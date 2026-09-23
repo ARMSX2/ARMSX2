@@ -245,6 +245,41 @@ struct MobileDriverProfile
 	DriverProfileConfidence confidence = DriverProfileConfidence::Unknown;
 	/// True when nothing in the table matched and the safe defaults are in force.
 	bool conservative_fallback = true;
+
+	/// Which generation of the declared-feedback-loop ordering fix this driver build carries, read
+	/// out of its driverInfo tag. 0 for every driver that carries no such tag, which is every
+	/// driver but ours. See ParseDeclaredLoopFixGeneration.
+	u32 declared_loop_fix_generation = 0;
+
+	/// This driver orders overlapping self-reads inside a declared attachment feedback loop.
+	///
+	/// ⚠️ Not something an extension promises and not something a driver's source can establish --
+	/// stock Turnip already EMITS the ordering mode and does not deliver it (GSSelfReadRoadPolicy.h
+	/// has the measurement). It is true only for a driver build that was measured byte-identical to
+	/// the barrier-keeping reference, and the only such builds are ours, which say so in
+	/// driverInfo. Every other driver keeps its barriers and comes out correct-and-slower.
+	bool orders_declared_feedback_loop = false;
+
+	/// This driver's best in-pass self-read road is a declared attachment feedback loop with the
+	/// per-draw barriers KEPT -- the declaration for the layout and the coherent destination read,
+	/// our own barriers for the ordering.
+	///
+	/// ⚠️ A weaker claim than orders_declared_feedback_loop, and a different one. That fact says
+	/// the driver orders overlapping self-reads so the barriers can go; this one says only that the
+	/// declared road is where this part belongs, and the barriers stay. Where a driver somehow
+	/// carried both, the ordering fact is strictly more and answers.
+	///
+	/// True today for Turnip on Adreno 730 and up (measured on the 740):
+	/// on an a740 that road is correct on every scored cell and stable across 7 reps, where the
+	/// copy road the driver database puts it on draws The Godfather a third wrong and NASCAR's sky
+	/// wrong. Against the same driver's copy road it is 17-21% faster on Stuntman and WRC3 and
+	/// +15.5% on Indiana Jones at native; Splashdown at native is its one real loss at +39.5%,
+	/// which the Splashdown blending cap addresses (GSCopyRoadBlendingPolicy.h). Against the stock Qualcomm blob --
+	/// what a user on this phone actually has -- it wins on seven of nine cells, by up to 2.4x.
+	/// The barrier-LESS declared road races on a7xx -- Turnip never emits the ordering state there
+	/// -- which is why this fact and not the other one.
+	bool prefers_declared_loop_with_barriers = false;
+
 	std::string driver_name;
 
 	constexpr bool HasBug(DriverBug bug) const
@@ -324,4 +359,9 @@ public:
 	/// actually has.
 	static void SetForcedBugs(u64 mask);
 	static u64 GetForcedBugs();
+
+	/// The generation number out of a `git-axfl<G>-` build tag in a Vulkan driverInfo string, or 0
+	/// when the string carries no well-formed one. Exposed for the tests; the resolver calls it
+	/// itself and publishes the answer as MobileDriverProfile::declared_loop_fix_generation.
+	static u32 ParseDeclaredLoopFixGeneration(std::string_view driver_info);
 };

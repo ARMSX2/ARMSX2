@@ -666,3 +666,300 @@ TEST(GSGpuDriverProfile, ForcedBugsRideOnTopOfTheDatabaseAndAreNotCountedAsRules
 	GpuProfileDetector::SetForcedBugs(0);
 	EXPECT_FALSE(resolve().driver.HasBug(DriverBug::BrokenBlendConstant));
 }
+
+// ---------------------------------------------------------------------------------------------
+// The declared-feedback-loop ordering fact, and the build tag it is parsed out of.
+//
+// This is the one fact in the database that is not a rule-table match, and it is the one whose
+// consequence is dropping barriers rather than adding work. Everything else in this file guards a
+// rule that stops firing; these guard a rule that fires when it should not, which is the direction
+// that renders wrong instead of slow.
+//
+// The tag: our Turnip builds pass MESA_GIT_SHA1_OVERRIDE, which Mesa pastes onto the package
+// version, so a build tagged `axfl1-005` reports driverInfo "Mesa 26.1.2 (git-axfl1-005)". A stock
+// distro Turnip is built from a release tarball and reports plain "Mesa 26.1.2" with no git sha at
+// all. The convention and the build register are in
+// README.ARMSX2.md in github.com/bmdhacks/armsx2-turnip.
+namespace
+{
+	constexpr const char* kFixedTurnipDriverInfo = "Mesa 26.1.2 (git-axfl1-005)";
+	constexpr const char* kStockTurnipDriverInfo = "Mesa 26.1.2";
+
+	GpuProfileSelection ResolveAdrenoVKWithInfo(const char* device_name, u32 driver_id,
+		const char* driver_name, u32 packed_version, const char* driver_info)
+	{
+		MobileDriverContext context;
+		context.api = MobileGpuApi::Vulkan;
+		context.vendor_id = kAdrenoVendorId;
+		context.driver_id = driver_id;
+		context.driver_version = packed_version;
+		context.driver_name = driver_name;
+		context.driver_info = driver_info;
+		return GpuProfileDetector::Resolve("auto", std::string_view(), device_name, context);
+	}
+
+	bool OrdersDeclaredLoop(const GpuProfileSelection& sel)
+	{
+		return sel.driver.orders_declared_feedback_loop;
+	}
+} // namespace
+
+TEST(GSGpuDriverProfile, TheFixTagParsesToItsGeneration)
+{
+	EXPECT_EQ(GpuProfileDetector::ParseDeclaredLoopFixGeneration(kFixedTurnipDriverInfo), 1u);
+	// Any generation, and the tag does not have to sit at the end of the string.
+	EXPECT_EQ(GpuProfileDetector::ParseDeclaredLoopFixGeneration("Mesa 26.1.2 (git-axfl7-012)"), 7u);
+	EXPECT_EQ(GpuProfileDetector::ParseDeclaredLoopFixGeneration("Mesa 27.0.0 (git-axfl12-a) extra"), 12u);
+	// Mesa emits it lowercase; accepting either spelling costs nothing and removes a way to be
+	// wrong for a reason nobody would look for.
+	EXPECT_EQ(GpuProfileDetector::ParseDeclaredLoopFixGeneration("Mesa 26.1.2 (GIT-AXFL3-001)"), 3u);
+}
+
+TEST(GSGpuDriverProfile, AMalformedFixTagIsNoTagAtAll)
+{
+	// Generation 0 is not a generation: the convention counts from 1, so a 0 is a build tagged by
+	// something that is not this convention.
+	EXPECT_EQ(GpuProfileDetector::ParseDeclaredLoopFixGeneration("Mesa 26.1.2 (git-axfl0-005)"), 0u);
+	// No digit at all, and the prefix on its own.
+	EXPECT_EQ(GpuProfileDetector::ParseDeclaredLoopFixGeneration("Mesa 26.1.2 (git-axfl-005)"), 0u);
+	EXPECT_EQ(GpuProfileDetector::ParseDeclaredLoopFixGeneration("Mesa 26.1.2 (git-axfl)"), 0u);
+	// The convention puts a hyphen after the generation; without it this is somebody's branch name
+	// that happens to start the same way.
+	EXPECT_EQ(GpuProfileDetector::ParseDeclaredLoopFixGeneration("Mesa 26.1.2 (git-axfl1)"), 0u);
+	EXPECT_EQ(GpuProfileDetector::ParseDeclaredLoopFixGeneration("Mesa 26.1.2 (git-axfl2beta-1)"), 0u);
+	// The tag has to start a token. A longer word that ends in "git-axfl1-" is not our tag.
+	EXPECT_EQ(GpuProfileDetector::ParseDeclaredLoopFixGeneration("Mesa 26.1.2 (notgit-axfl1-005)"), 0u);
+	// The tags that predate the convention, which are exactly the builds that do NOT have the fix.
+	EXPECT_EQ(GpuProfileDetector::ParseDeclaredLoopFixGeneration("Mesa 26.1.2 (git-armsx2-003)"), 0u);
+	EXPECT_EQ(GpuProfileDetector::ParseDeclaredLoopFixGeneration(kStockTurnipDriverInfo), 0u);
+	EXPECT_EQ(GpuProfileDetector::ParseDeclaredLoopFixGeneration(std::string_view()), 0u);
+}
+
+// A well-formed tag first, then everything that has to be true besides the tag. The device the
+// fix was measured on: SD865 / Adreno 650 / Turnip, carrying a generation-1 build.
+TEST(GSGpuDriverProfile, ATaggedTurnipOnAdreno6xxOrdersTheDeclaredLoop)
+{
+	const GpuProfileSelection sel = ResolveAdrenoVKWithInfo("Adreno (TM) 650", kTurnipDriverId,
+		"turnip", PackVulkanVersion(26, 1, 2), kFixedTurnipDriverInfo);
+
+	EXPECT_EQ(sel.driver.driver, MobileGpuDriver::MesaTurnip);
+	EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno6xx);
+	EXPECT_EQ(sel.driver.declared_loop_fix_generation, 1u);
+	EXPECT_TRUE(OrdersDeclaredLoop(sel));
+	// The fact is not a rule, so it must not look like one.
+	EXPECT_EQ(sel.driver.matched_rule_count,
+		ResolveAdrenoVKWithInfo("Adreno (TM) 650", kTurnipDriverId, "turnip", PackVulkanVersion(26, 1, 2),
+			kStockTurnipDriverInfo)
+			.driver.matched_rule_count);
+}
+
+// The stock driver on the same device, which is what every user has until they install the pack.
+TEST(GSGpuDriverProfile, StockTurnipMakesNoOrderingClaim)
+{
+	EXPECT_FALSE(OrdersDeclaredLoop(ResolveAdrenoVKWithInfo("Adreno (TM) 650", kTurnipDriverId,
+		"turnip", PackVulkanVersion(26, 1, 2), kStockTurnipDriverInfo)));
+	// And it keeps the workaround that puts it on the copy road, because that rule is about the
+	// driver it was measured on and this is that driver.
+	EXPECT_TRUE(ResolveAdrenoVKWithInfo("Adreno (TM) 650", kTurnipDriverId, "turnip",
+		PackVulkanVersion(26, 1, 2), kStockTurnipDriverInfo)
+			.driver.UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback));
+}
+
+// a7xx is measured separately and the driver patch behind generation 1 changes emission for
+// CHIP == A6XX only, so a tagged build on an a740 carries nothing to trust. The tag still parses --
+// it IS one of our builds -- and the claim is still refused.
+TEST(GSGpuDriverProfile, ATaggedTurnipOnAdreno7xxMakesNoOrderingClaim)
+{
+	const GpuProfileSelection sel = ResolveAdrenoVKWithInfo("Adreno (TM) 740", kTurnipDriverId,
+		"turnip", PackVulkanVersion(26, 1, 2), kFixedTurnipDriverInfo);
+
+	EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno7xx);
+	EXPECT_EQ(sel.driver.declared_loop_fix_generation, 1u);
+	EXPECT_FALSE(OrdersDeclaredLoop(sel));
+}
+
+// The older a6xx parts. On an Adreno 610 (MQ65) a generation-1 build renders the declared road
+// differently from run to run -- 5 of 24 dumps, visible in
+// play on Metal Gear Solid 3 -- while the same build's copy road and stock Turnip are stable. So
+// the fact covers the class it was measured correct on, the 650 and up, and nothing below it.
+TEST(GSGpuDriverProfile, ATaggedTurnipBelowTheAdreno650ClassMakesNoOrderingClaim)
+{
+	for (const char* device : {"Adreno (TM) 610", "Adreno (TM) 618", "Adreno (TM) 630", "Adreno (TM) 640"})
+	{
+		const GpuProfileSelection sel = ResolveAdrenoVKWithInfo(device, kTurnipDriverId,
+			"turnip", PackVulkanVersion(26, 1, 2), kFixedTurnipDriverInfo);
+
+		EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno6xx) << device;
+		EXPECT_EQ(sel.driver.declared_loop_fix_generation, 1u) << device;
+		EXPECT_FALSE(OrdersDeclaredLoop(sel)) << device;
+	}
+
+	EXPECT_TRUE(OrdersDeclaredLoop(ResolveAdrenoVKWithInfo("Adreno (TM) 660", kTurnipDriverId,
+		"turnip", PackVulkanVersion(26, 1, 2), kFixedTurnipDriverInfo)));
+}
+
+// A non-Turnip driver reporting the tag. It cannot happen -- the blob has no Mesa git sha - so if
+// it does, the string is not what we think it is and the safe reading is "not our build".
+TEST(GSGpuDriverProfile, ANonTurnipDriverCarryingTheTagMakesNoOrderingClaim)
+{
+	const GpuProfileSelection sel = ResolveAdrenoVKWithInfo("Adreno (TM) 650",
+		kQualcommProprietaryDriverId, "Qualcomm", PackVulkanVersion(512, 615, 0), kFixedTurnipDriverInfo);
+
+	EXPECT_EQ(sel.driver.driver, MobileGpuDriver::QualcommProprietary);
+	EXPECT_EQ(sel.driver.declared_loop_fix_generation, 1u);
+	EXPECT_FALSE(OrdersDeclaredLoop(sel));
+}
+
+// Mali under PanVK carrying the tag: same answer, one step further out. The claim names an Adreno
+// fix, so no other vendor can inherit it however its driver string reads.
+TEST(GSGpuDriverProfile, AMaliDriverCarryingTheTagMakesNoOrderingClaim)
+{
+	MobileDriverContext context;
+	context.api = MobileGpuApi::Vulkan;
+	context.vendor_id = kMaliVendorId;
+	context.driver_id = kArmDriverId;
+	context.driver_version = PackVulkanVersion(44, 1, 0);
+	context.driver_name = "ARM proprietary";
+	context.driver_info = kFixedTurnipDriverInfo;
+
+	const GpuProfileSelection sel =
+		GpuProfileDetector::Resolve("auto", std::string_view(), "Mali-G615 MC6", context);
+	EXPECT_EQ(sel.runtime_profile, RuntimeGpuProfile::Mali);
+	EXPECT_FALSE(OrdersDeclaredLoop(sel));
+}
+
+// The OpenGL path never reaches this road -- the declaration is a Vulkan pipeline create flag and
+// an image layout -- so the fact is refused there whatever the strings say.
+TEST(GSGpuDriverProfile, TheOrderingClaimDoesNotReachTheOpenGLPath)
+{
+	MobileDriverContext context;
+	context.api = MobileGpuApi::OpenGL;
+	context.driver_name = "Turnip Adreno (TM) 650";
+	context.driver_info = kFixedTurnipDriverInfo;
+	context.api_version_string = "OpenGL ES 3.2 Mesa 26.1.2";
+
+	const GpuProfileSelection sel =
+		GpuProfileDetector::Resolve("auto", "freedreno", "Adreno (TM) 650", context);
+	EXPECT_EQ(sel.driver.declared_loop_fix_generation, 1u);
+	EXPECT_FALSE(OrdersDeclaredLoop(sel));
+}
+
+// ---------------------------------------------------------------------------------------------
+// The a7xx preference: Turnip on an Adreno 7xx belongs on the declared feedback loop with the
+// per-draw barriers KEPT.
+//
+// Unlike the ordering fact above, this one needs no build tag. It is a fact about the PART, not
+// about a build: on an a740 both our pack build and upstream main draw the declared-with-barriers
+// road correct on every scored cell and stable over 7 reps, while the copy road the driver
+// database puts them on draws The Godfather a third wrong and NASCAR's sky wrong. The barrier-less road races there, so the two facts are genuinely
+// different claims and only one of them applies per part.
+namespace
+{
+	bool PrefersDeclaredLoopWithBarriers(const GpuProfileSelection& sel)
+	{
+		return sel.driver.prefers_declared_loop_with_barriers;
+	}
+
+	GpuProfileSelection ResolveTurnipVK(const char* device_name, const char* driver_info)
+	{
+		return ResolveAdrenoVKWithInfo(
+			device_name, kTurnipDriverId, "turnip", PackVulkanVersion(26, 1, 2), driver_info);
+	}
+} // namespace
+
+// The device this was measured on, and its bigger sibling. Stock Turnip, no tag, and it still earns
+// the preference -- that is the whole point of this fact being about the part.
+TEST(GSGpuDriverProfile, StockTurnipOnAdreno7xxPrefersTheDeclaredLoopWithBarriers)
+{
+	for (const char* device_name : {"Adreno (TM) 740", "Adreno (TM) 750", "Adreno (TM) 730"})
+	{
+		const GpuProfileSelection sel = ResolveTurnipVK(device_name, kStockTurnipDriverInfo);
+		EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno7xx) << device_name;
+		EXPECT_EQ(sel.driver.driver, MobileGpuDriver::MesaTurnip) << device_name;
+		EXPECT_TRUE(PrefersDeclaredLoopWithBarriers(sel)) << device_name;
+		// And no tag, so no ordering claim. Being on the declared road is not being ordered.
+		EXPECT_FALSE(OrdersDeclaredLoop(sel)) << device_name;
+	}
+}
+
+// Only the 730 and up. The a740 is the one part this was measured on. Our table files the 702, 710
+// and 720 -- and the 725 -- as 7xx too, but none was run, and the 702 is an a6xx-family part as far
+// as Mesa's freedreno device table is concerned. They keep origin/master's road: the RT-copy
+// workaround, no declared loop.
+TEST(GSGpuDriverProfile, TurnipBelowAdreno730DoesNotGetTheA7xxPreference)
+{
+	for (const char* device_name : {"Adreno (TM) 702", "Adreno (TM) 710", "Adreno (TM) 720", "Adreno (TM) 725"})
+	{
+		const GpuProfileSelection sel = ResolveTurnipVK(device_name, kStockTurnipDriverInfo);
+		EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno7xx) << device_name;
+		EXPECT_EQ(sel.driver.driver, MobileGpuDriver::MesaTurnip) << device_name;
+		EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(sel)) << device_name;
+		EXPECT_FALSE(OrdersDeclaredLoop(sel)) << device_name;
+		EXPECT_TRUE(sel.driver.UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback)) << device_name;
+		EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(ResolveTurnipVK(device_name, kFixedTurnipDriverInfo)))
+			<< device_name << " (tagged)";
+	}
+}
+
+// a6xx is the ordering fact's part, not this one's. Turnip on an a650 keeps the copy road unless
+// it carries the tag, which is exactly where the ordering fact left it.
+TEST(GSGpuDriverProfile, TurnipOnAdreno6xxDoesNotGetTheA7xxPreference)
+{
+	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(ResolveTurnipVK("Adreno (TM) 650", kStockTurnipDriverInfo)));
+	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(ResolveTurnipVK("Adreno (TM) 650", kFixedTurnipDriverInfo)));
+	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(ResolveTurnipVK("Adreno (TM) 630", kStockTurnipDriverInfo)));
+}
+
+// The two facts are measured on different drivers on different parts, so no part may hold both.
+// A tagged build on an a740 gets the preference like any other Turnip and the ordering claim from
+// nobody -- the tag buys ordering, and ordering is what a7xx does not have.
+TEST(GSGpuDriverProfile, ATaggedTurnipOnAdreno7xxGetsThePreferenceAndNotTheOrderingClaim)
+{
+	const GpuProfileSelection sel = ResolveTurnipVK("Adreno (TM) 740", kFixedTurnipDriverInfo);
+	EXPECT_EQ(sel.driver.declared_loop_fix_generation, 1u);
+	EXPECT_TRUE(PrefersDeclaredLoopWithBarriers(sel));
+	EXPECT_FALSE(OrdersDeclaredLoop(sel));
+}
+
+// The Qualcomm blob on the same a740. Its only in-pass road is the input attachment with barriers,
+// which was measured right on The Godfather and wrong on Splashdown; nothing here was measured on
+// it and the declared road is not its road.
+TEST(GSGpuDriverProfile, TheQualcommBlobOnAdreno7xxGetsNoPreference)
+{
+	const GpuProfileSelection sel = ResolveAdrenoVKWithInfo("Adreno (TM) 740",
+		kQualcommProprietaryDriverId, "Qualcomm", PackVulkanVersion(512, 780, 0), kStockTurnipDriverInfo);
+
+	EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno7xx);
+	EXPECT_EQ(sel.driver.driver, MobileGpuDriver::QualcommProprietary);
+	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(sel));
+}
+
+// The OpenGL path cannot declare anything -- the declaration is a Vulkan pipeline create flag and
+// an image layout -- so freedreno on an a740 is refused for the same reason the tag is.
+TEST(GSGpuDriverProfile, TheA7xxPreferenceDoesNotReachTheOpenGLPath)
+{
+	MobileDriverContext context;
+	context.api = MobileGpuApi::OpenGL;
+	context.driver_name = "Turnip Adreno (TM) 740";
+	context.api_version_string = "OpenGL ES 3.2 Mesa 26.1.2";
+
+	const GpuProfileSelection sel =
+		GpuProfileDetector::Resolve("auto", "freedreno", "Adreno (TM) 740", context);
+	EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno7xx);
+	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(sel));
+}
+
+// Mali is not an Adreno however its strings read.
+TEST(GSGpuDriverProfile, MaliGetsNoA7xxPreference)
+{
+	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0))));
+}
+
+// The a740 still carries the RT-copy workaround in the table. The database is not where that gets
+// resolved -- the road policy is, and it is where the fact outranks the workaround. Keeping the
+// bit is what lets a device that loses the layout extension fall back to the copy road.
+TEST(GSGpuDriverProfile, TheA7xxPreferenceDoesNotClearTheRtCopyWorkaround)
+{
+	EXPECT_TRUE(ResolveTurnipVK("Adreno (TM) 740", kStockTurnipDriverInfo)
+			.driver.UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback));
+}

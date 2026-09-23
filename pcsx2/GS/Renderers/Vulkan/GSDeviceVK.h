@@ -49,6 +49,12 @@ public:
 		bool vk_khr_driver_properties : 1;
 		bool vk_khr_shader_non_semantic_info : 1;
 		bool vk_ext_attachment_feedback_loop_layout : 1;
+		/// VK_EXT_attachment_feedback_loop_dynamic_state — the per-draw spelling of the
+		/// feedback-loop declaration, and Turnip's default one since 2026-09-22. Requested on
+		/// Adreno wherever the feedback-loop LAYOUT extension is also there, because off that road
+		/// there is nothing to declare; `-loop-create-flag` suppresses the request. See
+		/// GSDynamicFeedbackLoopPolicy.h.
+		bool vk_ext_attachment_feedback_loop_dynamic_state : 1;
 		bool vk_ext_fragment_shader_interlock : 1;
 		/// Both are required by the LSFG frame-generation shaders and by NOTHING else in the
 		/// renderer. They are requested anyway whenever the driver really has them, because the
@@ -74,11 +80,31 @@ public:
 	/// else should, and nothing may change it after the rings exist.
 	__fi const GSStreamRingMemoryDecision& GetStreamRingMemory() const { return m_stream_ring_memory; }
 
-	// The interaction between raster order attachment access and fbfetch is unclear.
+	// Which spelling the in-pass self-read uses: the attachment-feedback-loop layout with an
+	// ordinary sampler, or a subpass input attachment with subpassLoad. The two are mutually
+	// exclusive everywhere in this backend -- image usage bit, shader variant, descriptor type and
+	// render-pass input reference all branch on this one answer -- and it is fixed for the life of
+	// the device.
+	//
+	// The negated rasterization-order term is a PREFERENCE, not a correctness gate: where a device
+	// advertises that extension its subpassLoad is ordered in tile memory, which is the cheap road,
+	// so take it. (The helper used to carry the comment "the interaction is unclear", which was
+	// inherited hedging with no measurement behind it.) The preference is right on Mali, vacuous on
+	// desktop -- which does not advertise the extension and so already takes the layout road, with
+	// the pipeline create flag and everything else it implies -- and wrong on Adreno under Turnip,
+	// where the in-tile read is the broken one.
+	//
+	// m_force_feedback_loop_layout is how the declared-loop road overrides the preference
+	// on that one part. It is false unless the self-read road declares a feedback loop -- the
+	// experiment key, or a driver the database recognises as one that orders declared loops -- so
+	// the expression is unchanged on every device that is neither; see GSSelfReadRoadPolicy.h. It
+	// is written once in CheckFeatures, which runs before the first image, descriptor layout or
+	// render pass exists, and never again -- none of those can be changed afterwards.
 	__fi bool UseFeedbackLoopLayout() const
 	{
 		return m_optional_extensions.vk_ext_attachment_feedback_loop_layout &&
-		       !m_optional_extensions.vk_ext_rasterization_order_attachment_access;
+		       (m_force_feedback_loop_layout ||
+		        !m_optional_extensions.vk_ext_rasterization_order_attachment_access);
 	}
 
 	// Helpers for getting constants
@@ -113,6 +139,25 @@ public:
 	// Adreno-5xx / pre-0x801EA000 driver bug: colorWriteMask is ignored while a depth
 	// test is active (PPSSPP #10421). Cached in CheckFeatures, consumed in CreateTFXPipeline.
 	bool m_broken_colormask_with_depth = false;
+
+	// Declare the feedback loop per draw with vkCmdSetAttachmentFeedbackLoopEnableEXT instead of
+	// with the pipeline create flag, so a driver that programs its coherent primitive mode from
+	// the declaration applies it to the draws that read rather than to every pipeline in the
+	// latched pass. ⚠️ TRUE on an ordinary Turnip run since 2026-09-22: the create flag costs
+	// 2.8x on wrc3@1x there and it is what the flagless path was taking. Every driver but Turnip
+	// and Honeykrisp keeps the create flag. Decided by
+	// GSDynamicFeedbackLoopPolicy.h, written once in CheckFeatures before the first pipeline
+	// exists -- a pipeline's dynamic-state list cannot be changed afterwards -- and read in
+	// CreateTFXPipeline and per draw in DoRenderHW.
+	bool m_declare_loop_per_draw = false;
+
+	// Take the attachment-feedback-loop spelling even on a device that advertises
+	// rasterization-order attachment access. Decided by GSSelfReadRoadPolicy.h, written once in
+	// CheckFeatures before any image or render pass exists, and read by UseFeedbackLoopLayout()
+	// above. Two things set it: the driver database recognising a driver build measured to order
+	// declared loops, and gsrunner's -declare-feedback-loop, which is experiment scaffolding
+	// and still outranks the database where it is set.
+	bool m_force_feedback_loop_layout = false;
 
 	/// Returns true if running on an Imagination PowerVR GPU (vendorID 0x1010).
 	__fi bool IsDevicePowerVR() const { return (m_device_properties.vendorID == 0x1010u); }
@@ -592,7 +637,7 @@ private:
 
 	GSTexture* CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format) override;
 
-	void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const GSRegPMODE& PMODE,
+	void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const MergeTopBand* top_band, const GSRegPMODE& PMODE,
 		const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter) final;
 	void DoInterlace(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
 		ShaderInterlace shader, Filter filter, const InterlaceConstantBuffer& cb) final;
@@ -792,6 +837,13 @@ public:
 	VkDependencyFlags GetFeedbackBarrierDependencyFlags() const;
 	void SendHWDraw(const GSHWDrawConfig& config, GSTextureVK* draw_rt, GSTextureVK* draw_ds,
 		bool one_barrier, bool full_barrier);
+
+	/// The per-draw half of the dynamic feedback-loop spelling. Declares this draw's loop (or its
+	/// absence) with vkCmdSetAttachmentFeedbackLoopEnableEXT. A no-op
+	/// unless m_declare_loop_per_draw. Must be called AFTER the pipeline bind and before the
+	/// draw: the Mesa runtime resets the dynamic value on every bind, so it cannot be set once
+	/// per pass. See GSDynamicFeedbackLoopPolicy.h.
+	void DeclareDrawFeedbackLoop(const GSHWDrawConfig& config, const PipelineSelector& pipe);
 
 	//////////////////////////////////////////////////////////////////////////
 	// Vulkan State

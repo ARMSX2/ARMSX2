@@ -433,6 +433,7 @@ static const char* s_gs_hw_fix_names[] = {
 	"nativeScaling",
 	"texturePreloading",
 	"deinterlace",
+	"fieldShift",
 	"cpuSpriteRenderBW",
 	"cpuSpriteRenderLevel",
 	"cpuCLUTRender",
@@ -440,6 +441,7 @@ static const char* s_gs_hw_fix_names[] = {
 	"gpuPaletteConversion",
 	"minimumBlendingLevel",
 	"maximumBlendingLevel",
+	"copyRoadMaximumBlendingLevel",
 	"recommendedBlendingLevel",
 	"recommendedAccurateAlphaTest",
 	"recommendedHWAA1",
@@ -471,11 +473,13 @@ bool GameDatabaseSchema::isUserHackHWFix(GSHWFixId id)
 	switch (id)
 	{
 		case GSHWFixId::Deinterlace:
+		case GSHWFixId::FieldShift:
 		case GSHWFixId::Mipmap:
 		case GSHWFixId::TexturePreloading:
 		case GSHWFixId::TrilinearFiltering:
 		case GSHWFixId::MinimumBlendingLevel:
 		case GSHWFixId::MaximumBlendingLevel:
+		case GSHWFixId::CopyRoadMaximumBlendingLevel:
 		case GSHWFixId::RecommendedBlendingLevel:
 		case GSHWFixId::PCRTCOffsets:
 		case GSHWFixId::PCRTCOverscan:
@@ -807,6 +811,9 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 		case GSHWFixId::Deinterlace:
 			return (config.InterlaceMode == GSInterlaceMode::Automatic || static_cast<int>(config.InterlaceMode) == value);
 
+		case GSHWFixId::FieldShift:
+			return (config.FieldShift < 0 || static_cast<int>(config.FieldShift) == value);
+
 		case GSHWFixId::HWDownloadMode:
 			// A non-default user choice already "matches" (we never override it — see the apply switch).
 			return (config.HWDownloadMode != GSHardwareDownloadMode::Enabled || static_cast<int>(config.HWDownloadMode) == value);
@@ -830,6 +837,12 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 			return (static_cast<int>(config.AccurateBlendingUnit) >= value);
 
 		case GSHWFixId::MaximumBlendingLevel:
+			return (static_cast<int>(config.AccurateBlendingUnit) <= value);
+
+		case GSHWFixId::CopyRoadMaximumBlendingLevel:
+			// The cap is a ceiling the GS applies later, and only on the roads that charge for a
+			// destination read, so a player already at or below it has nothing left for this fix
+			// to do, on any device.
 			return (static_cast<int>(config.AccurateBlendingUnit) <= value);
 
 		case GSHWFixId::RecommendedBlendingLevel:
@@ -1061,6 +1074,16 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
 			}
 			break;
 
+			case GSHWFixId::FieldShift:
+			{
+				// Says whether the game moves its projection half a display line between fields.
+				// Only read where the field render is presented directly (integer upscale of 2 or
+				// more); elsewhere it costs nothing. A player's own answer wins.
+				if (value >= 0 && value <= 1 && config.FieldShift < 0)
+					config.FieldShift = static_cast<s8>(value);
+			}
+			break;
+
 			case GSHWFixId::CPUSpriteRenderBW:
 				config.UserHacks_CPUSpriteRenderBW = value;
 				break;
@@ -1101,6 +1124,17 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
 			{
 				if (value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum))
 					config.AccurateBlendingUnit = std::min(config.AccurateBlendingUnit, static_cast<AccBlendLevel>(value));
+			}
+			break;
+
+			case GSHWFixId::CopyRoadMaximumBlendingLevel:
+			{
+				// Recorded, not applied. Whether the cap bites depends on how the device serves a
+				// render-target self-read, and that is not known here -- the GS device may not
+				// exist yet, and it is the GS thread's to read when it does. So the value rides to
+				// GSConfig and GS.cpp asks GSCopyRoadBlendingPolicy.h once the device is up.
+				if (value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum))
+					config.CopyRoadMaximumBlendingLevel = static_cast<s8>(value);
 			}
 			break;
 

@@ -7,6 +7,7 @@
 #include "GS/GSVector.h"
 
 #include <cfloat>
+#include <limits>
 
 // Pure kernels backing the fused GIF packed vertex handlers and the per-prim
 // accept/cull decision in GSState::VertexKick. Factored out of GSState.cpp so the
@@ -451,35 +452,134 @@ namespace GSVertexKernels
 #endif
 	}
 
-	// Bounding box of one completed prim's window entries with the class rounding
-	// applied — the bbox half of the legacy CullTest, shared by the scalar-outcode
-	// fast path (which only needs it for accepted prims).
-	template <u32 n, int primclass>
-	__forceinline_odr GSVector4i ComputeCullBBox(const GSVector4i& v0, const GSVector4i& v1, const GSVector4i& v2,
-		bool nativeres, bool aa1_expand)
+	// ------------------------------------------------------------------------
+	// The cull grid: the sub-texel spacing of the device sample points a prim has
+	// to span to paint anything.
+	//
+	// A prim whose bounding box holds no sample point covers no device pixel, so
+	// it can be dropped before it becomes part of a draw -- and a draw all of
+	// whose prims go that way never happens at all. The grid is a power-of-two
+	// step in 12.4 sub-texels, carried as the two vectors the interior rounding
+	// needs plus its log2:
+	//
+	//   4  the native pixel centres, which are the device sample points at scale
+	//      1. This is what the shipped code selected with a `nativeres` bool.
+	//   3  2x.  2  4x.  1  8x. Exact at each of those, because the sample points
+	//      really are the multiples of 16 >> shift there -- see
+	//      GSState::ConfigCullGrid for the two conditions that have to hold.
+	//   0  no grid: keep every prim with any sub-texel extent, which is what every
+	//      non-native scale used to get and what a scale or a half-pixel-offset
+	//      mode whose sample points are not a power-of-two grid still gets. It is
+	//      spelled out as its own branch rather than falling out of the general
+	//      formula at step 1: the two disagree about a bottom/right edge sitting
+	//      exactly on a pixel boundary, and that is behaviour, not rounding.
+	//
+	// The sprite class carries its own shift because sprite geometry moves between
+	// the cull and the raster: at any upscale CorrectSpriteCoverageForUpscale
+	// pushes a sprite's far edge out to the next whole pixel, so a grid decision
+	// taken here would be taken on coordinates nothing rasterises. At scale 1 that
+	// pass returns early and sprites keep the pixel-centre grid.
+	//
+	// Invariant: sprite_shift is either equal to shift or 0, so the round vectors
+	// are valid for whichever class ends up using them.
+	//
+	// The grid also carries a per-axis PHASE, in sub-texels: the sample points are
+	// `phase + k*step`, not `k*step`. Every half-pixel-offset mode whose window
+	// constant is half a device pixel has phase 0, and HalfPixelOffset::Native --
+	// whose align-to-native branch puts the constant at S/2 -- has phase step/2,
+	// the odd multiples of half the device step (sub-texel 8k+4 at 2x, 4k+2 at 4x).
+	// See GSState::CullGridFor for the derivation from the mode's ox2.
+	//
+	// Invariant: phase is zero at shift 4 (native, where 1x byte identity is
+	// structural) and at shift 0 (no grid), and 0 <= phase < step otherwise. The
+	// sprite class therefore needs no phase of its own: it only ever carries the
+	// native grid.
+	struct CullGrid
 	{
-		GSVector4i bbox;
+		GSVector4i round_add;  // (step - 1, step - 1, -1, -1)
+		GSVector4i round_mask; // ~(step - 1)
+		GSVector4i phase;      // (phase_x, phase_y, phase_x, phase_y)
+		int shift;             // triangle class
+		int sprite_shift;      // sprite class
+		int band_bias_x;       // phase_x + 1, the constant the band expression subtracts
+		int band_bias_y;       // phase_y + 1
+
+		template <int primclass>
+		__forceinline_odr int ShiftFor() const
+		{
+			return (primclass == GS_SPRITE_CLASS) ? sprite_shift : shift;
+		}
+	};
+
+	// The device sample grid at an exact power-of-two upscale, as a log2 sub-texel
+	// step. 0 means the scale's sample points are not a sub-texel grid at all and
+	// nothing can be culled on them -- see GSState::ConfigCullGrid.
+	__forceinline_odr int DeviceCullGridShift(float scale)
+	{
+		if (scale == 1.0f)
+			return 4;
+		if (scale == 2.0f)
+			return 3;
+		if (scale == 4.0f)
+			return 2;
+		if (scale == 8.0f)
+			return 1;
+		return 0;
+	}
+
+	__forceinline_odr CullGrid MakeCullGrid(int shift, int sprite_shift, int phase_x = 0, int phase_y = 0)
+	{
+		const int step = 1 << shift;
+		return {GSVector4i(step - 1, step - 1, -1, -1), GSVector4i(~(step - 1)),
+			GSVector4i(phase_x, phase_y, phase_x, phase_y), shift, sprite_shift, phase_x + 1, phase_y + 1};
+	}
+
+	// Raw bounding box of one completed prim's window entries, no rounding.
+	template <u32 n>
+	__forceinline_odr GSVector4i CullPrimBounds(const GSVector4i& v0, const GSVector4i& v1, const GSVector4i& v2)
+	{
 		if constexpr (n == 1)
-		{
-			bbox = v0;
-		}
+			return v0;
 		else if constexpr (n == 2)
-		{
-			bbox = v0.runion(v1);
-		}
+			return v0.runion(v1);
 		else
 		{
 			static_assert(n == 3);
-			bbox = v0.runion(v1).runion(v2);
+			return v0.runion(v1).runion(v2);
 		}
+	}
 
+	// Snap a bbox inwards onto the grid: top/left up to the first sample point at
+	// or past the edge, bottom/right down to the last one strictly inside, then +1
+	// on bottom/right so rempty() reads "spans no sample point".
+	__forceinline_odr GSVector4i RoundToCullGrid(const GSVector4i& bbox, const CullGrid& grid)
+	{
+		const GSVector4i interior = (bbox + grid.round_add) & grid.round_mask;
+		return interior + GSVector4i(0, 0, 1, 1);
+	}
+
+	// The rounded bbox the accepted-prim draw_rect update and the scissor test
+	// consume. **This is the shipped rounding at every scale** -- the pixel-centre
+	// snap at native, the bottom/right sub-texel trim at any upscale -- and the
+	// finer cull grid deliberately does not reach it.
+	//
+	// The grid could round this box too, and that is the tighter and more honest
+	// rect. It is also a different change: the rect builds temp_draw_rect, which
+	// reaches the texture cache as valid rects, invalidations and page ranges, and
+	// at 2x letting the grid round it moved pixels on five of the forty-seven dumps
+	// in the test corpus -- the last two rows of a Splashdown frame, the last two
+	// columns of a Call of Duty 3 frame, a patch of Armored Core 3. So the grid
+	// answers one question only: does this prim paint anything at all.
+	template <int primclass>
+	__forceinline_odr GSVector4i RoundCullRect(GSVector4i bbox, const CullGrid& grid, bool aa1_expand)
+	{
 		if constexpr (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS)
 		{
-			if (nativeres)
+			if (grid.ShiftFor<primclass>() == 4)
 			{
-				// For triangles and sprites at native res take the interior pixel centers.
-				const GSVector4i interior = (bbox + GSVector4i(0xF, 0xF, -1, -1)) & GSVector4i(~0xF);
-				bbox = interior + GSVector4i(0, 0, 1, 1); // +1 to bottom/right so empty test works correctly.
+				// Native: the grid IS the pixel centres, so this is the shipped
+				// interior-pixel-centre rounding.
+				bbox = RoundToCullGrid(bbox, grid);
 			}
 			else
 			{
@@ -497,27 +597,147 @@ namespace GSVertexKernels
 		return bbox;
 	}
 
+	// The pixel rect one accepted prim contributes to temp_draw_rect: the class
+	// rounding is already in bbox, this is only the sub-pixel shift and the
+	// exclusive bottom/right endpoint.
+	__forceinline_odr GSVector4i PrimDrawRect(const GSVector4i& bbox)
+	{
+		return bbox.sra32<4>() + GSVector4i(0, 0, 1, 1);
+	}
+
+	// The same rect asked on the NATIVE pixel grid, whatever grid bbox was rounded
+	// on -- what the draw-buffering overlap heuristic compares its raw incoming
+	// prim box against (GSState::CheckOverlapVertsSlow). Only that heuristic reads
+	// it; temp_draw_rect keeps the shipped rounding, because it reaches the texture
+	// cache and rounding it moved pixels on five of forty-seven dumps at 2x.
+	//
+	// Why the one expression works at every grid. RoundCullRect leaves the
+	// bottom/right edge on the native grid already: its upscale arm trims the one
+	// sub-texel that separates floor(z/16)+1 from floor((z-1)/16)+1, and its native
+	// arm computes the latter outright. So the only edge that moves with the grid is
+	// top/left, floor above native against ceil at it, and +15 before the shift is
+	// that ceil:
+	//   * at the native grid bbox.x is already a multiple of 16, so +15 cannot reach
+	//     the next one and this is bit-identical to PrimDrawRect -- 1x is a
+	//     structural no-op, not a configuration branch;
+	//   * above it, (raw.x + 15) >> 4 is ceil(raw.x / 16), the native answer.
+	// The AA1 expansion is a whole pixel on every edge and is applied after the
+	// rounding in both arms, so it commutes with this.
+	//
+	// The point and line classes are excluded because RoundCullRect does not round
+	// them either: their contribution is the raw box at every scale, already
+	// scale-invariant, and putting the ceil on it would change native output.
+	template <int primclass>
+	__forceinline_odr GSVector4i PrimNativeDrawRect(const GSVector4i& bbox)
+	{
+		if constexpr (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS)
+			return (bbox + GSVector4i(15, 15, -1, -1)).sra32<4>() + GSVector4i(0, 0, 1, 1);
+		else
+			return PrimDrawRect(bbox);
+	}
+
+	// The identity element of runion, for a prim whose native rect is empty.
+	//
+	// A prim that spans no native sample point paints no native pixel, and at the
+	// native grid it is not merely thin -- CullTest rejects it on bbox.rempty() and
+	// it never reaches the accumulation. So the native rect must not take it either,
+	// and runion is a plain min/max with no notion of an empty operand: unioning
+	// such a box pulls the rect out to that prim's pixel, which is the 2x behaviour
+	// this is here to remove.
+	//
+	// It survives the fold's rintersect(scissor) as the scissor's own corners
+	// inverted -- still empty, and still an identity, because clamping the union
+	// gives the same answer as clamping the real operand alone.
+	__forceinline_odr GSVector4i NativeDrawRectNone()
+	{
+		return GSVector4i(std::numeric_limits<int>::max(), std::numeric_limits<int>::max(),
+			std::numeric_limits<int>::min(), std::numeric_limits<int>::min());
+	}
+
+	// PrimNativeDrawRect, with an empty result replaced by the union identity.
+	// Branchless: the emptiness is a data-dependent predicate (69% of Stuntman's
+	// submitted prims are sub-native at 2x), so a branch here mispredicts per prim.
+	template <int primclass>
+	__forceinline_odr GSVector4i PrimNativeDrawRectOrNone(const GSVector4i& bbox)
+	{
+		const GSVector4i rect = PrimNativeDrawRect<primclass>(bbox);
+		if constexpr (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS)
+		{
+			// lt lanes: (x < z, y < w, false, false) -- the same test rempty() runs,
+			// kept in vector registers. ANDed with itself lane-swapped and then
+			// broadcast, so every lane carries "not empty".
+			const GSVector4i lt = rect.lt32(rect.zwzw());
+			const GSVector4i keep = (lt & lt.yxwz()).xyxy();
+			return NativeDrawRectNone().blend8(rect, keep);
+		}
+		else
+		{
+			return rect;
+		}
+	}
+
+	// Whether the prim spans no point of the cull grid, and so paints nothing.
+	//
+	// Only asked where the grid is finer than the rect rounding, i.e. shift 1..3:
+	// at shift 4 the rect IS the grid and its own rempty() already says this, and
+	// at shift 0 there is no grid. Note the rect's rempty() is never weaker than
+	// this one -- a bbox the trim empties spans at most one sub-texel, which cannot
+	// straddle two grid points -- so the two are OR'd, not swapped.
+	template <int primclass>
+	__forceinline_odr u32 CullGridEmpty(const GSVector4i& bbox, const CullGrid& grid, bool aa1_expand)
+	{
+		const int shift = grid.ShiftFor<primclass>();
+		if (shift == 0 || shift == 4)
+			return 0;
+
+		// The phase shifts the sample set, so snap in the grid's own frame: subtract
+		// it, snap, and leave it subtracted. rempty() compares the two edges against
+		// each other, so the translation cancels and adding the phase back would be
+		// dead work. The AA1 expansion is +/-16 sub-texels, a multiple of every step
+		// the grid can take, so it commutes with the snap either way round.
+		GSVector4i snapped = RoundToCullGrid(bbox - grid.phase, grid);
+		if (aa1_expand)
+			snapped += GSVector4i(-0x10, -0x10, 0x10, 0x10);
+
+		return static_cast<u32>(snapped.rempty());
+	}
+
+	// Bounding box of one completed prim's window entries with the class rounding
+	// applied — the bbox half of the legacy CullTest, shared by the scalar-outcode
+	// fast path (which only needs it for accepted prims).
+	template <u32 n, int primclass>
+	__forceinline_odr GSVector4i ComputeCullBBox(const GSVector4i& v0, const GSVector4i& v1, const GSVector4i& v2,
+		const CullGrid& grid, bool aa1_expand)
+	{
+		return RoundCullRect<primclass>(CullPrimBounds<n>(v0, v1, v2), grid, aa1_expand);
+	}
+
 	// Accept/cull test for one completed prim. v0/v1/v2 are the window entries for
 	// the prim's vertices ({x, y, x, y} offset-subtracted 12.4 fixed-point, v0 most
-	// recent), scissor_cull = context scissor in cull form. nativeres selects the
-	// interior-pixel-center rounding; aa1_expand is the caller-evaluated
+	// recent), scissor_cull = context scissor in cull form. grid selects the
+	// sample-point rounding (see CullGrid); aa1_expand is the caller-evaluated
 	// "PRIM->AA1 && IsCoverageAlphaSupported()" (only for triangle/sprite classes).
 	// Returns nonzero to skip the prim; bbox receives the rounded bounding box the
 	// accepted-prim draw_rect update consumes.
 	template <u32 n, int primclass>
 	__forceinline_odr u32 CullTest(const GSVector4i& v0, const GSVector4i& v1, const GSVector4i& v2,
-		const GSVector4i& scissor_cull, bool nativeres, bool aa1_expand, GSVector4i& bbox)
+		const GSVector4i& scissor_cull, const CullGrid& grid, bool aa1_expand, GSVector4i& bbox)
 	{
-		bbox = ComputeCullBBox<n, primclass>(v0, v1, v2, nativeres, aa1_expand);
+		const GSVector4i raw = CullPrimBounds<n>(v0, v1, v2);
+		bbox = RoundCullRect<primclass>(raw, grid, aa1_expand);
 
-		// Do scissor test.
+		// Do scissor test. The box is the shipped one, and so is the half-pixel slop
+		// scissor_cull carries (GSDrawingContext::UpdateScissor): a prim in that
+		// margin still covers device pixels inside the scissor once it is upscaled,
+		// and the grid has no opinion about that.
 		const GSVector4i bbox_ex = bbox + GSVector4i(0, 0, 1, 1); // Exclusive coords for the scissor test.
 		u32 test = static_cast<u32>(!bbox_ex.rintersects(scissor_cull));
 
-		// Test for empty bbox.
+		// Test for empty bbox, and for spanning no point of the cull grid.
 		if constexpr (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS)
 		{
 			test |= static_cast<u32>(bbox.rempty());
+			test |= CullGridEmpty<primclass>(raw, grid, aa1_expand);
 		}
 
 		// Test for degenerate triangle.
@@ -584,21 +804,42 @@ namespace GSVertexKernels
 		return {(cull.x + 14) >> 4, (cull.y + 14) >> 4, (cull.z - 1) >> 4, (cull.w - 1) >> 4};
 	}
 
-	// Raw 12.4 bounds for point/line (no rounding, exclusive bbox test folded in).
+	// Raw 12.4 bounds for point/line, and for triangle/sprite wherever the cull
+	// grid is finer than native (no rounding, exclusive bbox test folded in).
+	//
+	// Why the raw bounds serve a grid class too: away from native the rounded
+	// classes' scissor test runs on the shipped trim box, whose only difference
+	// from the raw box is one sub-texel off a bottom/right edge that sits exactly
+	// on a pixel boundary. That difference is invisible to this test, because the
+	// trimmed edge only changes the answer when it meets the cull rect exactly,
+	// and the cull rect's edges are SCAX*16 -/+ 8 (GSDrawingContext::UpdateScissor)
+	// -- never a multiple of 16. GsVertexCull.ScalarTriangleSweep pins it.
 	__forceinline_odr CullBounds MakeRawCullBounds(const GSVector4i& cull)
 	{
 		return {cull.x, cull.y, cull.z, cull.w};
 	}
 
-	// Build one mirror entry from a vertex's window position. banded selects which
-	// coordinate space the outcode compares in (bands for triangle/sprite native
-	// res, raw 12.4 for point/line); bands are packed regardless so the entry
-	// shape is uniform.
+	// Build one mirror entry from a vertex's window position.
+	//
+	// `banded` selects which coordinate space the outcode compares in: bands at
+	// native res, where the scissor test runs on the pixel-centre-rounded box and
+	// the rounding folds into the bounds, and raw 12.4 everywhere else.
+	// `band_shift` is the cull grid's log2 sub-texel step, which sets how wide a
+	// band is -- 4 at native, 3 at 2x and so on. Bands are packed whatever the
+	// outcode space, so the entry shape is uniform; the band fields are read only
+	// as differences between vertices of one prim, which share an XYOFFSET, so a
+	// narrower band cannot overflow the 28-bit field either.
+	// `band_bias_*` is the grid's phase plus one, so a band boundary sits on a
+	// sample point: the band test asks "do all the prim's vertices fall between the
+	// same two sample points", and with a phase those points are phase + k*step.
+	// It is 1 at native and wherever the phase is zero, which is every mode but
+	// HalfPixelOffset::Native.
 	template <bool banded>
-	__forceinline_odr CullMirrorEntry MakeCullMirrorEntry(int wx, int wy, const CullBounds& bounds)
+	__forceinline_odr CullMirrorEntry MakeCullMirrorEntry(
+		int wx, int wy, const CullBounds& bounds, int band_shift, int band_bias_x = 1, int band_bias_y = 1)
 	{
-		const int bx = (wx - 1) >> 4;
-		const int by = (wy - 1) >> 4;
+		const int bx = (wx - band_bias_x) >> band_shift;
+		const int by = (wy - band_bias_y) >> band_shift;
 		const int cx = banded ? bx : wx;
 		const int cy = banded ? by : wy;
 
@@ -618,7 +859,15 @@ namespace GSVertexKernels
 
 	// The scalar decision. e0 is the most recent vertex. Unused entries (n < 3)
 	// may alias e0. Bit-equivalent to CullTest's return under the fast-path gate
-	// (point/line always; triangle non-fan / sprite when nativeres && !aa1).
+	// (point/line always; triangle non-fan / sprite whenever the class has a cull
+	// grid and there is no AA1 expansion).
+	//
+	// The band-equality test is "every vertex in one band on some axis", which is
+	// exactly "the prim spans no grid point" at whatever step the bands were built
+	// with -- so it serves as the native interior-empty test and as the upscale
+	// grid test without changing shape. It also subsumes the shipped trim box's
+	// own empty test: a box the trim empties spans at most one sub-texel, which
+	// cannot straddle two grid points.
 	template <u32 n, int primclass>
 	__forceinline_odr u32 CullTestScalar(const CullMirrorEntry& e0, const CullMirrorEntry& e1, const CullMirrorEntry& e2)
 	{

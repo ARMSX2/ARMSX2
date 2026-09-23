@@ -5,6 +5,7 @@
 
 #include "GS/GSState.h"
 #include "GS/MultiISA.h"
+#include "GS/Renderers/Common/GSFieldShiftDetector.h"
 #include <memory>
 #include <string>
 
@@ -53,6 +54,11 @@ private:
 	/// interlaced-field artefact, while a RUN of them is a real fade the game is drawing. GS thread
 	/// only. Ported alongside the presentation policy from sashkinbro/EmuCoreX.
 	u32 m_consecutive_blank_frames = 0;
+
+	/// Whether this title moves its projection half a display line between fields. Only consulted
+	/// where the field render is presented directly (integer upscale of 2 or more), where that
+	/// shift is the only correction the merge still makes. GS thread only.
+	GSFieldShiftDetector m_field_shift;
 
 protected:
 	GSVector2i m_real_size{0, 0};

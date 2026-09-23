@@ -26,4 +26,13 @@
 // 116: upstream PR 14824, the PrimID DATE init shaders take PRIMID_MIN/MAX defines.
 // 117: upstream PR 14743, ps_fbmask reads the destination alpha in the RTA-scaled domain and
 // ROV channel masking goes through FBMASK.
-static constexpr u32 SHADER_CACHE_VERSION = 117; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117
+// 118-123: tfx.* tests scan-mask field parity on the native line, indexes the dither matrix by the
+// native pixel under a per-axis phase the CPU picks (the PS constant buffer's last pad is named for
+// it), and gains PS_NATIVE_TEXEL_GRID so a nearest sprite minifying a GS-memory texture reads its
+// native pixel's texel (one more PS constant-buffer vector). interlace.* still tests field parity
+// on the device row; its constant buffer's second vector carries the undrawn top band.
+// 124: the TFX dither index and scan-mask test divide by the render target's scale, carried in the
+// PS constant buffer's former pad after RcpScaleFactor, instead of the texture's.
+// 125: the weave and MAD buffering passes fill the undrawn field band where the display rect
+// starts, read from FieldPad.xy as a row range, instead of from row 0 down to a row count.
+static constexpr u32 SHADER_CACHE_VERSION = 125; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117

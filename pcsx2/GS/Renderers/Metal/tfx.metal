@@ -75,6 +75,7 @@ constant bool PS_TEX_IS_FB          [[function_constant(GSMTLConstantIndex_PS_TE
 constant bool PS_AUTOMATIC_LOD      [[function_constant(GSMTLConstantIndex_PS_AUTOMATIC_LOD)]];
 constant bool PS_MANUAL_LOD         [[function_constant(GSMTLConstantIndex_PS_MANUAL_LOD)]];
 constant bool PS_REGION_RECT        [[function_constant(GSMTLConstantIndex_PS_REGION_RECT)]];
+constant bool PS_NATIVE_TEXEL_GRID  [[function_constant(GSMTLConstantIndex_PS_NATIVE_TEXEL_GRID)]];
 constant uint PS_SCANMSK            [[function_constant(GSMTLConstantIndex_PS_SCANMSK)]];
 constant uint PS_AA1_RAW            [[function_constant(GSMTLConstantIndex_PS_AA1)]];
 constant bool PS_ABE                [[function_constant(GSMTLConstantIndex_PS_ABE)]];
@@ -1256,6 +1257,25 @@ struct PSMain
 			st_int = in.ti.zw;
 		}
 
+		if (PS_NATIVE_TEXEL_GRID)
+		{
+			// A sprite that MINIFIES a GS-memory texture under a nearest sampler reads the texel
+			// its NATIVE pixel read, not the one this device pixel's own sample point lands on.
+			// The console samples a sprite once per pixel, so at two source texels per native
+			// pixel it never displays the texels in between, and at 2x those unreachable texels
+			// land on every second device column. See GSNativeTexelGridPolicy.h for the whole rule.
+			//
+			// native_texel_grid.xy is the source step per NATIVE pixel in these same coordinates
+			// -- zero on an axis that does not minify, which makes that axis' term vanish -- and
+			// .z is the scale. The convention is the integer pixel index, not the fragment centre:
+			// a device pixel samples where native coordinate pixel/scale samples, and its owner
+			// native pixel sampled at the floor of that. Hence floor the coordinate first, and
+			// divide rather than multiply by a reciprocal, which can land a hair under an integer
+			// where the divide is exact.
+			float2 native_here = floor(in.p.xy) / cb.native_texel_grid.z;
+			st += cb.native_texel_grid.xy * (floor(native_here) - native_here);
+		}
+
 		float4 T;
 		if (PS_CHANNEL == 1)
 			T = fetch_red();
@@ -1346,7 +1366,21 @@ struct PSMain
 		if (PS_DITHER == 2)
 			fpos = ushort2(in.p.xy);
 		else
-			fpos = ushort2(in.p.xy * float2(cb.scale_factor.y));
+		{
+			// The dither matrix indexes by NATIVE pixel, so reduce the device pixel to the one
+			// that owns it on both axes -- same fix and same reasoning as the SCANMSK test below:
+			// floor before dividing, because in.p.xy is coord + 0.5, and a true divide by S
+			// (cb.scale_factor.z, the RENDER TARGET's scale: the texture's, in scale_factor.x, is 1
+			// for a texture read from GS memory) rather than a reciprocal multiply, which can land a hair under an integer
+			// where the divide is exact.
+			// dither_phase then rotates the matrix under that index. At a fractional S some native
+			// pixels own one more device pixel than their neighbours, so their matrix entry covers
+			// more of the screen than the others; the phase decides which entries those are, and
+			// the CPU picks the quietest. It is zero at every whole S, where no cell is wider.
+			float dither_scale = cb.scale_factor.z;
+			fpos = ushort2(floor(in.p.xy) / dither_scale)
+			     + ushort2(cb.dither_phase & 3u, (cb.dither_phase >> 2) & 3u);
+		}
 		float value = cb.dither_matrix[fpos.y & 3][fpos.x & 3];
 
 		// The idea here is we add on the dither amount adjusted by the alpha before it goes to the hw blend
@@ -1547,7 +1581,15 @@ struct PSMain
 
 		if (PS_SCANMSK & 2)
 		{
-			if ((uint(in.p.y) & 1) == (PS_SCANMSK & 1))
+			// SCANMSK masks NATIVE scanlines, so reduce the device row to the line that owns it --
+			// floor(row / S) -- before the parity test. Two traps, both silent: in.p.y is row + 0.5,
+			// and at a fractional scale that half puts some rows in the line above their owner; and
+			// a multiply by the reciprocal can land a hair under an integer where row / S is exactly
+			// integral. S is scale_factor.z, the render target's scale: scale_factor.x is the
+			// texture's, which is 1 for a texture read from GS memory.
+			// (The dither path above uses the same floor-then-divide fix.)
+			float scanmsk_scale = cb.scale_factor.z;
+			if ((uint(floor(in.p.y) / scanmsk_scale) & 1) == (PS_SCANMSK & 1))
 				discard();
 		}
 

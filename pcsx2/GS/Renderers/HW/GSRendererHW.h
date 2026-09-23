@@ -6,6 +6,7 @@
 #include "GSTextureCache.h"
 #include "GS/Renderers/HW/GSDrawAlphaMask.h"
 #include "GS/Renderers/Common/GSFunctionMap.h"
+#include "GS/Renderers/Common/GSNativeTexelGridPolicy.h"
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/Renderers/Common/GSSwPrimRender.h"
 #include "GS/Renderers/SW/GSTextureCacheSW.h"
@@ -216,11 +217,15 @@ private:
 	template <bool linear>
 	void RoundSpriteOffset();
 
+	void CorrectSpriteCoverageForUpscale(GSTextureCache::Target* rt);
+
 	void DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex, const TextureMinMaxResult& tmm);
 
 	void ResetStates();
 	void HandleFlatShadedVertices();
-	void SetupIA(float target_scale, float sx, float sy, bool req_vert_backup, const bool no_rt);
+	/// Fills in the topology, the indices and the vertex offset for the draw's primitive class.
+	/// Returns false when the draw lights no pixel at all and must not be submitted.
+	bool SetupIA(float target_scale, float sx, float sy, bool req_vert_backup, const bool no_rt);
 	void EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GSTextureCache::Source* tex);
 	/// What the exact alpha-mask rules can do with this draw's alpha FBMSK without changing a
 	/// pixel -- clear it outright, have the shader write the target's known bits in its place, or
@@ -246,6 +251,12 @@ private:
 		bool& target_region, GSVector2i& unscaled_size, float& scale, GSDevice::RecycledTexture& src_copy);
 	bool CanUseTexIsFB(const GSTextureCache::Target* rt, const GSTextureCache::Source* tex,
 		const TextureMinMaxResult& tmm);
+
+	/// The texel step per native pixel that every sprite of this draw agrees on, per axis, in the
+	/// GS's own sixteenths. False -- and both steps zeroed -- when the draw has no sprites or two of
+	/// them walk the texture at different rates, because the shader carries one step for the whole
+	/// draw. See GSNativeTexelGridPolicy.h.
+	bool GetAgreedSpriteTexelSteps(GSNativeTexelStep& step_u, GSNativeTexelStep& step_v) const;
 	bool IsFastStencilShadowDraw() const;
 
 	void EmulateZbuffer(const GSTextureCache::Target* ds);
@@ -265,6 +276,7 @@ private:
 	void EmulateDATEGetConfig(DATEOptions& date, bool scale_rt_alpha, GSDevice::RecycledTexture& temp_ds);
 
 	void EmulateDither();
+	u32 GetDitherPhase(const GIFRegDIMX& DIMX, float scale);
 
 	void DetermineVSConfig(GSTextureCache::Target* rt, float rtscale, const GSVector2i& rtsize,
 		const GSVector2i& unscaled_size, float& vs_scale_x, float& vs_scale_y);
@@ -339,6 +351,13 @@ private:
 	u32 m_split_texture_shuffle_start_TBP = 0;
 	u32 m_split_texture_shuffle_fbw = 0;
 
+	// GetDitherPhase's answer, and the two inputs it was computed from. A scale of -1 is the
+	// "nothing cached yet" mark, since no target ever has a negative scale and DIMX == 0 is a
+	// perfectly ordinary matrix.
+	u64 m_dither_phase_dimx = 0;
+	float m_dither_phase_scale = -1.0f;
+	u32 m_dither_phase = 0;
+
 	u32 m_last_channel_shuffle_fbmsk = 0;
 	u32 m_last_channel_shuffle_fbp = 0;
 	u32 m_last_channel_shuffle_tbp = 0;
@@ -346,6 +365,9 @@ private:
 	u32 m_channel_shuffle_width = 0;
 	GSVector4i m_channel_shuffle_src_valid = GSVector4i::zero();
 	bool m_full_screen_shuffle = false;
+	// EmulateChannelShuffle replaced this draw's sprites with a quad of its own. Reset per draw in
+	// DrawPrims; CorrectSpriteCoverageForUpscale leaves such a quad alone.
+	bool m_channel_shuffle_rebuilt_quad = false;
 
 	GSTextureCache::Target* m_last_rt;
 
@@ -407,8 +429,20 @@ public:
 	void Lines2Sprites();
 	bool VerifyIndices();
 	void ExpandLineIndices();
-	bool LinesToPixelRuns();
+	/// What LinesToPixelRuns() did with the draw. The three outcomes are not two: a draw the GS
+	/// lights no pixel for is not a draw the pixel runs could not take, and the fallback figure is
+	/// wrong for it -- it would paint a stripe the console never paints.
+	enum class LineRunResult
+	{
+		Converted, ///< The vertex buffer now holds the rectangles. Draw them.
+		NothingLit, ///< The GS lights no pixel for any line in the draw. Draw nothing.
+		Refused, ///< The draw is untouched and needs the expanded-line fallback.
+	};
+	LineRunResult LinesToPixelRuns(bool aa1);
+	void SnapPointsToNativePixel();
 	GSVector4 RealignTargetTextureCoordinate(const GSTextureCache::Source* tex);
+	void ApplyNativeWTexOffset(const GSTextureCache::Source* tex, const GSTextureCache::Target* rt,
+		const GSTextureCache::Target* ds, GSVector2& texture_offset);
 	GSVector4i ComputeBoundingBoxRT(const GSVector2i& rtsize, float rtscale);
 	GSVector4i ComputeBoundingBoxTex(const GSVector2i& texsize, const GSVector4i& coverage, const GSVector4i& region, float texscale);
 	void MergeSprite(GSTextureCache::Source* tex);

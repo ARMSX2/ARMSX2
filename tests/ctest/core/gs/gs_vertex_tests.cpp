@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 #include <random>
 
 #include "GS/GSVertexKick.h"
@@ -67,10 +68,15 @@ namespace
 		int x, y, z, w;
 	};
 
-	// Scalar model of the legacy accept/cull decision. Window entries are the
-	// degenerate rects {x, y, x, y}; scissor is the cull-form rect.
+	// Every grid GSState::ConfigCullGrid can produce: 4 = native pixel centres,
+	// 3/2/1 = the exact device grids at 2x/4x/8x, 0 = no grid.
+	constexpr int kGridShifts[] = {0, 1, 2, 3, 4};
+
+	// Scalar model of the accept/cull decision. Window entries are the degenerate
+	// rects {x, y, x, y}; scissor is the cull-form rect. `shift` is the cull grid's
+	// log2 sub-texel step for this prim's class, 0 for no grid.
 	u32 RefCullTest(int n, int primclass, const RefRect& v0, const RefRect& v1, const RefRect& v2,
-		const RefRect& scissor, bool nativeres, bool aa1_expand)
+		const RefRect& scissor, int shift, bool aa1_expand)
 	{
 		auto runion = [](const RefRect& a, const RefRect& b) {
 			return RefRect{std::min(a.x, b.x), std::min(a.y, b.y), std::max(a.z, b.z), std::max(a.w, b.w)};
@@ -82,29 +88,46 @@ namespace
 		if (n >= 3)
 			bbox = runion(bbox, v2);
 
+		// Snap a rect inwards onto a grid of `step` sub-texels, +1 on the bottom/
+		// right lanes so "x >= z" reads as "spans no grid point".
+		auto snap = [aa1_expand](RefRect r, int step) {
+			r.x = (r.x + step - 1) & ~(step - 1);
+			r.y = (r.y + step - 1) & ~(step - 1);
+			r.z = ((r.z - 1) & ~(step - 1)) + 1;
+			r.w = ((r.w - 1) & ~(step - 1)) + 1;
+			if (aa1_expand)
+			{
+				r.x -= 0x10;
+				r.y -= 0x10;
+				r.z += 0x10;
+				r.w += 0x10;
+			}
+			return r;
+		};
+
 		const bool rounded = (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS);
+		const RefRect raw = bbox;
 		if (rounded)
 		{
-			if (nativeres)
+			// The rect keeps the shipped rounding at every scale: the pixel-centre
+			// snap at native, the bottom/right sub-texel trim at any upscale.
+			if (shift == 4)
 			{
-				bbox.x = (bbox.x + 0xF) & ~0xF;
-				bbox.y = (bbox.y + 0xF) & ~0xF;
-				bbox.z = ((bbox.z - 1) & ~0xF) + 1;
-				bbox.w = ((bbox.w - 1) & ~0xF) + 1;
+				bbox = snap(bbox, 16);
 			}
 			else
 			{
 				// mask {0,0,1,1}: only the bottom/right lanes can be decremented
 				bbox.z -= ((bbox.z & 0xF) == 0) ? 1 : 0;
 				bbox.w -= ((bbox.w & 0xF) == 0) ? 1 : 0;
-			}
 
-			if (aa1_expand)
-			{
-				bbox.x -= 0x10;
-				bbox.y -= 0x10;
-				bbox.z += 0x10;
-				bbox.w += 0x10;
+				if (aa1_expand)
+				{
+					bbox.x -= 0x10;
+					bbox.y -= 0x10;
+					bbox.z += 0x10;
+					bbox.w += 0x10;
+				}
 			}
 		}
 
@@ -116,7 +139,17 @@ namespace
 		               0;
 
 		if (rounded)
+		{
 			test |= (bbox.x >= bbox.z || bbox.y >= bbox.w) ? 1 : 0;
+
+			// The grid is asked separately, off the unrounded box, and only where it
+			// is finer than the rect rounding.
+			if (shift != 0 && shift != 4)
+			{
+				const RefRect g = snap(raw, 1 << shift);
+				test |= (g.x >= g.z || g.y >= g.w) ? 1 : 0;
+			}
+		}
 
 		if (primclass == GS_TRIANGLE_CLASS)
 		{
@@ -320,22 +353,28 @@ namespace
 			int sz = sx + static_cast<int>(rng() % 0x8000);
 			int sw = sy + static_cast<int>(rng() % 0x8000);
 
-			const bool nativeres = (rng() & 1) != 0;
+			// Every grid the config can produce, plus the sprite-class split: a
+			// sprite gets the grid only when it is the native one.
+			constexpr bool rounded_class = (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS);
+			const int tri_shift = kGridShifts[rng() % std::size(kGridShifts)];
+			const int sprite_shift = (tri_shift == 4) ? 4 : 0;
+			const GSVertexKernels::CullGrid grid = GSVertexKernels::MakeCullGrid(tri_shift, sprite_shift);
+			const int shift = rounded_class ? grid.ShiftFor<primclass>() : tri_shift;
 			const bool aa1 = (rng() & 7) == 0;
 
 			const RefRect rv0{x0, y0, x0, y0}, rv1{x1, y1, x1, y1}, rv2{x2, y2, x2, y2};
 			const RefRect rs{sx, sy, sz, sw};
 			const u32 expected =
-				RefCullTest(n, primclass, rv0, rv1, rv2, rs, nativeres, aa1) ? 1u : 0u;
+				RefCullTest(n, primclass, rv0, rv1, rv2, rs, shift, aa1) ? 1u : 0u;
 
 			GSVector4i bbox;
 			const u32 got = GSVertexKernels::CullTest<n, primclass>(WindowEntry(x0, y0), WindowEntry(x1, y1),
-				WindowEntry(x2, y2), GSVector4i(sx, sy, sz, sw), nativeres, aa1, bbox);
+				WindowEntry(x2, y2), GSVector4i(sx, sy, sz, sw), grid, aa1, bbox);
 
 			ASSERT_EQ(expected, got != 0 ? 1u : 0u)
 				<< "cull divergence at iter " << iter << " n=" << n << " class=" << primclass
 				<< " v0=(" << x0 << "," << y0 << ") v1=(" << x1 << "," << y1 << ") v2=(" << x2 << "," << y2
-				<< ") scissor=(" << sx << "," << sy << "," << sz << "," << sw << ") native=" << nativeres
+				<< ") scissor=(" << sx << "," << sy << "," << sz << "," << sw << ") shift=" << shift
 				<< " aa1=" << aa1;
 		}
 	}
@@ -347,11 +386,16 @@ namespace
 	// above). Production-shaped inputs: scissor cull rects are 16k-8 .. 16k+8 with
 	// SCAX0 <= SCAX1 (empty scissors take the m_scissor_invalid path and never
 	// reach the cull decision), coords are offset-subtracted 12.4. The fast-path
-	// gate is baked in: banded classes run nativeres, no AA1.
+	// gate is baked in: a rounded class runs with a grid, and no AA1.
+	//
+	// Every grid a rounded class can get is swept, which is the whole of the
+	// scalar path's contract: at native the outcode compares bands against the
+	// rounding-folded bounds, and at every finer grid it compares raw 12.4 against
+	// the plain cull rect while the bands carry the grid test.
 	template <u32 n, int primclass>
 	void RunScalarCullSweep(u64 seed, int iters)
 	{
-		constexpr bool banded = (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS);
+		constexpr bool rounded = (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS);
 		std::mt19937_64 rng(seed);
 
 		for (int iter = 0; iter < iters; iter++)
@@ -400,25 +444,129 @@ namespace
 				y2 &= ~0xF;
 			}
 
+			// Shift 4 (native) through 1 (8x) for a rounded class; point/line never
+			// consult the grid, so any value drives the same code there.
+			const int shift = rounded ? (1 + static_cast<int>(rng() % 4)) : 4;
+			const GSVertexKernels::CullGrid grid = GSVertexKernels::MakeCullGrid(shift, shift);
+			const bool banded = rounded && (shift == 4);
+
 			GSVector4i bbox;
 			const u32 expected = GSVertexKernels::CullTest<n, primclass>(WindowEntry(x0, y0), WindowEntry(x1, y1),
-				WindowEntry(x2, y2), cull, banded ? true : ((rng() & 1) != 0), false, bbox);
+				WindowEntry(x2, y2), cull, grid, false, bbox);
 
 			const GSVertexKernels::CullBounds bounds =
 				banded ? GSVertexKernels::MakeBandedCullBounds(cull) : GSVertexKernels::MakeRawCullBounds(cull);
-			const GSVertexKernels::CullMirrorEntry e0 = GSVertexKernels::MakeCullMirrorEntry<banded>(x0, y0, bounds);
-			const GSVertexKernels::CullMirrorEntry e1 = GSVertexKernels::MakeCullMirrorEntry<banded>(x1, y1, bounds);
-			const GSVertexKernels::CullMirrorEntry e2 = GSVertexKernels::MakeCullMirrorEntry<banded>(x2, y2, bounds);
+			const auto entry = [&](int x, int y) {
+				return banded ? GSVertexKernels::MakeCullMirrorEntry<true>(x, y, bounds, shift) :
+								GSVertexKernels::MakeCullMirrorEntry<false>(x, y, bounds, shift);
+			};
+			const GSVertexKernels::CullMirrorEntry e0 = entry(x0, y0);
+			const GSVertexKernels::CullMirrorEntry e1 = entry(x1, y1);
+			const GSVertexKernels::CullMirrorEntry e2 = entry(x2, y2);
 
 			const u32 got = GSVertexKernels::CullTestScalar<n, primclass>(e0, e1, e2);
 
 			ASSERT_EQ(expected != 0 ? 1u : 0u, got != 0 ? 1u : 0u)
 				<< "scalar cull divergence at iter " << iter << " n=" << n << " class=" << primclass
-				<< " v0=(" << x0 << "," << y0 << ") v1=(" << x1 << "," << y1 << ") v2=(" << x2 << "," << y2
-				<< ") scissor=(" << sax0 << "," << say0 << "," << sax1 << "," << say1 << ")";
+				<< " shift=" << shift << " v0=(" << x0 << "," << y0 << ") v1=(" << x1 << "," << y1 << ") v2=("
+				<< x2 << "," << y2 << ") scissor=(" << sax0 << "," << say0 << "," << sax1 << "," << say1 << ")";
 		}
 	}
 } // namespace
+
+// A triangle strip half a native pixel tall, taken off WRC 3's frame 0 draw
+// s_n 130: 44.6 native pixels wide, spanning native Y
+// 172.375..172.875, which in 12.4 sub-texels is 2764..2766. Sample rows sit on
+// the multiples of the grid step: 2768 at 1x and 2x, 2764 at 4x. So the strip
+// paints nothing at either 1x or 2x and does paint at 4x.
+//
+// Slid up two sub-texels it straddles 2760 -- a 2x sample row that is not a 1x
+// one -- and then it has to survive at 2x while still going at 1x.
+TEST(GsVertexCull, HalfPixelStripAgainstTheGrid)
+{
+	const GSVector4i scissor(-8, -8, 16 * 640 + 8, 16 * 448 + 8);
+
+	// x spans 5911..6098, which holds a sample column on every grid; y decides.
+	const auto cull_at = [&](int shift, int y_lo, int y_hi) {
+		const GSVertexKernels::CullGrid grid = GSVertexKernels::MakeCullGrid(shift, shift == 4 ? 4 : 0);
+		GSVector4i bbox;
+		return GSVertexKernels::CullTest<3, GS_TRIANGLE_CLASS>(WindowEntry(5911, y_lo), WindowEntry(6098, y_hi),
+				   WindowEntry(6000, y_lo), scissor, grid, false, bbox) != 0;
+	};
+
+	// The real draw: no sample row inside it at 1x or 2x, one at 4x.
+	EXPECT_TRUE(cull_at(4, 2764, 2766)) << "native: spans no pixel centre row";
+	EXPECT_TRUE(cull_at(3, 2764, 2766)) << "2x: spans no device sample row";
+	EXPECT_FALSE(cull_at(2, 2764, 2766)) << "4x: spans the sample row at 2764";
+
+	// Moved onto the 2x sample row at 2760, which is not a 1x one.
+	EXPECT_FALSE(cull_at(3, 2758, 2762)) << "2x: spans the device sample row at 2760";
+	EXPECT_TRUE(cull_at(4, 2758, 2762)) << "native: still no pixel centre row";
+
+	// No grid at all is the shipped upscale rule: it keeps everything with extent.
+	EXPECT_FALSE(cull_at(0, 2764, 2766)) << "no grid: sub-texel extent is enough";
+}
+
+// The sprite class only takes the grid when the grid is the native one, because
+// CorrectSpriteCoverageForUpscale moves a sprite's far edge after the cull runs.
+TEST(GsVertexCull, SpriteClassDeclinesTheUpscaleGrid)
+{
+	const GSVector4i scissor(-8, -8, 16 * 640 + 8, 16 * 448 + 8);
+
+	const auto cull_sprite = [&](int shift) {
+		const GSVertexKernels::CullGrid grid = GSVertexKernels::MakeCullGrid(shift, shift == 4 ? 4 : 0);
+		GSVector4i bbox;
+		return GSVertexKernels::CullTest<2, GS_SPRITE_CLASS>(WindowEntry(5911, 2764), WindowEntry(6098, 2766),
+				   WindowEntry(6098, 2766), scissor, grid, false, bbox) != 0;
+	};
+
+	EXPECT_TRUE(cull_sprite(4)) << "native: the pixel-centre grid still applies to sprites";
+	EXPECT_FALSE(cull_sprite(3)) << "2x: sprites keep the scale-blind rule";
+	EXPECT_FALSE(cull_sprite(2)) << "4x: sprites keep the scale-blind rule";
+}
+
+// The device grid, from the scale alone. 16/scale sub-texels where that is a
+// power of two, and nothing at all where it is not -- at a fractional scale the
+// sample points do not land on whole sub-texels, so no power-of-two grid contains
+// them and any grid would cull prims that paint.
+TEST(GsVertexCull, DeviceGridShiftFollowsTheScale)
+{
+	EXPECT_EQ(4, GSVertexKernels::DeviceCullGridShift(1.0f));
+	EXPECT_EQ(3, GSVertexKernels::DeviceCullGridShift(2.0f));
+	EXPECT_EQ(2, GSVertexKernels::DeviceCullGridShift(4.0f));
+	EXPECT_EQ(1, GSVertexKernels::DeviceCullGridShift(8.0f));
+
+	for (float scale : {1.05f, 1.5f, 1.75f, 3.0f, 5.0f, 6.0f, 7.0f, 16.0f})
+		EXPECT_EQ(0, GSVertexKernels::DeviceCullGridShift(scale)) << "scale " << scale;
+}
+
+// The grid at shift 4 has to be bit-for-bit the rule the shipped code selected
+// with `nativeres`, or 1x moves.
+TEST(GsVertexCull, NativeGridMatchesTheShippedNativeRounding)
+{
+	const GSVertexKernels::CullGrid grid = GSVertexKernels::MakeCullGrid(4, 4);
+	std::mt19937_64 rng(0x67763321);
+
+	for (int iter = 0; iter < 200000; iter++)
+	{
+		const int x0 = static_cast<int>(rng() % 0x20000) - 0x10000;
+		const int y0 = static_cast<int>(rng() % 0x20000) - 0x10000;
+		const int x1 = x0 + static_cast<int>(rng() % 0x200) - 0x100;
+		const int y1 = y0 + static_cast<int>(rng() % 0x200) - 0x100;
+		const int x2 = x0 + static_cast<int>(rng() % 0x200) - 0x100;
+		const int y2 = y0 + static_cast<int>(rng() % 0x200) - 0x100;
+
+		const GSVector4i bbox_raw = WindowEntry(x0, y0).runion(WindowEntry(x1, y1)).runion(WindowEntry(x2, y2));
+		const GSVector4i shipped =
+			((bbox_raw + GSVector4i(0xF, 0xF, -1, -1)) & GSVector4i(~0xF)) + GSVector4i(0, 0, 1, 1);
+
+		const GSVector4i got =
+			GSVertexKernels::ComputeCullBBox<3, GS_TRIANGLE_CLASS>(WindowEntry(x0, y0), WindowEntry(x1, y1),
+				WindowEntry(x2, y2), grid, false);
+
+		ASSERT_TRUE(got.eq(shipped)) << "native rounding moved at iter " << iter;
+	}
+}
 
 TEST(GsVertexCull, TriangleSweep)
 {

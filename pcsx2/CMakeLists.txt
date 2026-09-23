@@ -528,6 +528,7 @@ set(pcsx2GSSources
 	GS/MultiISA.cpp
 	GS/Renderers/Common/GSDevice.cpp
 	GS/Renderers/Common/GSDirtyRect.cpp
+	GS/Renderers/Common/GSFieldShiftDetector.cpp
 	GS/Renderers/Common/GSFunctionMap.cpp
 	# The GPU driver-bug database is keyed on the DRIVER, not the platform: Turnip, PanVK and the
 	# Qualcomm blob all ship outside Android too (ARM Linux handhelds — Rocknix, Batocera). Building
@@ -583,22 +584,30 @@ set(pcsx2GSHeaders
 	GS/GSXXH.h
 	GS/MultiISA.h
 	GS/Renderers/Common/GSBlendConstantPolicy.h
+	GS/Renderers/Common/GSCopyRoadBlendingPolicy.h
+	GS/Renderers/Common/GSDateRoadPolicy.h
+	GS/Renderers/Common/GSDeclaredLoopScopePolicy.h
+	GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h
 	GS/Renderers/Common/GSDevice.h
 	GS/Renderers/Common/GSDirtyRect.h
 	GS/Renderers/Common/GSFastList.h
 	GS/Renderers/Common/GSFastStencilShadow.h
 	GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h
+	GS/Renderers/Common/GSFieldShiftDetector.h
+	GS/Renderers/Common/GSFieldShiftPolicy.h
 	GS/Renderers/Common/GSFramebufferFetchPolicy.h
 	GS/Renderers/Common/GSFunctionMap.h
 	GS/Renderers/Common/GSGPUProfile.h
 	GS/Renderers/Common/GSGPUProfilePrivate.h
 	GS/Renderers/Common/GSInterlaceModePolicy.h
+	GS/Renderers/Common/GSNativeTexelGridPolicy.h
 	GS/Renderers/Common/GSPassScheduler.h
 	GS/Renderers/Common/GSPresentationPolicy.h
 	GS/Renderers/Common/GSRenderer.h
 	GS/Renderers/Common/GSSwPrimRender.h
 	GS/Renderers/Common/GSShaderEnums.h
 	GS/Renderers/Common/GSSelfReadCopyPolicy.h
+	GS/Renderers/Common/GSSelfReadRoadPolicy.h
 	GS/Renderers/Common/GSSnapshotPolicy.h
 	GS/Renderers/Common/GSStreamRingFlushRange.h
 	GS/Renderers/Common/GSStreamRingMemoryPolicy.h
@@ -606,6 +615,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSVertex.h
 	GS/Renderers/Common/GSVertexTrace.h
 	GS/Renderers/Null/GSDeviceNone.h
+	GS/Renderers/Null/GSNullDeviceProfile.h
 	GS/Renderers/Null/GSRendererNull.h
 	GS/Renderers/HW/GSAlphaKnownBits.h
 	GS/Renderers/HW/GSDepthCoverage.h
@@ -613,6 +623,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/HW/GSDrawLog.h
 	GS/Renderers/HW/GSHwHack.h
 	GS/Renderers/HW/GSLineWalk.h
+	GS/Renderers/HW/GSPointPlace.h
 	GS/Renderers/HW/GSRendererHW.h
 	GS/Renderers/HW/GSSpriteEdgeSnap.h
 	GS/Renderers/HW/GSTextureCache.h

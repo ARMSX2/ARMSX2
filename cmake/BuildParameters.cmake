@@ -20,6 +20,7 @@ option(LTO_PCSX2_CORE "Enable LTO/IPO/LTCG on the subset of pcsx2 that benefits 
 option(USE_VTUNE "Plug VTUNE to profile GS JIT.")
 option(USE_PERF_JITDUMP "Emit Linux perf jitdump (jit-<pid>.dump) for recompiled JIT blocks; use with perf record/inject." OFF)
 option(USE_PERF_MAP "Emit simple /tmp/perf-<pid>.map symbol table for recompiled JIT blocks." OFF)
+option(ENABLE_GS_DEBUG_LABELS "Compile the GS debug-label markers (GL_INS/GL_CACHE/GL_PUSH and friends) into Debug/Devel builds. Their arguments are assembled on every call whether or not a debugger is attached, which measured 1.6-6.1% of the GS thread by title (Sly 3 5.9%, Sly 1 6.1%, NASCAR 3.3%, CoD2 2.5%, Jak II 2.0%, Katamari 1.6%) and biases every Devel perf number against the Release build that ships. Default ON so ordinary Devel builds are unchanged; the perf suite configures a second build with this OFF to measure without that bias." ON)
 option(PACKAGE_MODE "Use this option to ease packaging of PCSX2 (developer/distribution option)")
 set(ARMSX2_VERSION "" CACHE STRING "Reported version for builds without a git checkout")
 option(BUNDLE_EMOJI_FONT "Bundles Noto Color Emoji for systems whose system emoji font isn't usable by freetype" ON)
@@ -350,6 +351,10 @@ if(USE_OPENGL)
 	if(USE_GLES)
 		list(APPEND PCSX2_DEFS USE_GLES)
 	endif()
+endif()
+
+if(NOT ENABLE_GS_DEBUG_LABELS)
+	list(APPEND PCSX2_DEFS PCSX2_GS_NO_DEBUG_LABELS)
 endif()
 
 if(ENABLE_LIBRETRO)

@@ -1082,6 +1082,9 @@
     <ClCompile Include="GS\Renderers\Common\GSDirtyRect.cpp">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClCompile>
+    <ClCompile Include="GS\Renderers\Common\GSFieldShiftDetector.cpp">
+      <Filter>System\Ps2\GS\Renderers\Common</Filter>
+    </ClCompile>
     <ClCompile Include="GS\Renderers\Common\GSDevice.cpp">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClCompile>
@@ -2555,7 +2558,16 @@
     <ClInclude Include="GS\Renderers\Common\GSFeedbackLoopCarryPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSFieldShiftDetector.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSFieldShiftPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSBlendConstantPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSCopyRoadBlendingPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSFastStencilShadow.h">
@@ -2564,10 +2576,25 @@
     <ClInclude Include="GS\Renderers\Common\GSFramebufferFetchPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSDateRoadPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSDeclaredLoopScopePolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSDynamicFeedbackLoopPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSSelfReadCopyPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSSelfReadRoadPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSInterlaceModePolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSNativeTexelGridPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSPassScheduler.h">
@@ -2600,10 +2627,16 @@
     <ClInclude Include="GS\Renderers\HW\GSLineWalk.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\HW\GSPointPlace.h">
+      <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\HW\GSSpriteEdgeSnap.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Null\GSDeviceNone.h">
+      <Filter>System\Ps2\GS\Renderers\Null</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Null\GSNullDeviceProfile.h">
       <Filter>System\Ps2\GS\Renderers\Null</Filter>
     </ClInclude>
     <ClInclude Include="MTGS.h">

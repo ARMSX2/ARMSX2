@@ -2346,10 +2346,31 @@ GSTextureCache::Target* GSTextureCache::FindTargetOverlap(Target* target, int ty
 	return nullptr;
 }
 
+int GSTextureCache::ScaleNativeToDevice(int native, float scale)
+{
+	return static_cast<int>(std::ceil(static_cast<float>(native) * scale));
+}
+
+int GSTextureCache::ScaleNativeSpanToDevice(int start, int length, float scale)
+{
+	return ScaleNativeToDevice(start + length, scale) - ScaleNativeToDevice(start, scale);
+}
+
+GSTextureCache::DeviceMove GSTextureCache::ScaleMoveToDevice(int sx, int sy, int dx, int dy, int w, int h, float scale)
+{
+	const int scaled_sx = ScaleNativeToDevice(sx, scale);
+	const int scaled_sy = ScaleNativeToDevice(sy, scale);
+	const int scaled_dx = ScaleNativeToDevice(dx, scale);
+	const int scaled_dy = ScaleNativeToDevice(dy, scale);
+	const int scaled_w = std::min(ScaleNativeSpanToDevice(sx, w, scale), ScaleNativeSpanToDevice(dx, w, scale));
+	const int scaled_h = std::min(ScaleNativeSpanToDevice(sy, h, scale), ScaleNativeSpanToDevice(dy, h, scale));
+	return {GSVector4i(scaled_sx, scaled_sy, scaled_sx + scaled_w, scaled_sy + scaled_h),
+		GSVector4i(scaled_dx, scaled_dy, scaled_dx + scaled_w, scaled_dy + scaled_h)};
+}
+
 GSVector2i GSTextureCache::ScaleRenderTargetSize(const GSVector2i& sz, float scale)
 {
-	return GSVector2i(static_cast<int>(std::ceil(static_cast<float>(sz.x) * scale)),
-		static_cast<int>(std::ceil(static_cast<float>(sz.y) * scale)));
+	return GSVector2i(ScaleNativeToDevice(sz.x, scale), ScaleNativeToDevice(sz.y, scale));
 }
 
 void GSTextureCache::CombineAlignedInsideTargets(Target* target, GSTextureCache::Source* src)
@@ -3023,7 +3044,11 @@ GSTextureCache::Target* GSTextureCache::ProcessTargetAfterLookup(RescaleHelper& 
 		if (!tex)
 			return nullptr;
 
-		if (rescaler.m_scale == 1.0f && type == RenderTarget)
+		// Can't box filter a fractional scale: the shader steps the source by an integer number of
+		// texels per output pixel, so a truncated factor reads the wrong texel and, below 1x,
+		// truncates to a zero-wide box. Stretch those, the same way the draw's downscale-source
+		// copy does.
+		if (rescaler.m_scale == 1.0f && type == RenderTarget && std::floor(dst->GetScale()) == dst->GetScale())
 		{
 			// When using native HPO, the top-left column/row of pixels are often not drawn. Clamp these away to avoid sampling black,
 			// causing bleeding into the edges of the downsampled texture.
@@ -3303,10 +3328,17 @@ GSTextureCache::Target* GSTextureCache::ProcessTargetAfterLookup(RescaleHelper& 
 			}
 
 			// And invalidate the target, we're drawing over it so we don't care what's there.
-			// We can't do this when upscaling, because of the vertex offset, the top/left rows often aren't drawn.
+			// We can't do this when upscaling: the vertex offset can leave device rows/columns of
+			// the target undrawn even though the draw covers every native pixel, so an invalidate
+			// leaves the merge sampling whatever the texture pool last left in that allocation.
+			// Native (mode 4) is the mode that misses the most: its offset is half a NATIVE pixel,
+			// a whole device pixel at 2x, so device row 0 and column 0 are never covered. Clear for
+			// every mode except NativeWTexOffset (mode 5), whose offset is half a DEVICE pixel, so
+			// row 0 and column 0 are always drawn and the clear would cost those titles for nothing.
+			// If a mode-5 hole is ever measured, this is the line that changes.
 			GL_INS("TC: Invalidating%s target %s[%x] because it's completely overwritten.", to_string(type),
-				(rescaler.m_scale > 1.0f && GSConfig.UserHacks_HalfPixelOffset >= GSHalfPixelOffset::Native) ? "[clearing] " : "", dst->m_TEX0.TBP0);
-			if (rescaler.m_scale > 1.0f && GSConfig.UserHacks_HalfPixelOffset < GSHalfPixelOffset::Native)
+				(rescaler.m_scale > 1.0f && GSConfig.UserHacks_HalfPixelOffset != GSHalfPixelOffset::NativeWTexOffset) ? "[clearing] " : "", dst->m_TEX0.TBP0);
+			if (rescaler.m_scale > 1.0f && GSConfig.UserHacks_HalfPixelOffset != GSHalfPixelOffset::NativeWTexOffset)
 			{
 				if (dst->m_type == RenderTarget)
 					g_gs_device->ClearRenderTarget(dst->m_texture, 0);
@@ -3650,11 +3682,16 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 								old_dst->m_valid = old_dst->m_valid.rintersect(GSVector4i(old_dst->m_valid.x, old_dst->m_valid.y, old_dst->m_valid.z, old_dst->m_valid.w - change_height));
 								old_dst->m_TEX0.TBP0 += block_diff;
 
-								const GSVector2i new_scaled_size = GSVector2i(old_dst->m_unscaled_size * old_dst->m_scale);
+								// Size the replacement by the same rule that sized the texture we are copying out of.
+								// GSVector2i's multiply takes an int per lane, so the float scale used to narrow to an
+								// int here: at 1.5x the new texture came out 1x wide and then took a 1.5x-wide copy.
+								const GSVector2i new_scaled_size = ScaleRenderTargetSize(old_dst->m_unscaled_size, old_dst->m_scale);
 								if (GSTexture* tex = g_gs_device->CreateCompatible(dst->m_texture, new_scaled_size, true))
 								{
-									const int height_offset = change_height * old_dst->m_scale;
-									g_gs_device->CopyRect(old_dst->m_texture, tex, GSVector4i(0, height_offset, old_dst->GetUnscaledWidth() * old_dst->m_scale, old_dst->GetUnscaledHeight() * old_dst->m_scale), 0, 0);
+									// The rows from native row change_height down survive, and that row starts at
+									// device row ceil(change_height * scale).
+									const int height_offset = ScaleNativeToDevice(change_height, old_dst->m_scale);
+									g_gs_device->CopyRect(old_dst->m_texture, tex, GSVector4i(0, height_offset, new_scaled_size.x, new_scaled_size.y), 0, 0);
 
 									g_gs_device->Recycle(old_dst->m_texture);
 									old_dst->m_texture = tex;
@@ -3734,6 +3771,13 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 					if (preserve_target && old_dst->m_scale == dst->m_scale && dst->m_type == old_dst->m_type && !new_valid.rcontains(old_dst->m_drawn_since_read))
 					{
 						// Clamp the copy inside the source and destination.
+						// Left truncating on purpose, unlike the other native-to-device conversions in this
+						// file: copy_rect is scaled here but then used in BOTH spaces below - as a device rect
+						// for the CopyRect, and as an unscaled rect against m_dirty, m_valid and
+						// AddDirtyRectTarget, which are all native. The two only agree at 1x. Rounding it one
+						// way or the other does not settle which space it is in, so changing it here would
+						// move the native uses for no stated reason. The unit mismatch is the finding; fix
+						// that first, then this line follows from whichever space survives.
 						const GSVector4i copy_rect = GSVector4i(GSVector4((new_valid + GSVector4i(0, new_valid.w).xyxy()).rintersect(old_dst->m_drawn_since_read).rintersect(GSVector4i(0, 0, dst->m_unscaled_size.x, new_valid.w + dst->m_unscaled_size.y))) * dst->m_scale);
 						// Copy over the double buffer data, in case we need it.
 						// Clear the dirty first
@@ -3806,14 +3850,18 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 					}
 
 					const int dst_offset_width = (page_diff % new_buffer_width) * GSLocalMemory::m_psm[old_dst->m_TEX0.PSM].pgs.x;
-					const int dst_offset_scaled_width = dst_offset_width * dst->m_scale;
-					const int dst_offset_scaled_height = dst_offset_height * dst->m_scale;
+					const int dst_offset_scaled_width = ScaleNativeToDevice(dst_offset_width, dst->m_scale);
+					const int dst_offset_scaled_height = ScaleNativeToDevice(dst_offset_height, dst->m_scale);
 					const GSVector4i dst_rect_scale = GSVector4i(old_dst->m_valid.x, dst_offset_height, old_dst->m_valid.z, texture_height);
 
 					if (((!hw_clear && (preserve_target || preload)) || dst_rect_scale.rintersect(draw_rect).rempty()) && dst->GetScale() == old_dst->GetScale())
 					{
 						int copy_width = ((old_dst->m_texture->GetWidth()) > (dst->m_texture->GetWidth()) ? (dst->m_texture->GetWidth()) : old_dst->m_texture->GetWidth()) - dst_offset_scaled_width;
-						int copy_height = (texture_height - dst_offset_height) * old_dst->m_scale;
+						// The old target's rows from native 0 land at native dst_offset_height in the new one.
+						// Copy what both of those native spans own on the device grid, as a move does.
+						const int copy_rows = texture_height - dst_offset_height;
+						int copy_height = std::min(ScaleNativeSpanToDevice(0, copy_rows, old_dst->m_scale),
+							ScaleNativeSpanToDevice(dst_offset_height, copy_rows, dst->m_scale));
 
 						GL_INS("TC: RT double buffer copy from FBP 0x%x, %dx%d => %d,%d", old_dst->m_TEX0.TBP0, copy_width, copy_height, 0, dst_offset_scaled_height);
 
@@ -3840,10 +3888,15 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 						}
 						else
 						{
-							if ((copy_width + dst_offset_scaled_width) > (dst->m_unscaled_size.x * dst->m_scale) || (copy_height + dst_offset_scaled_height) > (dst->m_unscaled_size.y * dst->m_scale))
+							// The bound being protected is the destination texture, which was allocated at
+							// ceil(unscaled * scale) per axis. Recomputing it with a truncating multiply put the
+							// clamp a pixel inside the real texture at a fractional scale.
+							const int dst_scaled_width = ScaleNativeToDevice(dst->m_unscaled_size.x, dst->m_scale);
+							const int dst_scaled_height = ScaleNativeToDevice(dst->m_unscaled_size.y, dst->m_scale);
+							if ((copy_width + dst_offset_scaled_width) > dst_scaled_width || (copy_height + dst_offset_scaled_height) > dst_scaled_height)
 							{
-								copy_width = std::min(copy_width, static_cast<int>((dst->m_unscaled_size.x * dst->m_scale) - dst_offset_scaled_width));
-								copy_height = std::min(copy_height, static_cast<int>((dst->m_unscaled_size.y * dst->m_scale) - dst_offset_scaled_height));
+								copy_width = std::min(copy_width, dst_scaled_width - dst_offset_scaled_width);
+								copy_height = std::min(copy_height, dst_scaled_height - dst_offset_scaled_height);
 							}
 
 							g_gs_device->CopyRect(old_dst->m_texture, dst->m_texture, GSVector4i(0, 0, copy_width, copy_height), dst_offset_scaled_width, dst_offset_scaled_height);
@@ -3943,7 +3996,9 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 								delete_target = false;
 								if (GSTexture* tex = g_gs_device->CreateCompatible(old_dst->m_texture, true))
 								{
-									g_gs_device->CopyRect(old_dst->m_texture, tex, GSVector4i(0, height_adjust * old_dst->m_scale, old_dst->m_texture->GetWidth(), old_dst->m_texture->GetHeight()), 0, 0);
+									// Same shape as the preload copy above: the rows from native row height_adjust
+									// down survive, and that row starts at device row ceil(height_adjust * scale).
+									g_gs_device->CopyRect(old_dst->m_texture, tex, GSVector4i(0, ScaleNativeToDevice(height_adjust, old_dst->m_scale), old_dst->m_texture->GetWidth(), old_dst->m_texture->GetHeight()), 0, 0);
 									if (src && src->m_target && src->m_from_target == old_dst)
 									{
 										src->m_from_target = old_dst;
@@ -4261,7 +4316,9 @@ void GSTextureCache::Target::ScaleRTAlpha()
 		if (m_alpha_max > 0)
 		{
 			const GSVector2i rtsize(m_texture->GetSize());
-			const GSVector4i valid_rect = GSVector4i(GSVector4(m_valid) * GSVector4(m_scale));
+			// Ceil, like every other native-to-device rect in the cache: truncating the far edge left
+			// the last device column and row of the valid area un-corrected at a fractional scale.
+			const GSVector4i valid_rect = GSVector4i((GSVector4(m_valid) * GSVector4(m_scale)).ceil());
 			GL_PUSH("TC: ScaleRTAlpha(valid=(%dx%d %d,%d=>%d,%d))", m_valid.width(), m_valid.height(), m_valid.x, m_valid.y, m_valid.z, m_valid.w);
 
 			if (GSTexture* temp_rt = g_gs_device->CreateCompatible(m_texture, rtsize, !GSVector4i::loadh(rtsize).eq(valid_rect)))
@@ -4286,7 +4343,8 @@ void GSTextureCache::Target::UnscaleRTAlpha()
 		if (m_alpha_max > 0)
 		{
 			const GSVector2i rtsize(m_texture->GetSize());
-			const GSVector4i valid_rect = GSVector4i(GSVector4(m_valid) * GSVector4(m_scale));
+			// Ceil, for the same reason as ScaleRTAlpha above.
+			const GSVector4i valid_rect = GSVector4i((GSVector4(m_valid) * GSVector4(m_scale)).ceil());
 			GL_PUSH("TC: UnscaleRTAlpha(valid=(%dx%d %d,%d=>%d,%d))", valid_rect.width(), valid_rect.height(), valid_rect.x, valid_rect.y, valid_rect.z, valid_rect.w);
 
 			if (GSTexture* temp_rt = g_gs_device->CreateCompatible(m_texture, rtsize, !GSVector4i::loadh(rtsize).eq(valid_rect)))
@@ -5604,14 +5662,19 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 		req_resize = true;
 	}
 
-	// Scale coordinates.
+	// Scale coordinates. Each offset names the first device pixel its native pixel owns, and the
+	// extent is what both native rects own on the device grid (see ScaleMoveToDevice). An extent of
+	// ceil(w * scale) is the span of a rect starting at native 0; at a fractional scale a rect
+	// starting elsewhere can own one pixel fewer, and the extra pixel pushed a one-row scroll of a
+	// full target one row past the texture and onto the CPU path.
 	const float scale = src->m_scale;
-	const int scaled_sx = static_cast<int>(sx * scale);
-	const int scaled_sy = static_cast<int>(sy * scale);
-	const int scaled_dx = static_cast<int>(dx * scale);
-	const int scaled_dy = static_cast<int>(dy * scale);
-	const int scaled_w = static_cast<int>(w * scale);
-	const int scaled_h = static_cast<int>(h * scale);
+	const DeviceMove device_move = ScaleMoveToDevice(sx, sy, dx, dy, w, h, scale);
+	const int scaled_sx = device_move.src.x;
+	const int scaled_sy = device_move.src.y;
+	const int scaled_dx = device_move.dst.x;
+	const int scaled_dy = device_move.dst.y;
+	const int scaled_w = device_move.src.width();
+	const int scaled_h = device_move.src.height();
 
 	// The source isn't in our texture, otherwise it could falsely expand the texture causing a misdetection later, which then renders black.
 	if ((scaled_sx + scaled_w) > src->m_texture->GetWidth() || (scaled_sy + scaled_h) > src->m_texture->GetHeight())
@@ -5619,7 +5682,7 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 
 	if (req_resize)
 	{
-		const GSVector2i target_size = GetTargetSize(DBP, DBW, DPSM, Common::AlignUpPow2(dx + w, 64), dx + h);
+		const GSVector2i target_size = GetTargetSize(DBP, DBW, DPSM, Common::AlignUpPow2(dx + w, 64), dy + h);
 		dst->ResizeTexture(std::max(dst->m_unscaled_size.x, target_size.x), std::max(dst->m_unscaled_size.y, target_size.y));
 	}
 	// We don't want to copy "old" data that the game has overwritten with writes,
@@ -5726,7 +5789,8 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 		}
 		else if (src->m_type != dst->m_type)
 		{
-			g_gs_device->StretchRectAuto(src->m_texture, src_rect, dst->m_texture, scaled_src_rect,
+			const GSVector4 dst_rect = GSVector4(scaled_dx, scaled_dy, (scaled_dx + scaled_w), (scaled_dy + scaled_h));
+			g_gs_device->StretchRectAuto(src->m_texture, src_rect, dst->m_texture, dst_rect,
 				Nearest, dpsm_s.trbpp == 16 ? 16 : 32, dpsm_s.trbpp);
 		}
 		else if (src->m_texture->IsDepthLike())
@@ -6331,10 +6395,14 @@ GSTextureCache::Source* GSTextureCache::CreateSource(const GIFRegTEX0& TEX0, con
 	if (dst && (x_offset != 0 || y_offset != 0) && (TEX0.PSM != PSMT8 || channel_shuffle))
 	{
 		const float scale = dst->m_scale;
-		const int x = static_cast<int>(scale * x_offset);
-		const int y = static_cast<int>(scale * y_offset);
-		const int w = static_cast<int>(std::ceil(scale * tw));
-		const int h = static_cast<int>(std::ceil(scale * th));
+		// The offset names the first device pixel its native pixel owns, and the extent is what the
+		// native rect owns from there. Truncating the offset read the copy one device column and row
+		// early, out of the previous native pixel; ceiling the extent on its own read one past the
+		// rect's far edge.
+		const int x = ScaleNativeToDevice(x_offset, scale);
+		const int y = ScaleNativeToDevice(y_offset, scale);
+		const int w = ScaleNativeSpanToDevice(x_offset, tw, scale);
+		const int h = ScaleNativeSpanToDevice(y_offset, th, scale);
 
 		const GSVector4i read_rect = GSVector4i(x_offset, y_offset, x_offset + tw, y_offset + th);
 		// Do this first as we could be adding in alpha from an upgraded 24bit target. if the rect intersects a dirty area.
@@ -6708,10 +6776,13 @@ GSTextureCache::Source* GSTextureCache::CreateSource(const GIFRegTEX0& TEX0, con
 
 						const GSVector4 dRect = GSVector4(GSVector4i::loadh(dst->m_unscaled_size));
 
-						if (GSConfig.UserHacks_NativeScaling != GSNativeScaling::Off)
+						// Same rule as the other two downsample sites: the box filter only has a whole
+						// number of source texels per output pixel at an integer scale, so a fractional
+						// one goes through the stretch below instead.
+						if (GSConfig.UserHacks_NativeScaling != GSNativeScaling::Off && std::floor(dst->GetScale()) == dst->GetScale())
 						{
 							const u32 downsample_factor = static_cast<u32>(dst->GetScale());
-							
+
 							g_gs_device->FilteredDownsampleTexture(dst->m_texture, tmpTex, downsample_factor, GSVector2i(0, 0), dRect);
 						}
 						else
@@ -6925,8 +6996,10 @@ GSTextureCache::Source* GSTextureCache::CreateMergedSource(GIFRegTEX0 TEX0, GIFR
 	const GSLocalMemory::psm_t& psm_s = GSLocalMemory::m_psm[TEX0.PSM];
 	const int tex_width = (std::max<int>(64 * TEX0.TBW, region.GetMaxX()) + (psm_s.bs.x - 1)) & ~(psm_s.bs.x - 1);
 	const int tex_height = ((region.HasY() ? region.GetHeight() : (1 << TEX0.TH)) + (psm_s.bs.y - 1)) & ~(psm_s.bs.y - 1);
-	const int scaled_width = static_cast<int>(static_cast<float>(tex_width) * scale);
-	const int scaled_height = static_cast<int>(static_cast<float>(tex_height) * scale);
+	// Ceil: the page copies queued below land at rect * scale in this texture, so a truncated
+	// allocation would be smaller than what gets written into it.
+	const int scaled_width = ScaleNativeToDevice(tex_width, scale);
+	const int scaled_height = ScaleNativeToDevice(tex_height, scale);
 
 	// Compute new end block based on size.
 	const u32 end_block = GSLocalMemory::m_psm[TEX0.PSM].info.bn(tex_width - 1, tex_height - 1, TEX0.TBP0, TEX0.TBW);

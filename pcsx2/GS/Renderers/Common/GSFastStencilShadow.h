@@ -6,6 +6,7 @@
 #include "GS/GS.h"
 #include "GS/GSRegs.h"
 #include "GS/GSVector.h"
+#include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
 
 // The alpha stencil counter, drawn by the blend unit instead of by reading the render target.
 //
@@ -33,26 +34,116 @@
 // renderer has.
 namespace GSFastStencilShadow
 {
-	// The device rule is three facts:
-	//  - Vulkan. Only the Vulkan TFX shader has the counter's output block, and Vulkan is where
-	//    texture barriers off means a frame read costs a render-pass break plus a copy.
-	//  - Texture barriers off. Frame reads are then served by the per-draw copy, which is the cost
-	//    this removes. With barriers on the read stays inside the pass and the renderer keeps its
-	//    per-primitive path.
-	//  - Dual-source blending, for the second factor.
-	//
-	// Today that is every Adreno part. Turnip and the Qualcomm driver both carry
-	// UseRenderTargetCopyForFeedback, which turns texture barriers off. Mali parts on that workaround
-	// report no dual-source blending, and desktop GPUs keep their barriers. OverrideTextureBarriers=1
-	// turns barriers back on, and with them this off.
-	//
-	// ⚠️ `!texture_barrier` on its own is not this rule. D3D11 runs without texture barriers as well,
-	// its copies are cheap, and its shader has no counter block, so taking the road there would draw
-	// the counter wrong for no gain. See cheap_rt_feedback_read for the same mistake made in the
-	// opposite direction.
-	constexpr bool DeviceQualifies(RenderAPI api, bool texture_barrier, bool dual_source_blend)
+	// The facts the device rule is made of. Two of them are about what the backend can DRAW; the
+	// road is about whether drawing it is worth anything.
+	struct DeviceFacts
 	{
-		return api == RenderAPI::Vulkan && !texture_barrier && dual_source_blend;
+		/// Only the Vulkan TFX shader carries the counter's output block.
+		RenderAPI api = RenderAPI::None;
+
+		/// The second factor needs a second fragment output.
+		bool dual_source_blend = false;
+
+		/// Which self-read road the device landed on -- GSSelfReadRoadDecision::road, so this
+		/// answers "what does a frame read cost here" rather than "is a frame read legal here".
+		GSSelfReadRoad road = GSSelfReadRoad::Copy;
+
+		/// The road declares an attachment feedback loop rather than reaching the same spelling by
+		/// the device's own preference -- GSSelfReadRoadDecision::loop_declared. True for both
+		/// declaration arms and for the driver fact that selects the same road; see below.
+		bool loop_declared = false;
+
+		/// The device the counter was measured on for the barrier-ordered road: Apple silicon
+		/// under Honeykrisp. Desktop Vulkan reaches the same road and was never timed there.
+		bool barrier_road_measured = false;
+	};
+
+	// The device rule, in two halves.
+	//
+	// CAN THE BACKEND DRAW IT: Vulkan, because only its TFX shader has the counter's output block,
+	// and dual-source blending, because that is where the second factor goes. Neither has moved.
+	//
+	// IS IT WORTH DRAWING: this half used to read `!texture_barrier`, and that was the bug.
+	// `texture_barrier` answers two questions at once -- "may a draw read the render target from
+	// inside the pass" and "does a frame read cost the renderer its cheap path" -- and only the
+	// second one is the counter's business. Keying on the bit therefore coupled the counter to the
+	// road: declaring the attachment feedback loop sets texture_barrier as a side effect
+	// (GSSelfReadRoadPolicy's arm branch), which switched the counter off on a road that still
+	// needs it. So the rule asks the road directly.
+	//
+	// The roads that qualify:
+	//
+	//  - Copy. Every frame read is a render-pass break plus a copy of the target, which is the
+	//    cost the blend removes. Jak II at 2x pays for about 3,400 of them a frame. This is every
+	//    Adreno part the declared road does not reach: Turnip and the Qualcomm driver both carry
+	//    UseRenderTargetCopyForFeedback, which turns texture barriers off. This road is what the
+	//    counter was written for and it is unchanged.
+	//
+	//  - A declared feedback loop. The read is in-pass, so it costs no copy, but auto-flush still
+	//    cuts the volume into one- and two-triangle draws and the counter is still what stops it.
+	//    Measured on an SD865 under Turnip, Jak II and Jak 3 at native and 2x: the declared road WITHOUT the counter runs +11.5% to
+	//    +42.0% against the copy road, and WITH the counter forced on it runs +0.13% to +0.90%,
+	//    which is the run-to-run noise measured in the same sitting. Draw counts with the counter
+	//    come out equal to the copy road's to the draw -- 5,753 on Jak II and 2,892 on Jak 3 at
+	//    native -- because the auto-flush split exemption comes back with it. Frames are
+	//    bit-identical to the declared road without the counter, both titles, both scales, every
+	//    frame. The declared road's entire measured cost on those titles was the counter's absence.
+	//
+	//    Both declaration arms qualify, not just the driver-ordered one. The declared loop with
+	//    barriers kept exists so that comparing it with the declared loop with ordering trusted
+	//    isolates the ordering claim; if the counter switched off on one of them that comparison would move two
+	//    things again, which is the mistake this rule is fixing.
+	//
+	//    And so does the road the DRIVER selects, which is the case that actually ships: a driver
+	//    build the database recognises as one that orders declared loops takes the same road with
+	//    no setting touched. That is why the fact is loop_declared and not arm_applied -- a road
+	//    that arrives by itself would otherwise arrive with the +11.5..+42.0% above attached.
+	//
+	//  - The backend's own per-draw barriers, with the read in-pass and nothing declared
+	//    (GSSelfReadRoad::InPassBarrier). The read costs no copy, but auto-flush still cuts the
+	//    volume into one- and two-triangle draws, and stopping that split is the rest of what the
+	//    counter does. Measured on an Apple M2 Max under Honeykrisp, Classic Vulkan, frame-time
+	//    p50 over 5 interleaved reps an arm: Jak II 170.237 ms ->
+	//    18.247 ms at 2x and 128.703 -> 16.246 at native; Jak 3 44.434 -> 7.726 at 2x; the Ratchet
+	//    & Clank: Up Your Arsenal effects capture 30.491 -> 4.618 at 2x. That is -82.6% to -89.3%
+	//    against a same-sitting base-vs-base noise floor of 0.04% to 0.83%. A second, lighter Jak
+	//    II capture is -13.2%/-14.3%, because the counter's value tracks the counter draws' share
+	//    of the frame rather than the title. The mechanism shows in the barrier count: Jak II at
+	//    2x emits 126,285 per-draw feedback barriers a run without the counter and 386 with it.
+	//
+	//    ⚠️ SCOPED TO THE M2 (barrier_road_measured). Desktop Vulkan lands on this road too -- it
+	//    keeps its texture barriers, and an in-tile read needs a Mali or Adreno part
+	//    (DecideVulkanFramebufferFetch) -- and so does MoltenVK, but neither was timed, so both
+	//    keep the answer they had before the road existed: no counter while barriers are on.
+	//
+	//    The Adreno 7xx declared road also lands on InPassBarrier, and it qualifies through
+	//    loop_declared above, not through this bullet.
+	//
+	// The road that does not:
+	//
+	//  - The in-tile read (GSSelfReadRoad::InPassOrdered): Mali under rasterization-order
+	//    attachment access, and an Adreno with OverrideTextureBarriers=1. Turning barriers back on
+	//    does not reach the bullet above -- the part still advertises rasterization-order access,
+	//    so the policy takes the in-tile read instead. Unmeasured on both, and the Mali parts
+	//    cannot draw the counter anyway.
+	//
+	//    ⚠️ This is why the rule names InPassBarrier rather than asking `road != Copy`. The loose
+	//    form reads as "any road that is not the copy road" and would take the counter onto both
+	//    of these: a debug lever whose own output is unscored, and a road whose parts fail the
+	//    dual-source term.
+	//
+	// ⚠️ Neither `!texture_barrier` nor the road on its own is this rule. D3D11 runs without
+	// texture barriers as well, its copies are cheap, and its shader has no counter block, so
+	// taking the road there would draw the counter wrong for no gain. See cheap_rt_feedback_read
+	// for the same mistake made in the opposite direction.
+	constexpr bool DeviceQualifies(const DeviceFacts& facts)
+	{
+		if (facts.api != RenderAPI::Vulkan || !facts.dual_source_blend)
+			return false;
+
+		return facts.road == GSSelfReadRoad::Copy
+			|| (facts.road == GSSelfReadRoad::InPassBarrier && facts.barrier_road_measured)
+			|| facts.loop_declared;
 	}
 
 	// The counter's registers: flat-shaded triangles, textured with nearest sampling from the 32-bit
@@ -82,5 +173,85 @@ namespace GSFastStencilShadow
 
 		const GSVector4 diff(pos_min.upld(pos_max) - tex_min.upld(tex_max));
 		return (diff.abs() < GSVector4(1.0f)).alltrue();
+	}
+
+	/// ⚠️ MEASUREMENT OVERRIDE, not a device fact and not a setting. The harness asked for the
+	/// counter to be off for the whole process, so DeviceQualifies is overruled wherever the
+	/// backend consults it.
+	///
+	/// Why it exists: it separates the counter's own contribution from the road's. Until the rule
+	/// above started asking the road, the two could not be told apart at all -- the
+	/// declared-feedback-loop road turns texture barriers ON (GSSelfReadRoadPolicy's arm branch)
+	/// and the rule required them OFF, so declaring the loop switched this counter off as a side
+	/// effect and a base-vs-declared A/B on Jak II moved two things at once. The declared road
+	/// keeps the counter now; this switch is what takes it away deliberately.
+	///
+	/// ⚠️ OverrideTextureBarriers=1 is NOT the arm for that job, though it looks like it. Turning
+	/// barriers on without an arm does not leave the copy road: the road policy falls past its
+	/// Copy return, and since vk-turnip-attachment-self-read takes away the layout road but not
+	/// the rasterization-order one, the in-tile read is still available and the road selected is
+	/// InPassOrdered, spelling InputAttachment -- the in-pass self-read with no declared loop,
+	/// which is the configuration that same profile rule exists to forbid. A device agrees with
+	/// the walk: on an Adreno 650 the arm reports the input attachment in use and emits zero
+	/// barriers, and zero is what separates this road from InPassBarrier. That configuration has been run and never
+	/// scored against a reference, so its timings measure a workload of unknown shape -- which
+	/// is reason enough not to use it here. This switch is the one that holds the road still.
+	///
+	/// Correct by construction when asked: the counter is an optimisation, and without it the
+	/// renderer takes the ordinary render-target read it took before the counter existed. So
+	/// frames under this flag must equal base's, and that equality is the proof the arm measured
+	/// our workload rather than a broken road.
+	///
+	/// The force-ON twin is directly below. It answers the opposite question and the two resolve
+	/// in Resolve, where this one wins.
+	///
+	/// Built to take the Adreno in-pass read's cost apart from the fast stencil shadow's.
+	inline bool s_force_off = false;
+
+	inline void SetForcedOff(bool value) { s_force_off = value; }
+	inline bool IsForcedOff() { return s_force_off; }
+
+	/// ⚠️ MEASUREMENT OVERRIDE, the twin of the above. Takes the counter on a road the rule
+	/// declines, so long as the backend can actually draw it.
+	///
+	/// The job it was built for is done. Measurement found the old `!texture_barrier` term costing real
+	/// time -- declaring the feedback loop turned barriers on and dropped the counter, and on
+	/// Jak II at 2x the counter's absence was worth +341.9% on the copy road but only +39.3% on
+	/// the declared road, so the declared road was substituting for most of the counter rather
+	/// than stacking on top of losing it. This switch reached the cell that settled it, counter ON
+	/// with the loop declared, and measured it at or inside noise of base with base's own draw
+	/// counts and bit-identical frames. DeviceQualifies says that on its own now.
+	///
+	/// It then did the same job a second time, on the barrier-ordered road. Run against the
+	/// default on an M2 Max, it priced the counter there -- -82.6% to -89.3% of frame-time p50 on Jak
+	/// II, Jak 3 and the Ratchet effects capture, frames byte-identical on all 94 corpus cells --
+	/// and DeviceQualifies now says so on its own, so on that device this switch changes nothing.
+	///
+	/// What is left for it is the one road the rule still declines: the in-tile read, which is
+	/// Mali's default and where an Adreno with OverrideTextureBarriers=1 lands. The Mali parts
+	/// cannot draw the counter at all, so the only reachable case is that Adreno lever -- and the
+	/// lever's own output has been run and never scored, which is the caveat SetForcedOff above
+	/// spells out. Measuring the counter there means scoring the road first.
+	///
+	/// ⚠️ Still gated on what the backend can DRAW, not merely on wanting it. The Vulkan TFX
+	/// shader is the only one carrying the counter's output block and the second factor needs
+	/// dual-source blending, so this override keeps the API and dual-source terms and lifts only
+	/// the road term. Forcing it on D3D11 would draw the counter wrong -- the mistake
+	/// DeviceQualifies already warns about in the opposite direction.
+	inline bool s_force_on = false;
+
+	inline void SetForcedOn(bool value) { s_force_on = value; }
+	inline bool IsForcedOn() { return s_force_on; }
+
+	/// What the backend should use, with both overrides resolved. Force-off wins over force-on:
+	/// asking for both is a harness mistake, and the safe resolution is the one that changes least
+	/// from the shipped picture.
+	constexpr bool Resolve(bool forced_off, bool forced_on, const DeviceFacts& facts)
+	{
+		if (forced_off)
+			return false;
+		if (forced_on)
+			return facts.api == RenderAPI::Vulkan && facts.dual_source_blend;
+		return DeviceQualifies(facts);
 	}
 } // namespace GSFastStencilShadow

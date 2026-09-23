@@ -724,7 +724,7 @@ GSTexture* GSDeviceMTL::CreateSurface(GSTexture::Usage usage, int width, int hei
 	}
 }}
 
-void GSDeviceMTL::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter)
+void GSDeviceMTL::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const MergeTopBand* top_band, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter)
 { @autoreleasepool {
 	id<MTLCommandBuffer> cmdbuf = GetRenderCmdBuf();
 	GSScopedDebugGroupMTL dbg(cmdbuf, @"DoMerge");
@@ -747,6 +747,8 @@ void GSDeviceMTL::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex,
 		// 2nd output is enabled and selected. Copy it to destination so we can blend it with 1st output
 		// Note: value outside of dRect must contains the background color (c)
 		StretchRect(sTex[1], sRect[1], dTex, dRect[1], ShaderConvert::COPY, filter);
+		if (top_band[1].enabled)
+			StretchRect(sTex[1], top_band[1].src, dTex, top_band[1].dst, ShaderConvert::COPY, filter);
 	}
 
 	// Save 2nd output
@@ -766,11 +768,21 @@ void GSDeviceMTL::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex,
 		{
 			// Blend with a constant alpha
 			DoStretchRect(sTex[0], sRect[0], dTex, dRect[0], pipeline, filter, LoadAction::Load, &cb_c, sizeof(cb_c));
+			if (top_band[0].enabled)
+			{
+				DoStretchRect(sTex[0], top_band[0].src, dTex, top_band[0].dst, pipeline, filter, LoadAction::Load,
+					&cb_c, sizeof(cb_c));
+			}
 		}
 		else
 		{
 			// Blend with 2 * input alpha
 			DoStretchRect(sTex[0], sRect[0], dTex, dRect[0], pipeline, filter, LoadAction::Load, nullptr, 0);
+			if (top_band[0].enabled)
+			{
+				DoStretchRect(sTex[0], top_band[0].src, dTex, top_band[0].dst, pipeline, filter, LoadAction::Load,
+					nullptr, 0);
+			}
 		}
 	}
 
@@ -2436,6 +2448,7 @@ void GSDeviceMTL::MRESetHWPipelineState(GSHWDrawConfig::VSSelector vssel, GSHWDr
 		setFnConstantB(m_fn_constants, pssel.automatic_lod,         GSMTLConstantIndex_PS_AUTOMATIC_LOD);
 		setFnConstantB(m_fn_constants, pssel.manual_lod,            GSMTLConstantIndex_PS_MANUAL_LOD);
 		setFnConstantB(m_fn_constants, pssel.region_rect,           GSMTLConstantIndex_PS_REGION_RECT);
+		setFnConstantB(m_fn_constants, pssel.native_texel_grid,     GSMTLConstantIndex_PS_NATIVE_TEXEL_GRID);
 		setFnConstantI(m_fn_constants, pssel.scanmsk,               GSMTLConstantIndex_PS_SCANMSK);
 		setFnConstantI(m_fn_constants, pssel.aa1,                   GSMTLConstantIndex_PS_AA1);
 		setFnConstantB(m_fn_constants, pssel.abe,                   GSMTLConstantIndex_PS_ABE);
@@ -2682,6 +2695,13 @@ static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, TCOffsetHack)     == of
 static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, STScale)          == offsetof(GSMTLMainPSUniform, st_scale));
 static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, DitherMatrix)     == offsetof(GSMTLMainPSUniform, dither_matrix));
 static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, ScaleFactor)      == offsetof(GSMTLMainPSUniform, scale_factor));
+static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, DitherPhase)      == offsetof(GSMTLMainPSUniform, dither_phase));
+static_assert(offsetof(GSHWDrawConfig::PSConstantBuffer, NativeTexelGrid)  == offsetof(GSMTLMainPSUniform, native_texel_grid));
+
+// DoInterlace hands the shader the whole InterlaceConstantBuffer, so the two layouts have to agree.
+static_assert(sizeof(InterlaceConstantBuffer) == sizeof(GSMTLInterlacePSUniform));
+static_assert(offsetof(InterlaceConstantBuffer, ZrH)        == offsetof(GSMTLInterlacePSUniform, ZrH));
+static_assert(offsetof(InterlaceConstantBuffer, FieldPad)   == offsetof(GSMTLInterlacePSUniform, field_pad));
 
 void GSDeviceMTL::SetupDestinationAlpha(GSTexture* rt, GSTexture* ds, const GSVector4i& r, SetDATM datm)
 {

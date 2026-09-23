@@ -268,6 +268,14 @@ protected:
 		int m_backed_up_ctx = 0;
 		u32 m_dirty_regs = 0;
 		GSVector4i draw_rect = GSVector4i::zero();
+		// draw_rect asked on the native pixel grid, whatever the upscale (see
+		// GSVertexKernels::PrimNativeDrawRect). Read by CheckOverlapVertsSlow and by
+		// nothing else -- draw_rect above keeps the shipped rounding because it
+		// reaches the texture cache. Equal to draw_rect at native resolution, by
+		// construction rather than by a branch. Only maintained while
+		// GSConfig.UserHacks_DrawBuffering is set, which is the only way the
+		// heuristic that reads it is reachable.
+		GSVector4i native_draw_rect = GSVector4i::zero();
 		bool related_draw = false;
 	};
 
@@ -325,6 +333,18 @@ protected:
 		GSVector4i* temp_rect;
 		const GSVector4i* scissor_in;
 
+		// The same accumulation on the native pixel grid, for the draw-buffering
+		// overlap heuristic. Shares acc_state: every accepted prim contributes to
+		// both, an empty native rect contributing the union's identity element
+		// rather than nothing, so "did this chunk accumulate, and does it replace or
+		// union" has one answer. Only tracked when draw buffering is on
+		// (track_native, i.e. GSState::m_track_native_draw_rect); the rect is dead
+		// state otherwise, and at the native grid it would be a second copy of the
+		// same number.
+		GSVector4i native_acc_rect;
+		GSVector4i* temp_native_rect;
+		bool track_native;
+
 		__fi void Load(GSState& s)
 		{
 			vb = s.m_vertex;
@@ -340,6 +360,8 @@ protected:
 			acc_state = 0;
 			temp_rect = &s.temp_draw_rect;
 			scissor_in = &s.m_context->scissor.in;
+			temp_native_rect = &s.temp_native_draw_rect;
+			track_native = s.m_track_native_draw_rect;
 		}
 
 		__fi void Store() const
@@ -354,6 +376,12 @@ protected:
 			{
 				const GSVector4i merged = (acc_state == 2) ? acc_rect : temp_rect->runion(acc_rect);
 				*temp_rect = merged.rintersect(*scissor_in);
+
+				if (track_native)
+				{
+					const GSVector4i nat = (acc_state == 2) ? native_acc_rect : temp_native_rect->runion(native_acc_rect);
+					*temp_native_rect = nat.rintersect(*scissor_in);
+				}
 			}
 		}
 	};
@@ -368,6 +396,44 @@ protected:
 	GSVertexKernels::CullBounds m_cull_bounds_raw = {};
 
 	void RefreshKickMirror();
+
+	// One kick-mirror entry for a vertex of `primclass`. Which coordinate space
+	// the outcode compares in, and how wide a band is, both follow the cull grid
+	// (GSVertexKick.h): bands against the banded bounds at native, raw 12.4
+	// against the plain cull rect everywhere else. primclass is a constant at the
+	// hot call site, so the selection folds away there.
+	__fi GSVertexKernels::CullMirrorEntry MakeKickMirror(int primclass, int wx, int wy) const
+	{
+		const bool rounded = (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS);
+		const int shift = !rounded ? 0 :
+		                             ((primclass == GS_SPRITE_CLASS) ? m_cull_grid.sprite_shift : m_cull_grid.shift);
+
+		if (shift == 4)
+			return GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, m_cull_bounds_band, 4);
+
+		// shift 0 means this class has no grid, so nothing reads the bands; pack
+		// them at the native width rather than at a degenerate one.
+		return GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, m_cull_bounds_raw, (shift != 0) ? shift : 4,
+			m_cull_grid.band_bias_x, m_cull_grid.band_bias_y);
+	}
+
+	// The cull grid the current config asks for.
+	static GSVertexKernels::CullGrid ConfigCullGrid();
+
+	// The cull grid this object's engine samples on. The hardware renderer's depends on the upscale
+	// and the half-pixel-offset mode, so it is ConfigCullGrid(); the software renderer is always
+	// native; the front parser culls for whichever engine is behind it. UpdateSettings re-applies
+	// it on every settings change, so no input of the grid can change without the grid following.
+	virtual GSVertexKernels::CullGrid EngineCullGrid() const { return ConfigCullGrid(); }
+
+public:
+	// The cull grid a scale and a half-pixel-offset mode ask for. Pure and public
+	// so gs_vertex_tests can pin the mode decisions without standing up a GS.
+	// `native_scale_targets`: some targets may render at scale 1 while the rest render at `scale`
+	// (native scaling, native palette draws), so the grid has to hold both sets of sample points.
+	static GSVertexKernels::CullGrid CullGridFor(float scale, GSHalfPixelOffset hpo, bool native_scale_targets = false);
+
+protected:
 
 	template <u32 prim, bool auto_flush> void VertexKick(u32 skip);
 	template <u32 prim, bool auto_flush> void VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const GSVector4i& v0, const GSVector4i& v1, VertexKickCursor& c);
@@ -490,6 +556,8 @@ protected:
 	bool IsMipMapActive();
 	bool IsCoverageAlpha();
 	bool IsCoverageAlphaFixedOne();
+	bool AA1LineCoverageFromPixelRuns();
+	bool AA1LineCoverageFromPixelRunsLive(bool tme, bool tcc);
 	virtual bool IsCoverageAlphaSupported();
 	// Which auto-flush rule ResetHandlers arms. The decision belongs to the renderer's DRAW
 	// ENGINE, not the process's renderer type: a renderer can run the SW engine as a fallback
@@ -567,6 +635,10 @@ public:
 	const GSDrawingEnvironment* m_draw_env = &m_env;
 	GSDrawingContext* m_context = nullptr;
 	GSVector4i temp_draw_rect;
+	// temp_draw_rect on the native pixel grid. Tracks temp_draw_rect at every write
+	// site so the two cannot drift; read only by CheckOverlapVertsSlow, through
+	// m_env_buffers[i].native_draw_rect.
+	GSVector4i temp_native_draw_rect;
 	// Owned by the renderer, which opens and closes it on the present path. The transfer
 	// and ReadFIFO packets that fill it are produced on the parse path, which is the front
 	// object under the split — hence GetDumpSink() rather than a bare m_dump read. Both
@@ -579,6 +651,25 @@ public:
 	bool m_are_quads = false;
 	bool m_are_quads_shuffle = false;
 	bool m_nativeres = false;
+	// The sample-point grid the per-prim cull rounds onto (GSVertexKick.h). Set
+	// from config beside m_nativeres, which keeps its own, narrower meaning: the
+	// scale is exactly 1. The software engine pins this native the same way it
+	// pins m_nativeres.
+	GSVertexKernels::CullGrid m_cull_grid = GSVertexKernels::MakeCullGrid(4, 4);
+	// Whether the vertex kick maintains the native-grid draw rect beside the
+	// shipped one. Only where it can differ: draw buffering on, and a grid that is
+	// not the native one. At the native grid the two rects are the same value by
+	// construction, so tracking there is pure cost -- measured at +1.1% to +3.8% of
+	// GS-thread CPU on the three drawBuffering dumps in the corpus.
+	bool m_track_native_draw_rect = false;
+
+	// Set them together: forgetting the second is a silent cost above native and a
+	// silently stale rect below it.
+	__fi void SetCullGrid(const GSVertexKernels::CullGrid& grid)
+	{
+		m_cull_grid = grid;
+		m_track_native_draw_rect = GSConfig.UserHacks_DrawBuffering && grid.shift != 4;
+	}
 	bool m_mipmap = false;
 	bool m_texflush_flag = false;
 	// This engine draws the alpha stencil counter through the blend unit, so IsAutoFlushDraw leaves the
@@ -984,6 +1075,9 @@ public:
 	// that draw EXECUTED, so it drains the back queue — memoized per
 	// (draw epoch, live ALPHA) so at most one drain per AA1 draw.
 	bool IsCoverageAlphaSupported() override;
+
+	// The back object's grid: this object culls the primitives the back will draw.
+	GSVertexKernels::CullGrid EngineCullGrid() const override { return m_back->m_cull_grid; }
 
 	// Once per frame, after the (drained) vsync executed on the back object:
 	// re-mirror present-side state the back mutated (Merge's scanmask

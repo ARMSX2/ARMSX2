@@ -111,12 +111,139 @@ constexpr int GSState::GetSaveStateSize(int version)
 	return size;
 }
 
+// The sample-point grid the per-prim cull rounds onto, from config. See CullGrid
+// in GSVertexKick.h for what a shift means.
+//
+// A window coordinate w (12.4 sub-texels, XYOFFSET subtracted) reaches window
+// position w*S/16 + c, where S is the target scale and c is the constant
+// DetermineVSConfig folds into its vertex offset. Device sample points are pixel
+// centres, so they sit at
+//
+//     w = (16/S)*(k + 0.5 - c)  =  k*step + (8/S - 16*c/S),  step = 16/S
+//
+// which is a whole-sub-texel arithmetic progression -- a grid with a step AND a
+// PHASE -- exactly when 16/S is a power of two, i.e. at S = 1, 2, 4 and 8. The
+// phase is the second term; the grid carries it, so c does not have to be 0.5 for
+// the grid to be the sample set. What c decides is only WHICH phase, and whether
+// the kick can know it.
+//
+// At S == 1 every path through DetermineVSConfig gives c == 0.5 and the phase is
+// zero, which is why the shipped native rule is exact rather than a guess, and why
+// 1x byte identity is structural here. Above 1 the phase has to be read off
+// DetermineVSConfig's two branches, and it is not the same for the two "align to
+// native" modes.
+//
+// The upscaling branch (HalfPixelOffset below Native, or a texture shuffle) takes
+// sx = 2*rtscale/(rtsize.x << 4) and ox2 = -1/rtsize.x. A window coordinate w then
+// reaches window position w*sx*rtsize.x/2 - ox2*rtsize.x/2, i.e. a device step of
+// rtscale per native pixel and a phase of rtsize.x/(2*rtsize.x) = 0.5. Exactly the
+// grid, unless HalfPixelOffset Normal folds mod_xy in.
+//
+// The align-to-native branch takes sx = 2/(unscaled_x << 4), so the device step is
+// rtsize.x/unscaled_x, and the phase is whatever -ox2*rtsize.x/2 comes to:
+//
+//   * NativeWTexOffset: ox2 = -1/(unscaled_x * rtscale), so the phase is
+//     rtsize.x/(2*unscaled_x*rtscale) = 0.5 -- the same half device pixel the
+//     upscaling branch gives, because the offset is divided by the scale. The grid
+//     is exact here. The one thing that moves it, NativeSpritePushApplies, moves
+//     SPRITE-class draws only, and the sprite class has no grid above native
+//     anyway. Measured: phase 0.5 and step 2.0 on every non-sprite draw of
+//     Prince of Persia, Sly 1 and Black at 2x.
+//   * Native: ox2 = -1/unscaled_x, so c = rtsize.x/(2*unscaled_x) = S/2 -- one
+//     device pixel at 2x. Substituting into the sample expression, the points sit
+//     at w = k*step + 8/S - 8, and 8/S is step/2 while 8 is a multiple of step for
+//     every step this branch can take, so Native's PHASE IS step/2: the odd
+//     multiples of half the device step, sub-texel 8k+4 at 2x and 4k+2 at 4x.
+//     Measured: phase 1.0 device pixels on Katamari Damacy and Jak II at 2x.
+//     That is a known phase, so the grid carries it and Native keeps the grid.
+//
+//     ⚠️ The one draw kind this is wrong about is a texture shuffle. The branch
+//     test above is `hpo < Native || m_texture_shuffle`, so under Native a shuffle
+//     draw takes the UPSCALING branch and samples at phase 0 instead. The vertex
+//     kick cannot see m_texture_shuffle -- it is decided in GSRendererHW::Draw,
+//     long after the prims are culled -- so a shuffle draw is culled against the
+//     wrong phase. Two things bound the exposure: a shuffle needs a 16-bit FRAME
+//     (GSRendererHW::DetectTextureShuffleImpl returns None otherwise), and a
+//     shuffle draw's vertices are rewritten by EmulateTextureShuffleAndFbmask
+//     AFTER the cull anyway, so culling one on ANY grid, including the shipped
+//     native one, is already approximate. The 47-dump corpus at 1x, 2x and 4x is
+//     what says the approximation does not show.
+//   * Normal: adds mod_xy/2 on the upscaling branch, and which targets carry that
+//     offset is a per-draw fact (Target::OffsetHack_modxy) the vertex kick cannot
+//     see. It declines, and it is the only mode that does.
+//
+// A phase that cannot be known is a phase that cannot be culled against: a finer
+// grid halves the population at risk without emptying it, since a prim narrower
+// than the step can still hold a sample point and no grid point. That is Normal's
+// case and not Native's -- Native's phase is known exactly and the grid carries it.
+//
+// Non-power-of-two scales decline for the same reason and it is not a rounding
+// nicety. At 1.5x the sample points are 10.667 sub-texels apart, so a prim
+// spanning sub-texels 10..11 holds the sample at 10.667 and holds no multiple of
+// 8, of 4 or of 2. Only step 1 -- no grid -- is safe there.
+//
+// The grid is the device's own sample set, with no margin. An earlier version shipped one binade
+// of margin -- cull only what spans no point of a grid twice as fine as the
+// device's -- because the exact grid moved pixels on one frame of one of the
+// 47-dump corpus (OutRun 2006, SLES-53998) and the cause was not then known. It is
+// now, and it is not a defect in the cull: dropping prims out of a draw can leave
+// it at exactly one quad, GSState::PrimitiveOverlap answers PRIM_OVERLAP_NO on the
+// m_index->tail == 6 shortcut instead of PRIM_OVERLAP_UNKNOW, and
+// GSRendererHW::EmulateBlending then spends a barrier on the accurate shader path
+// for an Ad blend instead of approximating it in the fixed-function unit as
+// DST_ALPHA with the source pre-doubled. The two differ by 256/255, one colour
+// level; the shader path is the correct one.
+GSVertexKernels::CullGrid GSState::CullGridFor(float scale, GSHalfPixelOffset hpo, bool native_scale_targets)
+{
+	int shift = 0;
+	int phase = 0;
+
+	if (scale == 1.0f)
+	{
+		shift = 4;
+	}
+	else if (hpo != GSHalfPixelOffset::Normal)
+	{
+		shift = GSVertexKernels::DeviceCullGridShift(scale);
+		if (shift != 0 && hpo == GSHalfPixelOffset::Native)
+		{
+			if (native_scale_targets)
+			{
+				// A target drawn at scale 1 samples at the whole-pixel sub-texels 16k, which the
+				// phased grid below misses entirely (8k+4 at 2x). The grid one binade finer with no
+				// phase holds both sets: the phased points are its odd multiples, 16k its multiples
+				// of 16 / step. At 8x that leaves no grid, which is the safe answer.
+				shift--;
+			}
+			else
+			{
+				phase = 1 << (shift - 1); // half a device step, per the derivation above
+			}
+		}
+	}
+
+	// Sprites move after the cull at every upscale (CorrectSpriteCoverageForUpscale
+	// pushes a far edge out to the next whole pixel), so only the native grid --
+	// where that pass returns early -- is decided on the coordinates that get
+	// rasterised.
+	return GSVertexKernels::MakeCullGrid(shift, (shift == 4) ? 4 : 0, phase, phase);
+}
+
+GSVertexKernels::CullGrid GSState::ConfigCullGrid()
+{
+	// Native scaling and native palette draws render some targets at scale 1 whatever the upscale.
+	const bool native_scale_targets =
+		GSConfig.UserHacks_NativeScaling != GSNativeScaling::Off || GSConfig.UserHacks_NativePaletteDraw;
+	return CullGridFor(GSConfig.UpscaleMultiplier, GSConfig.UserHacks_HalfPixelOffset, native_scale_targets);
+}
+
 GSState::GSState(GSBackQueue::Channel* shared_chan, bool is_front_parser)
 	: m_vt(this)
 {
 	// m_nativeres seems to be a hack. Unfortunately it impacts draw call number which make debug painful in the replayer.
 	// Let's keep it disabled to ease debug.
 	m_nativeres = GSConfig.UpscaleMultiplier == 1.0f;
+	SetCullGrid(ConfigCullGrid());
 	m_mipmap = GSConfig.Mipmap;
 	m_back_records = GSConfig.BackThreadMode != GSBackThreadMode::Off;
 	if (shared_chan)
@@ -240,6 +367,9 @@ GSFrontState::GSFrontState(GSState* back)
 	m_mem_target = back;
 	back->m_split_back = true;
 	back->m_parse_target = this;
+	// The base constructor took the config's grid. The front culls for the back's engine, so it
+	// takes the back's -- the software renderer's is native whatever the upscale setting says.
+	SetCullGrid(EngineCullGrid());
 	// The front splits draws for the back's engine, so it leaves unsplit what that engine does.
 	m_unsplit_stencil_counter = back->m_unsplit_stencil_counter;
 }
@@ -285,7 +415,15 @@ bool GSFrontState::IsCoverageAlphaSupported()
 		else if (!GSIsHardwareRenderer())
 			m_cov_answer = true; // SW: IsCoverageAlpha() alone
 		else
-			m_cov_answer = m_back->IsRTWrittenLive(m_context->ALPHA) && g_gs_device->Features().aa1;
+		{
+			// The HW answer is two roads: the vertex-shader expansion, and -- for lines only --
+			// the coverage the pixel runs carry on their own vertex alpha. AA1LineCoverageFromPixelRuns()
+			// reads the primclass off the back object for the same reason everything else here
+			// does: it is the last executed draw's class, which is what a single object would see.
+			const bool pixel_runs = m_back->AA1LineCoverageFromPixelRunsLive(PRIM->TME, m_context->TEX0.TCC);
+			m_cov_answer = m_back->IsRTWrittenLive(m_context->ALPHA) &&
+						   (g_gs_device->Features().aa1 || pixel_runs);
+		}
 	}
 
 	return m_cov_answer;
@@ -496,7 +634,10 @@ void GSState::ResetDrawBufferIdx()
 		if (m_index_buffers[i].tail > 0 || i == m_current_buffer_idx)
 		{
 			if (m_index_buffers[i].tail == 0)
+			{
 				m_env_buffers[i].draw_rect = GSVector4i::zero();
+				m_env_buffers[i].native_draw_rect = GSVector4i::zero();
+			}
 
 			if (entry_ptr == i && (m_index_buffers[i].tail > 0 || i == m_current_buffer_idx))
 			{
@@ -570,6 +711,7 @@ void GSState::ResetDrawBufferIdx()
 	{
 		m_dirty_gs_regs = m_env_buffers[m_current_buffer_idx].m_dirty_regs;
 		temp_draw_rect = m_env_buffers[m_current_buffer_idx].draw_rect;
+		temp_native_draw_rect = m_env_buffers[m_current_buffer_idx].native_draw_rect;
 	}
 }
 
@@ -852,6 +994,7 @@ void GSState::FlushBuffers(bool flush_base_only, bool use_flush_reason, GSFlushR
 			m_backed_up_ctx = m_env_buffers[m_current_buffer_idx].m_backed_up_ctx;
 			m_dirty_gs_regs = m_env_buffers[m_current_buffer_idx].m_dirty_regs;
 			temp_draw_rect = m_env_buffers[m_current_buffer_idx].draw_rect;
+			temp_native_draw_rect = m_env_buffers[m_current_buffer_idx].native_draw_rect;
 
 			std::memcpy(&m_prev_env, &m_env_buffers[m_current_buffer_idx].m_env, 88);
 			std::memcpy(&m_prev_env.CTXT[0], &m_env_buffers[m_current_buffer_idx].m_env.CTXT[0], 96);
@@ -943,6 +1086,7 @@ void GSState::PushBuffer()
 
 		m_current_buffer_idx = m_used_buffers_idx;
 		temp_draw_rect = GSVector4i::zero();
+		temp_native_draw_rect = GSVector4i::zero();
 		m_dirty_gs_regs = 0;
 		m_used_buffers_idx++;
 		m_recent_buffer_switch = true;
@@ -1080,6 +1224,7 @@ bool GSState::CanBufferNewDraw()
 				m_vertex->tail += copy_amt;
 				m_backed_up_ctx = m_env_buffers[i].m_backed_up_ctx;
 				temp_draw_rect = m_env_buffers[i].draw_rect;
+				temp_native_draw_rect = m_env_buffers[i].native_draw_rect;
 				m_env_buffers[i].m_dirty_regs = 0;
 				std::memcpy(&m_prev_env, &m_env_buffers[i].m_env, 88);
 				std::memcpy(&m_prev_env.CTXT[0], &m_env_buffers[i].m_env.CTXT[0], 96);
@@ -1201,6 +1346,7 @@ void GSState::SetDrawBuffDirty()
 {
 	m_env_buffers[m_current_buffer_idx].m_dirty_regs = m_dirty_gs_regs;
 	m_env_buffers[m_current_buffer_idx].draw_rect = temp_draw_rect;
+	m_env_buffers[m_current_buffer_idx].native_draw_rect = temp_native_draw_rect;
 }
 
 void GSState::ResetHandlers()
@@ -1301,6 +1447,12 @@ void GSState::ResetPCRTC()
 void GSState::UpdateSettings(const Pcsx2Config::GSOptions& old_config)
 {
 	m_mipmap = GSConfig.Mipmap;
+
+	// The grid reads the upscale, the half-pixel-offset mode and draw buffering, and a per-game
+	// GameDB value arrives through this same settings apply after boot. Re-derive it on every
+	// change rather than listing which changes matter. GS.cpp updates the renderer before the
+	// front parser, so the front copies a grid that is already current.
+	SetCullGrid(EngineCullGrid());
 
 	// Only the object owning local memory owns the shadow. UpdateSettings runs on both halves
 	// of the pipelined split (GS.cpp), and the front's accessors all resolve to the back, so
@@ -2056,14 +2208,17 @@ void GSState::GIFPackedRegHandlerNOP(const GIFPackedReg* RESTRICT r)
 bool GSState::s_fused_kick_use_kernel = true;
 
 // The kernel decides every prim with the scalar-outcode cull (GSVertexKick.h),
-// which is exact only for the shapes VertexKickDirect also takes it for: triangle
-// and sprite classes at native res with no AA1 coverage expansion. Everything else
-// keeps the per-vertex path, which still has the legacy NEON CullTest behind it.
+// which is exact only for the shapes VertexKickDirect also takes it for: a
+// triangle or sprite class that has a cull grid, with no AA1 coverage expansion.
+// Everything else keeps the per-vertex path, which still has the legacy NEON
+// CullTest behind it. The sprite class has no grid away from native, so sprites
+// still leave the kernel there; the triangle classes no longer do.
 template <u32 prim>
 __fi bool GSState::KickKernelApplies()
 {
+	constexpr int primclass = GSUtil::GetPrimClass(prim);
 	const bool aa1_expand = PRIM->AA1 && IsCoverageAlphaSupported();
-	return m_nativeres && !aa1_expand;
+	return m_cull_grid.ShiftFor<primclass>() != 0 && !aa1_expand;
 }
 
 // Whether the two-pass kernel (GSVertexKickKernel.h) carries this prim type at
@@ -2289,6 +2444,10 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 	// m_v is written by whichever path kicks the batch's last vertex: the kernel
 	// from its own parse, the seam from KickPackedOneLegacy's.
 	inv.last_out = &m_v;
+	// Config-level and so genuinely call-invariant, unlike the cull grid and the
+	// cull bounds below: a seam kick can flush, but it cannot turn draw buffering
+	// on or off.
+	inv.track_native_rect = m_track_native_draw_rect;
 	if constexpr (!GSVertexKernels::LayoutIsContiguousTriple(layout))
 		inv.off = m_packed_layout;
 
@@ -2425,7 +2584,10 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 
 		// Re-read across the seam: see the comment on inv above.
 		inv.xyof = m_xyof;
-		inv.bounds = m_cull_bounds_band;
+		// The kernel only carries triangle strips/lists and sprites, and only when
+		// the class has a grid, so this is the same choice MakeKickMirror makes.
+		inv.grid = m_cull_grid;
+		inv.bounds = (inv.grid.shift == 4) ? m_cull_bounds_band : m_cull_bounds_raw;
 		inv.shade = (PRIM->TME ? 1u : 0u) | (PRIM->FST ? 2u : 0u) | (PRIM->IIP ? 4u : 0u);
 		inv.sprite_q_fix = (prim == GS_SPRITE) && (m_env.PRIM.FST == 0);
 		// A carrying layout's carry is re-read here for the same reason the cull
@@ -2443,8 +2605,9 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 		// not a buffer member, folded here under one scissor clamp exactly as
 		// VertexKickCursor::Store does it.
 		u32 acc_state = GSVertexKickKernel::kAccEmpty;
+		GSVector4i native_acc_rect = GSVector4i::zero();
 		const GSVector4i acc_rect = GSVertexKickKernel::RunChunk<prim, layout>(r + k * stride, chunk,
-			m_vertex, m_index, m_kick_side_xyp, m_kick_side_meta, inv, &acc_state);
+			m_vertex, m_index, m_kick_side_xyp, m_kick_side_meta, inv, &acc_state, &native_acc_rect);
 
 		if (acc_state != GSVertexKickKernel::kAccEmpty)
 		{
@@ -2452,6 +2615,14 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 										  acc_rect :
 										  temp_draw_rect.runion(acc_rect);
 			temp_draw_rect = merged.rintersect(m_context->scissor.in);
+
+			if (inv.track_native_rect)
+			{
+				const GSVector4i nat = (acc_state == GSVertexKickKernel::kAccReplace) ?
+				                           native_acc_rect :
+				                           temp_native_draw_rect.runion(native_acc_rect);
+				temp_native_draw_rect = nat.rintersect(m_context->scissor.in);
+			}
 		}
 
 		k += chunk;
@@ -3630,6 +3801,7 @@ void GSState::FlushDraw(GSFlushReason reason)
 
 		m_dirty_gs_regs = 0;
 		temp_draw_rect = GSVector4i::zero();
+		temp_native_draw_rect = GSVector4i::zero();
 	}
 
 	m_state_flush_reason = GSFlushReason::UNKNOWN;
@@ -3930,6 +4102,7 @@ void GSState::FlushPrim()
 		std::memcpy(&rec.next_env, &m_env, sizeof(rec.next_env));
 		rec.next_v = m_v;
 		rec.draw_rect = temp_draw_rect;
+		rec.native_draw_rect = temp_native_draw_rect;
 		rec.vertex = &node->vb;
 		rec.index = &node->ib;
 		rec.node = node;
@@ -4002,7 +4175,7 @@ void GSState::FlushPrim()
 				m_vertex->xy[i & 3] = v;
 				const int wx = static_cast<int>(m_vertex->buff[i].XYZ.X) - m_xyof.I32[0];
 				const int wy = static_cast<int>(m_vertex->buff[i].XYZ.Y) - m_xyof.I32[1];
-				m_vertex->kick_ring[i & 3] = GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, m_cull_bounds_band);
+				m_vertex->kick_ring[i & 3] = MakeKickMirror(GS_TRIANGLE_CLASS, wx, wy);
 				m_vertex->xy_tail = unused;
 			}
 		}
@@ -4025,6 +4198,7 @@ void GSState::ExecDrawRecord(const GSBackQueue::DrawRecord& rec)
 	std::memcpy(&m_env, &rec.next_env, sizeof(m_env));
 	m_v = rec.next_v;
 	temp_draw_rect = rec.draw_rect;
+	temp_native_draw_rect = rec.native_draw_rect;
 	m_vertex = rec.vertex;
 	m_index = rec.index;
 	m_backed_up_ctx = rec.backed_up_ctx;
@@ -5452,14 +5626,12 @@ void GSState::RefreshKickMirror()
 		return;
 
 	const int primclass = GSUtil::GetPrimClass(PRIM->PRIM);
-	const bool banded = (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS);
 
 	for (GSVertexKernels::CullMirrorEntry& e : m_vertex->kick_ring)
 	{
 		const int wx = static_cast<s32>(static_cast<u32>(e.xyp));
 		const int wy = static_cast<s32>(static_cast<u32>(e.xyp >> 32));
-		e = banded ? GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, m_cull_bounds_band) :
-		             GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, m_cull_bounds_raw);
+		e = MakeKickMirror(primclass, wx, wy);
 	}
 }
 
@@ -7597,13 +7769,26 @@ __noinline bool GSState::CheckOverlapVertsSlow(u32 n)
 			new_area = new_area.sra32<4>();
 			new_area = new_area.rintersect(m_context->scissor.in);
 
-			if (new_area.rintersect(m_env_buffers[m_current_buffer_idx].draw_rect).eq(new_area))
+			// Both operands are native-pixel footprints of the same PS2 geometry, so
+			// the answer cannot depend on the upscale. new_area already is one -- it
+			// is built from the raw window coordinates and shifted, at every scale.
+			// The buffered rect is native_draw_rect rather than draw_rect, which
+			// above native keeps its raw sub-texel extent and takes every prim the
+			// finer cull grid let through, including the ones that paint no native
+			// pixel at all. See GSVertexKernels::PrimNativeDrawRect; at native
+			// resolution the two rects are the same value, so the kick does not
+			// spend anything keeping a second copy of it and this reads draw_rect.
+			const GSDrawBufferEnv& cur_buf = m_env_buffers[m_current_buffer_idx];
+			const GSVector4i cur_rect = m_track_native_draw_rect ? cur_buf.native_draw_rect : cur_buf.draw_rect;
+			if (new_area.rintersect(cur_rect).eq(new_area))
 				return true;
 				
 			if (m_current_buffer_idx < (m_used_buffers_idx - 1))
 			{
-				GSDrawingEnvironment& next_env = m_env_buffers[m_current_buffer_idx + 1].m_env;
-				if (next_env.CTXT[next_env.PRIM.CTXT].TEST.ATE && next_env.CTXT[next_env.PRIM.CTXT].TEST.ATST > ATST_ALWAYS && !new_area.rintersect(m_env_buffers[m_current_buffer_idx + 1].draw_rect).rempty())
+				const GSDrawBufferEnv& next_buf = m_env_buffers[m_current_buffer_idx + 1];
+				const GSDrawingEnvironment& next_env = next_buf.m_env;
+				const GSVector4i next_rect = m_track_native_draw_rect ? next_buf.native_draw_rect : next_buf.draw_rect;
+				if (next_env.CTXT[next_env.PRIM.CTXT].TEST.ATE && next_env.CTXT[next_env.PRIM.CTXT].TEST.ATST > ATST_ALWAYS && !new_area.rintersect(next_rect).rempty())
 					return true;
 			}
 		}
@@ -7762,11 +7947,9 @@ __forceinline void GSState::VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const
 	// computed on the scalar side (dual-issues against the NEON parse). The full
 	// 32-bit offset lane is subtracted so the values match xy exactly.
 	{
-		constexpr bool banded = (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS);
 		const int wx = static_cast<int>(xraw) - m_xyof.I32[0];
 		const int wy = static_cast<int>(yraw) - m_xyof.I32[1];
-		c.vb->kick_ring[xy_tail & 3] =
-			GSVertexKernels::MakeCullMirrorEntry<banded>(wx, wy, banded ? m_cull_bounds_band : m_cull_bounds_raw);
+		c.vb->kick_ring[xy_tail & 3] = MakeKickMirror(primclass, wx, wy);
 	}
 
 	// Backup head for triangle fans so we can read it later, otherwise it'll get lost after the 4th vertex.
@@ -7806,12 +7989,13 @@ __forceinline void GSState::VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const
 		const bool aa1_expand = rounded_class && PRIM->AA1 && IsCoverageAlphaSupported();
 
 		// Scalar-outcode decision (see GSVertexKick.h) for the hot shapes:
-		// point/line always, triangle strips/lists and sprites at native res
-		// without AA1 expansion. Rejected prims never touch NEON; accepted prims
-		// compute the bbox exactly as the legacy kernel does. Fans keep the
-		// legacy path (the head vertex sits outside the ring window).
+		// point/line always, triangle strips/lists and sprites whenever the class
+		// has a cull grid and there is no AA1 expansion. Rejected prims never touch
+		// NEON; accepted prims compute the bbox exactly as the legacy kernel does.
+		// Fans keep the legacy path (the head vertex sits outside the ring window).
 		constexpr bool fast_class = (prim != GS_TRIANGLEFAN);
-		const bool fast_cull = fast_class && (!rounded_class || (m_nativeres && !aa1_expand));
+		const bool fast_cull =
+			fast_class && (!rounded_class || (m_cull_grid.ShiftFor<primclass>() != 0 && !aa1_expand));
 		if (fast_cull)
 		{
 			const GSVertexKernels::CullMirrorEntry& e0 = c.vb->kick_ring[(xy_tail - 1) & 3];
@@ -7826,7 +8010,7 @@ __forceinline void GSState::VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const
 				const GSVector4i v0 = c.vb->xy[(xy_tail - 1) & 3];
 				const GSVector4i v1 = c.vb->xy[(xy_tail - 2) & 3];
 				const GSVector4i v2 = c.vb->xy[(xy_tail - 3) & 3];
-				bbox = GSVertexKernels::ComputeCullBBox<n, primclass>(v0, v1, v2, m_nativeres, aa1_expand);
+				bbox = GSVertexKernels::ComputeCullBBox<n, primclass>(v0, v1, v2, m_cull_grid, aa1_expand);
 			}
 		}
 		else
@@ -7835,7 +8019,7 @@ __forceinline void GSState::VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const
 			const GSVector4i v1 = c.vb->xy[(xy_tail - 2) & 3];
 			const GSVector4i v2 = (prim == GS_TRIANGLEFAN) ? c.vb->xyhead : c.vb->xy[(xy_tail - 3) & 3];
 
-			skip |= GSVertexKernels::CullTest<n, primclass>(v0, v1, v2, m_context->scissor.cull, m_nativeres, aa1_expand, bbox);
+			skip |= GSVertexKernels::CullTest<n, primclass>(v0, v1, v2, m_context->scissor.cull, m_cull_grid, aa1_expand, bbox);
 		}
 	}
 
@@ -8014,14 +8198,21 @@ __forceinline void GSState::VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const
 	// Update rectangle for the current draw (accumulated in the cursor, folded
 	// into temp_draw_rect with one scissor clamp at every seam). Needs exclusive
 	// endpoints.
-	const GSVector4i draw_rect = bbox.sra32<4>() + GSVector4i(0, 0, 1, 1);
+	// The native-grid twin is inside each arm rather than computed once above
+	// them, so that with draw buffering off the two arms are exactly the code that
+	// was here before: no select, no second union, nothing live across the loop.
+	const GSVector4i draw_rect = GSVertexKernels::PrimDrawRect(bbox);
 	if (c.acc_state != 0)
 	{
 		c.acc_rect = c.acc_rect.runion(draw_rect);
+		if (c.track_native)
+			c.native_acc_rect = c.native_acc_rect.runion(GSVertexKernels::PrimNativeDrawRectOrNone<primclass>(bbox));
 	}
 	else
 	{
 		c.acc_rect = draw_rect;
+		if (c.track_native)
+			c.native_acc_rect = GSVertexKernels::PrimNativeDrawRectOrNone<primclass>(bbox);
 		c.acc_state = (c.itail == n) ? 2 : 1;
 	}
 
@@ -8720,6 +8911,41 @@ bool GSState::IsCoverageAlpha()
 bool GSState::IsCoverageAlphaFixedOne()
 {
 	return IsCoverageAlpha() && !PRIM->ABE && !IsCoverageAlphaSupported();
+}
+
+bool GSState::AA1LineCoverageFromPixelRuns()
+{
+	return AA1LineCoverageFromPixelRunsLive(PRIM->TME, m_context->TEX0.TCC);
+}
+
+// The texture state is a parameter for the same reason IsRTWrittenLive's ALPHA is: the split
+// front object evaluates this at kick time with ITS live registers, while the primclass below
+// stays the back object's last-executed draw -- the mixed read a single object performs.
+bool GSState::AA1LineCoverageFromPixelRunsLive(bool tme, bool tcc)
+{
+	// Whether an AA1 LINE draw can carry the GS's per-pixel coverage on the pixel-run rectangles
+	// the hardware renderer already builds a line out of (GSRendererHW::LinesToPixelRuns).
+	//
+	// The coverage travels as the pixel's alpha, because that is what the GS does with it: the
+	// coverage REPLACES the alpha, and everything downstream -- the blend factor, the alpha test,
+	// what lands in memory -- reads the replaced value (gs-prim Results 4, 7, 8 and 9). So a
+	// rectangle whose vertex alpha is the coverage needs no shader work, no vertex-shader
+	// expansion and no feedback loop, which is the whole difference from the HWAA1 road.
+	//
+	// That only holds while the alpha reaching the fragment IS the vertex alpha. A texture that
+	// contributes alpha rewrites it, and the coverage would be thrown away with it, so those
+	// draws decline and keep the un-antialiased pixels they get today.
+	if (m_vt.m_primclass != GS_LINE_CLASS)
+		return false;
+
+	if (g_gs_device->Features().aa1)
+		return false; // the vertex-shader expansion owns AA1 wherever it is available
+
+	if (tme && tcc)
+		return false;
+
+	// Turning safe features off turns the whole pixel-run correction off, coverage included.
+	return !GSConfig.UserHacks_DisableSafeFeatures;
 }
 
 bool GSState::IsCoverageAlphaSupported()

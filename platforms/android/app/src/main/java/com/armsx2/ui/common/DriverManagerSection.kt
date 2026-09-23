@@ -44,7 +44,7 @@ import kotlinx.coroutines.withContext
 
 /**
  * Vulkan custom-driver manager: pick the system driver or an installed one, download
- * fresh builds from the bundled sources (K11MCH1 / MrPurple / StevenMXZ / crueter),
+ * fresh builds from the bundled sources (ARMSX2 / K11MCH1 / MrPurple / StevenMXZ / crueter),
  * import a local .zip, or delete an installed driver. Self-contained (plain Material3)
  * so it drops into both the full Settings renderer tab and the in-game renderer pane.
  * Selecting a driver only takes effect on the next renderer init — the caller shows an

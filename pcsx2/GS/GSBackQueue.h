@@ -241,6 +241,10 @@ namespace GSBackQueue
 		GSDrawingEnvironment next_env;
 		GSVertex next_v;
 		GSVector4i draw_rect; // temp_draw_rect at flush
+		// temp_native_draw_rect at flush. Carried beside draw_rect, and installed
+		// beside it, so the shipped rect and its native-grid twin cannot drift
+		// apart on the pipelined path.
+		GSVector4i native_draw_rect;
 		VertexBuff* vertex; // = &node->vb/&node->ib on the record path
 		IndexBuff* index;
 		DrawNode* node; // released by the consumer after the tail runs (null in tests)
@@ -295,8 +299,17 @@ namespace GSBackQueue
 		SlotT* BeginPush()
 		{
 			const u32 tail = m_tail.load(std::memory_order_relaxed);
-			if (tail - m_head.load(std::memory_order_acquire) == kCount)
-				return nullptr;
+			// m_cached_head is a shadow of the consumer's cursor that only ever
+			// lags, so a full reading off it is worth re-testing against the
+			// real thing while a not-full reading is always true. That keeps the
+			// consumer's line out of the push path: it is re-read once per
+			// kCount pushes instead of once per push.
+			if (tail - m_cached_head == kCount)
+			{
+				m_cached_head = m_head.load(std::memory_order_acquire);
+				if (tail - m_cached_head == kCount)
+					return nullptr;
+			}
 			return &m_slots[tail & (kCount - 1)];
 		}
 
@@ -310,8 +323,16 @@ namespace GSBackQueue
 		SlotT* Peek()
 		{
 			const u32 head = m_head.load(std::memory_order_relaxed);
-			if (head == m_tail.load(std::memory_order_acquire))
-				return nullptr;
+			// Mirror of BeginPush: an empty reading off the shadow is re-tested,
+			// a non-empty one is always true. The consumer runs behind whenever
+			// there is work, so the shadow answers nearly every call and the
+			// producer's line is touched about once per drained batch.
+			if (head == m_cached_tail)
+			{
+				m_cached_tail = m_tail.load(std::memory_order_acquire);
+				if (head == m_cached_tail)
+					return nullptr;
+			}
 			return &m_slots[head & (kCount - 1)];
 		}
 
@@ -322,8 +343,13 @@ namespace GSBackQueue
 
 	private:
 		std::unique_ptr<SlotT[]> m_slots;
+		// One line per side: each holds that side's own cursor and its shadow of
+		// the other's, so neither side writes a line the other reads on its fast
+		// path. The shadows are plain u32 — they are private to their owner.
 		alignas(64) std::atomic<u32> m_head{0}; // consumer cursor
+		u32 m_cached_tail = 0; // consumer's shadow of m_tail
 		alignas(64) std::atomic<u32> m_tail{0}; // producer cursor
+		u32 m_cached_head = 0; // producer's shadow of m_head
 	};
 
 	// Tagged slot sized for the largest record (DRAW). All records are trivially

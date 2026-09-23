@@ -12,6 +12,11 @@
 Dump file format:
 - [0xFFFFFFFF] [Header] [state size/4] [state data/size] [PMODE/0x2000] [id/1] [data/?] .. [id/1] [data/?]
 
+The [Header] above is a length-prefixed block: [header_size/4] then header_size bytes
+holding GSDumpHeader, the serial and the screenshot, each located by an offset field.
+Nothing in the format addresses bytes past the screenshot, so a reader that does not
+know about GSDumpProvenance skips it and loads the dump as before.
+
 Transfer data (id == 0)
 - [0/1] [path index/1] [size/4] [data/size]
 
@@ -38,6 +43,30 @@ struct GSDumpHeader
 	u32 screenshot_height;
 	u32 screenshot_offset;
 	u32 screenshot_size;
+};
+
+/// Appended to the header block, after the screenshot. It records how the dump was
+/// made rather than what it contains, and it exists because the two are not visible
+/// in each other: a dump captured before the capture path read the texture cache back
+/// holds stale local memory wherever the hardware renderer drew, and a dump captured
+/// after it holds the real thing, and the files look alike from the outside.
+///
+/// Absent or with the wrong magic means "written before this record existed", which is
+/// not the same as "targets were not read back" -- it is "we do not know".
+struct GSDumpProvenance
+{
+	static constexpr u32 MAGIC = 0x564F5250; // 'PROV'
+
+	enum Flags : u32
+	{
+		/// Every live render target was read back into local memory before the state
+		/// was frozen, so the dump's memory is what the game had, not what the
+		/// hardware renderer happened to leave behind.
+		TargetsReadBack = 1u << 0,
+	};
+
+	u32 magic;
+	u32 flags;
 };
 #pragma pack(pop)
 

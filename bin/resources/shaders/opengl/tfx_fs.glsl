@@ -106,13 +106,15 @@ layout(std140, binding = 0) uniform cb21
 
 	float ScaledScaleFactor;
 	float RcpScaleFactor;
-	float _pad0_cb1;
+	float RtScaleFactor; // the render target's scale; ScaledScaleFactor is the texture's
 	float _pad1_cb1;
 
 	float LineCovScale;
 	uint SubstituteAlphaKeep;
 	uint SubstituteAlphaValue;
-	float _pad2_cb1;
+	uint DitherPhase;
+
+	vec4 NativeTexelGrid;
 };
 
 in SHADER
@@ -925,6 +927,23 @@ vec4 ps_color()
 	vec2 st_int = PSin.t_int.zw;
 #endif
 
+#if PS_NATIVE_TEXEL_GRID
+	// A sprite that MINIFIES a GS-memory texture under a nearest sampler reads the texel its NATIVE
+	// pixel read, not the one this device pixel's own sample point lands on. The console samples a
+	// sprite once per pixel, so at two source texels per native pixel it never displays the texels
+	// in between, and at 2x those unreachable texels land on every second device column. See
+	// GSNativeTexelGridPolicy.h for the whole rule.
+	//
+	// NativeTexelGrid.xy is the source step per NATIVE pixel in these same coordinates -- zero on
+	// an axis that does not minify, which makes that axis' term vanish -- and .z is the scale. The
+	// convention is the integer pixel index, not the fragment centre: a device pixel samples where
+	// native coordinate pixel/scale samples, and its owner native pixel sampled at the floor of
+	// that. Hence floor the coordinate first, and divide rather than multiply by a reciprocal,
+	// which can land a hair under an integer where the divide is exact.
+	vec2 native_here = floor(gl_FragCoord.xy) / NativeTexelGrid.z;
+	st += NativeTexelGrid.xy * (floor(native_here) - native_here);
+#endif
+
 #if !NEEDS_TEX
 	vec4 T = vec4(0.0);
 #elif PS_CHANNEL_FETCH == 1
@@ -1010,7 +1029,19 @@ void ps_dither(inout vec3 C, float As)
 	#if PS_DITHER == 2
 		ivec2 fpos = ivec2(gl_FragCoord.xy);
 	#else
-		ivec2 fpos = ivec2(gl_FragCoord.xy * RcpScaleFactor);
+		// The dither matrix indexes by NATIVE pixel, so reduce the device pixel to the one
+		// that owns it on both axes -- same fix and same reasoning as the SCANMSK test below:
+		// floor before dividing, because gl_FragCoord is coord + 0.5, and a true divide by S
+		// (the RENDER TARGET's scale: the texture's, in ScaledScaleFactor, is 1 for a texture read
+		// from GS memory) rather than a reciprocal multiply, which can land a hair under an integer
+		// where the divide is exact.
+		// DitherPhase then rotates the matrix under that index. At a fractional S some native
+		// pixels own one more device pixel than their neighbours, so their matrix entry covers
+		// more of the screen than the others; the phase decides which entries those are, and
+		// the CPU picks the quietest. It is zero at every whole S, where no cell is wider.
+		float dither_scale = RtScaleFactor;
+		ivec2 fpos = ivec2(floor(gl_FragCoord.xy) / dither_scale)
+		           + ivec2(DitherPhase & 3u, (DitherPhase >> 2) & 3u);
 	#endif
 		float value = DitherMatrix[fpos.y&3][fpos.x&3];
 
@@ -1271,8 +1302,15 @@ void ps_main()
 #endif
 
 #if PS_SCANMSK & 2
-	// fail depth test on prohibited lines
-	if ((int(gl_FragCoord.y) & 1) == (PS_SCANMSK & 1))
+	// fail depth test on prohibited lines. SCANMSK masks NATIVE scanlines, so reduce the device row
+	// to the line that owns it -- floor(row / S) -- before the parity test. Two traps, both silent:
+	// gl_FragCoord.y is row + 0.5, and at a fractional scale that half puts some rows in the line
+	// above their owner; and a multiply by RcpScaleFactor can land a hair under an integer where
+	// row / S is exactly integral. S is RtScaleFactor, the render target's
+	// scale: ScaledScaleFactor is the texture's, which is 1 for a texture read from GS memory.
+	// (The dither path above uses the same floor-then-divide fix.)
+	float scanmsk_scale = RtScaleFactor;
+	if ((int(floor(gl_FragCoord.y) / scanmsk_scale) & 1) == (PS_SCANMSK & 1))
 		discard;
 #endif
 

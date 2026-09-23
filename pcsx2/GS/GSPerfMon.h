@@ -61,6 +61,12 @@ public:
 		// stats.json without reconstructing it from a draw stream.
 		RenderPassAreaPixels,
 
+		// Draws that read their texture on the native pixel grid because a sprite minifies a
+		// GS-memory texture under a nearest sampler (GSNativeTexelGridPolicy.h). The road is
+		// narrow by design and the census is the question it exists to answer: how many draws a
+		// frame, in how many titles, actually take it. Always zero at native scale.
+		NativeTexelGridDraws,
+
 		CounterLast,
 
 		// Reused counters for HW.

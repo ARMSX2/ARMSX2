@@ -77,6 +77,7 @@ namespace GameDatabaseSchema
 		NativeScaling,
 		TexturePreloading,
 		Deinterlace,
+		FieldShift,
 		CPUSpriteRenderBW,
 		CPUSpriteRenderLevel,
 		CPUCLUTRender,
@@ -84,6 +85,9 @@ namespace GameDatabaseSchema
 		GPUPaletteConversion,
 		MinimumBlendingLevel,
 		MaximumBlendingLevel,
+		// The blending-level ceiling that only applies while the device has to read the render
+		// target from a per-draw copy of it. See GS/Renderers/Common/GSCopyRoadBlendingPolicy.h.
+		CopyRoadMaximumBlendingLevel,
 		RecommendedBlendingLevel,
 		RecommendedAccurateAlphaTest,
 		RecommendedHWAA1,

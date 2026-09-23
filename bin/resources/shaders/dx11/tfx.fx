@@ -80,6 +80,7 @@
 #define PS_TCOFFSETHACK 0
 #define PS_POINT_SAMPLER 0
 #define PS_REGION_RECT 0
+#define PS_NATIVE_TEXEL_GRID 0
 #define PS_SHUFFLE 0
 #define PS_SHUFFLE_SAME 0
 #define PS_PROCESS_BA 0
@@ -279,12 +280,13 @@ cbuffer cb1
 	float4x4 DitherMatrix;
 	float ScaledScaleFactor;
 	float RcpScaleFactor;
-	float _pad0_cb1;
+	float RtScaleFactor; // the render target's scale; ScaledScaleFactor is the texture's
 	float _pad1_cb1;
 	float LineCovScale;
 	uint SubstituteAlphaKeep;
 	uint SubstituteAlphaValue;
-	float _pad2_cb1;
+	uint DitherPhase;
+	float4 NativeTexelGrid;
 };
 
 float4 RtLoad(int2 xy)
@@ -1050,6 +1052,23 @@ float4 ps_color(PS_INPUT input)
 	float2 st_int = input.ti.zw;
 #endif
 
+#if PS_NATIVE_TEXEL_GRID
+	// A sprite that MINIFIES a GS-memory texture under a nearest sampler reads the texel its NATIVE
+	// pixel read, not the one this device pixel's own sample point lands on. The console samples a
+	// sprite once per pixel, so at two source texels per native pixel it never displays the texels
+	// in between, and at 2x those unreachable texels land on every second device column. See
+	// GSNativeTexelGridPolicy.h for the whole rule.
+	//
+	// NativeTexelGrid.xy is the source step per NATIVE pixel in these same coordinates -- zero on
+	// an axis that does not minify, which makes that axis' term vanish -- and .z is the scale. The
+	// convention is the integer pixel index, not the fragment centre: a device pixel samples where
+	// native coordinate pixel/scale samples, and its owner native pixel sampled at the floor of
+	// that. Hence floor the coordinate first, and divide rather than multiply by a reciprocal,
+	// which can land a hair under an integer where the divide is exact.
+	float2 native_here = floor(input.p.xy) / NativeTexelGrid.z;
+	st += NativeTexelGrid.xy * (floor(native_here) - native_here);
+#endif
+
 #if PS_CHANNEL_FETCH == 1
 	float4 T = fetch_red(int2(input.p.xy + ChannelShuffleOffset));
 #elif PS_CHANNEL_FETCH == 2
@@ -1140,7 +1159,21 @@ void ps_dither(inout float3 C, float As, float2 pos_xy)
 		if (PS_DITHER == 2)
 			fpos = int2(pos_xy);
 		else
-			fpos = int2(pos_xy * RcpScaleFactor);
+		{
+			// The dither matrix indexes by NATIVE pixel, so reduce the device pixel to the one
+			// that owns it on both axes -- same fix and same reasoning as the SCANMSK test below:
+			// floor before dividing, because pos_xy is coord + 0.5, and a true divide by S
+			// (the RENDER TARGET's scale: the texture's, in ScaledScaleFactor, is 1 for a texture read
+			// from GS memory) rather than a reciprocal multiply, which can land a hair under an integer
+			// where the divide is exact.
+			// DitherPhase then rotates the matrix under that index. At a fractional S some native
+			// pixels own one more device pixel than their neighbours, so their matrix entry covers
+			// more of the screen than the others; the phase decides which entries those are, and
+			// the CPU picks the quietest. It is zero at every whole S, where no cell is wider.
+			const float dither_scale = RtScaleFactor;
+			fpos = int2(floor(pos_xy) / dither_scale)
+			     + int2(DitherPhase & 3u, (DitherPhase >> 2) & 3u);
+		}
 
 		float value = DitherMatrix[fpos.x & 3][fpos.y & 3];
 		
@@ -1412,8 +1445,15 @@ void ps_main(PS_INPUT input)
 
 	if (PS_SCANMSK & 2)
 	{
-		// fail depth test on prohibited lines
-		if ((int(input.p.y) & 1) == (PS_SCANMSK & 1))
+		// fail depth test on prohibited lines. SCANMSK masks NATIVE scanlines, so reduce the device
+		// row to the line that owns it -- floor(row / S) -- before the parity test. Two traps, both
+		// silent: input.p.y is row + 0.5, and at a fractional scale that half puts some rows in the
+		// line above their owner; and a multiply by RcpScaleFactor can land a hair under an integer
+		// where row / S is exactly integral. S is RtScaleFactor, the render target's
+		// scale: ScaledScaleFactor is the texture's, which is 1 for a texture read from GS memory.
+		// (The dither path above uses the same floor-then-divide fix.)
+		const float scanmsk_scale = RtScaleFactor;
+		if ((int(floor(input.p.y) / scanmsk_scale) & 1) == (PS_SCANMSK & 1))
 			discard;
 	}
 

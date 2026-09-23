@@ -79,13 +79,15 @@ namespace
 		{"UserHacks_SkipDraw_End", GSHWFixId::SkipDrawEnd, GSUserHackOverride::MaxCount},
 		{"texture_preloading", GSHWFixId::TexturePreloading, GSUserHackOverride::MaxCount},
 		{"deinterlace_mode", GSHWFixId::Deinterlace, GSUserHackOverride::MaxCount},
+		{"field_shift", GSHWFixId::FieldShift, GSUserHackOverride::MaxCount},
 		{"HWDownloadMode", GSHWFixId::HWDownloadMode, GSUserHackOverride::MaxCount},
 
-		// One control, two database fixes: the database clamps the blend level from
-		// both ends, so claiming the setting has to silence both clamps or the player
-		// still gets moved.
+		// One control, three database fixes: the database clamps the blend level from
+		// both ends and caps it again on the render-target-copy road, so claiming the
+		// setting has to silence all three clamps or the player still gets moved.
 		{"accurate_blending_unit", GSHWFixId::MinimumBlendingLevel, GSUserHackOverride::MaxCount},
 		{"accurate_blending_unit", GSHWFixId::MaximumBlendingLevel, GSUserHackOverride::MaxCount},
+		{"accurate_blending_unit", GSHWFixId::CopyRoadMaximumBlendingLevel, GSUserHackOverride::MaxCount},
 	};
 
 	// ⚠️ These are the settings keys, NOT GamefixOptions::GetGameFixName(), which

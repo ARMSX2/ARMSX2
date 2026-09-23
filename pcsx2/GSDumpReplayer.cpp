@@ -104,6 +104,16 @@ bool GSDumpReplayer::Initialize(const char* filename, Error* error)
 
 	Console.WriteLn("(GSDumpReplayer) Read file in %.2f ms.", timer.GetTimeMilliseconds());
 
+	// Worth a line of its own: a dump captured before the capture path read the texture
+	// cache back holds stale local memory wherever the hardware renderer drew, and every
+	// renderer that honours that memory will render the residue without complaining.
+	// Nothing else in the file distinguishes the two, so say which this one is.
+	Console.WriteLn("(GSDumpReplayer) Local memory: %s.",
+		!s_dump_file->HasProvenance() ?
+			"the dump does not say whether render targets were read back before the snapshot" :
+			(s_dump_file->TargetsWereReadBack() ? "render targets were read back before the snapshot" :
+												  "render targets were NOT read back before the snapshot"));
+
 	// We replace all CPUs.
 	Cpu = &GSDumpReplayerCpu;
 	psxCpu = &psxInt;

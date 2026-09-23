@@ -6,11 +6,15 @@
 #include "GS/Renderers/HW/GSDepthCoverage.h"
 #include "GS/Renderers/HW/GSDrawLog.h"
 #include "GS/Renderers/HW/GSLineWalk.h"
+#include "GS/Renderers/HW/GSPointPlace.h"
 #include "GS/Renderers/HW/GSSpriteEdgeSnap.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "GS/Renderers/Common/GSBlendConstantPolicy.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
+#include "GS/Renderers/Common/GSDateRoadPolicy.h"
+#include "GS/Renderers/Common/GSDeclaredLoopScopePolicy.h"
+#include "GS/Renderers/Common/GSNativeTexelGridPolicy.h"
 #include "GS/Renderers/Common/GSSelfReadCopyPolicy.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
@@ -20,6 +24,7 @@
 #include "common/BitUtils.h"
 #include "common/StringUtil.h"
 #include <bit>
+#include <limits>
 
 using PS_ATST  = GSShader::PS_ATST;
 using PS_AFAIL = GSShader::PS_AFAIL;
@@ -327,6 +332,33 @@ void GSRendererHW::Lines2Sprites()
 	}
 }
 
+void GSRendererHW::SnapPointsToNativePixel()
+{
+	// Moves every point onto the near boundary of the pixel the GS lights, which rounds to nearest
+	// rather than corner-sampling (GSPointPlace.h has the console measurement). At native
+	// resolution the point stays on the pixel it was already on, except at exactly half a pixel,
+	// where it moves to the one silicon draws. Above it, the snapped coordinate is what lets a
+	// whole-native-pixel figure land on the pixel's whole device block: the rounding is a step
+	// function, so it cannot come out of the draw's single vertex offset.
+	const int ofx = static_cast<int>(m_context->XYOFFSET.OFX);
+	const int ofy = static_cast<int>(m_context->XYOFFSET.OFY);
+
+	for (u32 i = 0; i < m_vertex->next; i++)
+	{
+		GSVertex& v = m_vertex->buff[i];
+		const int x = ofx + GSPointPlace::SnapToPixel(static_cast<int>(v.XYZ.X) - ofx);
+		const int y = ofy + GSPointPlace::SnapToPixel(static_cast<int>(v.XYZ.Y) - ofy);
+
+		// A coordinate within half a pixel of either end of the 16-bit range would wrap instead of
+		// moving, and wrapping puts the point somewhere else entirely. Those points are thousands
+		// of pixels off any target; leave them where they are.
+		if (static_cast<u32>(x) <= 0xFFFFu)
+			v.XYZ.X = static_cast<u16>(x);
+		if (static_cast<u32>(y) <= 0xFFFFu)
+			v.XYZ.Y = static_cast<u16>(y);
+	}
+}
+
 void GSRendererHW::ExpandLineIndices()
 {
 	const u32 process_count = (m_index->tail + 7) / 8 * 8;
@@ -395,9 +427,24 @@ namespace
 		const double v = a + (static_cast<double>(b) - a) * t;
 		return static_cast<T>(std::clamp(std::round(v), 0.0, max));
 	}
+
+	/// The alpha an AA1 pixel carries, given the pixel's own colour and the walk's 16-bit coverage.
+	///
+	/// The GS substitutes the coverage FOR the alpha rather than multiplying anything by it: with
+	/// blending off it always does, and with blending on only where the alpha is exactly 128
+	/// (gs-prim Results 4 and 7 -- one above the boundary switches it off, so the rule is equality
+	/// and not a threshold). The scanline reads the top 7 bits of the 16-bit value, which is why a
+	/// line sitting on a row of pixel centres comes back at 127 and not 128.
+	u32 LineCoverageAlpha(u32 rgba, int cov, bool abe)
+	{
+		if (abe && (rgba >> 24) != 128)
+			return rgba;
+
+		return (rgba & 0x00FFFFFFu) | (static_cast<u32>(cov >> 9) << 24);
+	}
 } // namespace
 
-bool GSRendererHW::LinesToPixelRuns()
+GSRendererHW::LineRunResult GSRendererHW::LinesToPixelRuns(bool aa1)
 {
 	// Draws every line as rectangles over exactly the pixels the GS lights (GSLineWalk.h), one
 	// rectangle per run of pixels that share a minor coordinate, a colour and a fog value. Drawn as
@@ -412,8 +459,17 @@ bool GSRendererHW::LinesToPixelRuns()
 	// coordinate of its top-left corner, so at native resolution pixel i samples the line at i,
 	// which is where the software renderer evaluates it.
 	//
-	// Returns false with the draw untouched when the rectangles would not fit 16-bit indices, when
-	// nothing would be drawn, or when a group in the full-barrier draw list would end up empty.
+	// Refused leaves the draw untouched, for the caller to draw as expanded lines: the rectangles
+	// would not fit 16-bit indices, or a group in the full-barrier draw list would end up empty.
+	// NothingLit is the other thing entirely -- the GS walk lights no pixel for any line in the
+	// draw, so there is nothing to draw by any means.
+	//
+	// With aa1 set, the walk is the antialiased one: two pixels per step rather than one, each
+	// carrying the GS's coverage as its alpha (GSLineWalk::WalkAA1 and LineCoverageAlpha). The
+	// coverage varies per pixel, so runs only merge where it holds -- which is every axis-aligned
+	// line, and no other. At more than native scale the rectangle is still the native pixel's
+	// whole device block and the coverage is still the native value: the console's picture
+	// enlarged, which is the same answer every other pixel run gives.
 
 	const u32 line_count = m_index->tail / 2;
 	const int ofx = m_context->XYOFFSET.OFX;
@@ -428,6 +484,7 @@ bool GSRendererHW::LinesToPixelRuns()
 
 	const bool flat = !m_conf.vs.iip;
 	const bool fog = PRIM->FGE;
+	const bool abe = PRIM->ABE;
 
 	// Calls run(v0, v1, step_x, m0, dm, lo, hi, minor, rgba, fog) for each run of one line, after
 	// clipping to the representable range. lo/hi are the run's end pixels on the major axis.
@@ -459,12 +516,15 @@ bool GSRendererHW::LinesToPixelRuns()
 				run(v0, v1, step_x, m0, dm, clo, chi, minor, rgba, f);
 		};
 
-		GSLineWalk::Walk(x0, y0, x1, y1, [&](int x, int y) {
+		// cov < 0 means no antialiasing: the pixel keeps the colour the gradient gives it.
+		const auto pixel = [&](int x, int y, int cov) {
 			const int m = step_x ? x : y;
 			const int n = step_x ? y : x;
 			// dm is never zero here: a zero-length line lights nothing.
 			const s64 k = static_cast<s64>(m) * 16 - m0;
-			const u32 c = colour_varies ? LineGradient8(v0.RGBAQ.U32[0], v1.RGBAQ.U32[0], k, dm) : v1.RGBAQ.U32[0];
+			u32 c = colour_varies ? LineGradient8(v0.RGBAQ.U32[0], v1.RGBAQ.U32[0], k, dm) : v1.RGBAQ.U32[0];
+			if (cov >= 0)
+				c = LineCoverageAlpha(c, cov, abe);
 			const u32 fg = fog_varies ? LineGradient8(v0.FOG, v1.FOG, k, dm) : v1.FOG;
 			if (open && n == minor && c == rgba && fg == f)
 			{
@@ -478,8 +538,32 @@ bool GSRendererHW::LinesToPixelRuns()
 			minor = n;
 			rgba = c;
 			f = fg;
-		});
-		close();
+		};
+
+		if (aa1)
+		{
+			// An AA1 line lights two pixels per step, and they interleave: the walk's own pixel,
+			// then its neighbour on the other side of the exact line. Taking one side at a time
+			// keeps a single open run, so a line that holds one coverage for its whole length --
+			// every axis-aligned one -- comes out as two rectangles instead of two per pixel.
+			// Nothing depends on the order: within a line no two of these pixels coincide, since
+			// the two of a step differ by one on the minor axis and consecutive steps differ on
+			// the major.
+			for (int side = 0; side < 2; side++)
+			{
+				GSLineWalk::WalkAA1(x0, y0, x1, y1, [&](int x, int y, int cov, int s) {
+					if (s == side)
+						pixel(x, y, cov);
+				});
+				close();
+				open = false;
+			}
+		}
+		else
+		{
+			GSLineWalk::Walk(x0, y0, x1, y1, [&](int x, int y) { pixel(x, y, -1); });
+			close();
+		}
 	};
 
 	// The full-barrier draw list counts primitives per group. Each group's line count becomes its
@@ -506,7 +590,7 @@ bool GSRendererHW::LinesToPixelRuns()
 				if (--group_left == 0)
 				{
 					if (group_quads == 0)
-						return false;
+						return LineRunResult::Refused;
 					group_quads = 0;
 					if (++group < m_drawlist.size())
 						group_left = m_drawlist[group];
@@ -515,8 +599,35 @@ bool GSRendererHW::LinesToPixelRuns()
 		}
 	}
 
-	if (total == 0 || total > 0x10000 / 4)
-		return false;
+	if (total == 0)
+	{
+		// Every line in the draw enters and leaves inside one pixel's diamond, or has zero length.
+		// The GS lights nothing for those (GSLineWalk.h; the gs-prim console capture matched the
+		// walk on all 188 of its line cases), so nothing is what we draw -- an expanded stripe or a
+		// GPU line here would paint pixels the console does not.
+		GL_INS("HW: %u lines light no pixel; nothing to draw.", line_count);
+		return LineRunResult::NothingLit;
+	}
+
+	if (total > 0x10000 / 4)
+	{
+		// One rectangle is four vertices indexed 16-bit, so 16384 of them is the ceiling. No dump
+		// we have comes near it, which is why it is worth saying out loud when it happens: the
+		// draw silently changes shape, from the pixels the GS lights to a figure centred on the
+		// line, and the minor axis goes out by up to half a native pixel.
+		GL_INS("HW: %u pixel-run rectangles for %u lines is past the %d a 16-bit index buffer holds.",
+			total, line_count, 0x10000 / 4);
+		static bool logged_once = false;
+		if (!logged_once)
+		{
+			logged_once = true;
+			Console.Warning("GS: a line draw needs %u pixel-run rectangles, past the %d a 16-bit index "
+							"buffer holds. Falling back to expanded lines, which place the minor axis "
+							"up to half a pixel out. Please report the game and scene.",
+				total, 0x10000 / 4);
+		}
+		return LineRunResult::Refused;
+	}
 
 	while (total * 4 > m_vertex->maxcount)
 		GrowVertexBuffer();
@@ -596,7 +707,7 @@ bool GSRendererHW::LinesToPixelRuns()
 		index[5] = base + 3;
 	}
 	m_index->tail = written * 6;
-	return true;
+	return LineRunResult::Converted;
 }
 
 template<u32 primclass, bool fst>
@@ -1650,11 +1761,56 @@ GSVector4 GSRendererHW::RealignTargetTextureCoordinate(const GSTextureCache::Sou
 	return half_offset;
 }
 
+// Half-pixel-offset mode 5's texture-side offset, for a texture read from a target. The FST offset
+// is 8 - 4/scale sixteenths of a texel: it is written open-coded below because the closed form
+// rounds one ULP differently at some scale-and-width pairs (1.5x and 3x among them), and changing
+// the number is not what this helper is for.
+//
+// Offsets are required when using FST -- it can be seen with the cabin part of the ship in God
+// of War.
+void GSRendererHW::ApplyNativeWTexOffset(const GSTextureCache::Source* tex, const GSTextureCache::Target* rt,
+	const GSTextureCache::Target* ds, GSVector2& texture_offset)
+{
+	if (GSConfig.UserHacks_HalfPixelOffset != GSHalfPixelOffset::NativeWTexOffset)
+		return;
+
+	const u32 psm = rt ? rt->m_TEX0.PSM : ds->m_TEX0.PSM;
+	const bool can_offset = m_r.width() > GSLocalMemory::m_psm[psm].pgs.x || m_r.height() > GSLocalMemory::m_psm[psm].pgs.y;
+
+	if (!can_offset || tex->m_scale <= 1.0f)
+		return;
+
+	const GSVertex* v = &m_vertex->buff[0];
+	if (PRIM->FST)
+	{
+		// Per axis, and only where the far edge lands on a whole native pixel.
+		const int x1_frac = ((v[1].XYZ.X - m_context->XYOFFSET.OFX) & 0xf);
+		const int y1_frac = ((v[1].XYZ.Y - m_context->XYOFFSET.OFY) & 0xf);
+
+		if (!(x1_frac & 8))
+			texture_offset.x = (1.0f - ((0.5f / (tex->m_unscaled_size.x * tex->m_scale)) * tex->m_unscaled_size.x)) * 8.0f;
+		if (!(y1_frac & 8))
+			texture_offset.y = (1.0f - ((0.5f / (tex->m_unscaled_size.y * tex->m_scale)) * tex->m_unscaled_size.y)) * 8.0f;
+	}
+	else if (m_vt.m_eq.q)
+	{
+		const float tw = static_cast<float>(1 << m_cached_ctx.TEX0.TW);
+		const float th = static_cast<float>(1 << m_cached_ctx.TEX0.TH);
+		const float q = v[0].RGBAQ.Q;
+
+		texture_offset.x = 0.5f * q / tw;
+		texture_offset.y = 0.5f * q / th;
+	}
+}
+
 GSVector4i GSRendererHW::ComputeBoundingBoxRT(const GSVector2i& rtsize, float rtscale)
 {
 	// A line lights the pixel its coordinate rounds to, and that pixel's far edge can sit a pixel and
-	// a half past the vertex bounds, so lines get the wider margin too.
-	const bool wide = IsCoverageAlphaSupported() || m_vt.m_primclass == GS_LINE_CLASS;
+	// a half past the vertex bounds, so lines get the wider margin too. A point rounds the same way
+	// (GSPointPlace.h) and reaches just as far: a point at x + 8/16 lights the pixel at x + 1, whose
+	// far edge is at x + 2.
+	const bool wide = IsCoverageAlphaSupported() || m_vt.m_primclass == GS_LINE_CLASS ||
+					  m_vt.m_primclass == GS_POINT_CLASS;
 	const GSVector4 offset = wide ? GSVector4(-2.0f, 2.0f) : GSVector4(-1.0f, 1.0f); // Round value
 	const GSVector4 box = m_vt.m_min.p.upld(m_vt.m_max.p) + offset.xxyy();
 	return GSVector4i(box * GSVector4(rtscale)).rintersect(GSVector4i(0, 0, rtsize.x, rtsize.y));
@@ -3154,6 +3310,104 @@ void GSRendererHW::RoundSpriteOffset()
 		if (debug)
 			fprintf(stderr, "HW: GREP_AFTER %d => %d\n\n", v[i].V, v[i + 1].V);
 #endif
+	}
+}
+
+// The upscaling coverage corrections for sprites: the AlignSpriteX game fix, the pixel-grid snap
+// and RoundSprite. All three rewrite the vertex buffer in place.
+//
+// This must be the LAST pass in a draw that touches geometry. It used to run in Draw(), before
+// DrawPrims, and two passes downstream of it rebuild the whole vertex buffer out of m_vt.m_min /
+// m_vt.m_max -- bounds taken once by m_vt.Update in GSState::DrawRecordTail and never refreshed by
+// anything that moves a vertex. MergeSprite (the paving merge, GameDB mergeSprite) and
+// ConvertSpriteTextureShuffleImpl both do that, so both threw every correction away. Ace Combat 5
+// is the visible case: its display-buffer strips end at x=511.5, the snap pushed the last one out
+// to 512, and the merge put 511.5 back, so at 2x the right-hand device column of the frame was
+// black. Running here instead means both rebuilds have already happened and there is no stale
+// reader left.
+//
+// Texture-shuffle draws are skipped outright. The rebuild replaces the batch with a single quad on
+// whole native pixels, so the snap and AlignSpriteX find nothing to move; only RoundSprite would
+// still act, and putting it on shuffle geometry is a behaviour change, not an ordering fix. Today
+// all three run on a shuffle draw and all three are discarded, so skipping them changes nothing and
+// saves the walk.
+void GSRendererHW::CorrectSpriteCoverageForUpscale(GSTextureCache::Target* rt)
+{
+	// Be careful to not correct downscaled targets, this can get messy and break post processing
+	// but it still needs to adjust native stuff from memory as it's not been compensated for
+	// upscaling (Dragon Quest 8 font for example).
+	// Nor the quad a texture or channel shuffle rebuilt in place of the game's sprites: it is on
+	// whole native pixels and whole texels already, and RoundSprite would still resample its UV
+	// under a bilinear sampler. When the correction ran before the rebuilds it never saw them.
+	if (!CanUpscale() || m_vt.m_primclass != GS_SPRITE_CLASS || !rt || rt->GetScale() <= 1.0f || m_texture_shuffle ||
+		m_channel_shuffle_rebuilt_quad)
+		return;
+
+	// Every pass below reads the first sprite, and the rebuilds upstream set the count themselves.
+	const u32 count = m_vertex->next;
+	if (count < 2)
+		return;
+
+	GSVertex* v = &m_vertex->buff[0];
+
+	// Hack to avoid vertical black line in various games (ace combat/tekken)
+	//
+	// This runs before SnapSpriteEdgesToPixelGrid because its one decision is read off the
+	// first sprite's coordinates, and the snap moves exactly those.
+	bool align_sprite_x = false;
+	if (GSConfig.UserHacks_AlignSpriteX)
+	{
+		// Note for performance reason I do the check only once on the first
+		// primitive
+		const bool unaligned_texture = ((v[1].U & 0xF) == 0) && PRIM->FST; // I'm not sure this check is useful
+		const int win_position = v[1].XYZ.X - m_context->XYOFFSET.OFX;
+		// v[2] only exists, and is only asked about, when the batch has a second sprite.
+		align_sprite_x = GSSpriteEdgeSnap::AlignSpriteXApplies(win_position, v[1].U, PRIM->FST, count,
+			v[1].XYZ.X, (count >= 4) ? v[2].XYZ.X : 0);
+		if (align_sprite_x)
+		{
+			// Normaly vertex are aligned on full pixels and texture in half
+			// pixels. Let's extend the coverage of an half-pixel to avoid
+			// hole after upscaling
+			for (u32 i = 0; i < count; i += 2)
+			{
+				v[i + 1].XYZ.X += 8;
+				// I really don't know if it is a good idea. Neither what to do for !PRIM->FST
+				if (unaligned_texture)
+					v[i + 1].U += 8;
+			}
+		}
+	}
+
+	// The GS rasterises a sprite in whole pixels, so a sprite whose far edge sits part way
+	// into a pixel covers exactly what one ending on the boundary covers. Upscaling
+	// multiplies that edge before rasterising and the sprite loses the pixel. NASCAR
+	// Thunder 2002 writes its alpha plane with a sprite ending at x=319.5 and reads it
+	// straight back through DATE with one ending at x=320: identical at 1x, one device
+	// column apart at 2x, and that column is the bright line down the middle of the screen.
+	//
+	// The hack above has already pushed every far X in this batch out by half a pixel for
+	// the same reason, on a batch-wide decision the snap does not get to second-guess per
+	// sprite. Snapping on top of that would move some of them a second time, so leave the
+	// batch alone when it fired.
+	if (!align_sprite_x)
+		SnapSpriteEdgesToPixelGrid();
+
+	// Noting to do if no texture is sampled
+	const bool draw_sprite_tex = PRIM->TME && (m_vt.m_primclass == GS_SPRITE_CLASS);
+	if (PRIM->FST && draw_sprite_tex && m_process_texture)
+	{
+		if ((GSConfig.UserHacks_RoundSprite > 1) || (GSConfig.UserHacks_RoundSprite == 1 && !m_vt.IsLinear()))
+		{
+			if (m_vt.IsLinear())
+				RoundSpriteOffset<true>();
+			else
+				RoundSpriteOffset<false>();
+		}
+	}
+	else
+	{
+		; // vertical line in Yakuza (note check m_userhacks_align_sprite_X behavior)
 	}
 }
 
@@ -5609,76 +5863,6 @@ void GSRendererHW::Draw()
 		return;
 	}
 
-	// A couple of hack to avoid upscaling issue. So far it seems to impacts mostly sprite
-	// Note: first hack corrects both position and texture coordinate
-	// Note: second hack corrects only the texture coordinate
-	// Be careful to not correct downscaled targets, this can get messy and break post processing
-	// but it still needs to adjust native stuff from memory as it's not been compensated for upscaling (Dragon Quest 8 font for example).
-	if (CanUpscale() && (m_vt.m_primclass == GS_SPRITE_CLASS) && rt && rt->GetScale() > 1.0f)
-	{
-		const u32 count = m_vertex->next;
-		GSVertex* v = &m_vertex->buff[0];
-
-		// Hack to avoid vertical black line in various games (ace combat/tekken)
-		//
-		// This runs before SnapSpriteEdgesToPixelGrid because its one decision is read off the
-		// first sprite's coordinates, and the snap moves exactly those.
-		bool align_sprite_x = false;
-		if (GSConfig.UserHacks_AlignSpriteX)
-		{
-			// Note for performance reason I do the check only once on the first
-			// primitive
-			const bool unaligned_texture = ((v[1].U & 0xF) == 0) && PRIM->FST; // I'm not sure this check is useful
-			const int win_position = v[1].XYZ.X - context->XYOFFSET.OFX;
-			// v[2] only exists, and is only asked about, when the batch has a second sprite.
-			align_sprite_x = GSSpriteEdgeSnap::AlignSpriteXApplies(win_position, v[1].U, PRIM->FST, count,
-				v[1].XYZ.X, (count >= 4) ? v[2].XYZ.X : 0);
-			if (align_sprite_x)
-			{
-				// Normaly vertex are aligned on full pixels and texture in half
-				// pixels. Let's extend the coverage of an half-pixel to avoid
-				// hole after upscaling
-				for (u32 i = 0; i < count; i += 2)
-				{
-					v[i + 1].XYZ.X += 8;
-					// I really don't know if it is a good idea. Neither what to do for !PRIM->FST
-					if (unaligned_texture)
-						v[i + 1].U += 8;
-				}
-			}
-		}
-
-		// The GS rasterises a sprite in whole pixels, so a sprite whose far edge sits part way
-		// into a pixel covers exactly what one ending on the boundary covers. Upscaling
-		// multiplies that edge before rasterising and the sprite loses the pixel. NASCAR
-		// Thunder 2002 writes its alpha plane with a sprite ending at x=319.5 and reads it
-		// straight back through DATE with one ending at x=320: identical at 1x, one device
-		// column apart at 2x, and that column is the bright line down the middle of the screen.
-		//
-		// The hack above has already pushed every far X in this batch out by half a pixel for
-		// the same reason, on a batch-wide decision the snap does not get to second-guess per
-		// sprite. Snapping on top of that would move some of them a second time, so leave the
-		// batch alone when it fired.
-		if (!align_sprite_x)
-			SnapSpriteEdgesToPixelGrid();
-
-		// Noting to do if no texture is sampled
-		if (PRIM->FST && draw_sprite_tex && m_process_texture)
-		{
-			if ((GSConfig.UserHacks_RoundSprite > 1) || (GSConfig.UserHacks_RoundSprite == 1 && !m_vt.IsLinear()))
-			{
-				if (m_vt.IsLinear())
-					RoundSpriteOffset<true>();
-				else
-					RoundSpriteOffset<false>();
-			}
-		}
-		else
-		{
-			; // vertical line in Yakuza (note check m_userhacks_align_sprite_X behavior)
-		}
-	}
-
 	//
 	const GSVector4i real_rect = m_r;
 
@@ -5949,7 +6133,7 @@ void GSRendererHW::HandleFlatShadedVertices()
 	}
 }
 
-void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert_backup, const bool no_rt)
+bool GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert_backup, const bool no_rt)
 {
 	GL_PUSH("HW: IA");
 
@@ -5973,23 +6157,61 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 			{
 				m_conf.topology = GSHWDrawConfig::Topology::Point;
 				m_conf.indices_per_prim = 1;
+
+				// A point rounds to nearest where a sprite corner-samples, and upscaled it covers
+				// the whole device block of the native pixel it lights. GSPointPlace.h carries the
+				// console measurement and the derivation; the two steps are here. First put the
+				// vertex on the pixel, at native resolution, where the rule was measured. As with
+				// lines, turning safe features off above native turns the whole correction off:
+				// the point stays where the game put it and keeps DetermineVSConfig's offset.
+				const bool correct_points = unscale_pt_ln || target_scale == 1.0f;
+				if (correct_points)
+					SnapPointsToNativePixel();
+
+				// Then give the draw the offset the figure this backend draws needs. It is written
+				// here rather than left to DetermineVSConfig because that function hands some
+				// draws more -- Align to Native offsets by half a native pixel at any scale, and
+				// the mod_xy hack scales the half pixel up. Both correct geometry a game puts on
+				// pixel centres, which a snapped point is not, so they would move it off its block.
+				const float ox = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFX));
+				const float oy = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFY));
+				const auto set_vertex_offset = [&](float dx, float dy) {
+					m_conf.cb_vs.vertex_offset = GSVector2(ox * sx - dx + 1.0f, oy * sy - dy + 1.0f);
+				};
+
 				if (unscale_pt_ln)
 				{
 					if (features.point_expand)
 					{
+						// A hardware point sprite is centred on the position and target_scale
+						// device pixels across: half a native pixel puts its centre on the middle
+						// of the block.
 						m_conf.vs.point_size = true;
 						m_conf.cb_vs.point_size = GSVector2(target_scale);
+						set_vertex_offset(GSPointPlace::CentredFigureOffset(sx), GSPointPlace::CentredFigureOffset(sy));
 					}
 					else if (features.vs_expand)
 					{
+						// The expanded quad grows one native pixel right and down from the
+						// position, so its corners are pixel boundaries: half a device pixel, the
+						// same figure and the same offset as a pixel-run rectangle. This is the
+						// one path that stays exact at a fractional scale.
 						m_conf.vs.expand = GSHWDrawConfig::VSExpand::Point;
 						m_conf.cb_vs.point_size = GSVector2(16.0f * sx, 16.0f * sy);
+						set_vertex_offset(GSPointPlace::BoundaryFigureOffset(sx, target_scale),
+							GSPointPlace::BoundaryFigureOffset(sy, target_scale));
 						m_conf.topology = GSHWDrawConfig::Topology::Triangle;
 						m_conf.verts = m_vertex->buff;
 						m_conf.nverts = m_vertex->next;
 						m_conf.nindices = m_index->tail * 6;
 						m_conf.indices_per_prim = 6;
-						return;
+						return true;
+					}
+					else
+					{
+						// Neither: a one-device-pixel point, still centred on the position, so the
+						// same offset lands it inside the block rather than on its edge.
+						set_vertex_offset(GSPointPlace::CentredFigureOffset(sx), GSPointPlace::CentredFigureOffset(sy));
 					}
 				}
 				else
@@ -5999,6 +6221,12 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 
 					// M1 requires point size output on *all* points.
 					m_conf.vs.point_size = true;
+
+					// At native one native pixel is one device pixel, so this is the value
+					// DetermineVSConfig already chose, in every half-pixel-offset mode. Above native
+					// (safe features off) DetermineVSConfig's value stands.
+					if (correct_points)
+						set_vertex_offset(GSPointPlace::CentredFigureOffset(sx), GSPointPlace::CentredFigureOffset(sy));
 				}
 			}
 			break;
@@ -6037,39 +6265,101 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 					m_conf.indices_per_prim = 6;
 					ExpandLineIndices();
 				}
-				else if ((unscale_pt_ln || target_scale == 1.0f) && LinesToPixelRuns())
+				else
 				{
-					// Native resolution included: the GPU's single-pixel line rule is not the GS's,
-					// and it is not the same rule on every driver.
-					GL_INS("HW: Lines drawn as pixel runs.");
-					m_conf.topology = GSHWDrawConfig::Topology::Triangle;
-					m_conf.indices_per_prim = 6;
+					// An AA1 line's pixels carry the GS's coverage as their alpha. IsCoverageAlphaSupported()
+					// already answered whether that is this draw's road -- with it true, everything
+					// upstream (the alpha range, fixed_one_a, the depth write) is set for a coverage
+					// that exists, so the rectangles have to carry one.
+					const bool aa1_coverage = !no_rt && PRIM->AA1 && AA1LineCoverageFromPixelRuns() &&
+											  IsCoverageAlphaSupported();
 
-					// The rectangle corners are pixel boundaries, so they take exactly half a device
-					// pixel of offset, the amount that puts a boundary between two device pixels.
-					// DetermineVSConfig can give more: Align to Native offsets by half a native pixel
-					// and the mod_xy hack scales the half pixel up. Both correct geometry a game
-					// places on pixel centres, and applied here they move every rectangle, a device
-					// pixel right and down at 2x under Align to Native. sx/sy are GS units (1/16
-					// pixel) to NDC, so half a device pixel is 8 * sx / target_scale; at native
-					// resolution this is the value DetermineVSConfig already chose.
-					const float ox = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFX));
-					const float oy = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFY));
-					m_conf.cb_vs.vertex_offset = GSVector2(ox * sx - 8.0f * sx / target_scale + 1.0f, oy * sy - 8.0f * sy / target_scale + 1.0f);
-				}
-				else if (unscale_pt_ln)
-				{
-					if (features.line_expand)
+					// The pixel runs are tried at native resolution as well as above it: the GPU's
+					// single-pixel line rule is not the GS's, and it is not the same rule on every
+					// driver. Turning safe features off above native turns the whole correction off.
+					const LineRunResult runs = (unscale_pt_ln || target_scale == 1.0f) ?
+												   LinesToPixelRuns(aa1_coverage) :
+												   LineRunResult::Refused;
+
+					if (runs == LineRunResult::NothingLit)
 					{
-						m_conf.line_expand = true;
+						// The GS lights no pixel for any line in this draw, so nothing is what we
+						// draw. The alternatives both paint pixels the console leaves alone: above
+						// native the fallback below draws a stripe centred on the line, and at
+						// native a bare GPU line applies whatever single-pixel rule the driver has.
+						// Sly 3 and Sly Cooper send 60 to 216 of these per capture -- particle
+						// segments about a pixel long that start and end inside one pixel's diamond
+						// -- and the stripe was the only thing on those pixels.
+						GL_INS("HW: Line draw lights no pixel; nothing submitted.");
+						return false;
 					}
-					else if (features.vs_expand)
+
+					if (runs == LineRunResult::Refused && aa1_coverage && !PRIM->ABE)
 					{
-						m_conf.vs.expand = GSHWDrawConfig::VSExpand::Line;
-						m_conf.cb_vs.point_size = GSVector2(16.0f * sx, 16.0f * sy);
+						// The coverage never reached any geometry, so the draw is back to the
+						// approximation a renderer that cannot carry one makes: with blending off
+						// the GS writes the coverage as the alpha, and a fixed one is the closest
+						// single value to it. m_conf.ps.fixed_one_a was cleared for this draw
+						// because IsCoverageAlphaSupported() said the coverage was coming.
+						m_conf.ps.fixed_one_a = true;
+					}
+
+					if (runs == LineRunResult::Converted)
+					{
+						GL_INS("HW: Lines drawn as pixel runs.");
 						m_conf.topology = GSHWDrawConfig::Topology::Triangle;
 						m_conf.indices_per_prim = 6;
-						ExpandLineIndices();
+
+						// The rectangle corners are pixel boundaries, so they take exactly half a device
+						// pixel of offset, the amount that puts a boundary between two device pixels.
+						// DetermineVSConfig can give more: Align to Native offsets by half a native pixel
+						// and the mod_xy hack scales the half pixel up. Both correct geometry a game
+						// places on pixel centres, and applied here they move every rectangle, a device
+						// pixel right and down at 2x under Align to Native. GSPointPlace.h has the
+						// arithmetic and the other figure, the centred one, that takes a different
+						// offset; at native resolution the two agree and this is the value
+						// DetermineVSConfig already chose.
+						const float ox = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFX));
+						const float oy = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFY));
+						m_conf.cb_vs.vertex_offset = GSVector2(ox * sx - GSPointPlace::BoundaryFigureOffset(sx, target_scale) + 1.0f,
+							oy * sy - GSPointPlace::BoundaryFigureOffset(sy, target_scale) + 1.0f);
+					}
+					else if (unscale_pt_ln)
+					{
+						// The pixel runs were refused -- too many rectangles for a 16-bit index buffer,
+						// or a full-barrier group left empty. What is left is a figure centred on the line's
+						// own coordinate rather than on the pixel the GS lights, so the perpendicular
+						// coordinate -- which rounds to nearest, exactly as a point does -- comes out
+						// up to half a native pixel off. Half a native pixel of vertex offset is the
+						// constant that makes this agree with a pixel-run rectangle on a line sitting
+						// on a whole coordinate, and no constant can do better, since the rounding is a
+						// step function (GSPointPlace.h). DetermineVSConfig only supplies that value in
+						// the Align to Native modes and the mod_xy hack can scale it up, so it is
+						// written here for every mode.
+						//
+						// At native resolution the pixel runs are the only correction, and a refusal
+						// there falls through to a bare GPU line rather than coming in here. That is
+						// deliberate and measured: an expanded line covers its whole segment, so it
+						// draws the last pixel the GS drops, and on the gs-prim capture it scores 81 of
+						// 188 line cells against the GPU line's 122. The GS's endpoint rule is a
+						// diamond test, which is the rule a spec-conformant GPU line already uses.
+						if (features.line_expand)
+						{
+							m_conf.line_expand = true;
+						}
+						else if (features.vs_expand)
+						{
+							m_conf.vs.expand = GSHWDrawConfig::VSExpand::Line;
+							m_conf.cb_vs.point_size = GSVector2(16.0f * sx, 16.0f * sy);
+							m_conf.topology = GSHWDrawConfig::Topology::Triangle;
+							m_conf.indices_per_prim = 6;
+							ExpandLineIndices();
+						}
+
+						const float ox = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFX));
+						const float oy = static_cast<float>(static_cast<int>(m_context->XYOFFSET.OFY));
+						m_conf.cb_vs.vertex_offset = GSVector2(ox * sx - GSPointPlace::CentredFigureOffset(sx) + 1.0f,
+							oy * sy - GSPointPlace::CentredFigureOffset(sy) + 1.0f);
 					}
 				}
 			}
@@ -6102,7 +6392,7 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 					m_conf.nverts = m_vertex->next;
 					m_conf.nindices = m_index->tail * 3;
 					m_conf.indices_per_prim = 6;
-					return;
+					return true;
 				}
 				else
 				{
@@ -6167,6 +6457,7 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 	}
 	m_conf.nverts = m_vertex->next;
 	m_conf.nindices = m_index->tail;
+	return true;
 }
 
 void GSRendererHW::EmulateZbuffer(const GSTextureCache::Target* ds)
@@ -6470,8 +6761,6 @@ void GSRendererHW::EmulateAA1()
 
 	if (IsCoverageAlphaSupported())
 	{
-		m_conf.ps.abe = PRIM->ABE; // ABE flag determines how coverage is used for alpha.
-
 		if (m_vt.m_primclass == GS_LINE_CLASS)
 		{
 			GL_INS("HW: AA1 lines. No depth write.");
@@ -6480,10 +6769,22 @@ void GSRendererHW::EmulateAA1()
 			m_conf.depth.zwe = false;
 			m_cached_ctx.ZBUF.ZMSK = 1;
 
+			if (AA1LineCoverageFromPixelRuns())
+			{
+				// The coverage is already the vertex alpha of every pixel-run rectangle, and the
+				// substitution rule was applied there, where the per-pixel alpha is known. The
+				// shader has nothing left to do and no inv_cov to do it with -- there is no
+				// vertex-shader expansion on this road.
+				return;
+			}
+
+			m_conf.ps.abe = PRIM->ABE; // ABE flag determines how coverage is used for alpha.
 			m_conf.ps.aa1 = GSHWDrawConfig::PS_AA1::LINE;
 		}
 		else if (m_vt.m_primclass == GS_TRIANGLE_CLASS)
 		{
+			m_conf.ps.abe = PRIM->ABE; // ABE flag determines how coverage is used for alpha.
+
 			// Force SW depth so that Z writes can be prevented for edge pixels.
 			if (m_cached_ctx.DepthWrite())
 			{
@@ -6541,6 +6842,14 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 		return;
 
 	const GSDevice::FeatureSupport& features = g_gs_device->Features();
+
+	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -date-road primid): the barrier state as the road
+	// selection found it, so that pinning the road to primitive-ID tracking can give back
+	// exactly the barrier this selection asks for and nothing that was already required for
+	// blending or fbmask. Two plain bools on a path that is not hot; inert when the override is
+	// not asked for. See the block after the chain, and GSDateRoadPolicy.h.
+	const bool one_barrier_before_date = m_conf.require_one_barrier;
+	const bool full_barrier_before_date = m_conf.require_full_barrier;
 
 	// Date one can run with complex alpha test if there's no overlap.
 	const bool complex_alpha_test = m_cached_ctx.TEST.ATE &&
@@ -6659,6 +6968,34 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 		GL_PERF("DATE: Accurate with no alpha write");
 		m_conf.require_one_barrier = true;
 		date_options.barrier = true;
+	}
+
+	// ⚠️ MEASUREMENT OVERRIDE.
+	//
+	// Pin every DATE draw to primitive-ID tracking, the road both handheld targets take today,
+	// so the DATE mechanism can be held still while the colour self-read road changes under it.
+	// Without this, giving a build an in-pass destination read moves draws onto the Full road by
+	// itself, and Stuntman's and Indiana Jones's A/B deltas mix two mechanisms with no way to
+	// tell them apart afterwards.
+	//
+	// Here rather than in EmulateDATEGetConfig, although that is where the road becomes a
+	// DestinationAlphaMode: this is the function that CHOOSES, and every branch above that picks
+	// a road also asks for the barrier that road needs. Undoing the choice means undoing the
+	// barrier with it, and restoring the state this function was entered with is the only
+	// spelling of that which cannot take away a barrier some earlier stage required for its own
+	// reasons. It also runs before EmulateBlending, so the whole downstream draw is configured
+	// the way it would have been had the primitive-ID road been chosen on its merits.
+	if (GSDateRoadForcesPrimID({.override_mode = GSDateRoadPolicy::GetOverride(),
+			.date_enabled = date_options.enabled,
+			.already_primid = date_options.primid,
+			.device_has_primitive_id = features.primitive_id,
+			.scanmsk_discards_lines = (m_conf.ps.scanmsk & 2) != 0}))
+	{
+		date_options.stencil_one = false;
+		date_options.barrier = false;
+		date_options.primid = true;
+		m_conf.require_one_barrier = one_barrier_before_date;
+		m_conf.require_full_barrier = full_barrier_before_date;
 	}
 
 	// Will save my life !
@@ -6852,6 +7189,32 @@ void GSRendererHW::DetermineVSConfig(GSTextureCache::Target* rt, float rtscale, 
 	m_conf.cb_vs.vertex_scale = GSVector2(sx, sy);
 	m_conf.cb_vs.vertex_offset = GSVector2(ox * sx + ox2 + 1, oy * sy + oy2 + 1);
 
+	// A sprite that reads its texture on the native texel grid needs this transform to be the
+	// plain one: native coordinate n at device coordinate n * scale + 0.5. Half-pixel-offset modes
+	// that place the vertices elsewhere make floor(fragment)/scale the wrong native pixel, so the
+	// draw loses the road here rather than snapping to a grid that is not its own.
+	// GSNativeTexelGridPolicy.h carries the rule and the numbers.
+	//
+	// The transform above is window = n * (8 * s * size) + (-0.5 * o2 * size), read straight out of
+	// s and o2 rather than out of the backend's window mapping, so the answer does not depend on
+	// which way a viewport happens to be flipped.
+	if (m_conf.ps.native_texel_grid)
+	{
+		const bool grid_x = GSDeviceGridIsNativeGridScaled(8.0f * sx * static_cast<float>(rtsize.x),
+			-0.5f * ox2 * static_cast<float>(rtsize.x), rtscale);
+		const bool grid_y = GSDeviceGridIsNativeGridScaled(8.0f * sy * static_cast<float>(rtsize.y),
+			-0.5f * oy2 * static_cast<float>(rtsize.y), rtscale);
+		if (grid_x && grid_y)
+		{
+			g_perfmon.Put(GSPerfMon::NativeTexelGridDraws, 1);
+		}
+		else
+		{
+			m_conf.ps.native_texel_grid = 0;
+			m_conf.cb_ps.NativeTexelGrid = GSVector4::zero();
+		}
+	}
+
 	m_conf.vs.iip = !IsFlatShaded();
 }
 
@@ -6866,20 +7229,69 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 		// but sometimes it slips through
 		if (m_conf.require_one_barrier || m_conf.require_full_barrier)
 			pxAssert(!m_conf.blend.enable);
+	}
 
+	// The in-pass destination read comes in two spellings, and both make the per-draw barrier
+	// redundant for the same reason -- something other than our barriers is ordering the read.
+	// Framebuffer fetch earns it from rasterization-order attachment access; the declared
+	// attachment feedback loop earns it from Turnip running the pass untiled with the coherent
+	// primitive mode (GSSelfReadRoadPolicy.h). Only the first
+	// carries Metal's dual-source restriction above, which is why that stayed in its own block.
+	//
+	// ⚠️ Dropping the barrier on the declared road is the ORDERING CLAIM. Keeping it would cost
+	// several times base -- an overlapping self-read draw gets require_full_barrier, i.e. one
+	// vkCmdPipelineBarrier per primitive group -- and, worse, it would SUPPLY the ordering the
+	// claim is about, so a correct picture would prove nothing. gsrunner -declare-feedback-loop 2
+	// keeps them deliberately, as the diagnostic arm. Which is still what that flag is for: the
+	// road itself is no longer experiment-only, since a driver build measured to order reaches it
+	// through the driver database with no key set.
+	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -declare-overlap-only). Which readers on the declared road actually declare. Off the road, and at the default
+	// scope, this is false for every draw and everything below is unchanged. The withheld draws
+	// go back on the copy road: the backend clones the target for them and samples the clone,
+	// which is what the device does today and what it does for every reader on every other
+	// backend. See GSDeclaredLoopScopePolicy.h for why the scope is worth measuring.
+	m_conf.undeclare_rt_feedback_loop = GSDrawWithholdsFeedbackLoop(
+		{.scope = GSDeclaredLoopScopePolicy::GetScope(),
+			.declared_road = features.declared_feedback_loop_orders_overlap,
+			.prim_overlap_yes = (m_prim_overlap == PRIM_OVERLAP_YES)});
+
+	if (features.framebuffer_fetch ||
+		(features.declared_feedback_loop_orders_overlap && !m_conf.undeclare_rt_feedback_loop))
+	{
 		// If we use depth feedback directly, we must use barriers for the depth texture.
 		// If we use depth-as-color feedback, then FB fetch can be used for depth also.
 		const bool need_barriers_for_depth = m_conf.ps.IsFeedbackLoopDepth() && features.depth_feedback;
+
+		// A draw that samples the live target somewhere other than the pixel it writes
+		// (TEX_HAZARD_RT: HandleTextureHazards' disjoint-rect shortcut or channel-shuffle page
+		// offset) depends on EARLIER draws' writes, which neither spelling orders -- both order the
+		// fragment's own pixel only. The fetch road never gets here with one (it clones the target,
+		// GSSelfReadCopyPolicy.h); the declared road does, and its one barrier is what serves it.
+		const bool samples_target_elsewhere = m_conf.tex_hazard == GSHWDrawConfig::TEX_HAZARD_RT;
 
 		// Fetch replaces the destination read; whether it also orders overlapping primitives
 		// within the draw is a per-backend property, and the software blend path enabled above
 		// depends on that ordering. See FbFetchDropsDrawBarriers for the full reasoning.
 		// PRIM_OVERLAP_UNKNOWN counts as overlapping.
-		if (FbFetchDropsDrawBarriers(features.framebuffer_fetch_orders_overlap,
+		if (!samples_target_elsewhere && FbFetchDropsDrawBarriers(
+				features.framebuffer_fetch_orders_overlap || features.declared_feedback_loop_orders_overlap,
 				m_prim_overlap != PRIM_OVERLAP_NO, need_barriers_for_depth))
 		{
 			m_conf.require_one_barrier = false;
 			m_conf.require_full_barrier = false;
+		}
+	}
+	else if (m_conf.undeclare_rt_feedback_loop)
+	{
+		// A withheld draw is served by one pre-draw snapshot of the target, which is the ordering
+		// a single barrier buys and never the per-primitive kind. Collapse the request to match,
+		// the same collapse a device with no barriers at all makes below -- otherwise the backend
+		// would be asked to split the draw and barrier against a target it is not sampling, and
+		// the clone would not be bound, because binding it is gated on require_one_barrier.
+		if (m_conf.require_full_barrier)
+		{
+			m_conf.require_full_barrier = false;
+			m_conf.require_one_barrier = true;
 		}
 	}
 	// Multi-pass algorithms shouldn't be needed with full barrier and backends may not handle this correctly
@@ -6919,12 +7331,107 @@ void GSRendererHW::EmulateDither()
 		m_conf.cb_ps.DitherMatrix[1] = GSVector4(DIMX.DM10, DIMX.DM11, DIMX.DM12, DIMX.DM13);
 		m_conf.cb_ps.DitherMatrix[2] = GSVector4(DIMX.DM20, DIMX.DM21, DIMX.DM22, DIMX.DM23);
 		m_conf.cb_ps.DitherMatrix[3] = GSVector4(DIMX.DM30, DIMX.DM31, DIMX.DM32, DIMX.DM33);
+
+		// Scaled dither (PS_DITHER == 1) indexes the matrix by the render target's native pixel,
+		// so the phase is chosen for the render target's scale, ScaleFactor.z, which is also what
+		// the shader divides by. Not ScaleFactor.x: that is the texture's scale, 1 for a texture
+		// read from GS memory, and dithering by it gave textured and untextured draws in one frame
+		// two different patterns.
+		m_conf.cb_ps.DitherPhase = GetDitherPhase(DIMX, m_conf.cb_ps.ScaleFactor.z);
 	}
 	else if (GSConfig.Dithering > 2)
 	{
 		m_conf.ps.dither = GSConfig.Dithering;
 		m_conf.blend_multi_pass.dither = GSConfig.Dithering;
 	}
+}
+
+// Scaled dither indexes the matrix by native pixel, so at a fractional upscale the cells do not all
+// cover the same number of device pixels: native cell k owns device pixels
+// [ceil(k * S), ceil((k + 1) * S)), which at 1.5x is two device pixels for the even cells and one
+// for the odd. Which cells own the extra pixel is fixed by that ownership rule, but which matrix
+// entry a cell indexes is not -- adding a phase before the index is masked to 4x4 rotates the
+// matrix under it. Spend the extra area on the quietest rows and columns the matrix has, measured
+// as the sum of DIMX^2 over them, not the sum of |DIMX| -- loudness is contrast, not average
+// magnitude, so a row or column of entries that are merely large should cost more than one whose
+// entries are merely spread out. On the standard matrix this is not academic: every column sums to
+// the same 8 in |DIMX|, which ties the x phase to 0 and does nothing; the same columns square to
+// 26/18/26/18, which breaks the tie and moves x to the quieter pair. The cells that cover more
+// screen are the ones that push the colour least, and the four-native-pixel period does not turn
+// into a visible harmonic.
+//
+// At a whole-number scale every cell owns exactly S device pixels, no cell is wider than another,
+// every phase scores zero, and this returns 0. That is what keeps 1x, 2x and every other whole
+// multiplier rendering exactly as they did before the phase existed.
+//
+// Four cells are a whole period of the pattern only when S's denominator divides 4, which every
+// multiplier the UI offers does (quarter steps to 3x, then halves, then whole numbers). A scale
+// from anywhere else still gets a phase; it is just chosen from the first four cells rather than
+// from a repeating period.
+u32 GSRendererHW::GetDitherPhase(const GIFRegDIMX& DIMX, float scale)
+{
+	if (DIMX.U64 == m_dither_phase_dimx && scale == m_dither_phase_scale)
+		return m_dither_phase;
+
+	// DIMX names its entries DMyx: the first index is the row the y axis picks, the second the
+	// column the x axis picks, which is what every backend's matrix fetch resolves to.
+	const int dimx[4][4] = {
+		{DIMX.DM00, DIMX.DM01, DIMX.DM02, DIMX.DM03},
+		{DIMX.DM10, DIMX.DM11, DIMX.DM12, DIMX.DM13},
+		{DIMX.DM20, DIMX.DM21, DIMX.DM22, DIMX.DM23},
+		{DIMX.DM30, DIMX.DM31, DIMX.DM32, DIMX.DM33},
+	};
+
+	// Which of the four cells own more device pixels than the narrowest cell does. Doubles, not
+	// floats: every multiplier the UI offers is exact in both, but a scale that is not leaves a
+	// product like 3 * S a hair under a whole number, and ceil() would answer a pixel too low.
+	const double s = static_cast<double>(scale);
+	const int narrow = static_cast<int>(std::floor(s));
+	bool wide[4];
+	for (int i = 0; i < 4; i++)
+	{
+		const int first = static_cast<int>(std::ceil(static_cast<double>(i) * s));
+		const int last = static_cast<int>(std::ceil(static_cast<double>(i + 1) * s));
+		wide[i] = (last - first) > narrow;
+	}
+
+	u32 phase = 0;
+	for (int axis = 0; axis < 2; axis++) // 0 = x, which picks a matrix column; 1 = y, a matrix row
+	{
+		int best_phase = 0;
+		int best_cost = std::numeric_limits<int>::max();
+		for (int p = 0; p < 4; p++)
+		{
+			int cost = 0;
+			for (int i = 0; i < 4; i++)
+			{
+				if (!wide[i])
+					continue;
+
+				const int line = (i + p) & 3;
+				for (int j = 0; j < 4; j++)
+				{
+					const int v = (axis == 1) ? dimx[line][j] : dimx[j][line];
+					cost += v * v;
+				}
+			}
+
+			// Strictly less, so a tie -- every tie, including the all-zero one a whole-number
+			// scale produces -- keeps the lowest phase, which is the rotation that does nothing.
+			if (cost < best_cost)
+			{
+				best_cost = cost;
+				best_phase = p;
+			}
+		}
+
+		phase |= static_cast<u32>(best_phase) << (axis * 2);
+	}
+
+	m_dither_phase_dimx = DIMX.U64;
+	m_dither_phase_scale = scale;
+	m_dither_phase = phase;
+	return phase;
 }
 
 // An exact alpha-mask decision is worth taking for one thing: the barrier it removes, and with it,
@@ -7522,6 +8029,7 @@ __ri u32 GSRendererHW::EmulateChannelShuffle(GSTextureCache::Target* src, bool t
 
 		m_vertex->head = m_vertex->tail = m_vertex->next = 2;
 		m_index->tail = 2;
+		m_channel_shuffle_rebuilt_quad = true;
 	}
 	else
 	{
@@ -7556,6 +8064,7 @@ __ri u32 GSRendererHW::EmulateChannelShuffle(GSTextureCache::Target* src, bool t
 			s[1].V = m_r.w << 4;
 			m_vertex->head = m_vertex->tail = m_vertex->next = 2;
 			m_index->tail = 2;
+			m_channel_shuffle_rebuilt_quad = true;
 		}
 
 		// If we're doing per page copying, then set the valid 1 frame ahead if we're continuing, as this will save the target lookup making a new target for the new row.
@@ -9115,32 +9624,11 @@ __ri void GSRendererHW::EmulateTextureSampler(const GSTextureCache::Target* rt, 
 		// The purpose of texture shuffle is to move color channel. Extra interpolation is likely a bad idea.
 		bilinear &= m_vt.IsLinear();
 
+		// No half-pixel-offset texture offset here: this arm is reached only on a texture shuffle
+		// (m_conf.ps.shuffle is set only under m_texture_shuffle), whose coordinates are already
+		// aligned.
 		const GSVector4 half_pixel = RealignTargetTextureCoordinate(tex);
 		m_conf.cb_vs.texture_offset = GSVector2(half_pixel.x, half_pixel.y);
-
-		// Can be seen with the cabin part of the ship in God of War, offsets are required when using FST.
-		// ST uses a normalized position so doesn't need an offset here, will break Bionicle Heroes.
-		// Do not apply HPO on texture shuffles as it already aligns the coordinates.
-		if (GSConfig.UserHacks_HalfPixelOffset == GSHalfPixelOffset::NativeWTexOffset && !m_texture_shuffle)
-		{
-			const u32 psm = rt ? rt->m_TEX0.PSM : ds->m_TEX0.PSM;
-			const bool can_offset = m_r.width() > GSLocalMemory::m_psm[psm].pgs.x || m_r.height() > GSLocalMemory::m_psm[psm].pgs.y;
-
-			if (can_offset && tex->m_scale > 1.0f)
-			{
-				const GSVertex* v = &m_vertex->buff[0];
-				if (PRIM->FST)
-				{
-					const int x1_frac = ((v[1].XYZ.X - m_context->XYOFFSET.OFX) & 0xf);
-					const int y1_frac = ((v[1].XYZ.Y - m_context->XYOFFSET.OFY) & 0xf);
-
-					if (!(x1_frac & 8))
-						m_conf.cb_vs.texture_offset.x = (1.0f - ((0.5f / (tex->m_unscaled_size.x * tex->m_scale)) * tex->m_unscaled_size.x)) * 8.0f;
-					if (!(y1_frac & 8))
-						m_conf.cb_vs.texture_offset.y = (1.0f - ((0.5f / (tex->m_unscaled_size.y * tex->m_scale)) * tex->m_unscaled_size.y)) * 8.0f;
-				}
-			}
-		}
 	}
 	else if (tex->m_target)
 	{
@@ -9192,35 +9680,7 @@ __ri void GSRendererHW::EmulateTextureSampler(const GSTextureCache::Target* rt, 
 		const GSVector4 half_pixel = RealignTargetTextureCoordinate(tex);
 		m_conf.cb_vs.texture_offset = GSVector2(half_pixel.x, half_pixel.y);
 
-		if (GSConfig.UserHacks_HalfPixelOffset == GSHalfPixelOffset::NativeWTexOffset)
-		{
-			const u32 psm = rt ? rt->m_TEX0.PSM : ds->m_TEX0.PSM;
-			const bool can_offset = m_r.width() > GSLocalMemory::m_psm[psm].pgs.x || m_r.height() > GSLocalMemory::m_psm[psm].pgs.y;
-
-			if (can_offset && tex->m_scale > 1.0f)
-			{
-				const GSVertex* v = &m_vertex->buff[0];
-				if (PRIM->FST)
-				{
-					const int x1_frac = ((v[1].XYZ.X - m_context->XYOFFSET.OFX) & 0xf);
-					const int y1_frac = ((v[1].XYZ.Y - m_context->XYOFFSET.OFY) & 0xf);
-
-					if (!(x1_frac & 8))
-						m_conf.cb_vs.texture_offset.x = (1.0f - ((0.5f / (tex->m_unscaled_size.x * tex->m_scale)) * tex->m_unscaled_size.x)) * 8.0f;
-					if (!(y1_frac & 8))
-						m_conf.cb_vs.texture_offset.y = (1.0f - ((0.5f / (tex->m_unscaled_size.y * tex->m_scale)) * tex->m_unscaled_size.y)) * 8.0f;
-				}
-				else if (m_vt.m_eq.q)
-				{
-					const float tw = static_cast<float>(1 << m_cached_ctx.TEX0.TW);
-					const float th = static_cast<float>(1 << m_cached_ctx.TEX0.TH);
-					const float q = v[0].RGBAQ.Q;
-
-					m_conf.cb_vs.texture_offset.x = 0.5f * q / tw;
-					m_conf.cb_vs.texture_offset.y = 0.5f * q / th;
-				}
-			}
-		}
+		ApplyNativeWTexOffset(tex, rt, ds, m_conf.cb_vs.texture_offset);
 
 		if (m_vt.m_primclass == GS_SPRITE_CLASS && m_index->tail >= 4 && GSLocalMemory::m_psm[m_cached_ctx.TEX0.PSM].bpp >= 16 &&
 			((tex->m_from_target_TEX0.PSM & 0x30) == 0x30 || GSLocalMemory::m_psm[m_cached_ctx.TEX0.PSM].pal > 0))
@@ -9374,6 +9834,84 @@ __ri void GSRendererHW::EmulateTextureSampler(const GSTextureCache::Target* rt, 
 	// clamp to base level if we're not providing or generating mipmaps
 	// manual trilinear causes the chain to be uploaded, auto causes it to be generated
 	m_conf.sampler.lodclamp = !(trilinear_manual || trilinear_auto);
+
+	// A sprite that minifies a GS-memory texture under a nearest sampler reads the texel its NATIVE
+	// pixel would have read, not the one its own device sample point lands on. The whole rule, the
+	// mechanism it repairs and the arithmetic the shader repeats are in GSNativeTexelGridPolicy.h;
+	// everything here is the facts that policy asks for.
+	GSNativeTexelGridInputs grid;
+	grid.sprite = (m_vt.m_primclass == GS_SPRITE_CLASS);
+	grid.texture_from_memory = !tex->m_target;
+	grid.texel_coordinates = !!PRIM->FST;
+	grid.nearest = !bilinear;
+	grid.mipmapped = trilinear_manual || trilinear_auto;
+	grid.field_render = m_regs->SMODE2.FFMD && isReallyInterlaced();
+	grid.scale = scale_rt;
+
+	// The per-sprite walk is the only part of this with a cost, so it runs only where the rest of
+	// the rule already holds. It leaves both steps at zero when the draw's sprites disagree, and a
+	// zero step is refused below.
+	if (GSDrawCouldSampleOnTheNativeTexelGrid(grid))
+		GetAgreedSpriteTexelSteps(grid.step_u, grid.step_v);
+
+	if (GSSpriteSamplesOnTheNativeTexelGrid(grid))
+	{
+		m_conf.ps.native_texel_grid = 1;
+
+		// The shader works in the fragment's own texture coordinates, which are texels over the
+		// TEX0 size -- the same normalisation the vertex shader's TextureScale applies -- so the
+		// step is divided by it here rather than in every fragment.
+		m_conf.cb_ps.NativeTexelGrid = GSVector4(
+			GSNativeTexelGridStep(grid.step_u) / static_cast<float>(tw),
+			GSNativeTexelGridStep(grid.step_v) / static_cast<float>(th), scale_rt, 0.0f);
+
+		// The last gate -- that the device grid IS the native grid scaled -- is the one fact this
+		// site cannot see, because the vertex transform is chosen later. DetermineVSConfig takes
+		// the bit away again if the mapping is not n * scale + 0.5, and counts the draw if it is.
+	}
+}
+
+bool GSRendererHW::GetAgreedSpriteTexelSteps(GSNativeTexelStep& step_u, GSNativeTexelStep& step_v) const
+{
+	step_u = GSNativeTexelStep();
+	step_v = GSNativeTexelStep();
+
+	// Two indices per sprite, the two opposite corners.
+	const u32 count = m_index->tail & ~1u;
+	if (count < 2)
+		return false;
+
+	const GSVertex* const v = m_vertex->buff;
+	const u16* const idx = m_index->buff;
+
+	for (u32 i = 0; i < count; i += 2)
+	{
+		const GSVertex& a = v[idx[i]];
+		const GSVertex& b = v[idx[i + 1]];
+
+		const GSNativeTexelStep u = GSMakeNativeTexelStep(
+			static_cast<int>(b.U) - static_cast<int>(a.U),
+			static_cast<int>(b.XYZ.X) - static_cast<int>(a.XYZ.X));
+		const GSNativeTexelStep t = GSMakeNativeTexelStep(
+			static_cast<int>(b.V) - static_cast<int>(a.V),
+			static_cast<int>(b.XYZ.Y) - static_cast<int>(a.XYZ.Y));
+
+		if (i == 0)
+		{
+			step_u = u;
+			step_v = t;
+			continue;
+		}
+
+		if (!GSNativeTexelStepsAgree(step_u, u) || !GSNativeTexelStepsAgree(step_v, t))
+		{
+			step_u = GSNativeTexelStep();
+			step_v = GSNativeTexelStep();
+			return false;
+		}
+	}
+
+	return true;
 }
 
 __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, const GSTextureCache::Target* ds,
@@ -9404,6 +9942,8 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 	copy_policy.framebuffer_fetch = g_gs_device->Features().framebuffer_fetch;
 	copy_policy.texture_barrier = g_gs_device->Features().texture_barrier;
 	copy_policy.feedback_loop_layout = g_gs_device->Features().feedback_loop_layout;
+	copy_policy.declared_feedback_loop_orders_overlap =
+		g_gs_device->Features().declared_feedback_loop_orders_overlap;
 	auto NoteResolution = [&](GSDrawLog::SelfRead resolution) {
 		if (log_self_read) [[unlikely]]
 			GSDrawLog::NoteSelfRead(resolution);
@@ -10484,6 +11024,7 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	// Warning it must be done at the begining because it will change the
 	// vertex list (it will interact with PrimitiveOverlap and accurate
 	// blending)
+	m_channel_shuffle_rebuilt_quad = false;
 	if (m_channel_shuffle && tex && tex->m_from_target)
 		EmulateChannelShuffle(tex->m_from_target, false, rt);
 
@@ -10504,6 +11045,10 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 			return;
 		}
 	}
+
+	// Last pass that moves a vertex: both rebuilds above have run, so nothing downstream can
+	// discard the correction by reading bounds taken before it.
+	CorrectSpriteCoverageForUpscale(rt);
 
 	if (EmulateDATEEarlyFail(date_options, rt))
 		return;
@@ -10729,7 +11274,13 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 
 	HandleFlatShadedVertices();
 
-	SetupIA(rtscale, vs_scale_x, vs_scale_y, m_channel_shuffle_width != 0, no_rt);
+	if (!SetupIA(rtscale, vs_scale_x, vs_scale_y, m_channel_shuffle_width != 0, no_rt))
+	{
+		// Nothing the draw asks for lands on a pixel. The draw log still gets its row, marked
+		// unsubmitted, the same as any other draw that returns from here without rendering.
+		GL_INS("HW: Draw %u lights no pixel; not submitted.", static_cast<u32>(s_n));
+		return;
+	}
 
 	if (m_conf.ds && m_conf.ps.IsFeedbackLoopDepth() && !g_gs_device->Features().depth_feedback && !m_conf.ps.HasDepthROV())
 	{
@@ -12310,5 +12861,9 @@ std::size_t GSRendererHW::ComputeDrawlistGetSize(float scale)
 
 bool GSRendererHW::IsCoverageAlphaSupported()
 {
-	return IsCoverageAlpha() && IsRTWritten() && g_gs_device->Features().aa1;
+	// Two roads carry the GS's coverage. The vertex-shader expansion does triangles and lines and
+	// needs a feedback loop; the pixel runs do lines only and need nothing, because the coverage
+	// rides the rectangle's own vertex alpha (AA1LineCoverageFromPixelRuns).
+	return IsCoverageAlpha() && IsRTWritten() &&
+		   (g_gs_device->Features().aa1 || AA1LineCoverageFromPixelRuns());
 }

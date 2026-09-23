@@ -112,6 +112,22 @@ bool GSDumpFile::ReadFile(Error* error)
 				m_serial.assign(reinterpret_cast<const char*>(m_state_data.data()) + header.serial_offset, header.serial_size);
 		}
 
+		// The provenance record, if this dump carries one. It sits after the screenshot,
+		// where older dumps simply end the header block -- so a short block, or a block
+		// whose tail does not carry the magic, is the answer "this dump does not say".
+		// m_state_data still holds the header block here; the real state replaces it below.
+		const u64 provenance_offset = static_cast<u64>(header.screenshot_offset) + header.screenshot_size;
+		if ((provenance_offset + sizeof(GSDumpProvenance)) <= ss)
+		{
+			GSDumpProvenance provenance;
+			std::memcpy(&provenance, m_state_data.data() + provenance_offset, sizeof(provenance));
+			if (provenance.magic == GSDumpProvenance::MAGIC)
+			{
+				m_has_provenance = true;
+				m_targets_read_back = (provenance.flags & GSDumpProvenance::TargetsReadBack) != 0;
+			}
+		}
+
 		// Read the real state data
 		m_state_data.resize(header.state_size);
 		if (Read(m_state_data.data(), header.state_size) != header.state_size)

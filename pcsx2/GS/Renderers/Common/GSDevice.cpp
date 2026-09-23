@@ -1293,23 +1293,23 @@ void GSDevice::ClearCurrent()
 	m_sgsr_output = nullptr;
 }
 
-void GSDevice::Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, const GSVector2i& fs, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c)
+void GSDevice::Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, const MergeTopBand* top_band, const GSVector2i& fs, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c)
 {
 	FlushDeferredDraws();
 	if (ResizeRenderTarget(&m_merge, fs.x, fs.y, false, false))
-		DoMerge(sTex, sRect, m_merge, dRect, PMODE, EXTBUF, c, BilnIf(GSConfig.PCRTCOffsets));
+		DoMerge(sTex, sRect, m_merge, dRect, top_band, PMODE, EXTBUF, c, BilnIf(GSConfig.PCRTCOffsets));
 
 	m_current = m_merge;
 }
 
-void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffset)
+void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffset, const GSFieldPadRows& top_pad)
 {
 	FlushDeferredDraws();
 	static int bufIdx = 0;
 	float offset = yoffset * static_cast<float>(field);
 	offset = GSConfig.DisableInterlaceOffset ? 0.0f : offset;
 
-	auto do_interlace = [this](GSTexture* sTex, GSTexture* dTex, ShaderInterlace shader, Filter filter, float yoffset, int bufIdx) {
+	auto do_interlace = [this, top_pad](GSTexture* sTex, GSTexture* dTex, ShaderInterlace shader, Filter filter, float yoffset, int bufIdx) {
 		const GSVector2i ds_i = dTex->GetSize();
 		const GSVector2 ds = GSVector2(static_cast<float>(ds_i.x), static_cast<float>(ds_i.y));
 
@@ -1327,7 +1327,8 @@ void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffse
 		}
 
 		const InterlaceConstantBuffer cb = {
-			GSVector4(static_cast<float>(bufIdx), 1.0f / ds.y, ds.y, MAD_SENSITIVITY)
+			GSVector4(static_cast<float>(bufIdx), 1.0f / ds.y, ds.y, MAD_SENSITIVITY),
+			GSVector4(top_pad.first, top_pad.end, 0.0f, 0.0f)
 		};
 
 		GL_PUSH("DoInterlace %dx%d Shader:%d Filter:%d", ds_i.x, ds_i.y, static_cast<int>(shader), filter);
@@ -2226,6 +2227,7 @@ static void DumpPSSelector(DrawConfigWriter& out, const GSHWDrawConfig::PSSelect
 	out.WriteLn("manual_lod: {}", ps.manual_lod);
 	out.WriteLn("point_sampler: {}", ps.point_sampler);
 	out.WriteLn("region_rect: {}", ps.region_rect);
+	out.WriteLn("native_texel_grid: {}", ps.native_texel_grid);
 	out.WriteLn("scanmsk: {} ({})", GSUtil::GetSCANMSKName(ps.scanmsk), ps.scanmsk);
 	out.WriteLn("aa1: {} ({})", GetPSAA1Name(ps.aa1), static_cast<u32>(ps.aa1));
 	out.WriteLn("abe: {}", static_cast<u32>(ps.abe));
@@ -2340,6 +2342,8 @@ static void DumpPSConstantBuffer(DrawConfigWriter& out, const GSHWDrawConfig::PS
 	DumpVector4(out, "DitherMatrix_3", cb.DitherMatrix[3]);
 	DumpVector4(out, "ScaleFactor", cb.ScaleFactor);
 	out.WriteLn("LineCovScale: {}", cb.LineCovScale);
+	out.WriteLn("DitherPhase: [{}, {}]", cb.DitherPhase & 3, (cb.DitherPhase >> 2) & 3);
+	DumpVector4(out, "NativeTexelGrid", cb.NativeTexelGrid);
 }
 
 static void DumpVSConstantBuffer(DrawConfigWriter& out, const GSHWDrawConfig::VSConstantBuffer& cb)

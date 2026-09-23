@@ -343,6 +343,7 @@
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="GS\Renderers\Common\GSDirtyRect.cpp" />
+    <ClCompile Include="GS\Renderers\Common\GSFieldShiftDetector.cpp" />
     <ClCompile Include="GS\GSDrawingContext.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSDrawScanline.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSDrawScanlineCodeGenerator.all.cpp">
@@ -822,6 +823,7 @@
     <ClInclude Include="GS\Renderers\HW\GSRendererHW.h" />
     <ClInclude Include="GS\Renderers\Null\GSRendererNull.h" />
     <ClInclude Include="GS\Renderers\Null\GSDeviceNone.h" />
+    <ClInclude Include="GS\Renderers\Null\GSNullDeviceProfile.h" />
     <ClInclude Include="GS\Renderers\SW\GSRendererSW.h" />
     <ClInclude Include="GS\Renderers\SW\GSBlockWalk.h" />
     <ClInclude Include="GS\Renderers\SW\GSColourWalk.h" />
@@ -859,17 +861,26 @@
     <ClInclude Include="GS\Renderers\HW\GSDrawAlphaMask.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h" />
     <ClInclude Include="GS\Renderers\HW\GSLineWalk.h" />
+    <ClInclude Include="GS\Renderers\HW\GSPointPlace.h" />
     <ClInclude Include="GS\Renderers\HW\GSSpriteEdgeSnap.h" />
     <ClInclude Include="GS\Renderers\SW\GSVertexSW.h" />
     <ClInclude Include="GS\Renderers\Common\GSVertexTrace.h" />
     <ClInclude Include="GS\Renderers\Common\GSFeedbackLoopCarryPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSFieldShiftDetector.h" />
+    <ClInclude Include="GS\Renderers\Common\GSFieldShiftPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSBlendConstantPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSCopyRoadBlendingPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSDateRoadPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSDeclaredLoopScopePolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSDynamicFeedbackLoopPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSFastStencilShadow.h" />
     <ClInclude Include="GS\Renderers\Common\GSFramebufferFetchPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSInterlaceModePolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSNativeTexelGridPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSPassScheduler.h" />
     <ClInclude Include="GS\Renderers\Common\GSPresentationPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSSelfReadCopyPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSSelfReadRoadPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSSnapshotPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSStreamRingFlushRange.h" />
     <ClInclude Include="GS\Renderers\Common\GSStreamRingMemoryPolicy.h" />

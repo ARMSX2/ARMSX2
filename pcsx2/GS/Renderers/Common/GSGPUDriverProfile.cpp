@@ -283,6 +283,55 @@ static MobileDriverVersion ParseVulkanDriverVersion(const MobileDriverContext& c
 	return version;
 }
 
+// Our own Turnip builds identify themselves in driverInfo, and that is how a driver states a fact
+// the Vulkan API has no way to state.
+//
+// Mesa pastes MESA_GIT_SHA1_OVERRIDE onto the package version, so a build we tagged `axfl1-005`
+// reports "Mesa 26.1.2 (git-axfl1-005)". A tag beginning `axfl<G>-` means the build carries
+// generation <G> of the declared-feedback-loop ordering fix; <G> is a decimal counting from 1, so
+// 0 is not a generation and never matches. Builds from before the convention (`armsx2-001` and its
+// neighbours) do not match, which is the point -- they were measured, and some of them do not have
+// the fix.
+//
+// Not a rule-table entry, because the table matches substrings and version bounds and this needs a
+// digit parsed out of a string. Being loose here would license dropping the barriers that keep
+// every other driver correct, so the parse demands the whole shape: a token boundary before
+// `git-`, at least one digit, a nonzero value, and the hyphen the convention puts after the
+// generation. A stock distro driver is built from a release tarball and carries no git sha at all,
+// so it cannot reach this by accident either way.
+static u32 ParseFixGeneration(std::string_view driver_info)
+{
+	constexpr std::string_view TAG_PREFIX = "git-axfl";
+	// Four digits is far more generation than this convention will ever need, and it keeps the
+	// accumulator from overflowing on a string that is not a tag at all.
+	constexpr size_t MAX_DIGITS = 4;
+
+	const std::string lowered = ToLowerASCII(driver_info);
+	for (size_t at = lowered.find(TAG_PREFIX); at != std::string::npos;
+		at = lowered.find(TAG_PREFIX, at + 1))
+	{
+		if (at > 0 && std::isalnum(static_cast<unsigned char>(lowered[at - 1])))
+			continue;
+
+		size_t pos = at + TAG_PREFIX.size();
+		u32 generation = 0;
+		size_t digits = 0;
+		while (pos < lowered.size() && digits < MAX_DIGITS &&
+			   std::isdigit(static_cast<unsigned char>(lowered[pos])))
+		{
+			generation = generation * 10 + static_cast<u32>(lowered[pos++] - '0');
+			digits++;
+		}
+
+		if (digits == 0 || generation == 0 || pos >= lowered.size() || lowered[pos] != '-')
+			continue;
+
+		return generation;
+	}
+
+	return 0;
+}
+
 static MobileGpuDriver DetectDriver(const GpuProfileSelection& selection,
 	const MobileDriverContext& context, std::string_view lowered_hints)
 {
@@ -542,17 +591,6 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 		Workaround(DriverWorkaround::DisableProvokingVertex) |
 			Workaround(DriverWorkaround::PreferCoherentReadback) |
 			Workaround(DriverWorkaround::UseRenderTargetCopyForFeedback)},
-	// Turnip shares none of the blob's other defects but inherits the same broken render-target
-	// self-read, so it needs its own rule rather than the vk-qualcomm-proprietary one (which is
-	// keyed on MobileGpuDriver::QualcommProprietary).
-	//
-	// ARMSX2 #442: with an HD texture pack, Tales of the Abyss loses its entire 2D text layer the
-	// moment the replacement's alpha range flips those draws to require_one_barrier and the RT
-	// self-read engages. Device A/B on Turnip/Mesa 26.1.2 + Adreno 650 established that BOTH
-	// in-pass forms drop the content — the subpassLoad input attachment AND the
-	// feedback-loop-layout texelFetch sampler — while reading a separate RT copy renders
-	// correctly. Hence both bug bits and the expensive workaround. The reporter sees the same
-	// failure on the proprietary blob.
 	// Every Turnip device writes its stream rings into write-combined memory, because
 	// VKStreamBuffer asks VMA for HOST_COHERENT and Turnip's write-combined type is the first one
 	// that satisfies it. On an MQ65 (Adreno 610, four A73 at 2.1 GHz) that costs about a third of
@@ -580,6 +618,24 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 	{"vk-turnip-a610-cached-stream-rings", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 610, 610, 0, {}, {}, 0, 0, false,
 		0, Workaround(DriverWorkaround::PreferCachedStreamRingMemory)},
+	// Turnip shares none of the blob's other defects but inherits the same broken render-target
+	// self-read, so it needs its own rule rather than the vk-qualcomm-proprietary one (which is
+	// keyed on MobileGpuDriver::QualcommProprietary).
+	//
+	// ARMSX2 #442: with an HD texture pack, Tales of the Abyss loses its entire 2D text layer the
+	// moment the replacement's alpha range flips those draws to require_one_barrier and the RT
+	// self-read engages. Device A/B on Turnip/Mesa 26.1.2 + Adreno 650 established that BOTH
+	// in-pass forms drop the content — the subpassLoad input attachment AND the
+	// feedback-loop-layout texelFetch sampler — while reading a separate RT copy renders
+	// correctly. Hence both bug bits and the expensive workaround. The reporter sees the same
+	// failure on the proprietary blob.
+	//
+	// Reach: the model bounds are 0/0, so this covers every Adreno on Turnip, while the evidence is
+	// one part (Adreno 650) on one Mesa (26.1.2). It is left unbounded because narrowing it would be
+	// a behaviour change with no more evidence behind it than the rule has. Where a part has been
+	// measured on the declared feedback loop, the driver facts below (orders_declared_feedback_loop,
+	// prefers_declared_loop_with_barriers) outrank this rule in GSSelfReadRoadPolicy.h; the copy
+	// road it forces is measurably wrong there (NASCAR's sky, The Godfather).
 	{"vk-turnip-attachment-self-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenSubpassFeedback) | Bug(DriverBug::BrokenAttachmentFeedbackLoopLayout),
@@ -687,6 +743,43 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 	if (profile.version.known)
 		profile.confidence = DriverProfileConfidence::DriverVersion;
 
+	// The two facts that do not come from the rule table. Both are still facts ABOUT THE DRIVER,
+	// and both are deliberately the same shape as UseRenderTargetCopyForFeedback: false unless
+	// this driver has been measured, so an unrecognised driver keeps the road it has.
+	//
+	// The ordering fact is restricted to a6xx because that is what the fix and the measurement
+	// cover -- the driver patch behind generation 1 changes emission for CHIP == A6XX only and
+	// a7xx comes out byte-identical to stock, so a tagged build on an a7xx part carries nothing to
+	// trust. The architecture comes from the device name ("Adreno (TM) 650"), the same parse every
+	// other model-bounded rule uses. Turnip only: a Qualcomm blob cannot carry a Mesa git tag, and
+	// if one ever appears to, it means the string is not what we think it is.
+	//
+	// Within a6xx, the 650 and up only. On an Adreno 610 the same build renders the declared road
+	// differently from run to run (5 of 24 dumps, visible in play on Metal Gear Solid 3) while
+	// its copy road is stable, so the parts below 650 keep their barriers and their copy road.
+	profile.declared_loop_fix_generation = ParseFixGeneration(context.driver_info);
+	profile.orders_declared_feedback_loop = (profile.declared_loop_fix_generation >= 1) &&
+		                                    (context.api == MobileGpuApi::Vulkan) && (profile.driver == MobileGpuDriver::MesaTurnip) &&
+		                                    (selection.gpu.architecture == MobileGpuArchitecture::Adreno6xx) &&
+		                                    (selection.gpu.model_number >= 650);
+
+	// The a7xx preference needs no tag, because it is not about a build. It is about the part: on
+	// an Adreno 740 the declared loop with our barriers kept is correct on every scored cell and
+	// stable, the copy road the vk-turnip-attachment-self-read rule puts it on draws The Godfather
+	// a third wrong and NASCAR's sky wrong, and both the pack build and upstream main behave the
+	// same. So every Turnip on those parts earns it, tagged or not,
+	// and a tagged build earns it the same way any other Turnip does -- the tag buys the ordering
+	// claim, which a7xx does not get.
+	//
+	// The 730 and up only (730, 735, 740, 750). The a740 is the part measured; the 730 and 750 are
+	// the a7xx generations either side of it in Mesa's freedreno table (gen1 and gen3 around the
+	// a740's gen2). The 702, 710, 720 and 725 are filed as 7xx in our table but were never run, and
+	// Mesa treats the 702 as an a6xx-family part, so they keep the copy road.
+	profile.prefers_declared_loop_with_barriers = (context.api == MobileGpuApi::Vulkan) &&
+		                                          (profile.driver == MobileGpuDriver::MesaTurnip) &&
+		                                          (selection.gpu.architecture == MobileGpuArchitecture::Adreno7xx) &&
+		                                          (selection.gpu.model_number >= 730);
+
 	for (const DriverRule& rule : s_driver_rules)
 	{
 		if (std::string_view(rule.id) == "vk-powervr-old-swapchain-width" &&
@@ -744,4 +837,9 @@ void GpuProfileDetector::SetForcedBugs(u64 mask)
 u64 GpuProfileDetector::GetForcedBugs()
 {
 	return s_forced_driver_bugs;
+}
+
+u32 GpuProfileDetector::ParseDeclaredLoopFixGeneration(std::string_view driver_info)
+{
+	return GpuProfileDetail::ParseFixGeneration(driver_info);
 }

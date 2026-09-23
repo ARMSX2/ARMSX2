@@ -316,6 +316,15 @@ enum class GSRendererType : s8
 	VK = 14,
 	Metal = 17,
 	DX12 = 15,
+
+	// GSRendererHW paired with the deviceless GSDeviceNone: the hardware renderer's CPU-side
+	// path (GIF decode, vertex kick, texture cache, everything Draw() does to build a
+	// submission) with no GPU behind it. Distinct from Null, which pairs GSDeviceNone with
+	// GSRendererNull and draws nothing at all -- reusing Null here would make GSIsHardwareRenderer(),
+	// UseHardwareRenderer() and every "renderer == Null" check in GS.cpp/GSState.cpp answer as if
+	// nothing were running, when GSRendererHW's real CPU logic is. pcsx2-gsrunner only
+	// (`-renderer nullhw`); deliberately not added to any Qt/ImGui renderer picker.
+	NullHW = 18,
 };
 
 enum class GSVSyncMode : u8
@@ -1013,6 +1022,13 @@ struct Pcsx2Config
 		float UpscaleMultiplier = DEFAULT_UPSCALE_MULTIPLIER;
 
 		AccBlendLevel AccurateBlendingUnit = DEFAULT_BLENDING_ACCURACY;
+		/// The highest blending accuracy this title may run at while the device pays for its
+		/// destination read on every draw that takes one -- a copy of the render target, or a
+		/// barrier -- as AccBlendLevel's integer; -1 when the title asks for nothing, which is
+		/// every title but Splashdown. Written only by the game database
+		/// (copyRoadMaximumBlendingLevel) and read only by the GS, which is the side that knows
+		/// which road the device took. See GS/Renderers/Common/GSCopyRoadBlendingPolicy.h.
+		s8 CopyRoadMaximumBlendingLevel = -1;
 		BiFiltering TextureFiltering = DEFAULT_TEXTURE_FILTERING_MODE;
 		TexturePreloadingLevel TexturePreloading = TexturePreloadingLevel::Full;
 		GSDumpCompressionMethod GSDumpCompression = GSDumpCompressionMethod::Zstandard;
@@ -1042,6 +1058,10 @@ struct Pcsx2Config
 		GSLimit24BitDepth UserHacks_Limit24BitDepth = GSLimit24BitDepth::Disabled;
 		GSBilinearDirtyMode UserHacks_BilinearHack = GSBilinearDirtyMode::Automatic;
 		TriFiltering TriFilter = DEFAULT_TRILINEAR_FILTERING_MODE;
+		/// Whether this title moves its projection half a display line between fields, which decides
+		/// whether the FFMD merge offset is applied when a field render is presented directly at an
+		/// integer upscale of 2 or more. -1 leaves it to the runtime detector, which defaults to 1.
+		s8 FieldShift = -1;
 		s8 OverrideTextureBarriers = -1;
 		GSDepthFeedbackMode DepthFeedbackMode = GSDepthFeedbackMode::Auto;
 		GSBackThreadMode BackThreadMode = GSBackThreadMode::Off;
