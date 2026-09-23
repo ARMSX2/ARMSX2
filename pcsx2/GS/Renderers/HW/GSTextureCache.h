@@ -522,12 +522,6 @@ protected:
 	bool PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, const GSVector2i& valid_size, bool is_frame,
 		bool preload, bool preserve_target, const GSVector4i draw_rect, Target* dst, GSTextureCache::Source* src = nullptr);
 
-	/// Converts one native coordinate or extent to the device grid. Native pixel n owns device
-	/// pixels [ceil(n * scale), ceil((n + 1) * scale)), which is where the rasteriser puts it, so
-	/// the conversion ceils. This is the one place that rule lives; everything below scales
-	/// through it rather than open-coding a multiply that truncates.
-	static int ScaleNativeToDevice(int native, float scale);
-
 	// Returns scaled texture size.
 	static GSVector2i ScaleRenderTargetSize(const GSVector2i& sz, float scale);
 
@@ -567,6 +561,31 @@ protected:
 		bool m_clear = true;
 	};
 public:
+	/// Converts one native coordinate to the device grid. Native pixel n owns device pixels
+	/// [ceil(n * scale), ceil((n + 1) * scale)), which is where the rasteriser puts it, so the
+	/// conversion ceils. This is the one place that rule lives; everything in the cache scales
+	/// through it rather than open-coding a multiply that truncates. Also the device size of a
+	/// texture whose native size is `native`, since that is a span starting at 0.
+	static int ScaleNativeToDevice(int native, float scale);
+
+	/// The device length of the native span [start, start + length): the difference of its two
+	/// edges' device positions. Not ScaleNativeToDevice(length), which is the length of a span
+	/// starting at native 0; at a fractional scale the two differ by up to a device pixel.
+	static int ScaleNativeSpanToDevice(int start, int length, float scale);
+
+	/// The device rectangles a native w x h move from (sx, sy) to (dx, dy) copies between. Each
+	/// starts at its native corner's first owned device pixel. Both have the same size, since a
+	/// copy cannot stretch, and that size is the smaller of the two owned spans per axis: at a
+	/// fractional scale the source and destination spans can differ by one device pixel, and
+	/// taking the larger would read a pixel the source does not own or write one the destination
+	/// does not own.
+	struct DeviceMove
+	{
+		GSVector4i src;
+		GSVector4i dst;
+	};
+	static DeviceMove ScaleMoveToDevice(int sx, int sy, int dx, int dy, int w, int h, float scale);
+
 	GSTextureCache();
 	~GSTextureCache();
 
