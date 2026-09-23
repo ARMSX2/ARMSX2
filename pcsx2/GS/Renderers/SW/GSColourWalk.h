@@ -137,8 +137,8 @@ struct GSColourWalk
 	/// them.
 	///
 	/// Kept inside the walk so clearing the walk invalidates it.
-	/// GSRasterizer::SetupPrim clears it for primitives whose walk it does not
-	/// rewrite.
+	/// GSRasterizer::SetupPrim marks it stale for every primitive with a walk.
+	/// A walkless primitive keeps GSColourWalkTablesZero from the one before.
 	struct
 	{
 		GSVector4 cfrac; ///< the colour fraction those tables were built from
