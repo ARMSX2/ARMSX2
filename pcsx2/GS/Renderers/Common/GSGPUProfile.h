@@ -269,7 +269,7 @@ struct MobileDriverProfile
 	/// declared road is where this part belongs, and the barriers stay. Where a driver somehow
 	/// carried both, the ordering fact is strictly more and answers.
 	///
-	/// True today for Turnip on Adreno 7xx, measured:
+	/// True today for Turnip on Adreno 730 and up (measured on the 740):
 	/// on an a740 that road is correct on every scored cell and stable across 7 reps, where the
 	/// copy road the driver database puts it on draws The Godfather a third wrong and NASCAR's sky
 	/// wrong. Against the same driver's copy road it is 17-21% faster on Stuntman and WRC3 and

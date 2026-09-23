@@ -157,7 +157,7 @@ struct GSSelfReadRoadInputs
 
 	/// MobileDriverProfile::prefers_declared_loop_with_barriers -- the driver database says THIS
 	/// part's best in-pass road is the declared loop with our own per-draw barriers still doing
-	/// the ordering. True for Turnip on Adreno 7xx and nothing else.
+	/// the ordering. True for Turnip on Adreno 730 and up and nothing else.
 	///
 	/// It outranks rt_self_read_is_broken on auto for the same reason the ordering fact does, and
 	/// a stronger one: on the a740 the copy road that rule selects is not merely slow, it is

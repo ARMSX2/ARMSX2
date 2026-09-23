@@ -801,12 +801,18 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 	// an Adreno 740 the declared loop with our barriers kept is correct on every scored cell and
 	// stable, the copy road the vk-turnip-attachment-self-read rule puts it on draws The Godfather
 	// a third wrong and NASCAR's sky wrong, and both the pack build and upstream main behave the
-	// same. So every Turnip on a7xx earns it, tagged or not,
+	// same. So every Turnip on those parts earns it, tagged or not,
 	// and a tagged build earns it the same way any other Turnip does -- the tag buys the ordering
 	// claim, which a7xx does not get.
+	//
+	// The 730 and up only (730, 735, 740, 750). The a740 is the part measured; the 730 and 750 are
+	// the a7xx generations either side of it in Mesa's freedreno table (gen1 and gen3 around the
+	// a740's gen2). The 702, 710, 720 and 725 are filed as 7xx in our table but were never run, and
+	// Mesa treats the 702 as an a6xx-family part, so they keep the copy road.
 	profile.prefers_declared_loop_with_barriers = (context.api == MobileGpuApi::Vulkan) &&
 		                                          (profile.driver == MobileGpuDriver::MesaTurnip) &&
-		                                          (selection.gpu.architecture == MobileGpuArchitecture::Adreno7xx);
+		                                          (selection.gpu.architecture == MobileGpuArchitecture::Adreno7xx) &&
+		                                          (selection.gpu.model_number >= 730);
 
 	for (const DriverRule& rule : s_driver_rules)
 	{

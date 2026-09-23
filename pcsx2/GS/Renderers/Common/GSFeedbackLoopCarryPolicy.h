@@ -93,7 +93,7 @@
 // boundary.
 //
 // The ADRENO half is reached when GSSelfReadRoadPolicy puts a Turnip device on the declared
-// feedback loop (our driver build on Adreno 650 and up, or Turnip on Adreno 7xx), which
+// feedback loop (our driver build on Adreno 650 and up, or Turnip on Adreno 730 and up), which
 // forces the layout spelling even though Turnip advertises rasterization-order access. Every other
 // Adreno stays on the copy road and carries nothing.
 //

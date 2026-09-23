@@ -882,6 +882,25 @@ TEST(GSGpuDriverProfile, StockTurnipOnAdreno7xxPrefersTheDeclaredLoopWithBarrier
 	}
 }
 
+// Only the 730 and up. The a740 is the one part this was measured on. Our table files the 702, 710
+// and 720 -- and the 725 -- as 7xx too, but none was run, and the 702 is an a6xx-family part as far
+// as Mesa's freedreno device table is concerned. They keep origin/master's road: the RT-copy
+// workaround, no declared loop.
+TEST(GSGpuDriverProfile, TurnipBelowAdreno730DoesNotGetTheA7xxPreference)
+{
+	for (const char* device_name : {"Adreno (TM) 702", "Adreno (TM) 710", "Adreno (TM) 720", "Adreno (TM) 725"})
+	{
+		const GpuProfileSelection sel = ResolveTurnipVK(device_name, kStockTurnipDriverInfo);
+		EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno7xx) << device_name;
+		EXPECT_EQ(sel.driver.driver, MobileGpuDriver::MesaTurnip) << device_name;
+		EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(sel)) << device_name;
+		EXPECT_FALSE(OrdersDeclaredLoop(sel)) << device_name;
+		EXPECT_TRUE(sel.driver.UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback)) << device_name;
+		EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(ResolveTurnipVK(device_name, kFixedTurnipDriverInfo)))
+			<< device_name << " (tagged)";
+	}
+}
+
 // a6xx is the ordering fact's part, not this one's. Turnip on an a650 keeps the copy road unless
 // it carries the tag, which is exactly where the ordering fact left it.
 TEST(GSGpuDriverProfile, TurnipOnAdreno6xxDoesNotGetTheA7xxPreference)

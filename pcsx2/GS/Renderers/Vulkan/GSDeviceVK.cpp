@@ -4054,7 +4054,7 @@ bool GSDeviceVK::CheckFeatures()
 	// the experiment key. Every other driver reports 0 here and is unaffected.
 	road_inputs.driver_orders_declared_loop = GetMobileDriverProfile().orders_declared_feedback_loop;
 	// The other driver fact: the database saying this PART belongs on the declared loop with our
-	// own per-draw barriers kept. Turnip on an Adreno 7xx, where the copy road is not merely slow
+	// own per-draw barriers kept. Turnip on an Adreno 730 and up, where the copy road is not merely slow
 	// but wrong, and where the barrier-less road races. Every other part reports false.
 	road_inputs.driver_prefers_declared_loop_with_barriers =
 		GetMobileDriverProfile().prefers_declared_loop_with_barriers;
