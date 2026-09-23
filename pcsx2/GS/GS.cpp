@@ -255,9 +255,12 @@ static void GSApplyCopyRoadBlendingCap(Pcsx2Config::GSOptions& config)
 	// The road, not the texture-barrier bit. A barrier road on a tiler charges for the destination
 	// read on every draw that takes one, the same as a copy road does -- which is what the bit
 	// cannot say, being equally true of the roads where the driver hands us the read for nothing.
+	// Which barrier roads charge is the backend's measured answer, not an inference: see
+	// barrier_read_costs_per_draw.
 	in.road = GSSelfReadRoadFromPublishedBits(
 		f.framebuffer_fetch, f.texture_barrier, f.declared_feedback_loop_orders_overlap);
 	in.multidraw_fb_copy = f.multidraw_fb_copy;
+	in.barrier_costs_per_draw = f.barrier_read_costs_per_draw;
 	in.title_cap = config.CopyRoadMaximumBlendingLevel;
 	in.configured_level = static_cast<int>(config.AccurateBlendingUnit);
 

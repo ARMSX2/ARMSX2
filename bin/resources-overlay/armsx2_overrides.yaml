@@ -593,7 +593,9 @@ SLES-50121:
 # barrier road turns these same draws into software blends and emits 59,023 barriers a run, +40%
 # on the frame; with the cap it is 1.01x the copy road with zero barriers. The M2's default road
 # is a barrier road too, so a development build that loads this overlay now takes the cap there --
-# measured there, the result is byte-identical to the copy road the picture was judged on.
+# measured there, the result is byte-identical to the copy road the picture was judged on. Only
+# those two drivers (Turnip, Honeykrisp) count their barrier road as costly; a desktop GPU on a
+# barrier road keeps its blending level even with this overlay loaded.
 # copyRoadMaximumBlendingLevel is deliberately NOT maximumBlendingLevel: the cost exists only where
 # we pay for the read per draw, so on a Mali with in-tile fetch, and on the Adreno declared-loop
 # road the driver orders for us, the entry is inert and the picture is the one it always was.

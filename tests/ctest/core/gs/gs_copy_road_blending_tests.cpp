@@ -50,10 +50,22 @@ namespace
 		return in;
 	}
 
-	// A real texture barrier, one per draw. The M2 at its defaults, every desktop GPU, and -- the
-	// reason this file changed -- a Turnip a7xx, where the driver answers each barrier with a cache
-	// flush and a wait for the pipeline to drain.
+	// A real texture barrier, one per draw, on a driver where that was measured to cost like a
+	// copy: the M2 at its defaults (Honeykrisp) and -- the reason this file changed -- a Turnip
+	// a7xx, where the driver answers each barrier with a cache flush and a wait for the pipeline to
+	// drain.
 	constexpr GSCopyRoadBlendingInputs BarrierRoad()
+	{
+		GSCopyRoadBlendingInputs in;
+		in.road = GSSelfReadRoad::InPassBarrier;
+		in.barrier_costs_per_draw = true;
+		return in;
+	}
+
+	// The same barrier road on desktop Vulkan (NVIDIA, AMD, Intel) or desktop GL with
+	// GL_ARB_texture_barrier. The barrier is cheap on an immediate-mode GPU, and nobody measured
+	// otherwise, so the backend does not claim it costs anything.
+	constexpr GSCopyRoadBlendingInputs DesktopBarrierRoad()
 	{
 		GSCopyRoadBlendingInputs in;
 		in.road = GSSelfReadRoad::InPassBarrier;
@@ -99,10 +111,26 @@ TEST(GSCopyRoadBlending, CopyRoadTakesTheCap)
 	EXPECT_EQ(CopyRoadBlendingLevel(WithSplashdownEntry(CopyRoad())), kMinimum);
 }
 
-// A barrier is not a free read on a tiler, so the barrier road takes the cap too.
+// A barrier is not a free read on a tiler, so the barrier road takes the cap too -- on the drivers
+// where that was measured.
 TEST(GSCopyRoadBlending, BarrierRoadTakesTheCap)
 {
 	EXPECT_EQ(CopyRoadBlendingLevel(WithSplashdownEntry(BarrierRoad())), kMinimum);
+}
+
+// Desktop Vulkan and GL keep origin/master's blending with the entry loaded: Splashdown stays at
+// the player's level on their barrier road.
+TEST(GSCopyRoadBlending, DesktopBarrierRoadKeepsItsBlending)
+{
+	EXPECT_EQ(CopyRoadBlendingLevel(WithSplashdownEntry(DesktopBarrierRoad())), kBasic);
+	EXPECT_FALSE(DestinationReadCostsPerDraw(DesktopBarrierRoad()));
+
+	// ...and the backend's bit is what separates the two, not the road.
+	GSCopyRoadBlendingInputs in = WithSplashdownEntry(DesktopBarrierRoad());
+	in.road = GSSelfReadRoadFromPublishedBits(false, true, false);
+	EXPECT_EQ(CopyRoadBlendingLevel(in), kBasic);
+	in.barrier_costs_per_draw = true;
+	EXPECT_EQ(CopyRoadBlendingLevel(in), kMinimum);
 }
 
 // The roads that must not move. The driver-ordered read is free by either entrance, and the
@@ -180,6 +208,7 @@ TEST(GSCopyRoadBlending, ThePublishedBitsNameTheRoadTheCapActsOn)
 	EXPECT_EQ(GSSelfReadRoadFromPublishedBits(false, true, true), GSSelfReadRoad::InPassOrdered);
 
 	GSCopyRoadBlendingInputs in;
+	in.barrier_costs_per_draw = true;
 	in.road = GSSelfReadRoadFromPublishedBits(false, true, false);
 	EXPECT_EQ(CopyRoadBlendingLevel(WithSplashdownEntry(in)), kMinimum);
 
@@ -195,22 +224,26 @@ TEST(GSCopyRoadBlending, CapsOnlyWhereTheReadCostsSomething)
 	{
 		for (int multidraw = 0; multidraw < 2; multidraw++)
 		{
-			for (int cap = 0; cap <= kMaximum; cap++)
+			for (int barrier_cost = 0; barrier_cost < 2; barrier_cost++)
 			{
-				for (int level = 0; level <= kMaximum; level++)
+				for (int cap = 0; cap <= kMaximum; cap++)
 				{
-					GSCopyRoadBlendingInputs in;
-					in.road = road;
-					in.multidraw_fb_copy = (multidraw != 0);
-					in.title_cap = cap;
-					in.configured_level = level;
+					for (int level = 0; level <= kMaximum; level++)
+					{
+						GSCopyRoadBlendingInputs in;
+						in.road = road;
+						in.multidraw_fb_copy = (multidraw != 0);
+						in.barrier_costs_per_draw = (barrier_cost != 0);
+						in.title_cap = cap;
+						in.configured_level = level;
 
-					const bool charges = (road == GSSelfReadRoad::InPassBarrier) ||
-					                     (road == GSSelfReadRoad::Copy && multidraw == 0);
-					const int expected = (charges && level > cap) ? cap : level;
-					EXPECT_EQ(CopyRoadBlendingLevel(in), expected)
-						<< "road=" << static_cast<int>(road) << " multidraw=" << multidraw
-						<< " cap=" << cap << " level=" << level;
+						const bool charges = (road == GSSelfReadRoad::InPassBarrier && barrier_cost != 0) ||
+						                     (road == GSSelfReadRoad::Copy && multidraw == 0);
+						const int expected = (charges && level > cap) ? cap : level;
+						EXPECT_EQ(CopyRoadBlendingLevel(in), expected)
+							<< "road=" << static_cast<int>(road) << " multidraw=" << multidraw
+							<< " barrier_cost=" << barrier_cost << " cap=" << cap << " level=" << level;
+					}
 				}
 			}
 		}

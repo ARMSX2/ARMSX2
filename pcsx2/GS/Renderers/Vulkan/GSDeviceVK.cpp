@@ -4112,6 +4112,12 @@ bool GSDeviceVK::CheckFeatures()
 	m_features.framebuffer_fetch = road.in_tile_read;
 	m_features.texture_barrier = road.texture_barrier;
 	m_features.declared_feedback_loop_orders_overlap = road.orders_overlapping_prims;
+	// The two drivers whose per-draw barrier was measured to cost about what a per-draw copy does:
+	// Turnip (an Adreno 740, +40% on Splashdown) and Honeykrisp (the M2). Read only by the
+	// blending cap in GSCopyRoadBlendingPolicy.h; every other driver treats the barrier as cheap.
+	m_features.barrier_read_costs_per_draw =
+		m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_TURNIP ||
+		m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP;
 	if (rt_self_read_is_broken && GSConfig.OverrideTextureBarriers < 0 && !m_features.texture_barrier)
 	{
 		Console.WriteLn("VK: driver has an unreliable in-pass render-target self-read — forcing the "

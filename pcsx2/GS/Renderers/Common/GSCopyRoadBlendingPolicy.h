@@ -55,6 +55,12 @@
 // So the behaviour is: ON A DEVICE WHERE READING THE DESTINATION COSTS SOMETHING PER DRAW,
 // SPLASHDOWN RENDERS WITH MINIMUM BLENDING ACCURACY. Everywhere else it renders exactly as it did.
 //
+// Which barrier roads count is a measurement, not a guess about tilers. The two devices timed on
+// the barrier road are an Adreno 740 under Turnip and an M2 under Honeykrisp, and the backend says
+// so in FeatureSupport::barrier_read_costs_per_draw. Desktop Vulkan and GL also sit on a barrier
+// road; the barrier is cheap on an immediate-mode GPU, nobody measured otherwise, and they keep
+// the blending level they had before this file existed.
+//
 // The scope is the point of the file, and the scope is the ROAD, not one device fact. Where the
 // driver orders the read for us -- Mali's in-tile fetch, and the declared feedback loop on a
 // Turnip build measured to order one (the a6xx road) -- the destination read
@@ -82,10 +88,9 @@
 // manual hardware fixes -- makes applyGSHardwareFixes skip it and never set the field this policy
 // reads. Nothing here needs to know about that; it sees a title that asked for nothing.
 //
-// And the cap ships in the mobile GameDB overlay only, which is the reason a desktop machine on the
-// barrier road does not move: no overlay, no entry, title_cap stays -1. The one exception is a
-// development build here that loads the overlay by hand -- the M2 does take the cap on Splashdown
-// now, and that was measured rather than assumed.
+// And the cap ships in the mobile GameDB overlay only, which the ARM64 Linux build also carries. A
+// desktop GPU in such a machine would load the entry, and barrier_read_costs_per_draw is what keeps
+// the barrier road from applying it there.
 //
 // Levels are plain integers, 0 = Minimum through 5 = Maximum, which is the grammar the database
 // key already speaks and what keeps this header free of Config.h. See
@@ -109,6 +114,12 @@ struct GSCopyRoadBlendingInputs
 	/// GLUsesPerPrimitiveFbCopy for the measurement that separates the two. Only ever set on the
 	/// copy road, and only meaningful there.
 	bool multidraw_fb_copy = false;
+
+	/// FeatureSupport::barrier_read_costs_per_draw: the barrier road on this device was measured to
+	/// cost like a copy (Adreno under Turnip, Apple silicon under Honeykrisp). Only meaningful on
+	/// InPassBarrier; false means the barrier is cheap, which is what every other device assumed
+	/// before this policy existed.
+	bool barrier_costs_per_draw = false;
 
 	/// The database's copyRoadMaximumBlendingLevel for the running title, or -1 when it asks for
 	/// nothing -- which is every title but one, and every title on a build without the mobile
@@ -135,9 +146,8 @@ constexpr bool DestinationReadCostsPerDraw(const GSCopyRoadBlendingInputs& in)
 		case GSSelfReadRoad::InPassBarrier:
 			// A barrier per draw. Cheap on the immediate-mode GPUs the barrier was designed for,
 			// and on a tiler a per-draw wait for the pipeline to drain -- +40% on Splashdown on an
-			// Adreno 740. The cap is in the mobile overlay, so which of those two a device is
-			// is already decided by whether it has the entry at all.
-			return true;
+			// Adreno 740. Only the devices where that was measured say so.
+			return in.barrier_costs_per_draw;
 
 		case GSSelfReadRoad::Copy:
 		default:
@@ -169,7 +179,11 @@ static_assert(CopyRoadBlendingLevel(
 
 // The road the picture was judged on, and the road measured byte-identical to it.
 static_assert(CopyRoadBlendingLevel({.road = GSSelfReadRoad::Copy, .title_cap = 0, .configured_level = 1}) == 0);
-static_assert(CopyRoadBlendingLevel({.road = GSSelfReadRoad::InPassBarrier, .title_cap = 0, .configured_level = 1}) == 0);
+static_assert(CopyRoadBlendingLevel(
+				  {.road = GSSelfReadRoad::InPassBarrier, .barrier_costs_per_draw = true, .title_cap = 0, .configured_level = 1}) == 0);
+
+// Desktop Vulkan and GL on the barrier road: the entry is present and nothing moves.
+static_assert(CopyRoadBlendingLevel({.road = GSSelfReadRoad::InPassBarrier, .title_cap = 0, .configured_level = 1}) == 1);
 
 // A title that asked for nothing is untouched on every road, which is every title but one.
 static_assert(CopyRoadBlendingLevel({.road = GSSelfReadRoad::Copy, .configured_level = 1}) == 1);
@@ -183,13 +197,17 @@ static_assert(CopyRoadBlendingLevel({.road = GSSelfReadRoad::Copy, .title_cap = 
 // The road predicate itself, so the four destination reads named in the comment above are two
 // distinct answers here: the two that cost something per draw, and the two that do not.
 static_assert(DestinationReadCostsPerDraw({.road = GSSelfReadRoad::Copy}));
-static_assert(DestinationReadCostsPerDraw({.road = GSSelfReadRoad::InPassBarrier}));
+static_assert(DestinationReadCostsPerDraw({.road = GSSelfReadRoad::InPassBarrier, .barrier_costs_per_draw = true}));
+static_assert(!DestinationReadCostsPerDraw({.road = GSSelfReadRoad::InPassBarrier}));
 static_assert(!DestinationReadCostsPerDraw({.road = GSSelfReadRoad::InPassOrdered}));
+static_assert(!DestinationReadCostsPerDraw({.road = GSSelfReadRoad::InPassOrdered, .barrier_costs_per_draw = true}));
 static_assert(!DestinationReadCostsPerDraw({.road = GSSelfReadRoad::Copy, .multidraw_fb_copy = true}));
 
 // And the same statement made through the road read-back, which is how GS.cpp reaches it: the bits
 // a backend publishes, in the order GSDevice::FeatureSupport carries them.
 static_assert(DestinationReadCostsPerDraw({.road = GSSelfReadRoadFromPublishedBits(false, false, false)}));
-static_assert(DestinationReadCostsPerDraw({.road = GSSelfReadRoadFromPublishedBits(false, true, false)}));
+static_assert(DestinationReadCostsPerDraw(
+	{.road = GSSelfReadRoadFromPublishedBits(false, true, false), .barrier_costs_per_draw = true}));
+static_assert(!DestinationReadCostsPerDraw({.road = GSSelfReadRoadFromPublishedBits(false, true, false)}));
 static_assert(!DestinationReadCostsPerDraw({.road = GSSelfReadRoadFromPublishedBits(true, true, false)}));
 static_assert(!DestinationReadCostsPerDraw({.road = GSSelfReadRoadFromPublishedBits(false, true, true)}));
