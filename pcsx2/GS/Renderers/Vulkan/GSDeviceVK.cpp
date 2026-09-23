@@ -4420,8 +4420,7 @@ bool GSDeviceVK::CheckFeatures()
 	// the shader path skipped entirely. God of War II's Athena statue speckles the
 	// same way. Biasing the stored value one PS2 Z unit down also clears it, which
 	// puts the disagreement below a single Z unit.
-	m_features.no_ps2_z_quantization =
-		GSConfig.DisablePS2DepthQuantization || IsDeviceMali() || IsDeviceAppleGPU();
+	m_features.no_ps2_z_quantization = IsDeviceMali() || IsDeviceAppleGPU();
 
 	// whether we can do point/line expand depends on the range of the device
 	const float f_upscale = static_cast<float>(GSConfig.UpscaleMultiplier);
