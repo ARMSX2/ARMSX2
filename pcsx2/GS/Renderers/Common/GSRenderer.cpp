@@ -244,13 +244,12 @@ bool GSRenderer::Merge(int field)
 	// Half the field-mode titles move their projection half a display line between fields, so their
 	// consecutive field renders are one native line apart and need the offset to line up; the rest
 	// draw the identical picture on both fields, and giving them the offset is what makes a still
-	// picture jitter a line every frame. GameDB (and the INI) can say outright; otherwise the
-	// detector watches the frames and says, defaulting to shift until it has an answer.
+	// picture jitter a line every frame. The detector watches the frames and says, defaulting to
+	// shift until it has an answer.
 	bool apply_field_shift = false;
 	if (present_field_direct && !GSConfig.DisableInterlaceOffset)
 	{
-		apply_field_shift =
-			(GSConfig.FieldShift >= 0) ? (GSConfig.FieldShift != 0) : m_field_shift.WantsShift();
+		apply_field_shift = m_field_shift.WantsShift();
 	}
 
 	// FastMAD (mode 3) stores four fields in a two-bank history target. Older Mali-G57 Vulkan drivers
@@ -391,9 +390,8 @@ bool GSRenderer::Merge(int field)
 	g_gs_device->Merge(tex, src_gs_read, dst, top_band, fs, m_regs->PMODE, m_regs->EXTBUF, c);
 
 	// Show the detector this field, offset and all. It is told which offset was applied so it can
-	// take it back out and measure what the GAME did between fields. Costs nothing once decided,
-	// and never once a GameDB or INI answer exists.
-	if (present_field_direct && (tex[0] || tex[1]) && GSConfig.FieldShift < 0 && !GSConfig.DisableInterlaceOffset)
+	// take it back out and measure what the GAME did between fields. Costs nothing once decided.
+	if (present_field_direct && (tex[0] || tex[1]) && !GSConfig.DisableInterlaceOffset)
 	{
 		m_field_shift.Update(g_gs_device->GetCurrent(), fs, upscale_rows,
 			apply_field_shift ? (upscale_rows * (field ^ field2)) : 0, field ^ field2);

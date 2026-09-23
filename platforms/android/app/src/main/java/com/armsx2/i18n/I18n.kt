@@ -1334,8 +1334,6 @@ private val BASE_EN: Map<String, String> = mapOf(
     "ralogin.username.label" to "Username (A to type)",
     "renderer.accurateAlphaTest.description" to "More accurate alpha testing in the hardware renderer (pairs with ROV). Applies live.",
     "renderer.accurateAlphaTest.label" to "Accurate Alpha Test",
-    "renderer.accurateBlendingFastPath.description" to "Vulkan + Adreno only: route accurate blending through the tile-memory framebuffer-fetch path instead of ROV / texture-barrier copies. It's the mobile-native equivalent of desktop ROV, and usually much faster on a tiler. ON by default. A few proprietary Adreno drivers return stale reads and may show artifacts (sprite alpha cutouts, invisible floor patches); turn this off if you see them. Restart the game to apply. No effect on Mali (already enabled) or OpenGL.",
-    "renderer.accurateBlendingFastPath.label" to "Accurate blending fast path",
     "renderer.angleOpenGL.label" to "OpenGL via ANGLE",
     "renderer.angleOpenGL.description" to "Run the OpenGL renderer through ANGLE, which translates OpenGL ES to Vulkan using a bundled driver. Useful on devices whose native OpenGL ES driver is broken or slow (e.g. some MediaTek Mali). Only takes effect when the renderer is set to OpenGL. Restart the game to apply.",
     "renderer.anisotropic.description" to "Sharpens angled textures. Higher values can cost GPU time.",

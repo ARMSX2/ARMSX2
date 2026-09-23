@@ -365,12 +365,6 @@ data class DisplaySettings(
     val hwAa1: Boolean = false,
     /** EmuCore/GS/HWAccurateAlphaTest — accurate alpha test for the HW renderer (pairs with ROV). Default off. */
     val hwAat: Boolean = false,
-    /** EmuCore/GS/EnableAdrenoFramebufferFetch — enable the Vulkan framebuffer-fetch
-     * (ROAA) accurate-blending fast path on non-Mali (Adreno) GPUs that expose the
-     * extension. Default ON so accurate blending runs in-tile (fast) instead of the
-     * per-primitive barrier fallback. A few proprietary Adreno drivers show stale-ROAA
-     * read artifacts — turn this off in the Renderer tab if so. Applies on game restart. */
-    val adrenoFbFetch: Boolean = true,
     /** EmuCore/GS/CoalesceRenderPasses — group consecutive draws to the same target into a
      * single render pass. Aimed squarely at tiling GPUs (every Android GPU), where each pass
      * boundary costs a full tile load and store; rendering output is unchanged. Default off,
@@ -383,11 +377,8 @@ data class DisplaySettings(
      * textures). Mali exposes no hardware dual-source blend, so with fetch off the HW
      * renderer SW-blends via a per-primitive texture barrier — very slow in blend-heavy
      * games (issue #339: Shadow of the Colossus on Dimensity 8350 + Mali-G615). This lets
-     * such a user test whether their driver is actually affected. Default OFF, and kept
-     * deliberately separate from adrenoFbFetch (which is default-ON plus a ConfigStore
-     * migration — keying off it would force fetch on for EVERY MediaTek Mali user, the
-     * exact breakage this works around). Inert on other GPUs/renderers. Applies on game
-     * restart. */
+     * such a user test whether their driver is actually affected. Default OFF. Inert on
+     * other GPUs/renderers. Applies on game restart. */
     val forceMaliFbFetch: Boolean = false,
     /** EmuCore/GS/AndroidUseAngleOpenGL — run the OpenGL renderer through ANGLE's
      *  GLES-on-Vulkan translation (bundled libEGL_angle.so / libGLESv2_angle.so).
@@ -1313,7 +1304,6 @@ data class Settings(
                 disableFramebufferFetch = boolAt("EmuCore/GS/DisableFramebufferFetch") ?: this.display.disableFramebufferFetch,
                 hwRov = boolAt("EmuCore/GS/HWROV") ?: this.display.hwRov,
                 hwAa1 = boolAt("EmuCore/GS/HWAA1") ?: this.display.hwAa1,
-                adrenoFbFetch = boolAt("EmuCore/GS/EnableAdrenoFramebufferFetch") ?: this.display.adrenoFbFetch,
                 coalesceRenderPasses = boolAt("EmuCore/GS/CoalesceRenderPasses") ?: this.display.coalesceRenderPasses,
                 forceMaliFbFetch = boolAt("EmuCore/GS/ForceMaliFramebufferFetch") ?: this.display.forceMaliFbFetch,
                 useAngleOpenGL = boolAt("EmuCore/GS/AndroidUseAngleOpenGL") ?: this.display.useAngleOpenGL,
@@ -1720,7 +1710,6 @@ data class Settings(
         put("EmuCore/GS", "DisableFramebufferFetch", "bool", display.disableFramebufferFetch.toString())
         put("EmuCore/GS", "HWROV", "bool", display.hwRov.toString())
         put("EmuCore/GS", "HWAA1", "bool", display.hwAa1.toString())
-        put("EmuCore/GS", "EnableAdrenoFramebufferFetch", "bool", display.adrenoFbFetch.toString())
         put("EmuCore/GS", "CoalesceRenderPasses", "bool", display.coalesceRenderPasses.toString())
         put("EmuCore/GS", "ForceMaliFramebufferFetch", "bool", display.forceMaliFbFetch.toString())
         // Parity write (native reads the ARMSX2_ANGLE_EGL_LIBRARY env var set by
@@ -2000,7 +1989,6 @@ data class Settings(
         put("disableFramebufferFetch", display.disableFramebufferFetch)
         put("hwRov", display.hwRov)
         put("hwAa1", display.hwAa1)
-        put("adrenoFbFetch", display.adrenoFbFetch)
         put("coalesceRenderPasses", display.coalesceRenderPasses)
         put("forceMaliFbFetch", display.forceMaliFbFetch)
         put("useAngleOpenGL", display.useAngleOpenGL)
@@ -2341,7 +2329,6 @@ data class Settings(
                     hwRov = json.optBoolean("hwRov", def.display.hwRov),
                     hwAa1 = json.optBoolean("hwAa1", def.display.hwAa1),
                     hwAat = false,
-                    adrenoFbFetch = json.optBoolean("adrenoFbFetch", def.display.adrenoFbFetch),
                     coalesceRenderPasses = json.optBoolean("coalesceRenderPasses", def.display.coalesceRenderPasses),
                     forceMaliFbFetch = json.optBoolean("forceMaliFbFetch", def.display.forceMaliFbFetch),
                     useAngleOpenGL = json.optBoolean("useAngleOpenGL", def.display.useAngleOpenGL),
@@ -2622,7 +2609,6 @@ data class Settings(
             if (current.display.disableFramebufferFetch != base.display.disableFramebufferFetch) j.put("disableFramebufferFetch", current.display.disableFramebufferFetch)
             if (current.display.hwRov != base.display.hwRov) j.put("hwRov", current.display.hwRov)
             if (current.display.hwAa1 != base.display.hwAa1) j.put("hwAa1", current.display.hwAa1)
-            if (current.display.adrenoFbFetch != base.display.adrenoFbFetch) j.put("adrenoFbFetch", current.display.adrenoFbFetch)
             if (current.display.coalesceRenderPasses != base.display.coalesceRenderPasses) j.put("coalesceRenderPasses", current.display.coalesceRenderPasses)
             if (current.display.forceMaliFbFetch != base.display.forceMaliFbFetch) j.put("forceMaliFbFetch", current.display.forceMaliFbFetch)
             if (current.display.useAngleOpenGL != base.display.useAngleOpenGL) j.put("useAngleOpenGL", current.display.useAngleOpenGL)
@@ -2897,7 +2883,6 @@ data class Settings(
                 hwRov = if (overrides.has("hwRov")) overrides.getBoolean("hwRov") else base.display.hwRov,
                 hwAa1 = if (overrides.has("hwAa1")) overrides.getBoolean("hwAa1") else base.display.hwAa1,
                 hwAat = false,
-                adrenoFbFetch = if (overrides.has("adrenoFbFetch")) overrides.getBoolean("adrenoFbFetch") else base.display.adrenoFbFetch,
                 coalesceRenderPasses = if (overrides.has("coalesceRenderPasses")) overrides.getBoolean("coalesceRenderPasses") else base.display.coalesceRenderPasses,
                 forceMaliFbFetch = if (overrides.has("forceMaliFbFetch")) overrides.getBoolean("forceMaliFbFetch") else base.display.forceMaliFbFetch,
                 useAngleOpenGL = if (overrides.has("useAngleOpenGL")) overrides.getBoolean("useAngleOpenGL") else base.display.useAngleOpenGL,

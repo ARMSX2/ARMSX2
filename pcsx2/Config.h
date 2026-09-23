@@ -907,14 +907,7 @@ struct Pcsx2Config
 					UseBlitSwapChain : 1,
 					DisableShaderCache : 1,
 					DisableFramebufferFetch : 1,
-					// Pretend the device has no dual-source blend unit, the way every Mali
-					// Vulkan blob reports it. GSRendererHW then takes the SRC1 substitution
-					// and SW-blend fallbacks, so a Mali-only blending bug reproduces on a
-					// desktop GPU instead of needing a device round-trip to see.
-					DisableDualSourceBlend : 1,
-					EnableAdrenoFramebufferFetch : 1,
 					ForceMaliFramebufferFetch : 1,
-					DisablePS2DepthQuantization : 1,
 					DisableVertexShaderExpand : 1,
 					SkipDuplicateFrames : 1,
 					OsdShowSpeed : 1,
@@ -1058,10 +1051,6 @@ struct Pcsx2Config
 		GSLimit24BitDepth UserHacks_Limit24BitDepth = GSLimit24BitDepth::Disabled;
 		GSBilinearDirtyMode UserHacks_BilinearHack = GSBilinearDirtyMode::Automatic;
 		TriFiltering TriFilter = DEFAULT_TRILINEAR_FILTERING_MODE;
-		/// Whether this title moves its projection half a display line between fields, which decides
-		/// whether the FFMD merge offset is applied when a field render is presented directly at an
-		/// integer upscale of 2 or more. -1 leaves it to the runtime detector, which defaults to 1.
-		s8 FieldShift = -1;
 		s8 OverrideTextureBarriers = -1;
 		GSDepthFeedbackMode DepthFeedbackMode = GSDepthFeedbackMode::Auto;
 		GSBackThreadMode BackThreadMode = GSBackThreadMode::Off;

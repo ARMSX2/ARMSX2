@@ -38,11 +38,10 @@ namespace
 } // namespace
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
-#include "GS/Renderers/Common/GSDateRoadPolicy.h"
-#include "GS/Renderers/Common/GSDeclaredLoopScopePolicy.h"
 #include "GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h"
 #include "GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
+#include "GS/Renderers/Common/GSMeasurementOverrides.h"
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
 
 #include "BuildVersion.h"
@@ -522,7 +521,7 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 	// the road is known.
 	m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state =
 		m_optional_extensions.vk_ext_attachment_feedback_loop_layout && IsDeviceAdreno() &&
-		GSDynamicFeedbackLoopPolicy::WantsDynamicPerDraw() &&
+		!g_gs_measurement_overrides.loop_create_flag &&
 		SupportsExtension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME, false);
 	m_optional_extensions.vk_ext_line_rasterization = SupportsExtension(VK_EXT_LINE_RASTERIZATION_EXTENSION_NAME, false);
 	m_optional_extensions.vk_khr_driver_properties = SupportsExtension(VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME, false);
@@ -3914,25 +3913,16 @@ bool GSDeviceVK::CheckFeatures()
 	// unit; without fbfetch the per-PRIMITIVE texture-barrier path tanks blend-heavy games
 	// (GT4 = 10-20fps slideshow). No-op on any Mali lacking the extension.
 	//
-	// ADRENO / other non-Mali: opt-in via EnableAdrenoFramebufferFetch — but that is true only
-	// where the Pcsx2Config default (false) actually holds, i.e. DESKTOP. The Android build ships
-	// the key ON; see the deny-list note below before reasoning about who gets fbfetch.
-	// ROV is the wrong primitive on a tiler (fragment_shader_interlock serializes same-pixel
-	// fragments + bypasses tile memory), so on Adreno fbfetch is the way to make accurate
-	// blending fast. Historically kept off because the Adreno-840 PROPRIETARY driver returned
-	// STALE ROAA reads above Basic blending (alpha cutouts / invisible floors, A/B 2026-06-10);
-	// that was never confirmed on other Adreno gens or on Turnip/Mesa, which is why it started
-	// life as a ship-dark toggle to be A/B-verified per device+driver. Gated on ROAA presence, so
-	// it is a no-op on any device that does not expose the extension.
+	// ADRENO: enabled whenever ROAA is present, on every OS, except the parts the database denies
+	// and the Adreno 8xx proprietary blob (below). ROV is the wrong primitive on a tiler
+	// (fragment_shader_interlock serializes same-pixel fragments and bypasses tile memory), so on
+	// Adreno fbfetch is the way to make accurate blending fast. A user whose Qualcomm driver gets
+	// it wrong switches drivers; there is no per-user switch.
+	//
+	// OTHER VENDORS: trusted on Android builds only (the vendor terms become a deny list there, see
+	// below); on desktop only Mali and Adreno are.
 	const bool is_mali_vk = (m_device_properties.vendorID == 0x13B5u);
 	const bool is_adreno = IsDeviceAdreno();
-	// Turnip/Mesa is the open Adreno driver and does NOT exhibit the proprietary
-	// blob's stale-ROAA reads (the reason Adreno fbfetch shipped opt-in), so default
-	// it ON there — the fast blend path on a tiler that drops the per-primitive
-	// barriers spiking GS on transparency-heavy scenes. Proprietary Adreno is opt-in
-	// via EnableAdrenoFramebufferFetch on desktop only (Android ships that key on);
-	// DisableFramebufferFetch still overrides everywhere.
-	//
 	// ⚠️ In practice this is currently moot on Adreno: UseRenderTargetCopyForFeedback turns texture
 	// barriers off below, and "fbfetch needs barriers" then clears framebuffer_fetch regardless of
 	// what this resolves to. Framebuffer fetch IS the in-tile self-read, so a driver that cannot
@@ -3968,11 +3958,6 @@ bool GSDeviceVK::CheckFeatures()
 	// black/missing textures and turns it back off -- which is why it must default OFF and stay a
 	// separate setting.
 	//
-	// Deliberately NOT reusing EnableAdrenoFramebufferFetch: that one is default-ON on Android
-	// (Settings.kt adrenoFbFetch = true, plus a ConfigStore migration that flips old saves ON),
-	// so keying off it would silently force fbfetch on for EVERY MediaTek Mali user -- the exact
-	// breakage this block exists to prevent.
-	//
 	// Xclipse stays excluded even when forced: it has no working ROAA fbfetch at all, so honouring
 	// the force there would route the fast path into a unit that cannot do it.
 	// ANGLE is likewise no escape for the user -- it translates GLES onto this same Vulkan driver.
@@ -3991,22 +3976,12 @@ bool GSDeviceVK::CheckFeatures()
 	// preserves that default while letting DisableFramebufferFetch actually take effect, which the
 	// old unconditional force ate (see feedback_adreno_fbfetch_ini_override_measurement_trap).
 	//
-	// ⚠️ The EnableAdrenoFramebufferFetch term is NOT a no-op, and the vendor terms below are NOT an
-	// allow-list on Android. That key defaults to false only in Pcsx2Config.cpp (desktop, where this
-	// really does restrict fbfetch to Mali+Adreno). The Android build ships it TRUE
-	// (Settings.kt adrenoFbFetch = true) and force-flips existing saves to true via a one-time
-	// ConfigStore migration, so there the disjunction is (is_mali_vk || is_adreno || true) == true
-	// and the vendor terms restrict NOTHING: every GPU advertising ROAA takes the fbfetch path,
-	// including PowerVR/Broadcom and any vendor not named here. Only the two negative terms still
-	// bite — the database's destination-read deny and is_xclipse_vk.
-	//
-	// So the effective Android policy is a DENY-list (ROAA is trusted unless the vendor is known to
-	// lie about it), not an allow-list. Do NOT "restore" the allow-list as a tidy-up: that would
-	// REMOVE fbfetch from PowerVR et al. and drop them onto the ~3-4x-slower per-primitive barrier
-	// path, on hardware nobody here can test. The deny-list shape is also the more future-proof one
-	// — a new vendor with working ROAA gets the fast path instead of being stranded until someone
-	// adds it to a list. If a non-Mali/non-Adreno vendor is ever REPORTED returning stale/empty
-	// ROAA, add it alongside is_xclipse_vk rather than re-narrowing this.
+	// On Android the vendor terms are a DENY list: any_vendor_trusted is set, so every GPU that
+	// advertises ROAA takes the fbfetch path unless the database's destination-read deny,
+	// is_xclipse_vk or the Adreno 8xx blob gate says otherwise. That keeps PowerVR and other
+	// unnamed vendors off the ~3-4x slower per-primitive barrier path. Do not narrow it back to an
+	// allow list; if another vendor is reported returning stale or empty ROAA reads, add it beside
+	// is_xclipse_vk.
 	// 8 Elite (Adreno 8xx on the Qualcomm PROPRIETARY driver): that blob returns STALE ROAA reads
 	// above Basic blending — invisible floors / alpha cutouts (A/B 2026-06-10, the "Adreno-840
 	// proprietary" case in the note above). Never reproduced on 6xx/7xx or on Turnip/Mesa. So keep
@@ -4028,7 +4003,9 @@ bool GSDeviceVK::CheckFeatures()
 	fetch_inputs.is_adreno8xx_proprietary = is_adreno8xx_proprietary;
 	fetch_inputs.broken_destination_read = roaa_destination_read_is_broken;
 	fetch_inputs.force_mali_fetch_key = GSConfig.ForceMaliFramebufferFetch;
-	fetch_inputs.adreno_fetch_key = GSConfig.EnableAdrenoFramebufferFetch;
+#ifdef __ANDROID__
+	fetch_inputs.any_vendor_trusted = true;
+#endif
 	const GSVulkanFramebufferFetchDecision fetch_decision = DecideVulkanFramebufferFetch(fetch_inputs);
 	if (fetch_decision.force_key_ignored)
 	{
@@ -4060,7 +4037,7 @@ bool GSDeviceVK::CheckFeatures()
 		GetMobileDriverProfile().prefers_declared_loop_with_barriers;
 	road_inputs.override_texture_barriers = GSConfig.OverrideTextureBarriers;
 	// Harness-only (gsrunner -declare-feedback-loop); Off on every other run.
-	road_inputs.arm = static_cast<u8>(GSSelfReadRoadPolicy::GetForcedArm());
+	road_inputs.arm = static_cast<u8>(g_gs_measurement_overrides.self_read_arm);
 	const GSSelfReadRoadDecision road = DecideSelfReadRoad(road_inputs);
 
 	// Before anything that can create an image, a descriptor layout or a render pass, because each
@@ -4072,7 +4049,7 @@ bool GSDeviceVK::CheckFeatures()
 	// reason as the line above -- a pipeline's dynamic-state list is fixed at creation, so this
 	// has to be final before the first one exists.
 	const GSDynamicFeedbackLoopInputs dynamic_loop_inputs = {
-		.spelling = GSDynamicFeedbackLoopPolicy::GetSpelling(),
+		.spelling = g_gs_measurement_overrides.LoopSpelling(),
 		.layout_road_live = UseFeedbackLoopLayout(),
 		.dynamic_state_available = m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state,
 		.device_measured = m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_TURNIP ||
@@ -4136,7 +4113,7 @@ bool GSDeviceVK::CheckFeatures()
 		Console.Error("VK: -declare-feedback-loop %u was requested and CANNOT be applied "
 					  "(VK_EXT_attachment_feedback_loop_layout %s, OverrideTextureBarriers=%d). "
 					  "This build is running the device's own self-read road.",
-			static_cast<unsigned>(GSSelfReadRoadPolicy::GetForcedArm()),
+			static_cast<unsigned>(g_gs_measurement_overrides.self_read_arm),
 			m_optional_extensions.vk_ext_attachment_feedback_loop_layout ? "present" : "ABSENT",
 			static_cast<int>(GSConfig.OverrideTextureBarriers));
 	}
@@ -4223,7 +4200,7 @@ bool GSDeviceVK::CheckFeatures()
 	// Mali Vulkan stacks frequently report dualSrcBlend=false. When absent, GSRendererHW SW-blends
 	// the specific draws that need SRC1 instead of relying on a global high blending-accuracy level
 	// (which is why Mali no longer needs Blending=Max by hand). Ported from sashkinbro/EmuCoreX.
-	m_features.dual_source_blend = m_device_features.dualSrcBlend && !GSConfig.DisableDualSourceBlend;
+	m_features.dual_source_blend = m_device_features.dualSrcBlend;
 
 	// A driver that ignores the blend constant cannot be asked for a constant-colour blend factor at
 	// all, so a fixed (AFIX) factor travels through the second fragment output instead. Read from the
@@ -4247,12 +4224,7 @@ bool GSDeviceVK::CheckFeatures()
 	// device that simply orders its own reads -- and it is loop_declared rather than arm_applied
 	// because the driver fact reaches the same road without the experiment key, and the counter has
 	// to come with it.
-	//
-	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -no-fast-stencil-shadow / -force-fast-stencil-shadow) sits
-	// above the device rule, so the harness can move the counter while leaving texture_barrier, the
-	// road and the spelling exactly where the device put them. Both false unless asked.
-	m_features.fast_stencil_shadow = GSFastStencilShadow::Resolve(GSFastStencilShadow::IsForcedOff(),
-		GSFastStencilShadow::IsForcedOn(),
+	m_features.fast_stencil_shadow = GSFastStencilShadow::DeviceQualifies(
 		{.api = GetRenderAPI(),
 			.dual_source_blend = m_features.dual_source_blend,
 			.road = road.road,
@@ -4260,6 +4232,21 @@ bool GSDeviceVK::CheckFeatures()
 			// The barrier road's counter was timed on the M2 only; desktop Vulkan on the same road
 			// keeps the answer it had before the road existed.
 			.barrier_road_measured = (m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP)});
+
+	// The device half of the feedback-loop carry (GSFeedbackLoopCarryPolicy.h). Every input is final
+	// here, so DoRenderHW copies this and fills in only the per-draw terms.
+	m_carry_device_facts = {};
+	m_carry_device_facts.device_always_carries = IsDeviceBroadcom();
+	m_carry_device_facts.device_is_measured_vendor = IsDeviceMali();
+	m_carry_device_facts.device_is_layout_road_vendor = IsDeviceAdreno();
+	// texture_barrier is what makes SendHWDraw issue the reader's feedback barrier at all. With it
+	// off there is no ordering, so the layout road carries nothing. Consulted only on the layout
+	// road; framebuffer_fetch is itself masked by texture_barrier.
+	m_carry_device_facts.barriers_order_reads = m_features.texture_barrier;
+	m_carry_device_facts.device_is_barrier_road_vendor =
+		(m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP);
+	m_carry_device_facts.framebuffer_fetch = m_features.framebuffer_fetch;
+	m_carry_device_facts.feedback_loop_layout = UseFeedbackLoopLayout();
 
 	// Mali-G57 r13p0-class drivers can expose alternating/stale FastMAD history banks instead of the
 	// reconstructed frame; GSRenderer::Merge falls those back to weave+blend. Ported from sashkinbro/EmuCoreX.
@@ -4295,7 +4282,7 @@ bool GSDeviceVK::CheckFeatures()
 	// reachable from the driver database too, and on that road the depth read must stay off for the
 	// same reason it does on the key's -- turning barriers on for colour must not hand a device the
 	// depth road nobody has measured on it.
-	const bool declare_depth_loop = road.loop_declared && GSSelfReadRoadPolicy::DeclaresDepthLoop();
+	const bool declare_depth_loop = road.loop_declared && g_gs_measurement_overrides.declare_depth_loop;
 	if (declare_depth_loop)
 		m_features.test_and_sample_depth = true;
 	else if (road.loop_declared)
@@ -4304,7 +4291,7 @@ bool GSDeviceVK::CheckFeatures()
 		// barriers on, or the two probes are measured together and neither answers anything.
 		m_features.test_and_sample_depth = false;
 	}
-	if (GSSelfReadRoadPolicy::DeclaresDepthLoop() && !road.loop_declared)
+	if (g_gs_measurement_overrides.declare_depth_loop && !road.loop_declared)
 	{
 		Console.Error("VK: -declare-depth-feedback-loop needs a declared colour feedback loop, and this "
 					  "device is not on that road. The depth probe is NOT running.");
@@ -4411,8 +4398,7 @@ bool GSDeviceVK::CheckFeatures()
 	// the shader path skipped entirely. God of War II's Athena statue speckles the
 	// same way. Biasing the stored value one PS2 Z unit down also clears it, which
 	// puts the disagreement below a single Z unit.
-	m_features.no_ps2_z_quantization =
-		GSConfig.DisablePS2DepthQuantization || IsDeviceMali() || IsDeviceAppleGPU();
+	m_features.no_ps2_z_quantization = IsDeviceMali() || IsDeviceAppleGPU();
 
 	// whether we can do point/line expand depends on the range of the device
 	const float f_upscale = static_cast<float>(GSConfig.UpscaleMultiplier);
@@ -4499,29 +4485,16 @@ bool GSDeviceVK::CheckFeatures()
 			m_features.test_and_sample_depth ? "on" : "off", m_features.depth_feedback ? "on" : "off");
 	}
 
-	// ⚠️ MEASUREMENT OVERRIDES -- the gsrunner flags that move a road for an A/B. Printed only when
-	// one of them is set, so a device measurement's log says which arm it is while an ordinary run
-	// says nothing. The loop spelling counts only when somebody named it: its default is not an
-	// override.
-	const bool any_measurement_override = GSFeedbackLoopCarryPolicy::IsForcedOff() ||
-	                                      GSDateRoadPolicy::GetOverride() != GSDateRoadOverride::Auto ||
-	                                      GSDeclaredLoopScopePolicy::GetScope() != GSDeclaredLoopScope::All ||
-	                                      GSDynamicFeedbackLoopPolicy::IsForced() ||
-	                                      GSFastStencilShadow::IsForcedOff() || GSFastStencilShadow::IsForcedOn() ||
-	                                      GSSelfReadRoadPolicy::GetForcedArm() != GSSelfReadArm::Off ||
-	                                      GSSelfReadRoadPolicy::DeclaresDepthLoop();
-	if (any_measurement_override)
+	// The gsrunner flags that move a road for an A/B. Printed only when one is set, so a device
+	// measurement's log says which arm it is while an ordinary run says nothing.
+	if (g_gs_measurement_overrides.Any())
 	{
-		Console.WriteLn("VK: measurement overrides: feedback-carry=%s date-road=%s declare-scope=%s "
-						"loop-spelling=%s(%s; %s) fast-stencil-shadow=%s declare-arm=%u depth-loop=%s",
-			GSFeedbackLoopCarryPolicy::IsForcedOff() ? "FORCED OFF" : "device policy", GSDateRoadPolicy::Name(),
-			GSDeclaredLoopScopePolicy::Name(), GSDynamicFeedbackLoopPolicy::Name(),
-			GSDynamicFeedbackLoopPolicy::Origin(),
+		Console.WriteLn("VK: measurement overrides: loop-spelling=%s(%s; %s) declare-arm=%u depth-loop=%s",
+			g_gs_measurement_overrides.loop_create_flag ? "pipeline create flag" : "dynamic per draw",
+			g_gs_measurement_overrides.loop_create_flag ? "forced" : "default",
 			m_declare_loop_per_draw ? "applied" : "pipeline create flag in effect",
-			GSFastStencilShadow::IsForcedOff() ? "FORCED OFF" :
-												 (GSFastStencilShadow::IsForcedOn() ? "FORCED ON" : "device policy"),
-			static_cast<unsigned>(GSSelfReadRoadPolicy::GetForcedArm()),
-			GSSelfReadRoadPolicy::DeclaresDepthLoop() ? "DECLARED" : "off");
+			static_cast<unsigned>(g_gs_measurement_overrides.self_read_arm),
+			g_gs_measurement_overrides.declare_depth_loop ? "DECLARED" : "off");
 	}
 
 	DevCon.WriteLn("Optional features:%s%s%s%s%s%s", m_features.primitive_id ? " primitive_id" : "",
@@ -9096,27 +9069,8 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		// Gated PER TARGET, not on the enclosing condition — that only requires ONE of rt/ds
 		// to match, so a draw keeping the RT but swapping the depth target would otherwise
 		// inherit a stale depth feedback layout: precisely the flicker mode described above.
-		GSFeedbackLoopCarryInputs carry;
-		// ⚠️ MEASUREMENT OVERRIDE (gsrunner -no-feedback-carry). False unless the harness asked, so every expression below is unchanged on every
-		// shipping device. It sits above the vendor terms in the policy because a declared-road
-		// arm that is slow has two candidate causes -- the declaration on the readers, or this
-		// carry spreading the same pipeline create flag over every draw in the latched pass --
-		// and until now nothing separated them at runtime.
-		carry.override_off = GSFeedbackLoopCarryPolicy::IsForcedOff();
-		carry.device_always_carries = IsDeviceBroadcom();
-		carry.device_is_measured_vendor = IsDeviceMali();
-		carry.device_is_layout_road_vendor = IsDeviceAdreno();
-		// The other way the layout road can order its read. texture_barrier is what makes
-		// SendHWDraw issue the reader's feedback barrier at all — with it off there is no reader, no barrier and no ordering, so the layout
-		// road carries nothing and -no-tex-barriers is inert by construction. Consulted
-		// only on the layout road; the fetch road's answer does not look at it, which
-		// matters because framebuffer_fetch is itself masked by texture_barrier.
-		carry.barriers_order_reads = m_features.texture_barrier;
-		// ...and only on the device that ordering was measured on.
-		carry.device_is_barrier_road_vendor =
-			(m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP);
-		carry.framebuffer_fetch = m_features.framebuffer_fetch;
-		carry.feedback_loop_layout = UseFeedbackLoopLayout();
+		// The device half was resolved once in CheckFeatures; only the two draw terms are per draw.
+		GSFeedbackLoopCarryInputs carry = m_carry_device_facts;
 		// SendHWDraw only receives a target to barrier against when the pipeline's matching
 		// feedback bit is set, so carrying the bit onto a draw that still asks for a barrier
 		// would emit one where none was emitted before. On the fetch path a non-reader never
@@ -9142,10 +9096,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 		if (CarryFeedbackLoopAcrossTargetRun(carry))
 		{
-			// A draw the scope override withheld the declaration from is about to take the copy
-			// road, which ends the pass anyway; inheriting the flag would re-declare exactly what
-			// the override withheld and make the arm measure the blanket road again.
-			if (draw_rt && m_current_render_target == draw_rt && !config.undeclare_rt_feedback_loop)
+			if (draw_rt && m_current_render_target == draw_rt)
 				pipe.feedback_loop_flags |= m_current_framebuffer_feedback_loop & FeedbackLoopFlag_ReadAndWriteRT;
 			if (draw_ds && m_current_depth_target == draw_ds && CarryDepthFeedbackAcrossTargetRun(carry))
 			{
@@ -9155,11 +9106,8 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		}
 	}
 
-	// undeclare_rt_feedback_loop is the measurement override (gsrunner -declare-overlap-only)
-	// putting this one draw back on the copy road although the device is on the declared road.
-	// False on every draw unless the harness asked, so the condition is unchanged everywhere else.
 	if (draw_rt && ((config.require_one_barrier && (config.IsFeedbackLoopRT(config.ps) || config.IsFeedbackLoopRT(config.alpha_second_pass.ps)))) &&
-		(!m_features.texture_barrier || config.undeclare_rt_feedback_loop))
+		!m_features.texture_barrier)
 	{
 		// Requires a copy of the RT.
 		draw_rt_clone = static_cast<GSTextureVK*>(CreateTexture(rtsize.x, rtsize.y, 1, draw_rt->GetFormat(), true));
@@ -9453,11 +9401,7 @@ void GSDeviceVK::UpdateHWPipelineSelector(GSHWDrawConfig& config, PipelineSelect
 	pipe.feedback_loop_flags = FeedbackLoopFlag_None;
 	if (m_features.texture_barrier)
 	{
-		// The colour half is what the scope override withholds -- the pipeline create flag it
-		// produces is what untiles the pass on Turnip and programs the serialising primitive
-		// mode, and confining that to the draws that need the ordering is the whole experiment.
-		// The depth half is untouched: nothing in the scope measurement declares a depth loop.
-		if (config.IsFeedbackLoopRT(config.ps) && !config.undeclare_rt_feedback_loop)
+		if (config.IsFeedbackLoopRT(config.ps))
 			pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadAndWriteRT;
 
 		if (config.IsFeedbackLoopDepth(config.ps))

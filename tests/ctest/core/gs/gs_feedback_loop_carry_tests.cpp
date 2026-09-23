@@ -153,7 +153,7 @@ TEST(GSFeedbackLoopCarry, DesktopVulkanOnTheLayoutRoadDoesNotCarry)
 	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(DesktopOnTheLayoutRoad()));
 	EXPECT_FALSE(CarryDepthFeedbackAcrossTargetRun(DesktopOnTheLayoutRoad()));
 
-	// ...with or without a reader in the run, and with the carry override untouched.
+	// ...with or without a reader in the run.
 	GSFeedbackLoopCarryInputs reader = DesktopOnTheLayoutRoad();
 	reader.draw_needs_own_barrier = true;
 	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(reader));
@@ -291,7 +291,7 @@ TEST(GSFeedbackLoopCarry, BroadcomCarryIsUnchanged)
 // with neither ordering term. It fails if a later term is ever added that can carry on no road.
 TEST(GSFeedbackLoopCarry, CarryingAlwaysRequiresARoadAndItsVendor)
 {
-	for (int bits = 0; bits < 256; bits++)
+	for (int bits = 0; bits < 128; bits++)
 	{
 		GSFeedbackLoopCarryInputs in;
 		in.device_is_measured_vendor = (bits & 1) != 0;
@@ -300,14 +300,13 @@ TEST(GSFeedbackLoopCarry, CarryingAlwaysRequiresARoadAndItsVendor)
 		in.draw_needs_own_barrier = (bits & 8) != 0;
 		in.device_is_layout_road_vendor = (bits & 16) != 0;
 		in.barriers_order_reads = (bits & 32) != 0;
-		in.override_off = (bits & 64) != 0;
-		in.device_is_barrier_road_vendor = (bits & 128) != 0;
+		in.device_is_barrier_road_vendor = (bits & 64) != 0;
 
 		const bool road = in.feedback_loop_layout ?
 		                      (in.device_is_layout_road_vendor ||
 		                          (in.barriers_order_reads && in.device_is_barrier_road_vendor)) :
 		                      (in.device_is_measured_vendor && in.framebuffer_fetch);
-		EXPECT_EQ(CarryFeedbackLoopAcrossTargetRun(in), road && !in.draw_needs_own_barrier && !in.override_off)
+		EXPECT_EQ(CarryFeedbackLoopAcrossTargetRun(in), road && !in.draw_needs_own_barrier)
 			<< "bits=" << bits;
 	}
 }
@@ -357,7 +356,7 @@ TEST(GSFeedbackLoopCarry, BroadcomDepthCarryStopsAtADepthWriter)
 // this is what catches it.
 TEST(GSFeedbackLoopCarry, DepthCarryIsTheColourCarryMinusDepthWriters)
 {
-	for (int bits = 0; bits < 1024; bits++)
+	for (int bits = 0; bits < 512; bits++)
 	{
 		GSFeedbackLoopCarryInputs in;
 		in.device_always_carries = (bits & 1) != 0;
@@ -368,77 +367,10 @@ TEST(GSFeedbackLoopCarry, DepthCarryIsTheColourCarryMinusDepthWriters)
 		in.draw_writes_depth = (bits & 32) != 0;
 		in.device_is_layout_road_vendor = (bits & 64) != 0;
 		in.barriers_order_reads = (bits & 128) != 0;
-		in.override_off = (bits & 256) != 0;
-		in.device_is_barrier_road_vendor = (bits & 512) != 0;
+		in.device_is_barrier_road_vendor = (bits & 256) != 0;
 
 		const bool colour = CarryFeedbackLoopAcrossTargetRun(in);
 		EXPECT_EQ(CarryDepthFeedbackAcrossTargetRun(in), colour && !in.draw_writes_depth)
 			<< "bits=" << bits;
 	}
-}
-
-// ---------------------------------------------------------------------------------------------
-// The harness override (gsrunner -no-feedback-carry).
-//
-// Its whole job is to be unconditional. A declared-road arm that measures slow has two candidate
-// causes -- the declaration on the draws that read, and this carry handing the same pipeline
-// create flag to every draw in the latched pass -- and they cannot be told apart unless one of
-// them can be switched off with everything else held still.
-// ---------------------------------------------------------------------------------------------
-
-// Every road that carries stops carrying, colour and depth alike.
-TEST(GSFeedbackLoopCarry, TheOverrideStopsEveryRoad)
-{
-	GSFeedbackLoopCarryInputs fetch = MaliWithFetch();
-	fetch.override_off = true;
-	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(fetch));
-	EXPECT_FALSE(CarryDepthFeedbackAcrossTargetRun(fetch));
-
-	GSFeedbackLoopCarryInputs layout = AdrenoOnTheLayoutRoad();
-	layout.override_off = true;
-	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(layout));
-	EXPECT_FALSE(CarryDepthFeedbackAcrossTargetRun(layout));
-}
-
-// Including the one carry that no device fact can switch off. A device that could out-vote the
-// override would make one row of the A/B silently measure the other arm.
-TEST(GSFeedbackLoopCarry, TheOverrideBeatsTheUnconditionalCarry)
-{
-	GSFeedbackLoopCarryInputs in;
-	in.device_always_carries = true;
-	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(in));
-
-	in.override_off = true;
-	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(in));
-	EXPECT_FALSE(CarryDepthFeedbackAcrossTargetRun(in));
-}
-
-// And left alone it is not there at all: the default-constructed field reproduces every answer
-// this file pinned before the override existed. This is the inertness gate in miniature -- the
-// 94-cell byte-identity check is the same statement about the whole binary.
-TEST(GSFeedbackLoopCarry, TheOverrideIsInertWhenNotAsked)
-{
-	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(MaliWithFetch()));
-	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(AdrenoOnTheLayoutRoad()));
-	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(M2OnTheLayoutRoad()));
-	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(LayoutRoadWithNoOrdering()));
-	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(OffTheFetchPath()));
-
-	GSFeedbackLoopCarryInputs broadcom;
-	broadcom.device_always_carries = true;
-	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(broadcom));
-}
-
-// The process-wide switch itself: default off, settable, readable. It is a plain inline global
-// rather than a setting because which road a device should take here is a measurement result and
-// a user has no way to know which side of the trade their driver is on.
-TEST(GSFeedbackLoopCarry, TheProcessOverrideDefaultsOff)
-{
-	EXPECT_FALSE(GSFeedbackLoopCarryPolicy::IsForcedOff());
-
-	GSFeedbackLoopCarryPolicy::SetForcedOff(true);
-	EXPECT_TRUE(GSFeedbackLoopCarryPolicy::IsForcedOff());
-
-	GSFeedbackLoopCarryPolicy::SetForcedOff(false);
-	EXPECT_FALSE(GSFeedbackLoopCarryPolicy::IsForcedOff());
 }

@@ -370,9 +370,9 @@ namespace
 		in.roaa_available = true;
 		in.is_adreno = true;
 		in.broken_destination_read = true;
-		// The Android build ships this key on, so the SD865 arrives here with it set. It is not
-		// what decides the answer, and pinning it set is the point.
-		in.adreno_fetch_key = true;
+		// Set as on an Android build. It is not what decides the answer, and pinning it set is the
+		// point.
+		in.any_vendor_trusted = true;
 		return in;
 	}
 } // namespace
@@ -432,7 +432,7 @@ TEST(GSVulkanFramebufferFetchPolicy, TheUserCanAlwaysTurnFetchOff)
 					in.is_adreno = adreno;
 					in.force_mali_fetch_key = forced;
 					in.broken_destination_read = denied;
-					in.adreno_fetch_key = true;
+					in.any_vendor_trusted = true;
 					SCOPED_TRACE(testing::Message() << "mali=" << mali << " adreno=" << adreno
 													<< " forced=" << forced << " denied=" << denied);
 
@@ -457,20 +457,20 @@ TEST(GSVulkanFramebufferFetchPolicy, TheForceKeyChangesNothingOffMali)
 			{
 				for (bool denied : {false, true})
 				{
-					for (bool adreno_key : {false, true})
+					for (bool any_vendor : {false, true})
 					{
 						GSVulkanFramebufferFetchInputs in;
 						in.roaa_available = roaa;
 						in.is_adreno = adreno;
 						in.is_xclipse = xclipse;
 						in.broken_destination_read = denied;
-						in.adreno_fetch_key = adreno_key;
+						in.any_vendor_trusted = any_vendor;
 
 						GSVulkanFramebufferFetchInputs forced = in;
 						forced.force_mali_fetch_key = true;
 						SCOPED_TRACE(testing::Message()
 									 << "roaa=" << roaa << " adreno=" << adreno << " xclipse=" << xclipse
-									 << " denied=" << denied << " adreno_key=" << adreno_key);
+									 << " denied=" << denied << " any_vendor=" << any_vendor);
 
 						EXPECT_EQ(DecideVulkanFramebufferFetch(in).enabled,
 							DecideVulkanFramebufferFetch(forced).enabled);

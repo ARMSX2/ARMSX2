@@ -1251,8 +1251,6 @@
  "ralogin.username.label": "اسم المستخدم (A للكتابة)",
  "renderer.accurateAlphaTest.description": "اختبار alpha أدق في hardware renderer (يقترن مع ROV). يُطبَّق مباشرة.",
  "renderer.accurateAlphaTest.label": "Accurate Alpha Test",
- "renderer.accurateBlendingFastPath.description": "Vulkan + Adreno فقط: يوجّه المزج الدقيق عبر مسار framebuffer-fetch لذاكرة البلاطة بدلاً من نسخ ROV / texture-barrier، وهو المكافئ المحمول لـ ROV سطح المكتب، وعادةً أسرع بكثير على tiler. مفعّل افتراضياً. بعض تعريفات Adreno الاحتكارية تُرجع قراءات قديمة وقد تُظهر عيوباً (قصّ alpha للـ sprites، رقع أرضية غير مرئية). أوقفه إذا رأيتها. أعد تشغيل اللعبة للتطبيق. لا أثر على Mali (مفعّل أصلاً) أو OpenGL.",
- "renderer.accurateBlendingFastPath.label": "مسار المزج الدقيق السريع",
  "renderer.angleOpenGL.description": "شغّل renderer الخاص بـ OpenGL عبر ANGLE، الذي يترجم OpenGL ES إلى Vulkan باستخدام تعريف مرفق. مفيد على الأجهزة التي يكون تعريف OpenGL ES الأصلي فيها معطوباً أو بطيئاً (مثل بعض أجهزة MediaTek Mali). يسري فقط عندما يكون Renderer مضبوطاً على OpenGL. أعد تشغيل اللعبة للتطبيق.",
  "renderer.angleOpenGL.label": "OpenGL عبر ANGLE",
  "renderer.anisotropic.description": "يزيد حدة النقوش المائلة. القيم الأعلى قد تكلّف وقت GPU.",

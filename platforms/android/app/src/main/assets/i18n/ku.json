@@ -1275,8 +1275,6 @@
   "ralogin.username.label": "Navê bikarhêner (A ku binivîse)",
   "renderer.accurateAlphaTest.description": "Testkirina alpha-ya rasttir di pêşkêşkera hardware de (bi ROV re hevber dike). Zindî sepandin.",
   "renderer.accurateAlphaTest.label": "Testa Alpha ya Rast",
-  "renderer.accurateBlendingFastPath.description": "Tenê Vulkan + Adreno: Li şûna ROV / kopiyên asteng-sazkerê, li şûna ROV / kopiyên asteng-tevgerê, tevlihevkirina rast bi riya pelika-bîra çarçoweya buffer-vekêşanê bi rê ve dibe (berdêla ROV-ya sermaseyê ya xwemalî ya mobîl, û bi gelemperî li ser tilerek pir zûtir). ON by default. Çend ajokarên Adreno yên xwedan xwendinên westayî vedigerînin û dibe ku huneran nîşan bidin (birînên alpha sprite, pêlên erdê yên nedîtbar); ger hûn wan bibînin vê yekê qut bikin. Ji bo serîlêdanê lîstikê ji nû ve bidin destpêkirin. Ti bandorek li ser Malî (jixwe çalak e) an OpenGL tune.",
-  "renderer.accurateBlendingFastPath.label": "Rêya bilez a tevlihevkirina rast",
   "renderer.angleOpenGL.description": "Pêşkêşkera OpenGL bi rêya ANGLE bimeşîne, ku bi ajokerek girêdayî OpenGL ES vediguhezîne Vulkan. Li ser cîhazên ku ajokera wan a xwecihî ya OpenGL ES şikestî an hêdî ye kêrhatî ye (mînak hin MediaTek Mali). Tenê dema pêşkêşker li OpenGL hatibe mîheng kirin bandor dike. Ji bo sepandinê, lîstikê ji nû ve bidin destpêkirin.",
   "renderer.angleOpenGL.label": "OpenGL bi rêya ANGLE",
   "renderer.anisotropic.description": "Textên goşeyî tûj dike. Nirxên bilindtir dikarin dema GPU lêçûn bikin.",

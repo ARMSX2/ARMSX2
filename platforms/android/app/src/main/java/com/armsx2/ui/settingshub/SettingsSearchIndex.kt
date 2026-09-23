@@ -90,7 +90,6 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("renderer.rov.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.coalesceRenderPasses.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("pad.pressureAmount.label", true, SettingsCategory.Controls),
-    SettingsSearchEntry("renderer.accurateBlendingFastPath.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.forceMaliFbFetch.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.angleOpenGL.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.accurateAlphaTest.label", true, SettingsCategory.Graphics),

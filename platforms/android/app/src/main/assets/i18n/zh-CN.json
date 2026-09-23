@@ -1251,8 +1251,6 @@
  "ralogin.username.label": "用户名（A 输入）",
  "renderer.accurateAlphaTest.description": "硬件渲染器中更精确的透明测试（配合 ROV）。实时生效。",
  "renderer.accurateAlphaTest.label": "精确透明测试",
- "renderer.accurateBlendingFastPath.description": "仅 Vulkan + Adreno：通过图块内存帧缓冲读取路径而非 ROV / 纹理屏障复制来进行精确混合。这是桌面 ROV 在移动端的原生等价方案，通常在图块渲染器上快得多。默认开启。少数专有 Adreno 驱动会返回陈旧读取并可能出现伪影（精灵透明抠图、地面斑块不可见），若看到请关闭。重启游戏生效。对 Mali（已启用）或 OpenGL 无影响。",
- "renderer.accurateBlendingFastPath.label": "精确混合快速路径",
  "renderer.angleOpenGL.description": "通过 ANGLE 运行 OpenGL 渲染器，它会借助内置驱动将 OpenGL ES 转换为 Vulkan。适用于原生 OpenGL ES 驱动存在缺陷或较慢的设备（如部分联发科 Mali）。仅在渲染器设为 OpenGL 时生效。重启游戏以应用。",
  "renderer.angleOpenGL.label": "通过 ANGLE 运行 OpenGL",
  "renderer.anisotropic.description": "锐化倾斜纹理。较高值会占用 GPU 时间。",

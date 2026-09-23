@@ -8,24 +8,17 @@
 /// Where a point lands, and how much vertex offset a figure needs to cover that same pixel once
 /// the device grid is bigger than the native one.
 ///
-/// **A point rounds to nearest.** It does not obey the corner-sample rule sprites and triangles
-/// follow. The gs-prim console capture (SCPH-30001) swept the phase a sixteenth at a time on both
-/// axes and read the answer off the table: fractions 0..7 stay on the pixel, 8..15 move to the
-/// next one. Round-to-nearest explains all 60 of its point cells; truncation explains 24. The
-/// software renderer has always done this -- GSRasterizer::DrawPoint adds 0.5 and truncates -- and
-/// it is the same rounding GSLineWalk uses for a line's endpoints and for its minor axis, which
-/// the same capture matched on 188 of 188 line cases.
+/// A point rounds to nearest: fractions 0..7 stay on the pixel, 8..15 move to the next. It does
+/// not follow the corner-sample rule of sprites and triangles. This matches console behaviour,
+/// GSRasterizer::DrawPoint (add 0.5, truncate), and GSLineWalk's endpoint and minor-axis rounding.
 ///
-/// **Upscaled, a point covers the whole device block of the native pixel it lights**, the way a
-/// one-pixel sprite does. The rounding cannot be folded into the draw's vertex offset instead: the
-/// offset is one constant for the whole draw and rounding is a step function of the coordinate, so
-/// above 1x there is no constant that lands every phase on the right block. Apply the rule where
-/// it was measured -- snap the vertex onto the boundary of the pixel it lights, at native
-/// resolution, in the 1/16 units the vertex buffer holds -- and the offset is then only asked to
-/// turn a whole native pixel into its block of device pixels.
+/// Upscaled, a point covers the whole device block of the native pixel it lights, like a
+/// one-pixel sprite. The rounding cannot be folded into the draw's vertex offset, which is one
+/// constant per draw, while rounding is a step function of the coordinate. So the vertex is
+/// snapped onto its pixel boundary at native resolution in 1/16 units, and the offset then only
+/// maps a native pixel to its device block.
 ///
-/// **Which offset that is depends on the figure the backend draws**, and above 1x the two answers
-/// differ:
+/// The offset depends on the figure the backend draws; above 1x the two differ:
 ///
 /// - A figure whose corners are pixel boundaries takes **half a device pixel**, the amount that
 ///   puts a boundary between two device pixels. VSExpand::Point grows a quad one native pixel
@@ -36,9 +29,7 @@
 ///   target_scale device pixels is one of these, and so are a wide line and the quad
 ///   VSExpand::Line builds.
 ///
-/// At native resolution the two are the same number, which is why nothing at 1x has ever had to
-/// choose -- and why Align to Native's half a native pixel has been right for hardware points all
-/// along and wrong for the pixel-run rectangles.
+/// At native resolution the two are equal.
 namespace GSPointPlace
 {
 	/// The native pixel a point at v lights. v is relative to XYOFFSET, in 1/16 pixel. >> rounds

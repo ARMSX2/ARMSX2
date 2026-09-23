@@ -22,6 +22,7 @@
 // Rides gs_vertex_tests -- the policy is header-only constexpr, so it needs no extra linkage.
 
 #include "GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h"
+#include "GS/Renderers/Common/GSMeasurementOverrides.h"
 
 #include <gtest/gtest.h>
 
@@ -135,30 +136,13 @@ TEST(GSDynamicFeedbackLoop, AppliedAndFallbackPartitionTheLayoutRoad)
 	}
 }
 
-// The process-wide switch: per draw by default and unforced, forceable either way, and its banner
-// pair says both which spelling a log is and whether anybody asked for it. The origin is what
-// an earlier measurement did not have -- it ran a whole set of dumps on the create flag because the spelling came from
-// a harness flag and the log said only the spelling, not where it came from.
-TEST(GSDynamicFeedbackLoop, TheProcessSpellingDefaultsToPerDrawAndSaysWhere)
+// The harness switch: per draw unless -loop-create-flag asked for the other spelling.
+TEST(GSDynamicFeedbackLoop, TheHarnessSpellingDefaultsToPerDraw)
 {
-	EXPECT_EQ(GSDynamicFeedbackLoopPolicy::GetSpelling(), GSLoopDeclarationSpelling::DynamicPerDraw);
-	EXPECT_TRUE(GSDynamicFeedbackLoopPolicy::WantsDynamicPerDraw());
-	EXPECT_FALSE(GSDynamicFeedbackLoopPolicy::IsForced());
-	EXPECT_STREQ(GSDynamicFeedbackLoopPolicy::Name(), "dynamic per draw");
-	EXPECT_STREQ(GSDynamicFeedbackLoopPolicy::Origin(), "default");
+	EXPECT_EQ(g_gs_measurement_overrides.LoopSpelling(), GSLoopDeclarationSpelling::DynamicPerDraw);
 
-	GSDynamicFeedbackLoopPolicy::ForceSpelling(GSLoopDeclarationSpelling::PipelineCreateFlag);
-	EXPECT_FALSE(GSDynamicFeedbackLoopPolicy::WantsDynamicPerDraw());
-	EXPECT_TRUE(GSDynamicFeedbackLoopPolicy::IsForced());
-	EXPECT_STREQ(GSDynamicFeedbackLoopPolicy::Name(), "pipeline create flag");
-	EXPECT_STREQ(GSDynamicFeedbackLoopPolicy::Origin(), "forced");
-
-	// Naming the default is still a forcing -- the banner should say somebody typed it.
-	GSDynamicFeedbackLoopPolicy::ForceSpelling(GSLoopDeclarationSpelling::DynamicPerDraw);
-	EXPECT_TRUE(GSDynamicFeedbackLoopPolicy::WantsDynamicPerDraw());
-	EXPECT_STREQ(GSDynamicFeedbackLoopPolicy::Origin(), "forced");
-
-	GSDynamicFeedbackLoopPolicy::ResetToDefault();
-	EXPECT_TRUE(GSDynamicFeedbackLoopPolicy::WantsDynamicPerDraw());
-	EXPECT_FALSE(GSDynamicFeedbackLoopPolicy::IsForced());
+	GSMeasurementOverrides forced;
+	forced.loop_create_flag = true;
+	EXPECT_EQ(forced.LoopSpelling(), GSLoopDeclarationSpelling::PipelineCreateFlag);
+	EXPECT_TRUE(forced.Any());
 }

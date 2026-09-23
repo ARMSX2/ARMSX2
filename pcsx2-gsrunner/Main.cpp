@@ -51,12 +51,7 @@
 #include "pcsx2/GS.h"
 #include "pcsx2/GS/Renderers/Common/GSDevice.h"
 #include "pcsx2/GS/Renderers/Common/GSGPUProfile.h"
-#include "pcsx2/GS/Renderers/Common/GSDateRoadPolicy.h"
-#include "pcsx2/GS/Renderers/Common/GSDeclaredLoopScopePolicy.h"
-#include "pcsx2/GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h"
-#include "pcsx2/GS/Renderers/Common/GSFastStencilShadow.h"
-#include "pcsx2/GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
-#include "pcsx2/GS/Renderers/Common/GSSelfReadRoadPolicy.h"
+#include "pcsx2/GS/Renderers/Common/GSMeasurementOverrides.h"
 #if defined(ARMSX2_USE_ADRENOTOOLS)
 // Only under the adrenotools flag, i.e. Android arm64. VKLoader.h drags in the Vulkan
 // headers and, on an X11 desktop, all of Xlib's macros with them -- see the note in
@@ -1117,9 +1112,6 @@ static void PrintCommandLineHelp(const char* progname)
 						 "advertises MAILBOX support but errors VK_ERROR_INITIALIZATION_FAILED on swapchain create.\n");
 	std::fprintf(stderr, "  -no-fb-fetch: Disable Vulkan framebuffer fetch (VK_EXT_rasterization_order_attachment_access). "
 						 "Use to A/B against drivers that mishandle subpass self-dependencies (e.g. libmali).\n");
-	std::fprintf(stderr, "  -no-dual-source: Report no dual-source blend unit, the way every Mali Vulkan blob does. "
-						 "Makes GSRendererHW take the SRC1 substitution and SW-blend fallbacks, so a Mali-only blending "
-						 "bug reproduces on a desktop GPU.\n");
 	std::fprintf(stderr, "  -broken-blend-constant: Report the driver as ignoring the Vulkan blend constant, the way Mesa "
 						 "Turnip does on some draws. GSRendererHW then sends a fixed (AFIX) blend factor through the "
 						 "second fragment output instead of vkCmdSetBlendConstants, so that road can be A/B'd on a "
@@ -1128,32 +1120,6 @@ static void PrintCommandLineHelp(const char* progname)
 						 "Falls back to hardware/geometry expansion.\n");
 	std::fprintf(stderr, "  -no-tex-barriers: Force OverrideTextureBarriers=0. Disables the texture-barrier render-pass pattern "
 						 "and the framebuffer-fetch / depth-feedback paths that build on it.\n");
-	std::fprintf(stderr, "  -no-feedback-carry: Stop the backend keeping the feedback-loop flag set across the draws that "
-						 "follow a self-reading one in the same render pass. Every draw is then declared on its own "
-						 "merits. Measurement instrument: the carry hands every pipeline in a latched pass the same "
-						 "create flag, which on Turnip is what untiles the pass and programs the coherent primitive "
-						 "mode, so it is the confound between 'declaring the read is expensive' and 'declaring it for "
-						 "draws that do not read is expensive'. Vulkan only.\n");
-	std::fprintf(stderr, "  -no-fast-stencil-shadow: Take the alpha stencil counter (Jak II / Jak 3 shadow volumes) off "
-						 "the blend unit and back onto the ordinary render-target read, leaving texture barriers, the "
-						 "self-read road and the loop spelling exactly where the device put them. Measurement "
-						 "instrument: it separates the counter's own contribution from the road's, which is what a "
-						 "base-vs-declared A/B cannot do on its own. Frames must match base -- the counter is an "
-						 "optimisation, not a different picture. Vulkan only.\n");
-	std::fprintf(stderr, "  -force-fast-stencil-shadow: Take the alpha stencil counter on a road whose rule declines "
-						 "it, by lifting only the road term (the Vulkan and dual-source terms still gate it, since "
-						 "those decide whether the counter can be drawn at all). The roads the rule declines are "
-						 "the in-tile read (Mali, or an Adreno with OverrideTextureBarriers=1) and the per-draw "
-						 "barrier road on any driver but Honeykrisp (desktop Vulkan, MoltenVK), where the counter "
-						 "has never been measured. The copy road, a declared feedback loop and the M2's barrier road "
-						 "qualify on their own, so this switch changes nothing there. -no-fast-stencil-shadow wins if both are passed. Vulkan "
-						 "only.\n");
-	std::fprintf(stderr, "  -date-road <auto|primid>: Which road the destination alpha test takes. auto is the per-draw "
-						 "decision the renderer already makes; primid pins every DATE draw to primitive-ID tracking, the "
-						 "road both handheld targets take today. Measurement instrument: giving a build an in-pass "
-						 "destination read moves DATE draws onto the Full road by itself, so an A/B of the colour road "
-						 "otherwise changes two mechanisms at once. ⚠️ EXPECTED TO MOVE PIXELS -- the DATE roads are four "
-						 "approximations of one PS2 rule and they disagree at the edges.\n");
 	std::fprintf(stderr, "  -declare-feedback-loop <1|2>: Declare the attachment feedback loop on a device with "
 						 "VK_EXT_attachment_feedback_loop_layout: 1 trusts the driver to order the read and drops the "
 						 "barriers, 2 keeps the barriers (the diagnostic arm). Measurement instrument only -- arm 1 "
@@ -1161,12 +1127,6 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -declare-depth-feedback-loop: Also declare the depth feedback loop, on a device whose colour "
 						 "loop is declared. ⚠️ Turnip has a recorded tiler hang sampling the live depth buffer; expect a "
 						 "possible device lockup. Vulkan only.\n");
-	std::fprintf(stderr, "  -declare-overlap-only: On a build that declares an attachment feedback loop for the draws that "
-						 "read their own render target, declare it only for the draws whose own primitives overlap, and "
-						 "leave every other reader on the copy road. Those are the draws a once-per-draw clone cannot "
-						 "serve; the rest it serves exactly. Measurement instrument: the driver's coherent primitive "
-						 "mode is what the declaration buys and what it costs, so this confines the cost to the draws "
-						 "that need the ordering. Inert on a build that declares nothing. Vulkan only.\n");
 	std::fprintf(stderr, "  -loop-create-flag: Declare the attachment feedback loop with the pipeline create flag "
 						 "instead of per draw with vkCmdSetAttachmentFeedbackLoopEnableEXT. The per-draw spelling is "
 						 "the DEFAULT on Turnip and Honeykrisp wherever the feedback-loop layout road is live and the "
@@ -1175,9 +1135,6 @@ static void PrintCommandLineHelp(const char* progname)
 						 "-- only when it is stated changes, and that is byte-identical. Measurement instrument only: "
 						 "on Turnip the create flag puts the driver's serialising primitive mode on every pipeline in "
 						 "a latched pass and costs up to 2.8x (wrc3@1x, SD865: 51.8 ms against 18.5). Vulkan only.\n");
-	std::fprintf(stderr, "  -dynamic-loop-enable: No longer needed -- the per-draw spelling it used to select is now "
-						 "the default. Accepted and reported so scripts written before that change still run; it "
-						 "changes nothing. Use -loop-create-flag for the other spelling.\n");
 	std::fprintf(stderr, "  -accblend <0-5>: Force accurate blending unit (0=Minimum, 1=Basic, 2=Medium, 3=High, 4=Full, 5=Maximum). "
 						 "Overrides the game/global default; use to exercise the SW-blend / fb-fetch (ROV) path headlessly.\n");
 	std::fprintf(stderr, "  --: Signals that no more arguments will follow and the remaining\n"
@@ -1704,12 +1661,6 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_settings_interface.SetBoolValue("EmuCore/GS", "DisableFramebufferFetch", true);
 				continue;
 			}
-			else if (CHECK_ARG("-no-dual-source"))
-			{
-				Console.WriteLn("Disabling dual-source blending (pretend to be a Mali blob)");
-				s_settings_interface.SetBoolValue("EmuCore/GS", "DisableDualSourceBlend", true);
-				continue;
-			}
 			else if (CHECK_ARG("-broken-blend-constant"))
 			{
 				Console.WriteLn("Pretending the driver ignores the blend constant (pretend to be Turnip)");
@@ -1732,33 +1683,6 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_settings_interface.SetIntValue("EmuCore/GS", "OverrideTextureBarriers", 0);
 				continue;
 			}
-			else if (CHECK_ARG("-no-feedback-carry"))
-			{
-				Console.WriteLn("Forcing the feedback-loop carry off for this process");
-				// Not a setting: which road a device should take here is a measurement result,
-				// not a user preference. Read where the backend builds the carry inputs, once
-				// per draw, which is long after argument parsing.
-				GSFeedbackLoopCarryPolicy::SetForcedOff(true);
-				continue;
-			}
-			else if (CHECK_ARG("-no-fast-stencil-shadow"))
-			{
-				Console.WriteLn("Forcing the alpha stencil counter off for this process");
-				// Not a setting: whether a frame read is worth avoiding is a device rule, and a
-				// user cannot tell which side of it their driver is on. Read once, where
-				// CheckFeatures resolves the feature bit, which is long after argument parsing.
-				GSFastStencilShadow::SetForcedOff(true);
-				continue;
-			}
-			else if (CHECK_ARG("-force-fast-stencil-shadow"))
-			{
-				Console.WriteLn("Forcing the alpha stencil counter on for this process");
-				// Lifts only the road term of the device rule; the Vulkan and dual-source terms
-				// still gate it, because those are about whether the backend can draw the counter
-				// at all rather than whether it is worth drawing.
-				GSFastStencilShadow::SetForcedOn(true);
-				continue;
-			}
 			else if (CHECK_ARG("-loop-create-flag"))
 			{
 				Console.WriteLn("Declaring the attachment feedback loop with the pipeline create flag, "
@@ -1769,26 +1693,16 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// reachable so the slow spelling can be priced on purpose rather than by accident
 				// -- an earlier measurement priced a whole set of dumps on the create flag without
 				// meaning to, before per draw became the default.
-				GSDynamicFeedbackLoopPolicy::ForceSpelling(GSLoopDeclarationSpelling::PipelineCreateFlag);
-				continue;
-			}
-			else if (CHECK_ARG("-dynamic-loop-enable"))
-			{
-				// Retired when the spelling it selected became the default. Accepted as a
-				// no-op rather than rejected, so every script and measurement command line written
-				// before then still runs -- and says out loud that it is not doing anything, so
-				// nobody reads its presence in a command line as the thing that chose the spelling.
-				Console.WriteLn("-dynamic-loop-enable is a no-op: the per-draw feedback-loop declaration "
-								"is the default. Use -loop-create-flag for the other spelling.");
+				g_gs_measurement_overrides.loop_create_flag = true;
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-declare-feedback-loop"))
 			{
 				const char* arm_arg = argv[++i];
 				if (std::strcmp(arm_arg, "1") == 0)
-					GSSelfReadRoadPolicy::SetForcedArm(GSSelfReadArm::Declared);
+					g_gs_measurement_overrides.self_read_arm = GSSelfReadArm::Declared;
 				else if (std::strcmp(arm_arg, "2") == 0)
-					GSSelfReadRoadPolicy::SetForcedArm(GSSelfReadArm::DeclaredKeepBarriers);
+					g_gs_measurement_overrides.self_read_arm = GSSelfReadArm::DeclaredKeepBarriers;
 				else
 				{
 					ArgError("-declare-feedback-loop: '{}' is not an arm (expected 1 or 2).", arm_arg);
@@ -1802,30 +1716,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			else if (CHECK_ARG("-declare-depth-feedback-loop"))
 			{
 				Console.WriteLn("Also declaring the depth feedback loop (needs a declared colour loop)");
-				GSSelfReadRoadPolicy::SetDeclareDepthLoop(true);
-				continue;
-			}
-			else if (CHECK_ARG("-declare-overlap-only"))
-			{
-				Console.WriteLn("Declaring the attachment feedback loop only for self-overlapping draws");
-				// Not a setting: which draws should pay a driver's serialising primitive mode is a
-				// measurement result on one device. Read per draw, in DetermineBarriers.
-				GSDeclaredLoopScopePolicy::SetScope(GSDeclaredLoopScope::OverlapOnly);
-				continue;
-			}
-			else if (CHECK_ARG_PARAM("-date-road"))
-			{
-				const char* road_arg = argv[++i];
-				if (std::strcmp(road_arg, "auto") == 0)
-					GSDateRoadPolicy::SetOverride(GSDateRoadOverride::Auto);
-				else if (std::strcmp(road_arg, "primid") == 0)
-					GSDateRoadPolicy::SetOverride(GSDateRoadOverride::PrimID);
-				else
-				{
-					ArgError("-date-road: '{}' is not a road (expected auto or primid).", road_arg);
-					return false;
-				}
-				Console.WriteLn(fmt::format("Destination alpha test road = {}", GSDateRoadPolicy::Name()));
+				g_gs_measurement_overrides.declare_depth_loop = true;
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-accblend"))

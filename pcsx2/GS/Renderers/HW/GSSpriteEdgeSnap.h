@@ -7,22 +7,20 @@
 
 /// The two upscaling adjustments a sprite's far edge can get, and the arithmetic behind each.
 ///
-/// Both push the far edge outwards by up to half a pixel, for the same reason: the GS rasterises a
-/// sprite in whole pixels, so an edge part way into a pixel covers what an edge on the boundary
-/// covers, and upscaling multiplies the coordinate before rasterising and loses the difference.
-/// They disagree about which sprites deserve it -- the pixel-grid snap takes any sprite whose UV
-/// slide comes out whole, the AlignSpriteX game fix takes every sprite in a batch whose first
-/// sprite is half a pixel short -- so a sprite must never get both.
+/// Both push the far edge outwards by up to half a pixel. The GS rasterises a sprite in whole
+/// pixels, so an edge part way into a pixel covers the same pixels as an edge on the boundary;
+/// upscaling multiplies the coordinate first and loses that. The pixel-grid snap applies to any
+/// sprite whose UV slide comes out whole; the AlignSpriteX game fix applies to every sprite in a
+/// batch whose first sprite is half a pixel short. A sprite must never get both.
 ///
-/// Both also have to keep off a far edge the next sprite in the batch starts on, which the fix
-/// does with its `hole_in_vertex` question and the snap with DropAbuttingAxes.
+/// Both must leave alone a far edge the next sprite starts on: the fix via `hole_in_vertex`, the
+/// snap via DropAbuttingAxes.
 ///
-/// The rules live in a header of their own so the order they run in can be tested without a GS
-/// device: the fix's one decision is read off the first sprite's coordinates, so a snap that ran
-/// first would answer it from coordinates it had already moved.
+/// Order matters: the fix decides from the first sprite's coordinates, so the snap must not run
+/// before it.
 ///
-/// The header also holds the test the Align to Native with Texture Offset half-pixel mode uses to
-/// decide whether to move a whole sprite batch onto the grid, since it reads the same fractions.
+/// Also holds the test the Align to Native with Texture Offset half-pixel mode uses to move a
+/// sprite batch onto the grid, since it reads the same fractions.
 namespace GSSpriteEdgeSnap
 {
 	/// How far one sprite's far corner has to move, in the sprite's own 1/16 units.
@@ -42,11 +40,9 @@ namespace GSSpriteEdgeSnap
 	/// The pixel-grid snap for one sprite. X and Y are relative to XYOFFSET; adjust_uv says the
 	/// sprite samples a texture with FST coordinates, so the UV has to slide with the position.
 	///
-	/// A zero delta means the sprite is left alone, which happens for three reasons: it already
-	/// ends on the grid, its far edge is not to the right of / below its near edge, or the UV
-	/// slide the position slide implies is not a whole step of the coordinate's own 1/16-texel
-	/// grid. The last one is a refusal, not an oversight -- writing a fractional slide down means
-	/// rounding, and rounding resamples the whole sprite to buy one edge pixel.
+	/// Returns a zero delta when the sprite already ends on the grid, its far edge is not right of
+	/// / below its near edge, or the implied UV slide is not a whole 1/16-texel step. Rounding a
+	/// fractional slide would resample the whole sprite to gain one edge pixel.
 	inline constexpr Delta FarEdge(int x0, int y0, int x1, int y1, int u0, int v0, int u1, int v1, bool adjust_uv)
 	{
 		const int dx = (x1 > x0) ? (SnapUp(x1) - x1) : 0;
@@ -81,20 +77,15 @@ namespace GSSpriteEdgeSnap
 	/// Cancels the snap on an axis where a neighbouring sprite starts exactly on this sprite's far
 	/// edge.
 	///
-	/// The snap recovers a device pixel the GS gives the sprite at native and upscaling takes
-	/// away. A far edge a neighbour starts on is not such a pixel: ceil() sends both coordinates
-	/// to the same pixel, so at native it is the neighbour that draws it and this sprite loses
-	/// nothing. Pushing the edge out there does not recover a pixel, it draws the neighbour's
-	/// first device column a second time -- and a batch that blends turns every one of those
-	/// columns into a bright line. Need for Speed Underground cuts its bloom downsample into
-	/// sixteen abutting strips and showed all fifteen seams from 1.76x upwards.
+	/// At native resolution the neighbour draws the pixel at a shared edge, so this sprite loses
+	/// nothing there. Snapping it would draw the neighbour's first device column twice, which a
+	/// blended batch shows as a bright seam (Need for Speed Underground's bloom strips).
 	///
-	/// The AlignSpriteX fix refuses a whole batch that tiles for the same reason; this asks the
-	/// question per sprite, so the sprite at the end of a strip still gets its edge back.
+	/// Unlike AlignSpriteX, which refuses a whole tiling batch, this is per sprite, so the last
+	/// sprite of a strip still gets its edge.
 	///
-	/// The other axis is not consulted, so a neighbour sitting on the coordinate without sharing a
-	/// single row with the sprite costs it the snap too. That direction is the safe one: it is a
-	/// return to what the renderer did before the snap existed.
+	/// The other axis is not checked, so a neighbour on the same coordinate that shares no row
+	/// also cancels the snap. That errs towards not snapping, which is safe.
 	inline constexpr Delta DropAbuttingAxes(Delta d, int x1, int y1, NearCorner prev, NearCorner next)
 	{
 		if ((prev.present && prev.x == x1) || (next.present && next.x == x1))
@@ -130,12 +121,10 @@ namespace GSSpriteEdgeSnap
 	/// the first sprite. The move is (16 - fraction) sixteenths of a pixel, so it lands an edge
 	/// sitting half a pixel or more off the grid on the next whole pixel.
 	///
-	/// A sprite whose near edge sits on a whole pixel is exempt. One that starts on a whole pixel
-	/// and only ends part way into the next (31.0 .. 41.9375 keeps the last pixel out) is already
-	/// on the grid: at native it covers the same pixels as 31.0 .. 42.0. Moving it anyway shifts
-	/// every texel of it by one device pixel at 2x, which is what put Dirge of Cerberus's item
-	/// text a device pixel to the right. Every other sprite keeps the move, including scaled and
-	/// freely placed ones whose two edges carry different fractions.
+	/// A sprite whose near edge sits on a whole pixel is exempt: it is already on the grid (at
+	/// native 31.0 .. 41.9375 covers the same pixels as 31.0 .. 42.0), and moving it shifts every
+	/// texel by a device pixel when upscaled (Dirge of Cerberus item text). Every other sprite
+	/// gets the move, including ones whose two edges carry different fractions.
 	///
 	/// `frac0` and `frac1` are the 1/16 fractions of the sprite's first and second vertex on this
 	/// axis, relative to XYOFFSET; `first_is_near` says the first vertex is the lower coordinate.

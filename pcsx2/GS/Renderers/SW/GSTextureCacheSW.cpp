@@ -167,10 +167,9 @@ void GSTextureCacheSW::Texture::Reset(u32 tw0, const GIFRegTEX0& TEX0, const GIF
 {
 	if (m_buff && (m_TEX0.TW != TEX0.TW || m_TEX0.TH != TEX0.TH))
 	{
-		// The texture's shape moved, so Update() has to hand the rasterizer a buffer that reads
-		// zero outside the blocks it unswizzles. The allocation is kept and Update() zeroes
-		// exactly the bytes previous draws wrote into it -- GSSwTextureDirty.h has the argument
-		// for why that produces identical bytes to a freshly zeroed allocation.
+		// Shape changed: Update() must hand over a buffer that reads zero outside the blocks it
+		// unswizzles. Keep the allocation; Update() zeroes only the bytes earlier draws wrote
+		// (see GSSwTextureDirty.h for why that equals a fresh zeroed allocation).
 		m_buff_stale = true;
 	}
 
@@ -186,11 +185,9 @@ void GSTextureCacheSW::Texture::Reset(u32 tw0, const GIFRegTEX0& TEX0, const GIF
 		m_tw = std::max<int>(m_TEX0.TW, GSLocalMemory::m_psm[m_TEX0.PSM].pal == 0 ? 3 : 5); // makes one row 32 bytes at least, matches the smallest block size that is allocated for m_buff
 	}
 
-	// Same rule as the pixel buffer, in words. Every word outside the tracked range is already
-	// zero: Update() only ever sets bits in m_valid and InvalidatePages() only ever clears them,
-	// so nothing can dirty a word this never saw. Reset() is reached from the hardware renderer's
-	// SwPrimRender road alone -- the software renderer's own cache goes through Lookup() and
-	// never resets a texture -- so this cannot change what that renderer sees either.
+	// Same rule for m_valid. Words outside the tracked range are already zero: Update() only
+	// sets bits and InvalidatePages() only clears them. Reset() is only reached from the
+	// hardware renderer's SwPrimRender path; the SW renderer's cache never resets a texture.
 	const GSSwTextureDirty::Range vr = m_valid_dirty.ClearRange(GS_MAX_PAGES);
 	if (vr.Size() > 0)
 		memset(&m_valid[vr.begin], 0, vr.Size() * sizeof(m_valid[0]));
@@ -241,8 +238,7 @@ bool GSTextureCacheSW::Texture::Update(const GSVector4i& rect)
 
 		if (m_buff_size < size)
 		{
-			// No buffer, or one too small to hold this draw. Grow-only: the allocation settles on
-			// the largest shape the road asks for and stops churning.
+			// No buffer, or too small. Grow-only, so the allocation settles on the largest shape.
 			if (m_buff)
 				_aligned_free(m_buff);
 
@@ -263,12 +259,10 @@ bool GSTextureCacheSW::Texture::Update(const GSVector4i& rect)
 		}
 		else
 		{
-			// The allocation is kept and put back the way a fresh zeroed one would have been:
-			// everything outside the tracked range is already zero, so zeroing the range makes the
-			// whole capacity zero. INVARIANT: after Update() returns, every byte the rasterizer may
-			// read -- inside the unswizzled rect, in the rest of the nominal buffer, or anywhere in
-			// the x4 guard band -- holds exactly what the allocate-and-memset path would have left
-			// there.
+			// Reuse the allocation. Everything outside the tracked range is already zero, so
+			// zeroing the range zeroes the whole capacity. INVARIANT: after Update() every byte
+			// the rasterizer may read, including the x4 guard band, matches what the
+			// allocate-and-memset path would have left.
 			const GSSwTextureDirty::Range dr = m_dirty.ClearRange(m_buff_size);
 			if (dr.Size() > 0)
 				std::memset(static_cast<u8*>(m_buff) + dr.begin, 0, dr.Size());
@@ -294,9 +288,8 @@ bool GSTextureCacheSW::Texture::Update(const GSVector4i& rect)
 
 	int block_pitch = pitch * bs.y;
 
-	// One block write covers bs.y rows of (bs.x << shift) bytes at stride `pitch` -- the same
-	// shape block_pitch above already assumes. Taken before shift picks up blockShiftX, which
-	// turns it from "bytes per pixel" into "bytes per block column".
+	// One block write covers bs.y rows of (bs.x << shift) bytes at stride `pitch`. Computed
+	// before shift picks up blockShiftX and stops meaning bytes per pixel.
 	const size_t block_extent = GSSwTextureDirty::BlockExtent(bs.y, pitch, static_cast<size_t>(bs.x) << shift);
 
 	shift += off.blockShiftX();

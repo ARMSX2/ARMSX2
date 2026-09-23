@@ -7,23 +7,18 @@
 
 #include "GS/Renderers/HW/GSAlphaKnownBits.h"
 
-/// Two different questions get asked about a draw's alpha framebuffer mask, and after the exact
-/// alpha drop they have two different answers.
+/// Rules for a draw's alpha framebuffer mask, which has two meanings once the exact alpha drop
+/// has run: what the shader does, and what the draw asked for.
 ///
 /// The drop clears the alpha byte of FBMSK when the target already holds those bits at the value
-/// this draw would write, so the write lands whole and the shader needs no read-back of the
-/// destination. What that changes is the shader and the barrier: after the drop, `ps.fbmask` is
-/// off and nothing in the pipeline is merging a destination alpha byte.
+/// this draw would write, so the shader needs no destination read-back. After the drop,
+/// `ps.fbmask` is off.
 ///
-/// It does not change what the draw asked for. A decision like "does this draw partially mask
-/// alpha, so the target must come out of RTA alpha scaling?" is about the draw, and reading it off
-/// `ps.fbmask` gets the wrong answer once the drop has cleared that flag -- the target then stays
-/// scaled where it used to de-correlate, and the round trip through the scaled representation moves
-/// colour by a unit or two. Those decisions ask for AsRequested() instead, which gives back the
-/// mask the drop took away.
+/// Decisions about the draw itself (e.g. "does it partially mask alpha, so the target must leave
+/// RTA alpha scaling?") must use AsRequested(), not `ps.fbmask`. Reading the cleared flag keeps the
+/// target scaled and the scaled round trip moves colour by a unit or two.
 ///
-/// The rule is a header of its own so the distinction is written down once and can be tested
-/// without a GS device.
+/// Kept in its own header so it can be tested without a GS device.
 namespace GSDrawAlphaMask
 {
 	/// What ExactDropped() means when this draw dropped nothing.
@@ -31,11 +26,9 @@ namespace GSDrawAlphaMask
 
 	/// What the exact alpha-mask rules decided about a draw.
 	///
-	/// The refusals are separated because they say different things about the title. An unknown
-	/// target is a tracker problem, and nothing can be done with the draw. The other two are the
-	/// substitution's population: the target knows the bits, so the shader can write them itself,
-	/// and the split records whether the source alpha was constant on them (the mask was doing
-	/// real work) or varied across the draw.
+	/// An unknown target means nothing can be done. The two Substitute values both mean the target
+	/// knows the masked bits, so the shader can write them itself; they differ in whether the
+	/// source alpha was constant on those bits or varied across the draw.
 	enum ExactAlphaDrop : u8
 	{
 		ExactAlphaDropNotConsidered = 0, ///< not an alpha-only partial mask on a 32-bit target
@@ -46,9 +39,8 @@ namespace GSDrawAlphaMask
 		ExactAlphaDropSubstituteLoadBearing, ///< known and constant, and different: the mask is doing work
 	};
 
-	/// Whether a verdict is one of the two the substitution acts on. Both mean the same thing
-	/// about the draw -- the target knows every bit the mask holds back, and the drop cannot have
-	/// it because the source does not already carry them -- and differ only in why.
+	/// Whether a verdict is one of the two the substitution acts on: the target knows every bit
+	/// the mask holds back, but the source does not already carry them, so the drop cannot apply.
 	inline constexpr bool IsExactAlphaSubstitute(u8 decision)
 	{
 		return decision == ExactAlphaDropSubstituteVarying || decision == ExactAlphaDropSubstituteLoadBearing;
@@ -57,8 +49,8 @@ namespace GSDrawAlphaMask
 	/// The alpha mask this draw asked for.
 	///
 	/// `dropped` is the alpha byte the exact drop cleared, or NothingDropped. `shader_masks` and
-	/// `shader_alpha_mask` are the live GSHWDrawConfig pair (`ps.fbmask`, `cb_ps.FbMask.a`) --
-	/// what the shader will actually do, which is what every other reader wants.
+	/// `shader_alpha_mask` are the live GSHWDrawConfig pair (`ps.fbmask`, `cb_ps.FbMask.a`), i.e.
+	/// what the shader will actually do.
 	inline constexpr u32 AsRequested(int dropped, bool shader_masks, u32 shader_alpha_mask)
 	{
 		if (dropped != NothingDropped)
@@ -69,17 +61,14 @@ namespace GSDrawAlphaMask
 
 	/// Whether the shader has to quantize the colour on its own account.
 	///
-	/// A draw that keeps a framebuffer mask runs the shader's masked-write road, and that road
-	/// turns the colour into integers on all four channels before it merges the destination in --
-	/// not only on the channels the mask touches. Off that road the colour stays fractional and
-	/// the output stage rounds it to nearest, which is a unit of colour of difference on every
-	/// pixel the draw covers, and another unit wherever a later draw blends against it. So a draw
-	/// the drop took off the road has to quantize anyway.
+	/// The shader's masked-write path converts all four channels to integers before merging the
+	/// destination. Without it the colour stays fractional and the output stage rounds to
+	/// nearest, which differs by a unit of colour. So a draw the drop took off that path must
+	/// still quantize.
 	///
-	/// Both arguments are the shader's four-channel mask nibble (`ps.fbmask`): `requested` as the
-	/// draw asked for it, `emulated` as it stands after the drop. A drop that leaves some other
-	/// channel partially masked leaves the draw on the road, where the quantization already
-	/// happens, so only a drop to nothing needs it put back.
+	/// Both arguments are the four-channel mask nibble (`ps.fbmask`): `requested` as the draw
+	/// asked for it, `emulated` after the drop. If any channel is still masked the draw stays on
+	/// the masked-write path, so only a drop to nothing needs quantization put back.
 	inline constexpr bool NeedsColorQuantize(u32 requested, u32 emulated)
 	{
 		return requested != 0u && emulated == 0u;
@@ -99,15 +88,12 @@ namespace GSDrawAlphaMask
 	/// the whole byte, by the caller's preconditions), `target` what the render target is known to
 	/// hold, and [src_lo, src_hi] the fragment alpha the draw would write.
 	///
-	/// The drop wins wherever both apply. It is the cheaper of the two -- no shader bit, no
-	/// constant, no permutation -- and where the source already carries the target's bits the two
-	/// write the same byte.
+	/// The drop wins wherever both apply: it is cheaper (no shader bit, no constant) and writes the
+	/// same byte.
 	///
-	/// Substitution needs less than the drop, not more: the drop writes the source's own bits
-	/// through the hole the mask used to cover, so it needs the source to be constant there and to
-	/// agree with the target. Substitution writes the target's known bits instead, so what the
-	/// source holds on those bits never reaches the framebuffer and does not have to be anything
-	/// in particular. Both need the same thing of the target: that its knowledge is exact.
+	/// The drop writes the source's own bits where the mask was, so the source must be constant
+	/// there and agree with the target. Substitution writes the target's known bits instead, so the
+	/// source can hold anything on them. Both require the target's knowledge to be exact.
 	inline constexpr ExactVerdict DecideExact(GSAlphaKnownBits::Known target, u8 masked, u8 src_lo, u8 src_hi)
 	{
 		if (masked == 0 || (target.bits & masked) != masked)
@@ -123,7 +109,7 @@ namespace GSDrawAlphaMask
 	/// result -- (src.a & ~M) | (known & M) -- out of one AND and one OR and no negation.
 	///
 	/// `keep` is every bit the source keeps, as a full 32-bit word, so the AND leaves an alpha
-	/// above 255 alone exactly as the masked-write road's `& ~FbMask` does. `value` is what the
+	/// above 255 alone, matching the masked-write path's `& ~FbMask`. `value` is what the
 	/// target is known to hold on the masked bits, already narrowed to them.
 	struct Substitution
 	{
@@ -141,18 +127,13 @@ namespace GSDrawAlphaMask
 	/// Whether this draw's primary colour output alpha already carries a value of its own, so
 	/// nothing downstream may claim the byte for something else.
 	///
-	/// The blend-mix factor substitution does exactly that on a GPU with no dual-source blend unit:
-	/// with nothing keeping the pass's alpha, it overwrites the byte with the blend factor
-	/// (ps.blend_factor_in_alpha), or takes the target into RTA scaling so the byte already reads
-	/// as one. Its own guard was "no shuffle and no fbmask", which was complete until the exact
-	/// alpha drop started clearing ps.fbmask on a draw that still means to write a particular
-	/// alpha byte. Reading the mask the draw ASKED for closes it: a dropped draw counts as spoken
-	/// for, exactly as it did before the drop existed.
+	/// Without dual-source blending, the blend-mix factor substitution overwrites the alpha byte
+	/// with the blend factor (ps.blend_factor_in_alpha) or moves the target into RTA scaling. A
+	/// draw whose alpha mask was dropped still writes a specific alpha byte, so this must check
+	/// the requested mask, not only the live ps.fbmask.
 	///
 	/// `shader_masks_any_channel` is the live ps.fbmask flag; `requested_alpha_mask` is
-	/// AsRequested() above. Neither the M2 nor any desktop GPU takes this road -- they all have a
-	/// dual-source blend unit -- so the coupling is only reachable on Mali and under
-	/// EmuCore/GS/DisableDualSourceBlend.
+	/// AsRequested() above. Only reachable on GPUs without dual-source blend.
 	inline constexpr bool AlphaOutputIsSpokenFor(bool shader_masks_any_channel, u32 requested_alpha_mask)
 	{
 		return shader_masks_any_channel || requested_alpha_mask != 0;
@@ -160,12 +141,10 @@ namespace GSDrawAlphaMask
 
 	/// Whether an exact alpha-mask drop that was held over the blend selection still stands.
 	///
-	/// A drop is worth taking for one thing: the barrier it removes, and with it, on a device with
-	/// no framebuffer fetch, the render-target clone the barrier becomes. So if the blend the draw
-	/// ended up with needs a barrier for its own reasons, the barrier is there whether the mask is
-	/// or not, and the drop has bought nothing -- the draw is better off back on the road it asked
-	/// for, with the same shader, the same blend and the same pixels it had before the rule
-	/// existed. `blend_requires_barrier` is the post-selection barrier state, one or full.
+	/// The drop only pays off by removing a barrier (and, without framebuffer fetch, the
+	/// render-target copy it implies). If the chosen blend needs a barrier anyway, the draw goes
+	/// back to its requested mask. `blend_requires_barrier` is the post-selection barrier state,
+	/// one or full.
 	inline constexpr bool DropStandsAfterBlend(bool blend_requires_barrier)
 	{
 		return !blend_requires_barrier;
@@ -173,13 +152,10 @@ namespace GSDrawAlphaMask
 
 	/// Whether a held substitution still stands after the blend selection.
 	///
-	/// It wants what the drop wants -- no barrier of the blend's own, or the barrier is there
-	/// either way and the substitution has bought nothing -- and one thing more. Colclip hardware
-	/// makes the masked-write road read the destination as `sample * 65535` on all four channels
-	/// including alpha, so the byte that road merges is not the tracked one and writing the
-	/// tracked one is not the same answer. The predicate at the framebuffer-mask site cannot see
-	/// that flag, because EmulateBlending sets it afterwards; holding the decision over the blend
-	/// is what makes it visible in time to refuse.
+	/// Same condition as the drop, plus no colclip hardware: colclip makes the masked-write path
+	/// read the destination as `sample * 65535` on all four channels, so the merged alpha byte is
+	/// not the tracked one. EmulateBlending sets that flag after the framebuffer-mask site, which
+	/// is why the decision is held until after blend selection.
 	inline constexpr bool SubstitutionStandsAfterBlend(bool blend_requires_barrier, bool colclip_hw)
 	{
 		return DropStandsAfterBlend(blend_requires_barrier) && !colclip_hw;
@@ -187,14 +163,11 @@ namespace GSDrawAlphaMask
 
 	/// Whether a draw whose exact alpha-mask decision is still held has a one-barrier road.
 	///
-	/// The decision takes the mask off the shader but only defers the barrier it required --
-	/// ResolveHeldAlphaMask puts mask and barrier back together if anything downstream needs a
-	/// barrier anyway. So every road chosen in between (the blend, the alpha test) has to be
-	/// chosen as if the barrier were there. Reading the live flag instead sends the draw down a
-	/// road it would not have taken with the mask on, and those roads are not always the same
-	/// pixels: the two-pass alpha-test road composites RGB out of order where overlapping
-	/// primitives meet, which is the whole reason the feedback road is preferred when a barrier
-	/// is already paid for.
+	/// A held decision takes the mask off the shader but only defers its barrier;
+	/// ResolveHeldAlphaMask restores both if anything downstream needs a barrier. So the blend and
+	/// alpha-test choices in between must be made as if the barrier were there. Otherwise the
+	/// draw can pick the two-pass alpha-test path, which composites RGB out of order where
+	/// overlapping primitives meet.
 	///
 	/// `live_one_barrier` is m_conf.require_one_barrier as it stands; `mask_held` says a decision
 	/// is outstanding.
@@ -203,9 +176,8 @@ namespace GSDrawAlphaMask
 		return live_one_barrier || mask_held;
 	}
 
-	/// Whether a mask holds back some alpha bits but not all of them. Neither end is partial: a
-	/// zero mask writes the whole byte, an 0xFF mask writes none of it, and in both cases the
-	/// target's alpha stays describable without reading the mask.
+	/// Whether a mask holds back some alpha bits but not all of them. 0 (write all) and 0xFF
+	/// (write none) are not partial.
 	inline constexpr bool IsPartial(u32 alpha_mask)
 	{
 		return alpha_mask != 0u && alpha_mask != 0xFFu;

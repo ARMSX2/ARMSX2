@@ -22,65 +22,31 @@
 
 MULTI_ISA_UNSHARED_IMPL;
 
-// The GS steps depth on a 2^-10 grid: the exact gradient TRUNCATED onto it, not
-// the gradient itself. Solved from console readings rather than guessed -- on a
-// row whose exact gradient is 1893.939393..., silicon's step solves to
-// 1893.938460 +/- 0.00004, and trunc(g * 1024) / 1024 is 1893.938477. On 32/33
-// it solves to 0.9687499 +/- 0.00007 against a truncation of 0.96875.
+// The GS steps depth by the exact gradient truncated onto a 2^-10 grid, not by
+// the exact gradient. Walking the exact value is more precise than the hardware
+// and lands one unit off on long spans, which is the whole margin a depth test
+// between consecutive Z levels decides on.
 //
-// Walking the exact gradient in float64, which is what we did, is MORE precise
-// than the hardware and lands one unit away from it on about a quarter of a long
-// span. One unit is exactly the margin a depth test between consecutive Z levels
-// decides on, so the extra precision was a divergence rather than an improvement
-// -- Z-laddered content is where it shows.
+// Truncation is toward zero, not floor (a sign-magnitude divider's behaviour).
+// The two agree on rising gradients; on falling ones a floor makes the step
+// steeper and the error accumulates to two units.
 //
-// TOWARD ZERO, not floor -- which is a direction the capture's decoder left
-// implicit and this re-render settles. That decoder models the step with a
-// floor, and the two agree on every rising gradient, so its own scoring could
-// not separate them. They disagree on falling ones, and there the console is
-// decisive: flooring makes a falling step steeper, the error then accumulates,
-// and the arm grows 84 readings that are TWO units out. Truncating toward zero
-// leaves every error at one unit, which is the bound the capture reports for
-// silicon itself. It is also what a sign-magnitude divider does naturally --
-// truncate the magnitude, apply the sign afterwards.
-//
-// Applied to the gradient where it is formed, so every SetupPrim backend inherits
-// it rather than each reimplementing the rule.
+// Applied where the gradient is formed so every SetupPrim backend inherits it.
 __forceinline static void TruncateDepthGradient(GSVector4& p)
 {
 	p.F64[1] = std::trunc(p.F64[1] * 1024.0) / 1024.0;
 }
 
-// The setup does not DIVIDE to form a colour or a fog gradient. It multiplies by a
-// reciprocal read out of a table eight significant bits wide, and the quantity it
-// inverts is the setup's own cross product.
+// The GS does not divide to form a colour or fog gradient. It multiplies by the
+// reciprocal of the setup's cross product, read from a table eight significant
+// bits wide and truncated (not rounded). The denominator is the cross product,
+// not an edge length: the two only coincide for power-of-two heights.
 //
-// Both halves of that are console measurements and the second one needed its own
-// capture. gs-walk2 (SCPH-30001, 2026-09-05) established the eight-bit truncation
-// over twenty-four baselines -- but every triangle it drew was 1024 rows tall, a
-// power of two, and under that shape the reciprocal of the horizontal baseline and
-// the reciprocal of the cross product have the identical mantissa. gs-shape swept
-// the height alone, which the exact gradient does not contain: if the denominator
-// were the baseline every height would draw the same row. Silicon's rows move --
-// up to 340 of 442 readings between two heights -- while two heights a power of
-// two apart stay byte-identical. Across four shape classes, including one whose
-// cross product is neither edge's length, the cross product's truncated reciprocal
-// explains 93.7% to 96.3% where the exact quotient explains 56% to 81%, the peak
-// in the width is sharp (74.9% at seven bits, 96.2% at eight, 80.8% at nine) and
-// truncation beats rounding at the same width by thirty points.
+// Computed in double so the reciprocal's own rounding is negligible, then the
+// mantissa is truncated toward zero to eight significant bits (the low 45
+// fraction bits of a binary64 cleared). The conversion to float is exact.
 //
-// Taken in double so the reciprocal's own rounding sits far below the granularity
-// being modelled, then the mantissa truncated toward zero to eight significant
-// binary digits -- one implicit leading bit and seven stored ones, which on a
-// binary64 is the low forty-five fraction bits cleared. The conversion back to
-// float is exact: eight significant bits fit a binary32 with room to spare.
-//
-// This file compiles with the project-wide -ffp-contract=fast, and the rule is
-// deliberately immune to it: the truncation is an integer mask, which no fused
-// multiply-add can absorb, and the multiply that consumes the result has nothing
-// to fuse with. Contraction still reaches the mul-subs below exactly as it
-// already reached the divides they replace -- a rounding at 2^-24, twenty-four
-// binades under the granularity being modelled.
+// -ffp-contract=fast cannot touch the truncation: it is an integer mask.
 __forceinline static GSVector4 TruncatedSetupReciprocal(const GSVector4& cross)
 {
 	double r = 1.0 / static_cast<double>(cross.x);
@@ -93,27 +59,15 @@ __forceinline static GSVector4 TruncatedSetupReciprocal(const GSVector4& cross)
 	return GSVector4(static_cast<float>(r));
 }
 
-// The depth gradients are formed from the PLANE, in double, not from the float32
-// barycentric coefficients the colour and texture lanes use.
+// The depth gradients are formed from the plane in double, not from the float32
+// coefficients the colour and texture lanes use. The float32 coefficient's
+// rounding error changes sign with the triangle's shape, so the 2^-10 truncation
+// could land a step above or below the true gradient depending on where the span
+// began. The hardware lands integer depths one below the plane's value.
 //
-// The vector setup below computes every attribute gradient as delta x (float32
-// coefficient), and for depth that coefficient carried a relative error of ~1e-8
-// whose SIGN depended on the triangle -- on how 1/dx happened to round -- so the
-// same plane, carried by triangles of different width, came out with a gradient
-// that the 2^-10 truncation then landed either a step BELOW the true value
-// (deficit: the walk runs short, integer landings store N-1, which is what silicon
-// does) or a step ABOVE it (surplus: the walk overtakes the plane and integer
-// landings store N). gs-block (SCPH-30001, 2026-08-15) swept one plane across
-// eight left edges: silicon read every integer landing one below on all eight, our
-// arm read the plane's own integer on two of them (widths 90 and 75, whose float32
-// reciprocals round up) and one below on the other six -- 46 of 136 readings
-// separated by where the span began, on a walk that is otherwise exact.
-//
-// In double the numerators are exact (a 32-bit z difference times a 12.4 position
-// difference fits a 53-bit mantissa) and the single division is correctly rounded,
-// so the truncated step is a function of the plane alone -- which is what makes a
-// pixel's depth a function of the pixel and the plane, and what a fragment shader
-// can reproduce.
+// In double the numerators are exact (32-bit z delta times a 12.4 position delta
+// fits 53 bits) and the one division is correctly rounded, so the truncated step
+// depends only on the plane.
 __forceinline static void FormDepthGradients(const GSVector4& dv0p, double dv0z, const GSVector4& dv1p, double dv1z, double& dscan_z, double& dedge_z)
 {
 	const double d0x = dv0p.x, d0y = dv0p.y, d1x = dv1p.x, d1y = dv1p.y;
@@ -443,14 +397,10 @@ void GSRasterizer::DrawEdgeTriangle(const GSVertexSW& v0, const GSVertexSW& v1, 
 	const int rxi1 = static_cast<int>(rx1);
 	const int ryi1 = static_cast<int>(ry1);
 
-	// AA1 widens a side by one pixel, and it widens it in whichever axis the side is
-	// steeper in -- so a vertical side puts its zero-coverage column one pixel outside
-	// the primitive's x extent exactly as a horizontal side puts its zero-coverage row
-	// one pixel outside the y extent. Both bounds therefore carry the same slack. The
-	// x bound used to be the un-widened extent, under a note saying the hardware's rule
-	// was unknown and this was an arbitrary pick; an SCPH-30001 capture of a right
-	// triangle with a vertical left side draws that column on every row of the side, at
-	// coverage zero, and draws nothing a second column out.
+	// AA1 widens a side by one pixel along its steeper axis, so a vertical side puts
+	// a zero-coverage column one pixel outside the x extent just as a horizontal side
+	// puts a zero-coverage row outside the y extent. Both bounds carry the same slack,
+	// and no further.
 	int bxi0 = static_cast<int>(std::ceil(std::min(x0, x1) - 1.0f));
 	int byi0 = static_cast<int>(std::ceil(std::min(y0, y1) - 1.0f));
 	int bxi1 = static_cast<int>(std::floor(std::max(x0, x1) + 1.0f));
@@ -799,14 +749,13 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	GSVertexSW2 edge;
 	GSVertexSW2 dedge;
 	GSVertexSW2 dscan;
-	// The section's LEFT edge's top vertex, which is the point the attribute
-	// plane is evaluated from. See the scalar twin below for what measured it.
+	// The section's left edge's top vertex: the point the attribute plane is
+	// evaluated from.
 	GSVertexSW2 ledge;
 
-	// Stages 1 and 2 of the primitive-grain rule, mirroring the scalar twin below
-	// lane for lane -- GSCoordinateWalk.h. Per primitive rather than per draw,
-	// because the grain comes from the largest of THESE three exponents and a strip
-	// shares its vertices between triangles that do not share a grain.
+	// Stages 1 and 2 of the primitive-grain rule (GSCoordinateWalk.h), mirroring
+	// the scalar path. Per primitive, not per draw: the grain comes from the largest
+	// of these three exponents, and strip neighbours need not share a grain.
 	GSVertexSW grained[3];
 	static constexpr u16 grained_index[3] = {0, 1, 2};
 	GSCoordinateGrain grain;
@@ -864,12 +813,9 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	GSVector4 tbmin = tbf.min(m_fscissor_y);
 	GSVector4i tb = GSVector4i(tbmax.xzyw(tbmin)); // max(y0, t) max(y1, t) min(y1, b) min(y2, b)
 
-	// UNCLIPPED, deliberately: the depth walk's bias gate asks whether the walk
-	// has stepped off the primitive's first scanline, and the scissor rejects
-	// pixels rather than reseeding the interpolator. Taking tb.x here instead
-	// would make a pixel's stored depth depend on the scissor around it -- the
-	// same triangle under a tighter scissor would exempt whichever row happened
-	// to survive, one unit out from the same draw untrimmed.
+	// Unclipped on purpose: the depth bias applies after the primitive's first
+	// scanline, and the scissor rejects pixels without reseeding the walk. Using
+	// the clipped top would make stored depth depend on the scissor.
 	const int prim_top = GSVector4i(tbf).x;
 
 	GSVertexSW2 dv0 = v1 - v0;
@@ -905,14 +851,12 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	dscan = dv1 * dxy01c.yyyy() - dv0 * dxy01c.wwww();
 	dedge = dv0 * dxy01c.zzzz() - dv1 * dxy01c.xxxx();
 
-	// ⚠️ Not compiled on this tree's ARM64 host (this is the AVX2 twin). Everything
-	// from here to TruncateDepthGradient mirrors the scalar path below lane for lane,
-	// so an x86 software renderer forms the same gradients as an ARM64 one.
+	// ⚠️ AVX2 path, not built on ARM64. Everything from here to
+	// TruncateDepthGradient must mirror the scalar path lane for lane.
 	//
-	// Colour and fog take silicon's truncated reciprocal; s, t, q and the position
-	// lanes keep the exact quotient above. GSVertexSW2::tc is t in lanes 0-3 and c in
-	// lanes 4-7, so the blend takes lane 3 (fog) and lanes 4-7 (colour) and leaves
-	// lanes 0-2 alone. The reasoning is on the scalar copy below.
+	// Colour and fog take the truncated reciprocal; s, t, q and position keep the
+	// exact quotient. tc is t in lanes 0-3 and c in lanes 4-7, so the blend takes
+	// lane 3 (fog) and lanes 4-7 (colour).
 	{
 		const GSVector8 dxy01r(dxy01 * TruncatedSetupReciprocal(cross));
 		const GSVector8 scan_r = dv1.tc * dxy01r.yyyy() - dv0.tc * dxy01r.wwww();
@@ -921,10 +865,8 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 		dscan.tc = dscan.tc.blend32<0xf8>(scan_r);
 		dedge.tc = dedge.tc.blend32<0xf8>(edge_r);
 
-		// And then again, to the eighth of a colour unit silicon actually walks --
-		// see GSColourWalk.h. Lanes 3 to 7 are fog and the four colour channels;
-		// s, t and q keep the exact quotient, so the truncated halves are blended
-		// back the same way the reciprocal's were.
+		// Then truncated to an eighth of a colour unit (GSColourWalk.h), blended
+		// back into lanes 3-7 the same way.
 		const GSVector8 trunc_s(GSColourWalkTruncUnit(dscan.tc.extract<0>()),
 			GSColourWalkTruncUnit(dscan.tc.extract<1>()));
 		const GSVector8 trunc_e(GSColourWalkTruncUnit(dedge.tc.extract<0>()),
@@ -934,9 +876,8 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 		dedge.tc = dedge.tc.blend32<0xf8>(trunc_e);
 	}
 
-	// Stage 3, as the scalar twin does it: the gradient the truncated vertices give,
-	// pushed down onto a grid a thousandth of the grain. Lanes 0 and 1 of tc are s
-	// and t; q and fog ride through.
+	// Stage 3, as in the scalar path: the gradient pushed down onto a grid a
+	// thousandth of the grain. Only the low half of tc (s, t, q, fog) is touched.
 	if (takes_grain)
 	{
 		const GSVector4 stq = GSCoordinateGradientOnGrain(dscan.tc.extract<0>(), grain,
@@ -945,9 +886,8 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 		dscan.tc = GSVector8(stq, dscan.tc.extract<1>());
 	}
 
-	// GSVertexSW2 is GSVertexSW with t and c fused into one vector at the same
-	// offsets, so the walk setup reads both through the scalar view. The block is
-	// eight pixels wide only when texturing, fog and AA1 are all off -- GSBlockWalk.h.
+	// GSVertexSW2 has the same layout as GSVertexSW, so the walk setup reads it
+	// through the scalar view. Block width: GSBlockWalk.h.
 	GSSetupColourWalk(vertex[i[0]], vertex[i[1]], vertex[i[2]],
 		reinterpret_cast<const GSVertexSW&>(dscan), reinterpret_cast<const GSVertexSW&>(dedge),
 		GSBlockWalkWidth(m_local.gd->sel.tfx != TFX_NONE, m_local.gd->sel.fge != 0,
@@ -993,10 +933,8 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 			edge.p = (v0.p.xxxx() + ddx[m2] * dv0.p.yyyy()).xyzw(edge.p);
 			dedge.p = ddx[!m2 << 1].yzzw(dedge.p);
 
-			// m2 == 0: the left edge is v1->v2 and v1 is its top vertex, which is
-			// where the anchor already sat. m2 == 1: v1 is the RIGHT-hand vertex
-			// and the left edge is the long v0->v2 one -- the case that was wrong
-			// while the seed came from v1.
+			// m2 == 0: the left edge is v1->v2, top vertex v1. m2 == 1: v1 is on
+			// the right and the left edge is the long v0->v2 one, top vertex v0.
 			ledge = m2 ? v0 : v1;
 
 			DrawTriangleSection(tb.y, tb.w, prim_top, edge, dedge, dscan, v1.p, ledge);
@@ -1077,13 +1015,12 @@ void GSRasterizer::DrawTriangleSection(int top, int bottom, int prim_top, GSVert
 		{
 			float prestep = l.x - p0.x;
 
-			// s, t and q keep the plane evaluated from the LEFT EDGE's top vertex.
+			// s, t and q are evaluated from the left edge's top vertex.
 			GSVector8 ldyv(static_cast<float>(top) - ledge.p.y);
 			GSVector8 lprestepv(l.x - ledge.p.x);
 
-			// Colour and fog come off the primitive's own walk instead -- see the
-			// scalar twin below, and GSColourWalk.h for what measured it. The
-			// blend takes lane 3 (fog) and lanes 4-7 (colour) and leaves s, t, q.
+			// Colour and fog come from the primitive's walk (GSColourWalk.h). The
+			// blend takes lane 3 (fog) and lanes 4-7 (colour).
 			const GSColourWalk& cwalk = m_local.cwalk;
 			const GSVector8 seed(GSColourWalkRowSeed(cwalk, cwalk.f, left, top),
 				GSColourWalkRowSeed(cwalk, cwalk.c, left, top));
@@ -1109,19 +1046,17 @@ void GSRasterizer::DrawTriangleSection(int top, int bottom, int prim_top, GSVert
 
 #else
 
-// The whole of DrawTriangle's setup, in one __noinline body, so the setup's
-// arithmetic is compiled exactly once. The z gradient's value is sensitive to which
-// multiply-adds the compiler contracts into fused ops — an ULP under an on-grid
-// gradient flips the truncated 2^-10 step by a whole unit — so a second source copy
-// of this arithmetic could legitimately disagree with this one.
+// DrawTriangle's setup in one __noinline body so its arithmetic is compiled once.
+// FMA contraction can move the z gradient by an ULP, which flips the truncated
+// 2^-10 step by a unit, so a second copy of this code could disagree with it.
 struct GSTriangleSetup
 {
 	GSVertexSW edge[2];
 	GSVertexSW dedge[2];
 	GSVertexSW dscan;
 	GSVector4 p0[2];
-	// The section's LEFT edge's TOP VERTEX, which is the point the attribute
-	// plane is evaluated from.
+	// The section's left edge's top vertex: the point the attribute plane is
+	// evaluated from.
 	GSVertexSW ledge[2];
 	int top[2];
 	int bottom[2];
@@ -1165,12 +1100,9 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 	GSVector4 tbmin = tbf.min(fscissor_y);
 	GSVector4i tb = GSVector4i(tbmax.xzyw(tbmin)); // max(y0, t) max(y1, t) min(y1, b) min(y2, b)
 
-	// UNCLIPPED, deliberately: the depth walk's bias gate asks whether the walk
-	// has stepped off the primitive's first scanline, and the scissor rejects
-	// pixels rather than reseeding the interpolator. Taking tb.x here instead
-	// would make a pixel's stored depth depend on the scissor around it -- the
-	// same triangle under a tighter scissor would exempt whichever row happened
-	// to survive, one unit out from the same draw untrimmed.
+	// Unclipped on purpose: the depth bias applies after the primitive's first
+	// scanline, and the scissor rejects pixels without reseeding the walk. Using
+	// the clipped top would make stored depth depend on the scissor.
 	out.top_prim = GSVector4i(tbf).extract32<0>(); // geometric first scanline, pre-scissor
 
 	GSVertexSW dv0 = v1 - v0;
@@ -1208,20 +1140,11 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 	out.dscan = dv1 * dxy01c.yyyy() - dv0 * dxy01c.wwww();
 	GSVertexSW dedge = dv0 * dxy01c.zzzz() - dv1 * dxy01c.xxxx();
 
-	// Colour and fog are formed again on silicon's truncated reciprocal; s, t, q
-	// and the position lanes keep the exact quotient above.
-	//
-	// The split is not a hedge, it is what the console reads. On the same height
-	// sweep, at heights where the truncated reciprocal would put a sampled texture
-	// coordinate in a different sixteenth of a texel on 206 of 221 pixels and move
-	// a depth value by more than a whole per-pixel step, silicon's coordinates and
-	// depths do not move at all -- and this renderer's exact quotient scores
-	// 100.00% against it on both sections. Colour and fog move at every height
-	// where the model says they should.
-	//
-	// Depth would be immune anyway: FormDepthGradients below overwrites the double
-	// lane from the plane. The texture lanes would not have been, which is why the
-	// two are separated here rather than left to the vector they share with fog.
+	// Colour and fog are formed again on the truncated reciprocal; s, t, q and
+	// position keep the exact quotient above. On hardware only colour and fog show
+	// the truncated reciprocal; texture coordinates and depth do not. Depth is
+	// overwritten from the plane below anyway; s, t, q must be kept apart from fog,
+	// which shares their vector.
 	{
 		const GSVector4 dxy01r = dxy01 * TruncatedSetupReciprocal(cross);
 		const GSVector4 scan_t = dv1.t * dxy01r.yyyy() - dv0.t * dxy01r.wwww();
@@ -1233,29 +1156,25 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 		out.dscan.t = out.dscan.t.blend32<8>(scan_t);
 		dedge.t = dedge.t.blend32<8>(edge_t);
 
-		// The truncated reciprocal's product is not yet the gradient silicon
-		// walks: it is truncated again, toward zero, to an eighth of a colour
-		// unit. GSColourWalk.h carries the console measurement behind that.
+		// Then truncated toward zero to an eighth of a colour unit
+		// (GSColourWalk.h).
 		out.dscan.c = GSColourWalkTruncUnit(out.dscan.c);
 		dedge.c = GSColourWalkTruncUnit(dedge.c);
 		out.dscan.t = out.dscan.t.blend32<8>(GSColourWalkTruncUnit(out.dscan.t));
 		dedge.t = dedge.t.blend32<8>(GSColourWalkTruncUnit(dedge.t));
 	}
 
-	// Stage 3: the gradient the truncated vertices give, pushed down onto a grid a
-	// thousandth of the primitive's grain -- strictly where twice the area is not a
-	// power of two, plain floor where it is. It goes on the gradient where it is
-	// formed, so the scanline seed the rasterizer computes below and both SetupPrim
-	// backends read one number rather than each re-deriving the rule.
+	// Stage 3: the gradient pushed down onto a grid a thousandth of the grain --
+	// strictly below where twice the area is not a power of two, plain floor where
+	// it is. Done here so the scanline seed and both SetupPrim backends read one value.
 	if (grain)
 	{
 		out.dscan.t = GSCoordinateGradientOnGrain(out.dscan.t, *grain,
 			GSSetupInvertsExactly(GSTriangleTwiceArea(v0.p, v1.p, v2.p)));
 	}
 
-	// One anchor, one walk direction and one block grid for the whole primitive,
-	// both sections included. GSColourWalk.h carries the rules and what decided
-	// each of them.
+	// One anchor, walk direction and block grid for the whole primitive, both
+	// sections included (GSColourWalk.h).
 	GSSetupColourWalk(v0, v1, v2, out.dscan, dedge, block_width, cwalk);
 
 	FormDepthGradients(dv0.p, dv0.p.F64[1], dv1.p, dv1.p.F64[1], out.dscan.p.F64[1], dedge.p.F64[1]);
@@ -1315,10 +1234,8 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 			out.dedge[n].p = ddx[!m2 << 1].yzzw(dedge.p);
 
 			out.p0[n] = v1.p;
-			// m2 == 0: the left edge is v1->v2 and v1 is its top vertex, which is
-			// where the anchor already sat. m2 == 1: v1 is the RIGHT-hand vertex
-			// and the left edge is the long v0->v2 one -- the case that was wrong
-			// while the seed came from v1.
+			// m2 == 0: the left edge is v1->v2, top vertex v1. m2 == 1: v1 is on
+			// the right and the left edge is the long v0->v2 one, top vertex v0.
 			out.ledge[n] = m2 ? v0 : v1;
 			out.top[n] = tb.y;
 			out.bottom[n] = tb.w;
@@ -1334,17 +1251,13 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	m_primcount++;
 
 	// The block is eight pixels wide only when texturing, fog and AA1 are all off,
-	// and four if any one of them is on -- GSBlockWalk.h. Everything else about the
-	// walk is the same at either width, and fog rides the same DDA as colour so it
-	// takes the same width.
+	// else four (GSBlockWalk.h). Fog uses the same walk as colour.
 	const GSScanlineSelector sel = m_local.gd->sel;
 	const int block_width = GSBlockWalkWidth(sel.tfx != TFX_NONE, sel.fge != 0, sel.aa1 != 0);
 
-	// Stages 1 and 2 of the primitive-grain rule, on the three vertices this
-	// primitive owns rather than on the draw's vertex buffer, because the grain comes
-	// from the largest of THESE three exponents and a strip shares its vertices
-	// between triangles that do not share a grain. GSCoordinateWalk.h carries the
-	// measurement, the identity with the front end's own truncation, and the limits.
+	// Stages 1 and 2 of the primitive-grain rule (GSCoordinateWalk.h), on copies of
+	// this primitive's three vertices: the grain comes from the largest of these
+	// three exponents, and strip neighbours need not share a grain.
 	GSVertexSW grained[3];
 	static constexpr u16 grained_index[3] = {0, 1, 2};
 	GSCoordinateGrain grain;
@@ -1352,8 +1265,8 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 
 	if (takes_grain)
 	{
-		// The linear filter's half texel is already off the vertex here; the rule keys
-		// on the coordinate, so it goes back on for the truncation and comes off after.
+		// The linear filter's half texel is already off the vertex; the rule keys on
+		// the coordinate, so it goes back on for the truncation and comes off after.
 		const float half = sel.ltf ? 32768.0f : 0.0f;
 
 		grained[0] = vertex[index[0]];
@@ -1465,17 +1378,12 @@ void GSRasterizer::DrawTriangleSection(int top, int bottom, int prim_top, GSVert
 		{
 			const float prestep = l.x - p0.x;
 
-			// s, t and q keep the plane evaluated from the LEFT EDGE's TOP
-			// VERTEX, which is where the console puts them. Their gradients are
-			// the exact quotient, so the point the plane is evaluated from is
-			// unobservable on them anyway.
+			// s, t and q are evaluated from the left edge's top vertex.
 			const float ldy = static_cast<float>(top) - ledge.p.y;
 			const float lprestep = l.x - ledge.p.x;
 
-			// Colour and fog do NOT come from the left edge. They come from the
-			// primitive's own anchor, walked out to this pixel on the block grid
-			// -- GSColourWalk.h has the model. blend32<8> keeps s, t and q and
-			// takes only w, the fog.
+			// Colour and fog come from the primitive's anchor, walked to this pixel
+			// on the block grid (GSColourWalk.h). blend32<8> takes only w, the fog.
 			const GSColourWalk& cwalk = m_local.cwalk;
 
 			e->p.F64[1] = edge.p.F64[1] + dedge.p.F64[1] * dy + dscan.p.F64[1] * prestep
@@ -1520,9 +1428,8 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 
 	GSVector4i r(v[0].p.xyxy(v[1].p).ceil());
 
-	// The sprite's OWN extent, before the scissor takes any of it away: the ramp
-	// term keys on the extent the primitive was drawn with, not on what survives
-	// clipping. GSCoordinateWalk.h.
+	// The sprite's own extent before scissoring; the ramp term keys on it
+	// (GSCoordinateWalk.h).
 	const GSVector4i extent = r;
 
 	r = r.rintersect(m_scissor);
@@ -1582,10 +1489,9 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 
 	scan.t = (scan.t + dt * prestep).xyzw(scan.t);
 
-	// A UV-route sprite's ascending ramp runs one sixteenth of a texel low on any
-	// axis whose own extent is not a power of two, from that axis's SECOND pixel,
-	// and never recovers. Measured on real hardware; GSCoordinateWalk.h carries
-	// the rule, including why the first pixel is exempt.
+	// A UV sprite's coordinate ramp runs a sixteenth of a texel low on any axis
+	// whose extent is not a power of two, from that axis's second pixel on
+	// (GSCoordinateWalk.h).
 	const float ramp_u = m_local.gd->sel.fst ? GSSpriteRampBias(dt.x, extent.width()) : 0.0f;
 	const float ramp_v = m_local.gd->sel.fst ? GSSpriteRampBias(dt.y, extent.height()) : 0.0f;
 
@@ -1597,8 +1503,8 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 		{
 			GSVertexSW row = scan;
 
-			// The sprite's OWN first row is the exempt one, so a sprite whose top
-			// the scissor took keeps the term on every row it draws.
+			// Only the sprite's own first row is exempt, so a scissored-off top
+			// leaves the term on every drawn row.
 			if (ramp_v != 0.0f && r.top != extent.y)
 				row.t -= GSVector4(0.0f, ramp_v, 0.0f, 0.0f);
 
@@ -1615,23 +1521,16 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 			}
 			else if (m_local.gd->sel.notest)
 			{
-				// ⚠️ A scanline compiled with no coverage test reads its frame and
-				// depth addresses off a per-column table indexed by `left >> 2`, so
-				// it requires a vector-aligned left -- which is exactly what
-				// GetScanlineGlobalData checks before it sets the bit. A span
-				// starting one pixel in would address the wrong column group, so the
-				// split is not available here and the term goes in the seed, which
-				// leaves this sprite's first COLUMN a sixteenth low where the
-				// console has it exact. Dropping the alignment check instead trips
-				// that assert on real game draws, so this is the one place the
-				// cheaper form survives.
+				// ⚠️ A notest scanline indexes its frame/depth address table by
+				// `left >> 2` and requires an aligned left, so the span cannot be
+				// split here. The term goes in the seed, leaving the first column a
+				// sixteenth low (hardware has it exact). Accepted inaccuracy.
 				row.t -= GSVector4(ramp_u, 0.0f, 0.0f, 0.0f);
 				DrawScanline(r.width(), r.left, r.top, row);
 			}
 			else
 			{
-				// The first column exactly, then the rest with the term in the
-				// seed -- one extra span per row rather than a test per pixel.
+				// The first column exact, then the rest with the term in the seed.
 				DrawScanline(1, r.left, r.top, row);
 
 				if (r.width() > 1)
@@ -1858,8 +1757,7 @@ void GSRasterizer::AddScanline(GSVertexSW* e, int pixels, int left, int top, con
 void GSRasterizer::SetupPrim(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, bool cwalk_live)
 {
 	m_local.cwalk.live = cwalk_live ? 1 : 0;
-	// The lane and step tables are a function of this walk, so whatever the last
-	// primitive left in them is not this one's answer, whatever row it was for.
+	// The lane and step tables belong to the previous primitive's walk.
 	m_local.cwalk.tables.state = GSColourWalkTablesStale;
 
 	m_setup_prim(vertex, index, dscan, m_local);
@@ -1920,10 +1818,8 @@ void GSRasterizer::DrawScanline(int pixels, int left, int top, const GSVertexSW&
 
 	pxAssert(m_pixels.actual <= m_pixels.total);
 
-	// The colour walk's lane and step tables follow the ROW, not the primitive:
-	// their jumps are floored with the row's own fractional part in them, which is
-	// what makes the walk one floor at every pixel. GSDrawScanline.cpp has the
-	// derivation.
+	// The colour walk's tables are per row: their jumps are floored with the row's
+	// fractional part included (GSDrawScanline.cpp).
 	GSDrawScanline::SetupColourWalkTables(m_local, top);
 
 	m_draw_scanline(pixels, left, top, scan, m_local);
@@ -2034,10 +1930,9 @@ void GSRasterizerList::Queue(const GSRingHeap::SharedPtr<GSRasterizerData>& data
 {
 	GSVector4i r = data->bbox.rintersect(data->scissor);
 
-	// Probe first. Generating a routine makes its pages writable for as long
-	// as the emit takes, and the workers are running from those same pages,
-	// so let them drain before we touch anything. Out of code space lands
-	// here too, and wants the same sync before the reset.
+	// Probe first. Generating a routine makes its pages writable while the
+	// workers may be executing from them, so drain them first. Running out of
+	// code space needs the same sync before the reset.
 	if (!m_ds.SetupDraw(*data.get(), false)) [[unlikely]]
 	{
 		Sync();
@@ -2053,10 +1948,8 @@ void GSRasterizerList::Queue(const GSRingHeap::SharedPtr<GSRasterizerData>& data
 
 	if (data->serial) [[unlikely]]
 	{
-		// This draw's own scanlines alias each other's memory, so no split of it is
-		// a split of memory. Drain the workers, run every row here, and return with
-		// nothing in flight -- alone before and after, which is what makes it the
-		// same computation the single-threaded rasterizer performs.
+		// This draw's scanlines alias each other's memory, so it cannot be split.
+		// Drain the workers and run every row here, alone.
 		Sync();
 
 		m_serial->Draw(*data.get());
@@ -2115,17 +2008,14 @@ int GSRasterizerList::GetPixels(bool reset)
 
 bool GSRasterizerList::RowsFoldAcrossWorkers(int page_height) const
 {
-	// Rows fold by exactly one page height, bands are 1 << m_thread_height rows,
-	// and worker ownership is the band index modulo the worker count. So the fold
-	// returns to the same worker only when the page is a whole number of bands AND
-	// the worker count divides that number -- at the shipped four-row band that is
-	// every format at two workers and no format at three.
+	// Rows fold by one page height, bands are 1 << m_thread_height rows, and a
+	// band's worker is its index modulo the worker count. The fold returns to the
+	// same worker only when the page is a whole number of bands and the worker
+	// count divides that number.
 	//
-	// A band taller than a page is not "zero bands per page", it is the worst case:
-	// the two folded rows sit in the same band for most of it and straddle its edge
-	// near the bottom, so the race is open at some y whatever the worker count.
-	// SWExtraThreadsHeight reaches 8 -- 256-row bands against 32-row pages -- so
-	// that is reachable from the INI, not hypothetical.
+	// A band taller than a page is the worst case, not a safe one: folded rows
+	// straddle a band edge somewhere whatever the worker count. SWExtraThreadsHeight
+	// can make bands 256 rows against 32-row pages.
 	const int workers = static_cast<int>(m_workers.size());
 
 	if (workers <= 1)

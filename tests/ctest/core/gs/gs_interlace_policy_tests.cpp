@@ -102,30 +102,23 @@ TEST(GSPresentationPolicy, KeepsAlternatingMidGameFadeFramesOnSubmissionPath)
 	EXPECT_EQ(skipped, (std::array<bool, 6>{true, false, false, false, false, false}));
 }
 
-// The undrawn band the shifted field leaves, and what the deinterlacer reads for it.
+// The undrawn band the shifted field leaves. The deinterlace shaders read row `end` for every row
+// in [first, end).
 
 TEST(GSFieldPadRows, ADisplayAtTheTopPadsItsFirstRows)
 {
 	// 2x, the display rect at merge row 0, shifted by one native line.
 	const GSFieldPadRows pad = GSComputeFieldPadRows(0.0f, 2.0f);
-	EXPECT_EQ(GSFieldPadSourceRow(0.0f, pad), 2.0f);
-	EXPECT_EQ(GSFieldPadSourceRow(1.0f, pad), 2.0f);
-	EXPECT_EQ(GSFieldPadSourceRow(2.0f, pad), 2.0f);
-	EXPECT_EQ(GSFieldPadSourceRow(3.0f, pad), 3.0f);
+	EXPECT_EQ(pad.first, 0.0f);
+	EXPECT_EQ(pad.end, 2.0f);
 }
 
 TEST(GSFieldPadRows, ADisplayLowerDownPadsItsOwnFirstRows)
 {
-	// 2x, the display rect starting at merge row 40: rows 40 and 41 are the hole, and the rows
-	// above the rect are background that must be read as themselves.
+	// 2x, the display rect starting at merge row 40: rows 40 and 41 are the hole.
 	const GSFieldPadRows pad = GSComputeFieldPadRows(40.0f, 42.0f);
-	EXPECT_EQ(GSFieldPadSourceRow(0.0f, pad), 0.0f);
-	EXPECT_EQ(GSFieldPadSourceRow(1.0f, pad), 1.0f);
-	EXPECT_EQ(GSFieldPadSourceRow(39.0f, pad), 39.0f);
-	EXPECT_EQ(GSFieldPadSourceRow(40.0f, pad), 42.0f);
-	EXPECT_EQ(GSFieldPadSourceRow(41.0f, pad), 42.0f);
-	EXPECT_EQ(GSFieldPadSourceRow(42.0f, pad), 42.0f);
-	EXPECT_EQ(GSFieldPadSourceRow(43.0f, pad), 43.0f);
+	EXPECT_EQ(pad.first, 40.0f);
+	EXPECT_EQ(pad.end, 42.0f);
 }
 
 TEST(GSFieldPadRows, AFractionalScaleCountsWholeRows)
@@ -134,13 +127,10 @@ TEST(GSFieldPadRows, AFractionalScaleCountsWholeRows)
 	const GSFieldPadRows pad = GSComputeFieldPadRows(30.0f, 31.5f);
 	EXPECT_EQ(pad.first, 30.0f);
 	EXPECT_EQ(pad.end, 31.0f);
-	EXPECT_EQ(GSFieldPadSourceRow(30.0f, pad), 31.0f);
-	EXPECT_EQ(GSFieldPadSourceRow(31.0f, pad), 31.0f);
 }
 
 TEST(GSFieldPadRows, NoShiftNoPad)
 {
 	const GSFieldPadRows pad = GSComputeFieldPadRows(40.0f, 40.0f);
-	for (float row = 0.0f; row < 64.0f; row += 1.0f)
-		EXPECT_EQ(GSFieldPadSourceRow(row, pad), row);
+	EXPECT_EQ(pad.first, pad.end);
 }

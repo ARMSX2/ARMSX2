@@ -117,9 +117,8 @@ static bool ParseMaliModel(std::string_view hints, char* series, u16* model, boo
 		return true;
 	};
 
-	// A vendor hint such as "ARM Mali" can appear before the actual renderer token. Do not
-	// scan across the " | " separator, otherwise the 'g' in the next "gpu=" key is mistaken
-	// for the model series and Mali-G57 becomes Unknown Mali.
+	// A vendor hint such as "ARM Mali" can precede the renderer token. Stop at the " | "
+	// separator, or the 'g' of the next "gpu=" key is read as the model series.
 	for (size_t pos = hints.find("mali"); pos != std::string_view::npos; pos = hints.find("mali", pos + 4))
 	{
 		if (try_token(pos, 4))
@@ -237,8 +236,7 @@ static void ApplyCoreCountLimits(MobileGsTuning* tuning, u8 core_count)
 
 bool LooksLikeMali(std::string_view lowered_hints)
 {
-	// Do not equate MediaTek with Mali: older MediaTek parts shipped PowerVR, and the GL/Vulkan renderer
-	// string is a more authoritative signal than the SoC vendor.
+	// Not MediaTek: older MediaTek parts shipped PowerVR, and the renderer string is authoritative.
 	return ContainsAny(lowered_hints, {"mali", "immortalis", "arm mali"});
 }
 

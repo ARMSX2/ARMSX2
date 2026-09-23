@@ -80,8 +80,7 @@ static constexpr std::array<AdrenoSpec, 52> s_adreno_specs = {{
 	{720, 0, MobileGpuArchitecture::Adreno7xx, T(128, 9, 7, true)},
 }};
 
-// Later 7xx/8xx models are kept separate because they use materially different renderer generations,
-// even though their current GS pool ceiling is the same.
+// Later 7xx/8xx models are a different renderer generation, kept separate from the table above.
 static constexpr std::array<AdrenoSpec, 10> s_recent_adreno_specs = {{
 	{725, 0, MobileGpuArchitecture::Adreno7xx, T(140, 10, 8, true)},
 	{730, 0, MobileGpuArchitecture::Adreno7xx, T(144, 10, 8, true)},

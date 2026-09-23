@@ -13,10 +13,10 @@
 
 #include <cstdint>
 
-// On iOS dual-map JIT, write through the RW alias (rx + g_code_rw_offset).
-// Identity no-op elsewhere. Mirrors armGetWritableCodePtr in pcsx2/arm64/AsmHelpers.cpp.
-// TargetConditionals.h defines TARGET_OS_IPHONE; without it the gate below reads
-// as false on iOS and the RW-alias write path silently never engages.
+// On iOS dual-map JIT, write through the RW alias (rx + g_code_rw_offset);
+// identity elsewhere. Mirrors armGetWritableCodePtr in pcsx2/arm64/AsmHelpers.cpp.
+// TargetConditionals.h defines TARGET_OS_IPHONE; without it the gate below is
+// false on iOS and the RW alias is never used.
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #endif
@@ -65,19 +65,16 @@ static const auto& _global_dimx = x19;
 static const auto& _local_aref = w20;
 static const auto& _global_frb = w21;
 static const auto& _global_fga = w22;
-// The level-of-detail table's three per-draw scalars and its base. The names used
-// to be the float log2's l/k/mxl; the level is integer arithmetic on a measured
-// table now (GSLevelOfDetail.h), so they carry 4 + TEX1.L, TEX1.K in sixteenths
-// and the same ceiling as an integer. x28 is saved by the prologue and was
-// otherwise unused.
+// The level-of-detail table's per-draw scalars and base (GSLevelOfDetail.h):
+// 4 + TEX1.L, TEX1.K in sixteenths, and the integer ceiling. x28 is saved by
+// the prologue and otherwise unused.
 static const auto& _global_lodshift = w23;
 static const auto& _global_lodk = w24;
 static const auto& _global_mxl = w25;
 static const auto& _global_lodtab = x28;
 
-// The alternating block step's cursor. Callee-saved on purpose: x5-x9 all carry
-// live values inside the loop body, which is why the first attempt at this --
-// x5/x6, which look free from Init -- came apart in ReadFrame.
+// The alternating block step's cursor. Callee-saved on purpose: x5-x9 all
+// carry live values inside the loop body.
 static const auto& _block_ptr = x26;
 static const auto& _block_hop = x27;
 
@@ -228,10 +225,10 @@ void GSDrawScanlineCodeGenerator::Generate()
 
 void GSDrawScanlineCodeGenerator::Init()
 {
-	// Where this span starts inside its eight-pixel BLOCK indexes the colour and
-	// fog lane tables, and on a four-lane host it also decides which of the two
-	// alternating steps the walk begins on. Read off the true left edge, before
-	// the vector alignment rounds it down. See GSColourWalk.h.
+	// Where this span starts inside its eight-pixel block indexes the colour and
+	// fog lane tables, and on a four-lane host decides which of the two alternating
+	// steps the walk begins on. Read off the true left edge, before vector
+	// alignment rounds it down. See GSColourWalk.h.
 	armAsm->And(w9, _left, 7);
 
 	if (!m_sel.notest)
@@ -284,14 +281,12 @@ void GSDrawScanlineCodeGenerator::Init()
 	armAsm->Add(x8, _scratchaddr, x8);
 
 	// x26 = &m_local.d[left & 7]. The colour and fog inits below read their lane
-	// offsets from there, and at the end of Init it is moved on to
-	// &m_local.dw[left & 7][0], where Step walks the alternating pair -- x27 is
-	// the signed hop to the other phase, so stepping is one add and one negate
-	// and needs no assumption about how the local data happens to be aligned.
+	// offsets from there; at the end of Init it moves to &m_local.dw[left & 7][0],
+	// where Step walks the alternating pair. x27 is the signed hop to the other
+	// phase, so stepping is one add and one negate with no alignment assumption.
 	//
-	// The shift is the row stride of BOTH tables, hard-coded. Pin all three: a
-	// fifth GSVector4i in skip or in blockstep, or a third phase, would silently
-	// index the wrong row.
+	// The shift is the row stride of both tables, hard-coded. A fifth GSVector4i in
+	// skip or blockstep, or a third phase, would silently index the wrong row.
 	static_assert(sizeof(GSScanlineLocalData::skip) == 128);
 	static_assert(sizeof(GSScanlineLocalData::blockstep) == 64);
 	static_assert(sizeof(GSScanlineLocalData::dw[0]) == 128);
@@ -301,9 +296,8 @@ void GSDrawScanlineCodeGenerator::Init()
 	if (m_block_split)
 		armAsm->Mov(_block_hop, sizeof(GSScanlineLocalData::blockstep));
 
-	// w1 = &m_local.d[skip], for the lanes still indexed by the span's position
-	// inside the VECTOR: depth and the texture coordinate. Colour and fog take
-	// _block_ptr instead.
+	// w1 = &m_local.d[skip], for the lanes indexed by the span's position inside
+	// the vector: depth and the texture coordinate. Colour and fog use _block_ptr.
 	if ((m_sel.prim != GS_SPRITE_CLASS && m_sel.zb) || (m_sel.fb && m_sel.tfx != TFX_NONE))
 	{
 		armAsm->Lsl(w1, w1, 3); // *8
@@ -392,10 +386,9 @@ void GSDrawScanlineCodeGenerator::Init()
 			{
 				// GSVector4i vti = GSVector4i(vt.floor()) & GS_UV_GRID_MASK;
 				//
-				// A span that walks the accumulator seeds on its 12.15 grid,
-				// floored below the exact plane -- GSCoordinateWalk.h. FCVTMS is
-				// the floor; the BIC is the grid. A triangle's own ST plane keeps
-				// the truncating conversion it always had.
+				// A span that walks the accumulator seeds on its 12.15 grid, floored below
+				// the exact plane (GSCoordinateWalk.h). FCVTMS is the floor; the BIC is the
+				// grid. A triangle's own ST plane keeps the truncating conversion.
 
 				if (m_sel.uvwalk)
 				{
@@ -427,13 +420,11 @@ void GSDrawScanlineCodeGenerator::Init()
 					{
 						// vf = GSTruncateCoordinate(v).xxzzlh().srl16(12);
 						//
-						// The sixteenth index truncates toward zero, so a negative
-						// coordinate takes a sixteenth less one first -- see
-						// GSDrawScanline.cpp for the measurement. A sprite's V never
-						// steps, so the weight is taken once here while the loop
-						// re-forms the index from t, and both have to read the same
-						// sixteenth: the bias goes to the weight's own register and t
-						// keeps the raw coordinate.
+						// The sixteenth index truncates toward zero, so a negative coordinate takes
+						// a sixteenth less one first. A sprite's V never steps, so the weight is
+						// taken once here while the loop re-forms the index from t; both must read
+						// the same sixteenth, so the bias goes to the weight's register and t keeps
+						// the raw coordinate.
 						armAsm->Sshr(_temp_vf.V4S(), _temp_t.V4S(), 31);
 						armAsm->Ushr(_temp_vf.V4S(), _temp_vf.V4S(), 20);
 						armAsm->Add(_temp_vf.V4S(), _temp_t.V4S(), _temp_vf.V4S());
@@ -538,13 +529,13 @@ void GSDrawScanlineCodeGenerator::Init()
 		armAsm->Ldr(_global_lodtab, _global(lodtab));
 	}
 
-	// Every colour destination is dithered, not just 16-bit ones -- see the note
-	// in GSDrawScanline.cpp's WriteFrame. fmt 3 is not a frame-buffer format.
+	// Every colour destination is dithered, not just 16-bit ones (see WriteFrame
+	// in GSDrawScanline.cpp). fmt 3 is not a frame-buffer format.
 	if (m_sel.dthe && m_sel.fpsm != 3)
 		armAsm->Ldr(_global_dimx, _global(dimx));
 
-	// Every lane-offset load is done; hand the cursor over to Step, which walks
-	// the alternating pair. dw has the same row stride as d, so this is one add.
+	// Lane-offset loads are done; hand the cursor to Step. dw has the same row
+	// stride as d, so this is one add.
 	if (m_block_split)
 		armAsm->Add(_block_ptr, _block_ptr, OFFSETOF(GSScanlineLocalData, dw));
 }
@@ -791,14 +782,13 @@ void GSDrawScanlineCodeGenerator::TestZ(const VRegister& temp1, const VRegister&
 	}
 }
 
-// The formed coordinate saturates into a signed 12.4 field; GSCoordinateWalk.h
-// carries the reading. Written as the field it is: take the
-// sixteenth, saturate it to sixteen signed bits, put it back. The bits below the
-// sixteenth go with it, and nothing downstream reads them -- the texel is bits 16
-// and up, the weight bits 12 to 15.
+// The formed coordinate saturates into a signed 12.4 field (GSCoordinateWalk.h):
+// take the sixteenth, saturate it to sixteen signed bits, put it back. The bits
+// below the sixteenth go with it; nothing downstream reads them (the texel is
+// bits 16 and up, the weight bits 12 to 15).
 //
-// SQXTN is the saturation, so there is no constant to materialise and the C++
-// reference's min/max form computes the same function.
+// SQXTN is the saturation; the C++ reference's min/max form computes the same
+// function.
 void GSDrawScanlineCodeGenerator::SaturateCoordinate(const VRegister& c, const VRegister& scratch)
 {
 	armAsm->Sshr(scratch.V4S(), c.V4S(), GS_COORD_SIXTEENTH_SHIFT);
@@ -820,10 +810,9 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 	VRegister ureg = _temp_s;
 	VRegister vreg = _temp_t;
 
-	// All-ones in every lane whose pixel takes the LINEAR filter. lod > 0 is exactly
-	// Q < the crossing constant, so the whole per-pixel MMAG/MMIN choice is one
-	// compare. Cheap enough to emit twice rather than tie up a register between the
-	// coordinate bias and the filter weights.
+	// All-ones in every lane whose pixel takes the linear filter. lod > 0 is
+	// exactly Q < the crossing constant, so the per-pixel MMAG/MMIN choice is one
+	// compare. Cheap enough to emit twice rather than hold a register.
 	const auto emit_ltfx_mask = [this](const VRegister& dst) {
 		armAsm->Ldr(dst, _global(ltfx_q));
 		armAsm->Fcmgt(dst.V4S(), dst.V4S(), _temp_q.V4S());
@@ -834,11 +823,10 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 
 	if (!m_sel.fst)
 	{
-		// Silicon multiplies by a reciprocal truncated to fourteen mantissa
-		// bits, it does not divide. Clearing the low nine bits of the float32
-		// mantissa is that grid; two BICs rather than a shift pair so the sign
-		// survives a negative Q. See GSDrawScanline.cpp for the measurement and
-		// for why the width is fourteen rather than thirteen.
+		// Multiply by a reciprocal truncated to fourteen mantissa bits, not a divide.
+		// Clearing the low nine bits of the float32 mantissa is that grid; two BICs
+		// rather than a shift pair so the sign survives a negative Q. See
+		// GSDrawScanline.cpp for why the width is fourteen.
 		armAsm->Fmov(v0.V4S(), 1.0f);
 		armAsm->Fdiv(v0.V4S(), v0.V4S(), _temp_q.V4S());
 		armAsm->Bic(v0.V4S(), 0xff, 0);
@@ -854,10 +842,9 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 	}
 
 	// The coordinate DDA's lag: one 16.16 unit on an axis that walks forward, zero
-	// on one that is still or walks back, so only a coordinate landing exactly on a
-	// sixteenth moves. See GSDrawScanline.cpp. On the FST side ureg is the live
-	// accumulator, so the biased copy goes to the scratch pair the packing below
-	// consumes anyway.
+	// on one that is still or walks back. See GSDrawScanline.cpp. On the FST side
+	// ureg is the live accumulator, so the biased copy goes to the scratch pair the
+	// packing below consumes anyway.
 	if (m_sel.prim != GS_SPRITE_CLASS)
 	{
 		armAsm->Ldr(v0, _local(tclag.u));
@@ -870,9 +857,8 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 
 	// GSTruncateCoordinate: the sixteenth index truncates toward zero, so a
 	// negative coordinate takes a sixteenth less one before the shifts below floor
-	// it into a texel and a weight. See GSDrawScanline.cpp for the measurement.
-	// The result goes to the scratch pair the packing consumes anyway, so this
-	// costs no register even where ureg is still the live FST accumulator.
+	// it into a texel and a weight. The result goes to the scratch pair, so this
+	// costs no register even where ureg is the live FST accumulator.
 	armAsm->Sshr(v0.V4S(), ureg.V4S(), 31);
 	armAsm->Sshr(v1.V4S(), vreg.V4S(), 31);
 	armAsm->Ushr(v0.V4S(), v0.V4S(), 20);
@@ -888,10 +874,9 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 		// v -= 0x8000;
 		//
 		// Exactly eight sixteenths, so it moves the texel index and never the
-		// weight, and it is our own step onto the tap pair rather than part of the
-		// console's coordinate -- which is why it comes after the truncation. The
-		// two filters do not sample the same point, so it belongs only to the
-		// pixels that actually filter linearly.
+		// weight. It is our step onto the tap pair, not part of the hardware
+		// coordinate, so it comes after the truncation. It applies only to pixels
+		// that filter linearly; the two filters do not sample the same point.
 		armAsm->Movi(v1.V4S(), 0x8000);
 
 		if (m_sel.ltfx)
@@ -904,9 +889,9 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 		armAsm->Sub(vreg.V4S(), vreg.V4S(), v1.V4S());
 	}
 
-	// The 12.4 field, taken on the finished coordinate: after the half-texel step,
-	// because the console's reading at the top of the field is weight 15 and not
-	// the 7 that clamping first would leave, and before the tap pair below.
+	// The 12.4 field, taken after the half-texel step (so the top of the field
+	// reads weight 15, not the 7 that clamping first would give) and before the
+	// tap pair below.
 	SaturateCoordinate(ureg, v0);
 	SaturateCoordinate(vreg, v0);
 
@@ -1236,7 +1221,7 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 	}
 
 	// The coordinate DDA's lag, taken before the level shift divides it away. See
-	// SampleTexture above, and GSDrawScanline.cpp for the measurement.
+	// SampleTexture above.
 	if (m_sel.prim != GS_SPRITE_CLASS)
 	{
 		armAsm->Ldr(local2, _local(tclag.u));
@@ -1251,11 +1236,8 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 	{
 		// LOD16 = K + (-e) * 2^(4+L) - T[L][idx], in sixteenths of a level.
 		//
-		// The console's logarithm is a 128-entry table on the top seven fractional
-		// bits of Q's own mantissa -- GSLevelOfDetail.h carries the measurement and
-		// the tables. This replaces a four-term polynomial log2, and a better
-		// polynomial would not have closed the gap: ours was already within 0.0023
-		// of a level. What was wrong was the shape, not the precision.
+		// The logarithm is a 128-entry table on the top seven fractional bits of Q's
+		// mantissa (GSLevelOfDetail.h), not a polynomial log2.
 
 		// -e = 127 - ((q >> 23) & 0xff)
 		armAsm->Ushr(v0.V4S(), _temp_q.V4S(), 23);
@@ -1271,8 +1253,7 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 		armAsm->Add(v0.V4S(), v0.V4S(), v1.V4S());
 
 		// - T[idx], idx = (q >> 16) & 0x7f. One extract-add-load triple per lane,
-		// the same shape ReadTexelImpl uses, which is why the table is held as
-		// words.
+		// as in ReadTexelImpl, which is why the table is held as words.
 		armAsm->Ushr(v4.V4S(), _temp_q.V4S(), 16);
 		armAsm->Movi(v1.V4S(), 0x7f);
 		armAsm->And(v4.V16B(), v4.V16B(), v1.V16B());
@@ -1290,10 +1271,9 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 
 		armAsm->Sub(v0.V4S(), v0.V4S(), v1.V4S());
 
-		// Sixteenths -> the 16.16 the rest of this path speaks, then the ceiling.
-		// The round-off `+ 0x8000` below is then the console's (LOD16 + 8) >> 4
-		// with ties up, and the trilinear weight the sampler takes from the top
-		// four bits of the fraction is LOD16 & 15.
+		// Sixteenths -> 16.16, then the ceiling. The `+ 0x8000` round-off below is
+		// then (LOD16 + 8) >> 4 with ties up, and the trilinear weight from the top
+		// four fraction bits is LOD16 & 15.
 		armAsm->Shl(v4.V4S(), v0.V4S(), 12);
 		armAsm->Dup(v0.V4S(), _global_mxl);
 		armAsm->Smin(v4.V4S(), v4.V4S(), v0.V4S());
@@ -1384,9 +1364,8 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 		armAsm->Sub(v3.V4S(), v3.V4S(), v4.V4S());
 	}
 
-	// The 12.4 field, as in SampleTexture above. No arm drives it under
-	// mipmapping; this level takes it at the same point in its own copy of
-	// the chain.
+	// The 12.4 field, as in SampleTexture above, taken at the same point in this
+	// level's copy of the chain.
 	SaturateCoordinate(v2, v0);
 	SaturateCoordinate(v3, v0);
 
@@ -1464,9 +1443,8 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 			armAsm->Sub(v3.V4S(), v3.V4S(), v4.V4S());
 		}
 
-		// The 12.4 field, as in SampleTexture above. No arm drives it under
-		// mipmapping; this level takes it at the same point in its own copy of
-		// the chain.
+		// The 12.4 field, as in SampleTexture above, taken at the same point in this
+		// level's copy of the chain.
 		SaturateCoordinate(v2, v0);
 		SaturateCoordinate(v3, v0);
 
@@ -1876,15 +1854,10 @@ void GSDrawScanlineCodeGenerator::ColorTFX()
 			storedVertexColor(_vscratch, _temp_ga);
 			modulate16(v6, _vscratch, 1);
 
-			// ⚠️ af is the walked alpha as the byte the GS STORES, so the negative
-			// the walk is allowed to carry has to be clamped to zero BEFORE the
-			// shift -- which is what GSWalkColorByte does and what `walkColorByte`
-			// emits. A plain logical shift turns a negative into a value up to 511,
-			// HIGHLIGHT then ADDS it to the colour, and the clamp below drives every
-			// channel to 255. One such pixel was the first word in a whole frame on
-			// which this road and the C++ reference disagreed, and thousands of
-			// later draws inherited it through the texture they sampled from it.
-			// The console's own rule is in GSWalkColorByte's comment.
+			// af is the walked alpha as the stored byte, so a negative the walk carries
+			// must be clamped to zero before the shift (GSWalkColorByte / walkColorByte).
+			// A plain logical shift turns a negative into up to 511, HIGHLIGHT adds it to
+			// the colour, and the clamp below drives every channel to 255.
 			armAsm->Trn2(_vscratch.V8H(), _temp_ga.V8H(), _temp_ga.V8H());
 			walkColorByte(v2, _vscratch);
 			armAsm->Add(v6.V8H(), v6.V8H(), v2.V8H());
@@ -1928,13 +1901,12 @@ void GSDrawScanlineCodeGenerator::Fog()
 	// rb = m_local.gd->frb.lerp16<0>(rb, floor(f));
 	// ga = m_local.gd->fga.lerp16<0>(ga, floor(f)).mix16(ga);
 	//
-	// The blend receives an INTEGER F -- see the C++ twin in GSDrawScanline.cpp
-	// for the console reading and for why lerp16<0> is already the 256 - F floor
-	// rule. storedVertexColor is that truncation and the pack's own saturation in
-	// one: fog rides the colour DDA, so a fog lane the walk has carried below zero
-	// saturates to 0 exactly as a colour lane does. It goes to a scratch because
-	// _temp_f is the walk's own accumulator and Step carries it on with its
-	// fraction intact.
+	// The blend takes an integer F; see the C++ twin in GSDrawScanline.cpp for
+	// why lerp16<0> is already the 256 - F floor rule. storedVertexColor is that
+	// truncation plus the pack's saturation: fog rides the colour DDA, so a fog
+	// lane carried below zero saturates to 0 like a colour lane. It goes to a
+	// scratch because _temp_f is the walk's accumulator and Step carries it on
+	// with its fraction intact.
 	storedVertexColor(_vscratch3, _temp_f);
 
 	armAsm->Dup(_vscratch.V4S(), _global_frb);
@@ -2045,14 +2017,8 @@ void GSDrawScanlineCodeGenerator::WriteMask()
 	}
 	else if (m_sel.zwrite)
 	{
-		// ⚠️ Both halves narrow from the register the compare WROTE. This branch
-		// used to compare into v1 and then narrow from _vscratch, which the compare
-		// never touched, so a depth-only draw took its write mask from whatever the
-		// scanline had left there -- deterministic per selector, and arbitrary. It
-		// fires only where the frame is not written and the depth is, which is why
-		// nothing but a depth-only draw ever saw it, and it is what split this road
-		// from the C++ reference on several game dumps and from the console on a
-		// depth-write capture.
+		// Both halves narrow from the register the compare wrote. Narrowing from
+		// anything else gives a depth-only draw an arbitrary write mask.
 		armAsm->Cmeq(_vscratch.V4S(), v1.V4S(), v4.V4S());
 		armAsm->Sqxtn(v1.V4H(), _vscratch.V4S());
 		armAsm->Sqxtn2(v1.V8H(), _vscratch.V4S());
@@ -2645,49 +2611,38 @@ void GSDrawScanlineCodeGenerator::modulate16(const VRegister& a, const VRegister
 
 void GSDrawScanlineCodeGenerator::modulate16(const VRegister& d, const VRegister& a, const VRegister& f, u8 shift)
 {
-	// GSVector4i::modulate16<shift>(f) is `sll16<shift + 1>().mul16hs(f)`: the shift
-	// happens in SIXTEEN-BIT lanes and WRAPS, and only then does the widening
-	// multiply take the product's high half.
+	// GSVector4i::modulate16<shift>(f) is `sll16<shift + 1>().mul16hs(f)`: the
+	// shift happens in 16-bit lanes and wraps, then the widening multiply takes
+	// the product's high half.
 	//
-	// SQDMULH after a shift of `shift` is the same function on every lane the
-	// shipped selectors reach -- it folds the last doubling into the 32-bit product
-	// -- and a DIFFERENT one as soon as a lane reaches 8192, where the reference
-	// wraps `a << (shift + 1)` and this did not. It also saturates where the
-	// reference does not. No capture separates the two: MODULATE multiplies a texel
-	// in 0..255, and the blend's operands are differences of bytes, so nothing we
-	// own drives a lane anywhere near the magnitude. The reference's shape is the
-	// one x86 ships and the one the C++ fallback runs on this host, so the three
-	// roads agree here rather than two of them agreeing and the third being
-	// unreachable-but-different.
+	// SQDMULH after a shift of `shift` agrees on every reachable lane but differs
+	// once a lane reaches 8192 (the reference wraps `a << (shift + 1)`) and it
+	// saturates where the reference does not. Matching the reference keeps x86,
+	// the C++ fallback and this path identical.
 	//
-	// The shift is by shift + 1 so the sixteen-bit wrap happens where the reference
-	// has it; halving afterwards is exact, because a value shifted left by at least
-	// one bit is even, and SQDMULH's own doubling then puts it back. Three
-	// instructions, no extra register, and the same word on every lane.
+	// Shifting by shift + 1 puts the 16-bit wrap where the reference has it;
+	// halving afterwards is exact because the shifted value is even, and SQDMULH's
+	// doubling puts it back. Three instructions, no extra register.
 	armAsm->Shl(d.V8H(), a.V8H(), shift + 1);
 	armAsm->Sshr(d.V8H(), d.V8H(), 1);
 	armAsm->Sqdmulh(d.V8H(), d.V8H(), f.V8H());
 }
 
-// The walk's carried colour, as the byte the GS stores. SQSHRUN is the exact
-// instruction for it: signed shift right by seven, then UNSIGNED saturating
-// narrow -- so a lane the walk has carried below zero saturates to 0 instead of
-// becoming 511 through a logical shift, and UXTL puts the eight lanes back at
-// sixteen bits for the arithmetic that follows. The unsigned saturation at the
-// top is free rather than a change: 32767 >> 7 is already 255.
+// The walk's carried colour as the stored byte. SQSHRUN is a signed shift
+// right by seven then unsigned saturating narrow, so a lane carried below zero
+// saturates to 0 instead of becoming 511; UXTL widens back to sixteen bits.
+// The top saturation changes nothing: 32767 >> 7 is already 255.
 //
-// The walk itself is untouched. Clamping what it CARRIES was measured and the
-// console refused it -- see the C++ twin in GSDrawScanline.cpp.
+// The walk itself is not clamped; see the C++ twin in GSDrawScanline.cpp.
 void GSDrawScanlineCodeGenerator::walkColorByte(const VRegister& d, const VRegister& c)
 {
 	armAsm->Sqshrun(d.V8B(), c.V8H(), 7);
 	armAsm->Uxtl(d.V8H(), d.V8B());
 }
 
-// The eight-bit colour the GS stores, put back on the seven-fraction grid the
-// modulate expects. The texture function multiplies the stored byte, never the
-// wider value the DDA carries -- console-measured, and the same rule
-// GSStoredVertexColor implements in GSDrawScanline.cpp.
+// The stored eight-bit colour, put back on the seven-fraction grid the
+// modulate expects. The texture function multiplies the stored byte, not the
+// wider DDA value; same rule as GSStoredVertexColor in GSDrawScanline.cpp.
 void GSDrawScanlineCodeGenerator::storedVertexColor(const VRegister& d, const VRegister& c)
 {
 	walkColorByte(d, c);

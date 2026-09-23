@@ -1251,8 +1251,6 @@
  "ralogin.username.label": "ชื่อผู้ใช้ (A เพื่อพิมพ์)",
  "renderer.accurateAlphaTest.description": "การทดสอบ alpha ที่แม่นยำขึ้นใน hardware renderer (จับคู่กับ ROV) มีผลทันที",
  "renderer.accurateAlphaTest.label": "Accurate Alpha Test",
- "renderer.accurateBlendingFastPath.description": "Vulkan + Adreno เท่านั้น: ส่งการเบลนด์แม่นยำผ่านเส้นทาง framebuffer-fetch ของ tile-memory แทนการคัดลอก ROV / texture-barrier เส้นทางนี้เทียบเท่า ROV บนเดสก์ท็อปแบบ mobile-native และมักเร็วกว่ามากบน tiler เปิดโดยค่าเริ่มต้น ไดรเวอร์ Adreno เฉพาะบางตัวคืนค่าอ่านเก่าและอาจแสดง artifact (sprite alpha ขาด พื้นล่องหน) ปิดหากเจอ รีสตาร์ตเกมเพื่อให้มีผล ไม่มีผลกับ Mali (เปิดอยู่แล้ว) หรือ OpenGL",
- "renderer.accurateBlendingFastPath.label": "Accurate blending fast path",
  "renderer.angleOpenGL.description": "รัน renderer OpenGL ผ่าน ANGLE ซึ่งแปล OpenGL ES เป็น Vulkan ด้วยไดรเวอร์ที่มาพร้อมแอป มีประโยชน์บนเครื่องที่ไดรเวอร์ OpenGL ES ดั้งเดิมเสียหรือช้า (เช่น MediaTek Mali บางรุ่น) มีผลเฉพาะเมื่อตั้ง renderer เป็น OpenGL รีสตาร์ตเกมเพื่อให้มีผล",
  "renderer.angleOpenGL.label": "OpenGL ผ่าน ANGLE",
  "renderer.anisotropic.description": "ทำให้ texture เอียงคมขึ้น ค่าที่สูงกว่าอาจกินเวลา GPU",

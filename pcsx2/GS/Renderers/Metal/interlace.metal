@@ -19,7 +19,7 @@ fragment float4 ps_interlace0(ConvertShaderData data [[stage_in]], ConvertPSRes 
 		// Rows [pad.x, pad.y) were never drawn for this field, so read the first row that was
 		// instead of the cleared hole. The band starts where the display rect does. At 1x it is
 		// one row and the field's own lowest row is its next, so nothing moves; at 2x it is two
-		// rows and this is what fills the black device row. GSFieldPadSourceRow is the same rule.
+		// rows and this is what fills the black device row.
 		const float src_row = (float(vpos) >= uniform.field_pad.x && float(vpos) < uniform.field_pad.y) ? uniform.field_pad.y : float(vpos);
 		return res.sample_level(data.t + float2(0.0f, (src_row - float(vpos)) * uniform.ZrH.y), 0);
 	}
