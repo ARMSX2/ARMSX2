@@ -46,7 +46,7 @@
 namespace
 {
 	// Re-exposes the protected growth/staging surface. GSState itself is concrete,
-	// and with the default GSBackThreadMode::Off the constructor stays local: no
+	// and with the resolved back-thread mode at its default of Off the constructor stays local: no
 	// back thread, no node pool, no GS device.
 	class StagingProbe final : public GSState
 	{

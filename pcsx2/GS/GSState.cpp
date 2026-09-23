@@ -24,6 +24,10 @@
 #include <bit>
 #include <thread>
 
+#if defined(__linux__)
+#include <sched.h>
+#endif
+
 
 GSHWAutoFlushLevel GSState::GetAutoFlushLevel() const
 {
@@ -245,7 +249,7 @@ GSState::GSState(GSBackQueue::Channel* shared_chan, bool is_front_parser)
 	m_nativeres = GSConfig.UpscaleMultiplier == 1.0f;
 	SetCullGrid(ConfigCullGrid());
 	m_mipmap = GSConfig.Mipmap;
-	m_back_records = GSConfig.BackThreadMode != GSBackThreadMode::Off;
+	m_back_records = GSConfig.BackThreadModeResolved != GSBackThreadMode::Off;
 	if (shared_chan)
 	{
 		// Front parser object of the two-object split: records go to the back
@@ -263,11 +267,11 @@ GSState::GSState(GSBackQueue::Channel* shared_chan, bool is_front_parser)
 	}
 	else if (m_back_records)
 	{
-		Console.WriteLn("GS: back-thread mode %d (record path active).", static_cast<int>(GSConfig.BackThreadMode));
+		Console.WriteLn("GS: back-thread mode %d (record path active).", static_cast<int>(GSConfig.BackThreadModeResolved));
 
 		AdoptTransferBuffer();
 
-		if (GSConfig.BackThreadMode >= GSBackThreadMode::Lockstep)
+		if (GSConfig.BackThreadModeResolved >= GSBackThreadMode::Lockstep)
 		{
 			// A GL device is context-bound to the MTGS thread; HW draws would
 			// issue GL calls from the back thread. SW never touches the device
@@ -857,7 +861,7 @@ void GSState::StartBackThread()
 	// runs pipelined while this back object's own flag stays lockstep), so
 	// report the configured mode, not this object's flag.
 	Console.WriteLn("GS: back thread started (%s).",
-		GSConfig.BackThreadMode == GSBackThreadMode::Pipelined ? "pipelined" : "lockstep");
+		GSConfig.BackThreadModeResolved == GSBackThreadMode::Pipelined ? "pipelined" : "lockstep");
 }
 
 void GSState::StopBackThread()
@@ -904,6 +908,14 @@ void GSState::BackThreadLoop()
 	// re-serialize the split, so clear to all cores. VMManager owns any future
 	// explicit pinning policy for this thread.
 	handle.SetAffinity(0);
+
+	// Nothing places this thread (VMManager pins the EE, VU and MTGS threads only), so say where
+	// the scheduler first put it. One sample, not a residency figure: it can migrate at any time.
+#if defined(__linux__)
+	Console.WriteLn("GS: back thread is unpinned (any core); first ran on CPU %d.", sched_getcpu());
+#else
+	Console.WriteLn("GS: back thread is unpinned (any core).");
+#endif
 
 	// Half the GS work runs here under the split, and the OSD's "GS" figure is the MTGS
 	// thread alone — so without this the mode reads as a large GS saving that is really

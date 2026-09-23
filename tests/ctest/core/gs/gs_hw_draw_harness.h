@@ -142,7 +142,7 @@ namespace GSHWDrawHarness
 			GSConfig.Renderer = GSRendererType::VK;
 			GSConfig.UpscaleMultiplier = 2.0f;
 			GSConfig.HWDownloadMode = GSHardwareDownloadMode::Disabled;
-			GSConfig.BackThreadMode = GSBackThreadMode::Off;
+			GSConfig.BackThreadModeResolved = GSBackThreadMode::Off;
 			GSConfig.CoalesceRenderPasses = false; // so DoRenderHW runs inside the draw, not later
 			GSConfig.UserHacks_MergePPSprite = false;
 			GSConfig.UserHacks_AlignSpriteX = false;

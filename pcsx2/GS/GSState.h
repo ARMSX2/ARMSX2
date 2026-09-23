@@ -852,7 +852,7 @@ public:
 	void SubmitPcrtcSync();
 	void ExecPcrtcSyncRecord(const GSBackQueue::PcrtcSyncRecord& rec);
 
-	// GV7-1: sampled from GSConfig.BackThreadMode at construction (the option is
+	// GV7-1: sampled from GSConfig.BackThreadModeResolved at construction (the option is
 	// restart-required, so it can't change under a live GSState). Off = the
 	// front-side seam functions skip the record round-trip entirely and call the
 	// executor tails against live state; any other mode builds records.
