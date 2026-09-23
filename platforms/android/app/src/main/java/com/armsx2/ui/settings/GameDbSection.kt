@@ -179,6 +179,10 @@ private fun entryName(entry: GameDbOverrides.Entry): String {
         "gpuPaletteConversion" -> "fixes.gpuPaletteConversion.label"
         "minimumBlendingLevel" -> "gamedb.name.minBlending"
         "maximumBlendingLevel" -> "gamedb.name.maxBlending"
+        // A ceiling that only bites on devices that pay for each read of the frame being drawn (a
+        // copy of it, or a barrier), so the name says when it applies. Splashdown is the one user.
+        "copyRoadMaximumBlendingLevel" -> "gamedb.name.copyRoadMaxBlending"
+        "fieldShift" -> "gamedb.name.fieldShift"
         "hwDownloadMode" -> "renderer.hardwareDownloadMode.label"
         // The database's own name, which is also what the log prints: better than nothing for
         // an entry added upstream after this list.
@@ -222,7 +226,8 @@ private fun entryValue(entry: GameDbOverrides.Entry): String {
             str("fixes.opt.auto"), off, "Weave TFF", "Weave BFF", "Bob TFF", "Bob BFF",
             "Blend TFF", "Blend BFF", "Adapt TFF", "Adapt BFF",
         )
-        "minimumBlendingLevel", "maximumBlendingLevel" -> pick("Minimum", "Basic", "Medium", "High", "Full", "Maximum")
+        "minimumBlendingLevel", "maximumBlendingLevel", "copyRoadMaximumBlendingLevel" ->
+            pick("Minimum", "Basic", "Medium", "High", "Full", "Maximum")
         "hwDownloadMode" -> pick("Accurate", "Force Full", "No Readbacks", "Unsync", "Disabled", "Async")
         "cpuSpriteRenderBW" -> if (v <= 0) off else "${v * 64}px"
         "gpuPaletteConversion" -> when (v) { 0 -> off; 1 -> on; else -> str("gamedb.value.paletteWithFullPreload") }

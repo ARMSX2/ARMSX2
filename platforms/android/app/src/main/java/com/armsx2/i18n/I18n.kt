@@ -1205,6 +1205,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "gamedb.name.rewriteLargeST" to "Rewrite Large ST",
     "gamedb.name.minBlending" to "Blending Accuracy (at least)",
     "gamedb.name.maxBlending" to "Blending Accuracy (at most)",
+    "gamedb.name.copyRoadMaxBlending" to "Blending Accuracy (at most, if frame reads are slow)",
+    "gamedb.name.fieldShift" to "Interlaced Field Shift",
     "gamedb.value.paletteWithFullPreload" to "On with full texture preloading",
     "perf.hack.deferVuWrites" to "Defer VU Writes",
     "perf.hack.fastCdvd" to "Fast CDVD",
