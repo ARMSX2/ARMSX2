@@ -108,6 +108,7 @@ namespace GSHWDrawHarness
 			m_draws++;
 			m_verts.assign(config.verts, config.verts + config.nverts);
 			m_cb_ps = config.cb_ps;
+			m_cb_vs = config.cb_vs;
 			m_ps = config.ps;
 			m_topology = config.topology;
 		}
@@ -120,6 +121,7 @@ namespace GSHWDrawHarness
 		u32 m_draws = 0;
 		std::vector<GSVertex> m_verts;
 		GSHWDrawConfig::PSConstantBuffer m_cb_ps;
+		GSHWDrawConfig::VSConstantBuffer m_cb_vs;
 		GSHWDrawConfig::PSSelector m_ps;
 		GSHWDrawConfig::Topology m_topology = GSHWDrawConfig::Topology::Triangle;
 	};

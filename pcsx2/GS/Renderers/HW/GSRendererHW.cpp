@@ -6160,8 +6160,12 @@ bool GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 				// A point rounds to nearest where a sprite corner-samples, and upscaled it covers
 				// the whole device block of the native pixel it lights. GSPointPlace.h carries the
 				// console measurement and the derivation; the two steps are here. First put the
-				// vertex on the pixel, at native resolution, where the rule was measured.
-				SnapPointsToNativePixel();
+				// vertex on the pixel, at native resolution, where the rule was measured. As with
+				// lines, turning safe features off above native turns the whole correction off:
+				// the point stays where the game put it and keeps DetermineVSConfig's offset.
+				const bool correct_points = unscale_pt_ln || target_scale == 1.0f;
+				if (correct_points)
+					SnapPointsToNativePixel();
 
 				// Then give the draw the offset the figure this backend draws needs. It is written
 				// here rather than left to DetermineVSConfig because that function hands some
@@ -6217,9 +6221,11 @@ bool GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 					// M1 requires point size output on *all* points.
 					m_conf.vs.point_size = true;
 
-					// One native pixel is one device pixel here, so this is the value
-					// DetermineVSConfig already chose, in every half-pixel-offset mode.
-					set_vertex_offset(GSPointPlace::CentredFigureOffset(sx), GSPointPlace::CentredFigureOffset(sy));
+					// At native one native pixel is one device pixel, so this is the value
+					// DetermineVSConfig already chose, in every half-pixel-offset mode. Above native
+					// (safe features off) DetermineVSConfig's value stands.
+					if (correct_points)
+						set_vertex_offset(GSPointPlace::CentredFigureOffset(sx), GSPointPlace::CentredFigureOffset(sy));
 				}
 			}
 			break;
