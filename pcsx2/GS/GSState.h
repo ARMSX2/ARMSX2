@@ -420,6 +420,12 @@ protected:
 	// The cull grid the current config asks for.
 	static GSVertexKernels::CullGrid ConfigCullGrid();
 
+	// The cull grid this object's engine samples on. The hardware renderer's depends on the upscale
+	// and the half-pixel-offset mode, so it is ConfigCullGrid(); the software renderer is always
+	// native; the front parser culls for whichever engine is behind it. UpdateSettings re-applies
+	// it on every settings change, so no input of the grid can change without the grid following.
+	virtual GSVertexKernels::CullGrid EngineCullGrid() const { return ConfigCullGrid(); }
+
 public:
 	// The cull grid a scale and a half-pixel-offset mode ask for. Pure and public
 	// so gs_vertex_tests can pin the mode decisions without standing up a GS.
@@ -1067,6 +1073,9 @@ public:
 	// that draw EXECUTED, so it drains the back queue — memoized per
 	// (draw epoch, live ALPHA) so at most one drain per AA1 draw.
 	bool IsCoverageAlphaSupported() override;
+
+	// The back object's grid: this object culls the primitives the back will draw.
+	GSVertexKernels::CullGrid EngineCullGrid() const override { return m_back->m_cull_grid; }
 
 	// Once per frame, after the (drained) vsync executed on the back object:
 	// re-mirror present-side state the back mutated (Merge's scanmask

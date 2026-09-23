@@ -112,6 +112,11 @@ namespace GSHWDrawHarness
 			m_topology = config.topology;
 		}
 
+		// What the device claims to be. The back thread only engages behind a Vulkan device, so a
+		// test that needs the pipelined front parser has this say Vulkan.
+		RenderAPI GetRenderAPI() const override { return m_api; }
+
+		RenderAPI m_api = RenderAPI::None;
 		u32 m_draws = 0;
 		std::vector<GSVertex> m_verts;
 		GSHWDrawConfig::PSConstantBuffer m_cb_ps;
@@ -151,6 +156,7 @@ namespace GSHWDrawHarness
 		void BringUp()
 		{
 			auto device = std::make_unique<CaptureDevice>();
+			device->m_api = m_device_api;
 			m_device = device.get();
 			g_gs_device = std::move(device);
 			ASSERT_TRUE(g_gs_device->Create(GSVSyncMode::Disabled, false));
@@ -261,6 +267,7 @@ namespace GSHWDrawHarness
 
 		std::unique_ptr<GSPrivRegSet> m_priv_regs;
 		Pcsx2Config::GSOptions m_saved_config;
+		RenderAPI m_device_api = RenderAPI::None;
 		Renderer* m_gs = nullptr;
 		CaptureDevice* m_device = nullptr;
 	};

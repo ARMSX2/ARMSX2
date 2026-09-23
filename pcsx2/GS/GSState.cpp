@@ -351,6 +351,9 @@ GSFrontState::GSFrontState(GSState* back)
 	m_mem_target = back;
 	back->m_split_back = true;
 	back->m_parse_target = this;
+	// The base constructor took the config's grid. The front culls for the back's engine, so it
+	// takes the back's -- the software renderer's is native whatever the upscale setting says.
+	SetCullGrid(EngineCullGrid());
 	// The front splits draws for the back's engine, so it leaves unsplit what that engine does.
 	m_unsplit_stencil_counter = back->m_unsplit_stencil_counter;
 }
@@ -1428,6 +1431,12 @@ void GSState::ResetPCRTC()
 void GSState::UpdateSettings(const Pcsx2Config::GSOptions& old_config)
 {
 	m_mipmap = GSConfig.Mipmap;
+
+	// The grid reads the upscale, the half-pixel-offset mode and draw buffering, and a per-game
+	// GameDB value arrives through this same settings apply after boot. Re-derive it on every
+	// change rather than listing which changes matter. GS.cpp updates the renderer before the
+	// front parser, so the front copies a grid that is already current.
+	SetCullGrid(EngineCullGrid());
 
 	// Only the object owning local memory owns the shadow. UpdateSettings runs on both halves
 	// of the pipelined split (GS.cpp), and the front's accessors all resolve to the back, so

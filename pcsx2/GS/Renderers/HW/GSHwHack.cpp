@@ -1550,7 +1550,7 @@ void GSRendererHW::UpdateRenderFixes()
 
 	m_nativeres = (GSConfig.UpscaleMultiplier == 1.0f);
 	s_nativeres = m_nativeres;
-	SetCullGrid(ConfigCullGrid());
+	SetCullGrid(EngineCullGrid());
 
 	m_gsc = nullptr;
 	m_oi = nullptr;
