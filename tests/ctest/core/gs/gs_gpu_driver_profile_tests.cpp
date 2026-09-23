@@ -679,7 +679,7 @@ TEST(GSGpuDriverProfile, ForcedBugsRideOnTopOfTheDatabaseAndAreNotCountedAsRules
 // version, so a build tagged `axfl1-005` reports driverInfo "Mesa 26.1.2 (git-axfl1-005)". A stock
 // distro Turnip is built from a release tarball and reports plain "Mesa 26.1.2" with no git sha at
 // all. The convention and the build register are in
-// umbrella/devs/bmdhacks/deploy/rocknix/turnip-build/README.md.
+// README.ARMSX2.md in github.com/bmdhacks/armsx2-turnip.
 namespace
 {
 	constexpr const char* kFixedTurnipDriverInfo = "Mesa 26.1.2 (git-axfl1-005)";
