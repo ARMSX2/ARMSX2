@@ -577,7 +577,7 @@ SLES-50121:
 
 # Splashdown: Rides Gone Wild -- blending accuracy held at Minimum (0) on any device that pays for
 # its destination read on every draw that takes one: a copy of the render target, or a barrier.
-# Source: bmdhacks, 2026-09-24. The Minimum picture was compared against the full-accuracy one
+# Source: bmdhacks. The Minimum picture was compared against the full-accuracy one
 # and the difference judged acceptable.
 # The cost it saves: on an SD865 under Turnip at native scale, 1,169 of Splashdown's 2,690 draws a
 # frame read the render target, which on that driver's RT-copy workaround (ARMSX2 #442) is 1,192

@@ -46,7 +46,7 @@
 // It costs picture. Blending accuracy is exactly what the level controls, so this is not a free
 // win being withheld by caution: about 30% of Splashdown's frame moves, by up to 40 levels out of
 // 255, across the water spray behind the boat. The Minimum picture was rendered on the device,
-// compared against the full-accuracy one, and judged acceptable on 2026-09-24; that judgement is
+// compared against the full-accuracy one, and judged acceptable; that judgement is
 // the authority for this file, since a speed change whose only cost is moved pixels is a call on
 // the picture, not on byte identity. The road makes no difference to the picture that was judged:
 // on the M2 at 1x the capped barrier road is byte-identical to the copy road, 3/3 frames, row for

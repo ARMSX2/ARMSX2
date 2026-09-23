@@ -7,7 +7,7 @@
 // destination read on every draw that takes one -- by copying the render target, or by emitting a
 // pipeline barrier. On the copy road that read costs it 1,177 target copies and 8.48 ms a frame;
 // on an Adreno 740's barrier road it costs 59,023 barriers and +40%. The Minimum picture was
-// judged acceptable on 2026-09-24, and the capped barrier road measured byte-identical to the copy
+// judged acceptable, and the capped barrier road measured byte-identical to the copy
 // road it was judged on. Where the driver orders the
 // read for us the read is free, and the title renders exactly as it did.
 //
