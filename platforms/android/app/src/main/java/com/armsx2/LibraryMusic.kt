@@ -124,10 +124,39 @@ object LibraryMusic {
         context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
 
     /**
-     * Begin playing, if we should. No-ops when the setting is off, a VM is running, or
-     * something else is already playing audio.
+     * True when another app is playing something the user is listening to: music, a podcast,
+     * a video. Deliberately narrower than AudioManager.isMusicActive(), which is true for ANY
+     * live stream on the media channel, games included: an emulator left in the background with
+     * a game paused keeps its silent stream open for hours, and that alone kept ARMSX3's library
+     * silent all afternoon on the Odin 3 (2026-09-23; ARMSX3 has the same fix).
      *
-     * The isMusicActive check is the difference between a nice touch and a hostile one:
+     * The usage alone cannot tell: game streams come as USAGE_GAME or USAGE_MEDIA (our own SPU2
+     * output sets none, so it is USAGE_MEDIA). What media apps do and emulators do not is say
+     * what they play: music, a film, speech (Spotify, YouTube, podcast apps, and our own splash
+     * and pause-menu tracks all set it). A raw game stream leaves the content type unknown, so
+     * it never counts, and neither does our own SPU2 output still closing after a game exits.
+     * Apps are only given the players that are live right now, so no state check is needed.
+     */
+    private fun otherMediaPlaying(am: AudioManager): Boolean =
+        runCatching {
+            am.activePlaybackConfigurations.any {
+                val attributes = it.audioAttributes
+                attributes.usage in MEDIA_USAGES && attributes.contentType in MEDIA_CONTENT
+            }
+        }.getOrElse { am.isMusicActive }
+
+    private val MEDIA_USAGES = setOf(AudioAttributes.USAGE_MEDIA, AudioAttributes.USAGE_UNKNOWN)
+    private val MEDIA_CONTENT = setOf(
+        AudioAttributes.CONTENT_TYPE_MUSIC,
+        AudioAttributes.CONTENT_TYPE_MOVIE,
+        AudioAttributes.CONTENT_TYPE_SPEECH,
+    )
+
+    /**
+     * Begin playing, if we should. No-ops when the setting is off, a VM is running, or
+     * another app is already playing music, a podcast or a video.
+     *
+     * The [otherMediaPlaying] check is the difference between a nice touch and a hostile one:
      * without it, opening the app over someone's podcast or Spotify starts a second
      * stream on top of theirs. Deferring to whoever is already playing costs us nothing
      * — the user can still toggle it on explicitly.
@@ -139,7 +168,7 @@ object LibraryMusic {
         val am = audioManager(context)
         // Skip the "someone else is playing" deference when forced — a user-initiated track
         // change is an explicit request to hear our music now (see restart()).
-        if (!force && am?.isMusicActive == true) {
+        if (!force && am != null && otherMediaPlaying(am)) {
             Log.i(TAG, "another app is playing audio; not starting library music")
             return
         }
