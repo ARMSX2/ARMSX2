@@ -88,7 +88,7 @@
 //
 // `arm` is the harness's -declare-feedback-loop -- measurement scaffolding, so one binary can run
 // base against the candidate on a device. It is a process global the runner sets
-// (GSSelfReadRoadPolicy::SetForcedArm below), not a setting: no INI key, no per-game entry, no UI
+// (GSMeasurementOverrides.h), not a setting: no INI key, no per-game entry, no UI
 // row, because a user cannot tell which road their driver wants. It still wins where it is set,
 // because the declared loop with barriers kept (value 2) on our own driver is the reference
 // picture the ordering claim is measured against.
@@ -179,7 +179,7 @@ struct GSSelfReadRoadInputs
 	/// only, so an explicit 1 lands where it always did: the in-pass read the extension list picks.
 	s8 override_texture_barriers = -1;
 
-	/// GSSelfReadRoadPolicy::GetForcedArm(), as GSSelfReadArm. Off on every run but a harness's.
+	/// GSMeasurementOverrides::self_read_arm, as GSSelfReadArm. Off on every run but a harness's.
 	u8 arm = static_cast<u8>(GSSelfReadArm::Off);
 };
 
@@ -752,27 +752,3 @@ static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_a
 static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true})
 		.loop_declared);
 static_assert(!DecideSelfReadRoad({.layout_road_available = true}).selected_by_driver_fact);
-
-namespace GSSelfReadRoadPolicy
-{
-	/// ⚠️ MEASUREMENT OVERRIDE -- gsrunner only (-declare-feedback-loop <1|2>).
-	///
-	/// The experiment arm fed to DecideSelfReadRoad. A process global rather than a setting, for the
-	/// reason every harness override in this directory is one: which road a driver wants is a
-	/// measurement result, and a user who set it by hand on NVIDIA or AMD would drop the barriers
-	/// and break blending. Set once before the VM starts; read in CheckFeatures, before any image,
-	/// descriptor layout or render pass exists.
-	inline GSSelfReadArm s_forced_arm = GSSelfReadArm::Off;
-
-	/// ⚠️ MEASUREMENT OVERRIDE -- gsrunner only (-declare-depth-feedback-loop).
-	///
-	/// Also declare the DEPTH feedback loop on a device whose colour loop is declared, so a draw that
-	/// samples its own depth buffer reads it in the pass. Turnip has a recorded tiler hang sampling
-	/// the live depth buffer while it is the depth attachment; expect a possible device lockup.
-	inline bool s_declare_depth_loop = false;
-
-	inline void SetForcedArm(GSSelfReadArm arm) { s_forced_arm = arm; }
-	inline GSSelfReadArm GetForcedArm() { return s_forced_arm; }
-	inline void SetDeclareDepthLoop(bool value) { s_declare_depth_loop = value; }
-	inline bool DeclaresDepthLoop() { return s_declare_depth_loop; }
-} // namespace GSSelfReadRoadPolicy

@@ -12,8 +12,6 @@
 #include "GS/Renderers/Common/GSBlendConstantPolicy.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
-#include "GS/Renderers/Common/GSDateRoadPolicy.h"
-#include "GS/Renderers/Common/GSDeclaredLoopScopePolicy.h"
 #include "GS/Renderers/Common/GSNativeTexelGridPolicy.h"
 #include "GS/Renderers/Common/GSSelfReadCopyPolicy.h"
 #include "GS/GSGL.h"
@@ -6843,14 +6841,6 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 
 	const GSDevice::FeatureSupport& features = g_gs_device->Features();
 
-	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -date-road primid): the barrier state as the road
-	// selection found it, so that pinning the road to primitive-ID tracking can give back
-	// exactly the barrier this selection asks for and nothing that was already required for
-	// blending or fbmask. Two plain bools on a path that is not hot; inert when the override is
-	// not asked for. See the block after the chain, and GSDateRoadPolicy.h.
-	const bool one_barrier_before_date = m_conf.require_one_barrier;
-	const bool full_barrier_before_date = m_conf.require_full_barrier;
-
 	// Date one can run with complex alpha test if there's no overlap.
 	const bool complex_alpha_test = m_cached_ctx.TEST.ATE &&
 	                                m_cached_ctx.TEST.ATST != ATST_ALWAYS &&
@@ -6968,34 +6958,6 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 		GL_PERF("DATE: Accurate with no alpha write");
 		m_conf.require_one_barrier = true;
 		date_options.barrier = true;
-	}
-
-	// ⚠️ MEASUREMENT OVERRIDE.
-	//
-	// Pin every DATE draw to primitive-ID tracking, the road both handheld targets take today,
-	// so the DATE mechanism can be held still while the colour self-read road changes under it.
-	// Without this, giving a build an in-pass destination read moves draws onto the Full road by
-	// itself, and Stuntman's and Indiana Jones's A/B deltas mix two mechanisms with no way to
-	// tell them apart afterwards.
-	//
-	// Here rather than in EmulateDATEGetConfig, although that is where the road becomes a
-	// DestinationAlphaMode: this is the function that CHOOSES, and every branch above that picks
-	// a road also asks for the barrier that road needs. Undoing the choice means undoing the
-	// barrier with it, and restoring the state this function was entered with is the only
-	// spelling of that which cannot take away a barrier some earlier stage required for its own
-	// reasons. It also runs before EmulateBlending, so the whole downstream draw is configured
-	// the way it would have been had the primitive-ID road been chosen on its merits.
-	if (GSDateRoadForcesPrimID({.override_mode = GSDateRoadPolicy::GetOverride(),
-			.date_enabled = date_options.enabled,
-			.already_primid = date_options.primid,
-			.device_has_primitive_id = features.primitive_id,
-			.scanmsk_discards_lines = (m_conf.ps.scanmsk & 2) != 0}))
-	{
-		date_options.stencil_one = false;
-		date_options.barrier = false;
-		date_options.primid = true;
-		m_conf.require_one_barrier = one_barrier_before_date;
-		m_conf.require_full_barrier = full_barrier_before_date;
 	}
 
 	// Will save my life !
@@ -7245,18 +7207,7 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 	// keeps them deliberately, as the diagnostic arm. Which is still what that flag is for: the
 	// road itself is no longer experiment-only, since a driver build measured to order reaches it
 	// through the driver database with no key set.
-	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -declare-overlap-only). Which readers on the declared road actually declare. Off the road, and at the default
-	// scope, this is false for every draw and everything below is unchanged. The withheld draws
-	// go back on the copy road: the backend clones the target for them and samples the clone,
-	// which is what the device does today and what it does for every reader on every other
-	// backend. See GSDeclaredLoopScopePolicy.h for why the scope is worth measuring.
-	m_conf.undeclare_rt_feedback_loop = GSDrawWithholdsFeedbackLoop(
-		{.scope = GSDeclaredLoopScopePolicy::GetScope(),
-			.declared_road = features.declared_feedback_loop_orders_overlap,
-			.prim_overlap_yes = (m_prim_overlap == PRIM_OVERLAP_YES)});
-
-	if (features.framebuffer_fetch ||
-		(features.declared_feedback_loop_orders_overlap && !m_conf.undeclare_rt_feedback_loop))
+	if (features.framebuffer_fetch || features.declared_feedback_loop_orders_overlap)
 	{
 		// If we use depth feedback directly, we must use barriers for the depth texture.
 		// If we use depth-as-color feedback, then FB fetch can be used for depth also.
@@ -7279,19 +7230,6 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 		{
 			m_conf.require_one_barrier = false;
 			m_conf.require_full_barrier = false;
-		}
-	}
-	else if (m_conf.undeclare_rt_feedback_loop)
-	{
-		// A withheld draw is served by one pre-draw snapshot of the target, which is the ordering
-		// a single barrier buys and never the per-primitive kind. Collapse the request to match,
-		// the same collapse a device with no barriers at all makes below -- otherwise the backend
-		// would be asked to split the draw and barrier against a target it is not sampling, and
-		// the clone would not be bound, because binding it is gated on require_one_barrier.
-		if (m_conf.require_full_barrier)
-		{
-			m_conf.require_full_barrier = false;
-			m_conf.require_one_barrier = true;
 		}
 	}
 	// Multi-pass algorithms shouldn't be needed with full barrier and backends may not handle this correctly

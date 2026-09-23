@@ -12,8 +12,7 @@
 # gs_stream_ring_flush_tests.cpp and gs_null_device_profile_tests.cpp ride this
 # target rather than adding one: those policies are header-only, so they need no
 # extra linkage.
-# gs_self_read_road_tests.cpp, gs_date_road_tests.cpp,
-# gs_declared_loop_scope_tests.cpp, gs_dynamic_feedback_loop_tests.cpp,
+# gs_self_read_road_tests.cpp, gs_dynamic_feedback_loop_tests.cpp,
 # gs_stream_ring_memory_tests.cpp, gs_stream_ring_flush_tests.cpp and
 # gs_null_device_profile_tests.cpp ride this target rather than adding one: those
 # policies are header-only, so they need no extra linkage.
@@ -30,8 +29,6 @@ add_pcsx2_test(gs_vertex_tests
 	gs_copy_road_blending_tests.cpp
 	gs_native_texel_grid_tests.cpp
 	gs_self_read_road_tests.cpp
-	gs_date_road_tests.cpp
-	gs_declared_loop_scope_tests.cpp
 	gs_dynamic_feedback_loop_tests.cpp
 	gs_stream_ring_memory_tests.cpp
 	gs_stream_ring_flush_tests.cpp

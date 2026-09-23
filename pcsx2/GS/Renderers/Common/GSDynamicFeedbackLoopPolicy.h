@@ -106,7 +106,7 @@ enum class GSLoopDeclarationSpelling : u8
 	DynamicPerDraw,
 };
 
-/// The spelling taken unless something forces the other one. One place, so the process global,
+/// The spelling taken unless something forces the other one. One place, so the harness override,
 /// the input struct and the asserts below cannot drift apart.
 inline constexpr GSLoopDeclarationSpelling kDefaultLoopDeclarationSpelling =
 	GSLoopDeclarationSpelling::DynamicPerDraw;
@@ -190,45 +190,3 @@ static_assert(!GSDeclaresLoopPerDraw({.dynamic_state_available = true, .device_m
 static_assert(!GSLoopSpellingFallsBackToCreateFlag({.dynamic_state_available = true, .device_measured = true}));
 static_assert(!GSDeclaresLoopPerDraw({}));
 static_assert(!GSLoopSpellingFallsBackToCreateFlag({}));
-
-namespace GSDynamicFeedbackLoopPolicy
-{
-	/// The spelling this process uses.
-	///
-	/// A process-wide inline global rather than a setting, for the reason every policy override
-	/// in this directory is one: which spelling a driver charges less for is a measurement result
-	/// on one device. Set once before the VM starts, because the answer has to be final before
-	/// the first pipeline exists -- a pipeline's dynamic-state list cannot be changed afterwards.
-	inline GSLoopDeclarationSpelling s_spelling = kDefaultLoopDeclarationSpelling;
-
-	/// Whether somebody named the spelling, as opposed to taking the default. Only changes what
-	/// the banner says and whether a fallback is worth reporting; never what is emitted.
-	inline bool s_forced = false;
-
-	inline void ForceSpelling(GSLoopDeclarationSpelling value)
-	{
-		s_spelling = value;
-		s_forced = true;
-	}
-
-	/// Back to the shipped default. For tests, which run both spellings in one process.
-	inline void ResetToDefault()
-	{
-		s_spelling = kDefaultLoopDeclarationSpelling;
-		s_forced = false;
-	}
-
-	inline GSLoopDeclarationSpelling GetSpelling() { return s_spelling; }
-	inline bool WantsDynamicPerDraw() { return s_spelling == GSLoopDeclarationSpelling::DynamicPerDraw; }
-	inline bool IsForced() { return s_forced; }
-
-	/// For the banner. A measurement log quotes this, so it says what was declared and how.
-	inline const char* Name()
-	{
-		return (s_spelling == GSLoopDeclarationSpelling::DynamicPerDraw) ? "dynamic per draw" : "pipeline create flag";
-	}
-
-	/// For the banner, beside Name(). A run that reads "forced" took a flag from somebody's
-	/// command line; a run that reads "default" is the road a user is on.
-	inline const char* Origin() { return s_forced ? "forced" : "default"; }
-} // namespace GSDynamicFeedbackLoopPolicy

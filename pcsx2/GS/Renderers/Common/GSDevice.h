@@ -1336,19 +1336,6 @@ struct alignas(16) GSHWDrawConfig
 	bool require_one_barrier;  ///< Require texture barrier before draw (also used to requst an rt copy if texture barrier isn't supported)
 	bool require_full_barrier; ///< Require texture barrier between all prims
 
-	/// ⚠️ MEASUREMENT OVERRIDE (gsrunner -declare-overlap-only).
-	///
-	/// The backend must NOT declare this draw's render-target feedback loop although the device is
-	/// on a road that otherwise would; the draw takes the copy road instead. False on every draw
-	/// unless the harness narrowed the scope, and the per-draw memset at the top of
-	/// GSRendererHW::Draw is what makes that the default -- which is why the field is spelled as
-	/// the exception rather than as "declare", whose default would have to be true.
-	///
-	/// Only the Vulkan backend reads it, because only Vulkan has the declared road. Elsewhere the
-	/// copy road is already the only road and the bit is never set. See
-	/// GSDeclaredLoopScopePolicy.h.
-	bool undeclare_rt_feedback_loop;
-
 	enum : u32
 	{
 		TEX_HAZARD_NONE,

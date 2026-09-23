@@ -21,6 +21,7 @@
 // Rides gs_vertex_tests -- the policy is header-only constexpr, so it needs no extra linkage.
 
 #include "Config.h"
+#include "GS/Renderers/Common/GSMeasurementOverrides.h"
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
 
 #include <gtest/gtest.h>
@@ -674,7 +675,7 @@ TEST(GSSelfReadRoad, TheBannerSeparatesTheBarrierPreferenceFromTheOtherEntrances
 //
 // It used to load from EmuCore/GS/DeclareAttachmentFeedbackLoop and DeclareDepthFeedbackLoop,
 // per-game included. Arm 1 on NVIDIA or AMD drops the barriers and breaks blending, so neither may
-// be reachable from an INI. The options struct has no such members, and the process globals the
+// be reachable from an INI. The options struct has no such members, and the harness overrides the
 // runner sets default to the shipped decision.
 
 template <typename T>
@@ -686,28 +687,16 @@ static_assert(!HasDepthArmSetting<Pcsx2Config::GSOptions>);
 
 TEST(GSSelfReadRoad, AAA_TheHarnessArmDefaultsOff)
 {
-	EXPECT_EQ(GSSelfReadRoadPolicy::GetForcedArm(), GSSelfReadArm::Off);
-	EXPECT_FALSE(GSSelfReadRoadPolicy::DeclaresDepthLoop());
+	EXPECT_EQ(g_gs_measurement_overrides.self_read_arm, GSSelfReadArm::Off);
+	EXPECT_FALSE(g_gs_measurement_overrides.declare_depth_loop);
+	EXPECT_FALSE(g_gs_measurement_overrides.Any());
 
 	// Fed through unchanged, desktop Vulkan gets origin/master's road: barriers, the layout
 	// spelling, nothing declared.
 	GSSelfReadRoadInputs in = Desktop();
-	in.arm = static_cast<u8>(GSSelfReadRoadPolicy::GetForcedArm());
+	in.arm = static_cast<u8>(g_gs_measurement_overrides.self_read_arm);
 	const GSSelfReadRoadDecision d = DecideSelfReadRoad(in);
 	EXPECT_EQ(d.road, GSSelfReadRoad::InPassBarrier);
 	EXPECT_FALSE(d.loop_declared);
 	EXPECT_FALSE(d.orders_overlapping_prims);
-}
-
-TEST(GSSelfReadRoad, TheHarnessArmRoundTrips)
-{
-	GSSelfReadRoadPolicy::SetForcedArm(GSSelfReadArm::DeclaredKeepBarriers);
-	GSSelfReadRoadPolicy::SetDeclareDepthLoop(true);
-	EXPECT_EQ(GSSelfReadRoadPolicy::GetForcedArm(), GSSelfReadArm::DeclaredKeepBarriers);
-	EXPECT_TRUE(GSSelfReadRoadPolicy::DeclaresDepthLoop());
-
-	GSSelfReadRoadPolicy::SetForcedArm(GSSelfReadArm::Off);
-	GSSelfReadRoadPolicy::SetDeclareDepthLoop(false);
-	EXPECT_EQ(GSSelfReadRoadPolicy::GetForcedArm(), GSSelfReadArm::Off);
-	EXPECT_FALSE(GSSelfReadRoadPolicy::DeclaresDepthLoop());
 }
