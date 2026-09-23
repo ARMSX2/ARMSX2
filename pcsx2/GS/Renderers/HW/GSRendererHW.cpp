@@ -1761,18 +1761,15 @@ GSVector4 GSRendererHW::RealignTargetTextureCoordinate(const GSTextureCache::Sou
 	return half_offset;
 }
 
-// Half-pixel-offset mode 5's texture-side offset, shared by both of EmulateTextureSampler's
-// texture arms. The FST offset is 8 - 4/scale sixteenths of a texel: it is written open-coded
-// below because the closed form rounds one ULP differently at some scale-and-width pairs (1.5x
-// and 3x among them), and changing the number is not what this helper is for.
+// Half-pixel-offset mode 5's texture-side offset, for a texture read from a target. The FST offset
+// is 8 - 4/scale sixteenths of a texel: it is written open-coded below because the closed form
+// rounds one ULP differently at some scale-and-width pairs (1.5x and 3x among them), and changing
+// the number is not what this helper is for.
 //
 // Offsets are required when using FST -- it can be seen with the cabin part of the ship in God
-// of War. ST uses a normalized position and needs no offset here, which breaks Bionicle Heroes
-// if it gets one; `allow_st` is the only thing the two call sites disagree about, because the
-// shuffle arm has no ST/Q path at all. The shuffle arm's other difference, declining the whole
-// offset on a texture shuffle, stays at its own call site.
+// of War.
 void GSRendererHW::ApplyNativeWTexOffset(const GSTextureCache::Source* tex, const GSTextureCache::Target* rt,
-	const GSTextureCache::Target* ds, bool allow_st, GSVector2& texture_offset)
+	const GSTextureCache::Target* ds, GSVector2& texture_offset)
 {
 	if (GSConfig.UserHacks_HalfPixelOffset != GSHalfPixelOffset::NativeWTexOffset)
 		return;
@@ -1795,7 +1792,7 @@ void GSRendererHW::ApplyNativeWTexOffset(const GSTextureCache::Source* tex, cons
 		if (!(y1_frac & 8))
 			texture_offset.y = (1.0f - ((0.5f / (tex->m_unscaled_size.y * tex->m_scale)) * tex->m_unscaled_size.y)) * 8.0f;
 	}
-	else if (allow_st && m_vt.m_eq.q)
+	else if (m_vt.m_eq.q)
 	{
 		const float tw = static_cast<float>(1 << m_cached_ctx.TEX0.TW);
 		const float th = static_cast<float>(1 << m_cached_ctx.TEX0.TH);
@@ -9620,17 +9617,11 @@ __ri void GSRendererHW::EmulateTextureSampler(const GSTextureCache::Target* rt, 
 		// The purpose of texture shuffle is to move color channel. Extra interpolation is likely a bad idea.
 		bilinear &= m_vt.IsLinear();
 
+		// No half-pixel-offset texture offset here: this arm is reached only on a texture shuffle
+		// (m_conf.ps.shuffle is set only under m_texture_shuffle), whose coordinates are already
+		// aligned.
 		const GSVector4 half_pixel = RealignTargetTextureCoordinate(tex);
 		m_conf.cb_vs.texture_offset = GSVector2(half_pixel.x, half_pixel.y);
-
-		// Do not apply HPO on texture shuffles as it already aligns the coordinates.
-		// NOTE: this arm is reached only when m_conf.ps.shuffle is set, and the one place that
-		// sets it is inside `if (m_texture_shuffle)` in EmulateTextureShuffleAndFbmask, with
-		// ResetStates() zeroing it per draw in between. So the condition below is always false
-		// and the call never happens. Left as it stands -- the asymmetry with the other call
-		// site is reported, not resolved.
-		if (!m_texture_shuffle)
-			ApplyNativeWTexOffset(tex, rt, ds, false, m_conf.cb_vs.texture_offset);
 	}
 	else if (tex->m_target)
 	{
@@ -9682,7 +9673,7 @@ __ri void GSRendererHW::EmulateTextureSampler(const GSTextureCache::Target* rt, 
 		const GSVector4 half_pixel = RealignTargetTextureCoordinate(tex);
 		m_conf.cb_vs.texture_offset = GSVector2(half_pixel.x, half_pixel.y);
 
-		ApplyNativeWTexOffset(tex, rt, ds, true, m_conf.cb_vs.texture_offset);
+		ApplyNativeWTexOffset(tex, rt, ds, m_conf.cb_vs.texture_offset);
 
 		if (m_vt.m_primclass == GS_SPRITE_CLASS && m_index->tail >= 4 && GSLocalMemory::m_psm[m_cached_ctx.TEX0.PSM].bpp >= 16 &&
 			((tex->m_from_target_TEX0.PSM & 0x30) == 0x30 || GSLocalMemory::m_psm[m_cached_ctx.TEX0.PSM].pal > 0))
