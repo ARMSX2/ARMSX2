@@ -52,6 +52,10 @@ namespace GSFastStencilShadow
 		/// the device's own preference -- GSSelfReadRoadDecision::loop_declared. True for both
 		/// declaration arms and for the driver fact that selects the same road; see below.
 		bool loop_declared = false;
+
+		/// The device the counter was measured on for the barrier-ordered road: Apple silicon
+		/// under Honeykrisp. Desktop Vulkan reaches the same road and was never timed there.
+		bool barrier_road_measured = false;
 	};
 
 	// The device rule, in two halves.
@@ -70,8 +74,8 @@ namespace GSFastStencilShadow
 	// The roads that qualify:
 	//
 	//  - Copy. Every frame read is a render-pass break plus a copy of the target, which is the
-	//    cost the blend removes. Jak II at 2x pays for about 3,400 of them a frame. Today this is
-	//    every Adreno part: Turnip and the Qualcomm driver both carry
+	//    cost the blend removes. Jak II at 2x pays for about 3,400 of them a frame. This is every
+	//    Adreno part the declared road does not reach: Turnip and the Qualcomm driver both carry
 	//    UseRenderTargetCopyForFeedback, which turns texture barriers off. This road is what the
 	//    counter was written for and it is unchanged.
 	//
@@ -107,19 +111,13 @@ namespace GSFastStencilShadow
 	//    of the frame rather than the title. The mechanism shows in the barrier count: Jak II at
 	//    2x emits 126,285 per-draw feedback barriers a run without the counter and 386 with it.
 	//
-	//    ⚠️ Two limits, and they are the part of this bullet worth reading.
+	//    ⚠️ SCOPED TO THE M2 (barrier_road_measured). Desktop Vulkan lands on this road too -- it
+	//    keeps its texture barriers, and an in-tile read needs a Mali or Adreno part
+	//    (DecideVulkanFramebufferFetch) -- and so does MoltenVK, but neither was timed, so both
+	//    keep the answer they had before the road existed: no counter while barriers are on.
 	//
-	//    DESKTOP VULKAN IS ON THIS ROAD BY A POLICY WALK, NOT BY A MEASUREMENT. It keeps its
-	//    texture barriers, and an in-tile read needs a Mali or Adreno part
-	//    (DecideVulkanFramebufferFetch), so it has none available and falls to this road -- but no
-	//    desktop GPU was timed. The exposure is scope rather than correctness: the blend
-	//    arithmetic is fixed-point 8-bit on whole factors, which Vulkan guarantees rather than AGX,
-	//    so what is unmeasured is how much it saves there, not whether it draws the same pixels.
-	//
-	//    NO HANDHELD IS ON THIS ROAD. Every Adreno is on Copy, and Mali parts report no
-	//    dual-source blending and so fail the first half before the road is asked. This bullet
-	//    buys frame time on the dev box and on desktop Vulkan and changes nothing on the handheld
-	//    targets.
+	//    The Adreno 7xx declared road also lands on InPassBarrier, and it qualifies through
+	//    loop_declared above, not through this bullet.
 	//
 	// The road that does not:
 	//
@@ -144,7 +142,7 @@ namespace GSFastStencilShadow
 			return false;
 
 		return facts.road == GSSelfReadRoad::Copy
-			|| facts.road == GSSelfReadRoad::InPassBarrier
+			|| (facts.road == GSSelfReadRoad::InPassBarrier && facts.barrier_road_measured)
 			|| facts.loop_declared;
 	}
 

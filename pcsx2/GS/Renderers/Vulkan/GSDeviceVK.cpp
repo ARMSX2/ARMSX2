@@ -4243,7 +4243,10 @@ bool GSDeviceVK::CheckFeatures()
 		{.api = GetRenderAPI(),
 			.dual_source_blend = m_features.dual_source_blend,
 			.road = road.road,
-			.loop_declared = road.loop_declared});
+			.loop_declared = road.loop_declared,
+			// The barrier road's counter was timed on the M2 only; desktop Vulkan on the same road
+			// keeps the answer it had before the road existed.
+			.barrier_road_measured = (m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP)});
 
 	// Mali-G57 r13p0-class drivers can expose alternating/stale FastMAD history banks instead of the
 	// reconstructed frame; GSRenderer::Merge falls those back to weave+blend. Ported from sashkinbro/EmuCoreX.

@@ -1141,11 +1141,11 @@ static void PrintCommandLineHelp(const char* progname)
 						 "optimisation, not a different picture. Vulkan only.\n");
 	std::fprintf(stderr, "  -force-fast-stencil-shadow: Take the alpha stencil counter on a road whose rule declines "
 						 "it, by lifting only the road term (the Vulkan and dual-source terms still gate it, since "
-						 "those decide whether the counter can be drawn at all). The road the rule declines is an "
-						 "in-pass read the device orders for itself with per-draw barriers -- Apple silicon, desktop "
-						 "Vulkan, or an Adreno with OverrideTextureBarriers=1 -- where the counter has never been "
-						 "measured. The copy road and a declared feedback loop both qualify on their own now, so this "
-						 "switch changes nothing there. -no-fast-stencil-shadow wins if both are passed. Vulkan "
+						 "those decide whether the counter can be drawn at all). The roads the rule declines are "
+						 "the in-tile read (Mali, or an Adreno with OverrideTextureBarriers=1) and the per-draw "
+						 "barrier road on any driver but Honeykrisp (desktop Vulkan, MoltenVK), where the counter "
+						 "has never been measured. The copy road, a declared feedback loop and the M2's barrier road "
+						 "qualify on their own, so this switch changes nothing there. -no-fast-stencil-shadow wins if both are passed. Vulkan "
 						 "only.\n");
 	std::fprintf(stderr, "  -date-road <auto|primid>: Which road the destination alpha test takes. auto is the per-draw "
 						 "decision the renderer already makes; primid pins every DATE draw to primitive-ID tracking, the "

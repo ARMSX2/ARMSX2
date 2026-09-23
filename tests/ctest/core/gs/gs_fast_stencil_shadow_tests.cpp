@@ -6,8 +6,8 @@
 //
 // The device rule has no setting behind it, so these cases are the whole contract. It is on for
 // Vulkan with dual-source blending on three roads -- the copy road, the backend's own per-draw
-// barriers, and a declared feedback loop -- and off on the fourth thing a road can be, the in-tile
-// read. Two cases matter most. D3D11 also runs without texture barriers, and reading "no barriers"
+// barriers on the M2 where that was measured, and a declared feedback loop -- and off on the
+// in-tile read and on desktop Vulkan's barrier road. Two cases matter most. D3D11 also runs without texture barriers, and reading "no barriers"
 // as "frame reads are expensive" would put a draw the D3D11 shader cannot express on a backend
 // where the read it replaces is cheap. And the rule names its roads rather than asking
 // `road != Copy`, because the loose form would also admit the in-tile read: Mali's default, and
@@ -58,7 +58,7 @@ namespace
 		return in;
 	}
 
-	// Apple silicon under Honeykrisp, which is the same row gs_self_read_road_tests.cpp calls
+	// Apple silicon under Honeykrisp, which is the same road inputs gs_self_read_road_tests.cpp calls
 	// Desktop: the feedback-loop layout extension without rasterization-order attachment access, no
 	// RT-copy workaround, no arm. The in-tile read is unavailable because
 	// DecideVulkanFramebufferFetch already folded in the missing ROAA extension. InPassBarrier,
@@ -97,25 +97,40 @@ namespace
 	// The rule's own inputs, built directly rather than through a road. For the exhaustive tables,
 	// where the point is to cover combinations the road policy cannot produce as well as the ones
 	// it can.
-	constexpr GSFastStencilShadow::DeviceFacts Facts(
-		RenderAPI api, bool dual_source_blend, GSSelfReadRoad road, bool loop_declared)
+	constexpr GSFastStencilShadow::DeviceFacts Facts(RenderAPI api, bool dual_source_blend, GSSelfReadRoad road,
+		bool loop_declared, bool barrier_road_measured = false)
 	{
 		GSFastStencilShadow::DeviceFacts f;
 		f.api = api;
 		f.dual_source_blend = dual_source_blend;
 		f.road = road;
 		f.loop_declared = loop_declared;
+		f.barrier_road_measured = barrier_road_measured;
 		return f;
 	}
 
-	constexpr GSFastStencilShadow::DeviceFacts FactsFor(
-		const GSSelfReadRoadInputs& road_inputs, RenderAPI api = RenderAPI::Vulkan, bool dual_source_blend = true)
+	constexpr GSFastStencilShadow::DeviceFacts FactsFor(const GSSelfReadRoadInputs& road_inputs,
+		RenderAPI api = RenderAPI::Vulkan, bool dual_source_blend = true, bool barrier_road_measured = false)
 	{
 		const GSSelfReadRoadDecision road = DecideSelfReadRoad(road_inputs);
 		return {.api = api,
 			.dual_source_blend = dual_source_blend,
 			.road = road.road,
-			.loop_declared = road.loop_declared};
+			.loop_declared = road.loop_declared,
+			.barrier_road_measured = barrier_road_measured};
+	}
+
+	// The M2: the road above, on the driver the barrier road was measured on.
+	constexpr GSFastStencilShadow::DeviceFacts M2Facts(RenderAPI api = RenderAPI::Vulkan)
+	{
+		return FactsFor(M2Shipped(), api, true, true);
+	}
+
+	// Desktop Vulkan -- NVIDIA, AMD or Intel: the same road inputs as the M2, dual-source blending,
+	// and no measurement.
+	constexpr GSFastStencilShadow::DeviceFacts DesktopVulkanFacts()
+	{
+		return FactsFor(M2Shipped(), RenderAPI::Vulkan, true, false);
 	}
 } // namespace
 
@@ -189,9 +204,6 @@ TEST(GSFastStencilShadow, OnWhenTheA7xxPreferenceDeclaresTheLoopWithNoKeySet)
 // is worth here -- -82.6% to -89.3% of frame-time p50 on Jak II, Jak 3 and the Ratchet effects
 // capture, byte-identical frames on all 94 corpus cells. So the rule takes this road, and the run
 // banner says fastShadow=yes(blend) on an M2 by default.
-//
-// Desktop Vulkan is the same row: it keeps its barriers and has no in-tile read available, so it
-// lands here too -- by this walk, not by a measurement.
 TEST(GSFastStencilShadow, OnOnTheBarrierOrderedRoadTheDeviceChoseForItself)
 {
 	const GSSelfReadRoadDecision road = DecideSelfReadRoad(M2Shipped());
@@ -200,7 +212,21 @@ TEST(GSFastStencilShadow, OnOnTheBarrierOrderedRoadTheDeviceChoseForItself)
 	ASSERT_TRUE(road.texture_barrier);
 	ASSERT_FALSE(road.arm_applied) << "no arm asked for, so the road alone has to carry it";
 
-	EXPECT_TRUE(GSFastStencilShadow::DeviceQualifies(FactsFor(M2Shipped())));
+	EXPECT_TRUE(GSFastStencilShadow::DeviceQualifies(M2Facts()));
+}
+
+// Desktop Vulkan walks to the same road -- it keeps its barriers and has no in-tile read -- but was
+// never timed there, so it keeps origin/master's answer: barriers on, no counter.
+TEST(GSFastStencilShadow, OffForDesktopVulkanOnTheBarrierOrderedRoad)
+{
+	ASSERT_EQ(DecideSelfReadRoad(M2Shipped()).road, GSSelfReadRoad::InPassBarrier);
+	EXPECT_FALSE(GSFastStencilShadow::DeviceQualifies(DesktopVulkanFacts()));
+	EXPECT_FALSE(GSFastStencilShadow::Resolve(false, false, DesktopVulkanFacts()));
+
+	// ...and it is still on for desktop on the copy road, which is what OverrideTextureBarriers=0
+	// gave it on origin/master too.
+	EXPECT_TRUE(GSFastStencilShadow::DeviceQualifies(
+		FactsFor(WithBarrierOverride(M2Shipped(), 0), RenderAPI::Vulkan, true, false)));
 }
 
 // ⚠️ THE CASE THAT PINS THE SPELLING OF THE RULE. OverrideTextureBarriers=1 on an Adreno part
@@ -232,9 +258,12 @@ TEST(GSFastStencilShadow, TheRoadTermAdmitsCopyAndBarriersAndDeclinesTheInTileRe
 {
 	EXPECT_TRUE(GSFastStencilShadow::DeviceQualifies(Facts(RenderAPI::Vulkan, true, GSSelfReadRoad::Copy, false)))
 		<< "every frame read is a pass break plus a copy";
-	EXPECT_TRUE(
-		GSFastStencilShadow::DeviceQualifies(Facts(RenderAPI::Vulkan, true, GSSelfReadRoad::InPassBarrier, false)))
+	EXPECT_TRUE(GSFastStencilShadow::DeviceQualifies(
+		Facts(RenderAPI::Vulkan, true, GSSelfReadRoad::InPassBarrier, false, true)))
 		<< "in-pass, but auto-flush still splits the volume -- measured on an M2 Max";
+	EXPECT_FALSE(
+		GSFastStencilShadow::DeviceQualifies(Facts(RenderAPI::Vulkan, true, GSSelfReadRoad::InPassBarrier, false)))
+		<< "the same road on a device nobody timed";
 	EXPECT_FALSE(
 		GSFastStencilShadow::DeviceQualifies(Facts(RenderAPI::Vulkan, true, GSSelfReadRoad::InPassOrdered, false)))
 		<< "the in-tile read is unmeasured, and `road != Copy` is the spelling that would let it in";
@@ -291,13 +320,17 @@ TEST(GSFastStencilShadow, OnExactlyWhenTheBackendCanDrawItAndTheRoadCosts)
 			{
 				for (bool loop_declared : {false, true})
 				{
-					const bool expected = api == RenderAPI::Vulkan && dual_source &&
-					                      (road == GSSelfReadRoad::Copy ||
-					                       road == GSSelfReadRoad::InPassBarrier || loop_declared);
-					EXPECT_EQ(GSFastStencilShadow::DeviceQualifies(Facts(api, dual_source, road, loop_declared)),
-						expected)
-						<< "api " << static_cast<int>(api) << " dual_source " << dual_source << " road "
-						<< static_cast<int>(road) << " loop_declared " << loop_declared;
+					for (bool measured : {false, true})
+					{
+						const bool expected = api == RenderAPI::Vulkan && dual_source &&
+						                      (road == GSSelfReadRoad::Copy ||
+						                       (road == GSSelfReadRoad::InPassBarrier && measured) || loop_declared);
+						EXPECT_EQ(GSFastStencilShadow::DeviceQualifies(
+									  Facts(api, dual_source, road, loop_declared, measured)),
+							expected)
+							<< "api " << static_cast<int>(api) << " dual_source " << dual_source << " road "
+							<< static_cast<int>(road) << " loop_declared " << loop_declared << " measured " << measured;
+					}
 				}
 			}
 		}
@@ -726,14 +759,14 @@ TEST(GSFastStencilShadowOverride, BeatsAQualifyingDeviceAndIsOtherwiseInvisible)
 	GSFastStencilShadow::SetForcedOff(true);
 	EXPECT_FALSE(resolved(FactsFor(AdrenoShipped()))) << "the copy road must go off";
 	EXPECT_FALSE(resolved(FactsFor(WithArm(AdrenoShipped(), GSSelfReadArm::Declared)))) << "and so must the declared road";
-	EXPECT_FALSE(resolved(FactsFor(M2Shipped())));
+	EXPECT_FALSE(resolved(M2Facts()));
 	EXPECT_FALSE(resolved(FactsFor(AdrenoShipped(), RenderAPI::Vulkan, false)));
 	EXPECT_FALSE(resolved(FactsFor(AdrenoShipped(), RenderAPI::D3D11)));
 
 	GSFastStencilShadow::SetForcedOff(false);
 	EXPECT_TRUE(resolved(FactsFor(AdrenoShipped()))) << "and come back when not asked";
 	EXPECT_TRUE(resolved(FactsFor(WithArm(AdrenoShipped(), GSSelfReadArm::Declared))));
-	EXPECT_TRUE(resolved(FactsFor(M2Shipped()))) << "the barrier-ordered road comes back too";
+	EXPECT_TRUE(resolved(M2Facts())) << "the barrier-ordered road comes back too";
 	EXPECT_FALSE(resolved(FactsFor(AdrenoShipped(), RenderAPI::Vulkan, false)));
 	EXPECT_FALSE(resolved(FactsFor(AdrenoShipped(), RenderAPI::D3D11)));
 }
@@ -777,9 +810,9 @@ TEST(GSFastStencilShadowOverride, ForceOnLiftsOnlyTheRoadTerm)
 	EXPECT_TRUE(GSFastStencilShadow::Resolve(false, true, FactsFor(in_tile)))
 		<< "forced on, and the backend can draw it";
 
-	EXPECT_TRUE(GSFastStencilShadow::Resolve(false, false, FactsFor(M2Shipped())))
+	EXPECT_TRUE(GSFastStencilShadow::Resolve(false, false, M2Facts()))
 		<< "the barrier-ordered road no longer needs the override";
-	EXPECT_TRUE(GSFastStencilShadow::Resolve(false, true, FactsFor(M2Shipped())))
+	EXPECT_TRUE(GSFastStencilShadow::Resolve(false, true, M2Facts()))
 		<< "so asking for it there changes nothing";
 
 	// Still gated on what the backend can draw.
@@ -787,14 +820,14 @@ TEST(GSFastStencilShadowOverride, ForceOnLiftsOnlyTheRoadTerm)
 		<< "no dual-source blending: the second factor has nowhere to go";
 	EXPECT_FALSE(GSFastStencilShadow::Resolve(false, true, FactsFor(AdrenoShipped(), RenderAPI::D3D11)))
 		<< "no counter block in that backend's shader";
-	EXPECT_FALSE(GSFastStencilShadow::Resolve(false, true, FactsFor(M2Shipped(), RenderAPI::D3D11)));
+	EXPECT_FALSE(GSFastStencilShadow::Resolve(false, true, M2Facts(RenderAPI::D3D11)));
 }
 
 // Asking for both is a harness mistake; resolve to the one that changes least from the
 // shipped picture.
 TEST(GSFastStencilShadowOverride, ForceOffBeatsForceOn)
 {
-	EXPECT_FALSE(GSFastStencilShadow::Resolve(true, true, FactsFor(M2Shipped())));
+	EXPECT_FALSE(GSFastStencilShadow::Resolve(true, true, M2Facts()));
 	EXPECT_FALSE(GSFastStencilShadow::Resolve(true, true, FactsFor(AdrenoShipped())))
 		<< "even on the road the device rule would have allowed";
 	EXPECT_FALSE(GSFastStencilShadow::Resolve(true, true, FactsFor(WithArm(AdrenoShipped(), GSSelfReadArm::Declared))))
@@ -836,14 +869,16 @@ TEST(GSFastStencilShadowOverride, ResolveMatchesTheRuleOnEveryDeviceRow)
 	const GSSelfReadRoadInputs rows[] = {AdrenoShipped(),
 		WithArm(AdrenoShipped(), GSSelfReadArm::Declared),
 		WithArm(AdrenoShipped(), GSSelfReadArm::DeclaredKeepBarriers), M2Shipped(),
-		WithBarrierOverride(AdrenoShipped(), 1)};
-	// The last row is the in-tile read, the one road the rule declines -- and the one a
-	// `road != Copy` spelling would wrongly admit alongside the M2's.
-	const bool expected[] = {true, true, true, true, false};
+		WithBarrierOverride(AdrenoShipped(), 1), M2Shipped()};
+	// Row 3 is the M2 and row 5 is desktop Vulkan on the same road inputs. Row 4 is the in-tile
+	// read, which the rule declines -- and the one a `road != Copy` spelling would wrongly admit
+	// alongside the M2's.
+	const bool measured[] = {false, false, false, true, false, false};
+	const bool expected[] = {true, true, true, true, false, false};
 
 	for (size_t i = 0; i < std::size(rows); ++i)
 	{
-		const GSFastStencilShadow::DeviceFacts facts = FactsFor(rows[i]);
+		const GSFastStencilShadow::DeviceFacts facts = FactsFor(rows[i], RenderAPI::Vulkan, true, measured[i]);
 		EXPECT_EQ(GSFastStencilShadow::DeviceQualifies(facts), expected[i]) << "device row " << i;
 		EXPECT_EQ(GSFastStencilShadow::Resolve(false, false, facts), expected[i]) << "device row " << i;
 	}
