@@ -24,6 +24,10 @@
 #include <bit>
 #include <thread>
 
+#if defined(__linux__)
+#include <sched.h>
+#endif
+
 
 GSHWAutoFlushLevel GSState::GetAutoFlushLevel() const
 {
@@ -904,6 +908,14 @@ void GSState::BackThreadLoop()
 	// re-serialize the split, so clear to all cores. VMManager owns any future
 	// explicit pinning policy for this thread.
 	handle.SetAffinity(0);
+
+	// Nothing places this thread (VMManager pins the EE, VU and MTGS threads only), so say where
+	// the scheduler first put it. One sample, not a residency figure: it can migrate at any time.
+#if defined(__linux__)
+	Console.WriteLn("GS: back thread is unpinned (any core); first ran on CPU %d.", sched_getcpu());
+#else
+	Console.WriteLn("GS: back thread is unpinned (any core).");
+#endif
 
 	// Half the GS work runs here under the split, and the OSD's "GS" figure is the MTGS
 	// thread alone — so without this the mode reads as a large GS saving that is really
