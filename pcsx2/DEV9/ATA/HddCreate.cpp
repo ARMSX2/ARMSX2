@@ -166,6 +166,25 @@ void HddCreate::WriteImage(const std::string& hddPath, u64 fileBytes, u64 zeroSi
 	}
 #endif
 
+#if defined(__ANDROID__)
+	// Android creates the image on the boot thread when a game starts with the HDD on (DEV9.cpp).
+	// Where the filesystem cannot make it sparse, which is most SD cards, the loop below would write
+	// every byte of it there: gigabytes of zeroes that fill the card and hang the boot, again on
+	// every launch while the HDD stays enabled (#255). Refuse instead, and the HDD stays off.
+	if (!sparseSupported)
+	{
+		Console.Error("DEV9: HddCreate: '%s' is on storage without sparse files, so a full %llu-byte "
+					  "image would have to be written. Not creating it.",
+			hddPath.c_str(), static_cast<unsigned long long>(fileBytes));
+		[[maybe_unused]] int i = ftruncate(nativeFile, 0);
+		newImage.reset();
+		FileSystem::DeleteFilePath(hddPath.c_str());
+		errored.store(true);
+		SetError();
+		return;
+	}
+#endif
+
 	lastUpdate = std::chrono::steady_clock::now();
 
 	// Round up.

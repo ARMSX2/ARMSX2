@@ -26,6 +26,13 @@
 #include "Config.h"
 #include "smap.h"
 
+#if defined(__ANDROID__)
+#include "common/FileSystem.h"
+#include "fmt/format.h"
+#include "Host.h"
+#include "ATA/HddCreate.h"
+#endif
+
 #ifdef _WIN32
 #pragma warning(disable : 4244)
 #endif
@@ -80,6 +87,22 @@ int mapping;
 
 bool isRunning = false;
 
+#if defined(__ANDROID__)
+// Android keeps HDD images where the app's help text (network.hddImage.help) says they are. A bare
+// HddFile name is app-managed: it lives in an "hdd" folder beside the BIOS folder, which is the
+// app's own files folder on the phone's storage and can hold a sparse file where most SD cards
+// cannot, and it is created as an empty 8 GiB image the first time a game boots with the HDD on.
+// A value with a folder in it is the player's own image: opened where it is, and never created.
+//
+// This is how the Refresh builds behaved (#255, #259). It did not come across when the Android app
+// moved onto this tree, so a bare name was looked for in the settings folder, nothing was created,
+// and the HDD switched itself off without a word while the help text still described this.
+static bool HddFileIsBareName(const std::string& file)
+{
+	return !file.empty() && file.find_first_of("/\\") == std::string::npos;
+}
+#endif
+
 std::string GetHDDPath()
 {
 	//GHC uses UTF8 on all platforms
@@ -88,10 +111,92 @@ std::string GetHDDPath()
 	if (hddPath.empty())
 		EmuConfig.DEV9.HddEnable = false;
 
+#if defined(__ANDROID__)
+	if (HddFileIsBareName(hddPath))
+	{
+		// An image already sitting where the core used to look for a bare name keeps working.
+		const std::string settings_path(Path::Combine(EmuFolders::Settings, hddPath));
+		if (FileSystem::FileExists(settings_path.c_str()))
+			return settings_path;
+
+		std::string root(Path::GetDirectory(EmuFolders::Bios));
+		if (root.empty())
+			root = EmuFolders::DataRoot;
+		return Path::Combine(Path::Combine(root, "hdd"), hddPath);
+	}
+
+	// A file manager's "copy path" often drops the leading slash: "storage/XXXX-XXXX/...".
+	if (hddPath.rfind("storage/", 0) == 0)
+		hddPath.insert(hddPath.begin(), '/');
+#endif
+
 	if (!Path::IsAbsolute(hddPath))
 		hddPath = Path::Combine(EmuFolders::Settings, hddPath);
 
 	return hddPath;
+}
+
+#if defined(__ANDROID__)
+// An HDD that fails to attach reaches the game as "no hard disk", with nothing on screen to say
+// why, so the reason goes to the OSD as well as the log.
+static void ReportHddOff(const std::string& reason)
+{
+	const std::string message(fmt::format("Virtual HDD is off: {}", reason));
+	Console.Error("DEV9: %s", message.c_str());
+	Host::AddKeyedOSDMessage("DEV9Hdd", message, Host::OSD_ERROR_DURATION);
+}
+
+static bool EnsureHDDImageExists(const std::string& hddPath)
+{
+	if (FileSystem::FileExists(hddPath.c_str()))
+		return true;
+
+	if (!HddFileIsBareName(EmuConfig.DEV9.HddFile))
+	{
+		ReportHddOff(fmt::format("no image at {}. A path with folders must point at an image that already exists.", hddPath));
+		return false;
+	}
+
+	const std::string directory(Path::GetDirectory(hddPath));
+	if (!directory.empty() && !FileSystem::CreateDirectoryPath(directory.c_str(), true))
+	{
+		ReportHddOff(fmt::format("could not create the folder {}.", directory));
+		return false;
+	}
+
+	static constexpr u64 NEW_IMAGE_BYTES = static_cast<u64>(8) * 1024 * 1024 * 1024;
+	Console.WriteLn("DEV9: Creating HDD image '%s' (8 GiB, sparse)", hddPath.c_str());
+	HddCreate creator;
+	creator.filePath = hddPath;
+	creator.neededSize = NEW_IMAGE_BYTES;
+	creator.Start();
+	if (creator.errored || !FileSystem::FileExists(hddPath.c_str()))
+	{
+		ReportHddOff(fmt::format("could not create {}.", hddPath));
+		return false;
+	}
+
+	return true;
+}
+#endif
+
+// Opens the configured image for the ATA device. False means the HDD stays off.
+static bool OpenHddImage(const std::string& hddPath)
+{
+#if defined(__ANDROID__)
+	if (!EnsureHDDImageExists(hddPath))
+		return false;
+
+	if (dev9.ata->Open(hddPath) != 0)
+	{
+		ReportHddOff(fmt::format("could not open {}. The app may not have access to that folder.", hddPath));
+		return false;
+	}
+
+	return true;
+#else
+	return dev9.ata->Open(hddPath) == 0;
+#endif
 }
 
 s32 DEV9init()
@@ -187,7 +292,7 @@ s32 DEV9open()
 
 	if (EmuConfig.DEV9.HddEnable)
 	{
-		if (dev9.ata->Open(hddPath) != 0)
+		if (!OpenHddImage(hddPath))
 			EmuConfig.DEV9.HddEnable = false;
 	}
 
@@ -1153,11 +1258,11 @@ void DEV9CheckChanges(const Pcsx2Config& old_config)
 			if (EmuConfig.DEV9.HddFile != old_config.DEV9.HddFile)
 			{
 				dev9.ata->Close();
-				if (dev9.ata->Open(hddPath) != 0)
+				if (!OpenHddImage(hddPath))
 					EmuConfig.DEV9.HddEnable = false;
 			}
 		}
-		else if (dev9.ata->Open(hddPath) != 0)
+		else if (!OpenHddImage(hddPath))
 			EmuConfig.DEV9.HddEnable = false;
 	}
 	else if (old_config.DEV9.HddEnable)
