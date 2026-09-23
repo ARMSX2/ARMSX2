@@ -4246,7 +4246,6 @@ bool GSDeviceVK::CheckFeatures()
 	// device that simply orders its own reads -- and it is loop_declared rather than arm_applied
 	// because the driver fact reaches the same road without the experiment key, and the counter has
 	// to come with it.
-	//
 	m_features.fast_stencil_shadow = GSFastStencilShadow::DeviceQualifies(
 		{.api = GetRenderAPI(),
 			.dual_source_blend = m_features.dual_source_blend,
@@ -4255,6 +4254,21 @@ bool GSDeviceVK::CheckFeatures()
 			// The barrier road's counter was timed on the M2 only; desktop Vulkan on the same road
 			// keeps the answer it had before the road existed.
 			.barrier_road_measured = (m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP)});
+
+	// The device half of the feedback-loop carry (GSFeedbackLoopCarryPolicy.h). Every input is final
+	// here, so DoRenderHW copies this and fills in only the per-draw terms.
+	m_carry_device_facts = {};
+	m_carry_device_facts.device_always_carries = IsDeviceBroadcom();
+	m_carry_device_facts.device_is_measured_vendor = IsDeviceMali();
+	m_carry_device_facts.device_is_layout_road_vendor = IsDeviceAdreno();
+	// texture_barrier is what makes SendHWDraw issue the reader's feedback barrier at all. With it
+	// off there is no ordering, so the layout road carries nothing. Consulted only on the layout
+	// road; framebuffer_fetch is itself masked by texture_barrier.
+	m_carry_device_facts.barriers_order_reads = m_features.texture_barrier;
+	m_carry_device_facts.device_is_barrier_road_vendor =
+		(m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP);
+	m_carry_device_facts.framebuffer_fetch = m_features.framebuffer_fetch;
+	m_carry_device_facts.feedback_loop_layout = UseFeedbackLoopLayout();
 
 	// Mali-G57 r13p0-class drivers can expose alternating/stale FastMAD history banks instead of the
 	// reconstructed frame; GSRenderer::Merge falls those back to weave+blend. Ported from sashkinbro/EmuCoreX.
@@ -9078,21 +9092,8 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		// Gated PER TARGET, not on the enclosing condition — that only requires ONE of rt/ds
 		// to match, so a draw keeping the RT but swapping the depth target would otherwise
 		// inherit a stale depth feedback layout: precisely the flicker mode described above.
-		GSFeedbackLoopCarryInputs carry;
-		carry.device_always_carries = IsDeviceBroadcom();
-		carry.device_is_measured_vendor = IsDeviceMali();
-		carry.device_is_layout_road_vendor = IsDeviceAdreno();
-		// The other way the layout road can order its read. texture_barrier is what makes
-		// SendHWDraw issue the reader's feedback barrier at all — with it off there is no reader, no barrier and no ordering, so the layout
-		// road carries nothing and -no-tex-barriers is inert by construction. Consulted
-		// only on the layout road; the fetch road's answer does not look at it, which
-		// matters because framebuffer_fetch is itself masked by texture_barrier.
-		carry.barriers_order_reads = m_features.texture_barrier;
-		// ...and only on the device that ordering was measured on.
-		carry.device_is_barrier_road_vendor =
-			(m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP);
-		carry.framebuffer_fetch = m_features.framebuffer_fetch;
-		carry.feedback_loop_layout = UseFeedbackLoopLayout();
+		// The device half was resolved once in CheckFeatures; only the two draw terms are per draw.
+		GSFeedbackLoopCarryInputs carry = m_carry_device_facts;
 		// SendHWDraw only receives a target to barrier against when the pipeline's matching
 		// feedback bit is set, so carrying the bit onto a draw that still asks for a barrier
 		// would emit one where none was emitted before. On the fetch path a non-reader never
