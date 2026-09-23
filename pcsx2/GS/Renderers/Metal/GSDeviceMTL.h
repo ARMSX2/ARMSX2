@@ -27,10 +27,11 @@ using GSMTLView = UIView;
 #include <AppKit/AppKit.h>
 using GSMTLView = NSView;
 #endif
-// MetalFX upscaler: macOS 13+ / iOS 16+, weak-linked on device. The simulator
-// SDK has no MetalFX headers, so PCSX2_HAS_METALFX is 0 there and every
-// MetalFX reference is compiled out; m_features.metalfx_spatial stays false.
-#if TARGET_OS_SIMULATOR
+// MetalFX upscaler: macOS 13+ / iOS 16+, weak-linked on device. Neither the
+// simulator nor the tvOS SDK ships MetalFX headers, so PCSX2_HAS_METALFX is 0
+// there and every MetalFX reference is compiled out; m_features.metalfx_spatial
+// stays false.
+#if TARGET_OS_SIMULATOR || TARGET_OS_TV
 	#define PCSX2_HAS_METALFX 0
 #else
 	#define PCSX2_HAS_METALFX 1

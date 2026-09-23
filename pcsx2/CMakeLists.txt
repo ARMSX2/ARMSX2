@@ -1781,15 +1781,17 @@ if (APPLE)
 			${COREMEDIA_LIBRARY}
 		)
 	endif()
-	# Weak-link MetalFX so older OS versions still load. Skip on the iOS simulator:
-	# MetalFX.framework isn't in the iphonesimulator SDK (see PCSX2_HAS_METALFX in
-	# GSDeviceMTL.h), so linking it there fails with "framework not found".
+	# Weak-link MetalFX so older OS versions still load. Skip it where the SDK
+	# does not carry the framework at all - the iOS simulator and tvOS (see
+	# PCSX2_HAS_METALFX in GSDeviceMTL.h) - because linking it there fails with
+	# "framework not found".
 	#
 	# ARMSX2_REAL_DEVICE is the iOS app's own switch and nothing sets it for the
 	# libretro core, which is only ever built against a device SDK - and without
 	# the framework the link is short MTLFXSpatialScalerDescriptor, because the
 	# header is there and PCSX2_HAS_METALFX is 1.
-	if(ARMSX2_REAL_DEVICE OR ENABLE_LIBRETRO OR NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+	if(NOT CMAKE_SYSTEM_NAME STREQUAL "tvOS"
+	   AND (ARMSX2_REAL_DEVICE OR ENABLE_LIBRETRO OR NOT CMAKE_SYSTEM_NAME STREQUAL "iOS"))
 		target_link_options(PCSX2_FLAGS INTERFACE "SHELL:-weak_framework MetalFX")
 	endif()
 endif()
