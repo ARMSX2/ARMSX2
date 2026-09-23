@@ -172,7 +172,8 @@ struct GSSelfReadRoadInputs
 	bool driver_prefers_declared_loop_with_barriers = false;
 
 	/// GSConfig.OverrideTextureBarriers: -1 auto, 0 force off, 1 force on. An explicit 0 is the
-	/// documented way back to the copy road and outranks the arm.
+	/// documented way back to the copy road and outranks the arm. The driver facts apply on auto
+	/// only, so an explicit 1 lands where it always did: the in-pass read the extension list picks.
 	s8 override_texture_barriers = -1;
 
 	/// GSConfig.DeclareAttachmentFeedbackLoop, as GSSelfReadArm.
@@ -289,19 +290,22 @@ constexpr GSSelfReadRoadDecision DecideSelfReadRoad(const GSSelfReadRoadInputs& 
 	d.arm_applied = arm_applies;
 	d.arm_unavailable = arm_requested && !arm_applies;
 
-	// Two driver facts take the same road the arm does, under the same two preconditions, and only
-	// when no arm was asked for. The key still wins where it is set: DeclaredKeepBarriers on our own
-	// driver is the reference picture the ordering claim is measured against, so it has to stay
-	// reachable there.
+	// Two driver facts take the same road the arm does, only when no arm was asked for and only
+	// with OverrideTextureBarriers on auto. The key still wins where it is set: DeclaredKeepBarriers
+	// on our own driver is the reference picture the ordering claim is measured against, so it has
+	// to stay reachable there. And an explicit 1 is the user's lever back to the in-pass read the
+	// extension list picks -- the in-tile read on Turnip -- so the facts leave it alone and it
+	// reaches the road it reached before they existed.
 	//
 	// The ordering fact is strictly more than the barrier one -- same road, barriers dropped --
 	// so where a driver somehow carried both, it is the one that answers. No part carries both
 	// today: one is a6xx and the other a7xx.
+	const bool barriers_on_auto = (in.override_texture_barriers < 0);
 	const bool ordering_fact_applies =
-		!arm_requested && in.driver_orders_declared_loop && in.layout_road_available && barriers_allowed;
+		!arm_requested && in.driver_orders_declared_loop && in.layout_road_available && barriers_on_auto;
 	const bool barrier_fact_applies = !arm_requested && !in.driver_orders_declared_loop &&
 	                                  in.driver_prefers_declared_loop_with_barriers &&
-	                                  in.layout_road_available && barriers_allowed;
+	                                  in.layout_road_available && barriers_on_auto;
 	const bool fact_applies = ordering_fact_applies || barrier_fact_applies;
 
 	if (arm_applies || fact_applies)
@@ -693,17 +697,19 @@ static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_a
 static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .override_texture_barriers = 0})
 		.loop_declared);
 
-// OverrideTextureBarriers=1 means "force the in-pass road", and on this part the in-pass road we
-// measured IS the declared one. Off the fact the same value takes the in-tile road instead (the
-// assert near the top of this file), which on an a740 is correct but 1.5-3.7x slower on three
-// titles -- so the lever keeps its documented meaning and gets the better of the two in-pass
-// roads rather than the one the extension list happens to prefer.
+// OverrideTextureBarriers=1 is the user's lever back to the in-tile read, and it reaches it with
+// either fact present, exactly as it did before the facts existed. The declared road is what auto
+// picks; an explicit 1 is not auto.
 static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .override_texture_barriers = 1})
-				  .road == GSSelfReadRoad::InPassBarrier);
-static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .override_texture_barriers = 1})
-		.loop_declared);
+				  .road == GSSelfReadRoad::InPassOrdered);
 static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .override_texture_barriers = 1})
+		.loop_declared);
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .override_texture_barriers = 1})
 		.in_tile_read);
+static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_orders_declared_loop = true, .override_texture_barriers = 1})
+		.in_tile_read);
+static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_orders_declared_loop = true, .override_texture_barriers = 1})
+		.loop_declared);
 
 // A part that prefers the road without the layout extension gets today's answer and nothing else,
 // exactly as the tag does: the layout spelling is the only one the declaration exists in.

@@ -544,26 +544,32 @@ TEST(GSSelfReadRoad, TheBarrierPreferenceStillLosesToBarriersForcedOff)
 	EXPECT_FALSE(d.selected_by_driver_fact);
 }
 
-// OverrideTextureBarriers=1 is documented as "force the in-pass road", and this part has two.
-// Off the fact the lever picks the in-tile one, which on the a740 is correct but 1.45-3.72x
-// slower on splashdown, wrc3 and jak2; the fact's road is the one that was measured good. The
-// lever keeps its meaning and gets the better in-pass road.
-TEST(GSSelfReadRoad, BarriersForcedOnKeepTheDeclaredRoadRatherThanTheInTileOne)
+// OverrideTextureBarriers=1 is the user's lever back to the in-tile read (Android exposes it), and
+// it reaches that road on origin/master. The driver facts are what AUTO picks; an explicit 1 is not
+// auto, so on a part carrying either fact it still lands on the in-tile read, bit for bit as it
+// does without the fact.
+TEST(GSSelfReadRoad, BarriersForcedOnReachTheInTileReadWhateverTheFacts)
 {
-	GSSelfReadRoadInputs in = WithBarrierPreference(TurnipShipped());
-	in.override_texture_barriers = 1;
-
-	const GSSelfReadRoadDecision d = DecideSelfReadRoad(in);
-	EXPECT_EQ(d.road, GSSelfReadRoad::InPassBarrier);
-	EXPECT_EQ(d.spelling, GSSelfReadSpelling::FeedbackLoopLayout);
-	EXPECT_FALSE(d.in_tile_read);
-	EXPECT_TRUE(d.loop_declared);
-
-	// And without the fact, the same value still takes the in-tile road it always did.
 	GSSelfReadRoadInputs without = TurnipShipped();
 	without.override_texture_barriers = 1;
-	EXPECT_TRUE(DecideSelfReadRoad(without).in_tile_read);
-	EXPECT_EQ(DecideSelfReadRoad(without).spelling, GSSelfReadSpelling::InputAttachment);
+	const GSSelfReadRoadDecision base = DecideSelfReadRoad(without);
+	ASSERT_EQ(base.road, GSSelfReadRoad::InPassOrdered);
+	ASSERT_EQ(base.spelling, GSSelfReadSpelling::InputAttachment);
+	ASSERT_TRUE(base.in_tile_read);
+
+	for (GSSelfReadRoadInputs in : {WithBarrierPreference(TurnipShipped()), WithDriverFact(TurnipShipped())})
+	{
+		in.override_texture_barriers = 1;
+		const GSSelfReadRoadDecision d = DecideSelfReadRoad(in);
+		EXPECT_EQ(d.road, base.road);
+		EXPECT_EQ(d.spelling, base.spelling);
+		EXPECT_EQ(d.in_tile_read, base.in_tile_read);
+		EXPECT_EQ(d.texture_barrier, base.texture_barrier);
+		EXPECT_FALSE(d.force_feedback_loop_layout);
+		EXPECT_FALSE(d.orders_overlapping_prims);
+		EXPECT_FALSE(d.loop_declared);
+		EXPECT_FALSE(d.selected_by_driver_fact);
+	}
 }
 
 TEST(GSSelfReadRoad, TheBarrierPreferenceNeedsTheLayoutExtension)

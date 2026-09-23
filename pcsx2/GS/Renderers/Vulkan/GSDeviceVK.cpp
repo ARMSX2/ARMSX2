@@ -4103,7 +4103,9 @@ bool GSDeviceVK::CheckFeatures()
 	//
 	// Only applied when OverrideTextureBarriers is on auto (-1). An explicit 1 still wins, so the
 	// in-tile path stays reachable for A/B-ing this workaround's cost and for a future driver
-	// revision that fixes the read; an explicit 0 already lands here anyway.
+	// revision that fixes the read; an explicit 0 already lands here anyway. The declared-loop
+	// driver facts below follow the same rule: they are what auto picks, and an explicit 1 still
+	// reaches the in-tile read.
 	//
 	// ⚠️ The rule above is about the road it was MEASURED on: the in-pass read while the pass is
 	// tiled, in both spellings that were reachable in July 2026. The third road -- declare the
@@ -4111,8 +4113,8 @@ bool GSDeviceVK::CheckFeatures()
 	// destination read on the untiled path -- was not reachable from this tree at all when the rule
 	// was written, because UseFeedbackLoopLayout() returns false on any device advertising
 	// rasterization-order attachment access, which every Turnip device does. The declared-loop
-	// road fills exactly that gap. The rule is NOT modified: what changes
-	// is that DecideSelfReadRoad has a third answer to give, and only when asked.
+	// road fills exactly that gap. The rule is NOT modified: what changes is that DecideSelfReadRoad
+	// has a third answer to give, on auto, for the Turnip parts the driver database names.
 	m_features.framebuffer_fetch = road.in_tile_read;
 	m_features.texture_barrier = road.texture_barrier;
 	m_features.declared_feedback_loop_orders_overlap = road.orders_overlapping_prims;
