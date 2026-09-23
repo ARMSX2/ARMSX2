@@ -56,8 +56,8 @@ object CustomDriver {
     private val DRIVER_SOURCES = listOf(
         // Our own Turnip: Mesa with the ARMSX2 driver patches, built as adrenotools packs.
         // The emulator recognises these builds by the `(git-axfl<N>-…)` token in
-        // driverInfo and takes the barrier-less in-pass read road on Adreno 6xx only
-        // under one of them (GSGPUDriverProfile.cpp). Same GitHub-releases zip format as
+        // driverInfo and takes the barrier-less in-pass read road on Adreno 650 and up
+        // (6xx only) under one of them (GSGPUDriverProfile.cpp). Same GitHub-releases zip format as
         // every source below; one release per pack, so the release name is the row title.
         DriverSource(
             "ARMSX2 · turnip",

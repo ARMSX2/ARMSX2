@@ -325,7 +325,7 @@ TEST(GSSelfReadRoad, TheDriverFactTakesArmOnesRoadWithNoKeySet)
 	EXPECT_TRUE(fact.loop_declared);
 }
 
-// The RT-copy workaround is the reason every Adreno is on the copy road today, and the fact has to
+// The RT-copy workaround is the reason every other Turnip Adreno is on the copy road, and the fact has to
 // outrank it or the fixed driver is stuck behind a rule about the broken one.
 TEST(GSSelfReadRoad, TheDriverFactOutranksTheRtCopyWorkaround)
 {

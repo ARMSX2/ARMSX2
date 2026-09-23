@@ -48,9 +48,9 @@ namespace
 	// Adreno under Turnip on the attachment-feedback-loop layout road. The declaration is what
 	// orders the read there: Turnip refuses to tile a pass holding a pipeline that declares a
 	// texture feedback loop, and on the untiled path the same declaration programs the coherent
-	// primitive mode. In this tree that combination is not reachable -- UseFeedbackLoopLayout()
-	// wants the rasterization-order extension absent and Turnip advertises it -- which is why the
-	// decision is pinned here as a function rather than observed on a device.
+	// primitive mode. Turnip advertises the rasterization-order extension, so only the declared-loop
+	// road (GSSelfReadRoadPolicy's driver facts) puts it here, and none of those devices is in this
+	// building -- which is why the decision is pinned here as a function.
 	constexpr GSFeedbackLoopCarryInputs AdrenoOnTheLayoutRoad()
 	{
 		GSFeedbackLoopCarryInputs in;
