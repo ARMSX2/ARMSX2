@@ -5682,7 +5682,7 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 
 	if (req_resize)
 	{
-		const GSVector2i target_size = GetTargetSize(DBP, DBW, DPSM, Common::AlignUpPow2(dx + w, 64), dx + h);
+		const GSVector2i target_size = GetTargetSize(DBP, DBW, DPSM, Common::AlignUpPow2(dx + w, 64), dy + h);
 		dst->ResizeTexture(std::max(dst->m_unscaled_size.x, target_size.x), std::max(dst->m_unscaled_size.y, target_size.y));
 	}
 	// We don't want to copy "old" data that the game has overwritten with writes,
