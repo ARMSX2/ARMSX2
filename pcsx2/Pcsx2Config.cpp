@@ -748,7 +748,6 @@ Pcsx2Config::GSOptions::GSOptions()
 	UseBlitSwapChain = false;
 	DisableShaderCache = false;
 	DisableFramebufferFetch = false;
-	DisableDualSourceBlend = false;
 	DisableVertexShaderExpand = false;
 	EnableAdrenoFramebufferFetch = false;
 	ForceMaliFramebufferFetch = false;
@@ -955,7 +954,6 @@ bool Pcsx2Config::GSOptions::IsRestartOption(const char* ini_key)
 		"UseBlitSwapChain",
 		"DisableShaderCache",
 		"DisableFramebufferFetch",
-		"DisableDualSourceBlend",
 		"DisableVertexShaderExpand",
 		"EnableAdrenoFramebufferFetch",
 		"ForceMaliFramebufferFetch",
@@ -985,7 +983,6 @@ bool Pcsx2Config::GSOptions::RestartOptionsAreEqual(const GSOptions& right) cons
 		   OpEqu(UseBlitSwapChain) &&
 		   OpEqu(DisableShaderCache) &&
 		   OpEqu(DisableFramebufferFetch) &&
-		   OpEqu(DisableDualSourceBlend) &&
 		   OpEqu(DisableVertexShaderExpand) &&
 		   OpEqu(EnableAdrenoFramebufferFetch) &&
 		   OpEqu(ForceMaliFramebufferFetch) &&
@@ -1040,7 +1037,6 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(UseBlitSwapChain);
 	SettingsWrapBitBool(DisableShaderCache);
 	SettingsWrapBitBool(DisableFramebufferFetch);
-	SettingsWrapBitBool(DisableDualSourceBlend);
 	SettingsWrapBitBool(DisableVertexShaderExpand);
 	SettingsWrapBitBool(EnableAdrenoFramebufferFetch);
 	SettingsWrapBitBool(ForceMaliFramebufferFetch);

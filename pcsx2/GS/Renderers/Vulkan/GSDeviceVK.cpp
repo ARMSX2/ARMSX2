@@ -4222,7 +4222,7 @@ bool GSDeviceVK::CheckFeatures()
 	// Mali Vulkan stacks frequently report dualSrcBlend=false. When absent, GSRendererHW SW-blends
 	// the specific draws that need SRC1 instead of relying on a global high blending-accuracy level
 	// (which is why Mali no longer needs Blending=Max by hand). Ported from sashkinbro/EmuCoreX.
-	m_features.dual_source_blend = m_device_features.dualSrcBlend && !GSConfig.DisableDualSourceBlend;
+	m_features.dual_source_blend = m_device_features.dualSrcBlend;
 
 	// A driver that ignores the blend constant cannot be asked for a constant-colour blend factor at
 	// all, so a fixed (AFIX) factor travels through the second fragment output instead. Read from the

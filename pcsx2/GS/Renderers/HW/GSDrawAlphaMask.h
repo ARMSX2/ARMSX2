@@ -133,8 +133,7 @@ namespace GSDrawAlphaMask
 	/// the requested mask, not only the live ps.fbmask.
 	///
 	/// `shader_masks_any_channel` is the live ps.fbmask flag; `requested_alpha_mask` is
-	/// AsRequested() above. Only reachable on GPUs without dual-source blend, or with
-	/// EmuCore/GS/DisableDualSourceBlend.
+	/// AsRequested() above. Only reachable on GPUs without dual-source blend.
 	inline constexpr bool AlphaOutputIsSpokenFor(bool shader_masks_any_channel, u32 requested_alpha_mask)
 	{
 		return shader_masks_any_channel || requested_alpha_mask != 0;
