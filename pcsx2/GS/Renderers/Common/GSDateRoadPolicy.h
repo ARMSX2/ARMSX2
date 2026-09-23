@@ -8,8 +8,8 @@
 // ---------------------------------------------------------------------------------------------
 // ⚠️ MEASUREMENT OVERRIDE — pin every destination-alpha-test draw to the primitive-ID road.
 //
-// Not a setting, and it does nothing unless a harness asks for it. Campaign
-// gs-adreno-inpass-read E4b, lane C25.
+// Not a setting, and it does nothing unless a harness asks for it. Built to measure the
+// Adreno in-pass read.
 //
 // What it is for. The PS2's destination alpha test (DATE) has four emulated roads, and which one
 // a draw takes is decided per draw from what the device can do:
@@ -125,7 +125,7 @@ namespace GSDateRoadPolicy
 	inline void SetOverride(GSDateRoadOverride value) { s_override = value; }
 	inline GSDateRoadOverride GetOverride() { return s_override; }
 
-	/// For the banner. A device round quotes this, so it names the arm rather than the setting.
+	/// For the banner. A measurement log quotes this, so it names the configuration rather than the setting.
 	inline const char* Name()
 	{
 		return (s_override == GSDateRoadOverride::PrimID) ? "primid (forced)" : "auto";

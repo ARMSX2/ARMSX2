@@ -736,7 +736,7 @@ TEST(GSGpuDriverProfile, AMalformedFixTagIsNoTagAtAll)
 }
 
 // A well-formed tag first, then everything that has to be true besides the tag. The device the
-// campaign ran on: SD865 / Adreno 650 / Turnip, carrying a generation-1 build.
+// fix was measured on: SD865 / Adreno 650 / Turnip, carrying a generation-1 build.
 TEST(GSGpuDriverProfile, ATaggedTurnipOnAdreno6xxOrdersTheDeclaredLoop)
 {
 	const GpuProfileSelection sel = ResolveAdrenoVKWithInfo("Adreno (TM) 650", kTurnipDriverId,
@@ -779,7 +779,7 @@ TEST(GSGpuDriverProfile, ATaggedTurnipOnAdreno7xxMakesNoOrderingClaim)
 }
 
 // The older a6xx parts. On an Adreno 610 (MQ65) a generation-1 build renders the declared road
-// differently from run to run -- 5 of 24 dumps in campaign gs-adreno-inpass-read E25, visible in
+// differently from run to run -- 5 of 24 dumps, visible in
 // play on Metal Gear Solid 3 -- while the same build's copy road and stock Turnip are stable. So
 // the fact covers the class it was measured correct on, the 650 and up, and nothing below it.
 TEST(GSGpuDriverProfile, ATaggedTurnipBelowTheAdreno650ClassMakesNoOrderingClaim)
@@ -851,8 +851,7 @@ TEST(GSGpuDriverProfile, TheOrderingClaimDoesNotReachTheOpenGLPath)
 // Unlike the ordering fact above, this one needs no build tag. It is a fact about the PART, not
 // about a build: on an a740 both our pack build and upstream main draw the declared-with-barriers
 // road correct on every scored cell and stable over 7 reps, while the copy road the driver
-// database puts them on draws The Godfather a third wrong and NASCAR's sky wrong (campaign
-// gs-adreno-inpass-read, E18). The barrier-less road races there, so the two facts are genuinely
+// database puts them on draws The Godfather a third wrong and NASCAR's sky wrong. The barrier-less road races there, so the two facts are genuinely
 // different claims and only one of them applies per part.
 namespace
 {
@@ -868,7 +867,7 @@ namespace
 	}
 } // namespace
 
-// The device E18 and E19 ran on, and its bigger sibling. Stock Turnip, no tag, and it still earns
+// The device this was measured on, and its bigger sibling. Stock Turnip, no tag, and it still earns
 // the preference -- that is the whole point of this fact being about the part.
 TEST(GSGpuDriverProfile, StockTurnipOnAdreno7xxPrefersTheDeclaredLoopWithBarriers)
 {
@@ -884,7 +883,7 @@ TEST(GSGpuDriverProfile, StockTurnipOnAdreno7xxPrefersTheDeclaredLoopWithBarrier
 }
 
 // a6xx is the ordering fact's part, not this one's. Turnip on an a650 keeps the copy road unless
-// it carries the tag, which is exactly where E17 left it.
+// it carries the tag, which is exactly where the ordering fact left it.
 TEST(GSGpuDriverProfile, TurnipOnAdreno6xxDoesNotGetTheA7xxPreference)
 {
 	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(ResolveTurnipVK("Adreno (TM) 650", kStockTurnipDriverInfo)));
@@ -904,7 +903,7 @@ TEST(GSGpuDriverProfile, ATaggedTurnipOnAdreno7xxGetsThePreferenceAndNotTheOrder
 }
 
 // The Qualcomm blob on the same a740. Its only in-pass road is the input attachment with barriers,
-// which E14 measured right on The Godfather and wrong on Splashdown; nothing here was measured on
+// which was measured right on The Godfather and wrong on Splashdown; nothing here was measured on
 // it and the declared road is not its road.
 TEST(GSGpuDriverProfile, TheQualcommBlobOnAdreno7xxGetsNoPreference)
 {

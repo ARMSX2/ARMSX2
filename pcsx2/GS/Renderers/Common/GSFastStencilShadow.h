@@ -77,8 +77,7 @@ namespace GSFastStencilShadow
 	//
 	//  - A declared feedback loop. The read is in-pass, so it costs no copy, but auto-flush still
 	//    cuts the volume into one- and two-triangle draws and the counter is still what stops it.
-	//    Measured on an SD865 under Turnip, Jak II and Jak 3 at native and 2x (campaign
-	//    gs-adreno-inpass-read, E4d and E4e): the declared road WITHOUT the counter runs +11.5% to
+	//    Measured on an SD865 under Turnip, Jak II and Jak 3 at native and 2x: the declared road WITHOUT the counter runs +11.5% to
 	//    +42.0% against the copy road, and WITH the counter forced on it runs +0.13% to +0.90%,
 	//    which is the run-to-run noise measured in the same sitting. Draw counts with the counter
 	//    come out equal to the copy road's to the draw -- 5,753 on Jak II and 2,892 on Jak 3 at
@@ -86,21 +85,21 @@ namespace GSFastStencilShadow
 	//    bit-identical to the declared road without the counter, both titles, both scales, every
 	//    frame. The declared road's entire measured cost on those titles was the counter's absence.
 	//
-	//    Both declaration arms qualify, not just the driver-ordered one. Arm 2 declares the loop
-	//    and keeps the per-draw barriers, and it exists so that arm-1-vs-arm-2 isolates the
-	//    ordering claim; if the counter switched off on one of them that comparison would move two
+	//    Both declaration arms qualify, not just the driver-ordered one. The declared loop with
+	//    barriers kept exists so that comparing it with the declared loop with ordering trusted
+	//    isolates the ordering claim; if the counter switched off on one of them that comparison would move two
 	//    things again, which is the mistake this rule is fixing.
 	//
 	//    And so does the road the DRIVER selects, which is the case that actually ships: a driver
 	//    build the database recognises as one that orders declared loops takes the same road with
 	//    no setting touched. That is why the fact is loop_declared and not arm_applied -- a road
-	//    that arrives by itself would otherwise arrive with E4e's +11.5..+42.0% attached.
+	//    that arrives by itself would otherwise arrive with the +11.5..+42.0% above attached.
 	//
 	//  - The backend's own per-draw barriers, with the read in-pass and nothing declared
 	//    (GSSelfReadRoad::InPassBarrier). The read costs no copy, but auto-flush still cuts the
 	//    volume into one- and two-triangle draws, and stopping that split is the rest of what the
 	//    counter does. Measured on an Apple M2 Max under Honeykrisp, Classic Vulkan, frame-time
-	//    p50 over 5 interleaved reps an arm (campaign upscale-unify, C31): Jak II 170.237 ms ->
+	//    p50 over 5 interleaved reps an arm: Jak II 170.237 ms ->
 	//    18.247 ms at 2x and 128.703 -> 16.246 at native; Jak 3 44.434 -> 7.726 at 2x; the Ratchet
 	//    & Clank: Up Your Arsenal effects capture 30.491 -> 4.618 at 2x. That is -82.6% to -89.3%
 	//    against a same-sitting base-vs-base noise floor of 0.04% to 0.83%. A second, lighter Jak
@@ -120,7 +119,7 @@ namespace GSFastStencilShadow
 	//    NO HANDHELD IS ON THIS ROAD. Every Adreno is on Copy, and Mali parts report no
 	//    dual-source blending and so fail the first half before the road is asked. This bullet
 	//    buys frame time on the dev box and on desktop Vulkan and changes nothing on the handheld
-	//    targets the campaign is measured against.
+	//    targets.
 	//
 	// The road that does not:
 	//
@@ -196,8 +195,7 @@ namespace GSFastStencilShadow
 	/// InPassOrdered, spelling InputAttachment -- the in-pass self-read with no declared loop,
 	/// which is the configuration that same profile rule exists to forbid. A device agrees with
 	/// the walk: on an Adreno 650 the arm reports the input attachment in use and emits zero
-	/// barriers, and zero is what separates this road from InPassBarrier
-	/// (campaigns/sotc-sd865-flicker-2026-09-05). That configuration has been run and never
+	/// barriers, and zero is what separates this road from InPassBarrier. That configuration has been run and never
 	/// scored against a reference, so its timings measure a workload of unknown shape -- which
 	/// is reason enough not to use it here. This switch is the one that holds the road still.
 	///
@@ -209,7 +207,7 @@ namespace GSFastStencilShadow
 	/// The force-ON twin is directly below. It answers the opposite question and the two resolve
 	/// in Resolve, where this one wins.
 	///
-	/// Campaign gs-adreno-inpass-read, the fast-stencil-shadow decomposition.
+	/// Built to take the Adreno in-pass read's cost apart from the fast stencil shadow's.
 	inline bool s_force_off = false;
 
 	inline void SetForcedOff(bool value) { s_force_off = value; }
@@ -218,16 +216,16 @@ namespace GSFastStencilShadow
 	/// ⚠️ MEASUREMENT OVERRIDE, the twin of the above. Takes the counter on a road the rule
 	/// declines, so long as the backend can actually draw it.
 	///
-	/// The job it was built for is done. E4d found the old `!texture_barrier` term costing real
+	/// The job it was built for is done. Measurement found the old `!texture_barrier` term costing real
 	/// time -- declaring the feedback loop turned barriers on and dropped the counter, and on
 	/// Jak II at 2x the counter's absence was worth +341.9% on the copy road but only +39.3% on
 	/// the declared road, so the declared road was substituting for most of the counter rather
 	/// than stacking on top of losing it. This switch reached the cell that settled it, counter ON
-	/// with the loop declared, and E4e measured it at or inside noise of base with base's own draw
+	/// with the loop declared, and measured it at or inside noise of base with base's own draw
 	/// counts and bit-identical frames. DeviceQualifies says that on its own now.
 	///
-	/// It then did the same job a second time, on the barrier-ordered road. C31 ran this switch
-	/// against the default on an M2 Max and priced it -- -82.6% to -89.3% of frame-time p50 on Jak
+	/// It then did the same job a second time, on the barrier-ordered road. Run against the
+	/// default on an M2 Max, it priced the counter there -- -82.6% to -89.3% of frame-time p50 on Jak
 	/// II, Jak 3 and the Ratchet effects capture, frames byte-identical on all 94 corpus cells --
 	/// and DeviceQualifies now says so on its own, so on that device this switch changes nothing.
 	///

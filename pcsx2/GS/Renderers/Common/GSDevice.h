@@ -1331,7 +1331,7 @@ struct alignas(16) GSHWDrawConfig
 	bool require_one_barrier;  ///< Require texture barrier before draw (also used to requst an rt copy if texture barrier isn't supported)
 	bool require_full_barrier; ///< Require texture barrier between all prims
 
-	/// ⚠️ MEASUREMENT OVERRIDE — campaign gs-adreno-inpass-read E4b (gsrunner -declare-overlap-only).
+	/// ⚠️ MEASUREMENT OVERRIDE (gsrunner -declare-overlap-only).
 	///
 	/// The backend must NOT declare this draw's render-target feedback loop although the device is
 	/// on a road that otherwise would; the draw takes the copy road instead. False on every draw
@@ -1543,7 +1543,7 @@ public:
 		bool framebuffer_fetch    : 1; ///< Can sample from the framebuffer without texture barriers.
 		bool feedback_loop_layout : 1; ///< The backend reaches an attachment it also writes through the attachment-feedback-loop image layout and an ordinary sampler, rather than through an in-tile read. Vulkan-only, and mutually exclusive with `framebuffer_fetch` there.
 		bool framebuffer_fetch_orders_overlap : 1; ///< Framebuffer fetch also orders overlapping primitives *within* a single draw, so a full barrier is redundant. Vulkan's rasterization-order attachment access, Metal's programmable blending and GL's ARM_shader_framebuffer_fetch all guarantee this by spec; GL's EXT_shader_framebuffer_fetch does not deliver it in practice.
-		bool declared_feedback_loop_orders_overlap : 1; ///< The backend declares an attachment feedback loop on the pipeline and the attachment layout, and the driver answers by ordering overlapping primitives within one draw -- the same licence `framebuffer_fetch_orders_overlap` carries, earned a different way (Adreno/Turnip runs a declared-loop pass untiled with a coherent destination read). Set only by the Vulkan backend on campaign gs-adreno-inpass-read's arm; see GSSelfReadRoadPolicy.h. ⚠️ The ordering is per PIXEL, so an offset read of the target still needs its copy -- GSSelfReadCopyPolicy.h takes this bit for exactly that.
+		bool declared_feedback_loop_orders_overlap : 1; ///< The backend declares an attachment feedback loop on the pipeline and the attachment layout, and the driver answers by ordering overlapping primitives within one draw -- the same licence `framebuffer_fetch_orders_overlap` carries, earned a different way (Adreno/Turnip runs a declared-loop pass untiled with a coherent destination read). Set only by the Vulkan backend on the declared-loop road; see GSSelfReadRoadPolicy.h. ⚠️ The ordering is per PIXEL, so an offset read of the target still needs its copy -- GSSelfReadCopyPolicy.h takes this bit for exactly that.
 		bool stencil_buffer       : 1; ///< Supports stencil buffer, and can use for DATE.
 		bool cas_sharpening       : 1; ///< Supports sufficient functionality for contrast adaptive sharpening.
 		bool test_and_sample_depth: 1; ///< Supports concurrently binding the depth-stencil buffer for sampling and depth testing.

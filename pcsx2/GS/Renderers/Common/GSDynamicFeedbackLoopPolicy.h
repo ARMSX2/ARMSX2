@@ -7,8 +7,7 @@
 
 // ---------------------------------------------------------------------------------------------
 // How a draw says it reads the attachment it writes -- and which of the two ways of saying it we
-// use by default. Campaign gs-adreno-inpass-read: E4b and lane C25 built it, E23 and E24 priced
-// it. Not a user setting: which spelling a driver charges less for is a measurement result.
+// use by default. Built and priced while measuring the Adreno in-pass read. Not a user setting: which spelling a driver charges less for is a measurement result.
 //
 // There are two spellings of the same declaration, and on Turnip they are charged differently.
 //
@@ -26,21 +25,19 @@
 //   patched Turnip its per-draw flush (which waits for idle) fires on every draw in the pass.
 //
 // ⚠️ What the create-flag spelling costs, measured. SD865, Turnip axfl1-005, gsrunner
-// `-perf -loop 10`, p50 frame time in ms, same binary, same driver, same dump (E24 brief's probe
-// over E23's `/storage/armsx2-suite`):
+// `-perf -loop 10`, p50 frame time in ms, same binary, same driver, same dump:
 //
 //   cell        create flag   per draw
 //   wrc3@1x         51.8        18.5      <- 2.8x, one title over its whole budget
 //   indy@1x          9.86        9.48     <- 4%, and it is the title the road is bought for
 //
 // The cost lands wherever a latched pass carries many non-readers behind one reader, so it is a
-// per-title cliff rather than a uniform tax: E23 ran the whole 20-dump scorecard on the create
-// flag by accident -- the runner flag that selected per-draw was an opt-in, and the user's path
-// has no flags -- and WRC3 read +170.9% at p95 against the campaign's start while eighteen of
-// twenty titles got faster. Every other declared-road number in the campaign (E12, E13, E16 §1,
-// E19, E22) was taken through a harness that passed that flag, so the spelling was part of the
-// road being priced and was never part of the road being shipped. E24 closes that gap by making
-// the measured spelling the default one.
+// per-title cliff rather than a uniform tax: one 20-dump measurement ran on the create flag by
+// accident -- the runner flag that selected per-draw was an opt-in, and the user's path has no
+// flags -- and WRC3 read +170.9% at p95 against the starting baseline while eighteen of twenty
+// titles got faster. Every other declared-road number was taken through a harness that passed
+// that flag, so the spelling was part of the road being priced and was never part of the road
+// being shipped. Making the measured spelling the default one closes that gap.
 //
 // Why the two costs separate, from Turnip 26.1.2 source (not measured):
 //
@@ -78,7 +75,7 @@
 // The spelling changes nothing a pixel can see. Which draws are declared, which passes are
 // opened, and what the attachment layout is are all unchanged -- so the pass collapse the carry
 // buys is preserved, and the population declared is the population declared before. Measured
-// identity-neutral three times: E4b and lane C25 on the M2, and E16 §3 on the SD865, where the
+// identity-neutral three times: twice on the M2, and once on the SD865, where the
 // binary with the per-draw flag matched the binary with no override at all on 20 of 20 cells.
 //
 // Where each spelling comes from:
@@ -141,7 +138,7 @@ constexpr bool GSLoopSpellingFallsBackToCreateFlag(const GSDynamicFeedbackLoopIn
 	       !in.dynamic_state_available;
 }
 
-// ⚠️ These pin the DEFAULT, and it changed in E24 (2026-09-22). It used to be the create flag,
+// ⚠️ These pin the DEFAULT, and it changed on 2026-09-22. It used to be the create flag,
 // because the spelling was an instrument nothing but a harness reached; it is now per draw,
 // because the create flag is what the user's flagless path was taking and it reads 51.8 ms
 // against 18.5 on wrc3@1x (SD865, axfl1-005, p50). Any one of these failing means the shipped
@@ -206,13 +203,13 @@ namespace GSDynamicFeedbackLoopPolicy
 	inline bool WantsDynamicPerDraw() { return s_spelling == GSLoopDeclarationSpelling::DynamicPerDraw; }
 	inline bool IsForced() { return s_forced; }
 
-	/// For the banner. A device round quotes this, so it says what was declared and how.
+	/// For the banner. A measurement log quotes this, so it says what was declared and how.
 	inline const char* Name()
 	{
 		return (s_spelling == GSLoopDeclarationSpelling::DynamicPerDraw) ? "dynamic per draw" : "pipeline create flag";
 	}
 
-	/// For the banner, beside Name(). A round that reads "forced" took a flag from somebody's
-	/// command line; a round that reads "default" is the road a user is on.
+	/// For the banner, beside Name(). A run that reads "forced" took a flag from somebody's
+	/// command line; a run that reads "default" is the road a user is on.
 	inline const char* Origin() { return s_forced ? "forced" : "default"; }
 } // namespace GSDynamicFeedbackLoopPolicy

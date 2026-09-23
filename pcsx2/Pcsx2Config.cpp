@@ -1181,7 +1181,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapIntEnumEx(UserHacks_GPUTargetCLUTMode, "UserHacks_GPUTargetCLUTMode");
 	SettingsWrapIntEnumEx(TriFilter, "TriFilter");
 	SettingsWrapBitfieldEx(OverrideTextureBarriers, "OverrideTextureBarriers");
-	// Experiment scaffolding, campaign gs-adreno-inpass-read. See Config.h.
+	// Measurement scaffolding for the Adreno in-pass read. See Config.h.
 	SettingsWrapBitfieldEx(DeclareAttachmentFeedbackLoop, "DeclareAttachmentFeedbackLoop");
 	SettingsWrapBitBoolEx(DeclareDepthFeedbackLoop, "DeclareDepthFeedbackLoop");
 	SettingsWrapIntEnumEx(DepthFeedbackMode, "DepthFeedbackMode");

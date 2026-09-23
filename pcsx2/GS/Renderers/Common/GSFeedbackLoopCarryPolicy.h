@@ -54,7 +54,7 @@
 // untiled path that same
 // declaration programs the primitive mode that orders the read. So the ordering comes from the
 // driver, which is the invariant the fetch road gets from rasterization-order attachment access.
-// Campaign gs-adreno-inpass-read measured the road on an SD865 under Turnip/Mesa 26.1.2: God of
+// The road was measured on an SD865 under Turnip/Mesa 26.1.2: God of
 // War II's presented frames were identical across three runs of each arm and identical between
 // the two roads, and its pass census is why this carry has to reach the road at all -- declaring
 // the loop WITHOUT the carry raised the pass count on three of seven titles (Splashdown 4,766 to
@@ -91,14 +91,14 @@
 // In this tree the ADRENO half of the layout branch is not reached at all. UseFeedbackLoopLayout()
 // requires the rasterization-order extension to be ABSENT and every Turnip device advertises it,
 // so feedback_loop_layout is false there and an Adreno takes the copy road. What makes the road
-// selectable is campaign gs-adreno-inpass-read's own change, which is not here; that rule is
-// written now so the carry arrives with that road rather than one round after it.
+// selectable is the Adreno in-pass read's own change, which is not here; that rule is
+// written now so the carry arrives with that road rather than one change after it.
 //
 // The BARRIER half is live today, on Apple silicon under Honeykrisp and on any other device that
 // advertises the feedback-loop layout without rasterization-order access. It is the one road in
 // this file that ships with a carry on hardware anyone is running, so it is the one whose evidence
-// is a byte-identity gate and a GPU-time A/B rather than a device census. Campaign upscale-unify
-// C23 measured it on an M2 Max: 94 presented-frame cells at 1x and 2x, base against carry.
+// is a byte-identity gate and a GPU-time A/B rather than a device census. Measured on an
+// M2 Max: 94 presented-frame cells at 1x and 2x, base against carry.
 //
 // Where the layout carry is NOT free, and how to tell. Every pipeline in a latched pass carries
 // the colour feedback-loop create flag, and a tiler may react to that flag by taking the pass out
@@ -137,8 +137,8 @@ struct GSFeedbackLoopCarryInputs
 	/// pass, and on Turnip that pipeline create flag is what takes the pass out of tiling and
 	/// programs the coherent primitive mode. So a declared-road arm that is slow cannot be read
 	/// -- the cost may be the declaration on the readers, or the carry spreading it over the
-	/// whole run, and nothing switched between the two at runtime. Campaign
-	/// gs-adreno-inpass-read E4b, lane C25. See GSFeedbackLoopCarryPolicy::SetForcedOff below.
+	/// whole run, and nothing switched between the two at runtime. See
+	/// GSFeedbackLoopCarryPolicy::SetForcedOff below.
 	bool override_off = false;
 
 	/// Devices that carried the flag before this policy existed and keep carrying it
@@ -327,7 +327,7 @@ static_assert(CarryFeedbackLoopAcrossTargetRun({.override_off = false,
 
 namespace GSFeedbackLoopCarryPolicy
 {
-	/// ⚠️ MEASUREMENT OVERRIDE — campaign gs-adreno-inpass-read E4b (lane C25), gsrunner only.
+	/// ⚠️ MEASUREMENT OVERRIDE — gsrunner only.
 	///
 	/// Turns the carry off for this process. It is deliberately NOT a setting: which road a
 	/// device should take here is a measurement result, not a user preference, and a user cannot

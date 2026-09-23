@@ -8,7 +8,7 @@
 // pinning, and neither can be seen on the machine the gates run on:
 //
 //   * left alone it does nothing at all, on any draw, on any device -- which is what lets the
-//     94-cell byte-identity gate mean "this lane is inert" rather than "this lane is inert on
+//     94-cell byte-identity gate mean "this override is inert" rather than "this override is inert on
 //     the one road that machine takes";
 //   * asked for, it still does not break the two fallbacks the renderer already has. A device
 //     with no primitive-ID target has no image to prefill, and a draw that discards alternate

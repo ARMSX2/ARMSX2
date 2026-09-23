@@ -9,7 +9,7 @@
 // pass, so the driver's serialising primitive mode reaches draws that never read anything. On the
 // SD865 that is 51.8 ms against 18.5 on wrc3@1x -- one title straight over its frame budget.
 //
-// ⚠️ E24 (2026-09-22) made the per-draw spelling the DEFAULT. What these tests now pin is that a
+// ⚠️ Since 2026-09-22 the per-draw spelling is the DEFAULT. What these tests now pin is that a
 // run with no flag, no key and no setting gets per draw wherever there is a loop to declare and
 // an extension to declare it with; that forcing the create flag still works, for pricing the
 // fallback; and that the one case worth a line in the log -- the layout road live with no
@@ -44,7 +44,7 @@ namespace
 } // namespace
 
 // The default is per draw, and it takes no flag to get there. This is the row that says the road
-// a user is on is the road the campaign measured.
+// a user is on is the road that was measured.
 TEST(GSDynamicFeedbackLoop, TheDefaultIsPerDraw)
 {
 	EXPECT_EQ(GSDynamicFeedbackLoopInputs{}.spelling, GSLoopDeclarationSpelling::DynamicPerDraw);
@@ -111,7 +111,7 @@ TEST(GSDynamicFeedbackLoop, AppliedAndFallbackPartitionTheLayoutRoad)
 
 // The process-wide switch: per draw by default and unforced, forceable either way, and its banner
 // pair says both which spelling a log is and whether anybody asked for it. The origin is what
-// E23 did not have -- it ran a whole scorecard on the create flag because the spelling came from
+// an earlier measurement did not have -- it ran a whole set of dumps on the create flag because the spelling came from
 // a harness flag and the log said only the spelling, not where it came from.
 TEST(GSDynamicFeedbackLoop, TheProcessSpellingDefaultsToPerDrawAndSaysWhere)
 {

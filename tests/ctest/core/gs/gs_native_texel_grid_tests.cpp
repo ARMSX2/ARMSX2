@@ -12,7 +12,7 @@
 //     exactly as it did. Widening any one gate shows up as a failure here.
 //   * The ARITHMETIC. The shaders repeat it, so a drift between the two is silent wrong output on
 //     the one road the change exists for. The numbers below are NASCAR Thunder 2002's own, read
-//     off the real 1x and 2x renders by lane Q-nascar2x, so the test says "this expression puts
+//     off the real 1x and 2x renders, so the test says "this expression puts
 //     the device pixel on the texel the console displayed" rather than "this expression is what
 //     was written".
 //
@@ -227,7 +227,7 @@ TEST(GSNativeTexelGrid, TheCorrectionIsTheIdentityAtNativeScale)
 
 TEST(GSNativeTexelGrid, ADeviceColumnReadsItsNativeColumnsTexel)
 {
-	// Q-nascar2x, presented frame 3, device row 430, the four haze draws. Without the correction
+	// NASCAR Thunder 2002 at 2x, presented frame 3, device row 430, the four haze draws. Without the correction
 	// the 2x render walks the texture one texel per DEVICE column -- 60, 61, 62, 63 ... -- so the
 	// odd texels, which the console never displays because they are alpha 0, land on every second
 	// column. That is the picket.

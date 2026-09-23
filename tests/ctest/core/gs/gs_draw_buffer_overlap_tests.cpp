@@ -255,7 +255,7 @@ TEST(GsDrawBufferOverlap, PointAndLineClassesKeepTheShippedRect)
 // ---------------------------------------------------------------------------
 // Stuntman's s_n 28, in shape.
 //
-// Q-stuntman measured the real draw: buffer 0 holding 9 indices at 1x and 15 at
+// Measured on the real draw: buffer 0 holding 9 indices at 1x and 15 at
 // 2x -- the same geometry, plus two triangles the native cull drops and the 2x
 // cull grid keeps -- with the incoming primitive's box [304, 226, 307, 226] at
 // both scales. At 1x the buffered rect was [302, 225, 304, 227] and 307 > 304, so

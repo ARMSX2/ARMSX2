@@ -567,7 +567,7 @@ namespace GSVertexKernels
 	// rect. It is also a different change: the rect builds temp_draw_rect, which
 	// reaches the texture cache as valid rects, invalidations and page ranges, and
 	// at 2x letting the grid round it moved pixels on five of the forty-seven dumps
-	// in the C12 corpus -- the last two rows of a Splashdown frame, the last two
+	// in the test corpus -- the last two rows of a Splashdown frame, the last two
 	// columns of a Call of Duty 3 frame, a patch of Armored Core 3. So the grid
 	// answers one question only: does this prim paint anything at all.
 	template <int primclass>

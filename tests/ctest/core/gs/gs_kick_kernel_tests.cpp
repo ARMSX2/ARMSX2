@@ -1272,8 +1272,8 @@ namespace
 // exact rather than contained.
 //
 // ⚠️ Getting the Native/NativeWTexOffset pair the wrong way round costs half the
-// corpus (C12 §6), and getting Native's phase wrong drops 6,466 painting prims out
-// of a single Jak II frame (C12d §1), so both are pinned here rather than left to
+// corpus, and getting Native's phase wrong drops 6,466 painting prims out
+// of a single Jak II frame, so both are pinned here rather than left to
 // the comment in GSState::CullGridFor.
 // ---------------------------------------------------------------------------
 TEST(GsCullGrid, HalfPixelOffsetModesThatKeepTheGrid)

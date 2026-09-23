@@ -146,8 +146,8 @@ TEST(GsNullDeviceProfile, MaliG615IsTheInTileFetchRoad)
 
 TEST(GsNullDeviceProfile, BlankIsExactlyTheFeatureSupportDefault)
 {
-	// The pre-profile null arm, kept so Lane R's 20-dump table and C12's per-title
-	// table stay reproducible. It must be the constructor's own answer and nothing
+	// The pre-profile null device, kept so a 20-dump table and a per-title table
+	// taken before profiles existed stay reproducible. It must be the constructor's own answer and nothing
 	// else -- including dual_source_blend, which that constructor sets true.
 	const GSDevice::FeatureSupport blank = GSNullDeviceProfile::Features(Id::Blank);
 	const GSDevice::FeatureSupport ctor;

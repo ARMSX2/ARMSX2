@@ -6963,12 +6963,12 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 		date_options.barrier = true;
 	}
 
-	// ⚠️ MEASUREMENT OVERRIDE — campaign gs-adreno-inpass-read E4b, lane C25.
+	// ⚠️ MEASUREMENT OVERRIDE.
 	//
 	// Pin every DATE draw to primitive-ID tracking, the road both handheld targets take today,
 	// so the DATE mechanism can be held still while the colour self-read road changes under it.
 	// Without this, giving a build an in-pass destination read moves draws onto the Full road by
-	// itself, and Stuntman's and Indiana Jones's arm deltas mix two mechanisms with no way to
+	// itself, and Stuntman's and Indiana Jones's A/B deltas mix two mechanisms with no way to
 	// tell them apart afterwards.
 	//
 	// Here rather than in EmulateDATEGetConfig, although that is where the road becomes a
@@ -7228,7 +7228,7 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 	// redundant for the same reason -- something other than our barriers is ordering the read.
 	// Framebuffer fetch earns it from rasterization-order attachment access; the declared
 	// attachment feedback loop earns it from Turnip running the pass untiled with the coherent
-	// primitive mode (campaign gs-adreno-inpass-read, GSSelfReadRoadPolicy.h). Only the first
+	// primitive mode (GSSelfReadRoadPolicy.h). Only the first
 	// carries Metal's dual-source restriction above, which is why that stayed in its own block.
 	//
 	// ⚠️ Dropping the barrier on the declared road is the ORDERING CLAIM. Keeping it would cost
@@ -7238,8 +7238,7 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 	// keeps them deliberately, as the diagnostic arm. Which is still what that key is for: the
 	// road itself is no longer experiment-only, since a driver build measured to order reaches it
 	// through the driver database with no key set.
-	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -declare-overlap-only), campaign gs-adreno-inpass-read
-	// E4b. Which readers on the declared road actually declare. Off the road, and at the default
+	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -declare-overlap-only). Which readers on the declared road actually declare. Off the road, and at the default
 	// scope, this is false for every draw and everything below is unchanged. The withheld draws
 	// go back on the copy road: the backend clones the target for them and samples the clone,
 	// which is what the device does today and what it does for every reader on every other
@@ -9616,7 +9615,7 @@ __ri void GSRendererHW::EmulateTextureSampler(const GSTextureCache::Target* rt, 
 		// sets it is inside `if (m_texture_shuffle)` in EmulateTextureShuffleAndFbmask, with
 		// ResetStates() zeroing it per draw in between. So the condition below is always false
 		// and the call never happens. Left as it stands -- the asymmetry with the other call
-		// site is reported, not resolved, in the C5 record.
+		// site is reported, not resolved.
 		if (!m_texture_shuffle)
 			ApplyNativeWTexOffset(tex, rt, ds, false, m_conf.cb_vs.texture_offset);
 	}

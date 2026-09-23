@@ -513,7 +513,7 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 	m_optional_extensions.vk_ext_attachment_feedback_loop_layout =
 		SupportsExtension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME, false);
 	// VK_EXT_attachment_feedback_loop_dynamic_state: the per-draw spelling of the feedback-loop
-	// declaration, and since E24 the DEFAULT spelling wherever the layout road above is live --
+	// declaration, and since 2026-09-22 the DEFAULT spelling wherever the layout road above is live --
 	// on Turnip the create-flag spelling puts the driver's serialising primitive mode on every
 	// pipeline in a latched pass and costs 2.8x on wrc3@1x. See GSDynamicFeedbackLoopPolicy.h.
 	// Requested alongside the layout extension rather than unconditionally, because without that
@@ -2429,7 +2429,7 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 	// bound in the subpass carries the matching blend flag, and CreateTFXPipeline gates that one on
 	// m_features.framebuffer_fetch. Those two agree everywhere today because the layout road
 	// requires the rasterization-order extension to be ABSENT, so this condition already implies
-	// UseFeedbackLoopLayout() is false. Campaign gs-adreno-inpass-read's arm breaks that
+	// UseFeedbackLoopLayout() is false. The declared-loop road breaks that
 	// implication -- extension present, layout road forced, in-tile read off -- and without this
 	// term the subpass would declare rasterization-order access that no pipeline in it has.
 	VkSubpassDescriptionFlags subpass_flags =
@@ -4106,8 +4106,8 @@ bool GSDeviceVK::CheckFeatures()
 	// attachment feedback loop, which makes Turnip refuse to tile the pass and programs a coherent
 	// destination read on the untiled path -- was not reachable from this tree at all when the rule
 	// was written, because UseFeedbackLoopLayout() returns false on any device advertising
-	// rasterization-order attachment access, which every Turnip device does. Campaign
-	// gs-adreno-inpass-read is measuring exactly that gap. The rule is NOT modified: what changes
+	// rasterization-order attachment access, which every Turnip device does. The declared-loop
+	// road fills exactly that gap. The rule is NOT modified: what changes
 	// is that DecideSelfReadRoad has a third answer to give, and only when asked.
 	m_features.framebuffer_fetch = road.in_tile_read;
 	m_features.texture_barrier = road.texture_barrier;
@@ -4119,7 +4119,7 @@ bool GSDeviceVK::CheckFeatures()
 	}
 	if (road.arm_unavailable)
 	{
-		// A silently inert arm is a device round that measures base twice and calls it an A/B.
+		// A silently inert arm is a device measurement that runs base twice and calls it an A/B.
 		Console.Error("VK: DeclareAttachmentFeedbackLoop=%u was requested and CANNOT be applied "
 					  "(VK_EXT_attachment_feedback_loop_layout %s, OverrideTextureBarriers=%d). "
 					  "This build is running the device's own self-read road.",
@@ -4227,8 +4227,8 @@ bool GSDeviceVK::CheckFeatures()
 	// "a draw may read the render target from inside the pass"; the counter's question is "does a
 	// frame read cost the renderer its cheap path", and the two only agree while the copy road is
 	// the only expensive one. Declaring the feedback loop sets texture_barrier as a side effect, so
-	// keying on the bit switched the counter off on the declared road -- and campaign
-	// gs-adreno-inpass-read E4e measured that absence as the declared road's ENTIRE cost on Jak II
+	// keying on the bit switched the counter off on the declared road -- and on an SD865 that
+	// absence measured as the declared road's ENTIRE cost on Jak II
 	// and Jak 3 (+11.5..+42.0% without it, +0.13..+0.90% with it forced on, same draw counts as the
 	// copy road, bit-identical frames). road.loop_declared is what separates a declared loop from a
 	// device that simply orders its own reads -- and it is loop_declared rather than arm_applied
@@ -4256,7 +4256,7 @@ bool GSDeviceVK::CheckFeatures()
 	// in-pass self-read.
 	m_features.test_and_sample_depth = m_features.texture_barrier && !is_adreno;
 
-	// ⚠️ EXPERIMENT SCAFFOLDING — campaign gs-adreno-inpass-read, the depth probe.
+	// ⚠️ MEASUREMENT SCAFFOLDING — the depth probe for the Adreno in-pass read.
 	//
 	// Nobody has measured an in-pass DEPTH self-read on any Adreno part. ARMSX2 #442 covered the
 	// COLOUR read only, and the `!is_adreno` term above is the consequence of a HANG, not of a
@@ -4438,7 +4438,7 @@ bool GSDeviceVK::CheckFeatures()
 
 	// The self-read road, WHY it was chosen, and -- on the declared road -- which Vulkan
 	// declarations this binary actually makes. A device record quotes this line, because "which
-	// declarations did the arm carry" is the question the July 2026 round could not answer about
+	// declarations did the arm carry" is the question the July 2026 attempt could not answer about
 	// itself, and that is why its negative result stood unchallenged for two months. The road name
 	// carries the reason (experiment key or driver fact), since the declared road now has three
 	// entrances and a record that does not say which one is as unusable as one that does not name
@@ -4483,14 +4483,14 @@ bool GSDeviceVK::CheckFeatures()
 			m_features.test_and_sample_depth ? "on" : "off", m_features.depth_feedback ? "on" : "off");
 	}
 
-	// ⚠️ MEASUREMENT OVERRIDES — campaign gs-adreno-inpass-read E4b (lane C25). Printed on every
-	// run, including the ones that pass no flag, so a log from a device round says which arm it is
+	// ⚠️ MEASUREMENT OVERRIDES. Printed on every
+	// run, including the ones that pass no flag, so a log from a device measurement says which arm it is
 	// rather than leaving it to be inferred from the command line somebody typed.
 	//
-	// `loop-spelling` is no longer one of them: since E24 the per-draw spelling is the default,
+	// `loop-spelling` is no longer one of them: since 2026-09-22 the per-draw spelling is the default,
 	// so it prints `(default; …)` on an ordinary run and `(forced; …)` only when somebody named
-	// it. That distinction is the whole reason the origin is printed -- E23 scored a whole
-	// scorecard on the create flag because every previous round had reached the other spelling
+	// it. That distinction is the whole reason the origin is printed -- one measurement scored a
+	// whole set of dumps on the create flag because every previous one had reached the other spelling
 	// through a harness flag and nothing in the log said so.
 	Console.WriteLn("VK: measurement overrides: feedback-carry=%s date-road=%s declare-scope=%s "
 					"loop-spelling=%s(%s; %s) fast-stencil-shadow=%s",
@@ -7654,7 +7654,7 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 	// Ported from sashkinbro/EmuCoreX ("Fix Vulkan attachment feedback pipelines").
 	if (UseFeedbackLoopLayout())
 	{
-		// The same declaration, spelled per draw -- the default spelling since E24. The dynamic
+		// The same declaration, spelled per draw -- the default spelling since 2026-09-22. The dynamic
 		// state goes on exactly the pipelines the create flag would have gone on, so the
 		// population declared is the population declared before and only WHEN it is stated
 		// changes; that is why the two are byte-identical. The two spellings
@@ -9054,8 +9054,8 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		// declaring the loop RAISED the pass count on three of seven census dumps
 		// (Splashdown 4,766 → 9,451), which is this alternation. Not reached in this tree
 		// yet: UseFeedbackLoopLayout() wants the rasterization-order extension ABSENT and
-		// Turnip advertises it, so an Adreno here takes the copy road. Campaign
-		// gs-adreno-inpass-read is what makes the road selectable; this is here so the
+		// Turnip advertises it, so an Adreno here takes the copy road. The Adreno in-pass read
+		// work is what makes the road selectable; this is here so the
 		// carry arrives with it rather than after it.
 		//
 		// Everywhere else on this road — Apple silicon under Honeykrisp is the device we
@@ -9064,21 +9064,20 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		// draw that reads its own target, and that barrier is what orders the read. So
 		// texture_barrier is the input, the reading draws keep their own barriers inside
 		// the held-open pass, and the non-readers the carry latches read nothing and
-		// barrier nothing. Measured on an M2 Max by campaign upscale-unify C23: presented
+		// barrier nothing. Measured on an M2 Max: presented
 		// frames identical on 94 cells at 1x and 2x.
 		//
 		// A road with no ordering keeps feedback-loop state draw-local: carrying it over
 		// can leave later draws in the previous feedback render pass/layout and cause
 		// Vulkan-only flicker. That matches sashkinbro/EmuCoreX, which removes the carry
 		// globally. A vendor-scoped carry was tried once before and reverted — do NOT
-		// widen this past the cases above without a round of its own.
+		// widen this past the cases above without measuring it on its own.
 		//
 		// Gated PER TARGET, not on the enclosing condition — that only requires ONE of rt/ds
 		// to match, so a draw keeping the RT but swapping the depth target would otherwise
 		// inherit a stale depth feedback layout: precisely the flicker mode described above.
 		GSFeedbackLoopCarryInputs carry;
-		// ⚠️ MEASUREMENT OVERRIDE (gsrunner -no-feedback-carry), campaign gs-adreno-inpass-read
-		// E4b. False unless the harness asked, so every expression below is unchanged on every
+		// ⚠️ MEASUREMENT OVERRIDE (gsrunner -no-feedback-carry). False unless the harness asked, so every expression below is unchanged on every
 		// shipping device. It sits above the vendor terms in the policy because a declared-road
 		// arm that is slow has two candidate causes -- the declaration on the readers, or this
 		// carry spreading the same pipeline create flag over every draw in the latched pass --
@@ -9435,7 +9434,7 @@ void GSDeviceVK::UpdateHWPipelineSelector(GSHWDrawConfig& config, PipelineSelect
 		// The colour half is what the scope override withholds -- the pipeline create flag it
 		// produces is what untiles the pass on Turnip and programs the serialising primitive
 		// mode, and confining that to the draws that need the ordering is the whole experiment.
-		// The depth half is untouched: nothing in this campaign declares a depth loop.
+		// The depth half is untouched: nothing in the scope measurement declares a depth loop.
 		if (config.IsFeedbackLoopRT(config.ps) && !config.undeclare_rt_feedback_loop)
 			pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadAndWriteRT;
 
@@ -9527,7 +9526,7 @@ void GSDeviceVK::DeclareDrawFeedbackLoop(const GSHWDrawConfig& config, const Pip
 	// point: the flag word on the pipeline selector is carried across the non-readers that follow
 	// a reader, so asking it alone would declare the loop for every draw in the latched pass,
 	// which is what the pipeline create flag already does. The depth aspect is a straight mirror
-	// of the create flag it replaces -- nothing in this campaign declares a depth loop.
+	// of the create flag it replaces -- nothing in the per-draw work declares a depth loop.
 	VkImageAspectFlags aspects = 0;
 	if (pipe.IsRTFeedbackLoop() && config.IsFeedbackLoopRT(pipe.ps))
 		aspects |= VK_IMAGE_ASPECT_COLOR_BIT;

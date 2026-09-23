@@ -641,8 +641,8 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 	// ⚠️ Being wrong here is user-visible in BOTH directions, so there is no quiet default to sit
 	// on. Applying it where the bug is absent forces the render-target copy road, which is not
 	// merely slower: it differs from the in-pass read on 47 of 94 corpus cells, and on the SD865 it
-	// puts NASCAR's sky at mean |Δ| 26.93 from the software renderer against 1.61 on either
-	// declared arm (campaign gs-adreno-inpass-read, E5 sky addendum, measured on the device).
+	// puts NASCAR's sky at mean |Δ| 26.93 from the software renderer against 1.61 on the declared
+	// loop with barriers kept or dropped (measured on the device).
 	// Lifting it where the bug is present loses Tales of the Abyss's text layer outright.
 	//
 	// Do NOT settle that by comparing severities. A lost text layer is worse per user who hits it,
@@ -789,7 +789,7 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 	// if one ever appears to, it means the string is not what we think it is.
 	//
 	// Within a6xx, the 650 and up only. On an Adreno 610 the same build renders the declared road
-	// differently from run to run (E25: 5 of 24 dumps, visible in play on Metal Gear Solid 3) while
+	// differently from run to run (5 of 24 dumps, visible in play on Metal Gear Solid 3) while
 	// its copy road is stable, so the parts below 650 keep their barriers and their copy road.
 	profile.declared_loop_fix_generation = ParseFixGeneration(context.driver_info);
 	profile.orders_declared_feedback_loop = (profile.declared_loop_fix_generation >= 1) &&
@@ -801,7 +801,7 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 	// an Adreno 740 the declared loop with our barriers kept is correct on every scored cell and
 	// stable, the copy road the vk-turnip-attachment-self-read rule puts it on draws The Godfather
 	// a third wrong and NASCAR's sky wrong, and both the pack build and upstream main behave the
-	// same (campaign gs-adreno-inpass-read, E18). So every Turnip on a7xx earns it, tagged or not,
+	// same. So every Turnip on a7xx earns it, tagged or not,
 	// and a tagged build earns it the same way any other Turnip does -- the tag buys the ordering
 	// claim, which a7xx does not get.
 	profile.prefers_declared_loop_with_barriers = (context.api == MobileGpuApi::Vulkan) &&

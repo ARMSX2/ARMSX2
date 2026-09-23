@@ -132,9 +132,10 @@ TEST(GSFastStencilShadow, OnForVulkanOnTheCopyRoadWithDualSource)
 	EXPECT_TRUE(GSFastStencilShadow::DeviceQualifies(FactsFor(AdrenoShipped())));
 }
 
-// The change C30 made, and the one E4e paid for: declaring the feedback loop turns texture
-// barriers on, but the read it buys is still one auto-flush splits the volume for. Both
-// declaration arms, because arm-1-vs-arm-2 is the ordering diagnostic and the counter must not be
+// The change that made the rule read the road, and the cost that motivated it: declaring the
+// feedback loop turns texture barriers on, but the read it buys is still one auto-flush splits the
+// volume for. Both declaration arms, because Declared against DeclaredKeepBarriers is the ordering
+// diagnostic and the counter must not be
 // a second variable in it.
 TEST(GSFastStencilShadow, OnWhenTheFeedbackLoopIsDeclared)
 {
@@ -142,7 +143,7 @@ TEST(GSFastStencilShadow, OnWhenTheFeedbackLoopIsDeclared)
 	const GSSelfReadRoadDecision declared = DecideSelfReadRoad(arm1);
 	ASSERT_EQ(declared.road, GSSelfReadRoad::InPassOrdered);
 	ASSERT_EQ(declared.spelling, GSSelfReadSpelling::FeedbackLoopLayout);
-	ASSERT_TRUE(declared.texture_barrier) << "the arm turns barriers on -- this is the coupling C30 broke";
+	ASSERT_TRUE(declared.texture_barrier) << "the arm turns barriers on -- this is the coupling the road rule broke";
 	ASSERT_TRUE(declared.arm_applied);
 	EXPECT_TRUE(GSFastStencilShadow::DeviceQualifies(FactsFor(arm1)));
 
@@ -154,7 +155,8 @@ TEST(GSFastStencilShadow, OnWhenTheFeedbackLoopIsDeclared)
 }
 
 // The same road with no key set, reached because the driver database recognised the driver build.
-// This is the case that matters for a user: E4e's +11.5..+42.0% was the counter's absence, and a
+// This is the case that matters for a user: the +11.5..+42.0% measured on an SD865 was the
+// counter's absence, and a
 // road that arrives by itself would have carried that cost by itself. arm_applied is FALSE here --
 // which is precisely why the rule reads loop_declared.
 TEST(GSFastStencilShadow, OnWhenTheDriverFactDeclaresTheLoopWithNoKeySet)
@@ -183,7 +185,7 @@ TEST(GSFastStencilShadow, OnWhenTheA7xxPreferenceDeclaresTheLoopWithNoKeySet)
 
 // The M2's own road, walked from its device facts rather than named: the layout extension present,
 // rasterization-order access absent, no RT-copy workaround and no arm. The read is in-pass and
-// costs no copy, but auto-flush still splits the volume, and C31 priced what removing that split
+// costs no copy, but auto-flush still splits the volume, and measurement priced what removing that split
 // is worth here -- -82.6% to -89.3% of frame-time p50 on Jak II, Jak 3 and the Ratchet effects
 // capture, byte-identical frames on all 94 corpus cells. So the rule takes this road, and the run
 // banner says fastShadow=yes(blend) on an M2 by default.
@@ -209,7 +211,7 @@ TEST(GSFastStencilShadow, OnOnTheBarrierOrderedRoadTheDeviceChoseForItself)
 // Written as `road != Copy`, the rule would admit this configuration -- a debug lever whose output
 // has been run and never scored against a reference -- and Mali's default road with it. So the
 // road enum is asserted here, not merely the spelling: the two roads share a spelling, which is
-// exactly how the wrong enum read as right for a month (campaign upscale-unify, C31).
+// exactly how the wrong enum read as right for a month.
 TEST(GSFastStencilShadow, OffWhenBarriersAreForcedOnWithoutADeclaration)
 {
 	constexpr GSSelfReadRoadInputs inputs = WithBarrierOverride(AdrenoShipped(), 1);
@@ -232,7 +234,7 @@ TEST(GSFastStencilShadow, TheRoadTermAdmitsCopyAndBarriersAndDeclinesTheInTileRe
 		<< "every frame read is a pass break plus a copy";
 	EXPECT_TRUE(
 		GSFastStencilShadow::DeviceQualifies(Facts(RenderAPI::Vulkan, true, GSSelfReadRoad::InPassBarrier, false)))
-		<< "in-pass, but auto-flush still splits the volume -- measured, C31";
+		<< "in-pass, but auto-flush still splits the volume -- measured on an M2 Max";
 	EXPECT_FALSE(
 		GSFastStencilShadow::DeviceQualifies(Facts(RenderAPI::Vulkan, true, GSSelfReadRoad::InPassOrdered, false)))
 		<< "the in-tile read is unmeasured, and `road != Copy` is the spelling that would let it in";
@@ -749,8 +751,8 @@ TEST(GSFastStencilShadowOverride, IsIdempotentAndRestorable)
 
 // ── The force-ON override (gsrunner -force-fast-stencil-shadow) ──────────────────────
 //
-// E4d's inversion made it necessary and E4e spent it; C31 then spent it a second time on
-// the M2's barrier-ordered road, and both cells are now what the device rule says by
+// Measuring the declared road on an SD865 made it necessary and settled that cell; it then
+// settled a second one on the M2's barrier-ordered road, and both cells are now what the device rule says by
 // itself. What is left for it is the in-tile read, which the rule still declines. These
 // pin what the override may and may not lift.
 
@@ -765,7 +767,7 @@ TEST(GSFastStencilShadowOverride, AAB_ForceOnDefaultsToInert)
 TEST(GSFastStencilShadowOverride, ForceOnLiftsOnlyTheRoadTerm)
 {
 	// The road the rule still declines: the in-tile read, reached here by forcing barriers on
-	// an Adreno part. The M2's road is no longer this case -- C31 measured it and the rule
+	// an Adreno part. The M2's road is no longer this case -- it was measured and the rule
 	// takes it -- so the override is inert there, which the row below pins.
 	constexpr GSSelfReadRoadInputs in_tile = WithBarrierOverride(AdrenoShipped(), 1);
 	ASSERT_EQ(DecideSelfReadRoad(in_tile).road, GSSelfReadRoad::InPassOrdered);
@@ -796,7 +798,7 @@ TEST(GSFastStencilShadowOverride, ForceOffBeatsForceOn)
 	EXPECT_FALSE(GSFastStencilShadow::Resolve(true, true, FactsFor(AdrenoShipped())))
 		<< "even on the road the device rule would have allowed";
 	EXPECT_FALSE(GSFastStencilShadow::Resolve(true, true, FactsFor(WithArm(AdrenoShipped(), GSSelfReadArm::Declared))))
-		<< "and on the one C30 added";
+		<< "and on the declared-loop road the rule now admits";
 }
 
 // With neither override asked, Resolve is DeviceQualifies on every row -- so a build

@@ -475,7 +475,7 @@ namespace
 } // namespace
 
 // A triangle strip half a native pixel tall, taken off WRC 3's frame 0 draw
-// s_n 130 (Q-wrc3 section 3): 44.6 native pixels wide, spanning native Y
+// s_n 130: 44.6 native pixels wide, spanning native Y
 // 172.375..172.875, which in 12.4 sub-texels is 2764..2766. Sample rows sit on
 // the multiples of the grid step: 2768 at 1x and 2x, 2764 at 4x. So the strip
 // paints nothing at either 1x or 2x and does paint at 4x.

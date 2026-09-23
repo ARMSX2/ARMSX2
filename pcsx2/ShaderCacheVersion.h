@@ -32,7 +32,7 @@
 // fix as 118's scan mask, on both axes, so tfx.* changes again.
 // 120: 118's native-line deinterlace is reverted -- interlace.* is back to testing field parity on
 // the device row -- and the constant buffer's second vector now carries the undrawn top band.
-// 121: the dither index change of 119 is reverted on the owner's flips; tfx.* changes back.
+// 121: the dither index change of 119 is reverted after a visual comparison; tfx.* changes back.
 // 122: scaled dither indexes the native pixel again, and the matrix is rotated under that index by
 // a per-axis phase the CPU picks, so tfx.* changes and the PS constant buffer's last pad is named.
 // 123: a sprite that minifies a GS-memory texture under a nearest sampler reads the texel its

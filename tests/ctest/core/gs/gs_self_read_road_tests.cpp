@@ -8,7 +8,7 @@
 // order it. Which one a device takes used to be four expressions spread over 150 lines of
 // GSDeviceVK::CheckFeatures, and reading them in order was the only way to find out.
 //
-// What these tests are mostly for is the no-change half. Campaign gs-adreno-inpass-read adds a
+// What these tests are mostly for is the no-change half. The declared-loop road adds a
 // third road for ONE part -- Adreno under Turnip, declaring an attachment feedback loop so the
 // driver runs the pass untiled with a coherent destination read -- and every other device must come
 // out of the function with exactly the bits it had before. None of those devices is the one that
@@ -102,7 +102,7 @@ TEST(GSSelfReadRoad, TurnipShippedTakesTheCopyRoad)
 TEST(GSSelfReadRoad, TurnipWithBarriersForcedOnKeepsTheDocumentedABRoad)
 {
 	// OverrideTextureBarriers=1 is the documented way back onto the in-tile road for A/B work and
-	// for a driver revision that fixes the read. The campaign must not have taken that away.
+	// for a driver revision that fixes the read. The declared-loop road must not have taken that away.
 	GSSelfReadRoadInputs in = TurnipShipped();
 	in.override_texture_barriers = 1;
 
@@ -267,7 +267,7 @@ TEST(GSSelfReadRoad, ArmOffNeverClaimsOrdering)
 
 TEST(GSSelfReadRoad, ArmTwoIsArmOneWithoutTheOrderingClaim)
 {
-	// What makes arm 2 a usable control: identical in every bit the pass is built from, so a
+	// What makes DeclaredKeepBarriers a usable control: identical in every bit the pass is built from, so a
 	// corpus difference between the two arms isolates the ordering and nothing else.
 	for (const GSSelfReadRoadInputs& in : {TurnipShipped(), Desktop()})
 	{
@@ -299,7 +299,7 @@ TEST(GSSelfReadRoad, DesktopShapeTakesTheLayoutSpellingAndOrdersWithBarriers)
 
 // --- the driver fact ------------------------------------------------------------------------------
 //
-// The road the campaign measured, reached with no setting touched. What earns it is not an
+// The road that was measured, reached with no setting touched. What earns it is not an
 // extension and not a vendor: it is the driver build saying, in driverInfo, that it is one we
 // measured. Everything below is about keeping that narrow -- a device that does not carry the fix
 // must come out of this function exactly where it was.
@@ -309,7 +309,7 @@ TEST(GSSelfReadRoad, TheDriverFactTakesArmOnesRoadWithNoKeySet)
 	const GSSelfReadRoadDecision fact = DecideSelfReadRoad(WithDriverFact(TurnipShipped()));
 	const GSSelfReadRoadDecision arm1 = DecideSelfReadRoad(WithArm(TurnipShipped(), GSSelfReadArm::Declared));
 
-	// Bit for bit, because arm 1 is what E11/E12 measured and the fact is the claim that
+	// Bit for bit, because GSSelfReadArm::Declared is what was measured and the fact is the claim that
 	// measurement licensed. A fact road that differed anywhere would be an unmeasured road.
 	EXPECT_EQ(fact.road, arm1.road);
 	EXPECT_EQ(fact.spelling, arm1.spelling);
@@ -378,17 +378,17 @@ TEST(GSSelfReadRoad, TheDriverFactNeedsTheLayoutExtension)
 	EXPECT_FALSE(d.loop_declared);
 }
 
-// The key still wins where it is set, and arm 2 is why. Arm 2 declares the same loop and keeps the
+// The key still wins where it is set, and DeclaredKeepBarriers is why. It declares the same loop and keeps the
 // barriers, so it is the reference picture the ordering claim is measured against; on our own
 // driver -- the only one carrying the fact -- it has to stay reachable or there is nothing to
-// compare arm 1 with.
+// compare Declared with.
 TEST(GSSelfReadRoad, TheKeyStillOutranksTheDriverFact)
 {
 	const GSSelfReadRoadInputs in = WithDriverFact(TurnipShipped());
 
 	const GSSelfReadRoadDecision two = DecideSelfReadRoad(WithArm(in, GSSelfReadArm::DeclaredKeepBarriers));
 	EXPECT_EQ(two.road, GSSelfReadRoad::InPassBarrier);
-	EXPECT_FALSE(two.orders_overlapping_prims) << "arm 2 exists to keep the barriers; the fact must not re-add the claim";
+	EXPECT_FALSE(two.orders_overlapping_prims) << "DeclaredKeepBarriers exists to keep the barriers; the fact must not re-add the claim";
 	EXPECT_TRUE(two.arm_applied);
 	EXPECT_FALSE(two.selected_by_driver_fact);
 
@@ -438,7 +438,7 @@ TEST(GSSelfReadRoad, TheM2ShapeIsUnchangedBecauseItsDriverCarriesNoFact)
 	EXPECT_FALSE(d.loop_declared);
 }
 
-// The banner. A device round quotes this line, and the declared road now has two entrances, so the
+// The banner. A measurement log quotes this line, and the declared road now has two entrances, so the
 // two must not print the same phrase -- a record that cannot say what put the machine on the road
 // is a record of an unknown configuration.
 TEST(GSSelfReadRoad, TheBannerSaysWhichEntranceWasUsed)
@@ -461,8 +461,7 @@ TEST(GSSelfReadRoad, TheBannerSaysWhichEntranceWasUsed)
 // The second driver fact, and the one that fixes wrong pixels rather than slow ones. On an Adreno
 // 740 the copy road the database puts every Turnip part on draws The Godfather a third wrong
 // against software and NASCAR's sky wrong; the declared loop with the barriers kept is correct on
-// every scored cell and stable over seven reps, and pays for it only on Splashdown (campaign
-// gs-adreno-inpass-read, E18 and E19). The barrier-LESS declared road races there, so this fact
+// every scored cell and stable over seven reps, and pays for it only on Splashdown. The barrier-LESS declared road races there, so this fact
 // must never reach the ordering claim.
 
 TEST(GSSelfReadRoad, TheBarrierPreferenceTakesArmTwosRoadWithNoKeySet)
@@ -471,7 +470,7 @@ TEST(GSSelfReadRoad, TheBarrierPreferenceTakesArmTwosRoadWithNoKeySet)
 	const GSSelfReadRoadDecision arm2 =
 		DecideSelfReadRoad(WithArm(TurnipShipped(), GSSelfReadArm::DeclaredKeepBarriers));
 
-	// Bit for bit, because arm 2 is the configuration E18 and E19 measured and the fact is that
+	// Bit for bit, because DeclaredKeepBarriers is the configuration measured on the a740 and the fact is that
 	// measurement shipped. A fact road that differed anywhere would be an unmeasured road.
 	EXPECT_EQ(pref.road, arm2.road);
 	EXPECT_EQ(pref.spelling, arm2.spelling);
@@ -584,7 +583,7 @@ TEST(GSSelfReadRoad, TheBarrierPreferenceNeedsTheLayoutExtension)
 	EXPECT_FALSE(d.arm_unavailable) << "nobody asked for an arm, so nothing failed";
 }
 
-// The key wins over this fact the same way it wins over the other one. Arm 1 is how the racing
+// The key wins over this fact the same way it wins over the other one. Declared is how the racing
 // road got measured on the a740 in the first place, so it has to stay reachable there.
 TEST(GSSelfReadRoad, TheKeyStillOutranksTheBarrierPreference)
 {

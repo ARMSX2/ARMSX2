@@ -1167,7 +1167,7 @@ static void PrintCommandLineHelp(const char* progname)
 						 "on Turnip the create flag puts the driver's serialising primitive mode on every pipeline in "
 						 "a latched pass and costs up to 2.8x (wrc3@1x, SD865: 51.8 ms against 18.5). Vulkan only.\n");
 	std::fprintf(stderr, "  -dynamic-loop-enable: No longer needed -- the per-draw spelling it used to select is now "
-						 "the default. Accepted and reported so briefs and scripts written before E24 still run; it "
+						 "the default. Accepted and reported so scripts written before that change still run; it "
 						 "changes nothing. Use -loop-create-flag for the other spelling.\n");
 	std::fprintf(stderr, "  -accblend <0-5>: Force accurate blending unit (0=Minimum, 1=Basic, 2=Medium, 3=High, 4=Full, 5=Maximum). "
 						 "Overrides the game/global default; use to exercise the SW-blend / fb-fetch (ROV) path headlessly.\n");
@@ -1758,16 +1758,17 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// on one device. It must be set before the VM starts, because a pipeline's
 				// dynamic-state list is fixed at creation. This direction is the fallback, kept
 				// reachable so the slow spelling can be priced on purpose rather than by accident
-				// -- which is what E23 did, before per draw became the default.
+				// -- an earlier measurement priced a whole set of dumps on the create flag without
+				// meaning to, before per draw became the default.
 				GSDynamicFeedbackLoopPolicy::ForceSpelling(GSLoopDeclarationSpelling::PipelineCreateFlag);
 				continue;
 			}
 			else if (CHECK_ARG("-dynamic-loop-enable"))
 			{
-				// Retired in E24, when the spelling it selected became the default. Accepted as a
-				// no-op rather than rejected, so every brief, script and device round written
+				// Retired when the spelling it selected became the default. Accepted as a
+				// no-op rather than rejected, so every script and measurement command line written
 				// before then still runs -- and says out loud that it is not doing anything, so
-				// nobody reads its presence in a command line as the thing that chose the arm.
+				// nobody reads its presence in a command line as the thing that chose the spelling.
 				Console.WriteLn("-dynamic-loop-enable is a no-op: the per-draw feedback-loop declaration "
 								"is the default. Use -loop-create-flag for the other spelling.");
 				continue;
@@ -1922,7 +1923,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			else if (CHECK_ARG_PARAM("-custom-driver"))
 			{
-				// Three mandatory words. The brief for this flag had a fourth optional
+				// Three mandatory words. The original design for this flag had a fourth optional
 				// one for the redirect directory, which cannot be parsed unambiguously:
 				// a trailing directory name and the dump filename look identical to the
 				// parser, so a run that omitted the redirect would have eaten its own

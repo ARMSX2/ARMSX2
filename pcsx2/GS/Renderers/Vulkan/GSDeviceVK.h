@@ -50,7 +50,7 @@ public:
 		bool vk_khr_shader_non_semantic_info : 1;
 		bool vk_ext_attachment_feedback_loop_layout : 1;
 		/// VK_EXT_attachment_feedback_loop_dynamic_state — the per-draw spelling of the
-		/// feedback-loop declaration, and the default one since E24. Requested wherever the
+		/// feedback-loop declaration, and the default one since 2026-09-22. Requested wherever the
 		/// feedback-loop LAYOUT extension is also there, because off that road there is nothing
 		/// to declare; `-loop-create-flag` suppresses the request. See
 		/// GSDynamicFeedbackLoopPolicy.h.
@@ -94,7 +94,7 @@ public:
 	// the pipeline create flag and everything else it implies -- and wrong on Adreno under Turnip,
 	// where the in-tile read is the broken one.
 	//
-	// m_force_feedback_loop_layout is how campaign gs-adreno-inpass-read overrides the preference
+	// m_force_feedback_loop_layout is how the declared-loop road overrides the preference
 	// on that one part. It is false unless the self-read road declares a feedback loop -- the
 	// experiment key, or a driver the database recognises as one that orders declared loops -- so
 	// the expression is unchanged on every device that is neither; see GSSelfReadRoadPolicy.h. It
@@ -143,7 +143,7 @@ public:
 	// Declare the feedback loop per draw with vkCmdSetAttachmentFeedbackLoopEnableEXT instead of
 	// with the pipeline create flag, so a driver that programs its coherent primitive mode from
 	// the declaration applies it to the draws that read rather than to every pipeline in the
-	// latched pass. ⚠️ TRUE on an ordinary run since E24 (2026-09-22): the create flag costs 2.8x
+	// latched pass. ⚠️ TRUE on an ordinary run since 2026-09-22: the create flag costs 2.8x
 	// on wrc3@1x on Turnip and it is what the flagless path was taking. Decided by
 	// GSDynamicFeedbackLoopPolicy.h, written once in CheckFeatures before the first pipeline
 	// exists -- a pipeline's dynamic-state list cannot be changed afterwards -- and read in

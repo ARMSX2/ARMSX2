@@ -269,12 +269,12 @@ struct MobileDriverProfile
 	/// declared road is where this part belongs, and the barriers stay. Where a driver somehow
 	/// carried both, the ordering fact is strictly more and answers.
 	///
-	/// True today for Turnip on Adreno 7xx, measured (campaign gs-adreno-inpass-read, E18 and E19):
+	/// True today for Turnip on Adreno 7xx, measured:
 	/// on an a740 that road is correct on every scored cell and stable across 7 reps, where the
 	/// copy road the driver database puts it on draws The Godfather a third wrong and NASCAR's sky
 	/// wrong. Against the same driver's copy road it is 17-21% faster on Stuntman and WRC3 and
 	/// +15.5% on Indiana Jones at native; Splashdown at native is its one real loss at +39.5%,
-	/// which the owner has flagged and which E21 is open on. Against the stock Qualcomm blob --
+	/// which the Splashdown blending cap addresses (GSCopyRoadBlendingPolicy.h). Against the stock Qualcomm blob --
 	/// what a user on this phone actually has -- it wins on seven of nine cells, by up to 2.4x.
 	/// The barrier-LESS declared road races on a7xx -- Turnip never emits the ordering state there
 	/// -- which is why this fact and not the other one.

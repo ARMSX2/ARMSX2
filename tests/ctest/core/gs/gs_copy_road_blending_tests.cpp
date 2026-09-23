@@ -6,9 +6,9 @@
 // One title, Splashdown, renders at Minimum blending accuracy on a device that pays for its
 // destination read on every draw that takes one -- by copying the render target, or by emitting a
 // pipeline barrier. On the copy road that read costs it 1,177 target copies and 8.48 ms a frame;
-// on an Adreno 740's barrier road it costs 59,023 barriers and +40% (campaign
-// gs-adreno-inpass-read, E21). The owner passed the Minimum picture on 2026-09-24, and E21 showed
-// the capped barrier road byte-identical to the copy road he judged. Where the driver orders the
+// on an Adreno 740's barrier road it costs 59,023 barriers and +40%. The Minimum picture was
+// judged acceptable on 2026-09-24, and the capped barrier road measured byte-identical to the copy
+// road it was judged on. Where the driver orders the
 // read for us the read is free, and the title renders exactly as it did.
 //
 // So almost all of what these tests are for is the "everywhere else". The change is visible on two
@@ -30,7 +30,7 @@ namespace
 	constexpr int kBasic = 1;
 	constexpr int kMaximum = 5;
 
-	// The road the owner judged the picture on: no in-pass read at all, so the target is cloned
+	// The road the picture was judged on: no in-pass read at all, so the target is cloned
 	// once per feedback draw. Every Adreno under ARMSX2 #442 on Vulkan, a GLES part with no fetch
 	// extension, and the M2 with OverrideTextureBarriers=0 -- which is how the M2 reproduces the
 	// road for the byte-identity gate.
@@ -60,8 +60,8 @@ namespace
 		return in;
 	}
 
-	// The declared feedback loop on a driver build measured to order one: the a6xx road, campaign
-	// E11/E12/E13. Same InPassOrdered answer as the in-tile read, reached a different way.
+	// The declared feedback loop on a driver build measured to order one: the a6xx road. Same
+	// InPassOrdered answer as the in-tile read, reached a different way.
 	constexpr GSCopyRoadBlendingInputs DriverOrderedLoopRoad()
 	{
 		GSCopyRoadBlendingInputs in;
@@ -99,7 +99,7 @@ TEST(GSCopyRoadBlending, CopyRoadTakesTheCap)
 	EXPECT_EQ(CopyRoadBlendingLevel(WithSplashdownEntry(CopyRoad())), kMinimum);
 }
 
-// E22: a barrier is not a free read on a tiler, so the barrier road takes the cap too.
+// A barrier is not a free read on a tiler, so the barrier road takes the cap too.
 TEST(GSCopyRoadBlending, BarrierRoadTakesTheCap)
 {
 	EXPECT_EQ(CopyRoadBlendingLevel(WithSplashdownEntry(BarrierRoad())), kMinimum);

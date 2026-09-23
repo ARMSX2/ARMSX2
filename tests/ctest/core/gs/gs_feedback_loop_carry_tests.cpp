@@ -184,7 +184,7 @@ TEST(GSFeedbackLoopCarry, BarriersAloneAreNotARoad)
 	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(copy_road));
 
 	// ...including on a device that has fetch but is not the vendor the fetch carry was measured
-	// on. Barriers do not stand in for that vendor round.
+	// on. Barriers do not stand in for measuring that vendor.
 	GSFeedbackLoopCarryInputs unmeasured_fetch;
 	unmeasured_fetch.framebuffer_fetch = true;
 	unmeasured_fetch.barriers_order_reads = true;
@@ -344,7 +344,7 @@ TEST(GSFeedbackLoopCarry, DepthCarryIsTheColourCarryMinusDepthWriters)
 }
 
 // ---------------------------------------------------------------------------------------------
-// The harness override (gsrunner -no-feedback-carry), campaign gs-adreno-inpass-read E4b.
+// The harness override (gsrunner -no-feedback-carry).
 //
 // Its whole job is to be unconditional. A declared-road arm that measures slow has two candidate
 // causes -- the declaration on the draws that read, and this carry handing the same pipeline
@@ -381,7 +381,7 @@ TEST(GSFeedbackLoopCarry, TheOverrideBeatsTheUnconditionalCarry)
 
 // And left alone it is not there at all: the default-constructed field reproduces every answer
 // this file pinned before the override existed. This is the inertness gate in miniature -- the
-// 94-cell byte-identity round is the same statement about the whole binary.
+// 94-cell byte-identity check is the same statement about the whole binary.
 TEST(GSFeedbackLoopCarry, TheOverrideIsInertWhenNotAsked)
 {
 	EXPECT_TRUE(CarryFeedbackLoopAcrossTargetRun(MaliWithFetch()));

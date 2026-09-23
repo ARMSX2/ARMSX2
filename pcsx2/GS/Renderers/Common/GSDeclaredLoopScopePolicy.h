@@ -8,8 +8,8 @@
 // ---------------------------------------------------------------------------------------------
 // ⚠️ MEASUREMENT OVERRIDE — which draws on the declared-feedback-loop road actually declare it.
 //
-// Not a setting, and it does nothing unless a harness asks for it. Campaign
-// gs-adreno-inpass-read E4b, lane C25.
+// Not a setting, and it does nothing unless a harness asks for it. Built to measure the
+// Adreno in-pass read.
 //
 // The road. A draw that reads the render target it writes can declare an attachment feedback
 // loop and sample the live attachment (GSSelfReadRoadPolicy.h). On Turnip the declaration is the
@@ -90,7 +90,7 @@ static_assert(!GSDrawWithholdsFeedbackLoop({.scope = GSDeclaredLoopScope::Overla
 static_assert(!GSDrawWithholdsFeedbackLoop({.scope = GSDeclaredLoopScope::OverlapOnly, .prim_overlap_yes = true}));
 static_assert(!GSDrawDeclaresFeedbackLoop({.prim_overlap_yes = true}));
 
-// On the road with the default scope every reader declares, exactly as the arm shipped it.
+// On the road with the default scope every reader declares, exactly as the road shipped it.
 static_assert(GSDrawDeclaresFeedbackLoop({.declared_road = true}));
 static_assert(GSDrawDeclaresFeedbackLoop({.declared_road = true, .prim_overlap_yes = true}));
 static_assert(!GSDrawWithholdsFeedbackLoop({.declared_road = true}));
@@ -117,7 +117,7 @@ namespace GSDeclaredLoopScopePolicy
 	inline void SetScope(GSDeclaredLoopScope value) { s_scope = value; }
 	inline GSDeclaredLoopScope GetScope() { return s_scope; }
 
-	/// For the banner. A device round quotes this, so it names the arm rather than the setting.
+	/// For the banner. A measurement log quotes this, so it names the configuration rather than the setting.
 	inline const char* Name()
 	{
 		return (s_scope == GSDeclaredLoopScope::OverlapOnly) ? "overlap-only" : "all readers";

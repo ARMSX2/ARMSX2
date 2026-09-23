@@ -17,7 +17,7 @@
 // only correction left: apply it for the second kind, and applying it to the first kind is what
 // makes a still picture jitter a line every frame.
 //
-// The test is the offline experiment's: mean absolute difference between two consecutive fields at
+// The test is the one first run offline: mean absolute difference between two consecutive fields at
 // three vertical alignments, 0 and +-S device rows. The pictures compared are MERGES, so whatever
 // offset the merge itself applied has to come back out -- that is what applied_delta_rows is for.
 

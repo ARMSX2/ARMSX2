@@ -182,7 +182,7 @@ constexpr int GSState::GetSaveStateSize(int version)
 // spanning sub-texels 10..11 holds the sample at 10.667 and holds no multiple of
 // 8, of 4 or of 2. Only step 1 -- no grid -- is safe there.
 //
-// The grid is the device's own sample set, with no margin. C12 shipped one binade
+// The grid is the device's own sample set, with no margin. An earlier version shipped one binade
 // of margin -- cull only what spans no point of a grid twice as fine as the
 // device's -- because the exact grid moved pixels on one frame of one of the
 // 47-dump corpus (OutRun 2006, SLES-53998) and the cause was not then known. It is
@@ -192,7 +192,7 @@ constexpr int GSState::GetSaveStateSize(int version)
 // GSRendererHW::EmulateBlending then spends a barrier on the accurate shader path
 // for an Ad blend instead of approximating it in the fixed-function unit as
 // DST_ALPHA with the source pre-doubled. The two differ by 256/255, one colour
-// level; the shader path is the correct one. See C14/RESULT.md.
+// level; the shader path is the correct one.
 GSVertexKernels::CullGrid GSState::CullGridFor(float scale, GSHalfPixelOffset hpo)
 {
 	int shift = 0;

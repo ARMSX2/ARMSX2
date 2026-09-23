@@ -241,7 +241,7 @@ static void GSClampUpscaleMultiplier(Pcsx2Config::GSOptions& config)
 // GSConfig is the renderer's own copy and is rebuilt from EmuConfig on every settings change, so
 // this runs again each time and nothing accumulates.
 //
-// Reasoning, measurements and the owner's decision: GSCopyRoadBlendingPolicy.h.
+// Reasoning, measurements and the picture-quality judgement: GSCopyRoadBlendingPolicy.h.
 static void GSApplyCopyRoadBlendingCap(Pcsx2Config::GSOptions& config)
 {
 	// Blending accuracy is a hardware-renderer concept; the software renderer blends exactly and

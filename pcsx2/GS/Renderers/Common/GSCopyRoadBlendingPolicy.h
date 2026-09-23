@@ -23,32 +23,32 @@
 //     pass, stores the tile, copies the target and starts a new pass. This is the expensive one,
 //     and it is where every Adreno under ARMSX2 #442 sits.
 //
-// On the copy road the price is not marginal. Lane Q-native measured Splashdown (SLUS-20686) on an
+// On the copy road the price is not marginal. Measured on Splashdown (SLUS-20686) on an
 // SD865 under Turnip at native scale: 1,169 of its 2,690 draws a frame read the render target,
 // which is 1,192 render passes and 1,177 target copies per frame, and a 32.18 ms p95 against a
 // 16.67 ms budget. Holding that one title's blending accuracy down to Minimum collapses it to 24
 // passes and 8 copies and 23.70 ms -- 8.48 ms, 26% of the frame, off one setting. At 2x the same
 // change is worth 1.20 ms, because the frame has become fill-bound and the saving is on the
-// submission side (lane F1).
+// submission side.
 //
-// ⚠️ THE BARRIER ROAD ON A TILER IS THE SAME PROBLEM, and this file said the opposite until lane
-// E22. It used to reason that a texture barrier means the read is cheap, so the cap should lift the
+// ⚠️ THE BARRIER ROAD ON A TILER IS THE SAME PROBLEM, and this file said the opposite until it
+// was measured. It used to reason that a texture barrier means the read is cheap, so the cap should lift the
 // moment a device has one. That is true of the GPUs the barrier came from and false of the ones we
-// ship to. Campaign gs-adreno-inpass-read measured it on an Adreno 740 (Turnip, E21): Splashdown's
+// ship to. Measured on an Adreno 740 (Turnip): Splashdown's
 // 4,678 destination-read draws per four frames stop being fixed-function blends and become software
 // blends, each promoted to a full barrier, 59,023 barriers a run, and the frame goes from 24.76 ms
 // to 34.80 ms -- +40% on the title that was already the slowest. With the cap applied on that same
 // road the barriers go to zero, the draw calls, passes and copies come back to the copy road's
-// exactly, and the frame is 25.06 ms: 1.012x the copy road. E21 §3 priced the barrier itself --
+// exactly, and the frame is 25.06 ms: 1.012x the copy road. Pricing the barrier itself on the same device:
 // dropping WAIT_FOR_IDLE from the driver's in-pass flush recovers 16-18% -- so what a barrier costs
 // there is a wait for the whole pipeline, per draw.
 //
 // It costs picture. Blending accuracy is exactly what the level controls, so this is not a free
 // win being withheld by caution: about 30% of Splashdown's frame moves, by up to 40 levels out of
-// 255, across the water spray behind the boat. Lane F1 rendered the flips on the device and the
-// owner judged the Minimum picture fine on 2026-09-24. That is the authority for this file; the
-// standing rule is that a speed change whose only cost is moved pixels is the owner's call on a
-// flip corpus, and he made it. E21 checked that the road makes no difference to what he judged:
+// 255, across the water spray behind the boat. The Minimum picture was rendered on the device,
+// compared against the full-accuracy one, and judged acceptable on 2026-09-24; that judgement is
+// the authority for this file, since a speed change whose only cost is moved pixels is a call on
+// the picture, not on byte identity. The road makes no difference to the picture that was judged:
 // on the M2 at 1x the capped barrier road is byte-identical to the copy road, 3/3 frames, row for
 // row over all 10,793 drawlog rows.
 //
@@ -57,14 +57,14 @@
 //
 // The scope is the point of the file, and the scope is the ROAD, not one device fact. Where the
 // driver orders the read for us -- Mali's in-tile fetch, and the declared feedback loop on a
-// Turnip build measured to order one (the a6xx road, campaign E11/E12/E13) -- the destination read
+// Turnip build measured to order one (the a6xx road) -- the destination read
 // is free, there is nothing for the cap to buy, and the better picture stays. Where we pay for the
 // read on every draw that takes one, by copying the target or by emitting a barrier, the cap
 // applies. Those are the two answers, and DestinationReadCostsPerDraw below is where they are
 // decided.
 //
 // Which device fact. NOT the driver workaround bit (DriverWorkaround::UseRenderTargetCopyForFeedback)
-// that puts Adreno on the copy road, even though that bit is what motivated the lane. The bit names
+// that puts Adreno on the copy road, even though that bit is what motivated this work. The bit names
 // one cause; the road has others -- an explicit OverrideTextureBarriers=0, a GLES part with no
 // fetch extension, a future driver entry nobody has written yet -- and a title's picture should not
 // depend on which cause landed the device on the road. It is also the difference between a rule
@@ -85,7 +85,7 @@
 // And the cap ships in the mobile GameDB overlay only, which is the reason a desktop machine on the
 // barrier road does not move: no overlay, no entry, title_cap stays -1. The one exception is a
 // development build here that loads the overlay by hand -- the M2 does take the cap on Splashdown
-// now, and that was measured rather than assumed (E22).
+// now, and that was measured rather than assumed.
 //
 // Levels are plain integers, 0 = Minimum through 5 = Maximum, which is the grammar the database
 // key already speaks and what keeps this header free of Config.h. See
@@ -135,7 +135,7 @@ constexpr bool DestinationReadCostsPerDraw(const GSCopyRoadBlendingInputs& in)
 		case GSSelfReadRoad::InPassBarrier:
 			// A barrier per draw. Cheap on the immediate-mode GPUs the barrier was designed for,
 			// and on a tiler a per-draw wait for the pipeline to drain -- +40% on Splashdown on an
-			// Adreno 740 (E21). The cap is in the mobile overlay, so which of those two a device is
+			// Adreno 740. The cap is in the mobile overlay, so which of those two a device is
 			// is already decided by whether it has the entry at all.
 			return true;
 
@@ -167,7 +167,7 @@ static_assert(CopyRoadBlendingLevel({.road = GSSelfReadRoad::InPassOrdered, .tit
 static_assert(CopyRoadBlendingLevel(
 				  {.road = GSSelfReadRoad::Copy, .multidraw_fb_copy = true, .title_cap = 0, .configured_level = 1}) == 1);
 
-// The road the owner judged the picture on, and the road E21 proved byte-identical to it.
+// The road the picture was judged on, and the road measured byte-identical to it.
 static_assert(CopyRoadBlendingLevel({.road = GSSelfReadRoad::Copy, .title_cap = 0, .configured_level = 1}) == 0);
 static_assert(CopyRoadBlendingLevel({.road = GSSelfReadRoad::InPassBarrier, .title_cap = 0, .configured_level = 1}) == 0);
 

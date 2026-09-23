@@ -17,11 +17,11 @@
 // Upscaling breaks the arithmetic, not the placement. At 2x the sprite covers twice as many device
 // columns and every one of them gets its own sample point, so the texels the console never showed
 // land on every second column: the haze disappears there and the scene behind shows through as a
-// one-device-pixel picket right across the grandstand. That is the defect the owner judged as
-// "banding in background", and no shipped setting touches it -- twenty arms were run and fourteen
+// one-device-pixel picket right across the grandstand. That is the defect reported as
+// "banding in background", and no shipped setting touches it -- twenty configurations were run and fourteen
 // are byte-identical to the base, because every shipped lever is about where the sprite lands or
 // how a texel is filtered, and this draw is placed correctly and filtered correctly. The error is
-// WHICH texel a device pixel reads. (Lane Q-nascar2x, 2026-09-20.)
+// WHICH texel a device pixel reads. (Measured 2026-09-20.)
 //
 // So the rule: A SPRITE THAT MINIFIES A GS-MEMORY TEXTURE UNDER A NEAREST SAMPLER READS THE TEXEL
 // ITS NATIVE PIXEL WOULD HAVE READ. The 2x2 device pixels of one native pixel all take that native
@@ -67,7 +67,7 @@
 //     they move away from the software renderer at native (Armored Core 3, exact agreement
 //     15.1% -> 4.9%) -- but with the field composition out of the way the same draws move hard
 //     toward it (3.7% -> 38.6% exact, mean error 26.77 -> 6.31). The rule picks the right texel
-//     for them and the composition discards it. That composition is another lane's; this gate
+//     for them and the composition discards it. That composition is a separate problem; this gate
 //     keeps this rule out of its way. Interlaced OUTPUT is not the condition and does not gate
 //     anything -- NASCAR's output is interlaced too, and its targets are whole 640x448 frames.
 //

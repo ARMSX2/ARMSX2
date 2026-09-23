@@ -93,7 +93,7 @@ struct GSSelfReadCopyInputs
 	bool feedback_loop_layout = false;
 
 	/// The backend declares an attachment feedback loop and the driver orders overlapping
-	/// primitives within the draw because of it (campaign gs-adreno-inpass-read's arm; see
+	/// primitives within the draw because of it (the declared-loop road; see
 	/// GSSelfReadRoadPolicy.h). That ordering is per PIXEL -- Adreno's
 	/// FLUSH_PER_OVERLAP_AND_OVERWRITE orders primitives covering the same sample, and says
 	/// nothing about a read of a pixel some earlier primitive in the same draw wrote. Identical

@@ -29,7 +29,7 @@
 //
 // ⚠️ The profile is not a claim that the null arm reproduces the device's GPU work. It reproduces
 // the device's CPU DECISIONS. Render passes, copies, barriers and area still report n/a, and Draw
-// Calls is still the floor Lane R described (one per RenderHW call, with no backend fan-out).
+// Calls is still a floor (one per RenderHW call, with no backend fan-out).
 namespace GSNullDeviceProfile
 {
 	enum class Id
@@ -48,7 +48,7 @@ namespace GSNullDeviceProfile
 		MaliG615,
 		// The historical GSDeviceNone: FeatureSupport's own default, every bit false except
 		// dual_source_blend. Not a device. Here so that numbers taken before profiles existed
-		// (Lane R's 20-dump table, C12's per-title table) stay reproducible.
+		// (a 20-dump table and a per-title table among them) stay reproducible.
 		Blank,
 	};
 
@@ -153,7 +153,7 @@ namespace GSNullDeviceProfile
 		// these profiles model the shipped road, and the arm is off. True on the Adreno road
 		// only, which is what stops auto-flush splitting the counter.
 		//
-		// Neither answer moved when the rule took the barrier-ordered road (upscale-unify C33):
+		// Neither answer moved when the rule took the barrier-ordered road:
 		// no modelled part is on it. The sentence above is what changed, not the value below.
 		f.fast_stencil_shadow = !mali;
 		// Mali gets the gl_FragDepth skip so DepthReplacing does not kill early-ZS.

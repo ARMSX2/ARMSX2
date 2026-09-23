@@ -27,9 +27,9 @@
 //   InPassOrdered  -- the draw reads the live attachment and the DRIVER orders it, so no barrier is
 //                     emitted at all. Two ways to earn that, and they are different mechanisms:
 //                     the in-tile read under Vulkan rasterization-order attachment access, and the
-//                     declared attachment feedback loop this campaign is measuring on Adreno.
+//                     declared attachment feedback loop, measured here on Adreno.
 //
-// THE SPELLING IS A SEPARATE AXIS, and conflating it with the road is how the July 2026 arm
+// THE SPELLING IS A SEPARATE AXIS, and conflating it with the road is how a July 2026 attempt
 // produced an unreadable result. Which shader variant, image layout, image usage bit and descriptor
 // type the read uses is decided ONCE at device creation and cannot move afterwards:
 //
@@ -59,13 +59,13 @@
 // the untiled path the same declaration programs GRAS_SC_CNTL.SINGLE_PRIM_MODE =
 // FLUSH_PER_OVERLAP_AND_OVERWRITE, the documented bypass-mode coherent-blend value. So the
 // application can ask for an untiled pass with a coherent, primitive-ordered destination read using
-// nothing but a standard extension. That configuration has never been on a device: the one arm that
-// tried it (2026-07-26, branch tota-442-adreno-fbfetch, now deleted) predated the pipeline create
+// nothing but a standard extension. That configuration had never been on a device: the one attempt
+// at it (2026-07-26, on a branch since deleted) predated the pipeline create
 // flag by three days, and the create flag is the single thing Turnip keys the sysmem decision on.
 //
 // ⚠️ THE GRANULARITY IS THE RENDER PASS, NOT THE DRAW. One declared pipeline untiles every other
-// draw sharing the pass, and our passes are deliberately coalesced. That bill is what the campaign's
-// E1 sizes; nothing in this header reduces it.
+// draw sharing the pass, and our passes are deliberately coalesced. That bill has to be measured
+// per title; nothing in this header reduces it.
 //
 // ⚠️ THE ORDERING IS PER PIXEL, NOT PER TARGET. FLUSH_PER_OVERLAP_AND_OVERWRITE orders primitives
 // that cover the same sample. A read of a DIFFERENT pixel that an earlier primitive in the same
@@ -87,8 +87,8 @@
 //
 // `arm` is EmuCore/GS/DeclareAttachmentFeedbackLoop -- experiment scaffolding, so one binary can
 // run base against the candidate on a device. It is not a user setting and has no UI row: a user
-// cannot tell which road their driver wants. It still wins where it is set, because arm 2 on our
-// own driver is the reference picture the ordering claim is measured against.
+// cannot tell which road their driver wants. It still wins where it is set, because the declared
+// loop with barriers kept (value 2) on our own driver is the reference picture the ordering claim is measured against.
 //
 // Written as a pure function so every no-change case is pinned without the device that takes the
 // changed one. See gs_self_read_road_tests.cpp.
@@ -162,8 +162,7 @@ struct GSSelfReadRoadInputs
 	/// It outranks rt_self_read_is_broken on auto for the same reason the ordering fact does, and
 	/// a stronger one: on the a740 the copy road that rule selects is not merely slow, it is
 	/// WRONG. The Godfather comes out a third wrong against software and NASCAR's sky wrong, and
-	/// the declared road with barriers is correct on every scored cell over seven reps (campaign
-	/// gs-adreno-inpass-read, E18).
+	/// the declared road with barriers is correct on every scored cell over seven reps.
 	///
 	/// ⚠️ It claims NOTHING about ordering, and that is the whole difference from
 	/// driver_orders_declared_loop. Turnip never emits the sysmem ordering state on a7xx, so the
@@ -213,18 +212,18 @@ struct GSSelfReadRoadDecision
 	/// - Turnip EMITS the ordering mode and does not deliver it. A declared loop forces sysmem
 	///   (tu_cmd_buffer.cc:5568) and sets SINGLE_PRIM_MODE = FLUSH_PER_OVERLAP_AND_OVERWRITE for
 	///   `feedback_loops` -- the same enum on the same register it uses for ROAA
-	///   (tu_pipeline.cc:3813), and that forced sysmem is also why E4a counted zero tiled passes on
-	///   declared passes. The term is unchanged in the device's own release (introduced
+	///   (tu_pipeline.cc:3813), and that forced sysmem is also why a pass census on the device counted
+	///   zero tiled passes on declared passes. The term is unchanged in the device's own release (introduced
 	///   a99600322c1, an ancestor of mesa-26.1.2; the function diffs empty against our clone).
 	///   ⚠️ **And the picture still moves and still races.** On an Adreno 650, claiming ordering
 	///   moves 47 of 94 corpus cells and is nondeterministic in 20 of them -- worst case 11
 	///   distinct outputs from 11 runs, against an arm that keeps the barriers and never once
-	///   disagreed with itself over 658 runs (campaign gs-adreno-inpass-read, E5). Whether that is
+	///   disagreed with itself over 658 runs. Whether that is
 	///   the distro's build, our own pipelines, or the mode not doing what its name says is
 	///   unseparated.
 	/// - Honeykrisp does not even emit it. It advertises the layout extension
 	///   (hk_physical_device.c:144) and has no ordering machinery anywhere in src/asahi/vulkan.
-	///   Claiming ordering there moves 70 of 94 corpus cells (upscale-unify/Q-copyroad2x).
+	///   Claiming ordering there moves 70 of 94 corpus cells.
 	///
 	/// ⚠️ **The strongest case for this guard is the first bullet**: the one driver whose source
 	/// says it orders, measurably does not. Reading the emission and concluding the behaviour is
@@ -240,7 +239,7 @@ struct GSSelfReadRoadDecision
 	///   correct-and-slower instead of fast-and-wrong. What earns it today: a Turnip build carrying
 	///   the a6xx feedback-loop fix, on which the barrier-dropping road came out byte-identical to
 	///   the barrier-keeping reference over the corpus and faster than the copy road on the titles
-	///   that matter (campaign gs-adreno-inpass-read, E11 and E12; the fix itself is E13).
+	///   that matter.
 	/// - `arm` = GSSelfReadArm::Declared, which is how the claim gets measured in the first place.
 	///   GSSelfReadArm::DeclaredKeepBarriers is its control.
 	bool orders_overlapping_prims = false;
@@ -255,7 +254,7 @@ struct GSSelfReadRoadDecision
 	bool loop_declared = false;
 
 	/// The declared road came from a driver fact rather than from the experiment key. Reported so
-	/// the banner can say which, because a device round quotes that line and "why is this machine
+	/// the banner can say which, because a measurement log quotes that line and "why is this machine
 	/// on the declared road" has exactly two answers.
 	///
 	/// WHICH driver fact is readable off the road: the ordering fact lands on InPassOrdered and
@@ -269,7 +268,7 @@ struct GSSelfReadRoadDecision
 	bool arm_applied = false;
 
 	/// The arm was asked for and could not be given -- no layout extension, or texture barriers
-	/// forced off. Reported so the caller can say so once; a silently inert arm is a device round
+	/// forced off. Reported so the caller can say so once; a silently inert arm is a device A/B
 	/// that measures base twice.
 	bool arm_unavailable = false;
 };
@@ -284,15 +283,16 @@ constexpr GSSelfReadRoadDecision DecideSelfReadRoad(const GSSelfReadRoadInputs& 
 	const bool arm_requested = (in.arm != static_cast<u8>(GSSelfReadArm::Off));
 	// An explicit OverrideTextureBarriers=0 still wins, over the arm and over the driver fact
 	// alike. It is the documented way back to the copy road, and a road that quietly overrode it
-	// would make that lever untrustworthy on the one build the device round is holding.
+	// would make that lever untrustworthy on the one build a device measurement is holding.
 	const bool barriers_allowed = (in.override_texture_barriers != 0);
 	const bool arm_applies = arm_requested && in.layout_road_available && barriers_allowed;
 	d.arm_applied = arm_applies;
 	d.arm_unavailable = arm_requested && !arm_applies;
 
 	// Two driver facts take the same road the arm does, under the same two preconditions, and only
-	// when no arm was asked for. The key still wins where it is set: arm 2 on our own driver is the
-	// reference picture the ordering claim is measured against, so it has to stay reachable there.
+	// when no arm was asked for. The key still wins where it is set: DeclaredKeepBarriers on our own
+	// driver is the reference picture the ordering claim is measured against, so it has to stay
+	// reachable there.
 	//
 	// The ordering fact is strictly more than the barrier one -- same road, barriers dropped --
 	// so where a driver somehow carried both, it is the one that answers. No part carries both
@@ -307,8 +307,8 @@ constexpr GSSelfReadRoadDecision DecideSelfReadRoad(const GSSelfReadRoadInputs& 
 	if (arm_applies || fact_applies)
 	{
 		// The ordering fact IS the ordering claim -- a driver gets it by being measured to order
-		// -- so it lands on arm 1's decision exactly. Arm 1 asserts the same thing on request; arm
-		// 2 declares the identical loop and KEEPS the barriers, which is the only way to tell the
+		// -- so it lands on GSSelfReadArm::Declared's decision exactly. Declared asserts the same thing
+		// on request; DeclaredKeepBarriers declares the identical loop and KEEPS the barriers, which is the only way to tell the
 		// declaration from the ordering on a device, and it is also what the barrier fact lands
 		// on. Nothing else may assert it: see the field's note, and the never-claims assertions
 		// below, which hold whatever the device advertises.
@@ -353,7 +353,7 @@ constexpr GSSelfReadRoadDecision DecideSelfReadRoad(const GSSelfReadRoadInputs& 
 // It exists because the road matters to code that runs a long way from the backend that chose it.
 // GSApplyCopyRoadBlendingCap in GS.cpp is the caller: it needs to know what a destination read
 // costs on this device, every backend has already published the answer, and only Vulkan holds a
-// GSSelfReadRoadDecision. Reading `texture_barrier` alone instead is exactly the bug that lane E22
+// GSSelfReadRoadDecision. Reading `texture_barrier` alone instead was a real bug, since
 // fixed -- that bit is true on the barrier road AND on both driver-ordered roads, so it cannot
 // tell a per-draw barrier from a free read.
 //
@@ -407,8 +407,8 @@ constexpr bool PublishedBitsNameTheSameRoad()
 }
 static_assert(PublishedBitsNameTheSameRoad());
 
-/// One phrase naming both axes and, on the declared road, what put the machine there. The device
-/// round quotes this line, so it says what was declared rather than what was configured -- and
+/// One phrase naming both axes and, on the declared road, what put the machine there. A
+/// measurement log quotes this line, so it says what was declared rather than what was configured -- and
 /// since the declared road now has two entrances, it says which one was used. "experiment key" is
 /// EmuCore/GS/DeclareAttachmentFeedbackLoop; "driver fact" is the driver database recognising this
 /// driver build as one that was measured to order.
@@ -426,7 +426,7 @@ constexpr const char* GSSelfReadRoadName(const GSSelfReadRoadDecision& d)
 			// declared when it actually was.
 			if (!d.loop_declared)
 				return "in-pass, barrier-ordered, declared feedback loop";
-			// The a7xx preference lands here: same declaration as the experiment key's arm 2, same
+			// The a7xx preference lands here: same declaration as the experiment key's value 2, same
 			// barriers, chosen by the driver database instead of by a setting.
 			return d.selected_by_driver_fact ?
 			           "in-pass, barrier-ordered, declared feedback loop (driver fact)" :
@@ -443,8 +443,8 @@ constexpr const char* GSSelfReadRoadName(const GSSelfReadRoadDecision& d)
 
 // --- The arm OFF is today's answer, on every device shape we ship to. ---------------------------
 //
-// These are the whole reason this is a function. If any of them changes, a device that is not part
-// of this campaign has moved.
+// These are the whole reason this is a function. If any of them changes, a device that nobody
+// meant to move has moved.
 
 // Turnip / the Qualcomm blob: the database's RT-copy workaround on auto. Copy road, no barriers, no
 // in-tile read however loudly the extension is advertised.
@@ -495,7 +495,7 @@ static_assert(!DecideSelfReadRoad({.layout_road_available = true, .override_text
 
 // --- The arm ON. --------------------------------------------------------------------------------
 
-// Turnip, arm 1: barriers on, in-tile read OFF, the layout forced, ordering claimed.
+// Turnip, GSSelfReadArm::Declared: barriers on, in-tile read OFF, the layout forced, ordering claimed.
 static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true,
 				  .roaa_available = true, .rt_self_read_is_broken = true,
 				  .arm = static_cast<u8>(GSSelfReadArm::Declared)})
@@ -517,7 +517,7 @@ static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_a
 				  .arm = static_cast<u8>(GSSelfReadArm::Declared)})
 				  .spelling == GSSelfReadSpelling::FeedbackLoopLayout);
 
-// Arm 2 declares the same thing and keeps the barriers. Everything but the ordering claim matches.
+// DeclaredKeepBarriers declares the same thing and keeps the barriers. Everything but the ordering claim matches.
 static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true,
 				  .roaa_available = true, .rt_self_read_is_broken = true,
 				  .arm = static_cast<u8>(GSSelfReadArm::DeclaredKeepBarriers)})
@@ -584,7 +584,7 @@ static_assert(!DecideSelfReadRoad({.layout_road_available = true, .roaa_availabl
 //
 // One driver build, recognised by the database, on the Turnip shape: every extension advertised and
 // the RT-copy workaround claimed, which is the shipped Adreno device. With no key set it must land
-// on arm 1's decision, bit for bit -- the fact is the same claim arm 1 makes, arrived at by
+// on GSSelfReadArm::Declared's decision, bit for bit -- the fact is the same claim Declared makes, arrived at by
 // measurement instead of by asking.
 
 static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_orders_declared_loop = true})
@@ -630,7 +630,7 @@ static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .roaa_availab
 static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_orders_declared_loop = true})
 		.arm_unavailable);
 
-// The key still wins on our own driver, and arm 2 is the reason it has to. Arm 2 declares the loop
+// The key still wins on our own driver, and DeclaredKeepBarriers is the reason it has to. It declares the loop
 // and keeps the barriers, so it is the reference picture the ordering claim is measured against; if
 // the fact overrode it there would be nothing to measure against on the only driver that has it.
 static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_orders_declared_loop = true, .arm = static_cast<u8>(GSSelfReadArm::DeclaredKeepBarriers)})
@@ -659,9 +659,9 @@ static_assert(DecideSelfReadRoad({.layout_road_available = true}).spelling ==
 // --- The a7xx preference. -------------------------------------------------------------------
 //
 // The second driver fact, on the same Turnip shape: every extension advertised and the RT-copy
-// workaround claimed. With no key set it must land on ARM 2's decision, bit for bit -- the
-// declared loop with the per-draw barriers kept, and no ordering claimed. That is what E18 and
-// E19 measured on the a740, and the barrier-less road on that part races.
+// workaround claimed. With no key set it must land on DeclaredKeepBarriers' decision, bit for bit --
+// the declared loop with the per-draw barriers kept, and no ordering claimed. That is what was
+// measured on the a740, and the barrier-less road on that part races.
 
 static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
 				  .road == GSSelfReadRoad::InPassBarrier);
@@ -673,7 +673,7 @@ static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_
 		.in_tile_read);
 static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
 		.force_feedback_loop_layout);
-// ⚠️ The one bit that separates this fact from E17's. Turnip never emits the sysmem ordering state
+// ⚠️ The one bit that separates this fact from the a6xx ordering fact. Turnip never emits the sysmem ordering state
 // on a7xx, so a claim here would be a claim about a race.
 static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
 		.orders_overlapping_prims);
@@ -714,8 +714,8 @@ static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .roaa_availab
 static_assert(!DecideSelfReadRoad({.in_tile_read_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true})
 		.arm_unavailable);
 
-// The experiment key still wins, both ways. Arm 1 drops the barriers on request -- that is how the
-// racing road got measured on the a740 in the first place -- and arm 2 is the road the fact
+// The experiment key still wins, both ways. Declared drops the barriers on request -- that is how the
+// racing road got measured on the a740 in the first place -- and DeclaredKeepBarriers is the road the fact
 // already selects, asked for by name.
 static_assert(DecideSelfReadRoad({.in_tile_read_available = true, .layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .arm = static_cast<u8>(GSSelfReadArm::Declared)})
 				  .road == GSSelfReadRoad::InPassOrdered);

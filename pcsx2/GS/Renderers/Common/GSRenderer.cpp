@@ -311,7 +311,7 @@ bool GSRenderer::Merge(int field)
 			// the top edge, where shifting the destination leaves rows the cleared merge target
 			// never drew (AC5's black row 1) and shifting the source asks the sampler for rows
 			// above the rect and gets the clamp -- the first drawn row, repeated, which is the fill
-			// C3d's shaders do by hand. Every backend's merge sampler clamps on both axes.
+			// the interlace shaders do by hand. Every backend's merge sampler clamps on both axes.
 			// The bottom is the same under both: the shifted field's last rows of source content
 			// fall off the screen, and no band appears.
 			const float dst_span = dst[i].w - dst[i].y;

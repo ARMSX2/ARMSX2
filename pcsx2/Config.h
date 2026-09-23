@@ -1063,7 +1063,7 @@ struct Pcsx2Config
 		/// integer upscale of 2 or more. -1 leaves it to the runtime detector, which defaults to 1.
 		s8 FieldShift = -1;
 		s8 OverrideTextureBarriers = -1;
-		/// ⚠️ EXPERIMENT SCAFFOLDING — campaign gs-adreno-inpass-read, not a user setting.
+		/// ⚠️ MEASUREMENT SCAFFOLDING for the Adreno in-pass read, not a user setting.
 		///
 		/// Which self-read road the Vulkan backend takes: 0 the device's own decision (the
 		/// default, and the only value that ships enabled), 1 declare the attachment feedback
@@ -1072,10 +1072,10 @@ struct Pcsx2Config
 		///
 		/// It exists so one binary can run base against the candidate on a device. It has no UI
 		/// row on purpose: a user cannot tell which road their driver wants, and producing that
-		/// answer as a driver-database rule is what the campaign is for. If the road lands, this
+		/// answer as a driver-database rule is what these measurements are for. If the road lands, this
 		/// is replaced by a DriverWorkaround bit and deleted.
 		u8 DeclareAttachmentFeedbackLoop = 0;
-		/// ⚠️ EXPERIMENT SCAFFOLDING — the depth half of the same campaign.
+		/// ⚠️ MEASUREMENT SCAFFOLDING — the depth half of the same measurements.
 		///
 		/// Also declare the DEPTH feedback loop, so a draw that samples the depth buffer it has
 		/// attached reads it in the pass instead of going through a blit, and tex == ds samples
