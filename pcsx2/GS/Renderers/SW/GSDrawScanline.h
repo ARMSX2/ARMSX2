@@ -46,10 +46,8 @@ public:
 	/// Draw pre-calculations, computed per-thread.
 	static void BeginDraw(const GSRasterizerData& data, GSScanlineLocalData& local);
 
-	/// The scanline's colour and fog tables, built from local.cwalk -- the walk
-	/// the setup decided for this primitive (GSColourWalk.h). Neither CSetupPrim
-	/// nor the generated SetupPrim builds them any more, so the rasterizer calls
-	/// this right after every one of them.
+	/// Builds the scanline's colour and fog tables from local.cwalk (GSColourWalk.h).
+	/// Neither SetupPrim builds them, so the rasterizer calls this after each one.
 	static void SetupColourWalkTables(GSScanlineLocalData& local, int y);
 
 	/// Not currently jitted.
@@ -58,10 +56,8 @@ public:
 	void UpdateDrawStats(u64 frame, u64 ticks, int actual, int total, int prims);
 	void PrintStats();
 
-	/// The C++ rasteriser, taken whenever there is no code memory to compile into.
-	/// Public because it is already handed out as a raw function pointer by
-	/// SetupDraw, and because it has to be callable beside the generated code for
-	/// anything to check the two against each other.
+	/// The C++ rasteriser, used when there is no code memory to compile into.
+	/// Public so it can be run beside the generated code to compare the two.
 	static void CSetupPrim(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, GSScanlineLocalData& local);
 	static void CDrawScanline(int pixels, int left, int top, const GSVertexSW& scan, GSScanlineLocalData& local);
 

@@ -87,15 +87,10 @@ static std::string GetAndroidProperty(const char* name)
 	return (length > 0) ? std::string(value.data(), static_cast<size_t>(length)) : std::string();
 }
 #elif defined(__linux__)
-// The SoC identity on a Linux handheld (ROCKNIX and its relatives), where there is no Android
-// property service. /proc/device-tree/compatible is a NUL-separated list of "vendor,board" strings
-// ordered most specific first, and on a MediaTek part it names the chipset -- an Anbernic RG 477V
-// reads "anbernic,rg477v" then "mediatek,mt6897". Nothing else on this platform reports the SoC
-// without shelling out or parsing a distribution-specific file, and every driver string the Vulkan
-// and GL APIs hand us describes the GPU rather than the chip it sits in.
-//
-// Read once per device creation, four hundred bytes at most, off a file that either exists or does
-// not -- systems without a device tree simply contribute no hint.
+// SoC identity on Linux handhelds, which have no Android property service. The device-tree
+// compatible list is NUL-separated "vendor,board" strings, most specific first; on MediaTek it
+// names the chipset (e.g. "anbernic,rg477v" then "mediatek,mt6897"). The graphics APIs only
+// describe the GPU. Systems without a device tree contribute no hint.
 static std::string GetDeviceTreeCompatible()
 {
 	std::FILE* file = std::fopen("/proc/device-tree/compatible", "rb");
@@ -106,8 +101,7 @@ static std::string GetDeviceTreeCompatible()
 	const size_t length = std::fread(buffer.data(), 1, buffer.size(), file);
 	std::fclose(file);
 
-	// Separators become spaces so a substring search cannot match across two entries, and so the
-	// result is one printable token list like every other hint.
+	// NULs become spaces so a substring search cannot match across two entries.
 	std::string compatible;
 	compatible.reserve(length);
 	for (size_t i = 0; i < length; i++)
@@ -165,9 +159,8 @@ static bool LooksLikeMediaTekSoc(std::string_view lowered_hints)
 	if (GpuProfileDetail::ContainsAny(lowered_hints, {"mediatek", "dimensity", "helio"}))
 		return true;
 
-	// MediaTek board/platform properties commonly use compact part numbers such as mt6877 or
-	// mt6989z without spelling out the vendor. Require a token boundary and four digits to avoid
-	// treating an unrelated occurrence of "mt" as a chipset identifier.
+	// Bare part numbers such as mt6877 or mt6989z. Require a token boundary and four digits so an
+	// unrelated "mt" does not match.
 	for (size_t i = 0; i + 6 <= lowered_hints.size(); i++)
 	{
 		if (lowered_hints[i] != 'm' || lowered_hints[i + 1] != 't' ||
@@ -391,8 +384,7 @@ const char* GpuProfileDetector::WorkaroundToString(DriverWorkaround value)
 GpuProfileSelection GpuProfileDetector::Resolve(std::string_view override_value, std::string_view gpu_vendor,
 	std::string_view gpu_renderer_or_name)
 {
-	// No driver context: the driver profile stays in its conservative-fallback state, so callers
-	// that have not been taught to pass one behave exactly as before.
+	// No driver context: the driver profile stays in its conservative-fallback state.
 	return Resolve(override_value, gpu_vendor, gpu_renderer_or_name, MobileDriverContext{});
 }
 
@@ -406,8 +398,7 @@ GpuProfileSelection GpuProfileDetector::Resolve(std::string_view override_value,
 	const std::string lowered_override = GpuProfileDetail::ToLowerASCII(override_value);
 	selection.is_mediatek_soc = (lowered_override == "mediatek") || LooksLikeMediaTekSoc(lowered_hints);
 	selection.gs_tuning = GpuProfileDetail::MakeConservativeMobileGsTuning();
-	// Attached on every exit path so the driver profile is always populated, whether the family
-	// came from an override, from detection, or from nothing at all.
+	// Runs on every exit path so the driver profile is always populated.
 	const auto finalize = [&]() {
 		selection.driver = GpuProfileDetail::ResolveDriverProfile(selection, driver_context, lowered_hints);
 		return selection;
@@ -433,11 +424,10 @@ GpuProfileSelection GpuProfileDetector::Resolve(std::string_view override_value,
 
 	if (selection.override_mode == GpuProfileOverride::Xclipse)
 	{
-		// Samsung Xclipse (Exynos, AMD-RDNA2) has no dedicated resolver — there is no reliable
-		// SoC-property signature and its one hardware quirk (broken ROAA framebuffer fetch) is
-		// keyed off the Vulkan vendorID (GSDeviceVK::IsDeviceXclipse). Setting the runtime
-		// profile is enough for GSDeviceVK to force fbfetch off; keep the conservative GS
-		// tuning already assigned above.
+		// Samsung Xclipse has no dedicated resolver: no reliable SoC-property signature, and its
+		// broken ROAA framebuffer fetch is keyed off the Vulkan vendorID
+		// (GSDeviceVK::IsDeviceXclipse). The runtime profile is enough for GSDeviceVK to force
+		// fbfetch off; GS tuning stays conservative.
 		selection.runtime_profile = RuntimeGpuProfile::Xclipse;
 		return finalize();
 	}

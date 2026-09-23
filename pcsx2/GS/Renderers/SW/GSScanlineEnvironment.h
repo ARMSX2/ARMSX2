@@ -59,21 +59,18 @@ union GSScanlineSelector
 		u32 zequal : 1; // 56
 		u32 breakpoint : 1; // Insert a trap to stop the program, helpful to stop debugger on a program
 
-		// The GS chooses between MMAG and MMIN PER PIXEL, from that pixel's own level
-		// of detail -- the filter can change part way along a single primitive, and on
-		// silicon it does. These two say "this primitive straddles the crossing, so
-		// decide per pixel": ltfx runs the bilinear path with the weight forced to zero
-		// wherever the nearest filter wins, and ltfx_ge picks which side that is.
+		// The GS picks MMAG or MMIN per pixel from that pixel's level of detail, so
+		// the filter can change within one primitive. ltfx marks a primitive that
+		// straddles the crossing: it runs the bilinear path with the weight forced to
+		// zero where the nearest filter wins. ltfx_ge picks which side that is.
 		u32 ltfx    : 1;
 		u32 ltfx_ge : 1;
 
-		// This coordinate walks in the console's 12.15 truncating accumulator.
-		// `fst` says only that the scanline bit-casts a 16.16 integer, and three
-		// different coordinates arrive on that road: the 12.4 UV register, a
-		// sprite's ST after the vertex conversion resolves its q(n)/q(n+1) rule,
-		// and a constant-Q triangle's ST plane that needed no divide. The first
-		// two take the accumulator and the third does not -- measured, both ways.
-		// See GSCoordinateWalk.h.
+		// This coordinate walks in the GS's 12.15 truncating accumulator.
+		// `fst` only says the scanline bit-casts a 16.16 integer. Three inputs
+		// arrive that way: the 12.4 UV register, a sprite's ST after the vertex
+		// conversion, and a constant-Q triangle's ST plane. The first two use the
+		// accumulator, the third does not. See GSCoordinateWalk.h.
 		u32 uvwalk : 1;
 	};
 
@@ -106,15 +103,9 @@ union GSScanlineSelector
 	operator u64() const { return key; }
 
 	/// Whether the rasterizer can serve this draw as a bulk rectangle fill instead of
-	/// running the per-pixel scanline. Every condition listed here is one the fill
-	/// cannot reproduce, so each has to stay out of the fast path.
-	///
-	/// Dither belongs in that list and was missing from it: the fill writes one constant
-	/// colour, while the dither matrix is added per pixel in WriteFrame. A dithered flat
-	/// sprite therefore lost its dither entirely -- and games fill 16-bit targets with
-	/// flat sprites constantly. Measured against silicon (gs-dither, SCPH-30001): the
-	/// same grid drawn as sprites and as triangles is identical to the pixel on console,
-	/// where ours differed on 1116 of 4096.
+	/// running the per-pixel scanline. Each condition listed is one the fill cannot
+	/// reproduce. Dither is one: the fill writes a constant colour, while the dither
+	/// matrix is added per pixel in WriteFrame.
 	bool IsSolidRect() const
 	{
 		return prim == GS_SPRITE_CLASS && iip == 0 && tfx == TFX_NONE && abe == 0 && ztst <= 1 && atst <= 1 && date == 0 && fge == 0 && dthe == 0;
@@ -153,14 +144,10 @@ struct alignas(32) GSScanlineGlobalData // per batch variables, this is like a p
 
 	void* vm;
 	// Seven mip levels, and an eighth slot that repeats the last one.
-	//
-	// At a level of detail at or above MXL the console returns level MXL with
-	// weight ZERO, so the trilinear blend's second tap is the same level as its
-	// first and the blend is inert. The scanline reads that second tap as
-	// `tex[lodi + 1]` unconditionally, so the cheapest way to say it -- and the
-	// one the TODO here asked for -- is a duplicate pointer rather than a clamp
-	// on the hot path. Before this the ceiling was MXL - 1 at weight 15, which
-	// reads a level early and a full weight where the console reads neither.
+	// At a level of detail at or above MXL the GS returns level MXL with weight
+	// zero, so the trilinear blend's second tap is the same level and the blend
+	// is inert. The scanline reads `tex[lodi + 1]` unconditionally; the duplicate
+	// pointer avoids a clamp on the hot path.
 	const void* tex[8];
 	u32* clut;
 	GSVector4i* dimx;
@@ -196,21 +183,18 @@ struct alignas(32) GSScanlineGlobalData // per batch variables, this is like a p
 
 #endif
 
-	// The console's logarithm, as a table -- see GSLevelOfDetail.h. `lodtab` is
-	// the row for this draw's TEX1.L, `lodk` is TEX1.K in sixteenths of a level,
-	// `lodshift` is 4 + TEX1.L, and `lodmxl` is the same ceiling `mxl` carries,
-	// kept as an integer because the level is now integer arithmetic throughout.
+	// The GS's logarithm as a table, see GSLevelOfDetail.h. `lodtab` is the row
+	// for this draw's TEX1.L, `lodk` is TEX1.K in sixteenths of a level,
+	// `lodshift` is 4 + TEX1.L, and `lodmxl` is `mxl` as an integer.
 	const s32* lodtab;
 	s32 lodk;
 	s32 lodshift;
 	s32 lodmxl;
 
-	// The primitive-grain rule's one per-draw input, per axis: TEX0's log2 width and
-	// height plus two, which is where the grain stops shrinking (GSCoordinateWalk.h).
-	// ZERO on every draw that does not take the rule, which is everything but an
-	// affine STQ triangle inside the front end's own texel-rounding gate -- the real
-	// value is never zero (it is at least two), so an all-zero or freshly built
-	// global reads as "no rule" rather than as some grain nobody chose.
+	// The primitive-grain rule's per-draw input, per axis: TEX0's log2 width and
+	// height plus two (GSCoordinateWalk.h). Zero on draws that do not take the rule
+	// (all but an affine STQ triangle inside the texel-rounding gate). A real value
+	// is at least two, so zero safely means "no rule".
 	s32 coord_grain_floor[2] = {};
 
 #ifdef ARCH_ARM64
@@ -264,17 +248,14 @@ struct alignas(32) GSScanlineLocalData // per prim variables, each thread has it
 
 #else
 
-	// Eight entries, not four. z, s, t and q are indexed by the span's position
-	// inside the VECTOR (left & 3) and only use the first four; colour and fog
-	// are indexed by its position inside the eight-pixel BLOCK (left & 7) and use
-	// all eight. See GSColourWalk.h.
+	// z, s, t and q are indexed by position inside the vector (left & 3) and use
+	// the first four entries; colour and fog by position inside the eight-pixel
+	// block (left & 7) and use all eight. See GSColourWalk.h.
 	struct skip { GSVector4 z, s, t, q; GSVector4i rb, ga, f, _pad; } d[8];
 	struct step { GSVector4 z, stq; GSVector4i c, f; } d4;
-	// Every draw walks an eight-pixel block, which is two vectors here, so its
-	// per-vector step alternates -- see GSColourWalk.h. Indexed by the span's
-	// position inside its block (left & 7) and then by phase; the two phases of a
-	// pair sum to the whole block step, and the walk starts at phase 0 and
-	// toggles.
+	// An eight-pixel block is two vectors here, so the per-vector step alternates
+	// (GSColourWalk.h). Indexed by position inside the block (left & 7), then by
+	// phase. The two phases sum to the block step; the walk starts at phase 0.
 	struct blockstep { GSVector4i rb, ga, f, _pad; } dw[8][2];
 	struct { GSVector4i rb, ga; } c;
 	struct { GSVector4i z, f; } p;
@@ -307,10 +288,8 @@ struct alignas(32) GSScanlineLocalData // per prim variables, each thread has it
 
 	//
 
-	/// What the setup decided about this primitive's colour interpolator: the
-	/// gradients on the walk's own grids, the anchor and the block grid. It lives
-	/// here rather than in the rasterizer's own state so that a test's setup_prim
-	/// hook, which is handed the local data, can read the decision.
+	/// The setup's colour interpolator decision for this primitive: gradients,
+	/// anchor and block grid. Kept here so a test's setup_prim hook can read it.
 	GSColourWalk cwalk;
 
 	const GSScanlineGlobalData* gd;
@@ -342,9 +321,7 @@ struct alignas(64) GSScanlineConstantData256B
 		0.0f,  1.0f,  2.0f,  3.0f,  4.0f,  5.0f,  6.0f,  7.0f,
 	};
 	// Eight lanes and an eight-pixel block are the same span (GSBlockWalk.h), so
-	// this build needs no split and no second lane-offset table. The pair that
-	// used to sit here described a four-wide textured block, which the console
-	// has since refused.
+	// this build needs no second lane-offset table.
 
 	constexpr GSScanlineConstantData256B()
 	{
@@ -375,20 +352,15 @@ struct alignas(64) GSScanlineConstantData128B
 		{ -2.0f , -1.0f , 0.0f  , 1.0f},
 		{ -3.0f , -2.0f , -1.0f , 0.0f},
 	};
-	// The same lane offsets as m_shift[1..4], as integers. The affine texture
-	// coordinate multiplies its own floored per-pixel step by these rather than
-	// truncating a float product, because the console's accumulator is
-	// seed + n * floor(step) and n * floor(step) is not floor(n * step).
-	// See GSCoordinateWalk.h.
+	// The lane offsets of m_shift[1..4] as integers. The affine texture coordinate
+	// multiplies its floored per-pixel step by these, because the GS accumulator
+	// is seed + n * floor(step), which is not floor(n * step). See GSCoordinateWalk.h.
 	alignas(16) s32 m_lane[4][4] = {
 		{  0,  1,  2,  3},
 		{ -1,  0,  1,  2},
 		{ -2, -1,  0,  1},
 		{ -3, -2, -1,  0},
 	};
-	// The colour and fog block steps are not built from constants any more: they
-	// are integers computed once per primitive from GSColourWalk, so the three
-	// lane tables and the broadcast eight that used to live here are gone.
 	alignas(16) float m_log2_coef[4][4] = {};
 
 	constexpr GSScanlineConstantData128B()

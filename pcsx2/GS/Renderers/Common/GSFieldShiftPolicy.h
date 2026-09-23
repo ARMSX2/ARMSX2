@@ -10,21 +10,19 @@
 
 // Does this game move its projection half a display line between fields?
 //
-// In field mode a game draws a half-height field. Some titles draw the identical picture on both
-// fields; others move the projection half a display line, so consecutive field renders are one
-// native line apart and only line up after one of them is shifted. When the field render is
-// presented directly (integer upscale of 2 or more, see GSInterlaceModePolicy.h) that shift is the
-// only correction left: apply it for the second kind, and applying it to the first kind is what
-// makes a still picture jitter a line every frame.
+// In field mode a game draws half-height fields. Some titles draw the same picture on both fields;
+// others move the projection half a display line, so consecutive fields line up only after one is
+// shifted. When the field render is presented directly (integer upscale >= 2, see
+// GSInterlaceModePolicy.h) that shift is the only correction left. Apply it to the second kind;
+// applying it to the first makes a still picture jitter a line every frame.
 //
-// The test is the one first run offline: mean absolute difference between two consecutive fields at
-// three vertical alignments, 0 and +-S device rows. The pictures compared are MERGES, so whatever
-// offset the merge itself applied has to come back out -- that is what applied_delta_rows is for.
+// The test: mean absolute difference between consecutive fields at three vertical alignments, 0 and
+// +-S device rows. The compared pictures are merges, so the merge's own offset is removed via
+// applied_delta_rows.
 
 struct GSFieldShiftSample
 {
-	// Mean absolute difference, in 0..255 units, at the three alignments the game itself could
-	// have drawn: no displacement, and one native line each way.
+	// Mean absolute difference (0..255) at no displacement and one native line each way.
 	float mad_aligned;
 	float mad_up;
 	float mad_down;
@@ -32,8 +30,7 @@ struct GSFieldShiftSample
 
 enum class GSFieldShiftVote
 {
-	// All three alignments agree -- a black screen, a static logo, a fade. Says nothing about the
-	// game and must not be counted.
+	// All three alignments agree (black screen, static logo, fade). Not counted.
 	Uninformative,
 	NoShift,
 	Shift,
@@ -41,18 +38,17 @@ enum class GSFieldShiftVote
 
 // Below this the frame carries no usable structure at all.
 inline constexpr float GS_FIELD_SHIFT_FLAT_MAD = 0.25f;
-// "No shift" claims the two fields are the SAME PICTURE, so its aligned difference collapses
-// towards zero while the alternatives do not. Demand a real gap before believing it.
+// "No shift" means the fields are the same picture, so the aligned difference should collapse
+// towards zero. Demand a real gap.
 inline constexpr float GS_FIELD_SHIFT_NOSHIFT_MARGIN = 1.5f;
 // A shift game keeps real motion in every alignment, so its margin is small by nature.
 inline constexpr float GS_FIELD_SHIFT_SHIFT_MARGIN = 1.02f;
-// One pair this lopsided is the whole answer; there is nothing to gain from seven more.
+// One pair this lopsided decides on its own.
 inline constexpr float GS_FIELD_SHIFT_DECISIVE_MARGIN = 8.0f;
 
-/// Only opposite fields say anything about a between-field shift. Two instances of the SAME field
-/// one frame apart differ by the game's motion and nothing else, and on a still screen they are
-/// identical -- which reads as "both fields draw the same picture" and is how a shift title gets
-/// called a still one. A dump replay does not always alternate, so this is not theoretical.
+/// Only opposite fields say anything about a between-field shift. Two instances of the same field
+/// are identical on a still screen, which would misread a shift title as no-shift. Dump replays do
+/// not always alternate parity.
 constexpr bool GSFieldShiftPairIsComparable(int prev_parity, int cur_parity)
 {
 	return prev_parity != cur_parity;
@@ -90,8 +86,8 @@ inline float GSFieldShiftMAD(
 inline GSFieldShiftSample GSMeasureFieldShift(
 	const u8* cur, const u8* prev, int cols, int rows, int step, int applied_delta_rows)
 {
-	// Displacements reach 2*step, and the clamp-filled top band and the clipped bottom are each
-	// step rows deep. Four steps of margin clears both with room over.
+	// Displacements reach 2*step, and the clamp-filled top band and clipped bottom are each step
+	// rows deep; four steps of margin clears both.
 	const int margin = std::max(4 * step, 4);
 	GSFieldShiftSample out = {};
 	out.mad_aligned = GSFieldShiftMAD(cur, prev, cols, rows, -applied_delta_rows, margin);
@@ -136,17 +132,15 @@ struct GSFieldShiftTally
 	int informative() const { return shift + noshift; }
 };
 
-/// Fields a decision stands before the detector measures again, about ten seconds of fields. A
-/// decision taken on a boot logo or a still menu -- two fields that are the same picture -- says
-/// nothing about the scenes after it, and a probe round costs a dozen 32-column readbacks.
+/// Fields a decision stands before measuring again (about ten seconds). A decision taken on a boot
+/// logo or still menu says nothing about later scenes; a probe round costs a dozen small readbacks.
 inline constexpr int GS_FIELD_SHIFT_RECHECK_FIELDS = 600;
 
 /// Fewer informative pairs than this and the vote is not worth taking.
 inline constexpr int GS_FIELD_SHIFT_MIN_VOTES = 3;
 
-/// SHIFT is the default: four of the six interlaced dumps shift, and it is the geometry Automatic
-/// already produced before this path existed. NO-SHIFT has to be earned by three quarters of an
-/// informative vote.
+/// SHIFT is the default (most interlaced titles tested shift, and it matches Automatic's
+/// geometry). NO-SHIFT needs three quarters of the informative votes.
 inline bool GSFieldShiftTallySaysNoShift(const GSFieldShiftTally& t)
 {
 	return t.noshift >= GS_FIELD_SHIFT_MIN_VOTES && t.noshift * 4 >= t.informative() * 3;
@@ -155,21 +149,17 @@ inline bool GSFieldShiftTallySaysNoShift(const GSFieldShiftTally& t)
 // ---------------------------------------------------------------------------------------------
 // The top band
 //
-// The field-direct merge applies the shift by moving what it READS, not where it draws, so screen
-// row r gets the source content of row r - offset and no destination row is left undrawn. The rows
-// at the top of the circuit's rect now ask for source rows above the rect, and the sampler answers
-// with its clamp -- the TEXTURE's first row.
+// The field-direct merge shifts what it READS, not where it draws, so no destination row is left
+// undrawn. The top rows then sample above the circuit's rect, and the sampler clamps to the
+// TEXTURE's first row.
 //
-// That is the rect's own first row only when the rect starts at the texture top. It usually does:
-// the rect begins at DISPFB.DBY (plus any whole-page offset between the display pointer and the
-// target's base), and every field-mode title that shifts has DBY = 0. When it does not, the clamp
-// returns rows the circuit does not own, so the merge draws the band itself instead, every row of
-// it sampling the centre of the rect's first texel row.
+// That is the rect's first row only when the rect starts at the texture top (DISPFB.DBY plus any
+// page offset to the target base is 0, the usual case). Otherwise the clamp returns rows the circuit
+// does not own, so the merge draws the band itself, every row sampling the centre of the rect's
+// first texel row.
 //
-// The band is exactly `shift_rows` destination rows deep -- a destination row is in it when its
-// centre maps above the rect, which is r + 0.5 < dst_top + shift_rows -- so it abuts the shifted
-// main draw with no gap and no overlap, and the first row below it samples the same texel row the
-// band repeats.
+// The band is exactly `shift_rows` destination rows deep (row centre r + 0.5 < dst_top +
+// shift_rows), so it abuts the shifted main draw with no gap or overlap.
 
 struct GSFieldShiftTopBand
 {
@@ -182,8 +172,7 @@ struct GSFieldShiftTopBand
 };
 
 /// rect_top_rows is where the circuit's rect starts in the texture, in native lines (DISPFB.DBY
-/// plus the target page offset). Zero -- the common case -- means the sampler's clamp already
-/// returns the rect's first row and no band is needed.
+/// plus the target page offset). Zero means the sampler's clamp suffices and no band is needed.
 inline GSFieldShiftTopBand GSComputeFieldShiftTopBand(
 	int rect_top_rows, float src_top_v, float dst_top, float shift_rows, int texture_height)
 {
@@ -198,11 +187,9 @@ inline GSFieldShiftTopBand GSComputeFieldShiftTopBand(
 	return band;
 }
 
-/// Where the shifted main draw starts once a band is drawn. The band owns destination rows
-/// [dst_top, dst_bottom) outright, so the main draw is cut to start below it, and its source top
-/// moves down by the same shift it was moved up by. Without the cut both draws cover the band's
-/// rows, which is harmless for circuit 2 (a copy, the band overwrites) but not for circuit 1,
-/// which is blended: those rows would take circuit 1 twice whenever the merge alpha is below one.
+/// Where the shifted main draw starts once a band is drawn: below the band, with its source top
+/// moved down by the shift. Without the cut, circuit 1 (blended) would be applied twice on the
+/// band's rows whenever merge alpha is below one.
 struct GSFieldShiftMainTop
 {
 	float dst_top = 0.0f;

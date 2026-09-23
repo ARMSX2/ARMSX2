@@ -38,10 +38,9 @@ GSRendererSW::GSRendererSW(int threads)
 	std::fill(std::begin(m_fzb_pages), std::end(m_fzb_pages), 0);
 	std::fill(std::begin(m_tex_pages), std::end(m_tex_pages), 0);
 
-	// The GSState constructor armed the parse handlers with the base GetAutoFlushLevel (a
-	// virtual resolves to the base from inside a base constructor); re-arm now that the
-	// override below is live. Matters when this engine runs under a hardware
-	// GSCurrentRenderer, i.e. as another renderer's fallback floor.
+	// The GSState constructor armed the parse handlers with the base GetAutoFlushLevel
+	// (virtual calls in a base constructor resolve to the base). Re-arm now that the
+	// override is live. Matters when this engine is a hardware renderer's fallback.
 	ResetHandlers();
 }
 
@@ -433,13 +432,10 @@ void GSRendererSW::Draw()
 		zb_pages = &_zb_pages;
 	}
 
-	// The rasterizer hands each worker a set of scanlines, and that is a safe
-	// division of the work only because distinct rows normally mean distinct
-	// bytes. Past the buffer's own page row the GS folds the address onto the row
-	// one page below instead of clamping or wrapping (gs-mem), so those two rows
-	// hold the same bytes while belonging to two workers, and whichever finishes
-	// second wins. Silicon has no such race, and neither does the single-threaded
-	// arm -- which is the one that scores gs-clip 100.00%. Run the draw there.
+	// Workers split a draw by scanline, which is safe only while distinct rows are
+	// distinct bytes. Past the buffer's page row the GS folds the address onto the
+	// row one page below (no clamp, no wrap), so two rows owned by different
+	// workers alias and the later writer wins. Run such draws single-threaded.
 	sd->serial =
 		(sd->global.sel.fb && r.right > m_context->offset.fb.pageRowWidth() &&
 			m_rl->RowsFoldAcrossWorkers(GSLocalMemory::m_psm[m_context->offset.fb.psm()].pgs.y)) ||
@@ -1154,10 +1150,8 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 					gd.lod.i = GSVector4i(lod >> 16);
 					// Every 16-bit lane must carry the fraction: the scanline blends
 					// [r,b]/[g,a] channel pairs of four pixels against these lanes.
-					// The previous xxxxl().xxzz() left lanes 5 and 7 zero (xxxxl
-					// passes the upper half through, and the scalar broadcast's
-					// upper 16 bits are zero there), so pixels 2 and 3 of every
-					// quad blended r/g but never b/a under a constant LOD.
+					// xxxxl().xxzz() would leave lanes 5 and 7 zero, so pixels 2 and 3
+					// would never blend b/a.
 					gd.lod.f = GSVector4i(lod & 0xffff).xxxxlh();
 
 					// TODO: lot to optimize when lod is constant
@@ -1168,12 +1162,10 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 					gd.l = GSVector4((float)(-(0x10000 << context->TEX1.L)));
 					gd.k = GSVector4((float)k);
 
-					// The level of detail is a table read on Q's mantissa, not a
-					// curve: GSLevelOfDetail.h carries the measurement and the
-					// tables. TEX1.K is already in sixteenths of a level, which is
-					// what the table's own units are, so it goes across unscaled --
-					// `k` above is the same field shifted into 16.16 for the float
-					// path the scanline no longer takes.
+					// The level of detail is a table lookup on Q's mantissa, not a
+					// log curve (see GSLevelOfDetail.h). TEX1.K is in sixteenths of a
+					// level, the table's own unit, so it goes across unscaled. `k`
+					// above is the 16.16 form for the float path.
 					gd.lodtab = GSLevelOfDetailTable[context->TEX1.L];
 					gd.lodk = context->TEX1.K;
 					gd.lodshift = 4 + context->TEX1.L;
@@ -1216,28 +1208,22 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 			}
 			else
 			{
-				// Tell the scanline the coordinate is affine only where the vertex
-				// conversion actually divided it -- the two must agree, and they were
-				// decided by different predicates. A constant-Q triangle keeps its Q
-				// and takes the console's reciprocal per pixel: silicon does not
-				// divide, it multiplies by a reciprocal truncated to fourteen
-				// fractional bits, and dividing at the vertex computes the exact
-				// quotient instead. See GSVertexQDivide.h for the measurement.
+				// Mark the coordinate affine only where the vertex conversion actually
+				// divided it; the two must agree. A constant-Q triangle keeps its Q and
+				// takes the per-pixel reciprocal: the GS multiplies by a reciprocal
+				// truncated to 14 fractional bits, which a vertex divide would not
+				// reproduce. See GSVertexQDivide.h.
 				gd.sel.fst |= (GSUseVertexQDivide(primclass, IsMipMapActive(), m_vt.m_eq.q != 0,
 					m_vt.m_min.t.z) || GSUseAffineRoute(primclass, m_vt.m_eq.q != 0, m_vt.m_min.t.z));
 
-				// An affine STQ triangle's coordinate is held to ONE grain for the whole
-				// primitive, not one per vertex, and its gradient sits on a grid a
-				// thousandth of that grain. GSCoordinateWalk.h carries the measurement
-				// and the rest of the rule; the rasterizer needs only where the grain
-				// stops shrinking, which is TEX0's own size.
+				// An affine STQ triangle's coordinate is held to one grain for the whole
+				// primitive, not one per vertex (see GSCoordinateWalk.h). The rasterizer
+				// needs only the grain floor, which is TEX0's size.
 				//
-				// The gate is the front end's own texel rounding -- a sprite or a
-				// constant-Z draw, STQ, textured -- narrowed to the triangles that then
-				// take the affine route. Staying inside it is what makes the widening an
-				// identity: those vertices are already truncated on the finer grid, so
-				// truncating them again onto the primitive's lands where the front end
-				// would have landed had its own rule been the primitive's.
+				// Gated to where the front end already rounds texels (constant Z, STQ,
+				// textured) and the triangle takes the affine route. Inside that gate
+				// the vertices are already truncated on a finer grid, so re-truncating
+				// them onto the primitive's grain is consistent with the front end.
 				if (primclass == GS_TRIANGLE_CLASS && !PRIM->FST && m_vt.m_eq.z
 					&& GSUseAffineRoute(primclass, m_vt.m_eq.q != 0, m_vt.m_min.t.z))
 				{
@@ -1245,22 +1231,14 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 					gd.coord_grain_floor[1] = static_cast<s32>(context->TEX0.TH) + 2;
 				}
 
-				// The console chooses MMAG versus MMIN per pixel, from that pixel's own
-				// level. When this primitive straddles the crossing and the two filters
-				// differ, hand the scanline the Q at which the level reaches zero and let
-				// it decide per pixel. Only meaningful where Q actually varies -- a
-				// constant-Q primitive has one level throughout and cannot straddle.
+				// The GS picks MMAG versus MMIN per pixel from that pixel's level. When
+				// the primitive straddles lod == 0 and the filters differ, pass the Q at
+				// which the level reaches zero and let the scanline decide per pixel.
+				// lod = -log2(Q) * 2^L + K, so lod > 0 is exactly Q < 2^(K / 2^L).
 				//
-				// lod = -log2(Q) * 2^L + K, so lod > 0 is exactly Q < 2^(K / 2^L),
-				// which is one constant. No logarithm is needed in the inner loop.
-				//
-				// Per-pixel MMAG/MMIN is implemented in the C++ reference scanline and in
-				// the ARM64 scanline generator. The x86 generator does not have it yet,
-				// so the selector is gated: leaving it set on x86 would make an x86
-				// build's JIT and its own C++ fallback disagree, which is worse than the
-				// per-primitive approximation. The consequence is that x86 software
-				// output differs from ARM64 software output on draws that cross the LOD
-				// filter threshold. The rule to port is in GSDrawScanline.cpp.
+				// ARM64 only: the x86 generator lacks this, and setting the bit there
+				// would make the x86 JIT disagree with its C++ fallback. x86 keeps the
+				// per-primitive choice. The rule to port is in GSDrawScanline.cpp.
 #ifdef ARCH_ARM64
 				if (m_vt.IsFilterCrossover() && !gd.sel.fst)
 				{
@@ -1362,25 +1340,15 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 			gd.t.mask = gd.t.mask.xxzz();
 			gd.t.invmask = ~gd.t.mask;
 
-			// Which coordinates walk in the console's 12.15 truncating accumulator,
-			// and it is not the same set as `fst`. That bit says only that the
-			// scanline reads a 16.16 integer, and by here it has grown to cover
-			// three different coordinates. Hardware splits them:
+			// Coordinates that walk in the GS's 12.15 truncating accumulator: UV
+			// (FST) draws and sprites whose ST the vertex conversion resolved. A
+			// constant-Q triangle's ST keeps its exact plane.
 			//
-			//   * the UV register, and a SPRITE whose ST the vertex conversion
-			//     resolved, both take the accumulator;
-			//   * a constant-Q TRIANGLE's ST plane refuses it and keeps its own
-			//     exact plane.
+			// Must be a subset of the final fst: a mipmapped STQ sprite walks the
+			// perspective route, and giving it an integer step with no Q step
+			// corrupts its output.
 			//
-			// ⚠️ It is a SUBSET of fst, and has to be read from the final value:
-			// a mipmapped STQ sprite never reaches the widening above, so it walks
-			// the perspective route, and telling setup to write it an integer step
-			// and no Q step corrupts thousands of words of a game frame.
-			//
-			// ARM64 only, for the reason ltfx carries above: the x86 setup
-			// generator does not implement the walk, and leaving the bit set there
-			// would make an x86 JIT disagree with its own C++ fallback. An x86
-			// software build keeps the wide accumulator on every road.
+			// ARM64 only, same reason as ltfx above. x86 keeps the wide accumulator.
 #ifdef ARCH_ARM64
 			gd.sel.uvwalk = gd.sel.fst && (PRIM->FST || primclass == GS_SPRITE_CLASS);
 #endif
@@ -1545,11 +1513,9 @@ bool GSRendererSW::IsCoverageAlphaSupported()
 	return IsCoverageAlpha();
 }
 
-// The SW engine's flush rule regardless of process renderer type: a renderer can run this
-// engine as its fallback floor under a hardware GSCurrentRenderer, and the parse-time flush
-// decision must follow the engine that consumes the draws or the floor diverges from this
-// renderer on self-texturing draws (FlatOut 2 diverged byte-for-byte when it did not).
-// SpritesOnly is a hardware-renderer notion; the SW rule is all-or-nothing.
+// The SW engine's flush rule, even when it runs as a hardware renderer's fallback: the
+// parse-time flush decision must follow the engine that consumes the draws, or
+// self-texturing draws diverge. SpritesOnly is a hardware notion; SW is all-or-nothing.
 GSHWAutoFlushLevel GSRendererSW::GetAutoFlushLevel() const
 {
 	return GSConfig.AutoFlushSW ? GSHWAutoFlushLevel::Enabled : GSHWAutoFlushLevel::Disabled;
@@ -1681,10 +1647,9 @@ void GSRendererSW::SharedData::UpdateSource()
 		}
 	}
 
-	// The dummy level the trilinear ceiling reads: see GSScanlineEnvironment.h.
-	// A level of detail at or above MXL is MXL at weight zero on the console, so
-	// the second tap has to be a legal pointer to the SAME level rather than one
-	// past the end.
+	// Dummy level for the trilinear ceiling (see GSScanlineEnvironment.h). A LOD at
+	// or above MXL is MXL at weight zero, so the second tap must point at the same
+	// level, not one past the end.
 	if (levels != 0)
 		global.tex[levels] = global.tex[levels - 1];
 

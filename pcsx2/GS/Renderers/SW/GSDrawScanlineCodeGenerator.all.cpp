@@ -1212,7 +1212,7 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 	if (!m_sel.fst)
 	{
 		// Truncated reciprocal, not a divide: multiply by 1/q with the low ten
-		// mantissa bits cleared. See GSDrawScanline.cpp for the measurement.
+		// mantissa bits cleared. See GSDrawScanline.cpp.
 		mov(eax, 0x3f800000);
 		broadcastGPRToVec(xym0, eax);
 		MOVE_IF_64(divps, xym0, xym0, _q);
@@ -1245,8 +1245,7 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 	}
 
 	// The coordinate DDA's lag: one 16.16 unit on an axis that walks forward, zero
-	// on one that is still or walks back, so only a coordinate landing exactly on a
-	// sixteenth moves. See GSDrawScanline.cpp for the measurement.
+	// on one that is still or walks back. See GSDrawScanline.cpp.
 	if (m_sel.prim != GS_SPRITE_CLASS)
 	{
 		psubd(xym2, _rip_local(tclag.u));
@@ -1659,7 +1658,7 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 	}
 
 	// The coordinate DDA's lag, taken before the level shift divides it away. See
-	// SampleTexture above, and GSDrawScanline.cpp for the measurement.
+	// SampleTexture above.
 	if (m_sel.prim != GS_SPRITE_CLASS)
 	{
 		psubd(xym2, _rip_local(tclag.u));
@@ -2197,9 +2196,8 @@ void GSDrawScanlineCodeGenerator::AlphaTFX()
 			// GSVector4i ga = iip ? gaf : m_local.c.ga;
 			// gat = gat.modulate16<1>(ga.srl16<7>().sll16<7>()).clamp8();
 			//
-			// The texture function multiplies the eight-bit colour the GS STORES,
-			// not the wider value the DDA carries. Console-measured;
-			// GSStoredVertexColor in GSDrawScanline.cpp carries the reasoning.
+			// The texture function multiplies the stored eight-bit colour, not the
+			// wider value the DDA carries. See GSStoredVertexColor in GSDrawScanline.cpp.
 
 			MOVE_IF_64(psrlw, tmpga, f_ga, 7);
 			psllw(tmpga, 7);
@@ -2424,9 +2422,8 @@ void GSDrawScanlineCodeGenerator::ColorTFX()
 	const XYm& f_ga  = _f_ga;
 	const XYm& tmpga = xym2;
 
-	// The texture function multiplies the eight-bit colour the GS STORES, not the
-	// wider value the DDA carries. Console-measured; GSStoredVertexColor in
-	// GSDrawScanline.cpp carries the reasoning.
+	// The texture function multiplies the stored eight-bit colour, not the wider
+	// value the DDA carries. See GSStoredVertexColor in GSDrawScanline.cpp.
 	auto modulate16_1_rb = [this](const XYm& tmp)
 	{
 		// GSVector4i rb = iip ? rbf : m_local.c.rb;
@@ -2959,8 +2956,8 @@ void GSDrawScanlineCodeGenerator::WriteFrame()
 
 	const XYm& tmp = xym15;
 
-	// Every colour destination is dithered, not just 16-bit ones -- see the note
-	// in GSDrawScanline.cpp's WriteFrame. fmt 3 is not a frame-buffer format.
+	// Every colour destination is dithered, not just 16-bit ones (see WriteFrame
+	// in GSDrawScanline.cpp). fmt 3 is not a frame-buffer format.
 	if (m_sel.dthe && m_sel.fpsm != 3)
 	{
 		// y = (top & 3) << 5

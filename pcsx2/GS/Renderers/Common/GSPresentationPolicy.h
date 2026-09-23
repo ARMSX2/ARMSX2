@@ -7,8 +7,7 @@
 // and can be omitted, but a mid-game blank must reach the normal present path so Vulkan submits the
 // commands recorded for a fade/transition instead of carrying incomplete state into the next frame.
 //
-// OpenGL does not have that deferred command-buffer hazard, so retain Android's existing alternating
-// blank suppression there to avoid changing its already-correct output.
+// OpenGL does not have that hazard, so it keeps Android's alternating blank suppression.
 //
 // Ported from sashkinbro/EmuCoreX ("Fix GS interlace and Vulkan presentation policies").
 constexpr bool ShouldSkipAndroidBlankFrame(

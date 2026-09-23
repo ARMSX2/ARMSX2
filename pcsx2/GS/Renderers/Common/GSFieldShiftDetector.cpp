@@ -36,11 +36,10 @@ void GSFieldShiftDetector::ReleaseResources()
 {
 	ReleaseReadbacks();
 
-	// The probe target goes back to the device pool only here, never on the decision. A decision
-	// can land with copies out of it still queued, and the pool will hand a texture recycled this
-	// frame straight back to the next caller -- which would leave those copies reading a target
-	// somebody else is now drawing into, with the layout transitions they recorded no longer
-	// describing it. A renderer reset or teardown has no queued work to contradict.
+	// The probe target returns to the device pool only here, never on a decision. A decision can
+	// land with copies from it still queued, and the pool may hand the texture to another caller the
+	// same frame, leaving those copies reading a target someone else is drawing into. A reset or
+	// teardown has no queued work.
 	if (m_probe)
 	{
 		if (g_gs_device)
@@ -114,8 +113,7 @@ void GSFieldShiftDetector::Update(
 	const bool picture_changed = !(size == m_size) || scale != m_scale;
 	if (!m_probing)
 	{
-		// Resting on a decision. Measure again when the picture it was taken on is gone, or when it
-		// has stood long enough that the game may have moved on from what it was showing.
+		// Resting. Re-measure after the recheck interval.
 		if (!picture_changed && ++m_fields_since_decision < GS_FIELD_SHIFT_RECHECK_FIELDS)
 			return;
 
@@ -124,7 +122,7 @@ void GSFieldShiftDetector::Update(
 	}
 	else if (picture_changed)
 	{
-		// A video-mode change. Everything measured so far was measured on a different picture.
+		// A video-mode change invalidates everything measured so far.
 		StartRound(size, scale);
 	}
 
@@ -164,10 +162,8 @@ void GSFieldShiftDetector::Update(
 	{
 		if (++m_waited_frames > MAX_WAIT_FRAMES)
 		{
-			// Either the backend cannot tell us a copy is done without flushing (D3D, Metal), or
-			// the GPU is that far behind. Flushing would block the GS thread on the GPU, which is
-			// the one thing this must never do, so stop here and go with the votes already in --
-			// which is the default when there are none.
+			// The backend cannot report completion without a flush (D3D, Metal), or the GPU is that
+			// far behind. Never flush here: decide on the votes already in, or the default.
 			m_cpu_ticks += Common::Timer::GetCurrentValue() - start;
 			Decide(GSFieldShiftTallySaysNoShift(m_tally), "readback did not complete without a flush");
 			return;
@@ -236,8 +232,8 @@ bool GSFieldShiftDetector::Probe(GSTexture* merge, int applied_offset_rows, int 
 		}
 	}
 
-	// A plain point-sampled column subsample: every row survives at full device resolution, which
-	// is where the whole signal is, and the columns are thinned to keep the transfer trivial.
+	// Point-sampled column subsample: every row at full device resolution (where the signal is),
+	// columns thinned to keep the transfer small.
 	g_gs_device->StretchRect(merge, GSVector4(0.0f, 0.0f, 1.0f, 1.0f), m_probe,
 		GSVector4(0.0f, 0.0f, static_cast<float>(m_cols), static_cast<float>(m_rows)), ShaderConvert::COPY,
 		Nearest);
@@ -270,8 +266,7 @@ bool GSFieldShiftDetector::Retire(ProbeSlot& slot)
 		u8* dst = m_cur.data() + static_cast<size_t>(r) * m_cols;
 		for (int c = 0; c < m_cols; c++)
 		{
-			// Cheap luma. The test only needs a monotone stand-in for the pixel; exact weights buy
-			// nothing and a shift or two is faster than a multiply per channel.
+			// Cheap luma; the test only needs a monotone stand-in for the pixel.
 			const u32 sum = static_cast<u32>(src[c * 4 + 0]) + static_cast<u32>(src[c * 4 + 1]) * 2u +
 			                static_cast<u32>(src[c * 4 + 2]);
 			dst[c] = static_cast<u8>(sum >> 2);
@@ -316,9 +311,8 @@ void GSFieldShiftDetector::Compare(const ProbeSlot& slot)
 	if (vote == GSFieldShiftVote::NoShift)
 	{
 		m_tally.noshift++;
-		// The two fields are the same picture and nothing else comes close. One pair this lopsided
-		// settles it, which is what lets a no-shift game correct itself on the earliest field it
-		// possibly can.
+		// The fields are the same picture by a wide margin. One such pair decides, so a no-shift
+		// game corrects itself as early as possible.
 		if (GSFieldShiftMargin(sample) >= GS_FIELD_SHIFT_DECISIVE_MARGIN)
 			Decide(true, "both fields draw the same picture");
 	}

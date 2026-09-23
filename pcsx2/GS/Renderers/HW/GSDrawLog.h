@@ -11,29 +11,20 @@
 
 /// Per-draw ledger for GS performance triage.
 ///
-/// Answers "which draws were expensive, and what PS2 state made them expensive" over a
-/// whole scene. The existing per-draw facility (GSHWDrawConfig::DumpConfig, driven by
-/// SaveHWConfig) writes one text file per draw, which is the right shape for inspecting
-/// a single suspicious draw and the wrong shape for profiling: a 900-draw frame produces
-/// 900 files. This produces one append-only table instead.
+/// Records which draws in a scene were expensive and what PS2 state they had, as one
+/// table. (GSHWDrawConfig::DumpConfig writes one file per draw, which suits inspecting a
+/// single draw, not profiling.)
 ///
-/// I/O discipline is the whole design. At ~900 draws/frame and 60 fps this sees roughly
-/// 54k rows/sec; formatting a row costs microseconds and writing it costs bandwidth, and
-/// both would land on the GS thread -- the thread under investigation -- turning the
-/// ledger into a measurement of itself. So capture records a packed POD into a
-/// preallocated arena (a memcpy-class store, no formatting, no I/O) and serialisation to
-/// CSV happens once, afterwards.
+/// Capture only copies a packed POD into a preallocated arena on the GS thread; no
+/// formatting or I/O happens there. CSV serialisation happens once, afterwards.
 ///
-/// The arena is bounded, so a long session yields the last N frames rather than an
-/// unusable multi-gigabyte file. Truncation is reported rather than silent.
+/// The arena is bounded; when it fills, later draws are dropped and truncation is reported.
 ///
-/// A row is assembled from two points in the draw, because the field sets do not
-/// overlap: the PS2 view (registers, live at the top of GSRendererHW::Draw) and the
-/// backend view (GSHWDrawConfig, only finalised at submit).
+/// A row is filled in two steps: the PS2 register view at the top of GSRendererHW::Draw,
+/// and the backend view (GSHWDrawConfig) at submit.
 ///
-/// This is an attribution tool, never a comparison tool. It is not free -- roughly 0.3%
-/// of a core plus the cache pressure of streaming writes -- so an A/B with the ledger
-/// enabled on one arm is invalid.
+/// Recording has a cost, so do not compare performance between a run with it enabled and
+/// one without.
 namespace GSDrawLog
 {
 	/// Packed to keep the arena small and the per-draw store cheap. Enum-ish fields are
@@ -82,12 +73,10 @@ namespace GSDrawLog
 
 	/// How a draw whose texture aliased the render target or depth buffer was resolved.
 	///
-	/// The tex_hazard and barrier columns are the draw config AFTER
-	/// GSRendererHW::HandleTextureHazards rewrote it, so a draw that arrived aliasing the
-	/// target and was resolved by copying is indistinguishable in them from an ordinary
-	/// textured draw -- it reads as tex_hazard NONE, barrier 0, no copy anywhere in sight.
-	/// Reading that resolved state as the original state produced a confidently wrong
-	/// diagnosis once. This column records which road the draw actually took.
+	/// The tex_hazard and barrier columns reflect the config after
+	/// GSRendererHW::HandleTextureHazards rewrote it, so a self-read resolved by copying looks
+	/// like an ordinary textured draw there (tex_hazard NONE, barrier 0). This column records
+	/// how the self-read was actually resolved.
 	enum SelfRead : u8
 	{
 		SelfReadNone = 0, ///< the source did not alias the render target or depth buffer

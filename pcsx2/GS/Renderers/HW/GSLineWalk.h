@@ -10,10 +10,9 @@
 
 /// The pixels a GS line primitive lights.
 ///
-/// This is the software renderer's line walk (GSRasterizer::DrawEdgeLine), which the gs-prim
-/// console capture matched on all 188 of its line cases, restated in the 1/16-pixel integers the
-/// vertex buffer holds. Every quantity the walk uses is a whole number of those units, so the
-/// integer form here lands on the same pixels as the float form there.
+/// The software renderer's line walk (GSRasterizer::DrawEdgeLine), which matches console output,
+/// restated in the vertex buffer's 1/16-pixel integers. Every quantity is a whole number of those
+/// units, so this lands on the same pixels as the float version.
 ///
 /// The rule:
 ///
@@ -55,9 +54,8 @@ namespace GSLineWalk
 	/// The walk itself. Calls step(x, y, D, scale) once per whole-pixel step along the major axis,
 	/// in the order the GS takes them, and returns how many steps there were. D is the decision
 	/// value -- the minor coordinate's signed distance from the centre of the pixel the step landed
-	/// on, in units of 1/scale of a pixel -- which is what the AA1 coverage is read off. Everything
-	/// else here is Walk(); the split exists so the coverage can be taken without a second
-	/// transcription of the walk to keep in step with this one.
+	/// on, in units of 1/scale of a pixel -- from which AA1 coverage is computed. Walk() and
+	/// WalkAA1() share this so there is one copy of the walk.
 	template <typename Step>
 	inline int WalkSteps(int x0, int y0, int x1, int y1, Step&& step_fn)
 	{
@@ -153,20 +151,17 @@ namespace GSLineWalk
 
 	/// The pixels an AA1 line lights, and the coverage each one carries.
 	///
-	/// An AA1 line lights TWO pixels per step, not one: the pixel the walk owns and its neighbour
-	/// on the minor axis, on whichever side the exact line leans. The two share a coverage between
-	/// them -- the near one gets what is left of full coverage, the far one the remainder -- so a
-	/// line that sits exactly on a row of pixel centres writes that row at full coverage and the
-	/// row beside it at zero. The zero-coverage row still writes: it blends nothing, but its alpha
-	/// lands in memory, which the gs-prim console capture measured (Result 8).
+	/// An AA1 line lights two pixels per step: the walk's pixel and its minor-axis neighbour on the
+	/// side the exact line leans. They split full coverage between them, so a line exactly on a
+	/// row of pixel centres writes that row at full coverage and the next at zero. The
+	/// zero-coverage pixel still writes its alpha to memory, as on the console.
 	///
 	/// Calls pixel(x, y, cov, side) twice per step, side 0 for the walk's own pixel and 1 for its
 	/// neighbour, and returns the number of pixels. `cov` is the software renderer's 16-bit edge
-	/// value; the scanline reads the top 7 bits of it, so the alpha it becomes runs 0 to 127.
+	/// value; the scanline reads its top 7 bits, so the alpha runs 0 to 127.
 	///
-	/// This is GSRasterizer::DrawEdgeLine's antialiased arm, value for value, including the float
-	/// division it truncates the coverage out of. Both renderers therefore put the same coverage on
-	/// the same pixel, which is what gs_line_walk_tests.cpp pins.
+	/// Matches GSRasterizer::DrawEdgeLine's antialiased path value for value, including the float
+	/// division, so both renderers produce the same coverage (gs_line_walk_tests.cpp).
 	template <typename Pixel>
 	inline int WalkAA1(int x0, int y0, int x1, int y1, Pixel&& pixel)
 	{

@@ -12,16 +12,14 @@
 class GSTexture;
 class GSDownloadTexture;
 
-/// Decides, from the frames themselves, whether a field-mode game moves its projection half a
-/// display line between fields. Only consulted where the field render is presented directly
-/// (integer upscale of 2 or more), where that shift is the only correction left to make.
+/// Decides from the frames whether a field-mode game moves its projection half a display line
+/// between fields. Only consulted where the field render is presented directly (integer upscale
+/// >= 2).
 ///
-/// Runs for a bounded handful of fields, then rests on its decision. It measures again after a
-/// video-mode change and every GS_FIELD_SHIFT_RECHECK_FIELDS fields, keeping the decision it has
-/// in force meanwhile, so an answer taken on a boot logo does not outlive the logo. It
-/// NEVER waits on the GPU: the readback is issued without a flush and collected on a later frame
-/// through Poll(), and a backend that cannot answer Poll() without a flush simply gets the default
-/// instead of a stall.
+/// Probes a bounded number of fields, then rests. It re-measures after a video-mode change and
+/// every GS_FIELD_SHIFT_RECHECK_FIELDS fields, keeping the current decision meanwhile. It NEVER
+/// waits on the GPU: readbacks are issued without a flush and collected later via Poll(); a backend
+/// that cannot answer Poll() without a flush gets the default instead of a stall.
 class GSFieldShiftDetector
 {
 public:
@@ -38,10 +36,9 @@ public:
 	/// Drop everything, including the decision. For a renderer reset or a device teardown.
 	void Reset();
 
-	/// Feed one field. `merge` is the merge target as it stands for this field, `size` its size,
-	/// `scale` the integer upscale (one native line in device rows), `applied_offset_rows` the
-	/// merge offset this field was actually drawn with, so the measurement can take it back out,
-	/// and `field_parity` which of the two fields this is.
+	/// Feed one field. `merge` is this field's merge target, `size` its size, `scale` the integer
+	/// upscale, `applied_offset_rows` the merge offset the field was drawn with (removed before
+	/// comparing), and `field_parity` which field this is.
 	void Update(GSTexture* merge, const GSVector2i& size, int scale, int applied_offset_rows, int field_parity);
 
 private:
@@ -52,18 +49,17 @@ private:
 		NoShift,
 	};
 
-	/// Columns sampled across the frame. 32 of them over a full frame height is ~29k samples a
-	/// field, which swamps the difference the test is looking for by two orders of magnitude, and
-	/// keeps a whole session's transfer under two megabytes.
+	/// Columns sampled across the frame: enough samples per field to resolve the difference, with
+	/// a small total transfer.
 	static constexpr int PROBE_COLUMNS = 32;
 	/// Fields probed before the vote is taken, whatever it says.
 	static constexpr int MAX_PROBE_FIELDS = 12;
-	/// Frames the oldest queued readback may stay unfinished before the detector gives up on the
-	/// backend. Never flushed: flushing is the stall this whole design exists to avoid.
+	/// Frames the oldest readback may stay unfinished before the detector gives up on the backend.
+	/// Never flushed, to avoid the stall.
 	static constexpr int MAX_WAIT_FRAMES = 8;
-	/// Readbacks in flight at once. EVERY field has to be probed -- a probe that waits for the
-	/// previous readback samples every OTHER field, which is the same field twice and says nothing
-	/// (see GSFieldShiftPairIsComparable). One slot per frame the GPU can be behind.
+	/// Readbacks in flight at once. Every field must be probed; waiting on the previous readback
+	/// would sample every other field, i.e. the same parity (see GSFieldShiftPairIsComparable).
+	/// One slot per frame the GPU can be behind.
 	static constexpr int PROBE_SLOTS = 4;
 
 	struct ProbeSlot
@@ -96,9 +92,8 @@ private:
 
 	GSTexture* m_probe = nullptr;
 	ProbeSlot m_slots[PROBE_SLOTS];
-	/// Index of the next field to probe, and of the oldest probe not yet collected. Retiring in
-	/// index order is what makes "these two signatures are consecutive fields" true by
-	/// construction.
+	/// Next field to probe, and oldest probe not yet collected. Retiring in index order guarantees
+	/// compared signatures are consecutive fields.
 	u32 m_next_index = 0;
 	u32 m_retire_index = 0;
 
@@ -111,12 +106,11 @@ private:
 
 	int m_fields_probed = 0;
 	int m_waited_frames = 0;
-	/// Pairs thrown away because both fields were the same one, or because a field went unprobed
-	/// between them. A run that is all of these is why a title can spend the whole probe budget
-	/// with nothing decided.
+	/// Pairs discarded for same parity or a gap between fields. Explains a probe round that
+	/// ends undecided.
 	int m_unusable_pairs = 0;
 	GSFieldShiftTally m_tally;
 
-	/// GS-thread time this detector has cost, start to decision. Reported once, when it decides.
+	/// GS-thread time spent up to the decision; reported once.
 	u64 m_cpu_ticks = 0;
 };
