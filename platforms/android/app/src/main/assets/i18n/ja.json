@@ -1251,8 +1251,6 @@
   "ralogin.username.label": "ユーザー名（Aで入力）",
   "renderer.accurateAlphaTest.description": "ハードウェアrendererでのより正確なアルファテスト（ROVと連携）。ライブで適用されます。",
   "renderer.accurateAlphaTest.label": "Accurate Alpha Test",
-  "renderer.accurateBlendingFastPath.description": "Vulkan＋Adrenoのみ：正確なブレンドをROV／texture-barrierコピーではなくタイルメモリのframebuffer-fetchパス経由でルーティングします。これはデスクトップROVのモバイルネイティブ相当で、タイラーでは通常はるかに高速です。デフォルトでオン。一部の独自Adrenoドライバは古い読み取りを返しアーティファクト（スプライトアルファの抜け、床パッチの消失）が出ることがあります。見えたらオフにしてください。適用にはゲームの再起動が必要です。Mali（既に有効）やOpenGLには影響しません。",
-  "renderer.accurateBlendingFastPath.label": "正確なブレンドの高速パス",
   "renderer.angleOpenGL.description": "OpenGLレンダラーをANGLE経由で実行します。ANGLEは同梱のドライバでOpenGL ESをVulkanに変換します。端末のネイティブOpenGL ESドライバが壊れている、または遅い場合（一部のMediaTek Maliなど）に有効です。レンダラーがOpenGLに設定されているときのみ有効になります。適用にはゲームの再起動が必要です。",
   "renderer.angleOpenGL.label": "ANGLE経由のOpenGL",
   "renderer.anisotropic.description": "角度のついたテクスチャをシャープにします。値が高いとGPU時間がかかります。",

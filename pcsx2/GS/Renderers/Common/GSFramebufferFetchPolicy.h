@@ -216,9 +216,10 @@ struct GSVulkanFramebufferFetchInputs
 	/// report that it was ignored.
 	bool force_mali_fetch_key = false;
 
-	/// EmuCore/GS/EnableAdrenoFramebufferFetch. The Android build ships it true, which makes the
-	/// vendor terms below a deny list there.
-	bool adreno_fetch_key = false;
+	/// Trust the extension on any vendor not denied below. True on Android builds, which makes the
+	/// vendor terms a deny list there and keeps PowerVR and other unnamed vendors off the
+	/// per-primitive barrier path. Elsewhere only Mali and Adreno are trusted.
+	bool any_vendor_trusted = false;
 };
 
 struct GSVulkanFramebufferFetchDecision
@@ -245,7 +246,7 @@ constexpr GSVulkanFramebufferFetchDecision DecideVulkanFramebufferFetch(
 
 	const bool vendor_allows =
 		!denied_destination_read && !in.is_xclipse && !in.is_adreno8xx_proprietary &&
-		(in.is_mali || in.is_adreno || in.adreno_fetch_key);
+		(in.is_mali || in.is_adreno || in.any_vendor_trusted);
 
 	decision.enabled = vendor_allows && in.roaa_available && !in.user_disabled;
 	return decision;
@@ -294,7 +295,7 @@ static_assert(!DecideVulkanFramebufferFetch({.roaa_available = true, .is_mali = 
 	.user_disabled = true, .force_mali_fetch_key = true})
 				   .enabled);
 
-// Deny list: an unnamed vendor gets the fast path where the Adreno key is on (Android), which keeps
-// PowerVR and others off the per-primitive barrier path.
-static_assert(DecideVulkanFramebufferFetch({.roaa_available = true, .adreno_fetch_key = true}).enabled);
+// Deny list: an unnamed vendor gets the fast path on Android, which keeps PowerVR and others off the
+// per-primitive barrier path.
+static_assert(DecideVulkanFramebufferFetch({.roaa_available = true, .any_vendor_trusted = true}).enabled);
 static_assert(!DecideVulkanFramebufferFetch({.roaa_available = true}).enabled);

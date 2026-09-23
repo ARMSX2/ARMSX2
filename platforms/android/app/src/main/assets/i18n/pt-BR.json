@@ -681,8 +681,6 @@
  "ralogin.username.label": "Usuário (A para digitar)",
  "renderer.accurateAlphaTest.description": "Teste de alpha mais preciso no renderizador de hardware (combina com o ROV). Aplica ao vivo.",
  "renderer.accurateAlphaTest.label": "Teste de Alpha Preciso",
- "renderer.accurateBlendingFastPath.description": "Só Vulkan + Adreno: roteia o blending preciso pelo caminho framebuffer-fetch da memória de tile em vez de cópias ROV / texture-barrier. É o equivalente nativo mobile do ROV de desktop, e normalmente muito mais rápido em um tiler. LIGADO por padrão. Alguns drivers Adreno proprietários retornam leituras desatualizadas e podem mostrar artefatos (recortes de alpha em sprites, trechos de chão invisíveis). Desligue se você os vir. Reinicie o jogo para aplicar. Sem efeito no Mali (já ativado) ou no OpenGL.",
- "renderer.accurateBlendingFastPath.label": "Caminho rápido de blending preciso",
  "renderer.anisotropic.description": "Deixa as texturas em ângulo mais nítidas. Valores mais altos podem custar tempo de GPU.",
  "renderer.anisotropic.label": "Anisotrópico",
  "renderer.asyncTextureLoading.description": "Carrega as substituições em segundo plano para reduzir travas.",

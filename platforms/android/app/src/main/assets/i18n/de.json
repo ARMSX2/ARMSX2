@@ -1182,8 +1182,6 @@
  "ralogin.username.label": "Benutzername (A zum Tippen)",
  "renderer.accurateAlphaTest.description": "Genauerer Alpha-Test im Hardware-Renderer (im Zusammenspiel mit ROV). Wirkt sofort.",
  "renderer.accurateAlphaTest.label": "Genauer Alpha-Test",
- "renderer.accurateBlendingFastPath.description": "Nur Vulkan + Adreno: leitet genaues Blending über den Framebuffer-Fetch-Pfad im Tile-Speicher statt über ROV-/Texture-Barrier-Kopien. Das ist das mobile Pendant zu Desktop-ROV und auf Tile-GPUs meist deutlich schneller. Standardmäßig AN. Einige proprietäre Adreno-Treiber liefern veraltete Reads und können Artefakte zeigen (ausgestanzte Sprite-Transparenzen, unsichtbare Bodenflächen); dann ausschalten. Zum Übernehmen Spiel neu starten. Kein Effekt auf Mali (dort bereits aktiv) oder OpenGL.",
- "renderer.accurateBlendingFastPath.label": "Schneller Pfad für genaues Blending",
  "renderer.angleOpenGL.description": "Den OpenGL-Renderer über ANGLE ausführen, das OpenGL ES mit einem mitgelieferten Treiber nach Vulkan übersetzt. Nützlich auf Geräten, deren nativer OpenGL-ES-Treiber fehlerhaft oder langsam ist (z. B. manche MediaTek-Mali-GPUs). Wirkt nur, wenn OpenGL als Renderer eingestellt ist. Zum Übernehmen Spiel neu starten.",
  "renderer.angleOpenGL.label": "OpenGL über ANGLE",
  "renderer.anisotropic.description": "Schärft schräg betrachtete Texturen. Höhere Werte können GPU-Zeit kosten.",

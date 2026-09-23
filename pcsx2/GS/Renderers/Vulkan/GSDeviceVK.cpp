@@ -3913,25 +3913,16 @@ bool GSDeviceVK::CheckFeatures()
 	// unit; without fbfetch the per-PRIMITIVE texture-barrier path tanks blend-heavy games
 	// (GT4 = 10-20fps slideshow). No-op on any Mali lacking the extension.
 	//
-	// ADRENO / other non-Mali: opt-in via EnableAdrenoFramebufferFetch — but that is true only
-	// where the Pcsx2Config default (false) actually holds, i.e. DESKTOP. The Android build ships
-	// the key ON; see the deny-list note below before reasoning about who gets fbfetch.
-	// ROV is the wrong primitive on a tiler (fragment_shader_interlock serializes same-pixel
-	// fragments + bypasses tile memory), so on Adreno fbfetch is the way to make accurate
-	// blending fast. Historically kept off because the Adreno-840 PROPRIETARY driver returned
-	// STALE ROAA reads above Basic blending (alpha cutouts / invisible floors, A/B 2026-06-10);
-	// that was never confirmed on other Adreno gens or on Turnip/Mesa, which is why it started
-	// life as a ship-dark toggle to be A/B-verified per device+driver. Gated on ROAA presence, so
-	// it is a no-op on any device that does not expose the extension.
+	// ADRENO: enabled whenever ROAA is present, on every OS, except the parts the database denies
+	// and the Adreno 8xx proprietary blob (below). ROV is the wrong primitive on a tiler
+	// (fragment_shader_interlock serializes same-pixel fragments and bypasses tile memory), so on
+	// Adreno fbfetch is the way to make accurate blending fast. A user whose Qualcomm driver gets
+	// it wrong switches drivers; there is no per-user switch.
+	//
+	// OTHER VENDORS: trusted on Android builds only (the vendor terms become a deny list there, see
+	// below); on desktop only Mali and Adreno are.
 	const bool is_mali_vk = (m_device_properties.vendorID == 0x13B5u);
 	const bool is_adreno = IsDeviceAdreno();
-	// Turnip/Mesa is the open Adreno driver and does NOT exhibit the proprietary
-	// blob's stale-ROAA reads (the reason Adreno fbfetch shipped opt-in), so default
-	// it ON there — the fast blend path on a tiler that drops the per-primitive
-	// barriers spiking GS on transparency-heavy scenes. Proprietary Adreno is opt-in
-	// via EnableAdrenoFramebufferFetch on desktop only (Android ships that key on);
-	// DisableFramebufferFetch still overrides everywhere.
-	//
 	// ⚠️ In practice this is currently moot on Adreno: UseRenderTargetCopyForFeedback turns texture
 	// barriers off below, and "fbfetch needs barriers" then clears framebuffer_fetch regardless of
 	// what this resolves to. Framebuffer fetch IS the in-tile self-read, so a driver that cannot
@@ -3967,11 +3958,6 @@ bool GSDeviceVK::CheckFeatures()
 	// black/missing textures and turns it back off -- which is why it must default OFF and stay a
 	// separate setting.
 	//
-	// Deliberately NOT reusing EnableAdrenoFramebufferFetch: that one is default-ON on Android
-	// (Settings.kt adrenoFbFetch = true, plus a ConfigStore migration that flips old saves ON),
-	// so keying off it would silently force fbfetch on for EVERY MediaTek Mali user -- the exact
-	// breakage this block exists to prevent.
-	//
 	// Xclipse stays excluded even when forced: it has no working ROAA fbfetch at all, so honouring
 	// the force there would route the fast path into a unit that cannot do it.
 	// ANGLE is likewise no escape for the user -- it translates GLES onto this same Vulkan driver.
@@ -3990,22 +3976,12 @@ bool GSDeviceVK::CheckFeatures()
 	// preserves that default while letting DisableFramebufferFetch actually take effect, which the
 	// old unconditional force ate (see feedback_adreno_fbfetch_ini_override_measurement_trap).
 	//
-	// ⚠️ The EnableAdrenoFramebufferFetch term is NOT a no-op, and the vendor terms below are NOT an
-	// allow-list on Android. That key defaults to false only in Pcsx2Config.cpp (desktop, where this
-	// really does restrict fbfetch to Mali+Adreno). The Android build ships it TRUE
-	// (Settings.kt adrenoFbFetch = true) and force-flips existing saves to true via a one-time
-	// ConfigStore migration, so there the disjunction is (is_mali_vk || is_adreno || true) == true
-	// and the vendor terms restrict NOTHING: every GPU advertising ROAA takes the fbfetch path,
-	// including PowerVR/Broadcom and any vendor not named here. Only the two negative terms still
-	// bite — the database's destination-read deny and is_xclipse_vk.
-	//
-	// So the effective Android policy is a DENY-list (ROAA is trusted unless the vendor is known to
-	// lie about it), not an allow-list. Do NOT "restore" the allow-list as a tidy-up: that would
-	// REMOVE fbfetch from PowerVR et al. and drop them onto the ~3-4x-slower per-primitive barrier
-	// path, on hardware nobody here can test. The deny-list shape is also the more future-proof one
-	// — a new vendor with working ROAA gets the fast path instead of being stranded until someone
-	// adds it to a list. If a non-Mali/non-Adreno vendor is ever REPORTED returning stale/empty
-	// ROAA, add it alongside is_xclipse_vk rather than re-narrowing this.
+	// On Android the vendor terms are a DENY list: any_vendor_trusted is set, so every GPU that
+	// advertises ROAA takes the fbfetch path unless the database's destination-read deny,
+	// is_xclipse_vk or the Adreno 8xx blob gate says otherwise. That keeps PowerVR and other
+	// unnamed vendors off the ~3-4x slower per-primitive barrier path. Do not narrow it back to an
+	// allow list; if another vendor is reported returning stale or empty ROAA reads, add it beside
+	// is_xclipse_vk.
 	// 8 Elite (Adreno 8xx on the Qualcomm PROPRIETARY driver): that blob returns STALE ROAA reads
 	// above Basic blending — invisible floors / alpha cutouts (A/B 2026-06-10, the "Adreno-840
 	// proprietary" case in the note above). Never reproduced on 6xx/7xx or on Turnip/Mesa. So keep
@@ -4027,7 +4003,9 @@ bool GSDeviceVK::CheckFeatures()
 	fetch_inputs.is_adreno8xx_proprietary = is_adreno8xx_proprietary;
 	fetch_inputs.broken_destination_read = roaa_destination_read_is_broken;
 	fetch_inputs.force_mali_fetch_key = GSConfig.ForceMaliFramebufferFetch;
-	fetch_inputs.adreno_fetch_key = GSConfig.EnableAdrenoFramebufferFetch;
+#ifdef __ANDROID__
+	fetch_inputs.any_vendor_trusted = true;
+#endif
 	const GSVulkanFramebufferFetchDecision fetch_decision = DecideVulkanFramebufferFetch(fetch_inputs);
 	if (fetch_decision.force_key_ignored)
 	{

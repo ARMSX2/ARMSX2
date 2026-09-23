@@ -1251,8 +1251,6 @@
   "ralogin.username.label": "Nama pengguna (A untuk mengetik)",
   "renderer.accurateAlphaTest.description": "Alpha test lebih akurat di renderer hardware (berpasangan dengan ROV). Berlaku langsung.",
   "renderer.accurateAlphaTest.label": "Accurate Alpha Test",
-  "renderer.accurateBlendingFastPath.description": "Vulkan + Adreno saja: mengalihkan blending akurat lewat jalur framebuffer-fetch tile-memory alih-alih salinan ROV / texture-barrier. Ini setara native-mobile dari ROV desktop, dan biasanya jauh lebih cepat di tiler. ON secara default. Beberapa driver Adreno proprietary mengembalikan baca basi dan bisa memunculkan artefak (potongan alpha sprite, tambalan lantai tak terlihat). Matikan ini jika Anda melihatnya. Mulai ulang game untuk menerapkan. Tak berpengaruh pada Mali (sudah aktif) atau OpenGL.",
-  "renderer.accurateBlendingFastPath.label": "Jalur cepat blending akurat",
   "renderer.angleOpenGL.description": "Jalankan renderer OpenGL melalui ANGLE, yang menerjemahkan OpenGL ES ke Vulkan dengan driver bawaan. Berguna di perangkat yang driver OpenGL ES native-nya rusak atau lambat (mis. beberapa MediaTek Mali). Hanya berlaku saat renderer diatur ke OpenGL. Mulai ulang game untuk menerapkan.",
   "renderer.angleOpenGL.label": "OpenGL via ANGLE",
   "renderer.anisotropic.description": "Mempertajam tekstur miring. Nilai lebih tinggi bisa memakan waktu GPU.",

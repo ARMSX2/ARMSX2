@@ -1251,8 +1251,6 @@
  "ralogin.username.label": "使用者名稱 (A 輸入)",
  "renderer.accurateAlphaTest.description": "硬體渲染器中更精確的 alpha 測試 (與 ROV 搭配)。即時套用。",
  "renderer.accurateAlphaTest.label": "Accurate Alpha Test",
- "renderer.accurateBlendingFastPath.description": "僅 Vulkan + Adreno：將精確混合改走圖塊記憶體 framebuffer-fetch 路徑，而非 ROV／texture-barrier 複製。這相當於桌面 ROV 的行動原生版本，在 tiler 上通常快很多。預設開啟。少數專有 Adreno 驅動會回傳過期讀取並可能出現瑕疵 (sprite alpha 鏤空、隱形地板區塊)，若看到請關閉。重新啟動遊戲以套用。對 Mali (已啟用) 或 OpenGL 無效。",
- "renderer.accurateBlendingFastPath.label": "精確混合快速路徑",
  "renderer.angleOpenGL.description": "透過 ANGLE 執行 OpenGL 渲染器，它會借助內建驅動程式將 OpenGL ES 轉譯為 Vulkan。適用於原生 OpenGL ES 驅動程式較弱或較慢的裝置（如部分 MediaTek Mali）。僅在渲染器設為 OpenGL 時生效。重新啟動遊戲以套用。",
  "renderer.angleOpenGL.label": "透過 ANGLE 執行 OpenGL",
  "renderer.anisotropic.description": "銳化斜角紋理。較高值可能耗費 GPU 時間。",

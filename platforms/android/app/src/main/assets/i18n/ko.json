@@ -1251,8 +1251,6 @@
  "ralogin.username.label": "사용자 이름 (A로 입력)",
  "renderer.accurateAlphaTest.description": "하드웨어 렌더러에서 더 정확한 알파 테스트(ROV와 함께 동작). 즉시 적용됩니다.",
  "renderer.accurateAlphaTest.label": "정확한 알파 테스트",
- "renderer.accurateBlendingFastPath.description": "Vulkan + Adreno 전용: 정확한 블렌딩을 ROV / 텍스처 배리어 복사 대신 타일 메모리 프레임버퍼 페치 경로로 처리합니다. 이는 데스크톱 ROV의 모바일 네이티브 등가물이며 보통 타일러에서 훨씬 빠릅니다. 기본값 켬. 일부 독점 Adreno 드라이버는 오래된 값을 읽어 결함(스프라이트 알파 컷아웃, 보이지 않는 바닥 조각)이 나타날 수 있으니, 보이면 끄세요. 적용하려면 게임을 재시작하세요. Mali(이미 활성) 또는 OpenGL에는 영향이 없습니다.",
- "renderer.accurateBlendingFastPath.label": "정확한 블렌딩 고속 경로",
  "renderer.angleOpenGL.description": "OpenGL 렌더러를 ANGLE을 통해 실행합니다. ANGLE은 번들 드라이버로 OpenGL ES를 Vulkan으로 변환합니다. 기기의 기본 OpenGL ES 드라이버가 고장났거나 느린 경우(일부 MediaTek Mali 등)에 유용합니다. 렌더러가 OpenGL로 설정된 경우에만 적용됩니다. 적용하려면 게임을 재시작하세요.",
  "renderer.angleOpenGL.label": "ANGLE를 통한 OpenGL",
  "renderer.anisotropic.description": "비스듬한 텍스처를 선명하게 합니다. 값이 높으면 GPU 시간을 소모할 수 있습니다.",

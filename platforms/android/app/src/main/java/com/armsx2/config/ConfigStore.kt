@@ -46,11 +46,9 @@ object ConfigStore {
     // One-time seed of the (now per-game) screen orientation + custom Vulkan driver from
     // their legacy global prefs, so updating doesn't reset a user's rotation lock or GPU driver.
     private const val KEY_ORIENTATION_DRIVER_MIGRATED = "config.migrated.orientationDriver"
-    // One-time flip of existing saves to the new Adreno framebuffer-fetch default-on.
     // One-time seed of the (now per-game) output-scaler fields from their legacy
     // global-only prefs, so updating doesn't reset a user's display resolution.
     private const val KEY_OUTPUT_SCALE_MIGRATED = "config.migrated.outputScale"
-    private const val KEY_ADRENO_FBFETCH_MIGRATED = "config.migrated.adrenoFbFetchOn"
     // One-time flip of existing all-on OSD saves to the new default-off.
     private const val KEY_OSD_OFF_MIGRATED = "config.migrated.osdDefaultOff"
     private const val KEY_OSD_SCALE_MIGRATED = "config.migrated.osdScale65"
@@ -124,18 +122,6 @@ object ConfigStore {
                 dirty = true
             }
             MainActivityRuntime.prefs.edit { putBoolean(KEY_ORIENTATION_DRIVER_MIGRATED, true) }
-        }
-
-        // Adreno framebuffer-fetch is now default-on. Flip existing global saves that
-        // still carry the old default-off ONCE, so updating users get the fast
-        // accurate-blending path too (they can turn it back off in the Renderer tab).
-        if (raw != null && !MainActivityRuntime.prefs.getBoolean(KEY_ADRENO_FBFETCH_MIGRATED, false) &&
-            !parsed.display.adrenoFbFetch) {
-            parsed = parsed.copy(display = parsed.display.copy(adrenoFbFetch = true))
-            dirty = true
-        }
-        if (!MainActivityRuntime.prefs.getBoolean(KEY_ADRENO_FBFETCH_MIGRATED, false)) {
-            MainActivityRuntime.prefs.edit { putBoolean(KEY_ADRENO_FBFETCH_MIGRATED, true) }
         }
 
         // The perf OSD (FPS/stats counters) now defaults OFF — it read as clutter.

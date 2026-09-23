@@ -1251,8 +1251,6 @@
  "ralogin.username.label": "Kullanıcı adı (yazmak için A)",
  "renderer.accurateAlphaTest.description": "Donanım renderer'da daha doğru alpha testi (ROV ile eşleşir). Anında uygulanır.",
  "renderer.accurateAlphaTest.label": "Doğru Alpha Test",
- "renderer.accurateBlendingFastPath.description": "Yalnızca Vulkan + Adreno: doğru harmanı ROV / texture-barrier kopyaları yerine tile-memory framebuffer-fetch yolundan geçir. Bu, masaüstü ROV'un mobil-native eşdeğeri ve genellikle bir tiler'da çok daha hızlı. Varsayılan olarak AÇIK. Birkaç özel Adreno sürücüsü eski okumalar döndürür ve hata gösterebilir (sprite alpha kesikleri, görünmez zemin parçaları). Bunları görürseniz kapatın. Uygulamak için oyunu yeniden başlatın. Mali (zaten etkin) veya OpenGL'de etkisi yok.",
- "renderer.accurateBlendingFastPath.label": "Doğru harman hızlı yolu",
  "renderer.angleOpenGL.description": "OpenGL renderer'ı, paketle gelen bir sürücü kullanarak OpenGL ES'i Vulkan'a çeviren ANGLE üzerinden çalıştırır. Yerel OpenGL ES sürücüsü bozuk veya yavaş olan cihazlarda kullanışlıdır (örn. bazı MediaTek Mali). Yalnızca renderer OpenGL olarak ayarlıyken etkilidir. Uygulamak için oyunu yeniden başlatın.",
  "renderer.angleOpenGL.label": "ANGLE ile OpenGL",
  "renderer.anisotropic.description": "Açılı dokuları keskinleştirir. Yüksek değerler GPU süresine mal olabilir.",

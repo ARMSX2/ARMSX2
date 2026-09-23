@@ -37,7 +37,7 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
     ),
     // RendererTab.kt
     SettingsCategory.Graphics to listOf(
-        "accurateBlendingUnit", "adrenoFbFetch", "aspectRatio", "casMode", "casSharpness",
+        "accurateBlendingUnit", "aspectRatio", "casMode", "casSharpness",
         "customAspectRatio", "deinterlaceMode", "displayBilinear", "dumpReplaceableTextures", "fmvAspectRatio",
         "forceMaliFbFetch", "fsrSharpness", "fxaa", "gpuProfile", "gsBackThreadMode", "hardwareDownloadMode",
         "hwAa1", "hwAccurateAlphaTest", "hwMipmap", "hwRov", "loadTextureReplacements",

@@ -572,14 +572,6 @@ fun RendererTab(state: MutableState<Settings>) {
                 apply(s.copy(display = s.display.copy(coalesceRenderPasses = it)))
             }
             SettingsDivider()
-            ToggleRow(
-                str("renderer.accurateBlendingFastPath.label"),
-                s.display.adrenoFbFetch,
-                description = str("renderer.accurateBlendingFastPath.description"),
-            ) {
-                apply(s.copy(display = s.display.copy(adrenoFbFetch = it)))
-            }
-            SettingsDivider()
             // MediaTek Mali / Mali-G57 escape hatch: those drivers are force-excluded from
             // the fbfetch path natively, which costs a per-primitive texture barrier on a
             // GPU with no dual-source blend. Default OFF — on is a test, not a fix.

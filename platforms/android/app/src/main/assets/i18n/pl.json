@@ -1251,8 +1251,6 @@
  "ralogin.username.label": "Nazwa użytkownika (A aby pisać)",
  "renderer.accurateAlphaTest.description": "Dokładniejszy test alpha w rendererze sprzętowym (łączy się z ROV). Działa na żywo.",
  "renderer.accurateAlphaTest.label": "Dokładny test alpha",
- "renderer.accurateBlendingFastPath.description": "Tylko Vulkan + Adreno: kieruj dokładny blending przez ścieżkę framebuffer-fetch w pamięci kafelków zamiast kopii ROV / texture-barrier. To mobilny odpowiednik desktopowego ROV, zwykle dużo szybszy na tilerze. Domyślnie WŁ. Kilka zamkniętych sterowników Adreno zwraca nieaktualne odczyty i może pokazywać artefakty (wycinki alpha sprite'ów, niewidoczne fragmenty podłogi). Wyłącz, jeśli je widzisz. Zrestartuj grę. Brak wpływu na Mali (już włączone) lub OpenGL.",
- "renderer.accurateBlendingFastPath.label": "Szybka ścieżka dokładnego blendingu",
  "renderer.angleOpenGL.description": "Uruchamia renderer OpenGL przez ANGLE, który tłumaczy OpenGL ES na Vulkan za pomocą dołączonego sterownika. Przydatne na urządzeniach, których natywny sterownik OpenGL ES jest uszkodzony lub wolny (np. niektóre MediaTek Mali). Działa tylko, gdy renderer jest ustawiony na OpenGL. Zrestartuj grę, aby zastosować.",
  "renderer.angleOpenGL.label": "OpenGL przez ANGLE",
  "renderer.anisotropic.description": "Wyostrza tekstury pod kątem. Wyższe wartości mogą kosztować czas GPU.",

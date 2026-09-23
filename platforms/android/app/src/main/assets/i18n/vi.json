@@ -1251,8 +1251,6 @@
   "ralogin.username.label": "Tên đăng nhập (A để gõ)",
   "renderer.accurateAlphaTest.description": "Kiểm tra alpha chính xác hơn trong renderer phần cứng (kết hợp với ROV). Áp dụng ngay.",
   "renderer.accurateAlphaTest.label": "Accurate Alpha Test",
-  "renderer.accurateBlendingFastPath.description": "Chỉ Vulkan + Adreno: định tuyến blending chính xác qua đường framebuffer-fetch trong bộ nhớ tile thay vì bản sao ROV / texture-barrier. Đây là bản tương đương native trên di động của ROV desktop, và thường nhanh hơn nhiều trên tiler. Bật mặc định. Vài driver Adreno độc quyền trả về giá trị đọc cũ và có thể hiện lỗi (cắt alpha sprite, mảng sàn vô hình). Tắt nếu bạn thấy chúng. Khởi động lại game để áp dụng. Không ảnh hưởng Mali (đã bật) hoặc OpenGL.",
-  "renderer.accurateBlendingFastPath.label": "Accurate blending fast path",
   "renderer.angleOpenGL.description": "Chạy renderer OpenGL qua ANGLE, chuyển OpenGL ES sang Vulkan bằng một driver đi kèm. Hữu ích trên thiết bị có driver OpenGL ES gốc bị lỗi hoặc chậm (ví dụ một số MediaTek Mali). Chỉ có tác dụng khi renderer được đặt là OpenGL. Khởi động lại game để áp dụng.",
   "renderer.angleOpenGL.label": "OpenGL qua ANGLE",
   "renderer.anisotropic.description": "Làm sắc nét texture nghiêng. Giá trị cao hơn có thể tốn thời gian GPU.",

@@ -907,7 +907,6 @@ struct Pcsx2Config
 					UseBlitSwapChain : 1,
 					DisableShaderCache : 1,
 					DisableFramebufferFetch : 1,
-					EnableAdrenoFramebufferFetch : 1,
 					ForceMaliFramebufferFetch : 1,
 					DisableVertexShaderExpand : 1,
 					SkipDuplicateFrames : 1,
