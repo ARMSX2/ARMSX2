@@ -787,10 +787,15 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 	// trust. The architecture comes from the device name ("Adreno (TM) 650"), the same parse every
 	// other model-bounded rule uses. Turnip only: a Qualcomm blob cannot carry a Mesa git tag, and
 	// if one ever appears to, it means the string is not what we think it is.
+	//
+	// Within a6xx, the 650 and up only. On an Adreno 610 the same build renders the declared road
+	// differently from run to run (E25: 5 of 24 dumps, visible in play on Metal Gear Solid 3) while
+	// its copy road is stable, so the parts below 650 keep their barriers and their copy road.
 	profile.declared_loop_fix_generation = ParseFixGeneration(context.driver_info);
 	profile.orders_declared_feedback_loop = (profile.declared_loop_fix_generation >= 1) &&
 		                                    (context.api == MobileGpuApi::Vulkan) && (profile.driver == MobileGpuDriver::MesaTurnip) &&
-		                                    (selection.gpu.architecture == MobileGpuArchitecture::Adreno6xx);
+		                                    (selection.gpu.architecture == MobileGpuArchitecture::Adreno6xx) &&
+		                                    (selection.gpu.model_number >= 650);
 
 	// The a7xx preference needs no tag, because it is not about a build. It is about the part: on
 	// an Adreno 740 the declared loop with our barriers kept is correct on every scored cell and

@@ -778,6 +778,26 @@ TEST(GSGpuDriverProfile, ATaggedTurnipOnAdreno7xxMakesNoOrderingClaim)
 	EXPECT_FALSE(OrdersDeclaredLoop(sel));
 }
 
+// The older a6xx parts. On an Adreno 610 (MQ65) a generation-1 build renders the declared road
+// differently from run to run -- 5 of 24 dumps in campaign gs-adreno-inpass-read E25, visible in
+// play on Metal Gear Solid 3 -- while the same build's copy road and stock Turnip are stable. So
+// the fact covers the class it was measured correct on, the 650 and up, and nothing below it.
+TEST(GSGpuDriverProfile, ATaggedTurnipBelowTheAdreno650ClassMakesNoOrderingClaim)
+{
+	for (const char* device : {"Adreno (TM) 610", "Adreno (TM) 618", "Adreno (TM) 630", "Adreno (TM) 640"})
+	{
+		const GpuProfileSelection sel = ResolveAdrenoVKWithInfo(device, kTurnipDriverId,
+			"turnip", PackVulkanVersion(26, 1, 2), kFixedTurnipDriverInfo);
+
+		EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno6xx) << device;
+		EXPECT_EQ(sel.driver.declared_loop_fix_generation, 1u) << device;
+		EXPECT_FALSE(OrdersDeclaredLoop(sel)) << device;
+	}
+
+	EXPECT_TRUE(OrdersDeclaredLoop(ResolveAdrenoVKWithInfo("Adreno (TM) 660", kTurnipDriverId,
+		"turnip", PackVulkanVersion(26, 1, 2), kFixedTurnipDriverInfo)));
+}
+
 // A non-Turnip driver reporting the tag. It cannot happen -- the blob has no Mesa git sha - so if
 // it does, the string is not what we think it is and the safe reading is "not our build".
 TEST(GSGpuDriverProfile, ANonTurnipDriverCarryingTheTagMakesNoOrderingClaim)

@@ -4461,7 +4461,7 @@ bool GSDeviceVK::CheckFeatures()
 			fix_generation, m_device_driver_properties.driverInfo,
 			GetMobileDriverProfile().orders_declared_feedback_loop ?
 				"TRUSTED" :
-				"NOT trusted on this part -- the fix covers Adreno 6xx on Turnip only");
+				"NOT trusted on this part -- the fix covers Adreno 650-699 on Turnip only");
 	}
 	// The other driver rule, named the same way and for the same reason. Printed whenever the
 	// profile carries it, in effect or not, so a log says which measurement put the machine here
