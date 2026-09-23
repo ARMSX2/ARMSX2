@@ -78,6 +78,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_draw_buffer_overlap_tests.cpp
 	gs_ktx_tests.cpp
 	gs_texture_cache_grid_tests.cpp
+	gs_dither_scale_tests.cpp
 )
 
 target_include_directories(gs_vertex_tests PRIVATE

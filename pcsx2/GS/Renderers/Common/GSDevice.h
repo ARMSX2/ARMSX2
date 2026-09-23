@@ -1173,6 +1173,10 @@ struct alignas(16) GSHWDrawConfig
 
 		GSVector4 DitherMatrix[4];
 
+		/// x is the texture's scale / 16 and y its reciprocal, for addressing the texture. z is the
+		/// render target's scale: line width, the scaled dither's native-pixel index and the scan
+		/// mask's native line all read z, because a texture from GS memory is at scale 1 whatever
+		/// the target is.
 		GSVector4 ScaleFactor;
 		float LineCovScale;
 		/// PS_SUBSTITUTE_ALPHA: the alpha byte becomes (a & SubstituteAlphaKeep) |

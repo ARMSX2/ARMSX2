@@ -1370,14 +1370,14 @@ struct PSMain
 			// The dither matrix indexes by NATIVE pixel, so reduce the device pixel to the one
 			// that owns it on both axes -- same fix and same reasoning as the SCANMSK test below:
 			// floor before dividing, because in.p.xy is coord + 0.5, and a true divide by S
-			// (recovered from cb.scale_factor.x, the fixed-point S/16 the texture path already
-			// carries) rather than a reciprocal multiply, which can land a hair under an integer
+			// (cb.scale_factor.z, the RENDER TARGET's scale: the texture's, in scale_factor.x, is 1
+			// for a texture read from GS memory) rather than a reciprocal multiply, which can land a hair under an integer
 			// where the divide is exact.
 			// dither_phase then rotates the matrix under that index. At a fractional S some native
 			// pixels own one more device pixel than their neighbours, so their matrix entry covers
 			// more of the screen than the others; the phase decides which entries those are, and
 			// the CPU picks the quietest. It is zero at every whole S, where no cell is wider.
-			float dither_scale = cb.scale_factor.x * 16.f;
+			float dither_scale = cb.scale_factor.z;
 			fpos = ushort2(floor(in.p.xy) / dither_scale)
 			     + ushort2(cb.dither_phase & 3u, (cb.dither_phase >> 2) & 3u);
 		}
@@ -1585,10 +1585,10 @@ struct PSMain
 			// floor(row / S) -- before the parity test. Two traps, both silent: in.p.y is row + 0.5,
 			// and at a fractional scale that half puts some rows in the line above their owner; and
 			// a multiply by the reciprocal can land a hair under an integer where row / S is exactly
-			// integral. scale_factor.x is S/16, the fixed-point convention the texture path uses,
-			// and scaling it by 16 is exact, so this recovers S and divides.
+			// integral. S is scale_factor.z, the render target's scale: scale_factor.x is the
+			// texture's, which is 1 for a texture read from GS memory.
 			// (The dither path above uses the same floor-then-divide fix.)
-			float scanmsk_scale = cb.scale_factor.x * 16.f;
+			float scanmsk_scale = cb.scale_factor.z;
 			if ((uint(floor(in.p.y) / scanmsk_scale) & 1) == (PS_SCANMSK & 1))
 				discard();
 		}

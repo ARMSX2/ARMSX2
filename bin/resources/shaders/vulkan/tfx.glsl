@@ -639,7 +639,7 @@ layout(std140, set = 0, binding = 1) uniform cb1
 	mat4 DitherMatrix;
 	float ScaledScaleFactor;
 	float RcpScaleFactor;
-	float _pad0_cb1;
+	float RtScaleFactor; // the render target's scale; ScaledScaleFactor is the texture's
 	float _pad1_cb1;
 	float LineCovScale;
 	uint SubstituteAlphaKeep;
@@ -1531,14 +1531,14 @@ void ps_dither(inout vec3 C, float As)
 			// The dither matrix indexes by NATIVE pixel, so reduce the device pixel to the one
 			// that owns it on both axes -- same fix and same reasoning as the SCANMSK test below:
 			// floor before dividing, because gl_FragCoord is coord + 0.5, and a true divide by S
-			// (recovered from ScaledScaleFactor, the fixed-point S/16 the texture path already
-			// carries) rather than a reciprocal multiply, which can land a hair under an integer
+			// (the RENDER TARGET's scale: the texture's, in ScaledScaleFactor, is 1 for a texture read
+			// from GS memory) rather than a reciprocal multiply, which can land a hair under an integer
 			// where the divide is exact.
 			// DitherPhase then rotates the matrix under that index. At a fractional S some native
 			// pixels own one more device pixel than their neighbours, so their matrix entry covers
 			// more of the screen than the others; the phase decides which entries those are, and
 			// the CPU picks the quietest. It is zero at every whole S, where no cell is wider.
-			const float dither_scale = ScaledScaleFactor * 16.0f;
+			const float dither_scale = RtScaleFactor;
 			fpos = ivec2(floor(gl_FragCoord.xy) / dither_scale)
 			     + ivec2(DitherPhase & 3u, (DitherPhase >> 2) & 3u);
 		#endif
@@ -1838,10 +1838,10 @@ void main()
 	// to the line that owns it -- floor(row / S) -- before the parity test. Two traps, both silent:
 	// gl_FragCoord.y is row + 0.5, and at a fractional scale that half puts some rows in the line
 	// above their owner; and a multiply by RcpScaleFactor can land a hair under an integer where
-	// row / S is exactly integral. ScaledScaleFactor is S/16, the fixed-point convention the
-	// texture path uses, and scaling it by 16 is exact, so this recovers S and divides.
+	// row / S is exactly integral. S is RtScaleFactor, the render target's
+	// scale: ScaledScaleFactor is the texture's, which is 1 for a texture read from GS memory.
 	// (The dither path above uses the same floor-then-divide fix.)
-	const float scanmsk_scale = ScaledScaleFactor * 16.0f;
+	const float scanmsk_scale = RtScaleFactor;
 	if ((int(floor(gl_FragCoord.y) / scanmsk_scale) & 1) == (PS_SCANMSK & 1))
 		DISCARD;
 #endif

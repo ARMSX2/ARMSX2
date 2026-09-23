@@ -7318,11 +7318,12 @@ void GSRendererHW::EmulateDither()
 		m_conf.cb_ps.DitherMatrix[2] = GSVector4(DIMX.DM20, DIMX.DM21, DIMX.DM22, DIMX.DM23);
 		m_conf.cb_ps.DitherMatrix[3] = GSVector4(DIMX.DM30, DIMX.DM31, DIMX.DM32, DIMX.DM33);
 
-		// Scaled dither (PS_DITHER == 1) indexes the matrix by native pixel, so the phase goes up
-		// with the matrix. ScaleFactor.x is S/16 and the shader recovers S the same way, so both
-		// sides are talking about the same S -- including the case where the texture and the
-		// render target are at different scales and this is the texture's.
-		m_conf.cb_ps.DitherPhase = GetDitherPhase(DIMX, m_conf.cb_ps.ScaleFactor.x * 16.0f);
+		// Scaled dither (PS_DITHER == 1) indexes the matrix by the render target's native pixel,
+		// so the phase is chosen for the render target's scale, ScaleFactor.z, which is also what
+		// the shader divides by. Not ScaleFactor.x: that is the texture's scale, 1 for a texture
+		// read from GS memory, and dithering by it gave textured and untextured draws in one frame
+		// two different patterns.
+		m_conf.cb_ps.DitherPhase = GetDitherPhase(DIMX, m_conf.cb_ps.ScaleFactor.z);
 	}
 	else if (GSConfig.Dithering > 2)
 	{

@@ -37,4 +37,6 @@
 // a per-axis phase the CPU picks, so tfx.* changes and the PS constant buffer's last pad is named.
 // 123: a sprite that minifies a GS-memory texture under a nearest sampler reads the texel its
 // native pixel read, so tfx.* gains PS_NATIVE_TEXEL_GRID and the PS constant buffer gains a vector.
-static constexpr u32 SHADER_CACHE_VERSION = 123; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117
+// 124: the TFX dither index and scan-mask test divide by the render target's scale, carried in the
+// PS constant buffer's former pad after RcpScaleFactor, instead of the texture's.
+static constexpr u32 SHADER_CACHE_VERSION = 124; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117
