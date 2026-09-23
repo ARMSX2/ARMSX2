@@ -3339,7 +3339,11 @@ void GSRendererHW::CorrectSpriteCoverageForUpscale(GSTextureCache::Target* rt)
 	// Be careful to not correct downscaled targets, this can get messy and break post processing
 	// but it still needs to adjust native stuff from memory as it's not been compensated for
 	// upscaling (Dragon Quest 8 font for example).
-	if (!CanUpscale() || m_vt.m_primclass != GS_SPRITE_CLASS || !rt || rt->GetScale() <= 1.0f || m_texture_shuffle)
+	// Nor the quad a texture or channel shuffle rebuilt in place of the game's sprites: it is on
+	// whole native pixels and whole texels already, and RoundSprite would still resample its UV
+	// under a bilinear sampler. When the correction ran before the rebuilds it never saw them.
+	if (!CanUpscale() || m_vt.m_primclass != GS_SPRITE_CLASS || !rt || rt->GetScale() <= 1.0f || m_texture_shuffle ||
+		m_channel_shuffle_rebuilt_quad)
 		return;
 
 	// Every pass below reads the first sprite, and the rebuilds upstream set the count themselves.
@@ -8021,6 +8025,7 @@ __ri u32 GSRendererHW::EmulateChannelShuffle(GSTextureCache::Target* src, bool t
 
 		m_vertex->head = m_vertex->tail = m_vertex->next = 2;
 		m_index->tail = 2;
+		m_channel_shuffle_rebuilt_quad = true;
 	}
 	else
 	{
@@ -8055,6 +8060,7 @@ __ri u32 GSRendererHW::EmulateChannelShuffle(GSTextureCache::Target* src, bool t
 			s[1].V = m_r.w << 4;
 			m_vertex->head = m_vertex->tail = m_vertex->next = 2;
 			m_index->tail = 2;
+			m_channel_shuffle_rebuilt_quad = true;
 		}
 
 		// If we're doing per page copying, then set the valid 1 frame ahead if we're continuing, as this will save the target lookup making a new target for the new row.
@@ -11020,6 +11026,7 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	// Warning it must be done at the begining because it will change the
 	// vertex list (it will interact with PrimitiveOverlap and accurate
 	// blending)
+	m_channel_shuffle_rebuilt_quad = false;
 	if (m_channel_shuffle && tex && tex->m_from_target)
 		EmulateChannelShuffle(tex->m_from_target, false, rt);
 

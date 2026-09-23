@@ -365,6 +365,9 @@ private:
 	u32 m_channel_shuffle_width = 0;
 	GSVector4i m_channel_shuffle_src_valid = GSVector4i::zero();
 	bool m_full_screen_shuffle = false;
+	// EmulateChannelShuffle replaced this draw's sprites with a quad of its own. Reset per draw in
+	// DrawPrims; CorrectSpriteCoverageForUpscale leaves such a quad alone.
+	bool m_channel_shuffle_rebuilt_quad = false;
 
 	GSTextureCache::Target* m_last_rt;
 
