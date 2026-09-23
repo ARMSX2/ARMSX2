@@ -4499,23 +4499,30 @@ bool GSDeviceVK::CheckFeatures()
 			m_features.test_and_sample_depth ? "on" : "off", m_features.depth_feedback ? "on" : "off");
 	}
 
-	// ⚠️ MEASUREMENT OVERRIDES. Printed on every
-	// run, including the ones that pass no flag, so a log from a device measurement says which arm it is
-	// rather than leaving it to be inferred from the command line somebody typed.
-	//
-	// `loop-spelling` is no longer one of them: since 2026-09-22 the per-draw spelling is the default,
-	// so it prints `(default; …)` on an ordinary run and `(forced; …)` only when somebody named
-	// it. That distinction is the whole reason the origin is printed -- one measurement scored a
-	// whole set of dumps on the create flag because every previous one had reached the other spelling
-	// through a harness flag and nothing in the log said so.
-	Console.WriteLn("VK: measurement overrides: feedback-carry=%s date-road=%s declare-scope=%s "
-					"loop-spelling=%s(%s; %s) fast-stencil-shadow=%s",
-		GSFeedbackLoopCarryPolicy::IsForcedOff() ? "FORCED OFF" : "device policy", GSDateRoadPolicy::Name(),
-		GSDeclaredLoopScopePolicy::Name(), GSDynamicFeedbackLoopPolicy::Name(),
-		GSDynamicFeedbackLoopPolicy::Origin(),
-		m_declare_loop_per_draw ? "applied" : "pipeline create flag in effect",
-		GSFastStencilShadow::IsForcedOff() ? "FORCED OFF" :
-											 (GSFastStencilShadow::IsForcedOn() ? "FORCED ON" : "device policy"));
+	// ⚠️ MEASUREMENT OVERRIDES -- the gsrunner flags that move a road for an A/B. Printed only when
+	// one of them is set, so a device measurement's log says which arm it is while an ordinary run
+	// says nothing. The loop spelling counts only when somebody named it: its default is not an
+	// override.
+	const bool any_measurement_override = GSFeedbackLoopCarryPolicy::IsForcedOff() ||
+	                                      GSDateRoadPolicy::GetOverride() != GSDateRoadOverride::Auto ||
+	                                      GSDeclaredLoopScopePolicy::GetScope() != GSDeclaredLoopScope::All ||
+	                                      GSDynamicFeedbackLoopPolicy::IsForced() ||
+	                                      GSFastStencilShadow::IsForcedOff() || GSFastStencilShadow::IsForcedOn() ||
+	                                      GSSelfReadRoadPolicy::GetForcedArm() != GSSelfReadArm::Off ||
+	                                      GSSelfReadRoadPolicy::DeclaresDepthLoop();
+	if (any_measurement_override)
+	{
+		Console.WriteLn("VK: measurement overrides: feedback-carry=%s date-road=%s declare-scope=%s "
+						"loop-spelling=%s(%s; %s) fast-stencil-shadow=%s declare-arm=%u depth-loop=%s",
+			GSFeedbackLoopCarryPolicy::IsForcedOff() ? "FORCED OFF" : "device policy", GSDateRoadPolicy::Name(),
+			GSDeclaredLoopScopePolicy::Name(), GSDynamicFeedbackLoopPolicy::Name(),
+			GSDynamicFeedbackLoopPolicy::Origin(),
+			m_declare_loop_per_draw ? "applied" : "pipeline create flag in effect",
+			GSFastStencilShadow::IsForcedOff() ? "FORCED OFF" :
+												 (GSFastStencilShadow::IsForcedOn() ? "FORCED ON" : "device policy"),
+			static_cast<unsigned>(GSSelfReadRoadPolicy::GetForcedArm()),
+			GSSelfReadRoadPolicy::DeclaresDepthLoop() ? "DECLARED" : "off");
+	}
 
 	DevCon.WriteLn("Optional features:%s%s%s%s%s%s", m_features.primitive_id ? " primitive_id" : "",
 		m_features.texture_barrier ? " texture_barrier" : "", m_features.framebuffer_fetch ? " framebuffer_fetch" : "",
