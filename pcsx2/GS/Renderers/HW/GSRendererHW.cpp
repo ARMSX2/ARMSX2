@@ -7262,11 +7262,18 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 		// If we use depth-as-color feedback, then FB fetch can be used for depth also.
 		const bool need_barriers_for_depth = m_conf.ps.IsFeedbackLoopDepth() && features.depth_feedback;
 
+		// A draw that samples the live target somewhere other than the pixel it writes
+		// (TEX_HAZARD_RT: HandleTextureHazards' disjoint-rect shortcut or channel-shuffle page
+		// offset) depends on EARLIER draws' writes, which neither spelling orders -- both order the
+		// fragment's own pixel only. The fetch road never gets here with one (it clones the target,
+		// GSSelfReadCopyPolicy.h); the declared road does, and its one barrier is what serves it.
+		const bool samples_target_elsewhere = m_conf.tex_hazard == GSHWDrawConfig::TEX_HAZARD_RT;
+
 		// Fetch replaces the destination read; whether it also orders overlapping primitives
 		// within the draw is a per-backend property, and the software blend path enabled above
 		// depends on that ordering. See FbFetchDropsDrawBarriers for the full reasoning.
 		// PRIM_OVERLAP_UNKNOWN counts as overlapping.
-		if (FbFetchDropsDrawBarriers(
+		if (!samples_target_elsewhere && FbFetchDropsDrawBarriers(
 				features.framebuffer_fetch_orders_overlap || features.declared_feedback_loop_orders_overlap,
 				m_prim_overlap != PRIM_OVERLAP_NO, need_barriers_for_depth))
 		{

@@ -53,6 +53,14 @@
 // tiler. It survives on desktop because immediate-mode drivers over-synchronise it. That is why
 // this rule is "take the copy", not "keep the barrier".
 //
+// The declared attachment feedback loop (GSSelfReadRoadPolicy.h) drops the destination read's
+// barriers too, but it is not a tiled read: declaring the loop is what makes Turnip run the pass
+// untiled, so a barrier inside it orders earlier draws' writes against a sample anywhere in the
+// target. That road keeps the one barrier an offset read asks for (GSRendererHW::DetermineBarriers)
+// and takes no copy -- the draw shape DeclareAttachmentFeedbackLoop=2 (the declared loop with every
+// barrier kept) gives these draws, which renders one picture per run on the Adreno 650. Cloning
+// there instead costs a copy and a render-pass break per draw.
+//
 // Written as a pure function of the device's facts so the no-change cases can be pinned without
 // the device that takes the changed one. See gs_self_read_copy_policy_tests.cpp.
 //
@@ -93,13 +101,14 @@ struct GSSelfReadCopyInputs
 	bool feedback_loop_layout = false;
 
 	/// The backend declares an attachment feedback loop and the driver orders overlapping
-	/// primitives within the draw because of it (the declared-loop road; see
-	/// GSSelfReadRoadPolicy.h). That ordering is per PIXEL -- Adreno's
-	/// FLUSH_PER_OVERLAP_AND_OVERWRITE orders primitives covering the same sample, and says
-	/// nothing about a read of a pixel some earlier primitive in the same draw wrote. Identical
-	/// limit to the in-tile read, and on that road the per-draw barrier that used to cover the
-	/// offset case is dropped, so the offset read needs the copy for the same reason it does
-	/// under fetch.
+	/// primitives within the draw because of it (see GSSelfReadRoadPolicy.h). That ordering is per
+	/// PIXEL -- Adreno's FLUSH_PER_OVERLAP_AND_OVERWRITE orders primitives covering the same sample
+	/// and says nothing about a read of a different pixel. It does not have to: both offset roads
+	/// only reach the barrier when nothing in this draw writes what it samples (the rects are
+	/// disjoint, or the shuffle reads another page), so the only ordering needed is against
+	/// EARLIER draws, and the declaration runs the pass untiled, where the barrier the hazard code
+	/// asks for is a real one. GSRendererHW::DetermineBarriers keeps that barrier on this road
+	/// while dropping the destination read's.
 	bool declared_feedback_loop_orders_overlap = false;
 
 };
@@ -115,21 +124,21 @@ constexpr bool SelfReadNeedsSourceCopy(const GSSelfReadCopyInputs& in)
 	if (in.same_pixel_read)
 		return false;
 
-	// The declared-feedback-loop road: the driver orders the fragment's own pixel and nothing
-	// else, and the barrier that used to cover the rest is gone. Same answer as the in-tile road,
-	// reached before the feedback_loop_layout term below, which that road also sets.
-	if (in.declared_feedback_loop_orders_overlap)
+	// The in-tile read: nothing on that road can serve a read of a different pixel, and the barrier
+	// is by-region on a tiled pass. Checked first so no other bit can release it.
+	if (in.framebuffer_fetch && in.texture_barrier && !in.feedback_loop_layout)
 		return true;
+
+	// The declared-feedback-loop road: the pass is untiled and the barrier the hazard code asks for
+	// is kept (DetermineBarriers), which orders the earlier draws this read depends on. A clone
+	// would buy the same ordering for a copy and a render-pass break. Spelled out rather than left
+	// to the feedback_loop_layout term, which this road also sets.
+	if (in.declared_feedback_loop_orders_overlap)
+		return false;
 
 	// No in-tile read: either a real barrier orders the sample (desktop), or the backend is
 	// already cloning the target for it. Both are roads this policy does not touch.
-	if (!in.framebuffer_fetch || in.feedback_loop_layout)
-		return false;
-
-	if (!in.texture_barrier)
-		return false;
-
-	return true;
+	return false;
 }
 
 // The fetch road: an offset read copies, the destination read does not.
@@ -151,10 +160,12 @@ static_assert(SelfReadNeedsSourceCopy(
 	{.same_pixel_read = false, .framebuffer_fetch = true, .texture_barrier = true}));
 static_assert(!SelfReadNeedsSourceCopy({.same_pixel_read = false, .texture_barrier = true}));
 
-// The declared-feedback-loop arm: an offset read copies, the destination read still does not. The
-// road sets feedback_loop_layout too, which alone would have said "leave it alone" -- the term
-// above it is what stops that.
-static_assert(SelfReadNeedsSourceCopy({.texture_barrier = true, .feedback_loop_layout = true,
+// The declared-feedback-loop road: neither an offset read nor the destination read copies. The
+// offset read is ordered by the barrier DetermineBarriers keeps for it.
+static_assert(!SelfReadNeedsSourceCopy({.texture_barrier = true, .feedback_loop_layout = true,
+	.declared_feedback_loop_orders_overlap = true}));
+// And the declared bit cannot release the in-tile read.
+static_assert(SelfReadNeedsSourceCopy({.framebuffer_fetch = true, .texture_barrier = true,
 	.declared_feedback_loop_orders_overlap = true}));
 static_assert(!SelfReadNeedsSourceCopy({.same_pixel_read = true, .texture_barrier = true,
 	.feedback_loop_layout = true, .declared_feedback_loop_orders_overlap = true}));

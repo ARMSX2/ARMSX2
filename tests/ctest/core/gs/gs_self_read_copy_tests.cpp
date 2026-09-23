@@ -53,6 +53,19 @@ namespace
 	{
 		return GSSelfReadCopyInputs();
 	}
+
+	// Our Turnip on Adreno 650 and up: the declared attachment feedback loop with the driver
+	// ordering overlapping primitives, so the per-draw barriers of the destination read are dropped.
+	// The declaration also untiles the pass and puts the target in the feedback-loop layout, which
+	// is why feedback_loop_layout rides along.
+	constexpr GSSelfReadCopyInputs DeclaredOrderedRoad()
+	{
+		GSSelfReadCopyInputs in;
+		in.texture_barrier = true;
+		in.feedback_loop_layout = true;
+		in.declared_feedback_loop_orders_overlap = true;
+		return in;
+	}
 } // namespace
 
 // The bug: an offset read on the fetch road has neither a copy nor a barrier. It gets the copy.
@@ -178,4 +191,28 @@ TEST(GSSelfReadCopy, ShuffleOffsetIsUnchangedOffTheFetchRoad)
 	GSSelfReadCopyInputs copy = CopyRoad();
 	copy.same_pixel_read = false;
 	EXPECT_FALSE(SelfReadNeedsSourceCopy(copy));
+}
+
+// The driver-ordered declared road. The pass is untiled, so the barrier the disjoint-rect shortcut
+// and the shuffle escape ask for is a real one: it orders the earlier draws' writes against this
+// draw's sample, and nothing in this draw writes what it samples. A clone buys nothing on top of
+// that and costs a copy and a render-pass break per draw -- 120 draws per four frames of Prince of
+// Persia: Warrior Within, which is a fifth of its frame time at 2x on the Adreno 650.
+TEST(GSSelfReadCopy, DeclaredOrderedRoadOffsetReadTakesTheBarrier)
+{
+	EXPECT_FALSE(SelfReadNeedsSourceCopy(DeclaredOrderedRoad()));
+
+	GSSelfReadCopyInputs same_pixel = DeclaredOrderedRoad();
+	same_pixel.same_pixel_read = true;
+	EXPECT_FALSE(SelfReadNeedsSourceCopy(same_pixel));
+}
+
+// The in-tile read is the road that still needs the copy for an offset read, and the declared
+// bit must not be able to talk it out of that: a device that somehow set both is still reading
+// through tile memory.
+TEST(GSSelfReadCopy, DeclaredBitDoesNotReleaseTheFetchRoad)
+{
+	GSSelfReadCopyInputs in = FetchRoad();
+	in.declared_feedback_loop_orders_overlap = true;
+	EXPECT_TRUE(SelfReadNeedsSourceCopy(in));
 }

@@ -70,7 +70,8 @@
 // ⚠️ THE ORDERING IS PER PIXEL, NOT PER TARGET. FLUSH_PER_OVERLAP_AND_OVERWRITE orders primitives
 // that cover the same sample. A read of a DIFFERENT pixel that an earlier primitive in the same
 // draw wrote is not covered -- exactly the limit the in-tile read has. GSSelfReadCopyPolicy.h is
-// where that is handled, and it takes `declared_feedback_loop_orders_overlap` for the purpose.
+// where that is handled, and it takes `declared_feedback_loop_orders_overlap` for the purpose: an
+// offset read on this road keeps its one barrier, which the untiled pass honours, and takes no copy.
 //
 // THREE ENTRANCES TO THE DECLARED ROAD, and they are not the same kind of thing.
 //
