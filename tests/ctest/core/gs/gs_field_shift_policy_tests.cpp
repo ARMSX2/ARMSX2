@@ -288,3 +288,42 @@ TEST(GSFieldShiftTopBand, TheBandTracksTheRectWhereverItSits)
 			<< "DBY " << dby;
 	}
 }
+
+TEST(GSFieldShiftTopBand, TheMainDrawStopsWhereTheBandStarts)
+{
+	// Circuit 1 is BLENDED over circuit 2. If the shifted main draw still covered the band's rows
+	// and the band then drew over them, those rows would take circuit 1 twice -- once from the
+	// wrong rows above the rect and once from the band -- whenever the merge alpha is below one.
+	const float src_top_v = 2.0f / kTexHeight;
+	const float src_bot_v = (2.0f + 448.0f) / kTexHeight;
+	const float per_dst_row = (src_bot_v - src_top_v) / (kDstBottom - kDstTop);
+	const float shift_v = kShiftRows * per_dst_row;
+
+	const GSFieldShiftTopBand band =
+		GSComputeFieldShiftTopBand(1, src_top_v, kDstTop, kShiftRows, kTexHeight);
+	ASSERT_TRUE(band.enabled);
+
+	const GSFieldShiftMainTop main = GSFieldShiftMainDrawBelowBand(band, kDstTop, src_top_v - shift_v, shift_v);
+	EXPECT_FLOAT_EQ(main.dst_top, band.dst_bottom);
+
+	// Below the band every row samples what the untrimmed shifted draw sampled there.
+	for (int row = 0; row < 16; row++)
+	{
+		if (static_cast<float>(row) + 0.5f < main.dst_top)
+			continue;
+		EXPECT_EQ(SampledTexelRow(main.src_top_v, src_bot_v - shift_v, main.dst_top, kDstBottom, row),
+			SampledTexelRow(src_top_v - shift_v, src_bot_v - shift_v, kDstTop, kDstBottom, row))
+			<< "destination row " << row;
+	}
+}
+
+TEST(GSFieldShiftTopBand, WithNoBandTheMainDrawIsUntouched)
+{
+	const GSFieldShiftTopBand band =
+		GSComputeFieldShiftTopBand(0, 0.0f, kDstTop, kShiftRows, kTexHeight);
+	ASSERT_FALSE(band.enabled);
+
+	const GSFieldShiftMainTop main = GSFieldShiftMainDrawBelowBand(band, kDstTop, -0.01f, 0.01f);
+	EXPECT_FLOAT_EQ(main.dst_top, kDstTop);
+	EXPECT_FLOAT_EQ(main.src_top_v, -0.01f);
+}

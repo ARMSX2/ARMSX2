@@ -192,3 +192,23 @@ inline GSFieldShiftTopBand GSComputeFieldShiftTopBand(
 	band.enabled = true;
 	return band;
 }
+
+/// Where the shifted main draw starts once a band is drawn. The band owns destination rows
+/// [dst_top, dst_bottom) outright, so the main draw is cut to start below it, and its source top
+/// moves down by the same shift it was moved up by. Without the cut both draws cover the band's
+/// rows, which is harmless for circuit 2 (a copy, the band overwrites) but not for circuit 1,
+/// which is blended: those rows would take circuit 1 twice whenever the merge alpha is below one.
+struct GSFieldShiftMainTop
+{
+	float dst_top = 0.0f;
+	float src_top_v = 0.0f;
+};
+
+inline GSFieldShiftMainTop GSFieldShiftMainDrawBelowBand(
+	const GSFieldShiftTopBand& band, float dst_top, float shifted_src_top_v, float src_shift_v)
+{
+	if (!band.enabled)
+		return {dst_top, shifted_src_top_v};
+
+	return {band.dst_bottom, shifted_src_top_v + src_shift_v};
+}

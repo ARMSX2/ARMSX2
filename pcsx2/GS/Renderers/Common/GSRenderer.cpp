@@ -336,17 +336,29 @@ bool GSRenderer::Merge(int field)
 				}
 
 				src_gs_read[i] -= GSVector4(0.0f, src_shift, 0.0f, src_shift);
+
+				// The band owns its rows, so the main draw starts below it.
+				const GSFieldShiftMainTop main_top =
+					GSFieldShiftMainDrawBelowBand(band, dst[i].y, src_gs_read[i].y, src_shift);
+				dst[i].y = main_top.dst_top;
+				src_gs_read[i].y = main_top.src_top_v;
 			}
+
+			// The shift here moves what is read, so no destination row is left undrawn above the
+			// picture and there is nothing for the deinterlacer to pad.
+			top_pad[i] = 0.0f;
 		}
 		else
 		{
 			dst[i] += GSVector4(0.0f, interlace_offset, 0.0f, interlace_offset);
+
+			// A row is drawn when its centre lies at or below the rect's top edge, so the first drawn
+			// row of a rect starting at y is ceil(y - 0.5). Count whole rows rather than passing the
+			// raw offset: at a fractional scale the offset is not a whole number of rows and half a
+			// row of shift would otherwise land the shader's fetch on a texel boundary. 2 rows at 2x,
+			// 1 at 1.5x.
+			top_pad[i] = std::max(std::ceil(dst[i].y - 0.5f) - std::ceil(unshifted_top - 0.5f), 0.0f);
 		}
-		// A row is drawn when its centre lies at or below the rect's top edge, so the first drawn row
-		// of a rect starting at y is ceil(y - 0.5). Count whole rows rather than passing the raw
-		// offset: at a fractional scale the offset is not a whole number of rows and half a row of
-		// shift would otherwise land the shader's fetch on a texel boundary. 2 rows at 2x, 1 at 1.5x.
-		top_pad[i] = std::max(std::ceil(dst[i].y - 0.5f) - std::ceil(unshifted_top - 0.5f), 0.0f);
 	}
 
 	if (feedback_merge && tex[2])
