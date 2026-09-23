@@ -1302,7 +1302,7 @@ void GSDevice::Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, con
 	m_current = m_merge;
 }
 
-void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffset, float top_pad)
+void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffset, const GSFieldPadRows& top_pad)
 {
 	FlushDeferredDraws();
 	static int bufIdx = 0;
@@ -1328,7 +1328,7 @@ void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffse
 
 		const InterlaceConstantBuffer cb = {
 			GSVector4(static_cast<float>(bufIdx), 1.0f / ds.y, ds.y, MAD_SENSITIVITY),
-			GSVector4(top_pad, 0.0f, 0.0f, 0.0f)
+			GSVector4(top_pad.first, top_pad.end, 0.0f, 0.0f)
 		};
 
 		GL_PUSH("DoInterlace %dx%d Shader:%d Filter:%d", ds_i.x, ds_i.y, static_cast<int>(shader), filter);

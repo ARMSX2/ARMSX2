@@ -9,6 +9,7 @@
 #include "GS/GSRegs.h" // GetAlphaTestPS speaks in ATST_* register values
 #include "GS/Renderers/Common/GSFastList.h"
 #include "GS/Renderers/Common/GSGPUProfile.h"
+#include "GS/Renderers/Common/GSInterlaceModePolicy.h"
 #include "GS/Renderers/Common/GSShaderEnums.h"
 #include "GS/Renderers/Common/GSTexture.h"
 #include "GS/Renderers/Common/GSVertex.h"
@@ -640,7 +641,7 @@ struct alignas(16) InterlaceConstantBuffer
 	// so the top rows of that field's merge were never written and the target is cleared under them
 	// (two rows at 2x, one at 1x and at 1.5x). The weave and MAD buffering passes read the first row
 	// that WAS drawn instead of the hole; without it the frame carries a black row at 2x and above.
-	// (undrawn device rows at the top of the merge, unused, unused, unused)
+	// (first undrawn device row, first drawn device row below it, unused, unused)
 	GSVector4 FieldPad;
 };
 static_assert(sizeof(InterlaceConstantBuffer) == 32, "InterlaceConstantBuffer is correct size");
@@ -2181,9 +2182,10 @@ public:
 
 	void ClearCurrent();
 	void Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, const MergeTopBand* top_band, const GSVector2i& fs, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c);
-	/// `top_pad` is how many device rows at the top of the merge target were not drawn for this
-	/// field, because the merge offset that field's picture down by a native line.
-	void Interlace(const GSVector2i& ds, int field, int mode, float yoffset, float top_pad);
+	/// `top_pad` is the device rows of the merge target that were not drawn for this field, because
+	/// the merge offset that field's picture down by a native line: they start where the circuit's
+	/// display rect starts, not necessarily at row 0.
+	void Interlace(const GSVector2i& ds, int field, int mode, float yoffset, const GSFieldPadRows& top_pad);
 	void FXAA();
 	void ShadeBoost();
 	/// Runs the configured RetroArch (.slangp) shader chain over m_current, after

@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cmath>
+
 struct GSInterlaceModeSelection
 {
 	int field_offset;
@@ -54,3 +57,39 @@ static_assert(SelectGSInterlaceMode(0, true, false, true, false, true).present_f
 // is never taken over.
 static_assert(!SelectGSInterlaceMode(0, true, false, true, true, true).present_field_direct);
 static_assert(!SelectGSInterlaceMode(2, false, false, true, false, true).present_field_direct);
+
+// ---------------------------------------------------------------------------------------------
+// The undrawn field band
+//
+// In FFMD mode (outside the field-direct presentation) GSRenderer::Merge draws one field a native
+// line lower than the other, so the merge target holds no picture in the device rows between where
+// that circuit's display rect starts and where its shifted picture starts. The weave and MAD
+// buffering passes read the first drawn row instead of that hole.
+//
+// The band is where the RECT starts, not at the top of the merge target: a display rect that
+// starts lower on the screen leaves its hole lower too, and the rows above it are the background,
+// which must be read as themselves.
+
+/// Device rows [first, end) of the merge target that the shifted field left undrawn.
+struct GSFieldPadRows
+{
+	float first = 0.0f;
+	float end = 0.0f;
+};
+
+/// `unshifted_top` and `shifted_top` are the circuit's destination rect top before and after the
+/// shift, in device pixels. A row is drawn when its centre is at or below a rect's top edge, so the
+/// first drawn row of a rect starting at y is ceil(y - 0.5).
+inline GSFieldPadRows GSComputeFieldPadRows(float unshifted_top, float shifted_top)
+{
+	const float first = std::ceil(unshifted_top - 0.5f);
+	const float end = std::ceil(shifted_top - 0.5f);
+	return {first, (end > first) ? end : first};
+}
+
+/// The merge-target row a deinterlace pass reads for destination row `row`. The shaders run this
+/// same expression with FieldPad.xy = (first, end).
+inline float GSFieldPadSourceRow(float row, const GSFieldPadRows& pad)
+{
+	return (row >= pad.first && row < pad.end) ? pad.end : row;
+}

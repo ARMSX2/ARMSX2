@@ -10,9 +10,9 @@ in vec2 PSin_t;
 in vec4 PSin_c;
 
 uniform vec4 ZrH;
-// x: device rows at the top of the merge that were not drawn for the field being read; y, z and w
-// are unused. GSRenderer::Merge offsets a field's picture down by one native line and the merge
-// target is cleared, so nothing drew the rows above it.
+// xy: the device rows [x, y) of the merge that were not drawn for the field being read, starting
+// where the circuit's display rect starts; z and w are unused. GSRenderer::Merge offsets a field's
+// picture down by one native line and the merge target is cleared, so nothing drew them.
 uniform vec4 FieldPad;
 
 layout(binding = 0) uniform sampler2D TextureSampler;
@@ -29,11 +29,11 @@ void ps_main0()
 
 	if ((vpos & 1) == field)
 	{
-		// Rows above the pad were never drawn for this field, so read the first row that was
-		// instead of the cleared hole. At 1x the pad is one row and the field's own lowest row is
-		// row 1, so nothing moves; at 2x the pad is two rows and this is what fills the black
-		// device row 1.
-		float src_row = max(float(vpos), FieldPad.x);
+		// Rows [pad.x, pad.y) were never drawn for this field, so read the first row that was
+		// instead of the cleared hole. The band starts where the display rect does. At 1x it is
+		// one row and the field's own lowest row is its next, so nothing moves; at 2x it is two
+		// rows and this is what fills the black device row. GSFieldPadSourceRow is the same rule.
+		float src_row = (float(vpos) >= FieldPad.x && float(vpos) < FieldPad.y) ? FieldPad.y : float(vpos);
 		SV_Target0 = textureLod(TextureSampler, PSin_t + vec2(0.0f, (src_row - float(vpos)) * ZrH.y), 0.0);
 	}
 	else
@@ -85,7 +85,7 @@ void ps_main3()
 		// source's height, so the source row a fragment reads is its row within the bank, and one
 		// source row is 1 / vres of the texture coordinate.
 		int   srow    = int(gl_FragCoord.y) - bank * vres;
-		float src_row = max(float(srow), FieldPad.x);
+		float src_row = (float(srow) >= FieldPad.x && float(srow) < FieldPad.y) ? FieldPad.y : float(srow);
 		SV_Target0 = textureLod(TextureSampler, PSin_t + vec2(0.0f, (src_row - float(srow)) / float(vres)), 0.0);
 	}
 	else

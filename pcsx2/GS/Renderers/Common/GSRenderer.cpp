@@ -203,7 +203,7 @@ bool GSRenderer::Merge(int field)
 	GSDevice::MergeTopBand top_band[2] = {};
 	// Device rows at the top of the merge target each circuit's picture was pushed past. The target
 	// is cleared, so for the field that moved down, nothing drew those rows.
-	float top_pad[2] = {};
+	GSFieldPadRows top_pad[2] = {};
 
 	// Use offset for bob deinterlacing always, extra offset added later for FFMD mode.
 	const bool scanmask_frame = m_scanmask_used && abs(PCRTCDisplays.PCRTCDisplays[0].displayRect.y - PCRTCDisplays.PCRTCDisplays[1].displayRect.y) != 1;
@@ -346,18 +346,16 @@ bool GSRenderer::Merge(int field)
 
 			// The shift here moves what is read, so no destination row is left undrawn above the
 			// picture and there is nothing for the deinterlacer to pad.
-			top_pad[i] = 0.0f;
+			top_pad[i] = {};
 		}
 		else
 		{
 			dst[i] += GSVector4(0.0f, interlace_offset, 0.0f, interlace_offset);
 
-			// A row is drawn when its centre lies at or below the rect's top edge, so the first drawn
-			// row of a rect starting at y is ceil(y - 0.5). Count whole rows rather than passing the
-			// raw offset: at a fractional scale the offset is not a whole number of rows and half a
-			// row of shift would otherwise land the shader's fetch on a texel boundary. 2 rows at 2x,
-			// 1 at 1.5x.
-			top_pad[i] = std::max(std::ceil(dst[i].y - 0.5f) - std::ceil(unshifted_top - 0.5f), 0.0f);
+			// Whole rows, from where this circuit's rect starts: at a fractional scale the offset is
+			// not a whole number of rows, and a rect lower on the screen leaves its hole lower too.
+			// 2 rows at 2x, 1 at 1.5x.
+			top_pad[i] = GSComputeFieldPadRows(unshifted_top, dst[i].y);
 		}
 	}
 
@@ -409,7 +407,7 @@ bool GSRenderer::Merge(int field)
 		// loop above pushed one field's picture down by a native line, and the merge target is
 		// cleared, so the weave and MAD passes would otherwise read a hole there. Read from the same
 		// circuit the bob offset is taken from.
-		const float field_pad = top_pad[tex[1] ? 1 : 0];
+		const GSFieldPadRows field_pad = top_pad[tex[1] ? 1 : 0];
 
 		g_gs_device->Interlace(fs, field ^ field2, mode, offset, field_pad);
 	}
