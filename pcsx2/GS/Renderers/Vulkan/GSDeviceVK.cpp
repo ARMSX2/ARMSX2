@@ -9052,26 +9052,23 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		// pipeline that declares a texture feedback loop, and on the untiled path the same
 		// declaration programs the primitive mode that orders the read. Without the carry,
 		// declaring the loop RAISED the pass count on three of seven census dumps
-		// (Splashdown 4,766 → 9,451), which is this alternation. Not reached in this tree
-		// yet: UseFeedbackLoopLayout() wants the rasterization-order extension ABSENT and
-		// Turnip advertises it, so an Adreno here takes the copy road. The Adreno in-pass read
-		// work is what makes the road selectable; this is here so the
-		// carry arrives with it rather than after it.
+		// (Splashdown 4,766 → 9,451), which is this alternation. An Adreno reaches this road
+		// only when GSSelfReadRoadPolicy declares the loop for it.
 		//
-		// Everywhere else on this road — Apple silicon under Honeykrisp is the device we
-		// have, and it takes the road by default — the ordering is OURS: with texture
-		// barriers on, SendHWDraw emits a framebuffer-local feedback barrier for every
-		// draw that reads its own target, and that barrier is what orders the read. So
-		// texture_barrier is the input, the reading draws keep their own barriers inside
-		// the held-open pass, and the non-readers the carry latches read nothing and
-		// barrier nothing. Measured on an M2 Max: presented
-		// frames identical on 94 cells at 1x and 2x.
+		// On Apple silicon under Honeykrisp, which takes this road by default, the ordering
+		// is OURS: with texture barriers on, SendHWDraw emits a framebuffer-local feedback
+		// barrier for every draw that reads its own target, and that barrier is what orders
+		// the read. So the reading draws keep their own barriers inside the held-open pass,
+		// and the non-readers the carry latches read nothing and barrier nothing. Measured on
+		// an M2 Max: presented frames identical on 94 cells at 1x and 2x.
 		//
-		// A road with no ordering keeps feedback-loop state draw-local: carrying it over
-		// can leave later draws in the previous feedback render pass/layout and cause
-		// Vulkan-only flicker. That matches sashkinbro/EmuCoreX, which removes the carry
-		// globally. A vendor-scoped carry was tried once before and reverted — do NOT
-		// widen this past the cases above without measuring it on its own.
+		// Desktop NVIDIA, AMD and Intel drivers are on the same road with the same barriers
+		// and do NOT carry: nobody has timed it there. A road with no ordering, or one nobody
+		// measured, keeps feedback-loop state draw-local: carrying it over can leave later
+		// draws in the previous feedback render pass/layout and cause Vulkan-only flicker.
+		// That matches sashkinbro/EmuCoreX, which removes the carry globally. A vendor-scoped
+		// carry was tried once before and reverted — do NOT widen this past the cases above
+		// without measuring it on its own.
 		//
 		// Gated PER TARGET, not on the enclosing condition — that only requires ONE of rt/ds
 		// to match, so a draw keeping the RT but swapping the depth target would otherwise
@@ -9086,13 +9083,15 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		carry.device_always_carries = IsDeviceBroadcom();
 		carry.device_is_measured_vendor = IsDeviceMali();
 		carry.device_is_layout_road_vendor = IsDeviceAdreno();
-		// The other way the layout road can order its read, and the one that is live today.
-		// texture_barrier is what makes SendHWDraw issue the reader's feedback barrier at
-		// all — with it off there is no reader, no barrier and no ordering, so the layout
+		// The other way the layout road can order its read. texture_barrier is what makes
+		// SendHWDraw issue the reader's feedback barrier at all — with it off there is no reader, no barrier and no ordering, so the layout
 		// road carries nothing and -no-tex-barriers is inert by construction. Consulted
 		// only on the layout road; the fetch road's answer does not look at it, which
 		// matters because framebuffer_fetch is itself masked by texture_barrier.
 		carry.barriers_order_reads = m_features.texture_barrier;
+		// ...and only on the device that ordering was measured on.
+		carry.device_is_barrier_road_vendor =
+			(m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP);
 		carry.framebuffer_fetch = m_features.framebuffer_fetch;
 		carry.feedback_loop_layout = UseFeedbackLoopLayout();
 		// SendHWDraw only receives a target to barrier against when the pipeline's matching

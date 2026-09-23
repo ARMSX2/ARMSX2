@@ -67,9 +67,13 @@
 // barriers on, a draw that reads its own render target asks for a feedback barrier and SendHWDraw
 // emits one, a framebuffer-local self-dependency inside the open pass. That is an ordering the
 // road provides, exactly as the driver's primitive mode is on Adreno and rasterization-order
-// access is on the fetch road. So the rule is not a vendor list -- it is CARRY WHERE THE ROAD
-// ORDERS THE READ, and the layout road has two ways of doing that: the Adreno's driver, or this
-// backend's own barriers.
+// access is on the fetch road. So the rule is CARRY WHERE THE ROAD ORDERS THE READ, and the layout
+// road has two ways of doing that: the Adreno's driver, or this backend's own barriers.
+//
+// The barrier half is still scoped to the device it was measured on. Desktop NVIDIA, AMD and Intel
+// drivers take the layout road with the same barriers, so the argument above applies to them
+// word for word, but nobody has timed the carry there and it changes how their passes are cut.
+// They keep the draw-local flag they always had until someone does.
 //
 // A carried non-reader needs no barrier, because it reads nothing. What the carry hands it is the
 // pass's flag word, which is what supplies the pipeline create flag the FEEDBACK_LOOP_OPTIMAL
@@ -88,17 +92,14 @@
 // writes against the same sampler read inside one pass. Same two accesses, same order, one fewer
 // boundary.
 //
-// In this tree the ADRENO half of the layout branch is not reached at all. UseFeedbackLoopLayout()
-// requires the rasterization-order extension to be ABSENT and every Turnip device advertises it,
-// so feedback_loop_layout is false there and an Adreno takes the copy road. What makes the road
-// selectable is the Adreno in-pass read's own change, which is not here; that rule is
-// written now so the carry arrives with that road rather than one change after it.
+// The ADRENO half is reached when GSSelfReadRoadPolicy puts a Turnip device on the declared
+// feedback loop (our driver build on Adreno 650 and up, or Turnip on Adreno 7xx), which
+// forces the layout spelling even though Turnip advertises rasterization-order access. Every other
+// Adreno stays on the copy road and carries nothing.
 //
-// The BARRIER half is live today, on Apple silicon under Honeykrisp and on any other device that
-// advertises the feedback-loop layout without rasterization-order access. It is the one road in
-// this file that ships with a carry on hardware anyone is running, so it is the one whose evidence
-// is a byte-identity gate and a GPU-time A/B rather than a device census. Measured on an
-// M2 Max: 94 presented-frame cells at 1x and 2x, base against carry.
+// The BARRIER half is live on Apple silicon under Honeykrisp, the one device it was measured on.
+// Its evidence is a byte-identity gate and a GPU-time A/B rather than a device census: on an M2
+// Max, 94 presented-frame cells at 1x and 2x, base against carry.
 //
 // Where the layout carry is NOT free, and how to tell. Every pipeline in a latched pass carries
 // the colour feedback-loop create flag, and a tiler may react to that flag by taking the pass out
@@ -163,6 +164,12 @@ struct GSFeedbackLoopCarryInputs
 	/// layout road carries nothing -- which is what keeps -no-tex-barriers inert by construction.
 	bool barriers_order_reads = false;
 
+	/// The device the barrier-ordered layout carry was measured on: Apple silicon under
+	/// Honeykrisp. Desktop NVIDIA, AMD and Intel drivers take the same road with the same
+	/// barriers, but nobody has timed the carry there, so they keep the draw-local flag they had
+	/// before -- barriers_order_reads alone does not carry.
+	bool device_is_barrier_road_vendor = false;
+
 	/// The in-tile self-read path is live (Vulkan rasterization-order attachment access, which is
 	/// what makes declaring a pass self-reading free).
 	bool framebuffer_fetch = false;
@@ -193,9 +200,9 @@ struct GSFeedbackLoopCarryInputs
 // The rule is that a run may be latched wherever the road orders the read: rasterization-order
 // access on the fetch road, and on the layout road either the driver's primitive mode (Adreno) or
 // this backend's own per-draw feedback barriers. A road with no ordering carries nothing, whatever
-// the vendor -- a vendor-scoped carry was once widened past its evidence here and had to be
-// reverted (see the GSDeviceVK call site), and the fetch road stays scoped to the vendor it was
-// measured on for that reason.
+// the vendor. And each ordering is scoped to the device it was measured on -- the fetch road to
+// Mali, the barrier half of the layout road to Honeykrisp -- because a vendor-scoped carry was once
+// widened past its evidence here and had to be reverted (see the GSDeviceVK call site).
 constexpr bool CarryFeedbackLoopAcrossTargetRun(const GSFeedbackLoopCarryInputs& in)
 {
 	// Above the unconditional carry on purpose -- see the field's comment.
@@ -212,7 +219,7 @@ constexpr bool CarryFeedbackLoopAcrossTargetRun(const GSFeedbackLoopCarryInputs&
 	// applies, not a priority. On the layout road either ordering will do: the driver's, or this
 	// backend's own barriers.
 	if (in.feedback_loop_layout)
-		return in.device_is_layout_road_vendor || in.barriers_order_reads;
+		return in.device_is_layout_road_vendor || (in.barriers_order_reads && in.device_is_barrier_road_vendor);
 
 	return in.device_is_measured_vendor && in.framebuffer_fetch;
 }
@@ -262,20 +269,25 @@ static_assert(!CarryFeedbackLoopAcrossTargetRun(
 static_assert(!CarryFeedbackLoopAcrossTargetRun(
 	{.device_is_measured_vendor = false, .framebuffer_fetch = true}));
 
-// The layout road, all four ways it can be ordered or not. Either source of ordering carries;
-// neither does not. The third row is the M2 on its shipped road, the fourth is the same machine
-// with texture barriers off.
+// The layout road, every way it can be ordered or not. Either source of ordering carries; neither
+// does not. The third row is the M2 on its shipped road, the fourth is desktop Vulkan on the same
+// road with the same barriers -- unmeasured, so it keeps the draw-local flag -- and the fifth is
+// the M2 with texture barriers off.
 static_assert(CarryFeedbackLoopAcrossTargetRun(
 	{.device_is_layout_road_vendor = true, .feedback_loop_layout = true}));
 static_assert(CarryFeedbackLoopAcrossTargetRun({.device_is_layout_road_vendor = true,
 	.barriers_order_reads = true, .feedback_loop_layout = true}));
-static_assert(CarryFeedbackLoopAcrossTargetRun(
+static_assert(CarryFeedbackLoopAcrossTargetRun({.barriers_order_reads = true,
+	.device_is_barrier_road_vendor = true, .feedback_loop_layout = true}));
+static_assert(!CarryFeedbackLoopAcrossTargetRun(
 	{.barriers_order_reads = true, .feedback_loop_layout = true}));
+static_assert(!CarryFeedbackLoopAcrossTargetRun(
+	{.device_is_barrier_road_vendor = true, .feedback_loop_layout = true}));
 static_assert(!CarryFeedbackLoopAcrossTargetRun({.feedback_loop_layout = true}));
 static_assert(!CarryFeedbackLoopAcrossTargetRun({.device_is_layout_road_vendor = true,
 	.feedback_loop_layout = true, .draw_needs_own_barrier = true}));
 static_assert(!CarryFeedbackLoopAcrossTargetRun({.barriers_order_reads = true,
-	.feedback_loop_layout = true, .draw_needs_own_barrier = true}));
+	.device_is_barrier_road_vendor = true, .feedback_loop_layout = true, .draw_needs_own_barrier = true}));
 
 // The vendor term does not carry without its road, and neither road's term changes the other's
 // answer.
@@ -307,9 +319,9 @@ static_assert(!CarryDepthFeedbackAcrossTargetRun({.device_is_layout_road_vendor 
 static_assert(CarryDepthFeedbackAcrossTargetRun(
 	{.device_is_layout_road_vendor = true, .feedback_loop_layout = true}));
 static_assert(!CarryDepthFeedbackAcrossTargetRun({.barriers_order_reads = true,
-	.feedback_loop_layout = true, .draw_writes_depth = true}));
-static_assert(CarryDepthFeedbackAcrossTargetRun(
-	{.barriers_order_reads = true, .feedback_loop_layout = true}));
+	.device_is_barrier_road_vendor = true, .feedback_loop_layout = true, .draw_writes_depth = true}));
+static_assert(CarryDepthFeedbackAcrossTargetRun({.barriers_order_reads = true,
+	.device_is_barrier_road_vendor = true, .feedback_loop_layout = true}));
 
 // The override beats every road and every vendor term, in both halves of the decision.
 static_assert(!CarryFeedbackLoopAcrossTargetRun({.override_off = true, .device_always_carries = true}));

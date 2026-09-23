@@ -12,7 +12,8 @@
 // ways a road does that: rasterization-order attachment access on the framebuffer-fetch path
 // (Mali), the driver's own coherent primitive mode on the attachment-feedback-loop layout path
 // (Adreno under Turnip), and this backend's explicit per-draw feedback barriers on that same
-// layout path everywhere else (Apple silicon under Honeykrisp, which takes the road by default).
+// layout path, on the one device that was measured (Apple silicon under Honeykrisp, which takes
+// the road by default). Desktop Vulkan reaches the same road and does not carry.
 //
 // What these tests are for is the other half: a road with no ordering must reach exactly the
 // behaviour it had before, and most of those combinations cannot be produced on any machine in
@@ -63,6 +64,18 @@ namespace
 	// the self-read itself: SendHWDraw emits a framebuffer-local feedback barrier for every draw
 	// that reads its own target. No driver primitive mode is involved, and none is needed.
 	constexpr GSFeedbackLoopCarryInputs M2OnTheLayoutRoad()
+	{
+		GSFeedbackLoopCarryInputs in;
+		in.feedback_loop_layout = true;
+		in.barriers_order_reads = true;
+		in.device_is_barrier_road_vendor = true;
+		return in;
+	}
+
+	// Desktop Vulkan -- NVIDIA, AMD (RADV) or Intel (ANV). Same road as the M2 and the same
+	// barriers: the layout extension without rasterization-order access, texture barriers on. The
+	// carry was never timed on any of them.
+	constexpr GSFeedbackLoopCarryInputs DesktopOnTheLayoutRoad()
 	{
 		GSFeedbackLoopCarryInputs in;
 		in.feedback_loop_layout = true;
@@ -132,6 +145,20 @@ TEST(GSFeedbackLoopCarry, LayoutRoadCarriesWhenBarriersOrderTheRead)
 	EXPECT_TRUE(CarryDepthFeedbackAcrossTargetRun(M2OnTheLayoutRoad()));
 }
 
+// Desktop Vulkan keeps the draw-local flag it has on origin/master. The argument for the barrier
+// carry applies to it word for word, but the carry changes where its passes are cut and nobody has
+// timed that on a desktop GPU, so it stays off there until someone does.
+TEST(GSFeedbackLoopCarry, DesktopVulkanOnTheLayoutRoadDoesNotCarry)
+{
+	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(DesktopOnTheLayoutRoad()));
+	EXPECT_FALSE(CarryDepthFeedbackAcrossTargetRun(DesktopOnTheLayoutRoad()));
+
+	// ...with or without a reader in the run, and with the carry override untouched.
+	GSFeedbackLoopCarryInputs reader = DesktopOnTheLayoutRoad();
+	reader.draw_needs_own_barrier = true;
+	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(reader));
+}
+
 // The road with neither ordering carries nothing. This is the M2 under -no-tex-barriers, and it is
 // what makes that arm inert by construction rather than by measurement: with no barrier there is
 // no reader, so there is nothing for a latched pass to have been ordered against.
@@ -146,8 +173,8 @@ TEST(GSFeedbackLoopCarry, LayoutRoadDoesNotCarryWithNothingOrderingTheRead)
 	EXPECT_FALSE(CarryFeedbackLoopAcrossTargetRun(fetch_vendor));
 }
 
-// The four ways the layout road can be ordered, in one place: neither source, each alone, both.
-// Either one is enough and neither is required of the other.
+// The ways the layout road can be ordered, in one place: the driver's ordering, or our barriers on
+// the device they were measured on. Either one is enough and neither is required of the other.
 TEST(GSFeedbackLoopCarry, TheLayoutRoadNeedsEitherOrderingAndNotBoth)
 {
 	GSFeedbackLoopCarryInputs in;
@@ -157,10 +184,14 @@ TEST(GSFeedbackLoopCarry, TheLayoutRoadNeedsEitherOrderingAndNotBoth)
 	{
 		for (int barriers = 0; barriers < 2; barriers++)
 		{
-			in.device_is_layout_road_vendor = driver != 0;
-			in.barriers_order_reads = barriers != 0;
-			EXPECT_EQ(CarryFeedbackLoopAcrossTargetRun(in), driver != 0 || barriers != 0)
-				<< "driver=" << driver << " barriers=" << barriers;
+			for (int measured = 0; measured < 2; measured++)
+			{
+				in.device_is_layout_road_vendor = driver != 0;
+				in.barriers_order_reads = barriers != 0;
+				in.device_is_barrier_road_vendor = measured != 0;
+				EXPECT_EQ(CarryFeedbackLoopAcrossTargetRun(in), driver != 0 || (barriers != 0 && measured != 0))
+					<< "driver=" << driver << " barriers=" << barriers << " measured=" << measured;
+			}
 		}
 	}
 }
@@ -260,7 +291,7 @@ TEST(GSFeedbackLoopCarry, BroadcomCarryIsUnchanged)
 // with neither ordering term. It fails if a later term is ever added that can carry on no road.
 TEST(GSFeedbackLoopCarry, CarryingAlwaysRequiresARoadAndItsVendor)
 {
-	for (int bits = 0; bits < 128; bits++)
+	for (int bits = 0; bits < 256; bits++)
 	{
 		GSFeedbackLoopCarryInputs in;
 		in.device_is_measured_vendor = (bits & 1) != 0;
@@ -270,9 +301,11 @@ TEST(GSFeedbackLoopCarry, CarryingAlwaysRequiresARoadAndItsVendor)
 		in.device_is_layout_road_vendor = (bits & 16) != 0;
 		in.barriers_order_reads = (bits & 32) != 0;
 		in.override_off = (bits & 64) != 0;
+		in.device_is_barrier_road_vendor = (bits & 128) != 0;
 
 		const bool road = in.feedback_loop_layout ?
-		                      (in.device_is_layout_road_vendor || in.barriers_order_reads) :
+		                      (in.device_is_layout_road_vendor ||
+		                          (in.barriers_order_reads && in.device_is_barrier_road_vendor)) :
 		                      (in.device_is_measured_vendor && in.framebuffer_fetch);
 		EXPECT_EQ(CarryFeedbackLoopAcrossTargetRun(in), road && !in.draw_needs_own_barrier && !in.override_off)
 			<< "bits=" << bits;
@@ -324,7 +357,7 @@ TEST(GSFeedbackLoopCarry, BroadcomDepthCarryStopsAtADepthWriter)
 // this is what catches it.
 TEST(GSFeedbackLoopCarry, DepthCarryIsTheColourCarryMinusDepthWriters)
 {
-	for (int bits = 0; bits < 512; bits++)
+	for (int bits = 0; bits < 1024; bits++)
 	{
 		GSFeedbackLoopCarryInputs in;
 		in.device_always_carries = (bits & 1) != 0;
@@ -336,6 +369,7 @@ TEST(GSFeedbackLoopCarry, DepthCarryIsTheColourCarryMinusDepthWriters)
 		in.device_is_layout_road_vendor = (bits & 64) != 0;
 		in.barriers_order_reads = (bits & 128) != 0;
 		in.override_off = (bits & 256) != 0;
+		in.device_is_barrier_road_vendor = (bits & 512) != 0;
 
 		const bool colour = CarryFeedbackLoopAcrossTargetRun(in);
 		EXPECT_EQ(CarryDepthFeedbackAcrossTargetRun(in), colour && !in.draw_writes_depth)
