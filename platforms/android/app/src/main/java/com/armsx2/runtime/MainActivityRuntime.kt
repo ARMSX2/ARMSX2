@@ -775,12 +775,12 @@ open class MainActivityRuntime : ComponentActivity() {
                     // Only the tier-confining mode is overridden. Modes 1-6 are explicit per-core
                     // placements the user went looking for, so they are left alone.
                     val sustained = prefs.getBoolean("ui.sustainedPerf", false)
-                    val affinity = if (sustained && bootCfg.affinityMode == 7) 0 else bootCfg.affinityMode
-                    if (affinity != bootCfg.affinityMode)
+                    val affinity = if (sustained && bootCfg.output.affinityMode == 7) 0 else bootCfg.output.affinityMode
+                    if (affinity != bootCfg.output.affinityMode)
                         println("@@ANDROID_AFFINITY@@ sustained performance on -> affinity forced to Disabled")
                     runCatching { NativeApp.setAffinityMode(affinity) }
                     // The hold itself waits for the VM to come up. BIOS boots skip it.
-                    if (bootCfg.autoProgressiveScan)
+                    if (bootCfg.output.autoProgressiveScan)
                         startAutoProgressiveScanHold()
                     // Bank a copy of the cards this boot will mount, while they are still closed.
                     // Cheap and silent: it only writes when the card verifies AND its contents
@@ -907,10 +907,12 @@ open class MainActivityRuntime : ComponentActivity() {
             // global, which a global assignment always equals, so it wiped it.)
             currentGame.value?.serial?.takeIf { it.isNotBlank() }?.let { serial ->
                 if (prefs.getBoolean("memcard.perGame", false) &&
-                    resolved.memoryCardSlot1Filename.equals("mcd001.ps2", ignoreCase = true)) {
+                    resolved.system.memoryCardSlot1Filename.equals("mcd001.ps2", ignoreCase = true)) {
                     resolved = resolved.copy(
-                        memoryCardSlot1Filename = "$serial.ps2",
-                        memoryCardSlot1Enabled = true,
+                        system = resolved.system.copy(
+                            memoryCardSlot1Filename = "$serial.ps2",
+                            memoryCardSlot1Enabled = true,
+                        ),
                     )
                 }
             }
@@ -919,15 +921,15 @@ open class MainActivityRuntime : ComponentActivity() {
             // The file is in the same app-private BIOS dir as the global one, so only the
             // Filenames/BIOS *filename* changes; commit before the VM's LoadBIOS runs.
             run {
-                val effectiveBios = resolved.biosFilename.takeIf { it.isNotBlank() }
+                val effectiveBios = resolved.system.biosFilename.takeIf { it.isNotBlank() }
                     ?: bios.value?.takeIf { it.isNotEmpty() }?.let { File(it).name }
                 if (!effectiveBios.isNullOrBlank()) {
                     NativeApp.setSetting("Filenames", "BIOS", "string", effectiveBios)
                     NativeApp.commitSettings()
                 }
             }
-            upscale.value = resolved.upscaleFloat
-            renderer.value = resolved.renderer
+            upscale.value = resolved.output.upscaleFloat
+            renderer.value = resolved.output.renderer
             NativeApp.renderUpscalemultiplier(upscale.value)
             // Pin custom Vulkan driver (if any) BEFORE the renderer write —
             // the renderer JNI may trigger MTGS::ApplySettings which can
@@ -936,7 +938,7 @@ open class MainActivityRuntime : ComponentActivity() {
             val ctx = instance?.applicationContext
             // Per-game GPU driver: pin THIS title's resolved driver (blank = system). Keep the
             // session mirror in sync so the picker UI + delete/reselect logic stay correct.
-            val pickedId = resolved.customDriverId.takeIf { it.isNotBlank() }
+            val pickedId = resolved.output.customDriverId.takeIf { it.isNotBlank() }
             customDriverId.value = pickedId
             val picked: com.armsx2.CustomDriver.InstalledDriver? =
                 if (ctx != null) pickedId?.let { id ->
@@ -961,7 +963,7 @@ open class MainActivityRuntime : ComponentActivity() {
             // #254: cache whether this title runs with the emulated USB keyboard so
             // dispatchKeyEvent can forward physical-keyboard keys to it. applyTo()
             // already pushed [USB1] Type + the live attach (usbSetKeyboardEnabled).
-            usbKeyboardActive = resolved.usbKeyboard
+            usbKeyboardActive = resolved.system.usbKeyboard
 
             // Neutralize the NATIVE pad analog deadzone before the VM loads [Pad1].
             // A stale [Pad1]/Deadzone in an existing config (from the old, non-saving
@@ -1431,14 +1433,14 @@ open class MainActivityRuntime : ComponentActivity() {
          *  overrides are out of scope for v1. */
         fun applyAngleEnv(context: Context) {
             val settings = runCatching { com.armsx2.config.ConfigStore.loadGlobal() }.getOrNull()
-            val eligible = settings?.useAngleOpenGL == true && settings.renderer == "opengl"
+            val eligible = settings?.display?.useAngleOpenGL == true && settings.output.renderer == "opengl"
             val libDir = context.applicationInfo.nativeLibraryDir
             val egl = File(libDir, "libEGL_angle.so")
             val gles = File(libDir, "libGLESv2_angle.so")
             // gsBackThread rides on every line: GV7's back thread is the OTHER ANGLE suspect
             // (ANGLE binds an EGL context to a single thread far more strictly than the native
             // GLES drivers do), so the log has to say whether it was engaged.
-            val ctx = "renderer=${settings?.renderer} useAngle=${settings?.useAngleOpenGL} gsBackThread=${settings?.gsBackThreadMode}"
+            val ctx = "renderer=${settings?.output?.renderer} useAngle=${settings?.display?.useAngleOpenGL} gsBackThread=${settings?.display?.gsBackThreadMode}"
             try {
                 if (eligible && egl.exists() && gles.exists()) {
                     android.system.Os.setenv("ARMSX2_ANGLE_EGL_LIBRARY", egl.absolutePath, true)
@@ -2216,7 +2218,7 @@ open class MainActivityRuntime : ComponentActivity() {
         // game and global otherwise; the launcher/library uses its own app-level rotation
         // (AetherSX2-style split). Both share the 0/1/2/3 mapping below.
         val orientation = if (emulationOwnsOrientation)
-            com.armsx2.config.ConfigStore.resolveForGame(currentGame.value?.settingsKey).orientation
+            com.armsx2.config.ConfigStore.resolveForGame(currentGame.value?.settingsKey).output.orientation
         else
             com.armsx2.ui.theme.LauncherOrientationPreferences.mode.value
         val requested = when (orientation) {
@@ -2407,13 +2409,13 @@ open class MainActivityRuntime : ComponentActivity() {
         // "renderer"/"upscaleFloat" prefs. Read the global baseline for the
         // pre-launch UI; applyRendererPrefs re-resolves per-game at boot.
         com.armsx2.config.ConfigStore.loadGlobal().let { g0 ->
-            renderer.value = g0.renderer
-            upscale.value = g0.upscaleFloat
+            renderer.value = g0.output.renderer
+            upscale.value = g0.output.upscaleFloat
             // customDriverId/orientation now live in the Settings tier too (ConfigStore
             // one-time-seeds them from the legacy "customDriverId"/"ui.orientation" prefs).
             // Seed the pre-launch driver mirror from the global baseline; applyRendererPrefs
             // re-resolves per-game at boot.
-            customDriverId.value = g0.customDriverId.takeIf { it.isNotBlank() }
+            customDriverId.value = g0.output.customDriverId.takeIf { it.isNotBlank() }
         }
         surface.value = EmulationSurface(this)
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -3838,7 +3840,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 if (serial != null) com.armsx2.config.SettingsScope.Game
                 else com.armsx2.config.SettingsScope.Global,
                 serial,
-                resolved.copy(upscaleFloat = nf),
+                resolved.copy(output = resolved.output.copy(upscaleFloat = nf)),
             )
         }
         android.widget.Toast.makeText(this, "Resolution ${next}x", android.widget.Toast.LENGTH_SHORT).show()

@@ -237,8 +237,8 @@ class TextureManagerViewModel(application: Application) : AndroidViewModel(appli
      * are on disk and the game looks exactly the same — the single most confusing possible outcome.
      */
     fun onPackInstalled() {
-        if (!state.value.settings.loadTextureReplacements) {
-            update { it.copy(loadTextureReplacements = true) }
+        if (!state.value.settings.graphics.loadTextureReplacements) {
+            update { it.copy(graphics = it.graphics.copy(loadTextureReplacements = true)) }
         }
         refresh()
         reloadCore()

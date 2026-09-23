@@ -37,8 +37,8 @@ class MemoryCardViewModel(application: Application) : AndroidViewModel(applicati
             .map { file ->
                 MemoryCardItem(
                     file = file,
-                    slot1 = settings.memoryCardSlot1Enabled && file.name.equals(settings.memoryCardSlot1Filename, true),
-                    slot2 = settings.memoryCardSlot2Enabled && file.name.equals(settings.memoryCardSlot2Filename, true),
+                    slot1 = settings.system.memoryCardSlot1Enabled && file.name.equals(settings.system.memoryCardSlot1Filename, true),
+                    slot2 = settings.system.memoryCardSlot2Enabled && file.name.equals(settings.system.memoryCardSlot2Filename, true),
                     size = if (file.isFile) file.length() else directorySize(file),
                 )
             }
@@ -198,8 +198,8 @@ class MemoryCardViewModel(application: Application) : AndroidViewModel(applicati
             NativeApp.commitSettings()
             val current = ConfigStore.loadGlobal()
             ConfigStore.saveGlobal(
-                if (slot == 1) current.copy(memoryCardSlot1Enabled = true, memoryCardSlot1Filename = item.file.name)
-                else current.copy(memoryCardSlot2Enabled = true, memoryCardSlot2Filename = item.file.name),
+                if (slot == 1) current.copy(system = current.system.copy(memoryCardSlot1Enabled = true, memoryCardSlot1Filename = item.file.name))
+                else current.copy(system = current.system.copy(memoryCardSlot2Enabled = true, memoryCardSlot2Filename = item.file.name)),
             )
             true
         }.getOrDefault(false)
@@ -216,9 +216,9 @@ class MemoryCardViewModel(application: Application) : AndroidViewModel(applicati
     fun assignToGame(serial: String, slot: Int, item: MemoryCardItem) {
         val resolved = ConfigStore.resolveForGame(serial)
         val updated = if (slot == 1) {
-            resolved.copy(memoryCardSlot1Enabled = true, memoryCardSlot1Filename = item.file.name)
+            resolved.copy(system = resolved.system.copy(memoryCardSlot1Enabled = true, memoryCardSlot1Filename = item.file.name))
         } else {
-            resolved.copy(memoryCardSlot2Enabled = true, memoryCardSlot2Filename = item.file.name)
+            resolved.copy(system = resolved.system.copy(memoryCardSlot2Enabled = true, memoryCardSlot2Filename = item.file.name))
         }
         val ok = runCatching { ConfigStore.save(SettingsScope.Game, serial, updated) }.isSuccess
         state.value = if (ok) {
@@ -241,13 +241,17 @@ class MemoryCardViewModel(application: Application) : AndroidViewModel(applicati
         val resolved = ConfigStore.resolveForGame(serial)
         val updated = if (slot == 1) {
             resolved.copy(
-                memoryCardSlot1Enabled = global.memoryCardSlot1Enabled,
-                memoryCardSlot1Filename = global.memoryCardSlot1Filename,
+                system = resolved.system.copy(
+                    memoryCardSlot1Enabled = global.system.memoryCardSlot1Enabled,
+                    memoryCardSlot1Filename = global.system.memoryCardSlot1Filename,
+                ),
             )
         } else {
             resolved.copy(
-                memoryCardSlot2Enabled = global.memoryCardSlot2Enabled,
-                memoryCardSlot2Filename = global.memoryCardSlot2Filename,
+                system = resolved.system.copy(
+                    memoryCardSlot2Enabled = global.system.memoryCardSlot2Enabled,
+                    memoryCardSlot2Filename = global.system.memoryCardSlot2Filename,
+                ),
             )
         }
         val ok = runCatching { ConfigStore.save(SettingsScope.Game, serial, updated) }.isSuccess
@@ -264,9 +268,9 @@ class MemoryCardViewModel(application: Application) : AndroidViewModel(applicati
         serial ?: return null
         val resolved = runCatching { ConfigStore.resolveForGame(serial) }.getOrNull() ?: return null
         return if (slot == 1) {
-            resolved.memoryCardSlot1Filename.takeIf { resolved.memoryCardSlot1Enabled }
+            resolved.system.memoryCardSlot1Filename.takeIf { resolved.system.memoryCardSlot1Enabled }
         } else {
-            resolved.memoryCardSlot2Filename.takeIf { resolved.memoryCardSlot2Enabled }
+            resolved.system.memoryCardSlot2Filename.takeIf { resolved.system.memoryCardSlot2Enabled }
         }
     }
 

@@ -494,7 +494,7 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
                     if (pn.isNotEmpty()) runCatching { NativeApp.setEnabledPatches(false, pn, pn, bestSerial()) } // [Patches]
                 }
                 if (cheatEntries.isNotEmpty()) {
-                    update { it.copy(enableCheats = true) } // only cheats are gated on Enable Cheats
+                    update { it.copy(emuCore = it.emuCore.copy(enableCheats = true)) } // only cheats are gated on Enable Cheats
                     val cn = cheatEntries.mapNotNull { it.name.takeIf(String::isNotBlank) }.distinct().toTypedArray()
                     if (cn.isNotEmpty()) runCatching { NativeApp.setEnabledPatches(true, cn, cn, bestSerial()) } // [Cheats]
                 }

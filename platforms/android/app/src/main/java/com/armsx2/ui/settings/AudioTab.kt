@@ -42,74 +42,74 @@ fun AudioTab(state: MutableState<Settings>) {
         )
         IntSliderRow(
             label = str("audio.volume.label"),
-            value = s.audioVolume.coerceIn(0, 150),
+            value = s.audio.audioVolume.coerceIn(0, 150),
             min = 0,
             max = 150,
             description = str("audio.volume.description"),
             valueFormatter = { "$it%" },
-            onChange = { apply(s.copy(audioVolume = it)) },
+            onChange = { apply(s.copy(audio = s.audio.copy(audioVolume = it))) },
         )
         SettingsDivider()
-        ToggleRow(str("audio.mute.label"), s.audioMuted) { apply(s.copy(audioMuted = it)) }
+        ToggleRow(str("audio.mute.label"), s.audio.audioMuted) { apply(s.copy(audio = s.audio.copy(audioMuted = it))) }
         SettingsDivider()
         ToggleRow(
             str("audio.synchronization.label"),
-            s.audioTimeStretch,
+            s.audio.audioTimeStretch,
             description = str("audio.synchronization.description"),
-        ) { apply(s.copy(audioTimeStretch = it)) }
+        ) { apply(s.copy(audio = s.audio.copy(audioTimeStretch = it))) }
         SettingsDivider()
         IntSliderRow(
             label = str("audio.buffer.label"),
-            value = s.audioBufferMs.coerceIn(20, 200),
+            value = s.audio.audioBufferMs.coerceIn(20, 200),
             min = 20,
             max = 200,
             description = str("audio.buffer.description"),
             valueFormatter = { "$it ms" },
-            onChange = { apply(s.copy(audioBufferMs = it)) },
+            onChange = { apply(s.copy(audio = s.audio.copy(audioBufferMs = it))) },
         )
         SettingsDivider()
         IntSliderRow(
             label = str("audio.outputLatency.label"),
-            value = s.audioOutputLatencyMs.coerceIn(5, 100),
+            value = s.audio.audioOutputLatencyMs.coerceIn(5, 100),
             min = 5,
             max = 100,
             description = str("audio.outputLatency.description"),
             valueFormatter = { "$it ms" },
-            onChange = { apply(s.copy(audioOutputLatencyMs = it)) },
+            onChange = { apply(s.copy(audio = s.audio.copy(audioOutputLatencyMs = it))) },
         )
         SettingsDivider()
         IntSliderRow(
             label = str("audio.fastForwardVolume.label"),
-            value = s.audioFastForwardVolume.coerceIn(0, 100),
+            value = s.audio.audioFastForwardVolume.coerceIn(0, 100),
             min = 0,
             max = 100,
             description = str("audio.fastForwardVolume.description"),
             valueFormatter = { "$it%" },
-            onChange = { apply(s.copy(audioFastForwardVolume = it)) },
+            onChange = { apply(s.copy(audio = s.audio.copy(audioFastForwardVolume = it))) },
         )
         SettingsDivider()
         ToggleRow(
             str("audio.swapChannels.label"),
-            s.audioSwapChannels,
+            s.audio.audioSwapChannels,
             description = str("audio.swapChannels.description"),
-        ) { apply(s.copy(audioSwapChannels = it)) }
+        ) { apply(s.copy(audio = s.audio.copy(audioSwapChannels = it))) }
         SettingsDivider()
         ToggleRow(
             str("audio.spu2Simd.label"),
-            s.spu2NeonReverb,
+            s.audio.spu2NeonReverb,
             description = str("audio.spu2Simd.description"),
-        ) { apply(s.copy(spu2NeonReverb = it)) }
+        ) { apply(s.copy(audio = s.audio.copy(spu2NeonReverb = it))) }
         SettingsDivider()
         ToggleRow(
             str("audio.openSles.label"),
-            s.audioOpenSLES,
+            s.audio.audioOpenSLES,
             description = str("audio.openSles.description"),
-        ) { apply(s.copy(audioOpenSLES = it)) }
+        ) { apply(s.copy(audio = s.audio.copy(audioOpenSLES = it))) }
         SettingsDivider()
         ToggleRow(
             str("audio.lightweight.label"),
-            s.spu2LightweightMix,
+            s.audio.spu2LightweightMix,
             description = str("audio.lightweight.description"),
-        ) { apply(s.copy(spu2LightweightMix = it)) }
+        ) { apply(s.copy(audio = s.audio.copy(spu2LightweightMix = it))) }
     }
 }

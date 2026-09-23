@@ -60,7 +60,7 @@ internal fun GameDbSection(state: MutableState<Settings>) {
             val description = when {
                 switchedOff -> str("gamedb.state.off")
                 bySetting -> str("gamedb.state.yourSetting")
-                entry.core && !s.enableGameFixes -> str("gamedb.state.autoFixesOff")
+                entry.core && !s.emuCore.enableGameFixes -> str("gamedb.state.autoFixesOff")
                 entry.userHack && manualHardwareFixes -> str("gamedb.state.manualFixes")
                 else -> null
             }

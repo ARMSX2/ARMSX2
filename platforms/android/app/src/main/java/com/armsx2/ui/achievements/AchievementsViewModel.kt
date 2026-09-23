@@ -164,7 +164,7 @@ class AchievementsViewModel(application: Application) : AndroidViewModel(applica
 
     fun confirmToggleHardcore() {
         val target = state.value.pendingHardcore ?: return
-        saveRa { it.copy(achievementsHardcore = target) }
+        saveRa { it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(hardcore = target))) }
         state.value = state.value.copy(hardcore = target, pendingHardcore = null)
         // Enabling hardcore only takes hold on a system reset. Reboot the game now — so
         // "Enable & restart" actually restarts — but ONLY when a game is actually running.
@@ -186,14 +186,14 @@ class AchievementsViewModel(application: Application) : AndroidViewModel(applica
     fun setOption(key: String, enabled: Boolean) {
         saveRa {
             when (key) {
-                "notifications" -> it.copy(achievementsNotifications = enabled)
-                "leaderboardNotifications" -> it.copy(achievementsLeaderboardNotifications = enabled)
-                "overlays" -> it.copy(achievementsOverlays = enabled)
-                "lbOverlays" -> it.copy(achievementsLbOverlays = enabled)
-                "soundEffects" -> it.copy(achievementsSoundEffects = enabled)
-                "encoreMode" -> it.copy(achievementsEncoreMode = enabled)
-                "spectatorMode" -> it.copy(achievementsSpectatorMode = enabled)
-                "unofficialTestMode" -> it.copy(achievementsUnofficialTestMode = enabled)
+                "notifications" -> it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(notifications = enabled)))
+                "leaderboardNotifications" -> it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(leaderboardNotifications = enabled)))
+                "overlays" -> it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(overlays = enabled)))
+                "lbOverlays" -> it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(lbOverlays = enabled)))
+                "soundEffects" -> it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(soundEffects = enabled)))
+                "encoreMode" -> it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(encoreMode = enabled)))
+                "spectatorMode" -> it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(spectatorMode = enabled)))
+                "unofficialTestMode" -> it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(unofficialTestMode = enabled)))
                 else -> it
             }
         }
@@ -216,11 +216,11 @@ class AchievementsViewModel(application: Application) : AndroidViewModel(applica
     fun setOptionInt(key: String, value: Int) {
         saveRa {
             when (key) {
-                "notificationsDuration" -> it.copy(achievementsNotificationsDuration = value)
-                "leaderboardsDuration" -> it.copy(achievementsLeaderboardsDuration = value)
-                "notificationPosition" -> it.copy(achievementsNotificationPosition = value)
-                "overlayPosition" -> it.copy(achievementsOverlayPosition = value)
-                "notificationScale" -> it.copy(achievementsNotificationScale = value)
+                "notificationsDuration" -> it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(notificationsDuration = value)))
+                "leaderboardsDuration" -> it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(leaderboardsDuration = value)))
+                "notificationPosition" -> it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(notificationPosition = value)))
+                "overlayPosition" -> it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(overlayPosition = value)))
+                "notificationScale" -> it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(notificationScale = value)))
                 else -> it
             }
         }
@@ -240,7 +240,7 @@ class AchievementsViewModel(application: Application) : AndroidViewModel(applica
 
     /** RetroAchievements on or off, in this screen's scope. The core starts or stops it live. */
     fun setEnabled(enabled: Boolean) {
-        saveRa { it.copy(achievementsEnabled = enabled) }
+        saveRa { it.copy(emuCore = it.emuCore.copy(achievements = it.emuCore.achievements.copy(enabled = enabled))) }
         state.value = state.value.copy(enabled = enabled, hasGameOverrides = state.value.perGame)
     }
 
@@ -312,29 +312,29 @@ class AchievementsViewModel(application: Application) : AndroidViewModel(applica
             // the live rcheevos flag from the JSON — that's always off with no game running,
             // which would make the library RA tab's Hardcore toggle snap back off after you
             // enable it. isHardcorePersisted() is valid with or without a running game.
-            hardcore = cfg.achievementsHardcore,
+            hardcore = cfg.emuCore.achievements.hardcore,
             score = root.optLong("score").coerceAtLeast(0),
             softcoreScore = root.optLong("softcoreScore").coerceAtLeast(0),
             avatarUrl = root.optString("avatarUrl"),
             items = parseAchievementItems(json),
             subsets = parseSubsets(json),
-            enabled = cfg.achievementsEnabled,
+            enabled = cfg.emuCore.achievements.enabled,
             perGame = serial != null,
             scopeTitle = if (serial != null) MainActivityRuntime.currentGame.value?.title.orEmpty() else "",
             hasGameOverrides = gameOverrides != null && Settings.ACHIEVEMENTS_KEYS.any(gameOverrides::has),
-            notifications = cfg.achievementsNotifications,
-            leaderboardNotifications = cfg.achievementsLeaderboardNotifications,
-            overlays = cfg.achievementsOverlays,
-            lbOverlays = cfg.achievementsLbOverlays,
-            soundEffects = cfg.achievementsSoundEffects,
-            notificationsDuration = cfg.achievementsNotificationsDuration,
-            leaderboardsDuration = cfg.achievementsLeaderboardsDuration,
-            notificationPosition = cfg.achievementsNotificationPosition,
-            overlayPosition = cfg.achievementsOverlayPosition,
-            notificationScale = cfg.achievementsNotificationScale,
-            encoreMode = cfg.achievementsEncoreMode,
-            spectatorMode = cfg.achievementsSpectatorMode,
-            unofficialTestMode = cfg.achievementsUnofficialTestMode,
+            notifications = cfg.emuCore.achievements.notifications,
+            leaderboardNotifications = cfg.emuCore.achievements.leaderboardNotifications,
+            overlays = cfg.emuCore.achievements.overlays,
+            lbOverlays = cfg.emuCore.achievements.lbOverlays,
+            soundEffects = cfg.emuCore.achievements.soundEffects,
+            notificationsDuration = cfg.emuCore.achievements.notificationsDuration,
+            leaderboardsDuration = cfg.emuCore.achievements.leaderboardsDuration,
+            notificationPosition = cfg.emuCore.achievements.notificationPosition,
+            overlayPosition = cfg.emuCore.achievements.overlayPosition,
+            notificationScale = cfg.emuCore.achievements.notificationScale,
+            encoreMode = cfg.emuCore.achievements.encoreMode,
+            spectatorMode = cfg.emuCore.achievements.spectatorMode,
+            unofficialTestMode = cfg.emuCore.achievements.unofficialTestMode,
             unlockSoundName = MainActivityRuntime.prefs.getString(UNLOCK_SOUND_PREF, null),
             soundVolume = MainActivityRuntime.prefs.getInt(SOUND_VOLUME_PREF, 100),
         )

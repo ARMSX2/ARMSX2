@@ -62,13 +62,13 @@ fun NetworkTab(state: MutableState<Settings>) {
     // there is exactly one way into LAN play. Indices still line up with NetApi in Config.h.
     val apiValues = listOf("Unset", "PCAP Bridged", "PCAP Switched", "TAP", "Sockets")
     val apiLabels = listOf("Unset", "PCAP Br.", "PCAP Sw.", "TAP", "Sockets")
-    val apiIndex = apiValues.indexOf(s.dev9EthApi).let { if (it >= 0) it else apiValues.lastIndex }
+    val apiIndex = apiValues.indexOf(s.network.dev9EthApi).let { if (it >= 0) it else apiValues.lastIndex }
     // 0 Online / 1 Host / 2 Join — derived from the stored settings rather than kept as its own
     // field, so there is a single source of truth and no way for the two to disagree.
-    val netMode = if (s.dev9EthApi != "Local Link") 0 else if (s.localLinkHost) 1 else 2
+    val netMode = if (s.network.dev9EthApi != "Local Link") 0 else if (s.network.localLinkHost) 1 else 2
     val dnsModes = listOf("Manual", "Auto", "Internal")
-    val dns1Index = dnsModes.indexOf(s.dev9ModeDns1).let { if (it >= 0) it else 1 }
-    val dns2Index = dnsModes.indexOf(s.dev9ModeDns2).let { if (it >= 0) it else 1 }
+    val dns1Index = dnsModes.indexOf(s.network.dev9ModeDns1).let { if (it >= 0) it else 1 }
+    val dns2Index = dnsModes.indexOf(s.network.dev9ModeDns2).let { if (it >= 0) it else 1 }
 
     fun apply(updated: Settings) = InGameOverlay.saveSettings(updated)
 
@@ -94,14 +94,16 @@ fun NetworkTab(state: MutableState<Settings>) {
         // code delivered working input in this same game at 069f8a44. Under investigation as a
         // regression somewhere in 069f8a44..94d2e3f6 — DEV9 itself is unchanged across that window,
         // so it is a trigger rather than the cause. Warn about the effect, do not assert a cause.
-        ToggleRow(str("network.enableDev9Ethernet"), s.dev9EthEnable,
+        ToggleRow(str("network.enableDev9Ethernet"), s.network.dev9EthEnable,
             description = str("network.enableDev9Ethernet.desc")) {
-            val currentDevice = s.dev9EthDevice.ifEmpty { "Auto" }
+            val currentDevice = s.network.dev9EthDevice.ifEmpty { "Auto" }
             apply(
                 s.copy(
-                    dev9EthEnable = it,
-                    dev9EthApi = s.dev9EthApi.ifEmpty { "Sockets" },
-                    dev9EthDevice = currentDevice,
+                    network = s.network.copy(
+                        dev9EthEnable = it,
+                        dev9EthApi = s.network.dev9EthApi.ifEmpty { "Sockets" },
+                        dev9EthDevice = currentDevice,
+                    ),
                 )
             )
         }
@@ -124,14 +126,14 @@ fun NetworkTab(state: MutableState<Settings>) {
                 // not connected" and nothing points at the room code. It defaulted to empty, so the
                 // feature was unusable until you happened to type one. Seed a code when switching
                 // into a LAN mode; the host reads it out and guests retype it, same as the address.
-                val seededCode = s.localLinkRoomCode.takeIf { it.length in 4..12 } ?: generateRoomCode()
+                val seededCode = s.network.localLinkRoomCode.takeIf { it.length in 4..12 } ?: generateRoomCode()
                 apply(
                     when (mode) {
                         // Host is peer 1 by protocol; guests take the derived id so two devices
                         // never share one. Set here (not during composition) so it is a plain edit.
-                        1 -> s.copy(dev9EthApi = "Local Link", localLinkHost = true, localLinkPeerId = 1, localLinkRoomCode = seededCode)
-                        2 -> s.copy(dev9EthApi = "Local Link", localLinkHost = false, localLinkPeerId = derivedPeerId, localLinkRoomCode = seededCode)
-                        else -> s.copy(dev9EthApi = "Sockets", localLinkHost = false)
+                        1 -> s.copy(network = s.network.copy(dev9EthApi = "Local Link", localLinkHost = true, localLinkPeerId = 1, localLinkRoomCode = seededCode))
+                        2 -> s.copy(network = s.network.copy(dev9EthApi = "Local Link", localLinkHost = false, localLinkPeerId = derivedPeerId, localLinkRoomCode = seededCode))
+                        else -> s.copy(network = s.network.copy(dev9EthApi = "Sockets", localLinkHost = false))
                     }
                 )
             },
@@ -143,13 +145,13 @@ fun NetworkTab(state: MutableState<Settings>) {
                 label = str("network.ethernetApi"),
                 options = apiLabels,
                 selectedIndex = apiIndex,
-                onChange = { apply(s.copy(dev9EthApi = apiValues[it])) },
+                onChange = { apply(s.copy(network = s.network.copy(dev9EthApi = apiValues[it]))) },
             )
             SettingsDivider()
             DeviceChooser(
-                selected = s.dev9EthDevice.ifEmpty { "Auto" },
+                selected = s.network.dev9EthDevice.ifEmpty { "Auto" },
                 adapters = adapters,
-                onChange = { apply(s.copy(dev9EthDevice = it.ifEmpty { "Auto" })) },
+                onChange = { apply(s.copy(network = s.network.copy(dev9EthDevice = it.ifEmpty { "Auto" }))) },
             )
             SettingsDivider()
         } else {
@@ -189,40 +191,40 @@ fun NetworkTab(state: MutableState<Settings>) {
                 LocalLinkRow(
                     controllerId = "network.localLink.address",
                     label = str("network.localLink.address"),
-                    value = s.localLinkAddress,
+                    value = s.network.localLinkAddress,
                     description = str("network.localLink.address.desc"),
                     fieldLabel = str("network.address"),
-                ) { apply(s.copy(localLinkAddress = it)) }
+                ) { apply(s.copy(network = s.network.copy(localLinkAddress = it))) }
             }
             SettingsDivider()
             LocalLinkRow(
                 controllerId = "network.localLink.port",
                 label = str("network.localLink.port"),
-                value = s.localLinkPort.toString(),
+                value = s.network.localLinkPort.toString(),
                 description = str("network.localLink.port.desc"),
                 fieldLabel = str("network.localLink.port"),
-            ) { apply(s.copy(localLinkPort = it.toIntOrNull()?.coerceIn(1024, 65535) ?: 19072)) }
+            ) { apply(s.copy(network = s.network.copy(localLinkPort = it.toIntOrNull()?.coerceIn(1024, 65535) ?: 19072))) }
             SettingsDivider()
             LocalLinkRow(
                 controllerId = "network.localLink.roomCode",
                 label = str("network.localLink.roomCode"),
-                value = s.localLinkRoomCode,
+                value = s.network.localLinkRoomCode,
                 description = str("network.localLink.roomCode.desc"),
                 fieldLabel = str("network.localLink.roomCode"),
-                onGenerate = { apply(s.copy(localLinkRoomCode = generateRoomCode())) },
+                onGenerate = { apply(s.copy(network = s.network.copy(localLinkRoomCode = generateRoomCode()))) },
             ) {
                 // Uppercased to match the native side, which normalises before deriving the key.
                 // An out-of-range code disables DEV9 entirely, so refuse it rather than storing it.
                 val cleaned = it.uppercase().filter { c -> c.isLetterOrDigit() }.take(12)
-                apply(s.copy(localLinkRoomCode = cleaned.ifEmpty { s.localLinkRoomCode }))
+                apply(s.copy(network = s.network.copy(localLinkRoomCode = cleaned.ifEmpty { s.network.localLinkRoomCode })))
             }
             // Loud, visible warning instead of the silent "no network adapter" the game reports.
-            if (s.localLinkRoomCode.length !in 4..12)
+            if (s.network.localLinkRoomCode.length !in 4..12)
                 HelpText(str("network.localLink.roomCode.invalid"))
             SettingsDivider()
             ReadOnlyRow(
                 label = str("network.localLink.peerId"),
-                value = (if (netMode == 1) 1 else s.localLinkPeerId).toString(),
+                value = (if (netMode == 1) 1 else s.network.localLinkPeerId).toString(),
                 description = str("network.localLink.peerId.desc"),
             )
             HelpText(str("network.localLink.limits"))
@@ -234,55 +236,55 @@ fun NetworkTab(state: MutableState<Settings>) {
         // Local Link assigns those itself from the peer id, so showing them in LAN mode would be
         // presenting settings that silently do nothing.
         if (netMode == 0) {
-        ToggleRow(str("network.interceptDhcp"), s.dev9InterceptDhcp) {
-            apply(s.copy(dev9InterceptDhcp = it))
+        ToggleRow(str("network.interceptDhcp"), s.network.dev9InterceptDhcp) {
+            apply(s.copy(network = s.network.copy(dev9InterceptDhcp = it)))
         }
         SettingsDivider()
-        ToggleRow(str("network.autoSubnetMask"), s.dev9AutoMask) {
-            apply(s.copy(dev9AutoMask = it))
+        ToggleRow(str("network.autoSubnetMask"), s.network.dev9AutoMask) {
+            apply(s.copy(network = s.network.copy(dev9AutoMask = it)))
         }
         SettingsDivider()
-        ToggleRow(str("network.autoGateway"), s.dev9AutoGateway) {
-            apply(s.copy(dev9AutoGateway = it))
+        ToggleRow(str("network.autoGateway"), s.network.dev9AutoGateway) {
+            apply(s.copy(network = s.network.copy(dev9AutoGateway = it)))
         }
         SettingsDivider()
         SegmentedRow(
             label = str("network.primaryDns"),
             options = dnsModes,
             selectedIndex = dns1Index,
-            onChange = { apply(s.copy(dev9ModeDns1 = dnsModes[it])) },
+            onChange = { apply(s.copy(network = s.network.copy(dev9ModeDns1 = dnsModes[it]))) },
         )
         SettingsDivider()
         SegmentedRow(
             label = str("network.secondaryDns"),
             options = dnsModes,
             selectedIndex = dns2Index,
-            onChange = { apply(s.copy(dev9ModeDns2 = dnsModes[it])) },
+            onChange = { apply(s.copy(network = s.network.copy(dev9ModeDns2 = dnsModes[it]))) },
         )
         SettingsDivider()
-        EditableTextRow(str("network.ps2Ip"), s.dev9Ps2Ip) {
-            apply(s.copy(dev9Ps2Ip = it.ifEmpty { "0.0.0.0" }))
+        EditableTextRow(str("network.ps2Ip"), s.network.dev9Ps2Ip) {
+            apply(s.copy(network = s.network.copy(dev9Ps2Ip = it.ifEmpty { "0.0.0.0" })))
         }
         SettingsDivider()
-        EditableTextRow(str("network.subnetMask"), s.dev9Mask) {
-            apply(s.copy(dev9Mask = it.ifEmpty { "0.0.0.0" }))
+        EditableTextRow(str("network.subnetMask"), s.network.dev9Mask) {
+            apply(s.copy(network = s.network.copy(dev9Mask = it.ifEmpty { "0.0.0.0" })))
         }
         SettingsDivider()
-        EditableTextRow(str("network.gateway"), s.dev9Gateway) {
-            apply(s.copy(dev9Gateway = it.ifEmpty { "0.0.0.0" }))
+        EditableTextRow(str("network.gateway"), s.network.dev9Gateway) {
+            apply(s.copy(network = s.network.copy(dev9Gateway = it.ifEmpty { "0.0.0.0" })))
         }
         SettingsDivider()
-        EditableTextRow(str("network.dns1"), s.dev9Dns1) {
-            apply(s.copy(dev9Dns1 = it.ifEmpty { "0.0.0.0" }))
+        EditableTextRow(str("network.dns1"), s.network.dev9Dns1) {
+            apply(s.copy(network = s.network.copy(dev9Dns1 = it.ifEmpty { "0.0.0.0" })))
         }
         SettingsDivider()
-        EditableTextRow(str("network.dns2"), s.dev9Dns2) {
-            apply(s.copy(dev9Dns2 = it.ifEmpty { "0.0.0.0" }))
+        EditableTextRow(str("network.dns2"), s.network.dev9Dns2) {
+            apply(s.copy(network = s.network.copy(dev9Dns2 = it.ifEmpty { "0.0.0.0" })))
         }
         SettingsDivider()
         HelpText(str("network.hostMappings.help"))
         run {
-            val hosts = s.dev9EthHosts
+            val hosts = s.network.dev9EthHosts
             for (i in 0..hosts.size) {
                 val entry = hosts.getOrNull(i)
                 EditableTextRow(if (entry == null) str("network.addHost") else "${str("network.host")} ${i + 1}", entry?.url ?: "") { newUrl ->
@@ -295,35 +297,35 @@ fun NetworkTab(state: MutableState<Settings>) {
                     } else {
                         list[i] = list[i].copy(url = newUrl.trim())
                     }
-                    apply(s.copy(dev9EthHosts = list))
+                    apply(s.copy(network = s.network.copy(dev9EthHosts = list)))
                 }
                 if (entry != null) {
                     EditableTextRow("   ↳ " + str("network.mapsToIp"), entry.ip) { newIp ->
                         val list = hosts.toMutableList()
                         list[i] = list[i].copy(ip = newIp.trim().ifEmpty { "0.0.0.0" })
-                        apply(s.copy(dev9EthHosts = list))
+                        apply(s.copy(network = s.network.copy(dev9EthHosts = list)))
                     }
                 }
                 SettingsDivider()
             }
         }
         } // end Online-only block
-        ToggleRow(str("network.logDhcp"), s.dev9EthLogDhcp) {
-            apply(s.copy(dev9EthLogDhcp = it))
+        ToggleRow(str("network.logDhcp"), s.network.dev9EthLogDhcp) {
+            apply(s.copy(network = s.network.copy(dev9EthLogDhcp = it)))
         }
         SettingsDivider()
-        ToggleRow(str("network.logDns"), s.dev9EthLogDns) {
-            apply(s.copy(dev9EthLogDns = it))
+        ToggleRow(str("network.logDns"), s.network.dev9EthLogDns) {
+            apply(s.copy(network = s.network.copy(dev9EthLogDns = it)))
         }
         SettingsDivider()
-        ToggleRow(str("network.enableDev9VirtualHdd"), s.dev9HddEnable) {
-            apply(s.copy(dev9HddEnable = it, dev9HddFile = s.dev9HddFile.ifEmpty { "DEV9hdd.raw" }))
+        ToggleRow(str("network.enableDev9VirtualHdd"), s.network.dev9HddEnable) {
+            apply(s.copy(network = s.network.copy(dev9HddEnable = it, dev9HddFile = s.network.dev9HddFile.ifEmpty { "DEV9hdd.raw" })))
         }
         SettingsDivider()
         HddFileRow(
-            fileName = s.dev9HddFile.ifEmpty { "DEV9hdd.raw" },
-            onChange = { apply(s.copy(dev9HddFile = it.ifEmpty { "DEV9hdd.raw" })) },
-            onReset = { apply(s.copy(dev9HddFile = "DEV9hdd.raw")) },
+            fileName = s.network.dev9HddFile.ifEmpty { "DEV9hdd.raw" },
+            onChange = { apply(s.copy(network = s.network.copy(dev9HddFile = it.ifEmpty { "DEV9hdd.raw" }))) },
+            onReset = { apply(s.copy(network = s.network.copy(dev9HddFile = "DEV9hdd.raw"))) },
         )
         HelpText(str("network.hddImage.help"))
 
@@ -335,8 +337,8 @@ fun NetworkTab(state: MutableState<Settings>) {
             fontSize = 14.sp,
             modifier = Modifier.padding(bottom = 4.dp),
         )
-        ToggleRow(str("network.emulateUsbKeyboard"), s.usbKeyboard) {
-            apply(s.copy(usbKeyboard = it))
+        ToggleRow(str("network.emulateUsbKeyboard"), s.system.usbKeyboard) {
+            apply(s.copy(system = s.system.copy(usbKeyboard = it)))
         }
         HelpText(str("network.usbKeyboard.help"))
     }

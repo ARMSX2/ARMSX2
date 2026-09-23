@@ -303,47 +303,47 @@ private fun PatchOptions(state: PatchManagerUiState, viewModel: PatchManagerView
         Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
             SectionTitle(str("ra.options.header"), str("scope.global"))
             SettingSwitchRow(
-                str("patches.cheats.label"), str("patches.pasteImportHint"), state.settings.enableCheats,
-                onCheckedChange = { value -> viewModel.update { it.copy(enableCheats = value) } },
+                str("patches.cheats.label"), str("patches.pasteImportHint"), state.settings.emuCore.enableCheats,
+                onCheckedChange = { value -> viewModel.update { it.copy(emuCore = it.emuCore.copy(enableCheats = value)) } },
                 modifier = Modifier.controllerFocusable(
                     "patches.enableCheats",
-                    onConfirm = { viewModel.update { it.copy(enableCheats = !state.settings.enableCheats) } },
+                    onConfirm = { viewModel.update { it.copy(emuCore = it.emuCore.copy(enableCheats = !state.settings.emuCore.enableCheats)) } },
                 ),
             )
             SettingSwitchRow(
                 // Own description rather than the shared "applies at boot" line: this one silently
                 // auto-applies a patch to every game that has one, which reads nothing like
                 // "enable widescreen patches" and cost a long GT4 rendering hunt to track down.
-                str("patches.widescreen.label"), str("patches.widescreen.description"), state.settings.enableWideScreenPatches,
-                onCheckedChange = { value -> viewModel.update { it.copy(enableWideScreenPatches = value) } },
+                str("patches.widescreen.label"), str("patches.widescreen.description"), state.settings.emuCore.enableWideScreenPatches,
+                onCheckedChange = { value -> viewModel.update { it.copy(emuCore = it.emuCore.copy(enableWideScreenPatches = value)) } },
                 modifier = Modifier.controllerFocusable(
                     "patches.widescreen",
-                    onConfirm = { viewModel.update { it.copy(enableWideScreenPatches = !state.settings.enableWideScreenPatches) } },
+                    onConfirm = { viewModel.update { it.copy(emuCore = it.emuCore.copy(enableWideScreenPatches = !state.settings.emuCore.enableWideScreenPatches)) } },
                 ),
             )
             SettingSwitchRow(
-                str("patches.noInterlacing.label"), str("patches.applyAtBoot"), state.settings.enableNoInterlacingPatches,
-                onCheckedChange = { value -> viewModel.update { it.copy(enableNoInterlacingPatches = value) } },
+                str("patches.noInterlacing.label"), str("patches.applyAtBoot"), state.settings.emuCore.enableNoInterlacingPatches,
+                onCheckedChange = { value -> viewModel.update { it.copy(emuCore = it.emuCore.copy(enableNoInterlacingPatches = value)) } },
                 modifier = Modifier.controllerFocusable(
                     "patches.noInterlacing",
-                    onConfirm = { viewModel.update { it.copy(enableNoInterlacingPatches = !state.settings.enableNoInterlacingPatches) } },
+                    onConfirm = { viewModel.update { it.copy(emuCore = it.emuCore.copy(enableNoInterlacingPatches = !state.settings.emuCore.enableNoInterlacingPatches)) } },
                 ),
             )
             // HostFS (host: filesystem) — lets ELF/homebrew and certain advanced mods read
             // from the host. Native field + apply already exist; this restores the toggle.
             SettingSwitchRow(
-                str("patches.hostFs.label"), str("patches.hostFs.description"), state.settings.hostFs,
-                onCheckedChange = { value -> viewModel.update { it.copy(hostFs = value) } },
+                str("patches.hostFs.label"), str("patches.hostFs.description"), state.settings.emuCore.hostFs,
+                onCheckedChange = { value -> viewModel.update { it.copy(emuCore = it.emuCore.copy(hostFs = value)) } },
                 modifier = Modifier.controllerFocusable(
                     "patches.hostFs",
-                    onConfirm = { viewModel.update { it.copy(hostFs = !state.settings.hostFs) } },
+                    onConfirm = { viewModel.update { it.copy(emuCore = it.emuCore.copy(hostFs = !state.settings.emuCore.hostFs)) } },
                 ),
             )
             // Where host: actually reads from. Worth stating outright: on Android the root
             // CANNOT be the folder holding the disc, because a SAF content:// URI has no
             // parent directory to derive one from (see Hle_SetHostRoot). Without this line
             // the natural assumption is "next to the ISO", which silently reads nothing.
-            if (state.settings.hostFs) {
+            if (state.settings.emuCore.hostFs) {
                 Text(
                     str("patches.hostFs.folder"),
                     style = MaterialTheme.typography.bodySmall,

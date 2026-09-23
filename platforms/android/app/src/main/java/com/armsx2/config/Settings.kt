@@ -18,10 +18,15 @@ import org.json.JSONObject
  * field, then a single NativeApp.commitSettings to push the queued writes
  * into the running VM (or persist them for the next launch).
  *
+ * Settings holds one nested data class per section (CpuSettings, GraphicsSettings and so on),
+ * because a Kotlin data class stops working on Android at around 245 fields; SettingsSizeTest
+ * says why and fails before any class gets there. The JSON keys stay flat ("renderer", not
+ * "graphics.renderer"), so the nesting is invisible to stored settings and per-game overrides.
+ *
  * Adding a new setting:
- *   1. Add a field with an upstream-matching default,
+ *   1. Add a field, with an upstream-matching default, to its section's class,
  *   2. Add a setSetting line in applyTo,
- *   3. Add the JSON mapping in toJson + fromJson + merge,
+ *   3. Add the JSON mapping in toJson + fromJson + diff + merge,
  *   4. Surface a widget in the appropriate Settings tab.
  */
 /** One DEV9 internal-DNS host override: [url] resolves to [ip] when DNS mode = Internal.
@@ -32,38 +37,44 @@ data class Dev9HostMapping(
     val enabled: Boolean = true,
 )
 
-/** `{"<preset path>": {"<parameter name>": value}}` — the wire form of
- *  [Settings.shaderChainParams]. Spelled once and shared by all four places the map has to
- *  cross a boundary (the JSON store, the per-game override diff, the override merge and the
- *  INI seed), because four hand-rolled copies of the same nesting is four chances for one
- *  of them to drift. */
-private fun shaderChainParamsToJson(value: Map<String, Map<String, Float>>): JSONObject =
-    JSONObject().apply {
-        value.forEach { (preset, params) ->
-            if (preset.isNotEmpty() && params.isNotEmpty()) {
-                put(preset, JSONObject().apply {
-                    params.forEach { (name, v) -> put(name, v.toDouble()) }
-                })
-            }
-        }
-    }
+/** RetroAchievements' options, the [Achievements] section the RetroAchievements screen and the
+ *  in-game menu's 🏆 tab edit. Standard settings, so what is chosen for a game applies to that
+ *  game and outranks the global value; they used to be written straight into the global native
+ *  config from wherever they were changed. Defaults are Pcsx2Config::AchievementsOptions'.
+ *
+ *  Nested one level further, in [EmuCoreSettings]. The JSON keys keep their "achievements"
+ *  prefix ("achievementsHardcore" and so on), as they had before these moved here. */
+data class AchievementsSettings(
+    /** Achievements/Enabled. Can differ per game: off globally and on for the games you want it
+     *  in, or the other way round. The core starts and stops RetroAchievements itself when a
+     *  game's value differs (Achievements::UpdateSettings). On by default, matching the native
+     *  first-run seed and the login, which both switch it on. */
+    val enabled: Boolean = true,
+    /** Achievements/ChallengeMode. Only engages from a clean boot (Achievements::UpdateSettings
+     *  defers it), which the hardcore switch handles. */
+    val hardcore: Boolean = false,
+    val notifications: Boolean = true,
+    val leaderboardNotifications: Boolean = true,
+    val overlays: Boolean = true,
+    val lbOverlays: Boolean = true,
+    val soundEffects: Boolean = true,
+    val encoreMode: Boolean = false,
+    val spectatorMode: Boolean = false,
+    val unofficialTestMode: Boolean = false,
+    val notificationsDuration: Int = 5,
+    val leaderboardsDuration: Int = 10,
+    /** The positions are the core's enum values: OsdOverlayPos (TopLeft = 1) for notifications,
+     *  AchievementOverlayPosition (TopLeft = 0) for the overlay. */
+    val notificationPosition: Int = 1,
+    val overlayPosition: Int = 8,
+    /** Achievements/NotificationScale — size of the achievement popups and in-game indicators, as a
+     *  percentage of the stock layout (50..250). The stock size was hard to read on a handheld. */
+    val notificationScale: Int = 100,
+)
 
-private fun shaderChainParamsFromJson(json: JSONObject?): Map<String, Map<String, Float>> {
-    if (json == null) return emptyMap()
-    return buildMap {
-        json.keys().forEach { preset ->
-            val params = json.optJSONObject(preset) ?: return@forEach
-            val values = buildMap<String, Float> {
-                params.keys().forEach { name -> put(name, params.optDouble(name, 0.0).toFloat()) }
-            }
-            // Drop presets whose overrides all went away rather than persisting an empty
-            // object that would read back as "this preset is tweaked" forever.
-            if (values.isNotEmpty()) put(preset, values)
-        }
-    }
-}
-
-data class Settings(
+/** EE/VU clamping, speed hacks, recompiler enables and the arm64 JIT options
+ *  (EmuCore/Speedhacks, EmuCore/CPU). Part of [Settings]. */
+data class CpuSettings(
     // ---- EmuCore/Speedhacks ----
     /** EmuCore/Speedhacks/EECycleRate — −3..+3 (50%..300%). 0 = nominal. */
     val eeCycleRate: Int = 0,
@@ -127,6 +138,63 @@ data class Settings(
      *  relies on accurate FMAC/FDIV/EFU/IALU pipeline-stall timing. */
     val vuSkipStallSim: Boolean = false,
 
+    // ---- EmuCore/CPU/Recompiler — recompiler enables ----
+    /** EmuCore/CPU/Recompiler/EnableEE — EE (R5900) recompiler. */
+    val recEE: Boolean = true,
+    /** EmuCore/CPU/Recompiler/EnableIOP — IOP (R3000) recompiler. */
+    val recIOP: Boolean = true,
+    /** EmuCore/CPU/Recompiler/EnableVU0 — VU0 recompiler. */
+    val recVU0: Boolean = true,
+    /** EmuCore/CPU/Recompiler/EnableVU1 — VU1 recompiler. */
+    val recVU1: Boolean = true,
+    /** EmuCore/CPU/Recompiler/EnableFastmem — fastmem (page-fault backpatch
+     *  signal handler). Disabling falls back to the slow VTLB read/write
+     *  path on every memory op. */
+    val enableFastmem: Boolean = true,
+
+    // ---- macOS/PCSX2 ARM64 backend compatibility flags ----
+    // Hidden from UI and forced on. Kept only so older JSON/INI/per-game blobs
+    // with UseMac* keys still parse without losing the rest of their settings.
+    /** EmuCore/CPU/Recompiler/UseMacEE — legacy, forced on. */
+    val useMacEE: Boolean = true,
+    /** EmuCore/CPU/Recompiler/UseMacIOP — legacy, forced on. */
+    val useMacIOP: Boolean = true,
+    /** EmuCore/CPU/Recompiler/UseMacVU0 — legacy, forced on. */
+    val useMacVU0: Boolean = true,
+    /** EmuCore/CPU/Recompiler/UseMacVU1 — legacy, forced on. */
+    val useMacVU1: Boolean = true,
+
+    // ---- microVU-style compile-time pipeline-stall folding ----
+    /** EmuCore/CPU/Recompiler/Vu1InlineFmacStall — replace the per-pair
+     *  `vu1_TestFMACStallReg / _Reg2` BLs (formerly 17-32% of total CPU per
+     *  simpleperf) with an inline `Add VU1_CYCLE_REG, #fmac_stall`. Mirrors
+     *  mac's compile-time mVUincCycles + mVUstall fold. Gated by the same
+     *  `fmac_carry_safe` (ct_cycle > 3) guarantee that cross-block carry-in
+     *  FMAC slots have retired at runtime. */
+    val vu1InlineFmacStall: Boolean = false,
+    /** EmuCore/CPU/Recompiler/Vu1CrossBlockPState — propagate predecessor's
+     *  exit pipeline-state to successor block compile, so CARRY_IN_GATE_*
+     *  bounds can shrink (FMAC/IALU=3, FDIV=12, EFU=54). When a predecessor
+     *  links to a successor, the successor variant is specialised for that
+     *  predecessor's exitState. Mirrors mac's microBlockManager pState match. */
+    val vu1CrossBlockPState: Boolean = false,
+    /** EmuCore/CPU/Recompiler/Vu1InlineDrainTestPipes — inline-emit the
+     *  vu1_TestPipes_VU1 FMAC drain at JIT sites where the pre-walk proves
+     *  FDIV/EFU/IALU are empty (skip_info[i].fmacOnlyTestPipes). Saves the BL
+     *  + viCacheInvalidateAll + return overhead per call. Mac doesn't need
+     *  this because it has no runtime FMAC ring — flag instances are routed
+     *  at compile time. */
+    val vu1InlineDrainTestPipes: Boolean = false,
+    /** EmuCore/CPU/Recompiler/Vu1FmacInstanceRouting — mac-style 4-slot flag-
+     *  instance routing. Repurposes VU->fmac[0..3].{mac,status,clip}flag as
+     *  instance slots; skips the ring metadata Strs and the FMAC stall BLs.
+     *  fmaccount stays 0 so vu1_TestPipes_VU1's FMAC drain early-exits. */
+    val vu1FmacInstanceRouting: Boolean = false,
+)
+
+/** Frame limiter and speed target (EmuCore/GS frame limiter, Framerate). Part of [Settings]. */
+data class FrameLimitSettings(
+
     // ---- EmuCore/GS — frame limiter ----
     /** EmuCore/GS/FrameLimitEnable. */
     val frameLimitEnable: Boolean = true,
@@ -144,6 +212,10 @@ data class Settings(
     val fpsLimit: Int = 0,
     /** Deprecated Android-only frame skip. Kept for JSON compatibility only. */
     val frameSkip: Int = 0,
+)
+
+/** Audio output (SPU2). Part of [Settings]. */
+data class AudioSettings(
 
     // ---- Audio (SPU2/Output) ----
     /** SPU2/Output/StandardVolume — output volume %, 0..200 (100 = full). */
@@ -178,6 +250,10 @@ data class Settings(
      *  can't keep up even with NEON reverb; default off = full reverb. Applies
      *  live (read per-sample in MixCore). */
     val spu2LightweightMix: Boolean = false,
+)
+
+/** Patches, cheats, boot options, RetroAchievements and the other EmuCore toggles. Part of [Settings]. */
+data class EmuCoreSettings(
 
     // ---- EmuCore — patches / cheats ----
     /** EmuCore/EnablePatches — game-compatibility patches (default on). */
@@ -198,35 +274,8 @@ data class Settings(
     /** EmuCore/HostFs — host: filesystem access in the VM, for ELF/homebrew and mods
      *  (e.g. modded Persona 3 FES). Per-game capable; applies on the next game boot. */
     val hostFs: Boolean = false,
-    /** Achievements/Enabled — RetroAchievements. A standard setting so it can differ per game: off
-     *  globally and on for the games you want it in, or the other way round. The core starts and
-     *  stops RetroAchievements itself when a game's value differs (Achievements::UpdateSettings).
-     *  On by default, matching the native first-run seed and the login, which both switch it on. */
-    val achievementsEnabled: Boolean = true,
-    /** The rest of RetroAchievements' own options, the [Achievements] section the RetroAchievements
-     *  screen and the in-game menu's 🏆 tab edit. Standard settings like [achievementsEnabled], so
-     *  what is chosen for a game applies to that game and outranks the global value; they used to
-     *  be written straight into the global native config from wherever they were changed.
-     *  Defaults are Pcsx2Config::AchievementsOptions'. Hardcore still only engages from a clean
-     *  boot (Achievements::UpdateSettings defers it), which the hardcore switch handles. The
-     *  positions are the core's enum values: OsdOverlayPos (TopLeft = 1) for notifications,
-     *  AchievementOverlayPosition (TopLeft = 0) for the overlay. */
-    val achievementsHardcore: Boolean = false,
-    val achievementsNotifications: Boolean = true,
-    val achievementsLeaderboardNotifications: Boolean = true,
-    val achievementsOverlays: Boolean = true,
-    val achievementsLbOverlays: Boolean = true,
-    val achievementsSoundEffects: Boolean = true,
-    val achievementsEncoreMode: Boolean = false,
-    val achievementsSpectatorMode: Boolean = false,
-    val achievementsUnofficialTestMode: Boolean = false,
-    val achievementsNotificationsDuration: Int = 5,
-    val achievementsLeaderboardsDuration: Int = 10,
-    val achievementsNotificationPosition: Int = 1,
-    val achievementsOverlayPosition: Int = 8,
-    /** Achievements/NotificationScale — size of the achievement popups and in-game indicators, as a
-     *  percentage of the stock layout (50..250). The stock size was hard to read on a handheld. */
-    val achievementsNotificationScale: Int = 100,
+    /** RetroAchievements' options, the [Achievements] INI section. */
+    val achievements: AchievementsSettings = AchievementsSettings(),
     /** EmuCore/EnablePINE — the IPC server external tools drive the emulator through
      *  (read/write guest memory, savestates, GS dumps). On Android it listens on loopback
      *  TCP, so it is reachable from a workstation only after `adb forward`; nothing outside
@@ -288,6 +337,10 @@ data class Settings(
     val vu0RoundMode: Int = 3,
     /** EmuCore/CPU/VU1.Roundmode — VU1 rounding: 0 Nearest / 1 Neg / 2 Pos / 3 Chop. Default Chop. */
     val vu1RoundMode: Int = 3,
+)
+
+/** Display, PCRTC and presentation options (EmuCore/GS). Part of [Settings]. */
+data class DisplaySettings(
 
     // ---- EmuCore/GS — display / PCRTC fixes ----
     /** EmuCore/GS/pcrtc_offsets — apply PCRTC screen offsets. PCSX2 default off. */
@@ -357,6 +410,13 @@ data class Settings(
     val disableShaderCache: Boolean = false,
     /** EmuCore/GS/HWAccurateAlphaTest — accurate hardware alpha test. PCSX2 default off. */
     val hwAccurateAlphaTest: Boolean = false,
+    /** EmuCore/GS/VsyncEnable — sync presentation to the display refresh (less
+     *  tearing/smoother, slightly higher latency). Applies on game restart. */
+    val vsyncEnable: Boolean = false,
+)
+
+/** Hardware and software renderer fixes, including the upscaling fixes (EmuCore/GS). Part of [Settings]. */
+data class HwFixesSettings(
 
     // ---- EmuCore/GS — hardware / software renderer fixes ----
     /** EmuCore/GS/UserHacks_SkipDraw_Start — first draw to skip. 0 = off. */
@@ -387,6 +447,80 @@ data class Settings(
     val dithering: Int = 2,
     /** EmuCore/GS/VsyncQueueSize — frames the GS thread may queue (0-3). PCSX2 default 2. */
     val vsyncQueueSize: Int = 2,
+    /** EmuCore/GS/UserHacks_AutoFlushLevel — GSHWAutoFlushLevel:
+     *  0 Disabled · 1 SpritesOnly · 2 Enabled. */
+    val autoFlush: Int = 0,
+    /** EmuCore/GS/UserHacks_HalfPixelOffset — GSHalfPixelOffset:
+     *  0 Off · 1 Normal · 2 Special · 3 SpecialAggressive · 4 Native · 5 NativeWTexOffset. */
+    val halfPixelOffset: Int = 0,
+    /** EmuCore/GS/UserHacks_Limit24BitDepth — 0 Off · 1 Upper · 2 Lower. */
+    val limit24BitDepth: Int = 0,
+    /** EmuCore/GS/UserHacks — master hardware-fixes toggle. */
+    val manualUserHacks: Boolean = false,
+    /** EmuCore/GS/UserHacks_TextureInsideRt — texture inside render target. */
+    val textureInsideRt: Int = 0,
+    /** EmuCore/GS/UserHacks_native_scaling — upscaling fixes/native scaling. */
+    val nativeScaling: Int = 0,
+    /** EmuCore/GS/UserHacks_round_sprite_offset. */
+    val roundSprite: Int = 0,
+    /** EmuCore/GS/UserHacks_BilinearHack. */
+    val bilinearUpscale: Int = 0,
+    /** EmuCore/GS/UserHacks_GPUTargetCLUTMode. */
+    val gpuTargetClut: Int = 0,
+    /** EmuCore/GS/UserHacks_CPUSpriteRenderBW. */
+    val cpuSpriteRenderBw: Int = 0,
+    /** EmuCore/GS/UserHacks_CPUSpriteRenderLevel. */
+    val cpuSpriteRenderLevel: Int = 0,
+    // ---- Additional PCSX2 hardware / upscaling fixes (full parity) ----
+    // Upscaling fixes
+    /** EmuCore/GS/UserHacks_align_sprite_X — Align Sprite (fixes vertical lines on some 2D upscales). */
+    val alignSprite: Boolean = false,
+    /** EmuCore/GS/UserHacks_merge_pp_sprite — Merge Sprite (fixes lines between post-process sprites). */
+    val mergeSprite: Boolean = false,
+    /** EmuCore/GS/UserHacks_ForceEvenSpritePosition — "Wild Arms" hack; forces even sprite/texture positions. */
+    val forceEvenSpritePosition: Boolean = false,
+    /** EmuCore/GS/UserHacks_NativePaletteDraw — Unscaled Palette Texture Draws. */
+    val unscaledPaletteDraw: Boolean = false,
+    /** EmuCore/GS/UserHacks_TCOffsetX — texture-coordinate X offset, 0..10000 (= 0..10 px ×1000). */
+    val textureOffsetX: Int = 0,
+    /** EmuCore/GS/UserHacks_TCOffsetY — texture-coordinate Y offset, 0..10000 (= 0..10 px ×1000). */
+    val textureOffsetY: Int = 0,
+    // Hardware fixes
+    /** EmuCore/GS/paltex — GPU Palette Conversion. */
+    val gpuPaletteConversion: Boolean = false,
+    /** EmuCore/GS/UserHacks_CPU_FB_Conversion — CPU Framebuffer Conversion. */
+    val cpuFramebufferConversion: Boolean = false,
+    /** EmuCore/GS/UserHacks_ReadTCOnClose — Read Targets When Closing. */
+    val readTargetsWhenClosing: Boolean = false,
+    /** EmuCore/GS/UserHacks_DisableDepthSupport — Disable Depth Emulation. */
+    val disableDepthEmulation: Boolean = false,
+    /** EmuCore/GS/UserHacks_DisablePartialInvalidation — Disable Partial Source Invalidation. */
+    val disablePartialInvalidation: Boolean = false,
+    /** EmuCore/GS/UserHacks_Disable_Safe_Features — Disable Safe Features. */
+    val disableSafeFeatures: Boolean = false,
+    /** EmuCore/GS/UserHacks_DisableRenderFixes — Disable Render Fixes. */
+    val disableRenderFixes: Boolean = false,
+    /** EmuCore/GS/preload_frame_with_gs_data — Preload Frame Data. */
+    val preloadFrameData: Boolean = false,
+    /** EmuCore/GS/UserHacks_EstimateTextureRegion — Estimate Texture Region. */
+    val estimateTextureRegion: Boolean = false,
+    /** EmuCore/GS/UserHacks_DrawBuffering — buffer draws (UserHack). */
+    val drawBuffering: Boolean = false,
+    /** EmuCore/GS/UserHacks_CPUCLUTRender — CPU CLUT Render: 0 Off · 1 Normal · 2 Aggressive. */
+    val cpuClutRender: Int = 0,
+    /** EmuCore/GS/TriFilter — TriFiltering: -1 Auto · 0 Off · 1 PS2 · 2 Forced. */
+    val triFilter: Int = -1,
+    /** EmuCore/GS/MaxAnisotropy — 0 Off, else 2/4/8/16. */
+    val maxAnisotropy: Int = 0,
+    /** EmuCore/GS/AndroidGpuProfileOverride — 0 Auto · 1 Mali · 2 Adreno · 3 PowerVR · 4 Xclipse.
+     *  Stringified to "auto"/"mali"/"adreno"/"powervr"/"xclipse" when written to emucore.
+     *  Picked up in GSDeviceOGL::CheckFeatures at device init; requires
+     *  a renderer restart to take effect. */
+    val gpuProfile: Int = 0,
+)
+
+/** Output-surface scaling and the app-side display layout; per-game scoped. Part of [Settings]. */
+data class OutputSettings(
     // Output-surface scaling. App-side (no EmuCore key) but PER-GAME scoped: a heavy
     // game can render its output smaller while the library and lighter games stay
     // sharp. Were global-only prefs until #-Duda reported that changing them in Game
@@ -467,6 +601,10 @@ data class Settings(
     /** EmuCore/GS/deinterlace_mode — GSInterlaceMode:
      *  0 Auto · 1 Off · 2/3 Weave · 4/5 Bob · 6/7 Blend · 8/9 Adaptive. */
     val deinterlaceMode: Int = 0,
+)
+
+/** DEV9: PS2 HDD and Ethernet, including Local Link. Part of [Settings]. */
+data class NetworkSettings(
 
     // ---- DEV9 — PS2 HDD / Ethernet ----
     /** DEV9/Eth/EthEnable — PS2 network adapter. */
@@ -513,6 +651,10 @@ data class Settings(
     val dev9HddEnable: Boolean = false,
     /** DEV9/Hdd/HddFile — path/name of the virtual HDD image. */
     val dev9HddFile: String = "DEV9hdd.raw",
+)
+
+/** Memory cards, the per-game BIOS and USB devices. Part of [Settings]. */
+data class SystemSettings(
 
     // ---- MemoryCards ----
     val memoryCardSlot1Enabled: Boolean = true,
@@ -532,59 +674,10 @@ data class Settings(
      *  events are forwarded to it (see MainActivityRuntime.dispatchKeyEvent → NativeApp.usbKeyboardKey).
      *  Default off. */
     val usbKeyboard: Boolean = false,
+)
 
-    // ---- EmuCore/CPU/Recompiler — recompiler enables ----
-    /** EmuCore/CPU/Recompiler/EnableEE — EE (R5900) recompiler. */
-    val recEE: Boolean = true,
-    /** EmuCore/CPU/Recompiler/EnableIOP — IOP (R3000) recompiler. */
-    val recIOP: Boolean = true,
-    /** EmuCore/CPU/Recompiler/EnableVU0 — VU0 recompiler. */
-    val recVU0: Boolean = true,
-    /** EmuCore/CPU/Recompiler/EnableVU1 — VU1 recompiler. */
-    val recVU1: Boolean = true,
-    /** EmuCore/CPU/Recompiler/EnableFastmem — fastmem (page-fault backpatch
-     *  signal handler). Disabling falls back to the slow VTLB read/write
-     *  path on every memory op. */
-    val enableFastmem: Boolean = true,
-
-    // ---- macOS/PCSX2 ARM64 backend compatibility flags ----
-    // Hidden from UI and forced on. Kept only so older JSON/INI/per-game blobs
-    // with UseMac* keys still parse without losing the rest of their settings.
-    /** EmuCore/CPU/Recompiler/UseMacEE — legacy, forced on. */
-    val useMacEE: Boolean = true,
-    /** EmuCore/CPU/Recompiler/UseMacIOP — legacy, forced on. */
-    val useMacIOP: Boolean = true,
-    /** EmuCore/CPU/Recompiler/UseMacVU0 — legacy, forced on. */
-    val useMacVU0: Boolean = true,
-    /** EmuCore/CPU/Recompiler/UseMacVU1 — legacy, forced on. */
-    val useMacVU1: Boolean = true,
-
-    // ---- microVU-style compile-time pipeline-stall folding ----
-    /** EmuCore/CPU/Recompiler/Vu1InlineFmacStall — replace the per-pair
-     *  `vu1_TestFMACStallReg / _Reg2` BLs (formerly 17-32% of total CPU per
-     *  simpleperf) with an inline `Add VU1_CYCLE_REG, #fmac_stall`. Mirrors
-     *  mac's compile-time mVUincCycles + mVUstall fold. Gated by the same
-     *  `fmac_carry_safe` (ct_cycle > 3) guarantee that cross-block carry-in
-     *  FMAC slots have retired at runtime. */
-    val vu1InlineFmacStall: Boolean = false,
-    /** EmuCore/CPU/Recompiler/Vu1CrossBlockPState — propagate predecessor's
-     *  exit pipeline-state to successor block compile, so CARRY_IN_GATE_*
-     *  bounds can shrink (FMAC/IALU=3, FDIV=12, EFU=54). When a predecessor
-     *  links to a successor, the successor variant is specialised for that
-     *  predecessor's exitState. Mirrors mac's microBlockManager pState match. */
-    val vu1CrossBlockPState: Boolean = false,
-    /** EmuCore/CPU/Recompiler/Vu1InlineDrainTestPipes — inline-emit the
-     *  vu1_TestPipes_VU1 FMAC drain at JIT sites where the pre-walk proves
-     *  FDIV/EFU/IALU are empty (skip_info[i].fmacOnlyTestPipes). Saves the BL
-     *  + viCacheInvalidateAll + return overhead per call. Mac doesn't need
-     *  this because it has no runtime FMAC ring — flag instances are routed
-     *  at compile time. */
-    val vu1InlineDrainTestPipes: Boolean = false,
-    /** EmuCore/CPU/Recompiler/Vu1FmacInstanceRouting — mac-style 4-slot flag-
-     *  instance routing. Repurposes VU->fmac[0..3].{mac,status,clip}flag as
-     *  instance slots; skips the ring metadata Strs and the FMAC stall BLs.
-     *  fmaccount stays 0 so vu1_TestPipes_VU1's FMAC drain early-exits. */
-    val vu1FmacInstanceRouting: Boolean = false,
+/** Renderer accuracy, quality, post-processing and texture replacement (EmuCore/GS). Part of [Settings]. */
+data class GraphicsSettings(
 
     // ---- EmuCore/GS — renderer accuracy / quality ----
     /** EmuCore/GS/hw_mipmap. */
@@ -689,6 +782,10 @@ data class Settings(
     val dumpReplaceableTextures: Boolean = false,
     /** EmuCore/GS/OsdShowTextureReplacements. */
     val osdShowTextureReplacements: Boolean = false,
+)
+
+/** On-screen display: the performance overlay and its elements. Part of [Settings]. */
+data class OsdSettings(
     // Performance Overlay element toggles. Default true to mirror native
     // initialize(), which turns every OsdShow* bit on at first boot.
     // Disabling GPU also stops the GPU timing queries (real perf win).
@@ -708,9 +805,6 @@ data class Settings(
      *  one of the five positions we don't offer (the centres) still round-trips. Default 3 is
      *  PCSX2's own DEFAULT_OSD_PERFORMANCE_POS, so nobody's overlay moves on update. */
     val osdPosition: Int = 3,
-    /** EmuCore/GS/VsyncEnable — sync presentation to the display refresh (less
-     *  tearing/smoother, slightly higher latency). Applies on game restart. */
-    val vsyncEnable: Boolean = false,
     /** EmuCore/GS/OsdShowVPS. */
     val osdShowVps: Boolean = false,
     /** EmuCore/GS/OsdShowSpeed. */
@@ -741,78 +835,54 @@ data class Settings(
     val osdShowSettings: Boolean = false,
     /** EmuCore/GS/OsdShowInputs — the control inputs (bottom-right). */
     val osdShowInputs: Boolean = false,
-    /** EmuCore/GS/UserHacks_AutoFlushLevel — GSHWAutoFlushLevel:
-     *  0 Disabled · 1 SpritesOnly · 2 Enabled. */
-    val autoFlush: Int = 0,
-    /** EmuCore/GS/UserHacks_HalfPixelOffset — GSHalfPixelOffset:
-     *  0 Off · 1 Normal · 2 Special · 3 SpecialAggressive · 4 Native · 5 NativeWTexOffset. */
-    val halfPixelOffset: Int = 0,
-    /** EmuCore/GS/UserHacks_Limit24BitDepth — 0 Off · 1 Upper · 2 Lower. */
-    val limit24BitDepth: Int = 0,
-    /** EmuCore/GS/UserHacks — master hardware-fixes toggle. */
-    val manualUserHacks: Boolean = false,
-    /** EmuCore/GS/UserHacks_TextureInsideRt — texture inside render target. */
-    val textureInsideRt: Int = 0,
-    /** EmuCore/GS/UserHacks_native_scaling — upscaling fixes/native scaling. */
-    val nativeScaling: Int = 0,
-    /** EmuCore/GS/UserHacks_round_sprite_offset. */
-    val roundSprite: Int = 0,
-    /** EmuCore/GS/UserHacks_BilinearHack. */
-    val bilinearUpscale: Int = 0,
-    /** EmuCore/GS/UserHacks_GPUTargetCLUTMode. */
-    val gpuTargetClut: Int = 0,
-    /** EmuCore/GS/UserHacks_CPUSpriteRenderBW. */
-    val cpuSpriteRenderBw: Int = 0,
-    /** EmuCore/GS/UserHacks_CPUSpriteRenderLevel. */
-    val cpuSpriteRenderLevel: Int = 0,
-    // ---- Additional PCSX2 hardware / upscaling fixes (full parity) ----
-    // Upscaling fixes
-    /** EmuCore/GS/UserHacks_align_sprite_X — Align Sprite (fixes vertical lines on some 2D upscales). */
-    val alignSprite: Boolean = false,
-    /** EmuCore/GS/UserHacks_merge_pp_sprite — Merge Sprite (fixes lines between post-process sprites). */
-    val mergeSprite: Boolean = false,
-    /** EmuCore/GS/UserHacks_ForceEvenSpritePosition — "Wild Arms" hack; forces even sprite/texture positions. */
-    val forceEvenSpritePosition: Boolean = false,
-    /** EmuCore/GS/UserHacks_NativePaletteDraw — Unscaled Palette Texture Draws. */
-    val unscaledPaletteDraw: Boolean = false,
-    /** EmuCore/GS/UserHacks_TCOffsetX — texture-coordinate X offset, 0..10000 (= 0..10 px ×1000). */
-    val textureOffsetX: Int = 0,
-    /** EmuCore/GS/UserHacks_TCOffsetY — texture-coordinate Y offset, 0..10000 (= 0..10 px ×1000). */
-    val textureOffsetY: Int = 0,
-    // Hardware fixes
-    /** EmuCore/GS/paltex — GPU Palette Conversion. */
-    val gpuPaletteConversion: Boolean = false,
-    /** EmuCore/GS/UserHacks_CPU_FB_Conversion — CPU Framebuffer Conversion. */
-    val cpuFramebufferConversion: Boolean = false,
-    /** EmuCore/GS/UserHacks_ReadTCOnClose — Read Targets When Closing. */
-    val readTargetsWhenClosing: Boolean = false,
-    /** EmuCore/GS/UserHacks_DisableDepthSupport — Disable Depth Emulation. */
-    val disableDepthEmulation: Boolean = false,
-    /** EmuCore/GS/UserHacks_DisablePartialInvalidation — Disable Partial Source Invalidation. */
-    val disablePartialInvalidation: Boolean = false,
-    /** EmuCore/GS/UserHacks_Disable_Safe_Features — Disable Safe Features. */
-    val disableSafeFeatures: Boolean = false,
-    /** EmuCore/GS/UserHacks_DisableRenderFixes — Disable Render Fixes. */
-    val disableRenderFixes: Boolean = false,
-    /** EmuCore/GS/preload_frame_with_gs_data — Preload Frame Data. */
-    val preloadFrameData: Boolean = false,
-    /** EmuCore/GS/UserHacks_EstimateTextureRegion — Estimate Texture Region. */
-    val estimateTextureRegion: Boolean = false,
-    /** EmuCore/GS/UserHacks_DrawBuffering — buffer draws (UserHack). */
-    val drawBuffering: Boolean = false,
-    /** EmuCore/GS/UserHacks_CPUCLUTRender — CPU CLUT Render: 0 Off · 1 Normal · 2 Aggressive. */
-    val cpuClutRender: Int = 0,
-    /** EmuCore/GS/TriFilter — TriFiltering: -1 Auto · 0 Off · 1 PS2 · 2 Forced. */
-    val triFilter: Int = -1,
-    /** EmuCore/GS/MaxAnisotropy — 0 Off, else 2/4/8/16. */
-    val maxAnisotropy: Int = 0,
-    /** EmuCore/GS/AndroidGpuProfileOverride — 0 Auto · 1 Mali · 2 Adreno · 3 PowerVR · 4 Xclipse.
-     *  Stringified to "auto"/"mali"/"adreno"/"powervr"/"xclipse" when written to emucore.
-     *  Picked up in GSDeviceOGL::CheckFeatures at device init; requires
-     *  a renderer restart to take effect. */
-    val gpuProfile: Int = 0,
+)
+
+
+/** `{"<preset path>": {"<parameter name>": value}}` — the wire form of
+ *  [Settings.shaderChainParams]. Spelled once and shared by all four places the map has to
+ *  cross a boundary (the JSON store, the per-game override diff, the override merge and the
+ *  INI seed), because four hand-rolled copies of the same nesting is four chances for one
+ *  of them to drift. */
+private fun shaderChainParamsToJson(value: Map<String, Map<String, Float>>): JSONObject =
+    JSONObject().apply {
+        value.forEach { (preset, params) ->
+            if (preset.isNotEmpty() && params.isNotEmpty()) {
+                put(preset, JSONObject().apply {
+                    params.forEach { (name, v) -> put(name, v.toDouble()) }
+                })
+            }
+        }
+    }
+
+private fun shaderChainParamsFromJson(json: JSONObject?): Map<String, Map<String, Float>> {
+    if (json == null) return emptyMap()
+    return buildMap {
+        json.keys().forEach { preset ->
+            val params = json.optJSONObject(preset) ?: return@forEach
+            val values = buildMap<String, Float> {
+                params.keys().forEach { name -> put(name, params.optDouble(name, 0.0).toFloat()) }
+            }
+            // Drop presets whose overrides all went away rather than persisting an empty
+            // object that would read back as "this preset is tweaked" forever.
+            if (values.isNotEmpty()) put(preset, values)
+        }
+    }
+}
+
+data class Settings(
+    val cpu: CpuSettings = CpuSettings(),
+    val frameLimit: FrameLimitSettings = FrameLimitSettings(),
+    val audio: AudioSettings = AudioSettings(),
+    val emuCore: EmuCoreSettings = EmuCoreSettings(),
+    val display: DisplaySettings = DisplaySettings(),
+    val hwFixes: HwFixesSettings = HwFixesSettings(),
+    val output: OutputSettings = OutputSettings(),
+    val network: NetworkSettings = NetworkSettings(),
+    val system: SystemSettings = SystemSettings(),
+    val graphics: GraphicsSettings = GraphicsSettings(),
+    val osd: OsdSettings = OsdSettings(),
 ) {
-    val effectiveVu1ClampMode: Int get() = if (vu1ClampMode < 0) vuClampMode else vu1ClampMode
+    val effectiveVu1ClampMode: Int get() = if (cpu.vu1ClampMode < 0) cpu.vuClampMode else cpu.vu1ClampMode
 
     /** Routes a persisted-key write to the native base layer, or to
      *  [emitSink] when a per-game INI export is capturing the key set (see
@@ -828,19 +898,19 @@ data class Settings(
     /** Push every field into emucore via NativeApp.setSetting + commit. */
     fun applyTo() {
         // Speedhacks
-        put("EmuCore/Speedhacks", "EECycleRate", "int", eeCycleRate.toString())
-        put("EmuCore/Speedhacks", "EECycleSkip", "int", eeCycleSkip.toString())
+        put("EmuCore/Speedhacks", "EECycleRate", "int", cpu.eeCycleRate.toString())
+        put("EmuCore/Speedhacks", "EECycleSkip", "int", cpu.eeCycleSkip.toString())
         // EE/FPU + VU clamping (recompiler accuracy). Each mode unpacks to the
         // PCSX2 bit flags below. Needs a recompiler reset (commitSettings /
         // game restart) to take effect.
-        put("EmuCore/CPU/Recompiler", "fpuOverflow", "bool", (eeClampMode >= 1).toString())
-        put("EmuCore/CPU/Recompiler", "fpuExtraOverflow", "bool", (eeClampMode >= 2).toString())
-        put("EmuCore/CPU/Recompiler", "fpuFullMode", "bool", (eeClampMode >= 3).toString())
+        put("EmuCore/CPU/Recompiler", "fpuOverflow", "bool", (cpu.eeClampMode >= 1).toString())
+        put("EmuCore/CPU/Recompiler", "fpuExtraOverflow", "bool", (cpu.eeClampMode >= 2).toString())
+        put("EmuCore/CPU/Recompiler", "fpuFullMode", "bool", (cpu.eeClampMode >= 3).toString())
         // The four are cumulative and emucore validates them as such: an
         // inconsistent set is silently reset to defaults on load rather than
         // rejected, so all four go out together or none of them mean anything.
-        put("EmuCore/CPU/Recompiler", "fpuExactMode", "bool", (eeClampMode >= 4).toString())
-        for ((vu, mode) in arrayOf("vu0" to vuClampMode, "vu1" to effectiveVu1ClampMode)) {
+        put("EmuCore/CPU/Recompiler", "fpuExactMode", "bool", (cpu.eeClampMode >= 4).toString())
+        for ((vu, mode) in arrayOf("vu0" to cpu.vuClampMode, "vu1" to effectiveVu1ClampMode)) {
             put("EmuCore/CPU/Recompiler", "${vu}Overflow", "bool", (mode >= 1).toString())
             put("EmuCore/CPU/Recompiler", "${vu}ExtraOverflow", "bool", (mode >= 2).toString())
             put("EmuCore/CPU/Recompiler", "${vu}SignOverflow", "bool", (mode >= 3).toString())
@@ -848,21 +918,21 @@ data class Settings(
             // ExactMode without SignOverflow back to defaults on load.
             put("EmuCore/CPU/Recompiler", "${vu}ExactMode", "bool", (mode >= 4).toString())
         }
-        put("EmuCore/Speedhacks", "vuThread", "bool", mtvu.toString())
-        put("EmuCore/Speedhacks", "vu1Instant", "bool", vu1Instant.toString())
-        put("EmuCore/Speedhacks", "vuFlagHack", "bool", vuFlagHack.toString())
-        put("EmuCore/Speedhacks", "fastCDVD", "bool", fastCDVD.toString())
-        put("EmuCore/Speedhacks", "IntcStat", "bool", intcStat.toString())
-        put("EmuCore/Speedhacks", "WaitLoop", "bool", waitLoop.toString())
-        put("EmuCore/Speedhacks", "vuNeonFusions", "bool", vuNeonFusions.toString())
-        put("EmuCore/Speedhacks", "vuDeferredWrites", "bool", vuDeferredWrites.toString())
-        put("EmuCore/Speedhacks", "vuSkipStallSim", "bool", vuSkipStallSim.toString())
+        put("EmuCore/Speedhacks", "vuThread", "bool", cpu.mtvu.toString())
+        put("EmuCore/Speedhacks", "vu1Instant", "bool", cpu.vu1Instant.toString())
+        put("EmuCore/Speedhacks", "vuFlagHack", "bool", cpu.vuFlagHack.toString())
+        put("EmuCore/Speedhacks", "fastCDVD", "bool", cpu.fastCDVD.toString())
+        put("EmuCore/Speedhacks", "IntcStat", "bool", cpu.intcStat.toString())
+        put("EmuCore/Speedhacks", "WaitLoop", "bool", cpu.waitLoop.toString())
+        put("EmuCore/Speedhacks", "vuNeonFusions", "bool", cpu.vuNeonFusions.toString())
+        put("EmuCore/Speedhacks", "vuDeferredWrites", "bool", cpu.vuDeferredWrites.toString())
+        put("EmuCore/Speedhacks", "vuSkipStallSim", "bool", cpu.vuSkipStallSim.toString())
         // GS frame limit. The setting key is persisted (read by runVMThread
         // after Initialize so cold starts honor the preference) AND the live
         // limiter mode is poked via speedhackLimitermode so toggling in-game
         // takes effect immediately. 0 = Nominal (capped at native rate),
         // 3 = Unlimited.
-        put("EmuCore/GS", "FrameLimitEnable", "bool", frameLimitEnable.toString())
+        put("EmuCore/GS", "FrameLimitEnable", "bool", frameLimit.frameLimitEnable.toString())
         // Preserve an active fast-forward / slow-down latch, exactly as the in-game overlay's
         // own frame-limit path does (MainActivityRuntime). Forcing 0/3 unconditionally here
         // clobbered Turbo on ANY settings apply while fast-forward was engaged — and since
@@ -875,7 +945,7 @@ data class Settings(
                 when {
                     MainActivityRuntime.fastForwardToggleActive -> MainActivityRuntime.ffLimiterMode()
                     MainActivityRuntime.slowDownToggleActive -> 2
-                    else -> if (frameLimitEnable) 0 else 3
+                    else -> if (frameLimit.frameLimitEnable) 0 else 3
                 }
             )
         }
@@ -884,148 +954,148 @@ data class Settings(
         // → UpdateTargetSpeed picks this up live. Clamp mirrors emucore's
         // EmulationSpeedOptions::SanityCheck (0.05..10.0).
         put("Framerate", "NominalScalar", "float",
-            (nominalSpeedPercent.coerceIn(10, 1000) / 100f).toString())
+            (frameLimit.nominalSpeedPercent.coerceIn(10, 1000) / 100f).toString())
         // Live-apply: the setSetting above only persists; the running frame
         // pacer needs a direct re-pace (mirrors speedhackLimitermode).
-        if (emitSink == null) NativeApp.setNominalSpeed(nominalSpeedPercent.coerceIn(10, 1000))
+        if (emitSink == null) NativeApp.setNominalSpeed(frameLimit.nominalSpeedPercent.coerceIn(10, 1000))
         // Max presented-FPS cap — independent of the Speed Limit % above. Caps
         // the display rate by dropping presents on the GS thread (emulation keeps
         // full speed, NominalScalar untouched); 0 = off. See GSRenderer::VSync.
-        if (emitSink == null) NativeApp.setFpsCap(fpsLimit.coerceIn(0, 1000))
+        if (emitSink == null) NativeApp.setFpsCap(frameLimit.fpsLimit.coerceIn(0, 1000))
         // Manual frameskip (0..5) — present 1 of every (N+1) frames. Held as a
         // GS-thread global, applied live; no persisted EmuCore key needed.
-        if (emitSink == null) NativeApp.setFrameSkip(frameSkip.coerceIn(0, 5))
-        if (emitSink == null) NativeApp.setPortraitRenderTop(portraitRenderTop)
-        if (emitSink == null) NativeApp.setLandscapeRenderTop(landscapeRenderTop)
+        if (emitSink == null) NativeApp.setFrameSkip(frameLimit.frameSkip.coerceIn(0, 5))
+        if (emitSink == null) NativeApp.setPortraitRenderTop(output.portraitRenderTop)
+        if (emitSink == null) NativeApp.setLandscapeRenderTop(output.landscapeRenderTop)
         // Audio (SPU2). Volume/mute are live native setters; the rest are written
         // to the base layer and applied on commit (SPU2 stream reconfigure).
-        if (emitSink == null) NativeApp.setAudioVolume(audioVolume.coerceIn(0, 200))
-        if (emitSink == null) NativeApp.setAudioMuted(audioMuted)
-        if (emitSink == null) NativeApp.setAudioSwapChannels(audioSwapChannels)
-        put("SPU2/Output", "SyncMode", "string", if (audioTimeStretch) "TimeStretch" else "Disabled")
-        put("SPU2/Output", "BufferMS", "int", audioBufferMs.coerceIn(10, 200).toString())
-        put("SPU2/Output", "OutputLatencyMS", "int", audioOutputLatencyMs.coerceIn(5, 200).toString())
-        put("SPU2/Output", "FastForwardVolume", "int", audioFastForwardVolume.coerceIn(0, 200).toString())
+        if (emitSink == null) NativeApp.setAudioVolume(audio.audioVolume.coerceIn(0, 200))
+        if (emitSink == null) NativeApp.setAudioMuted(audio.audioMuted)
+        if (emitSink == null) NativeApp.setAudioSwapChannels(audio.audioSwapChannels)
+        put("SPU2/Output", "SyncMode", "string", if (audio.audioTimeStretch) "TimeStretch" else "Disabled")
+        put("SPU2/Output", "BufferMS", "int", audio.audioBufferMs.coerceIn(10, 200).toString())
+        put("SPU2/Output", "OutputLatencyMS", "int", audio.audioOutputLatencyMs.coerceIn(5, 200).toString())
+        put("SPU2/Output", "FastForwardVolume", "int", audio.audioFastForwardVolume.coerceIn(0, 200).toString())
         // Opt-in NEON reverb FIR (ARM64). Read by SPU2::InternalReset on the
         // next game boot; default off = scalar reference (unchanged audio).
-        put("SPU2", "NeonReverbSIMD", "bool", spu2NeonReverb.toString())
+        put("SPU2", "NeonReverbSIMD", "bool", audio.spu2NeonReverb.toString())
         // Opt-in OpenSL ES output (Oboe). Lives in the SPU2/Output StreamParameters,
         // so ApplySettings → CheckForConfigChanges recreates the stream on toggle.
-        put("SPU2/Output", "AndroidOpenSLES", "bool", audioOpenSLES.toString())
+        put("SPU2/Output", "AndroidOpenSLES", "bool", audio.audioOpenSLES.toString())
         // Lightweight mix (skip reverb) — read live in MixCore via EmuConfig.SPU2.
-        put("SPU2/Output", "LightweightMode", "bool", spu2LightweightMix.toString())
+        put("SPU2/Output", "LightweightMode", "bool", audio.spu2LightweightMix.toString())
         // Patches / cheats (EmuCore). Reloaded by ApplySettings →
         // CheckForPatchConfigChanges; widescreen/no-interlacing take effect on
         // the next boot for most games.
-        put("EmuCore", "EnablePatches", "bool", enablePatches.toString())
-        put("EmuCore", "EnableCheats", "bool", enableCheats.toString())
-        put("EmuCore", "EnableWideScreenPatches", "bool", enableWideScreenPatches.toString())
-        put("EmuCore", "EnableNoInterlacingPatches", "bool", enableNoInterlacingPatches.toString())
-        put("EmuCore", "EnableFastBoot", "bool", enableFastBoot.toString())
-        put("EmuCore", "HostFs", "bool", hostFs.toString())
-        put("Achievements", "Enabled", "bool", achievementsEnabled.toString())
-        put("Achievements", "ChallengeMode", "bool", achievementsHardcore.toString())
-        put("Achievements", "Notifications", "bool", achievementsNotifications.toString())
-        put("Achievements", "LeaderboardNotifications", "bool", achievementsLeaderboardNotifications.toString())
-        put("Achievements", "Overlays", "bool", achievementsOverlays.toString())
-        put("Achievements", "LBOverlays", "bool", achievementsLbOverlays.toString())
-        put("Achievements", "SoundEffects", "bool", achievementsSoundEffects.toString())
-        put("Achievements", "EncoreMode", "bool", achievementsEncoreMode.toString())
-        put("Achievements", "SpectatorMode", "bool", achievementsSpectatorMode.toString())
-        put("Achievements", "UnofficialTestMode", "bool", achievementsUnofficialTestMode.toString())
-        put("Achievements", "NotificationsDuration", "int", achievementsNotificationsDuration.coerceIn(3, 30).toString())
-        put("Achievements", "LeaderboardsDuration", "int", achievementsLeaderboardsDuration.coerceIn(3, 30).toString())
-        put("Achievements", "NotificationPosition", "int", achievementsNotificationPosition.toString())
-        put("Achievements", "OverlayPosition", "int", achievementsOverlayPosition.toString())
-        put("Achievements", "NotificationScale", "int", achievementsNotificationScale.coerceIn(50, 250).toString())
+        put("EmuCore", "EnablePatches", "bool", emuCore.enablePatches.toString())
+        put("EmuCore", "EnableCheats", "bool", emuCore.enableCheats.toString())
+        put("EmuCore", "EnableWideScreenPatches", "bool", emuCore.enableWideScreenPatches.toString())
+        put("EmuCore", "EnableNoInterlacingPatches", "bool", emuCore.enableNoInterlacingPatches.toString())
+        put("EmuCore", "EnableFastBoot", "bool", emuCore.enableFastBoot.toString())
+        put("EmuCore", "HostFs", "bool", emuCore.hostFs.toString())
+        put("Achievements", "Enabled", "bool", emuCore.achievements.enabled.toString())
+        put("Achievements", "ChallengeMode", "bool", emuCore.achievements.hardcore.toString())
+        put("Achievements", "Notifications", "bool", emuCore.achievements.notifications.toString())
+        put("Achievements", "LeaderboardNotifications", "bool", emuCore.achievements.leaderboardNotifications.toString())
+        put("Achievements", "Overlays", "bool", emuCore.achievements.overlays.toString())
+        put("Achievements", "LBOverlays", "bool", emuCore.achievements.lbOverlays.toString())
+        put("Achievements", "SoundEffects", "bool", emuCore.achievements.soundEffects.toString())
+        put("Achievements", "EncoreMode", "bool", emuCore.achievements.encoreMode.toString())
+        put("Achievements", "SpectatorMode", "bool", emuCore.achievements.spectatorMode.toString())
+        put("Achievements", "UnofficialTestMode", "bool", emuCore.achievements.unofficialTestMode.toString())
+        put("Achievements", "NotificationsDuration", "int", emuCore.achievements.notificationsDuration.coerceIn(3, 30).toString())
+        put("Achievements", "LeaderboardsDuration", "int", emuCore.achievements.leaderboardsDuration.coerceIn(3, 30).toString())
+        put("Achievements", "NotificationPosition", "int", emuCore.achievements.notificationPosition.toString())
+        put("Achievements", "OverlayPosition", "int", emuCore.achievements.overlayPosition.toString())
+        put("Achievements", "NotificationScale", "int", emuCore.achievements.notificationScale.coerceIn(50, 250).toString())
         // VMManager::ReloadPINE compares these against the live server and starts, stops or
         // rebinds it, so a commit is enough — no game restart.
-        put("EmuCore", "EnablePINE", "bool", pineEnabled.toString())
-        put("EmuCore", "PINESlot", "int", pineSlot.toString())
-        put("EmuCore", "EnableGameFixes", "bool", enableGameFixes.toString())
-        put("EmuCore/Gamefixes", "SoftwareRendererFMVHack", "bool", gamefixSoftwareRendererFmv.toString())
-        put("EmuCore/Gamefixes", "SkipMPEGHack", "bool", gamefixSkipMpeg.toString())
-        put("EmuCore/Gamefixes", "EETimingHack", "bool", gamefixEETiming.toString())
-        put("EmuCore/Gamefixes", "InstantDMAHack", "bool", gamefixInstantDma.toString())
-        put("EmuCore/Gamefixes", "BlitInternalFPSHack", "bool", gamefixBlitInternalFps.toString())
-        put("EmuCore/Gamefixes", "OPHFlagHack", "bool", gamefixOphFlag.toString())
-        put("EmuCore/Gamefixes", "GIFFIFOHack", "bool", gamefixGifFifo.toString())
-        put("EmuCore/Gamefixes", "DMABusyHack", "bool", gamefixDmaBusy.toString())
-        put("EmuCore/Gamefixes", "VIF1StallHack", "bool", gamefixVif1Stall.toString())
-        put("EmuCore/Gamefixes", "IbitHack", "bool", gamefixIbit.toString())
-        put("EmuCore/Gamefixes", "FullVU0SyncHack", "bool", gamefixFullVu0Sync.toString())
-        put("EmuCore/Gamefixes", "VuAddSubHack", "bool", gamefixVuAddSub.toString())
-        put("EmuCore/Gamefixes", "VUOverflowHack", "bool", gamefixVuOverflow.toString())
-        put("EmuCore/Gamefixes", "XgKickHack", "bool", gamefixXgkick.toString())
-        put("EmuCore/Gamefixes", "GoemonTlbHack", "bool", gamefixGoemonTlb.toString())
-        put("EmuCore/Gamefixes", "VUSyncHack", "bool", gamefixVuSync.toString())
-        put("EmuCore/GS", "SkipDuplicateFrames", "bool", skipDuplicateFrames.toString())
-        put("EmuCore/CPU", "FPU.Roundmode", "int", eeFpuRoundMode.coerceIn(0, 3).toString())
-        put("EmuCore/CPU", "VU0.Roundmode", "int", vu0RoundMode.coerceIn(0, 3).toString())
-        put("EmuCore/CPU", "VU1.Roundmode", "int", vu1RoundMode.coerceIn(0, 3).toString())
+        put("EmuCore", "EnablePINE", "bool", emuCore.pineEnabled.toString())
+        put("EmuCore", "PINESlot", "int", emuCore.pineSlot.toString())
+        put("EmuCore", "EnableGameFixes", "bool", emuCore.enableGameFixes.toString())
+        put("EmuCore/Gamefixes", "SoftwareRendererFMVHack", "bool", emuCore.gamefixSoftwareRendererFmv.toString())
+        put("EmuCore/Gamefixes", "SkipMPEGHack", "bool", emuCore.gamefixSkipMpeg.toString())
+        put("EmuCore/Gamefixes", "EETimingHack", "bool", emuCore.gamefixEETiming.toString())
+        put("EmuCore/Gamefixes", "InstantDMAHack", "bool", emuCore.gamefixInstantDma.toString())
+        put("EmuCore/Gamefixes", "BlitInternalFPSHack", "bool", emuCore.gamefixBlitInternalFps.toString())
+        put("EmuCore/Gamefixes", "OPHFlagHack", "bool", emuCore.gamefixOphFlag.toString())
+        put("EmuCore/Gamefixes", "GIFFIFOHack", "bool", emuCore.gamefixGifFifo.toString())
+        put("EmuCore/Gamefixes", "DMABusyHack", "bool", emuCore.gamefixDmaBusy.toString())
+        put("EmuCore/Gamefixes", "VIF1StallHack", "bool", emuCore.gamefixVif1Stall.toString())
+        put("EmuCore/Gamefixes", "IbitHack", "bool", emuCore.gamefixIbit.toString())
+        put("EmuCore/Gamefixes", "FullVU0SyncHack", "bool", emuCore.gamefixFullVu0Sync.toString())
+        put("EmuCore/Gamefixes", "VuAddSubHack", "bool", emuCore.gamefixVuAddSub.toString())
+        put("EmuCore/Gamefixes", "VUOverflowHack", "bool", emuCore.gamefixVuOverflow.toString())
+        put("EmuCore/Gamefixes", "XgKickHack", "bool", emuCore.gamefixXgkick.toString())
+        put("EmuCore/Gamefixes", "GoemonTlbHack", "bool", emuCore.gamefixGoemonTlb.toString())
+        put("EmuCore/Gamefixes", "VUSyncHack", "bool", emuCore.gamefixVuSync.toString())
+        put("EmuCore/GS", "SkipDuplicateFrames", "bool", emuCore.skipDuplicateFrames.toString())
+        put("EmuCore/CPU", "FPU.Roundmode", "int", emuCore.eeFpuRoundMode.coerceIn(0, 3).toString())
+        put("EmuCore/CPU", "VU0.Roundmode", "int", emuCore.vu0RoundMode.coerceIn(0, 3).toString())
+        put("EmuCore/CPU", "VU1.Roundmode", "int", emuCore.vu1RoundMode.coerceIn(0, 3).toString())
         // Display + GS renderer + hardware/upscaling-fix keys are all written
         // together in writeGsToNative() below (shared with applyGsLive()).
         // DEV9. Networking/HDD are initialized with the VM, so changes
         // made from the in-game overlay are persisted for the next boot.
-        put("DEV9/Eth", "EthEnable", "bool", dev9EthEnable.toString())
-        put("DEV9/Eth", "EthApi", "string", dev9EthApi)
-        put("DEV9/Eth", "LocalLinkHost", "bool", localLinkHost.toString())
-        put("DEV9/Eth", "LocalLinkAddress", "string", localLinkAddress)
-        put("DEV9/Eth", "LocalLinkPort", "int", localLinkPort.coerceIn(1, 65535).toString())
-        put("DEV9/Eth", "LocalLinkPeerId", "int", localLinkPeerId.coerceIn(1, 65533).toString())
-        put("DEV9/Eth", "LocalLinkRoomCode", "string", localLinkRoomCode)
-        put("DEV9/Eth", "EthDevice", "string", dev9EthDevice.ifEmpty { "Auto" })
-        put("DEV9/Eth", "EthLogDHCP", "bool", dev9EthLogDhcp.toString())
-        put("DEV9/Eth", "EthLogDNS", "bool", dev9EthLogDns.toString())
-        put("DEV9/Eth", "InterceptDHCP", "bool", dev9InterceptDhcp.toString())
-        put("DEV9/Eth", "PS2IP", "string", dev9Ps2Ip.ifEmpty { "0.0.0.0" })
-        put("DEV9/Eth", "Mask", "string", dev9Mask.ifEmpty { "0.0.0.0" })
-        put("DEV9/Eth", "Gateway", "string", dev9Gateway.ifEmpty { "0.0.0.0" })
-        put("DEV9/Eth", "DNS1", "string", dev9Dns1.ifEmpty { "0.0.0.0" })
-        put("DEV9/Eth", "DNS2", "string", dev9Dns2.ifEmpty { "0.0.0.0" })
-        put("DEV9/Eth", "AutoMask", "bool", dev9AutoMask.toString())
-        put("DEV9/Eth", "AutoGateway", "bool", dev9AutoGateway.toString())
-        put("DEV9/Eth", "ModeDNS1", "string", dev9ModeDns1.ifEmpty { "Auto" })
-        put("DEV9/Eth", "ModeDNS2", "string", dev9ModeDns2.ifEmpty { "Auto" })
+        put("DEV9/Eth", "EthEnable", "bool", network.dev9EthEnable.toString())
+        put("DEV9/Eth", "EthApi", "string", network.dev9EthApi)
+        put("DEV9/Eth", "LocalLinkHost", "bool", network.localLinkHost.toString())
+        put("DEV9/Eth", "LocalLinkAddress", "string", network.localLinkAddress)
+        put("DEV9/Eth", "LocalLinkPort", "int", network.localLinkPort.coerceIn(1, 65535).toString())
+        put("DEV9/Eth", "LocalLinkPeerId", "int", network.localLinkPeerId.coerceIn(1, 65533).toString())
+        put("DEV9/Eth", "LocalLinkRoomCode", "string", network.localLinkRoomCode)
+        put("DEV9/Eth", "EthDevice", "string", network.dev9EthDevice.ifEmpty { "Auto" })
+        put("DEV9/Eth", "EthLogDHCP", "bool", network.dev9EthLogDhcp.toString())
+        put("DEV9/Eth", "EthLogDNS", "bool", network.dev9EthLogDns.toString())
+        put("DEV9/Eth", "InterceptDHCP", "bool", network.dev9InterceptDhcp.toString())
+        put("DEV9/Eth", "PS2IP", "string", network.dev9Ps2Ip.ifEmpty { "0.0.0.0" })
+        put("DEV9/Eth", "Mask", "string", network.dev9Mask.ifEmpty { "0.0.0.0" })
+        put("DEV9/Eth", "Gateway", "string", network.dev9Gateway.ifEmpty { "0.0.0.0" })
+        put("DEV9/Eth", "DNS1", "string", network.dev9Dns1.ifEmpty { "0.0.0.0" })
+        put("DEV9/Eth", "DNS2", "string", network.dev9Dns2.ifEmpty { "0.0.0.0" })
+        put("DEV9/Eth", "AutoMask", "bool", network.dev9AutoMask.toString())
+        put("DEV9/Eth", "AutoGateway", "bool", network.dev9AutoGateway.toString())
+        put("DEV9/Eth", "ModeDNS1", "string", network.dev9ModeDns1.ifEmpty { "Auto" })
+        put("DEV9/Eth", "ModeDNS2", "string", network.dev9ModeDns2.ifEmpty { "Auto" })
         // Internal-DNS host overrides. Count gates how many Host{i} sections the core reads.
-        put("DEV9/Eth/Hosts", "Count", "int", dev9EthHosts.size.toString())
-        dev9EthHosts.forEachIndexed { i, h ->
+        put("DEV9/Eth/Hosts", "Count", "int", network.dev9EthHosts.size.toString())
+        network.dev9EthHosts.forEachIndexed { i, h ->
             put("DEV9/Eth/Hosts/Host$i", "Url", "string", h.url)
             put("DEV9/Eth/Hosts/Host$i", "Desc", "string", "ARMSX2")
             put("DEV9/Eth/Hosts/Host$i", "Address", "string", h.ip.ifEmpty { "0.0.0.0" })
             put("DEV9/Eth/Hosts/Host$i", "Enabled", "bool", h.enabled.toString())
         }
-        put("DEV9/Hdd", "HddEnable", "bool", dev9HddEnable.toString())
-        put("DEV9/Hdd", "HddFile", "string", dev9HddFile.ifEmpty { "DEV9hdd.raw" })
-        put("MemoryCards", "Slot1_Enable", "bool", memoryCardSlot1Enabled.toString())
-        put("MemoryCards", "Slot1_Filename", "string", memoryCardSlot1Filename.ifEmpty { "mcd001.ps2" })
-        put("MemoryCards", "Slot2_Enable", "bool", memoryCardSlot2Enabled.toString())
-        put("MemoryCards", "Slot2_Filename", "string", memoryCardSlot2Filename.ifEmpty { "mcd002.ps2" })
+        put("DEV9/Hdd", "HddEnable", "bool", network.dev9HddEnable.toString())
+        put("DEV9/Hdd", "HddFile", "string", network.dev9HddFile.ifEmpty { "DEV9hdd.raw" })
+        put("MemoryCards", "Slot1_Enable", "bool", system.memoryCardSlot1Enabled.toString())
+        put("MemoryCards", "Slot1_Filename", "string", system.memoryCardSlot1Filename.ifEmpty { "mcd001.ps2" })
+        put("MemoryCards", "Slot2_Enable", "bool", system.memoryCardSlot2Enabled.toString())
+        put("MemoryCards", "Slot2_Filename", "string", system.memoryCardSlot2Filename.ifEmpty { "mcd002.ps2" })
         // USB keyboard (#254). Persist [USB1] Type so USBOptions::LoadSave attaches
         // the emulated HID keyboard on the next boot (or ApplySettings). The live
         // attach/detach on a running VM is done via NativeApp.usbSetKeyboardEnabled
         // below (CheckForConfigChanges recreates the device), since a plain
         // setSetting write doesn't reattach USB devices on its own.
-        put("USB1", "Type", "string", if (usbKeyboard) "hidkbd" else "None")
+        put("USB1", "Type", "string", if (system.usbKeyboard) "hidkbd" else "None")
         // Recompiler enables. Picked up by VMManager::ApplySettings →
         // SysCpuProviderPack rebind. Toggling these on a running VM swaps
         // the dispatch pointer; existing JIT block caches are flushed by
         // ApplySettings's CpusChanged path.
-        put("EmuCore/CPU/Recompiler", "EnableEE", "bool", recEE.toString())
-        put("EmuCore/CPU/Recompiler", "EnableIOP", "bool", recIOP.toString())
-        put("EmuCore/CPU/Recompiler", "EnableVU0", "bool", recVU0.toString())
-        put("EmuCore/CPU/Recompiler", "EnableVU1", "bool", recVU1.toString())
-        put("EmuCore/CPU/Recompiler", "EnableFastmem", "bool", enableFastmem.toString())
+        put("EmuCore/CPU/Recompiler", "EnableEE", "bool", cpu.recEE.toString())
+        put("EmuCore/CPU/Recompiler", "EnableIOP", "bool", cpu.recIOP.toString())
+        put("EmuCore/CPU/Recompiler", "EnableVU0", "bool", cpu.recVU0.toString())
+        put("EmuCore/CPU/Recompiler", "EnableVU1", "bool", cpu.recVU1.toString())
+        put("EmuCore/CPU/Recompiler", "EnableFastmem", "bool", cpu.enableFastmem.toString())
         // Force the single macOS/PCSX2 ARM64 backend. VMManager also ignores
         // stale UseMac* values, but writing true cleans old persisted settings.
         put("EmuCore/CPU/Recompiler", "UseMacEE", "bool", "true")
         put("EmuCore/CPU/Recompiler", "UseMacIOP", "bool", "true")
         put("EmuCore/CPU/Recompiler", "UseMacVU0", "bool", "true")
         put("EmuCore/CPU/Recompiler", "UseMacVU1", "bool", "true")
-        put("EmuCore/CPU/Recompiler", "Vu1InlineFmacStall", "bool", vu1InlineFmacStall.toString())
-        put("EmuCore/CPU/Recompiler", "Vu1CrossBlockPState", "bool", vu1CrossBlockPState.toString())
-        put("EmuCore/CPU/Recompiler", "Vu1InlineDrainTestPipes", "bool", vu1InlineDrainTestPipes.toString())
-        put("EmuCore/CPU/Recompiler", "Vu1FmacInstanceRouting", "bool", vu1FmacInstanceRouting.toString())
+        put("EmuCore/CPU/Recompiler", "Vu1InlineFmacStall", "bool", cpu.vu1InlineFmacStall.toString())
+        put("EmuCore/CPU/Recompiler", "Vu1CrossBlockPState", "bool", cpu.vu1CrossBlockPState.toString())
+        put("EmuCore/CPU/Recompiler", "Vu1InlineDrainTestPipes", "bool", cpu.vu1InlineDrainTestPipes.toString())
+        put("EmuCore/CPU/Recompiler", "Vu1FmacInstanceRouting", "bool", cpu.vu1FmacInstanceRouting.toString())
         writeGsToNative()
         // Per-game INI export is capturing the key set only — writeGsToNative()
         // above was the last persisted emit, so stop before the live pokes /
@@ -1036,32 +1106,32 @@ data class Settings(
         // 0..5 — the upper bound is the LAST aspect index, so adding a ratio means widening this
         // too. Left at 4 it silently sent 10:7 to the core no matter what the picker showed, which
         // is the worst version of this bug: the UI looks correct and nothing happens.
-        NativeApp.setAspectRatio(aspectRatio.coerceIn(0, 8))
-        NativeApp.setFmvAspectRatio(fmvAspectRatio.coerceIn(0, 8))
-        NativeApp.renderTvShader(tvShader.coerceIn(0, 7))
+        NativeApp.setAspectRatio(output.aspectRatio.coerceIn(0, 8))
+        NativeApp.setFmvAspectRatio(output.fmvAspectRatio.coerceIn(0, 8))
+        NativeApp.renderTvShader(graphics.tvShader.coerceIn(0, 7))
         NativeApp.renderShadeBoost(
-            shadeBoost,
-            shadeBoostBrightness.coerceIn(1, 100),
-            shadeBoostContrast.coerceIn(1, 100),
-            shadeBoostSaturation.coerceIn(1, 100),
-            shadeBoostGamma.coerceIn(1, 100),
+            graphics.shadeBoost,
+            graphics.shadeBoostBrightness.coerceIn(1, 100),
+            graphics.shadeBoostContrast.coerceIn(1, 100),
+            graphics.shadeBoostSaturation.coerceIn(1, 100),
+            graphics.shadeBoostGamma.coerceIn(1, 100),
         )
-        NativeApp.osdShowFPS(osdShowFps)
-        NativeApp.osdSetScale(osdScale.toFloat())
-        NativeApp.osdSetColor(osdColor)
-        NativeApp.osdShowVPS(osdShowVps)
-        NativeApp.osdShowSpeed(osdShowSpeed)
-        NativeApp.osdShowCPU(osdShowCpu)
-        NativeApp.osdShowGPU(osdShowGpu)
-        NativeApp.osdShowResolution(osdShowResolution)
-        NativeApp.osdShowGSStats(osdShowGsStats)
-        NativeApp.osdShowFrameTimes(osdShowFrameTimes)
-        NativeApp.osdShowHardwareInfo(osdShowHardwareInfo)
-        NativeApp.osdShowMessages(osdShowMessages)
-        NativeApp.osdShowGpuStats(osdShowGpuStats)
-        NativeApp.osdShowVersion(osdShowVersion)
-        NativeApp.osdShowSettings(osdShowSettings)
-        NativeApp.osdShowInputs(osdShowInputs)
+        NativeApp.osdShowFPS(osd.osdShowFps)
+        NativeApp.osdSetScale(osd.osdScale.toFloat())
+        NativeApp.osdSetColor(osd.osdColor)
+        NativeApp.osdShowVPS(osd.osdShowVps)
+        NativeApp.osdShowSpeed(osd.osdShowSpeed)
+        NativeApp.osdShowCPU(osd.osdShowCpu)
+        NativeApp.osdShowGPU(osd.osdShowGpu)
+        NativeApp.osdShowResolution(osd.osdShowResolution)
+        NativeApp.osdShowGSStats(osd.osdShowGsStats)
+        NativeApp.osdShowFrameTimes(osd.osdShowFrameTimes)
+        NativeApp.osdShowHardwareInfo(osd.osdShowHardwareInfo)
+        NativeApp.osdShowMessages(osd.osdShowMessages)
+        NativeApp.osdShowGpuStats(osd.osdShowGpuStats)
+        NativeApp.osdShowVersion(osd.osdShowVersion)
+        NativeApp.osdShowSettings(osd.osdShowSettings)
+        NativeApp.osdShowInputs(osd.osdShowInputs)
         // ★ The OSD MODE overrides every flag just written. Full / Minimal / Off are a separate
         // choice from the per-stat selection above, and this function runs on every settings
         // change — so without this line, changing any unrelated setting quietly swaps an active
@@ -1072,7 +1142,7 @@ data class Settings(
         // setSetting("USB1","Type",...) write is persisted but doesn't reattach
         // USB devices, so drive the device (re)creation explicitly. No-op before
         // the VM exists — the persisted Type above handles the cold boot.
-        NativeApp.usbSetKeyboardEnabled(0, usbKeyboard)
+        NativeApp.usbSetKeyboardEnabled(0, system.usbKeyboard)
         NativeApp.commitSettings()
     }
 
@@ -1105,7 +1175,7 @@ data class Settings(
             val fe = boolAt("EmuCore/CPU/Recompiler/fpuExtraOverflow")
             val ff = boolAt("EmuCore/CPU/Recompiler/fpuFullMode")
             val fx = boolAt("EmuCore/CPU/Recompiler/fpuExactMode")
-            if (fo == null && fe == null && ff == null && fx == null) this.eeClampMode
+            if (fo == null && fe == null && ff == null && fx == null) this.cpu.eeClampMode
             else if (fx == true) 4 else if (ff == true) 3 else if (fe == true) 2 else if (fo == true) 1 else 0
         }
         // VU clamp (0 None / 1 Normal / 2 Extra / 3 Extra+Sign / 4 Exact) — the same packing,
@@ -1120,7 +1190,7 @@ data class Settings(
             return if (o == null && e == null && sgn == null && fx == null) fallback
             else if (fx == true) 4 else if (sgn == true) 3 else if (e == true) 2 else if (o == true) 1 else 0
         }
-        val vuClamp = vuClampAt("vu0", this.vuClampMode)
+        val vuClamp = vuClampAt("vu0", this.cpu.vuClampMode)
         val vu1Clamp = vuClampAt("vu1", this.effectiveVu1ClampMode).let { if (it == vuClamp) -1 else it }
 
         // renderer + upscale aren't written by applyTo's put() — the core / renderUpscalemultiplier
@@ -1131,146 +1201,190 @@ data class Settings(
             12 -> "opengl"
             13 -> "software"
             14 -> "vulkan"
-            else -> this.renderer
+            else -> this.output.renderer
         }
 
         return this.copy(
-            // ---- Renderer + upscale (base-layer keys, not applyTo put()) ----
-            renderer = recoveredRenderer,
-            upscaleFloat = floatAt("EmuCore/GS/upscale_multiplier") ?: this.upscaleFloat,
-            // ---- EmuCore/Speedhacks ----
-            eeCycleRate = intAt("EmuCore/Speedhacks/EECycleRate") ?: this.eeCycleRate,
-            eeCycleSkip = intAt("EmuCore/Speedhacks/EECycleSkip") ?: this.eeCycleSkip,
-            eeClampMode = eeClamp,
-            vuClampMode = vuClamp,
-            vu1ClampMode = vu1Clamp,
-            mtvu = boolAt("EmuCore/Speedhacks/vuThread") ?: this.mtvu,
-            vu1Instant = boolAt("EmuCore/Speedhacks/vu1Instant") ?: this.vu1Instant,
-            vuFlagHack = boolAt("EmuCore/Speedhacks/vuFlagHack") ?: this.vuFlagHack,
-            fastCDVD = boolAt("EmuCore/Speedhacks/fastCDVD") ?: this.fastCDVD,
-            intcStat = boolAt("EmuCore/Speedhacks/IntcStat") ?: this.intcStat,
-            waitLoop = boolAt("EmuCore/Speedhacks/WaitLoop") ?: this.waitLoop,
-            vuNeonFusions = boolAt("EmuCore/Speedhacks/vuNeonFusions") ?: this.vuNeonFusions,
-            vuDeferredWrites = boolAt("EmuCore/Speedhacks/vuDeferredWrites") ?: this.vuDeferredWrites,
-            vuSkipStallSim = boolAt("EmuCore/Speedhacks/vuSkipStallSim") ?: this.vuSkipStallSim,
-            // ---- Frame limiter (nominalSpeedPercent stored as the 0.10..10.0 scalar) ----
-            frameLimitEnable = boolAt("EmuCore/GS/FrameLimitEnable") ?: this.frameLimitEnable,
-            nominalSpeedPercent = floatAt("Framerate/NominalScalar")?.let { Math.round(it * 100f) }
-                ?: this.nominalSpeedPercent,
-            // ---- Audio (SPU2/Output) — SyncMode is TimeStretch/Disabled ----
-            audioTimeStretch = strAt("SPU2/Output/SyncMode")?.let { it == "TimeStretch" } ?: this.audioTimeStretch,
-            audioBufferMs = intAt("SPU2/Output/BufferMS") ?: this.audioBufferMs,
-            audioOutputLatencyMs = intAt("SPU2/Output/OutputLatencyMS") ?: this.audioOutputLatencyMs,
-            audioFastForwardVolume = intAt("SPU2/Output/FastForwardVolume") ?: this.audioFastForwardVolume,
-            spu2NeonReverb = boolAt("SPU2/NeonReverbSIMD") ?: this.spu2NeonReverb,
-            audioOpenSLES = boolAt("SPU2/Output/AndroidOpenSLES") ?: this.audioOpenSLES,
-            spu2LightweightMix = boolAt("SPU2/Output/LightweightMode") ?: this.spu2LightweightMix,
-            // ---- EmuCore patches / cheats ----
-            enablePatches = boolAt("EmuCore/EnablePatches") ?: this.enablePatches,
-            enableCheats = boolAt("EmuCore/EnableCheats") ?: this.enableCheats,
-            enableWideScreenPatches = boolAt("EmuCore/EnableWideScreenPatches") ?: this.enableWideScreenPatches,
-            enableNoInterlacingPatches = boolAt("EmuCore/EnableNoInterlacingPatches") ?: this.enableNoInterlacingPatches,
-            enableFastBoot = boolAt("EmuCore/EnableFastBoot") ?: this.enableFastBoot,
-            hostFs = boolAt("EmuCore/HostFs") ?: this.hostFs,
-            achievementsEnabled = boolAt("Achievements/Enabled") ?: this.achievementsEnabled,
-            achievementsHardcore = boolAt("Achievements/ChallengeMode") ?: this.achievementsHardcore,
-            achievementsNotifications = boolAt("Achievements/Notifications") ?: this.achievementsNotifications,
-            achievementsLeaderboardNotifications = boolAt("Achievements/LeaderboardNotifications") ?: this.achievementsLeaderboardNotifications,
-            achievementsOverlays = boolAt("Achievements/Overlays") ?: this.achievementsOverlays,
-            achievementsLbOverlays = boolAt("Achievements/LBOverlays") ?: this.achievementsLbOverlays,
-            achievementsSoundEffects = boolAt("Achievements/SoundEffects") ?: this.achievementsSoundEffects,
-            achievementsEncoreMode = boolAt("Achievements/EncoreMode") ?: this.achievementsEncoreMode,
-            achievementsSpectatorMode = boolAt("Achievements/SpectatorMode") ?: this.achievementsSpectatorMode,
-            achievementsUnofficialTestMode = boolAt("Achievements/UnofficialTestMode") ?: this.achievementsUnofficialTestMode,
-            achievementsNotificationsDuration = intAt("Achievements/NotificationsDuration") ?: this.achievementsNotificationsDuration,
-            achievementsLeaderboardsDuration = intAt("Achievements/LeaderboardsDuration") ?: this.achievementsLeaderboardsDuration,
-            achievementsNotificationPosition = intAt("Achievements/NotificationPosition") ?: this.achievementsNotificationPosition,
-            achievementsOverlayPosition = intAt("Achievements/OverlayPosition") ?: this.achievementsOverlayPosition,
-            achievementsNotificationScale = intAt("Achievements/NotificationScale") ?: this.achievementsNotificationScale,
-            pineEnabled = boolAt("EmuCore/EnablePINE") ?: this.pineEnabled,
-            pineSlot = intAt("EmuCore/PINESlot") ?: this.pineSlot,
-            enableGameFixes = boolAt("EmuCore/EnableGameFixes") ?: this.enableGameFixes,
-            // ---- EmuCore/Gamefixes ----
-            gamefixSoftwareRendererFmv = boolAt("EmuCore/Gamefixes/SoftwareRendererFMVHack") ?: this.gamefixSoftwareRendererFmv,
-            gamefixSkipMpeg = boolAt("EmuCore/Gamefixes/SkipMPEGHack") ?: this.gamefixSkipMpeg,
-            gamefixEETiming = boolAt("EmuCore/Gamefixes/EETimingHack") ?: this.gamefixEETiming,
-            gamefixInstantDma = boolAt("EmuCore/Gamefixes/InstantDMAHack") ?: this.gamefixInstantDma,
-            gamefixBlitInternalFps = boolAt("EmuCore/Gamefixes/BlitInternalFPSHack") ?: this.gamefixBlitInternalFps,
-            gamefixOphFlag = boolAt("EmuCore/Gamefixes/OPHFlagHack") ?: this.gamefixOphFlag,
-            gamefixGifFifo = boolAt("EmuCore/Gamefixes/GIFFIFOHack") ?: this.gamefixGifFifo,
-            gamefixDmaBusy = boolAt("EmuCore/Gamefixes/DMABusyHack") ?: this.gamefixDmaBusy,
-            gamefixVif1Stall = boolAt("EmuCore/Gamefixes/VIF1StallHack") ?: this.gamefixVif1Stall,
-            gamefixIbit = boolAt("EmuCore/Gamefixes/IbitHack") ?: this.gamefixIbit,
-            gamefixFullVu0Sync = boolAt("EmuCore/Gamefixes/FullVU0SyncHack") ?: this.gamefixFullVu0Sync,
-            gamefixVuAddSub = boolAt("EmuCore/Gamefixes/VuAddSubHack") ?: this.gamefixVuAddSub,
-            gamefixVuOverflow = boolAt("EmuCore/Gamefixes/VUOverflowHack") ?: this.gamefixVuOverflow,
-            gamefixXgkick = boolAt("EmuCore/Gamefixes/XgKickHack") ?: this.gamefixXgkick,
-            gamefixGoemonTlb = boolAt("EmuCore/Gamefixes/GoemonTlbHack") ?: this.gamefixGoemonTlb,
-            gamefixVuSync = boolAt("EmuCore/Gamefixes/VUSyncHack") ?: this.gamefixVuSync,
-            skipDuplicateFrames = boolAt("EmuCore/GS/SkipDuplicateFrames") ?: this.skipDuplicateFrames,
-            eeFpuRoundMode = intAt("EmuCore/CPU/FPU.Roundmode") ?: this.eeFpuRoundMode,
-            vu0RoundMode = intAt("EmuCore/CPU/VU0.Roundmode") ?: this.vu0RoundMode,
-            vu1RoundMode = intAt("EmuCore/CPU/VU1.Roundmode") ?: this.vu1RoundMode,
-            // ---- DEV9 — Ethernet / HDD ----
-            dev9EthEnable = boolAt("DEV9/Eth/EthEnable") ?: this.dev9EthEnable,
-            dev9EthApi = strAt("DEV9/Eth/EthApi") ?: this.dev9EthApi,
-            localLinkHost = boolAt("DEV9/Eth/LocalLinkHost") ?: this.localLinkHost,
-            localLinkAddress = strAt("DEV9/Eth/LocalLinkAddress") ?: this.localLinkAddress,
-            localLinkPort = intAt("DEV9/Eth/LocalLinkPort") ?: this.localLinkPort,
-            localLinkPeerId = intAt("DEV9/Eth/LocalLinkPeerId") ?: this.localLinkPeerId,
-            localLinkRoomCode = strAt("DEV9/Eth/LocalLinkRoomCode") ?: this.localLinkRoomCode,
-            dev9EthDevice = strAt("DEV9/Eth/EthDevice") ?: this.dev9EthDevice,
-            dev9EthLogDhcp = boolAt("DEV9/Eth/EthLogDHCP") ?: this.dev9EthLogDhcp,
-            dev9EthLogDns = boolAt("DEV9/Eth/EthLogDNS") ?: this.dev9EthLogDns,
-            dev9InterceptDhcp = boolAt("DEV9/Eth/InterceptDHCP") ?: this.dev9InterceptDhcp,
-            dev9Ps2Ip = strAt("DEV9/Eth/PS2IP") ?: this.dev9Ps2Ip,
-            dev9Mask = strAt("DEV9/Eth/Mask") ?: this.dev9Mask,
-            dev9Gateway = strAt("DEV9/Eth/Gateway") ?: this.dev9Gateway,
-            dev9Dns1 = strAt("DEV9/Eth/DNS1") ?: this.dev9Dns1,
-            dev9Dns2 = strAt("DEV9/Eth/DNS2") ?: this.dev9Dns2,
-            dev9AutoMask = boolAt("DEV9/Eth/AutoMask") ?: this.dev9AutoMask,
-            dev9AutoGateway = boolAt("DEV9/Eth/AutoGateway") ?: this.dev9AutoGateway,
-            dev9ModeDns1 = strAt("DEV9/Eth/ModeDNS1") ?: this.dev9ModeDns1,
-            dev9ModeDns2 = strAt("DEV9/Eth/ModeDNS2") ?: this.dev9ModeDns2,
-            // Internal-DNS host overrides — Count gates Host{i} sections (Desc is ignored).
-            dev9EthHosts = run {
-                val count = intAt("DEV9/Eth/Hosts/Count") ?: return@run this.dev9EthHosts
-                (0 until count).mapNotNull { idx ->
-                    val url = ini["DEV9/Eth/Hosts/Host$idx/Url"] ?: return@mapNotNull null
-                    Dev9HostMapping(
-                        url = url,
-                        ip = (ini["DEV9/Eth/Hosts/Host$idx/Address"] ?: "0.0.0.0").ifEmpty { "0.0.0.0" },
-                        enabled = boolAt("DEV9/Eth/Hosts/Host$idx/Enabled") ?: true,
-                    )
-                }.filter { it.url.isNotBlank() }
+            cpu = this.cpu.copy(
+                // ---- EmuCore/Speedhacks ----
+                eeCycleRate = intAt("EmuCore/Speedhacks/EECycleRate") ?: this.cpu.eeCycleRate,
+                eeCycleSkip = intAt("EmuCore/Speedhacks/EECycleSkip") ?: this.cpu.eeCycleSkip,
+                eeClampMode = eeClamp,
+                vuClampMode = vuClamp,
+                vu1ClampMode = vu1Clamp,
+                mtvu = boolAt("EmuCore/Speedhacks/vuThread") ?: this.cpu.mtvu,
+                vu1Instant = boolAt("EmuCore/Speedhacks/vu1Instant") ?: this.cpu.vu1Instant,
+                vuFlagHack = boolAt("EmuCore/Speedhacks/vuFlagHack") ?: this.cpu.vuFlagHack,
+                fastCDVD = boolAt("EmuCore/Speedhacks/fastCDVD") ?: this.cpu.fastCDVD,
+                intcStat = boolAt("EmuCore/Speedhacks/IntcStat") ?: this.cpu.intcStat,
+                waitLoop = boolAt("EmuCore/Speedhacks/WaitLoop") ?: this.cpu.waitLoop,
+                vuNeonFusions = boolAt("EmuCore/Speedhacks/vuNeonFusions") ?: this.cpu.vuNeonFusions,
+                vuDeferredWrites = boolAt("EmuCore/Speedhacks/vuDeferredWrites") ?: this.cpu.vuDeferredWrites,
+                vuSkipStallSim = boolAt("EmuCore/Speedhacks/vuSkipStallSim") ?: this.cpu.vuSkipStallSim,
+                // ---- EmuCore/CPU/Recompiler enables ----
+                recEE = boolAt("EmuCore/CPU/Recompiler/EnableEE") ?: this.cpu.recEE,
+                recIOP = boolAt("EmuCore/CPU/Recompiler/EnableIOP") ?: this.cpu.recIOP,
+                recVU0 = boolAt("EmuCore/CPU/Recompiler/EnableVU0") ?: this.cpu.recVU0,
+                recVU1 = boolAt("EmuCore/CPU/Recompiler/EnableVU1") ?: this.cpu.recVU1,
+                enableFastmem = boolAt("EmuCore/CPU/Recompiler/EnableFastmem") ?: this.cpu.enableFastmem,
+                // Legacy/forced-on ARM64 backend flags — always "true" in the INI (mirror fromJson).
+                useMacEE = true,
+                useMacIOP = true,
+                useMacVU0 = true,
+                useMacVU1 = true,
+                vu1InlineFmacStall = boolAt("EmuCore/CPU/Recompiler/Vu1InlineFmacStall") ?: this.cpu.vu1InlineFmacStall,
+                vu1CrossBlockPState = boolAt("EmuCore/CPU/Recompiler/Vu1CrossBlockPState") ?: this.cpu.vu1CrossBlockPState,
+                vu1InlineDrainTestPipes = boolAt("EmuCore/CPU/Recompiler/Vu1InlineDrainTestPipes") ?: this.cpu.vu1InlineDrainTestPipes,
+                vu1FmacInstanceRouting = boolAt("EmuCore/CPU/Recompiler/Vu1FmacInstanceRouting") ?: this.cpu.vu1FmacInstanceRouting,
+            ),
+            frameLimit = this.frameLimit.copy(
+                // ---- Frame limiter (nominalSpeedPercent stored as the 0.10..10.0 scalar) ----
+                frameLimitEnable = boolAt("EmuCore/GS/FrameLimitEnable") ?: this.frameLimit.frameLimitEnable,
+                nominalSpeedPercent = floatAt("Framerate/NominalScalar")?.let { Math.round(it * 100f) }
+                ?: this.frameLimit.nominalSpeedPercent,
+            ),
+            audio = this.audio.copy(
+                // ---- Audio (SPU2/Output) — SyncMode is TimeStretch/Disabled ----
+                audioTimeStretch = strAt("SPU2/Output/SyncMode")?.let { it == "TimeStretch" } ?: this.audio.audioTimeStretch,
+                audioBufferMs = intAt("SPU2/Output/BufferMS") ?: this.audio.audioBufferMs,
+                audioOutputLatencyMs = intAt("SPU2/Output/OutputLatencyMS") ?: this.audio.audioOutputLatencyMs,
+                audioFastForwardVolume = intAt("SPU2/Output/FastForwardVolume") ?: this.audio.audioFastForwardVolume,
+                spu2NeonReverb = boolAt("SPU2/NeonReverbSIMD") ?: this.audio.spu2NeonReverb,
+                audioOpenSLES = boolAt("SPU2/Output/AndroidOpenSLES") ?: this.audio.audioOpenSLES,
+                spu2LightweightMix = boolAt("SPU2/Output/LightweightMode") ?: this.audio.spu2LightweightMix,
+            ),
+            emuCore = this.emuCore.copy(
+                // ---- EmuCore patches / cheats ----
+                enablePatches = boolAt("EmuCore/EnablePatches") ?: this.emuCore.enablePatches,
+                enableCheats = boolAt("EmuCore/EnableCheats") ?: this.emuCore.enableCheats,
+                enableWideScreenPatches = boolAt("EmuCore/EnableWideScreenPatches") ?: this.emuCore.enableWideScreenPatches,
+                enableNoInterlacingPatches = boolAt("EmuCore/EnableNoInterlacingPatches") ?: this.emuCore.enableNoInterlacingPatches,
+                enableFastBoot = boolAt("EmuCore/EnableFastBoot") ?: this.emuCore.enableFastBoot,
+                hostFs = boolAt("EmuCore/HostFs") ?: this.emuCore.hostFs,
+                achievements = AchievementsSettings(
+                enabled = boolAt("Achievements/Enabled") ?: this.emuCore.achievements.enabled,
+                hardcore = boolAt("Achievements/ChallengeMode") ?: this.emuCore.achievements.hardcore,
+                notifications = boolAt("Achievements/Notifications") ?: this.emuCore.achievements.notifications,
+                leaderboardNotifications = boolAt("Achievements/LeaderboardNotifications") ?: this.emuCore.achievements.leaderboardNotifications,
+                overlays = boolAt("Achievements/Overlays") ?: this.emuCore.achievements.overlays,
+                lbOverlays = boolAt("Achievements/LBOverlays") ?: this.emuCore.achievements.lbOverlays,
+                soundEffects = boolAt("Achievements/SoundEffects") ?: this.emuCore.achievements.soundEffects,
+                encoreMode = boolAt("Achievements/EncoreMode") ?: this.emuCore.achievements.encoreMode,
+                spectatorMode = boolAt("Achievements/SpectatorMode") ?: this.emuCore.achievements.spectatorMode,
+                unofficialTestMode = boolAt("Achievements/UnofficialTestMode") ?: this.emuCore.achievements.unofficialTestMode,
+                notificationsDuration = intAt("Achievements/NotificationsDuration") ?: this.emuCore.achievements.notificationsDuration,
+                leaderboardsDuration = intAt("Achievements/LeaderboardsDuration") ?: this.emuCore.achievements.leaderboardsDuration,
+                notificationPosition = intAt("Achievements/NotificationPosition") ?: this.emuCore.achievements.notificationPosition,
+                overlayPosition = intAt("Achievements/OverlayPosition") ?: this.emuCore.achievements.overlayPosition,
+                notificationScale = intAt("Achievements/NotificationScale") ?: this.emuCore.achievements.notificationScale,
+            ),
+                pineEnabled = boolAt("EmuCore/EnablePINE") ?: this.emuCore.pineEnabled,
+                pineSlot = intAt("EmuCore/PINESlot") ?: this.emuCore.pineSlot,
+                enableGameFixes = boolAt("EmuCore/EnableGameFixes") ?: this.emuCore.enableGameFixes,
+                // ---- EmuCore/Gamefixes ----
+                gamefixSoftwareRendererFmv = boolAt("EmuCore/Gamefixes/SoftwareRendererFMVHack") ?: this.emuCore.gamefixSoftwareRendererFmv,
+                gamefixSkipMpeg = boolAt("EmuCore/Gamefixes/SkipMPEGHack") ?: this.emuCore.gamefixSkipMpeg,
+                gamefixEETiming = boolAt("EmuCore/Gamefixes/EETimingHack") ?: this.emuCore.gamefixEETiming,
+                gamefixInstantDma = boolAt("EmuCore/Gamefixes/InstantDMAHack") ?: this.emuCore.gamefixInstantDma,
+                gamefixBlitInternalFps = boolAt("EmuCore/Gamefixes/BlitInternalFPSHack") ?: this.emuCore.gamefixBlitInternalFps,
+                gamefixOphFlag = boolAt("EmuCore/Gamefixes/OPHFlagHack") ?: this.emuCore.gamefixOphFlag,
+                gamefixGifFifo = boolAt("EmuCore/Gamefixes/GIFFIFOHack") ?: this.emuCore.gamefixGifFifo,
+                gamefixDmaBusy = boolAt("EmuCore/Gamefixes/DMABusyHack") ?: this.emuCore.gamefixDmaBusy,
+                gamefixVif1Stall = boolAt("EmuCore/Gamefixes/VIF1StallHack") ?: this.emuCore.gamefixVif1Stall,
+                gamefixIbit = boolAt("EmuCore/Gamefixes/IbitHack") ?: this.emuCore.gamefixIbit,
+                gamefixFullVu0Sync = boolAt("EmuCore/Gamefixes/FullVU0SyncHack") ?: this.emuCore.gamefixFullVu0Sync,
+                gamefixVuAddSub = boolAt("EmuCore/Gamefixes/VuAddSubHack") ?: this.emuCore.gamefixVuAddSub,
+                gamefixVuOverflow = boolAt("EmuCore/Gamefixes/VUOverflowHack") ?: this.emuCore.gamefixVuOverflow,
+                gamefixXgkick = boolAt("EmuCore/Gamefixes/XgKickHack") ?: this.emuCore.gamefixXgkick,
+                gamefixGoemonTlb = boolAt("EmuCore/Gamefixes/GoemonTlbHack") ?: this.emuCore.gamefixGoemonTlb,
+                gamefixVuSync = boolAt("EmuCore/Gamefixes/VUSyncHack") ?: this.emuCore.gamefixVuSync,
+                skipDuplicateFrames = boolAt("EmuCore/GS/SkipDuplicateFrames") ?: this.emuCore.skipDuplicateFrames,
+                eeFpuRoundMode = intAt("EmuCore/CPU/FPU.Roundmode") ?: this.emuCore.eeFpuRoundMode,
+                vu0RoundMode = intAt("EmuCore/CPU/VU0.Roundmode") ?: this.emuCore.vu0RoundMode,
+                vu1RoundMode = intAt("EmuCore/CPU/VU1.Roundmode") ?: this.emuCore.vu1RoundMode,
+            ),
+            display = this.display.copy(
+                vsyncEnable = boolAt("EmuCore/GS/VsyncEnable") ?: this.display.vsyncEnable,
+                screenOffsets = boolAt("EmuCore/GS/pcrtc_offsets") ?: this.display.screenOffsets,
+                showOverscan = boolAt("EmuCore/GS/pcrtc_overscan") ?: this.display.showOverscan,
+                antiBlur = boolAt("EmuCore/GS/pcrtc_antiblur") ?: this.display.antiBlur,
+                disableInterlaceOffset = boolAt("EmuCore/GS/disable_interlace_offset") ?: this.display.disableInterlaceOffset,
+                syncToHostRefresh = boolAt("EmuCore/GS/SyncToHostRefreshRate") ?: this.display.syncToHostRefresh,
+                disableFramebufferFetch = boolAt("EmuCore/GS/DisableFramebufferFetch") ?: this.display.disableFramebufferFetch,
+                hwRov = boolAt("EmuCore/GS/HWROV") ?: this.display.hwRov,
+                hwAa1 = boolAt("EmuCore/GS/HWAA1") ?: this.display.hwAa1,
+                adrenoFbFetch = boolAt("EmuCore/GS/EnableAdrenoFramebufferFetch") ?: this.display.adrenoFbFetch,
+                coalesceRenderPasses = boolAt("EmuCore/GS/CoalesceRenderPasses") ?: this.display.coalesceRenderPasses,
+                forceMaliFbFetch = boolAt("EmuCore/GS/ForceMaliFramebufferFetch") ?: this.display.forceMaliFbFetch,
+                useAngleOpenGL = boolAt("EmuCore/GS/AndroidUseAngleOpenGL") ?: this.display.useAngleOpenGL,
+                overrideTextureBarriers = intAt("EmuCore/GS/OverrideTextureBarriers") ?: this.display.overrideTextureBarriers,
+                gsBackThreadMode = intAt("EmuCore/GS/GSBackThreadMode") ?: this.display.gsBackThreadMode,
+                disableVertexShaderExpand = boolAt("EmuCore/GS/DisableVertexShaderExpand") ?: this.display.disableVertexShaderExpand,
+                useBlitSwapChain = boolAt("EmuCore/GS/UseBlitSwapChain") ?: this.display.useBlitSwapChain,
+                disableShaderCache = boolAt("EmuCore/GS/DisableShaderCache") ?: this.display.disableShaderCache,
+                hwAccurateAlphaTest = boolAt("EmuCore/GS/HWAccurateAlphaTest") ?: this.display.hwAccurateAlphaTest,
+            ),
+            hwFixes = this.hwFixes.copy(
+                drawBuffering = boolAt("EmuCore/GS/UserHacks_DrawBuffering") ?: this.hwFixes.drawBuffering,
+                spinGpuReadbacks = boolAt("EmuCore/GS/HWSpinGPUForReadbacks") ?: this.hwFixes.spinGpuReadbacks,
+                spinCpuReadbacks = boolAt("EmuCore/GS/HWSpinCPUForReadbacks") ?: this.hwFixes.spinCpuReadbacks,
+                integerScaling = boolAt("EmuCore/GS/IntegerScaling") ?: this.hwFixes.integerScaling,
+                cropLeft = intAt("EmuCore/GS/CropLeft") ?: this.hwFixes.cropLeft,
+                cropTop = intAt("EmuCore/GS/CropTop") ?: this.hwFixes.cropTop,
+                cropRight = intAt("EmuCore/GS/CropRight") ?: this.hwFixes.cropRight,
+                cropBottom = intAt("EmuCore/GS/CropBottom") ?: this.hwFixes.cropBottom,
+                dithering = intAt("EmuCore/GS/dithering_ps2") ?: this.hwFixes.dithering,
+                vsyncQueueSize = intAt("EmuCore/GS/VsyncQueueSize") ?: this.hwFixes.vsyncQueueSize,
+                skipDrawStart = intAt("EmuCore/GS/UserHacks_SkipDraw_Start") ?: this.hwFixes.skipDrawStart,
+                skipDrawEnd = intAt("EmuCore/GS/UserHacks_SkipDraw_End") ?: this.hwFixes.skipDrawEnd,
+                // "UserHacks" is applyTo's derived master (manualUserHacks OR any hack set);
+                // recovering it into manualUserHacks is idempotent — the individual hacks below
+                // re-derive it when re-applied, and it preserves a master-on-with-no-hacks state.
+                manualUserHacks = boolAt("EmuCore/GS/UserHacks") ?: this.hwFixes.manualUserHacks,
+                autoFlush = intAt("EmuCore/GS/UserHacks_AutoFlushLevel") ?: this.hwFixes.autoFlush,
+                halfPixelOffset = intAt("EmuCore/GS/UserHacks_HalfPixelOffset") ?: this.hwFixes.halfPixelOffset,
+                limit24BitDepth = intAt("EmuCore/GS/UserHacks_Limit24BitDepth") ?: this.hwFixes.limit24BitDepth,
+                textureInsideRt = intAt("EmuCore/GS/UserHacks_TextureInsideRt") ?: this.hwFixes.textureInsideRt,
+                nativeScaling = intAt("EmuCore/GS/UserHacks_native_scaling") ?: this.hwFixes.nativeScaling,
+                roundSprite = intAt("EmuCore/GS/UserHacks_round_sprite_offset") ?: this.hwFixes.roundSprite,
+                bilinearUpscale = intAt("EmuCore/GS/UserHacks_BilinearHack") ?: this.hwFixes.bilinearUpscale,
+                gpuTargetClut = intAt("EmuCore/GS/UserHacks_GPUTargetCLUTMode") ?: this.hwFixes.gpuTargetClut,
+                cpuSpriteRenderBw = intAt("EmuCore/GS/UserHacks_CPUSpriteRenderBW") ?: this.hwFixes.cpuSpriteRenderBw,
+                cpuSpriteRenderLevel = intAt("EmuCore/GS/UserHacks_CPUSpriteRenderLevel") ?: this.hwFixes.cpuSpriteRenderLevel,
+                cpuClutRender = intAt("EmuCore/GS/UserHacks_CPUCLUTRender") ?: this.hwFixes.cpuClutRender,
+                alignSprite = boolAt("EmuCore/GS/UserHacks_align_sprite_X") ?: this.hwFixes.alignSprite,
+                mergeSprite = boolAt("EmuCore/GS/UserHacks_merge_pp_sprite") ?: this.hwFixes.mergeSprite,
+                forceEvenSpritePosition = boolAt("EmuCore/GS/UserHacks_ForceEvenSpritePosition") ?: this.hwFixes.forceEvenSpritePosition,
+                unscaledPaletteDraw = boolAt("EmuCore/GS/UserHacks_NativePaletteDraw") ?: this.hwFixes.unscaledPaletteDraw,
+                textureOffsetX = intAt("EmuCore/GS/UserHacks_TCOffsetX") ?: this.hwFixes.textureOffsetX,
+                textureOffsetY = intAt("EmuCore/GS/UserHacks_TCOffsetY") ?: this.hwFixes.textureOffsetY,
+                gpuPaletteConversion = boolAt("EmuCore/GS/paltex") ?: this.hwFixes.gpuPaletteConversion,
+                cpuFramebufferConversion = boolAt("EmuCore/GS/UserHacks_CPU_FB_Conversion") ?: this.hwFixes.cpuFramebufferConversion,
+                readTargetsWhenClosing = boolAt("EmuCore/GS/UserHacks_ReadTCOnClose") ?: this.hwFixes.readTargetsWhenClosing,
+                disableDepthEmulation = boolAt("EmuCore/GS/UserHacks_DisableDepthSupport") ?: this.hwFixes.disableDepthEmulation,
+                disablePartialInvalidation = boolAt("EmuCore/GS/UserHacks_DisablePartialInvalidation") ?: this.hwFixes.disablePartialInvalidation,
+                disableSafeFeatures = boolAt("EmuCore/GS/UserHacks_Disable_Safe_Features") ?: this.hwFixes.disableSafeFeatures,
+                disableRenderFixes = boolAt("EmuCore/GS/UserHacks_DisableRenderFixes") ?: this.hwFixes.disableRenderFixes,
+                preloadFrameData = boolAt("EmuCore/GS/preload_frame_with_gs_data") ?: this.hwFixes.preloadFrameData,
+                estimateTextureRegion = boolAt("EmuCore/GS/UserHacks_EstimateTextureRegion") ?: this.hwFixes.estimateTextureRegion,
+                triFilter = intAt("EmuCore/GS/TriFilter") ?: this.hwFixes.triFilter,
+                maxAnisotropy = intAt("EmuCore/GS/MaxAnisotropy") ?: this.hwFixes.maxAnisotropy,
+                gpuProfile = when (strAt("EmuCore/GS/AndroidGpuProfileOverride")) {
+                "mali" -> 1
+                "adreno" -> 2
+                "powervr" -> 3
+                "xclipse" -> 4
+                "auto" -> 0
+                else -> this.hwFixes.gpuProfile
             },
-            dev9HddEnable = boolAt("DEV9/Hdd/HddEnable") ?: this.dev9HddEnable,
-            dev9HddFile = strAt("DEV9/Hdd/HddFile") ?: this.dev9HddFile,
-            // ---- MemoryCards ----
-            memoryCardSlot1Enabled = boolAt("MemoryCards/Slot1_Enable") ?: this.memoryCardSlot1Enabled,
-            memoryCardSlot1Filename = strAt("MemoryCards/Slot1_Filename") ?: this.memoryCardSlot1Filename,
-            memoryCardSlot2Enabled = boolAt("MemoryCards/Slot2_Enable") ?: this.memoryCardSlot2Enabled,
-            memoryCardSlot2Filename = strAt("MemoryCards/Slot2_Filename") ?: this.memoryCardSlot2Filename,
-            // ---- USB keyboard (USB1/Type = hidkbd/None) ----
-            usbKeyboard = strAt("USB1/Type")?.let { it == "hidkbd" } ?: this.usbKeyboard,
-            // ---- EmuCore/CPU/Recompiler enables ----
-            recEE = boolAt("EmuCore/CPU/Recompiler/EnableEE") ?: this.recEE,
-            recIOP = boolAt("EmuCore/CPU/Recompiler/EnableIOP") ?: this.recIOP,
-            recVU0 = boolAt("EmuCore/CPU/Recompiler/EnableVU0") ?: this.recVU0,
-            recVU1 = boolAt("EmuCore/CPU/Recompiler/EnableVU1") ?: this.recVU1,
-            enableFastmem = boolAt("EmuCore/CPU/Recompiler/EnableFastmem") ?: this.enableFastmem,
-            // Legacy/forced-on ARM64 backend flags — always "true" in the INI (mirror fromJson).
-            useMacEE = true,
-            useMacIOP = true,
-            useMacVU0 = true,
-            useMacVU1 = true,
-            vu1InlineFmacStall = boolAt("EmuCore/CPU/Recompiler/Vu1InlineFmacStall") ?: this.vu1InlineFmacStall,
-            vu1CrossBlockPState = boolAt("EmuCore/CPU/Recompiler/Vu1CrossBlockPState") ?: this.vu1CrossBlockPState,
-            vu1InlineDrainTestPipes = boolAt("EmuCore/CPU/Recompiler/Vu1InlineDrainTestPipes") ?: this.vu1InlineDrainTestPipes,
-            vu1FmacInstanceRouting = boolAt("EmuCore/CPU/Recompiler/Vu1FmacInstanceRouting") ?: this.vu1FmacInstanceRouting,
-            // ---- EmuCore/GS (writeGsToNative). Aspect/FMV/gpuProfile stored as names. ----
-            customAspectRatio = floatAt("EmuCore/GS/CustomAspectRatio") ?: this.customAspectRatio,
-            aspectRatio = when (strAt("EmuCore/GS/AspectRatio")) {
+            ),
+            output = this.output.copy(
+                // ---- Renderer + upscale (base-layer keys, not applyTo put()) ----
+                renderer = recoveredRenderer,
+                upscaleFloat = floatAt("EmuCore/GS/upscale_multiplier") ?: this.output.upscaleFloat,
+                // ---- EmuCore/GS (writeGsToNative). Aspect/FMV/gpuProfile stored as names. ----
+                customAspectRatio = floatAt("EmuCore/GS/CustomAspectRatio") ?: this.output.customAspectRatio,
+                aspectRatio = when (strAt("EmuCore/GS/AspectRatio")) {
                 "Stretch" -> 0
                 "Auto 4:3/3:2" -> 1
                 "4:3" -> 2
@@ -1280,9 +1394,9 @@ data class Settings(
                 "20:9" -> 6
                 "19.5:9" -> 7
                 "Custom" -> 8
-                else -> this.aspectRatio
+                else -> this.output.aspectRatio
             },
-            fmvAspectRatio = when (strAt("EmuCore/GS/FMVAspectRatioSwitch")) {
+                fmvAspectRatio = when (strAt("EmuCore/GS/FMVAspectRatioSwitch")) {
                 "Off" -> 0
                 "Auto 4:3/3:2" -> 1
                 "4:3" -> 2
@@ -1292,140 +1406,120 @@ data class Settings(
                 "20:9" -> 6
                 "19.5:9" -> 7
                 "Custom" -> 8
-                else -> this.fmvAspectRatio
+                else -> this.output.fmvAspectRatio
             },
-            deinterlaceMode = intAt("EmuCore/GS/deinterlace_mode") ?: this.deinterlaceMode,
-            framerateNtsc = floatAt("EmuCore/GS/FramerateNTSC") ?: this.framerateNtsc,
-            frameratePal = floatAt("EmuCore/GS/FrameratePAL") ?: this.frameratePal,
-            hwMipmap = boolAt("EmuCore/GS/hw_mipmap") ?: this.hwMipmap,
-            accurateBlendingUnit = intAt("EmuCore/GS/accurate_blending_unit") ?: this.accurateBlendingUnit,
-            textureFiltering = intAt("EmuCore/GS/filter") ?: this.textureFiltering,
-            displayBilinear = intAt("EmuCore/GS/linear_present_mode") ?: this.displayBilinear,
-            texturePreloading = intAt("EmuCore/GS/texture_preloading") ?: this.texturePreloading,
-            hardwareDownloadMode = intAt("EmuCore/GS/HWDownloadMode") ?: this.hardwareDownloadMode,
-            tvShader = intAt("EmuCore/GS/TVShader") ?: this.tvShader,
-            shadeBoost = boolAt("EmuCore/GS/ShadeBoost") ?: this.shadeBoost,
-            shadeBoostBrightness = intAt("EmuCore/GS/ShadeBoost_Brightness") ?: this.shadeBoostBrightness,
-            shadeBoostContrast = intAt("EmuCore/GS/ShadeBoost_Contrast") ?: this.shadeBoostContrast,
-            shadeBoostSaturation = intAt("EmuCore/GS/ShadeBoost_Saturation") ?: this.shadeBoostSaturation,
-            shadeBoostGamma = intAt("EmuCore/GS/ShadeBoost_Gamma") ?: this.shadeBoostGamma,
-            fxaa = boolAt("EmuCore/GS/fxaa") ?: this.fxaa,
-            shaderChainEnabled = boolAt("EmuCore/GS/ShaderChainEnabled") ?: this.shaderChainEnabled,
-            shaderChainPreset = strAt("EmuCore/GS/ShaderChainPreset") ?: this.shaderChainPreset,
-            lsfgEnabled = boolAt("EmuCore/GS/LsfgEnabled") ?: this.lsfgEnabled,
-            lsfgMultiplier = intAt("EmuCore/GS/LsfgMultiplier") ?: this.lsfgMultiplier,
-            lsfgDllPath = strAt("EmuCore/GS/LsfgDllPath") ?: this.lsfgDllPath,
-            lsfgPerformance = boolAt("EmuCore/GS/LsfgPerformance") ?: this.lsfgPerformance,
-            lsfgFlowScale = intAt("EmuCore/GS/LsfgFlowScale") ?: this.lsfgFlowScale,
-            lsfgTargetRate = intAt("EmuCore/GS/LsfgTargetRate") ?: this.lsfgTargetRate,
-            shaderChainParams = strAt("EmuCore/GS/ShaderChainParams")?.let { raw ->
+                deinterlaceMode = intAt("EmuCore/GS/deinterlace_mode") ?: this.output.deinterlaceMode,
+                framerateNtsc = floatAt("EmuCore/GS/FramerateNTSC") ?: this.output.framerateNtsc,
+                frameratePal = floatAt("EmuCore/GS/FrameratePAL") ?: this.output.frameratePal,
+                autoFlushSw = boolAt("EmuCore/GS/autoflush_sw") ?: this.output.autoFlushSw,
+                mipmapSw = boolAt("EmuCore/GS/mipmap") ?: this.output.mipmapSw,
+                swThreads = intAt("EmuCore/GS/extrathreads") ?: this.output.swThreads,
+                swThreadsHeight = intAt("EmuCore/GS/extrathreads_height") ?: this.output.swThreadsHeight,
+            ),
+            network = this.network.copy(
+                // ---- DEV9 — Ethernet / HDD ----
+                dev9EthEnable = boolAt("DEV9/Eth/EthEnable") ?: this.network.dev9EthEnable,
+                dev9EthApi = strAt("DEV9/Eth/EthApi") ?: this.network.dev9EthApi,
+                localLinkHost = boolAt("DEV9/Eth/LocalLinkHost") ?: this.network.localLinkHost,
+                localLinkAddress = strAt("DEV9/Eth/LocalLinkAddress") ?: this.network.localLinkAddress,
+                localLinkPort = intAt("DEV9/Eth/LocalLinkPort") ?: this.network.localLinkPort,
+                localLinkPeerId = intAt("DEV9/Eth/LocalLinkPeerId") ?: this.network.localLinkPeerId,
+                localLinkRoomCode = strAt("DEV9/Eth/LocalLinkRoomCode") ?: this.network.localLinkRoomCode,
+                dev9EthDevice = strAt("DEV9/Eth/EthDevice") ?: this.network.dev9EthDevice,
+                dev9EthLogDhcp = boolAt("DEV9/Eth/EthLogDHCP") ?: this.network.dev9EthLogDhcp,
+                dev9EthLogDns = boolAt("DEV9/Eth/EthLogDNS") ?: this.network.dev9EthLogDns,
+                dev9InterceptDhcp = boolAt("DEV9/Eth/InterceptDHCP") ?: this.network.dev9InterceptDhcp,
+                dev9Ps2Ip = strAt("DEV9/Eth/PS2IP") ?: this.network.dev9Ps2Ip,
+                dev9Mask = strAt("DEV9/Eth/Mask") ?: this.network.dev9Mask,
+                dev9Gateway = strAt("DEV9/Eth/Gateway") ?: this.network.dev9Gateway,
+                dev9Dns1 = strAt("DEV9/Eth/DNS1") ?: this.network.dev9Dns1,
+                dev9Dns2 = strAt("DEV9/Eth/DNS2") ?: this.network.dev9Dns2,
+                dev9AutoMask = boolAt("DEV9/Eth/AutoMask") ?: this.network.dev9AutoMask,
+                dev9AutoGateway = boolAt("DEV9/Eth/AutoGateway") ?: this.network.dev9AutoGateway,
+                dev9ModeDns1 = strAt("DEV9/Eth/ModeDNS1") ?: this.network.dev9ModeDns1,
+                dev9ModeDns2 = strAt("DEV9/Eth/ModeDNS2") ?: this.network.dev9ModeDns2,
+                // Internal-DNS host overrides — Count gates Host{i} sections (Desc is ignored).
+                dev9EthHosts = run {
+                val count = intAt("DEV9/Eth/Hosts/Count") ?: return@run this.network.dev9EthHosts
+                (0 until count).mapNotNull { idx ->
+                    val url = ini["DEV9/Eth/Hosts/Host$idx/Url"] ?: return@mapNotNull null
+                    Dev9HostMapping(
+                        url = url,
+                        ip = (ini["DEV9/Eth/Hosts/Host$idx/Address"] ?: "0.0.0.0").ifEmpty { "0.0.0.0" },
+                        enabled = boolAt("DEV9/Eth/Hosts/Host$idx/Enabled") ?: true,
+                    )
+                }.filter { it.url.isNotBlank() }
+            },
+                dev9HddEnable = boolAt("DEV9/Hdd/HddEnable") ?: this.network.dev9HddEnable,
+                dev9HddFile = strAt("DEV9/Hdd/HddFile") ?: this.network.dev9HddFile,
+            ),
+            system = this.system.copy(
+                // ---- MemoryCards ----
+                memoryCardSlot1Enabled = boolAt("MemoryCards/Slot1_Enable") ?: this.system.memoryCardSlot1Enabled,
+                memoryCardSlot1Filename = strAt("MemoryCards/Slot1_Filename") ?: this.system.memoryCardSlot1Filename,
+                memoryCardSlot2Enabled = boolAt("MemoryCards/Slot2_Enable") ?: this.system.memoryCardSlot2Enabled,
+                memoryCardSlot2Filename = strAt("MemoryCards/Slot2_Filename") ?: this.system.memoryCardSlot2Filename,
+                // ---- USB keyboard (USB1/Type = hidkbd/None) ----
+                usbKeyboard = strAt("USB1/Type")?.let { it == "hidkbd" } ?: this.system.usbKeyboard,
+            ),
+            graphics = this.graphics.copy(
+                hwMipmap = boolAt("EmuCore/GS/hw_mipmap") ?: this.graphics.hwMipmap,
+                accurateBlendingUnit = intAt("EmuCore/GS/accurate_blending_unit") ?: this.graphics.accurateBlendingUnit,
+                textureFiltering = intAt("EmuCore/GS/filter") ?: this.graphics.textureFiltering,
+                displayBilinear = intAt("EmuCore/GS/linear_present_mode") ?: this.graphics.displayBilinear,
+                texturePreloading = intAt("EmuCore/GS/texture_preloading") ?: this.graphics.texturePreloading,
+                hardwareDownloadMode = intAt("EmuCore/GS/HWDownloadMode") ?: this.graphics.hardwareDownloadMode,
+                tvShader = intAt("EmuCore/GS/TVShader") ?: this.graphics.tvShader,
+                shadeBoost = boolAt("EmuCore/GS/ShadeBoost") ?: this.graphics.shadeBoost,
+                shadeBoostBrightness = intAt("EmuCore/GS/ShadeBoost_Brightness") ?: this.graphics.shadeBoostBrightness,
+                shadeBoostContrast = intAt("EmuCore/GS/ShadeBoost_Contrast") ?: this.graphics.shadeBoostContrast,
+                shadeBoostSaturation = intAt("EmuCore/GS/ShadeBoost_Saturation") ?: this.graphics.shadeBoostSaturation,
+                shadeBoostGamma = intAt("EmuCore/GS/ShadeBoost_Gamma") ?: this.graphics.shadeBoostGamma,
+                fxaa = boolAt("EmuCore/GS/fxaa") ?: this.graphics.fxaa,
+                shaderChainEnabled = boolAt("EmuCore/GS/ShaderChainEnabled") ?: this.graphics.shaderChainEnabled,
+                shaderChainPreset = strAt("EmuCore/GS/ShaderChainPreset") ?: this.graphics.shaderChainPreset,
+                lsfgEnabled = boolAt("EmuCore/GS/LsfgEnabled") ?: this.graphics.lsfgEnabled,
+                lsfgMultiplier = intAt("EmuCore/GS/LsfgMultiplier") ?: this.graphics.lsfgMultiplier,
+                lsfgDllPath = strAt("EmuCore/GS/LsfgDllPath") ?: this.graphics.lsfgDllPath,
+                lsfgPerformance = boolAt("EmuCore/GS/LsfgPerformance") ?: this.graphics.lsfgPerformance,
+                lsfgFlowScale = intAt("EmuCore/GS/LsfgFlowScale") ?: this.graphics.lsfgFlowScale,
+                lsfgTargetRate = intAt("EmuCore/GS/LsfgTargetRate") ?: this.graphics.lsfgTargetRate,
+                shaderChainParams = strAt("EmuCore/GS/ShaderChainParams")?.let { raw ->
                 // Hand-editable file, so a malformed blob is a real possibility: keep the
                 // rest of the recovered settings rather than throwing the lot away.
                 runCatching { shaderChainParamsFromJson(JSONObject(raw)) }.getOrNull()
-            } ?: this.shaderChainParams,
-            casMode = intAt("EmuCore/GS/CASMode") ?: this.casMode,
-            casSharpness = intAt("EmuCore/GS/CASSharpness") ?: this.casSharpness,
-            upscaler = intAt("EmuCore/GS/Upscaler") ?: this.upscaler,
-            fsrSharpness = intAt("EmuCore/GS/FSRSharpness") ?: this.fsrSharpness,
-            sgsrSharpness = intAt("EmuCore/GS/SGSRSharpness") ?: this.sgsrSharpness,
-            loadTextureReplacements = boolAt("EmuCore/GS/LoadTextureReplacements") ?: this.loadTextureReplacements,
-            loadTextureReplacementsAsync = boolAt("EmuCore/GS/LoadTextureReplacementsAsync") ?: this.loadTextureReplacementsAsync,
-            precacheTextureReplacements = boolAt("EmuCore/GS/PrecacheTextureReplacements") ?: this.precacheTextureReplacements,
-            dumpReplaceableTextures = boolAt("EmuCore/GS/DumpReplaceableTextures") ?: this.dumpReplaceableTextures,
-            osdShowTextureReplacements = boolAt("EmuCore/GS/OsdShowTextureReplacements") ?: this.osdShowTextureReplacements,
-            osdShowFps = boolAt("EmuCore/GS/OsdShowFPS") ?: this.osdShowFps,
-            osdScale = intAt("EmuCore/GS/OsdScale") ?: this.osdScale,
-            osdColor = intAt("EmuCore/GS/OsdColor") ?: this.osdColor,
-            osdPosition = intAt("EmuCore/GS/OsdPerformancePos") ?: this.osdPosition,
-            vsyncEnable = boolAt("EmuCore/GS/VsyncEnable") ?: this.vsyncEnable,
-            osdShowVps = boolAt("EmuCore/GS/OsdShowVPS") ?: this.osdShowVps,
-            osdShowSpeed = boolAt("EmuCore/GS/OsdShowSpeed") ?: this.osdShowSpeed,
-            osdShowCpu = boolAt("EmuCore/GS/OsdShowCPU") ?: this.osdShowCpu,
-            osdShowGpu = boolAt("EmuCore/GS/OsdShowGPU") ?: this.osdShowGpu,
-            osdShowResolution = boolAt("EmuCore/GS/OsdShowResolution") ?: this.osdShowResolution,
-            osdShowGsStats = boolAt("EmuCore/GS/OsdShowGSStats") ?: this.osdShowGsStats,
-            osdShowFrameTimes = boolAt("EmuCore/GS/OsdShowFrameTimes") ?: this.osdShowFrameTimes,
-            osdShowHardwareInfo = boolAt("EmuCore/GS/OsdShowHardwareInfo") ?: this.osdShowHardwareInfo,
-            // OsdMessagesPos is an enum int (0 None / 1 TopLeft); applyTo writes 1 when shown.
-            osdShowMessages = intAt("EmuCore/GS/OsdMessagesPos")?.let { it != 0 } ?: this.osdShowMessages,
-            osdShowGpuStats = boolAt("EmuCore/GS/OsdShowGPUStats") ?: this.osdShowGpuStats,
-            osdShowVersion = boolAt("EmuCore/GS/OsdShowVersion") ?: this.osdShowVersion,
-            osdShowSettings = boolAt("EmuCore/GS/OsdShowSettings") ?: this.osdShowSettings,
-            osdShowInputs = boolAt("EmuCore/GS/OsdShowInputs") ?: this.osdShowInputs,
-            screenOffsets = boolAt("EmuCore/GS/pcrtc_offsets") ?: this.screenOffsets,
-            showOverscan = boolAt("EmuCore/GS/pcrtc_overscan") ?: this.showOverscan,
-            antiBlur = boolAt("EmuCore/GS/pcrtc_antiblur") ?: this.antiBlur,
-            disableInterlaceOffset = boolAt("EmuCore/GS/disable_interlace_offset") ?: this.disableInterlaceOffset,
-            syncToHostRefresh = boolAt("EmuCore/GS/SyncToHostRefreshRate") ?: this.syncToHostRefresh,
-            disableFramebufferFetch = boolAt("EmuCore/GS/DisableFramebufferFetch") ?: this.disableFramebufferFetch,
-            hwRov = boolAt("EmuCore/GS/HWROV") ?: this.hwRov,
-            hwAa1 = boolAt("EmuCore/GS/HWAA1") ?: this.hwAa1,
-            adrenoFbFetch = boolAt("EmuCore/GS/EnableAdrenoFramebufferFetch") ?: this.adrenoFbFetch,
-            coalesceRenderPasses = boolAt("EmuCore/GS/CoalesceRenderPasses") ?: this.coalesceRenderPasses,
-            forceMaliFbFetch = boolAt("EmuCore/GS/ForceMaliFramebufferFetch") ?: this.forceMaliFbFetch,
-            useAngleOpenGL = boolAt("EmuCore/GS/AndroidUseAngleOpenGL") ?: this.useAngleOpenGL,
-            overrideTextureBarriers = intAt("EmuCore/GS/OverrideTextureBarriers") ?: this.overrideTextureBarriers,
-            gsBackThreadMode = intAt("EmuCore/GS/GSBackThreadMode") ?: this.gsBackThreadMode,
-            disableVertexShaderExpand = boolAt("EmuCore/GS/DisableVertexShaderExpand") ?: this.disableVertexShaderExpand,
-            useBlitSwapChain = boolAt("EmuCore/GS/UseBlitSwapChain") ?: this.useBlitSwapChain,
-            disableShaderCache = boolAt("EmuCore/GS/DisableShaderCache") ?: this.disableShaderCache,
-            hwAccurateAlphaTest = boolAt("EmuCore/GS/HWAccurateAlphaTest") ?: this.hwAccurateAlphaTest,
-            drawBuffering = boolAt("EmuCore/GS/UserHacks_DrawBuffering") ?: this.drawBuffering,
-            spinGpuReadbacks = boolAt("EmuCore/GS/HWSpinGPUForReadbacks") ?: this.spinGpuReadbacks,
-            spinCpuReadbacks = boolAt("EmuCore/GS/HWSpinCPUForReadbacks") ?: this.spinCpuReadbacks,
-            integerScaling = boolAt("EmuCore/GS/IntegerScaling") ?: this.integerScaling,
-            cropLeft = intAt("EmuCore/GS/CropLeft") ?: this.cropLeft,
-            cropTop = intAt("EmuCore/GS/CropTop") ?: this.cropTop,
-            cropRight = intAt("EmuCore/GS/CropRight") ?: this.cropRight,
-            cropBottom = intAt("EmuCore/GS/CropBottom") ?: this.cropBottom,
-            dithering = intAt("EmuCore/GS/dithering_ps2") ?: this.dithering,
-            vsyncQueueSize = intAt("EmuCore/GS/VsyncQueueSize") ?: this.vsyncQueueSize,
-            autoFlushSw = boolAt("EmuCore/GS/autoflush_sw") ?: this.autoFlushSw,
-            mipmapSw = boolAt("EmuCore/GS/mipmap") ?: this.mipmapSw,
-            swThreads = intAt("EmuCore/GS/extrathreads") ?: this.swThreads,
-            swThreadsHeight = intAt("EmuCore/GS/extrathreads_height") ?: this.swThreadsHeight,
-            skipDrawStart = intAt("EmuCore/GS/UserHacks_SkipDraw_Start") ?: this.skipDrawStart,
-            skipDrawEnd = intAt("EmuCore/GS/UserHacks_SkipDraw_End") ?: this.skipDrawEnd,
-            // "UserHacks" is applyTo's derived master (manualUserHacks OR any hack set);
-            // recovering it into manualUserHacks is idempotent — the individual hacks below
-            // re-derive it when re-applied, and it preserves a master-on-with-no-hacks state.
-            manualUserHacks = boolAt("EmuCore/GS/UserHacks") ?: this.manualUserHacks,
-            autoFlush = intAt("EmuCore/GS/UserHacks_AutoFlushLevel") ?: this.autoFlush,
-            halfPixelOffset = intAt("EmuCore/GS/UserHacks_HalfPixelOffset") ?: this.halfPixelOffset,
-            limit24BitDepth = intAt("EmuCore/GS/UserHacks_Limit24BitDepth") ?: this.limit24BitDepth,
-            textureInsideRt = intAt("EmuCore/GS/UserHacks_TextureInsideRt") ?: this.textureInsideRt,
-            nativeScaling = intAt("EmuCore/GS/UserHacks_native_scaling") ?: this.nativeScaling,
-            roundSprite = intAt("EmuCore/GS/UserHacks_round_sprite_offset") ?: this.roundSprite,
-            bilinearUpscale = intAt("EmuCore/GS/UserHacks_BilinearHack") ?: this.bilinearUpscale,
-            gpuTargetClut = intAt("EmuCore/GS/UserHacks_GPUTargetCLUTMode") ?: this.gpuTargetClut,
-            cpuSpriteRenderBw = intAt("EmuCore/GS/UserHacks_CPUSpriteRenderBW") ?: this.cpuSpriteRenderBw,
-            cpuSpriteRenderLevel = intAt("EmuCore/GS/UserHacks_CPUSpriteRenderLevel") ?: this.cpuSpriteRenderLevel,
-            cpuClutRender = intAt("EmuCore/GS/UserHacks_CPUCLUTRender") ?: this.cpuClutRender,
-            alignSprite = boolAt("EmuCore/GS/UserHacks_align_sprite_X") ?: this.alignSprite,
-            mergeSprite = boolAt("EmuCore/GS/UserHacks_merge_pp_sprite") ?: this.mergeSprite,
-            forceEvenSpritePosition = boolAt("EmuCore/GS/UserHacks_ForceEvenSpritePosition") ?: this.forceEvenSpritePosition,
-            unscaledPaletteDraw = boolAt("EmuCore/GS/UserHacks_NativePaletteDraw") ?: this.unscaledPaletteDraw,
-            textureOffsetX = intAt("EmuCore/GS/UserHacks_TCOffsetX") ?: this.textureOffsetX,
-            textureOffsetY = intAt("EmuCore/GS/UserHacks_TCOffsetY") ?: this.textureOffsetY,
-            gpuPaletteConversion = boolAt("EmuCore/GS/paltex") ?: this.gpuPaletteConversion,
-            cpuFramebufferConversion = boolAt("EmuCore/GS/UserHacks_CPU_FB_Conversion") ?: this.cpuFramebufferConversion,
-            readTargetsWhenClosing = boolAt("EmuCore/GS/UserHacks_ReadTCOnClose") ?: this.readTargetsWhenClosing,
-            disableDepthEmulation = boolAt("EmuCore/GS/UserHacks_DisableDepthSupport") ?: this.disableDepthEmulation,
-            disablePartialInvalidation = boolAt("EmuCore/GS/UserHacks_DisablePartialInvalidation") ?: this.disablePartialInvalidation,
-            disableSafeFeatures = boolAt("EmuCore/GS/UserHacks_Disable_Safe_Features") ?: this.disableSafeFeatures,
-            disableRenderFixes = boolAt("EmuCore/GS/UserHacks_DisableRenderFixes") ?: this.disableRenderFixes,
-            preloadFrameData = boolAt("EmuCore/GS/preload_frame_with_gs_data") ?: this.preloadFrameData,
-            estimateTextureRegion = boolAt("EmuCore/GS/UserHacks_EstimateTextureRegion") ?: this.estimateTextureRegion,
-            triFilter = intAt("EmuCore/GS/TriFilter") ?: this.triFilter,
-            maxAnisotropy = intAt("EmuCore/GS/MaxAnisotropy") ?: this.maxAnisotropy,
-            gpuProfile = when (strAt("EmuCore/GS/AndroidGpuProfileOverride")) {
-                "mali" -> 1
-                "adreno" -> 2
-                "powervr" -> 3
-                "xclipse" -> 4
-                "auto" -> 0
-                else -> this.gpuProfile
-            },
+            } ?: this.graphics.shaderChainParams,
+                casMode = intAt("EmuCore/GS/CASMode") ?: this.graphics.casMode,
+                casSharpness = intAt("EmuCore/GS/CASSharpness") ?: this.graphics.casSharpness,
+                upscaler = intAt("EmuCore/GS/Upscaler") ?: this.graphics.upscaler,
+                fsrSharpness = intAt("EmuCore/GS/FSRSharpness") ?: this.graphics.fsrSharpness,
+                sgsrSharpness = intAt("EmuCore/GS/SGSRSharpness") ?: this.graphics.sgsrSharpness,
+                loadTextureReplacements = boolAt("EmuCore/GS/LoadTextureReplacements") ?: this.graphics.loadTextureReplacements,
+                loadTextureReplacementsAsync = boolAt("EmuCore/GS/LoadTextureReplacementsAsync") ?: this.graphics.loadTextureReplacementsAsync,
+                precacheTextureReplacements = boolAt("EmuCore/GS/PrecacheTextureReplacements") ?: this.graphics.precacheTextureReplacements,
+                dumpReplaceableTextures = boolAt("EmuCore/GS/DumpReplaceableTextures") ?: this.graphics.dumpReplaceableTextures,
+                osdShowTextureReplacements = boolAt("EmuCore/GS/OsdShowTextureReplacements") ?: this.graphics.osdShowTextureReplacements,
+            ),
+            osd = this.osd.copy(
+                osdShowFps = boolAt("EmuCore/GS/OsdShowFPS") ?: this.osd.osdShowFps,
+                osdScale = intAt("EmuCore/GS/OsdScale") ?: this.osd.osdScale,
+                osdColor = intAt("EmuCore/GS/OsdColor") ?: this.osd.osdColor,
+                osdPosition = intAt("EmuCore/GS/OsdPerformancePos") ?: this.osd.osdPosition,
+                osdShowVps = boolAt("EmuCore/GS/OsdShowVPS") ?: this.osd.osdShowVps,
+                osdShowSpeed = boolAt("EmuCore/GS/OsdShowSpeed") ?: this.osd.osdShowSpeed,
+                osdShowCpu = boolAt("EmuCore/GS/OsdShowCPU") ?: this.osd.osdShowCpu,
+                osdShowGpu = boolAt("EmuCore/GS/OsdShowGPU") ?: this.osd.osdShowGpu,
+                osdShowResolution = boolAt("EmuCore/GS/OsdShowResolution") ?: this.osd.osdShowResolution,
+                osdShowGsStats = boolAt("EmuCore/GS/OsdShowGSStats") ?: this.osd.osdShowGsStats,
+                osdShowFrameTimes = boolAt("EmuCore/GS/OsdShowFrameTimes") ?: this.osd.osdShowFrameTimes,
+                osdShowHardwareInfo = boolAt("EmuCore/GS/OsdShowHardwareInfo") ?: this.osd.osdShowHardwareInfo,
+                // OsdMessagesPos is an enum int (0 None / 1 TopLeft); applyTo writes 1 when shown.
+                osdShowMessages = intAt("EmuCore/GS/OsdMessagesPos")?.let { it != 0 } ?: this.osd.osdShowMessages,
+                osdShowGpuStats = boolAt("EmuCore/GS/OsdShowGPUStats") ?: this.osd.osdShowGpuStats,
+                osdShowVersion = boolAt("EmuCore/GS/OsdShowVersion") ?: this.osd.osdShowVersion,
+                osdShowSettings = boolAt("EmuCore/GS/OsdShowSettings") ?: this.osd.osdShowSettings,
+                osdShowInputs = boolAt("EmuCore/GS/OsdShowInputs") ?: this.osd.osdShowInputs,
+            ),
         )
     }
 
@@ -1478,7 +1572,7 @@ data class Settings(
         // (ComputePerGameOverrides), so VU1's group is written even where its values match
         // global's...
         val forced = HashSet<String>()
-        if (vu1ClampMode != global.vu1ClampMode)
+        if (cpu.vu1ClampMode != global.cpu.vu1ClampMode)
             listOf("vu1Overflow", "vu1ExtraOverflow", "vu1SignOverflow", "vu1ExactMode")
                 .mapTo(forced) { "EmuCore/CPU/Recompiler/$it" }
         // ...and so is everything the game's own settings and switched-off entries claim.
@@ -1517,7 +1611,7 @@ data class Settings(
      *  [applyGsLive] (running VM). Keep the key list in sync with
      *  Pcsx2Config::GSOptions::LoadSave. */
     private fun writeGsToNative() {
-        val aspectRatioName = when (aspectRatio.coerceIn(0, 8)) {
+        val aspectRatioName = when (output.aspectRatio.coerceIn(0, 8)) {
             0 -> "Stretch"
             2 -> "4:3"
             3 -> "16:9"
@@ -1529,7 +1623,7 @@ data class Settings(
             else -> "Auto 4:3/3:2"
         }
         put("EmuCore/GS", "AspectRatio", "string", aspectRatioName)
-        val fmvAspectRatioName = when (fmvAspectRatio.coerceIn(0, 8)) {
+        val fmvAspectRatioName = when (output.fmvAspectRatio.coerceIn(0, 8)) {
             1 -> "Auto 4:3/3:2"
             2 -> "4:3"
             3 -> "16:9"
@@ -1541,42 +1635,42 @@ data class Settings(
             else -> "Off"
         }
         put("EmuCore/GS", "FMVAspectRatioSwitch", "string", fmvAspectRatioName)
-        put("EmuCore/GS", "CustomAspectRatio", "float", customAspectRatio.coerceIn(0.5f, 5.0f).toString())
-        put("EmuCore/GS", "deinterlace_mode", "int", deinterlaceMode.coerceIn(0, 9).toString())
-        put("EmuCore/GS", "FramerateNTSC", "float", framerateNtsc.toString())
-        put("EmuCore/GS", "FrameratePAL", "float", frameratePal.toString())
-        put("EmuCore/GS", "hw_mipmap", "bool", hwMipmap.toString())
-        put("EmuCore/GS", "accurate_blending_unit", "int", accurateBlendingUnit.toString())
-        put("EmuCore/GS", "filter", "int", textureFiltering.toString())
-        put("EmuCore/GS", "linear_present_mode", "int", displayBilinear.coerceIn(0, 2).toString())
-        put("EmuCore/GS", "texture_preloading", "int", texturePreloading.toString())
+        put("EmuCore/GS", "CustomAspectRatio", "float", output.customAspectRatio.coerceIn(0.5f, 5.0f).toString())
+        put("EmuCore/GS", "deinterlace_mode", "int", output.deinterlaceMode.coerceIn(0, 9).toString())
+        put("EmuCore/GS", "FramerateNTSC", "float", output.framerateNtsc.toString())
+        put("EmuCore/GS", "FrameratePAL", "float", output.frameratePal.toString())
+        put("EmuCore/GS", "hw_mipmap", "bool", graphics.hwMipmap.toString())
+        put("EmuCore/GS", "accurate_blending_unit", "int", graphics.accurateBlendingUnit.toString())
+        put("EmuCore/GS", "filter", "int", graphics.textureFiltering.toString())
+        put("EmuCore/GS", "linear_present_mode", "int", graphics.displayBilinear.coerceIn(0, 2).toString())
+        put("EmuCore/GS", "texture_preloading", "int", graphics.texturePreloading.toString())
         // Upper bound MUST match the highest GSHardwareDownloadMode value (now 5 = Asynchronous).
         // This clamp silently swallowed anything above it, so a new mode would have looked like it
         // simply did nothing — the same failure shape that cost hours on the DEV9 hunt.
-        put("EmuCore/GS", "HWDownloadMode", "int", hardwareDownloadMode.coerceIn(0, 5).toString())
-        put("EmuCore/GS", "TVShader", "int", tvShader.coerceIn(0, 7).toString())
-        put("EmuCore/GS", "ShadeBoost", "bool", shadeBoost.toString())
-        put("EmuCore/GS", "ShadeBoost_Brightness", "int", shadeBoostBrightness.coerceIn(1, 100).toString())
-        put("EmuCore/GS", "ShadeBoost_Contrast", "int", shadeBoostContrast.coerceIn(1, 100).toString())
-        put("EmuCore/GS", "ShadeBoost_Saturation", "int", shadeBoostSaturation.coerceIn(1, 100).toString())
-        put("EmuCore/GS", "ShadeBoost_Gamma", "int", shadeBoostGamma.coerceIn(1, 100).toString())
-        put("EmuCore/GS", "fxaa", "bool", fxaa.toString())
-        put("EmuCore/GS", "ShaderChainEnabled", "bool", shaderChainEnabled.toString())
-        put("EmuCore/GS", "ShaderChainPreset", "string", shaderChainPreset)
-        put("EmuCore/GS", "LsfgEnabled", "bool", lsfgEnabled.toString())
-        put("EmuCore/GS", "LsfgMultiplier", "int", lsfgMultiplier.toString())
-        put("EmuCore/GS", "LsfgDllPath", "string", lsfgDllPath)
-        put("EmuCore/GS", "LsfgPerformance", "bool", lsfgPerformance.toString())
+        put("EmuCore/GS", "HWDownloadMode", "int", graphics.hardwareDownloadMode.coerceIn(0, 5).toString())
+        put("EmuCore/GS", "TVShader", "int", graphics.tvShader.coerceIn(0, 7).toString())
+        put("EmuCore/GS", "ShadeBoost", "bool", graphics.shadeBoost.toString())
+        put("EmuCore/GS", "ShadeBoost_Brightness", "int", graphics.shadeBoostBrightness.coerceIn(1, 100).toString())
+        put("EmuCore/GS", "ShadeBoost_Contrast", "int", graphics.shadeBoostContrast.coerceIn(1, 100).toString())
+        put("EmuCore/GS", "ShadeBoost_Saturation", "int", graphics.shadeBoostSaturation.coerceIn(1, 100).toString())
+        put("EmuCore/GS", "ShadeBoost_Gamma", "int", graphics.shadeBoostGamma.coerceIn(1, 100).toString())
+        put("EmuCore/GS", "fxaa", "bool", graphics.fxaa.toString())
+        put("EmuCore/GS", "ShaderChainEnabled", "bool", graphics.shaderChainEnabled.toString())
+        put("EmuCore/GS", "ShaderChainPreset", "string", graphics.shaderChainPreset)
+        put("EmuCore/GS", "LsfgEnabled", "bool", graphics.lsfgEnabled.toString())
+        put("EmuCore/GS", "LsfgMultiplier", "int", graphics.lsfgMultiplier.toString())
+        put("EmuCore/GS", "LsfgDllPath", "string", graphics.lsfgDllPath)
+        put("EmuCore/GS", "LsfgPerformance", "bool", graphics.lsfgPerformance.toString())
         // Clamped to the same 25..100 the native side enforces. A value outside it would be
         // coerced there anyway, and the two disagreeing is how a slider ends up looking stuck.
-        put("EmuCore/GS", "LsfgFlowScale", "int", lsfgFlowScale.coerceIn(25, 100).toString())
-        put("EmuCore/GS", "LsfgTargetRate", "int", lsfgTargetRate.coerceIn(0, 1000).toString())
+        put("EmuCore/GS", "LsfgFlowScale", "int", graphics.lsfgFlowScale.coerceIn(25, 100).toString())
+        put("EmuCore/GS", "LsfgTargetRate", "int", graphics.lsfgTargetRate.coerceIn(0, 1000).toString())
         // Parameter overrides, as one opaque JSON blob. Nothing in emucore reads this key —
         // there is no GSConfig field behind it, and the live values reach the renderer via
         // the push below, not through here. It is written so the map survives the same
         // round-trips every other field gets: settings export/import, and the reused-folder
         // recovery that rebuilds prefs from the INI after a fresh install.
-        put("EmuCore/GS", "ShaderChainParams", "string", shaderChainParamsToJson(shaderChainParams).toString())
+        put("EmuCore/GS", "ShaderChainParams", "string", shaderChainParamsToJson(graphics.shaderChainParams).toString())
         // The actual live apply. Only the CURRENT preset's values are pushed (the rest are
         // kept for when the user picks those presets again), and only the overrides — a
         // parameter left out keeps what the chain has, which for the freshly built or
@@ -1584,124 +1678,124 @@ data class Settings(
         // the UI's own pushEffective, which sends initials explicitly to a live chain.
         // Skipped under emitSink: an export has no renderer to push to.
         if (emitSink == null)
-            ShaderParams.push(shaderChainPreset, shaderChainParams[shaderChainPreset].orEmpty())
-        put("EmuCore/GS", "CASMode", "int", casMode.coerceIn(0, 2).toString())
-        put("EmuCore/GS", "CASSharpness", "int", casSharpness.coerceIn(0, 100).toString())
+            ShaderParams.push(graphics.shaderChainPreset, graphics.shaderChainParams[graphics.shaderChainPreset].orEmpty())
+        put("EmuCore/GS", "CASMode", "int", graphics.casMode.coerceIn(0, 2).toString())
+        put("EmuCore/GS", "CASSharpness", "int", graphics.casSharpness.coerceIn(0, 100).toString())
         // Upper bound is the HIGHEST enum value, not the count of options this UI shows —
         // clamping to the visible choices would silently rewrite the top one back to Off. This
         // bound has to move every time the core enum grows, which is exactly the trap it was
         // written to warn about: it was still UPSCALER_FSR1 when SGSR was added.
-        put("EmuCore/GS", "Upscaler", "int", upscaler.coerceIn(UPSCALER_OFF, UPSCALER_SGSR_EDGE).toString())
-        put("EmuCore/GS", "FSRSharpness", "int", fsrSharpness.coerceIn(0, 100).toString())
-        put("EmuCore/GS", "SGSRSharpness", "int", sgsrSharpness.coerceIn(0, 200).toString())
-        put("EmuCore/GS", "LoadTextureReplacements", "bool", loadTextureReplacements.toString())
-        put("EmuCore/GS", "LoadTextureReplacementsAsync", "bool", loadTextureReplacementsAsync.toString())
-        put("EmuCore/GS", "PrecacheTextureReplacements", "bool", precacheTextureReplacements.toString())
-        put("EmuCore/GS", "DumpReplaceableTextures", "bool", dumpReplaceableTextures.toString())
-        put("EmuCore/GS", "OsdShowTextureReplacements", "bool", osdShowTextureReplacements.toString())
-        put("EmuCore/GS", "OsdShowFPS", "bool", osdShowFps.toString())
-        put("EmuCore/GS", "OsdScale", "int", osdScale.coerceIn(25, 500).toString())
-        put("EmuCore/GS", "OsdColor", "int", (osdColor and 0xFFFFFF).toString())
-        put("EmuCore/GS", "OsdPerformancePos", "int", osdPosition.coerceIn(0, 9).toString())
-        put("EmuCore/GS", "VsyncEnable", "bool", vsyncEnable.toString())
-        put("EmuCore/GS", "OsdShowVPS", "bool", osdShowVps.toString())
-        put("EmuCore/GS", "OsdShowSpeed", "bool", osdShowSpeed.toString())
-        put("EmuCore/GS", "OsdShowCPU", "bool", osdShowCpu.toString())
-        put("EmuCore/GS", "OsdShowGPU", "bool", osdShowGpu.toString())
-        put("EmuCore/GS", "OsdShowResolution", "bool", osdShowResolution.toString())
-        put("EmuCore/GS", "OsdShowGSStats", "bool", osdShowGsStats.toString())
-        put("EmuCore/GS", "OsdShowFrameTimes", "bool", osdShowFrameTimes.toString())
-        put("EmuCore/GS", "OsdShowHardwareInfo", "bool", osdShowHardwareInfo.toString())
-        put("EmuCore/GS", "OsdMessagesPos", "int", if (osdShowMessages) "1" else "0")
-        put("EmuCore/GS", "OsdShowGPUStats", "bool", osdShowGpuStats.toString())
-        put("EmuCore/GS", "OsdShowVersion", "bool", osdShowVersion.toString())
-        put("EmuCore/GS", "OsdShowSettings", "bool", osdShowSettings.toString())
-        put("EmuCore/GS", "OsdShowInputs", "bool", osdShowInputs.toString())
+        put("EmuCore/GS", "Upscaler", "int", graphics.upscaler.coerceIn(UPSCALER_OFF, UPSCALER_SGSR_EDGE).toString())
+        put("EmuCore/GS", "FSRSharpness", "int", graphics.fsrSharpness.coerceIn(0, 100).toString())
+        put("EmuCore/GS", "SGSRSharpness", "int", graphics.sgsrSharpness.coerceIn(0, 200).toString())
+        put("EmuCore/GS", "LoadTextureReplacements", "bool", graphics.loadTextureReplacements.toString())
+        put("EmuCore/GS", "LoadTextureReplacementsAsync", "bool", graphics.loadTextureReplacementsAsync.toString())
+        put("EmuCore/GS", "PrecacheTextureReplacements", "bool", graphics.precacheTextureReplacements.toString())
+        put("EmuCore/GS", "DumpReplaceableTextures", "bool", graphics.dumpReplaceableTextures.toString())
+        put("EmuCore/GS", "OsdShowTextureReplacements", "bool", graphics.osdShowTextureReplacements.toString())
+        put("EmuCore/GS", "OsdShowFPS", "bool", osd.osdShowFps.toString())
+        put("EmuCore/GS", "OsdScale", "int", osd.osdScale.coerceIn(25, 500).toString())
+        put("EmuCore/GS", "OsdColor", "int", (osd.osdColor and 0xFFFFFF).toString())
+        put("EmuCore/GS", "OsdPerformancePos", "int", osd.osdPosition.coerceIn(0, 9).toString())
+        put("EmuCore/GS", "VsyncEnable", "bool", display.vsyncEnable.toString())
+        put("EmuCore/GS", "OsdShowVPS", "bool", osd.osdShowVps.toString())
+        put("EmuCore/GS", "OsdShowSpeed", "bool", osd.osdShowSpeed.toString())
+        put("EmuCore/GS", "OsdShowCPU", "bool", osd.osdShowCpu.toString())
+        put("EmuCore/GS", "OsdShowGPU", "bool", osd.osdShowGpu.toString())
+        put("EmuCore/GS", "OsdShowResolution", "bool", osd.osdShowResolution.toString())
+        put("EmuCore/GS", "OsdShowGSStats", "bool", osd.osdShowGsStats.toString())
+        put("EmuCore/GS", "OsdShowFrameTimes", "bool", osd.osdShowFrameTimes.toString())
+        put("EmuCore/GS", "OsdShowHardwareInfo", "bool", osd.osdShowHardwareInfo.toString())
+        put("EmuCore/GS", "OsdMessagesPos", "int", if (osd.osdShowMessages) "1" else "0")
+        put("EmuCore/GS", "OsdShowGPUStats", "bool", osd.osdShowGpuStats.toString())
+        put("EmuCore/GS", "OsdShowVersion", "bool", osd.osdShowVersion.toString())
+        put("EmuCore/GS", "OsdShowSettings", "bool", osd.osdShowSettings.toString())
+        put("EmuCore/GS", "OsdShowInputs", "bool", osd.osdShowInputs.toString())
         // Display / PCRTC fixes (not gated by the UserHacks master).
-        put("EmuCore/GS", "pcrtc_offsets", "bool", screenOffsets.toString())
-        put("EmuCore/GS", "pcrtc_overscan", "bool", showOverscan.toString())
-        put("EmuCore/GS", "pcrtc_antiblur", "bool", antiBlur.toString())
-        put("EmuCore/GS", "disable_interlace_offset", "bool", disableInterlaceOffset.toString())
-        put("EmuCore/GS", "SyncToHostRefreshRate", "bool", syncToHostRefresh.toString())
-        put("EmuCore/GS", "DisableFramebufferFetch", "bool", disableFramebufferFetch.toString())
-        put("EmuCore/GS", "HWROV", "bool", hwRov.toString())
-        put("EmuCore/GS", "HWAA1", "bool", hwAa1.toString())
-        put("EmuCore/GS", "EnableAdrenoFramebufferFetch", "bool", adrenoFbFetch.toString())
-        put("EmuCore/GS", "CoalesceRenderPasses", "bool", coalesceRenderPasses.toString())
-        put("EmuCore/GS", "ForceMaliFramebufferFetch", "bool", forceMaliFbFetch.toString())
+        put("EmuCore/GS", "pcrtc_offsets", "bool", display.screenOffsets.toString())
+        put("EmuCore/GS", "pcrtc_overscan", "bool", display.showOverscan.toString())
+        put("EmuCore/GS", "pcrtc_antiblur", "bool", display.antiBlur.toString())
+        put("EmuCore/GS", "disable_interlace_offset", "bool", display.disableInterlaceOffset.toString())
+        put("EmuCore/GS", "SyncToHostRefreshRate", "bool", display.syncToHostRefresh.toString())
+        put("EmuCore/GS", "DisableFramebufferFetch", "bool", display.disableFramebufferFetch.toString())
+        put("EmuCore/GS", "HWROV", "bool", display.hwRov.toString())
+        put("EmuCore/GS", "HWAA1", "bool", display.hwAa1.toString())
+        put("EmuCore/GS", "EnableAdrenoFramebufferFetch", "bool", display.adrenoFbFetch.toString())
+        put("EmuCore/GS", "CoalesceRenderPasses", "bool", display.coalesceRenderPasses.toString())
+        put("EmuCore/GS", "ForceMaliFramebufferFetch", "bool", display.forceMaliFbFetch.toString())
         // Parity write (native reads the ARMSX2_ANGLE_EGL_LIBRARY env var set by
         // MainActivityRuntime.applyAngleEnv, not this key) — kept so the config file
         // reflects the toggle.
-        put("EmuCore/GS", "AndroidUseAngleOpenGL", "bool", useAngleOpenGL.toString())
-        put("EmuCore/GS", "OverrideTextureBarriers", "int", overrideTextureBarriers.coerceIn(-1, 1).toString())
-        put("EmuCore/GS", "GSBackThreadMode", "int", gsBackThreadMode.coerceIn(0, 3).toString())
-        put("EmuCore/GS", "DisableVertexShaderExpand", "bool", disableVertexShaderExpand.toString())
-        put("EmuCore/GS", "UseBlitSwapChain", "bool", useBlitSwapChain.toString())
-        put("EmuCore/GS", "DisableShaderCache", "bool", disableShaderCache.toString())
-        put("EmuCore/GS", "HWAccurateAlphaTest", "bool", hwAccurateAlphaTest.toString())
-        put("EmuCore/GS", "UserHacks_DrawBuffering", "bool", drawBuffering.toString())
-        put("EmuCore/GS", "HWSpinGPUForReadbacks", "bool", spinGpuReadbacks.toString())
-        put("EmuCore/GS", "HWSpinCPUForReadbacks", "bool", spinCpuReadbacks.toString())
-        put("EmuCore/GS", "IntegerScaling", "bool", integerScaling.toString())
+        put("EmuCore/GS", "AndroidUseAngleOpenGL", "bool", display.useAngleOpenGL.toString())
+        put("EmuCore/GS", "OverrideTextureBarriers", "int", display.overrideTextureBarriers.coerceIn(-1, 1).toString())
+        put("EmuCore/GS", "GSBackThreadMode", "int", display.gsBackThreadMode.coerceIn(0, 3).toString())
+        put("EmuCore/GS", "DisableVertexShaderExpand", "bool", display.disableVertexShaderExpand.toString())
+        put("EmuCore/GS", "UseBlitSwapChain", "bool", display.useBlitSwapChain.toString())
+        put("EmuCore/GS", "DisableShaderCache", "bool", display.disableShaderCache.toString())
+        put("EmuCore/GS", "HWAccurateAlphaTest", "bool", display.hwAccurateAlphaTest.toString())
+        put("EmuCore/GS", "UserHacks_DrawBuffering", "bool", hwFixes.drawBuffering.toString())
+        put("EmuCore/GS", "HWSpinGPUForReadbacks", "bool", hwFixes.spinGpuReadbacks.toString())
+        put("EmuCore/GS", "HWSpinCPUForReadbacks", "bool", hwFixes.spinCpuReadbacks.toString())
+        put("EmuCore/GS", "IntegerScaling", "bool", hwFixes.integerScaling.toString())
         // Display zoom (#383) overrides the manual crops while active: trim every edge by the
         // same fraction so the picture scales up without distortion. Nominal 640x448 native
         // frame; the zoom factor is what matters visually, so an approximate frame size is fine.
         // (1 - 100/Z)/2 is the per-edge fraction that leaves 1/Z of the image visible, centred.
-        val zoom = displayZoom.coerceIn(100, 150)
+        val zoom = hwFixes.displayZoom.coerceIn(100, 150)
         val zCropX = if (zoom > 100) ((640.0 * (1.0 - 100.0 / zoom)) / 2.0).toInt() else -1
         val zCropY = if (zoom > 100) ((448.0 * (1.0 - 100.0 / zoom)) / 2.0).toInt() else -1
-        val effLeft = if (zCropX >= 0) zCropX else cropLeft
-        val effRight = if (zCropX >= 0) zCropX else cropRight
-        val effTop = if (zCropY >= 0) zCropY else cropTop
-        val effBottom = if (zCropY >= 0) zCropY else cropBottom
+        val effLeft = if (zCropX >= 0) zCropX else hwFixes.cropLeft
+        val effRight = if (zCropX >= 0) zCropX else hwFixes.cropRight
+        val effTop = if (zCropY >= 0) zCropY else hwFixes.cropTop
+        val effBottom = if (zCropY >= 0) zCropY else hwFixes.cropBottom
         put("EmuCore/GS", "CropLeft", "int", effLeft.coerceIn(0, 640).toString())
         put("EmuCore/GS", "CropTop", "int", effTop.coerceIn(0, 640).toString())
         put("EmuCore/GS", "CropRight", "int", effRight.coerceIn(0, 640).toString())
         put("EmuCore/GS", "CropBottom", "int", effBottom.coerceIn(0, 640).toString())
-        put("EmuCore/GS", "dithering_ps2", "int", dithering.coerceIn(0, 3).toString())
-        put("EmuCore/GS", "VsyncQueueSize", "int", vsyncQueueSize.coerceIn(0, 3).toString())
-        put("EmuCore/GS", "autoflush_sw", "bool", autoFlushSw.toString())
-        put("EmuCore/GS", "mipmap", "bool", mipmapSw.toString())
-        put("EmuCore/GS", "extrathreads", "int", swThreads.coerceIn(0, 10).toString())
-        put("EmuCore/GS", "extrathreads_height", "int", swThreadsHeight.coerceIn(0, 8).toString())
+        put("EmuCore/GS", "dithering_ps2", "int", hwFixes.dithering.coerceIn(0, 3).toString())
+        put("EmuCore/GS", "VsyncQueueSize", "int", hwFixes.vsyncQueueSize.coerceIn(0, 3).toString())
+        put("EmuCore/GS", "autoflush_sw", "bool", output.autoFlushSw.toString())
+        put("EmuCore/GS", "mipmap", "bool", output.mipmapSw.toString())
+        put("EmuCore/GS", "extrathreads", "int", output.swThreads.coerceIn(0, 10).toString())
+        put("EmuCore/GS", "extrathreads_height", "int", output.swThreadsHeight.coerceIn(0, 8).toString())
         // Skip-draw is a UserHack (gated by the master toggle below).
-        put("EmuCore/GS", "UserHacks_SkipDraw_Start", "int", skipDrawStart.coerceAtLeast(0).toString())
-        put("EmuCore/GS", "UserHacks_SkipDraw_End", "int", skipDrawEnd.coerceAtLeast(0).toString())
+        put("EmuCore/GS", "UserHacks_SkipDraw_Start", "int", hwFixes.skipDrawStart.coerceAtLeast(0).toString())
+        put("EmuCore/GS", "UserHacks_SkipDraw_End", "int", hwFixes.skipDrawEnd.coerceAtLeast(0).toString())
         // Master hardware-fixes toggle. Auto-enables when ANY individual hack is
         // non-default so the user doesn't have to flip it; PCSX2 masks every
         // UserHacks_* key when this is off (GSOptions::MaskUserHacks).
         put("EmuCore/GS", "UserHacks", "bool", anyUserHackEnabled().toString())
-        put("EmuCore/GS", "UserHacks_AutoFlushLevel", "int", autoFlush.coerceIn(0, 2).toString())
-        put("EmuCore/GS", "UserHacks_HalfPixelOffset", "int", halfPixelOffset.coerceIn(0, 5).toString())
-        put("EmuCore/GS", "UserHacks_Limit24BitDepth", "int", limit24BitDepth.coerceIn(0, 2).toString())
-        put("EmuCore/GS", "UserHacks_TextureInsideRt", "int", textureInsideRt.coerceIn(0, 2).toString())
-        put("EmuCore/GS", "UserHacks_native_scaling", "int", nativeScaling.coerceIn(0, 4).toString())
-        put("EmuCore/GS", "UserHacks_round_sprite_offset", "int", roundSprite.coerceIn(0, 2).toString())
-        put("EmuCore/GS", "UserHacks_BilinearHack", "int", bilinearUpscale.coerceIn(0, 3).toString())
-        put("EmuCore/GS", "UserHacks_GPUTargetCLUTMode", "int", gpuTargetClut.coerceIn(0, 2).toString())
-        put("EmuCore/GS", "UserHacks_CPUSpriteRenderBW", "int", cpuSpriteRenderBw.coerceIn(0, 3).toString())
-        put("EmuCore/GS", "UserHacks_CPUSpriteRenderLevel", "int", cpuSpriteRenderLevel.coerceIn(0, 5).toString())
-        put("EmuCore/GS", "UserHacks_CPUCLUTRender", "int", cpuClutRender.coerceIn(0, 2).toString())
+        put("EmuCore/GS", "UserHacks_AutoFlushLevel", "int", hwFixes.autoFlush.coerceIn(0, 2).toString())
+        put("EmuCore/GS", "UserHacks_HalfPixelOffset", "int", hwFixes.halfPixelOffset.coerceIn(0, 5).toString())
+        put("EmuCore/GS", "UserHacks_Limit24BitDepth", "int", hwFixes.limit24BitDepth.coerceIn(0, 2).toString())
+        put("EmuCore/GS", "UserHacks_TextureInsideRt", "int", hwFixes.textureInsideRt.coerceIn(0, 2).toString())
+        put("EmuCore/GS", "UserHacks_native_scaling", "int", hwFixes.nativeScaling.coerceIn(0, 4).toString())
+        put("EmuCore/GS", "UserHacks_round_sprite_offset", "int", hwFixes.roundSprite.coerceIn(0, 2).toString())
+        put("EmuCore/GS", "UserHacks_BilinearHack", "int", hwFixes.bilinearUpscale.coerceIn(0, 3).toString())
+        put("EmuCore/GS", "UserHacks_GPUTargetCLUTMode", "int", hwFixes.gpuTargetClut.coerceIn(0, 2).toString())
+        put("EmuCore/GS", "UserHacks_CPUSpriteRenderBW", "int", hwFixes.cpuSpriteRenderBw.coerceIn(0, 3).toString())
+        put("EmuCore/GS", "UserHacks_CPUSpriteRenderLevel", "int", hwFixes.cpuSpriteRenderLevel.coerceIn(0, 5).toString())
+        put("EmuCore/GS", "UserHacks_CPUCLUTRender", "int", hwFixes.cpuClutRender.coerceIn(0, 2).toString())
         // Upscaling fixes (parity additions)
-        put("EmuCore/GS", "UserHacks_align_sprite_X", "bool", alignSprite.toString())
-        put("EmuCore/GS", "UserHacks_merge_pp_sprite", "bool", mergeSprite.toString())
-        put("EmuCore/GS", "UserHacks_ForceEvenSpritePosition", "bool", forceEvenSpritePosition.toString())
-        put("EmuCore/GS", "UserHacks_NativePaletteDraw", "bool", unscaledPaletteDraw.toString())
-        put("EmuCore/GS", "UserHacks_TCOffsetX", "int", textureOffsetX.coerceIn(0, 10000).toString())
-        put("EmuCore/GS", "UserHacks_TCOffsetY", "int", textureOffsetY.coerceIn(0, 10000).toString())
+        put("EmuCore/GS", "UserHacks_align_sprite_X", "bool", hwFixes.alignSprite.toString())
+        put("EmuCore/GS", "UserHacks_merge_pp_sprite", "bool", hwFixes.mergeSprite.toString())
+        put("EmuCore/GS", "UserHacks_ForceEvenSpritePosition", "bool", hwFixes.forceEvenSpritePosition.toString())
+        put("EmuCore/GS", "UserHacks_NativePaletteDraw", "bool", hwFixes.unscaledPaletteDraw.toString())
+        put("EmuCore/GS", "UserHacks_TCOffsetX", "int", hwFixes.textureOffsetX.coerceIn(0, 10000).toString())
+        put("EmuCore/GS", "UserHacks_TCOffsetY", "int", hwFixes.textureOffsetY.coerceIn(0, 10000).toString())
         // Hardware fixes (parity additions)
-        put("EmuCore/GS", "paltex", "bool", gpuPaletteConversion.toString())
-        put("EmuCore/GS", "UserHacks_CPU_FB_Conversion", "bool", cpuFramebufferConversion.toString())
-        put("EmuCore/GS", "UserHacks_ReadTCOnClose", "bool", readTargetsWhenClosing.toString())
-        put("EmuCore/GS", "UserHacks_DisableDepthSupport", "bool", disableDepthEmulation.toString())
-        put("EmuCore/GS", "UserHacks_DisablePartialInvalidation", "bool", disablePartialInvalidation.toString())
-        put("EmuCore/GS", "UserHacks_Disable_Safe_Features", "bool", disableSafeFeatures.toString())
-        put("EmuCore/GS", "UserHacks_DisableRenderFixes", "bool", disableRenderFixes.toString())
-        put("EmuCore/GS", "preload_frame_with_gs_data", "bool", preloadFrameData.toString())
-        put("EmuCore/GS", "UserHacks_EstimateTextureRegion", "bool", estimateTextureRegion.toString())
-        put("EmuCore/GS", "TriFilter", "int", triFilter.toString())
-        put("EmuCore/GS", "MaxAnisotropy", "int", maxAnisotropy.toString())
-        val gpuProfileStr = when (gpuProfile) {
+        put("EmuCore/GS", "paltex", "bool", hwFixes.gpuPaletteConversion.toString())
+        put("EmuCore/GS", "UserHacks_CPU_FB_Conversion", "bool", hwFixes.cpuFramebufferConversion.toString())
+        put("EmuCore/GS", "UserHacks_ReadTCOnClose", "bool", hwFixes.readTargetsWhenClosing.toString())
+        put("EmuCore/GS", "UserHacks_DisableDepthSupport", "bool", hwFixes.disableDepthEmulation.toString())
+        put("EmuCore/GS", "UserHacks_DisablePartialInvalidation", "bool", hwFixes.disablePartialInvalidation.toString())
+        put("EmuCore/GS", "UserHacks_Disable_Safe_Features", "bool", hwFixes.disableSafeFeatures.toString())
+        put("EmuCore/GS", "UserHacks_DisableRenderFixes", "bool", hwFixes.disableRenderFixes.toString())
+        put("EmuCore/GS", "preload_frame_with_gs_data", "bool", hwFixes.preloadFrameData.toString())
+        put("EmuCore/GS", "UserHacks_EstimateTextureRegion", "bool", hwFixes.estimateTextureRegion.toString())
+        put("EmuCore/GS", "TriFilter", "int", hwFixes.triFilter.toString())
+        put("EmuCore/GS", "MaxAnisotropy", "int", hwFixes.maxAnisotropy.toString())
+        val gpuProfileStr = when (hwFixes.gpuProfile) {
             1 -> "mali"
             2 -> "adreno"
             3 -> "powervr"
@@ -1714,17 +1808,17 @@ data class Settings(
     /** True when any hardware/upscaling fix is non-default — used to auto-enable
      *  the UserHacks master so individual hacks aren't silently masked off. */
     internal fun anyUserHackEnabled(): Boolean =
-        manualUserHacks ||
-            autoFlush != 0 || halfPixelOffset != 0 || limit24BitDepth != 0 ||
-            textureInsideRt != 0 || nativeScaling != 0 || roundSprite != 0 ||
-            bilinearUpscale != 0 || gpuTargetClut != 0 || cpuSpriteRenderBw != 0 ||
-            cpuSpriteRenderLevel != 0 || cpuClutRender != 0 ||
-            textureOffsetX != 0 || textureOffsetY != 0 ||
-            alignSprite || mergeSprite || forceEvenSpritePosition || unscaledPaletteDraw ||
-            gpuPaletteConversion || cpuFramebufferConversion || readTargetsWhenClosing ||
-            disableDepthEmulation || disablePartialInvalidation || disableSafeFeatures ||
-            disableRenderFixes || preloadFrameData || estimateTextureRegion || drawBuffering ||
-            skipDrawStart != 0 || skipDrawEnd != 0
+        hwFixes.manualUserHacks ||
+            hwFixes.autoFlush != 0 || hwFixes.halfPixelOffset != 0 || hwFixes.limit24BitDepth != 0 ||
+            hwFixes.textureInsideRt != 0 || hwFixes.nativeScaling != 0 || hwFixes.roundSprite != 0 ||
+            hwFixes.bilinearUpscale != 0 || hwFixes.gpuTargetClut != 0 || hwFixes.cpuSpriteRenderBw != 0 ||
+            hwFixes.cpuSpriteRenderLevel != 0 || hwFixes.cpuClutRender != 0 ||
+            hwFixes.textureOffsetX != 0 || hwFixes.textureOffsetY != 0 ||
+            hwFixes.alignSprite || hwFixes.mergeSprite || hwFixes.forceEvenSpritePosition || hwFixes.unscaledPaletteDraw ||
+            hwFixes.gpuPaletteConversion || hwFixes.cpuFramebufferConversion || hwFixes.readTargetsWhenClosing ||
+            hwFixes.disableDepthEmulation || hwFixes.disablePartialInvalidation || hwFixes.disableSafeFeatures ||
+            hwFixes.disableRenderFixes || hwFixes.preloadFrameData || hwFixes.estimateTextureRegion || hwFixes.drawBuffering ||
+            hwFixes.skipDrawStart != 0 || hwFixes.skipDrawEnd != 0
 
     /** Live GS-only apply for a running VM: persist all EmuCore/GS keys, then
      *  reconfigure the GS thread without the heavy CPU/JIT rebuild commitSettings()
@@ -1747,219 +1841,219 @@ data class Settings(
     // the VM and recomputes vsync. Keeping them out of here avoids a redundant
     // (and park-free, thus ineffective) GS reconfigure for a framerate-only edit.
     fun gsDiffersFrom(other: Settings): Boolean =
-        deinterlaceMode != other.deinterlaceMode ||
-            textureFiltering != other.textureFiltering ||
-            displayBilinear != other.displayBilinear ||
-            texturePreloading != other.texturePreloading ||
-            hardwareDownloadMode != other.hardwareDownloadMode ||
-            tvShader != other.tvShader ||
-            shadeBoost != other.shadeBoost ||
-            shadeBoostBrightness != other.shadeBoostBrightness ||
-            shadeBoostContrast != other.shadeBoostContrast ||
-            shadeBoostSaturation != other.shadeBoostSaturation ||
-            shadeBoostGamma != other.shadeBoostGamma ||
-            fxaa != other.fxaa ||
-            lsfgEnabled != other.lsfgEnabled ||
-            lsfgMultiplier != other.lsfgMultiplier ||
-            lsfgDllPath != other.lsfgDllPath ||
-            lsfgPerformance != other.lsfgPerformance ||
-            lsfgFlowScale != other.lsfgFlowScale ||
-            lsfgTargetRate != other.lsfgTargetRate ||
-            osdPosition != other.osdPosition ||
-            casMode != other.casMode ||
-            casSharpness != other.casSharpness ||
-            upscaler != other.upscaler ||
-            fsrSharpness != other.fsrSharpness ||
-            sgsrSharpness != other.sgsrSharpness ||
-            accurateBlendingUnit != other.accurateBlendingUnit ||
-            hwMipmap != other.hwMipmap ||
-            triFilter != other.triFilter ||
-            maxAnisotropy != other.maxAnisotropy ||
-            manualUserHacks != other.manualUserHacks ||
-            autoFlush != other.autoFlush ||
-            halfPixelOffset != other.halfPixelOffset ||
-            limit24BitDepth != other.limit24BitDepth ||
-            textureInsideRt != other.textureInsideRt ||
-            nativeScaling != other.nativeScaling ||
-            roundSprite != other.roundSprite ||
-            bilinearUpscale != other.bilinearUpscale ||
-            gpuTargetClut != other.gpuTargetClut ||
-            cpuSpriteRenderBw != other.cpuSpriteRenderBw ||
-            cpuSpriteRenderLevel != other.cpuSpriteRenderLevel ||
-            cpuClutRender != other.cpuClutRender ||
-            alignSprite != other.alignSprite ||
-            mergeSprite != other.mergeSprite ||
-            forceEvenSpritePosition != other.forceEvenSpritePosition ||
-            unscaledPaletteDraw != other.unscaledPaletteDraw ||
-            textureOffsetX != other.textureOffsetX ||
-            textureOffsetY != other.textureOffsetY ||
-            gpuPaletteConversion != other.gpuPaletteConversion ||
-            cpuFramebufferConversion != other.cpuFramebufferConversion ||
-            readTargetsWhenClosing != other.readTargetsWhenClosing ||
-            disableDepthEmulation != other.disableDepthEmulation ||
-            disablePartialInvalidation != other.disablePartialInvalidation ||
-            disableSafeFeatures != other.disableSafeFeatures ||
-            disableRenderFixes != other.disableRenderFixes ||
-            preloadFrameData != other.preloadFrameData ||
-            estimateTextureRegion != other.estimateTextureRegion ||
-            hwAccurateAlphaTest != other.hwAccurateAlphaTest ||
-            drawBuffering != other.drawBuffering ||
+        output.deinterlaceMode != other.output.deinterlaceMode ||
+            graphics.textureFiltering != other.graphics.textureFiltering ||
+            graphics.displayBilinear != other.graphics.displayBilinear ||
+            graphics.texturePreloading != other.graphics.texturePreloading ||
+            graphics.hardwareDownloadMode != other.graphics.hardwareDownloadMode ||
+            graphics.tvShader != other.graphics.tvShader ||
+            graphics.shadeBoost != other.graphics.shadeBoost ||
+            graphics.shadeBoostBrightness != other.graphics.shadeBoostBrightness ||
+            graphics.shadeBoostContrast != other.graphics.shadeBoostContrast ||
+            graphics.shadeBoostSaturation != other.graphics.shadeBoostSaturation ||
+            graphics.shadeBoostGamma != other.graphics.shadeBoostGamma ||
+            graphics.fxaa != other.graphics.fxaa ||
+            graphics.lsfgEnabled != other.graphics.lsfgEnabled ||
+            graphics.lsfgMultiplier != other.graphics.lsfgMultiplier ||
+            graphics.lsfgDllPath != other.graphics.lsfgDllPath ||
+            graphics.lsfgPerformance != other.graphics.lsfgPerformance ||
+            graphics.lsfgFlowScale != other.graphics.lsfgFlowScale ||
+            graphics.lsfgTargetRate != other.graphics.lsfgTargetRate ||
+            osd.osdPosition != other.osd.osdPosition ||
+            graphics.casMode != other.graphics.casMode ||
+            graphics.casSharpness != other.graphics.casSharpness ||
+            graphics.upscaler != other.graphics.upscaler ||
+            graphics.fsrSharpness != other.graphics.fsrSharpness ||
+            graphics.sgsrSharpness != other.graphics.sgsrSharpness ||
+            graphics.accurateBlendingUnit != other.graphics.accurateBlendingUnit ||
+            graphics.hwMipmap != other.graphics.hwMipmap ||
+            hwFixes.triFilter != other.hwFixes.triFilter ||
+            hwFixes.maxAnisotropy != other.hwFixes.maxAnisotropy ||
+            hwFixes.manualUserHacks != other.hwFixes.manualUserHacks ||
+            hwFixes.autoFlush != other.hwFixes.autoFlush ||
+            hwFixes.halfPixelOffset != other.hwFixes.halfPixelOffset ||
+            hwFixes.limit24BitDepth != other.hwFixes.limit24BitDepth ||
+            hwFixes.textureInsideRt != other.hwFixes.textureInsideRt ||
+            hwFixes.nativeScaling != other.hwFixes.nativeScaling ||
+            hwFixes.roundSprite != other.hwFixes.roundSprite ||
+            hwFixes.bilinearUpscale != other.hwFixes.bilinearUpscale ||
+            hwFixes.gpuTargetClut != other.hwFixes.gpuTargetClut ||
+            hwFixes.cpuSpriteRenderBw != other.hwFixes.cpuSpriteRenderBw ||
+            hwFixes.cpuSpriteRenderLevel != other.hwFixes.cpuSpriteRenderLevel ||
+            hwFixes.cpuClutRender != other.hwFixes.cpuClutRender ||
+            hwFixes.alignSprite != other.hwFixes.alignSprite ||
+            hwFixes.mergeSprite != other.hwFixes.mergeSprite ||
+            hwFixes.forceEvenSpritePosition != other.hwFixes.forceEvenSpritePosition ||
+            hwFixes.unscaledPaletteDraw != other.hwFixes.unscaledPaletteDraw ||
+            hwFixes.textureOffsetX != other.hwFixes.textureOffsetX ||
+            hwFixes.textureOffsetY != other.hwFixes.textureOffsetY ||
+            hwFixes.gpuPaletteConversion != other.hwFixes.gpuPaletteConversion ||
+            hwFixes.cpuFramebufferConversion != other.hwFixes.cpuFramebufferConversion ||
+            hwFixes.readTargetsWhenClosing != other.hwFixes.readTargetsWhenClosing ||
+            hwFixes.disableDepthEmulation != other.hwFixes.disableDepthEmulation ||
+            hwFixes.disablePartialInvalidation != other.hwFixes.disablePartialInvalidation ||
+            hwFixes.disableSafeFeatures != other.hwFixes.disableSafeFeatures ||
+            hwFixes.disableRenderFixes != other.hwFixes.disableRenderFixes ||
+            hwFixes.preloadFrameData != other.hwFixes.preloadFrameData ||
+            hwFixes.estimateTextureRegion != other.hwFixes.estimateTextureRegion ||
+            display.hwAccurateAlphaTest != other.display.hwAccurateAlphaTest ||
+            hwFixes.drawBuffering != other.hwFixes.drawBuffering ||
             // Texture-replacement toggles: without these here the in-game "Load Texture
             // Packs" switch only wrote the base layer (setSetting) and never fired the
             // live GS reconfigure, so a just-imported pack didn't appear until the next
             // game boot. Including them routes through applyGSSettingsLive → GSUpdateConfig
             // → GSTextureReplacements reload/purge, so the pack loads immediately.
-            loadTextureReplacements != other.loadTextureReplacements ||
-            loadTextureReplacementsAsync != other.loadTextureReplacementsAsync ||
-            precacheTextureReplacements != other.precacheTextureReplacements ||
-            dumpReplaceableTextures != other.dumpReplaceableTextures ||
-            osdShowTextureReplacements != other.osdShowTextureReplacements
+            graphics.loadTextureReplacements != other.graphics.loadTextureReplacements ||
+            graphics.loadTextureReplacementsAsync != other.graphics.loadTextureReplacementsAsync ||
+            graphics.precacheTextureReplacements != other.graphics.precacheTextureReplacements ||
+            graphics.dumpReplaceableTextures != other.graphics.dumpReplaceableTextures ||
+            graphics.osdShowTextureReplacements != other.graphics.osdShowTextureReplacements
 
     fun toJson(): JSONObject = JSONObject().apply {
-        put("eeCycleRate", eeCycleRate)
-        put("eeCycleSkip", eeCycleSkip)
-        put("eeClampMode", eeClampMode)
-        put("vuClampMode", vuClampMode)
-        put("vu1ClampMode", vu1ClampMode)
-        put("mtvu", mtvu)
-        put("vu1Instant", vu1Instant)
-        put("vuFlagHack", vuFlagHack)
-        put("fastCDVD", fastCDVD)
-        put("intcStat", intcStat)
-        put("waitLoop", waitLoop)
-        put("vuNeonFusions", vuNeonFusions)
-        put("vuDeferredWrites", vuDeferredWrites)
-        put("vuSkipStallSim", vuSkipStallSim)
-        put("frameLimitEnable", frameLimitEnable)
-        put("nominalSpeedPercent", nominalSpeedPercent)
-        put("fpsLimit", fpsLimit)
-        put("frameSkip", frameSkip)
-        put("audioVolume", audioVolume)
-        put("audioMuted", audioMuted)
-        put("audioSwapChannels", audioSwapChannels)
-        put("audioTimeStretch", audioTimeStretch)
-        put("audioBufferMs", audioBufferMs)
-        put("audioOutputLatencyMs", audioOutputLatencyMs)
-        put("audioFastForwardVolume", audioFastForwardVolume)
-        put("spu2NeonReverb", spu2NeonReverb)
-        put("audioOpenSLES", audioOpenSLES)
-        put("spu2LightweightMix", spu2LightweightMix)
-        put("renderer", renderer)
-        put("upscaleFloat", upscaleFloat.toDouble())
-        put("customDriverId", customDriverId)
-        put("orientation", orientation)
-        put("portraitRenderTop", portraitRenderTop)
-        put("landscapeRenderTop", landscapeRenderTop)
-        put("autoProgressiveScan", autoProgressiveScan)
-        put("affinityMode", affinityMode)
-        put("framerateNtsc", framerateNtsc.toDouble())
-        put("frameratePal", frameratePal.toDouble())
-        put("enablePatches", enablePatches)
-        put("enableCheats", enableCheats)
-        put("enableWideScreenPatches", enableWideScreenPatches)
-        put("enableNoInterlacingPatches", enableNoInterlacingPatches)
-        put("enableFastBoot", enableFastBoot)
-        put("hostFs", hostFs)
-        put("achievementsEnabled", achievementsEnabled)
-        put("achievementsHardcore", achievementsHardcore)
-        put("achievementsNotifications", achievementsNotifications)
-        put("achievementsLeaderboardNotifications", achievementsLeaderboardNotifications)
-        put("achievementsOverlays", achievementsOverlays)
-        put("achievementsLbOverlays", achievementsLbOverlays)
-        put("achievementsSoundEffects", achievementsSoundEffects)
-        put("achievementsEncoreMode", achievementsEncoreMode)
-        put("achievementsSpectatorMode", achievementsSpectatorMode)
-        put("achievementsUnofficialTestMode", achievementsUnofficialTestMode)
-        put("achievementsNotificationsDuration", achievementsNotificationsDuration)
-        put("achievementsLeaderboardsDuration", achievementsLeaderboardsDuration)
-        put("achievementsNotificationPosition", achievementsNotificationPosition)
-        put("achievementsOverlayPosition", achievementsOverlayPosition)
-        put("achievementsNotificationScale", achievementsNotificationScale)
-        put("pineEnabled", pineEnabled)
-        put("pineSlot", pineSlot)
-        put("enableGameFixes", enableGameFixes)
-        put("gamefixSoftwareRendererFmv", gamefixSoftwareRendererFmv)
-        put("gamefixSkipMpeg", gamefixSkipMpeg)
-        put("gamefixEETiming", gamefixEETiming)
-        put("gamefixInstantDma", gamefixInstantDma)
-        put("gamefixBlitInternalFps", gamefixBlitInternalFps)
-        put("gamefixOphFlag", gamefixOphFlag)
-        put("gamefixGifFifo", gamefixGifFifo)
-        put("gamefixDmaBusy", gamefixDmaBusy)
-        put("gamefixVif1Stall", gamefixVif1Stall)
-        put("gamefixIbit", gamefixIbit)
-        put("gamefixFullVu0Sync", gamefixFullVu0Sync)
-        put("gamefixVuAddSub", gamefixVuAddSub)
-        put("gamefixVuOverflow", gamefixVuOverflow)
-        put("gamefixXgkick", gamefixXgkick)
-        put("gamefixGoemonTlb", gamefixGoemonTlb)
-        put("gamefixVuSync", gamefixVuSync)
-        put("skipDuplicateFrames", skipDuplicateFrames)
-        put("eeFpuRoundMode", eeFpuRoundMode)
-        put("vu0RoundMode", vu0RoundMode)
-        put("vu1RoundMode", vu1RoundMode)
-        put("screenOffsets", screenOffsets)
-        put("showOverscan", showOverscan)
-        put("antiBlur", antiBlur)
-        put("disableInterlaceOffset", disableInterlaceOffset)
-        put("syncToHostRefresh", syncToHostRefresh)
-        put("disableFramebufferFetch", disableFramebufferFetch)
-        put("hwRov", hwRov)
-        put("hwAa1", hwAa1)
-        put("adrenoFbFetch", adrenoFbFetch)
-        put("coalesceRenderPasses", coalesceRenderPasses)
-        put("forceMaliFbFetch", forceMaliFbFetch)
-        put("useAngleOpenGL", useAngleOpenGL)
-        put("overrideTextureBarriers", overrideTextureBarriers)
-        put("gsBackThreadMode", gsBackThreadMode)
-        put("disableVertexShaderExpand", disableVertexShaderExpand)
-        put("useBlitSwapChain", useBlitSwapChain)
-        put("disableShaderCache", disableShaderCache)
-        put("hwAccurateAlphaTest", hwAccurateAlphaTest)
-        put("skipDrawStart", skipDrawStart)
-        put("skipDrawEnd", skipDrawEnd)
-        put("spinGpuReadbacks", spinGpuReadbacks)
-        put("spinCpuReadbacks", spinCpuReadbacks)
-        put("integerScaling", integerScaling)
-        put("cropLeft", cropLeft)
-        put("displayZoom", displayZoom)
-        put("cropTop", cropTop)
-        put("cropRight", cropRight)
-        put("cropBottom", cropBottom)
-        put("dithering", dithering)
-        put("vsyncQueueSize", vsyncQueueSize)
-        put("hwScaler", hwScaler)
-        put("screenResOverride", screenResOverride)
-        put("autoFlushSw", autoFlushSw)
-        put("mipmapSw", mipmapSw)
-        put("swThreads", swThreads)
-        put("swThreadsHeight", swThreadsHeight)
-        put("aspectRatio", aspectRatio)
-        put("fmvAspectRatio", fmvAspectRatio)
-        put("customAspectRatio", customAspectRatio.toDouble())
-        put("deinterlaceMode", deinterlaceMode)
-        put("dev9EthEnable", dev9EthEnable)
-        put("dev9EthApi", dev9EthApi)
-        put("localLinkHost", localLinkHost)
-        put("localLinkAddress", localLinkAddress)
-        put("localLinkPort", localLinkPort)
-        put("localLinkPeerId", localLinkPeerId)
-        put("localLinkRoomCode", localLinkRoomCode)
-        put("dev9EthDevice", dev9EthDevice)
-        put("dev9EthLogDhcp", dev9EthLogDhcp)
-        put("dev9EthLogDns", dev9EthLogDns)
-        put("dev9InterceptDhcp", dev9InterceptDhcp)
-        put("dev9Ps2Ip", dev9Ps2Ip)
-        put("dev9Mask", dev9Mask)
-        put("dev9Gateway", dev9Gateway)
-        put("dev9Dns1", dev9Dns1)
-        put("dev9Dns2", dev9Dns2)
-        put("dev9AutoMask", dev9AutoMask)
-        put("dev9AutoGateway", dev9AutoGateway)
-        put("dev9ModeDns1", dev9ModeDns1)
-        put("dev9ModeDns2", dev9ModeDns2)
+        put("eeCycleRate", cpu.eeCycleRate)
+        put("eeCycleSkip", cpu.eeCycleSkip)
+        put("eeClampMode", cpu.eeClampMode)
+        put("vuClampMode", cpu.vuClampMode)
+        put("vu1ClampMode", cpu.vu1ClampMode)
+        put("mtvu", cpu.mtvu)
+        put("vu1Instant", cpu.vu1Instant)
+        put("vuFlagHack", cpu.vuFlagHack)
+        put("fastCDVD", cpu.fastCDVD)
+        put("intcStat", cpu.intcStat)
+        put("waitLoop", cpu.waitLoop)
+        put("vuNeonFusions", cpu.vuNeonFusions)
+        put("vuDeferredWrites", cpu.vuDeferredWrites)
+        put("vuSkipStallSim", cpu.vuSkipStallSim)
+        put("frameLimitEnable", frameLimit.frameLimitEnable)
+        put("nominalSpeedPercent", frameLimit.nominalSpeedPercent)
+        put("fpsLimit", frameLimit.fpsLimit)
+        put("frameSkip", frameLimit.frameSkip)
+        put("audioVolume", audio.audioVolume)
+        put("audioMuted", audio.audioMuted)
+        put("audioSwapChannels", audio.audioSwapChannels)
+        put("audioTimeStretch", audio.audioTimeStretch)
+        put("audioBufferMs", audio.audioBufferMs)
+        put("audioOutputLatencyMs", audio.audioOutputLatencyMs)
+        put("audioFastForwardVolume", audio.audioFastForwardVolume)
+        put("spu2NeonReverb", audio.spu2NeonReverb)
+        put("audioOpenSLES", audio.audioOpenSLES)
+        put("spu2LightweightMix", audio.spu2LightweightMix)
+        put("renderer", output.renderer)
+        put("upscaleFloat", output.upscaleFloat.toDouble())
+        put("customDriverId", output.customDriverId)
+        put("orientation", output.orientation)
+        put("portraitRenderTop", output.portraitRenderTop)
+        put("landscapeRenderTop", output.landscapeRenderTop)
+        put("autoProgressiveScan", output.autoProgressiveScan)
+        put("affinityMode", output.affinityMode)
+        put("framerateNtsc", output.framerateNtsc.toDouble())
+        put("frameratePal", output.frameratePal.toDouble())
+        put("enablePatches", emuCore.enablePatches)
+        put("enableCheats", emuCore.enableCheats)
+        put("enableWideScreenPatches", emuCore.enableWideScreenPatches)
+        put("enableNoInterlacingPatches", emuCore.enableNoInterlacingPatches)
+        put("enableFastBoot", emuCore.enableFastBoot)
+        put("hostFs", emuCore.hostFs)
+        put("achievementsEnabled", emuCore.achievements.enabled)
+        put("achievementsHardcore", emuCore.achievements.hardcore)
+        put("achievementsNotifications", emuCore.achievements.notifications)
+        put("achievementsLeaderboardNotifications", emuCore.achievements.leaderboardNotifications)
+        put("achievementsOverlays", emuCore.achievements.overlays)
+        put("achievementsLbOverlays", emuCore.achievements.lbOverlays)
+        put("achievementsSoundEffects", emuCore.achievements.soundEffects)
+        put("achievementsEncoreMode", emuCore.achievements.encoreMode)
+        put("achievementsSpectatorMode", emuCore.achievements.spectatorMode)
+        put("achievementsUnofficialTestMode", emuCore.achievements.unofficialTestMode)
+        put("achievementsNotificationsDuration", emuCore.achievements.notificationsDuration)
+        put("achievementsLeaderboardsDuration", emuCore.achievements.leaderboardsDuration)
+        put("achievementsNotificationPosition", emuCore.achievements.notificationPosition)
+        put("achievementsOverlayPosition", emuCore.achievements.overlayPosition)
+        put("achievementsNotificationScale", emuCore.achievements.notificationScale)
+        put("pineEnabled", emuCore.pineEnabled)
+        put("pineSlot", emuCore.pineSlot)
+        put("enableGameFixes", emuCore.enableGameFixes)
+        put("gamefixSoftwareRendererFmv", emuCore.gamefixSoftwareRendererFmv)
+        put("gamefixSkipMpeg", emuCore.gamefixSkipMpeg)
+        put("gamefixEETiming", emuCore.gamefixEETiming)
+        put("gamefixInstantDma", emuCore.gamefixInstantDma)
+        put("gamefixBlitInternalFps", emuCore.gamefixBlitInternalFps)
+        put("gamefixOphFlag", emuCore.gamefixOphFlag)
+        put("gamefixGifFifo", emuCore.gamefixGifFifo)
+        put("gamefixDmaBusy", emuCore.gamefixDmaBusy)
+        put("gamefixVif1Stall", emuCore.gamefixVif1Stall)
+        put("gamefixIbit", emuCore.gamefixIbit)
+        put("gamefixFullVu0Sync", emuCore.gamefixFullVu0Sync)
+        put("gamefixVuAddSub", emuCore.gamefixVuAddSub)
+        put("gamefixVuOverflow", emuCore.gamefixVuOverflow)
+        put("gamefixXgkick", emuCore.gamefixXgkick)
+        put("gamefixGoemonTlb", emuCore.gamefixGoemonTlb)
+        put("gamefixVuSync", emuCore.gamefixVuSync)
+        put("skipDuplicateFrames", emuCore.skipDuplicateFrames)
+        put("eeFpuRoundMode", emuCore.eeFpuRoundMode)
+        put("vu0RoundMode", emuCore.vu0RoundMode)
+        put("vu1RoundMode", emuCore.vu1RoundMode)
+        put("screenOffsets", display.screenOffsets)
+        put("showOverscan", display.showOverscan)
+        put("antiBlur", display.antiBlur)
+        put("disableInterlaceOffset", display.disableInterlaceOffset)
+        put("syncToHostRefresh", display.syncToHostRefresh)
+        put("disableFramebufferFetch", display.disableFramebufferFetch)
+        put("hwRov", display.hwRov)
+        put("hwAa1", display.hwAa1)
+        put("adrenoFbFetch", display.adrenoFbFetch)
+        put("coalesceRenderPasses", display.coalesceRenderPasses)
+        put("forceMaliFbFetch", display.forceMaliFbFetch)
+        put("useAngleOpenGL", display.useAngleOpenGL)
+        put("overrideTextureBarriers", display.overrideTextureBarriers)
+        put("gsBackThreadMode", display.gsBackThreadMode)
+        put("disableVertexShaderExpand", display.disableVertexShaderExpand)
+        put("useBlitSwapChain", display.useBlitSwapChain)
+        put("disableShaderCache", display.disableShaderCache)
+        put("hwAccurateAlphaTest", display.hwAccurateAlphaTest)
+        put("skipDrawStart", hwFixes.skipDrawStart)
+        put("skipDrawEnd", hwFixes.skipDrawEnd)
+        put("spinGpuReadbacks", hwFixes.spinGpuReadbacks)
+        put("spinCpuReadbacks", hwFixes.spinCpuReadbacks)
+        put("integerScaling", hwFixes.integerScaling)
+        put("cropLeft", hwFixes.cropLeft)
+        put("displayZoom", hwFixes.displayZoom)
+        put("cropTop", hwFixes.cropTop)
+        put("cropRight", hwFixes.cropRight)
+        put("cropBottom", hwFixes.cropBottom)
+        put("dithering", hwFixes.dithering)
+        put("vsyncQueueSize", hwFixes.vsyncQueueSize)
+        put("hwScaler", output.hwScaler)
+        put("screenResOverride", output.screenResOverride)
+        put("autoFlushSw", output.autoFlushSw)
+        put("mipmapSw", output.mipmapSw)
+        put("swThreads", output.swThreads)
+        put("swThreadsHeight", output.swThreadsHeight)
+        put("aspectRatio", output.aspectRatio)
+        put("fmvAspectRatio", output.fmvAspectRatio)
+        put("customAspectRatio", output.customAspectRatio.toDouble())
+        put("deinterlaceMode", output.deinterlaceMode)
+        put("dev9EthEnable", network.dev9EthEnable)
+        put("dev9EthApi", network.dev9EthApi)
+        put("localLinkHost", network.localLinkHost)
+        put("localLinkAddress", network.localLinkAddress)
+        put("localLinkPort", network.localLinkPort)
+        put("localLinkPeerId", network.localLinkPeerId)
+        put("localLinkRoomCode", network.localLinkRoomCode)
+        put("dev9EthDevice", network.dev9EthDevice)
+        put("dev9EthLogDhcp", network.dev9EthLogDhcp)
+        put("dev9EthLogDns", network.dev9EthLogDns)
+        put("dev9InterceptDhcp", network.dev9InterceptDhcp)
+        put("dev9Ps2Ip", network.dev9Ps2Ip)
+        put("dev9Mask", network.dev9Mask)
+        put("dev9Gateway", network.dev9Gateway)
+        put("dev9Dns1", network.dev9Dns1)
+        put("dev9Dns2", network.dev9Dns2)
+        put("dev9AutoMask", network.dev9AutoMask)
+        put("dev9AutoGateway", network.dev9AutoGateway)
+        put("dev9ModeDns1", network.dev9ModeDns1)
+        put("dev9ModeDns2", network.dev9ModeDns2)
         put("dev9EthHosts", JSONArray().apply {
-            dev9EthHosts.forEach { h ->
+            network.dev9EthHosts.forEach { h ->
                 put(JSONObject().apply {
                     put("url", h.url)
                     put("ip", h.ip)
@@ -1967,107 +2061,107 @@ data class Settings(
                 })
             }
         })
-        put("dev9HddEnable", dev9HddEnable)
-        put("dev9HddFile", dev9HddFile)
-        put("memoryCardSlot1Enabled", memoryCardSlot1Enabled)
-        put("memoryCardSlot1Filename", memoryCardSlot1Filename)
-        put("biosFilename", biosFilename)
-        put("memoryCardSlot2Enabled", memoryCardSlot2Enabled)
-        put("memoryCardSlot2Filename", memoryCardSlot2Filename)
-        put("usbKeyboard", usbKeyboard)
-        put("recEE", recEE)
-        put("recIOP", recIOP)
-        put("recVU0", recVU0)
-        put("recVU1", recVU1)
-        put("enableFastmem", enableFastmem)
-        put("vu1InlineFmacStall", vu1InlineFmacStall)
-        put("vu1CrossBlockPState", vu1CrossBlockPState)
-        put("vu1InlineDrainTestPipes", vu1InlineDrainTestPipes)
-        put("vu1FmacInstanceRouting", vu1FmacInstanceRouting)
-        put("hwMipmap", hwMipmap)
-        put("accurateBlendingUnit", accurateBlendingUnit)
-        put("textureFiltering", textureFiltering)
-        put("displayBilinear", displayBilinear)
-        put("texturePreloading", texturePreloading)
-        put("hardwareDownloadMode", hardwareDownloadMode)
-        put("tvShader", tvShader)
-        put("shadeBoost", shadeBoost)
-        put("shadeBoostBrightness", shadeBoostBrightness)
-        put("shadeBoostContrast", shadeBoostContrast)
-        put("shadeBoostSaturation", shadeBoostSaturation)
-        put("shadeBoostGamma", shadeBoostGamma)
-        put("fxaa", fxaa)
-        put("shaderChainEnabled", shaderChainEnabled)
-        put("shaderChainPreset", shaderChainPreset)
-        put("shaderChainParams", shaderChainParamsToJson(shaderChainParams))
+        put("dev9HddEnable", network.dev9HddEnable)
+        put("dev9HddFile", network.dev9HddFile)
+        put("memoryCardSlot1Enabled", system.memoryCardSlot1Enabled)
+        put("memoryCardSlot1Filename", system.memoryCardSlot1Filename)
+        put("biosFilename", system.biosFilename)
+        put("memoryCardSlot2Enabled", system.memoryCardSlot2Enabled)
+        put("memoryCardSlot2Filename", system.memoryCardSlot2Filename)
+        put("usbKeyboard", system.usbKeyboard)
+        put("recEE", cpu.recEE)
+        put("recIOP", cpu.recIOP)
+        put("recVU0", cpu.recVU0)
+        put("recVU1", cpu.recVU1)
+        put("enableFastmem", cpu.enableFastmem)
+        put("vu1InlineFmacStall", cpu.vu1InlineFmacStall)
+        put("vu1CrossBlockPState", cpu.vu1CrossBlockPState)
+        put("vu1InlineDrainTestPipes", cpu.vu1InlineDrainTestPipes)
+        put("vu1FmacInstanceRouting", cpu.vu1FmacInstanceRouting)
+        put("hwMipmap", graphics.hwMipmap)
+        put("accurateBlendingUnit", graphics.accurateBlendingUnit)
+        put("textureFiltering", graphics.textureFiltering)
+        put("displayBilinear", graphics.displayBilinear)
+        put("texturePreloading", graphics.texturePreloading)
+        put("hardwareDownloadMode", graphics.hardwareDownloadMode)
+        put("tvShader", graphics.tvShader)
+        put("shadeBoost", graphics.shadeBoost)
+        put("shadeBoostBrightness", graphics.shadeBoostBrightness)
+        put("shadeBoostContrast", graphics.shadeBoostContrast)
+        put("shadeBoostSaturation", graphics.shadeBoostSaturation)
+        put("shadeBoostGamma", graphics.shadeBoostGamma)
+        put("fxaa", graphics.fxaa)
+        put("shaderChainEnabled", graphics.shaderChainEnabled)
+        put("shaderChainPreset", graphics.shaderChainPreset)
+        put("shaderChainParams", shaderChainParamsToJson(graphics.shaderChainParams))
         // These five were missing from the JSON round-trip entirely, which IS the persistence
         // format — so every LSFG choice, the imported DLL path included, was thrown away the
         // moment the app was restarted.
-        put("lsfgEnabled", lsfgEnabled)
-        put("lsfgMultiplier", lsfgMultiplier)
-        put("lsfgDllPath", lsfgDllPath)
-        put("lsfgPerformance", lsfgPerformance)
-        put("lsfgFlowScale", lsfgFlowScale)
-        put("lsfgTargetRate", lsfgTargetRate)
-        put("casMode", casMode)
-        put("casSharpness", casSharpness)
-        put("upscaler", upscaler)
-        put("fsrSharpness", fsrSharpness)
-        put("sgsrSharpness", sgsrSharpness)
-        put("loadTextureReplacements", loadTextureReplacements)
-        put("loadTextureReplacementsAsync", loadTextureReplacementsAsync)
-        put("precacheTextureReplacements", precacheTextureReplacements)
-        put("dumpReplaceableTextures", dumpReplaceableTextures)
-        put("osdShowTextureReplacements", osdShowTextureReplacements)
-        put("osdShowFps", osdShowFps)
-        put("osdScale", osdScale)
-        put("osdColor", osdColor)
-        put("osdPosition", osdPosition)
-        put("vsyncEnable", vsyncEnable)
-        put("osdShowVps", osdShowVps)
-        put("osdShowSpeed", osdShowSpeed)
-        put("osdShowCpu", osdShowCpu)
-        put("osdShowGpu", osdShowGpu)
-        put("osdShowResolution", osdShowResolution)
-        put("osdShowGsStats", osdShowGsStats)
-        put("osdShowFrameTimes", osdShowFrameTimes)
-        put("osdShowHardwareInfo", osdShowHardwareInfo)
-        put("osdShowMessages", osdShowMessages)
-        put("osdShowGpuStats", osdShowGpuStats)
-        put("osdShowVersion", osdShowVersion)
-        put("osdShowSettings", osdShowSettings)
-        put("osdShowInputs", osdShowInputs)
-        put("autoFlush", autoFlush)
-        put("halfPixelOffset", halfPixelOffset)
-        put("limit24BitDepth", limit24BitDepth)
-        put("manualUserHacks", manualUserHacks)
-        put("textureInsideRt", textureInsideRt)
-        put("nativeScaling", nativeScaling)
-        put("roundSprite", roundSprite)
-        put("bilinearUpscale", bilinearUpscale)
-        put("gpuTargetClut", gpuTargetClut)
-        put("cpuSpriteRenderBw", cpuSpriteRenderBw)
-        put("cpuSpriteRenderLevel", cpuSpriteRenderLevel)
-        put("alignSprite", alignSprite)
-        put("mergeSprite", mergeSprite)
-        put("forceEvenSpritePosition", forceEvenSpritePosition)
-        put("unscaledPaletteDraw", unscaledPaletteDraw)
-        put("textureOffsetX", textureOffsetX)
-        put("textureOffsetY", textureOffsetY)
-        put("gpuPaletteConversion", gpuPaletteConversion)
-        put("cpuFramebufferConversion", cpuFramebufferConversion)
-        put("readTargetsWhenClosing", readTargetsWhenClosing)
-        put("disableDepthEmulation", disableDepthEmulation)
-        put("disablePartialInvalidation", disablePartialInvalidation)
-        put("disableSafeFeatures", disableSafeFeatures)
-        put("disableRenderFixes", disableRenderFixes)
-        put("preloadFrameData", preloadFrameData)
-        put("estimateTextureRegion", estimateTextureRegion)
-        put("drawBuffering", drawBuffering)
-        put("cpuClutRender", cpuClutRender)
-        put("triFilter", triFilter)
-        put("maxAnisotropy", maxAnisotropy)
-        put("gpuProfile", gpuProfile)
+        put("lsfgEnabled", graphics.lsfgEnabled)
+        put("lsfgMultiplier", graphics.lsfgMultiplier)
+        put("lsfgDllPath", graphics.lsfgDllPath)
+        put("lsfgPerformance", graphics.lsfgPerformance)
+        put("lsfgFlowScale", graphics.lsfgFlowScale)
+        put("lsfgTargetRate", graphics.lsfgTargetRate)
+        put("casMode", graphics.casMode)
+        put("casSharpness", graphics.casSharpness)
+        put("upscaler", graphics.upscaler)
+        put("fsrSharpness", graphics.fsrSharpness)
+        put("sgsrSharpness", graphics.sgsrSharpness)
+        put("loadTextureReplacements", graphics.loadTextureReplacements)
+        put("loadTextureReplacementsAsync", graphics.loadTextureReplacementsAsync)
+        put("precacheTextureReplacements", graphics.precacheTextureReplacements)
+        put("dumpReplaceableTextures", graphics.dumpReplaceableTextures)
+        put("osdShowTextureReplacements", graphics.osdShowTextureReplacements)
+        put("osdShowFps", osd.osdShowFps)
+        put("osdScale", osd.osdScale)
+        put("osdColor", osd.osdColor)
+        put("osdPosition", osd.osdPosition)
+        put("vsyncEnable", display.vsyncEnable)
+        put("osdShowVps", osd.osdShowVps)
+        put("osdShowSpeed", osd.osdShowSpeed)
+        put("osdShowCpu", osd.osdShowCpu)
+        put("osdShowGpu", osd.osdShowGpu)
+        put("osdShowResolution", osd.osdShowResolution)
+        put("osdShowGsStats", osd.osdShowGsStats)
+        put("osdShowFrameTimes", osd.osdShowFrameTimes)
+        put("osdShowHardwareInfo", osd.osdShowHardwareInfo)
+        put("osdShowMessages", osd.osdShowMessages)
+        put("osdShowGpuStats", osd.osdShowGpuStats)
+        put("osdShowVersion", osd.osdShowVersion)
+        put("osdShowSettings", osd.osdShowSettings)
+        put("osdShowInputs", osd.osdShowInputs)
+        put("autoFlush", hwFixes.autoFlush)
+        put("halfPixelOffset", hwFixes.halfPixelOffset)
+        put("limit24BitDepth", hwFixes.limit24BitDepth)
+        put("manualUserHacks", hwFixes.manualUserHacks)
+        put("textureInsideRt", hwFixes.textureInsideRt)
+        put("nativeScaling", hwFixes.nativeScaling)
+        put("roundSprite", hwFixes.roundSprite)
+        put("bilinearUpscale", hwFixes.bilinearUpscale)
+        put("gpuTargetClut", hwFixes.gpuTargetClut)
+        put("cpuSpriteRenderBw", hwFixes.cpuSpriteRenderBw)
+        put("cpuSpriteRenderLevel", hwFixes.cpuSpriteRenderLevel)
+        put("alignSprite", hwFixes.alignSprite)
+        put("mergeSprite", hwFixes.mergeSprite)
+        put("forceEvenSpritePosition", hwFixes.forceEvenSpritePosition)
+        put("unscaledPaletteDraw", hwFixes.unscaledPaletteDraw)
+        put("textureOffsetX", hwFixes.textureOffsetX)
+        put("textureOffsetY", hwFixes.textureOffsetY)
+        put("gpuPaletteConversion", hwFixes.gpuPaletteConversion)
+        put("cpuFramebufferConversion", hwFixes.cpuFramebufferConversion)
+        put("readTargetsWhenClosing", hwFixes.readTargetsWhenClosing)
+        put("disableDepthEmulation", hwFixes.disableDepthEmulation)
+        put("disablePartialInvalidation", hwFixes.disablePartialInvalidation)
+        put("disableSafeFeatures", hwFixes.disableSafeFeatures)
+        put("disableRenderFixes", hwFixes.disableRenderFixes)
+        put("preloadFrameData", hwFixes.preloadFrameData)
+        put("estimateTextureRegion", hwFixes.estimateTextureRegion)
+        put("drawBuffering", hwFixes.drawBuffering)
+        put("cpuClutRender", hwFixes.cpuClutRender)
+        put("triFilter", hwFixes.triFilter)
+        put("maxAnisotropy", hwFixes.maxAnisotropy)
+        put("gpuProfile", hwFixes.gpuProfile)
     }
 
     companion object {
@@ -2117,14 +2211,24 @@ data class Settings(
          *  NOTE: intentionally does NOT touch CAS — there is no CAS Settings
          *  field wired in this build. */
         fun lowEndPreset(base: Settings, mtvu: Boolean): Settings = base.copy(
-            accurateBlendingUnit = 0,   // Minimum
-            upscaleFloat = 1.0f,        // native resolution
-            hwMipmap = false,           // mipmap off
-            gpuPaletteConversion = false,
-            texturePreloading = 1,      // Partial
-            hwRov = false,              // ROV off
-            eeCycleSkip = 1,
-            mtvu = mtvu,
+            cpu = base.cpu.copy(
+                eeCycleSkip = 1,
+                mtvu = mtvu,
+            ),
+            display = base.display.copy(
+                hwRov = false,              // ROV off
+            ),
+            hwFixes = base.hwFixes.copy(
+                gpuPaletteConversion = false,
+            ),
+            output = base.output.copy(
+                upscaleFloat = 1.0f,        // native resolution
+            ),
+            graphics = base.graphics.copy(
+                accurateBlendingUnit = 0,   // Minimum
+                hwMipmap = false,           // mipmap off
+                texturePreloading = 1,      // Partial
+            ),
         )
 
         /** Lenient parse — missing keys fall back to defaults so old saved
@@ -2132,153 +2236,215 @@ data class Settings(
         fun fromJson(json: JSONObject): Settings {
             val def = Settings()
             return Settings(
-                eeCycleRate = json.optInt("eeCycleRate", def.eeCycleRate),
-                eeCycleSkip = json.optInt("eeCycleSkip", def.eeCycleSkip),
-                eeClampMode = json.optInt("eeClampMode", def.eeClampMode),
-                vuClampMode = json.optInt("vuClampMode", def.vuClampMode),
-                vu1ClampMode = json.optInt("vu1ClampMode", def.vu1ClampMode),
-                mtvu = json.optBoolean("mtvu", def.mtvu),
-                vu1Instant = json.optBoolean("vu1Instant", def.vu1Instant),
-                vuFlagHack = json.optBoolean("vuFlagHack", def.vuFlagHack),
-                fastCDVD = json.optBoolean("fastCDVD", def.fastCDVD),
-                intcStat = json.optBoolean("intcStat", def.intcStat),
-                waitLoop = json.optBoolean("waitLoop", def.waitLoop),
-                vuNeonFusions = json.optBoolean("vuNeonFusions", def.vuNeonFusions),
-                vuDeferredWrites = json.optBoolean("vuDeferredWrites", def.vuDeferredWrites),
-                vuSkipStallSim = json.optBoolean("vuSkipStallSim", def.vuSkipStallSim),
-                frameLimitEnable = json.optBoolean("frameLimitEnable", def.frameLimitEnable),
-                nominalSpeedPercent = json.optInt("nominalSpeedPercent", def.nominalSpeedPercent),
-                fpsLimit = json.optInt("fpsLimit", def.fpsLimit),
-                frameSkip = json.optInt("frameSkip", def.frameSkip),
-                audioVolume = json.optInt("audioVolume", def.audioVolume),
-                audioMuted = json.optBoolean("audioMuted", def.audioMuted),
-                audioSwapChannels = json.optBoolean("audioSwapChannels", def.audioSwapChannels),
-                audioTimeStretch = json.optBoolean("audioTimeStretch", def.audioTimeStretch),
-                audioBufferMs = json.optInt("audioBufferMs", def.audioBufferMs),
-                audioOutputLatencyMs = json.optInt("audioOutputLatencyMs", def.audioOutputLatencyMs),
-                audioFastForwardVolume = json.optInt("audioFastForwardVolume", def.audioFastForwardVolume),
-                spu2NeonReverb = json.optBoolean("spu2NeonReverb", def.spu2NeonReverb),
-                audioOpenSLES = json.optBoolean("audioOpenSLES", def.audioOpenSLES),
-                spu2LightweightMix = json.optBoolean("spu2LightweightMix", def.spu2LightweightMix),
-                renderer = json.optString("renderer", def.renderer),
-                upscaleFloat = json.optDouble("upscaleFloat", def.upscaleFloat.toDouble()).toFloat(),
-                customDriverId = json.optString("customDriverId", def.customDriverId),
-                orientation = json.optInt("orientation", def.orientation),
-                portraitRenderTop = json.optBoolean("portraitRenderTop", def.portraitRenderTop),
-                landscapeRenderTop = json.optBoolean("landscapeRenderTop", def.landscapeRenderTop),
-                autoProgressiveScan = json.optBoolean("autoProgressiveScan", def.autoProgressiveScan),
-                affinityMode = json.optInt("affinityMode", def.affinityMode),
-                framerateNtsc = json.optDouble("framerateNtsc", def.framerateNtsc.toDouble()).toFloat(),
-                frameratePal = json.optDouble("frameratePal", def.frameratePal.toDouble()).toFloat(),
-                enablePatches = json.optBoolean("enablePatches", def.enablePatches),
-                enableCheats = json.optBoolean("enableCheats", def.enableCheats),
-                enableWideScreenPatches = json.optBoolean("enableWideScreenPatches", def.enableWideScreenPatches),
-                enableNoInterlacingPatches = json.optBoolean("enableNoInterlacingPatches", def.enableNoInterlacingPatches),
-                enableFastBoot = json.optBoolean("enableFastBoot", def.enableFastBoot),
-                hostFs = json.optBoolean("hostFs", def.hostFs),
-                achievementsEnabled = json.optBoolean("achievementsEnabled", def.achievementsEnabled),
-                achievementsHardcore = json.optBoolean("achievementsHardcore", def.achievementsHardcore),
-                achievementsNotifications = json.optBoolean("achievementsNotifications", def.achievementsNotifications),
-                achievementsLeaderboardNotifications = json.optBoolean("achievementsLeaderboardNotifications", def.achievementsLeaderboardNotifications),
-                achievementsOverlays = json.optBoolean("achievementsOverlays", def.achievementsOverlays),
-                achievementsLbOverlays = json.optBoolean("achievementsLbOverlays", def.achievementsLbOverlays),
-                achievementsSoundEffects = json.optBoolean("achievementsSoundEffects", def.achievementsSoundEffects),
-                achievementsEncoreMode = json.optBoolean("achievementsEncoreMode", def.achievementsEncoreMode),
-                achievementsSpectatorMode = json.optBoolean("achievementsSpectatorMode", def.achievementsSpectatorMode),
-                achievementsUnofficialTestMode = json.optBoolean("achievementsUnofficialTestMode", def.achievementsUnofficialTestMode),
-                achievementsNotificationsDuration = json.optInt("achievementsNotificationsDuration", def.achievementsNotificationsDuration),
-                achievementsLeaderboardsDuration = json.optInt("achievementsLeaderboardsDuration", def.achievementsLeaderboardsDuration),
-                achievementsNotificationPosition = json.optInt("achievementsNotificationPosition", def.achievementsNotificationPosition),
-                achievementsOverlayPosition = json.optInt("achievementsOverlayPosition", def.achievementsOverlayPosition),
-                achievementsNotificationScale = json.optInt("achievementsNotificationScale", def.achievementsNotificationScale),
-                pineEnabled = json.optBoolean("pineEnabled", def.pineEnabled),
-                pineSlot = json.optInt("pineSlot", def.pineSlot),
-                enableGameFixes = json.optBoolean("enableGameFixes", def.enableGameFixes),
-                gamefixSoftwareRendererFmv = json.optBoolean("gamefixSoftwareRendererFmv", def.gamefixSoftwareRendererFmv),
-                gamefixSkipMpeg = json.optBoolean("gamefixSkipMpeg", def.gamefixSkipMpeg),
-                gamefixEETiming = json.optBoolean("gamefixEETiming", def.gamefixEETiming),
-                gamefixInstantDma = json.optBoolean("gamefixInstantDma", def.gamefixInstantDma),
-                gamefixBlitInternalFps = json.optBoolean("gamefixBlitInternalFps", def.gamefixBlitInternalFps),
-                gamefixOphFlag = json.optBoolean("gamefixOphFlag", def.gamefixOphFlag),
-                gamefixGifFifo = json.optBoolean("gamefixGifFifo", def.gamefixGifFifo),
-                gamefixDmaBusy = json.optBoolean("gamefixDmaBusy", def.gamefixDmaBusy),
-                gamefixVif1Stall = json.optBoolean("gamefixVif1Stall", def.gamefixVif1Stall),
-                gamefixIbit = json.optBoolean("gamefixIbit", def.gamefixIbit),
-                gamefixFullVu0Sync = json.optBoolean("gamefixFullVu0Sync", def.gamefixFullVu0Sync),
-                gamefixVuAddSub = json.optBoolean("gamefixVuAddSub", def.gamefixVuAddSub),
-                gamefixVuOverflow = json.optBoolean("gamefixVuOverflow", def.gamefixVuOverflow),
-                gamefixXgkick = json.optBoolean("gamefixXgkick", def.gamefixXgkick),
-                gamefixGoemonTlb = json.optBoolean("gamefixGoemonTlb", def.gamefixGoemonTlb),
-                gamefixVuSync = json.optBoolean("gamefixVuSync", def.gamefixVuSync),
-                skipDuplicateFrames = json.optBoolean("skipDuplicateFrames", def.skipDuplicateFrames),
-                eeFpuRoundMode = json.optInt("eeFpuRoundMode", def.eeFpuRoundMode),
-                vu0RoundMode = json.optInt("vu0RoundMode", def.vu0RoundMode),
-                vu1RoundMode = json.optInt("vu1RoundMode", def.vu1RoundMode),
-                screenOffsets = json.optBoolean("screenOffsets", def.screenOffsets),
-                showOverscan = json.optBoolean("showOverscan", def.showOverscan),
-                antiBlur = json.optBoolean("antiBlur", def.antiBlur),
-                disableInterlaceOffset = json.optBoolean("disableInterlaceOffset", def.disableInterlaceOffset),
-                syncToHostRefresh = json.optBoolean("syncToHostRefresh", def.syncToHostRefresh),
-                disableFramebufferFetch = json.optBoolean("disableFramebufferFetch", def.disableFramebufferFetch),
-                hwRov = json.optBoolean("hwRov", def.hwRov),
-                hwAa1 = json.optBoolean("hwAa1", def.hwAa1),
-                hwAat = false,
-                adrenoFbFetch = json.optBoolean("adrenoFbFetch", def.adrenoFbFetch),
-                coalesceRenderPasses = json.optBoolean("coalesceRenderPasses", def.coalesceRenderPasses),
-                forceMaliFbFetch = json.optBoolean("forceMaliFbFetch", def.forceMaliFbFetch),
-                useAngleOpenGL = json.optBoolean("useAngleOpenGL", def.useAngleOpenGL),
-                overrideTextureBarriers = json.optInt("overrideTextureBarriers", def.overrideTextureBarriers),
-                gsBackThreadMode = json.optInt("gsBackThreadMode", def.gsBackThreadMode),
-                disableVertexShaderExpand = json.optBoolean("disableVertexShaderExpand", def.disableVertexShaderExpand),
-                useBlitSwapChain = json.optBoolean("useBlitSwapChain", def.useBlitSwapChain),
-                disableShaderCache = json.optBoolean("disableShaderCache", def.disableShaderCache),
-                hwAccurateAlphaTest = json.optBoolean(
-                    "hwAccurateAlphaTest",
-                    json.optBoolean("hwAat", def.hwAccurateAlphaTest),
+                cpu = CpuSettings(
+                    eeCycleRate = json.optInt("eeCycleRate", def.cpu.eeCycleRate),
+                    eeCycleSkip = json.optInt("eeCycleSkip", def.cpu.eeCycleSkip),
+                    eeClampMode = json.optInt("eeClampMode", def.cpu.eeClampMode),
+                    vuClampMode = json.optInt("vuClampMode", def.cpu.vuClampMode),
+                    vu1ClampMode = json.optInt("vu1ClampMode", def.cpu.vu1ClampMode),
+                    mtvu = json.optBoolean("mtvu", def.cpu.mtvu),
+                    vu1Instant = json.optBoolean("vu1Instant", def.cpu.vu1Instant),
+                    vuFlagHack = json.optBoolean("vuFlagHack", def.cpu.vuFlagHack),
+                    fastCDVD = json.optBoolean("fastCDVD", def.cpu.fastCDVD),
+                    intcStat = json.optBoolean("intcStat", def.cpu.intcStat),
+                    waitLoop = json.optBoolean("waitLoop", def.cpu.waitLoop),
+                    vuNeonFusions = json.optBoolean("vuNeonFusions", def.cpu.vuNeonFusions),
+                    vuDeferredWrites = json.optBoolean("vuDeferredWrites", def.cpu.vuDeferredWrites),
+                    vuSkipStallSim = json.optBoolean("vuSkipStallSim", def.cpu.vuSkipStallSim),
+                    recEE = json.optBoolean("recEE", def.cpu.recEE),
+                    recIOP = json.optBoolean("recIOP", def.cpu.recIOP),
+                    recVU0 = json.optBoolean("recVU0", def.cpu.recVU0),
+                    recVU1 = json.optBoolean("recVU1", def.cpu.recVU1),
+                    enableFastmem = json.optBoolean("enableFastmem", def.cpu.enableFastmem),
+                    useMacEE = true,
+                    useMacIOP = true,
+                    useMacVU0 = true,
+                    useMacVU1 = true,
+                    vu1InlineFmacStall = json.optBoolean("vu1InlineFmacStall", def.cpu.vu1InlineFmacStall),
+                    vu1CrossBlockPState = json.optBoolean("vu1CrossBlockPState", def.cpu.vu1CrossBlockPState),
+                    vu1InlineDrainTestPipes = json.optBoolean("vu1InlineDrainTestPipes", def.cpu.vu1InlineDrainTestPipes),
+                    vu1FmacInstanceRouting = json.optBoolean("vu1FmacInstanceRouting", def.cpu.vu1FmacInstanceRouting),
                 ),
-                skipDrawStart = json.optInt("skipDrawStart", def.skipDrawStart),
-                skipDrawEnd = json.optInt("skipDrawEnd", def.skipDrawEnd),
-                spinGpuReadbacks = json.optBoolean("spinGpuReadbacks", def.spinGpuReadbacks),
-                spinCpuReadbacks = json.optBoolean("spinCpuReadbacks", def.spinCpuReadbacks),
-                integerScaling = json.optBoolean("integerScaling", def.integerScaling),
-                cropLeft = json.optInt("cropLeft", def.cropLeft),
-                displayZoom = json.optInt("displayZoom", def.displayZoom),
-                cropTop = json.optInt("cropTop", def.cropTop),
-                cropRight = json.optInt("cropRight", def.cropRight),
-                cropBottom = json.optInt("cropBottom", def.cropBottom),
-                dithering = json.optInt("dithering", def.dithering),
-                vsyncQueueSize = json.optInt("vsyncQueueSize", def.vsyncQueueSize),
-                hwScaler = json.optInt("hwScaler", def.hwScaler),
-                screenResOverride = json.optString("screenResOverride", def.screenResOverride).ifEmpty { def.screenResOverride },
-                autoFlushSw = json.optBoolean("autoFlushSw", def.autoFlushSw),
-                mipmapSw = json.optBoolean("mipmapSw", def.mipmapSw),
-                swThreads = json.optInt("swThreads", def.swThreads),
-                swThreadsHeight = json.optInt("swThreadsHeight", def.swThreadsHeight),
-                aspectRatio = json.optInt("aspectRatio", def.aspectRatio),
-                fmvAspectRatio = json.optInt("fmvAspectRatio", def.fmvAspectRatio),
-                customAspectRatio = json.optDouble("customAspectRatio", def.customAspectRatio.toDouble()).toFloat(),
-                deinterlaceMode = json.optInt("deinterlaceMode", def.deinterlaceMode),
-                dev9EthEnable = json.optBoolean("dev9EthEnable", def.dev9EthEnable),
-                dev9EthApi = json.optString("dev9EthApi", def.dev9EthApi).ifEmpty { def.dev9EthApi },
-                localLinkHost = json.optBoolean("localLinkHost", def.localLinkHost),
-                localLinkAddress = json.optString("localLinkAddress", def.localLinkAddress),
-                localLinkPort = json.optInt("localLinkPort", def.localLinkPort),
-                localLinkPeerId = json.optInt("localLinkPeerId", def.localLinkPeerId),
-                localLinkRoomCode = json.optString("localLinkRoomCode", def.localLinkRoomCode),
-                dev9EthDevice = json.optString("dev9EthDevice", def.dev9EthDevice).ifEmpty { def.dev9EthDevice },
-                dev9EthLogDhcp = json.optBoolean("dev9EthLogDhcp", def.dev9EthLogDhcp),
-                dev9EthLogDns = json.optBoolean("dev9EthLogDns", def.dev9EthLogDns),
-                dev9InterceptDhcp = json.optBoolean("dev9InterceptDhcp", def.dev9InterceptDhcp),
-                dev9Ps2Ip = json.optString("dev9Ps2Ip", def.dev9Ps2Ip).ifEmpty { def.dev9Ps2Ip },
-                dev9Mask = json.optString("dev9Mask", def.dev9Mask).ifEmpty { def.dev9Mask },
-                dev9Gateway = json.optString("dev9Gateway", def.dev9Gateway).ifEmpty { def.dev9Gateway },
-                dev9Dns1 = json.optString("dev9Dns1", def.dev9Dns1).ifEmpty { def.dev9Dns1 },
-                dev9Dns2 = json.optString("dev9Dns2", def.dev9Dns2).ifEmpty { def.dev9Dns2 },
-                dev9AutoMask = json.optBoolean("dev9AutoMask", def.dev9AutoMask),
-                dev9AutoGateway = json.optBoolean("dev9AutoGateway", def.dev9AutoGateway),
-                dev9ModeDns1 = json.optString("dev9ModeDns1", def.dev9ModeDns1).ifEmpty { def.dev9ModeDns1 },
-                dev9ModeDns2 = json.optString("dev9ModeDns2", def.dev9ModeDns2).ifEmpty { def.dev9ModeDns2 },
-                dev9EthHosts = json.optJSONArray("dev9EthHosts")?.let { arr ->
+                frameLimit = FrameLimitSettings(
+                    frameLimitEnable = json.optBoolean("frameLimitEnable", def.frameLimit.frameLimitEnable),
+                    nominalSpeedPercent = json.optInt("nominalSpeedPercent", def.frameLimit.nominalSpeedPercent),
+                    fpsLimit = json.optInt("fpsLimit", def.frameLimit.fpsLimit),
+                    frameSkip = json.optInt("frameSkip", def.frameLimit.frameSkip),
+                ),
+                audio = AudioSettings(
+                    audioVolume = json.optInt("audioVolume", def.audio.audioVolume),
+                    audioMuted = json.optBoolean("audioMuted", def.audio.audioMuted),
+                    audioSwapChannels = json.optBoolean("audioSwapChannels", def.audio.audioSwapChannels),
+                    audioTimeStretch = json.optBoolean("audioTimeStretch", def.audio.audioTimeStretch),
+                    audioBufferMs = json.optInt("audioBufferMs", def.audio.audioBufferMs),
+                    audioOutputLatencyMs = json.optInt("audioOutputLatencyMs", def.audio.audioOutputLatencyMs),
+                    audioFastForwardVolume = json.optInt("audioFastForwardVolume", def.audio.audioFastForwardVolume),
+                    spu2NeonReverb = json.optBoolean("spu2NeonReverb", def.audio.spu2NeonReverb),
+                    audioOpenSLES = json.optBoolean("audioOpenSLES", def.audio.audioOpenSLES),
+                    spu2LightweightMix = json.optBoolean("spu2LightweightMix", def.audio.spu2LightweightMix),
+                ),
+                emuCore = EmuCoreSettings(
+                    enablePatches = json.optBoolean("enablePatches", def.emuCore.enablePatches),
+                    enableCheats = json.optBoolean("enableCheats", def.emuCore.enableCheats),
+                    enableWideScreenPatches = json.optBoolean("enableWideScreenPatches", def.emuCore.enableWideScreenPatches),
+                    enableNoInterlacingPatches = json.optBoolean("enableNoInterlacingPatches", def.emuCore.enableNoInterlacingPatches),
+                    enableFastBoot = json.optBoolean("enableFastBoot", def.emuCore.enableFastBoot),
+                    hostFs = json.optBoolean("hostFs", def.emuCore.hostFs),
+                    achievements = AchievementsSettings(
+                    enabled = json.optBoolean("achievementsEnabled", def.emuCore.achievements.enabled),
+                    hardcore = json.optBoolean("achievementsHardcore", def.emuCore.achievements.hardcore),
+                    notifications = json.optBoolean("achievementsNotifications", def.emuCore.achievements.notifications),
+                    leaderboardNotifications = json.optBoolean("achievementsLeaderboardNotifications", def.emuCore.achievements.leaderboardNotifications),
+                    overlays = json.optBoolean("achievementsOverlays", def.emuCore.achievements.overlays),
+                    lbOverlays = json.optBoolean("achievementsLbOverlays", def.emuCore.achievements.lbOverlays),
+                    soundEffects = json.optBoolean("achievementsSoundEffects", def.emuCore.achievements.soundEffects),
+                    encoreMode = json.optBoolean("achievementsEncoreMode", def.emuCore.achievements.encoreMode),
+                    spectatorMode = json.optBoolean("achievementsSpectatorMode", def.emuCore.achievements.spectatorMode),
+                    unofficialTestMode = json.optBoolean("achievementsUnofficialTestMode", def.emuCore.achievements.unofficialTestMode),
+                    notificationsDuration = json.optInt("achievementsNotificationsDuration", def.emuCore.achievements.notificationsDuration),
+                    leaderboardsDuration = json.optInt("achievementsLeaderboardsDuration", def.emuCore.achievements.leaderboardsDuration),
+                    notificationPosition = json.optInt("achievementsNotificationPosition", def.emuCore.achievements.notificationPosition),
+                    overlayPosition = json.optInt("achievementsOverlayPosition", def.emuCore.achievements.overlayPosition),
+                    notificationScale = json.optInt("achievementsNotificationScale", def.emuCore.achievements.notificationScale),
+                ),
+                    pineEnabled = json.optBoolean("pineEnabled", def.emuCore.pineEnabled),
+                    pineSlot = json.optInt("pineSlot", def.emuCore.pineSlot),
+                    enableGameFixes = json.optBoolean("enableGameFixes", def.emuCore.enableGameFixes),
+                    gamefixSoftwareRendererFmv = json.optBoolean("gamefixSoftwareRendererFmv", def.emuCore.gamefixSoftwareRendererFmv),
+                    gamefixSkipMpeg = json.optBoolean("gamefixSkipMpeg", def.emuCore.gamefixSkipMpeg),
+                    gamefixEETiming = json.optBoolean("gamefixEETiming", def.emuCore.gamefixEETiming),
+                    gamefixInstantDma = json.optBoolean("gamefixInstantDma", def.emuCore.gamefixInstantDma),
+                    gamefixBlitInternalFps = json.optBoolean("gamefixBlitInternalFps", def.emuCore.gamefixBlitInternalFps),
+                    gamefixOphFlag = json.optBoolean("gamefixOphFlag", def.emuCore.gamefixOphFlag),
+                    gamefixGifFifo = json.optBoolean("gamefixGifFifo", def.emuCore.gamefixGifFifo),
+                    gamefixDmaBusy = json.optBoolean("gamefixDmaBusy", def.emuCore.gamefixDmaBusy),
+                    gamefixVif1Stall = json.optBoolean("gamefixVif1Stall", def.emuCore.gamefixVif1Stall),
+                    gamefixIbit = json.optBoolean("gamefixIbit", def.emuCore.gamefixIbit),
+                    gamefixFullVu0Sync = json.optBoolean("gamefixFullVu0Sync", def.emuCore.gamefixFullVu0Sync),
+                    gamefixVuAddSub = json.optBoolean("gamefixVuAddSub", def.emuCore.gamefixVuAddSub),
+                    gamefixVuOverflow = json.optBoolean("gamefixVuOverflow", def.emuCore.gamefixVuOverflow),
+                    gamefixXgkick = json.optBoolean("gamefixXgkick", def.emuCore.gamefixXgkick),
+                    gamefixGoemonTlb = json.optBoolean("gamefixGoemonTlb", def.emuCore.gamefixGoemonTlb),
+                    gamefixVuSync = json.optBoolean("gamefixVuSync", def.emuCore.gamefixVuSync),
+                    skipDuplicateFrames = json.optBoolean("skipDuplicateFrames", def.emuCore.skipDuplicateFrames),
+                    eeFpuRoundMode = json.optInt("eeFpuRoundMode", def.emuCore.eeFpuRoundMode),
+                    vu0RoundMode = json.optInt("vu0RoundMode", def.emuCore.vu0RoundMode),
+                    vu1RoundMode = json.optInt("vu1RoundMode", def.emuCore.vu1RoundMode),
+                ),
+                display = DisplaySettings(
+                    screenOffsets = json.optBoolean("screenOffsets", def.display.screenOffsets),
+                    showOverscan = json.optBoolean("showOverscan", def.display.showOverscan),
+                    antiBlur = json.optBoolean("antiBlur", def.display.antiBlur),
+                    disableInterlaceOffset = json.optBoolean("disableInterlaceOffset", def.display.disableInterlaceOffset),
+                    syncToHostRefresh = json.optBoolean("syncToHostRefresh", def.display.syncToHostRefresh),
+                    disableFramebufferFetch = json.optBoolean("disableFramebufferFetch", def.display.disableFramebufferFetch),
+                    hwRov = json.optBoolean("hwRov", def.display.hwRov),
+                    hwAa1 = json.optBoolean("hwAa1", def.display.hwAa1),
+                    hwAat = false,
+                    adrenoFbFetch = json.optBoolean("adrenoFbFetch", def.display.adrenoFbFetch),
+                    coalesceRenderPasses = json.optBoolean("coalesceRenderPasses", def.display.coalesceRenderPasses),
+                    forceMaliFbFetch = json.optBoolean("forceMaliFbFetch", def.display.forceMaliFbFetch),
+                    useAngleOpenGL = json.optBoolean("useAngleOpenGL", def.display.useAngleOpenGL),
+                    overrideTextureBarriers = json.optInt("overrideTextureBarriers", def.display.overrideTextureBarriers),
+                    gsBackThreadMode = json.optInt("gsBackThreadMode", def.display.gsBackThreadMode),
+                    disableVertexShaderExpand = json.optBoolean("disableVertexShaderExpand", def.display.disableVertexShaderExpand),
+                    useBlitSwapChain = json.optBoolean("useBlitSwapChain", def.display.useBlitSwapChain),
+                    disableShaderCache = json.optBoolean("disableShaderCache", def.display.disableShaderCache),
+                    hwAccurateAlphaTest = json.optBoolean(
+                    "hwAccurateAlphaTest",
+                    json.optBoolean("hwAat", def.display.hwAccurateAlphaTest),
+                ),
+                    vsyncEnable = json.optBoolean("vsyncEnable", def.display.vsyncEnable),
+                ),
+                hwFixes = HwFixesSettings(
+                    skipDrawStart = json.optInt("skipDrawStart", def.hwFixes.skipDrawStart),
+                    skipDrawEnd = json.optInt("skipDrawEnd", def.hwFixes.skipDrawEnd),
+                    spinGpuReadbacks = json.optBoolean("spinGpuReadbacks", def.hwFixes.spinGpuReadbacks),
+                    spinCpuReadbacks = json.optBoolean("spinCpuReadbacks", def.hwFixes.spinCpuReadbacks),
+                    integerScaling = json.optBoolean("integerScaling", def.hwFixes.integerScaling),
+                    cropLeft = json.optInt("cropLeft", def.hwFixes.cropLeft),
+                    displayZoom = json.optInt("displayZoom", def.hwFixes.displayZoom),
+                    cropTop = json.optInt("cropTop", def.hwFixes.cropTop),
+                    cropRight = json.optInt("cropRight", def.hwFixes.cropRight),
+                    cropBottom = json.optInt("cropBottom", def.hwFixes.cropBottom),
+                    dithering = json.optInt("dithering", def.hwFixes.dithering),
+                    vsyncQueueSize = json.optInt("vsyncQueueSize", def.hwFixes.vsyncQueueSize),
+                    autoFlush = json.optInt("autoFlush", def.hwFixes.autoFlush),
+                    halfPixelOffset = json.optInt("halfPixelOffset", def.hwFixes.halfPixelOffset),
+                    limit24BitDepth = json.optInt("limit24BitDepth", def.hwFixes.limit24BitDepth),
+                    manualUserHacks = json.optBoolean("manualUserHacks", def.hwFixes.manualUserHacks),
+                    textureInsideRt = json.optInt("textureInsideRt", def.hwFixes.textureInsideRt),
+                    nativeScaling = json.optInt("nativeScaling", def.hwFixes.nativeScaling),
+                    roundSprite = json.optInt("roundSprite", def.hwFixes.roundSprite),
+                    bilinearUpscale = json.optInt("bilinearUpscale", def.hwFixes.bilinearUpscale),
+                    gpuTargetClut = json.optInt("gpuTargetClut", def.hwFixes.gpuTargetClut),
+                    cpuSpriteRenderBw = json.optInt("cpuSpriteRenderBw", def.hwFixes.cpuSpriteRenderBw),
+                    cpuSpriteRenderLevel = json.optInt("cpuSpriteRenderLevel", def.hwFixes.cpuSpriteRenderLevel),
+                    alignSprite = json.optBoolean("alignSprite", def.hwFixes.alignSprite),
+                    mergeSprite = json.optBoolean("mergeSprite", def.hwFixes.mergeSprite),
+                    forceEvenSpritePosition = json.optBoolean("forceEvenSpritePosition", def.hwFixes.forceEvenSpritePosition),
+                    unscaledPaletteDraw = json.optBoolean("unscaledPaletteDraw", def.hwFixes.unscaledPaletteDraw),
+                    textureOffsetX = json.optInt("textureOffsetX", def.hwFixes.textureOffsetX),
+                    textureOffsetY = json.optInt("textureOffsetY", def.hwFixes.textureOffsetY),
+                    gpuPaletteConversion = json.optBoolean("gpuPaletteConversion", def.hwFixes.gpuPaletteConversion),
+                    cpuFramebufferConversion = json.optBoolean("cpuFramebufferConversion", def.hwFixes.cpuFramebufferConversion),
+                    readTargetsWhenClosing = json.optBoolean("readTargetsWhenClosing", def.hwFixes.readTargetsWhenClosing),
+                    disableDepthEmulation = json.optBoolean("disableDepthEmulation", def.hwFixes.disableDepthEmulation),
+                    disablePartialInvalidation = json.optBoolean("disablePartialInvalidation", def.hwFixes.disablePartialInvalidation),
+                    disableSafeFeatures = json.optBoolean("disableSafeFeatures", def.hwFixes.disableSafeFeatures),
+                    disableRenderFixes = json.optBoolean("disableRenderFixes", def.hwFixes.disableRenderFixes),
+                    preloadFrameData = json.optBoolean("preloadFrameData", def.hwFixes.preloadFrameData),
+                    estimateTextureRegion = json.optBoolean("estimateTextureRegion", def.hwFixes.estimateTextureRegion),
+                    drawBuffering = json.optBoolean("drawBuffering", def.hwFixes.drawBuffering),
+                    cpuClutRender = json.optInt("cpuClutRender", def.hwFixes.cpuClutRender),
+                    triFilter = json.optInt("triFilter", def.hwFixes.triFilter),
+                    maxAnisotropy = json.optInt("maxAnisotropy", def.hwFixes.maxAnisotropy),
+                    gpuProfile = json.optInt("gpuProfile", def.hwFixes.gpuProfile),
+                ),
+                output = OutputSettings(
+                    renderer = json.optString("renderer", def.output.renderer),
+                    upscaleFloat = json.optDouble("upscaleFloat", def.output.upscaleFloat.toDouble()).toFloat(),
+                    customDriverId = json.optString("customDriverId", def.output.customDriverId),
+                    orientation = json.optInt("orientation", def.output.orientation),
+                    portraitRenderTop = json.optBoolean("portraitRenderTop", def.output.portraitRenderTop),
+                    landscapeRenderTop = json.optBoolean("landscapeRenderTop", def.output.landscapeRenderTop),
+                    autoProgressiveScan = json.optBoolean("autoProgressiveScan", def.output.autoProgressiveScan),
+                    affinityMode = json.optInt("affinityMode", def.output.affinityMode),
+                    framerateNtsc = json.optDouble("framerateNtsc", def.output.framerateNtsc.toDouble()).toFloat(),
+                    frameratePal = json.optDouble("frameratePal", def.output.frameratePal.toDouble()).toFloat(),
+                    hwScaler = json.optInt("hwScaler", def.output.hwScaler),
+                    screenResOverride = json.optString("screenResOverride", def.output.screenResOverride).ifEmpty { def.output.screenResOverride },
+                    autoFlushSw = json.optBoolean("autoFlushSw", def.output.autoFlushSw),
+                    mipmapSw = json.optBoolean("mipmapSw", def.output.mipmapSw),
+                    swThreads = json.optInt("swThreads", def.output.swThreads),
+                    swThreadsHeight = json.optInt("swThreadsHeight", def.output.swThreadsHeight),
+                    aspectRatio = json.optInt("aspectRatio", def.output.aspectRatio),
+                    fmvAspectRatio = json.optInt("fmvAspectRatio", def.output.fmvAspectRatio),
+                    customAspectRatio = json.optDouble("customAspectRatio", def.output.customAspectRatio.toDouble()).toFloat(),
+                    deinterlaceMode = json.optInt("deinterlaceMode", def.output.deinterlaceMode),
+                ),
+                network = NetworkSettings(
+                    dev9EthEnable = json.optBoolean("dev9EthEnable", def.network.dev9EthEnable),
+                    dev9EthApi = json.optString("dev9EthApi", def.network.dev9EthApi).ifEmpty { def.network.dev9EthApi },
+                    localLinkHost = json.optBoolean("localLinkHost", def.network.localLinkHost),
+                    localLinkAddress = json.optString("localLinkAddress", def.network.localLinkAddress),
+                    localLinkPort = json.optInt("localLinkPort", def.network.localLinkPort),
+                    localLinkPeerId = json.optInt("localLinkPeerId", def.network.localLinkPeerId),
+                    localLinkRoomCode = json.optString("localLinkRoomCode", def.network.localLinkRoomCode),
+                    dev9EthDevice = json.optString("dev9EthDevice", def.network.dev9EthDevice).ifEmpty { def.network.dev9EthDevice },
+                    dev9EthLogDhcp = json.optBoolean("dev9EthLogDhcp", def.network.dev9EthLogDhcp),
+                    dev9EthLogDns = json.optBoolean("dev9EthLogDns", def.network.dev9EthLogDns),
+                    dev9InterceptDhcp = json.optBoolean("dev9InterceptDhcp", def.network.dev9InterceptDhcp),
+                    dev9Ps2Ip = json.optString("dev9Ps2Ip", def.network.dev9Ps2Ip).ifEmpty { def.network.dev9Ps2Ip },
+                    dev9Mask = json.optString("dev9Mask", def.network.dev9Mask).ifEmpty { def.network.dev9Mask },
+                    dev9Gateway = json.optString("dev9Gateway", def.network.dev9Gateway).ifEmpty { def.network.dev9Gateway },
+                    dev9Dns1 = json.optString("dev9Dns1", def.network.dev9Dns1).ifEmpty { def.network.dev9Dns1 },
+                    dev9Dns2 = json.optString("dev9Dns2", def.network.dev9Dns2).ifEmpty { def.network.dev9Dns2 },
+                    dev9AutoMask = json.optBoolean("dev9AutoMask", def.network.dev9AutoMask),
+                    dev9AutoGateway = json.optBoolean("dev9AutoGateway", def.network.dev9AutoGateway),
+                    dev9ModeDns1 = json.optString("dev9ModeDns1", def.network.dev9ModeDns1).ifEmpty { def.network.dev9ModeDns1 },
+                    dev9ModeDns2 = json.optString("dev9ModeDns2", def.network.dev9ModeDns2).ifEmpty { def.network.dev9ModeDns2 },
+                    dev9EthHosts = json.optJSONArray("dev9EthHosts")?.let { arr ->
                     (0 until arr.length()).mapNotNull { idx ->
                         arr.optJSONObject(idx)?.let { o ->
                             Dev9HostMapping(
@@ -2288,110 +2454,72 @@ data class Settings(
                             )
                         }
                     }.filter { it.url.isNotBlank() }
-                } ?: def.dev9EthHosts,
-                dev9HddEnable = json.optBoolean("dev9HddEnable", def.dev9HddEnable),
-                dev9HddFile = json.optString("dev9HddFile", def.dev9HddFile).ifEmpty { def.dev9HddFile },
-                memoryCardSlot1Enabled = json.optBoolean("memoryCardSlot1Enabled", def.memoryCardSlot1Enabled),
-                memoryCardSlot1Filename = json.optString("memoryCardSlot1Filename", def.memoryCardSlot1Filename).ifEmpty { def.memoryCardSlot1Filename },
-                biosFilename = json.optString("biosFilename", def.biosFilename),
-                memoryCardSlot2Enabled = json.optBoolean("memoryCardSlot2Enabled", def.memoryCardSlot2Enabled),
-                memoryCardSlot2Filename = json.optString("memoryCardSlot2Filename", def.memoryCardSlot2Filename).ifEmpty { def.memoryCardSlot2Filename },
-                usbKeyboard = json.optBoolean("usbKeyboard", def.usbKeyboard),
-                recEE = json.optBoolean("recEE", def.recEE),
-                recIOP = json.optBoolean("recIOP", def.recIOP),
-                recVU0 = json.optBoolean("recVU0", def.recVU0),
-                recVU1 = json.optBoolean("recVU1", def.recVU1),
-                enableFastmem = json.optBoolean("enableFastmem", def.enableFastmem),
-                useMacEE = true,
-                useMacIOP = true,
-                useMacVU0 = true,
-                useMacVU1 = true,
-                vu1InlineFmacStall = json.optBoolean("vu1InlineFmacStall", def.vu1InlineFmacStall),
-                vu1CrossBlockPState = json.optBoolean("vu1CrossBlockPState", def.vu1CrossBlockPState),
-                vu1InlineDrainTestPipes = json.optBoolean("vu1InlineDrainTestPipes", def.vu1InlineDrainTestPipes),
-                vu1FmacInstanceRouting = json.optBoolean("vu1FmacInstanceRouting", def.vu1FmacInstanceRouting),
-                hwMipmap = json.optBoolean("hwMipmap", def.hwMipmap),
-                accurateBlendingUnit = json.optInt("accurateBlendingUnit", def.accurateBlendingUnit),
-                textureFiltering = json.optInt("textureFiltering", def.textureFiltering),
-                displayBilinear = json.optInt("displayBilinear", def.displayBilinear),
-                texturePreloading = json.optInt("texturePreloading", def.texturePreloading),
-                hardwareDownloadMode = json.optInt("hardwareDownloadMode", def.hardwareDownloadMode),
-                tvShader = json.optInt("tvShader", def.tvShader),
-                shadeBoost = json.optBoolean("shadeBoost", def.shadeBoost),
-                shadeBoostBrightness = json.optInt("shadeBoostBrightness", def.shadeBoostBrightness),
-                shadeBoostContrast = json.optInt("shadeBoostContrast", def.shadeBoostContrast),
-                shadeBoostSaturation = json.optInt("shadeBoostSaturation", def.shadeBoostSaturation),
-                shadeBoostGamma = json.optInt("shadeBoostGamma", def.shadeBoostGamma),
-                fxaa = json.optBoolean("fxaa", def.fxaa),
-                shaderChainEnabled = json.optBoolean("shaderChainEnabled", def.shaderChainEnabled),
-                shaderChainPreset = json.optString("shaderChainPreset", def.shaderChainPreset),
-                shaderChainParams = json.optJSONObject("shaderChainParams")
-                    ?.let { shaderChainParamsFromJson(it) } ?: def.shaderChainParams,
-                lsfgEnabled = json.optBoolean("lsfgEnabled", def.lsfgEnabled),
-                lsfgMultiplier = json.optInt("lsfgMultiplier", def.lsfgMultiplier),
-                lsfgDllPath = json.optString("lsfgDllPath", def.lsfgDllPath),
-                lsfgPerformance = json.optBoolean("lsfgPerformance", def.lsfgPerformance),
-                lsfgFlowScale = json.optInt("lsfgFlowScale", def.lsfgFlowScale),
-                lsfgTargetRate = json.optInt("lsfgTargetRate", def.lsfgTargetRate),
-                casMode = json.optInt("casMode", def.casMode),
-                casSharpness = json.optInt("casSharpness", def.casSharpness),
-                upscaler = json.optInt("upscaler", def.upscaler),
-                fsrSharpness = json.optInt("fsrSharpness", def.fsrSharpness),
-                sgsrSharpness = json.optInt("sgsrSharpness", def.sgsrSharpness),
-                loadTextureReplacements = json.optBoolean("loadTextureReplacements", def.loadTextureReplacements),
-                loadTextureReplacementsAsync = json.optBoolean("loadTextureReplacementsAsync", def.loadTextureReplacementsAsync),
-                precacheTextureReplacements = json.optBoolean("precacheTextureReplacements", def.precacheTextureReplacements),
-                dumpReplaceableTextures = json.optBoolean("dumpReplaceableTextures", def.dumpReplaceableTextures),
-                osdShowTextureReplacements = json.optBoolean("osdShowTextureReplacements", def.osdShowTextureReplacements),
-                osdShowFps = json.optBoolean("osdShowFps", def.osdShowFps),
-                osdScale = json.optInt("osdScale", def.osdScale),
-                osdColor = json.optInt("osdColor", def.osdColor),
-                osdPosition = json.optInt("osdPosition", def.osdPosition),
-                vsyncEnable = json.optBoolean("vsyncEnable", def.vsyncEnable),
-                osdShowVps = json.optBoolean("osdShowVps", def.osdShowVps),
-                osdShowSpeed = json.optBoolean("osdShowSpeed", def.osdShowSpeed),
-                osdShowCpu = json.optBoolean("osdShowCpu", def.osdShowCpu),
-                osdShowGpu = json.optBoolean("osdShowGpu", def.osdShowGpu),
-                osdShowResolution = json.optBoolean("osdShowResolution", def.osdShowResolution),
-                osdShowGsStats = json.optBoolean("osdShowGsStats", def.osdShowGsStats),
-                osdShowFrameTimes = json.optBoolean("osdShowFrameTimes", def.osdShowFrameTimes),
-                osdShowHardwareInfo = json.optBoolean("osdShowHardwareInfo", def.osdShowHardwareInfo),
-                osdShowMessages = json.optBoolean("osdShowMessages", def.osdShowMessages),
-                osdShowGpuStats = json.optBoolean("osdShowGpuStats", def.osdShowGpuStats),
-                osdShowVersion = json.optBoolean("osdShowVersion", def.osdShowVersion),
-                osdShowSettings = json.optBoolean("osdShowSettings", def.osdShowSettings),
-                osdShowInputs = json.optBoolean("osdShowInputs", def.osdShowInputs),
-                autoFlush = json.optInt("autoFlush", def.autoFlush),
-                halfPixelOffset = json.optInt("halfPixelOffset", def.halfPixelOffset),
-                limit24BitDepth = json.optInt("limit24BitDepth", def.limit24BitDepth),
-                manualUserHacks = json.optBoolean("manualUserHacks", def.manualUserHacks),
-                textureInsideRt = json.optInt("textureInsideRt", def.textureInsideRt),
-                nativeScaling = json.optInt("nativeScaling", def.nativeScaling),
-                roundSprite = json.optInt("roundSprite", def.roundSprite),
-                bilinearUpscale = json.optInt("bilinearUpscale", def.bilinearUpscale),
-                gpuTargetClut = json.optInt("gpuTargetClut", def.gpuTargetClut),
-                cpuSpriteRenderBw = json.optInt("cpuSpriteRenderBw", def.cpuSpriteRenderBw),
-                cpuSpriteRenderLevel = json.optInt("cpuSpriteRenderLevel", def.cpuSpriteRenderLevel),
-                alignSprite = json.optBoolean("alignSprite", def.alignSprite),
-                mergeSprite = json.optBoolean("mergeSprite", def.mergeSprite),
-                forceEvenSpritePosition = json.optBoolean("forceEvenSpritePosition", def.forceEvenSpritePosition),
-                unscaledPaletteDraw = json.optBoolean("unscaledPaletteDraw", def.unscaledPaletteDraw),
-                textureOffsetX = json.optInt("textureOffsetX", def.textureOffsetX),
-                textureOffsetY = json.optInt("textureOffsetY", def.textureOffsetY),
-                gpuPaletteConversion = json.optBoolean("gpuPaletteConversion", def.gpuPaletteConversion),
-                cpuFramebufferConversion = json.optBoolean("cpuFramebufferConversion", def.cpuFramebufferConversion),
-                readTargetsWhenClosing = json.optBoolean("readTargetsWhenClosing", def.readTargetsWhenClosing),
-                disableDepthEmulation = json.optBoolean("disableDepthEmulation", def.disableDepthEmulation),
-                disablePartialInvalidation = json.optBoolean("disablePartialInvalidation", def.disablePartialInvalidation),
-                disableSafeFeatures = json.optBoolean("disableSafeFeatures", def.disableSafeFeatures),
-                disableRenderFixes = json.optBoolean("disableRenderFixes", def.disableRenderFixes),
-                preloadFrameData = json.optBoolean("preloadFrameData", def.preloadFrameData),
-                estimateTextureRegion = json.optBoolean("estimateTextureRegion", def.estimateTextureRegion),
-                drawBuffering = json.optBoolean("drawBuffering", def.drawBuffering),
-                cpuClutRender = json.optInt("cpuClutRender", def.cpuClutRender),
-                triFilter = json.optInt("triFilter", def.triFilter),
-                maxAnisotropy = json.optInt("maxAnisotropy", def.maxAnisotropy),
-                gpuProfile = json.optInt("gpuProfile", def.gpuProfile),
+                } ?: def.network.dev9EthHosts,
+                    dev9HddEnable = json.optBoolean("dev9HddEnable", def.network.dev9HddEnable),
+                    dev9HddFile = json.optString("dev9HddFile", def.network.dev9HddFile).ifEmpty { def.network.dev9HddFile },
+                ),
+                system = SystemSettings(
+                    memoryCardSlot1Enabled = json.optBoolean("memoryCardSlot1Enabled", def.system.memoryCardSlot1Enabled),
+                    memoryCardSlot1Filename = json.optString("memoryCardSlot1Filename", def.system.memoryCardSlot1Filename).ifEmpty { def.system.memoryCardSlot1Filename },
+                    biosFilename = json.optString("biosFilename", def.system.biosFilename),
+                    memoryCardSlot2Enabled = json.optBoolean("memoryCardSlot2Enabled", def.system.memoryCardSlot2Enabled),
+                    memoryCardSlot2Filename = json.optString("memoryCardSlot2Filename", def.system.memoryCardSlot2Filename).ifEmpty { def.system.memoryCardSlot2Filename },
+                    usbKeyboard = json.optBoolean("usbKeyboard", def.system.usbKeyboard),
+                ),
+                graphics = GraphicsSettings(
+                    hwMipmap = json.optBoolean("hwMipmap", def.graphics.hwMipmap),
+                    accurateBlendingUnit = json.optInt("accurateBlendingUnit", def.graphics.accurateBlendingUnit),
+                    textureFiltering = json.optInt("textureFiltering", def.graphics.textureFiltering),
+                    displayBilinear = json.optInt("displayBilinear", def.graphics.displayBilinear),
+                    texturePreloading = json.optInt("texturePreloading", def.graphics.texturePreloading),
+                    hardwareDownloadMode = json.optInt("hardwareDownloadMode", def.graphics.hardwareDownloadMode),
+                    tvShader = json.optInt("tvShader", def.graphics.tvShader),
+                    shadeBoost = json.optBoolean("shadeBoost", def.graphics.shadeBoost),
+                    shadeBoostBrightness = json.optInt("shadeBoostBrightness", def.graphics.shadeBoostBrightness),
+                    shadeBoostContrast = json.optInt("shadeBoostContrast", def.graphics.shadeBoostContrast),
+                    shadeBoostSaturation = json.optInt("shadeBoostSaturation", def.graphics.shadeBoostSaturation),
+                    shadeBoostGamma = json.optInt("shadeBoostGamma", def.graphics.shadeBoostGamma),
+                    fxaa = json.optBoolean("fxaa", def.graphics.fxaa),
+                    shaderChainEnabled = json.optBoolean("shaderChainEnabled", def.graphics.shaderChainEnabled),
+                    shaderChainPreset = json.optString("shaderChainPreset", def.graphics.shaderChainPreset),
+                    shaderChainParams = json.optJSONObject("shaderChainParams")
+                    ?.let { shaderChainParamsFromJson(it) } ?: def.graphics.shaderChainParams,
+                    lsfgEnabled = json.optBoolean("lsfgEnabled", def.graphics.lsfgEnabled),
+                    lsfgMultiplier = json.optInt("lsfgMultiplier", def.graphics.lsfgMultiplier),
+                    lsfgDllPath = json.optString("lsfgDllPath", def.graphics.lsfgDllPath),
+                    lsfgPerformance = json.optBoolean("lsfgPerformance", def.graphics.lsfgPerformance),
+                    lsfgFlowScale = json.optInt("lsfgFlowScale", def.graphics.lsfgFlowScale),
+                    lsfgTargetRate = json.optInt("lsfgTargetRate", def.graphics.lsfgTargetRate),
+                    casMode = json.optInt("casMode", def.graphics.casMode),
+                    casSharpness = json.optInt("casSharpness", def.graphics.casSharpness),
+                    upscaler = json.optInt("upscaler", def.graphics.upscaler),
+                    fsrSharpness = json.optInt("fsrSharpness", def.graphics.fsrSharpness),
+                    sgsrSharpness = json.optInt("sgsrSharpness", def.graphics.sgsrSharpness),
+                    loadTextureReplacements = json.optBoolean("loadTextureReplacements", def.graphics.loadTextureReplacements),
+                    loadTextureReplacementsAsync = json.optBoolean("loadTextureReplacementsAsync", def.graphics.loadTextureReplacementsAsync),
+                    precacheTextureReplacements = json.optBoolean("precacheTextureReplacements", def.graphics.precacheTextureReplacements),
+                    dumpReplaceableTextures = json.optBoolean("dumpReplaceableTextures", def.graphics.dumpReplaceableTextures),
+                    osdShowTextureReplacements = json.optBoolean("osdShowTextureReplacements", def.graphics.osdShowTextureReplacements),
+                ),
+                osd = OsdSettings(
+                    osdShowFps = json.optBoolean("osdShowFps", def.osd.osdShowFps),
+                    osdScale = json.optInt("osdScale", def.osd.osdScale),
+                    osdColor = json.optInt("osdColor", def.osd.osdColor),
+                    osdPosition = json.optInt("osdPosition", def.osd.osdPosition),
+                    osdShowVps = json.optBoolean("osdShowVps", def.osd.osdShowVps),
+                    osdShowSpeed = json.optBoolean("osdShowSpeed", def.osd.osdShowSpeed),
+                    osdShowCpu = json.optBoolean("osdShowCpu", def.osd.osdShowCpu),
+                    osdShowGpu = json.optBoolean("osdShowGpu", def.osd.osdShowGpu),
+                    osdShowResolution = json.optBoolean("osdShowResolution", def.osd.osdShowResolution),
+                    osdShowGsStats = json.optBoolean("osdShowGsStats", def.osd.osdShowGsStats),
+                    osdShowFrameTimes = json.optBoolean("osdShowFrameTimes", def.osd.osdShowFrameTimes),
+                    osdShowHardwareInfo = json.optBoolean("osdShowHardwareInfo", def.osd.osdShowHardwareInfo),
+                    osdShowMessages = json.optBoolean("osdShowMessages", def.osd.osdShowMessages),
+                    osdShowGpuStats = json.optBoolean("osdShowGpuStats", def.osd.osdShowGpuStats),
+                    osdShowVersion = json.optBoolean("osdShowVersion", def.osd.osdShowVersion),
+                    osdShowSettings = json.optBoolean("osdShowSettings", def.osd.osdShowSettings),
+                    osdShowInputs = json.optBoolean("osdShowInputs", def.osd.osdShowInputs),
+                ),
             )
         }
 
@@ -2406,149 +2534,149 @@ data class Settings(
          */
         fun diff(base: Settings, current: Settings): JSONObject {
             val j = JSONObject()
-            if (current.eeCycleRate         != base.eeCycleRate)         j.put("eeCycleRate", current.eeCycleRate)
-            if (current.eeCycleSkip         != base.eeCycleSkip)         j.put("eeCycleSkip", current.eeCycleSkip)
-            if (current.eeClampMode         != base.eeClampMode)         j.put("eeClampMode", current.eeClampMode)
-            if (current.vuClampMode         != base.vuClampMode)         j.put("vuClampMode", current.vuClampMode)
-            if (current.vu1ClampMode        != base.vu1ClampMode)        j.put("vu1ClampMode", current.vu1ClampMode)
-            if (current.mtvu                != base.mtvu)                j.put("mtvu", current.mtvu)
-            if (current.vu1Instant          != base.vu1Instant)          j.put("vu1Instant", current.vu1Instant)
-            if (current.vuFlagHack          != base.vuFlagHack)          j.put("vuFlagHack", current.vuFlagHack)
-            if (current.fastCDVD            != base.fastCDVD)            j.put("fastCDVD", current.fastCDVD)
-            if (current.intcStat            != base.intcStat)            j.put("intcStat", current.intcStat)
-            if (current.waitLoop            != base.waitLoop)            j.put("waitLoop", current.waitLoop)
-            if (current.vuNeonFusions       != base.vuNeonFusions)       j.put("vuNeonFusions", current.vuNeonFusions)
-            if (current.vuDeferredWrites    != base.vuDeferredWrites)    j.put("vuDeferredWrites", current.vuDeferredWrites)
-            if (current.vuSkipStallSim      != base.vuSkipStallSim)      j.put("vuSkipStallSim", current.vuSkipStallSim)
-            if (current.frameLimitEnable    != base.frameLimitEnable)    j.put("frameLimitEnable", current.frameLimitEnable)
-            if (current.nominalSpeedPercent != base.nominalSpeedPercent) j.put("nominalSpeedPercent", current.nominalSpeedPercent)
-            if (current.fpsLimit            != base.fpsLimit)            j.put("fpsLimit", current.fpsLimit)
-            if (current.frameSkip != base.frameSkip) j.put("frameSkip", current.frameSkip)
-            if (current.audioVolume != base.audioVolume) j.put("audioVolume", current.audioVolume)
-            if (current.audioMuted != base.audioMuted) j.put("audioMuted", current.audioMuted)
-            if (current.audioSwapChannels != base.audioSwapChannels) j.put("audioSwapChannels", current.audioSwapChannels)
-            if (current.audioTimeStretch != base.audioTimeStretch) j.put("audioTimeStretch", current.audioTimeStretch)
-            if (current.audioBufferMs != base.audioBufferMs) j.put("audioBufferMs", current.audioBufferMs)
-            if (current.audioOutputLatencyMs != base.audioOutputLatencyMs) j.put("audioOutputLatencyMs", current.audioOutputLatencyMs)
-            if (current.audioFastForwardVolume != base.audioFastForwardVolume) j.put("audioFastForwardVolume", current.audioFastForwardVolume)
-            if (current.spu2NeonReverb != base.spu2NeonReverb) j.put("spu2NeonReverb", current.spu2NeonReverb)
-            if (current.audioOpenSLES != base.audioOpenSLES) j.put("audioOpenSLES", current.audioOpenSLES)
-            if (current.spu2LightweightMix != base.spu2LightweightMix) j.put("spu2LightweightMix", current.spu2LightweightMix)
-            if (current.renderer != base.renderer) j.put("renderer", current.renderer)
-            if (current.upscaleFloat != base.upscaleFloat) j.put("upscaleFloat", current.upscaleFloat.toDouble())
-            if (current.customDriverId != base.customDriverId) j.put("customDriverId", current.customDriverId)
-            if (current.orientation != base.orientation) j.put("orientation", current.orientation)
-            if (current.portraitRenderTop != base.portraitRenderTop) j.put("portraitRenderTop", current.portraitRenderTop)
-            if (current.landscapeRenderTop != base.landscapeRenderTop) j.put("landscapeRenderTop", current.landscapeRenderTop)
-            if (current.autoProgressiveScan != base.autoProgressiveScan) j.put("autoProgressiveScan", current.autoProgressiveScan)
-            if (current.affinityMode != base.affinityMode) j.put("affinityMode", current.affinityMode)
-            if (current.framerateNtsc != base.framerateNtsc) j.put("framerateNtsc", current.framerateNtsc.toDouble())
-            if (current.frameratePal != base.frameratePal) j.put("frameratePal", current.frameratePal.toDouble())
-            if (current.enablePatches != base.enablePatches) j.put("enablePatches", current.enablePatches)
-            if (current.enableCheats != base.enableCheats) j.put("enableCheats", current.enableCheats)
-            if (current.enableWideScreenPatches != base.enableWideScreenPatches) j.put("enableWideScreenPatches", current.enableWideScreenPatches)
-            if (current.enableNoInterlacingPatches != base.enableNoInterlacingPatches) j.put("enableNoInterlacingPatches", current.enableNoInterlacingPatches)
-            if (current.enableFastBoot != base.enableFastBoot) j.put("enableFastBoot", current.enableFastBoot)
-            if (current.hostFs != base.hostFs) j.put("hostFs", current.hostFs)
-            if (current.achievementsEnabled != base.achievementsEnabled) j.put("achievementsEnabled", current.achievementsEnabled)
-            if (current.achievementsHardcore != base.achievementsHardcore) j.put("achievementsHardcore", current.achievementsHardcore)
-            if (current.achievementsNotifications != base.achievementsNotifications) j.put("achievementsNotifications", current.achievementsNotifications)
-            if (current.achievementsLeaderboardNotifications != base.achievementsLeaderboardNotifications) j.put("achievementsLeaderboardNotifications", current.achievementsLeaderboardNotifications)
-            if (current.achievementsOverlays != base.achievementsOverlays) j.put("achievementsOverlays", current.achievementsOverlays)
-            if (current.achievementsLbOverlays != base.achievementsLbOverlays) j.put("achievementsLbOverlays", current.achievementsLbOverlays)
-            if (current.achievementsSoundEffects != base.achievementsSoundEffects) j.put("achievementsSoundEffects", current.achievementsSoundEffects)
-            if (current.achievementsEncoreMode != base.achievementsEncoreMode) j.put("achievementsEncoreMode", current.achievementsEncoreMode)
-            if (current.achievementsSpectatorMode != base.achievementsSpectatorMode) j.put("achievementsSpectatorMode", current.achievementsSpectatorMode)
-            if (current.achievementsUnofficialTestMode != base.achievementsUnofficialTestMode) j.put("achievementsUnofficialTestMode", current.achievementsUnofficialTestMode)
-            if (current.achievementsNotificationsDuration != base.achievementsNotificationsDuration) j.put("achievementsNotificationsDuration", current.achievementsNotificationsDuration)
-            if (current.achievementsLeaderboardsDuration != base.achievementsLeaderboardsDuration) j.put("achievementsLeaderboardsDuration", current.achievementsLeaderboardsDuration)
-            if (current.achievementsNotificationPosition != base.achievementsNotificationPosition) j.put("achievementsNotificationPosition", current.achievementsNotificationPosition)
-            if (current.achievementsOverlayPosition != base.achievementsOverlayPosition) j.put("achievementsOverlayPosition", current.achievementsOverlayPosition)
-            if (current.achievementsNotificationScale != base.achievementsNotificationScale) j.put("achievementsNotificationScale", current.achievementsNotificationScale)
-            if (current.enableGameFixes != base.enableGameFixes) j.put("enableGameFixes", current.enableGameFixes)
-            if (current.gamefixSoftwareRendererFmv != base.gamefixSoftwareRendererFmv) j.put("gamefixSoftwareRendererFmv", current.gamefixSoftwareRendererFmv)
-            if (current.gamefixSkipMpeg != base.gamefixSkipMpeg) j.put("gamefixSkipMpeg", current.gamefixSkipMpeg)
-            if (current.gamefixEETiming != base.gamefixEETiming) j.put("gamefixEETiming", current.gamefixEETiming)
-            if (current.gamefixInstantDma != base.gamefixInstantDma) j.put("gamefixInstantDma", current.gamefixInstantDma)
-            if (current.gamefixBlitInternalFps != base.gamefixBlitInternalFps) j.put("gamefixBlitInternalFps", current.gamefixBlitInternalFps)
-            if (current.gamefixOphFlag       != base.gamefixOphFlag)       j.put("gamefixOphFlag", current.gamefixOphFlag)
-            if (current.gamefixGifFifo       != base.gamefixGifFifo)       j.put("gamefixGifFifo", current.gamefixGifFifo)
-            if (current.gamefixDmaBusy       != base.gamefixDmaBusy)       j.put("gamefixDmaBusy", current.gamefixDmaBusy)
-            if (current.gamefixVif1Stall     != base.gamefixVif1Stall)     j.put("gamefixVif1Stall", current.gamefixVif1Stall)
-            if (current.gamefixIbit          != base.gamefixIbit)          j.put("gamefixIbit", current.gamefixIbit)
-            if (current.gamefixFullVu0Sync   != base.gamefixFullVu0Sync)   j.put("gamefixFullVu0Sync", current.gamefixFullVu0Sync)
-            if (current.gamefixVuAddSub      != base.gamefixVuAddSub)      j.put("gamefixVuAddSub", current.gamefixVuAddSub)
-            if (current.gamefixVuOverflow    != base.gamefixVuOverflow)    j.put("gamefixVuOverflow", current.gamefixVuOverflow)
-            if (current.gamefixXgkick        != base.gamefixXgkick)        j.put("gamefixXgkick", current.gamefixXgkick)
-            if (current.gamefixGoemonTlb     != base.gamefixGoemonTlb)     j.put("gamefixGoemonTlb", current.gamefixGoemonTlb)
-            if (current.gamefixVuSync        != base.gamefixVuSync)        j.put("gamefixVuSync", current.gamefixVuSync)
-            if (current.skipDuplicateFrames  != base.skipDuplicateFrames)  j.put("skipDuplicateFrames", current.skipDuplicateFrames)
-            if (current.eeFpuRoundMode       != base.eeFpuRoundMode)       j.put("eeFpuRoundMode", current.eeFpuRoundMode)
-            if (current.vu0RoundMode         != base.vu0RoundMode)         j.put("vu0RoundMode", current.vu0RoundMode)
-            if (current.vu1RoundMode         != base.vu1RoundMode)         j.put("vu1RoundMode", current.vu1RoundMode)
-            if (current.screenOffsets        != base.screenOffsets)        j.put("screenOffsets", current.screenOffsets)
-            if (current.showOverscan         != base.showOverscan)         j.put("showOverscan", current.showOverscan)
-            if (current.antiBlur             != base.antiBlur)             j.put("antiBlur", current.antiBlur)
-            if (current.disableInterlaceOffset != base.disableInterlaceOffset) j.put("disableInterlaceOffset", current.disableInterlaceOffset)
-            if (current.syncToHostRefresh    != base.syncToHostRefresh)    j.put("syncToHostRefresh", current.syncToHostRefresh)
-            if (current.disableFramebufferFetch != base.disableFramebufferFetch) j.put("disableFramebufferFetch", current.disableFramebufferFetch)
-            if (current.hwRov != base.hwRov) j.put("hwRov", current.hwRov)
-            if (current.hwAa1 != base.hwAa1) j.put("hwAa1", current.hwAa1)
-            if (current.adrenoFbFetch != base.adrenoFbFetch) j.put("adrenoFbFetch", current.adrenoFbFetch)
-            if (current.coalesceRenderPasses != base.coalesceRenderPasses) j.put("coalesceRenderPasses", current.coalesceRenderPasses)
-            if (current.forceMaliFbFetch != base.forceMaliFbFetch) j.put("forceMaliFbFetch", current.forceMaliFbFetch)
-            if (current.useAngleOpenGL != base.useAngleOpenGL) j.put("useAngleOpenGL", current.useAngleOpenGL)
-            if (current.overrideTextureBarriers != base.overrideTextureBarriers) j.put("overrideTextureBarriers", current.overrideTextureBarriers)
-            if (current.gsBackThreadMode != base.gsBackThreadMode) j.put("gsBackThreadMode", current.gsBackThreadMode)
-            if (current.disableVertexShaderExpand != base.disableVertexShaderExpand) j.put("disableVertexShaderExpand", current.disableVertexShaderExpand)
-            if (current.useBlitSwapChain     != base.useBlitSwapChain)     j.put("useBlitSwapChain", current.useBlitSwapChain)
-            if (current.disableShaderCache   != base.disableShaderCache)   j.put("disableShaderCache", current.disableShaderCache)
-            if (current.hwAccurateAlphaTest  != base.hwAccurateAlphaTest)  j.put("hwAccurateAlphaTest", current.hwAccurateAlphaTest)
-            if (current.skipDrawStart        != base.skipDrawStart)        j.put("skipDrawStart", current.skipDrawStart)
-            if (current.skipDrawEnd          != base.skipDrawEnd)          j.put("skipDrawEnd", current.skipDrawEnd)
-            if (current.spinGpuReadbacks     != base.spinGpuReadbacks)     j.put("spinGpuReadbacks", current.spinGpuReadbacks)
-            if (current.spinCpuReadbacks     != base.spinCpuReadbacks)     j.put("spinCpuReadbacks", current.spinCpuReadbacks)
-            if (current.integerScaling       != base.integerScaling)       j.put("integerScaling", current.integerScaling)
-            if (current.cropLeft             != base.cropLeft)             j.put("cropLeft", current.cropLeft)
-            if (current.displayZoom          != base.displayZoom)          j.put("displayZoom", current.displayZoom)
-            if (current.cropTop              != base.cropTop)              j.put("cropTop", current.cropTop)
-            if (current.cropRight            != base.cropRight)            j.put("cropRight", current.cropRight)
-            if (current.cropBottom           != base.cropBottom)           j.put("cropBottom", current.cropBottom)
-            if (current.dithering            != base.dithering)            j.put("dithering", current.dithering)
-            if (current.vsyncQueueSize       != base.vsyncQueueSize)       j.put("vsyncQueueSize", current.vsyncQueueSize)
-            if (current.hwScaler             != base.hwScaler)             j.put("hwScaler", current.hwScaler)
-            if (current.screenResOverride    != base.screenResOverride)    j.put("screenResOverride", current.screenResOverride)
-            if (current.autoFlushSw          != base.autoFlushSw)          j.put("autoFlushSw", current.autoFlushSw)
-            if (current.mipmapSw             != base.mipmapSw)             j.put("mipmapSw", current.mipmapSw)
-            if (current.swThreads            != base.swThreads)            j.put("swThreads", current.swThreads)
-            if (current.swThreadsHeight      != base.swThreadsHeight)      j.put("swThreadsHeight", current.swThreadsHeight)
-            if (current.aspectRatio         != base.aspectRatio)         j.put("aspectRatio", current.aspectRatio)
-            if (current.fmvAspectRatio      != base.fmvAspectRatio)      j.put("fmvAspectRatio", current.fmvAspectRatio)
-            if (current.customAspectRatio   != base.customAspectRatio)   j.put("customAspectRatio", current.customAspectRatio.toDouble())
-            if (current.deinterlaceMode     != base.deinterlaceMode)     j.put("deinterlaceMode", current.deinterlaceMode)
-            if (current.dev9EthEnable       != base.dev9EthEnable)       j.put("dev9EthEnable", current.dev9EthEnable)
-            if (current.dev9EthApi          != base.dev9EthApi)          j.put("dev9EthApi", current.dev9EthApi)
-            if (current.localLinkHost != base.localLinkHost) j.put("localLinkHost", current.localLinkHost)
-            if (current.localLinkAddress != base.localLinkAddress) j.put("localLinkAddress", current.localLinkAddress)
-            if (current.localLinkPort != base.localLinkPort) j.put("localLinkPort", current.localLinkPort)
-            if (current.localLinkPeerId != base.localLinkPeerId) j.put("localLinkPeerId", current.localLinkPeerId)
-            if (current.localLinkRoomCode != base.localLinkRoomCode) j.put("localLinkRoomCode", current.localLinkRoomCode)
-            if (current.dev9EthDevice       != base.dev9EthDevice)       j.put("dev9EthDevice", current.dev9EthDevice)
-            if (current.dev9EthLogDhcp      != base.dev9EthLogDhcp)      j.put("dev9EthLogDhcp", current.dev9EthLogDhcp)
-            if (current.dev9EthLogDns       != base.dev9EthLogDns)       j.put("dev9EthLogDns", current.dev9EthLogDns)
-            if (current.dev9InterceptDhcp   != base.dev9InterceptDhcp)   j.put("dev9InterceptDhcp", current.dev9InterceptDhcp)
-            if (current.dev9Ps2Ip           != base.dev9Ps2Ip)           j.put("dev9Ps2Ip", current.dev9Ps2Ip)
-            if (current.dev9Mask            != base.dev9Mask)            j.put("dev9Mask", current.dev9Mask)
-            if (current.dev9Gateway         != base.dev9Gateway)         j.put("dev9Gateway", current.dev9Gateway)
-            if (current.dev9Dns1            != base.dev9Dns1)            j.put("dev9Dns1", current.dev9Dns1)
-            if (current.dev9Dns2            != base.dev9Dns2)            j.put("dev9Dns2", current.dev9Dns2)
-            if (current.dev9AutoMask        != base.dev9AutoMask)        j.put("dev9AutoMask", current.dev9AutoMask)
-            if (current.dev9AutoGateway     != base.dev9AutoGateway)     j.put("dev9AutoGateway", current.dev9AutoGateway)
-            if (current.dev9ModeDns1        != base.dev9ModeDns1)        j.put("dev9ModeDns1", current.dev9ModeDns1)
-            if (current.dev9ModeDns2        != base.dev9ModeDns2)        j.put("dev9ModeDns2", current.dev9ModeDns2)
-            if (current.dev9EthHosts        != base.dev9EthHosts) {
+            if (current.cpu.eeCycleRate         != base.cpu.eeCycleRate)         j.put("eeCycleRate", current.cpu.eeCycleRate)
+            if (current.cpu.eeCycleSkip         != base.cpu.eeCycleSkip)         j.put("eeCycleSkip", current.cpu.eeCycleSkip)
+            if (current.cpu.eeClampMode         != base.cpu.eeClampMode)         j.put("eeClampMode", current.cpu.eeClampMode)
+            if (current.cpu.vuClampMode         != base.cpu.vuClampMode)         j.put("vuClampMode", current.cpu.vuClampMode)
+            if (current.cpu.vu1ClampMode        != base.cpu.vu1ClampMode)        j.put("vu1ClampMode", current.cpu.vu1ClampMode)
+            if (current.cpu.mtvu                != base.cpu.mtvu)                j.put("mtvu", current.cpu.mtvu)
+            if (current.cpu.vu1Instant          != base.cpu.vu1Instant)          j.put("vu1Instant", current.cpu.vu1Instant)
+            if (current.cpu.vuFlagHack          != base.cpu.vuFlagHack)          j.put("vuFlagHack", current.cpu.vuFlagHack)
+            if (current.cpu.fastCDVD            != base.cpu.fastCDVD)            j.put("fastCDVD", current.cpu.fastCDVD)
+            if (current.cpu.intcStat            != base.cpu.intcStat)            j.put("intcStat", current.cpu.intcStat)
+            if (current.cpu.waitLoop            != base.cpu.waitLoop)            j.put("waitLoop", current.cpu.waitLoop)
+            if (current.cpu.vuNeonFusions       != base.cpu.vuNeonFusions)       j.put("vuNeonFusions", current.cpu.vuNeonFusions)
+            if (current.cpu.vuDeferredWrites    != base.cpu.vuDeferredWrites)    j.put("vuDeferredWrites", current.cpu.vuDeferredWrites)
+            if (current.cpu.vuSkipStallSim      != base.cpu.vuSkipStallSim)      j.put("vuSkipStallSim", current.cpu.vuSkipStallSim)
+            if (current.frameLimit.frameLimitEnable    != base.frameLimit.frameLimitEnable)    j.put("frameLimitEnable", current.frameLimit.frameLimitEnable)
+            if (current.frameLimit.nominalSpeedPercent != base.frameLimit.nominalSpeedPercent) j.put("nominalSpeedPercent", current.frameLimit.nominalSpeedPercent)
+            if (current.frameLimit.fpsLimit            != base.frameLimit.fpsLimit)            j.put("fpsLimit", current.frameLimit.fpsLimit)
+            if (current.frameLimit.frameSkip != base.frameLimit.frameSkip) j.put("frameSkip", current.frameLimit.frameSkip)
+            if (current.audio.audioVolume != base.audio.audioVolume) j.put("audioVolume", current.audio.audioVolume)
+            if (current.audio.audioMuted != base.audio.audioMuted) j.put("audioMuted", current.audio.audioMuted)
+            if (current.audio.audioSwapChannels != base.audio.audioSwapChannels) j.put("audioSwapChannels", current.audio.audioSwapChannels)
+            if (current.audio.audioTimeStretch != base.audio.audioTimeStretch) j.put("audioTimeStretch", current.audio.audioTimeStretch)
+            if (current.audio.audioBufferMs != base.audio.audioBufferMs) j.put("audioBufferMs", current.audio.audioBufferMs)
+            if (current.audio.audioOutputLatencyMs != base.audio.audioOutputLatencyMs) j.put("audioOutputLatencyMs", current.audio.audioOutputLatencyMs)
+            if (current.audio.audioFastForwardVolume != base.audio.audioFastForwardVolume) j.put("audioFastForwardVolume", current.audio.audioFastForwardVolume)
+            if (current.audio.spu2NeonReverb != base.audio.spu2NeonReverb) j.put("spu2NeonReverb", current.audio.spu2NeonReverb)
+            if (current.audio.audioOpenSLES != base.audio.audioOpenSLES) j.put("audioOpenSLES", current.audio.audioOpenSLES)
+            if (current.audio.spu2LightweightMix != base.audio.spu2LightweightMix) j.put("spu2LightweightMix", current.audio.spu2LightweightMix)
+            if (current.output.renderer != base.output.renderer) j.put("renderer", current.output.renderer)
+            if (current.output.upscaleFloat != base.output.upscaleFloat) j.put("upscaleFloat", current.output.upscaleFloat.toDouble())
+            if (current.output.customDriverId != base.output.customDriverId) j.put("customDriverId", current.output.customDriverId)
+            if (current.output.orientation != base.output.orientation) j.put("orientation", current.output.orientation)
+            if (current.output.portraitRenderTop != base.output.portraitRenderTop) j.put("portraitRenderTop", current.output.portraitRenderTop)
+            if (current.output.landscapeRenderTop != base.output.landscapeRenderTop) j.put("landscapeRenderTop", current.output.landscapeRenderTop)
+            if (current.output.autoProgressiveScan != base.output.autoProgressiveScan) j.put("autoProgressiveScan", current.output.autoProgressiveScan)
+            if (current.output.affinityMode != base.output.affinityMode) j.put("affinityMode", current.output.affinityMode)
+            if (current.output.framerateNtsc != base.output.framerateNtsc) j.put("framerateNtsc", current.output.framerateNtsc.toDouble())
+            if (current.output.frameratePal != base.output.frameratePal) j.put("frameratePal", current.output.frameratePal.toDouble())
+            if (current.emuCore.enablePatches != base.emuCore.enablePatches) j.put("enablePatches", current.emuCore.enablePatches)
+            if (current.emuCore.enableCheats != base.emuCore.enableCheats) j.put("enableCheats", current.emuCore.enableCheats)
+            if (current.emuCore.enableWideScreenPatches != base.emuCore.enableWideScreenPatches) j.put("enableWideScreenPatches", current.emuCore.enableWideScreenPatches)
+            if (current.emuCore.enableNoInterlacingPatches != base.emuCore.enableNoInterlacingPatches) j.put("enableNoInterlacingPatches", current.emuCore.enableNoInterlacingPatches)
+            if (current.emuCore.enableFastBoot != base.emuCore.enableFastBoot) j.put("enableFastBoot", current.emuCore.enableFastBoot)
+            if (current.emuCore.hostFs != base.emuCore.hostFs) j.put("hostFs", current.emuCore.hostFs)
+            if (current.emuCore.achievements.enabled != base.emuCore.achievements.enabled) j.put("achievementsEnabled", current.emuCore.achievements.enabled)
+            if (current.emuCore.achievements.hardcore != base.emuCore.achievements.hardcore) j.put("achievementsHardcore", current.emuCore.achievements.hardcore)
+            if (current.emuCore.achievements.notifications != base.emuCore.achievements.notifications) j.put("achievementsNotifications", current.emuCore.achievements.notifications)
+            if (current.emuCore.achievements.leaderboardNotifications != base.emuCore.achievements.leaderboardNotifications) j.put("achievementsLeaderboardNotifications", current.emuCore.achievements.leaderboardNotifications)
+            if (current.emuCore.achievements.overlays != base.emuCore.achievements.overlays) j.put("achievementsOverlays", current.emuCore.achievements.overlays)
+            if (current.emuCore.achievements.lbOverlays != base.emuCore.achievements.lbOverlays) j.put("achievementsLbOverlays", current.emuCore.achievements.lbOverlays)
+            if (current.emuCore.achievements.soundEffects != base.emuCore.achievements.soundEffects) j.put("achievementsSoundEffects", current.emuCore.achievements.soundEffects)
+            if (current.emuCore.achievements.encoreMode != base.emuCore.achievements.encoreMode) j.put("achievementsEncoreMode", current.emuCore.achievements.encoreMode)
+            if (current.emuCore.achievements.spectatorMode != base.emuCore.achievements.spectatorMode) j.put("achievementsSpectatorMode", current.emuCore.achievements.spectatorMode)
+            if (current.emuCore.achievements.unofficialTestMode != base.emuCore.achievements.unofficialTestMode) j.put("achievementsUnofficialTestMode", current.emuCore.achievements.unofficialTestMode)
+            if (current.emuCore.achievements.notificationsDuration != base.emuCore.achievements.notificationsDuration) j.put("achievementsNotificationsDuration", current.emuCore.achievements.notificationsDuration)
+            if (current.emuCore.achievements.leaderboardsDuration != base.emuCore.achievements.leaderboardsDuration) j.put("achievementsLeaderboardsDuration", current.emuCore.achievements.leaderboardsDuration)
+            if (current.emuCore.achievements.notificationPosition != base.emuCore.achievements.notificationPosition) j.put("achievementsNotificationPosition", current.emuCore.achievements.notificationPosition)
+            if (current.emuCore.achievements.overlayPosition != base.emuCore.achievements.overlayPosition) j.put("achievementsOverlayPosition", current.emuCore.achievements.overlayPosition)
+            if (current.emuCore.achievements.notificationScale != base.emuCore.achievements.notificationScale) j.put("achievementsNotificationScale", current.emuCore.achievements.notificationScale)
+            if (current.emuCore.enableGameFixes != base.emuCore.enableGameFixes) j.put("enableGameFixes", current.emuCore.enableGameFixes)
+            if (current.emuCore.gamefixSoftwareRendererFmv != base.emuCore.gamefixSoftwareRendererFmv) j.put("gamefixSoftwareRendererFmv", current.emuCore.gamefixSoftwareRendererFmv)
+            if (current.emuCore.gamefixSkipMpeg != base.emuCore.gamefixSkipMpeg) j.put("gamefixSkipMpeg", current.emuCore.gamefixSkipMpeg)
+            if (current.emuCore.gamefixEETiming != base.emuCore.gamefixEETiming) j.put("gamefixEETiming", current.emuCore.gamefixEETiming)
+            if (current.emuCore.gamefixInstantDma != base.emuCore.gamefixInstantDma) j.put("gamefixInstantDma", current.emuCore.gamefixInstantDma)
+            if (current.emuCore.gamefixBlitInternalFps != base.emuCore.gamefixBlitInternalFps) j.put("gamefixBlitInternalFps", current.emuCore.gamefixBlitInternalFps)
+            if (current.emuCore.gamefixOphFlag       != base.emuCore.gamefixOphFlag)       j.put("gamefixOphFlag", current.emuCore.gamefixOphFlag)
+            if (current.emuCore.gamefixGifFifo       != base.emuCore.gamefixGifFifo)       j.put("gamefixGifFifo", current.emuCore.gamefixGifFifo)
+            if (current.emuCore.gamefixDmaBusy       != base.emuCore.gamefixDmaBusy)       j.put("gamefixDmaBusy", current.emuCore.gamefixDmaBusy)
+            if (current.emuCore.gamefixVif1Stall     != base.emuCore.gamefixVif1Stall)     j.put("gamefixVif1Stall", current.emuCore.gamefixVif1Stall)
+            if (current.emuCore.gamefixIbit          != base.emuCore.gamefixIbit)          j.put("gamefixIbit", current.emuCore.gamefixIbit)
+            if (current.emuCore.gamefixFullVu0Sync   != base.emuCore.gamefixFullVu0Sync)   j.put("gamefixFullVu0Sync", current.emuCore.gamefixFullVu0Sync)
+            if (current.emuCore.gamefixVuAddSub      != base.emuCore.gamefixVuAddSub)      j.put("gamefixVuAddSub", current.emuCore.gamefixVuAddSub)
+            if (current.emuCore.gamefixVuOverflow    != base.emuCore.gamefixVuOverflow)    j.put("gamefixVuOverflow", current.emuCore.gamefixVuOverflow)
+            if (current.emuCore.gamefixXgkick        != base.emuCore.gamefixXgkick)        j.put("gamefixXgkick", current.emuCore.gamefixXgkick)
+            if (current.emuCore.gamefixGoemonTlb     != base.emuCore.gamefixGoemonTlb)     j.put("gamefixGoemonTlb", current.emuCore.gamefixGoemonTlb)
+            if (current.emuCore.gamefixVuSync        != base.emuCore.gamefixVuSync)        j.put("gamefixVuSync", current.emuCore.gamefixVuSync)
+            if (current.emuCore.skipDuplicateFrames  != base.emuCore.skipDuplicateFrames)  j.put("skipDuplicateFrames", current.emuCore.skipDuplicateFrames)
+            if (current.emuCore.eeFpuRoundMode       != base.emuCore.eeFpuRoundMode)       j.put("eeFpuRoundMode", current.emuCore.eeFpuRoundMode)
+            if (current.emuCore.vu0RoundMode         != base.emuCore.vu0RoundMode)         j.put("vu0RoundMode", current.emuCore.vu0RoundMode)
+            if (current.emuCore.vu1RoundMode         != base.emuCore.vu1RoundMode)         j.put("vu1RoundMode", current.emuCore.vu1RoundMode)
+            if (current.display.screenOffsets        != base.display.screenOffsets)        j.put("screenOffsets", current.display.screenOffsets)
+            if (current.display.showOverscan         != base.display.showOverscan)         j.put("showOverscan", current.display.showOverscan)
+            if (current.display.antiBlur             != base.display.antiBlur)             j.put("antiBlur", current.display.antiBlur)
+            if (current.display.disableInterlaceOffset != base.display.disableInterlaceOffset) j.put("disableInterlaceOffset", current.display.disableInterlaceOffset)
+            if (current.display.syncToHostRefresh    != base.display.syncToHostRefresh)    j.put("syncToHostRefresh", current.display.syncToHostRefresh)
+            if (current.display.disableFramebufferFetch != base.display.disableFramebufferFetch) j.put("disableFramebufferFetch", current.display.disableFramebufferFetch)
+            if (current.display.hwRov != base.display.hwRov) j.put("hwRov", current.display.hwRov)
+            if (current.display.hwAa1 != base.display.hwAa1) j.put("hwAa1", current.display.hwAa1)
+            if (current.display.adrenoFbFetch != base.display.adrenoFbFetch) j.put("adrenoFbFetch", current.display.adrenoFbFetch)
+            if (current.display.coalesceRenderPasses != base.display.coalesceRenderPasses) j.put("coalesceRenderPasses", current.display.coalesceRenderPasses)
+            if (current.display.forceMaliFbFetch != base.display.forceMaliFbFetch) j.put("forceMaliFbFetch", current.display.forceMaliFbFetch)
+            if (current.display.useAngleOpenGL != base.display.useAngleOpenGL) j.put("useAngleOpenGL", current.display.useAngleOpenGL)
+            if (current.display.overrideTextureBarriers != base.display.overrideTextureBarriers) j.put("overrideTextureBarriers", current.display.overrideTextureBarriers)
+            if (current.display.gsBackThreadMode != base.display.gsBackThreadMode) j.put("gsBackThreadMode", current.display.gsBackThreadMode)
+            if (current.display.disableVertexShaderExpand != base.display.disableVertexShaderExpand) j.put("disableVertexShaderExpand", current.display.disableVertexShaderExpand)
+            if (current.display.useBlitSwapChain     != base.display.useBlitSwapChain)     j.put("useBlitSwapChain", current.display.useBlitSwapChain)
+            if (current.display.disableShaderCache   != base.display.disableShaderCache)   j.put("disableShaderCache", current.display.disableShaderCache)
+            if (current.display.hwAccurateAlphaTest  != base.display.hwAccurateAlphaTest)  j.put("hwAccurateAlphaTest", current.display.hwAccurateAlphaTest)
+            if (current.hwFixes.skipDrawStart        != base.hwFixes.skipDrawStart)        j.put("skipDrawStart", current.hwFixes.skipDrawStart)
+            if (current.hwFixes.skipDrawEnd          != base.hwFixes.skipDrawEnd)          j.put("skipDrawEnd", current.hwFixes.skipDrawEnd)
+            if (current.hwFixes.spinGpuReadbacks     != base.hwFixes.spinGpuReadbacks)     j.put("spinGpuReadbacks", current.hwFixes.spinGpuReadbacks)
+            if (current.hwFixes.spinCpuReadbacks     != base.hwFixes.spinCpuReadbacks)     j.put("spinCpuReadbacks", current.hwFixes.spinCpuReadbacks)
+            if (current.hwFixes.integerScaling       != base.hwFixes.integerScaling)       j.put("integerScaling", current.hwFixes.integerScaling)
+            if (current.hwFixes.cropLeft             != base.hwFixes.cropLeft)             j.put("cropLeft", current.hwFixes.cropLeft)
+            if (current.hwFixes.displayZoom          != base.hwFixes.displayZoom)          j.put("displayZoom", current.hwFixes.displayZoom)
+            if (current.hwFixes.cropTop              != base.hwFixes.cropTop)              j.put("cropTop", current.hwFixes.cropTop)
+            if (current.hwFixes.cropRight            != base.hwFixes.cropRight)            j.put("cropRight", current.hwFixes.cropRight)
+            if (current.hwFixes.cropBottom           != base.hwFixes.cropBottom)           j.put("cropBottom", current.hwFixes.cropBottom)
+            if (current.hwFixes.dithering            != base.hwFixes.dithering)            j.put("dithering", current.hwFixes.dithering)
+            if (current.hwFixes.vsyncQueueSize       != base.hwFixes.vsyncQueueSize)       j.put("vsyncQueueSize", current.hwFixes.vsyncQueueSize)
+            if (current.output.hwScaler             != base.output.hwScaler)             j.put("hwScaler", current.output.hwScaler)
+            if (current.output.screenResOverride    != base.output.screenResOverride)    j.put("screenResOverride", current.output.screenResOverride)
+            if (current.output.autoFlushSw          != base.output.autoFlushSw)          j.put("autoFlushSw", current.output.autoFlushSw)
+            if (current.output.mipmapSw             != base.output.mipmapSw)             j.put("mipmapSw", current.output.mipmapSw)
+            if (current.output.swThreads            != base.output.swThreads)            j.put("swThreads", current.output.swThreads)
+            if (current.output.swThreadsHeight      != base.output.swThreadsHeight)      j.put("swThreadsHeight", current.output.swThreadsHeight)
+            if (current.output.aspectRatio         != base.output.aspectRatio)         j.put("aspectRatio", current.output.aspectRatio)
+            if (current.output.fmvAspectRatio      != base.output.fmvAspectRatio)      j.put("fmvAspectRatio", current.output.fmvAspectRatio)
+            if (current.output.customAspectRatio   != base.output.customAspectRatio)   j.put("customAspectRatio", current.output.customAspectRatio.toDouble())
+            if (current.output.deinterlaceMode     != base.output.deinterlaceMode)     j.put("deinterlaceMode", current.output.deinterlaceMode)
+            if (current.network.dev9EthEnable       != base.network.dev9EthEnable)       j.put("dev9EthEnable", current.network.dev9EthEnable)
+            if (current.network.dev9EthApi          != base.network.dev9EthApi)          j.put("dev9EthApi", current.network.dev9EthApi)
+            if (current.network.localLinkHost != base.network.localLinkHost) j.put("localLinkHost", current.network.localLinkHost)
+            if (current.network.localLinkAddress != base.network.localLinkAddress) j.put("localLinkAddress", current.network.localLinkAddress)
+            if (current.network.localLinkPort != base.network.localLinkPort) j.put("localLinkPort", current.network.localLinkPort)
+            if (current.network.localLinkPeerId != base.network.localLinkPeerId) j.put("localLinkPeerId", current.network.localLinkPeerId)
+            if (current.network.localLinkRoomCode != base.network.localLinkRoomCode) j.put("localLinkRoomCode", current.network.localLinkRoomCode)
+            if (current.network.dev9EthDevice       != base.network.dev9EthDevice)       j.put("dev9EthDevice", current.network.dev9EthDevice)
+            if (current.network.dev9EthLogDhcp      != base.network.dev9EthLogDhcp)      j.put("dev9EthLogDhcp", current.network.dev9EthLogDhcp)
+            if (current.network.dev9EthLogDns       != base.network.dev9EthLogDns)       j.put("dev9EthLogDns", current.network.dev9EthLogDns)
+            if (current.network.dev9InterceptDhcp   != base.network.dev9InterceptDhcp)   j.put("dev9InterceptDhcp", current.network.dev9InterceptDhcp)
+            if (current.network.dev9Ps2Ip           != base.network.dev9Ps2Ip)           j.put("dev9Ps2Ip", current.network.dev9Ps2Ip)
+            if (current.network.dev9Mask            != base.network.dev9Mask)            j.put("dev9Mask", current.network.dev9Mask)
+            if (current.network.dev9Gateway         != base.network.dev9Gateway)         j.put("dev9Gateway", current.network.dev9Gateway)
+            if (current.network.dev9Dns1            != base.network.dev9Dns1)            j.put("dev9Dns1", current.network.dev9Dns1)
+            if (current.network.dev9Dns2            != base.network.dev9Dns2)            j.put("dev9Dns2", current.network.dev9Dns2)
+            if (current.network.dev9AutoMask        != base.network.dev9AutoMask)        j.put("dev9AutoMask", current.network.dev9AutoMask)
+            if (current.network.dev9AutoGateway     != base.network.dev9AutoGateway)     j.put("dev9AutoGateway", current.network.dev9AutoGateway)
+            if (current.network.dev9ModeDns1        != base.network.dev9ModeDns1)        j.put("dev9ModeDns1", current.network.dev9ModeDns1)
+            if (current.network.dev9ModeDns2        != base.network.dev9ModeDns2)        j.put("dev9ModeDns2", current.network.dev9ModeDns2)
+            if (current.network.dev9EthHosts        != base.network.dev9EthHosts) {
                 j.put("dev9EthHosts", JSONArray().apply {
-                    current.dev9EthHosts.forEach { host ->
+                    current.network.dev9EthHosts.forEach { host ->
                         put(JSONObject().apply {
                             put("url", host.url)
                             put("ip", host.ip)
@@ -2557,261 +2685,323 @@ data class Settings(
                     }
                 })
             }
-            if (current.dev9HddEnable       != base.dev9HddEnable)       j.put("dev9HddEnable", current.dev9HddEnable)
-            if (current.dev9HddFile         != base.dev9HddFile)         j.put("dev9HddFile", current.dev9HddFile)
-            if (current.memoryCardSlot1Enabled != base.memoryCardSlot1Enabled) j.put("memoryCardSlot1Enabled", current.memoryCardSlot1Enabled)
-            if (current.memoryCardSlot1Filename != base.memoryCardSlot1Filename) j.put("memoryCardSlot1Filename", current.memoryCardSlot1Filename)
-            if (current.biosFilename != base.biosFilename) j.put("biosFilename", current.biosFilename)
-            if (current.memoryCardSlot2Enabled != base.memoryCardSlot2Enabled) j.put("memoryCardSlot2Enabled", current.memoryCardSlot2Enabled)
-            if (current.memoryCardSlot2Filename != base.memoryCardSlot2Filename) j.put("memoryCardSlot2Filename", current.memoryCardSlot2Filename)
-            if (current.usbKeyboard         != base.usbKeyboard)         j.put("usbKeyboard", current.usbKeyboard)
-            if (current.recEE               != base.recEE)               j.put("recEE", current.recEE)
-            if (current.recIOP              != base.recIOP)              j.put("recIOP", current.recIOP)
-            if (current.recVU0              != base.recVU0)              j.put("recVU0", current.recVU0)
-            if (current.recVU1              != base.recVU1)              j.put("recVU1", current.recVU1)
-            if (current.enableFastmem       != base.enableFastmem)       j.put("enableFastmem", current.enableFastmem)
-            if (current.vu1InlineFmacStall  != base.vu1InlineFmacStall)  j.put("vu1InlineFmacStall", current.vu1InlineFmacStall)
-            if (current.vu1CrossBlockPState != base.vu1CrossBlockPState) j.put("vu1CrossBlockPState", current.vu1CrossBlockPState)
-            if (current.vu1InlineDrainTestPipes != base.vu1InlineDrainTestPipes) j.put("vu1InlineDrainTestPipes", current.vu1InlineDrainTestPipes)
-            if (current.vu1FmacInstanceRouting != base.vu1FmacInstanceRouting) j.put("vu1FmacInstanceRouting", current.vu1FmacInstanceRouting)
-            if (current.hwMipmap            != base.hwMipmap)            j.put("hwMipmap", current.hwMipmap)
-            if (current.accurateBlendingUnit!= base.accurateBlendingUnit)j.put("accurateBlendingUnit", current.accurateBlendingUnit)
-            if (current.textureFiltering    != base.textureFiltering)    j.put("textureFiltering", current.textureFiltering)
-            if (current.displayBilinear     != base.displayBilinear)     j.put("displayBilinear", current.displayBilinear)
-            if (current.texturePreloading   != base.texturePreloading)   j.put("texturePreloading", current.texturePreloading)
-            if (current.hardwareDownloadMode!= base.hardwareDownloadMode)j.put("hardwareDownloadMode", current.hardwareDownloadMode)
-            if (current.tvShader            != base.tvShader)            j.put("tvShader", current.tvShader)
-            if (current.shadeBoost          != base.shadeBoost)          j.put("shadeBoost", current.shadeBoost)
-            if (current.shadeBoostBrightness != base.shadeBoostBrightness) j.put("shadeBoostBrightness", current.shadeBoostBrightness)
-            if (current.shadeBoostContrast  != base.shadeBoostContrast)  j.put("shadeBoostContrast", current.shadeBoostContrast)
-            if (current.shadeBoostSaturation != base.shadeBoostSaturation) j.put("shadeBoostSaturation", current.shadeBoostSaturation)
-            if (current.shadeBoostGamma     != base.shadeBoostGamma)     j.put("shadeBoostGamma", current.shadeBoostGamma)
-            if (current.fxaa                != base.fxaa)                j.put("fxaa", current.fxaa)
-            if (current.shaderChainEnabled  != base.shaderChainEnabled)  j.put("shaderChainEnabled", current.shaderChainEnabled)
-            if (current.shaderChainPreset   != base.shaderChainPreset)   j.put("shaderChainPreset", current.shaderChainPreset)
-            if (current.shaderChainParams   != base.shaderChainParams)   j.put("shaderChainParams", shaderChainParamsToJson(current.shaderChainParams))
-            if (current.lsfgEnabled         != base.lsfgEnabled)         j.put("lsfgEnabled", current.lsfgEnabled)
-            if (current.lsfgMultiplier      != base.lsfgMultiplier)      j.put("lsfgMultiplier", current.lsfgMultiplier)
-            if (current.lsfgDllPath         != base.lsfgDllPath)         j.put("lsfgDllPath", current.lsfgDllPath)
-            if (current.lsfgPerformance     != base.lsfgPerformance)     j.put("lsfgPerformance", current.lsfgPerformance)
-            if (current.lsfgFlowScale       != base.lsfgFlowScale)       j.put("lsfgFlowScale", current.lsfgFlowScale)
-            if (current.lsfgTargetRate      != base.lsfgTargetRate)      j.put("lsfgTargetRate", current.lsfgTargetRate)
-            if (current.casMode             != base.casMode)             j.put("casMode", current.casMode)
-            if (current.casSharpness        != base.casSharpness)        j.put("casSharpness", current.casSharpness)
-            if (current.upscaler            != base.upscaler)            j.put("upscaler", current.upscaler)
-            if (current.fsrSharpness        != base.fsrSharpness)        j.put("fsrSharpness", current.fsrSharpness)
-            if (current.sgsrSharpness       != base.sgsrSharpness)       j.put("sgsrSharpness", current.sgsrSharpness)
-            if (current.loadTextureReplacements != base.loadTextureReplacements) j.put("loadTextureReplacements", current.loadTextureReplacements)
-            if (current.loadTextureReplacementsAsync != base.loadTextureReplacementsAsync) j.put("loadTextureReplacementsAsync", current.loadTextureReplacementsAsync)
-            if (current.precacheTextureReplacements != base.precacheTextureReplacements) j.put("precacheTextureReplacements", current.precacheTextureReplacements)
-            if (current.dumpReplaceableTextures != base.dumpReplaceableTextures) j.put("dumpReplaceableTextures", current.dumpReplaceableTextures)
-            if (current.osdShowTextureReplacements != base.osdShowTextureReplacements) j.put("osdShowTextureReplacements", current.osdShowTextureReplacements)
-            if (current.osdShowFps != base.osdShowFps) j.put("osdShowFps", current.osdShowFps)
-            if (current.osdScale != base.osdScale) j.put("osdScale", current.osdScale)
-            if (current.osdColor != base.osdColor) j.put("osdColor", current.osdColor)
-            if (current.osdPosition != base.osdPosition) j.put("osdPosition", current.osdPosition)
-            if (current.vsyncEnable != base.vsyncEnable) j.put("vsyncEnable", current.vsyncEnable)
-            if (current.osdShowVps != base.osdShowVps) j.put("osdShowVps", current.osdShowVps)
-            if (current.osdShowSpeed != base.osdShowSpeed) j.put("osdShowSpeed", current.osdShowSpeed)
-            if (current.osdShowCpu != base.osdShowCpu) j.put("osdShowCpu", current.osdShowCpu)
-            if (current.osdShowGpu != base.osdShowGpu) j.put("osdShowGpu", current.osdShowGpu)
-            if (current.osdShowResolution != base.osdShowResolution) j.put("osdShowResolution", current.osdShowResolution)
-            if (current.osdShowGsStats != base.osdShowGsStats) j.put("osdShowGsStats", current.osdShowGsStats)
-            if (current.osdShowFrameTimes != base.osdShowFrameTimes) j.put("osdShowFrameTimes", current.osdShowFrameTimes)
-            if (current.osdShowHardwareInfo != base.osdShowHardwareInfo) j.put("osdShowHardwareInfo", current.osdShowHardwareInfo)
-            if (current.osdShowMessages != base.osdShowMessages) j.put("osdShowMessages", current.osdShowMessages)
-            if (current.osdShowGpuStats != base.osdShowGpuStats) j.put("osdShowGpuStats", current.osdShowGpuStats)
-            if (current.osdShowVersion != base.osdShowVersion) j.put("osdShowVersion", current.osdShowVersion)
-            if (current.osdShowSettings != base.osdShowSettings) j.put("osdShowSettings", current.osdShowSettings)
-            if (current.osdShowInputs != base.osdShowInputs) j.put("osdShowInputs", current.osdShowInputs)
-            if (current.autoFlush           != base.autoFlush)           j.put("autoFlush", current.autoFlush)
-            if (current.halfPixelOffset     != base.halfPixelOffset)     j.put("halfPixelOffset", current.halfPixelOffset)
-            if (current.limit24BitDepth     != base.limit24BitDepth)     j.put("limit24BitDepth", current.limit24BitDepth)
-            if (current.manualUserHacks     != base.manualUserHacks)     j.put("manualUserHacks", current.manualUserHacks)
-            if (current.textureInsideRt     != base.textureInsideRt)     j.put("textureInsideRt", current.textureInsideRt)
-            if (current.nativeScaling       != base.nativeScaling)       j.put("nativeScaling", current.nativeScaling)
-            if (current.roundSprite         != base.roundSprite)         j.put("roundSprite", current.roundSprite)
-            if (current.bilinearUpscale     != base.bilinearUpscale)     j.put("bilinearUpscale", current.bilinearUpscale)
-            if (current.gpuTargetClut       != base.gpuTargetClut)       j.put("gpuTargetClut", current.gpuTargetClut)
-            if (current.cpuSpriteRenderBw   != base.cpuSpriteRenderBw)   j.put("cpuSpriteRenderBw", current.cpuSpriteRenderBw)
-            if (current.cpuSpriteRenderLevel != base.cpuSpriteRenderLevel) j.put("cpuSpriteRenderLevel", current.cpuSpriteRenderLevel)
-            if (current.alignSprite         != base.alignSprite)         j.put("alignSprite", current.alignSprite)
-            if (current.mergeSprite         != base.mergeSprite)         j.put("mergeSprite", current.mergeSprite)
-            if (current.forceEvenSpritePosition != base.forceEvenSpritePosition) j.put("forceEvenSpritePosition", current.forceEvenSpritePosition)
-            if (current.unscaledPaletteDraw != base.unscaledPaletteDraw) j.put("unscaledPaletteDraw", current.unscaledPaletteDraw)
-            if (current.textureOffsetX      != base.textureOffsetX)      j.put("textureOffsetX", current.textureOffsetX)
-            if (current.textureOffsetY      != base.textureOffsetY)      j.put("textureOffsetY", current.textureOffsetY)
-            if (current.gpuPaletteConversion != base.gpuPaletteConversion) j.put("gpuPaletteConversion", current.gpuPaletteConversion)
-            if (current.cpuFramebufferConversion != base.cpuFramebufferConversion) j.put("cpuFramebufferConversion", current.cpuFramebufferConversion)
-            if (current.readTargetsWhenClosing != base.readTargetsWhenClosing) j.put("readTargetsWhenClosing", current.readTargetsWhenClosing)
-            if (current.disableDepthEmulation != base.disableDepthEmulation) j.put("disableDepthEmulation", current.disableDepthEmulation)
-            if (current.disablePartialInvalidation != base.disablePartialInvalidation) j.put("disablePartialInvalidation", current.disablePartialInvalidation)
-            if (current.disableSafeFeatures != base.disableSafeFeatures) j.put("disableSafeFeatures", current.disableSafeFeatures)
-            if (current.disableRenderFixes  != base.disableRenderFixes)  j.put("disableRenderFixes", current.disableRenderFixes)
-            if (current.preloadFrameData    != base.preloadFrameData)    j.put("preloadFrameData", current.preloadFrameData)
-            if (current.estimateTextureRegion != base.estimateTextureRegion) j.put("estimateTextureRegion", current.estimateTextureRegion)
-            if (current.drawBuffering        != base.drawBuffering)        j.put("drawBuffering", current.drawBuffering)
-            if (current.cpuClutRender       != base.cpuClutRender)       j.put("cpuClutRender", current.cpuClutRender)
-            if (current.triFilter           != base.triFilter)           j.put("triFilter", current.triFilter)
-            if (current.maxAnisotropy       != base.maxAnisotropy)       j.put("maxAnisotropy", current.maxAnisotropy)
-            if (current.gpuProfile          != base.gpuProfile)          j.put("gpuProfile", current.gpuProfile)
+            if (current.network.dev9HddEnable       != base.network.dev9HddEnable)       j.put("dev9HddEnable", current.network.dev9HddEnable)
+            if (current.network.dev9HddFile         != base.network.dev9HddFile)         j.put("dev9HddFile", current.network.dev9HddFile)
+            if (current.system.memoryCardSlot1Enabled != base.system.memoryCardSlot1Enabled) j.put("memoryCardSlot1Enabled", current.system.memoryCardSlot1Enabled)
+            if (current.system.memoryCardSlot1Filename != base.system.memoryCardSlot1Filename) j.put("memoryCardSlot1Filename", current.system.memoryCardSlot1Filename)
+            if (current.system.biosFilename != base.system.biosFilename) j.put("biosFilename", current.system.biosFilename)
+            if (current.system.memoryCardSlot2Enabled != base.system.memoryCardSlot2Enabled) j.put("memoryCardSlot2Enabled", current.system.memoryCardSlot2Enabled)
+            if (current.system.memoryCardSlot2Filename != base.system.memoryCardSlot2Filename) j.put("memoryCardSlot2Filename", current.system.memoryCardSlot2Filename)
+            if (current.system.usbKeyboard         != base.system.usbKeyboard)         j.put("usbKeyboard", current.system.usbKeyboard)
+            if (current.cpu.recEE               != base.cpu.recEE)               j.put("recEE", current.cpu.recEE)
+            if (current.cpu.recIOP              != base.cpu.recIOP)              j.put("recIOP", current.cpu.recIOP)
+            if (current.cpu.recVU0              != base.cpu.recVU0)              j.put("recVU0", current.cpu.recVU0)
+            if (current.cpu.recVU1              != base.cpu.recVU1)              j.put("recVU1", current.cpu.recVU1)
+            if (current.cpu.enableFastmem       != base.cpu.enableFastmem)       j.put("enableFastmem", current.cpu.enableFastmem)
+            if (current.cpu.vu1InlineFmacStall  != base.cpu.vu1InlineFmacStall)  j.put("vu1InlineFmacStall", current.cpu.vu1InlineFmacStall)
+            if (current.cpu.vu1CrossBlockPState != base.cpu.vu1CrossBlockPState) j.put("vu1CrossBlockPState", current.cpu.vu1CrossBlockPState)
+            if (current.cpu.vu1InlineDrainTestPipes != base.cpu.vu1InlineDrainTestPipes) j.put("vu1InlineDrainTestPipes", current.cpu.vu1InlineDrainTestPipes)
+            if (current.cpu.vu1FmacInstanceRouting != base.cpu.vu1FmacInstanceRouting) j.put("vu1FmacInstanceRouting", current.cpu.vu1FmacInstanceRouting)
+            if (current.graphics.hwMipmap            != base.graphics.hwMipmap)            j.put("hwMipmap", current.graphics.hwMipmap)
+            if (current.graphics.accurateBlendingUnit!= base.graphics.accurateBlendingUnit)j.put("accurateBlendingUnit", current.graphics.accurateBlendingUnit)
+            if (current.graphics.textureFiltering    != base.graphics.textureFiltering)    j.put("textureFiltering", current.graphics.textureFiltering)
+            if (current.graphics.displayBilinear     != base.graphics.displayBilinear)     j.put("displayBilinear", current.graphics.displayBilinear)
+            if (current.graphics.texturePreloading   != base.graphics.texturePreloading)   j.put("texturePreloading", current.graphics.texturePreloading)
+            if (current.graphics.hardwareDownloadMode!= base.graphics.hardwareDownloadMode)j.put("hardwareDownloadMode", current.graphics.hardwareDownloadMode)
+            if (current.graphics.tvShader            != base.graphics.tvShader)            j.put("tvShader", current.graphics.tvShader)
+            if (current.graphics.shadeBoost          != base.graphics.shadeBoost)          j.put("shadeBoost", current.graphics.shadeBoost)
+            if (current.graphics.shadeBoostBrightness != base.graphics.shadeBoostBrightness) j.put("shadeBoostBrightness", current.graphics.shadeBoostBrightness)
+            if (current.graphics.shadeBoostContrast  != base.graphics.shadeBoostContrast)  j.put("shadeBoostContrast", current.graphics.shadeBoostContrast)
+            if (current.graphics.shadeBoostSaturation != base.graphics.shadeBoostSaturation) j.put("shadeBoostSaturation", current.graphics.shadeBoostSaturation)
+            if (current.graphics.shadeBoostGamma     != base.graphics.shadeBoostGamma)     j.put("shadeBoostGamma", current.graphics.shadeBoostGamma)
+            if (current.graphics.fxaa                != base.graphics.fxaa)                j.put("fxaa", current.graphics.fxaa)
+            if (current.graphics.shaderChainEnabled  != base.graphics.shaderChainEnabled)  j.put("shaderChainEnabled", current.graphics.shaderChainEnabled)
+            if (current.graphics.shaderChainPreset   != base.graphics.shaderChainPreset)   j.put("shaderChainPreset", current.graphics.shaderChainPreset)
+            if (current.graphics.shaderChainParams   != base.graphics.shaderChainParams)   j.put("shaderChainParams", shaderChainParamsToJson(current.graphics.shaderChainParams))
+            if (current.graphics.lsfgEnabled         != base.graphics.lsfgEnabled)         j.put("lsfgEnabled", current.graphics.lsfgEnabled)
+            if (current.graphics.lsfgMultiplier      != base.graphics.lsfgMultiplier)      j.put("lsfgMultiplier", current.graphics.lsfgMultiplier)
+            if (current.graphics.lsfgDllPath         != base.graphics.lsfgDllPath)         j.put("lsfgDllPath", current.graphics.lsfgDllPath)
+            if (current.graphics.lsfgPerformance     != base.graphics.lsfgPerformance)     j.put("lsfgPerformance", current.graphics.lsfgPerformance)
+            if (current.graphics.lsfgFlowScale       != base.graphics.lsfgFlowScale)       j.put("lsfgFlowScale", current.graphics.lsfgFlowScale)
+            if (current.graphics.lsfgTargetRate      != base.graphics.lsfgTargetRate)      j.put("lsfgTargetRate", current.graphics.lsfgTargetRate)
+            if (current.graphics.casMode             != base.graphics.casMode)             j.put("casMode", current.graphics.casMode)
+            if (current.graphics.casSharpness        != base.graphics.casSharpness)        j.put("casSharpness", current.graphics.casSharpness)
+            if (current.graphics.upscaler            != base.graphics.upscaler)            j.put("upscaler", current.graphics.upscaler)
+            if (current.graphics.fsrSharpness        != base.graphics.fsrSharpness)        j.put("fsrSharpness", current.graphics.fsrSharpness)
+            if (current.graphics.sgsrSharpness       != base.graphics.sgsrSharpness)       j.put("sgsrSharpness", current.graphics.sgsrSharpness)
+            if (current.graphics.loadTextureReplacements != base.graphics.loadTextureReplacements) j.put("loadTextureReplacements", current.graphics.loadTextureReplacements)
+            if (current.graphics.loadTextureReplacementsAsync != base.graphics.loadTextureReplacementsAsync) j.put("loadTextureReplacementsAsync", current.graphics.loadTextureReplacementsAsync)
+            if (current.graphics.precacheTextureReplacements != base.graphics.precacheTextureReplacements) j.put("precacheTextureReplacements", current.graphics.precacheTextureReplacements)
+            if (current.graphics.dumpReplaceableTextures != base.graphics.dumpReplaceableTextures) j.put("dumpReplaceableTextures", current.graphics.dumpReplaceableTextures)
+            if (current.graphics.osdShowTextureReplacements != base.graphics.osdShowTextureReplacements) j.put("osdShowTextureReplacements", current.graphics.osdShowTextureReplacements)
+            if (current.osd.osdShowFps != base.osd.osdShowFps) j.put("osdShowFps", current.osd.osdShowFps)
+            if (current.osd.osdScale != base.osd.osdScale) j.put("osdScale", current.osd.osdScale)
+            if (current.osd.osdColor != base.osd.osdColor) j.put("osdColor", current.osd.osdColor)
+            if (current.osd.osdPosition != base.osd.osdPosition) j.put("osdPosition", current.osd.osdPosition)
+            if (current.display.vsyncEnable != base.display.vsyncEnable) j.put("vsyncEnable", current.display.vsyncEnable)
+            if (current.osd.osdShowVps != base.osd.osdShowVps) j.put("osdShowVps", current.osd.osdShowVps)
+            if (current.osd.osdShowSpeed != base.osd.osdShowSpeed) j.put("osdShowSpeed", current.osd.osdShowSpeed)
+            if (current.osd.osdShowCpu != base.osd.osdShowCpu) j.put("osdShowCpu", current.osd.osdShowCpu)
+            if (current.osd.osdShowGpu != base.osd.osdShowGpu) j.put("osdShowGpu", current.osd.osdShowGpu)
+            if (current.osd.osdShowResolution != base.osd.osdShowResolution) j.put("osdShowResolution", current.osd.osdShowResolution)
+            if (current.osd.osdShowGsStats != base.osd.osdShowGsStats) j.put("osdShowGsStats", current.osd.osdShowGsStats)
+            if (current.osd.osdShowFrameTimes != base.osd.osdShowFrameTimes) j.put("osdShowFrameTimes", current.osd.osdShowFrameTimes)
+            if (current.osd.osdShowHardwareInfo != base.osd.osdShowHardwareInfo) j.put("osdShowHardwareInfo", current.osd.osdShowHardwareInfo)
+            if (current.osd.osdShowMessages != base.osd.osdShowMessages) j.put("osdShowMessages", current.osd.osdShowMessages)
+            if (current.osd.osdShowGpuStats != base.osd.osdShowGpuStats) j.put("osdShowGpuStats", current.osd.osdShowGpuStats)
+            if (current.osd.osdShowVersion != base.osd.osdShowVersion) j.put("osdShowVersion", current.osd.osdShowVersion)
+            if (current.osd.osdShowSettings != base.osd.osdShowSettings) j.put("osdShowSettings", current.osd.osdShowSettings)
+            if (current.osd.osdShowInputs != base.osd.osdShowInputs) j.put("osdShowInputs", current.osd.osdShowInputs)
+            if (current.hwFixes.autoFlush           != base.hwFixes.autoFlush)           j.put("autoFlush", current.hwFixes.autoFlush)
+            if (current.hwFixes.halfPixelOffset     != base.hwFixes.halfPixelOffset)     j.put("halfPixelOffset", current.hwFixes.halfPixelOffset)
+            if (current.hwFixes.limit24BitDepth     != base.hwFixes.limit24BitDepth)     j.put("limit24BitDepth", current.hwFixes.limit24BitDepth)
+            if (current.hwFixes.manualUserHacks     != base.hwFixes.manualUserHacks)     j.put("manualUserHacks", current.hwFixes.manualUserHacks)
+            if (current.hwFixes.textureInsideRt     != base.hwFixes.textureInsideRt)     j.put("textureInsideRt", current.hwFixes.textureInsideRt)
+            if (current.hwFixes.nativeScaling       != base.hwFixes.nativeScaling)       j.put("nativeScaling", current.hwFixes.nativeScaling)
+            if (current.hwFixes.roundSprite         != base.hwFixes.roundSprite)         j.put("roundSprite", current.hwFixes.roundSprite)
+            if (current.hwFixes.bilinearUpscale     != base.hwFixes.bilinearUpscale)     j.put("bilinearUpscale", current.hwFixes.bilinearUpscale)
+            if (current.hwFixes.gpuTargetClut       != base.hwFixes.gpuTargetClut)       j.put("gpuTargetClut", current.hwFixes.gpuTargetClut)
+            if (current.hwFixes.cpuSpriteRenderBw   != base.hwFixes.cpuSpriteRenderBw)   j.put("cpuSpriteRenderBw", current.hwFixes.cpuSpriteRenderBw)
+            if (current.hwFixes.cpuSpriteRenderLevel != base.hwFixes.cpuSpriteRenderLevel) j.put("cpuSpriteRenderLevel", current.hwFixes.cpuSpriteRenderLevel)
+            if (current.hwFixes.alignSprite         != base.hwFixes.alignSprite)         j.put("alignSprite", current.hwFixes.alignSprite)
+            if (current.hwFixes.mergeSprite         != base.hwFixes.mergeSprite)         j.put("mergeSprite", current.hwFixes.mergeSprite)
+            if (current.hwFixes.forceEvenSpritePosition != base.hwFixes.forceEvenSpritePosition) j.put("forceEvenSpritePosition", current.hwFixes.forceEvenSpritePosition)
+            if (current.hwFixes.unscaledPaletteDraw != base.hwFixes.unscaledPaletteDraw) j.put("unscaledPaletteDraw", current.hwFixes.unscaledPaletteDraw)
+            if (current.hwFixes.textureOffsetX      != base.hwFixes.textureOffsetX)      j.put("textureOffsetX", current.hwFixes.textureOffsetX)
+            if (current.hwFixes.textureOffsetY      != base.hwFixes.textureOffsetY)      j.put("textureOffsetY", current.hwFixes.textureOffsetY)
+            if (current.hwFixes.gpuPaletteConversion != base.hwFixes.gpuPaletteConversion) j.put("gpuPaletteConversion", current.hwFixes.gpuPaletteConversion)
+            if (current.hwFixes.cpuFramebufferConversion != base.hwFixes.cpuFramebufferConversion) j.put("cpuFramebufferConversion", current.hwFixes.cpuFramebufferConversion)
+            if (current.hwFixes.readTargetsWhenClosing != base.hwFixes.readTargetsWhenClosing) j.put("readTargetsWhenClosing", current.hwFixes.readTargetsWhenClosing)
+            if (current.hwFixes.disableDepthEmulation != base.hwFixes.disableDepthEmulation) j.put("disableDepthEmulation", current.hwFixes.disableDepthEmulation)
+            if (current.hwFixes.disablePartialInvalidation != base.hwFixes.disablePartialInvalidation) j.put("disablePartialInvalidation", current.hwFixes.disablePartialInvalidation)
+            if (current.hwFixes.disableSafeFeatures != base.hwFixes.disableSafeFeatures) j.put("disableSafeFeatures", current.hwFixes.disableSafeFeatures)
+            if (current.hwFixes.disableRenderFixes  != base.hwFixes.disableRenderFixes)  j.put("disableRenderFixes", current.hwFixes.disableRenderFixes)
+            if (current.hwFixes.preloadFrameData    != base.hwFixes.preloadFrameData)    j.put("preloadFrameData", current.hwFixes.preloadFrameData)
+            if (current.hwFixes.estimateTextureRegion != base.hwFixes.estimateTextureRegion) j.put("estimateTextureRegion", current.hwFixes.estimateTextureRegion)
+            if (current.hwFixes.drawBuffering        != base.hwFixes.drawBuffering)        j.put("drawBuffering", current.hwFixes.drawBuffering)
+            if (current.hwFixes.cpuClutRender       != base.hwFixes.cpuClutRender)       j.put("cpuClutRender", current.hwFixes.cpuClutRender)
+            if (current.hwFixes.triFilter           != base.hwFixes.triFilter)           j.put("triFilter", current.hwFixes.triFilter)
+            if (current.hwFixes.maxAnisotropy       != base.hwFixes.maxAnisotropy)       j.put("maxAnisotropy", current.hwFixes.maxAnisotropy)
+            if (current.hwFixes.gpuProfile          != base.hwFixes.gpuProfile)          j.put("gpuProfile", current.hwFixes.gpuProfile)
             return j
         }
 
         fun merge(base: Settings, overrides: JSONObject): Settings = Settings(
-            eeCycleRate = if (overrides.has("eeCycleRate")) overrides.getInt("eeCycleRate") else base.eeCycleRate,
-            eeCycleSkip = if (overrides.has("eeCycleSkip")) overrides.getInt("eeCycleSkip") else base.eeCycleSkip,
-            eeClampMode = if (overrides.has("eeClampMode")) overrides.getInt("eeClampMode") else base.eeClampMode,
-            vuClampMode = if (overrides.has("vuClampMode")) overrides.getInt("vuClampMode") else base.vuClampMode,
-            vu1ClampMode = if (overrides.has("vu1ClampMode")) overrides.getInt("vu1ClampMode") else base.vu1ClampMode,
-            mtvu = if (overrides.has("mtvu")) overrides.getBoolean("mtvu") else base.mtvu,
-            vu1Instant = if (overrides.has("vu1Instant")) overrides.getBoolean("vu1Instant") else base.vu1Instant,
-            vuFlagHack = if (overrides.has("vuFlagHack")) overrides.getBoolean("vuFlagHack") else base.vuFlagHack,
-            fastCDVD = if (overrides.has("fastCDVD")) overrides.getBoolean("fastCDVD") else base.fastCDVD,
-            intcStat = if (overrides.has("intcStat")) overrides.getBoolean("intcStat") else base.intcStat,
-            waitLoop = if (overrides.has("waitLoop")) overrides.getBoolean("waitLoop") else base.waitLoop,
-            vuNeonFusions = if (overrides.has("vuNeonFusions")) overrides.getBoolean("vuNeonFusions") else base.vuNeonFusions,
-            vuDeferredWrites = if (overrides.has("vuDeferredWrites")) overrides.getBoolean("vuDeferredWrites") else base.vuDeferredWrites,
-            vuSkipStallSim = if (overrides.has("vuSkipStallSim")) overrides.getBoolean("vuSkipStallSim") else base.vuSkipStallSim,
-            frameLimitEnable = if (overrides.has("frameLimitEnable")) overrides.getBoolean("frameLimitEnable") else base.frameLimitEnable,
-            nominalSpeedPercent = if (overrides.has("nominalSpeedPercent")) overrides.getInt("nominalSpeedPercent") else base.nominalSpeedPercent,
-            fpsLimit = if (overrides.has("fpsLimit")) overrides.getInt("fpsLimit") else base.fpsLimit,
-            frameSkip = if (overrides.has("frameSkip")) overrides.getInt("frameSkip") else base.frameSkip,
-            audioVolume = if (overrides.has("audioVolume")) overrides.getInt("audioVolume") else base.audioVolume,
-            audioMuted = if (overrides.has("audioMuted")) overrides.getBoolean("audioMuted") else base.audioMuted,
-            audioSwapChannels = if (overrides.has("audioSwapChannels")) overrides.getBoolean("audioSwapChannels") else base.audioSwapChannels,
-            audioTimeStretch = if (overrides.has("audioTimeStretch")) overrides.getBoolean("audioTimeStretch") else base.audioTimeStretch,
-            audioBufferMs = if (overrides.has("audioBufferMs")) overrides.getInt("audioBufferMs") else base.audioBufferMs,
-            audioOutputLatencyMs = if (overrides.has("audioOutputLatencyMs")) overrides.getInt("audioOutputLatencyMs") else base.audioOutputLatencyMs,
-            audioFastForwardVolume = if (overrides.has("audioFastForwardVolume")) overrides.getInt("audioFastForwardVolume") else base.audioFastForwardVolume,
-            spu2NeonReverb = if (overrides.has("spu2NeonReverb")) overrides.getBoolean("spu2NeonReverb") else base.spu2NeonReverb,
-            audioOpenSLES = if (overrides.has("audioOpenSLES")) overrides.getBoolean("audioOpenSLES") else base.audioOpenSLES,
-            spu2LightweightMix = if (overrides.has("spu2LightweightMix")) overrides.getBoolean("spu2LightweightMix") else base.spu2LightweightMix,
-            renderer = if (overrides.has("renderer")) overrides.getString("renderer") else base.renderer,
-            upscaleFloat = if (overrides.has("upscaleFloat")) overrides.getDouble("upscaleFloat").toFloat() else base.upscaleFloat,
-            customDriverId = if (overrides.has("customDriverId")) overrides.getString("customDriverId") else base.customDriverId,
-            orientation = if (overrides.has("orientation")) overrides.getInt("orientation") else base.orientation,
-            portraitRenderTop = if (overrides.has("portraitRenderTop")) overrides.getBoolean("portraitRenderTop") else base.portraitRenderTop,
-            landscapeRenderTop = if (overrides.has("landscapeRenderTop")) overrides.getBoolean("landscapeRenderTop") else base.landscapeRenderTop,
-            autoProgressiveScan = if (overrides.has("autoProgressiveScan")) overrides.getBoolean("autoProgressiveScan") else base.autoProgressiveScan,
-            affinityMode = if (overrides.has("affinityMode")) overrides.getInt("affinityMode") else base.affinityMode,
-            framerateNtsc = if (overrides.has("framerateNtsc")) overrides.getDouble("framerateNtsc").toFloat() else base.framerateNtsc,
-            frameratePal = if (overrides.has("frameratePal")) overrides.getDouble("frameratePal").toFloat() else base.frameratePal,
-            enablePatches = if (overrides.has("enablePatches")) overrides.getBoolean("enablePatches") else base.enablePatches,
-            enableCheats = if (overrides.has("enableCheats")) overrides.getBoolean("enableCheats") else base.enableCheats,
-            enableWideScreenPatches = if (overrides.has("enableWideScreenPatches")) overrides.getBoolean("enableWideScreenPatches") else base.enableWideScreenPatches,
-            enableNoInterlacingPatches = if (overrides.has("enableNoInterlacingPatches")) overrides.getBoolean("enableNoInterlacingPatches") else base.enableNoInterlacingPatches,
-            enableFastBoot = if (overrides.has("enableFastBoot")) overrides.getBoolean("enableFastBoot") else base.enableFastBoot,
-            hostFs = if (overrides.has("hostFs")) overrides.getBoolean("hostFs") else base.hostFs,
-            achievementsEnabled = if (overrides.has("achievementsEnabled")) overrides.getBoolean("achievementsEnabled") else base.achievementsEnabled,
-            achievementsHardcore = if (overrides.has("achievementsHardcore")) overrides.getBoolean("achievementsHardcore") else base.achievementsHardcore,
-            achievementsNotifications = if (overrides.has("achievementsNotifications")) overrides.getBoolean("achievementsNotifications") else base.achievementsNotifications,
-            achievementsLeaderboardNotifications = if (overrides.has("achievementsLeaderboardNotifications")) overrides.getBoolean("achievementsLeaderboardNotifications") else base.achievementsLeaderboardNotifications,
-            achievementsOverlays = if (overrides.has("achievementsOverlays")) overrides.getBoolean("achievementsOverlays") else base.achievementsOverlays,
-            achievementsLbOverlays = if (overrides.has("achievementsLbOverlays")) overrides.getBoolean("achievementsLbOverlays") else base.achievementsLbOverlays,
-            achievementsSoundEffects = if (overrides.has("achievementsSoundEffects")) overrides.getBoolean("achievementsSoundEffects") else base.achievementsSoundEffects,
-            achievementsEncoreMode = if (overrides.has("achievementsEncoreMode")) overrides.getBoolean("achievementsEncoreMode") else base.achievementsEncoreMode,
-            achievementsSpectatorMode = if (overrides.has("achievementsSpectatorMode")) overrides.getBoolean("achievementsSpectatorMode") else base.achievementsSpectatorMode,
-            achievementsUnofficialTestMode = if (overrides.has("achievementsUnofficialTestMode")) overrides.getBoolean("achievementsUnofficialTestMode") else base.achievementsUnofficialTestMode,
-            achievementsNotificationsDuration = if (overrides.has("achievementsNotificationsDuration")) overrides.getInt("achievementsNotificationsDuration") else base.achievementsNotificationsDuration,
-            achievementsLeaderboardsDuration = if (overrides.has("achievementsLeaderboardsDuration")) overrides.getInt("achievementsLeaderboardsDuration") else base.achievementsLeaderboardsDuration,
-            achievementsNotificationPosition = if (overrides.has("achievementsNotificationPosition")) overrides.getInt("achievementsNotificationPosition") else base.achievementsNotificationPosition,
-            achievementsOverlayPosition = if (overrides.has("achievementsOverlayPosition")) overrides.getInt("achievementsOverlayPosition") else base.achievementsOverlayPosition,
-            achievementsNotificationScale = if (overrides.has("achievementsNotificationScale")) overrides.getInt("achievementsNotificationScale") else base.achievementsNotificationScale,
-            // Always the global value: PINE is one server for the process, so "this game runs
-            // with PINE on" is not a thing that can be true. Deliberately absent from the diff
-            // above too, so a per-game file never acquires the key -- but it still has to be
-            // listed HERE, because this is a full constructor and an omitted field silently
-            // resets to the default rather than inheriting from base.
-            pineEnabled = base.pineEnabled,
-            pineSlot = base.pineSlot,
-            enableGameFixes = if (overrides.has("enableGameFixes")) overrides.getBoolean("enableGameFixes") else base.enableGameFixes,
-            gamefixSoftwareRendererFmv = if (overrides.has("gamefixSoftwareRendererFmv")) overrides.getBoolean("gamefixSoftwareRendererFmv") else base.gamefixSoftwareRendererFmv,
-            gamefixSkipMpeg = if (overrides.has("gamefixSkipMpeg")) overrides.getBoolean("gamefixSkipMpeg") else base.gamefixSkipMpeg,
-            gamefixEETiming = if (overrides.has("gamefixEETiming")) overrides.getBoolean("gamefixEETiming") else base.gamefixEETiming,
-            gamefixInstantDma = if (overrides.has("gamefixInstantDma")) overrides.getBoolean("gamefixInstantDma") else base.gamefixInstantDma,
-            gamefixBlitInternalFps = if (overrides.has("gamefixBlitInternalFps")) overrides.getBoolean("gamefixBlitInternalFps") else base.gamefixBlitInternalFps,
-            gamefixOphFlag = if (overrides.has("gamefixOphFlag")) overrides.getBoolean("gamefixOphFlag") else base.gamefixOphFlag,
-            gamefixGifFifo = if (overrides.has("gamefixGifFifo")) overrides.getBoolean("gamefixGifFifo") else base.gamefixGifFifo,
-            gamefixDmaBusy = if (overrides.has("gamefixDmaBusy")) overrides.getBoolean("gamefixDmaBusy") else base.gamefixDmaBusy,
-            gamefixVif1Stall = if (overrides.has("gamefixVif1Stall")) overrides.getBoolean("gamefixVif1Stall") else base.gamefixVif1Stall,
-            gamefixIbit = if (overrides.has("gamefixIbit")) overrides.getBoolean("gamefixIbit") else base.gamefixIbit,
-            gamefixFullVu0Sync = if (overrides.has("gamefixFullVu0Sync")) overrides.getBoolean("gamefixFullVu0Sync") else base.gamefixFullVu0Sync,
-            gamefixVuAddSub = if (overrides.has("gamefixVuAddSub")) overrides.getBoolean("gamefixVuAddSub") else base.gamefixVuAddSub,
-            gamefixVuOverflow = if (overrides.has("gamefixVuOverflow")) overrides.getBoolean("gamefixVuOverflow") else base.gamefixVuOverflow,
-            gamefixXgkick = if (overrides.has("gamefixXgkick")) overrides.getBoolean("gamefixXgkick") else base.gamefixXgkick,
-            gamefixGoemonTlb = if (overrides.has("gamefixGoemonTlb")) overrides.getBoolean("gamefixGoemonTlb") else base.gamefixGoemonTlb,
-            gamefixVuSync = if (overrides.has("gamefixVuSync")) overrides.getBoolean("gamefixVuSync") else base.gamefixVuSync,
-            skipDuplicateFrames = if (overrides.has("skipDuplicateFrames")) overrides.getBoolean("skipDuplicateFrames") else base.skipDuplicateFrames,
-            eeFpuRoundMode = if (overrides.has("eeFpuRoundMode")) overrides.getInt("eeFpuRoundMode") else base.eeFpuRoundMode,
-            vu0RoundMode = if (overrides.has("vu0RoundMode")) overrides.getInt("vu0RoundMode") else base.vu0RoundMode,
-            vu1RoundMode = if (overrides.has("vu1RoundMode")) overrides.getInt("vu1RoundMode") else base.vu1RoundMode,
-            screenOffsets = if (overrides.has("screenOffsets")) overrides.getBoolean("screenOffsets") else base.screenOffsets,
-            showOverscan = if (overrides.has("showOverscan")) overrides.getBoolean("showOverscan") else base.showOverscan,
-            antiBlur = if (overrides.has("antiBlur")) overrides.getBoolean("antiBlur") else base.antiBlur,
-            disableInterlaceOffset = if (overrides.has("disableInterlaceOffset")) overrides.getBoolean("disableInterlaceOffset") else base.disableInterlaceOffset,
-            syncToHostRefresh = if (overrides.has("syncToHostRefresh")) overrides.getBoolean("syncToHostRefresh") else base.syncToHostRefresh,
-            disableFramebufferFetch = if (overrides.has("disableFramebufferFetch")) overrides.getBoolean("disableFramebufferFetch") else base.disableFramebufferFetch,
-            hwRov = if (overrides.has("hwRov")) overrides.getBoolean("hwRov") else base.hwRov,
-            hwAa1 = if (overrides.has("hwAa1")) overrides.getBoolean("hwAa1") else base.hwAa1,
-            hwAat = false,
-            adrenoFbFetch = if (overrides.has("adrenoFbFetch")) overrides.getBoolean("adrenoFbFetch") else base.adrenoFbFetch,
-            coalesceRenderPasses = if (overrides.has("coalesceRenderPasses")) overrides.getBoolean("coalesceRenderPasses") else base.coalesceRenderPasses,
-            forceMaliFbFetch = if (overrides.has("forceMaliFbFetch")) overrides.getBoolean("forceMaliFbFetch") else base.forceMaliFbFetch,
-            useAngleOpenGL = if (overrides.has("useAngleOpenGL")) overrides.getBoolean("useAngleOpenGL") else base.useAngleOpenGL,
-            overrideTextureBarriers = if (overrides.has("overrideTextureBarriers")) overrides.getInt("overrideTextureBarriers") else base.overrideTextureBarriers,
-            gsBackThreadMode = if (overrides.has("gsBackThreadMode")) overrides.getInt("gsBackThreadMode") else base.gsBackThreadMode,
-            disableVertexShaderExpand = if (overrides.has("disableVertexShaderExpand")) overrides.getBoolean("disableVertexShaderExpand") else base.disableVertexShaderExpand,
-            useBlitSwapChain = if (overrides.has("useBlitSwapChain")) overrides.getBoolean("useBlitSwapChain") else base.useBlitSwapChain,
-            disableShaderCache = if (overrides.has("disableShaderCache")) overrides.getBoolean("disableShaderCache") else base.disableShaderCache,
-            hwAccurateAlphaTest = when {
+            cpu = CpuSettings(
+                eeCycleRate = if (overrides.has("eeCycleRate")) overrides.getInt("eeCycleRate") else base.cpu.eeCycleRate,
+                eeCycleSkip = if (overrides.has("eeCycleSkip")) overrides.getInt("eeCycleSkip") else base.cpu.eeCycleSkip,
+                eeClampMode = if (overrides.has("eeClampMode")) overrides.getInt("eeClampMode") else base.cpu.eeClampMode,
+                vuClampMode = if (overrides.has("vuClampMode")) overrides.getInt("vuClampMode") else base.cpu.vuClampMode,
+                vu1ClampMode = if (overrides.has("vu1ClampMode")) overrides.getInt("vu1ClampMode") else base.cpu.vu1ClampMode,
+                mtvu = if (overrides.has("mtvu")) overrides.getBoolean("mtvu") else base.cpu.mtvu,
+                vu1Instant = if (overrides.has("vu1Instant")) overrides.getBoolean("vu1Instant") else base.cpu.vu1Instant,
+                vuFlagHack = if (overrides.has("vuFlagHack")) overrides.getBoolean("vuFlagHack") else base.cpu.vuFlagHack,
+                fastCDVD = if (overrides.has("fastCDVD")) overrides.getBoolean("fastCDVD") else base.cpu.fastCDVD,
+                intcStat = if (overrides.has("intcStat")) overrides.getBoolean("intcStat") else base.cpu.intcStat,
+                waitLoop = if (overrides.has("waitLoop")) overrides.getBoolean("waitLoop") else base.cpu.waitLoop,
+                vuNeonFusions = if (overrides.has("vuNeonFusions")) overrides.getBoolean("vuNeonFusions") else base.cpu.vuNeonFusions,
+                vuDeferredWrites = if (overrides.has("vuDeferredWrites")) overrides.getBoolean("vuDeferredWrites") else base.cpu.vuDeferredWrites,
+                vuSkipStallSim = if (overrides.has("vuSkipStallSim")) overrides.getBoolean("vuSkipStallSim") else base.cpu.vuSkipStallSim,
+                recEE = if (overrides.has("recEE")) overrides.getBoolean("recEE") else base.cpu.recEE,
+                recIOP = if (overrides.has("recIOP")) overrides.getBoolean("recIOP") else base.cpu.recIOP,
+                recVU0 = if (overrides.has("recVU0")) overrides.getBoolean("recVU0") else base.cpu.recVU0,
+                recVU1 = if (overrides.has("recVU1")) overrides.getBoolean("recVU1") else base.cpu.recVU1,
+                enableFastmem = if (overrides.has("enableFastmem")) overrides.getBoolean("enableFastmem") else base.cpu.enableFastmem,
+                useMacEE = true,
+                useMacIOP = true,
+                useMacVU0 = true,
+                useMacVU1 = true,
+                vu1InlineFmacStall = if (overrides.has("vu1InlineFmacStall")) overrides.getBoolean("vu1InlineFmacStall") else base.cpu.vu1InlineFmacStall,
+                vu1CrossBlockPState = if (overrides.has("vu1CrossBlockPState")) overrides.getBoolean("vu1CrossBlockPState") else base.cpu.vu1CrossBlockPState,
+                vu1InlineDrainTestPipes = if (overrides.has("vu1InlineDrainTestPipes")) overrides.getBoolean("vu1InlineDrainTestPipes") else base.cpu.vu1InlineDrainTestPipes,
+                vu1FmacInstanceRouting = if (overrides.has("vu1FmacInstanceRouting")) overrides.getBoolean("vu1FmacInstanceRouting") else base.cpu.vu1FmacInstanceRouting,
+            ),
+            frameLimit = FrameLimitSettings(
+                frameLimitEnable = if (overrides.has("frameLimitEnable")) overrides.getBoolean("frameLimitEnable") else base.frameLimit.frameLimitEnable,
+                nominalSpeedPercent = if (overrides.has("nominalSpeedPercent")) overrides.getInt("nominalSpeedPercent") else base.frameLimit.nominalSpeedPercent,
+                fpsLimit = if (overrides.has("fpsLimit")) overrides.getInt("fpsLimit") else base.frameLimit.fpsLimit,
+                frameSkip = if (overrides.has("frameSkip")) overrides.getInt("frameSkip") else base.frameLimit.frameSkip,
+            ),
+            audio = AudioSettings(
+                audioVolume = if (overrides.has("audioVolume")) overrides.getInt("audioVolume") else base.audio.audioVolume,
+                audioMuted = if (overrides.has("audioMuted")) overrides.getBoolean("audioMuted") else base.audio.audioMuted,
+                audioSwapChannels = if (overrides.has("audioSwapChannels")) overrides.getBoolean("audioSwapChannels") else base.audio.audioSwapChannels,
+                audioTimeStretch = if (overrides.has("audioTimeStretch")) overrides.getBoolean("audioTimeStretch") else base.audio.audioTimeStretch,
+                audioBufferMs = if (overrides.has("audioBufferMs")) overrides.getInt("audioBufferMs") else base.audio.audioBufferMs,
+                audioOutputLatencyMs = if (overrides.has("audioOutputLatencyMs")) overrides.getInt("audioOutputLatencyMs") else base.audio.audioOutputLatencyMs,
+                audioFastForwardVolume = if (overrides.has("audioFastForwardVolume")) overrides.getInt("audioFastForwardVolume") else base.audio.audioFastForwardVolume,
+                spu2NeonReverb = if (overrides.has("spu2NeonReverb")) overrides.getBoolean("spu2NeonReverb") else base.audio.spu2NeonReverb,
+                audioOpenSLES = if (overrides.has("audioOpenSLES")) overrides.getBoolean("audioOpenSLES") else base.audio.audioOpenSLES,
+                spu2LightweightMix = if (overrides.has("spu2LightweightMix")) overrides.getBoolean("spu2LightweightMix") else base.audio.spu2LightweightMix,
+            ),
+            emuCore = EmuCoreSettings(
+                enablePatches = if (overrides.has("enablePatches")) overrides.getBoolean("enablePatches") else base.emuCore.enablePatches,
+                enableCheats = if (overrides.has("enableCheats")) overrides.getBoolean("enableCheats") else base.emuCore.enableCheats,
+                enableWideScreenPatches = if (overrides.has("enableWideScreenPatches")) overrides.getBoolean("enableWideScreenPatches") else base.emuCore.enableWideScreenPatches,
+                enableNoInterlacingPatches = if (overrides.has("enableNoInterlacingPatches")) overrides.getBoolean("enableNoInterlacingPatches") else base.emuCore.enableNoInterlacingPatches,
+                enableFastBoot = if (overrides.has("enableFastBoot")) overrides.getBoolean("enableFastBoot") else base.emuCore.enableFastBoot,
+                hostFs = if (overrides.has("hostFs")) overrides.getBoolean("hostFs") else base.emuCore.hostFs,
+                achievements = AchievementsSettings(
+                enabled = if (overrides.has("achievementsEnabled")) overrides.getBoolean("achievementsEnabled") else base.emuCore.achievements.enabled,
+                hardcore = if (overrides.has("achievementsHardcore")) overrides.getBoolean("achievementsHardcore") else base.emuCore.achievements.hardcore,
+                notifications = if (overrides.has("achievementsNotifications")) overrides.getBoolean("achievementsNotifications") else base.emuCore.achievements.notifications,
+                leaderboardNotifications = if (overrides.has("achievementsLeaderboardNotifications")) overrides.getBoolean("achievementsLeaderboardNotifications") else base.emuCore.achievements.leaderboardNotifications,
+                overlays = if (overrides.has("achievementsOverlays")) overrides.getBoolean("achievementsOverlays") else base.emuCore.achievements.overlays,
+                lbOverlays = if (overrides.has("achievementsLbOverlays")) overrides.getBoolean("achievementsLbOverlays") else base.emuCore.achievements.lbOverlays,
+                soundEffects = if (overrides.has("achievementsSoundEffects")) overrides.getBoolean("achievementsSoundEffects") else base.emuCore.achievements.soundEffects,
+                encoreMode = if (overrides.has("achievementsEncoreMode")) overrides.getBoolean("achievementsEncoreMode") else base.emuCore.achievements.encoreMode,
+                spectatorMode = if (overrides.has("achievementsSpectatorMode")) overrides.getBoolean("achievementsSpectatorMode") else base.emuCore.achievements.spectatorMode,
+                unofficialTestMode = if (overrides.has("achievementsUnofficialTestMode")) overrides.getBoolean("achievementsUnofficialTestMode") else base.emuCore.achievements.unofficialTestMode,
+                notificationsDuration = if (overrides.has("achievementsNotificationsDuration")) overrides.getInt("achievementsNotificationsDuration") else base.emuCore.achievements.notificationsDuration,
+                leaderboardsDuration = if (overrides.has("achievementsLeaderboardsDuration")) overrides.getInt("achievementsLeaderboardsDuration") else base.emuCore.achievements.leaderboardsDuration,
+                notificationPosition = if (overrides.has("achievementsNotificationPosition")) overrides.getInt("achievementsNotificationPosition") else base.emuCore.achievements.notificationPosition,
+                overlayPosition = if (overrides.has("achievementsOverlayPosition")) overrides.getInt("achievementsOverlayPosition") else base.emuCore.achievements.overlayPosition,
+                notificationScale = if (overrides.has("achievementsNotificationScale")) overrides.getInt("achievementsNotificationScale") else base.emuCore.achievements.notificationScale,
+            ),
+                // Always the global value: PINE is one server for the process, so "this game runs
+                // with PINE on" is not a thing that can be true. Deliberately absent from the diff
+                // above too, so a per-game file never acquires the key -- but it still has to be
+                // listed HERE, because this is a full constructor and an omitted field silently
+                // resets to the default rather than inheriting from base.
+                pineEnabled = base.emuCore.pineEnabled,
+                pineSlot = base.emuCore.pineSlot,
+                enableGameFixes = if (overrides.has("enableGameFixes")) overrides.getBoolean("enableGameFixes") else base.emuCore.enableGameFixes,
+                gamefixSoftwareRendererFmv = if (overrides.has("gamefixSoftwareRendererFmv")) overrides.getBoolean("gamefixSoftwareRendererFmv") else base.emuCore.gamefixSoftwareRendererFmv,
+                gamefixSkipMpeg = if (overrides.has("gamefixSkipMpeg")) overrides.getBoolean("gamefixSkipMpeg") else base.emuCore.gamefixSkipMpeg,
+                gamefixEETiming = if (overrides.has("gamefixEETiming")) overrides.getBoolean("gamefixEETiming") else base.emuCore.gamefixEETiming,
+                gamefixInstantDma = if (overrides.has("gamefixInstantDma")) overrides.getBoolean("gamefixInstantDma") else base.emuCore.gamefixInstantDma,
+                gamefixBlitInternalFps = if (overrides.has("gamefixBlitInternalFps")) overrides.getBoolean("gamefixBlitInternalFps") else base.emuCore.gamefixBlitInternalFps,
+                gamefixOphFlag = if (overrides.has("gamefixOphFlag")) overrides.getBoolean("gamefixOphFlag") else base.emuCore.gamefixOphFlag,
+                gamefixGifFifo = if (overrides.has("gamefixGifFifo")) overrides.getBoolean("gamefixGifFifo") else base.emuCore.gamefixGifFifo,
+                gamefixDmaBusy = if (overrides.has("gamefixDmaBusy")) overrides.getBoolean("gamefixDmaBusy") else base.emuCore.gamefixDmaBusy,
+                gamefixVif1Stall = if (overrides.has("gamefixVif1Stall")) overrides.getBoolean("gamefixVif1Stall") else base.emuCore.gamefixVif1Stall,
+                gamefixIbit = if (overrides.has("gamefixIbit")) overrides.getBoolean("gamefixIbit") else base.emuCore.gamefixIbit,
+                gamefixFullVu0Sync = if (overrides.has("gamefixFullVu0Sync")) overrides.getBoolean("gamefixFullVu0Sync") else base.emuCore.gamefixFullVu0Sync,
+                gamefixVuAddSub = if (overrides.has("gamefixVuAddSub")) overrides.getBoolean("gamefixVuAddSub") else base.emuCore.gamefixVuAddSub,
+                gamefixVuOverflow = if (overrides.has("gamefixVuOverflow")) overrides.getBoolean("gamefixVuOverflow") else base.emuCore.gamefixVuOverflow,
+                gamefixXgkick = if (overrides.has("gamefixXgkick")) overrides.getBoolean("gamefixXgkick") else base.emuCore.gamefixXgkick,
+                gamefixGoemonTlb = if (overrides.has("gamefixGoemonTlb")) overrides.getBoolean("gamefixGoemonTlb") else base.emuCore.gamefixGoemonTlb,
+                gamefixVuSync = if (overrides.has("gamefixVuSync")) overrides.getBoolean("gamefixVuSync") else base.emuCore.gamefixVuSync,
+                skipDuplicateFrames = if (overrides.has("skipDuplicateFrames")) overrides.getBoolean("skipDuplicateFrames") else base.emuCore.skipDuplicateFrames,
+                eeFpuRoundMode = if (overrides.has("eeFpuRoundMode")) overrides.getInt("eeFpuRoundMode") else base.emuCore.eeFpuRoundMode,
+                vu0RoundMode = if (overrides.has("vu0RoundMode")) overrides.getInt("vu0RoundMode") else base.emuCore.vu0RoundMode,
+                vu1RoundMode = if (overrides.has("vu1RoundMode")) overrides.getInt("vu1RoundMode") else base.emuCore.vu1RoundMode,
+            ),
+            display = DisplaySettings(
+                screenOffsets = if (overrides.has("screenOffsets")) overrides.getBoolean("screenOffsets") else base.display.screenOffsets,
+                showOverscan = if (overrides.has("showOverscan")) overrides.getBoolean("showOverscan") else base.display.showOverscan,
+                antiBlur = if (overrides.has("antiBlur")) overrides.getBoolean("antiBlur") else base.display.antiBlur,
+                disableInterlaceOffset = if (overrides.has("disableInterlaceOffset")) overrides.getBoolean("disableInterlaceOffset") else base.display.disableInterlaceOffset,
+                syncToHostRefresh = if (overrides.has("syncToHostRefresh")) overrides.getBoolean("syncToHostRefresh") else base.display.syncToHostRefresh,
+                disableFramebufferFetch = if (overrides.has("disableFramebufferFetch")) overrides.getBoolean("disableFramebufferFetch") else base.display.disableFramebufferFetch,
+                hwRov = if (overrides.has("hwRov")) overrides.getBoolean("hwRov") else base.display.hwRov,
+                hwAa1 = if (overrides.has("hwAa1")) overrides.getBoolean("hwAa1") else base.display.hwAa1,
+                hwAat = false,
+                adrenoFbFetch = if (overrides.has("adrenoFbFetch")) overrides.getBoolean("adrenoFbFetch") else base.display.adrenoFbFetch,
+                coalesceRenderPasses = if (overrides.has("coalesceRenderPasses")) overrides.getBoolean("coalesceRenderPasses") else base.display.coalesceRenderPasses,
+                forceMaliFbFetch = if (overrides.has("forceMaliFbFetch")) overrides.getBoolean("forceMaliFbFetch") else base.display.forceMaliFbFetch,
+                useAngleOpenGL = if (overrides.has("useAngleOpenGL")) overrides.getBoolean("useAngleOpenGL") else base.display.useAngleOpenGL,
+                overrideTextureBarriers = if (overrides.has("overrideTextureBarriers")) overrides.getInt("overrideTextureBarriers") else base.display.overrideTextureBarriers,
+                gsBackThreadMode = if (overrides.has("gsBackThreadMode")) overrides.getInt("gsBackThreadMode") else base.display.gsBackThreadMode,
+                disableVertexShaderExpand = if (overrides.has("disableVertexShaderExpand")) overrides.getBoolean("disableVertexShaderExpand") else base.display.disableVertexShaderExpand,
+                useBlitSwapChain = if (overrides.has("useBlitSwapChain")) overrides.getBoolean("useBlitSwapChain") else base.display.useBlitSwapChain,
+                disableShaderCache = if (overrides.has("disableShaderCache")) overrides.getBoolean("disableShaderCache") else base.display.disableShaderCache,
+                hwAccurateAlphaTest = when {
                 overrides.has("hwAccurateAlphaTest") -> overrides.getBoolean("hwAccurateAlphaTest")
                 overrides.has("hwAat") -> overrides.getBoolean("hwAat")
-                else -> base.hwAccurateAlphaTest
+                else -> base.display.hwAccurateAlphaTest
             },
-            skipDrawStart = if (overrides.has("skipDrawStart")) overrides.getInt("skipDrawStart") else base.skipDrawStart,
-            skipDrawEnd = if (overrides.has("skipDrawEnd")) overrides.getInt("skipDrawEnd") else base.skipDrawEnd,
-            spinGpuReadbacks = if (overrides.has("spinGpuReadbacks")) overrides.getBoolean("spinGpuReadbacks") else base.spinGpuReadbacks,
-            spinCpuReadbacks = if (overrides.has("spinCpuReadbacks")) overrides.getBoolean("spinCpuReadbacks") else base.spinCpuReadbacks,
-            integerScaling = if (overrides.has("integerScaling")) overrides.getBoolean("integerScaling") else base.integerScaling,
-            cropLeft = if (overrides.has("cropLeft")) overrides.getInt("cropLeft") else base.cropLeft,
-            displayZoom = if (overrides.has("displayZoom")) overrides.getInt("displayZoom") else base.displayZoom,
-            cropTop = if (overrides.has("cropTop")) overrides.getInt("cropTop") else base.cropTop,
-            cropRight = if (overrides.has("cropRight")) overrides.getInt("cropRight") else base.cropRight,
-            cropBottom = if (overrides.has("cropBottom")) overrides.getInt("cropBottom") else base.cropBottom,
-            dithering = if (overrides.has("dithering")) overrides.getInt("dithering") else base.dithering,
-            vsyncQueueSize = if (overrides.has("vsyncQueueSize")) overrides.getInt("vsyncQueueSize") else base.vsyncQueueSize,
-            hwScaler = if (overrides.has("hwScaler")) overrides.getInt("hwScaler") else base.hwScaler,
-            screenResOverride = if (overrides.has("screenResOverride")) overrides.getString("screenResOverride") else base.screenResOverride,
-            autoFlushSw = if (overrides.has("autoFlushSw")) overrides.getBoolean("autoFlushSw") else base.autoFlushSw,
-            mipmapSw = if (overrides.has("mipmapSw")) overrides.getBoolean("mipmapSw") else base.mipmapSw,
-            swThreads = if (overrides.has("swThreads")) overrides.getInt("swThreads") else base.swThreads,
-            swThreadsHeight = if (overrides.has("swThreadsHeight")) overrides.getInt("swThreadsHeight") else base.swThreadsHeight,
-            aspectRatio = if (overrides.has("aspectRatio")) overrides.getInt("aspectRatio") else base.aspectRatio,
-            fmvAspectRatio = if (overrides.has("fmvAspectRatio")) overrides.getInt("fmvAspectRatio") else base.fmvAspectRatio,
-            customAspectRatio = if (overrides.has("customAspectRatio")) overrides.getDouble("customAspectRatio").toFloat() else base.customAspectRatio,
-            deinterlaceMode = if (overrides.has("deinterlaceMode")) overrides.getInt("deinterlaceMode") else base.deinterlaceMode,
-            dev9EthEnable = if (overrides.has("dev9EthEnable")) overrides.getBoolean("dev9EthEnable") else base.dev9EthEnable,
-            dev9EthApi = if (overrides.has("dev9EthApi")) overrides.getString("dev9EthApi").ifEmpty { base.dev9EthApi } else base.dev9EthApi,
-            localLinkHost = if (overrides.has("localLinkHost")) overrides.getBoolean("localLinkHost") else base.localLinkHost,
-            localLinkAddress = if (overrides.has("localLinkAddress")) overrides.getString("localLinkAddress") else base.localLinkAddress,
-            localLinkPort = if (overrides.has("localLinkPort")) overrides.getInt("localLinkPort") else base.localLinkPort,
-            localLinkPeerId = if (overrides.has("localLinkPeerId")) overrides.getInt("localLinkPeerId") else base.localLinkPeerId,
-            localLinkRoomCode = if (overrides.has("localLinkRoomCode")) overrides.getString("localLinkRoomCode") else base.localLinkRoomCode,
-            dev9EthDevice = if (overrides.has("dev9EthDevice")) overrides.getString("dev9EthDevice").ifEmpty { base.dev9EthDevice } else base.dev9EthDevice,
-            dev9EthLogDhcp = if (overrides.has("dev9EthLogDhcp")) overrides.getBoolean("dev9EthLogDhcp") else base.dev9EthLogDhcp,
-            dev9EthLogDns = if (overrides.has("dev9EthLogDns")) overrides.getBoolean("dev9EthLogDns") else base.dev9EthLogDns,
-            dev9InterceptDhcp = if (overrides.has("dev9InterceptDhcp")) overrides.getBoolean("dev9InterceptDhcp") else base.dev9InterceptDhcp,
-            dev9Ps2Ip = if (overrides.has("dev9Ps2Ip")) overrides.getString("dev9Ps2Ip").ifEmpty { base.dev9Ps2Ip } else base.dev9Ps2Ip,
-            dev9Mask = if (overrides.has("dev9Mask")) overrides.getString("dev9Mask").ifEmpty { base.dev9Mask } else base.dev9Mask,
-            dev9Gateway = if (overrides.has("dev9Gateway")) overrides.getString("dev9Gateway").ifEmpty { base.dev9Gateway } else base.dev9Gateway,
-            dev9Dns1 = if (overrides.has("dev9Dns1")) overrides.getString("dev9Dns1").ifEmpty { base.dev9Dns1 } else base.dev9Dns1,
-            dev9Dns2 = if (overrides.has("dev9Dns2")) overrides.getString("dev9Dns2").ifEmpty { base.dev9Dns2 } else base.dev9Dns2,
-            dev9AutoMask = if (overrides.has("dev9AutoMask")) overrides.getBoolean("dev9AutoMask") else base.dev9AutoMask,
-            dev9AutoGateway = if (overrides.has("dev9AutoGateway")) overrides.getBoolean("dev9AutoGateway") else base.dev9AutoGateway,
-            dev9ModeDns1 = if (overrides.has("dev9ModeDns1")) overrides.getString("dev9ModeDns1").ifEmpty { base.dev9ModeDns1 } else base.dev9ModeDns1,
-            dev9ModeDns2 = if (overrides.has("dev9ModeDns2")) overrides.getString("dev9ModeDns2").ifEmpty { base.dev9ModeDns2 } else base.dev9ModeDns2,
-            dev9EthHosts = if (overrides.has("dev9EthHosts")) {
+                vsyncEnable = if (overrides.has("vsyncEnable")) overrides.getBoolean("vsyncEnable") else base.display.vsyncEnable,
+            ),
+            hwFixes = HwFixesSettings(
+                skipDrawStart = if (overrides.has("skipDrawStart")) overrides.getInt("skipDrawStart") else base.hwFixes.skipDrawStart,
+                skipDrawEnd = if (overrides.has("skipDrawEnd")) overrides.getInt("skipDrawEnd") else base.hwFixes.skipDrawEnd,
+                spinGpuReadbacks = if (overrides.has("spinGpuReadbacks")) overrides.getBoolean("spinGpuReadbacks") else base.hwFixes.spinGpuReadbacks,
+                spinCpuReadbacks = if (overrides.has("spinCpuReadbacks")) overrides.getBoolean("spinCpuReadbacks") else base.hwFixes.spinCpuReadbacks,
+                integerScaling = if (overrides.has("integerScaling")) overrides.getBoolean("integerScaling") else base.hwFixes.integerScaling,
+                cropLeft = if (overrides.has("cropLeft")) overrides.getInt("cropLeft") else base.hwFixes.cropLeft,
+                displayZoom = if (overrides.has("displayZoom")) overrides.getInt("displayZoom") else base.hwFixes.displayZoom,
+                cropTop = if (overrides.has("cropTop")) overrides.getInt("cropTop") else base.hwFixes.cropTop,
+                cropRight = if (overrides.has("cropRight")) overrides.getInt("cropRight") else base.hwFixes.cropRight,
+                cropBottom = if (overrides.has("cropBottom")) overrides.getInt("cropBottom") else base.hwFixes.cropBottom,
+                dithering = if (overrides.has("dithering")) overrides.getInt("dithering") else base.hwFixes.dithering,
+                vsyncQueueSize = if (overrides.has("vsyncQueueSize")) overrides.getInt("vsyncQueueSize") else base.hwFixes.vsyncQueueSize,
+                autoFlush = if (overrides.has("autoFlush")) overrides.getInt("autoFlush") else base.hwFixes.autoFlush,
+                halfPixelOffset = if (overrides.has("halfPixelOffset")) overrides.getInt("halfPixelOffset") else base.hwFixes.halfPixelOffset,
+                limit24BitDepth = if (overrides.has("limit24BitDepth")) overrides.getInt("limit24BitDepth") else base.hwFixes.limit24BitDepth,
+                manualUserHacks = if (overrides.has("manualUserHacks")) overrides.getBoolean("manualUserHacks") else base.hwFixes.manualUserHacks,
+                textureInsideRt = if (overrides.has("textureInsideRt")) overrides.getInt("textureInsideRt") else base.hwFixes.textureInsideRt,
+                nativeScaling = if (overrides.has("nativeScaling")) overrides.getInt("nativeScaling") else base.hwFixes.nativeScaling,
+                roundSprite = if (overrides.has("roundSprite")) overrides.getInt("roundSprite") else base.hwFixes.roundSprite,
+                bilinearUpscale = if (overrides.has("bilinearUpscale")) overrides.getInt("bilinearUpscale") else base.hwFixes.bilinearUpscale,
+                gpuTargetClut = if (overrides.has("gpuTargetClut")) overrides.getInt("gpuTargetClut") else base.hwFixes.gpuTargetClut,
+                cpuSpriteRenderBw = if (overrides.has("cpuSpriteRenderBw")) overrides.getInt("cpuSpriteRenderBw") else base.hwFixes.cpuSpriteRenderBw,
+                cpuSpriteRenderLevel = if (overrides.has("cpuSpriteRenderLevel")) overrides.getInt("cpuSpriteRenderLevel") else base.hwFixes.cpuSpriteRenderLevel,
+                alignSprite = if (overrides.has("alignSprite")) overrides.getBoolean("alignSprite") else base.hwFixes.alignSprite,
+                mergeSprite = if (overrides.has("mergeSprite")) overrides.getBoolean("mergeSprite") else base.hwFixes.mergeSprite,
+                forceEvenSpritePosition = if (overrides.has("forceEvenSpritePosition")) overrides.getBoolean("forceEvenSpritePosition") else base.hwFixes.forceEvenSpritePosition,
+                unscaledPaletteDraw = if (overrides.has("unscaledPaletteDraw")) overrides.getBoolean("unscaledPaletteDraw") else base.hwFixes.unscaledPaletteDraw,
+                textureOffsetX = if (overrides.has("textureOffsetX")) overrides.getInt("textureOffsetX") else base.hwFixes.textureOffsetX,
+                textureOffsetY = if (overrides.has("textureOffsetY")) overrides.getInt("textureOffsetY") else base.hwFixes.textureOffsetY,
+                gpuPaletteConversion = if (overrides.has("gpuPaletteConversion")) overrides.getBoolean("gpuPaletteConversion") else base.hwFixes.gpuPaletteConversion,
+                cpuFramebufferConversion = if (overrides.has("cpuFramebufferConversion")) overrides.getBoolean("cpuFramebufferConversion") else base.hwFixes.cpuFramebufferConversion,
+                readTargetsWhenClosing = if (overrides.has("readTargetsWhenClosing")) overrides.getBoolean("readTargetsWhenClosing") else base.hwFixes.readTargetsWhenClosing,
+                disableDepthEmulation = if (overrides.has("disableDepthEmulation")) overrides.getBoolean("disableDepthEmulation") else base.hwFixes.disableDepthEmulation,
+                disablePartialInvalidation = if (overrides.has("disablePartialInvalidation")) overrides.getBoolean("disablePartialInvalidation") else base.hwFixes.disablePartialInvalidation,
+                disableSafeFeatures = if (overrides.has("disableSafeFeatures")) overrides.getBoolean("disableSafeFeatures") else base.hwFixes.disableSafeFeatures,
+                disableRenderFixes = if (overrides.has("disableRenderFixes")) overrides.getBoolean("disableRenderFixes") else base.hwFixes.disableRenderFixes,
+                preloadFrameData = if (overrides.has("preloadFrameData")) overrides.getBoolean("preloadFrameData") else base.hwFixes.preloadFrameData,
+                estimateTextureRegion = if (overrides.has("estimateTextureRegion")) overrides.getBoolean("estimateTextureRegion") else base.hwFixes.estimateTextureRegion,
+                drawBuffering = if (overrides.has("drawBuffering")) overrides.getBoolean("drawBuffering") else base.hwFixes.drawBuffering,
+                cpuClutRender = if (overrides.has("cpuClutRender")) overrides.getInt("cpuClutRender") else base.hwFixes.cpuClutRender,
+                triFilter = if (overrides.has("triFilter")) overrides.getInt("triFilter") else base.hwFixes.triFilter,
+                maxAnisotropy = if (overrides.has("maxAnisotropy")) overrides.getInt("maxAnisotropy") else base.hwFixes.maxAnisotropy,
+                gpuProfile = if (overrides.has("gpuProfile")) overrides.getInt("gpuProfile") else base.hwFixes.gpuProfile,
+            ),
+            output = OutputSettings(
+                renderer = if (overrides.has("renderer")) overrides.getString("renderer") else base.output.renderer,
+                upscaleFloat = if (overrides.has("upscaleFloat")) overrides.getDouble("upscaleFloat").toFloat() else base.output.upscaleFloat,
+                customDriverId = if (overrides.has("customDriverId")) overrides.getString("customDriverId") else base.output.customDriverId,
+                orientation = if (overrides.has("orientation")) overrides.getInt("orientation") else base.output.orientation,
+                portraitRenderTop = if (overrides.has("portraitRenderTop")) overrides.getBoolean("portraitRenderTop") else base.output.portraitRenderTop,
+                landscapeRenderTop = if (overrides.has("landscapeRenderTop")) overrides.getBoolean("landscapeRenderTop") else base.output.landscapeRenderTop,
+                autoProgressiveScan = if (overrides.has("autoProgressiveScan")) overrides.getBoolean("autoProgressiveScan") else base.output.autoProgressiveScan,
+                affinityMode = if (overrides.has("affinityMode")) overrides.getInt("affinityMode") else base.output.affinityMode,
+                framerateNtsc = if (overrides.has("framerateNtsc")) overrides.getDouble("framerateNtsc").toFloat() else base.output.framerateNtsc,
+                frameratePal = if (overrides.has("frameratePal")) overrides.getDouble("frameratePal").toFloat() else base.output.frameratePal,
+                hwScaler = if (overrides.has("hwScaler")) overrides.getInt("hwScaler") else base.output.hwScaler,
+                screenResOverride = if (overrides.has("screenResOverride")) overrides.getString("screenResOverride") else base.output.screenResOverride,
+                autoFlushSw = if (overrides.has("autoFlushSw")) overrides.getBoolean("autoFlushSw") else base.output.autoFlushSw,
+                mipmapSw = if (overrides.has("mipmapSw")) overrides.getBoolean("mipmapSw") else base.output.mipmapSw,
+                swThreads = if (overrides.has("swThreads")) overrides.getInt("swThreads") else base.output.swThreads,
+                swThreadsHeight = if (overrides.has("swThreadsHeight")) overrides.getInt("swThreadsHeight") else base.output.swThreadsHeight,
+                aspectRatio = if (overrides.has("aspectRatio")) overrides.getInt("aspectRatio") else base.output.aspectRatio,
+                fmvAspectRatio = if (overrides.has("fmvAspectRatio")) overrides.getInt("fmvAspectRatio") else base.output.fmvAspectRatio,
+                customAspectRatio = if (overrides.has("customAspectRatio")) overrides.getDouble("customAspectRatio").toFloat() else base.output.customAspectRatio,
+                deinterlaceMode = if (overrides.has("deinterlaceMode")) overrides.getInt("deinterlaceMode") else base.output.deinterlaceMode,
+            ),
+            network = NetworkSettings(
+                dev9EthEnable = if (overrides.has("dev9EthEnable")) overrides.getBoolean("dev9EthEnable") else base.network.dev9EthEnable,
+                dev9EthApi = if (overrides.has("dev9EthApi")) overrides.getString("dev9EthApi").ifEmpty { base.network.dev9EthApi } else base.network.dev9EthApi,
+                localLinkHost = if (overrides.has("localLinkHost")) overrides.getBoolean("localLinkHost") else base.network.localLinkHost,
+                localLinkAddress = if (overrides.has("localLinkAddress")) overrides.getString("localLinkAddress") else base.network.localLinkAddress,
+                localLinkPort = if (overrides.has("localLinkPort")) overrides.getInt("localLinkPort") else base.network.localLinkPort,
+                localLinkPeerId = if (overrides.has("localLinkPeerId")) overrides.getInt("localLinkPeerId") else base.network.localLinkPeerId,
+                localLinkRoomCode = if (overrides.has("localLinkRoomCode")) overrides.getString("localLinkRoomCode") else base.network.localLinkRoomCode,
+                dev9EthDevice = if (overrides.has("dev9EthDevice")) overrides.getString("dev9EthDevice").ifEmpty { base.network.dev9EthDevice } else base.network.dev9EthDevice,
+                dev9EthLogDhcp = if (overrides.has("dev9EthLogDhcp")) overrides.getBoolean("dev9EthLogDhcp") else base.network.dev9EthLogDhcp,
+                dev9EthLogDns = if (overrides.has("dev9EthLogDns")) overrides.getBoolean("dev9EthLogDns") else base.network.dev9EthLogDns,
+                dev9InterceptDhcp = if (overrides.has("dev9InterceptDhcp")) overrides.getBoolean("dev9InterceptDhcp") else base.network.dev9InterceptDhcp,
+                dev9Ps2Ip = if (overrides.has("dev9Ps2Ip")) overrides.getString("dev9Ps2Ip").ifEmpty { base.network.dev9Ps2Ip } else base.network.dev9Ps2Ip,
+                dev9Mask = if (overrides.has("dev9Mask")) overrides.getString("dev9Mask").ifEmpty { base.network.dev9Mask } else base.network.dev9Mask,
+                dev9Gateway = if (overrides.has("dev9Gateway")) overrides.getString("dev9Gateway").ifEmpty { base.network.dev9Gateway } else base.network.dev9Gateway,
+                dev9Dns1 = if (overrides.has("dev9Dns1")) overrides.getString("dev9Dns1").ifEmpty { base.network.dev9Dns1 } else base.network.dev9Dns1,
+                dev9Dns2 = if (overrides.has("dev9Dns2")) overrides.getString("dev9Dns2").ifEmpty { base.network.dev9Dns2 } else base.network.dev9Dns2,
+                dev9AutoMask = if (overrides.has("dev9AutoMask")) overrides.getBoolean("dev9AutoMask") else base.network.dev9AutoMask,
+                dev9AutoGateway = if (overrides.has("dev9AutoGateway")) overrides.getBoolean("dev9AutoGateway") else base.network.dev9AutoGateway,
+                dev9ModeDns1 = if (overrides.has("dev9ModeDns1")) overrides.getString("dev9ModeDns1").ifEmpty { base.network.dev9ModeDns1 } else base.network.dev9ModeDns1,
+                dev9ModeDns2 = if (overrides.has("dev9ModeDns2")) overrides.getString("dev9ModeDns2").ifEmpty { base.network.dev9ModeDns2 } else base.network.dev9ModeDns2,
+                dev9EthHosts = if (overrides.has("dev9EthHosts")) {
                 overrides.optJSONArray("dev9EthHosts")?.let { array ->
                     buildList {
                         repeat(array.length()) { index ->
@@ -2826,115 +3016,77 @@ data class Settings(
                             }
                         }
                     }
-                } ?: base.dev9EthHosts
-            } else base.dev9EthHosts,
-            dev9HddEnable = if (overrides.has("dev9HddEnable")) overrides.getBoolean("dev9HddEnable") else base.dev9HddEnable,
-            dev9HddFile = if (overrides.has("dev9HddFile")) overrides.getString("dev9HddFile").ifEmpty { base.dev9HddFile } else base.dev9HddFile,
-            memoryCardSlot1Enabled = if (overrides.has("memoryCardSlot1Enabled")) overrides.getBoolean("memoryCardSlot1Enabled") else base.memoryCardSlot1Enabled,
-            memoryCardSlot1Filename = if (overrides.has("memoryCardSlot1Filename")) overrides.getString("memoryCardSlot1Filename").ifEmpty { base.memoryCardSlot1Filename } else base.memoryCardSlot1Filename,
-            biosFilename = if (overrides.has("biosFilename")) overrides.getString("biosFilename") else base.biosFilename,
-            memoryCardSlot2Enabled = if (overrides.has("memoryCardSlot2Enabled")) overrides.getBoolean("memoryCardSlot2Enabled") else base.memoryCardSlot2Enabled,
-            memoryCardSlot2Filename = if (overrides.has("memoryCardSlot2Filename")) overrides.getString("memoryCardSlot2Filename").ifEmpty { base.memoryCardSlot2Filename } else base.memoryCardSlot2Filename,
-            usbKeyboard = if (overrides.has("usbKeyboard")) overrides.getBoolean("usbKeyboard") else base.usbKeyboard,
-            recEE = if (overrides.has("recEE")) overrides.getBoolean("recEE") else base.recEE,
-            recIOP = if (overrides.has("recIOP")) overrides.getBoolean("recIOP") else base.recIOP,
-            recVU0 = if (overrides.has("recVU0")) overrides.getBoolean("recVU0") else base.recVU0,
-            recVU1 = if (overrides.has("recVU1")) overrides.getBoolean("recVU1") else base.recVU1,
-            enableFastmem = if (overrides.has("enableFastmem")) overrides.getBoolean("enableFastmem") else base.enableFastmem,
-            useMacEE = true,
-            useMacIOP = true,
-            useMacVU0 = true,
-            useMacVU1 = true,
-            vu1InlineFmacStall = if (overrides.has("vu1InlineFmacStall")) overrides.getBoolean("vu1InlineFmacStall") else base.vu1InlineFmacStall,
-            vu1CrossBlockPState = if (overrides.has("vu1CrossBlockPState")) overrides.getBoolean("vu1CrossBlockPState") else base.vu1CrossBlockPState,
-            vu1InlineDrainTestPipes = if (overrides.has("vu1InlineDrainTestPipes")) overrides.getBoolean("vu1InlineDrainTestPipes") else base.vu1InlineDrainTestPipes,
-            vu1FmacInstanceRouting = if (overrides.has("vu1FmacInstanceRouting")) overrides.getBoolean("vu1FmacInstanceRouting") else base.vu1FmacInstanceRouting,
-            hwMipmap = if (overrides.has("hwMipmap")) overrides.getBoolean("hwMipmap") else base.hwMipmap,
-            accurateBlendingUnit = if (overrides.has("accurateBlendingUnit")) overrides.getInt("accurateBlendingUnit") else base.accurateBlendingUnit,
-            textureFiltering = if (overrides.has("textureFiltering")) overrides.getInt("textureFiltering") else base.textureFiltering,
-            displayBilinear = if (overrides.has("displayBilinear")) overrides.getInt("displayBilinear") else base.displayBilinear,
-            texturePreloading = if (overrides.has("texturePreloading")) overrides.getInt("texturePreloading") else base.texturePreloading,
-            hardwareDownloadMode = if (overrides.has("hardwareDownloadMode")) overrides.getInt("hardwareDownloadMode") else base.hardwareDownloadMode,
-            tvShader = if (overrides.has("tvShader")) overrides.getInt("tvShader") else base.tvShader,
-            shadeBoost = if (overrides.has("shadeBoost")) overrides.getBoolean("shadeBoost") else base.shadeBoost,
-            shadeBoostBrightness = if (overrides.has("shadeBoostBrightness")) overrides.getInt("shadeBoostBrightness") else base.shadeBoostBrightness,
-            shadeBoostContrast = if (overrides.has("shadeBoostContrast")) overrides.getInt("shadeBoostContrast") else base.shadeBoostContrast,
-            shadeBoostSaturation = if (overrides.has("shadeBoostSaturation")) overrides.getInt("shadeBoostSaturation") else base.shadeBoostSaturation,
-            shadeBoostGamma = if (overrides.has("shadeBoostGamma")) overrides.getInt("shadeBoostGamma") else base.shadeBoostGamma,
-            fxaa = if (overrides.has("fxaa")) overrides.getBoolean("fxaa") else base.fxaa,
-            shaderChainEnabled = if (overrides.has("shaderChainEnabled")) overrides.getBoolean("shaderChainEnabled") else base.shaderChainEnabled,
-            shaderChainPreset = if (overrides.has("shaderChainPreset")) overrides.getString("shaderChainPreset") else base.shaderChainPreset,
+                } ?: base.network.dev9EthHosts
+            } else base.network.dev9EthHosts,
+                dev9HddEnable = if (overrides.has("dev9HddEnable")) overrides.getBoolean("dev9HddEnable") else base.network.dev9HddEnable,
+                dev9HddFile = if (overrides.has("dev9HddFile")) overrides.getString("dev9HddFile").ifEmpty { base.network.dev9HddFile } else base.network.dev9HddFile,
+            ),
+            system = SystemSettings(
+                memoryCardSlot1Enabled = if (overrides.has("memoryCardSlot1Enabled")) overrides.getBoolean("memoryCardSlot1Enabled") else base.system.memoryCardSlot1Enabled,
+                memoryCardSlot1Filename = if (overrides.has("memoryCardSlot1Filename")) overrides.getString("memoryCardSlot1Filename").ifEmpty { base.system.memoryCardSlot1Filename } else base.system.memoryCardSlot1Filename,
+                biosFilename = if (overrides.has("biosFilename")) overrides.getString("biosFilename") else base.system.biosFilename,
+                memoryCardSlot2Enabled = if (overrides.has("memoryCardSlot2Enabled")) overrides.getBoolean("memoryCardSlot2Enabled") else base.system.memoryCardSlot2Enabled,
+                memoryCardSlot2Filename = if (overrides.has("memoryCardSlot2Filename")) overrides.getString("memoryCardSlot2Filename").ifEmpty { base.system.memoryCardSlot2Filename } else base.system.memoryCardSlot2Filename,
+                usbKeyboard = if (overrides.has("usbKeyboard")) overrides.getBoolean("usbKeyboard") else base.system.usbKeyboard,
+            ),
+            graphics = GraphicsSettings(
+                hwMipmap = if (overrides.has("hwMipmap")) overrides.getBoolean("hwMipmap") else base.graphics.hwMipmap,
+                accurateBlendingUnit = if (overrides.has("accurateBlendingUnit")) overrides.getInt("accurateBlendingUnit") else base.graphics.accurateBlendingUnit,
+                textureFiltering = if (overrides.has("textureFiltering")) overrides.getInt("textureFiltering") else base.graphics.textureFiltering,
+                displayBilinear = if (overrides.has("displayBilinear")) overrides.getInt("displayBilinear") else base.graphics.displayBilinear,
+                texturePreloading = if (overrides.has("texturePreloading")) overrides.getInt("texturePreloading") else base.graphics.texturePreloading,
+                hardwareDownloadMode = if (overrides.has("hardwareDownloadMode")) overrides.getInt("hardwareDownloadMode") else base.graphics.hardwareDownloadMode,
+                tvShader = if (overrides.has("tvShader")) overrides.getInt("tvShader") else base.graphics.tvShader,
+                shadeBoost = if (overrides.has("shadeBoost")) overrides.getBoolean("shadeBoost") else base.graphics.shadeBoost,
+                shadeBoostBrightness = if (overrides.has("shadeBoostBrightness")) overrides.getInt("shadeBoostBrightness") else base.graphics.shadeBoostBrightness,
+                shadeBoostContrast = if (overrides.has("shadeBoostContrast")) overrides.getInt("shadeBoostContrast") else base.graphics.shadeBoostContrast,
+                shadeBoostSaturation = if (overrides.has("shadeBoostSaturation")) overrides.getInt("shadeBoostSaturation") else base.graphics.shadeBoostSaturation,
+                shadeBoostGamma = if (overrides.has("shadeBoostGamma")) overrides.getInt("shadeBoostGamma") else base.graphics.shadeBoostGamma,
+                fxaa = if (overrides.has("fxaa")) overrides.getBoolean("fxaa") else base.graphics.fxaa,
+                shaderChainEnabled = if (overrides.has("shaderChainEnabled")) overrides.getBoolean("shaderChainEnabled") else base.graphics.shaderChainEnabled,
+                shaderChainPreset = if (overrides.has("shaderChainPreset")) overrides.getString("shaderChainPreset") else base.graphics.shaderChainPreset,
             // Replaces the global map wholesale rather than merging per parameter: a
             // per-game tweak means "this game's chain looks like THIS", and merging would
             // let a later global edit leak into a game the user had already dialled in.
             shaderChainParams = if (overrides.has("shaderChainParams")) {
                 shaderChainParamsFromJson(overrides.optJSONObject("shaderChainParams"))
-            } else base.shaderChainParams,
-            lsfgEnabled = if (overrides.has("lsfgEnabled")) overrides.getBoolean("lsfgEnabled") else base.lsfgEnabled,
-            lsfgMultiplier = if (overrides.has("lsfgMultiplier")) overrides.getInt("lsfgMultiplier") else base.lsfgMultiplier,
-            lsfgDllPath = if (overrides.has("lsfgDllPath")) overrides.getString("lsfgDllPath") else base.lsfgDllPath,
-            lsfgPerformance = if (overrides.has("lsfgPerformance")) overrides.getBoolean("lsfgPerformance") else base.lsfgPerformance,
-            lsfgFlowScale = if (overrides.has("lsfgFlowScale")) overrides.getInt("lsfgFlowScale") else base.lsfgFlowScale,
-            lsfgTargetRate = if (overrides.has("lsfgTargetRate")) overrides.getInt("lsfgTargetRate") else base.lsfgTargetRate,
-            casMode = if (overrides.has("casMode")) overrides.getInt("casMode") else base.casMode,
-            casSharpness = if (overrides.has("casSharpness")) overrides.getInt("casSharpness") else base.casSharpness,
-            upscaler = if (overrides.has("upscaler")) overrides.getInt("upscaler") else base.upscaler,
-            fsrSharpness = if (overrides.has("fsrSharpness")) overrides.getInt("fsrSharpness") else base.fsrSharpness,
-            sgsrSharpness = if (overrides.has("sgsrSharpness")) overrides.getInt("sgsrSharpness") else base.sgsrSharpness,
-            loadTextureReplacements = if (overrides.has("loadTextureReplacements")) overrides.getBoolean("loadTextureReplacements") else base.loadTextureReplacements,
-            loadTextureReplacementsAsync = if (overrides.has("loadTextureReplacementsAsync")) overrides.getBoolean("loadTextureReplacementsAsync") else base.loadTextureReplacementsAsync,
-            precacheTextureReplacements = if (overrides.has("precacheTextureReplacements")) overrides.getBoolean("precacheTextureReplacements") else base.precacheTextureReplacements,
-            dumpReplaceableTextures = if (overrides.has("dumpReplaceableTextures")) overrides.getBoolean("dumpReplaceableTextures") else base.dumpReplaceableTextures,
-            osdShowTextureReplacements = if (overrides.has("osdShowTextureReplacements")) overrides.getBoolean("osdShowTextureReplacements") else base.osdShowTextureReplacements,
-            osdShowFps = if (overrides.has("osdShowFps")) overrides.getBoolean("osdShowFps") else base.osdShowFps,
-            osdScale = if (overrides.has("osdScale")) overrides.getInt("osdScale") else base.osdScale,
-            osdColor = if (overrides.has("osdColor")) overrides.getInt("osdColor") else base.osdColor,
-            osdPosition = if (overrides.has("osdPosition")) overrides.getInt("osdPosition") else base.osdPosition,
-            vsyncEnable = if (overrides.has("vsyncEnable")) overrides.getBoolean("vsyncEnable") else base.vsyncEnable,
-            osdShowVps = if (overrides.has("osdShowVps")) overrides.getBoolean("osdShowVps") else base.osdShowVps,
-            osdShowSpeed = if (overrides.has("osdShowSpeed")) overrides.getBoolean("osdShowSpeed") else base.osdShowSpeed,
-            osdShowCpu = if (overrides.has("osdShowCpu")) overrides.getBoolean("osdShowCpu") else base.osdShowCpu,
-            osdShowGpu = if (overrides.has("osdShowGpu")) overrides.getBoolean("osdShowGpu") else base.osdShowGpu,
-            osdShowResolution = if (overrides.has("osdShowResolution")) overrides.getBoolean("osdShowResolution") else base.osdShowResolution,
-            osdShowGsStats = if (overrides.has("osdShowGsStats")) overrides.getBoolean("osdShowGsStats") else base.osdShowGsStats,
-            osdShowFrameTimes = if (overrides.has("osdShowFrameTimes")) overrides.getBoolean("osdShowFrameTimes") else base.osdShowFrameTimes,
-            osdShowHardwareInfo = if (overrides.has("osdShowHardwareInfo")) overrides.getBoolean("osdShowHardwareInfo") else base.osdShowHardwareInfo,
-            osdShowMessages = if (overrides.has("osdShowMessages")) overrides.getBoolean("osdShowMessages") else base.osdShowMessages,
-            osdShowGpuStats = if (overrides.has("osdShowGpuStats")) overrides.getBoolean("osdShowGpuStats") else base.osdShowGpuStats,
-            osdShowVersion = if (overrides.has("osdShowVersion")) overrides.getBoolean("osdShowVersion") else base.osdShowVersion,
-            osdShowSettings = if (overrides.has("osdShowSettings")) overrides.getBoolean("osdShowSettings") else base.osdShowSettings,
-            osdShowInputs = if (overrides.has("osdShowInputs")) overrides.getBoolean("osdShowInputs") else base.osdShowInputs,
-            autoFlush = if (overrides.has("autoFlush")) overrides.getInt("autoFlush") else base.autoFlush,
-            halfPixelOffset = if (overrides.has("halfPixelOffset")) overrides.getInt("halfPixelOffset") else base.halfPixelOffset,
-            limit24BitDepth = if (overrides.has("limit24BitDepth")) overrides.getInt("limit24BitDepth") else base.limit24BitDepth,
-            manualUserHacks = if (overrides.has("manualUserHacks")) overrides.getBoolean("manualUserHacks") else base.manualUserHacks,
-            textureInsideRt = if (overrides.has("textureInsideRt")) overrides.getInt("textureInsideRt") else base.textureInsideRt,
-            nativeScaling = if (overrides.has("nativeScaling")) overrides.getInt("nativeScaling") else base.nativeScaling,
-            roundSprite = if (overrides.has("roundSprite")) overrides.getInt("roundSprite") else base.roundSprite,
-            bilinearUpscale = if (overrides.has("bilinearUpscale")) overrides.getInt("bilinearUpscale") else base.bilinearUpscale,
-            gpuTargetClut = if (overrides.has("gpuTargetClut")) overrides.getInt("gpuTargetClut") else base.gpuTargetClut,
-            cpuSpriteRenderBw = if (overrides.has("cpuSpriteRenderBw")) overrides.getInt("cpuSpriteRenderBw") else base.cpuSpriteRenderBw,
-            cpuSpriteRenderLevel = if (overrides.has("cpuSpriteRenderLevel")) overrides.getInt("cpuSpriteRenderLevel") else base.cpuSpriteRenderLevel,
-            alignSprite = if (overrides.has("alignSprite")) overrides.getBoolean("alignSprite") else base.alignSprite,
-            mergeSprite = if (overrides.has("mergeSprite")) overrides.getBoolean("mergeSprite") else base.mergeSprite,
-            forceEvenSpritePosition = if (overrides.has("forceEvenSpritePosition")) overrides.getBoolean("forceEvenSpritePosition") else base.forceEvenSpritePosition,
-            unscaledPaletteDraw = if (overrides.has("unscaledPaletteDraw")) overrides.getBoolean("unscaledPaletteDraw") else base.unscaledPaletteDraw,
-            textureOffsetX = if (overrides.has("textureOffsetX")) overrides.getInt("textureOffsetX") else base.textureOffsetX,
-            textureOffsetY = if (overrides.has("textureOffsetY")) overrides.getInt("textureOffsetY") else base.textureOffsetY,
-            gpuPaletteConversion = if (overrides.has("gpuPaletteConversion")) overrides.getBoolean("gpuPaletteConversion") else base.gpuPaletteConversion,
-            cpuFramebufferConversion = if (overrides.has("cpuFramebufferConversion")) overrides.getBoolean("cpuFramebufferConversion") else base.cpuFramebufferConversion,
-            readTargetsWhenClosing = if (overrides.has("readTargetsWhenClosing")) overrides.getBoolean("readTargetsWhenClosing") else base.readTargetsWhenClosing,
-            disableDepthEmulation = if (overrides.has("disableDepthEmulation")) overrides.getBoolean("disableDepthEmulation") else base.disableDepthEmulation,
-            disablePartialInvalidation = if (overrides.has("disablePartialInvalidation")) overrides.getBoolean("disablePartialInvalidation") else base.disablePartialInvalidation,
-            disableSafeFeatures = if (overrides.has("disableSafeFeatures")) overrides.getBoolean("disableSafeFeatures") else base.disableSafeFeatures,
-            disableRenderFixes = if (overrides.has("disableRenderFixes")) overrides.getBoolean("disableRenderFixes") else base.disableRenderFixes,
-            preloadFrameData = if (overrides.has("preloadFrameData")) overrides.getBoolean("preloadFrameData") else base.preloadFrameData,
-            estimateTextureRegion = if (overrides.has("estimateTextureRegion")) overrides.getBoolean("estimateTextureRegion") else base.estimateTextureRegion,
-            drawBuffering = if (overrides.has("drawBuffering")) overrides.getBoolean("drawBuffering") else base.drawBuffering,
-            cpuClutRender = if (overrides.has("cpuClutRender")) overrides.getInt("cpuClutRender") else base.cpuClutRender,
-            triFilter = if (overrides.has("triFilter")) overrides.getInt("triFilter") else base.triFilter,
-            maxAnisotropy = if (overrides.has("maxAnisotropy")) overrides.getInt("maxAnisotropy") else base.maxAnisotropy,
-            gpuProfile = if (overrides.has("gpuProfile")) overrides.getInt("gpuProfile") else base.gpuProfile,
+            } else base.graphics.shaderChainParams,
+                lsfgEnabled = if (overrides.has("lsfgEnabled")) overrides.getBoolean("lsfgEnabled") else base.graphics.lsfgEnabled,
+                lsfgMultiplier = if (overrides.has("lsfgMultiplier")) overrides.getInt("lsfgMultiplier") else base.graphics.lsfgMultiplier,
+                lsfgDllPath = if (overrides.has("lsfgDllPath")) overrides.getString("lsfgDllPath") else base.graphics.lsfgDllPath,
+                lsfgPerformance = if (overrides.has("lsfgPerformance")) overrides.getBoolean("lsfgPerformance") else base.graphics.lsfgPerformance,
+                lsfgFlowScale = if (overrides.has("lsfgFlowScale")) overrides.getInt("lsfgFlowScale") else base.graphics.lsfgFlowScale,
+                lsfgTargetRate = if (overrides.has("lsfgTargetRate")) overrides.getInt("lsfgTargetRate") else base.graphics.lsfgTargetRate,
+                casMode = if (overrides.has("casMode")) overrides.getInt("casMode") else base.graphics.casMode,
+                casSharpness = if (overrides.has("casSharpness")) overrides.getInt("casSharpness") else base.graphics.casSharpness,
+                upscaler = if (overrides.has("upscaler")) overrides.getInt("upscaler") else base.graphics.upscaler,
+                fsrSharpness = if (overrides.has("fsrSharpness")) overrides.getInt("fsrSharpness") else base.graphics.fsrSharpness,
+                sgsrSharpness = if (overrides.has("sgsrSharpness")) overrides.getInt("sgsrSharpness") else base.graphics.sgsrSharpness,
+                loadTextureReplacements = if (overrides.has("loadTextureReplacements")) overrides.getBoolean("loadTextureReplacements") else base.graphics.loadTextureReplacements,
+                loadTextureReplacementsAsync = if (overrides.has("loadTextureReplacementsAsync")) overrides.getBoolean("loadTextureReplacementsAsync") else base.graphics.loadTextureReplacementsAsync,
+                precacheTextureReplacements = if (overrides.has("precacheTextureReplacements")) overrides.getBoolean("precacheTextureReplacements") else base.graphics.precacheTextureReplacements,
+                dumpReplaceableTextures = if (overrides.has("dumpReplaceableTextures")) overrides.getBoolean("dumpReplaceableTextures") else base.graphics.dumpReplaceableTextures,
+                osdShowTextureReplacements = if (overrides.has("osdShowTextureReplacements")) overrides.getBoolean("osdShowTextureReplacements") else base.graphics.osdShowTextureReplacements,
+            ),
+            osd = OsdSettings(
+                osdShowFps = if (overrides.has("osdShowFps")) overrides.getBoolean("osdShowFps") else base.osd.osdShowFps,
+                osdScale = if (overrides.has("osdScale")) overrides.getInt("osdScale") else base.osd.osdScale,
+                osdColor = if (overrides.has("osdColor")) overrides.getInt("osdColor") else base.osd.osdColor,
+                osdPosition = if (overrides.has("osdPosition")) overrides.getInt("osdPosition") else base.osd.osdPosition,
+                osdShowVps = if (overrides.has("osdShowVps")) overrides.getBoolean("osdShowVps") else base.osd.osdShowVps,
+                osdShowSpeed = if (overrides.has("osdShowSpeed")) overrides.getBoolean("osdShowSpeed") else base.osd.osdShowSpeed,
+                osdShowCpu = if (overrides.has("osdShowCpu")) overrides.getBoolean("osdShowCpu") else base.osd.osdShowCpu,
+                osdShowGpu = if (overrides.has("osdShowGpu")) overrides.getBoolean("osdShowGpu") else base.osd.osdShowGpu,
+                osdShowResolution = if (overrides.has("osdShowResolution")) overrides.getBoolean("osdShowResolution") else base.osd.osdShowResolution,
+                osdShowGsStats = if (overrides.has("osdShowGsStats")) overrides.getBoolean("osdShowGsStats") else base.osd.osdShowGsStats,
+                osdShowFrameTimes = if (overrides.has("osdShowFrameTimes")) overrides.getBoolean("osdShowFrameTimes") else base.osd.osdShowFrameTimes,
+                osdShowHardwareInfo = if (overrides.has("osdShowHardwareInfo")) overrides.getBoolean("osdShowHardwareInfo") else base.osd.osdShowHardwareInfo,
+                osdShowMessages = if (overrides.has("osdShowMessages")) overrides.getBoolean("osdShowMessages") else base.osd.osdShowMessages,
+                osdShowGpuStats = if (overrides.has("osdShowGpuStats")) overrides.getBoolean("osdShowGpuStats") else base.osd.osdShowGpuStats,
+                osdShowVersion = if (overrides.has("osdShowVersion")) overrides.getBoolean("osdShowVersion") else base.osd.osdShowVersion,
+                osdShowSettings = if (overrides.has("osdShowSettings")) overrides.getBoolean("osdShowSettings") else base.osd.osdShowSettings,
+                osdShowInputs = if (overrides.has("osdShowInputs")) overrides.getBoolean("osdShowInputs") else base.osd.osdShowInputs,
+            ),
         )
     }
 }
