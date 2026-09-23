@@ -50,9 +50,9 @@ public:
 		bool vk_khr_shader_non_semantic_info : 1;
 		bool vk_ext_attachment_feedback_loop_layout : 1;
 		/// VK_EXT_attachment_feedback_loop_dynamic_state — the per-draw spelling of the
-		/// feedback-loop declaration, and the default one since 2026-09-22. Requested wherever the
-		/// feedback-loop LAYOUT extension is also there, because off that road there is nothing
-		/// to declare; `-loop-create-flag` suppresses the request. See
+		/// feedback-loop declaration, and Turnip's default one since 2026-09-22. Requested on
+		/// Adreno wherever the feedback-loop LAYOUT extension is also there, because off that road
+		/// there is nothing to declare; `-loop-create-flag` suppresses the request. See
 		/// GSDynamicFeedbackLoopPolicy.h.
 		bool vk_ext_attachment_feedback_loop_dynamic_state : 1;
 		bool vk_ext_fragment_shader_interlock : 1;
@@ -143,8 +143,9 @@ public:
 	// Declare the feedback loop per draw with vkCmdSetAttachmentFeedbackLoopEnableEXT instead of
 	// with the pipeline create flag, so a driver that programs its coherent primitive mode from
 	// the declaration applies it to the draws that read rather than to every pipeline in the
-	// latched pass. ⚠️ TRUE on an ordinary run since 2026-09-22: the create flag costs 2.8x
-	// on wrc3@1x on Turnip and it is what the flagless path was taking. Decided by
+	// latched pass. ⚠️ TRUE on an ordinary Turnip run since 2026-09-22: the create flag costs
+	// 2.8x on wrc3@1x there and it is what the flagless path was taking. Every driver but Turnip
+	// and Honeykrisp keeps the create flag. Decided by
 	// GSDynamicFeedbackLoopPolicy.h, written once in CheckFeatures before the first pipeline
 	// exists -- a pipeline's dynamic-state list cannot be changed afterwards -- and read in
 	// CreateTFXPipeline and per draw in DoRenderHW.

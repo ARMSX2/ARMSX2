@@ -80,9 +80,14 @@
 //
 // Where each spelling comes from:
 //
-//   * per draw -- the default, taken whenever the feedback-loop LAYOUT road is live and
+//   * per draw -- the default on the drivers it was run on (Turnip, and Honeykrisp for the
+//     identity runs), taken whenever the feedback-loop LAYOUT road is live and
 //     VK_EXT_attachment_feedback_loop_dynamic_state is present with its feature bit on.
-//   * create flag, by fallback -- the layout road is live and that extension is NOT there. The
+//   * create flag, by device -- every other driver, which is desktop NVIDIA, AMD and Intel
+//     Vulkan. They take the layout road by default and have always declared the loop with the
+//     create flag; nobody has run the per-draw spelling on them, so they keep it, and the
+//     extension is not even requested there. Not reported: it is the spelling they always had.
+//   * create flag, by fallback -- a measured driver on the layout road without that extension. The
 //     declaration still has to be made, and the create flag is the only spelling left. Said out
 //     loud, because on Turnip it is the expensive one and a silent fallback is a device that
 //     quietly runs the 2.8x arm.
@@ -117,12 +122,17 @@ struct GSDynamicFeedbackLoopInputs
 
 	/// VK_EXT_attachment_feedback_loop_dynamic_state is present AND its feature bit is on.
 	bool dynamic_state_available = false;
+
+	/// The driver the per-draw spelling was run on: Turnip (priced on the SD865) and Honeykrisp
+	/// (identity runs on the M2). Every other driver keeps the create flag it always had, and the
+	/// fallback is not reported for it, because it is not a fallback there.
+	bool device_measured = false;
 };
 
 /// True when the backend declares the loop per draw instead of per pipeline.
 constexpr bool GSDeclaresLoopPerDraw(const GSDynamicFeedbackLoopInputs& in)
 {
-	return in.spelling == GSLoopDeclarationSpelling::DynamicPerDraw && in.layout_road_live &&
+	return in.spelling == GSLoopDeclarationSpelling::DynamicPerDraw && in.device_measured && in.layout_road_live &&
 	       in.dynamic_state_available;
 }
 
@@ -134,7 +144,7 @@ constexpr bool GSDeclaresLoopPerDraw(const GSDynamicFeedbackLoopInputs& in)
 /// is not a fallback and does not report -- somebody asked for it.
 constexpr bool GSLoopSpellingFallsBackToCreateFlag(const GSDynamicFeedbackLoopInputs& in)
 {
-	return in.spelling == GSLoopDeclarationSpelling::DynamicPerDraw && in.layout_road_live &&
+	return in.spelling == GSLoopDeclarationSpelling::DynamicPerDraw && in.device_measured && in.layout_road_live &&
 	       !in.dynamic_state_available;
 }
 
@@ -145,30 +155,39 @@ constexpr bool GSLoopSpellingFallsBackToCreateFlag(const GSDynamicFeedbackLoopIn
 // road changed spelling by accident, which is a silent 2.8x on one title in twenty.
 
 // The default spelling is per draw wherever there is a loop to declare and the extension to
-// declare it with -- no flag, no key, no setting.
-static_assert(GSDeclaresLoopPerDraw({.layout_road_live = true, .dynamic_state_available = true}));
+// declare it with, on a driver it was run on -- no flag, no key, no setting.
+static_assert(GSDeclaresLoopPerDraw({.layout_road_live = true, .dynamic_state_available = true, .device_measured = true}));
+static_assert(!GSLoopSpellingFallsBackToCreateFlag(
+	{.layout_road_live = true, .dynamic_state_available = true, .device_measured = true}));
+
+// Desktop Vulkan: the layout road is its default road, and it keeps the create flag it always had,
+// silently, whether or not its driver has the extension.
+static_assert(!GSDeclaresLoopPerDraw({.layout_road_live = true, .dynamic_state_available = true}));
 static_assert(!GSLoopSpellingFallsBackToCreateFlag({.layout_road_live = true, .dynamic_state_available = true}));
+static_assert(!GSDeclaresLoopPerDraw({.layout_road_live = true}));
+static_assert(!GSLoopSpellingFallsBackToCreateFlag({.layout_road_live = true}));
 
 // Asked for explicitly, it is the same thing. `spelling` carries no third state.
 static_assert(GSDeclaresLoopPerDraw({.spelling = GSLoopDeclarationSpelling::DynamicPerDraw,
-	.layout_road_live = true, .dynamic_state_available = true}));
+	.layout_road_live = true, .dynamic_state_available = true, .device_measured = true}));
 
 // Forced back to the create flag on a device that could have done either: deliberate, so not a
 // fallback and not reported.
 static_assert(!GSDeclaresLoopPerDraw({.spelling = GSLoopDeclarationSpelling::PipelineCreateFlag,
-	.layout_road_live = true, .dynamic_state_available = true}));
+	.layout_road_live = true, .dynamic_state_available = true, .device_measured = true}));
 static_assert(!GSLoopSpellingFallsBackToCreateFlag({.spelling = GSLoopDeclarationSpelling::PipelineCreateFlag,
-	.layout_road_live = true, .dynamic_state_available = true}));
+	.layout_road_live = true, .dynamic_state_available = true, .device_measured = true}));
 
 // On the layout road without the extension the loop still has to be declared, so the create flag
-// is what is left -- and that IS the fallback, which is the one case worth a line in the log.
-static_assert(!GSDeclaresLoopPerDraw({.layout_road_live = true}));
-static_assert(GSLoopSpellingFallsBackToCreateFlag({.layout_road_live = true}));
+// is what is left -- and on a measured driver that IS the fallback, the one case worth a line in
+// the log. The M2 is this row: Honeykrisp has no dynamic-state extension.
+static_assert(!GSDeclaresLoopPerDraw({.layout_road_live = true, .device_measured = true}));
+static_assert(GSLoopSpellingFallsBackToCreateFlag({.layout_road_live = true, .device_measured = true}));
 
 // Off the layout road nothing is declared either way, whatever the device advertises. This is the
 // ordinary case -- every copy-road device is here -- so it is silent.
-static_assert(!GSDeclaresLoopPerDraw({.dynamic_state_available = true}));
-static_assert(!GSLoopSpellingFallsBackToCreateFlag({.dynamic_state_available = true}));
+static_assert(!GSDeclaresLoopPerDraw({.dynamic_state_available = true, .device_measured = true}));
+static_assert(!GSLoopSpellingFallsBackToCreateFlag({.dynamic_state_available = true, .device_measured = true}));
 static_assert(!GSDeclaresLoopPerDraw({}));
 static_assert(!GSLoopSpellingFallsBackToCreateFlag({}));
 

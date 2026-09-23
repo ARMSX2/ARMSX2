@@ -1161,8 +1161,9 @@ static void PrintCommandLineHelp(const char* progname)
 						 "that need the ordering. Inert on a build that declares nothing. Vulkan only.\n");
 	std::fprintf(stderr, "  -loop-create-flag: Declare the attachment feedback loop with the pipeline create flag "
 						 "instead of per draw with vkCmdSetAttachmentFeedbackLoopEnableEXT. The per-draw spelling is "
-						 "the DEFAULT wherever the feedback-loop layout road is live and the dynamic-state extension "
-						 "is there, so this forces the fallback. Same draws declared, same passes, same image layout "
+						 "the DEFAULT on Turnip and Honeykrisp wherever the feedback-loop layout road is live and the "
+						 "dynamic-state extension is there (every other driver keeps the create flag), so this "
+						 "forces the fallback. Same draws declared, same passes, same image layout "
 						 "-- only when it is stated changes, and that is byte-identical. Measurement instrument only: "
 						 "on Turnip the create flag puts the driver's serialising primitive mode on every pipeline in "
 						 "a latched pass and costs up to 2.8x (wrc3@1x, SD865: 51.8 ms against 18.5). Vulkan only.\n");

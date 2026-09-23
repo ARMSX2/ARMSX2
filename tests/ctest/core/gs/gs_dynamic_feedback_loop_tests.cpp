@@ -9,9 +9,10 @@
 // pass, so the driver's serialising primitive mode reaches draws that never read anything. On the
 // SD865 that is 51.8 ms against 18.5 on wrc3@1x -- one title straight over its frame budget.
 //
-// ⚠️ Since 2026-09-22 the per-draw spelling is the DEFAULT. What these tests now pin is that a
-// run with no flag, no key and no setting gets per draw wherever there is a loop to declare and
-// an extension to declare it with; that forcing the create flag still works, for pricing the
+// ⚠️ Since 2026-09-22 the per-draw spelling is the DEFAULT on the drivers it was run on (Turnip,
+// Honeykrisp). What these tests now pin is that a run with no flag, no key and no setting gets per
+// draw there wherever there is a loop to declare and an extension to declare it with; that desktop
+// Vulkan keeps the create flag it always had; that forcing the create flag still works, for pricing the
 // fallback; and that the one case worth a line in the log -- the layout road live with no
 // dynamic-state extension, so the declaration falls back to the expensive spelling -- is reported
 // while the ordinary copy-road case stays silent. The old shape of that report fired whenever the
@@ -26,9 +27,20 @@
 
 namespace
 {
-	// A device on the layout road with the extension: the one configuration the per-draw spelling
-	// can be applied on.
+	// A measured driver (Turnip) on the layout road with the extension: the one configuration the
+	// per-draw spelling can be applied on.
 	constexpr GSDynamicFeedbackLoopInputs Capable()
+	{
+		GSDynamicFeedbackLoopInputs in;
+		in.layout_road_live = true;
+		in.dynamic_state_available = true;
+		in.device_measured = true;
+		return in;
+	}
+
+	// Desktop Vulkan -- NVIDIA, AMD (RADV) or Intel (ANV): the layout road by default, the
+	// extension possibly present, and never run with the per-draw spelling.
+	constexpr GSDynamicFeedbackLoopInputs DesktopVulkan()
 	{
 		GSDynamicFeedbackLoopInputs in;
 		in.layout_road_live = true;
@@ -73,6 +85,19 @@ TEST(GSDynamicFeedbackLoop, WithoutTheExtensionItFallsBackAndIsReported)
 	EXPECT_FALSE(GSLoopSpellingFallsBackToCreateFlag(Forced(in)));
 }
 
+// Desktop Vulkan keeps origin/master's pipeline create flag, with or without the extension, and
+// says nothing about it: it is the spelling that driver has always had, not a fallback.
+TEST(GSDynamicFeedbackLoop, DesktopVulkanKeepsTheCreateFlagSilently)
+{
+	EXPECT_FALSE(GSDeclaresLoopPerDraw(DesktopVulkan()));
+	EXPECT_FALSE(GSLoopSpellingFallsBackToCreateFlag(DesktopVulkan()));
+
+	GSDynamicFeedbackLoopInputs no_extension = DesktopVulkan();
+	no_extension.dynamic_state_available = false;
+	EXPECT_FALSE(GSDeclaresLoopPerDraw(no_extension));
+	EXPECT_FALSE(GSLoopSpellingFallsBackToCreateFlag(no_extension));
+}
+
 // Off the layout road there is no declaration to spell: the in-tile road states the loop with an
 // input attachment and the copy road states nothing at all. Neither spelling applies, and it is
 // silent -- this is the ordinary case on most devices, so a report here would be noise in every
@@ -92,15 +117,16 @@ TEST(GSDynamicFeedbackLoop, OffTheLayoutRoadNothingIsDeclaredAndNothingIsReporte
 // per draw and did not get it, and the two are never both true.
 TEST(GSDynamicFeedbackLoop, AppliedAndFallbackPartitionTheLayoutRoad)
 {
-	for (int bits = 0; bits < 8; bits++)
+	for (int bits = 0; bits < 16; bits++)
 	{
 		GSDynamicFeedbackLoopInputs in;
 		in.spelling = (bits & 1) != 0 ? GSLoopDeclarationSpelling::DynamicPerDraw :
 		                                GSLoopDeclarationSpelling::PipelineCreateFlag;
 		in.layout_road_live = (bits & 2) != 0;
 		in.dynamic_state_available = (bits & 4) != 0;
+		in.device_measured = (bits & 8) != 0;
 
-		const bool wants = in.spelling == GSLoopDeclarationSpelling::DynamicPerDraw;
+		const bool wants = in.spelling == GSLoopDeclarationSpelling::DynamicPerDraw && in.device_measured;
 		const bool applied = wants && in.layout_road_live && in.dynamic_state_available;
 		const bool fell_back = wants && in.layout_road_live && !in.dynamic_state_available;
 		EXPECT_EQ(GSDeclaresLoopPerDraw(in), applied) << "bits=" << bits;

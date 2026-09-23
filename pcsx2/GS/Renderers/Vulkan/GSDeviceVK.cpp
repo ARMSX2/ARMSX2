@@ -513,15 +513,15 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 	m_optional_extensions.vk_ext_attachment_feedback_loop_layout =
 		SupportsExtension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME, false);
 	// VK_EXT_attachment_feedback_loop_dynamic_state: the per-draw spelling of the feedback-loop
-	// declaration, and since 2026-09-22 the DEFAULT spelling wherever the layout road above is live --
-	// on Turnip the create-flag spelling puts the driver's serialising primitive mode on every
-	// pipeline in a latched pass and costs 2.8x on wrc3@1x. See GSDynamicFeedbackLoopPolicy.h.
-	// Requested alongside the layout extension rather than unconditionally, because without that
-	// road there is no declaration to spell; `-loop-create-flag` keeps the old device reachable
+	// declaration, the DEFAULT spelling on Turnip wherever the layout road above is live -- there
+	// the create-flag spelling puts the driver's serialising primitive mode on every pipeline in a
+	// latched pass and costs 2.8x on wrc3@1x. See GSDynamicFeedbackLoopPolicy.h. Requested on
+	// Adreno only: every other driver keeps the create flag it always had, so the device it
+	// creates is the one it created before. `-loop-create-flag` keeps the old device reachable
 	// for measuring the fallback. Whether it is USED is decided in CheckFeatures, which is where
 	// the road is known.
 	m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state =
-		m_optional_extensions.vk_ext_attachment_feedback_loop_layout &&
+		m_optional_extensions.vk_ext_attachment_feedback_loop_layout && IsDeviceAdreno() &&
 		GSDynamicFeedbackLoopPolicy::WantsDynamicPerDraw() &&
 		SupportsExtension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME, false);
 	m_optional_extensions.vk_ext_line_rasterization = SupportsExtension(VK_EXT_LINE_RASTERIZATION_EXTENSION_NAME, false);
@@ -4066,19 +4066,23 @@ bool GSDeviceVK::CheckFeatures()
 	// of those bakes the spelling in permanently.
 	m_force_feedback_loop_layout = road.force_feedback_loop_layout;
 
-	// Which spelling the loop is declared in: per draw (the default) or with the pipeline create
-	// flag. Resolved here for the same reason as the line above -- a pipeline's dynamic-state
-	// list is fixed at creation, so this has to be final before the first one exists.
+	// Which spelling the loop is declared in: per draw (the default on Turnip and Honeykrisp) or
+	// with the pipeline create flag (every other driver, as before). Resolved here for the same
+	// reason as the line above -- a pipeline's dynamic-state list is fixed at creation, so this
+	// has to be final before the first one exists.
 	const GSDynamicFeedbackLoopInputs dynamic_loop_inputs = {
-		GSDynamicFeedbackLoopPolicy::GetSpelling(), UseFeedbackLoopLayout(),
-		m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state};
+		.spelling = GSDynamicFeedbackLoopPolicy::GetSpelling(),
+		.layout_road_live = UseFeedbackLoopLayout(),
+		.dynamic_state_available = m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state,
+		.device_measured = m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_TURNIP ||
+		                   m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP};
 	m_declare_loop_per_draw = GSDeclaresLoopPerDraw(dynamic_loop_inputs);
 	if (GSLoopSpellingFallsBackToCreateFlag(dynamic_loop_inputs))
 	{
 		// Not an inert arm -- the loop IS declared -- but declared the way that costs, and a
 		// device that takes the fallback silently is a device nobody knows is on it. A warning
 		// rather than an error: the price is a measurement on Turnip and nowhere else, and a
-		// desktop driver without the extension (the M2's is one) pays nothing for it.
+		// driver without the extension (the M2's is one) pays nothing for it.
 		Console.Warning("VK: no VK_EXT_attachment_feedback_loop_dynamic_state here, so the feedback "
 						"loop is declared with the PIPELINE CREATE FLAG rather than per draw. "
 						"Measured on Turnip only: that spelling costs up to 2.8x on a self-read-heavy "
