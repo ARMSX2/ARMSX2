@@ -7241,8 +7241,8 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 	// ⚠️ Dropping the barrier on the declared road is the ORDERING CLAIM. Keeping it would cost
 	// several times base -- an overlapping self-read draw gets require_full_barrier, i.e. one
 	// vkCmdPipelineBarrier per primitive group -- and, worse, it would SUPPLY the ordering the
-	// claim is about, so a correct picture would prove nothing. DeclareAttachmentFeedbackLoop=2
-	// keeps them deliberately, as the diagnostic arm. Which is still what that key is for: the
+	// claim is about, so a correct picture would prove nothing. gsrunner -declare-feedback-loop 2
+	// keeps them deliberately, as the diagnostic arm. Which is still what that flag is for: the
 	// road itself is no longer experiment-only, since a driver build measured to order reaches it
 	// through the driver database with no key set.
 	// ⚠️ MEASUREMENT OVERRIDE (gsrunner -declare-overlap-only). Which readers on the declared road actually declare. Off the road, and at the default

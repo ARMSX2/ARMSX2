@@ -4059,7 +4059,8 @@ bool GSDeviceVK::CheckFeatures()
 	road_inputs.driver_prefers_declared_loop_with_barriers =
 		GetMobileDriverProfile().prefers_declared_loop_with_barriers;
 	road_inputs.override_texture_barriers = GSConfig.OverrideTextureBarriers;
-	road_inputs.arm = GSConfig.DeclareAttachmentFeedbackLoop;
+	// Harness-only (gsrunner -declare-feedback-loop); Off on every other run.
+	road_inputs.arm = static_cast<u8>(GSSelfReadRoadPolicy::GetForcedArm());
 	const GSSelfReadRoadDecision road = DecideSelfReadRoad(road_inputs);
 
 	// Before anything that can create an image, a descriptor layout or a render pass, because each
@@ -4132,10 +4133,10 @@ bool GSDeviceVK::CheckFeatures()
 	if (road.arm_unavailable)
 	{
 		// A silently inert arm is a device measurement that runs base twice and calls it an A/B.
-		Console.Error("VK: DeclareAttachmentFeedbackLoop=%u was requested and CANNOT be applied "
+		Console.Error("VK: -declare-feedback-loop %u was requested and CANNOT be applied "
 					  "(VK_EXT_attachment_feedback_loop_layout %s, OverrideTextureBarriers=%d). "
 					  "This build is running the device's own self-read road.",
-			static_cast<unsigned>(GSConfig.DeclareAttachmentFeedbackLoop),
+			static_cast<unsigned>(GSSelfReadRoadPolicy::GetForcedArm()),
 			m_optional_extensions.vk_ext_attachment_feedback_loop_layout ? "present" : "ABSENT",
 			static_cast<int>(GSConfig.OverrideTextureBarriers));
 	}
@@ -4294,7 +4295,7 @@ bool GSDeviceVK::CheckFeatures()
 	// reachable from the driver database too, and on that road the depth read must stay off for the
 	// same reason it does on the key's -- turning barriers on for colour must not hand a device the
 	// depth road nobody has measured on it.
-	const bool declare_depth_loop = road.loop_declared && GSConfig.DeclareDepthFeedbackLoop;
+	const bool declare_depth_loop = road.loop_declared && GSSelfReadRoadPolicy::DeclaresDepthLoop();
 	if (declare_depth_loop)
 		m_features.test_and_sample_depth = true;
 	else if (road.loop_declared)
@@ -4303,9 +4304,9 @@ bool GSDeviceVK::CheckFeatures()
 		// barriers on, or the two probes are measured together and neither answers anything.
 		m_features.test_and_sample_depth = false;
 	}
-	if (GSConfig.DeclareDepthFeedbackLoop && !road.loop_declared)
+	if (GSSelfReadRoadPolicy::DeclaresDepthLoop() && !road.loop_declared)
 	{
-		Console.Error("VK: DeclareDepthFeedbackLoop needs a declared colour feedback loop, and this "
+		Console.Error("VK: -declare-depth-feedback-loop needs a declared colour feedback loop, and this "
 					  "device is not on that road. The depth probe is NOT running.");
 	}
 

@@ -1063,31 +1063,6 @@ struct Pcsx2Config
 		/// integer upscale of 2 or more. -1 leaves it to the runtime detector, which defaults to 1.
 		s8 FieldShift = -1;
 		s8 OverrideTextureBarriers = -1;
-		/// ⚠️ MEASUREMENT SCAFFOLDING for the Adreno in-pass read, not a user setting.
-		///
-		/// Which self-read road the Vulkan backend takes: 0 the device's own decision (the
-		/// default, and the only value that ships enabled), 1 declare the attachment feedback
-		/// loop and trust the driver's primitive ordering, 2 declare it and keep the per-draw
-		/// barriers. See GSSelfReadRoadPolicy.h.
-		///
-		/// It exists so one binary can run base against the candidate on a device. It has no UI
-		/// row on purpose: a user cannot tell which road their driver wants, and producing that
-		/// answer as a driver-database rule is what these measurements are for. If the road lands, this
-		/// is replaced by a DriverWorkaround bit and deleted.
-		u8 DeclareAttachmentFeedbackLoop = 0;
-		/// ⚠️ MEASUREMENT SCAFFOLDING — the depth half of the same measurements.
-		///
-		/// Also declare the DEPTH feedback loop, so a draw that samples the depth buffer it has
-		/// attached reads it in the pass instead of going through a blit, and tex == ds samples
-		/// the live depth buffer instead of copying it. Only effective with
-		/// DeclareAttachmentFeedbackLoop on, because the in-pass depth read and the colour copy
-		/// road are the same texture_barrier bit.
-		///
-		/// ⚠️ Adreno/Turnip has a recorded tiler hang sampling the live depth buffer while it is
-		/// the depth attachment. Declaring the loop untiles the pass, which may be exactly the
-		/// condition that hang needs -- expect a possible device lockup, and run this arm after
-		/// the colour arm's results are banked.
-		bool DeclareDepthFeedbackLoop = false;
 		GSDepthFeedbackMode DepthFeedbackMode = GSDepthFeedbackMode::Auto;
 		GSBackThreadMode BackThreadMode = GSBackThreadMode::Off;
 

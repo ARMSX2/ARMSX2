@@ -155,7 +155,7 @@ public:
 	// rasterization-order attachment access. Decided by GSSelfReadRoadPolicy.h, written once in
 	// CheckFeatures before any image or render pass exists, and read by UseFeedbackLoopLayout()
 	// above. Two things set it: the driver database recognising a driver build measured to order
-	// declared loops, and EmuCore/GS/DeclareAttachmentFeedbackLoop, which is experiment scaffolding
+	// declared loops, and gsrunner's -declare-feedback-loop, which is experiment scaffolding
 	// and still outranks the database where it is set.
 	bool m_force_feedback_loop_layout = false;
 

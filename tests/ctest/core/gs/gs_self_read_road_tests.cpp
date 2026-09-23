@@ -20,6 +20,7 @@
 //
 // Rides gs_vertex_tests -- the policy is header-only constexpr, so it needs no extra linkage.
 
+#include "Config.h"
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
 
 #include <gtest/gtest.h>
@@ -667,4 +668,46 @@ TEST(GSSelfReadRoad, TheBannerSeparatesTheBarrierPreferenceFromTheOtherEntrances
 	EXPECT_STRNE(by_preference, GSSelfReadRoadName(DecideSelfReadRoad(Desktop())));
 	EXPECT_STREQ(GSSelfReadRoadName(DecideSelfReadRoad(Desktop())),
 		"in-pass, barrier-ordered, declared feedback loop");
+}
+
+// --- the experiment arm is a harness global, not a setting ---------------------------------------
+//
+// It used to load from EmuCore/GS/DeclareAttachmentFeedbackLoop and DeclareDepthFeedbackLoop,
+// per-game included. Arm 1 on NVIDIA or AMD drops the barriers and breaks blending, so neither may
+// be reachable from an INI. The options struct has no such members, and the process globals the
+// runner sets default to the shipped decision.
+
+template <typename T>
+concept HasColourArmSetting = requires(T t) { t.DeclareAttachmentFeedbackLoop; };
+template <typename T>
+concept HasDepthArmSetting = requires(T t) { t.DeclareDepthFeedbackLoop; };
+static_assert(!HasColourArmSetting<Pcsx2Config::GSOptions>);
+static_assert(!HasDepthArmSetting<Pcsx2Config::GSOptions>);
+
+TEST(GSSelfReadRoad, AAA_TheHarnessArmDefaultsOff)
+{
+	EXPECT_EQ(GSSelfReadRoadPolicy::GetForcedArm(), GSSelfReadArm::Off);
+	EXPECT_FALSE(GSSelfReadRoadPolicy::DeclaresDepthLoop());
+
+	// Fed through unchanged, desktop Vulkan gets origin/master's road: barriers, the layout
+	// spelling, nothing declared.
+	GSSelfReadRoadInputs in = Desktop();
+	in.arm = static_cast<u8>(GSSelfReadRoadPolicy::GetForcedArm());
+	const GSSelfReadRoadDecision d = DecideSelfReadRoad(in);
+	EXPECT_EQ(d.road, GSSelfReadRoad::InPassBarrier);
+	EXPECT_FALSE(d.loop_declared);
+	EXPECT_FALSE(d.orders_overlapping_prims);
+}
+
+TEST(GSSelfReadRoad, TheHarnessArmRoundTrips)
+{
+	GSSelfReadRoadPolicy::SetForcedArm(GSSelfReadArm::DeclaredKeepBarriers);
+	GSSelfReadRoadPolicy::SetDeclareDepthLoop(true);
+	EXPECT_EQ(GSSelfReadRoadPolicy::GetForcedArm(), GSSelfReadArm::DeclaredKeepBarriers);
+	EXPECT_TRUE(GSSelfReadRoadPolicy::DeclaresDepthLoop());
+
+	GSSelfReadRoadPolicy::SetForcedArm(GSSelfReadArm::Off);
+	GSSelfReadRoadPolicy::SetDeclareDepthLoop(false);
+	EXPECT_EQ(GSSelfReadRoadPolicy::GetForcedArm(), GSSelfReadArm::Off);
+	EXPECT_FALSE(GSSelfReadRoadPolicy::DeclaresDepthLoop());
 }

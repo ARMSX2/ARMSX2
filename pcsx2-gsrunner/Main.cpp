@@ -56,6 +56,7 @@
 #include "pcsx2/GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h"
 #include "pcsx2/GS/Renderers/Common/GSFastStencilShadow.h"
 #include "pcsx2/GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
+#include "pcsx2/GS/Renderers/Common/GSSelfReadRoadPolicy.h"
 #if defined(ARMSX2_USE_ADRENOTOOLS)
 // Only under the adrenotools flag, i.e. Android arm64. VKLoader.h drags in the Vulkan
 // headers and, on an X11 desktop, all of Xlib's macros with them -- see the note in
@@ -1153,6 +1154,13 @@ static void PrintCommandLineHelp(const char* progname)
 						 "destination read moves DATE draws onto the Full road by itself, so an A/B of the colour road "
 						 "otherwise changes two mechanisms at once. ⚠️ EXPECTED TO MOVE PIXELS -- the DATE roads are four "
 						 "approximations of one PS2 rule and they disagree at the edges.\n");
+	std::fprintf(stderr, "  -declare-feedback-loop <1|2>: Declare the attachment feedback loop on a device with "
+						 "VK_EXT_attachment_feedback_loop_layout: 1 trusts the driver to order the read and drops the "
+						 "barriers, 2 keeps the barriers (the diagnostic arm). Measurement instrument only -- arm 1 "
+						 "breaks blending on a driver that does not order the read. Vulkan only.\n");
+	std::fprintf(stderr, "  -declare-depth-feedback-loop: Also declare the depth feedback loop, on a device whose colour "
+						 "loop is declared. ⚠️ Turnip has a recorded tiler hang sampling the live depth buffer; expect a "
+						 "possible device lockup. Vulkan only.\n");
 	std::fprintf(stderr, "  -declare-overlap-only: On a build that declares an attachment feedback loop for the draws that "
 						 "read their own render target, declare it only for the draws whose own primitives overlap, and "
 						 "leave every other reader on the copy road. Those are the draws a once-per-draw clone cannot "
@@ -1774,6 +1782,29 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 								"is the default. Use -loop-create-flag for the other spelling.");
 				continue;
 			}
+			else if (CHECK_ARG_PARAM("-declare-feedback-loop"))
+			{
+				const char* arm_arg = argv[++i];
+				if (std::strcmp(arm_arg, "1") == 0)
+					GSSelfReadRoadPolicy::SetForcedArm(GSSelfReadArm::Declared);
+				else if (std::strcmp(arm_arg, "2") == 0)
+					GSSelfReadRoadPolicy::SetForcedArm(GSSelfReadArm::DeclaredKeepBarriers);
+				else
+				{
+					ArgError("-declare-feedback-loop: '{}' is not an arm (expected 1 or 2).", arm_arg);
+					return false;
+				}
+				// Not a setting: it drops the barriers on request, which breaks blending on a desktop
+				// GPU. Read once in CheckFeatures, before anything that bakes the spelling in.
+				Console.WriteLn(fmt::format("Declaring the attachment feedback loop, arm {}", arm_arg));
+				continue;
+			}
+			else if (CHECK_ARG("-declare-depth-feedback-loop"))
+			{
+				Console.WriteLn("Also declaring the depth feedback loop (needs a declared colour loop)");
+				GSSelfReadRoadPolicy::SetDeclareDepthLoop(true);
+				continue;
+			}
 			else if (CHECK_ARG("-declare-overlap-only"))
 			{
 				Console.WriteLn("Declaring the attachment feedback loop only for self-overlapping draws");
@@ -1989,6 +2020,19 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 	{
 		ArgError("no GS dump filename was given.");
 		return false;
+	}
+
+	// These two used to be INI keys. Nothing reads them from settings any more, so a -set or -ini
+	// that still names them would run the base road and look like the arm. Refuse it by name.
+	for (const char* retired : {"DeclareAttachmentFeedbackLoop", "DeclareDepthFeedbackLoop"})
+	{
+		if (s_settings_interface.ContainsValue("EmuCore/GS", retired))
+		{
+			ArgError("EmuCore/GS/{} is no longer a setting; use -declare-feedback-loop <1|2> or "
+					 "-declare-depth-feedback-loop.",
+				retired);
+			return false;
+		}
 	}
 
 	if (!VMManager::IsGSDumpFileName(params.filename))

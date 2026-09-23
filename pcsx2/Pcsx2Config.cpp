@@ -897,8 +897,6 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(UserHacks_BilinearHack) &&
 		OpEqu(FieldShift) &&
 		OpEqu(OverrideTextureBarriers) &&
-		OpEqu(DeclareAttachmentFeedbackLoop) &&
-		OpEqu(DeclareDepthFeedbackLoop) &&
 		OpEqu(DepthFeedbackMode) &&
 		OpEqu(BackThreadMode) &&
 
@@ -964,11 +962,6 @@ bool Pcsx2Config::GSOptions::IsRestartOption(const char* ini_key)
 		"EnableAdrenoFramebufferFetch",
 		"ForceMaliFramebufferFetch",
 		"OverrideTextureBarriers",
-		// Both are read once in GSDeviceVK::CheckFeatures, and the image usage bit, shader
-		// variant and descriptor type they pick are fixed at device creation -- so changing
-		// either in place would leave the UI saying one road and the device running another.
-		"DeclareAttachmentFeedbackLoop",
-		"DeclareDepthFeedbackLoop",
 		"DepthFeedbackMode",
 		"GSBackThreadMode",
 		"HWAA1",
@@ -1000,8 +993,6 @@ bool Pcsx2Config::GSOptions::RestartOptionsAreEqual(const GSOptions& right) cons
 		   OpEqu(EnableAdrenoFramebufferFetch) &&
 		   OpEqu(ForceMaliFramebufferFetch) &&
 		   OpEqu(OverrideTextureBarriers) &&
-		   OpEqu(DeclareAttachmentFeedbackLoop) &&
-		   OpEqu(DeclareDepthFeedbackLoop) &&
 		   OpEqu(DepthFeedbackMode) &&
 		   OpEqu(BackThreadMode) &&
 		   OpEqu(HWAA1) &&
@@ -1181,9 +1172,6 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapIntEnumEx(UserHacks_GPUTargetCLUTMode, "UserHacks_GPUTargetCLUTMode");
 	SettingsWrapIntEnumEx(TriFilter, "TriFilter");
 	SettingsWrapBitfieldEx(OverrideTextureBarriers, "OverrideTextureBarriers");
-	// Measurement scaffolding for the Adreno in-pass read. See Config.h.
-	SettingsWrapBitfieldEx(DeclareAttachmentFeedbackLoop, "DeclareAttachmentFeedbackLoop");
-	SettingsWrapBitBoolEx(DeclareDepthFeedbackLoop, "DeclareDepthFeedbackLoop");
 	SettingsWrapIntEnumEx(DepthFeedbackMode, "DepthFeedbackMode");
 	SettingsWrapIntEnumEx(BackThreadMode, "GSBackThreadMode");
 
