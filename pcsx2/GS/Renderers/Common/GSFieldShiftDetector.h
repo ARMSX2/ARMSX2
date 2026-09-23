@@ -16,7 +16,9 @@ class GSDownloadTexture;
 /// display line between fields. Only consulted where the field render is presented directly
 /// (integer upscale of 2 or more), where that shift is the only correction left to make.
 ///
-/// Runs for a bounded handful of fields after a video-mode change and then stops for good. It
+/// Runs for a bounded handful of fields, then rests on its decision. It measures again after a
+/// video-mode change and every GS_FIELD_SHIFT_RECHECK_FIELDS fields, keeping the decision it has
+/// in force meanwhile, so an answer taken on a boot logo does not outlive the logo. It
 /// NEVER waits on the GPU: the readback is issued without a flush and collected on a later frame
 /// through Poll(), and a backend that cannot answer Poll() without a flush simply gets the default
 /// instead of a stall.
@@ -28,6 +30,8 @@ public:
 
 	/// True while nothing has been decided yet -- the default (shift) is in force.
 	bool IsPending() const { return m_decision == Decision::Pending; }
+	/// True while fields are being measured, for a first decision or a recheck.
+	bool IsProbing() const { return m_probing; }
 	/// What the merge should do with the FFMD offset on this field.
 	bool WantsShift() const { return m_decision != Decision::NoShift; }
 
@@ -76,9 +80,14 @@ private:
 	void Compare(const ProbeSlot& slot);
 	void Decide(bool no_shift, const char* why);
 	void ReleaseReadbacks();
+	void StartRound(const GSVector2i& size, int scale);
 	void ReleaseResources();
 
 	Decision m_decision = Decision::Pending;
+	/// Measuring, as opposed to resting on m_decision.
+	bool m_probing = true;
+	/// Fields fed since the last decision, while resting.
+	int m_fields_since_decision = 0;
 
 	GSVector2i m_size{0, 0};
 	int m_scale = 0;

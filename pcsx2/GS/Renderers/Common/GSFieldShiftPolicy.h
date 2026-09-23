@@ -136,6 +136,11 @@ struct GSFieldShiftTally
 	int informative() const { return shift + noshift; }
 };
 
+/// Fields a decision stands before the detector measures again, about ten seconds of fields. A
+/// decision taken on a boot logo or a still menu -- two fields that are the same picture -- says
+/// nothing about the scenes after it, and a probe round costs a dozen 32-column readbacks.
+inline constexpr int GS_FIELD_SHIFT_RECHECK_FIELDS = 600;
+
 /// Fewer informative pairs than this and the vote is not worth taking.
 inline constexpr int GS_FIELD_SHIFT_MIN_VOTES = 3;
 

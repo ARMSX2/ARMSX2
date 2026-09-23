@@ -82,6 +82,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_cull_grid_refresh_tests.cpp
 	gs_cull_grid_native_target_tests.cpp
 	gs_point_safe_features_tests.cpp
+	gs_field_shift_detector_tests.cpp
 )
 
 target_include_directories(gs_vertex_tests PRIVATE

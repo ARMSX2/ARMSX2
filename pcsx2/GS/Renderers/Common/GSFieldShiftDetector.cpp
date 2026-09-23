@@ -53,6 +53,8 @@ void GSFieldShiftDetector::Reset()
 {
 	ReleaseResources();
 	m_decision = Decision::Pending;
+	m_probing = true;
+	m_fields_since_decision = 0;
 	m_size = GSVector2i(0, 0);
 	m_scale = 0;
 	m_rows = 0;
@@ -69,9 +71,31 @@ void GSFieldShiftDetector::Reset()
 	m_cpu_ticks = 0;
 }
 
+void GSFieldShiftDetector::StartRound(const GSVector2i& size, int scale)
+{
+	// The probe target only has to go when its size does; a recheck of the same picture keeps it.
+	if (!(size == m_size) || scale != m_scale)
+		ReleaseResources();
+	else
+		ReleaseReadbacks();
+	m_size = size;
+	m_scale = scale;
+	m_rows = size.y;
+	m_cols = std::min(PROBE_COLUMNS, size.x);
+	m_next_index = 0;
+	m_retire_index = 0;
+	m_fields_probed = 0;
+	m_waited_frames = 0;
+	m_unusable_pairs = 0;
+	m_tally = GSFieldShiftTally();
+	m_cpu_ticks = 0;
+}
+
 void GSFieldShiftDetector::Decide(bool no_shift, const char* why)
 {
 	m_decision = no_shift ? Decision::NoShift : Decision::Shift;
+	m_probing = false;
+	m_fields_since_decision = 0;
 
 	DevCon.WriteLn("GS: field shift detector: %s after %d fields (%d shift / %d no-shift votes, "
 				   "%d unusable pairs), %s, %.3f ms of GS thread total",
@@ -84,23 +108,24 @@ void GSFieldShiftDetector::Decide(bool no_shift, const char* why)
 void GSFieldShiftDetector::Update(
 	GSTexture* merge, const GSVector2i& size, int scale, int applied_offset_rows, int field_parity)
 {
-	if (m_decision != Decision::Pending || !merge || !g_gs_device || scale < 2 || size.x <= 0 || size.y <= 0)
+	if (!merge || !g_gs_device || scale < 2 || size.x <= 0 || size.y <= 0)
 		return;
 
-	if (!(size == m_size) || scale != m_scale)
+	const bool picture_changed = !(size == m_size) || scale != m_scale;
+	if (!m_probing)
+	{
+		// Resting on a decision. Measure again when the picture it was taken on is gone, or when it
+		// has stood long enough that the game may have moved on from what it was showing.
+		if (!picture_changed && ++m_fields_since_decision < GS_FIELD_SHIFT_RECHECK_FIELDS)
+			return;
+
+		m_probing = true;
+		StartRound(size, scale);
+	}
+	else if (picture_changed)
 	{
 		// A video-mode change. Everything measured so far was measured on a different picture.
-		ReleaseResources();
-		m_size = size;
-		m_scale = scale;
-		m_rows = size.y;
-		m_cols = std::min(PROBE_COLUMNS, size.x);
-		m_next_index = 0;
-		m_retire_index = 0;
-		m_fields_probed = 0;
-		m_waited_frames = 0;
-		m_unusable_pairs = 0;
-		m_tally = GSFieldShiftTally();
+		StartRound(size, scale);
 	}
 
 	const u64 start = Common::Timer::GetCurrentValue();
@@ -128,7 +153,7 @@ void GSFieldShiftDetector::Update(
 
 		const bool ok = Retire(*oldest);
 		m_retire_index++;
-		if (!ok || m_decision != Decision::Pending)
+		if (!ok || !m_probing)
 		{
 			m_cpu_ticks += Common::Timer::GetCurrentValue() - start;
 			return;
@@ -257,7 +282,7 @@ bool GSFieldShiftDetector::Retire(ProbeSlot& slot)
 	slot.in_flight = false;
 
 	Compare(slot);
-	if (m_decision != Decision::Pending)
+	if (!m_probing)
 		return true;
 
 	m_prev.swap(m_cur);
