@@ -429,7 +429,9 @@ protected:
 public:
 	// The cull grid a scale and a half-pixel-offset mode ask for. Pure and public
 	// so gs_vertex_tests can pin the mode decisions without standing up a GS.
-	static GSVertexKernels::CullGrid CullGridFor(float scale, GSHalfPixelOffset hpo);
+	// `native_scale_targets`: some targets may render at scale 1 while the rest render at `scale`
+	// (native scaling, native palette draws), so the grid has to hold both sets of sample points.
+	static GSVertexKernels::CullGrid CullGridFor(float scale, GSHalfPixelOffset hpo, bool native_scale_targets = false);
 
 protected:
 

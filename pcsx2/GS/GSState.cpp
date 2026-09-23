@@ -193,7 +193,7 @@ constexpr int GSState::GetSaveStateSize(int version)
 // for an Ad blend instead of approximating it in the fixed-function unit as
 // DST_ALPHA with the source pre-doubled. The two differ by 256/255, one colour
 // level; the shader path is the correct one.
-GSVertexKernels::CullGrid GSState::CullGridFor(float scale, GSHalfPixelOffset hpo)
+GSVertexKernels::CullGrid GSState::CullGridFor(float scale, GSHalfPixelOffset hpo, bool native_scale_targets)
 {
 	int shift = 0;
 	int phase = 0;
@@ -206,7 +206,20 @@ GSVertexKernels::CullGrid GSState::CullGridFor(float scale, GSHalfPixelOffset hp
 	{
 		shift = GSVertexKernels::DeviceCullGridShift(scale);
 		if (shift != 0 && hpo == GSHalfPixelOffset::Native)
-			phase = 1 << (shift - 1); // half a device step, per the derivation above
+		{
+			if (native_scale_targets)
+			{
+				// A target drawn at scale 1 samples at the whole-pixel sub-texels 16k, which the
+				// phased grid below misses entirely (8k+4 at 2x). The grid one binade finer with no
+				// phase holds both sets: the phased points are its odd multiples, 16k its multiples
+				// of 16 / step. At 8x that leaves no grid, which is the safe answer.
+				shift--;
+			}
+			else
+			{
+				phase = 1 << (shift - 1); // half a device step, per the derivation above
+			}
+		}
 	}
 
 	// Sprites move after the cull at every upscale (CorrectSpriteCoverageForUpscale
@@ -218,7 +231,10 @@ GSVertexKernels::CullGrid GSState::CullGridFor(float scale, GSHalfPixelOffset hp
 
 GSVertexKernels::CullGrid GSState::ConfigCullGrid()
 {
-	return CullGridFor(GSConfig.UpscaleMultiplier, GSConfig.UserHacks_HalfPixelOffset);
+	// Native scaling and native palette draws render some targets at scale 1 whatever the upscale.
+	const bool native_scale_targets =
+		GSConfig.UserHacks_NativeScaling != GSNativeScaling::Off || GSConfig.UserHacks_NativePaletteDraw;
+	return CullGridFor(GSConfig.UpscaleMultiplier, GSConfig.UserHacks_HalfPixelOffset, native_scale_targets);
 }
 
 GSState::GSState(GSBackQueue::Channel* shared_chan, bool is_front_parser)
