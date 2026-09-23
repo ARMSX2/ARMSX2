@@ -584,6 +584,7 @@ set(pcsx2GSHeaders
 	GS/GSXXH.h
 	GS/MultiISA.h
 	GS/Renderers/Common/GSBlendConstantPolicy.h
+	GS/Renderers/Common/GSCopyRoadBlendingPolicy.h
 	GS/Renderers/Common/GSDateRoadPolicy.h
 	GS/Renderers/Common/GSDeclaredLoopScopePolicy.h
 	GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h
