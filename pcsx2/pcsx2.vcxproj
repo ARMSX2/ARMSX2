@@ -869,6 +869,7 @@
     <ClInclude Include="GS\Renderers\Common\GSFieldShiftDetector.h" />
     <ClInclude Include="GS\Renderers\Common\GSFieldShiftPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSBlendConstantPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSBackThreadPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSCopyRoadBlendingPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSDateRoadPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSDeclaredLoopScopePolicy.h" />

@@ -16,6 +16,7 @@
 #include "Input/InputManager.h"
 #include "MTGS.h"
 #include "pcsx2/GS.h"
+#include "GS/Renderers/Common/GSBackThreadPolicy.h"
 #include "GS/Renderers/Common/GSCopyRoadBlendingPolicy.h"
 #include "GS/Renderers/Null/GSDeviceNone.h"
 #include "GS/Renderers/Null/GSRendererNull.h"
@@ -278,6 +279,34 @@ static void GSApplyCopyRoadBlendingCap(Pcsx2Config::GSOptions& config)
 	config.AccurateBlendingUnit = static_cast<AccBlendLevel>(level);
 }
 
+// Resolves the back-thread setting for the renderer about to open, into GSConfig only, for the same
+// reason as the blending cap above: it depends on the device and the download mode, so it is
+// re-derived every time a renderer opens and never written back into the player's settings. Must run before the renderer
+// is constructed, because the renderer's constructor starts the back thread.
+static void GSResolveBackThreadMode(Pcsx2Config::GSOptions& config, GSRendererType renderer)
+{
+	GSBackThreadInputs in;
+	in.requested = config.BackThreadMode;
+	in.hardware_renderer = (renderer != GSRendererType::SW && renderer != GSRendererType::Null);
+	in.vulkan = g_gs_device && g_gs_device->GetRenderAPI() == RenderAPI::Vulkan;
+	in.download_mode = config.HWDownloadMode;
+
+	const GSBackThreadDecision decision = GSDecideBackThreadMode(in);
+	config.BackThreadModeResolved = decision.mode;
+
+	// A request for the split that does not get it is worth a warning.
+	if (decision.mode != config.BackThreadMode)
+	{
+		Console.Warning("GS: back thread %s, not pipelined (%s).", GSBackThreadModeName(decision.mode),
+			GSBackThreadReasonText(decision.reason));
+	}
+	else
+	{
+		Console.WriteLn("GS: back thread %s (%s).", GSBackThreadModeName(decision.mode),
+			GSBackThreadReasonText(decision.reason));
+	}
+}
+
 // GV7-1d-ii: the front parser object of the two-object split (GSState.h).
 // Non-null only when GSBackThreadMode::Pipelined engaged; all GIF-parse entry
 // points below route to it, while draw/present/TC stay on g_gs_renderer.
@@ -300,6 +329,8 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 	GSCurrentPresenterOffsetsRead = (renderer == GSRendererType::SW);
 
 	GSVertexSW::InitStatic();
+
+	GSResolveBackThreadMode(GSConfig, renderer);
 
 	if (renderer == GSRendererType::Null)
 	{
@@ -330,10 +361,10 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 	g_gs_renderer->UpdateRenderFixes();
 
 	// GV7-1d-ii: instantiate the front parser only when the back thread really
-	// engaged (the renderer ctor falls back to inline records on a non-Vulkan
-	// HW device). An EE-thread read of *live* local memory forces single-object
-	// (lockstep) — see below for why that is not every EE-thread read.
-	if (GSConfig.BackThreadMode == GSBackThreadMode::Pipelined && g_gs_renderer->IsBackThreadRunning())
+	// engaged. GSResolveBackThreadMode has already turned a pipelined request into
+	// Off where it cannot pipeline (a non-Vulkan HW device, Unsynchronized
+	// downloads); the check below is what remains of the original refusal.
+	if (GSConfig.BackThreadModeResolved == GSBackThreadMode::Pipelined && g_gs_renderer->IsBackThreadRunning())
 	{
 		// Which thread performs the readback is the wrong question here; what it reads is the
 		// right one. Unsynchronized takes GS local memory directly, with no lock and no drain,
@@ -347,7 +378,9 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 		// The one exception is a shadow that never came up — ReadLocalMemoryUnsync then falls
 		// back to live local memory, which is exactly the Unsynchronized hazard, now against a
 		// concurrently drawing back thread. The renderer is already constructed at this point,
-		// so its shadow state is the thing to ask.
+		// so its shadow state is the thing to ask. (Its constructor allocates the shadow and
+		// marks it ready, so this is a guard, not a road: Unsynchronized itself never reaches
+		// here.)
 		const bool ee_thread_reads_live_memory =
 			GSConfig.HWDownloadMode == GSHardwareDownloadMode::Unsynchronized ||
 			(GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous &&
@@ -1027,6 +1060,9 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
 {
 	Pcsx2Config::GSOptions old_config(std::move(GSConfig));
 	GSConfig = new_config;
+	// The resolved back-thread mode belongs to the open renderer. A changed request reopens it
+	// below (BackThreadMode is a restart option), which resolves again.
+	GSConfig.BackThreadModeResolved = old_config.BackThreadModeResolved;
 	if (!g_gs_renderer)
 		return;
 
