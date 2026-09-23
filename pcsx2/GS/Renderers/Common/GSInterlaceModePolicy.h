@@ -81,10 +81,3 @@ inline GSFieldPadRows GSComputeFieldPadRows(float unshifted_top, float shifted_t
 	const float end = std::ceil(shifted_top - 0.5f);
 	return {first, (end > first) ? end : first};
 }
-
-/// The merge-target row a deinterlace pass reads for destination row `row`. The shaders run this
-/// same expression with FieldPad.xy = (first, end).
-inline float GSFieldPadSourceRow(float row, const GSFieldPadRows& pad)
-{
-	return (row >= pad.first && row < pad.end) ? pad.end : row;
-}

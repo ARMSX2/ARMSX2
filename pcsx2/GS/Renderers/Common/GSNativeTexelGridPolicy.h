@@ -172,15 +172,6 @@ constexpr float GSNativeTexelGridStep(const GSNativeTexelStep& step)
 	           0.0f;
 }
 
-/// The correction added to a texture coordinate on one axis, in units of `step`. `device_coord` is
-/// the fragment coordinate (pixel + 0.5); the floor recovers the integer pixel index. The shaders
-/// run the same expression and must match it.
-inline float GSNativeTexelGridOffset(float step, float scale, float device_coord)
-{
-	const float here = std::floor(device_coord) / scale;
-	return step * (std::floor(here) - here);
-}
-
 // NASCAR Thunder 2002's haze sprites: 640 texels across 320 pixels in U, 448 across 448 in V, at
 // 2x, nearest, PSMT8 out of GS memory.
 static_assert(GSSpriteSamplesOnTheNativeTexelGrid({.sprite = true,
