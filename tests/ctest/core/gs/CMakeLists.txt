@@ -84,6 +84,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_point_safe_features_tests.cpp
 	gs_field_shift_detector_tests.cpp
 	gs_channel_shuffle_cover_tests.cpp
+	gs_sw_palette_block_copy_tests.cpp
 )
 
 target_include_directories(gs_vertex_tests PRIVATE
@@ -91,6 +92,27 @@ target_include_directories(gs_vertex_tests PRIVATE
 )
 
 target_link_libraries(gs_vertex_tests PUBLIC
+	PCSX2_FLAGS
+	PCSX2
+	common
+)
+
+# The palette block copy against the generated scanline, which is what games run. The same source
+# rides gs_vertex_tests too, where there is no code memory and the rasterizer uses its C++ scanline.
+# It is its own binary because reserving code memory switches every later rasterizer in the
+# process to generated code, which the other suites in gs_vertex_tests do not expect.
+add_pcsx2_test(gs_sw_palette_block_copy_jit_tests
+	${CMAKE_CURRENT_SOURCE_DIR}/../StubHost.cpp
+	gs_sw_palette_block_copy_tests.cpp
+)
+
+target_compile_definitions(gs_sw_palette_block_copy_jit_tests PRIVATE GS_PALETTE_COPY_TESTS_JIT=1)
+
+target_include_directories(gs_sw_palette_block_copy_jit_tests PRIVATE
+	${CMAKE_CURRENT_SOURCE_DIR}/../../../../pcsx2
+)
+
+target_link_libraries(gs_sw_palette_block_copy_jit_tests PUBLIC
 	PCSX2_FLAGS
 	PCSX2
 	common
