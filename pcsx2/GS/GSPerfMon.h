@@ -67,6 +67,10 @@ public:
 		// frame, in how many titles, actually take it. Always zero at native scale.
 		NativeTexelGridDraws,
 
+		// Draws on the CPU sprite road written by the palette block copy rather than the
+		// rasterizer (GSRendererHWMultiISA.cpp). Exists so a run can show the copy was reached.
+		SwPaletteBlockCopies,
+
 		CounterLast,
 
 		// Reused counters for HW.

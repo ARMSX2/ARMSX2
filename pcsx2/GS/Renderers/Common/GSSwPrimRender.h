@@ -26,6 +26,18 @@ struct GSSwPrimRenderState
 	std::vector<GSVertexSW> vertex_buffer;
 	std::unique_ptr<GSTextureCacheSW::Texture> texture[7 + 1];
 	std::unique_ptr<GSVirtualAlignedClass<32>> rasterizer;
+
+	/// One sprite of a palette block copy, validated before any pixel is written.
+	struct PaletteBlock
+	{
+		GSVector4i rect; ///< pixels written, already scissored
+		s32 u, v; ///< 16.16 texel coordinate at the rect's top-left pixel
+	};
+	std::vector<PaletteBlock> palette_blocks;
+
+	/// When false every draw goes through the rasterizer, including the ones the palette block copy
+	/// would take. The copy is exact, so this changes no output; tests use it to run the reference.
+	bool palette_block_copy = true;
 };
 
 // The rectangle the scanline core walks and the caller accounts for in guest memory. One

@@ -1757,8 +1757,13 @@ void GSRasterizer::AddScanline(GSVertexSW* e, int pixels, int left, int top, con
 void GSRasterizer::SetupPrim(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, bool cwalk_live)
 {
 	m_local.cwalk.live = cwalk_live ? 1 : 0;
-	// The lane and step tables belong to the previous primitive's walk.
-	m_local.cwalk.tables.state = GSColourWalkTablesStale;
+	// A walk's tables belong to the previous primitive. A walkless primitive
+	// wants zero tables, and tables already marked zero stay valid across it:
+	// only SetupColourWalkTables writes them non-zero. (A setup that writes the
+	// colour and fog steps derives them from dscan, whose colour and fog are zero
+	// for every walkless primitive; sprites skip both.)
+	if (cwalk_live)
+		m_local.cwalk.tables.state = GSColourWalkTablesStale;
 
 	m_setup_prim(vertex, index, dscan, m_local);
 }
@@ -1819,8 +1824,10 @@ void GSRasterizer::DrawScanline(int pixels, int left, int top, const GSVertexSW&
 	pxAssert(m_pixels.actual <= m_pixels.total);
 
 	// The colour walk's tables are per row: their jumps are floored with the row's
-	// fractional part included (GSDrawScanline.cpp).
-	GSDrawScanline::SetupColourWalkTables(m_local, top);
+	// fractional part included (GSDrawScanline.cpp). Zero tables for a walkless
+	// primitive are already what every row wants.
+	if (m_local.cwalk.live || m_local.cwalk.tables.state != GSColourWalkTablesZero)
+		GSDrawScanline::SetupColourWalkTables(m_local, top);
 
 	m_draw_scanline(pixels, left, top, scan, m_local);
 }

@@ -310,7 +310,7 @@ void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local, int y)
 	if (!w.live)
 	{
 		// Lines, points, sprites and the AA1 edge pass have no walk and a zero
-		// dscan. Write the zeros once per primitive.
+		// dscan. Write the zeros once; they stay until a walk replaces them.
 		if (w.tables.state == GSColourWalkTablesZero)
 			return;
 

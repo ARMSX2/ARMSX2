@@ -8,6 +8,8 @@
 #include "GS/Renderers/SW/GSTextureCacheSW.h"
 #include "GS/Renderers/SW/GSRasterizer.h"
 
+#include <algorithm>
+
 class CURRENT_ISA::GSRendererHWFunctions
 {
 public:
@@ -27,6 +29,10 @@ class CURRENT_ISA::GSSwPrimRenderFunctions
 {
 public:
 	static bool Run(GSRenderer& renderer, GSSwPrimRenderState& sw, const GSVector4i& bbox);
+
+private:
+	static bool IsPaletteBlockCopy(const GSRasterizerData& data, bool uv);
+	static bool DrawPaletteBlocks(GSSwPrimRenderState& sw, const GSRasterizerData& data);
 };
 
 MULTI_ISA_UNSHARED_IMPL;
@@ -594,10 +600,206 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 		}
 	}
 
+	if (sw.palette_block_copy && IsPaletteBlockCopy(data, PRIM->FST) && DrawPaletteBlocks(sw, data))
+	{
+		g_perfmon.Put(GSPerfMon::SwPaletteBlockCopies, 1);
+		return true;
+	}
+
 	if (!sw.rasterizer)
 		sw.rasterizer = std::make_unique<GSSingleRasterizer>();
 
 	static_cast<GSSingleRasterizer*>(sw.rasterizer.get())->Draw(data);
+
+	return true;
+}
+
+// The palette block copy: a sprite draw that writes each texel's palette entry one-to-one into a
+// 32-bit frame. Games that expand paletted textures on the GS draw thousands of these a frame, and
+// the rasterizer spends most of its time on each in setup that this shape does not need.
+//
+// It runs instead of the rasterizer, after everything Run() sets up, and must write exactly the
+// bytes the scanline would. So it is decided on the scanline's own selector rather than on the GS
+// registers: a draw is taken only if the selector the rasterizer would compile is this one shape,
+// up to fields that cannot change a pixel of it. It reads texels from the same snapshot the
+// scanline reads (gd.tex[0], taken by Update() before any pixel is written, so a draw that
+// overwrites its own texture reads what it read before), through the same palette (gd.clut),
+// wraps with the same limits (gd.t) and addresses the frame through the same tables
+// (gd.fzbr/fzbc).
+bool GSSwPrimRenderFunctions::IsPaletteBlockCopy(const GSRasterizerData& data, bool uv)
+{
+	// UV coordinates only. A sprite's ST also reaches the scanline as a 16.16 integer, but after a
+	// divide, so it is not held to sixteenths and DrawPaletteBlocks() would not be exact on it.
+	if (!uv)
+		return false;
+
+	const GSScanlineGlobalData& gd = data.global;
+	GSScanlineSelector sel = gd.sel;
+
+	// Plain repeat or clamp on each axis. The region modes can address past the texture's rows.
+	if (sel.wms > CLAMP_CLAMP || sel.wmt > CLAMP_CLAMP)
+		return false;
+
+	// Fields that cannot change what this shape writes: the wrap is read from gd.t, the texture
+	// pitch from sel.tw; an 8-bit texel colour passes the colour clamp or the wrap mask unchanged;
+	// datm is read only with date; notest picks how the scanline handles span edges, not which
+	// pixels it writes.
+	sel.wms = 0;
+	sel.wmt = 0;
+	sel.tw = 0;
+	sel.colclamp = 0;
+	sel.datm = 0;
+	sel.notest = 0;
+
+	// Everything else must be exactly this: a textured sprite with a nearest, non-mipmapped UV
+	// lookup through the palette, decal with texture alpha (the output is the palette entry), a
+	// 32-bit frame write with no test, no depth, no blend, no fog, no dither and no alpha
+	// correction. Any other bit set, known or added later, sends the draw to the rasterizer.
+	GSScanlineSelector want;
+	want.key = 0;
+	want.fpsm = 0;
+	want.zpsm = 3;
+	want.atst = ATST_ALWAYS;
+	want.tfx = TFX_DECAL;
+	want.tcc = 1;
+	want.fst = 1;
+	want.tlu = 1;
+	want.ababcd = 0xff;
+	want.fwrite = 1;
+	want.prim = GS_SPRITE_CLASS;
+
+	if (sel.key != want.key)
+		return false;
+
+	// The frame mask is not in the selector; a masked bit would keep its old value.
+#if _M_SSE >= 0x501
+	if (gd.fm != 0)
+		return false;
+#else
+	if (!gd.fm.eq(GSVector4i::zero()))
+		return false;
+#endif
+
+	// Scan masking skips rows.
+	if (data.scanmsk_value & 2)
+		return false;
+
+	return data.index && data.index_count >= 2 && (data.index_count & 1) == 0 && gd.tex[0] && gd.clut;
+}
+
+// Mirrors GSRasterizer::DrawSprite and the scanline's nearest lookup for the one shape
+// IsPaletteBlockCopy() admits, and refuses (writing nothing) any sprite where it could not:
+//
+// - The texture coordinate must step exactly one texel per pixel on both axes. Positions and UVs
+//   arrive as sixteenths, so every product and sum below is exact in float and the coordinate at
+//   pixel k is the seed plus k whole texels, whatever the scanline's vector width.
+// - The sprite's own extent must be a power of two on both axes. Otherwise the rasterizer walks
+//   the coordinate a sixteenth low from the second pixel on (GSSpriteRampBias), which this does
+//   not model.
+// - Under notest, a sprite the scissor cuts off-grid on the left or right is refused. Run() picks
+//   notest by checking a bounding box that is already clipped to the scissor, so a clipped sprite
+//   can carry it, and a notest scanline assumes its span starts and ends on the vector grid. What
+//   it writes for an off-grid span is not what this would write.
+bool GSSwPrimRenderFunctions::DrawPaletteBlocks(GSSwPrimRenderState& sw, const GSRasterizerData& data)
+{
+	constexpr float one_texel = 65536.0f;
+	constexpr int max_width = 2048; // the scissor's own limit
+#if _M_SSE >= 0x501
+	constexpr int notest_grid = 8;
+#else
+	constexpr int notest_grid = 4;
+#endif
+	const bool notest = data.global.sel.notest;
+
+	const GSVertexSW* vertex = data.vertex;
+	const u16* index = data.index;
+
+	sw.palette_blocks.clear();
+
+	for (int i = 0; i < data.index_count; i += 2)
+	{
+		const GSVertexSW& v0 = vertex[index[i + 0]];
+		const GSVertexSW& v1 = vertex[index[i + 1]];
+
+		// Order the corners as DrawSprite does, each axis on its own.
+		const GSVector4 mask = (v0.p < v1.p).xyzw(GSVector4::zero());
+		const GSVector4 p0 = v1.p.blend32(v0.p, mask);
+		const GSVector4 t0 = v1.t.blend32(v0.t, mask);
+		const GSVector4 p1 = v0.p.blend32(v1.p, mask);
+		const GSVector4 t1 = v0.t.blend32(v1.t, mask);
+
+		const GSVector4i extent(p0.xyxy(p1).ceil());
+		const GSVector4i r = extent.rintersect(data.scissor);
+
+		if (r.rempty())
+			continue;
+
+		const GSVector4 dt = (t1 - t0) / (p1 - p0);
+		if (dt.x != one_texel || dt.y != one_texel)
+			return false;
+
+		const int w = extent.width();
+		const int h = extent.height();
+		if ((w & (w - 1)) != 0 || (h & (h - 1)) != 0 || r.width() > max_width)
+			return false;
+
+		if (notest && ((r.left | r.right) & (notest_grid - 1)) != 0)
+			return false;
+
+		const GSVector4 seed = t0 + dt * (GSVector4(r.left, r.top) - p0);
+		sw.palette_blocks.push_back({r, static_cast<s32>(seed.x), static_cast<s32>(seed.y)});
+	}
+
+	const GSScanlineGlobalData& gd = data.global;
+
+	// The coordinate as the scanline forms it, wrapped by gd.t: repeat is (c & min) | max, clamp is
+	// min(max(c, min), max). The scanline also truncates a negative coordinate toward zero and
+	// saturates one past 2047.9375 texels; neither can happen here. One texel per pixel puts the
+	// far corner's U at the near corner's plus the width, and U is a 14-bit field, so every texel
+	// read is in [0, 1024).
+	const auto texel = [](s32 c, s16 tmin, s16 tmax, bool repeat) -> u32 {
+		const s16 t = static_cast<s16>(c >> 16);
+		const s16 w = repeat ? static_cast<s16>((t & tmin) | tmax) : std::min(std::max(t, tmin), tmax);
+		return static_cast<u16>(w);
+	};
+
+	const s16 umin = static_cast<s16>(gd.t.min.U16[0]);
+	const s16 umax = static_cast<s16>(gd.t.max.U16[0]);
+	const bool urepeat = gd.t.mask.U16[0] != 0;
+	const s16 vmin = static_cast<s16>(gd.t.min.U16[4]);
+	const s16 vmax = static_cast<s16>(gd.t.max.U16[4]);
+	const bool vrepeat = gd.t.mask.U16[4] != 0;
+
+	const u8* tex = static_cast<const u8*>(gd.tex[0]);
+	const u32* clut = gd.clut;
+	const int pitch_shift = gd.sel.tw + 3;
+	u8* vm = static_cast<u8*>(gd.vm);
+
+	// Where a 32-bit pixel sits within its four-pixel group (GSDrawScanline's WritePixel).
+	static constexpr int group_offset[4] = {0, 4, 16, 20};
+
+	u16 columns[max_width];
+
+	for (const GSSwPrimRenderState::PaletteBlock& b : sw.palette_blocks)
+	{
+		const int width = b.rect.width();
+
+		for (int k = 0; k < width; k++)
+			columns[k] = static_cast<u16>(texel(b.u + k * 65536, umin, umax, urepeat));
+
+		for (int y = b.rect.top; y < b.rect.bottom; y++)
+		{
+			const u8* row = tex + (texel(b.v + (y - b.rect.top) * 65536, vmin, vmax, vrepeat) << pitch_shift);
+			const int base = gd.fzbr[y].x;
+
+			for (int k = 0; k < width; k++)
+			{
+				const int x = b.rect.left + k;
+				const int fa = (base + gd.fzbc[x >> 2].x) % HALF_VM_SIZE;
+				*reinterpret_cast<u32*>(vm + fa * 2 + group_offset[x & 3]) = clut[row[columns[k]]];
+			}
+		}
+	}
 
 	return true;
 }

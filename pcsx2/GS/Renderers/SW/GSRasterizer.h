@@ -127,9 +127,10 @@ protected:
 
 	__forceinline void AddScanline(GSVertexSW* e, int pixels, int left, int top, const GSVertexSW& scan);
 
-	/// Wraps m_setup_prim and marks the colour walk tables stale (GSColourWalk.h).
-	/// `cwalk_live` is true only for a triangle's main pass; lines, points, sprites
-	/// and the AA1 edge pass have no walk and take zeroed tables.
+	/// Wraps m_setup_prim and marks the colour walk tables stale for a primitive
+	/// with a walk (GSColourWalk.h). `cwalk_live` is true only for a triangle's main
+	/// pass; lines, points, sprites and the AA1 edge pass have no walk and take
+	/// zeroed tables, which carry over from one walkless primitive to the next.
 	__forceinline void SetupPrim(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, bool cwalk_live);
 	__forceinline void Flush(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, bool cwalk_live, bool edge = false);
 

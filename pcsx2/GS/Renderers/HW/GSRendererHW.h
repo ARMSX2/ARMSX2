@@ -418,6 +418,9 @@ public:
 	virtual ~GSRendererHW() override;
 
 	__fi static GSRendererHW* GetInstance() { return static_cast<GSRendererHW*>(g_gs_renderer.get()); }
+
+	/// The software sprite road's scratch; tests reach its palette_block_copy switch through this.
+	GSSwPrimRenderState& GetSwPrimState() { return m_sw_prim; }
 	__fi HWCachedCtx* GetCachedCtx() { return &m_cached_ctx; }
 	__fi u32 GetLastChannelShuffleFBP() { return m_last_channel_shuffle_fbp; }
 	void Destroy() override;
