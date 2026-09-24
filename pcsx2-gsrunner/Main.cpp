@@ -59,6 +59,8 @@
 #include "pcsx2/GS/Renderers/Vulkan/VKLoader.h"
 #endif
 #include "pcsx2/GS/GSPerfMon.h"
+#include "pcsx2/GS/GSXXH.h"
+#include "pcsx2/GS/Renderers/Common/GSRenderer.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
 #include "pcsx2/GS/Renderers/Null/GSDeviceNone.h"
 #include "pcsx2/GSDumpReplayer.h"
@@ -419,6 +421,7 @@ static double s_last_pipeline_switches = 0;
 static u64 s_total_pipeline_switches = 0;
 static double s_last_native_texel_grid_draws = 0;
 static u64 s_total_native_texel_grid_draws = 0;
+static bool s_vm_hash = false;
 
 static u64 s_total_prims = 0;
 static u64 s_total_tc_source_hit = 0;
@@ -697,6 +700,15 @@ void Host::BeginPresentFrame()
 		// queue dumping of this frame
 		std::string dump_path(fmt::format("{}_frame{:05}.png", s_output_prefix, s_dump_frame_number));
 		GSQueueSnapshot(dump_path);
+	}
+
+	// GS local memory at the frame boundary. The hardware renderer's presented frame does not show
+	// every byte a draw left in local memory (a texture decoded there may be overwritten before
+	// anything reads it), so a change that must leave local memory alone is checked on this too.
+	if (s_vm_hash && g_gs_renderer)
+	{
+		const u64 hash = GSXXH3_64bits(g_gs_renderer->m_mem.m_vm8, GSLocalMemory::m_vmsize);
+		Console.WriteLn(fmt::format("GS local memory hash: loop {} frame {} {:016x}", s_loop_number, s_dump_frame_number, hash));
 	}
 
 	if (GSIsHardwareRenderer())
@@ -1104,6 +1116,7 @@ static void PrintCommandLineHelp(const char* progname)
 						 "hundreds of them fit.\n");
 	std::fprintf(stderr, "  -ladder-every <n>: Take a ladder rung every n draws. Only used if -ladder is used.\n");
 	std::fprintf(stderr, "  -ladder-out <path>: Where to write the ladder rungs. Only used if -ladder is used.\n");
+	std::fprintf(stderr, "  -vmhash: Log a hash of GS local memory at every presented frame.\n");
 	std::fprintf(stderr, "  -stats-json <path>: Write per-frame and run-summary statistics as JSON. Combine with -perf "
 						 "for frame/GPU timing.\n");
 	std::fprintf(stderr, "  -set <Section/Key>=<value>: Override any setting, e.g. -set EmuCore/GS/AccurateBlendingUnit=3. "
@@ -1579,6 +1592,11 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			{
 				Console.WriteLn("Enable performance stats");
 				s_perf_enable = true;
+				continue;
+			}
+			else if (CHECK_ARG("-vmhash"))
+			{
+				s_vm_hash = true;
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-drawlog"))
