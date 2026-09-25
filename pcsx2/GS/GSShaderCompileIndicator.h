@@ -16,6 +16,11 @@ namespace GSShaderCompileIndicator
 	inline std::atomic<u64> s_time_ns{0};
 	inline std::atomic<u64> s_last_time{0};
 
+	/// Set on pipeline precompile workers. Their compiles stall nothing, so the indicator, which
+	/// tells the player why the picture froze, leaves them out; a GS-thread wait on one is reported
+	/// by the waiter instead.
+	inline thread_local bool t_background = false;
+
 	inline u64 GetRecentCompileHold()
 	{
 		static const u64 hold = static_cast<u64>(Common::Timer::ConvertNanosecondsToValue(static_cast<double>(RECENT_COMPILE_HOLD_NS)));
@@ -90,7 +95,8 @@ namespace GSShaderCompileIndicator
 
 		~CompileTimer()
 		{
-			OnCompileDone(static_cast<u64>(timer.GetTimeNanoseconds()), timer.GetStartValue());
+			if (!t_background)
+				OnCompileDone(static_cast<u64>(timer.GetTimeNanoseconds()), timer.GetStartValue());
 		}
 
 		CompileTimer(const CompileTimer&) = delete;

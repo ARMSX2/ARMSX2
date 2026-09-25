@@ -3,6 +3,7 @@
 
 #include "GS/GS.h"
 #include "GS/GSCompileStats.h"
+#include "GS/GSShaderCompileIndicator.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
@@ -7517,7 +7518,11 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 		m_optional_extensions.vk_ext_roaa_depth)
 		gpb.AddDepthStencilFlags(VK_PIPELINE_DEPTH_STENCIL_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_DEPTH_ACCESS_BIT_EXT);
 
-	VkPipeline pipeline = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true));
+	// Marked dirty after the create, not before: a precompile worker's create can straddle a flush
+	// on the GS thread, and a flag set before it would be cleared by that flush and the new entry
+	// never written.
+	VkPipeline pipeline = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(false));
+	g_vulkan_shader_cache->GetPipelineCache(true);
 	if (pipeline)
 	{
 		Vulkan::SetObjectName(
@@ -7711,6 +7716,7 @@ void GSDeviceVK::SetGameIdentity(const std::string& serial, u32 crc)
 void GSDeviceVK::PrecompileWorker()
 {
 	Threading::SetNameOfCurrentThread("GS pipeline precompile");
+	GSShaderCompileIndicator::t_background = true;
 
 	// A thread inherits its creator's affinity, and the GS thread may be pinned to one core.
 	const Threading::ThreadHandle self = Threading::ThreadHandle::GetForCallingThread();
@@ -7755,12 +7761,24 @@ std::optional<VkPipeline> GSDeviceVK::TakePrecompiledTFXPipeline(const PipelineS
 		return std::nullopt;
 	}
 
-	m_precompile_done_cv.wait(lock, [this, &p]() {
-		return m_precompile_jobs.at(p).state == TFXPrecompileJob::State::Done;
-	});
+	if (it->second.state == TFXPrecompileJob::State::Running)
+	{
+		const Common::Timer wait_timer;
+		m_precompile_done_cv.wait(lock, [this, &p]() {
+			return m_precompile_jobs.at(p).state == TFXPrecompileJob::State::Done;
+		});
+		GSShaderCompileIndicator::OnCompileDone(
+			static_cast<u64>(wait_timer.GetTimeNanoseconds()), wait_timer.GetStartValue());
+	}
+
 	const auto done = m_precompile_jobs.find(p);
 	const VkPipeline pipeline = done->second.pipeline;
 	m_precompile_jobs.erase(done);
+
+	// A worker's failure may be one the GS thread would not have had (memory pressure from several
+	// compiles at once), so it gets its own attempt rather than a permanent null for the session.
+	if (pipeline == VK_NULL_HANDLE)
+		return std::nullopt;
 	return pipeline;
 }
 

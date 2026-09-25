@@ -639,8 +639,9 @@ private:
 	/// Joins the workers and moves every finished pipeline into m_tfx_pipelines. GS thread only.
 	void StopPipelinePrecompile();
 	void PrecompileWorker();
-	/// The result of a precompile job for p, waiting if a worker is building it. nullopt if there is
-	/// no job, or the job had not started (it is dropped and the caller builds p itself).
+	/// The result of a precompile job for p, waiting if a worker is building it (the only wait). nullopt
+	/// if there is no job, the job had not started, or the worker's build failed: the job is dropped
+	/// and the caller builds p itself.
 	std::optional<VkPipeline> TakePrecompiledTFXPipeline(const PipelineSelector& p);
 	void RecordTFXPipelineKey(const PipelineSelector& p);
 	/// What CreateTFXPipeline reads besides the key. A key file written under a different value is
