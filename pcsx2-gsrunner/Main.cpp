@@ -1162,6 +1162,9 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -surfaceless: Disables showing a window.\n");
 	std::fprintf(stderr, "  -logfile <filename>: Writes emu log to filename.\n");
 	std::fprintf(stderr, "  -noshadercache: Disables the shader cache (useful for parallel runs).\n");
+	std::fprintf(stderr, "  -precompile-pipelines: Build the dump's recorded Vulkan pipelines on worker threads at start, as the "
+						 "app does by default. Off unless asked for (this flag or -set EmuCore/GS/PrecompilePipelines=true), so "
+						 "a timed run has no background compilation competing with it.\n");
 	std::fprintf(stderr, "  -debugdevice: Enable the graphics API debug device (Vulkan validation layers / GL debug output). "
 						 "Slow; for diagnosing API misuse, not for measurement.\n");
 	std::fprintf(stderr, "  -perf: Enable frame timing performance stats.\n");
@@ -1647,6 +1650,11 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 
 				continue;
 			}
+			else if (CHECK_ARG("-precompile-pipelines"))
+			{
+				s_settings_interface.SetBoolValue("EmuCore/GS", "PrecompilePipelines", true);
+				continue;
+			}
 			else if (CHECK_ARG("-noshadercache"))
 			{
 				Console.WriteLn("Disabling shader cache");
@@ -2078,6 +2086,11 @@ void GSRunner::SettingsOverride()
 {
 	// complete as quickly as possible
 	s_settings_interface.SetBoolValue("EmuCore/GS", "FrameLimitEnable", s_force_vsync);
+
+	// The app's default is on; a measurement must not have worker threads compiling beside the run
+	// unless it asked for them.
+	if (!s_settings_interface.ContainsValue("EmuCore/GS", "PrecompilePipelines"))
+		s_settings_interface.SetBoolValue("EmuCore/GS", "PrecompilePipelines", false);
 	s_settings_interface.SetIntValue("EmuCore/GS", "VsyncEnable", s_force_vsync);
 	// -vsync needs DisableMailboxPresentation too: GetEffectiveVSyncMode() returns
 	// Mailbox when VsyncEnable=true unless this is set.
