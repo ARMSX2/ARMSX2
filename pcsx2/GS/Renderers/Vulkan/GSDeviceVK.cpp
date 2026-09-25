@@ -7793,7 +7793,7 @@ void GSDeviceVK::SetGameIdentity(const std::string& serial, u32 crc)
 
 void GSDeviceVK::PrecompileWorker()
 {
-	Threading::SetNameOfCurrentThread("GS pipeline precompile");
+	Threading::SetNameOfCurrentThread("GS precompile"); // Linux keeps 15 characters.
 	GSShaderCompileIndicator::t_background = true;
 
 	// A thread inherits its creator's affinity, and the GS thread may be pinned to one core.
