@@ -58,7 +58,12 @@ object MemoryCardBackup {
     private const val SCHEMA = 1
     private const val MANIFEST = "armsx2-mcbak.json"
     private const val PAYLOAD = "card/"
-    private const val EXT = ".mcbak"
+    /** A plain zip, named as one so a file manager opens it and the player can pull the card out
+     *  (`card/<name>.ps2`) without the app. */
+    private const val EXT = ".zip"
+
+    /** What snapshots were called before; same zip layout. Renamed to [EXT] when listed. */
+    private const val LEGACY_EXT = ".mcbak"
     private const val TMP_EXT = ".part"
     private const val BACKUP_DIR = "memcard-backups"
     private const val CARDS_DIR = "memcards"
@@ -210,12 +215,26 @@ object MemoryCardBackup {
 
     /** Newest first. A snapshot whose manifest is unreadable is still listed, marked unhealthy —
      *  hiding it would be worse than showing something the user can judge. */
-    fun list(context: Context, cardName: String): List<Snapshot> =
-        backupsFor(context, cardName).listFiles()
+    fun list(context: Context, cardName: String): List<Snapshot> {
+        val dir = backupsFor(context, cardName)
+        renameLegacy(dir)
+        return dir.listFiles()
             .orEmpty()
-            .filter { it.isFile && it.name.endsWith(EXT) }
+            .filter { it.isFile && (it.name.endsWith(EXT) || it.name.endsWith(LEGACY_EXT)) }
             .mapNotNull { read(it, cardName) }
             .sortedByDescending { it.takenAt }
+    }
+
+    /** Give `.mcbak` snapshots the `.zip` name so older ones open in a file manager too. A rename
+     *  that fails leaves the file under its old name, which [list] still accepts. */
+    private fun renameLegacy(dir: File) {
+        dir.listFiles().orEmpty()
+            .filter { it.isFile && it.name.endsWith(LEGACY_EXT) }
+            .forEach { f ->
+                val target = File(dir, f.name.removeSuffix(LEGACY_EXT) + EXT)
+                if (!target.exists()) runCatching { f.renameTo(target) }
+            }
+    }
 
     private fun read(f: File, cardName: String): Snapshot? {
         val fallbackTime = f.name.substringBefore('-').toLongOrNull() ?: f.lastModified()
