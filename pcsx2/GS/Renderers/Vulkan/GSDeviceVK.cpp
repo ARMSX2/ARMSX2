@@ -2909,7 +2909,6 @@ bool GSDeviceVK::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 		Host::ReportErrorAsync("GS", TRANSLATE_SV("GSDeviceVK", "Your GPU does not support the required Vulkan features."));
 		return false;
 	}
-	m_features.feedback_carry = GSFeedbackCarryForDevice(m_carry_device_facts);
 
 	if (!CreateNullTexture())
 	{
@@ -4028,19 +4027,20 @@ void GSDeviceVK::ResolveFeedbackConsumers(const GSSelfReadRoadDecision& road)
 			// keeps the answer it had before the road existed.
 			.barrier_road_measured = m_device_rules.barrier_road_measured});
 
-	// The device half of the feedback-loop carry (GSFeedbackLoopCarryPolicy.h). Every input is final
-	// here, so DoRenderHW copies this and fills in only the per-draw terms.
-	m_carry_device_facts = {};
-	m_carry_device_facts.device_always_carries = IsDeviceBroadcom();
-	m_carry_device_facts.device_is_measured_vendor = IsDeviceMali();
-	m_carry_device_facts.device_is_layout_road_vendor = IsDeviceAdreno();
+	// The device half of the feedback-loop carry (GSDrawRoad.h). Every input is final here; the
+	// renderer adds the per-draw terms.
+	GSFeedbackLoopCarryInputs carry;
+	carry.device_always_carries = IsDeviceBroadcom();
+	carry.device_is_measured_vendor = IsDeviceMali();
+	carry.device_is_layout_road_vendor = IsDeviceAdreno();
 	// texture_barrier is what makes SendHWDraw issue the reader's feedback barrier at all. With it
 	// off there is no ordering, so the layout road carries nothing. Consulted only on the layout
 	// road; framebuffer_fetch is itself masked by texture_barrier.
-	m_carry_device_facts.barriers_order_reads = m_features.texture_barrier;
-	m_carry_device_facts.device_is_barrier_road_vendor = m_device_rules.barrier_road_measured;
-	m_carry_device_facts.framebuffer_fetch = m_features.framebuffer_fetch;
-	m_carry_device_facts.feedback_loop_layout = UseFeedbackLoopLayout();
+	carry.barriers_order_reads = m_features.texture_barrier;
+	carry.device_is_barrier_road_vendor = m_device_rules.barrier_road_measured;
+	carry.framebuffer_fetch = m_features.framebuffer_fetch;
+	carry.feedback_loop_layout = UseFeedbackLoopLayout();
+	m_features.feedback_carry = GSFeedbackCarryForDevice(carry);
 }
 
 bool GSDeviceVK::ResolveDepthFeedback(const GSSelfReadRoadDecision& road)

@@ -152,10 +152,6 @@ public:
 	// and still outranks the database where it is set.
 	bool m_force_feedback_loop_layout = false;
 
-	// The device facts of the feedback-loop carry, resolved in CheckFeatures and published as
-	// FeatureSupport::feedback_carry for the renderer's per-draw decision.
-	GSFeedbackLoopCarryInputs m_carry_device_facts;
-
 	__fi bool IsDevicePowerVR() const { return (m_device_properties.vendorID == GpuVendorID::Imagination); }
 	/// Samsung Xclipse (Exynos, AMD RDNA2).
 	__fi bool IsDeviceXclipse() const { return (m_device_properties.vendorID == GpuVendorID::Samsung); }
