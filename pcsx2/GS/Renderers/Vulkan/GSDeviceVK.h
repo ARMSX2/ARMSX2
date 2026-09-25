@@ -25,7 +25,6 @@
 #include <optional>
 #include <string>
 #include <thread>
-#include <unordered_set>
 #include <vector>
 
 class VKSwapChain;
@@ -604,7 +603,7 @@ private:
 	std::unordered_map<u32, VkShaderModule> m_tfx_vertex_shaders;
 	std::unordered_map<GSHWDrawConfig::PSSelector, VkShaderModule, GSHWDrawConfig::PSSelectorHash>
 		m_tfx_fragment_shaders;
-	/// GS thread only. Precompiled pipelines move in here when first drawn with, or at StopPipelinePrecompile.
+	/// GS thread only. A precompiled pipeline moves in here when it is first drawn with.
 	std::unordered_map<PipelineSelector, VkPipeline, PipelineSelectorHash> m_tfx_pipelines;
 	u32 m_tfx_pipeline_compile_counter = 0;
 
@@ -631,12 +630,19 @@ private:
 	std::vector<std::thread> m_precompile_workers;
 	bool m_precompile_stop = false;
 	bool m_precompile_active = false; ///< GS thread only: whether m_precompile_jobs can be non-empty.
-	/// GS thread only: the keys the game's key file holds, and the file new keys are appended to.
-	std::unordered_set<PipelineSelector, PipelineSelectorHash> m_recorded_tfx_keys;
+	/// GS thread only: the keys the game's key file holds (record index and last session drawn), the
+	/// open file, and this session's number in it.
+	struct RecordedTFXKey
+	{
+		u32 index;
+		u32 last_session;
+	};
+	std::unordered_map<PipelineSelector, RecordedTFXKey, PipelineSelectorHash> m_recorded_tfx_keys;
 	std::FILE* m_tfx_key_file = nullptr;
+	u32 m_tfx_key_session = 0;
 
 	void SetGameIdentity(const std::string& serial, u32 crc) override;
-	/// Joins the workers and moves every finished pipeline into m_tfx_pipelines. GS thread only.
+	/// Joins the workers and destroys every pipeline built but not drawn with. GS thread only.
 	void StopPipelinePrecompile();
 	void PrecompileWorker();
 	/// The result of a precompile job for p, waiting if a worker is building it (the only wait). nullopt

@@ -7047,7 +7047,7 @@ bool GSDeviceVK::DoSGSR(GSTexture* sTex, GSTexture* dTex, const std::array<u32, 
 
 void GSDeviceVK::DestroyResources()
 {
-	// Before anything a worker reads is destroyed; finished pipelines join m_tfx_pipelines below.
+	// Before anything a worker reads is destroyed.
 	StopPipelinePrecompile();
 
 	if (m_tfx_ubo_descriptor_set != VK_NULL_HANDLE)
@@ -7551,6 +7551,7 @@ VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 		if (const std::optional<VkPipeline> precompiled = TakePrecompiledTFXPipeline(p))
 		{
 			m_tfx_pipelines.emplace(p, *precompiled);
+			RecordTFXPipelineKey(p);
 			return *precompiled;
 		}
 	}
@@ -7592,19 +7593,69 @@ namespace
 	struct TFXKeyFileHeader
 	{
 		static constexpr u32 MAGIC = 0x59454B50; // "PKEY"
-		static constexpr u32 FORMAT = 1;
+		static constexpr u32 FORMAT = 2;
 
 		u32 magic;
 		u32 format;
 		u32 shader_cache_version;
 		u32 key_size;
 		u8 fingerprint[16];
+		/// Incremented each time the game starts with this file.
+		u32 session;
+	};
+
+	struct TFXKeyFileRecord
+	{
+		GSDeviceVK::PipelineSelector key;
+		/// The last session that drew with this key.
+		u32 last_session;
+		u32 pad;
 	};
 #pragma pack(pop)
 
-	/// Enough for any one game's sessions so far; the file is in first-use order, so a cap keeps the
-	/// pipelines a game reaches first.
-	static constexpr size_t MAX_PRECOMPILED_TFX_PIPELINES = 4096;
+	/// Keys drawn with in this many of the game's most recent sessions are built ahead of use; older
+	/// ones stay in the file but cost no memory. A key not drawn with in KEEP_SESSIONS is dropped.
+	static constexpr u32 PRECOMPILE_SESSIONS = 4;
+	static constexpr u32 KEEP_SESSIONS = 32;
+
+	/// Key files kept in the directory, one per game and device configuration; the least recently
+	/// played go first.
+	static constexpr size_t MAX_TFX_KEY_FILES = 128;
+
+	/// Pipelines built ahead of use, in the order the game first used them.
+	static size_t GetMaxPrecompiledTFXPipelines()
+	{
+		static constexpr u64 GB = 1024ull * 1024 * 1024;
+		return (GetPhysicalMemory() >= 6 * GB) ? 2048 : 768;
+	}
+
+	/// Keys come from a file this code wrote under the same fingerprint, so these hold unless the file
+	/// is damaged or the selector layout changed without a SHADER_CACHE_VERSION bump. Every field that
+	/// indexes a table or names an enum is checked, and every bit a real key leaves zero.
+	static bool IsLoadableTFXKey(const GSDeviceVK::PipelineSelector& p)
+	{
+		return p.topology <= static_cast<u32>(GSHWDrawConfig::Topology::Triangle) && (p.key >> 8) == 0 &&
+			   p.pad == 0 && p.bs.op <= GSDevice::OP_REV_SUBTRACT &&
+			   p.vs.expand <= GSHWDrawConfig::VSExpand::TriangleAA1 && p.vs._free == 0 && p.dss._free == 0 &&
+			   p.cms._free == 0 && p.ps.atst <= GSShader::PS_ATST::NOTEQUAL && p.ps.afail <= GSShader::PS_AFAIL::RGB_ONLY_SW_Z &&
+			   p.ps.rov_depth <= GSShader::PS_ROV_DEPTH::READ_ONLY &&
+			   p.ps.blend_hw <= static_cast<u32>(HWBlendType::INV_SRC_DST_BLEND_HALF);
+	}
+
+	static void PruneTFXKeyFiles(const std::string& dir)
+	{
+		FileSystem::FindResultsArray files;
+		if (!FileSystem::FindFiles(dir.c_str(), "*.bin", FILESYSTEM_FIND_FILES, &files) ||
+			files.size() <= MAX_TFX_KEY_FILES)
+		{
+			return;
+		}
+		std::sort(files.begin(), files.end(), [](const FILESYSTEM_FIND_DATA& a, const FILESYSTEM_FIND_DATA& b) {
+			return a.ModificationTime < b.ModificationTime;
+		});
+		for (size_t i = 0; i < files.size() - MAX_TFX_KEY_FILES; i++)
+			FileSystem::DeleteFilePath(files[i].FileName.c_str());
+	}
 } // namespace
 
 std::string GSDeviceVK::GetTFXPipelineKeyFingerprint() const
@@ -7640,62 +7691,88 @@ void GSDeviceVK::SetGameIdentity(const std::string& serial, u32 crc)
 	const std::string dir = Path::Combine(EmuFolders::Cache, "vulkan_pipeline_keys");
 	if (!FileSystem::EnsureDirectoryExists(dir.c_str(), false))
 		return;
-	const std::string path =
-		Path::Combine(dir, Path::SanitizeFileName(fmt::format("{}_{:08X}{}.bin", serial, crc,
-							   GSConfig.UseDebugDevice ? "_debug" : "")));
 
-	TFXKeyFileHeader want = {};
-	want.magic = TFXKeyFileHeader::MAGIC;
-	want.format = TFXKeyFileHeader::FORMAT;
-	want.shader_cache_version = SHADER_CACHE_VERSION;
-	want.key_size = sizeof(PipelineSelector);
+	TFXKeyFileHeader header = {};
+	header.magic = TFXKeyFileHeader::MAGIC;
+	header.format = TFXKeyFileHeader::FORMAT;
+	header.shader_cache_version = SHADER_CACHE_VERSION;
+	header.key_size = sizeof(PipelineSelector);
 	{
 		const std::string fingerprint = GetTFXPipelineKeyFingerprint();
 		MD5Digest digest;
 		digest.Update(fingerprint.data(), static_cast<u32>(fingerprint.size()));
-		digest.Final(want.fingerprint);
+		digest.Final(header.fingerprint);
 	}
 
-	std::vector<PipelineSelector> keys;
+	// One file per game and device configuration, so a switch of driver family or of a setting the
+	// fingerprint covers keeps both lists instead of emptying one.
+	const std::string path = Path::Combine(dir,
+		Path::SanitizeFileName(fmt::format("{}_{:08X}_{:02x}{:02x}{:02x}{:02x}{}.bin", serial, crc,
+			header.fingerprint[0], header.fingerprint[1], header.fingerprint[2], header.fingerprint[3],
+			GSConfig.UseDebugDevice ? "_debug" : "")));
+
+	// Read what the last sessions recorded, drop what has gone stale, and write it back with this
+	// session's number. A torn record at the end (a kill mid-append) is dropped here.
+	std::vector<TFXKeyFileRecord> records;
+	u32 session = 1;
 	if (std::optional<std::vector<u8>> data = FileSystem::ReadBinaryFile(path.c_str());
 		data.has_value() && data->size() >= sizeof(TFXKeyFileHeader) &&
-		std::memcmp(data->data(), &want, sizeof(want)) == 0)
+		std::memcmp(data->data(), &header, offsetof(TFXKeyFileHeader, session)) == 0)
 	{
-		// A torn record at the end (a kill mid-append) is ignored and overwritten below.
-		const size_t count = (data->size() - sizeof(TFXKeyFileHeader)) / sizeof(PipelineSelector);
-		keys.resize(count);
-		std::memcpy(keys.data(), data->data() + sizeof(TFXKeyFileHeader), count * sizeof(PipelineSelector));
-		m_tfx_key_file = FileSystem::OpenCFile(path.c_str(), "r+b");
-		if (m_tfx_key_file)
-			FileSystem::FSeek64(m_tfx_key_file, sizeof(TFXKeyFileHeader) + count * sizeof(PipelineSelector), SEEK_SET);
-	}
-	else
-	{
-		m_tfx_key_file = FileSystem::OpenCFile(path.c_str(), "w+b");
-		if (m_tfx_key_file && (std::fwrite(&want, sizeof(want), 1, m_tfx_key_file) != 1 || std::fflush(m_tfx_key_file) != 0))
+		u32 last_session;
+		std::memcpy(&last_session, data->data() + offsetof(TFXKeyFileHeader, session), sizeof(last_session));
+		session = last_session + 1;
+		const size_t count = (data->size() - sizeof(TFXKeyFileHeader)) / sizeof(TFXKeyFileRecord);
+		records.reserve(count);
+		for (size_t i = 0; i < count; i++)
 		{
-			std::fclose(m_tfx_key_file);
-			m_tfx_key_file = nullptr;
+			TFXKeyFileRecord rec;
+			std::memcpy(&rec, data->data() + sizeof(TFXKeyFileHeader) + i * sizeof(TFXKeyFileRecord), sizeof(rec));
+			if (rec.last_session >= session || session - rec.last_session > KEEP_SESSIONS ||
+				!IsLoadableTFXKey(rec.key) || m_recorded_tfx_keys.find(rec.key) != m_recorded_tfx_keys.end())
+			{
+				continue;
+			}
+			m_recorded_tfx_keys.emplace(rec.key, RecordedTFXKey{static_cast<u32>(records.size()), rec.last_session});
+			records.push_back(rec);
 		}
 	}
+	header.session = session;
+	m_tfx_key_session = session;
+
+	const std::string tmp_path = path + ".tmp";
+	{
+		std::vector<u8> out(sizeof(header) + records.size() * sizeof(TFXKeyFileRecord));
+		std::memcpy(out.data(), &header, sizeof(header));
+		if (!records.empty())
+			std::memcpy(out.data() + sizeof(header), records.data(), records.size() * sizeof(TFXKeyFileRecord));
+		if (!FileSystem::WriteBinaryFile(tmp_path.c_str(), out.data(), out.size()) ||
+			!FileSystem::RenamePath(tmp_path.c_str(), path.c_str()))
+		{
+			FileSystem::DeleteFilePath(tmp_path.c_str());
+			m_recorded_tfx_keys.clear();
+			ERROR_LOG("Vulkan: could not write the pipeline key file '{}'", path);
+			return;
+		}
+	}
+	m_tfx_key_file = FileSystem::OpenCFile(path.c_str(), "r+b");
 	if (!m_tfx_key_file)
 	{
+		m_recorded_tfx_keys.clear();
 		ERROR_LOG("Vulkan: could not open the pipeline key file '{}'", path);
 		return;
 	}
+	PruneTFXKeyFiles(dir);
 
-	for (const PipelineSelector& key : keys)
+	const size_t max_jobs = GetMaxPrecompiledTFXPipelines();
+	for (const TFXKeyFileRecord& rec : records)
 	{
-		// Written by this code under the same fingerprint, so these hold; checked because a bad
-		// topology indexes past a table in CreateTFXPipeline.
-		if (key.topology > static_cast<u8>(GSHWDrawConfig::Topology::Triangle) || key.pad != 0)
+		if (m_precompile_jobs.size() >= max_jobs)
+			break;
+		if (session - rec.last_session > PRECOMPILE_SESSIONS || m_tfx_pipelines.find(rec.key) != m_tfx_pipelines.end())
 			continue;
-		if (!m_recorded_tfx_keys.insert(key).second || m_tfx_pipelines.find(key) != m_tfx_pipelines.end())
-			continue;
-		if (m_precompile_jobs.size() >= MAX_PRECOMPILED_TFX_PIPELINES)
-			continue;
-		m_precompile_jobs.emplace(key, TFXPrecompileJob());
-		m_precompile_queue.push_back(key);
+		m_precompile_jobs.emplace(rec.key, TFXPrecompileJob());
+		m_precompile_queue.push_back(rec.key);
 	}
 
 	if (m_precompile_queue.empty())
@@ -7709,8 +7786,8 @@ void GSDeviceVK::SetGameIdentity(const std::string& serial, u32 crc)
 	for (u32 i = 0; i < num_workers; i++)
 		m_precompile_workers.emplace_back(&GSDeviceVK::PrecompileWorker, this);
 
-	INFO_LOG("Vulkan: building {} recorded pipelines for {} on {} threads", m_precompile_queue.size(), serial,
-		num_workers);
+	INFO_LOG("Vulkan: building {} of {} recorded pipelines for {} (session {}) on {} threads",
+		m_precompile_queue.size(), records.size(), serial, session, num_workers);
 }
 
 void GSDeviceVK::PrecompileWorker()
@@ -7794,12 +7871,11 @@ void GSDeviceVK::StopPipelinePrecompile()
 	m_precompile_workers.clear();
 	m_precompile_stop = false;
 
-	// Built and never drawn with yet: keep them, this game has used them before.
+	// Built and not drawn with this session. Never bound, so no command buffer holds them and they
+	// can go now rather than occupy driver memory until the device closes.
 	for (const auto& [key, job] : m_precompile_jobs)
 	{
-		if (job.state != TFXPrecompileJob::State::Done || job.pipeline == VK_NULL_HANDLE)
-			continue;
-		if (!m_tfx_pipelines.emplace(key, job.pipeline).second)
+		if (job.pipeline != VK_NULL_HANDLE)
 			vkDestroyPipeline(m_device, job.pipeline, nullptr);
 	}
 	m_precompile_jobs.clear();
@@ -7815,15 +7891,29 @@ void GSDeviceVK::StopPipelinePrecompile()
 
 void GSDeviceVK::RecordTFXPipelineKey(const PipelineSelector& p)
 {
-	if (!m_tfx_key_file || !m_recorded_tfx_keys.insert(p).second)
+	if (!m_tfx_key_file)
 		return;
 
-	if (std::fwrite(&p, sizeof(p), 1, m_tfx_key_file) != 1 || std::fflush(m_tfx_key_file) != 0)
+	// A key already in the file gets this session's number; a new one is appended.
+	const auto it = m_recorded_tfx_keys.find(p);
+	if (it != m_recorded_tfx_keys.end() && it->second.last_session == m_tfx_key_session)
+		return;
+
+	const u32 index = (it != m_recorded_tfx_keys.end()) ? it->second.index : static_cast<u32>(m_recorded_tfx_keys.size());
+	const TFXKeyFileRecord rec = {p, m_tfx_key_session, 0};
+	if (FileSystem::FSeek64(m_tfx_key_file, sizeof(TFXKeyFileHeader) + static_cast<s64>(index) * sizeof(rec), SEEK_SET) != 0 ||
+		std::fwrite(&rec, sizeof(rec), 1, m_tfx_key_file) != 1 || std::fflush(m_tfx_key_file) != 0)
 	{
-		Console.Error("Vulkan: failed to append to the pipeline key file, recording stopped");
+		Console.Error("Vulkan: failed to write to the pipeline key file, recording stopped");
 		std::fclose(m_tfx_key_file);
 		m_tfx_key_file = nullptr;
+		return;
 	}
+
+	if (it != m_recorded_tfx_keys.end())
+		it->second.last_session = m_tfx_key_session;
+	else
+		m_recorded_tfx_keys.emplace(p, RecordedTFXKey{index, m_tfx_key_session});
 }
 
 bool GSDeviceVK::BindDrawPipeline(const PipelineSelector& p)
