@@ -498,16 +498,9 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 	m_optional_extensions.vk_ext_rasterization_order_attachment_access =
 		SupportsExtension(VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME, false) ||
 		SupportsExtension(VK_ARM_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME, false);
-	// VK_EXT_attachment_feedback_loop_layout: the in-tile feedback-loop path is what lets
-	// accurate blending run WITHOUT the per-primitive texture-barrier "slideshow". We used to
-	// blanket-disable it on Mali (vendorID 0x13B5) after the EmuCoreX dev saw stale-color /
-	// device-lost on SOME MediaTek-Mali blobs — but that demoted EVERY modern Mali (e.g.
-	// Mali-G615 on r44p1) to the barrier path, costing ~3-4x on blend-heavy games. izzy2lost's
-	// PSX2 (PCSX2_ARM64) keeps it enabled on Mali and runs those same devices full-speed, so
-	// the disable was over-broad. Enable wherever the driver advertises it; the authoritative
-	// feature-bit reconciliation below (attachmentFeedbackLoopLayout == VK_TRUE) still filters
-	// blobs that don't truly support it. If a specific old blob regresses, narrow by driver
-	// version rather than re-blocking the whole vendor.
+	// VK_EXT_attachment_feedback_loop_layout: enabled wherever the driver advertises it, and the
+	// feature bit is reconciled after device creation. A driver that fails under it is excluded by
+	// driver version (see the r44p1 rule), not by vendor.
 	m_optional_extensions.vk_ext_attachment_feedback_loop_layout =
 		SupportsExtension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME, false);
 	// VK_EXT_attachment_feedback_loop_dynamic_state: the per-draw spelling of the feedback-loop
@@ -1166,7 +1159,8 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 
 void GSDeviceVK::ResolveDeviceIdentity()
 {
-	// Needs m_device_driver_properties, so it runs as soon as ProcessDeviceExtensions has them.
+	// The driver context feeds the driver-bug database, ported from sashkinbro/EmuCoreX with his
+	// approval. Needs m_device_driver_properties, so it runs as soon as ProcessDeviceExtensions has them.
 	// Resolved on every platform: the driver-bug database is keyed on the driver, and Turnip on an
 	// ARM Linux handheld is the same driver as Turnip on a phone. Resolution is pure data;
 	// PublishGPUProfile hands it to the device, and the rules act only where they are queried.
@@ -3723,14 +3717,8 @@ bool GSDeviceVK::CheckFeatures()
 
 void GSDeviceVK::PublishGPUProfile()
 {
-	// NOTE (2026-07-12): we deliberately do NOT force the Mali runtime GPU profile here.
-	// The old band-aid clamped blending accuracy up to Full on Mali (via the profile) to
-	// dodge the broken HW dual-source unit — which is exactly why Mali used to "need
-	// Blending=Max". sashkinbro/EmuCoreX replaced that with the correct, targeted fix:
-	// m_features.dual_source_blend = dualSrcBlend (below), so GSRendererHW SW-blends ONLY
-	// the specific SRC1/blend-mix/PABE draws instead of globally clamping. We already carry
-	// that path, and the Vulkan renderer never reads the runtime profile anyway (only
-	// GSDeviceOGL does), so the force was dead weight that diverged from his known-good tree.
+	// The runtime profile does not raise blending accuracy on Mali: without dualSrcBlend, GSRendererHW
+	// blends only the SRC1 draws in the shader (dual_source_blend, below).
 
 	// The mobile-specific consequences stay Android-only: off Android the GL detector classifies
 	// every non-Mali GPU as Adreno, so the runtime profile would be a wrong answer there, and the
@@ -3738,14 +3726,9 @@ void GSDeviceVK::PublishGPUProfile()
 	const GpuProfileSelection& mobile_profile = m_gpu_profile;
 	SetMobileDriverProfile(mobile_profile.driver);
 #if defined(__ANDROID__)
-	// ★ Vulkan resolved mobile_profile and pushed every OTHER piece of it into the device
-	// (GPU identity, GS tuning) but never the runtime profile itself, so
-	// IsMaliGPUProfile()/IsAdrenoGPUProfile() answered from the default for the entire Vulkan
-	// lifetime, and the profile printed in VK logs was whatever the default happened to be
-	// rather than the detected GPU.
+	// So that IsMaliGPUProfile() and IsAdrenoGPUProfile() answer for the Vulkan device too.
 	SetRuntimeGPUProfile(mobile_profile.runtime_profile);
-	// Per-vendor GS tuning (pool sizes/ages + constrained) — drives GSDevice pool sizing above.
-	// This is what constrains texture/target caching on weaker Mali (e.g. G615). From EmuCoreX.
+	// Per-model pool sizes and ages, which drive GSDevice's pool sizing. From sashkinbro/EmuCoreX.
 	SetMobileGPUIdentity(mobile_profile.gpu);
 	SetMobileGSTuning(mobile_profile.gs_tuning);
 
@@ -3782,186 +3765,57 @@ void GSDeviceVK::PublishGPUProfile()
 
 GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad()
 {
-	// Set when the user (or auto-detection) selects the Xclipse GPU profile; forces the
-	// Xclipse fbfetch-off path below even if the 0x144D vendorID guess doesn't fire on
-	// their driver. Declared outside the Android block so it stays a harmless false on
-	// desktop. Populated from the resolved mobile profile just below.
+	// A forced Xclipse profile (Android settings) counts as an Xclipse device.
 	bool force_xclipse_profile = false;
 #if defined(__ANDROID__)
 	force_xclipse_profile = (m_gpu_profile.override_mode == GpuProfileOverride::Xclipse) ||
 		(m_gpu_profile.runtime_profile == RuntimeGpuProfile::Xclipse);
 #endif
 
-	// BrokenSubpassFeedback + BrokenAttachmentFeedbackLoopLayout: on these drivers an in-pass
-	// render-target self-read can silently drop the whole draw, in BOTH shapes — the subpassLoad
-	// input attachment and the feedback-loop-layout texelFetch sampler. Reading a separate copy of
-	// the target is the only reliable form.
+	// UseRenderTargetCopyForFeedback: on these drivers an in-pass render-target self-read returns the
+	// content from the start of the pass, stale across earlier draws and across earlier primitives of
+	// the same draw, in both in-pass shapes (subpassLoad and the feedback-loop layout sampler). Only a
+	// separate copy of the target reads correctly. It affects every draw that reads the target,
+	// including destination-alpha tests and write masks, not only draws that sample it.
 	//
-	// This was originally narrowed to replacement textures, on the evidence that Tales of the
-	// Abyss + an HD pack lost its whole 2D text layer in-tile (at 1x as well as 4x, so not
-	// tile-size related) while NFS Underground pushed 608 barrier draws per frame through the same
-	// in-tile self-read with no pack and rendered correctly. That read the pattern backwards: the
-	// self-read is not reliable for ordinary blending either, it just fails subtly enough there to
-	// look fine. OutRun 2006 has no pack and renders its sea as high-contrast two-tone speckle -
-	// 4.0% of the frame differs from the software renderer by more than 16 levels in-tile, and
-	// 0.13% through the RT copy (Turnip/Adreno 650, water dump, 2026-08-02). Both in-pass shapes
-	// are byte-identical wrong, which is what says driver rather than draw.
+	// ⚠️ Breaking the pass instead of copying is exact but slower: on Turnip the copy road keeps the
+	// untiled sysmem mode these passes run fastest in, and every in-pass alternative leaves it. One copy
+	// cannot serve several draws either, because each feedback draw reads what the previous one wrote.
 	//
-	// So it applies to every draw on an affected driver now. The cost is real and scales with
-	// upscale - measured on device, RT copy vs in-tile, median frame time over two runs each:
-	//
-	//              1x      3x      4x
-	//   FlatOut 2  +7.5%  +10.5%  +24.6%   (copies/frame 23 -> 477, render passes 100 -> 538)
-	//   OutRun    +20.5%   +9.9%   +0.5%
-	//   GoW II     -3.2%   +2.9%
-	//   RG lamps   -1.5%   +9.3%
-	//
-	// The old note recorded +38%/+40% at 3x/4x on NFSU. Nothing here reproduces that on the titles
-	// available now; FlatOut 2 makes a bigger structural change (more copies, more render passes)
-	// for a third of the cost at 3x. Treat the old figure as an upper bound on a build we can no
-	// longer run, not as a contradiction.
-	//
-	// WHICH draws does it get wrong? All of them, on every affected title, and worse than it
-	// looks. Scored per frame against the software renderer, in-tile (Turnip/Adreno 650,
-	// 2026-08-02):
-	//
-	//   FlatOut 2   31.3% of the frame wrong by >16 levels   <- worst measured, once read as clean
-	//   Katamari     7.5%
-	//   OutRun       4.6%   (a separate scoring run from the 4.0% above, different frames)
-	//   NFSU         0.00% by >16 levels, but ~40% of pixels off by 1-16
-	//
-	// NFSU is the whole lesson: corrupt everywhere and invisible, which is exactly what made
-	// "only titles with a texture pack" look like a real gate. There is no title-level
-	// discriminator to find. Nor a useful draw-level one - most corrupted draws never sample the
-	// target, they read it for the destination-alpha test and the write mask, so "self-read"
-	// understates what the workaround protects.
-	//
-	// Two symptoms, one behaviour (per-draw bisect + Turnip source reading, 2026-08-03): an
-	// in-pass read returns render-pass-START content — stale across the pass's earlier DRAWS, and
-	// stale across the earlier PRIMITIVES of its own draw (God of War II's ~10.9k-primitive
-	// accumulation strip collapses to exactly one layer: error = -(k-1) on a pixel covered by k
-	// layers, i.e. every fragment reads the pre-draw value). The explicit vkCmdPipelineBarrier
-	// self-dependency changes nothing, and neither does forcing rasterization-order access on
-	// every pipeline (TU_DEBUG=rast_order, byte-identical) — the read simply does not observe
-	// unresolved tile writes.
-	//
-	// ⚠️ DO NOT ATTEMPT TO REPLACE THE COPY WITH A PASS BREAK. It was fully built and validated
-	// (2026-08-03): break the pass before each one-barrier feedback draw and sample the live
-	// attachment, so the stale read returns exactly the pre-draw snapshot the copy provides. It
-	// IS byte-exact — but only in shapes that cost 2-5x whole-frame. The complete map, every cell
-	// measured on the SD865:
-	//
-	//   - This workload's speed lives in Turnip's untiled sysmem NO_FLUSH mode: the bandwidth
-	//     autotuner renders most of these small single-draw passes untiled, and the shipped COPY
-	//     path depends on it too (TU_DEBUG=gmem: Katamari 4.2 -> 10.0 ms, NFSU 10.8 -> 48 ms).
-	//   - A live self-read under sysmem NO_FLUSH is a data race: nondeterministic frames
-	//     run-to-run, byte-compare passes by luck. Every fix abandons NO_FLUSH: declaring the
-	//     loop via an input-attachment reference triggers feedback_invalidate (replayed per
-	//     tile); the rasterization-order pipeline flag makes sysmem execution
-	//     FLUSH_PER_OVERLAP_AND_OVERWRITE (per-overlap pipeline flush — these draws overlap
-	//     heavily); pinning gmem pays the gmem tax directly. All land at 2x Katamari / 5x NFSU.
-	//   - The copy is the unique shape that is correct, deterministic, AND compatible with
-	//     sysmem NO_FLUSH — the shader reads a separate texture, so the driver owes it nothing.
-	//     That is WHY the copy path is also the fastest: its measured "cost" (0.6 ms/frame on
-	//     Katamari vs no read at all) cannot be recovered by removing the copy, because removing
-	//     the copy removes the rendering mode.
-	//
-	// ⚠️ Reusing the clone ACROSS draws was also fully built and refuted (2026-08-05): a snapshot
-	// cache keyed on "no pass end since the copy" with per-draw written-area tracking, verified
-	// byte-exact on ten dumps — and it hit 0 times in ~4,800 feedback draws across the corpus.
-	// The reads are byte-dependent on the writes: these draws read the RT at (or overlapping) the
-	// destination pixels of the PREVIOUS feedback draw (blend/fbmask/tex-is-fb chains), so the
-	// snapshot is stale by construction the moment it could be reused. That geometry is GS-state,
-	// not GPU behaviour, so no driver revision changes it. Batching several copies into one pass
-	// break fails on the same dependency: copy N is only valid after draw N-1 has executed. The
-	// per-feedback-draw break+copy bracket is structural for this workload.
-	//
-	// OverrideTextureBarriers = 1 remains the documented way back to the in-tile path for A/B
-	// work and for a future driver revision that fixes the read.
+	// OverrideTextureBarriers = 1 still reaches the in-pass read.
 	const bool rt_self_read_is_broken =
 		GetMobileDriverProfile().UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback);
 
-	// framebuffer_fetch: the tiler-native ordered Cd read (ROAA / subpassLoad in tile
-	// memory). It lets DetermineBarriers() (GSRendererHW.cpp) drop every per-primitive
-	// barrier and makes ROV (m_features.rov below) auto-disable — the fast, correct path
-	// for blend-heavy games on a TBDR.
-	//
-	// MALI (0x13B5): ENABLED by default when ROAA is present. The Mali profile forces SW
-	// blend, so fbfetch reads Cd in-shader and never touches Mali's broken HW dual-source
-	// unit; without fbfetch the per-PRIMITIVE texture-barrier path tanks blend-heavy games
-	// (GT4 = 10-20fps slideshow). No-op on any Mali lacking the extension.
-	//
-	// ADRENO: enabled whenever ROAA is present, on every OS, except the parts the database denies
-	// and the Adreno 8xx proprietary blob (below). ROV is the wrong primitive on a tiler
-	// (fragment_shader_interlock serializes same-pixel fragments and bypasses tile memory), so on
-	// Adreno fbfetch is the way to make accurate blending fast. A user whose Qualcomm driver gets
-	// it wrong switches drivers; there is no per-user switch.
-	//
-	// OTHER VENDORS: trusted on Android builds only (the vendor terms become a deny list there, see
-	// below); on desktop only Mali and Adreno are.
+	// framebuffer_fetch: the ordered in-tile read of the destination (rasterization-order attachment
+	// access). It lets DetermineBarriers drop the per-primitive barriers, and turns ROV off.
+	//   Mali: on wherever the extension is. Mali forces software blending, and without fetch its only
+	//     destination read is a barrier per primitive.
+	//   Adreno: on wherever the extension is, on every OS, except the parts the database denies and
+	//     the Adreno 8xx Qualcomm driver.
+	//   Other vendors: trusted on Android builds only.
 	const bool is_mali_vk = IsDeviceMali();
 	const bool is_adreno = IsDeviceAdreno();
-	// ⚠️ In practice this is currently moot on Adreno: UseRenderTargetCopyForFeedback turns texture
-	// barriers off below, and "fbfetch needs barriers" then clears framebuffer_fetch regardless of
-	// what this resolves to. Framebuffer fetch IS the in-tile self-read, so a driver that cannot
-	// do that read cannot have it. Kept as-is so a driver that stops carrying the bug recovers the
-	// fast path for free.
-	// Samsung Xclipse (Exynos AMD-RDNA2) has no working ROAA-based framebuffer fetch — force it off
-	// there so we never route the fast-blend path into a broken unit. Inert if the 0x144D vendorID
-	// guess is wrong (a real Xclipse tester must confirm IsDeviceXclipse() fires). The user
-	// can also force it from Settings → Renderer → GPU Profile (force_xclipse_profile) for
-	// drivers where the 0x144D vendorID doesn't report.
+	// Moot on Adreno today: the copy workaround turns barriers off, and fetch needs them. A driver that
+	// loses the bug gets the fast road back with no change here.
+	// Xclipse has no working rasterization-order fetch.
 	const bool is_xclipse_vk = IsDeviceXclipse() || force_xclipse_profile;
-	// The parts that expose ROAA and return zero or stale destination colour through it (black or
-	// intermittently missing textures) are rules vk-mediatek-mali-roaa-destination-read and
-	// vk-arm-g57-roaa-destination-read in the driver-bug database. That is where the exemption for
-	// a part we have measured lives, and it is why this is a table lookup rather than the inline
-	// `IsMediaTekSoC() || deviceName contains Mali-G57` test it replaces -- the inline one could
-	// not express "except MT6897", and it could not fire at all off Android, where the SoC is
-	// never pushed into the device.
+	// Parts that return zero or stale destination colour through rasterization-order access are denied
+	// by the driver-bug database (vk-mediatek-mali-roaa-destination-read,
+	// vk-arm-g57-roaa-destination-read), which also holds the MT6897 exemption.
 	//
-	// ForceMaliFramebufferFetch (default OFF) lets a user on a MediaTek part the database still
-	// denies re-enable fbfetch and A/B their own driver. The deny is a per-VENDOR guess, not a
-	// per-driver fact, and it is expensive where it is wrong: Mali reports dualSrcBlend=false, so
-	// GSRendererHW force-SW-blends every SRC1/blend-mix/PABE draw, and with fbfetch off the only
-	// way to read Cd is the per-PRIMITIVE texture barrier -- the "GT4 slideshow" path described
-	// above. Issue #339 is that collision on a Dimensity 8350 + Mali-G615 (Shadow of the Colossus
-	// lost perf when SW blend fixed its visuals). If a newer MediaTek driver reports ROAA
-	// honestly, this recovers the fast blend path; if it still lies, the user sees the
-	// black/missing textures and turns it back off -- which is why it must default OFF and stay a
-	// separate setting.
-	//
-	// Xclipse stays excluded even when forced: it has no working ROAA fbfetch at all, so honouring
-	// the force there would route the fast path into a unit that cannot do it.
-	// ANGLE is likewise no escape for the user -- it translates GLES onto this same Vulkan driver.
-	// The working workaround remains the native GL renderer, whose fbfetch comes from
-	// GL_ARM_shader_framebuffer_fetch (GSDeviceOGL) and never touches the Vulkan ROAA path.
-	//
-	// ⚠️ The key is MALI-ONLY, and it is the policy function below that makes it so. It reads as a
-	// Mali escape hatch and is named for one, but it used to sit in a term any vendor could reach:
-	// on an Adreno part whose database entry denies the destination read, setting it lifted that
-	// deny too and put Adreno on the in-tile road that ARMSX2 #442 says it cannot take.
+	// ForceMaliFramebufferFetch (off by default) lifts that deny on Mali only, so a user can test
+	// whether their driver really has the defect; where the deny is wrong it costs a barrier per
+	// primitive on every software-blended draw. It never lifts the Xclipse gate, and the policy function
+	// keeps it Mali-only so it cannot put an Adreno part the database denies on the in-tile road.
 	const bool roaa_destination_read_is_broken =
 		GetMobileDriverProfile().HasBug(DriverBug::BrokenRoaaDestinationRead);
-	// is_adreno (not just is_turnip): the removed `if (is_adreno)` block used to force fbfetch on
-	// for the whole vendor, so making it opt-in here would silently drop the proprietary blob onto
-	// the per-primitive barrier path — a regression unrelated to #442. Keeping the vendor listed
-	// preserves that default while letting DisableFramebufferFetch actually take effect, which the
-	// old unconditional force ate (see feedback_adreno_fbfetch_ini_override_measurement_trap).
+	// Adreno is listed as a vendor, not only Turnip, so the Qualcomm driver keeps fetch by default and
+	// DisableFramebufferFetch still turns it off. On Android the vendor terms are a deny list: any GPU
+	// with the extension takes fetch unless the database, Xclipse or the Adreno 8xx gate says otherwise.
+	// Add a vendor that returns stale reads beside Xclipse rather than narrowing this to an allow list.
 	//
-	// On Android the vendor terms are a DENY list: any_vendor_trusted is set, so every GPU that
-	// advertises ROAA takes the fbfetch path unless the database's destination-read deny,
-	// is_xclipse_vk or the Adreno 8xx blob gate says otherwise. That keeps PowerVR and other
-	// unnamed vendors off the ~3-4x slower per-primitive barrier path. Do not narrow it back to an
-	// allow list; if another vendor is reported returning stale or empty ROAA reads, add it beside
-	// is_xclipse_vk.
-	// 8 Elite (Adreno 8xx on the Qualcomm PROPRIETARY driver): that blob returns STALE ROAA reads
-	// above Basic blending — invisible floors / alpha cutouts (A/B 2026-06-10, the "Adreno-840
-	// proprietary" case in the note above). Never reproduced on 6xx/7xx or on Turnip/Mesa. So keep
-	// the fast in-tile fbfetch path for every other Adreno, but route the 8xx proprietary blob onto
-	// the correct texture-barrier path — restoring the historical 8-Elite exclusion. A hard gate like
-	// is_xclipse_vk (the toggle can't force it back on), since it's a correctness bug, not a perf
-	// trade; Turnip on 8xx (open driver, no stale reads) is unaffected and keeps the fast path.
+	// The Qualcomm driver on Adreno 8xx returns stale rasterization-order reads above Basic blending;
+	// Turnip on the same parts does not. A hard gate, like Xclipse.
 	const bool is_adreno8xx_proprietary = m_device_rules.adreno8xx_proprietary;
 	// Every term above, in one place, in GSFramebufferFetchPolicy.h beside the OpenGL decision. The
 	// facts are collected here; which of them wins is pinned there and in gs_vertex_tests.
@@ -3986,24 +3840,18 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad()
 						"key only lifts the Mali destination-read deny. Framebuffer fetch is unchanged.",
 			m_device_properties.deviceName, m_device_properties.vendorID);
 	}
-	// Which of the three self-read roads this device takes, and what that implies for texture
-	// barriers, the in-tile read, the layout spelling and primitive ordering. One function, all
-	// inputs explicit, and every no-change case pinned at compile time -- the four bits below used
-	// to be decided by four expressions spread over 150 lines of this function, which is the shape
-	// the OpenGL fetch decision was in when it contradicted itself in a single log.
+	// Which self-read road this device takes, and what that implies for barriers, the in-tile read, the
+	// layout spelling and primitive ordering. See GSSelfReadRoadPolicy.h.
 	GSSelfReadRoadInputs road_inputs;
 	road_inputs.in_tile_read_available = fetch_decision.enabled;
 	road_inputs.layout_road_available = m_optional_extensions.vk_ext_attachment_feedback_loop_layout;
 	road_inputs.roaa_available = m_optional_extensions.vk_ext_rasterization_order_attachment_access;
 	road_inputs.rt_self_read_is_broken = rt_self_read_is_broken;
-	// The driver saying, in driverInfo, that it is a build measured to order overlapping self-reads
-	// inside a declared feedback loop. This is what puts a user who loads our Turnip pack on the
-	// declared road with no setting touched, and it is why the road below can be reached without
-	// the experiment key. Every other driver reports 0 here and is unaffected.
+	// A driverInfo tag saying this build orders overlapping self-reads inside a declared loop. It puts
+	// a user of our Turnip builds on the declared road with no setting touched.
 	road_inputs.driver_orders_declared_loop = GetMobileDriverProfile().orders_declared_feedback_loop;
-	// The other driver fact: the database saying this PART belongs on the declared loop with our
-	// own per-draw barriers kept. Turnip on an Adreno 730 and up, where the copy road is not merely slow
-	// but wrong, and where the barrier-less road races. Every other part reports false.
+	// The database saying this part belongs on the declared loop with our own barriers kept: Turnip on
+	// Adreno 730 and up, where the copy road renders wrong.
 	road_inputs.driver_prefers_declared_loop_with_barriers =
 		GetMobileDriverProfile().prefers_declared_loop_with_barriers;
 	road_inputs.override_texture_barriers = GSConfig.OverrideTextureBarriers;
@@ -4027,48 +3875,26 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad()
 	m_declare_loop_per_draw = GSDeclaresLoopPerDraw(dynamic_loop_inputs);
 	if (GSLoopSpellingFallsBackToCreateFlag(dynamic_loop_inputs))
 	{
-		// Not an inert arm -- the loop IS declared -- but declared the way that costs, and a
-		// device that takes the fallback silently is a device nobody knows is on it. A warning
-		// rather than an error: the price is a measurement on Turnip and nowhere else, and a
-		// driver without the extension (the M2's is one) pays nothing for it.
+		// The loop is declared, but in the spelling that costs on Turnip. Say so.
 		Console.Warning("VK: no VK_EXT_attachment_feedback_loop_dynamic_state here, so the feedback "
 						"loop is declared with the PIPELINE CREATE FLAG rather than per draw. "
 						"Measured on Turnip only: that spelling costs up to 2.8x on a self-read-heavy "
 						"title (wrc3@1x, SD865).");
 	}
 
-	// No working in-pass render-target self-read (ARMSX2 #442, Qualcomm/Turnip). Force the RT-COPY
-	// path: with texture barriers off, GSRendererHW reads Cd from a separate copy of the target
-	// (draw_rt_clone) instead of sampling the live attachment, and "fbfetch needs barriers" below
-	// (framebuffer_fetch &= texture_barrier) drops the in-tile read too. Expensive — one RT copy
-	// per feedback draw — but it is the only shape this driver renders correctly.
+	// With the copy workaround in effect, texture barriers are off: GSRendererHW reads the destination
+	// from a copy of the target, and the in-tile read goes with the barriers. tfx.glsl picks the read
+	// from DISABLE_TEXTURE_BARRIER or HAS_FEEDBACK_LOOP_LAYOUT; turning framebuffer_fetch off alone would
+	// leave subpassLoad in place, which is just as broken.
 	//
-	// tfx.glsl selects the read purely from two defines: DISABLE_TEXTURE_BARRIER (this path) or
-	// HAS_FEEDBACK_LOOP_LAYOUT. Both compile texelFetch; the difference is whether the sampled
-	// image is a copy or the live attachment, and only the copy works here. Turning
-	// framebuffer_fetch off on its own does NOT change the variant — it leaves subpassLoad in
-	// place, which is equally broken.
-	//
-	// Only applied when OverrideTextureBarriers is on auto (-1). An explicit 1 still wins, so the
-	// in-tile path stays reachable for A/B-ing this workaround's cost and for a future driver
-	// revision that fixes the read; an explicit 0 already lands here anyway. The declared-loop
-	// driver facts below follow the same rule: they are what auto picks, and an explicit 1 still
-	// reaches the in-tile read.
-	//
-	// ⚠️ The rule above is about the road it was MEASURED on: the in-pass read while the pass is
-	// tiled, in both spellings that were reachable in July 2026. The third road -- declare the
-	// attachment feedback loop, which makes Turnip refuse to tile the pass and programs a coherent
-	// destination read on the untiled path -- was not reachable from this tree at all when the rule
-	// was written, because UseFeedbackLoopLayout() returns false on any device advertising
-	// rasterization-order attachment access, which every Turnip device does. The declared-loop
-	// road fills exactly that gap. The rule is NOT modified: what changes is that DecideSelfReadRoad
-	// has a third answer to give, on auto, for the Turnip parts the driver database names.
+	// The workaround applies on auto only (OverrideTextureBarriers = -1). The declared-loop driver facts
+	// are auto answers too, and outrank the copy on the parts the database names: the workaround was
+	// measured on the tiled in-pass read, and Turnip does not tile a declared loop.
 	m_features.framebuffer_fetch = road.in_tile_read;
 	m_features.texture_barrier = road.texture_barrier;
 	m_features.declared_feedback_loop_orders_overlap = road.orders_overlapping_prims;
-	// The two drivers whose per-draw barrier was measured to cost about what a per-draw copy does:
-	// Turnip (an Adreno 740, +40% on Splashdown) and Honeykrisp (the M2). Read only by the
-	// blending cap in GSCopyRoadBlendingPolicy.h; every other driver treats the barrier as cheap.
+	// Turnip and Honeykrisp, where a per-draw barrier costs about what a copy does. Read only by
+	// GSCopyRoadBlendingPolicy.h; every other driver treats the barrier as cheap.
 	m_features.barrier_read_costs_per_draw = m_device_rules.self_read_costs_measured;
 	if (rt_self_read_is_broken && GSConfig.OverrideTextureBarriers < 0 && !m_features.texture_barrier)
 	{
@@ -4099,18 +3925,10 @@ void GSDeviceVK::ResolveFeatureTable()
 
 	m_features.prefer_new_textures = true;
 #if defined(__ANDROID__)
-	// Weak mobile parts would rather reuse than grow the pool, and full preloading blows
-	// their texture budget. Both from the resolved GPU profile; sashkinbro/EmuCoreX.
+	// Weak mobile parts would rather reuse than grow the pool; from the resolved GPU profile.
+	// sashkinbro/EmuCoreX.
 	m_features.prefer_new_textures = GetMobileGSTuning().prefer_new_textures;
-	// The profile no longer forces Texture Preloading down to Partial. It silently contradicted an
-	// explicit user setting — our default is Full, and the downgrade fired for every "constrained"
-	// profile, which includes the conservative fallback used by any GPU the table does not
-	// recognise, so the UI said Full while the renderer ran Partial and only a log line said
-	// otherwise. It was also order-dependent: GSConfig is a global reassigned wholesale on each
-	// ApplySettings, while this override only re-runs when the device is recreated, so preloading
-	// could differ between a fresh boot and a mid-session settings change. sashkinbro dropped it
-	// too ("Restore fast mobile GS paths"); Full is upstream's default because it is usually the
-	// faster path, and a pool-size heuristic is not a measurement of texture-memory pressure.
+	// The profile leaves Texture Preloading alone: the user's setting outranks a pool-size heuristic.
 #endif
 	m_features.provoking_vertex_last = m_optional_extensions.vk_ext_provoking_vertex;
 	m_features.vs_expand = !GSConfig.DisableVertexShaderExpand;
@@ -4139,35 +3957,16 @@ void GSDeviceVK::ResolveFeatureTable()
 	// rather than being left to rely on that.
 	m_features.feedback_loop_layout = UseFeedbackLoopLayout();
 
-	// The Vulkan spelling of framebuffer fetch *is* rasterization-order attachment access, whose
-	// contract is that overlapping fragments in one draw observe each other in primitive order.
-	// So the ordering a full barrier would provide is already guaranteed, and keeping the barrier
-	// would only reintroduce the render-pass breaks this path exists to avoid.
+	// Vulkan's framebuffer fetch is rasterization-order attachment access, which orders overlapping
+	// fragments within a draw, so a full barrier would add only pass breaks. Derived after the last
+	// write to framebuffer_fetch so the two bits cannot disagree.
 	//
-	// Derived AFTER every write to framebuffer_fetch above, including the RT-copy workaround's
-	// texture_barrier mask. Deriving it beside the first assignment left the pair disagreeing on
-	// Adreno — no fetch, but "fetch orders overlap" still true — which is inert only for as long as
-	// every reader sits inside an `if (features.framebuffer_fetch)` gate, as DetermineBarriers
-	// currently does. Keep this the last word on the bit rather than relying on that.
-	//
-	// ⚠️ Delivering that contract for an in-pass SELF-read is a separate question from ordering, and
-	// Turnip answers the two differently depending on tiling. Read against mesa-26.1.2: the tiled
-	// path sets GRAS_SC_CNTL.SINGLE_PRIM_MODE = FLUSH_PER_OVERLAP under rasterization-order access,
-	// which the a6xx register docs define as waiting for any overlapping primitive prior to the
-	// current one — the ordering really is requested. The stronger FLUSH_PER_OVERLAP_AND_OVERWRITE,
-	// whose documented extra guarantee is that UCHE and CCU stay in sync "when fetching the previous
-	// value for the current pixel", is only ever set on the UNTILED sysmem path (and there a feedback
-	// loop alone is enough to get it). The device agrees: forcing ROAA on every pipeline changed
-	// nothing while tiled, and the same draw came out correct under TU_DEBUG=sysmem. So what fails
-	// on Adreno is read VISIBILITY while tiled — writes sit unresolved in GMEM while the fetch goes
-	// out through UCHE — not primitive ordering. Adreno never reaches this line with fetch enabled,
-	// so nothing here depends on it; a tiler whose fetch is a genuine tile-local read is a different
-	// case and is not implicated by any of the above.
+	// ⚠️ Ordering is not visibility. On Turnip a tiled in-pass self-read does not see unresolved tile
+	// writes even with rasterization-order access. Adreno never reaches here with fetch enabled.
 	m_features.framebuffer_fetch_orders_overlap = m_features.framebuffer_fetch;
 
-	// Mali Vulkan stacks frequently report dualSrcBlend=false. When absent, GSRendererHW SW-blends
-	// the specific draws that need SRC1 instead of relying on a global high blending-accuracy level
-	// (which is why Mali no longer needs Blending=Max by hand). Ported from sashkinbro/EmuCoreX.
+	// Without dualSrcBlend (common on Mali), GSRendererHW blends the SRC1 draws in the shader.
+	// Ported from sashkinbro/EmuCoreX.
 	m_features.dual_source_blend = m_device_features.dualSrcBlend;
 
 	// A driver that ignores the blend constant cannot be asked for a constant-colour blend factor at
@@ -4181,50 +3980,28 @@ void GSDeviceVK::ResolveFeatureTable()
 	// Use D32F depth instead of D32S8 when we have framebuffer fetch.
 	m_features.stencil_buffer &= !m_features.framebuffer_fetch;
 
-	// Turnip below Mesa 26.2 wedges the GPU on A6XX_EARLY_Z_LATE_Z + a D32S8 depth-stencil
-	// attachment + a discarding fragment shader, which is SetupDATE's stencil pre-pass quad once a
-	// stencil buffer exists (round 20260903-0135, A650 / turnip 26.1.2, 8 of 8 titles lost the
-	// device; fixed in Mesa a70d2af590d / MR !41858, first shipped in 26.2). Bounded to that
-	// driver by the vk-turnip-d32s8-early-z-late-z-hang rule rather than to the Adreno vendor
-	// ID, which is what this used to be.
-	//
-	// Stencil off means depth is created as plain D32_SFLOAT and neither a stencil attachment nor
-	// the stencil DATE pre-pass is emitted; DATE falls back to PrimID tracking, then Full, then Off.
+	// Turnip before Mesa 26.2 hangs on EARLY_Z_LATE_Z with a D32S8 attachment and a discarding shader,
+	// which is SetupDATE's stencil pre-pass (rule vk-turnip-d32s8-early-z-late-z-hang). Without a stencil
+	// buffer depth is plain D32_SFLOAT, and DATE falls back to primitive-ID tracking, then Full, then Off.
 	if (UsesMobileDriverWorkaround(DriverWorkaround::DisableStencilBuffer))
 		m_features.stencil_buffer = false;
 
-	// Mali-G57 r13p0-class drivers can expose alternating/stale FastMAD history banks instead of the
-	// reconstructed frame; GSRenderer::Merge falls those back to weave+blend. Ported from sashkinbro/EmuCoreX.
+	// Mali-G57 drivers can return stale FastMAD history; GSRenderer::Merge then weaves and blends.
+	// Ported from sashkinbro/EmuCoreX.
 	m_features.broken_mad_deinterlace = m_device_rules.broken_mad_deinterlace;
 
-	// Adreno colorWriteMask-with-depthtest bug (PPSSPP #10421 / thin3d_vulkan.cpp): on
-	// Adreno 5xx and pre-0x801EA000 drivers the pipeline colorWriteMask is ignored while a
-	// depth test is active, so masked RGBA channels get written. PS2 FBMASK relies on the
-	// write mask; we emulate the one case Vulkan blend can express (RGB fully masked, alpha
-	// independent) in CreateTFXPipeline. No user toggle; excludes Adreno 6xx/7xx/8xx.
-	// The 0x801EA000 threshold is in the PROPRIETARY blob's driverVersion encoding; Turnip
-	// reports Mesa's version (e.g. Mesa 26.1.2 -> 0x06801002), which is always below it and
-	// made the workaround misfire on every Turnip device. The blob bug does not exist in
-	// Mesa, so exclude Turnip outright.
+	// Adreno 5xx and old Qualcomm drivers ignore colorWriteMask while a depth test is active (PPSSPP
+	// #10421). CreateTFXPipeline emulates the one case blending can express: RGB fully masked, alpha
+	// independent.
 	m_broken_colormask_with_depth = m_device_rules.broken_colormask_with_depth;
 	if (m_broken_colormask_with_depth)
 		Console.WriteLn("VK: Adreno colorWriteMask-with-depthtest workaround active (deviceID=0x%08X driver=0x%08X)",
 			m_device_properties.deviceID, m_device_properties.driverVersion);
 
-	// On tiler GPUs, declaring gl_FragDepth (for PS2 32-bit Z quantization) emits
-	// SPIR-V ExecutionMode DepthReplacing, which disables early-ZS for the entire
-	// pipeline. Default-on for Mali; opt-out via INI for Z-precision-sensitive titles.
-	//
-	// Apple GPUs additionally miscompare. Depth stored through gl_FragDepth does not
-	// bit-match the fixed-function interpolation that a later read-only pass tests
-	// against, so a GEQUAL retest of the same geometry drops out along shared triangle
-	// edges and whatever was drawn underneath shows through as pinpoints. The floor
-	// only ever lowers the stored value, so it masks the mismatch rather than causing
-	// it: on Black (SLUS-21376) a dark wall shows 7062 stray pixels with the depth
-	// write on the shader path and the floor removed, 748 with the floor, and 0 with
-	// the shader path skipped entirely. God of War II's Athena statue speckles the
-	// same way. Biasing the stored value one PS2 Z unit down also clears it, which
-	// puts the disagreement below a single Z unit.
+	// Declaring gl_FragDepth for PS2 Z quantization makes the pipeline DepthReplacing, which turns early
+	// depth off on a tiler, so Mali skips it. Apple GPUs skip it for correctness: depth written from the
+	// shader does not bit-match the fixed-function depth a later pass tests against, and a GEQUAL retest
+	// of the same geometry drops pixels along shared edges.
 	m_features.no_ps2_z_quantization = IsDeviceMali() || IsDeviceAppleGPU();
 
 	const VkPhysicalDeviceLimits& limits = m_device_properties.limits;
@@ -4238,20 +4015,10 @@ void GSDeviceVK::ResolveFeatureTable()
 
 void GSDeviceVK::ResolveFeedbackConsumers(const GSSelfReadRoadDecision& road)
 {
-	// The alpha stencil counter through the blend unit (GSFastStencilShadow.h). Decided here because
-	// every input is final by now: the road above, and dual_source_blend just above.
-	//
-	// It reads the ROAD, not m_features.texture_barrier, and the difference matters. The bit means
-	// "a draw may read the render target from inside the pass"; the counter's question is "does a
-	// frame read cost the renderer its cheap path", and the two only agree while the copy road is
-	// the only expensive one. Declaring the feedback loop sets texture_barrier as a side effect, so
-	// keying on the bit switched the counter off on the declared road -- and on an SD865 that
-	// absence measured as the declared road's ENTIRE cost on Jak II
-	// and Jak 3 (+11.5..+42.0% without it, +0.13..+0.90% with it forced on, same draw counts as the
-	// copy road, bit-identical frames). road.loop_declared is what separates a declared loop from a
-	// device that simply orders its own reads -- and it is loop_declared rather than arm_applied
-	// because the driver fact reaches the same road without the experiment key, and the counter has
-	// to come with it.
+	// The alpha stencil counter through the blend unit (GSFastStencilShadow.h). It keys on the road, not
+	// on texture_barrier: declaring the feedback loop turns texture_barrier on, and the counter is most
+	// of what keeps the declared road cheap. loop_declared rather than arm_applied, because a driver
+	// fact reaches the same road without the experiment key.
 	m_features.fast_stencil_shadow = GSFastStencilShadow::DeviceQualifies(
 		{.api = GetRenderAPI(),
 			.dual_source_blend = m_features.dual_source_blend,
@@ -4278,43 +4045,22 @@ void GSDeviceVK::ResolveFeedbackConsumers(const GSSelfReadRoadDecision& road)
 
 bool GSDeviceVK::ResolveDepthFeedback(const GSSelfReadRoadDecision& road)
 {
-	// Concurrent depth test + depth-as-texture rides the same feedback-sync path as texture_barrier;
-	// a driver with broken barriers has no chance doing GENERAL-layout depth feedback either.
-	// Additionally, Adreno/turnip hangs the tiler sampling the live depth buffer while it is also the
-	// depth attachment (tex == ds) — force it off there so tex == ds takes a depth copy instead of an
-	// in-pass self-read.
+	// Testing and sampling the same depth buffer rides the texture barrier. Adreno hangs the tiler
+	// sampling the live depth buffer while it is also the attachment, so tex == ds takes a copy there.
 	m_features.test_and_sample_depth = m_features.texture_barrier && !IsDeviceAdreno();
 
-	// ⚠️ MEASUREMENT SCAFFOLDING — the depth probe for the Adreno in-pass read.
+	// The depth probe (gsrunner -declare-depth-feedback-loop). No in-pass depth read has been run on
+	// Adreno; the exclusion above is for a hang. The probe asks whether a declared loop, which Turnip
+	// never tiles, avoids it. ⚠️ It may lock up the device.
 	//
-	// Nobody has measured an in-pass DEPTH self-read on any Adreno part. ARMSX2 #442 covered the
-	// COLOUR read only, and the `!is_adreno` term above is the consequence of a HANG, not of a
-	// wrong picture: Turnip wedges the tiler sampling the live depth buffer while it is also the
-	// depth attachment. The answer decides whether Indiana Jones is reachable at all -- 394 of its
-	// 837 feedback copies a frame are depth, and the colour half alone leaves it at ~25.5 ms
-	// against a 16.67 budget.
-	//
-	// The hypothesis this probe tests is that the hang needs the pass to be TILED, and that a
-	// declared feedback loop -- which makes Turnip refuse to tile the pass at all -- removes the
-	// condition. It is a hypothesis. ⚠️ EXPECT A POSSIBLE DEVICE LOCKUP ON THIS ARM, and run it
-	// after the colour arm's results are banked rather than interleaved with them.
-	//
-	// It rides on the colour arm because it has to: the in-pass depth read needs texture barriers,
-	// and texture barriers on is what takes COLOUR self-reads off the copy road. One bit, three
-	// consumers. Splitting them would mean threading a per-draw-class "may read in pass" predicate
-	// through HandleTextureHazards and DoRenderHW, which is a shipping change, not a probe.
-	//
-	// Keyed on road.loop_declared, not on the experiment key: the declared colour road is now
-	// reachable from the driver database too, and on that road the depth read must stay off for the
-	// same reason it does on the key's -- turning barriers on for colour must not hand a device the
-	// depth road nobody has measured on it.
+	// On any declared colour loop, from the key or from a driver fact, the depth read stays off unless
+	// the probe asks for it: turning barriers on for colour must not enable an unmeasured depth road.
 	const bool declare_depth_loop = road.loop_declared && g_gs_measurement_overrides.declare_depth_loop;
 	if (declare_depth_loop)
 		m_features.test_and_sample_depth = true;
 	else if (road.loop_declared)
 	{
-		// The colour road alone must NOT acquire the depth road as a side effect of turning
-		// barriers on, or the two probes are measured together and neither answers anything.
+		// Barriers are on for the colour loop; that alone must not enable the depth road.
 		m_features.test_and_sample_depth = false;
 	}
 	if (g_gs_measurement_overrides.declare_depth_loop && !road.loop_declared)
@@ -4323,16 +4069,10 @@ bool GSDeviceVK::ResolveDepthFeedback(const GSSelfReadRoadDecision& road)
 					  "device is not on that road. The depth probe is NOT running.");
 	}
 
-	// Mobile tile-native ordered depth feedback ("mobile ROV"), opt-in via HWROV. Reads the
-	// depth buffer in-tile (subpassLoad on a depth input attachment) instead of copying it to a
-	// colour RT (DoBeginDSAsRT), so SW-Z / DATE / alpha-test / AA1 depth passes fuse in-pass rather
-	// than round-tripping. It needs an ordered in-tile depth read: ROAA on the depth aspect on the
-	// framebuffer_fetch path (Mali-default / opt-in Adreno), or the render-pass self-dependency on
-	// the texture_barrier path. Gated behind HWROV so toggle-off is byte-for-byte the well-tested
-	// avoid/copy fallback (same as D3D11). Mali r44p1 excludes itself: texture_barrier is forced
-	// off for it above, so framebuffer_fetch is off and the ordered read is unavailable.
-	// Read at device init, so the depth half applies on game restart (HWROV's colour half is live).
-	// Desktop keeps canonical feedback-loop behaviour.
+	// Android: depth feedback reads the depth buffer in the pass (a depth input attachment) instead of
+	// copying it to a colour target, opt-in through HWROV. It needs an ordered in-pass depth read:
+	// rasterization-order depth access on the fetch road, or the pass self-dependency on the barrier
+	// road. HWROV off keeps the copy. Read at device creation, so it applies on game restart.
 #if defined(__ANDROID__)
 	const bool depth_feedback_ordered =
 		m_features.framebuffer_fetch ? m_optional_extensions.vk_ext_roaa_depth : m_features.texture_barrier;
@@ -4344,12 +4084,8 @@ bool GSDeviceVK::ResolveDepthFeedback(const GSSelfReadRoadDecision& road)
 #else
 	m_features.depth_feedback = m_features.feedback_loops();
 #endif
-	// The other half of the depth probe, and the other half of the reason the colour arm must not
-	// drift into it. depth_feedback is what decides whether a draw that SAMPLES the depth buffer it
-	// has attached (software Z, DATE-depth, AA1) reads it in the pass or goes through
-	// BeginDSAsRT's depth-to-colour blit -- and on this build it is just feedback_loops(), i.e.
-	// texture_barrier, so turning barriers on for the colour arm would have flipped it on by
-	// itself. Forced back off there, and on only when the depth probe is asked for.
+	// On a declared loop, depth_feedback would follow texture_barrier on by itself; it is on only when
+	// the depth probe asks for it.
 	if (road.loop_declared)
 		m_features.depth_feedback = declare_depth_loop;
 	m_features.aa1 = GSConfig.HWAA1 && m_features.vs_expand && m_features.feedback_loops();
@@ -4359,13 +4095,9 @@ bool GSDeviceVK::ResolveDepthFeedback(const GSSelfReadRoadDecision& road)
 
 void GSDeviceVK::ResolveStreamRingMemory()
 {
-	// Which memory the six stream rings get. Decided here, with the other device-shaped decisions,
-	// because it is one: the rings are allocated once at device init and the choice cannot be
-	// revisited afterwards. GSStreamRingMemoryPolicy.h carries the reasoning and the device
-	// numbers; what this does is read the memory-type table, ask the driver database its one
-	// question, and hand VKStreamBuffer::Create the answer. Leaving a cached road is opt-in: with
-	// no rule for this GPU the answer is the write-combined selection every device had before the
-	// policy existed, whatever the table offers.
+	// The rings are allocated once at device creation, so their memory type is chosen here and never
+	// revisited. GSStreamRingMemoryPolicy.h has the reasoning. With no driver rule the answer is the
+	// write-combined type VMA would pick.
 	VkPhysicalDeviceMemoryProperties memory_properties = {};
 	vkGetPhysicalDeviceMemoryProperties(m_physical_device, &memory_properties);
 
@@ -4390,11 +4122,8 @@ void GSDeviceVK::ResolveStreamRingMemory()
 
 void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool declare_depth_loop)
 {
-	// @@MALI_TELEMETRY@@ One-line device/driver banner so Mali (and Adreno) field reports are
-	// actionable: which GPU/driver, and — critically — which accurate-blend path was resolved:
-	// in-tile framebuffer_fetch (cheap) vs the per-primitive barrier fallback (the tile-flush
-	// slideshow). ROAA=yes but fbfetch=NO on Mali means the barrier path is active. See the
-	// Mali driver-support deep dive.
+	// One line naming the GPU, the driver and the blend road it resolved to, so a field report says
+	// which path the device is on. ROAA=yes with fbfetch=NO means the per-primitive barrier path.
 	Console.WriteLn("VK: GPU '%s' vendor=0x%04X driver='%s' (%s) | ROAA=%s fbfetch=%s texbarrier=%s "
 					"inpAttFB=%s dualSrc=%s blendConst=%s fastShadow=%s testSampleDepth=%s madFallback=%s pushdesc=%s "
 					"streamRings=%s(type %u)",
@@ -4405,9 +4134,8 @@ void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool de
 		m_optional_extensions.vk_ext_rasterization_order_attachment_access ? "yes" : "NO",
 		m_features.framebuffer_fetch ? "yes(in-tile)" : "NO(barrier-fallback)",
 		m_features.texture_barrier ? "on" : "off",
-		// inputAttachmentFeedback: the subpassInput/INPUT_ATTACHMENT descriptor path is active
-		// when texture_barrier is on AND feedback_loop_layout is unavailable (Mali). This is the
-		// path sashkinbro's stale-tile descriptor fix targets — the rainbow-blink suspect.
+		// The input-attachment descriptor path: barriers on and no feedback-loop layout (Mali), the
+		// path sashkinbro's stale-tile descriptor fix targets.
 		(m_features.texture_barrier && !UseFeedbackLoopLayout()) ? "yes" : "NO",
 		m_features.dual_source_blend ? "yes" : "NO(sw-blend-fallback)",
 		m_features.broken_blend_constant ? "BROKEN(afix-via-src1)" : "ok",
@@ -4417,23 +4145,15 @@ void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool de
 		m_use_push_descriptors ? "on" : "off",
 		GSStreamRingMemoryRoadName(m_stream_ring_memory.road), m_stream_ring_memory.type_index);
 
-	// The self-read road, WHY it was chosen, and -- on the declared road -- which Vulkan
-	// declarations this binary actually makes. A device record quotes this line, because "which
-	// declarations did the arm carry" is the question the July 2026 attempt could not answer about
-	// itself, and that is why its negative result stood unchallenged for two months. The road name
-	// carries the reason (experiment key or driver fact), since the declared road now has three
-	// entrances and a record that does not say which one is as unusable as one that does not name
-	// its driver. Which driver fact is readable off the road: the ordering fact lands on
-	// driver-ordered and the a7xx preference on barrier-ordered. Emitted here rather than beside
-	// the GPU banner because depth_feedback is only final a few lines above.
+	// The self-read road and what selected it (the road name carries the experiment key or the driver
+	// fact), and on the declared road which Vulkan declarations are made. After the banner because
+	// depth_feedback is final only now.
 	Console.WriteLn("VK: self-read road = %s [texbarrier=%s intile=%s layout=%s ordersOverlap=%s]",
 		GSSelfReadRoadName(road), m_features.texture_barrier ? "on" : "off",
 		m_features.framebuffer_fetch ? "on" : "off", UseFeedbackLoopLayout() ? "on" : "off",
 		m_features.declared_feedback_loop_orders_overlap ? "claimed" : "no");
-	// The driver half of that answer, printed whenever a driver claims the fix at all -- including
-	// when the claim was refused. A user who installs the driver pack and sees no change needs to
-	// be told the tag was read and what disqualified the part, not left to infer it from a road
-	// name that looks exactly like the one they had before.
+	// Printed whenever a driver claims the fix, including when the part disqualifies it, so a user who
+	// installed the driver pack can see the tag was read.
 	if (const u32 fix_generation = GetMobileDriverProfile().declared_loop_fix_generation;
 		fix_generation != 0)
 	{
@@ -4444,9 +4164,7 @@ void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool de
 				"TRUSTED" :
 				"NOT trusted on this part -- the fix covers Adreno 650-699 on Turnip only");
 	}
-	// The other driver rule, named the same way and for the same reason. Printed whenever the
-	// profile carries it, in effect or not, so a log says which measurement put the machine here
-	// rather than leaving a road name to stand for it.
+	// Printed whenever the profile carries the rule, in effect or not.
 	if (GetMobileDriverProfile().prefers_declared_loop_with_barriers)
 	{
 		const bool in_effect = road.selected_by_driver_fact && road.road == GSSelfReadRoad::InPassBarrier;
