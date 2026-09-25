@@ -16,12 +16,16 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <cstdio>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 class VKSwapChain;
@@ -595,11 +599,53 @@ private:
 		return m_convert[ShaderConvertSelector(shader).Index()];
 	}
 
+	/// Guards m_tfx_vertex_shaders and m_tfx_fragment_shaders, which precompile workers fill too.
+	std::mutex m_tfx_shader_mutex;
 	std::unordered_map<u32, VkShaderModule> m_tfx_vertex_shaders;
 	std::unordered_map<GSHWDrawConfig::PSSelector, VkShaderModule, GSHWDrawConfig::PSSelectorHash>
 		m_tfx_fragment_shaders;
+	/// GS thread only. Precompiled pipelines move in here when first drawn with, or at StopPipelinePrecompile.
 	std::unordered_map<PipelineSelector, VkPipeline, PipelineSelectorHash> m_tfx_pipelines;
 	u32 m_tfx_pipeline_compile_counter = 0;
+
+	// Pipeline precompile. Each game's TFX pipeline keys are appended to a file in the cache
+	// directory as they are first created; when that game starts again, worker threads build the
+	// recorded pipelines in first-use order, ahead of the draws that need them. The pipelines are
+	// the ones the GS thread would have built -- same key, same CreateTFXPipeline -- so this moves
+	// work off the GS thread without changing what is drawn.
+	struct TFXPrecompileJob
+	{
+		enum class State : u8
+		{
+			Queued, ///< Not started. The GS thread may take it and build it itself.
+			Running, ///< A worker is building it. The GS thread waits for it.
+			Done,
+		};
+		State state = State::Queued;
+		VkPipeline pipeline = VK_NULL_HANDLE;
+	};
+	std::mutex m_precompile_mutex; ///< Guards the queue, the jobs and m_precompile_stop.
+	std::condition_variable m_precompile_done_cv;
+	std::deque<PipelineSelector> m_precompile_queue;
+	std::unordered_map<PipelineSelector, TFXPrecompileJob, PipelineSelectorHash> m_precompile_jobs;
+	std::vector<std::thread> m_precompile_workers;
+	bool m_precompile_stop = false;
+	bool m_precompile_active = false; ///< GS thread only: whether m_precompile_jobs can be non-empty.
+	/// GS thread only: the keys the game's key file holds, and the file new keys are appended to.
+	std::unordered_set<PipelineSelector, PipelineSelectorHash> m_recorded_tfx_keys;
+	std::FILE* m_tfx_key_file = nullptr;
+
+	void SetGameIdentity(const std::string& serial, u32 crc) override;
+	/// Joins the workers and moves every finished pipeline into m_tfx_pipelines. GS thread only.
+	void StopPipelinePrecompile();
+	void PrecompileWorker();
+	/// The result of a precompile job for p, waiting if a worker is building it. nullopt if there is
+	/// no job, or the job had not started (it is dropped and the caller builds p itself).
+	std::optional<VkPipeline> TakePrecompiledTFXPipeline(const PipelineSelector& p);
+	void RecordTFXPipelineKey(const PipelineSelector& p);
+	/// What CreateTFXPipeline reads besides the key. A key file written under a different value is
+	/// discarded, so a key is never built on a device configuration it was not recorded on.
+	std::string GetTFXPipelineKeyFingerprint() const;
 
 	VkRenderPass m_utility_color_render_pass_load = VK_NULL_HANDLE;
 	VkRenderPass m_utility_color_render_pass_clear = VK_NULL_HANDLE;

@@ -296,8 +296,13 @@ static const char* compilation_status_to_string(shaderc_compilation_status statu
 std::optional<VKShaderCache::SPIRVCodeVector> VKShaderCache::CompileShaderToSPV(u32 stage, std::string_view source, bool debug)
 {
 	std::optional<VKShaderCache::SPIRVCodeVector> ret;
-	if (!dyn_shaderc::Open())
-		return ret;
+	{
+		// Compilation itself is thread-safe on one compiler object; loading it is not.
+		static std::mutex s_open_mutex;
+		std::unique_lock lock(s_open_mutex);
+		if (!dyn_shaderc::Open())
+			return ret;
+	}
 
 	const GSShaderCompileIndicator::CompileTimer compile_timer;
 	const GSCompileStats::ScopedTimer stats_timer(GSCompileStats::SpirvCompileNs);
@@ -417,7 +422,8 @@ VkPipelineCache VKShaderCache::GetPipelineCache(bool set_dirty /*= true*/)
 	if (m_pipeline_cache == VK_NULL_HANDLE)
 		return VK_NULL_HANDLE;
 
-	m_pipeline_cache_dirty |= set_dirty;
+	if (set_dirty)
+		m_pipeline_cache_dirty.store(true, std::memory_order_relaxed);
 	return m_pipeline_cache;
 }
 
@@ -644,12 +650,17 @@ bool VKShaderCache::FlushPipelineCache(bool force)
 
 	const GSCompileStats::ScopedTimer stats_timer(GSCompileStats::CacheFlushNs);
 
+	// Cleared before the data is read, so a pipeline a worker adds while this runs marks it dirty
+	// again instead of being lost.
+	m_pipeline_cache_dirty.store(false, std::memory_order_relaxed);
+
 	size_t data_size;
 	VkResult res =
 		vkGetPipelineCacheData(GSDeviceVK::GetInstance()->GetDevice(), m_pipeline_cache, &data_size, nullptr);
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkGetPipelineCacheData() failed: ");
+		m_pipeline_cache_dirty.store(true, std::memory_order_relaxed);
 		return false;
 	}
 
@@ -658,6 +669,7 @@ bool VKShaderCache::FlushPipelineCache(bool force)
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkGetPipelineCacheData() (2) failed: ");
+		m_pipeline_cache_dirty.store(true, std::memory_order_relaxed);
 		return false;
 	}
 
@@ -679,6 +691,7 @@ bool VKShaderCache::FlushPipelineCache(bool force)
 		{
 			Console.Error("Failed to write pipeline cache to '%s'", m_pipeline_cache_filename.c_str());
 			FileSystem::DeleteFilePath(tmp_filename.c_str());
+			m_pipeline_cache_dirty.store(true, std::memory_order_relaxed);
 			return false;
 		}
 	}
@@ -687,7 +700,6 @@ bool VKShaderCache::FlushPipelineCache(bool force)
 		Console.WriteLn("Skipping updating pipeline cache '%s' due to no changes.", m_pipeline_cache_filename.c_str());
 	}
 
-	m_pipeline_cache_dirty = false;
 	return true;
 }
 
@@ -745,21 +757,26 @@ VKShaderCache::CacheIndexKey VKShaderCache::GetCacheKey(u32 type, const std::str
 std::optional<VKShaderCache::SPIRVCodeVector> VKShaderCache::GetShaderSPV(u32 type, std::string_view shader_code)
 {
 	const auto key = GetCacheKey(type, shader_code);
-	auto iter = m_index.find(key);
-	if (iter == m_index.end())
-		return CompileAndAddShaderSPV(key, shader_code);
-
-	GSCompileStats::Add(GSCompileStats::SpirvCacheHits, 1);
-	std::optional<SPIRVCodeVector> spv = SPIRVCodeVector(iter->second.blob_size);
-
-	if (std::fseek(m_blob_file, iter->second.file_offset, SEEK_SET) != 0 ||
-		std::fread(spv->data(), sizeof(SPIRVCodeType), iter->second.blob_size, m_blob_file) != iter->second.blob_size)
 	{
-		Console.Error("Read blob from file failed, recompiling");
-		spv = CompileShaderToSPV(type, shader_code, GSConfig.UseDebugDevice);
+		std::unique_lock lock(m_mutex);
+		auto iter = m_index.find(key);
+		if (iter != m_index.end())
+		{
+			GSCompileStats::Add(GSCompileStats::SpirvCacheHits, 1);
+			std::optional<SPIRVCodeVector> spv = SPIRVCodeVector(iter->second.blob_size);
+			if (std::fseek(m_blob_file, iter->second.file_offset, SEEK_SET) == 0 &&
+				std::fread(spv->data(), sizeof(SPIRVCodeType), iter->second.blob_size, m_blob_file) == iter->second.blob_size)
+			{
+				return spv;
+			}
+
+			Console.Error("Read blob from file failed, recompiling");
+			lock.unlock();
+			return CompileShaderToSPV(type, shader_code, GSConfig.UseDebugDevice);
+		}
 	}
 
-	return spv;
+	return CompileAndAddShaderSPV(key, shader_code);
 }
 
 VkShaderModule VKShaderCache::GetShaderModule(u32 type, std::string_view shader_code)
@@ -804,6 +821,12 @@ std::optional<VKShaderCache::SPIRVCodeVector> VKShaderCache::CompileAndAddShader
 	std::optional<SPIRVCodeVector> spv = CompileShaderToSPV(key.shader_type, shader_code, GSConfig.UseDebugDevice);
 	if (!spv.has_value())
 		return {};
+
+	std::unique_lock lock(m_mutex);
+
+	// Another thread may have compiled the same source while this one did.
+	if (m_index.find(key) != m_index.end())
+		return spv;
 
 	if (!m_blob_file || std::fseek(m_blob_file, 0, SEEK_END) != 0)
 		return spv;

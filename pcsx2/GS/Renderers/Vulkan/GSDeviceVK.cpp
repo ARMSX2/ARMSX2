@@ -45,15 +45,20 @@ namespace
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
 
 #include "BuildVersion.h"
+#include "Config.h"
 #include "Host.h"
+#include "ShaderCacheVersion.h"
 #include "ImGui/ImGuiManager.h"
 
 #include "common/Console.h"
 #include "common/BitUtils.h"
 #include "common/Error.h"
+#include "common/FileSystem.h"
 #include "common/HostSys.h"
+#include "common/MD5Digest.h"
 #include "common/Path.h"
 #include "common/ScopedGuard.h"
+#include "common/Threading.h"
 #include "common/Timer.h"
 
 #include "imgui.h"
@@ -7041,6 +7046,9 @@ bool GSDeviceVK::DoSGSR(GSTexture* sTex, GSTexture* dTex, const std::array<u32, 
 
 void GSDeviceVK::DestroyResources()
 {
+	// Before anything a worker reads is destroyed; finished pipelines join m_tfx_pipelines below.
+	StopPipelinePrecompile();
+
 	if (m_tfx_ubo_descriptor_set != VK_NULL_HANDLE)
 		FreePersistentDescriptorSet(m_tfx_ubo_descriptor_set);
 
@@ -7203,9 +7211,14 @@ void GSDeviceVK::DestroyResources()
 
 VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
 {
-	const auto it = m_tfx_vertex_shaders.find(sel.key);
-	if (it != m_tfx_vertex_shaders.end())
-		return it->second;
+	// Precompile workers call this too. The lock covers the map only; two threads that miss on the
+	// same key both compile it and the loser's module is dropped.
+	{
+		std::unique_lock lock(m_tfx_shader_mutex);
+		const auto it = m_tfx_vertex_shaders.find(sel.key);
+		if (it != m_tfx_vertex_shaders.end())
+			return it->second;
+	}
 
 	GSCompileStats::Add(GSCompileStats::ShaderSources, 1);
 	std::optional<GSCompileStats::ScopedTimer> source_timer(std::in_place, GSCompileStats::ShaderSourceNs);
@@ -7226,15 +7239,22 @@ VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
 	if (mod)
 		Vulkan::SetObjectName(m_device, mod, "TFX Vertex %08X", sel.key);
 
-	m_tfx_vertex_shaders.emplace(sel.key, mod);
-	return mod;
+	std::unique_lock lock(m_tfx_shader_mutex);
+	const auto [it, inserted] = m_tfx_vertex_shaders.emplace(sel.key, mod);
+	if (!inserted && mod != VK_NULL_HANDLE)
+		vkDestroyShaderModule(m_device, mod, nullptr);
+	return it->second;
 }
 
 VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector& sel)
 {
-	const auto it = m_tfx_fragment_shaders.find(sel);
-	if (it != m_tfx_fragment_shaders.end())
-		return it->second;
+	// Same locking as GetTFXVertexShader.
+	{
+		std::unique_lock lock(m_tfx_shader_mutex);
+		const auto it = m_tfx_fragment_shaders.find(sel);
+		if (it != m_tfx_fragment_shaders.end())
+			return it->second;
+	}
 
 	GSCompileStats::Add(GSCompileStats::ShaderSources, 1);
 	std::optional<GSCompileStats::ScopedTimer> source_timer(std::in_place, GSCompileStats::ShaderSourceNs);
@@ -7317,8 +7337,11 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	if (mod)
 		Vulkan::SetObjectName(m_device, mod, "TFX Fragment %016" PRIX64 "_%016" PRIX64, sel.key_hi, sel.key_lo);
 
-	m_tfx_fragment_shaders.emplace(sel, mod);
-	return mod;
+	std::unique_lock lock(m_tfx_shader_mutex);
+	const auto [it, inserted] = m_tfx_fragment_shaders.emplace(sel, mod);
+	if (!inserted && mod != VK_NULL_HANDLE)
+		vkDestroyShaderModule(m_device, mod, nullptr);
+	return it->second;
 }
 
 VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
@@ -7517,6 +7540,16 @@ VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 	// only slow compiles are logged, so this costs nothing in the common case.
 	GSCompileStats::Add(GSCompileStats::TFXPipelineMisses, 1);
 	const GSCompileStats::ScopedTimer stall_timer(GSCompileStats::GSThreadStallNs);
+
+	if (m_precompile_active)
+	{
+		if (const std::optional<VkPipeline> precompiled = TakePrecompiledTFXPipeline(p))
+		{
+			m_tfx_pipelines.emplace(p, *precompiled);
+			return *precompiled;
+		}
+	}
+
 	const Common::Timer::Value tfx_compile_start = Common::Timer::GetCurrentValue();
 	VkPipeline pipeline = CreateTFXPipeline(p);
 	const double tfx_compile_ms =
@@ -7527,6 +7560,8 @@ VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 			tfx_compile_ms, m_tfx_pipeline_compile_counter + 1);
 	}
 	m_tfx_pipelines.emplace(p, pipeline);
+	if (pipeline != VK_NULL_HANDLE)
+		RecordTFXPipelineKey(p);
 
 	// Persist the pipeline cache every N new compiles so an Android OOM-kill
 	// or crash mid-session doesn't throw away pipelines that compiled after
@@ -7544,6 +7579,233 @@ VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 		g_vulkan_shader_cache->FlushPipelineCache();
 	}
 	return pipeline;
+}
+
+namespace
+{
+#pragma pack(push, 4)
+	struct TFXKeyFileHeader
+	{
+		static constexpr u32 MAGIC = 0x59454B50; // "PKEY"
+		static constexpr u32 FORMAT = 1;
+
+		u32 magic;
+		u32 format;
+		u32 shader_cache_version;
+		u32 key_size;
+		u8 fingerprint[16];
+	};
+#pragma pack(pop)
+
+	/// Enough for any one game's sessions so far; the file is in first-use order, so a cap keeps the
+	/// pipelines a game reaches first.
+	static constexpr size_t MAX_PRECOMPILED_TFX_PIPELINES = 4096;
+} // namespace
+
+std::string GSDeviceVK::GetTFXPipelineKeyFingerprint() const
+{
+	// The driver version is left out on purpose: an update keeps the key list. Anything that
+	// changes what a key builds -- features, workaround rules, attachment formats, the shader
+	// header -- is in.
+	std::stringstream ss;
+	ss << m_device_properties.vendorID << ' ' << m_device_properties.deviceID << ' '
+	   << static_cast<u32>(m_device_driver_properties.driverID) << ' ' << SHADER_CACHE_VERSION << ' '
+	   << sizeof(PipelineSelector) << ' ' << m_features.framebuffer_fetch << m_features.depth_feedback
+	   << m_features.provoking_vertex_last << m_features.texture_barrier << m_features.rov
+	   << m_features.primitive_id << m_features.vs_expand << m_optional_extensions.vk_ext_line_rasterization
+	   << m_optional_extensions.vk_ext_roaa_depth << UseFeedbackLoopLayout() << m_declare_loop_per_draw
+	   << m_broken_colormask_with_depth << ' ';
+	for (const GSTexture::Format fmt : {GSTexture::Format::Color, GSTexture::Format::ColorHQ,
+			 GSTexture::Format::ColorHDR, GSTexture::Format::ColorClip, GSTexture::Format::DepthStencil,
+			 GSTexture::Format::PrimID})
+	{
+		ss << static_cast<u32>(LookupNativeFormat(fmt)) << ' ';
+	}
+	AddShaderHeader(ss);
+	return ss.str();
+}
+
+void GSDeviceVK::SetGameIdentity(const std::string& serial, u32 crc)
+{
+	StopPipelinePrecompile();
+
+	if (!GSConfig.PrecompilePipelines || GSConfig.DisableShaderCache || serial.empty())
+		return;
+
+	const std::string dir = Path::Combine(EmuFolders::Cache, "vulkan_pipeline_keys");
+	if (!FileSystem::EnsureDirectoryExists(dir.c_str(), false))
+		return;
+	const std::string path =
+		Path::Combine(dir, Path::SanitizeFileName(fmt::format("{}_{:08X}{}.bin", serial, crc,
+							   GSConfig.UseDebugDevice ? "_debug" : "")));
+
+	TFXKeyFileHeader want = {};
+	want.magic = TFXKeyFileHeader::MAGIC;
+	want.format = TFXKeyFileHeader::FORMAT;
+	want.shader_cache_version = SHADER_CACHE_VERSION;
+	want.key_size = sizeof(PipelineSelector);
+	{
+		const std::string fingerprint = GetTFXPipelineKeyFingerprint();
+		MD5Digest digest;
+		digest.Update(fingerprint.data(), static_cast<u32>(fingerprint.size()));
+		digest.Final(want.fingerprint);
+	}
+
+	std::vector<PipelineSelector> keys;
+	if (std::optional<std::vector<u8>> data = FileSystem::ReadBinaryFile(path.c_str());
+		data.has_value() && data->size() >= sizeof(TFXKeyFileHeader) &&
+		std::memcmp(data->data(), &want, sizeof(want)) == 0)
+	{
+		// A torn record at the end (a kill mid-append) is ignored and overwritten below.
+		const size_t count = (data->size() - sizeof(TFXKeyFileHeader)) / sizeof(PipelineSelector);
+		keys.resize(count);
+		std::memcpy(keys.data(), data->data() + sizeof(TFXKeyFileHeader), count * sizeof(PipelineSelector));
+		m_tfx_key_file = FileSystem::OpenCFile(path.c_str(), "r+b");
+		if (m_tfx_key_file)
+			FileSystem::FSeek64(m_tfx_key_file, sizeof(TFXKeyFileHeader) + count * sizeof(PipelineSelector), SEEK_SET);
+	}
+	else
+	{
+		m_tfx_key_file = FileSystem::OpenCFile(path.c_str(), "w+b");
+		if (m_tfx_key_file && (std::fwrite(&want, sizeof(want), 1, m_tfx_key_file) != 1 || std::fflush(m_tfx_key_file) != 0))
+		{
+			std::fclose(m_tfx_key_file);
+			m_tfx_key_file = nullptr;
+		}
+	}
+	if (!m_tfx_key_file)
+	{
+		ERROR_LOG("Vulkan: could not open the pipeline key file '{}'", path);
+		return;
+	}
+
+	for (const PipelineSelector& key : keys)
+	{
+		// Written by this code under the same fingerprint, so these hold; checked because a bad
+		// topology indexes past a table in CreateTFXPipeline.
+		if (key.topology > static_cast<u8>(GSHWDrawConfig::Topology::Triangle) || key.pad != 0)
+			continue;
+		if (!m_recorded_tfx_keys.insert(key).second || m_tfx_pipelines.find(key) != m_tfx_pipelines.end())
+			continue;
+		if (m_precompile_jobs.size() >= MAX_PRECOMPILED_TFX_PIPELINES)
+			continue;
+		m_precompile_jobs.emplace(key, TFXPrecompileJob());
+		m_precompile_queue.push_back(key);
+	}
+
+	if (m_precompile_queue.empty())
+		return;
+
+	// Half the cores less one, at most four: enough to stay ahead of a game's first frames without
+	// taking the cores the EE, GS and VU threads run on.
+	const u32 hw = std::max(std::thread::hardware_concurrency(), 2u);
+	const u32 num_workers = std::min<u32>(std::clamp(hw / 2 - 1, 1u, 4u), static_cast<u32>(m_precompile_queue.size()));
+	m_precompile_active = true;
+	for (u32 i = 0; i < num_workers; i++)
+		m_precompile_workers.emplace_back(&GSDeviceVK::PrecompileWorker, this);
+
+	INFO_LOG("Vulkan: building {} recorded pipelines for {} on {} threads", m_precompile_queue.size(), serial,
+		num_workers);
+}
+
+void GSDeviceVK::PrecompileWorker()
+{
+	Threading::SetNameOfCurrentThread("GS pipeline precompile");
+
+	// A thread inherits its creator's affinity, and the GS thread may be pinned to one core.
+	const Threading::ThreadHandle self = Threading::ThreadHandle::GetForCallingThread();
+	self.SetAffinity(0);
+	self.SetNicePriority(5);
+
+	std::unique_lock lock(m_precompile_mutex);
+	while (!m_precompile_stop && !m_precompile_queue.empty())
+	{
+		const PipelineSelector p = m_precompile_queue.front();
+		m_precompile_queue.pop_front();
+
+		// Gone if the GS thread took it off the queue to build it itself.
+		const auto it = m_precompile_jobs.find(p);
+		if (it == m_precompile_jobs.end() || it->second.state != TFXPrecompileJob::State::Queued)
+			continue;
+		it->second.state = TFXPrecompileJob::State::Running;
+
+		lock.unlock();
+		const VkPipeline pipeline = CreateTFXPipeline(p);
+		lock.lock();
+
+		// Still present: the GS thread erases a Running job only after it has become Done.
+		TFXPrecompileJob& job = m_precompile_jobs.at(p);
+		job.pipeline = pipeline;
+		job.state = TFXPrecompileJob::State::Done;
+		m_precompile_done_cv.notify_all();
+	}
+}
+
+std::optional<VkPipeline> GSDeviceVK::TakePrecompiledTFXPipeline(const PipelineSelector& p)
+{
+	std::unique_lock lock(m_precompile_mutex);
+	const auto it = m_precompile_jobs.find(p);
+	if (it == m_precompile_jobs.end())
+		return std::nullopt;
+
+	if (it->second.state == TFXPrecompileJob::State::Queued)
+	{
+		// Building it here is no slower than waiting behind the queue for a worker.
+		m_precompile_jobs.erase(it);
+		return std::nullopt;
+	}
+
+	m_precompile_done_cv.wait(lock, [this, &p]() {
+		return m_precompile_jobs.at(p).state == TFXPrecompileJob::State::Done;
+	});
+	const auto done = m_precompile_jobs.find(p);
+	const VkPipeline pipeline = done->second.pipeline;
+	m_precompile_jobs.erase(done);
+	return pipeline;
+}
+
+void GSDeviceVK::StopPipelinePrecompile()
+{
+	{
+		std::unique_lock lock(m_precompile_mutex);
+		m_precompile_stop = true;
+		m_precompile_queue.clear();
+	}
+	for (std::thread& worker : m_precompile_workers)
+		worker.join();
+	m_precompile_workers.clear();
+	m_precompile_stop = false;
+
+	// Built and never drawn with yet: keep them, this game has used them before.
+	for (const auto& [key, job] : m_precompile_jobs)
+	{
+		if (job.state != TFXPrecompileJob::State::Done || job.pipeline == VK_NULL_HANDLE)
+			continue;
+		if (!m_tfx_pipelines.emplace(key, job.pipeline).second)
+			vkDestroyPipeline(m_device, job.pipeline, nullptr);
+	}
+	m_precompile_jobs.clear();
+	m_precompile_active = false;
+
+	m_recorded_tfx_keys.clear();
+	if (m_tfx_key_file)
+	{
+		std::fclose(m_tfx_key_file);
+		m_tfx_key_file = nullptr;
+	}
+}
+
+void GSDeviceVK::RecordTFXPipelineKey(const PipelineSelector& p)
+{
+	if (!m_tfx_key_file || !m_recorded_tfx_keys.insert(p).second)
+		return;
+
+	if (std::fwrite(&p, sizeof(p), 1, m_tfx_key_file) != 1 || std::fflush(m_tfx_key_file) != 0)
+	{
+		Console.Error("Vulkan: failed to append to the pipeline key file, recording stopped");
+		std::fclose(m_tfx_key_file);
+		m_tfx_key_file = nullptr;
+	}
 }
 
 bool GSDeviceVK::BindDrawPipeline(const PipelineSelector& p)

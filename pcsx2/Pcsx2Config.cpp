@@ -747,6 +747,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	UseDebugDevice = false;
 	UseBlitSwapChain = false;
 	DisableShaderCache = false;
+	PrecompilePipelines = true;
 	DisableFramebufferFetch = false;
 	DisableVertexShaderExpand = false;
 	ForceMaliFramebufferFetch = false;
@@ -951,6 +952,7 @@ bool Pcsx2Config::GSOptions::IsRestartOption(const char* ini_key)
 		"DebugLabels",
 		"UseBlitSwapChain",
 		"DisableShaderCache",
+		"PrecompilePipelines",
 		"DisableFramebufferFetch",
 		"DisableVertexShaderExpand",
 		"ForceMaliFramebufferFetch",
@@ -979,6 +981,7 @@ bool Pcsx2Config::GSOptions::RestartOptionsAreEqual(const GSOptions& right) cons
 		   OpEqu(DebugLabels) &&
 		   OpEqu(UseBlitSwapChain) &&
 		   OpEqu(DisableShaderCache) &&
+		   OpEqu(PrecompilePipelines) &&
 		   OpEqu(DisableFramebufferFetch) &&
 		   OpEqu(DisableVertexShaderExpand) &&
 		   OpEqu(ForceMaliFramebufferFetch) &&
@@ -1032,6 +1035,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(DumpDrawLog);
 	SettingsWrapBitBool(UseBlitSwapChain);
 	SettingsWrapBitBool(DisableShaderCache);
+	SettingsWrapBitBool(PrecompilePipelines);
 	SettingsWrapBitBool(DisableFramebufferFetch);
 	SettingsWrapBitBool(DisableVertexShaderExpand);
 	SettingsWrapBitBool(ForceMaliFramebufferFetch);

@@ -200,6 +200,9 @@ static bool OpenGSDevice(GSRendererType renderer, bool clear_state_on_fail, bool
 	Console.WriteLn(Color_StrongGreen, "%s Graphics Driver Info:", GSDevice::RenderAPIToString(new_api));
 	Console.WriteLn(g_gs_device->GetDriverInfo());
 
+	// The CPU thread does not hold the VM info lock while the GS device opens.
+	g_gs_device->SetGameIdentity(VMManager::GetDiscSerial(), VMManager::GetDiscCRC());
+
 	return true;
 }
 
@@ -774,8 +777,11 @@ void GSThrottlePresentation()
 	g_gs_device->ThrottlePresentation();
 }
 
-void GSGameChanged()
+void GSGameChanged(const std::string& serial, u32 crc)
 {
+	if (g_gs_device)
+		g_gs_device->SetGameIdentity(serial, crc);
+
 	if (GSIsHardwareRenderer())
 	{
 		GSHwHack::ResetState();

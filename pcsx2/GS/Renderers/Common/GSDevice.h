@@ -1981,6 +1981,10 @@ public:
 	/// Enables/disables GPU frame timing.
 	virtual bool SetGPUTimingEnabled(bool enabled) = 0;
 
+	/// Names the running game, so a device can build the pipelines it recorded for that game ahead
+	/// of their first use. Called on the GS thread after Create() and on every game change.
+	virtual void SetGameIdentity(const std::string& serial, u32 crc) {}
+
 	/// Returns the amount of GPU time utilized since the last time this method was called.
 	virtual float GetAndResetAccumulatedGPUTime() = 0;
 

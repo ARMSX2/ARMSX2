@@ -7,9 +7,11 @@
 
 #include "common/HashCombine.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -25,6 +27,7 @@ public:
 	static void Destroy();
 
 	/// Returns a handle to the pipeline cache. Set set_dirty to true if you are planning on writing to it externally.
+	/// Callable from pipeline compile workers: the VkPipelineCache is created internally synchronized.
 	VkPipelineCache GetPipelineCache(bool set_dirty = true);
 
 	/// Writes pipeline cache to file, saving all newly compiled pipelines.
@@ -32,6 +35,8 @@ public:
 	/// is rate-limited: pass force=true only where a missed flush actually loses data (teardown).
 	bool FlushPipelineCache(bool force = false);
 
+	/// The shader getters may run on several threads at once: the SPIR-V index and its files are
+	/// guarded by m_mutex, and GLSL compilation runs outside it.
 	VkShaderModule GetVertexShader(std::string_view shader_code);
 	VkShaderModule GetFragmentShader(std::string_view shader_code);
 	VkShaderModule GetComputeShader(std::string_view shader_code);
@@ -92,6 +97,8 @@ private:
 	std::optional<SPIRVCodeVector> CompileAndAddShaderSPV(const CacheIndexKey& key, std::string_view shader_code);
 	VkShaderModule GetShaderModule(u32 type, std::string_view shader_code);
 
+	/// Guards m_index, m_index_file and m_blob_file.
+	std::mutex m_mutex;
 	std::FILE* m_index_file = nullptr;
 	std::FILE* m_blob_file = nullptr;
 	std::string m_pipeline_cache_filename;
@@ -99,7 +106,7 @@ private:
 	CacheIndex m_index;
 
 	VkPipelineCache m_pipeline_cache = VK_NULL_HANDLE;
-	bool m_pipeline_cache_dirty = false;
+	std::atomic<bool> m_pipeline_cache_dirty{false};
 	/// When the cache was last serialised, so the synchronous GS-thread write can be rate-limited.
 	std::chrono::steady_clock::time_point m_last_pipeline_cache_flush{};
 };

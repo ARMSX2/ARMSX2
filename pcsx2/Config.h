@@ -908,6 +908,9 @@ struct Pcsx2Config
 					DumpDrawLog : 1,
 					UseBlitSwapChain : 1,
 					DisableShaderCache : 1,
+					// Record the TFX pipelines each game uses and build them on worker threads
+					// when the game starts, ahead of their first draw. Needs the shader cache.
+					PrecompilePipelines : 1,
 					DisableFramebufferFetch : 1,
 					ForceMaliFramebufferFetch : 1,
 					DisableVertexShaderExpand : 1,

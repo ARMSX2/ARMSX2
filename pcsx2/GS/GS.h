@@ -105,7 +105,7 @@ bool GSHasFrontParser();
 void GSStopGSDump();
 void GSPresentCurrentFrame();
 void GSThrottlePresentation();
-void GSGameChanged();
+void GSGameChanged(const std::string& serial, u32 crc);
 void GSSetDisplayAlignment(GSDisplayAlignment alignment);
 void GSSetPortraitRenderTopAlign(bool enabled);
 /// Pixels kept clear at the top of a portrait window (display cutout / camera).
