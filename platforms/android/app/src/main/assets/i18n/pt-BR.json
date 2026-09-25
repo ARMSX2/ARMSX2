@@ -1236,7 +1236,7 @@
  "pad.lightgun.port1": "Porta 1",
  "pad.lightgun.port2": "Porta 2",
  "pad.lightgun.port.description": "A maioria dos jogos lightgun espera a arma na Porta 1.",
- "pad.lightgun.help": "Toque para mirar e atirar. Tocar próximo à borda da tela dispara FORA DA TELA, que é como esses jogos são recarregados. A/B/C, Start, Select e Cal (recalibrar) são botões na tela que você pode mover e redimensionar no editor de layout de toque.",
+ "pad.lightgun.help": "Toque para mirar e atirar. Tocar próximo à borda da tela dispara FORA DA TELA, que é como esses jogos são recarregados. A/B/C, Start, Select e Cal (recalibrar) são botões na tela que você pode mover e redimensionar no editor de layout de toque. Se uma tela de configuração pedir para atirar em um alvo (Time Crisis), toque em Cal primeiro e depois atire no alvo.",
  "pad.gesture.section": "Controle de gestos",
  "pad.gesture.enable.label": "Ativar controle por gestos",
  "pad.gesture.enable.description": "Deslizar e tocar duas vezes na área vazia da tela aciona um botão. Somente onde não há controle na tela: um dedo que pousa em um botão, stick ou direcional ainda controla esse controle.",

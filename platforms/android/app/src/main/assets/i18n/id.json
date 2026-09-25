@@ -874,7 +874,7 @@
   "pad.leftStickFeel.title": "Rasa Stik Kiri",
   "pad.lightgun.enable.description": "Memasang GunCon 2 teremulasi ke port USB dan membidik dengan layar sentuh. Mulai ulang game setelah mengubah ini: game memeriksa port saat boot.",
   "pad.lightgun.enable.label": "Aktifkan GunCon 2",
-  "pad.lightgun.help": "Sentuh untuk membidik dan menembak. Menyentuh di dekat tepi layar akan menembak ke LUAR LAYAR, begitulah cara mengisi ulang di game-game ini. A/B/C, Start, Select, dan Cal (kalibrasi ulang) adalah tombol di layar yang dapat dipindahkan dan diubah ukurannya di editor tata letak sentuh.",
+  "pad.lightgun.help": "Sentuh untuk membidik dan menembak. Menyentuh di dekat tepi layar akan menembak ke LUAR LAYAR, begitulah cara mengisi ulang di game-game ini. A/B/C, Start, Select, dan Cal (kalibrasi ulang) adalah tombol di layar yang dapat dipindahkan dan diubah ukurannya di editor tata letak sentuh. Jika layar pengaturan meminta Anda menembak sasaran (Time Crisis), sentuh Cal dulu, lalu tembak sasarannya.",
   "pad.lightgun.port.description": "Sebagian besar game lightgun mengharapkan pistol di Port 1.",
   "pad.lightgun.port.label": "Port USB",
   "pad.lightgun.port1": "Port 1",

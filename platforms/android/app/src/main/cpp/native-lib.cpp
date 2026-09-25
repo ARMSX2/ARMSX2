@@ -2181,8 +2181,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setEnabledPatches(
 //   * device selection  -> USB{n}/Type in the settings ini
 //   * aiming            -> InputManager::UpdatePointerAbsolutePosition, which is what
 //                          GunCon2State reads via GetPointerAbsolutePosition(0) when it has no
-//                          relative binds. Coordinates are WINDOW PIXELS; our SurfaceView is the
-//                          whole window, so raw touch x/y goes straight through.
+//                          relative binds, in the GS window's (the surface buffer's) pixels.
+//                          Kotlin sends a fraction of the screen and it is scaled here, because
+//                          the buffer can be smaller than the screen (performance downscale,
+//                          resolution override) while the SurfaceView still covers all of it.
 //   * buttons           -> USB::SetDeviceBindValue(port, BID_*, 0/1)
 // BID_* values are guncon2.cpp's binding ids, mirrored in NativeApp for the Kotlin side.
 
@@ -2266,8 +2268,18 @@ JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_usbLightgunAim(JNIEnv*, jclass, jfloat x, jfloat y) {
     if (!VMManager::HasValidVM())
         return;
+    // x/y are fractions of the screen. The surface buffer's size is what the GS window reports,
+    // and so the space the GunCon's draw-rect mapping (GSTranslateWindowToDisplayCoordinates) uses.
+    float width, height;
+    {
+        std::lock_guard<std::mutex> lock(s_window_mutex);
+        width = static_cast<float>(s_window_width);
+        height = static_cast<float>(s_window_height);
+    }
+    if (width <= 0.0f || height <= 0.0f)
+        return;
     // Pointer 0: GunCon2State::GetAbsolutePosition reads index 0 specifically.
-    InputManager::UpdatePointerAbsolutePosition(0, static_cast<float>(x), static_cast<float>(y));
+    InputManager::UpdatePointerAbsolutePosition(0, x * width, y * height);
 }
 
 extern "C"

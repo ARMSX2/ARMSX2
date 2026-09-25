@@ -869,7 +869,7 @@
  "pad.leftStickFeel.title": "Tacto del stick izquierdo",
  "pad.lightgun.enable.description": "Conecta una GunCon 2 emulada a un puerto USB y apunta con la pantalla táctil. Reinicia el juego tras cambiar esto: el juego comprueba el puerto al arrancar.",
  "pad.lightgun.enable.label": "Activar GunCon 2",
- "pad.lightgun.help": "Toca para apuntar y disparar. Tocar cerca de un borde de la pantalla dispara FUERA DE LA PANTALLA, que es como se recarga en estos juegos. A/B/C, Start, Select y Cal (recalibrar) son botones en pantalla que puedes mover y redimensionar en el editor de distribución táctil.",
+ "pad.lightgun.help": "Toca para apuntar y disparar. Tocar cerca de un borde de la pantalla dispara FUERA DE LA PANTALLA, que es como se recarga en estos juegos. A/B/C, Start, Select y Cal (recalibrar) son botones en pantalla que puedes mover y redimensionar en el editor de distribución táctil. Si una pantalla de configuración te pide disparar a un objetivo (Time Crisis), toca primero Cal y luego dispara al objetivo.",
  "pad.lightgun.port.description": "La mayoría de juegos de pistola esperan la pistola en el Puerto 1.",
  "pad.lightgun.port.label": "Puerto USB",
  "pad.lightgun.port1": "Puerto 1",

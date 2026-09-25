@@ -102,10 +102,15 @@ private class LightgunInputNode(private var params: LightgunParams) : Modifier.N
                 // A held trigger is the controls in use, so a timed auto-hide cannot take this
                 // layer away mid-shot (see TouchControls.activeHolds).
                 TouchControls.beginTouchHold()
-                // Aim BEFORE the trigger, in that order: the core samples the pointer when the
-                // trigger goes down, so firing first would shoot where the previous shot landed.
-                Lightgun.aim(ch.position.x, ch.position.y)
-                Lightgun.trigger(true, ch.position.x, ch.position.y, p.widthPx, p.heightPx)
+                if (Lightgun.calibrateNext.value) {
+                    // Cal was tapped first: this touch is the calibration shot, on the target.
+                    Lightgun.calibrationShot(ch.position.x, ch.position.y, p.widthPx, p.heightPx)
+                } else {
+                    // Aim BEFORE the trigger, in that order: the core samples the pointer when the
+                    // trigger goes down, so firing first would shoot where the previous shot landed.
+                    Lightgun.aim(ch.position.x, ch.position.y, p.widthPx, p.heightPx)
+                    Lightgun.trigger(true, ch.position.x, ch.position.y, p.widthPx, p.heightPx)
+                }
                 ch.consume()
                 continue
             }
@@ -113,7 +118,7 @@ private class LightgunInputNode(private var params: LightgunParams) : Modifier.N
             ch.consume()
             last = ch.position
             if (ch.pressed) {
-                Lightgun.aim(ch.position.x, ch.position.y)
+                Lightgun.aim(ch.position.x, ch.position.y, p.widthPx, p.heightPx)
             } else {
                 Lightgun.trigger(false, ch.position.x, ch.position.y, p.widthPx, p.heightPx)
                 aiming = null

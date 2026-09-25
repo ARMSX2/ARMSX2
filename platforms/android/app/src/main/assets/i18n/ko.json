@@ -874,7 +874,7 @@
  "pad.leftStickFeel.title": "왼쪽 스틱 감도",
  "pad.lightgun.enable.description": "에뮬레이트된 GunCon 2를 USB 포트에 연결하고 터치스크린으로 조준합니다. 변경한 후에는 게임을 재시작하세요. 게임은 부팅할 때 포트를 확인합니다.",
  "pad.lightgun.enable.label": "GunCon 2 활성화",
- "pad.lightgun.help": "터치로 조준하고 발사합니다. 화면 가장자리 근처를 터치하면 화면 밖 사격이 되며, 이 게임들은 이 방식으로 재장전합니다. A/B/C, Start, Select, Cal(재보정)은 화면 버튼이며, 터치 레이아웃 편집기에서 위치와 크기를 바꿀 수 있습니다.",
+ "pad.lightgun.help": "터치로 조준하고 발사합니다. 화면 가장자리 근처를 터치하면 화면 밖 사격이 되며, 이 게임들은 이 방식으로 재장전합니다. A/B/C, Start, Select, Cal(재보정)은 화면 버튼이며, 터치 레이아웃 편집기에서 위치와 크기를 바꿀 수 있습니다. 설정 화면에서 과녁을 쏘라고 하면(Time Crisis) 먼저 Cal을 누른 다음 과녁을 쏘세요.",
  "pad.lightgun.port.description": "대부분의 라이트건 게임은 건이 포트 1에 연결되어 있다고 가정합니다.",
  "pad.lightgun.port.label": "USB 포트",
  "pad.lightgun.port1": "포트 1",

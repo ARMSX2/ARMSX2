@@ -970,6 +970,9 @@ open class MainActivityRuntime : ComponentActivity() {
             // dispatchKeyEvent can forward physical-keyboard keys to it. applyTo()
             // already pushed [USB1] Type + the live attach (usbApplyPorts).
             usbKeyboardActive = resolved.system.usbKeyboard
+            // A Cal armed in the previous game must not turn this one's first shot into a
+            // calibration shot.
+            com.armsx2.input.Lightgun.calibrateNext.value = false
 
             // Neutralize the NATIVE pad analog deadzone before the VM loads [Pad1].
             // A stale [Pad1]/Deadzone in an existing config (from the old, non-saving

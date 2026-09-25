@@ -869,7 +869,7 @@
   "pad.leftStickFeel.title": "Ressenti du stick gauche",
   "pad.lightgun.enable.description": "Branche un GunCon 2 émulé sur un port USB et permet de viser avec l'écran tactile. Redémarrez le jeu après avoir modifié ce réglage : le jeu interroge le port au démarrage.",
   "pad.lightgun.enable.label": "Activer le GunCon 2",
-  "pad.lightgun.help": "Touchez pour viser et tirer. Toucher près d'un bord de l'écran tire HORS ÉCRAN, ce qui permet de recharger dans ces jeux. A/B/C, Start, Select et Cal (recalibrer) sont des boutons à l'écran que vous pouvez déplacer et redimensionner dans l'éditeur de disposition tactile.",
+  "pad.lightgun.help": "Touchez pour viser et tirer. Toucher près d'un bord de l'écran tire HORS ÉCRAN, ce qui permet de recharger dans ces jeux. A/B/C, Start, Select et Cal (recalibrer) sont des boutons à l'écran que vous pouvez déplacer et redimensionner dans l'éditeur de disposition tactile. Si un écran de configuration vous demande de tirer sur une cible (Time Crisis), touchez d'abord Cal, puis tirez sur la cible.",
   "pad.lightgun.port.description": "La plupart des jeux de tir au pistolet attendent le pistolet sur le port 1.",
   "pad.lightgun.port.label": "Port USB",
   "pad.lightgun.port1": "Port 1",

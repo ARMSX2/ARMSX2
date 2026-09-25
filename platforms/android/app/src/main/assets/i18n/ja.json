@@ -874,7 +874,7 @@
   "pad.leftStickFeel.title": "左スティックの感触",
   "pad.lightgun.enable.description": "エミュレートしたGunCon 2をUSBポートに接続し、タッチスクリーンで照準を合わせます。変更後はゲームを再起動してください。ゲームは起動時にポートを確認します。",
   "pad.lightgun.enable.label": "GunCon 2を有効化",
-  "pad.lightgun.help": "タッチで照準と射撃を行います。画面の端付近をタッチすると画面外への射撃になり、これらのゲームではそれでリロードします。A/B/C、Start、Select、Cal（再キャリブレーション）は画面上のボタンで、タッチ配置エディターで移動やサイズ変更ができます。",
+  "pad.lightgun.help": "タッチで照準と射撃を行います。画面の端付近をタッチすると画面外への射撃になり、これらのゲームではそれでリロードします。A/B/C、Start、Select、Cal（再キャリブレーション）は画面上のボタンで、タッチ配置エディターで移動やサイズ変更ができます。設定画面で的を撃つよう求められたら（Time Crisis）、先に Cal をタップしてから的を撃ってください。",
   "pad.lightgun.port.description": "ほとんどのライトガンゲームは、ガンがポート1に接続されていることを前提としています。",
   "pad.lightgun.port.label": "USBポート",
   "pad.lightgun.port1": "ポート1",

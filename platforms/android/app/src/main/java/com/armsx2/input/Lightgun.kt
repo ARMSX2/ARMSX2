@@ -1,5 +1,7 @@
 package com.armsx2.input
 
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.runtime.mutableStateOf
 import com.armsx2.runtime.MainActivityRuntime
 import kr.co.iefriends.pcsx2.NativeApp
@@ -24,6 +26,8 @@ object Lightgun {
     private const val KEY_PORT = "lightgun.port"
     /** Off-screen reload margin, as a fraction of the shorter screen edge. */
     private const val EDGE_RELOAD_FRAC = 0.06f
+    /** How long a calibration shot holds Recalibrate: several polls, under the core's 12-poll exchange. */
+    private const val CALIBRATION_PRESS_MS = 150L
 
     /** Mirrors the pref so Compose recomposes. */
     val enabled = mutableStateOf(false)
@@ -92,15 +96,43 @@ object Lightgun {
 
     private var triggerDown = false
 
+    /** Cal was tapped: the next touch on the screen is a calibration shot, not a trigger pull. */
+    val calibrateNext = mutableStateOf(false)
+
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+    private val releaseCalibration = Runnable {
+        runCatching { NativeApp.usbLightgunButton(port.value, NativeApp.GUNCON_RECALIBRATE, false) }
+    }
+
     /**
-     * Aim at a window pixel coordinate.
+     * Aim at a touch position, given with the size of the area it was measured in.
      *
-     * Passed straight through: `InputManager::UpdatePointerAbsolutePosition` wants window pixels,
-     * and our SurfaceView spans the window, so touch coordinates already are those.
+     * Sent as a fraction of that area, which native scales to the game surface. The overlay and the
+     * surface cover the same area, but the surface can have fewer pixels than the screen (the
+     * performance downscale, a resolution override), and the core reads the pointer in surface
+     * pixels: raw screen pixels put every shot below and right of the finger whenever they differ.
      */
-    fun aim(x: Float, y: Float) {
+    fun aim(x: Float, y: Float, widthPx: Float, heightPx: Float) {
+        if (!enabled.value || widthPx <= 0f || heightPx <= 0f) return
+        runCatching { NativeApp.usbLightgunAim(x / widthPx, y / heightPx) }
+    }
+
+    /**
+     * Fire a calibration shot where the finger landed, instead of pulling the trigger.
+     *
+     * Some games (Time Crisis) will not pass their setup screen on a plain shot: after the trigger
+     * they blank the screen and wait for the gun to report that it sees nothing, which a finger
+     * never does. The core's Recalibrate binding plays that whole exchange at the current aim, so
+     * aim first, then press it. Let go after [CALIBRATION_PRESS_MS] whatever the finger does: the
+     * exchange lasts 12 polls, and a press still held when it ends starts another one.
+     */
+    fun calibrationShot(x: Float, y: Float, widthPx: Float, heightPx: Float) {
+        calibrateNext.value = false
         if (!enabled.value) return
-        runCatching { NativeApp.usbLightgunAim(x, y) }
+        aim(x, y, widthPx, heightPx)
+        mainHandler.removeCallbacks(releaseCalibration)
+        runCatching { NativeApp.usbLightgunButton(port.value, NativeApp.GUNCON_RECALIBRATE, true) }
+        mainHandler.postDelayed(releaseCalibration, CALIBRATION_PRESS_MS)
     }
 
     /**

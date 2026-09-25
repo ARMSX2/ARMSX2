@@ -1191,6 +1191,10 @@ private fun StateActionWidget(cfg: TouchButtonCfg, edit: Boolean) {
  * other, so the editor moves, resizes and hides it. Above the aim layer, so pressing one is a button
  * press rather than a shot at that part of the screen. Held for as long as the finger stays down,
  * even after it slides off, and let go if the controls disappear mid-press.
+ *
+ * Cal is the exception: it presses nothing itself. The calibration shot has to land on the game's
+ * target, and a finger on this button is not there, so a tap ARMS it (lit up) and the next touch on
+ * the screen fires it (Lightgun.calibrationShot). A second tap stands it down.
  */
 @Composable
 private fun GunButtonWidget(cfg: TouchButtonCfg, edit: Boolean) {
@@ -1207,15 +1211,38 @@ private fun GunButtonWidget(cfg: TouchButtonCfg, edit: Boolean) {
     }
     val opacity = TouchControls.opacity.floatValue
     val bind = gunBind(cfg.id)
+    val isCal = cfg.id == TouchButtonId.GUN_CAL
+    val armed = isCal && Lightgun.calibrateNext.value
+    // Lit strongly enough to read at a low controls opacity: an armed Cal changes what the next
+    // touch does, so it must not be missed.
+    val armedAlpha = maxOf(opacity, 0.6f)
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.30f * opacity), CircleShape)
-            .border(1.dp, Color.White.copy(alpha = 0.45f * opacity), CircleShape)
+            .background(
+                if (armed) Color.White.copy(alpha = 0.40f * armedAlpha) else Color.Black.copy(alpha = 0.30f * opacity),
+                CircleShape,
+            )
+            .border(
+                if (armed) 2.dp else 1.dp,
+                Color.White.copy(alpha = if (armed) 0.95f * armedAlpha else 0.45f * opacity),
+                CircleShape,
+            )
             .pointerInput(cfg.id) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     down.consume()
+                    if (isCal) {
+                        Lightgun.calibrateNext.value = !Lightgun.calibrateNext.value
+                        TouchControls.noteTouchInteraction()
+                        // Keep the rest of this finger off everything else.
+                        while (true) {
+                            val ch = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
+                            ch?.consume()
+                            if (ch == null || !ch.pressed) break
+                        }
+                        return@awaitEachGesture
+                    }
                     Lightgun.button(bind, true)
                     TouchControls.beginTouchHold()
                     TouchControls.noteTouchInteraction()
@@ -1235,7 +1262,7 @@ private fun GunButtonWidget(cfg: TouchButtonCfg, edit: Boolean) {
     ) {
         Text(
             label,
-            color = Color.White.copy(alpha = legibleAlpha(opacity, 0.35f)),
+            color = if (armed) Color.Black.copy(alpha = 0.85f) else Color.White.copy(alpha = legibleAlpha(opacity, 0.35f)),
             fontSize = if (label.length > 3) 11.sp else 15.sp,
             fontWeight = FontWeight.Bold,
         )
