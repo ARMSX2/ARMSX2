@@ -968,7 +968,7 @@ open class MainActivityRuntime : ComponentActivity() {
             instance?.runOnUiThread { instance?.applyEmulationOrientation() }
             // #254: cache whether this title runs with the emulated USB keyboard so
             // dispatchKeyEvent can forward physical-keyboard keys to it. applyTo()
-            // already pushed [USB1] Type + the live attach (usbSetKeyboardEnabled).
+            // already pushed [USB1] Type + the live attach (usbApplyPorts).
             usbKeyboardActive = resolved.system.usbKeyboard
 
             // Neutralize the NATIVE pad analog deadzone before the VM loads [Pad1].

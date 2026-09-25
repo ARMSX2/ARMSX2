@@ -17,7 +17,11 @@ import kr.co.iefriends.pcsx2.NativeApp
  * a drum pad with nothing extra to configure. Aiming for the lightgun is the one thing that needs
  * more than a button, and lives in [Lightgun].
  *
- * ★ Changing a port is RESTART-REQUIRED: the game probes the port at boot and caches what it found.
+ * ★ Restart the game after changing a port. The new device is plugged into a running game straight
+ * away (NativeApp.usbApplyPorts), but many games only look for USB devices at boot.
+ *
+ * Port 1 is shared with the USB keyboard switch (Settings.system.usbKeyboard): while that is on, the
+ * keyboard takes the port, and while it is off, the port carries what was picked here.
  */
 object UsbDevices {
     data class Device(val type: String, val display: String, val subtypes: List<String>)
@@ -54,6 +58,14 @@ object UsbDevices {
         if (list.isNotEmpty()) cached = list
         return list
     }
+
+    /**
+     * The device the picker put on [port], read from its preference rather than [portType]. The
+     * settings apply at game launch writes Port 1 from this, and it can run before [load] has
+     * (a game started straight from a shortcut).
+     */
+    fun storedType(port: Int): String =
+        runCatching { MainActivityRuntime.prefs.getString(KEY_TYPE.format(port), NONE) }.getOrNull() ?: NONE
 
     fun load() {
         for (p in 0..1) {

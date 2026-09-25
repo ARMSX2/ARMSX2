@@ -228,8 +228,9 @@ public class NativeApp {
 
 	/**
 	 * Set the emulated device in a USB port. {@code type} is a core type name
-	 * ("guncon2", "None", ...); port is 0 or 1. Restart recommended — swapping a USB
-	 * device on a running VM is the emulated equivalent of unplugging it.
+	 * ("guncon2", "None", ...); port is 0 or 1. A running game gets the device plugged
+	 * in straight away, but a restart is still recommended: many games only look for USB
+	 * devices at boot.
 	 */
 	public static native void usbSetDeviceType(int port, String type);
 
@@ -462,12 +463,10 @@ public class NativeApp {
 	public static native void resetKeyStatus();
 
 	// ---- USB keyboard (#254: EQOA / Konami-keyboard games) ----
-	/** Attach ({@code true}) or detach ({@code false}) an emulated USB HID
-	 *  keyboard on USB port {@code port} (0 = USB1, 1 = USB2). Persists
-	 *  [USB{port+1}] Type = hidkbd/None and, when a VM is running, recreates the
-	 *  device live so the game sees the (dis)connect. Call off the UI thread — a
-	 *  live change briefly parks the emulation pipeline. */
-	public static native void usbSetKeyboardEnabled(int port, boolean enabled);
+	/** Plug the devices the settings name for both USB ports into a running game, and
+	 *  unplug what they no longer name. Called after Settings.applyTo writes [USB1] Type
+	 *  for the keyboard switch; a no-op with no VM running. */
+	public static native void usbApplyPorts();
 	/** Feed one Android hardware {@link android.view.KeyEvent} to the emulated USB
 	 *  keyboard on {@code port}. {@code androidKeyCode} is {@code KeyEvent.keyCode};
 	 *  {@code pressed} is the down/up state. Returns {@code true} iff a USB keyboard

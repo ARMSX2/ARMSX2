@@ -1038,6 +1038,38 @@ static void RebuildUsbGenericBinds(u32 port) {
     Console.WriteLnFmt("@@ANDROID_USB@@ bridged '{}' subtype={} on port {}", dev, subtype, port + 1);
 }
 
+// Plug the devices the settings name for both ports into a running game, and unplug what they no
+// longer name, the way desktop's ApplySettings does when a port changes (USB::CheckForConfigChanges).
+//
+// On the CPU thread, where the IOP polls these devices. s_pad_mutex keeps the input thread from
+// pressing a button on a device while it is being swapped out: every SetDeviceBindValue caller
+// takes it. EmuConfig.USB is reloaded HERE and nowhere earlier, because CheckForConfigChanges only
+// swaps a port whose config differs from the running one. Writing the new type into EmuConfig
+// ahead of this, as the picker used to, left nothing to compare, so the device never came up.
+static void ApplyUsbPortsToRunningVM() {
+    Host::RunOnCPUThread([]() {
+        if (!VMManager::HasValidVM())
+            return;
+        std::lock_guard<std::mutex> lk(s_pad_mutex);
+        const Pcsx2Config old_config(EmuConfig);
+        {
+            auto lock = Host::GetSettingsLock();
+            SettingsLoadWrapper wrap(*Host::GetSettingsInterface());
+            EmuConfig.USB.LoadSave(wrap);
+        }
+        // Every settings apply comes through here (Settings.applyTo), nearly always with no port
+        // change; the commit that follows it refreshes the unchanged devices already.
+        if (EmuConfig.USB == old_config.USB)
+            return;
+        USB::CheckForConfigChanges(old_config);
+        for (u32 port = 0; port < USB::NUM_PORTS; port++)
+        {
+            Console.WriteLnFmt("@@ANDROID_USB@@ live port={} type={}", port + 1,
+                USB::DeviceTypeIndexToName(EmuConfig.USB.Ports[port].DeviceType));
+        }
+    });
+}
+
 /// Our pad keycode -> the generic binding it represents, or Unknown when it has no equivalent.
 static GenericInputBinding PadKeyToGeneric(jint key) {
     switch (key) {
@@ -1105,6 +1137,9 @@ static void applyPadButton(u32 port, jint p_key, jint p_range, jboolean p_keyPre
     // release when it first composes in the library) — the pads don't exist yet, so drop it.
     if (!VMManager::HasValidVM())
         return;
+    // Held for the USB mirror too, not only the pad: a settings change can swap the USB device
+    // out from under it (ApplyUsbPortsToRunningVM).
+    std::lock_guard<std::mutex> lk(s_pad_mutex);
     // Mirror to an attached USB device when this button has a generic equivalent (see
     // RebuildUsbGenericBinds). Harmless when nothing is attached — the table is all -1.
     if (port <= 1)
@@ -1118,7 +1153,6 @@ static void applyPadButton(u32 port, jint p_key, jint p_range, jboolean p_keyPre
         }
     }
 
-    std::lock_guard<std::mutex> lk(s_pad_mutex);
     Pad::SetControllerState(port, static_cast<u32>(_key), state);
 }
 
@@ -2169,14 +2203,13 @@ Java_kr_co_iefriends_pcsx2_NativeApp_usbSetDeviceType(JNIEnv* env, jclass, jint 
         return;
     USB::SetConfigDevice(*si, static_cast<u32>(port), type.c_str());
     si->Save();
-    // Mirror into EmuConfig so a running VM sees it without a full ApplySettings; USB reattaches
-    // the port on the next CheckForConfigChanges. Device changes are restart-recommended anyway —
-    // hot-swapping a USB device mid-game is the emulated equivalent of yanking the plug.
-    const s32 index = USB::DeviceTypeNameToIndex(type);
-    EmuConfig.USB.Ports[port].DeviceType = index;
-    Console.WriteLnFmt("@@ANDROID_USB@@ port={} type={} index={}", port + 1, type, index);
+    Console.WriteLnFmt("@@ANDROID_USB@@ port={} type={} index={}", port + 1, type,
+        USB::DeviceTypeNameToIndex(type));
     lock.unlock();
     RebuildUsbGenericBinds(static_cast<u32>(port));
+    // Into a running game now. Restart is still recommended, since many games only look for USB
+    // devices at boot, but a game that watches the port sees the plug go in.
+    ApplyUsbPortsToRunningVM();
 }
 
 // Available device types, as "typeName\x1fDisplay Name\x1fsub1\x1fsub2..." joined by \x1e.
@@ -2225,6 +2258,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_usbSetDeviceSubtype(JNIEnv* env, jclass, ji
     si->Save();
     lock.unlock();
     RebuildUsbGenericBinds(static_cast<u32>(port));
+    ApplyUsbPortsToRunningVM();
 }
 
 extern "C"
@@ -2242,6 +2276,8 @@ Java_kr_co_iefriends_pcsx2_NativeApp_usbLightgunButton(JNIEnv*, jclass, jint por
                                                        jboolean pressed) {
     if (!VMManager::HasValidVM() || port < 0 || port > 1)
         return;
+    // Against a settings change swapping the device out (ApplyUsbPortsToRunningVM).
+    std::lock_guard<std::mutex> lk(s_pad_mutex);
     USB::SetDeviceBindValue(static_cast<u32>(port), static_cast<u32>(bind),
         (pressed == JNI_TRUE) ? 1.0f : 0.0f);
 }
@@ -4053,42 +4089,12 @@ static QKeyCode AndroidKeyCodeToQKeyCode(int kc)
     }
 }
 
-// Attach/detach the emulated USB HID keyboard on a USB port (0 or 1) LIVE on a
-// running VM. Persistence of [USB{port+1}] Type is handled Kotlin-side via
-// setSetting (Settings.applyTo), so this only drives the live device
-// (re)creation: it sets the live EmuConfig and calls USB::CheckForConfigChanges,
-// which DestroyDevice/CreateDevice the USB port so the running game sees the
-// (dis)connect immediately. Mirrors enablePad2's threading discipline —
-// ScopedVMPause parks the EE/MTVU/MTGS pipeline (which the USB/OHCI poll runs
-// on) while the device list is rebuilt. No-op before the VM exists: the
-// persisted Type is picked up by USBOptions::LoadSave on the next boot.
+// Settings.applyTo has just written [USB1] Type for the USB keyboard switch: plug that into a
+// running game. The swap itself is ApplyUsbPortsToRunningVM, shared with the device picker. No-op
+// before the VM exists: USBOptions::LoadSave picks the persisted Type up on the next boot.
 extern "C" JNIEXPORT void JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_usbSetKeyboardEnabled(JNIEnv*, jclass, jint p_port, jboolean p_enabled) {
-    if (p_port < 0 || static_cast<u32>(p_port) >= USB::NUM_PORTS)
-        return;
-    if (!VMManager::HasValidVM())
-        return;
-
-    const u32 port = static_cast<u32>(p_port);
-    const s32 new_type = p_enabled ? DEVTYPE_HIDKEYBOARD : DEVTYPE_NONE;
-    if (EmuConfig.USB.Ports[port].DeviceType == new_type)
-        return; // already in the requested state
-
-    ScopedVMPause vm_pause(/*pause_audio=*/false);
-    if (!vm_pause.parked())
-        return;
-
-    const Pcsx2Config old_config(EmuConfig);
-    EmuConfig.USB.Ports[port].DeviceType = new_type;
-    EmuConfig.USB.Ports[port].DeviceSubtype = 0;
-    // Serialize the device-list swap against the Android input thread's
-    // usbKeyboardKey / applyPadButton calls (both touch the same emulated
-    // device state) — same reasoning as enablePad2's s_pad_mutex.
-    {
-        std::lock_guard<std::mutex> lk(s_pad_mutex);
-        USB::CheckForConfigChanges(old_config);
-    }
-    Console.WriteLnFmt("@@ANDROID_USBKBD@@ port={} type={}", port, p_enabled ? "hidkbd" : "None");
+Java_kr_co_iefriends_pcsx2_NativeApp_usbApplyPorts(JNIEnv*, jclass) {
+    ApplyUsbPortsToRunningVM();
 }
 
 // Forward one Android hardware KeyEvent to the emulated USB keyboard on [port].

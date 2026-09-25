@@ -1063,11 +1063,14 @@ data class Settings(
         put("MemoryCards", "Slot2_Enable", "bool", system.memoryCardSlot2Enabled.toString())
         put("MemoryCards", "Slot2_Filename", "string", system.memoryCardSlot2Filename.ifEmpty { "mcd002.ps2" })
         // USB keyboard (#254). Persist [USB1] Type so USBOptions::LoadSave attaches
-        // the emulated HID keyboard on the next boot (or ApplySettings). The live
-        // attach/detach on a running VM is done via NativeApp.usbSetKeyboardEnabled
-        // below (CheckForConfigChanges recreates the device), since a plain
-        // setSetting write doesn't reattach USB devices on its own.
-        put("USB1", "Type", "string", if (system.usbKeyboard) "hidkbd" else "None")
+        // the emulated HID keyboard on the next boot. The live attach/detach on a
+        // running VM is NativeApp.usbApplyPorts below.
+        //
+        // Port 1 is shared with the USB device picker (UsbDevices), so the switch owns it
+        // only while it is on. Off, the port carries what the picker put there. This used
+        // to write "None" instead, at every settings apply and every game launch, which
+        // unplugged a GunCon 2 or Buzz set on Port 1 before the game ever saw it.
+        put("USB1", "Type", "string", if (system.usbKeyboard) "hidkbd" else com.armsx2.input.UsbDevices.storedType(0))
         // Recompiler enables. Picked up by VMManager::ApplySettings →
         // SysCpuProviderPack rebind. Toggling these on a running VM swaps
         // the dispatch pointer; existing JIT block caches are flushed by
@@ -1129,11 +1132,10 @@ data class Settings(
         // mode for the Custom flags, which reads to the user as "the OSD disappeared when I
         // changed a setting". Custom is already correct and is left alone.
         com.armsx2.ui.InGameOverlay.reassertOsdModeAfterSettingsApply()
-        // USB keyboard (#254): live attach/detach on the running VM. A plain
-        // setSetting("USB1","Type",...) write is persisted but doesn't reattach
-        // USB devices, so drive the device (re)creation explicitly. No-op before
-        // the VM exists — the persisted Type above handles the cold boot.
-        NativeApp.usbSetKeyboardEnabled(0, system.usbKeyboard)
+        // USB keyboard (#254): live attach/detach on the running VM, of whatever the
+        // [USB1] Type above now names. No-op before the VM exists: the persisted Type
+        // handles the cold boot.
+        NativeApp.usbApplyPorts()
         NativeApp.commitSettings()
     }
 
