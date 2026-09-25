@@ -12,6 +12,7 @@ struct TexturePacksView<Options: View>: View {
     @State private var titles: [String: String] = [:]
     @State private var pendingRemoval: TexturePack?
     @State private var failure: String?
+    @State private var showCatalog = false
     @State private var showPicker = false
     @State private var importing = false
 
@@ -31,6 +32,11 @@ struct TexturePacksView<Options: View>: View {
 
             // Buttons and sheets, not links and a toolbar: the wide per-game panel has no navigation stack.
             Section {
+                Button {
+                    showCatalog = true
+                } label: {
+                    Label(settings.localized("Download Texture Packs"), systemImage: "arrow.down.circle")
+                }
                 Button {
                     showPicker = true
                 } label: {
@@ -62,6 +68,11 @@ struct TexturePacksView<Options: View>: View {
         .navigationTitle(settings.localized("Texture Packs"))
         .navigationBarTitleDisplayMode(.inline)
         .task { await reload() }
+        .sheet(isPresented: $showCatalog, onDismiss: { Task { await reload() } }) {
+            NavigationStack {
+                TextureCatalogView(serial: serial)
+            }
+        }
         .sheet(isPresented: $showPicker) {
             ImportDocumentPicker(
                 allowedContentTypes: [],

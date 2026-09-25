@@ -140,6 +140,7 @@ struct RootView: View {
         .onAppear {
             StikDebugLauncher.autoOpenIfNeeded(reason: "app launch")
             ShaderCatalogInstaller.sweepStagedDownloads()
+            TexturePackLibrary.sweepStaging(in: TexturePackLibrary.root)
         }
         .onReceive(
             NotificationCenter.default.publisher(

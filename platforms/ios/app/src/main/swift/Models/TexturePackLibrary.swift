@@ -36,6 +36,29 @@ enum TexturePackLibrary {
         }
     }
 
+    static func catalogIDs(in root: URL) -> Set<String> {
+        let serialFolders = (try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+        return Set(serialFolders.flatMap { markedIDs(in: $0.appendingPathComponent("replacements", isDirectory: true)) })
+    }
+
+    // Catalog packs can be downloaded again, so they stay out of iCloud backup; imports don't.
+    static func markCatalogPack(_ id: String, in folder: URL) throws {
+        try Set(markedIDs(in: folder) + [id]).sorted().joined(separator: "\n")
+            .write(to: folder.appendingPathComponent(catalogMarker), atomically: true, encoding: .utf8)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var folder = folder
+        try folder.setResourceValues(values)
+    }
+
+    static func sweepStaging(in root: URL) {
+        let leftovers = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        for url in leftovers where url.lastPathComponent.hasPrefix(".import-") {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     // GameLibrarySnapshot persists this cache; reading it names packs without opening any disc.
     static func titlesBySerial() -> [String: String] {
         struct Entry: Decodable { let metadata: [String: String] }
@@ -51,6 +74,13 @@ enum TexturePackLibrary {
             }
         }
         return titles
+    }
+
+    private static let catalogMarker = ".armsx2-catalog"
+
+    private static func markedIDs(in folder: URL) -> [String] {
+        let text = (try? String(contentsOf: folder.appendingPathComponent(catalogMarker), encoding: .utf8)) ?? ""
+        return text.split(separator: "\n").map(String.init)
     }
 
     private static func size(of folder: URL) -> Int64 {
