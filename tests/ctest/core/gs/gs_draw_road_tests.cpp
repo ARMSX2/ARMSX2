@@ -203,3 +203,181 @@ TEST(GSDrawRoad, DropRuleSwept)
 		EXPECT_EQ(Drops(dev, elsewhere, overlap, depth), expected) << "bits=" << bits;
 	}
 }
+
+// --- Feedback-loop carry ---------------------------------------------------------------------
+
+namespace
+{
+	constexpr GSFeedbackLoopCarryInputs MaliWithFetch()
+	{
+		return {.device_is_measured_vendor = true, .barriers_order_reads = true, .framebuffer_fetch = true};
+	}
+
+	// Turnip on the declared loop.
+	constexpr GSFeedbackLoopCarryInputs AdrenoOnTheLayoutRoad()
+	{
+		return {.device_is_layout_road_vendor = true, .barriers_order_reads = true, .feedback_loop_layout = true};
+	}
+
+	// Honeykrisp's default road: our own feedback barriers order the read.
+	constexpr GSFeedbackLoopCarryInputs M2OnTheLayoutRoad()
+	{
+		return {.barriers_order_reads = true, .device_is_barrier_road_vendor = true, .feedback_loop_layout = true};
+	}
+
+	// NVIDIA, AMD, Intel: same road and barriers as the M2, never timed.
+	constexpr GSFeedbackLoopCarryInputs DesktopOnTheLayoutRoad()
+	{
+		return {.barriers_order_reads = true, .feedback_loop_layout = true};
+	}
+
+	constexpr GSDrawRoad Decide(GSFeedbackCarry carry, bool any_barrier, bool writes_depth)
+	{
+		GSDrawRoadDevice dev;
+		dev.carry = carry;
+		GSDrawRoadDraw draw;
+		draw.any_barrier = any_barrier;
+		draw.writes_depth = writes_depth;
+		return GSDecideDrawRoad(dev, draw);
+	}
+} // namespace
+
+TEST(GSDrawRoad, CarryByDevice)
+{
+	EXPECT_EQ(GSFeedbackCarryForDevice(MaliWithFetch()), GSFeedbackCarry::NonReaders);
+	EXPECT_EQ(GSFeedbackCarryForDevice(AdrenoOnTheLayoutRoad()), GSFeedbackCarry::NonReaders);
+	EXPECT_EQ(GSFeedbackCarryForDevice(M2OnTheLayoutRoad()), GSFeedbackCarry::NonReaders);
+	EXPECT_EQ(GSFeedbackCarryForDevice({.device_always_carries = true}), GSFeedbackCarry::All);
+
+	// Desktop keeps draw-local bits, and so does the copy road on any vendor.
+	EXPECT_EQ(GSFeedbackCarryForDevice(DesktopOnTheLayoutRoad()), GSFeedbackCarry::None);
+	EXPECT_EQ(GSFeedbackCarryForDevice({}), GSFeedbackCarry::None);
+	EXPECT_EQ(GSFeedbackCarryForDevice({.device_is_layout_road_vendor = true}), GSFeedbackCarry::None);
+	EXPECT_EQ(GSFeedbackCarryForDevice({.barriers_order_reads = true}), GSFeedbackCarry::None);
+}
+
+// Fetch carries only on the vendor it was measured on, and only with fetch live.
+TEST(GSDrawRoad, FetchCarryNeedsFetchAndItsVendor)
+{
+	GSFeedbackLoopCarryInputs no_fetch = MaliWithFetch();
+	no_fetch.framebuffer_fetch = false;
+	EXPECT_EQ(GSFeedbackCarryForDevice(no_fetch), GSFeedbackCarry::None);
+
+	GSFeedbackLoopCarryInputs other_vendor = MaliWithFetch();
+	other_vendor.device_is_measured_vendor = false;
+	EXPECT_EQ(GSFeedbackCarryForDevice(other_vendor), GSFeedbackCarry::None);
+
+	// A device reporting both spellings is answered by the layout road's terms alone.
+	GSFeedbackLoopCarryInputs both = MaliWithFetch();
+	both.feedback_loop_layout = true;
+	EXPECT_EQ(GSFeedbackCarryForDevice(both), GSFeedbackCarry::None);
+}
+
+// With texture barriers off the layout road has no ordering, so -no-tex-barriers is inert.
+TEST(GSDrawRoad, LayoutRoadWithoutOrderingDoesNotCarry)
+{
+	GSFeedbackLoopCarryInputs in = M2OnTheLayoutRoad();
+	in.barriers_order_reads = false;
+	EXPECT_EQ(GSFeedbackCarryForDevice(in), GSFeedbackCarry::None);
+
+	in.device_is_measured_vendor = true;
+	EXPECT_EQ(GSFeedbackCarryForDevice(in), GSFeedbackCarry::None);
+}
+
+// A reader asks for its own barrier and so never inherits a carried bit; carrying onto it would
+// emit a barrier that was not there before. Broadcom carries onto every draw.
+TEST(GSDrawRoad, ReadersSetTheirOwnBits)
+{
+	EXPECT_TRUE(Decide(GSFeedbackCarry::NonReaders, false, false).carry_rt);
+	EXPECT_FALSE(Decide(GSFeedbackCarry::NonReaders, true, false).carry_rt);
+	EXPECT_TRUE(Decide(GSFeedbackCarry::All, true, false).carry_rt);
+	EXPECT_FALSE(Decide(GSFeedbackCarry::None, false, false).carry_rt);
+}
+
+// A depth writer never inherits the depth bits, on any device; the colour carry is untouched.
+TEST(GSDrawRoad, DepthBitsAreNotCarriedAcrossADepthWriter)
+{
+	for (GSFeedbackCarry carry : {GSFeedbackCarry::NonReaders, GSFeedbackCarry::All})
+	{
+		const GSDrawRoad writer = Decide(carry, false, true);
+		EXPECT_TRUE(writer.carry_rt);
+		EXPECT_FALSE(writer.carry_depth);
+
+		const GSDrawRoad non_writer = Decide(carry, false, false);
+		EXPECT_TRUE(non_writer.carry_depth);
+	}
+}
+
+// The composed rule equals the per-draw carry it replaced, over every input.
+TEST(GSDrawRoad, CarrySwept)
+{
+	for (int bits = 0; bits < 512; bits++)
+	{
+		GSFeedbackLoopCarryInputs dev;
+		dev.device_always_carries = (bits & 1) != 0;
+		dev.device_is_measured_vendor = (bits & 2) != 0;
+		dev.framebuffer_fetch = (bits & 4) != 0;
+		dev.feedback_loop_layout = (bits & 8) != 0;
+		dev.device_is_layout_road_vendor = (bits & 16) != 0;
+		dev.barriers_order_reads = (bits & 32) != 0;
+		dev.device_is_barrier_road_vendor = (bits & 64) != 0;
+		const bool any_barrier = (bits & 128) != 0;
+		const bool writes_depth = (bits & 256) != 0;
+
+		const bool ordered = dev.feedback_loop_layout ?
+		                         (dev.device_is_layout_road_vendor ||
+		                             (dev.barriers_order_reads && dev.device_is_barrier_road_vendor)) :
+		                         (dev.device_is_measured_vendor && dev.framebuffer_fetch);
+		const bool colour = dev.device_always_carries || (ordered && !any_barrier);
+
+		const GSDrawRoad road = Decide(GSFeedbackCarryForDevice(dev), any_barrier, writes_depth);
+		EXPECT_EQ(road.carry_rt, colour) << "bits=" << bits;
+		EXPECT_EQ(road.carry_depth, colour && !writes_depth) << "bits=" << bits;
+	}
+}
+
+// --- Feedback-loop bits and the clone --------------------------------------------------------
+
+// The pipeline's feedback bits follow the read on every in-pass road, whether or not the draw kept
+// its barriers; the copy road has none and clones instead.
+TEST(GSDrawRoad, FeedbackBitsFollowTheRead)
+{
+	const GSDrawRoad in_pass = GSDecideDrawRoad(BarrierRoad(), {.reads_rt = true, .reads_depth = true});
+	EXPECT_TRUE(in_pass.rt_loop);
+	EXPECT_TRUE(in_pass.depth_loop);
+	EXPECT_FALSE(in_pass.clone_rt);
+
+	const GSDrawRoad copy = GSDecideDrawRoad(CopyRoad(), {.reads_rt = true, .reads_depth = true, .one_barrier = true});
+	EXPECT_FALSE(copy.rt_loop);
+	EXPECT_FALSE(copy.depth_loop);
+	EXPECT_TRUE(copy.clone_rt);
+}
+
+// The copy road clones only for a one-barrier draw that reads the target in either pass.
+TEST(GSDrawRoad, CloneSwept)
+{
+	for (int bits = 0; bits < 16; bits++)
+	{
+		GSDrawRoadDevice dev;
+		dev.texture_barrier = (bits & 1) != 0;
+		GSDrawRoadDraw draw;
+		draw.reads_rt = (bits & 2) != 0;
+		draw.second_pass_reads_rt = (bits & 4) != 0;
+		draw.one_barrier = (bits & 8) != 0;
+
+		const bool expected = !dev.texture_barrier && draw.one_barrier && (draw.reads_rt || draw.second_pass_reads_rt);
+		EXPECT_EQ(GSDecideDrawRoad(dev, draw).clone_rt, expected) << "bits=" << bits;
+	}
+}
+
+// Sampling the attached depth buffer is read-only depth feedback unless the draw already reads and
+// writes it, and needs no texture barrier.
+TEST(GSDrawRoad, DepthReadIsReadOnlyFeedback)
+{
+	EXPECT_TRUE(GSDecideDrawRoad(CopyRoad(), {.samples_attached_depth = true}).depth_read);
+	EXPECT_TRUE(GSDecideDrawRoad(BarrierRoad(), {.samples_attached_depth = true}).depth_read);
+
+	const GSDrawRoad rw = GSDecideDrawRoad(BarrierRoad(), {.reads_depth = true, .samples_attached_depth = true});
+	EXPECT_TRUE(rw.depth_loop);
+	EXPECT_FALSE(rw.depth_read);
+}

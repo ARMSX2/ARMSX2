@@ -39,7 +39,6 @@ namespace
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h"
-#include "GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 #include "GS/Renderers/Common/GSMeasurementOverrides.h"
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
@@ -2919,6 +2918,7 @@ bool GSDeviceVK::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 		Host::ReportErrorAsync("GS", TRANSLATE_SV("GSDeviceVK", "Your GPU does not support the required Vulkan features."));
 		return false;
 	}
+	m_features.feedback_carry = GSFeedbackCarryForDevice(m_carry_device_facts);
 
 	if (!CreateNullTexture())
 	{
@@ -9019,95 +9019,19 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			m_pipeline_selector.ds = true;
 		}
 
-		// Carry the feedback-loop flag across a run of draws on the same target.
-		//
-		// The rule: once a target run has a reader, the flag stays set for the following
-		// non-readers on that target until the pass ends for another reason. Without it the
-		// flag is draw-local, so OMSetRenderTargets ends and restarts the pass on every
-		// reader/non-reader alternation, and an isolated reader costs two pass boundaries.
-		//
-		// Three device classes carry, for the same reason and on different evidence:
-		//
-		// Broadcom/V3D (Raspberry Pi, via the Linux arm64 build) is tile-based and pays
-		// heavily to close and reopen a tile render pass. Its carry is unconditional and
-		// predates the key below.
-		//
-		// The framebuffer-fetch path reads the attachment in-tile through subpassLoad under
-		// rasterization-order attachment access, so a pass declared self-reading by a draw
-		// that never reads is the same pass with one unused input attachment — it costs
-		// nothing to leave the flag set. Gated to Mali, where it was measured: OutRun 2006
-		// 599.5 render passes a frame down to 31.1, Xenosaga 75,899 per run down to 133 and
-		// its frame time from about 32 ms to 16.7, frames identical either way on all 22
-		// corpus dumps.
-		//
-		// The attachment-feedback-loop LAYOUT path samples the attachment in that layout
-		// with an ordinary sampler, and it carries wherever the read is ordered — which on
-		// this road is two different things on two kinds of device.
-		//
-		// On Adreno the ordering is the driver's: Turnip will not tile a pass holding a
-		// pipeline that declares a texture feedback loop, and on the untiled path the same
-		// declaration programs the primitive mode that orders the read. Without the carry,
-		// declaring the loop RAISED the pass count on three of seven census dumps
-		// (Splashdown 4,766 → 9,451), which is this alternation. An Adreno reaches this road
-		// only when GSSelfReadRoadPolicy declares the loop for it.
-		//
-		// On Apple silicon under Honeykrisp, which takes this road by default, the ordering
-		// is OURS: with texture barriers on, SendHWDraw emits a framebuffer-local feedback
-		// barrier for every draw that reads its own target, and that barrier is what orders
-		// the read. So the reading draws keep their own barriers inside the held-open pass,
-		// and the non-readers the carry latches read nothing and barrier nothing. Measured on
-		// an M2 Max: presented frames identical on 94 cells at 1x and 2x.
-		//
-		// Desktop NVIDIA, AMD and Intel drivers are on the same road with the same barriers
-		// and do NOT carry: nobody has timed it there. A road with no ordering, or one nobody
-		// measured, keeps feedback-loop state draw-local: carrying it over can leave later
-		// draws in the previous feedback render pass/layout and cause Vulkan-only flicker.
-		// That matches sashkinbro/EmuCoreX, which removes the carry globally. A vendor-scoped
-		// carry was tried once before and reverted — do NOT widen this past the cases above
-		// without measuring it on its own.
-		//
-		// Gated PER TARGET, not on the enclosing condition — that only requires ONE of rt/ds
-		// to match, so a draw keeping the RT but swapping the depth target would otherwise
-		// inherit a stale depth feedback layout: precisely the flicker mode described above.
-		// The device half was resolved once in CheckFeatures; only the two draw terms are per draw.
-		GSFeedbackLoopCarryInputs carry = m_carry_device_facts;
-		// SendHWDraw only receives a target to barrier against when the pipeline's matching
-		// feedback bit is set, so carrying the bit onto a draw that still asks for a barrier
-		// would emit one where none was emitted before. On the fetch path a non-reader never
-		// asks for one, so this term never fires there; it keeps the carry from being the
-		// thing that introduces a barrier if that ever stops being true.
-		const bool alpha_pass_barrier = config.alpha_second_pass.enable &&
-		                                (config.alpha_second_pass.require_one_barrier || config.alpha_second_pass.require_full_barrier);
-		carry.draw_needs_own_barrier =
-			config.require_one_barrier || config.require_full_barrier || alpha_pass_barrier;
-		// A pass carrying the depth feedback bits is a pass in which nothing wrote the depth
-		// being sampled -- that is what makes an in-tile depth read well defined, since the
-		// renderer only lets a draw sample its own depth buffer when it does not write it.
-		// Carrying those bits onto a depth writer says the opposite of what the draw does, and
-		// puts a depth writer and a depth sampler in one pass. So the carried word for a depth
-		// writer drops the depth bits; the colour carry is unaffected, because there is no
-		// read-only colour flag to contradict -- the colour attachment is written by every draw
-		// in the pass either way, and the RT bit only adds an input attachment and an ordering
-		// guarantee over a read this draw does not perform. Reasoning in full in
-		// GSFeedbackLoopCarryPolicy.h. The alpha second pass is included because it rebinds
-		// pipe.dss inside the pass this decision opens.
-		carry.draw_writes_depth = pipe.dss.zwe ||
-		                          (config.alpha_second_pass.enable && config.alpha_second_pass.depth.zwe);
-
-		if (CarryFeedbackLoopAcrossTargetRun(carry))
+		// Keep the open pass's feedback bits across a run of draws on the same target, as the
+		// renderer decided (GSDrawRoad.h). Per target: a draw that keeps the RT but swaps the depth
+		// buffer must not inherit the old depth feedback layout.
+		if (config.road.carry_rt && draw_rt && m_current_render_target == draw_rt)
+			pipe.feedback_loop_flags |= m_current_framebuffer_feedback_loop & FeedbackLoopFlag_ReadAndWriteRT;
+		if (config.road.carry_depth && draw_ds && m_current_depth_target == draw_ds)
 		{
-			if (draw_rt && m_current_render_target == draw_rt)
-				pipe.feedback_loop_flags |= m_current_framebuffer_feedback_loop & FeedbackLoopFlag_ReadAndWriteRT;
-			if (draw_ds && m_current_depth_target == draw_ds && CarryDepthFeedbackAcrossTargetRun(carry))
-			{
-				pipe.feedback_loop_flags |= (m_current_framebuffer_feedback_loop &
-					(FeedbackLoopFlag_ReadAndWriteDepth | FeedbackLoopFlag_ReadDepth));
-			}
+			pipe.feedback_loop_flags |= (m_current_framebuffer_feedback_loop &
+				(FeedbackLoopFlag_ReadAndWriteDepth | FeedbackLoopFlag_ReadDepth));
 		}
 	}
 
-	if (draw_rt && ((config.require_one_barrier && (config.IsFeedbackLoopRT(config.ps) || config.IsFeedbackLoopRT(config.alpha_second_pass.ps)))) &&
-		!m_features.texture_barrier)
+	if (draw_rt && config.road.clone_rt)
 	{
 		// Requires a copy of the RT.
 		draw_rt_clone = static_cast<GSTextureVK*>(CreateTexture(rtsize.x, rtsize.y, 1, draw_rt->GetFormat(), true));
@@ -9398,28 +9322,15 @@ void GSDeviceVK::UpdateHWPipelineSelector(GSHWDrawConfig& config, PipelineSelect
 	pipe.rt = config.rt != nullptr && !config.ps.HasColorROV();
 	pipe.ds = config.ds != nullptr && !config.ps.HasDepthROV();
 	pipe.line_width = config.line_expand;
+	// Set from the read, not from the barrier request: the ordered roads drop a reader's barriers
+	// and the read is still in the pass.
 	pipe.feedback_loop_flags = FeedbackLoopFlag_None;
-	if (m_features.texture_barrier)
-	{
-		if (config.IsFeedbackLoopRT(config.ps))
-			pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadAndWriteRT;
-
-		if (config.IsFeedbackLoopDepth(config.ps))
-			pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadAndWriteDepth;
-	}
-	// With framebuffer fetch, an RT-reading shader (IsFeedbackLoopRT: tex_is_fb / fbmask / date >= 5 /
-	// sw_blend) reads the render target via subpassLoad, which requires it bound as an input attachment -
-	// i.e. an RT feedback loop. DetermineBarriers clears the barrier flags for framebuffer fetch (the read
-	// is coherent), so the barrier-gated block above skips these draws and the input attachment is never
-	// bound. Wire the RT feedback loop here so IsRTFeedbackLoop() drives the input-attachment binding,
-	// feedback render pass and rasterization-order blend flag. Only the subpassLoad path needs this; the
-	// feedback-loop-layout path samples a texture and is handled elsewhere.
-	if (m_features.framebuffer_fetch && !UseFeedbackLoopLayout() && config.IsFeedbackLoopRT(config.ps))
+	if (config.road.rt_loop)
 		pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadAndWriteRT;
-	if (pipe.ds && !(pipe.feedback_loop_flags & FeedbackLoopFlag_ReadAndWriteDepth))
-	{
-		pipe.feedback_loop_flags |= (config.tex && config.tex == config.ds) ? FeedbackLoopFlag_ReadDepth : FeedbackLoopFlag_None;
-	}
+	if (config.road.depth_loop)
+		pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadAndWriteDepth;
+	else if (config.road.depth_read)
+		pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadDepth;
 
 	// enable point size in the vertex shader if we're rendering points regardless of upscaling.
 	pipe.vs.point_size |= (config.topology == GSHWDrawConfig::Topology::Point);

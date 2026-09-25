@@ -2555,9 +2555,6 @@
     <ClInclude Include="GS\GSVertexKickKernel.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
-    <ClInclude Include="GS\Renderers\Common\GSFeedbackLoopCarryPolicy.h">
-      <Filter>System\Ps2\GS</Filter>
-    </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSFieldShiftDetector.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>

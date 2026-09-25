@@ -4,7 +4,6 @@
 #pragma once
 
 #include "GS/Renderers/Common/GSDevice.h"
-#include "GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
 #include "GS/Renderers/Common/GSStreamRingMemoryPolicy.h"
 #include "GS/GSVector.h"
 #include "GS/Renderers/Vulkan/GSTextureVK.h"
@@ -160,8 +159,8 @@ public:
 	// and still outranks the database where it is set.
 	bool m_force_feedback_loop_layout = false;
 
-	// The per-device inputs of the feedback-loop carry, resolved once in CheckFeatures. DoRenderHW
-	// adds the per-draw terms.
+	// The device facts of the feedback-loop carry, resolved in CheckFeatures and published as
+	// FeatureSupport::feedback_carry for the renderer's per-draw decision.
 	GSFeedbackLoopCarryInputs m_carry_device_facts;
 
 	/// Returns true if running on an Imagination PowerVR GPU (vendorID 0x1010).

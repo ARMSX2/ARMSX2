@@ -393,7 +393,24 @@ namespace
 			.framebuffer_fetch = f.framebuffer_fetch,
 			.feedback_loop_layout = f.feedback_loop_layout,
 			.fetch_orders_overlap = f.framebuffer_fetch_orders_overlap,
-			.declared_loop_orders_overlap = f.declared_feedback_loop_orders_overlap};
+			.declared_loop_orders_overlap = f.declared_feedback_loop_orders_overlap,
+			.carry = f.feedback_carry};
+	}
+
+	/// Called once per draw, after the last change to anything it reads.
+	GSDrawRoad DecideDrawRoad(const GSHWDrawConfig& conf, const GSDevice::FeatureSupport& f)
+	{
+		const GSHWDrawConfig::AlphaPass& second = conf.alpha_second_pass;
+		const bool depth_attached = conf.ds && !conf.ps.HasDepthROV();
+		return GSDecideDrawRoad(GetDrawRoadDevice(f),
+			{.reads_rt = conf.IsFeedbackLoopRT(conf.ps),
+				.second_pass_reads_rt = conf.IsFeedbackLoopRT(second.ps),
+				.reads_depth = conf.IsFeedbackLoopDepth(conf.ps),
+				.samples_attached_depth = depth_attached && conf.tex == conf.ds,
+				.one_barrier = conf.require_one_barrier,
+				.any_barrier = conf.require_one_barrier || conf.require_full_barrier ||
+				               (second.enable && (second.require_one_barrier || second.require_full_barrier)),
+				.writes_depth = (depth_attached && conf.depth.zwe) || (second.enable && second.depth.zwe)});
 	}
 
 	/// floor(num / den), either sign of either.
@@ -11183,6 +11200,8 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 		GSHWDrawConfig::DumpConfig(GetDrawDumpPath("%05d_hwconfig.txt", s_n), m_conf);
 	}
 
+	m_conf.road = DecideDrawRoad(m_conf, g_gs_device->Features());
+
 	// Completes the row opened at the top of Draw() with the backend view, which only
 	// exists here.
 	GSDrawLog::EndDraw(m_conf, static_cast<u8>(m_prim_overlap));
@@ -12722,6 +12741,7 @@ void GSRendererHW::EndHLEHardwareDraw(bool force_copy_on_hazard /* = false */)
 	                      (!GSDevice::IsDualSourceBlendFactor(config.blend.src_factor) &&
 	                       !GSDevice::IsDualSourceBlendFactor(config.blend.dst_factor));
 
+	config.road = DecideDrawRoad(config, g_gs_device->Features());
 	g_gs_device->RenderHW(m_conf);
 
 	if (copy)
