@@ -1940,6 +1940,9 @@
     <ClInclude Include="GS\GSLocalMemory.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\GSCompileStats.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\GSPerfMon.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>

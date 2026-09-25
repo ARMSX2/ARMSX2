@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/GS.h"
+#include "GS/GSCompileStats.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
@@ -68,6 +69,7 @@ namespace
 #include <bit>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <utility>
 
@@ -7205,6 +7207,8 @@ VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
 	if (it != m_tfx_vertex_shaders.end())
 		return it->second;
 
+	GSCompileStats::Add(GSCompileStats::ShaderSources, 1);
+	std::optional<GSCompileStats::ScopedTimer> source_timer(std::in_place, GSCompileStats::ShaderSourceNs);
 	std::stringstream ss;
 	AddShaderHeader(ss);
 	AddShaderStageMacro(ss, true, false, false);
@@ -7215,8 +7219,10 @@ VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
 	AddMacro(ss, "VS_EXPAND", static_cast<int>(sel.expand));
 	AddMacro(ss, "VS_PROVOKING_VERTEX_LAST", static_cast<int>(m_features.provoking_vertex_last));
 	ss << m_tfx_source;
+	std::string source = ss.str();
+	source_timer.reset();
 
-	VkShaderModule mod = g_vulkan_shader_cache->GetVertexShader(ss.str());
+	VkShaderModule mod = g_vulkan_shader_cache->GetVertexShader(source);
 	if (mod)
 		Vulkan::SetObjectName(m_device, mod, "TFX Vertex %08X", sel.key);
 
@@ -7230,6 +7236,8 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	if (it != m_tfx_fragment_shaders.end())
 		return it->second;
 
+	GSCompileStats::Add(GSCompileStats::ShaderSources, 1);
+	std::optional<GSCompileStats::ScopedTimer> source_timer(std::in_place, GSCompileStats::ShaderSourceNs);
 	std::stringstream ss;
 	AddShaderHeader(ss);
 	AddShaderStageMacro(ss, false, false, true);
@@ -7302,8 +7310,10 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_ROV_COLOR", sel.rov_color);
 	AddMacro(ss, "PS_ROV_DEPTH", static_cast<u32>(sel.rov_depth));
 	ss << m_tfx_source;
+	std::string source = ss.str();
+	source_timer.reset();
 
-	VkShaderModule mod = g_vulkan_shader_cache->GetFragmentShader(ss.str());
+	VkShaderModule mod = g_vulkan_shader_cache->GetFragmentShader(source);
 	if (mod)
 		Vulkan::SetObjectName(m_device, mod, "TFX Fragment %016" PRIX64 "_%016" PRIX64, sel.key_hi, sel.key_lo);
 
@@ -7505,6 +7515,8 @@ VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 	// at 4x+ and hits a burst of new variants at once — which is the other half of "turn fast-forward
 	// off and it hangs for a few seconds". Timed so the stall is measurable instead of inferred;
 	// only slow compiles are logged, so this costs nothing in the common case.
+	GSCompileStats::Add(GSCompileStats::TFXPipelineMisses, 1);
+	const GSCompileStats::ScopedTimer stall_timer(GSCompileStats::GSThreadStallNs);
 	const Common::Timer::Value tfx_compile_start = Common::Timer::GetCurrentValue();
 	VkPipeline pipeline = CreateTFXPipeline(p);
 	const double tfx_compile_ms =

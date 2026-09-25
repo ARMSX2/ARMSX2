@@ -561,6 +561,7 @@ set(pcsx2GSHeaders
 	GS/GSBlock.h
 	GS/GSBackQueue.h
 	GS/GSClut.h
+	GS/GSCompileStats.h
 	GS/GSDrawingContext.h
 	GS/GSDrawingEnvironment.h
 	GS/GSDump.h

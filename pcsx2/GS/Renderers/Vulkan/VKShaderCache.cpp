@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
+#include "GS/GSCompileStats.h"
 #include "GS/GSShaderCompileIndicator.h"
 #include "GS/GS.h"
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
@@ -299,6 +300,8 @@ std::optional<VKShaderCache::SPIRVCodeVector> VKShaderCache::CompileShaderToSPV(
 		return ret;
 
 	const GSShaderCompileIndicator::CompileTimer compile_timer;
+	const GSCompileStats::ScopedTimer stats_timer(GSCompileStats::SpirvCompileNs);
+	GSCompileStats::Add(GSCompileStats::SpirvCompiles, 1);
 
 	shaderc_compile_options_t options = dyn_shaderc::shaderc_compile_options_initialize();
 	pxAssertRel(options, "shaderc_compile_options_initialize() failed");
@@ -627,6 +630,8 @@ bool VKShaderCache::FlushPipelineCache(bool force)
 	}
 	m_last_pipeline_cache_flush = now;
 
+	const GSCompileStats::ScopedTimer stats_timer(GSCompileStats::CacheFlushNs);
+
 	size_t data_size;
 	VkResult res =
 		vkGetPipelineCacheData(GSDeviceVK::GetInstance()->GetDevice(), m_pipeline_cache, &data_size, nullptr);
@@ -732,6 +737,7 @@ std::optional<VKShaderCache::SPIRVCodeVector> VKShaderCache::GetShaderSPV(u32 ty
 	if (iter == m_index.end())
 		return CompileAndAddShaderSPV(key, shader_code);
 
+	GSCompileStats::Add(GSCompileStats::SpirvCacheHits, 1);
 	std::optional<SPIRVCodeVector> spv = SPIRVCodeVector(iter->second.blob_size);
 
 	if (std::fseek(m_blob_file, iter->second.file_offset, SEEK_SET) != 0 ||
@@ -753,6 +759,7 @@ VkShaderModule VKShaderCache::GetShaderModule(u32 type, std::string_view shader_
 	const VkShaderModuleCreateInfo ci{
 		VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0, spv->size() * sizeof(SPIRVCodeType), spv->data()};
 
+	const GSCompileStats::ScopedTimer stats_timer(GSCompileStats::ModuleCreateNs);
 	VkShaderModule mod;
 	VkResult res = vkCreateShaderModule(GSDeviceVK::GetInstance()->GetDevice(), &ci, nullptr, &mod);
 	if (res != VK_SUCCESS)

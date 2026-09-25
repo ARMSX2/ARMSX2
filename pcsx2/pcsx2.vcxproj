@@ -814,6 +814,7 @@
     <ClInclude Include="GS\Renderers\Common\GSGPUProfilePrivate.h" />
     <ClInclude Include="GS\GSLocalMemory.h" />
     <ClInclude Include="GS\GSLzma.h" />
+    <ClInclude Include="GS\GSCompileStats.h" />
     <ClInclude Include="GS\GSPerfMon.h" />
     <ClInclude Include="GS\GSPng.h" />
     <ClInclude Include="GS\GSRingHeap.h" />

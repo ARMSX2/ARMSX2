@@ -58,6 +58,7 @@
 // ImGuiOverlays.cpp. Android has neither problem and nothing else needs the header.
 #include "pcsx2/GS/Renderers/Vulkan/VKLoader.h"
 #endif
+#include "pcsx2/GS/GSCompileStats.h"
 #include "pcsx2/GS/GSPerfMon.h"
 #include "pcsx2/GS/GSXXH.h"
 #include "pcsx2/GS/Renderers/Common/GSRenderer.h"
@@ -401,6 +402,20 @@ struct FrameSample
 	/// while faults are still high if pages are being re-faulted without growing RSS,
 	/// and can grow without a fault spike if the growth came from one large mmap.
 	u64 minflt_delta;
+
+	/// Shader and pipeline compilation in this frame, per stage (GSCompileStats.h). Counts and
+	/// times include work on compile worker threads; gs_stall_ms is what the GS thread waited.
+	u32 shader_sources;
+	u32 spirv_compiles;
+	u32 spirv_cache_hits;
+	u32 pipeline_creates;
+	u32 tfx_pipeline_misses;
+	float shader_source_ms;
+	float spirv_ms;
+	float module_ms;
+	float pipeline_ms;
+	float gs_stall_ms;
+	float cache_flush_ms;
 };
 // Work posted from other threads (the PINE server) to run on the CPU thread.
 static std::mutex s_cpu_thread_tasks_mutex;
@@ -415,6 +430,15 @@ static std::string s_driver_info;
 static u64 s_frame_timer_last = 0;
 static u64 s_gs_cpu_time_last = 0;
 static u64 s_minflt_last = 0;
+static u64 s_compile_last[GSCompileStats::Count] = {};
+static u64 s_compile_total[GSCompileStats::Count] = {};
+/// Compilation done before the VM started (device creation's utility pipelines), and the clocks
+/// at that point, so frame 0 -- which has no predecessor for frame_ms -- still gets a duration.
+static u64 s_compile_startup[GSCompileStats::Count] = {};
+static u64 s_vm_started_time = 0;
+static u64 s_vm_started_gs_cpu = 0;
+static float s_first_frame_ms = 0.0f;
+static float s_first_frame_gs_cpu_ms = 0.0f;
 static bool s_saw_gs_back_thread_in_stats = false;
 static double s_last_prims = 0;
 static double s_last_tc_source_hit = 0;
@@ -841,6 +865,40 @@ void Host::BeginPresentFrame()
 				s_minflt_last = minflt_now;
 			}
 
+			// Frame 0 has no frame_ms, so its duration is taken from VM start (after the GS
+			// device and its utility pipelines exist) to this present.
+			if (s_frame_samples.empty() && s_vm_started_time != 0)
+			{
+				s_first_frame_ms = static_cast<float>(Common::Timer::ConvertValueToMilliseconds(now - s_vm_started_time));
+				if (gs_cpu_now > s_vm_started_gs_cpu && s_vm_started_gs_cpu != 0)
+				{
+					s_first_frame_gs_cpu_ms = static_cast<float>(static_cast<double>(gs_cpu_now - s_vm_started_gs_cpu) * 1000.0 /
+					                                             static_cast<double>(Threading::GetThreadTicksPerSecond()));
+				}
+			}
+
+			// Deltas since VM start for the first sample: device creation is reported separately.
+			u64 compile_delta[GSCompileStats::Count];
+			for (u32 c = 0; c < GSCompileStats::Count; c++)
+			{
+				const u64 now_value = GSCompileStats::Get(static_cast<GSCompileStats::Counter>(c));
+				compile_delta[c] = now_value - s_compile_last[c];
+				s_compile_last[c] = now_value;
+				s_compile_total[c] += compile_delta[c];
+			}
+			const auto ns_to_ms = [](u64 ns) { return static_cast<float>(static_cast<double>(ns) / 1e6); };
+			sample.shader_sources = static_cast<u32>(compile_delta[GSCompileStats::ShaderSources]);
+			sample.spirv_compiles = static_cast<u32>(compile_delta[GSCompileStats::SpirvCompiles]);
+			sample.spirv_cache_hits = static_cast<u32>(compile_delta[GSCompileStats::SpirvCacheHits]);
+			sample.pipeline_creates = static_cast<u32>(compile_delta[GSCompileStats::PipelineCreates]);
+			sample.tfx_pipeline_misses = static_cast<u32>(compile_delta[GSCompileStats::TFXPipelineMisses]);
+			sample.shader_source_ms = ns_to_ms(compile_delta[GSCompileStats::ShaderSourceNs]);
+			sample.spirv_ms = ns_to_ms(compile_delta[GSCompileStats::SpirvCompileNs]);
+			sample.module_ms = ns_to_ms(compile_delta[GSCompileStats::ModuleCreateNs]);
+			sample.pipeline_ms = ns_to_ms(compile_delta[GSCompileStats::PipelineCreateNs]);
+			sample.gs_stall_ms = ns_to_ms(compile_delta[GSCompileStats::GSThreadStallNs]);
+			sample.cache_flush_ms = ns_to_ms(compile_delta[GSCompileStats::CacheFlushNs]);
+
 			s_saw_gs_back_thread_in_stats |= PerformanceMetrics::HasGSBackThread();
 			s_frame_samples.push_back(sample);
 		}
@@ -859,6 +917,13 @@ void Host::OnVMStarting()
 
 void Host::OnVMStarted()
 {
+	s_vm_started_time = Common::Timer::GetCurrentValue();
+	s_vm_started_gs_cpu = MTGS::GetThreadHandle().GetCPUTime();
+	for (u32 c = 0; c < GSCompileStats::Count; c++)
+	{
+		s_compile_startup[c] = GSCompileStats::Get(static_cast<GSCompileStats::Counter>(c));
+		s_compile_last[c] = s_compile_startup[c];
+	}
 }
 
 void Host::OnVMDestroyed()
@@ -2215,6 +2280,26 @@ static void WriteStatsJson(const std::string& path)
 		rss_kb_first, rss_kb_last, rss_kb_max);
 	std::fprintf(fp.get(), "    \"frame_ms_p50\": %.3f,\n    \"frame_ms_p95\": %.3f,\n    \"frame_ms_p99\": %.3f,\n",
 		Percentile(frame_times, 0.50), Percentile(frame_times, 0.95), Percentile(frame_times, 0.99));
+	// Compilation totals over the sampled frames (GSCompileStats.h), counts then milliseconds.
+	std::fprintf(fp.get(),
+		"    \"compile\": {\"shader_sources\":%" PRIu64 ",\"spirv_compiles\":%" PRIu64 ",\"spirv_cache_hits\":%" PRIu64
+		",\"pipeline_creates\":%" PRIu64 ",\"tfx_pipeline_misses\":%" PRIu64 ",\"shader_source_ms\":%.3f,\"spirv_ms\":%.3f"
+		",\"module_ms\":%.3f,\"pipeline_ms\":%.3f,\"gs_stall_ms\":%.3f,\"cache_flush_ms\":%.3f},\n",
+		s_compile_total[GSCompileStats::ShaderSources], s_compile_total[GSCompileStats::SpirvCompiles],
+		s_compile_total[GSCompileStats::SpirvCacheHits], s_compile_total[GSCompileStats::PipelineCreates],
+		s_compile_total[GSCompileStats::TFXPipelineMisses], s_compile_total[GSCompileStats::ShaderSourceNs] / 1e6,
+		s_compile_total[GSCompileStats::SpirvCompileNs] / 1e6, s_compile_total[GSCompileStats::ModuleCreateNs] / 1e6,
+		s_compile_total[GSCompileStats::PipelineCreateNs] / 1e6, s_compile_total[GSCompileStats::GSThreadStallNs] / 1e6,
+		s_compile_total[GSCompileStats::CacheFlushNs] / 1e6);
+	std::fprintf(fp.get(),
+		"    \"startup_compile\": {\"spirv_compiles\":%" PRIu64 ",\"spirv_cache_hits\":%" PRIu64 ",\"pipeline_creates\":%" PRIu64
+		",\"spirv_ms\":%.3f,\"pipeline_ms\":%.3f},\n",
+		s_compile_startup[GSCompileStats::SpirvCompiles], s_compile_startup[GSCompileStats::SpirvCacheHits],
+		s_compile_startup[GSCompileStats::PipelineCreates], s_compile_startup[GSCompileStats::SpirvCompileNs] / 1e6,
+		s_compile_startup[GSCompileStats::PipelineCreateNs] / 1e6);
+	// frame_ms of frame 0 stays 0 (and out of the percentiles above); these give it a duration.
+	std::fprintf(fp.get(), "    \"first_frame_ms\": %.3f,\n    \"first_frame_gs_cpu_ms\": %.3f,\n", s_first_frame_ms,
+		s_first_frame_gs_cpu_ms);
 	std::fprintf(fp.get(), "    \"frame_ms_worst\": %.3f,\n    \"frame_worst_index\": %u\n  },\n", worst_ms, worst_frame);
 
 	std::fprintf(fp.get(), "  \"frames\": [\n");
@@ -2237,7 +2322,10 @@ static void WriteStatsJson(const std::string& path)
 			"\"hash_cache_hit\":%" PRIu64 ",\"hash_cache_miss\":%" PRIu64 ","
 			"\"pipeline_switches\":%s,\"gpu_blocking_waits\":%s,"
 			"\"native_texel_grid_draws\":%" PRIu64 ",\"sw_palette_block_copies\":%" PRIu64 ","
-			"\"rss_kb\":%" PRIu64 ",\"minflt_delta\":%" PRIu64 "}%s\n",
+			"\"rss_kb\":%" PRIu64 ",\"minflt_delta\":%" PRIu64 ","
+			"\"shader_sources\":%u,\"spirv_compiles\":%u,\"spirv_cache_hits\":%u,\"pipeline_creates\":%u,"
+			"\"tfx_pipeline_misses\":%u,\"shader_source_ms\":%.3f,\"spirv_ms\":%.3f,\"module_ms\":%.3f,"
+			"\"pipeline_ms\":%.3f,\"gs_stall_ms\":%.3f,\"cache_flush_ms\":%.3f}%s\n",
 			s.frame, s.frame_in_dump, s.idle ? "true" : "false", s.frame_ms, gpu_ms_str.c_str(), s.gs_cpu_ms,
 			s.prims, s.draws, s.draw_calls,
 			j_u64(s.render_passes).c_str(), j_u64(s.render_pass_area_pixels).c_str(), j_u64(s.barriers).c_str(), j_u64(s.copies).c_str(),
@@ -2249,6 +2337,9 @@ static void WriteStatsJson(const std::string& path)
 			j_u64(s.pipeline_switches).c_str(), j_u64(s.gpu_blocking_waits).c_str(),
 			s.native_texel_grid_draws, s.sw_palette_block_copies,
 			s.rss_kb, s.minflt_delta,
+			s.shader_sources, s.spirv_compiles, s.spirv_cache_hits, s.pipeline_creates,
+			s.tfx_pipeline_misses, s.shader_source_ms, s.spirv_ms, s.module_ms,
+			s.pipeline_ms, s.gs_stall_ms, s.cache_flush_ms,
 			(i + 1 < s_frame_samples.size()) ? "," : "");
 	}
 	std::fprintf(fp.get(), "  ]\n}\n");
