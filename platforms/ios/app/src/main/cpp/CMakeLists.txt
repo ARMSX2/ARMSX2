@@ -420,7 +420,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		${ARMSX2_ROOT}/3rdparty/soundtouch/soundtouch
 		${ARMSX2_ROOT}/3rdparty/lz4/lz4/lib
 		${ARMSX2_ROOT}/3rdparty/lzma/include
-		${ARMSX2_ROOT}/3rdparty/zstd/zstd/lib
+		${ARMSX2_ANDROID_VENDORED}/zstd/lib
 		${ARMSX2_ROOT}/3rdparty/demangler/include
 		${ARMSX2_ROOT}/3rdparty/ccc/src
 		${CMAKE_BINARY_DIR}/3rdparty/SDL3/include-revision

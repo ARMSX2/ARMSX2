@@ -61,9 +61,6 @@ struct GraphicsTab: View {
     @Binding var perGameDisableDepth: Int
     @Binding var perGameCPUCLUT: Int
     @Binding var perGameGPUTargetCLUT: Int
-    @Binding var perGameLoadTextureReplacements: Int
-    @Binding var perGameLoadTextureReplacementsAsync: Int
-    @Binding var perGamePrecacheTextureReplacements: Int
 
     let savesToRunningGame: Bool
     let shaderChainSupported: Bool
@@ -388,30 +385,6 @@ struct GraphicsTab: View {
             sharedPicker("GPU Target CLUT", selection: $perGameGPUTargetCLUT,
                          SettingsOptions.withUseGlobal(SettingsOptions.gpuTargetClut))
                 .disabled(!enabled)
-        }
-
-        Section(settings.localized("Texture Replacement")) {
-            Picker(settings.localized("Load Replacement Textures"), selection: $perGameLoadTextureReplacements) {
-                Text(settings.localized("Use Global")).tag(-1)
-                Text(settings.localized("Off")).tag(0)
-                Text(settings.localized("On")).tag(1)
-            }
-            .disabled(!enabled)
-            Picker(settings.localized("Async Loading"), selection: $perGameLoadTextureReplacementsAsync) {
-                Text(settings.localized("Use Global")).tag(-1)
-                Text(settings.localized("Off")).tag(0)
-                Text(settings.localized("On")).tag(1)
-            }
-            .disabled(!enabled)
-            Picker(settings.localized("Precache Textures"), selection: $perGamePrecacheTextureReplacements) {
-                Text(settings.localized("Use Global")).tag(-1)
-                Text(settings.localized("Off")).tag(0)
-                Text(settings.localized("On")).tag(1)
-            }
-            .disabled(!enabled)
-            Text(settings.localized("Texture replacement needs a restart to take effect."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
     }
 
