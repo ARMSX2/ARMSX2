@@ -70,7 +70,7 @@ fun TextureManagerScreen(onBack: () -> Unit, viewModel: TextureManagerViewModel 
                     Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
                         TextureOptions(state, viewModel, Modifier.fillMaxWidth())
                         Spacer(Modifier.padding(top = 10.dp))
-                        TextureOnlineSection(catalogSerial(state), librarySerials(state), Modifier.fillMaxWidth()) {
+                        TextureOnlineSection(catalogSerial(state), librarySerials(state), ownedSerials(state), Modifier.fillMaxWidth()) {
                             viewModel.onPackInstalled()
                         }
                         Spacer(Modifier.padding(top = 10.dp))
@@ -83,7 +83,7 @@ fun TextureManagerScreen(onBack: () -> Unit, viewModel: TextureManagerViewModel 
                     ) {
                         TextureOptions(state, viewModel, Modifier.width(310.dp))
                         Column(Modifier.weight(1f)) {
-                            TextureOnlineSection(catalogSerial(state), librarySerials(state), Modifier.fillMaxWidth()) {
+                            TextureOnlineSection(catalogSerial(state), librarySerials(state), ownedSerials(state), Modifier.fillMaxWidth()) {
                                 viewModel.onPackInstalled()
                             }
                             Spacer(Modifier.padding(top = 10.dp))
@@ -284,4 +284,16 @@ private fun librarySerials(state: TextureManagerUiState): Set<String> =
         addAll(state.librarySerials)
         state.packs.forEach { add(it.serial.uppercase()) }
         state.activeSerial?.let { add(it.uppercase()) }
+    }
+
+/**
+ * Serials of games the player can actually boot: the library scan and the game in context. This is
+ * what picks a multi-region pack's install folder, so unlike [librarySerials] it leaves out the
+ * installed pack folders. With those in, a pack already installed under the wrong region's serial
+ * would count as owned and keep being installed there.
+ */
+private fun ownedSerials(state: TextureManagerUiState): Set<String> =
+    buildSet {
+        addAll(state.librarySerials)
+        catalogSerial(state)?.let { add(it) }
     }

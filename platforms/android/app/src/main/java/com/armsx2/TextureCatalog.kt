@@ -104,6 +104,19 @@ object TextureCatalog {
             !serial.isNullOrBlank() && serials.any { it.equals(serial, ignoreCase = true) }
 
         /**
+         * The serial folder this pack installs into for this player. The core only reads
+         * replacements from the folder named for the running disc's own serial, so a multi-region
+         * pack has to land under the serial of the copy the player has: the game in context if the
+         * pack covers it, else the first of the pack's serials in [ownedSerials] (upper-case), else
+         * the first one listed. Always using the first one listed put a PAL player's pack under the
+         * NTSC serial, where their game never looks.
+         */
+        fun installSerialFor(contextSerial: String?, ownedSerials: Set<String>): String =
+            serials.firstOrNull { it.equals(contextSerial, ignoreCase = true) }
+                ?: serials.firstOrNull { it.uppercase() in ownedSerials }
+                ?: serials.first()
+
+        /**
          * The pieces to fetch, in order. A single-file pack presents as one piece so the installer
          * has exactly one path to maintain rather than a split one.
          */
