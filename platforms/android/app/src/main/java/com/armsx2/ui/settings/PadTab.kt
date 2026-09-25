@@ -927,7 +927,9 @@ private fun UsbPortPicker(
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                com.armsx2.input.UsbDevices.displayName(current),
+                // The same words as the list's first row, not the core's "None" for it.
+                if (current == com.armsx2.input.UsbDevices.NONE) str("pad.usb.none")
+                else com.armsx2.input.UsbDevices.displayName(current),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 14.sp,
                 maxLines = 1,
