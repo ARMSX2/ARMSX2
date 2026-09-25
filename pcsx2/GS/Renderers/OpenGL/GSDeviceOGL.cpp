@@ -1215,28 +1215,6 @@ bool GSDeviceOGL::CheckFeatures()
 		m_features.depth_feedback |= GSConfig.DepthFeedbackMode == GSDepthFeedbackMode::Auto;
 	}
 
-	// ARMSX2 (Adreno GLES only; inert on every other GPU/profile). Adreno's driver
-	// rejects a fragment shader declaring TWO framebuffer-fetch `inout` outputs (o_col0
-	// colour + o_col1 depth), which the depth-as-colour SW-Z path emits for accurate-
-	// alpha-test draws -> link failure -> garbage (Everybody's Golf 4 / Minna no Golf 4).
-	// Route depth feedback through the depth path (a single fetch output) so it links, and
-	// read prior depth via the coherent ARM depth-stencil fetch (gl_LastFragDepthARM) when
-	// available -- the mode-1 depth sampler read is incoherent on GLES (no barrier on a
-	// sampled depth attachment) and makes occluded triangles poke through as white shards.
-	// Only overrides Auto; an explicit DepthFeedbackMode choice is honoured. The GPU
-	// profile is already resolved above (SetRuntimeGPUProfile), so IsAdrenoGPUProfile()
-	// is valid here.
-	if (m_features.framebuffer_fetch && IsAdrenoGPUProfile() &&
-		GSConfig.DepthFeedbackMode == GSDepthFeedbackMode::Auto)
-	{
-		m_features.depth_feedback = true;
-		m_arm_depth_fetch = GLAD_GL_ARM_shader_framebuffer_fetch_depth_stencil;
-		Console.WriteLn(m_arm_depth_fetch
-			? "GL: Adreno - depth feedback via coherent ARM depth-stencil fetch (gl_LastFragDepthARM)."
-			: "GL: Adreno - routing depth feedback through the depth sampler "
-			  "(avoids the dual framebuffer-fetch output link failure).");
-	}
-
 	// Mobile tile-based GPU profiles. Both Mali and Adreno prefer fresh
 	// textures over reused ones (avoids tile-flush stalls on partial
 	// writes), so the texture-pool hint is shared. Mali additionally
@@ -1305,29 +1283,16 @@ bool GSDeviceOGL::CheckFeatures()
 	{
 		Console.WriteLn(Color_Cyan, "GL: Adreno profile active (EXT/PLS framebuffer fetch).");
 
-		// Adreno's GLES driver rejects a fragment shader that declares TWO
-		// framebuffer-fetch `inout` outputs. The depth-as-colour feedback path
-		// (DEPTH_FEEDBACK_SUPPORT 2) emits exactly that whenever the colour output
-		// already needs fetch AND a SW-Z depth draw is in flight -- o_col0 (colour
-		// fetch) at location 0 and o_col1 (depth fetch) at location 1 both become
-		// `inout`. That combination is produced by the accurate-alpha-test RGB-only
-		// + depth-write path, so any game carrying accurateAlphaTest (e.g. Everybody's
-		// Golf 4 / Minna no Golf 4, SCKA-20057 / SCPS-15059) fails to link those draws
-		// -> "Output o_col1 location or component exceeds max allowed" -> garbage
-		// (black-boxed faces, a floating RT rectangle, blue bars). Vulkan is unaffected
-		// (real depth attachment, no second fetch output). Route depth feedback through
-		// the real depth sampler (DEPTH_FEEDBACK_SUPPORT 1) so only o_col0 is a fetch
-		// output and the program links. test_and_sample_depth is already true above,
-		// and texture_barrier==true here keeps the DS-clone path (bind at ~3402) inert.
-		// Only override Auto -- an explicit DepthFeedbackMode choice is honoured.
+		// Adreno's GLES driver will not link a fragment shader with two framebuffer-fetch outputs.
+		// The depth-as-colour path (DEPTH_FEEDBACK_SUPPORT 2) emits two whenever a draw needs the
+		// colour fetch and a software depth write at once, as accurate alpha test does. Depth
+		// feedback goes through the depth attachment instead (DEPTH_FEEDBACK_SUPPORT 1), leaving
+		// colour the only fetch output. An explicit DepthFeedbackMode is honoured.
 		if (m_features.framebuffer_fetch && GSConfig.DepthFeedbackMode == GSDepthFeedbackMode::Auto)
 		{
 			m_features.depth_feedback = true;
-			// The mode-1 depth SAMPLER read is incoherent on GLES (no texture_barrier
-			// for a sampled depth attachment) -> stale reads make occluded/interior
-			// triangles poke through as white shards. When the coherent ARM depth-
-			// stencil fetch extension is present, read prior depth via gl_LastFragDepthARM
-			// instead (tile-local, one output, no sampler, no feedback-loop bind).
+			// The depth sampler read is not coherent on GLES. The ARM depth-stencil fetch is, so
+			// prior depth comes from gl_LastFragDepthARM where the extension exists.
 			m_arm_depth_fetch = GLAD_GL_ARM_shader_framebuffer_fetch_depth_stencil;
 			Console.WriteLn(m_arm_depth_fetch
 				? "GL: Adreno - depth feedback via coherent ARM depth-stencil fetch (gl_LastFragDepthARM)."
