@@ -2838,7 +2838,17 @@ bool GSDeviceVK::AllocatePreinitializedGPUBuffer(u32 size, VkBuffer* gpu_buffer,
 	const VkBufferCopy buf_copy = {0u, 0u, size};
 	fill_callback(cpu_ai.pMappedData);
 	vmaFlushAllocation(m_allocator, cpu_allocation, 0, size);
-	vkCmdCopyBuffer(GetCurrentInitCommandBuffer(), cpu_buffer, *gpu_buffer, 1, &buf_copy);
+	const VkCommandBuffer cmdbuf = GetCurrentInitCommandBuffer();
+	vkCmdCopyBuffer(cmdbuf, cpu_buffer, *gpu_buffer, 1, &buf_copy);
+
+	// The init buffer is submitted ahead of the draw buffer in the same vkQueueSubmit, which orders
+	// nothing on its own: the first draw that binds this index buffer could read it before the copy
+	// lands. Synchronization validation reports it on the first frame.
+	const VkBufferMemoryBarrier barrier = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, nullptr,
+		VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_INDEX_READ_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+		*gpu_buffer, 0, size};
+	vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 0, nullptr,
+		1, &barrier, 0, nullptr);
 	DeferBufferDestruction(cpu_buffer, cpu_allocation);
 	return true;
 }
