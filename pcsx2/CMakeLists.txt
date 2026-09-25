@@ -589,6 +589,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h
 	GS/Renderers/Common/GSDevice.h
 	GS/Renderers/Common/GSDirtyRect.h
+	GS/Renderers/Common/GSDrawRoad.h
 	GS/Renderers/Common/GSFastList.h
 	GS/Renderers/Common/GSFastStencilShadow.h
 	GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h
@@ -606,7 +607,6 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSRenderer.h
 	GS/Renderers/Common/GSSwPrimRender.h
 	GS/Renderers/Common/GSShaderEnums.h
-	GS/Renderers/Common/GSSelfReadCopyPolicy.h
 	GS/Renderers/Common/GSSelfReadRoadPolicy.h
 	GS/Renderers/Common/GSSnapshotPolicy.h
 	GS/Renderers/Common/GSStreamRingFlushRange.h

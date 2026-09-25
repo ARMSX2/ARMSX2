@@ -51,9 +51,8 @@
 // sharing the pass, and our passes are deliberately coalesced.
 //
 // ⚠️ The ordering is per pixel, not per target. It orders primitives covering the same sample, not
-// a read of a different pixel an earlier primitive wrote. GSSelfReadCopyPolicy.h handles that via
-// `declared_feedback_loop_orders_overlap`: an offset read keeps its one barrier, which the untiled
-// pass honours, and takes no copy.
+// a read of a different pixel an earlier primitive wrote. An offset read keeps its one barrier,
+// which the untiled pass honours, and takes no copy (GSDrawRoad.h).
 //
 // ENTRANCES TO THE DECLARED ROAD
 //
@@ -164,8 +163,8 @@ struct GSSelfReadRoadDecision
 	bool force_feedback_loop_layout = false;
 
 	/// -> GSDevice::FeatureSupport::declared_feedback_loop_orders_overlap. Licenses
-	/// DetermineBarriers to drop the per-draw barriers, and tells GSSelfReadCopyPolicy that an
-	/// OFFSET read still needs its copy.
+	/// DetermineBarriers to drop the per-draw barriers of a read of the fragment's own pixel. An
+	/// OFFSET read keeps its one barrier (GSDrawRoad.h).
 	///
 	/// ⚠️ This is a fact about the DRIVER, not the road. Declaring a feedback loop buys the layout
 	/// and the validity relaxation, not ordering between overlapping fragments that sample what

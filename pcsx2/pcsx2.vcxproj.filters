@@ -2585,7 +2585,7 @@
     <ClInclude Include="GS\Renderers\Common\GSDynamicFeedbackLoopPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
-    <ClInclude Include="GS\Renderers\Common\GSSelfReadCopyPolicy.h">
+    <ClInclude Include="GS\Renderers\Common\GSDrawRoad.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSSelfReadRoadPolicy.h">

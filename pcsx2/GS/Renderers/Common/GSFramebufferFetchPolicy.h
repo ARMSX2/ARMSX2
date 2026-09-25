@@ -101,31 +101,6 @@ static_assert(FbFetchOrdersOverlappingPrims(GSFramebufferFetchBackend::ARM));
 static_assert(!FbFetchOrdersOverlappingPrims(GSFramebufferFetchBackend::EXT));
 static_assert(!FbFetchOrdersOverlappingPrims(GSFramebufferFetchBackend::None));
 
-// Whether a draw may drop its barrier requirement because framebuffer fetch is available.
-//
-// Fetch replaces the destination read. Whether it also orders overlapping primitives within one
-// draw depends on the backend's spelling. GSRendererHW switches an overlapping draw to software
-// blending because fetch is available and asks for a full barrier to get per-primitive ordering;
-// dropping that barrier without an ordering guarantee lets a primitive blend against a
-// destination its predecessor has not written yet.
-//
-// Backends whose fetch orders by contract (see FbFetchOrdersOverlappingPrims) drop the barrier.
-// Where the draw's primitives do not overlap, a live in-tile read and a pre-draw snapshot are the
-// same value, so the barrier is dropped on every backend.
-//
-// `prims_may_overlap` must be true when overlap is unknown: "no" risks correctness, "yes" costs
-// only a split draw.
-constexpr bool FbFetchDropsDrawBarriers(
-	bool fetch_orders_overlapping_prims, bool prims_may_overlap, bool needs_barriers_for_depth)
-{
-	// Depth feedback reads through a texture, not the colour attachment, so fetch says nothing
-	// about it and its barriers stand regardless.
-	if (needs_barriers_for_depth)
-		return false;
-
-	return fetch_orders_overlapping_prims || !prims_may_overlap;
-}
-
 // Which shape the OpenGL backend's blend fallback takes when it has no texture barrier.
 //
 // With multidraw_fb_copy set, the backend copies the render target once per primitive group
@@ -155,16 +130,6 @@ static_assert(GLUsesPerPrimitiveFbCopy(false, false));
 // A barrier means the copy path is unreachable either way.
 static_assert(!GLUsesPerPrimitiveFbCopy(true, true));
 static_assert(!GLUsesPerPrimitiveFbCopy(true, false));
-
-// Unordered fetch: an overlapping draw keeps its barrier, a non-overlapping one drops it.
-static_assert(!FbFetchDropsDrawBarriers(false, true, false));
-static_assert(FbFetchDropsDrawBarriers(false, false, false));
-// Backends whose fetch *is* an ordering guarantee keep the barrier-free fast path, overlap or not.
-static_assert(FbFetchDropsDrawBarriers(true, true, false));
-static_assert(FbFetchDropsDrawBarriers(true, false, false));
-// Depth feedback outranks all of it.
-static_assert(!FbFetchDropsDrawBarriers(true, false, true));
-static_assert(!FbFetchDropsDrawBarriers(false, false, true));
 
 // A blocklisted driver or the user's setting must survive the Mali profile, and must not demote
 // the profile to PowerVR.

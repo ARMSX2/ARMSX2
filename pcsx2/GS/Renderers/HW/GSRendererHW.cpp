@@ -10,10 +10,9 @@
 #include "GS/Renderers/HW/GSSpriteEdgeSnap.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "GS/Renderers/Common/GSBlendConstantPolicy.h"
+#include "GS/Renderers/Common/GSDrawRoad.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
-#include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 #include "GS/Renderers/Common/GSNativeTexelGridPolicy.h"
-#include "GS/Renderers/Common/GSSelfReadCopyPolicy.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
@@ -388,6 +387,15 @@ void GSRendererHW::ExpandLineIndices()
 
 namespace
 {
+	GSDrawRoadDevice GetDrawRoadDevice(const GSDevice::FeatureSupport& f)
+	{
+		return {.texture_barrier = f.texture_barrier,
+			.framebuffer_fetch = f.framebuffer_fetch,
+			.feedback_loop_layout = f.feedback_loop_layout,
+			.fetch_orders_overlap = f.framebuffer_fetch_orders_overlap,
+			.declared_loop_orders_overlap = f.declared_feedback_loop_orders_overlap};
+	}
+
 	/// floor(num / den), either sign of either.
 	s64 LineFloorDiv(s64 num, s64 den)
 	{
@@ -7193,44 +7201,16 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 			pxAssert(!m_conf.blend.enable);
 	}
 
-	// The in-pass destination read comes in two spellings, and both make the per-draw barrier
-	// redundant for the same reason -- something other than our barriers is ordering the read.
-	// Framebuffer fetch earns it from rasterization-order attachment access; the declared
-	// attachment feedback loop earns it from Turnip running the pass untiled with the coherent
-	// primitive mode (GSSelfReadRoadPolicy.h). Only the first
-	// carries Metal's dual-source restriction above, which is why that stayed in its own block.
-	//
-	// ⚠️ Dropping the barrier on the declared road is the ORDERING CLAIM. Keeping it would cost
-	// several times base -- an overlapping self-read draw gets require_full_barrier, i.e. one
-	// vkCmdPipelineBarrier per primitive group -- and, worse, it would SUPPLY the ordering the
-	// claim is about, so a correct picture would prove nothing. gsrunner -declare-feedback-loop 2
-	// keeps them deliberately, as the diagnostic arm. Which is still what that flag is for: the
-	// road itself is no longer experiment-only, since a driver build measured to order reaches it
-	// through the driver database with no key set.
-	if (features.framebuffer_fetch || features.declared_feedback_loop_orders_overlap)
+	// Framebuffer fetch or a driver-ordered declared loop orders the read without our barriers.
+	// TEX_HAZARD_RT is an offset read (HandleTextureHazards' disjoint-rect shortcut or channel-shuffle
+	// page offset): the declared road keeps its one barrier for it, the fetch road has already
+	// cloned. Depth read directly (not depth-as-colour) keeps its barriers. PRIM_OVERLAP_UNKNOWN
+	// counts as overlapping.
+	if (GSDrawDropsBarriers(GetDrawRoadDevice(features), m_conf.tex_hazard == GSHWDrawConfig::TEX_HAZARD_RT,
+			m_prim_overlap != PRIM_OVERLAP_NO, m_conf.ps.IsFeedbackLoopDepth() && features.depth_feedback))
 	{
-		// If we use depth feedback directly, we must use barriers for the depth texture.
-		// If we use depth-as-color feedback, then FB fetch can be used for depth also.
-		const bool need_barriers_for_depth = m_conf.ps.IsFeedbackLoopDepth() && features.depth_feedback;
-
-		// A draw that samples the live target somewhere other than the pixel it writes
-		// (TEX_HAZARD_RT: HandleTextureHazards' disjoint-rect shortcut or channel-shuffle page
-		// offset) depends on EARLIER draws' writes, which neither spelling orders -- both order the
-		// fragment's own pixel only. The fetch road never gets here with one (it clones the target,
-		// GSSelfReadCopyPolicy.h); the declared road does, and its one barrier is what serves it.
-		const bool samples_target_elsewhere = m_conf.tex_hazard == GSHWDrawConfig::TEX_HAZARD_RT;
-
-		// Fetch replaces the destination read; whether it also orders overlapping primitives
-		// within the draw is a per-backend property, and the software blend path enabled above
-		// depends on that ordering. See FbFetchDropsDrawBarriers for the full reasoning.
-		// PRIM_OVERLAP_UNKNOWN counts as overlapping.
-		if (!samples_target_elsewhere && FbFetchDropsDrawBarriers(
-				features.framebuffer_fetch_orders_overlap || features.declared_feedback_loop_orders_overlap,
-				m_prim_overlap != PRIM_OVERLAP_NO, need_barriers_for_depth))
-		{
-			m_conf.require_one_barrier = false;
-			m_conf.require_full_barrier = false;
-		}
+		m_conf.require_one_barrier = false;
+		m_conf.require_full_barrier = false;
 	}
 	// Multi-pass algorithms shouldn't be needed with full barrier and backends may not handle this correctly
 	pxAssert(!m_conf.require_full_barrier || !m_conf.ps.colclip_hw);
@@ -9868,20 +9848,10 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 	const bool ds_self_read = ds && m_conf.tex == m_conf.ds;
 	const bool log_self_read = GSDrawLog::IsActive() && (rt_self_read || ds_self_read);
 
-	// The device half of the offset-self-read rule. Two roads below leave a draw sampling the
-	// render target at a location it is not writing: the disjoint-rect shortcut, and the
-	// channel shuffle whose source page differs from its destination page. Neither is served by
-	// anything on a backend that reads the destination in tile memory -- the backend's clone is
-	// gated on the absence of a texture barrier, and the barrier is then dropped on the grounds
-	// that fetch "replaces the destination read", which an offset read is not. Both sites ask
-	// this one function. See GSSelfReadCopyPolicy.h for the whole road and the device it was
-	// measured on; same_pixel_read is filled in per site.
-	GSSelfReadCopyInputs copy_policy;
-	copy_policy.framebuffer_fetch = g_gs_device->Features().framebuffer_fetch;
-	copy_policy.texture_barrier = g_gs_device->Features().texture_barrier;
-	copy_policy.feedback_loop_layout = g_gs_device->Features().feedback_loop_layout;
-	copy_policy.declared_feedback_loop_orders_overlap =
-		g_gs_device->Features().declared_feedback_loop_orders_overlap;
+	// Two roads below leave the draw sampling its render target somewhere other than the pixel it
+	// writes: the disjoint-rect shortcut and the channel-shuffle page offset. On the in-tile read
+	// both take a copy (GSDrawRoad.h).
+	const bool offset_read_copies = GSOffsetSelfReadNeedsCopy(GetDrawRoadDevice(g_gs_device->Features()));
 	auto NoteResolution = [&](GSDrawLog::SelfRead resolution) {
 		if (log_self_read) [[unlikely]]
 			GSDrawLog::NoteSelfRead(resolution);
@@ -9958,14 +9928,8 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 				return;
 			}
 
-			// We are past the destination read, so whatever this draw samples, it is not the
-			// pixel it is writing. On a backend that reads the destination in tile memory there is
-			// nothing that can serve such a read, so take the copy -- the policy hoisted at the
-			// top of this function decides it, and the channel-shuffle road below asks the same
-			// question with the same key.
-			copy_policy.same_pixel_read = same_pixel_read;
-
-			if (!m_channel_shuffle && !SelfReadNeedsSourceCopy(copy_policy))
+			// Past the destination read, so this is an offset read.
+			if (!m_channel_shuffle && !offset_read_copies)
 			{
 				const GSVector4i src_box_rect = GSVector4i(m_vt.m_min.t.x, m_vt.m_min.t.y, m_vt.m_max.t.x, m_vt.m_max.t.y);
 				const GSVector4i src_rect = src_box_rect + source_region.GetRect(rt->GetUnscaledSize().x, rt->GetUnscaledSize().y).xyxy();
@@ -10005,15 +9969,9 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 				}
 			}
 
-			// No GSSelfReadCopyPolicy gate here, deliberately. This block is the depth twin of the
-			// render-target disjoint-rect shortcut above, but it cannot skip a copy: it is guarded
-			// by !m_channel_shuffle, so it is only reached when the direct-read branch above
-			// declined, which for a non-shuffle draw means DepthWrite() is set -- and with depth
-			// being written HandleBarrierHazard's depth arm returns false for every device. So the
-			// block always falls through to the copy already. The depth road that does skip both a
-			// copy and a barrier is the direct read above, which needs neither: it requires the
-			// draw not to write depth, and a pass that samples depth carries the read-only depth
-			// feedback flag, so no draw in it wrote the depth being sampled.
+			// No offset_read_copies gate here: for a non-shuffle draw this is only reached with
+			// DepthWrite() set, where HandleBarrierHazard's depth arm returns false on every device,
+			// so the block always falls through to the copy.
 			if (!m_channel_shuffle)
 			{
 				const GSVector4i src_box_rect = GSVector4i(m_vt.m_min.t.x, m_vt.m_min.t.y, m_vt.m_max.t.x, m_vt.m_max.t.y);
@@ -10099,30 +10057,13 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 			const int horizontal_offset = ((page_offset % src_target->m_TEX0.TBW) * GSLocalMemory::m_psm[src_target->m_TEX0.PSM].pgs.x) + draw_offset.x;
 			const int vertical_offset = ((page_offset / src_target->m_TEX0.TBW) * GSLocalMemory::m_psm[src_target->m_TEX0.PSM].pgs.y) + draw_offset.y;
 
-			// The channel-shuffle twin of the offset read at the top of this function. The escape
-			// below samples the live target at gl_FragCoord + ChannelShuffleOffset -- a page away
-			// from the pixel the fragment is writing -- so on a backend whose destination read
-			// happens in tile memory nothing serves it, for the reasons in GSSelfReadCopyPolicy.h.
-			// Same decision, same key, one test file.
-			//
-			// The remedy differs, because the shader offset is what addresses the source. The copy
-			// has to be COORDINATE-IDENTITY: ChannelShuffleOffset is added to the fragment's own
-			// position, so the source region must land in the copy at the coordinates it occupies
-			// in the target, and the shader offset stays. That is exactly the copy GSDeviceVK's
-			// draw_rt_clone already makes for this same draw on every device without a texture
-			// barrier, so the shape is proven rather than invented. It is NOT the shape of the
-			// relocating copy in the else below, which moves the source region onto the draw rect
-			// and leaves ChannelShuffleOffset at zero -- that road belongs to the depth shuffle
-			// that cannot read the live target at all.
-			//
-			// Colour only, and not the downscale road. The depth twin of this escape
-			// (test_and_sample_depth with depth not written) is out of scope for the same reason
-			// the depth disjoint-rect block is: a pass that samples depth carries the read-only
-			// depth flag, so no draw in it wrote the depth being sampled. The downscale road
-			// ignores copy_dst_offset entirely, so an identity copy is not expressible there.
-			copy_policy.same_pixel_read = false;
-			const bool shuffle_offset_copies =
-				rt_self_read && !m_downscale_source && SelfReadNeedsSourceCopy(copy_policy);
+			// The escape below samples the live target at gl_FragCoord + ChannelShuffleOffset, a
+			// page away from the pixel being written: an offset read. Where that needs a copy, the
+			// copy is COORDINATE-IDENTITY, because the shader offset still addresses the source --
+			// the same shape GSDeviceVK's draw_rt_clone makes without texture barriers, not the
+			// relocating copy in the else below. Colour only (a pass that samples depth wrote none
+			// of it), and not the downscale road, which ignores copy_dst_offset.
+			const bool shuffle_offset_copies = rt_self_read && !m_downscale_source && offset_read_copies;
 
 			if (!shuffle_offset_copies &&
 				(HandleBarrierHazard(false) || (rt != tex->m_from_target && ds != tex->m_from_target)))
