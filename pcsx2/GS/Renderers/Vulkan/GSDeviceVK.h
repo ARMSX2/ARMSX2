@@ -25,6 +25,7 @@
 #include <vector>
 
 class VKSwapChain;
+struct GSSelfReadRoadDecision;
 
 class GSDeviceVK final : public GSDevice
 {
@@ -690,7 +691,25 @@ private:
 	VkShaderModule GetUtilityFragmentShader(const std::string& source, const char* replace_main);
 
 	bool CreateDeviceAndSwapChain();
+
+	/// Fills m_features and the device-constant state beside it. Runs once, after the device
+	/// exists and before any image, render pass or pipeline. The pieces below run in this order;
+	/// each reads only what an earlier one has made final.
 	bool CheckFeatures();
+	/// Resolves the GPU and driver profile and publishes it to the device.
+	GpuProfileSelection ResolveGPUProfile();
+	/// Framebuffer fetch, texture barriers and the declared-loop spelling: the self-read road.
+	GSSelfReadRoadDecision ResolveSelfReadRoad(const GpuProfileSelection& mobile_profile);
+	/// Feature bits that depend on the device alone, plus the road bits already set.
+	void ResolveFeatureTable();
+	/// The fast stencil shadow and the feedback-loop carry's device facts.
+	void ResolveFeedbackConsumers(const GSSelfReadRoadDecision& road);
+	/// Depth sampling and depth feedback. Returns whether the depth loop is declared.
+	bool ResolveDepthFeedback(const GSSelfReadRoadDecision& road);
+	void ResolveStreamRingMemory();
+	void LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool declare_depth_loop);
+	/// Format support, texture size limits and ROV. False if a required format is missing.
+	bool CheckFormatSupport();
 	bool CreateNullTexture();
 	bool CreateBuffers();
 

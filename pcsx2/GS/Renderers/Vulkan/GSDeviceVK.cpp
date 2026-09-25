@@ -3714,11 +3714,18 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 
 bool GSDeviceVK::CheckFeatures()
 {
-	const VkPhysicalDeviceLimits& limits = m_device_properties.limits;
-	//const u32 vendorID = m_device_properties.vendorID;
-	//const bool isAMD = (vendorID == 0x1002 || vendorID == 0x1022);
-	//const bool isNVIDIA = (vendorID == 0x10DE);
+	const GpuProfileSelection gpu_profile = ResolveGPUProfile();
+	const GSSelfReadRoadDecision road = ResolveSelfReadRoad(gpu_profile);
+	ResolveFeatureTable();
+	ResolveFeedbackConsumers(road);
+	const bool declare_depth_loop = ResolveDepthFeedback(road);
+	ResolveStreamRingMemory();
+	LogResolvedFeatures(road, declare_depth_loop);
+	return CheckFormatSupport();
+}
 
+GpuProfileSelection GSDeviceVK::ResolveGPUProfile()
+{
 	// NOTE (2026-07-12): we deliberately do NOT force the Mali runtime GPU profile here.
 	// The old band-aid clamped blending accuracy up to Full on Mali (via the profile) to
 	// dodge the broken HW dual-source unit — which is exactly why Mali used to "need
@@ -3727,12 +3734,6 @@ bool GSDeviceVK::CheckFeatures()
 	// the specific SRC1/blend-mix/PABE draws instead of globally clamping. We already carry
 	// that path, and the Vulkan renderer never reads the runtime profile anyway (only
 	// GSDeviceOGL does), so the force was dead weight that diverged from his known-good tree.
-
-	// Set when the user (or auto-detection) selects the Xclipse GPU profile; forces the
-	// Xclipse fbfetch-off path below even if the 0x144D vendorID guess doesn't fire on
-	// their driver. Declared outside the Android block so it stays a harmless false on
-	// desktop. Populated from the resolved mobile profile just below.
-	bool force_xclipse_profile = false;
 
 	// The driver context feeds the driver-bug database (ported from EmuCoreX/sashkinbro with his
 	// approval). Vulkan is the good case: VkPhysicalDeviceDriverProperties names the blob outright,
@@ -3777,8 +3778,6 @@ bool GSDeviceVK::CheckFeatures()
 	// lifetime, and the profile printed in VK logs was whatever the default happened to be
 	// rather than the detected GPU.
 	SetRuntimeGPUProfile(mobile_profile.runtime_profile);
-	force_xclipse_profile = (mobile_profile.override_mode == GpuProfileOverride::Xclipse) ||
-		(mobile_profile.runtime_profile == RuntimeGpuProfile::Xclipse);
 	// Per-vendor GS tuning (pool sizes/ages + constrained) — drives GSDevice pool sizing above.
 	// This is what constrains texture/target caching on weaker Mali (e.g. G615). From EmuCoreX.
 	SetMobileGPUIdentity(mobile_profile.gpu);
@@ -3813,6 +3812,21 @@ bool GSDeviceVK::CheckFeatures()
 		static_cast<unsigned long long>(mobile_profile.driver.bugs),
 		static_cast<unsigned long long>(mobile_profile.driver.workarounds));
 	DevCon.WriteLn("VK: GPU profile hints: %s", mobile_profile.hints.c_str());
+
+	return mobile_profile;
+}
+
+GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad(const GpuProfileSelection& mobile_profile)
+{
+	// Set when the user (or auto-detection) selects the Xclipse GPU profile; forces the
+	// Xclipse fbfetch-off path below even if the 0x144D vendorID guess doesn't fire on
+	// their driver. Declared outside the Android block so it stays a harmless false on
+	// desktop. Populated from the resolved mobile profile just below.
+	bool force_xclipse_profile = false;
+#if defined(__ANDROID__)
+	force_xclipse_profile = (mobile_profile.override_mode == GpuProfileOverride::Xclipse) ||
+		(mobile_profile.runtime_profile == RuntimeGpuProfile::Xclipse);
+#endif
 
 	// BrokenSubpassFeedback + BrokenAttachmentFeedbackLoopLayout: on these drivers an in-pass
 	// render-target self-read can silently drop the whole draw, in BOTH shapes — the subpassLoad
@@ -3928,17 +3942,12 @@ bool GSDeviceVK::CheckFeatures()
 	// what this resolves to. Framebuffer fetch IS the in-tile self-read, so a driver that cannot
 	// do that read cannot have it. Kept as-is so a driver that stops carrying the bug recovers the
 	// fast path for free.
-	const bool is_turnip = (m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_TURNIP);
 	// Samsung Xclipse (Exynos AMD-RDNA2) has no working ROAA-based framebuffer fetch — force it off
 	// there so we never route the fast-blend path into a broken unit. Inert if the 0x144D vendorID
 	// guess is wrong (a real Xclipse tester must confirm IsDeviceXclipse() fires). The user
 	// can also force it from Settings → Renderer → GPU Profile (force_xclipse_profile) for
 	// drivers where the 0x144D vendorID doesn't report.
 	const bool is_xclipse_vk = IsDeviceXclipse() || force_xclipse_profile;
-	// deviceName is null-terminated by Vulkan. Kept for the FastMAD deinterlace fallback below;
-	// the G57 fbfetch deny lives in the driver-bug database now.
-	const bool is_mali_g57 = is_mali_vk &&
-		(std::string_view(m_device_properties.deviceName).find("Mali-G57") != std::string_view::npos);
 	// The parts that expose ROAA and return zero or stale destination colour through it (black or
 	// intermittently missing textures) are rules vk-mediatek-mali-roaa-destination-read and
 	// vk-arm-g57-roaa-destination-read in the driver-bug database. That is where the exemption for
@@ -4123,6 +4132,12 @@ bool GSDeviceVK::CheckFeatures()
 	// gone. One difference, deliberate: the table-driven path respects OverrideTextureBarriers,
 	// which the hand-rolled test ignored -- and the comment above documents forcing barriers on as
 	// the way back to the in-tile path for A/B work, so honouring it is the intent.)
+
+	return road;
+}
+
+void GSDeviceVK::ResolveFeatureTable()
+{
 	m_features.multidraw_fb_copy = false;
 	m_features.broken_point_sampler = false;
 
@@ -4210,6 +4225,71 @@ bool GSDeviceVK::CheckFeatures()
 	// by the time this reads it.
 	m_features.broken_blend_constant = GetMobileDriverProfile().HasBug(DriverBug::BrokenBlendConstant);
 
+	// Use D32F depth instead of D32S8 when we have framebuffer fetch.
+	m_features.stencil_buffer &= !m_features.framebuffer_fetch;
+
+	// Turnip below Mesa 26.2 wedges the GPU on A6XX_EARLY_Z_LATE_Z + a D32S8 depth-stencil
+	// attachment + a discarding fragment shader, which is SetupDATE's stencil pre-pass quad once a
+	// stencil buffer exists (round 20260903-0135, A650 / turnip 26.1.2, 8 of 8 titles lost the
+	// device; fixed in Mesa a70d2af590d / MR !41858, first shipped in 26.2). Bounded to that
+	// driver by the vk-turnip-d32s8-early-z-late-z-hang rule rather than to the Adreno vendor
+	// ID, which is what this used to be.
+	//
+	// Stencil off means depth is created as plain D32_SFLOAT and neither a stencil attachment nor
+	// the stencil DATE pre-pass is emitted; DATE falls back to PrimID tracking, then Full, then Off.
+	if (UsesMobileDriverWorkaround(DriverWorkaround::DisableStencilBuffer))
+		m_features.stencil_buffer = false;
+
+	// deviceName is null-terminated by Vulkan. The G57 fbfetch deny lives in the driver-bug database.
+	const bool is_mali_g57 = IsDeviceMali() &&
+		(std::string_view(m_device_properties.deviceName).find("Mali-G57") != std::string_view::npos);
+	// Mali-G57 r13p0-class drivers can expose alternating/stale FastMAD history banks instead of the
+	// reconstructed frame; GSRenderer::Merge falls those back to weave+blend. Ported from sashkinbro/EmuCoreX.
+	m_features.broken_mad_deinterlace = is_mali_g57;
+
+	const bool is_turnip = (m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_TURNIP);
+	// Adreno colorWriteMask-with-depthtest bug (PPSSPP #10421 / thin3d_vulkan.cpp): on
+	// Adreno 5xx and pre-0x801EA000 drivers the pipeline colorWriteMask is ignored while a
+	// depth test is active, so masked RGBA channels get written. PS2 FBMASK relies on the
+	// write mask; we emulate the one case Vulkan blend can express (RGB fully masked, alpha
+	// independent) in CreateTFXPipeline. No user toggle; excludes Adreno 6xx/7xx/8xx.
+	// The 0x801EA000 threshold is in the PROPRIETARY blob's driverVersion encoding; Turnip
+	// reports Mesa's version (e.g. Mesa 26.1.2 -> 0x06801002), which is always below it and
+	// made the workaround misfire on every Turnip device. The blob bug does not exist in
+	// Mesa, so exclude Turnip outright.
+	m_broken_colormask_with_depth = IsDeviceAdreno() && !is_turnip &&
+		(m_device_properties.deviceID < 0x06000000u || m_device_properties.driverVersion < 0x801EA000u);
+	if (m_broken_colormask_with_depth)
+		Console.WriteLn("VK: Adreno colorWriteMask-with-depthtest workaround active (deviceID=0x%08X driver=0x%08X)",
+			m_device_properties.deviceID, m_device_properties.driverVersion);
+
+	// On tiler GPUs, declaring gl_FragDepth (for PS2 32-bit Z quantization) emits
+	// SPIR-V ExecutionMode DepthReplacing, which disables early-ZS for the entire
+	// pipeline. Default-on for Mali; opt-out via INI for Z-precision-sensitive titles.
+	//
+	// Apple GPUs additionally miscompare. Depth stored through gl_FragDepth does not
+	// bit-match the fixed-function interpolation that a later read-only pass tests
+	// against, so a GEQUAL retest of the same geometry drops out along shared triangle
+	// edges and whatever was drawn underneath shows through as pinpoints. The floor
+	// only ever lowers the stored value, so it masks the mismatch rather than causing
+	// it: on Black (SLUS-21376) a dark wall shows 7062 stray pixels with the depth
+	// write on the shader path and the floor removed, 748 with the floor, and 0 with
+	// the shader path skipped entirely. God of War II's Athena statue speckles the
+	// same way. Biasing the stored value one PS2 Z unit down also clears it, which
+	// puts the disagreement below a single Z unit.
+	m_features.no_ps2_z_quantization = IsDeviceMali() || IsDeviceAppleGPU();
+
+	const VkPhysicalDeviceLimits& limits = m_device_properties.limits;
+	// whether we can do point/line expand depends on the range of the device
+	const float f_upscale = static_cast<float>(GSConfig.UpscaleMultiplier);
+	m_features.point_expand = (m_device_features.largePoints && limits.pointSizeRange[0] <= f_upscale &&
+							   limits.pointSizeRange[1] >= f_upscale);
+	m_features.line_expand =
+		(m_device_features.wideLines && limits.lineWidthRange[0] <= f_upscale && limits.lineWidthRange[1] >= f_upscale);
+}
+
+void GSDeviceVK::ResolveFeedbackConsumers(const GSSelfReadRoadDecision& road)
+{
 	// The alpha stencil counter through the blend unit (GSFastStencilShadow.h). Decided here because
 	// every input is final by now: the road above, and dual_source_blend just above.
 	//
@@ -4247,17 +4327,16 @@ bool GSDeviceVK::CheckFeatures()
 		(m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP);
 	m_carry_device_facts.framebuffer_fetch = m_features.framebuffer_fetch;
 	m_carry_device_facts.feedback_loop_layout = UseFeedbackLoopLayout();
+}
 
-	// Mali-G57 r13p0-class drivers can expose alternating/stale FastMAD history banks instead of the
-	// reconstructed frame; GSRenderer::Merge falls those back to weave+blend. Ported from sashkinbro/EmuCoreX.
-	m_features.broken_mad_deinterlace = is_mali_g57;
-
+bool GSDeviceVK::ResolveDepthFeedback(const GSSelfReadRoadDecision& road)
+{
 	// Concurrent depth test + depth-as-texture rides the same feedback-sync path as texture_barrier;
 	// a driver with broken barriers has no chance doing GENERAL-layout depth feedback either.
 	// Additionally, Adreno/turnip hangs the tiler sampling the live depth buffer while it is also the
 	// depth attachment (tex == ds) — force it off there so tex == ds takes a depth copy instead of an
 	// in-pass self-read.
-	m_features.test_and_sample_depth = m_features.texture_barrier && !is_adreno;
+	m_features.test_and_sample_depth = m_features.texture_barrier && !IsDeviceAdreno();
 
 	// ⚠️ MEASUREMENT SCAFFOLDING — the depth probe for the Adreno in-pass read.
 	//
@@ -4297,116 +4376,6 @@ bool GSDeviceVK::CheckFeatures()
 					  "device is not on that road. The depth probe is NOT running.");
 	}
 
-	// Use D32F depth instead of D32S8 when we have framebuffer fetch.
-	m_features.stencil_buffer &= !m_features.framebuffer_fetch;
-
-	// Which memory the six stream rings get. Decided here, with the other device-shaped decisions,
-	// because it is one: the rings are allocated once at device init and the choice cannot be
-	// revisited afterwards. GSStreamRingMemoryPolicy.h carries the reasoning and the device
-	// numbers; what this does is read the memory-type table, ask the driver database its one
-	// question, and hand VKStreamBuffer::Create the answer. Leaving a cached road is opt-in: with
-	// no rule for this GPU the answer is the write-combined selection every device had before the
-	// policy existed, whatever the table offers.
-	{
-		VkPhysicalDeviceMemoryProperties memory_properties = {};
-		vkGetPhysicalDeviceMemoryProperties(m_physical_device, &memory_properties);
-
-		// The policy mirrors the Vulkan property bits so it stays backend-neutral and testable.
-		// If Vulkan ever renumbers them this is where it breaks, loudly, at compile time.
-		static_assert(GS_MEMORY_PROPERTY_DEVICE_LOCAL == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		static_assert(GS_MEMORY_PROPERTY_HOST_VISIBLE == VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		static_assert(GS_MEMORY_PROPERTY_HOST_COHERENT == VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		static_assert(GS_MEMORY_PROPERTY_HOST_CACHED == VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-
-		u32 type_flags[VK_MAX_MEMORY_TYPES] = {};
-		for (u32 i = 0; i < memory_properties.memoryTypeCount; i++)
-			type_flags[i] = static_cast<u32>(memory_properties.memoryTypes[i].propertyFlags);
-
-		GSStreamRingMemoryInputs inputs;
-		inputs.type_flags = type_flags;
-		inputs.type_count = memory_properties.memoryTypeCount;
-		inputs.prefer_cached_over_write_combined =
-			UsesMobileDriverWorkaround(DriverWorkaround::PreferCachedStreamRingMemory);
-		m_stream_ring_memory = GSDecideStreamRingMemory(inputs);
-	}
-
-	// @@MALI_TELEMETRY@@ One-line device/driver banner so Mali (and Adreno) field reports are
-	// actionable: which GPU/driver, and — critically — which accurate-blend path was resolved:
-	// in-tile framebuffer_fetch (cheap) vs the per-primitive barrier fallback (the tile-flush
-	// slideshow). ROAA=yes but fbfetch=NO on Mali means the barrier path is active. See the
-	// Mali driver-support deep dive.
-	Console.WriteLn("VK: GPU '%s' vendor=0x%04X driver='%s' (%s) | ROAA=%s fbfetch=%s texbarrier=%s "
-					"inpAttFB=%s dualSrc=%s blendConst=%s fastShadow=%s testSampleDepth=%s madFallback=%s pushdesc=%s "
-					"streamRings=%s(type %u)",
-		m_device_properties.deviceName,
-		m_device_properties.vendorID,
-		m_device_driver_properties.driverName,
-		m_device_driver_properties.driverInfo,
-		m_optional_extensions.vk_ext_rasterization_order_attachment_access ? "yes" : "NO",
-		m_features.framebuffer_fetch ? "yes(in-tile)" : "NO(barrier-fallback)",
-		m_features.texture_barrier ? "on" : "off",
-		// inputAttachmentFeedback: the subpassInput/INPUT_ATTACHMENT descriptor path is active
-		// when texture_barrier is on AND feedback_loop_layout is unavailable (Mali). This is the
-		// path sashkinbro's stale-tile descriptor fix targets — the rainbow-blink suspect.
-		(m_features.texture_barrier && !UseFeedbackLoopLayout()) ? "yes" : "NO",
-		m_features.dual_source_blend ? "yes" : "NO(sw-blend-fallback)",
-		m_features.broken_blend_constant ? "BROKEN(afix-via-src1)" : "ok",
-		m_features.fast_stencil_shadow ? "yes(blend)" : "NO(rt-read)",
-		m_features.test_and_sample_depth ? "on" : "off",
-		m_features.broken_mad_deinterlace ? "weave+blend(G57)" : "motion-adaptive",
-		m_use_push_descriptors ? "on" : "off",
-		GSStreamRingMemoryRoadName(m_stream_ring_memory.road), m_stream_ring_memory.type_index);
-
-	// Adreno colorWriteMask-with-depthtest bug (PPSSPP #10421 / thin3d_vulkan.cpp): on
-	// Adreno 5xx and pre-0x801EA000 drivers the pipeline colorWriteMask is ignored while a
-	// depth test is active, so masked RGBA channels get written. PS2 FBMASK relies on the
-	// write mask; we emulate the one case Vulkan blend can express (RGB fully masked, alpha
-	// independent) in CreateTFXPipeline. No user toggle; excludes Adreno 6xx/7xx/8xx.
-	// The 0x801EA000 threshold is in the PROPRIETARY blob's driverVersion encoding; Turnip
-	// reports Mesa's version (e.g. Mesa 26.1.2 -> 0x06801002), which is always below it and
-	// made the workaround misfire on every Turnip device. The blob bug does not exist in
-	// Mesa, so exclude Turnip outright.
-	m_broken_colormask_with_depth = IsDeviceAdreno() && !is_turnip &&
-		(m_device_properties.deviceID < 0x06000000u || m_device_properties.driverVersion < 0x801EA000u);
-	if (m_broken_colormask_with_depth)
-		Console.WriteLn("VK: Adreno colorWriteMask-with-depthtest workaround active (deviceID=0x%08X driver=0x%08X)",
-			m_device_properties.deviceID, m_device_properties.driverVersion);
-
-	// Turnip below Mesa 26.2 wedges the GPU on A6XX_EARLY_Z_LATE_Z + a D32S8 depth-stencil
-	// attachment + a discarding fragment shader, which is SetupDATE's stencil pre-pass quad once a
-	// stencil buffer exists (round 20260903-0135, A650 / turnip 26.1.2, 8 of 8 titles lost the
-	// device; fixed in Mesa a70d2af590d / MR !41858, first shipped in 26.2). Bounded to that
-	// driver by the vk-turnip-d32s8-early-z-late-z-hang rule rather than to the Adreno vendor
-	// ID, which is what this used to be.
-	//
-	// Stencil off means depth is created as plain D32_SFLOAT and neither a stencil attachment nor
-	// the stencil DATE pre-pass is emitted; DATE falls back to PrimID tracking, then Full, then Off.
-	if (UsesMobileDriverWorkaround(DriverWorkaround::DisableStencilBuffer))
-		m_features.stencil_buffer = false;
-
-	// On tiler GPUs, declaring gl_FragDepth (for PS2 32-bit Z quantization) emits
-	// SPIR-V ExecutionMode DepthReplacing, which disables early-ZS for the entire
-	// pipeline. Default-on for Mali; opt-out via INI for Z-precision-sensitive titles.
-	//
-	// Apple GPUs additionally miscompare. Depth stored through gl_FragDepth does not
-	// bit-match the fixed-function interpolation that a later read-only pass tests
-	// against, so a GEQUAL retest of the same geometry drops out along shared triangle
-	// edges and whatever was drawn underneath shows through as pinpoints. The floor
-	// only ever lowers the stored value, so it masks the mismatch rather than causing
-	// it: on Black (SLUS-21376) a dark wall shows 7062 stray pixels with the depth
-	// write on the shader path and the floor removed, 748 with the floor, and 0 with
-	// the shader path skipped entirely. God of War II's Athena statue speckles the
-	// same way. Biasing the stored value one PS2 Z unit down also clears it, which
-	// puts the disagreement below a single Z unit.
-	m_features.no_ps2_z_quantization = IsDeviceMali() || IsDeviceAppleGPU();
-
-	// whether we can do point/line expand depends on the range of the device
-	const float f_upscale = static_cast<float>(GSConfig.UpscaleMultiplier);
-	m_features.point_expand = (m_device_features.largePoints && limits.pointSizeRange[0] <= f_upscale &&
-							   limits.pointSizeRange[1] >= f_upscale);
-	m_features.line_expand =
-		(m_device_features.wideLines && limits.lineWidthRange[0] <= f_upscale && limits.lineWidthRange[1] >= f_upscale);
-
 	// Mobile tile-native ordered depth feedback ("mobile ROV"), opt-in via HWROV. Reads the
 	// depth buffer in-tile (subpassLoad on a depth input attachment) instead of copying it to a
 	// colour RT (DoBeginDSAsRT), so SW-Z / DATE / alpha-test / AA1 depth passes fuse in-pass rather
@@ -4437,6 +4406,69 @@ bool GSDeviceVK::CheckFeatures()
 	if (road.loop_declared)
 		m_features.depth_feedback = declare_depth_loop;
 	m_features.aa1 = GSConfig.HWAA1 && m_features.vs_expand && m_features.feedback_loops();
+
+	return declare_depth_loop;
+}
+
+void GSDeviceVK::ResolveStreamRingMemory()
+{
+	// Which memory the six stream rings get. Decided here, with the other device-shaped decisions,
+	// because it is one: the rings are allocated once at device init and the choice cannot be
+	// revisited afterwards. GSStreamRingMemoryPolicy.h carries the reasoning and the device
+	// numbers; what this does is read the memory-type table, ask the driver database its one
+	// question, and hand VKStreamBuffer::Create the answer. Leaving a cached road is opt-in: with
+	// no rule for this GPU the answer is the write-combined selection every device had before the
+	// policy existed, whatever the table offers.
+	VkPhysicalDeviceMemoryProperties memory_properties = {};
+	vkGetPhysicalDeviceMemoryProperties(m_physical_device, &memory_properties);
+
+	// The policy mirrors the Vulkan property bits so it stays backend-neutral and testable.
+	// If Vulkan ever renumbers them this is where it breaks, loudly, at compile time.
+	static_assert(GS_MEMORY_PROPERTY_DEVICE_LOCAL == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	static_assert(GS_MEMORY_PROPERTY_HOST_VISIBLE == VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+	static_assert(GS_MEMORY_PROPERTY_HOST_COHERENT == VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	static_assert(GS_MEMORY_PROPERTY_HOST_CACHED == VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+
+	u32 type_flags[VK_MAX_MEMORY_TYPES] = {};
+	for (u32 i = 0; i < memory_properties.memoryTypeCount; i++)
+		type_flags[i] = static_cast<u32>(memory_properties.memoryTypes[i].propertyFlags);
+
+	GSStreamRingMemoryInputs inputs;
+	inputs.type_flags = type_flags;
+	inputs.type_count = memory_properties.memoryTypeCount;
+	inputs.prefer_cached_over_write_combined =
+		UsesMobileDriverWorkaround(DriverWorkaround::PreferCachedStreamRingMemory);
+	m_stream_ring_memory = GSDecideStreamRingMemory(inputs);
+}
+
+void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool declare_depth_loop)
+{
+	// @@MALI_TELEMETRY@@ One-line device/driver banner so Mali (and Adreno) field reports are
+	// actionable: which GPU/driver, and — critically — which accurate-blend path was resolved:
+	// in-tile framebuffer_fetch (cheap) vs the per-primitive barrier fallback (the tile-flush
+	// slideshow). ROAA=yes but fbfetch=NO on Mali means the barrier path is active. See the
+	// Mali driver-support deep dive.
+	Console.WriteLn("VK: GPU '%s' vendor=0x%04X driver='%s' (%s) | ROAA=%s fbfetch=%s texbarrier=%s "
+					"inpAttFB=%s dualSrc=%s blendConst=%s fastShadow=%s testSampleDepth=%s madFallback=%s pushdesc=%s "
+					"streamRings=%s(type %u)",
+		m_device_properties.deviceName,
+		m_device_properties.vendorID,
+		m_device_driver_properties.driverName,
+		m_device_driver_properties.driverInfo,
+		m_optional_extensions.vk_ext_rasterization_order_attachment_access ? "yes" : "NO",
+		m_features.framebuffer_fetch ? "yes(in-tile)" : "NO(barrier-fallback)",
+		m_features.texture_barrier ? "on" : "off",
+		// inputAttachmentFeedback: the subpassInput/INPUT_ATTACHMENT descriptor path is active
+		// when texture_barrier is on AND feedback_loop_layout is unavailable (Mali). This is the
+		// path sashkinbro's stale-tile descriptor fix targets — the rainbow-blink suspect.
+		(m_features.texture_barrier && !UseFeedbackLoopLayout()) ? "yes" : "NO",
+		m_features.dual_source_blend ? "yes" : "NO(sw-blend-fallback)",
+		m_features.broken_blend_constant ? "BROKEN(afix-via-src1)" : "ok",
+		m_features.fast_stencil_shadow ? "yes(blend)" : "NO(rt-read)",
+		m_features.test_and_sample_depth ? "on" : "off",
+		m_features.broken_mad_deinterlace ? "weave+blend(G57)" : "motion-adaptive",
+		m_use_push_descriptors ? "on" : "off",
+		GSStreamRingMemoryRoadName(m_stream_ring_memory.road), m_stream_ring_memory.type_index);
 
 	// The self-read road, WHY it was chosen, and -- on the declared road -- which Vulkan
 	// declarations this binary actually makes. A device record quotes this line, because "which
@@ -4505,7 +4537,10 @@ bool GSDeviceVK::CheckFeatures()
 	DevCon.WriteLn("Using %s for point expansion and %s for line expansion.",
 		m_features.point_expand ? "hardware" : "vertex expanding",
 		m_features.line_expand ? "hardware" : "vertex expanding");
+}
 
+bool GSDeviceVK::CheckFormatSupport()
+{
 	bool has_rov_storage_flags = true;
 
 	// Check texture format support before we try to create them.
