@@ -493,8 +493,20 @@ bool VKShaderCache::ReadExistingShaderCache(const std::string& index_filename, c
 		return false;
 	}
 
+	// SPIR-V depends on the GLSL source, which is the key, and on the compiler, which
+	// SHADER_CACHE_VERSION covers -- not on the driver. So a driver update keeps the SPIR-V and only
+	// the pipeline cache, which holds driver binaries, is rebuilt. The device header is still
+	// written here and still checked for debug builds of the shaders, whose debug info depends on a
+	// device extension.
 	VK_PIPELINE_CACHE_HEADER header;
-	if (std::fread(&header, sizeof(header), 1, m_index_file) != 1 || !ValidatePipelineCacheHeader(header))
+	if (std::fread(&header, sizeof(header), 1, m_index_file) != 1)
+	{
+		Console.Error("Failed to read the header of '%s'", index_filename.c_str());
+		std::fclose(m_index_file);
+		m_index_file = nullptr;
+		return false;
+	}
+	if (GSConfig.UseDebugDevice && !ValidatePipelineCacheHeader(header))
 	{
 		Console.Error("Mismatched pipeline cache header in '%s' (GPU/driver changed?)", index_filename.c_str());
 		std::fclose(m_index_file);
