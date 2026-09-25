@@ -1042,9 +1042,6 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 	m_optional_extensions.vk_ext_roaa_depth &= m_optional_extensions.vk_ext_rasterization_order_attachment_access;
 	m_optional_extensions.vk_ext_attachment_feedback_loop_layout &=
 		(attachment_feedback_loop_feature.attachmentFeedbackLoopLayout == VK_TRUE);
-	m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state &=
-		(attachment_feedback_loop_dynamic_feature.attachmentFeedbackLoopDynamicState == VK_TRUE) &&
-		m_optional_extensions.vk_ext_attachment_feedback_loop_layout;
 
 	VkPhysicalDeviceProperties2 properties2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
 
@@ -1070,6 +1067,11 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 		Console.WriteLn("Mali r44p1: disabling attachment-feedback-loop blend path (DEVICE_LOST workaround).");
 		m_optional_extensions.vk_ext_attachment_feedback_loop_layout = false;
 	}
+
+	// After every write to the layout bit: the per-draw declaration has nothing to declare without it.
+	m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state &=
+		(attachment_feedback_loop_dynamic_feature.attachmentFeedbackLoopDynamicState == VK_TRUE) &&
+		m_optional_extensions.vk_ext_attachment_feedback_loop_layout;
 
 	// Decide whether to bind textures via VK_KHR_push_descriptor. It's optional
 	// now — when it's absent (some Mali, e.g. Mali-G52), unusable, or known-buggy
@@ -4083,12 +4085,6 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad()
 			m_optional_extensions.vk_ext_attachment_feedback_loop_layout ? "present" : "ABSENT",
 			static_cast<int>(GSConfig.OverrideTextureBarriers));
 	}
-	// (Mali r44p1 used to get its own copy of the block above, testing driverInfo for "r44p1" and
-	// clearing texture_barrier a second time. It is now rule vk-arm-r44p1-attachment-self-read in
-	// the driver-bug database, so rt_self_read_is_broken already covers it and the duplicate is
-	// gone. One difference, deliberate: the table-driven path respects OverrideTextureBarriers,
-	// which the hand-rolled test ignored -- and the comment above documents forcing barriers on as
-	// the way back to the in-tile path for A/B work, so honouring it is the intent.)
 
 	return road;
 }

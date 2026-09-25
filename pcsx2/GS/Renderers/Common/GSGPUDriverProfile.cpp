@@ -495,6 +495,9 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 	// MT6897 is exempt on measurement: its r44p1 runs the in-tile read with no device loss or stale
 	// content, where the founding report (Motorola Edge 60 Pro, also r44p1) crashed on nearly every
 	// game. No version bound separates the two blobs, so the exemption is per SoC.
+	//
+	// The other half of the r44p1 workaround, the Vulkan device not using the feedback-loop layout,
+	// is VulkanDeviceRules::avoid_feedback_loop_layout below.
 	{"vk-arm-r44p1-attachment-self-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {44, 1, 0}, {44, 2, 0},
 		0, 0, false,

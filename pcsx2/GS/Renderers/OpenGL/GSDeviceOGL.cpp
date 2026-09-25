@@ -1121,21 +1121,11 @@ bool GSDeviceOGL::CheckFeatures()
 	// GSFramebufferFetchPolicy.h for why it is a separate pure function). Nothing below may write
 	// m_features.framebuffer_fetch -- read `fbfetch` instead if you need to know what was decided.
 	//
-	// Which drivers cannot survive the in-tile read is a fact about the DRIVER, so it lives in the
-	// driver-bug database with the rest of them rather than in a substring test here.
-	// UseRenderTargetCopyForFeedback is the same workaround the Vulkan backend keys its RT-copy
-	// fallback on -- fetch and the texture barrier are two spellings of one in-tile read, so a
-	// driver that fails the read fails both, and one bit answers for both APIs. Note that no GL
-	// rule sets it today: the r44p1 GL rule was deliberately lifted (2.6.6.4 field evidence beat
-	// the MGS3 corruption report -- the full account sits above the GL rules in
-	// GSGPUDriverProfile.cpp), while r44p1's Vulkan rule remains because there the read is a
-	// device loss, and on Vulkan the RT copy is an ordinary image copy rather than a tile flush.
-	//
-	// This replaced a hand-rolled search for "r44p1" in GL_VERSION. The database matches a PARSED
-	// driver revision instead, which is what lets a rule say "exactly r44p1" rather than "contains
-	// r44p1" -- and what would let the next bad blob be a table row. gs_gpu_driver_profile_tests
-	// pins the real device string through the resolver, because a rule that silently matches
-	// nothing would put the device straight back on the faulting path with no diagnostic.
+	// Which drivers cannot survive the in-tile read is a fact about the driver, so it lives in the
+	// driver-bug database. UseRenderTargetCopyForFeedback is the bit the Vulkan backend keys its
+	// render-target copy on: fetch and the texture barrier are two spellings of one in-tile read,
+	// so one bit answers for both APIs. No GL rule sets it today; GSGPUDriverProfile.cpp says why
+	// r44p1 has a Vulkan rule and no GL one.
 	const bool fbfetch_driver_blocklisted =
 		GetMobileDriverProfile().UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback);
 	const GSFramebufferFetchDecision fbfetch = DecideGLFramebufferFetch(GLAD_GL_ARM_shader_framebuffer_fetch,
@@ -1151,7 +1141,7 @@ bool GSDeviceOGL::CheckFeatures()
 	switch (fbfetch.veto)
 	{
 		case GSFramebufferFetchVeto::DriverBlocklist:
-			Console.WriteLn("Mali r44p1: disabling framebuffer fetch (GL context-lost workaround; matches the Vulkan gate).");
+			Console.WriteLn("GL: framebuffer fetch disabled for this driver build by the driver-bug database.");
 			break;
 		case GSFramebufferFetchVeto::UserSetting:
 			Host::AddOSDMessage(
@@ -1184,7 +1174,7 @@ bool GSDeviceOGL::CheckFeatures()
 
 		// Pick the blend fallback's shape now that we know whether there is a barrier. GLES always
 		// arrives here with multidraw_fb_copy set (there is no ARB/NV texture barrier), and on a
-		// device where fetch is also off -- the r44p1 blocklist, the user's setting, or simply no
+		// device where fetch is also off -- a driver-bug database veto, the user's setting, or no
 		// fetch extension -- that leaves the per-primitive render-target copy as the blend path,
 		// which on a tiler means a tile flush and resolve per primitive group. See
 		// GLUsesPerPrimitiveFbCopy for the measurement; the short version is 0.33 fps.
@@ -1280,7 +1270,7 @@ bool GSDeviceOGL::CheckFeatures()
 		// ⚠️ This block must NOT re-enable framebuffer fetch, and nothing here may write
 		// m_features.framebuffer_fetch. It used to set it unconditionally true off the raw
 		// GLAD_GL_ARM_shader_framebuffer_fetch extension rather than the decision made ~100 lines
-		// above, which resurrected fetch after both the r44p1 driver guard and the user's
+		// above, which resurrected fetch after both the driver-bug database veto and the user's
 		// DisableFramebufferFetch setting -- so on Mali GL there was no way to turn fetch off at
 		// all. Demotion stays keyed on the extension because that is what it has always meant (a
 		// Mali profile that cannot reach the ARM shader path is on the wrong profile), but fetch

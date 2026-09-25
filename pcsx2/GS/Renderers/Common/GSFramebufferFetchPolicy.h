@@ -39,8 +39,8 @@ struct GSFramebufferFetchDecision
 	bool demote_mali_to_powervr = false;
 };
 
-// `driver_blocklisted` is the caller's driver-version test (currently Mali r44p1, which loses the
-// GL context under the in-tile blend path). `mali_profile` is the runtime GPU profile, which is
+// `driver_blocklisted` is the driver-bug database's UseRenderTargetCopyForFeedback workaround,
+// which no GL rule sets today. `mali_profile` is the runtime GPU profile, which is
 // what tfx_fs.glsl keys its backend selection off, not the extension set.
 constexpr GSFramebufferFetchDecision DecideGLFramebufferFetch(bool has_arm_fetch, bool has_ext_fetch,
 	bool has_pls_fetch, bool driver_blocklisted, bool user_disabled, bool mali_profile)
