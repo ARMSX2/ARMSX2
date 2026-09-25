@@ -55,6 +55,14 @@ public:
 
 	static std::unique_ptr<GLContext> Create(const WindowInfo& wi, Error* error);
 
+	/// Set by a headless frontend (the GS dump runner) before the GS opens. With it
+	/// set, a Surfaceless window gets an EGL context on Mesa's surfaceless platform,
+	/// with no default framebuffer; the device draws into textures and skips present.
+	/// Left false, Surfaceless gets no context, as before. The Qt app passes
+	/// Surfaceless while it shows the game list and when it probes adapter info, and
+	/// a context from the surfaceless platform could not later attach to its window.
+	static bool AllowHeadless;
+
 	// Libretro: the frontend is about to throw away the context this one shares
 	// with, and on EGL that takes the whole display - driver state included -
 	// with it, leaving these handles pointing at freed memory. Called while

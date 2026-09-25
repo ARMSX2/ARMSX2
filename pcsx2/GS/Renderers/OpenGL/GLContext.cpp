@@ -15,6 +15,9 @@
 #ifdef WAYLAND_API
 #include "GS/Renderers/OpenGL/GLContextEGLWayland.h"
 #endif
+#ifndef __ANDROID__
+#include "GS/Renderers/OpenGL/GLContextEGL.h"
+#endif
 #endif
 
 #include "common/Console.h"
@@ -31,6 +34,8 @@ static bool ShouldPreferESContext()
 	const char* value = std::getenv("PREFER_GLES_CONTEXT");
 	return (value && std::strcmp(value, "1") == 0);
 }
+
+bool GLContext::AllowHeadless = false;
 
 GLContext::GLContext(const WindowInfo& wi)
 	: m_wi(wi)
@@ -108,6 +113,10 @@ std::unique_ptr<GLContext> GLContext::Create(const WindowInfo& wi, Error* error)
 #ifdef WAYLAND_API
 	if (!context && wi.type == WindowInfo::Type::Wayland)
 		context = GLContextEGLWayland::Create(wi, std::span<const Version>(versions_to_try, num_versions_to_try), error);
+#endif
+#ifndef __ANDROID__
+	if (!context && wi.type == WindowInfo::Type::Surfaceless && AllowHeadless)
+		context = GLContextEGL::Create(wi, std::span<const Version>(versions_to_try, num_versions_to_try), error);
 #endif
 #endif
 

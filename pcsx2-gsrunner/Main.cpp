@@ -63,6 +63,9 @@
 #include "pcsx2/GS/Renderers/Common/GSRenderer.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
 #include "pcsx2/GS/Renderers/Null/GSDeviceNone.h"
+#ifdef ENABLE_OPENGL
+#include "pcsx2/GS/Renderers/OpenGL/GLContext.h"
+#endif
 #include "pcsx2/GSDumpReplayer.h"
 #include "pcsx2/GameList.h"
 #include "pcsx2/Host.h"
@@ -2640,6 +2643,11 @@ int main(int argc, char* argv[])
 		// not reach the terminal this early in startup.
 		return EXIT_FAILURE;
 	}
+
+#ifdef ENABLE_OPENGL
+	// -surfaceless on OpenGL: an EGL context with no window. Only this frontend opts in.
+	GLContext::AllowHeadless = true;
+#endif
 
 	if (s_use_window.value_or(true) && !GSRunner::CreatePlatformWindow())
 	{
