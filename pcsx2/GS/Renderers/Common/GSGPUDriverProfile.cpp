@@ -21,6 +21,7 @@ constexpr u32 DRIVER_ID_ARM_PROPRIETARY = 9;
 constexpr u32 DRIVER_ID_MESA_TURNIP = 18;
 constexpr u32 DRIVER_ID_MESA_PANVK = 20;
 constexpr u32 DRIVER_ID_IMAGINATION_OPEN_SOURCE_MESA = 25;
+constexpr u32 DRIVER_ID_MESA_HONEYKRISP = 26;
 
 constexpr u64 Bug(DriverBug bug)
 {
@@ -721,4 +722,37 @@ u64 GpuProfileDetector::GetForcedBugs()
 u32 GpuProfileDetector::ParseDeclaredLoopFixGeneration(std::string_view driver_info)
 {
 	return GpuProfileDetail::ParseFixGeneration(driver_info);
+}
+
+VulkanDeviceRules GpuProfileDetector::ResolveVulkanDeviceRules(const GpuProfileSelection& selection,
+	const MobileDriverContext& context, std::string_view device_name)
+{
+	using namespace GpuProfileDetail;
+
+	const bool mali = (context.vendor_id == GpuVendorID::ARM);
+	const bool adreno = (context.vendor_id == GpuVendorID::Qualcomm);
+	const bool qualcomm_driver = (context.driver_id == DRIVER_ID_QUALCOMM_PROPRIETARY);
+	const bool turnip = (context.driver_id == DRIVER_ID_MESA_TURNIP);
+	const bool honeykrisp = (context.driver_id == DRIVER_ID_MESA_HONEYKRISP);
+	const auto name_has = [device_name](std::string_view part) {
+		return device_name.find(part) != std::string_view::npos;
+	};
+
+	VulkanDeviceRules rules;
+	rules.broken_timestamp_queries = mali && name_has("Mali-G615");
+	// Matched on the driverInfo string, not the parsed revision the rule table uses, and without the
+	// table's MT6897 exemption. MT6897's r44p1 does not advertise the layout extension, so the two
+	// agree on every r44p1 device seen.
+	rules.avoid_feedback_loop_layout =
+		mali && context.driver_info.find("r44p1") != std::string_view::npos;
+	rules.avoid_push_descriptors = mali || (adreno && !qualcomm_driver && !turnip);
+	rules.broken_provoking_vertex = adreno && qualcomm_driver;
+	rules.broken_colormask_with_depth =
+		adreno && !turnip && (context.device_id < 0x06000000u || context.driver_version < 0x801EA000u);
+	rules.broken_mad_deinterlace = mali && name_has("Mali-G57");
+	rules.adreno8xx_proprietary =
+		adreno && qualcomm_driver && selection.gpu.architecture == MobileGpuArchitecture::Adreno8xx;
+	rules.self_read_costs_measured = turnip || honeykrisp;
+	rules.barrier_road_measured = honeykrisp;
+	return rules;
 }

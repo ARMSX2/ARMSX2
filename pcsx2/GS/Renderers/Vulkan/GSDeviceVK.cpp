@@ -951,29 +951,22 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		queue_family_properties[m_graphics_queue_family_index].timestampValidBits,
 		m_device_properties.limits.timestampPeriod);
 
+	m_gpu_pipeline_statistics_supported = (m_device_features.pipelineStatisticsQuery != 0);
+	DevCon.WriteLn("GPU pipeline statistics is %s", m_gpu_pipeline_statistics_supported ? "supported" : "not supported");
+
+	if (!ProcessDeviceExtensions())
+		return false;
+
 #if defined(__ANDROID__)
-	// Mali-G615 (Valhall 4th-gen) on the r44p1 blob advertises timestampValidBits>0, but its
-	// timestamp query pool never resolves even after the command-buffer fence signals —
-	// vkGetQueryPoolResults returns VK_NOT_READY every frame ("(CommandBufferCompleted)
-	// vkGetQueryPoolResults failed: VK_NOT_READY"), and the present spin-manager that leans on
-	// those timestamps stalls into a multi-second freeze (Burnout 3 at native res). Disable GPU
-	// timing + present spinning on THIS GPU only: other Mali report better results with them on,
-	// so the gate is deliberately narrow (deviceName match, not a blanket Mali rule). Costs only
-	// the GPU-time OSD stat and a present-pacing optimisation; rendering correctness is unaffected.
-	if (m_device_properties.vendorID == 0x13B5u &&
-		std::string_view(m_device_properties.deviceName).find("Mali-G615") != std::string_view::npos)
+	// Mali-G615's timestamp queries never resolve, and the present spin that waits on them stalls
+	// for seconds. Other Mali parts keep both. Costs the GPU-time stat and present pacing only.
+	if (m_device_rules.broken_timestamp_queries)
 	{
 		Console.WriteLn("Mali-G615: disabling GPU timing + present spinning (r44p1 timestamp-query VK_NOT_READY freeze).");
 		m_gpu_timing_supported = false;
 		m_spinning_supported = false;
 	}
 #endif
-
-	m_gpu_pipeline_statistics_supported = (m_device_features.pipelineStatisticsQuery != 0);
-	DevCon.WriteLn("GPU pipeline statistics is %s", m_gpu_pipeline_statistics_supported ? "supported" : "not supported");
-
-	if (!ProcessDeviceExtensions())
-		return false;
 
 	if (m_spinning_supported)
 	{
@@ -1068,20 +1061,12 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 
 	// query
 	vkGetPhysicalDeviceProperties2(m_physical_device, &properties2);
+	ResolveDeviceIdentity();
 
-	// The Mali r44p1 blob mishandles the in-tile attachment-feedback-loop blend path and
-	// loses the device under it — VK_ERROR_DEVICE_LOST on every game, but ONLY on this driver
-	// (Motorola Edge 60 Pro / Mali-G615 r44p1; other Mali blobs, including other G615 units,
-	// run it fine). The extension-select comment above anticipated exactly this: "if a specific
-	// old blob regresses, narrow by driver version rather than re-blocking the whole vendor."
-	// Demote only r44p1 to the slower-but-stable per-primitive barrier path.
-	if (m_device_properties.vendorID == 0x13B5u && m_optional_extensions.vk_khr_driver_properties &&
-		std::string_view(m_device_driver_properties.driverInfo).find("r44p1") != std::string_view::npos)
+	// Mali r44p1 loses the device under an in-pass self-read. This alone does not avoid it: the
+	// driver-bug database also puts r44p1 on the render-target copy road.
+	if (m_device_rules.avoid_feedback_loop_layout)
 	{
-		// NOTE: this layout disable alone did NOT stop the DEVICE_LOST — the per-primitive barrier /
-		// fbfetch path it falls back to lowers to the same faulting in-tile silicon. The real fix
-		// forces r44p1 onto the RT-copy blend path by ALSO disabling texture_barrier; see the matching
-		// "Mali r44p1:" block where m_features.texture_barrier is resolved.
 		Console.WriteLn("Mali r44p1: disabling attachment-feedback-loop blend path (DEVICE_LOST workaround).");
 		m_optional_extensions.vk_ext_attachment_feedback_loop_layout = false;
 	}
@@ -1096,32 +1081,16 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 			push_descriptor_properties.maxPushDescriptors, NUM_TFX_TEXTURES);
 		m_use_push_descriptors = false;
 	}
-	// Mali (ARM, vendorID 0x13B5) advertises VK_KHR_push_descriptor but its driver
-	// null-derefs inside vkCmdPushDescriptorSetKHR on the first textured draw, so
-	// never use it there even when present.
-	if (m_use_push_descriptors && properties2.properties.vendorID == 0x13B5u)
-		m_use_push_descriptors = false;
-	// Adreno (Qualcomm, 0x5143): the pre-transplant backend measured a per-draw TFX
-	// texture-rebind stall with push descriptors on Turnip (RP6), and a descriptor-set
-	// fallback regression on the proprietary driver (8 Elite), so it allowed only the
-	// proprietary driver. That Turnip measurement was of the OLD backend's binding code;
-	// this backend has always shipped push descriptors on Turnip
-	// (Adreno 610/650) and outperforms the fallback there. Allow the two drivers we have
-	// evidence for; keep the conservative disable only for an unknown Adreno driver.
-	if (m_use_push_descriptors && properties2.properties.vendorID == 0x5143u &&
-		m_device_driver_properties.driverID != VK_DRIVER_ID_QUALCOMM_PROPRIETARY &&
-		m_device_driver_properties.driverID != VK_DRIVER_ID_MESA_TURNIP)
+	// Mali crashes in vkCmdPushDescriptorSetKHR even where it advertises the extension, and an
+	// Adreno driver other than Qualcomm's or Turnip is untested with it.
+	if (m_use_push_descriptors && m_device_rules.avoid_push_descriptors)
 		m_use_push_descriptors = false;
 	if (!m_use_push_descriptors)
 		Console.Warning("VK: Using non-push-descriptor texture binding fallback.");
 
-	// The Adreno PROPRIETARY driver mis-selects the provoking vertex with
-	// VK_EXT_provoking_vertex (Eden strips it on Qualcomm); drop it there so GSRendererHW's
-	// software provoking-vertex-first path runs instead. Turnip keeps the extension: the
-	// this backend has shipped it on Turnip with no flat-shading reports, and the SW fallback
-	// costs GS-thread CPU per flat-shaded batch.
-	if (m_optional_extensions.vk_ext_provoking_vertex && properties2.properties.vendorID == 0x5143u &&
-		m_device_driver_properties.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY)
+	// Qualcomm's Adreno driver selects the wrong provoking vertex, so GSRendererHW's software
+	// provoking-vertex-first path runs instead. Turnip keeps the extension.
+	if (m_optional_extensions.vk_ext_provoking_vertex && m_device_rules.broken_provoking_vertex)
 		m_optional_extensions.vk_ext_provoking_vertex = false;
 
 	if (m_optional_extensions.vk_ext_line_rasterization && !line_rasterization_feature.bresenhamLines)
@@ -1191,6 +1160,32 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 		m_optional_extensions.vk_ext_fragment_shader_interlock ? "supported" : "NOT supported");
 
 	return true;
+}
+
+void GSDeviceVK::ResolveDeviceIdentity()
+{
+	// Needs m_device_driver_properties, so it runs as soon as ProcessDeviceExtensions has them.
+	// Resolved on every platform: the driver-bug database is keyed on the driver, and Turnip on an
+	// ARM Linux handheld is the same driver as Turnip on a phone. Resolution is pure data;
+	// PublishGPUProfile hands it to the device, and the rules act only where they are queried.
+	MobileDriverContext driver_context;
+	driver_context.api = MobileGpuApi::Vulkan;
+	driver_context.vendor_id = m_device_properties.vendorID;
+	driver_context.device_id = m_device_properties.deviceID;
+	driver_context.driver_version = m_device_properties.driverVersion;
+	driver_context.api_version = m_device_properties.apiVersion;
+	driver_context.max_draw_indirect_count = m_device_properties.limits.maxDrawIndirectCount;
+	if (m_optional_extensions.vk_khr_driver_properties)
+	{
+		driver_context.driver_id = static_cast<u32>(m_device_driver_properties.driverID);
+		driver_context.driver_name = m_device_driver_properties.driverName;
+		driver_context.driver_info = m_device_driver_properties.driverInfo;
+	}
+	m_gpu_profile = GpuProfileDetector::Resolve(
+		GSConfig.AndroidGpuProfileOverride, std::string_view(), m_device_properties.deviceName,
+		driver_context);
+	m_device_rules =
+		GpuProfileDetector::ResolveVulkanDeviceRules(m_gpu_profile, driver_context, m_device_properties.deviceName);
 }
 
 bool GSDeviceVK::CreateAllocator()
@@ -3714,8 +3709,8 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 
 bool GSDeviceVK::CheckFeatures()
 {
-	const GpuProfileSelection gpu_profile = ResolveGPUProfile();
-	const GSSelfReadRoadDecision road = ResolveSelfReadRoad(gpu_profile);
+	PublishGPUProfile();
+	const GSSelfReadRoadDecision road = ResolveSelfReadRoad();
 	ResolveFeatureTable();
 	ResolveFeedbackConsumers(road);
 	const bool declare_depth_loop = ResolveDepthFeedback(road);
@@ -3724,7 +3719,7 @@ bool GSDeviceVK::CheckFeatures()
 	return CheckFormatSupport();
 }
 
-GpuProfileSelection GSDeviceVK::ResolveGPUProfile()
+void GSDeviceVK::PublishGPUProfile()
 {
 	// NOTE (2026-07-12): we deliberately do NOT force the Mali runtime GPU profile here.
 	// The old band-aid clamped blending accuracy up to Full on Mali (via the profile) to
@@ -3735,41 +3730,10 @@ GpuProfileSelection GSDeviceVK::ResolveGPUProfile()
 	// that path, and the Vulkan renderer never reads the runtime profile anyway (only
 	// GSDeviceOGL does), so the force was dead weight that diverged from his known-good tree.
 
-	// The driver context feeds the driver-bug database (ported from EmuCoreX/sashkinbro with his
-	// approval). Vulkan is the good case: VkPhysicalDeviceDriverProperties names the blob outright,
-	// which is what the r44p1 DEVICE_LOST and 8-Elite push-descriptor fixes both learned the hard
-	// way — gate on driverID, never on vendorID, or Turnip/PanVK inherit proprietary workarounds.
-	// ProcessDeviceExtensions() has already filled m_device_driver_properties by the time we get
-	// here (CreateDeviceAndSwapChain runs before CheckFeatures), so one resolve sees everything.
-	//
-	// Resolved on EVERY platform, not just Android: the database is keyed on the DRIVER, and the
-	// same drivers ship off Android. Turnip on an ARM Linux handheld (Rocknix/Batocera) is the
-	// same Mesa stack with the same defects as Turnip on a phone, and it was the #442 reproducer.
-	// Gating this on __ANDROID__ made every rule silently dead on exactly the devices we test on.
-	// Resolution is pure data — a rule only changes behaviour where something queries HasBug()/
-	// UsesWorkaround(), and every such query is an explicit, per-defect decision.
-	//
-	// The MOBILE-SPECIFIC consequences below stay Android-only on purpose:
-	//   - SetRuntimeGPUProfile(): off Android the GL detector classifies every non-Mali GPU as
-	//     Adreno, so publishing the runtime profile here would hand desktop callers a wrong answer.
-	//   - GS tuning / GPU identity: their only consumers are themselves __ANDROID__-gated, and
-	//     changing desktop texture-pool sizing is not this code's business.
-	MobileDriverContext driver_context;
-	driver_context.api = MobileGpuApi::Vulkan;
-	driver_context.vendor_id = m_device_properties.vendorID;
-	driver_context.device_id = m_device_properties.deviceID;
-	driver_context.driver_version = m_device_properties.driverVersion;
-	driver_context.api_version = m_device_properties.apiVersion;
-	driver_context.max_draw_indirect_count = m_device_properties.limits.maxDrawIndirectCount;
-	if (m_optional_extensions.vk_khr_driver_properties)
-	{
-		driver_context.driver_id = static_cast<u32>(m_device_driver_properties.driverID);
-		driver_context.driver_name = m_device_driver_properties.driverName;
-		driver_context.driver_info = m_device_driver_properties.driverInfo;
-	}
-	const GpuProfileSelection mobile_profile = GpuProfileDetector::Resolve(
-		GSConfig.AndroidGpuProfileOverride, std::string_view(), m_device_properties.deviceName,
-		driver_context);
+	// The mobile-specific consequences stay Android-only: off Android the GL detector classifies
+	// every non-Mali GPU as Adreno, so the runtime profile would be a wrong answer there, and the
+	// GS tuning and GPU identity have only Android consumers.
+	const GpuProfileSelection& mobile_profile = m_gpu_profile;
 	SetMobileDriverProfile(mobile_profile.driver);
 #if defined(__ANDROID__)
 	// ★ Vulkan resolved mobile_profile and pushed every OTHER piece of it into the device
@@ -3812,11 +3776,9 @@ GpuProfileSelection GSDeviceVK::ResolveGPUProfile()
 		static_cast<unsigned long long>(mobile_profile.driver.bugs),
 		static_cast<unsigned long long>(mobile_profile.driver.workarounds));
 	DevCon.WriteLn("VK: GPU profile hints: %s", mobile_profile.hints.c_str());
-
-	return mobile_profile;
 }
 
-GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad(const GpuProfileSelection& mobile_profile)
+GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad()
 {
 	// Set when the user (or auto-detection) selects the Xclipse GPU profile; forces the
 	// Xclipse fbfetch-off path below even if the 0x144D vendorID guess doesn't fire on
@@ -3824,8 +3786,8 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad(const GpuProfileSelection
 	// desktop. Populated from the resolved mobile profile just below.
 	bool force_xclipse_profile = false;
 #if defined(__ANDROID__)
-	force_xclipse_profile = (mobile_profile.override_mode == GpuProfileOverride::Xclipse) ||
-		(mobile_profile.runtime_profile == RuntimeGpuProfile::Xclipse);
+	force_xclipse_profile = (m_gpu_profile.override_mode == GpuProfileOverride::Xclipse) ||
+		(m_gpu_profile.runtime_profile == RuntimeGpuProfile::Xclipse);
 #endif
 
 	// BrokenSubpassFeedback + BrokenAttachmentFeedbackLoopLayout: on these drivers an in-pass
@@ -3935,7 +3897,7 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad(const GpuProfileSelection
 	//
 	// OTHER VENDORS: trusted on Android builds only (the vendor terms become a deny list there, see
 	// below); on desktop only Mali and Adreno are.
-	const bool is_mali_vk = (m_device_properties.vendorID == 0x13B5u);
+	const bool is_mali_vk = IsDeviceMali();
 	const bool is_adreno = IsDeviceAdreno();
 	// ⚠️ In practice this is currently moot on Adreno: UseRenderTargetCopyForFeedback turns texture
 	// barriers off below, and "fbfetch needs barriers" then clears framebuffer_fetch regardless of
@@ -3998,9 +3960,7 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad(const GpuProfileSelection
 	// the correct texture-barrier path — restoring the historical 8-Elite exclusion. A hard gate like
 	// is_xclipse_vk (the toggle can't force it back on), since it's a correctness bug, not a perf
 	// trade; Turnip on 8xx (open driver, no stale reads) is unaffected and keeps the fast path.
-	const bool is_adreno8xx_proprietary = is_adreno &&
-		m_device_driver_properties.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY &&
-		mobile_profile.gpu.architecture == MobileGpuArchitecture::Adreno8xx;
+	const bool is_adreno8xx_proprietary = m_device_rules.adreno8xx_proprietary;
 	// Every term above, in one place, in GSFramebufferFetchPolicy.h beside the OpenGL decision. The
 	// facts are collected here; which of them wins is pinned there and in gs_vertex_tests.
 	GSVulkanFramebufferFetchInputs fetch_inputs;
@@ -4061,8 +4021,7 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad(const GpuProfileSelection
 		.spelling = g_gs_measurement_overrides.LoopSpelling(),
 		.layout_road_live = UseFeedbackLoopLayout(),
 		.dynamic_state_available = m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state,
-		.device_measured = m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_TURNIP ||
-		                   m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP};
+		.device_measured = m_device_rules.self_read_costs_measured};
 	m_declare_loop_per_draw = GSDeclaresLoopPerDraw(dynamic_loop_inputs);
 	if (GSLoopSpellingFallsBackToCreateFlag(dynamic_loop_inputs))
 	{
@@ -4108,9 +4067,7 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad(const GpuProfileSelection
 	// The two drivers whose per-draw barrier was measured to cost about what a per-draw copy does:
 	// Turnip (an Adreno 740, +40% on Splashdown) and Honeykrisp (the M2). Read only by the
 	// blending cap in GSCopyRoadBlendingPolicy.h; every other driver treats the barrier as cheap.
-	m_features.barrier_read_costs_per_draw =
-		m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_TURNIP ||
-		m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP;
+	m_features.barrier_read_costs_per_draw = m_device_rules.self_read_costs_measured;
 	if (rt_self_read_is_broken && GSConfig.OverrideTextureBarriers < 0 && !m_features.texture_barrier)
 	{
 		Console.WriteLn("VK: driver has an unreliable in-pass render-target self-read — forcing the "
@@ -4240,14 +4197,10 @@ void GSDeviceVK::ResolveFeatureTable()
 	if (UsesMobileDriverWorkaround(DriverWorkaround::DisableStencilBuffer))
 		m_features.stencil_buffer = false;
 
-	// deviceName is null-terminated by Vulkan. The G57 fbfetch deny lives in the driver-bug database.
-	const bool is_mali_g57 = IsDeviceMali() &&
-		(std::string_view(m_device_properties.deviceName).find("Mali-G57") != std::string_view::npos);
 	// Mali-G57 r13p0-class drivers can expose alternating/stale FastMAD history banks instead of the
 	// reconstructed frame; GSRenderer::Merge falls those back to weave+blend. Ported from sashkinbro/EmuCoreX.
-	m_features.broken_mad_deinterlace = is_mali_g57;
+	m_features.broken_mad_deinterlace = m_device_rules.broken_mad_deinterlace;
 
-	const bool is_turnip = (m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_TURNIP);
 	// Adreno colorWriteMask-with-depthtest bug (PPSSPP #10421 / thin3d_vulkan.cpp): on
 	// Adreno 5xx and pre-0x801EA000 drivers the pipeline colorWriteMask is ignored while a
 	// depth test is active, so masked RGBA channels get written. PS2 FBMASK relies on the
@@ -4257,8 +4210,7 @@ void GSDeviceVK::ResolveFeatureTable()
 	// reports Mesa's version (e.g. Mesa 26.1.2 -> 0x06801002), which is always below it and
 	// made the workaround misfire on every Turnip device. The blob bug does not exist in
 	// Mesa, so exclude Turnip outright.
-	m_broken_colormask_with_depth = IsDeviceAdreno() && !is_turnip &&
-		(m_device_properties.deviceID < 0x06000000u || m_device_properties.driverVersion < 0x801EA000u);
+	m_broken_colormask_with_depth = m_device_rules.broken_colormask_with_depth;
 	if (m_broken_colormask_with_depth)
 		Console.WriteLn("VK: Adreno colorWriteMask-with-depthtest workaround active (deviceID=0x%08X driver=0x%08X)",
 			m_device_properties.deviceID, m_device_properties.driverVersion);
@@ -4311,7 +4263,7 @@ void GSDeviceVK::ResolveFeedbackConsumers(const GSSelfReadRoadDecision& road)
 			.loop_declared = road.loop_declared,
 			// The barrier road's counter was timed on the M2 only; desktop Vulkan on the same road
 			// keeps the answer it had before the road existed.
-			.barrier_road_measured = (m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP)});
+			.barrier_road_measured = m_device_rules.barrier_road_measured});
 
 	// The device half of the feedback-loop carry (GSFeedbackLoopCarryPolicy.h). Every input is final
 	// here, so DoRenderHW copies this and fills in only the per-draw terms.
@@ -4323,8 +4275,7 @@ void GSDeviceVK::ResolveFeedbackConsumers(const GSSelfReadRoadDecision& road)
 	// off there is no ordering, so the layout road carries nothing. Consulted only on the layout
 	// road; framebuffer_fetch is itself masked by texture_barrier.
 	m_carry_device_facts.barriers_order_reads = m_features.texture_barrier;
-	m_carry_device_facts.device_is_barrier_road_vendor =
-		(m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP);
+	m_carry_device_facts.device_is_barrier_road_vendor = m_device_rules.barrier_road_measured;
 	m_carry_device_facts.framebuffer_fetch = m_features.framebuffer_fetch;
 	m_carry_device_facts.feedback_loop_layout = UseFeedbackLoopLayout();
 }
@@ -6230,7 +6181,7 @@ bool GSDeviceVK::CreatePipelineLayouts()
 	// attachment (not vendor-scoped). Keep this condition identical to the writes in ApplyTFXState.
 	// Vendor-scoped per sashkinbro/EmuCoreX 30b09c8 (Fix Adreno Vulkan accurate blending flicker).
 	const VkDescriptorType feedback_descriptor_type =
-		(m_features.texture_barrier && !UseFeedbackLoopLayout() && m_device_properties.vendorID == 0x13B5u) ?
+		(m_features.texture_barrier && !UseFeedbackLoopLayout() && IsDeviceMali()) ?
 			VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT :
 			VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 	dslb.AddBinding(TFX_TEXTURE_RT, feedback_descriptor_type, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -8558,7 +8509,7 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 		}
 		if (flags & DIRTY_FLAG_TFX_TEXTURE_RT)
 		{
-			if (m_features.texture_barrier && !UseFeedbackLoopLayout() && m_device_properties.vendorID == 0x13B5u)
+			if (m_features.texture_barrier && !UseFeedbackLoopLayout() && IsDeviceMali())
 			{
 				dsub.AddInputAttachmentDescriptorWrite(
 					ds, TFX_TEXTURE_RT, m_tfx_textures[TFX_TEXTURE_RT]->GetView(), VK_IMAGE_LAYOUT_GENERAL);
@@ -8576,7 +8527,7 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 		}
 		if (flags & DIRTY_FLAG_TFX_TEXTURE_DEPTH)
 		{
-			if (m_features.texture_barrier && !UseFeedbackLoopLayout() && m_device_properties.vendorID == 0x13B5u)
+			if (m_features.texture_barrier && !UseFeedbackLoopLayout() && IsDeviceMali())
 			{
 				dsub.AddInputAttachmentDescriptorWrite(
 					ds, TFX_TEXTURE_DEPTH, m_tfx_textures[TFX_TEXTURE_DEPTH]->GetView(), VK_IMAGE_LAYOUT_GENERAL);

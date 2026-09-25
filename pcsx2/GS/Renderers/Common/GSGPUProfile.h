@@ -276,6 +276,53 @@ struct MobileGpuIdentity
 	std::string name = "Unknown";
 };
 
+/// PCI vendor IDs as Vulkan reports them in VkPhysicalDeviceProperties::vendorID. Apple silicon
+/// reports a different ID per driver, so it is identified by driver instead.
+namespace GpuVendorID
+{
+constexpr u32 AMD = 0x1002;
+constexpr u32 NVIDIA = 0x10DE;
+constexpr u32 Intel = 0x8086;
+constexpr u32 ARM = 0x13B5;
+constexpr u32 Qualcomm = 0x5143;
+constexpr u32 Imagination = 0x1010;
+constexpr u32 Broadcom = 0x14E4;
+/// Samsung Xclipse. Not confirmed on a device: a driver reporting another ID leaves every check
+/// against this one inert.
+constexpr u32 Samsung = 0x144D;
+} // namespace GpuVendorID
+
+/// Vulkan device rules keyed on the device's own identity (vendor ID, device name, driver ID,
+/// driverInfo) rather than matched in the driver-bug database. Each keeps the exact condition the
+/// backend has always applied, which is not always the database's: the push-descriptor rule covers
+/// Mali on every driver, where the database names Arm's.
+struct VulkanDeviceRules
+{
+	/// Mali-G615: timestamp queries never resolve, and the present spin that waits on them stalls.
+	bool broken_timestamp_queries = false;
+	/// Mali on a driver whose driverInfo names r44p1: the attachment-feedback-loop layout is not
+	/// used. The rest of the r44p1 workaround is rule vk-arm-r44p1-attachment-self-read.
+	bool avoid_feedback_loop_layout = false;
+	/// Mali crashes inside vkCmdPushDescriptorSetKHR. Adreno is trusted with push descriptors on the
+	/// Qualcomm driver and Turnip only.
+	bool avoid_push_descriptors = false;
+	/// Adreno on the Qualcomm driver selects the wrong provoking vertex.
+	bool broken_provoking_vertex = false;
+	/// Adreno 5xx, or a Qualcomm driver older than 0x801EA000, ignores colorWriteMask while a depth
+	/// test is active. That version is in the Qualcomm encoding, so Turnip is excluded outright.
+	bool broken_colormask_with_depth = false;
+	/// Mali-G57: the FastMAD history banks read back stale, so deinterlace uses weave and blend.
+	bool broken_mad_deinterlace = false;
+	/// Adreno 8xx on the Qualcomm driver: rasterization-order reads return stale colour above
+	/// Basic blending. Turnip on the same parts is fine.
+	bool adreno8xx_proprietary = false;
+	/// Turnip or Honeykrisp: the drivers on which the in-pass self-read was measured. A per-draw
+	/// barrier there costs about what a per-draw copy does, and the loop is declared per draw.
+	bool self_read_costs_measured = false;
+	/// Honeykrisp: the barrier-ordered road's fast stencil shadow and carry were measured there.
+	bool barrier_road_measured = false;
+};
+
 struct GpuProfileSelection
 {
 	GpuProfileOverride override_mode = GpuProfileOverride::Auto;
@@ -318,4 +365,9 @@ public:
 	/// The generation from a `git-axfl<G>-` build tag in a Vulkan driverInfo string, or 0 if none.
 	/// Exposed for tests; the resolver publishes it as declared_loop_fix_generation.
 	static u32 ParseDeclaredLoopFixGeneration(std::string_view driver_info);
+
+	/// The Vulkan device rules for a device. `selection` is the result of Resolve on the same
+	/// context; `device_name` is VkPhysicalDeviceProperties::deviceName.
+	static VulkanDeviceRules ResolveVulkanDeviceRules(const GpuProfileSelection& selection,
+		const MobileDriverContext& context, std::string_view device_name);
 };
