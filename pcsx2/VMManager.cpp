@@ -518,7 +518,14 @@ void VMManager::Internal::CPUThreadShutdown()
 	PerformanceMetrics::SetCPUThread(Threading::ThreadHandle());
 	PerformanceMetrics::AdpfShutdown(); // ADPF: close the hint session on VM shutdown (Android)
 
+	// On Android this runs at the end of every game, not once at app exit as on desktop, and the
+	// settings screen lists the USB devices from this registry between games. Emptying it here left
+	// that list with nothing but "Not Connected" after the first game until the app restarted (#752).
+	// The registry only holds device factories, filled once at app start (native-lib's initialize);
+	// a game's own devices are closed by USBclose().
+#if !defined(__ANDROID__)
 	USBshutdown();
+#endif
 
 	MTGS::ShutdownThread();
 	GSJoinSnapshotThreads();
