@@ -57,6 +57,7 @@ import com.armsx2.MemoryCardBackup
 import com.armsx2.PlayTime
 import com.armsx2.i18n.str
 import com.armsx2.input.ControllerMappings
+import com.armsx2.input.HotkeyHoldState
 import com.armsx2.input.SoftKeyboard
 import com.armsx2.runtime.MainActivityRuntime.Companion.internalBiosDir
 import com.armsx2.runtime.MainActivityRuntime.Companion.romsDirs
@@ -1313,6 +1314,7 @@ open class MainActivityRuntime : ComponentActivity() {
             // at normal speed. Same for the gyro hotkey latch — a game left with gyro
             // toggled off must not silently start the next one with gyro dead.
             fastForwardToggleActive = false
+            instance?.fastForwardHold?.clear()
             slowDownToggleActive = false
             gyroActive.value = true
             val nativeActive = runCatching { NativeApp.hasActiveVM() }.getOrDefault(false)
@@ -3033,6 +3035,20 @@ open class MainActivityRuntime : ComponentActivity() {
     // (e.g. Select + R1) — kept current at the top of dispatchKeyEvent so a
     // combo's modifier can be checked the instant its main key is pressed.
     private val heldKeys = HashSet<Int>()
+    private val fastForwardHold = HotkeyHoldState()
+
+    private fun startFastForwardHold(mainKey: Int) {
+        val modifier = ControllerMappings.hotkeyModCode(ControllerMappings.SysHotkey.FAST_FORWARD)
+            .takeUnless { it == KeyEvent.KEYCODE_UNKNOWN }
+        fastForwardHold.start(mainKey, modifier)
+        fastForwardToggleActive = false
+        runCatching { NativeApp.speedhackLimitermode(ffLimiterMode()) }
+    }
+
+    private fun releaseFastForwardHold(key: Int) {
+        if (fastForwardHold.release(key))
+            runCatching { NativeApp.speedhackLimitermode(baseLimiterMode()) }
+    }
 
     // Hold-BACK-to-exit (Dolphin-style) timer. Instance-scoped because
     // dispatchKeyEvent is an Activity method; the posted runnable is cancelled on
@@ -3076,7 +3092,14 @@ open class MainActivityRuntime : ComponentActivity() {
         if (kc != KeyEvent.KEYCODE_UNKNOWN) {
             when (event.action) {
                 KeyEvent.ACTION_DOWN -> heldKeys.add(kc)
-                KeyEvent.ACTION_UP -> heldKeys.remove(kc)
+                KeyEvent.ACTION_UP -> {
+                    heldKeys.remove(kc)
+                    // A combo hold ends when EITHER physical key is released, even if
+                    // this key is the modifier and matchHotkey would not match it.
+                    // Axis-owned triggers release only at their axis threshold; their
+                    // duplicate key-up must not end the hold ahead of that edge.
+                    if (triggerHotkeyOwner[kc] != true) releaseFastForwardHold(kc)
+                }
             }
         }
         // Track the active gamepad so PS2 rumble routes to its vibrator.
@@ -3619,13 +3642,8 @@ open class MainActivityRuntime : ComponentActivity() {
                     // Hold to fast-forward (Turbo), release to return to the user's
                     // current limiter mode (Nominal if frame-limit is on, else Unlimited)
                     // — not blindly Nominal, which would re-enable a disabled limiter.
-                    if (event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP) {
-                        if (event.repeatCount == 0) {
-                            // Holding FF supersedes any latched FF-toggle.
-                            if (down) fastForwardToggleActive = false
-                            runCatching { NativeApp.speedhackLimitermode(if (down) ffLimiterMode() else baseLimiterMode()) }
-                        }
-                    }
+                    // Release was handled above using the binding active at press time.
+                    if (down && event.repeatCount == 0) startFastForwardHold(kc)
                     return true
                 }
                 ControllerMappings.SysHotkey.FAST_FORWARD_TOGGLE -> {
@@ -5264,6 +5282,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 }
             } else {
                 heldKeys.remove(code)
+                releaseFastForwardHold(code)
                 held.remove(code)
             }
         }
@@ -5523,7 +5542,10 @@ open class MainActivityRuntime : ComponentActivity() {
         // event that happens to read the axis low.
         if (pressed) heldKeys.add(code)
         if (pressed != held.contains(code)) {
-            if (pressed) held.add(code) else { held.remove(code); heldKeys.remove(code) }
+            if (pressed) held.add(code) else {
+                held.remove(code)
+                heldKeys.remove(code)
+            }
             // Only the path that saw this press first fires its hotkey or macro, on both edges;
             // on a pad that reports the trigger both ways the key path has the other. See
             // triggerHotkeyOwner.
@@ -5532,6 +5554,7 @@ open class MainActivityRuntime : ComponentActivity() {
             } else {
                 (triggerHotkeyOwner[code] == true).also { if (it) triggerHotkeyOwner.remove(code) }
             }
+            if (ours && !pressed) releaseFastForwardHold(code)
             // Triggers now reach the Hotkeys tab's capture like any other button, so they have
             // to be able to fire one here. Hold-type hotkeys act on both edges (a trigger has a
             // real release, unlike a stick edge); the rest fire on the press. Matching on
@@ -5539,10 +5562,7 @@ open class MainActivityRuntime : ComponentActivity() {
             if (ours) ControllerMappings.matchHotkey(code, if (pressed) heldKeys else heldKeys + code)?.let { hk ->
                 when (hk) {
                     ControllerMappings.SysHotkey.FAST_FORWARD -> {
-                        if (pressed) fastForwardToggleActive = false
-                        runCatching {
-                            NativeApp.speedhackLimitermode(if (pressed) ffLimiterMode() else baseLimiterMode())
-                        }
+                        if (pressed) startFastForwardHold(code)
                     }
                     ControllerMappings.SysHotkey.PRESSURE_MOD ->
                         com.armsx2.ui.touch.TouchControls.pressureModifierHeld.value = pressed
