@@ -1982,7 +1982,8 @@ public:
 	virtual bool SetGPUTimingEnabled(bool enabled) = 0;
 
 	/// Names the running game, so a device can build the pipelines it recorded for that game ahead
-	/// of their first use. Called on the GS thread after Create() and on every game change.
+	/// of their first use. Called on the GS thread when a renderer opens and on every game change;
+	/// an empty serial (the software renderer, or no game) means build nothing.
 	virtual void SetGameIdentity(const std::string& serial, u32 crc) {}
 
 	/// Returns the amount of GPU time utilized since the last time this method was called.

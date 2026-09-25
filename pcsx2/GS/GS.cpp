@@ -200,9 +200,6 @@ static bool OpenGSDevice(GSRendererType renderer, bool clear_state_on_fail, bool
 	Console.WriteLn(Color_StrongGreen, "%s Graphics Driver Info:", GSDevice::RenderAPIToString(new_api));
 	Console.WriteLn(g_gs_device->GetDriverInfo());
 
-	// The CPU thread does not hold the VM info lock while the GS device opens.
-	g_gs_device->SetGameIdentity(VMManager::GetDiscSerial(), VMManager::GetDiscCRC());
-
 	return true;
 }
 
@@ -362,6 +359,17 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 	g_gs_renderer->SetRegsMem(basemem);
 	g_gs_renderer->ResetPCRTC();
 	g_gs_renderer->UpdateRenderFixes();
+
+	// Pipeline precompile is for the hardware renderer's draws only. An empty serial stops it, which
+	// a switch to the software renderer on the same device needs. The CPU thread does not hold the
+	// VM info lock while the GS opens.
+	if (g_gs_device)
+	{
+		if (GSIsHardwareRenderer())
+			g_gs_device->SetGameIdentity(VMManager::GetDiscSerial(), VMManager::GetDiscCRC());
+		else
+			g_gs_device->SetGameIdentity(std::string(), 0);
+	}
 
 	// GV7-1d-ii: instantiate the front parser only when the back thread really
 	// engaged. GSResolveBackThreadMode has already turned a pipelined request into
@@ -780,7 +788,7 @@ void GSThrottlePresentation()
 void GSGameChanged(const std::string& serial, u32 crc)
 {
 	if (g_gs_device)
-		g_gs_device->SetGameIdentity(serial, crc);
+		g_gs_device->SetGameIdentity(GSIsHardwareRenderer() ? serial : std::string(), crc);
 
 	if (GSIsHardwareRenderer())
 	{
