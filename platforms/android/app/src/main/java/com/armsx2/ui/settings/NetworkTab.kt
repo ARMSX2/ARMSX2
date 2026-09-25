@@ -274,12 +274,19 @@ fun NetworkTab(state: MutableState<Settings>) {
             apply(s.copy(network = s.network.copy(dev9Gateway = it.ifEmpty { "0.0.0.0" })))
         }
         SettingsDivider()
+        // The core reads a DNS address only in Manual mode, and Auto gives the PS2 no DNS on
+        // Android at all (#379). So typing an address switches that slot to Manual: left on Auto,
+        // a revival server's DNS was saved and then silently ignored.
         EditableTextRow(str("network.dns1"), s.network.dev9Dns1) {
-            apply(s.copy(network = s.network.copy(dev9Dns1 = it.ifEmpty { "0.0.0.0" })))
+            val ip = it.ifEmpty { "0.0.0.0" }
+            val mode = if (ip != "0.0.0.0") "Manual" else s.network.dev9ModeDns1
+            apply(s.copy(network = s.network.copy(dev9Dns1 = ip, dev9ModeDns1 = mode)))
         }
         SettingsDivider()
         EditableTextRow(str("network.dns2"), s.network.dev9Dns2) {
-            apply(s.copy(network = s.network.copy(dev9Dns2 = it.ifEmpty { "0.0.0.0" })))
+            val ip = it.ifEmpty { "0.0.0.0" }
+            val mode = if (ip != "0.0.0.0") "Manual" else s.network.dev9ModeDns2
+            apply(s.copy(network = s.network.copy(dev9Dns2 = ip, dev9ModeDns2 = mode)))
         }
         SettingsDivider()
         HelpText(str("network.hostMappings.help"))
