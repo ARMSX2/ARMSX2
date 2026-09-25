@@ -185,7 +185,6 @@ struct BIOSListView: View {
             }
             .sheet(isPresented: $showBIOSCompatibilityImporter) {
                 ImportDocumentPicker(
-                    allowedContentTypes: FileImportHandler.biosContentTypes,
                     allowsMultipleSelection: true,
                     legacyDocumentTypes: ["public.item", "public.data", "public.content"]
                 ) { result in
