@@ -7783,6 +7783,7 @@ void GSDeviceVK::SetGameIdentity(const std::string& serial, u32 crc)
 	const u32 hw = std::max(std::thread::hardware_concurrency(), 2u);
 	const u32 num_workers = std::min<u32>(std::clamp(hw / 2 - 1, 1u, 4u), static_cast<u32>(m_precompile_queue.size()));
 	m_precompile_active = true;
+	m_precompile_start = Common::Timer::GetCurrentValue();
 	for (u32 i = 0; i < num_workers; i++)
 		m_precompile_workers.emplace_back(&GSDeviceVK::PrecompileWorker, this);
 
@@ -7800,6 +7801,7 @@ void GSDeviceVK::PrecompileWorker()
 	self.SetAffinity(0);
 	self.SetNicePriority(5);
 
+	u32 built = 0;
 	std::unique_lock lock(m_precompile_mutex);
 	while (!m_precompile_stop && !m_precompile_queue.empty())
 	{
@@ -7821,7 +7823,14 @@ void GSDeviceVK::PrecompileWorker()
 		job.pipeline = pipeline;
 		job.state = TFXPrecompileJob::State::Done;
 		m_precompile_done_cv.notify_all();
+		built++;
 	}
+
+	GSCompileStats::Add(GSCompileStats::PrecompileBuilt, built);
+	const double cpu_ms = static_cast<double>(self.GetCPUTime()) * 1000.0 / static_cast<double>(Threading::GetThreadTicksPerSecond());
+	const double wall_ms = Common::Timer::ConvertValueToMilliseconds(Common::Timer::GetCurrentValue() - m_precompile_start);
+	INFO_LOG("Vulkan: precompile worker built {} pipelines, {:.1f} ms CPU, finished {:.1f} ms after start, last on CPU {}",
+		built, cpu_ms, wall_ms, self.GetCurrentCpu());
 }
 
 std::optional<VkPipeline> GSDeviceVK::TakePrecompiledTFXPipeline(const PipelineSelector& p)
@@ -7844,8 +7853,10 @@ std::optional<VkPipeline> GSDeviceVK::TakePrecompiledTFXPipeline(const PipelineS
 		m_precompile_done_cv.wait(lock, [this, &p]() {
 			return m_precompile_jobs.at(p).state == TFXPrecompileJob::State::Done;
 		});
-		GSShaderCompileIndicator::OnCompileDone(
-			static_cast<u64>(wait_timer.GetTimeNanoseconds()), wait_timer.GetStartValue());
+		const u64 waited_ns = static_cast<u64>(wait_timer.GetTimeNanoseconds());
+		GSShaderCompileIndicator::OnCompileDone(waited_ns, wait_timer.GetStartValue());
+		GSCompileStats::Add(GSCompileStats::PrecompileWaits, 1);
+		GSCompileStats::Add(GSCompileStats::PrecompileWaitNs, waited_ns);
 	}
 
 	const auto done = m_precompile_jobs.find(p);

@@ -629,6 +629,7 @@ private:
 	std::unordered_map<PipelineSelector, TFXPrecompileJob, PipelineSelectorHash> m_precompile_jobs;
 	std::vector<std::thread> m_precompile_workers;
 	bool m_precompile_stop = false;
+	u64 m_precompile_start = 0; ///< Common::Timer value when the workers started; read by the workers.
 	bool m_precompile_active = false; ///< GS thread only: whether m_precompile_jobs can be non-empty.
 	/// GS thread only: the keys the game's key file holds (record index and last session drawn), the
 	/// open file, and this session's number in it.

@@ -2297,13 +2297,16 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(),
 		"    \"compile\": {\"shader_sources\":%" PRIu64 ",\"spirv_compiles\":%" PRIu64 ",\"spirv_cache_hits\":%" PRIu64
 		",\"pipeline_creates\":%" PRIu64 ",\"tfx_pipeline_misses\":%" PRIu64 ",\"shader_source_ms\":%.3f,\"spirv_ms\":%.3f"
-		",\"module_ms\":%.3f,\"pipeline_ms\":%.3f,\"gs_stall_ms\":%.3f,\"cache_flush_ms\":%.3f},\n",
+		",\"module_ms\":%.3f,\"pipeline_ms\":%.3f,\"gs_stall_ms\":%.3f,\"cache_flush_ms\":%.3f,"
+		"\"precompile_built\":%" PRIu64 ",\"precompile_waits\":%" PRIu64 ",\"precompile_wait_ms\":%.3f},\n",
 		s_compile_total[GSCompileStats::ShaderSources], s_compile_total[GSCompileStats::SpirvCompiles],
 		s_compile_total[GSCompileStats::SpirvCacheHits], s_compile_total[GSCompileStats::PipelineCreates],
 		s_compile_total[GSCompileStats::TFXPipelineMisses], s_compile_total[GSCompileStats::ShaderSourceNs] / 1e6,
 		s_compile_total[GSCompileStats::SpirvCompileNs] / 1e6, s_compile_total[GSCompileStats::ModuleCreateNs] / 1e6,
 		s_compile_total[GSCompileStats::PipelineCreateNs] / 1e6, s_compile_total[GSCompileStats::GSThreadStallNs] / 1e6,
-		s_compile_total[GSCompileStats::CacheFlushNs] / 1e6);
+		s_compile_total[GSCompileStats::CacheFlushNs] / 1e6,
+		GSCompileStats::Get(GSCompileStats::PrecompileBuilt), s_compile_total[GSCompileStats::PrecompileWaits],
+		s_compile_total[GSCompileStats::PrecompileWaitNs] / 1e6);
 	std::fprintf(fp.get(),
 		"    \"startup_compile\": {\"spirv_compiles\":%" PRIu64 ",\"spirv_cache_hits\":%" PRIu64 ",\"pipeline_creates\":%" PRIu64
 		",\"spirv_ms\":%.3f,\"pipeline_ms\":%.3f},\n",

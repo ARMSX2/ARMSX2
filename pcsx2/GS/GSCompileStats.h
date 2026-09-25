@@ -28,6 +28,9 @@ namespace GSCompileStats
 		TFXPipelineMisses, ///< Draws whose TFX pipeline was not in the in-memory map.
 		GSThreadStallNs, ///< GS thread time spent obtaining a TFX pipeline it did not have.
 		CacheFlushNs, ///< Pipeline cache serialisation.
+		PrecompileWaits, ///< Draws that waited for a pipeline a precompile worker was building.
+		PrecompileWaitNs,
+		PrecompileBuilt, ///< Pipelines precompile workers finished.
 		Count
 	};
 
