@@ -8758,8 +8758,10 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 				const u32 size_indiv = config.drawarea.width() * config.drawarea.height() +
 				                       config.samplearea.width() * config.samplearea.height();
 
-				// Do an individual copy if the union is larger than the sum of individual areas.
-				if (size_union > size_indiv)
+				// Do an individual copy if the union is larger than the sum of individual areas. Only
+				// when they are disjoint: two copies into the same texels with no barrier between them
+				// are a write-after-write hazard, even though both write the same bytes.
+				if (size_union > size_indiv && config.drawarea.rintersect(config.samplearea).rempty())
 				{
 					const GSVector4i snapped_drawarea = ProcessCopyArea(GSVector4i(0, 0, rtsize.x, rtsize.y), config.drawarea);
 					const GSVector4i snapped_samplearea = ProcessCopyArea(GSVector4i(0, 0, rtsize.x, rtsize.y), config.samplearea);
