@@ -33,6 +33,19 @@ class IOSMetalBarrierTests(unittest.TestCase):
         self.assertTrue("supportsBCTextureCompression" in implementation, "BC support must come from the GPU")
         self.assertIsNone(re.search(r"m_features\.(dxt|bptc)_textures = true;", implementation))
 
+    def test_astc_textures_follow_the_gpu(self):
+        implementation = (
+            ROOT / "pcsx2/GS/Renderers/Metal/GSDeviceMTL.mm"
+        ).read_text(encoding="utf-8")
+
+        self.assertTrue(
+            "m_features.astc_textures = [m_dev.dev supportsFamily:MTLGPUFamilyApple2];" in implementation,
+            "ASTC support must come from the GPU",
+        )
+        sizes = ["4x4", "5x4", "5x5", "6x5", "6x6", "8x5", "8x6", "8x8",
+                 "10x5", "10x6", "10x8", "10x10", "12x10", "12x12"]
+        self.assertEqual([s for s in sizes if f"MTLPixelFormatASTC_{s}_LDR" not in implementation], [])
+
 
 if __name__ == "__main__":
     unittest.main()

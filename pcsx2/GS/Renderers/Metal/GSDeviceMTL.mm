@@ -642,22 +642,20 @@ static constexpr MTLPixelFormat ConvertPixelFormat(GSTexture::Format format)
 		case GSTexture::Format::BC2:          return MTLPixelFormatBC2_RGBA;
 		case GSTexture::Format::BC3:          return MTLPixelFormatBC3_RGBA;
 		case GSTexture::Format::BC7:          return MTLPixelFormatBC7_RGBAUnorm;
-			// Metal ASTC is optional and unimplemented; the replacement loader rejects ASTC
-			// before anything can ask for a pixel format. Keep the switch exhaustive.
-		case GSTexture::Format::ASTC4x4:
-		case GSTexture::Format::ASTC5x4:
-		case GSTexture::Format::ASTC5x5:
-		case GSTexture::Format::ASTC6x5:
-		case GSTexture::Format::ASTC6x6:
-		case GSTexture::Format::ASTC8x5:
-		case GSTexture::Format::ASTC8x6:
-		case GSTexture::Format::ASTC8x8:
-		case GSTexture::Format::ASTC10x5:
-		case GSTexture::Format::ASTC10x6:
-		case GSTexture::Format::ASTC10x8:
-		case GSTexture::Format::ASTC10x10:
-		case GSTexture::Format::ASTC12x10:
-		case GSTexture::Format::ASTC12x12:    return MTLPixelFormatInvalid;
+		case GSTexture::Format::ASTC4x4:      return MTLPixelFormatASTC_4x4_LDR;
+		case GSTexture::Format::ASTC5x4:      return MTLPixelFormatASTC_5x4_LDR;
+		case GSTexture::Format::ASTC5x5:      return MTLPixelFormatASTC_5x5_LDR;
+		case GSTexture::Format::ASTC6x5:      return MTLPixelFormatASTC_6x5_LDR;
+		case GSTexture::Format::ASTC6x6:      return MTLPixelFormatASTC_6x6_LDR;
+		case GSTexture::Format::ASTC8x5:      return MTLPixelFormatASTC_8x5_LDR;
+		case GSTexture::Format::ASTC8x6:      return MTLPixelFormatASTC_8x6_LDR;
+		case GSTexture::Format::ASTC8x8:      return MTLPixelFormatASTC_8x8_LDR;
+		case GSTexture::Format::ASTC10x5:     return MTLPixelFormatASTC_10x5_LDR;
+		case GSTexture::Format::ASTC10x6:     return MTLPixelFormatASTC_10x6_LDR;
+		case GSTexture::Format::ASTC10x8:     return MTLPixelFormatASTC_10x8_LDR;
+		case GSTexture::Format::ASTC10x10:    return MTLPixelFormatASTC_10x10_LDR;
+		case GSTexture::Format::ASTC12x10:    return MTLPixelFormatASTC_12x10_LDR;
+		case GSTexture::Format::ASTC12x12:    return MTLPixelFormatASTC_12x12_LDR;
 	}
 }
 
@@ -666,7 +664,7 @@ GSTexture* GSDeviceMTL::CreateSurface(GSTexture::Usage usage, int width, int hei
 	pxAssert(GSTexture::ValidateUsageAndFormat(usage, format));
 
 	MTLPixelFormat fmt = ConvertPixelFormat(format);
-	pxAssertRel(format != GSTexture::Format::Invalid, "Can't create surface of this format!");
+	pxAssertRel(fmt != MTLPixelFormatInvalid, "Can't create surface of this format!");
 
 	MTLTextureDescriptor* desc = [MTLTextureDescriptor
 		texture2DDescriptorWithPixelFormat:fmt
@@ -1361,6 +1359,8 @@ bool GSDeviceMTL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	// Only Apple9 and some iPads sample BC on iOS; without it the replacement loader decodes on the CPU.
 	m_features.dxt_textures = [m_dev.dev supportsBCTextureCompression];
 	m_features.bptc_textures = m_features.dxt_textures;
+	// Every Apple GPU samples ASTC; a Mac with an Intel or AMD GPU does not.
+	m_features.astc_textures = [m_dev.dev supportsFamily:MTLGPUFamilyApple2];
 	m_features.framebuffer_fetch = m_dev.features.framebuffer_fetch && !GSConfig.DisableFramebufferFetch;
 	// Apple's programmable blending reads the tile in rasterization order, so overlapping
 	// primitives in one draw already observe each other and a full barrier adds nothing.
