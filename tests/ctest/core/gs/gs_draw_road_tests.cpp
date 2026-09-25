@@ -370,6 +370,24 @@ TEST(GSDrawRoad, CloneSwept)
 	}
 }
 
+// An offset read whose filter reaches pixels the same draw writes is cloned on the barrier road
+// too: a barrier orders the read against earlier draws, not against this draw's own writes.
+// Beyond Good & Evil's bloom blur reads one column into its own write area and came out different
+// from run to run on Honeykrisp until it was.
+TEST(GSDrawRoad, OffsetReadIntoItsOwnWriteAreaClones)
+{
+	const GSDrawRoadDraw hits = {.reads_rt = true, .one_barrier = true, .offset_read_hits_write = true};
+	EXPECT_TRUE(GSDecideDrawRoad(BarrierRoad(), hits).clone_rt);
+	EXPECT_TRUE(GSDecideDrawRoad(DeclaredOrderedRoad(), hits).clone_rt);
+	EXPECT_TRUE(GSDecideDrawRoad(CopyRoad(), hits).clone_rt);
+
+	// The read stays declared: the live target is still bound as an attachment it reads.
+	EXPECT_TRUE(GSDecideDrawRoad(BarrierRoad(), hits).rt_loop);
+
+	const GSDrawRoadDraw misses = {.reads_rt = true, .one_barrier = true};
+	EXPECT_FALSE(GSDecideDrawRoad(BarrierRoad(), misses).clone_rt);
+}
+
 // Sampling the attached depth buffer is read-only depth feedback unless the draw already reads and
 // writes it, and needs no texture barrier.
 TEST(GSDrawRoad, DepthReadIsReadOnlyFeedback)

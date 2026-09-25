@@ -135,6 +135,11 @@ struct GSDrawRoadDraw
 
 	/// The draw or its alpha second pass writes depth.
 	bool writes_depth = false;
+
+	/// The draw samples its colour target at an offset, and the texels its filter reaches include
+	/// pixels the draw itself writes. A barrier orders the read against earlier draws only, so
+	/// what such a texel returns depends on which of the draw's own fragments ran first.
+	bool offset_read_hits_write = false;
 };
 
 /// The per-draw result, carried in GSHWDrawConfig::road. The renderer decides it once per draw;
@@ -150,7 +155,8 @@ struct GSDrawRoad
 	/// Sample the attached depth buffer without writing it (read-only depth feedback).
 	bool depth_read : 1;
 
-	/// No in-pass read: copy the colour target before the draw and read the copy.
+	/// Copy the colour target before the draw and read the copy: the copy road, and an offset read
+	/// that reaches the draw's own write area on any road.
 	bool clone_rt : 1;
 
 	/// Keep the open pass's colour feedback bit on this draw, if the pass is on the same target.
@@ -168,7 +174,8 @@ constexpr GSDrawRoad GSDecideDrawRoad(const GSDrawRoadDevice& dev, const GSDrawR
 	road.rt_loop = dev.texture_barrier && draw.reads_rt;
 	road.depth_loop = dev.texture_barrier && draw.reads_depth;
 	road.depth_read = draw.samples_attached_depth && !road.depth_loop;
-	road.clone_rt = !dev.texture_barrier && draw.one_barrier && (draw.reads_rt || draw.second_pass_reads_rt);
+	road.clone_rt = (!dev.texture_barrier && draw.one_barrier && (draw.reads_rt || draw.second_pass_reads_rt)) ||
+	                draw.offset_read_hits_write;
 	road.carry_rt = dev.carry == GSFeedbackCarry::All || (dev.carry == GSFeedbackCarry::NonReaders && !draw.any_barrier);
 	road.carry_depth = road.carry_rt && !draw.writes_depth;
 	return road;

@@ -410,7 +410,8 @@ namespace
 				.one_barrier = conf.require_one_barrier,
 				.any_barrier = conf.require_one_barrier || conf.require_full_barrier ||
 				               (second.enable && (second.require_one_barrier || second.require_full_barrier)),
-				.writes_depth = (depth_attached && conf.depth.zwe) || (second.enable && second.depth.zwe)});
+				.writes_depth = (depth_attached && conf.depth.zwe) || (second.enable && second.depth.zwe),
+				.offset_read_hits_write = conf.offset_read_hits_write});
 	}
 
 	/// floor(num / den), either sign of either.
@@ -9960,13 +9961,21 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 			if (!m_channel_shuffle && !offset_read_copies)
 			{
 				const GSVector4i src_box_rect = GSVector4i(m_vt.m_min.t.x, m_vt.m_min.t.y, m_vt.m_max.t.x, m_vt.m_max.t.y);
-				const GSVector4i src_rect = src_box_rect + source_region.GetRect(rt->GetUnscaledSize().x, rt->GetUnscaledSize().y).xyxy();
+				const GSVector4i region_offset = source_region.GetRect(rt->GetUnscaledSize().x, rt->GetUnscaledSize().y).xyxy();
+				const GSVector4i src_rect = src_box_rect + region_offset;
 
 				// If the two don't overlap, there's no need to copy.
 				if (m_r.rintersect(src_rect).rempty())
 				{
 					if (HandleBarrierHazard(true))
 					{
+						// The vertex box above is where the texture coordinates land; the filter reads
+						// further. A bilinear read at GS texel centres takes half of the texel before
+						// the first coordinate, so a strip drawn right next to the strip it reads
+						// (a ping-pong blur) reads one column of its own output. Which value that
+						// column returns depends on which fragments of the draw ran first, so the
+						// backend reads a copy made before the draw.
+						m_conf.offset_read_hits_write = !m_r.rintersect(tmm.coverage + region_offset).rempty();
 						NoteResolution(GSDrawLog::SelfReadBarrier);
 						unscaled_size = rt->GetUnscaledSize();
 						scale = rt->GetScale();

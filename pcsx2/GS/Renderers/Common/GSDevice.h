@@ -1336,6 +1336,7 @@ struct alignas(16) GSHWDrawConfig
 
 	bool require_one_barrier;  ///< Require texture barrier before draw (also used to requst an rt copy if texture barrier isn't supported)
 	bool require_full_barrier; ///< Require texture barrier between all prims
+	bool offset_read_hits_write; ///< An offset read of the RT whose filter reaches pixels this draw writes; see GSDrawRoadDraw
 	GSDrawRoad road;           ///< How the draw's self-read is served; decided by the renderer, see GSDrawRoad.h
 
 	enum : u32
