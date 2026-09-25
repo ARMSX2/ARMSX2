@@ -482,15 +482,12 @@ object CustomCovers {
     /** Bumped on set/remove so cover tiles re-resolve. */
     val version = mutableStateOf(0)
 
-    // MainActivityRuntime.assetCopyRoot() can flip between the chosen system dir and the
-    // app-private fallback depending on a transient write-probe — so covers got
-    // stored under one root and looked up under another ("sometimes there,
-    // sometimes not"). Cache the covers root on first resolve so set + load always
-    // agree, and share this exact cache with the library cover loader.
-    @Volatile
-    private var cachedCoversRoot: File? = null
+    // Not cached. This used to remember the first answer because assetCopyRoot re-ran a write
+    // check on every call and could flip between the chosen folder and app-private storage.
+    // It now returns the folder pinned at startup, and a cache filled before startup finished
+    // would hold on to the wrong one.
     fun coversRoot(context: Context): File =
-        cachedCoversRoot ?: File(MainActivityRuntime.assetCopyRoot(context), "covers").also { cachedCoversRoot = it }
+        File(MainActivityRuntime.assetCopyRoot(context), "covers")
 
     private fun dir(context: Context): File = File(coversRoot(context), "custom")
 

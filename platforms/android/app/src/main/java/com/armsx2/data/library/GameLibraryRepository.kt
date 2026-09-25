@@ -167,9 +167,7 @@ class GameLibraryRepository(private val context: Context) {
      * (PR #391), reworked here to run off-thread and to also fire on removal.
      */
     private fun exportRecentGamesPublic(orderedUris: List<String>, justPlayed: GameInfo? = null) {
-        val root = MainActivityRuntime.systemDirPosix()
-            ?: context.getExternalFilesDir(null)?.absolutePath
-            ?: return
+        val root = MainActivityRuntime.assetCopyRoot(context)
         val cached = loadCached().games
         val byUri = (if (justPlayed != null) cached + justPlayed else cached).associateBy { it.uri.toString() }
         val array = JSONArray()

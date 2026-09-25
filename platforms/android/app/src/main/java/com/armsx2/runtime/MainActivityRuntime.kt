@@ -286,9 +286,7 @@ open class MainActivityRuntime : ComponentActivity() {
          *  which is exactly where the native core puts EmuFolders::InputProfiles.
          *  Two copies of that reasoning would be one copy too many. */
         fun inputProfilesDir(): File? {
-            val root = systemDirPosix()
-                ?: instance?.applicationContext?.getExternalFilesDir(null)?.absolutePath
-                ?: return null
+            val root = dataRootOrNull() ?: return null
             val dir = File(root, "inputprofiles")
             if (!dir.exists()) runCatching { dir.mkdirs() }
             return if (dir.isDirectory) dir else null
@@ -308,9 +306,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 if (dir.isDirectory) return dir
             }
             // Native not up yet (library scan can run before the core initialises).
-            val root = systemDirPosix()
-                ?: instance?.applicationContext?.getExternalFilesDir(null)?.absolutePath
-                ?: return null
+            val root = dataRootOrNull() ?: return null
             val dir = File(root, "hostfs")
             if (!dir.exists()) runCatching { dir.mkdirs() }
             return if (dir.isDirectory) dir else null
@@ -386,10 +382,15 @@ open class MainActivityRuntime : ComponentActivity() {
                 val dir = File(posixPath)
                 if (!dir.exists() && !dir.mkdirs()) return false
                 if (!dir.isDirectory) return false
-                val probe = File(dir, ".armsx2-write-probe")
-                val ok = probe.createNewFile()
-                if (ok) probe.delete()
-                ok
+                // A fresh name per check. This used to create one fixed name with
+                // createNewFile, which returns false when the file already exists: two checks
+                // running at once (several threads resolve the data root at startup) made the
+                // loser report the folder unwritable, and a probe left behind by a process
+                // killed between create and delete failed every check after it. Either way the
+                // app quietly ran from app-private storage and the player's saves "vanished".
+                File(dir, ".armsx2-write-probe").delete()
+                File.createTempFile(".armsx2-write-probe-", ".tmp", dir).delete()
+                true
             } catch (_: Exception) {
                 false
             }
@@ -410,6 +411,11 @@ open class MainActivityRuntime : ComponentActivity() {
         // it, while "frame limit off" — which is this same mode 3 — visibly fast-forwarded.
         // Use the path that demonstrably works instead of shipping a second one that doesn't.
         const val FF_LIMITER_MODE = 3
+
+        /** How long [waitForDataRoot] keeps checking an unreachable data folder before asking:
+         *  10 tries, one second apart. */
+        private const val DATA_ROOT_WAIT_TRIES = 10
+        private const val DATA_ROOT_WAIT_STEP_MS = 1000L
 
         // Fast-forward SPEED slider (in-game pause menu, under Frame Limit). Stored as an integer
         // multiplier 2..10 (×); FF_SPEED_UNLIMITED = no cap, which reuses the mode-3 uncapped path
@@ -1677,8 +1683,16 @@ open class MainActivityRuntime : ComponentActivity() {
          *  ONCE per process, so the setup wizard compares against this to know
          *  whether a storage-location change actually needs a process restart
          *  to take effect (it can't be hot-swapped while the process lives). */
-        private var lastInitDataRoot: String? = null
+        @Volatile private var lastInitDataRoot: String? = null
         fun currentInitDataRoot(): String? = lastInitDataRoot
+
+        /** The player chose "use internal storage this time" when their data folder could not
+         *  be reached at startup. Process-wide, so it lasts exactly until the next launch. */
+        @Volatile var dataRootFallbackAccepted = false
+
+        /** The chosen data folder that could not be reached at startup, while we wait for the
+         *  player to retry or fall back; null otherwise. Drives the prompt in setContent. */
+        val dataRootUnavailable = mutableStateOf<String?>(null)
 
         /**
          * Factory-reset every app SETTING and cold-restart.
@@ -1773,11 +1787,39 @@ open class MainActivityRuntime : ComponentActivity() {
             }
         }
 
-        fun assetCopyRoot(context: Context): String {
-            val custom = systemDirPosix()
-            return custom?.takeIf { validateSystemDirWritable(it) }
-                ?: context.getExternalFilesDir(null)?.absolutePath
-                ?: context.dataDir.absolutePath
+        fun assetCopyRoot(context: Context): String =
+            lastInitDataRoot ?: resolveDataRoot(context)
+
+        /** [assetCopyRoot] for callers without a Context to hand. Null only before the activity
+         *  exists. */
+        fun dataRootOrNull(): String? =
+            lastInitDataRoot ?: instance?.applicationContext?.let(::resolveDataRoot)
+
+        private fun internalDataRoot(context: Context): String =
+            context.getExternalFilesDir(null)?.absolutePath ?: context.dataDir.absolutePath
+
+        /** A systemDir saved as a SAF tree URI by an older build. On the Play build those can
+         *  resolve to a folder the core was never able to write, so such installs have always
+         *  run from app-private storage and must keep doing so without a prompt every launch. */
+        private fun systemDirIsLegacyTreeUri(): Boolean =
+            systemDir.value?.startsWith("content://") == true
+
+        /**
+         * Where the data root should be, deciding afresh. Only [kickoffEmucoreInit] should rely
+         * on this directly: once it has pinned [lastInitDataRoot] — the folder the core was
+         * handed — every caller gets that, so no screen can read or write a different folder
+         * from the one the core is using.
+         *
+         * Deliberately does NOT probe a chosen SD card or custom folder. Whether it is reachable
+         * is decided once, at startup, and an unreachable one is put to the player rather than
+         * swapped for app-private storage behind their back.
+         */
+        private fun resolveDataRoot(context: Context): String {
+            if (dataRootFallbackAccepted) return internalDataRoot(context)
+            val chosen = systemDirPosix() ?: return internalDataRoot(context)
+            if (systemDirIsLegacyTreeUri() && !validateSystemDirWritable(chosen))
+                return internalDataRoot(context)
+            return chosen
         }
 
         fun copyAssetAll(p_context: Context, srcPath: String) {
@@ -1919,6 +1961,26 @@ open class MainActivityRuntime : ComponentActivity() {
      *  captures without manually tapping the BIOS card. */
     private var autoBootBiosFired = false
 
+    private var dataRootWaitJob: Job? = null
+
+    /** The chosen data folder was not writable at startup. An SD card can take a few seconds to
+     *  mount after the device wakes or Android restarts the app, so keep checking for a while
+     *  before asking the player what to do. */
+    private fun waitForDataRoot(path: String) {
+        if (dataRootWaitJob?.isActive == true) return
+        dataRootWaitJob = lifecycleScope.launch {
+            repeat(DATA_ROOT_WAIT_TRIES) {
+                delay(DATA_ROOT_WAIT_STEP_MS)
+                if (withContext(Dispatchers.IO) { validateSystemDirWritable(path) }) {
+                    kickoffEmucoreInit()
+                    return@launch
+                }
+            }
+            android.util.Log.w("ARMSX2", "Data folder unreachable after waiting: $path")
+            dataRootUnavailable.value = path
+        }
+    }
+
     /** Build-config flag for the auto-boot-to-BIOS path above. Flip to
      *  true (here, or move to BuildConfig via app/build.gradle.kts if a
      *  variant-level toggle is wanted) to drop straight into the BIOS
@@ -1939,11 +2001,23 @@ open class MainActivityRuntime : ComponentActivity() {
      */
     private fun kickoffEmucoreInit() {
         if (emucoreInitDone) return
+        // A chosen SD card or custom folder must be reachable before the core is pointed at it.
+        // If it is not, hold init rather than fall back: falling back is how saves "vanished",
+        // since the core then ran from app-private storage with a fresh, empty set of cards.
+        // Skipped once this process has pinned a root: a recreated activity must not second-guess
+        // the folder the core is already using.
+        val chosen = systemDirPosix()
+        if (lastInitDataRoot == null && chosen != null && !systemDirIsLegacyTreeUri() &&
+            !dataRootFallbackAccepted && !validateSystemDirWritable(chosen)
+        ) {
+            waitForDataRoot(chosen)
+            return
+        }
         emucoreInitDone = true
-        // Record the root native is about to pin (same resolution as
-        // NativeApp.initializeOnce's dataPath) so a later storage change can be
-        // detected and trigger a restart instead of silently not taking effect.
-        lastInitDataRoot = assetCopyRoot(applicationContext)
+        // Pin the root native is about to be handed. NativeApp.initializeOnce reads this rather
+        // than deciding again, every Kotlin caller of assetCopyRoot gets it from here on, and a
+        // later storage change is detected against it to trigger a restart.
+        lastInitDataRoot = lastInitDataRoot ?: resolveDataRoot(applicationContext)
 
         // #9: one-time recovery for a fresh install that reuses an old data folder — restore
         // settings from the in-folder mirror, or seed from the folder's old PCSX2-Android.ini,
@@ -2558,6 +2632,28 @@ open class MainActivityRuntime : ComponentActivity() {
             if (!setupComplete.value || setupEditorVisible.value) {
                 com.armsx2.ui.onboarding.OnboardingScreen()
             } else if (setupComplete.value) {
+                // The chosen data folder could not be reached at startup (see waitForDataRoot).
+                // Back / Retry is the default: falling back is the choice that has to be made on
+                // purpose, because saves made in app-private storage are not where the player's
+                // real ones are.
+                dataRootUnavailable.value?.let { path ->
+                    com.armsx2.ui.common.ConfirmOverlay(
+                        title = str("dataroot.unavailable.title"),
+                        message = str("dataroot.unavailable.body").format(path),
+                        confirmLabel = str("dataroot.unavailable.internal"),
+                        dismissLabel = str("dataroot.unavailable.retry"),
+                        idPrefix = "dataroot-unavailable",
+                        onConfirm = {
+                            dataRootUnavailable.value = null
+                            dataRootFallbackAccepted = true
+                            kickoffEmucoreInit()
+                        },
+                        onDismiss = {
+                            dataRootUnavailable.value = null
+                            kickoffEmucoreInit()
+                        },
+                    )
+                }
                 // A launch found an active memory card it could not read, and has a verified
                 // backup to put back. The boot is held until this is answered — restoring after
                 // the console has mounted the card would be overwritten by its cached directory.

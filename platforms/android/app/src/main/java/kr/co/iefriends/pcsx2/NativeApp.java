@@ -68,15 +68,14 @@ public class NativeApp {
 			externalFilesDir = context.getDataDir();
 		}
 
-		// DataRoot: prefer the user-chosen system folder only when the SAF tree
-		// URI resolves to a POSIX path that native code can actually write.
-		// Falls back to externalFilesDir when unset, unresolvable, or blocked
-		// by scoped storage.
-		String chosen = MainActivityRuntime.Companion.systemDirPosix();
-		if (chosen != null && !MainActivityRuntime.Companion.validateSystemDirWritable(chosen)) {
-			chosen = null;
+		// DataRoot: the folder MainActivityRuntime.kickoffEmucoreInit pinned. It is
+		// decided there, once, so the core and every Kotlin screen use the same folder;
+		// deciding again here could come out differently and split the player's saves
+		// across two folders.
+		String dataPath = MainActivityRuntime.Companion.currentInitDataRoot();
+		if (dataPath == null || dataPath.isEmpty()) {
+			dataPath = externalFilesDir.getAbsolutePath();
 		}
-		String dataPath = (chosen != null) ? chosen : externalFilesDir.getAbsolutePath();
 
 		// BIOS folder: the directory that actually holds the configured BIOS file.
 		// The setup wizard (and the migration in MainActivityRuntime.kickoffEmucoreInit) keep the
