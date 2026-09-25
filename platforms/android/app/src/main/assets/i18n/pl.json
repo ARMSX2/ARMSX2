@@ -874,7 +874,7 @@
  "pad.leftStickFeel.title": "Czułość lewej gałki",
  "pad.lightgun.enable.description": "Podłącza emulowany GunCon 2 do portu USB i pozwala celować nim za pomocą ekranu dotykowego. Po zmianie zrestartuj grę: gra sprawdza port podczas uruchamiania.",
  "pad.lightgun.enable.label": "Włącz GunCon 2",
- "pad.lightgun.help": "Dotknij, aby wycelować i strzelić. Dotknięcie przy krawędzi ekranu to strzał POZA EKRAN, czyli sposób przeładowania w tych grach. A/B/C, Start, Select i Cal (ponowna kalibracja) pojawiają się wzdłuż prawej krawędzi.",
+ "pad.lightgun.help": "Dotknij, aby wycelować i strzelić. Dotknięcie przy krawędzi ekranu to strzał POZA EKRAN, czyli sposób przeładowania w tych grach. A/B/C, Start, Select i Cal (ponowna kalibracja) to przyciski ekranowe, które można przesuwać i skalować w edytorze układu dotykowego.",
  "pad.lightgun.port.description": "Większość gier na pistolet świetlny oczekuje pistoletu w porcie 1.",
  "pad.lightgun.port.label": "Port USB",
  "pad.lightgun.port1": "Port 1",

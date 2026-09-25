@@ -876,7 +876,7 @@
  "pad.leftStickFeel.title": "左搖桿手感",
  "pad.lightgun.enable.description": "為 USB 連接埠接上模擬的 GunCon 2，並用觸控螢幕瞄準。變更這個選項後請重新啟動遊戲：遊戲只會在開機時偵測連接埠。",
  "pad.lightgun.enable.label": "啟用 GunCon 2",
- "pad.lightgun.help": "觸控螢幕以瞄準並開火。觸碰螢幕邊緣附近會觸發「畫面外」開火，這些遊戲藉此實現換彈。A/B/C、Start、Select 與 Cal（重新校正）會顯示在螢幕右側邊緣。",
+ "pad.lightgun.help": "觸控螢幕以瞄準並開火。觸碰螢幕邊緣附近會觸發「畫面外」開火，這些遊戲藉此實現換彈。A/B/C、Start、Select 與 Cal（重新校正）是螢幕按鈕，可在觸控配置編輯器中移動與調整大小。",
  "pad.lightgun.port.description": "大多數光槍遊戲預期光槍接在連接埠 1。",
  "pad.lightgun.port.label": "USB 連接埠",
  "pad.lightgun.port1": "連接埠 1",

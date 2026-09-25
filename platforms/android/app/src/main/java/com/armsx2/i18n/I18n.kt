@@ -925,7 +925,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "pad.lightgun.port1" to "Port 1",
     "pad.lightgun.port2" to "Port 2",
     "pad.lightgun.port.description" to "Most lightgun games expect the gun in Port 1.",
-    "pad.lightgun.help" to "Touch to aim and fire. Touching near a screen edge fires OFF-SCREEN, which is how these games reload. A/B/C, Start, Select and Cal (recalibrate) appear down the right edge.",
+    "pad.lightgun.help" to "Touch to aim and fire. Touching near a screen edge fires OFF-SCREEN, which is how these games reload. A/B/C, Start, Select and Cal (recalibrate) are on-screen buttons you can move and resize in the touch layout editor.",
     "pad.gesture.section" to "Gesture Control",
     "pad.gesture.enable.label" to "Enable gesture control",
     "pad.gesture.enable.description" to "Swipes and a double-tap on empty screen area fire a button. Only where there is no on-screen control: a finger that lands on a button, stick or D-pad still drives that control.",

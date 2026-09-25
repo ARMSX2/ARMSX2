@@ -133,14 +133,4 @@ object Lightgun {
         if (!enabled.value) return
         runCatching { NativeApp.usbLightgunButton(port.value, bind, down) }
     }
-
-    /** Buttons offered on screen, as (binding, label). Mirrors NetherSX2's gun overlay. */
-    fun overlayButtons(): List<Pair<Int, String>> = listOf(
-        NativeApp.GUNCON_A to "A",
-        NativeApp.GUNCON_B to "B",
-        NativeApp.GUNCON_C to "C",
-        NativeApp.GUNCON_START to "Start",
-        NativeApp.GUNCON_SELECT to "Sel",
-        NativeApp.GUNCON_RECALIBRATE to "Cal",
-    )
 }

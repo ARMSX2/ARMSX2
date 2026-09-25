@@ -874,7 +874,7 @@
   "pad.leftStickFeel.title": "Cảm giác cần trái",
   "pad.lightgun.enable.description": "Gắn một GunCon 2 giả lập vào cổng USB và ngắm bằng màn hình cảm ứng. Khởi động lại game sau khi thay đổi: game dò cổng khi khởi động.",
   "pad.lightgun.enable.label": "Bật GunCon 2",
-  "pad.lightgun.help": "Chạm để ngắm và bắn. Chạm gần mép màn hình sẽ bắn RA NGOÀI màn hình, đó là cách nạp đạn trong các game này. Các nút A/B/C, Start, Select và Cal (hiệu chỉnh lại) nằm dọc mép phải.",
+  "pad.lightgun.help": "Chạm để ngắm và bắn. Chạm gần mép màn hình sẽ bắn RA NGOÀI màn hình, đó là cách nạp đạn trong các game này. Các nút A/B/C, Start, Select và Cal (hiệu chỉnh lại) là nút trên màn hình, có thể di chuyển và đổi kích thước trong trình chỉnh bố cục cảm ứng.",
   "pad.lightgun.port.description": "Hầu hết game súng ánh sáng cần súng ở Cổng 1.",
   "pad.lightgun.port.label": "Cổng USB",
   "pad.lightgun.port1": "Cổng 1",

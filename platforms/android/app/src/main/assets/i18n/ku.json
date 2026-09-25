@@ -899,7 +899,7 @@
   "pad.leftStickFeel.title": "Left Stick Feel",
   "pad.lightgun.enable.description": "GunCon 2ek emûlekirî bi portek USB ve girê dide û bi ekrana destlêdanê armanc dike. Piştî guhertina vê lîstikê ji nû ve bide destpêkirin: lîstik dema bootê portê kontrol dike.",
   "pad.lightgun.enable.label": "GunCon 2 Çalak Bike",
-  "pad.lightgun.help": "Ji bo armanckirin û gulebarandinê pê bike. Pêbûn nêzî kêleka ekranê OFF-SCREEN dide gulebaran, ku ev awayê van lîstikan ê ji nû ve dagirtinê ye. A/B/C, Start, Select û Cal (ji nû ve kalîbrekirin) li kêleka rastê ve xuya dibin.",
+  "pad.lightgun.help": "Ji bo armanckirin û gulebarandinê pê bike. Pêbûn nêzî kêleka ekranê OFF-SCREEN dide gulebaran, ku ev awayê van lîstikan ê ji nû ve dagirtinê ye. A/B/C, Start, Select û Cal (ji nû ve kalîbrekirin) bişkokên li ser ekranê ne, ku tu dikarî di edîtora layout touch de biguhêzî û mezinahiya wan biguherînî.",
   "pad.lightgun.port.description": "Piraniya lîstikên tivinga ronahiyê li benda tivingê li Port 1-ê ne.",
   "pad.lightgun.port.label": "Porta USB",
   "pad.lightgun.port1": "Port 1",

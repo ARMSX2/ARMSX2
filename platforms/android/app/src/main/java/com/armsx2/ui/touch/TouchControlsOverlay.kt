@@ -2,6 +2,8 @@ package com.armsx2.ui.touch
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -45,6 +47,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
@@ -75,6 +78,7 @@ import com.armsx2.EmuState
 import com.armsx2.R
 import com.armsx2.i18n.str
 import com.armsx2.input.ControllerMappings
+import com.armsx2.input.Lightgun
 import com.armsx2.runtime.MainActivityRuntime
 import com.armsx2.ui.Colors
 import com.armsx2.ui.InGameOverlay
@@ -346,22 +350,43 @@ fun TouchControlsOverlay() {
                 onPressedChange = { unifiedPressed = it },
             )
         }
-        // Lightgun aiming, when a GunCon 2 is attached. Below the widgets (so gun buttons and
-        // pause win a finger that starts on them) but it DOES consume otherwise: with a gun
-        // attached, a touch on empty screen IS the shot.
-        if (!edit) {
-            LightgunLayer(widthPx = widthPx, heightPx = heightPx)
+        // With a GunCon 2 attached, a touch on empty screen IS the shot, so the gun owns empty
+        // screen outright: the gesture layer and the Half-Screen Sticks, which want the same fingers,
+        // stand down while it is attached, and the regular stick widgets come back.
+        val gunAttached = Lightgun.enabled.value
+        val halfSticks = TouchControls.fullHalfSticks.value && !gunAttached
+        // Lightgun aiming. Below the widgets, so the gun buttons, pause, D-pad and sticks win a
+        // finger that starts on them. The multi-touch buttons have no handler of their own, so their
+        // areas are handed over and left alone; see LightgunInputNode.
+        if (!edit && gunAttached) {
+            val density = LocalDensity.current
+            val radius = TouchControls.multiTouchRadius.floatValue
+            val multi = if (!faceMulti) emptyList() else layout.buttons
+                .filter { it.enabled && isMultiTouchKind(it.id.kind) && !it.tapToHold }
+            val blockers = GunBlockers(
+                rects = multi.map { cfg ->
+                    val s = with(density) { cfg.sizeDp.dp.toPx() }
+                    val cx = widthPx * cfg.xFrac
+                    val cy = heightPx * cfg.yFrac
+                    Rect(cx - s / 2f, cy - s / 2f, cx + s / 2f, cy + s / 2f)
+                },
+                circles = multi.map { cfg ->
+                    val s = with(density) { cfg.sizeDp.dp.toPx() }
+                    Offset(widthPx * cfg.xFrac, heightPx * cfg.yFrac) to s * radius
+                },
+            )
+            LightgunLayer(widthPx = widthPx, heightPx = heightPx, blockers = blockers)
         }
         // Gesture layer (swipes / double-tap on empty area). Composed here — below every visual
         // widget — for the same reason as the layers around it: a finger that starts on a control
         // is claimed by that control and never reaches the gesture handler. It also never consumes,
         // so it cannot swallow a press even if this ordering changes later.
-        if (!edit) {
+        if (!edit && !gunAttached) {
             GestureLayer(widthPx = widthPx, heightPx = heightPx)
         }
         // Full-half invisible analog sticks: an invisible layer owning each screen half, composed
         // z-BELOW the visual widgets so a finger starting on a button drives the button, not a stick.
-        if (!edit && TouchControls.fullHalfSticks.value) {
+        if (!edit && halfSticks) {
             FullHalfStickLayer(layout = layout, widthPx = widthPx, heightPx = heightPx, faceMulti = faceMulti)
         }
         for (cfg in layout.buttons) {
@@ -370,8 +395,11 @@ fun TouchControlsOverlay() {
             // normal L/R stick widgets during play (edit mode still shows them so they stay editable).
             // Except the left one when the player chose to keep it: then only the right half is a
             // stick, and this widget is the left stick as usual.
-            if (!edit && TouchControls.fullHalfSticks.value && cfg.id.kind == TouchButtonId.Kind.STICK &&
+            if (!edit && halfSticks && cfg.id.kind == TouchButtonId.Kind.STICK &&
                 !(cfg.id == TouchButtonId.L_STICK && TouchControls.fullHalfKeepLeftStick.value)) continue
+            // The gun's buttons exist only while a gun is attached, in play and in the editor alike;
+            // the layout entry only carries where each one sits and how big it is.
+            if (cfg.id.kind == TouchButtonId.Kind.GUN && !gunAttached) continue
             // Drawn above during play (outside the auto-hide / "Never" gate) so it can't be
             // hidden away; skip it here or it would render twice. Edit mode still gets it from
             // the loop, so it stays draggable/resizable like every other widget.
@@ -411,6 +439,7 @@ fun TouchControlsOverlay() {
                     TouchButtonId.Kind.MACRO -> MacroWidget(cfg, edit)
                     TouchButtonId.Kind.STATEACTION -> StateActionWidget(cfg, edit)
                     TouchButtonId.Kind.ANALOGEXTRA -> AnalogExtraWidget(cfg, edit)
+                    TouchButtonId.Kind.GUN -> GunButtonWidget(cfg, edit)
 	                    else -> ButtonWidget(
 	                        cfg = cfg,
 	                        edit = edit,
@@ -472,12 +501,6 @@ fun TouchControlsOverlay() {
                     EditToolbar()
                 }
             }
-        }
-
-        // Gun buttons LAST, so they sit above LightgunLayer: pressing A/B/C/Cal must be a button
-        // press, not a shot at that corner of the screen. They consume their own pointer.
-        if (!edit) {
-            LightgunButtons()
         }
 
         if (TouchControls.profileDialogOpen.value) {
@@ -607,7 +630,9 @@ private fun drawableFor(id: TouchButtonId, pressed: Boolean): Int = when (id) {
     TouchButtonId.PAUSE, TouchButtonId.PRESSURE, TouchButtonId.FAST_FORWARD,
     TouchButtonId.MACRO1, TouchButtonId.MACRO2, TouchButtonId.MACRO3, TouchButtonId.MACRO4,
     TouchButtonId.SAVE_STATE, TouchButtonId.LOAD_STATE, TouchButtonId.SCREENSHOT,
-    TouchButtonId.ANALOG_EXTRA -> R.drawable.pad_cross
+    TouchButtonId.ANALOG_EXTRA,
+    TouchButtonId.GUN_A, TouchButtonId.GUN_B, TouchButtonId.GUN_C,
+    TouchButtonId.GUN_START, TouchButtonId.GUN_SELECT, TouchButtonId.GUN_CAL -> R.drawable.pad_cross
 }
 
 /** Pressure-sensitivity modifier button. Emits no PS2 keycode; while held it
@@ -1158,6 +1183,62 @@ private fun StateActionWidget(cfg: TouchButtonCfg, edit: Boolean) {
                 fontWeight = FontWeight.Bold,
             )
         }
+    }
+}
+
+/**
+ * One of the GunCon 2's own buttons (A, B, C, Start, Select, Recalibrate). A layout widget like any
+ * other, so the editor moves, resizes and hides it. Above the aim layer, so pressing one is a button
+ * press rather than a shot at that part of the screen. Held for as long as the finger stays down,
+ * even after it slides off, and let go if the controls disappear mid-press.
+ */
+@Composable
+private fun GunButtonWidget(cfg: TouchButtonCfg, edit: Boolean) {
+    val label = cfg.id.label.removePrefix("Gun ")
+    if (edit) {
+        Box(
+            modifier = Modifier.fillMaxSize().editGestures(cfg),
+            contentAlignment = Alignment.Center,
+        ) {
+            EditAdornment(cfg.id)
+            Text(label, color = Color.White.copy(alpha = 0.75f), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+        return
+    }
+    val opacity = TouchControls.opacity.floatValue
+    val bind = gunBind(cfg.id)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.30f * opacity), CircleShape)
+            .border(1.dp, Color.White.copy(alpha = 0.45f * opacity), CircleShape)
+            .pointerInput(cfg.id) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                    Lightgun.button(bind, true)
+                    TouchControls.beginTouchHold()
+                    TouchControls.noteTouchInteraction()
+                    try {
+                        while (true) {
+                            val ch = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
+                            ch?.consume()
+                            if (ch == null || !ch.pressed) break
+                        }
+                    } finally {
+                        Lightgun.button(bind, false)
+                        TouchControls.endTouchHold()
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            color = Color.White.copy(alpha = legibleAlpha(opacity, 0.35f)),
+            fontSize = if (label.length > 3) 11.sp else 15.sp,
+            fontWeight = FontWeight.Bold,
+        )
     }
 }
 

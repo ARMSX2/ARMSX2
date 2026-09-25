@@ -869,7 +869,7 @@
  "pad.leftStickFeel.title": "Feeling stick sinistro",
  "pad.lightgun.enable.description": "Collega un GunCon 2 emulato a una porta USB e permette di mirare con il touchscreen. Riavvia il gioco dopo aver modificato questa opzione: il gioco controlla la porta all'avvio.",
  "pad.lightgun.enable.label": "Abilita GunCon 2",
- "pad.lightgun.help": "Tocca per mirare e sparare. Toccare vicino a un bordo dello schermo spara FUORI SCHERMO, ed è così che questi giochi ricaricano. A/B/C, Start, Select e Cal (ricalibra) compaiono lungo il bordo destro.",
+ "pad.lightgun.help": "Tocca per mirare e sparare. Toccare vicino a un bordo dello schermo spara FUORI SCHERMO, ed è così che questi giochi ricaricano. A/B/C, Start, Select e Cal (ricalibra) sono pulsanti a schermo che puoi spostare e ridimensionare nell'editor del layout touch.",
  "pad.lightgun.port.description": "La maggior parte dei giochi con pistola ottica si aspetta la pistola nella porta 1.",
  "pad.lightgun.port.label": "Porta USB",
  "pad.lightgun.port1": "Porta 1",

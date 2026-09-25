@@ -805,7 +805,7 @@
  "pad.leftStickFeel.title": "Linker Stick: Ansprechverhalten",
  "pad.lightgun.enable.description": "Schließt eine emulierte GunCon 2 an einen USB-Port an und zielt damit über den Touchscreen. Nach einer Änderung das Spiel neu starten: Das Spiel prüft den Port beim Start.",
  "pad.lightgun.enable.label": "GunCon 2 aktivieren",
- "pad.lightgun.help": "Berühren zum Zielen und Schießen. Eine Berührung nahe dem Bildschirmrand schießt AUSSERHALB des Bildschirms, so laden diese Spiele nach. A/B/C, Start, Select und Cal (neu kalibrieren) erscheinen am rechten Rand.",
+ "pad.lightgun.help": "Berühren zum Zielen und Schießen. Eine Berührung nahe dem Bildschirmrand schießt AUSSERHALB des Bildschirms, so laden diese Spiele nach. A/B/C, Start, Select und Cal (neu kalibrieren) sind Bildschirmtasten, die sich im Touch-Layout-Editor verschieben und in der Größe ändern lassen.",
  "pad.lightgun.port.description": "Die meisten Lightgun-Spiele erwarten die Pistole an Port 1.",
  "pad.lightgun.port.label": "USB-Port",
  "pad.lightgun.port1": "Port 1",

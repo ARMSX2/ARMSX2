@@ -1484,9 +1484,21 @@ enum class TouchButtonId(val label: String, val keycode: Int, val kind: Kind) {
     // additionally hit-tests this widget's own circle so a thumb that glides up off
     // the stick latches it without lifting; see StickWidget. Its keycode is chosen in
     // Pad settings (analogExtraKeycode), so the enum entry carries none.
-    ANALOG_EXTRA("Extra", 0, Kind.ANALOGEXTRA);
+    ANALOG_EXTRA("Extra", 0, Kind.ANALOGEXTRA),
 
-    enum class Kind { FACE, SHOULDER, MENU, DPAD, STICK, PAUSE, PRESSURE, FASTFORWARD, MACRO, STATEACTION, ANALOGEXTRA }
+    // The GunCon 2's own buttons, while a gun is attached to a USB port (Pad settings, USB
+    // devices). Full layout widgets, so they can be moved, resized and hidden like any other
+    // control; they used to be a fixed column down the right edge, on top of the face buttons. The
+    // trigger is the touch itself, so it has none. The label is the editor's name for the widget;
+    // the button shows it without the "Gun " prefix.
+    GUN_A("Gun A", 0, Kind.GUN),
+    GUN_B("Gun B", 0, Kind.GUN),
+    GUN_C("Gun C", 0, Kind.GUN),
+    GUN_START("Gun Start", 0, Kind.GUN),
+    GUN_SELECT("Gun Sel", 0, Kind.GUN),
+    GUN_CAL("Gun Cal", 0, Kind.GUN);
+
+    enum class Kind { FACE, SHOULDER, MENU, DPAD, STICK, PAUSE, PRESSURE, FASTFORWARD, MACRO, STATEACTION, ANALOGEXTRA, GUN }
 }
 
 /** Position + size for a single widget. xFrac / yFrac are anchor-point
@@ -1612,6 +1624,14 @@ data class TouchLayout(val buttons: List<TouchButtonCfg>) {
                 // clear of the D-pad's right edge (which reaches x 0.40) instead, still an easy left
                 // thumb reach and in open space. Drag it wherever you like — it is a normal widget.
                 TouchButtonCfg(TouchButtonId.ANALOG_EXTRA, 0.44f, 0.72f, 48f),
+                // GunCon 2 buttons: two rows of three between the shoulder pairs, above the face
+                // diamond and the left stick. Only on screen while a gun is attached.
+                TouchButtonCfg(TouchButtonId.GUN_A,      0.36f, 0.415f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_B,      0.50f, 0.415f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_C,      0.64f, 0.415f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_START,  0.36f, 0.485f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_SELECT, 0.50f, 0.485f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_CAL,    0.64f, 0.485f, 46f),
             ).let { placed ->
                 // Splice in anything the landscape default has that this list does not (pause,
                 // pressure, save/load-state buttons...) so a new widget never goes missing in
@@ -1670,6 +1690,16 @@ data class TouchLayout(val buttons: List<TouchButtonCfg>) {
                 // this flag, so it is `enabled` here — see the ANALOG_EXTRA gate in the overlay's
                 // widget loop.
                 TouchButtonCfg(TouchButtonId.ANALOG_EXTRA, 0.10f, 0.34f, 48f),
+                // GunCon 2 buttons: a row across the top, between the shoulders and clear of the
+                // pause button, and above the picture on a wide screen, since the picture is what
+                // you aim at. Only on screen while a gun is attached (the GUN gate in the overlay's
+                // widget loop), so they are `enabled` here like the extra analog button.
+                TouchButtonCfg(TouchButtonId.GUN_A,      0.30f, 0.08f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_B,      0.38f, 0.08f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_C,      0.46f, 0.08f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_START,  0.54f, 0.08f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_SELECT, 0.62f, 0.08f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_CAL,    0.70f, 0.08f, 46f),
                 // Analog sticks — bottom inside, between DPad/face cluster
                 // and the center, so thumb travel is short.
                 TouchButtonCfg(TouchButtonId.L_STICK,  0.28f, 0.80f, 130f),

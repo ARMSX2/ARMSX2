@@ -874,7 +874,7 @@
  "pad.leftStickFeel.title": "Sol Çubuk Hissi",
  "pad.lightgun.enable.description": "Bir USB portuna emüle edilmiş bir GunCon 2 takar ve dokunmatik ekranla nişan almanızı sağlar. Bunu değiştirdikten sonra oyunu yeniden başlatın: oyun, portu açılışta yoklar.",
  "pad.lightgun.enable.label": "GunCon 2'yi Etkinleştir",
- "pad.lightgun.help": "Nişan almak ve ateş etmek için dokunun. Ekran kenarına yakın dokunmak EKRAN DIŞINA ateş eder; bu oyunlarda şarjör böyle doldurulur. A/B/C, Start, Select ve Cal (yeniden kalibre et) sağ kenar boyunca görünür.",
+ "pad.lightgun.help": "Nişan almak ve ateş etmek için dokunun. Ekran kenarına yakın dokunmak EKRAN DIŞINA ateş eder; bu oyunlarda şarjör böyle doldurulur. A/B/C, Start, Select ve Cal (yeniden kalibre et), dokunmatik düzen düzenleyicisinde taşıyıp boyutlandırabileceğiniz ekran düğmeleridir.",
  "pad.lightgun.port.description": "Çoğu ışık tabancası oyunu tabancayı Port 1'de bekler.",
  "pad.lightgun.port.label": "USB portu",
  "pad.lightgun.port1": "Port 1",
