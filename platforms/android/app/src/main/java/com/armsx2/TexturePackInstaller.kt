@@ -35,6 +35,9 @@ object TexturePackInstaller {
     /** Peak usage is the archive plus its extracted contents plus the outgoing pack kept for
      *  rollback, so budget for well over the download alone. */
     private const val FREE_SPACE_SLACK = 512L * 1024 * 1024
+    /** A removed pack's folder while its files are deleted. It sits beside the game folders so
+     *  moving it there is one rename, and the leading dot keeps it from reading as a serial. */
+    private const val REMOVED_PREFIX = ".deleting-"
 
     sealed interface Progress {
         data class Downloading(val read: Long, val total: Long) : Progress
@@ -176,6 +179,52 @@ object TexturePackInstaller {
         } finally {
             staging.deleteRecursively()
         }
+    }
+
+    /**
+     * Removes the pack installed in [serialDirectory] (a game's `textures/<SERIAL>` folder): takes
+     * it out of use in one step, then deletes its files. Returns true when no pack is left there.
+     * Blocking; call from a background dispatcher.
+     *
+     * This used to be one deleteRecursively() over the game's folder. When a single file refused,
+     * it stopped part way and left the pack half deleted, still where the core reads it, and
+     * recorded as installed, so the catalog would not reinstall over it. Now the pack folder is
+     * first renamed out of the game's folder into one beside it, which is one rename on the same
+     * filesystem however many files the pack holds: the pack is out of use at once. Deleting the
+     * files comes after, and whatever of that fails is finished by [sweepRemovedPacks] instead of
+     * being left in use.
+     *
+     * Only the pack goes, along with the replacements.old an interrupted [commit] can leave.
+     * Anything else in the game's folder, such as texture dumps, stays, and the folder goes once
+     * it is empty.
+     */
+    fun removePack(serialDirectory: File): Boolean {
+        val root = serialDirectory.parentFile ?: return false
+        for (name in listOf("replacements", "replacements.old")) {
+            val dir = File(serialDirectory, name)
+            if (!dir.exists()) continue
+            val removed = File(root, "$REMOVED_PREFIX${serialDirectory.name}-$name-${System.nanoTime()}")
+            // The rename should always work here; if it does not, delete in place as before.
+            val doomed = if (dir.renameTo(removed)) removed else dir
+            if (!runCatching { doomed.deleteRecursively() }.getOrDefault(false)) {
+                // deleteRecursively() says nothing about WHICH entry refused. Name a few.
+                val left = runCatching {
+                    doomed.walkTopDown().filter { it != doomed }.take(5).toList()
+                }.getOrDefault(emptyList())
+                Log.w(TAG, "delete ${doomed.absolutePath} incomplete (renamed=${doomed === removed}); " +
+                    "survivors=${left.joinToString { it.relativeTo(doomed).path }}")
+            }
+        }
+        if (serialDirectory.list()?.isEmpty() == true) serialDirectory.delete()
+        return !File(serialDirectory, "replacements").exists()
+    }
+
+    /** Finishes deleting packs [removePack] could not delete completely. [texturesRoot] is the
+     *  `textures` folder. Blocking; call from a background dispatcher. */
+    fun sweepRemovedPacks(texturesRoot: File) {
+        texturesRoot.listFiles().orEmpty()
+            .filter { it.isDirectory && it.name.startsWith(REMOVED_PREFIX) }
+            .forEach { runCatching { it.deleteRecursively() } }
     }
 
     private sealed interface ExtractionResult {

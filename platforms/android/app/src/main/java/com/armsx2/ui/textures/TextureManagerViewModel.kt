@@ -6,6 +6,7 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.armsx2.TexturePackInstallState
+import com.armsx2.TexturePackInstaller
 import com.armsx2.data.library.GameLibraryRepository
 import com.armsx2.runtime.MainActivityRuntime
 import com.armsx2.config.ConfigStore
@@ -55,6 +56,7 @@ class TextureManagerViewModel(application: Application) : AndroidViewModel(appli
         viewModelScope.launch {
             val scanned = withContext(Dispatchers.IO) {
                 val root = textureRoot().apply { mkdirs() }
+                TexturePackInstaller.sweepRemovedPacks(root)
                 val serialDirs = root.listFiles().orEmpty().filter(File::isDirectory)
                 val packs = serialDirs.mapNotNull { serialDir ->
                     val replacements = File(serialDir, "replacements")
@@ -192,42 +194,24 @@ class TextureManagerViewModel(application: Application) : AndroidViewModel(appli
 
     fun delete(pack: TexturePackItem) {
         val serialDirectory = pack.directory.parentFile ?: return
-        // Also off the main thread: deleteRecursively over a 1.8 GB / 4000-file pack is
-        // just as capable of ANRing as the import was.
+        // Also off the main thread: deleting a 1.8 GB / 4000-file pack is just as capable of
+        // ANRing as the import was.
         state.value = state.value.copy(busy = true, message = null, error = null)
         viewModelScope.launch {
-            val deleted = withContext(Dispatchers.IO) {
-                val ok = runCatching { serialDirectory.deleteRecursively() }.getOrDefault(false)
-                if (!ok) {
-                    // deleteRecursively() is all-or-nothing in its return value and says nothing
-                    // about WHICH entry refused, so a failure was previously unactionable — the
-                    // user just saw "Unable to delete". Name the survivors.
-                    val left = runCatching {
-                        serialDirectory.walkTopDown().filter { it != serialDirectory }.take(5).toList()
-                    }.getOrDefault(emptyList())
-                    android.util.Log.w(
-                        "TextureManager",
-                        "delete ${serialDirectory.absolutePath} failed; exists=${serialDirectory.exists()} " +
-                            "survivors=${left.joinToString { it.relativeTo(serialDirectory).path }}",
-                    )
-                }
-                // Treat "the directory is gone" as success regardless of what the walk returned:
-                // a partial failure that still removed everything is a success to the user, and
-                // the state reconcile below keys off the filesystem anyway.
-                ok || !serialDirectory.exists()
-            }
+            val deleted = withContext(Dispatchers.IO) { TexturePackInstaller.removePack(serialDirectory) }
+            // The record goes whatever happened on disk. A pack that is gone, or half gone, is not
+            // installed, and a record left behind keeps a greyed-out "Installed" in the catalog,
+            // which is the one thing that stops a reinstall.
+            TexturePackInstallState.forgetSerial(pack.serial)
+            // Drop the cached size too, or a reinstall of the same serial could be measured
+            // against the deleted pack's mtime and report stale counts.
+            PackSizeCache.forget(pack.serial)
             state.value = if (deleted) {
                 state.value.copy(busy = false, message = "Deleted texture pack ${pack.serial}.")
             } else {
                 state.value.copy(busy = false, error = "Unable to delete ${pack.serial}.")
             }
-            if (deleted) {
-                com.armsx2.TexturePackInstallState.forgetSerial(pack.serial)
-                // Drop the cached size too, or a reinstall of the same serial could be measured
-                // against the deleted pack's mtime and report stale counts.
-                PackSizeCache.forget(pack.serial)
-            }
-            if (deleted && pack.serial.equals(state.value.activeSerial, true)) reloadCore()
+            if (pack.serial.equals(state.value.activeSerial, true)) reloadCore()
             refresh()
         }
     }
