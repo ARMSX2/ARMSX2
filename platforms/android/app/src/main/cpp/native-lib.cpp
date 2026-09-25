@@ -298,6 +298,13 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
     // instruction; one that appears only after a failed boot is not.
     FileSystem::CreateDirectoryPath(Path::Combine(EmuFolders::DataRoot, "hostfs").c_str(), true);
 
+    // Fill the USB device registry now. The core only fills it in CPUThreadInitialize, which on
+    // Android runs when a game boots, and empties it again when the game stops. So with no game
+    // running the settings screen asked an empty registry, got no devices, and offered only
+    // "Not Connected" on both ports (#752). Register() does nothing when the registry is already
+    // filled, and no game thread exists yet at this point.
+    USBinit();
+
 #ifdef ARMSX2_PGO_GENERATE
     // PGO instrument build: redirect the .profraw output to an on-device writable
     // dir — the baked -fprofile-dir is the build machine's path. set_filename

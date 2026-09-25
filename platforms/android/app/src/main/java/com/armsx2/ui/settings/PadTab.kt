@@ -875,24 +875,9 @@ private fun UsbDeviceSection(refreshToken: MutableState<Int>) {
         for (port in 0..1) {
             SettingsDivider()
             val current = com.armsx2.input.UsbDevices.portType[port].value
-            // A plain list of rows rather than a segmented strip: 19 entries would be unusable as
-            // chips, and this mirrors the radio list other emulators use for the same choice.
-            Text(
-                "${str("pad.usb.port")} ${port + 1}  ·  ${com.armsx2.input.UsbDevices.displayName(current)}",
-                style = MaterialTheme.typography.labelMedium,
-                color = Colors.pasx2_blue,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(top = 6.dp, bottom = 2.dp),
-            )
-            UsbDeviceRow(str("pad.usb.none"), current == com.armsx2.input.UsbDevices.NONE) {
-                com.armsx2.input.UsbDevices.setType(port, com.armsx2.input.UsbDevices.NONE)
+            UsbPortPicker(port, current, devices) { type ->
+                com.armsx2.input.UsbDevices.setType(port, type)
                 refreshToken.value++
-            }
-            devices.forEach { d ->
-                UsbDeviceRow(d.display, current == d.type) {
-                    com.armsx2.input.UsbDevices.setType(port, d.type)
-                    refreshToken.value++
-                }
             }
             // Subtypes only exist for a few devices (different wheels, different turntables).
             val subs = devices.firstOrNull { it.type == current }?.subtypes.orEmpty()
@@ -910,15 +895,71 @@ private fun UsbDeviceSection(refreshToken: MutableState<Int>) {
     }
 }
 
-/** One device choice. Radio-style: exactly one device per port. */
+/**
+ * One port: a row saying what is attached, which opens the device list in place and closes again
+ * on a pick. In place rather than a dialog, which would swallow the gamepad. Both ports used to
+ * show their whole list at once, 19 rows each, with no row that read as the port itself.
+ */
 @Composable
-private fun UsbDeviceRow(label: String, selected: Boolean, onPick: () -> Unit) {
+private fun UsbPortPicker(
+    port: Int,
+    current: String,
+    devices: List<com.armsx2.input.UsbDevices.Device>,
+    onPick: (String) -> Unit,
+) {
+    val open = androidx.compose.runtime.saveable.rememberSaveable(port) { mutableStateOf(false) }
+    val toggle = { open.value = !open.value }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(rowAura())
+            .clickable(onClick = toggle)
+            .controllerFocusable("usb.port.$port", onConfirm = toggle)
+            .padding(horizontal = 6.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                "${str("pad.usb.port")} ${port + 1}",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                com.armsx2.input.UsbDevices.displayName(current),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 14.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
+            if (open.value) "▾" else "▸",
+            color = Colors.pasx2_blue,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+    if (open.value) {
+        val pick = { type: String -> onPick(type); open.value = false }
+        UsbDeviceRow(port, str("pad.usb.none"), current == com.armsx2.input.UsbDevices.NONE) {
+            pick(com.armsx2.input.UsbDevices.NONE)
+        }
+        devices.forEach { d -> UsbDeviceRow(port, d.display, current == d.type) { pick(d.type) } }
+    }
+}
+
+/** One device choice. Radio-style: exactly one device per port. The id carries the port, since
+ *  both ports list the same devices and a shared id would let the pad reach only one of them. */
+@Composable
+private fun UsbDeviceRow(port: Int, label: String, selected: Boolean, onPick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
             .clickable(onClick = onPick)
-            .controllerFocusable("usb.dev.$label", onConfirm = onPick)
-            .padding(vertical = 7.dp, horizontal = 4.dp),
+            .controllerFocusable("usb.dev.$port.$label", onConfirm = onPick)
+            .padding(start = 16.dp, end = 4.dp, top = 7.dp, bottom = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(

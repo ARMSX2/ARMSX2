@@ -37,7 +37,11 @@ object UsbDevices {
 
     private var cached: List<Device>? = null
 
-    /** Devices this build can emulate, straight from the core. Cached — it cannot change at runtime. */
+    /**
+     * Devices this build can emulate, straight from the core. Cached once it has an answer, since
+     * that cannot change at runtime. An empty answer is not cached: it means the core's registry
+     * was not filled yet, and keeping it would leave the picker empty for the whole session (#752).
+     */
     fun available(): List<Device> {
         cached?.let { return it }
         val raw = runCatching { NativeApp.usbDeviceTypes() }.getOrNull().orEmpty()
@@ -47,7 +51,7 @@ object UsbDevices {
             if (parts.size < 2) return@mapNotNull null
             Device(parts[0], parts[1], parts.drop(2))
         }
-        cached = list
+        if (list.isNotEmpty()) cached = list
         return list
     }
 
