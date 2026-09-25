@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -22,6 +23,15 @@ class IOSMetalBarrierTests(unittest.TestCase):
             r"#endif$",
         )
         self.assertNotIn("[enc textureBarrier];", implementation)
+
+    def test_bc_textures_follow_the_gpu(self):
+        implementation = (
+            ROOT / "pcsx2/GS/Renderers/Metal/GSDeviceMTL.mm"
+        ).read_text(encoding="utf-8")
+
+        # Most iOS GPUs cannot sample BC, and creating a BC texture there aborts.
+        self.assertTrue("supportsBCTextureCompression" in implementation, "BC support must come from the GPU")
+        self.assertIsNone(re.search(r"m_features\.(dxt|bptc)_textures = true;", implementation))
 
 
 if __name__ == "__main__":

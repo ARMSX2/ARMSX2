@@ -1358,8 +1358,9 @@ bool GSDeviceMTL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	m_features.point_expand = true;
 	m_features.line_expand = false;
 	m_features.prefer_new_textures = true;
-	m_features.dxt_textures = true;
-	m_features.bptc_textures = true;
+	// Only Apple9 and some iPads sample BC on iOS; without it the replacement loader decodes on the CPU.
+	m_features.dxt_textures = [m_dev.dev supportsBCTextureCompression];
+	m_features.bptc_textures = m_features.dxt_textures;
 	m_features.framebuffer_fetch = m_dev.features.framebuffer_fetch && !GSConfig.DisableFramebufferFetch;
 	// Apple's programmable blending reads the tile in rasterization order, so overlapping
 	// primitives in one draw already observe each other and a full barrier adds nothing.
