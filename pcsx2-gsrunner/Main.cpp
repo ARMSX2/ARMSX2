@@ -607,6 +607,11 @@ bool GSRunner::InitializeConfig()
 
 	VMManager::SetDefaultSettings(si, true, true, true, true, true);
 
+	// The app's default is on; a measurement must not have worker threads compiling beside the run
+	// unless it asks for them. Set before the command line is parsed, so -precompile-pipelines, -set
+	// and -ini can turn it back on.
+	si.SetBoolValue("EmuCore/GS", "PrecompilePipelines", false);
+
 	VMManager::Internal::LoadStartupSettings();
 	return true;
 }
@@ -2086,11 +2091,6 @@ void GSRunner::SettingsOverride()
 {
 	// complete as quickly as possible
 	s_settings_interface.SetBoolValue("EmuCore/GS", "FrameLimitEnable", s_force_vsync);
-
-	// The app's default is on; a measurement must not have worker threads compiling beside the run
-	// unless it asked for them.
-	if (!s_settings_interface.ContainsValue("EmuCore/GS", "PrecompilePipelines"))
-		s_settings_interface.SetBoolValue("EmuCore/GS", "PrecompilePipelines", false);
 	s_settings_interface.SetIntValue("EmuCore/GS", "VsyncEnable", s_force_vsync);
 	// -vsync needs DisableMailboxPresentation too: GetEffectiveVSyncMode() returns
 	// Mailbox when VsyncEnable=true unless this is set.
