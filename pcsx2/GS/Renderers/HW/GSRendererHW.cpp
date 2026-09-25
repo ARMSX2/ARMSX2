@@ -733,6 +733,17 @@ GSRendererHW::LineRunResult GSRendererHW::LinesToPixelRuns(bool aa1)
 	return LineRunResult::Converted;
 }
 
+bool GSRendererHW::AA1LineExpandsAboveNative(float target_scale)
+{
+	// A pixel run carries one native pixel's coverage across that pixel's whole device block. The
+	// low-coverage pixel of each AA1 pair comes out nearly the background colour, and above native
+	// it no longer lands on the edge pixel of the fill it outlines, since the fill's edge is drawn
+	// on the finer grid: Sly 3's cel outlines grow a background-coloured strip between the outline
+	// and the fill, and step in native-pixel blocks. The expansion computes the coverage per device
+	// pixel. It needs no feedback loop for lines, only vertex-shader expansion.
+	return target_scale != 1.0f && g_gs_device->Features().vs_expand && AA1LineCoverageFromPixelRuns();
+}
+
 template<u32 primclass, bool fst>
 GSRendererHW::TextureShuffleInfo GSRendererHW::DetectTextureShuffleImpl()
 {
@@ -6170,7 +6181,7 @@ bool GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 
 	const bool unscale_pt_ln = !GSConfig.UserHacks_DisableSafeFeatures && (target_scale != 1.0f);
 	const GSDevice::FeatureSupport features = g_gs_device->Features();
-	const bool draw_aa1 = !no_rt && PRIM->AA1 && features.aa1;
+	const bool draw_aa1 = !no_rt && PRIM->AA1 && (features.aa1 || AA1LineExpandsAboveNative(target_scale));
 
 	pxAssert(VerifyIndices());
 
@@ -6778,7 +6789,7 @@ void GSRendererHW::DetermineAlphaScaling(GSTextureCache::Target* rt, GSTextureCa
 	}
 }
 
-void GSRendererHW::EmulateAA1()
+void GSRendererHW::EmulateAA1(float target_scale)
 {
 	pxAssert(!g_gs_device->Features().aa1 || g_gs_device->Features().feedback_loops());
 
@@ -6792,7 +6803,7 @@ void GSRendererHW::EmulateAA1()
 			m_conf.depth.zwe = false;
 			m_cached_ctx.ZBUF.ZMSK = 1;
 
-			if (AA1LineCoverageFromPixelRuns())
+			if (AA1LineCoverageFromPixelRuns() && !AA1LineExpandsAboveNative(target_scale))
 			{
 				// The coverage is already the vertex alpha of every pixel-run rectangle, and the
 				// substitution rule was applied there, where the per-pixel alpha is known. The
@@ -10930,7 +10941,7 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	m_prim_overlap = PrimitiveOverlap(false);
 
 	// Do AA1 setup early so we can mask depth if possible.
-	EmulateAA1();
+	EmulateAA1((rt ? rt : ds)->GetScale());
 
 	if (rt)
 	{

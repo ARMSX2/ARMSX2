@@ -260,7 +260,7 @@ private:
 	bool IsFastStencilShadowDraw() const;
 
 	void EmulateZbuffer(const GSTextureCache::Target* ds);
-	void EmulateAA1();
+	void EmulateAA1(float target_scale);
 	void EmulateAlphaTest(DATEOptions& date_options);
 	void EmulateAlphaTestSecondPass();
 	void ConfigureDepthFeedback(bool rov_depth = false);
@@ -442,6 +442,9 @@ public:
 		Refused, ///< The draw is untouched and needs the expanded-line fallback.
 	};
 	LineRunResult LinesToPixelRuns(bool aa1);
+	/// Whether this AA1 line draw takes the vertex-shader expansion rather than the pixel runs,
+	/// which it does above native wherever the device can expand lines.
+	bool AA1LineExpandsAboveNative(float target_scale);
 	void SnapPointsToNativePixel();
 	GSVector4 RealignTargetTextureCoordinate(const GSTextureCache::Source* tex);
 	void ApplyNativeWTexOffset(const GSTextureCache::Source* tex, const GSTextureCache::Target* rt,
