@@ -69,6 +69,7 @@ struct NumberFormat {
     /// bounds and it cannot be read back off the keyboard either.
     var labelsBounds: Bool { literal == nil }
     var isTypeable: Bool { literal == nil }
+    var isPercentage: Bool { literal == nil && unit == "%@%" }
 
     /// The smallest change this readout can show. A continuous row snaps to it so the stored
     /// value is the number on screen rather than a fraction hiding underneath it.
@@ -292,6 +293,9 @@ struct NumberRow: View {
 
     @Environment(\.numberRowStyle) private var rowStyle
     @Environment(\.numberRowActivity) private var activity
+    @Environment(\.menuControllerInputRouter) private var controllerInput
+    @Environment(\.controllerAccessibilityInheritedTargetID)
+    private var inheritedControllerTargetID
     // A disabled Text does not dim on its own, so the skipdraw and texture offset fields have been
     // sitting there fully tinted and boxed while doing nothing at all.
     @Environment(\.isEnabled) private var isEnabled
@@ -441,11 +445,17 @@ struct NumberRow: View {
     var body: some View {
         content
             .padding(.vertical, rowStyle.verticalPadding)
+            .controllerAccessibilityAdjustableTarget(
+                label: localizedTitle,
+                value: displayText,
+                onActivate: beginTyping,
+                onIncrement: { controllerAdjust(by: 1) },
+                onDecrement: { controllerAdjust(by: -1) }
+            )
             .onChange(of: store.wrappedValue) { _, _ in
                 guard isDragging else { return }
                 activity.update(localizedTitle, displayText, true)
             }
-            .onChange(of: draft) { _, _ in draftChanged() }
             .onChange(of: fieldFocused) { _, focused in
                 if !focused { commit() }
             }
@@ -471,7 +481,7 @@ struct NumberRow: View {
     @ViewBuilder
     private var control: some View {
         if style == .stepper {
-            Stepper("", value: clampedValue, in: range, step: step ?? 1)
+            Stepper("", value: clampedValue, in: range, step: effectiveStep ?? 1)
                 .labelsHidden()
                 .fixedSize()
                 .frame(maxWidth: .infinity, alignment: .trailing)
@@ -524,7 +534,7 @@ struct NumberRow: View {
 
     @ViewBuilder
     private var slider: some View {
-        if !detents.isEmpty {
+        if usesDetents {
             // Bound to the position in the list rather than the value, so the stops are evenly
             // spaced. That is what puts 60 in the middle of 30/45/60/90/120 instead of at 43%,
             // and it keeps the tick marks few enough to mean something.
@@ -568,7 +578,7 @@ struct NumberRow: View {
                 .focused($fieldFocused)
                 .keyboardType(keyboardType)
                 .submitLabel(.done)
-                .onSubmit { fieldFocused = false }
+                .onSubmit { commitAndDismissKeyboard() }
                 .multilineTextAlignment(.trailing)
                 .textFieldStyle(.plain)
                 .font(rowStyle.valueFont)
@@ -587,7 +597,10 @@ struct NumberRow: View {
                     // you are actually in rather than from all 275 at once.
                     ToolbarItemGroup(placement: .keyboard) {
                         Spacer()
-                        Button(settings.localized("Done")) { fieldFocused = false }
+                        Button(
+                            settings.localized("Done"),
+                            action: commitAndDismissKeyboard
+                        )
                     }
                 }
         } else if rowStyle.allowsTypedEntry && format.isTypeable {
@@ -627,8 +640,11 @@ struct NumberRow: View {
         }
     }
 
+    @ViewBuilder
     private func accessoryButton(_ accessory: NumberRowAccessory) -> some View {
-        Button(action: accessory.action) {
+        let label = settings.localized(accessory.label)
+            .replacingOccurrences(of: "%@", with: localizedTitle)
+        let button = Button(action: accessory.action) {
             Image(systemName: accessory.systemImage)
                 .font(.caption.weight(.semibold))
                 .frame(width: 28, height: 28)
@@ -636,9 +652,20 @@ struct NumberRow: View {
         }
         .buttonStyle(.borderless)
         .foregroundStyle(.secondary)
-        .accessibilityLabel(
-            settings.localized(accessory.label).replacingOccurrences(of: "%@", with: localizedTitle)
-        )
+        .accessibilityLabel(label)
+
+        if inheritedControllerTargetID == nil {
+            button.controllerAccessibilityActionTarget(
+                label: label,
+                activationFeedback: .activate,
+                action: accessory.action
+            )
+        } else {
+            // The surrounding numeric row already owns the stable controller
+            // ID. A second inherited probe here would replace that owner every
+            // time Override remounts the row and trap directional focus.
+            button
+        }
     }
 
     /// A hand edited INI hands us values outside the range and Slider does not cope with that, so
@@ -653,10 +680,46 @@ struct NumberRow: View {
     private var snappingValue: Binding<Double> {
         Binding(get: { clamped(store.wrappedValue) },
                 set: { raw in
-                    guard let step, step > 0 else { store.wrappedValue = clamped(raw); return }
+                    guard let step = effectiveStep, step > 0 else {
+                        store.wrappedValue = clamped(raw)
+                        return
+                    }
                     let steps = ((raw - range.lowerBound) / step).rounded()
                     store.wrappedValue = clamped(range.lowerBound + steps * step)
                 })
+    }
+
+    /// Percentage tracks ending at 100 are continuous 1% controls. Detents remain useful visual
+    /// suggestions for irregular ranges such as FPS, but they must not turn 0/25/50/75/100 into
+    /// the only values reachable from a controller or a drag.
+    private var usesOnePercentGranularity: Bool {
+        guard format.isPercentage else { return false }
+        let shownLowerBound = range.lowerBound * format.scale
+        let shownUpperBound = range.upperBound * format.scale
+        return shownLowerBound >= -0.000_001
+            && shownLowerBound <= 100.000_001
+            && abs(shownUpperBound - 100) <= 0.000_001
+    }
+
+    private var onePercentStep: Double { 1 / format.scale }
+
+    private var effectiveStep: Double? {
+        usesOnePercentGranularity ? onePercentStep : step
+    }
+
+    private var usesDetents: Bool {
+        !usesOnePercentGranularity && !detents.isEmpty
+    }
+
+    /// The initial edge remains a precise one-step edit. Only repeat events inherit the router's
+    /// smooth hold acceleration, so a long hold advances several slider increments per callback
+    /// while ordinary taps never skip a value.
+    private var controllerAdjustmentStepCount: Int {
+        guard controllerInput?.isRepeatingDirectionCommand == true else { return 1 }
+        return max(
+            1,
+            Int((controllerInput?.directionalRepeatAcceleration ?? 1).rounded())
+        )
     }
 
     /// Reading snaps to the nearest stop so the knob always sits on one. Writing only happens on a
@@ -678,6 +741,39 @@ struct NumberRow: View {
     private func clamped(_ value: Double) -> Double {
         guard value.isFinite else { return range.lowerBound }
         return min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    private func controllerAdjust(by direction: Int) {
+        guard isEnabled, direction != 0 else { return }
+        let movement = direction * controllerAdjustmentStepCount
+
+        if usesOnePercentGranularity {
+            let next = store.wrappedValue
+                + Double(movement) * onePercentStep
+            store.wrappedValue = clamped(
+                Self.snapped(next, to: onePercentStep)
+            )
+            return
+        }
+
+        if usesDetents {
+            let current = clamped(store.wrappedValue)
+            let currentIndex = detents.enumerated().min {
+                abs($0.element - current) < abs($1.element - current)
+            }?.offset ?? 0
+            let nextIndex = min(
+                max(currentIndex + movement, detents.startIndex),
+                detents.index(before: detents.endIndex)
+            )
+            store.wrappedValue = detents[nextIndex]
+            return
+        }
+
+        let span = range.upperBound - range.lowerBound
+        let increment = step ?? max(format.displayStep, span / 20)
+        store.wrappedValue = clamped(
+            store.wrappedValue + Double(movement) * increment
+        )
     }
 
     /// Fixed, because these strings are compared with each other and never shown to anyone.
@@ -791,14 +887,17 @@ struct NumberRow: View {
         DispatchQueue.main.async { fieldFocused = true }
     }
 
-    /// Commit as they type, but only once the number is inside the range. A panel that reads its
-    /// staged value on Save cannot see a draft still sitting in the keyboard, and half typed
-    /// digits would otherwise clamp to the nearest bound on the way past.
-    private func draftChanged() {
-        guard isTyping, draft != seededDraft else { return }
-        guard let parsed = format.parse(draft, locale: editingLocale),
-              range.contains(parsed) else { return }
-        store.wrappedValue = parsed
+    /// Keep the draft local until editing ends. Besides making Done deterministic,
+    /// this prevents Per-Game live preview from restarting for every digit.
+    private func commitAndDismissKeyboard() {
+        commit()
+        fieldFocused = false
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
     }
 
     /// Nothing unparseable is written and nothing out of range is written; the row snaps back to
@@ -806,6 +905,7 @@ struct NumberRow: View {
     ///
     /// No bracketing here. That exists to stop a reload per drag tick, and this is one write.
     private func commit() {
+        guard isTyping else { return }
         isTyping = false
         // Opening the keyboard and closing it again must not change anything. The draft starts
         // as the rounded readout, so writing it back would quietly drop whatever precision the
@@ -837,4 +937,119 @@ private struct OptionalHint: ViewModifier {
             content
         }
     }
+}
+
+/// Shared full-reset interaction for Settings surfaces. A reset is important
+/// enough to confirm, but its success feedback should stay in context instead
+/// of replacing the current screen with a second modal.
+struct ConfirmedSettingsResetButton: View {
+    let title: String
+    let confirmationTitle: String
+    let confirmationMessage: String
+    let completionMessage: String
+    let controllerTargetID: String?
+    let action: () -> Void
+
+    @State private var showsConfirmation = false
+    @State private var showsCompletion = false
+    @State private var completionTask: Task<Void, Never>?
+    @Environment(\.menuControllerInputRouter) private var controllerInput
+
+    private var settings: SettingsStore { SettingsStore.shared }
+
+    init(
+        _ title: String,
+        confirmationTitle: String,
+        confirmationMessage: String,
+        completionMessage: String,
+        controllerTargetID: String? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.confirmationTitle = confirmationTitle
+        self.confirmationMessage = confirmationMessage
+        self.completionMessage = completionMessage
+        self.controllerTargetID = controllerTargetID
+        self.action = action
+    }
+
+    var body: some View {
+        Button(role: .destructive) {
+            showsConfirmation = true
+        } label: {
+            HStack(spacing: 12) {
+                Text(title)
+                Spacer(minLength: 8)
+                if showsCompletion {
+                    Label(completionMessage, systemImage: "checkmark.circle.fill")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.green)
+                        .lineLimit(1)
+                        .transition(
+                            .opacity.combined(with: .scale(scale: 0.92))
+                        )
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .controllerAccessibilityActionTarget(
+            id: controllerTargetID,
+            label: title
+        ) {
+            showsConfirmation = true
+        }
+        .confirmationDialog(
+            confirmationTitle,
+            isPresented: $showsConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(settings.localized("Reset"), role: .destructive) {
+                performReset()
+            }
+            Button(settings.localized("Cancel"), role: .cancel) {}
+        } message: {
+            Text(confirmationMessage)
+        }
+        .onDisappear {
+            completionTask?.cancel()
+            completionTask = nil
+        }
+    }
+
+    @MainActor
+    private func performReset() {
+        action()
+        completionTask?.cancel()
+        withAnimation(.easeOut(duration: 0.18)) {
+            showsCompletion = true
+        }
+        announceSettingsResetSuccess(
+            completionMessage,
+            controllerInput: controllerInput
+        )
+        completionTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2.4))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeIn(duration: 0.18)) {
+                showsCompletion = false
+            }
+            completionTask = nil
+        }
+    }
+}
+
+/// Use this from reset flows which already own a confirmation/result alert.
+/// The reusable reset row above calls the same path automatically.
+@MainActor
+func announceSettingsResetSuccess(
+    _ message: String,
+    controllerInput: MenuControllerInputRouter? = nil
+) {
+    MenuAudioPackManager.shared.playEvent(.uiToast)
+    if let controllerInput {
+        controllerInput.playTouchHaptics(.destination)
+    } else {
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+    UIAccessibility.post(notification: .announcement, argument: message)
 }

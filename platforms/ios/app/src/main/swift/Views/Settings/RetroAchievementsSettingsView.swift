@@ -22,6 +22,31 @@ struct RetroAchievementsSettingsView: View {
     @State private var showingMessage = false
     @State private var showingHardcoreDisableConfirm = false
 
+    private var controllerTargetOrder: [String] {
+        var ids = ["settings.achievements.enabled"]
+        if achievementsSupported {
+            if hasStoredAccount {
+                ids.append("settings.achievements.logout")
+                if !bool("loggedIn") && achievementsEnabled && !loggingIn {
+                    ids.append("settings.achievements.login-again")
+                }
+            } else if achievementsEnabled && !loggingIn {
+                ids.append("settings.achievements.login")
+            }
+            if hardcoreSupported {
+                ids.append("settings.achievements.hardcore")
+            }
+            ids += [
+                "settings.achievements.notifications",
+                "settings.achievements.leaderboards",
+                "settings.achievements.overlays",
+            ]
+        } else {
+            ids.append("settings.achievements.unavailable")
+        }
+        return ids
+    }
+
     private func applyHardcoreChange(_ enabled: Bool) {
         hardcoreEnabled = enabled
         ARMSX2Bridge.setRetroAchievementsHardcore(enabled)
@@ -57,7 +82,7 @@ struct RetroAchievementsSettingsView: View {
                         refreshSoon()
                     }
                 ))
-                .disabled(!achievementsSupported)
+                .controllerAccessibilityTargetID("settings.achievements.enabled")
 
                 statusRow("Client", value: bool("active") ? "Active" : "Inactive")
                 statusRow("Account", value: accountSummary, localizeValue: !hasStoredAccount)
@@ -92,6 +117,7 @@ struct RetroAchievementsSettingsView: View {
                         } label: {
                             Text(settings.localized("Log Out"))
                         }
+                        .controllerAccessibilityTargetID("settings.achievements.logout")
 
                         if !bool("loggedIn") {
                             Button {
@@ -101,6 +127,7 @@ struct RetroAchievementsSettingsView: View {
                             } label: {
                                 Text(settings.localized(loggingIn ? "Logging In..." : "Log In Again"))
                             }
+                            .controllerAccessibilityTargetID("settings.achievements.login-again")
                             .disabled(!achievementsEnabled || loggingIn)
                         }
                     } else {
@@ -111,6 +138,7 @@ struct RetroAchievementsSettingsView: View {
                         } label: {
                             Text(settings.localized(loggingIn ? "Logging In..." : "Log In"))
                         }
+                        .controllerAccessibilityTargetID("settings.achievements.login")
                         .disabled(!achievementsEnabled || loggingIn)
                     }
                 }
@@ -127,7 +155,7 @@ struct RetroAchievementsSettingsView: View {
                                 }
                             }
                         ))
-                        .disabled(!achievementsEnabled)
+                        .controllerAccessibilityTargetID("settings.achievements.hardcore")
                         .confirmationDialog(
                             settings.localized("Turn off Hardcore Mode?"),
                             isPresented: $showingHardcoreDisableConfirm,
@@ -152,7 +180,7 @@ struct RetroAchievementsSettingsView: View {
                             refreshSoon()
                         }
                     ))
-                    .disabled(!achievementsEnabled)
+                    .controllerAccessibilityTargetID("settings.achievements.notifications")
 
                     Toggle(settings.localized("Leaderboard Notifications"), isOn: Binding(
                         get: { leaderboardNotificationsEnabled },
@@ -162,7 +190,7 @@ struct RetroAchievementsSettingsView: View {
                             refreshSoon()
                         }
                     ))
-                    .disabled(!achievementsEnabled)
+                    .controllerAccessibilityTargetID("settings.achievements.leaderboards")
 
                     Toggle(settings.localized("In-Game Overlays"), isOn: Binding(
                         get: { overlaysEnabled },
@@ -172,7 +200,7 @@ struct RetroAchievementsSettingsView: View {
                             refreshSoon()
                         }
                     ))
-                    .disabled(!achievementsEnabled)
+                    .controllerAccessibilityTargetID("settings.achievements.overlays")
                 } header: {
                     Text(settings.localized("Modes"))
                 } footer: {
@@ -212,6 +240,10 @@ struct RetroAchievementsSettingsView: View {
                     statusRow("Status", value: "Temporarily Unavailable")
                     Text(settings.localized(unavailableMessage))
                         .foregroundStyle(.secondary)
+                    Button(settings.localized("Why is RetroAchievements unavailable?")) {
+                        showMessage(title: "RetroAchievements", body: unavailableMessage)
+                    }
+                    .controllerAccessibilityTargetID("settings.achievements.unavailable")
                 }
             }
 
@@ -221,6 +253,7 @@ struct RetroAchievementsSettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .controllerAccessibilityTargetOrder(controllerTargetOrder)
         .navigationTitle(settings.localized("RetroAchievements"))
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: refresh)
