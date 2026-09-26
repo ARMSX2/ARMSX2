@@ -35,6 +35,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -52,6 +53,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
@@ -94,6 +96,12 @@ import androidx.core.content.edit
 private val focusBlue = Color(0xFF3DA5FF)
 
 val LocalSettingsScrollState = staticCompositionLocalOf<ScrollState?> { null }
+
+/** Only set while search is resolving a jump. Collapsed sections compose their rows in a
+ * zero-sized container for that one pass, so the matching section can open itself without
+ * expanding every section on the page. */
+internal val LocalSettingsSearchTarget = staticCompositionLocalOf<String?> { null }
+private val LocalSearchSectionExpand = staticCompositionLocalOf<(() -> Unit)?> { null }
 
 /** The exclusive input layer the surrounding content belongs to — null on a base screen, a
  *  modal's key inside PadModal's host, which is the only thing that ever provides it.
@@ -260,16 +268,15 @@ internal object SettingsControllerNav {
         scrollVelocity.floatValue = 0f
     }
 
-    /** Highlight + scroll to the row whose id derives from [label] — used by settings search
-     *  to jump to a specific control after switching tabs. The shared row widgets register
-     *  label-based ids (toggle:/segmented:/segmented-grid:/slider:<label>[:hash]); sliders
-     *  append a composition hash, so those are matched by prefix. Returns true once a row
-     *  matched (the target tab must already be composed — retry until it is). */
+    /** Highlight + scroll to the row or section header whose id derives from [label].
+     *  Sliders append a composition hash, so those are matched by prefix. Returns true only
+     *  after the destination control is visibly composed and registered. */
     fun selectByLabel(label: String): Boolean {
         val ids = orderedIds()
         val exact = setOf("toggle:$label", "segmented:$label", "segmented-grid:$label", "slider:$label")
         val id = ids.firstOrNull { it in exact }
             ?: ids.firstOrNull { it.startsWith("slider:$label:") }
+            ?: ids.firstOrNull { settingsSectionMatchesLabel(it, label) }
             ?: return false
         selectedId.value = id
         selectedIndex.intValue = ids.indexOf(id)
@@ -471,6 +478,15 @@ internal fun ControllerAutoScroll(scroll: ScrollState) {
     }
 }
 
+/** The registry ids used by the shared settings rows. Slider ids may carry an additional
+ * composition suffix, but other prefixes must match the whole label. */
+internal fun settingsRowMatchesLabel(id: String, label: String): Boolean =
+    id == "toggle:$label" || id == "segmented:$label" ||
+        id == "segmented-grid:$label" || id == "slider:$label" ||
+        id.startsWith("slider:$label:")
+
+internal fun settingsSectionMatchesLabel(id: String, label: String): Boolean = id == "section.$label"
+
 internal fun Modifier.controllerFocusable(
     controllerId: String? = null,
     shape: RoundedCornerShape = RoundedCornerShape(16.dp),
@@ -482,9 +498,16 @@ internal fun Modifier.controllerFocusable(
     // call site has to remember to pass. That is what lets an unmodified ToggleRow or slider be
     // dropped inside a modal and layer correctly with no plumbing at all.
     val navLayer = LocalNavLayer.current
+    val searchTarget = LocalSettingsSearchTarget.current
+    val expandSection = LocalSearchSectionExpand.current
+    val isSearchProbe = expandSection != null
     var focused by remember { mutableStateOf(false) }
     val bringIntoView = remember { BringIntoViewRequester() }
-    if (controllerId != null) {
+    if (controllerId != null && searchTarget != null && expandSection != null &&
+        settingsRowMatchesLabel(controllerId, searchTarget)) {
+        SideEffect { expandSection() }
+    }
+    if (controllerId != null && !isSearchProbe) {
         // Upsert the latest closures after every (re)composition so adjust /
         // confirm always run against the CURRENT value (SideEffect runs on each
         // successful recomposition, including the partial ones where only this
@@ -502,8 +525,8 @@ internal fun Modifier.controllerFocusable(
             onDispose { SettingsControllerNav.unregister(controllerId) }
         }
     }
-    val selected = controllerId != null && SettingsControllerNav.isSelected(controllerId)
-    if (controllerId != null) {
+    val selected = controllerId != null && !isSearchProbe && SettingsControllerNav.isSelected(controllerId)
+    if (controllerId != null && !isSearchProbe) {
         // Scroll the selected row just into view using its real measured bounds.
         LaunchedEffect(selected) {
             if (selected) runCatching { bringIntoView.bringIntoView() }
@@ -512,7 +535,7 @@ internal fun Modifier.controllerFocusable(
     this
         .bringIntoViewRequester(bringIntoView)
         .then(
-            if (controllerId != null)
+            if (controllerId != null && !isSearchProbe)
                 Modifier.onGloballyPositioned {
                     val p = it.positionInRoot()
                     SettingsControllerNav.setPosition(controllerId, p.x, p.y)
@@ -602,6 +625,16 @@ fun CollapsibleSection(
     var expanded by androidx.compose.runtime.saveable.rememberSaveable(title) {
         mutableStateOf(initiallyExpanded)
     }
+    val searchTarget = LocalSettingsSearchTarget.current
+    val expandParent = LocalSearchSectionExpand.current
+    if (searchTarget == title && (!expanded || expandParent != null)) {
+        // Section titles are search results too. Open the selected section (and any collapsed
+        // ancestor) before the search jump focuses its visible header.
+        SideEffect {
+            expanded = true
+            expandParent?.invoke()
+        }
+    }
     val toggle = {
         expanded = !expanded
         com.armsx2.MenuSfx.play(
@@ -631,9 +664,23 @@ fun CollapsibleSection(
             fontWeight = FontWeight.Bold,
         )
     }
-    // Collapsed content is not composed at all, so its rows also drop out of the controller-focus
-    // registry — a pad cannot land on a setting the user cannot see.
-    if (expanded) content()
+    // Outside a search jump, collapsed content is not composed and its rows leave the controller
+    // registry. A search probe composes it at zero size, but controllerFocusable does not register
+    // probe rows, so a pad still cannot land on a setting the user cannot see.
+    if (expanded) {
+        content()
+    } else if (searchTarget != null) {
+        // The target may be inside this section. Compose its rows just long enough to identify
+        // the match, without showing them or adding their height to the settings page. The
+        // matching row's controllerFocusable expands this section in a SideEffect; the search
+        // jump then focuses the now-visible row on the next composition.
+        CompositionLocalProvider(LocalSearchSectionExpand provides {
+            expanded = true
+            expandParent?.invoke()
+        }) {
+            Box(Modifier.size(0.dp).clipToBounds()) { content() }
+        }
+    }
 }
 
 @Composable
