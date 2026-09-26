@@ -78,6 +78,15 @@ final class ShaderCatalog: ObservableObject {
         }
     }
 
+    /// Catalogue networking is presentation work. Closing the shader browser
+    /// must not leave its manifest request retaining the browser model while
+    /// gameplay resumes.
+    func cancelPresentationWork() {
+        inFlight?.cancel()
+        inFlight = nil
+        isLoading = false
+    }
+
     private func run(force: Bool) async {
         if entries.isEmpty, let cached = Self.readCache() {
             entries = cached.entries
