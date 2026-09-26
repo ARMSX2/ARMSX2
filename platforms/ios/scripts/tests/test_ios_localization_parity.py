@@ -19,10 +19,10 @@ class TestLocalizationParity(unittest.TestCase):
     def test_xcstrings_exists_and_valid_json(self):
         self.assertTrue(XSTRINGS_PATH.exists(), f"Missing {XSTRINGS_PATH}")
         data = json.loads(XSTRINGS_PATH.read_text(encoding="utf-8"))
-        self.assertEqual(data.get("version"), "1.0")
+        self.assertEqual(data.get("version"), "1.1")
         self.assertEqual(data.get("sourceLanguage"), "en")
         self.assertIn("strings", data)
-        self.assertEqual(len(data["strings"]), 589)
+        self.assertEqual(len(data["strings"]), 634)
 
     def test_info_plist_cfbundlelocalizations(self):
         self.assertTrue(INFO_PLIST_PATH.exists(), f"Missing {INFO_PLIST_PATH}")

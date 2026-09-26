@@ -6,10 +6,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]
 SWIFT = ROOT / "platforms/ios/app/src/main/swift"
 CPP = ROOT / "platforms/ios/app/src/main/cpp"
+MODELS = SWIFT / "Models"
 
 
 def read(path):
     return Path(path).read_text(encoding="utf-8")
+
+
+def store_text():
+    """SettingsStore and the sibling files its extensions live in."""
+    return "\n".join(read(p) for p in sorted(MODELS.glob("SettingsStore*.swift")))
 
 
 def without_comments(text):

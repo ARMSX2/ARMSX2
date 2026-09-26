@@ -87,7 +87,7 @@ class ShaderPresetPathTests(unittest.TestCase):
             "ShaderPresetLibrary does not check a token for a '..' component")
 
     def test_an_unresolvable_token_disables_the_chain(self):
-        body = block(self.store, "func applyShaderChainSelection(")
+        body = block(self.store_all, "func applyShaderChainSelection(")
         self.assertIn(
             "ShaderPresetLibrary.resolve(", body,
             "applyShaderChainSelection() does not call ShaderPresetLibrary.resolve(")

@@ -113,12 +113,11 @@ class BrowserReachability(unittest.TestCase):
 
     SECTION = SWIFT / "Views/Settings/ShaderChainSection.swift"
     PAGE = SWIFT / "Views/Settings/ShaderSettingsView.swift"
-    IN_GAME = SWIFT / "Views/GameScreenView.swift"
 
     def test_the_download_row_sits_above_install(self):
         text = read(self.SECTION)
-        download = at(text, 'localized("Download Shaders")', "the Download row")
-        install = at(text, 'localized("Install Shader Pack")', "the Install row")
+        download = at(text, 'Label(localized("Download Shaders")', "the Download row")
+        install = at(text, 'Label(localized("Install Shader Pack")', "the Install row")
         self.assertLess(download, install,
                         "Download Shaders sits below Install Shader Pack in ShaderChainSection")
 
@@ -128,17 +127,17 @@ class BrowserReachability(unittest.TestCase):
             "ShaderSettingsView opens ShaderCatalogBrowserView as well as ShaderChainSection, "
             "so the row appears twice")
 
-    def test_the_in_game_host_can_push_a_destination(self):
-        """The row is a NavigationLink and the pause panel has no stack of its own."""
-        text = read(self.IN_GAME)
-        mount = at(text, "ShaderChainSection(", "the in-game mount")
-        # A window, not a whole-file search: GameScreenView carries several NavigationStacks
-        # and any one of them would satisfy a backwards search from here.
-        window = text[max(0, mount - 200):mount]
-        self.assertIn(
-            "NavigationStack", window,
-            "GameScreenView mounts ShaderChainSection outside a NavigationStack, so its "
-            "NavigationLinks do nothing")
+    def test_the_section_needs_no_host_stack(self):
+        """The in-game shader workspace has no stack of its own, so the section pushes nothing
+        and every screen it opens is a sheet that brings its own NavigationStack."""
+        text = read(self.SECTION)
+        self.assertNotIn("NavigationLink", text,
+                         "ShaderChainSection pushes a NavigationLink, which does nothing in game")
+        for request in ("$browseRequest", "$catalogRequest"):
+            with self.subTest(sheet=request):
+                sheet = text[at(text, f".sheet(item: {request}", request):]
+                self.assertIn("NavigationStack {", sheet[:300],
+                              f"the {request} sheet has no NavigationStack of its own")
 
     def test_a_downloaded_preset_can_be_picked_from_its_row(self):
         """Use on a downloaded row picks its preset instead of stopping at Installed."""
@@ -157,13 +156,16 @@ class BrowserReachability(unittest.TestCase):
                       "shared top folder the extractor dropped")
 
     def test_a_preset_picked_in_any_folder_closes_the_browser(self):
-        """A dismiss taken from an outer folder is ignored once an inner folder is pushed on top."""
+        """A dismiss taken from an outer folder is ignored once an inner folder is pushed on top,
+        so a pick closes the sheet through the host's onClose, which every folder receives."""
         self.assertRegex(
-            read(self.SECTION), r"select\(token\)\s+browseRequest = nil",
+            read(self.SECTION), r"onClose:\s*\{\s*browseRequest = nil\s*\}",
             "the Shaders section no longer closes the preset sheet on a pick")
-        self.assertNotIn(
-            "dismiss()", read(SWIFT / "Views/Settings/ShaderPresetBrowserView.swift"),
-            "ShaderPresetBrowserView calls dismiss(), which does nothing from an inner folder")
+        browser = read(SWIFT / "Views/Settings/ShaderPresetBrowserView.swift")
+        select = block(browser, "private func select(")
+        self.assertLess(at(select, "onSelect(", "the pick"), at(select, "onClose()", "the close"),
+                        "select() does not close the sheet through onClose after the pick")
+        self.assertIn("onClose: onClose", browser, "an inner folder does not receive onClose")
 
 
 if __name__ == "__main__":

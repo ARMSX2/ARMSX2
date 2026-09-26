@@ -32,8 +32,11 @@ class ShaderParameterRowPolicy(unittest.TestCase):
             "for it")
 
     def test_the_value_that_reaches_the_store_is_the_presets_own_clamp(self):
+        path = self.row
+        if "setParameter(" in path:
+            path += block(self.section, "private func setParameter(")
         self.assertIn(
-            "params.setValue", self.row,
+            "params.setValue", path,
             "parameterRow() does not write through params.setValue, where ShaderParam.clamped "
             "runs")
 

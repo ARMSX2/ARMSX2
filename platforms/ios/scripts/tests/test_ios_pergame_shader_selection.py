@@ -121,6 +121,8 @@ class PerGameShaderSelectionPolicy(unittest.TestCase):
 
     def test_save_notices_a_shader_only_change(self):
         body = block(self.panel, FINGERPRINT)
+        if "perGameLivePreviewFingerprint()" in body:
+            body += block(self.panel, "func perGameLivePreviewFingerprint")
         for state in PANEL_STATES:
             with self.subTest(state=state):
                 self.assertIn(

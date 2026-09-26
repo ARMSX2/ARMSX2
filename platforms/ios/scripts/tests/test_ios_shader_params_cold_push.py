@@ -4,11 +4,10 @@
 import re
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import SWIFT, block, read, store_text, without_comments
 
 
 MODELS = SWIFT / "Models"
-STORE = MODELS / "SettingsStore.swift"
 PARAMS = MODELS / "ShaderParams.swift"
 
 PUSH = "ShaderParams.pushStored("
@@ -18,7 +17,7 @@ BRIDGE = "ARMSX2Bridge.setShaderChainParameters("
 class ShaderParamsColdPushTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.store = without_comments(read(STORE))
+        cls.store = without_comments(store_text())
         cls.params = without_comments(read(PARAMS))
         cls.push = block(cls.params, "func pushStored(")
 

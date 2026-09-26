@@ -165,7 +165,7 @@ class SettingsDescriptorTests(unittest.TestCase):
         """Reset functions assign literals, so each is compared with its descriptor default."""
         by_property = {self.property_of[n]: (n, d) for n, (_, _, d) in self.descriptors.items()}
         for func in RESET_FUNCS:
-            for line in block(self.source, f"func {func}").split("\n"):
+            for line in block(self.store_source, f"func {func}").split("\n"):
                 match = re.match(r"^\s*(\w+) = (.+?)(?:\s*//.*)?$", line)
                 if not match or match.group(1) not in by_property:
                     continue

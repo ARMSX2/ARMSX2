@@ -122,7 +122,10 @@ final class ShaderPassLibrary: ObservableObject {
     ) -> [ShaderPassDescriptor] {
         var visits = Set<String>()
         let preset = resolvedPreset(in: presetURL, visits: &visits)
-        let count = Int(preset["shaders"]?.value ?? "")
+        // RetroArch presets stop at 64 passes; past that the shaderN keys decide.
+        let count = Int(preset["shaders"]?.value ?? "").flatMap {
+            (0...64).contains($0) ? $0 : nil
+        }
         let indices = count.map { Array(0..<$0) }
             ?? preset.keys.compactMap(shaderIndex).sorted()
         return indices.compactMap { index in
