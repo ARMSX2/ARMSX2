@@ -339,6 +339,8 @@
     <true/>
     <key>UIApplicationSupportsIndirectInputEvents</key>
     <true/>
+    <key>GCSupportsControllerUserInteraction</key>
+    <true/>
     <key>LSSupportsGameMode</key>
     <true/>
     <key>NSLocalNetworkUsageDescription</key>

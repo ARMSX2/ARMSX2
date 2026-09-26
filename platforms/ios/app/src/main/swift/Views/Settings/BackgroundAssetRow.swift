@@ -30,7 +30,9 @@ struct BackgroundAssetRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Image(systemName: glyph).font(.caption).foregroundStyle(.secondary)
-                        Text(title).font(.body).foregroundStyle(.primary)
+                        Text(title)
+                            .font(.body)
+                            .controllerFocusedTextColor()
                     }
                     if asset == nil, !displayedCaption.isEmpty {
                         Text(displayedCaption).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

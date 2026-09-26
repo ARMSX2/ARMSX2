@@ -24,7 +24,8 @@ final class InitialContentBootstrap {
     }
 
     /// Saves the access granted by UIDocumentPickerViewController and immediately
-    /// scans the selected ARMSX2 root for BIOS, GAMES, PRESETS, and SKINS.
+    /// scans the selected ARMSX2 root for BIOS, games, presets, skins, plus
+    /// PRESETS/logo.png and PRESETS/audiopack.zip.
     func selectARMSX2Folder(_ url: URL) async -> String {
         guard !isRunning else {
             return "The selected ARMSX2 folder is already being scanned."
@@ -178,7 +179,13 @@ final class InitialContentBootstrap {
         }.value
 
         configureDefaultBIOS()
+        // The BIOS tab can be completely offloaded while Settings scans this
+        // folder, so no view exists to receive the change notification. Keep
+        // the shared library invalidated until the tab mounts again.
+        BIOSLibraryState.shared.markNeedsRefresh()
         let appliedPresets = applyPresetFiles(named: preparation.presetNames)
+        let logoImport = importLogoImage(preparation.logoImage)
+        let audioPackImport = await importAudioPackArchive(preparation.audioPackArchive)
         let skinImport = await importSkinArchives(preparation.skinArchives)
         NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
 
@@ -195,7 +202,7 @@ final class InitialContentBootstrap {
         }
 
         NSLog(
-            "[ARMSX2 iOS Folder] complete root=%@ BIOS candidates=%d copied=%d games discovered=%d imported=%d skipped=%d failed=%d covers=%d skins=%d skinSkipped=%d skinFailed=%d defaultSkin=%@ presets=%@",
+            "[ARMSX2 iOS Folder] complete root=%@ BIOS candidates=%d copied=%d games discovered=%d imported=%d skipped=%d failed=%d covers=%d skins=%d skinSkipped=%d skinFailed=%d defaultSkin=%@ logoFound=%d logoImported=%d audioPackFound=%d audioPackImported=%d presets=%@",
             rootDirectory.path,
             preparation.biosCandidates,
             preparation.biosCopied,
@@ -208,6 +215,10 @@ final class InitialContentBootstrap {
             skinImport.skipped,
             skinImport.failed,
             skinImport.selectedDefaultName ?? "",
+            logoImport.found ? 1 : 0,
+            logoImport.imported ? 1 : 0,
+            audioPackImport.found ? 1 : 0,
+            audioPackImport.imported ? 1 : 0,
             appliedPresets.joined(separator: ", ")
         )
 
@@ -232,7 +243,59 @@ final class InitialContentBootstrap {
         if let selectedDefaultName = skinImport.selectedDefaultName {
             summary.append("Default skin and layout: \(selectedDefaultName).")
         }
+        if logoImport.imported {
+            summary.append("Logo: PRESETS/logo.png imported.")
+        } else if let errorDescription = logoImport.errorDescription {
+            summary.append("Logo could not be imported: \(errorDescription)")
+        } else {
+            summary.append("No PRESETS/logo.png was found.")
+        }
+        if audioPackImport.imported {
+            summary.append("Audio pack: PRESETS/audiopack.zip imported.")
+        } else if let errorDescription = audioPackImport.errorDescription {
+            summary.append("Audio pack could not be imported: \(errorDescription)")
+        } else {
+            summary.append("No audiopack.zip was found.")
+        }
         return summary.joined(separator: "\n")
+    }
+
+    private func importLogoImage(_ sourceURL: URL?) -> InitialLogoImportResult {
+        guard let sourceURL else { return InitialLogoImportResult() }
+        do {
+            try ARMSX2LogoStore.shared.importLogo(from: sourceURL)
+            return InitialLogoImportResult(found: true, imported: true)
+        } catch {
+            NSLog(
+                "[ARMSX2 iOS Folder] logo import failed source=%@ error=%@",
+                sourceURL.path,
+                error.localizedDescription
+            )
+            return InitialLogoImportResult(
+                found: true,
+                imported: false,
+                errorDescription: error.localizedDescription
+            )
+        }
+    }
+
+    private func importAudioPackArchive(_ sourceURL: URL?) async -> InitialAudioPackImportResult {
+        guard let sourceURL else { return InitialAudioPackImportResult() }
+        do {
+            try await MenuAudioPackManager.shared.importPack(from: sourceURL)
+            return InitialAudioPackImportResult(found: true, imported: true)
+        } catch {
+            NSLog(
+                "[ARMSX2 iOS Folder] audio pack import failed source=%@ error=%@",
+                sourceURL.path,
+                error.localizedDescription
+            )
+            return InitialAudioPackImportResult(
+                found: true,
+                imported: false,
+                errorDescription: error.localizedDescription
+            )
+        }
     }
 
     private func configureDefaultBIOS() {
@@ -345,6 +408,7 @@ final class InitialContentBootstrap {
                 hasCover: existingCover != nil
             )
         }
+        AutomaticCustomSkinManager.shared.enqueueMatches(for: targets)
         return await coverStore.downloadMissingCovers(for: targets, showResult: false)
     }
 }
@@ -366,6 +430,20 @@ private struct InitialContentPreparation: Sendable {
     let gameFiles: [URL]
     let presetNames: Set<String>
     let skinArchives: [URL]
+    let logoImage: URL?
+    let audioPackArchive: URL?
+}
+
+private struct InitialLogoImportResult {
+    var found = false
+    var imported = false
+    var errorDescription: String?
+}
+
+private struct InitialAudioPackImportResult {
+    var found = false
+    var imported = false
+    var errorDescription: String?
 }
 
 private struct InitialGameImportResult: Sendable {
@@ -420,12 +498,27 @@ private enum InitialContentFileInstaller {
             roots: searchRoots,
             fileManager: fileManager
         )
+        let presetFiles = presetInputDirectories.flatMap { directory in
+            regularFiles(in: directory, fileManager: fileManager)
+        }
+        let logoImage = presetFiles.first { source in
+            source.lastPathComponent.caseInsensitiveCompare("logo.png") == .orderedSame
+        }
+        let audioPackArchive = presetFiles.first { source in
+            source.lastPathComponent.caseInsensitiveCompare("audiopack.zip") == .orderedSame
+        } ?? searchRoots.lazy.compactMap { searchRoot in
+            regularFiles(in: searchRoot, fileManager: fileManager).first { source in
+                source.lastPathComponent.caseInsensitiveCompare("audiopack.zip") == .orderedSame
+            }
+        }.first
         NSLog(
-            "[ARMSX2 iOS Folder] scan BIOS=%@ GAMES=%@ PRESETS=%@ SKINS=%@",
+            "[ARMSX2 iOS Folder] scan BIOS=%@ GAMES=%@ PRESETS=%@ SKINS=%@ LOGO=%@ AUDIOPACK=%@",
             biosInputDirectories.map(\.path).joined(separator: ", "),
             gameInputDirectories.map(\.path).joined(separator: ", "),
             presetInputDirectories.map(\.path).joined(separator: ", "),
-            skinInputDirectories.map(\.path).joined(separator: ", ")
+            skinInputDirectories.map(\.path).joined(separator: ", "),
+            logoImage?.path ?? "",
+            audioPackArchive?.path ?? ""
         )
 
         var biosCandidates = 0
@@ -505,7 +598,9 @@ private enum InitialContentFileInstaller {
             biosCopied: biosCopied,
             gameFiles: gameFiles,
             presetNames: presetNames,
-            skinArchives: skinArchives
+            skinArchives: skinArchives,
+            logoImage: logoImage,
+            audioPackArchive: audioPackArchive
         )
     }
 

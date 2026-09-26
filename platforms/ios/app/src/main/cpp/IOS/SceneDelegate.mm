@@ -46,6 +46,7 @@
 
 #import <UIKit/UIKit.h>
 #import <SwiftUI/SwiftUI.h>
+#import <GameController/GameController.h>
 
 // Xcode names the generated Swift bridge header after the Swift module.
 #if __has_include("ARMSX2iOS-Swift.h")
@@ -65,6 +66,7 @@
 
 // Defined below, next to the VM worker state it reads.
 static bool ARMSX2JITWorkerBusy();
+static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
 
 @implementation PCSX2SceneDelegate
 
@@ -230,6 +232,21 @@ static bool ARMSX2JITWorkerBusy();
         uiWindow.windowScene = windowScene;
         self.window = uiWindow;
         self.window.backgroundColor = [UIColor systemGroupedBackgroundColor];
+#if ARMSX2_HAS_SWIFTUI
+        // SDL creates the original render controller. Keep it as a child of a
+        // GCEventViewController so UIKit can own menu focus without changing the
+        // CAMetalLayer host used by emulation.
+        UIViewController *sdlRootVC = uiWindow.rootViewController;
+        if (sdlRootVC) {
+            s_sdlRootVC = sdlRootVC;
+            UIViewController *eventHost =
+                [SwiftUIHost createControllerEventHostWithContentController:sdlRootVC];
+            if (eventHost) {
+                uiWindow.rootViewController = eventHost;
+                s_rootVC = eventHost;
+            }
+        }
+#endif
         // Before the window is on screen, so there is no wrong first frame.
         [self syncRootViewToWindow];
         [self.window makeKeyAndVisible];
@@ -248,6 +265,7 @@ static bool ARMSX2JITWorkerBusy();
         
 // Debug-only UI elements
 #if DEBUG
+        UIViewController *rootVC = self.window.rootViewController;
         if (rootVC) {
             g_logView = [[UITextView alloc] initWithFrame:CGRectMake(10, 50, 600, 300)];
             g_logView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.5];
@@ -267,6 +285,10 @@ static bool ARMSX2JITWorkerBusy();
         if (rootVC) {
             rootVC.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
 
+            if (connectionOptions.URLContexts.count > 0 || getenv("ARMSX2_BOOT_ELF") ||
+                getenv("ARMSX2_AUTO_BOOT")) {
+                [SwiftUIHost suppressAutomaticGameStartup];
+            }
             UIViewController *menuVC = [SwiftUIHost createMenuController];
             menuVC.view.translatesAutoresizingMaskIntoConstraints = NO;
             menuVC.view.userInteractionEnabled = YES;
@@ -311,6 +333,8 @@ static bool ARMSX2JITWorkerBusy();
             EmuConfig.BaseFilenames.Bios.c_str(), bootISO.c_str());
         std::fflush(stderr);
         Console.WriteLn("[UI] VM boot requested from UI (rootVC=%p)", s_rootVC);
+        NSNumber* loadState = note.userInfo[@"loadLastSaveState"];
+        s_loadLastSaveStateOnBoot.store(loadState ? loadState.boolValue : true);
         ARMSX2ApplyIOSMultitapConfig("boot-request");
         if (s_rootVC) s_rootVC.view.backgroundColor = [UIColor blackColor];
 #if TARGET_OS_SIMULATOR
@@ -865,6 +889,8 @@ static void ARMSX2StartJITKeepalive()
 
             // --- Build boot parameters from INI ---
             VMBootParameters boot_params;
+            const bool loadLastSaveState = s_loadLastSaveStateOnBoot.exchange(false);
+            std::string bootGameName;
             boot_params.fast_boot = false;
             {
                 std::string isoDir = EmuFolders::DataRoot + "/iso";
@@ -891,6 +917,7 @@ static void ARMSX2StartJITKeepalive()
                     isoFilename.c_str(), isoPath.c_str(), isoExists ? 1 : 0, fastBoot ? 1 : 0);
                 std::fflush(stderr);
                 if (isoExists) {
+                    bootGameName = isoFilename;
                     std::string suffix = isoFilename.size() >= 4 ? isoFilename.substr(isoFilename.size() - 4) : "";
                     std::transform(suffix.begin(), suffix.end(), suffix.begin(), ::tolower);
                     bool isElf = (suffix == ".elf");
@@ -1025,6 +1052,13 @@ static void ARMSX2StartJITKeepalive()
                 bootErrorText.c_str());
             std::fflush(stderr);
             if (bootResult == VMBootResult::StartupSuccess) {
+                // Identity and per-game settings are now valid, but the CPU has
+                // not executed any game or BIOS frames. No UI polling is needed.
+                if (!getenv("ARMSX2_BOOT_ELF")) {
+                    @autoreleasepool {
+                        ARMSX2IOSCompleteGameBoot(bootGameName, loadLastSaveState);
+                    }
+                }
                 ARMSX2IOSLogMemoryCardConfig("post-vm-initialize");
                 std::fprintf(stderr, "@@BOOT_POST_INIT@@ stage=before_osd state=%d frame=%u\n",
                     static_cast<int>(VMManager::GetState()), ::g_FrameCount);

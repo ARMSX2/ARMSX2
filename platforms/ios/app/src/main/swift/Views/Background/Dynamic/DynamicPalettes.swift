@@ -9,12 +9,25 @@ import UIKit
 
 enum ThemePalette: String, CaseIterable, Identifiable, Equatable, Codable {
   case blue
+  case henyBlue
   case violet
   case cyan
   case pink
   case gold
   case crimson
   case emerald
+  case neonGreen
+  case electricLime
+  case hotMagenta
+  case plasmaOrange
+  case arcticIce
+  case platinumGrey
+  case gunmetalGrey
+  case obsidian
+  case ps1Grey
+  case ps2Brown
+  case copper
+  case desertSand
   case midnight
   case burgundy
   case graphite
@@ -56,9 +69,11 @@ enum ThemePalette: String, CaseIterable, Identifiable, Equatable, Codable {
   var id: String { rawValue }
 
   static let primaryPalettes: [ThemePalette] = [
-    .blue, .violet, .cyan, .pink, .gold, .crimson, .emerald, .midnight,
-    .burgundy, .graphite, .noir, .silver, .slate, .charcoal, .navy,
-    .deepTeal, .lavender, .sunset, .aurora, .multicolor,
+    .blue, .henyBlue, .violet, .cyan, .pink, .gold, .crimson, .emerald, .neonGreen,
+    .electricLime, .hotMagenta, .plasmaOrange, .arcticIce, .platinumGrey,
+    .gunmetalGrey, .obsidian, .ps1Grey, .ps2Brown, .copper, .desertSand,
+    .midnight, .burgundy, .graphite, .noir, .silver, .slate, .charcoal,
+    .navy, .deepTeal, .lavender, .sunset, .aurora, .multicolor,
   ]
 
   static let morePalettes: [ThemePalette] = [
@@ -82,9 +97,13 @@ enum ThemePalette: String, CaseIterable, Identifiable, Equatable, Codable {
 
   var lightRibbonPaletteForMart: ThemePalette {
     switch self {
-    case .blue, .violet, .cyan, .pink, .gold, .crimson, .emerald,
-      .silver, .lavender, .sunset, .aurora, .multicolor:
+    case .blue, .henyBlue, .violet, .cyan, .pink, .gold, .crimson, .emerald,
+      .neonGreen, .electricLime, .hotMagenta, .plasmaOrange, .arcticIce,
+      .platinumGrey, .ps1Grey, .copper, .desertSand, .silver, .lavender,
+      .sunset, .aurora, .multicolor:
       return self
+    case .gunmetalGrey, .obsidian: return .platinumGrey
+    case .ps2Brown: return .desertSand
     case .midnight: return .blue
     case .burgundy: return .pink
     case .graphite, .noir: return .silver
@@ -121,12 +140,38 @@ enum ThemePalette: String, CaseIterable, Identifiable, Equatable, Codable {
 
   var title: String {
     switch self {
+    case .henyBlue:
+      return "Heny Blue"
     case .noir:
       return "Black Noir"
     case .multicolor:
       return "Multicolor"
     case .deepTeal:
       return "Deep Teal"
+    case .neonGreen:
+      return "Neon Green"
+    case .electricLime:
+      return "Electric Lime"
+    case .hotMagenta:
+      return "Hot Magenta"
+    case .plasmaOrange:
+      return "Plasma Orange"
+    case .arcticIce:
+      return "Arctic Ice"
+    case .platinumGrey:
+      return "Platinum Grey"
+    case .gunmetalGrey:
+      return "Gunmetal Grey"
+    case .obsidian:
+      return "Obsidian"
+    case .ps1Grey:
+      return "Classic Grey"
+    case .ps2Brown:
+      return "Classic Brown"
+    case .copper:
+      return "Copper"
+    case .desertSand:
+      return "Desert Sand"
     case .xmbFrostedPearl:
       return "Frosted Pearl"
     case .xmbLunarGraphite:
@@ -192,6 +237,14 @@ extension ThemePalette {
         Color(red: 0.16, green: 0.78, blue: 1),
         .white,
       ]
+    case .henyBlue:
+      // ARMSX2's readable semantic blue. Keep the leading stop exact because
+      // icons, controls, and focused text resolve from it.
+      return [
+        Color(red: 0x57 / 255, green: 0xB8 / 255, blue: 0xF9 / 255),
+        Color(red: 0x57 / 255, green: 0xB8 / 255, blue: 0xF9 / 255),
+        Color(red: 0x57 / 255, green: 0xB8 / 255, blue: 0xF9 / 255),
+      ]
     case .violet:
       return [
         Color(red: 0.58, green: 0.24, blue: 1),
@@ -227,6 +280,78 @@ extension ThemePalette {
         Color(red: 0.04, green: 0.72, blue: 0.42),
         Color(red: 0.2, green: 1, blue: 0.66),
         Color(red: 0.01, green: 0.2, blue: 0.12),
+      ]
+    case .neonGreen:
+      return [
+        Color(red: 0.22, green: 1, blue: 0.08),
+        Color(red: 0.65, green: 1, blue: 0.18),
+        Color(red: 0.02, green: 0.25, blue: 0),
+      ]
+    case .electricLime:
+      return [
+        Color(red: 0.72, green: 1, blue: 0.04),
+        Color(red: 0.92, green: 1, blue: 0.38),
+        Color(red: 0.18, green: 0.3, blue: 0),
+      ]
+    case .hotMagenta:
+      return [
+        Color(red: 1, green: 0.04, blue: 0.64),
+        Color(red: 1, green: 0.38, blue: 0.88),
+        Color(red: 0.32, green: 0, blue: 0.22),
+      ]
+    case .plasmaOrange:
+      return [
+        Color(red: 1, green: 0.28, blue: 0.02),
+        Color(red: 1, green: 0.74, blue: 0.1),
+        Color(red: 0.38, green: 0.05, blue: 0),
+      ]
+    case .arcticIce:
+      return [
+        Color(red: 0.36, green: 0.88, blue: 1),
+        Color(red: 0.9, green: 0.98, blue: 1),
+        Color(red: 0.04, green: 0.24, blue: 0.34),
+      ]
+    case .platinumGrey:
+      return [
+        Color(white: 0.68),
+        Color(white: 0.94),
+        Color(white: 0.26),
+      ]
+    case .gunmetalGrey:
+      return [
+        Color(red: 0.22, green: 0.27, blue: 0.34),
+        Color(red: 0.46, green: 0.52, blue: 0.6),
+        Color(red: 0.035, green: 0.045, blue: 0.06),
+      ]
+    case .obsidian:
+      return [
+        Color(red: 0.04, green: 0.045, blue: 0.06),
+        Color(red: 0.2, green: 0.22, blue: 0.28),
+        Color(red: 0.005, green: 0.006, blue: 0.01),
+      ]
+    case .ps1Grey:
+      return [
+        Color(red: 0.46, green: 0.45, blue: 0.42),
+        Color(red: 0.72, green: 0.7, blue: 0.64),
+        Color(red: 0.22, green: 0.21, blue: 0.19),
+      ]
+    case .ps2Brown:
+      return [
+        Color(red: 0.2, green: 0.15, blue: 0.11),
+        Color(red: 0.46, green: 0.34, blue: 0.23),
+        Color(red: 0.08, green: 0.055, blue: 0.035),
+      ]
+    case .copper:
+      return [
+        Color(red: 0.72, green: 0.3, blue: 0.1),
+        Color(red: 0.95, green: 0.58, blue: 0.26),
+        Color(red: 0.25, green: 0.08, blue: 0.02),
+      ]
+    case .desertSand:
+      return [
+        Color(red: 0.67, green: 0.54, blue: 0.34),
+        Color(red: 0.9, green: 0.78, blue: 0.55),
+        Color(red: 0.28, green: 0.2, blue: 0.12),
       ]
     case .midnight:
       return [
@@ -360,6 +485,104 @@ extension ThemePalette {
     }
   }
 
+  /// A single, readable tint for controls and focused labels. Several palettes
+  /// deliberately begin with a near-black background colour, so using
+  /// `colors.first` made the Plain Palette accent appear unchanged or disabled.
+  var semanticAccentColor: Color {
+    let paletteColors = colors
+    switch self {
+    case .midnight, .burgundy, .graphite, .slate, .charcoal, .navy,
+      .deepTeal, .gunmetalGrey, .obsidian, .ps2Brown,
+      .xmbLunarGraphite, .xmbAntiqueDusk, .xmbSageMidnight,
+      .xmbRoseTwilight, .xmbForestVelvet, .xmbVioletNocturne,
+      .xmbTidalAbyss, .xmbOceanMidnight, .xmbPurpleEclipse,
+      .xmbEmberNight, .xmbHearthShadow, .xmbCinderRed:
+      return paletteColors.dropFirst().first ?? paletteColors.first ?? .blue
+    default:
+      return paletteColors.first ?? .blue
+    }
+  }
+
+  /// Text palettes use a high-contrast stop instead of their brightest accent.
+  /// This keeps vivid themes such as Neon Green readable without falling back
+  /// to the harsh white used by the system's primary label colour.
+  var semanticInterfaceTextColor: Color {
+    guard !resolvedRGBColors.isEmpty else { return .primary }
+    let selected = prefersDarkInterfaceText
+      ? resolvedRGBColors.min(by: { $0.luminance < $1.luminance })
+      : resolvedRGBColors.max(by: { $0.luminance < $1.luminance })
+    guard let selected else { return .primary }
+
+    if prefersDarkInterfaceText {
+      let scale = selected.luminance > 0.3
+        ? 0.3 / selected.luminance
+        : 1
+      return Color(
+        red: selected.red * scale,
+        green: selected.green * scale,
+        blue: selected.blue * scale
+      )
+    }
+
+    let blend = selected.luminance < 0.72
+      ? (0.72 - selected.luminance) / max(1 - selected.luminance, 0.001)
+      : 0
+    return Color(
+      red: selected.red + (1 - selected.red) * blend,
+      green: selected.green + (1 - selected.green) * blend,
+      blue: selected.blue + (1 - selected.blue) * blend
+    )
+  }
+
+  var semanticFocusedInterfaceTextColor: Color {
+    switch self {
+    case .blue:
+      return .blue
+    case .henyBlue:
+      return colors[0]
+    default:
+      return semanticInterfaceTextColor
+    }
+  }
+
+  var semanticInterfaceShadowColor: Color {
+    guard let darkest = resolvedRGBColors.min(
+      by: { $0.luminance < $1.luminance }
+    ) else { return .black }
+    return Color(red: darkest.red, green: darkest.green, blue: darkest.blue)
+  }
+
+  var prefersDarkInterfaceText: Bool {
+    guard !resolvedRGBColors.isEmpty else { return false }
+    let average = resolvedRGBColors.reduce(0) { $0 + $1.luminance }
+      / Double(resolvedRGBColors.count)
+    return average >= 0.5
+  }
+
+  private var resolvedRGBColors: [(
+    red: Double,
+    green: Double,
+    blue: Double,
+    luminance: Double
+  )] {
+    colors.compactMap { color in
+      var red: CGFloat = 0
+      var green: CGFloat = 0
+      var blue: CGFloat = 0
+      var alpha: CGFloat = 0
+      guard UIColor(color).getRed(
+        &red,
+        green: &green,
+        blue: &blue,
+        alpha: &alpha
+      ) else { return nil }
+      let luminance = 0.2126 * Double(red)
+        + 0.7152 * Double(green)
+        + 0.0722 * Double(blue)
+      return (Double(red), Double(green), Double(blue), luminance)
+    }
+  }
+
   private static func xmbColors(
     start: (red: Int, green: Int, blue: Int),
     end: (red: Int, green: Int, blue: Int)
@@ -390,6 +613,8 @@ extension ThemePalette {
     switch self {
     case .blue:
       return [.blue, .cyan, .midnight, .silver]
+    case .henyBlue:
+      return [.henyBlue, .cyan, .blue, .silver]
     case .violet:
       return [.violet, .lavender, .pink, .aurora]
     case .cyan:
@@ -402,6 +627,30 @@ extension ThemePalette {
       return [.crimson, .burgundy, .sunset, .gold]
     case .emerald:
       return [.emerald, .deepTeal, .cyan, .aurora]
+    case .neonGreen:
+      return [.neonGreen, .electricLime, .emerald, .cyan]
+    case .electricLime:
+      return [.electricLime, .neonGreen, .gold, .emerald]
+    case .hotMagenta:
+      return [.hotMagenta, .pink, .violet, .aurora]
+    case .plasmaOrange:
+      return [.plasmaOrange, .gold, .sunset, .crimson]
+    case .arcticIce:
+      return [.arcticIce, .cyan, .silver, .blue]
+    case .platinumGrey:
+      return [.platinumGrey, .silver, .graphite, .ps1Grey]
+    case .gunmetalGrey:
+      return [.gunmetalGrey, .graphite, .slate, .obsidian]
+    case .obsidian:
+      return [.obsidian, .noir, .charcoal, .gunmetalGrey]
+    case .ps1Grey:
+      return [.ps1Grey, .platinumGrey, .silver, .desertSand]
+    case .ps2Brown:
+      return [.ps2Brown, .copper, .desertSand, .charcoal]
+    case .copper:
+      return [.copper, .desertSand, .gold, .ps2Brown]
+    case .desertSand:
+      return [.desertSand, .copper, .gold, .ps1Grey]
     case .midnight:
       return [.midnight, .navy, .blue, .slate]
     case .burgundy:
@@ -509,6 +758,12 @@ struct SavedPaletteColor: Codable, Hashable, Identifiable {
   var isGradient: Bool {
     guard let gradientHexes else { return false }
     return gradientHexes.count > 1
+  }
+
+  /// Resolves the saved solid colour without generating the extra gradient
+  /// stops used by dynamic-background previews.
+  var color: Color {
+    Self.color(from: hex)
   }
 
   var gradientColors: [Color] {

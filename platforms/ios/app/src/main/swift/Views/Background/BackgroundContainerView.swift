@@ -7,7 +7,9 @@ import ImageIO
 
 struct BackgroundContainerView: View {
     @State private var settings = SettingsStore.shared
+    @State private var gameCoverThemePreview = GameCoverThemePreviewStore.shared
     let size: CGSize
+    var isPresentationActive = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
@@ -30,15 +32,34 @@ struct BackgroundContainerView: View {
         return dim
     }
 
+    /// Cover previews are presentation-only. The saved dynamic palette remains
+    /// untouched, so leaving a favorite card restores the exact prior theme.
+    private var effectiveDynamicAppearancePreferences: DynamicAppearancePreferences {
+        guard let preview = gameCoverThemePreview.preview else {
+            return settings.dynamicAppearancePreferences
+        }
+        var preferences = settings.dynamicAppearancePreferences
+        preferences.sharedCustomColor = preview.backgroundPalette
+        preferences.sharedMultiColor.isEnabled = false
+        preferences.ribbonCustomColor = preview.accentPalette
+        preferences.ribbonMultiColor.isEnabled = false
+        return preferences
+    }
+
     var body: some View {
         ZStack {
-            if isRenderingEnabled {
+            if isRenderingEnabled && isPresentationActive {
                 if settings.dynamicBackgroundsEnabled {
                     DynamicBackgroundRendererView(
-                        preferences: settings.dynamicAppearancePreferences
+                        preferences: effectiveDynamicAppearancePreferences,
+                        allowsMainMenuThermalFallback: true
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
+                    .animation(
+                        .easeInOut(duration: 0.46),
+                        value: gameCoverThemePreview.preview
+                    )
                 } else if let asset = activeAsset {
                     let url = BackgroundStorage.fileURL(for: asset)
                     switch asset.kind {

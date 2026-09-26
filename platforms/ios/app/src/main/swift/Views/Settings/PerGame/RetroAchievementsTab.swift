@@ -18,6 +18,12 @@ struct RetroAchievementsTab: View {
                     Text(settings.localized("Off")).tag(0)
                     Text(settings.localized("On")).tag(1)
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    id: "per-game.retro.enabled",
+                    label: settings.localized("Enable RetroAchievements"),
+                    selection: $raEnabledOverride,
+                    options: triStateOptions
+                )
                 .disabled(!enabled)
 
                 Picker(settings.localized("Hardcore Mode"), selection: $raHardcoreOverride) {
@@ -25,6 +31,12 @@ struct RetroAchievementsTab: View {
                     Text(settings.localized("Off")).tag(0)
                     Text(settings.localized("On")).tag(1)
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    id: "per-game.retro.hardcore",
+                    label: settings.localized("Hardcore Mode"),
+                    selection: $raHardcoreOverride,
+                    options: triStateOptions
+                )
                 .disabled(!enabled)
             }
 
@@ -38,5 +50,13 @@ struct RetroAchievementsTab: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var triStateOptions: [(id: Int, title: String)] {
+        [
+            (-1, settings.localized("Use Global")),
+            (0, settings.localized("Off")),
+            (1, settings.localized("On")),
+        ]
     }
 }

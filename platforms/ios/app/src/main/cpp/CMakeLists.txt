@@ -12,10 +12,10 @@ if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_BINARY_DIR})
 endif()
 
 set(ARMSX2_VERSION_MAJOR 2)
-set(ARMSX2_VERSION_MINOR 5)
-set(ARMSX2_VERSION_PATCH 3)
+set(ARMSX2_VERSION_MINOR 6)
+set(ARMSX2_VERSION_PATCH 0)
 set(ARMSX2_VERSION "${ARMSX2_VERSION_MAJOR}.${ARMSX2_VERSION_MINOR}.${ARMSX2_VERSION_PATCH}")
-set(ARMSX2_BUILD_NUMBER 253)
+set(ARMSX2_BUILD_NUMBER 260)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	set(CMAKE_C_COMPILER_WORKS 1)
@@ -209,6 +209,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${ARMSX2_CODE_SIGN_ENTITLEMENTS}"
 			XCODE_ATTRIBUTE_SWIFT_OBJC_BRIDGING_HEADER "${CMAKE_SOURCE_DIR}/ARMSX2-Bridging-Header.h"
 			XCODE_ATTRIBUTE_SWIFT_VERSION "6.0"
+			# Keep optimized Swift emission per-file. This avoids excessive
+			# frontend memory use in the large SwiftUI target on recent Xcode.
+			XCODE_ATTRIBUTE_SWIFT_COMPILATION_MODE "singlefile"
+			XCODE_ATTRIBUTE_SWIFT_ENABLE_BATCH_MODE "NO"
 			XCODE_ATTRIBUTE_CLANG_ENABLE_MODULES "YES"
 			XCODE_ATTRIBUTE_ENABLE_ON_DEMAND_RESOURCES "NO"
 			XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "@executable_path/Frameworks /usr/lib/swift"
@@ -269,6 +273,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 			target_sources(ARMSX2iOS PRIVATE "${BOOT_SPLASH_VIDEO}")
 			set_source_files_properties("${BOOT_SPLASH_VIDEO}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 		endif()
+
+		# UI defaults come directly from the Android resource tree. There is no
+		# duplicate iOS audio pack to become stale; startup remains custom-pack-only.
+		set(IOS_DEFAULT_UI_AUDIO_FILES
+			"${ARMSX2_ROOT}/platforms/android/app/src/main/res/raw/sfx_nav_a.wav"
+			"${ARMSX2_ROOT}/platforms/android/app/src/main/res/raw/library_music.m4a"
+			"${ARMSX2_ROOT}/platforms/android/app/src/main/res/raw/pause_music.mp3"
+			"${ARMSX2_ROOT}/platforms/android/app/src/main/res/raw/sfx_reset.wav"
+			"${ARMSX2_ROOT}/platforms/android/app/src/main/res/raw/sfx_popup_close.wav"
+			"${ARMSX2_ROOT}/platforms/android/app/src/main/res/raw/sfx_popup_open.wav"
+			"${ARMSX2_ROOT}/platforms/android/app/src/main/res/raw/sfx_nav_b.wav"
+			"${ARMSX2_ROOT}/platforms/android/app/src/main/res/raw/sfx_toggle_off.wav"
+			"${ARMSX2_ROOT}/platforms/android/app/src/main/res/raw/sfx_toggle_on.wav"
+		)
+		target_sources(ARMSX2iOS PRIVATE ${IOS_DEFAULT_UI_AUDIO_FILES})
+		set_source_files_properties(${IOS_DEFAULT_UI_AUDIO_FILES} PROPERTIES
+			MACOSX_PACKAGE_LOCATION "Resources/ui_audio/default")
 
 		file(GLOB IOS_CONTROLLER_ICON_FILES "${CMAKE_SOURCE_DIR}/../assets/app_icons/controller_icons_nether/*.png")
 		if(IOS_CONTROLLER_ICON_FILES)
@@ -446,6 +467,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		"${ARMSX2_ROOT}/bin/resources-overlay/armsx2_overrides.yaml"
 		"${CMAKE_SOURCE_DIR}/../assets/resources/patches.zip"
 		"${CMAKE_SOURCE_DIR}/../assets/resources/Localizable.xcstrings"
+		"${CMAKE_SOURCE_DIR}/../assets/resources/Purple-Milk.armsx2-theme.json"
+		"${CMAKE_SOURCE_DIR}/../assets/resources/Ender-Pearl-Pul.armsx2-theme.json"
 	)
 
 	target_sources(ARMSX2iOS PRIVATE ${METAL_SHADERS} ${FONTS} ${IOS_SHADER_RESOURCES})

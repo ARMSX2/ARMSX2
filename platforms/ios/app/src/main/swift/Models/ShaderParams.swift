@@ -143,7 +143,9 @@ final class ShaderParams: ObservableObject {
         }
         overrides = Self.stored()[newToken] ?? [:]
         isLoading = true
-        let result = await Task.detached(priority: .userInitiated) { Result { try Self.read(at: url) } }.value
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { try Self.parameters(at: url) }
+        }.value
         guard current == generation else { return }
         isLoading = false
         switch result {
@@ -178,6 +180,22 @@ final class ShaderParams: ObservableObject {
     func resetAll() {
         overrides = [:]
         persist()
+        pushEffective()
+    }
+
+    /// A generated multi-layer preset can be parsed by a renderer that only
+    /// reports parameters from one inherited preset. Merge the parameters
+    /// discovered from each source layer so every visible layer remains
+    /// adjustable and receives its effective runtime value.
+    func includeAdditionalParameters(_ additional: [ShaderParam]) {
+        guard !additional.isEmpty else { return }
+        var known = Set(params.map(\.name))
+        var merged = params
+        for param in additional where known.insert(param.name).inserted {
+            merged.append(param)
+        }
+        guard merged != params else { return }
+        params = merged
         pushEffective()
     }
 
@@ -252,13 +270,24 @@ final class ShaderParams: ObservableObject {
         return decoded
     }
 
-    private nonisolated static func read(at url: URL) throws -> [ShaderParam] {
-        let json = try ARMSX2Bridge.shaderPresetParameters(atPath: url.path)
-        guard let data = json.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode([ShaderParam].self, from: data) else {
-            return []
+    nonisolated static func parameters(at url: URL) throws -> [ShaderParam] {
+        do {
+            let json = try ARMSX2Bridge.shaderPresetParameters(atPath: url.path)
+            if let data = json.data(using: .utf8),
+               let decoded = try? JSONDecoder().decode([ShaderParam].self, from: data) {
+                return decoded.filter { !$0.name.isEmpty }
+            }
+        } catch {
+            let fallback = ShaderPresetParameterFallbackParser.parameters(in: url)
+            if !fallback.isEmpty { return fallback }
+            throw error
         }
-        return decoded.filter { !$0.name.isEmpty }
+
+        // Preset download and configuration belong to the Swift frontend, not
+        // to the optional renderer. When librashader is absent, inspect the
+        // same #pragma parameter declarations directly so the editor remains
+        // useful and its choices are ready for a renderer-enabled build.
+        return ShaderPresetParameterFallbackParser.parameters(in: url)
     }
 
     // MARK: - Saving
@@ -314,5 +343,222 @@ final class ShaderParams: ObservableObject {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " _-"))
         let scalars = name.unicodeScalars.map { allowed.contains($0) ? $0 : Unicode.Scalar("_") }
         return String(String.UnicodeScalarView(scalars)).trimmingCharacters(in: .whitespaces)
+    }
+}
+
+/// Lightweight RetroArch preset inspection used only when librashader was not
+/// linked. Rendering still belongs to librashader; this parser merely exposes
+/// author-declared controls and their preset overrides to the settings UI.
+private enum ShaderPresetParameterFallbackParser {
+    private struct Definition {
+        var description: String
+        var initial: Float
+        var minimum: Float
+        var maximum: Float
+        var step: Float
+    }
+
+    nonisolated static func parameters(in presetURL: URL) -> [ShaderParam] {
+        var presetVisits = Set<String>()
+        var shaderVisits = Set<String>()
+        var definitions: [String: Definition] = [:]
+        var order: [String] = []
+        var overrides: [String: Float] = [:]
+
+        inspectPreset(
+            presetURL,
+            presetVisits: &presetVisits,
+            shaderVisits: &shaderVisits,
+            definitions: &definitions,
+            order: &order,
+            overrides: &overrides
+        )
+
+        return order.compactMap { name in
+            guard let definition = definitions[name] else { return nil }
+            let initial = overrides[name] ?? definition.initial
+            return ShaderParam(
+                name: name,
+                description: definition.description,
+                initial: min(max(initial, definition.minimum), definition.maximum),
+                minimum: definition.minimum,
+                maximum: definition.maximum,
+                step: definition.step
+            )
+        }
+    }
+
+    private nonisolated static func inspectPreset(
+        _ url: URL,
+        presetVisits: inout Set<String>,
+        shaderVisits: inout Set<String>,
+        definitions: inout [String: Definition],
+        order: inout [String],
+        overrides: inout [String: Float]
+    ) {
+        let resolvedURL = url.standardizedFileURL
+        guard presetVisits.insert(resolvedURL.path).inserted,
+              let text = try? String(contentsOf: resolvedURL, encoding: .utf8)
+        else { return }
+
+        let lines = text.components(separatedBy: .newlines)
+        for line in lines {
+            guard let reference = directivePath("#reference", in: line),
+                  let referenceURL = resolve(reference, relativeTo: resolvedURL)
+            else { continue }
+            inspectPreset(
+                referenceURL,
+                presetVisits: &presetVisits,
+                shaderVisits: &shaderVisits,
+                definitions: &definitions,
+                order: &order,
+                overrides: &overrides
+            )
+        }
+
+        let assignments = dictionary(from: lines)
+        for key in assignments.keys
+        where key.hasPrefix("shader")
+            && Int(key.dropFirst("shader".count)) != nil {
+            guard let path = assignments[key],
+                  let shaderURL = resolve(path, relativeTo: resolvedURL)
+            else { continue }
+            inspectShader(
+                shaderURL,
+                visits: &shaderVisits,
+                definitions: &definitions,
+                order: &order
+            )
+        }
+
+        for (name, value) in assignments {
+            guard definitions[name] != nil,
+                  let number = Float(value), number.isFinite else { continue }
+            overrides[name] = number
+        }
+    }
+
+    private nonisolated static func inspectShader(
+        _ url: URL,
+        visits: inout Set<String>,
+        definitions: inout [String: Definition],
+        order: inout [String]
+    ) {
+        let resolvedURL = url.standardizedFileURL
+        guard visits.insert(resolvedURL.path).inserted,
+              let text = try? String(contentsOf: resolvedURL, encoding: .utf8)
+        else { return }
+
+        for line in text.components(separatedBy: .newlines) {
+            if let include = directivePath("#include", in: line),
+               let includeURL = resolve(include, relativeTo: resolvedURL) {
+                inspectShader(
+                    includeURL,
+                    visits: &visits,
+                    definitions: &definitions,
+                    order: &order
+                )
+            }
+            guard let parsed = parameterDeclaration(in: line) else { continue }
+            if definitions[parsed.name] == nil { order.append(parsed.name) }
+            definitions[parsed.name] = parsed.definition
+        }
+    }
+
+    private nonisolated static func parameterDeclaration(
+        in line: String
+    ) -> (name: String, definition: Definition)? {
+        let pattern = #"^\s*#pragma\s+parameter\s+([A-Za-z_][A-Za-z0-9_]*)\s+\"([^\"]*)\"\s+([-+]?(?:\d*\.?\d+)(?:[eE][-+]?\d+)?)\s+([-+]?(?:\d*\.?\d+)(?:[eE][-+]?\d+)?)\s+([-+]?(?:\d*\.?\d+)(?:[eE][-+]?\d+)?)(?:\s+([-+]?(?:\d*\.?\d+)(?:[eE][-+]?\d+)?))?"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(
+                in: line,
+                range: NSRange(line.startIndex..., in: line)
+              ), match.numberOfRanges >= 6,
+              let nameRange = Range(match.range(at: 1), in: line),
+              let descriptionRange = Range(match.range(at: 2), in: line),
+              let initial = number(at: 3, match: match, in: line),
+              let minimum = number(at: 4, match: match, in: line),
+              let maximum = number(at: 5, match: match, in: line),
+              maximum >= minimum else { return nil }
+        let step = number(at: 6, match: match, in: line) ?? 0
+        return (
+            String(line[nameRange]),
+            Definition(
+                description: String(line[descriptionRange]),
+                initial: initial,
+                minimum: minimum,
+                maximum: maximum,
+                step: step
+            )
+        )
+    }
+
+    private nonisolated static func number(
+        at index: Int,
+        match: NSTextCheckingResult,
+        in text: String
+    ) -> Float? {
+        guard index < match.numberOfRanges,
+              match.range(at: index).location != NSNotFound,
+              let range = Range(match.range(at: index), in: text),
+              let value = Float(text[range]), value.isFinite else { return nil }
+        return value
+    }
+
+    private nonisolated static func dictionary(
+        from lines: [String]
+    ) -> [String: String] {
+        var result: [String: String] = [:]
+        for rawLine in lines {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard !line.hasPrefix("#"),
+                  let separator = line.firstIndex(of: "=") else { continue }
+            let key = line[..<separator]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = unquote(String(line[line.index(after: separator)...]))
+            guard !key.isEmpty, !value.isEmpty else { continue }
+            result[key] = value
+        }
+        return result
+    }
+
+    private nonisolated static func directivePath(
+        _ directive: String,
+        in line: String
+    ) -> String? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix(directive) else { return nil }
+        let tail = trimmed.dropFirst(directive.count)
+            .trimmingCharacters(in: .whitespaces)
+        let value = unquote(tail.hasPrefix("=")
+            ? String(tail.dropFirst()) : tail)
+        return value.isEmpty ? nil : value
+    }
+
+    private nonisolated static func unquote(_ source: String) -> String {
+        var value = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let comment = value.firstIndex(of: "#") {
+            value = String(value[..<comment])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if value.count >= 2, value.first == "\"", value.last == "\"" {
+            value.removeFirst()
+            value.removeLast()
+        }
+        return value
+    }
+
+    private nonisolated static func resolve(
+        _ path: String,
+        relativeTo source: URL
+    ) -> URL? {
+        guard !path.isEmpty else { return nil }
+        let candidate = path.hasPrefix("/")
+            ? URL(fileURLWithPath: path)
+            : source.deletingLastPathComponent()
+                .appendingPathComponent(path)
+        let resolved = candidate.standardizedFileURL
+        return FileManager.default.fileExists(atPath: resolved.path)
+            ? resolved : nil
     }
 }

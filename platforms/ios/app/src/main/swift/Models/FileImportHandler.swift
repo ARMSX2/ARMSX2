@@ -156,6 +156,7 @@ final class FileImportHandler {
     func presentImportResult(_ message: String) {
         lastImportMessage = message
         showImportAlert = true
+        MenuAudioPackManager.shared.playEvent(.uiToast)
     }
 
     private enum ImportResult {

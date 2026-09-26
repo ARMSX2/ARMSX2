@@ -6,7 +6,6 @@ import SwiftUI
 struct FramePacingSettingsView: View {
     @State private var settings = SettingsStore.shared
     @State private var presetDetailsTarget: FramePacingPreset?
-    @State private var showResetConfirmation = false
 
     var body: some View {
         Form {
@@ -44,30 +43,23 @@ struct FramePacingSettingsView: View {
             }
 
             Section {
-                Button(role: .destructive) {
-                    showResetConfirmation = true
-                } label: {
-                    Text(settings.localized("Reset Frame Pacing to Defaults"))
+                ConfirmedSettingsResetButton(
+                    settings.localized("Reset Frame Pacing to Defaults"),
+                    confirmationTitle: settings.localized("Reset Frame Pacing?"),
+                    confirmationMessage: settings.localized("This restores the Optimal preset values. Your individual pacing changes are replaced."),
+                    completionMessage: settings.localized("Defaults Restored"),
+                    controllerTargetID: "settings.frame-pacing.reset-defaults"
+                ) {
+                    settings.applyFramePacingPreset(.optimal)
+                    settings.framePacingPreset = .optimal
                 }
+                .uiCriticalForegroundStyle()
             }
         }
         .navigationTitle(settings.localized("Frame Pacing"))
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $presetDetailsTarget) { preset in
             PresetDetailsSheet(preset: preset)
-        }
-        .confirmationDialog(
-            settings.localized("Reset Frame Pacing?"),
-            isPresented: $showResetConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button(settings.localized("Reset"), role: .destructive) {
-                settings.applyFramePacingPreset(.optimal)
-                settings.framePacingPreset = .optimal
-            }
-            Button(settings.localized("Cancel"), role: .cancel) {}
-        } message: {
-            Text(settings.localized("This restores the Optimal preset values. Your individual pacing changes are replaced."))
         }
     }
 
@@ -93,7 +85,7 @@ struct FramePacingSettingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(settings.localized(preset.label))
                         .font(.body)
-                        .foregroundStyle(.primary)
+                        .controllerFocusedTextColor()
                     Text(settings.localized(preset.caption))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -109,6 +101,11 @@ struct FramePacingSettingsView: View {
                 }
                 .accessibilityLabel(settings.localized("Preset details"))
                 .buttonStyle(.borderless)
+                .controllerAccessibilityActionTarget(
+                    label: settings.localized("Preset details")
+                ) {
+                    presetDetailsTarget = preset
+                }
 
                 if settings.framePacingPreset == preset {
                     Image(systemName: "checkmark")
@@ -120,6 +117,11 @@ struct FramePacingSettingsView: View {
             .frame(minHeight: 44)
         }
         .buttonStyle(.plain)
+        .controllerAccessibilityActionTarget(
+            label: settings.localized(preset.label)
+        ) {
+            settings.framePacingPreset = preset
+        }
     }
 
 }

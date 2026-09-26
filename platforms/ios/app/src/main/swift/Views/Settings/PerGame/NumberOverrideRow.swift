@@ -3,6 +3,25 @@
 
 import SwiftUI
 
+/// Lets the parent live-preview transaction distinguish an explicit
+/// "Override" activation from an actual value adjustment. The inherited
+/// value is copied into the editor by the button, but that bookkeeping action
+/// must not interrupt gameplay for a preview.
+private struct PerGameOverrideWillActivateKey: EnvironmentKey {
+    // SwiftUI reads and invokes this value from the main-actor view tree. The
+    // unsafe nonisolated spelling is limited to the immutable empty default;
+    // it avoids requiring every UI callback to pretend it is cross-actor
+    // Sendable.
+    nonisolated(unsafe) static let defaultValue: () -> Void = {}
+}
+
+extension EnvironmentValues {
+    var perGameOverrideWillActivate: () -> Void {
+        get { self[PerGameOverrideWillActivateKey.self] }
+        set { self[PerGameOverrideWillActivateKey.self] = newValue }
+    }
+}
+
 /// A per-game number that can fall back to the global one. The inherit row names the value it
 /// inherits and Override starts you there, neither of which the Shade Boost row this replaces
 /// did: that one just said "Use Global" and seeded a hardcoded 50.
@@ -15,6 +34,8 @@ struct NumberOverrideRow: View {
     let global: Int
     var sentinel: Int = SettingsOptions.useGlobalID
     let settings: SettingsStore
+    @Environment(\.perGameOverrideWillActivate)
+    private var perGameOverrideWillActivate
 
     init(_ setting: NumberSetting, value: Binding<Int>, global: Int,
          sentinel: Int = SettingsOptions.useGlobalID, settings: SettingsStore) {
@@ -49,11 +70,26 @@ struct NumberOverrideRow: View {
             // Seeded from the global, clamped because the global keys are not all bounded on
             // load and a hand-edited INI could hand us something outside this control's range.
             Button(settings.localized("Override")) {
-                value = SettingsStore.clamped(global, to: setting.intRange)
+                applyOverride()
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
         }
+        .contentShape(Rectangle())
+        .controllerAccessibilityActionTarget(
+            label: overrideControllerLabel,
+            activationFeedback: .activate,
+            action: applyOverride
+        )
+    }
+
+    private var overrideControllerLabel: String {
+        "\(settings.localized(setting.title)), \(settings.localized("Override"))"
+    }
+
+    private func applyOverride() {
+        perGameOverrideWillActivate()
+        value = SettingsStore.clamped(global, to: setting.intRange)
     }
 
     private func formatted(_ value: Int) -> String {
@@ -69,6 +105,8 @@ struct FloatOverrideRow: View {
     let global: Float
     var sentinel: Float = -1.0
     let settings: SettingsStore
+    @Environment(\.perGameOverrideWillActivate)
+    private var perGameOverrideWillActivate
 
     init(_ setting: NumberSetting, value: Binding<Float>, global: Float,
          sentinel: Float = -1.0, settings: SettingsStore) {
@@ -88,12 +126,17 @@ struct FloatOverrideRow: View {
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
                 Button(settings.localized("Override")) {
-                    value = Float(min(max(Double(global), setting.range.lowerBound),
-                                      setting.range.upperBound))
+                    applyOverride()
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
             }
+            .contentShape(Rectangle())
+            .controllerAccessibilityActionTarget(
+                label: overrideControllerLabel,
+                activationFeedback: .activate,
+                action: applyOverride
+            )
         } else {
             NumberRow(setting, value: $value,
                       accessory: NumberRowAccessory(
@@ -107,5 +150,19 @@ struct FloatOverrideRow: View {
 
     private func formatted(_ value: Float) -> String {
         setting.format.text(Double(value), settings: settings)
+    }
+
+    private var overrideControllerLabel: String {
+        "\(settings.localized(setting.title)), \(settings.localized("Override"))"
+    }
+
+    private func applyOverride() {
+        perGameOverrideWillActivate()
+        value = Float(
+            min(
+                max(Double(global), setting.range.lowerBound),
+                setting.range.upperBound
+            )
+        )
     }
 }

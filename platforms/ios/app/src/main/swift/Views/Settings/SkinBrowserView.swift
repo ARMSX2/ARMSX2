@@ -214,7 +214,14 @@ struct SkinBrowserView: View {
                     .cornerRadius(8)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(String(format: settings.localized("Preview %@"), skin.name))
+                .accessibilityLabel(
+                    String(format: settings.localized("Preview %@"), skin.name)
+                )
+                .controllerAccessibilityActionTarget(
+                    label: String(format: settings.localized("Preview %@"), skin.name)
+                ) {
+                    previewSkin = skin
+                }
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -256,6 +263,9 @@ struct SkinBrowserView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .controllerAccessibilityActionTarget(label: "Get \(skin.name)") {
+                    Task { await installer.install(skin) }
+                }
             }
 
             if let error = installer.errors[skin.file] {
@@ -266,7 +276,20 @@ struct SkinBrowserView: View {
                         .foregroundStyle(.orange)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(String(format: settings.localized("Show the error from %@"), skin.name))
+                .accessibilityLabel(
+                    String(
+                        format: settings.localized("Show the error from %@"),
+                        skin.name
+                    )
+                )
+                .controllerAccessibilityActionTarget(
+                    label: String(
+                        format: settings.localized("Show the error from %@"),
+                        skin.name
+                    )
+                ) {
+                    detailAlert = error
+                }
             } else if let notice = installer.notices[skin.file] {
                 Button {
                     detailAlert = notice
@@ -275,7 +298,24 @@ struct SkinBrowserView: View {
                         .foregroundStyle(.yellow)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(String(format: settings.localized("Show what %@ reported during install"), skin.name))
+                .accessibilityLabel(
+                    String(
+                        format: settings.localized(
+                            "Show what %@ reported during install"
+                        ),
+                        skin.name
+                    )
+                )
+                .controllerAccessibilityActionTarget(
+                    label: String(
+                        format: settings.localized(
+                            "Show what %@ reported during install"
+                        ),
+                        skin.name
+                    )
+                ) {
+                    detailAlert = notice
+                }
             }
         }
         .swipeActions(edge: .trailing) {
