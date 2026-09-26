@@ -183,6 +183,31 @@ extension NumberSetting {
         "Phone Rumble Strength", in: 0...1, format: .unitPercent,
         detents: [0, 0.25, 0.5, 0.75, 1], default: 0.25)
 
+    static let gameRumbleStrength = NumberSetting(
+        "Game Rumble Strength", in: 0...2, format: .unitPercent,
+        step: 0.01, default: 1,
+        hint: "100% preserves the original game rumble. 200% applies 2x strength.")
+
+    static let gameControllerDeadZone = NumberSetting(
+        "Dead Zone", in: 0...0.25, format: .unitPercent,
+        step: 0.01, default: 0.15,
+        hint: "Ignores stick movement inside this range.")
+
+    static let gameControllerLeftNegativeDeadzone = NumberSetting(
+        "Left Negative Deadzone", in: -0.25...0, format: .unitPercent,
+        step: 0.01, default: -0.08,
+        hint: "Sets the left stick's minimum output after it leaves the dead zone.")
+
+    static let gameControllerRightNegativeDeadzone = NumberSetting(
+        "Right Negative Deadzone", in: -0.25...0, format: .unitPercent,
+        step: 0.01, default: -0.08,
+        hint: "Sets the right stick's minimum output after it leaves the dead zone.")
+
+    static let uiRumbleStrength = NumberSetting(
+        "UI Rumble Strength", in: 0...2, format: .unitPercent,
+        step: 0.01, default: 1,
+        hint: "100% preserves the original UI rumble. 200% applies up to 2x gain.")
+
     // Typed fields, not sliders: these get copied verbatim off a compatibility list, so reaching
     // an exact number matters and dragging towards one does not.
     static let textureOffsetX = NumberSetting(
@@ -225,116 +250,15 @@ final class SettingsStore {
 
     /// Manual EmuCore/Gamefixes toggles — see SettingsStore+GameFixes.swift.
 
-    @ObservationIgnored private var suppressINIWrites = false
-    @ObservationIgnored private var isProgrammaticOsdFlagChange = false
-    @ObservationIgnored private var isAutoMarkingCustom = false
-    @ObservationIgnored private var isProgrammaticFramePacingFlagChange = false
-    @ObservationIgnored private var isAutoMarkingFramePacingCustom = false
-    @ObservationIgnored private var graphicsApplyWorkItem: DispatchWorkItem?
-    @ObservationIgnored private var visualSliderDragCount = 0
-    @ObservationIgnored private var graphicsApplyDeferred = false
-    @ObservationIgnored private var visualSliderWatchdog: DispatchWorkItem?
-
-    /// Coalesces live applies of visual settings so rapid changes reload GS settings
-    /// at most once per short window. It is a no-op while a visual slider is being
-    /// dragged; the slider's editing-ended handler triggers the apply on release so a
-    /// drag does not fire one apply per tick.
-    func requestGraphicsApply() {
-        guard visualSliderDragCount == 0 else {
-            // Remember that something graphics-shaped moved, so the release knows whether
-            // it has anything to apply. Every slider brackets now, including the audio and
-            // virtual pad ones that never touch GS.
-            graphicsApplyDeferred = true
-            return
-        }
-        graphicsApplyWorkItem?.cancel()
-        let workItem = DispatchWorkItem { ARMSX2Bridge.applyGraphicsSettingsNow() }
-        graphicsApplyWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
-    }
-
-    private func commit<T>(_ setting: Setting<T>, _ value: T) {
-        guard !(setting.suppressible && suppressINIWrites) else { return }
-        setting.codec.write(setting.section, setting.key, value)
-        if setting.appliesGraphics { requestGraphicsApplyGuarded() }
-    }
-
-    /// Nothing should reach this while the INI is loading, but it checks anyway:
-    /// a reload there would throw away the values init has just read.
-    func requestGraphicsApplyGuarded() {
-        guard !suppressINIWrites else { return }
-        requestGraphicsApply()
-    }
-
-    /// Marks the start of a visual slider drag so per-tick value changes do not each
-    /// trigger a graphics reload. Balanced by endVisualSliderEdit(), which fires a
-    /// single coalesced apply when the last drag ends.
-    /// A watchdog releases the count if a drag ends without its editing-ended handler.
-    func beginVisualSliderEdit() {
-        visualSliderDragCount += 1
-        visualSliderWatchdog?.cancel()
-        let watchdog = DispatchWorkItem { [weak self] in
-            guard let self, self.visualSliderDragCount > 0 else { return }
-            NSLog("[ARMSX2 iOS Settings] Visual slider bracket timed out, releasing")
-            self.visualSliderDragCount = 0
-            self.finishVisualSliderEdits()
-        }
-        visualSliderWatchdog = watchdog
-        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: watchdog)
-    }
-
-    func endVisualSliderEdit() {
-        if visualSliderDragCount > 0 { visualSliderDragCount -= 1 }
-        guard visualSliderDragCount == 0 else { return }
-        finishVisualSliderEdits()
-    }
-
-    /// Only reload if a graphics key actually moved while the bracket was up. Dragging an
-    /// audio or virtual pad slider raises the same count and has nothing to apply.
-    private func finishVisualSliderEdits() {
-        visualSliderWatchdog?.cancel()
-        visualSliderWatchdog = nil
-        guard graphicsApplyDeferred else { return }
-        graphicsApplyDeferred = false
-        requestGraphicsApply()
-    }
-
-    /// Writes core's absolute ShaderChainPreset for the token, pushes its saved parameters and
-    /// retries it if it failed before. A token that names no file clears the selection.
-    private func applyShaderChainSelection() {
-        guard !shaderChainPresetRef.isEmpty else {
-            ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPreset", value: "")
-            return
-        }
-        guard let url = ShaderPresetLibrary.resolve(shaderChainPresetRef) else {
-            shaderChainEnabled = false
-            shaderChainPresetRef = ""
-            return
-        }
-        ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPreset", value: url.path)
-        ShaderParams.pushStored(token: shaderChainPresetRef)
-        ARMSX2Bridge.retryShaderChain()
-    }
-
-    /// Re-roots the selection in this launch's container before the GS device reads the config.
-    /// An older build's absolute path becomes a token, or is dropped if it names nothing.
-    private static func migrateShaderChainSelectionV1() {
-        let stored = ARMSX2Bridge.getINIString("EmuCore/GS", key: "ShaderChainPreset", defaultValue: "")
-        var token = ARMSX2Bridge.getINIString("EmuCore/GS", key: "ShaderChainPresetRef", defaultValue: "")
-        guard !token.isEmpty || !stored.isEmpty else { return }
-        if token.isEmpty { token = ShaderPresetLibrary.token(forLegacyPath: stored) ?? "" }
-        guard let url = ShaderPresetLibrary.resolve(token) else {
-            ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPresetRef", value: "")
-            ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPreset", value: "")
-            ARMSX2Bridge.setINIBool("EmuCore/GS", key: "ShaderChainEnabled", value: false)
-            return
-        }
-        ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPresetRef", value: token)
-        ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPreset", value: url.path)
-        // Launch changes no selection, so the saved parameters are pushed here. Static and
-        // bridge-only, since init must not touch SettingsStore.shared.
-        ShaderParams.pushStored(token: token)
-    }
+    @ObservationIgnored var suppressINIWrites = false
+    @ObservationIgnored var isProgrammaticOsdFlagChange = false
+    @ObservationIgnored var isAutoMarkingCustom = false
+    @ObservationIgnored var isProgrammaticFramePacingFlagChange = false
+    @ObservationIgnored var isAutoMarkingFramePacingCustom = false
+    @ObservationIgnored var graphicsApplyWorkItem: DispatchWorkItem?
+    @ObservationIgnored var visualSliderDragCount = 0
+    @ObservationIgnored var graphicsApplyDeferred = false
+    @ObservationIgnored var visualSliderWatchdog: DispatchWorkItem?
 
     // ── Emulator / CPU ──
     // writes CoreType + UseArm64Dynarec
@@ -364,6 +288,18 @@ final class SettingsStore {
             ARMSX2Bridge.setINIBool("GameISO", key: "FastBoot", value: fastBoot)
             ARMSX2Bridge.setINIBool("EmuCore", key: "EnableFastBoot", value: fastBoot)
         }
+    }
+    let _automaticLoadLastSaveStateConfig = Setting<Bool>(
+        section: "ARMSX2iOS/Boot", key: "AutomaticLoadLastSaveState", default: false,
+        codec: .bool)
+    var automaticLoadLastSaveState = false {
+        didSet { commit(_automaticLoadLastSaveStateConfig, automaticLoadLastSaveState) }
+    }
+    let _automaticLoadLastGameConfig = Setting<Bool>(
+        section: "ARMSX2iOS/Boot", key: "AutomaticLoadLastGame", default: false,
+        codec: .bool)
+    var automaticLoadLastGame = false {
+        didSet { commit(_automaticLoadLastGameConfig, automaticLoadLastGame) }
     }
     // writes ManualFastmem + EnableFastmem
     var fastmem: Bool {
@@ -647,28 +583,6 @@ final class SettingsStore {
     // own INI key.
     var gameFixes: [String: Bool] = [:]
 
-    func gameFixEnabled(_ key: String) -> Bool {
-        gameFixes[key] ?? false
-    }
-
-    func setGameFix(_ key: String, _ value: Bool) {
-        gameFixes[key] = value
-        guard !suppressINIWrites else { return }
-        ARMSX2Bridge.setINIBool("EmuCore/Gamefixes", key: key, value: value)
-    }
-
-    private static func loadGameFixes() -> [String: Bool] {
-        var values: [String: Bool] = [:]
-        for option in gameFixOptions {
-            values[option.key] = ARMSX2Bridge.getINIBool("EmuCore/Gamefixes", key: option.key, defaultValue: false)
-        }
-        return values
-    }
-
-    // ── Graphics ──
-
-    /// MetalFX Spatial upscaling requires iOS 16+ and a device GPU that supports it.
-    /// Probes at runtime so the UI can hide the option on unsupported hardware.
     var isMetalFXAvailable: Bool {
         ARMSX2Bridge.isMetalFXSupported()
     }
@@ -997,79 +911,7 @@ final class SettingsStore {
     /// core can see the result. Empty until a game is running.
     var graphicsHackStatus: [String: GraphicsHackStatus] = [:]
 
-    func graphicsHack(_ key: String) -> GraphicsHackStatus? {
-        graphicsHackStatus[key]
-    }
-
-    func refreshGraphicsHackStatus() {
-        var parsed: [String: GraphicsHackStatus] = [:]
-        for (key, value) in ARMSX2Bridge.graphicsHackState() {
-            guard let entry = value as? [String: Any],
-                  let effective = entry["effective"] as? Int,
-                  let rawReason = entry["reason"] as? Int,
-                  let reason = GraphicsHackReason(rawValue: rawReason),
-                  let pinned = entry["pinned"] as? Bool else { continue }
-            parsed[key] = GraphicsHackStatus(effective: effective, reason: reason, pinned: pinned)
-        }
-        graphicsHackStatus = parsed
-    }
-
-    /// Claims a hack for the player so the GameDB stops overwriting that one. Shares the
-    /// debounced apply with the row's own write, so claiming and changing in one gesture
-    /// costs one apply rather than two.
-    func setGraphicsHackPinned(_ key: String, _ pinned: Bool) {
-        ARMSX2Bridge.setGraphicsHackPinned(key, pinned: pinned)
-        requestGraphicsApplyGuarded()
-    }
-
-    /// Unpinning hands the hack back to the automatics, so the stored value goes back
-    /// to its default too, or the row keeps showing a value the core will discard.
-    func resetGraphicsHackValue(_ key: String) {
-        switch key {
-        case "UserHacks_align_sprite_X": alignSprite = false
-        case "UserHacks_merge_pp_sprite": mergeSprite = false
-        case "UserHacks_round_sprite_offset": roundSprite = 0
-        case "UserHacks_HalfPixelOffset": halfPixelOffset = 0
-        case "UserHacks_ForceEvenSpritePosition": wildArmsOffset = false
-        case "UserHacks_native_scaling": nativeScaling = 0
-        case "UserHacks_TCOffsetX": textureOffsetX = 0
-        case "UserHacks_TCOffsetY": textureOffsetY = 0
-        case "UserHacks_TextureInsideRt": textureInsideRt = 0
-        case "UserHacks_BilinearHack": bilinearUpscaleHack = 0
-        case "UserHacks_Limit24BitDepth": limit24BitDepth = 0
-        case "UserHacks_CPUSpriteRenderBW": cpuSpriteRenderBw = 0
-        case "UserHacks_CPUSpriteRenderLevel": cpuSpriteRenderLevel = 0
-        case "UserHacks_CPUCLUTRender": cpuClutRender = 0
-        case "UserHacks_GPUTargetCLUTMode": gpuTargetClut = 0
-        default: setGSBoolHack(key, false)
-        }
-    }
-
-    /// Homogeneous bool GS hacks — see SettingsStore+Graphics.swift for the option list.
     var gsBoolHacks: [String: Bool] = [:]
-
-    func gsBoolHackEnabled(_ key: String) -> Bool {
-        gsBoolHacks[key] ?? false
-    }
-
-    /// The single write funnel for those hacks. They live in a dictionary rather
-    /// than a Setting<T>, so the default EmuCore/GS apply hook cannot reach them;
-    /// this is their equivalent. Everything that changes one goes through here.
-    func setGSBoolHack(_ key: String, _ value: Bool) {
-        gsBoolHacks[key] = value
-        guard !suppressINIWrites else { return }
-        ARMSX2Bridge.setINIBool("EmuCore/GS", key: key, value: value)
-        ARMSX2Bridge.setGraphicsHackPinned(key, pinned: true)
-        requestGraphicsApplyGuarded()
-    }
-
-    private static func loadGSBoolHacks() -> [String: Bool] {
-        var values: [String: Bool] = [:]
-        for option in gsBoolHackOptions {
-            values[option.key] = ARMSX2Bridge.getINIBool("EmuCore/GS", key: option.key, defaultValue: false)
-        }
-        return values
-    }
 
     // ── Screen / PCRTC (EmuCore/GS) ── display-output options, applied live.
     let _pcrtcOffsetsConfig = Setting<Bool>(
@@ -1359,6 +1201,34 @@ final class SettingsStore {
         suppressible: false,
         codec: .bool)
     var hapticFeedback: Bool = true { didSet { commit(_hapticFeedbackConfig, hapticFeedback) } }
+    let _gameRumbleStrengthConfig = Setting<Float>(
+        section: "ARMSX2iOS/UI", key: "GameRumbleStrength", default: 1,
+        suppressible: false,
+        codec: .float)
+    var gameRumbleStrength: Float = 1 {
+        didSet {
+            let clamped = min(max(gameRumbleStrength, 0), 2)
+            guard clamped == gameRumbleStrength else {
+                gameRumbleStrength = clamped
+                return
+            }
+            commit(_gameRumbleStrengthConfig, gameRumbleStrength)
+        }
+    }
+    let _uiRumbleStrengthConfig = Setting<Float>(
+        section: "ARMSX2iOS/UI", key: "UIRumbleStrength", default: 0.5,
+        suppressible: false,
+        codec: .float)
+    var uiRumbleStrength: Float = 0.5 {
+        didSet {
+            let clamped = min(max(uiRumbleStrength, 0), 1)
+            guard clamped == uiRumbleStrength else {
+                uiRumbleStrength = clamped
+                return
+            }
+            commit(_uiRumbleStrengthConfig, uiRumbleStrength)
+        }
+    }
     let _dpadDiagonalsEnabledConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "DpadDiagonalsEnabled", default: true,
         suppressible: false,
@@ -1374,6 +1244,12 @@ final class SettingsStore {
         suppressible: false,
         codec: .rawInt)
     var virtualPadSkin: VirtualPadSkin = .armsx2Refresh { didSet { commit(_virtualPadSkinConfig, virtualPadSkin) } }
+    let _automaticDownloadCustomSkinConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "AutomaticDownloadCustomSkin", default: false,
+        codec: .bool)
+    var automaticDownloadCustomSkin: Bool = false {
+        didSet { commit(_automaticDownloadCustomSkinConfig, automaticDownloadCustomSkin) }
+    }
     let _autoHideVirtualPadWhenControllerConnectedConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "AutoHideVirtualPadWhenControllerConnected", default: true,
         codec: .bool)
@@ -1398,6 +1274,57 @@ final class SettingsStore {
             }
             guard !suppressINIWrites else { return }
             ARMSX2Bridge.setINIFloat("ARMSX2iOS/UI", key: "AnalogStickScale", value: analogStickScale)
+        }
+    }
+    let _gameControllerDeadZoneConfig = Setting<Float>(
+        section: "ARMSX2iOS/Gamepad", key: "StickDeadZone", default: 0.15,
+        codec: .float)
+    var gameControllerDeadZone: Float = 0.15 {
+        didSet {
+            let clamped = min(max(gameControllerDeadZone, 0), 0.25)
+            guard clamped == gameControllerDeadZone else {
+                gameControllerDeadZone = clamped
+                return
+            }
+            commit(_gameControllerDeadZoneConfig, gameControllerDeadZone)
+        }
+    }
+    let _gameControllerLeftInstantDeadzoneConfig = Setting<Bool>(
+        section: "ARMSX2iOS/Gamepad", key: "LeftInstantDeadzoneEnabled", default: false,
+        codec: .bool)
+    var gameControllerLeftInstantDeadzoneEnabled: Bool = false {
+        didSet { commit(_gameControllerLeftInstantDeadzoneConfig, gameControllerLeftInstantDeadzoneEnabled) }
+    }
+    let _gameControllerLeftNegativeDeadzoneConfig = Setting<Float>(
+        section: "ARMSX2iOS/Gamepad", key: "LeftNegativeDeadzone", default: -0.08,
+        codec: .float)
+    var gameControllerLeftNegativeDeadzone: Float = -0.08 {
+        didSet {
+            let clamped = min(max(gameControllerLeftNegativeDeadzone, -0.25), 0)
+            guard clamped == gameControllerLeftNegativeDeadzone else {
+                gameControllerLeftNegativeDeadzone = clamped
+                return
+            }
+            commit(_gameControllerLeftNegativeDeadzoneConfig, gameControllerLeftNegativeDeadzone)
+        }
+    }
+    let _gameControllerRightInstantDeadzoneConfig = Setting<Bool>(
+        section: "ARMSX2iOS/Gamepad", key: "RightInstantDeadzoneEnabled", default: false,
+        codec: .bool)
+    var gameControllerRightInstantDeadzoneEnabled: Bool = false {
+        didSet { commit(_gameControllerRightInstantDeadzoneConfig, gameControllerRightInstantDeadzoneEnabled) }
+    }
+    let _gameControllerRightNegativeDeadzoneConfig = Setting<Float>(
+        section: "ARMSX2iOS/Gamepad", key: "RightNegativeDeadzone", default: -0.08,
+        codec: .float)
+    var gameControllerRightNegativeDeadzone: Float = -0.08 {
+        didSet {
+            let clamped = min(max(gameControllerRightNegativeDeadzone, -0.25), 0)
+            guard clamped == gameControllerRightNegativeDeadzone else {
+                gameControllerRightNegativeDeadzone = clamped
+                return
+            }
+            commit(_gameControllerRightNegativeDeadzoneConfig, gameControllerRightNegativeDeadzone)
         }
     }
     private static let stickInversionSection = "ARMSX2iOS/UI"
@@ -1466,6 +1393,62 @@ final class SettingsStore {
         suppressible: false,
         codec: .int)
     var controllerMultitapMode: Int = 0 { didSet { commit(_controllerMultitapModeConfig, controllerMultitapMode) } }
+    let _controllerMacroQuickMenuConfig = Setting<ControllerMacroBinding>(
+        section: "ARMSX2iOS/Gamepad", key: "MacroQuickMenu",
+        default: ControllerMacroAction.quickMenu.defaultBinding,
+        suppressible: false, codec: .rawString)
+    let _controllerMacroQuickMenuSelectPauseMigration = Setting<Bool>(
+        section: "ARMSX2iOS/Gamepad", key: "MacroQuickMenuSelectPauseMigrated",
+        default: false, suppressible: false, codec: .bool)
+    let _controllerMacroStartDefaultsMigration = Setting<Bool>(
+        section: "ARMSX2iOS/Gamepad", key: "MacroStartDefaultsMigrated",
+        default: false, suppressible: false, codec: .bool)
+    var controllerMacroQuickMenu = ControllerMacroAction.quickMenu.defaultBinding {
+        didSet { commit(_controllerMacroQuickMenuConfig, controllerMacroQuickMenu) }
+    }
+    let _controllerMacroSaveGameStateConfig = Setting<ControllerMacroBinding>(
+        section: "ARMSX2iOS/Gamepad", key: "MacroSaveGameState",
+        default: ControllerMacroAction.saveGameState.defaultBinding,
+        suppressible: false, codec: .rawString)
+    var controllerMacroSaveGameState = ControllerMacroAction.saveGameState.defaultBinding {
+        didSet { commit(_controllerMacroSaveGameStateConfig, controllerMacroSaveGameState) }
+    }
+    let _controllerMacroLoadGameStateConfig = Setting<ControllerMacroBinding>(
+        section: "ARMSX2iOS/Gamepad", key: "MacroLoadGameState",
+        default: ControllerMacroAction.loadGameState.defaultBinding,
+        suppressible: false, codec: .rawString)
+    var controllerMacroLoadGameState = ControllerMacroAction.loadGameState.defaultBinding {
+        didSet { commit(_controllerMacroLoadGameStateConfig, controllerMacroLoadGameState) }
+    }
+    let _controllerMacroIncreaseSpeedConfig = Setting<ControllerMacroBinding>(
+        section: "ARMSX2iOS/Gamepad", key: "MacroIncreaseSpeed",
+        default: ControllerMacroAction.increaseSpeed.defaultBinding,
+        suppressible: false, codec: .rawString)
+    var controllerMacroIncreaseSpeed = ControllerMacroAction.increaseSpeed.defaultBinding {
+        didSet { commit(_controllerMacroIncreaseSpeedConfig, controllerMacroIncreaseSpeed) }
+    }
+    let _controllerMacroDecreaseSpeedConfig = Setting<ControllerMacroBinding>(
+        section: "ARMSX2iOS/Gamepad", key: "MacroDecreaseSpeed",
+        default: ControllerMacroAction.decreaseSpeed.defaultBinding,
+        suppressible: false, codec: .rawString)
+    var controllerMacroDecreaseSpeed = ControllerMacroAction.decreaseSpeed.defaultBinding {
+        didSet { commit(_controllerMacroDecreaseSpeedConfig, controllerMacroDecreaseSpeed) }
+    }
+    let _controllerMacroEnableFastForwardConfig = Setting<ControllerMacroBinding>(
+        section: "ARMSX2iOS/Gamepad", key: "MacroEnableFastForward",
+        default: ControllerMacroAction.enableFastForward.defaultBinding,
+        suppressible: false, codec: .rawString)
+    var controllerMacroEnableFastForward = ControllerMacroAction.enableFastForward.defaultBinding {
+        didSet { commit(_controllerMacroEnableFastForwardConfig, controllerMacroEnableFastForward) }
+    }
+    let _controllerMacroDisableFastForwardConfig = Setting<ControllerMacroBinding>(
+        section: "ARMSX2iOS/Gamepad", key: "MacroDisableFastForward",
+        default: ControllerMacroAction.disableFastForward.defaultBinding,
+        suppressible: false, codec: .rawString)
+    var controllerMacroDisableFastForward = ControllerMacroAction.disableFastForward.defaultBinding {
+        didSet { commit(_controllerMacroDisableFastForwardConfig, controllerMacroDisableFastForward) }
+    }
+
     let _autoOpenStikDebugConfig = Setting<Bool>(
         section: "ARMSX2iOS/JIT", key: "AutoOpenStikDebug", default: false,
         codec: .bool)
@@ -1560,6 +1543,17 @@ final class SettingsStore {
     var clearLiquidGlassUI: Bool = true {
         didSet {
             UserDefaults.standard.set(clearLiquidGlassUI, forKey: "ARMSX2iOSClearLiquidGlassUI")
+            if !clearLiquidGlassUI && clearLiquidGlassUISubSettings {
+                clearLiquidGlassUISubSettings = false
+            }
+        }
+    }
+    var clearLiquidGlassUISubSettings: Bool = true {
+        didSet {
+            UserDefaults.standard.set(
+                clearLiquidGlassUISubSettings,
+                forKey: "ARMSX2iOSClearLiquidGlassUISubSettings"
+            )
         }
     }
     var clearLiquidGlassUIQuickMenu: Bool = false {
@@ -1570,11 +1564,379 @@ final class SettingsStore {
             )
         }
     }
+    var clearLiquidGlassUIPerGameSettingsLibrary: Bool = false {
+        didSet {
+            UserDefaults.standard.set(
+                clearLiquidGlassUIPerGameSettingsLibrary,
+                forKey: "ARMSX2iOSClearLiquidGlassUIPerGameSettingsLibrary"
+            )
+        }
+    }
+    var clearLiquidGlassUIPerGameSettingsEmulation: Bool = false {
+        didSet {
+            UserDefaults.standard.set(
+                clearLiquidGlassUIPerGameSettingsEmulation,
+                forKey: "ARMSX2iOSClearLiquidGlassUIPerGameSettingsEmulation"
+            )
+        }
+    }
+    static let perGameLivePreviewDurationRange: ClosedRange<Double> = 2...10
+    static let perGameBeforeChangesPreviewDurationRange: ClosedRange<Double> = 0...10
+    var temporalSaveStateToLivePreviewChanges: Bool = true {
+        didSet {
+            UserDefaults.standard.set(
+                temporalSaveStateToLivePreviewChanges,
+                forKey: "ARMSX2iOSTemporalSaveStateToLivePreviewChanges"
+            )
+        }
+    }
+    var perGameLivePreviewDuration: Double = 2 {
+        didSet {
+            UserDefaults.standard.set(
+                perGameLivePreviewDuration,
+                forKey: "ARMSX2iOSPerGameLivePreviewDuration"
+            )
+        }
+    }
+    var perGameBeforeChangesPreviewDuration: Double = 0 {
+        didSet {
+            UserDefaults.standard.set(
+                perGameBeforeChangesPreviewDuration,
+                forKey: "ARMSX2iOSPerGameBeforeChangesPreviewDuration"
+            )
+        }
+    }
+    var perGameLivePreviewStopsWithCircle: Bool = true {
+        didSet {
+            UserDefaults.standard.set(
+                perGameLivePreviewStopsWithCircle,
+                forKey: "ARMSX2iOSPerGameLivePreviewStopsWithCircle"
+            )
+        }
+    }
     var gameCardZoomAnimationEnabled: Bool = true {
         didSet {
             UserDefaults.standard.set(
                 gameCardZoomAnimationEnabled,
                 forKey: "ARMSX2iOSGameCardZoomAnimationEnabled"
+            )
+        }
+    }
+    var favoriteGlowingEffectEnabled: Bool = false {
+        didSet {
+            UserDefaults.standard.set(
+                favoriteGlowingEffectEnabled,
+                forKey: "ARMSX2iOSFavoriteGlowingEffectEnabled"
+            )
+        }
+    }
+    var hideGameplayStatusBar: Bool = true {
+        didSet {
+            UserDefaults.standard.set(
+                hideGameplayStatusBar,
+                forKey: "ARMSX2iOSHideGameplayStatusBar"
+            )
+        }
+    }
+    var hideIntroStatusBar: Bool = true {
+        didSet {
+            UserDefaults.standard.set(
+                hideIntroStatusBar,
+                forKey: "ARMSX2iOSHideIntroStatusBar"
+            )
+        }
+    }
+    var hideMenuStatusBar: Bool = true {
+        didSet {
+            UserDefaults.standard.set(
+                hideMenuStatusBar,
+                forKey: "ARMSX2iOSHideMenuStatusBar"
+            )
+        }
+    }
+    var focusOrbsEnabled: Bool = false {
+        didSet {
+            UserDefaults.standard.set(
+                focusOrbsEnabled,
+                forKey: "ARMSX2iOSFocusOrbsEnabled"
+            )
+        }
+    }
+    // Retain the preset's readable semantic defaults while editing Custom.
+    var controllerCustomThemeBase: ControllerUIThemePreset = ControllerUIThemePreset(
+        rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSCustomThemeBase") ?? ""
+    ) ?? .defaultTheme {
+        didSet {
+            UserDefaults.standard.set(controllerCustomThemeBase.rawValue, forKey: "ARMSX2iOSCustomThemeBase")
+        }
+    }
+    var controllerRoleCustomColors: [String: SavedPaletteColor] = {
+        guard let data = UserDefaults.standard.data(forKey: "ARMSX2iOSRoleCustomColors") else { return [:] }
+        return (try? JSONDecoder().decode([String: SavedPaletteColor].self, from: data)) ?? [:]
+    }() {
+        didSet {
+            if let data = try? JSONEncoder().encode(controllerRoleCustomColors) {
+                UserDefaults.standard.set(data, forKey: "ARMSX2iOSRoleCustomColors")
+            }
+        }
+    }
+    var controllerUIThemePreset: ControllerUIThemePreset = .defaultTheme {
+        didSet {
+            UserDefaults.standard.set(
+                controllerUIThemePreset.rawValue,
+                forKey: "ARMSX2iOSControllerUIThemePreset"
+            )
+        }
+    }
+    var controllerNavigationDepthEffectEnabled: Bool = true {
+        didSet {
+            UserDefaults.standard.set(
+                controllerNavigationDepthEffectEnabled,
+                forKey: "ARMSX2iOSControllerNavigationDepthEffectEnabled"
+            )
+        }
+    }
+    var controllerFocusBoxStyle: ControllerFocusBoxStyle = .neonBlue {
+        didSet {
+            UserDefaults.standard.set(
+                controllerFocusBoxStyle.rawValue,
+                forKey: "ARMSX2iOSControllerFocusBoxStyle"
+            )
+        }
+    }
+    var controllerNavigationFocusAnimation: ControllerNavigationFocusTravelStyle = .easeInOut {
+        didSet {
+            UserDefaults.standard.set(
+                controllerNavigationFocusAnimation.rawValue,
+                forKey: "ARMSX2iOSControllerNavigationFocusAnimation"
+            )
+        }
+    }
+    var controllerFocusBoxPalette: ThemePalette = .multicolor {
+        didSet {
+            UserDefaults.standard.set(
+                controllerFocusBoxPalette.rawValue,
+                forKey: "ARMSX2iOSControllerFocusBoxPalette"
+            )
+        }
+    }
+    var controllerFocusBoxCustomColor: SavedPaletteColor? {
+        didSet {
+            Self.persistSavedPaletteColor(
+                controllerFocusBoxCustomColor,
+                forKey: "ARMSX2iOSControllerFocusBoxCustomColor"
+            )
+        }
+    }
+    var controllerOrbPalette: ThemePalette = .blue {
+        didSet {
+            UserDefaults.standard.set(
+                controllerOrbPalette.rawValue,
+                forKey: "ARMSX2iOSControllerOrbPalette"
+            )
+        }
+    }
+    var controllerNavigationAccentPalette: ThemePalette = .henyBlue {
+        didSet {
+            UserDefaults.standard.set(
+                controllerNavigationAccentPalette.rawValue,
+                forKey: "ARMSX2iOSControllerNavigationAccentPalette"
+            )
+        }
+    }
+    var controllerNavigationCustomAccentColor: SavedPaletteColor? {
+        didSet {
+            Self.persistSavedPaletteColor(
+                controllerNavigationCustomAccentColor,
+                forKey: "ARMSX2iOSControllerNavigationCustomAccentColor"
+            )
+        }
+    }
+    var controllerTextPalette: ThemePalette? = nil {
+        didSet {
+            if let controllerTextPalette {
+                UserDefaults.standard.set(
+                    controllerTextPalette.rawValue,
+                    forKey: "ARMSX2iOSControllerTextPalette"
+                )
+            } else {
+                UserDefaults.standard.removeObject(
+                    forKey: "ARMSX2iOSControllerTextPalette"
+                )
+            }
+        }
+    }
+    var controllerTextCustomColor: SavedPaletteColor? {
+        didSet {
+            Self.persistSavedPaletteColor(
+                controllerTextCustomColor,
+                forKey: "ARMSX2iOSControllerTextCustomColor"
+            )
+        }
+    }
+    var controllerSecondaryTextPalette: ThemePalette? = nil {
+        didSet {
+            if let controllerSecondaryTextPalette {
+                UserDefaults.standard.set(
+                    controllerSecondaryTextPalette.rawValue,
+                    forKey: "ARMSX2iOSControllerSecondaryTextPalette"
+                )
+            } else {
+                UserDefaults.standard.removeObject(
+                    forKey: "ARMSX2iOSControllerSecondaryTextPalette"
+                )
+            }
+        }
+    }
+    var controllerCriticalTextPalette: ThemePalette = .crimson {
+        didSet {
+            UserDefaults.standard.set(
+                controllerCriticalTextPalette.rawValue,
+                forKey: "ARMSX2iOSControllerCriticalTextPalette"
+            )
+        }
+    }
+    var controllerTabTitlePalette: ThemePalette? = nil {
+        didSet {
+            Self.persistOptionalThemePalette(
+                controllerTabTitlePalette,
+                forKey: "ARMSX2iOSControllerTabTitlePalette"
+            )
+        }
+    }
+    var controllerTabSubtitlePalette: ThemePalette? = nil {
+        didSet {
+            Self.persistOptionalThemePalette(
+                controllerTabSubtitlePalette,
+                forKey: "ARMSX2iOSControllerTabSubtitlePalette"
+            )
+        }
+    }
+    var controllerBottomTabBarPalette: ThemePalette? = nil {
+        didSet {
+            Self.persistOptionalThemePalette(
+                controllerBottomTabBarPalette,
+                forKey: "ARMSX2iOSControllerBottomTabBarPalette"
+            )
+        }
+    }
+    var controllerBottomTabBarUnselectedPalette: ThemePalette? = nil {
+        didSet {
+            Self.persistOptionalThemePalette(
+                controllerBottomTabBarUnselectedPalette,
+                forKey: "ARMSX2iOSControllerBottomTabBarUnselectedPalette"
+            )
+        }
+    }
+    var controllerCardTitlePalette: ThemePalette? = nil {
+        didSet {
+            Self.persistOptionalThemePalette(
+                controllerCardTitlePalette,
+                forKey: "ARMSX2iOSControllerCardTitlePalette"
+            )
+        }
+    }
+    var controllerContextMenuPalette: ThemePalette? = nil {
+        didSet {
+            Self.persistOptionalThemePalette(
+                controllerContextMenuPalette,
+                forKey: "ARMSX2iOSControllerContextMenuPalette"
+            )
+        }
+    }
+    var controllerImportActionPalette: ThemePalette? = nil {
+        didSet {
+            Self.persistOptionalThemePalette(
+                controllerImportActionPalette,
+                forKey: "ARMSX2iOSControllerImportActionPalette"
+            )
+        }
+    }
+    var controllerToolbarPalette: ThemePalette? = nil {
+        didSet {
+            Self.persistOptionalThemePalette(
+                controllerToolbarPalette,
+                forKey: "ARMSX2iOSControllerToolbarPalette"
+            )
+        }
+    }
+    var controllerFocusedTextPalette: ThemePalette = .blue {
+        didSet {
+            UserDefaults.standard.set(
+                controllerFocusedTextPalette.rawValue,
+                forKey: "ARMSX2iOSControllerFocusedTextPalette"
+            )
+        }
+    }
+    var controllerFocusedTextCustomColor: SavedPaletteColor? {
+        didSet {
+            Self.persistSavedPaletteColor(
+                controllerFocusedTextCustomColor,
+                forKey: "ARMSX2iOSControllerFocusedTextCustomColor"
+            )
+        }
+    }
+    var controllerTextShadowStrength: Double = 0 {
+        didSet {
+            UserDefaults.standard.set(
+                controllerTextShadowStrength,
+                forKey: "ARMSX2iOSControllerTextShadowStrength"
+            )
+        }
+    }
+    var controllerTextShadowPalette: ThemePalette = .obsidian {
+        didSet {
+            UserDefaults.standard.set(
+                controllerTextShadowPalette.rawValue,
+                forKey: "ARMSX2iOSControllerTextShadowPalette"
+            )
+        }
+    }
+    var controllerTextShadowCustomColor: SavedPaletteColor? {
+        didSet {
+            Self.persistSavedPaletteColor(
+                controllerTextShadowCustomColor,
+                forKey: "ARMSX2iOSControllerTextShadowCustomColor"
+            )
+        }
+    }
+    var controllerFocusedTextShadowStrength: Double = 0.1 {
+        didSet {
+            UserDefaults.standard.set(
+                controllerFocusedTextShadowStrength,
+                forKey: "ARMSX2iOSControllerFocusedTextShadowStrength"
+            )
+        }
+    }
+    var controllerFocusedTextShadowPalette: ThemePalette = .obsidian {
+        didSet {
+            UserDefaults.standard.set(
+                controllerFocusedTextShadowPalette.rawValue,
+                forKey: "ARMSX2iOSControllerFocusedTextShadowPalette"
+            )
+        }
+    }
+    var controllerFocusedTextShadowCustomColor: SavedPaletteColor? {
+        didSet {
+            Self.persistSavedPaletteColor(
+                controllerFocusedTextShadowCustomColor,
+                forKey: "ARMSX2iOSControllerFocusedTextShadowCustomColor"
+            )
+        }
+    }
+    var controllerFocusBoxAnimationSpeed: Double = 1 {
+        didSet {
+            UserDefaults.standard.set(
+                controllerFocusBoxAnimationSpeed,
+                forKey: "ARMSX2iOSControllerFocusBoxAnimationSpeed"
+            )
+        }
+    }
+    var controllerFocusBoxGlowIntensity: Double = 1 {
+        didSet {
+            UserDefaults.standard.set(
+                controllerFocusBoxGlowIntensity,
+                forKey: "ARMSX2iOSControllerFocusBoxGlowIntensity"
             )
         }
     }
@@ -1639,12 +2001,14 @@ final class SettingsStore {
 
     // ── Init from INI ──
     private init() {
+        Self.initializeAutomaticJITAppearanceState()
         // Assignments in init skip didSet, so loading the INI writes nothing back. Moved
         // into a helper they would fire, and every non-suppressible setting would rewrite
         // itself each launch.
         suppressINIWrites = true
         defer {
             suppressINIWrites = false
+            synchronizeControllerMacroGameplayInput()
             applyFrameLimiterSettings()
         }
 
@@ -1663,6 +2027,8 @@ final class SettingsStore {
         vu0Recompiler = _vu0RecompilerConfig.load()
         vu1Recompiler = _vu1RecompilerConfig.load()
         fastBoot = Self.loadedFastBoot()
+        automaticLoadLastSaveState = _automaticLoadLastSaveStateConfig.load()
+        automaticLoadLastGame = _automaticLoadLastGameConfig.load()
         fastmem = ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "EnableFastmem", defaultValue: true)
         emulationOnlyModeEnabled = _emulationOnlyModeConfig.load()
         emulationOnlyDisablePatches = _emulationOnlyDisablePatchesConfig.load()
@@ -1829,21 +2195,90 @@ final class SettingsStore {
         // UI
         padOpacity = _padOpacityConfig.load()
         hapticFeedback = _hapticFeedbackConfig.load()
+        gameRumbleStrength = _gameRumbleStrengthConfig.load()
+        uiRumbleStrength = _uiRumbleStrengthConfig.load()
         phoneRumbleStrength = _phoneRumbleStrengthConfig.load()
         increaseRumbleDurationAndInterpolation = _increaseRumbleDurationAndInterpolationConfig.load()
         dpadDiagonalsEnabled = _dpadDiagonalsEnabledConfig.load()
         faceComboZonesEnabled = _faceComboZonesEnabledConfig.load()
         virtualPadSkin = _virtualPadSkinConfig.load()
+        automaticDownloadCustomSkin = _automaticDownloadCustomSkinConfig.load()
         autoHideVirtualPadWhenControllerConnected = _autoHideVirtualPadWhenControllerConnectedConfig.load()
         autoFullscreen = _autoFullscreenConfig.load()
         hideMenuButton = _hideMenuButtonConfig.load()
         analogStickScale = Self.clampedAnalogStickScale(ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "AnalogStickScale", defaultValue: 1.0))
+        gameControllerDeadZone = _gameControllerDeadZoneConfig.load()
+        gameControllerLeftInstantDeadzoneEnabled = _gameControllerLeftInstantDeadzoneConfig.load()
+        gameControllerLeftNegativeDeadzone = _gameControllerLeftNegativeDeadzoneConfig.load()
+        gameControllerRightInstantDeadzoneEnabled = _gameControllerRightInstantDeadzoneConfig.load()
+        gameControllerRightNegativeDeadzone = _gameControllerRightNegativeDeadzoneConfig.load()
         invertLeftStickX = _invertLeftStickXConfig.load()
         invertLeftStickY = _invertLeftStickYConfig.load()
         invertRightStickX = _invertRightStickXConfig.load()
         invertRightStickY = _invertRightStickYConfig.load()
         appLanguage = _appLanguageConfig.load()
         controllerMultitapMode = _controllerMultitapModeConfig.load()
+        let loadedQuickMenuMacro = _controllerMacroQuickMenuConfig.load()
+        if !_controllerMacroQuickMenuSelectPauseMigration.load() {
+            let previousDefault = ControllerMacroBinding(first: .l3, second: .r3)
+            let resolvedQuickMenuMacro = loadedQuickMenuMacro == previousDefault
+                ? ControllerMacroAction.quickMenu.defaultBinding
+                : loadedQuickMenuMacro
+            controllerMacroQuickMenu = resolvedQuickMenuMacro
+            _controllerMacroQuickMenuConfig.write(resolvedQuickMenuMacro)
+            _controllerMacroQuickMenuSelectPauseMigration.write(true)
+        } else {
+            controllerMacroQuickMenu = loadedQuickMenuMacro
+        }
+        let loadedSaveStateMacro = _controllerMacroSaveGameStateConfig.load()
+        let loadedLoadStateMacro = _controllerMacroLoadGameStateConfig.load()
+        let loadedIncreaseSpeedMacro = _controllerMacroIncreaseSpeedConfig.load()
+        let loadedDecreaseSpeedMacro = _controllerMacroDecreaseSpeedConfig.load()
+        let loadedEnableFastForwardMacro = _controllerMacroEnableFastForwardConfig.load()
+        let loadedDisableFastForwardMacro = _controllerMacroDisableFastForwardConfig.load()
+        if !_controllerMacroStartDefaultsMigration.load() {
+            let previousSaveStateDefault = ControllerMacroBinding(first: .r3, second: .circle)
+            let previousLoadStateDefault = ControllerMacroBinding(first: .r3, second: .triangle)
+            let previousIncreaseSpeedDefault = ControllerMacroBinding(first: .l3, second: .dpadRight)
+            let previousDecreaseSpeedDefault = ControllerMacroBinding(first: .l3, second: .dpadLeft)
+            let previousEnableFastForwardDefault = ControllerMacroBinding(first: .l3, second: .dpadUp)
+            let previousDisableFastForwardDefault = ControllerMacroBinding(first: .l3, second: .dpadDown)
+
+            let resolvedSaveStateMacro = loadedSaveStateMacro == previousSaveStateDefault
+                ? ControllerMacroAction.saveGameState.defaultBinding : loadedSaveStateMacro
+            let resolvedLoadStateMacro = loadedLoadStateMacro == previousLoadStateDefault
+                ? ControllerMacroAction.loadGameState.defaultBinding : loadedLoadStateMacro
+            let resolvedIncreaseSpeedMacro = loadedIncreaseSpeedMacro == previousIncreaseSpeedDefault
+                ? ControllerMacroAction.increaseSpeed.defaultBinding : loadedIncreaseSpeedMacro
+            let resolvedDecreaseSpeedMacro = loadedDecreaseSpeedMacro == previousDecreaseSpeedDefault
+                ? ControllerMacroAction.decreaseSpeed.defaultBinding : loadedDecreaseSpeedMacro
+            let resolvedEnableFastForwardMacro = loadedEnableFastForwardMacro == previousEnableFastForwardDefault
+                ? ControllerMacroAction.enableFastForward.defaultBinding : loadedEnableFastForwardMacro
+            let resolvedDisableFastForwardMacro = loadedDisableFastForwardMacro == previousDisableFastForwardDefault
+                ? ControllerMacroAction.disableFastForward.defaultBinding : loadedDisableFastForwardMacro
+
+            controllerMacroSaveGameState = resolvedSaveStateMacro
+            controllerMacroLoadGameState = resolvedLoadStateMacro
+            controllerMacroIncreaseSpeed = resolvedIncreaseSpeedMacro
+            controllerMacroDecreaseSpeed = resolvedDecreaseSpeedMacro
+            controllerMacroEnableFastForward = resolvedEnableFastForwardMacro
+            controllerMacroDisableFastForward = resolvedDisableFastForwardMacro
+
+            _controllerMacroSaveGameStateConfig.write(resolvedSaveStateMacro)
+            _controllerMacroLoadGameStateConfig.write(resolvedLoadStateMacro)
+            _controllerMacroIncreaseSpeedConfig.write(resolvedIncreaseSpeedMacro)
+            _controllerMacroDecreaseSpeedConfig.write(resolvedDecreaseSpeedMacro)
+            _controllerMacroEnableFastForwardConfig.write(resolvedEnableFastForwardMacro)
+            _controllerMacroDisableFastForwardConfig.write(resolvedDisableFastForwardMacro)
+            _controllerMacroStartDefaultsMigration.write(true)
+        } else {
+            controllerMacroSaveGameState = loadedSaveStateMacro
+            controllerMacroLoadGameState = loadedLoadStateMacro
+            controllerMacroIncreaseSpeed = loadedIncreaseSpeedMacro
+            controllerMacroDecreaseSpeed = loadedDecreaseSpeedMacro
+            controllerMacroEnableFastForward = loadedEnableFastForwardMacro
+            controllerMacroDisableFastForward = loadedDisableFastForwardMacro
+        }
         autoOpenStikDebug = _autoOpenStikDebugConfig.load()
         // Not load(): older builds wrote names this enum no longer spells that way.
         jitScriptProtocol = Self.loadedJITScriptProtocol()
@@ -1866,16 +2301,228 @@ final class SettingsStore {
         dynamicBackgroundsEnabled = UserDefaults.standard.object(
             forKey: "ARMSX2iOSDynamicBackgroundsEnabled"
         ) as? Bool ?? true
-        dynamicAppearancePreferences = DynamicAppearancePreferences.load() ?? .standard
+        var loadedDynamicAppearance =
+            DynamicAppearancePreferences.load() ?? .standard
+        let storedThemePreset = ControllerUIThemePreset(
+            rawValue: UserDefaults.standard.string(
+                forKey: "ARMSX2iOSControllerUIThemePreset"
+            ) ?? ""
+        )
+        if storedThemePreset == .defaultTheme,
+           loadedDynamicAppearance.particleSettings.armsx2LogoEnabled == nil {
+            // The logo option was added after existing Default-theme payloads
+            // had already been persisted. Upgrade only the missing value;
+            // an explicit user-off selection remains respected.
+            loadedDynamicAppearance.particleSettings.armsx2LogoEnabled = true
+            loadedDynamicAppearance.save()
+        }
+        dynamicAppearancePreferences = loadedDynamicAppearance
+        clearLiquidGlassUISubSettings = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSClearLiquidGlassUISubSettings"
+        ) as? Bool ?? true
         clearLiquidGlassUI = UserDefaults.standard.object(
             forKey: "ARMSX2iOSClearLiquidGlassUI"
         ) as? Bool ?? true
         clearLiquidGlassUIQuickMenu = UserDefaults.standard.object(
             forKey: "ARMSX2iOSClearLiquidGlassUIQuickMenu"
         ) as? Bool ?? false
+        let perGameRegularGlassMigrationKey =
+            "ARMSX2iOSPerGameSettingsRegularGlassMigrationV1"
+        if !UserDefaults.standard.bool(forKey: perGameRegularGlassMigrationKey) {
+            // Restore the earlier regular (non-clear) Liquid Glass presentation
+            // once for existing installs as well as new ones. Users can still
+            // opt into Clear independently afterward.
+            clearLiquidGlassUIPerGameSettingsLibrary = false
+            clearLiquidGlassUIPerGameSettingsEmulation = false
+            UserDefaults.standard.set(true, forKey: perGameRegularGlassMigrationKey)
+        } else {
+            clearLiquidGlassUIPerGameSettingsLibrary = UserDefaults.standard.object(
+                forKey: "ARMSX2iOSClearLiquidGlassUIPerGameSettingsLibrary"
+            ) as? Bool ?? false
+            clearLiquidGlassUIPerGameSettingsEmulation = UserDefaults.standard.object(
+                forKey: "ARMSX2iOSClearLiquidGlassUIPerGameSettingsEmulation"
+            ) as? Bool ?? false
+        }
+        temporalSaveStateToLivePreviewChanges = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSTemporalSaveStateToLivePreviewChanges"
+        ) as? Bool ?? true
+        perGameLivePreviewDuration = min(
+            max(
+                UserDefaults.standard.object(
+                    forKey: "ARMSX2iOSPerGameLivePreviewDuration"
+                ) as? Double ?? 2,
+                Self.perGameLivePreviewDurationRange.lowerBound
+            ),
+            Self.perGameLivePreviewDurationRange.upperBound
+        )
+        perGameBeforeChangesPreviewDuration = min(
+            max(
+                UserDefaults.standard.double(
+                    forKey: "ARMSX2iOSPerGameBeforeChangesPreviewDuration"
+                ),
+                Self.perGameBeforeChangesPreviewDurationRange.lowerBound
+            ),
+            Self.perGameBeforeChangesPreviewDurationRange.upperBound
+        )
+        perGameLivePreviewStopsWithCircle = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSPerGameLivePreviewStopsWithCircle"
+        ) as? Bool ?? true
         gameCardZoomAnimationEnabled = UserDefaults.standard.object(
             forKey: "ARMSX2iOSGameCardZoomAnimationEnabled"
         ) as? Bool ?? true
+        favoriteGlowingEffectEnabled = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSFavoriteGlowingEffectEnabled"
+        ) as? Bool ?? false
+        hideGameplayStatusBar = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSHideGameplayStatusBar"
+        ) as? Bool ?? true
+        hideIntroStatusBar = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSHideIntroStatusBar"
+        ) as? Bool ?? true
+        hideMenuStatusBar = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSHideMenuStatusBar"
+        ) as? Bool ?? true
+        focusOrbsEnabled = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSFocusOrbsEnabled"
+        ) as? Bool ?? false
+        let storedControllerUIThemePreset = ControllerUIThemePreset(
+            rawValue: UserDefaults.standard.string(
+                forKey: "ARMSX2iOSControllerUIThemePreset"
+            ) ?? ""
+        ) ?? .defaultTheme
+        controllerUIThemePreset = storedControllerUIThemePreset
+        controllerNavigationDepthEffectEnabled = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSControllerNavigationDepthEffectEnabled"
+        ) as? Bool ?? true
+        controllerFocusBoxStyle = ControllerFocusBoxStyle(
+            rawValue: UserDefaults.standard.string(
+                forKey: "ARMSX2iOSControllerFocusBoxStyle"
+            ) ?? ""
+        ) ?? .neonBlue
+        controllerNavigationFocusAnimation = ControllerNavigationFocusTravelStyle(
+            rawValue: UserDefaults.standard.string(
+                forKey: "ARMSX2iOSControllerNavigationFocusAnimation"
+            ) ?? ""
+        ) ?? .easeInOut
+        controllerFocusBoxPalette = ThemePalette(
+            rawValue: UserDefaults.standard.string(
+                forKey: "ARMSX2iOSControllerFocusBoxPalette"
+            ) ?? ""
+        ) ?? .multicolor
+        controllerFocusBoxCustomColor = Self.loadSavedPaletteColor(
+            forKey: "ARMSX2iOSControllerFocusBoxCustomColor"
+        )
+        controllerOrbPalette = ThemePalette(
+            rawValue: UserDefaults.standard.string(
+                forKey: "ARMSX2iOSControllerOrbPalette"
+            ) ?? ""
+        ) ?? .blue
+        controllerNavigationAccentPalette = ThemePalette(
+            rawValue: UserDefaults.standard.string(
+                forKey: "ARMSX2iOSControllerNavigationAccentPalette"
+            ) ?? ""
+        ) ?? .henyBlue
+        controllerNavigationCustomAccentColor = Self.loadSavedPaletteColor(
+            forKey: "ARMSX2iOSControllerNavigationCustomAccentColor"
+        )
+        controllerTextPalette = UserDefaults.standard.string(
+            forKey: "ARMSX2iOSControllerTextPalette"
+        ).flatMap(ThemePalette.init(rawValue:))
+        controllerTextCustomColor = Self.loadSavedPaletteColor(
+            forKey: "ARMSX2iOSControllerTextCustomColor"
+        )
+        controllerSecondaryTextPalette = UserDefaults.standard.string(
+            forKey: "ARMSX2iOSControllerSecondaryTextPalette"
+        ).flatMap(ThemePalette.init(rawValue:))
+        controllerCriticalTextPalette = ThemePalette(
+            rawValue: UserDefaults.standard.string(
+                forKey: "ARMSX2iOSControllerCriticalTextPalette"
+            ) ?? ""
+        ) ?? .crimson
+        controllerTabTitlePalette = UserDefaults.standard.string(
+            forKey: "ARMSX2iOSControllerTabTitlePalette"
+        ).flatMap(ThemePalette.init(rawValue:))
+        controllerTabSubtitlePalette = UserDefaults.standard.string(
+            forKey: "ARMSX2iOSControllerTabSubtitlePalette"
+        ).flatMap(ThemePalette.init(rawValue:))
+        controllerBottomTabBarPalette = UserDefaults.standard.string(
+            forKey: "ARMSX2iOSControllerBottomTabBarPalette"
+        ).flatMap(ThemePalette.init(rawValue:))
+        controllerBottomTabBarUnselectedPalette = UserDefaults.standard.string(
+            forKey: "ARMSX2iOSControllerBottomTabBarUnselectedPalette"
+        ).flatMap(ThemePalette.init(rawValue:))
+        controllerCardTitlePalette = UserDefaults.standard.string(
+            forKey: "ARMSX2iOSControllerCardTitlePalette"
+        ).flatMap(ThemePalette.init(rawValue:))
+        controllerContextMenuPalette = UserDefaults.standard.string(
+            forKey: "ARMSX2iOSControllerContextMenuPalette"
+        ).flatMap(ThemePalette.init(rawValue:))
+        controllerImportActionPalette = UserDefaults.standard.string(
+            forKey: "ARMSX2iOSControllerImportActionPalette"
+        ).flatMap(ThemePalette.init(rawValue:))
+        controllerToolbarPalette = UserDefaults.standard.string(
+            forKey: "ARMSX2iOSControllerToolbarPalette"
+        ).flatMap(ThemePalette.init(rawValue:))
+        controllerFocusedTextPalette = ThemePalette(
+            rawValue: UserDefaults.standard.string(
+                forKey: "ARMSX2iOSControllerFocusedTextPalette"
+            ) ?? ""
+        ) ?? .blue
+        controllerFocusedTextCustomColor = Self.loadSavedPaletteColor(
+            forKey: "ARMSX2iOSControllerFocusedTextCustomColor"
+        )
+        controllerTextShadowStrength = min(
+            max(
+                UserDefaults.standard.object(
+                    forKey: "ARMSX2iOSControllerTextShadowStrength"
+                ) as? Double ?? 0,
+                0
+            ),
+            1
+        )
+        controllerTextShadowPalette = ThemePalette(
+            rawValue: UserDefaults.standard.string(
+                forKey: "ARMSX2iOSControllerTextShadowPalette"
+            ) ?? ""
+        ) ?? .obsidian
+        controllerTextShadowCustomColor = Self.loadSavedPaletteColor(
+            forKey: "ARMSX2iOSControllerTextShadowCustomColor"
+        )
+        controllerFocusedTextShadowStrength = min(
+            max(
+                UserDefaults.standard.object(
+                    forKey: "ARMSX2iOSControllerFocusedTextShadowStrength"
+                ) as? Double ?? 0.1,
+                0
+            ),
+            1
+        )
+        controllerFocusedTextShadowPalette = ThemePalette(
+            rawValue: UserDefaults.standard.string(
+                forKey: "ARMSX2iOSControllerFocusedTextShadowPalette"
+            ) ?? ""
+        ) ?? .obsidian
+        controllerFocusedTextShadowCustomColor = Self.loadSavedPaletteColor(
+            forKey: "ARMSX2iOSControllerFocusedTextShadowCustomColor"
+        )
+        controllerFocusBoxAnimationSpeed = min(
+            max(
+                UserDefaults.standard.object(
+                    forKey: "ARMSX2iOSControllerFocusBoxAnimationSpeed"
+                ) as? Double ?? 1,
+                0.25
+            ),
+            2
+        )
+        controllerFocusBoxGlowIntensity = min(
+            max(
+                UserDefaults.standard.object(
+                    forKey: "ARMSX2iOSControllerFocusBoxGlowIntensity"
+                ) as? Double ?? 1,
+                0
+            ),
+            2
+        )
         backgroundPrimaryAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundPrimaryAsset")
         backgroundLandscapeAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundLandscapeAsset")
         backgroundFitMode = BackgroundFitMode(rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSBackgroundFitMode") ?? "") ?? .fill
@@ -1903,528 +2550,5 @@ final class SettingsStore {
         }
     }
 
-    static func frameLimiterEnabled(fromNominalScalar scalar: Float) -> Bool {
-        !scalar.isFinite || scalar < 5.0
-    }
 
-    private static func sanitizedNominalScalar(_ scalar: Float) -> Float {
-        guard scalar.isFinite else { return 1.0 }
-        return min(max(scalar, 0.05), 10.0)
-    }
-
-    private static func clampedTargetFPS(_ fps: Float) -> Float {
-        guard fps.isFinite else { return defaultTargetFPS }
-        let millisecondPrecision = (fps * 1_000.0).rounded() / 1_000.0
-        return min(max(millisecondPrecision, minTargetFPS), maxTargetFPS)
-    }
-
-    private static func clampedSpeedScalar(_ scalar: Float) -> Float {
-        guard scalar.isFinite else { return defaultFastForwardScalar }
-        let stepped = (scalar * 4.0).rounded() / 4.0
-        return min(max(stepped, minFastForwardScalar), maxFastForwardScalar)
-    }
-
-    // clampedEmulatorVolumePercent — see SettingsStore+Audio.swift.
-
-    private static func clampedAnalogStickScale(_ scale: Float) -> Float {
-        guard scale.isFinite else { return 1.0 }
-        return min(max(scale, 0.8), 1.6)
-    }
-
-    private static func clampedBackgroundDim(_ value: Double) -> Double {
-        guard value.isFinite else { return 0.0 }
-        return min(max(value, 0.0), 1.0)
-    }
-
-    private static func loadBackgroundAsset(forKey key: String) -> BackgroundAsset? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(BackgroundAsset.self, from: data)
-    }
-
-    /// Removes background assets whose files no longer exist. Returns `true`
-    /// when at least one stale asset was cleared so callers can surface a notice.
-    @discardableResult
-    func sanitizeBackgroundAssets() -> Bool {
-        var removed = false
-        if let primary = backgroundPrimaryAsset, !BackgroundStorage.exists(primary) {
-            backgroundPrimaryAsset = nil
-            removed = true
-        }
-        if let landscape = backgroundLandscapeAsset, !BackgroundStorage.exists(landscape) {
-            backgroundLandscapeAsset = nil
-            removed = true
-        }
-        return removed
-    }
-
-    private static func clampedTextureOffset(_ offset: Int) -> Int {
-        min(max(offset, textureOffsetRange.lowerBound), textureOffsetRange.upperBound)
-    }
-
-    private static func clampedSkipDraw(_ value: Int) -> Int {
-        min(max(value, skipDrawRange.lowerBound), skipDrawRange.upperBound)
-    }
-
-    static func normalizedSkipDrawEnd(start: Int, end: Int) -> Int {
-        let clampedStart = clampedSkipDraw(start)
-        let clampedEnd = clampedSkipDraw(end)
-        return clampedStart > 0 && clampedEnd < clampedStart ? clampedStart : clampedEnd
-    }
-
-    // MARK: - CPU rounding/clamp writers
-
-    /// Write the EE clamp level to the three FPU recompiler keys.
-    static func applyEEClampMode(_ mode: Int) {
-        ARMSX2Bridge.setINIBool("EmuCore/CPU/Recompiler", key: "fpuOverflow", value: mode >= 1)
-        ARMSX2Bridge.setINIBool("EmuCore/CPU/Recompiler", key: "fpuExtraOverflow", value: mode >= 2)
-        ARMSX2Bridge.setINIBool("EmuCore/CPU/Recompiler", key: "fpuFullMode", value: mode >= 3)
-    }
-
-    /// Write the VU clamp level to both VU0 and VU1 recompiler keys (six booleans total).
-    static func applyVUClampMode(_ mode: Int) {
-        for prefix in ["vu0", "vu1"] {
-            ARMSX2Bridge.setINIBool("EmuCore/CPU/Recompiler", key: "\(prefix)Overflow", value: mode >= 1)
-            ARMSX2Bridge.setINIBool("EmuCore/CPU/Recompiler", key: "\(prefix)ExtraOverflow", value: mode >= 2)
-            ARMSX2Bridge.setINIBool("EmuCore/CPU/Recompiler", key: "\(prefix)SignOverflow", value: mode >= 3)
-        }
-    }
-
-    static func targetFPS(fromNominalScalar scalar: Float, baseFramerate: Float) -> Float {
-        guard frameLimiterEnabled(fromNominalScalar: scalar) else { return defaultTargetFPS }
-        return clampedTargetFPS(sanitizedNominalScalar(scalar) * max(baseFramerate, 1.0))
-    }
-
-    static func normalSpeedScalar(frameLimiterEnabled: Bool) -> Float {
-        frameLimiterEnabled ? 1.0 : 10.0
-    }
-
-    private static func loadedTargetFPS(fromNominalScalar scalar: Float, baseFramerate: Float) -> Float {
-        let normalizedScalar = sanitizedNominalScalar(scalar)
-        let derivedTarget = abs(normalizedScalar - 1.0) < 0.002
-            ? defaultTargetFPS
-            : targetFPS(fromNominalScalar: scalar, baseFramerate: baseFramerate)
-        let rawStoredTarget = ARMSX2Bridge.getINIFloat(
-            "ARMSX2iOS/FramePacing", key: "TargetFPS", defaultValue: -1.0)
-        let hasStoredTarget = rawStoredTarget.isFinite && rawStoredTarget >= minTargetFPS
-        let target = hasStoredTarget ? clampedTargetFPS(rawStoredTarget) : derivedTarget
-
-        // Older iOS builds encoded the presentation cadence in NominalScalar,
-        // slowing CPU and audio timing together with video. Move that cadence
-        // to its dedicated key and restore normal emulation speed.
-        if frameLimiterEnabled(fromNominalScalar: scalar) && abs(normalizedScalar - 1.0) >= 0.002 {
-            NSLog("[ARMSX2 iOS Settings] Migrating global presentation cap %.3f FPS; restoring NominalScalar=1.0", target)
-            ARMSX2Bridge.setINIFloat("ARMSX2iOS/FramePacing", key: "TargetFPS", value: target)
-            ARMSX2Bridge.setINIFloat("Framerate", key: "NominalScalar", value: 1.0)
-        }
-
-        return target
-    }
-
-    private static func sanitizeNominalScalarIfNeeded(_ scalar: Float) {
-        let sanitized = sanitizedNominalScalar(scalar)
-        guard abs(scalar - sanitized) > 0.001 else { return }
-
-        NSLog("[ARMSX2 iOS Settings] Clamping unsupported NominalScalar %.3f -> %.3f", scalar, sanitized)
-        ARMSX2Bridge.setINIFloat("Framerate", key: "NominalScalar", value: sanitized)
-    }
-
-    // excludeHddImageFromBackup / normalizeDEV9Settings — see SettingsStore+DEV9.swift.
-
-    private static func normalizedOsdPerformancePosition(_ value: Int) -> Int {
-        switch value {
-        case 0, 1, 3:
-            return value
-        case 2:
-            return defaultOsdPerformancePosition
-        default:
-            return defaultOsdPerformancePosition
-        }
-    }
-
-    private func applyFrameLimiterSettings() {
-        guard !suppressINIWrites else { return }
-        let scalar = Self.normalSpeedScalar(frameLimiterEnabled: frameLimiterEnabled)
-        NSLog("[ARMSX2 iOS Settings] Frame limiter %@ targetFPS=%.3f NominalScalar=%.3f",
-              frameLimiterEnabled ? "ON" : "OFF", targetFPS, scalar)
-        ARMSX2Bridge.setINIFloat("ARMSX2iOS/FramePacing", key: "TargetFPS", value: targetFPS)
-        ARMSX2Bridge.setINIFloat("Framerate", key: "NominalScalar", value: scalar)
-        ARMSX2Bridge.setPresentFPSCap(frameLimiterEnabled ? targetFPS : 0.0)
-    }
-
-    /// Frame targets control presentation cadence rather than VM speed. The
-    /// selected cadence is stored separately while NominalScalar remains 1.0.
-    static func nominalScalarForFrameLimiter(enabled: Bool) -> Float {
-        enabled ? 1.0 : 10.0
-    }
-
-    func setRuntimeFastForwardEnabled(_ enabled: Bool) {
-        fastForwardRuntimeEnabled = enabled
-        // Purely a limiter mode switch. Touching frameLimiterEnabled as well writes
-        // NominalScalar=10, which makes the OSD report the nominal scalar rather than
-        // the turbo target and churns the INI on every toggle.
-        if enabled {
-            NSLog("@@FF_UI@@ enabled=1 turbo=%.3f", fastForwardScalar)
-            ARMSX2Bridge.setLimiterMode(1)
-        } else {
-            NSLog("@@FF_UI@@ enabled=0 targetFPS=%.0f", targetFPS)
-            ARMSX2Bridge.setLimiterMode(0)
-        }
-    }
-
-    // supportedIOSRenderer — see SettingsStore+Graphics.swift.
-    // localized / localizedLayoutDirection — see SettingsStore+UI.swift.
-
-    /// Apply OSD preset — writes ALL OSD flags to INI + GSConfig
-    private func applyOsdPreset(_ preset: OsdPreset) {
-        guard preset != .custom else { return }
-        ARMSX2Bridge.applyOsdPreset(Int32(preset.rawValue))
-        if preset == .off {
-            osdPerformancePosition = 0
-        } else {
-            revealOsdPerformancePositionIfHidden()
-        }
-        let isSimple = preset == .simple
-        let isDetail = preset == .detail
-        let isFull = preset == .full
-        isProgrammaticOsdFlagChange = true
-        defer { isProgrammaticOsdFlagChange = false }
-        osdShowFPS = isSimple || isDetail || isFull
-        osdShowVPS = isDetail || isFull
-        osdShowSpeed = isSimple || isDetail || isFull
-        osdShowCPU = isSimple || isDetail || isFull
-        osdShowGPU = isDetail || isFull
-        osdShowResolution = isDetail || isFull
-        osdShowGSStats = isFull
-        osdShowIndicators = isDetail || isFull
-        osdShowSettings = isFull
-        osdShowInputs = isFull
-        osdShowFrameTimes = isFull
-        osdShowVersion = isSimple || isDetail || isFull
-        osdShowHardwareInfo = isFull
-        osdShowDeviceStats = isSimple || isDetail || isFull
-    }
-
-    /// If the perf overlay is at the hidden position (None/0), restore it to the default
-    /// so newly-enabled perf stats become visible. Shared by applyOsdPreset + restoreCustomOsd.
-    private func revealOsdPerformancePositionIfHidden() {
-        if osdPerformancePosition == 0 {
-            osdPerformancePosition = Self.defaultOsdPerformancePosition
-        }
-    }
-
-    private static let osdCustomFlagKeyPaths: [(ReferenceWritableKeyPath<SettingsStore, Bool>, String)] = [
-        (\.osdShowFPS, "OsdCustomShowFPS"),
-        (\.osdShowVPS, "OsdCustomShowVPS"),
-        (\.osdShowSpeed, "OsdCustomShowSpeed"),
-        (\.osdShowCPU, "OsdCustomShowCPU"),
-        (\.osdShowGPU, "OsdCustomShowGPU"),
-        (\.osdShowResolution, "OsdCustomShowResolution"),
-        (\.osdShowGSStats, "OsdCustomShowGSStats"),
-        (\.osdShowIndicators, "OsdCustomShowIndicators"),
-        (\.osdShowSettings, "OsdCustomShowSettings"),
-        (\.osdShowInputs, "OsdCustomShowInputs"),
-        (\.osdShowFrameTimes, "OsdCustomShowFrameTimes"),
-        (\.osdShowVersion, "OsdCustomShowVersion"),
-        (\.osdShowHardwareInfo, "OsdCustomShowHardwareInfo"),
-        (\.osdShowDeviceStats, "OsdCustomShowDeviceStats"),
-    ]
-
-    private func snapshotCustomOsd() {
-        for (keyPath, key) in Self.osdCustomFlagKeyPaths {
-            ARMSX2Bridge.setINIBool("ARMSX2iOS/UI", key: key, value: self[keyPath: keyPath])
-        }
-    }
-
-    private func restoreCustomOsd() {
-        revealOsdPerformancePositionIfHidden()
-        isProgrammaticOsdFlagChange = true
-        for (keyPath, key) in Self.osdCustomFlagKeyPaths {
-            self[keyPath: keyPath] = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: key, defaultValue: self[keyPath: keyPath])
-        }
-        isProgrammaticOsdFlagChange = false
-    }
-
-    private func markOsdCustom() {
-        guard !suppressINIWrites, !isProgrammaticOsdFlagChange else { return }
-        isAutoMarkingCustom = true
-        if osdPreset != .custom {
-            osdPreset = .custom
-        }
-        isAutoMarkingCustom = false
-        snapshotCustomOsd()
-    }
-
-    /// Apply a preset via the individual clamped setters. Never writes
-    /// Framerate/NominalScalar directly — frameLimiterEnabled + targetFPS go
-    /// through applyFrameLimiterSettings. Non-Framerate keys first so the
-    /// limiter flag is set before targetFPS fires applyFrameLimiterSettings.
-    func applyFramePacingPreset(_ preset: FramePacingPreset) {
-        guard preset != .custom else { return }
-        isProgrammaticFramePacingFlagChange = true
-        defer { isProgrammaticFramePacingFlagChange = false }
-        guard let values = Self.framePacingPresetTable[preset] else { return }
-        // Spelled out rather than looped, because the order above is the point.
-        vsyncQueueSize = values.vsyncQueueSize
-        audioOutputLatencyMs = values.audioOutputLatencyMs
-        audioBufferMs = values.audioBufferMs
-        syncToHostRefresh = values.syncToHostRefresh
-        frameLimiterEnabled = values.frameLimiterEnabled
-        targetFPS = Float(values.targetFPS)
-    }
-
-    /// Hook for restoring individual pacing values when cycling back to
-    /// .custom. Currently a no-op; kept so the preset didSet stays symmetric
-    /// with the OSD preset handling.
-    private func restoreCustomFramePacing() {
-    }
-
-    /// Mark the preset .custom when the user edits any individual pacing
-    /// control directly.
-    private func markFramePacingCustom() {
-        guard !suppressINIWrites, !isProgrammaticFramePacingFlagChange else { return }
-        isAutoMarkingFramePacingCustom = true
-        if framePacingPreset != .custom {
-            framePacingPreset = .custom
-        }
-        isAutoMarkingFramePacingCustom = false
-    }
-
-    /// Reset emulator settings to ARMSX2 iOS defaults
-    func resetEmulatorDefaults() {
-        eeCoreType = 2          // ARM64 JIT
-        // Core uses EnableEE (not CoreType) to select interpreter vs recompiler.
-        // Restore EnableEE=true so the core actually uses the recompiler again,
-        // undoing any prior applyFullInterpreterPreset() that forced the interpreter.
-        ARMSX2Bridge.setINIBool("EmuCore/CPU/Recompiler", key: "EnableEE", value: true)
-        iopRecompiler = true
-        vu0Recompiler = true
-        vu1Recompiler = true
-        fastBoot = false
-        fastmem = true
-        emulationOnlyModeEnabled = false
-        emulationOnlyDisablePatches = true
-        emulationOnlyDisablePINE = true
-        emulationOnlyDisableRetroAchievements = true
-        emulationOnlyDisableInputRecording = true
-        emulationOnlyDisableOSD = true
-        emulationOnlyDisableFramePacing = true
-        emulationOnlyDisableVirtualControls = true
-        emulationOnlyDisableQuickMenu = true
-        emulationOnlyClearNetworkCache = true
-        emulationOnlyModeDelaySeconds = Self.defaultEmulationOnlyModeDelaySeconds
-        eeFpuRoundMode = 3      // Chop (Zero)
-        vu0RoundMode = 3
-        vu1RoundMode = 3
-        eeClampMode = 1         // Normal
-        vuClampMode = 1
-        targetFPS = Self.defaultTargetFPS
-        frameLimiterEnabled = true
-        fastForwardRuntimeEnabled = false
-        fastForwardScalar = Self.defaultFastForwardScalar
-        emulatorVolumePercent = Self.defaultEmulatorVolumePercent
-        audioTimeStretch = true
-        audioFastForwardVolume = 100
-        audioSwapChannels = false
-        ntscFramerate = 59.94
-        palFramerate = 50.0
-        fastCDVD = false
-        eeCycleRate = 0
-        vu1Instant = true
-        mtvu = true
-        waitLoop = true
-        intcStat = true
-        eeCycleSkip = 0
-        vuFlagHack = true
-        enableCheats = false
-        enablePatches = true
-        enableGameFixes = true
-        enableGameDBHardwareFixes = true
-        enableWidescreenPatches = false
-        enableNoInterlacingPatches = false
-        hostFilesystem = false
-        for option in Self.gameFixOptions {
-            gameFixes[option.key] = false
-            ARMSX2Bridge.setINIBool("EmuCore/Gamefixes", key: option.key, value: false)
-        }
-        jitScriptProtocol = JITScriptProtocol.defaultValue
-    }
-
-    /// Keep EE/IOP/VU0 fast while isolating suspected VU1 JIT regressions.
-    func applyVU1CompatibilityPreset() {
-        eeCoreType = 2
-        // Core uses EnableEE (not CoreType) to select interpreter vs recompiler.
-        // Restore EnableEE=true so the core actually uses the EE recompiler again,
-        // undoing any prior applyFullInterpreterPreset() that forced the interpreter.
-        ARMSX2Bridge.setINIBool("EmuCore/CPU/Recompiler", key: "EnableEE", value: true)
-        iopRecompiler = true
-        vu0Recompiler = true
-        vu1Recompiler = false
-        vu1Instant = false
-        mtvu = false
-        fastmem = false
-    }
-
-    /// Slow diagnostic preset for crash isolation when dynarec state is suspect.
-    func applyFullInterpreterPreset() {
-        eeCoreType = 1
-        // Core uses EnableEE (not CoreType) to select interpreter vs recompiler.
-        // Must write EnableEE=false to actually force the EE interpreter.
-        ARMSX2Bridge.setINIBool("EmuCore/CPU/Recompiler", key: "EnableEE", value: false)
-        iopRecompiler = false
-        vu0Recompiler = false
-        vu1Recompiler = false
-        vu1Instant = false
-        mtvu = false
-        fastmem = false
-    }
-
-    /// Reset graphics settings to ARMSX2 iOS defaults
-    func resetGraphicsDefaults() {
-        // Hand the hacks back to the game database, otherwise a reset leaves whatever was
-        // claimed still overriding it.
-        ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHackOverrides", value: 0)
-        renderer = 17           // Metal
-        upscaleMultiplier = 1.0 // Native PS2
-        textureFiltering = 2    // Bilinear (PS2)
-        backThreadMode = 0            // Disabled
-        hardwareMipmapping = true
-        fxaa = false
-        casMode = 0             // Disabled
-        casSharpness = 50
-        shaderChainEnabled = false
-        shaderChainPresetRef = ""
-        interlaceMode = 0       // GSInterlaceMode::Automatic
-        aspectRatio = 1         // Auto 4:3/3:2
-        blendingAccuracy = 1    // Basic
-        dithering = 2           // Scaled
-        trilinearFiltering = -1 // Automatic
-        halfPixelOffset = 0
-        roundSprite = 0
-        alignSprite = false
-        mergeSprite = false
-        wildArmsOffset = false
-        textureOffsetX = 0
-        textureOffsetY = 0
-        skipDrawStart = 0
-        skipDrawEnd = 0
-        // GS hardware fixes
-        hwAccurateAlphaTest = false
-        textureInsideRt = 0
-        limit24BitDepth = 0
-        nativeScaling = 0
-        cpuClutRender = 0
-        cpuSpriteRenderBw = 0
-        cpuSpriteRenderLevel = 0
-        gpuTargetClut = 0
-        bilinearUpscaleHack = 0
-        maxAnisotropy = 0
-        hardwareDownloadMode = 0
-        tvShader = 0
-        upscaler = 0
-        // Defaults hand the hacks back to the game database, so the claim goes with them.
-        for option in Self.gsBoolHackOptions {
-            setGSBoolHack(option.key, false)
-            setGraphicsHackPinned(option.key, false)
-        }
-        // Screen / PCRTC and Shade Boost
-        pcrtcOffsets = false
-        pcrtcOverscan = false
-        pcrtcAntiBlur = true
-        disableInterlaceOffset = false
-        skipDuplicateFrames = true
-        integerScaling = false
-        shadeBoost = false
-        shadeBoostBrightness = 50
-        shadeBoostContrast = 50
-        shadeBoostSaturation = 50
-        shadeBoostGamma = 50
-        // Texture pack and dump toggles are intentionally preserved.
-    }
-
-    /// Restores application configuration without deleting imported content,
-    /// user-created presets, memory cards, skins, or account credentials.
-    func resetAllDefaults() {
-        resetEmulatorDefaults()
-        resetGraphicsDefaults()
-
-        // Texture replacement settings are intentionally preserved by the
-        // graphics-only reset, but a full reset returns them to fresh-install values.
-        loadTextureReplacements = false
-        loadTextureReplacementsAsync = true
-        precacheTextureReplacements = false
-        texturePreloading = 2
-        dumpReplaceableTextures = false
-        dumpReplaceableMipmaps = false
-        dumpTexturesWithFMVActive = false
-        dumpDirectTextures = true
-        dumpPaletteTextures = true
-
-        // The graphics and emulator resets no longer touch the pacing keys, so this is the only
-        // thing restoring them. Apply the values first, the way the Frame Pacing screen's own
-        // reset does, rather than leaning on the preset's didSet to do it.
-        applyFramePacingPreset(.optimal)
-        framePacingPreset = .optimal
-        adaptiveResolutionEnabled = false
-
-        osdPreset = .off
-        lastActiveOsdPreset = .simple
-        osdPerformancePosition = Self.defaultOsdPerformancePosition
-        osdShowMessages = true
-        osdShowTextureReplacements = false
-        snapshotCustomOsd()
-
-        padOpacity = 0.6
-        phoneRumbleStrength = 0.25
-        increaseRumbleDurationAndInterpolation = true
-        hapticFeedback = true
-        dpadDiagonalsEnabled = true
-        faceComboZonesEnabled = true
-        autoHideVirtualPadWhenControllerConnected = true
-        autoFullscreen = true
-        hideMenuButton = false
-        analogStickScale = 1.0
-        invertLeftStickX = false
-        invertLeftStickY = false
-        invertRightStickX = false
-        invertRightStickY = false
-        appLanguage = .system
-        controllerMultitapMode = 0
-        autoOpenStikDebug = false
-        jitScriptProtocol = JITScriptProtocol.defaultValue
-
-        dev9HddEnabled = false
-        dev9HddFile = "DEV9hdd.raw"
-        dev9EthernetEnabled = false
-        dev9EthDevice = "Auto"
-        dev9InterceptDHCP = false
-        dev9EthLogDHCP = false
-        dev9EthLogDNS = false
-        dev9DNS1Mode = "Auto"
-        dev9DNS1 = "0.0.0.0"
-        dev9DNS2Mode = "Auto"
-        dev9DNS2 = "0.0.0.0"
-
-        dynamicBackgroundsEnabled = true
-        dynamicAppearancePreferences = .standard
-        clearLiquidGlassUI = true
-        clearLiquidGlassUIQuickMenu = false
-        gameCardZoomAnimationEnabled = true
-        backgroundPrimaryAsset = nil
-        backgroundLandscapeAsset = nil
-        backgroundFitMode = .fill
-        backgroundLandscapeFitMode = .fill
-        backgroundVideoMuted = true
-        backgroundDim = 0.0
-        backgroundEnabledInBIOS = true
-        backgroundEnabledInHelp = true
-        backgroundEnabledInSettings = true
-
-        DynamicThumbstickSettings.shared.restoreDefaults()
-        let padLayout = PadLayoutStore.shared
-        padLayout.resetAll()
-        padLayout.resetControlVisibility()
-        padLayout.save()
-        ARMSX2Bridge.resetButtonMappings()
-        ARMSX2Bridge.flushINISettings()
-    }
 }
