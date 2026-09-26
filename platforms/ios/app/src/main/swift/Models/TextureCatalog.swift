@@ -20,9 +20,9 @@ struct TextureCatalogPack: Identifiable, Equatable, Sendable {
 }
 
 enum TextureCatalog {
-    // Tried in order: the project's B2 bucket of ASTC packs, then mirrors of sashkinbro's catalogue.
+    // Tried in order: bmdhacks' ASTC catalogue, then mirrors of sashkinbro's.
     static let sources = [
-        "https://f005.backblazeb2.com/file/armsx2-textures/textures.json",
+        "https://dl.ps2ktxpak.net/textures.json",
         "https://raw.githubusercontent.com/sashkinbro/EmuCoreX-Textures/main/textures.json",
         "https://github.com/sashkinbro/EmuCoreX-Textures/raw/main/textures.json",
         "https://cdn.jsdelivr.net/gh/sashkinbro/EmuCoreX-Textures@main/textures.json",
