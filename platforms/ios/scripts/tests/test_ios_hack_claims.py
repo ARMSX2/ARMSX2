@@ -1,12 +1,11 @@
 import re
 import unittest
 
-from ios_source import CPP, ROOT, SWIFT, block
+from ios_source import CPP, ROOT, SWIFT, block, store_text
 
 
 BRIDGE = CPP / "ARMSX2Bridge.mm"
 GRAPHICS_VIEW = SWIFT / "Views/Settings/GraphicsSettingsView.swift"
-STORE = SWIFT / "Models/SettingsStore.swift"
 STORE_GRAPHICS = SWIFT / "Models/SettingsStore+Graphics.swift"
 OVERRIDES = ROOT / "pcsx2/PerGameOverrides.cpp"
 
@@ -18,7 +17,7 @@ class HackClaimPlumbing(unittest.TestCase):
     def setUp(self):
         self.bridge = BRIDGE.read_text()
         self.view = GRAPHICS_VIEW.read_text()
-        self.store = STORE.read_text()
+        self.store = store_text()
         self.store_graphics = STORE_GRAPHICS.read_text()
         self.overrides = OVERRIDES.read_text()
 

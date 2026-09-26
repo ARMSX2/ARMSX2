@@ -1,13 +1,13 @@
 import unittest
 
-from ios_source import SWIFT, block, without_comments
+from ios_source import SWIFT, at, block, without_comments
 
 
 QUICK_MENU = SWIFT / "Views/QuickMenuView.swift"
 GAME_SCREEN = SWIFT / "Views/GameScreenView.swift"
+WORKSPACE = SWIFT / "Views/Settings/ShaderWorkspaceView.swift"
 
 SECTION = "ShaderChainSection("
-PANEL = "ShaderControlPanel"
 ROUTER = "openPauseMenuChild"
 APPLY = "applyGraphicsSettingsNow"
 BRIDGE = "ARMSX2Bridge"
@@ -25,21 +25,18 @@ class QuickMenuShaderRoutePolicy(unittest.TestCase):
             "QuickMenuView builds ShaderChainSection, which needs a Form and a NavigationStack "
             "the pause card does not have")
 
-    def test_the_hosted_panel_gives_the_section_a_stack_and_a_form(self):
-        panel = block(self.game_screen, f"private struct {PANEL}: View")
-
-        for token in ("NavigationStack {", "Form {", SECTION):
-            with self.subTest(token=token):
-                self.assertIn(
-                    token, panel,
-                    f"{PANEL} does not contain {token!r}, which ShaderChainSection needs")
-
-        self.assertLess(
-            panel.index("NavigationStack {"), panel.index("Form {"),
-            f"{PANEL} opens its Form outside the NavigationStack")
-        self.assertLess(
-            panel.index("Form {"), panel.index(SECTION),
-            f"{PANEL} mounts ShaderChainSection outside its Form")
+    def test_the_hosted_workspace_mounts_the_section_in_a_form(self):
+        """In game, .shaders opens the per-game panel on its shader workspace. The section
+        pushes nothing (test_ios_shader_catalog), so a Form is all it needs."""
+        self.assertIn("initiallySelectsShaders:", self.game_screen,
+                      "the in-game shader route no longer opens the shader workspace")
+        workspace = block(without_comments(WORKSPACE.read_text(encoding="utf-8")),
+                          "private var managementContent")
+        form = at(workspace, "Form {", "the workspace Form")
+        for mount in ("PerGameShaderSection(", SECTION):
+            with self.subTest(mount=mount):
+                self.assertLess(form, at(workspace, mount, mount),
+                                f"the workspace mounts {mount} outside its Form")
 
     def test_the_route_table_stays_exhaustive(self):
         router = block(self.game_screen, f"private func {ROUTER}(")

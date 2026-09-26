@@ -2218,67 +2218,33 @@ final class SettingsStore {
         invertRightStickY = _invertRightStickYConfig.load()
         appLanguage = _appLanguageConfig.load()
         controllerMultitapMode = _controllerMultitapModeConfig.load()
-        let loadedQuickMenuMacro = _controllerMacroQuickMenuConfig.load()
         if !_controllerMacroQuickMenuSelectPauseMigration.load() {
-            let previousDefault = ControllerMacroBinding(first: .l3, second: .r3)
-            let resolvedQuickMenuMacro = loadedQuickMenuMacro == previousDefault
-                ? ControllerMacroAction.quickMenu.defaultBinding
-                : loadedQuickMenuMacro
-            controllerMacroQuickMenu = resolvedQuickMenuMacro
-            _controllerMacroQuickMenuConfig.write(resolvedQuickMenuMacro)
+            if _controllerMacroQuickMenuConfig.load() == ControllerMacroBinding(first: .l3, second: .r3) {
+                _controllerMacroQuickMenuConfig.write(ControllerMacroAction.quickMenu.defaultBinding)
+            }
             _controllerMacroQuickMenuSelectPauseMigration.write(true)
-        } else {
-            controllerMacroQuickMenu = loadedQuickMenuMacro
         }
-        let loadedSaveStateMacro = _controllerMacroSaveGameStateConfig.load()
-        let loadedLoadStateMacro = _controllerMacroLoadGameStateConfig.load()
-        let loadedIncreaseSpeedMacro = _controllerMacroIncreaseSpeedConfig.load()
-        let loadedDecreaseSpeedMacro = _controllerMacroDecreaseSpeedConfig.load()
-        let loadedEnableFastForwardMacro = _controllerMacroEnableFastForwardConfig.load()
-        let loadedDisableFastForwardMacro = _controllerMacroDisableFastForwardConfig.load()
         if !_controllerMacroStartDefaultsMigration.load() {
-            let previousSaveStateDefault = ControllerMacroBinding(first: .r3, second: .circle)
-            let previousLoadStateDefault = ControllerMacroBinding(first: .r3, second: .triangle)
-            let previousIncreaseSpeedDefault = ControllerMacroBinding(first: .l3, second: .dpadRight)
-            let previousDecreaseSpeedDefault = ControllerMacroBinding(first: .l3, second: .dpadLeft)
-            let previousEnableFastForwardDefault = ControllerMacroBinding(first: .l3, second: .dpadUp)
-            let previousDisableFastForwardDefault = ControllerMacroBinding(first: .l3, second: .dpadDown)
-
-            let resolvedSaveStateMacro = loadedSaveStateMacro == previousSaveStateDefault
-                ? ControllerMacroAction.saveGameState.defaultBinding : loadedSaveStateMacro
-            let resolvedLoadStateMacro = loadedLoadStateMacro == previousLoadStateDefault
-                ? ControllerMacroAction.loadGameState.defaultBinding : loadedLoadStateMacro
-            let resolvedIncreaseSpeedMacro = loadedIncreaseSpeedMacro == previousIncreaseSpeedDefault
-                ? ControllerMacroAction.increaseSpeed.defaultBinding : loadedIncreaseSpeedMacro
-            let resolvedDecreaseSpeedMacro = loadedDecreaseSpeedMacro == previousDecreaseSpeedDefault
-                ? ControllerMacroAction.decreaseSpeed.defaultBinding : loadedDecreaseSpeedMacro
-            let resolvedEnableFastForwardMacro = loadedEnableFastForwardMacro == previousEnableFastForwardDefault
-                ? ControllerMacroAction.enableFastForward.defaultBinding : loadedEnableFastForwardMacro
-            let resolvedDisableFastForwardMacro = loadedDisableFastForwardMacro == previousDisableFastForwardDefault
-                ? ControllerMacroAction.disableFastForward.defaultBinding : loadedDisableFastForwardMacro
-
-            controllerMacroSaveGameState = resolvedSaveStateMacro
-            controllerMacroLoadGameState = resolvedLoadStateMacro
-            controllerMacroIncreaseSpeed = resolvedIncreaseSpeedMacro
-            controllerMacroDecreaseSpeed = resolvedDecreaseSpeedMacro
-            controllerMacroEnableFastForward = resolvedEnableFastForwardMacro
-            controllerMacroDisableFastForward = resolvedDisableFastForwardMacro
-
-            _controllerMacroSaveGameStateConfig.write(resolvedSaveStateMacro)
-            _controllerMacroLoadGameStateConfig.write(resolvedLoadStateMacro)
-            _controllerMacroIncreaseSpeedConfig.write(resolvedIncreaseSpeedMacro)
-            _controllerMacroDecreaseSpeedConfig.write(resolvedDecreaseSpeedMacro)
-            _controllerMacroEnableFastForwardConfig.write(resolvedEnableFastForwardMacro)
-            _controllerMacroDisableFastForwardConfig.write(resolvedDisableFastForwardMacro)
+            let previousStartDefaults: [(Setting<ControllerMacroBinding>, ControllerMacroBinding, ControllerMacroAction)] = [
+                (_controllerMacroSaveGameStateConfig, ControllerMacroBinding(first: .r3, second: .circle), .saveGameState),
+                (_controllerMacroLoadGameStateConfig, ControllerMacroBinding(first: .r3, second: .triangle), .loadGameState),
+                (_controllerMacroIncreaseSpeedConfig, ControllerMacroBinding(first: .l3, second: .dpadRight), .increaseSpeed),
+                (_controllerMacroDecreaseSpeedConfig, ControllerMacroBinding(first: .l3, second: .dpadLeft), .decreaseSpeed),
+                (_controllerMacroEnableFastForwardConfig, ControllerMacroBinding(first: .l3, second: .dpadUp), .enableFastForward),
+                (_controllerMacroDisableFastForwardConfig, ControllerMacroBinding(first: .l3, second: .dpadDown), .disableFastForward),
+            ]
+            for (setting, previousDefault, action) in previousStartDefaults where setting.load() == previousDefault {
+                setting.write(action.defaultBinding)
+            }
             _controllerMacroStartDefaultsMigration.write(true)
-        } else {
-            controllerMacroSaveGameState = loadedSaveStateMacro
-            controllerMacroLoadGameState = loadedLoadStateMacro
-            controllerMacroIncreaseSpeed = loadedIncreaseSpeedMacro
-            controllerMacroDecreaseSpeed = loadedDecreaseSpeedMacro
-            controllerMacroEnableFastForward = loadedEnableFastForwardMacro
-            controllerMacroDisableFastForward = loadedDisableFastForwardMacro
         }
+        controllerMacroQuickMenu = _controllerMacroQuickMenuConfig.load()
+        controllerMacroSaveGameState = _controllerMacroSaveGameStateConfig.load()
+        controllerMacroLoadGameState = _controllerMacroLoadGameStateConfig.load()
+        controllerMacroIncreaseSpeed = _controllerMacroIncreaseSpeedConfig.load()
+        controllerMacroDecreaseSpeed = _controllerMacroDecreaseSpeedConfig.load()
+        controllerMacroEnableFastForward = _controllerMacroEnableFastForwardConfig.load()
+        controllerMacroDisableFastForward = _controllerMacroDisableFastForwardConfig.load()
         autoOpenStikDebug = _autoOpenStikDebugConfig.load()
         // Not load(): older builds wrote names this enum no longer spells that way.
         jitScriptProtocol = Self.loadedJITScriptProtocol()
@@ -2317,12 +2283,14 @@ final class SettingsStore {
             loadedDynamicAppearance.save()
         }
         dynamicAppearancePreferences = loadedDynamicAppearance
-        clearLiquidGlassUISubSettings = UserDefaults.standard.object(
-            forKey: "ARMSX2iOSClearLiquidGlassUISubSettings"
-        ) as? Bool ?? true
-        clearLiquidGlassUI = UserDefaults.standard.object(
+        let storedClearGlass = UserDefaults.standard.object(
             forKey: "ARMSX2iOSClearLiquidGlassUI"
         ) as? Bool ?? true
+        clearLiquidGlassUI = storedClearGlass
+        // New in this release, so an upgrade starts from the main toggle.
+        clearLiquidGlassUISubSettings = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSClearLiquidGlassUISubSettings"
+        ) as? Bool ?? storedClearGlass
         clearLiquidGlassUIQuickMenu = UserDefaults.standard.object(
             forKey: "ARMSX2iOSClearLiquidGlassUIQuickMenu"
         ) as? Bool ?? false
