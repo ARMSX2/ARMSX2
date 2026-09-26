@@ -156,7 +156,6 @@ struct PadLayoutEditView: View {
         .persistentSystemOverlays(.hidden)
         .onDisappear {
             rollbackUnsavedChanges()
-            NotificationCenter.default.post(name: Notification.Name("ARMSX2iOSPadLayoutEditorDismissed"), object: nil)
         }
         .alert(nameActionTitle, isPresented: Binding(
             get: { pendingNameAction != nil },
@@ -402,13 +401,15 @@ struct PadLayoutEditView: View {
         // Only create or update a layout preset when the layout geometry actually
         // changed. Skin-only preview/reset must not force "Save as New Layout".
         guard editorIsModified else {
-            undoStack.removeAll()
-            originalSnapshot = nil
-            onDismiss()
+            // The editor temporarily applies a preset to the shared working
+            // layout. Always restore that working copy on exit; gameplay reads
+            // the saved preset directly. Leaking this temporary copy used to
+            // make a preset appear to work only after opening the editor once.
+            finishPresetEditRestoringOriginal()
             return
         }
 
-        if let activePresetID {
+        if activePresetID != nil {
             updateCurrentPresetAndDismiss()
         } else if context.gameIdentity != nil || context.initialSnapshot != nil {
             beginNameAction(.saveNew)
@@ -959,6 +960,7 @@ private struct DraggableGroup: View {
     @State private var dragOffset: CGSize = .zero
     @State private var currentScale: CGFloat = 1.0
     @State private var hasPushedSnapshot = false
+    @Environment(\.uiAccentColour) private var accentColour
 
     private var pos: PadGroupPosition {
         layout.position(for: id, landscape: isLandscape)
@@ -1003,7 +1005,7 @@ private struct DraggableGroup: View {
                 .frame(width: visibleSize.width + 12, height: visibleSize.height + 12)
                 .overlay {
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(.blue.opacity(isSelected ? 0.95 : 0.45), lineWidth: isSelected ? 2.4 : 1.4)
+                        .stroke(accentColour.opacity(isSelected ? 0.95 : 0.45), lineWidth: isSelected ? 2.4 : 1.4)
                 }
 
             RoundedRectangle(cornerRadius: 8)
@@ -1015,7 +1017,7 @@ private struct DraggableGroup: View {
 
             Text(id.uppercased())
                 .font(.system(size: 9, weight: .bold))
-                .foregroundStyle((isOverlapping ? Color.red : Color.blue).opacity(isSelected ? 1.0 : 0.75))
+                .foregroundStyle((isOverlapping ? Color.red : accentColour).opacity(isSelected ? 1.0 : 0.75))
                 .offset(y: -(visibleSize.height / 2 + 12))
         }
         .frame(width: hitSize.width, height: hitSize.height)
@@ -1134,6 +1136,7 @@ private struct DraggableButton: View {
     @State private var dragOffset: CGSize = .zero
     @State private var currentScale: CGFloat = 1.0
     @State private var hasPushedSnapshot = false
+    @Environment(\.uiAccentColour) private var accentColour
 
     private var pos: PadGroupPosition {
         layout.perButtonPosition(for: id, landscape: isLandscape, areaW: areaW, areaH: areaH)
@@ -1170,7 +1173,7 @@ private struct DraggableButton: View {
                 .frame(width: visibleSize.width + 10, height: visibleSize.height + 10)
                 .overlay {
                     RoundedRectangle(cornerRadius: 6)
-                        .stroke(.blue.opacity(isSelected ? 0.95 : 0.45), lineWidth: isSelected ? 2.3 : 1.3)
+                        .stroke(accentColour.opacity(isSelected ? 0.95 : 0.45), lineWidth: isSelected ? 2.3 : 1.3)
                 }
 
             RoundedRectangle(cornerRadius: 6)
@@ -1182,7 +1185,7 @@ private struct DraggableButton: View {
 
             Text(buttonLabel.uppercased())
                 .font(.system(size: 8, weight: .bold))
-                .foregroundStyle((isOverlapping ? Color.red : Color.blue).opacity(isSelected ? 1.0 : 0.75))
+                .foregroundStyle((isOverlapping ? Color.red : accentColour).opacity(isSelected ? 1.0 : 0.75))
                 .offset(y: -(visibleSize.height / 2 + 10))
         }
         .frame(width: hitSize.width, height: hitSize.height)

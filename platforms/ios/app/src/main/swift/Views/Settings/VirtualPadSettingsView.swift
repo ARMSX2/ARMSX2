@@ -11,6 +11,27 @@ private enum DynamicActionRole {
     case holdFire
 }
 
+/// Explicit controls share their label identity with the predeclared Form order.
+/// Touch keeps the native controls; Cross opens the same option list.
+@MainActor
+private func controllerToggle(_ title: String, isOn: Binding<Bool>) -> some View {
+    Toggle(title, isOn: isOn)
+        .controllerAccessibilityToggleTarget(id: title, label: title, isOn: isOn)
+}
+
+@MainActor
+private func controllerPicker<Value: Hashable>(
+    _ title: String, selection: Binding<Value>, options: [(id: Value, title: String)],
+    id: String? = nil
+) -> some View {
+    Picker(title, selection: selection) {
+        ForEach(options, id: \.id) { option in
+            Text(option.title).tag(option.id)
+        }
+    }
+    .controllerAccessibilityOptionsPickerTarget(id: id ?? title, label: title, selection: selection, options: options)
+}
+
 private struct SkinReplacePrompt: Identifiable {
     let id = UUID()
     let name: String
@@ -75,45 +96,43 @@ struct VirtualPadSettingsView: View {
     var body: some View {
         Form {
             Section(settings.localized("Appearance")) {
-                Picker(settings.localized("Button Skin"), selection: Binding<String>(
+                controllerPicker(settings.localized("Button Skin"), selection: Binding<String>(
                     get: { skinLibrary.selectedSkinID },
                     set: { selectSkin(id: $0) }
-                )) {
-                    ForEach(skinLibrary.allDescriptors) { skin in
-                        Text(settings.localized(skin.displayName)).tag(skin.id)
-                    }
-                }
+                ), options: skinLibrary.allDescriptors.map { ($0.id, settings.localized($0.displayName)) })
 
                 Text(settings.localized(selectedSkinDetail))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 NumberRow(.padOpacity, value: $settings.padOpacity, settings: settings)
+                    .controllerAccessibilityTargetID(settings.localized(NumberSetting.padOpacity.title))
             }
 
             Section(settings.localized("Gameplay")) {
-                Toggle(settings.localized("Hide Virtual Pad When Controller Is Connected"), isOn: $settings.autoHideVirtualPadWhenControllerConnected)
+                controllerToggle(settings.localized("Hide Virtual Pad When Controller Is Connected"), isOn: $settings.autoHideVirtualPadWhenControllerConnected)
                 Text(settings.localized("Automatically hides the on-screen controls while an external controller is connected."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Toggle(settings.localized("Auto Full Screen"), isOn: $settings.autoFullscreen)
-                Toggle(settings.localized("Hide Menu Button"), isOn: $settings.hideMenuButton)
+                controllerToggle(settings.localized("Auto Full Screen"), isOn: $settings.autoFullscreen)
+                controllerToggle(settings.localized("Hide Menu Button"), isOn: $settings.hideMenuButton)
                 Text(settings.localized("Hides the in-game menu button. Tap the game area to show it for a few seconds."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Toggle(settings.localized("D-pad Diagonals"), isOn: $settings.dpadDiagonalsEnabled)
+                controllerToggle(settings.localized("D-pad Diagonals"), isOn: $settings.dpadDiagonalsEnabled)
                 Text(settings.localized("Allows one-finger diagonal and quarter-circle motions on the virtual D-pad."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Toggle(settings.localized("Face Button Combo Zones"), isOn: $settings.faceComboZonesEnabled)
+                controllerToggle(settings.localized("Face Button Combo Zones"), isOn: $settings.faceComboZonesEnabled)
                 Text(settings.localized("Press between face buttons to trigger both buttons at once."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 NumberRow(.analogStickSize, value: $settings.analogStickScale, settings: settings)
+                    .controllerAccessibilityTargetID(settings.localized(NumberSetting.analogStickSize.title))
 
                 Text(settings.localized("Double-tap empty gameplay space to show the menu button again."))
                     .font(.caption)
@@ -121,28 +140,38 @@ struct VirtualPadSettingsView: View {
             }
 
             Section {
-                Toggle(settings.localized("Invert Left Horizontal"), isOn: $settings.invertLeftStickX)
-                Toggle(settings.localized("Invert Left Vertical"), isOn: $settings.invertLeftStickY)
-                Toggle(settings.localized("Invert Right Horizontal"), isOn: $settings.invertRightStickX)
-                Toggle(settings.localized("Invert Right Vertical (Camera)"), isOn: $settings.invertRightStickY)
+                controllerToggle(settings.localized("Invert Left Horizontal"), isOn: $settings.invertLeftStickX)
+                controllerToggle(settings.localized("Invert Left Vertical"), isOn: $settings.invertLeftStickY)
+                controllerToggle(settings.localized("Invert Right Horizontal"), isOn: $settings.invertRightStickX)
+                controllerToggle(settings.localized("Invert Right Vertical (Camera)"), isOn: $settings.invertRightStickY)
             } header: {
                 Text(settings.localized("Stick Inversion"))
             } footer: {
-                Text(settings.localized("Flips the on-screen stick axes. Useful for games with fixed inverted camera or flight controls. Per-game overrides are available in the game’s Virtual Pad settings."))
+                Text(settings.localized("Flips the virtual and connected-controller stick axes. Useful for games with fixed inverted camera or flight controls. Per-game overrides are available in the game’s Virtual Pad settings."))
             }
 
             Section(settings.localized("Custom Skin")) {
+                controllerToggle(
+                    settings.localized("Automatic Download Custom Skin"),
+                    isOn: $settings.automaticDownloadCustomSkin
+                )
+                Text(settings.localized("When a newly added game's serial matches the community catalog, its custom skin and recommended layout are downloaded automatically. You choose whether to apply them when launching the game."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 Button {
                     showSkinImporter = true
                 } label: {
                     Label(settings.localized("Import Skin"), systemImage: "paintpalette")
                 }
+                .controllerAccessibilityActionTarget(id: settings.localized("Import Skin"), label: settings.localized("Import Skin")) {
+                    showSkinImporter = true
+                }
 
-                NavigationLink {
-                    SkinBrowserView()
-                } label: {
+                NavigationLink(value: SettingsPane.skinBrowser) {
                     Label("Browse Skins", systemImage: "square.grid.2x2")
                 }
+                .controllerAccessibilityTargetID(settings.localized("Browse Skins"))
 
                 Text("Import loose PNG/JPG/WebP button images, a full portrait/landscape controller image, or a zipped skin pack. Button files can be named cross, circle, square, triangle, up, down, left, right, L1, R1, L2, R2, start, select, analog_base, or analog_stick.")
                     .font(.caption)
@@ -180,40 +209,41 @@ struct VirtualPadSettingsView: View {
                             } label: {
                                 Image(systemName: "ellipsis.circle")
                             }
+                            .controllerAccessibilityMenuTarget(id: "vpad.skin.\(skin.id)", label: skin.displayName)
                         }
                     }
                 }
             }
 
             Section(settings.localized("Feedback")) {
-                Toggle(settings.localized("Haptic Feedback"), isOn: $settings.hapticFeedback)
+                controllerToggle(settings.localized("Haptic Feedback"), isOn: $settings.hapticFeedback)
 
                 NumberRow(.phoneRumbleStrength, value: $settings.phoneRumbleStrength,
                           settings: settings)
+                    .controllerAccessibilityTargetID(settings.localized(NumberSetting.phoneRumbleStrength.title))
                 Text(settings.localized("Controls the iPhone Taptic Engine when no controller is connected. 25% preserves the original Core Haptics intensity; 100% applies up to 3x gain, and 0% disables phone rumble. Has no effect on a controller's own motors."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Toggle(
+                controllerToggle(
                     settings.localized("Increase Duration of Rumble and Interpolation"),
                     isOn: $settings.increaseRumbleDurationAndInterpolation)
             }
 
             Section(settings.localized("Layout")) {
-                Picker("Default VPad Layout", selection: Binding<String?>(
+                controllerPicker(settings.localized("Default VPad Layout"), selection: Binding<String?>(
                     get: { layoutPresets.globalPresetID },
                     set: { layoutPresets.globalPresetID = $0 }
-                )) {
-                    Text("Current Layout").tag(nil as String?)
-                    ForEach(layoutPresets.presets) { preset in
-                        Text(preset.displayName).tag(Optional(preset.id))
-                    }
-                }
+                ), options: [(nil as String?, settings.localized("Current Layout"))]
+                    + layoutPresets.presets.map { (Optional($0.id), $0.displayName) })
 
                 Button {
                     showLayoutEditor = true
                 } label: {
                     Label(settings.localized("Edit Layout"), systemImage: "square.resize")
+                }
+                .controllerAccessibilityActionTarget(id: settings.localized("Edit Layout"), label: settings.localized("Edit Layout")) {
+                    showLayoutEditor = true
                 }
                 Text(settings.localized("Drag buttons to reposition. Pinch to resize."))
                     .font(.caption)
@@ -226,6 +256,9 @@ struct VirtualPadSettingsView: View {
                     showLayoutImporter = true
                 } label: {
                     Label("Import Layout", systemImage: "square.and.arrow.down")
+                }
+                .controllerAccessibilityActionTarget(id: settings.localized("Import Layout"), label: settings.localized("Import Layout")) {
+                    showLayoutImporter = true
                 }
 
                 if !layoutPresets.presets.isEmpty {
@@ -266,6 +299,7 @@ struct VirtualPadSettingsView: View {
                             .accessibilityLabel(
                                 settings.localized("Layout Options") + " \(preset.displayName)"
                             )
+                            .controllerAccessibilityMenuTarget(id: "vpad.layout.\(preset.id)", label: preset.displayName)
                         }
                     }
                 }
@@ -279,7 +313,7 @@ struct VirtualPadSettingsView: View {
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(settings.localized(preset.rawValue))
-                                    .foregroundStyle(.primary)
+                                    .controllerFocusedTextColor()
                                 Text(settings.localized(preset.summary))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -299,6 +333,12 @@ struct VirtualPadSettingsView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .controllerAccessibilityActionTarget(
+                        id: settings.localized(preset.rawValue),
+                        label: settings.localized(preset.rawValue)
+                    ) {
+                        preset.apply(settings: dynamicSettings)
+                    }
                 }
             } header: {
                 Text(settings.localized("Dynamic Control Presets"))
@@ -309,22 +349,22 @@ struct VirtualPadSettingsView: View {
             }
 
             Section {
-                Toggle(
+                controllerToggle(
                     settings.localized("Legacy Thumbsticks"),
                     isOn: Binding(
                         get: { dynamicSettings.legacyThumbsticks },
                         set: { dynamicSettings.setLegacyThumbsticks($0) }
                     )
                 )
-                Toggle(
+                controllerToggle(
                     settings.localized("Dynamic Thumbsticks"),
                     isOn: Binding(
                         get: { dynamicSettings.dynamicThumbsticks },
                         set: { dynamicSettings.setDynamicThumbsticks($0) }
                     )
                 )
-                Toggle(settings.localized("Swipe Camera"), isOn: $dynamicSettings.swipeCamera)
-                Toggle(settings.localized("Gyroscope Camera"), isOn: $dynamicSettings.gyroscopeCamera)
+                controllerToggle(settings.localized("Swipe Camera"), isOn: $dynamicSettings.swipeCamera)
+                controllerToggle(settings.localized("Gyroscope Camera"), isOn: $dynamicSettings.gyroscopeCamera)
             } header: {
                 Text(settings.localized("Dynamic Controls"))
             } footer: {
@@ -332,7 +372,7 @@ struct VirtualPadSettingsView: View {
             }
 
             Section {
-                Toggle(
+                controllerToggle(
                     settings.localized("Left Thumbstick Instant Deadzone"),
                     isOn: $dynamicSettings.leftInstantDeadzoneEnabled
                 )
@@ -346,7 +386,7 @@ struct VirtualPadSettingsView: View {
                     )
                 }
 
-                Toggle(
+                controllerToggle(
                     settings.localized("Right Thumbstick Instant Deadzone"),
                     isOn: $dynamicSettings.rightInstantDeadzoneEnabled
                 )
@@ -375,7 +415,7 @@ struct VirtualPadSettingsView: View {
                     format: .multiplier
                 )
 
-                Toggle(
+                controllerToggle(
                     settings.localized("Convert Swipe to Dynamic Joystick"),
                     isOn: $dynamicSettings.convertSwipeToDynamicJoystick
                 )
@@ -432,12 +472,12 @@ struct VirtualPadSettingsView: View {
             }
 
             Section {
-                Toggle(
+                controllerToggle(
                     settings.localized("Dynamic Aiming Crosshair"),
                     isOn: $dynamicSettings.dynamicCrosshairEnabled
                 )
                 if dynamicSettings.dynamicCrosshairEnabled {
-                    Toggle(
+                    controllerToggle(
                         settings.localized("Show Crosshair While Holding Swipe"),
                         isOn: $dynamicSettings.showCrosshairWhileHoldingSwipe
                     )
@@ -468,22 +508,16 @@ struct VirtualPadSettingsView: View {
                         step: 0.05,
                         format: .unitPercent
                     )
-                    Picker(
+                    controllerPicker(
                         settings.localized("Crosshair Type"),
-                        selection: $dynamicSettings.dynamicCrosshairType
-                    ) {
-                        ForEach(DynamicCrosshairType.allCases) { type in
-                            Text(settings.localized(type.title)).tag(type)
-                        }
-                    }
-                    Picker(
+                        selection: $dynamicSettings.dynamicCrosshairType,
+                        options: DynamicCrosshairType.allCases.map { ($0, settings.localized($0.title)) }
+                    )
+                    controllerPicker(
                         settings.localized("Crosshair Animation"),
-                        selection: $dynamicSettings.dynamicCrosshairAnimation
-                    ) {
-                        ForEach(DynamicCrosshairAnimation.allCases) { animation in
-                            Text(settings.localized(animation.title)).tag(animation)
-                        }
-                    }
+                        selection: $dynamicSettings.dynamicCrosshairAnimation,
+                        options: DynamicCrosshairAnimation.allCases.map { ($0, settings.localized($0.title)) }
+                    )
                 }
             } header: {
                 Text(settings.localized("Dynamic Crosshair"))
@@ -528,7 +562,7 @@ struct VirtualPadSettingsView: View {
                         step: 0.01,
                         format: .unitPercent
                     )
-                    Toggle(settings.localized("Activation Haptics"), isOn: $dynamicSettings.activationHaptics)
+                    controllerToggle(settings.localized("Activation Haptics"), isOn: $dynamicSettings.activationHaptics)
                 } header: {
                     Text(settings.localized("Dynamic Thumbstick Feel"))
                 } footer: {
@@ -573,8 +607,8 @@ struct VirtualPadSettingsView: View {
                         step: 0.5,
                         format: .radiansPerSecond.decimals(1)
                     )
-                    Toggle(settings.localized("Invert Gyro Horizontal"), isOn: $dynamicSettings.invertGyroHorizontal)
-                    Toggle(settings.localized("Invert Gyro Vertical"), isOn: $dynamicSettings.invertGyroVertical)
+                    controllerToggle(settings.localized("Invert Gyro Horizontal"), isOn: $dynamicSettings.invertGyroHorizontal)
+                    controllerToggle(settings.localized("Invert Gyro Vertical"), isOn: $dynamicSettings.invertGyroVertical)
                 } header: {
                     Text(settings.localized("Gyroscope"))
                 } footer: {
@@ -587,32 +621,29 @@ struct VirtualPadSettingsView: View {
                     (dynamicSettings.leftThumbstickActionsEnabled || dynamicSettings.rightThumbstickActionsEnabled)) {
                 Section {
                     if dynamicSettings.swipeCamera {
-                        Picker(
+                        controllerPicker(
                             settings.localized("Trigger Button When Un-holding Swipe"),
-                            selection: $dynamicSettings.triggerButtonWhenUnholdingSwipe
-                        ) {
-                            Text(settings.localized("Off")).tag(-1)
-                            ForEach(VirtualPadActionButton.allCases) { button in
-                                Text(settings.localized(button.title)).tag(button.rawValue)
-                            }
-                        }
+                            selection: $dynamicSettings.triggerButtonWhenUnholdingSwipe,
+                            options: [(-1, settings.localized("Off"))]
+                                + VirtualPadActionButton.allCases.map { ($0.rawValue, settings.localized($0.title)) }
+                        )
                     }
 
-                    Toggle(
+                    controllerToggle(
                         dynamicActionTitle("Hold Aim While Touching Camera", role: .aim),
                         isOn: Binding(
                             get: { dynamicSettings.holdAimWhileSwipe },
                             set: { dynamicSettings.setHoldAimWhileSwipe($0) }
                         )
                     )
-                    Toggle(
+                    controllerToggle(
                         dynamicActionTitle("Double Tap to Hold Aim", role: .aim),
                         isOn: Binding(
                             get: { dynamicSettings.doubleTapToHoldAim },
                             set: { dynamicSettings.setDoubleTapToHoldAim($0) }
                         )
                     )
-                    Toggle(
+                    controllerToggle(
                         settings.localized("Enable Single-Tap Action on Non-Aim Mode"),
                         isOn: Binding(
                             get: { dynamicSettings.singleTapActionAllowedInNonAimMode },
@@ -623,7 +654,7 @@ struct VirtualPadSettingsView: View {
                         !dynamicSettings.doubleTapToHoldAim ||
                             dynamicSettings.actionsOnNonAimMode
                     )
-                    Toggle(
+                    controllerToggle(
                         settings.localized("Enable Actions on Non-Aim Mode"),
                         isOn: Binding(
                             get: { dynamicSettings.actionsOnNonAimMode },
@@ -646,7 +677,7 @@ struct VirtualPadSettingsView: View {
                         format: .seconds
                     )
                     .disabled(!dynamicSettings.doubleTapToHoldAim)
-                    Toggle(
+                    controllerToggle(
                         dynamicActionTitle("Tap to Fire Single Shots", role: .fire),
                         isOn: $dynamicSettings.tapToFire
                     )
@@ -664,7 +695,7 @@ struct VirtualPadSettingsView: View {
                         step: 1,
                         format: .points
                     )
-                    Toggle(
+                    controllerToggle(
                         dynamicActionTitle("Multiple Taps Enable Automatic Fire", role: .holdFire),
                         isOn: Binding(
                             get: {
@@ -705,12 +736,12 @@ struct VirtualPadSettingsView: View {
                         format: .seconds
                     )
                     .disabled(automaticFireControlsDisabled)
-                    Toggle(
+                    controllerToggle(
                         dynamicActionTitle("Extend Automatic Fire While Dragging", role: .holdFire),
                         isOn: $dynamicSettings.extendFireWhileDragging
                     )
                         .disabled(automaticFireControlsDisabled)
-                    Toggle(
+                    controllerToggle(
                         dynamicActionTitle("Release Fire When Touch Ends", role: .holdFire),
                         isOn: $dynamicSettings.releaseFireWhenTouchEnds
                     )
@@ -736,12 +767,20 @@ struct VirtualPadSettingsView: View {
             }
 
             Section {
-                Button(settings.localized("Restore Dynamic Control Defaults"), role: .destructive) {
+                ConfirmedSettingsResetButton(
+                    settings.localized("Restore Dynamic Control Defaults"),
+                    confirmationTitle: settings.localized("Restore Dynamic Control Defaults?"),
+                    confirmationMessage: settings.localized("This restores every Dynamic Control option to its original value."),
+                    completionMessage: settings.localized("Defaults Restored"),
+                    controllerTargetID: "settings.virtual-pad.restore-dynamic-defaults"
+                ) {
                     dynamicSettings.restoreDefaults()
                 }
+                .uiCriticalForegroundStyle()
             }
         }
         .navigationTitle(settings.localized("Virtual Pad"))
+        .controllerAccessibilityTargetOrder(controllerTargetOrder)
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: refreshHardcoreAutomaticFireRestriction)
         .onReceive(
@@ -1188,6 +1227,101 @@ struct VirtualPadSettingsView: View {
         }
     }
 
+    /// Form recycles rows: the complete enabled order must exist independently
+    /// of which controls are onscreen. Repeated controls have section-qualified
+    /// IDs, so left/right and aim profiles cannot replace each other.
+    private var controllerTargetOrder: [String] {
+        let localized = settings.localized
+        var order = ["Button Skin", NumberSetting.padOpacity.title,
+                     "Hide Virtual Pad When Controller Is Connected", "Auto Full Screen", "Hide Menu Button",
+                     "D-pad Diagonals", "Face Button Combo Zones", NumberSetting.analogStickSize.title,
+                     "Invert Left Horizontal", "Invert Left Vertical", "Invert Right Horizontal",
+                     "Invert Right Vertical (Camera)", "Automatic Download Custom Skin",
+                     "Import Skin", "Browse Skins"].map(localized)
+        order += skinLibrary.importedDescriptors.map { "vpad.skin.\($0.id)" }
+        order += ["Haptic Feedback", NumberSetting.phoneRumbleStrength.title,
+                  "Increase Duration of Rumble and Interpolation", "Default VPad Layout",
+                  "Edit Layout", "Import Layout"].map(localized)
+        order += layoutPresets.presets.map { "vpad.layout.\($0.id)" }
+        order += BuiltInDynamicControlPreset.allCases.map { localized($0.rawValue) }
+        order += ["Legacy Thumbsticks", "Dynamic Thumbsticks", "Swipe Camera", "Gyroscope Camera",
+                  "Left Thumbstick Instant Deadzone"].map(localized)
+        if dynamicSettings.leftInstantDeadzoneEnabled { order.append(localized("Left Negative Deadzone")) }
+        order.append(localized("Right Thumbstick Instant Deadzone"))
+        if dynamicSettings.rightInstantDeadzoneEnabled { order.append(localized("Right Negative Deadzone")) }
+        order += ["Left Thumbstick Movement Area", "Right Thumbstick Movement Area",
+                  "Convert Swipe to Dynamic Joystick"].map(localized)
+        if dynamicSettings.convertSwipeToDynamicJoystick {
+            order += ["Convert Into Dynamic Thumbstick", "Pulling Back Distance"].map(localized)
+        }
+        order += ["Movement Sensitivity", "Look Sensitivity"].map(localized)
+        if dynamicSettings.swipeCamera {
+            order += swipeProfileOrder("Swipe Sensitivity", enabled: true, toggle: false)
+            order += swipeProfileOrder("Sensitivity While on Aim Mode", enabled: dynamicSettings.swipeSensitivityWhileAimingEnabled)
+            order += swipeProfileOrder("Sensitivity While Not Aiming", enabled: dynamicSettings.swipeSensitivityWhileNotAimingEnabled)
+        }
+        if dynamicSettings.dynamicThumbsticks {
+            order += thumbstickActionOrder("Dynamic Actions in Left Thumbstick", enabled: dynamicSettings.leftThumbstickActionsEnabled)
+        }
+        if dynamicSettings.swipeCamera || dynamicSettings.dynamicThumbsticks {
+            order += thumbstickActionOrder("Dynamic Actions in Right Thumbstick", enabled: dynamicSettings.rightThumbstickActionsEnabled)
+        }
+        order.append(localized("Dynamic Aiming Crosshair"))
+        if dynamicSettings.dynamicCrosshairEnabled {
+            if dynamicSettings.swipeCamera {
+                order.append(localized("Show Crosshair While Holding Swipe"))
+                if dynamicSettings.showCrosshairWhileHoldingSwipe { order.append(localized("Crosshair Hide Delay")) }
+            }
+            order += ["Crosshair Size", "Crosshair Opacity", "Crosshair Type", "Crosshair Animation"].map(localized)
+        }
+        if dynamicSettings.dynamicThumbsticks {
+            order += ["Maximum Radius", "Dead Zone", "Thumbstick Opacity", "Base Opacity", "Trail Opacity", "Activation Haptics"].map(localized)
+        }
+        if dynamicSettings.gyroscopeCamera {
+            order += ["Gyro Sensitivity", "Gyro Acceleration", "Gyro Smoothing", "Gyro Dead Zone", "Maximum Gyro Rate",
+                      "Invert Gyro Horizontal", "Invert Gyro Vertical"].map(localized)
+        }
+        if dynamicSettings.swipeCamera || (dynamicSettings.dynamicThumbsticks
+            && (dynamicSettings.leftThumbstickActionsEnabled || dynamicSettings.rightThumbstickActionsEnabled)) {
+            if dynamicSettings.swipeCamera { order.append(localized("Trigger Button When Un-holding Swipe")) }
+            order += [dynamicActionTitle("Hold Aim While Touching Camera", role: .aim),
+                      dynamicActionTitle("Double Tap to Hold Aim", role: .aim)]
+            if dynamicSettings.doubleTapToHoldAim && !dynamicSettings.actionsOnNonAimMode {
+                order.append(localized("Enable Single-Tap Action on Non-Aim Mode"))
+            }
+            order.append(localized("Enable Actions on Non-Aim Mode"))
+            if dynamicSettings.holdAimWhileSwipe || dynamicSettings.doubleTapToHoldAim {
+                order.append(dynamicActionTitle("Aim Release Delay", role: .aim))
+            }
+            if dynamicSettings.doubleTapToHoldAim { order.append(dynamicActionTitle("Double-Tap Window", role: .aim)) }
+            order += ["Tap to Fire Single Shots", "Single-Shot Tap Duration", "Single-Shot Travel Tolerance"].map {
+                dynamicActionTitle($0, role: .fire)
+            }
+            if !automaticFireBlockedByHardcore {
+                order.append(dynamicActionTitle("Multiple Taps Enable Automatic Fire", role: .holdFire))
+            }
+            if !automaticFireControlsDisabled {
+                order += ["Multiple-Tap Window", "Taps to Activate", "Automatic Fire Interval",
+                          "Extend Automatic Fire While Dragging", "Release Fire When Touch Ends"].map {
+                    dynamicActionTitle($0, role: .holdFire)
+                }
+                if !dynamicSettings.releaseFireWhenTouchEnds { order.append(dynamicActionTitle("Fire Release Delay", role: .holdFire)) }
+            }
+        }
+        order.append("settings.virtual-pad.restore-dynamic-defaults")
+        return order
+    }
+
+    private func swipeProfileOrder(_ title: String, enabled: Bool, toggle: Bool = true) -> [String] {
+        let id = settings.localized(title)
+        return (toggle ? [id] : []) + (enabled ? [id + "/value", id + "/horizontal", id + "/vertical"] : [])
+    }
+
+    private func thumbstickActionOrder(_ title: String, enabled: Bool) -> [String] {
+        let id = settings.localized(title)
+        return [id] + (enabled ? [id + "/aim", id + "/fire", id + "/holdFire"] : [])
+    }
+
     @ViewBuilder
     private func thumbstickActionButtonsSection(
         title: String,
@@ -1198,23 +1332,15 @@ struct VirtualPadSettingsView: View {
         holdFire: Binding<VirtualPadActionButton>
     ) -> some View {
         Section {
-            Toggle(toggleTitle, isOn: isEnabled)
+            controllerToggle(toggleTitle, isOn: isEnabled)
             if isEnabled.wrappedValue {
-                Picker(settings.localized("Aim (Hold Thumbstick)"), selection: aim) {
-                    ForEach(VirtualPadActionButton.allCases) { button in
-                        Text(settings.localized(button.title)).tag(button)
-                    }
-                }
-                Picker(settings.localized("Fire (Tap Thumbstick)"), selection: fire) {
-                    ForEach(VirtualPadActionButton.allCases) { button in
-                        Text(settings.localized(button.title)).tag(button)
-                    }
-                }
-                Picker(settings.localized("Hold Fire (Fast Tap Thumbstick)"), selection: holdFire) {
-                    ForEach(VirtualPadActionButton.allCases) { button in
-                        Text(settings.localized(button.title)).tag(button)
-                    }
-                }
+                let options = VirtualPadActionButton.allCases.map { (id: $0, title: settings.localized($0.title)) }
+                controllerPicker(settings.localized("Aim (Hold Thumbstick)"), selection: aim,
+                                 options: options, id: toggleTitle + "/aim")
+                controllerPicker(settings.localized("Fire (Tap Thumbstick)"), selection: fire,
+                                 options: options, id: toggleTitle + "/fire")
+                controllerPicker(settings.localized("Hold Fire (Fast Tap Thumbstick)"), selection: holdFire,
+                                 options: options, id: toggleTitle + "/holdFire")
             }
         } header: {
             Text(title)
@@ -1275,6 +1401,7 @@ private struct DynamicControlSlider: View {
     /// Always a real format, never a prebuilt string: a row that hands over a finished readout
     /// cannot label its bounds or be typed into, and it ends up the odd one out in the stack.
     var format: NumberFormat = .plain
+    var controllerID: String? = nil
 
     private var settings: SettingsStore { SettingsStore.shared }
 
@@ -1286,6 +1413,7 @@ private struct DynamicControlSlider: View {
                   step: step,
                   detents: NumberRow.stops(in: range, step: step),
                   settings: settings)
+            .controllerAccessibilityTargetID(controllerID ?? settings.localized(title))
     }
 }
 
@@ -1307,7 +1435,7 @@ private struct DynamicSwipeSensitivityControl: View {
             // The toggle used to carry the readout too. It moved down onto the row that actually
             // changes it, which is also the only way the slider gets an announced value.
             if showsEnableToggle {
-                Toggle(settings.localized(title), isOn: $isEnabled)
+                controllerToggle(settings.localized(title), isOn: $isEnabled)
             }
             // When the toggle above is already carrying the name, the row underneath is just the
             // amount, so it says so rather than printing the same words twice.
@@ -1319,13 +1447,15 @@ private struct DynamicSwipeSensitivityControl: View {
                       detents: NumberRow.stops(in: Self.sensitivityRange,
                                                step: Self.sensitivityStep),
                       settings: settings)
+                .controllerAccessibilityTargetID(settings.localized(title) + "/value")
                 .disabled(!isEnabled)
             DynamicControlSlider(
                 title: "Horizontal Swipe Sensitivity",
                 value: $horizontalSensitivity,
                 range: 0.25...2,
                 step: 0.01,
-                format: .unitPercent
+                format: .unitPercent,
+                controllerID: settings.localized(title) + "/horizontal"
             )
             .disabled(!isEnabled)
             DynamicControlSlider(
@@ -1333,7 +1463,8 @@ private struct DynamicSwipeSensitivityControl: View {
                 value: $verticalSensitivity,
                 range: 0.25...2,
                 step: 0.01,
-                format: .unitPercent
+                format: .unitPercent,
+                controllerID: settings.localized(title) + "/vertical"
             )
             .disabled(!isEnabled)
         }
