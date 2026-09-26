@@ -5,6 +5,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <SDL3/SDL_metal.h>
+#import <GameController/GameController.h>
 
 // SwiftUI integration — Xcode names the generated header after the Swift module.
 #if __has_include("ARMSX2iOS-Swift.h")
@@ -1031,6 +1032,7 @@ const int s_defaultMap[16] = {
 // owned by UIKit/SwiftUI and outlive these unretained references.
 UIViewController* __unsafe_unretained s_menuVC = nil;
 UIViewController* __unsafe_unretained s_rootVC = nil;
+UIViewController* __unsafe_unretained s_sdlRootVC = nil;
 
 static void ARMSX2EnsureGameRenderViewOnMain(const char* reason) {
     if (g_gameRenderView)
