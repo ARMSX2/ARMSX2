@@ -11,6 +11,60 @@ BUILD_LOG="$BUILD_DIR/xcodebuild.log"
 ENTITLEMENTS_FILE="${ENTITLEMENTS_FILE:-$ROOT_DIR/app/src/main/cpp/Entitlements.plist}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 AD_HOC_SIGN="${AD_HOC_SIGN:-0}"
+RUSTUP_HOME="${RUSTUP_HOME:-$BUILD_DIR/rustup-home}"
+CARGO_HOME="${CARGO_HOME:-$BUILD_DIR/cargo-home}"
+LIBRASHADER_RUST_TARGET="aarch64-apple-ios"
+
+require_tool() {
+	if ! command -v "$1" >/dev/null 2>&1; then
+		echo "error: required tool '$1' was not found." >&2
+		exit 1
+	fi
+}
+
+ensure_librashader_toolchain() {
+	export RUSTUP_HOME CARGO_HOME
+	if [[ -x "$CARGO_HOME/bin/cargo" ]]; then
+		export PATH="$CARGO_HOME/bin:$PATH"
+	fi
+
+	if ! command -v cargo >/dev/null 2>&1 \
+		|| ! command -v rustc >/dev/null 2>&1; then
+		require_tool curl
+		local rustup_platform rustup_url installer expected_hash actual_hash
+		case "$(uname -m)" in
+			arm64) rustup_platform="aarch64-apple-darwin" ;;
+			x86_64) rustup_platform="x86_64-apple-darwin" ;;
+			*) echo "error: unsupported Rust host architecture: $(uname -m)" >&2; exit 1 ;;
+		esac
+		rustup_url="https://static.rust-lang.org/rustup/dist/$rustup_platform/rustup-init"
+		installer="$BUILD_DIR/rustup-init"
+		echo "Installing the project-local Rust toolchain required by librashader..."
+		curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+			"$rustup_url" --output "$installer"
+		expected_hash="$(curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+			"$rustup_url.sha256" | awk '{print $1}')"
+		actual_hash="$(shasum -a 256 "$installer" | awk '{print $1}')"
+		if [[ -z "$expected_hash" || "$actual_hash" != "$expected_hash" ]]; then
+			echo "error: rustup-init checksum verification failed." >&2
+			exit 1
+		fi
+		chmod u+x "$installer"
+		"$installer" -y --no-modify-path --profile minimal --default-toolchain stable
+		export PATH="$CARGO_HOME/bin:$PATH"
+	fi
+
+	if command -v rustup >/dev/null 2>&1; then
+		rustup target add "$LIBRASHADER_RUST_TARGET"
+	fi
+
+	local target_libdir
+	target_libdir="$(rustc --print target-libdir --target "$LIBRASHADER_RUST_TARGET" 2>/dev/null || true)"
+	if [[ -z "$target_libdir" || ! -d "$target_libdir" ]]; then
+		echo "error: Rust target $LIBRASHADER_RUST_TARGET is required for the production iOS shader chain." >&2
+		exit 1
+	fi
+}
 
 refresh_generated_git_metadata() {
 	local short_hash full_hash git_date pbxproj svnrev_file
@@ -35,6 +89,7 @@ refresh_generated_git_metadata() {
 }
 
 mkdir -p "$BUILD_DIR"
+ensure_librashader_toolchain
 
 if ! command -v xcodebuild >/dev/null 2>&1; then
 	echo "error: xcodebuild was not found. Install full Xcode from Apple, then run:" >&2
@@ -64,6 +119,10 @@ elif [[ ! -d "$PROJECT" ]]; then
 	exit 1
 else
 	echo "cmake not found; reusing existing generated Xcode project."
+fi
+if ! grep -q "ARMSX2_HAS_LIBRASHADER" "$PROJECT/project.pbxproj"; then
+	echo "error: production project omitted librashader; refusing to package a shader-disabled IPA." >&2
+	exit 1
 fi
 refresh_generated_git_metadata
 
@@ -133,11 +192,18 @@ if [[ -n "$SIGN_IDENTITY" || "$AD_HOC_SIGN" == "1" ]]; then
 	codesign -d --entitlements :- "$STAGED_APP" 2>&1 | sed -n '1,80p'
 fi
 
-(cd "$STAGING_DIR" && zip -qry "$BUILD_DIR/$IPA_NAME" Payload)
+OUTPUT_IPA="$BUILD_DIR/$IPA_NAME"
+# zip updates an existing archive in place and preserves entries that no longer
+# exist in Payload. Always create the IPA from an empty output path so removed
+# app resources cannot survive a later incremental package.
+if [[ -e "$OUTPUT_IPA" ]]; then
+	rm "$OUTPUT_IPA"
+fi
+(cd "$STAGING_DIR" && zip -qry "$OUTPUT_IPA" Payload)
 
 if [[ -n "$SIGN_IDENTITY" || "$AD_HOC_SIGN" == "1" ]]; then
 	echo "Created signed IPA:"
 else
 	echo "Created unsigned IPA:"
 fi
-echo "  $BUILD_DIR/$IPA_NAME"
+echo "  $OUTPUT_IPA"
