@@ -38,6 +38,11 @@ struct MemoryCardSettingsView: View {
                         Text(card).tag(card)
                     }
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    label: settings.localized("Slot 1"),
+                    selection: $slot1Card,
+                    options: cardPickerOptions
+                )
                 .onChange(of: slot1Card) { _, newValue in
                     ARMSX2Bridge.setMemoryCard(name: newValue, forSlot: 1, enabled: !newValue.isEmpty)
                 }
@@ -48,6 +53,11 @@ struct MemoryCardSettingsView: View {
                         Text(card).tag(card)
                     }
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    label: settings.localized("Slot 2"),
+                    selection: $slot2Card,
+                    options: cardPickerOptions
+                )
                 .onChange(of: slot2Card) { _, newValue in
                     ARMSX2Bridge.setMemoryCard(name: newValue, forSlot: 2, enabled: !newValue.isEmpty)
                 }
@@ -70,6 +80,13 @@ struct MemoryCardSettingsView: View {
                             Text("\(size) MB").tag(size)
                         }
                     }
+                    .controllerAccessibilityOptionsPickerTarget(
+                        label: settings.localized("Size"),
+                        selection: $newCardSizeMB,
+                        options: cardSizes.map {
+                            (id: $0, title: "\($0) MB")
+                        }
+                    )
                 }
 
                 Button {
@@ -100,13 +117,23 @@ struct MemoryCardSettingsView: View {
                                 Image(systemName: "square.and.arrow.up")
                             }
                             .buttonStyle(.borderless)
+                            .controllerAccessibilityActionTarget(
+                                label: settings.localized("Export") + " " + card
+                            ) {
+                                pendingExportCard = card
+                            }
                             Button {
                                 pendingDeleteCard = card
                             } label: {
                                 Image(systemName: "trash")
-                                    .foregroundStyle(.red)
+                                    .uiCriticalForegroundStyle()
                             }
                             .buttonStyle(.borderless)
+                            .controllerAccessibilityActionTarget(
+                                label: settings.localized("Delete") + " " + card
+                            ) {
+                                pendingDeleteCard = card
+                            }
                         }
                     }
                 }
@@ -191,6 +218,11 @@ struct MemoryCardSettingsView: View {
                 }
             }
         }
+    }
+
+    private var cardPickerOptions: [(id: String, title: String)] {
+        [("", settings.localized("Unplugged"))]
+            + availableCards.map { (id: $0, title: $0) }
     }
 
     private func refresh() {

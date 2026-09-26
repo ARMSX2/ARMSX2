@@ -52,6 +52,27 @@ private struct StoragePaths: Sendable {
     }
 }
 
+private struct StorageExternalGamesAlertCommandListener: View {
+    let controllerInput: MenuControllerInputRouter
+    let onCommand: (MenuControllerCommand) -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onChange(of: controllerInput.latestEvent) { _, event in
+                guard let event,
+                      event.captureOwner
+                        == MenuControllerNavigationCaptureOwner
+                            .storageExternalGamesAlert else {
+                    return
+                }
+                onCommand(event.command)
+            }
+    }
+}
+
 private enum StorageClearAction: Identifiable, Sendable {
     case appCache
     case textureDumps
@@ -277,6 +298,20 @@ struct StorageSettingsView: View {
     @State private var showExternalGameFilePicker = false
     @State private var showExternalFolderPicker = false
     @State private var externalActionMessage: String?
+    @Environment(\.menuControllerInputRouter) private var controllerInput
+
+    private var controllerTargetOrder: [String] {
+        let cleanupActions = [
+                "settings.storage.clear-cache",
+                "settings.storage.clear-textures",
+                "settings.storage.clear-logs",
+                "settings.storage.clear-all",
+            ]
+        return (isWorking ? [] : ["settings.storage.refresh"])
+            + ["settings.storage.add-file", "settings.storage.add-folder"]
+            + externalLibrary.directories.map { "settings.storage.remove.\($0.id)" }
+            + (isWorking ? [] : cleanupActions)
+    }
 
     private var externalGameFileContentTypes: [UTType] {
         var types: [UTType] = [.item, .data, .content]
@@ -287,8 +322,9 @@ struct StorageSettingsView: View {
     }
 
     var body: some View {
-        Form {
-            Section(settings.localized("Usage")) {
+        ZStack {
+            Form {
+                Section(settings.localized("Usage")) {
                 LabeledContent(settings.localized("App Cache"), value: formatBytes(report.appCacheBytes))
                 LabeledContent(settings.localized("Texture Dumps"), value: formatBytes(report.textureDumpBytes))
                 LabeledContent(settings.localized("Diagnostic Logs"), value: formatBytes(report.diagnosticLogBytes))
@@ -300,21 +336,24 @@ struct StorageSettingsView: View {
                 } label: {
                     Label(settings.localized("Refresh Storage Usage"), systemImage: "arrow.clockwise")
                 }
+                .controllerAccessibilityTargetID("settings.storage.refresh")
                 .disabled(isWorking)
             }
 
-            Section {
+                Section {
                 Button {
                     showExternalGameFilePicker = true
                 } label: {
                     Label(settings.localized("Add External Game File"), systemImage: "doc.badge.plus")
                 }
+                .controllerAccessibilityTargetID("settings.storage.add-file")
 
                 Button {
                     showExternalFolderPicker = true
                 } label: {
                     Label(settings.localized("Add External Game Folder"), systemImage: "externaldrive.badge.plus")
                 }
+                .controllerAccessibilityTargetID("settings.storage.add-folder")
 
                 if externalLibrary.directories.isEmpty {
                     ContentUnavailableView(
@@ -348,6 +387,12 @@ struct StorageSettingsView: View {
                                 Image(systemName: "trash")
                             }
                             .buttonStyle(.borderless)
+                            .controllerAccessibilityActionTarget(
+                                id: "settings.storage.remove.\(location.id)",
+                                label: settings.localized("Remove") + " " + location.displayName
+                            ) {
+                                externalLibrary.removeDirectory(id: location.id)
+                            }
                         }
                         .padding(.vertical, 4)
                     }
@@ -358,12 +403,13 @@ struct StorageSettingsView: View {
                 Text(settings.localized("USB/SSD folders can be scanned and played directly. Removing an entry only removes ARMSX2's bookmark and does not delete the game."))
             }
 
-            Section(settings.localized("Cleanup")) {
+                Section(settings.localized("Cleanup")) {
                 Button(role: .destructive) {
                     pendingAction = .appCache
                 } label: {
                     Label(settings.localized("Clear App Cache"), systemImage: "trash")
                 }
+                .controllerAccessibilityTargetID("settings.storage.clear-cache")
                 .disabled(isWorking)
 
                 Button(role: .destructive) {
@@ -371,6 +417,7 @@ struct StorageSettingsView: View {
                 } label: {
                     Label(settings.localized("Clear Texture Dumps"), systemImage: "photo.stack")
                 }
+                .controllerAccessibilityTargetID("settings.storage.clear-textures")
                 .disabled(isWorking)
 
                 Button(role: .destructive) {
@@ -378,6 +425,7 @@ struct StorageSettingsView: View {
                 } label: {
                     Label(settings.localized("Clear Diagnostic Logs"), systemImage: "doc.text.magnifyingglass")
                 }
+                .controllerAccessibilityTargetID("settings.storage.clear-logs")
                 .disabled(isWorking)
 
                 Button(role: .destructive) {
@@ -385,6 +433,7 @@ struct StorageSettingsView: View {
                 } label: {
                     Label(settings.localized("Clear All Generated Files"), systemImage: "externaldrive.badge.xmark")
                 }
+                .controllerAccessibilityTargetID("settings.storage.clear-all")
                 .disabled(isWorking)
 
                 if isWorking {
@@ -394,6 +443,40 @@ struct StorageSettingsView: View {
                 Text(settings.localized("This never removes imported games, BIOS files, save states, memory cards, covers, settings, PNACH files, or replacement texture packs."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                }
+            }
+            .controllerAccessibilityTargetOrder(controllerTargetOrder)
+
+            if showsExternalGamesControllerAlert,
+               let externalActionMessage {
+                ControllerNavigationAlert(
+                    title: settings.localized("External Games"),
+                    message: settings.localized(externalActionMessage),
+                    actions: [
+                        .init(id: "ok", title: settings.localized("OK")),
+                    ],
+                    selectedIndex: 0,
+                    onSelect: { _ in
+                        dismissExternalGamesAlert(feedback: .activate)
+                    },
+                    onDismiss: {
+                        dismissExternalGamesAlert(feedback: .back)
+                    }
+                )
+                // This modal owns its selection while the Settings session is
+                // retained underneath it. Do not register the OK action as a
+                // second target in that underlying Form graph.
+                .environment(\.controllerAccessibilityNavigationActive, false)
+                .environment(\.controllerAccessibilityNavigationSession, nil)
+                .overlay {
+                    if let controllerInput {
+                        StorageExternalGamesAlertCommandListener(
+                            controllerInput: controllerInput,
+                            onCommand: handleExternalGamesAlertCommand
+                        )
+                    }
+                }
+                .zIndex(20_000)
             }
         }
         .navigationTitle(settings.localized("Storage"))
@@ -401,6 +484,20 @@ struct StorageSettingsView: View {
         .task {
             externalLibrary.reload()
             await refreshReport()
+        }
+        .onChange(of: externalActionMessage) { _, _ in
+            updateExternalGamesAlertCapture()
+        }
+        .onChange(of: controllerInput?.hasConnectedController) { _, _ in
+            updateExternalGamesAlertCapture()
+        }
+        .onDisappear {
+            controllerInput?.setNavigationCaptured(
+                false,
+                owner: MenuControllerNavigationCaptureOwner
+                    .storageExternalGamesAlert,
+                priority: 1_000
+            )
         }
         .sheet(isPresented: $showExternalGameFilePicker) {
             ImportDocumentPicker(
@@ -478,7 +575,10 @@ struct StorageSettingsView: View {
         .alert(
             settings.localized("External Games"),
             isPresented: Binding(
-                get: { externalActionMessage != nil },
+                get: {
+                    externalActionMessage != nil
+                        && !showsExternalGamesControllerAlert
+                },
                 set: { if !$0 { externalActionMessage = nil } }
             )
         ) {
@@ -488,6 +588,61 @@ struct StorageSettingsView: View {
         } message: {
             Text(externalActionMessage ?? "")
         }
+    }
+
+    private var showsExternalGamesControllerAlert: Bool {
+        externalActionMessage != nil
+            && controllerInput?.hasConnectedController == true
+    }
+
+    @MainActor
+    private func updateExternalGamesAlertCapture() {
+        guard let controllerInput else { return }
+        if showsExternalGamesControllerAlert {
+            // A document picker is usually touch-owned. Restore controller
+            // presentation before claiming the modal so OK is immediately
+            // visible and the first press cannot reach Storage underneath.
+            controllerInput.claimPresentedNavigationFocus()
+        }
+        controllerInput.setNavigationCaptured(
+            showsExternalGamesControllerAlert,
+            owner: MenuControllerNavigationCaptureOwner
+                .storageExternalGamesAlert,
+            priority: 1_000
+        )
+    }
+
+    @MainActor
+    private func handleExternalGamesAlertCommand(
+        _ command: MenuControllerCommand
+    ) {
+        guard showsExternalGamesControllerAlert else { return }
+        switch command {
+        case .activate:
+            dismissExternalGamesAlert(feedback: .activate)
+        case .back:
+            dismissExternalGamesAlert(feedback: .back)
+        case .up, .upLeft, .left, .downLeft,
+             .upRight, .right, .downRight, .down,
+             .toggleFavorite, .showContextMenu,
+             .previousTab, .nextTab:
+            controllerInput?.playFeedback(.boundary)
+        }
+    }
+
+    @MainActor
+    private func dismissExternalGamesAlert(
+        feedback: MenuControllerFeedback
+    ) {
+        guard externalActionMessage != nil else { return }
+        controllerInput?.setNavigationCaptured(
+            false,
+            owner: MenuControllerNavigationCaptureOwner
+                .storageExternalGamesAlert,
+            priority: 1_000
+        )
+        externalActionMessage = nil
+        controllerInput?.playFeedback(feedback)
     }
 
     @MainActor

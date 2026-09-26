@@ -33,10 +33,12 @@ private let licenses: [LicenseEntry] = [
     LicenseEntry(name: "plutosvg", license: "MIT", copyright: "© plutosvg contributors"),
     LicenseEntry(name: "rcheevos", license: "MIT", copyright: "© RetroAchievements contributors"),
     LicenseEntry(name: "discord-rpc", license: "MIT", copyright: "© Discord Inc."),
-    LicenseEntry(name: "PlayStation 3 XMB Waves Recreation", license: "MIT", copyright: "© 2025 Mart"),
+    LicenseEntry(name: "Glass Ribbons Background", license: "MIT", copyright: "© 2025 Mart"),
 ]
 
 struct LicenseView: View {
+    @Environment(\.uiAccentColour) private var accentColour
+
     var body: some View {
         List(licenses) { entry in
             VStack(alignment: .leading, spacing: 4) {
@@ -44,7 +46,7 @@ struct LicenseView: View {
                     .font(.headline)
                 Text(entry.license)
                     .font(.subheadline)
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(accentColour)
                 Text(entry.copyright)
                     .font(.caption)
                     .foregroundStyle(.secondary)
