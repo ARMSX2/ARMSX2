@@ -3,9 +3,13 @@
 
 #pragma once
 
+#include "UpdaterBranding.h"
+
 #include "common/FileSystem.h"
+#include "common/Path.h"
 #include "common/ScopedGuard.h"
 #include "common/StringUtil.h"
+#include "common/ZipHelpers.h"
 
 #include "fmt/format.h"
 
@@ -18,17 +22,108 @@
 #endif
 
 #include <cstdio>
+#include <limits>
+#include <memory>
 #include <string>
 #include <vector>
-
-#ifdef _WIN32
-static constexpr char UPDATER_EXECUTABLE[] = "updater.exe";
-static constexpr char UPDATER_ARCHIVE_NAME[] = "update.7z";
-#endif
 
 static inline bool ExtractUpdater(const char* archive_path, const char* destination_path, std::string* error)
 {
 #if defined(_WIN32)
+	if (StringUtil::EndsWithNoCase(archive_path, ".zip"))
+	{
+		zip_error_t ze;
+		zip_error_init(&ze);
+		std::unique_ptr<zip_t, void (*)(zip_t*)> zip = zip_open_managed(archive_path, ZIP_RDONLY, &ze);
+		if (!zip)
+		{
+			*error = fmt::format("Failed to open '{}': {}", archive_path, zip_error_strerror(&ze));
+			zip_error_fini(&ze);
+			return false;
+		}
+		zip_error_fini(&ze);
+
+		const zip_int64_t count = zip_get_num_entries(zip.get(), 0);
+		if (count < 0)
+		{
+			*error = fmt::format("Failed to read zip directory: {}", zip_strerror(zip.get()));
+			return false;
+		}
+
+		zip_uint64_t updater_file_index = static_cast<zip_uint64_t>(count);
+		for (zip_uint64_t file_index = 0; file_index < static_cast<zip_uint64_t>(count); file_index++)
+		{
+			const char* filename = zip_get_name(zip.get(), file_index, ZIP_FL_ENC_GUESS);
+			if (!filename)
+				continue;
+
+			std::string normalized_filename(filename);
+			for (char& ch : normalized_filename)
+			{
+				if (ch == '/' || ch == '\\')
+					ch = FS_OSPATH_SEPARATOR_CHARACTER;
+			}
+
+			const std::string filename_only(Path::GetFileName(normalized_filename));
+			if (StringUtil::Strcasecmp(filename_only.c_str(), UpdaterBranding::UPDATER_EXECUTABLE) == 0)
+			{
+				updater_file_index = file_index;
+				break;
+			}
+		}
+
+		if (updater_file_index == static_cast<zip_uint64_t>(count))
+		{
+			*error = fmt::format("Updater executable ({}) not found in archive.", UpdaterBranding::UPDATER_EXECUTABLE);
+			return false;
+		}
+
+		zip_stat_t zs;
+		if (zip_stat_index(zip.get(), updater_file_index, ZIP_FL_ENC_GUESS, &zs) != 0)
+		{
+			*error = fmt::format("Failed to stat {} in archive: {}", UpdaterBranding::UPDATER_EXECUTABLE, zip_strerror(zip.get()));
+			return false;
+		}
+		if (zs.size > static_cast<zip_uint64_t>((std::numeric_limits<size_t>::max)()))
+		{
+			*error = fmt::format("{} is too large to extract.", UpdaterBranding::UPDATER_EXECUTABLE);
+			return false;
+		}
+
+		std::unique_ptr<zip_file_t, int (*)(zip_file_t*)> zf =
+			zip_fopen_index_managed(zip.get(), updater_file_index, ZIP_FL_ENC_GUESS);
+		if (!zf)
+		{
+			*error = fmt::format("Failed to open {} in archive: {}", UpdaterBranding::UPDATER_EXECUTABLE, zip_strerror(zip.get()));
+			return false;
+		}
+
+		std::vector<u8> data(static_cast<size_t>(zs.size));
+		if (!data.empty() && zip_fread(zf.get(), data.data(), data.size()) != static_cast<zip_int64_t>(data.size()))
+		{
+			*error = fmt::format("Failed to read {} from archive.", UpdaterBranding::UPDATER_EXECUTABLE);
+			return false;
+		}
+
+		std::FILE* fp = FileSystem::OpenCFile(destination_path, "wb");
+		if (!fp)
+		{
+			*error = fmt::format("Failed to open '{0}' for writing.", destination_path);
+			return false;
+		}
+
+		const bool wrote_completely = (data.empty() || std::fwrite(data.data(), data.size(), 1, fp) == 1) && std::fflush(fp) == 0;
+		if (std::fclose(fp) != 0 || !wrote_completely)
+		{
+			*error = fmt::format("Failed to write output file '{}'", destination_path);
+			FileSystem::DeleteFilePath(destination_path);
+			return false;
+		}
+
+		error->clear();
+		return true;
+	}
+
 	static constexpr size_t kInputBufSize = ((size_t)1 << 18);
 	static constexpr ISzAlloc g_Alloc = {SzAlloc, SzFree};
 
@@ -97,7 +192,7 @@ static inline bool ExtractUpdater(const char* archive_path, const char* destinat
 
 		// TODO: This won't work on Linux (4-byte wchar_t).
 		const std::string filename(StringUtil::WideStringToUTF8String(reinterpret_cast<wchar_t*>(filename_buffer.data())));
-		if (filename != UPDATER_EXECUTABLE)
+		if (filename != UpdaterBranding::UPDATER_EXECUTABLE)
 			continue;
 
 		updater_file_index = file_index;
@@ -106,7 +201,7 @@ static inline bool ExtractUpdater(const char* archive_path, const char* destinat
 
 	if (updater_file_index == archive.NumFiles)
 	{
-		*error = fmt::format("Updater executable ({}) not found in archive.", UPDATER_EXECUTABLE);
+		*error = fmt::format("Updater executable ({}) not found in archive.", UpdaterBranding::UPDATER_EXECUTABLE);
 		return false;
 	}
 
@@ -125,7 +220,7 @@ static inline bool ExtractUpdater(const char* archive_path, const char* destinat
 	if (res != SZ_OK)
 	{
 		*error = fmt::format("Failed to decompress {0} from 7z (file index=%u, error=%s)",
-			UPDATER_EXECUTABLE, updater_file_index, SZErrorToString(res));
+			UpdaterBranding::UPDATER_EXECUTABLE, updater_file_index, SZErrorToString(res));
 		return false;
 	}
 

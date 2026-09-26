@@ -362,6 +362,7 @@ endif()
 # Currently, 7z is only needed for the Windows updater.
 if(WIN32)
 	target_link_libraries(pcsx2-qt PRIVATE
+		libzip::zip
 		LZMA::LZMA
 	)
 endif()

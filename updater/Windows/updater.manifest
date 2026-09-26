@@ -3,10 +3,10 @@
 <assemblyIdentity
     version="1.0.0.0"
     processorArchitecture="*"
-    name="net.pcsx2.updater"
+    name="net.armsx2.updater"
     type="win32"
 />
-<description>PCSX2 Updater</description>
+<description>ARMSX2 Updater</description>
 <dependency>
     <dependentAssembly>
         <assemblyIdentity

@@ -2,6 +2,7 @@ add_executable(updater
 	SZErrors.h
 	Updater.cpp
 	Updater.h
+	UpdaterBranding.h
 	UpdaterExtractor.h
 )
 
@@ -12,6 +13,7 @@ if(WIN32)
 	target_sources(updater PRIVATE ../pcsx2-qt/VCRuntimeChecker.cpp)
 	target_link_libraries(updater PRIVATE
 		LZMA::LZMA
+		libzip::zip
 		Comctl32.lib
 	)
 	target_sources(updater PRIVATE

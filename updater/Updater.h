@@ -7,10 +7,12 @@
 
 #ifdef _WIN32
 #include "common/RedtapeWindows.h"
+#include "common/ZipHelpers.h"
 #include "7z.h"
 #include "7zFile.h"
 #endif
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -31,7 +33,7 @@ public:
 	void CleanupStagingDirectory();
 	void RemoveUpdateZip();
 
-	std::string FindPCSX2Exe() const;
+	std::string FindMainExecutable() const;
 
 private:
 	bool RecursiveDeleteDirectory(const char* path);
@@ -40,7 +42,7 @@ private:
 
 	struct FileToUpdate
 	{
-		u32 file_index;
+		u64 file_index;
 		std::string destination_filename;
 	};
 
@@ -59,8 +61,10 @@ private:
 	CFileInStream m_archive_stream = {};
 	CLookToRead2 m_look_stream = {};
 	CSzArEx m_archive = {};
+	std::unique_ptr<zip_t, void (*)(zip_t*)> m_zip_archive{nullptr, nullptr};
 
 	bool m_file_opened = false;
 	bool m_archive_opened = false;
+	bool m_is_zip_archive = false;
 #endif
 };

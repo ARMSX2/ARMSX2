@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "Updater.h"
+#include "UpdaterBranding.h"
 #include "Windows/resource.h"
 
 #include "common/FileSystem.h"
@@ -167,7 +168,7 @@ void Win32ProgressCallback::UIThreadProc(wil::slim_event_manual_reset* creationE
 
 bool Win32ProgressCallback::Create()
 {
-	static const wchar_t* CLASS_NAME = L"PCSX2Win32ProgressCallbackWindow";
+	static const wchar_t* CLASS_NAME = UpdaterBranding::WIN32_PROGRESS_WINDOW_CLASS;
 	static bool class_registered = false;
 
 	if (!class_registered)
@@ -431,7 +432,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 	if (argc != 5)
 	{
 		progress.ModalError("Expected 4 arguments: parent process id, output directory, update zip, program to "
-							"launch.\n\nThis program is not intended to be run manually, please use the main PCSX2 application and "
+							"launch.\n\nThis program is not intended to be run manually, please use the main application and "
 							"click Help->Check for Updates.");
 		return 1;
 	}
@@ -490,7 +491,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 	updater.RemoveUpdateZip();
 
 	// Rename the new executable to match the existing one
-	if (std::string actual_exe = updater.FindPCSX2Exe(); !actual_exe.empty())
+	if (std::string actual_exe = updater.FindMainExecutable(); !actual_exe.empty())
 	{
 		const std::string full_path = destination_directory + FS_OSPATH_SEPARATOR_STR + actual_exe;
 		progress.DisplayFormattedInformation("Moving '%s' to '%S'", full_path.c_str(), program_to_launch.c_str());
@@ -505,7 +506,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 	}
 	else
 	{
-		progress.ModalError("Couldn't find PCSX2 in update package, please re-download a fresh version from GitHub.");
+		progress.DisplayFormattedModalError("Couldn't find %s in update package, please re-download a fresh version from GitHub.",
+			UpdaterBranding::APP_NAME);
 		return 1;
 	}
 

@@ -225,6 +225,7 @@ private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, on
         // what changed without leaving for a browser — the GitHub row above is still there for
         // anyone who wants the repo itself.
         DrawerItem("news.title", "📰", AppRoute.News),
+        DrawerItem("update.title", "⬇️", AppRoute.Updates),
         DrawerItem("friends.title", "👥", AppRoute.Friends, friendsBadge = true),
         // About left the settings tab strip: it is a read-only page, not a setting, and it sat in
         // the tab row costing a slot on every settings visit.
@@ -363,6 +364,7 @@ private fun sameDestination(current: AppRoute, target: AppRoute): Boolean = when
     AppRoute.Achievements -> current is AppRoute.Achievements
     AppRoute.Language -> current is AppRoute.Language
     AppRoute.News -> current is AppRoute.News
+    AppRoute.Updates -> current is AppRoute.Updates
     AppRoute.Friends -> current is AppRoute.Friends
     AppRoute.About -> current is AppRoute.About
 }

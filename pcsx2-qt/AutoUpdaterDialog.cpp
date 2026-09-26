@@ -17,11 +17,10 @@
 #include "common/Console.h"
 #include "common/Error.h"
 #include "common/FileSystem.h"
+#include "common/HostSys.h"
 #include "common/HTTPDownloader.h"
 #include "common/Path.h"
 #include "common/StringUtil.h"
-
-#include "cpuinfo.h"
 
 #include <functional>
 #include <QtCore/QCoreApplication>
@@ -47,23 +46,7 @@
 // Interval at which HTTP requests are polled.
 static constexpr u32 HTTP_POLL_INTERVAL = 10;
 
-#if defined(_WIN32)
-#define UPDATE_PLATFORM_STR "Windows"
-#elif defined(__linux__)
-#define UPDATE_PLATFORM_STR "Linux"
-#elif defined(__APPLE__)
-#define UPDATE_PLATFORM_STR "MacOS"
-#endif
-
-#ifdef MULTI_ISA_SHARED_COMPILATION
-// #undef UPDATE_ADDITIONAL_TAGS
-#elif _M_SSE >= 0x501
-#define UPDATE_ADDITIONAL_TAGS "AVX2"
-#else
-#define UPDATE_ADDITIONAL_TAGS "SSE4"
-#endif
-
-#define LATEST_RELEASE_URL "https://api.armsx2.net/v1/%1Releases?pageSize=1"
+#define RELEASES_URL "https://api.github.com/repos/ARMSX2/ARMSX2/releases?per_page=20"
 #define CHANGES_URL "https://api.github.com/repos/ARMSX2/ARMSX2/compare/%1...%2"
 
 // Available release channels.
@@ -76,6 +59,112 @@ static const char* UPDATE_TAGS[] = {"stable", "nightly"};
 #ifndef DEFAULT_UPDATER_CHANNEL
 #define DEFAULT_UPDATER_CHANNEL "nightly"
 #endif
+
+static bool IsNightlyRelease(const QJsonObject& release)
+{
+	const QString identity = QStringLiteral("%1 %2")
+								 .arg(release["tag_name"].toString(), release["name"].toString())
+								 .toLower();
+	return identity.contains(QStringLiteral("nightly"));
+}
+
+static bool IsReleaseInChannel(const QJsonObject& release, const QString& channel)
+{
+	if (release["draft"].toBool())
+		return false;
+
+	if (channel == QStringLiteral("nightly"))
+		return release["prerelease"].toBool() || IsNightlyRelease(release);
+
+	return !IsNightlyRelease(release);
+}
+
+static bool IsOfficialGitHubDownload(const QString& url)
+{
+	return url.startsWith(QStringLiteral("https://github.com/ARMSX2/ARMSX2/releases/download/"));
+}
+
+static bool IsUnwantedUpdateAsset(const QString& name, const QString& identity)
+{
+	return identity.contains(QStringLiteral("symbols")) ||
+		   identity.contains(QStringLiteral("debug")) ||
+		   identity.contains(QStringLiteral("pdb")) ||
+		   identity.contains(QStringLiteral("dSYM"), Qt::CaseInsensitive) ||
+		   identity.contains(QStringLiteral("installer")) ||
+		   name.endsWith(QStringLiteral(".sha256"), Qt::CaseInsensitive) ||
+		   name.endsWith(QStringLiteral(".txt"), Qt::CaseInsensitive);
+}
+
+static bool IsAssetForCurrentPlatform(const QJsonObject& release, const QJsonObject& asset)
+{
+	const QString name = asset["name"].toString();
+	const QString lower_name = name.toLower();
+	const QString identity = QStringLiteral("%1 %2 %3")
+								 .arg(name, release["tag_name"].toString(), release["name"].toString())
+								 .toLower();
+
+	if (IsUnwantedUpdateAsset(name, identity))
+		return false;
+
+#if defined(_WIN32)
+	// The Windows updater replaces the app from an archive containing the unpacked program
+	// files and updater.exe. Standalone installers are deliberately ignored above.
+	return (identity.contains(QStringLiteral("windows")) ||
+			   identity.contains(QStringLiteral("armsx2-windows")) ||
+			   identity.contains(QStringLiteral("win-arm")) ||
+			   identity.contains(QStringLiteral("win64"))) &&
+		   (lower_name.endsWith(QStringLiteral(".zip")) ||
+			   identity.contains(QStringLiteral("windows-arm64")));
+#elif defined(__linux__)
+	return lower_name.endsWith(QStringLiteral(".appimage")) ||
+		   (identity.contains(QStringLiteral("linux")) && identity.contains(QStringLiteral("appimage")));
+#elif defined(__APPLE__)
+	return lower_name.endsWith(QStringLiteral(".tar.xz")) ||
+		   lower_name.endsWith(QStringLiteral(".app.zip")) ||
+		   lower_name.endsWith(QStringLiteral(".dmg")) ||
+		   lower_name.endsWith(QStringLiteral(".pkg")) ||
+		   identity.contains(QStringLiteral("armsx2-macos")) ||
+		   identity.contains(QStringLiteral("macos")) ||
+		   identity.contains(QStringLiteral("mac os"));
+#else
+	return false;
+#endif
+}
+
+static int ScoreUpdateAsset(const QJsonObject& asset)
+{
+	const QString name = asset["name"].toString().toLower();
+
+#if defined(_WIN32)
+	if (name.endsWith(QStringLiteral(".zip")))
+		return 4;
+	if (name.contains(QStringLiteral("windows-arm64")))
+		return 2;
+#elif defined(__linux__)
+	if (name.endsWith(QStringLiteral(".appimage")))
+	{
+		const bool wants_16k = (HostSys::GetRuntimePageSize() >= 16384);
+		if (wants_16k && name.contains(QStringLiteral("16k-pages")))
+			return 6;
+		if (!wants_16k && name.contains(QStringLiteral("4k-pages")))
+			return 6;
+		return 4;
+	}
+	if (name.contains(QStringLiteral("appimage")))
+		return 3;
+#elif defined(__APPLE__)
+	if (name.endsWith(QStringLiteral(".tar.xz")))
+		return 4;
+	if (name.endsWith(QStringLiteral(".app.zip")))
+		return 3;
+	if (name.endsWith(QStringLiteral(".dmg")) || name.endsWith(QStringLiteral(".pkg")))
+		return 2;
+	if (name.contains(QStringLiteral("macos-arm64")))
+		return 1;
+#endif
+
+	return 1;
+}
 
 AutoUpdaterDialog::AutoUpdaterDialog(QWidget* parent /* = nullptr */)
 	: QDialog(parent)
@@ -97,12 +186,6 @@ AutoUpdaterDialog::~AutoUpdaterDialog() = default;
 
 bool AutoUpdaterDialog::isSupported()
 {
-	// ARMSX2: the auto-updater is temporarily disabled — there is no ARMSX2
-	// update channel yet. Remove this early return to restore the original
-	// platform-detection logic below.
-	return false;
-
-#if 0
 	// Logic to detect whether we can use the auto updater.
 	// We use tagged commit, because this gets set on nightly builds.
 	if (!BuildVersion::GitTaggedCommit)
@@ -122,7 +205,6 @@ bool AutoUpdaterDialog::isSupported()
 	return true;
 #else
 	return false;
-#endif
 #endif
 }
 
@@ -218,7 +300,7 @@ void AutoUpdaterDialog::queueUpdateCheck(bool display_message)
 			return;
 		}
 
-		m_http->CreateRequest(QStringLiteral(LATEST_RELEASE_URL).arg(getCurrentUpdateTag()).toStdString(),
+		m_http->CreateRequest(QStringLiteral(RELEASES_URL).toStdString(),
 			std::bind(&AutoUpdaterDialog::getLatestReleaseComplete, this, std::placeholders::_1, std::placeholders::_3));
 	}
 	else
@@ -229,11 +311,6 @@ void AutoUpdaterDialog::queueUpdateCheck(bool display_message)
 
 void AutoUpdaterDialog::getLatestReleaseComplete(s32 status_code, std::vector<u8> data)
 {
-#ifdef _M_X86
-	// should already be initialized, but just in case this somehow runs before the CPU thread starts setting up...
-	cpuinfo_initialize();
-#endif
-
 	if (!isSupported())
 		return;
 
@@ -243,125 +320,59 @@ void AutoUpdaterDialog::getLatestReleaseComplete(s32 status_code, std::vector<u8
 	{
 		QJsonParseError parse_error;
 		QJsonDocument doc(QJsonDocument::fromJson(QByteArray(reinterpret_cast<const char*>(data.data()), data.size()), &parse_error));
-		if (doc.isObject())
+		if (doc.isArray())
 		{
-			const QJsonObject doc_object(doc.object());
-			const QJsonArray data_array(doc_object["data"].toArray());
-			if (!data_array.isEmpty())
+			const QString channel = getCurrentUpdateTag();
+			const QJsonArray releases(doc.array());
+			bool found_channel_release = false;
+			for (const QJsonValue& release_value : releases)
 			{
-				// just take the first one, that's all we requested anyway
-				const QJsonObject data_object(data_array.first().toObject());
-				const QJsonObject assets_object(data_object["assets"].toObject());
-				const QJsonArray platform_array(assets_object[UPDATE_PLATFORM_STR].toArray());
-				if (!platform_array.isEmpty())
+				const QJsonObject release(release_value.toObject());
+				if (!IsReleaseInChannel(release, channel))
+					continue;
+				found_channel_release = true;
+
+				const QJsonArray assets(release["assets"].toArray());
+				QJsonObject best_asset;
+				int best_asset_score = 0;
+
+				for (const QJsonValue& asset_value : assets)
 				{
-					QJsonObject best_asset;
-					int best_asset_score = 0;
+					const QJsonObject asset(asset_value.toObject());
+					const QString download_url = asset["browser_download_url"].toString();
+					if (!IsOfficialGitHubDownload(download_url) || !IsAssetForCurrentPlatform(release, asset))
+						continue;
 
-					// search for usable files
-					for (const QJsonValue& asset_value : platform_array)
+					const int score = ScoreUpdateAsset(asset);
+					if (score > best_asset_score)
 					{
-						const QJsonObject asset_object(asset_value.toObject());
-						const QJsonArray additional_tags_array(asset_object["additionalTags"].toArray());
-						bool is_symbols = false;
-						bool is_installer = false;
-						bool is_avx2 = false;
-						bool is_sse4 = false;
-						bool is_perfect_match = false;
-						for (const QJsonValue& additional_tag : additional_tags_array)
-						{
-							const QString additional_tag_str(additional_tag.toString());
-							if (additional_tag_str == QStringLiteral("symbols"))
-							{
-								// we're not interested in symbols downloads
-								is_symbols = true;
-								break;
-							}
-							if (additional_tag_str == QStringLiteral("installer"))
-							{
-								// we're not interested in installer download
-								is_installer = true;
-								break;
-							}
-							else if (additional_tag_str == QStringLiteral("SSE4"))
-							{
-								is_sse4 = true;
-							}
-							else if (additional_tag_str == QStringLiteral("AVX2"))
-							{
-								is_avx2 = true;
-							}
-#ifdef UPDATE_ADDITIONAL_TAGS
-							if (additional_tag_str == QStringLiteral(UPDATE_ADDITIONAL_TAGS))
-							{
-								// Found the same variant as what's currently running!  But keep checking in case it's symbols.
-								is_perfect_match = true;
-							}
-#endif
-						}
-
-						if (is_symbols)
-						{
-							// skip this asset
-							continue;
-						}
-
-						if (is_installer)
-						{
-							// skip this asset
-							continue;
-						}
-#ifdef _M_X86
-						if (is_avx2 && cpuinfo_has_x86_avx2())
-						{
-							// skip this asset
-							continue;
-						}
-#endif
-
-						int score;
-						if (is_perfect_match)
-							score = 4; // #1 choice is the one matching this binary
-						else if (is_avx2)
-							score = 3; // Prefer AVX2 over SSE4 (support test was done above)
-						else if (is_sse4)
-							score = 2; // Prefer SSE4 over one with no tags at all
-						else
-							score = 1; // Multi-ISA builds will have no tags, they'll only get picked because they're the only available build
-
-						if (score > best_asset_score)
-						{
-							best_asset = std::move(asset_object);
-							best_asset_score = score;
-						}
-					}
-
-					if (best_asset_score == 0)
-					{
-						reportError("no matching assets found");
-					}
-					else
-					{
-						m_latest_version = data_object["version"].toString();
-						m_latest_version_timestamp = QDateTime::fromString(data_object["publishedAt"].toString(), QStringLiteral("yyyy-MM-ddThh:mm:ss.zzzZ"));
-						m_download_url = best_asset["url"].toString();
-						m_download_size = best_asset["size"].toInt();
-						found_update_info = true;
+						best_asset = asset;
+						best_asset_score = score;
 					}
 				}
-				else
-				{
-					reportError("platform not found in assets array");
-				}
+
+				if (best_asset_score == 0)
+					continue;
+
+				m_latest_version = release["tag_name"].toString();
+				m_latest_version_timestamp = QDateTime::fromString(release["published_at"].toString(), Qt::ISODate);
+				m_download_url = best_asset["browser_download_url"].toString();
+				m_download_size = best_asset["size"].toInt();
+				found_update_info = true;
+				break;
 			}
-			else
+
+			if (!found_update_info)
 			{
-				reportError("data is not an array");
+				if (found_channel_release)
+					reportError("no matching %s assets found for this platform", channel.toUtf8().constData());
+				else
+					reportError("no %s releases found", channel.toUtf8().constData());
 			}
 		}
 		else
 		{
-			reportError("JSON is not an object");
+			reportError("GitHub release JSON is not an array");
 		}
 	}
 	else
@@ -611,8 +622,8 @@ bool AutoUpdaterDialog::doesUpdaterNeedElevation(const std::string& application_
 bool AutoUpdaterDialog::processUpdate(const std::vector<u8>& data, QProgressDialog&)
 {
 	const std::string& application_dir = EmuFolders::AppRoot;
-	const std::string update_zip_path = Path::Combine(EmuFolders::DataRoot, UPDATER_ARCHIVE_NAME);
-	const std::string updater_path = Path::Combine(EmuFolders::DataRoot, UPDATER_EXECUTABLE);
+	const std::string update_zip_path = Path::Combine(EmuFolders::DataRoot, UpdaterBranding::UPDATE_ARCHIVE_NAME);
+	const std::string updater_path = Path::Combine(EmuFolders::DataRoot, UpdaterBranding::UPDATER_EXECUTABLE);
 
 	if ((FileSystem::FileExists(update_zip_path.c_str()) && !FileSystem::DeleteFilePath(update_zip_path.c_str())))
 	{
@@ -675,7 +686,7 @@ void AutoUpdaterDialog::cleanupAfterUpdate()
 	if (EmuFolders::AppRoot == EmuFolders::DataRoot)
 		return;
 
-	const std::string updater_path = Path::Combine(EmuFolders::DataRoot, UPDATER_EXECUTABLE);
+	const std::string updater_path = Path::Combine(EmuFolders::DataRoot, UpdaterBranding::UPDATER_EXECUTABLE);
 	if (!FileSystem::FileExists(updater_path.c_str()))
 		return;
 

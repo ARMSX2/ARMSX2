@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "Updater.h"
+#include "UpdaterBranding.h"
 
 #include "common/Console.h"
 #include "common/FileSystem.h"
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <set>
 #include <string>
@@ -36,7 +38,7 @@ static constexpr ISzAlloc g_Alloc = {SzAlloc, SzFree};
 Updater::Updater(ProgressCallback* progress)
 	: m_progress(progress)
 {
-	progress->SetTitle("PCSX2 Update Installer");
+	progress->SetTitle(UpdaterBranding::WINDOW_TITLE);
 }
 
 Updater::~Updater()
@@ -66,11 +68,28 @@ bool Updater::Initialize(std::string destination_directory)
 bool Updater::OpenUpdateZip(const char* path)
 {
 #ifdef _WIN32
+	m_zip_path = path;
+	m_is_zip_archive = StringUtil::EndsWithNoCase(path, ".zip");
+	if (m_is_zip_archive)
+	{
+		zip_error_t ze;
+		zip_error_init(&ze);
+		m_zip_archive = zip_open_managed(path, ZIP_RDONLY, &ze);
+		if (!m_zip_archive)
+		{
+			m_progress->DisplayFormattedModalError("Failed to open '%s': %s", path, zip_error_strerror(&ze));
+			zip_error_fini(&ze);
+			return false;
+		}
+
+		zip_error_fini(&ze);
+		m_progress->SetStatusText("Parsing update zip...");
+		return ParseZip();
+	}
+
 	FileInStream_CreateVTable(&m_archive_stream);
 	LookToRead2_CreateVTable(&m_look_stream, False);
 	CrcGenerateTable();
-
-	m_zip_path = path;
 
 	m_look_stream.buf = (Byte*)ISzAlloc_Alloc(&g_Alloc, kInputBufSize);
 	if (!m_look_stream.buf)
@@ -115,6 +134,9 @@ bool Updater::OpenUpdateZip(const char* path)
 void Updater::CloseUpdateZip()
 {
 #ifdef _WIN32
+	m_zip_archive.reset();
+	m_is_zip_archive = false;
+
 	if (m_archive_opened)
 	{
 		SzArEx_Free(&m_archive, &g_Alloc);
@@ -182,6 +204,46 @@ bool Updater::RecursiveDeleteDirectory(const char* path)
 bool Updater::ParseZip()
 {
 #ifdef _WIN32
+	if (m_is_zip_archive)
+	{
+		const zip_int64_t count = zip_get_num_entries(m_zip_archive.get(), 0);
+		if (count < 0)
+		{
+			m_progress->DisplayFormattedModalError("Failed to read zip directory: %s", zip_strerror(m_zip_archive.get()));
+			return false;
+		}
+
+		for (zip_uint64_t file_index = 0; file_index < static_cast<zip_uint64_t>(count); file_index++)
+		{
+			zip_stat_t zs;
+			if (zip_stat_index(m_zip_archive.get(), file_index, ZIP_FL_ENC_GUESS, &zs) != 0 || !zs.name)
+				continue;
+
+			FileToUpdate entry;
+			entry.file_index = file_index;
+			entry.destination_filename = zs.name;
+			if (entry.destination_filename.empty())
+				continue;
+
+			for (size_t i = 0; i < entry.destination_filename.length(); i++)
+			{
+				if (entry.destination_filename[i] == '/' || entry.destination_filename[i] == '\\')
+					entry.destination_filename[i] = FS_OSPATH_SEPARATOR_CHARACTER;
+			}
+
+			while (!entry.destination_filename.empty() && entry.destination_filename[0] == FS_OSPATH_SEPARATOR_CHARACTER)
+				entry.destination_filename.erase(0, 1);
+
+			if (!entry.destination_filename.empty() && entry.destination_filename.back() != FS_OSPATH_SEPARATOR_CHARACTER &&
+				StringUtil::Strcasecmp(entry.destination_filename.c_str(), "updater.exe") != 0)
+			{
+				m_progress->DisplayFormattedInformation("Found file in zip: '%s'", entry.destination_filename.c_str());
+				m_update_paths.push_back(std::move(entry));
+			}
+		}
+	}
+	else
+	{
 	std::vector<UInt16> filename_buffer;
 
 	for (u32 file_index = 0; file_index < m_archive.NumFiles; file_index++)
@@ -226,6 +288,7 @@ bool Updater::ParseZip()
 				m_update_paths.push_back(std::move(entry));
 			}
 		}
+	}
 	}
 
 	if (m_update_paths.empty())
@@ -302,6 +365,67 @@ bool Updater::StageUpdate()
 	m_progress->SetProgressValue(0);
 
 #ifdef _WIN32
+	if (m_is_zip_archive)
+	{
+		std::vector<u8> buffer;
+		for (const FileToUpdate& ftu : m_update_paths)
+		{
+			m_progress->SetFormattedStatusText("Extracting '%s'...", ftu.destination_filename.c_str());
+			m_progress->DisplayFormattedInformation("Decompressing '%s'...", ftu.destination_filename.c_str());
+
+			zip_stat_t zs;
+			if (zip_stat_index(m_zip_archive.get(), static_cast<zip_uint64_t>(ftu.file_index), ZIP_FL_ENC_GUESS, &zs) != 0)
+			{
+				m_progress->DisplayFormattedModalError("Failed to stat file '%s' from zip: %s",
+					ftu.destination_filename.c_str(), zip_strerror(m_zip_archive.get()));
+				return false;
+			}
+			if (zs.size > static_cast<zip_uint64_t>((std::numeric_limits<size_t>::max)()))
+			{
+				m_progress->DisplayFormattedModalError("File '%s' is too large to extract.", ftu.destination_filename.c_str());
+				return false;
+			}
+
+			std::unique_ptr<zip_file_t, int (*)(zip_file_t*)> zf =
+				zip_fopen_index_managed(m_zip_archive.get(), static_cast<zip_uint64_t>(ftu.file_index), ZIP_FL_ENC_GUESS);
+			if (!zf)
+			{
+				m_progress->DisplayFormattedModalError("Failed to open file '%s' from zip: %s",
+					ftu.destination_filename.c_str(), zip_strerror(m_zip_archive.get()));
+				return false;
+			}
+
+			buffer.resize(static_cast<size_t>(zs.size));
+			if (!buffer.empty() && zip_fread(zf.get(), buffer.data(), buffer.size()) != static_cast<zip_int64_t>(buffer.size()))
+			{
+				m_progress->DisplayFormattedModalError("Failed to read file '%s' from zip.", ftu.destination_filename.c_str());
+				return false;
+			}
+
+			const std::string destination_file = StringUtil::StdStringFromFormat(
+				"%s" FS_OSPATH_SEPARATOR_STR "%s", m_staging_directory.c_str(), ftu.destination_filename.c_str());
+			std::FILE* fp = FileSystem::OpenCFile(destination_file.c_str(), "wb");
+			if (!fp)
+			{
+				m_progress->DisplayFormattedModalError("Failed to open staging output file '%s'", destination_file.c_str());
+				return false;
+			}
+
+			const bool wrote_completely =
+				(buffer.empty() || std::fwrite(buffer.data(), buffer.size(), 1, fp) == 1) && std::fflush(fp) == 0;
+			if (std::fclose(fp) != 0 || !wrote_completely)
+			{
+				m_progress->DisplayFormattedModalError("Failed to write output file '%s'", destination_file.c_str());
+				FileSystem::DeleteFilePath(destination_file.c_str());
+				return false;
+			}
+
+			m_progress->IncrementProgressValue();
+		}
+
+		return true;
+	}
+
 	UInt32 block_index = 0xFFFFFFFF; /* it can have any value before first call (if outBuffer = 0) */
 	Byte* out_buffer = 0; /* it must be 0 before first call for each new archive. */
 	size_t out_buffer_size = 0; /* it can have any value before first call (if outBuffer = 0) */
@@ -415,14 +539,14 @@ void Updater::RemoveUpdateZip()
 		m_progress->DisplayFormattedError("Failed to remove update zip '%s'", m_zip_path.c_str());
 }
 
-std::string Updater::FindPCSX2Exe() const
+std::string Updater::FindMainExecutable() const
 {
 	for (const FileToUpdate& file : m_update_paths)
 	{
 		const std::string& name = file.destination_filename;
 		if (name.find(FS_OSPATH_SEPARATOR_CHARACTER) != name.npos)
 			continue; // Main exe is expected to be at the top level
-		if (!StringUtil::StartsWithNoCase(name, "pcsx2"))
+		if (!StringUtil::StartsWithNoCase(name, UpdaterBranding::APP_EXECUTABLE_PREFIX))
 			continue;
 		if (!StringUtil::EndsWithNoCase(name, "exe"))
 			continue;
