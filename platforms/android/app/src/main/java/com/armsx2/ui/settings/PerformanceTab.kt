@@ -282,7 +282,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
             SettingsDivider()
             // Recompiler float-clamping accuracy (PCSX2 parity). Higher = more
             // accurate float handling (fixes SPS / missing geometry / VU glitches)
-            // at a speed cost. Needs a recompiler reset, so restart the game.
+            // at a speed cost. Applying settings resets the recompiler cache in-game.
             SegmentedRow(
                 label = str("perf.eeFpuClamping.label"),
                 options = listOf(str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.full"), str("perf.clamp.exact")),

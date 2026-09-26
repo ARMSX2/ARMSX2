@@ -892,8 +892,8 @@ data class Settings(
         put("EmuCore/Speedhacks", "EECycleRate", "int", cpu.eeCycleRate.toString())
         put("EmuCore/Speedhacks", "EECycleSkip", "int", cpu.eeCycleSkip.toString())
         // EE/FPU + VU clamping (recompiler accuracy). Each mode unpacks to the
-        // PCSX2 bit flags below. Needs a recompiler reset (commitSettings /
-        // game restart) to take effect.
+        // PCSX2 bit flags below. commitSettings resets the recompiler cache
+        // in-game, so a game restart is not required.
         put("EmuCore/CPU/Recompiler", "fpuOverflow", "bool", (cpu.eeClampMode >= 1).toString())
         put("EmuCore/CPU/Recompiler", "fpuExtraOverflow", "bool", (cpu.eeClampMode >= 2).toString())
         put("EmuCore/CPU/Recompiler", "fpuFullMode", "bool", (cpu.eeClampMode >= 3).toString())
