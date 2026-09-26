@@ -25,7 +25,45 @@ struct ShaderPresetListing: Hashable {
     static let empty = ShaderPresetListing(folders: [], presets: [])
 }
 
-/// The two preset roots, and tokens that name a preset across reinstalls.
+/// A direct child of Documents/shaders which the user can remove without ever
+/// exposing the read-only bundled collection or the protected My Presets folder.
+struct ShaderManagedDownload: Identifiable, Hashable {
+    enum Kind: Hashable {
+        case pack
+        case preset
+    }
+
+    let name: String
+    let url: URL
+    let kind: Kind
+
+    var id: URL { url }
+
+    func contains(_ candidate: URL) -> Bool {
+        let rootPath = url.standardizedFileURL.path
+        let candidatePath = candidate.standardizedFileURL.path
+        switch kind {
+        case .pack:
+            return candidatePath == rootPath || candidatePath.hasPrefix(rootPath + "/")
+        case .preset:
+            return candidatePath == rootPath
+        }
+    }
+}
+
+enum ShaderManagedDownloadError: LocalizedError {
+    case protectedLocation
+
+    var errorDescription: String? {
+        switch self {
+        case .protectedLocation:
+            return "Only downloaded shader packs and presets can be deleted."
+        }
+    }
+}
+
+/// The two preset roots, persistent tokens, browsing, and downloaded-pack
+/// management. It has no instance state, so every entry point remains static.
 enum ShaderPresetLibrary {
     static let presetExtension = "slangp"
     static let rootFolderName = "shaders"
@@ -197,6 +235,61 @@ enum ShaderPresetLibrary {
     static func deletableURL(for preset: ShaderPresetFile) -> URL? {
         let parent = preset.url.deletingLastPathComponent().standardizedFileURL.path
         return parent == savedPresetRoot?.standardizedFileURL.path ? preset.url : nil
+    }
+
+    /// Manage the install unit rather than a promoted browser folder. A shader archive may
+    /// contain one wrapping directory which the browser intentionally skips; deleting that
+    /// promoted child would otherwise leave the wrapper and catalogue marker behind.
+    static func managedDownloads() -> [ShaderManagedDownload] {
+        guard let root = prepareUserRoots() else { return [] }
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        return contents.compactMap { rawURL in
+            let url = rawURL.standardizedFileURL
+            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?
+                .isDirectory == true
+            if isDirectory {
+                guard url.lastPathComponent != savedPresetFolderName,
+                      containsPreset(url) else { return nil }
+                return ShaderManagedDownload(
+                    name: url.lastPathComponent,
+                    url: url,
+                    kind: .pack
+                )
+            }
+            guard url.pathExtension.lowercased() == presetExtension else { return nil }
+            return ShaderManagedDownload(
+                name: url.deletingPathExtension().lastPathComponent,
+                url: url,
+                kind: .preset
+            )
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// Deletion is restricted to direct, currently enumerated children of Documents/shaders.
+    /// This prevents a stale or forged URL from deleting bundled content, My Presets, or an
+    /// arbitrary directory elsewhere in the app container.
+    static func deleteManagedDownloads(_ downloads: [ShaderManagedDownload]) throws {
+        guard let root = userRoot?.standardizedFileURL else {
+            throw ShaderManagedDownloadError.protectedLocation
+        }
+        let allowedPaths = Set(managedDownloads().map { $0.url.standardizedFileURL.path })
+        for download in downloads {
+            let url = download.url.standardizedFileURL
+            guard url.deletingLastPathComponent().path == root.path,
+                  url.lastPathComponent != savedPresetFolderName,
+                  allowedPaths.contains(url.path) else {
+                throw ShaderManagedDownloadError.protectedLocation
+            }
+        }
+        for download in downloads {
+            try FileManager.default.removeItem(at: download.url.standardizedFileURL)
+        }
     }
 
     private static func listing(at directory: URL) -> ShaderPresetListing {

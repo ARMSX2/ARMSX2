@@ -10,24 +10,134 @@ private struct ShaderPackPickerSource: Identifiable {
     var id: Bool { isFolder }
 }
 
+private struct ShaderPackInstallOptionsView: View {
+    let localized: @MainActor (String) -> String
+    let controllerInput: MenuControllerInputRouter?
+    let onZip: () -> Void
+    let onFolder: () -> Void
+    let onBasePack: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    private let targetOrder = [
+        "shader-install.zip",
+        "shader-install.folder",
+        "shader-install.base-pack",
+        "shader-install.cancel",
+    ]
+
+    var body: some View {
+        NavigationStack {
+            List {
+                installButton(
+                    id: "shader-install.zip",
+                    title: localized("From a Zip Archive"),
+                    systemImage: "doc.zipper",
+                    action: onZip
+                )
+                installButton(
+                    id: "shader-install.folder",
+                    title: localized("From a Folder"),
+                    systemImage: "folder",
+                    action: onFolder
+                )
+                installButton(
+                    id: "shader-install.base-pack",
+                    title: localized("Get Base Shader Pack"),
+                    systemImage: "arrow.down.circle.fill",
+                    action: onBasePack
+                )
+            }
+            .navigationTitle(localized("Install Shader Pack"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(localized("Cancel")) { dismiss() }
+                        .controllerAccessibilityActionTarget(
+                            id: "shader-install.cancel",
+                            label: localized("Cancel"),
+                            activationFeedback: .back
+                        ) {
+                            dismiss()
+                        }
+                }
+            }
+            .controllerAccessibilityTargetOrder(targetOrder)
+            .controllerAccessibilityNavigation(
+                controllerInput: controllerInput,
+                scopeKey: "shader-install-options",
+                priority: 760,
+                orbStyle: .liquidGlass,
+                onBack: {
+                    dismiss()
+                    return true
+                },
+                usesNativeFocusEngine: false,
+                usesExplicitTargetGeometryOnly: true,
+                preferredInitialFocusLabel: targetOrder.first,
+                declaredTargetOrder: targetOrder
+            )
+        }
+        .presentationDetents([.medium])
+    }
+
+    private func installButton(
+        id: String,
+        title: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            dismissThen(action)
+        } label: {
+            Label(title, systemImage: systemImage)
+        }
+        .controllerAccessibilityActionTarget(id: id, label: title) {
+            dismissThen(action)
+        }
+    }
+
+    private func dismissThen(_ action: @escaping () -> Void) {
+        dismiss()
+        Task { @MainActor in
+            await Task.yield()
+            action()
+        }
+    }
+}
+
+private struct ShaderCatalogBrowserRequest: Identifiable {
+    let id = "shader-catalog-browser"
+}
+
 /// Persistence comes from the caller, so Settings and the pause card share these rows.
 struct ShaderChainSection: View {
     @Binding var enabled: Bool
     @Binding var presetRef: String
     let localized: @MainActor (String) -> String
+    var controllerInput: MenuControllerInputRouter? = nil
+    var onLivePreviewChange: (@MainActor (String, String) -> Void)? = nil
+    var showsParameters = true
+    var showsClearPresetAction = true
+    var showsEnabledToggle = true
 
     @StateObject private var importer = ShaderPackImporter()
     @StateObject private var params = ShaderParams()
     @State private var pickerSource: ShaderPackPickerSource?
     @State private var browseRequest: ShaderPresetBrowserRequest?
+    @State private var catalogRequest: ShaderCatalogBrowserRequest?
     @State private var saveRequest: ShaderPresetSaveRequest?
+    @State private var showsInstallOptions = false
 
     private var settings: SettingsStore { SettingsStore.shared }
 
     var body: some View {
         Group {
             chainSection
-            if enabled, !presetRef.isEmpty, params.isLoading || !params.params.isEmpty {
+            if showsParameters,
+               enabled,
+               !presetRef.isEmpty,
+               params.isLoading || !params.params.isEmpty {
                 parameterSection
             }
         }
@@ -36,7 +146,9 @@ struct ShaderChainSection: View {
     private var chainSection: some View {
         Section {
             Button {
-                browseRequest = ShaderPresetBrowserRequest()
+                performTouchAction(.submenu) {
+                    browseRequest = ShaderPresetBrowserRequest()
+                }
             } label: {
                 HStack {
                     Text(localized("Preset"))
@@ -51,6 +163,12 @@ struct ShaderChainSection: View {
                 }
             }
             .tint(.primary)
+            .controllerAccessibilityActionTarget(
+                id: "shader-chain.preset",
+                label: localized("Preset")
+            ) {
+                browseRequest = ShaderPresetBrowserRequest()
+            }
             .sheet(item: $browseRequest, onDismiss: {
                 if !presetRef.isEmpty, ShaderPresetLibrary.resolve(presetRef) == nil { presetRef = "" }
             }) { _ in
@@ -60,10 +178,9 @@ struct ShaderChainSection: View {
                         folder: nil,
                         selectedToken: presetRef,
                         localized: localized,
-                        onSelect: { token in
-                            select(token)
-                            browseRequest = nil
-                        }
+                        onSelect: selectPreset,
+                        controllerInput: controllerInput,
+                        onClose: { browseRequest = nil }
                     )
                 }
             }
@@ -75,36 +192,68 @@ struct ShaderChainSection: View {
                 problem(failure)
             }
 
-            if !presetRef.isEmpty {
-                Toggle(localized("Shaders"), isOn: $enabled)
+            if showsEnabledToggle, !presetRef.isEmpty {
+                Toggle(localized("Shaders"), isOn: touchLiveEnabled)
+                    .controllerAccessibilityToggleTarget(
+                        id: "shader-chain.enabled",
+                        label: localized("Shaders"),
+                        isOn: liveEnabled
+                    )
             }
 
-            NavigationLink {
-                ShaderCatalogBrowserView(localized: localized, onSelect: select)
+            Button {
+                performTouchAction(.submenu) {
+                    catalogRequest = ShaderCatalogBrowserRequest()
+                }
             } label: {
                 Label(localized("Download Shaders"), systemImage: "arrow.down.circle")
             }
+            .controllerAccessibilityActionTarget(
+                id: "shader-chain.download",
+                label: localized("Download Shaders")
+            ) {
+                catalogRequest = ShaderCatalogBrowserRequest()
+            }
+            .sheet(item: $catalogRequest) { _ in
+                NavigationStack {
+                    ShaderCatalogBrowserView(
+                        localized: localized,
+                        onSelect: selectPreset,
+                        controllerInput: controllerInput
+                    )
+                }
+                .presentationDetents([.large])
+            }
 
-            Menu {
-                Button {
-                    pickerSource = ShaderPackPickerSource(isFolder: false)
-                } label: {
-                    Label(localized("From a Zip Archive"), systemImage: "doc.zipper")
-                }
-                Button {
-                    pickerSource = ShaderPackPickerSource(isFolder: true)
-                } label: {
-                    Label(localized("From a Folder"), systemImage: "folder")
-                }
-                Button(action: getBasePack) {
-                    basePackLabel
+            Button {
+                performTouchAction(.submenu) {
+                    showsInstallOptions = true
                 }
             } label: {
                 Label(localized("Install Shader Pack"), systemImage: "square.and.arrow.down")
             }
+            .controllerAccessibilityActionTarget(
+                id: "shader-chain.install",
+                label: localized("Install Shader Pack")
+            ) {
+                showsInstallOptions = true
+            }
             .disabled(importer.isBusy)
             .sheet(item: $pickerSource) { source in
                 picker(for: source)
+            }
+            .sheet(isPresented: $showsInstallOptions) {
+                ShaderPackInstallOptionsView(
+                    localized: localized,
+                    controllerInput: controllerInput,
+                    onZip: {
+                        pickerSource = ShaderPackPickerSource(isFolder: false)
+                    },
+                    onFolder: {
+                        pickerSource = ShaderPackPickerSource(isFolder: true)
+                    },
+                    onBasePack: getBasePack
+                )
             }
 
             if importer.installing.contains(ShaderPresetLibrary.basePackFolderName) {
@@ -131,12 +280,21 @@ struct ShaderChainSection: View {
                     .foregroundStyle(.orange)
             }
 
-            if !presetRef.isEmpty {
+            if showsClearPresetAction, !presetRef.isEmpty {
                 Button(role: .destructive) {
-                    presetRef = ""
+                    performTouchAction(.activate) {
+                        selectPreset("")
+                    }
                 } label: {
                     Text(localized("Clear Preset"))
                 }
+                .controllerAccessibilityActionTarget(
+                    id: "shader-chain.clear-preset",
+                    label: localized("Clear Preset")
+                ) {
+                    selectPreset("")
+                }
+                .foregroundStyle(.red)
             }
         } footer: {
             Text(localized("Filters like CRT scanlines or LCD grids, drawn over the game. The first frame can stutter while one loads."))
@@ -167,14 +325,30 @@ struct ShaderChainSection: View {
                         Task { if let token = await params.save(as: name) { select(token) } }
                     }
                 }
+                .controllerAccessibilityActionTarget(
+                    id: "shader-chain.save-preset",
+                    label: localized("Save as New Preset")
+                ) {
+                    saveRequest = ShaderPresetSaveRequest(
+                        token: presetRef, suggestedName: presetName)
+                }
             }
 
             if params.hasOverrides {
-                Button(role: .destructive) {
+                ConfirmedSettingsResetButton(
+                    localized("Reset All Parameters"),
+                    confirmationTitle: localized("Reset Shader Parameters?"),
+                    confirmationMessage: localized("This restores every parameter exposed by the current shader preset."),
+                    completionMessage: localized("Defaults Restored"),
+                    controllerTargetID: "shader-chain.reset-parameters"
+                ) {
                     params.resetAll()
-                } label: {
-                    Text(localized("Reset All Parameters"))
+                    onLivePreviewChange?(
+                        localized("Parameters"),
+                        localized("Defaults")
+                    )
                 }
+                .uiCriticalForegroundStyle()
             }
 
             if let failure = params.errorText {
@@ -197,21 +371,27 @@ struct ShaderChainSection: View {
                 param.label,
                 value: Binding(
                     get: { params.value(for: param) },
-                    set: { params.setValue($0, for: param) }
+                    set: { setParameter($0, for: param) }
                 ),
                 in: param.minimum...param.maximum,
                 format: NumberFormat.plain.decimals(param.decimals),
                 step: Double(param.increment),
-                detents: NumberRow.stops(in: Double(param.minimum)...Double(param.maximum),
-                                         step: Double(param.increment)),
+                detents: NumberRow.stops(
+                    in: Double(param.minimum)...Double(param.maximum),
+                    step: Double(param.increment)
+                ),
                 accessory: NumberRowAccessory(
                     systemImage: "arrow.counterclockwise",
                     label: "Reset %@",
                     isVisible: params.overrides[param.name] != nil,
-                    action: { params.reset(param) }
+                    action: {
+                        params.reset(param)
+                        presentParameterPreview(param)
+                    }
                 ),
                 settings: settings
             )
+            .controllerAccessibilityTargetID(parameterTargetID(param))
         } else {
             Text(param.label)
                 .font(.footnote.weight(.semibold))
@@ -262,6 +442,79 @@ struct ShaderChainSection: View {
 
     private var presetName: String {
         ShaderPresetLibrary.displayName(for: presetRef) ?? localized("None")
+    }
+
+    private var liveEnabled: Binding<Bool> {
+        Binding(
+            get: { enabled },
+            set: { next in
+                guard enabled != next else { return }
+                enabled = next
+                onLivePreviewChange?(
+                    localized("Shader Chain"),
+                    localized(next ? "On" : "Off")
+                )
+            }
+        )
+    }
+
+    private var touchLiveEnabled: Binding<Bool> {
+        Binding(
+            get: { liveEnabled.wrappedValue },
+            set: { next in
+                performTouchAction(.toggle(isOn: next)) {
+                    liveEnabled.wrappedValue = next
+                }
+            }
+        )
+    }
+
+    private func performTouchAction(
+        _ feedback: MenuControllerFeedback,
+        action: () -> Void
+    ) {
+        action()
+        MenuAudioPackManager.shared.play(feedback)
+        controllerInput?.playTouchHaptics(feedback)
+    }
+
+    private func selectPreset(_ token: String) {
+        guard presetRef != token else { return }
+        if !token.isEmpty {
+            enabled = true
+        }
+        presetRef = token
+        onLivePreviewChange?(
+            localized("Preset"),
+            token.isEmpty ? localized("None") : presetDisplayName(token)
+        )
+    }
+
+    private func setParameter(_ value: Float, for param: ShaderParam) {
+        params.setValue(value, for: param)
+        presentParameterPreview(param)
+    }
+
+    private func presentParameterPreview(_ param: ShaderParam) {
+        let value = params.value(for: param)
+        onLivePreviewChange?(
+            param.name,
+            String(format: "%.*f", param.decimals, Double(value))
+        )
+    }
+
+    private func parameterTargetID(_ param: ShaderParam) -> String {
+        "shader-chain.parameter." + param.id
+    }
+
+    private func presetDisplayName(_ token: String) -> String {
+        guard let separator = token.firstIndex(of: ShaderPresetLibrary.markerSeparator) else {
+            return localized("None")
+        }
+        let relative = token[token.index(after: separator)...]
+        let name = URL(fileURLWithPath: String(relative))
+            .deletingPathExtension().lastPathComponent
+        return name.isEmpty ? localized("None") : name
     }
 
     @ViewBuilder
