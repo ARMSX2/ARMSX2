@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 import SwiftUI
+import UniformTypeIdentifiers
 import UIKit
 
 struct AppIconOption: Identifiable, Hashable {
@@ -58,10 +59,13 @@ private enum AppInstallEnvironment {
 
 struct AppIconSettingsView: View {
     @State private var settings = SettingsStore.shared
+    @State private var logoStore = ARMSX2LogoStore.shared
     @State private var currentIcon: String? = UIApplication.shared.alternateIconName
     @State private var pendingExport: AppIconOption?
     @State private var shareItem: ShareSheetItem?
     @State private var showExportError = false
+    @State private var showLogoImporter = false
+    @State private var logoImportError: String?
 
     private var inExportMode: Bool { AppInstallEnvironment.isLikelyExternalContainer }
 
@@ -90,6 +94,8 @@ struct AppIconSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            logoSection
         }
         .navigationTitle(settings.localized("App Icon"))
         .navigationBarTitleDisplayMode(.inline)
@@ -113,6 +119,87 @@ struct AppIconSettingsView: View {
         }
         .sheet(item: $shareItem) { item in
             ActivityShareSheet(activityItems: [item.url])
+        }
+        .sheet(isPresented: $showLogoImporter) {
+            ImportDocumentPicker(
+                allowedContentTypes: [.png],
+                allowsMultipleSelection: false,
+                asCopy: true
+            ) { result in
+                handleLogoImport(result)
+            }
+        }
+        .alert(
+            settings.localized("Couldn’t import the logo."),
+            isPresented: Binding(
+                get: { logoImportError != nil },
+                set: { if !$0 { logoImportError = nil } }
+            )
+        ) {
+            Button(settings.localized("OK"), role: .cancel) {}
+        } message: {
+            Text(logoImportError ?? "")
+        }
+    }
+
+    private var logoSection: some View {
+        Section {
+            if let image = logoStore.image {
+                HStack(spacing: 14) {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color(.tertiarySystemFill))
+                        .frame(width: 92, height: 52)
+                        .overlay {
+                            Image(uiImage: image)
+                                .resizable()
+                                .interpolation(.high)
+                                .scaledToFit()
+                                .padding(6)
+                        }
+
+                    Text(settings.localized("logo.png"))
+                        .controllerFocusedTextColor()
+
+                    Spacer()
+
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                .accessibilityElement(children: .combine)
+            }
+
+            Button {
+                MenuAudioPackManager.shared.playEvent(.contextMenu)
+                showLogoImporter = true
+            } label: {
+                Label(
+                    settings.localized(logoStore.hasLogo ? "Replace Logo" : "Import Logo"),
+                    systemImage: "photo.badge.plus"
+                )
+            }
+            .controllerAccessibilityActionTarget(
+                label: settings.localized(logoStore.hasLogo ? "Replace Logo" : "Import Logo")
+            ) {
+                MenuAudioPackManager.shared.playEvent(.contextMenu)
+                showLogoImporter = true
+            }
+
+            if logoStore.hasLogo {
+                Button(role: .destructive) {
+                    deleteLogo()
+                } label: {
+                    Label(settings.localized("Delete Logo"), systemImage: "trash")
+                }
+                .controllerAccessibilityActionTarget(
+                    label: settings.localized("Delete Logo")
+                ) {
+                    deleteLogo()
+                }
+            }
+        } header: {
+            Text(settings.localized("Logo"))
+        } footer: {
+            Text(settings.localized("The optional logo.png replaces Boot BIOS in the Games toolbar and is also used by the ARMSX2 Logo dynamic-background effect."))
         }
     }
 
@@ -141,7 +228,7 @@ struct AppIconSettingsView: View {
                 previewThumbnail(for: option)
 
                 Text(rowTitle(option))
-                    .foregroundStyle(.primary)
+                    .controllerFocusedTextColor()
 
                 Spacer()
 
@@ -151,6 +238,9 @@ struct AppIconSettingsView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(rowTitle(option))
+        .controllerAccessibilityActionTarget(label: rowTitle(option)) {
+            rowTapped(option)
+        }
         .accessibilityHint(settings.localized(inExportMode
             ? "Exports this icon for a Home Screen shortcut."
             : "Sets this as the app icon."))
@@ -201,6 +291,41 @@ struct AppIconSettingsView: View {
             exportIcon(option)
         } else {
             applyIcon(option)
+        }
+    }
+
+    private func handleLogoImport(_ result: Result<[URL], Error>) {
+        showLogoImporter = false
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessing {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+            do {
+                try logoStore.importLogo(from: url)
+                MenuAudioPackManager.shared.playEvent(.select)
+            } catch {
+                logoImportError = error.localizedDescription
+                MenuAudioPackManager.shared.playEvent(.uiToast)
+            }
+        case .failure(let error):
+            guard !FileImportHandler.isUserCancelledPickerError(error) else { return }
+            logoImportError = error.localizedDescription
+            MenuAudioPackManager.shared.playEvent(.uiToast)
+        }
+    }
+
+    private func deleteLogo() {
+        do {
+            try logoStore.deleteLogo()
+            MenuAudioPackManager.shared.playEvent(.return)
+        } catch {
+            logoImportError = error.localizedDescription
+            MenuAudioPackManager.shared.playEvent(.uiToast)
         }
     }
 

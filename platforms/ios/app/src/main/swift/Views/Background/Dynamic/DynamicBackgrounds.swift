@@ -22,6 +22,36 @@ enum DynamicBackgroundStyle: String, CaseIterable, Identifiable, Codable {
   case playStation4Waves = "waves"
   case playStationRibbons = "ps5"
 
+  init(from decoder: Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    let rawValue = try container.decode(String.self)
+
+    if let current = Self(rawValue: rawValue) {
+      self = current
+      return
+    }
+
+    // The short-lived standalone Y2K renderers were replaced by tuned themes
+    // backed by the established PS2/PS3 engines. Preserve stored selections
+    // across that migration instead of invalidating all appearance settings.
+    switch rawValue {
+    case "frutigerEco", "dorfic", "frutigerMetro", "vectorbloom":
+      self = .playStation2Menu
+    case "frutigerAero", "darkAero", "technozen", "mcBling", "skeuomorphicAqua":
+      self = .playStation3XMBByMart
+    default:
+      throw DecodingError.dataCorruptedError(
+        in: container,
+        debugDescription: "Unknown dynamic background style: \(rawValue)"
+      )
+    }
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    try container.encode(rawValue)
+  }
+
   var id: String { rawValue }
 
   var title: String {
@@ -35,21 +65,21 @@ enum DynamicBackgroundStyle: String, CaseIterable, Identifiable, Codable {
     case .towersOrbs:
       return "Towers Orbs"
     case .playStation2Menu:
-      return "PlayStation 2 Menu by Henyckma"
+      return "Crystal Towers by Henyckma"
     case .playStation3XMBByMart:
-      return "PlayStation 3 XMB by Mart"
+      return "Glass Ribbons by Mart"
     case .faceButtons:
       return "Face Buttons"
     case .playStationPortableBlur:
-      return "PlayStation Portable Blur"
+      return "Portable Blur"
     case .playStation3Splines:
-      return "PlayStation 3 Splines"
+      return "Ribbon Splines"
     case .playStation4Particles:
-      return "PlayStation 4 Particles"
+      return "Particle Field"
     case .playStation4Waves:
-      return "PlayStation 4 Waves"
+      return "Layered Waves"
     case .playStationRibbons:
-      return "PlayStation Ribbons"
+      return "Luminous Ribbons"
     }
   }
 
@@ -105,38 +135,57 @@ enum DynamicBackgroundStyle: String, CaseIterable, Identifiable, Codable {
   }
 
   // Creates the selected animated background with shared base colors and ribbon accents.
+  @MainActor
   @ViewBuilder
   func makeBackground(theme: DynamicBackgroundTheme) -> some View {
     ZStack {
       switch self {
       case .multicolorAmbient:
         MulticolorAmbientBackground(theme: theme)
+          .dynamicWallpaperSwiftUIRenderSurface(opaque: true)
       case .lightSpeed:
         LightSpeedBackground(theme: theme)
+          .dynamicWallpaperSwiftUIRenderSurface(opaque: true)
       case .spatialRetro:
         SpatialRetroBackground(theme: theme)
+          .dynamicWallpaperSwiftUIRenderSurface(opaque: true)
       case .towersOrbs:
         TowersOrbsBackground(theme: theme)
+          .dynamicWallpaperSwiftUIRenderSurface(opaque: true)
       case .playStation2Menu:
         PlayStation2MenuBackground(theme: theme)
+          .dynamicWallpaperSwiftUIRenderSurface(opaque: true)
       case .playStation3XMBByMart:
         PlayStation3XMBByMartBackground(theme: theme)
       case .faceButtons:
         FaceButtonsBackground(theme: theme)
+          .dynamicWallpaperSwiftUIRenderSurface(
+            opaque: true,
+            usesFaceButtonResolution: true
+          )
       case .playStationPortableBlur:
         PlayStationPortableBlurBackground(theme: theme)
+          .dynamicWallpaperSwiftUIRenderSurface(opaque: true)
       case .playStation3Splines:
         PlayStation3SplinesBackground(theme: theme, ribbonSizing: .playStation3)
+          .dynamicWallpaperSwiftUIRenderSurface(opaque: true)
       case .playStation4Particles:
         PlayStation4ParticlesBackground(theme: theme)
+          .dynamicWallpaperSwiftUIRenderSurface(opaque: true)
       case .playStation4Waves:
         PlayStation4WavesBackground(theme: theme)
+          .dynamicWallpaperSwiftUIRenderSurface(opaque: true)
       case .playStationRibbons:
         PlayStationRibbonsBackground(theme: theme)
+          .dynamicWallpaperSwiftUIRenderSurface(opaque: true)
       }
 
-      if theme.particleSettings.isEnabled {
+      if theme.particleSettings.isEnabled
+          || theme.particleSettings.isARMSX2LogoEnabled {
         DynamicParticleOverlay(theme: theme)
+          // Keep the particle/logo presentation above UIKit- and
+          // Metal-backed dynamic renderers, while remaining below menu UI.
+          .zIndex(2)
       }
 
       if self != .faceButtons && theme.particleSettings.faceButtonsEnabled {
@@ -145,6 +194,10 @@ enum DynamicBackgroundStyle: String, CaseIterable, Identifiable, Codable {
           showsBackdrop: false,
           showsLightBands: false
         )
+        .dynamicWallpaperSwiftUIRenderSurface(
+          usesFaceButtonResolution: true
+        )
+        .zIndex(1)
       }
     }
   }
@@ -154,9 +207,10 @@ enum DynamicBackgroundStyle: String, CaseIterable, Identifiable, Codable {
 
 struct MulticolorAmbientBackground: View {
   let theme: DynamicBackgroundTheme
+  @Environment(\.uiFrameRateConfiguration) private var frameRates
 
   var body: some View {
-    TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
+    AdaptiveAnimationTimeline(domain: .dynamicBackground) { timeline in
       let time =
         timeline.date.timeIntervalSinceReferenceDate
         * theme.particleSettings.backgrounds.multicolorAmbientSpeed
@@ -207,9 +261,10 @@ struct MulticolorAmbientBackground: View {
             y: CGFloat(sin(time * 0.23)) * 130 + 180
           )
 
-        Canvas(rendersAsynchronously: true) { context, size in
+        DynamicWallpaperCanvas(rendersAsynchronously: true) { context, size in
           let particleColor = theme.ribbonColor(index: 2, time: time)
-          for index in 0..<26 {
+          let particleCount = frameRates.scaledDynamicEffectCount(26)
+          for index in 0..<particleCount {
             let phase = Double(index) * 1.73
             let x = (sin(time * 0.07 + phase) * 0.5 + 0.5) * size.width
             let y = (cos(time * 0.05 + phase * 1.4) * 0.5 + 0.5) * size.height
@@ -230,9 +285,10 @@ struct MulticolorAmbientBackground: View {
 
 struct LightSpeedBackground: View {
   let theme: DynamicBackgroundTheme
+  @Environment(\.uiFrameRateConfiguration) private var frameRates
 
   var body: some View {
-    TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
+    AdaptiveAnimationTimeline(domain: .dynamicBackground) { timeline in
       let time =
         timeline.date.timeIntervalSinceReferenceDate
         * theme.particleSettings.backgrounds.lightSpeedMotionSpeed
@@ -258,7 +314,7 @@ struct LightSpeedBackground: View {
           curvature: theme.sharedPaletteGradientCurvature
         )
 
-        Canvas(rendersAsynchronously: true) { context, size in
+        DynamicWallpaperCanvas(rendersAsynchronously: true) { context, size in
           let vanishingPoint = vanishingPoint(size: size, time: time)
 
           drawBackgroundNebulas(
@@ -319,7 +375,13 @@ struct LightSpeedBackground: View {
     let sizeScale = CGFloat(max(0.45, settings.size))
     let brightness = max(0.42, settings.brightness)
     let speed = max(0.25, settings.speed) * 0.25
-    let count = min(260, max(90, Int(150 * settings.amount)))
+    let count = min(
+      frameRates.scaledDynamicEffectCount(260),
+      max(
+        frameRates.scaledDynamicEffectCount(90),
+        frameRates.scaledDynamicEffectCount(150 * settings.amount)
+      )
+    )
 
     for index in 0..<count {
       let seedA = DynamicBackgroundMath.seededUnit(index: index, salt: 22.77)
@@ -387,7 +449,8 @@ struct LightSpeedBackground: View {
     size: CGSize,
     time: TimeInterval
   ) {
-    for index in 0..<7 {
+    let nebulaCount = frameRates.scaledDynamicGeometryCount(7, minimum: 3)
+    for index in 0..<nebulaCount {
       let seedA = DynamicBackgroundMath.seededUnit(index: index, salt: 13.19)
       let seedB = DynamicBackgroundMath.seededUnit(index: index, salt: 71.73)
       let seedC = DynamicBackgroundMath.seededUnit(index: index, salt: 41.11)
@@ -424,7 +487,13 @@ struct LightSpeedBackground: View {
   ) {
     context.blendMode = .plusLighter
 
-    let count = min(360, max(130, Int(190 * settings.amount)))
+    let count = min(
+      frameRates.scaledDynamicEffectCount(360),
+      max(
+        frameRates.scaledDynamicEffectCount(130),
+        frameRates.scaledDynamicEffectCount(190 * settings.amount)
+      )
+    )
     let speed = max(0.12, settings.speed) * 0.18
     let sizeScale = CGFloat(max(0.45, settings.size))
     let brightness = max(0.36, settings.brightness)
@@ -510,9 +579,10 @@ struct LightSpeedBackground: View {
 
 struct SpatialRetroBackground: View {
   let theme: DynamicBackgroundTheme
+  @Environment(\.uiFrameRateConfiguration) private var frameRates
 
   var body: some View {
-    TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
+    AdaptiveAnimationTimeline(domain: .dynamicBackground) { timeline in
       let time =
         timeline.date.timeIntervalSinceReferenceDate
         * theme.particleSettings.backgrounds.spatialRetroSpeed
@@ -546,7 +616,7 @@ struct SpatialRetroBackground: View {
             y: CGFloat(cos(time * 0.07)) * 80
           )
 
-        Canvas(rendersAsynchronously: true) { context, size in
+        DynamicWallpaperCanvas(rendersAsynchronously: true) { context, size in
           drawPerspectiveGrid(
             context: &context,
             size: size,
@@ -593,7 +663,8 @@ struct SpatialRetroBackground: View {
       y: horizon
     )
 
-    for column in -10...10 {
+    let columnExtent = frameRates.scaledDynamicGeometryCount(10, minimum: 4)
+    for column in -columnExtent...columnExtent {
       var line = Path()
       line.move(to: vanishingPoint)
       line.addLine(
@@ -609,8 +680,10 @@ struct SpatialRetroBackground: View {
       )
     }
 
-    for row in 0..<17 {
-      let phase = (Double(row) / 17 + time * 0.055).truncatingRemainder(dividingBy: 1)
+    let rowCount = frameRates.scaledDynamicGeometryCount(17, minimum: 7)
+    for row in 0..<rowCount {
+      let phase = (Double(row) / Double(rowCount) + time * 0.055)
+        .truncatingRemainder(dividingBy: 1)
       let progress = CGFloat(phase)
       let depth = progress * progress
       let y = horizon + (size.height - horizon) * depth
@@ -632,7 +705,8 @@ struct SpatialRetroBackground: View {
     time: TimeInterval,
     color: Color
   ) {
-    for index in 0..<76 {
+    let dustCount = frameRates.scaledDynamicEffectCount(76)
+    for index in 0..<dustCount {
       let seed = Double(index) * 1.731
       let x = (sin(seed * 2.17) * 0.5 + 0.5) * size.width
       let progress = (Double(index) * 0.071 + time * (0.008 + Double(index % 4) * 0.002))
@@ -659,7 +733,8 @@ struct SpatialRetroBackground: View {
     size: CGSize,
     time: TimeInterval
   ) {
-    for shapeIndex in 0..<7 {
+    let shapeCount = frameRates.scaledDynamicGeometryCount(7, minimum: 3)
+    for shapeIndex in 0..<shapeCount {
       let seed = Double(shapeIndex) * 1.43
       let center = CGPoint(
         x: size.width
@@ -727,9 +802,10 @@ struct SpatialRetroBackground: View {
 
 struct TowersOrbsBackground: View {
   let theme: DynamicBackgroundTheme
+  @Environment(\.uiFrameRateConfiguration) private var frameRates
 
   var body: some View {
-    TimelineView(.animation(minimumInterval: 1 / 24)) { timeline in
+    AdaptiveAnimationTimeline(domain: .dynamicBackground) { timeline in
       let time =
         timeline.date.timeIntervalSinceReferenceDate
         * theme.particleSettings.backgrounds.towersOrbsSpeed
@@ -754,7 +830,7 @@ struct TowersOrbsBackground: View {
           curvature: theme.sharedPaletteGradientCurvature
         )
 
-        Canvas(rendersAsynchronously: true) { context, size in
+        DynamicWallpaperCanvas(rendersAsynchronously: true) { context, size in
           drawOrbitingOrbs(
             context: &context,
             size: size,
@@ -787,12 +863,14 @@ struct TowersOrbsBackground: View {
     size: CGSize,
     time: TimeInterval
   ) {
-    for depth in 0..<5 {
-      for column in 0..<8 {
-        let index = depth * 8 + column
+    let depthCount = frameRates.scaledDynamicGeometryCount(5, minimum: 2)
+    let columnCount = frameRates.scaledDynamicGeometryCount(8, minimum: 4)
+    for depth in 0..<depthCount {
+      for column in 0..<columnCount {
+        let index = depth * columnCount + column
         let towerColor = theme.ribbonColor(index: index, time: time)
         let seed = Double(index) * 1.731
-        let spacing = size.width / 7
+        let spacing = size.width / CGFloat(max(1, columnCount - 1))
         let x =
           CGFloat(column) * spacing
           + CGFloat(depth % 2) * spacing * 0.48
@@ -887,12 +965,14 @@ struct TowersOrbsBackground: View {
     time: TimeInterval,
     drawsFront: Bool
   ) {
-    for orbIndex in 0..<4 {
+    let orbCount = frameRates.scaledDynamicGeometryCount(4, minimum: 1)
+    let trailCount = frameRates.scaledDynamicGeometryCount(13, minimum: 5)
+    for orbIndex in 0..<orbCount {
       let orbColor = theme.ribbonColor(index: orbIndex, time: time)
       let configuration = orbitConfiguration(index: orbIndex, size: size)
       let currentMoment = time + configuration.startOffset
 
-      for tailIndex in 0..<13 {
+      for tailIndex in 0..<trailCount {
         let firstMoment = currentMoment - Double(tailIndex) * 0.12
         let secondMoment = currentMoment - Double(tailIndex + 1) * 0.12
         let middleDepth = orbitDepth(
@@ -1319,6 +1399,7 @@ enum PlayStation2MenuGeometry {
 struct PlayStation2MenuBackground: View {
   let theme: DynamicBackgroundTheme
   @Environment(\.menuBackgroundSessionStart) private var cameraStartDate
+  @Environment(\.uiFrameRateConfiguration) private var frameRates
 
   var body: some View {
     let framesPerSecond = max(
@@ -1326,7 +1407,10 @@ struct PlayStation2MenuBackground: View {
       theme.particleSettings.backgrounds.playStation2MenuFramesPerSecond
     )
 
-    TimelineView(.animation(minimumInterval: 1 / framesPerSecond)) { timeline in
+    AdaptiveAnimationTimeline(
+      domain: .dynamicBackground,
+      maximumFramesPerSecond: framesPerSecond
+    ) { timeline in
       let motionSettings = theme.particleSettings.backgrounds
       let time =
         timeline.date.timeIntervalSinceReferenceDate
@@ -1372,7 +1456,7 @@ struct PlayStation2MenuBackground: View {
           endRadius: 700
         )
 
-        Canvas(
+        DynamicWallpaperCanvas(
           opaque: false,
           colorMode: .nonLinear,
           rendersAsynchronously: true
@@ -1386,8 +1470,14 @@ struct PlayStation2MenuBackground: View {
             rollSpeed: motionSettings.playStation2MenuRollSpeed,
             orbitDegrees: motionSettings.playStation2MenuOrbitDegrees
           )
-          let towers = towerConfigurations(camera: camera)
-          let crystals = crystalConfigurations(camera: camera)
+          let towers = frameRates.reducedDynamicGeometry(
+            towerConfigurations(camera: camera),
+            minimum: 5
+          )
+          let crystals = frameRates.reducedDynamicGeometry(
+            crystalConfigurations(camera: camera),
+            minimum: 3
+          )
 
           drawFog(
             context: &context,
@@ -1501,7 +1591,10 @@ extension PlayStation2MenuBackground {
     time: TimeInterval,
     foreground: Bool
   ) {
-    let count = foreground ? 4 : 7
+    let count = frameRates.scaledDynamicGeometryCount(
+      foreground ? 4 : 7,
+      minimum: foreground ? 2 : 3
+    )
     context.drawLayer { fog in
       fog.blendMode = .plusLighter
       fog.addFilter(.blur(radius: foreground ? 72 : 62))
@@ -2163,7 +2256,10 @@ extension PlayStation2MenuBackground {
     time: TimeInterval,
     pass: PlayStation2MenuDepthPass
   ) {
-    for index in 0..<4 {
+    let orbCount = frameRates.scaledDynamicGeometryCount(4, minimum: 1)
+    let samples = frameRates.scaledDynamicGeometryCount(42, minimum: 14)
+
+    for index in 0..<orbCount {
       let configuration = orbConfiguration(index: index, camera: camera)
       let moment = time * configuration.speed + configuration.phase
       let headWorld = orbPoint(moment: moment, configuration: configuration)
@@ -2171,7 +2267,6 @@ extension PlayStation2MenuBackground {
       let passVisibility = pass.visibility(at: head.depth)
       guard passVisibility > 0.001 else { continue }
 
-      let samples = 42
       let projections = (0...samples).map { sample in
         let sampleMoment = moment - Double(samples - sample) * 0.027
         return camera.project(
@@ -2768,8 +2863,8 @@ final class PlayStation3XMBMartSplinePipeline {
   private static let tableEntryCount = 0x169
   private static let loopIterations = 8
   private static let storesPerIteration = 8
-  static let textureWidth = 256
-  static let textureHeight = 64
+  let textureWidth: Int
+  let textureHeight: Int
   private static let descriptorByteCount = 0x2200
   private static let normA = [0.39584, -0.0052389996, -0.58664495, 0.189007]
   private static let normB = [-0.003751, -0.57536095, 0.161975, 0.417137]
@@ -2799,12 +2894,22 @@ final class PlayStation3XMBMartSplinePipeline {
     count: PlayStation3XMBMartSplinePipeline.loopIterations
       * PlayStation3XMBMartSplinePipeline.storesPerIteration * 4
   )
-  private var controlPoints = [Double](repeating: 0, count: 28)
-  private var displacement = [Double](
-    repeating: 0,
-    count: PlayStation3XMBMartSplinePipeline.textureWidth
-      * PlayStation3XMBMartSplinePipeline.textureHeight
-  )
+  private var controlPoints: [Double]
+  private var displacement: [Double]
+
+  init(detailScale: Double = 1) {
+    let clampedScale = min(1, max(0.25, detailScale))
+    textureWidth = max(64, Int((256 * clampedScale).rounded()))
+    textureHeight = max(16, Int((64 * clampedScale).rounded()))
+    controlPoints = Array(
+      repeating: 0,
+      count: max(12, Int((28 * clampedScale).rounded()))
+    )
+    displacement = Array(
+      repeating: 0,
+      count: textureWidth * textureHeight
+    )
+  }
 
   func update(settings: PlayStation3XMBSettings, time: TimeInterval) {
     buildRuntimeInputs(settings: settings)
@@ -2816,22 +2921,22 @@ final class PlayStation3XMBMartSplinePipeline {
   }
 
   func sample(u: Double, v: Double) -> Double {
-    let x = clamp(u, lower: 0, upper: 1) * Double(Self.textureWidth - 1)
-    let y = clamp(v, lower: 0, upper: 1) * Double(Self.textureHeight - 1)
+    let x = clamp(u, lower: 0, upper: 1) * Double(textureWidth - 1)
+    let y = clamp(v, lower: 0, upper: 1) * Double(textureHeight - 1)
     let x0 = Int(floor(x))
     let y0 = Int(floor(y))
-    let x1 = min(Self.textureWidth - 1, x0 + 1)
-    let y1 = min(Self.textureHeight - 1, y0 + 1)
+    let x1 = min(textureWidth - 1, x0 + 1)
+    let y1 = min(textureHeight - 1, y0 + 1)
     let xBlend = x - floor(x)
     let yBlend = y - floor(y)
     let top = mix(
-      displacement[y0 * Self.textureWidth + x0],
-      displacement[y0 * Self.textureWidth + x1],
+      displacement[y0 * textureWidth + x0],
+      displacement[y0 * textureWidth + x1],
       amount: xBlend
     )
     let bottom = mix(
-      displacement[y1 * Self.textureWidth + x0],
-      displacement[y1 * Self.textureWidth + x1],
+      displacement[y1 * textureWidth + x0],
+      displacement[y1 * textureWidth + x1],
       amount: xBlend
     )
     return mix(top, bottom, amount: yBlend)
@@ -3008,9 +3113,9 @@ final class PlayStation3XMBMartSplinePipeline {
     let kernelVectorCount = Self.loopIterations * Self.storesPerIteration
     let flow = time * settings.flowSpeed * settings.timeStep
 
-    for row in 0..<Self.textureHeight {
-      let depth = Double(row) / Double(max(1, Self.textureHeight - 1)) * 2 - 1
-      let rowBase = row * Self.textureWidth
+    for row in 0..<textureHeight {
+      let depth = Double(row) / Double(max(1, textureHeight - 1)) * 2 - 1
+      let rowBase = row * textureWidth
       let rowPhase = flow * 0.25 + depth * 1.7
 
       for index in 0..<controlPointCount {
@@ -3071,10 +3176,10 @@ final class PlayStation3XMBMartSplinePipeline {
           + legacy * (1 - settings.reversePipelineBlend)
       }
 
-      for xIndex in 0..<Self.textureWidth {
+      for xIndex in 0..<textureWidth {
         displacement[rowBase + xIndex] = evaluateSpline(
           controlPoints: controlPoints,
-          position: Double(xIndex) / Double(max(1, Self.textureWidth - 1))
+          position: Double(xIndex) / Double(max(1, textureWidth - 1))
         )
       }
     }
@@ -3213,6 +3318,8 @@ private struct XMBSessionRandomNumberGenerator: RandomNumberGenerator {
 }
 
 private final class PlayStation3XMBMartMetalRenderer: NSObject, MTKViewDelegate {
+  private static let paletteTransitionDuration: TimeInterval = 0.46
+
   private let renderMode: PlayStation3XMBMartRenderMode
   private let sessionStartTime: TimeInterval
   private let particleTimeOffset: TimeInterval
@@ -3225,7 +3332,7 @@ private final class PlayStation3XMBMartMetalRenderer: NSObject, MTKViewDelegate 
   private let waveIndexBuffer: MTLBuffer
   private let waveIndexCount: Int
   private let splineTexture: MTLTexture
-  private let splinePipeline = PlayStation3XMBMartSplinePipeline()
+  private let splinePipeline: PlayStation3XMBMartSplinePipeline
 
   private var settings = PlayStation3XMBSettings()
   private var theme: DynamicBackgroundTheme?
@@ -3237,13 +3344,12 @@ private final class PlayStation3XMBMartMetalRenderer: NSObject, MTKViewDelegate 
     geometry: SIMD4(0, 0, 1, 0)
   )
   private var waveColor = SIMD4<Float>(1, 1, 1, 1)
+  private var paletteTransitionStartTime: TimeInterval?
+  private var paletteTransitionSourceBackgroundUniforms: XMBBackgroundUniforms?
+  private var paletteTransitionSourceWaveColor: SIMD4<Float>?
   private var particleBuffer: MTLBuffer?
   private var particleCount = 0
-  private var displacementValues = [Float](
-    repeating: 0,
-    count: PlayStation3XMBMartSplinePipeline.textureWidth
-      * PlayStation3XMBMartSplinePipeline.textureHeight
-  )
+  private var displacementValues: [Float]
   private var splineTime: TimeInterval = 0
   private var particleTime: TimeInterval = 0
 
@@ -3251,7 +3357,8 @@ private final class PlayStation3XMBMartMetalRenderer: NSObject, MTKViewDelegate 
   init?(
     view: MTKView,
     renderMode: PlayStation3XMBMartRenderMode,
-    sessionStartTime: TimeInterval
+    sessionStartTime: TimeInterval,
+    geometryDetailScale: Double
   ) {
     guard let device = view.device,
       let commandQueue = device.makeCommandQueue(),
@@ -3305,7 +3412,12 @@ private final class PlayStation3XMBMartMetalRenderer: NSObject, MTKViewDelegate 
       return nil
     }
 
-    let grid = Self.makeWaveGrid(resolution: 100)
+    let clampedDetailScale = min(1, max(0.25, geometryDetailScale))
+    let gridResolution = max(
+      32,
+      min(100, Int((100 * clampedDetailScale).rounded()))
+    )
+    let grid = Self.makeWaveGrid(resolution: gridResolution)
     guard
       let waveVertexBuffer = device.makeBuffer(
         bytes: grid.vertices,
@@ -3321,10 +3433,13 @@ private final class PlayStation3XMBMartMetalRenderer: NSObject, MTKViewDelegate 
       return nil
     }
 
+    let splinePipeline = PlayStation3XMBMartSplinePipeline(
+      detailScale: clampedDetailScale
+    )
     let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
       pixelFormat: .r32Float,
-      width: PlayStation3XMBMartSplinePipeline.textureWidth,
-      height: PlayStation3XMBMartSplinePipeline.textureHeight,
+      width: splinePipeline.textureWidth,
+      height: splinePipeline.textureHeight,
       mipmapped: false
     )
     textureDescriptor.usage = .shaderRead
@@ -3352,6 +3467,11 @@ private final class PlayStation3XMBMartMetalRenderer: NSObject, MTKViewDelegate 
     self.waveIndexBuffer = waveIndexBuffer
     self.waveIndexCount = grid.indices.count
     self.splineTexture = splineTexture
+    self.splinePipeline = splinePipeline
+    self.displacementValues = Array(
+      repeating: 0,
+      count: splinePipeline.textureWidth * splinePipeline.textureHeight
+    )
     super.init()
 
     rebuildParticles(device: device, count: Int(settings.particleCount))
@@ -3360,8 +3480,14 @@ private final class PlayStation3XMBMartMetalRenderer: NSObject, MTKViewDelegate 
   func update(
     settings: PlayStation3XMBSettings,
     theme: DynamicBackgroundTheme,
-    particleControls: PlayStation3XMBMartParticleControls
+    particleControls: PlayStation3XMBMartParticleControls,
+    effectDensity: Double
   ) {
+    if let currentTheme = self.theme, currentTheme != theme {
+      paletteTransitionStartTime = CFAbsoluteTimeGetCurrent()
+      paletteTransitionSourceBackgroundUniforms = backgroundUniforms
+      paletteTransitionSourceWaveColor = waveColor
+    }
     self.settings = settings
     self.theme = theme
     self.particleControls = particleControls
@@ -3373,7 +3499,7 @@ private final class PlayStation3XMBMartMetalRenderer: NSObject, MTKViewDelegate 
     let desiredCount = Int(
       min(
         4000,
-        max(10, (settings.particleCount * density).rounded())
+        max(4, (settings.particleCount * density * effectDensity).rounded())
       )
     )
     if desiredCount != particleCount {
@@ -3390,17 +3516,30 @@ private final class PlayStation3XMBMartMetalRenderer: NSObject, MTKViewDelegate 
 
     if let theme {
       let paletteTime = CFAbsoluteTimeGetCurrent()
+      let progress = paletteTransitionProgress(at: paletteTime)
       if renderMode == .fullBackground {
         let gradient = PlayStation3XMBMartThemeResolver.backgroundGradient(
           theme: theme,
           settings: settings,
           time: paletteTime
         )
-        backgroundUniforms = makeBackgroundUniforms(gradient: gradient)
+        let targetUniforms = makeBackgroundUniforms(gradient: gradient)
+        backgroundUniforms = paletteTransitionSourceBackgroundUniforms.map {
+          interpolate($0, targetUniforms, progress: progress)
+        } ?? targetUniforms
       }
-      waveColor = colorComponents(
+      let targetWaveColor = colorComponents(
         theme.highlightColor(index: 0, time: paletteTime)
       )
+      waveColor = paletteTransitionSourceWaveColor.map {
+        interpolate($0, targetWaveColor, progress: progress)
+      } ?? targetWaveColor
+
+      if progress >= 1 {
+        paletteTransitionStartTime = nil
+        paletteTransitionSourceBackgroundUniforms = nil
+        paletteTransitionSourceWaveColor = nil
+      }
     }
 
     if renderMode != .particlesOnly {
@@ -3412,13 +3551,13 @@ private final class PlayStation3XMBMartMetalRenderer: NSObject, MTKViewDelegate 
           region: MTLRegionMake2D(
             0,
             0,
-            PlayStation3XMBMartSplinePipeline.textureWidth,
-            PlayStation3XMBMartSplinePipeline.textureHeight
+            splinePipeline.textureWidth,
+            splinePipeline.textureHeight
           ),
           mipmapLevel: 0,
           withBytes: baseAddress,
           bytesPerRow: MemoryLayout<Float>.stride
-            * PlayStation3XMBMartSplinePipeline.textureWidth
+            * splinePipeline.textureWidth
         )
       }
     }
@@ -3663,6 +3802,37 @@ private final class PlayStation3XMBMartMetalRenderer: NSObject, MTKViewDelegate 
     )
   }
 
+  private func paletteTransitionProgress(at time: TimeInterval) -> Float {
+    guard let startTime = paletteTransitionStartTime else { return 1 }
+    let linear = min(
+      1,
+      max(0, (time - startTime) / Self.paletteTransitionDuration)
+    )
+    let eased = linear * linear * (3 - 2 * linear)
+    return Float(eased)
+  }
+
+  private func interpolate(
+    _ source: XMBBackgroundUniforms,
+    _ target: XMBBackgroundUniforms,
+    progress: Float
+  ) -> XMBBackgroundUniforms {
+    XMBBackgroundUniforms(
+      startColor: interpolate(source.startColor, target.startColor, progress: progress),
+      endColor: interpolate(source.endColor, target.endColor, progress: progress),
+      directionRange: target.directionRange,
+      geometry: target.geometry
+    )
+  }
+
+  private func interpolate(
+    _ source: SIMD4<Float>,
+    _ target: SIMD4<Float>,
+    progress: Float
+  ) -> SIMD4<Float> {
+    source + (target - source) * progress
+  }
+
   private func colorComponents(_ color: Color) -> SIMD4<Float> {
     let uiColor = UIColor(color)
     var red: CGFloat = 0
@@ -3740,19 +3910,74 @@ struct PlayStation3XMBMartParticleControls {
   var depthVariation = 0.0
 }
 
+/// `MTKView.autoResizeDrawable` only follows view-size changes. Wallpaper
+/// resolution changes leave the bounds untouched, so this subclass explicitly
+/// updates the drawable's pixel dimensions whenever its scale or layout changes.
+private final class DynamicWallpaperMTKView: MTKView {
+  var wallpaperRenderScale: CGFloat = 1 {
+    didSet {
+      guard abs(wallpaperRenderScale - oldValue) > 0.0001 else { return }
+      updateDrawableResolution()
+    }
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    updateDrawableResolution()
+  }
+
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    updateDrawableResolution()
+  }
+
+  func updateDrawableResolution() {
+    let nativeScale = window?.screen.scale ?? UIScreen.main.scale
+    let pixelsPerPoint = nativeScale * wallpaperRenderScale
+
+    // Keep UIKit layout in native point coordinates. Only the Metal drawable
+    // is reduced; changing contentScaleFactor lets SwiftUI/MTKView restore a
+    // native-sized drawable during a later layout pass.
+    if abs(contentScaleFactor - nativeScale) > 0.0001 {
+      contentScaleFactor = nativeScale
+    }
+
+    guard bounds.width > 0, bounds.height > 0 else { return }
+    let targetSize = CGSize(
+      width: max(1, (bounds.width * pixelsPerPoint).rounded()),
+      height: max(1, (bounds.height * pixelsPerPoint).rounded())
+    )
+    guard abs(drawableSize.width - targetSize.width) > 0.5
+        || abs(drawableSize.height - targetSize.height) > 0.5
+    else {
+      return
+    }
+    drawableSize = targetSize
+    (layer as? CAMetalLayer)?.drawableSize = targetSize
+  }
+}
+
 struct PlayStation3XMBMartMetalSurface: UIViewRepresentable {
   let settings: PlayStation3XMBSettings
   let theme: DynamicBackgroundTheme
   let sessionStartTime: TimeInterval
   var renderMode: PlayStation3XMBMartRenderMode = .fullBackground
   var particleControls = PlayStation3XMBMartParticleControls()
+  @Environment(\.uiFrameRateConfiguration) private var frameRates
 
   func makeCoordinator() -> Coordinator {
-    Coordinator(renderMode: renderMode, sessionStartTime: sessionStartTime)
+    Coordinator(
+      renderMode: renderMode,
+      sessionStartTime: sessionStartTime,
+      geometryDetailScale: frameRates.dynamicGeometryDetailScale
+    )
   }
 
   func makeUIView(context: Context) -> MTKView {
-    let view = MTKView(frame: .zero, device: MTLCreateSystemDefaultDevice())
+    let view = DynamicWallpaperMTKView(
+      frame: .zero,
+      device: MTLCreateSystemDefaultDevice()
+    )
     view.colorPixelFormat = .bgra8Unorm
     let rendersTransparentSurface = renderMode != .fullBackground
     view.clearColor = MTLClearColor(
@@ -3762,8 +3987,9 @@ struct PlayStation3XMBMartMetalSurface: UIViewRepresentable {
       alpha: rendersTransparentSurface ? 0 : 1
     )
     view.framebufferOnly = true
-    view.autoResizeDrawable = true
-    view.preferredFramesPerSecond = 30
+    view.autoResizeDrawable = false
+    updateDrawableResolution(for: view)
+    view.preferredFramesPerSecond = preferredFramesPerSecond
     view.enableSetNeedsDisplay = false
     view.isPaused = false
     view.isOpaque = !rendersTransparentSurface
@@ -3773,17 +3999,38 @@ struct PlayStation3XMBMartMetalSurface: UIViewRepresentable {
     context.coordinator.renderer?.update(
       settings: settings,
       theme: theme,
-      particleControls: particleControls
+      particleControls: particleControls,
+      effectDensity: frameRates.effectiveDynamicParticleAmount
     )
     return view
   }
 
   func updateUIView(_ view: MTKView, context: Context) {
+    if view.preferredFramesPerSecond != preferredFramesPerSecond {
+      view.preferredFramesPerSecond = preferredFramesPerSecond
+    }
+    updateDrawableResolution(for: view)
     context.coordinator.renderer?.update(
       settings: settings,
       theme: theme,
-      particleControls: particleControls
+      particleControls: particleControls,
+      effectDensity: frameRates.effectiveDynamicParticleAmount
     )
+  }
+
+  private func updateDrawableResolution(for view: MTKView) {
+    guard let view = view as? DynamicWallpaperMTKView else { return }
+    view.wallpaperRenderScale = CGFloat(
+      frameRates.dynamicWallpaperRenderScale
+    )
+    view.updateDrawableResolution()
+  }
+
+  private var preferredFramesPerSecond: Int {
+    let domain: UIFrameRateDomain = renderMode == .particlesOnly
+      ? .dynamicParticles
+      : .dynamicBackground
+    return Int(frameRates.framesPerSecond(for: domain).rounded())
   }
 
   static func dismantleUIView(_ view: MTKView, coordinator: Coordinator) {
@@ -3799,14 +4046,17 @@ struct PlayStation3XMBMartMetalSurface: UIViewRepresentable {
     fileprivate var renderer: PlayStation3XMBMartMetalRenderer?
     private let renderMode: PlayStation3XMBMartRenderMode
     private let sessionStartTime: TimeInterval
+    private let geometryDetailScale: Double
     private var retainsShaderLibrary = false
 
     init(
       renderMode: PlayStation3XMBMartRenderMode,
-      sessionStartTime: TimeInterval
+      sessionStartTime: TimeInterval,
+      geometryDetailScale: Double
     ) {
       self.renderMode = renderMode
       self.sessionStartTime = sessionStartTime
+      self.geometryDetailScale = geometryDetailScale
     }
 
     @MainActor
@@ -3815,7 +4065,8 @@ struct PlayStation3XMBMartMetalSurface: UIViewRepresentable {
       guard let renderer = PlayStation3XMBMartMetalRenderer(
         view: view,
         renderMode: renderMode,
-        sessionStartTime: sessionStartTime
+        sessionStartTime: sessionStartTime,
+        geometryDetailScale: geometryDetailScale
       ) else {
         PlayStation3XMBByMartShaderLibrary.releaseIfUnused()
         return
@@ -3851,6 +4102,7 @@ struct PlayStation3XMBByMartBackground: View {
     if usesPlayStation4PaletteBackdrop {
       ZStack {
         PlayStation4WavesBackground(theme: theme, showsWaves: false)
+          .dynamicWallpaperSwiftUIRenderSurface(opaque: true)
 
         PlayStation3XMBMartMetalSurface(
           settings: settings,
@@ -3992,18 +4244,36 @@ struct FaceButtonsBackground: View {
   let theme: DynamicBackgroundTheme
   var showsBackdrop = true
   var showsLightBands = true
+  @Environment(\.uiFrameRateConfiguration) private var frameRates
+  @State private var displayedTheme: DynamicBackgroundTheme
+  @State private var previousTheme: DynamicBackgroundTheme?
+  @State private var paletteTransitionStartTime: TimeInterval?
+
+  private let paletteTransitionDuration: TimeInterval = 0.46
+
+  init(
+    theme: DynamicBackgroundTheme,
+    showsBackdrop: Bool = true,
+    showsLightBands: Bool = true
+  ) {
+    self.theme = theme
+    self.showsBackdrop = showsBackdrop
+    self.showsLightBands = showsLightBands
+    _displayedTheme = State(initialValue: theme)
+  }
 
   var body: some View {
-    TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
+    AdaptiveAnimationTimeline(domain: .dynamicFaceButtons) { timeline in
       let time = timeline.date.timeIntervalSinceReferenceDate
       let motionTime =
         time
         * settings.faceButtonSpeed
         * settings.backgrounds.faceButtonsSpeed
-      let deepColor = theme.sharedColor(index: 0, time: time)
-      let midColor = theme.sharedColor(index: 1, time: time)
-      let lightColor = theme.sharedColor(index: 2, time: time)
-      let sharedGradient = theme.sharedGradientPoints(
+      let paletteProgress = paletteTransitionProgress(at: time)
+      let deepColor = sharedColor(index: 0, time: time, progress: paletteProgress)
+      let midColor = sharedColor(index: 1, time: time, progress: paletteProgress)
+      let lightColor = sharedColor(index: 2, time: time, progress: paletteProgress)
+      let sharedGradient = displayedTheme.sharedGradientPoints(
         from: .topLeading,
         to: .bottomTrailing
       )
@@ -4012,14 +4282,34 @@ struct FaceButtonsBackground: View {
         if showsBackdrop {
           PaletteGradientField(
             colors: [
-              theme.paletteBackgroundColor(deepColor, darkness: 0.96),
-              theme.paletteBackgroundColor(deepColor, darkness: 0.54),
-              theme.paletteBackgroundColor(midColor, darkness: 0.66),
-              theme.paletteBackgroundColor(midColor, darkness: 0.94),
+              paletteBackgroundColor(
+                index: 0,
+                time: time,
+                darkness: 0.96,
+                progress: paletteProgress
+              ),
+              paletteBackgroundColor(
+                index: 0,
+                time: time,
+                darkness: 0.54,
+                progress: paletteProgress
+              ),
+              paletteBackgroundColor(
+                index: 1,
+                time: time,
+                darkness: 0.66,
+                progress: paletteProgress
+              ),
+              paletteBackgroundColor(
+                index: 1,
+                time: time,
+                darkness: 0.94,
+                progress: paletteProgress
+              ),
             ],
             startPoint: sharedGradient.start,
             endPoint: sharedGradient.end,
-            curvature: theme.sharedPaletteGradientCurvature
+            curvature: displayedTheme.sharedPaletteGradientCurvature
           )
 
           Circle()
@@ -4032,29 +4322,39 @@ struct FaceButtonsBackground: View {
             )
         }
 
-        Canvas(rendersAsynchronously: true) { context, size in
+        // Keep the full-screen path pass off the main display transaction so
+        // native Game Library scrolling is not serialized behind the animated
+        // wallpaper.
+        DynamicWallpaperCanvas(
+          rendersAsynchronously: true,
+          // The complete face-button layer is rasterized once by its dedicated
+          // render surface. Avoid multiplying it by the wallpaper scale again.
+          usesWallpaperRenderScale: false
+        ) { context, size in
           if showsLightBands && settings.backgrounds.faceButtonsShowsLightBands {
             drawWeavingLightBands(
               context: &context,
               size: size,
               motionTime: motionTime,
-              colorTime: time
+              colorTime: time,
+              paletteProgress: paletteProgress
             )
           }
           drawFaceButtonField(
             context: &context,
             size: size,
             motionTime: motionTime,
-            colorTime: time
+            colorTime: time,
+            paletteProgress: paletteProgress
           )
         }
 
         if showsBackdrop {
           LinearGradient(
             colors: [
-              theme.paletteDarkOverlay(opacity: 0.18),
+              paletteDarkOverlay(opacity: 0.18, progress: paletteProgress),
               .clear,
-              theme.paletteDarkOverlay(opacity: 0.38),
+              paletteDarkOverlay(opacity: 0.38, progress: paletteProgress),
             ],
             startPoint: .top,
             endPoint: .bottom
@@ -4063,10 +4363,15 @@ struct FaceButtonsBackground: View {
       }
       .ignoresSafeArea()
     }
+    .onChange(of: theme) { _, newTheme in
+      previousTheme = displayedTheme
+      displayedTheme = newTheme
+      paletteTransitionStartTime = Date.timeIntervalSinceReferenceDate
+    }
   }
 
   private var settings: DynamicParticleSettings {
-    theme.particleSettings
+    displayedTheme.particleSettings
   }
 
   // Draws soft sine-wave paths that the face symbols appear to weave through.
@@ -4074,11 +4379,13 @@ struct FaceButtonsBackground: View {
     context: inout GraphicsContext,
     size: CGSize,
     motionTime: TimeInterval,
-    colorTime: TimeInterval
+    colorTime: TimeInterval,
+    paletteProgress: Double
   ) {
-    for bandIndex in 0..<5 {
+    let bandCount = frameRates.scaledDynamicGeometryCount(5, minimum: 2)
+    let steps = frameRates.scaledDynamicGeometryCount(52, minimum: 18)
+    for bandIndex in 0..<bandCount {
       var path = Path()
-      let steps = 52
       let baseY = size.height * CGFloat(0.2 + Double(bandIndex) * 0.14)
       let amplitude = size.height * CGFloat(0.035 + Double(bandIndex % 2) * 0.018)
       let phase =
@@ -4101,7 +4408,11 @@ struct FaceButtonsBackground: View {
         }
       }
 
-      let color = theme.ribbonColor(index: bandIndex, time: colorTime)
+      let color = ribbonColor(
+        index: bandIndex,
+        time: colorTime,
+        progress: paletteProgress
+      )
       context.drawLayer { glow in
         glow.addFilter(.blur(radius: 16))
         glow.stroke(
@@ -4123,23 +4434,26 @@ struct FaceButtonsBackground: View {
     context: inout GraphicsContext,
     size: CGSize,
     motionTime: TimeInterval,
-    colorTime: TimeInterval
+    colorTime: TimeInterval,
+    paletteProgress: Double
   ) {
     context.blendMode = .plusLighter
 
-    let symbolCount = min(180, max(0, Int(72 * settings.faceButtonAmount)))
-    for index in 0..<symbolCount {
+    let symbolCount = min(
+      frameRates.scaledDynamicFaceButtonCount(180),
+      frameRates.scaledDynamicFaceButtonCount(72 * settings.faceButtonAmount)
+    )
+    let glyphs = (0..<symbolCount).map { index in
       let color =
         index.isMultiple(of: 6)
-        ? theme.highlightColor(index: index, time: colorTime)
-        : theme.ribbonColor(index: index, time: colorTime)
+        ? highlightColor(index: index, time: colorTime, progress: paletteProgress)
+        : ribbonColor(index: index, time: colorTime, progress: paletteProgress)
       let center = symbolCenter(index: index, size: size, time: motionTime)
       let side = symbolSide(index: index, size: size, time: motionTime)
       let rotation = symbolRotation(index: index, time: motionTime)
       let opacity = (index.isMultiple(of: 5) ? 0.78 : 0.46) * settings.faceButtonOpacity
 
-      drawFaceButtonSymbol(
-        context: &context,
+      return makeFaceButtonGlyph(
         kind: symbolKind(for: index),
         center: center,
         side: side,
@@ -4148,18 +4462,154 @@ struct FaceButtonsBackground: View {
         opacity: opacity
       )
     }
+
+    // One shared offscreen glow replaces one filtered layer per symbol. The
+    // visible artwork stays equivalent while leaving GPU/compositor headroom
+    // for ReplayKit and system screen recording.
+    context.drawLayer { glow in
+      glow.blendMode = .plusLighter
+      glow.addFilter(.blur(radius: 7))
+      for glyph in glyphs {
+        glow.stroke(
+          glyph.path,
+          with: .color(glyph.color.opacity(glyph.opacity * 0.72)),
+          style: StrokeStyle(
+            lineWidth: glyph.lineWidth * 1.4,
+            lineCap: .round,
+            lineJoin: .round
+          )
+        )
+      }
+    }
+
+    for glyph in glyphs {
+      if glyph.kind != .cross {
+        context.fill(
+          glyph.path,
+          with: .color(glyph.color.opacity(glyph.opacity * 0.08))
+        )
+      }
+      context.stroke(
+        glyph.path,
+        with: .color(glyph.color.opacity(glyph.opacity)),
+        style: StrokeStyle(
+          lineWidth: glyph.lineWidth,
+          lineCap: .round,
+          lineJoin: .round
+        )
+      )
+      context.stroke(
+        glyph.path,
+        with: .color(.white.opacity(glyph.opacity * 0.24)),
+        style: StrokeStyle(
+          lineWidth: max(0.6, glyph.lineWidth * 0.42),
+          lineCap: .round,
+          lineJoin: .round
+        )
+      )
+    }
   }
 
-  // Draws one PlayStation face-button outline with glow and a faint inner fill.
-  private func drawFaceButtonSymbol(
-    context: inout GraphicsContext,
+  private struct FaceButtonGlyph {
+    let kind: FaceButtonSymbol
+    let path: Path
+    let color: Color
+    let opacity: Double
+    let lineWidth: CGFloat
+  }
+
+  private func paletteTransitionProgress(at time: TimeInterval) -> Double {
+    guard let startTime = paletteTransitionStartTime else { return 1 }
+    let linear = min(
+      1,
+      max(0, (time - startTime) / paletteTransitionDuration)
+    )
+    return linear * linear * (3 - 2 * linear)
+  }
+
+  private func sharedColor(
+    index: Int,
+    time: TimeInterval,
+    progress: Double
+  ) -> Color {
+    let target = displayedTheme.sharedColor(index: index, time: time)
+    guard let previousTheme, progress < 1 else { return target }
+    return blendPaletteEffectColor(
+      previousTheme.sharedColor(index: index, time: time),
+      target,
+      amount: progress
+    )
+  }
+
+  private func ribbonColor(
+    index: Int,
+    time: TimeInterval,
+    progress: Double
+  ) -> Color {
+    let target = displayedTheme.ribbonColor(index: index, time: time)
+    guard let previousTheme, progress < 1 else { return target }
+    return blendPaletteEffectColor(
+      previousTheme.ribbonColor(index: index, time: time),
+      target,
+      amount: progress
+    )
+  }
+
+  private func highlightColor(
+    index: Int,
+    time: TimeInterval,
+    progress: Double
+  ) -> Color {
+    let target = displayedTheme.highlightColor(index: index, time: time)
+    guard let previousTheme, progress < 1 else { return target }
+    return blendPaletteEffectColor(
+      previousTheme.highlightColor(index: index, time: time),
+      target,
+      amount: progress
+    )
+  }
+
+  private func paletteBackgroundColor(
+    index: Int,
+    time: TimeInterval,
+    darkness: Double,
+    progress: Double
+  ) -> Color {
+    let target = displayedTheme.paletteBackgroundColor(
+      displayedTheme.sharedColor(index: index, time: time),
+      darkness: darkness
+    )
+    guard let previousTheme, progress < 1 else { return target }
+    let source = previousTheme.paletteBackgroundColor(
+      previousTheme.sharedColor(index: index, time: time),
+      darkness: darkness
+    )
+    return blendPaletteEffectColor(source, target, amount: progress)
+  }
+
+  private func paletteDarkOverlay(
+    opacity: Double,
+    progress: Double
+  ) -> Color {
+    let target = displayedTheme.paletteDarkOverlay(opacity: opacity)
+    guard let previousTheme, progress < 1 else { return target }
+    return blendPaletteEffectColor(
+      previousTheme.paletteDarkOverlay(opacity: opacity),
+      target,
+      amount: progress
+    )
+  }
+
+  // Resolves geometry once so the glow and crisp passes share exactly the
+  // same path instead of rebuilding it in separate compositing layers.
+  private func makeFaceButtonGlyph(
     kind: FaceButtonSymbol,
     center: CGPoint,
     side: CGFloat,
     rotation: Double,
     color: Color,
     opacity: Double
-  ) {
+  ) -> FaceButtonGlyph {
     let lineWidth = max(1.2, side * 0.07)
     let path: Path
 
@@ -4182,23 +4632,12 @@ struct FaceButtonsBackground: View {
       path = polygonPath(sides: 3, center: center, radius: side * 0.6, rotation: rotation - .pi / 2)
     }
 
-    if kind != .cross {
-      context.fill(path, with: .color(color.opacity(opacity * 0.08)))
-    }
-
-    context.drawLayer { glow in
-      glow.addFilter(.shadow(color: color.opacity(0.78), radius: 8))
-      glow.stroke(
-        path,
-        with: .color(color.opacity(opacity)),
-        style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
-      )
-    }
-
-    context.stroke(
-      path,
-      with: .color(.white.opacity(opacity * 0.24)),
-      style: StrokeStyle(lineWidth: max(0.6, lineWidth * 0.42), lineCap: .round, lineJoin: .round)
+    return FaceButtonGlyph(
+      kind: kind,
+      path: path,
+      color: color,
+      opacity: opacity,
+      lineWidth: lineWidth
     )
   }
 
@@ -4307,7 +4746,6 @@ struct FaceButtonsBackground: View {
         path.addLine(to: point)
       }
     }
-
     path.closeSubpath()
     return path
   }
@@ -4354,9 +4792,10 @@ private enum FaceButtonSymbol: Equatable {
 
 struct PlayStationPortableBlurBackground: View {
   let theme: DynamicBackgroundTheme
+  @Environment(\.uiFrameRateConfiguration) private var frameRates
 
   var body: some View {
-    TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
+    AdaptiveAnimationTimeline(domain: .dynamicBackground) { timeline in
       let time =
         timeline.date.timeIntervalSinceReferenceDate
         * theme.particleSettings.backgrounds.playStationPortableBlurSpeed
@@ -4407,8 +4846,10 @@ struct PlayStationPortableBlurBackground: View {
         )
 
         if settings.showsRibbons {
-          Canvas(rendersAsynchronously: true) { context, size in
-            let ribbonCount = max(1, Int(settings.ribbonCount.rounded()))
+          DynamicWallpaperCanvas(rendersAsynchronously: true) { context, size in
+            let ribbonCount = frameRates.scaledDynamicGeometryCount(
+              settings.ribbonCount
+            )
             for index in 0..<ribbonCount {
               drawRibbon(
                 context: &context,
@@ -4518,8 +4959,9 @@ struct PlayStationPortableBlurBackground: View {
       time * (0.12 + Double(index) * 0.011) * direction
       + Double(index) * 0.63 * settings.phaseSpread
 
-    let points = (0...28).map { step in
-      let progress = CGFloat(step) / 28
+    let sampleCount = frameRates.scaledDynamicGeometryCount(28, minimum: 10)
+    let points = (0...sampleCount).map { step in
+      let progress = CGFloat(step) / CGFloat(sampleCount)
       let progressValue = Double(progress)
       let longWave = sin(progressValue * 2.15 + phase)
       let secondaryWave = sin(
@@ -4556,9 +4998,10 @@ enum PlayStationRibbonSizing {
 struct PlayStation3SplinesBackground: View {
   let theme: DynamicBackgroundTheme
   let ribbonSizing: PlayStationRibbonSizing
+  @Environment(\.uiFrameRateConfiguration) private var frameRates
 
   var body: some View {
-    TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
+    AdaptiveAnimationTimeline(domain: .dynamicBackground) { timeline in
       let time =
         timeline.date.timeIntervalSinceReferenceDate
         * theme.particleSettings.backgrounds.playStation3SplinesSpeed
@@ -4608,7 +5051,7 @@ struct PlayStation3SplinesBackground: View {
           endRadius: 520
         )
 
-        Canvas(rendersAsynchronously: true) { context, size in
+        DynamicWallpaperCanvas(rendersAsynchronously: true) { context, size in
           if settings.showsParticles {
             drawParticles(
               context: &context,
@@ -4654,7 +5097,9 @@ struct PlayStation3SplinesBackground: View {
     primary: Color,
     highlight: Color
   ) {
-    let strandCount = max(1, Int(settings.strandCount.rounded()))
+    let strandCount = frameRates.scaledDynamicGeometryCount(
+      settings.strandCount
+    )
 
     for index in 0..<strandCount {
       let path = splinePath(size: size, time: time, index: index)
@@ -4707,7 +5152,7 @@ struct PlayStation3SplinesBackground: View {
   ) {
     context.blendMode = .plusLighter
 
-    let particleCount = max(0, Int(settings.particleCount.rounded()))
+    let particleCount = frameRates.scaledDynamicEffectCount(settings.particleCount)
     let particleTime = time * settings.particleSpeed
 
     for index in 0..<particleCount {
@@ -4774,7 +5219,13 @@ struct PlayStation3SplinesBackground: View {
       time * (0.1 + strand * 0.0025) * direction
       + strand * 0.24 * settings.phaseSpread
     let centeredIndex =
-      CGFloat(index) - CGFloat(max(0, Int(settings.strandCount.rounded()) - 1)) / 2
+      CGFloat(index)
+        - CGFloat(
+          max(
+            0,
+            frameRates.scaledDynamicGeometryCount(settings.strandCount) - 1
+          )
+        ) / 2
     let baseY =
       size.height
       * (CGFloat(settings.verticalPosition)
@@ -4784,8 +5235,9 @@ struct PlayStation3SplinesBackground: View {
       * (0.09 + CGFloat(index % 4) * 0.008)
       * CGFloat(settings.waveAmplitude)
 
-    let points = (0...32).map { step in
-      let progress = CGFloat(step) / 32
+    let sampleCount = frameRates.scaledDynamicGeometryCount(32, minimum: 12)
+    let points = (0...sampleCount).map { step in
+      let progress = CGFloat(step) / CGFloat(sampleCount)
       let progressValue = Double(progress)
       let primaryWave = sin(progressValue * .pi * 2.05 + phase)
       let detailWave = sin(
@@ -4842,9 +5294,10 @@ struct PlayStation3SplinesBackground: View {
 
 struct PlayStation4ParticlesBackground: View {
   let theme: DynamicBackgroundTheme
+  @Environment(\.uiFrameRateConfiguration) private var frameRates
 
   var body: some View {
-    TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
+    AdaptiveAnimationTimeline(domain: .dynamicBackground) { timeline in
       let time =
         timeline.date.timeIntervalSinceReferenceDate
         * theme.particleSettings.backgrounds.playStation4ParticlesSpeed
@@ -4894,7 +5347,7 @@ struct PlayStation4ParticlesBackground: View {
           endRadius: 520
         )
 
-        Canvas(rendersAsynchronously: true) { context, size in
+        DynamicWallpaperCanvas(rendersAsynchronously: true) { context, size in
           if settings.showsParticles {
             drawParticles(
               context: &context,
@@ -4941,7 +5394,7 @@ struct PlayStation4ParticlesBackground: View {
   ) {
     context.blendMode = .plusLighter
 
-    let particleCount = max(0, Int(settings.particleCount.rounded()))
+    let particleCount = frameRates.scaledDynamicEffectCount(settings.particleCount)
     let particleTime = time * settings.particleSpeed
 
     for index in 0..<particleCount {
@@ -5002,7 +5455,7 @@ struct PlayStation4ParticlesBackground: View {
     primary: Color,
     highlight: Color
   ) {
-    let waveCount = max(1, Int(settings.waveCount.rounded()))
+    let waveCount = frameRates.scaledDynamicGeometryCount(settings.waveCount)
 
     for index in 0..<waveCount {
       let path = playStationWavePath(size: size, time: time, index: index)
@@ -5050,7 +5503,7 @@ struct PlayStation4ParticlesBackground: View {
   // Builds the same two-curve wave shape used by PS4 Waves.
   private func playStationWavePath(size: CGSize, time: TimeInterval, index: Int) -> Path {
     let layer = Double(index)
-    let waveCount = max(1, Int(settings.waveCount.rounded()))
+    let waveCount = frameRates.scaledDynamicGeometryCount(settings.waveCount)
     let phase =
       time * (0.18 + layer * 0.012)
       + layer * 0.74 * settings.phaseSpread
@@ -5114,9 +5567,10 @@ struct PlayStation4ParticlesBackground: View {
 struct PlayStation4WavesBackground: View {
   let theme: DynamicBackgroundTheme
   var showsWaves = true
+  @Environment(\.uiFrameRateConfiguration) private var frameRates
 
   var body: some View {
-    TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
+    AdaptiveAnimationTimeline(domain: .dynamicBackground) { timeline in
       let time =
         timeline.date.timeIntervalSinceReferenceDate
         * theme.particleSettings.backgrounds.playStation4WavesSpeed
@@ -5173,7 +5627,7 @@ struct PlayStation4WavesBackground: View {
         }
 
         if settings.showsParticles {
-          Canvas(rendersAsynchronously: true) { context, size in
+          DynamicWallpaperCanvas(rendersAsynchronously: true) { context, size in
             drawParticles(
               context: &context,
               size: size,
@@ -5184,7 +5638,7 @@ struct PlayStation4WavesBackground: View {
         }
 
         if showsWaves && settings.showsWaves {
-          Canvas(rendersAsynchronously: true) { context, size in
+          DynamicWallpaperCanvas(rendersAsynchronously: true) { context, size in
             drawWaves(
               context: &context,
               size: size,
@@ -5219,7 +5673,7 @@ struct PlayStation4WavesBackground: View {
     time: TimeInterval,
     highlight: Color
   ) {
-    let particleCount = max(0, Int(settings.particleCount.rounded()))
+    let particleCount = frameRates.scaledDynamicEffectCount(settings.particleCount)
     let particleTime = time * settings.particleSpeed
 
     for index in 0..<particleCount {
@@ -5259,7 +5713,7 @@ struct PlayStation4WavesBackground: View {
     time: TimeInterval,
     highlight: Color
   ) {
-    let waveCount = max(1, Int(settings.waveCount.rounded()))
+    let waveCount = frameRates.scaledDynamicGeometryCount(settings.waveCount)
 
     for index in 0..<waveCount {
       let path = wavePath(size: size, time: time, index: index)
@@ -5307,7 +5761,7 @@ struct PlayStation4WavesBackground: View {
   // Builds one horizontal PS4 wave path from two cubic curves.
   private func wavePath(size: CGSize, time: TimeInterval, index: Int) -> Path {
     let layer = Double(index)
-    let waveCount = max(1, Int(settings.waveCount.rounded()))
+    let waveCount = frameRates.scaledDynamicGeometryCount(settings.waveCount)
     let phase =
       time * (0.18 + layer * 0.012)
       + layer * 0.74 * settings.phaseSpread
@@ -5371,9 +5825,10 @@ struct PlayStation4WavesBackground: View {
 
 struct PlayStationRibbonsBackground: View {
   let theme: DynamicBackgroundTheme
+  @Environment(\.uiFrameRateConfiguration) private var frameRates
 
   var body: some View {
-    TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
+    AdaptiveAnimationTimeline(domain: .dynamicBackground) { timeline in
       let time =
         timeline.date.timeIntervalSinceReferenceDate
         * theme.particleSettings.backgrounds.playStationRibbonsSpeed
@@ -5411,7 +5866,7 @@ struct PlayStationRibbonsBackground: View {
             y: CGFloat(sin(time * 0.06)) * 120 - 120
           )
 
-        Canvas(rendersAsynchronously: true) { context, size in
+        DynamicWallpaperCanvas(rendersAsynchronously: true) { context, size in
           if settings.showsPanels {
             drawLuminousPanels(
               context: &context,
@@ -5453,7 +5908,7 @@ extension PlayStationRibbonsBackground {
     size: CGSize,
     time: TimeInterval
   ) {
-    let panelCount = max(1, Int(settings.panelCount.rounded()))
+    let panelCount = frameRates.scaledDynamicGeometryCount(settings.panelCount)
 
     for index in 0..<panelCount {
       let panel = panelPath(size: size, time: time, index: index)
@@ -5510,7 +5965,7 @@ extension PlayStationRibbonsBackground {
     time: TimeInterval,
     color: Color
   ) {
-    let particleCount = max(0, Int(settings.particleCount.rounded()))
+    let particleCount = frameRates.scaledDynamicEffectCount(settings.particleCount)
     let particleTime = time * settings.particleSpeed
 
     for index in 0..<particleCount {
