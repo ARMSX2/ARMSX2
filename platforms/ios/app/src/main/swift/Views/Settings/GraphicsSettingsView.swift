@@ -317,8 +317,7 @@ struct GraphicsSettingsView: View {
                 Text(settings.localized("GameDB Graphics Fixes are safest for most games, and turning this on drops all of them. You don't need it to change one sprite or texture-offset value below: changing one keeps your answer for that setting and leaves the rest automatic. Skipdraw still needs this on."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                // MaskUpscalingHacks() zeroes these unless the multiplier is above 1, so the
-                // toggles read on and do nothing.
+                // MaskUpscalingHacks() zeroes these unless the multiplier is above 1, so the toggles read on and do nothing.
                 if settings.upscaleMultiplier <= 1.0 {
                     Text(settings.localized("Half-pixel Offset, Round Sprite, Align Sprite, Merge Sprite, Wild Arms Offset and the texture offsets only apply above 1x Internal Resolution. At 1x or below they are ignored."))
                         .font(.caption)
@@ -427,60 +426,6 @@ struct GraphicsSettingsView: View {
                 Text(settings.localized("Hardware Fixes"))
             } footer: {
                 Text(settings.localized("These hardware fixes are for compatibility. Most games should use Automatic or Default values."))
-            }
-
-            Section(settings.localized("Texture Replacement")) {
-                Toggle(settings.localized("Load Replacement Textures"), isOn: $settings.loadTextureReplacements)
-                Text(settings.localized("Loads PNG or DDS texture packs from Documents/textures/[Game Serial]/replacements/. Texture packs use app storage and may be large. Requires restart."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Toggle(settings.localized("Async Loading"), isOn: $settings.loadTextureReplacementsAsync)
-                    .disabled(!settings.loadTextureReplacements)
-                Text(settings.localized("Loads replacement textures in the background to reduce boot stalls."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Toggle(settings.localized("Precache Textures"), isOn: $settings.precacheTextureReplacements)
-                    .disabled(!settings.loadTextureReplacements)
-                Text(settings.localized("Loads all replacements when the game starts. Faster in-game, but uses more RAM."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Picker(settings.localized("Texture Preloading"), selection: $settings.texturePreloading) {
-                    Text(settings.localized("Off")).tag(0)
-                    Text(settings.localized("Partial")).tag(1)
-                    Text(settings.localized("Full")).tag(2)
-                }
-                Text(settings.localized("Core texture preloading mode. Full can improve replacement behavior but may increase memory use."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if settings.loadTextureReplacements && (settings.precacheTextureReplacements || settings.texturePreloading > 0) {
-                    Text(settings.localized("Large texture packs can use a lot of RAM when preload/precache is active and may cause stalls or crashes."))
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-            }
-
-            Section(settings.localized("Texture Dumping")) {
-                Toggle(settings.localized("Dump Replaceable Textures"), isOn: $settings.dumpReplaceableTextures)
-                Text(settings.localized("Writes discovered textures to Documents/textures/[Game Serial]/dumps/. This can heavily reduce performance and grow app storage quickly."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if settings.dumpReplaceableTextures {
-                    Text(settings.localized("Texture dumping can heavily slow games and create very large dump folders. Turn it off after collecting the textures you need."))
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-
-                Toggle(settings.localized("Dump Mipmaps"), isOn: $settings.dumpReplaceableMipmaps)
-                    .disabled(!settings.dumpReplaceableTextures)
-                Toggle(settings.localized("Dump During FMV"), isOn: $settings.dumpTexturesWithFMVActive)
-                    .disabled(!settings.dumpReplaceableTextures)
-                Toggle(settings.localized("Dump Direct Textures"), isOn: $settings.dumpDirectTextures)
-                    .disabled(!settings.dumpReplaceableTextures)
-                Toggle(settings.localized("Dump Palette Textures"), isOn: $settings.dumpPaletteTextures)
-                    .disabled(!settings.dumpReplaceableTextures)
             }
 
             Section {

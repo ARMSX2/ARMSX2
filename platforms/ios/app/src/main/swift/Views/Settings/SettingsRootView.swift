@@ -18,6 +18,7 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
     case emulator
     case graphics
     case shaders
+    case texturePacks
     case framePacing
     case audio
     case network
@@ -49,6 +50,8 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
             return "Graphics"
         case .shaders:
             return "Shaders"
+        case .texturePacks:
+            return "Texture Packs"
         case .framePacing:
             return "Frame Pacing"
         case .audio:
@@ -94,6 +97,8 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
             return "paintbrush"
         case .shaders:
             return "camera.filters"
+        case .texturePacks:
+            return "photo.stack"
         case .framePacing:
             return "speedometer"
         case .audio:
@@ -228,6 +233,10 @@ struct SettingsRootView: View {
                     }
                     .gameCardTintMenuBackgroundListRow(backgroundActive)
                 }
+                NavigationLink(value: SettingsPane.texturePacks) {
+                    Label(settings.localized("Texture Packs"), systemImage: "photo.stack")
+                }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
                 NavigationLink(value: SettingsPane.framePacing) {
                     Label(settings.localized("Frame Pacing"), systemImage: "speedometer")
                 }
@@ -481,6 +490,8 @@ struct SettingsRootView: View {
             GraphicsSettingsView()
         case .shaders:
             ShaderSettingsView()
+        case .texturePacks:
+            TexturePacksView { TextureReplacementSettings() }
         case .framePacing:
             FramePacingSettingsView()
         case .audio:

@@ -13,7 +13,7 @@ struct PerGameSettingsPanel: View {
     @State private var skinLibrary = VPadSkinLibraryStore.shared
 
     private enum PerGameSettingsCategory: CaseIterable, Identifiable, Hashable {
-        case general, graphics, framePacing, audio, cpu, pad, fixes, cheats, retroAchievements
+        case general, graphics, textures, framePacing, audio, cpu, pad, fixes, cheats, retroAchievements
 
         var id: Self { self }
 
@@ -24,6 +24,7 @@ struct PerGameSettingsPanel: View {
             switch self {
             case .general: return "General"
             case .graphics: return "Graphics"
+            case .textures: return "Texture Packs"
             case .framePacing: return "Frame Pacing"
             case .audio: return "Audio"
             case .cpu: return "CPU & Speedhacks"
@@ -38,6 +39,7 @@ struct PerGameSettingsPanel: View {
             switch self {
             case .general: return "slider.horizontal.3"
             case .graphics: return "paintbrush"
+            case .textures: return "photo.stack"
             case .framePacing: return "speedometer"
             case .audio: return "speaker.wave.2"
             case .cpu: return "cpu"
@@ -612,6 +614,7 @@ struct PerGameSettingsPanel: View {
         switch category {
         case .general:  generalTab
         case .graphics: graphicsTab
+        case .textures: texturesTab
         case .framePacing: framePacingTab
         case .audio:    audioTab
         case .cpu:      cpuTab
@@ -689,9 +692,6 @@ struct PerGameSettingsPanel: View {
             perGameDisableDepth: $perGameDisableDepth,
             perGameCPUCLUT: $perGameCPUCLUT,
             perGameGPUTargetCLUT: $perGameGPUTargetCLUT,
-            perGameLoadTextureReplacements: $perGameLoadTextureReplacements,
-            perGameLoadTextureReplacementsAsync: $perGameLoadTextureReplacementsAsync,
-            perGamePrecacheTextureReplacements: $perGamePrecacheTextureReplacements,
             savesToRunningGame: savesToRunningGame,
             shaderChainSupported: Self.shaderChainSupported,
             onBrowseShaderPreset: { shaderPresetRequest = ShaderPresetBrowserRequest() },
@@ -706,6 +706,17 @@ struct PerGameSettingsPanel: View {
             volumePercent: $volumePercent,
             globalVolumePercent: $globalVolumePercent,
             perGameFastForwardVolume: $perGameFastForwardVolume,
+            settings: settings
+        )
+    }
+
+    private var texturesTab: some View {
+        TexturesTab(
+            enabled: $enabled,
+            perGameLoadTextureReplacements: $perGameLoadTextureReplacements,
+            perGameLoadTextureReplacementsAsync: $perGameLoadTextureReplacementsAsync,
+            perGamePrecacheTextureReplacements: $perGamePrecacheTextureReplacements,
+            serial: game.metadata["serial"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
             settings: settings
         )
     }

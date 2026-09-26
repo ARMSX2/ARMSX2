@@ -252,6 +252,12 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 
 // Runtime disc identity
 + (nonnull NSString *)currentDiscIdentity;
+// The folder name the texture loader reads, unlike currentDiscIdentity which normalizes it.
++ (nonnull NSString *)currentTextureSerial;
++ (void)reloadTextureReplacements;
+// Unpacks a zip or tar.zst of replacement textures into textures/<serial>/replacements and returns the
+// serial: `serial` if set, else a serial folder in the archive, else its file name, else fallbackSerial.
++ (nullable NSString *)installTexturePackAtURL:(nonnull NSURL *)archiveURL serial:(nonnull NSString *)forcedSerial fallbackSerial:(nonnull NSString *)fallbackSerial error:(NSError * _Nullable * _Nullable)error;
 
 // VM lifecycle for menu flow
 + (BOOL)isVMRunning;
