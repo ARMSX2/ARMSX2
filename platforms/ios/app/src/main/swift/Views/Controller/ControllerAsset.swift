@@ -4,7 +4,12 @@
 import SwiftUI
 import UIKit
 
+private final class ControllerAssetImageCache: @unchecked Sendable {
+    let images = NSCache<NSString, UIImage>()
+}
+
 enum ControllerAsset {
+    private static let imageCache = ControllerAssetImageCache()
     private static let edgeToEdgePortraitAspectRatio: CGFloat = 1.55
     private static let analogBaseCommonFileName = "ic_controller_analog_base.png"
     private static let analogBaseLeftFileName = "ic_controller_analog_base_left.png"
@@ -111,34 +116,94 @@ enum ControllerAsset {
     ) -> UIImage? {
         guard !fileName.isEmpty else { return nil }
 
+        let cacheKey = descriptorImageCacheKey(
+            fileName: fileName,
+            descriptor: descriptor
+        )
+        if let cached = imageCache.images.object(forKey: cacheKey) {
+            return cached
+        }
+
         let skin = descriptor.virtualPadSkin
         let baseName = (fileName as NSString).deletingPathExtension
+        let resolved: UIImage?
         if descriptor.source == .imported,
            let directory = skinLibrary.importedAssetsDirectory(for: descriptor),
            let customImage = customImage(named: fileName, baseName: baseName, directory: directory) {
-            return customImage
-        }
-
-        if isLegacyCustomDescriptor(descriptor),
+            resolved = customImage
+        } else if isLegacyCustomDescriptor(descriptor),
            let directory = VirtualPadSkin.legacyCustomSkinDirectory(),
            let customImage = customImage(named: fileName, baseName: baseName, directory: directory) {
-            return customImage
-        }
-
-        if let directoryName = skin.bundledDirectoryName,
+            resolved = customImage
+        } else if let directoryName = skin.bundledDirectoryName,
            let bundledImage = bundledSkinImage(named: baseName, directoryName: directoryName) {
-            return bundledImage
+            resolved = bundledImage
+        } else if let image = UIImage(named: baseName) ?? UIImage(named: fileName) {
+            resolved = image
+        } else if let path = Bundle.main.path(forResource: baseName, ofType: "png") {
+            resolved = UIImage(contentsOfFile: path)
+        } else {
+            resolved = nil
         }
 
-        if let image = UIImage(named: baseName) ?? UIImage(named: fileName) {
-            return image
+        if let resolved {
+            imageCache.images.setObject(resolved, forKey: cacheKey)
         }
+        return resolved
+    }
 
-        guard let path = Bundle.main.path(forResource: baseName, ofType: "png") else {
-            return nil
+    /// Decode every image used by the ordinary virtual-pad renderer while the
+    /// launch confirmation is still onscreen. The gameplay hierarchy can then
+    /// draw the accepted skin without synchronous file reads on its first frame.
+    static func prewarm(
+        descriptor: VPadSkinDescriptor,
+        skinLibrary: VPadSkinLibraryStore = .shared
+    ) {
+        let buttons: [ARMSX2PadButton] = [
+            .up, .down, .left, .right,
+            .cross, .circle, .square, .triangle,
+            .L1, .R1, .L2, .R2,
+            .start, .select, .L3, .R3,
+        ]
+        let extraFiles = [
+            analogBaseCommonFileName,
+            analogBaseLeftFileName,
+            analogBaseRightFileName,
+            analogStickCurrentFileName,
+            legacyAnalogStickFileName,
+            analogStickLeftFileName,
+            analogStickRightFileName,
+            legacyAnalogStickLeftFileName,
+            legacyAnalogStickRightFileName,
+        ]
+        let files = buttons.map { fileName(for: $0) } + extraFiles
+        for file in files {
+            guard let source = image(
+                named: file,
+                descriptor: descriptor,
+                skinLibrary: skinLibrary
+            ) else {
+                continue
+            }
+            let prepared = source.preparingForDisplay() ?? source
+            imageCache.images.setObject(
+                prepared,
+                forKey: descriptorImageCacheKey(
+                    fileName: file,
+                    descriptor: descriptor
+                )
+            )
         }
+    }
 
-        return UIImage(contentsOfFile: path)
+    private static func descriptorImageCacheKey(
+        fileName: String,
+        descriptor: VPadSkinDescriptor
+    ) -> NSString {
+        let revision = descriptor.source == .imported
+            ? Int(descriptor.updatedAt.timeIntervalSince1970 * 1_000)
+            : 0
+        return "\(descriptor.id)|\(revision)|\(fileName)" as NSString
     }
 
     private static func skinContainsExactAsset(
@@ -172,6 +237,69 @@ enum ControllerAsset {
         }
 
         return UIImage(contentsOfFile: url.path)
+    }
+
+    /// Returns complete controller artwork for library and confirmation
+    /// previews. Unlike the gameplay loader below, previews may safely display
+    /// edge-to-edge and landscape artwork because they do not define hit areas.
+    static func fullSkinImage(
+        descriptor: VPadSkinDescriptor,
+        isLandscape: Bool,
+        skinLibrary: VPadSkinLibraryStore = .shared
+    ) -> UIImage? {
+        let directory: URL?
+        if descriptor.source == .imported {
+            directory = skinLibrary.importedAssetsDirectory(for: descriptor)
+        } else if isLegacyCustomDescriptor(descriptor) {
+            directory = VirtualPadSkin.legacyCustomSkinDirectory()
+        } else {
+            directory = nil
+        }
+        guard let directory else {
+            return nil
+        }
+
+        let orientationCandidates = isLandscape
+            ? [
+                "controller_edgetoedge_landscape",
+                "iphone_edgetoedge_landscape",
+                "controller_landscape",
+                "iphone_landscape",
+                "skin_landscape",
+                "background_landscape",
+                "gamepad_landscape",
+                "landscape",
+            ]
+            : [
+                "controller_edgetoedge_portrait",
+                "iphone_edgetoedge_portrait",
+                "controller_portrait",
+                "iphone_portrait",
+                "skin_portrait",
+                "background_portrait",
+                "gamepad_portrait",
+                "portrait",
+            ]
+        let sharedCandidates = [
+            "controller",
+            "skin",
+            "background",
+            "gamepad",
+            "full",
+            "layout",
+        ]
+
+        for baseName in orientationCandidates + sharedCandidates {
+            if let image = customImage(
+                named: "\(baseName).png",
+                baseName: baseName,
+                directory: directory
+            ) {
+                return image
+            }
+        }
+
+        return nil
     }
 
     static func gameplayFullSkinImage(skin: VirtualPadSkin, isLandscape: Bool) -> UIImage? {
@@ -216,7 +344,6 @@ enum ControllerAsset {
         isLandscape: Bool,
         skinLibrary: VPadSkinLibraryStore = .shared
     ) -> UIImage? {
-        let skin = descriptor.virtualPadSkin
         let directory: URL?
         if descriptor.source == .imported {
             directory = skinLibrary.importedAssetsDirectory(for: descriptor)
