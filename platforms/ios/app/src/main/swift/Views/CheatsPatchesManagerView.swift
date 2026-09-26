@@ -4,6 +4,50 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+private struct CheatsControllerFocusModifier: ViewModifier {
+    let targetID: String
+    let isFocused: Bool
+    let cornerRadius: CGFloat
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.uiAccentColour) private var accentColour
+
+    func body(content: Content) -> some View {
+        content
+            .focusEffectDisabled()
+            .padding(.horizontal, 7)
+            .foregroundStyle(isFocused ? accentColour : Color.primary)
+            .background {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(isFocused ? Color.black.opacity(0.2) : .clear)
+            }
+            .controllerFocusBoxPresentation(
+                isVisible: isFocused,
+                cornerRadius: cornerRadius,
+                performanceOptimized: true
+            )
+            .controllerNavigationOrbTarget(
+                id: "cheats.\(targetID)",
+                isActive: isFocused,
+                palette: .blue,
+                style: .plain,
+                inset: 2,
+                orbScale: 0.7,
+                priority: 10
+            )
+            .scaleEffect(isFocused && !reduceMotion ? 1.01 : 1)
+            .shadow(
+                color: .black.opacity(isFocused ? 0.1 : 0),
+                radius: isFocused ? 4 : 0,
+                y: isFocused ? 2 : 0
+            )
+            .animation(
+                reduceMotion ? .linear(duration: 0.1) : .smooth(duration: 0.2),
+                value: isFocused
+            )
+    }
+}
+
 private enum InstalledFileRemoval {
     case patch
     case cheat
@@ -11,9 +55,28 @@ private enum InstalledFileRemoval {
 }
 
 struct CheatsPatchesManagerView: View {
+    private enum ControllerTarget: Hashable {
+        case done
+        case retryIdentity
+        case dismissFeedback
+        case installed(String)
+        case enableAll
+        case disableAll
+        case removeInstalled
+        case downloadPatches
+        case downloadCheats
+        case importType
+        case importFile
+        case advanced
+        case addPatchSource
+        case addCheatSource
+        case saveSources
+    }
+
     let isoName: String
     let gameTitle: String
     let launchContext: CheatsPatchesLaunchContext
+    let controllerInput: MenuControllerInputRouter?
 
     @State private var settings = SettingsStore.shared
     @State private var store = PatchStore.shared
@@ -25,39 +88,55 @@ struct CheatsPatchesManagerView: View {
     @State private var pendingEntryRemoval: PatchEntry?
     @State private var showAdvanced = false
     @State private var downloadTask: Task<Void, Never>?
+    @State private var controllerTarget: ControllerTarget = .done
+    @State private var controllerConfirmationIndex = 0
     @Environment(\.dismiss) private var dismiss
 
     init(
         isoName: String,
         gameTitle: String,
-        launchContext: CheatsPatchesLaunchContext = .library
+        launchContext: CheatsPatchesLaunchContext = .library,
+        controllerInput: MenuControllerInputRouter? = nil
     ) {
         self.isoName = isoName
         self.gameTitle = gameTitle
         self.launchContext = launchContext
+        self.controllerInput = controllerInput
     }
 
     var body: some View {
         NavigationStack {
-            Form {
-                gameSection
-                if capabilityMessage != nil {
-                    capabilitySection
-                }
-                if store.showMessage, store.lastMessage != nil {
-                    feedbackSection
-                }
-                if PatchStore.hardcoreBlocksPnachContent() {
-                    Section {
-                        Label {
-                            Text(settings.localized("Hardcore Mode is on. Cheats and most patches are blocked, but widescreen and 60fps patches from a trusted database can still be enabled."))
-                                .fixedSize(horizontal: false, vertical: true)
-                        } icon: {
-                            Image(systemName: "lock.fill")
-                                .foregroundStyle(.orange)
-                        }
+            ScrollViewReader { proxy in
+                Form {
+                    ControllerRightStickScrollTarget(
+                        controllerInput: controllerInput,
+                        axes: .vertical,
+                        manualCaptureOwner:
+                            MenuControllerNavigationCaptureOwner.cheatsPatchesManager,
+                        priority: 90
+                    )
+                    .frame(height: 0)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    gameSection
+                    if capabilityMessage != nil {
+                        capabilitySection
                     }
-                } else if PatchStore.hardcorePendingRestart() {
+                    if store.showMessage, store.lastMessage != nil {
+                        feedbackSection
+                    }
+                    if PatchStore.hardcoreBlocksPnachContent() {
+                        Section {
+                            Label {
+                                Text(settings.localized("Hardcore Mode is on. Cheats and most patches are blocked, but widescreen and 60fps patches from a trusted database can still be enabled."))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            } icon: {
+                                Image(systemName: "lock.fill")
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    } else if PatchStore.hardcorePendingRestart() {
                     // This screen used to claim everything was blocked the moment Hardcore was
                     // switched on. It is not: Hardcore arms on a boot, and until then the
                     // entries below carry on working.
@@ -70,27 +149,65 @@ struct CheatsPatchesManagerView: View {
                                 .foregroundStyle(.orange)
                         }
                     }
+                    }
+                    installedSection
+                    availableSection
+                    importSection
+                    advancedSection
                 }
-                installedSection
-                availableSection
-                importSection
-                advancedSection
+                .scrollContentBackground(.hidden)
+                .background(Color.clear)
+                .onChange(of: controllerTarget) { _, target in
+                    withAnimation(.snappy(duration: 0.22)) {
+                        proxy.scrollTo(target, anchor: .center)
+                    }
+                }
             }
             .navigationTitle(settings.localized("Cheats & Patches"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(settings.localized("Done")) { dismiss() }
+                    Button { dismissWithReturnSound() } label: {
+                        Text(settings.localized("Done"))
+                            .modifier(
+                                CheatsControllerFocusModifier(
+                                    targetID: "done",
+                                    isFocused:
+                                        controllerInput?.isControllerNavigationEnabled == true
+                                            && controllerTarget == .done,
+                                    cornerRadius: 14
+                                )
+                            )
+                    }
                 }
             }
             .onAppear {
                 reload()
                 patchSourcesDraft = store.patchDatabaseURLTemplates
                 cheatSourcesDraft = store.cheatDatabaseURLTemplates
+                controllerInput?.setNavigationCaptured(
+                    true,
+                    owner: MenuControllerNavigationCaptureOwner.cheatsPatchesManager,
+                    priority: 500
+                )
             }
             .onDisappear {
                 downloadTask?.cancel()
                 downloadTask = nil
+                // PatchStore is shared for persistence, but its parsed rows,
+                // messages, and current-game identity are presentation-only.
+                // Discard them when this manager leaves the hierarchy so the
+                // Quick Menu does not keep them resident during gameplay.
+                store.releasePresentationResources()
+                controllerInput?.setNavigationCaptured(
+                    false,
+                    owner: MenuControllerNavigationCaptureOwner.cheatsPatchesManager,
+                    priority: 500
+                )
+            }
+            .onChange(of: controllerInput?.latestEvent) { _, event in
+                guard let event else { return }
+                handleControllerCommand(event)
             }
             .sheet(isPresented: $showImportPicker) {
                 ImportDocumentPicker(
@@ -113,7 +230,18 @@ struct CheatsPatchesManagerView: View {
             }
             .confirmationDialog(
                 removalTitle,
-                isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }),
+                isPresented: Binding(
+                    get: {
+                        pendingRemoval != nil
+                            && controllerInput?.hasConnectedController != true
+                    },
+                    set: { presented in
+                        if !presented,
+                           controllerInput?.hasConnectedController != true {
+                            pendingRemoval = nil
+                        }
+                    }
+                ),
                 titleVisibility: .visible
             ) {
                 Button(removalActionTitle, role: .destructive) { performPendingRemoval() }
@@ -123,7 +251,18 @@ struct CheatsPatchesManagerView: View {
             }
             .confirmationDialog(
                 settings.localized("Remove this entry?"),
-                isPresented: Binding(get: { pendingEntryRemoval != nil }, set: { if !$0 { pendingEntryRemoval = nil } }),
+                isPresented: Binding(
+                    get: {
+                        pendingEntryRemoval != nil
+                            && controllerInput?.hasConnectedController != true
+                    },
+                    set: { presented in
+                        if !presented,
+                           controllerInput?.hasConnectedController != true {
+                            pendingEntryRemoval = nil
+                        }
+                    }
+                ),
                 titleVisibility: .visible
             ) {
                 Button(settings.localized("Remove Entry"), role: .destructive) {
@@ -135,6 +274,23 @@ struct CheatsPatchesManagerView: View {
                 Button(settings.localized("Cancel"), role: .cancel) { pendingEntryRemoval = nil }
             } message: {
                 Text(settings.localized("This removes only this entry from its file. All other entries are kept."))
+            }
+            .accessibilityHidden(controllerConfirmationActive)
+        }
+        .background(Color.clear)
+        .glassSurface(clear: false, cornerRadius: 26)
+        .controllerNavigationOrbOverlay(controllerInput: controllerInput)
+        .overlay {
+            if controllerConfirmationActive {
+                ControllerNavigationAlert(
+                    title: controllerConfirmationTitle,
+                    dimsBackground: launchContext != .library,
+                    message: controllerConfirmationMessage,
+                    actions: controllerConfirmationActions,
+                    selectedIndex: controllerConfirmationIndex,
+                    onSelect: performControllerConfirmationAction,
+                    onDismiss: dismissControllerConfirmation
+                )
             }
         }
     }
@@ -180,7 +336,11 @@ struct CheatsPatchesManagerView: View {
             }
 
             if launchContext == .inGame {
-                Button(settings.localized("Retry Game Information")) { reload() }
+                Button { reload() } label: {
+                    Text(settings.localized("Retry Game Information"))
+                        .modifier(controllerFocus(.retryIdentity))
+                }
+                .id(ControllerTarget.retryIdentity)
             }
         } header: {
             Text(settings.localized("Game Identification"))
@@ -202,9 +362,11 @@ struct CheatsPatchesManagerView: View {
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
+                        .modifier(controllerFocus(.dismissFeedback))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(settings.localized("Dismiss message"))
+                .id(ControllerTarget.dismissFeedback)
             }
         }
     }
@@ -245,6 +407,10 @@ struct CheatsPatchesManagerView: View {
                             .accessibilityAddTraits(.isHeader)
                         ForEach(entries) { entry in
                             installedRow(entry)
+                                .modifier(
+                                    controllerFocus(.installed(entry.id))
+                                )
+                                .id(ControllerTarget.installed(entry.id))
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     if !entry.isLegacy && !entry.name.isEmpty {
                                         Button(role: .destructive) {
@@ -264,15 +430,19 @@ struct CheatsPatchesManagerView: View {
                             store.setAllNamedEntries(enabled: true)
                         } label: {
                             Label(settings.localized("Enable All"), systemImage: "checkmark.circle")
+                                .modifier(controllerFocus(.enableAll))
                         }
                         .disabled(!store.canEnableAll)
+                        .id(ControllerTarget.enableAll)
 
                         Button {
                             store.setAllNamedEntries(enabled: false)
                         } label: {
                             Label(settings.localized("Disable All"), systemImage: "circle.slash")
+                                .modifier(controllerFocus(.disableAll))
                         }
                         .disabled(!store.canDisableAll)
+                        .id(ControllerTarget.disableAll)
                     }
                     .buttonStyle(.borderless)
                     .accessibilityElement(children: .contain)
@@ -302,8 +472,10 @@ struct CheatsPatchesManagerView: View {
                     }
                 } label: {
                     Label(settings.localized("Remove Installed Files…"), systemImage: "trash")
+                        .modifier(controllerFocus(.removeInstalled))
                 }
                 .accessibilityHint(settings.localized("Removes complete installed files, not individual entries"))
+                .id(ControllerTarget.removeInstalled)
             }
         } header: {
             Text(settings.localized("Installed"))
@@ -468,9 +640,11 @@ struct CheatsPatchesManagerView: View {
                         hasDatabasePatch ? settings.localized("Reinstall Patches") : settings.localized("Download Patches"),
                         systemImage: hasDatabasePatch ? "arrow.clockwise.icloud" : "icloud.and.arrow.down"
                     )
+                    .modifier(controllerFocus(.downloadPatches))
                 }
                 .disabled(!store.identityState.canUseDatabase || !store.canManageInstalledFiles || store.isDownloading)
                 .accessibilityHint(settings.localized(store.identityState.canUseDatabase ? "Downloads matching patches from every configured source" : "Requires an identified game CRC"))
+                .id(ControllerTarget.downloadPatches)
             } else {
                 Text(settings.localized("No patch download source is configured. Add one in Advanced or import a file below."))
                     .font(.caption)
@@ -486,8 +660,10 @@ struct CheatsPatchesManagerView: View {
                         hasDatabaseCheat ? settings.localized("Reinstall Cheats") : settings.localized("Download Cheats"),
                         systemImage: hasDatabaseCheat ? "arrow.clockwise.icloud" : "icloud.and.arrow.down"
                     )
+                    .modifier(controllerFocus(.downloadCheats))
                 }
                 .disabled(!store.identityState.canUseDatabase || !store.canManageInstalledFiles || store.isDownloading)
+                .id(ControllerTarget.downloadCheats)
             }
 
             if store.isDownloading {
@@ -532,13 +708,17 @@ struct CheatsPatchesManagerView: View {
                 Text(settings.localized("Cheat")).tag(true)
             }
             .pickerStyle(.segmented)
+            .modifier(controllerFocus(.importType))
+            .id(ControllerTarget.importType)
 
             Button {
                 showImportPicker = true
             } label: {
                 Label(settings.localized("Import File"), systemImage: "square.and.arrow.down")
+                    .modifier(controllerFocus(.importFile))
             }
             .disabled(!store.canManageInstalledFiles)
+            .id(ControllerTarget.importFile)
         } header: {
             Text(settings.localized("Import"))
         } footer: {
@@ -569,8 +749,10 @@ struct CheatsPatchesManagerView: View {
                     patchSourcesDraft.append("")
                 } label: {
                     Label(settings.localized("Add source"), systemImage: "plus.circle")
+                        .modifier(controllerFocus(.addPatchSource))
                 }
                 .buttonStyle(.borderless)
+                .id(ControllerTarget.addPatchSource)
 
                 Text(settings.localized("Cheat sources"))
                     .font(.subheadline.weight(.semibold))
@@ -591,8 +773,10 @@ struct CheatsPatchesManagerView: View {
                     cheatSourcesDraft.append("")
                 } label: {
                     Label(settings.localized("Add source"), systemImage: "plus.circle")
+                        .modifier(controllerFocus(.addCheatSource))
                 }
                 .buttonStyle(.borderless)
+                .id(ControllerTarget.addCheatSource)
 
                 Button(settings.localized("Save Source URLs")) {
                     store.patchDatabaseURLTemplates = patchSourcesDraft
@@ -603,6 +787,8 @@ struct CheatsPatchesManagerView: View {
                 }
                 .buttonStyle(.borderless)
                 .padding(.top, 8)
+                .modifier(controllerFocus(.saveSources))
+                .id(ControllerTarget.saveSources)
 
                 Text(settings.localized("Supported placeholders: \u{24}{serial}, \u{24}{crc}, and \u{24}{title}. Built-in sources provide PCSX2 patches, an UltraWidescreen / NaturalVision pack, and a community cheat collection. Only add sources you trust."))
                     .font(.caption)
@@ -612,10 +798,275 @@ struct CheatsPatchesManagerView: View {
                 Label(settings.localized("Source URLs"), systemImage: "link")
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     .contentShape(Rectangle())
+                    .modifier(controllerFocus(.advanced))
             }
+            .id(ControllerTarget.advanced)
         } header: {
             Text(settings.localized("Advanced"))
         }
+    }
+
+    private func controllerFocus(
+        _ target: ControllerTarget
+    ) -> CheatsControllerFocusModifier {
+        CheatsControllerFocusModifier(
+            targetID: String(describing: target),
+            isFocused:
+                controllerInput?.isControllerNavigationEnabled == true
+                    && controllerTarget == target,
+            cornerRadius: 12
+        )
+    }
+
+    private var controllerConfirmationActive: Bool {
+        controllerInput?.hasConnectedController == true
+            && (pendingRemoval != nil || pendingEntryRemoval != nil)
+    }
+
+    private var controllerConfirmationTitle: String {
+        pendingEntryRemoval != nil ? "Remove this entry?" : removalTitle
+    }
+
+    private var controllerConfirmationMessage: String {
+        pendingEntryRemoval != nil
+            ? "This removes only this entry from its file. All other entries are kept."
+            : removalMessage
+    }
+
+    private var controllerConfirmationActions:
+        [ControllerNavigationAlertAction] {
+        [
+            .init(id: "cancel", title: "Cancel"),
+            .init(
+                id: "remove",
+                title: pendingEntryRemoval != nil
+                    ? "Remove Entry"
+                    : removalActionTitle,
+                isDestructive: true
+            ),
+        ]
+    }
+
+    private func dismissControllerConfirmation() {
+        pendingRemoval = nil
+        pendingEntryRemoval = nil
+        controllerConfirmationIndex = 0
+    }
+
+    private func performControllerConfirmationAction(_ index: Int) {
+        guard index == 1 else {
+            dismissControllerConfirmation()
+            return
+        }
+        if let entry = pendingEntryRemoval {
+            store.removeEntry(entry)
+            pendingEntryRemoval = nil
+        } else {
+            performPendingRemoval()
+        }
+        controllerConfirmationIndex = 0
+    }
+
+    private func handleControllerConfirmationCommand(
+        _ command: MenuControllerCommand
+    ) {
+        switch command {
+        case .up, .upLeft, .left, .downLeft:
+            controllerConfirmationIndex = 0
+            controllerInput?.playFeedback(.move(command))
+        case .upRight, .right, .downRight, .down:
+            controllerConfirmationIndex = 1
+            controllerInput?.playFeedback(.move(command))
+        case .activate:
+            performControllerConfirmationAction(controllerConfirmationIndex)
+            controllerInput?.playFeedback(.activate)
+        case .back:
+            dismissControllerConfirmation()
+            controllerInput?.playFeedback(.back)
+        case .toggleFavorite, .showContextMenu, .previousTab, .nextTab:
+            controllerInput?.playFeedback(.boundary)
+        }
+    }
+
+    private var controllerTargets: [ControllerTarget] {
+        var targets: [ControllerTarget] = [.done]
+        if capabilityMessage != nil, launchContext == .inGame {
+            targets.append(.retryIdentity)
+        }
+        if store.showMessage, store.lastMessage != nil {
+            targets.append(.dismissFeedback)
+        }
+        targets.append(
+            contentsOf: store.installed.map { .installed($0.id) }
+        )
+        if hasNamedEntries {
+            targets.append(contentsOf: [.enableAll, .disableAll])
+        }
+        if !store.installed.isEmpty {
+            targets.append(.removeInstalled)
+        }
+        if store.hasConfiguredPatchDatabase {
+            targets.append(.downloadPatches)
+        }
+        if store.hasConfiguredCheatDatabase {
+            targets.append(.downloadCheats)
+        }
+        targets.append(contentsOf: [.importType, .importFile, .advanced])
+        if showAdvanced {
+            targets.append(
+                contentsOf: [.addPatchSource, .addCheatSource, .saveSources]
+            )
+        }
+        return targets
+    }
+
+    private func handleControllerCommand(_ event: MenuControllerInputEvent) {
+        guard controllerInput != nil,
+              event.captureOwner
+                == MenuControllerNavigationCaptureOwner.cheatsPatchesManager else {
+            return
+        }
+        let command = event.command
+        if showImportPicker {
+            if command == .back {
+                showImportPicker = false
+                controllerInput?.playFeedback(.back)
+            }
+            return
+        }
+        if controllerConfirmationActive {
+            handleControllerConfirmationCommand(command)
+            return
+        }
+        let targets = controllerTargets
+        guard !targets.isEmpty else { return }
+        let index = targets.firstIndex(of: controllerTarget) ?? 0
+        if !targets.contains(controllerTarget) {
+            controllerTarget = targets[index]
+        }
+
+        switch command {
+        case .up, .upLeft, .upRight:
+            let next = max(targets.startIndex, index - 1)
+            guard next != index else {
+                controllerInput?.playFeedback(.boundary)
+                return
+            }
+            controllerTarget = targets[next]
+            controllerInput?.playFeedback(.move(.up))
+        case .down, .downLeft, .downRight:
+            let next = min(targets.index(before: targets.endIndex), index + 1)
+            guard next != index else {
+                controllerInput?.playFeedback(.boundary)
+                return
+            }
+            controllerTarget = targets[next]
+            controllerInput?.playFeedback(.move(.down))
+        case .left, .right:
+            guard controllerTarget == .importType else {
+                controllerInput?.playFeedback(.boundary)
+                return
+            }
+            importAsCheat = command == .right
+            controllerInput?.playFeedback(.move(command))
+        case .activate:
+            activateControllerTarget()
+        case .back:
+            if showAdvanced {
+                showAdvanced = false
+                controllerTarget = .advanced
+            } else {
+                dismiss()
+            }
+            controllerInput?.playFeedback(.back)
+        case .toggleFavorite, .showContextMenu, .previousTab, .nextTab:
+            break
+        }
+    }
+
+    private func activateControllerTarget() {
+        switch controllerTarget {
+        case .done:
+            dismissWithReturnSound()
+        case .retryIdentity:
+            reload()
+        case .dismissFeedback:
+            store.dismissMessage()
+        case .installed(let id):
+            guard let entry = store.installed.first(where: { $0.id == id }),
+                  !entry.isLegacy else {
+                controllerInput?.playFeedback(.boundary)
+                return
+            }
+            store.toggle(entry)
+        case .enableAll:
+            guard store.canEnableAll else {
+                controllerInput?.playFeedback(.boundary)
+                return
+            }
+            store.setAllNamedEntries(enabled: true)
+        case .disableAll:
+            guard store.canDisableAll else {
+                controllerInput?.playFeedback(.boundary)
+                return
+            }
+            store.setAllNamedEntries(enabled: false)
+        case .removeInstalled:
+            if patchEntryCount > 0, cheatEntryCount > 0 {
+                pendingRemoval = .all
+            } else if patchEntryCount > 0 {
+                pendingRemoval = .patch
+            } else if cheatEntryCount > 0 {
+                pendingRemoval = .cheat
+            } else {
+                controllerInput?.playFeedback(.boundary)
+                return
+            }
+        case .downloadPatches:
+            guard store.identityState.canUseDatabase,
+                  store.canManageInstalledFiles,
+                  !store.isDownloading else {
+                controllerInput?.playFeedback(.boundary)
+                return
+            }
+            store.dismissMessage()
+            startDatabaseDownload(asCheat: false)
+        case .downloadCheats:
+            guard store.identityState.canUseDatabase,
+                  store.canManageInstalledFiles,
+                  !store.isDownloading else {
+                controllerInput?.playFeedback(.boundary)
+                return
+            }
+            store.dismissMessage()
+            startDatabaseDownload(asCheat: true)
+        case .importType:
+            importAsCheat.toggle()
+        case .importFile:
+            guard store.canManageInstalledFiles else {
+                controllerInput?.playFeedback(.boundary)
+                return
+            }
+            showImportPicker = true
+        case .advanced:
+            showAdvanced.toggle()
+        case .addPatchSource:
+            patchSourcesDraft.append("")
+        case .addCheatSource:
+            cheatSourcesDraft.append("")
+        case .saveSources:
+            store.patchDatabaseURLTemplates = patchSourcesDraft
+            store.cheatDatabaseURLTemplates = cheatSourcesDraft
+            patchSourcesDraft = store.patchDatabaseURLTemplates
+            cheatSourcesDraft = store.cheatDatabaseURLTemplates
+            store.applyFeedback("Source URLs saved.", kind: .success)
+        }
+        controllerInput?.playFeedback(.activate)
+    }
+
+    private func dismissWithReturnSound() {
+        MenuAudioPackManager.shared.playEvent(.return)
+        dismiss()
     }
 
     // One source-URL row. The text binding is captured per-row so SwiftUI tracks it
@@ -635,7 +1086,7 @@ struct CheatsPatchesManagerView: View {
                 .accessibilityLabel(label)
             Button(action: onRemove) {
                 Image(systemName: "minus.circle.fill")
-                    .foregroundStyle(.red)
+                    .uiCriticalForegroundStyle()
             }
             .buttonStyle(.plain)
             .accessibilityLabel(settings.localized("Remove source"))

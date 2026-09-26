@@ -98,6 +98,7 @@ enum OverlayFrameMode {
 struct GameOverlayContainer<Content: View>: View {
     var onTapOutside: (() -> Void)? = nil
     var frameMode: OverlayFrameMode = .bounded
+    var dimsBackground = true
     @ViewBuilder let content: (OverlayMetrics) -> Content
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -158,8 +159,13 @@ struct GameOverlayContainer<Content: View>: View {
     /// taps, so gameplay gets none while an overlay is up.
     @ViewBuilder
     private func backdrop(metrics: OverlayMetrics) -> some View {
-        let scrim = OverlayTheme.scrimBase
-            .opacity(metrics.scrimOpacity)
+        let scrim = Group {
+            if dimsBackground {
+                OverlayTheme.scrimBase.opacity(metrics.scrimOpacity)
+            } else {
+                Color.clear
+            }
+        }
             .ignoresSafeArea()
             .contentShape(Rectangle())
 
