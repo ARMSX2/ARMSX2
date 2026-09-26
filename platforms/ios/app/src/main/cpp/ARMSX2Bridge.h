@@ -65,6 +65,7 @@ typedef NS_ENUM(NSInteger, ARMSX2PadButton) {
 @end
 
 typedef void (^ARMSX2SaveStateCompletion)(BOOL success);
+typedef void (^ARMSX2TemporaryStateCreationCompletion)(NSString * _Nullable token);
 typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonnull message);
 
 @interface ARMSX2Bridge : NSObject
@@ -80,11 +81,23 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (void)setPadButton:(ARMSX2PadButton)button pressed:(BOOL)pressed;
 + (void)setLeftStickX:(float)x Y:(float)y;
 + (void)setRightStickX:(float)x Y:(float)y;
++ (void)configureControllerMacroInputMask:(uint32_t)inputMask
+                             modifierMask:(uint32_t)modifierMask
+    NS_SWIFT_NAME(configureControllerMacroInput(mask:modifierMask:));
++ (void)consumeControllerMacroInputMask:(uint32_t)inputMask
+    NS_SWIFT_NAME(consumeControllerMacroInput(mask:));
 
 // VM control
 + (void)requestVMStop;
 + (void)setVMPaused:(BOOL)paused;
 + (void)setFullScreen:(BOOL)enabled;
+
+// Silent, private save-state transaction used by the in-game Per-Game Settings
+// live preview. These states never occupy a user slot and never emit an OSD.
++ (void)beginPerGameLivePreviewWithCompletion:(nullable ARMSX2TemporaryStateCreationCompletion)completion NS_SWIFT_NAME(beginPerGameLivePreview(completion:));
++ (void)applyPerGameLivePreviewForToken:(nonnull NSString *)token completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(applyPerGameLivePreview(token:completion:));
++ (void)restorePerGameLivePreviewStateForToken:(nonnull NSString *)token completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(restorePerGameLivePreviewState(token:completion:));
++ (void)finishPerGameLivePreviewForToken:(nonnull NSString *)token preserveSettings:(BOOL)preserveSettings completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(finishPerGameLivePreview(token:preserveSettings:completion:));
 + (BOOL)isSDLFullscreen;
 
 // Info
@@ -111,6 +124,13 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
                                                       error:(NSError * _Nullable * _Nullable)error
     NS_SWIFT_NAME(extractShaderPackArchive(at:to:error:));
 
+// Extracts one MP3 or WAV for each required UI-audio role. Archive folders are
+// ignored and the validated files are flattened into the destination.
++ (nonnull NSArray<NSURL *> *)extractAudioPackArchiveAtURL:(nonnull NSURL *)archiveURL
+                                               toDirectory:(nonnull NSURL *)destinationDirectory
+                                                     error:(NSError * _Nullable * _Nullable)error
+    NS_SWIFT_NAME(extractAudioPackArchive(at:to:error:));
+
 // Extracts the first .ps2 file from a ZIP into the memory-card directory.
 + (nullable NSString *)extractMemoryCardArchiveAtURL:(nonnull NSURL *)archiveURL
     NS_SWIFT_NAME(extractMemoryCardArchive(at:));
@@ -133,6 +153,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // Audio
 + (int)emulatorVolumePercent;
 + (void)setEmulatorVolumePercent:(int)value;
++ (void)setPerGameLivePreviewAudioMuted:(BOOL)muted;
 
 // ISO management
 + (nullable NSString *)currentISOPath;
@@ -143,6 +164,8 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (nonnull NSArray<NSDictionary<NSString *, id> *> *)availableISOEntries;
 + (nonnull NSDictionary<NSString *, NSString *> *)gameMetadataForISO:(nonnull NSString *)isoName;
 + (nonnull NSDictionary<NSString *, id> *)gameSettingsForISO:(nullable NSString *)isoName NS_SWIFT_NAME(gameSettings(forISO:));
++ (nonnull NSDictionary<NSString *, id> *)gameSettingsForSerial:(nullable NSString *)serial
+                                                            crc:(nullable NSString *)crc NS_SWIFT_NAME(gameSettings(forSerial:crc:));
 + (nullable NSDictionary<NSString *, id> *)gameSettingsForCurrentGame;
 + (void)setGameSettings:(nonnull NSDictionary<NSString *, id> *)settings forISO:(nullable NSString *)isoName NS_SWIFT_NAME(setGameSettings(_:forISO:));
 + (nullable NSString *)linkedDiscPathForELF:(nonnull NSString *)elfName NS_SWIFT_NAME(linkedDiscPath(forELF:));
@@ -248,6 +271,10 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // Runtime speed control
 + (int)limiterMode;
 + (void)setLimiterMode:(int)mode;
++ (void)setRuntimeFastForwardEnabled:(BOOL)enabled speedPercent:(int)percent
+    NS_SWIFT_NAME(setRuntimeFastForward(enabled:speedPercent:));
++ (void)setRuntimeEmulationSpeedPercent:(int)percent
+    NS_SWIFT_NAME(setRuntimeEmulationSpeedPercent(_:));
 + (void)setPresentFPSCap:(float)fps NS_SWIFT_NAME(setPresentFPSCap(_:));
 
 // Runtime disc identity
@@ -257,6 +284,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (BOOL)isVMRunning;
 + (BOOL)hasBIOS;
 + (void)requestVMBoot;
++ (void)requestVMBootLoadingLastSaveState:(BOOL)loadLastSaveState NS_SWIFT_NAME(requestVMBoot(loadLastSaveState:));
 + (void)testControllerRumble;
 
 // Save states

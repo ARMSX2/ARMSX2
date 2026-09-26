@@ -137,6 +137,8 @@ namespace Host
                 // Use dedicated game render view if available (sized for portrait).
                 if (g_gameRenderView) {
                     wi.window_handle = (__bridge void*)g_gameRenderView;
+                } else if (s_sdlRootVC) {
+                    wi.window_handle = (__bridge void*)s_sdlRootVC.view;
                 } else {
                     wi.window_handle = (__bridge void*)[window rootViewController].view;
                 }
