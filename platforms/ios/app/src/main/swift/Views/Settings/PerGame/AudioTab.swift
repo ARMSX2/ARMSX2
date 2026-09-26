@@ -16,6 +16,11 @@ struct AudioTab: View {
         PerGameTab(title: settings.localized("Audio")) {
             Section(settings.localized("Audio")) {
                 Toggle(settings.localized("Use Custom Volume"), isOn: volumeOverrideBinding)
+                    .controllerAccessibilityToggleTarget(
+                        id: "per-game.audio.custom-volume",
+                        label: settings.localized("Use Custom Volume"),
+                        isOn: volumeOverrideBinding
+                    )
                     .disabled(!enabled)
 
                 if volumeOverride {
@@ -30,6 +35,9 @@ struct AudioTab: View {
                                   }),
                               hint: "Adjusts emulator audio for this game without changing iOS system volume or other apps.",
                               settings: settings)
+                        .controllerAccessibilityTargetID(
+                            "per-game.audio.emulator-volume"
+                        )
                         .disabled(!enabled)
                 } else {
                     HStack {
@@ -48,6 +56,9 @@ struct AudioTab: View {
                 NumberOverrideRow(.fastForwardVolume, value: $perGameFastForwardVolume,
                                   global: settings.audioFastForwardVolume,
                                   settings: settings)
+                    .controllerAccessibilityTargetID(
+                        "per-game.audio.fast-forward-volume"
+                    )
                     .disabled(!enabled)
                 Text(settings.localized("Buffer Size and Output Latency are on the Frame Pacing tab."))
                     .font(.caption)

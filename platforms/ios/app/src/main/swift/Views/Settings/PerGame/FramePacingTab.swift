@@ -36,6 +36,15 @@ struct FramePacingTab: View {
                         Text(settings.localized(preset.label)).tag(preset.rawValue)
                     }
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    id: "per-game.frame-pacing.preset",
+                    label: settings.localized("Preset"),
+                    selection: $perGameFramePacingPreset,
+                    options: [(id: -1, title: settings.localized("Use Global"))]
+                        + FramePacingPreset.allCases.map {
+                            (id: $0.rawValue, title: settings.localized($0.label))
+                        }
+                )
                 .disabled(!enabled)
 
                 Text(String(format: settings.localized("Global preset: %@"), settings.localized(settings.framePacingPreset.label)))
@@ -51,16 +60,32 @@ struct FramePacingTab: View {
                     Text(settings.localized("On")).tag(1)
                     Text(settings.localized("Off")).tag(0)
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    id: "per-game.frame-pacing.frame-limiter",
+                    label: settings.localized("Frame Limiter"),
+                    selection: $perGameFrameLimiter,
+                    options: [
+                        (id: -1, title: settings.localized("Use Global")),
+                        (id: 1, title: settings.localized("On")),
+                        (id: 0, title: settings.localized("Off")),
+                    ]
+                )
                 .disabled(!enabled)
 
                 FloatOverrideRow(.targetFPS, value: $perGameTargetFPS,
                                  global: settings.targetFPS,
                                  settings: settings)
+                    .controllerAccessibilityTargetID(
+                        "per-game.frame-pacing.target-fps"
+                    )
                     .disabled(perGameFrameLimiter == 0 || !enabled)
 
                 NumberOverrideRow(.vsyncQueueSize, value: $perGameVsyncQueue,
                                   global: settings.vsyncQueueSize,
                                   settings: settings)
+                    .controllerAccessibilityTargetID(
+                        "per-game.frame-pacing.vsync-queue"
+                    )
                     .disabled(!enabled)
 
                 Picker(settings.localized("Sync to Host Refresh"), selection: $perGameSyncToHostRefresh) {
@@ -68,6 +93,16 @@ struct FramePacingTab: View {
                     Text(settings.localized("Off")).tag(0)
                     Text(settings.localized("On")).tag(1)
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    id: "per-game.frame-pacing.sync-host-refresh",
+                    label: settings.localized("Sync to Host Refresh"),
+                    selection: $perGameSyncToHostRefresh,
+                    options: [
+                        (id: -1, title: settings.localized("Use Global")),
+                        (id: 0, title: settings.localized("Off")),
+                        (id: 1, title: settings.localized("On")),
+                    ]
+                )
                 .disabled(!enabled)
                 Text(settings.localized("Sync to Host Refresh needs a restart to take effect."))
                     .font(.caption)
@@ -76,11 +111,17 @@ struct FramePacingTab: View {
                 NumberOverrideRow(.audioBufferMs, value: $perGameBufferMS,
                                   global: settings.audioBufferMs,
                                   settings: settings)
+                    .controllerAccessibilityTargetID(
+                        "per-game.frame-pacing.audio-buffer"
+                    )
                     .disabled(!enabled)
 
                 NumberOverrideRow(.audioOutputLatencyMs, value: $perGameOutputLatencyMS,
                                   global: settings.audioOutputLatencyMs,
                                   settings: settings)
+                    .controllerAccessibilityTargetID(
+                        "per-game.frame-pacing.output-latency"
+                    )
                     .disabled(!enabled)
             } header: {
                 Text(settings.localized("Individual Settings"))
@@ -91,6 +132,12 @@ struct FramePacingTab: View {
                     showResetConfirmation = true
                 } label: {
                     Text(settings.localized("Reset Per-Game Frame Pacing"))
+                }
+                .controllerAccessibilityActionTarget(
+                    id: "per-game.frame-pacing.reset",
+                    label: settings.localized("Reset Per-Game Frame Pacing")
+                ) {
+                    showResetConfirmation = true
                 }
                 .disabled(!enabled)
             }
@@ -110,4 +157,5 @@ struct FramePacingTab: View {
             || perGameBufferMS != -1
             || perGameOutputLatencyMS != -1
     }
+
 }
