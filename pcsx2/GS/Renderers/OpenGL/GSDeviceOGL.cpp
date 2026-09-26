@@ -1748,7 +1748,37 @@ void GSDeviceOGL::KickTimestampQuery()
 	if (m_timestamp_query_started || m_waiting_timestamp_queries == NUM_TIMESTAMP_QUERIES)
 		return;
 
+	// A begin the driver rejects must not consume the ring slot. Marking it started anyway means
+	// PopTimestampQuery ends it, counts it as waiting and then polls a query that never ran: the
+	// availability read fails (GL_INVALID_OPERATION on GLES) with available=0, the drain loop stops
+	// on that slot every frame, and no GPU time is ever produced for the rest of the session.
+	// Drivers have been seen to reject a begin transiently (Mali-G52 r38p1 rejects the first one
+	// after the queries are created with GL_OUT_OF_MEMORY, then accepts the next), so a rejection
+	// is retried next frame, and only a driver that keeps rejecting gets GPU timing turned off.
+	//
+	// glGetError reports the oldest pending error, so anything left over from earlier in the frame
+	// has to be drained first, or it would be blamed on this begin.
+	while (glGetError() != GL_NO_ERROR)
+		;
+
 	glBeginQuery(GL_TIME_ELAPSED, m_timestamp_queries[m_write_timestamp_query]);
+
+	if (const GLenum err = glGetError(); err != GL_NO_ERROR)
+	{
+		if (++m_timestamp_query_failures == 1)
+			Console.Warning("GL: glBeginQuery(GL_TIME_ELAPSED) failed with 0x%04X, retrying next frame.", err);
+
+		if (m_timestamp_query_failures >= MAX_CONSECUTIVE_TIMESTAMP_QUERY_FAILURES)
+		{
+			Console.Warning("GL: glBeginQuery(GL_TIME_ELAPSED) failed %u times in a row, disabling GPU timing.",
+				m_timestamp_query_failures);
+			SetGPUTimingEnabled(false);
+		}
+
+		return;
+	}
+
+	m_timestamp_query_failures = 0;
 	m_timestamp_query_started = true;
 }
 
@@ -1761,15 +1791,26 @@ bool GSDeviceOGL::SetGPUTimingEnabled(bool enabled)
 	if (enabled && m_is_gles && !GLAD_GL_EXT_disjoint_timer_query)
 		return false;
 
+	// KickTimestampQuery gave up on this device after too many rejected begins. Creating the
+	// queries again would only fail the same way, and refusing lets the caller clear OsdShowGPU
+	// instead of showing a GPU usage that nothing measures.
+	if (enabled && m_timestamp_query_failures >= MAX_CONSECUTIVE_TIMESTAMP_QUERY_FAILURES)
+		return false;
+
 	if (m_gpu_timing_enabled == enabled)
 		return true;
 
 	m_gpu_timing_enabled = enabled;
 	if (m_gpu_timing_enabled)
+	{
+		// CreateTimestampQueries kicks the first query. If that rejection is the one that reaches
+		// the limit, KickTimestampQuery has already turned timing off again from inside this call,
+		// so report what actually holds rather than a stale true.
 		CreateTimestampQueries();
-	else
-		DestroyTimestampQueries();
+		return m_gpu_timing_enabled;
+	}
 
+	DestroyTimestampQueries();
 	return true;
 }
 

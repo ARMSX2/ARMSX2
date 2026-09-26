@@ -161,6 +161,10 @@ public:
 private:
 	static constexpr u8 NUM_TIMESTAMP_QUERIES = 5;
 	static constexpr u8 NUM_PIPELINE_STATISTICS_QUERIES = 5;
+	// Consecutive rejected glBeginQuery(GL_TIME_ELAPSED) before GPU timing is turned off for the
+	// lifetime of the device. At 60fps that gives up in under 200ms, while a single transient
+	// rejection (see KickTimestampQuery) never trips it.
+	static constexpr u32 MAX_CONSECUTIVE_TIMESTAMP_QUERY_FAILURES = 10;
 
 	std::unique_ptr<GLContext> m_gl_context;
 
@@ -296,6 +300,7 @@ private:
 	u8 m_write_timestamp_query = 0;
 	u8 m_waiting_timestamp_queries = 0;
 	bool m_timestamp_query_started = false;
+	u32 m_timestamp_query_failures = 0; // consecutive rejected begins; reset by an accepted one
 	bool m_gpu_timing_enabled = false;
 
 	std::array<std::array<GLuint, 2>, NUM_PIPELINE_STATISTICS_QUERIES> m_pipeline_statistics_queries = {};
