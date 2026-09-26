@@ -14,13 +14,16 @@ import SwiftUI
 struct EnumPicker<Selection: Hashable, Label: View>: View {
     let options: [(id: Selection, title: String)]
     @Binding var selection: Selection
+    let controllerLabel: String
     @ViewBuilder let label: Label
 
     init(_ options: [(id: Selection, title: String)],
          selection: Binding<Selection>,
+         controllerLabel: String,
          @ViewBuilder label: () -> Label) {
         self.options = options
         self._selection = selection
+        self.controllerLabel = controllerLabel
         self.label = label()
     }
 
@@ -32,5 +35,10 @@ struct EnumPicker<Selection: Hashable, Label: View>: View {
         } label: {
             label
         }
+        .controllerAccessibilityOptionsPickerTarget(
+            label: controllerLabel,
+            selection: $selection,
+            options: options
+        )
     }
 }

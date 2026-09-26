@@ -66,9 +66,9 @@ struct GraphicsTab: View {
     @Binding var perGamePrecacheTextureReplacements: Int
 
     let savesToRunningGame: Bool
-    let shaderChainSupported: Bool
     let onBrowseShaderPreset: () -> Void
     let settings: SettingsStore
+    var showsOnlyShaders = false
 
     // MARK: Static option tables (moved from the panel)
 
@@ -106,15 +106,34 @@ struct GraphicsTab: View {
     ]
 
     var body: some View {
-        PerGameTab(title: settings.localized("Graphics")) {
-            graphicsContent
+        PerGameTab(
+            title: settings.localized(
+                showsOnlyShaders ? "Shaders" : "Graphics"
+            )
+        ) {
+            if showsOnlyShaders {
+                shaderContent
+            } else {
+                graphicsContent
+            }
         }
+    }
+
+    @ViewBuilder
+    private var shaderContent: some View {
+        PerGameShaderSection(
+            enabled: enabled,
+            chain: $perGameShaderChain,
+            presetRef: $perGameShaderPresetRef,
+            settings: settings,
+            onBrowse: onBrowseShaderPreset
+        )
     }
 
     @ViewBuilder
     private var graphicsContent: some View {
         Section(settings.localized("Graphics")) {
-            sharedPicker("Renderer", selection: $perGameRenderer,
+            sharedPicker("Renderer", id: "renderer", selection: $perGameRenderer,
                          SettingsOptions.withUseGlobal(SettingsOptions.renderer))
                 .disabled(!enabled)
 
@@ -122,9 +141,12 @@ struct GraphicsTab: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            EnumPicker([(id: Self.upscaleUseGlobalSentinel, title: settings.localized("Use Global"))] + UpscaleOptions.all, selection: $upscaleMultiplier) {
+            EnumPicker([(id: Self.upscaleUseGlobalSentinel, title: settings.localized("Use Global"))] + UpscaleOptions.all, selection: $upscaleMultiplier, controllerLabel: settings.localized("Internal Resolution")) {
                 Text(settings.localized("Internal Resolution"))
             }
+            .controllerAccessibilityTargetID(
+                "per-game.graphics.internal-resolution"
+            )
             .disabled(!enabled)
 
             if upscaleMultiplier > 1 && !ophFlagHackEffective {
@@ -139,17 +161,31 @@ struct GraphicsTab: View {
                     Text(settings.localized("Off")).tag(0)
                     Text(settings.localized("MetalFX Spatial")).tag(1)
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    id: "per-game.graphics.spatial-upscaler",
+                    label: settings.localized("Spatial Upscaler"),
+                    selection: $perGameUpscaler,
+                    options: [
+                        (-1, settings.localized("Use Global")),
+                        (0, settings.localized("Off")),
+                        (1, settings.localized("MetalFX Spatial")),
+                    ]
+                )
                 .disabled(!enabled)
             }
 
-            EnumPicker([(id: Self.aspectUseGlobalSentinel, title: settings.localized("Use Global"))] + Self.aspectRatioOptions, selection: $aspectRatio) {
+            EnumPicker([(id: Self.aspectUseGlobalSentinel, title: settings.localized("Use Global"))] + Self.aspectRatioOptions, selection: $aspectRatio, controllerLabel: settings.localized("Aspect Ratio")) {
                 Text(settings.localized("Aspect Ratio"))
             }
+            .controllerAccessibilityTargetID("per-game.graphics.aspect-ratio")
             .disabled(!enabled)
 
-            EnumPicker([(id: Self.useGlobalSentinel, title: settings.localized("Use Global"))] + Self.textureFilteringOptionsEnum, selection: $textureFiltering) {
+            EnumPicker([(id: Self.useGlobalSentinel, title: settings.localized("Use Global"))] + Self.textureFilteringOptionsEnum, selection: $textureFiltering, controllerLabel: settings.localized("Texture Filtering")) {
                 Text(settings.localized("Texture Filtering"))
             }
+            .controllerAccessibilityTargetID(
+                "per-game.graphics.texture-filtering"
+            )
             .disabled(!enabled)
 
             Picker(settings.localized("Hardware Mipmapping"), selection: $hardwareMipmapping) {
@@ -157,17 +193,26 @@ struct GraphicsTab: View {
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.hardware-mipmapping",
+                label: settings.localized("Hardware Mipmapping"),
+                selection: $hardwareMipmapping,
+                options: triStateOptions
+            )
             .disabled(!enabled)
             Text(settings.localized("Turn this off only for games with mipmap-related texture stripes, shimmer, or bad LOD. " + (savesToRunningGame ? "Applies when you save." : "Applies on next boot.")))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            EnumPicker([(id: Self.useGlobalSentinel, title: settings.localized("Use Global"))] + Self.blendingAccuracyOptions, selection: $blendingAccuracy) {
+            EnumPicker([(id: Self.useGlobalSentinel, title: settings.localized("Use Global"))] + Self.blendingAccuracyOptions, selection: $blendingAccuracy, controllerLabel: settings.localized("Blending Accuracy")) {
                 Text(settings.localized("Blending Accuracy"))
             }
+            .controllerAccessibilityTargetID(
+                "per-game.graphics.blending-accuracy"
+            )
             .disabled(!enabled)
 
-            sharedPicker("Deinterlace", selection: $interlaceMode,
+            sharedPicker("Deinterlace", id: "deinterlace", selection: $interlaceMode,
                          SettingsOptions.withUseGlobal(SettingsOptions.deinterlace))
                 .disabled(!enabled)
 
@@ -176,6 +221,12 @@ struct GraphicsTab: View {
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.fxaa",
+                label: settings.localized("FXAA"),
+                selection: $perGameFXAA,
+                options: triStateOptions
+            )
             .disabled(!enabled)
 
             Picker(settings.localized("Dithering"), selection: $perGameDithering) {
@@ -184,9 +235,20 @@ struct GraphicsTab: View {
                 Text(settings.localized("Unscaled")).tag(1)
                 Text(settings.localized("Scaled")).tag(2)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.dithering",
+                label: settings.localized("Dithering"),
+                selection: $perGameDithering,
+                options: [
+                    (-1, settings.localized("Use Global")),
+                    (0, settings.localized("Off")),
+                    (1, settings.localized("Unscaled")),
+                    (2, settings.localized("Scaled")),
+                ]
+            )
             .disabled(!enabled)
 
-            sharedPicker("TV/CRT Shader", selection: $perGameTVShader,
+            sharedPicker("TV/CRT Shader", id: "tv-crt-shader", selection: $perGameTVShader,
                          SettingsOptions.withUseGlobal(SettingsOptions.tvShader))
                 .disabled(!enabled)
             Text(settings.localized("Scanline and CRT effects are subtle on high-resolution displays and are more visible at a lower Internal Resolution."))
@@ -198,15 +260,24 @@ struct GraphicsTab: View {
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.cas-sharpening",
+                label: settings.localized("CAS Sharpening"),
+                selection: $perGameCASMode,
+                options: triStateOptions
+            )
             .disabled(!enabled)
 
-            sharedPicker("Max Anisotropy", selection: $perGameMaxAnisotropy,
+            sharedPicker("Max Anisotropy", id: "max-anisotropy", selection: $perGameMaxAnisotropy,
                          SettingsOptions.withUseGlobal(SettingsOptions.maxAnisotropy))
                 .disabled(!enabled)
 
             NumberOverrideRow(.casSharpness, value: $perGameCASSharpness,
                               global: settings.casSharpness,
                               settings: settings)
+                .controllerAccessibilityTargetID(
+                    "per-game.graphics.cas-sharpness"
+                )
                 .disabled(!enabled)
 
             Picker(settings.localized("Screen Offsets"), selection: $perGamePCRTCOffsets) {
@@ -214,6 +285,12 @@ struct GraphicsTab: View {
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.screen-offsets",
+                label: settings.localized("Screen Offsets"),
+                selection: $perGamePCRTCOffsets,
+                options: triStateOptions
+            )
             .disabled(!enabled)
 
             Picker(settings.localized("Integer Scaling"), selection: $perGameIntegerScaling) {
@@ -221,6 +298,12 @@ struct GraphicsTab: View {
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.integer-scaling",
+                label: settings.localized("Integer Scaling"),
+                selection: $perGameIntegerScaling,
+                options: triStateOptions
+            )
             .disabled(!enabled)
 
             Picker(settings.localized("Skip Duplicate Frames"), selection: $perGameSkipDupFrames) {
@@ -228,6 +311,12 @@ struct GraphicsTab: View {
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.skip-duplicate-frames",
+                label: settings.localized("Skip Duplicate Frames"),
+                selection: $perGameSkipDupFrames,
+                options: triStateOptions
+            )
             .disabled(!enabled)
 
             Picker(settings.localized("Show Overscan"), selection: $perGamePCRTCOverscan) {
@@ -235,6 +324,12 @@ struct GraphicsTab: View {
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.show-overscan",
+                label: settings.localized("Show Overscan"),
+                selection: $perGamePCRTCOverscan,
+                options: triStateOptions
+            )
             .disabled(!enabled)
 
             Picker(settings.localized("Anti-Blur"), selection: $perGamePCRTCAntiBlur) {
@@ -242,6 +337,12 @@ struct GraphicsTab: View {
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.anti-blur",
+                label: settings.localized("Anti-Blur"),
+                selection: $perGamePCRTCAntiBlur,
+                options: triStateOptions
+            )
             .disabled(!enabled)
 
             Picker(settings.localized("Disable Interlace Offset"), selection: $perGameDisableInterlaceOffset) {
@@ -249,6 +350,12 @@ struct GraphicsTab: View {
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.disable-interlace-offset",
+                label: settings.localized("Disable Interlace Offset"),
+                selection: $perGameDisableInterlaceOffset,
+                options: triStateOptions
+            )
             .disabled(!enabled)
         }
 
@@ -259,34 +366,45 @@ struct GraphicsTab: View {
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.shade-boost",
+                label: settings.localized("Shade Boost"),
+                selection: $perGameShadeBoost,
+                options: triStateOptions
+            )
             .disabled(!enabled)
 
             NumberOverrideRow(.shadeBoostBrightness, value: $perGameShadeBoostBrightness,
                               global: settings.shadeBoostBrightness,
                               settings: settings)
+                .controllerAccessibilityTargetID(
+                    "per-game.graphics.shade-boost-brightness"
+                )
                 .disabled(!enabled)
             NumberOverrideRow(.shadeBoostContrast, value: $perGameShadeBoostContrast,
                               global: settings.shadeBoostContrast,
                               settings: settings)
+                .controllerAccessibilityTargetID(
+                    "per-game.graphics.shade-boost-contrast"
+                )
                 .disabled(!enabled)
             NumberOverrideRow(.shadeBoostSaturation, value: $perGameShadeBoostSaturation,
                               global: settings.shadeBoostSaturation,
                               settings: settings)
+                .controllerAccessibilityTargetID(
+                    "per-game.graphics.shade-boost-saturation"
+                )
                 .disabled(!enabled)
             NumberOverrideRow(.shadeBoostGamma, value: $perGameShadeBoostGamma,
                               global: settings.shadeBoostGamma,
                               settings: settings)
+                .controllerAccessibilityTargetID(
+                    "per-game.graphics.shade-boost-gamma"
+                )
                 .disabled(!enabled)
         }
 
-        if shaderChainSupported {
-            PerGameShaderSection(
-                enabled: enabled,
-                chain: $perGameShaderChain,
-                presetRef: $perGameShaderPresetRef,
-                settings: settings,
-                onBrowse: onBrowseShaderPreset)
-        }
+        shaderContent
 
         Section(settings.localized("Advanced Upscaling Hacks")) {
             Text(settings.localized("A hack you set here outranks the game database for this game, and everything on Use Global stays automatic. " + (savesToRunningGame ? "Changes apply when you save." : "Changes apply on next boot.")))
@@ -299,7 +417,7 @@ struct GraphicsTab: View {
                     .foregroundStyle(.orange)
             }
 
-            sharedPicker("Trilinear Filtering", selection: $trilinearFiltering,
+            sharedPicker("Trilinear Filtering", id: "trilinear-filtering", selection: $trilinearFiltering,
                          Self.trilinearFilteringOptions)
                 .disabled(!enabled)
 
@@ -309,11 +427,11 @@ struct GraphicsTab: View {
                     .foregroundStyle(.orange)
             }
 
-            sharedPicker("Half-pixel Offset", selection: $halfPixelOffset,
+            sharedPicker("Half-pixel Offset", id: "half-pixel-offset", selection: $halfPixelOffset,
                          Self.halfPixelOffsetOptions)
                 .disabled(!enabled)
 
-            sharedPicker("Round Sprite", selection: $roundSprite,
+            sharedPicker("Round Sprite", id: "round-sprite", selection: $roundSprite,
                          Self.roundSpriteOptions)
                 .disabled(!enabled)
 
@@ -322,6 +440,12 @@ struct GraphicsTab: View {
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.align-sprite",
+                label: settings.localized("Align Sprite"),
+                selection: $alignSprite,
+                options: triStateOptions
+            )
             .disabled(!enabled)
 
             Picker(settings.localized("Merge Sprite"), selection: $mergeSprite) {
@@ -329,6 +453,12 @@ struct GraphicsTab: View {
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.merge-sprite",
+                label: settings.localized("Merge Sprite"),
+                selection: $mergeSprite,
+                options: triStateOptions
+            )
             .disabled(!enabled)
 
             Picker(settings.localized("Wild Arms Offset"), selection: $wildArmsOffset) {
@@ -336,33 +466,71 @@ struct GraphicsTab: View {
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.wild-arms-offset",
+                label: settings.localized("Wild Arms Offset"),
+                selection: $wildArmsOffset,
+                options: triStateOptions
+            )
             .disabled(!enabled)
 
             Toggle(settings.localized("Override Texture Offset X"), isOn: $textureOffsetXOverride)
+                .controllerAccessibilityToggleTarget(
+                    id: "per-game.graphics.texture-offset-x-override",
+                    label: settings.localized("Override Texture Offset X"),
+                    isOn: $textureOffsetXOverride
+                )
                 .disabled(!enabled)
             if textureOffsetXOverride {
                 NumberRow(.textureOffsetX, value: $textureOffsetX, settings: settings)
+                    .controllerAccessibilityTargetID(
+                        "per-game.graphics.texture-offset-x"
+                    )
                     .disabled(!enabled)
             }
 
             Toggle(settings.localized("Override Texture Offset Y"), isOn: $textureOffsetYOverride)
+                .controllerAccessibilityToggleTarget(
+                    id: "per-game.graphics.texture-offset-y-override",
+                    label: settings.localized("Override Texture Offset Y"),
+                    isOn: $textureOffsetYOverride
+                )
                 .disabled(!enabled)
             if textureOffsetYOverride {
                 NumberRow(.textureOffsetY, value: $textureOffsetY, settings: settings)
+                    .controllerAccessibilityTargetID(
+                        "per-game.graphics.texture-offset-y"
+                    )
                     .disabled(!enabled)
             }
 
             Toggle(settings.localized("Override Skipdraw Start"), isOn: $skipDrawStartOverride)
+                .controllerAccessibilityToggleTarget(
+                    id: "per-game.graphics.skipdraw-start-override",
+                    label: settings.localized("Override Skipdraw Start"),
+                    isOn: $skipDrawStartOverride
+                )
                 .disabled(!manualAdvancedHacksEnabled)
             if skipDrawStartOverride {
                 NumberRow(.skipDrawStart, value: skipDrawStartBinding, settings: settings)
+                    .controllerAccessibilityTargetID(
+                        "per-game.graphics.skipdraw-start"
+                    )
                     .disabled(!manualAdvancedHacksEnabled)
             }
 
             Toggle(settings.localized("Override Skipdraw End"), isOn: $skipDrawEndOverride)
+                .controllerAccessibilityToggleTarget(
+                    id: "per-game.graphics.skipdraw-end-override",
+                    label: settings.localized("Override Skipdraw End"),
+                    isOn: $skipDrawEndOverride
+                )
                 .disabled(!manualAdvancedHacksEnabled)
             if skipDrawEndOverride {
                 NumberRow(.skipDrawEnd, value: skipDrawEndBinding, settings: settings)
+                    .controllerAccessibilityTargetID(
+                        "per-game.graphics.skipdraw-end"
+                    )
                     .disabled(!manualAdvancedHacksEnabled)
             }
             if skipDrawStartOverride || skipDrawEndOverride {
@@ -373,7 +541,7 @@ struct GraphicsTab: View {
         }
 
         Section(settings.localized("Hardware Fixes & Display")) {
-            sharedPicker("Hardware Download Mode", selection: $perGameHWDownloadMode,
+            sharedPicker("Hardware Download Mode", id: "hardware-download-mode", selection: $perGameHWDownloadMode,
                          SettingsOptions.withUseGlobal(SettingsOptions.hardwareDownloadMode))
                 .disabled(!enabled)
             Picker(settings.localized("Disable Depth Emulation"), selection: $perGameDisableDepth) {
@@ -381,11 +549,17 @@ struct GraphicsTab: View {
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.disable-depth-emulation",
+                label: settings.localized("Disable Depth Emulation"),
+                selection: $perGameDisableDepth,
+                options: triStateOptions
+            )
             .disabled(!enabled)
-            sharedPicker("CPU CLUT Render", selection: $perGameCPUCLUT,
+            sharedPicker("CPU CLUT Render", id: "cpu-clut-render", selection: $perGameCPUCLUT,
                          SettingsOptions.withUseGlobal(SettingsOptions.cpuClutRender))
                 .disabled(!enabled)
-            sharedPicker("GPU Target CLUT", selection: $perGameGPUTargetCLUT,
+            sharedPicker("GPU Target CLUT", id: "gpu-target-clut", selection: $perGameGPUTargetCLUT,
                          SettingsOptions.withUseGlobal(SettingsOptions.gpuTargetClut))
                 .disabled(!enabled)
         }
@@ -396,18 +570,36 @@ struct GraphicsTab: View {
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.load-replacement-textures",
+                label: settings.localized("Load Replacement Textures"),
+                selection: $perGameLoadTextureReplacements,
+                options: triStateOptions
+            )
             .disabled(!enabled)
             Picker(settings.localized("Async Loading"), selection: $perGameLoadTextureReplacementsAsync) {
                 Text(settings.localized("Use Global")).tag(-1)
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.async-loading",
+                label: settings.localized("Async Loading"),
+                selection: $perGameLoadTextureReplacementsAsync,
+                options: triStateOptions
+            )
             .disabled(!enabled)
             Picker(settings.localized("Precache Textures"), selection: $perGamePrecacheTextureReplacements) {
                 Text(settings.localized("Use Global")).tag(-1)
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.precache-textures",
+                label: settings.localized("Precache Textures"),
+                selection: $perGamePrecacheTextureReplacements,
+                options: triStateOptions
+            )
             .disabled(!enabled)
             Text(settings.localized("Texture replacement needs a restart to take effect."))
                 .font(.caption)
@@ -417,13 +609,30 @@ struct GraphicsTab: View {
 
     /// Picker over a shared option table, localized the way the global screen's own
     /// helper does. The caller adds `.disabled(...)`, since the gate differs per row.
-    private func sharedPicker(_ title: String, selection: Binding<Int>,
+    private func sharedPicker(_ title: String, id: String,
+                              selection: Binding<Int>,
                               _ options: [(id: Int, title: String)]) -> some View {
         Picker(settings.localized(title), selection: selection) {
             ForEach(options, id: \.id) { option in
                 Text(settings.localized(option.title)).tag(option.id)
             }
         }
+        .controllerAccessibilityOptionsPickerTarget(
+            id: "per-game.graphics.\(id)",
+            label: settings.localized(title),
+            selection: selection,
+            options: options.map { option in
+                (id: option.id, title: settings.localized(option.title))
+            }
+        )
+    }
+
+    private var triStateOptions: [(id: Int, title: String)] {
+        [
+            (Self.useGlobalSentinel, settings.localized("Use Global")),
+            (0, settings.localized("Off")),
+            (1, settings.localized("On")),
+        ]
     }
 
     private var manualAdvancedHacksEnabled: Bool {
