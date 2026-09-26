@@ -34,6 +34,7 @@
     <ClCompile>
       <AdditionalIncludeDirectories>$(SolutionDir)3rdparty\fmt\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories>$(SolutionDir)3rdparty\lzma\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)3rdparty\libzip\msvc;$(SolutionDir)3rdparty\libzip\lib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories>$(SolutionDir)3rdparty\fast_float\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories>$(SolutionDir)3rdparty\winwil\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -45,6 +46,9 @@
     </ProjectReference>
     <ProjectReference Include="$(SolutionDir)3rdparty\lzma\lzma.vcxproj">
       <Project>{a4323327-3f2b-4271-83d9-7f9a3c66b6b2}</Project>
+    </ProjectReference>
+    <ProjectReference Include="$(SolutionDir)3rdparty\libzip\libzip.vcxproj">
+      <Project>{20b2e9fe-f020-42a0-b324-956f5b06ea68}</Project>
     </ProjectReference>
     <ProjectReference Include="$(SolutionDir)common\common.vcxproj">
       <Project>{4639972e-424e-4e13-8b07-ca403c481346}</Project>
@@ -58,6 +62,7 @@
   <ItemGroup>
     <ClInclude Include="SZErrors.h" />
     <ClInclude Include="Updater.h" />
+    <ClInclude Include="UpdaterBranding.h" />
     <ClInclude Include="UpdaterExtractor.h" />
     <ClInclude Include="Windows\resource.h" />
   </ItemGroup>

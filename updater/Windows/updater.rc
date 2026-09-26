@@ -67,13 +67,13 @@ BEGIN
     BEGIN
         BLOCK "0c0904b0"
         BEGIN
-            VALUE "CompanyName", "PCSX2"
-            VALUE "FileDescription", "PCSX2"
+            VALUE "CompanyName", "ARMSX2"
+            VALUE "FileDescription", "ARMSX2"
             VALUE "FileVersion", "2.0"
             VALUE "InternalName", "updater.exe"
-            VALUE "LegalCopyright", "Copyright (C) 2022 PCSX2 Dev Team"
+            VALUE "LegalCopyright", "Copyright (C) 2026 ARMSX2 Team"
             VALUE "OriginalFilename", "updater.exe"
-            VALUE "ProductName", "PCSX2 Update Installer"
+            VALUE "ProductName", "ARMSX2 Update Installer"
             VALUE "ProductVersion", "2.0"
         END
     END

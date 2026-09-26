@@ -329,6 +329,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "update.downloadFailed" to "Download failed",
     "update.checkOnLaunch" to "Check on launch",
     "update.checkOnLaunch.desc" to "Automatically check GitHub for a new version each time ARMSX2 starts.",
+    "update.playManaged" to "Updates for this build are handled by Google Play.",
     "update.later" to "Later",
     "app.theme.system" to "System",
     "app.theme.materialyou" to "Material You",

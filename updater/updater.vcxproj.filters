@@ -3,12 +3,13 @@
   <ItemGroup>
     <ClCompile Include="Updater.cpp" />
     <ClCompile Include="Windows\WindowsUpdater.cpp">
-	<ClCompile Include="$(SolutionDir)pcsx2-qt\VCRuntimeChecker.cpp" />
       <Filter>Windows</Filter>
     </ClCompile>
+    <ClCompile Include="$(SolutionDir)pcsx2-qt\VCRuntimeChecker.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Updater.h" />
+    <ClInclude Include="UpdaterBranding.h" />
     <ClInclude Include="SZErrors.h" />
     <ClInclude Include="Windows\resource.h">
       <Filter>Windows</Filter>
