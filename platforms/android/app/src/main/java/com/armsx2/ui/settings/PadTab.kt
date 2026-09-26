@@ -1341,6 +1341,13 @@ internal fun AnalogSticksSection(
     editSerial: String? = null,
 ) {
     CollapsibleSection(str("pad.section.analogSticks"), initiallyExpanded = false) {
+        // Subscribe the section's content to the token, as GyroSection does. The switches and
+        // stick modes below read raw prefs (ControllerMappings.*Scope), which Compose can't
+        // observe, and this function's params never change, so it is skipped when the tab
+        // recomposes. Without this read the bump in each onChange is lost: a switch only
+        // catches up on tab re-entry, and a second tap sends the same value as the first.
+        @Suppress("UNUSED_EXPRESSION")
+        refreshToken.intValue
         // Extra button on the ON-SCREEN left stick: a sprint/jump button just above it that
         // you can reach by GLIDING the same thumb up off the stick, without lifting off and
         // losing your heading (GTA / Silent Hill sprint, GoW / KH jump).
