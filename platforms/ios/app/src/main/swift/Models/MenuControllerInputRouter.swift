@@ -847,28 +847,15 @@ final class MenuControllerInputRouter {
         focusReleaseSequence &+= 1
     }
 
+    // Kept for this launch only. Saved across launches, the first visit to a
+    // Settings page opened scrolled down to the row used last time.
     func rememberNavigationFocusKey(_ key: String, forScope scopeKey: String) {
         guard !scopeKey.isEmpty, !key.isEmpty else { return }
         rememberedNavigationFocusKeys[scopeKey] = key
-        if scopeKey.hasPrefix("settings.") {
-            UserDefaults.standard.set(
-                key,
-                forKey: "ARMSX2iOSControllerFocus.\(scopeKey)"
-            )
-        }
     }
 
     func rememberedNavigationFocusKey(forScope scopeKey: String) -> String? {
-        if let remembered = rememberedNavigationFocusKeys[scopeKey] {
-            return remembered
-        }
-        guard scopeKey.hasPrefix("settings."),
-              let persisted = UserDefaults.standard.string(
-                forKey: "ARMSX2iOSControllerFocus.\(scopeKey)"
-              ),
-              !persisted.isEmpty else { return nil }
-        rememberedNavigationFocusKeys[scopeKey] = persisted
-        return persisted
+        rememberedNavigationFocusKeys[scopeKey]
     }
 
     /// Registers a screen-scoped consumer with the one controller command

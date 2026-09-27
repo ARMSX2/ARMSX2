@@ -632,10 +632,9 @@ struct SettingsRootView: View {
     @State private var stikDebugOpenFailed = false
     @State private var stikDebugOpenInProgress = false
     @Binding private var navigationPath: [SettingsPane]
-    @AppStorage("ARMSX2iOSSettingsRememberedRootPane")
-    private var rememberedRootPaneRawValue = ""
-    @AppStorage("ARMSX2iOSSettingsRememberedRootScrollPosition")
-    private var rememberedRootScrollPositionID = ""
+    // Remembered for this launch only, so Settings opens at the top after a relaunch.
+    @State private var rememberedRootPaneRawValue = ""
+    @State private var rememberedRootScrollPositionID = ""
     @State private var rootScrollPositionID: String?
     @Environment(\.menuTabIsActive) private var menuTabIsActive
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -659,12 +658,6 @@ struct SettingsRootView: View {
         self.onPreviousControllerTab = onPreviousControllerTab
         self.onNextControllerTab = onNextControllerTab
         self.onControllerBoundary = onControllerBoundary
-        let storedPosition = UserDefaults.standard.string(
-            forKey: "ARMSX2iOSSettingsRememberedRootScrollPosition"
-        )
-        self._rootScrollPositionID = State(
-            initialValue: storedPosition.flatMap { $0.isEmpty ? nil : $0 }
-        )
     }
 
     private var backgroundConfigured: Bool {
