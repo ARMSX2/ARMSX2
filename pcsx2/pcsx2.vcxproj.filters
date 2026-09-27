@@ -2615,6 +2615,9 @@
     <ClInclude Include="GS\Renderers\Common\GSStreamRingFlushRange.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSStreamRingGrowth.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSStreamRingMemoryPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
