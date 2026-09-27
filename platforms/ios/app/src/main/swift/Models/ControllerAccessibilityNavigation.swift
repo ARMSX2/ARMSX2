@@ -259,6 +259,7 @@ final class ControllerAccessibilityNavigationSession {
     @ObservationIgnored private var onBoundary: (@MainActor (MenuControllerCommand) -> Bool)?
     @ObservationIgnored private var boundaryRules: [ControllerAccessibilityBoundaryRule] = []
     @ObservationIgnored private var directionalLinks: [ControllerAccessibilityDirectionalLink] = []
+    @ObservationIgnored private var pageDirectionalLinks: [ControllerAccessibilityDirectionalLink] = []
     @ObservationIgnored private var prioritizesDirectionalLinks = false
     @ObservationIgnored private var confinesHorizontalFocusMovement = false
     @ObservationIgnored private var focusScrollBehavior:
@@ -411,6 +412,10 @@ final class ControllerAccessibilityNavigationSession {
 
     func unregisterScrollSurface(_ surface: any ControllerAccessibilityScrollSurface) {
         scrollSurfaces.remove(surface)
+    }
+
+    func setPageDirectionalLinks(_ links: [ControllerAccessibilityDirectionalLink]) {
+        pageDirectionalLinks = links
     }
 
     func setDeclaredOrder(_ navigationIDs: [String]) {
@@ -1858,10 +1863,11 @@ final class ControllerAccessibilityNavigationSession {
         from key: String,
         direction: MenuControllerCommand
     ) -> String? {
-        guard prioritizesDirectionalLinks || !directionalLinks.isEmpty,
+        guard prioritizesDirectionalLinks || !directionalLinks.isEmpty
+                || !pageDirectionalLinks.isEmpty,
               let target = targets[key] else { return nil }
         let firstContentKey = firstContentTarget(in: orderedKeys())
-        return directionalLinks.first(where: { link in
+        return (directionalLinks + pageDirectionalLinks).first(where: { link in
             guard link.direction == direction else { return false }
             if link.fromLabel == ControllerAccessibilityDirectionalLink.firstContent {
                 return key == firstContentKey
@@ -3180,6 +3186,7 @@ private struct ControllerAccessibilityWindowFocusOverlayInstaller:
 
 private struct ControllerAccessibilityTargetOrderModifier: ViewModifier {
     let navigationIDs: [String]
+    let links: [ControllerAccessibilityDirectionalLink]
     @Environment(\.controllerAccessibilityNavigationSession) private var session
     @Environment(\.controllerAccessibilityNavigationActive) private var isActive
     @Environment(\.controllerAccessibilityTargetsSuppressed) private var isSuppressed
@@ -3188,7 +3195,10 @@ private struct ControllerAccessibilityTargetOrderModifier: ViewModifier {
         content
             .onAppear { publishOrderIfActive() }
             .onChange(of: navigationIDs) { _, value in
-                if isActive, !isSuppressed { session?.setDeclaredOrder(value) }
+                if isActive, !isSuppressed {
+                    session?.setDeclaredOrder(value)
+                    session?.setPageDirectionalLinks(links)
+                }
             }
             .onChange(of: isActive) { _, _ in publishOrderIfActive() }
             .onChange(of: isSuppressed) { _, _ in publishOrderIfActive() }
@@ -3198,6 +3208,7 @@ private struct ControllerAccessibilityTargetOrderModifier: ViewModifier {
     private func publishOrderIfActive() {
         guard isActive else { return }
         session?.setDeclaredOrder(isSuppressed ? [] : navigationIDs)
+        session?.setPageDirectionalLinks(isSuppressed ? [] : links)
     }
 }
 
@@ -3571,10 +3582,14 @@ extension View {
         )
     }
 
-    func controllerAccessibilityTargetOrder(_ navigationIDs: [String]) -> some View {
+    func controllerAccessibilityTargetOrder(
+        _ navigationIDs: [String],
+        links: [ControllerAccessibilityDirectionalLink] = []
+    ) -> some View {
         modifier(
             ControllerAccessibilityTargetOrderModifier(
-                navigationIDs: navigationIDs
+                navigationIDs: navigationIDs,
+                links: links
             )
         )
     }
