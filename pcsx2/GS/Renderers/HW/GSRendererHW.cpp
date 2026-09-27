@@ -6905,6 +6905,19 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 		date_options.barrier = true;
 		m_conf.require_full_barrier = true;
 	}
+	else if (features.declared_feedback_loop_orders_overlap)
+	{
+		// Also free on a declared feedback loop whose driver orders the read of the fragment's own
+		// pixel: DetermineBarriers drops the barrier (it keeps one only for an offset read), so the
+		// draw reads destination alpha inside the open pass. On this road the other modes each end
+		// the pass for a setup draw: stencil DATE fills the stencil buffer from the target (even
+		// StencilOne, which skips the setup only when a barrier survives, and none does here), and
+		// primitive-ID tracking fills its image. Stuntman at native on Turnip 26.3 had 60% more
+		// passes for it.
+		GL_PERF("DATE: Accurate with a driver-ordered feedback loop");
+		date_options.barrier = true;
+		m_conf.require_full_barrier = true;
+	}
 	else if (features.feedback_loops() && IsCoverageAlphaSupported())
 	{
 		// We're using AA1 for this draw so use only full barrier DATE, to avoid the complications
