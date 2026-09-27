@@ -687,6 +687,11 @@ void GSRendererSW::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GS
 	}
 }
 
+void GSRendererSW::SynchronizeLocalMemoryRead(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r)
+{
+	InvalidateLocalMem(BITBLTBUF, r);
+}
+
 void GSRendererSW::UsePages(const GSOffset::PageLooper& pages, const int type)
 {
 	pages.loopPages([this, type](u32 page)

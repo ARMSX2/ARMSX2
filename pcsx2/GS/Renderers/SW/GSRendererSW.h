@@ -70,6 +70,7 @@ protected:
 	void Sync(int reason);
 	void InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r) override;
 	void InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut = false) override;
+	void SynchronizeLocalMemoryRead(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r) override;
 
 	void UsePages(const GSOffset::PageLooper& pages, const int type);
 	void ReleasePages(const GSOffset::PageLooper& pages, const int type);

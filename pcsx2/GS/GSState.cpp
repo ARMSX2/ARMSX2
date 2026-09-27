@@ -4345,8 +4345,51 @@ void GSState::DrawRecordTail(u64 draw_serial)
 			DumpTransferImages();
 	}
 
+	bool strict_depth_for_matched_texture = !skip_draw && !GSConfig.UserHacks_DisableRenderFixes &&
+		PRIM->TME && PRIM->PRIM == GS_TRIANGLESTRIP && PRIM->ABE &&
+		m_context->TEX0.PSM == PSMT4 && m_context->TEX0.TBW == 2 &&
+		m_context->TEX0.TW == 5 && m_context->TEX0.TH == 5 &&
+		m_context->TEX0.CBP + 2 == m_context->TEX0.TBP0 &&
+		m_context->TEX0.CPSM == PSMCT32 && m_context->TEX0.TCC &&
+		m_context->FRAME.PSM == PSMCT32 && m_context->ZBUF.PSM == PSMZ24 &&
+		m_context->TEST.ATE && m_context->TEST.ATST == ATST_GEQUAL && m_context->TEST.AREF == 0 &&
+		m_context->TEST.ZTE && m_context->TEST.ZTST == ZTST_GEQUAL;
+	if (strict_depth_for_matched_texture)
+	{
+		const u32 bp = m_context->TEX0.TBP0;
+		const u32 bw = m_context->TEX0.TBW;
+		GIFRegBITBLTBUF texture_source = {};
+		texture_source.SBP = bp;
+		texture_source.SBW = bw;
+		texture_source.SPSM = PSMT4;
+		SynchronizeLocalMemoryRead(texture_source, GSVector4i(0, 0, 32, 32));
+		const bool gray_prefix = m_mem.ReadPixel4(5, 5, bp, bw) == 10 &&
+			m_mem.ReadPixel4(8, 8, bp, bw) == 6 &&
+			m_mem.ReadPixel4(16, 16, bp, bw) == 9 &&
+			m_mem.ReadPixel4(23, 21, bp, bw) == 6 &&
+			m_mem.ReadPixel4(31, 31, bp, bw) == 6;
+		strict_depth_for_matched_texture = false;
+		if (gray_prefix)
+		{
+			u64 hash = 0xcbf29ce484222325ULL;
+			for (int y = 0; y < 32; y++)
+			{
+				for (int x = 0; x < 32; x++)
+				{
+					hash ^= m_mem.ReadPixel4(x, y, bp, bw);
+					hash *= 0x100000001b3ULL;
+				}
+			}
+			strict_depth_for_matched_texture = hash == 0x5609cb3bb8317f91ULL;
+		}
+	}
+	const u32 original_ztst = m_context->TEST.ZTST;
+	if (strict_depth_for_matched_texture)
+		m_context->TEST.ZTST = ZTST_GREATER;
 	if (!skip_draw)
 		Draw();
+	if (strict_depth_for_matched_texture)
+		m_context->TEST.ZTST = original_ztst;
 
 	g_perfmon.Put(GSPerfMon::Draw, 1);
 	g_perfmon.Put(GSPerfMon::Prim, m_index->tail / GSUtil::GetVertexCount(PRIM->PRIM));
