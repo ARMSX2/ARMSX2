@@ -3393,10 +3393,11 @@ private struct SpeedControlPanel: View {
     @Environment(\.menuControllerInputRouter) private var controllerInput
     @State private var hardcoreActive = false
 
+    // Done sits in the toolbar above the rows, so it comes first.
     private static let controllerTargetOrder = [
+        "runtime.speed.done",
         "runtime.speed.fast-forward",
         "runtime.speed.scalar",
-        "runtime.speed.done",
     ]
 
     var body: some View {
@@ -3479,7 +3480,6 @@ private struct SpeedControlPanel: View {
             usesExplicitTargetGeometryOnly: true,
             focusScrollBehavior: .maintainWithinViewport,
             preferredInitialFocusLabel: "runtime.speed.fast-forward",
-            preferredTrailingFocusLabels: ["runtime.speed.done"],
             declaredTargetOrder: Self.controllerTargetOrder
         )
     }
