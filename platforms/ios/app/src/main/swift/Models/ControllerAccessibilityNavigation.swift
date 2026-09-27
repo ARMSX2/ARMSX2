@@ -290,6 +290,7 @@ final class ControllerAccessibilityNavigationSession {
         Task<Void, Never>?
     @ObservationIgnored private var readinessTask: Task<Void, Never>?
     @ObservationIgnored private var pendingFocusKey: String?
+    @ObservationIgnored var ownerDeclaresOrder = false
     // Preserve input timing across the asynchronous lazy-row mount.
     @ObservationIgnored private var focusRepeatAcceleration: Double?
     @ObservationIgnored private var pendingDirectionalMove:
@@ -3195,7 +3196,7 @@ private struct ControllerAccessibilityTargetOrderModifier: ViewModifier {
         content
             .onAppear { publishOrderIfActive() }
             .onChange(of: navigationIDs) { _, value in
-                if isActive, !isSuppressed {
+                if isActive, !isSuppressed, session?.ownerDeclaresOrder != true {
                     session?.setDeclaredOrder(value)
                     session?.setPageDirectionalLinks(links)
                 }
@@ -3206,7 +3207,9 @@ private struct ControllerAccessibilityTargetOrderModifier: ViewModifier {
     }
 
     private func publishOrderIfActive() {
-        guard isActive else { return }
+        // A page sliding out still sees the scope change and would replace
+        // the order of the screen it uncovers.
+        guard isActive, session?.ownerDeclaresOrder != true else { return }
         session?.setDeclaredOrder(isSuppressed ? [] : navigationIDs)
         session?.setPageDirectionalLinks(isSuppressed ? [] : links)
     }
@@ -3484,6 +3487,7 @@ private struct ControllerAccessibilityNavigationModifier: ViewModifier {
         // Screens with a known semantic order must publish it before their
         // first lazy row marks the session ready. Relying only on a descendant
         // `onAppear` lets iPad List mounting accept entry with a one-row graph.
+        session.ownerDeclaresOrder = declaredTargetOrder != nil
         if let declaredTargetOrder {
             session.setDeclaredOrder(declaredTargetOrder)
         }
