@@ -225,7 +225,7 @@ bool OboeAudioStream::Open()
 	builder.setSharingMode(oboe::SharingMode::Shared);
 	builder.setFormat(oboe::AudioFormat::Float);
 	builder.setSampleRate(m_sample_rate);
-	builder.setChannelCount(m_output_channels == 2 ? oboe::ChannelCount::Stereo : oboe::ChannelCount::Mono);
+	builder.setChannelCount(m_output_channels);
 	builder.setDeviceId(oboe::kUnspecified);
 	builder.setBufferCapacityInFrames(2048 * 2);
 	builder.setFramesPerDataCallback(2048);
@@ -237,6 +237,14 @@ bool OboeAudioStream::Open()
 	if (result != oboe::Result::OK)
 	{
 		Console.Error("(Oboe) openStream() failed: %d", result);
+		return false;
+	}
+	// ReadFrames() writes m_output_channels samples per frame into the callback buffer.
+	if (m_stream->getChannelCount() != m_output_channels)
+	{
+		Console.Error("(Oboe) Stream opened with %d channels, need %d", m_stream->getChannelCount(), static_cast<int>(m_output_channels));
+		m_stream->close();
+		m_stream.reset();
 		return false;
 	}
 	return true;
