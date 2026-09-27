@@ -18,6 +18,7 @@
 #include <cerrno>
 #include <ctime>
 #include <cstring>
+#include <iterator>
 #include <optional>
 
 #define XXH_STATIC_LINKING_ONLY 1
