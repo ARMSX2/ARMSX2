@@ -11,6 +11,8 @@ final class InitialContentBootstrap {
 
     private static let bookmarkKey = "ARMSX2iOSExternalRootBookmark"
     private static let displayNameKey = "ARMSX2iOSExternalRootDisplayName"
+    private static let logoImportDateKey = "ARMSX2iOSFolderLogoImportDate"
+    private static let audioPackImportDateKey = "ARMSX2iOSFolderAudioPackImportDate"
 
     private(set) var selectedFolderName: String?
     private(set) var isRunning = false
@@ -258,6 +260,8 @@ final class InitialContentBootstrap {
             summary.append("Logo: PRESETS/logo.png imported.")
         } else if let errorDescription = logoImport.errorDescription {
             summary.append("Logo could not be imported: \(errorDescription)")
+        } else if logoImport.found {
+            summary.append("Logo: PRESETS/logo.png is unchanged since the last import.")
         } else {
             summary.append("No PRESETS/logo.png was found.")
         }
@@ -265,6 +269,8 @@ final class InitialContentBootstrap {
             summary.append("Audio pack: PRESETS/audiopack.zip imported.")
         } else if let errorDescription = audioPackImport.errorDescription {
             summary.append("Audio pack could not be imported: \(errorDescription)")
+        } else if audioPackImport.found {
+            summary.append("Audio pack: PRESETS/audiopack.zip is unchanged since the last import.")
         } else {
             summary.append("No audiopack.zip was found.")
         }
@@ -273,8 +279,12 @@ final class InitialContentBootstrap {
 
     private func importLogoImage(_ sourceURL: URL?) -> InitialLogoImportResult {
         guard let sourceURL else { return InitialLogoImportResult() }
+        guard Self.changedSinceLastImport(sourceURL, key: Self.logoImportDateKey) else {
+            return InitialLogoImportResult(found: true)
+        }
         do {
             try ARMSX2LogoStore.shared.importLogo(from: sourceURL)
+            Self.recordImport(of: sourceURL, key: Self.logoImportDateKey)
             return InitialLogoImportResult(found: true, imported: true)
         } catch {
             NSLog(
@@ -292,8 +302,12 @@ final class InitialContentBootstrap {
 
     private func importAudioPackArchive(_ sourceURL: URL?) async -> InitialAudioPackImportResult {
         guard let sourceURL else { return InitialAudioPackImportResult() }
+        guard Self.changedSinceLastImport(sourceURL, key: Self.audioPackImportDateKey) else {
+            return InitialAudioPackImportResult(found: true)
+        }
         do {
             try await MenuAudioPackManager.shared.importPack(from: sourceURL)
+            Self.recordImport(of: sourceURL, key: Self.audioPackImportDateKey)
             return InitialAudioPackImportResult(found: true, imported: true)
         } catch {
             NSLog(
@@ -333,6 +347,24 @@ final class InitialContentBootstrap {
             applied.append(preset.rawValue)
         }
         return applied
+    }
+
+    // Lost folder access asks the player to pick the folder again, and that must not
+    // reset the logo or the sounds unless the file changed, as with the skins.
+    private static func changedSinceLastImport(_ url: URL, key: String) -> Bool {
+        guard let imported = UserDefaults.standard.object(forKey: key) as? Date else {
+            return true
+        }
+        guard let modified = modificationDate(of: url) else { return false }
+        return modified > imported
+    }
+
+    private static func recordImport(of url: URL, key: String) {
+        UserDefaults.standard.set(modificationDate(of: url) ?? Date(), forKey: key)
+    }
+
+    private static func modificationDate(of url: URL) -> Date? {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
     }
 
     private func importSkinArchives(_ sourceURLs: [URL]) async -> InitialSkinImportResult {

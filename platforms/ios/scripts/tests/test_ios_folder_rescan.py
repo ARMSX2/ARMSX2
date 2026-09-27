@@ -22,6 +22,14 @@ class RescanLeavesTheLogoAndSounds(unittest.TestCase):
         self.assertIn("importContents(from: selectedURL, importsLogoAndAudioPack: true)",
                       block(self.source, "func selectARMSX2Folder("))
 
+    def test_picking_again_only_imports_a_changed_file(self):
+        for name, key in (("private func importLogoImage(", "logoImportDateKey"),
+                          ("private func importAudioPackArchive(", "audioPackImportDateKey")):
+            with self.subTest(name=name):
+                body = block(self.source, name)
+                self.assertIn("changedSinceLastImport(sourceURL, key: Self.%s)" % key, body)
+                self.assertIn("recordImport(of: sourceURL, key: Self.%s)" % key, body)
+
     def test_the_imports_follow_the_flag(self):
         contents = block(self.source, "private func importContents(")
         self.assertIn("importsLogoAndAudioPack ? preparation.logoImage : nil", contents)
