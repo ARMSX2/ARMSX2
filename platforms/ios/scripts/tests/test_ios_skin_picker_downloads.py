@@ -28,6 +28,8 @@ class SkinPickersDownloadOnApply(unittest.TestCase):
         self.assertIn("installCatalogSkin(", block(self.installer, "func installIfNeeded("))
         library = without_comments(read(SWIFT / "Views/GameListView.swift"))
         game = without_comments(read(SWIFT / "Views/GameScreenView.swift"))
+        self.assertIn("== skinAtPick", block(library, "private func completeAutomaticCustomSkinLaunch("),
+                      "a download must not land over a skin chosen after the pick")
         self.assertIn("installIfNeeded(", block(library, "private func completeAutomaticCustomSkinLaunch("),
                       "the library picker applies a listed skin without downloading it")
         self.assertIn("installIfNeeded(", block(game, "private func applyRuntimeControllerSkinSelection("),

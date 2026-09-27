@@ -8502,11 +8502,19 @@ struct GameListView: View {
         }
         if apply, pending.proposal.isCatalogListing {
             // Only the library picker lists skins that are not installed yet.
+            let identity = PadLayoutGameIdentity(
+                serial: pending.game.metadata["serial"],
+                crc: pending.game.metadata["crc"]
+            )
+            let skinAtPick = identity.flatMap { PadLayoutPresetStore.shared.skinID(for: $0) }
             catalogSkinInstallTask = Task { @MainActor in
                 let installed = await AutomaticCustomSkinManager.shared
                     .installIfNeeded(pending.proposal)
                 guard !Task.isCancelled else { return }
                 catalogSkinInstallTask = nil
+                // A skin picked in game or reset on the Pad tab meanwhile wins.
+                guard identity.flatMap({ PadLayoutPresetStore.shared.skinID(for: $0) })
+                    == skinAtPick else { return }
                 if let installed {
                     applyAutomaticCustomSkin(installed, from: pending)
                 } else {
