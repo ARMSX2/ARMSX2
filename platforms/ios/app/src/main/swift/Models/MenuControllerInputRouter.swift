@@ -100,6 +100,7 @@ struct MenuControllerInputEvent: Equatable, Sendable {
 enum MenuControllerNavigationCaptureOwner {
     static let rootAlert = "root.controller-alert"
     static let storageExternalGamesAlert = "settings.storage.external-games-alert"
+    static let biosPrompt = "menu.bios.prompt"
     static let gameLibraryPresentation = "game-library.presentation"
     static let cheatsPatchesManager = "cheats-patches-manager"
     static let themePresetShortcut = "menu.theme-preset-shortcut"

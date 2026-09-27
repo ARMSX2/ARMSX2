@@ -93,237 +93,50 @@ final class BIOSLibraryState {
     }
 }
 
-private enum BIOSControllerToolbarAction: Int, CaseIterable {
-    case boot
-    case importBIOS
-    case refresh
+private let biosControllerScope = "menu.bios"
+
+private enum BIOSControllerTarget {
+    static let boot = "bios.toolbar.boot"
+    static let importBIOS = "bios.toolbar.import"
+    static let refresh = "bios.toolbar.refresh"
+    static let toolbar = [boot, importBIOS, refresh]
+    static let emptyImport = "bios.content.import"
 }
 
-private let biosControllerContentMemoryScope = "menu.bios.content"
-private let biosControllerToolbarMemoryScope = "menu.bios.toolbar"
-
-@MainActor
-@Observable
-private final class BIOSControllerToolbarFocusState {
-    var selectedAction: BIOSControllerToolbarAction = .boot
-}
-
-@MainActor
-@Observable
-private final class BIOSControllerItemFocusState {
-    var isFocused = false
-}
-
-@MainActor
-@Observable
-private final class BIOSControllerFocusState {
-    @ObservationIgnored private var storedSelectedID: String?
-    @ObservationIgnored private var itemStates: [String: BIOSControllerItemFocusState] = [:]
-    @ObservationIgnored private var isEnabled = false
-    @ObservationIgnored private var isLibraryZone = true
-    @ObservationIgnored private var isVisible = true
-    @ObservationIgnored private var selectionChangeHandler: ((String?) -> Void)?
-
-    var selectedID: String? {
-        get { storedSelectedID }
-        set {
-            guard storedSelectedID != newValue else { return }
-            let previous = storedSelectedID
-            storedSelectedID = newValue
-            refresh(previous)
-            refresh(newValue)
-            selectionChangeHandler?(newValue)
-        }
-    }
-
-    func setSelectionChangeHandler(_ handler: ((String?) -> Void)?) {
-        selectionChangeHandler = handler
-        if let handler {
-            handler(storedSelectedID)
-        }
-    }
-
-    func setEnabled(_ enabled: Bool) {
-        guard isEnabled != enabled else { return }
-        isEnabled = enabled
-        refresh(storedSelectedID)
-    }
-
-    func setLibraryZoneActive(_ active: Bool) {
-        guard isLibraryZone != active else { return }
-        isLibraryZone = active
-        refresh(storedSelectedID)
-    }
-
-    func setVisible(_ visible: Bool) {
-        guard isVisible != visible else { return }
-        isVisible = visible
-        refresh(storedSelectedID)
-    }
-
-    func updateIDs(_ ids: [String]) {
-        let retained = Set(ids)
-        itemStates = itemStates.filter { retained.contains($0.key) }
-        if let storedSelectedID, !retained.contains(storedSelectedID) {
-            selectedID = nil
-        }
-    }
-
-    func itemState(for id: String) -> BIOSControllerItemFocusState {
-        if let state = itemStates[id] { return state }
-        let state = BIOSControllerItemFocusState()
-        itemStates[id] = state
-        state.isFocused = isFocused(id)
-        return state
-    }
-
-    private func isFocused(_ id: String) -> Bool {
-        isEnabled && isLibraryZone && isVisible && storedSelectedID == id
-    }
-
-    private func refresh(_ id: String?) {
-        guard let id, let state = itemStates[id] else { return }
-        state.isFocused = isFocused(id)
-    }
-}
-
-private struct BIOSControllerItemFocusModifier: ViewModifier {
+/// Tells the page which toolbar item has focus, so Back there returns to the list.
+private struct BIOSToolbarFocusReporter: ViewModifier {
     let id: String
-    let state: BIOSControllerItemFocusState
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var focusedID: String?
+    @Environment(\.controllerAccessibilityTargetFocused) private var isFocused
 
     func body(content: Content) -> some View {
-        content
-            .focusEffectDisabled()
-            .background {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(state.isFocused ? Color.black.opacity(0.2) : .clear)
+        content.onChange(of: isFocused, initial: true) { _, focused in
+            if focused {
+                focusedID = id
+            } else if focusedID == id {
+                focusedID = nil
             }
-            // The outer row owns Liquid Glass. Publish the pill-shaped depth
-            // anchor to that surface, and keep only the foreground pill in
-            // this content layer.
-            .controllerFocusDepthAnchor(
-                id: "bios.focus.\(id)",
-                isFocused: state.isFocused
-            )
-            .controllerFocusBoxForegroundPresentation(
-                isVisible: state.isFocused,
-                cornerRadius: 12
-            )
-            .controllerNavigationOrbTarget(
-                id: "bios.focus.\(id)",
-                isActive: state.isFocused,
-                palette: .blue,
-                style: .plain,
-                inset: 2,
-                orbScale: 0.78,
-                priority: 20
-            )
-            .scaleEffect(state.isFocused && !reduceMotion ? 1.01 : 1)
-            .shadow(
-                color: .black.opacity(state.isFocused ? 0.1 : 0),
-                radius: state.isFocused ? 4 : 0,
-                y: state.isFocused ? 2 : 0
-            )
-            .zIndex(state.isFocused ? 20 : 0)
-            .animation(
-                reduceMotion
-                    ? .linear(duration: 0.1)
-                    : .smooth(duration: 0.16, extraBounce: 0),
-                value: state.isFocused
-            )
+        }
     }
 }
 
-private struct BIOSControllerFocusedTextModifier: ViewModifier {
-    let state: BIOSControllerItemFocusState
-    @Environment(\.controllerTextAppearance) private var textAppearance
-    @Environment(\.uiCardTitleColour) private var contentTextColour
-
-    func body(content: Content) -> some View {
-        content
-            .foregroundStyle(
-                state.isFocused
-                    ? textAppearance.focusedColor
-                    : contentTextColour
-            )
-            .shadow(
-                color: .black.opacity(state.isFocused ? 0.1 : 0),
-                radius: state.isFocused ? 4 : 0,
-                y: state.isFocused ? 2 : 0
-            )
-            .animation(
-                ControllerFocusVisualAnimation.textFade,
-                value: state.isFocused
-            )
-    }
-}
-
-private struct BIOSControllerCommandListener: View {
-    let controllerInput: MenuControllerInputRouter?
-    let focusState: BIOSControllerFocusState
-    let isVisible: Bool
-    let onCommand: (MenuControllerInputEvent) -> Void
-    let onLibraryEntry: (Bool) -> Void
-    let onAvailabilityChanged: () -> Void
+private struct BIOSPromptCommandListener: View {
+    let controllerInput: MenuControllerInputRouter
+    let onCommand: (MenuControllerCommand) -> Void
 
     var body: some View {
         Color.clear
             .frame(width: 0, height: 0)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
-            .onChange(of: controllerInput?.latestEvent) { _, event in
-                guard let event else { return }
-                onCommand(event)
+            .onChange(of: controllerInput.latestEvent) { _, event in
+                guard let event,
+                      event.captureOwner
+                        == MenuControllerNavigationCaptureOwner.biosPrompt else {
+                    return
+                }
+                onCommand(event.command)
             }
-            .onChange(of: controllerInput?.latestLibraryEntryRequest) { _, request in
-                guard let request else { return }
-                onLibraryEntry(request.preferLast)
-            }
-            .onChange(of: controllerInput?.focusReleaseSequence) { _, _ in
-                focusState.setEnabled(false)
-                focusState.selectedID = nil
-            }
-            .onChange(of: controllerInput?.navigationZone, initial: true) { _, zone in
-                focusState.setLibraryZoneActive(zone == .library)
-                onAvailabilityChanged()
-            }
-            .onChange(
-                of: controllerInput?.isControllerNavigationEnabled,
-                initial: true
-            ) { _, _ in
-                onAvailabilityChanged()
-            }
-            .onChange(of: isVisible, initial: true) { _, visible in
-                focusState.setVisible(visible)
-                onAvailabilityChanged()
-            }
-    }
-}
-
-private struct BIOSControllerToolbarFocusModifier: ViewModifier {
-    let state: BIOSControllerToolbarFocusState
-    let action: BIOSControllerToolbarAction
-    let controllerInput: MenuControllerInputRouter?
-    let isVisible: Bool
-    var baseHorizontalPadding: CGFloat = 0
-    var minimumWidth: CGFloat = 36
-    var foregroundColour: Color? = nil
-
-    func body(content: Content) -> some View {
-        let isFocused = isVisible
-            && controllerInput?.isControllerNavigationEnabled == true
-            && controllerInput?.navigationZone == .topToolbar
-            && state.selectedAction == action
-        content.modifier(
-            ControllerToolbarFocusVisualModifier(
-                isFocused: isFocused,
-                focusID: "bios.toolbar.\(action.rawValue)",
-                baseHorizontalPadding: baseHorizontalPadding,
-                minimumWidth: minimumWidth,
-                foregroundColour: foregroundColour
-            )
-        )
     }
 }
 
@@ -376,10 +189,7 @@ struct BIOSListView: View {
     @State private var existingBIOSImportFileNames: [String] = []
     @State private var BIOSRefreshTask: Task<Void, Never>?
     @State private var appState = AppState.shared
-    @State private var controllerFocusState = BIOSControllerFocusState()
-    @State private var controllerToolbarFocusState =
-        BIOSControllerToolbarFocusState()
-    @State private var controllerEntryPrefersLast = false
+    @State private var focusedToolbarTargetID: String?
     @Environment(\.menuTabIsActive) private var menuTabIsActive
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.uiAccentColour) private var accentColour
@@ -405,9 +215,7 @@ struct BIOSListView: View {
             controllerInput: controllerInput,
             axes: .vertical,
             priority: 90,
-            isEnabled: controllerLibraryNavigationAllowed
-                && controllerInput?.navigationZone == .library,
-            onReachedLeadingEdge: controllerRightStickReachedTop,
+            isEnabled: menuTabIsActive,
             searchesNearbyScrollViews: true
         )
         .frame(height: 0)
@@ -420,15 +228,8 @@ struct BIOSListView: View {
     private var biosControllerContentIDs: [String] {
         guard library.hasLoaded else { return [] }
         return bioses.isEmpty
-            ? ["bios.content.import"]
+            ? [BIOSControllerTarget.emptyImport]
             : bioses.map(\.filePath)
-    }
-
-    private var controllerLibraryNavigationAllowed: Bool {
-        menuTabIsActive
-            && appState.currentScreen == .menu
-            && (controllerInput?.isControllerNavigationEnabled ?? false)
-            && !(controllerInput?.isNavigationCaptured ?? false)
     }
 
     var body: some View {
@@ -479,60 +280,35 @@ struct BIOSListView: View {
                         .scrollBounceBehavior(.always)
                     }
                 } else {
-                    ScrollViewReader { proxy in
-                        List {
-                            biosRightStickScrollTarget
-                                .listRowInsets(EdgeInsets())
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
+                    List {
+                        biosRightStickScrollTarget
+                            .listRowInsets(EdgeInsets())
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
 
-                            if showsPageOwnedLargeTitle {
-                                EmbeddedMenuLargeTitle(
-                                    title: settings.localized("BIOS")
-                                )
-                                .listRowInsets(EdgeInsets())
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
-                            }
+                        if showsPageOwnedLargeTitle {
+                            EmbeddedMenuLargeTitle(
+                                title: settings.localized("BIOS")
+                            )
+                            .listRowInsets(EdgeInsets())
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                        }
 
-                            ForEach(bioses, id: \.filePath) { bios in
-                                biosRow(bios)
-                                    .id(bios.filePath)
-                                    .gameCardTintMenuBackgroundListRow(backgroundActive)
-                            }
-                        }
-                        .contentMargins(.top, 0, for: .scrollContent)
-                        .contentMargins(.bottom, 0, for: .scrollContent)
-                        .scrollContentBackground(backgroundActive ? .hidden : .automatic)
-                        .scrollBounceBehavior(.always)
-#if targetEnvironment(macCatalyst)
-                        .listStyle(.inset)
-#endif
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .onAppear {
-                            controllerFocusState.setSelectionChangeHandler { id in
-                                guard let id else { return }
-                                let acceleration = controllerInput?
-                                    .directionalRepeatAcceleration ?? 1
-                                let duration = controllerInput?
-                                    .isRepeatingDirectionCommand == true
-                                    ? max(0.04, 0.12 / acceleration)
-                                    : 0.18
-                                withAnimation(
-                                    .smooth(duration: duration, extraBounce: 0)
-                                ) {
-                                    proxy.scrollTo(id, anchor: .center)
-                                }
-                                controllerInput?.rememberNavigationFocusKey(
-                                    id,
-                                    forScope: biosControllerContentMemoryScope
-                                )
-                            }
-                        }
-                        .onDisappear {
-                            controllerFocusState.setSelectionChangeHandler(nil)
+                        ForEach(bioses, id: \.filePath) { bios in
+                            biosRow(bios)
+                                .id(bios.filePath)
+                                .gameCardTintMenuBackgroundListRow(backgroundActive)
                         }
                     }
+                    .contentMargins(.top, 0, for: .scrollContent)
+                    .contentMargins(.bottom, 0, for: .scrollContent)
+                    .scrollContentBackground(backgroundActive ? .hidden : .automatic)
+                    .scrollBounceBehavior(.always)
+#if targetEnvironment(macCatalyst)
+                    .listStyle(.inset)
+#endif
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
 
                 if let prompt = activePrompt {
@@ -545,20 +321,20 @@ struct BIOSListView: View {
                         onSelect: { performPromptAction($0, prompt: prompt) },
                         onDismiss: { dismissPrompt(prompt) }
                     )
+                    // The prompt answers through its own capture, not the page's navigation.
+                    .environment(\.controllerAccessibilityNavigationActive, false)
+                    .environment(\.controllerAccessibilityNavigationSession, nil)
+                    .overlay {
+                        if let controllerInput {
+                            BIOSPromptCommandListener(
+                                controllerInput: controllerInput
+                            ) { handlePromptCommand($0, prompt: prompt) }
+                        }
+                    }
                     .zIndex(20_000)
                 }
             }
             .stableMenuContentGlassContainer()
-            .overlay {
-                BIOSControllerCommandListener(
-                    controllerInput: controllerInput,
-                    focusState: controllerFocusState,
-                    isVisible: menuTabIsActive,
-                    onCommand: handleControllerCommand,
-                    onLibraryEntry: handleControllerLibraryEntry,
-                    onAvailabilityChanged: synchronizeControllerAvailability
-                )
-            }
             .clearNavigationContainerBackground()
             .optionalMenuNavigationChrome(
                 title: settings.localized("BIOS"),
@@ -573,16 +349,24 @@ struct BIOSListView: View {
                             .font(.callout.weight(.semibold))
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
-                            .modifier(
-                                biosControllerToolbarFocus(
-                                    .boot,
-                                    baseHorizontalPadding: 14,
-                                    minimumWidth: 112
-                                )
-                            )
+                            .padding(.horizontal, 14)
+                            .frame(minWidth: 112, minHeight: 36)
+                            .controllerAccessibilityToolbarFocusVisual()
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(settings.localized("Boot BIOS"))
+                    .modifier(
+                        BIOSToolbarFocusReporter(
+                            id: BIOSControllerTarget.boot,
+                            focusedID: $focusedToolbarTargetID
+                        )
+                    )
+                    .controllerAccessibilityActionTarget(
+                        id: BIOSControllerTarget.boot,
+                        label: BIOSControllerTarget.boot,
+                        action: performBootBIOSAction
+                    )
+                    .fixedSize()
                 }
                 ToolbarItem(id: "menu.import", placement: .topBarTrailing) {
                     Menu {
@@ -604,7 +388,8 @@ struct BIOSListView: View {
                         }
                     } label: {
                         Image(systemName: "plus")
-                            .modifier(biosControllerToolbarFocus(.importBIOS))
+                            .frame(minWidth: 36, minHeight: 36)
+                            .controllerAccessibilityToolbarFocusVisual()
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(settings.localized("Import BIOS"))
@@ -613,17 +398,37 @@ struct BIOSListView: View {
                             MenuAudioPackManager.shared.playEvent(.contextMenu)
                         }
                     )
+                    .modifier(
+                        BIOSToolbarFocusReporter(
+                            id: BIOSControllerTarget.importBIOS,
+                            focusedID: $focusedToolbarTargetID
+                        )
+                    )
+                    .controllerAccessibilityActionTarget(
+                        id: BIOSControllerTarget.importBIOS,
+                        label: BIOSControllerTarget.importBIOS,
+                        action: openBIOSImporter
+                    )
                 }
                 ToolbarItem(id: "menu.refresh", placement: .topBarTrailing) {
                     Button { loadBIOSes() } label: {
                         Image(systemName: "arrow.clockwise")
                             .menuToolbarMorphElement("refresh")
-                            .modifier(
-                                biosControllerToolbarFocus(.refresh)
-                            )
+                            .frame(minWidth: 36, minHeight: 36)
+                            .controllerAccessibilityToolbarFocusVisual()
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(settings.localized("Refresh"))
+                    .modifier(
+                        BIOSToolbarFocusReporter(
+                            id: BIOSControllerTarget.refresh,
+                            focusedID: $focusedToolbarTargetID
+                        )
+                    )
+                    .controllerAccessibilityActionTarget(
+                        id: BIOSControllerTarget.refresh,
+                        label: BIOSControllerTarget.refresh
+                    ) { loadBIOSes() }
                 }
                 }
             }
@@ -680,37 +485,20 @@ struct BIOSListView: View {
             }
         }
         .onAppear {
-            restoreControllerToolbarFocus()
             if menuTabIsActive {
                 scheduleBIOSRefresh(after: .milliseconds(0))
             }
-            synchronizeControllerItems()
-            synchronizeControllerAvailability()
         }
         .onChange(of: menuTabIsActive) { _, isActive in
             if isActive {
-                restoreControllerToolbarFocus()
                 scheduleBIOSRefresh(after: .milliseconds(0))
-            }
-            synchronizeControllerAvailability()
-        }
-        .onChange(of: controllerInput?.navigationZone) { _, zone in
-            if zone == .topToolbar {
-                rememberControllerToolbarFocus()
-            }
-        }
-        .onChange(of: controllerToolbarFocusState.selectedAction) { _, _ in
-            if controllerInput?.navigationZone == .topToolbar {
-                rememberControllerToolbarFocus()
             }
         }
         .onChange(of: activePrompt) { previous, prompt in
             promptSelectedIndex = 0
+            updatePromptCapture()
             guard let prompt, prompt != previous else { return }
             MenuAudioPackManager.shared.playEvent(.uiToast)
-        }
-        .onChange(of: bioses) { _, _ in
-            synchronizeControllerItems()
         }
         .onReceive(NotificationCenter.default.publisher(for: InitialContentBootstrap.didChangeNotification)) { _ in
             library.markNeedsRefresh()
@@ -721,89 +509,75 @@ struct BIOSListView: View {
         .onDisappear {
             BIOSRefreshTask?.cancel()
             BIOSRefreshTask = nil
+            controllerInput?.setNavigationCaptured(
+                false,
+                owner: MenuControllerNavigationCaptureOwner.biosPrompt,
+                priority: 1_000
+            )
         }
-    }
-
-    private func biosControllerToolbarFocus(
-        _ action: BIOSControllerToolbarAction,
-        baseHorizontalPadding: CGFloat = 0,
-        minimumWidth: CGFloat = 36,
-        foregroundColour: Color? = nil
-    ) -> BIOSControllerToolbarFocusModifier {
-        BIOSControllerToolbarFocusModifier(
-            state: controllerToolbarFocusState,
-            action: action,
+        .environment(\.controllerAccessibilityTargetsSuppressed, !library.hasLoaded)
+        .controllerAccessibilityTargetOrder(biosControllerContentIDs)
+        .controllerAccessibilityNavigation(
             controllerInput: controllerInput,
-            isVisible: menuTabIsActive,
-            baseHorizontalPadding: baseHorizontalPadding,
-            minimumWidth: minimumWidth,
-            foregroundColour: foregroundColour
+            isActive: menuTabIsActive,
+            scopeKey: biosControllerScope,
+            priority: 80,
+            orbStyle: .plain,
+            focusNeonExclusionLabels: BIOSControllerTarget.toolbar,
+            onBack: handleControllerBack,
+            onPreviousTab: onPreviousControllerTab,
+            onNextTab: onNextControllerTab,
+            onBoundary: onControllerBoundary,
+            directionalLinks: biosControllerLinks,
+            confinesHorizontalFocusMovement: true,
+            usesExplicitTargetGeometryOnly: true
         )
     }
 
-    private func synchronizeControllerItems() {
-        controllerFocusState.updateIDs(biosControllerContentIDs)
-        guard controllerLibraryNavigationAllowed,
-              controllerInput?.navigationZone == .library,
-              controllerFocusState.selectedID == nil else { return }
-        _ = selectInitialControllerItem(preferLast: controllerEntryPrefersLast)
+    // Back from the toolbar returns to the list. Back from the list leaves it for
+    // the tab bar, where Up comes back in.
+    private func handleControllerBack() -> Bool {
+        guard focusedToolbarTargetID != nil else {
+            return onControllerBoundary(.down)
+        }
+        return controllerInput?.requestNavigationSessionEntry(
+            preferLast: false,
+            matchingScopePrefix: biosControllerScope
+        ) ?? false
     }
 
-    private func synchronizeControllerAvailability() {
-        controllerFocusState.setEnabled(controllerLibraryNavigationAllowed)
-        guard controllerLibraryNavigationAllowed,
-              controllerInput?.navigationZone == .library,
-              controllerFocusState.selectedID == nil else { return }
-        _ = selectInitialControllerItem(preferLast: controllerEntryPrefersLast)
-    }
-
-    private func handleControllerLibraryEntry(preferLast: Bool) {
-        guard controllerLibraryNavigationAllowed else { return }
-        controllerEntryPrefersLast = preferLast
-        controllerFocusState.setEnabled(true)
-        _ = selectInitialControllerItem(preferLast: preferLast)
-    }
-
-    @discardableResult
-    private func selectInitialControllerItem(preferLast: Bool) -> Bool {
-        if let rememberedID = controllerInput?.rememberedNavigationFocusKey(
-            forScope: biosControllerContentMemoryScope
-        ) {
-            if biosControllerContentIDs.contains(rememberedID) {
-                controllerFocusState.selectedID = rememberedID
-                return true
+    private var biosControllerLinks: [ControllerAccessibilityDirectionalLink] {
+        typealias Link = ControllerAccessibilityDirectionalLink
+        let target = BIOSControllerTarget.self
+        var links = [
+            Link(fromLabel: target.boot, direction: .right, toLabel: target.importBIOS),
+            Link(fromLabel: target.importBIOS, direction: .left, toLabel: target.boot),
+            Link(fromLabel: target.importBIOS, direction: .right, toLabel: target.refresh),
+            Link(fromLabel: target.refresh, direction: .left, toLabel: target.importBIOS),
+        ]
+        for id in target.toolbar {
+            links.append(Link(fromLabel: id, direction: .up, toLabel: Link.navigationBoundary))
+        }
+        if let first = biosControllerContentIDs.first,
+           let last = biosControllerContentIDs.last {
+            links.append(Link(fromLabel: first, direction: .up, toLabel: target.boot))
+            links.append(Link(fromLabel: last, direction: .down, toLabel: Link.navigationBoundary))
+            for id in target.toolbar {
+                links.append(Link(fromLabel: id, direction: .down, toLabel: first))
             }
         }
-        guard let id = preferLast
-                ? biosControllerContentIDs.last
-                : biosControllerContentIDs.first else { return false }
-        controllerFocusState.selectedID = id
-        return true
+        return links
     }
 
-    private func rememberControllerToolbarFocus() {
-        controllerInput?.rememberNavigationFocusKey(
-            String(controllerToolbarFocusState.selectedAction.rawValue),
-            forScope: biosControllerToolbarMemoryScope
-        )
-    }
-
-    private func restoreControllerToolbarFocus() {
-        guard let rememberedAction = controllerInput?.rememberedNavigationFocusKey(
-            forScope: biosControllerToolbarMemoryScope
-        ), let rawValue = Int(rememberedAction),
-           let action = BIOSControllerToolbarAction(rawValue: rawValue) else {
-            return
+    private func updatePromptCapture() {
+        if activePrompt != nil {
+            controllerInput?.claimPresentedNavigationFocus()
         }
-        controllerToolbarFocusState.selectedAction = action
-    }
-
-    private func controllerRightStickReachedTop() {
-        guard controllerLibraryNavigationAllowed,
-              controllerInput?.navigationZone == .library else { return }
-        controllerFocusState.setEnabled(false)
-        controllerInput?.setNavigationZone(.topToolbar)
-        controllerInput?.playFeedback(.move(.up))
+        controllerInput?.setNavigationCaptured(
+            activePrompt != nil,
+            owner: MenuControllerNavigationCaptureOwner.biosPrompt,
+            priority: 1_000
+        )
     }
 
     private var activePrompt: BIOSPromptKind? {
@@ -924,140 +698,6 @@ struct BIOSListView: View {
         }
     }
 
-    private func handleControllerCommand(_ event: MenuControllerInputEvent) {
-        guard !event.isNavigationSessionRouted,
-              event.captureOwner == nil else { return }
-        if let prompt = activePrompt {
-            handlePromptCommand(event.command, prompt: prompt)
-            return
-        }
-        guard controllerLibraryNavigationAllowed else { return }
-        let command = event.command
-        if controllerInput?.navigationZone == .tabBar { return }
-        if controllerInput?.navigationZone == .topToolbar {
-            handleControllerToolbarCommand(command)
-            return
-        }
-        if controllerInput?.suppressesLibraryEvent(event) == true { return }
-
-        let ids = biosControllerContentIDs
-        guard !ids.isEmpty else { return }
-        let index = controllerFocusState.selectedID.flatMap {
-            ids.firstIndex(of: $0)
-        }
-            ?? (controllerEntryPrefersLast ? ids.index(before: ids.endIndex) : ids.startIndex)
-
-        switch command {
-        case .up, .upLeft, .upRight:
-            guard index > ids.startIndex else {
-                controllerFocusState.setEnabled(false)
-                controllerInput?.setNavigationZone(.topToolbar)
-                controllerInput?.playFeedback(.move(.up))
-                return
-            }
-            controllerFocusState.selectedID = ids[index - 1]
-            controllerInput?.playFeedback(.move(.up))
-        case .down, .downLeft, .downRight:
-            guard index < ids.index(before: ids.endIndex) else {
-                controllerFocusState.setEnabled(false)
-                if onControllerBoundary(.down) {
-                    controllerInput?.playFeedback(.move(.down))
-                } else {
-                    controllerInput?.playFeedback(.boundary)
-                }
-                return
-            }
-            controllerFocusState.selectedID = ids[index + 1]
-            controllerInput?.playFeedback(.move(.down))
-        case .activate:
-            activateControllerContent(id: ids[index])
-        case .back:
-            controllerFocusState.selectedID = nil
-            controllerFocusState.setEnabled(false)
-            controllerInput?.playFeedback(.back)
-        case .left, .right, .toggleFavorite, .showContextMenu:
-            controllerInput?.playFeedback(.boundary)
-        case .previousTab, .nextTab:
-            break
-        }
-    }
-
-    private func handleControllerToolbarCommand(
-        _ command: MenuControllerCommand
-    ) {
-        let actions = BIOSControllerToolbarAction.allCases
-        let index = actions.firstIndex(
-            of: controllerToolbarFocusState.selectedAction
-        ) ?? actions.startIndex
-        switch command {
-        case .left:
-            let next = max(actions.startIndex, index - 1)
-            guard next != index else {
-                controllerInput?.playFeedback(.boundary)
-                return
-            }
-            controllerToolbarFocusState.selectedAction = actions[next]
-            controllerInput?.playFeedback(.move(.left))
-        case .right:
-            let next = min(actions.index(before: actions.endIndex), index + 1)
-            guard next != index else {
-                controllerInput?.playFeedback(.boundary)
-                return
-            }
-            controllerToolbarFocusState.selectedAction = actions[next]
-            controllerInput?.playFeedback(.move(.right))
-        case .down, .downLeft, .downRight:
-            controllerInput?.setNavigationZone(.library)
-            controllerFocusState.setEnabled(true)
-            if !selectInitialControllerItem(preferLast: false) {
-                controllerInput?.playFeedback(.boundary)
-                return
-            }
-            controllerInput?.playFeedback(.move(.down))
-        case .up, .upLeft, .upRight:
-            controllerInput?.playFeedback(.boundary)
-        case .activate:
-            performControllerToolbarAction(
-                controllerToolbarFocusState.selectedAction
-            )
-            controllerInput?.playFeedback(.activate)
-        case .back:
-            controllerInput?.setNavigationZone(.library)
-            controllerFocusState.setEnabled(true)
-            _ = selectInitialControllerItem(preferLast: false)
-            controllerInput?.playFeedback(.back)
-        case .toggleFavorite, .showContextMenu, .previousTab, .nextTab:
-            break
-        }
-    }
-
-    private func performControllerToolbarAction(
-        _ action: BIOSControllerToolbarAction
-    ) {
-        switch action {
-        case .boot:
-            performBootBIOSAction()
-        case .importBIOS:
-            openBIOSImporter()
-        case .refresh:
-            loadBIOSes()
-        }
-    }
-
-    private func activateControllerContent(id: String) {
-        if id == "bios.content.import" {
-            openBIOSImporter()
-            controllerInput?.playFeedback(.destination)
-            return
-        }
-        guard let bios = bioses.first(where: { $0.filePath == id }) else {
-            controllerInput?.playFeedback(.boundary)
-            return
-        }
-        selectBIOS(bios)
-        controllerInput?.playFeedback(.activate)
-    }
-
     private func presentMenuPanel(_ name: String, _ action: @escaping () -> Void) {
         NSLog("[ARMSX2 iOS BIOSMenu] present \(name)")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
@@ -1066,8 +706,7 @@ struct BIOSListView: View {
     }
 
     private func biosRow(_ bios: BIOSLibraryEntry) -> some View {
-        let focusState = controllerFocusState.itemState(for: bios.filePath)
-        return Button {
+        Button {
             selectBIOS(bios)
         } label: {
             HStack(spacing: 12) {
@@ -1076,9 +715,6 @@ struct BIOSListView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(bios.fileName)
                         .font(.body)
-                        .modifier(
-                            BIOSControllerFocusedTextModifier(state: focusState)
-                        )
                     Text(bios.valid ? "\(bios.regionName) BIOS" : settings.localized("Not a boot BIOS"))
                         .font(.caption)
                         .foregroundStyle(secondaryTextColour)
@@ -1102,20 +738,14 @@ struct BIOSListView: View {
             }
         }
         .buttonStyle(.plain)
-        // BIOS uses its own stable-ID controller graph. Keeping these rows in
-        // UIKit's native focus graph as well can deliver Cross to the first
-        // native row after the custom highlight has moved elsewhere.
-        .focusable(false)
         .foregroundStyle(contentTextColour)
         .opacity(bios.valid ? 1 : 0.65)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(biosControllerLabel(for: bios))
-        .modifier(
-            BIOSControllerItemFocusModifier(
-                id: bios.filePath,
-                state: focusState
-            )
-        )
+        .controllerAccessibilityActionTarget(
+            id: bios.filePath,
+            label: biosControllerLabel(for: bios)
+        ) { selectBIOS(bios) }
     }
 
     private func selectBIOS(_ bios: BIOSLibraryEntry) {
@@ -1135,10 +765,7 @@ struct BIOSListView: View {
     }
 
     private var emptyState: some View {
-        let focusState = controllerFocusState.itemState(
-            for: "bios.content.import"
-        )
-        return VStack(spacing: 16) {
+        VStack(spacing: 16) {
             Image(systemName: "cpu")
                 .font(.system(size: 48))
                 .foregroundStyle(.secondary)
@@ -1163,13 +790,12 @@ struct BIOSListView: View {
             .focusEffectDisabled()
             .accessibilityElement(children: .combine)
             .accessibilityLabel(settings.localized("Import BIOS"))
-            .modifier(
-                BIOSControllerItemFocusModifier(
-                    id: "bios.content.import",
-                    state: focusState
-                )
+            .controllerAccessibilityActionTarget(
+                id: BIOSControllerTarget.emptyImport,
+                label: settings.localized("Import BIOS"),
+                activationFeedback: .destination,
+                action: openBIOSImporter
             )
-            .id("bios.content.import")
             Text(settings.localized("If one picker refuses to select your .bin/.rom file, try the other."))
                 .font(.caption)
                 .foregroundStyle(secondaryTextColour.opacity(0.78))
