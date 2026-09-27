@@ -34,6 +34,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_aa1_edge_tests.cpp
 	gs_sw_colour_walk_tables_tests.cpp
 	gs_line_walk_tests.cpp
+	gs_line_runs_tests.cpp
 	gs_point_place_tests.cpp
 	gs_sw_setup_reciprocal_tests.cpp
 	gs_readback_transfer_size_tests.cpp
