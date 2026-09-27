@@ -1063,6 +1063,7 @@ struct AppearanceSettingsView: View {
                 onCancel: { showsThemeNameKeyboard = false }
             )
             .presentationBackground(.clear)
+            .appStatusBarHidden()
         }
         .alert("Theme Not Saved", isPresented: $themeSaveError) {
             Button("OK", role: .cancel) {}
