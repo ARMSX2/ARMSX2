@@ -21,6 +21,9 @@
 #include <process.h>
 #define getpid _getpid
 #else
+#include <csignal>
+#include <sys/resource.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -471,4 +474,162 @@ TEST_F(GSCacheFileTest, DeleteAllTakesEveryCacheAndNothingElse)
 	EXPECT_TRUE(FileSystem::FileExists(PathOf("achievement_images/1.png").c_str()));
 	EXPECT_FALSE(FileSystem::DirectoryExists(PathOf("vulkan_pipeline_keys").c_str()));
 	EXPECT_FALSE(FileSystem::FileExists(PathOf("vulkan_pipelines.bin.tmp1234").c_str()));
+}
+
+TEST_F(GSCacheFileTest, RecreateKeepsTheLock)
+{
+	const std::string base = PathOf("store");
+	BlobStore owner;
+	ASSERT_TRUE(owner.Open(base, KIND_TEST, MakeStamp("A"), 24));
+	FillStore(owner, 3);
+	ASSERT_TRUE(owner.Recreate());
+	EXPECT_EQ(owner.GetEntryCount(), 0u);
+	EXPECT_TRUE(owner.IsWritable());
+#ifndef _WIN32
+	BlobStore other;
+	ASSERT_TRUE(other.Open(base, KIND_TEST, MakeStamp("A"), 24));
+	EXPECT_TRUE(other.GetOpenInfo().read_only);
+#endif
+	FillStore(owner, 2);
+	owner.Close();
+	BlobStore again;
+	ASSERT_TRUE(again.Open(base, KIND_TEST, MakeStamp("A"), 24));
+	EXPECT_EQ(again.GetEntryCount(), 2u);
+}
+
+TEST_F(GSCacheFileTest, ClearEmptiesLiveStoresInPlaceAndDeletesTheRest)
+{
+	// A renderer's store stays open through the clear, as it does with a running game or with the
+	// fullscreen UI's device alive; the clear must not leave it appending to a deleted file.
+	const std::string base = PathOf("vulkan_shaders_0123abcd");
+	BlobStore live;
+	ASSERT_TRUE(live.Open(base, KIND_TEST, MakeStamp("A"), 24));
+	FillStore(live, 5);
+	WriteAll(PathOf("vulkan_pipelines_0123abcd.bin"), Bytes(1, 64));
+	WriteAll(PathOf("gl_programs_99999999.idx"), Bytes(1, 64));
+
+	EXPECT_EQ(DeleteAll(m_dir), 4u);
+	EXPECT_FALSE(FileSystem::FileExists(PathOf("vulkan_pipelines_0123abcd.bin").c_str()));
+	EXPECT_FALSE(FileSystem::FileExists(PathOf("gl_programs_99999999.idx").c_str()));
+	EXPECT_TRUE(FileSystem::FileExists((base + ".idx").c_str()));
+	EXPECT_EQ(live.GetEntryCount(), 0u);
+	EXPECT_TRUE(live.IsWritable());
+	EXPECT_EQ(ReadAll(base + ".bin").size(), 0u);
+
+	// What it adds afterwards lands in the files a new start reads.
+	FillStore(live, 2);
+	live.Close();
+	BlobStore next;
+	ASSERT_TRUE(next.Open(base, KIND_TEST, MakeStamp("A"), 24));
+	EXPECT_EQ(next.GetEntryCount(), 2u);
+	ExpectEntry(next, 0);
+	ExpectEntry(next, 1);
+}
+
+#ifndef _WIN32
+// A full disk, simulated with a file size limit in a child process: the append fails part way, and
+// the store must cut both files back and stop writing, leaving nothing for the next start to trip on.
+static int AppendUntilFull(const std::string& base, const Stamp& stamp, bool fail_in_index)
+{
+	BlobStore store;
+	if (!store.Open(base, KIND_TEST, stamp, 24))
+		return 10;
+	const s64 idx_before = FileSystem::GetPathFileSize((base + ".idx").c_str());
+	const s64 bin_before = FileSystem::GetPathFileSize((base + ".bin").c_str());
+
+	// Room for a 1-byte blob but not a whole index entry, or not even the blob.
+	const rlim_t limit = fail_in_index ? static_cast<rlim_t>(idx_before + 20) : static_cast<rlim_t>(bin_before + 10);
+	std::signal(SIGXFSZ, SIG_IGN);
+	const struct rlimit rl = {limit, limit};
+	if (setrlimit(RLIMIT_FSIZE, &rl) != 0)
+		return 11;
+
+	std::vector<u8> key(24, 0x77);
+	const std::vector<u8> data(fail_in_index ? 1 : 100, 0x42);
+	if (store.Insert(key.data(), data.data(), data.size()))
+		return 12;
+	if (store.IsWritable())
+		return 13;
+	key[0] = 0x78;
+	if (store.Insert(key.data(), data.data(), 1))
+		return 14;
+	if (FileSystem::GetPathFileSize((base + ".idx").c_str()) != idx_before)
+		return 15;
+	if (FileSystem::GetPathFileSize((base + ".bin").c_str()) != bin_before)
+		return 16;
+	// Reading still works.
+	std::vector<u8> out;
+	std::vector<u8> first(24, 0);
+	if (!store.Lookup(first.data(), &out))
+		return 17;
+	return 0;
+}
+
+TEST_F(GSCacheFileTest, FailedAppendIsCutBackAndStopsWriting)
+{
+	for (const bool fail_in_index : {true, false})
+	{
+		const std::string base = PathOf(fail_in_index ? "full_idx" : "full_bin");
+		{
+			BlobStore store;
+			ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
+			FillStore(store, 4);
+		}
+		const pid_t pid = fork();
+		ASSERT_GE(pid, 0);
+		if (pid == 0)
+			_exit(AppendUntilFull(base, MakeStamp("A"), fail_in_index));
+		int status = 0;
+		ASSERT_EQ(waitpid(pid, &status, 0), pid);
+		ASSERT_TRUE(WIFEXITED(status));
+		EXPECT_EQ(WEXITSTATUS(status), 0) << (fail_in_index ? "index" : "data");
+
+		BlobStore store;
+		ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
+		EXPECT_EQ(store.GetOpenInfo().truncated_bytes, 0u);
+		EXPECT_EQ(store.GetEntryCount(), 4u);
+		for (u32 i = 0; i < 4; i++)
+			ExpectEntry(store, i);
+	}
+}
+
+TEST_F(GSCacheFileTest, StaleTempFilesAreRemoved)
+{
+	// A pid far above any this machine hands out is not running.
+	WriteAll(PathOf("vulkan_pipelines_aa.bin.tmp2147480000"), Bytes(1, 8));
+	const std::string mine = PathOf(("gl_programs.bin.tmp" + std::to_string(getpid())).c_str());
+	WriteAll(mine, Bytes(1, 8));
+	WriteAll(PathOf("notes.tmpfile"), Bytes(1, 8));
+	EXPECT_EQ(CleanStaleTempFiles(m_dir), 1u);
+	EXPECT_TRUE(FileSystem::FileExists(mine.c_str()));
+	EXPECT_TRUE(FileSystem::FileExists(PathOf("notes.tmpfile").c_str()));
+}
+#endif
+
+TEST_F(GSCacheFileTest, OtherIdentitiesArePrunedOldestFirst)
+{
+	// Five builds' SPIR-V stores and the unversioned name of the old format, oldest first.
+	const char* stems[] = {"vulkan_shaders", "vulkan_shaders_11111111", "vulkan_shaders_22222222",
+		"vulkan_shaders_33333333", "vulkan_shaders_44444444", "vulkan_shaders_55555555"};
+	s64 t = 1000000000;
+	for (const char* stem : stems)
+	{
+		for (const char* ext : {".idx", ".bin"})
+		{
+			const std::string p = PathOf((std::string(stem) + ext).c_str());
+			WriteAll(p, Bytes(1, 8));
+			std::filesystem::last_write_time(p, std::filesystem::file_time_type::clock::now() -
+													 std::chrono::seconds(2000000000 - t));
+		}
+		t += 1000;
+	}
+	WriteAll(PathOf("vulkan_pipelines_11111111.bin"), Bytes(1, 8));
+
+	// The current identity is the oldest one; it stays, with the two most recent others.
+	EXPECT_EQ(PruneOtherIdentities(m_dir, "vulkan_shaders", "vulkan_shaders_11111111", 3), 6u);
+	for (const char* keep : {"vulkan_shaders_11111111.idx", "vulkan_shaders_44444444.bin", "vulkan_shaders_55555555.idx",
+			 "vulkan_pipelines_11111111.bin"})
+		EXPECT_TRUE(FileSystem::FileExists(PathOf(keep).c_str())) << keep;
+	for (const char* gone : {"vulkan_shaders.idx", "vulkan_shaders_22222222.bin", "vulkan_shaders_33333333.idx"})
+		EXPECT_FALSE(FileSystem::FileExists(PathOf(gone).c_str())) << gone;
 }

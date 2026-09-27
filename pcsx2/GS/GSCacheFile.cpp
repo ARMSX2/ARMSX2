@@ -14,6 +14,9 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <algorithm>
+#include <cerrno>
+#include <ctime>
 #include <cstring>
 #include <optional>
 
@@ -25,6 +28,7 @@
 #include "common/RedtapeWindows.h"
 #include <io.h>
 #else
+#include <signal.h>
 #include <sys/file.h>
 #include <unistd.h>
 #endif
@@ -87,29 +91,89 @@ namespace GSCacheFile
 			return (h.stamp == stamp) ? ReadResult::Ok : ReadResult::StampMismatch;
 		}
 
-		static bool TruncateFile(std::FILE* fp, u64 size)
+		static int FileDescriptor(std::FILE* fp)
 		{
-			std::fflush(fp);
 #ifdef _WIN32
-			return (_chsize_s(_fileno(fp), static_cast<__int64>(size)) == 0);
+			return _fileno(fp);
 #else
-			return (ftruncate(fileno(fp), static_cast<off_t>(size)) == 0);
+			return fileno(fp);
 #endif
 		}
 
-		static bool TryLockFile(std::FILE* fp)
+		/// False where the stream has no descriptor (a libretro frontend's VFS) or the call fails.
+		static bool TruncateFile(std::FILE* fp, u64 size)
 		{
+			std::fflush(fp);
+			const int fd = FileDescriptor(fp);
+			if (fd < 0)
+				return false;
 #ifdef _WIN32
-			const HANDLE h = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(fp)));
+			return (_chsize_s(fd, static_cast<__int64>(size)) == 0);
+#else
+			return (ftruncate(fd, static_cast<off_t>(size)) == 0);
+#endif
+		}
+
+		enum class LockResult
+		{
+			Locked,
+			/// Another open file holds it: the only answer that means "someone else is writing".
+			Contended,
+			/// No descriptor, or the file system has no locks (ENOLCK on some FUSE and network mounts).
+			Unavailable,
+		};
+
+		static LockResult TryLockFile(std::FILE* fp, std::string* why)
+		{
+			const int fd = FileDescriptor(fp);
+			if (fd < 0)
+			{
+				*why = "no file descriptor";
+				return LockResult::Unavailable;
+			}
+#ifdef _WIN32
+			const HANDLE h = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+			if (h == INVALID_HANDLE_VALUE)
+			{
+				*why = "no file handle";
+				return LockResult::Unavailable;
+			}
+			// A byte far past any data, so the lock never stops another process reading the file.
 			OVERLAPPED ov = {};
-			return (h != INVALID_HANDLE_VALUE &&
-					LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov));
+			ov.OffsetHigh = 0x7FFFFFFFu;
+			if (LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov))
+				return LockResult::Locked;
+			const DWORD err = GetLastError();
+			if (err == ERROR_LOCK_VIOLATION)
+				return LockResult::Contended;
+			*why = fmt::format("LockFileEx error {}", err);
+			return LockResult::Unavailable;
 #else
 			// flock, not lockf: the lock belongs to this open file, so a second open of the same file in
 			// this process (a renderer switch before the old cache is closed) is refused too.
-			return (flock(fileno(fp), LOCK_EX | LOCK_NB) == 0);
+			if (flock(fd, LOCK_EX | LOCK_NB) == 0)
+				return LockResult::Locked;
+			const int err = errno;
+			if (err == EWOULDBLOCK || err == EAGAIN)
+				return LockResult::Contended;
+			*why = fmt::format("flock errno {}", err);
+			return LockResult::Unavailable;
 #endif
 		}
+
+		/// Writes and reads go straight to the file: after a failed write, a stdio buffer would still
+		/// hold the bytes and put them back after the file was cut to its last good size.
+		static std::FILE* OpenUnbuffered(const std::string& path, const char* mode)
+		{
+			std::FILE* fp = FileSystem::OpenCFile(path.c_str(), mode);
+			if (fp)
+				std::setvbuf(fp, nullptr, _IONBF, 0);
+			return fp;
+		}
+
+		/// Live stores, so a clear can empty them in place instead of deleting files they have open.
+		static std::mutex s_registry_mutex;
+		static std::vector<BlobStore*> s_registry;
 	} // namespace
 
 	bool Digest::operator==(const Digest& rhs) const
@@ -310,18 +374,25 @@ namespace GSCacheFile
 	bool BlobStore::Open(const std::string& base_path, Kind kind, const Stamp& stamp, u32 key_size, u64 max_data_size)
 	{
 		Close();
-		m_base_path = base_path;
-		m_kind = kind;
-		m_stamp = stamp.GetDigest();
-		m_stamp_text = stamp.GetText();
-		m_key_size = key_size;
-		m_max_data_size = max_data_size;
-		m_open_info = {};
-		m_bad_data = 0;
+		{
+			std::unique_lock lock(m_mutex);
+			m_base_path = base_path;
+			m_kind = kind;
+			m_stamp = stamp.GetDigest();
+			m_stamp_text = stamp.GetText();
+			m_key_size = key_size;
+			m_max_data_size = max_data_size;
+			m_open_info = {};
+			m_bad_data = 0;
+			m_write_failed = false;
 
-		if (ReadExisting())
-			return true;
-		return CreateNew();
+			if (!ReadExisting() && !CreateNew())
+				return false;
+		}
+
+		std::unique_lock reg(s_registry_mutex);
+		s_registry.push_back(this);
+		return true;
 	}
 
 	void BlobStore::CloseFiles()
@@ -340,25 +411,36 @@ namespace GSCacheFile
 
 	void BlobStore::Close()
 	{
+		{
+			std::unique_lock reg(s_registry_mutex);
+			s_registry.erase(std::remove(s_registry.begin(), s_registry.end(), this), s_registry.end());
+		}
 		std::unique_lock lock(m_mutex);
 		CloseFiles();
 		m_entries.clear();
 		m_read_only = false;
 	}
 
+	bool BlobStore::IsWritable() const
+	{
+		std::unique_lock lock(m_mutex);
+		return m_index_file && m_data_file && !m_read_only && !m_write_failed;
+	}
+
 	bool BlobStore::Recreate()
 	{
 		std::unique_lock lock(m_mutex);
+		m_entries.clear();
+		m_write_failed = false;
 		if (m_read_only)
 		{
 			// Another process owns the files; stop using them rather than delete its work.
 			CloseFiles();
-			m_entries.clear();
 			return false;
 		}
+		if (m_index_file && m_data_file)
+			return ResetFiles();
 		CloseFiles();
-		m_entries.clear();
-		lock.unlock();
 		return CreateNew();
 	}
 
@@ -368,44 +450,58 @@ namespace GSCacheFile
 		return m_entries.size();
 	}
 
-	bool BlobStore::LockIndex()
+	bool BlobStore::ResetFiles()
 	{
-		return TryLockFile(m_index_file);
+		// In place where the files allow it, so the lock on the index is never let go.
+		const FileHeader h = MakeHeader(INDEX_MAGIC, m_kind, m_key_size, m_stamp, 0, 0);
+		if (!TruncateFile(m_data_file, 0) || !TruncateFile(m_index_file, 0))
+		{
+			// No descriptor to truncate through: reopen both files empty. Nothing was locked.
+			CloseFiles();
+			m_index_file = OpenUnbuffered(m_base_path + ".idx", "w+b");
+			m_data_file = OpenUnbuffered(m_base_path + ".bin", "w+b");
+		}
+		if (!m_index_file || !m_data_file || FileSystem::FSeek64(m_index_file, 0, SEEK_SET) != 0 ||
+			std::fwrite(&h, sizeof(h), 1, m_index_file) != 1)
+		{
+			Console.Error("GS cache: cannot create '%s'", m_base_path.c_str());
+			CloseFiles();
+			return false;
+		}
+		return true;
 	}
 
 	bool BlobStore::CreateNew()
 	{
 		const std::string index_path = m_base_path + ".idx";
-		const std::string data_path = m_base_path + ".bin";
 
-		// Opened before anything is deleted, so a store another process holds is left alone.
-		m_index_file = FileSystem::OpenCFile(index_path.c_str(), "a+b");
+		// Opened and locked before anything is emptied, so a store another process holds is left alone.
+		m_index_file = OpenUnbuffered(index_path, "a+b");
+		// A libretro frontend's file system opens "a+" only on an existing file.
+		if (!m_index_file)
+			m_index_file = OpenUnbuffered(index_path, "w+b");
 		if (!m_index_file)
 		{
 			Console.Error("GS cache: cannot open '%s'", index_path.c_str());
 			return false;
 		}
-		if (!LockIndex())
+		std::string why;
+		switch (TryLockFile(m_index_file, &why))
 		{
-			Console.Warning("GS cache: '%s' is in use by another process; running without it", index_path.c_str());
-			CloseFiles();
-			return false;
+			case LockResult::Locked:
+				break;
+			case LockResult::Contended:
+				Console.Warning("GS cache: '%s' is in use by another process; running without it", index_path.c_str());
+				CloseFiles();
+				return false;
+			case LockResult::Unavailable:
+				Console.Warning("GS cache: cannot lock '%s' (%s); writing it unlocked", index_path.c_str(), why.c_str());
+				break;
 		}
 
-		// Truncate in place rather than delete: the lock is on this open file.
-		const FileHeader h = MakeHeader(INDEX_MAGIC, m_kind, m_key_size, m_stamp, 0, 0);
-		m_data_file = FileSystem::OpenCFile(data_path.c_str(), "w+b");
-		if (!m_data_file || !TruncateFile(m_index_file, 0) || std::fwrite(&h, sizeof(h), 1, m_index_file) != 1 ||
-			std::fflush(m_index_file) != 0)
-		{
-			Console.Error("GS cache: cannot create '%s'", m_base_path.c_str());
-			CloseFiles();
-			FileSystem::DeleteFilePath(index_path.c_str());
-			return false;
-		}
-
+		m_data_file = OpenUnbuffered(m_base_path + ".bin", "w+b");
 		m_read_only = false;
-		return true;
+		return ResetFiles();
 	}
 
 	bool BlobStore::ReadExisting()
@@ -413,53 +509,66 @@ namespace GSCacheFile
 		const std::string index_path = m_base_path + ".idx";
 		const std::string data_path = m_base_path + ".bin";
 
-		m_index_file = FileSystem::OpenCFile(index_path.c_str(), "r+b");
+		m_index_file = OpenUnbuffered(index_path, "r+b");
 		if (!m_index_file)
 		{
 			m_open_info.discarded = ReadResult::Missing;
 			return false;
 		}
-		if (!LockIndex())
+		std::string why;
+		switch (TryLockFile(m_index_file, &why))
 		{
-			// Read what the other process has written; write nothing.
-			std::fclose(m_index_file);
-			m_index_file = FileSystem::OpenCFile(index_path.c_str(), "rb");
-			if (!m_index_file)
-				return false;
-			m_read_only = true;
-			m_open_info.read_only = true;
-			Console.Warning("GS cache: '%s' is in use by another process; reading it without adding to it",
-				index_path.c_str());
+			case LockResult::Locked:
+				break;
+			case LockResult::Contended:
+				// Read what the other process has written; write nothing.
+				std::fclose(m_index_file);
+				m_index_file = OpenUnbuffered(index_path, "rb");
+				if (!m_index_file)
+					return false;
+				m_read_only = true;
+				m_open_info.read_only = true;
+				Console.Warning("GS cache: '%s' is in use by another process; reading it without adding to it",
+					index_path.c_str());
+				break;
+			case LockResult::Unavailable:
+				Console.Warning("GS cache: cannot lock '%s' (%s); using it unlocked", index_path.c_str(), why.c_str());
+				break;
 		}
 
 		const auto fail = [this](ReadResult why) {
 			m_open_info.discarded = why;
 			CloseFiles();
 			m_entries.clear();
-			if (m_read_only)
-			{
-				// Not ours to delete. Leave the pair to the process that holds it and run without a cache,
-				// with the files closed so CreateNew is not attempted on them.
-				m_read_only = false;
-			}
+			// A store another process holds is not ours to replace: leave its files alone and run
+			// without a cache, with the files closed so CreateNew is not attempted on them.
+			m_read_only = false;
 			return false;
 		};
 
-		FileHeader h;
-		if (std::fread(&h, sizeof(h), 1, m_index_file) != 1)
+		// The whole index in one read: the file is unbuffered.
+		const s64 index_size = FileSystem::FSize64(m_index_file);
+		if (index_size < static_cast<s64>(sizeof(FileHeader)))
 			return fail(ReadResult::Truncated);
+		std::vector<u8> index(static_cast<size_t>(index_size));
+		if (FileSystem::FSeek64(m_index_file, 0, SEEK_SET) != 0 || std::fread(index.data(), index.size(), 1, m_index_file) != 1)
+			return fail(ReadResult::Truncated);
+
+		FileHeader h;
+		std::memcpy(&h, index.data(), sizeof(h));
 		if (const ReadResult res = CheckHeader(h, INDEX_MAGIC, m_kind, m_key_size, m_stamp); res != ReadResult::Ok)
 		{
 			Console.WriteLn("GS cache: discarding '%s': %s", index_path.c_str(), ReadResultString(res));
 			return fail(res);
 		}
 
-		m_data_file = FileSystem::OpenCFile(data_path.c_str(), m_read_only ? "rb" : "r+b");
+		m_data_file = OpenUnbuffered(data_path, m_read_only ? "rb" : "r+b");
 		if (!m_data_file)
 			return fail(ReadResult::Missing);
-		if (FileSystem::FSeek64(m_data_file, 0, SEEK_END) != 0)
+		const s64 data_size_signed = FileSystem::FSize64(m_data_file);
+		if (data_size_signed < 0)
 			return fail(ReadResult::Truncated);
-		const u64 data_size = static_cast<u64>(FileSystem::FTell64(m_data_file));
+		const u64 data_size = static_cast<u64>(data_size_signed);
 		if (data_size > m_max_data_size)
 		{
 			Console.WriteLn("GS cache: '%s' holds %llu bytes, over the limit; starting over", data_path.c_str(),
@@ -467,15 +576,11 @@ namespace GSCacheFile
 			return fail(ReadResult::Ok);
 		}
 
-		const s64 index_size = FileSystem::FSize64(m_index_file);
 		const size_t entry_size = GetEntrySize();
-		std::vector<u8> rec(entry_size);
 		u64 good_end = sizeof(h);
-		for (;;)
+		while (good_end + entry_size <= index.size())
 		{
-			if (std::fread(rec.data(), entry_size, 1, m_index_file) != 1)
-				break;
-
+			const u8* rec = index.data() + good_end;
 			Entry e;
 			u64 entry_hash;
 			std::memcpy(&e.offset, &rec[m_key_size], sizeof(u64));
@@ -486,24 +591,30 @@ namespace GSCacheFile
 
 			// The first entry that is damaged or points past the data ends the index. Every later
 			// entry was appended after it, so it cannot be trusted to be whole either.
-			if (entry_hash != Hash64(rec.data(), entry_size - sizeof(u64)) || e.offset > data_size ||
+			if (entry_hash != Hash64(rec, entry_size - sizeof(u64)) || e.offset > data_size ||
 				e.size > data_size - e.offset)
 			{
 				break;
 			}
 
-			m_entries.insert_or_assign(std::string(reinterpret_cast<const char*>(rec.data()), m_key_size), e);
+			m_entries.insert_or_assign(std::string(reinterpret_cast<const char*>(rec), m_key_size), e);
 			good_end += entry_size;
 		}
 
-		if (index_size >= 0 && static_cast<u64>(index_size) > good_end)
+		if (index.size() > good_end)
 		{
-			m_open_info.truncated_bytes = static_cast<u64>(index_size) - good_end;
+			m_open_info.truncated_bytes = index.size() - good_end;
 			Console.Warning("GS cache: '%s' ends in %llu damaged or incomplete bytes; %s", index_path.c_str(),
 				static_cast<unsigned long long>(m_open_info.truncated_bytes),
 				m_read_only ? "ignoring them" : "cutting them off");
 			if (!m_read_only && !TruncateFile(m_index_file, good_end))
-				return fail(ReadResult::Truncated);
+			{
+				// No descriptor: rewrite the good part instead.
+				std::fclose(m_index_file);
+				m_index_file = OpenUnbuffered(index_path, "w+b");
+				if (!m_index_file || std::fwrite(index.data(), good_end, 1, m_index_file) != 1)
+					return fail(ReadResult::Truncated);
+			}
 		}
 
 		m_open_info.entries = static_cast<u32>(m_entries.size());
@@ -524,6 +635,7 @@ namespace GSCacheFile
 			(e.size > 0 && std::fread(data->data(), e.size, 1, m_data_file) != 1) ||
 			Hash64(data->data(), data->size()) != e.data_hash)
 		{
+			std::clearerr(m_data_file);
 			m_bad_data++;
 			Console.Warning("GS cache: an entry in '%s.bin' failed its checksum; rebuilding it", m_base_path.c_str());
 			m_entries.erase(it);
@@ -539,18 +651,20 @@ namespace GSCacheFile
 	bool BlobStore::Insert(const void* key, const void* data, size_t size, u32 aux)
 	{
 		std::unique_lock lock(m_mutex);
-		if (!m_index_file || !m_data_file || m_read_only)
+		if (!m_index_file || !m_data_file || m_read_only || m_write_failed)
 			return false;
 
 		// Two threads that compiled the same source both get here; the second has nothing to add.
 		if (m_entries.find(std::string(static_cast<const char*>(key), m_key_size)) != m_entries.end())
 			return true;
 
-		if (FileSystem::FSeek64(m_data_file, 0, SEEK_END) != 0)
+		const s64 data_end = FileSystem::FSize64(m_data_file);
+		const s64 index_end = FileSystem::FSize64(m_index_file);
+		if (data_end < 0 || index_end < 0)
 			return false;
 
 		Entry e;
-		e.offset = static_cast<u64>(FileSystem::FTell64(m_data_file));
+		e.offset = static_cast<u64>(data_end);
 		e.size = static_cast<u32>(size);
 		e.aux = aux;
 		e.data_hash = Hash64(data, size);
@@ -567,11 +681,21 @@ namespace GSCacheFile
 
 		// Data first, then the entry that points at it: a kill between the two leaves unreferenced
 		// data, never an entry without its data.
-		if ((size > 0 && std::fwrite(data, size, 1, m_data_file) != 1) || std::fflush(m_data_file) != 0 ||
-			FileSystem::FSeek64(m_index_file, 0, SEEK_END) != 0 ||
-			std::fwrite(rec.data(), entry_size, 1, m_index_file) != 1 || std::fflush(m_index_file) != 0)
+		if (FileSystem::FSeek64(m_data_file, data_end, SEEK_SET) != 0 ||
+			(size > 0 && std::fwrite(data, size, 1, m_data_file) != 1) ||
+			FileSystem::FSeek64(m_index_file, index_end, SEEK_SET) != 0 ||
+			std::fwrite(rec.data(), entry_size, 1, m_index_file) != 1)
 		{
-			Console.Error("GS cache: failed to append to '%s'", m_base_path.c_str());
+			// Usually a full disk. Cut both files back to where they were, so no part of this entry is
+			// left for the next start to read, and add nothing more this session: another append would
+			// most likely fail the same way.
+			std::clearerr(m_data_file);
+			std::clearerr(m_index_file);
+			const bool cut = TruncateFile(m_index_file, static_cast<u64>(index_end)) &&
+							 TruncateFile(m_data_file, static_cast<u64>(data_end));
+			m_write_failed = true;
+			Console.Error("GS cache: failed to append to '%s'%s; not adding to it again this session",
+				m_base_path.c_str(), cut ? "" : " (and could not cut it back; the next start will)");
 			return false;
 		}
 
@@ -579,38 +703,146 @@ namespace GSCacheFile
 		return true;
 	}
 
+	bool BlobStore::OwnsPath(const std::string& path) const
+	{
+		return (path == m_base_path + ".idx" || path == m_base_path + ".bin");
+	}
+
 	u32 DeleteAll(const std::string& cache_dir)
 	{
 		static constexpr const char* prefixes[] = {
-			"vulkan_shaders", "vulkan_pipelines", "gl_programs", "d3d_shaders_", "d3d12_", "lsfg_spirv.cache"};
+			"vulkan_shaders", "vulkan_pipelines", "gl_programs", "d3d_shaders_", "d3d12_", "lsfg_spirv"};
+
+		std::unique_lock reg(s_registry_mutex);
 
 		u32 removed = 0;
 		FileSystem::FindResultsArray files;
-		if (FileSystem::FindFiles(cache_dir.c_str(), "*", FILESYSTEM_FIND_FILES, &files))
+		if (FileSystem::FindFiles(cache_dir.c_str(), "*", FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_HIDDEN_FILES, &files))
 		{
 			for (const FILESYSTEM_FIND_DATA& fd : files)
 			{
 				const std::string_view name = Path::GetFileName(fd.FileName);
-				for (const char* prefix : prefixes)
-				{
-					if (name.compare(0, std::strlen(prefix), prefix) == 0)
-					{
-						removed += FileSystem::DeleteFilePath(fd.FileName.c_str()) ? 1 : 0;
-						break;
-					}
-				}
+				const bool is_cache = std::any_of(std::begin(prefixes), std::end(prefixes),
+					[&name](const char* prefix) { return name.compare(0, std::strlen(prefix), prefix) == 0; });
+				if (!is_cache)
+					continue;
+
+				// A live store is emptied in place, keeping its lock and its open files.
+				const auto owner = std::find_if(s_registry.begin(), s_registry.end(),
+					[&fd](const BlobStore* store) { return store->OwnsPath(fd.FileName); });
+				if (owner != s_registry.end())
+					continue;
+
+				removed += FileSystem::DeleteFilePath(fd.FileName.c_str()) ? 1 : 0;
 			}
+		}
+		const std::string probe = Path::Combine(cache_dir, "x");
+		for (BlobStore* store : s_registry)
+		{
+			if (Path::GetDirectory(store->GetBasePath()) == Path::GetDirectory(probe))
+				removed += store->Recreate() ? 2 : 0;
 		}
 
 		const std::string keys_dir = Path::Combine(cache_dir, "vulkan_pipeline_keys");
 		FileSystem::FindResultsArray key_files;
-		if (FileSystem::FindFiles(keys_dir.c_str(), "*", FILESYSTEM_FIND_FILES, &key_files))
+		if (FileSystem::FindFiles(keys_dir.c_str(), "*", FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_HIDDEN_FILES, &key_files))
 		{
 			for (const FILESYSTEM_FIND_DATA& fd : key_files)
 				removed += FileSystem::DeleteFilePath(fd.FileName.c_str()) ? 1 : 0;
 		}
 		FileSystem::DeleteDirectory(keys_dir.c_str());
 
+		return removed;
+	}
+
+	namespace
+	{
+		static bool ProcessIsAlive(u64 pid)
+		{
+#ifdef _WIN32
+			const HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+			if (!h)
+				return false;
+			DWORD code = 0;
+			const bool alive = GetExitCodeProcess(h, &code) && code == STILL_ACTIVE;
+			CloseHandle(h);
+			return alive;
+#else
+			return (pid > 0 && (kill(static_cast<pid_t>(pid), 0) == 0 || errno == EPERM));
+#endif
+		}
+	} // namespace
+
+	u32 CleanStaleTempFiles(const std::string& dir)
+	{
+		static constexpr s64 DAY = 24 * 60 * 60;
+		const s64 now = static_cast<s64>(std::time(nullptr));
+		u32 removed = 0;
+		FileSystem::FindResultsArray files;
+		if (!FileSystem::FindFiles(dir.c_str(), "*.tmp*", FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_HIDDEN_FILES, &files))
+			return 0;
+		for (const FILESYSTEM_FIND_DATA& fd : files)
+		{
+			const std::string_view name = Path::GetFileName(fd.FileName);
+			const size_t pos = name.rfind(".tmp");
+			if (pos == std::string_view::npos || pos + 4 >= name.size())
+				continue;
+			const std::string_view digits = name.substr(pos + 4);
+			if (!std::all_of(digits.begin(), digits.end(), [](char c) { return c >= '0' && c <= '9'; }))
+				continue;
+			const u64 pid = std::strtoull(std::string(digits).c_str(), nullptr, 10);
+			// A live pid may be a new process that reused the number, so age settles it too.
+			if (ProcessIsAlive(pid) && now - static_cast<s64>(fd.ModificationTime) < DAY)
+				continue;
+			removed += FileSystem::DeleteFilePath(fd.FileName.c_str()) ? 1 : 0;
+		}
+		return removed;
+	}
+
+	std::string ShortName(const Digest& digest)
+	{
+		return digest.ToHex().substr(0, 8);
+	}
+
+	u32 PruneOtherIdentities(const std::string& dir, std::string_view prefix, std::string_view current_stem, u32 keep)
+	{
+		// stem -> newest modification time of its files. A stem is the name up to its first '.'.
+		std::vector<std::pair<std::string, s64>> stems;
+		FileSystem::FindResultsArray files;
+		if (!FileSystem::FindFiles(dir.c_str(), "*", FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_HIDDEN_FILES, &files))
+			return 0;
+		for (const FILESYSTEM_FIND_DATA& fd : files)
+		{
+			const std::string_view name = Path::GetFileName(fd.FileName);
+			if (name.compare(0, prefix.size(), prefix) != 0)
+				continue;
+			const std::string stem(name.substr(0, name.find('.')));
+			auto it = std::find_if(stems.begin(), stems.end(), [&stem](const auto& p) { return p.first == stem; });
+			if (it == stems.end())
+				stems.emplace_back(stem, static_cast<s64>(fd.ModificationTime));
+			else
+				it->second = std::max(it->second, static_cast<s64>(fd.ModificationTime));
+		}
+
+		// The current identity always stays, then the most recently used others.
+		std::sort(stems.begin(), stems.end(), [&current_stem](const auto& a, const auto& b) {
+			if ((a.first == current_stem) != (b.first == current_stem))
+				return a.first == current_stem;
+			return a.second > b.second;
+		});
+		u32 removed = 0;
+		for (size_t i = keep; i < stems.size(); i++)
+		{
+			for (const FILESYSTEM_FIND_DATA& fd : files)
+			{
+				const std::string_view name = Path::GetFileName(fd.FileName);
+				if (name.substr(0, name.find('.')) == stems[i].first)
+				{
+					Console.WriteLn("GS cache: removing '%s', left by another build or driver", fd.FileName.c_str());
+					removed += FileSystem::DeleteFilePath(fd.FileName.c_str()) ? 1 : 0;
+				}
+			}
+		}
 		return removed;
 	}
 } // namespace GSCacheFile

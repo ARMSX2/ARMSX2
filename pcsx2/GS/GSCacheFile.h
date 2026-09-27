@@ -86,10 +86,22 @@ namespace GSCacheFile
 	};
 	const char* ReadResultString(ReadResult result);
 
-	/// Writes to a temporary file beside `path` and renames it over `path`. No fsync: a power cut
-	/// can at worst leave a short or empty file, which the reader's checksum rejects, and an fsync
-	/// can stall the GS thread for hundreds of milliseconds on phone flash.
+	/// Writes to a temporary file beside `path`, named for this process, and renames it over `path`.
+	/// No fsync: a power cut can at worst leave a short or empty file, which the reader's checksum
+	/// rejects, and an fsync can stall the GS thread for hundreds of milliseconds on phone flash.
 	bool WriteFileAtomic(const std::string& path, const void* data, size_t size);
+
+	/// Deletes temporary files a killed write left in `dir`: those whose process is gone, or a day old.
+	u32 CleanStaleTempFiles(const std::string& dir);
+
+	/// The first eight hex digits of a stamp's digest, for file names. A build- or driver-stamped
+	/// file carries it, so two builds sharing a data root (a stable and a nightly install) each keep
+	/// their own file instead of discarding each other's at every start.
+	std::string ShortName(const Digest& digest);
+
+	/// Deletes the files in `dir` whose names start with `prefix`, grouped by stem (the name up to the
+	/// first '.'), except `current_stem` and the `keep - 1` other stems used most recently.
+	u32 PruneOtherIdentities(const std::string& dir, std::string_view prefix, std::string_view current_stem, u32 keep);
 
 	/// A whole file: header, then one payload covered by one checksum.
 	bool WriteFramedFile(const std::string& path, Kind kind, const Stamp& stamp, const void* data, size_t size);
@@ -113,7 +125,9 @@ namespace GSCacheFile
 	///
 	/// One process writes at a time, enforced with a lock on the index. Another process that finds
 	/// it locked reads what is there and writes nothing: two writers appending to one pair could
-	/// point an entry at the other's data.
+	/// point an entry at the other's data. Where there is no lock to take (a libretro frontend's
+	/// file system, a mount without locks) the store is used unlocked; the checksums still keep a
+	/// mixed-up entry from reaching the driver.
 	class BlobStore
 	{
 	public:
@@ -140,11 +154,14 @@ namespace GSCacheFile
 		bool Open(const std::string& base_path, Kind kind, const Stamp& stamp, u32 key_size,
 			u64 max_data_size = DEFAULT_MAX_DATA_SIZE);
 		void Close();
-		/// Deletes both files and starts an empty store under the same stamp.
+		/// Empties the store under the same stamp, in place, keeping the lock.
 		bool Recreate();
 
 		bool IsOpen() const { return m_index_file != nullptr; }
-		bool IsWritable() const { return IsOpen() && !m_read_only; }
+		/// False when another process holds the store, or after an append failed this session.
+		bool IsWritable() const;
+		const std::string& GetBasePath() const { return m_base_path; }
+		bool OwnsPath(const std::string& path) const;
 		const OpenInfo& GetOpenInfo() const { return m_open_info; }
 		size_t GetEntryCount() const;
 
@@ -167,7 +184,7 @@ namespace GSCacheFile
 
 		bool CreateNew();
 		bool ReadExisting();
-		bool LockIndex();
+		bool ResetFiles();
 		void CloseFiles();
 		size_t GetEntrySize() const { return m_key_size + 32; }
 
@@ -181,6 +198,7 @@ namespace GSCacheFile
 		std::FILE* m_index_file = nullptr;
 		std::FILE* m_data_file = nullptr;
 		bool m_read_only = false;
+		bool m_write_failed = false;
 		OpenInfo m_open_info;
 		u32 m_bad_data = 0;
 
@@ -188,8 +206,9 @@ namespace GSCacheFile
 		std::unordered_map<std::string, Entry> m_entries;
 	};
 
-	/// Deletes every GS shader and pipeline cache file under `cache_dir`. Returns how many files went.
-	/// Safe while nothing has them open; on POSIX also safe while a renderer does, which keeps
-	/// writing to the unlinked files until it closes them.
+	/// Deletes every GS shader and pipeline cache file under `cache_dir`. A store that is open in this
+	/// process is emptied in place instead, so it keeps its lock and never writes to a deleted file.
+	/// Must run where nothing else writes the other caches: on the GS thread while it runs (see
+	/// GSClearShaderCache). Returns how many files were removed or emptied.
 	u32 DeleteAll(const std::string& cache_dir);
 } // namespace GSCacheFile

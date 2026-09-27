@@ -110,3 +110,20 @@ target_link_libraries(gs_sw_palette_block_copy_jit_tests PUBLIC
 	PCSX2
 	common
 )
+
+# The GS cache store under a host file system (the libretro core's VFS). Its own binary: a host file
+# system is installed once per process, and would change every other test's files.
+if(UNIX)
+	add_pcsx2_test(gs_cache_file_vfs_tests
+		${CMAKE_CURRENT_SOURCE_DIR}/../StubHost.cpp
+		gs_cache_file_vfs_tests.cpp
+	)
+	target_include_directories(gs_cache_file_vfs_tests PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR}/../../../../pcsx2
+	)
+	target_link_libraries(gs_cache_file_vfs_tests PUBLIC
+		PCSX2_FLAGS
+		PCSX2
+		common
+	)
+endif()
