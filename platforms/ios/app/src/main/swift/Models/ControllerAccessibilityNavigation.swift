@@ -3342,6 +3342,11 @@ private struct ControllerAccessibilityNavigationModifier: ViewModifier {
             .onChange(of: controllerInput?.isMenuActive) { _, _ in
                 updateRegistration()
             }
+            // A touch drops every session, and a screen that keeps its router
+            // gets no other signal when the pad takes over again.
+            .onChange(of: controllerInput?.isControllerNavigationEnabled) { _, enabled in
+                if enabled == true { updateRegistration() }
+            }
             .onChange(of: controllerInput?.focusReleaseSequence) { _, _ in
                 // Analog begin/end is delivered synchronously to its owner.
                 // A delayed SwiftUI observation must not hide a newer focus.
