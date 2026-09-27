@@ -70,8 +70,10 @@ import com.armsx2.ui.settings.RendererTab
 import com.armsx2.ui.settings.SegmentedRow
 import com.armsx2.ui.settings.SkinsTab
 import com.armsx2.ui.settings.LocalSettingsScrollState
+import com.armsx2.ui.settings.LocalSettingsSearchTarget
 
 private data class SettingsSection(val category: SettingsCategory, val titleKey: String, val glyph: String)
+private data class PendingSettingsJump(val category: SettingsCategory, val label: String)
 
 /**
  * Lets L1/R1 flick between settings tabs, the way the old Refresh UI did.
@@ -123,11 +125,11 @@ fun SettingsScreen(
     var showReset by remember { mutableStateOf(false) }
     // Settings-search "jump to control": holds the resolved label of the target row while the
     // freshly-switched tab composes + lays out, then selects it (highlight + scroll into view).
-    var pendingJump by remember { mutableStateOf<String?>(null) }
+    var pendingJump by remember { mutableStateOf<PendingSettingsJump?>(null) }
     val openSearch = {
         SettingsSearch.open { category, label ->
             viewModel.selectCategory(category)
-            pendingJump = label
+            pendingJump = PendingSettingsJump(category, label)
         }
     }
     val screenScroll = rememberScrollState(initial = SettingsScrollMemory.lastOffset)
@@ -154,24 +156,25 @@ fun SettingsScreen(
             screenScroll.animateScrollTo(0)
         }
     }
-    // Search-jump: after selectCategory swaps the tab, retry selecting the target row until its
-    // tab has composed + registered (rows self-register via controllerFocusable); the row's own
-    // bringIntoView then scrolls it on-screen and draws the focus ring.
-    LaunchedEffect(pendingJump) {
-        val anchor = pendingJump ?: return@LaunchedEffect
-        var tries = 0
-        while (tries < 40 && !com.armsx2.ui.settings.SettingsControllerNav.selectByLabel(anchor)) {
-            kotlinx.coroutines.delay(25)
-            tries++
-        }
-        pendingJump = null
-    }
     val ui = viewModel.uiState.value
     val contentReady = ui.game?.uri?.toString() == scopeGame?.uri?.toString()
     val displayedCategory = if (scopeGame != null && ui.category == SettingsCategory.General) {
         SettingsCategory.Performance
     } else {
         ui.category
+    }
+    // Wait for the destination tab, not merely for a row with the same label in the old tab.
+    // Collapsed sections expose their rows during this jump and open only the matching section;
+    // after it expands, the row's bringIntoView places the selected control on-screen.
+    LaunchedEffect(pendingJump, displayedCategory, contentReady) {
+        val jump = pendingJump ?: return@LaunchedEffect
+        if (!contentReady || displayedCategory != jump.category) return@LaunchedEffect
+        var tries = 0
+        while (tries < 40 && !com.armsx2.ui.settings.SettingsControllerNav.selectByLabel(jump.label)) {
+            kotlinx.coroutines.delay(25)
+            tries++
+        }
+        pendingJump = null
     }
 
     // L1/R1 tab cycling — registered only while this screen is composed. The visible-tab
@@ -267,7 +270,12 @@ fun SettingsScreen(
                         },
                     )
                     Spacer(Modifier.height(10.dp))
-                    SettingsPanel(displayedCategory, viewModel, Modifier.fillMaxWidth())
+                    CompositionLocalProvider(
+                        LocalSettingsSearchTarget provides pendingJump
+                            ?.takeIf { it.category == displayedCategory }?.label,
+                    ) {
+                        SettingsPanel(displayedCategory, viewModel, Modifier.fillMaxWidth())
+                    }
                     Spacer(Modifier.height(16.dp))
                 }
             }
