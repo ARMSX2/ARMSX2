@@ -1105,7 +1105,6 @@ struct SettingsRootView: View {
             ] : [],
             // Long lazy Lists use the ordered target graph without asking
             // UIKit to rebuild focus environments for every mounted row.
-            usesNativeFocusEngine: false,
             // Every root row has one explicit full-row target. Do not also
             // synthesize a second focusable UIControl through the global Button
             // style while the large Settings List is mounting.

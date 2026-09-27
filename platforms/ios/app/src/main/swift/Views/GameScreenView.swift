@@ -2762,7 +2762,6 @@ private struct RuntimeDiscSwapPanel: View {
                     onClose()
                     return true
                 },
-                usesNativeFocusEngine: false,
                 usesExplicitTargetGeometryOnly: true,
                 focusScrollBehavior: .maintainWithinViewport,
                 preferredInitialFocusLabel: "runtime.disc.eject",
@@ -3179,7 +3178,6 @@ private struct SaveStatesPanel: View {
             // left-stick diagonals continue vertically; explicit Left/Right
             // links still move between Load and Overwrite.
             confinesHorizontalFocusMovement: true,
-            usesNativeFocusEngine: false,
             usesExplicitTargetGeometryOnly: true,
             preferredInitialFocusLabel: preferredControllerTargetID
         )
@@ -3429,7 +3427,6 @@ private struct SpeedControlPanel: View {
                 return true
             },
             confinesHorizontalFocusMovement: true,
-            usesNativeFocusEngine: false,
             usesExplicitTargetGeometryOnly: true,
             focusScrollBehavior: .maintainWithinViewport,
             preferredInitialFocusLabel: "runtime.speed.fast-forward",

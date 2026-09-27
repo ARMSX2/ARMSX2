@@ -72,7 +72,6 @@ private struct ShaderPackInstallOptionsView: View {
                     dismiss()
                     return true
                 },
-                usesNativeFocusEngine: false,
                 usesExplicitTargetGeometryOnly: true,
                 preferredInitialFocusLabel: targetOrder.first,
                 declaredTargetOrder: targetOrder

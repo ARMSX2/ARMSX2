@@ -501,7 +501,6 @@ private struct GamepadLinkedSettingsSheet: View {
                 close()
                 return true
             },
-            usesNativeFocusEngine: false,
             usesExplicitTargetGeometryOnly: true,
             preservesFocusDuringRightStickScrolling: false,
             focusScrollBehavior: .maintainWithinViewport,

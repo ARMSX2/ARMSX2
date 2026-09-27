@@ -132,7 +132,6 @@ struct ShaderCatalogBrowserView: View {
                 dismiss()
                 return true
             },
-            usesNativeFocusEngine: false,
             usesExplicitTargetGeometryOnly: true,
             focusScrollBehavior: .maintainWithinViewport,
             focusTopAlignmentMargin: 20,

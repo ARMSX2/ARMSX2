@@ -417,12 +417,11 @@ extension EnvironmentValues {
 /// aggregate valueChangedHandler.
 @MainActor
 @Observable
-final class MenuControllerInputRouter: @unchecked Sendable {
+final class MenuControllerInputRouter {
     private struct NavigationSessionTarget {
         let scopeKey: String
         let priority: Int
         let registrationOrder: UInt64
-        let usesNativeFocusEngine: Bool
         var isReady: Bool
         var scrollWindow: UIWindow?
         var scrollFocusFrame: CGRect?
@@ -618,7 +617,6 @@ final class MenuControllerInputRouter: @unchecked Sendable {
         launchInputInterceptor = nil
         cancelEmulationShortcutInput()
         cancelThemePresetRepeats()
-        ControllerEventDeliveryCoordinator.shared.setNativeFocusAuthorized(false)
         pendingNavigationSessionCommands.removeAll(keepingCapacity: false)
         updateNavigationCaptureState()
         registeredExtendedProfiles.removeAll(keepingCapacity: false)
@@ -635,7 +633,6 @@ final class MenuControllerInputRouter: @unchecked Sendable {
         ControllerEventDeliveryCoordinator.shared.setMenuActive(active)
         guard active != isMenuActive else { return }
         isMenuActive = active
-        updateControllerDeliveryPreference()
         cancelRepeat()
         cancelThemePresetRepeats()
         cancelDirectionSampling()
@@ -658,7 +655,6 @@ final class MenuControllerInputRouter: @unchecked Sendable {
             navigationSessionEntryTask?.cancel()
             navigationSessionEntryTask = nil
             pendingNavigationSessionEntryRequest = nil
-            ControllerEventDeliveryCoordinator.shared.setNativeFocusAuthorized(false)
             pendingNavigationSessionCommands.removeAll(keepingCapacity: true)
             hasNavigationSession = false
             updateNavigationCaptureState()
@@ -687,7 +683,6 @@ final class MenuControllerInputRouter: @unchecked Sendable {
         pressedFaceButton = nil
         updateRightStick(x: 0, y: 0)
         refreshConnectedControllers()
-        updateControllerDeliveryPreference()
         updateNavigationCaptureState()
         schedulePendingNavigationSessionEntryIfReady()
     }
@@ -708,7 +703,6 @@ final class MenuControllerInputRouter: @unchecked Sendable {
             manualNavigationCaptures.removeValue(forKey: owner)
         }
         manuallyCapturedNavigation = !manualNavigationCaptures.isEmpty
-        updateControllerDeliveryPreference()
         updateNavigationCaptureState()
         activeRightStickTargetID = nil
         dispatchRightStickVector()
@@ -819,7 +813,6 @@ final class MenuControllerInputRouter: @unchecked Sendable {
         rightStickVector = .zero
         rightStickHoldStartTime = nil
         finishRightStickScrolling()
-        ControllerEventDeliveryCoordinator.shared.setNativeFocusAuthorized(false)
         feedbackPlayer.releaseControllerResources()
         requestFocusRelease()
         tabBarOrbFocusFrameInWindow = nil
@@ -836,7 +829,6 @@ final class MenuControllerInputRouter: @unchecked Sendable {
         hasNavigationSession = !navigationSessions.isEmpty
         updateNavigationCaptureState()
         feedbackPlayer.attach(to: GCController.controllers())
-        updateControllerDeliveryPreference()
     }
 
     private func retireControllerNavigationResourcesAfterHandoff() {
@@ -858,7 +850,6 @@ final class MenuControllerInputRouter: @unchecked Sendable {
             self.rightStickTargets.removeAll(keepingCapacity: false)
             self.activeRightStickTargetID = nil
             self.updateNavigationCaptureState()
-            self.updateControllerDeliveryPreference()
         }
     }
 
@@ -898,7 +889,6 @@ final class MenuControllerInputRouter: @unchecked Sendable {
         id: UUID,
         scopeKey: String,
         priority: Int,
-        usesNativeFocusEngine: Bool,
         isReady: Bool,
         handler: @escaping @MainActor (MenuControllerCommand) -> Bool,
         entryHandler: @escaping @MainActor (Bool) -> Bool = { _ in false },
@@ -928,7 +918,6 @@ final class MenuControllerInputRouter: @unchecked Sendable {
             scopeKey: scopeKey,
             priority: priority,
             registrationOrder: order,
-            usesNativeFocusEngine: usesNativeFocusEngine,
             isReady: isReady,
             scrollWindow: navigationSessions[id]?.scrollWindow,
             scrollFocusFrame: navigationSessions[id]?.scrollFocusFrame,
@@ -945,7 +934,6 @@ final class MenuControllerInputRouter: @unchecked Sendable {
         // while the persistent tab bar still owns controller focus; changing
         // zones here makes the next Down press enter the first lazy row.
         // `requestNavigationSessionEntry` is the sole content-entry owner.
-        updateControllerDeliveryPreference()
         if scopeChanged, !rightStickVector.isZero { scheduleRightStickRedispatch() }
     }
 
@@ -954,7 +942,6 @@ final class MenuControllerInputRouter: @unchecked Sendable {
               target.isReady != isReady else { return }
         target.isReady = isReady
         navigationSessions[id] = target
-        updateControllerDeliveryPreference()
         updateNavigationCaptureState()
         schedulePendingNavigationSessionCommandIfReady(id: id)
         schedulePendingNavigationSessionEntryIfReady()
@@ -1020,7 +1007,6 @@ final class MenuControllerInputRouter: @unchecked Sendable {
         }
         pendingNavigationSessionCommands.removeValue(forKey: id)
         hasNavigationSession = !navigationSessions.isEmpty
-        updateControllerDeliveryPreference()
         updateNavigationCaptureState()
         activeRightStickTargetID = nil
         scheduleRightStickRedispatch()
@@ -1057,7 +1043,6 @@ final class MenuControllerInputRouter: @unchecked Sendable {
             pendingTabBarOrbSourceFrame = nil
         }
         navigationZone = zone
-        updateControllerDeliveryPreference()
         activeRightStickTargetID = nil
         dispatchRightStickVector()
     }
@@ -1230,7 +1215,6 @@ final class MenuControllerInputRouter: @unchecked Sendable {
         lastDirectionEdges.removeAll(keepingCapacity: true)
         pressedButtons.removeAll(keepingCapacity: true)
         pressedFaceButton = nil
-        updateControllerDeliveryPreference()
     }
 
     func suppressesLibraryEvent(_ event: MenuControllerInputEvent) -> Bool {
@@ -1421,9 +1405,6 @@ final class MenuControllerInputRouter: @unchecked Sendable {
 
         if isDirectionalElement(element, of: gamepad.dpad)
             || isDirectionalElement(element, of: gamepad.leftThumbstick) {
-            if ControllerEventDeliveryCoordinator.shared.nativeFocusEnabled {
-                return
-            }
             scheduleDirectionUpdate(gamepad, profileID: profileID)
             return
         }
@@ -1437,14 +1418,8 @@ final class MenuControllerInputRouter: @unchecked Sendable {
         }
 
         if element === gamepad.buttonA {
-            if ControllerEventDeliveryCoordinator.shared.nativeFocusEnabled {
-                return
-            }
             updateButton(.primary, pressed: gamepad.buttonA.isPressed, command: .activate, profileID: profileID)
         } else if element === gamepad.buttonB {
-            if ControllerEventDeliveryCoordinator.shared.nativeFocusEnabled {
-                return
-            }
             updateButton(.secondary, pressed: gamepad.buttonB.isPressed, command: .back, profileID: profileID)
         } else if element === gamepad.buttonX {
             updateButton(.favorite, pressed: gamepad.buttonX.isPressed, command: .toggleFavorite, profileID: profileID)
@@ -1576,19 +1551,10 @@ final class MenuControllerInputRouter: @unchecked Sendable {
         let profileID = ObjectIdentifier(gamepad)
 
         if isDirectionalElement(element, of: gamepad.dpad) {
-            if ControllerEventDeliveryCoordinator.shared.nativeFocusEnabled {
-                return
-            }
             scheduleDirectionUpdate(gamepad, profileID: profileID)
         } else if element === gamepad.buttonA {
-            if ControllerEventDeliveryCoordinator.shared.nativeFocusEnabled {
-                return
-            }
             updateButton(.primary, pressed: gamepad.buttonA.isPressed, command: .activate, profileID: profileID)
         } else if element === gamepad.buttonX {
-            if ControllerEventDeliveryCoordinator.shared.nativeFocusEnabled {
-                return
-            }
             updateButton(.secondary, pressed: gamepad.buttonX.isPressed, command: .back, profileID: profileID)
         }
     }
@@ -2117,38 +2083,12 @@ final class MenuControllerInputRouter: @unchecked Sendable {
         return CGFloat(1 + (2.25 * eased))
     }
 
-    func handleNativeBackPress() -> Bool {
-        guard isMenuActive else { return false }
-        emit(.back)
-        return true
-    }
-
     /// Keyboard arrows arrive through UIKit instead of a GCController profile.
     /// Route them into the same graph while custom navigation owns the menu;
     /// controller-originated UIKit duplicates are consumed by the event host.
     func handleKeyboardDirectionalPress(_ command: MenuControllerCommand) {
-        guard isMenuActive,
-              command.isSpatialDirection,
-              !ControllerEventDeliveryCoordinator.shared.nativeFocusEnabled
-        else {
-            return
-        }
+        guard isMenuActive, command.isSpatialDirection else { return }
         emit(command)
-    }
-
-    private func updateControllerDeliveryPreference() {
-        let foregroundSession = frontmostNavigationSessionEntry?.value
-        let nativeFocusOwnerIsReady = isMenuActive
-            && isControllerNavigationEnabled
-            && activeNavigationInputMode == .controller
-            && launchInputInterceptor == nil
-            && frontmostManualNavigationCapture == nil
-            && navigationZone != .tabBar
-            && foregroundSession?.usesNativeFocusEngine == true
-            && foregroundSession?.isReady == true
-        ControllerEventDeliveryCoordinator.shared.setNativeFocusAuthorized(
-            nativeFocusOwnerIsReady
-        )
     }
 
     private func normalizedRightStickAxis(_ value: Float) -> Float {
@@ -2474,10 +2414,7 @@ private final class MenuControllerGlobalScrollDriver {
     private func resolveScrollView(
         for vector: MenuControllerScrollVector
     ) -> UIScrollView? {
-        let scenes = UIApplication.shared.connectedScenes.compactMap {
-            $0 as? UIWindowScene
-        }
-        let windows = scenes.flatMap(\.windows)
+        let windows = (UIApplication.shared.appWindowScene?.windows ?? [])
             .filter { !$0.isHidden && $0.alpha >= 0.01 }
             .sorted { lhs, rhs in
                 if lhs.isKeyWindow != rhs.isKeyWindow {

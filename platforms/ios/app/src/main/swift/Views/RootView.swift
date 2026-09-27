@@ -675,7 +675,8 @@ struct RootView: View {
                 observesTouchActions:
                     !menuControllerInput.isControllerNavigationEnabled,
                 blocksUnderlyingTouches:
-                    menuControllerInput.isControllerNavigationEnabled
+                    menuControllerInput.isMenuActive
+                        && menuControllerInput.isControllerNavigationEnabled
                         && menuControllerInput.pendingNavigationModeSwitchRequest == nil
                         && frameRates.asksBeforeTouchNavigation,
                 onTouch: {
