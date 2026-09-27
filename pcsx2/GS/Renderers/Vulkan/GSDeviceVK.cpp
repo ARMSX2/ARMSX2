@@ -3329,12 +3329,16 @@ GSDevice::PresentResult GSDeviceVK::DoBeginPresent(bool frame_skip)
 		vkCmdEndQuery(m_current_command_buffer, m_pipeline_statistics_query_pool, m_current_frame);
 	}
 
+	// SUBOPTIMAL is a success: the image is acquired and presentable. Adreno returns it when the
+	// compositor changes state (the touch overlay redrawing), and rebuilding the swap chain for it
+	// blanks the window. Rebuilding would not clear it either, since preTransform stays identity.
+	// Real size changes arrive as a host resize, an Android surface change, or OUT_OF_DATE.
 	VkResult res = m_resize_requested ? VK_ERROR_OUT_OF_DATE_KHR : m_swap_chain->AcquireNextImage();
-	if (res != VK_SUCCESS)
+	if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
 	{
 		m_swap_chain->ReleaseCurrentImage();
 
-		if (res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_OUT_OF_DATE_KHR)
+		if (res == VK_ERROR_OUT_OF_DATE_KHR)
 		{
 			ResizeWindow(0, 0, m_window_info.surface_scale);
 			ImGuiManager::WindowResized();
@@ -6839,7 +6843,7 @@ void GSDeviceVK::RenderImGui()
 void GSDeviceVK::RenderBlankFrame()
 {
 	VkResult res = m_swap_chain->AcquireNextImage();
-	if (res != VK_SUCCESS)
+	if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
 	{
 		Console.Error("VK: Failed to acquire image for blank frame present");
 		return;
