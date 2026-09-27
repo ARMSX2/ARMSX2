@@ -512,6 +512,7 @@ endif()
 
 set(pcsx2GSSources
 	GS/GS.cpp
+	GS/GSCacheFile.cpp
 	GS/GSClut.cpp
 	GS/GSDrawingContext.cpp
 	GS/GSDrawingEnvironment.cpp
@@ -560,6 +561,7 @@ set(pcsx2GSHeaders
 	GS/GSAlignedClass.h
 	GS/GSBlock.h
 	GS/GSBackQueue.h
+	GS/GSCacheFile.h
 	GS/GSClut.h
 	GS/GSCompileStats.h
 	GS/GSDrawingContext.h
@@ -1519,6 +1521,40 @@ if(ARMSX2_EMBED_RESOURCES)
 		EmbeddedResources.h)
 	target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_EMBEDDED_RESOURCES)
 endif()
+
+# The GS caches' build identity: a hash of the GS code and the shader sources, recomputed whenever
+# one of them changes (see cmake/GSCacheBuildId.cmake). The file list goes through a file for the
+# same reason as the embedded resources' list.
+set(ARMSX2_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
+file(GLOB_RECURSE ARMSX2_GS_CACHE_ID_INPUTS CONFIGURE_DEPENDS
+	"${ARMSX2_REPO_ROOT}/pcsx2/GS/*"
+	"${ARMSX2_REPO_ROOT}/bin/resources/shaders/*")
+list(APPEND ARMSX2_GS_CACHE_ID_INPUTS "${ARMSX2_REPO_ROOT}/pcsx2/ShaderCacheVersion.h")
+list(SORT ARMSX2_GS_CACHE_ID_INPUTS)
+set(ARMSX2_GS_CACHE_ID_REL "")
+foreach(f IN LISTS ARMSX2_GS_CACHE_ID_INPUTS)
+	file(RELATIVE_PATH rel "${ARMSX2_REPO_ROOT}" "${f}")
+	string(APPEND ARMSX2_GS_CACHE_ID_REL "${rel}\n")
+endforeach()
+set(ARMSX2_GS_CACHE_ID_DIR "${CMAKE_CURRENT_BINARY_DIR}/gs_cache_id")
+file(WRITE "${ARMSX2_GS_CACHE_ID_DIR}/inputs.list.tmp" "${ARMSX2_GS_CACHE_ID_REL}")
+configure_file("${ARMSX2_GS_CACHE_ID_DIR}/inputs.list.tmp" "${ARMSX2_GS_CACHE_ID_DIR}/inputs.list" COPYONLY)
+add_custom_command(
+	OUTPUT "${ARMSX2_GS_CACHE_ID_DIR}/gs_cache_build_id.h"
+	COMMAND ${CMAKE_COMMAND}
+		-DOUT=${ARMSX2_GS_CACHE_ID_DIR}/gs_cache_build_id.h
+		-DROOT=${ARMSX2_REPO_ROOT}
+		-DLIST=${ARMSX2_GS_CACHE_ID_DIR}/inputs.list
+		-P "${ARMSX2_REPO_ROOT}/cmake/GSCacheBuildId.cmake"
+	DEPENDS ${ARMSX2_GS_CACHE_ID_INPUTS}
+		"${ARMSX2_GS_CACHE_ID_DIR}/inputs.list"
+		"${ARMSX2_REPO_ROOT}/cmake/GSCacheBuildId.cmake"
+	COMMENT "Hashing the GS sources for the shader cache identity"
+	VERBATIM)
+target_sources(PCSX2 PRIVATE "${ARMSX2_GS_CACHE_ID_DIR}/gs_cache_build_id.h")
+set_source_files_properties(GS/GSCacheFile.cpp PROPERTIES
+	OBJECT_DEPENDS "${ARMSX2_GS_CACHE_ID_DIR}/gs_cache_build_id.h"
+	INCLUDE_DIRECTORIES "${ARMSX2_GS_CACHE_ID_DIR}")
 
 # common Sources
 target_sources(PCSX2 PRIVATE
