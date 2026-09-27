@@ -1646,7 +1646,7 @@ final class SettingsStore {
             )
         }
     }
-    var hideMenuStatusBar: Bool = true {
+    var hideMenuStatusBar: Bool = false {
         didSet {
             UserDefaults.standard.set(
                 hideMenuStatusBar,
@@ -2349,7 +2349,7 @@ final class SettingsStore {
         ) as? Bool ?? true
         hideMenuStatusBar = UserDefaults.standard.object(
             forKey: "ARMSX2iOSHideMenuStatusBar"
-        ) as? Bool ?? true
+        ) as? Bool ?? false
         focusOrbsEnabled = UserDefaults.standard.object(
             forKey: "ARMSX2iOSFocusOrbsEnabled"
         ) as? Bool ?? false
