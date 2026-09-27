@@ -360,6 +360,8 @@ final class ThemeGalleryStore {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var customDraftPersistenceTask:
         Task<Void, Never>?
+    // Entries this build cannot decode, kept as stored so a build that can still has them.
+    @ObservationIgnored private var undecodableThemes: [Any]
     private static let themesKey = "ARMSX2iOSSavedAppearanceThemesV1"
     private static let draftKey = "ARMSX2iOSCustomAppearanceDraftV1"
     private static let activeSavedThemeKey =
@@ -367,9 +369,22 @@ final class ThemeGalleryStore {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        themes = defaults.data(forKey: Self.themesKey).flatMap {
-            try? JSONDecoder().decode([SavedAppearanceTheme].self, from: $0)
+        let storedThemes = defaults.data(forKey: Self.themesKey).flatMap {
+            try? JSONSerialization.jsonObject(with: $0) as? [Any]
         } ?? []
+        var decodedThemes: [SavedAppearanceTheme] = []
+        var undecodable: [Any] = []
+        for entry in storedThemes {
+            if let object = entry as? [String: Any],
+               let data = try? JSONSerialization.data(withJSONObject: object),
+               let theme = try? JSONDecoder().decode(SavedAppearanceTheme.self, from: data) {
+                decodedThemes.append(theme)
+            } else {
+                undecodable.append(entry)
+            }
+        }
+        themes = decodedThemes
+        undecodableThemes = undecodable
         customDraft = defaults.data(forKey: Self.draftKey).flatMap {
             try? JSONDecoder().decode(AppearanceThemeSnapshot.self, from: $0)
         }
@@ -563,18 +578,40 @@ final class ThemeGalleryStore {
             snapshot: AppearanceThemeSnapshot(settings: settings)
         )
         let updated = themes + [theme]
-        guard let data = try? JSONEncoder().encode(updated) else { return false }
-        defaults.set(data, forKey: Self.themesKey)
+        guard persistThemes(updated) else { return false }
         themes = updated
         preserveCustomTheme(settings)
         setActiveSavedTheme(theme.id)
         return true
     }
 
+    // The widest slider is the descriptor seed at 100_000. Past that, or not finite, a
+    // value only reaches Int conversions that trap on every launch.
+    private static func numbersAreInRange(_ value: Any?) -> Bool {
+        switch value {
+        case let number as NSNumber:
+            return number.doubleValue.isFinite && abs(number.doubleValue) <= 100_000
+        case let array as [Any]:
+            return array.allSatisfy { numbersAreInRange($0) }
+        case let object as [String: Any]:
+            return object.values.allSatisfy { numbersAreInRange($0) }
+        default:
+            return true
+        }
+    }
+
+    private func persistThemes(_ updated: [SavedAppearanceTheme]) -> Bool {
+        guard let encoded = try? JSONEncoder().encode(updated),
+              let entries = try? JSONSerialization.jsonObject(with: encoded) as? [Any],
+              let data = try? JSONSerialization.data(withJSONObject: entries + undecodableThemes)
+        else { return false }
+        defaults.set(data, forKey: Self.themesKey)
+        return true
+    }
+
     func remove(_ id: UUID) {
         let updated = themes.filter { $0.id != id }
-        guard let data = try? JSONEncoder().encode(updated) else { return }
-        defaults.set(data, forKey: Self.themesKey)
+        guard persistThemes(updated) else { return }
         themes = updated
         if activeSavedThemeID == id {
             clearActiveSavedTheme()
@@ -616,7 +653,8 @@ final class ThemeGalleryStore {
         }
 
         let data = try Data(contentsOf: url)
-        guard let document = try? JSONDecoder().decode(
+        guard Self.numbersAreInRange(try? JSONSerialization.jsonObject(with: data)),
+              let document = try? JSONDecoder().decode(
             AppearanceThemeTransferDocument.self,
             from: data
         ), document.format == AppearanceThemeTransferDocument.format else {
@@ -636,10 +674,9 @@ final class ThemeGalleryStore {
             snapshot: document.snapshot
         )
         let updated = themes + [imported]
-        guard let encoded = try? JSONEncoder().encode(updated) else {
+        guard persistThemes(updated) else {
             throw AppearanceThemeTransferError.couldNotSave
         }
-        defaults.set(encoded, forKey: Self.themesKey)
         themes = updated
         settings.markAppearanceUserModified()
         imported.snapshot.restore(to: settings)

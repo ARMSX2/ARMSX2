@@ -4099,7 +4099,7 @@ struct PlayStation3XMBByMartBackground: View {
 
   @ViewBuilder
   var body: some View {
-    if usesPlayStation4PaletteBackdrop {
+    if theme.usesPlayStation4PaletteBackdrop {
       ZStack {
         PlayStation4WavesBackground(theme: theme, showsWaves: false)
           .dynamicWallpaperSwiftUIRenderSurface(opaque: true)
@@ -4127,9 +4127,14 @@ struct PlayStation3XMBByMartBackground: View {
   private var settings: PlayStation3XMBSettings {
     theme.particleSettings.playStation3XMB
   }
+}
 
-  private var usesPlayStation4PaletteBackdrop: Bool {
-    settings.gradientPreset == .theme && theme.usesDynamicSharedPalette
+extension DynamicBackgroundTheme {
+  /// Mart's XMB draws the PS4 waves behind itself for a theme gradient on a
+  /// shared palette, and that backdrop does not blend a palette change.
+  var usesPlayStation4PaletteBackdrop: Bool {
+    particleSettings.playStation3XMB.gradientPreset == .theme
+      && usesDynamicSharedPalette
   }
 }
 
