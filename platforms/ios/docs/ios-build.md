@@ -65,6 +65,10 @@ The IPA is written to:
 build-ios-xcode/ARMSX2-iOS-unsigned.ipa
 ```
 
+For a quicker development build, `./scripts/build-ios-ipa.sh --fast` turns off
+PCSX2 core LTO and compiles the Swift UI at `-Onone`. It builds in
+`build-ios-fast-xcode` and writes `ARMSX2-iOS-development.ipa` there.
+
 ## Automatic Signing
 
 If you have an Apple developer team and want Xcode automatic signing, regenerate
