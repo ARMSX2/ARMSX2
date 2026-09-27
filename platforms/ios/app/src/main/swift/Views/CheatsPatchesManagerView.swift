@@ -209,6 +209,15 @@ struct CheatsPatchesManagerView: View {
                 guard let event else { return }
                 handleControllerCommand(event)
             }
+            // A touch drops the capture, so take it back when the pad returns.
+            .onChange(of: controllerInput?.isControllerNavigationEnabled) { _, enabled in
+                guard enabled == true else { return }
+                controllerInput?.setNavigationCaptured(
+                    true,
+                    owner: MenuControllerNavigationCaptureOwner.cheatsPatchesManager,
+                    priority: 500
+                )
+            }
             .sheet(isPresented: $showImportPicker) {
                 ImportDocumentPicker(
                     allowedContentTypes: FileImportHandler.pnachContentTypes,
