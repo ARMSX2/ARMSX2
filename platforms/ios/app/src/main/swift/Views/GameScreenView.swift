@@ -1704,7 +1704,7 @@ struct GameScreenView: View {
         runtimeControllerSkinCatalogTask?.cancel()
         runtimeControllerSkinCatalogTask = Task { @MainActor in
             let refreshed = await AutomaticCustomSkinManager.shared
-                .downloadAvailableProposals(forSerial: serial)
+                .catalogProposals(forSerial: serial)
             guard !Task.isCancelled,
                   overlayRoute == .pausedPresenting(.controllerSkin),
                   !refreshed.isEmpty else { return }
@@ -1734,7 +1734,23 @@ struct GameScreenView: View {
     }
 
     private func applyRuntimeControllerSkinSelection() {
-        guard let proposal = selectedRuntimeControllerSkinProposal,
+        guard let picked = selectedRuntimeControllerSkinProposal,
+              picked.isCatalogListing else {
+            applyRuntimeControllerSkin(selectedRuntimeControllerSkinProposal)
+            return
+        }
+        // A listed catalog skin downloads now that it is picked.
+        runtimeControllerSkinCatalogTask?.cancel()
+        runtimeControllerSkinCatalogTask = Task { @MainActor in
+            let installed = await AutomaticCustomSkinManager.shared
+                .installIfNeeded(picked)
+            guard !Task.isCancelled else { return }
+            applyRuntimeControllerSkin(installed ?? picked)
+        }
+    }
+
+    private func applyRuntimeControllerSkin(_ proposal: AutomaticCustomSkinProposal?) {
+        guard let proposal,
               let descriptor = skinLibrary.descriptor(id: proposal.skinID)
         else {
             presentImportantStatusMessage(
