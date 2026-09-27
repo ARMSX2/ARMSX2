@@ -366,6 +366,7 @@
     <ClCompile Include="GS\GSRingHeap.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSRasterizer.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSRenderer.cpp" />
+    <ClCompile Include="GS\Renderers\HW\GSLineRuns.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSRendererHW.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSRendererHWMultiISA.cpp" />
     <ClCompile Include="GS\Renderers\Null\GSRendererNull.cpp" />
@@ -863,6 +864,7 @@
     <ClInclude Include="GS\Renderers\HW\GSDepthCoverage.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawAlphaMask.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h" />
+    <ClInclude Include="GS\Renderers\HW\GSLineRuns.h" />
     <ClInclude Include="GS\Renderers\HW\GSLineWalk.h" />
     <ClInclude Include="GS\Renderers\HW\GSPointPlace.h" />
     <ClInclude Include="GS\Renderers\HW\GSSpriteEdgeSnap.h" />

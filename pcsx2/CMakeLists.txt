@@ -549,6 +549,7 @@ set(pcsx2GSSources
 	GS/Renderers/Null/GSRendererNull.cpp
 	GS/Renderers/HW/GSDrawLog.cpp
 	GS/Renderers/HW/GSHwHack.cpp
+	GS/Renderers/HW/GSLineRuns.cpp
 	GS/Renderers/HW/GSRendererHW.cpp
 	GS/Renderers/HW/GSTextureCache.cpp
 	GS/Renderers/HW/GSTextureReplacementLoaders.cpp
@@ -625,6 +626,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/HW/GSDrawAlphaMask.h
 	GS/Renderers/HW/GSDrawLog.h
 	GS/Renderers/HW/GSHwHack.h
+	GS/Renderers/HW/GSLineRuns.h
 	GS/Renderers/HW/GSLineWalk.h
 	GS/Renderers/HW/GSPointPlace.h
 	GS/Renderers/HW/GSRendererHW.h
