@@ -9,7 +9,9 @@
 
 #include "pcsx2/Host.h"
 #include "pcsx2/Patch.h"
+#include "pcsx2/VMManager.h"
 #include "pcsx2/GS/GS.h"
+#include "pcsx2/GS/GSCacheFile.h"
 #include "pcsx2/GS/GSUtil.h"
 
 struct RendererInfo
@@ -242,6 +244,11 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_advanced.gsDumpCompression, "EmuCore/GS", "GSDumpCompression", static_cast<int>(GSDumpCompressionMethod::Zstandard));
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_advanced.disableFramebufferFetch, "EmuCore/GS", "DisableFramebufferFetch", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_advanced.disableShaderCache, "EmuCore/GS", "DisableShaderCache", false);
+	// The caches are shared by every game, so the action belongs to the global settings only.
+	if (dialog()->isPerGameSettings())
+		m_advanced.clearShaderCache->setVisible(false);
+	else
+		connect(m_advanced.clearShaderCache, &QPushButton::clicked, this, &GraphicsSettingsWidget::onClearShaderCacheClicked);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_advanced.disableVertexShaderExpand, "EmuCore/GS", "DisableVertexShaderExpand", false);
 	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_advanced.gsDownloadMode, "EmuCore/GS", "HWDownloadMode", static_cast<int>(GSHardwareDownloadMode::Enabled));
 	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_advanced.gsBackThreadMode, "EmuCore/GS", "GSBackThreadMode", static_cast<int>(GSBackThreadMode::Off));
@@ -732,6 +739,10 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 		dialog()->registerWidgetHelp(m_advanced.disableShaderCache, tr("Disable Shader Cache"), tr("Unchecked"),
 			tr("Prevents the loading and saving of shaders/pipelines to disk."));
 
+		dialog()->registerWidgetHelp(m_advanced.clearShaderCache, tr("Clear Shader Cache"), tr("N/A"),
+			tr("Deletes every compiled shader and pipeline the renderers have saved to disk. They are rebuilt as games need "
+			   "them, so the next start of each game may stutter briefly. Only available while no game is running."));
+
 		dialog()->registerWidgetHelp(m_advanced.disableVertexShaderExpand, tr("Disable Vertex Shader Expand"), tr("Unchecked"),
 			tr("Falls back to the CPU for expanding sprites/lines."));
 
@@ -1177,6 +1188,22 @@ void GraphicsSettingsWidget::onUpscaleMultiplierChanged()
 		if (m_hw.upscaleMultiplier->itemData(i, TemporaryMultiplierRole).toBool())
 			m_hw.upscaleMultiplier->removeItem(i);
 	}
+}
+
+void GraphicsSettingsWidget::onClearShaderCacheClicked()
+{
+	// A running renderer holds the files open and would write its pipelines straight back.
+	if (VMManager::HasValidVM())
+	{
+		QMessageBox::information(QtUtils::GetRootWidget(this), tr("Clear Shader Cache"),
+			tr("Shut down the game before clearing the shader cache."));
+		return;
+	}
+
+	const u32 removed = GSCacheFile::DeleteAll(EmuFolders::Cache);
+	QMessageBox::information(QtUtils::GetRootWidget(this), tr("Clear Shader Cache"),
+		(removed > 0) ? tr("Deleted %n shader cache file(s).", nullptr, static_cast<int>(removed)) :
+						tr("The shader cache is already empty."));
 }
 
 #include "moc_GraphicsSettingsWidget.cpp"

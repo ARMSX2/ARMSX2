@@ -381,6 +381,13 @@
           </property>
          </widget>
         </item>
+        <item row="3" column="0">
+         <widget class="QPushButton" name="clearShaderCache">
+          <property name="text">
+           <string>Clear Shader Cache</string>
+          </property>
+         </widget>
+        </item>
        </layout>
       </item>
      </layout>
@@ -418,6 +425,7 @@
   <tabstop>palFrameRate</tabstop>
   <tabstop>overrideTextureBarriers</tabstop>
   <tabstop>useDebugDevice</tabstop>
+  <tabstop>clearShaderCache</tabstop>
   <tabstop>disableFramebufferFetch</tabstop>
   <tabstop>disableShaderCache</tabstop>
   <tabstop>disableVertexShaderExpand</tabstop>
