@@ -266,39 +266,6 @@ private struct OrbitKeysEditorToolbarFocusModifier: ViewModifier {
   }
 }
 
-// MARK: - Keyboard Launcher
-
-struct OrbitKeysLauncherTextField: View {
-  @ObservedObject var model: OrbitKeysModel
-
-  var body: some View {
-    Button(action: model.openKeyboard) {
-      Text(
-        model.committedText.isEmpty
-          ? "Tap or press Cross"
-          : model.committedText
-      )
-      .font(.system(size: 13, weight: .medium, design: .monospaced))
-      .foregroundStyle(model.committedText.isEmpty ? .white.opacity(0.44) : .white)
-      .lineLimit(1)
-      .truncationMode(.tail)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, 12)
-      .frame(height: 34)
-      .contentShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
-      .keyboardThemeSurface(
-        usesLegacyTheme: model.usesLegacyTheme,
-        clearGlassLevel: model.clearGlassLevel,
-        cornerRadius: 17
-      )
-    }
-    .buttonStyle(.plain)
-    .frame(minWidth: 170, idealWidth: 260, maxWidth: .infinity)
-    .accessibilityLabel("Text input")
-    .accessibilityHint("Tap or press Cross to open the controller keyboard")
-  }
-}
-
 // MARK: - Keyboard Text Field
 
 struct OrbitKeysTextField: View {

@@ -53,22 +53,6 @@ enum DynamicWallpaperResolution: String, CaseIterable, Identifiable, Hashable, S
         }
     }
 
-    /// Pixel resolution and scene complexity are related, but not linearly.
-    /// Keep enough ambient detail for every preset to retain its identity while
-    /// reducing the number of independently animated objects at low quality.
-    var effectQuantityScale: Double {
-        switch self {
-        case .minimum: return 0.25
-        case .sixth: return 0.30
-        case .quarter: return 0.40
-        case .third: return 0.50
-        case .performance: return 0.65
-        case .balanced: return 0.75
-        case .normal: return 0.88
-        case .high: return 1.00
-        }
-    }
-
     /// Structural geometry is reduced more conservatively than particles so
     /// ribbons and tower scenes remain recognizable at very low resolution.
     var geometryDetailScale: Double {

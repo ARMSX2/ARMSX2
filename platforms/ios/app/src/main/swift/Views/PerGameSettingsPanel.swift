@@ -2395,24 +2395,6 @@ struct PerGameSettingsPanel: View {
         return ARMSX2Bridge.getPerGameINIBool(section, key: key, defaultValue: false, forISO: target) ? 1 : 0
     }
 
-    private static func loadedPerGameString(
-        _ section: String,
-        _ key: String,
-        useCurrent: Bool,
-        iso: String,
-        snapshot: PerGameINISnapshot? = nil
-    ) -> String {
-        if let snapshot {
-            return snapshot.string(section, key) ?? ""
-        }
-        return ARMSX2Bridge.getPerGameINIString(
-            section,
-            key: key,
-            defaultValue: "",
-            forISO: targetISO(useCurrent: useCurrent, iso: iso)
-        )
-    }
-
     private static func setPerGameBoolValue(_ section: String, _ key: String, _ value: Bool, useCurrent: Bool, iso: String) {
         ARMSX2Bridge.setPerGameINIBool(section, key: key, value: value, forISO: targetISO(useCurrent: useCurrent, iso: iso))
     }

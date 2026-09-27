@@ -82,10 +82,6 @@ private enum RootControllerAlertKind: Equatable {
     case navigationMode(MenuNavigationInputMode)
     case libraryExport
 
-    var isJITWarning: Bool {
-        self == .jitInitial || self == .jitFinal
-    }
-
     var isNavigationModePrompt: Bool {
         if case .navigationMode = self { return true }
         return false
@@ -1254,18 +1250,6 @@ struct RootView: View {
         MenuAudioPackManager.shared.playEvent(.noJIT)
         settings.applyAutomaticNoJITAppearanceIfEligible()
     }
-
-    private func dismissTouchFileImportAlert() {
-        guard fileImporter.showImportAlert else { return }
-        fileImporter.showImportAlert = false
-        MenuAudioPackManager.shared.playEvent(.return)
-    }
-
-    private func dismissTouchBIOSAlert() {
-        guard appState.bootDisclaimerMessage != nil else { return }
-        appState.bootDisclaimerMessage = nil
-        MenuAudioPackManager.shared.playEvent(.return)
-    }
 }
 
 /// Rebuilds the selected card as a live SwiftUI Liquid Glass surface while the
@@ -2176,9 +2160,7 @@ struct MenuTabView: View {
                 controllerInput.playFeedback(.move(.up))
             } else if controllerInput.requestNavigationSessionEntry(
                 preferLast: true,
-                matchingScopePrefix: selectedTab == 1
-                    ? "menu-tab.1"
-                    : "settings."
+                matchingScopePrefix: "settings."
             ) {
                 controllerInput.playFeedback(.move(.up))
             } else {

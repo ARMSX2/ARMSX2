@@ -874,8 +874,6 @@ static NSMutableDictionary<NSString*, NSDictionary<NSString*, id>*>* ARMSX2PerGa
     static NSMutableDictionary<NSString*, NSDictionary<NSString*, id>*>* transactions;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // This bridge is compiled without ARC; the process-wide registry owns
-        // its storage explicitly.
         transactions = [[NSMutableDictionary alloc] init];
     });
     return transactions;
@@ -2254,7 +2252,6 @@ static NSArray<NSString*>* ARMSX2RequiredAudioPackRoles()
     static NSArray<NSString*>* roles;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // This bridge is built without ARC; retain process-wide collections explicitly.
         roles = [[NSArray alloc] initWithObjects:@"background", @"navigation", @"select",
                                                   @"switch_toggle_on",
                                                   @"switch_toggle_off", @"return",

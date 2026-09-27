@@ -54,13 +54,6 @@ extension MenuControllerCommand {
         default: nil
         }
     }
-
-    var isDiagonalDirection: Bool {
-        switch self {
-        case .upLeft, .upRight, .downLeft, .downRight: true
-        default: false
-        }
-    }
 }
 
 /// Face-button state used only by the presentation-level controller feedback.
