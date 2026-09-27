@@ -1157,6 +1157,10 @@ static void PrintCommandLineHelp(const char* progname)
 						 "are printed at start-up. Ignored unless the renderer is nullhw.\n");
 	std::fprintf(stderr, "  -no-stencil-buffer: Vulkan only. Report no stencil buffer and create depth as plain D32F, as "
 						 "Turnip before Mesa 26.2 does, so destination-alpha tests take the no-stencil choices.\n");
+	std::fprintf(stderr, "  -vertex-ring-kib <n>: Vulkan only. Start the vertex ring at n KiB instead of the shipped "
+						 "size; it still grows on demand to its cap.\n");
+	std::fprintf(stderr, "  -vertex-ring-no-grow: Vulkan only. The vertex ring keeps its starting size and waits for "
+						 "the GPU when full.\n");
 	std::fprintf(stderr, "  -swthreads <threads>: Sets the number of threads for the software renderer.\n");
 	std::fprintf(stderr, "  -upscale <multiplier>: Sets the upscale multiplier, e.g. 1 for native or 2 for 2x. Minimum 0.5.\n");
 	std::fprintf(stderr, "  -renderhacks [af|cpufb|dds|dpi|dsf|tinrt|plf]: Enable user hacks -- auto flush, CPU framebuffer "
@@ -1837,6 +1841,25 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// choices on a device that has D32S8, for an A/B on one binary.
 				g_gs_measurement_overrides.disable_stencil_buffer = true;
 				Console.WriteLn("Forcing the stencil buffer off (depth as plain D32F)");
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-vertex-ring-kib"))
+			{
+				const std::optional<u32> kib = ParseNumericArg<u32>("-vertex-ring-kib", argv[++i]);
+				if (!kib.has_value() || kib.value() == 0)
+				{
+					ArgError("-vertex-ring-kib: expected a size in KiB above zero.");
+					return false;
+				}
+				// Not a setting: a small start is how the ring's growth path is driven on titles whose
+				// frames fit the shipped size.
+				g_gs_measurement_overrides.vertex_ring_start_kib = kib.value();
+				continue;
+			}
+			else if (CHECK_ARG("-vertex-ring-no-grow"))
+			{
+				// Not a setting: the ring as it was before it could grow, for an A/B on one binary.
+				g_gs_measurement_overrides.vertex_ring_no_growth = true;
 				continue;
 			}
 			else if (CHECK_ARG("-declare-depth-feedback-loop"))

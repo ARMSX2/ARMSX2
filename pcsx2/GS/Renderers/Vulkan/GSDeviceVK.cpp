@@ -112,10 +112,23 @@ enum : u32
 	// whose frames fit never pays for more.
 	VERTEX_BUFFER_MAX_SIZE = 64 * 1024 * 1024,
 
-	// How many persistent TFX UBO sets can be alive at once: the current one plus one retiring per
-	// vertex-ring growth (16 -> 32 -> 64 MiB is two), since each growth rebinds the ring by handle.
-	MAX_TFX_UBO_DESCRIPTOR_SETS = 3,
+	// The smallest start gsrunner's -vertex-ring-kib may choose.
+	VERTEX_BUFFER_MIN_START_SIZE = 64 * 1024,
 };
+
+static constexpr u32 CountDoublings(u32 from, u32 to)
+{
+	u32 n = 0;
+	for (; from < to; from *= 2)
+		n++;
+	return n;
+}
+
+// How many persistent TFX UBO sets can be alive at once: the current one plus one retiring per
+// vertex-ring growth, since each growth rebinds the ring by handle. Sized for the smallest start,
+// though the shipped 16 -> 32 -> 64 MiB is only two growths.
+static constexpr u32 MAX_TFX_UBO_DESCRIPTOR_SETS =
+	1 + CountDoublings(VERTEX_BUFFER_MIN_START_SIZE, VERTEX_BUFFER_MAX_SIZE);
 
 
 #ifdef ENABLE_OGL_DEBUG
@@ -5829,11 +5842,18 @@ bool GSDeviceVK::CreateBuffers()
 	// the device's storage-buffer range.
 	u32 vertex_size = VERTEX_BUFFER_SIZE;
 	u32 vertex_max_size = VERTEX_BUFFER_MAX_SIZE;
+	if (g_gs_measurement_overrides.vertex_ring_start_kib != 0)
+		vertex_size = std::clamp<u32>(g_gs_measurement_overrides.vertex_ring_start_kib,
+						  VERTEX_BUFFER_MIN_START_SIZE / 1024, VERTEX_BUFFER_MAX_SIZE / 1024) * 1024;
+	if (g_gs_measurement_overrides.vertex_ring_no_growth)
+		vertex_max_size = vertex_size;
 	if (m_features.vs_expand)
 	{
 		vertex_max_size = static_cast<u32>(std::min<u64>(vertex_max_size, m_device_properties.limits.maxStorageBufferRange));
 		vertex_max_size = std::max<u32>(vertex_max_size, vertex_size);
 	}
+	if (g_gs_measurement_overrides.vertex_ring_start_kib != 0 || g_gs_measurement_overrides.vertex_ring_no_growth)
+		Console.WriteLn("VK: measurement overrides: vertex ring %u KiB, growth to %u KiB", vertex_size / 1024, vertex_max_size / 1024);
 
 	if (!m_vertex_stream_buffer.Create(
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | (m_features.vs_expand ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0),

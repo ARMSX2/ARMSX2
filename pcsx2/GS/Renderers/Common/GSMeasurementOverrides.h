@@ -6,7 +6,7 @@
 #include "GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h"
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
 
-/// Switches that move the Vulkan self-read road for an A/B, and nothing else. Only
+/// Switches that move the Vulkan self-read road, or size the vertex ring, for an A/B. Only
 /// pcsx2-gsrunner sets them, from its command line, before the VM starts; the Vulkan backend
 /// reads them once, while it resolves its features and before any pipeline, image or render pass
 /// exists. None is read per draw.
@@ -33,6 +33,15 @@ struct GSMeasurementOverrides
 	/// under DriverWorkaround::DisableStencilBuffer does (Turnip before Mesa 26.2). Puts the old
 	/// driver's destination-alpha choices on a device that has D32S8.
 	bool disable_stencil_buffer = false;
+
+	/// -vertex-ring-kib N: the Vulkan vertex ring's starting size, in KiB (0 = the shipped size),
+	/// clamped to 64 KiB .. the growth cap.
+	/// It still grows to its cap on demand, so a small start drives the growth path on every title.
+	u32 vertex_ring_start_kib = 0;
+
+	/// -vertex-ring-no-grow: the vertex ring keeps its starting size and waits for the GPU when
+	/// full, as it did before it could grow.
+	bool vertex_ring_no_growth = false;
 
 	GSLoopDeclarationSpelling LoopSpelling() const
 	{
