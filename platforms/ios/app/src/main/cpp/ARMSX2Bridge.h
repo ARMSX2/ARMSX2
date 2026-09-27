@@ -159,6 +159,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // ISO management
 + (nullable NSString *)currentISOPath;
 + (nullable NSString *)currentGameISOName;
++ (nullable NSString *)discInDriveName;
 + (nonnull NSString *)isoDirectory;
 + (nonnull NSString *)documentsDirectory;
 + (nonnull NSArray<NSString *> *)availableISOs;

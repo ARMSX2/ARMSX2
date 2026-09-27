@@ -280,6 +280,7 @@ struct OverlayRowLabelStyle: LabelStyle {
 /// A fixed-min-height overlay action row that GUARANTEES the main label wins over a trailing
 /// value: the label gets `layoutPriority(1)` and the trailing value `layoutPriority(-1)` with tail
 /// truncation, so on a narrow width the trailing value elides first while the label stays intact.
+/// `keepsTrailingValue` reverses that for a short status such as "In drive".
 /// The label is never blue (`textPrimary`); red is used only when `isDestructive`.
 struct OverlayActionRow: View {
     private let controllerNavigationID: String?
@@ -287,6 +288,7 @@ struct OverlayActionRow: View {
     private let systemImage: String?
     private let trailingValue: String?
     private let isDestructive: Bool
+    private let keepsTrailingValue: Bool
     private let action: () -> Void
     @Environment(\.uiCriticalTextColour) private var criticalTextColour
     @Environment(\.uiAccentColour) private var accentColour
@@ -298,6 +300,7 @@ struct OverlayActionRow: View {
         systemImage: String? = nil,
         trailingValue: String? = nil,
         isDestructive: Bool = false,
+        keepsTrailingValue: Bool = false,
         action: @escaping () -> Void
     ) {
         self.controllerNavigationID = controllerNavigationID
@@ -305,6 +308,7 @@ struct OverlayActionRow: View {
         self.systemImage = systemImage
         self.trailingValue = trailingValue
         self.isDestructive = isDestructive
+        self.keepsTrailingValue = keepsTrailingValue
         self.action = action
     }
 
@@ -329,7 +333,7 @@ struct OverlayActionRow: View {
                         allowsFocusedBlue: !isDestructive
                     )
                     .lineLimit(1)
-                    .layoutPriority(1)
+                    .layoutPriority(keepsTrailingValue ? 0 : 1)
                 Spacer(minLength: 0)
                 if let trailingValue {
                     Text(trailingValue)
@@ -339,7 +343,7 @@ struct OverlayActionRow: View {
                         )
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .layoutPriority(-1)
+                        .layoutPriority(keepsTrailingValue ? 2 : -1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
