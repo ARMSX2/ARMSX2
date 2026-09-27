@@ -1630,6 +1630,14 @@ final class SettingsStore {
             )
         }
     }
+    var gameMenuCoverColoursEnabled: Bool = true {
+        didSet {
+            UserDefaults.standard.set(
+                gameMenuCoverColoursEnabled,
+                forKey: "ARMSX2iOSGameMenuCoverColoursEnabled"
+            )
+        }
+    }
     var hideGameplayStatusBar: Bool = true {
         didSet {
             UserDefaults.standard.set(
@@ -2341,6 +2349,9 @@ final class SettingsStore {
         favoriteGlowingEffectEnabled = UserDefaults.standard.object(
             forKey: "ARMSX2iOSFavoriteGlowingEffectEnabled"
         ) as? Bool ?? false
+        gameMenuCoverColoursEnabled = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSGameMenuCoverColoursEnabled"
+        ) as? Bool ?? true
         hideGameplayStatusBar = UserDefaults.standard.object(
             forKey: "ARMSX2iOSHideGameplayStatusBar"
         ) as? Bool ?? true

@@ -2925,11 +2925,12 @@ struct GameListView: View {
             GameCoverThemePreviewStore.shared.clear()
             return
         }
-        // With the optional favorite treatment disabled, normal focus changes
-        // must remain O(1): do not scan the library or schedule palette work.
-        // Explicit Context Menu/Now Running previews still opt in.
+        // Favorite focus and the Context Menu/Now Running previews each have
+        // a switch. With it off, a focus change must not scan the library or
+        // schedule palette work.
         guard includesNonFavoriteGame
-                || settings.favoriteGlowingEffectEnabled else {
+                ? settings.gameMenuCoverColoursEnabled
+                : settings.favoriteGlowingEffectEnabled else {
             GameCoverThemePreviewStore.shared.clear()
             return
         }

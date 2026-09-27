@@ -71,6 +71,7 @@ struct AppearanceSettingsView: View {
         "settings.appearance.clear-liquid-glass-per-game-emulation",
         "settings.appearance.game-card-zoom",
         "settings.appearance.favorite-glowing-effect",
+        "settings.appearance.game-menu-cover-colours",
         "settings.appearance.hide-intro-status-bar",
         "settings.appearance.hide-menu-status-bar",
         "settings.appearance.hide-gameplay-status-bar",
@@ -353,6 +354,15 @@ struct AppearanceSettingsView: View {
                 }
                 .appearanceControllerListRow(
                     "settings.appearance.favorite-glowing-effect"
+                )
+                Toggle(isOn: $settings.gameMenuCoverColoursEnabled) {
+                    Label(
+                        settings.localized("Cover Colours in Game Menus"),
+                        systemImage: "paintpalette"
+                    )
+                }
+                .appearanceControllerListRow(
+                    "settings.appearance.game-menu-cover-colours"
                 )
                 Toggle(isOn: manualBinding(for: \.hideIntroStatusBar)) {
                     Label(
