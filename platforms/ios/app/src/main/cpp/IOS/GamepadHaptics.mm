@@ -230,10 +230,7 @@ static u32 ARMSX2RawControllerMacroPhysicalInputMask(SDL_Gamepad* gamepad, u8 na
     return mask;
 }
 
-static u32 ARMSX2ResolveControllerMacroGameplayMask(
-    u32 gamepad_index,
-    u32 raw_mask,
-    u32 replay_eligible_raw_mask)
+static u32 ARMSX2ResolveControllerMacroGameplayMask(u32 gamepad_index, u32 raw_mask)
 {
     if (gamepad_index >= ARMSX2_MAX_IOS_GAMEPADS)
         return raw_mask;
@@ -272,10 +269,8 @@ static u32 ARMSX2ResolveControllerMacroGameplayMask(
             continue;
         }
 
-        // Configured secondary inputs are not speculative modifiers. Deliver them immediately
-        // when used normally, exactly as master does. Once Swift recognizes a complete chord,
-        // its atomic consumed bit removes the input on the next pad poll and keeps it removed
-        // until physical release.
+        // Secondary inputs reach the game at once, as on master. A chord Swift recognizes sets
+        // their consumed bit, which withholds them from the next poll until physical release.
         if (!is_modifier) {
             state.delivered_mask &= ~bit;
             state.replay_eligible_mask &= ~bit;
@@ -312,7 +307,7 @@ static u32 ARMSX2ResolveControllerMacroGameplayMask(
         }
 
         state.replay_frames[index] = 0;
-        if (replay_eligible_raw_mask & bit)
+        if (raw_mask & bit)
             state.replay_eligible_mask |= bit;
         if (!was_pressed || state.press_started_ms[index] == 0)
             state.press_started_ms[index] = now;
@@ -2050,24 +2045,10 @@ void ARMSX2ApplyIOSGamepadInput(unsigned int gamepad_index, SDL_Gamepad* gamepad
         ARMSX2RecomputeNativeGamepadAnyDpadLatchedMask();
     }
 
-    const u32 physical_raw_macro_input_mask =
+    const u32 raw_macro_input_mask =
         ARMSX2RawControllerMacroPhysicalInputMask(gamepad, native_dpad_mask);
-    u32 raw_macro_input_mask = physical_raw_macro_input_mask;
-    constexpr Sint16 macro_direction_threshold = 19005; // 0.58 * SDL's axis range.
-    const Sint16 macro_left_x = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTX);
-    const Sint16 macro_left_y = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTY);
-    if (macro_left_x >= macro_direction_threshold)
-        raw_macro_input_mask |= ARMSX2_MACRO_INPUT_RIGHT;
-    else if (macro_left_x <= -macro_direction_threshold)
-        raw_macro_input_mask |= ARMSX2_MACRO_INPUT_LEFT;
-    if (macro_left_y >= macro_direction_threshold)
-        raw_macro_input_mask |= ARMSX2_MACRO_INPUT_DOWN;
-    else if (macro_left_y <= -macro_direction_threshold)
-        raw_macro_input_mask |= ARMSX2_MACRO_INPUT_UP;
-
     const u32 gameplay_macro_input_mask =
-        ARMSX2ResolveControllerMacroGameplayMask(
-            gamepad_index, raw_macro_input_mask, physical_raw_macro_input_mask);
+        ARMSX2ResolveControllerMacroGameplayMask(gamepad_index, raw_macro_input_mask);
     const u32 replay_macro_input_mask =
         ARMSX2ControllerMacroCurrentReplayMask(gamepad_index);
 
@@ -2185,20 +2166,6 @@ void ARMSX2ApplyIOSGamepadInput(unsigned int gamepad_index, SDL_Gamepad* gamepad
     float ly = axis(SDL_GAMEPAD_AXIS_LEFTY);
     float rx = axis(SDL_GAMEPAD_AXIS_RIGHTX);
     float ry = axis(SDL_GAMEPAD_AXIS_RIGHTY);
-    if (lx > 0 && (raw_macro_input_mask & ARMSX2_MACRO_INPUT_RIGHT)
-        && !(gameplay_macro_input_mask & ARMSX2_MACRO_INPUT_RIGHT)) {
-        lx = 0.0f;
-    } else if (lx < 0 && (raw_macro_input_mask & ARMSX2_MACRO_INPUT_LEFT)
-        && !(gameplay_macro_input_mask & ARMSX2_MACRO_INPUT_LEFT)) {
-        lx = 0.0f;
-    }
-    if (ly > 0 && (raw_macro_input_mask & ARMSX2_MACRO_INPUT_DOWN)
-        && !(gameplay_macro_input_mask & ARMSX2_MACRO_INPUT_DOWN)) {
-        ly = 0.0f;
-    } else if (ly < 0 && (raw_macro_input_mask & ARMSX2_MACRO_INPUT_UP)
-        && !(gameplay_macro_input_mask & ARMSX2_MACRO_INPUT_UP)) {
-        ly = 0.0f;
-    }
 
     const ARMSX2ControllerStickSettings& stick_settings = ARMSX2GetControllerStickSettings();
     ARMSX2ApplyControllerStickResponse(
