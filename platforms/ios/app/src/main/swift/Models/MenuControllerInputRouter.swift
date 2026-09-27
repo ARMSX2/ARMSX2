@@ -223,16 +223,12 @@ enum ControllerMacroButton: String, CaseIterable, Identifiable, Sendable {
             gamepad.buttonY.isPressed
         case .dpadUp:
             gamepad.dpad.up.isPressed
-                || gamepad.leftThumbstick.yAxis.value >= 0.58
         case .dpadDown:
             gamepad.dpad.down.isPressed
-                || gamepad.leftThumbstick.yAxis.value <= -0.58
         case .dpadLeft:
             gamepad.dpad.left.isPressed
-                || gamepad.leftThumbstick.xAxis.value <= -0.58
         case .dpadRight:
             gamepad.dpad.right.isPressed
-                || gamepad.leftThumbstick.xAxis.value >= 0.58
         }
     }
 }
