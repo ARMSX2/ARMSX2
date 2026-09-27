@@ -200,7 +200,7 @@ extension SettingsStore {
         favoriteGlowingEffectEnabled = false
         hideGameplayStatusBar = true
         hideIntroStatusBar = true
-        hideMenuStatusBar = true
+        hideMenuStatusBar = false
         controllerNavigationDepthEffectEnabled = true
         focusOrbsEnabled = false
 
