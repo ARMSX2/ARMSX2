@@ -2055,21 +2055,29 @@ open class MainActivityRuntime : ComponentActivity() {
         copyAssetAll(applicationContext, "bios")
         copyAssetAll(applicationContext, "resources")
 
-        // On an app UPDATE (versionCode changed), drop the regenerable GPU caches. Installing a
-        // new build over an old one keeps the compiled GS shader/pipeline cache under
-        // <dataRoot>/cache, and a cache baked by a different core build can render corrupt — the
-        // "scrambled PS2 logo" and post-update graphical glitches users currently fix by
-        // reinstalling clean (#376/#385). The cache is pure derived data (rebuilt on demand),
-        // never user content, so wiping it is always safe. Skipped on first install (no prior
-        // version recorded) — there is nothing stale to clear.
+        // On any new install of the app, drop the regenerable GPU caches. The native caches carry
+        // their own build and driver stamps and discard themselves on a mismatch; this is the second
+        // line, for anything an older build wrote before those stamps existed. The marker lives in
+        // the data root beside the caches, not in this package's preferences: a data root shared by
+        // two installs (stable and nightly) is wiped whenever the other one last used it, and a
+        // data root that moved is wiped where it now is. lastUpdateTime changes on every install,
+        // so a rebuilt APK with an unchanged versionCode counts too. The marker is written only
+        // after the wipe succeeded, so a failed wipe is retried on the next launch.
         runCatching {
-            val prevVc = prefs.getInt("lastRunVersionCode", 0)
-            val curVc = BuildConfig.VERSION_CODE
-            if (prevVc != 0 && prevVc != curVc) {
-                File(assetCopyRoot(applicationContext), "cache").deleteRecursively()
-                android.util.Log.i("ARMSX2", "Update $prevVc -> $curVc: cleared GS shader/pipeline cache")
+            val info = packageManager.getPackageInfo(packageName, 0)
+            val install = "$packageName ${BuildConfig.VERSION_CODE} ${BuildConfig.VERSION_NAME} ${info.lastUpdateTime}"
+            val cacheDir = File(assetCopyRoot(applicationContext), "cache")
+            val marker = File(cacheDir, ".install")
+            val recorded = runCatching { marker.readText() }.getOrNull()
+            if (recorded != install) {
+                val wiped = !cacheDir.exists() || cacheDir.deleteRecursively()
+                if (wiped && cacheDir.mkdirs()) {
+                    marker.writeText(install)
+                    android.util.Log.i("ARMSX2", "New install ($install): cleared GS shader/pipeline cache")
+                } else {
+                    android.util.Log.w("ARMSX2", "New install ($install): could not clear ${cacheDir.path}")
+                }
             }
-            if (prevVc != curVc) prefs.edit { putInt("lastRunVersionCode", curVc) }
         }
 
         // Point the ANGLE EGL env vars at the bundled libs (or clear them) before the
