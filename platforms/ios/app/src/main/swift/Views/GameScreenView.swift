@@ -1284,6 +1284,8 @@ struct GameScreenView: View {
                     dismissRuntimeControllerSkinPicker(playsSound: true)
                     return true
                 },
+                directionalLinks: Self.runtimeControllerSkinActionLinks,
+                prioritizesDirectionalLinks: true,
                 confinesHorizontalFocusMovement: true,
                 usesExplicitTargetGeometryOnly: true,
                 preferredInitialFocusLabel: "alert.detail.skin",
@@ -1293,6 +1295,23 @@ struct GameScreenView: View {
             .contextMenuPanelTextAppearance()
         }
     }
+
+    // Apply and Cancel sit side by side, so Left and Right move between them.
+    private static let runtimeControllerSkinActionLinks: [ControllerAccessibilityDirectionalLink] = [
+        .init(fromLabel: "alert.action.apply", direction: .right, toLabel: "alert.action.cancel"),
+        .init(fromLabel: "alert.action.cancel", direction: .left, toLabel: "alert.action.apply"),
+        .init(fromLabel: "alert.action.cancel", direction: .up, toLabel: "alert.detail.setCustomLayout"),
+        .init(
+            fromLabel: "alert.action.apply",
+            direction: .down,
+            toLabel: ControllerAccessibilityDirectionalLink.navigationBoundary
+        ),
+        .init(
+            fromLabel: "alert.action.cancel",
+            direction: .down,
+            toLabel: ControllerAccessibilityDirectionalLink.navigationBoundary
+        ),
+    ]
 
     private var selectedRuntimeControllerSkinProposal:
         AutomaticCustomSkinProposal? {
@@ -1724,8 +1743,6 @@ struct GameScreenView: View {
         runtimeControllerSkinSelectionIndex = (
             runtimeControllerSkinSelectionIndex + offset + count
         ) % count
-        runtimeControllerSkinSetsLayout = selectedRuntimeControllerSkinProposal?
-            .shouldApplyCustomLayout ?? false
     }
 
     private func setRuntimeControllerSkinLayout(_ enabled: Bool) {
