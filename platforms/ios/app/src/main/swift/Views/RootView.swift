@@ -1197,12 +1197,14 @@ struct RootView: View {
             guard menuControllerInput.isControllerNavigationEnabled else {
                 return
             }
-            if selectedMenuTab == 0 || selectedMenuTab == 1 {
+            if selectedMenuTab == 0 {
                 menuControllerInput.requestLibraryEntry(preferLast: true)
             } else {
                 _ = menuControllerInput.requestNavigationSessionEntry(
                     preferLast: true,
-                    matchingScopePrefix: "settings."
+                    matchingScopePrefix: selectedMenuTab == 1
+                        ? "menu.bios"
+                        : "settings."
                 )
             }
         }
@@ -1757,12 +1759,12 @@ struct MenuTabView: View {
         controllerTabEntryTask = Task { @MainActor in
             await Task.yield()
             guard !Task.isCancelled, selectedTab == tab else { return }
-            if tab == 0 || tab == 1 {
+            if tab == 0 {
                 controllerInput.requestLibraryEntry(preferLast: false)
             } else {
                 _ = controllerInput.requestNavigationSessionEntry(
                     preferLast: false,
-                    matchingScopePrefix: "settings."
+                    matchingScopePrefix: tab == 1 ? "menu.bios" : "settings."
                 )
             }
             controllerTabEntryTask = nil
@@ -2155,12 +2157,12 @@ struct MenuTabView: View {
                 transitionsTab ? .tabTransition : .activate
             )
         case .up, .upLeft, .upRight:
-            if selectedTab == 0 || selectedTab == 1 {
+            if selectedTab == 0 {
                 controllerInput.requestLibraryEntry(preferLast: true)
                 controllerInput.playFeedback(.move(.up))
             } else if controllerInput.requestNavigationSessionEntry(
                 preferLast: true,
-                matchingScopePrefix: "settings."
+                matchingScopePrefix: selectedTab == 1 ? "menu.bios" : "settings."
             ) {
                 controllerInput.playFeedback(.move(.up))
             } else {
