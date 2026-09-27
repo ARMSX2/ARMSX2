@@ -12,6 +12,8 @@
 #include "common/Path.h"
 #include "common/Timer.h"
 
+#include "fmt/format.h"
+
 #include <cstring>
 
 GLShaderCache::GLShaderCache() = default;
@@ -65,7 +67,11 @@ bool GLShaderCache::Open(bool is_gles)
 	stamp.Add("glsl_version", gl_string(GL_SHADING_LANGUAGE_VERSION));
 	stamp.AddHex("binary_formats", formats.data(), formats.size() * sizeof(GLint));
 
-	if (!m_store.Open(Path::Combine(EmuFolders::Cache, "gl_programs"), GSCacheFile::KIND_GL_PROGRAMS, stamp, KEY_SIZE))
+	// Named for the driver, so switching between two (the device's GLES driver and ANGLE) keeps both.
+	GSCacheFile::CleanStaleTempFiles(EmuFolders::Cache);
+	const std::string stem = "gl_programs_" + GSCacheFile::ShortName(stamp.GetDigest());
+	GSCacheFile::PruneOtherIdentities(EmuFolders::Cache, "gl_programs", stem, 3);
+	if (!m_store.Open(Path::Combine(EmuFolders::Cache, stem), GSCacheFile::KIND_GL_PROGRAMS, stamp, KEY_SIZE))
 		Console.Warning("GL: running without a program cache");
 
 	return true;

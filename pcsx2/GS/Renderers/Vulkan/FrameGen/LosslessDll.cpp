@@ -549,7 +549,12 @@ std::string GetLosslessDllPath() {
 }
 
 std::string GetShaderCachePath() {
-    return Path::Combine(EmuFolders::Cache, CACHE_FILE_NAME);
+    // Named for the build that translated it, so two builds sharing a data root keep one each. The
+    // original name (CACHE_FILE_NAME, shared with Eden) is still what the prune matches on.
+    const std::string_view base = std::string_view(CACHE_FILE_NAME).substr(0, std::string_view(CACHE_FILE_NAME).find('.'));
+    const std::string stem = fmt::format("{}_{}", base, GSCacheFile::ShortName(LsfgCacheStamp().GetDigest()));
+    GSCacheFile::PruneOtherIdentities(EmuFolders::Cache, base, stem, 2);
+    return Path::Combine(EmuFolders::Cache, stem + ".cache");
 }
 
 LosslessStatus ReadShaderResources(const std::string& path, ShaderResources& out_resources) {

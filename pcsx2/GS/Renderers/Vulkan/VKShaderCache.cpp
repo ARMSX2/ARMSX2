@@ -455,17 +455,38 @@ void VKShaderCache::Open()
 	}
 
 	const bool debug = GSConfig.UseDebugDevice;
-	m_pipeline_cache_filename = GetPipelineCacheBaseFileName(debug);
+	GSCacheFile::CleanStaleTempFiles(EmuFolders::Cache);
+
+	// Each file's name carries its stamp's digest, so builds and drivers sharing a data root keep
+	// separate files; the few most recently used others stay, older ones are removed.
+	static constexpr u32 KEEP_IDENTITIES = 3;
+	const GSCacheFile::Stamp spirv_stamp = GetSPIRVStamp(debug);
+	const std::string spirv_stem = fmt::format("vulkan_shaders{}_{}", debug ? "_debug" : "",
+		GSCacheFile::ShortName(spirv_stamp.GetDigest()));
+	GSCacheFile::PruneOtherIdentities(EmuFolders::Cache, "vulkan_shaders", spirv_stem, KEEP_IDENTITIES);
+
+	m_pipeline_cache_stamp = GetPipelineCacheStamp(debug);
+	const std::string pipeline_stem = fmt::format("vulkan_pipelines{}_{}", debug ? "_debug" : "",
+		GSCacheFile::ShortName(m_pipeline_cache_stamp.GetDigest()));
+	GSCacheFile::PruneOtherIdentities(EmuFolders::Cache, "vulkan_pipelines", pipeline_stem, KEEP_IDENTITIES);
+	m_pipeline_cache_filename = Path::Combine(EmuFolders::Cache, pipeline_stem + ".bin");
 
 	static constexpr u32 KEY_SIZE = sizeof(GSCacheFile::Digest) + 2 * sizeof(u32);
-	const GSCacheFile::Stamp spirv_stamp = GetSPIRVStamp(debug);
-	if (!m_spirv_store.Open(GetShaderCacheBaseFileName(debug), GSCacheFile::KIND_VK_SPIRV, spirv_stamp, KEY_SIZE))
+	if (!m_spirv_store.Open(Path::Combine(EmuFolders::Cache, spirv_stem), GSCacheFile::KIND_VK_SPIRV, spirv_stamp, KEY_SIZE))
 		Console.Warning("Vulkan: running without a SPIR-V cache");
 	else
-		INFO_LOG("Vulkan: SPIR-V cache has {} entries", m_spirv_store.GetEntryCount());
+		INFO_LOG("Vulkan: SPIR-V cache '{}' has {} entries", spirv_stem, m_spirv_store.GetEntryCount());
 
 	if (!ReadExistingPipelineCache())
 		CreateNewPipelineCache();
+}
+
+void VKShaderCache::ResetPipelineCache()
+{
+	// Nothing else may be using the cache: the caller has stopped the precompile workers and runs on
+	// the GS thread. Pipelines already built do not refer to it.
+	ClosePipelineCache();
+	CreateNewPipelineCache();
 }
 
 VkPipelineCache VKShaderCache::GetPipelineCache(bool set_dirty /*= true*/)
@@ -497,7 +518,7 @@ bool VKShaderCache::ReadExistingPipelineCache()
 {
 	std::vector<u8> data;
 	const GSCacheFile::ReadResult res = GSCacheFile::ReadFramedFile(
-		m_pipeline_cache_filename, GSCacheFile::KIND_VK_PIPELINES, GetPipelineCacheStamp(GSConfig.UseDebugDevice), &data);
+		m_pipeline_cache_filename, GSCacheFile::KIND_VK_PIPELINES, m_pipeline_cache_stamp, &data);
 	if (res != GSCacheFile::ReadResult::Ok)
 	{
 		if (res != GSCacheFile::ReadResult::Missing)
@@ -593,7 +614,7 @@ bool VKShaderCache::FlushPipelineCache(bool force)
 	// half-written blob that still passes the driver's header check has rendered garbage on Adreno.
 	Console.WriteLn("Writing %zu bytes to '%s'", data_size, m_pipeline_cache_filename.c_str());
 	if (!GSCacheFile::WriteFramedFile(m_pipeline_cache_filename, GSCacheFile::KIND_VK_PIPELINES,
-			GetPipelineCacheStamp(GSConfig.UseDebugDevice), data.data(), data.size()))
+			m_pipeline_cache_stamp, data.data(), data.size()))
 	{
 		Console.Error("Failed to write pipeline cache to '%s'", m_pipeline_cache_filename.c_str());
 		m_pipeline_cache_dirty.store(true, std::memory_order_relaxed);
@@ -610,28 +631,6 @@ void VKShaderCache::ClosePipelineCache()
 
 	vkDestroyPipelineCache(GSDeviceVK::GetInstance()->GetDevice(), m_pipeline_cache, nullptr);
 	m_pipeline_cache = VK_NULL_HANDLE;
-}
-
-std::string VKShaderCache::GetShaderCacheBaseFileName(bool debug)
-{
-	std::string base_filename = "vulkan_shaders";
-
-	if (debug)
-		base_filename += "_debug";
-
-	return Path::Combine(EmuFolders::Cache, base_filename);
-}
-
-std::string VKShaderCache::GetPipelineCacheBaseFileName(bool debug)
-{
-	std::string base_filename = "vulkan_pipelines";
-
-	if (debug)
-		base_filename += "_debug";
-
-	base_filename += ".bin";
-
-	return Path::Combine(EmuFolders::Cache, base_filename);
 }
 
 std::optional<VKShaderCache::SPIRVCodeVector> VKShaderCache::GetShaderSPV(u32 type, std::string_view shader_code)

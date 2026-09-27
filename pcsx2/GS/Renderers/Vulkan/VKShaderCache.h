@@ -34,6 +34,10 @@ public:
 	/// is rate-limited: pass force=true only where a missed flush actually loses data (teardown).
 	bool FlushPipelineCache(bool force = false);
 
+	/// Replaces the pipeline cache with an empty one, so a cleared cache is not written back. GS thread
+	/// only, with no pipeline compile running on another thread.
+	void ResetPipelineCache();
+
 	/// The shader getters may run on several threads at once: the SPIR-V store locks itself, and
 	/// GLSL compilation runs outside that lock.
 	VkShaderModule GetVertexShader(std::string_view shader_code);
@@ -47,8 +51,6 @@ private:
 
 	VKShaderCache();
 
-	static std::string GetShaderCacheBaseFileName(bool debug);
-	static std::string GetPipelineCacheBaseFileName(bool debug);
 	static std::optional<VKShaderCache::SPIRVCodeVector> CompileShaderToSPV(
 		u32 stage, std::string_view source, bool debug);
 	static GSCacheFile::Stamp GetSPIRVStamp(bool debug);
@@ -66,6 +68,7 @@ private:
 	/// SPIR-V by GLSL source. Internally locked, so callable from pipeline compile workers.
 	GSCacheFile::BlobStore m_spirv_store;
 	std::string m_pipeline_cache_filename;
+	GSCacheFile::Stamp m_pipeline_cache_stamp;
 	/// Hash of the pipeline cache data last read or written, so an unchanged cache is not rewritten.
 	u64 m_pipeline_cache_file_hash = 0;
 

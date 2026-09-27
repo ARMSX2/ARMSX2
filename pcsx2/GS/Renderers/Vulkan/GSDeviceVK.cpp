@@ -7640,19 +7640,62 @@ namespace
 			   p.ps.blend_hw <= static_cast<u32>(HWBlendType::INV_SRC_DST_BLEND_HALF);
 	}
 
-	static void PruneTFXKeyFiles(const std::string& dir)
+	/// Builds whose lists are kept: two builds sharing a data root (stable and nightly) each keep
+	/// theirs, and the lists of builds no longer run are removed.
+	static constexpr size_t KEEP_BUILDS = 3;
+
+	/// The build token of a key file name, `<serial>_<crc>_<config>_<build>[_debug].bin`.
+	static std::string_view TFXKeyFileBuild(std::string_view name)
+	{
+		name = name.substr(0, name.rfind('.'));
+		if (name.size() > 6 && name.substr(name.size() - 6) == "_debug")
+			name = name.substr(0, name.size() - 6);
+		const size_t pos = name.rfind('_');
+		return (pos == std::string_view::npos) ? std::string_view() : name.substr(pos + 1);
+	}
+
+	static void PruneTFXKeyFiles(const std::string& dir, std::string_view current_build)
 	{
 		FileSystem::FindResultsArray files;
-		if (!FileSystem::FindFiles(dir.c_str(), "*.bin", FILESYSTEM_FIND_FILES, &files) ||
-			files.size() <= MAX_TFX_KEY_FILES)
-		{
+		if (!FileSystem::FindFiles(dir.c_str(), "*.bin", FILESYSTEM_FIND_FILES, &files))
 			return;
+
+		// Newest use of each build's lists; the current build always stays.
+		std::vector<std::pair<std::string, s64>> builds;
+		for (const FILESYSTEM_FIND_DATA& fd : files)
+		{
+			const std::string build(TFXKeyFileBuild(Path::GetFileName(fd.FileName)));
+			auto it = std::find_if(builds.begin(), builds.end(), [&build](const auto& b) { return b.first == build; });
+			if (it == builds.end())
+				builds.emplace_back(build, static_cast<s64>(fd.ModificationTime));
+			else
+				it->second = std::max(it->second, static_cast<s64>(fd.ModificationTime));
 		}
-		std::sort(files.begin(), files.end(), [](const FILESYSTEM_FIND_DATA& a, const FILESYSTEM_FIND_DATA& b) {
+		std::sort(builds.begin(), builds.end(), [&current_build](const auto& a, const auto& b) {
+			if ((a.first == current_build) != (b.first == current_build))
+				return a.first == current_build;
+			return a.second > b.second;
+		});
+		if (builds.size() > KEEP_BUILDS)
+			builds.resize(KEEP_BUILDS);
+
+		std::vector<FILESYSTEM_FIND_DATA> kept;
+		for (FILESYSTEM_FIND_DATA& fd : files)
+		{
+			const std::string_view build = TFXKeyFileBuild(Path::GetFileName(fd.FileName));
+			if (std::none_of(builds.begin(), builds.end(), [&build](const auto& b) { return b.first == build; }))
+				FileSystem::DeleteFilePath(fd.FileName.c_str());
+			else
+				kept.push_back(std::move(fd));
+		}
+
+		if (kept.size() <= MAX_TFX_KEY_FILES)
+			return;
+		std::sort(kept.begin(), kept.end(), [](const FILESYSTEM_FIND_DATA& a, const FILESYSTEM_FIND_DATA& b) {
 			return a.ModificationTime < b.ModificationTime;
 		});
-		for (size_t i = 0; i < files.size() - MAX_TFX_KEY_FILES; i++)
-			FileSystem::DeleteFilePath(files[i].FileName.c_str());
+		for (size_t i = 0; i < kept.size() - MAX_TFX_KEY_FILES; i++)
+			FileSystem::DeleteFilePath(kept[i].FileName.c_str());
 	}
 } // namespace
 
@@ -7701,10 +7744,13 @@ void GSDeviceVK::SetGameIdentity(const std::string& serial, u32 crc)
 	stamp.Add("build", GSCacheFile::GetBuildId());
 	stamp.Add("device", fingerprint);
 
+	const std::string& build_id = GSCacheFile::GetBuildId();
+	const std::string build_token = GSCacheFile::ShortName(GSCacheFile::Hash128(build_id.data(), build_id.size()));
 	const std::string path = Path::Combine(dir,
-		Path::SanitizeFileName(fmt::format("{}_{:08X}_{:02x}{:02x}{:02x}{:02x}{}.bin", serial, crc,
+		Path::SanitizeFileName(fmt::format("{}_{:08X}_{:02x}{:02x}{:02x}{:02x}_{}{}.bin", serial, crc,
 			fingerprint_digest.bytes[0], fingerprint_digest.bytes[1], fingerprint_digest.bytes[2],
-			fingerprint_digest.bytes[3], GSConfig.UseDebugDevice ? "_debug" : "")));
+			fingerprint_digest.bytes[3], build_token, GSConfig.UseDebugDevice ? "_debug" : "")));
+	GSCacheFile::CleanStaleTempFiles(dir);
 
 	// Read what the last sessions recorded, drop what has gone stale, and write it back with this
 	// session's number. A record that fails its checksum, or a torn one at the end, is dropped here.
@@ -7765,7 +7811,7 @@ void GSDeviceVK::SetGameIdentity(const std::string& serial, u32 crc)
 		ERROR_LOG("Vulkan: could not open the pipeline key file '{}'", path);
 		return;
 	}
-	PruneTFXKeyFiles(dir);
+	PruneTFXKeyFiles(dir, build_token);
 
 	const size_t max_jobs = GetMaxPrecompiledTFXPipelines();
 	for (const TFXKeyFileRecord& rec : records)
