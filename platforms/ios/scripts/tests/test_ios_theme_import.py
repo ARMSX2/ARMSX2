@@ -50,6 +50,8 @@ class ImportedNumbers(unittest.TestCase):
 
     def test_the_import_checks_every_number_first(self):
         importer = block(without_comments(read(GALLERY)), "func importTheme(")
+        self.assertIn("let object = try? JSONSerialization.jsonObject(with: data)", importer,
+                      "a file the number check cannot read must be refused")
         self.assertLess(importer.index("numbersAreInRange("), importer.index("JSONDecoder().decode("),
                         "importTheme decodes the document before checking its numbers")
 
