@@ -73,6 +73,61 @@ private struct RootControllerAlertCommandListener: View {
     }
 }
 
+/// Shows RootView's prompts in a window above the main one. The window lives only
+/// while a prompt is up and never becomes key, so controller events still reach
+/// the main window's event host.
+private struct RootAlertWindow: UIViewRepresentable {
+    let content: AnyView?
+
+    func makeUIView(context: Context) -> RootAlertWindowAnchor {
+        RootAlertWindowAnchor()
+    }
+
+    func updateUIView(_ anchor: RootAlertWindowAnchor, context: Context) {
+        anchor.show(content.map { AnyView($0.environment(\.self, context.environment)) })
+    }
+
+    static func dismantleUIView(_ anchor: RootAlertWindowAnchor, coordinator: ()) {
+        anchor.show(nil)
+    }
+}
+
+private final class RootAlertWindowAnchor: UIView {
+    private var alertWindow: UIWindow?
+    private var content: AnyView?
+
+    func show(_ content: AnyView?) {
+        self.content = content
+        update()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        update()
+    }
+
+    private func update() {
+        guard let content else {
+            alertWindow?.isHidden = true
+            alertWindow = nil
+            return
+        }
+        if let host = alertWindow?.rootViewController as? ARMSX2HostingController<AnyView> {
+            host.rootView = content
+            return
+        }
+        guard let scene = window?.windowScene else { return }
+        let host = ARMSX2HostingController(rootView: content)
+        host.view.backgroundColor = .clear
+        host.view.accessibilityViewIsModal = true
+        let alertWindow = UIWindow(windowScene: scene)
+        alertWindow.windowLevel = .alert
+        alertWindow.rootViewController = host
+        alertWindow.isHidden = false
+        self.alertWindow = alertWindow
+    }
+}
+
 private enum RootControllerAlertKind: Equatable {
     case fileImport
     case bios
@@ -635,31 +690,11 @@ struct RootView: View {
                 }
                 .zIndex(100)
             }
-
-            if let kind = activeControllerAlertKind,
-               menuScreenActive || kind.isNavigationModePrompt {
-                ControllerNavigationAlert(
-                    title: controllerAlertTitle(for: kind),
-                    message: controllerAlertMessage(for: kind),
-                    actions: controllerAlertActions(for: kind),
-                    selectedIndex: rootControllerAlertSelection,
-                    onSelect: { index in
-                        selectControllerAlertAction(index, kind: kind)
-                    },
-                    onDismiss: {
-                        dismissControllerAlert(kind)
-                    }
-                )
-                .overlay {
-                    RootControllerAlertCommandListener(
-                        controllerInput: menuControllerInput,
-                        onCommand: { command in
-                            handleControllerAlertCommand(command, kind: kind)
-                        }
-                    )
-                }
-                .zIndex(200)
-            }
+        }
+        // A sheet from the pause menu covers every layer of this view, so the
+        // prompts get a window of their own.
+        .background {
+            RootAlertWindow(content: rootControllerAlert)
         }
         .environment(\.locale, settings.appLanguage == .system ? .autoupdatingCurrent : Locale(identifier: settings.appLanguage.bcp47Code))
         .environment(\.layoutDirection, settings.localizedLayoutDirection)
@@ -917,6 +952,33 @@ struct RootView: View {
 
     private var jitAlertContent: some View {
         standardAlertContent
+    }
+
+    private var rootControllerAlert: AnyView? {
+        guard let kind = activeControllerAlertKind,
+              menuScreenActive || kind.isNavigationModePrompt else { return nil }
+        return AnyView(
+            ControllerNavigationAlert(
+                title: controllerAlertTitle(for: kind),
+                message: controllerAlertMessage(for: kind),
+                actions: controllerAlertActions(for: kind),
+                selectedIndex: rootControllerAlertSelection,
+                onSelect: { index in
+                    selectControllerAlertAction(index, kind: kind)
+                },
+                onDismiss: {
+                    dismissControllerAlert(kind)
+                }
+            )
+            .overlay {
+                RootControllerAlertCommandListener(
+                    controllerInput: menuControllerInput,
+                    onCommand: { command in
+                        handleControllerAlertCommand(command, kind: kind)
+                    }
+                )
+            }
+        )
     }
 
     private var activeControllerAlertKind: RootControllerAlertKind? {
