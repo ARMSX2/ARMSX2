@@ -653,7 +653,8 @@ final class ThemeGalleryStore {
         }
 
         let data = try Data(contentsOf: url)
-        guard Self.numbersAreInRange(try? JSONSerialization.jsonObject(with: data)),
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              Self.numbersAreInRange(object),
               let document = try? JSONDecoder().decode(
             AppearanceThemeTransferDocument.self,
             from: data
