@@ -23,10 +23,28 @@ struct SkinBrowserView: View {
     @State private var detailAlert: String?
     @State private var previewSkin: CatalogSkin?
     @State private var skinPendingRemoval: CatalogSkin?
+    @State private var showsSearchKeyboard = false
     @Environment(\.menuControllerInputRouter) private var controllerInput
 
     var body: some View {
         List {
+            if controllerInput?.isControllerNavigationEnabled == true {
+                Button {
+                    showsSearchKeyboard = true
+                } label: {
+                    Label(
+                        searchText.isEmpty ? settings.localized("Search skins") : searchText,
+                        systemImage: "magnifyingglass"
+                    )
+                }
+                .controllerAccessibilityActionTarget(
+                    id: "skin.search",
+                    label: settings.localized("Search skins")
+                ) {
+                    showsSearchKeyboard = true
+                }
+            }
+
             lastUpdatedRow
 
             if catalog.isLoading {
@@ -54,6 +72,12 @@ struct SkinBrowserView: View {
                         Text(settings.localized(option.rawValue)).tag(option)
                     }
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    id: "skin.filter",
+                    label: settings.localized("Skins"),
+                    selection: $filter,
+                    options: Filter.allCases.map { (id: $0, title: settings.localized($0.rawValue)) }
+                )
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .listRowSeparator(.hidden)
@@ -106,6 +130,19 @@ struct SkinBrowserView: View {
         }
         .sheet(item: $previewSkin) { skin in
             SkinPreviewSheet(skin: skin, controllerInput: controllerInput)
+        }
+        .fullScreenCover(isPresented: $showsSearchKeyboard) {
+            OrbitKeysKeyboardView(
+                title: settings.localized("Search skins"),
+                initialText: searchText,
+                startsInNormalKeyboard: true,
+                onCommit: { text in
+                    searchText = text
+                    showsSearchKeyboard = false
+                },
+                onCancel: { showsSearchKeyboard = false }
+            )
+            .presentationBackground(.clear)
         }
     }
 
@@ -213,7 +250,14 @@ struct SkinBrowserView: View {
         if let first = actions.first {
             links.append(.init(fromLabel: first, direction: .up, toLabel: boundary))
         }
-        return (previews + actions, links)
+        var header: [String] = []
+        if controllerInput?.isControllerNavigationEnabled == true {
+            header.append("skin.search")
+        }
+        if !catalog.skins.isEmpty {
+            header.append("skin.filter")
+        }
+        return (header + previews + actions, links)
     }
 
     private func subtitle(for skin: CatalogSkin) -> String? {

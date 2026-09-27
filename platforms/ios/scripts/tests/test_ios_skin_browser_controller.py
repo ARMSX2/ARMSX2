@@ -21,10 +21,16 @@ class SkinBrowserController(unittest.TestCase):
     def test_the_page_declares_its_columns_and_their_seam(self):
         self.assertIn("links: controllerColumns.links", self.browser)
         columns = block(self.browser, "private var controllerColumns:")
-        self.assertIn("return (previews + actions, links)", columns)
+        self.assertIn("return (header + previews + actions, links)", columns)
         for target in ('"skin.preview.', '"skin.get.', '"skin.detail.'):
             with self.subTest(target=target):
                 self.assertIn("id: " + target, self.browser)
+
+    def test_search_and_filter_are_reachable(self):
+        self.assertIn('.controllerAccessibilityOptionsPickerTarget(\n                    id: "skin.filter"',
+                      self.browser)
+        self.assertIn("OrbitKeysKeyboardView(", self.browser)
+        self.assertIn('id: "skin.search"', self.browser)
 
     def test_page_links_are_followed(self):
         self.assertIn("(directionalLinks + pageDirectionalLinks).first(",
