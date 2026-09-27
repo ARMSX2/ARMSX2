@@ -2791,6 +2791,7 @@ private struct RuntimeDiscSwapPanel: View {
 
 private struct RetroAchievementsGamePanel: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.menuControllerInputRouter) private var controllerInput
     let settings: SettingsStore
 
     @State private var entries: [RetroAchievementEntry] = []
@@ -2809,6 +2810,11 @@ private struct RetroAchievementsGamePanel: View {
                             Section(group.title) {
                                 ForEach(group.entries) { entry in
                                     RetroAchievementRow(entry: entry, settings: settings)
+                                        .controllerAccessibilityActionTarget(
+                                            id: "runtime.retro-achievements.\(entry.id)",
+                                            label: entry.title,
+                                            activationFeedback: .silent
+                                        ) {}
                                 }
                             }
                         }
@@ -2831,6 +2837,16 @@ private struct RetroAchievementsGamePanel: View {
                 refresh()
             }
         }
+        .controllerAccessibilityNavigation(
+            controllerInput: controllerInput,
+            scopeKey: "runtime.retro-achievements",
+            priority: 345,
+            onBack: {
+                dismiss()
+                return true
+            },
+            usesExplicitTargetGeometryOnly: true
+        )
     }
 
     private var summarySection: some View {
