@@ -3992,7 +3992,8 @@ void GSDeviceVK::ResolveFeatureTable()
 	// Turnip before Mesa 26.2 hangs on EARLY_Z_LATE_Z with a D32S8 attachment and a discarding shader,
 	// which is SetupDATE's stencil pre-pass (rule vk-turnip-d32s8-early-z-late-z-hang). Without a stencil
 	// buffer depth is plain D32_SFLOAT, and DATE falls back to primitive-ID tracking, then Full, then Off.
-	if (UsesMobileDriverWorkaround(DriverWorkaround::DisableStencilBuffer))
+	if (UsesMobileDriverWorkaround(DriverWorkaround::DisableStencilBuffer) ||
+		g_gs_measurement_overrides.disable_stencil_buffer)
 		m_features.stencil_buffer = false;
 
 	// Mali-G57 drivers can return stale FastMAD history; GSRenderer::Merge then weaves and blends.
@@ -4196,12 +4197,14 @@ void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool de
 	// measurement's log says which arm it is while an ordinary run says nothing.
 	if (g_gs_measurement_overrides.Any())
 	{
-		Console.WriteLn("VK: measurement overrides: loop-spelling=%s(%s; %s) declare-arm=%u depth-loop=%s",
+		Console.WriteLn("VK: measurement overrides: loop-spelling=%s(%s; %s) declare-arm=%u depth-loop=%s "
+						"stencil-buffer=%s",
 			g_gs_measurement_overrides.loop_create_flag ? "pipeline create flag" : "dynamic per draw",
 			g_gs_measurement_overrides.loop_create_flag ? "forced" : "default",
 			m_declare_loop_per_draw ? "applied" : "pipeline create flag in effect",
 			static_cast<unsigned>(g_gs_measurement_overrides.self_read_arm),
-			g_gs_measurement_overrides.declare_depth_loop ? "DECLARED" : "off");
+			g_gs_measurement_overrides.declare_depth_loop ? "DECLARED" : "off",
+			g_gs_measurement_overrides.disable_stencil_buffer ? "FORCED OFF" : "device");
 	}
 
 	DevCon.WriteLn("Optional features:%s%s%s%s%s%s", m_features.primitive_id ? " primitive_id" : "",

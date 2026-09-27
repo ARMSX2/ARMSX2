@@ -29,12 +29,20 @@ struct GSMeasurementOverrides
 	/// extension is requested at all.
 	bool loop_create_flag = false;
 
+	/// -no-stencil-buffer: create depth as plain D32F and report no stencil buffer, as a device
+	/// under DriverWorkaround::DisableStencilBuffer does (Turnip before Mesa 26.2). Puts the old
+	/// driver's destination-alpha choices on a device that has D32S8.
+	bool disable_stencil_buffer = false;
+
 	GSLoopDeclarationSpelling LoopSpelling() const
 	{
 		return loop_create_flag ? GSLoopDeclarationSpelling::PipelineCreateFlag : kDefaultLoopDeclarationSpelling;
 	}
 
-	bool Any() const { return self_read_arm != GSSelfReadArm::Off || declare_depth_loop || loop_create_flag; }
+	bool Any() const
+	{
+		return self_read_arm != GSSelfReadArm::Off || declare_depth_loop || loop_create_flag || disable_stencil_buffer;
+	}
 };
 
 inline GSMeasurementOverrides g_gs_measurement_overrides;

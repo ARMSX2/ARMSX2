@@ -1083,6 +1083,8 @@ static void PrintCommandLineHelp(const char* progname)
 						 "Dimensity 8300 in-tile framebuffer-fetch road; 'blank' restores FeatureSupport's own "
 						 "defaults, which is what the null arm reported before profiles existed. The resolved bits "
 						 "are printed at start-up. Ignored unless the renderer is nullhw.\n");
+	std::fprintf(stderr, "  -no-stencil-buffer: Vulkan only. Report no stencil buffer and create depth as plain D32F, as "
+						 "Turnip before Mesa 26.2 does, so destination-alpha tests take the no-stencil choices.\n");
 	std::fprintf(stderr, "  -swthreads <threads>: Sets the number of threads for the software renderer.\n");
 	std::fprintf(stderr, "  -upscale <multiplier>: Sets the upscale multiplier, e.g. 1 for native or 2 for 2x. Minimum 0.5.\n");
 	std::fprintf(stderr, "  -renderhacks [af|cpufb|dds|dpi|dsf|tinrt|plf]: Enable user hacks -- auto flush, CPU framebuffer "
@@ -1739,6 +1741,15 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// Not a setting: it drops the barriers on request, which breaks blending on a desktop
 				// GPU. Read once in CheckFeatures, before anything that bakes the spelling in.
 				Console.WriteLn(fmt::format("Declaring the attachment feedback loop, arm {}", arm_arg));
+				continue;
+			}
+			else if (CHECK_ARG("-no-stencil-buffer"))
+			{
+				// Not a setting: whether a device may have a stencil buffer is a driver fact
+				// (vk-turnip-d32s8-early-z-late-z-hang). This puts that driver's destination-alpha
+				// choices on a device that has D32S8, for an A/B on one binary.
+				g_gs_measurement_overrides.disable_stencil_buffer = true;
+				Console.WriteLn("Forcing the stencil buffer off (depth as plain D32F)");
 				continue;
 			}
 			else if (CHECK_ARG("-declare-depth-feedback-loop"))
