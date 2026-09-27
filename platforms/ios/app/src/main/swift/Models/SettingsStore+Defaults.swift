@@ -198,6 +198,7 @@ extension SettingsStore {
         clearLiquidGlassUIPerGameSettingsEmulation = false
         gameCardZoomAnimationEnabled = true
         favoriteGlowingEffectEnabled = false
+        gameMenuCoverColoursEnabled = true
         hideGameplayStatusBar = true
         hideIntroStatusBar = true
         hideMenuStatusBar = false

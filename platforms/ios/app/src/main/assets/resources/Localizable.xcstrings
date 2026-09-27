@@ -4407,6 +4407,9 @@
         }
       }
     },
+    "Cover Colours in Game Menus" : {
+      "extractionState" : "manual"
+    },
     "Cover Result" : {
       "extractionState" : "manual",
       "localizations" : {
