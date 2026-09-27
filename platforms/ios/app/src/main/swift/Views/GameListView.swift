@@ -2277,6 +2277,7 @@ struct GameListView: View {
     @Environment(\.uiCriticalTextColour) private var criticalTextColour
     @State private var showRestartAlert = false
     @State private var showStopAlert = false
+    @State private var stopConfirmationAnchor: StopConfirmationAnchor?
     @State private var showCoverTemplateEditor = false
     @State private var showGameReplacementAlert = false
     @State private var catalogSkinInstallTask: Task<Void, Never>?
@@ -3130,6 +3131,8 @@ struct GameListView: View {
                 }
 
             }
+            .environment(\.stopConfirmationPresented, showStopAlert)
+            .onPreferenceChange(StopConfirmationAnchorKey.self) { stopConfirmationAnchor = $0 }
             .overlay {
                 if controllerLayoutMenuPresented {
                     ControllerNavigationAlert(
@@ -3168,7 +3171,15 @@ struct GameListView: View {
                 }
             }
             .overlay {
-                if let kind = activeControllerAlertKind,
+                if activeControllerAlertKind == .stop {
+                    StopGameConfirmation(
+                        gameTitle: displayTitle(forRunningName: displayedRunningGameName ?? ""),
+                        anchor: stopConfirmationAnchor,
+                        selectedIndex: controllerAlertSelectedIndex,
+                        onSelect: { performControllerAlertAction($0, for: .stop) },
+                        onDismiss: { dismissControllerAlert(.stop) }
+                    )
+                } else if let kind = activeControllerAlertKind,
                    kind != .automaticCustomSkin {
                     ControllerNavigationAlert(
                         title: controllerAlertTitle(for: kind),
@@ -7032,7 +7043,7 @@ struct GameListView: View {
         }
         if let entry = games.first(where: { $0.bootName == name || $0.name == name }) {
             let title = entry.metadata["title"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return title.isEmpty ? entry.name : title
+            return title.isEmpty ? Self.cleanGameFileName(entry.name) : title
         }
         return Self.cleanGameFileName(name)
     }
@@ -7078,7 +7089,7 @@ struct GameListView: View {
 
     /// Last path component with its disc extension (`.iso`, `.bin`, `.cue`, …) removed,
     /// used when no matching library entry is available.
-    private static func cleanGameFileName(_ value: String) -> String {
+    static func cleanGameFileName(_ value: String) -> String {
         let fileName = (value as NSString).lastPathComponent
         guard !fileName.isEmpty else { return value }
         return (fileName as NSString).deletingPathExtension
@@ -8161,6 +8172,7 @@ struct GameListView: View {
                     }
                     .buttonStyle(.bordered)
                     .modifier(nowRunningControllerFocus(.stop))
+                    .stopConfirmationSource()
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }
@@ -8234,6 +8246,7 @@ struct GameListView: View {
                     }
                     .buttonStyle(.bordered)
                     .modifier(nowRunningControllerFocus(.stop))
+                    .stopConfirmationSource()
                 }
                 .controlSize(metrics.isCompact ? .small : .regular)
                 .transition(.opacity.combined(with: .scale(scale: 0.9)))
@@ -8264,6 +8277,7 @@ struct GameListView: View {
             materializeTransition: true,
             cornerRadius: metrics.cornerRadius
         )
+        .stopConfirmationCard()
     }
 
 	@ViewBuilder
