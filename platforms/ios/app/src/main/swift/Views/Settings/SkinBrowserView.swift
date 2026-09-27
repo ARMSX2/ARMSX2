@@ -93,13 +93,15 @@ struct SkinBrowserView: View {
                 skinRow(skin)
             }
         }
-        // Pin this to the drawer. Left alone, iOS 26 puts the field at the
-        // bottom of the screen, which is where our tab bar lives, and the bar
-        // wins on z order. Always rather than automatic, so the field is
-        // sitting there instead of needing a pull down to find it.
+        // Pinned to the drawer, since iOS 26 otherwise puts it at the bottom under our tab bar.
+        // Always for touch, so it needs no pull down; automatic in controller mode, where the
+        // Search skins row replaces it and a pad can't pull it down.
         .searchable(
             text: $searchText,
-            placement: .navigationBarDrawer(displayMode: .always),
+            placement: .navigationBarDrawer(
+                displayMode: controllerInput?.isControllerNavigationEnabled == true
+                    ? .automatic : .always
+            ),
             prompt: Text(settings.localized("Search skins"))
         )
         .navigationTitle(settings.localized("Skins"))
