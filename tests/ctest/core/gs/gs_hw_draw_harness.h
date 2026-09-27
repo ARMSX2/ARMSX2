@@ -111,7 +111,14 @@ namespace GSHWDrawHarness
 			m_cb_vs = config.cb_vs;
 			m_ps = config.ps;
 			m_topology = config.topology;
+			m_destination_alpha = config.destination_alpha;
+			m_require_one_barrier = config.require_one_barrier;
+			m_require_full_barrier = config.require_full_barrier;
 		}
+
+		/// The feature bits the renderer reads per draw, for a test that puts the device on a road
+		/// the None profile does not describe. Set after BringUp().
+		FeatureSupport& MutableFeatures() { return m_features; }
 
 		// What the device claims to be. The back thread only engages behind a Vulkan device, so a
 		// test that needs the pipelined front parser has this say Vulkan.
@@ -124,6 +131,9 @@ namespace GSHWDrawHarness
 		GSHWDrawConfig::VSConstantBuffer m_cb_vs;
 		GSHWDrawConfig::PSSelector m_ps;
 		GSHWDrawConfig::Topology m_topology = GSHWDrawConfig::Topology::Triangle;
+		GSHWDrawConfig::DestinationAlphaMode m_destination_alpha = GSHWDrawConfig::DestinationAlphaMode::Off;
+		bool m_require_one_barrier = false;
+		bool m_require_full_barrier = false;
 	};
 
 	class Renderer final : public GSRendererHW

@@ -16,6 +16,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_field_shift_policy_tests.cpp
 	gs_framebuffer_fetch_policy_tests.cpp
 	gs_draw_road_tests.cpp
+	gs_date_road_tests.cpp
 	gs_copy_road_blending_tests.cpp
 	gs_native_texel_grid_tests.cpp
 	gs_self_read_road_tests.cpp
