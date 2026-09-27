@@ -70,6 +70,8 @@ private final class SkinReplaceGate {
 }
 
 struct VirtualPadSettingsView: View {
+    let onOpenPane: (SettingsPane) -> Void
+
     @State private var settings = SettingsStore.shared
     @State private var dynamicSettings = DynamicThumbstickSettings.shared
     @State private var layoutPresets = PadLayoutPresetStore.shared
@@ -92,6 +94,10 @@ struct VirtualPadSettingsView: View {
     @State private var skinReplacePrompt: SkinReplacePrompt?
     @State private var skinReplaceGate = SkinReplaceGate()
     @State private var automaticFireBlockedByHardcore = false
+
+    init(onOpenPane: @escaping (SettingsPane) -> Void = { _ in }) {
+        self.onOpenPane = onOpenPane
+    }
 
     var body: some View {
         Form {
@@ -171,7 +177,12 @@ struct VirtualPadSettingsView: View {
                 NavigationLink(value: SettingsPane.skinBrowser) {
                     Label("Browse Skins", systemImage: "square.grid.2x2")
                 }
-                .controllerAccessibilityTargetID(settings.localized("Browse Skins"))
+                .controllerAccessibilityActionTarget(
+                    id: settings.localized("Browse Skins"),
+                    label: settings.localized("Browse Skins")
+                ) {
+                    onOpenPane(.skinBrowser)
+                }
 
                 Text("Import loose PNG/JPG/WebP button images, a full portrait/landscape controller image, or a zipped skin pack. Button files can be named cross, circle, square, triangle, up, down, left, right, L1, R1, L2, R2, start, select, analog_base, or analog_stick.")
                     .font(.caption)

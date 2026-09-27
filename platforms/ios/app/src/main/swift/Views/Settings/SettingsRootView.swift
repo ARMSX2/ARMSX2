@@ -1394,6 +1394,11 @@ struct SettingsRootView: View {
             )
     }
 
+    private func openPane(_ pane: SettingsPane) {
+        guard navigationPath.last != pane else { return }
+        navigationPath.append(pane)
+    }
+
     @ViewBuilder
     private func settingsDetail(for pane: SettingsPane?) -> some View {
         switch pane {
@@ -1424,20 +1429,17 @@ struct SettingsRootView: View {
         case .retroAchievements:
             RetroAchievementsSettingsView()
         case .customSkin:
-            VirtualPadSettingsView()
+            VirtualPadSettingsView(onOpenPane: openPane)
         case .overlay:
             OverlaySettingsView()
         case .gameController:
-            GamepadSettingsView { pane in
-                guard navigationPath.last != pane else { return }
-                navigationPath.append(pane)
-            }
+            GamepadSettingsView(onOpenPane: openPane)
         case .controllerMacros:
             ControllerMacrosSettingsView()
         case .localMultiplayer:
             LocalMultiplayerSettingsView()
         case .virtualPad:
-            VirtualPadSettingsView()
+            VirtualPadSettingsView(onOpenPane: openPane)
         case .help:
             HelpView()
         case .licenses:
