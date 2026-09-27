@@ -10204,7 +10204,9 @@ private struct GameInfoPanel: View {
                         .textSelection(.enabled)
                 }
             }
+            .scrollContentBackground(.hidden)
             .navigationTitle(settings.localized("Game Info"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(settings.localized("Done")) {
@@ -10213,6 +10215,7 @@ private struct GameInfoPanel: View {
                 }
             }
         }
+        .glassSurface(clear: false, cornerRadius: 26)
     }
 
     private var regionDisplay: String {
@@ -10252,6 +10255,7 @@ private struct DiscLinkPicker: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
             .navigationTitle(settings.localized("Disc Path"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -10260,6 +10264,7 @@ private struct DiscLinkPicker: View {
                 }
             }
         }
+        .glassSurface(clear: false, cornerRadius: 26)
     }
 }
 
