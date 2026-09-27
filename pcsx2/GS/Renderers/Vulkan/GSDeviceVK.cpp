@@ -8509,6 +8509,7 @@ void GSDeviceVK::BeginRenderPass(VkRenderPass rp, const GSVector4i& rect)
 		EndRenderPass();
 
 	m_current_render_pass = rp;
+	m_loop_declared_in_pass = false;
 	m_current_render_pass_area = rect;
 	CountRenderPassArea(rect);
 
@@ -8536,6 +8537,7 @@ void GSDeviceVK::BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, c
 		EndRenderPass();
 
 	m_current_render_pass = rp;
+	m_loop_declared_in_pass = false;
 	m_current_render_pass_area = rect;
 	CountRenderPassArea(rect);
 
@@ -9665,8 +9667,13 @@ void GSDeviceVK::DeclareDrawFeedbackLoop(const GSHWDrawConfig& config, const Pip
 
 	// ⚠️ Issued after the pipeline bind, every draw, deliberately. The Mesa runtime resets this
 	// value while filling a bound pipeline's static state, so a value set once per pass would be
-	// gone by the second draw. VK_IMAGE_ASPECT_NONE is the legal way to say "no loop".
-	vkCmdSetAttachmentFeedbackLoopEnableEXT(GetCurrentCommandBuffer(), aspects);
+	// gone by the second draw. VK_IMAGE_ASPECT_NONE is the legal way to say "no loop". The first
+	// reader of a pass writes it twice; see GSLoopEnableWritesForDraw.
+	const GSLoopEnableWrites writes = GSLoopEnableWritesForDraw(aspects, m_loop_declared_in_pass);
+	for (u32 i = 0; i < writes.count; i++)
+		vkCmdSetAttachmentFeedbackLoopEnableEXT(GetCurrentCommandBuffer(), writes.values[i]);
+	if (aspects != 0)
+		m_loop_declared_in_pass = true;
 }
 
 void GSDeviceVK::SendHWDraw(const GSHWDrawConfig& config, GSTextureVK* draw_rt, GSTextureVK* draw_ds,

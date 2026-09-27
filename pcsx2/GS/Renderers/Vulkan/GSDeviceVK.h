@@ -147,6 +147,8 @@ public:
 	// exists -- a pipeline's dynamic-state list cannot be changed afterwards -- and read in
 	// CreateTFXPipeline and per draw in DoRenderHW.
 	bool m_declare_loop_per_draw = false;
+	// A draw in the current render pass has declared a feedback loop (GSLoopEnableWritesForDraw).
+	bool m_loop_declared_in_pass = false;
 
 	// Take the attachment-feedback-loop spelling even on a device that advertises
 	// rasterization-order attachment access. Decided by GSSelfReadRoadPolicy.h, written once in
