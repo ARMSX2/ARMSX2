@@ -120,6 +120,11 @@ struct ControllerGameContextMenu: View {
         .environment(\.clearLiquidGlassUIEnabled, false)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Context Menu for \(game.displayName)")
+        .accessibilityAddTraits(.isModal)
+        .accessibilityAction(.escape) {
+            feedbackInput?.playFeedback(.back)
+            onDismiss()
+        }
         .onAppear {
             // Presentation itself is tactile even when a long press came from
             // a separate UIKit gesture recognizer. Audio stays at the state
@@ -654,6 +659,11 @@ struct ControllerNavigationAlert: View {
         .zIndex(20_000)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
+        .accessibilityAddTraits(.isModal)
+        .accessibilityAction(.escape) {
+            controllerInput?.playFeedback(.back)
+            onDismiss()
+        }
         .onAppear {
             // Every app-owned prompt gets a lightweight presentation pulse;
             // its owner remains responsible for the semantic sound (toast,

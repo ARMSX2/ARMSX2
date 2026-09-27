@@ -80,6 +80,7 @@ private enum RootControllerAlertKind: Equatable {
     case jitInitial
     case jitFinal
     case navigationMode(MenuNavigationInputMode)
+    case libraryExport
 
     var isJITWarning: Bool {
         self == .jitInitial || self == .jitFinal
@@ -832,7 +833,7 @@ struct RootView: View {
             // toast sound in most paths; the audio coalescer makes this safe for
             // the remaining direct BIOS-disclaimer path.
             switch kind {
-            case .fileImport, .bios, .restartVM:
+            case .fileImport, .bios, .restartVM, .libraryExport:
                 MenuAudioPackManager.shared.playEvent(.uiToast)
             case .jitInitial, .jitFinal:
                 break
@@ -866,11 +867,6 @@ struct RootView: View {
             // exclusively on the selected tab's onDisappear ordering.
             GameLibraryRuntimeResources.releaseForGameplay()
             PatchStore.shared.releasePresentationResources()
-        }
-        .onOpenURL { url in
-            if !ARMSX2DeepLinkHandler.handle(url) {
-                fileImporter.handleURL(url)
-            }
         }
     }
 
@@ -936,6 +932,7 @@ struct RootView: View {
         if appState.pendingRestartGame != nil { return .restartVM }
         if fileImporter.showImportAlert { return .fileImport }
         if appState.bootDisclaimerMessage != nil { return .bios }
+        if appState.pendingLibraryExport != nil { return .libraryExport }
         return nil
     }
 
@@ -1002,6 +999,8 @@ struct RootView: View {
             settings.localized("Use Controller Navigation?")
         case .navigationMode(.touch):
             settings.localized("Use Touch Navigation?")
+        case .libraryExport:
+            settings.localized("Send your game library?")
         }
     }
 
@@ -1032,6 +1031,14 @@ struct RootView: View {
         case .navigationMode(.touch):
             settings.localized(
                 "Touch navigation will release controller focus and unload its inactive focus and scroll resources."
+            )
+        case .libraryExport:
+            String(
+                format: settings.localized(
+                    "A link is asking for the name, serial and CRC of every game you have.\nSend that list to %@?"
+                ),
+                URL(string: appState.pendingLibraryExport ?? "")?.host
+                    ?? appState.pendingLibraryExport ?? ""
             )
         }
     }
@@ -1067,6 +1074,15 @@ struct RootView: View {
                 .init(
                     id: "do-not-ask-again",
                     title: settings.localized("Do Not Ask Again")
+                ),
+            ]
+        case .libraryExport:
+            [
+                .init(id: "cancel", title: settings.localized("Cancel")),
+                .init(
+                    id: "send",
+                    title: settings.localized("Send"),
+                    isDestructive: true
                 ),
             ]
         }
@@ -1166,6 +1182,12 @@ struct RootView: View {
                     restoreControllerFocusAfterModeHandoff()
                 }
             }
+        case .libraryExport:
+            if index == 1, let callback = appState.pendingLibraryExport {
+                ARMSX2DeepLinkHandler.performLibraryExport(callback: callback)
+            }
+            appState.pendingLibraryExport = nil
+            menuControllerInput.playFeedback(index == 1 ? .activate : .back)
         }
     }
 
@@ -1192,7 +1214,7 @@ struct RootView: View {
     private func dismissControllerAlert(_ kind: RootControllerAlertKind) {
         guard activeControllerAlertKind == kind else { return }
         switch kind {
-        case .fileImport, .bios, .restartVM:
+        case .fileImport, .bios, .restartVM, .libraryExport:
             closeControllerAlert(kind, feedback: .back)
         case .jitInitial, .jitFinal:
             showNoJITFinalConfirmation = false
@@ -1221,6 +1243,8 @@ struct RootView: View {
             appState.cancelPendingJITGameBoot()
         case .navigationMode(let mode):
             menuControllerInput.cancelNavigationModeSwitch(mode)
+        case .libraryExport:
+            appState.pendingLibraryExport = nil
         }
         menuControllerInput.playFeedback(feedback)
     }
@@ -1787,6 +1811,7 @@ struct MenuTabView: View {
                                     gameRenamePresented = $0
                                 }
                             )
+                            .dynamicTypeSize(...DynamicTypeSize.accessibility3)
                         case 1:
                             BIOSListView(
                                 controllerInput: activeControllerInput,
@@ -1833,6 +1858,8 @@ struct MenuTabView: View {
                                             gameRenamePresented = $0
                                         }
                                     )
+                                        // Past AX3 the favorite star covers the cover art.
+                                        .dynamicTypeSize(...DynamicTypeSize.accessibility3)
                                         .environment(\.menuTabIsActive, true)
                                         .environment(
                                             \.menuLargeTitleIsSource,

@@ -61,7 +61,7 @@ final class InitialContentBootstrap {
             UserDefaults.standard.set(displayName, forKey: Self.displayNameKey)
             selectedFolderName = displayName
 
-            return await importContents(from: selectedURL)
+            return await importContents(from: selectedURL, importsLogoAndAudioPack: true)
         } catch {
             NSLog(
                 "[ARMSX2 iOS Folder] selection failed path=%@ securityScoped=%d error=%@",
@@ -118,7 +118,7 @@ final class InitialContentBootstrap {
                 NSLog("[ARMSX2 iOS Folder] refreshed stale bookmark path=%@", rootURL.path)
             }
 
-            return await importContents(from: rootURL)
+            return await importContents(from: rootURL, importsLogoAndAudioPack: false)
         } catch {
             NSLog("[ARMSX2 iOS Folder] bookmark scan failed error=%@", error.localizedDescription)
             return "The saved ARMSX2 folder could not be opened. Select it again to renew access.\n\(error.localizedDescription)"
@@ -161,7 +161,10 @@ final class InitialContentBootstrap {
         UserDefaults.standard.set(bookmarkData, forKey: Self.bookmarkKey)
     }
 
-    private func importContents(from rootDirectory: URL) async -> String {
+    private func importContents(
+        from rootDirectory: URL,
+        importsLogoAndAudioPack: Bool
+    ) async -> String {
         let biosDirectory = URL(
             fileURLWithPath: ARMSX2Bridge.biosDirectory(),
             isDirectory: true
@@ -184,8 +187,13 @@ final class InitialContentBootstrap {
         // the shared library invalidated until the tab mounts again.
         BIOSLibraryState.shared.markNeedsRefresh()
         let appliedPresets = applyPresetFiles(named: preparation.presetNames)
-        let logoImport = importLogoImage(preparation.logoImage)
-        let audioPackImport = await importAudioPackArchive(preparation.audioPackArchive)
+        // A rescan must not bring back a removed logo or reset the menu sounds.
+        let logoImport = importLogoImage(
+            importsLogoAndAudioPack ? preparation.logoImage : nil
+        )
+        let audioPackImport = await importAudioPackArchive(
+            importsLogoAndAudioPack ? preparation.audioPackArchive : nil
+        )
         let skinImport = await importSkinArchives(preparation.skinArchives)
         NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
 
@@ -242,6 +250,9 @@ final class InitialContentBootstrap {
         }
         if let selectedDefaultName = skinImport.selectedDefaultName {
             summary.append("Default skin and layout: \(selectedDefaultName).")
+        }
+        guard importsLogoAndAudioPack else {
+            return summary.joined(separator: "\n")
         }
         if logoImport.imported {
             summary.append("Logo: PRESETS/logo.png imported.")
