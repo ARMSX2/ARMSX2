@@ -209,10 +209,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${ARMSX2_CODE_SIGN_ENTITLEMENTS}"
 			XCODE_ATTRIBUTE_SWIFT_OBJC_BRIDGING_HEADER "${CMAKE_SOURCE_DIR}/ARMSX2-Bridging-Header.h"
 			XCODE_ATTRIBUTE_SWIFT_VERSION "6.0"
-			# Keep optimized Swift emission per-file. This avoids excessive
-			# frontend memory use in the large SwiftUI target on recent Xcode.
-			XCODE_ATTRIBUTE_SWIFT_COMPILATION_MODE "singlefile"
-			XCODE_ATTRIBUTE_SWIFT_ENABLE_BATCH_MODE "NO"
+			# Debug compiles Swift per file; Release is whole-module, as on base. If a
+			# Release build runs out of frontend memory, per-file goes back for Release.
+			XCODE_ATTRIBUTE_SWIFT_COMPILATION_MODE "$<IF:$<CONFIG:Debug>,singlefile,wholemodule>"
+			XCODE_ATTRIBUTE_SWIFT_ENABLE_BATCH_MODE "$<IF:$<CONFIG:Debug>,NO,YES>"
 			XCODE_ATTRIBUTE_CLANG_ENABLE_MODULES "YES"
 			XCODE_ATTRIBUTE_ENABLE_ON_DEMAND_RESOURCES "NO"
 			XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "@executable_path/Frameworks /usr/lib/swift"
