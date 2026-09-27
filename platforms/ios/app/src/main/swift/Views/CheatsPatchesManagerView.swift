@@ -108,17 +108,6 @@ struct CheatsPatchesManagerView: View {
         NavigationStack {
             ScrollViewReader { proxy in
                 Form {
-                    ControllerRightStickScrollTarget(
-                        controllerInput: controllerInput,
-                        axes: .vertical,
-                        manualCaptureOwner:
-                            MenuControllerNavigationCaptureOwner.cheatsPatchesManager,
-                        priority: 90
-                    )
-                    .frame(height: 0)
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
                     gameSection
                     if capabilityMessage != nil {
                         capabilitySection
@@ -317,6 +306,17 @@ struct CheatsPatchesManagerView: View {
                     .font(.headline)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityAddTraits(.isHeader)
+                    // A row of its own for this marker left an empty band above the title.
+                    .background {
+                        ControllerRightStickScrollTarget(
+                            controllerInput: controllerInput,
+                            axes: .vertical,
+                            manualCaptureOwner:
+                                MenuControllerNavigationCaptureOwner.cheatsPatchesManager,
+                            priority: 90
+                        )
+                        .frame(height: 0)
+                    }
             }
         }
     }

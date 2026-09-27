@@ -3833,7 +3833,7 @@ struct GameListView: View {
             .fullScreenCover(item: $cheatsManagerTarget) { game in
                 GameLibraryForegroundPanel(
                     maximumWidth: 980,
-                    maximumHeight: 780,
+                    maximumHeight: 700,
                     onDismiss: { cheatsManagerTarget = nil }
                 ) {
                     CheatsPatchesManagerView(
