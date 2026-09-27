@@ -29,6 +29,7 @@ enum QuickMenuDestination: Equatable {
 /// otherwise. Resume is pinned inside the panel footer so it never detaches or hides rows.
 struct QuickMenuView: View {
     @State private var showStopConfirmation = false
+    @State private var stopConfirmationAnchor: StopConfirmationAnchor?
     @Environment(\.menuControllerInputRouter) private var controllerInput
 
     let settings: SettingsStore
@@ -109,24 +110,11 @@ struct QuickMenuView: View {
                     )
 
                 if showStopConfirmation {
-                    ControllerNavigationAlert(
-                        title: settings.localized("Stop Emulation?"),
-                        message: settings.localized(
-                            "This will shut down the running game. All unsaved progress will be lost."
-                        ),
-                        actions: [
-                            .init(
-                                id: "cancel",
-                                title: settings.localized("Cancel")
-                            ),
-                            .init(
-                                id: "stop",
-                                title: settings.localized("Stop"),
-                                isDestructive: true,
-                                activationFeedback: .silent
-                            ),
-                        ],
+                    StopGameConfirmation(
+                        gameTitle: GameListView.cleanGameFileName(gameTitle ?? ""),
+                        anchor: stopConfirmationAnchor,
                         selectedIndex: 0,
+                        stopFeedback: .silent,
                         onSelect: { index in
                             if index == 0 {
                                 showStopConfirmation = false
@@ -140,6 +128,8 @@ struct QuickMenuView: View {
                     )
                 }
             }
+                .environment(\.stopConfirmationPresented, showStopConfirmation)
+                .onPreferenceChange(StopConfirmationAnchorKey.self) { stopConfirmationAnchor = $0 }
                 .controllerAccessibilityTargetOrder(
                     showStopConfirmation
                         ? []
@@ -1020,6 +1010,7 @@ private struct QuickMenuStopButton: View {
         }
         .buttonStyle(.plain)
         .contentShape(Circle())
+        .stopConfirmationSource()
         .accessibilityLabel(accessibilityLabel)
         .controllerAccessibilityActionTarget(
             id: controllerNavigationID,

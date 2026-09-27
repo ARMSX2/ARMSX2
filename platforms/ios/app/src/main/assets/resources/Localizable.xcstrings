@@ -23381,6 +23381,9 @@
         }
       }
     },
+    "Stop %@?" : {
+      "extractionState" : "manual"
+    },
     "Stop Emulation" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -23450,6 +23453,9 @@
           }
         }
       }
+    },
+    "Stop Game" : {
+      "extractionState" : "manual"
     },
     "Stop this game before deleting it." : {
       "extractionState" : "manual",
@@ -26261,6 +26267,9 @@
           }
         }
       }
+    },
+    "Unsaved progress will be lost." : {
+      "extractionState" : "manual"
     },
     "unread" : {
       "extractionState" : "manual",
