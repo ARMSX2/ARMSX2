@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/GS.h"
+#include "GS/GSCacheFile.h"
 #include "GS/GSCompileStats.h"
 #include "GS/GSShaderCompileIndicator.h"
 #include "GS/GSGL.h"
@@ -56,7 +57,6 @@ namespace
 #include "common/Error.h"
 #include "common/FileSystem.h"
 #include "common/HostSys.h"
-#include "common/MD5Digest.h"
 #include "common/Path.h"
 #include "common/ScopedGuard.h"
 #include "common/Threading.h"
@@ -7590,28 +7590,16 @@ VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 namespace
 {
 #pragma pack(push, 4)
-	struct TFXKeyFileHeader
-	{
-		static constexpr u32 MAGIC = 0x59454B50; // "PKEY"
-		static constexpr u32 FORMAT = 2;
-
-		u32 magic;
-		u32 format;
-		u32 shader_cache_version;
-		u32 key_size;
-		u8 fingerprint[16];
-		/// Incremented each time the game starts with this file.
-		u32 session;
-	};
-
 	struct TFXKeyFileRecord
 	{
 		GSDeviceVK::PipelineSelector key;
 		/// The last session that drew with this key.
 		u32 last_session;
-		u32 pad;
+		/// GSCacheFile::SealRecord's checksum of the fields above.
+		u32 checksum;
 	};
 #pragma pack(pop)
+	static constexpr u32 TFX_KEY_RECORD_SIZE = sizeof(TFXKeyFileRecord);
 
 	/// Keys drawn with in this many of the game's most recent sessions are built ahead of use; older
 	/// ones stay in the file but cost no memory. A key not drawn with in KEEP_SESSIONS is dropped.
@@ -7629,9 +7617,10 @@ namespace
 		return (GetPhysicalMemory() >= 6 * GB) ? 2048 : 768;
 	}
 
-	/// Keys come from a file this code wrote under the same fingerprint, so these hold unless the file
-	/// is damaged or the selector layout changed without a SHADER_CACHE_VERSION bump. Every field that
-	/// indexes a table or names an enum is checked, and every bit a real key leaves zero.
+	/// Keys come from a file this build wrote (the stamp holds the build identity) and each record
+	/// passed its checksum, so these always hold. They are checked anyway, since a bad key would be
+	/// compiled on a worker thread: every field that indexes a table or names an enum, and every bit
+	/// a real key leaves zero.
 	static bool IsLoadableTFXKey(const GSDeviceVK::PipelineSelector& p)
 	{
 		return p.topology <= static_cast<u32>(GSHWDrawConfig::Topology::Triangle) && (p.key >> 8) == 0 &&
@@ -7692,64 +7681,69 @@ void GSDeviceVK::SetGameIdentity(const std::string& serial, u32 crc)
 	if (!FileSystem::EnsureDirectoryExists(dir.c_str(), false))
 		return;
 
-	TFXKeyFileHeader header = {};
-	header.magic = TFXKeyFileHeader::MAGIC;
-	header.format = TFXKeyFileHeader::FORMAT;
-	header.shader_cache_version = SHADER_CACHE_VERSION;
-	header.key_size = sizeof(PipelineSelector);
-	{
-		const std::string fingerprint = GetTFXPipelineKeyFingerprint();
-		MD5Digest digest;
-		digest.Update(fingerprint.data(), static_cast<u32>(fingerprint.size()));
-		digest.Final(header.fingerprint);
-	}
+	// The build identity is in the stamp because what a key means is defined by this build's code:
+	// a list from another build could name pipelines no draw of this one produces, or ones that do
+	// not compile. The device configuration is in the file name as well, so a switch of driver
+	// family or of a covered setting keeps both lists; the driver version is not, so a driver update
+	// keeps the list, which is the point of it.
+	const std::string fingerprint = GetTFXPipelineKeyFingerprint();
+	const GSCacheFile::Digest fingerprint_digest = GSCacheFile::Hash128(fingerprint.data(), fingerprint.size());
+	GSCacheFile::Stamp stamp;
+	stamp.Add("build", GSCacheFile::GetBuildId());
+	stamp.Add("device", fingerprint);
 
-	// One file per game and device configuration, so a switch of driver family or of a setting the
-	// fingerprint covers keeps both lists instead of emptying one.
 	const std::string path = Path::Combine(dir,
 		Path::SanitizeFileName(fmt::format("{}_{:08X}_{:02x}{:02x}{:02x}{:02x}{}.bin", serial, crc,
-			header.fingerprint[0], header.fingerprint[1], header.fingerprint[2], header.fingerprint[3],
-			GSConfig.UseDebugDevice ? "_debug" : "")));
+			fingerprint_digest.bytes[0], fingerprint_digest.bytes[1], fingerprint_digest.bytes[2],
+			fingerprint_digest.bytes[3], GSConfig.UseDebugDevice ? "_debug" : "")));
 
 	// Read what the last sessions recorded, drop what has gone stale, and write it back with this
-	// session's number. A torn record at the end (a kill mid-append) is dropped here.
+	// session's number. A record that fails its checksum, or a torn one at the end, is dropped here.
 	std::vector<TFXKeyFileRecord> records;
 	u32 session = 1;
-	if (std::optional<std::vector<u8>> data = FileSystem::ReadBinaryFile(path.c_str());
-		data.has_value() && data->size() >= sizeof(TFXKeyFileHeader) &&
-		std::memcmp(data->data(), &header, offsetof(TFXKeyFileHeader, session)) == 0)
+	if (std::optional<std::vector<u8>> data = FileSystem::ReadBinaryFile(path.c_str()); data.has_value())
 	{
-		u32 last_session;
-		std::memcpy(&last_session, data->data() + offsetof(TFXKeyFileHeader, session), sizeof(last_session));
-		session = last_session + 1;
-		const size_t count = (data->size() - sizeof(TFXKeyFileHeader)) / sizeof(TFXKeyFileRecord);
-		records.reserve(count);
-		for (size_t i = 0; i < count; i++)
+		u64 last_session = 0;
+		u32 dropped = 0;
+		std::vector<std::vector<u8>> raw;
+		const GSCacheFile::ReadResult res = GSCacheFile::ParseRecordFile(
+			*data, GSCacheFile::KIND_VK_PIPELINE_KEYS, stamp, TFX_KEY_RECORD_SIZE, &last_session, &raw, &dropped);
+		if (res != GSCacheFile::ReadResult::Ok)
 		{
-			TFXKeyFileRecord rec;
-			std::memcpy(&rec, data->data() + sizeof(TFXKeyFileHeader) + i * sizeof(TFXKeyFileRecord), sizeof(rec));
-			if (rec.last_session >= session || session - rec.last_session > KEEP_SESSIONS ||
-				!IsLoadableTFXKey(rec.key) || m_recorded_tfx_keys.find(rec.key) != m_recorded_tfx_keys.end())
+			INFO_LOG("Vulkan: discarding the pipeline key list '{}': {}", Path::GetFileName(path),
+				GSCacheFile::ReadResultString(res));
+		}
+		else
+		{
+			if (dropped > 0)
+				WARNING_LOG("Vulkan: {} damaged records in the pipeline key list '{}'", dropped, Path::GetFileName(path));
+			session = static_cast<u32>(last_session) + 1;
+			records.reserve(raw.size());
+			for (const std::vector<u8>& bytes : raw)
 			{
-				continue;
+				TFXKeyFileRecord rec;
+				std::memcpy(&rec, bytes.data(), sizeof(rec));
+				if (rec.last_session >= session || session - rec.last_session > KEEP_SESSIONS ||
+					!IsLoadableTFXKey(rec.key) || m_recorded_tfx_keys.find(rec.key) != m_recorded_tfx_keys.end())
+				{
+					continue;
+				}
+				m_recorded_tfx_keys.emplace(rec.key, RecordedTFXKey{static_cast<u32>(records.size()), rec.last_session});
+				records.push_back(rec);
 			}
-			m_recorded_tfx_keys.emplace(rec.key, RecordedTFXKey{static_cast<u32>(records.size()), rec.last_session});
-			records.push_back(rec);
 		}
 	}
-	header.session = session;
 	m_tfx_key_session = session;
 
-	const std::string tmp_path = path + ".tmp";
 	{
-		std::vector<u8> out(sizeof(header) + records.size() * sizeof(TFXKeyFileRecord));
-		std::memcpy(out.data(), &header, sizeof(header));
+		std::vector<u8> out = GSCacheFile::MakeRecordFileHeader(
+			GSCacheFile::KIND_VK_PIPELINE_KEYS, stamp, TFX_KEY_RECORD_SIZE, session);
+		const size_t header_size = out.size();
+		out.resize(header_size + records.size() * sizeof(TFXKeyFileRecord));
 		if (!records.empty())
-			std::memcpy(out.data() + sizeof(header), records.data(), records.size() * sizeof(TFXKeyFileRecord));
-		if (!FileSystem::WriteBinaryFile(tmp_path.c_str(), out.data(), out.size()) ||
-			!FileSystem::RenamePath(tmp_path.c_str(), path.c_str()))
+			std::memcpy(out.data() + header_size, records.data(), records.size() * sizeof(TFXKeyFileRecord));
+		if (!GSCacheFile::WriteFileAtomic(path, out.data(), out.size()))
 		{
-			FileSystem::DeleteFilePath(tmp_path.c_str());
 			m_recorded_tfx_keys.clear();
 			ERROR_LOG("Vulkan: could not write the pipeline key file '{}'", path);
 			return;
@@ -7911,8 +7905,10 @@ void GSDeviceVK::RecordTFXPipelineKey(const PipelineSelector& p)
 		return;
 
 	const u32 index = (it != m_recorded_tfx_keys.end()) ? it->second.index : static_cast<u32>(m_recorded_tfx_keys.size());
-	const TFXKeyFileRecord rec = {p, m_tfx_key_session, 0};
-	if (FileSystem::FSeek64(m_tfx_key_file, sizeof(TFXKeyFileHeader) + static_cast<s64>(index) * sizeof(rec), SEEK_SET) != 0 ||
+	TFXKeyFileRecord rec = {p, m_tfx_key_session, 0};
+	GSCacheFile::SealRecord(&rec, TFX_KEY_RECORD_SIZE);
+	if (FileSystem::FSeek64(m_tfx_key_file,
+			static_cast<s64>(GSCacheFile::GetRecordFileHeaderSize()) + static_cast<s64>(index) * sizeof(rec), SEEK_SET) != 0 ||
 		std::fwrite(&rec, sizeof(rec), 1, m_tfx_key_file) != 1 || std::fflush(m_tfx_key_file) != 0)
 	{
 		Console.Error("Vulkan: failed to write to the pipeline key file, recording stopped");
