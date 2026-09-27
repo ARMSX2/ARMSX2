@@ -291,6 +291,7 @@ final class ControllerAccessibilityNavigationSession {
     @ObservationIgnored private var readinessTask: Task<Void, Never>?
     @ObservationIgnored private var pendingFocusKey: String?
     @ObservationIgnored var ownerDeclaresOrder = false
+    @ObservationIgnored private var isRevealingRows = false
     // Preserve input timing across the asynchronous lazy-row mount.
     @ObservationIgnored private var focusRepeatAcceleration: Double?
     @ObservationIgnored private var pendingDirectionalMove:
@@ -994,7 +995,7 @@ final class ControllerAccessibilityNavigationSession {
                 }
                 index += step
             }
-            return performBoundary(direction)
+            return revealMoreRows(direction) || performBoundary(direction)
         }
 
         if let destination = spatialDestination(
@@ -1007,6 +1008,35 @@ final class ControllerAccessibilityNavigationSession {
             return true
         }
         return performBoundary(direction)
+    }
+
+    /// A page without a declared order only knows its mounted rows. When the
+    /// rows past the focus are disabled or plain text, the next control can sit
+    /// outside the List's mounted range, so scroll half a screen and try again.
+    private func revealMoreRows(_ direction: MenuControllerCommand) -> Bool {
+        guard declaredOrder.isEmpty, controllerInput?.isRightStickScrolling != true,
+              let focusedKey, let view = targets[focusedKey]?.view.value,
+              let scrollView = enclosingScrollView(for: view) else { return false }
+        if isRevealingRows {
+            scheduleFocusedPresentationUpdate()
+            return true
+        }
+        // Only content counts, not the margins kept clear for the tab bar.
+        let offset = scrollView.contentOffset.y
+        let end = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+        let step = scrollView.bounds.height / 2
+        let next = direction == .down ? min(end, offset + step) : max(0, offset - step)
+        guard direction == .down ? next > offset + 1 : next < offset - 1 else { return false }
+        scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: next), animated: false)
+        scrollView.layoutIfNeeded()
+        isRevealingRows = true
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self else { return }
+            _ = self.move(direction)
+            self.isRevealingRows = false
+        }
+        return true
     }
 
     private func performBoundary(_ direction: MenuControllerCommand) -> Bool {
