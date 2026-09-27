@@ -1524,9 +1524,11 @@ endif()
 
 # The GS caches' build identity: a hash of the GS code and the shader sources, recomputed whenever
 # one of them changes (see cmake/GSCacheBuildId.cmake). The file list goes through a file for the
-# same reason as the embedded resources' list.
+# same reason as the embedded resources' list. A plain glob, not CONFIGURE_DEPENDS: an edit to any
+# listed file reruns the hash through DEPENDS, and a new GS source needs a CMakeLists.txt edit, which
+# reconfigures anyway. CONFIGURE_DEPENDS would also leave a glob check pending in every dry run.
 set(ARMSX2_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
-file(GLOB_RECURSE ARMSX2_GS_CACHE_ID_INPUTS CONFIGURE_DEPENDS
+file(GLOB_RECURSE ARMSX2_GS_CACHE_ID_INPUTS
 	"${ARMSX2_REPO_ROOT}/pcsx2/GS/*"
 	"${ARMSX2_REPO_ROOT}/bin/resources/shaders/*")
 list(APPEND ARMSX2_GS_CACHE_ID_INPUTS "${ARMSX2_REPO_ROOT}/pcsx2/ShaderCacheVersion.h")
@@ -1537,8 +1539,14 @@ foreach(f IN LISTS ARMSX2_GS_CACHE_ID_INPUTS)
 	string(APPEND ARMSX2_GS_CACHE_ID_REL "${rel}\n")
 endforeach()
 set(ARMSX2_GS_CACHE_ID_DIR "${CMAKE_CURRENT_BINARY_DIR}/gs_cache_id")
-file(WRITE "${ARMSX2_GS_CACHE_ID_DIR}/inputs.list.tmp" "${ARMSX2_GS_CACHE_ID_REL}")
-configure_file("${ARMSX2_GS_CACHE_ID_DIR}/inputs.list.tmp" "${ARMSX2_GS_CACHE_ID_DIR}/inputs.list" COPYONLY)
+# Rewritten only when the list changes, so a reconfigure does not rehash for nothing.
+set(ARMSX2_GS_CACHE_ID_OLD "")
+if(EXISTS "${ARMSX2_GS_CACHE_ID_DIR}/inputs.list")
+	file(READ "${ARMSX2_GS_CACHE_ID_DIR}/inputs.list" ARMSX2_GS_CACHE_ID_OLD)
+endif()
+if(NOT ARMSX2_GS_CACHE_ID_OLD STREQUAL ARMSX2_GS_CACHE_ID_REL)
+	file(WRITE "${ARMSX2_GS_CACHE_ID_DIR}/inputs.list" "${ARMSX2_GS_CACHE_ID_REL}")
+endif()
 add_custom_command(
 	OUTPUT "${ARMSX2_GS_CACHE_ID_DIR}/gs_cache_build_id.h"
 	COMMAND ${CMAKE_COMMAND}
