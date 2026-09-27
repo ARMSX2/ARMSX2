@@ -23,6 +23,7 @@ struct SkinBrowserView: View {
     @State private var detailAlert: String?
     @State private var previewSkin: CatalogSkin?
     @State private var skinPendingRemoval: CatalogSkin?
+    @Environment(\.menuControllerInputRouter) private var controllerInput
 
     var body: some View {
         List {
@@ -79,6 +80,10 @@ struct SkinBrowserView: View {
         )
         .navigationTitle(settings.localized("Skins"))
         .navigationBarTitleDisplayMode(.inline)
+        .controllerAccessibilityTargetOrder(
+            controllerColumns.order,
+            links: controllerColumns.links
+        )
         .task { await catalog.fetch() }
         .refreshable { await catalog.fetch(force: true) }
         .alert(settings.localized("Skin Install"), isPresented: isDetailAlertPresented) {
@@ -100,7 +105,7 @@ struct SkinBrowserView: View {
             Text(settings.localized("This deletes the installed skin. Linked layout presets are kept."))
         }
         .sheet(item: $previewSkin) { skin in
-            SkinPreviewSheet(skin: skin)
+            SkinPreviewSheet(skin: skin, controllerInput: controllerInput)
         }
     }
 
@@ -183,6 +188,34 @@ struct SkinBrowserView: View {
         return settings.localized("No skins match that search.")
     }
 
+    /// Previews and actions are two columns, so Down stays in the one it started in
+    /// and Left or Right crosses over. Only targets that mount are listed.
+    private var controllerColumns: (order: [String], links: [ControllerAccessibilityDirectionalLink]) {
+        let installed = installedFiles
+        var previews: [String] = []
+        var actions: [String] = []
+        for skin in filteredSkins {
+            if SkinCatalog.previewURL(for: skin) != nil {
+                previews.append("skin.preview.\(skin.file)")
+            }
+            if !installer.installing.contains(skin.file), !installed.contains(skin.file) {
+                actions.append("skin.get.\(skin.file)")
+            }
+            if installer.errors[skin.file] != nil || installer.notices[skin.file] != nil {
+                actions.append("skin.detail.\(skin.file)")
+            }
+        }
+        let boundary = ControllerAccessibilityDirectionalLink.navigationBoundary
+        var links: [ControllerAccessibilityDirectionalLink] = []
+        if let last = previews.last {
+            links.append(.init(fromLabel: last, direction: .down, toLabel: boundary))
+        }
+        if let first = actions.first {
+            links.append(.init(fromLabel: first, direction: .up, toLabel: boundary))
+        }
+        return (previews + actions, links)
+    }
+
     private func subtitle(for skin: CatalogSkin) -> String? {
         var parts: [String] = []
         if let author = skin.author, !author.isEmpty {
@@ -218,6 +251,7 @@ struct SkinBrowserView: View {
                     String(format: settings.localized("Preview %@"), skin.name)
                 )
                 .controllerAccessibilityActionTarget(
+                    id: "skin.preview.\(skin.file)",
                     label: String(format: settings.localized("Preview %@"), skin.name)
                 ) {
                     previewSkin = skin
@@ -263,7 +297,7 @@ struct SkinBrowserView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .controllerAccessibilityActionTarget(label: "Get \(skin.name)") {
+                .controllerAccessibilityActionTarget(id: "skin.get.\(skin.file)", label: "Get \(skin.name)") {
                     Task { await installer.install(skin) }
                 }
             }
@@ -283,6 +317,7 @@ struct SkinBrowserView: View {
                     )
                 )
                 .controllerAccessibilityActionTarget(
+                    id: "skin.detail.\(skin.file)",
                     label: String(
                         format: settings.localized("Show the error from %@"),
                         skin.name
@@ -307,6 +342,7 @@ struct SkinBrowserView: View {
                     )
                 )
                 .controllerAccessibilityActionTarget(
+                    id: "skin.detail.\(skin.file)",
                     label: String(
                         format: settings.localized(
                             "Show what %@ reported during install"
@@ -332,6 +368,7 @@ struct SkinBrowserView: View {
 
 private struct SkinPreviewSheet: View {
     let skin: CatalogSkin
+    let controllerInput: MenuControllerInputRouter?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -350,5 +387,17 @@ private struct SkinPreviewSheet: View {
                 }
             }
         }
+        // Without a scope of its own, Back reached the Settings page underneath and
+        // popped the Skins page while the preview stayed up.
+        .controllerAccessibilityNavigation(
+            controllerInput: controllerInput,
+            scopeKey: "skin-browser.preview",
+            priority: 720,
+            onBack: {
+                dismiss()
+                return true
+            },
+            usesExplicitTargetGeometryOnly: true
+        )
     }
 }
