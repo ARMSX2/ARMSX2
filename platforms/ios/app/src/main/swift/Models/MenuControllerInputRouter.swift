@@ -453,8 +453,8 @@ final class MenuControllerInputRouter {
     private enum Button: Hashable {
         case primary
         case secondary
-        case favorite
-        case info
+        case square
+        case triangle
         case previousTab
         case nextTab
         case previousTheme
@@ -1412,9 +1412,9 @@ final class MenuControllerInputRouter {
         } else if element === gamepad.buttonB {
             updateButton(.secondary, pressed: gamepad.buttonB.isPressed, command: .back, profileID: profileID)
         } else if element === gamepad.buttonX {
-            updateButton(.favorite, pressed: gamepad.buttonX.isPressed, command: .toggleFavorite, profileID: profileID)
+            updateButton(.square, pressed: gamepad.buttonX.isPressed, command: .showContextMenu, profileID: profileID)
         } else if element === gamepad.buttonY {
-            updateButton(.info, pressed: gamepad.buttonY.isPressed, command: .showContextMenu, profileID: profileID)
+            updateButton(.triangle, pressed: gamepad.buttonY.isPressed, command: .toggleFavorite, profileID: profileID)
         } else if element === gamepad.leftShoulder {
             updateButton(.previousTab, pressed: gamepad.leftShoulder.isPressed, command: .previousTab, profileID: profileID)
         } else if element === gamepad.rightShoulder {
@@ -1872,7 +1872,7 @@ final class MenuControllerInputRouter {
         let allButtons = pressedButtons.values.reduce(into: Set<Button>()) {
             $0.formUnion($1)
         }
-        if allButtons.contains(.info) {
+        if allButtons.contains(.triangle) {
             pressedFaceButton = .triangle
         } else if allButtons.contains(.secondary) {
             pressedFaceButton = .circle
