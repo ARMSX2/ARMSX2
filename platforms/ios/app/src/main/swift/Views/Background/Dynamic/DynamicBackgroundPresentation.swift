@@ -104,9 +104,9 @@ private struct DynamicBackgroundStylePresentation: Equatable {
 }
 
 /// The palette-facing subset of a dynamic theme. Geometry-only setting edits
-/// continue updating their existing renderer, while every source of colour
-/// changes (theme shortcuts, cover previews, favourites, and the Context Menu)
-/// follows the same crossfade path.
+/// continue updating their existing renderer, and so does a colour change for a
+/// renderer that blends palettes itself. Every other source of colour (theme
+/// shortcuts, cover previews, favourites, and the Context Menu) crossfades.
 private struct DynamicBackgroundPaletteSignature: Equatable {
     let sharedPalette: ThemePalette
     let sharedCustomColor: SavedPaletteColor?
@@ -264,8 +264,20 @@ private struct DynamicBackgroundStyleCrossfadeView: View {
         let styleChanges = current.style != next.style
         let paletteChanges =
             current.paletteSignature != next.paletteSignature
+        let blendsPaletteInPlace = switch next.style {
+        case .faceButtons:
+            true
+        case .playStation3XMBByMart:
+            !current.theme.usesPlayStation4PaletteBackdrop
+                && !next.theme.usesPlayStation4PaletteBackdrop
+        default:
+            false
+        }
 
-        guard styleChanges || paletteChanges else {
+        // Mid-crossfade, a palette change retargets the incoming layer instead of stacking.
+        let crossfadeRunning = layers.count > 1
+        guard styleChanges
+                || (paletteChanges && !blendsPaletteInPlace && !crossfadeRunning) else {
             layers[activeIndex].presentation = next
             return
         }
@@ -584,7 +596,15 @@ struct DynamicBackgroundAppearanceSections: View {
 
     var body: some View {
         Section {
-            Toggle(isOn: $settings.dynamicBackgroundsEnabled) {
+            // Like the other appearance controls, this marks the choice as the player's,
+            // so the automatic no-JIT theme leaves it alone.
+            Toggle(isOn: Binding(
+                get: { settings.dynamicBackgroundsEnabled },
+                set: { enabled in
+                    settings.beginCustomThemeEditing()
+                    settings.dynamicBackgroundsEnabled = enabled
+                }
+            )) {
                 Label(
                     settings.localized("Use Dynamic Background"),
                     systemImage: settings.dynamicBackgroundsEnabled ? "waveform.path" : "waveform.path.badge.minus"

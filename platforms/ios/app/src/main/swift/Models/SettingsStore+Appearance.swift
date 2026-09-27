@@ -16,6 +16,8 @@ private enum AutomaticJITAppearanceState {
         "ARMSX2iOSSavedAppearanceThemesV1",
         "ARMSX2iOSBackgroundPrimaryAsset",
         "ARMSX2iOSBackgroundLandscapeAsset",
+        "ARMSX2iOSDynamicBackgroundsEnabled",
+        "ARMSX2iOSBackgroundDim",
     ]
 }
 

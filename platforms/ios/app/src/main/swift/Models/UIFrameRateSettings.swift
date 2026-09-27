@@ -129,19 +129,23 @@ struct UIFrameRateConfiguration: Equatable, Sendable {
             : dynamicFaceButtonAmount
     }
 
+    // Ceilings well above anything the sliders reach, clamped before Int() can trap.
     func scaledDynamicEffectCount(_ count: Double) -> Int {
-        max(0, Int((count * effectiveDynamicParticleAmount).rounded()))
+        let scaled = (count * effectiveDynamicParticleAmount).rounded()
+        return Int(DynamicBackgroundMath.clamp(scaled, to: 0...4000))
     }
 
     func scaledDynamicFaceButtonCount(_ count: Double) -> Int {
-        max(0, Int((count * effectiveDynamicFaceButtonAmount).rounded()))
+        let scaled = (count * effectiveDynamicFaceButtonAmount).rounded()
+        return Int(DynamicBackgroundMath.clamp(scaled, to: 0...512))
     }
 
     func scaledDynamicGeometryCount(
         _ count: Double,
         minimum: Int = 1
     ) -> Int {
-        max(minimum, Int((count * dynamicGeometryDetailScale).rounded()))
+        let scaled = (count * dynamicGeometryDetailScale).rounded()
+        return max(minimum, Int(DynamicBackgroundMath.clamp(scaled, to: 0...256)))
     }
 
     func reducedDynamicGeometry<Element>(
