@@ -217,6 +217,10 @@ public:
 	// commands can be retreived by calling GetCurrentFenceCounter().
 	u64 GetCompletedFenceCounter() const { return m_completed_fence_counter; }
 
+	// Polls the submitted command buffers' fences without blocking and retires every one that has
+	// signalled, advancing GetCompletedFenceCounter().
+	void ScanForCommandBufferCompletion();
+
 	// Gets the fence that will be signaled when the currently executing command buffer is
 	// queued and executed. Do not wait for this fence before the buffer is executed.
 	u64 GetCurrentFenceCounter() const { return m_frame_resources[m_current_frame].fence_counter; }
@@ -233,6 +237,10 @@ public:
 	void WaitForFenceCounter(u64 fence_counter);
 
 	void WaitForGPUIdle();
+
+	// A stream ring replaced its buffer (VKStreamBuffer::Grow). Rebinds whatever refers to it by
+	// handle, from the command buffer being recorded on.
+	void OnStreamRingReplaced(const VKStreamBuffer& ring);
 
 private:
 	// Helper method to create a Vulkan instance.
@@ -301,7 +309,6 @@ private:
 
 	void CommandBufferCompleted(u32 index);
 	void ActivateCommandBuffer(u32 index);
-	void ScanForCommandBufferCompletion();
 	void WaitForCommandBufferCompletion(u32 index);
 
 	/// VK_EXT_device_fault post-mortem: on VK_ERROR_DEVICE_LOST, logs the driver's
@@ -1007,6 +1014,7 @@ private:
 
 	void InitializeState();
 	bool CreatePersistentDescriptorSets();
+	VkDescriptorSet CreateTFXUBODescriptorSet();
 
 	void SetInitialState(VkCommandBuffer cmdbuf);
 	void ApplyBaseState(u32 flags, VkCommandBuffer cmdbuf);

@@ -28,12 +28,15 @@ public:
 	__fi u8* GetHostPointer() const { return m_host_pointer; }
 	__fi u8* GetCurrentHostPointer() const { return m_host_pointer + m_current_offset; }
 	__fi u32 GetCurrentSize() const { return m_size; }
+	__fi u32 GetMaxSize() const { return m_max_size; }
 	__fi u32 GetCurrentSpace() const { return m_current_space; }
 	__fi u32 GetCurrentOffset() const { return m_current_offset; }
 
 	/// `name` labels this ring in the message logged if it cannot be allocated on the road the
-	/// stream-ring memory policy chose.
-	bool Create(VkBufferUsageFlags usage, u32 size, const char* name);
+	/// stream-ring memory policy chose. A `max_size` above `size` lets ReserveMemory replace the
+	/// buffer with a larger one instead of waiting for the GPU (GSStreamRingGrowth.h); the device
+	/// is told through GSDeviceVK::OnStreamRingReplaced, because the buffer handle changes.
+	bool Create(VkBufferUsageFlags usage, u32 size, const char* name, u32 max_size = 0);
 	void Destroy(bool defer);
 
 	bool ReserveMemory(u32 num_bytes, u32 alignment);
@@ -50,17 +53,36 @@ public:
 	void FlushPendingWrites();
 
 private:
-	bool AllocateBuffer(VkBufferUsageFlags usage, u32 size);
+	struct ClearSpace
+	{
+		/// Index into m_tracked_fences of the fence to wait for.
+		size_t fence_index;
+		u32 offset;
+		u32 space;
+		u32 gpu_position;
+	};
+
 	void UpdateCurrentFencePosition();
 	void UpdateGPUPosition();
 
-	// Waits for as many fences as needed to allocate num_bytes bytes from the buffer.
-	bool WaitForClearSpace(u32 num_bytes);
+	// Finds the oldest tracked fence whose completion would free num_bytes bytes.
+	bool FindClearSpace(u32 num_bytes, ClearSpace* out) const;
+
+	// Waits for the fence FindClearSpace chose and moves the ring onto the space it frees.
+	void WaitForClearSpace(const ClearSpace& space);
+
+	// Replaces the buffer with an empty one of new_size bytes. The old buffer is destroyed once the
+	// command buffer being recorded retires, since draws already recorded in it still read it.
+	bool Grow(u32 new_size);
 
 	u32 m_size = 0;
+	u32 m_max_size = 0;
 	u32 m_current_offset = 0;
 	u32 m_current_space = 0;
 	u32 m_current_gpu_position = 0;
+
+	VkBufferUsageFlags m_usage = 0;
+	const char* m_name = "";
 
 	VmaAllocation m_allocation = VK_NULL_HANDLE;
 	VkBuffer m_buffer = VK_NULL_HANDLE;
