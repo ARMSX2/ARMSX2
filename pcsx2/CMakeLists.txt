@@ -1522,17 +1522,39 @@ if(ARMSX2_EMBED_RESOURCES)
 	target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_EMBEDDED_RESOURCES)
 endif()
 
-# The GS caches' build identity: a hash of the GS code and the shader sources, recomputed whenever
-# one of them changes (see cmake/GSCacheBuildId.cmake). The file list goes through a file for the
-# same reason as the embedded resources' list. A plain glob, not CONFIGURE_DEPENDS: an edit to any
-# listed file reruns the hash through DEPENDS, and a new GS source needs a CMakeLists.txt edit, which
-# reconfigures anyway. CONFIGURE_DEPENDS would also leave a glob check pending in every dry run.
+# The GS caches' build identity: a hash of the GS code and the shader sources (see
+# cmake/GSCacheBuildId.cmake). Source files only, by extension, and never a dotfile or a symlink, so
+# editor backups and lock files cannot change it. An edit to a listed file reruns the hash through
+# DEPENDS. A file added or removed changes its directory's modification time, and the directories are
+# configure dependencies, so CMake reruns and the list follows; this keeps a dry run clean, which a
+# CONFIGURE_DEPENDS glob does not. The list goes through a file for the same reason as the embedded
+# resources' list.
 set(ARMSX2_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
-file(GLOB_RECURSE ARMSX2_GS_CACHE_ID_INPUTS
-	"${ARMSX2_REPO_ROOT}/pcsx2/GS/*"
-	"${ARMSX2_REPO_ROOT}/bin/resources/shaders/*")
+set(ARMSX2_GS_CACHE_ID_EXTENSIONS cpp c h hpp inl mm glsl hlsl fx metal)
+set(ARMSX2_GS_CACHE_ID_INPUTS "")
+set(ARMSX2_GS_CACHE_ID_DIRS "")
+foreach(root IN ITEMS "${ARMSX2_REPO_ROOT}/pcsx2/GS" "${ARMSX2_REPO_ROOT}/bin/resources/shaders")
+	file(GLOB_RECURSE entries LIST_DIRECTORIES true "${root}/*")
+	list(APPEND ARMSX2_GS_CACHE_ID_DIRS "${root}")
+	foreach(f IN LISTS entries)
+		get_filename_component(name "${f}" NAME)
+		if(IS_SYMLINK "${f}" OR name MATCHES "^\\.")
+			continue()
+		endif()
+		if(IS_DIRECTORY "${f}")
+			list(APPEND ARMSX2_GS_CACHE_ID_DIRS "${f}")
+			continue()
+		endif()
+		get_filename_component(ext "${f}" LAST_EXT)
+		string(REGEX REPLACE "^\\." "" ext "${ext}")
+		if(ext IN_LIST ARMSX2_GS_CACHE_ID_EXTENSIONS)
+			list(APPEND ARMSX2_GS_CACHE_ID_INPUTS "${f}")
+		endif()
+	endforeach()
+endforeach()
 list(APPEND ARMSX2_GS_CACHE_ID_INPUTS "${ARMSX2_REPO_ROOT}/pcsx2/ShaderCacheVersion.h")
 list(SORT ARMSX2_GS_CACHE_ID_INPUTS)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${ARMSX2_GS_CACHE_ID_DIRS})
 set(ARMSX2_GS_CACHE_ID_REL "")
 foreach(f IN LISTS ARMSX2_GS_CACHE_ID_INPUTS)
 	file(RELATIVE_PATH rel "${ARMSX2_REPO_ROOT}" "${f}")
