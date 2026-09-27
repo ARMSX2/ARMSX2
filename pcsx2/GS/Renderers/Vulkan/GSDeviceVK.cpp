@@ -7623,6 +7623,15 @@ namespace
 	/// a real key leaves zero.
 	static bool IsLoadableTFXKey(const GSDeviceVK::PipelineSelector& p)
 	{
+		// The bytes after the last member are padding, zero in every selector a draw builds.
+		static constexpr size_t USED_BYTES = sizeof(GSHWDrawConfig::PSSelector) + sizeof(u32) +
+											 sizeof(GSHWDrawConfig::BlendState) + 4 * sizeof(u8);
+		static_assert(USED_BYTES <= sizeof(GSDeviceVK::PipelineSelector));
+		u8 tail[sizeof(GSDeviceVK::PipelineSelector) - USED_BYTES];
+		std::memcpy(tail, reinterpret_cast<const u8*>(&p) + USED_BYTES, sizeof(tail));
+		if (std::any_of(std::begin(tail), std::end(tail), [](u8 b) { return b != 0; }))
+			return false;
+
 		return p.topology <= static_cast<u32>(GSHWDrawConfig::Topology::Triangle) && (p.key >> 8) == 0 &&
 			   p.pad == 0 && p.bs.op <= GSDevice::OP_REV_SUBTRACT &&
 			   p.vs.expand <= GSHWDrawConfig::VSExpand::TriangleAA1 && p.vs._free == 0 && p.dss._free == 0 &&
@@ -7905,7 +7914,13 @@ void GSDeviceVK::RecordTFXPipelineKey(const PipelineSelector& p)
 		return;
 
 	const u32 index = (it != m_recorded_tfx_keys.end()) ? it->second.index : static_cast<u32>(m_recorded_tfx_keys.size());
-	TFXKeyFileRecord rec = {p, m_tfx_key_session, 0};
+	// Copied byte for byte into a zeroed record. A member-wise copy leaves the selector's tail padding
+	// undefined, the maps compare selectors with memcmp, and a key read back with stray padding would
+	// never match a draw: its precompiled pipeline would go unused and the key be recorded again.
+	TFXKeyFileRecord rec;
+	std::memset(&rec, 0, sizeof(rec));
+	std::memcpy(&rec.key, &p, sizeof(p));
+	rec.last_session = m_tfx_key_session;
 	GSCacheFile::SealRecord(&rec, TFX_KEY_RECORD_SIZE);
 	if (FileSystem::FSeek64(m_tfx_key_file,
 			static_cast<s64>(GSCacheFile::GetRecordFileHeaderSize()) + static_cast<s64>(index) * sizeof(rec), SEEK_SET) != 0 ||
