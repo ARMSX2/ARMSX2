@@ -77,6 +77,7 @@ public:
 	__fi u32 GetGraphicsQueueFamilyIndex() const { return m_graphics_queue_family_index; }
 	__fi u32 GetPresentQueueFamilyIndex() const { return m_present_queue_family_index; }
 	__fi const VkPhysicalDeviceProperties& GetDeviceProperties() const { return m_device_properties; }
+	__fi const VkPhysicalDeviceDriverPropertiesKHR& GetDeviceDriverProperties() const { return m_device_driver_properties; }
 	__fi const OptionalExtensions& GetOptionalExtensions() const { return m_optional_extensions; }
 
 	/// Which memory the six stream rings are allocated from, decided once in CheckFeatures from the
