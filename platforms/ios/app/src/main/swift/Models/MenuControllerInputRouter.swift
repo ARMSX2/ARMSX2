@@ -111,7 +111,7 @@ enum MenuControllerNavigationCaptureOwner {
     static let cheatsPatchesManager = "cheats-patches-manager"
     static let themePresetShortcut = "menu.theme-preset-shortcut"
     static let perGameLivePreview = "per-game.live-preview"
-    static let shaderLivePreview = "shader.live-preview"
+    static let orbitKeysKeyboard = "orbit-keys.keyboard"
 }
 
 struct MenuControllerLibraryEntryRequest: Equatable, Sendable {
