@@ -144,6 +144,7 @@ struct ThemeGalleryView: View {
                 onCancel: { showsNameKeyboard = false }
             )
             .presentationBackground(.clear)
+            .appStatusBarHidden()
         }
         .alert("Theme Not Saved", isPresented: $saveError) {
             Button("OK", role: .cancel) {}

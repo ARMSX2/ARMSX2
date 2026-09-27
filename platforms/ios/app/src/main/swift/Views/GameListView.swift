@@ -3564,6 +3564,7 @@ struct GameListView: View {
                     GameInfoPanel(game: game)
                 }
                 .presentationBackground(.clear)
+                .appStatusBarHidden()
             }
             .fullScreenCover(isPresented: $gameLibraryViewOptionsPresented) {
                 ZStack {
@@ -3651,6 +3652,7 @@ struct GameListView: View {
                 }
                 .onDisappear { gameLibraryViewOptionsPreview = nil }
                 .presentationBackground(.clear)
+                .appStatusBarHidden()
             }
             // A page overlay cannot outrank NavigationStack chrome or the
             // root safe-area tab bar. Present the controller context menu at
@@ -3704,6 +3706,7 @@ struct GameListView: View {
                     }
                 }
                 .presentationBackground(.clear)
+                .appStatusBarHidden()
             }
             // Match Context Menu's scene-level presentation. A page overlay
             // cannot render above NavigationStack chrome or the persistent tab
@@ -3770,6 +3773,7 @@ struct GameListView: View {
                     }
                     .contextMenuPanelTextAppearance()
                     .presentationBackground(.clear)
+                    .appStatusBarHidden()
                 }
             }
             .fullScreenCover(
@@ -3793,6 +3797,7 @@ struct GameListView: View {
                     }
                 )
                 .presentationBackground(.clear)
+                .appStatusBarHidden()
             }
             .fullScreenCover(item: $renameTarget) { game in
                 OrbitKeysKeyboardView(
@@ -3809,6 +3814,7 @@ struct GameListView: View {
                     }
                 )
                 .presentationBackground(.clear)
+                .appStatusBarHidden()
             }
             .fullScreenCover(item: $discLinkTarget) { game in
                 GameLibraryForegroundPanel(
@@ -3822,6 +3828,7 @@ struct GameListView: View {
                     }
                 }
                 .presentationBackground(.clear)
+                .appStatusBarHidden()
             }
             .fullScreenCover(item: $cheatsManagerTarget) { game in
                 GameLibraryForegroundPanel(
@@ -3837,6 +3844,7 @@ struct GameListView: View {
                     )
                 }
                 .presentationBackground(.clear)
+                .appStatusBarHidden()
             }
 			}
             .alert(settings.localized("Stop Emulation?"), isPresented: nativeAlertBinding($showStopAlert)) {

@@ -188,6 +188,14 @@ final class ControllerEventDeliveryCoordinator {
     }
 }
 
+extension View {
+    /// A full-screen cover gets its own controller, which answers for the status
+    /// bar itself, so it repeats the choice the app's hosting controller makes.
+    func appStatusBarHidden() -> some View {
+        statusBarHidden(AppState.shared.hideStatusBar)
+    }
+}
+
 /// Custom hosting controller that respects fullScreen state for status bar hiding
 class ARMSX2HostingController<Content: View>: UIHostingController<Content> {
     override var prefersStatusBarHidden: Bool {

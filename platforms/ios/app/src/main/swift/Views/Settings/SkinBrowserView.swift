@@ -145,6 +145,7 @@ struct SkinBrowserView: View {
                 onCancel: { showsSearchKeyboard = false }
             )
             .presentationBackground(.clear)
+            .appStatusBarHidden()
         }
     }
 

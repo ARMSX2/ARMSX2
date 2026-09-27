@@ -181,6 +181,7 @@ struct MenuThemePresetShortcutOverlay: View {
                 }
             )
             .presentationBackground(.clear)
+            .appStatusBarHidden()
         }
         .alert("Theme Not Saved", isPresented: $themeSaveError) {
             Button("OK", role: .cancel) {}

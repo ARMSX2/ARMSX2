@@ -911,6 +911,7 @@ struct PerGameSettingsPanel: View {
                 launchContext: savesToRunningGame ? .inGame : .library,
                 controllerInput: controllerInput
             )
+            .appStatusBarHidden()
         }
         .confirmationDialog(settings.localized("Reset all per-game overrides?"),
                             isPresented: nativeControllerDialogBinding($showResetAllConfirmation),
