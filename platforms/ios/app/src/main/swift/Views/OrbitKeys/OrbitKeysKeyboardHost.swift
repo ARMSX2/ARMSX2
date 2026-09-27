@@ -15,6 +15,7 @@ struct OrbitKeysKeyboardView: View {
   @StateObject private var model: OrbitKeysModel
   @State private var hasOpened = false
   @State private var hasCompleted = false
+  @Environment(\.menuControllerInputRouter) private var controllerInput
 
   init(
     title: String,
@@ -488,13 +489,26 @@ struct OrbitKeysKeyboardView: View {
   private func openKeyboard() {
     guard !hasOpened else { return }
     hasOpened = true
+    setNavigationCaptured(true)
+    model.haptics.router = controllerInput
     model.openKeyboard()
+  }
+
+  // The keyboard reads the pad itself; this keeps the router's copy from the
+  // screen underneath. It outranks the root alert, so it goes when the keyboard closes.
+  private func setNavigationCaptured(_ captured: Bool) {
+    controllerInput?.setNavigationCaptured(
+      captured,
+      owner: MenuControllerNavigationCaptureOwner.orbitKeysKeyboard,
+      priority: 1_100
+    )
   }
 
   private func handleVisibilityChange(
     _ oldValue: Bool,
     _ isVisible: Bool
   ) {
+    if !isVisible { setNavigationCaptured(false) }
     guard hasOpened, oldValue, !isVisible, !hasCompleted else { return }
     hasCompleted = true
     if let submitted = model.lastSubmittedText {
@@ -505,6 +519,7 @@ struct OrbitKeysKeyboardView: View {
   }
 
   private func releaseResources() {
+    setNavigationCaptured(false)
     if !hasCompleted {
       hasCompleted = true
       onCancel()

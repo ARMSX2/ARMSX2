@@ -1,7 +1,6 @@
 // Adapted from OrbitKeys-iOS_COMPLETED_FINAL_FIXED.zip for ARMSX2 integration.
 // Dynamic Background sources are intentionally excluded.
 import Combine
-import CoreHaptics
 import Foundation
 @preconcurrency import GameController
 import UIKit
@@ -229,9 +228,11 @@ enum OrbitKeysLayout {
 
 // MARK: - Haptic Feedback
 
+/// Plays the keyboard's feedback through the menu router, whose player applies
+/// Haptic Feedback and UI Rumble Strength.
 @MainActor
-final class OrbitKeysHapticManager {
-  enum Feedback: CaseIterable, Hashable {
+struct OrbitKeysHaptics {
+  enum Feedback {
     case selection
     case key
     case space
@@ -240,126 +241,18 @@ final class OrbitKeysHapticManager {
     case success
   }
 
-  private let selectionGenerator = UISelectionFeedbackGenerator()
-  private let lightGenerator = UIImpactFeedbackGenerator(style: .light)
-  private let rigidGenerator = UIImpactFeedbackGenerator(style: .rigid)
-  private let softGenerator = UIImpactFeedbackGenerator(style: .soft)
-  private let notificationGenerator = UINotificationFeedbackGenerator()
-  private var controllerEngines: [CHHapticEngine] = []
-  private var controllerPlayers: [Feedback: [any CHHapticPatternPlayer]] = [:]
-
-  init() {
-    selectionGenerator.prepare()
-    lightGenerator.prepare()
-  }
-
-  func attach(to controller: GCController?) {
-    for engine in controllerEngines {
-      engine.stop(completionHandler: nil)
-    }
-    controllerPlayers.removeAll(keepingCapacity: false)
-    controllerEngines.removeAll(keepingCapacity: false)
-    guard let haptics = controller?.haptics else { return }
-
-    let supported = haptics.supportedLocalities
-    let localities: [GCHapticsLocality]
-    if supported.contains(.leftHandle), supported.contains(.rightHandle) {
-      localities = [.leftHandle, .rightHandle]
-    } else if supported.contains(.handles) {
-      localities = [.handles]
-    } else if supported.contains(.default) {
-      localities = [.default]
-    } else if let locality = supported.first {
-      localities = [locality]
-    } else {
-      return
-    }
-
-    for locality in localities {
-      guard let engine = haptics.createEngine(withLocality: locality) else { continue }
-      do {
-        engine.isAutoShutdownEnabled = false
-        try engine.start()
-        controllerEngines.append(engine)
-        for feedback in Feedback.allCases {
-          let pattern = try CHHapticPattern(
-            events: controllerEvents(for: feedback),
-            parameters: []
-          )
-          let player = try engine.makePlayer(with: pattern)
-          controllerPlayers[feedback, default: []].append(player)
-        }
-      } catch {
-        continue
-      }
-    }
-  }
+  weak var router: MenuControllerInputRouter?
 
   func play(_ feedback: Feedback) {
-    playDeviceFeedback(feedback)
-    playControllerFeedback(feedback)
-  }
-
-  private func playDeviceFeedback(_ feedback: Feedback) {
-    switch feedback {
-    case .selection:
-      selectionGenerator.selectionChanged()
-      selectionGenerator.prepare()
-    case .key:
-      rigidGenerator.impactOccurred(intensity: 0.72)
-    case .space:
-      softGenerator.impactOccurred(intensity: 0.66)
-    case .delete:
-      rigidGenerator.impactOccurred(intensity: 0.92)
-    case .mode:
-      lightGenerator.impactOccurred(intensity: 0.55)
-    case .success:
-      notificationGenerator.notificationOccurred(.success)
+    let menuFeedback: MenuControllerFeedback = switch feedback {
+    case .selection: .move(.left)
+    case .key, .delete: .activate
+    case .space: .back
+    case .mode: .tabTransition
+    case .success: .favorite(isFavorite: true)
     }
+    router?.playTouchHaptics(menuFeedback)
   }
-
-  private func playControllerFeedback(_ feedback: Feedback) {
-    guard let players = controllerPlayers[feedback] else { return }
-    for player in players {
-      try? player.start(atTime: CHHapticTimeImmediate)
-    }
-  }
-
-  private func controllerEvents(for feedback: Feedback) -> [CHHapticEvent] {
-    switch feedback {
-    case .selection:
-      [transient(intensity: 0.1, sharpness: 0.5, time: 0)]
-    case .key:
-      [transient(intensity: 0.24, sharpness: 0.58, time: 0)]
-    case .space:
-      [transient(intensity: 0.16, sharpness: 0.18, time: 0)]
-    case .delete:
-      [transient(intensity: 0.28, sharpness: 0.68, time: 0)]
-    case .mode:
-      [transient(intensity: 0.16, sharpness: 0.34, time: 0)]
-    case .success:
-      [
-        transient(intensity: 0.16, sharpness: 0.3, time: 0),
-        transient(intensity: 0.24, sharpness: 0.52, time: 0.055),
-      ]
-    }
-  }
-
-  private func transient(
-    intensity: Float,
-    sharpness: Float,
-    time: TimeInterval
-  ) -> CHHapticEvent {
-    CHHapticEvent(
-      eventType: .hapticTransient,
-      parameters: [
-        CHHapticEventParameter(parameterID: .hapticIntensity, value: intensity),
-        CHHapticEventParameter(parameterID: .hapticSharpness, value: sharpness),
-      ],
-      relativeTime: time
-    )
-  }
-
 }
 
 // MARK: - Keyboard Model
@@ -433,7 +326,7 @@ final class OrbitKeysModel: ObservableObject {
   private var keyboardSettingsDpadRepeatTask: Task<Void, Never>?
   private var keyboardSettingsHeldDirection: OrbitKeysFullQwertyDirection?
   private var observers: [NSObjectProtocol] = []
-  private let haptics = OrbitKeysHapticManager()
+  var haptics = OrbitKeysHaptics()
   private let onCommit: (String) -> Void
 
   var mode: OrbitKeysKeyboardMode {
@@ -924,7 +817,6 @@ final class OrbitKeysModel: ObservableObject {
   private func openKeyboard(playsAudio: Bool) {
     guard !isKeyboardVisible else { return }
     resetTransientModeHolds()
-    haptics.attach(to: activeController)
     characters = committedText.map(String.init)
     cursor = characters.count
     fullQwertySelection = OrbitKeysFullQwertyLayout.clampedPosition(
@@ -990,7 +882,6 @@ final class OrbitKeysModel: ObservableObject {
     lastActivatedFullQwertyPosition = nil
     characters.removeAll(keepingCapacity: false)
     cursor = 0
-    haptics.attach(to: nil)
   }
 
   /// Final teardown for an embedded keyboard presentation. Per-element
@@ -1004,7 +895,6 @@ final class OrbitKeysModel: ObservableObject {
     stopKeyboardSettingsDpadRepeat()
     removeControllerHandlers(from: activeController)
     activeController = nil
-    haptics.attach(to: nil)
     for observer in observers {
       NotificationCenter.default.removeObserver(observer)
     }
@@ -1145,7 +1035,7 @@ final class OrbitKeysModel: ObservableObject {
 
   private func closeKeyboard(
     clearsActivation: Bool,
-    feedback: OrbitKeysHapticManager.Feedback
+    feedback: OrbitKeysHaptics.Feedback
   ) {
     setBackspaceHeld(false)
     setSpaceHeld(false)
@@ -1271,7 +1161,6 @@ final class OrbitKeysModel: ObservableObject {
     activeController = controller
     GCController.stopWirelessControllerDiscovery()
     if isKeyboardVisible {
-      haptics.attach(to: controller)
     }
 
     gamepad.leftThumbstick.valueChangedHandler = { [weak self] _, x, y in
@@ -1477,7 +1366,6 @@ final class OrbitKeysModel: ObservableObject {
     isRightStickLatched = false
     isL3Pressed = false
     isR3Pressed = false
-    haptics.attach(to: nil)
 
     if let nextController = GCController.controllers().first(where: { $0 !== controller }) {
       connect(nextController)
