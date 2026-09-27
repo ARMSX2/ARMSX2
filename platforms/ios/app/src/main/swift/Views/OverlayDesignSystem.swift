@@ -19,8 +19,6 @@ enum OverlayTheme {
     static let shell = Color(red: 0.110, green: 0.122, blue: 0.149)          // #1C1F26
     /// Section/card surface — one step lighter than the shell for grouping depth.
     static let card = Color(red: 0.149, green: 0.165, blue: 0.200)           // #262A33
-    /// Emphasized / selected / pressed card surface — lightest graphite step.
-    static let cardElevated = Color(red: 0.188, green: 0.208, blue: 0.247)   // #30353F
     /// Hairline separator / divider stroke between rows and above a footer.
     static let separator = Color(red: 0.227, green: 0.247, blue: 0.290)      // #3A3F4A
     /// Top stop of the shell gradient, a step lighter so the panel reads as lit from above.
@@ -52,11 +50,6 @@ enum OverlayTheme {
     static let textPrimary = Color(red: 0.925, green: 0.933, blue: 0.949)   // #ECEEF2
     /// Trailing values, captions, subtitles.
     static let textSecondary = Color(red: 0.66, green: 0.69, blue: 0.74)  // #A8B0BD
-
-    // MARK: Footer
-
-    /// Footer surface — matches the shell so a pinned Save/Cancel/Resume bar blends seamlessly.
-    static let footer = shell
 
     // MARK: Glass — controlled frosted chrome (panel shell + cards; never the gameplay scrim)
 
@@ -202,60 +195,6 @@ struct OverlaySectionCard<Content: View>: View {
                 .opacity(accessible ? 0 : 1)
         }
         .shadow(color: OverlayTheme.cardShadow.opacity(accessible ? 0 : 1), radius: 4, x: 0, y: 2)
-    }
-}
-
-/// Pinned overlay footer: a full-width primary action (Resume / Save) as a `borderedProminent`
-/// button tinted with the overlay accent, plus an optional secondary action. It inherits the
-/// scaffold's single glass surface and adds only a top hairline. Apply via
-/// `.safeAreaInset(edge: .bottom)`.
-struct OverlayFooter: View {
-    private let primaryLabel: String
-    private let primarySystemImage: String
-    private let primaryAction: () -> Void
-    private let secondaryLabel: String?
-    private let secondaryAction: (() -> Void)?
-    private let compact: Bool
-    @Environment(\.uiAccentColour) private var accentColour
-
-    init(
-        primaryLabel: String,
-        primarySystemImage: String,
-        primaryAction: @escaping () -> Void,
-        secondaryLabel: String? = nil,
-        secondaryAction: (() -> Void)? = nil,
-        compact: Bool = false
-    ) {
-        self.primaryLabel = primaryLabel
-        self.primarySystemImage = primarySystemImage
-        self.primaryAction = primaryAction
-        self.secondaryLabel = secondaryLabel
-        self.secondaryAction = secondaryAction
-        self.compact = compact
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            OverlayTheme.separator
-                .frame(height: 0.5)
-            VStack(spacing: 8) {
-                Button(action: primaryAction) {
-                    Label(primaryLabel, systemImage: primarySystemImage)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(compact ? .regular : .large)
-                if let secondaryLabel, let secondaryAction {
-                    Button(secondaryLabel, action: secondaryAction)
-                        .buttonStyle(.bordered)
-                        .controlSize(.regular)
-                }
-            }
-            .padding(.horizontal, compact ? 18 : 20)
-            .padding(.top, 8)
-            .padding(.bottom, compact ? 10 : 14)
-        }
-        .tint(accentColour)
     }
 }
 

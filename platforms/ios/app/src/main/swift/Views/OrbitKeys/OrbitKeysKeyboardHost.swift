@@ -527,18 +527,3 @@ struct OrbitKeysKeyboardView: View {
     model.releaseKeyboardSessionResources()
   }
 }
-
-/// Replaces OrbitKeys' standalone `@main` demo with an embeddable sample that
-/// can be used elsewhere in ARMSX2 without creating a second app entry point.
-struct OrbitKeysEmbeddedDemoView: View {
-  @State private var text = ""
-
-  var body: some View {
-    OrbitKeysKeyboardView(
-      title: "OrbitKeys",
-      initialText: text,
-      onCommit: { text = $0 },
-      onCancel: {}
-    )
-  }
-}

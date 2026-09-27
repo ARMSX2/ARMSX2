@@ -6,8 +6,6 @@ import QuartzCore
 import SwiftUI
 import UIKit
 
-let controllerImportBIOSToolbarTargetLabel = "controller.toolbar.import-bios"
-
 struct ControllerAccessibilityDirectionalLink: Equatable {
     static let scrollBoundary = "controller.scroll-boundary"
     static let firstContent = "controller.first-content"
@@ -2228,10 +2226,6 @@ final class ControllerAccessibilityNavigationSession {
     fileprivate static func explicitKey(_ id: String) -> String {
         "controller.focus.id.\(id)"
     }
-
-    fileprivate static func semanticKey(_ label: String) -> String {
-        "controller.focus.label.\(label)"
-    }
 }
 
 private extension MenuControllerCommand {
@@ -2813,18 +2807,6 @@ private struct ControllerFocusedForegroundModifier: ViewModifier {
                 ControllerFocusVisualAnimation.textFade,
                 value: visuallyFocused
             )
-    }
-}
-
-private struct ControllerAccessibilityFocusedNeonModifier: ViewModifier {
-    let cornerRadius: CGFloat
-    @Environment(\.controllerAccessibilityTargetFocused) private var isFocused
-
-    func body(content: Content) -> some View {
-        content.controllerFocusBoxPresentation(
-            isVisible: isFocused,
-            cornerRadius: cornerRadius
-        )
     }
 }
 
@@ -3740,14 +3722,6 @@ extension View {
                 normal: normal,
                 allowsFocusedBlue: allowsFocusedBlue
             )
-        )
-    }
-
-    func controllerAccessibilityFocusedNeon(
-        cornerRadius: CGFloat = 12
-    ) -> some View {
-        modifier(
-            ControllerAccessibilityFocusedNeonModifier(cornerRadius: cornerRadius)
         )
     }
 
