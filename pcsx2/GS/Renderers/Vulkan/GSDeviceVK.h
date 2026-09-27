@@ -1050,6 +1050,9 @@ private:
 	// ~0u = no readback seen yet, window shut.
 	u32 m_render_passes_since_submit = 0;
 	u32 m_readback_frame = ~0u;
+	// The kick's spacing, in unsubmitted render passes (see DoRenderHW). Only gsrunner's
+	// -readback-kick-passes moves it.
+	u32 m_readback_kick_passes = 8;
 
 	GSVector4i m_scissor = GSVector4i::zero();
 	VkViewport m_viewport = {0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};

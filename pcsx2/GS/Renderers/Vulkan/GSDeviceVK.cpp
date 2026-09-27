@@ -177,6 +177,11 @@ GSDeviceVK::GSDeviceVK()
 #endif
 
 	std::memset(&m_pipeline_selector, 0, sizeof(m_pipeline_selector));
+	if (g_gs_measurement_overrides.readback_kick_passes != 0)
+	{
+		m_readback_kick_passes = g_gs_measurement_overrides.readback_kick_passes;
+		Console.WriteLn("VK: measurement override: readback kick after %u unsubmitted render passes", m_readback_kick_passes);
+	}
 }
 
 GSDeviceVK::~GSDeviceVK() = default;
@@ -9020,7 +9025,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	// boundary. Most passes end at a target switch rather than with no pass open, so without
 	// that boundary many readback frames never kick before their readback at all.
 	//
-	// A kick needs kick_threshold unsubmitted passes, the open one included. Every submit sleeps
+	// A kick needs m_readback_kick_passes unsubmitted passes, the open one included. Every submit sleeps
 	// in the driver on Android's Adreno drivers, and the governor answers the sleeps by lowering
 	// the GS thread's clock, so kicking at every boundary costs more there than the earlier
 	// start saves.
@@ -9036,14 +9041,13 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	// and the real number is 2, because ~3300 of ~3400 offers find the next command buffer
 	// still executing. So raising the threshold buys far less than it looks like it should.
 	// Sweeping it 8->16 measured -2% total GPU stall on Rogue Galaxy and +12% on OutRun 2006.
-	constexpr u32 kick_threshold = 8;
 	constexpr u32 readback_window_frames = 3;
 	const bool near_readback = m_readback_frame != ~0u && (m_frame - m_readback_frame) <= readback_window_frames;
 	const bool at_pass_boundary = !InRenderPass() ||
 		(!config.ps.HasColorROV() && !config.ps.HasDepthROV() && !g_gs_device->GetColorClipTexture() &&
 			!(config.rt && config.rt == m_current_render_target) && !(config.ds && config.ds == m_current_depth_target));
 	const u32 unsubmitted_passes = m_render_passes_since_submit + (InRenderPass() ? 1u : 0u);
-	if (near_readback && at_pass_boundary && unsubmitted_passes >= kick_threshold)
+	if (near_readback && at_pass_boundary && unsubmitted_passes >= m_readback_kick_passes)
 	{
 		// The kick must never block: submitting cycles to the next command buffer, and
 		// ActivateCommandBuffer fence-waits if that buffer's previous submission is still
