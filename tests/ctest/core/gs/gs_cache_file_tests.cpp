@@ -23,7 +23,6 @@
 #else
 #include <csignal>
 #include <sys/resource.h>
-#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -527,8 +526,38 @@ TEST_F(GSCacheFileTest, ClearEmptiesLiveStoresInPlaceAndDeletesTheRest)
 }
 
 #ifndef _WIN32
-// A full disk, simulated with a file size limit in a child process: the append fails part way, and
-// the store must cut both files back and stop writing, leaving nothing for the next start to trip on.
+// A full disk, simulated with a file size limit: the append fails part way, and the store must cut
+// both files back and stop writing, leaving nothing for the next start to trip on. The limit is set
+// in this process, soft limit only, and put back on every return. Not in a forked child: fork()
+// returns -1 on the CI runners.
+namespace
+{
+	class FileSizeLimit
+	{
+	public:
+		explicit FileSizeLimit(rlim_t limit)
+		{
+			m_old_handler = std::signal(SIGXFSZ, SIG_IGN);
+			if (getrlimit(RLIMIT_FSIZE, &m_old) != 0)
+				return;
+			const struct rlimit rl = {limit, m_old.rlim_max};
+			m_set = (setrlimit(RLIMIT_FSIZE, &rl) == 0);
+		}
+		~FileSizeLimit()
+		{
+			if (m_set)
+				setrlimit(RLIMIT_FSIZE, &m_old);
+			std::signal(SIGXFSZ, m_old_handler);
+		}
+		bool IsSet() const { return m_set; }
+
+	private:
+		struct rlimit m_old = {};
+		void (*m_old_handler)(int) = SIG_DFL;
+		bool m_set = false;
+	};
+} // namespace
+
 static int AppendUntilFull(const std::string& base, const Stamp& stamp, bool fail_in_index)
 {
 	BlobStore store;
@@ -539,9 +568,8 @@ static int AppendUntilFull(const std::string& base, const Stamp& stamp, bool fai
 
 	// Room for a 1-byte blob but not a whole index entry, or not even the blob.
 	const rlim_t limit = fail_in_index ? static_cast<rlim_t>(idx_before + 20) : static_cast<rlim_t>(bin_before + 10);
-	std::signal(SIGXFSZ, SIG_IGN);
-	const struct rlimit rl = {limit, limit};
-	if (setrlimit(RLIMIT_FSIZE, &rl) != 0)
+	FileSizeLimit fsize(limit);
+	if (!fsize.IsSet())
 		return 11;
 
 	std::vector<u8> key(24, 0x77);
@@ -575,14 +603,7 @@ TEST_F(GSCacheFileTest, FailedAppendIsCutBackAndStopsWriting)
 			ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
 			FillStore(store, 4);
 		}
-		const pid_t pid = fork();
-		ASSERT_GE(pid, 0);
-		if (pid == 0)
-			_exit(AppendUntilFull(base, MakeStamp("A"), fail_in_index));
-		int status = 0;
-		ASSERT_EQ(waitpid(pid, &status, 0), pid);
-		ASSERT_TRUE(WIFEXITED(status));
-		EXPECT_EQ(WEXITSTATUS(status), 0) << (fail_in_index ? "index" : "data");
+		EXPECT_EQ(AppendUntilFull(base, MakeStamp("A"), fail_in_index), 0) << (fail_in_index ? "index" : "data");
 
 		BlobStore store;
 		ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
