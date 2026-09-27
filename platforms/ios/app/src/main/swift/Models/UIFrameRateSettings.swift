@@ -303,6 +303,10 @@ final class UIFrameRateSettings {
     var asksBeforeTouchNavigation: Bool {
         didSet { UserDefaults.standard.set(asksBeforeTouchNavigation, forKey: Keys.askTouch) }
     }
+    // Off by default: a pad set down on a table pressed the triggers and switched themes.
+    var changesThemeWithTriggers: Bool {
+        didSet { UserDefaults.standard.set(changesThemeWithTriggers, forKey: Keys.themeTriggers) }
+    }
 
     var displayMaximumFramesPerSecond: Int {
         max(30, UIScreen.main.maximumFramesPerSecond)
@@ -381,6 +385,7 @@ final class UIFrameRateSettings {
         usesLightweightQualityOnHotTemperature = true
         asksBeforeControllerNavigation = true
         asksBeforeTouchNavigation = true
+        changesThemeWithTriggers = false
     }
 
     private enum Keys {
@@ -402,6 +407,7 @@ final class UIFrameRateSettings {
             "ARMSX2iOSUseLightweightQualityOnHotTemperature"
         static let askController = "ARMSX2iOSAskBeforeControllerNavigation"
         static let askTouch = "ARMSX2iOSAskBeforeTouchNavigation"
+        static let themeTriggers = "ARMSX2iOSChangeThemeWithTriggers"
     }
 
     private init() {
@@ -456,6 +462,7 @@ final class UIFrameRateSettings {
         ) as? Bool ?? true
         asksBeforeControllerNavigation = defaults.object(forKey: Keys.askController) as? Bool ?? true
         asksBeforeTouchNavigation = defaults.object(forKey: Keys.askTouch) as? Bool ?? true
+        changesThemeWithTriggers = defaults.object(forKey: Keys.themeTriggers) as? Bool ?? false
     }
 
     private static func load(

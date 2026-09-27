@@ -2784,6 +2784,9 @@
         }
       }
     },
+    "Change Theme with L2 and R2" : {
+      "extractionState" : "manual"
+    },
     "Changes show right away. Save as New Preset keeps them in My Presets. A saved preset stops working if you delete the shader it came from." : {
       "extractionState" : "manual",
       "localizations" : {
