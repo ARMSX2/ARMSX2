@@ -4483,17 +4483,6 @@ std::unique_ptr<GSDownloadTexture> GSDeviceVK::CreateDownloadTexture(u32 width, 
 	return GSDownloadTextureVK::Create(width, height, format);
 }
 
-void GSDeviceVK::DoHintReadbackSource(GSTexture* tex)
-{
-	// MRU ring of 2 (see the member comment): per-frame readback patterns re-read the
-	// same one or two targets, and the next draw into one of them predicts a readback.
-	if (m_recent_readback_sources[0] == tex || m_recent_readback_sources[1] == tex)
-		return;
-
-	m_recent_readback_sources[1] = m_recent_readback_sources[0];
-	m_recent_readback_sources[0] = tex;
-}
-
 void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
 {
 	// Empty rect, abort copy.

@@ -861,7 +861,6 @@ public:
 	void Draw(const GSHWDrawConfig& config, int offset, int count);
 
 	std::unique_ptr<GSDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format) override;
-	void DoHintReadbackSource(GSTexture* tex) override;
 
 	void DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY) override;
 
@@ -1051,14 +1050,6 @@ private:
 	// ~0u = no readback seen yet, window shut.
 	u32 m_render_passes_since_submit = 0;
 	u32 m_readback_frame = ~0u;
-
-	// Textures recently used as synchronous-readback sources (see DoHintReadbackSource).
-	// A draw INTO one of these is almost certainly the producer of the next readback,
-	// so DoRenderHW kicks the command buffer first: the queued backlog drains while the
-	// producing pass records, leaving the readback to wait on one small pass + copy
-	// instead of the whole backlog. Compared by pointer only, never dereferenced —
-	// a recycled allocation at worst causes one extra readback-window submit.
-	std::array<GSTexture*, 2> m_recent_readback_sources = {};
 
 	GSVector4i m_scissor = GSVector4i::zero();
 	VkViewport m_viewport = {0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};

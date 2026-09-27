@@ -567,11 +567,6 @@ void GSDevice::ClearDepth(GSTexture* t, float d)
 	t->SetClearDepth(d);
 }
 
-void GSDevice::DoHintReadbackSource(GSTexture* tex)
-{
-	// Default: no scheduling hint. See GSDeviceVK for a backend that uses it.
-}
-
 bool GSDevice::ProcessClearsBeforeCopy(GSTexture* sTex, GSTexture* dTex, const bool full_copy)
 {
 	FlushDeferredDraws();

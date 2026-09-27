@@ -7764,9 +7764,7 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 	if (asynchronous && !asynchronous_dltex)
 		return;
 
-	// Per-frame readback patterns (occlusion tests etc.) redraw the same target before
-	// each read; let the backend schedule submissions around the next producing draw.
-	g_gs_device->HintReadbackSource(t->m_texture);
+	g_gs_device->FlushBeforeReadback();
 
 	if (direct_read)
 	{
