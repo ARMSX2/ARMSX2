@@ -22,6 +22,7 @@
 #include "common/FileSystem.h"
 #include "common/Path.h"
 
+#include "GS/GSCacheFile.h"
 #include "GS/GSXXH.h"
 
 #include "LosslessDll.h"
@@ -364,9 +365,17 @@ void AppendRaw(std::vector<u8>& out, const void* data, size_t size) {
     out.insert(out.end(), bytes, bytes + size);
 }
 
-// PORT: Eden streams the cache out through Common::FS::IOFile. PCSX2's FileSystem has no
-// incremental writer, so the identical byte layout is assembled in memory and written in one
-// call. That also makes the write all-or-nothing rather than leaving a half-written cache behind.
+/// The SPIR-V here is translated by this build's code, so the build identity is the stamp: a
+/// build with a different translation starts over instead of trusting CACHE_VERSION to be bumped.
+[[nodiscard]] GSCacheFile::Stamp LsfgCacheStamp() {
+    GSCacheFile::Stamp stamp;
+    stamp.Add("build", GSCacheFile::GetBuildId());
+    return stamp;
+}
+
+// PORT: Eden streams the cache out through Common::FS::IOFile. Here the identical byte layout is
+// assembled in memory and written as the payload of a GSCacheFile framed file: a checksum over it,
+// and a temporary file renamed into place, so a kill mid-write leaves the old cache or none.
 [[nodiscard]] bool WriteShaderCache(const std::string& path, const CacheHeader& header,
                                     const ShaderModules& modules) {
     std::vector<u8> blob;
@@ -379,7 +388,8 @@ void AppendRaw(std::vector<u8>& out, const void* data, size_t size) {
         AppendRaw(blob, words.data(), words.size() * sizeof(u32));
     }
 
-    return FileSystem::WriteBinaryFile(path.c_str(), blob.data(), blob.size());
+    return GSCacheFile::WriteFramedFile(path, GSCacheFile::KIND_LSFG_SPIRV, LsfgCacheStamp(), blob.data(),
+                                        blob.size());
 }
 
 // PORT: likewise the read side — the whole file is pulled in at once and walked with a cursor.
@@ -413,8 +423,9 @@ void AppendRaw(std::vector<u8>& out, const void* data, size_t size) {
         return false;
     }
 
-    const std::optional<std::vector<u8>> blob = FileSystem::ReadBinaryFile(path.c_str());
-    if (!blob) {
+    std::optional<std::vector<u8>> blob = std::vector<u8>();
+    if (GSCacheFile::ReadFramedFile(path, GSCacheFile::KIND_LSFG_SPIRV, LsfgCacheStamp(), &*blob) !=
+        GSCacheFile::ReadResult::Ok) {
         return false;
     }
 

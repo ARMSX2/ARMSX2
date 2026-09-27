@@ -3,6 +3,7 @@
 
 #include "GS/Renderers/DX12/D3D12ShaderCache.h"
 #include "GS/GS.h"
+#include "GS/GSCacheFile.h"
 #include "GS/GSShaderCompileIndicator.h"
 
 #include "Config.h"
@@ -162,7 +163,7 @@ bool D3D12ShaderCache::CreateNew(
 		return false;
 	}
 
-	const u32 file_version = SHADER_CACHE_VERSION;
+	const u32 file_version = GSCacheFile::GetBuildVersionWord();
 	if (std::fwrite(&file_version, sizeof(file_version), 1, index_file) != 1)
 	{
 		Console.Error("Failed to write version to index file '%s'", index_filename.c_str());
@@ -203,7 +204,7 @@ bool D3D12ShaderCache::ReadExisting(const std::string& index_filename, const std
 	}
 
 	u32 file_version;
-	if (std::fread(&file_version, sizeof(file_version), 1, index_file) != 1 || file_version != SHADER_CACHE_VERSION)
+	if (std::fread(&file_version, sizeof(file_version), 1, index_file) != 1 || file_version != GSCacheFile::GetBuildVersionWord())
 	{
 		Console.Error("Bad file version in '%s'", index_filename.c_str());
 		std::fclose(index_file);
