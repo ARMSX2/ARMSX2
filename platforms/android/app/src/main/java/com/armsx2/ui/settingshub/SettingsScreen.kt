@@ -70,10 +70,10 @@ import com.armsx2.ui.settings.RendererTab
 import com.armsx2.ui.settings.SegmentedRow
 import com.armsx2.ui.settings.SkinsTab
 import com.armsx2.ui.settings.LocalSettingsScrollState
-import com.armsx2.ui.settings.LocalSettingsSearchTarget
+import com.armsx2.ui.settings.LocalSettingsSearchOpenSections
 
 private data class SettingsSection(val category: SettingsCategory, val titleKey: String, val glyph: String)
-private data class PendingSettingsJump(val category: SettingsCategory, val label: String)
+private data class PendingSettingsJump(val category: SettingsCategory, val label: String, val sections: List<String>)
 
 /**
  * Lets L1/R1 flick between settings tabs, the way the old Refresh UI did.
@@ -127,9 +127,9 @@ fun SettingsScreen(
     // freshly-switched tab composes + lays out, then selects it (highlight + scroll into view).
     var pendingJump by remember { mutableStateOf<PendingSettingsJump?>(null) }
     val openSearch = {
-        SettingsSearch.open { category, label ->
+        SettingsSearch.open { category, label, sections ->
             viewModel.selectCategory(category)
-            pendingJump = PendingSettingsJump(category, label)
+            pendingJump = PendingSettingsJump(category, label, sections)
         }
     }
     val screenScroll = rememberScrollState(initial = SettingsScrollMemory.lastOffset)
@@ -164,8 +164,9 @@ fun SettingsScreen(
         ui.category
     }
     // Wait for the destination tab, not merely for a row with the same label in the old tab.
-    // Collapsed sections expose their rows during this jump and open only the matching section;
-    // after it expands, the row's bringIntoView places the selected control on-screen.
+    // The jump's section chain (LocalSettingsSearchOpenSections, below) opens the sections that
+    // wrap the target; once the row composes and registers, its own bringIntoView places the
+    // selected control on-screen.
     LaunchedEffect(pendingJump, displayedCategory, contentReady) {
         val jump = pendingJump ?: return@LaunchedEffect
         if (!contentReady || displayedCategory != jump.category) return@LaunchedEffect
@@ -271,8 +272,9 @@ fun SettingsScreen(
                     )
                     Spacer(Modifier.height(10.dp))
                     CompositionLocalProvider(
-                        LocalSettingsSearchTarget provides pendingJump
-                            ?.takeIf { it.category == displayedCategory }?.label,
+                        LocalSettingsSearchOpenSections provides pendingJump
+                            ?.takeIf { it.category == displayedCategory }?.sections?.toSet()
+                            ?: emptySet(),
                     ) {
                         SettingsPanel(displayedCategory, viewModel, Modifier.fillMaxWidth())
                     }

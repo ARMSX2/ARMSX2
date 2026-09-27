@@ -16,7 +16,7 @@ class SettingsSearchJumpTest {
     }
 
     @Test
-    fun doesNotExpandForOtherRowsOrSectionHeaders() {
+    fun doesNotMatchOtherRowsOrSectionHeaders() {
         val label = "CPU Sprite Render"
         assertFalse(settingsRowMatchesLabel("toggle:CPU Sprite Render Extra", label))
         assertFalse(settingsRowMatchesLabel("slider:CPU Sprite Render Extra:42", label))

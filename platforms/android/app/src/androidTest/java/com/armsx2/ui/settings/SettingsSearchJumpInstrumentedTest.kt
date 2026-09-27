@@ -3,9 +3,6 @@ package com.armsx2.ui.settings
 import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
@@ -19,11 +16,10 @@ class SettingsSearchJumpInstrumentedTest {
     @get:Rule val composeRule = createComposeRule()
 
     @Test
-    fun searchOpensOnlyMatchingCollapsedSectionAndNormalCollapseStillWorks() {
-        var target by mutableStateOf<String?>("Merge Sprite")
+    fun jumpOpensOnlyTheNamedSectionAndNormalCollapseStillWorks() {
         composeRule.setContent {
             MaterialTheme {
-                CompositionLocalProvider(LocalSettingsSearchTarget provides target) {
+                CompositionLocalProvider(LocalSettingsSearchOpenSections provides setOf("Upscaling Fixes")) {
                     Column {
                         CollapsibleSection("Upscaling Fixes") {
                             ToggleRow("Merge Sprite", false, onChange = {})
@@ -37,11 +33,11 @@ class SettingsSearchJumpInstrumentedTest {
         }
 
         composeRule.waitForIdle()
-        composeRule.runOnIdle { target = null }
-        composeRule.waitForIdle()
         composeRule.onNodeWithText("Merge Sprite").assertIsDisplayed()
         composeRule.onNodeWithText("GPU Target CLUT").assertDoesNotExist()
         assertTrue(SettingsControllerNav.selectByLabel("Merge Sprite"))
+        // A setting behind a section the jump did not open stays unreachable for the pad.
+        assertFalse(SettingsControllerNav.selectByLabel("GPU Target CLUT"))
 
         composeRule.onNodeWithText("Upscaling Fixes").performClick()
         composeRule.waitForIdle()
@@ -51,10 +47,9 @@ class SettingsSearchJumpInstrumentedTest {
 
     @Test
     fun sectionTitleResultOpensAndFocusesItsHeader() {
-        var target by mutableStateOf<String?>("Hardware Fixes")
         composeRule.setContent {
             MaterialTheme {
-                CompositionLocalProvider(LocalSettingsSearchTarget provides target) {
+                CompositionLocalProvider(LocalSettingsSearchOpenSections provides setOf("Hardware Fixes")) {
                     CollapsibleSection("Hardware Fixes") {
                         ToggleRow("GPU Target CLUT", false, onChange = {})
                     }
@@ -62,8 +57,6 @@ class SettingsSearchJumpInstrumentedTest {
             }
         }
 
-        composeRule.waitForIdle()
-        composeRule.runOnIdle { target = null }
         composeRule.waitForIdle()
         composeRule.onNodeWithText("GPU Target CLUT").assertIsDisplayed()
         assertTrue(SettingsControllerNav.selectByLabel("Hardware Fixes"))
