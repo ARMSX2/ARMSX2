@@ -2264,6 +2264,8 @@ struct GameListView: View {
     @Environment(\.menuControllerInputRouter)
     private var sharedMenuControllerInput
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    // Card text uses fixed point sizes, so this carries Larger Text into them.
+    @ScaledMetric(relativeTo: .body) private var dynamicTypeTextScale: CGFloat = 1
     @Environment(\.layoutDirection) private var layoutDirection
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.uiAccentColour) private var accentColour
@@ -2845,13 +2847,13 @@ struct GameListView: View {
     private var resolvedGameNameTextScale: CGFloat {
         CGFloat(
             min(max(activeGameNameTextScaleBinding.wrappedValue, 0.75), 1.5)
-        )
+        ) * dynamicTypeTextScale
     }
 
     private var resolvedGameInfoTextScale: CGFloat {
         CGFloat(
             min(max(activeGameInfoTextScaleBinding.wrappedValue, 0.75), 1.5)
-        )
+        ) * dynamicTypeTextScale
     }
 
     private var resolvedGameCardCornerRadius: CGFloat {
@@ -6660,7 +6662,7 @@ struct GameListView: View {
             .lastPathComponent
         GameDisplayNameStore.shared.setDisplayName(
             proposedName,
-            for: game.id,
+            for: game.bootName,
             fallback: fallbackName
         )
         loadGames()
@@ -8960,8 +8962,9 @@ struct GameListView: View {
                 let fallbackDisplayName = fileURL
                     .deletingPathExtension()
                     .lastPathComponent
+                // Keyed like favorites: the absolute path moves on a reinstall.
                 let displayName = GameDisplayNameStore.shared.displayName(
-                    for: record.id,
+                    for: record.external ? record.path : record.name,
                     fallback: fallbackDisplayName
                 )
                 loadedGames.append(
