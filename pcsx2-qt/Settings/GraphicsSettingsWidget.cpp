@@ -9,9 +9,7 @@
 
 #include "pcsx2/Host.h"
 #include "pcsx2/Patch.h"
-#include "pcsx2/VMManager.h"
 #include "pcsx2/GS/GS.h"
-#include "pcsx2/GS/GSCacheFile.h"
 #include "pcsx2/GS/GSUtil.h"
 
 struct RendererInfo
@@ -741,7 +739,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 
 		dialog()->registerWidgetHelp(m_advanced.clearShaderCache, tr("Clear Shader Cache"), tr("N/A"),
 			tr("Deletes every compiled shader and pipeline the renderers have saved to disk. They are rebuilt as games need "
-			   "them, so the next start of each game may stutter briefly. Only available while no game is running."));
+			   "them, so the next start of each game may stutter briefly."));
 
 		dialog()->registerWidgetHelp(m_advanced.disableVertexShaderExpand, tr("Disable Vertex Shader Expand"), tr("Unchecked"),
 			tr("Falls back to the CPU for expanding sprites/lines."));
@@ -1192,18 +1190,11 @@ void GraphicsSettingsWidget::onUpscaleMultiplierChanged()
 
 void GraphicsSettingsWidget::onClearShaderCacheClicked()
 {
-	// A running renderer holds the files open and would write its pipelines straight back.
-	if (VMManager::HasValidVM())
-	{
-		QMessageBox::information(QtUtils::GetRootWidget(this), tr("Clear Shader Cache"),
-			tr("Shut down the game before clearing the shader cache."));
-		return;
-	}
-
-	const u32 removed = GSCacheFile::DeleteAll(EmuFolders::Cache);
+	// Through the CPU thread to the GS thread when a renderer is open, so the renderer empties its
+	// open caches in place and writes nothing back.
+	Host::RunOnCPUThread([]() { GSClearShaderCache(); });
 	QMessageBox::information(QtUtils::GetRootWidget(this), tr("Clear Shader Cache"),
-		(removed > 0) ? tr("Deleted %n shader cache file(s).", nullptr, static_cast<int>(removed)) :
-						tr("The shader cache is already empty."));
+		tr("The shader cache has been cleared. Shaders are rebuilt as games need them."));
 }
 
 #include "moc_GraphicsSettingsWidget.cpp"

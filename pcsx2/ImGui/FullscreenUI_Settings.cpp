@@ -3,7 +3,7 @@
 
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSTexture.h"
-#include "GS/GSCacheFile.h"
+#include "GS/GS.h"
 #include "GS/GSUtil.h"
 #include "Achievements.h"
 #include "GameList.h"
@@ -3441,13 +3441,13 @@ void FullscreenUI::DrawGraphicsSettingsPage(SettingsInterface* bsi, bool show_ad
 			"EmuCore/GS", "CoalesceRenderPasses", false);
 		DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_BAN, "Disable Shader Cache"), FSUI_CSTR("Prevents the loading and saving of shaders/pipelines to disk."),
 			"EmuCore/GS", "DisableShaderCache", false);
-		// The caches are shared by every game, and a running renderer holds them open.
+		// The caches are shared by every game. This runs on the GS thread, where the open caches can
+		// be emptied in place, so a running game is no obstacle.
 		if (!IsEditingGameSettings(bsi) &&
 			MenuButton(FSUI_ICONSTR(ICON_FA_TRASH, "Clear Shader Cache"),
-				FSUI_CSTR("Deletes every compiled shader and pipeline saved to disk. They are rebuilt as games need them."),
-				!VMManager::HasValidVM()))
+				FSUI_CSTR("Deletes every compiled shader and pipeline saved to disk. They are rebuilt as games need them.")))
 		{
-			const u32 removed = GSCacheFile::DeleteAll(EmuFolders::Cache);
+			const u32 removed = GSClearShaderCacheOnGSThread();
 			ShowToast(std::string(), (removed > 0) ? fmt::format(FSUI_FSTR("Deleted {} shader cache files."), removed) :
 													 std::string(FSUI_STR("The shader cache is already empty.")));
 		}

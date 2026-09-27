@@ -1009,6 +1009,12 @@ private fun ClearShaderCacheRow() {
             .clip(RoundedCornerShape(16.dp))
             .background(rowAura())
             .clickable {
+                // A running renderer holds the caches open and would write its pipelines back after
+                // the files were deleted, so the clear waits until the game is shut down.
+                if (MainActivityRuntime.eState.value != com.armsx2.EmuState.STOPPED) {
+                    Toast.makeText(context, I18n.get("renderer.clearShaderCache.stopGameFirst"), Toast.LENGTH_LONG).show()
+                    return@clickable
+                }
                 val n = clearShaderCache(File(MainActivityRuntime.assetCopyRoot(context), "cache"))
                 status.value = if (n > 0)
                     "Cleared $n shader-cache file${if (n == 1) "" else "s"}. Restart the game to rebuild."
@@ -1044,7 +1050,7 @@ private fun ClearShaderCacheRow() {
  *  killed write left behind. They rebuild on the next renderer init. Same set as the core's
  *  GSCacheFile::DeleteAll. Returns how many files were removed. */
 private fun clearShaderCache(cacheDir: File): Int {
-    val prefixes = listOf("vulkan_shaders", "vulkan_pipelines", "gl_programs", "lsfg_spirv.cache")
+    val prefixes = listOf("vulkan_shaders", "vulkan_pipelines", "gl_programs", "lsfg_spirv")
     var removed = 0
     cacheDir.listFiles()?.forEach { f ->
         if (f.isFile && prefixes.any { f.name.startsWith(it) } && runCatching { f.delete() }.getOrDefault(false))

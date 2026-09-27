@@ -1986,6 +1986,11 @@ public:
 	/// an empty serial (the software renderer, or no game) means build nothing.
 	virtual void SetGameIdentity(const std::string& serial, u32 crc) {}
 
+	/// Called on the GS thread just before the on-disk shader caches are cleared: close whatever
+	/// cache file the device holds outside GSCacheFile's stores, and drop in-memory state it would
+	/// otherwise write back.
+	virtual void PrepareShaderCacheClear() {}
+
 	/// Returns the amount of GPU time utilized since the last time this method was called.
 	virtual float GetAndResetAccumulatedGPUTime() = 0;
 

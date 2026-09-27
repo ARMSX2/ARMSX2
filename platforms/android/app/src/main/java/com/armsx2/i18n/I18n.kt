@@ -1352,6 +1352,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "renderer.clearShaderCache.alreadyEmpty" to "Shader cache is already empty.",
     "renderer.clearShaderCache.description" to "Wipes the compiled Vulkan + GL shader/pipeline caches. Use if a game renders corrupt after a driver swap or update; the next launch rebuilds them clean.",
     "renderer.clearShaderCache.label" to "Clear Shader Cache",
+    "renderer.clearShaderCache.stopGameFirst" to "Shut down the game before clearing the shader cache.",
     "renderer.contrast.label" to "Contrast",
     "renderer.cas.description" to "AMD FidelityFX Contrast-Adaptive Sharpening. Crisps up the image.",
     "renderer.cas.label" to "CAS Sharpening",

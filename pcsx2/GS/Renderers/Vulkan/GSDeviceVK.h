@@ -644,6 +644,7 @@ private:
 	u32 m_tfx_key_session = 0;
 
 	void SetGameIdentity(const std::string& serial, u32 crc) override;
+	void PrepareShaderCacheClear() override;
 	/// Joins the workers and destroys every pipeline built but not drawn with. GS thread only.
 	void StopPipelinePrecompile();
 	void PrecompileWorker();

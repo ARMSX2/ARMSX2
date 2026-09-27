@@ -149,6 +149,8 @@ static constexpr u32 WINDOW_WIDTH = 640;
 static constexpr u32 WINDOW_HEIGHT = 480;
 
 static MemorySettingsInterface s_settings_interface;
+/// -clear-shader-cache-at-frame: the dump frame at which to clear, or -1.
+static s32 s_clear_shader_cache_frame = -1;
 
 static std::string s_output_prefix;
 static s32 s_loop_count = 1;
@@ -1167,6 +1169,8 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -surfaceless: Disables showing a window.\n");
 	std::fprintf(stderr, "  -logfile <filename>: Writes emu log to filename.\n");
 	std::fprintf(stderr, "  -noshadercache: Disables the shader cache (useful for parallel runs).\n");
+	std::fprintf(stderr, "  -clear-shader-cache-at-frame <n>: Clears the shader cache once, at dump frame n, the way the "
+						 "settings button does while a renderer is open.\n");
 	std::fprintf(stderr, "  -precompile-pipelines: Build the dump's recorded Vulkan pipelines on worker threads at start, as the "
 						 "app does by default. Off unless asked for (this flag or -set EmuCore/GS/PrecompilePipelines=true), so "
 						 "a timed run has no background compilation competing with it.\n");
@@ -1653,6 +1657,11 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					s_settings_interface.SetBoolValue("Logging", "EnableTimestamps", false);
 				}
 
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-clear-shader-cache-at-frame"))
+			{
+				s_clear_shader_cache_frame = StringUtil::FromChars<s32>(argv[++i]).value_or(-1);
 				continue;
 			}
 			else if (CHECK_ARG("-precompile-pipelines"))
@@ -2810,6 +2819,12 @@ void Host::PumpMessagesOnCPUThread()
 			s_cpu_thread_tasks.pop_front();
 		}
 		task();
+	}
+
+	if (s_clear_shader_cache_frame >= 0 && static_cast<s32>(GSDumpReplayer::GetFrameNumber()) == s_clear_shader_cache_frame)
+	{
+		s_clear_shader_cache_frame = -1;
+		GSClearShaderCache([](u32 removed) { INFO_LOG("gsrunner: cleared the shader cache ({} files)", removed); });
 	}
 
 	// update GS thread copy of frame number

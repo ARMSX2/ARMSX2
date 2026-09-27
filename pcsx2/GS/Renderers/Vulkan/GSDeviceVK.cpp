@@ -7840,6 +7840,15 @@ void GSDeviceVK::SetGameIdentity(const std::string& serial, u32 crc)
 		m_precompile_queue.size(), records.size(), serial, session, num_workers);
 }
 
+void GSDeviceVK::PrepareShaderCacheClear()
+{
+	// Joins the workers and closes the key list; recording resumes at the next game change.
+	StopPipelinePrecompile();
+	// The driver's cache would otherwise be written back, cleared files and all, at the next flush.
+	if (g_vulkan_shader_cache)
+		g_vulkan_shader_cache->ResetPipelineCache();
+}
+
 void GSDeviceVK::PrecompileWorker()
 {
 	Threading::SetNameOfCurrentThread("GS precompile"); // Linux keeps 15 characters.

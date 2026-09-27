@@ -6,6 +6,7 @@
 #include "ImGui/FullscreenUI.h"
 #include "ImGui/ImGuiManager.h"
 #include "GS/GS.h"
+#include "GS/GSCacheFile.h"
 #include "GS/GSExtra.h"
 #include "GS/GSGL.h"
 #include "GS/GSLzma.h"
@@ -542,6 +543,29 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_r
 	}
 
 	return true;
+}
+
+u32 GSClearShaderCacheOnGSThread()
+{
+	if (g_gs_device)
+		g_gs_device->PrepareShaderCacheClear();
+	const u32 removed = GSCacheFile::DeleteAll(EmuFolders::Cache);
+	INFO_LOG("GS: shader cache cleared ({} files)", removed);
+	return removed;
+}
+
+void GSClearShaderCache(std::function<void(u32)> done)
+{
+	auto work = [done = std::move(done)]() {
+		const u32 removed = GSClearShaderCacheOnGSThread();
+		if (done)
+			done(removed);
+	};
+
+	if (MTGS::IsOpen())
+		MTGS::RunOnGSThread(std::move(work));
+	else
+		work();
 }
 
 bool GSopen(const Pcsx2Config::GSOptions& config, GSRendererType renderer, u8* basemem,

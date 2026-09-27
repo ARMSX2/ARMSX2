@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <functional>
+
 #include "common/WindowInfo.h"
 #include "SaveState.h"
 #include "pcsx2/Config.h"
@@ -55,6 +57,14 @@ class SmallStringBase;
 s16 GSLookupGetSkipCountFunctionId(const std::string_view name);
 s16 GSLookupBeforeDrawFunctionId(const std::string_view name);
 s16 GSLookupMoveHandlerFunctionId(const std::string_view name);
+
+/// Deletes every GS shader and pipeline cache file. While the GS thread runs the work is posted
+/// there, where the open caches can be emptied and nothing is written back afterwards, so call it
+/// from the CPU thread. `done` receives the number of files removed or emptied, on the thread that
+/// did the work.
+void GSClearShaderCache(std::function<void(u32)> done = {});
+/// The same, for a caller already on the GS thread (the fullscreen UI), or when no GS thread runs.
+u32 GSClearShaderCacheOnGSThread();
 
 bool GSopen(const Pcsx2Config::GSOptions& config, GSRendererType renderer, u8* basemem,
 	GSVSyncMode vsync_mode, bool allow_present_throttle);
