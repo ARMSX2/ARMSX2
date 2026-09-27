@@ -176,6 +176,14 @@ struct AutomaticCustomSkinProposal: Codable, Equatable {
     var isUniversalSelection: Bool {
         selectionKind == "universal"
     }
+
+    /// A catalog skin a picker lists before it is installed. Applying one
+    /// downloads it first, through `installIfNeeded`.
+    static let catalogListingPrefix = "catalog:"
+
+    var isCatalogListing: Bool {
+        skinID.hasPrefix(Self.catalogListingPrefix)
+    }
 }
 
 private struct AutomaticCustomSkinPersistence: Codable {
@@ -319,39 +327,60 @@ final class AutomaticCustomSkinManager {
         return proposalsWithCatalogPreviews(available)
     }
 
-    /// Manual Per-Game Custom Skin pickers opt into the same catalog download
-    /// work as Automatic Download Custom Skin. This remains available when the
-    /// background automatic-download preference is off because opening the
-    /// picker is an explicit user request.
-    @MainActor
-    func downloadAvailableProposals(
+    /// The Per-Game Custom Skin pickers list the compatible catalog skins that
+    /// are not installed after the installed ones, whether or not Automatic
+    /// Download Custom Skin is on. Nothing downloads until one is applied.
+    func catalogProposals(
         forSerial rawSerial: String?
     ) async -> [AutomaticCustomSkinProposal] {
         let serial = PadLayoutGameIdentity.normalizedSerial(rawSerial)
         guard !serial.isEmpty else { return [] }
-
+        let installed = installedProposals(forSerial: serial)
+        let skins: [CatalogSkin]
         do {
-            let skins = try await fetchCatalogSkins()
-            guard !Task.isCancelled else { return [] }
-            let catalogProposals = await installCatalogProposals(
-                from: skins,
-                forSerial: serial
-            )
-            guard !Task.isCancelled else { return [] }
-            if let recommendation = catalogProposals.first {
-                proposals[serial] = recommendation
-                proposalOptions[serial] = catalogProposals
-                persist()
-            }
+            skins = try await fetchCatalogSkins()
         } catch {
             NSLog(
-                "[ARMSX2 iOS Skins] manual catalog download failed serial=%@ error=%@",
+                "[ARMSX2 iOS Skins] catalog listing failed serial=%@ error=%@",
                 serial,
                 error.localizedDescription
             )
+            return installed
         }
+        let installedCatalogIDs = Set(installed.map(\.catalogID))
+        let listed = compatibleSkins(in: skins, forSerial: serial)
+            .filter { !installedCatalogIDs.contains($0.file) }
+            .map { skin in
+                AutomaticCustomSkinProposal(
+                    serial: serial,
+                    catalogID: skin.file,
+                    skinID: AutomaticCustomSkinProposal.catalogListingPrefix + skin.file,
+                    layoutPresetID: nil,
+                    skinName: skin.name,
+                    previewURLString: SkinCatalog.previewURL(
+                        for: skin
+                    )?.absoluteString,
+                    selectionKind: skin.isUniversal ? "universal" : "exact"
+                )
+            }
+        var options = installed
+        let firstBuiltIn = options.firstIndex { $0.selectionKind == "builtIn" }
+        options.insert(contentsOf: listed, at: firstBuiltIn ?? options.endIndex)
+        return options
+    }
 
-        return installedProposals(forSerial: serial)
+    /// Downloads a skin a picker only listed. Installed choices come back as
+    /// they are, and nil means the download failed.
+    func installIfNeeded(
+        _ proposal: AutomaticCustomSkinProposal
+    ) async -> AutomaticCustomSkinProposal? {
+        guard proposal.isCatalogListing else { return proposal }
+        guard let skin = try? await fetchCatalogSkins().first(where: {
+            $0.file == proposal.catalogID
+        }) else {
+            return nil
+        }
+        return await installCatalogSkin(skin, forSerial: proposal.serial)
     }
 
     private func proposalsWithCatalogPreviews(
@@ -527,6 +556,11 @@ final class AutomaticCustomSkinManager {
         persist()
     }
 
+    func forgetAcceptedAssignment(forSerial serial: String) {
+        guard acceptedAssignments.removeValue(forKey: serial) != nil else { return }
+        persist()
+    }
+
     private func apply(
         _ proposal: AutomaticCustomSkinProposal,
         to identity: PadLayoutGameIdentity,
@@ -630,22 +664,13 @@ final class AutomaticCustomSkinManager {
     }
 
     /// Downloads the exact serial matches first, followed by universal `any`
-    /// skins, and reuses an installed descriptor whenever its linked layout is
-    /// already complete. Both background matching and explicit pickers call
-    /// this single implementation.
+    /// skins, for Automatic Download Custom Skin. The pickers install only the
+    /// skin the player applies.
     private func installCatalogProposals(
         from skins: [CatalogSkin],
         forSerial serial: String
     ) async -> [AutomaticCustomSkinProposal] {
-        let compatibleSkins = skins.filter {
-            $0.isCompatible(withSerial: serial)
-        }.sorted { lhs, rhs in
-            let lhsExact = lhs.explicitlyMatches(serial: serial)
-            let rhsExact = rhs.explicitlyMatches(serial: serial)
-            if lhsExact != rhsExact { return lhsExact }
-            return lhs.name.localizedStandardCompare(rhs.name)
-                == .orderedAscending
-        }
+        let compatibleSkins = self.compatibleSkins(in: skins, forSerial: serial)
         guard !compatibleSkins.isEmpty else { return [] }
 
         var availableOptions: [AutomaticCustomSkinProposal] = []
@@ -655,53 +680,78 @@ final class AutomaticCustomSkinManager {
                 availableOptions.append(makeDefaultProposal(forSerial: serial))
                 insertedDefaultSelection = true
             }
-            do {
-                let installed = VPadSkinLibraryStore.shared
-                    .importedDescriptors.first {
-                        $0.catalogID == skin.file
-                    }
-                let descriptor: VPadSkinDescriptor
-                if let installed,
-                   skin.iosLayout == nil
-                    || installed.linkedLayoutPresetID != nil {
-                    descriptor = installed
-                } else {
-                    let result = try await SkinInstaller
-                        .installForAutomaticAssignment(
-                            skin,
-                            replacing: installed?.id
-                        )
-                    descriptor = result.descriptor
-                }
-                await prefetchPreview(for: skin)
-                availableOptions.append(
-                    AutomaticCustomSkinProposal(
-                        serial: serial,
-                        catalogID: skin.file,
-                        skinID: descriptor.id,
-                        layoutPresetID: descriptor.linkedLayoutPresetID,
-                        skinName: descriptor.displayName,
-                        previewURLString: SkinCatalog.previewURL(
-                            for: skin
-                        )?.absoluteString,
-                        selectionKind: skin.isUniversal
-                            ? "universal"
-                            : "exact"
-                    )
-                )
-            } catch {
-                NSLog(
-                    "[ARMSX2 iOS Skins] catalog download failed serial=%@ skin=%@ error=%@",
-                    serial,
-                    skin.name,
-                    error.localizedDescription
-                )
+            if let proposal = await installCatalogSkin(skin, forSerial: serial) {
+                availableOptions.append(proposal)
             }
         }
         if !insertedDefaultSelection {
             availableOptions.append(makeDefaultProposal(forSerial: serial))
         }
         return availableOptions
+    }
+
+    private func compatibleSkins(
+        in skins: [CatalogSkin],
+        forSerial serial: String
+    ) -> [CatalogSkin] {
+        skins.filter {
+            $0.isCompatible(withSerial: serial)
+        }.sorted { lhs, rhs in
+            let lhsExact = lhs.explicitlyMatches(serial: serial)
+            let rhsExact = rhs.explicitlyMatches(serial: serial)
+            if lhsExact != rhsExact { return lhsExact }
+            return lhs.name.localizedStandardCompare(rhs.name)
+                == .orderedAscending
+        }
+    }
+
+    /// Reuses an installed descriptor whenever its linked layout is already
+    /// complete, and downloads the skin otherwise.
+    private func installCatalogSkin(
+        _ skin: CatalogSkin,
+        forSerial serial: String
+    ) async -> AutomaticCustomSkinProposal? {
+        do {
+            let installed = VPadSkinLibraryStore.shared
+                .importedDescriptors.first {
+                    $0.catalogID == skin.file
+                }
+            let descriptor: VPadSkinDescriptor
+            if let installed,
+               skin.iosLayout == nil
+                || installed.linkedLayoutPresetID != nil {
+                descriptor = installed
+            } else {
+                let result = try await SkinInstaller
+                    .installForAutomaticAssignment(
+                        skin,
+                        replacing: installed?.id
+                    )
+                descriptor = result.descriptor
+            }
+            await prefetchPreview(for: skin)
+            return AutomaticCustomSkinProposal(
+                serial: serial,
+                catalogID: skin.file,
+                skinID: descriptor.id,
+                layoutPresetID: descriptor.linkedLayoutPresetID,
+                skinName: descriptor.displayName,
+                previewURLString: SkinCatalog.previewURL(
+                    for: skin
+                )?.absoluteString,
+                selectionKind: skin.isUniversal
+                    ? "universal"
+                    : "exact"
+            )
+        } catch {
+            NSLog(
+                "[ARMSX2 iOS Skins] catalog download failed serial=%@ skin=%@ error=%@",
+                serial,
+                skin.name,
+                error.localizedDescription
+            )
+            return nil
+        }
     }
 
     private func fetchCatalogSkins() async throws -> [CatalogSkin] {

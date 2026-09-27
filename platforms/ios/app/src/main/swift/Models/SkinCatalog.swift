@@ -157,7 +157,7 @@ enum SkinCatalogError: LocalizedError {
 /// Fetches the community skin catalog (manifest.json) from the ARMSX2 skins repo.
 @MainActor
 final class SkinCatalog: ObservableObject {
-    static let repo = "henyckma/ARMSX2-CustomControllerSkins"
+    static let repo = "bagasromadon/ARMSX2-CustomControllerSkins"
     static let manifestURL = URL(string: "https://raw.githubusercontent.com/\(repo)/main/manifest.json")!
     static let rawBase = "https://raw.githubusercontent.com/\(repo)/main"
 

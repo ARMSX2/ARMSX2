@@ -2279,6 +2279,7 @@ struct GameListView: View {
     @State private var showStopAlert = false
     @State private var showCoverTemplateEditor = false
     @State private var showGameReplacementAlert = false
+    @State private var catalogSkinInstallTask: Task<Void, Never>?
     @State private var pendingAutomaticCustomSkinLaunch:
         PendingAutomaticCustomSkinLaunch?
     @State private var coverTemplateDraft = CoverStore.defaultCoverURLTemplate
@@ -8495,30 +8496,28 @@ struct GameListView: View {
         guard let pending = pendingAutomaticCustomSkinLaunch else { return }
         pendingAutomaticCustomSkinLaunch = nil
         if apply {
-            let applied = AutomaticCustomSkinManager.shared.apply(
-                pending.proposal,
-                toISO: pending.game.bootName,
-                metadata: pending.game.metadata,
-                setCustomLayout: pending.setCustomLayout,
-                doNotShowAgain: pending.purpose == .gameLaunch
-                    && pending.doNotShowAgain
-            )
-            if !applied {
-                NSLog(
-                    "[ARMSX2 iOS Skins] automatic per-game assignment failed serial=%@",
-                    pending.proposal.serial
-                )
-            } else if let descriptor = VPadSkinLibraryStore.shared.descriptor(
-                id: pending.proposal.skinID
-            ) {
-                // Populate both render and hit-mask caches before switching to
-                // gameplay. No post-launch skin replacement or decode hitch is
-                // then needed for the accepted package.
-                ControllerAsset.prewarm(descriptor: descriptor)
-                ARMSX2VirtualPadMaskImageCache.prewarm(
-                    descriptor: descriptor
-                )
+            // A newer pick replaces a download that has not finished.
+            catalogSkinInstallTask?.cancel()
+            catalogSkinInstallTask = nil
+        }
+        if apply, pending.proposal.isCatalogListing {
+            // Only the library picker lists skins that are not installed yet.
+            catalogSkinInstallTask = Task { @MainActor in
+                let installed = await AutomaticCustomSkinManager.shared
+                    .installIfNeeded(pending.proposal)
+                guard !Task.isCancelled else { return }
+                catalogSkinInstallTask = nil
+                if let installed {
+                    applyAutomaticCustomSkin(installed, from: pending)
+                } else {
+                    gameActionTitle = settings.localized("Per-Game Custom Skin")
+                    gameActionMessage = settings.localized(
+                        "The selected controller skin is unavailable."
+                    )
+                }
             }
+        } else if apply {
+            applyAutomaticCustomSkin(pending.proposal, from: pending)
         } else if pending.purpose == .gameLaunch {
             AutomaticCustomSkinManager.shared.decline(
                 pending.proposal,
@@ -8531,6 +8530,36 @@ struct GameListView: View {
             transition: pending.transition,
             preferredPadSerial: pending.proposal.serial
         )
+    }
+
+    private func applyAutomaticCustomSkin(
+        _ proposal: AutomaticCustomSkinProposal,
+        from pending: PendingAutomaticCustomSkinLaunch
+    ) {
+        let applied = AutomaticCustomSkinManager.shared.apply(
+            proposal,
+            toISO: pending.game.bootName,
+            metadata: pending.game.metadata,
+            setCustomLayout: pending.setCustomLayout,
+            doNotShowAgain: pending.purpose == .gameLaunch
+                && pending.doNotShowAgain
+        )
+        if !applied {
+            NSLog(
+                "[ARMSX2 iOS Skins] automatic per-game assignment failed serial=%@",
+                proposal.serial
+            )
+        } else if let descriptor = VPadSkinLibraryStore.shared.descriptor(
+            id: proposal.skinID
+        ) {
+            // Populate both render and hit-mask caches before switching to
+            // gameplay. No post-launch skin replacement or decode hitch is
+            // then needed for the accepted package.
+            ControllerAsset.prewarm(descriptor: descriptor)
+            ARMSX2VirtualPadMaskImageCache.prewarm(
+                descriptor: descriptor
+            )
+        }
     }
 
     private func presentPerGameCustomSkin(for game: ISOEntry) {
@@ -8562,12 +8591,11 @@ struct GameListView: View {
         controllerAlertSelectedIndex = 0
         MenuAudioPackManager.shared.playEvent(.uiToast)
 
-        // The manual picker is an explicit request: run the same exact/`any`
-        // catalog installation used by Automatic Download Custom Skin, then
-        // merge the downloaded choices into the already-visible picker.
+        // Add the catalog skins for this game to the already-visible picker.
+        // The one the player applies downloads then, and nothing else does.
         Task { @MainActor in
             let refreshed = await AutomaticCustomSkinManager.shared
-                .downloadAvailableProposals(forSerial: serial)
+                .catalogProposals(forSerial: serial)
             guard !refreshed.isEmpty,
                   var pending = pendingAutomaticCustomSkinLaunch,
                   pending.purpose == .library,
