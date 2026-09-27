@@ -9829,7 +9829,6 @@ private struct GameLibraryViewOptionsPanel: View {
                 onApply()
                 return true
             },
-            usesNativeFocusEngine: false,
             usesExplicitTargetGeometryOnly: true,
             focusScrollBehavior: .maintainWithinViewport,
             scrollAnimationDuration: 0.16,

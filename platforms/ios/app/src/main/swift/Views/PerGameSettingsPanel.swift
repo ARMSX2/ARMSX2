@@ -761,7 +761,6 @@ struct PerGameSettingsPanel: View {
                 directionalLinks: perGameControllerDirectionalLinks,
                 prioritizesDirectionalLinks: true,
                 confinesHorizontalFocusMovement: true,
-                usesNativeFocusEngine: false,
                 // Per-Game rows all publish stable semantic probes. Keeping
                 // this surface explicit-only prevents a nested native control
                 // from becoming a second focus owner for the same setting.

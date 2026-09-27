@@ -8,8 +8,6 @@ import GameController
 #endif
 
 /// Owns the controller delivery boundary for the complete SDL/SwiftUI window.
-/// Gameplay keeps profile delivery, while the menu can opt into UIKit press
-/// delivery on systems which can also preserve the analog profile callbacks.
 @MainActor
 @objc(ARMSX2ControllerEventHostViewController)
 final class ARMSX2ControllerEventHostViewController: GCEventViewController {
@@ -19,7 +17,6 @@ final class ARMSX2ControllerEventHostViewController: GCEventViewController {
         self.contentController = contentController
         super.init(nibName: nil, bundle: nil)
         controllerUserInteractionEnabled = false
-        ControllerEventDeliveryCoordinator.shared.install(host: self)
     }
 
     @available(*, unavailable)
@@ -50,11 +47,6 @@ final class ARMSX2ControllerEventHostViewController: GCEventViewController {
         contentController.didMove(toParent: self)
     }
 
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        ControllerEventDeliveryCoordinator.shared.hostDidEnterWindow()
-    }
-
     override var childForStatusBarHidden: UIViewController? {
         children.last
     }
@@ -77,15 +69,6 @@ final class ARMSX2ControllerEventHostViewController: GCEventViewController {
 
     override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation {
         contentController.preferredInterfaceOrientationForPresentation
-    }
-
-    func setNativeControllerDeliveryEnabled(_ enabled: Bool) {
-        controllerUserInteractionEnabled = enabled
-        if #available(iOS 26.0, *), let loadedView = viewIfLoaded {
-            for case let interaction as GCEventInteraction in loadedView.interactions {
-                interaction.receivesEventsInView = enabled
-            }
-        }
     }
 
     override func pressesBegan(
@@ -114,10 +97,6 @@ final class ARMSX2ControllerEventHostViewController: GCEventViewController {
         _ presses: Set<UIPress>,
         with event: UIPressesEvent?
     ) {
-        if presses.contains(where: { $0.type == .menu }),
-           ControllerEventDeliveryCoordinator.shared.handleBackPress() {
-            return
-        }
         if ControllerEventDeliveryCoordinator.shared.shouldConsumeDirectionalPresses,
            presses.contains(where: { $0.type.isDirectional }) {
             return
@@ -142,16 +121,6 @@ private extension UIPress.PressType {
         self == .upArrow || self == .downArrow
             || self == .leftArrow || self == .rightArrow
     }
-
-    var menuControllerCommand: MenuControllerCommand? {
-        switch self {
-        case .upArrow: .up
-        case .downArrow: .down
-        case .leftArrow: .left
-        case .rightArrow: .right
-        default: nil
-        }
-    }
 }
 
 private extension UIKeyboardHIDUsage {
@@ -166,46 +135,27 @@ private extension UIKeyboardHIDUsage {
     }
 }
 
-/// A deliberately small bridge between GameController's process-wide delivery
-/// mode and the SwiftUI-owned menu router. iOS 26 can deliver gamepad events to
-/// both UIKit and profile callbacks; older systems keep the deterministic
-/// profile-driven fallback so right-stick scrolling is never lost.
+/// A deliberately small bridge between UIKit presses and the SwiftUI-owned
+/// menu router, which reads controllers through their GameController profile.
 @MainActor
 final class ControllerEventDeliveryCoordinator {
     static let shared = ControllerEventDeliveryCoordinator()
-    nonisolated static let nativeFocusModeDidChange = Notification.Name(
-        "ARMSX2ControllerNativeFocusModeDidChange"
-    )
 
-    private weak var host: ARMSX2ControllerEventHostViewController?
     private weak var router: MenuControllerInputRouter?
-    private(set) var nativeFocusEnabled = false
     private(set) var rightStickScrolling = false
     private var menuActive = false
-    // The app's menu is profile-driven unless the foreground navigation
-    // session explicitly opts into UIKit focus. A scene merely supporting a
-    // focus system (which is normal on iPad) is not enough to transfer input
-    // ownership away from the custom controller graph.
-    private var nativeFocusAuthorized = false
 
     private init() {}
 
     var shouldConsumeDirectionalPresses: Bool {
-        menuActive && (!nativeFocusEnabled || rightStickScrolling)
+        menuActive
     }
 
-    /// Profile-driven screens must not also forward the controller's UIKit
-    /// press copy into SwiftUI. A focused NavigationLink treats that duplicate
-    /// direction as activation on iPad. Physical controllers continue through
-    /// their GCController profile; keyboard arrows are bridged here so the
-    /// same deterministic graph remains usable in Simulator and on hardware.
+    /// A controller's UIKit copy of a press must not reach SwiftUI, where a
+    /// focused NavigationLink takes a duplicate direction as activation on iPad.
+    /// Keyboard arrows are bridged here, for Simulator and hardware keyboards.
     func handleMenuPressesEvent(_ presses: Set<UIPress>) -> Bool {
         guard menuActive else { return false }
-        if nativeFocusEnabled {
-            return rightStickScrolling
-                && presses.contains(where: { $0.type.isDirectional })
-        }
-
         if let keyboardPress = presses.first(where: {
             $0.key?.keyCode.menuControllerCommand != nil
         }) {
@@ -224,63 +174,17 @@ final class ControllerEventDeliveryCoordinator {
         return presses.contains(where: { $0.key == nil })
     }
 
-    func install(host: ARMSX2ControllerEventHostViewController) {
-        self.host = host
-        updateDeliveryMode()
-    }
-
     func install(router: MenuControllerInputRouter) {
         self.router = router
-    }
-
-    func hostDidEnterWindow() {
-        updateDeliveryMode()
     }
 
     func setMenuActive(_ active: Bool) {
         menuActive = active
         if !active { rightStickScrolling = false }
-        updateDeliveryMode()
     }
 
     func setRightStickScrolling(_ active: Bool) {
         rightStickScrolling = active
-    }
-
-    func handleBackPress() -> Bool {
-        guard nativeFocusEnabled else { return false }
-        return router?.handleNativeBackPress() == true
-    }
-
-    func setNativeFocusAuthorized(_ authorized: Bool) {
-        guard authorized != nativeFocusAuthorized else { return }
-        nativeFocusAuthorized = authorized
-        updateDeliveryMode()
-    }
-
-    private func updateDeliveryMode() {
-        guard let host else {
-            nativeFocusEnabled = false
-            return
-        }
-
-        let previousMode = nativeFocusEnabled
-        if #available(iOS 26.0, *),
-           menuActive,
-           nativeFocusAuthorized,
-           host.viewIfLoaded?.window?.windowScene?.focusSystem != nil {
-            nativeFocusEnabled = true
-            host.setNativeControllerDeliveryEnabled(true)
-        } else {
-            nativeFocusEnabled = false
-            host.setNativeControllerDeliveryEnabled(false)
-        }
-        if nativeFocusEnabled != previousMode {
-            NotificationCenter.default.post(
-                name: Self.nativeFocusModeDidChange,
-                object: nil
-            )
-        }
     }
 }
 

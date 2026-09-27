@@ -175,7 +175,6 @@ struct QuickMenuView: View {
                     // Quick Menu publishes a complete semantic graph. Giving
                     // UIKit a second focus owner makes the fixed portrait footer
                     // compete geometrically with the scrolling rows on iOS 26.
-                    usesNativeFocusEngine: false,
                     usesExplicitTargetGeometryOnly: true,
                     preservesFocusDuringRightStickScrolling: false,
                     focusScrollBehavior: .maintainWithinViewport,

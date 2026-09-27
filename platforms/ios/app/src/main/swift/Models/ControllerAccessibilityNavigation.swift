@@ -275,9 +275,6 @@ final class ControllerAccessibilityNavigationSession {
     @ObservationIgnored private var preferredInitialFocusLabel: String?
     @ObservationIgnored private var preferredLastEntryLabel: String?
     @ObservationIgnored private var preferredTrailingFocusLabels: [String] = []
-    @ObservationIgnored private weak var pendingNativeFocusView: UIView?
-    @ObservationIgnored private var nativeFocusRequestTask: Task<Void, Never>?
-    @ObservationIgnored private var nativeFocusLossTask: Task<Void, Never>?
     @ObservationIgnored private var mountedTargetTask: Task<Void, Never>?
     @ObservationIgnored private var focusedPresentationTask: Task<Void, Never>?
     @ObservationIgnored private var focusPresentationRevealTask:
@@ -456,8 +453,6 @@ final class ControllerAccessibilityNavigationSession {
 
     func deactivate() {
         rememberCurrentFocus()
-        cancelNativeFocusRequest()
-        cancelNativeFocusLoss()
         mountedTargetTask?.cancel()
         mountedTargetTask = nil
         focusedPresentationTask?.cancel()
@@ -501,10 +496,6 @@ final class ControllerAccessibilityNavigationSession {
     func suspendFocusForScrolling(preservingPresentation: Bool = false) {
         pendingDirectionalMove = nil
         focusRepeatAcceleration = nil
-        guard !ControllerEventDeliveryCoordinator.shared.nativeFocusEnabled else {
-            publishScrollFocus()
-            return
-        }
         permitsAutomaticFocus = false
         focusPresentationRevealTask?.cancel()
         focusPresentationRevealTask = nil
@@ -564,7 +555,7 @@ final class ControllerAccessibilityNavigationSession {
         }
         rightStickManualFocusKey = nil
         rightStickScrollView = nil
-        if let focusedKey { setFocus(focusedKey, requestsNativeFocus: false) }
+        if let focusedKey { setFocus(focusedKey) }
     }
 
     /// Supplies the shared analog driver with the focused probe's actual
@@ -600,17 +591,6 @@ final class ControllerAccessibilityNavigationSession {
             window: window,
             frame: frame
         )
-    }
-
-    func synchronizeNativeFocus() {
-        guard ControllerEventDeliveryCoordinator.shared.nativeFocusEnabled else {
-            return
-        }
-        if focusedKey == nil { _ = focusInitialIfPossible() }
-        guard let focusedKey, let view = targets[focusedKey]?.view.value else {
-            return
-        }
-        requestNativeFocus(on: view)
     }
 
     @discardableResult
@@ -772,30 +752,6 @@ final class ControllerAccessibilityNavigationSession {
         }
     }
 
-    fileprivate func nativeFocusChanged(
-        key: String,
-        isFocused: Bool,
-        heading: UIFocusHeading
-    ) {
-        guard ControllerEventDeliveryCoordinator.shared.nativeFocusEnabled else { return }
-        if isFocused {
-            cancelNativeFocusLoss()
-            let changed = focusedKey != key
-            guard changed else { return }
-            setFocus(key, requestsNativeFocus: false, scrolls: false)
-            if changed, let direction = heading.controllerCommand {
-                controllerInput?.playFeedback(.move(direction))
-            }
-        } else if focusedKey == key {
-            scheduleNativeFocusLoss(for: key)
-        }
-        // UIKit notifies the previous item that it lost focus before the next
-        // item publishes its gain. Clearing the entire observed SwiftUI focus
-        // graph during that midpoint remounts Form probes and can recursively
-        // restart the same focus transaction. Defer the loss until the complete
-        // UIKit transaction proves that no target in this scope gained focus.
-    }
-
     fileprivate func activate(_ key: String) -> Bool {
         guard let target = targets[key], target.isEnabled else { return false }
         if let onActivateFocusedLabel,
@@ -849,23 +805,6 @@ final class ControllerAccessibilityNavigationSession {
             controllerInput?.playFeedback(.activate)
         }
         return true
-    }
-
-    fileprivate func handleNativeHorizontalPress(
-        _ key: String,
-        increment: Bool
-    ) -> Bool {
-        if adjust(key, increment: increment) { return true }
-        guard confinesHorizontalFocusMovement else { return false }
-        controllerInput?.playFeedback(.boundary)
-        return true
-    }
-
-    fileprivate func permitsNativeFocusMovement(
-        _ heading: UIFocusHeading
-    ) -> Bool {
-        guard confinesHorizontalFocusMovement else { return true }
-        return !heading.contains(.left) && !heading.contains(.right)
     }
 
     func handle(_ command: MenuControllerCommand) -> Bool {
@@ -1106,7 +1045,6 @@ final class ControllerAccessibilityNavigationSession {
 
     private func setFocus(
         _ key: String,
-        requestsNativeFocus: Bool = true,
         scrolls: Bool = true
     ) {
         guard isMountedAndEnabled(key) else { return }
@@ -1118,7 +1056,6 @@ final class ControllerAccessibilityNavigationSession {
         pendingFocusExpiryTask = nil
         mountedTargetTask?.cancel()
         mountedTargetTask = nil
-        cancelNativeFocusLoss()
         if focusedKey == key {
             if targets[key]?.focusState.isFocused == false {
                 targets[key]?.focusState.isFocused = true
@@ -1127,11 +1064,6 @@ final class ControllerAccessibilityNavigationSession {
             if !beganScroll,
                !(isScrollPresentationActive && scrollPresentationKey == key) {
                 updateFocusedPresentation()
-            }
-            if requestsNativeFocus,
-               let view = targets[key]?.view.value,
-               !view.isFocused {
-                requestNativeFocus(on: view)
             }
             publishScrollFocus()
             return
@@ -1167,9 +1099,6 @@ final class ControllerAccessibilityNavigationSession {
                 updateFocusedPresentation()
             }
         }
-        if requestsNativeFocus, let view = targets[key]?.view.value {
-            requestNativeFocus(on: view)
-        }
         publishScrollFocus()
     }
 
@@ -1189,8 +1118,6 @@ final class ControllerAccessibilityNavigationSession {
         pendingFocusKey = nil
         mountedTargetTask?.cancel()
         mountedTargetTask = nil
-        cancelNativeFocusRequest()
-        cancelNativeFocusLoss()
         for key in targets.keys where targets[key]?.focusState.isFocused == true {
             targets[key]?.focusState.isFocused = false
         }
@@ -1436,7 +1363,7 @@ final class ControllerAccessibilityNavigationSession {
         guard let key else { return }
         if focusedKey != key || focusIsSuspendedForScrolling
             || targets[key]?.focusState.isFocused != true {
-            setFocus(key, requestsNativeFocus: false, scrolls: false)
+            setFocus(key, scrolls: false)
         } else if !isScrollPresentationActive {
             updateFocusedPresentation(
                 frameOverride: targets[key]?.view.value.flatMap(presentationFrameForView)
@@ -1751,61 +1678,6 @@ final class ControllerAccessibilityNavigationSession {
         }
     }
 
-    private func requestNativeFocus(on view: UIView) {
-        guard ControllerEventDeliveryCoordinator.shared.nativeFocusEnabled else {
-            return
-        }
-        pendingNativeFocusView = view
-        guard nativeFocusRequestTask == nil else { return }
-        nativeFocusRequestTask = Task { @MainActor [weak self] in
-            // A focus request can trigger SwiftUI reconciliation. Deferring and
-            // coalescing it prevents a Form probe update from recursively asking
-            // UIKit to synchronously update the same focus item.
-            await Task.yield()
-            guard let self, !Task.isCancelled else { return }
-            self.nativeFocusRequestTask = nil
-            guard let view = self.pendingNativeFocusView,
-                  view.window != nil,
-                  !view.isFocused,
-                  ControllerEventDeliveryCoordinator.shared.nativeFocusEnabled,
-                  let focusSystem = view.window?.windowScene?.focusSystem else {
-                self.pendingNativeFocusView = nil
-                return
-            }
-            self.pendingNativeFocusView = nil
-            focusSystem.requestFocusUpdate(to: view)
-            focusSystem.updateFocusIfNeeded()
-        }
-    }
-
-    private func cancelNativeFocusRequest() {
-        nativeFocusRequestTask?.cancel()
-        nativeFocusRequestTask = nil
-        pendingNativeFocusView = nil
-    }
-
-    private func scheduleNativeFocusLoss(for key: String) {
-        cancelNativeFocusLoss()
-        nativeFocusLossTask = Task { @MainActor [weak self] in
-            // `didUpdateFocus` sends the old and new item callbacks in the same
-            // UIKit transaction. Let both callbacks finish before deciding that
-            // focus actually left this navigation scope.
-            await Task.yield()
-            guard let self, !Task.isCancelled else { return }
-            self.nativeFocusLossTask = nil
-            guard self.focusedKey == key,
-                  !self.targets.values.contains(where: {
-                      $0.view.value?.isFocused == true
-                  }) else { return }
-            self.clearFocus()
-        }
-    }
-
-    private func cancelNativeFocusLoss() {
-        nativeFocusLossTask?.cancel()
-        nativeFocusLossTask = nil
-    }
-
     private func focusInitialIfPossible() -> Bool {
         guard focusedKey == nil, permitsAutomaticFocus else { return false }
         return focusContent(preferLast: false)
@@ -1928,7 +1800,6 @@ final class ControllerAccessibilityNavigationSession {
                     self.targets[key]?.focusState.isFocused = true
                 }
                 self.updateFocusedPresentation()
-                self.requestNativeFocus(on: owner)
                 self.publishScrollFocus()
             }
         }
@@ -2379,20 +2250,6 @@ private extension MenuControllerCommand {
     }
 }
 
-private extension UIFocusHeading {
-    var controllerCommand: MenuControllerCommand? {
-        if contains(.up) && contains(.right) { return .upRight }
-        if contains(.down) && contains(.right) { return .downRight }
-        if contains(.down) && contains(.left) { return .downLeft }
-        if contains(.up) && contains(.left) { return .upLeft }
-        if contains(.up) { return .up }
-        if contains(.down) { return .down }
-        if contains(.left) { return .left }
-        if contains(.right) { return .right }
-        return nil
-    }
-}
-
 private final class ControllerAccessibilityScopeProbeView: UIView {
     weak var session: ControllerAccessibilityNavigationSession?
 
@@ -2462,11 +2319,6 @@ fileprivate final class ControllerAccessibilityActionProbeView: UIControl {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override var canBecomeFocused: Bool {
-        targetEnabled && navigationSession != nil
-            && ControllerEventDeliveryCoordinator.shared.nativeFocusEnabled
-    }
-
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool { false }
 
     override func didMoveToWindow() {
@@ -2488,51 +2340,6 @@ fileprivate final class ControllerAccessibilityActionProbeView: UIControl {
             registrationID: registrationID,
             owner: self
         )
-    }
-
-    override func shouldUpdateFocus(
-        in context: UIFocusUpdateContext
-    ) -> Bool {
-        guard navigationSession?.permitsNativeFocusMovement(
-            context.focusHeading
-        ) != false else { return false }
-        return super.shouldUpdateFocus(in: context)
-    }
-
-    override func didUpdateFocus(
-        in context: UIFocusUpdateContext,
-        with coordinator: UIFocusAnimationCoordinator
-    ) {
-        super.didUpdateFocus(in: context, with: coordinator)
-        guard !resolvedKey.isEmpty else { return }
-        navigationSession?.nativeFocusChanged(
-            key: resolvedKey,
-            isFocused: context.nextFocusedItem === self,
-            heading: context.focusHeading
-        )
-    }
-
-    override func pressesEnded(
-        _ presses: Set<UIPress>,
-        with event: UIPressesEvent?
-    ) {
-        guard isFocused else {
-            super.pressesEnded(presses, with: event)
-            return
-        }
-        if presses.contains(where: { $0.type == .select }),
-           navigationSession?.activate(resolvedKey) == true { return }
-        if presses.contains(where: { $0.type == .leftArrow }),
-           navigationSession?.handleNativeHorizontalPress(
-               resolvedKey,
-               increment: false
-           ) == true { return }
-        if presses.contains(where: { $0.type == .rightArrow }),
-           navigationSession?.handleNativeHorizontalPress(
-               resolvedKey,
-               increment: true
-           ) == true { return }
-        super.pressesEnded(presses, with: event)
     }
 
     @discardableResult
@@ -2604,7 +2411,6 @@ fileprivate final class ControllerAccessibilityActionProbeView: UIControl {
         guard window != nil, superview != nil,
               let registrationID, let navigationSession,
               let targetFocusState else { return }
-        configureNativeListFocus()
         resolvedKey = navigationSession.registerTarget(
             registrationID: registrationID,
             view: self,
@@ -2622,33 +2428,6 @@ fileprivate final class ControllerAccessibilityActionProbeView: UIControl {
             onIncrement: onIncrement,
             onDecrement: onDecrement
         )
-    }
-
-    /// SwiftUI Form is backed by a UIKit list on current iOS releases. Let that
-    /// native scroll container participate in the focus transaction instead of
-    /// reconstructing its cells or scrolling by synthetic viewport steps.
-    private func configureNativeListFocus() {
-        guard ControllerEventDeliveryCoordinator.shared.nativeFocusEnabled else {
-            return
-        }
-        var ancestor = superview
-        while let current = ancestor {
-            if let collectionView = current as? UICollectionView {
-                collectionView.allowsFocus = true
-                collectionView.allowsFocusDuringEditing = true
-                collectionView.selectionFollowsFocus = false
-                collectionView.remembersLastFocusedIndexPath = true
-                return
-            }
-            if let tableView = current as? UITableView {
-                tableView.allowsFocus = true
-                tableView.allowsFocusDuringEditing = true
-                tableView.selectionFollowsFocus = false
-                tableView.remembersLastFocusedIndexPath = true
-                return
-            }
-            ancestor = current.superview
-        }
     }
 }
 
@@ -2927,7 +2706,6 @@ private struct ControllerAccessibilityOptionsList<Selection: Hashable>: View {
                 dismiss()
                 return true
             },
-            usesNativeFocusEngine: false,
             usesExplicitTargetGeometryOnly: true,
             preservesFocusDuringRightStickScrolling: false,
             focusScrollBehavior: .maintainWithinViewport,
@@ -3195,7 +2973,7 @@ private struct ControllerAccessibilityRegisteringButtonStyle: PrimitiveButtonSty
                 .controllerAccessibilityActionTarget(label: "") {
                     configuration.trigger()
                 }
-        } else { Button(configuration).buttonStyle(.automatic) }
+        } else { Button(configuration) }
     }
 }
 
@@ -3213,7 +2991,7 @@ private struct ControllerAccessibilityRegisteringToggleStyle: ToggleStyle {
                     label: "",
                     isOn: configuration.$isOn
                 )
-        } else { Toggle(configuration).toggleStyle(.switch) }
+        } else { Toggle(configuration) }
     }
 }
 
@@ -3472,7 +3250,6 @@ private struct ControllerAccessibilityNavigationModifier: ViewModifier {
     let directionalLinks: [ControllerAccessibilityDirectionalLink]
     let prioritizesDirectionalLinks: Bool
     let confinesHorizontalFocusMovement: Bool
-    let usesNativeFocusEngine: Bool
     let usesExplicitTargetGeometryOnly: Bool
     let preservesFocusDuringRightStickScrolling: Bool
     let focusScrollBehavior: ControllerAccessibilityFocusScrollBehavior
@@ -3580,14 +3357,6 @@ private struct ControllerAccessibilityNavigationModifier: ViewModifier {
                     session.suspendFocusForScrolling()
                 }
             }
-            .onReceive(
-                NotificationCenter.default.publisher(
-                    for: ControllerEventDeliveryCoordinator
-                        .nativeFocusModeDidChange
-                )
-            ) { _ in
-                if navigationIsActive { session.synchronizeNativeFocus() }
-            }
             .onDisappear {
                 controllerInput?.unregisterNavigationSession(
                     id: registrationID
@@ -3602,89 +3371,92 @@ private struct ControllerAccessibilityNavigationModifier: ViewModifier {
             && controllerInput?.hasConnectedController == true
     }
 
-    @ViewBuilder
+    // One chain in every state. A branch here gave the screen a second identity, so
+    // a controller connecting or sleeping rebuilt it, the Settings stack included.
     private func navigationContent(_ content: Content) -> some View {
-        if controllerInput?.isMenuActive == true,
-           controllerInput?.hasConnectedController == true {
-            content
-                .environment(\.controllerAccessibilityNavigationActive, navigationIsActive)
-                .environment(
-                    \.controllerAccessibilityNavigationSession,
-                    navigationIsActive ? session : nil
+        content
+            .environment(\.controllerAccessibilityNavigationActive, navigationIsActive)
+            .environment(
+                \.controllerAccessibilityNavigationSession,
+                navigationIsActive ? session : nil
+            )
+            .environment(
+                \.controllerAccessibilityNavigationRegistrationID,
+                navigationIsActive ? registrationID : nil
+            )
+            .environment(
+                \.controllerAccessibilityUsesWindowFocusVisual,
+                !focusNeonExclusionLabels.isEmpty
+            )
+            .environment(
+                \.controllerAccessibilityAutomaticTargetSuppressed,
+                !registersAutomaticTargets
+            )
+            .buttonStyle(
+                ControllerAccessibilityRegisteringButtonStyle(
+                    isActive: registersAutomaticTargets
                 )
-                .environment(
-                    \.controllerAccessibilityNavigationRegistrationID,
-                    navigationIsActive ? registrationID : nil
+            )
+            .toggleStyle(
+                ControllerAccessibilityRegisteringToggleStyle(
+                    isActive: registersAutomaticTargets
                 )
-                .environment(
-                    \.controllerAccessibilityUsesWindowFocusVisual,
-                    !focusNeonExclusionLabels.isEmpty
-                )
-                .buttonStyle(
-                    ControllerAccessibilityRegisteringButtonStyle(
-                        isActive: navigationIsActive
-                            && !usesExplicitTargetGeometryOnly
-                    )
-                )
-                .toggleStyle(
-                    ControllerAccessibilityRegisteringToggleStyle(
-                        isActive: navigationIsActive
-                            && !usesExplicitTargetGeometryOnly
-                    )
-                )
-                .background {
-                    if navigationIsActive {
-                        ZStack {
-                            ControllerAccessibilityScopeProbe(session: session)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            // One exact scroll owner serves every managed
-                            // surface. The focused probe supplies its actual
-                            // UIScrollView, so Settings, Appearance, Per-Game,
-                            // Quick Menu, and overlays share Emulator's path.
-                            ControllerRightStickScrollTarget(
+            )
+            .background {
+                if navigationIsActive {
+                    ZStack {
+                        ControllerAccessibilityScopeProbe(session: session)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        // One exact scroll owner serves every managed surface. The focused
+                        // probe supplies its actual UIScrollView, so Settings, Appearance,
+                        // Per-Game, Quick Menu, and overlays share Emulator's path.
+                        ControllerRightStickScrollTarget(
+                            controllerInput: controllerInput,
+                            axes: .vertical,
+                            // This is a fallback for screens without a concrete List/Form
+                            // marker. Screen-local owners know their private SwiftUI scroll
+                            // hierarchy and must be offered the gesture first.
+                            priority: priority - 10_000,
+                            isEnabled: navigationIsActive,
+                            preferredScrollViewProvider: {
+                                session.preferredRightStickScrollView()
+                            },
+                            // `session.configure` runs on appearance. Use the modifier's
+                            // stable ID immediately so this target cannot mount ownerless
+                            // and be removed by the router's active-session filter.
+                            ownerSessionIDOverride: registrationID
+                        )
+                        .frame(width: 0, height: 0)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                        if !focusNeonExclusionLabels.isEmpty {
+                            ControllerAccessibilityWindowFocusOverlayInstaller(
+                                session: session,
                                 controllerInput: controllerInput,
-                                axes: .vertical,
-                                // This is a fallback for screens without a
-                                // concrete List/Form marker. Screen-local owners
-                                // know their private SwiftUI scroll hierarchy and
-                                // must be offered the gesture first.
-                                priority: priority - 10_000,
-                                isEnabled: navigationIsActive,
-                                preferredScrollViewProvider: {
-                                    session.preferredRightStickScrollView()
-                                },
-                                // `session.configure` runs on appearance. Use
-                                // the modifier's stable ID immediately so this
-                                // target cannot mount ownerless and be removed
-                                // by the router's active-session filter.
-                                ownerSessionIDOverride: registrationID
+                                style: orbStyle,
+                                includedLabels: focusNeonExclusionLabels
                             )
                             .frame(width: 0, height: 0)
-                            .allowsHitTesting(false)
-                            .accessibilityHidden(true)
-                            if !focusNeonExclusionLabels.isEmpty {
-                                ControllerAccessibilityWindowFocusOverlayInstaller(
-                                    session: session,
-                                    controllerInput: controllerInput,
-                                    style: orbStyle,
-                                    includedLabels: focusNeonExclusionLabels
-                                )
-                                .frame(width: 0, height: 0)
-                            }
                         }
                     }
                 }
-                .overlay {
-                    if navigationIsActive {
-                        ControllerAccessibilityFocusOverlay(
-                            session: session,
-                            controllerInput: controllerInput,
-                            style: orbStyle,
-                            focusNeonExclusionLabels: focusNeonExclusionLabels
-                        )
-                    }
+            }
+            .overlay {
+                if navigationIsActive {
+                    ControllerAccessibilityFocusOverlay(
+                        session: session,
+                        controllerInput: controllerInput,
+                        style: orbStyle,
+                        focusNeonExclusionLabels: focusNeonExclusionLabels
+                    )
                 }
-        } else { content }
+            }
+    }
+
+    // The nearest scope decides for its buttons. The styles fall through to an outer
+    // scope's style when inactive, so this also keeps that one from registering them.
+    private var registersAutomaticTargets: Bool {
+        navigationIsActive && !usesExplicitTargetGeometryOnly
     }
 
     private func updateRegistration() {
@@ -3727,7 +3499,6 @@ private struct ControllerAccessibilityNavigationModifier: ViewModifier {
             id: registrationID,
             scopeKey: scopeKey,
             priority: priority,
-            usesNativeFocusEngine: usesNativeFocusEngine,
             isReady: session.hasNavigableElements,
             handler: { [weak session] command in
                 session?.handle(command) ?? false
@@ -3768,10 +3539,6 @@ extension View {
         directionalLinks: [ControllerAccessibilityDirectionalLink] = [],
         prioritizesDirectionalLinks: Bool = false,
         confinesHorizontalFocusMovement: Bool = false,
-        // Native focus is opt-in. Most ARMSX2 surfaces publish their own stable
-        // semantic graph, so device focus capability alone must never steal
-        // D-pad or left-stick delivery from that graph on iPad.
-        usesNativeFocusEngine: Bool = false,
         usesExplicitTargetGeometryOnly: Bool = false,
         preservesFocusDuringRightStickScrolling: Bool = false,
         focusScrollBehavior: ControllerAccessibilityFocusScrollBehavior =
@@ -3804,7 +3571,6 @@ extension View {
                 directionalLinks: directionalLinks,
                 prioritizesDirectionalLinks: prioritizesDirectionalLinks,
                 confinesHorizontalFocusMovement: confinesHorizontalFocusMovement,
-                usesNativeFocusEngine: usesNativeFocusEngine,
                 usesExplicitTargetGeometryOnly: usesExplicitTargetGeometryOnly,
                 preservesFocusDuringRightStickScrolling:
                     preservesFocusDuringRightStickScrolling,
