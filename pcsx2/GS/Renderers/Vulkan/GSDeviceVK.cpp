@@ -9018,12 +9018,26 @@ GSTextureVK* GSDeviceVK::SetupPrimitiveTrackingDATE(GSHWDrawConfig& config)
 void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 {
 	// Mid-frame kick (see m_render_passes_since_submit in the header): while a
-	// readback-prone frame is recording, submit accumulated work at a render-pass
-	// boundary so the GPU executes concurrently with GS-thread recording instead of
-	// only starting when the readback fence-waits on it. Draw entry is the safe spot:
-	// nothing is staged yet, and every binding below re-applies via dirty flags.
-	// Gated to outside-a-render-pass (no forced tile flush on tilers) and to frames
-	// near an actual readback (games that never read back see zero change).
+	// readback-prone frame is recording, submit the work recorded so far once enough of it has
+	// piled up, so the GPU executes it while the GS thread records the rest instead of starting
+	// only when the readback fence-waits on it. Draw entry is the safe spot: nothing is staged
+	// yet, and every binding below re-applies via dirty flags.
+	//
+	// A kick happens only at a render-pass boundary: with no pass open, or when the draw shares
+	// neither target with the open pass and so ends it anyway (the keep-the-pass test further
+	// down). Ending a pass the draw would have continued costs a tile store on a tiler, so a draw
+	// that keeps either target never kicks. A colour-clip target in progress or an ROV draw
+	// changes which image the draw binds, so neither is predicted and both wait for the next
+	// boundary. Most passes end at a target switch rather than with no pass open, so without
+	// that boundary many readback frames never kick before their readback at all.
+	//
+	// A kick needs kick_threshold unsubmitted passes, the open one included. Every submit sleeps
+	// in the driver on Android's Adreno drivers, and the governor answers the sleeps by lowering
+	// the GS thread's clock, so kicking at every boundary costs more there than the earlier
+	// start saves.
+	//
+	// Frames count as readback-prone for readback_window_frames after a synchronous readback,
+	// so a game that never reads back sees zero change.
 	//
 	// Do not read the threshold as a submit budget. It sets how often we *offer* to kick;
 	// what we get is decided by the fence gate below, and that gate binds by a wide margin.
@@ -9031,32 +9045,30 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	// needs the first to have retired. Measured on Rogue Galaxy (M2/Honeykrisp, 60 frames,
 	// ~116 RPs/frame): the arithmetic "RPs-per-frame / threshold" predicts ~14 kicks/frame
 	// and the real number is 2, because ~3300 of ~3400 offers find the next command buffer
-	// still executing. So raising the threshold buys far less than it looks like it should,
-	// and lowering it buys nothing. Sweeping it 8->16 measured -2% total GPU stall on Rogue
-	// Galaxy and +12% on OutRun 2006, i.e. no free lunch in either direction.
+	// still executing. So raising the threshold buys far less than it looks like it should.
+	// Sweeping it 8->16 measured -2% total GPU stall on Rogue Galaxy and +12% on OutRun 2006.
 	constexpr u32 kick_threshold = 8;
 	constexpr u32 readback_window_frames = 3;
-	// A draw into a recent readback source is (almost certainly) producing the data for
-	// the next readback, which follows immediately — kick regardless of the threshold so
-	// the backlog drains during this pass's recording and the readback waits only on the
-	// pass itself plus the copy (see m_recent_readback_sources).
-	const bool produces_readback_data =
-		config.rt && (config.rt == m_recent_readback_sources[0] || config.rt == m_recent_readback_sources[1]);
 	const bool near_readback = m_readback_frame != ~0u && (m_frame - m_readback_frame) <= readback_window_frames;
-	if (near_readback &&
-		(m_render_passes_since_submit >= kick_threshold ||
-			(produces_readback_data && m_render_passes_since_submit > 0)) &&
-		!InRenderPass())
+	const bool at_pass_boundary = !InRenderPass() ||
+		(!config.ps.HasColorROV() && !config.ps.HasDepthROV() && !g_gs_device->GetColorClipTexture() &&
+			!(config.rt && config.rt == m_current_render_target) && !(config.ds && config.ds == m_current_depth_target));
+	const u32 unsubmitted_passes = m_render_passes_since_submit + (InRenderPass() ? 1u : 0u);
+	if (near_readback && at_pass_boundary && unsubmitted_passes >= kick_threshold)
 	{
 		// The kick must never block: submitting cycles to the next command buffer, and
 		// ActivateCommandBuffer fence-waits if that buffer's previous submission is still
 		// executing — a hidden GPU-sync worse than the backlog the kick drains. Only kick
 		// when the next buffer is verifiably complete; otherwise keep recording and retry
-		// at the next draw (the counter keeps the gate open).
+		// at the next boundary.
 		ScanForCommandBufferCompletion();
 		const u32 next_buffer = (m_current_frame + 1) % NUM_COMMAND_BUFFERS;
 		if (m_frame_resources[next_buffer].fence_counter <= m_completed_fence_counter)
+		{
+			// Submitting does not close an open pass, and this one ends at this draw anyway.
+			EndRenderPass();
 			ExecuteCommandBuffer(WaitType::None);
+		}
 	}
 
 	const GSVector2i rtsize(config.rt ? config.rt->GetSize() : config.ds->GetSize());
