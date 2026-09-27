@@ -3191,6 +3191,17 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     return currentPath.length > 0 ? currentPath.lastPathComponent : nil;
 }
 
+// Unlike currentGameISOName there is no INI fallback, so an ejected drive reads as empty.
++ (nullable NSString *)discInDriveName {
+    if (!VMManager::HasValidVM())
+        return nil;
+    const std::string discPath = VMManager::GetDiscPath();
+    if (discPath.empty())
+        return nil;
+    NSString *fileName = ARMSX2NSStringFromStringView(Path::GetFileName(discPath));
+    return fileName.length > 0 ? fileName : nil;
+}
+
 + (nonnull NSString *)isoDirectory {
     NSString *docsPath = [self documentsDirectory];
     NSString *isoDir = [docsPath stringByAppendingPathComponent:@"iso"];

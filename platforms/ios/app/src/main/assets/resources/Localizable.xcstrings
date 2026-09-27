@@ -11248,6 +11248,9 @@
         }
       }
     },
+    "In drive" : {
+      "extractionState" : "manual"
+    },
     "In-Game Overlays" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -14248,6 +14251,9 @@
           }
         }
       }
+    },
+    "No disc" : {
+      "extractionState" : "manual"
     },
     "No disc images found" : {
       "extractionState" : "manual",

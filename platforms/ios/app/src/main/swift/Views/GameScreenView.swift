@@ -400,6 +400,8 @@ struct GameScreenView: View {
     // transitions `.paused -> .pausedPresenting(child)` without tearing the card down; the child
     // covers the screen and dismissing it returns to `.paused` (the pause menu), not gameplay.
     @State private var overlayRoute: OverlayRoute = .hidden
+    // The pause menu child last opened. Its row takes focus when the card returns.
+    @State private var pauseMenuChild: QuickMenuDestination?
     @State private var runtimePerGameSettingsEntry: ISOEntry?
     @State private var runtimePerGameSettings: [String: Any]?
     @State private var runtimePerGameStartsInGameController = false
@@ -487,6 +489,7 @@ struct GameScreenView: View {
                     shaderChainAvailable: true,
                     gameTitle: currentRuntimeGameName(),
                     variant: metrics.variant,
+                    returningFrom: pauseMenuChild,
                     activePadLayoutName: activePadLayoutDisplayName,
                     activeControllerSkinName:
                         effectivePadSkinDescriptor.displayName,
@@ -581,11 +584,12 @@ struct GameScreenView: View {
             case .controllerSkin:
                 runtimeControllerSkinPicker
             case .changeDisc:
-                GameOverlayContainer(frameMode: .landscapePanel) { _ in
-                    RuntimeDiscSwapPanel(
+                GameOverlayContainer(frameMode: .landscapePanel) { metrics in
+                    ChangeDiscPanel(
                         settings: settings,
-                        controllerInput: controllerInput,
+                        variant: metrics.variant,
                         discs: availableDiscSwapNames,
+                        driveDisc: ARMSX2Bridge.discInDriveName(),
                         onEject: {
                             ejectDisc()
                             overlayRoute = .paused
@@ -886,6 +890,7 @@ struct GameScreenView: View {
         // open/dismiss regardless of which screen it was. This replaces the seven per-screen
         // observers that existed for the old independent booleans.
         .onChange(of: overlayRoute) { _, route in
+            if route == .hidden { pauseMenuChild = nil }
             if route == .paused {
                 // Child dismissal and background re-entry can expose the pause
                 // card without going through either explicit open action.
@@ -1667,6 +1672,7 @@ struct GameScreenView: View {
     /// destination simply transitions to `.pausedPresenting` so the card stays logically open
     /// underneath the child and reappears when the child is dismissed.
     private func openPauseMenuChild(_ destination: QuickMenuDestination) {
+        pauseMenuChild = destination
         // Exhaustive (no `default`): adding a new QuickMenuDestination case without a matching
         // presentation would fail to compile here, so a destination can never silently route to
         // `.pausedPresenting` with no view presenting it.
@@ -2685,122 +2691,6 @@ struct GameScreenView: View {
 
     private var availableDiscSwapNames: [String] {
         ARMSX2Bridge.availableISOs().filter { !$0.lowercased().hasSuffix(".elf") }
-    }
-}
-
-/// Controller-owned replacement for the nested native Change Disc `Menu`.
-/// Native menus can take UIKit focus ownership and leave the emulation overlay
-/// without a GameController handler after dismissal. This list keeps every
-/// operation inside the same explicit navigation session.
-private struct RuntimeDiscSwapPanel: View {
-    let settings: SettingsStore
-    let controllerInput: MenuControllerInputRouter?
-    let discs: [String]
-    let onEject: () -> Void
-    let onInsert: (String) -> Void
-    let onRestart: (String) -> Void
-    let onClose: () -> Void
-
-    private var controllerTargetOrder: [String] {
-        ["runtime.disc.close", "runtime.disc.eject"]
-            + discs.indices.map { "runtime.disc.insert.\($0)" }
-            + discs.indices.map { "runtime.disc.restart.\($0)" }
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    Button(action: onEject) {
-                        Label(
-                            settings.localized("Eject Disc"),
-                            systemImage: "eject"
-                        )
-                    }
-                    .controllerAccessibilityActionTarget(
-                        id: "runtime.disc.eject",
-                        label: settings.localized("Eject Disc"),
-                        action: onEject
-                    )
-                    .gameCardTintMenuBackgroundListRow(true)
-                }
-
-                if discs.isEmpty {
-                    Section {
-                        Text(settings.localized("No disc images found"))
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    Section(settings.localized("Insert Disc (No Reboot)")) {
-                        ForEach(Array(discs.enumerated()), id: \.offset) { index, disc in
-                            Button {
-                                onInsert(disc)
-                            } label: {
-                                Label(disc, systemImage: "opticaldisc")
-                            }
-                            .controllerAccessibilityActionTarget(
-                                id: "runtime.disc.insert.\(index)",
-                                label: disc
-                            ) {
-                                onInsert(disc)
-                            }
-                            .gameCardTintMenuBackgroundListRow(true)
-                        }
-                    }
-
-                    Section(settings.localized("Restart With Disc")) {
-                        ForEach(Array(discs.enumerated()), id: \.offset) { index, disc in
-                            Button {
-                                onRestart(disc)
-                            } label: {
-                                Label(disc, systemImage: "arrow.clockwise.circle")
-                            }
-                            .controllerAccessibilityActionTarget(
-                                id: "runtime.disc.restart.\(index)",
-                                label: disc
-                            ) {
-                                onRestart(disc)
-                            }
-                            .gameCardTintMenuBackgroundListRow(true)
-                        }
-                    }
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .navigationTitle(settings.localized("Change Disc"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(action: onClose) {
-                        Label(
-                            settings.localized("Back"),
-                            systemImage: "chevron.left"
-                        )
-                    }
-                    .controllerAccessibilityActionTarget(
-                        id: "runtime.disc.close",
-                        label: settings.localized("Back"),
-                        activationFeedback: .back,
-                        action: onClose
-                    )
-                }
-            }
-            .controllerAccessibilityTargetOrder(controllerTargetOrder)
-            .controllerAccessibilityNavigation(
-                controllerInput: controllerInput,
-                scopeKey: "runtime.change-disc",
-                priority: 320,
-                orbStyle: .liquidGlass,
-                onBack: {
-                    onClose()
-                    return true
-                },
-                usesExplicitTargetGeometryOnly: true,
-                focusScrollBehavior: .maintainWithinViewport,
-                preferredInitialFocusLabel: "runtime.disc.eject",
-                declaredTargetOrder: controllerTargetOrder
-            )
-        }
     }
 }
 

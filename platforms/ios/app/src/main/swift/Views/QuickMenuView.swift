@@ -43,6 +43,8 @@ struct QuickMenuView: View {
     let shaderChainAvailable: Bool
     let gameTitle: String?
     let variant: PauseLayoutVariant
+    /// The child just closed, whose row gets focus back instead of Resume.
+    let returningFrom: QuickMenuDestination?
     let activePadLayoutName: String
     let activeControllerSkinName: String
 
@@ -93,7 +95,7 @@ struct QuickMenuView: View {
             // `overlayBody`. In particular, iPad uses the portrait-style body
             // even when its measured card is wider than it is tall.
             let usesLandscapeMap = variant == .phoneLandscape
-            let usesTwoColumns = supportsTwoColumns(
+            let usesTwoColumns = variant.supportsTwoColumns(
                 width: geo.size.width,
                 height: geo.size.height
             )
@@ -181,7 +183,8 @@ struct QuickMenuView: View {
                     preferredInitialFocusLabel:
                         showStopConfirmation
                             ? settings.localized("Cancel")
-                            : ControllerTargetID.resume
+                            : returningFrom.map(controllerTargetID(for:))
+                                ?? ControllerTargetID.resume
                 )
                 .task(
                     id: quickMenuControllerScopeKey(
@@ -211,6 +214,22 @@ struct QuickMenuView: View {
         // keeping the scheme local avoids changing the game or library.
         .preferredColorScheme(.dark)
         .quickMenuLiquidGlassConfiguration()
+    }
+
+    private func controllerTargetID(for destination: QuickMenuDestination) -> String {
+        switch destination {
+        case .perGame: ControllerTargetID.perGame
+        case .gameController: ControllerTargetID.gameController
+        case .controllerSkin: ControllerTargetID.controllerSkin
+        case .speed: ControllerTargetID.speed
+        case .shaders: ControllerTargetID.shaders
+        case .saveStates: ControllerTargetID.saveStates
+        case .cheats: ControllerTargetID.cheats
+        case .retroAchievements: ControllerTargetID.retroAchievements
+        case .padLayout: ControllerTargetID.editPadLayout
+        case .resetROM: ControllerTargetID.resetROM
+        case .changeDisc: ControllerTargetID.changeDisc
+        }
     }
 
     private func quickMenuControllerScopeKey(
@@ -614,22 +633,6 @@ struct QuickMenuView: View {
         .environment(\.overlayCompact, true)
     }
 
-    /// Two columns only when the measured card can keep both columns comfortable.
-    /// iPhone portrait always uses one column, while compact landscape and iPad
-    /// layouts fall back to one column below their respective usable-size threshold.
-    private func supportsTwoColumns(width: CGFloat, height: CGFloat) -> Bool {
-        switch variant {
-        case .phonePortrait:
-            return false
-        case .ipadTwoColumn:
-            return width >= 500 && height >= 320
-        case .phoneLandscape:
-            // Notched 19.5:9 iPhones retain at least 640 points after safe-area
-            // clearance; smaller 16:9 phones continue using the compact column.
-            return width >= 640 && height >= 300
-        }
-    }
-
     @ViewBuilder
     private func cardsContent(twoColumns: Bool) -> some View {
         if twoColumns {
@@ -877,6 +880,267 @@ struct QuickMenuView: View {
 
 }
 
+private extension PauseLayoutVariant {
+    /// Two columns only when the measured card can keep both columns comfortable.
+    /// iPhone portrait always uses one column, while compact landscape and iPad
+    /// layouts fall back to one column below their respective usable-size threshold.
+    func supportsTwoColumns(width: CGFloat, height: CGFloat) -> Bool {
+        switch self {
+        case .phonePortrait:
+            return false
+        case .ipadTwoColumn:
+            return width >= 500 && height >= 320
+        case .phoneLandscape:
+            // Notched 19.5:9 iPhones retain at least 640 points after safe-area
+            // clearance; smaller 16:9 phones continue using the compact column.
+            return width >= 640 && height >= 300
+        }
+    }
+}
+
+/// Pause → Change Disc, built from the pause menu's own shell, header and cards. Insert
+/// and Restart sit side by side when there is room, so each disc's two actions share a line.
+struct ChangeDiscPanel: View {
+    @Environment(\.menuControllerInputRouter) private var controllerInput
+
+    let settings: SettingsStore
+    let variant: PauseLayoutVariant
+    let discs: [String]
+    let driveDisc: String?
+    let onEject: () -> Void
+    let onInsert: (String) -> Void
+    let onRestart: (String) -> Void
+    let onClose: () -> Void
+
+    private static let close = "runtime.disc.close"
+    private static let eject = "runtime.disc.eject"
+    private static func insert(_ index: Int) -> String { "runtime.disc.insert.\(index)" }
+    private static func restart(_ index: Int) -> String { "runtime.disc.restart.\(index)" }
+
+    private func isInDrive(_ disc: String) -> Bool {
+        (disc as NSString).lastPathComponent == driveDisc
+    }
+
+    // Inserting the disc that is already in the drive does nothing, so its row is left out.
+    private var insertIDs: [String] {
+        discs.indices.filter { !isInDrive(discs[$0]) }.map(Self.insert)
+    }
+
+    private var restartIDs: [String] { discs.indices.map(Self.restart) }
+
+    private var driveTitle: String { driveDisc ?? settings.localized("No disc") }
+
+    var body: some View {
+        GeometryReader { geo in
+            let landscape = variant == .phoneLandscape
+            let twoColumns = !discs.isEmpty
+                && variant.supportsTwoColumns(width: geo.size.width, height: geo.size.height)
+            let rows = insertIDs + restartIDs
+            let order = landscape ? [Self.eject, Self.close] + rows : rows + [Self.eject, Self.close]
+            let scopeKey = "runtime.change-disc.\(landscape ? "landscape" : "portrait").\(twoColumns ? 2 : 1)"
+            Group {
+                if landscape {
+                    landscapeBody(width: geo.size.width, twoColumns: twoColumns)
+                } else {
+                    portraitBody(twoColumns: twoColumns)
+                }
+            }
+            .controllerAccessibilityTargetOrder(order)
+            .controllerAccessibilityNavigation(
+                controllerInput: controllerInput,
+                scopeKey: scopeKey,
+                priority: 320,
+                orbStyle: .liquidGlass,
+                onBack: {
+                    onClose()
+                    return true
+                },
+                directionalLinks: directionalLinks(landscape: landscape, twoColumns: twoColumns),
+                prioritizesDirectionalLinks: true,
+                usesExplicitTargetGeometryOnly: true,
+                focusScrollBehavior: .maintainWithinViewport,
+                preferredInitialFocusLabel: rows.first ?? Self.close,
+                declaredTargetOrder: order
+            )
+            .task(id: scopeKey) {
+                // As in the pause menu, registering is passive, so ask to enter once the rows mount.
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                _ = controllerInput?.requestNavigationSessionEntry(
+                    preferLast: false,
+                    matchingScopePrefix: "runtime.change-disc."
+                )
+            }
+        }
+        .environment(\.controllerTextAppearance, settings.controllerQuickMenuTextAppearance)
+        .preferredColorScheme(.dark)
+        .quickMenuLiquidGlassConfiguration()
+    }
+
+    /// Up and Down stay in a column and reach Eject or Back at its end. Left and Right pair a
+    /// disc's Insert and Restart rows. One column is a single chain, as in the pause menu.
+    private func directionalLinks(landscape: Bool, twoColumns: Bool)
+        -> [ControllerAccessibilityDirectionalLink] {
+        let eject = Self.eject
+        let back = Self.close
+        var links: [ControllerAccessibilityDirectionalLink] = [
+            .init(fromLabel: eject, direction: .right, toLabel: back),
+            .init(fromLabel: back, direction: .left, toLabel: eject),
+        ]
+        func chain(_ labels: [String]) {
+            for (upper, lower) in zip(labels, labels.dropFirst()) {
+                links.append(.init(fromLabel: upper, direction: .down, toLabel: lower))
+                links.append(.init(fromLabel: lower, direction: .up, toLabel: upper))
+            }
+        }
+        if twoColumns {
+            chain(landscape ? [eject] + insertIDs : insertIDs + [eject])
+            chain(landscape ? [back] + restartIDs : restartIDs + [back])
+            for index in discs.indices where !isInDrive(discs[index]) {
+                links.append(.init(fromLabel: Self.insert(index), direction: .right, toLabel: Self.restart(index)))
+                links.append(.init(fromLabel: Self.restart(index), direction: .left, toLabel: Self.insert(index)))
+            }
+        } else {
+            let rows = insertIDs + restartIDs
+            chain(landscape ? [back] + rows : rows + [back])
+            if let edge = landscape ? rows.first : rows.last {
+                links.append(.init(fromLabel: eject, direction: landscape ? .down : .up, toLabel: edge))
+            }
+        }
+        // Unlinked directions stay put; geometry sent Left from Eject into the Restart card.
+        let linked = Set(links.map { "\($0.fromLabel) \($0.direction)" })
+        for label in [eject, back] + insertIDs + restartIDs {
+            for direction in [MenuControllerCommand.up, .down, .left, .right]
+            where !linked.contains("\(label) \(direction)") {
+                links.append(.init(
+                    fromLabel: label,
+                    direction: direction,
+                    toLabel: ControllerAccessibilityDirectionalLink.navigationBoundary
+                ))
+            }
+        }
+        return links
+    }
+
+    private func landscapeBody(width: CGFloat, twoColumns: Bool) -> some View {
+        OverlayPanelScaffold {
+            VStack(spacing: 0) {
+                LandscapeCommandBar(
+                    settings: settings,
+                    gameTitle: driveTitle,
+                    stopControllerNavigationID: Self.eject,
+                    resumeControllerNavigationID: Self.close,
+                    onStop: onEject,
+                    onResume: onClose,
+                    iconOnly: width < 380,
+                    systemImage: "opticaldisc",
+                    title: settings.localized("Change Disc"),
+                    ejects: true,
+                    resumeTitle: settings.localized("Back"),
+                    resumeImage: "chevron.left"
+                )
+                scrollingCards(twoColumns: twoColumns)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .environment(\.overlayCompact, true)
+    }
+
+    private func portraitBody(twoColumns: Bool) -> some View {
+        OverlayPanelScaffold {
+            VStack(spacing: 0) {
+                OverlayHeader(
+                    systemImage: "opticaldisc",
+                    title: settings.localized("Change Disc"),
+                    subtitle: driveTitle,
+                    compact: variant != .phonePortrait
+                )
+                scrollingCards(twoColumns: twoColumns)
+                QuickMenuFooter(
+                    settings: settings,
+                    compact: variant != .phonePortrait,
+                    stopControllerNavigationID: Self.eject,
+                    resumeControllerNavigationID: Self.close,
+                    onStop: onEject,
+                    onResume: onClose,
+                    ejects: true,
+                    resumeTitle: settings.localized("Back"),
+                    resumeImage: "chevron.left"
+                )
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+    }
+
+    private func scrollingCards(twoColumns: Bool) -> some View {
+        ScrollView {
+            ControllerRightStickScrollTarget(
+                controllerInput: controllerInput,
+                axes: .vertical,
+                priority: 320,
+                pointsPerSecond: 680
+            )
+            .frame(height: 0)
+            Group {
+                if discs.isEmpty {
+                    OverlaySectionCard {
+                        Text(settings.localized("No disc images found"))
+                            .foregroundStyle(
+                                settings.controllerQuickMenuTextAppearance.secondaryColor
+                                    ?? OverlayTheme.textSecondary
+                            )
+                            .frame(minHeight: 44)
+                    }
+                } else if twoColumns {
+                    HStack(alignment: .top, spacing: 12) {
+                        insertCard
+                        restartCard
+                    }
+                } else {
+                    VStack(spacing: 14) {
+                        insertCard
+                        restartCard
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, variant == .phoneLandscape ? 8 : 10)
+        }
+    }
+
+    private var insertCard: some View {
+        OverlaySectionCard(title: settings.localized("Insert Disc (No Reboot)")) {
+            ForEach(Array(discs.enumerated()), id: \.offset) { index, disc in
+                let inDrive = isInDrive(disc)
+                OverlayActionRow(
+                    controllerNavigationID: Self.insert(index),
+                    label: GameListView.cleanGameFileName(disc),
+                    systemImage: "opticaldisc",
+                    trailingValue: inDrive ? settings.localized("In drive") : nil,
+                    keepsTrailingValue: true
+                ) {
+                    onInsert(disc)
+                }
+                .disabled(inDrive)
+            }
+        }
+    }
+
+    private var restartCard: some View {
+        OverlaySectionCard(title: settings.localized("Restart With Disc")) {
+            ForEach(Array(discs.enumerated()), id: \.offset) { index, disc in
+                OverlayActionRow(
+                    controllerNavigationID: Self.restart(index),
+                    label: GameListView.cleanGameFileName(disc),
+                    systemImage: "arrow.clockwise"
+                ) {
+                    onRestart(disc)
+                }
+            }
+        }
+    }
+}
+
 private struct LandscapeCommandBar: View {
     let settings: SettingsStore
     let gameTitle: String?
@@ -885,16 +1149,21 @@ private struct LandscapeCommandBar: View {
     let onStop: () -> Void
     let onResume: () -> Void
     let iconOnly: Bool
+    var systemImage = "pause.circle.fill"
+    var title: String?
+    var ejects = false
+    var resumeTitle: String?
+    var resumeImage = "play.fill"
     @Environment(\.uiAccentColour) private var accentColour
     @Environment(\.controllerTextAppearance) private var textAppearance
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Image(systemName: "pause.circle.fill")
+                Image(systemName: systemImage)
                     .font(.system(size: 18))
                     .foregroundStyle(accentColour)
-                Text(settings.localized("Paused"))
+                Text(title ?? settings.localized("Paused"))
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(
                         textAppearance.normalColor ?? OverlayTheme.textPrimary
@@ -914,19 +1183,20 @@ private struct LandscapeCommandBar: View {
                 Spacer(minLength: 8)
                 QuickMenuStopButton(
                     controllerNavigationID: stopControllerNavigationID,
-                    accessibilityLabel: settings.localized("Stop"),
+                    accessibilityLabel: settings.localized(ejects ? "Eject Disc" : "Stop"),
                     compact: true,
+                    ejects: ejects,
                     action: onStop
                 )
                 Button(action: onResume) {
                     if iconOnly {
-                        Image(systemName: "play.fill")
+                        Image(systemName: resumeImage)
                             .foregroundStyle(.white)
                     } else {
                         Label {
-                            Text(settings.localized("Resume"))
+                            Text(resumeTitle ?? settings.localized("Resume"))
                         } icon: {
-                            Image(systemName: "play.fill")
+                            Image(systemName: resumeImage)
                                 .foregroundStyle(.white)
                         }
                     }
@@ -955,6 +1225,9 @@ private struct QuickMenuFooter: View {
     let resumeControllerNavigationID: String
     let onStop: () -> Void
     let onResume: () -> Void
+    var ejects = false
+    var resumeTitle: String?
+    var resumeImage = "play.fill"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -963,15 +1236,16 @@ private struct QuickMenuFooter: View {
             HStack(spacing: compact ? 10 : 12) {
                 QuickMenuStopButton(
                     controllerNavigationID: stopControllerNavigationID,
-                    accessibilityLabel: settings.localized("Stop"),
+                    accessibilityLabel: settings.localized(ejects ? "Eject Disc" : "Stop"),
                     compact: compact,
+                    ejects: ejects,
                     action: onStop
                 )
                 Button(action: onResume) {
                     Label {
-                        Text(settings.localized("Resume"))
+                        Text(resumeTitle ?? settings.localized("Resume"))
                     } icon: {
-                        Image(systemName: "play.fill")
+                        Image(systemName: resumeImage)
                             .foregroundStyle(.white)
                     }
                         .frame(maxWidth: .infinity)
@@ -996,17 +1270,19 @@ private struct QuickMenuStopButton: View {
     let controllerNavigationID: String
     let accessibilityLabel: String
     let compact: Bool
+    /// Change Disc puts Eject in this slot: neutral, since ejecting loses nothing.
+    var ejects = false
     let action: () -> Void
 
     private var diameter: CGFloat { compact ? 36 : 46 }
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "stop.fill")
+            Image(systemName: ejects ? "eject.fill" : "stop.fill")
                 .font(.system(size: compact ? 13 : 16, weight: .bold))
                 .foregroundStyle(.white)
                 .frame(width: diameter, height: diameter)
-                .background(Color.red, in: Circle())
+                .background(ejects ? OverlayTheme.separator : Color.red, in: Circle())
         }
         .buttonStyle(.plain)
         .contentShape(Circle())
