@@ -56,12 +56,14 @@ namespace GSLineWalk
 	/// value -- the minor coordinate's signed distance from the centre of the pixel the step landed
 	/// on, in units of 1/scale of a pixel -- from which AA1 coverage is computed. Walk() and
 	/// WalkAA1() share this so there is one copy of the walk.
-	template <typename Step>
-	inline int WalkSteps(int x0, int y0, int x1, int y1, Step&& step_fn)
+	///
+	/// WalkStepsOnAxis is the same walk for a caller that already knows the major axis, which it
+	/// must have chosen by the same rule: X when |dx| >= |dy|.
+	template <bool step_x, typename Step>
+	inline int WalkStepsOnAxis(int x0, int y0, int x1, int y1, Step&& step_fn)
 	{
 		const int dx = x1 - x0;
 		const int dy = y1 - y0;
-		const bool step_x = Abs(dx) >= Abs(dy);
 		const bool pos_x = dx >= 0;
 		const bool pos_y = dy >= 0;
 		const int dxi = pos_x ? 1 : -1;
@@ -138,6 +140,14 @@ namespace GSLineWalk
 			}
 		}
 		return count;
+	}
+
+	template <typename Step>
+	inline int WalkSteps(int x0, int y0, int x1, int y1, Step&& step_fn)
+	{
+		if (Abs(x1 - x0) >= Abs(y1 - y0))
+			return WalkStepsOnAxis<true>(x0, y0, x1, y1, step_fn);
+		return WalkStepsOnAxis<false>(x0, y0, x1, y1, step_fn);
 	}
 
 	/// Calls pixel(x, y) for every pixel the line from (x0, y0) to (x1, y1) lights, in the order the
