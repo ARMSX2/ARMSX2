@@ -873,10 +873,7 @@ struct PerGameSettingsPanel: View {
                 await previewTask?.value
                 let initializedToken = await initialization?.value
                 guard let token = existingToken ?? initializedToken else { return }
-                _ = await ARMSX2Bridge.finishPerGameLivePreview(
-                    token: token,
-                    preserveSettings: false
-                )
+                _ = await ARMSX2Bridge.finishPerGameLivePreview(token: token)
             }
         }
         .interactiveDismissDisabled(hasPendingChanges)
@@ -2087,10 +2084,7 @@ struct PerGameSettingsPanel: View {
             livePreviewInitialization = nil
             guard settings.temporalSaveStateToLivePreviewChanges else {
                 if let token {
-                    _ = await ARMSX2Bridge.finishPerGameLivePreview(
-                        token: token,
-                        preserveSettings: false
-                    )
+                    _ = await ARMSX2Bridge.finishPerGameLivePreview(token: token)
                 }
                 return
             }
@@ -2174,6 +2168,7 @@ struct PerGameSettingsPanel: View {
                 let sequenceBeingApplied = livePreviewChangeSequence
 
                 publishLivePreviewPresentation(.applying)
+                ARMSX2Bridge.refreshPerGameLivePreviewBaseline(token: token, afterSave: false)
                 guard writeCurrentSettings(normalizesEditableValues: false),
                       await applyLivePreview(token: token) else {
                     throw CancellationError()
@@ -2258,7 +2253,6 @@ struct PerGameSettingsPanel: View {
     }
 
     private func dismissPanel(
-        preservingChanges: Bool = true,
         appliesChanges: Bool = false
     ) {
         guard !livePreviewSessionIsFinishing else { return }
@@ -2292,10 +2286,7 @@ struct PerGameSettingsPanel: View {
                 completePanelDismissal()
                 return
             }
-            _ = await ARMSX2Bridge.finishPerGameLivePreview(
-                token: token,
-                preserveSettings: preservingChanges
-            )
+            _ = await ARMSX2Bridge.finishPerGameLivePreview(token: token)
             livePreviewToken = nil
             completePanelDismissal()
         }
@@ -2321,11 +2312,11 @@ struct PerGameSettingsPanel: View {
 
     private func discardChangesAndDismiss() {
         MenuAudioPackManager.shared.playEvent(.return)
-        dismissPanel(preservingChanges: false)
+        dismissPanel()
     }
 
     private func applyChangesAndDismiss() {
-        dismissPanel(preservingChanges: true, appliesChanges: true)
+        dismissPanel(appliesChanges: true)
     }
 
     private var perGamePadLayoutEditorContext: PadLayoutEditorContext {
@@ -2565,6 +2556,9 @@ struct PerGameSettingsPanel: View {
         guard writeCurrentSettings(normalizesEditableValues: true) else {
             return
         }
+        if let livePreviewToken {
+            ARMSX2Bridge.refreshPerGameLivePreviewBaseline(token: livePreviewToken, afterSave: true)
+        }
         statusMessage = postSaveMessage
         savedFingerprint = perGameFingerprint()
         lastPreviewedFingerprint = perGameLivePreviewFingerprint()
@@ -2574,8 +2568,8 @@ struct PerGameSettingsPanel: View {
     }
 
     /// Writes the editor snapshot through the existing bridge. During a live preview
-    /// the native transaction restores the original INI immediately after the VM has
-    /// consumed this snapshot, so this method does not itself mark anything saved.
+    /// the native transaction puts the committed INI back once the VM has consumed
+    /// this snapshot, so this method does not itself mark anything saved.
     @discardableResult
     private func writeCurrentSettings(
         normalizesEditableValues: Bool

@@ -4316,6 +4316,32 @@ static void ARMSX2RequestPerGameSettingsReload()
     });
 }
 
++ (void)refreshPerGameLivePreviewBaselineForToken:(nonnull NSString *)token
+                                        afterSave:(BOOL)afterSave
+{
+    std::string serial;
+    u32 crc = 0;
+    if (!ARMSX2PerGameIdentityForCurrentGame(&serial, &crc))
+        return;
+
+    // Read before Swift writes the next preview, so the baseline is the committed file,
+    // including a Save or a Pad tab write made since the last preview.
+    NSString* settingsPath = ARMSX2NSStringFromStdString(ARMSX2PerGameSettingsPath(serial, crc));
+    id committed = [NSData dataWithContentsOfFile:settingsPath] ?: NSNull.null;
+    dispatch_async(ARMSX2SaveStateQueue(), ^{
+        NSDictionary<NSString*, id>* transaction = ARMSX2PerGameLivePreviewTransactions()[token];
+        if (![transaction[@"settingsPath"] isEqualToString:settingsPath] ||
+            (!afterSave && [transaction[@"restorePending"] boolValue]))
+            return;
+        NSMutableDictionary<NSString*, id>* updated = [transaction mutableCopy];
+        updated[@"originalSettings"] = committed;
+        // A Save is committed even after a failed restore. Write it again here: an
+        // apply still running when Save wrote the file has put older bytes back.
+        updated[@"restorePending"] = @(afterSave && !ARMSX2RestorePerGameLivePreviewSettings(updated));
+        ARMSX2PerGameLivePreviewTransactions()[token] = updated;
+    });
+}
+
 + (void)applyPerGameLivePreviewForToken:(nonnull NSString *)token
                               completion:(nullable ARMSX2SaveStateCompletion)completion
 {
@@ -4339,9 +4365,17 @@ static void ARMSX2RequestPerGameSettingsReload()
                 applied = true;
             }, true);
 
-            // Preview values belong to the running VM only. Restore the original
-            // per-game file immediately so an interrupted preview cannot become a save.
-            applied = ARMSX2RestorePerGameLivePreviewSettings(transaction) && applied;
+            // Preview values belong to the running VM only. Put the committed file back
+            // at once so an interrupted preview cannot become a save; finish retries a miss.
+            const bool restored = ARMSX2RestorePerGameLivePreviewSettings(transaction);
+            const bool pending = !restored;
+            if (pending != [transaction[@"restorePending"] boolValue])
+            {
+                NSMutableDictionary<NSString*, id>* updated = [transaction mutableCopy];
+                updated[@"restorePending"] = @(pending);
+                ARMSX2PerGameLivePreviewTransactions()[token] = updated;
+            }
+            applied = restored && applied;
         }
 
         if (callback)
@@ -4373,7 +4407,6 @@ static void ARMSX2RequestPerGameSettingsReload()
 }
 
 + (void)finishPerGameLivePreviewForToken:(nonnull NSString *)token
-                         preserveSettings:(BOOL)preserveSettings
                                completion:(nullable ARMSX2SaveStateCompletion)completion
 {
     ARMSX2SaveStateCompletion callback = [completion copy];
@@ -4383,7 +4416,7 @@ static void ARMSX2RequestPerGameSettingsReload()
         if (transaction)
         {
             s_ARMSX2PerGameSettingsReloadGeneration.fetch_add(1, std::memory_order_relaxed);
-            if (!preserveSettings)
+            if ([transaction[@"restorePending"] boolValue])
                 finished = ARMSX2RestorePerGameLivePreviewSettings(transaction);
 
             NSString* statePath = transaction[@"statePath"];
@@ -4394,8 +4427,8 @@ static void ARMSX2RequestPerGameSettingsReload()
                     return;
                 }
 
-                // Saving retains the edited file; cancelling reloads the original
-                // snapshot. Either path restores the gameplay moment before exit.
+                // Every apply put the committed file back, so reloading it drops the
+                // preview; the state load restores the gameplay moment before exit.
                 VMManager::ReloadGameSettings();
                 ARMSX2_ApplyEffectivePresentFPSCap();
                 if (MTGS::IsOpen())

@@ -95,9 +95,10 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // Silent, private save-state transaction used by the in-game Per-Game Settings
 // live preview. These states never occupy a user slot and never emit an OSD.
 + (void)beginPerGameLivePreviewWithCompletion:(nullable ARMSX2TemporaryStateCreationCompletion)completion NS_SWIFT_NAME(beginPerGameLivePreview(completion:));
++ (void)refreshPerGameLivePreviewBaselineForToken:(nonnull NSString *)token afterSave:(BOOL)afterSave NS_SWIFT_NAME(refreshPerGameLivePreviewBaseline(token:afterSave:));
 + (void)applyPerGameLivePreviewForToken:(nonnull NSString *)token completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(applyPerGameLivePreview(token:completion:));
 + (void)restorePerGameLivePreviewStateForToken:(nonnull NSString *)token completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(restorePerGameLivePreviewState(token:completion:));
-+ (void)finishPerGameLivePreviewForToken:(nonnull NSString *)token preserveSettings:(BOOL)preserveSettings completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(finishPerGameLivePreview(token:preserveSettings:completion:));
++ (void)finishPerGameLivePreviewForToken:(nonnull NSString *)token completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(finishPerGameLivePreview(token:completion:));
 + (BOOL)isSDLFullscreen;
 
 // Info
