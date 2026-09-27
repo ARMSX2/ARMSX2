@@ -1455,7 +1455,8 @@ final class MenuControllerInputRouter {
             }
             return
         }
-        guard pressed, !wasPressed, canChangeMainMenuTheme else { return }
+        guard pressed, !wasPressed, UIFrameRateSettings.shared.changesThemeWithTriggers,
+              canChangeMainMenuTheme else { return }
         guard publishThemePresetRequest(step: step) else { return }
 
         themePresetRepeatTasks[profileID]?[button]?.cancel()

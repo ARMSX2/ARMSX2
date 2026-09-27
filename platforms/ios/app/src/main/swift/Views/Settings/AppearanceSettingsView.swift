@@ -83,6 +83,7 @@ struct AppearanceSettingsView: View {
         "settings.appearance.dynamic-face-buttons-fps",
         "settings.appearance.ask-controller-navigation",
         "settings.appearance.ask-touch-navigation",
+        "settings.appearance.theme-triggers",
         "settings.appearance.dynamic-background",
         "settings.appearance.original-full-quality-live-wallpapers",
         "settings.appearance.lightweight-quality-hot-temperature",
@@ -512,6 +513,14 @@ struct AppearanceSettingsView: View {
                 )
                 .appearanceControllerListRow(
                     "settings.appearance.ask-touch-navigation"
+                )
+
+                Toggle(
+                    settings.localized("Change Theme with L2 and R2"),
+                    isOn: $frameRates.changesThemeWithTriggers
+                )
+                .appearanceControllerListRow(
+                    "settings.appearance.theme-triggers"
                 )
             } header: {
                 Label(
