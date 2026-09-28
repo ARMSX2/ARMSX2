@@ -713,7 +713,8 @@ struct SettingsRootView: View {
             // destination currently presented by navigationDestination.
             if navigationPath.isEmpty {
             List {
-            if controllerInput != nil {
+            // A landscape phone has no room for it: it pushed Language to the bottom.
+            if controllerInput != nil, verticalSizeClass != .compact {
                 Color.clear
                     .frame(height: Self.topNavigationFocusClearance)
                     .listRowInsets(EdgeInsets())
