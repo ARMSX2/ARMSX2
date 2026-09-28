@@ -877,7 +877,8 @@ final class ControllerAccessibilityNavigationSession {
         pendingDirectionalMove = nil
         permitsAutomaticFocus = true
         let keys = orderedKeys()
-        let preferred = preferLast ? preferredLastEntryLabel : preferredInitialFocusLabel
+        let preferred = (preferLast ? preferredLastEntryLabel : preferredInitialFocusLabel)
+            .map(Self.navigationID)
         if let preferred, let key = keyMatching(preferred, in: keys) {
             pendingFocusKey = nil
             pendingFocusExpiryTask?.cancel()
@@ -2259,6 +2260,13 @@ final class ControllerAccessibilityNavigationSession {
 
     fileprivate static func explicitKey(_ id: String) -> String {
         "controller.focus.id.\(id)"
+    }
+
+    /// Settings hands back the router's remembered key as its preferred label. Matching wraps a
+    /// label in `explicitKey` again, so that key never matched and Back landed on the first row.
+    private static func navigationID(_ label: String) -> String {
+        let prefix = explicitKey("")
+        return label.hasPrefix(prefix) ? String(label.dropFirst(prefix.count)) : label
     }
 }
 
