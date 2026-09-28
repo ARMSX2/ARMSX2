@@ -943,8 +943,6 @@ private fun UnifiedTouchLayer(
                                     } else {
                                         foreign.remove(ch.id)
                                     }
-                                    // TEMP #765 glide diagnostics: remove after the test.
-                                    android.util.Log.d("ARMSX2_GLIDE", "down f=${ch.id.value} consumed=${ch.isConsumed} foreign=${ch.id in foreign}")
                                 }
                                 if (!ch.pressed) {
                                     // Lift / cancel: drop this finger's state entirely.
@@ -982,9 +980,6 @@ private fun UnifiedTouchLayer(
                                 }
                                 dir[ch.id] = d
                                 dirLatched[ch.id] = (dirLatched[ch.id] ?: DpadState()) or d
-                                // TEMP #765 glide diagnostics: remove after the test.
-                                if (current[ch.id] != h)
-                                    android.util.Log.d("ARMSX2_GLIDE", "f=${ch.id.value} hits=${h.map { it.name }}")
                                 current[ch.id] = h
                                 latched.getOrPut(ch.id) { mutableSetOf() }.addAll(h)
                                 // The first thing this finger touched, button or direction, for Hold first.
@@ -994,9 +989,6 @@ private fun UnifiedTouchLayer(
                                 }
                             }
                             val agg = current.keys.flatMap { contribution(it) }.toSet()
-                            // TEMP #765 glide diagnostics: remove after the test.
-                            if (agg != pressed)
-                                android.util.Log.d("ARMSX2_GLIDE", "pressed=${agg.map { it.name }} mode=$glideMode")
                             (pressed - agg).forEach { glidePress(it, false) }
                             (agg - pressed).forEach { glidePress(it, true) }
                             val aggDir = current.keys.fold(DpadState()) { acc, f -> acc or dirContribution(f) }
@@ -1013,8 +1005,6 @@ private fun UnifiedTouchLayer(
                             updatePressed(agg, aggDir)
                         }
                     } finally {
-                        // TEMP #765 glide diagnostics: remove after the test.
-                        android.util.Log.d("ARMSX2_GLIDE", "layer stopped, releasing ${pressed.map { it.name }}")
                         releaseAll()
                     }
                 }
