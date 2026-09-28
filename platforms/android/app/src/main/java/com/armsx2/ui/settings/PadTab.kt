@@ -1268,7 +1268,7 @@ private fun StickTargetPickerDialog(
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(str("pad.stickTarget.hotkeys"), color = Colors.pasx2_blue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                    ControllerMappings.SysHotkey.entries.forEach { h ->
+                    ControllerMappings.hotkeysInDisplayOrder.forEach { h ->
                         val hc = ControllerMappings.stickCodeForHotkey(h)
                         StickPickItem("Hotkey: ${h.label}", current == hc, "$layer.hk.${h.name}") { onPick(hc) }
                     }

@@ -1176,6 +1176,17 @@ object ControllerMappings {
         PRESSURE_MOD_TOGGLE("pad.pressuremodtoggle.keycode", "Pressure Modifier (toggle)"),
     }
 
+    /**
+     * The hotkeys in the order the screens list them. The enum's order is persisted (ordinals,
+     * append only), so a later addition lands at the end even when it belongs beside an older
+     * one: the Pressure Modifier toggle sat far below the hold binding it pairs with.
+     */
+    val hotkeysInDisplayOrder: List<SysHotkey> by lazy {
+        val out = SysHotkey.entries.filter { it != SysHotkey.PRESSURE_MOD_TOGGLE }.toMutableList()
+        out.add(out.indexOf(SysHotkey.PRESSURE_MOD) + 1, SysHotkey.PRESSURE_MOD_TOGGLE)
+        out
+    }
+
     // A hotkey is either a single button or a two-button combo. The main key is
     // stored under prefKey; an optional modifier (held while the main key is
     // pressed) under prefKey + MOD_SUFFIX. UNKNOWN modifier = single-button.
