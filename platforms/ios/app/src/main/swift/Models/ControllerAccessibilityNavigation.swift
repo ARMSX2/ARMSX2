@@ -426,6 +426,7 @@ final class ControllerAccessibilityNavigationSession {
             return value.isEmpty ? nil : Self.explicitKey(value)
         }
         guard next != declaredOrder else { return }
+        let previousOrder = declaredOrderSet
         declaredOrder = next
         declaredOrderSet = Set(next)
         var nextIndex: [String: Int] = [:]
@@ -441,7 +442,32 @@ final class ControllerAccessibilityNavigationSession {
         } else if let pendingFocusKey, next.contains(pendingFocusKey) {
             scheduleScopeRestorationSeek(pendingFocusKey)
         }
+        if let focusedKey, previousOrder.contains(focusedKey), !declaredOrderSet.contains(focusedKey) {
+            refocusReplacement(of: focusedKey, added: declaredOrderSet.subtracting(previousOrder))
+        }
         updateReadiness()
+    }
+
+    /// The focused row left the order for good, as Save does once a slot holds a state. Its
+    /// persistent entry kept the ring on the empty spot. Focus the closest row that replaced it,
+    /// or else the closest row, once the replacements have registered.
+    private func refocusReplacement(of droppedKey: String, added: Set<String>) {
+        guard let frame = targets[droppedKey]?.lastFrame else { return }
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self, self.focusedKey == droppedKey else { return }
+            let mounted = self.declaredOrder.filter(self.isMountedAndEnabled)
+            let replacements = mounted.filter(added.contains)
+            let nearest = (replacements.isEmpty ? mounted : replacements).min { lhs, rhs in
+                self.distance(from: frame, to: lhs) < self.distance(from: frame, to: rhs)
+            }
+            if let nearest { self.setFocus(nearest) }
+        }
+    }
+
+    private func distance(from frame: CGRect, to key: String) -> CGFloat {
+        guard let other = targets[key]?.lastFrame else { return .greatestFiniteMagnitude }
+        return hypot(other.midX - frame.midX, other.midY - frame.midY)
     }
 
     func updateScope(view: UIView) {
