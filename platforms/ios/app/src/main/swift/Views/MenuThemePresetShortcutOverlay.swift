@@ -183,11 +183,12 @@ struct MenuThemePresetShortcutOverlay: View {
             .presentationBackground(.clear)
             .appStatusBarHidden()
         }
-        .alert("Theme Not Saved", isPresented: $themeSaveError) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Enter a name for your theme.")
-        }
+        .controllerPrompt(
+            "Theme Not Saved",
+            isPresented: $themeSaveError,
+            message: "Enter a name for your theme.",
+            actions: [.ok]
+        )
         .onDisappear {
             controllerInput.setNavigationCaptured(
                 false,

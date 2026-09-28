@@ -818,11 +818,12 @@ struct VirtualPadSettingsView: View {
         .sheet(item: $layoutExportItem) { item in
             ActivityShareSheet(activityItems: [item.url])
         }
-        .alert("Layout Import", isPresented: $showLayoutImportAlert) {
-            Button(settings.localized("OK"), role: .cancel) {}
-        } message: {
-            Text(layoutImportMessage)
-        }
+        .controllerPrompt(
+            "Layout Import",
+            isPresented: $showLayoutImportAlert,
+            message: layoutImportMessage,
+            actions: [.ok]
+        )
         .alert(
             settings.localized("Rename Layout"),
             isPresented: Binding<Bool>(
@@ -852,37 +853,32 @@ struct VirtualPadSettingsView: View {
         } message: {
             Text(settings.localized("Choose a new name for this layout."))
         }
-        .confirmationDialog(
+        .controllerPrompt(
             settings.localized("Delete Layout?"),
             isPresented: Binding<Bool>(
                 get: { layoutPendingDelete != nil },
                 set: { if !$0 { layoutPendingDelete = nil } }
             ),
-            presenting: layoutPendingDelete
-        ) { preset in
-            Button(
-                "\(settings.localized("Delete")) \(preset.displayName)",
-                role: .destructive
-            ) {
-                do {
-                    try layoutPresets.deletePreset(id: preset.id)
-                } catch {
-                    layoutImportMessage =
-                        "Layout deletion failed: \(error.localizedDescription)"
-                    showLayoutImportAlert = true
-                }
-                layoutPendingDelete = nil
-            }
-            Button(settings.localized("Cancel"), role: .cancel) {
-                layoutPendingDelete = nil
-            }
-        } message: { _ in
-            Text(
-                settings.localized(
-                    "Games using this layout will fall back to their next available layout."
-                )
-            )
-        }
+            message: settings.localized(
+                "Games using this layout will fall back to their next available layout."
+            ),
+            actions: [
+                .cancel,
+                .init(
+                    title: "\(settings.localized("Delete")) \(layoutPendingDelete?.displayName ?? "")",
+                    isDestructive: true
+                ) {
+                    guard let preset = layoutPendingDelete else { return }
+                    do {
+                        try layoutPresets.deletePreset(id: preset.id)
+                    } catch {
+                        layoutImportMessage =
+                            "Layout deletion failed: \(error.localizedDescription)"
+                        showLayoutImportAlert = true
+                    }
+                },
+            ]
+        )
         .sheet(isPresented: $showSkinImporter) {
             ImportDocumentPicker(
                 allowedContentTypes: [
@@ -912,32 +908,12 @@ struct VirtualPadSettingsView: View {
                 }
             }
         }
-        .alert(settings.localized("Custom Skin"), isPresented: $showSkinImportAlert) {
-            if let result = lastSkinImportResult {
-                if result.includesLinkedLayout {
-                    Button("Apply Skin Only Globally") {
-                        selectSkin(id: result.descriptor.id)
-                    }
-                    Button("Apply Skin + Layout Globally") {
-                        selectSkin(id: result.descriptor.id)
-                        layoutPresets.globalPresetID = result.descriptor.linkedLayoutPresetID
-                    }
-                    Button("Apply Layout Only Globally") {
-                        layoutPresets.globalPresetID = result.descriptor.linkedLayoutPresetID
-                    }
-                    Button("Later", role: .cancel) {}
-                } else {
-                    Button("Apply Skin Only Globally") {
-                        selectSkin(id: result.descriptor.id)
-                    }
-                    Button("Later", role: .cancel) {}
-                }
-            } else {
-                Button(settings.localized("OK"), role: .cancel) {}
-            }
-        } message: {
-            Text(skinImportMessage)
-        }
+        .controllerPrompt(
+            settings.localized("Custom Skin"),
+            isPresented: $showSkinImportAlert,
+            message: skinImportMessage,
+            actions: skinImportActions
+        )
         .alert("Rename Skin", isPresented: Binding<Bool>(
             get: { skinPendingRename != nil },
             set: { if !$0 { skinPendingRename = nil } }
@@ -955,26 +931,23 @@ struct VirtualPadSettingsView: View {
         } message: {
             Text("Choose a display name for this imported skin.")
         }
-        .confirmationDialog(
+        .controllerPrompt(
             "Delete Skin?",
             isPresented: Binding<Bool>(
                 get: { skinPendingDelete != nil },
                 set: { if !$0 { skinPendingDelete = nil } }
             ),
-            presenting: skinPendingDelete
-        ) { skin in
-            Button("Delete \(skin.displayName)", role: .destructive) {
-                try? skinLibrary.deleteImportedSkin(id: skin.id, layoutPresets: layoutPresets)
-                syncSettingsSkinFromLibrarySelection()
-                skinPendingDelete = nil
-            }
-            Button("Cancel", role: .cancel) {
-                skinPendingDelete = nil
-            }
-        } message: { skin in
-            Text("This removes the imported skin. Linked layout presets are kept.")
-        }
-        .confirmationDialog(
+            message: "This removes the imported skin. Linked layout presets are kept.",
+            actions: [
+                .cancel,
+                .init(title: "Delete \(skinPendingDelete?.displayName ?? "")", isDestructive: true) {
+                    guard let skin = skinPendingDelete else { return }
+                    try? skinLibrary.deleteImportedSkin(id: skin.id, layoutPresets: layoutPresets)
+                    syncSettingsSkinFromLibrarySelection()
+                },
+            ]
+        )
+        .controllerPrompt(
             "\(skinReplacePrompt?.name ?? "This skin") is already installed",
             isPresented: Binding<Bool>(
                 get: { skinReplacePrompt != nil },
@@ -988,23 +961,17 @@ struct VirtualPadSettingsView: View {
                     }
                 }
             ),
-            presenting: skinReplacePrompt
-        ) { prompt in
-            Button("Replace") {
-                skinReplacePrompt = nil
-                resumeSkinReplace(.replace(prompt.existingSkinID))
-            }
-            Button("Keep Both") {
-                skinReplacePrompt = nil
-                resumeSkinReplace(.keepBoth)
-            }
-            Button("Cancel", role: .cancel) {
-                skinReplacePrompt = nil
-                resumeSkinReplace(.cancel)
-            }
-        } message: { _ in
-            Text("Replace it, or keep both copies?")
-        }
+            message: "Replace it, or keep both copies?",
+            actions: [
+                .init(title: "Cancel", isCancel: true) { resumeSkinReplace(.cancel) },
+                .init(title: "Keep Both") { resumeSkinReplace(.keepBoth) },
+                .init(title: "Replace") {
+                    if let prompt = skinReplacePrompt {
+                        resumeSkinReplace(.replace(prompt.existingSkinID))
+                    }
+                },
+            ]
+        )
         .fullScreenCover(isPresented: $showLayoutEditor) {
             PadLayoutEditView(
                 onDismiss: { showLayoutEditor = false },
@@ -1015,6 +982,26 @@ struct VirtualPadSettingsView: View {
                 )
             )
         }
+    }
+
+    private var skinImportActions: [ControllerPrompt.Action] {
+        guard let result = lastSkinImportResult else { return [.ok] }
+        let skinID = result.descriptor.id
+        let layoutID = result.descriptor.linkedLayoutPresetID
+        var actions: [ControllerPrompt.Action] = [
+            .init(title: "Later", isCancel: true),
+            .init(title: "Apply Skin Only Globally") { selectSkin(id: skinID) },
+        ]
+        if result.includesLinkedLayout {
+            actions.append(.init(title: "Apply Skin + Layout Globally") {
+                selectSkin(id: skinID)
+                layoutPresets.globalPresetID = layoutID
+            })
+            actions.append(.init(title: "Apply Layout Only Globally") {
+                layoutPresets.globalPresetID = layoutID
+            })
+        }
+        return actions
     }
 
     private var selectedSkinDetail: String {

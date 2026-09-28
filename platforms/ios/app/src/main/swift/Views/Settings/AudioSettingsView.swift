@@ -87,25 +87,26 @@ struct AudioSettingsView: View {
             allowsMultipleSelection: false,
             onCompletion: handleAudioFileSelection
         )
-        .confirmationDialog(
+        .controllerPrompt(
             settings.localized("Remove Audio Pack?"),
             isPresented: $isRemoveConfirmationPresented,
-            titleVisibility: .visible
-        ) {
-            Button(settings.localized("Remove Audio Pack"), role: .destructive) {
-                removeAudioPack()
-            }
-            Button(settings.localized("Cancel"), role: .cancel) {}
-        } message: {
-            Text(settings.localized("The bundled default audio pack will be restored."))
-        }
-        .alert(item: $audioPackMessage) { message in
-            Alert(
-                title: Text(message.title),
-                message: Text(message.detail),
-                dismissButton: .default(Text(settings.localized("OK")))
-            )
-        }
+            message: settings.localized("The bundled default audio pack will be restored."),
+            actions: [
+                .cancel,
+                .init(title: settings.localized("Remove Audio Pack"), isDestructive: true) {
+                    removeAudioPack()
+                },
+            ]
+        )
+        .controllerPrompt(
+            audioPackMessage?.title ?? "",
+            isPresented: Binding(
+                get: { audioPackMessage != nil },
+                set: { if !$0 { audioPackMessage = nil } }
+            ),
+            message: audioPackMessage?.detail ?? "",
+            actions: [.ok]
+        )
         .onChange(of: audioPackMessage?.id) { _, messageID in
             guard messageID != nil else { return }
             MenuAudioPackManager.shared.playEvent(.uiToast)

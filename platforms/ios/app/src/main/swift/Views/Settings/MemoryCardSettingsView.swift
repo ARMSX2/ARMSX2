@@ -154,36 +154,33 @@ struct MemoryCardSettingsView: View {
         .navigationTitle(settings.localized("Memory Cards"))
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: refresh)
-        .alert(settings.localized("Memory Cards"), isPresented: $showResult) {
-            Button(settings.localized("OK")) {}
-        } message: {
-            Text(settings.localized(resultMessage ?? ""))
-        }
-        .confirmationDialog(
+        .controllerPrompt(
+            settings.localized("Memory Cards"),
+            isPresented: $showResult,
+            message: settings.localized(resultMessage ?? ""),
+            actions: [.ok]
+        )
+        .controllerPrompt(
             settings.localized("Delete Memory Card?"),
             isPresented: Binding(
                 get: { pendingDeleteCard != nil },
                 set: { if !$0 { pendingDeleteCard = nil } }
             ),
-            titleVisibility: .visible
-        ) {
-            Button(settings.localized("Delete"), role: .destructive) {
-                if let card = pendingDeleteCard {
-                    let success = ARMSX2Bridge.deleteMemoryCard(named: card)
-                    refresh()
-                    resultMessage = success ? "Memory card deleted." : "Could not delete the memory card. It may be in use."
-                    showResult = true
-                }
-                pendingDeleteCard = nil
-            }
-            Button(settings.localized("Cancel"), role: .cancel) {
-                pendingDeleteCard = nil
-            }
-        } message: {
-            if let card = pendingDeleteCard {
-                Text(settings.localized("Delete \"\(card)\"? Saves on it will be lost, and it will be removed from any slot it is assigned to."))
-            }
-        }
+            message: pendingDeleteCard.map {
+                settings.localized("Delete \"\($0)\"? Saves on it will be lost, and it will be removed from any slot it is assigned to.")
+            } ?? "",
+            actions: [
+                .cancel,
+                .init(title: settings.localized("Delete"), isDestructive: true) {
+                    if let card = pendingDeleteCard {
+                        let success = ARMSX2Bridge.deleteMemoryCard(named: card)
+                        refresh()
+                        resultMessage = success ? "Memory card deleted." : "Could not delete the memory card. It may be in use."
+                        showResult = true
+                    }
+                },
+            ]
+        )
         .sheet(item: Binding(
             get: { pendingExportCard.map { ExportableCard(name: $0) } },
             set: { pendingExportCard = $0?.name }

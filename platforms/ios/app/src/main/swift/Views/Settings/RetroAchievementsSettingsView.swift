@@ -156,18 +156,17 @@ struct RetroAchievementsSettingsView: View {
                             }
                         ))
                         .controllerAccessibilityTargetID("settings.achievements.hardcore")
-                        .confirmationDialog(
+                        .controllerPrompt(
                             settings.localized("Turn off Hardcore Mode?"),
                             isPresented: $showingHardcoreDisableConfirm,
-                            titleVisibility: .visible
-                        ) {
-                            Button(settings.localized("Turn Off Hardcore"), role: .destructive) {
-                                applyHardcoreChange(false)
-                            }
-                            Button(settings.localized("Cancel"), role: .cancel) {}
-                        } message: {
-                            Text(settings.localized("Disabling Hardcore drops you to Casual mode for the rest of this session. Re-enable it after resetting the game."))
-                        }
+                            message: settings.localized("Disabling Hardcore drops you to Casual mode for the rest of this session. Re-enable it after resetting the game."),
+                            actions: [
+                                .cancel,
+                                .init(title: settings.localized("Turn Off Hardcore"), isDestructive: true) {
+                                    applyHardcoreChange(false)
+                                },
+                            ]
+                        )
 
                         statusRow("Hardcore Status", value: hardcoreStatus)
                     }
@@ -277,11 +276,12 @@ struct RetroAchievementsSettingsView: View {
                 }
             )
         }
-        .alert(settings.localized(messageTitle), isPresented: $showingMessage) {
-            Button(settings.localized("OK"), role: .cancel) {}
-        } message: {
-            Text(messageBody)
-        }
+        .controllerPrompt(
+            settings.localized(messageTitle),
+            isPresented: $showingMessage,
+            message: messageBody,
+            actions: [.ok]
+        )
     }
 
     private var accountSummary: String {

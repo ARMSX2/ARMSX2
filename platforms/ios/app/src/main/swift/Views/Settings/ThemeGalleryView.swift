@@ -146,23 +146,26 @@ struct ThemeGalleryView: View {
             .presentationBackground(.clear)
             .appStatusBarHidden()
         }
-        .alert("Theme Not Saved", isPresented: $saveError) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Enter a name for your theme.")
-        }
-        .alert("Delete Saved Theme?", isPresented: Binding(
-            get: { pendingDeletion != nil },
-            set: { if !$0 { pendingDeletion = nil } }
-        )) {
-            Button("Cancel", role: .cancel) { pendingDeletion = nil }
-            Button("Delete", role: .destructive) {
-                if let pendingDeletion { gallery.remove(pendingDeletion.id) }
-                pendingDeletion = nil
-            }
-        } message: {
-            Text(pendingDeletion?.name ?? "")
-        }
+        .controllerPrompt(
+            "Theme Not Saved",
+            isPresented: $saveError,
+            message: "Enter a name for your theme.",
+            actions: [.ok]
+        )
+        .controllerPrompt(
+            "Delete Saved Theme?",
+            isPresented: Binding(
+                get: { pendingDeletion != nil },
+                set: { if !$0 { pendingDeletion = nil } }
+            ),
+            message: pendingDeletion?.name ?? "",
+            actions: [
+                .cancel,
+                .init(title: "Delete", isDestructive: true) {
+                    if let pendingDeletion { gallery.remove(pendingDeletion.id) }
+                },
+            ]
+        )
     }
 
     private var header: some View {

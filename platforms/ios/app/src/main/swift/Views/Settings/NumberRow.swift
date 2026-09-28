@@ -950,7 +950,6 @@ struct ConfirmedSettingsResetButton: View {
     let controllerTargetID: String?
     let action: () -> Void
 
-    @State private var showsConfirmation = false
     @State private var showsCompletion = false
     @State private var completionTask: Task<Void, Never>?
     @Environment(\.menuControllerInputRouter) private var controllerInput
@@ -974,9 +973,7 @@ struct ConfirmedSettingsResetButton: View {
     }
 
     var body: some View {
-        Button(role: .destructive) {
-            showsConfirmation = true
-        } label: {
+        Button(role: .destructive, action: confirm) {
             HStack(spacing: 12) {
                 Text(title)
                 Spacer(minLength: 8)
@@ -994,26 +991,24 @@ struct ConfirmedSettingsResetButton: View {
         }
         .controllerAccessibilityActionTarget(
             id: controllerTargetID,
-            label: title
-        ) {
-            showsConfirmation = true
-        }
-        .confirmationDialog(
-            confirmationTitle,
-            isPresented: $showsConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button(settings.localized("Reset"), role: .destructive) {
-                performReset()
-            }
-            Button(settings.localized("Cancel"), role: .cancel) {}
-        } message: {
-            Text(confirmationMessage)
-        }
+            label: title,
+            action: confirm
+        )
         .onDisappear {
             completionTask?.cancel()
             completionTask = nil
         }
+    }
+
+    private func confirm() {
+        ControllerPrompt.shared.ask(
+            confirmationTitle,
+            message: confirmationMessage,
+            actions: [
+                .cancel,
+                .init(title: settings.localized("Reset"), isDestructive: true, run: performReset),
+            ]
+        )
     }
 
     @MainActor

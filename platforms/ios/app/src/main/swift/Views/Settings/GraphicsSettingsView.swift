@@ -632,23 +632,21 @@ struct GraphicsSettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2GraphicsHackStateChanged"))) { _ in
             settings.refreshGraphicsHackStatus()
         }
-        .confirmationDialog(
+        .controllerPrompt(
             settings.localized("Clear Emulator Cache?"),
             isPresented: $showShaderCacheClearConfirm,
-            titleVisibility: .visible
-        ) {
-            Button(settings.localized("Clear"), role: .destructive) {
-                clearShaderCache()
-            }
-            Button(settings.localized("Cancel"), role: .cancel) {}
-        } message: {
-            Text(settings.localized("Achievement images download again the next time they are shown."))
-        }
-        .alert(settings.localized("Emulator Cache"), isPresented: $showShaderCacheResult) {
-            Button(settings.localized("OK")) {}
-        } message: {
-            Text(settings.localized(shaderCacheResult ?? ""))
-        }
+            message: settings.localized("Achievement images download again the next time they are shown."),
+            actions: [
+                .cancel,
+                .init(title: settings.localized("Clear"), isDestructive: true) { clearShaderCache() },
+            ]
+        )
+        .controllerPrompt(
+            settings.localized("Emulator Cache"),
+            isPresented: $showShaderCacheResult,
+            message: settings.localized(shaderCacheResult ?? ""),
+            actions: [.ok]
+        )
     }
 
     private func textureDumpBinding(

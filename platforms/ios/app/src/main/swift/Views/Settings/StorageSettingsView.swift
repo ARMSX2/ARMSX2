@@ -545,33 +545,28 @@ struct StorageSettingsView: View {
                 }
             }
         }
-        .confirmationDialog(
+        .controllerPrompt(
             settings.localized(pendingAction?.title ?? "Clear Cache"),
             isPresented: Binding(
                 get: { pendingAction != nil },
                 set: { if !$0 { pendingAction = nil } }
             ),
-            titleVisibility: .visible
-        ) {
-            if let pendingAction {
-                Button(settings.localized(pendingAction.title), role: .destructive) {
-                    let action = pendingAction
-                    self.pendingAction = nil
-                    Task { @MainActor in await clear(action) }
-                }
-            }
-
-            Button(settings.localized("Cancel"), role: .cancel) {
-                pendingAction = nil
-            }
-        } message: {
-            Text(settings.localized(pendingAction?.confirmationMessage ?? ""))
-        }
-        .alert(settings.localized("Storage Cleanup"), isPresented: $showResult) {
-            Button(settings.localized("OK")) {}
-        } message: {
-            Text(resultMessage ?? "")
-        }
+            message: settings.localized(pendingAction?.confirmationMessage ?? ""),
+            actions: [
+                .cancel,
+                .init(title: settings.localized(pendingAction?.title ?? "Clear Cache"), isDestructive: true) {
+                    if let action = pendingAction {
+                        Task { @MainActor in await clear(action) }
+                    }
+                },
+            ]
+        )
+        .controllerPrompt(
+            settings.localized("Storage Cleanup"),
+            isPresented: $showResult,
+            message: resultMessage ?? "",
+            actions: [.ok]
+        )
         .alert(
             settings.localized("External Games"),
             isPresented: Binding(

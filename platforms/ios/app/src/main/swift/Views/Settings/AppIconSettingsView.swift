@@ -99,24 +99,26 @@ struct AppIconSettingsView: View {
         }
         .navigationTitle(settings.localized("App Icon"))
         .navigationBarTitleDisplayMode(.inline)
-        .alert(
+        .controllerPrompt(
             settings.localized("Couldn’t change the app icon."),
             isPresented: Binding(
                 get: { pendingExport != nil },
                 set: { if !$0 { pendingExport = nil } }
             ),
-            presenting: pendingExport
-        ) { option in
-            Button(settings.localized("Export Icon")) { exportIcon(option) }
-            Button(settings.localized("OK"), role: .cancel) {}
-        } message: { _ in
-            Text(settings.localized("iOS rejected the icon change. This can happen when ARMSX2 runs inside another app’s container. The icons are bundled — you can export one instead."))
-        }
-        .alert(settings.localized("Couldn’t export the icon."), isPresented: $showExportError) {
-            Button(settings.localized("OK"), role: .cancel) {}
-        } message: {
-            Text(settings.localized("The icon image couldn’t be prepared for sharing."))
-        }
+            message: settings.localized("iOS rejected the icon change. This can happen when ARMSX2 runs inside another app’s container. The icons are bundled — you can export one instead."),
+            actions: [
+                .ok,
+                .init(title: settings.localized("Export Icon")) {
+                    if let option = pendingExport { exportIcon(option) }
+                },
+            ]
+        )
+        .controllerPrompt(
+            settings.localized("Couldn’t export the icon."),
+            isPresented: $showExportError,
+            message: settings.localized("The icon image couldn’t be prepared for sharing."),
+            actions: [.ok]
+        )
         .sheet(item: $shareItem) { item in
             ActivityShareSheet(activityItems: [item.url])
         }
@@ -129,17 +131,15 @@ struct AppIconSettingsView: View {
                 handleLogoImport(result)
             }
         }
-        .alert(
+        .controllerPrompt(
             settings.localized("Couldn’t import the logo."),
             isPresented: Binding(
                 get: { logoImportError != nil },
                 set: { if !$0 { logoImportError = nil } }
-            )
-        ) {
-            Button(settings.localized("OK"), role: .cancel) {}
-        } message: {
-            Text(logoImportError ?? "")
-        }
+            ),
+            message: logoImportError ?? "",
+            actions: [.ok]
+        )
     }
 
     private var logoSection: some View {
