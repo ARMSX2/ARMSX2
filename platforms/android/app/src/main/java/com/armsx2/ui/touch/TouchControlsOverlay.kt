@@ -719,8 +719,12 @@ private fun UnifiedTouchLayer(
     // tap-to-hold (latched buttons keep their own pressGestures handler so the
     // latch logic runs — the shared layer has no latch). Same rect+circle hit math
     // as the old per-region FaceMultiTouchLayer: center + radius = sizePx * 0.62.
+    // Macros and the P½ pressure modifier are glide TARGETS too (#765): a finger that started on a
+    // face button can slide onto one and press it, the way MGS2/3 players hold a weapon button and
+    // then need P½ or a macro. A finger that lands on one directly is still that widget's own
+    // (they stay in foreignRects below), so a tap keeps its exact behaviour and timing.
     val hitButtons = layout.buttons.filter {
-        it.enabled && isMultiTouchKind(it.id.kind) && !it.tapToHold
+        it.enabled && (isMultiTouchKind(it.id.kind) || isGlideTargetKind(it.id.kind)) && !it.tapToHold
     }
     // Foreign regions: DPAD / STICK / tap+long-press kinds (PAUSE / FASTFORWARD /
     // MACRO / STATEACTION / PRESSURE) and any tap-to-hold digital button. Those
@@ -806,8 +810,23 @@ private fun UnifiedTouchLayer(
                         pos.x >= it.left && pos.x <= it.right &&
                         pos.y >= it.top && pos.y <= it.bottom
                     }
+                // Presses one glide target: a button sends its keycode, a macro runs through
+                // fireMacro (its own frequency and pressure, under a key of its own so a finger
+                // tapping the same macro directly can't release this one), and P½ sets the
+                // modifier as its widget does, softening buttons already held.
+                fun glidePress(id: TouchButtonId, down: Boolean) {
+                    when (id.kind) {
+                        TouchButtonId.Kind.MACRO ->
+                            TouchControls.fireMacro(id, "glide", down) { code, p -> sendDigital(code, p) }
+                        TouchButtonId.Kind.PRESSURE -> {
+                            TouchControls.pressureModifierHeld.value = down
+                            TouchControls.reapplyPressureToHeldButtons()
+                        }
+                        else -> sendDigital(id.keycode, down)
+                    }
+                }
                 fun releaseAll() {
-                    pressed.forEach { sendDigital(it.keycode, false) }
+                    pressed.forEach { glidePress(it, false) }
                     updatePressed(emptySet())
                 }
                 awaitPointerEventScope {
@@ -865,8 +884,8 @@ private fun UnifiedTouchLayer(
                                 if (ch.id !in first && h.isNotEmpty()) first[ch.id] = h
                             }
                             val agg = current.keys.flatMap { contribution(it) }.toSet()
-                            (pressed - agg).forEach { sendDigital(it.keycode, false) }
-                            (agg - pressed).forEach { sendDigital(it.keycode, true) }
+                            (pressed - agg).forEach { glidePress(it, false) }
+                            (agg - pressed).forEach { glidePress(it, true) }
                             // Per-finger consume: only claim changes for fingers WE own
                             // (mapped to >=1 control). Never blanket-consume the whole
                             // event — that would starve co-occurring gestures like the
@@ -2014,6 +2033,10 @@ private fun isMultiTouchKind(kind: TouchButtonId.Kind): Boolean =
     kind == TouchButtonId.Kind.FACE ||
     kind == TouchButtonId.Kind.SHOULDER ||
     kind == TouchButtonId.Kind.MENU
+
+/** Widgets with a handler of their own that a gliding finger can still press (#765). */
+private fun isGlideTargetKind(kind: TouchButtonId.Kind): Boolean =
+    kind == TouchButtonId.Kind.MACRO || kind == TouchButtonId.Kind.PRESSURE
 
 /** Press/release pointerInput for a single digital button. Emits the
  *  keycode on down, releases on up or pointer cancel.
