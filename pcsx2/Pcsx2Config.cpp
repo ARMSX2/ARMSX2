@@ -879,7 +879,6 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(DumpReplayLoopCount) &&
 		OpEqu(DumpReplayFrameStart) &&
 		OpEqu(DumpReplayFrameEnd) &&
-		OpEqu(SavedMetricsCaptureSeconds) &&
 
 		OpEqu(ExclusiveFullscreenControl) &&
 		OpEqu(ScreenshotSize) &&
@@ -1103,7 +1102,6 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitfieldEx(DumpReplayLoopCount, "DumpReplayLoopCount");
 	SettingsWrapBitfieldEx(DumpReplayFrameStart, "DumpReplayFrameStart");
 	SettingsWrapBitfieldEx(DumpReplayFrameEnd, "DumpReplayFrameEnd");
-	SettingsWrapBitfieldEx(SavedMetricsCaptureSeconds, "SavedMetricsCaptureSeconds");
 
 	SettingsWrapEntryEx(CaptureContainer, "CaptureContainer");
 	SettingsWrapEntryEx(VideoCaptureCodec, "VideoCaptureCodec");

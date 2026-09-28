@@ -168,8 +168,6 @@ DebugSettingsWidget::DebugSettingsWidget(SettingsWindow* settings_dialog, QWidge
 	connect(m_gs.replayUseFrameRange, &QCheckBox::checkStateChanged, this, &DebugSettingsWidget::onDumpReplayUseFrameRangeChanged);
 	onDumpReplayUseFrameRangeChanged();
 
-	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_gs.savedMetricsCaptureSeconds, "EmuCore/GS", "SavedMetricsCaptureSeconds", 10);
-
 #ifdef PCSX2_DEVBUILD
 	//////////////////////////////////////////////////////////////////////////
 	// Logging Settings
