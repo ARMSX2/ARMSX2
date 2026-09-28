@@ -66,6 +66,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableFloatStateOf
@@ -81,6 +83,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -1645,7 +1648,7 @@ private fun LibraryOverflowMenu(
             val coversCtx = androidx.compose.ui.platform.LocalContext.current
             remember { com.armsx2.memcard.MemcardCovers.load() }
             val on = com.armsx2.memcard.MemcardCovers.enabled.value
-            val animated = com.armsx2.memcard.MemcardCovers.animateSelected.value
+            val animated = com.armsx2.memcard.MemcardCovers.animate.value
             LibraryOverflowItem(
                 glyph = "▤",
                 label = str("games.overflow.memcardCovers"),
@@ -1658,10 +1661,10 @@ private fun LibraryOverflowMenu(
                 closeThen {
                     when {
                         !on -> {
-                            com.armsx2.memcard.MemcardCovers.setAnimateSelected(true)
+                            com.armsx2.memcard.MemcardCovers.setAnimate(true)
                             com.armsx2.memcard.MemcardCovers.setEnabled(coversCtx, true)
                         }
-                        animated -> com.armsx2.memcard.MemcardCovers.setAnimateSelected(false)
+                        animated -> com.armsx2.memcard.MemcardCovers.setAnimate(false)
                         else -> com.armsx2.memcard.MemcardCovers.setEnabled(coversCtx, false)
                     }
                 }
@@ -1866,7 +1869,6 @@ private fun GameGridCard(
                 .fillMaxWidth()
                 .aspectRatio(coverAspectRatio())
                 .coverFrame(selected, 2.dp, MaterialTheme.colorScheme.primary, memcard = showsMemcardCover(game)),
-            animate = selected,
         )
         if (GridLabels.show.value) {
             Spacer(Modifier.height(4.dp))
@@ -1899,7 +1901,7 @@ private fun GameListCard(game: GameInfo, selected: Boolean, onClick: () -> Unit,
         ),
     ) {
         Row(Modifier.padding(7.dp), verticalAlignment = Alignment.CenterVertically) {
-            GameCover(game, Modifier.width(54.dp).aspectRatio(coverAspectRatio()), animate = selected)
+            GameCover(game, Modifier.width(54.dp).aspectRatio(coverAspectRatio()))
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(game.displayTitle(EnglishTitles.enabled.value), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1923,7 +1925,6 @@ private fun RecentGameCard(game: GameInfo, selected: Boolean = false, onClick: (
             game,
             Modifier.fillMaxWidth().aspectRatio(coverAspectRatio())
                 .coverFrame(selected, 2.5.dp, Color(0xFF3DA5FF), memcard = showsMemcardCover(game)),
-            animate = selected,
         )
         Spacer(Modifier.height(5.dp))
         Text(game.displayTitle(EnglishTitles.enabled.value), style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -2025,13 +2026,12 @@ private fun coverAspectRatio(): Float = if (CoverArtStyle.use3d.value) 0.646f el
  * still reads.
  */
 private fun Modifier.coverFrame(selected: Boolean, selectedWidth: Dp, selectedColor: Color, memcard: Boolean = false): Modifier {
-    // A Memory Card Cover is just the icon, so no frame shaped like a cover around it; while it
-    // animates, the moving icon is what shows the selection, so only a still one gets a frame.
-    val showSelected = selected && !(memcard && com.armsx2.memcard.MemcardCovers.animateSelected.value)
+    // A Memory Card Cover is just the icon, so no idle outline shaped like a cover around it. The
+    // selection frame stays: it is how a controller player sees where they are.
     val idle = !CoverArtStyle.use3d.value && !memcard
     val contrast = MaterialTheme.colorScheme.inverseSurface
     return when {
-        showSelected -> this
+        selected -> this
             .border(selectedWidth + 2.dp, contrast, RoundedCornerShape(13.dp))
             .border(selectedWidth, selectedColor, RoundedCornerShape(12.dp))
         idle -> this.border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f), RoundedCornerShape(12.dp))
@@ -2060,10 +2060,10 @@ private fun GameCover(
     // covers whose source art is a touch taller than the 0.7 slot.
     contentScale: ContentScale = ContentScale.Fit,
     placeholderText: Boolean = true,
-    /** The tile is selected: a Memory Card Cover comes to life (see MemcardAnimatedCover). */
-    animate: Boolean = false,
-    /** A reflection of a selected tile: it shows that tile's moving Memory Card Cover too. */
-    mirrorLive: Boolean = false,
+    /** Where a moving Memory Card Cover puts each frame, for a reflection to show. */
+    liveOut: MutableState<ImageBitmap?>? = null,
+    /** This is a reflection: show those frames rather than a still picture. */
+    liveIn: State<ImageBitmap?>? = null,
 ) {
     val context = LocalContext.current
     // Read the 3D-cover flag explicitly (not just via game.coverUrl, which is
@@ -2085,11 +2085,15 @@ private fun GameCover(
         if (custom == null) com.armsx2.memcard.MemcardCovers.coverFor(game.serial) else null
     }
     val model = custom ?: memcard ?: game.coverUrl
-    // The selected tile's icon moves; the still picture under it is hidden once the first moving
-    // frame is up, or the two (both transparent around the icon) would show at once.
-    val animating = animate && memcard != null && com.armsx2.memcard.MemcardCovers.animateSelected.value
+    // In Animated mode a Memory Card Cover moves, as on the console, except while a game is
+    // loaded (the library shown over it shouldn't take the game's CPU). The still picture under it
+    // is hidden once the first moving frame is up, or the two (both transparent around the icon)
+    // would show at once.
+    val moving = memcard != null && com.armsx2.memcard.MemcardCovers.animate.value &&
+        com.armsx2.runtime.MainActivityRuntime.eState.value == com.armsx2.EmuState.STOPPED
+    val animating = moving && liveIn == null
     var animReady by remember(game.serial, animating) { mutableStateOf(false) }
-    val mirroring = mirrorLive && memcard != null && com.armsx2.memcard.MemcardCovers.animateSelected.value
+    val mirroring = moving && liveIn != null
     var mirrorShown by remember(game.serial, mirroring) { mutableStateOf(false) }
     val request = remember(model, use3d, coverRegion, coverPins) {
         ImageRequest.Builder(context)
@@ -2133,10 +2137,10 @@ private fun GameCover(
                 },
             )
             if (animating) {
-                game.serial?.let { MemcardAnimatedCover(it, Modifier.matchParentSize(), onFirstFrame = { animReady = true }) }
+                game.serial?.let { MemcardAnimatedCover(it, Modifier.matchParentSize(), onFirstFrame = { animReady = true }, live = liveOut) }
             }
-            if (mirroring) {
-                game.serial?.let { MemcardLiveMirror(it, Modifier.matchParentSize(), onShown = { shown -> mirrorShown = shown }) }
+            if (mirroring && liveIn != null) {
+                MemcardLiveMirror(liveIn, Modifier.matchParentSize(), onShown = { shown -> mirrorShown = shown })
             }
         }
     }
@@ -2500,6 +2504,8 @@ private fun ShelfGameCard(game: GameInfo, width: Dp, reflectionHeight: Dp, selec
     // Long-press opens the game context menu (per-game settings, hide, etc.) — same as the grid /
     // list / recents cards. Without this the shelf layout had no way to reach per-game settings.
     Column(modifier = Modifier.width(width).combinedClickable(onClick = { onLaunch(game) }, onLongClick = { onDetails(game) })) {
+        // A moving Memory Card Cover's frames, shared with its reflection.
+        val live = remember(game.serial) { mutableStateOf<ImageBitmap?>(null) }
         // Square corners in shelf view — rounding fought the 3D box-art edges. The
         // grid/cover view keeps rounded corners (GameCover's 12.dp default).
         // ContentScale.Fit shows the WHOLE cover — Crop was trimming the top off the
@@ -2508,14 +2514,13 @@ private fun ShelfGameCard(game: GameInfo, width: Dp, reflectionHeight: Dp, selec
             game,
             Modifier.fillMaxWidth().aspectRatio(0.7f)
                 .then(
-                    // An animating Memory Card Cover shows the selection by moving; see coverFrame.
-                    if (selected && !(showsMemcardCover(game) && com.armsx2.memcard.MemcardCovers.animateSelected.value))
+                    if (selected)
                         Modifier.border(2.5.dp, Color(0xFF3DA5FF), RoundedCornerShape(4.dp))
                     else Modifier,
                 ),
             cornerRadius = 0.dp,
             contentScale = ContentScale.Fit,
-            animate = selected,
+            liveOut = live,
         )
         // A faint mirror of the cover on the shelf surface just in front of it.
         // clipToBounds keeps it to reflectionHeight — without it the full flipped
@@ -2528,7 +2533,7 @@ private fun ShelfGameCard(game: GameInfo, width: Dp, reflectionHeight: Dp, selec
                 cornerRadius = 0.dp,
                 contentScale = ContentScale.Fit,
                 placeholderText = false,
-                mirrorLive = selected,
+                liveIn = live,
             )
             // Fade the reflection out toward the front of the shelf.
             Box(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0x55000000)))))

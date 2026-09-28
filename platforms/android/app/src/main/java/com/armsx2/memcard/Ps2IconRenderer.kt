@@ -32,7 +32,37 @@ object Ps2IconRenderer {
         /** Stand the icon on the bottom edge, as it stands on y = 0 in its own space, rather than
          *  centring it: on the shelf it sits on the shelf, over its reflection. */
         val anchorBottom: Boolean = false,
+        /** How far the camera looks down on the icon, radians. The console's browser looks down on
+         *  its icons (the tops of boxes show), about this much. */
+        val pitch: Float = CAMERA_PITCH,
     )
+
+    const val CAMERA_PITCH = 0.3f
+
+    /**
+     * Buffers a moving icon keeps from frame to frame, so drawing a frame allocates nothing: a
+     * library full of turning covers would otherwise make garbage by the megabyte every second.
+     * One per animation; not for use by two renders at once.
+     */
+    class Scratch {
+        internal var color = IntArray(0)
+        internal var depth = FloatArray(0)
+        internal var pos = FloatArray(0)
+        internal var weights = FloatArray(0)
+        internal var sx = FloatArray(0)
+        internal var sy = FloatArray(0)
+        internal var sz = FloatArray(0)
+        internal var lit = FloatArray(0)
+
+        internal fun fit(pixels: Int, vertices: Int, shapes: Int) {
+            if (color.size != pixels) { color = IntArray(pixels); depth = FloatArray(pixels) }
+            if (sx.size != vertices) {
+                pos = FloatArray(vertices * 3); sx = FloatArray(vertices); sy = FloatArray(vertices)
+                sz = FloatArray(vertices); lit = FloatArray(vertices * 3)
+            }
+            if (weights.size != shapes) weights = FloatArray(shapes)
+        }
+    }
 
     /** A turn about the vertical axis (radians) and a moment of the animation (frames). */
     data class Pose(val yaw: Float, val time: Float)
@@ -56,18 +86,21 @@ object Ps2IconRenderer {
         return draw(icon, sys, width, height, pose.yaw, pose.time, options, options.supersample.coerceIn(1, 4)).pixels
     }
 
-    /** One frame of an animated cover: no choosing, straight to the pixels. */
-    fun renderFrame(icon: Ps2Icon, sys: Ps2IconSys?, width: Int, height: Int, pose: Pose, options: Options = Options()): IntArray =
-        draw(icon, sys, width, height, pose.yaw, pose.time, options, options.supersample.coerceIn(1, 4)).pixels
+    /** One frame of an animated cover: no choosing, straight to the pixels. With [scratch], and no
+     *  supersampling, the pixels are the scratch's own buffer, good until its next frame. */
+    fun renderFrame(
+        icon: Ps2Icon, sys: Ps2IconSys?, width: Int, height: Int, pose: Pose, options: Options = Options(), scratch: Scratch? = null,
+    ): IntArray = draw(icon, sys, width, height, pose.yaw, pose.time, options, options.supersample.coerceIn(1, 4), scratch).pixels
 
     /**
      * The pose for a still cover, which has to choose one moment of something built to be seen
      * moving: the browser spins every icon and plays its animation.
      *
      * The front, turned slightly, at the animation's first frame is the default, since that is
-     * the pose the icon is designed around. Only when it is clearly a poor view, under half the
+     * the pose the icon is designed around. Only when it is clearly a poor view, under 60% of the
      * area of the best one (GRAW's emblem is a coin that faces sideways and flips: edge-on it is
-     * a line), are other moments tried at the front, and then other angles. Candidates are drawn
+     * a sliver, 52% from the camera's height), are other moments tried at the front, and then
+     * other angles. The closest a good rest view comes is Blinky head-on, at 61%. Candidates are drawn
      * at thumbnail size, and the framing does not change with the turn, so area is how big the
      * icon really looks from there.
      *
@@ -85,10 +118,10 @@ object Ps2IconRenderer {
         }
         val tries = ArrayList<Try>()
         for ((i, y) in yaws.withIndex()) for (t in times) {
-            tries += Try(Pose(y, t), options.yaw != null || i < FRONT_CANDIDATES, draw(icon, sys, 36, 52, y, t, options, 1))
+            tries += Try(Pose(y, t), options.yaw != null || i < FRONT_CANDIDATES, draw(icon, sys, 36, 52, y, t, options, 1, measure = true))
         }
         val biggest = tries.maxOf { it.d.coverage }
-        fun good(t: Try?) = t != null && t.d.coverage >= biggest * 0.5f
+        fun good(t: Try?) = t != null && t.d.coverage >= biggest * 0.6f
         val restPose = tries.filter { it.front && it.pose.time == times[0] }.maxByOrNull { it.view }
         val frontAnyTime = tries.filter { it.front }.maxByOrNull { it.view }
         val pick = when {
@@ -102,8 +135,8 @@ object Ps2IconRenderer {
         return pick.pose
     }
 
-    /** What a draw came out as: the pixels, and for choosing between draws, how much of the
-     *  tile the icon covers and its mean brightness. */
+    /** What a draw came out as: the pixels, and for choosing between draws (when measured), how
+     *  much of the tile the icon covers and its mean brightness. */
     private class Drawn(val pixels: IntArray, val coverage: Float, val luma: Float)
 
     /**
@@ -115,55 +148,66 @@ object Ps2IconRenderer {
      * saves everything visible is wound the other way, and Bakugan's card, which is built inside
      * out, reads the right way round from either side only with its near face hidden.
      *
-     * The model turns about its own vertical axis, through the middle of its footprint, and is
-     * framed by the widest it gets over a full turn and every animation shape. So a turn or an
-     * animation never changes its size or pushes it out of the tile, and a spinning cover starts
-     * exactly where its still picture is.
+     * The camera looks down on the model by [Options.pitch]. The model turns about its own vertical
+     * axis, through the middle of its footprint, and is framed by the most room it takes on screen
+     * over a full turn and every animation shape. So a turn or an animation never changes its size
+     * or pushes it out of the tile, and a spinning cover starts exactly where its still picture is.
      */
     private fun draw(
         icon: Ps2Icon, sys: Ps2IconSys?, width: Int, height: Int, yaw: Float, time: Float, options: Options, ss: Int,
+        scratch: Scratch? = null, measure: Boolean = false,
     ): Drawn {
         val w = width * ss
         val h = height * ss
-        val color = IntArray(w * h)
-        val depth = FloatArray(w * h) { Float.NEGATIVE_INFINITY }
-        if (options.background) background(color, w, h, sys)
-
         val nv = icon.vertexCount
-        val pos = blend(icon, time)
+        val buf = scratch ?: Scratch()
+        buf.fit(w * h, nv, icon.shapeCount)
+        val color = buf.color
+        val depth = buf.depth
+        depth.fill(Float.NEGATIVE_INFINITY)
+        if (options.background) background(color, w, h, sys) else color.fill(0)
+
+        val pos = blendInto(icon, time, buf.pos, buf.weights)
         val cy = cos(yaw)
         val sy = sin(yaw)
+        val cp = cos(options.pitch)
+        val sp = sin(options.pitch)
 
         val all = icon.positions
         val count = icon.shapeCount * icon.vertexCount
         var lx = Float.MAX_VALUE; var hx = -Float.MAX_VALUE
         var lz = Float.MAX_VALUE; var hz = -Float.MAX_VALUE
-        var minY = Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
         for (i in 0 until count) {
             lx = min(lx, all[i * 3]); hx = max(hx, all[i * 3])
-            minY = min(minY, all[i * 3 + 1]); maxY = max(maxY, all[i * 3 + 1])
             lz = min(lz, all[i * 3 + 2]); hz = max(hz, all[i * 3 + 2])
         }
         val cx = (lx + hx) / 2f
         val cz = (lz + hz) / 2f
+        // A point r from the axis swings from r in front to r behind over a turn, so seen from
+        // above it rises and falls on screen by r * sin(pitch) about its own height.
         var r2 = 1e-6f
+        var top = Float.MAX_VALUE; var bottom = -Float.MAX_VALUE
         for (i in 0 until count) {
             val dx = all[i * 3] - cx; val dz = all[i * 3 + 2] - cz
-            r2 = max(r2, dx * dx + dz * dz)
+            val rr = dx * dx + dz * dz
+            r2 = max(r2, rr)
+            val y = all[i * 3 + 1] * cp
+            val swing = sqrt(rr) * sp
+            top = min(top, y - swing); bottom = max(bottom, y + swing)
         }
         // Width and height fitted separately: a standing figure in a tall tile uses the height.
         val scale = min(
             w * options.fill / (2f * sqrt(r2)).coerceAtLeast(1e-3f),
-            h * options.fill / (maxY - minY).coerceAtLeast(1e-3f),
+            h * options.fill / (bottom - top).coerceAtLeast(1e-3f),
         )
-        // Where icon-space y lands on screen: its base (the largest y) on the bottom edge, or
-        // its middle in the middle.
-        val refY = if (options.anchorBottom) maxY else (minY + maxY) / 2f
+        // Where the icon lands on screen: its lowest point on the bottom edge, or its middle in
+        // the middle.
+        val refY = if (options.anchorBottom) bottom else (top + bottom) / 2f
         val baseY = if (options.anchorBottom) h * (1f - BOTTOM_MARGIN) else h / 2f
 
         // Transform and light each vertex once.
-        val sx = FloatArray(nv); val syy = FloatArray(nv); val sz = FloatArray(nv)
-        val lit = FloatArray(nv * 3)
+        val sx = buf.sx; val syy = buf.sy; val sz = buf.sz
+        val lit = buf.lit
 
         val floor = options.ambientFloor
         val amb = sys?.ambient ?: floatArrayOf(0.55f, 0.55f, 0.55f)
@@ -172,9 +216,10 @@ object Ps2IconRenderer {
             val rx = x * cy + z * sy
             val rz = -x * sy + z * cy
             sx[v] = w / 2f + rx * scale
-            syy[v] = baseY + (y - refY) * scale
-            // Nearer the camera = smaller z; the depth test keeps the larger value, so negate.
-            sz[v] = -rz
+            // Looking down: what is further back sits higher on screen.
+            syy[v] = baseY + (y * cp - rz * sp - refY) * scale
+            // Nearer the camera = less depth; the depth test keeps the larger value, so negate.
+            sz[v] = -(y * sp + rz * cp)
 
             val n0 = icon.normals[v * 3]; val ny = icon.normals[v * 3 + 1]; val n2 = icon.normals[v * 3 + 2]
             val nx = n0 * cy + n2 * sy
@@ -206,7 +251,7 @@ object Ps2IconRenderer {
             t += 3
         }
         var sum = 0f; var n = 0
-        for (i in color.indices) if (depth[i] != Float.NEGATIVE_INFINITY) {
+        if (measure) for (i in color.indices) if (depth[i] != Float.NEGATIVE_INFINITY) {
             val p = color[i]
             sum += 0.299f * ((p shr 16) and 0xFF) + 0.587f * ((p shr 8) and 0xFF) + 0.114f * (p and 0xFF)
             n++
@@ -220,10 +265,13 @@ object Ps2IconRenderer {
 
     /** Morph-target positions at [time]: each frame names a shape and a weight curve over time;
      *  the shapes are blended by those weights. One shape, or nothing to go on, is just shape 0. */
-    fun blend(icon: Ps2Icon, time: Float): FloatArray {
+    fun blend(icon: Ps2Icon, time: Float): FloatArray =
+        blendInto(icon, time, FloatArray(icon.vertexCount * 3), FloatArray(icon.shapeCount))
+
+    private fun blendInto(icon: Ps2Icon, time: Float, out: FloatArray, weights: FloatArray): FloatArray {
         val nv = icon.vertexCount
-        val out = FloatArray(nv * 3)
-        val weights = FloatArray(icon.shapeCount)
+        out.fill(0f)
+        weights.fill(0f)
         if (icon.shapeCount > 1 && icon.frames.isNotEmpty()) {
             for (f in icon.frames) if (f.shape in 0 until icon.shapeCount) weights[f.shape] += weightAt(f, time)
         }

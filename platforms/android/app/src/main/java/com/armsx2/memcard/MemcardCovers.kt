@@ -32,7 +32,7 @@ object MemcardCovers {
     private const val CACHE_DIR = "memcard_covers"
 
     /** Bump when the renderer changes, so every cached cover is drawn again. */
-    private const val RENDER_VERSION = 4
+    private const val RENDER_VERSION = 5
 
     /** The library's 2D cover slot (0.72, coverAspectRatio in HomeScreen), with room to spare for
      *  large cover sizes. Every layout (grid, list, shelf, Recently Played) draws covers through
@@ -46,25 +46,26 @@ object MemcardCovers {
 
     val enabled = mutableStateOf(false)
 
-    /** The selected game's cover spins and plays its animation, as on the PS2's memory card
-     *  screen. Only the selected one: animating every tile would cost a render per tile per frame. */
-    val animateSelected = mutableStateOf(true)
+    /** Covers turn and play their animations, as on the PS2's memory card screen ("Animated"),
+     *  rather than standing still ("Still"). Each tile on screen draws its own frames. */
+    val animate = mutableStateOf(true)
 
     /** Bumped whenever the covers change, so tiles resolve their cover again. */
     val generation = mutableIntStateOf(0)
 
     @Volatile private var bySerial: Map<String, File> = emptyMap()
 
-    /** Where each cover's save is, so the selected one can be drawn moving. */
+    /** Where each cover's save is, so it can be drawn moving. */
     private class Source(val card: File, val folder: String)
     @Volatile private var sources: Map<String, Source> = emptyMap()
 
     /** A save's icon, parsed, with the pose its still cover was drawn in. */
     class Loaded(val icon: Ps2Icon, val sys: Ps2IconSys, val pose: Ps2IconRenderer.Pose)
 
-    // The last few selected, so moving back and forth between tiles doesn't reread the card.
-    private val loadedIcons = object : LinkedHashMap<String, Loaded>(8, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Loaded>?) = size > 6
+    // Every tile on screen moves, so keep a screenful and then some: scrolling back and forth
+    // shouldn't reread the cards. An icon is a few hundred KB at most.
+    private val loadedIcons = object : LinkedHashMap<String, Loaded>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Loaded>?) = size > 48
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -75,12 +76,12 @@ object MemcardCovers {
         if (loaded) return
         loaded = true
         enabled.value = runCatching { MainActivityRuntime.prefs.getBoolean(KEY_ENABLED, false) }.getOrDefault(false)
-        animateSelected.value = runCatching { MainActivityRuntime.prefs.getBoolean(KEY_ANIMATE, true) }.getOrDefault(true)
+        animate.value = runCatching { MainActivityRuntime.prefs.getBoolean(KEY_ANIMATE, true) }.getOrDefault(true)
     }
 
-    fun setAnimateSelected(on: Boolean) {
+    fun setAnimate(on: Boolean) {
         MainActivityRuntime.prefs.edit().putBoolean(KEY_ANIMATE, on).apply()
-        animateSelected.value = on
+        animate.value = on
     }
 
     /** The icon behind [serial]'s cover, parsed, or null. Reads the card, so call it off the main
@@ -109,13 +110,16 @@ object MemcardCovers {
      *  per game a cover uses. */
     class SaveRef(val card: File, val folder: String, val title: String, val serial: String?, val modified: Long)
 
-    /** Every save with a readable icon.sys across the cards, newest first. Reads the cards. */
+    /** Every save with a readable icon.sys across the cards, newest first. Reads the cards. A save
+     *  whose icon isn't on the card is left out: the BIOS's own "Your System Configuration" names
+     *  one that lives in the console, and would be a blank page. */
     fun allSaves(context: Context): List<SaveRef> {
         val out = ArrayList<SaveRef>()
         for (card in cardFiles(context)) runCatching {
             Ps2MemoryCard.open(card)?.use { c ->
                 for (save in c.saves()) {
                     val sys = Ps2IconSys.parse(save.read("icon.sys")) ?: continue
+                    if (save.fileNames.none { it.equals(sys.iconNormal, ignoreCase = true) }) continue
                     out += SaveRef(card, save.folder, sys.title.ifBlank { save.folder }, save.serial, save.modifiedMillis)
                 }
             }
