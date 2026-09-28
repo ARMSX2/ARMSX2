@@ -27,6 +27,12 @@
 //   * the untiling stays: dirty non-zero dynamic feedback-loop state sets rp.disable_gmem, never
 //     cleared inside a pass, so one reading draw untiles the whole pass. This is required: the
 //     coherent primitive mode inside a tiled pass is the incoherent case.
+//     ⚠️ "Dirty" means changed. The Mesa runtime keeps the value across passes and marks it dirty
+//     only when a set changes it, so a pass whose first reader declares what the previous pass
+//     ended on is never untiled, and its reads sample stale memory (Beyond Good & Evil on the
+//     Adreno 740: a draw-shaped patch of the previous frame). The create flag is re-read at every
+//     pass begin and does not have this. GSLoopEnableWritesForDraw makes the first reader of each
+//     pass write zero first.
 //   * the primitive mode follows `dyn.feedback_loops | pipeline_feedback_loops`, so with the
 //     pipeline half zero it changes draw by draw.
 //   * the pipeline half is zero: vk_graphics_state.c derives feedback_loop_not_input_only from
@@ -105,6 +111,24 @@ constexpr bool GSLoopSpellingFallsBackToCreateFlag(const GSDynamicFeedbackLoopIn
 {
 	return in.spelling == GSLoopDeclarationSpelling::DynamicPerDraw && in.device_measured && in.layout_road_live &&
 	       !in.dynamic_state_available;
+}
+
+/// The values one draw hands vkCmdSetAttachmentFeedbackLoopEnableEXT, in order.
+struct GSLoopEnableWrites
+{
+	u32 count;
+	u32 values[2];
+};
+
+/// What to write for a draw declaring `aspects`, given whether an earlier draw in the same render
+/// pass already declared a loop. The first reader of a pass writes zero before its aspects so the
+/// value always changes: the runtime marks the state dirty only on a change, and it keeps the value
+/// across passes, so a pass opening on the aspects the previous pass ended on would stay tiled.
+constexpr GSLoopEnableWrites GSLoopEnableWritesForDraw(u32 aspects, bool declared_in_pass)
+{
+	if (aspects != 0 && !declared_in_pass)
+		return {2, {0, aspects}};
+	return {1, {aspects, 0}};
 }
 
 // These pin the default. One failing means the shipped road changed spelling by accident.

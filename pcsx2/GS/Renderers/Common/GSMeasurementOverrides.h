@@ -43,6 +43,10 @@ struct GSMeasurementOverrides
 	/// full, as it did before it could grow.
 	bool vertex_ring_no_growth = false;
 
+	/// -readback-kick-passes N: in a readback frame, the Vulkan mid-frame kick waits for at least
+	/// N unsubmitted render passes (0 = the shipped spacing). Read once, when the device is created.
+	u32 readback_kick_passes = 0;
+
 	GSLoopDeclarationSpelling LoopSpelling() const
 	{
 		return loop_create_flag ? GSLoopDeclarationSpelling::PipelineCreateFlag : kDefaultLoopDeclarationSpelling;

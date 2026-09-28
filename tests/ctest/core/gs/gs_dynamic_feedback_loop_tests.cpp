@@ -146,3 +146,79 @@ TEST(GSDynamicFeedbackLoop, TheHarnessSpellingDefaultsToPerDraw)
 	EXPECT_EQ(forced.LoopSpelling(), GSLoopDeclarationSpelling::PipelineCreateFlag);
 	EXPECT_TRUE(forced.Any());
 }
+
+namespace
+{
+	// Enough of Mesa to see what Turnip sees. The runtime's SET_DYN_VALUE marks the feedback-loop
+	// state dirty only when the value changes, and it keeps the value across render passes. Turnip
+	// untiles a pass only from a draw that finds the state dirty and non-zero.
+	struct MesaLoopState
+	{
+		u32 value = 0;
+		bool dirty = false;
+		bool pass_untiled = false;
+
+		void BeginPass() { pass_untiled = false; }
+		void Set(u32 aspects)
+		{
+			if (value != aspects)
+			{
+				value = aspects;
+				dirty = true;
+			}
+		}
+		void Draw()
+		{
+			if (dirty && value != 0)
+				pass_untiled = true;
+			dirty = false;
+		}
+	};
+
+	constexpr u32 kColour = 1; // VK_IMAGE_ASPECT_COLOR_BIT
+
+	void DeclareAndDraw(MesaLoopState& mesa, u32 aspects, bool& declared_in_pass)
+	{
+		const GSLoopEnableWrites writes = GSLoopEnableWritesForDraw(aspects, declared_in_pass);
+		for (u32 i = 0; i < writes.count; i++)
+			mesa.Set(writes.values[i]);
+		if (aspects != 0)
+			declared_in_pass = true;
+		mesa.Draw();
+	}
+} // namespace
+
+// The Beyond Good & Evil cave on the Nova: pass N ends on a reading draw, pass N+1 opens on
+// another. Handing the driver the same value again is not a change, so the second pass stayed
+// tiled while its draws sampled the attachment -- stale memory in the shape of the draw. Every
+// pass with a reading draw has to be untiled, whatever the previous pass left behind.
+TEST(GSDynamicFeedbackLoop, EveryPassWithAReaderIsUntiled)
+{
+	MesaLoopState mesa;
+	for (int pass = 0; pass < 3; pass++)
+	{
+		mesa.BeginPass();
+		bool declared_in_pass = false;
+		DeclareAndDraw(mesa, kColour, declared_in_pass);
+		DeclareAndDraw(mesa, kColour, declared_in_pass);
+		EXPECT_TRUE(mesa.pass_untiled) << "pass " << pass;
+	}
+
+	// A pass with no reader stays tiled, even straight after one that had a reader.
+	mesa.BeginPass();
+	bool declared_in_pass = false;
+	DeclareAndDraw(mesa, 0, declared_in_pass);
+	EXPECT_FALSE(mesa.pass_untiled);
+}
+
+// Only the first reading draw of a pass pays the extra write.
+TEST(GSDynamicFeedbackLoop, OnlyThePassesFirstReaderWritesTwice)
+{
+	EXPECT_EQ(GSLoopEnableWritesForDraw(kColour, false).count, 2u);
+	EXPECT_EQ(GSLoopEnableWritesForDraw(kColour, false).values[0], 0u);
+	EXPECT_EQ(GSLoopEnableWritesForDraw(kColour, false).values[1], kColour);
+	EXPECT_EQ(GSLoopEnableWritesForDraw(kColour, true).count, 1u);
+	EXPECT_EQ(GSLoopEnableWritesForDraw(kColour, true).values[0], kColour);
+	EXPECT_EQ(GSLoopEnableWritesForDraw(0, false).count, 1u);
+	EXPECT_EQ(GSLoopEnableWritesForDraw(0, false).values[0], 0u);
+}
