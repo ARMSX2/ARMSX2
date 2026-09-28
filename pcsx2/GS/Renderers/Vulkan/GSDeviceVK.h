@@ -472,6 +472,8 @@ private:
 
 	VkRenderPass m_tfx_render_pass[2][2][2][3][2][2][3][3] = {}; // [rt][ds][colclip][date][fbl][dsp][rt_op][ds_op]
 
+	VkDescriptorSetLayout m_cas_ds_layout = VK_NULL_HANDLE;
+	VkPipelineLayout m_cas_pipeline_layout = VK_NULL_HANDLE;
 	std::array<VkPipeline, NUM_CAS_PIPELINES> m_cas_pipelines = {};
 	VkPipeline m_imgui_pipeline = VK_NULL_HANDLE;
 
@@ -479,7 +481,6 @@ private:
 	GSHWDrawConfig::PSConstantBuffer m_ps_cb_cache;
 	GSHWDrawConfig::VSPushConstants m_vs_pc_cache;
 
-	std::string m_convert_source;
 	std::string m_tfx_source;
 
 	GSTexture* CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format) override;
