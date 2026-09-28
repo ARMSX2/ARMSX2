@@ -795,6 +795,8 @@
   "overlay.toggle.emulationSpeed": "エミュレーション速度 %",
   "overlay.toggle.emulatorVersion": "エミュレーターのバージョン",
   "overlay.toggle.fastForwardPopups": "早送りのポップアップ",
+  "overlay.toggle.freeSoftwareNotice": "ゲーム起動時のフリーソフトウェアの案内",
+  "overlay.toggle.freeSoftwareNotice.desc": "ゲーム起動時に表示される、ARMSX2 は無料で販売されるべきではないという案内です。",
   "overlay.toggle.fastForwardPopups.desc": "ホットキーを押したときに画面上にメッセージを表示します。早送りは、有効な間は既に隅にアイコンが表示されます。",
   "overlay.toggle.fps": "FPS",
   "overlay.toggle.frameTimesGraph": "フレームタイムのグラフ",

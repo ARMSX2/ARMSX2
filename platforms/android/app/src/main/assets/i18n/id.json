@@ -795,6 +795,8 @@
   "overlay.toggle.emulationSpeed": "Kecepatan emulasi %",
   "overlay.toggle.emulatorVersion": "Versi emulator",
   "overlay.toggle.fastForwardPopups": "Pop-up Fast-Forward",
+  "overlay.toggle.freeSoftwareNotice": "Pemberitahuan perangkat lunak gratis saat game dimulai",
+  "overlay.toggle.freeSoftwareNotice.desc": "Pengingat saat game dimulai bahwa ARMSX2 gratis dan tidak boleh dijual.",
   "overlay.toggle.fastForwardPopups.desc": "Pesan di layar saat hotkey ditekan. Fast-Forward sudah menampilkan ikon di sudut selama aktif.",
   "overlay.toggle.fps": "FPS",
   "overlay.toggle.frameTimesGraph": "Grafik waktu frame",

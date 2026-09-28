@@ -790,6 +790,8 @@
  "overlay.toggle.emulationSpeed": "Velocidad de emulación %",
  "overlay.toggle.emulatorVersion": "Versión del emulador",
  "overlay.toggle.fastForwardPopups": "Avisos de avance rápido",
+ "overlay.toggle.freeSoftwareNotice": "Aviso de software libre al iniciar un juego",
+ "overlay.toggle.freeSoftwareNotice.desc": "El recordatorio, al arrancar un juego, de que ARMSX2 es gratuito y nunca debe venderse.",
  "overlay.toggle.fastForwardPopups.desc": "Mensajes en pantalla al pulsar un atajo. El avance rápido ya muestra un icono en la esquina mientras está activo.",
  "overlay.toggle.fps": "FPS",
  "overlay.toggle.frameTimesGraph": "Gráfico de tiempos de frame",

@@ -796,6 +796,8 @@
  "overlay.toggle.emulationSpeed": "سرعت شبیه سازی %",
  "overlay.toggle.emulatorVersion": "نسخه شبیه ساز",
  "overlay.toggle.fastForwardPopups": "پنجره های بازشو سریع به جلو",
+ "overlay.toggle.freeSoftwareNotice": "یادآوری نرم‌افزار رایگان هنگام شروع بازی",
+ "overlay.toggle.freeSoftwareNotice.desc": "یادآوری‌ای که هنگام اجرای بازی نشان می‌دهد ARMSX2 رایگان است و هرگز نباید فروخته شود.",
  "overlay.toggle.fastForwardPopups.desc": "پیام‌های روی صفحه هنگام فشردن کلید میانبر. جلو بردن سریع هنگام فعال بودن، از قبل یک نماد در گوشه نشان می‌دهد.",
  "overlay.toggle.fps": "FPS",
  "overlay.master.label": "نمایش روی صفحه",

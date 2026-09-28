@@ -790,6 +790,8 @@
   "overlay.toggle.emulationSpeed": "Vitesse d'émulation %",
   "overlay.toggle.emulatorVersion": "Version de l'émulateur",
   "overlay.toggle.fastForwardPopups": "Pop-ups d'avance rapide",
+  "overlay.toggle.freeSoftwareNotice": "Avis de logiciel libre au lancement d'un jeu",
+  "overlay.toggle.freeSoftwareNotice.desc": "Le rappel, au démarrage d'un jeu, qu'ARMSX2 est gratuit et ne doit jamais être vendu.",
   "overlay.toggle.fastForwardPopups.desc": "Messages à l'écran lors de l'appui sur un raccourci. L'avance rapide affiche déjà une icône dans le coin quand elle est active.",
   "overlay.toggle.fps": "FPS",
   "overlay.toggle.frameTimesGraph": "Graphe des temps de frame",

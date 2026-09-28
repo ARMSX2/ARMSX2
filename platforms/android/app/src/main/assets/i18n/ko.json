@@ -795,6 +795,8 @@
  "overlay.toggle.emulationSpeed": "에뮬레이션 속도 %",
  "overlay.toggle.emulatorVersion": "에뮬레이터 버전",
  "overlay.toggle.fastForwardPopups": "빨리감기 팝업",
+ "overlay.toggle.freeSoftwareNotice": "게임 시작 시 무료 소프트웨어 안내",
+ "overlay.toggle.freeSoftwareNotice.desc": "게임을 시작할 때 ARMSX2가 무료이며 절대 판매되어서는 안 된다는 안내입니다.",
  "overlay.toggle.fastForwardPopups.desc": "단축키를 누르면 화면에 메시지를 표시합니다. 빨리감기는 활성화된 동안 이미 모서리에 아이콘이 표시됩니다.",
  "overlay.toggle.fps": "FPS",
  "overlay.toggle.frameTimesGraph": "프레임 타임 그래프",

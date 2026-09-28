@@ -795,6 +795,8 @@
   "overlay.toggle.emulationSpeed": "Leza Emulation %",
   "overlay.toggle.emulatorVersion": "Guhertoya Emulatorê",
   "overlay.toggle.fastForwardPopups": "Fast-Forward pop-ups",
+  "overlay.toggle.freeSoftwareNotice": "Agahdariya nermalava belaş di destpêka lîstikê de",
+  "overlay.toggle.freeSoftwareNotice.desc": "Bîranîna ku dema lîstikek dest pê dike tê nîşandan: ARMSX2 belaş e û divê qet neyê firotin.",
   "overlay.toggle.fastForwardPopups.desc": "Dema hotkey-yek tê pêlkirin peyamên li ser ekranê. Fast-Forward jixwe dema çalak e îkonek li quncikê nîşan dide.",
   "overlay.toggle.fps": "FPS",
   "overlay.master.label": "Nîşandana li ser ekranê",

@@ -213,5 +213,18 @@ fun OverlayTab(state: MutableState<Settings>) {
             ffToasts.value = it
             com.armsx2.runtime.MainActivityRuntime.prefs.edit { putBoolean("ui.hotkeyToasts", it) }
         }
+        SettingsDivider()
+        // The free-software notice each game boot shows (#453). On by default; turned off it stays
+        // off, applied at once and again at every app start.
+        val freeNotice = remember { mutableStateOf(com.armsx2.runtime.MainActivityRuntime.prefs.getBoolean("ui.freeSoftwareNotice", true)) }
+        ToggleRow(
+            str("overlay.toggle.freeSoftwareNotice"),
+            freeNotice.value,
+            description = str("overlay.toggle.freeSoftwareNotice.desc"),
+        ) {
+            freeNotice.value = it
+            com.armsx2.runtime.MainActivityRuntime.prefs.edit { putBoolean("ui.freeSoftwareNotice", it) }
+            runCatching { kr.co.iefriends.pcsx2.NativeApp.setFreeSoftwareNotice(it) }
+        }
     }
 }

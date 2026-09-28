@@ -862,6 +862,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     // for the save-state ones has to be able to recognise it (#629).
     "overlay.toggle.fastForwardPopups" to "Hotkey pop-ups (Fast-Forward, save states)",
     "overlay.toggle.fastForwardPopups.desc" to "On-screen messages when a hotkey is pressed. Fast-Forward already shows an icon in the corner while it is active.",
+    "overlay.toggle.freeSoftwareNotice" to "Free-software notice at game start",
+    "overlay.toggle.freeSoftwareNotice.desc" to "The reminder, shown when a game boots, that ARMSX2 is free and should never be sold.",
     "overlay.toggle.fps" to "FPS",
     "overlay.master.label" to "On-screen display",
     "overlay.simple.label" to "Simple OSD (FPS only)",

@@ -795,6 +795,8 @@
  "overlay.toggle.emulationSpeed": "Emülasyon hızı %",
  "overlay.toggle.emulatorVersion": "Emülatör sürümü",
  "overlay.toggle.fastForwardPopups": "İleri sarma açılır bildirimleri",
+ "overlay.toggle.freeSoftwareNotice": "Oyun başlarken ücretsiz yazılım bildirimi",
+ "overlay.toggle.freeSoftwareNotice.desc": "Bir oyun açılırken gösterilen, ARMSX2'nin ücretsiz olduğunu ve asla satılmaması gerektiğini hatırlatan bildirim.",
  "overlay.toggle.fastForwardPopups.desc": "Bir kısayol tuşuna basıldığında gösterilen ekran üstü mesajlar. İleri sarma etkinken köşede zaten bir simge gösterilir.",
  "overlay.toggle.fps": "FPS",
  "overlay.toggle.frameTimesGraph": "Kare süresi grafiği",

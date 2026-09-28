@@ -795,6 +795,8 @@
   "overlay.toggle.emulationSpeed": "Tốc độ giả lập %",
   "overlay.toggle.emulatorVersion": "Phiên bản giả lập",
   "overlay.toggle.fastForwardPopups": "Pop-up tua nhanh",
+  "overlay.toggle.freeSoftwareNotice": "Thông báo phần mềm miễn phí khi khởi động game",
+  "overlay.toggle.freeSoftwareNotice.desc": "Lời nhắc khi khởi động game rằng ARMSX2 miễn phí và không bao giờ được bán.",
   "overlay.toggle.fastForwardPopups.desc": "Thông báo trên màn hình khi nhấn phím tắt. Tua nhanh vốn đã hiện một biểu tượng ở góc khi đang bật.",
   "overlay.toggle.fps": "FPS",
   "overlay.toggle.frameTimesGraph": "Biểu đồ thời gian khung",

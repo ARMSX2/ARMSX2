@@ -795,6 +795,8 @@
  "overlay.toggle.emulationSpeed": "ความเร็วการจำลอง %",
  "overlay.toggle.emulatorVersion": "เวอร์ชัน emulator",
  "overlay.toggle.fastForwardPopups": "ป๊อปอัพเร่งเร็ว",
+ "overlay.toggle.freeSoftwareNotice": "ข้อความซอฟต์แวร์ฟรีเมื่อเริ่มเกม",
+ "overlay.toggle.freeSoftwareNotice.desc": "ข้อความเตือนตอนเริ่มเกมว่า ARMSX2 ใช้ฟรีและห้ามนำไปขาย",
  "overlay.toggle.fastForwardPopups.desc": "ข้อความบนหน้าจอเมื่อกดปุ่มลัด การเร่งเร็วจะแสดงไอคอนที่มุมจออยู่แล้วขณะทำงาน",
  "overlay.toggle.fps": "FPS",
  "overlay.toggle.frameTimesGraph": "กราฟ frame time",

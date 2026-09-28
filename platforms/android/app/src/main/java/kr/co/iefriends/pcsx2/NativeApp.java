@@ -468,6 +468,9 @@ public class NativeApp {
 	 *  unplug what they no longer name. Called after Settings.applyTo writes [USB1] Type
 	 *  for the keyboard switch; a no-op with no VM running. */
 	public static native void usbApplyPorts();
+
+	/** Show the free-software notice when a game boots (#453). On by default. */
+	public static native void setFreeSoftwareNotice(boolean show);
 	/** Feed one Android hardware {@link android.view.KeyEvent} to the emulated USB
 	 *  keyboard on {@code port}. {@code androidKeyCode} is {@code KeyEvent.keyCode};
 	 *  {@code pressed} is the down/up state. Returns {@code true} iff a USB keyboard

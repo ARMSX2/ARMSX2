@@ -2122,6 +2122,8 @@ open class MainActivityRuntime : ComponentActivity() {
                 com.armsx2.input.Lightgun.load()
                 com.armsx2.input.UsbDevices.applyAtBoot()
             }
+            // The Overlay tab's switch for the free-software notice at game start (#453).
+            runCatching { NativeApp.setFreeSoftwareNotice(prefs.getBoolean("ui.freeSoftwareNotice", true)) }
 
             // Pin Filenames/BIOS to the file the setup wizard copied —
             // deferred to here because Host::SetBaseStringSettingValue

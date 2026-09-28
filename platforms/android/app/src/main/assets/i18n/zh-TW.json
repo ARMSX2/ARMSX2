@@ -797,6 +797,8 @@
  "overlay.toggle.emulationSpeed": "模擬速度 %",
  "overlay.toggle.emulatorVersion": "模擬器版本",
  "overlay.toggle.fastForwardPopups": "快轉彈出訊息",
+ "overlay.toggle.freeSoftwareNotice": "遊戲啟動時的免費軟體提示",
+ "overlay.toggle.freeSoftwareNotice.desc": "啟動遊戲時顯示的提示：ARMSX2 是免費軟體，絕不應被販售。",
  "overlay.toggle.fastForwardPopups.desc": "按下快捷鍵時顯示螢幕訊息。快轉開啟時，角落已經會顯示圖示。",
  "overlay.toggle.fps": "FPS",
  "overlay.toggle.frameTimesGraph": "影格時間圖表",

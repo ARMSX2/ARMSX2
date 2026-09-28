@@ -795,6 +795,8 @@
   "overlay.toggle.emulationSpeed": "Швидкість емуляції %",
   "overlay.toggle.emulatorVersion": "Версія емулятора",
   "overlay.toggle.fastForwardPopups": "Спливаючі вікна швидкого перемотування вперед",
+  "overlay.toggle.freeSoftwareNotice": "Повідомлення про вільне ПЗ під час запуску гри",
+  "overlay.toggle.freeSoftwareNotice.desc": "Нагадування під час запуску гри, що ARMSX2 безкоштовний і не повинен продаватися.",
   "overlay.toggle.fastForwardPopups.desc": "Повідомлення на екрані під час натискання гарячої клавіші. Перемотування вперед і так показує значок у куті, поки воно активне.",
   "overlay.toggle.fps": "FPS",
   "overlay.master.label": "Відображення на екрані",

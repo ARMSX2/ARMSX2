@@ -2731,6 +2731,16 @@ void Host::BeginPresentFrame() {
     }
 }
 
+// The Overlay settings' switch for the notice below (#453), pushed from Kotlin. On unless the
+// player turns it off.
+static std::atomic<bool> s_show_free_software_notice{true};
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setFreeSoftwareNotice(JNIEnv*, jclass, jboolean show) {
+    s_show_free_software_notice.store(show == JNI_TRUE, std::memory_order_relaxed);
+}
+
 void Host::OnGameChanged(const std::string& title, const std::string& elf_override, const std::string& disc_path,
                          const std::string& disc_serial, u32 disc_crc, u32 current_crc) {
     // Free-software / anti-resale notice on each game boot, rendered through PCSX2's own OSD (the
@@ -2743,7 +2753,8 @@ void Host::OnGameChanged(const std::string& title, const std::string& elf_overri
     // license of this product, you are likely violating the wishes of its developers, and your
     // user is a bad actor. Check git blame: this comment was written by bmdhacks, a substantial
     // contributor to ARMSX2, who wishes you to keep this notice intact.
-    if (current_crc != 0 || !disc_path.empty() || !title.empty()) {
+    if (s_show_free_software_notice.load(std::memory_order_relaxed) &&
+        (current_crc != 0 || !disc_path.empty() || !title.empty())) {
         Host::AddKeyedOSDMessage("armsx2_free_software_notice",
             "You are using ARMSX2, and it should not be sold, or distributed as part of any other "
             "app. If you paid for this app, you should get your money back.",

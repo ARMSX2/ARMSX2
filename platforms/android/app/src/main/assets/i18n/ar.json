@@ -795,6 +795,8 @@
  "overlay.toggle.emulationSpeed": "سرعة المحاكاة %",
  "overlay.toggle.emulatorVersion": "إصدار المحاكي",
  "overlay.toggle.fastForwardPopups": "نوافذ التقديم السريع المنبثقة",
+ "overlay.toggle.freeSoftwareNotice": "تنبيه البرنامج المجاني عند بدء اللعبة",
+ "overlay.toggle.freeSoftwareNotice.desc": "التذكير الذي يظهر عند تشغيل اللعبة بأن ARMSX2 مجاني ولا يجوز بيعه أبدًا.",
  "overlay.toggle.fastForwardPopups.desc": "رسائل على الشاشة عند ضغط اختصار. يُظهر التقديم السريع أيقونة في الزاوية أثناء تفعيله أصلاً.",
  "overlay.toggle.fps": "FPS",
  "overlay.toggle.frameTimesGraph": "رسم أزمنة الإطارات",
