@@ -882,7 +882,7 @@ public:
 			{
 				if (mVUsFlagHack)
 				{
-					if ((ref.quick & ~0x0C04) != (quick64 & ~0x0C04)) continue;
+					if ((ref.quick & ~0x3002) != (quick64 & ~0x3002)) continue;
 				}
 				else if (ref.quick != quick64) continue;
 
