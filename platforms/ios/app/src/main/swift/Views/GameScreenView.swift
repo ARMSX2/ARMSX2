@@ -833,7 +833,8 @@ struct GameScreenView: View {
                     title: saveStateShortcutPromptTitle(prompt),
                     message: saveStateShortcutPromptMessage(prompt),
                     actions: saveStateShortcutPromptActions(prompt),
-                    selectedIndex: saveStateShortcutPromptInitialIndex(prompt),
+                    // The action after Cancel: Create, Replace or Load.
+                    selectedIndex: 1,
                     onSelect: { index in
                         handleSaveStateShortcutPromptSelection(
                             prompt,
@@ -852,8 +853,17 @@ struct GameScreenView: View {
                         return true
                     },
                     usesExplicitTargetGeometryOnly: true,
-                    preferredInitialFocusLabel: saveStateShortcutPromptInitialFocusLabel(prompt)
+                    preferredInitialFocusLabel: saveStateShortcutPromptActions(prompt)[1].title
                 )
+                .task(id: prompt) {
+                    // Registering is passive, so the ring waited for a press. Enter now.
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    _ = controllerInput?.requestNavigationSessionEntry(
+                        preferLast: false,
+                        matchingScopePrefix: "runtime.last-save-state-confirmation"
+                    )
+                }
             }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: overlayRoute)
@@ -2455,30 +2465,6 @@ struct GameScreenView: View {
                     isDestructive: true
                 ),
             ]
-        }
-    }
-
-    private func saveStateShortcutPromptInitialIndex(
-        _ prompt: SaveStateShortcutPrompt
-    ) -> Int {
-        switch prompt {
-        case .create, .load:
-            1
-        case .replace:
-            0
-        }
-    }
-
-    private func saveStateShortcutPromptInitialFocusLabel(
-        _ prompt: SaveStateShortcutPrompt
-    ) -> String {
-        switch prompt {
-        case .create:
-            settings.localized("Create")
-        case .load:
-            settings.localized("Load")
-        case .replace:
-            settings.localized("Cancel")
         }
     }
 
