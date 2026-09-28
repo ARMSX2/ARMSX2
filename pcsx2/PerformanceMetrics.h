@@ -15,7 +15,7 @@ namespace PerformanceMetrics
 		DISPFBBlit
 	};
 
-	class AvgFPS
+	class AverageFPS
 	{
 	private:
 		static constexpr size_t FPS_BUFFER_SIZE = 16;
