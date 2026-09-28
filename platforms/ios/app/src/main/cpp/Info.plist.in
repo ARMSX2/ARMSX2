@@ -28,7 +28,7 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleDisplayName</key>
-    <string>ARMSX2 iOS</string>
+    <string>@ARMSX2_DISPLAY_NAME@</string>
     <key>CFBundleIconFiles</key>
     <array>
         <string>icon-60</string>
@@ -294,7 +294,7 @@
         </dict>
     </dict>
     <key>CFBundleShortVersionString</key>
-    <string>@ARMSX2_VERSION@</string>
+    <string>@ARMSX2_VERSION@@ARMSX2_VERSION_SUFFIX@</string>
     <key>CFBundleVersion</key>
     <string>@ARMSX2_BUILD_NUMBER@</string>
     <key>CFBundleURLTypes</key>
