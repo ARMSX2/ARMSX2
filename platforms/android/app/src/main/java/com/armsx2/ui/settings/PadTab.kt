@@ -286,10 +286,11 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             // must run off the UI thread (and is a safe no-op when no VM is active).
             ToggleRow(
                 str("pad.multitap.label"),
-                ControllerMappings.multitapEnabled(),
+                ControllerMappings.multitapEnabledScope(editSerial),
                 description = str("pad.multitap.description"),
             ) { on ->
-                ControllerMappings.setMultitapEnabled(on)
+                // The tier shown: this game's own value in Game scope, else global.
+                ControllerMappings.setMultitapEnabled(on, editSerial)
                 refreshToken.intValue++
             }
             SettingsDivider()
@@ -307,7 +308,7 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 // would let the user pin a pad at an un-armed PS2 port, where its input goes
                 // nowhere at all -- the router ignores such a pin, so the picker must not show it.
                 val slotCount =
-                    if (ControllerMappings.multitapEnabled()) com.armsx2.input.PadRouter.MAX_PADS else 2
+                    if (ControllerMappings.multitapEnabledScope(editSerial)) com.armsx2.input.PadRouter.MAX_PADS else 2
                 val slotLabels = listOf(str("pad.assign.auto")) +
                     (0 until slotCount).map { str("pad.player${it + 1}") }
                 val rumbleModes = com.armsx2.input.PadRouter.RumbleMode.entries

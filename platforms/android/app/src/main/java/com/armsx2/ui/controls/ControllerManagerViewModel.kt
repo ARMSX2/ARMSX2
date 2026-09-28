@@ -88,7 +88,7 @@ class ControllerManagerViewModel(application: Application) : AndroidViewModel(ap
     }
 
     fun setMultitap(value: Boolean) {
-        ControllerMappings.setMultitapEnabled(value)
+        ControllerMappings.setMultitapEnabledForRunningGame(value)
         refresh()
     }
 

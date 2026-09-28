@@ -448,19 +448,36 @@ object ControllerMappings {
     // PS2 Multitap master switch. OFF (default) = classic 2-player co-op. ON = up to 8
     // controllers routed to the 2 ports x 4 slots. Extra pads (slots 2-7) reuse the P1
     // button mapping. Also drives PadRouter's routing gate.
+    //
+    // Scoped like the rest of the Controls tab: a per-game value shadows the global one for that
+    // game only. It used to be one global switch, so turning it on in a game's own settings turned
+    // it on for every game.
     private const val KEY_MULTITAP = "pad.multitap.enabled"
-    fun multitapEnabled(): Boolean = MainActivityRuntime.prefs.getBoolean(KEY_MULTITAP, false)
-    fun setMultitapEnabled(on: Boolean) {
-        MainActivityRuntime.prefs.edit { putBoolean(KEY_MULTITAP, on) }
-        com.armsx2.input.PadRouter.multitapEnabled = on
-        if (MainActivityRuntime.nativeReady.value) {
+    /** Runtime (per-game aware): the running game's own value, else global. Read at boot. */
+    fun multitapEnabled(): Boolean = resolveBoolean(KEY_MULTITAP, false)
+    /** Scope-explicit, for the Controls tab. */
+    fun multitapEnabledScope(serial: String?): Boolean = scopedBoolean(KEY_MULTITAP, serial, false)
+    fun setMultitapEnabled(on: Boolean, serial: String? = null) {
+        val before = multitapEnabled()
+        MainActivityRuntime.prefs.edit { putBoolean(scopedKey(KEY_MULTITAP, serial), on) }
+        // Armed live only when the running game's own answer changed: a global edit under a game
+        // with a value of its own, or another game's value, leaves the running one alone.
+        val after = multitapEnabled()
+        com.armsx2.input.PadRouter.multitapEnabled = after
+        if (after != before && MainActivityRuntime.nativeReady.value) {
             kotlin.concurrent.thread(name = "armsx2-multitap") {
                 runCatching {
-                    kr.co.iefriends.pcsx2.NativeApp.setMultitap(0, on)
-                    kr.co.iefriends.pcsx2.NativeApp.setMultitap(1, on)
+                    kr.co.iefriends.pcsx2.NativeApp.setMultitap(0, after)
+                    kr.co.iefriends.pcsx2.NativeApp.setMultitap(1, after)
                 }
             }
         }
+    }
+    /** For the in-game switches (quick menu, Controllers screen): they show the running game's
+     *  answer, so they edit the game's own value when it has one, and the global one otherwise. */
+    fun setMultitapEnabledForRunningGame(on: Boolean) {
+        val serial = runtimeSerial()?.takeIf { MainActivityRuntime.prefs.contains(gameKey(it, KEY_MULTITAP)) }
+        setMultitapEnabled(on, serial)
     }
 
     // ---- Gyroscope / motion controls (per-game aware) ---------------------

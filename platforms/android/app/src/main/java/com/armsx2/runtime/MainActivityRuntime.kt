@@ -1019,7 +1019,11 @@ open class MainActivityRuntime : ComponentActivity() {
                 // 8 slots on for a complete pair of taps; idle slots are harmless (games
                 // ignore unused pads). Unconditional-when-ON so a pad joining after boot
                 // still lands on a live slot; the Pad-tab toggle covers mid-session enable.
-                if (ControllerMappings.multitapEnabled()) {
+                // This game's own value if it has one (currentGame is set by now), else global;
+                // the router follows it, so routing and the armed ports agree for this game.
+                val multitap = ControllerMappings.multitapEnabled()
+                com.armsx2.input.PadRouter.multitapEnabled = multitap
+                if (multitap) {
                     NativeApp.setSetting("Pad", "MultitapPort1", "bool", "true")
                     NativeApp.setSetting("Pad", "MultitapPort2", "bool", "true")
                     for (s in 2..8) {

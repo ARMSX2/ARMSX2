@@ -255,7 +255,7 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun setMultitap(enabled: Boolean) {
-        ControllerMappings.setMultitapEnabled(enabled)
+        ControllerMappings.setMultitapEnabledForRunningGame(enabled)
         state.value = state.value.copy(multitapEnabled = enabled)
     }
 
