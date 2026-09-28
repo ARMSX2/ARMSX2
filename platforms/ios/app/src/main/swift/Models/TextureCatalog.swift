@@ -49,9 +49,9 @@ enum TextureCatalog {
         return packs.isEmpty ? nil : packs
     }
 
-    // Android installs under the first serial, which misses a PAL owner of a multi-region pack.
-    static func serial(for pack: TextureCatalogPack, owned: Set<String>) -> String {
-        pack.serials.first { owned.contains($0) } ?? pack.serials[0]
+    // Android's rule from bcb6ffd5c6: the game in context, else a copy the player owns, else the first listed.
+    static func serial(for pack: TextureCatalogPack, context: String?, owned: Set<String>) -> String {
+        pack.serials.first { $0 == context } ?? pack.serials.first { owned.contains($0) } ?? pack.serials[0]
     }
 
     static func normalizedSerial(_ raw: String) -> String? {

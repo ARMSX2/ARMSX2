@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -14,8 +15,9 @@ import Foundation
 let data = try! Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
 guard let packs = TextureCatalog.parse(data) else { print("rejected"); exit(0) }
 let owned = Set(CommandLine.arguments.dropFirst(2))
+let context = ProcessInfo.processInfo.environment["CONTEXT"]
 for pack in packs {
-    print(pack.id, pack.serials.joined(separator: ","), TextureCatalog.serial(for: pack, owned: owned), pack.fileName)
+    print(pack.id, pack.serials.joined(separator: ","), TextureCatalog.serial(for: pack, context: context, owned: owned), pack.fileName)
 }
 """
 
@@ -44,10 +46,11 @@ class TextureCatalogTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.build.cleanup()
 
-    def run_driver(self, catalog, *owned):
+    def run_driver(self, catalog, *owned, context=None):
         path = self.dir / "catalog.json"
         path.write_text(json.dumps(catalog), encoding="utf-8")
-        out = subprocess.run([str(self.exe), str(path), *owned], check=True, capture_output=True, text=True)
+        env = dict(os.environ, **({"CONTEXT": context} if context else {}))
+        out = subprocess.run([str(self.exe), str(path), *owned], check=True, capture_output=True, text=True, env=env)
         return out.stdout.strip().splitlines()
 
     def test_bad_entries_drop_themselves_and_good_ones_survive(self):
@@ -69,6 +72,11 @@ class TextureCatalogTests(unittest.TestCase):
     def test_the_owned_region_is_installed_rather_than_the_first(self):
         catalog = {"schemaVersion": 2, "entries": [entry()]}
         self.assertEqual(self.run_driver(catalog, "SLES-52541")[0].split()[2], "SLES-52541")
+
+    def test_the_game_in_context_beats_other_owned_regions(self):
+        catalog = {"schemaVersion": 2, "entries": [entry()]}
+        self.assertEqual(self.run_driver(catalog, "SLUS-21287", "SLES-52541", context="SLES-52541")[0].split()[2],
+                         "SLES-52541")
 
     def test_schema_one_is_zip_only(self):
         catalog = {"schemaVersion": 1, "entries": [entry(format=None, decompressedSizeBytes=None, id="z"),

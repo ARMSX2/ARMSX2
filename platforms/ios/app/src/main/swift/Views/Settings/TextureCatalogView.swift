@@ -197,7 +197,8 @@ struct TextureCatalogView: View {
 
             let archive = try await Self.download(pack, into: staging, tracker: tracker)
             progress = nil
-            let serial = TextureCatalog.serial(for: pack, owned: owned)
+            let context = self.serial ?? TextureCatalog.normalizedSerial(ARMSX2Bridge.currentTextureSerial())
+            let serial = TextureCatalog.serial(for: pack, context: context, owned: owned)
             try await Task.detached(priority: .userInitiated) {
                 let received = try archive.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
                 guard Int64(received) == pack.bytes, try ShaderCatalogInstaller.sha256(of: archive) == pack.sha256 else {
