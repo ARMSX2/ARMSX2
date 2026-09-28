@@ -6,8 +6,8 @@
     - any-glob-to-any-file:
       - '.github/*'
       - '.github/**/*'
-      - '*.slnx'
-      - '**/*.slnx'
+      - '*.sln'
+      - '**/*.sln'
       - '*.vcxproj*'
       - '**/*.vcxproj*'
       - 'cmake/*'
