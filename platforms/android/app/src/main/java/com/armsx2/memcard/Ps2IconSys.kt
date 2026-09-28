@@ -58,8 +58,10 @@ class Ps2IconSys(
         /** The title, in Shift-JIS on the card, usually full-width ("Ｓｐｉｄｅｒ－Ｍａｎ"). NFKC brings
          *  that back to ordinary text. The u16 at 0x06 is where the second line starts. */
         private fun title(b: ByteArray): String = runCatching {
+            // A zero byte ends it: no Shift-JIS character contains one, and some games leave junk
+            // after the end (a Resident Evil 4 save does).
             var end = 0xC0
-            while (end + 1 < 0xC0 + 68 && !(b[end].toInt() == 0 && b[end + 1].toInt() == 0)) end += 2
+            while (end < 0xC0 + 68 && b[end].toInt() != 0) end++
             val raw = b.copyOfRange(0xC0, end)
             val split = (Ps2MemoryCard.u16(b, 0x06)).coerceIn(0, raw.size)
             val sjis = java.nio.charset.Charset.forName("Shift_JIS")

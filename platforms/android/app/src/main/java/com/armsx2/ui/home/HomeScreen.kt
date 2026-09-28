@@ -1820,6 +1820,7 @@ private fun GameGridCard(
                 .fillMaxWidth()
                 .aspectRatio(coverAspectRatio())
                 .coverFrame(selected, 2.dp, MaterialTheme.colorScheme.primary),
+            animate = selected,
         )
         if (GridLabels.show.value) {
             Spacer(Modifier.height(4.dp))
@@ -1852,7 +1853,7 @@ private fun GameListCard(game: GameInfo, selected: Boolean, onClick: () -> Unit,
         ),
     ) {
         Row(Modifier.padding(7.dp), verticalAlignment = Alignment.CenterVertically) {
-            GameCover(game, Modifier.width(54.dp).aspectRatio(coverAspectRatio()))
+            GameCover(game, Modifier.width(54.dp).aspectRatio(coverAspectRatio()), animate = selected)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(game.displayTitle(EnglishTitles.enabled.value), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1876,6 +1877,7 @@ private fun RecentGameCard(game: GameInfo, selected: Boolean = false, onClick: (
             game,
             Modifier.fillMaxWidth().aspectRatio(coverAspectRatio())
                 .coverFrame(selected, 2.5.dp, Color(0xFF3DA5FF)),
+            animate = selected,
         )
         Spacer(Modifier.height(5.dp))
         Text(game.displayTitle(EnglishTitles.enabled.value), style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1997,6 +1999,8 @@ private fun GameCover(
     // covers whose source art is a touch taller than the 0.7 slot.
     contentScale: ContentScale = ContentScale.Fit,
     placeholderText: Boolean = true,
+    /** The tile is selected: a Memory Card Cover comes to life (see MemcardAnimatedCover). */
+    animate: Boolean = false,
 ) {
     val context = LocalContext.current
     // Read the 3D-cover flag explicitly (not just via game.coverUrl, which is
@@ -2059,6 +2063,9 @@ private fun GameCover(
                     }
                 },
             )
+            if (animate && memcard != null && com.armsx2.memcard.MemcardCovers.animateSelected.value) {
+                game.serial?.let { MemcardAnimatedCover(it, Modifier.matchParentSize()) }
+            }
         }
     }
 }
@@ -2435,6 +2442,7 @@ private fun ShelfGameCard(game: GameInfo, width: Dp, reflectionHeight: Dp, selec
                 ),
             cornerRadius = 0.dp,
             contentScale = ContentScale.Fit,
+            animate = selected,
         )
         // A faint mirror of the cover on the shelf surface just in front of it.
         // clipToBounds keeps it to reflectionHeight — without it the full flipped

@@ -28,10 +28,11 @@ import java.security.MessageDigest
 object MemcardCovers {
     private const val TAG = "MemcardCovers"
     private const val KEY_ENABLED = "library.memcardCovers"
+    private const val KEY_ANIMATE = "library.memcardCovers.animate"
     private const val CACHE_DIR = "memcard_covers"
 
     /** Bump when the renderer changes, so every cached cover is drawn again. */
-    private const val RENDER_VERSION = 1
+    private const val RENDER_VERSION = 3
 
     /** The library's 2D cover slot (0.72, coverAspectRatio in HomeScreen), with room to spare for
      *  large cover sizes. Every layout (grid, list, shelf, Recently Played) draws covers through
@@ -41,10 +42,26 @@ object MemcardCovers {
 
     val enabled = mutableStateOf(false)
 
+    /** The selected game's cover spins and plays its animation, as on the PS2's memory card
+     *  screen. Only the selected one: animating every tile would cost a render per tile per frame. */
+    val animateSelected = mutableStateOf(true)
+
     /** Bumped whenever the covers change, so tiles resolve their cover again. */
     val generation = mutableIntStateOf(0)
 
     @Volatile private var bySerial: Map<String, File> = emptyMap()
+
+    /** Where each cover's save is, so the selected one can be drawn moving. */
+    private class Source(val card: File, val folder: String)
+    @Volatile private var sources: Map<String, Source> = emptyMap()
+
+    /** A save's icon, parsed, with the pose its still cover was drawn in. */
+    class Loaded(val icon: Ps2Icon, val sys: Ps2IconSys, val pose: Ps2IconRenderer.Pose)
+
+    // The last few selected, so moving back and forth between tiles doesn't reread the card.
+    private val loadedIcons = object : LinkedHashMap<String, Loaded>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Loaded>?) = size > 6
+    }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val scanLock = Mutex()
@@ -54,6 +71,30 @@ object MemcardCovers {
         if (loaded) return
         loaded = true
         enabled.value = runCatching { MainActivityRuntime.prefs.getBoolean(KEY_ENABLED, false) }.getOrDefault(false)
+        animateSelected.value = runCatching { MainActivityRuntime.prefs.getBoolean(KEY_ANIMATE, true) }.getOrDefault(true)
+    }
+
+    fun setAnimateSelected(on: Boolean) {
+        MainActivityRuntime.prefs.edit().putBoolean(KEY_ANIMATE, on).apply()
+        animateSelected.value = on
+    }
+
+    /** The icon behind [serial]'s cover, parsed, or null. Reads the card, so call it off the main
+     *  thread. */
+    fun loadIcon(serial: String): Loaded? {
+        val key = serial.uppercase()
+        synchronized(loadedIcons) { loadedIcons[key]?.let { return it } }
+        val src = sources[key] ?: return null
+        val result = runCatching {
+            Ps2MemoryCard.open(src.card)?.use { card ->
+                val save = card.saves().firstOrNull { it.folder == src.folder } ?: return@use null
+                val sys = Ps2IconSys.parse(save.read("icon.sys")) ?: return@use null
+                val icon = Ps2Icon.parse(save.read(sys.iconNormal)) ?: return@use null
+                Loaded(icon, sys, Ps2IconRenderer.choosePose(icon, sys))
+            }
+        }.getOrNull() ?: return null
+        synchronized(loadedIcons) { loadedIcons[key] = result }
+        return result
     }
 
     fun setEnabled(context: Context, on: Boolean) {
@@ -80,6 +121,8 @@ object MemcardCovers {
                     ?: return@withLock
                 if (found != bySerial) {
                     bySerial = found
+                    // A changed save may be one already loaded for animating.
+                    synchronized(loadedIcons) { loadedIcons.clear() }
                     withContext(Dispatchers.Main) { generation.intValue++ }
                 }
             }
@@ -123,6 +166,7 @@ object MemcardCovers {
             }
             for ((serial, file) in wanted) if (file.isFile) out[serial] = file
         }
+        sources = out.keys.associateWith { serial -> picks.getValue(serial).let { Source(it.card, it.folder) } }
         // Drop covers no save points at any more.
         val keep = out.values.toSet()
         cacheDir.listFiles()?.forEach { if (it !in keep) it.delete() }

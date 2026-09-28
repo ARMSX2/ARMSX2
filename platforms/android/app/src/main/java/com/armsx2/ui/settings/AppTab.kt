@@ -1036,6 +1036,14 @@ fun AppTab() {
                 description = str("app.library.memcardCovers.desc"),
                 onChange = { com.armsx2.memcard.MemcardCovers.setEnabled(ctx, it) },
             )
+            if (com.armsx2.memcard.MemcardCovers.enabled.value) {
+                ToggleRow(
+                    label = str("app.library.memcardCovers.animate"),
+                    value = com.armsx2.memcard.MemcardCovers.animateSelected.value,
+                    description = str("app.library.memcardCovers.animate.desc"),
+                    onChange = com.armsx2.memcard.MemcardCovers::setAnimateSelected,
+                )
+            }
         }
 
         IntSliderRow(

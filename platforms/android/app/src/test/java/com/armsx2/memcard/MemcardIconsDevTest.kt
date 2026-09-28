@@ -16,6 +16,60 @@ class MemcardIconsDevTest {
     private val tileW = 144
     private val tileH = 206
 
+    /** MEMCARD_TEST_FOCUS=folder1,folder2: those saves at 0/90/180/270 degrees x 4 animation
+     *  times, one row per save and angle, to study facing and animation. */
+    @Test
+    fun focus() {
+        val cards = System.getenv("MEMCARD_TEST_CARDS")?.split(':')?.filter { it.isNotBlank() }.orEmpty()
+        val out = System.getenv("MEMCARD_TEST_OUT")?.let(::File)
+        val focus = System.getenv("MEMCARD_TEST_FOCUS")?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
+        Assume.assumeTrue(cards.isNotEmpty() && out != null && focus.isNotEmpty())
+        val tiles = ArrayList<IntArray>()
+        var rows = 0
+        for (path in cards) Ps2MemoryCard.open(File(path))?.use { card ->
+            for (save in card.saves().filter { it.folder in focus }) {
+                val sys = Ps2IconSys.parse(save.read("icon.sys")) ?: continue
+                val icon = Ps2Icon.parse(save.read(sys.iconNormal)) ?: continue
+                val len = icon.frameLength.coerceAtLeast(1).toFloat()
+                for (yaw in floatArrayOf(0f, 1.5708f, 3.1416f, 4.7124f)) {
+                    rows++
+                    for (t in floatArrayOf(0f, 0.25f, 0.5f, 0.75f)) {
+                        tiles += Ps2IconRenderer.render(icon, sys, tileW, tileH, Ps2IconRenderer.Options(yaw = yaw, time = t * len))
+                    }
+                }
+            }
+        }
+        val sheet = BufferedImage(4 * tileW, rows * tileH, BufferedImage.TYPE_INT_RGB)
+        tiles.forEachIndexed { i, px -> sheet.setRGB((i % 4) * tileW, (i / 4) * tileH, tileW, tileH, px, 0, tileW) }
+        ImageIO.write(sheet, "png", File(out, "focus.png"))
+    }
+
+    /** MEMCARD_TEST_FILM=folder1,folder2: 8 moments across each save's animation, front view. */
+    @Test
+    fun filmstrip() {
+        val cards = System.getenv("MEMCARD_TEST_CARDS")?.split(':')?.filter { it.isNotBlank() }.orEmpty()
+        val out = System.getenv("MEMCARD_TEST_OUT")?.let(::File)
+        val film = System.getenv("MEMCARD_TEST_FILM")?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
+        Assume.assumeTrue(cards.isNotEmpty() && out != null && film.isNotEmpty())
+        val tiles = ArrayList<IntArray>()
+        for (path in cards) Ps2MemoryCard.open(File(path))?.use { card ->
+            val byName = card.saves().associateBy { it.folder }
+            for (name in film) {
+                val save = byName[name] ?: continue
+                val sys = Ps2IconSys.parse(save.read("icon.sys")) ?: continue
+                val icon = Ps2Icon.parse(save.read(sys.iconNormal)) ?: continue
+                val len = icon.frameLength.coerceAtLeast(1).toFloat()
+                for (k in 0 until 8) {
+                    tiles += Ps2IconRenderer.render(icon, sys, tileW, tileH, Ps2IconRenderer.Options(yaw = -0.35f, time = len * k / 8f))
+                }
+            }
+        }
+        val rows = tiles.size / 8
+        val sheet = BufferedImage(8 * tileW, rows * tileH, BufferedImage.TYPE_INT_RGB)
+        tiles.forEachIndexed { i, px -> sheet.setRGB((i % 8) * tileW, (i / 8) * tileH, tileW, tileH, px, 0, tileW) }
+        ImageIO.write(sheet, "png", File(out, "film.png"))
+    }
+
     @Test
     fun contactSheet() {
         val cards = System.getenv("MEMCARD_TEST_CARDS")?.split(':')?.filter { it.isNotBlank() }.orEmpty()
@@ -24,7 +78,7 @@ class MemcardIconsDevTest {
         out!!.mkdirs()
         val variant = System.getenv("MEMCARD_TEST_VARIANT") ?: "default"
         val options = when (variant) {
-            "front" -> Ps2IconRenderer.Options(yaw = 0f)
+            "front" -> Ps2IconRenderer.Options(yaw = 0f, time = 0f)
             "nofloor" -> Ps2IconRenderer.Options(ambientFloor = 0f)
             else -> Ps2IconRenderer.Options()
         }
@@ -49,6 +103,7 @@ class MemcardIconsDevTest {
                     log.appendLine("${save.folder} [${save.serial}] '${sys.title}' shapes=${icon.shapeCount} " +
                         "verts=${icon.vertexCount} frames=${icon.frames.size} len=${icon.frameLength} tex=${icon.texture != null}")
                     tiles += Ps2IconRenderer.render(icon, sys, tileW, tileH, options)
+                    log.appendLine("    #${tiles.size - 1} ${Ps2IconRenderer.lastPick}")
                 }
             }
         }

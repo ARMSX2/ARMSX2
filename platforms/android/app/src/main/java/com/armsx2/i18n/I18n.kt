@@ -283,6 +283,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "app.library.search" to "Library search",
     "app.library.search.desc" to "Show the game search field on the library home screen.",
     "app.library.memcardCovers" to "Memory Card Covers",
+    "app.library.memcardCovers.animate" to "Animate the selected cover",
+    "app.library.memcardCovers.animate.desc" to "The selected game's save icon turns and plays its animation, like the save under the cursor on the PS2's memory card screen.",
     "app.library.memcardCovers.desc" to "Show a game's PS2 save icon as its cover when one of your memory cards has a save for it. Read only from your own cards. Games without a save keep their box art.",
     "app.library.recents" to "Recently played games",
     "app.library.recents.desc" to "Show the Recently Played section on the library home screen.",

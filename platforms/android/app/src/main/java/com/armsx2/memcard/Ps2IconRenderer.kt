@@ -15,13 +15,10 @@ import kotlin.math.sqrt
  */
 object Ps2IconRenderer {
     class Options(
-        /** Turn about the vertical axis, radians, or null to choose the best-lit of a few turns.
-         *  The browser spins icons, and each save lights its icon from its own directions, so no
-         *  one angle suits every icon: a front-facing card lit only from the side sits in the dark
-         *  part of the spin (the ESPN NFL 2K5 box). */
+        /** Turn about the vertical axis, radians, or null to choose one (see [choosePose]). */
         val yaw: Float? = null,
-        /** Animation time in frames, for icons that morph. */
-        val time: Float = 0f,
+        /** Animation time in frames, or null to choose one along with the turn. */
+        val time: Float? = null,
         /** How much of the tile the icon may fill, 0..1. */
         val fill: Float = 0.82f,
         /** Renders at this many times the size and averages down, to smooth the edges. */
@@ -31,22 +28,88 @@ object Ps2IconRenderer {
         val ambientFloor: Float = 0.45f,
     )
 
-    private val YAW_CANDIDATES = floatArrayOf(0.35f, -0.35f, 0f, 0.7f, -0.7f)
+    /** A turn about the vertical axis (radians) and a moment of the animation (frames). */
+    data class Pose(val yaw: Float, val time: Float)
 
-    /** ARGB pixels, [width] x [height]. */
+    // A slight turn either side of each quarter: 20 degrees off square reads as 3D. The first two
+    // are the front, which a still cover keeps unless it is clearly a poor view.
+    private val YAW_CANDIDATES = floatArrayOf(-0.35f, 0.35f, 1.22f, 1.92f, 2.79f, 3.49f, 4.36f, 5.06f)
+    private const val FRONT_CANDIDATES = 2
+
+    /** How the last automatic choice was made, for the dev contact sheet. */
+    @Volatile internal var lastPick: String = ""
+
+    /** ARGB pixels, [width] x [height], at the pose [options] names or, for what it leaves
+     *  open, the one [choosePose] picks. */
     fun render(icon: Ps2Icon, sys: Ps2IconSys?, width: Int, height: Int, options: Options = Options()): IntArray {
-        val yaw = options.yaw ?: YAW_CANDIDATES.maxByOrNull { draw(icon, sys, 36, 52, it, options, 1).iconLuma }!!
-        return draw(icon, sys, width, height, yaw, options, options.supersample.coerceIn(1, 4)).pixels
+        val pose = if (options.yaw != null && options.time != null) Pose(options.yaw, options.time)
+            else choosePose(icon, sys, options)
+        return draw(icon, sys, width, height, pose.yaw, pose.time, options, options.supersample.coerceIn(1, 4)).pixels
     }
 
-    private class Drawn(val pixels: IntArray, val iconLuma: Float)
+    /** One frame of an animated cover: no choosing, straight to the pixels. */
+    fun renderFrame(icon: Ps2Icon, sys: Ps2IconSys?, width: Int, height: Int, pose: Pose, options: Options = Options()): IntArray =
+        draw(icon, sys, width, height, pose.yaw, pose.time, options, options.supersample.coerceIn(1, 4)).pixels
+
+    /**
+     * The pose for a still cover, which has to choose one moment of something built to be seen
+     * moving: the browser spins every icon and plays its animation.
+     *
+     * The front, turned slightly, at the animation's first frame is the default, since that is
+     * the pose the icon is designed around. Only when it is clearly a poor view, under half the
+     * area of the best one (GRAW's emblem is a coin that faces sideways and flips: edge-on it is
+     * a line), are other moments tried at the front, and then other angles. Candidates are drawn
+     * at thumbnail size, and the framing does not change with the turn, so area is how big the
+     * icon really looks from there.
+     *
+     * Deliberately not judged by which way surfaces face: the stored normals can't be trusted for
+     * that (Bakugan's card reads correctly from the side its normals point away from).
+     */
+    fun choosePose(icon: Ps2Icon, sys: Ps2IconSys?, options: Options = Options()): Pose {
+        val yaws = options.yaw?.let { floatArrayOf(it) } ?: YAW_CANDIDATES
+        val len = icon.frameLength.coerceAtLeast(1).toFloat()
+        val first = icon.playOffset.toFloat().coerceIn(0f, len)
+        val times = options.time?.let { floatArrayOf(it) }
+            ?: if (icon.animated) floatArrayOf(first, len * 0.25f, len * 0.5f, len * 0.75f) else floatArrayOf(first)
+        class Try(val pose: Pose, val front: Boolean, val d: Drawn) {
+            val view get() = d.coverage * (0.7f + 0.3f * d.luma / 255f)
+        }
+        val tries = ArrayList<Try>()
+        for ((i, y) in yaws.withIndex()) for (t in times) {
+            tries += Try(Pose(y, t), options.yaw != null || i < FRONT_CANDIDATES, draw(icon, sys, 36, 52, y, t, options, 1))
+        }
+        val biggest = tries.maxOf { it.d.coverage }
+        fun good(t: Try?) = t != null && t.d.coverage >= biggest * 0.5f
+        val restPose = tries.filter { it.front && it.pose.time == times[0] }.maxByOrNull { it.view }
+        val frontAnyTime = tries.filter { it.front }.maxByOrNull { it.view }
+        val pick = when {
+            good(restPose) -> restPose
+            good(frontAnyTime) -> frontAnyTime
+            else -> tries.maxByOrNull { it.view }
+        } ?: return Pose(0f, first)
+        lastPick = "rest(cov=%.3f) front(cov=%.3f t=%.0f) biggest=%.3f -> yaw=%.2f t=%.0f".format(
+            restPose?.d?.coverage ?: 0f, frontAnyTime?.d?.coverage ?: 0f, frontAnyTime?.pose?.time ?: 0f, biggest,
+            pick.pose.yaw, pick.pose.time)
+        return pick.pose
+    }
+
+    /** What a draw came out as: the pixels, and for choosing between draws, how much of the
+     *  tile the icon covers and its mean brightness. */
+    private class Drawn(val pixels: IntArray, val coverage: Float, val luma: Float)
 
     /**
      * Icon space is x right, y down, z into the screen, with the camera on the -z side: that is
      * the side a save's own logo reads correctly from (ESPN's, not mirrored). The icon.sys light
      * directions point the way the light travels, so a surface is lit by the reverse of each.
+     *
+     * The model turns about its own vertical axis, through the middle of its footprint, and is
+     * framed by the widest it gets over a full turn and every animation shape. So a turn or an
+     * animation never changes its size or pushes it out of the tile, and a spinning cover starts
+     * exactly where its still picture is.
      */
-    private fun draw(icon: Ps2Icon, sys: Ps2IconSys?, width: Int, height: Int, yaw: Float, options: Options, ss: Int): Drawn {
+    private fun draw(
+        icon: Ps2Icon, sys: Ps2IconSys?, width: Int, height: Int, yaw: Float, time: Float, options: Options, ss: Int,
+    ): Drawn {
         val w = width * ss
         val h = height * ss
         val color = IntArray(w * h)
@@ -54,35 +117,42 @@ object Ps2IconRenderer {
         background(color, w, h, sys)
 
         val nv = icon.vertexCount
-        val pos = blend(icon, options.time)
+        val pos = blend(icon, time)
         val cy = cos(yaw)
         val sy = sin(yaw)
 
-        // Frame every shape at once, so an animating icon doesn't bob as it changes size.
-        var minX = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE
+        val all = icon.positions
+        val count = icon.shapeCount * icon.vertexCount
+        var lx = Float.MAX_VALUE; var hx = -Float.MAX_VALUE
+        var lz = Float.MAX_VALUE; var hz = -Float.MAX_VALUE
         var minY = Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
-        val allShapes = icon.positions
-        for (i in 0 until icon.shapeCount * icon.vertexCount) {
-            val x = allShapes[i * 3]; val y = allShapes[i * 3 + 1]; val z = allShapes[i * 3 + 2]
-            val rx = x * cy + z * sy
-            minX = min(minX, rx); maxX = max(maxX, rx)
-            minY = min(minY, y); maxY = max(maxY, y)
+        for (i in 0 until count) {
+            lx = min(lx, all[i * 3]); hx = max(hx, all[i * 3])
+            minY = min(minY, all[i * 3 + 1]); maxY = max(maxY, all[i * 3 + 1])
+            lz = min(lz, all[i * 3 + 2]); hz = max(hz, all[i * 3 + 2])
         }
-        val span = max(maxX - minX, maxY - minY).coerceAtLeast(1e-3f)
-        val scale = min(w, h) * options.fill / span
-        val midX = (minX + maxX) / 2f
+        val cx = (lx + hx) / 2f
+        val cz = (lz + hz) / 2f
+        var r2 = 1e-6f
+        for (i in 0 until count) {
+            val dx = all[i * 3] - cx; val dz = all[i * 3 + 2] - cz
+            r2 = max(r2, dx * dx + dz * dz)
+        }
         val midY = (minY + maxY) / 2f
+        val span = max(2f * sqrt(r2), maxY - minY).coerceAtLeast(1e-3f)
+        val scale = min(w, h) * options.fill / span
 
         // Transform and light each vertex once.
         val sx = FloatArray(nv); val syy = FloatArray(nv); val sz = FloatArray(nv)
         val lit = FloatArray(nv * 3)
+
         val floor = options.ambientFloor
         val amb = sys?.ambient ?: floatArrayOf(0.55f, 0.55f, 0.55f)
         for (v in 0 until nv) {
-            val x = pos[v * 3]; val y = pos[v * 3 + 1]; val z = pos[v * 3 + 2]
+            val x = pos[v * 3] - cx; val y = pos[v * 3 + 1]; val z = pos[v * 3 + 2] - cz
             val rx = x * cy + z * sy
             val rz = -x * sy + z * cy
-            sx[v] = w / 2f + (rx - midX) * scale
+            sx[v] = w / 2f + rx * scale
             syy[v] = h / 2f + (y - midY) * scale
             // Nearer the camera = smaller z; the depth test keeps the larger value, so negate.
             sz[v] = -rz
@@ -116,15 +186,17 @@ object Ps2IconRenderer {
             triangle(t, t + 1, t + 2, sx, syy, sz, lit, icon.uvs, tex, color, depth, w, h)
             t += 3
         }
-        // How well lit the icon itself came out, for picking a turn: mean luma over its pixels.
         var sum = 0f; var n = 0
         for (i in color.indices) if (depth[i] != Float.NEGATIVE_INFINITY) {
             val p = color[i]
             sum += 0.299f * ((p shr 16) and 0xFF) + 0.587f * ((p shr 8) and 0xFF) + 0.114f * (p and 0xFF)
             n++
         }
-        val luma = if (n == 0) 0f else sum / n
-        return Drawn(if (ss == 1) color else downsample(color, w, h, ss), luma)
+        return Drawn(
+            pixels = if (ss == 1) color else downsample(color, w, h, ss),
+            coverage = n / color.size.toFloat(),
+            luma = if (n == 0) 0f else sum / n,
+        )
     }
 
     /** Morph-target positions at [time]: each frame names a shape and a weight curve over time;
