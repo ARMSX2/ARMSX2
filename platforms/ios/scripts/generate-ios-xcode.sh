@@ -6,6 +6,8 @@ SOURCE_DIR="$ROOT_DIR/app/src/main/cpp"
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build-ios-xcode}"
 BUNDLE_ID="${BUNDLE_ID:-com.armsx2.ios}"
 TEAM_ID="${TEAM_ID:-}"
+DISPLAY_NAME="${DISPLAY_NAME:-ARMSX2 iOS}"
+VERSION_SUFFIX="${VERSION_SUFFIX:-}"
 
 if ! command -v cmake >/dev/null 2>&1; then
 	echo "error: cmake is required to generate the iOS Xcode project." >&2
@@ -18,7 +20,9 @@ cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Xcode \
 	-DARMSX2_REAL_DEVICE=ON \
 	-DLTO_PCSX2_CORE=ON \
 	-DARMSX2_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
-	-DARMSX2_DEVELOPMENT_TEAM="$TEAM_ID"
+	-DARMSX2_DEVELOPMENT_TEAM="$TEAM_ID" \
+	-DARMSX2_DISPLAY_NAME="$DISPLAY_NAME" \
+	-DARMSX2_VERSION_SUFFIX="$VERSION_SUFFIX"
 
 cat <<EOF
 
