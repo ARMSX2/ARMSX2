@@ -458,6 +458,8 @@ final class ControllerAccessibilityNavigationSession {
         Task { @MainActor [weak self] in
             await Task.yield()
             guard let self, self.focusedKey == droppedKey else { return }
+            // Storage takes its buttons out of the order while it cleans; they are still there.
+            if self.targets[droppedKey]?.view.value?.window != nil { return }
             let mounted = self.declaredOrder.filter(self.isMountedAndEnabled)
             let replacements = mounted.filter(added.contains)
             let nearest = (replacements.isEmpty ? mounted : replacements).min { lhs, rhs in
