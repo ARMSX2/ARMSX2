@@ -86,7 +86,6 @@ bool GSHasDisplayWindow();
 void GSResizeDisplayWindow(u32 width, u32 height, float scale);
 void GSUpdateDisplayWindow();
 void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle);
-void GSResetStats();
 
 GSRendererType GSGetCurrentRenderer();
 bool GSIsHardwareRenderer();

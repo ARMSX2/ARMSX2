@@ -13,7 +13,6 @@
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
 #include "GS/MultiISA.h"
-#include "GS/GSPerfMon.h"
 #include "Host.h"
 #include "Input/InputManager.h"
 #include "MTGS.h"
@@ -564,11 +563,6 @@ void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
 	Console.WriteLnFmt(Color_StrongCyan, "Setting vsync mode: {}{}", modes[static_cast<size_t>(mode)],
 		allow_present_throttle ? " (throttle allowed)" : "");
 	g_gs_device->SetVSyncMode(mode, allow_present_throttle);
-}
-
-void GSResetStats()
-{
-	g_perfmon.Reset();
 }
 
 bool GSWantsExclusiveFullscreen()

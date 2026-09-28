@@ -23,7 +23,6 @@ public:
 
 private Q_SLOTS:
 	void onDrawDumpingChanged();
-	void onDumpReplayUseFrameRangeChanged();
 #ifdef PCSX2_DEVBUILD
 	void onLoggingEnableChanged();
 #endif
