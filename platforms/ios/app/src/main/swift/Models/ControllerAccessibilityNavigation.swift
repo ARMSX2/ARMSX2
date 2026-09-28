@@ -263,6 +263,7 @@ final class ControllerAccessibilityNavigationSession {
     @ObservationIgnored private var pageDirectionalLinks: [ControllerAccessibilityDirectionalLink] = []
     @ObservationIgnored private var prioritizesDirectionalLinks = false
     @ObservationIgnored private var confinesHorizontalFocusMovement = false
+    @ObservationIgnored private var wrapsAtListEnds = false
     @ObservationIgnored private var focusScrollBehavior:
         ControllerAccessibilityFocusScrollBehavior = .revealIfNeeded
     @ObservationIgnored private var scrollAnimationDuration: Double = 0.22
@@ -341,6 +342,7 @@ final class ControllerAccessibilityNavigationSession {
         directionalLinks: [ControllerAccessibilityDirectionalLink],
         prioritizesDirectionalLinks: Bool,
         confinesHorizontalFocusMovement: Bool,
+        wrapsAtListEnds: Bool,
         focusScrollBehavior: ControllerAccessibilityFocusScrollBehavior,
         scrollAnimationDuration: Double,
         focusViewportEdgeMargin: CGFloat,
@@ -362,6 +364,7 @@ final class ControllerAccessibilityNavigationSession {
         self.directionalLinks = directionalLinks
         self.prioritizesDirectionalLinks = prioritizesDirectionalLinks
         self.confinesHorizontalFocusMovement = confinesHorizontalFocusMovement
+        self.wrapsAtListEnds = wrapsAtListEnds
         self.focusScrollBehavior = focusScrollBehavior
         self.scrollAnimationDuration = max(0, scrollAnimationDuration)
         self.focusViewportEdgeMargin = max(0, focusViewportEdgeMargin)
@@ -1026,7 +1029,8 @@ final class ControllerAccessibilityNavigationSession {
                 }
                 index += step
             }
-            return revealMoreRows(direction) || performBoundary(direction)
+            return revealMoreRows(direction) || wrapToOtherEnd(direction)
+                || performBoundary(direction)
         }
 
         if let destination = spatialDestination(
@@ -1067,6 +1071,27 @@ final class ControllerAccessibilityNavigationSession {
             _ = self.move(direction)
             self.isRevealingRows = false
         }
+        return true
+    }
+
+    /// A new press past the last row jumps to the first one, and Up past the first to the last.
+    private func wrapToOtherEnd(_ direction: MenuControllerCommand) -> Bool {
+        guard wrapsAtListEnds, focusRepeatAcceleration == nil,
+              controllerInput?.isRightStickScrolling != true,
+              let focusedKey, let view = targets[focusedKey]?.view.value,
+              let scrollView = enclosingScrollView(for: view) else { return false }
+        let inset = scrollView.adjustedContentInset
+        let bottom = scrollView.contentSize.height - scrollView.bounds.height + inset.bottom
+        let y = direction == .down ? -inset.top : max(-inset.top, bottom)
+        scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: y), animated: false)
+        scrollView.layoutIfNeeded()
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self, self.focusedKey == focusedKey else { return }
+            let keys = self.orderedKeys(includingUnmountedDeclared: true)
+            if let key = direction == .down ? keys.first : keys.last { self.focusOrSeek(key) }
+        }
+        controllerInput?.playFeedback(.move(direction))
         return true
     }
 
@@ -3321,6 +3346,7 @@ private struct ControllerAccessibilityNavigationModifier: ViewModifier {
     let directionalLinks: [ControllerAccessibilityDirectionalLink]
     let prioritizesDirectionalLinks: Bool
     let confinesHorizontalFocusMovement: Bool
+    let wrapsAtListEnds: Bool
     let usesExplicitTargetGeometryOnly: Bool
     let preservesFocusDuringRightStickScrolling: Bool
     let focusScrollBehavior: ControllerAccessibilityFocusScrollBehavior
@@ -3361,6 +3387,7 @@ private struct ControllerAccessibilityNavigationModifier: ViewModifier {
             .onChange(of: confinesHorizontalFocusMovement) { _, _ in
                 updateRegistration()
             }
+            .onChange(of: wrapsAtListEnds) { _, _ in updateRegistration() }
             .onChange(of: focusScrollBehavior) { _, _ in updateRegistration() }
             .onChange(of: focusViewportEdgeMargin) { _, _ in
                 updateRegistration()
@@ -3548,6 +3575,7 @@ private struct ControllerAccessibilityNavigationModifier: ViewModifier {
             directionalLinks: directionalLinks,
             prioritizesDirectionalLinks: prioritizesDirectionalLinks,
             confinesHorizontalFocusMovement: confinesHorizontalFocusMovement,
+            wrapsAtListEnds: wrapsAtListEnds,
             focusScrollBehavior: focusScrollBehavior,
             scrollAnimationDuration: scrollAnimationDuration,
             focusViewportEdgeMargin: focusViewportEdgeMargin,
@@ -3616,6 +3644,7 @@ extension View {
         directionalLinks: [ControllerAccessibilityDirectionalLink] = [],
         prioritizesDirectionalLinks: Bool = false,
         confinesHorizontalFocusMovement: Bool = false,
+        wrapsAtListEnds: Bool = false,
         usesExplicitTargetGeometryOnly: Bool = false,
         preservesFocusDuringRightStickScrolling: Bool = false,
         focusScrollBehavior: ControllerAccessibilityFocusScrollBehavior =
@@ -3648,6 +3677,7 @@ extension View {
                 directionalLinks: directionalLinks,
                 prioritizesDirectionalLinks: prioritizesDirectionalLinks,
                 confinesHorizontalFocusMovement: confinesHorizontalFocusMovement,
+                wrapsAtListEnds: wrapsAtListEnds,
                 usesExplicitTargetGeometryOnly: usesExplicitTargetGeometryOnly,
                 preservesFocusDuringRightStickScrolling:
                     preservesFocusDuringRightStickScrolling,

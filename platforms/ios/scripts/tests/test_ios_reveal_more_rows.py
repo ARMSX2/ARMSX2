@@ -17,7 +17,7 @@ class RevealMoreRows(unittest.TestCase):
         cls.source = without_comments(read(NAVIGATION))
 
     def test_the_edge_scrolls_before_it_gives_up(self):
-        self.assertIn("return revealMoreRows(direction) || performBoundary(direction)", self.source)
+        self.assertIn("return revealMoreRows(direction) || wrapToOtherEnd(direction)", self.source)
 
     def test_it_only_runs_where_nothing_else_can_seek(self):
         reveal = block(self.source, "private func revealMoreRows(")
