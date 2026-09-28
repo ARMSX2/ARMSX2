@@ -979,6 +979,23 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
         selected = settings.output.aspectRatio,
         onSelect = viewModel::setAspectRatio,
     )
+    // Screen orientation from in-game: whether a game plays better in portrait or landscape is
+    // found out by trying it, and that meant leaving for All Settings each time. Same values as
+    // the Renderer tab's row, and applied straight away the same way.
+    HorizontalOptions(
+        title = str("renderer.orientation.label"),
+        options = listOf(
+            0 to str("renderer.orientation.device"),
+            1 to str("renderer.orientation.landscape"),
+            2 to str("renderer.orientation.portrait"),
+            3 to str("renderer.orientation.autoRotate"),
+        ),
+        selected = settings.output.orientation.coerceIn(0, 3),
+        onSelect = { value ->
+            viewModel.updateSettings { it.copy(output = it.output.copy(orientation = value)) }
+            MainActivityRuntime.instance?.applyEmulationOrientation()
+        },
+    )
     // Overlay artwork, switchable from in-game — trying bezels means seeing them ON the game, and
     // having to leave for All Settings each time made that unusable. Import still lives in the
     // settings tab (it opens a file picker); this is the picker for what is already imported.
