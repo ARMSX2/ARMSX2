@@ -231,6 +231,14 @@ fun HomeScreen(
         }
     }
     LaunchedEffect(directories, nativeReady) { viewModel.load(directories, nativeReady) }
+    // Memory Card Covers: look at the cards again when the library shows and when a game stops,
+    // which is when a new save appears. Nothing is drawn again unless a save changed.
+    remember { com.armsx2.memcard.MemcardCovers.load() }
+    val memcardCoversOn = com.armsx2.memcard.MemcardCovers.enabled.value
+    val emuState = MainActivityRuntime.eState.value
+    LaunchedEffect(memcardCoversOn, emuState) {
+        if (memcardCoversOn) com.armsx2.memcard.MemcardCovers.refresh(context)
+    }
     DisposableEffect(viewModel, onOpenMenu) {
         HomeInputController.bind(viewModel, onOpenMenu, onOpenGameMenu = { menuGame = it })
         onDispose { HomeInputController.unbind(viewModel) }
@@ -2002,7 +2010,14 @@ private fun GameCover(
     val coverPins = com.armsx2.CoverRegionIndex.perGameGeneration.intValue
     val customCoverMap = LocalCustomCoverMap.current
     val custom = remember(game.uri, customCoverMap) { CustomCovers.matchIn(customCoverMap, game) }
-    val model = custom ?: game.coverUrl
+    // A save icon from the player's own memory cards, when Memory Card Covers is on. A cover set
+    // by hand still wins; box art is what's left.
+    val memcardOn = com.armsx2.memcard.MemcardCovers.enabled.value
+    val memcardGeneration = com.armsx2.memcard.MemcardCovers.generation.intValue
+    val memcard = remember(game.serial, memcardOn, memcardGeneration) {
+        if (custom == null) com.armsx2.memcard.MemcardCovers.coverFor(game.serial) else null
+    }
+    val model = custom ?: memcard ?: game.coverUrl
     val request = remember(model, use3d, coverRegion, coverPins) {
         ImageRequest.Builder(context)
             .data(model)

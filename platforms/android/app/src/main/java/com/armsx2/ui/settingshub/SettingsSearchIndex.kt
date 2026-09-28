@@ -30,6 +30,7 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("app.library.recents", true, SettingsCategory.General),
     SettingsSearchEntry("app.library.coverSize", true, SettingsCategory.General),
     SettingsSearchEntry("games.overflow.gridNames", true, SettingsCategory.General),
+    SettingsSearchEntry("app.library.memcardCovers", true, SettingsCategory.General),
     SettingsSearchEntry("app.backup.export", true, SettingsCategory.General),
     SettingsSearchEntry("app.backup.import", true, SettingsCategory.General),
     SettingsSearchEntry("app.blockHome", true, SettingsCategory.General),

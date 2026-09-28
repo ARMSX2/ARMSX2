@@ -1026,6 +1026,18 @@ fun AppTab() {
             onChange = { com.armsx2.GridLabels.set(it) },
         )
 
+        // Memory Card Covers: each game's PS2 save icon, from the player's own cards, as its cover.
+        run {
+            val ctx = LocalContext.current
+            remember { com.armsx2.memcard.MemcardCovers.load() }
+            ToggleRow(
+                label = str("app.library.memcardCovers"),
+                value = com.armsx2.memcard.MemcardCovers.enabled.value,
+                description = str("app.library.memcardCovers.desc"),
+                onChange = { com.armsx2.memcard.MemcardCovers.setEnabled(ctx, it) },
+            )
+        }
+
         IntSliderRow(
             label = str("app.library.coverSize"),
             value = (com.armsx2.ui.UiScale.coverScale.value * 100f).toInt().coerceIn(75, 250),
