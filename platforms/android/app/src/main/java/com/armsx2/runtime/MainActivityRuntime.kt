@@ -951,6 +951,8 @@ open class MainActivityRuntime : ComponentActivity() {
                 if (ctx != null) pickedId?.let { id ->
                     com.armsx2.CustomDriver.listInstalled(ctx).firstOrNull { it.id == id }
                 } else null
+            // Turnip options (#719) go into the environment before the device is created.
+            com.armsx2.CustomDriver.applyDriverEnv()
             if (ctx != null) com.armsx2.CustomDriver.applyToNative(ctx, picked)
             when (renderer.value) {
                 "vulkan" -> NativeApp.renderVulkan()

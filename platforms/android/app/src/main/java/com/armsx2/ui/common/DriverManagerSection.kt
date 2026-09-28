@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -219,6 +220,39 @@ fun DriverManagerSection() {
 
         if (busyId == "import") Text(str("backend.driver.installing"), color = MaterialTheme.colorScheme.onSurfaceVariant)
         message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+
+        // Only an installed driver reads these, so they appear once there is one.
+        if (installed.isNotEmpty()) TurnipOptions()
+    }
+}
+
+/**
+ * Turnip's environment options (#719), after Eden's Freedreno settings page: the UBWC flag hint
+ * recent builds need on Snapdragon 8 Gen 2, and free NAME=value lines for anything else. Global
+ * rather than per game, since they describe the device's driver, not a title. Applied by
+ * [CustomDriver.applyDriverEnv] at the next game start.
+ */
+@Composable
+private fun TurnipOptions() {
+    var ubwcHint by remember { mutableStateOf(CustomDriver.ubwcFlagHint()) }
+    var envText by remember { mutableStateOf(CustomDriver.driverEnvText()) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionTitle(str("backend.turnip.label"), str("backend.turnip.description"))
+        SettingSwitchRow(
+            title = str("backend.turnip.ubwcHint"),
+            description = str("backend.turnip.ubwcHint.desc"),
+            checked = ubwcHint,
+            onCheckedChange = { ubwcHint = it; CustomDriver.setUbwcFlagHint(it) },
+        )
+        OutlinedTextField(
+            value = envText,
+            onValueChange = { envText = it; CustomDriver.setDriverEnvText(it) },
+            label = { Text(str("backend.turnip.env")) },
+            placeholder = { Text("TU_DEBUG=sysmem") },
+            supportingText = { Text(str("backend.turnip.env.desc")) },
+            minLines = 2,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 
