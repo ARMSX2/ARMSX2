@@ -1004,13 +1004,8 @@ struct AppearanceSettingsView: View {
         )
         .tint(settings.controllerNavigationAccentColor)
         .controllerAccessibilityTargetOrder(Self.controllerTargetOrder)
-        // Keep these margins on the Form itself so they reliably reach the
+        // Keep this margin on the Form itself so it reliably reaches the
         // private UIKit list created by Form.
-        .contentMargins(
-            .top,
-            controllerNavigationActive ? 96 : 0,
-            for: .scrollContent
-        )
         .contentMargins(
             .bottom,
             controllerNavigationActive ? 192 : 0,

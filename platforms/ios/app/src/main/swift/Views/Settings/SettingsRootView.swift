@@ -1003,11 +1003,6 @@ struct SettingsRootView: View {
                 // bar just like the root List. Give their final controls enough
                 // real scroll range to be revealed above that foreground bar.
                 .contentMargins(
-                    .top,
-                    controllerInput == nil ? 0 : 96,
-                    for: .scrollContent
-                )
-                .contentMargins(
                     .bottom,
                     controllerInput == nil ? 0 : 192,
                     for: .scrollContent
