@@ -1169,6 +1169,11 @@ object ControllerMappings {
         // the panel goes to the monitor, and turning it off meant unplugging or digging into App
         // settings (SoraNo, on a Thor). Appended last for the persisted-by-ordinal reason above.
         SECOND_SCREEN("pad.secondscreen.keycode", "Second Screen Panel (toggle)"),
+        // The pressure modifier as a toggle (#304): press once for soft presses, again for full.
+        // The hold binding needs a finger on its button for the whole gesture, and a handheld with
+        // no spare button has nothing to give it; bound to a two-button combo, this one costs no
+        // button at all. Appended last for the persisted-by-ordinal reason above.
+        PRESSURE_MOD_TOGGLE("pad.pressuremodtoggle.keycode", "Pressure Modifier (toggle)"),
     }
 
     // A hotkey is either a single button or a two-button combo. The main key is

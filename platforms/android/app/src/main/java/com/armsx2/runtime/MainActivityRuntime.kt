@@ -972,8 +972,9 @@ open class MainActivityRuntime : ComponentActivity() {
             // already pushed [USB1] Type + the live attach (usbApplyPorts).
             usbKeyboardActive = resolved.system.usbKeyboard
             // A Cal armed in the previous game must not turn this one's first shot into a
-            // calibration shot.
+            // calibration shot, nor a pressure modifier toggled on (#304) soften its first press.
             com.armsx2.input.Lightgun.calibrateNext.value = false
+            com.armsx2.ui.touch.TouchControls.pressureModifierHeld.value = false
 
             // Neutralize the NATIVE pad analog deadzone before the VM loads [Pad1].
             // A stale [Pad1]/Deadzone in an existing config (from the old, non-saving
@@ -3627,6 +3628,10 @@ open class MainActivityRuntime : ComponentActivity() {
                     if (down && event.repeatCount == 0) toggleGyro()
                     return true
                 }
+                ControllerMappings.SysHotkey.PRESSURE_MOD_TOGGLE -> {
+                    if (down && event.repeatCount == 0) togglePressureModifier()
+                    return true
+                }
                 ControllerMappings.SysHotkey.GYRO_RECENTER -> {
                     if (down && event.repeatCount == 0) recenterGyro()
                     return true
@@ -3835,6 +3840,15 @@ open class MainActivityRuntime : ComponentActivity() {
         val on = !gyroActive.value
         gyroActive.value = on
         hotkeyToast(if (on) "Gyro ON" else "Gyro OFF")
+    }
+
+    /** The PRESSURE_MOD_TOGGLE hotkey (#304): flips the soft-press modifier and leaves it, applied
+     *  to buttons already held just as the hold binding does. */
+    private fun togglePressureModifier() {
+        val on = !com.armsx2.ui.touch.TouchControls.pressureModifierHeld.value
+        com.armsx2.ui.touch.TouchControls.pressureModifierHeld.value = on
+        com.armsx2.ui.touch.TouchControls.reapplyPressureToHeldButtons()
+        hotkeyToast(if (on) "Pressure modifier ON" else "Pressure modifier OFF")
     }
 
     /** Re-zero the motion neutral. Routed through [gyroRecenterHook] because the sensor
@@ -5348,6 +5362,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 hotkeyToast(if (on) "Fast Forward ON" else "Fast Forward OFF")
             }
             ControllerMappings.SysHotkey.GYRO_TOGGLE -> toggleGyro()
+            ControllerMappings.SysHotkey.PRESSURE_MOD_TOGGLE -> togglePressureModifier()
             // GYRO_HOLD needs key up/down edges, which this edge-triggered path (stick
             // directions / combos) doesn't provide — behave as a toggle here rather than
             // latching gyro on with no release.
