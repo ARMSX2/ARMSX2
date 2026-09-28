@@ -32,13 +32,17 @@ object MemcardCovers {
     private const val CACHE_DIR = "memcard_covers"
 
     /** Bump when the renderer changes, so every cached cover is drawn again. */
-    private const val RENDER_VERSION = 3
+    private const val RENDER_VERSION = 4
 
     /** The library's 2D cover slot (0.72, coverAspectRatio in HomeScreen), with room to spare for
      *  large cover sizes. Every layout (grid, list, shelf, Recently Played) draws covers through
      *  the same GameCover, so one render serves them all. */
-    private const val COVER_W = 288
-    private const val COVER_H = 400
+    const val COVER_W = 288
+    const val COVER_H = 400
+
+    /** A cover is just the icon: no gradient, nothing shaped like a box behind it, standing on
+     *  the bottom edge so on the shelf it sits on the shelf. */
+    val COVER_OPTIONS = Ps2IconRenderer.Options(background = false, anchorBottom = true)
 
     val enabled = mutableStateOf(false)
 
@@ -85,17 +89,48 @@ object MemcardCovers {
         val key = serial.uppercase()
         synchronized(loadedIcons) { loadedIcons[key]?.let { return it } }
         val src = sources[key] ?: return null
-        val result = runCatching {
-            Ps2MemoryCard.open(src.card)?.use { card ->
-                val save = card.saves().firstOrNull { it.folder == src.folder } ?: return@use null
-                val sys = Ps2IconSys.parse(save.read("icon.sys")) ?: return@use null
-                val icon = Ps2Icon.parse(save.read(sys.iconNormal)) ?: return@use null
-                Loaded(icon, sys, Ps2IconRenderer.choosePose(icon, sys))
-            }
-        }.getOrNull() ?: return null
+        val result = load(src.card, src.folder, COVER_OPTIONS) ?: return null
         synchronized(loadedIcons) { loadedIcons[key] = result }
         return result
     }
+
+    private fun load(cardFile: File, folder: String, options: Ps2IconRenderer.Options): Loaded? = runCatching {
+        Ps2MemoryCard.open(cardFile)?.use { card ->
+            val save = card.saves().firstOrNull { it.folder == folder } ?: return@use null
+            val sys = Ps2IconSys.parse(save.read("icon.sys")) ?: return@use null
+            val icon = Ps2Icon.parse(save.read(sys.iconNormal)) ?: return@use null
+            Loaded(icon, sys, Ps2IconRenderer.choosePose(icon, sys, options))
+        }
+    }.getOrNull()
+
+    // ---- Icon viewer ----------------------------------------------------------------------
+
+    /** One save with an icon, for the Icon Viewer: every save on every card, not just the one
+     *  per game a cover uses. */
+    class SaveRef(val card: File, val folder: String, val title: String, val serial: String?, val modified: Long)
+
+    /** Every save with a readable icon.sys across the cards, newest first. Reads the cards. */
+    fun allSaves(context: Context): List<SaveRef> {
+        val out = ArrayList<SaveRef>()
+        for (card in cardFiles(context)) runCatching {
+            Ps2MemoryCard.open(card)?.use { c ->
+                for (save in c.saves()) {
+                    val sys = Ps2IconSys.parse(save.read("icon.sys")) ?: continue
+                    out += SaveRef(card, save.folder, sys.title.ifBlank { save.folder }, save.serial, save.modifiedMillis)
+                }
+            }
+        }
+        return out.sortedByDescending { it.modified }
+    }
+
+    /** A save's icon for the viewer, which shows it on its own background. Reads the card. */
+    fun loadForViewer(ref: SaveRef): Loaded? = load(ref.card, ref.folder, Ps2IconRenderer.Options())
+
+    private fun cardFiles(context: Context): List<File> =
+        (MemoryCardBackup.cardsDir(context).listFiles() ?: emptyArray()).filter { f ->
+            (f.isFile && f.name.endsWith(".ps2", ignoreCase = true)) ||
+                (f.isDirectory && File(f, "_pcsx2_superblock").exists())
+        }
 
     fun setEnabled(context: Context, on: Boolean) {
         MainActivityRuntime.prefs.edit().putBoolean(KEY_ENABLED, on).apply()
@@ -132,11 +167,7 @@ object MemcardCovers {
     private class Pick(val card: File, val folder: String, val modified: Long)
 
     private fun scan(context: Context): Map<String, File> {
-        val cardsDir = MemoryCardBackup.cardsDir(context)
-        val cards = (cardsDir.listFiles() ?: emptyArray()).filter { f ->
-            (f.isFile && f.name.endsWith(".ps2", ignoreCase = true)) ||
-                (f.isDirectory && File(f, "_pcsx2_superblock").exists())
-        }
+        val cards = cardFiles(context)
 
         // The newest save of each game across every card, by the time the card itself recorded.
         val picks = HashMap<String, Pick>()
@@ -183,7 +214,7 @@ object MemcardCovers {
     private fun renderTo(save: Ps2Save, file: File) {
         val sys = Ps2IconSys.parse(save.read("icon.sys")) ?: return
         val icon = Ps2Icon.parse(save.read(sys.iconNormal)) ?: return
-        val px = Ps2IconRenderer.render(icon, sys, COVER_W, COVER_H)
+        val px = Ps2IconRenderer.render(icon, sys, COVER_W, COVER_H, COVER_OPTIONS)
         val bmp = Bitmap.createBitmap(px, COVER_W, COVER_H, Bitmap.Config.ARGB_8888)
         val tmp = File(file.parentFile, file.name + ".tmp")
         tmp.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }

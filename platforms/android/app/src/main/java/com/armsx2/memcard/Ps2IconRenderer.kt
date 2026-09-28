@@ -14,7 +14,7 @@ import kotlin.math.sqrt
  * renders a cover once and is done: covers are cached, never drawn per frame of scrolling.
  */
 object Ps2IconRenderer {
-    class Options(
+    data class Options(
         /** Turn about the vertical axis, radians, or null to choose one (see [choosePose]). */
         val yaw: Float? = null,
         /** Animation time in frames, or null to choose one along with the turn. */
@@ -26,6 +26,12 @@ object Ps2IconRenderer {
         /** Least light any surface gets. The console shades with the save's own ambient, which
          *  is often dim (0.25); on a still cover that leaves unlit faces nearly black. */
         val ambientFloor: Float = 0.45f,
+        /** Draw the save's icon.sys gradient behind it; without, everything but the icon is
+         *  transparent (a library cover is just the icon, on the shelf like a cut-out case). */
+        val background: Boolean = true,
+        /** Stand the icon on the bottom edge, as it stands on y = 0 in its own space, rather than
+         *  centring it: on the shelf it sits on the shelf, over its reflection. */
+        val anchorBottom: Boolean = false,
     )
 
     /** A turn about the vertical axis (radians) and a moment of the animation (frames). */
@@ -35,6 +41,9 @@ object Ps2IconRenderer {
     // are the front, which a still cover keeps unless it is clearly a poor view.
     private val YAW_CANDIDATES = floatArrayOf(-0.35f, 0.35f, 1.22f, 1.92f, 2.79f, 3.49f, 4.36f, 5.06f)
     private const val FRONT_CANDIDATES = 2
+
+    /** Room left under an icon stood on the bottom edge. */
+    private const val BOTTOM_MARGIN = 0.03f
 
     /** How the last automatic choice was made, for the dev contact sheet. */
     @Volatile internal var lastPick: String = ""
@@ -63,7 +72,7 @@ object Ps2IconRenderer {
      * icon really looks from there.
      *
      * Deliberately not judged by which way surfaces face: the stored normals can't be trusted for
-     * that (Bakugan's card reads correctly from the side its normals point away from).
+     * that (every normal on Bakugan's card points the same way, both faces included).
      */
     fun choosePose(icon: Ps2Icon, sys: Ps2IconSys?, options: Options = Options()): Pose {
         val yaws = options.yaw?.let { floatArrayOf(it) } ?: YAW_CANDIDATES
@@ -102,6 +111,10 @@ object Ps2IconRenderer {
      * the side a save's own logo reads correctly from (ESPN's, not mirrored). The icon.sys light
      * directions point the way the light travels, so a surface is lit by the reverse of each.
      *
+     * Back faces, wound clockwise on screen, are not drawn, as on the console: on 200 of 212 real
+     * saves everything visible is wound the other way, and Bakugan's card, which is built inside
+     * out, reads the right way round from either side only with its near face hidden.
+     *
      * The model turns about its own vertical axis, through the middle of its footprint, and is
      * framed by the widest it gets over a full turn and every animation shape. So a turn or an
      * animation never changes its size or pushes it out of the tile, and a spinning cover starts
@@ -114,7 +127,7 @@ object Ps2IconRenderer {
         val h = height * ss
         val color = IntArray(w * h)
         val depth = FloatArray(w * h) { Float.NEGATIVE_INFINITY }
-        background(color, w, h, sys)
+        if (options.background) background(color, w, h, sys)
 
         val nv = icon.vertexCount
         val pos = blend(icon, time)
@@ -138,9 +151,15 @@ object Ps2IconRenderer {
             val dx = all[i * 3] - cx; val dz = all[i * 3 + 2] - cz
             r2 = max(r2, dx * dx + dz * dz)
         }
-        val midY = (minY + maxY) / 2f
-        val span = max(2f * sqrt(r2), maxY - minY).coerceAtLeast(1e-3f)
-        val scale = min(w, h) * options.fill / span
+        // Width and height fitted separately: a standing figure in a tall tile uses the height.
+        val scale = min(
+            w * options.fill / (2f * sqrt(r2)).coerceAtLeast(1e-3f),
+            h * options.fill / (maxY - minY).coerceAtLeast(1e-3f),
+        )
+        // Where icon-space y lands on screen: its base (the largest y) on the bottom edge, or
+        // its middle in the middle.
+        val refY = if (options.anchorBottom) maxY else (minY + maxY) / 2f
+        val baseY = if (options.anchorBottom) h * (1f - BOTTOM_MARGIN) else h / 2f
 
         // Transform and light each vertex once.
         val sx = FloatArray(nv); val syy = FloatArray(nv); val sz = FloatArray(nv)
@@ -153,7 +172,7 @@ object Ps2IconRenderer {
             val rx = x * cy + z * sy
             val rz = -x * sy + z * cy
             sx[v] = w / 2f + rx * scale
-            syy[v] = h / 2f + (y - midY) * scale
+            syy[v] = baseY + (y - refY) * scale
             // Nearer the camera = smaller z; the depth test keeps the larger value, so negate.
             sz[v] = -rz
 
@@ -233,6 +252,9 @@ object Ps2IconRenderer {
         return f.weights[n - 1]
     }
 
+    /** Just a save's background gradient, [w] x [h], for a caller that draws the icon over it. */
+    fun backgroundPixels(sys: Ps2IconSys?, w: Int, h: Int): IntArray = IntArray(w * h).also { background(it, w, h, sys) }
+
     // The browser's own backdrop, dark blue, that a save's background is laid over.
     private val BROWSER_BACKGROUND = intArrayOf(0x1A2A4A, 0x1A2A4A, 0x0A0F1E, 0x0A0F1E)
 
@@ -276,6 +298,8 @@ object Ps2IconRenderer {
         val x0 = sx[a]; val y0 = sy[a]; val x1 = sx[b]; val y1 = sy[b]; val x2 = sx[c]; val y2 = sy[c]
         val den = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2)
         if (den == 0f || !den.isFinite()) return
+        // Clockwise on screen: a back face.
+        if (den > 0f) return
         val minX = max(0, min(x0, min(x1, x2)).toInt())
         val maxX = min(w - 1, max(x0, max(x1, x2)).toInt() + 1)
         val minY = max(0, min(y0, min(y1, y2)).toInt())
@@ -334,17 +358,22 @@ object Ps2IconRenderer {
         return out
     }
 
+    /** Averages each [ss] x [ss] block. Colour is averaged over the covered samples only and
+     *  coverage becomes alpha, so a transparent icon's edges are smooth with no dark fringe. */
     private fun downsample(src: IntArray, w: Int, h: Int, ss: Int): IntArray {
         val ow = w / ss; val oh = h / ss
         val out = IntArray(ow * oh)
         val n = ss * ss
         for (y in 0 until oh) for (x in 0 until ow) {
-            var r = 0; var g = 0; var b = 0
+            var r = 0; var g = 0; var b = 0; var covered = 0
             for (dy in 0 until ss) for (dx in 0 until ss) {
                 val p = src[(y * ss + dy) * w + x * ss + dx]
+                if (p ushr 24 == 0) continue
                 r += (p shr 16) and 0xFF; g += (p shr 8) and 0xFF; b += p and 0xFF
+                covered++
             }
-            out[y * ow + x] = 0xFF000000.toInt() or ((r / n) shl 16) or ((g / n) shl 8) or (b / n)
+            out[y * ow + x] = if (covered == 0) 0
+                else ((covered * 255 / n) shl 24) or ((r / covered) shl 16) or ((g / covered) shl 8) or (b / covered)
         }
         return out
     }

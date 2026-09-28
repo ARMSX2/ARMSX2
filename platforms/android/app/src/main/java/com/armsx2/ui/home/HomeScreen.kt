@@ -76,6 +76,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
@@ -239,6 +240,8 @@ fun HomeScreen(
     LaunchedEffect(memcardCoversOn, emuState) {
         if (memcardCoversOn) com.armsx2.memcard.MemcardCovers.refresh(context)
     }
+    if (MemcardIconViewerState.open.value) MemcardIconViewer(onClose = { MemcardIconViewerState.open.value = false })
+    if (MemcardIconViewerState.info.value) MemcardCoversInfo(onClose = { MemcardIconViewerState.info.value = false })
     DisposableEffect(viewModel, onOpenMenu) {
         HomeInputController.bind(viewModel, onOpenMenu, onOpenGameMenu = { menuGame = it })
         onDispose { HomeInputController.unbind(viewModel) }
@@ -1628,9 +1631,16 @@ private fun LibraryOverflowMenu(
             closeThen { onSort(HomeSort.RecentlyPlayed) }
         }
         OverflowSeparator()
-        // Memory Card Covers: each game's PS2 save icon, from the player's own cards, as its cover.
-        // One row cycling Off -> Animated -> Still, like Cover region; Animated brings the selected
-        // tile's icon to life.
+        // Memory card covers, a section of its own: each game's PS2 save icon, from the player's own
+        // cards, as its cover (Off / Animated / Still, cycling like Cover region), the Icon Viewer,
+        // and a note on how it works.
+        Text(
+            text = str("games.section.memcardCovers"),
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Bold,
+        )
         run {
             val coversCtx = androidx.compose.ui.platform.LocalContext.current
             remember { com.armsx2.memcard.MemcardCovers.load() }
@@ -1657,6 +1667,13 @@ private fun LibraryOverflowMenu(
                 }
             }
         }
+        LibraryOverflowItem(glyph = "◈", label = str("games.overflow.iconViewer")) {
+            closeThen { MemcardIconViewerState.open.value = true }
+        }
+        LibraryOverflowItem(glyph = "?", label = str("games.overflow.memcardInfo")) {
+            closeThen { MemcardIconViewerState.info.value = true }
+        }
+        OverflowSeparator()
         LibraryOverflowItem(
             glyph = if (use3dCovers) "3D" else "2D",
             label = str("games.overflow.coverStyle"),
@@ -1848,7 +1865,7 @@ private fun GameGridCard(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(coverAspectRatio())
-                .coverFrame(selected, 2.dp, MaterialTheme.colorScheme.primary),
+                .coverFrame(selected, 2.dp, MaterialTheme.colorScheme.primary, memcard = showsMemcardCover(game)),
             animate = selected,
         )
         if (GridLabels.show.value) {
@@ -1905,7 +1922,7 @@ private fun RecentGameCard(game: GameInfo, selected: Boolean = false, onClick: (
         GameCover(
             game,
             Modifier.fillMaxWidth().aspectRatio(coverAspectRatio())
-                .coverFrame(selected, 2.5.dp, Color(0xFF3DA5FF)),
+                .coverFrame(selected, 2.5.dp, Color(0xFF3DA5FF), memcard = showsMemcardCover(game)),
             animate = selected,
         )
         Spacer(Modifier.height(5.dp))
@@ -2007,15 +2024,30 @@ private fun coverAspectRatio(): Float = if (CoverArtStyle.use3d.value) 0.646f el
  * keeps the theme's identity. Whichever of the two the background happens to match, the other one
  * still reads.
  */
-private fun Modifier.coverFrame(selected: Boolean, selectedWidth: Dp, selectedColor: Color): Modifier {
-    val idle = !CoverArtStyle.use3d.value
+private fun Modifier.coverFrame(selected: Boolean, selectedWidth: Dp, selectedColor: Color, memcard: Boolean = false): Modifier {
+    // A Memory Card Cover is just the icon, so no frame shaped like a cover around it; while it
+    // animates, the moving icon is what shows the selection, so only a still one gets a frame.
+    val showSelected = selected && !(memcard && com.armsx2.memcard.MemcardCovers.animateSelected.value)
+    val idle = !CoverArtStyle.use3d.value && !memcard
     val contrast = MaterialTheme.colorScheme.inverseSurface
     return when {
-        selected -> this
+        showSelected -> this
             .border(selectedWidth + 2.dp, contrast, RoundedCornerShape(13.dp))
             .border(selectedWidth, selectedColor, RoundedCornerShape(12.dp))
         idle -> this.border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f), RoundedCornerShape(12.dp))
         else -> this
+    }
+}
+
+/** This game's tile shows a Memory Card Cover (the feature is on, it has a save icon, and no cover
+ *  set by hand outranks it). */
+@Composable
+private fun showsMemcardCover(game: GameInfo): Boolean {
+    if (!com.armsx2.memcard.MemcardCovers.enabled.value) return false
+    val generation = com.armsx2.memcard.MemcardCovers.generation.intValue
+    val customMap = LocalCustomCoverMap.current
+    return remember(game.uri, game.serial, customMap, generation) {
+        CustomCovers.matchIn(customMap, game) == null && com.armsx2.memcard.MemcardCovers.coverFor(game.serial) != null
     }
 }
 
@@ -2030,6 +2062,8 @@ private fun GameCover(
     placeholderText: Boolean = true,
     /** The tile is selected: a Memory Card Cover comes to life (see MemcardAnimatedCover). */
     animate: Boolean = false,
+    /** A reflection of a selected tile: it shows that tile's moving Memory Card Cover too. */
+    mirrorLive: Boolean = false,
 ) {
     val context = LocalContext.current
     // Read the 3D-cover flag explicitly (not just via game.coverUrl, which is
@@ -2051,6 +2085,12 @@ private fun GameCover(
         if (custom == null) com.armsx2.memcard.MemcardCovers.coverFor(game.serial) else null
     }
     val model = custom ?: memcard ?: game.coverUrl
+    // The selected tile's icon moves; the still picture under it is hidden once the first moving
+    // frame is up, or the two (both transparent around the icon) would show at once.
+    val animating = animate && memcard != null && com.armsx2.memcard.MemcardCovers.animateSelected.value
+    var animReady by remember(game.serial, animating) { mutableStateOf(false) }
+    val mirroring = mirrorLive && memcard != null && com.armsx2.memcard.MemcardCovers.animateSelected.value
+    var mirrorShown by remember(game.serial, mirroring) { mutableStateOf(false) }
     val request = remember(model, use3d, coverRegion, coverPins) {
         ImageRequest.Builder(context)
             .data(model)
@@ -2070,7 +2110,7 @@ private fun GameCover(
             SubcomposeAsyncImage(
                 model = request,
                 contentDescription = game.displayTitle(EnglishTitles.enabled.value),
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().then(if ((animating && animReady) || mirrorShown) Modifier.alpha(0f) else Modifier),
                 contentScale = contentScale,
                 loading = { CoverPlaceholder(game.displayTitle(EnglishTitles.enabled.value), game.serial, showText = placeholderText) },
                 error = {
@@ -2092,8 +2132,11 @@ private fun GameCover(
                     }
                 },
             )
-            if (animate && memcard != null && com.armsx2.memcard.MemcardCovers.animateSelected.value) {
-                game.serial?.let { MemcardAnimatedCover(it, Modifier.matchParentSize()) }
+            if (animating) {
+                game.serial?.let { MemcardAnimatedCover(it, Modifier.matchParentSize(), onFirstFrame = { animReady = true }) }
+            }
+            if (mirroring) {
+                game.serial?.let { MemcardLiveMirror(it, Modifier.matchParentSize(), onShown = { shown -> mirrorShown = shown }) }
             }
         }
     }
@@ -2465,7 +2508,8 @@ private fun ShelfGameCard(game: GameInfo, width: Dp, reflectionHeight: Dp, selec
             game,
             Modifier.fillMaxWidth().aspectRatio(0.7f)
                 .then(
-                    if (selected)
+                    // An animating Memory Card Cover shows the selection by moving; see coverFrame.
+                    if (selected && !(showsMemcardCover(game) && com.armsx2.memcard.MemcardCovers.animateSelected.value))
                         Modifier.border(2.5.dp, Color(0xFF3DA5FF), RoundedCornerShape(4.dp))
                     else Modifier,
                 ),
@@ -2484,6 +2528,7 @@ private fun ShelfGameCard(game: GameInfo, width: Dp, reflectionHeight: Dp, selec
                 cornerRadius = 0.dp,
                 contentScale = ContentScale.Fit,
                 placeholderText = false,
+                mirrorLive = selected,
             )
             // Fade the reflection out toward the front of the shelf.
             Box(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0x55000000)))))
