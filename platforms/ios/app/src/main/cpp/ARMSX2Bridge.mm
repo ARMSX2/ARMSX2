@@ -69,6 +69,7 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 #include "common/Error.h"
 #include "IOS/TexturePackPaths.h"
 #include "IOS/TexturePackTar.h"
+#include "IOS/TexturePackZstd.h"
 
 #include <algorithm>
 #include <array>
@@ -4147,8 +4148,9 @@ static NSString* ARMSX2FailTexturePack(NSError** error, NSString* message)
     return nil;
 }
 
-// Android rejects a bigger single file as malformed rather than large.
+// Android's limits: a bigger single file is malformed rather than large, and so is a pack of more entries.
 static const zip_uint64_t kMaxTextureBytes = 512ull * 1024 * 1024;
+static const unsigned long long kMaxEntries = 100000;
 static const unsigned long long kSpareBytes = 256ull * 1024 * 1024;
 
 static NSString* ARMSX2NoSpaceForTexturePack(NSString* name, unsigned long long needed, unsigned long long available)
@@ -4172,6 +4174,8 @@ static NSString* ARMSX2UnpackTextureZip(NSURL* archiveURL, NSURL* staging, unsig
     std::unordered_set<std::string> destinations;
     unsigned long long total = 0;
     const zip_int64_t count = zip_get_num_entries(zf.get(), 0);
+    if (static_cast<unsigned long long>(std::max<zip_int64_t>(count, 0)) > kMaxEntries)
+        return [NSString stringWithFormat:@"%@ has more than %llu entries.", name, kMaxEntries];
     for (zip_uint64_t i = 0; i < static_cast<zip_uint64_t>(std::max<zip_int64_t>(count, 0)); i++) {
         zip_stat_t stat = {};
         if (zip_stat_index(zf.get(), i, ZIP_FL_ENC_GUESS, &stat) != 0 || !stat.name)
@@ -4200,20 +4204,29 @@ static NSString* ARMSX2UnpackTextureZip(NSURL* archiveURL, NSURL* staging, unsig
     if (available < total + kSpareBytes)
         return ARMSX2NoSpaceForTexturePack(name, total + kSpareBytes, available);
 
+    // The sizes above are only what the zip claims, so the real bytes are counted again as they land.
     NSFileManager* manager = [NSFileManager defaultManager];
+    std::vector<char> chunk(256 * 1024);
+    unsigned long long written = 0;
     for (size_t n = 0; n < paths.size(); n++) {
         NSURL* destination = [staging URLByAppendingPathComponent:@(paths[n].c_str()) isDirectory:NO];
         auto file = zip_fopen_index_managed(zf.get(), indices[n], 0);
-        std::optional<std::vector<u8>> data = file ? ReadBinaryFileInZip(file.get(), 1024 * 1024) : std::nullopt;
-        if (data.has_value() && data->size() > kMaxTextureBytes)
-            data.reset();
-        bool written = false;
-        @autoreleasepool {
-            written = data.has_value() &&
-                [manager createDirectoryAtURL:destination.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil] &&
-                [[NSData dataWithBytesNoCopy:data->data() length:data->size() freeWhenDone:NO] writeToURL:destination options:0 error:nil];
+        [manager createDirectoryAtURL:destination.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+        std::FILE* out = file ? std::fopen(destination.path.fileSystemRepresentation, "wb") : nullptr;
+        bool ok = out != nullptr;
+        zip_uint64_t size = 0;
+        zip_int64_t got = 0;
+        while (ok && (got = zip_fread(file.get(), chunk.data(), chunk.size())) > 0) {
+            size += static_cast<zip_uint64_t>(got);
+            written += static_cast<unsigned long long>(got);
+            if (written + kSpareBytes > available) {
+                std::fclose(out);
+                return [NSString stringWithFormat:@"%@ does not fit in the free space.", name];
+            }
+            ok = size <= kMaxTextureBytes && std::fwrite(chunk.data(), 1, static_cast<size_t>(got), out) == static_cast<size_t>(got);
         }
-        if (!written)
+        ok = (!out || std::fclose(out) == 0) && ok && got == 0;
+        if (!ok)
             return [NSString stringWithFormat:@"Could not unpack %s from %@.", paths[n].c_str(), name];
     }
     return nil;
@@ -4225,8 +4238,7 @@ static NSString* ARMSX2UnpackTextureTarZstd(NSURL* archiveURL, NSURL* staging, u
 {
     NSString* name = archiveURL.lastPathComponent;
     auto fp = FileSystem::OpenManagedCFile(archiveURL.path.fileSystemRepresentation, "rb");
-    std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> dctx(ZSTD_createDCtx(), ZSTD_freeDCtx);
-    if (!fp || !dctx)
+    if (!fp)
         return [NSString stringWithFormat:@"Could not open %@.", name];
 
     unsigned char head[32]; // more than any zstd frame header
@@ -4235,43 +4247,22 @@ static NSString* ARMSX2UnpackTextureTarZstd(NSURL* archiveURL, NSURL* staging, u
         return ARMSX2NoSpaceForTexturePack(name, content + kSpareBytes, available);
     std::rewind(fp.get());
 
-    std::vector<char> in(ZSTD_DStreamInSize()), out(ZSTD_DStreamOutSize());
-    ZSTD_inBuffer input = {in.data(), 0, 0};
-    size_t out_pos = 0, out_len = 0;
-    bool drained = true;
-    const auto read = [&](void* buffer, size_t n) {
-        char* dst = static_cast<char*>(buffer);
-        while (n > 0) {
-            if (out_pos == out_len) {
-                // A full output buffer can leave decoded bytes behind, so drain before reading more.
-                if (drained && input.pos == input.size) {
-                    input.size = std::fread(in.data(), 1, in.size(), fp.get());
-                    input.pos = 0;
-                    if (input.size == 0)
-                        return false;
-                }
-                ZSTD_outBuffer output = {out.data(), out.size(), 0};
-                if (ZSTD_isError(ZSTD_decompressStream(dctx.get(), &output, &input)))
-                    return false;
-                out_pos = 0;
-                out_len = output.pos;
-                drained = output.pos < output.size;
-                continue;
-            }
-            const size_t take = std::min(n, out_len - out_pos);
-            std::memcpy(dst, out.data() + out_pos, take);
-            out_pos += take;
-            dst += take;
-            n -= take;
-        }
-        return true;
-    };
+    TexturePackZstd zstd(fp.get());
+    if (!zstd.Valid())
+        return [NSString stringWithFormat:@"Could not open %@.", name];
+    const auto read = [&zstd](void* buffer, size_t n) { return zstd.Read(buffer, n); };
 
     NSFileManager* manager = [NSFileManager defaultManager];
     std::unordered_set<std::string> destinations;
     std::vector<char> chunk(256 * 1024);
     std::string error;
+    // The frame header's size is optional and can lie, so the real bytes are counted as they land.
+    unsigned long long entries = 0, written = 0;
     const bool ok = TexturePackTar::Read(read, [&](const std::string& entry_name, uint64_t size) {
+        if (++entries > kMaxEntries) {
+            error = "it has more than " + std::to_string(kMaxEntries) + " entries";
+            return false;
+        }
         const TexturePackPaths::Entry entry = TexturePackPaths::Classify(entry_name);
         if (entry.kind == TexturePackPaths::Kind::Unsafe) {
             error = "it contains an unsafe entry: " + entry_name;
@@ -4302,6 +4293,11 @@ static NSString* ARMSX2UnpackTextureTarZstd(NSURL* archiveURL, NSURL* staging, u
             const size_t n = static_cast<size_t>(std::min<uint64_t>(left, chunk.size()));
             if (!read(chunk.data(), n))
                 break;
+            if (file && (written += n) + kSpareBytes > available) {
+                std::fclose(file);
+                error = "it does not fit in the free space";
+                return false;
+            }
             wrote = wrote && (!file || std::fwrite(chunk.data(), 1, n, file) == n);
             left -= n;
         }
