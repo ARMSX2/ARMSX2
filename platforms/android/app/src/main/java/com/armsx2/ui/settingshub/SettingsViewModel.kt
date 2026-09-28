@@ -28,16 +28,30 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         InGameOverlay.currentSerial.value = serial
         InGameOverlay.settingsScope.value = if (serial == null) SettingsScope.Global else SettingsScope.Game
         settings.value = if (serial == null) ConfigStore.loadGlobal() else ConfigStore.resolveForGame(serial)
-        uiState.value = SettingsUiState(
-            category = if (game != null && category == SettingsCategory.General) SettingsCategory.Performance else category,
-            game = game,
-        )
+        // General is the generic "open settings" entry every menu uses, so reopen on the category
+        // last shown instead (#729): changing a setting, trying it in the game and coming back
+        // used to land on General every time. A caller that asks for a specific category (the
+        // in-game Skins shortcut) still gets it. Info exists only for a game, so without one a
+        // remembered Info gives way to General.
+        val remembered = lastCategory
+            ?.takeIf { category == SettingsCategory.General && (game != null || it != SettingsCategory.Info) }
+        val start = remembered ?: category
+        val shown = if (game != null && start == SettingsCategory.General) SettingsCategory.Performance else start
+        lastCategory = shown
+        uiState.value = SettingsUiState(category = shown, game = game)
     }
 
     fun selectCategory(category: SettingsCategory) {
         // Nav tick when flipping to a different settings tab (controller bumpers, tap, or search jump).
         if (category != uiState.value.category) com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.NAV)
         uiState.value = uiState.value.copy(category = category)
+        lastCategory = category
+    }
+
+    private companion object {
+        /** The category last shown, for the life of the process. Not in the view-model's own state:
+         *  the library's settings route gets a fresh view-model on every visit. */
+        var lastCategory: SettingsCategory? = null
     }
 
     /**

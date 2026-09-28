@@ -90,8 +90,8 @@ object SettingsCategoryNav {
     var cycle: ((Int) -> Unit)? = null
 }
 
-/** Retains the settings page's scroll offset across close/reopen. The selected category already
- *  persists in the view-model, so restoring this one offset returns you to where you were (esp.
+/** Retains the settings page's scroll offset across close/reopen. The selected category is
+ *  remembered by SettingsViewModel (#729), so restoring this one offset returns you to where you were (esp.
  *  useful in long lists like Fixes) instead of snapping to the top every time. */
 private object SettingsScrollMemory {
     var lastOffset = 0
