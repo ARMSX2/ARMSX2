@@ -17,6 +17,10 @@ import kr.co.iefriends.pcsx2.NativeApp
  * **Blocking — never call from the main thread.** It reads the image's boot ELF (roughly 1–10 MB,
  * more for a compressed .chd, which decompresses on the way). Results are memoised per path for the
  * process lifetime; a disc image's identity cannot change without the file changing.
+ *
+ * While a game is running this answers null for any disc image the VM does not report: the probe
+ * goes through the core's one CDVD, which the game holds (see getGameTitle in native-lib.cpp). A
+ * null is not memoised, so the same call works again once the game has closed.
  */
 object DiscIdentity {
     data class Id(val serial: String?, val crc: String?)

@@ -520,8 +520,22 @@ Java_kr_co_iefriends_pcsx2_NativeApp_getGameTitle(JNIEnv *env, jclass clazz,
     const GameList::Entry *entry = GameList::GetEntryForPath(_szPath.c_str());
     if (!entry || entry->crc == 0)
     {
-        if (GameList::PopulateEntryFromPath(_szPath, &temp_entry))
-            entry = &temp_entry;
+        // ★ A disc image is identified THROUGH the global CDVD: GameList::GetIsoSerialAndCRC points
+        // it at the file, reads, and closes it. A running VM holds the CDVD lock for its whole life,
+        // and probing anyway closed the game's own disc under it. From the quick menu during a
+        // fast boot (the menu asks for the CRC, which is 0 until the game's ELF runs) that failed the
+        // boot's disc read at the BIOS hand-off, and the BIOS menu came up instead of the game.
+        // PCSX2's own callers (the game list refresh, IsoHasher) take this lock the same way. An
+        // ELF is read from its own file and never touches the CDVD.
+        const bool is_elf = VMManager::IsElfFileName(_szPath.c_str());
+        Error cdvd_error;
+        if (is_elf || cdvdLock(&cdvd_error))
+        {
+            if (GameList::PopulateEntryFromPath(_szPath, &temp_entry))
+                entry = &temp_entry;
+            if (!is_elf)
+                cdvdUnlock();
+        }
     }
     if (!entry)
         return env->NewStringUTF("");
