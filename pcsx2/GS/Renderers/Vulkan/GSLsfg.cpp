@@ -151,11 +151,11 @@ namespace GSLsfg
 			// VkDevice, and there is no equivalent path for the GLES backend.
 			if (!s_is_vulkan.load(std::memory_order_relaxed))
 				return Unavailable::NotVulkan;
-			// Adreno 7xx or newer, per upstream. Asked of the resolved architecture rather than
-			// a GL_RENDERER substring search, for the same reason the Mali workarounds moved
-			// into the driver database: a parsed generation can say "7xx and up", a substring
-			// cannot.
-			if (s_adreno_generation.load(std::memory_order_relaxed) < 7)
+			// Adreno 7xx or newer, or a 6xx on Turnip (GSDeviceVK reports 6 only for that
+			// pairing). Asked of the resolved architecture rather than a GL_RENDERER substring
+			// search, for the same reason the Mali workarounds moved into the driver database: a
+			// parsed generation can say "7xx and up", a substring cannot.
+			if (s_adreno_generation.load(std::memory_order_relaxed) < 6)
 				return Unavailable::GpuUnsupported;
 		}
 
@@ -186,7 +186,7 @@ namespace GSLsfg
 			case Unavailable::Available: return "available";
 			case Unavailable::NotCompiledIn: return "not included in this build";
 			case Unavailable::NotVulkan: return "requires the Vulkan renderer";
-			case Unavailable::GpuUnsupported: return "requires an Adreno 7xx or newer GPU";
+			case Unavailable::GpuUnsupported: return "requires an Adreno 7xx or newer GPU, or an Adreno 6xx on Turnip";
 			case Unavailable::NoDll: return "no Lossless.dll selected";
 			case Unavailable::DllUnreadable: return "the selected file is not a readable DLL";
 			case Unavailable::InitFailed: return "frame generation failed to start on this device";

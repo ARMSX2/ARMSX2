@@ -3806,13 +3806,20 @@ void GSDeviceVK::PublishGPUProfile()
 	SetMobileGPUIdentity(mobile_profile.gpu);
 	SetMobileGSTuning(mobile_profile.gs_tuning);
 
-	// Hand the resolved architecture to frame generation, which needs Adreno 7xx or newer. Done
-	// here rather than asked for on demand so the settings screen can still say WHY the row is
-	// unavailable after the game stops and the device is gone.
+	// Hand the resolved architecture to frame generation, which needs Adreno 7xx or newer, or a
+	// 6xx on Turnip. Done here rather than asked for on demand so the settings screen can still
+	// say WHY the row is unavailable after the game stops and the device is gone.
 	{
 		u32 adreno_generation = 0;
 		switch (mobile_profile.gpu.architecture)
 		{
+			// Adreno 6xx only under Turnip, which is where frame generation already runs on these
+			// GPUs (Winlator, GameHub). Nothing shows the Qualcomm driver on 6xx doing it (#626).
+			// Either way Initialize() still checks the features the shaders need.
+			case MobileGpuArchitecture::Adreno6xx:
+				if (mobile_profile.driver.driver == MobileGpuDriver::MesaTurnip)
+					adreno_generation = 6;
+				break;
 			case MobileGpuArchitecture::Adreno7xx: adreno_generation = 7; break;
 			case MobileGpuArchitecture::Adreno8xx: adreno_generation = 8; break;
 			// Adreno X (X1-85 and up) postdates 7xx and carries the same feature set.

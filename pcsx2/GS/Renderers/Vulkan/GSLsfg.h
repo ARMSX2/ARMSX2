@@ -33,7 +33,7 @@ namespace GSLsfg
 		Available = 0,   ///< usable right now
 		NotCompiledIn,   ///< play flavour, or the library was not fetched
 		NotVulkan,       ///< the OpenGL backend has no AHardwareBuffer path
-		GpuUnsupported,  ///< needs Adreno 7xx or newer
+		GpuUnsupported,  ///< needs Adreno 7xx or newer, or a 6xx on Turnip
 		NoDll,           ///< the user has not supplied Lossless.dll
 		DllUnreadable,   ///< supplied, but not a PE we can read shaders out of
 		InitFailed,      ///< the library refused to initialise on this device
@@ -65,7 +65,8 @@ namespace GSLsfg
 
 	/// Record what the renderer that just came up can do. Called once from GSDeviceVK::Create so
 	/// the frontend can answer "is this supported" without a device, and so the verdict survives
-	/// into the settings screen after the game stops. `adreno_generation` is 7 for Adreno 7xx, 8
+	/// into the settings screen after the game stops. `adreno_generation` is 6 for an Adreno 6xx on
+	/// Turnip, 7 for Adreno 7xx, 8
 	/// for 8xx, 0 when the GPU is not an Adreno or was not recognised.
 	void NoteRendererCapability(bool is_vulkan, u32 adreno_generation);
 
