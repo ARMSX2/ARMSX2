@@ -45,11 +45,11 @@ if [ "${INSTALLDIR:0:1}" != "/" ]; then
 	INSTALLDIR="$PWD/$INSTALLDIR"
 fi
 
-QT=6.11.1
+QT=6.11.2
 QTAPNG=1.3.0
 
 FREETYPE=2.14.3
-SDL=SDL3-3.4.12
+SDL=SDL3-3.4.16
 HARFBUZZ=14.2.0
 ZSTD=1.5.7
 LZ4=1.10.0
@@ -59,8 +59,8 @@ LIBWEBP=1.6.0
 FFMPEG=8.1
 MOLTENVK=1.4.1
 KDDOCKWIDGETS=2.4.1
-PLUTOVG=1.3.2
-PLUTOSVG=0.0.7
+PLUTOVG=1.3.3
+PLUTOSVG=0.0.8
 RAPIDYAML=0.12.1
 
 SHADERC=2026.2
@@ -86,15 +86,15 @@ CMAKE_COMMON=(
 )
 
 grep . > SHASUMS <<EOF
-d9594a31228aa23ad6b531719a29b45f0f3989fe6c136d45767ea179f233c1ac  qtbase-everywhere-src-$QT.tar.xz
-b2bf6c6845ac175ed7f819145483ba4676f617aaa6a5012c8efee63c8bbac413  qtimageformats-everywhere-src-$QT.tar.xz
-7f3cf02f4824bf03c2c5859ea6db173bf1482a1daf24e6cdf7bc78cfa26a8a94  qtsvg-everywhere-src-$QT.tar.xz
-8e61835a679c93fa9c6065b142353c2071ba68e297898937c32a03777fcaf50d  qttools-everywhere-src-$QT.tar.xz
-37c02c81206594c7bb4edca85ac93e8e55a9836b70c960fde6cb0f8623ec5677  qttranslations-everywhere-src-$QT.tar.xz
+5b2e00eccaf5a4d8c14134ffa0ea8dfd0a35ae1ffc7f8d87fa4305a1ed23cf22  qtbase-everywhere-src-$QT.tar.xz
+cecd8900f34b6550076309bc94f62f828008b633a4239e0a08c86788f41001f8  qtimageformats-everywhere-src-$QT.tar.xz
+d594337feca84c26fb67fe87b85e6a5c12fda404b611d905f9d138210c311876  qtsvg-everywhere-src-$QT.tar.xz
+9ea75af35c512f7e09e61c8c3af3997f13b4d43bb099cf43fcec470126b4041e  qttools-everywhere-src-$QT.tar.xz
+021684c1a7937a9fabc3b056a6698ad5978794caf9ac190fd6cc11399e67c014  qttranslations-everywhere-src-$QT.tar.xz
 f1d3be3489f758efe1a8f12118a212febbe611aa670af32e0159fa3c1feab2a6  QtApng-$QTAPNG.tar.gz
 
 36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f  freetype-$FREETYPE.tar.xz
-f07b958a9ac5020fb7a44cadb957f658b2149c3c8abb4f63145fac9303249db7  $SDL.tar.gz
+7322236cd12090c3eb40b9728be4d49c76f66ad17d04369584d4ecad5cf77c68  $SDL.tar.gz
 c652d5d94971031654ab3989891a490a895d3e3f2b71171c62692b28e94b1b93  harfbuzz-$HARFBUZZ.tar.gz
 eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3  zstd-$ZSTD.tar.gz
 537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b  lz4-$LZ4.tar.gz
@@ -105,8 +105,8 @@ eee7dea22ed502868017971c86c63c4ed1e6085de0baebfdcc3d3322f00f3eb0  libpng-$LIBPNG
 b072aed6871998cce9b36e7774033105ca29e33632be5b6347f3206898e0756a  ffmpeg-$FFMPEG.tar.xz
 9985f141902a17de818e264d17c1ce334b748e499ee02fcb4703e4dc0038f89c  MoltenVK-$MOLTENVK.tar.gz
 5cd9495d9316cf6cc937bb328a7fd491c3248ef2469cfa42511f1039f6148aca  KDDockWidgets-$KDDOCKWIDGETS.tar.gz
-7bd4e79ce18b1d47517e7e91fbb7cf19d4f01942804a519bc7c0bf32b6325dd5  plutovg-$PLUTOVG.tar.gz
-78561b571ac224030cdc450ca2986b4de915c2ba7616004a6d71a379bffd15f3  plutosvg-$PLUTOSVG.tar.gz
+2b0d17a6e016f47b86f9c00e2cb82600041b1ea1f7d2a00c2d46ae542cbfed3c  plutovg-$PLUTOVG.tar.gz
+49d5cfe772d3aa10cd4879f2f6e189f5083c08e4c8ea01bf3d5b87c97dfca7d2  plutosvg-$PLUTOSVG.tar.gz
 e9efcdd17f86287748793cf21d106e461fcad8d103a3e5a23632afe93828660d  rapidyaml-$RAPIDYAML-src.tgz
 
 f924178e75e3293082481b25ed64d5e48a795b479dac3bd3c83d23070855df42  shaderc-$SHADERC.tar.gz
@@ -257,6 +257,8 @@ echo "Installing MoltenVK..."
 rm -fr "MoltenVK-${MOLTENVK}"
 tar xf "MoltenVK-$MOLTENVK.tar.gz"
 cd "MoltenVK-${MOLTENVK}"
+patch -p1 < "$SCRIPTDIR/4cf93f0f16b1503580cdb7ffdedb056321446677.patch"
+patch -p1 < "$SCRIPTDIR/mvk-texture-swizzle.patch"
 sed -i '' 's/xcodebuild "$@"/xcodebuild $XCODEBUILD_EXTRA_ARGS "$@"/g' fetchDependencies
 sed -i '' 's/XCODEBUILD :=/XCODEBUILD ?=/g' Makefile
 XCODEBUILD_EXTRA_ARGS="VALID_ARCHS=$OSX_ARCH" ./fetchDependencies --macos

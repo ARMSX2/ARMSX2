@@ -65,6 +65,7 @@ enum class ShaderConvert
 	RGBA8_TO_DEPTH16,
 	RGB5A1_TO_DEPTH16,
 	DEPTH32_TO_DEPTH24,
+	PRIMID_TO_RGBA8,
 	DOWNSAMPLE_COPY,
 	RGBA_TO_8I,
 	RGB5A1_TO_8I,
@@ -128,6 +129,7 @@ static inline constexpr bool HasColorOutput(ShaderConvert shader)
 		case ShaderConvert::DEPTH32_TO_RGBA8:
 		case ShaderConvert::DEPTH32_TO_RGB8:
 		case ShaderConvert::DEPTH16_TO_RGB5A1:
+		case ShaderConvert::PRIMID_TO_RGBA8:
 		case ShaderConvert::DOWNSAMPLE_COPY:
 		case ShaderConvert::RGBA_TO_8I:
 		case ShaderConvert::RGB5A1_TO_8I:
@@ -168,6 +170,7 @@ static inline constexpr bool HasFloat32Input(ShaderConvert shader)
 		case ShaderConvert::DEPTH32_TO_RGB8:
 		case ShaderConvert::DEPTH16_TO_RGB5A1:
 		case ShaderConvert::DEPTH32_TO_DEPTH24:
+		case ShaderConvert::PRIMID_TO_RGBA8:
 			return true;
 		default:
 			return false;
@@ -286,7 +289,7 @@ class ShaderConvertSelector
 public:
 	constexpr ShaderConvertSelector(ShaderConvert shader = ShaderConvert::COPY, u8 mask = 0xf,
  		bool depth_out = false, Filter filter = Filter::Nearest)
-		: fields { static_cast<u32>(shader) }
+		: fields {{ static_cast<u32>(shader) }}
 	{
 		*this = SetMask(mask).SetDepthOutput(depth_out).SetFilter(filter);
 	}
@@ -468,7 +471,7 @@ static inline ShaderConvertSelector GetConvertShader(GSTexture::Format src, GSTe
 			switch (dst)
 			{
 				case GSTexture::Format::Color:
-					pxAssert(src_bpp == 32 && dst_bpp == 32);
+					pxAssert(src_bpp == dst_bpp);
 					shader = ShaderConvert::COPY; // bpp is handled by mask
 					break;
 				case GSTexture::Format::DepthColor:
@@ -538,6 +541,10 @@ static inline ShaderConvertSelector GetConvertShader(GSTexture::Format src, GSTe
 				default:
 					pxAssert(false);
 			}
+			break;
+		case GSTexture::Format::PrimID:
+			pxAssert(dst == GSTexture::Format::Color);
+			shader = ShaderConvert::PRIMID_TO_RGBA8;
 			break;
 		default:
 			pxAssert(false);

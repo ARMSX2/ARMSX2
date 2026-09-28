@@ -204,6 +204,7 @@ static std::string s_disc_version;
 static std::string s_title;
 static std::string s_title_en_search;
 static std::string s_title_en_replace;
+static std::string s_cur_region;
 static u32 s_disc_crc;
 static u32 s_current_crc;
 static u32 s_elf_entry_point = 0xFFFFFFFFu;
@@ -211,6 +212,7 @@ static std::string s_elf_path;
 static std::pair<u32, u32> s_elf_text_range;
 static bool s_elf_executed = false;
 static std::string s_elf_override;
+static std::string s_game_settings_override;
 static std::string s_input_profile_name;
 static u32 s_frame_advance_count = 0;
 static bool s_fast_boot_requested = false;
@@ -982,6 +984,10 @@ bool VMManager::ReloadGameSettings()
 
 std::string VMManager::GetGameSettingsPath(const std::string_view game_serial, u32 game_crc)
 {
+	// Game settings override via -gamecfg command line flag
+	if (!s_game_settings_override.empty())
+		return s_game_settings_override;
+
 	std::string sanitized_serial(Path::SanitizeFileName(game_serial));
 
 	return game_serial.empty() ?
@@ -1248,11 +1254,12 @@ void VMManager::UpdateDiscDetails(bool booting)
 			s_disc_crc = GSDumpReplayer::GetDumpCRC();
 			s_disc_elf = {};
 			s_disc_version = {};
+			s_cur_region = "NTSC";
 			serial_is_valid = !s_disc_serial.empty();
 		}
 		else if (CDVDsys_GetSourceType() != CDVD_SourceType::NoDisc)
 		{
-			cdvdGetDiscInfo(&s_disc_serial, &s_disc_elf, &s_disc_version, &s_disc_crc, nullptr);
+			cdvdGetDiscInfo(&s_disc_serial, &s_disc_elf, &s_disc_version, &s_cur_region, &s_disc_crc, nullptr);
 			serial_is_valid = !s_disc_serial.empty();
 		}
 		else if (!s_elf_override.empty())
@@ -1260,12 +1267,14 @@ void VMManager::UpdateDiscDetails(bool booting)
 			s_disc_serial = Path::GetFileTitle(s_elf_override);
 			s_disc_version = {};
 			s_disc_crc = 0; // set below
+			s_cur_region = "NTSC";
 		}
 		else
 		{
 			s_disc_serial = BiosSerial;
 			s_disc_version = {};
 			s_disc_crc = 0;
+			s_cur_region = (BiosZone == "Europe") ? "PAL" : "NTSC";
 			title = fmt::format(TRANSLATE_FS("VMManager", "PS2 BIOS ({})"), BiosZone);
 		}
 
@@ -1570,6 +1579,7 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 			GSDumpReplayer::Shutdown();
 
 		s_elf_override = {};
+		s_game_settings_override = {};
 		ClearELFInfo();
 		ClearDiscDetails();
 
@@ -1669,6 +1679,23 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 		return VMBootResult::StartupFailure;
 	}
 	ScopedGuard close_cdvd(&DoCDVDclose);
+
+	if (!boot_params.game_config.empty())
+	{
+		if (!StringUtil::compareNoCase(Path::GetExtension(boot_params.game_config), "ini"))
+		{
+			Error::SetStringFmt(error,
+				TRANSLATE_FS("VMManager", "Requested game config '{}' is not an INI file."), boot_params.game_config);
+			return VMBootResult::StartupFailure;
+		}
+		else if (!FileSystem::FileExists(boot_params.game_config.c_str()))
+		{
+			Error::SetStringFmt(error,
+				TRANSLATE_FS("VMManager", "Requested game config '{}' does not exist."), boot_params.game_config);
+			return VMBootResult::StartupFailure;
+		}
+		s_game_settings_override = boot_params.game_config;
+	}
 
 	// Figure out which game we're running! This also loads game settings.
 	UpdateDiscDetails(true);
@@ -1897,6 +1924,7 @@ void VMManager::Shutdown(bool save_resume_state)
 
 	SaveSessionTime(s_disc_serial);
 	s_elf_override = {};
+	s_game_settings_override = {};
 	ClearELFInfo();
 	CDVDsys_ClearFiles();
 
@@ -2500,7 +2528,7 @@ void VMManager::ResetFrameLimiter()
 	s_limiter_frame_start = GetCPUTicks();
 }
 
-void VMManager::Internal::Throttle()
+void VMManager::Internal::Throttle(bool vsync_start)
 {
 	if (s_target_speed == 0.0f || s_use_vsync_for_timing)
 	{
@@ -2518,7 +2546,7 @@ void VMManager::Internal::Throttle()
 
 	const u64 uExpectedEnd =
 		s_limiter_frame_start +
-		s_limiter_ticks_per_frame; // Compute when we would expect this frame to end, assuming everything goes perfectly perfect.
+		(vsync_start ? (s_limiter_ticks_per_frame * 0.9) : s_limiter_ticks_per_frame); // Compute when we would expect this frame to end, assuming everything goes perfectly perfect.
 	const u64 iEnd = GetCPUTicks(); // The current tick we actually stopped on.
 	const s64 sDeltaTime = iEnd - uExpectedEnd; // The diff between when we stopped and when we expected to.
 
@@ -2549,8 +2577,11 @@ void VMManager::Internal::Throttle()
 	while (GetCPUTicks() < uExpectedEnd)
 		ShortSpin();
 
-	// Finally, set our next frame start to when this one ends
-	s_limiter_frame_start = uExpectedEnd;
+	if (!vsync_start)
+	{
+		// Finally, set our next frame start to when this one ends
+		s_limiter_frame_start = uExpectedEnd;
+	}
 }
 
 void VMManager::Internal::FrameRateChanged()
@@ -3108,6 +3139,11 @@ bool VMManager::Internal::WasFastBooted()
 bool VMManager::Internal::IsFastBootInProgress()
 {
 	return s_fast_boot_requested && !HasBootedELF();
+}
+
+std::string VMManager::Internal::GetCurrentRegion()
+{
+	return s_cur_region;
 }
 
 void VMManager::Internal::DisableFastBoot()
@@ -3702,7 +3738,7 @@ void VMManager::WarnAboutUnsafeSettings()
 			append(ICON_FA_CIRCLE_EXCLAMATION,
 				TRANSLATE_SV("VMManager", "Draw Buffering is enabled, this may result in graphical errors."));
 		}
-		if (EmuConfig.GS.UserHacks_RewriteLargeST)
+		if (EmuConfig.GS.UserHacks_RewriteLargeSTCoords)
 		{
 			append(ICON_FA_CIRCLE_EXCLAMATION,
 				TRANSLATE_SV("VMManager", "Rewrite large ST is enabled, this may reduce performance."));

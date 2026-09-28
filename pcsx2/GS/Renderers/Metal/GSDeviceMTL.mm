@@ -1302,7 +1302,10 @@ bool GSDeviceMTL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 			Console.Warning("Metal: Couldn't find adapter %s, using default", GSConfig.Adapter.c_str());
 		m_dev = GSMTLDevice(MRCTransfer(MTLCreateSystemDefaultDevice()));
 		if (!m_dev.dev)
-			Host::ReportErrorAsync(TRANSLATE_SV("GSDeviceMTL", "No Metal Devices Available"), TRANSLATE_SV("GSDeviceMTL", "No Metal-supporting GPUs were found.  PCSX2 requires a Metal GPU (available on all Macs from 2012 onwards)."));
+		{
+			Host::ReportErrorAsync(TRANSLATE_SV("GSDeviceMTL", "No Metal Devices Available"), TRANSLATE_SV("GSDeviceMTL", "No Metal-supporting GPUs were found.  PCSX2 requires a Metal GPU (available on all Macs from 2012 onwards).  If you're using OCLP on a Mac that should support Metal, try rerunning the OCLP installer."));
+			return false;
+		}
 	}
 
 	m_name = [[m_dev.dev name] UTF8String];
@@ -3158,7 +3161,7 @@ static simd::float4 ToSimd(const ImVec4& vec)
 
 void GSDeviceMTL::RenderImGui(ImDrawData* data)
 {
-	if (data->CmdListsCount == 0)
+	if (data->CmdLists.Size == 0)
 		return;
 	UpdateImGuiTextures();
 	simd::float4 transform;
@@ -3181,7 +3184,7 @@ void GSDeviceMTL::RenderImGui(ImDrawData* data)
 	simd::float2 clip_scale = ToSimd(data->FramebufferScale); // (1,1) unless using retina display which are often (2,2)
 	ImTextureID last_tex = reinterpret_cast<ImTextureID>(nullptr);
 
-	for (int i = 0; i < data->CmdListsCount; i++)
+	for (int i = 0; i < data->CmdLists.Size; i++)
 	{
 		const ImDrawList* cmd_list = data->CmdLists[i];
 		size_t vtx_size = cmd_list->VtxBuffer.Size * sizeof(ImDrawVert);

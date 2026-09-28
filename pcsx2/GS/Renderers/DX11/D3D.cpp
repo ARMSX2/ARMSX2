@@ -25,6 +25,7 @@
 #include <d3d11.h>
 #include <directx/d3d12.h>
 #include <d3dcompiler.h>
+#include <dxcapi.h>
 #include <fstream>
 
 #include "fmt/format.h"
@@ -377,6 +378,8 @@ GSRendererType D3D::GetPreferredRenderer()
 		Console.WriteLn("D3D11 feature level for autodetection: %x", static_cast<unsigned>(feature_level));
 		return feature_level;
 	};
+
+	/*
 	const auto get_d3d12_device = [&adapter]() {
 		wil::com_ptr_nothrow<ID3D12Device> device;
 		const HRESULT hr = D3D12CreateDevice(adapter.get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(device.put()));
@@ -384,6 +387,7 @@ GSRendererType D3D::GetPreferredRenderer()
 			Console.Error("D3D12CreateDevice() for automatic renderer failed: %08X", hr);
 		return device;
 	};
+	
 #ifdef ENABLE_VULKAN
 	static constexpr auto check_vulkan_supported = []() {
 		if (!GSDeviceVK::EnumerateGPUs().empty())
@@ -398,6 +402,7 @@ GSRendererType D3D::GetPreferredRenderer()
 #else
 	static constexpr auto check_vulkan_supported = []() { return false; };
 #endif
+	*/
 
 	switch (GetVendorID(adapter.get()))
 	{
@@ -431,30 +436,40 @@ GSRendererType D3D::GetPreferredRenderer()
 
 		case VendorID::Intel:
 		{
-			// Vulkan has broken barriers, prior to Xe.
-
+			// Note1: Vulkan has broken barriers, prior to Xe.
 			// Sampler feedback Tier 0.9 is only present in Tiger Lake/Xe/Arc, so we can use that to
 			// differentiate between them. Unfortunately, that requires a D3D12 device.
-			const auto device12 = get_d3d12_device();
-			if (device12)
-			{
-				D3D12_FEATURE_DATA_D3D12_OPTIONS7 opts = {};
-				if (SUCCEEDED(device12->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &opts, sizeof(opts))) &&
-					(opts.SamplerFeedbackTier >= D3D12_SAMPLER_FEEDBACK_TIER_0_9) &&
-					check_vulkan_supported())
-				{
-					Console.WriteLn("Sampler feedback tier 0.9 found for Intel GPU, defaulting to Vulkan.");
-					return GSRendererType::VK;
-				}
-				else
-				{
-					Console.WriteLn("Sampler feedback tier 0.9 or Vulkan not found for Intel GPU, using OpenGL.");
-					return GSRendererType::OGL;
-				}
-			}
 
-			Console.WriteLn("Sampler feedback tier 0.9 or Direct3D 12 not found for Intel GPU, using Direct3D 11.");
-			return GSRendererType::DX11;
+			// Note2: Keep DX11 default on Haswell/Broadwell as OpenGL is much much slower.
+			const std::optional<D3D_FEATURE_LEVEL> feature_level = get_d3d11_feature_level();
+			if (!feature_level.has_value())
+				return GSRendererType::DX11;
+			else if (feature_level == D3D_FEATURE_LEVEL_12_0)
+			{
+				return GSRendererType::DX12;
+				/*
+				// Keep the old code as a reference if we need it.
+				const auto device12 = get_d3d12_device();
+				if (device12)
+				{
+					D3D12_FEATURE_DATA_D3D12_OPTIONS7 opts = {};
+					if (SUCCEEDED(device12->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &opts, sizeof(opts))) &&
+						(opts.SamplerFeedbackTier >= D3D12_SAMPLER_FEEDBACK_TIER_0_9) &&
+						check_vulkan_supported())
+					{
+						Console.WriteLn("Sampler feedback tier 0.9 found for Intel GPU, defaulting to Vulkan.");
+						return GSRendererType::VK;
+					}
+					else
+						return GSRendererType::OGL;
+				}
+				
+				else
+					return GSRendererType::OGL;
+				*/
+			}
+			else
+				return GSRendererType::DX11;
 		}
 		break;
 
@@ -481,18 +496,23 @@ const char* D3D::ShaderModelToCacheString(D3D::ShaderModel shader_model)
 		case ShaderModel::SM50:
 			return "sm50";
 		case ShaderModel::SM51:
+		case ShaderModel::SM60:
+		case ShaderModel::SM61:
+		case ShaderModel::SM62:
+		case ShaderModel::SM63:
+		case ShaderModel::SM64:
 			return "sm51";
+		case ShaderModel::SM65:
+			return "sm65";
 		default:
 			return "unk";
 	}
 }
 
-wil::com_ptr_nothrow<ID3DBlob> D3D::CompileShader(D3D::ShaderType type, D3D::ShaderModel shader_model, bool debug,
+wil::com_ptr_nothrow<ID3DBlob> D3D::CompileShaderDXBC(D3D::ShaderType type, D3D::ShaderModel shader_model, bool debug,
 	const std::string_view code, const D3D_SHADER_MACRO* macros /* = nullptr */,
 	const char* entry_point /* = "main" */)
 {
-	const GSShaderCompileIndicator::CompileTimer compile_timer;
-
 	const char* target;
 	switch (shader_model)
 	{
@@ -543,7 +563,7 @@ wil::com_ptr_nothrow<ID3DBlob> D3D::CompileShader(D3D::ShaderType type, D3D::Sha
 
 	if (FAILED(hr))
 	{
-		Console.WriteLn("Failed to compile '%s':\n%s", target, error_string.c_str());
+		Console.WriteLn("D3D: Failed to compile '%s':\n%s", target, error_string.c_str());
 
 		std::ofstream ofs(Path::Combine(EmuFolders::Logs, fmt::format("pcsx2_bad_shader_{}.txt", s_next_bad_shader_id++)),
 			std::ofstream::out | std::ofstream::binary);
@@ -568,4 +588,125 @@ wil::com_ptr_nothrow<ID3DBlob> D3D::CompileShader(D3D::ShaderType type, D3D::Sha
 		Console.Warning("'%s' compiled with warnings:\n%s", target, error_string.c_str());
 
 	return blob;
+}
+
+wil::com_ptr_nothrow<ID3DBlob> D3D::CompileShaderDXIL(D3D::ShaderType type, D3D::ShaderModel shader_model, bool debug,
+	const std::string_view code, const D3D_SHADER_MACRO* macros /* = nullptr */,
+	const char* entry_point /* = "main" */)
+{
+	const wchar_t* target;
+	switch (shader_model)
+	{
+		case ShaderModel::SM60:
+		case ShaderModel::SM61:
+		case ShaderModel::SM62:
+		case ShaderModel::SM63:
+		case ShaderModel::SM64:
+			pxAssert(false);
+			break;
+		case ShaderModel::SM65:
+		default:
+		{
+			static constexpr std::array<const wchar_t*, 4> targets = {{L"vs_6_5", L"ps_6_5", L"cs_6_5"}};
+			target = targets[static_cast<int>(type)];
+		}
+		break;
+	}
+
+	// Build Args.
+	std::vector<std::wstring> args;
+	if (macros)
+	{
+		for (const D3D_SHADER_MACRO* macro = macros; macro->Name != nullptr; macro++)
+			args.push_back(StringUtil::UTF8StringToWideString(fmt::format("-D{}={}", macro->Name, macro->Definition)));
+	}
+
+	if (entry_point)
+	{
+		args.push_back(L"-E");
+		args.push_back(StringUtil::UTF8StringToWideString(entry_point));
+	}
+
+	args.push_back(L"-T");
+	args.push_back(target);
+
+	if (debug)
+	{
+		args.push_back(L"-Od");
+		args.push_back(L"-Zi");
+		args.push_back(L"-Zss");
+		args.push_back(L"-Qembed_debug");
+	}
+	else
+	{
+		args.push_back(L"-O3");
+		args.push_back(L"-Qstrip_reflect");
+	}
+
+	std::vector<const wchar_t*> arg_ptrs;
+	arg_ptrs.reserve(args.size());
+	for (const std::wstring& arg : args)
+		arg_ptrs.push_back(arg.c_str());
+
+	// Compile Shader.
+	wil::com_ptr_nothrow<IDxcCompiler3> compiler;
+	DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(compiler.put()));
+
+	const DxcBuffer source{code.data(), code.length(), DXC_CP_UTF8};
+	wil::com_ptr_nothrow<IDxcResult> results;
+	HRESULT hr = compiler->Compile(&source, arg_ptrs.data(), arg_ptrs.size(), nullptr, IID_PPV_ARGS(results.put()));
+
+	if (FAILED(hr))
+	{
+		Console.WriteLn("Compiler Failed");
+		return {};
+	}
+
+	wil::com_ptr_nothrow<IDxcBlobUtf8> error_string = nullptr;
+	results->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(error_string.put()), nullptr);
+
+	results->GetStatus(&hr);
+	if (FAILED(hr))
+	{
+		std::string target_utf8 = StringUtil::WideStringToUTF8String(target);
+		Console.WriteLn("D3D: Failed to compile '%s':\n%s", target_utf8.c_str(), error_string->GetStringPointer());
+
+		std::ofstream ofs(Path::Combine(EmuFolders::Logs, fmt::format("pcsx2_bad_shader_{}.txt", s_next_bad_shader_id++)),
+			std::ofstream::out | std::ofstream::binary);
+		if (ofs.is_open())
+		{
+			ofs << code;
+			ofs << "\n\nCompile as " << target_utf8.c_str() << " failed: " << hr << "\n";
+			ofs.write(error_string->GetStringPointer(), error_string->GetStringLength());
+			ofs << "\n";
+			if (macros)
+			{
+				for (const D3D_SHADER_MACRO* macro = macros; macro->Name != nullptr; macro++)
+					ofs << "#define " << macro->Name << " " << macro->Definition << "\n";
+			}
+			ofs.close();
+		}
+
+		return {};
+	}
+
+	if (error_string->GetStringLength() != 0)
+		Console.Warning("'%s' compiled with warnings:\n%s", StringUtil::WideStringToUTF8String(target).c_str(), error_string->GetStringPointer());
+
+	wil::com_ptr_nothrow<ID3DBlob> blob = nullptr;
+	results->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(blob.put()), nullptr);
+
+	return blob;
+}
+
+wil::com_ptr_nothrow<ID3DBlob> D3D::CompileShader(D3D::ShaderType type, D3D::ShaderModel shader_model, bool debug,
+	const std::string_view code, const D3D_SHADER_MACRO* macros /* = nullptr */,
+	const char* entry_point /* = "main" */)
+{
+	const GSShaderCompileIndicator::CompileTimer compile_timer;
+
+	if (static_cast<int>(shader_model) < 0x65)
+		return CompileShaderDXBC(type, shader_model, debug, code, macros, entry_point);
+	else
+		return CompileShaderDXIL(type, shader_model, debug, code, macros, entry_point);
 }

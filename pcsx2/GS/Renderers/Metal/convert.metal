@@ -175,11 +175,6 @@ fragment float4 ps_convert_depth16_rgb5a1(ConvertShaderData data [[stage_in]], C
 	return convert_depth16_rgba8(res.sample(data.t)) / 255.f;
 }
 
-fragment float ps_convert_float32_depth_to_color(ConvertShaderData data [[stage_in]], ConvertPSDepthRes res)
-{
-	return res.sample(data.t);
-}
-
 fragment float4 ps_downsample_copy(ConvertShaderData data [[stage_in]],
 	texture2d<float> texture [[texture(GSMTLTextureIndexNonHW)]],
 	constant GSMTLDownsamplePSUniform& uniform [[buffer(GSMTLBufferIndexUniforms)]])
@@ -272,6 +267,16 @@ struct ConvertToDepthRes
 			return convert(sample(coord));
 	}
 };
+
+static float4 uint_to_rgba8(uint i)
+{
+	return float4(as_type<uchar4>(i)) / 255.f;
+}
+
+fragment float4 ps_convert_primid_rgba8(ConvertShaderData data [[stage_in]], ConvertPSDepthOrColorRes res)
+{
+	return uint_to_rgba8(as_type<uint>(res.sample(data.t)));
+}
 
 fragment DepthOrColorOut ps_depth_copy(ConvertShaderData data [[stage_in]], ConvertPSDepthOrColorRes res)
 {

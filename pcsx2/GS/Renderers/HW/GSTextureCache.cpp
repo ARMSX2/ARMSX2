@@ -4204,6 +4204,12 @@ GSTextureCache::Target* GSTextureCache::LookupDisplayTarget(GIFRegTEX0 TEX0, con
 			if (last_draw - iter->draw > 500)
 				break;
 
+			if (iter->was_hardware_only)
+			{
+				++iter;
+				continue;
+			}
+
 			const u32 transfer_end = GSLocalMemory::GetUnwrappedEndBlockAddress(iter->blit.DBP, iter->blit.DBW, iter->blit.DPSM, iter->rect);
 
 			// If the format, and location doesn't overlap
@@ -5925,6 +5931,8 @@ bool GSTextureCache::ShuffleMove(u32 BP, u32 BW, u32 PSM, int sx, int sy, int dx
 	if (read_ba || !write_rg)
 		tgt->UnscaleRTAlpha();
 
+	tgt->Update();
+
 	GSHWDrawConfig& config = GSRendererHW::GetInstance()->BeginHLEHardwareDraw(tgt->m_texture, nullptr, tgt->m_scale, tgt->m_texture, tgt->m_scale, bbox);
 	config.colormask.wrgba = (write_rg ? (1 | 2) : (4 | 8));
 	config.ps.process_ba = read_ba ? 1 : 0;
@@ -6007,6 +6015,15 @@ bool GSTextureCache::PageMove(u32 SBP, u32 DBP, u32 BW, u32 PSM, int sx, int sy,
 		GL_INS("TC: Effective SBP of %x or DBP of %x is not page aligned.", SBP - stgt->m_TEX0.TBP0, DBP - dtgt->m_TEX0.TBP0);
 		return false;
 	}
+
+	// We don't want to copy "old" data that the game has overwritten with writes,
+	// so flush any overlapping dirty area.
+	// We pass that this is an invalidation to the translate function just to get a rough rect, we don't care if it's slightly for an overlap check.
+	stgt->UpdateIfDirtyIntersects(TranslateAlignedRectByPage(stgt, SBP, PSM, BW, GSVector4i(sx, sy, sx + w, sy + h), true));
+
+	// The main point of HW moves is so GPU data can get used as sources. If we don't flush all writes,
+	// we're not going to be able to use it as a source.
+	dtgt->Update();
 
 	// Need to offset based on the target's actual BP.
 	const u32 real_src_offset = ((SBP - stgt->m_TEX0.TBP0) / GS_BLOCKS_PER_PAGE) + src_page_offset;

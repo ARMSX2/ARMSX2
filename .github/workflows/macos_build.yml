@@ -184,6 +184,12 @@ jobs:
             exit 1
           fi
 
+      - name: Clean Caches
+        run: |
+          ccache -s
+          ccache --evict-older-than 1d
+          ccache -s
+
       - name: Prepare Build Artifacts
         run: |
           mv build/pcsx2*/ARMSX2.app ARMSX2.app

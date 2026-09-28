@@ -75,7 +75,7 @@ public:
 				return tex->GetUAVDescriptor();
 			default:
 				pxFailRel("Impossible.");
-				return D3D12DescriptorHandle{ 0, 0 };
+				return {};
 		}
 	}
 
@@ -158,6 +158,8 @@ public:
 	// Partial depth copies require ProgrammableSamplePositions tier 1.
 	bool SupportsProgrammableSamplePositions();
 
+	D3D_SHADER_MODEL DetectShaderModelSupport();
+
 	enum class WaitType
 	{
 		None, ///< Don't wait (async)
@@ -191,7 +193,6 @@ public:
 	void UploadIndices(D3D12StreamBuffer& buffer, const void* index, size_t count);
 
 private:
-	// For pipeline statistics
 	enum class QueryState
 	{
 		None,
@@ -209,7 +210,7 @@ private:
 		std::vector<std::pair<D3D12DescriptorHeapManager&, u32>> pending_descriptors;
 		u64 ready_fence_value = 0;
 		bool init_command_list_used = false;
-		bool has_timestamp_query = false;
+		QueryState timestamp_query_state = QueryState::None;
 		QueryState pipeline_statistics_query = QueryState::None;
 	};
 
@@ -381,10 +382,15 @@ private:
 	bool m_allow_tearing_supported = false;
 	bool m_using_allow_tearing = false;
 	bool m_is_exclusive_fullscreen = false;
+	D3D_SHADER_MODEL m_shader_model = D3D_SHADER_MODEL_5_1;
 	bool m_uma = false;
 	bool m_typed_casting_supported = false;
 	bool m_enhanced_barriers = false;
 	bool m_device_lost = false;
+
+	// Drivers are allowed to move barriers to the start of a renderpass.
+	// Only Adreno drivers are known to do this.
+	bool m_rp_reorders_barriers = false;
 
 	ComPtr<ID3D12RootSignature> m_tfx_root_signature;
 	ComPtr<ID3D12RootSignature> m_utility_root_signature;
@@ -524,6 +530,9 @@ public:
 	void EndPresent() override;
 
 	bool SetGPUTimingEnabled(bool enabled) override;
+	void StartGPUTiming();
+	void EndGPUTiming();
+	void ReadGPUTiming();
 	float GetAndResetAccumulatedGPUTime() override;
 
 	bool SetGPUPipelineStatisticsEnabled(bool enabled) override;

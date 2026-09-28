@@ -187,6 +187,7 @@ private:
 	u32 m_libretro_bb_idx = 0;
 	bool m_context_released = false;
 	bool m_objects_destroyed = false;
+	bool m_rgba16_unorm_hw_blend = false;
 
 public:
 	// Libretro: the frontend threw away the context this device's own context

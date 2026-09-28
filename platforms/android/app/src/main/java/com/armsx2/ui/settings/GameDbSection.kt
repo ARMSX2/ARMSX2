@@ -160,7 +160,7 @@ private fun entryName(entry: GameDbOverrides.Entry): String {
         "nativePaletteDraw" -> "fixes.unscaledPaletteDraw.label"
         "estimateTextureRegion" -> "fixes.estimateTextureRegion.label"
         "drawBuffering" -> "fixes.drawBuffering.label"
-        "rewriteLargeST" -> "gamedb.name.rewriteLargeST"
+        "rewriteLargeST", "rewriteLargeSTCoords" -> "gamedb.name.rewriteLargeST"
         "PCRTCOffsets" -> "fixes.screenOffsets.label"
         "PCRTCOverscan" -> "fixes.showOverscan.label"
         "coalesceRenderPasses" -> "renderer.coalesceRenderPasses.label"

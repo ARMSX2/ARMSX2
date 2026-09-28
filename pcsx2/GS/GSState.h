@@ -615,6 +615,7 @@ public:
 		u64 draw;
 		GSVector4i rect;
 		EEGS_TransferType transfer_type;
+		bool was_hardware_only;
 	};
 
 	enum NoGapsType

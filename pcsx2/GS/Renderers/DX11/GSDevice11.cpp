@@ -618,6 +618,7 @@ bool GSDevice11::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 void GSDevice11::Destroy()
 {
 	delete m_null_texture;
+	m_null_texture = nullptr;
 	
 	GSDevice::Destroy();
 	DestroySwapChain();
@@ -735,7 +736,7 @@ void GSDevice11::SetFeatures(IDXGIAdapter1* adapter)
 
 	D3D11_FEATURE_DATA_D3D11_OPTIONS2 options2{};
 	m_dev->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS2, &options2, sizeof(options2));
-	m_features.rov = m_uav_texture && options2.ROVsSupported;
+	m_features.rov = m_uav_texture && options2.TypedUAVLoadAdditionalFormats && options2.ROVsSupported;
 	for (u32 fmt = static_cast<u32>(GSTexture::Format::Color); fmt <= static_cast<u32>(GSTexture::Format::PrimID); fmt++)
 	{
 		if (GSTexture::IsShaderWriteFormat(static_cast<GSTexture::Format>(fmt)))
@@ -2409,7 +2410,7 @@ void GSDevice11::RenderImGui()
 {
 	ImGui::Render();
 	const ImDrawData* draw_data = ImGui::GetDrawData();
-	if (draw_data->CmdListsCount == 0)
+	if (draw_data->CmdLists.Size == 0)
 		return;
 
 	UpdateImGuiTextures();
@@ -2443,7 +2444,7 @@ void GSDevice11::RenderImGui()
 	PSSetSamplerState(m_convert.ln.get());
 
 	// Render command lists
-	for (int n = 0; n < draw_data->CmdListsCount; n++)
+	for (int n = 0; n < draw_data->CmdLists.Size; n++)
 	{
 		const ImDrawList* cmd_list = draw_data->CmdLists[n];
 

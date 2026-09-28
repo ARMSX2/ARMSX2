@@ -208,7 +208,7 @@
               "minimum": 0,
               "maximum": 1
             },
-            "rewriteLargeST": {
+            "rewriteLargeSTCoords": {
               "type": "integer",
               "minimum": 0,
               "maximum": 1

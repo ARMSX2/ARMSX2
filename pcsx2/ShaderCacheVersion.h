@@ -35,4 +35,7 @@
 // PS constant buffer's former pad after RcpScaleFactor, instead of the texture's.
 // 125: the weave and MAD buffering passes fill the undrawn field band where the display rect
 // starts, read from FieldPad.xy as a row range, instead of from row 0 down to a row count.
-static constexpr u32 SHADER_CACHE_VERSION = 125; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117
+// 126: the 2026-09 upstream sync: the AA1 triangle-expand vertex shaders, the tfx type-mismatch fixes,
+// the software-blend shuffle denormalize, and the GL gpu_shader5 removal change shader
+// source text. Upstream numbered their last of these 118.
+static constexpr u32 SHADER_CACHE_VERSION = 126; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117, their 118 = our 126

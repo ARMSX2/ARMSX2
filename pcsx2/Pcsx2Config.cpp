@@ -752,6 +752,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	DisableVertexShaderExpand = false;
 	ForceMaliFramebufferFetch = false;
 	SkipDuplicateFrames = true;
+	AdvancedFrameDisplay = false;
 	OsdMessagesPos = OsdOverlayPos::TopLeft;
 	OsdPerformancePos = OsdOverlayPos::TopRight;
 	OsdShowSpeed = false;
@@ -1040,6 +1041,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(DisableVertexShaderExpand);
 	SettingsWrapBitBool(ForceMaliFramebufferFetch);
 	SettingsWrapBitBool(SkipDuplicateFrames);
+	SettingsWrapBitBool(AdvancedFrameDisplay);
 	SettingsWrapBitBool(OsdShowSpeed);
 	SettingsWrapBitBool(OsdShowFPS);
 	SettingsWrapBitBool(OsdShowVPS);
@@ -1086,7 +1088,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapIntEnumEx(UserHacks_Limit24BitDepth, "UserHacks_Limit24BitDepth");
 	SettingsWrapBitBoolEx(UserHacks_EstimateTextureRegion, "UserHacks_EstimateTextureRegion");
 	SettingsWrapBitBoolEx(UserHacks_DrawBuffering, "UserHacks_DrawBuffering");
-	SettingsWrapBitBoolEx(UserHacks_RewriteLargeST, "UserHacks_RewriteLargeST");
+	SettingsWrapBitBoolEx(UserHacks_RewriteLargeSTCoords, "UserHacks_RewriteLargeST");
 	SettingsWrapBitBoolEx(FXAA, "fxaa");
 	SettingsWrapBitBool(ShadeBoost);
 	SettingsWrapBitBoolEx(DumpGSData, "DumpGSData");
@@ -1276,7 +1278,7 @@ void Pcsx2Config::GSOptions::MaskUserHacks(bool respect_claims)
 	if (!keep(GSUserHackOverride::GPUTargetCLUT))
 		UserHacks_GPUTargetCLUTMode = GSGPUTargetCLUTMode::Disabled;
 	if (!keep(GSUserHackOverride::RewriteLargeST))
-		UserHacks_RewriteLargeST = false;
+		UserHacks_RewriteLargeSTCoords = false;
 
 	// No UI reaches these two, so there is nothing for a player to claim.
 	UserHacks_DisableSafeFeatures = false;

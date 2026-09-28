@@ -107,7 +107,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 	SettingWidgetBinder::BindWidgetToIntSetting(
 		sif, m_hw.trilinearFiltering, "EmuCore/GS", "TriFilter", static_cast<int>(TriFiltering::Automatic), -1);
 	SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_hw.anisotropicFiltering, "EmuCore/GS", "MaxAnisotropy",
-		s_anisotropic_filtering_entries, s_anisotropic_filtering_values, "0");
+		s_anisotropic_filtering_entries, s_anisotropic_filtering_values, "0", "GraphicsSettingsWidget");
 	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_hw.dithering, "EmuCore/GS", "dithering_ps2", 2);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_hw.mipmapping, "EmuCore/GS", "hw_mipmap", true);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_hw.accurateAlphaTest, "EmuCore/GS", "HWAccurateAlphaTest", false);
@@ -154,7 +154,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_fixes.readTCOnClose, "EmuCore/GS", "UserHacks_ReadTCOnClose", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_fixes.estimateTextureRegion, "EmuCore/GS", "UserHacks_EstimateTextureRegion", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_fixes.drawBuffering, "EmuCore/GS", "UserHacks_DrawBuffering", false);
-	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_fixes.rewriteLargeST, "EmuCore/GS", "UserHacks_RewriteLargeST", false);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_fixes.rewriteLargeSTCoords, "EmuCore/GS", "UserHacks_RewriteLargeST", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_fixes.gpuPaletteConversion, "EmuCore/GS", "paltex", false);
 	connect(m_fixes.cpuSpriteRenderBW, &QComboBox::currentIndexChanged, this,
 		&GraphicsSettingsWidget::onCPUSpriteRenderBWChanged);
@@ -611,8 +611,8 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 		dialog()->registerWidgetHelp(m_fixes.drawBuffering, tr("Draw Buffering"), tr("Unchecked"),
 			tr("Attempts to reduce draw calls in games which do heavy context switching for blending purposes."));
 		
-		dialog()->registerWidgetHelp(m_fixes.rewriteLargeST, tr("Rewrite Large ST"), tr("Unchecked"),
-			tr("Rewrite large ST coordinates and clamp the values (mainly for Ridge Racer V)."));
+		dialog()->registerWidgetHelp(m_fixes.rewriteLargeSTCoords, tr("Rewrite Large ST"), tr("Unchecked"),
+			tr("Rewrite large ST coordinates and clamp the values (mainly for Ridge Racer V and Destruction Derby Arena)."));
 	}
 
 	// Upscaling Fixes tab

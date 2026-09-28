@@ -421,7 +421,7 @@ static const char* s_gs_hw_fix_names[] = {
 	"nativePaletteDraw",
 	"estimateTextureRegion",
 	"drawBuffering",
-	"rewriteLargeST",
+	"rewriteLargeSTCoords",
 	"PCRTCOffsets",
 	"PCRTCOverscan",
 	"coalesceRenderPasses",
@@ -463,6 +463,10 @@ static std::optional<GameDatabaseSchema::GSHWFixId> GameDatabaseSchema::parseHWF
 		if (name.compare(s_gs_hw_fix_names[i]) == 0)
 			return static_cast<GameDatabaseSchema::GSHWFixId>(i);
 	}
+
+	// ARMSX2 2.6.9 shipped this fix before upstream renamed it; custom databases may still use it.
+	if (name == "rewriteLargeST")
+		return GameDatabaseSchema::GSHWFixId::RewriteLargeSTCoords;
 
 	return std::nullopt;
 }
@@ -540,7 +544,7 @@ static std::optional<GSUserHackOverride> UserHackOverrideForHWFix(GameDatabaseSc
 			return GSUserHackOverride::CPUCLUTRender;
 		case GameDatabaseSchema::GSHWFixId::GPUTargetCLUT:
 			return GSUserHackOverride::GPUTargetCLUT;
-		case GameDatabaseSchema::GSHWFixId::RewriteLargeST:
+		case GameDatabaseSchema::GSHWFixId::RewriteLargeSTCoords:
 			return GSUserHackOverride::RewriteLargeST;
 		default:
 			return std::nullopt;
@@ -767,8 +771,8 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 		case GSHWFixId::DrawBuffering:
 			return (static_cast<int>(config.UserHacks_DrawBuffering) == value);
 		
-		case GSHWFixId::RewriteLargeST:
-			return (static_cast<int>(config.UserHacks_RewriteLargeST) == value);
+		case GSHWFixId::RewriteLargeSTCoords:
+			return (static_cast<int>(config.UserHacks_RewriteLargeSTCoords) == value);
 
 		case GSHWFixId::PCRTCOffsets:
 			return (static_cast<int>(config.PCRTCOffsets) == value);
@@ -989,8 +993,8 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
 				config.UserHacks_DrawBuffering = (value > 0);
 				break;
 
-			case GSHWFixId::RewriteLargeST:
-				config.UserHacks_RewriteLargeST = (value > 0);
+			case GSHWFixId::RewriteLargeSTCoords:
+				config.UserHacks_RewriteLargeSTCoords = (value > 0);
 				break;
 
 			case GSHWFixId::PCRTCOffsets:

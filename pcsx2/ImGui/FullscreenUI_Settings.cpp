@@ -1987,7 +1987,7 @@ void FullscreenUI::DrawSettingsWindow()
 				break;
 
 			case SettingsPage::Achievements:
-				DrawAchievementsSettingsPage(lock);
+				DrawAchievementsSettingsPage();
 				break;
 
 			case SettingsPage::Controller:
@@ -2660,6 +2660,13 @@ void FullscreenUI::DrawEmulationSettingsPage()
 		bsi->SetIntValue("EmuCore/GS", "VsyncQueueSize", optimal_frame_pacing ? 0 : DEFAULT_FRAME_LATENCY);
 		SetSettingsChanged(bsi);
 	}
+
+	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_ANGLES_RIGHT, "Advanced Frame Display"),
+		FSUI_CSTR("Displays the newest frame immediately at the beginning of the "
+		"frame raster time, instead of at the end. Can reduce perceived "
+		"input lag, but may cause problems with some games, such as "
+		"Soulcalibur II and Baldur's Gate Dark Alliance II. "),
+		"EmuCore/GS", "AdvancedFrameDisplay", false);
 
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_ARROWS_SPIN, "Vertical Sync (VSync)"), FSUI_CSTR("Synchronizes frame presentation with host refresh."),
 		"EmuCore/GS", "VsyncEnable", false);
@@ -4624,15 +4631,9 @@ void FullscreenUI::DrawAchievementsLoginWindow()
 
 								Host::SetBaseBoolSettingValue("Achievements", "ChallengeMode", true);
 								Host::CommitBaseSettingChanges();
-								VMManager::ApplySettings();
+								Host::RunOnCPUThread([]() { VMManager::ApplySettings(); });
 
-								bool has_active_game;
-								{
-									auto lock = Achievements::GetLock();
-									has_active_game = Achievements::HasActiveGame();
-								}
-
-								if (has_active_game)
+								if (VMManager::HasValidVM())
 								{
 									OpenConfirmMessageDialog(FSUI_STR("Reset System"),
 										FSUI_STR("Hardcore mode will not be enabled until the system is reset. Do you want to reset the system now?"),
@@ -4654,10 +4655,9 @@ void FullscreenUI::DrawAchievementsLoginWindow()
 								{
 									Host::SetBaseBoolSettingValue("Achievements", "Enabled", true);
 									Host::CommitBaseSettingChanges();
-									VMManager::ApplySettings();
+									Host::RunOnCPUThread([]() { VMManager::ApplySettings(); });
+									prompt_hardcore();
 								}
-
-								prompt_hardcore();
 							});
 					}
 					else
@@ -4751,7 +4751,7 @@ void FullscreenUI::DrawAchievementsLoginWindow()
 	ImGui::PopStyleVar(2);
 }
 
-void FullscreenUI::DrawAchievementsSettingsPage(std::unique_lock<std::mutex>& settings_lock)
+void FullscreenUI::DrawAchievementsSettingsPage()
 {
 #ifdef ENABLE_RAINTEGRATION
 	if (Achievements::IsUsingRAIntegration())
@@ -5975,6 +5975,7 @@ TRANSLATE_NOOP("FullscreenUI", "Game compatibility copied to clipboard.");
 TRANSLATE_NOOP("FullscreenUI", "Game path copied to clipboard.");
 TRANSLATE_NOOP("FullscreenUI", "None");
 TRANSLATE_NOOP("FullscreenUI", "Automatic");
+TRANSLATE_NOOP("FullscreenUI", "Default");
 TRANSLATE_NOOP("FullscreenUI", "Both slots must have a card selected to swap.");
 TRANSLATE_NOOP("FullscreenUI", "Swapped Slot 1 and Slot 2 memory cards.");
 TRANSLATE_NOOP("FullscreenUI", "Browse...");
@@ -6044,16 +6045,16 @@ TRANSLATE_NOOP("FullscreenUI", "Pauses the emulator when a game is started.");
 TRANSLATE_NOOP("FullscreenUI", "Pauses the emulator when you minimize the window or switch to another application, and unpauses when you switch back.");
 TRANSLATE_NOOP("FullscreenUI", "Pauses the emulator when a controller with bindings is disconnected.");
 TRANSLATE_NOOP("FullscreenUI", "Pauses the emulator when you open the quick menu, and unpauses when you close it.");
-TRANSLATE_NOOP("FullscreenUI", "Display a modal dialog when a save state load/save operation fails.");
+TRANSLATE_NOOP("FullscreenUI", "Displays a modal dialog when a save state load/save operation fails.");
 TRANSLATE_NOOP("FullscreenUI", "Determines whether a prompt will be displayed to confirm shutting down the emulator/game when the hotkey is pressed.");
 TRANSLATE_NOOP("FullscreenUI", "Automatically saves the emulator state when powering down or exiting. You can then resume directly from where you left off next time.");
 TRANSLATE_NOOP("FullscreenUI", "Creates a backup copy of a save state if it already exists when the save is created. The backup copy has a .backup suffix");
 TRANSLATE_NOOP("FullscreenUI", "Changes which gamepad button glyph set is used in Big Picture UI and input binding displays.");
 TRANSLATE_NOOP("FullscreenUI", "Integration");
-TRANSLATE_NOOP("FullscreenUI", "Shows the game you are currently playing as part of your profile on Discord.");
+TRANSLATE_NOOP("FullscreenUI", "Shows the game you are currently playing as part of your profile in Discord.");
 TRANSLATE_NOOP("FullscreenUI", "Game Display");
 TRANSLATE_NOOP("FullscreenUI", "Automatically switches to fullscreen mode when a game is started.");
-TRANSLATE_NOOP("FullscreenUI", "Switches between full screen and windowed when the window is double-clicked.");
+TRANSLATE_NOOP("FullscreenUI", "Allows switching in and out of fullscreen mode by double-clicking the game window.");
 TRANSLATE_NOOP("FullscreenUI", "Hides the mouse pointer/cursor when the emulator is in fullscreen mode.");
 TRANSLATE_NOOP("FullscreenUI", "Automatically starts Big Picture Mode instead of the regular Qt interface when ARMSX2 launches.");
 TRANSLATE_NOOP("FullscreenUI", "Operations");
@@ -6062,7 +6063,7 @@ TRANSLATE_NOOP("FullscreenUI", "BIOS Configuration");
 TRANSLATE_NOOP("FullscreenUI", "Changes the BIOS image used to start future sessions.");
 TRANSLATE_NOOP("FullscreenUI", "BIOS Selection");
 TRANSLATE_NOOP("FullscreenUI", "Fast Boot Options");
-TRANSLATE_NOOP("FullscreenUI", "Skips the intro screen, and bypasses region checks.");
+TRANSLATE_NOOP("FullscreenUI", "Patches the BIOS to skip the console's boot animation.");
 TRANSLATE_NOOP("FullscreenUI", "Removes emulation speed throttle until the game starts to reduce startup time.");
 TRANSLATE_NOOP("FullscreenUI", "Speed Control");
 TRANSLATE_NOOP("FullscreenUI", "Sets the speed when running without fast forwarding.");
@@ -6074,11 +6075,11 @@ TRANSLATE_NOOP("FullscreenUI", "Makes the emulated Emotion Engine skip cycles. H
 TRANSLATE_NOOP("FullscreenUI", "Generally a speedup on CPUs with 4 or more cores. Safe for most games, but a few are incompatible and may hang.");
 TRANSLATE_NOOP("FullscreenUI", "Pins emulation threads to CPU cores to potentially improve performance/frame time variance.");
 TRANSLATE_NOOP("FullscreenUI", "Enables loading cheats from pnach files.");
-TRANSLATE_NOOP("FullscreenUI", "Enables access to files from the host: namespace in the virtual machine.");
-TRANSLATE_NOOP("FullscreenUI", "Fast disc access, less loading times. Not recommended.");
+TRANSLATE_NOOP("FullscreenUI", "Allows games and homebrew to access files / folders directly on the host computer.");
+TRANSLATE_NOOP("FullscreenUI", "Fast disc access, shorter loading times. Check HDLoader compatibility lists for games that are known to have issues with this.");
 TRANSLATE_NOOP("FullscreenUI", "Loads the disc image into RAM before starting the virtual machine.");
 TRANSLATE_NOOP("FullscreenUI", "Real-Time Clock");
-TRANSLATE_NOOP("FullscreenUI", "Uses a fixed date/time for the virtual PS2 instead of the host clock. Applied on boot only.");
+TRANSLATE_NOOP("FullscreenUI", "Manually set a real-time clock to use for the virtual PlayStation 2 instead of using your OS' system clock.");
 TRANSLATE_NOOP("FullscreenUI", "Calendar year for the virtual PS2 RTC.");
 TRANSLATE_NOOP("FullscreenUI", "Month of the year (1-12).");
 TRANSLATE_NOOP("FullscreenUI", "Day of the month (1-31).");
@@ -6088,6 +6089,7 @@ TRANSLATE_NOOP("FullscreenUI", "Second of the minute (0-59).");
 TRANSLATE_NOOP("FullscreenUI", "Frame Pacing / Latency Control");
 TRANSLATE_NOOP("FullscreenUI", "Sets the number of frames which can be queued.");
 TRANSLATE_NOOP("FullscreenUI", "Synchronize EE and GS threads after each frame. Lowest input latency, but increases system requirements.");
+TRANSLATE_NOOP("FullscreenUI", "Displays the newest frame immediately at the beginning of the frame raster time, instead of at the end. Can reduce perceived input lag, but may cause problems with some games, such as Soulcalibur II and Baldur's Gate Dark Alliance II. ");
 TRANSLATE_NOOP("FullscreenUI", "Synchronizes frame presentation with host refresh.");
 TRANSLATE_NOOP("FullscreenUI", "Speeds up emulation so that the guest refresh rate matches the host.");
 TRANSLATE_NOOP("FullscreenUI", "Disables ARMSX2's internal frame timing, and uses host vsync instead.");
@@ -6096,42 +6098,40 @@ TRANSLATE_NOOP("FullscreenUI", "Selects the API used to render the emulated GS."
 TRANSLATE_NOOP("FullscreenUI", "Display");
 TRANSLATE_NOOP("FullscreenUI", "Selects the aspect ratio to display the game content at.");
 TRANSLATE_NOOP("FullscreenUI", "Selects the aspect ratio for display when a FMV is detected as playing.");
-TRANSLATE_NOOP("FullscreenUI", "Selects the algorithm used to convert the PS2's interlaced output to progressive for display.");
+TRANSLATE_NOOP("FullscreenUI", "Determines the deinterlacing method to be used on the interlaced screen of the emulated console.\nAutomatic should be able to correctly deinterlace most games, but if you see visibly shaky graphics, try one of the other options.");
 TRANSLATE_NOOP("FullscreenUI", "Disables interlacing offset which may reduce blurring in some situations.");
-TRANSLATE_NOOP("FullscreenUI", "Determines the resolution at which screenshots will be saved.");
-TRANSLATE_NOOP("FullscreenUI", "Selects the format which will be used to save screenshots.");
-TRANSLATE_NOOP("FullscreenUI", "Selects the quality at which screenshots will be compressed.");
-TRANSLATE_NOOP("FullscreenUI", "%d%%");
 TRANSLATE_NOOP("FullscreenUI", "Increases or decreases the virtual picture size vertically.");
+TRANSLATE_NOOP("FullscreenUI", "%d%%");
 TRANSLATE_NOOP("FullscreenUI", "Crops the image, while respecting aspect ratio.");
 TRANSLATE_NOOP("FullscreenUI", "%dpx");
-TRANSLATE_NOOP("FullscreenUI", "Enables loading widescreen patches from pnach files.");
-TRANSLATE_NOOP("FullscreenUI", "Enables loading no-interlacing patches from pnach files.");
+TRANSLATE_NOOP("FullscreenUI", "Automatically loads and applies widescreen patches on game start. Can cause issues.");
+TRANSLATE_NOOP("FullscreenUI", "Automatically loads and applies no-interlacing patches on game start. Can cause issues.");
 TRANSLATE_NOOP("FullscreenUI", "Smooths out the image when upscaling the console to the screen.");
 TRANSLATE_NOOP("FullscreenUI", "Adds padding to the display area to ensure that the ratio between pixels on the host to pixels in the console is an integer number. May result in a sharper image in some 2D games.");
 TRANSLATE_NOOP("FullscreenUI", "Enables PCRTC Offsets which position the screen as the game requests.");
 TRANSLATE_NOOP("FullscreenUI", "Enables the option to show the overscan area on games which draw more than the safe area of the screen.");
-TRANSLATE_NOOP("FullscreenUI", "Enables internal Anti-Blur hacks. Less accurate to PS2 rendering but will make a lot of games look less blurry.");
+TRANSLATE_NOOP("FullscreenUI", "Enables internal Anti-Blur hacks. Less accurate than PS2 rendering but will make a lot of games look less blurry.");
 TRANSLATE_NOOP("FullscreenUI", "Rendering");
 TRANSLATE_NOOP("FullscreenUI", "Multiplies the render resolution by the specified factor (upscaling).");
 TRANSLATE_NOOP("FullscreenUI", "Selects where bilinear filtering is utilized when rendering textures.");
 TRANSLATE_NOOP("FullscreenUI", "Selects where trilinear filtering is utilized when rendering textures.");
-TRANSLATE_NOOP("FullscreenUI", "Selects where anisotropic filtering is utilized when rendering textures.");
+TRANSLATE_NOOP("FullscreenUI", "Reduces texture aliasing at extreme viewing angles.");
 TRANSLATE_NOOP("FullscreenUI", "Selects the type of dithering applies when the game requests it.");
 TRANSLATE_NOOP("FullscreenUI", "Determines the level of accuracy when emulating blend modes not supported by the host graphics API.");
-TRANSLATE_NOOP("FullscreenUI", "Enables emulation of the GS's edge anti-aliasing (AA1).");
+TRANSLATE_NOOP("FullscreenUI", "Enables AA1 (PS2 antialiasing), which some games require to render correctly. This may result in a heavy performance penalty.");
 TRANSLATE_NOOP("FullscreenUI", "Enables accurate alpha testing, which some games require to render correctly. This may require more draw calls and result in a speed penalty.");
-TRANSLATE_NOOP("FullscreenUI", "Enables emulation of the GS's texture mipmapping.");
+TRANSLATE_NOOP("FullscreenUI", "Enables mipmapping, which some games require to render correctly. Mipmapping uses progressively lower resolution variants of textures at progressively further distances to reduce processing load and avoid visual artifacts.");
 TRANSLATE_NOOP("FullscreenUI", "Enables Rasterizer Ordered View (ROV), which allows feedback loops to be executed with fewer draw calls. Can improve performance in feedback heavy games with higher accuracy settings.");
 TRANSLATE_NOOP("FullscreenUI", "Number of threads to use in addition to the main GS thread for rasterization.");
 TRANSLATE_NOOP("FullscreenUI", "Force a primitive flush when a framebuffer is also an input texture.");
 TRANSLATE_NOOP("FullscreenUI", "Hardware Fixes");
 TRANSLATE_NOOP("FullscreenUI", "Disables automatic hardware fixes, allowing you to set fixes manually.");
-TRANSLATE_NOOP("FullscreenUI", "Uses software renderer to draw texture decompression-like sprites.");
+TRANSLATE_NOOP("FullscreenUI", "The maximum target memory width that will allow the CPU Sprite Renderer to activate on.");
 TRANSLATE_NOOP("FullscreenUI", "Determines filter level for CPU sprite render.");
-TRANSLATE_NOOP("FullscreenUI", "Uses software renderer to draw texture CLUT points/sprites.");
-TRANSLATE_NOOP("FullscreenUI", "Try to detect when a game is drawing its own color palette and then renders it on the GPU with special handling.");
-TRANSLATE_NOOP("FullscreenUI", "Object range to skip drawing.");
+TRANSLATE_NOOP("FullscreenUI", "Tries to detect when a game is drawing its own color palette and then renders it in software, instead of on the GPU.");
+TRANSLATE_NOOP("FullscreenUI", "Tries to detect when a game is drawing its own color palette and then renders it on the GPU with special handling.");
+TRANSLATE_NOOP("FullscreenUI", "Completely skips drawing surfaces from the starting index up to the ending index.");
+TRANSLATE_NOOP("FullscreenUI", "Forces a primitive flush when a framebuffer is also an input texture. Fixes some processing effects such as the shadows in the Jak series and radiosity in GTA:SA.");
 TRANSLATE_NOOP("FullscreenUI", "Convert 4-bit and 8-bit framebuffer on the CPU instead of the GPU.");
 TRANSLATE_NOOP("FullscreenUI", "Disable the support of depth buffers in the texture cache.");
 TRANSLATE_NOOP("FullscreenUI", "This option disables multiple safe features.");
@@ -6141,19 +6141,21 @@ TRANSLATE_NOOP("FullscreenUI", "Removes texture cache entries when there is any 
 TRANSLATE_NOOP("FullscreenUI", "Allows the texture cache to reuse as an input texture the inner portion of a previous framebuffer.");
 TRANSLATE_NOOP("FullscreenUI", "Flushes all targets in the texture cache back to local memory when shutting down.");
 TRANSLATE_NOOP("FullscreenUI", "Attempts to reduce the texture size when games do not set it themselves (e.g. Snowblind games).");
+TRANSLATE_NOOP("FullscreenUI", "Rewrite Large ST");
+TRANSLATE_NOOP("FullscreenUI", "Rewrite large ST coordinates and clamp the values.");
 TRANSLATE_NOOP("FullscreenUI", "When enabled GPU converts colormap-textures, otherwise the CPU will. It is a trade-off between GPU and CPU.");
 TRANSLATE_NOOP("FullscreenUI", "Attempts to reduce draw calls in games which do heavy context switching for blending purposes.");
 TRANSLATE_NOOP("FullscreenUI", "Truncate 32-bit depth values to 24 bits. Helps games struggling with Z-fighting.");
 TRANSLATE_NOOP("FullscreenUI", "Upscaling Fixes");
-TRANSLATE_NOOP("FullscreenUI", "Adjusts vertices relative to upscaling.");
-TRANSLATE_NOOP("FullscreenUI", "Attempt to do rescaling at native resolution.");
+TRANSLATE_NOOP("FullscreenUI", "Might fix some misaligned fog, bloom, or blend effect.");
+TRANSLATE_NOOP("FullscreenUI", "Emulates native PS2 coordinate scaling behavior when upscaling to reduce misalignment artifacts and seams in games that draw custom 2D elements.");
 TRANSLATE_NOOP("FullscreenUI", "Adjusts sprite coordinates.");
 TRANSLATE_NOOP("FullscreenUI", "Can smooth out textures due to be bilinear filtered when upscaling. E.g. Brave sun glare.");
 TRANSLATE_NOOP("FullscreenUI", "Adjusts target texture offsets.");
 TRANSLATE_NOOP("FullscreenUI", "Fixes issues with upscaling (vertical lines) in some games.");
-TRANSLATE_NOOP("FullscreenUI", "Replaces multiple post-processing sprites with a larger single sprite.");
+TRANSLATE_NOOP("FullscreenUI", "Replaces post-processing multiple paving sprites by a single fat sprite. It reduces various upscaling lines.");
 TRANSLATE_NOOP("FullscreenUI", "Lowers the GS precision to avoid gaps between pixels when upscaling. Fixes the text on Wild Arms games.");
-TRANSLATE_NOOP("FullscreenUI", "Can fix some broken effects which rely on pixel perfect precision.");
+TRANSLATE_NOOP("FullscreenUI", "Forces palette texture draws to render at native resolution.");
 TRANSLATE_NOOP("FullscreenUI", "Texture Replacement");
 TRANSLATE_NOOP("FullscreenUI", "Loads replacement textures where available and user-provided.");
 TRANSLATE_NOOP("FullscreenUI", "Loads replacement textures on a worker thread, reducing microstutter when replacements are enabled.");
@@ -6164,7 +6166,7 @@ TRANSLATE_NOOP("FullscreenUI", "Dumps replaceable textures to disk. Will reduce 
 TRANSLATE_NOOP("FullscreenUI", "Includes mipmaps when dumping textures.");
 TRANSLATE_NOOP("FullscreenUI", "Allows texture dumping when FMVs are active. You should not enable this.");
 TRANSLATE_NOOP("FullscreenUI", "Post-Processing");
-TRANSLATE_NOOP("FullscreenUI", "Enables FXAA post-processing shader.");
+TRANSLATE_NOOP("FullscreenUI", "Applies the FXAA anti-aliasing algorithm to improve the visual quality of games.");
 TRANSLATE_NOOP("FullscreenUI", "Enables FidelityFX Contrast Adaptive Sharpening.");
 TRANSLATE_NOOP("FullscreenUI", "Determines the intensity the sharpening effect in CAS post-processing.");
 TRANSLATE_NOOP("FullscreenUI", "Filters");
@@ -6173,7 +6175,23 @@ TRANSLATE_NOOP("FullscreenUI", "Adjusts brightness. 50 is normal.");
 TRANSLATE_NOOP("FullscreenUI", "Adjusts contrast. 50 is normal.");
 TRANSLATE_NOOP("FullscreenUI", "Adjusts gamma. 50 is normal.");
 TRANSLATE_NOOP("FullscreenUI", "Adjusts saturation. 50 is normal.");
-TRANSLATE_NOOP("FullscreenUI", "Applies a shader which replicates the visual effects of different styles of television set.");
+TRANSLATE_NOOP("FullscreenUI", "Applies a shader which replicates the visual effects of different styles of television sets.");
+TRANSLATE_NOOP("FullscreenUI", "Media Capture");
+TRANSLATE_NOOP("FullscreenUI", "Determines the resolution at which screenshots will be saved.");
+TRANSLATE_NOOP("FullscreenUI", "Selects the format which will be used to save screenshots.");
+TRANSLATE_NOOP("FullscreenUI", "Selects the quality at which screenshots will be compressed.");
+TRANSLATE_NOOP("FullscreenUI", "Selects the media container file format for recordings.");
+TRANSLATE_NOOP("FullscreenUI", "Includes video in recordings.");
+TRANSLATE_NOOP("FullscreenUI", "Selects the video codec used for recordings. If unsure, leave this set to Default.");
+TRANSLATE_NOOP("FullscreenUI", "Selects the pixel format used for recordings. Unsupported formats fall back to a format supported by the codec.");
+TRANSLATE_NOOP("FullscreenUI", "Sets the video bitrate. Higher bitrates generally improve quality but increase file size.");
+TRANSLATE_NOOP("FullscreenUI", "%d kbps");
+TRANSLATE_NOOP("FullscreenUI", "When checked, the video capture resolution will follow the internal resolution of the running game.");
+TRANSLATE_NOOP("FullscreenUI", "Sets the recording width when Automatic Resolution is disabled.");
+TRANSLATE_NOOP("FullscreenUI", "Sets the recording height when Automatic Resolution is disabled.");
+TRANSLATE_NOOP("FullscreenUI", "Includes audio in recordings.");
+TRANSLATE_NOOP("FullscreenUI", "Selects the audio codec used for recordings. If unsure, leave this set to Default.");
+TRANSLATE_NOOP("FullscreenUI", "Sets the audio bitrate.");
 TRANSLATE_NOOP("FullscreenUI", "Advanced");
 TRANSLATE_NOOP("FullscreenUI", "Skips displaying frames that don't change in 25/30fps games. Can improve speed, but increase input lag/make frame pacing worse.");
 TRANSLATE_NOOP("FullscreenUI", "Forces the use of FIFO over Mailbox presentation, i.e. double buffering instead of triple buffering. Usually results in worse frame pacing.");
@@ -6183,7 +6201,7 @@ TRANSLATE_NOOP("FullscreenUI", "Changes synchronization behavior for GS download
 TRANSLATE_NOOP("FullscreenUI", "Pipelined splits GS emulation across two threads on multi-core systems. The debug modes are much slower — do not use them for play.");
 TRANSLATE_NOOP("FullscreenUI", "Overrides the driver's heuristics for enabling exclusive fullscreen, or direct flip/scanout.");
 TRANSLATE_NOOP("FullscreenUI", "Forces texture barrier functionality to the specified value.");
-TRANSLATE_NOOP("FullscreenUI", "Sets the compression algorithm for GS dumps.");
+TRANSLATE_NOOP("FullscreenUI", "Change the compression algorithm used when creating a GS dump.");
 TRANSLATE_NOOP("FullscreenUI", "Prevents the usage of framebuffer fetch when supported by host GPU.");
 TRANSLATE_NOOP("FullscreenUI", "Groups consecutive draws to the same target into one render pass. Helps on tiling GPUs, where every pass boundary costs a full tile load and store. Rendering is unchanged.");
 TRANSLATE_NOOP("FullscreenUI", "Prevents the loading and saving of shaders/pipelines to disk.");
@@ -6195,10 +6213,10 @@ TRANSLATE_NOOP("FullscreenUI", "Uploads full textures to the GPU on use, rather 
 TRANSLATE_NOOP("FullscreenUI", "Determines what frame rate NTSC games run at.");
 TRANSLATE_NOOP("FullscreenUI", "Determines what frame rate PAL games run at.");
 TRANSLATE_NOOP("FullscreenUI", "On-Screen Display");
-TRANSLATE_NOOP("FullscreenUI", "Determines how large the on-screen messages and monitors are.");
-TRANSLATE_NOOP("FullscreenUI", "Determines the distance in pixels from the edges of the screen for OSD elements.");
+TRANSLATE_NOOP("FullscreenUI", "Scales the size of the onscreen OSD from 50% to 500%.");
+TRANSLATE_NOOP("FullscreenUI", "Sets the distance in pixels from the edges of the screen for OSD elements.");
 TRANSLATE_NOOP("FullscreenUI", "Determines where on-screen display messages are positioned.");
-TRANSLATE_NOOP("FullscreenUI", "Determines where performance statistics are positioned.");
+TRANSLATE_NOOP("FullscreenUI", "Position of a variety of on-screen performance data points as selected by the user.");
 TRANSLATE_NOOP("FullscreenUI", "Select OSD Font");
 TRANSLATE_NOOP("FullscreenUI", "Use default bundled font");
 TRANSLATE_NOOP("FullscreenUI", "Draws OSD text with heavier weight for improved readability.");
@@ -6211,16 +6229,16 @@ TRANSLATE_NOOP("FullscreenUI", "Shows the current system CPU and GPU information
 TRANSLATE_NOOP("FullscreenUI", "Shows statistics about the emulated GS such as primitives and draw calls.");
 TRANSLATE_NOOP("FullscreenUI", "Shows the host's CPU utilization based on threads.");
 TRANSLATE_NOOP("FullscreenUI", "Shows the host's GPU utilization.");
-TRANSLATE_NOOP("FullscreenUI", "Shows indicators when fast forwarding, pausing, and other abnormal states are active.");
+TRANSLATE_NOOP("FullscreenUI", "Shows icon indicators for emulation states such as Pausing, Turbo, Fast-Forward, and Slow-Motion.");
 TRANSLATE_NOOP("FullscreenUI", "Shows debug information about the renderer.");
-TRANSLATE_NOOP("FullscreenUI", "Shows the host's GPU pipeline statistics.");
-TRANSLATE_NOOP("FullscreenUI", "Shows a visual history of frame times.");
-TRANSLATE_NOOP("FullscreenUI", "Shows the current configuration in the bottom-right corner of the display.");
-TRANSLATE_NOOP("FullscreenUI", "Shows the amount of currently active patches/cheats on the bottom-right corner of the display.");
+TRANSLATE_NOOP("FullscreenUI", "Shows GPU vertex shader and pixels shader invocations.");
+TRANSLATE_NOOP("FullscreenUI", "Displays a graph showing the average frametimes.");
+TRANSLATE_NOOP("FullscreenUI", "Displays various settings and the current values of those settings in the bottom-right corner of the display.");
+TRANSLATE_NOOP("FullscreenUI", "Shows the amount of currently active patches/cheats in the bottom-right corner of the display.");
 TRANSLATE_NOOP("FullscreenUI", "Shows the current controller state of the system in the bottom-left corner of the display.");
-TRANSLATE_NOOP("FullscreenUI", "Shows the status of the currently active video capture.");
-TRANSLATE_NOOP("FullscreenUI", "Shows the status of the currently active input recording.");
-TRANSLATE_NOOP("FullscreenUI", "Shows the number of dumped and loaded texture replacements on the OSD.");
+TRANSLATE_NOOP("FullscreenUI", "Shows the status of the currently active video capture in the top-right corner of the display.");
+TRANSLATE_NOOP("FullscreenUI", "Shows the status of the currently active input recording in the top-right corner of the display.");
+TRANSLATE_NOOP("FullscreenUI", "Shows the status of the number of dumped and loaded texture replacements in the top-right corner of the display.");
 TRANSLATE_NOOP("FullscreenUI", "Displays warnings when settings are enabled which may break games.");
 TRANSLATE_NOOP("FullscreenUI", "Audio Control");
 TRANSLATE_NOOP("FullscreenUI", "Controls the volume of the audio played on the host at normal speed.");
@@ -6229,7 +6247,7 @@ TRANSLATE_NOOP("FullscreenUI", "Prevents the emulator from producing any audible
 TRANSLATE_NOOP("FullscreenUI", "Backend Settings");
 TRANSLATE_NOOP("FullscreenUI", "Determines how audio frames produced by the emulator are submitted to the host.");
 TRANSLATE_NOOP("FullscreenUI", "Determines how audio is expanded from stereo to surround for supported games.");
-TRANSLATE_NOOP("FullscreenUI", "Changes when SPU samples are generated relative to system emulation.");
+TRANSLATE_NOOP("FullscreenUI", "When the emulation isn't running at 100% speed, adjusts the tempo of the audio\nwhich produces much nicer sound during fast-forward/slowdown.");
 TRANSLATE_NOOP("FullscreenUI", "Determines the amount of audio buffered before being pulled by the host API.");
 TRANSLATE_NOOP("FullscreenUI", "%d ms");
 TRANSLATE_NOOP("FullscreenUI", "Determines how much latency there is between the audio being picked up by the host API, and played through speakers.");
@@ -6328,7 +6346,7 @@ TRANSLATE_NOOP("FullscreenUI", "Determines how the results of floating-point ope
 TRANSLATE_NOOP("FullscreenUI", "Determines how the results of floating-point division is rounded. Some games need specific settings.");
 TRANSLATE_NOOP("FullscreenUI", "Determines how out-of-range floating point numbers are handled. Some games need specific settings.");
 TRANSLATE_NOOP("FullscreenUI", "Performs just-in-time binary translation of 64-bit MIPS-IV machine code to native code.");
-TRANSLATE_NOOP("FullscreenUI", "Enables simulation of the EE's cache. Slow.");
+TRANSLATE_NOOP("FullscreenUI", "Enables emulation of the EE's hardware cache. Interpreter only, provided for diagnostics.");
 TRANSLATE_NOOP("FullscreenUI", "Huge speedup for some games, with almost no compatibility side effects.");
 TRANSLATE_NOOP("FullscreenUI", "Moderate speedup for some games, with no known side effects.");
 TRANSLATE_NOOP("FullscreenUI", "Uses backpatching to avoid register flushing on every memory access.");
@@ -6336,7 +6354,8 @@ TRANSLATE_NOOP("FullscreenUI", "Pauses the virtual machine when a TLB miss occur
 TRANSLATE_NOOP("FullscreenUI", "Exposes additional memory to the virtual machine, expanding the EE and IOP memory to 128MB and 8MB respectively.");
 TRANSLATE_NOOP("FullscreenUI", "Emulates the EE FPU's missing add/sub guard bits for hardware-accurate results (default). A few games need it; disabling is a minor speedup for EE-FPU-heavy games verified correct without it. No effect in Full clamping mode.");
 TRANSLATE_NOOP("FullscreenUI", "Vector Units");
-TRANSLATE_NOOP("FullscreenUI", "New Vector Unit recompiler with much improved compatibility. Recommended.");
+TRANSLATE_NOOP("FullscreenUI", "Performs just-in-time binary translation of Vector Unit 0 (VU0) microprograms to native code.");
+TRANSLATE_NOOP("FullscreenUI", "Performs just-in-time binary translation of Vector Unit 1 (VU1) microprograms to native code.");
 TRANSLATE_NOOP("FullscreenUI", "Good speedup and high compatibility, may cause graphical errors.");
 TRANSLATE_NOOP("FullscreenUI", "Runs VU1 instantly. Provides a modest speed improvement in most games. Safe for most games, but a few games may exhibit graphical errors.");
 TRANSLATE_NOOP("FullscreenUI", "I/O Processor");
@@ -6656,7 +6675,6 @@ TRANSLATE_NOOP("FullscreenUI", "Low (Fast)");
 TRANSLATE_NOOP("FullscreenUI", "Medium (Recommended)");
 TRANSLATE_NOOP("FullscreenUI", "Very High (Slow, Not Recommended)");
 TRANSLATE_NOOP("FullscreenUI", "Clear Binding");
-TRANSLATE_NOOP("FullscreenUI", "Default");
 TRANSLATE_NOOP("FullscreenUI", "Change Page");
 TRANSLATE_NOOP("FullscreenUI", "Navigate");
 TRANSLATE_NOOP("FullscreenUI", "Select");
@@ -6725,6 +6743,7 @@ TRANSLATE_NOOP("FullscreenUI", "Minute");
 TRANSLATE_NOOP("FullscreenUI", "Second");
 TRANSLATE_NOOP("FullscreenUI", "Maximum Frame Latency");
 TRANSLATE_NOOP("FullscreenUI", "Optimal Frame Pacing");
+TRANSLATE_NOOP("FullscreenUI", "Advanced Frame Display");
 TRANSLATE_NOOP("FullscreenUI", "Vertical Sync (VSync)");
 TRANSLATE_NOOP("FullscreenUI", "Sync to Host Refresh Rate");
 TRANSLATE_NOOP("FullscreenUI", "Use Host VSync Timing");
@@ -6732,9 +6751,6 @@ TRANSLATE_NOOP("FullscreenUI", "Aspect Ratio");
 TRANSLATE_NOOP("FullscreenUI", "FMV Aspect Ratio Override");
 TRANSLATE_NOOP("FullscreenUI", "Deinterlacing");
 TRANSLATE_NOOP("FullscreenUI", "Disable Interlace Offset");
-TRANSLATE_NOOP("FullscreenUI", "Screenshot Resolution");
-TRANSLATE_NOOP("FullscreenUI", "Screenshot Format");
-TRANSLATE_NOOP("FullscreenUI", "Screenshot Quality");
 TRANSLATE_NOOP("FullscreenUI", "Vertical Stretch");
 TRANSLATE_NOOP("FullscreenUI", "Crop");
 TRANSLATE_NOOP("FullscreenUI", "Apply Widescreen Patches");
@@ -6801,6 +6817,20 @@ TRANSLATE_NOOP("FullscreenUI", "Contrast");
 TRANSLATE_NOOP("FullscreenUI", "Gamma");
 TRANSLATE_NOOP("FullscreenUI", "Saturation");
 TRANSLATE_NOOP("FullscreenUI", "TV Shader");
+TRANSLATE_NOOP("FullscreenUI", "Screenshot Resolution");
+TRANSLATE_NOOP("FullscreenUI", "Screenshot Format");
+TRANSLATE_NOOP("FullscreenUI", "Screenshot Quality");
+TRANSLATE_NOOP("FullscreenUI", "Container Format");
+TRANSLATE_NOOP("FullscreenUI", "Capture Video");
+TRANSLATE_NOOP("FullscreenUI", "Video Codec");
+TRANSLATE_NOOP("FullscreenUI", "Video Format");
+TRANSLATE_NOOP("FullscreenUI", "Video Bitrate");
+TRANSLATE_NOOP("FullscreenUI", "Automatic Resolution");
+TRANSLATE_NOOP("FullscreenUI", "Video Capture Width");
+TRANSLATE_NOOP("FullscreenUI", "Video Capture Height");
+TRANSLATE_NOOP("FullscreenUI", "Capture Audio");
+TRANSLATE_NOOP("FullscreenUI", "Audio Codec");
+TRANSLATE_NOOP("FullscreenUI", "Audio Bitrate");
 TRANSLATE_NOOP("FullscreenUI", "Skip Presenting Duplicate Frames");
 TRANSLATE_NOOP("FullscreenUI", "Disable Mailbox Presentation");
 TRANSLATE_NOOP("FullscreenUI", "Use Blit Swap Chain");
