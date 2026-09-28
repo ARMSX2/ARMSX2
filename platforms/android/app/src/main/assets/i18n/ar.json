@@ -287,7 +287,7 @@
  "backend.turnip.label": "خيارات Turnip",
  "backend.turnip.description": "إعدادات تقرؤها تعريفات Turnip، ويتجاهلها تعريف النظام. تسري التغييرات عند تشغيل اللعبة التالية.",
  "backend.turnip.ubwcHint": "تلميح علامة UBWC",
- "backend.turnip.ubwcHint.desc": "يصلح أخطاء الرسم مع إصدارات Turnip الحديثة على Snapdragon 8 Gen 2 (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
+ "backend.turnip.ubwcHint.desc": "قد يصلح أخطاء الرسم التي تظهرها بعض إصدارات Turnip الحديثة على بعض وحدات Adreno. اتركه متوقفًا ما لم ترها (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
  "backend.turnip.env": "متغيرات التعريف",
  "backend.turnip.env.desc": "سطر واحد لكل NAME=value. متغيرات FD_ وTU_ وIR3_ وMESA_ فقط. يُقرأ TU_DEBUG مرة واحدة، لذا أعد تشغيل التطبيق بعد تغييره.",
  "backend.driver.browseOnline": "تصفّح عبر الإنترنت",

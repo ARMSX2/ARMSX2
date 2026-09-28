@@ -287,7 +287,7 @@
  "backend.turnip.label": "Opcje Turnip",
  "backend.turnip.description": "Ustawienia odczytywane przez sterowniki Turnip. Sterownik systemowy je ignoruje. Zmiany działają od następnego uruchomienia gry.",
  "backend.turnip.ubwcHint": "Wskazówka flagi UBWC",
- "backend.turnip.ubwcHint.desc": "Naprawia błędy grafiki w nowszych wersjach Turnip na Snapdragonie 8 Gen 2 (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
+ "backend.turnip.ubwcHint.desc": "Może naprawić błędy grafiki, które niektóre nowsze wersje Turnip pokazują na części układów Adreno. Zostaw wyłączone, jeśli ich nie widzisz (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
  "backend.turnip.env": "Zmienne sterownika",
  "backend.turnip.env.desc": "Jedna para NAME=value w wierszu. Tylko zmienne FD_, TU_, IR3_ i MESA_. TU_DEBUG jest czytany raz, więc po zmianie uruchom aplikację ponownie.",
  "backend.driver.browseOnline": "Przeglądaj online",

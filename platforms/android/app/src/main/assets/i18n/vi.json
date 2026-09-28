@@ -287,7 +287,7 @@
   "backend.turnip.label": "Tùy chọn Turnip",
   "backend.turnip.description": "Các tinh chỉnh do driver Turnip đọc. Driver hệ thống bỏ qua chúng. Thay đổi có hiệu lực khi khởi động game tiếp theo.",
   "backend.turnip.ubwcHint": "Gợi ý cờ UBWC",
-  "backend.turnip.ubwcHint.desc": "Sửa lỗi hiển thị với các bản Turnip mới trên Snapdragon 8 Gen 2 (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
+  "backend.turnip.ubwcHint.desc": "Có thể sửa lỗi hiển thị mà một số bản Turnip mới gặp trên một số GPU Adreno. Hãy để tắt nếu bạn không thấy lỗi (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
   "backend.turnip.env": "Biến của driver",
   "backend.turnip.env.desc": "Mỗi dòng một NAME=value. Chỉ các biến FD_, TU_, IR3_ và MESA_. TU_DEBUG chỉ được đọc một lần, nên hãy khởi động lại ứng dụng sau khi đổi.",
   "backend.driver.browseOnline": "Duyệt trực tuyến",

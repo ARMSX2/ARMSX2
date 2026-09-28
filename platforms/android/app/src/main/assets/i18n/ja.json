@@ -287,7 +287,7 @@
   "backend.turnip.label": "Turnip のオプション",
   "backend.turnip.description": "Turnip ドライバーが読み取る設定です。システムドライバーは無視します。変更は次のゲーム起動時に反映されます。",
   "backend.turnip.ubwcHint": "UBWC フラグヒント",
-  "backend.turnip.ubwcHint.desc": "Snapdragon 8 Gen 2 で最近の Turnip ビルドを使うと出る描画の不具合を直します (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1)。",
+  "backend.turnip.ubwcHint.desc": "一部の最近の Turnip ビルドが特定の Adreno GPU で出す描画の不具合を直せる場合があります。不具合が出ない限りオフのままにしてください (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1)。",
   "backend.turnip.env": "ドライバー変数",
   "backend.turnip.env.desc": "1 行に 1 つの NAME=value。FD_、TU_、IR3_、MESA_ の変数のみ。TU_DEBUG は一度しか読み込まれないため、変更後はアプリを再起動してください。",
   "backend.driver.browseOnline": "オンラインで探す",

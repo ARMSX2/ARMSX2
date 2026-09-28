@@ -282,7 +282,7 @@
   "backend.turnip.label": "Options de Turnip",
   "backend.turnip.description": "Réglages lus par les pilotes Turnip. Le pilote système les ignore. Les changements s'appliquent au prochain lancement d'un jeu.",
   "backend.turnip.ubwcHint": "Indication de drapeau UBWC",
-  "backend.turnip.ubwcHint.desc": "Corrige des défauts d'affichage avec les versions récentes de Turnip sur Snapdragon 8 Gen 2 (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
+  "backend.turnip.ubwcHint.desc": "Peut corriger des défauts d'affichage que certaines versions récentes de Turnip présentent sur certains GPU Adreno. Laissez-le désactivé si vous n'en voyez pas (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
   "backend.turnip.env": "Variables du pilote",
   "backend.turnip.env.desc": "Un NAME=value par ligne. Variables FD_, TU_, IR3_ et MESA_ uniquement. TU_DEBUG n'est lu qu'une fois : redémarrez l'app après l'avoir modifié.",
   "backend.driver.browseOnline": "Parcourir en ligne",

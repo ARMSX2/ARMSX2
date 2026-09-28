@@ -287,7 +287,7 @@
  "backend.turnip.label": "Turnip 選項",
  "backend.turnip.description": "由 Turnip 驅動程式讀取的調校選項，系統驅動程式會忽略。變更會在下次啟動遊戲時生效。",
  "backend.turnip.ubwcHint": "UBWC 旗標提示",
- "backend.turnip.ubwcHint.desc": "修正較新 Turnip 版本在 Snapdragon 8 Gen 2 上的畫面錯誤（FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1）。",
+ "backend.turnip.ubwcHint.desc": "可修正部分較新 Turnip 版本在某些 Adreno GPU 上出現的畫面錯誤。沒有問題時請保持關閉（FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1）。",
  "backend.turnip.env": "驅動程式變數",
  "backend.turnip.env.desc": "每行一個 NAME=value。僅限 FD_、TU_、IR3_ 與 MESA_ 變數。TU_DEBUG 只會讀取一次，修改後請重新啟動 App。",
  "backend.driver.browseOnline": "線上瀏覽",

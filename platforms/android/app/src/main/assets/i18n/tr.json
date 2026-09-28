@@ -287,7 +287,7 @@
  "backend.turnip.label": "Turnip seçenekleri",
  "backend.turnip.description": "Turnip sürücülerinin okuduğu ayarlar. Sistem sürücüsü bunları yok sayar. Değişiklikler bir sonraki oyun başlangıcında uygulanır.",
  "backend.turnip.ubwcHint": "UBWC bayrak ipucu",
- "backend.turnip.ubwcHint.desc": "Snapdragon 8 Gen 2'de yeni Turnip sürümleriyle görülen görüntü hatalarını giderir (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
+ "backend.turnip.ubwcHint.desc": "Bazı yeni Turnip sürümlerinin belirli Adreno GPU'larda gösterdiği görüntü hatalarını giderebilir. Görmüyorsanız kapalı bırakın (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
  "backend.turnip.env": "Sürücü değişkenleri",
  "backend.turnip.env.desc": "Her satıra bir NAME=value. Yalnızca FD_, TU_, IR3_ ve MESA_ değişkenleri. TU_DEBUG bir kez okunur, değiştirdikten sonra uygulamayı yeniden başlatın.",
  "backend.driver.browseOnline": "Çevrimiçi gözat",

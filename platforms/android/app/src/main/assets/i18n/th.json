@@ -287,7 +287,7 @@
  "backend.turnip.label": "ตัวเลือกของ Turnip",
  "backend.turnip.description": "การตั้งค่าที่ไดรเวอร์ Turnip อ่าน ไดรเวอร์ของระบบจะไม่สนใจค่าเหล่านี้ การเปลี่ยนแปลงมีผลเมื่อเริ่มเกมครั้งถัดไป",
  "backend.turnip.ubwcHint": "คำใบ้แฟล็ก UBWC",
- "backend.turnip.ubwcHint.desc": "แก้ภาพเพี้ยนเมื่อใช้ Turnip รุ่นใหม่บน Snapdragon 8 Gen 2 (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1)",
+ "backend.turnip.ubwcHint.desc": "อาจแก้ภาพเพี้ยนที่ Turnip รุ่นใหม่บางรุ่นแสดงบน GPU Adreno บางรุ่น ปล่อยปิดไว้หากไม่เห็นปัญหา (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1)",
  "backend.turnip.env": "ตัวแปรของไดรเวอร์",
  "backend.turnip.env.desc": "หนึ่งบรรทัดต่อ NAME=value หนึ่งค่า ใช้ได้เฉพาะตัวแปร FD_, TU_, IR3_ และ MESA_ ระบบอ่าน TU_DEBUG เพียงครั้งเดียว จึงต้องรีสตาร์ตแอปหลังเปลี่ยนค่า",
  "backend.driver.browseOnline": "เรียกดูออนไลน์",

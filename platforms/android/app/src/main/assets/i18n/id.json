@@ -287,7 +287,7 @@
   "backend.turnip.label": "Opsi Turnip",
   "backend.turnip.description": "Pengaturan yang dibaca driver Turnip. Driver sistem mengabaikannya. Perubahan berlaku saat game berikutnya dimulai.",
   "backend.turnip.ubwcHint": "Petunjuk flag UBWC",
-  "backend.turnip.ubwcHint.desc": "Memperbaiki glitch tampilan pada build Turnip terbaru di Snapdragon 8 Gen 2 (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
+  "backend.turnip.ubwcHint.desc": "Dapat memperbaiki glitch tampilan yang muncul pada beberapa build Turnip terbaru di GPU Adreno tertentu. Biarkan mati kecuali kamu melihatnya (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
   "backend.turnip.env": "Variabel driver",
   "backend.turnip.env.desc": "Satu NAME=value per baris. Hanya variabel FD_, TU_, IR3_, dan MESA_. TU_DEBUG hanya dibaca sekali, jadi mulai ulang aplikasi setelah mengubahnya.",
   "backend.driver.browseOnline": "Jelajahi online",

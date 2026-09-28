@@ -480,7 +480,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "backend.turnip.label" to "Turnip options",
     "backend.turnip.description" to "Tuning read by Turnip drivers. The system driver ignores it. Changes apply at the next game start.",
     "backend.turnip.ubwcHint" to "UBWC flag hint",
-    "backend.turnip.ubwcHint.desc" to "Fixes rendering glitches with recent Turnip builds on Snapdragon 8 Gen 2 (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
+    "backend.turnip.ubwcHint.desc" to "Can fix rendering glitches some recent Turnip builds show on certain Adreno GPUs. Leave it off unless you see them (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
     "backend.turnip.env" to "Driver variables",
     "backend.turnip.env.desc" to "One NAME=value per line. FD_, TU_, IR3_ and MESA_ variables only. TU_DEBUG is read once, so restart the app after changing it.",
     "backend.driver.use" to "Use",

@@ -287,7 +287,7 @@
  "backend.turnip.label": "Turnip 选项",
  "backend.turnip.description": "由 Turnip 驱动读取的调校选项，系统驱动会忽略。更改在下次启动游戏时生效。",
  "backend.turnip.ubwcHint": "UBWC 标志提示",
- "backend.turnip.ubwcHint.desc": "修复较新 Turnip 版本在骁龙 8 Gen 2 上的画面错误（FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1）。",
+ "backend.turnip.ubwcHint.desc": "可修复部分较新 Turnip 版本在某些 Adreno GPU 上出现的画面错误。未出现问题时请保持关闭（FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1）。",
  "backend.turnip.env": "驱动变量",
  "backend.turnip.env.desc": "每行一个 NAME=value。仅限 FD_、TU_、IR3_ 和 MESA_ 变量。TU_DEBUG 只读取一次，修改后请重启应用。",
  "backend.driver.browseOnline": "在线浏览",

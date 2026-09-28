@@ -334,7 +334,7 @@
   "backend.turnip.label": "Vebijarkên Turnip",
   "backend.turnip.description": "Mîhengên ku ajokerên Turnip dixwînin. Ajokera pergalê wan paşguh dike. Guhertin di destpêka lîstika din de derbas dibin.",
   "backend.turnip.ubwcHint": "Îşareta flagê ya UBWC",
-  "backend.turnip.ubwcHint.desc": "Xeletiyên wênekirinê yên guhertoyên nû yên Turnip li ser Snapdragon 8 Gen 2 çareser dike (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
+  "backend.turnip.ubwcHint.desc": "Dikare xeletiyên wênekirinê yên ku hin guhertoyên nû yên Turnip li ser hin GPU-yên Adreno nîşan didin çareser bike. Heta ku tu wan nebînî girtî bihêle (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
   "backend.turnip.env": "Guherbarên ajokerê",
   "backend.turnip.env.desc": "Her rêzek NAME=value yek. Tenê guherbarên FD_, TU_, IR3_ û MESA_. TU_DEBUG tenê carekê tê xwendin, ji ber vê yekê piştî guhertinê sepanê ji nû ve dest pê bike.",
   "backend.driver.browseOnline": "Bi serhêl bigerin",

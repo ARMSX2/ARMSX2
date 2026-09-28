@@ -334,7 +334,7 @@
   "backend.turnip.label": "Параметры Turnip",
   "backend.turnip.description": "Настройки, которые читают драйверы Turnip. Системный драйвер их игнорирует. Изменения вступают в силу при следующем запуске игры.",
   "backend.turnip.ubwcHint": "Подсказка флага UBWC",
-  "backend.turnip.ubwcHint.desc": "Исправляет артефакты изображения в свежих сборках Turnip на Snapdragon 8 Gen 2 (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
+  "backend.turnip.ubwcHint.desc": "Может исправить артефакты изображения, которые дают некоторые свежие сборки Turnip на отдельных GPU Adreno. Не включайте, если их не видите (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
   "backend.turnip.env": "Переменные драйвера",
   "backend.turnip.env.desc": "По одной паре NAME=value в строке. Только переменные FD_, TU_, IR3_ и MESA_. TU_DEBUG читается один раз, поэтому после изменения перезапустите приложение.",
   "backend.driver.browseOnline": "Просмотр онлайн",

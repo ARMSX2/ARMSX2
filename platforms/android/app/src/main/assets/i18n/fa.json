@@ -335,7 +335,7 @@
  "backend.turnip.label": "گزینه‌های Turnip",
  "backend.turnip.description": "تنظیماتی که درایورهای Turnip می‌خوانند و درایور سیستم نادیده می‌گیرد. تغییرات از اجرای بعدی بازی اعمال می‌شوند.",
  "backend.turnip.ubwcHint": "راهنمای پرچم UBWC",
- "backend.turnip.ubwcHint.desc": "خطاهای رندر را با نسخه‌های جدید Turnip روی Snapdragon 8 Gen 2 برطرف می‌کند (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
+ "backend.turnip.ubwcHint.desc": "ممکن است خطاهای رندری را که برخی نسخه‌های جدید Turnip روی بعضی GPUهای Adreno نشان می‌دهند برطرف کند. تا وقتی آن‌ها را نمی‌بینید خاموش بگذارید (FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1).",
  "backend.turnip.env": "متغیرهای درایور",
  "backend.turnip.env.desc": "هر خط یک NAME=value. فقط متغیرهای FD_، TU_، IR3_ و MESA_. TU_DEBUG فقط یک بار خوانده می‌شود، پس پس از تغییر آن برنامه را دوباره اجرا کنید.",
  "backend.driver.browseOnline": "مرور آنلاین",
