@@ -143,33 +143,35 @@ struct SettingsPresetsView: View {
                 }
             }
         }
-        .alert(item: $message) { message in
-            Alert(
-                title: Text(settings.localized(message.title)),
-                message: Text(settings.localized(message.text)),
-                dismissButton: .default(Text(settings.localized("OK")))
-            )
-        }
-        .alert(
+        .controllerPrompt(
+            settings.localized(message?.title ?? ""),
+            isPresented: Binding(
+                get: { message != nil },
+                set: { if !$0 { message = nil } }
+            ),
+            message: settings.localized(message?.text ?? ""),
+            actions: [.ok]
+        )
+        .controllerPrompt(
             settings.localized("Reset Settings?"),
-            isPresented: $isResetSettingsConfirmationPresented
-        ) {
-            Button(settings.localized("Cancel"), role: .cancel) {}
-            Button(settings.localized("Reset Settings"), role: .destructive) {
-                BuiltInSettingsPreset.defaultPreset.apply(
-                    settings: settings,
-                    skinLibrary: skinLibrary
-                )
-                let completion = settings.localized("All Settings Restored")
-                announceSettingsResetSuccess(completion)
-                message = SettingsPresetsMessage(
-                    title: "Settings Restored",
-                    text: "All emulator settings were restored to their original values."
-                )
-            }
-        } message: {
-            Text(settings.localized("This will reset all settings to their original values."))
-        }
+            isPresented: $isResetSettingsConfirmationPresented,
+            message: settings.localized("This will reset all settings to their original values."),
+            actions: [
+                .cancel,
+                .init(title: settings.localized("Reset Settings"), isDestructive: true) {
+                    BuiltInSettingsPreset.defaultPreset.apply(
+                        settings: settings,
+                        skinLibrary: skinLibrary
+                    )
+                    let completion = settings.localized("All Settings Restored")
+                    announceSettingsResetSuccess(completion)
+                    message = SettingsPresetsMessage(
+                        title: "Settings Restored",
+                        text: "All emulator settings were restored to their original values."
+                    )
+                },
+            ]
+        )
     }
 
     private var folderAccessSection: some View {

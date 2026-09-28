@@ -136,10 +136,78 @@ private enum RootControllerAlertKind: Equatable {
     case jitFinal
     case navigationMode(MenuNavigationInputMode)
     case libraryExport
+    case prompt(UUID)
 
-    var isNavigationModePrompt: Bool {
-        if case .navigationMode = self { return true }
-        return false
+    /// Shown over gameplay too, not only on the menu screens.
+    var showsOverGameplay: Bool {
+        switch self {
+        case .navigationMode, .prompt: true
+        default: false
+        }
+    }
+}
+
+/// A question any screen can ask through RootView's prompt window. SwiftUI's own
+/// `.confirmationDialog` is a UIAlertController, which a controller cannot reach.
+@MainActor
+@Observable
+final class ControllerPrompt {
+    struct Action {
+        let title: String
+        var isDestructive = false
+        var isCancel = false
+        var run: @MainActor () -> Void = {}
+    }
+
+    struct Request {
+        let id = UUID()
+        let title: String
+        let message: String
+        let actions: [Action]
+    }
+
+    static let shared = ControllerPrompt()
+    private(set) var request: Request?
+
+    func ask(_ title: String, message: String, actions: [Action]) {
+        request = Request(title: title, message: message, actions: actions)
+    }
+
+    /// Runs the chosen action, or the cancel action for nil (Circle, or a tap outside).
+    func answer(_ index: Int?) {
+        guard let request else { return }
+        self.request = nil
+        let chosen = index.flatMap { request.actions.indices.contains($0) ? request.actions[$0] : nil }
+        (chosen ?? request.actions.first(where: \.isCancel))?.run()
+    }
+}
+
+extension ControllerPrompt.Action {
+    @MainActor static var cancel: Self { .init(title: SettingsStore.shared.localized("Cancel"), isCancel: true) }
+    @MainActor static var ok: Self { .init(title: SettingsStore.shared.localized("OK"), isCancel: true) }
+}
+
+extension View {
+    /// Use in place of `.alert` and `.confirmationDialog`: the question goes to RootView's prompt
+    /// window, which touch and the controller can both answer. Any answer clears `isPresented`.
+    func controllerPrompt(
+        _ title: String,
+        isPresented: Binding<Bool>,
+        message: String = "",
+        actions: [ControllerPrompt.Action]
+    ) -> some View {
+        onChange(of: isPresented.wrappedValue, initial: true) { _, presented in
+            guard presented else { return }
+            ControllerPrompt.shared.ask(title, message: message, actions: actions.map { action in
+                var action = action
+                let run = action.run
+                action.run = {
+                    run()
+                    isPresented.wrappedValue = false
+                }
+                return action
+            })
+        }
     }
 }
 
@@ -869,7 +937,7 @@ struct RootView: View {
                 MenuAudioPackManager.shared.playEvent(.uiToast)
             case .jitInitial, .jitFinal:
                 break
-            case .navigationMode:
+            case .navigationMode, .prompt:
                 MenuAudioPackManager.shared.playEvent(.uiToast)
             }
         }
@@ -956,7 +1024,7 @@ struct RootView: View {
 
     private var rootControllerAlert: AnyView? {
         guard let kind = activeControllerAlertKind,
-              menuScreenActive || kind.isNavigationModePrompt else { return nil }
+              menuScreenActive || kind.showsOverGameplay else { return nil }
         return AnyView(
             ControllerNavigationAlert(
                 title: controllerAlertTitle(for: kind),
@@ -984,6 +1052,9 @@ struct RootView: View {
     private var activeControllerAlertKind: RootControllerAlertKind? {
         if let request = menuControllerInput.pendingNavigationModeSwitchRequest {
             return .navigationMode(request.mode)
+        }
+        if let request = ControllerPrompt.shared.request {
+            return .prompt(request.id)
         }
         if appState.pendingJITGameBoot != nil {
             return showNoJITFinalConfirmation ? .jitFinal : .jitInitial
@@ -1060,6 +1131,8 @@ struct RootView: View {
             settings.localized("Use Touch Navigation?")
         case .libraryExport:
             settings.localized("Send your game library?")
+        case .prompt:
+            ControllerPrompt.shared.request?.title ?? ""
         }
     }
 
@@ -1099,6 +1172,8 @@ struct RootView: View {
                 URL(string: appState.pendingLibraryExport ?? "")?.host
                     ?? appState.pendingLibraryExport ?? ""
             )
+        case .prompt:
+            ControllerPrompt.shared.request?.message ?? ""
         }
     }
 
@@ -1106,6 +1181,14 @@ struct RootView: View {
         for kind: RootControllerAlertKind
     ) -> [ControllerNavigationAlertAction] {
         switch kind {
+        case .prompt:
+            (ControllerPrompt.shared.request?.actions ?? []).enumerated().map {
+                .init(
+                    id: "prompt.\($0.offset)",
+                    title: $0.element.title,
+                    isDestructive: $0.element.isDestructive
+                )
+            }
         case .fileImport, .bios:
             [.init(id: "ok", title: settings.localized("OK"))]
         case .restartVM:
@@ -1247,6 +1330,10 @@ struct RootView: View {
             }
             appState.pendingLibraryExport = nil
             menuControllerInput.playFeedback(index == 1 ? .activate : .back)
+        case .prompt:
+            let cancels = ControllerPrompt.shared.request?.actions[index].isCancel == true
+            ControllerPrompt.shared.answer(index)
+            menuControllerInput.playFeedback(cancels ? .back : .activate)
         }
     }
 
@@ -1284,6 +1371,9 @@ struct RootView: View {
         case .navigationMode(let mode):
             menuControllerInput.cancelNavigationModeSwitch(mode)
             menuControllerInput.playFeedback(.back)
+        case .prompt:
+            ControllerPrompt.shared.answer(nil)
+            menuControllerInput.playFeedback(.back)
         }
     }
 
@@ -1306,6 +1396,8 @@ struct RootView: View {
             menuControllerInput.cancelNavigationModeSwitch(mode)
         case .libraryExport:
             appState.pendingLibraryExport = nil
+        case .prompt:
+            ControllerPrompt.shared.answer(nil)
         }
         menuControllerInput.playFeedback(feedback)
     }

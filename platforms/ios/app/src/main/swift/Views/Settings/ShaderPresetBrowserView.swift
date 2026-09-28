@@ -139,18 +139,16 @@ struct ShaderPresetBrowserView: View {
             placement: .navigationBarDrawer(displayMode: .always),
             prompt: localized("Search this folder")
         )
-        .confirmationDialog(
+        .controllerPrompt(
             String(format: localized("Delete %@?"), pendingDelete?.name ?? ""),
             isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
-            titleVisibility: .visible
-        ) {
-            Button(localized("Delete"), role: .destructive) { deletePending() }
-            Button(localized("Cancel"), role: .cancel) { pendingDelete = nil }
-        } message: {
-            if pendingDelete?.url.hasDirectoryPath == true {
-                Text(localized("Presets saved from it stop working."))
-            }
-        }
+            message: pendingDelete?.url.hasDirectoryPath == true
+                ? localized("Presets saved from it stop working.") : "",
+            actions: [
+                .cancel,
+                .init(title: localized("Delete"), isDestructive: true) { deletePending() },
+            ]
+        )
         .controllerAccessibilityTargetOrder(controllerTargetOrder)
         .controllerAccessibilityNavigation(
             controllerInput: controllerInput,
@@ -423,25 +421,26 @@ private struct ShaderDownloadManagerView: View {
             declaredTargetOrder: controllerTargetOrder
         )
         .task { await reload() }
-        .confirmationDialog(
+        .controllerPrompt(
             localized("Delete Selected Shaders?"),
             isPresented: $showsDeleteConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button(deleteActionTitle, role: .destructive) { deleteSelected() }
-            Button(localized("Cancel"), role: .cancel) {}
-        } message: {
-            Text(localized(
+            message: localized(
                 "Deleted shader packs cannot be restored unless they are downloaded or imported again."
-            ))
-        }
-        .alert(item: $deletionFailure) { failure in
-            Alert(
-                title: Text(localized("Shaders Could Not Be Deleted")),
-                message: Text(failure.message),
-                dismissButton: .default(Text(localized("OK")))
-            )
-        }
+            ),
+            actions: [
+                .cancel,
+                .init(title: deleteActionTitle, isDestructive: true) { deleteSelected() },
+            ]
+        )
+        .controllerPrompt(
+            localized("Shaders Could Not Be Deleted"),
+            isPresented: Binding(
+                get: { deletionFailure != nil },
+                set: { if !$0 { deletionFailure = nil } }
+            ),
+            message: deletionFailure?.message ?? "",
+            actions: [.ok]
+        )
     }
 
     private var controllerTargetOrder: [String] {

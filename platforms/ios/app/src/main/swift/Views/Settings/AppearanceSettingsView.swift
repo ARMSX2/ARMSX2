@@ -1065,11 +1065,12 @@ struct AppearanceSettingsView: View {
             .presentationBackground(.clear)
             .appStatusBarHidden()
         }
-        .alert("Theme Not Saved", isPresented: $themeSaveError) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Enter a name for your theme.")
-        }
+        .controllerPrompt(
+            "Theme Not Saved",
+            isPresented: $themeSaveError,
+            message: "Enter a name for your theme.",
+            actions: [.ok]
+        )
         .sheet(item: $themeShareItem) { item in
             ActivityShareSheet(activityItems: [item.url])
         }
@@ -1081,14 +1082,12 @@ struct AppearanceSettingsView: View {
                 importTheme(result)
             }
         }
-        .alert(
+        .controllerPrompt(
             settings.localized("Theme Preset"),
-            isPresented: $showsThemeTransferResult
-        ) {
-            Button(settings.localized("OK"), role: .cancel) {}
-        } message: {
-            Text(settings.localized(themeTransferMessage))
-        }
+            isPresented: $showsThemeTransferResult,
+            message: settings.localized(themeTransferMessage),
+            actions: [.ok]
+        )
         .sheet(item: $presentedControllerColour) { target in
             ControllerCustomColourEditor(
                 title: settings.localized(customColourTitle(for: target)),

@@ -112,24 +112,26 @@ struct SkinBrowserView: View {
         )
         .task { await catalog.fetch() }
         .refreshable { await catalog.fetch(force: true) }
-        .alert(settings.localized("Skin Install"), isPresented: isDetailAlertPresented) {
-            Button(settings.localized("OK"), role: .cancel) {}
-        } message: {
-            Text(detailAlert ?? "")
-        }
-        .alert(
+        .controllerPrompt(
+            settings.localized("Skin Install"),
+            isPresented: isDetailAlertPresented,
+            message: detailAlert ?? "",
+            actions: [.ok]
+        )
+        .controllerPrompt(
             settings.localized("Remove Skin?"),
             isPresented: isRemoveAlertPresented,
-            presenting: skinPendingRemoval
-        ) { skin in
-            Button(String(format: settings.localized("Remove %@"), skin.name), role: .destructive) {
-                installer.uninstall(skin)
-                skinPendingRemoval = nil
-            }
-            Button(settings.localized("Cancel"), role: .cancel) { skinPendingRemoval = nil }
-        } message: { _ in
-            Text(settings.localized("This deletes the installed skin. Linked layout presets are kept."))
-        }
+            message: settings.localized("This deletes the installed skin. Linked layout presets are kept."),
+            actions: [
+                .cancel,
+                .init(
+                    title: String(format: settings.localized("Remove %@"), skinPendingRemoval?.name ?? ""),
+                    isDestructive: true
+                ) {
+                    if let skin = skinPendingRemoval { installer.uninstall(skin) }
+                },
+            ]
+        )
         .sheet(item: $previewSkin) { skin in
             SkinPreviewSheet(skin: skin, controllerInput: controllerInput)
         }

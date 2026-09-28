@@ -9913,22 +9913,17 @@ private struct GameLibraryViewOptionsPanel: View {
             resetFeedbackTask = nil
             onPreviewChanged(nil)
         }
-        .confirmationDialog(
+        .controllerPrompt(
             settings.localized("Reset Game Library View Options?"),
             isPresented: $showsResetConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button(settings.localized("Reset"), role: .destructive) {
-                performReset()
-            }
-            Button(settings.localized("Cancel"), role: .cancel) {}
-        } message: {
-            Text(
-                settings.localized(
-                    "This restores the current orientation's card layout and visible content options to their defaults."
-                )
-            )
-        }
+            message: settings.localized(
+                "This restores the current orientation's card layout and visible content options to their defaults."
+            ),
+            actions: [
+                .cancel,
+                .init(title: settings.localized("Reset"), isDestructive: true, run: performReset),
+            ]
+        )
     }
 
     private func glassSection<Content: View>(

@@ -3077,28 +3077,19 @@ private struct SaveStatesPanel: View {
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2RetroAchievementsStateChanged"))) { _ in
                 refresh()
             }
-            .confirmationDialog(
+            .controllerPrompt(
                 "\(settings.localized("Overwrite Slot")) \(pendingOverwrite?.slot ?? 0)?",
                 isPresented: Binding(
                     get: { pendingOverwrite != nil },
-                    set: { newValue in
-                        if !newValue {
-                            pendingOverwrite = nil
-                        }
-                    }
+                    set: { if !$0 { pendingOverwrite = nil } }
                 ),
-                titleVisibility: .visible
-            ) {
-                Button(settings.localized("Overwrite"), role: .destructive) {
-                    if let pendingOverwrite {
-                        save(pendingOverwrite)
-                    }
-                    pendingOverwrite = nil
-                }
-                Button(settings.localized("Cancel"), role: .cancel) {
-                    pendingOverwrite = nil
-                }
-            }
+                actions: [
+                    .cancel,
+                    .init(title: settings.localized("Overwrite"), isDestructive: true) {
+                        if let pendingOverwrite { save(pendingOverwrite) }
+                    },
+                ]
+            )
         }
         .controllerAccessibilityTargetOrder(controllerTargetOrder)
         .controllerAccessibilityNavigation(
