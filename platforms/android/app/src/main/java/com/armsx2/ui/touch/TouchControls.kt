@@ -546,7 +546,8 @@ object TouchControls {
 
     fun macroTargetFor(code: Int): MacroTarget? = macroAssignableTargets.firstOrNull { it.code == code }
 
-    /** Codes macro [id] fires, in display order (empty if unconfigured).
+    /** Codes macro [id] fires, in the order they were picked (empty if unconfigured).
+     *  Macros saved before #746 were stored in display order, so they read back unchanged.
      *
      *  Reads BOTH forms: this used to store TouchButtonId names, so an existing macro's
      *  "CROSS,R1" still resolves — each token is mapped to its keycode. New writes are
@@ -558,14 +559,16 @@ object TouchControls {
         val codes = raw.split(",").mapNotNull { token ->
             token.toIntOrNull()
                 ?: runCatching { TouchButtonId.valueOf(token).keycode }.getOrNull()
-        }.toSet()
-        // Display order, and anything unrecognised drops out.
-        return macroAssignableTargets.map { it.code }.filter { it in codes }
+        }.distinct()
+        // Stored order, and anything unrecognised drops out.
+        val known = macroAssignableTargets.mapTo(HashSet()) { it.code }
+        return codes.filter { it in known }
     }
 
     fun setMacroCodes(id: TouchButtonId, codes: List<Int>) {
-        val wanted = codes.toSet()
-        val csv = macroAssignableTargets.map { it.code }.filter { it in wanted }.joinToString(",")
+        // In the order given, which is the order they were picked: Press in order reads it (#746).
+        val known = macroAssignableTargets.mapTo(HashSet()) { it.code }
+        val csv = codes.distinct().filter { it in known }.joinToString(",")
         MainActivityRuntime.prefs.edit { putString(KEY_MACRO_PREFIX + id.name, csv) }
         invalidateRuntimeMacroCache()
         macroBindTick.intValue++
@@ -632,6 +635,22 @@ object TouchControls {
         macroBindTick.intValue++
     }
 
+    // ---- Press in order (#746) -------------------------------------------------------
+    // A macro presses all its buttons in one instant, so the game gets them as a single state.
+    // Some inputs need one held before the next arrives (L2, then L-Stick Up, then Triangle), and
+    // the order the buttons were picked in could not say so. Opt-in per macro; off keeps every
+    // existing macro exactly as it was.
+
+    private const val KEY_MACRO_ORDER_PREFIX = "touch.macro.inorder."
+
+    fun macroInOrder(id: TouchButtonId): Boolean =
+        MainActivityRuntime.prefs.getBoolean(KEY_MACRO_ORDER_PREFIX + id.name, false)
+
+    fun setMacroInOrder(id: TouchButtonId, on: Boolean) {
+        MainActivityRuntime.prefs.edit { putBoolean(KEY_MACRO_ORDER_PREFIX + id.name, on) }
+        macroBindTick.intValue++
+    }
+
     /** Pressure-sensitive buttons a macro with its own pressure is holding, and that pressure.
      *  Read by [pressureRangeFor]; touch and pad input arrive on different threads. */
     private val macroPressureHeld = java.util.concurrent.ConcurrentHashMap<Int, Int>()
@@ -686,6 +705,24 @@ object TouchControls {
         pressured.forEach { macroPressureHeld[it] = pressure }
         if (buttons.isEmpty()) return
         val frames = macroFrequency(id)
+        if (frames <= 0 && buttons.size > 1 && macroInOrder(id)) {
+            // Press in order (#746): one button per sampled state, in the order they were picked,
+            // each staying down; the release above lets them all go together. Kept in
+            // macroRunnables until then, so a release mid-sequence cancels the rest and key
+            // auto-repeat can't start it over.
+            if (macroRunnables.containsKey(runKey)) return
+            var next = 0
+            val runnable = object : Runnable {
+                override fun run() {
+                    emit(buttons[next], true)
+                    next++
+                    if (next < buttons.size) macroHandler.postDelayed(this, MACRO_MIN_STATE_MS)
+                }
+            }
+            macroRunnables[runKey] = runnable
+            runnable.run()
+            return
+        }
         if (frames <= 0) {
             buttons.forEach { emit(it, true) }
             return

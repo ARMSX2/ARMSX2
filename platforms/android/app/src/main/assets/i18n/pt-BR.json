@@ -455,6 +455,8 @@
  "pad.leftStickFeel.title": "Sensibilidade do Analógico Esquerdo",
  "pad.macro.notSet": "Não definido",
  "pad.macro.pressure.description": "Com que força esta macro pressiona seus botões sensíveis à pressão (D-pad, botões de ação, L1/R1/L2/R2). Duas macros para o mesmo botão com pressões diferentes dão a você, por exemplo, dois níveis de zoom.",
+ "pad.macro.inOrder.label": "Pressionar em ordem",
+ "pad.macro.inOrder.description": "Pressiona os botões um após o outro, na ordem em que você os escolheu, em vez de todos de uma vez. Eles são soltos juntos. Só com Frequência em \"Espera\".",
  "pad.macro.pressure.full": "Pressão total",
  "pad.macro.pressure.label": "Pressão",
  "pad.macroConfig.intro": "Toque nos botões que esta macro deve pressionar juntos.",

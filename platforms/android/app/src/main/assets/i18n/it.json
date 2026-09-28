@@ -894,6 +894,8 @@
  "pad.macro.frequency.label": "Frequenza",
  "pad.macro.notSet": "Non impostato",
  "pad.macro.pressure.description": "Quanto forte questa macro preme i suoi pulsanti sensibili alla pressione (D-pad, pulsanti frontali, L1/R1/L2/R2). Due macro per lo stesso pulsante con pressioni diverse ti danno, per esempio, due livelli di zoom.",
+ "pad.macro.inOrder.label": "Premi in ordine",
+ "pad.macro.inOrder.description": "Preme i pulsanti uno dopo l'altro, nell'ordine in cui li hai scelti, invece che tutti insieme. Vengono rilasciati insieme. Solo con Frequenza su «Tieni premuto».",
  "pad.macro.pressure.full": "Pressione completa",
  "pad.macro.pressure.label": "Pressione",
  "pad.macroConfig.intro": "Tocca i pulsanti che questa macro deve premere insieme.",

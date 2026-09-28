@@ -830,6 +830,8 @@
  "pad.macro.frequency.label": "Frequenz",
  "pad.macro.notSet": "Nicht belegt",
  "pad.macro.pressure.description": "Wie fest dieses Makro seine druckempfindlichen Tasten drückt (Steuerkreuz, Aktionstasten, L1/R1/L2/R2). Zwei Makros für dieselbe Taste mit unterschiedlichem Druck ergeben zum Beispiel zwei Zoomstufen.",
+ "pad.macro.inOrder.label": "Der Reihe nach drücken",
+ "pad.macro.inOrder.description": "Drückt die Tasten nacheinander in der Reihenfolge, in der du sie gewählt hast, statt alle auf einmal. Losgelassen werden sie zusammen. Nur wenn Frequenz auf „Halten“ steht.",
  "pad.macro.pressure.full": "Voll gedrückt",
  "pad.macro.pressure.label": "Druck",
  "pad.macroConfig.intro": "Die Tasten antippen, die dieses Makro zusammen drücken soll.",

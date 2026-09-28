@@ -1661,6 +1661,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "savestate.title.loadManage" to "Load / Manage Saves",
     "pad.macro.pressure.label" to "Pressure",
     "pad.macro.pressure.description" to "How hard this macro presses its pressure-sensitive buttons (D-pad, face buttons, L1/R1/L2/R2). Two macros for the same button at different pressures give you, say, two zoom levels.",
+    "pad.macro.inOrder.label" to "Press in order",
+    "pad.macro.inOrder.description" to "Press the buttons one after another, in the order you picked them, instead of all at once. They are released together. Only with Frequency set to Hold.",
     "pad.macro.pressure.full" to "Full press",
     "pad.pressureAmount.label" to "Pressure modifier amount",
     "pad.pressureAmount.description" to

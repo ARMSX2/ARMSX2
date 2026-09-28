@@ -899,6 +899,8 @@
  "pad.macro.frequency.label": "빈도",
  "pad.macro.notSet": "미설정",
  "pad.macro.pressure.description": "이 매크로가 압력 감지 버튼(D-pad, 페이스 버튼, L1/R1/L2/R2)을 얼마나 세게 누를지 정합니다. 같은 버튼에 압력이 다른 매크로 두 개를 만들면, 예를 들어 두 단계의 줌 레벨을 만들 수 있습니다.",
+ "pad.macro.inOrder.label": "순서대로 누르기",
+ "pad.macro.inOrder.description": "버튼을 한꺼번에 누르지 않고 고른 순서대로 하나씩 누릅니다. 뗄 때는 함께 뗍니다. 빈도가 '홀드'일 때만 작동합니다.",
  "pad.macro.pressure.full": "완전히 누르기",
  "pad.macro.pressure.label": "압력",
  "pad.macroConfig.intro": "이 매크로가 함께 누를 버튼을 탭하세요.",

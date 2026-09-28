@@ -899,6 +899,8 @@
   "pad.macro.frequency.label": "Tần suất",
   "pad.macro.notSet": "Chưa đặt",
   "pad.macro.pressure.description": "Macro này nhấn các nút cảm ứng lực (D-pad, nút mặt, L1/R1/L2/R2) mạnh đến mức nào. Hai macro cho cùng một nút ở mức lực khác nhau có thể cho bạn, chẳng hạn, hai mức zoom khác nhau.",
+  "pad.macro.inOrder.label": "Nhấn theo thứ tự",
+  "pad.macro.inOrder.description": "Nhấn từng nút lần lượt theo thứ tự bạn đã chọn, thay vì nhấn tất cả cùng lúc. Các nút được thả cùng nhau. Chỉ khi Tần suất là \"Giữ\".",
   "pad.macro.pressure.full": "Nhấn hết lực",
   "pad.macro.pressure.label": "Lực nhấn",
   "pad.macroConfig.intro": "Chạm các nút mà macro này cần nhấn cùng lúc.",

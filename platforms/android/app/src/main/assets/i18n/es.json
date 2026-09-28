@@ -894,6 +894,8 @@
  "pad.macro.frequency.label": "Frecuencia",
  "pad.macro.notSet": "Sin asignar",
  "pad.macro.pressure.description": "Con qué fuerza pulsa esta macro sus botones sensibles a la presión (D-pad, botones frontales, L1/R1/L2/R2). Dos macros para el mismo botón con presiones distintas te dan, por ejemplo, dos niveles de zoom.",
+ "pad.macro.inOrder.label": "Pulsar en orden",
+ "pad.macro.inOrder.description": "Pulsa los botones uno tras otro, en el orden en que los elegiste, en lugar de todos a la vez. Se sueltan juntos. Solo con Frecuencia en «Mantener».",
  "pad.macro.pressure.full": "Pulsación completa",
  "pad.macro.pressure.label": "Presión",
  "pad.macroConfig.intro": "Toca los botones que esta macro debe pulsar a la vez.",

@@ -894,6 +894,8 @@
   "pad.macro.frequency.label": "Fréquence",
   "pad.macro.notSet": "Non défini",
   "pad.macro.pressure.description": "Force avec laquelle cette macro appuie sur ses boutons sensibles à la pression (D-pad, boutons d'action, L1/R1/L2/R2). Deux macros pour le même bouton avec des pressions différentes donnent par exemple deux niveaux de zoom.",
+  "pad.macro.inOrder.label": "Appuyer dans l'ordre",
+  "pad.macro.inOrder.description": "Appuie sur les boutons l'un après l'autre, dans l'ordre où vous les avez choisis, au lieu de tous en même temps. Ils sont relâchés ensemble. Uniquement avec Fréquence sur « Maintien ».",
   "pad.macro.pressure.full": "Appui complet",
   "pad.macro.pressure.label": "Pression",
   "pad.macroConfig.intro": "Touchez les boutons que cette macro doit presser ensemble.",

@@ -901,6 +901,8 @@
  "pad.macro.frequency.label": "频率",
  "pad.macro.notSet": "未设置",
  "pad.macro.pressure.description": "此宏按下压力感应按键（方向键、面部按键、L1/R1/L2/R2）时的力度。为同一按键设置两个不同压力的宏，例如可以得到两档不同的缩放级别。",
+ "pad.macro.inOrder.label": "按顺序按下",
+ "pad.macro.inOrder.description": "按你选择的顺序依次按下各个按键，而不是同时按下，松开时一起松开。仅在频率为“按住”时有效。",
  "pad.macro.pressure.full": "完全按下",
  "pad.macro.pressure.label": "压力",
  "pad.macroConfig.intro": "点击此宏应同时按下的按键。",

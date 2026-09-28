@@ -899,6 +899,8 @@
  "pad.macro.frequency.label": "ความถี่",
  "pad.macro.notSet": "ยังไม่ได้ตั้ง",
  "pad.macro.pressure.description": "macro นี้กดปุ่มที่รองรับแรงกด (D-pad, ปุ่มหน้า, L1/R1/L2/R2) แรงแค่ไหน การตั้ง macro สองชุดสำหรับปุ่มเดียวกันด้วยแรงกดต่างกัน จะให้ผลเช่น ระดับการซูมสองระดับ",
+ "pad.macro.inOrder.label": "กดตามลำดับ",
+ "pad.macro.inOrder.description": "กดปุ่มทีละปุ่มตามลำดับที่คุณเลือก แทนการกดพร้อมกันทั้งหมด แล้วปล่อยพร้อมกัน ใช้ได้เฉพาะเมื่อความถี่ตั้งเป็น \"กดค้าง\"",
  "pad.macro.pressure.full": "กดเต็มแรง",
  "pad.macro.pressure.label": "แรงกด",
  "pad.macroConfig.intro": "แตะปุ่มที่ macro นี้ควรกดพร้อมกัน",

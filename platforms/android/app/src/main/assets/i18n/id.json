@@ -899,6 +899,8 @@
   "pad.macro.frequency.label": "Frekuensi",
   "pad.macro.notSet": "Belum diatur",
   "pad.macro.pressure.description": "Seberapa keras makro ini menekan tombol yang sensitif tekanan (D-pad, tombol utama, L1/R1/L2/R2). Dua makro untuk tombol yang sama dengan tekanan berbeda bisa memberi Anda, misalnya, dua level zoom.",
+  "pad.macro.inOrder.label": "Tekan berurutan",
+  "pad.macro.inOrder.description": "Menekan tombol satu per satu, sesuai urutan kamu memilihnya, bukan sekaligus. Semuanya dilepas bersamaan. Hanya saat Frekuensi diatur ke Tahan.",
   "pad.macro.pressure.full": "Tekan penuh",
   "pad.macro.pressure.label": "Tekanan",
   "pad.macroConfig.intro": "Ketuk tombol yang harus ditekan makro ini bersamaan.",

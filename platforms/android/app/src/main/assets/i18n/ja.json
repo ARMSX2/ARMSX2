@@ -899,6 +899,8 @@
   "pad.macro.frequency.label": "頻度",
   "pad.macro.notSet": "未設定",
   "pad.macro.pressure.description": "このマクロが感圧ボタン（D-pad、フェイスボタン、L1/R1/L2/R2）をどれくらいの強さで押すかです。同じボタンに対して圧力の異なる2つのマクロを作れば、例えば2段階のズームレベルを実現できます。",
+  "pad.macro.inOrder.label": "順番に押す",
+  "pad.macro.inOrder.description": "ボタンを同時ではなく、選んだ順に 1 つずつ押します。離すときは同時です。頻度が「ホールド」のときのみ有効です。",
   "pad.macro.pressure.full": "フルプレス",
   "pad.macro.pressure.label": "圧力",
   "pad.macroConfig.intro": "このマクロが同時に押すボタンをタップします。",

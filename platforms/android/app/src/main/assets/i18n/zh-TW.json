@@ -901,6 +901,8 @@
  "pad.macro.frequency.label": "頻率",
  "pad.macro.notSet": "未設定",
  "pad.macro.pressure.description": "此巨集按下壓力感應按鍵（D-pad、面部按鍵、L1/R1/L2/R2）時的力道。為同一按鍵設定兩個不同壓力的巨集，例如可以得到兩檔不同的縮放等級。",
+ "pad.macro.inOrder.label": "依序按下",
+ "pad.macro.inOrder.description": "依你選擇的順序逐一按下各個按鍵，而不是同時按下，放開時一起放開。僅在頻率為「按住」時有效。",
  "pad.macro.pressure.full": "完全按下",
  "pad.macro.pressure.label": "壓力",
  "pad.macroConfig.intro": "點此巨集應同時按下的按鍵。",

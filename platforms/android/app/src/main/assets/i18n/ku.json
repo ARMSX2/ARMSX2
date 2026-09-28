@@ -924,6 +924,8 @@
   "pad.macro.frequency.label": "Frekans",
   "pad.macro.notSet": "Not set",
   "pad.macro.pressure.description": "Ev makro bişkokên xwe yên hessas-bi-zext (D-pad, bişkokên rûyî, L1/R1/L2/R2) çiqas bi hêz dipelçiqîne. Du makro ji bo heman bişkokê li ser zextên cuda, mînak, du astên zoom didin te.",
+  "pad.macro.inOrder.label": "Bi rêzê bitikîne",
+  "pad.macro.inOrder.description": "Bişkokan li şûna hemûyan bi hev re, yek li pey yekê û bi rêza ku te hilbijartine ditikîne. Hemû bi hev re têne berdan. Tenê dema Frekans li ser \"Bigire\" be.",
   "pad.macro.pressure.full": "Pêlkirina Tevahî",
   "pad.macro.pressure.label": "Zext",
   "pad.macroConfig.intro": "Bişkojkên ku divê ev makro bi hev re bikişîne bikirtînin.",
