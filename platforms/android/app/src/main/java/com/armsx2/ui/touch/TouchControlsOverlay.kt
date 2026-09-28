@@ -368,7 +368,7 @@ fun TouchControlsOverlay() {
             val density = LocalDensity.current
             val radius = TouchControls.multiTouchRadius.floatValue
             val multi = if (!faceMulti) emptyList() else layout.buttons
-                .filter { it.enabled && isMultiTouchKind(it.id.kind) && !it.tapToHold }
+                .filter { it.enabled && isUnifiedKind(it.id.kind) && !it.tapToHold }
             val blockers = GunBlockers(
                 rects = multi.map { cfg ->
                     val s = with(density) { cfg.sizeDp.dp.toPx() }
@@ -440,9 +440,9 @@ fun TouchControlsOverlay() {
                     TouchButtonId.Kind.DPAD -> DpadWidget(cfg, edit)
                     TouchButtonId.Kind.STICK -> StickWidget(cfg, edit)
                     TouchButtonId.Kind.PAUSE -> PauseWidget(cfg, edit)
-                    TouchButtonId.Kind.PRESSURE -> PressureButtonWidget(cfg, edit)
+                    TouchButtonId.Kind.PRESSURE -> PressureButtonWidget(cfg, edit, inputEnabled = !(faceMulti && !cfg.tapToHold))
                     TouchButtonId.Kind.FASTFORWARD -> FastForwardWidget(cfg, edit)
-                    TouchButtonId.Kind.MACRO -> MacroWidget(cfg, edit)
+                    TouchButtonId.Kind.MACRO -> MacroWidget(cfg, edit, inputEnabled = !(faceMulti && !cfg.tapToHold))
                     TouchButtonId.Kind.STATEACTION -> StateActionWidget(cfg, edit)
                     TouchButtonId.Kind.ANALOGEXTRA -> AnalogExtraWidget(cfg, edit)
                     TouchButtonId.Kind.GUN -> GunButtonWidget(cfg, edit)
@@ -645,13 +645,15 @@ private fun drawableFor(id: TouchButtonId, pressed: Boolean): Int = when (id) {
  *  sets TouchControls.pressureModifierHeld so pressure-capable buttons report a
  *  soft (~50%) press. Tints blue while held. */
 @Composable
-private fun PressureButtonWidget(cfg: TouchButtonCfg, edit: Boolean) {
+private fun PressureButtonWidget(cfg: TouchButtonCfg, edit: Boolean, inputEnabled: Boolean = true) {
     val held = TouchControls.pressureModifierHeld.value
     val opacity = TouchControls.opacity.floatValue
     val mod = Modifier
         .fillMaxSize()
         .let { it ->
             if (edit) it.editGestures(cfg)
+            // Multi-touch on: UnifiedTouchLayer presses P½, so a finger can glide on and off it.
+            else if (!inputEnabled) it
             else it.pointerInput(cfg.id) {
                 awaitPointerEventScope {
                     while (true) {
@@ -719,12 +721,11 @@ private fun UnifiedTouchLayer(
     // tap-to-hold (latched buttons keep their own pressGestures handler so the
     // latch logic runs — the shared layer has no latch). Same rect+circle hit math
     // as the old per-region FaceMultiTouchLayer: center + radius = sizePx * 0.62.
-    // Macros and the P½ pressure modifier are glide TARGETS too (#765): a finger that started on a
-    // face button can slide onto one and press it, the way MGS2/3 players hold a weapon button and
-    // then need P½ or a macro. A finger that lands on one directly is still that widget's own
-    // (they stay in foreignRects below), so a tap keeps its exact behaviour and timing.
+    // Macros and the P½ pressure modifier are the layer's too (#765), so a finger can press one,
+    // slide onto one or slide off one, the way MGS2/3 players hold a weapon button and then need
+    // P½ or a macro on the same thumb. Their widgets are render-only while this layer is on.
     val hitButtons = layout.buttons.filter {
-        it.enabled && (isMultiTouchKind(it.id.kind) || isGlideTargetKind(it.id.kind)) && !it.tapToHold
+        it.enabled && isUnifiedKind(it.id.kind) && !it.tapToHold
     }
     // Foreign regions: DPAD / STICK / tap+long-press kinds (PAUSE / FASTFORWARD /
     // MACRO / STATEACTION / PRESSURE) and any tap-to-hold digital button. Those
@@ -734,7 +735,7 @@ private fun UnifiedTouchLayer(
     // above-layer consume ever races), so a tap on the stick / Pause can't leak
     // into a face button.
     val foreignRects = layout.buttons.filter { cfg ->
-        cfg.enabled && (!isMultiTouchKind(cfg.id.kind) || cfg.tapToHold)
+        cfg.enabled && (!isUnifiedKind(cfg.id.kind) || cfg.tapToHold)
     }
 
     val density = LocalDensity.current
@@ -775,11 +776,15 @@ private fun UnifiedTouchLayer(
         }
     )
     val dims = widthPx to heightPx
+    // Each button's own Turbo (#619). This layer presses the buttons itself when Multi-Touch is
+    // on, so without this the setting only reached the single-button widget and turbo stopped
+    // the moment Multi-Touch went on (#754).
+    val turboById = hitButtons.filter { it.turbo > 0 }.associate { it.id to it.turbo }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(buttonRects, foreignBounds, dims, glideMode) {
+            .pointerInput(buttonRects, foreignBounds, dims, glideMode, turboById) {
                 var pressed = emptySet<TouchButtonId>()
                 fun updatePressed(next: Set<TouchButtonId>) {
                     if (pressed == next) return
@@ -822,7 +827,11 @@ private fun UnifiedTouchLayer(
                             TouchControls.pressureModifierHeld.value = down
                             TouchControls.reapplyPressureToHeldButtons()
                         }
-                        else -> sendDigital(id.keycode, down)
+                        else -> {
+                            val turbo = turboById[id] ?: 0
+                            if (turbo > 0) TouchControls.fireTurboButton(id.keycode, "multitouch", down, turbo, ::sendDigital)
+                            else sendDigital(id.keycode, down)
+                        }
                     }
                 }
                 fun releaseAll() {
@@ -845,14 +854,26 @@ private fun UnifiedTouchLayer(
                     val current = mutableMapOf<androidx.compose.ui.input.pointer.PointerId, Set<TouchButtonId>>()
                     val first = mutableMapOf<androidx.compose.ui.input.pointer.PointerId, Set<TouchButtonId>>()
                     val foreign = mutableSetOf<androidx.compose.ui.input.pointer.PointerId>()
+                    // P½ is a modifier, not a button (#765). A finger that reaches it holds it until
+                    // the finger lifts, whatever the glide mode, so it can go on gliding over other
+                    // buttons and press them softly. Until it reaches another button it also keeps
+                    // the buttons it arrived holding, so "hold Square, slide onto P½, lift" eases
+                    // Square off instead of firing it, even in Follow.
+                    val modifier = mutableMapOf<androidx.compose.ui.input.pointer.PointerId, Set<TouchButtonId>>()
+                    val carried = mutableMapOf<androidx.compose.ui.input.pointer.PointerId, Set<TouchButtonId>>()
+                    fun isPressure(b: TouchButtonId) = b.kind == TouchButtonId.Kind.PRESSURE
                     // What one finger holds down. FOLLOW and HOLD_ALL read exactly what the old
                     // glide=false and glide=true read, so those two are unchanged.
-                    fun contribution(id: androidx.compose.ui.input.pointer.PointerId): Set<TouchButtonId> =
-                        when (glideMode) {
+                    fun contribution(id: androidx.compose.ui.input.pointer.PointerId): Set<TouchButtonId> {
+                        val base = when (glideMode) {
                             TouchControls.GlideMode.FOLLOW -> current[id].orEmpty()
                             TouchControls.GlideMode.HOLD_FIRST -> first[id].orEmpty() + current[id].orEmpty()
                             TouchControls.GlideMode.HOLD_ALL -> latched[id].orEmpty()
                         }
+                        val mod = modifier[id] ?: return base
+                        val onButton = current[id].orEmpty().any { !isPressure(it) }
+                        return base + mod + (if (onButton) emptySet() else carried[id].orEmpty())
+                    }
                     try {
                         while (true) {
                             val ev = awaitPointerEvent()
@@ -875,10 +896,18 @@ private fun UnifiedTouchLayer(
                                     current.remove(ch.id)
                                     first.remove(ch.id)
                                     foreign.remove(ch.id)
+                                    modifier.remove(ch.id)
+                                    carried.remove(ch.id)
                                     continue
                                 }
                                 if (ch.id in foreign) continue
                                 val h = hits(ch.position)
+                                val reached = h.filter(::isPressure)
+                                if (reached.isNotEmpty()) {
+                                    if (ch.id !in modifier)
+                                        carried[ch.id] = contribution(ch.id).filterNot(::isPressure).toSet()
+                                    modifier[ch.id] = modifier[ch.id].orEmpty() + reached
+                                }
                                 current[ch.id] = h
                                 latched.getOrPut(ch.id) { mutableSetOf() }.addAll(h)
                                 if (ch.id !in first && h.isNotEmpty()) first[ch.id] = h
@@ -1103,7 +1132,7 @@ private fun Modifier.macroPressGestures(macroId: TouchButtonId) =
  *  and releases them on lift. Opt-in (disabled in the default layout); configure the
  *  button set in Pad settings → Touch Macros. An unconfigured macro is a no-op. */
 @Composable
-private fun MacroWidget(cfg: TouchButtonCfg, edit: Boolean) {
+private fun MacroWidget(cfg: TouchButtonCfg, edit: Boolean, inputEnabled: Boolean = true) {
     if (edit) {
         Box(
             modifier = Modifier.fillMaxSize().editGestures(cfg),
@@ -1126,7 +1155,8 @@ private fun MacroWidget(cfg: TouchButtonCfg, edit: Boolean) {
                 // No dark circle behind custom art — the pack draws its own shape, and the backing
                 // would show as a disc behind a square button.
                 .then(if (skin == null) Modifier.clip(CircleShape).background(Color.Black.copy(alpha = 0.30f * opacity)) else Modifier)
-                .macroPressGestures(cfg.id),
+                // Multi-touch on: UnifiedTouchLayer fires the macro, so a finger can glide on and off.
+                .then(if (inputEnabled) Modifier.macroPressGestures(cfg.id) else Modifier),
             contentAlignment = Alignment.Center,
         ) {
             if (skin != null) {
@@ -1895,7 +1925,7 @@ private fun FullHalfStickLayer(layout: TouchLayout, widthPx: Float, heightPx: Fl
     // or a thumb on the rim of Cross would move the right stick instead.
     val radius = TouchControls.multiTouchRadius.floatValue
     val foreignCircles = if (!faceMulti) emptyList() else layout.buttons
-        .filter { it.enabled && isMultiTouchKind(it.id.kind) && !it.tapToHold }
+        .filter { it.enabled && isUnifiedKind(it.id.kind) && !it.tapToHold }
         .map { cfg ->
             val sizePx = with(density) { cfg.sizeDp.dp.toPx() }
             UnifiedHit(id = cfg.id, cx = widthPx * cfg.xFrac, cy = heightPx * cfg.yFrac, radius = sizePx * radius)
@@ -2034,9 +2064,14 @@ private fun isMultiTouchKind(kind: TouchButtonId.Kind): Boolean =
     kind == TouchButtonId.Kind.SHOULDER ||
     kind == TouchButtonId.Kind.MENU
 
-/** Widgets with a handler of their own that a gliding finger can still press (#765). */
+/** Macros and P½ (#765). With multi-touch on they are the layer's as well, so a finger can start
+ *  on one and glide off it, not only glide onto it: their widgets go render-only like the buttons'. */
 private fun isGlideTargetKind(kind: TouchButtonId.Kind): Boolean =
     kind == TouchButtonId.Kind.MACRO || kind == TouchButtonId.Kind.PRESSURE
+
+/** Everything [UnifiedTouchLayer] owns while multi-touch is on. */
+private fun isUnifiedKind(kind: TouchButtonId.Kind): Boolean =
+    isMultiTouchKind(kind) || isGlideTargetKind(kind)
 
 /** Press/release pointerInput for a single digital button. Emits the
  *  keycode on down, releases on up or pointer cancel.
