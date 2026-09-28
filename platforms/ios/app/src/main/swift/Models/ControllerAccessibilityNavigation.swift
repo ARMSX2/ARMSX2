@@ -1231,17 +1231,14 @@ final class ControllerAccessibilityNavigationSession {
     private func isFullyVisible(_ view: UIView, in scrollView: UIScrollView) -> Bool {
         guard view.window != nil else { return false }
         let targetFrame = view.convert(view.bounds, to: scrollView)
+        // The bare bounds counted a row hidden under a bar or pinned header as visible.
+        let viewport = scrollViewportFrame(in: scrollView)
         let maximumMargin = max(
             0,
-            (scrollView.bounds.height - targetFrame.height) / 2 - 1
+            (viewport.height - targetFrame.height) / 2 - 1
         )
         let edgeMargin = min(focusViewportEdgeMargin, maximumMargin)
-        let visibleFrame = CGRect(
-            origin: scrollView.contentOffset,
-            size: scrollView.bounds.size
-        )
-        .insetBy(dx: 0, dy: edgeMargin)
-        return visibleFrame.contains(targetFrame)
+        return viewport.insetBy(dx: 0, dy: edgeMargin).contains(targetFrame)
     }
 
     private func focusCorridorDestination(

@@ -3164,6 +3164,14 @@ private struct SaveStatesPanel: View {
                     ))
                 }
 
+                // Up on Slot 1 swapped Load and Overwrite, so both list ends stop.
+                let boundary = ControllerAccessibilityDirectionalLink.navigationBoundary
+                if rowIndex == rows.startIndex {
+                    links.append(.init(fromLabel: target, direction: .up, toLabel: boundary))
+                }
+                if rowIndex + 1 == rows.endIndex {
+                    links.append(.init(fromLabel: target, direction: .down, toLabel: boundary))
+                }
                 let semanticColumn = saveStateActionColumn(target)
                 if rowIndex > rows.startIndex,
                    let destination = nearestSaveStateTarget(
