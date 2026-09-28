@@ -2035,9 +2035,8 @@ void GSState::DumpTransferImages()
 				transfer.rect.x, transfer.rect.y, transfer.rect.z, transfer.rect.w);
 		}
 
-		if (!transfer.was_hardware_only)
-			m_mem.SaveBMP(filename, transfer.blit.DBP, transfer.blit.DBW, transfer.blit.DPSM,
-				transfer.rect.width(), transfer.rect.height(), transfer.rect.x, transfer.rect.y);
+		m_mem.SaveBMP(filename, transfer.blit.DBP, transfer.blit.DBW, transfer.blit.DPSM,
+			transfer.rect.width(), transfer.rect.height(), transfer.rect.x, transfer.rect.y);
 	}
 }
 
@@ -3897,7 +3896,7 @@ void GSState::ExecTransferRecord(const GSBackQueue::TransferRecord& rec)
 		}
 		else
 		{
-			const GSUploadQueue new_transfer = {rec.blit, rec.draw_serial, rec.rect, EEGS_TransferType::EE_to_GS, false};
+			const GSUploadQueue new_transfer = {rec.blit, rec.draw_serial, rec.rect, EEGS_TransferType::EE_to_GS};
 			m_draw_transfers.push_back(new_transfer);
 		}
 	}
@@ -4852,12 +4851,11 @@ void GSState::Move()
 		m_draw_transfers.pop_back();
 		transfer.rect = transfer.rect.runion(r);
 		transfer.draw = s_n;
-		transfer.was_hardware_only = false;
 		m_draw_transfers.push_back(transfer);
 	}
 	else
 	{
-		const GSUploadQueue new_transfer = {m_env.BITBLTBUF, s_n, r, EEGS_TransferType::GS_to_GS, false};
+		const GSUploadQueue new_transfer = {m_env.BITBLTBUF, s_n, r, EEGS_TransferType::GS_to_GS};
 		m_draw_transfers.push_back(new_transfer);
 	}
 
