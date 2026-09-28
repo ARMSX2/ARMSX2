@@ -1026,6 +1026,16 @@ open class MainActivityRuntime : ComponentActivity() {
                         NativeApp.setSetting("Pad$s", "AxisScale", "float", "1.33")
                         NativeApp.setSetting("Pad$s", "ButtonDeadzone", "float", "0")
                     }
+                } else {
+                    // Off has to be written as well. These flags live in the settings file, and
+                    // switching Multitap off with no game running never reaches the core
+                    // (setMultitap needs a VM), so a tap armed once stayed plugged in on every
+                    // later boot. A game that looks for a multitap then found one on port 1 and
+                    // took its players from there, never from port 2 where the second
+                    // controller plays: Marvel Ultimate Alliance and Sonic Riders (#586).
+                    NativeApp.setSetting("Pad", "MultitapPort1", "bool", "false")
+                    NativeApp.setSetting("Pad", "MultitapPort2", "bool", "false")
+                    for (s in 3..8) NativeApp.setSetting("Pad$s", "Type", "string", "None")
                 }
             }
 
