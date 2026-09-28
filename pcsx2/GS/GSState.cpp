@@ -2083,15 +2083,19 @@ __noinline bool GIFClassifyPaddedLayout(const GSVector4i& regs, u32 nreg, u32& t
 	}
 
 	// {ST, RGBAQ, XYZF2} with NOPs between: most of outrun-b's and mgs3's traffic.
+	// {UV, RGBAQ, XYZF2} with NOPs between is the same triple addressed by UV.
 	if (n == 3)
 	{
-		if (desc[0] == GIF_REG_STQ && desc[1] == GIF_REG_RGBA && desc[2] == GIF_REG_XYZF2)
-		{
+		if (desc[1] != GIF_REG_RGBA || desc[2] != GIF_REG_XYZF2)
+			return false;
+		if (desc[0] == GIF_REG_STQ)
 			type = GIFPath::TYPE_NOPSTQRGBAXYZF2;
-			layout = {nreg, pos[0], pos[1], pos[2]};
-			return true;
-		}
-		return false;
+		else if (desc[0] == GIF_REG_UV)
+			type = GIFPath::TYPE_UVRGBAQXYZF2;
+		else
+			return false;
+		layout = {nreg, pos[0], pos[1], pos[2]};
+		return true;
 	}
 
 	// The two-register layouts, NOP-padded. XYZF2 twins are deliberately not
