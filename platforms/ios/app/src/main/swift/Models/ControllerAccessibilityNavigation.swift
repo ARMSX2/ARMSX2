@@ -243,6 +243,7 @@ final class ControllerAccessibilityNavigationSession {
     @ObservationIgnored private var scopeKey = ""
     @ObservationIgnored private var registrationID: UUID?
     @ObservationIgnored private var targets: [String: Target] = [:]
+    @ObservationIgnored private var scrollOwners: [String: WeakView] = [:]
     @ObservationIgnored private var registrationKeys: [UUID: String] = [:]
     @ObservationIgnored private let scrollSurfaces = NSHashTable<AnyObject>.weakObjects()
     @ObservationIgnored private var duplicateBaseKeys = Set<String>()
@@ -387,6 +388,7 @@ final class ControllerAccessibilityNavigationSession {
         self.scopeKey = scopeKey
         scopeRevision &+= 1
         targets.removeAll(keepingCapacity: true)
+        scrollOwners.removeAll()
         registrationKeys.removeAll(keepingCapacity: true)
         duplicateBaseKeys.removeAll(keepingCapacity: true)
         declaredOrder.removeAll(keepingCapacity: true)
@@ -2218,10 +2220,20 @@ final class ControllerAccessibilityNavigationSession {
         // with no UIScrollView ancestor at all. Use the same screen-local
         // owner as analog scrolling, rather than waiting for scrollTo to mount
         // an offscreen row. Weak markers keep retained/covered pages passive.
-        return scrollSurfaces.allObjects.lazy
-            .compactMap { $0 as? any ControllerAccessibilityScrollSurface }
-            .compactMap { $0.scrollViewForFocusTarget(view) }
-            .first
+        let key = ((view as? ControllerAccessibilityActionProbeView)?.resolvedKey)
+            .flatMap { $0.isEmpty ? nil : $0 }
+        if let owner = scrollSurfaces.allObjects.lazy
+            .compactMap({ $0 as? any ControllerAccessibilityScrollSurface })
+            .compactMap({ $0.scrollViewForFocusTarget(view) })
+            .first {
+            if let key { scrollOwners[key] = WeakView(owner) }
+            return owner
+        }
+        // The marker forgets a row whose cell the List reused, and a row under
+        // the title is outside it, so Settings never scrolled back to it.
+        guard let key, let owner = scrollOwners[key]?.value as? UIScrollView,
+              owner.window === window else { return nil }
+        return owner
     }
 
     private func verticalScrollableRange(of scrollView: UIScrollView) -> CGFloat {
