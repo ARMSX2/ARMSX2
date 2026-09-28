@@ -1628,6 +1628,35 @@ private fun LibraryOverflowMenu(
             closeThen { onSort(HomeSort.RecentlyPlayed) }
         }
         OverflowSeparator()
+        // Memory Card Covers: each game's PS2 save icon, from the player's own cards, as its cover.
+        // One row cycling Off -> Animated -> Still, like Cover region; Animated brings the selected
+        // tile's icon to life.
+        run {
+            val coversCtx = androidx.compose.ui.platform.LocalContext.current
+            remember { com.armsx2.memcard.MemcardCovers.load() }
+            val on = com.armsx2.memcard.MemcardCovers.enabled.value
+            val animated = com.armsx2.memcard.MemcardCovers.animateSelected.value
+            LibraryOverflowItem(
+                glyph = "▤",
+                label = str("games.overflow.memcardCovers"),
+                trailing = when {
+                    !on -> str("common.off")
+                    animated -> str("games.overflow.memcardCovers.animated")
+                    else -> str("games.overflow.memcardCovers.still")
+                },
+            ) {
+                closeThen {
+                    when {
+                        !on -> {
+                            com.armsx2.memcard.MemcardCovers.setAnimateSelected(true)
+                            com.armsx2.memcard.MemcardCovers.setEnabled(coversCtx, true)
+                        }
+                        animated -> com.armsx2.memcard.MemcardCovers.setAnimateSelected(false)
+                        else -> com.armsx2.memcard.MemcardCovers.setEnabled(coversCtx, false)
+                    }
+                }
+            }
+        }
         LibraryOverflowItem(
             glyph = if (use3dCovers) "3D" else "2D",
             label = str("games.overflow.coverStyle"),
