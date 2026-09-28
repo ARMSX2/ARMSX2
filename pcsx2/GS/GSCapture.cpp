@@ -169,7 +169,6 @@ namespace GSCapture
 	static bool ReceivePackets(AVCodecContext* codec_context, AVStream* stream, AVPacket* packet);
 	static bool ProcessAudioPackets(s64 video_pts);
 	static void InternalEndCapture(std::unique_lock<std::mutex>& lock);
-	static void InternalFlush(bool flush_audio_only);
 	static CodecList GetCodecListForContainer(const char* container, AVMediaType type);
 
 	static std::mutex s_lock;
@@ -1464,14 +1463,14 @@ std::string GSCapture::GetNextCaptureFileName()
 	return ret;
 }
 
-void GSCapture::InternalFlush(bool flush_audio_only)
+void GSCapture::Flush()
 {
 	std::unique_lock<std::mutex> lock(s_lock);
 
 	if (s_encoding_error)
 		return;
-	if (!flush_audio_only)
-		ProcessAllInFlightFrames(lock);
+
+	ProcessAllInFlightFrames(lock);
 
 	if (IsCapturingAudio())
 	{
@@ -1484,16 +1483,6 @@ void GSCapture::InternalFlush(bool flush_audio_only)
 		s_audio_buffer_write_pos = 0;
 		s_audio_buffer_size.store(0, std::memory_order_release);
 	}
-}
-
-void GSCapture::Flush()
-{
-	InternalFlush(false);
-}
-
-void GSCapture::FlushAudioOnly()
-{
-	InternalFlush(true);
 }
 
 GSCapture::CodecList GSCapture::GetCodecListForContainer(const char* container, AVMediaType type)
