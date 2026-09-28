@@ -1991,9 +1991,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_enablePad2(JNIEnv *env, jclass clazz) {
 // live when BOTH the flag is set AND Ports[slot].Type == DualShock2 (Pad::LoadConfig
 // forces NotConnected otherwise). Sio2 reads the multitap flag + Pad::GetPad(port,slot)
 // live every poll, so no SIO re-init is needed — Pad::LoadConfig sends eject ticks and
-// the running game re-detects. Threading mirrors enablePad2 exactly: ScopedVMPause parks
-// the CPU/MTGS/MTVU side and s_pad_mutex serializes the input thread against the
-// s_controllers[] rebuild. MUST be called off the UI thread (the park can take up to 3s).
+// the running game re-detects. Threading: ScopedVMPause parks the CPU/MTGS/MTVU side and
+// s_pad_mutex serializes the input thread against the s_controllers[] rebuild. MUST be
+// called off the UI thread (the park can take up to 3s).
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setMultitap(JNIEnv *env, jclass clazz, jint p_port, jboolean p_enabled) {
     if (!VMManager::HasValidVM())
@@ -2008,21 +2008,23 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setMultitap(JNIEnv *env, jclass clazz, jint
     ScopedVMPause vm_pause(false);
     if (!vm_pause.parked())
         return;
-    {
-        auto lock = Host::GetSettingsLock();
-        if (SettingsInterface* si = Host::GetSettingsInterface()) {
-            si->SetBoolValue("Pad", flagKey, enabled);
-            for (int k = 0; k < 3; k++) {
-                const std::string section = Pad::GetConfigSection(taps[k]); // [Pad3..Pad8]
-                si->SetStringValue(section.c_str(), "Type", enabled ? "DualShock2" : "None");
-                si->SetFloatValue(section.c_str(), "Deadzone", 0.0f);       // app shapes the stick
-                si->SetFloatValue(section.c_str(), "AxisScale", 1.33f);     // PCSX2 default
-                si->SetFloatValue(section.c_str(), "ButtonDeadzone", 0.0f);
-            }
-        }
+    // Into the BASE layer, as setSetting writes. Host::GetSettingsInterface() is the layered
+    // view, and every setter on it is a pxFailRel, so writing through it aborted the app the
+    // moment Multitap was switched with a game running. The SetBase* calls lock for themselves.
+    Host::SetBaseBoolSettingValue("Pad", flagKey, enabled);
+    for (int k = 0; k < 3; k++) {
+        const std::string section = Pad::GetConfigSection(taps[k]); // [Pad3..Pad8]
+        Host::SetBaseStringSettingValue(section.c_str(), "Type", enabled ? "DualShock2" : "None");
+        Host::SetBaseFloatSettingValue(section.c_str(), "Deadzone", 0.0f);       // app shapes the stick
+        Host::SetBaseFloatSettingValue(section.c_str(), "AxisScale", 1.33f);     // PCSX2 default
+        Host::SetBaseFloatSettingValue(section.c_str(), "ButtonDeadzone", 0.0f);
     }
     {
         std::lock_guard<std::mutex> lk(s_pad_mutex);
+        // Held across the reload, as VMManager::LoadSettings holds it, so a setting written from
+        // the UI meanwhile can't change the file under the read. Pad mutex first, then this: the
+        // order ApplyUsbPortsToRunningVM takes them in.
+        auto settings_lock = Host::GetSettingsLock();
         if (port == 0)
             EmuConfig.Pad.MultitapPort0_Enabled = enabled;
         else
