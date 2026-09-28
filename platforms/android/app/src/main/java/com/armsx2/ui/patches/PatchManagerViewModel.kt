@@ -34,6 +34,8 @@ data class PatchManagerUiState(
     // linger into the next game's tab. The browser only renders onlineEntries when this equals
     // the game currently on screen — a hard guard that survives any missed lifecycle reset.
     val onlineForGameKey: String = "",
+    // The large cheat database's own search ([PatchManagerViewModel.fetchLargeCheats]).
+    val largeLoading: Boolean = false,
     // Local per-cheat manager: the expanded file's parsed cheats (name/enabled).
     val localExpandedPath: String? = null,
     val localCheats: List<PatchRepo.LocalCheat> = emptyList(),
@@ -74,9 +76,14 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
     fun cancelOnlineSearch() {
         onlineSearchJob?.cancel()
         onlineSearchJob = null
-        if (state.value.onlineLoading)
-            state.value = state.value.copy(onlineLoading = false)
+        largeSearchJob?.cancel()
+        largeSearchJob = null
+        if (state.value.onlineLoading || state.value.largeLoading)
+            state.value = state.value.copy(onlineLoading = false, largeLoading = false)
     }
+
+    /** The large cheat database's search, if any. See fetchLargeCheats. */
+    private var largeSearchJob: kotlinx.coroutines.Job? = null
 
     private companion object {
         /** A user can hand us a storage root by accident; an unbounded SAF walk of that is a hang. */
@@ -356,29 +363,23 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
     fun fetchOnline(game: GameInfo?) {
         val gameKey = game?.uri?.toString() ?: ""
         state.value = state.value.copy(
-            onlineLoading = true, error = null, onlineEntries = emptyList(), onlineForGameKey = gameKey,
+            onlineLoading = true, largeLoading = false, error = null, onlineEntries = emptyList(),
+            onlineForGameKey = gameKey,
         )
         // ★ Tracked so it can be STOPPED, and so a second search cannot stack on the first.
         //
-        // The scan walks four repositories, each a multi-megabyte GitHub tree that is downloaded
-        // and regex-scanned. Left running behind the emulator that is enough CPU to cost a
+        // The scan walks several repositories, each a GitHub file list that may have to be
+        // downloaded and regex-scanned. Left running behind the emulator that is enough CPU to cost a
         // low-end device full speed and heat it badly — reported on a Helio G99, where going
         // back to the game did not stop it. viewModelScope alone was not enough: it only
         // cancels when the ViewModel clears, which does not happen merely because the user
         // returned to the game.
         onlineSearchJob?.cancel()
+        // This search replaces the list, so a large-database search still running would add its
+        // cheats to a list that is about to be thrown away.
+        largeSearchJob?.cancel()
         onlineSearchJob = viewModelScope.launch {
-            // Serial priority: the library's (filename-derived) serial, then the running
-            // game's serial, then — for a plainly-named file whose filename yielded no
-            // serial and that isn't running — read it straight off the disc image
-            // (SYSTEM.CNF), the same probe the library scan uses. The last step is why
-            // online patches now work from the library, not only in-game: GameInfo.serial
-            // is often null there, but the disc always carries the real serial.
-            val serial = withContext(Dispatchers.IO) {
-                game?.serial?.takeIf { it.isNotBlank() }
-                    ?: runCatching { NativeApp.getGameSerial() }.getOrNull()?.takeIf { it.isNotBlank() }
-                    ?: game?.uri?.let { probeSerialFromDisc(it) }
-            }
+            val serial = withContext(Dispatchers.IO) { resolveSerial(game) }
             if (serial == null) {
                 state.value = state.value.copy(
                     onlineLoading = false,
@@ -386,27 +387,114 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
                 )
                 return@launch
             }
+            // The bundled patch DB (offline, complete), so patches resolve without the
+            // rate-limited/truncating GitHub tree — for BOTH the booted (by-CRC) and the
+            // library (by-serial) paths.
+            val bundled = File(MainActivityRuntime.assetCopyRoot(getApplication()), "resources/patches.zip")
+            val crc = withContext(Dispatchers.IO) {
+                runCatching { NativeApp.getGameCRC() }.getOrNull()?.takeIf { it.length == 8 }
+            }
+            // The patches the app ships show straight away; the online sources only add to them.
+            // They used to wait for every source, so a slow connection hid patches that were on
+            // the device all along. A booted game keeps its own CRC: that is the file the core
+            // loads, and the one Install names.
+            val quick = withContext(Dispatchers.IO) { PatchRepo.bundledForSerial(serial, bundled) }
+            if (quick.entries.isNotEmpty()) {
+                state.value = state.value.copy(
+                    onlineTitle = quick.gametitle,
+                    onlineEntries = quick.entries,
+                    onlineSelected = emptySet(),
+                    onlineSerial = quick.serial,
+                    onlineCrc = crc ?: quick.crc,
+                    onlineForGameKey = gameKey,
+                )
+            }
             val result = withContext(Dispatchers.IO) {
-                // The bundled patch DB (offline, complete), so patches resolve without the
-                // rate-limited/truncating GitHub tree — for BOTH the booted (by-CRC) and the
-                // library (by-serial) paths.
-                val bundled = File(MainActivityRuntime.assetCopyRoot(getApplication()), "resources/patches.zip")
-                val crc = runCatching { NativeApp.getGameCRC() }.getOrNull()?.takeIf { it.length == 8 }
                 if (crc != null) PatchRepo.fetchForGame(serial, crc, bundled)
                 else PatchRepo.fetchForSerial(serial, bundled)
             }
+            val stillSelected = state.value.onlineSelected
             state.value = state.value.copy(
                 onlineLoading = false,
                 onlineTitle = result.gametitle,
                 onlineEntries = result.entries,
-                onlineSelected = emptySet(),
+                // Ticks made on the bundled patches while the rest loaded carry over.
+                onlineSelected = stillSelected.filterTo(HashSet()) { n -> result.entries.any { it.name == n } },
                 onlineSerial = result.serial.ifBlank { serial },
                 onlineCrc = result.crc,
                 onlineForGameKey = gameKey,
-                error = result.error,
+                // "Nothing in the database" was also what a refused or failed download looked like.
+                error = if (result.entries.isEmpty() && PatchRepo.listingsUnavailable())
+                    I18n.get("patches.online.unreachable") else result.error,
             )
         }
     }
+
+    /**
+     * Search the large cheat database for this game and add what it finds to the list.
+     *
+     * A separate button, as ARMSX3 keeps Artemis apart from the RPCS3 patches: its file list is
+     * 6.3 MB, more than everything the regular search downloads put together (see
+     * PatchRepo.fetchLargeCheats). Whatever the list already shows stays; cheats it already has
+     * are not added twice.
+     */
+    fun fetchLargeCheats(game: GameInfo?) {
+        val gameKey = game?.uri?.toString() ?: ""
+        val before = state.value
+        val sameGame = before.onlineForGameKey == gameKey
+        state.value = before.copy(
+            largeLoading = true, error = null, message = null, onlineForGameKey = gameKey,
+            onlineEntries = if (sameGame) before.onlineEntries else emptyList(),
+            onlineSelected = if (sameGame) before.onlineSelected else emptySet(),
+        )
+        largeSearchJob?.cancel()
+        largeSearchJob = viewModelScope.launch {
+            val serial = withContext(Dispatchers.IO) { resolveSerial(game) }
+            if (serial == null) {
+                state.value = state.value.copy(
+                    largeLoading = false,
+                    error = "No game serial to look up patches for. Open this from a game.",
+                )
+                return@launch
+            }
+            val found = withContext(Dispatchers.IO) {
+                val bundled = File(MainActivityRuntime.assetCopyRoot(getApplication()), "resources/patches.zip")
+                val crc = runCatching { NativeApp.getGameCRC() }.getOrNull()?.takeIf { it.length == 8 }
+                    ?: state.value.onlineCrc.takeIf { state.value.onlineForGameKey == gameKey && it.isNotBlank() }
+                PatchRepo.fetchLargeCheats(serial, crc, bundled)
+            }
+            val cur = state.value
+            val existing = if (cur.onlineForGameKey == gameKey) cur.onlineEntries else emptyList()
+            val seen = existing.mapTo(HashSet()) { PatchRepo.cheatKey(it.name) }
+            val added = found.entries.filter { seen.add(PatchRepo.cheatKey(it.name)) }
+            state.value = cur.copy(
+                largeLoading = false,
+                onlineEntries = existing + added,
+                onlineTitle = cur.onlineTitle.ifBlank { found.gametitle },
+                onlineSerial = cur.onlineSerial.ifBlank { found.serial },
+                onlineCrc = cur.onlineCrc.ifBlank { found.crc },
+                onlineForGameKey = gameKey,
+                // The list growing says it worked; only a search that added nothing says why.
+                error = when {
+                    added.isNotEmpty() -> null
+                    PatchRepo.largeListingUnavailable() -> I18n.get("patches.online.large.unreachable")
+                    else -> I18n.get("patches.online.large.none")
+                },
+            )
+        }
+    }
+
+    /**
+     * The serial to search with: the library's (filename-derived) serial, then the running
+     * game's serial, then, for a plainly-named file whose filename yielded no serial and that
+     * isn't running, read straight off the disc image (SYSTEM.CNF), the same probe the library
+     * scan uses. The last step is why online patches work from the library, not only in-game:
+     * GameInfo.serial is often null there, but the disc always carries the real serial. IO thread.
+     */
+    private fun resolveSerial(game: GameInfo?): String? =
+        game?.serial?.takeIf { it.isNotBlank() }
+            ?: runCatching { NativeApp.getGameSerial() }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: game?.uri?.let { probeSerialFromDisc(it) }
 
     /** Read the PS2 serial straight from the disc image (SYSTEM.CNF) via the same native
      *  probe the library scan uses — the fallback for a plainly-named file whose filename
