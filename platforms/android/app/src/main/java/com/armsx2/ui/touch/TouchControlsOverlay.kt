@@ -145,7 +145,7 @@ fun TouchControlsOverlay() {
         com.armsx2.input.AndroidGyroscopeInput(context) { mode, x, y ->
             // Fold the gyro into the shared analog-merge layer as a SIGNED addend on
             // the physical stick that shares its axis (aim -> right or the user-chosen
-            // left for RE4-style games; steer -> left) instead of writing the stick
+            // left for RE4-style games; steer -> its own choice, left by default) instead of writing the stick
             // codes raw. That lets coarse stick aim and fine gyro adjustment run at
             // once — before, whichever moved last clobbered the other. The combine
             // (and the P1 physical-stick state it sums with) lives in the runtime.
@@ -157,17 +157,23 @@ fun TouchControlsOverlay() {
     // the effect keys on it: turning it off unregisters the sensor, and stop()'s (0,0)
     // release clears the gyro addend so the physical stick is left driving on its own.
     val gyroOn = MainActivityRuntime.gyroActive.value
+    // Split axes (#592): each axis its own sensitivity, and Steer mode reads Y as well.
+    val gyroSplit = ControllerMappings.gyroSplitAxes()
+    val gyroSensX = if (gyroSplit) ControllerMappings.gyroSensitivityX() else ControllerMappings.gyroSensitivity()
+    val gyroSensY = if (gyroSplit) ControllerMappings.gyroSensitivityY() else ControllerMappings.gyroSensitivity()
     DisposableEffect(MainActivityRuntime.eState.value, gyroMode, gyroOn,
-            ControllerMappings.gyroSensitivity(),
+            gyroSensX, gyroSensY, gyroSplit,
             ControllerMappings.gyroSmoothing(),
             ControllerMappings.gyroInvertX(),
             ControllerMappings.gyroInvertY()) {
         if (MainActivityRuntime.eState.value == EmuState.RUNNING && gyroMode != 0 && gyroOn) {
             gyro.start(gyroMode,
-                ControllerMappings.gyroSensitivity(),
+                gyroSensX,
+                gyroSensY,
                 ControllerMappings.gyroSmoothing(),
                 ControllerMappings.gyroInvertX(),
-                ControllerMappings.gyroInvertY())
+                ControllerMappings.gyroInvertY(),
+                steerY = gyroSplit)
             // Hand the runtime a handle on recenter() — it owns hotkey dispatch but not the
             // sensor. Only published while a session is actually registered so GYRO_RECENTER
             // can report "not active" rather than appearing to work.

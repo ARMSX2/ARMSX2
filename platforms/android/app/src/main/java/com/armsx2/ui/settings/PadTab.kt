@@ -1505,6 +1505,19 @@ internal fun GyroSection(
                 },
             )
         }
+        // The same choice for Steering, which only ever drove the left stick (#592). Same order
+        // and values as Aim's row; Left stays the default.
+        if (gyroMode == ControllerMappings.GYRO_STEER) {
+            SegmentedRow(
+                label = str("pad.gyro.steerStick.label"),
+                options = listOf(str("pad.gyro.aimStick.right"), str("pad.gyro.aimStick.left")),
+                selectedIndex = ControllerMappings.gyroSteerStickScope(editSerial),
+                onChange = {
+                    ControllerMappings.setGyroSteerStick(it, editSerial)
+                    refreshToken.intValue++
+                },
+            )
+        }
         // Report which sensor the mode will actually use. Aim prefers a real gyroscope and
         // steering the game rotation vector, but both fall back to the accelerometer, which
         // essentially every device has — so "unavailable" is now genuinely rare. Say when
@@ -1526,17 +1539,55 @@ internal fun GyroSection(
             }
         }
         SettingsDivider()
-        IntSliderRow(
-            label = str("pad.gyro.sensitivity.label"),
-            value = ControllerMappings.gyroSensitivityScope(editSerial),
-            min = 25,
-            max = 300,
-            valueFormatter = { "${it}%" },
-            onChange = {
-                ControllerMappings.setGyroSensitivity(it, editSerial)
-                refreshToken.intValue++
-            },
-        )
+        // One slider for both axes, or one per axis (#592), where 0% turns that axis off and
+        // Steering reads tipping forward and back as Y.
+        val gyroSplit = ControllerMappings.gyroSplitAxesScope(editSerial)
+        ToggleRow(
+            str("pad.gyro.splitAxes.label"),
+            gyroSplit,
+            description = str("pad.gyro.splitAxes.description"),
+        ) {
+            ControllerMappings.setGyroSplitAxes(it, editSerial)
+            refreshToken.intValue++
+        }
+        SettingsDivider()
+        if (gyroSplit) {
+            IntSliderRow(
+                label = str("pad.gyro.sensitivityX.label"),
+                value = ControllerMappings.gyroSensitivityXScope(editSerial),
+                min = 0,
+                max = 300,
+                valueFormatter = { "${it}%" },
+                onChange = {
+                    ControllerMappings.setGyroSensitivityX(it, editSerial)
+                    refreshToken.intValue++
+                },
+            )
+            SettingsDivider()
+            IntSliderRow(
+                label = str("pad.gyro.sensitivityY.label"),
+                value = ControllerMappings.gyroSensitivityYScope(editSerial),
+                min = 0,
+                max = 300,
+                valueFormatter = { "${it}%" },
+                onChange = {
+                    ControllerMappings.setGyroSensitivityY(it, editSerial)
+                    refreshToken.intValue++
+                },
+            )
+        } else {
+            IntSliderRow(
+                label = str("pad.gyro.sensitivity.label"),
+                value = ControllerMappings.gyroSensitivityScope(editSerial),
+                min = 25,
+                max = 300,
+                valueFormatter = { "${it}%" },
+                onChange = {
+                    ControllerMappings.setGyroSensitivity(it, editSerial)
+                    refreshToken.intValue++
+                },
+            )
+        }
         SettingsDivider()
         IntSliderRow(
             label = str("pad.gyro.smoothing.label"),

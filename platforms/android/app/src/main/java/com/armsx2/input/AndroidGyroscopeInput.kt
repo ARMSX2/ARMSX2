@@ -81,7 +81,11 @@ class AndroidGyroscopeInput(
     private var activeSensor: Sensor? = null
     private var activeKind = KIND_NONE
     private var mode = 0
-    private var sensitivity = 1f
+    // Per axis (#592): the same value unless the player split them, and 0 turns that axis off.
+    private var sensitivityX = 1f
+    private var sensitivityY = 1f
+    // Steer mode reads tipping forward and back as Y only when the axes were split (#592).
+    private var steerY = false
     private var smoothing = 0.45f
     private var invertX = false
     private var invertY = false
@@ -91,6 +95,7 @@ class AndroidGyroscopeInput(
     private var lastSentY = 0f
     private var wasActive = false
     private var steeringCenter: Float? = null
+    private var steeringPitchCenter: Float? = null
     private var tiltCenterX: Float? = null
     private var tiltCenterY: Float? = null
     // Raw TYPE_ACCELEROMETER carries the player's hand movement on top of gravity. TYPE_GRAVITY is
@@ -103,10 +108,21 @@ class AndroidGyroscopeInput(
     /** The sensor kind [start] settled on, or [KIND_NONE] when not running. */
     val kind: Int get() = activeKind
 
-    fun start(mode: Int, sensitivityPercent: Int, smoothingPercent: Int, invertX: Boolean, invertY: Boolean): Boolean {
+    /** [sensitivityXPercent] and [sensitivityYPercent] are 0-300; [steerY] lets Steer mode use Y. */
+    fun start(
+        mode: Int,
+        sensitivityXPercent: Int,
+        sensitivityYPercent: Int,
+        smoothingPercent: Int,
+        invertX: Boolean,
+        invertY: Boolean,
+        steerY: Boolean = false,
+    ): Boolean {
         stop()
         this.mode = mode
-        this.sensitivity = sensitivityPercent.coerceIn(25, 300) / 100f
+        this.sensitivityX = sensitivityXPercent.coerceIn(0, 300) / 100f
+        this.sensitivityY = sensitivityYPercent.coerceIn(0, 300) / 100f
+        this.steerY = steerY
         this.smoothing = smoothingPercent.coerceIn(0, 90) / 100f
         this.invertX = invertX
         this.invertY = invertY
@@ -116,6 +132,7 @@ class AndroidGyroscopeInput(
         lastSentY = 0f
         wasActive = false
         steeringCenter = null
+        steeringPitchCenter = null
         tiltCenterX = null
         tiltCenterY = null
         haveGravity = false
@@ -127,6 +144,7 @@ class AndroidGyroscopeInput(
 
     fun recenter() {
         steeringCenter = null
+        steeringPitchCenter = null
         tiltCenterX = null
         tiltCenterY = null
         filteredX = 0f
@@ -187,7 +205,7 @@ class AndroidGyroscopeInput(
             Surface.ROTATION_180 -> gy to -gx
             else -> -gy to -gx
         }
-        return (axes.first * 0.72f * sensitivity) to (axes.second * 0.72f * sensitivity)
+        return (axes.first * 0.72f * sensitivityX) to (axes.second * 0.72f * sensitivityY)
     }
 
     private fun steeringValues(event: SensorEvent): Pair<Float, Float> {
@@ -206,7 +224,13 @@ class AndroidGyroscopeInput(
         val center = steeringCenter ?: roll.also { steeringCenter = it }
         val delta = wrapPi(roll - center)
         val steeringRange = Math.toRadians(32.0).toFloat()
-        return (delta / steeringRange * sensitivity).coerceIn(-1f, 1f) to 0f
+        val x = (delta / steeringRange * sensitivityX).coerceIn(-1f, 1f)
+        if (!steerY) return x to 0f
+        // Tipping forward and back, measured as tiltValues measures pitch: the angle of world-up
+        // (the screen-aligned matrix's third row) out of the screen plane.
+        val pitch = atan2(remapped[8], hypot(remapped[6], remapped[7]))
+        val pitchCenter = steeringPitchCenter ?: pitch.also { steeringPitchCenter = it }
+        return x to (wrapPi(pitch - pitchCenter) / steeringRange * sensitivityY).coerceIn(-1f, 1f)
     }
 
     /** Gravity-only fallback. Both axes are relative to wherever the device was when the mode
@@ -253,12 +277,13 @@ class AndroidGyroscopeInput(
         val dPitch = wrapPi(pitch - centerPitch)
 
         val range = Math.toRadians(32.0).toFloat()
-        val rollOut = (dRoll / range * sensitivity).coerceIn(-1f, 1f)
-        val pitchOut = (dPitch / range * sensitivity).coerceIn(-1f, 1f)
+        val rollOut = (dRoll / range * sensitivityX).coerceIn(-1f, 1f)
+        val pitchOut = (dPitch / range * sensitivityY).coerceIn(-1f, 1f)
 
-        // Steering is X-only, same contract as the rotation-vector path. Aim gets both axes, with
-        // X coming from twist because yaw is unobservable from gravity (see KIND_TILT).
-        return if (mode == 2) rollOut to 0f else rollOut to pitchOut
+        // Steering is X-only unless the axes were split, same contract as the rotation-vector
+        // path. Aim gets both axes, with X coming from twist because yaw is unobservable from
+        // gravity (see KIND_TILT).
+        return if (mode == 2 && !steerY) rollOut to 0f else rollOut to pitchOut
     }
 
     private fun wrapPi(value: Float): Float {

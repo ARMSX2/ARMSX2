@@ -155,6 +155,8 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("pad.rumble.label", true, SettingsCategory.Controls, listOf("pad.section.playerRumble")),
     SettingsSearchEntry("pad.gyro.mode.label", true, SettingsCategory.Controls, listOf("pad.gyro.section")),
     SettingsSearchEntry("pad.gyro.sensitivity.label", true, SettingsCategory.Controls, listOf("pad.gyro.section")),
+    SettingsSearchEntry("pad.gyro.splitAxes.label", true, SettingsCategory.Controls, listOf("pad.gyro.section")),
+    SettingsSearchEntry("pad.gyro.steerStick.label", true, SettingsCategory.Controls, listOf("pad.gyro.section")),
     SettingsSearchEntry("pad.gyro.smoothing.label", true, SettingsCategory.Controls, listOf("pad.gyro.section")),
     SettingsSearchEntry("pad.gyro.invertX.label", true, SettingsCategory.Controls, listOf("pad.gyro.section")),
     SettingsSearchEntry("pad.gyro.invertY.label", true, SettingsCategory.Controls, listOf("pad.gyro.section")),
