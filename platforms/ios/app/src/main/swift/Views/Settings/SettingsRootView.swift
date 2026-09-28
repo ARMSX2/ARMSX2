@@ -1097,6 +1097,7 @@ struct SettingsRootView: View {
                     toLabel: "settings.root.help"
                 ),
             ] : [],
+            wrapsAtListEnds: !navigationPath.isEmpty,
             // Long lazy Lists use the ordered target graph without asking
             // UIKit to rebuild focus environments for every mounted row.
             // Every root row has one explicit full-row target. Do not also
