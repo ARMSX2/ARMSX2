@@ -29,6 +29,7 @@
 #include "VU.h"
 
 #include <gtest/gtest.h>
+#include <cstring>
 
 #include <vector>
 

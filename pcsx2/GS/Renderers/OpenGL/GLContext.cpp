@@ -29,6 +29,9 @@
 #include "GS/Renderers/OpenGL/GLLibretro.h"
 #endif
 
+#include <cstdlib>
+#include <cstring>
+
 static bool ShouldPreferESContext()
 {
 	const char* value = std::getenv("PREFER_GLES_CONTEXT");

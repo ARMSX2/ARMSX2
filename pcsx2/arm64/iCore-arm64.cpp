@@ -12,6 +12,8 @@
 #include "common/Assertions.h"
 #include "common/Console.h"
 
+#include <cstring>
+
 namespace a64 = vixl::aarch64;
 
 //#define RALOG(...) fprintf(stderr, __VA_ARGS__)

@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 #include <arm_neon.h>
+#include <cstring>
 #include "Common.h"
 #include "VU.h"
 #include "MTVU.h"

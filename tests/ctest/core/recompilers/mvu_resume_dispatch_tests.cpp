@@ -44,6 +44,7 @@
 #include "VUmicro.h"
 
 #include <gtest/gtest.h>
+#include <cstring>
 
 // Test hooks exported by pcsx2/arm64/microVU-arm64.cpp under
 // PCSX2_RECOMPILER_TESTS (same cross-TU pattern as

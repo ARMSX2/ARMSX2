@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <cfenv>
+#include <cstring>
 
 extern void _vuFlushAll(VURegs* VU);
 extern void _vuXGKICKFlush(VURegs* VU);

@@ -8,6 +8,7 @@
 
 #include <cfloat>
 #include <limits>
+#include <cstring>
 
 // Pure kernels backing the fused GIF packed vertex handlers and the per-prim
 // accept/cull decision in GSState::VertexKick. Factored out of GSState.cpp so the

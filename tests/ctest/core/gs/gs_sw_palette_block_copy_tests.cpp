@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <random>
 #include <string>
+#include <cstring>
 
 using namespace GSHWDrawHarness;
 

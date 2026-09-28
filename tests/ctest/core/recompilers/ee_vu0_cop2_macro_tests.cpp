@@ -25,6 +25,7 @@
 #include "Config.h"
 
 #include <gtest/gtest.h>
+#include <cstring>
 
 // EE-SRA 3 Arm C: VI-pool probe, defined in arm64/microVU-arm64.cpp
 // (PCSX2_RECOMPILER_TESTS builds only). Global scope — must be declared
