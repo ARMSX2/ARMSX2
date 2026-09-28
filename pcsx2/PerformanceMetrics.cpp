@@ -132,7 +132,8 @@ static bool s_adpf_create_failed = false;
 static bool s_adpf_report_warned = false;
 static bool s_adpf_paused = false; // reporting suspended (unlimited/vsync/interrupted), edge-logged
 static int64_t s_adpf_target_ns = 0;
-static Common::Timer::Value s_adpf_work_start = 0; // start of the current active-work period (0 = none)
+static Common::Timer::Value s_adpf_work_start = 0; // start of the current active-work segment (0 = none)
+static int64_t s_adpf_work_accum_ns = 0; // this frame's segments closed so far; -1 = frame incomplete, skip it
 
 // The frame deadline in ns: emulated refresh scaled by the limiter's target speed, so turbo /
 // slow-motion move the deadline correctly. Returns 0 when there is no finite deadline (Unlimited,
@@ -477,10 +478,11 @@ void PerformanceMetrics::AdpfShutdown()
 	s_adpf_tids.clear();
 	s_adpf_create_failed = false;
 	s_adpf_work_start = 0;
+	s_adpf_work_accum_ns = 0;
 #endif
 }
 
-void PerformanceMetrics::AdpfOnFrameWorkComplete()
+void PerformanceMetrics::AdpfEndWorkSegment(bool frame_end)
 {
 #if defined(__ANDROID__)
 	// Sampled at Throttle() entry — the instant the frame's active CPU work finished, before the
@@ -494,14 +496,32 @@ void PerformanceMetrics::AdpfOnFrameWorkComplete()
 		return;
 	AdpfEnsureSession();
 	if (!s_adpf_session || s_adpf_work_start == 0)
+	{
+		// No open segment (first frame, or just resumed from a pause). If this is the frame's
+		// first wait, its second segment alone would under-report the frame, so skip it.
+		s_adpf_work_accum_ns = frame_end ? 0 : -1;
 		return;
+	}
+	const int64_t segment_ns = static_cast<int64_t>(Common::Timer::ConvertValueToSeconds(now - s_adpf_work_start) * 1.0e9);
+	if (!frame_end)
+	{
+		if (s_adpf_work_accum_ns >= 0)
+			s_adpf_work_accum_ns += segment_ns;
+		return;
+	}
+	if (s_adpf_work_accum_ns < 0)
+	{
+		s_adpf_work_accum_ns = 0;
+		return;
+	}
+	const int64_t work_ns = s_adpf_work_accum_ns + segment_ns;
+	s_adpf_work_accum_ns = 0;
 	const int64_t target = AdpfTargetNs();
 	if (target > 0 && target != s_adpf_target_ns)
 	{
 		s_adpf.updateTarget(s_adpf_session, target);
 		s_adpf_target_ns = target;
 	}
-	const int64_t work_ns = static_cast<int64_t>(Common::Timer::ConvertValueToSeconds(now - s_adpf_work_start) * 1.0e9);
 	// Drop absurd outliers (savestate load, renderer recreation, debugger stall): a period several
 	// times the deadline is not a real frame and would spam a spurious max-frequency demand.
 	if (work_ns <= 0 || (s_adpf_target_ns > 0 && work_ns > s_adpf_target_ns * 4))
@@ -544,6 +564,7 @@ void PerformanceMetrics::AdpfPauseFrameWork()
 		s_adpf_paused = true;
 	}
 	s_adpf_work_start = 0;
+	s_adpf_work_accum_ns = 0;
 #endif
 }
 

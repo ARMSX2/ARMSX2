@@ -583,7 +583,10 @@ static __fi void GSVSync()
 static __fi void VSyncEnd(u64 sCycle)
 {
 	EECNT_LOG("    ================  EE COUNTER VSYNC END (frame: %d)  ================", g_FrameCount);
-	VMManager::Internal::Throttle(false);
+	if (!VMManager::Internal::IsExecutionInterrupted())
+		VMManager::Internal::Throttle(false);
+	else
+		PerformanceMetrics::AdpfPauseFrameWork();
 
 	if (EmuConfig.GS.AdvancedFrameDisplay)
 	{

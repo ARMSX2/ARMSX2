@@ -89,11 +89,13 @@ namespace PerformanceMetrics
 	/// ADPF work-period brackets, driven by the frame limiter (VMManager::Internal::Throttle).
 	/// The reported duration must be the active EE/GS/VU work per frame, EXCLUDING the deliberate
 	/// limiter sleep and present wait, per the PerformanceHintManager contract (reportActualWork
-	/// = the last workload cycle, not the frame interval). OnFrameWorkComplete() reports the
-	/// period that just ended (called at Throttle entry, before the sleep); BeginFrameWork()
-	/// opens a new period after the sleep; PauseFrameWork() invalidates it when we are not
-	/// frame-limiting (unlimited / host-vsync pacing), so no bogus duration is reported.
-	void AdpfOnFrameWorkComplete();
+	/// = the last workload cycle, not the frame interval). The limiter waits twice per frame, at
+	/// vsync start and at vsync end, so a frame's work is two segments. EndWorkSegment() closes the
+	/// segment that just ended (called at Throttle entry, before the sleep) and, at the frame's
+	/// last wait, reports both segments as one period; BeginFrameWork() opens the next segment
+	/// after the sleep; PauseFrameWork() invalidates the frame when we are not frame-limiting
+	/// (unlimited / host-vsync pacing / interrupted), so no bogus duration is reported.
+	void AdpfEndWorkSegment(bool frame_end);
 	void AdpfBeginFrameWork();
 	void AdpfPauseFrameWork();
 

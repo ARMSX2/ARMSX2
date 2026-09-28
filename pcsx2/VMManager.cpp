@@ -2538,10 +2538,11 @@ void VMManager::Internal::Throttle(bool vsync_start)
 		return;
 	}
 
-	// ADPF: report the active-work period that just ended (before the limiter sleep below), then
-	// re-open a new period AFTER the sleep. The ScopedGuard fires on EVERY exit past here —
-	// including the missed-frame early return — so measurement survives the can't-hit-target case.
-	PerformanceMetrics::AdpfOnFrameWorkComplete();
+	// ADPF: close the active-work segment that just ended (before the limiter sleep below), then
+	// re-open one AFTER the sleep. The frame's two segments are reported together at the vsync-end
+	// wait. The ScopedGuard fires on EVERY exit past here — including the missed-frame early
+	// return — so measurement survives the can't-hit-target case.
+	PerformanceMetrics::AdpfEndWorkSegment(!vsync_start);
 	ScopedGuard adpf_begin_next_work([]() { PerformanceMetrics::AdpfBeginFrameWork(); });
 
 	const u64 uExpectedEnd =
