@@ -563,7 +563,9 @@ void GSState::SetPrimHandlers()
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_UVXYZ2 - 2][P] = \
 		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairUVXYZ2, auto_flush>(); \
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_RGBAQXYZ2 - 2][P] = \
-		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairRGBAQXYZ2, auto_flush>();
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairRGBAQXYZ2, auto_flush>(); \
+	m_fpGIFPackedRegHandlerLayout[GIF_REG_UVRGBAQXYZF2 - 2][P] = \
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::UvTripleXYZF2, auto_flush>();
 
 	SetHandlerXYZ(GS_POINTLIST, true);
 	SetHandlerXYZ(GS_LINELIST, non_sprite_af);
@@ -2904,7 +2906,7 @@ void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size
 	u32 done = 0;
 	if (m_dirty_gs_regs)
 	{
-		constexpr u32 reg_a = (layout == GSVertexKernels::PackedLayout::PairUVXYZ2) ?
+		constexpr u32 reg_a = GSVertexKernels::LayoutHasUV(layout) ?
 								  GIF_REG_UV :
 								  ((layout == GSVertexKernels::PackedLayout::PairRGBAQXYZ2) ? GIF_REG_RGBA :
 																							  GIF_REG_STQ);
@@ -2917,7 +2919,7 @@ void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size
 		{
 			const GIFPackedReg* RESTRICT rv = r + done * stride;
 			ReplayPackedQword(reg_a, rv + off_a);
-			if constexpr (GSVertexKernels::LayoutIsTriple(layout))
+			if constexpr (GSVertexKernels::LayoutHasSeparateRgba(layout))
 				ReplayPackedQword(GIF_REG_RGBA, rv + off_rgba);
 			ReplayPackedQword(reg_xyz, rv + off_xyz);
 			done++;
@@ -2928,7 +2930,7 @@ void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size
 		CheckFlushes();
 	}
 
-	if constexpr (layout == GSVertexKernels::PackedLayout::PairUVXYZ2)
+	if constexpr (GSVertexKernels::LayoutHasUV(layout))
 	{
 		// UserHacks_ForceEvenSpritePosition swaps GIFPackedRegHandlerUV for a
 		// version whose only extra effect is this sticky flag. Nothing inside one

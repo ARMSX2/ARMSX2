@@ -181,19 +181,38 @@ namespace GSVertexKernels
 		PairSTQXYZ2,    // {ST, XYZ2}: colour and Q carried
 		PairUVXYZ2,     // {UV, XYZ2}: ST, colour and Q carried
 		PairRGBAQXYZ2,  // {RGBAQ, XYZ2}: ST carried, Q from the latch
+		UvTripleXYZF2,  // {UV, RGBAQ, XYZF2}, contiguous or NOP-padded: ST carried, Q from the latch
 	};
 
 	constexpr bool LayoutIsXYZF2(PackedLayout l)
 	{
-		return l == PackedLayout::TripleXYZF2 || l == PackedLayout::NopTripleXYZF2;
+		return l == PackedLayout::TripleXYZF2 || l == PackedLayout::NopTripleXYZF2 ||
+			   l == PackedLayout::UvTripleXYZF2;
 	}
 	constexpr bool LayoutIsContiguousTriple(PackedLayout l)
 	{
 		return l == PackedLayout::TripleXYZF2 || l == PackedLayout::TripleXYZ2;
 	}
+	// The {ST, RGBAQ, XYZ} triples: every field of m[0] comes from the record.
 	constexpr bool LayoutIsTriple(PackedLayout l)
 	{
 		return LayoutIsContiguousTriple(l) || l == PackedLayout::NopTripleXYZF2;
+	}
+	// Whether the record carries an RGBAQ descriptor beside its first one.
+	constexpr bool LayoutHasSeparateRgba(PackedLayout l)
+	{
+		return LayoutIsTriple(l) || l == PackedLayout::UvTripleXYZF2;
+	}
+	// Whether the record carries a UV descriptor.
+	constexpr bool LayoutHasUV(PackedLayout l)
+	{
+		return l == PackedLayout::PairUVXYZ2 || l == PackedLayout::UvTripleXYZF2;
+	}
+	// Whether m[0] is the carry with the record's colour and the latched Q put in,
+	// ST unchanged -- what GIFPackedRegHandlerRGBA leaves in m_v.
+	constexpr bool LayoutTakesColourOverCarry(PackedLayout l)
+	{
+		return l == PackedLayout::PairRGBAQXYZ2 || l == PackedLayout::UvTripleXYZF2;
 	}
 	// Whether the record carries an ST descriptor, and therefore whether the tag
 	// moves the latched Q that the next RGBAQ write will read.
@@ -228,6 +247,16 @@ namespace GSVertexKernels
 		else
 			return o.off_rgba;
 	}
+	// The record's colour descriptor, for a layout that takes its colour over the carry.
+	template <PackedLayout L>
+	__forceinline_odr u32 LayoutOffColour(const GIFPackedLayout& o)
+	{
+		static_assert(LayoutTakesColourOverCarry(L));
+		if constexpr (L == PackedLayout::PairRGBAQXYZ2)
+			return o.off_a;
+		else
+			return o.off_rgba;
+	}
 	template <PackedLayout L>
 	__forceinline_odr u32 LayoutOffXyz(const GIFPackedLayout& o)
 	{
@@ -241,7 +270,8 @@ namespace GSVertexKernels
 	//
 	//   PairSTQ / PairUV  m_v.m[0] as it stands: lanes 2 and 3 are the colour and
 	//                     the vertex's own Q, neither of which such a tag writes.
-	//   PairRGBAQ         m_v.m[0] with LANE 2 SET TO THE LATCHED Q. That is not
+	//   PairRGBAQ, UvTriple
+	//                     m_v.m[0] with LANE 2 SET TO THE LATCHED Q. That is not
 	//                     cosmetic: GIFPackedRegHandlerRGBA writes RGBAQ.Q = m_q,
 	//                     and putting m_q there lets the parse reuse the shipped
 	//                     {S, T, RGBA, Q} table pattern, whose last lane comes
@@ -249,7 +279,7 @@ namespace GSVertexKernels
 	__forceinline_odr GSVector4i MakeLayoutCarry(PackedLayout l, const GSVector4i& v_m0, float q)
 	{
 		GSVector4i c = v_m0;
-		if (l == PackedLayout::PairRGBAQXYZ2)
+		if (LayoutTakesColourOverCarry(l))
 			std::memcpy(&c.U32[2], &q, sizeof(q));
 		return c;
 	}
@@ -260,7 +290,7 @@ namespace GSVertexKernels
 	template <PackedLayout L>
 	__forceinline_odr u64 LayoutUVFog(const GIFPackedReg* RESTRICT rv, u32 off_a, u64 uvfog)
 	{
-		if constexpr (L == PackedLayout::PairUVXYZ2)
+		if constexpr (LayoutHasUV(L))
 		{
 			u64 w;
 			std::memcpy(&w, &rv[off_a], sizeof(w));
@@ -318,10 +348,10 @@ namespace GSVertexKernels
 				{
 					v.U64[0] = rv[off_a].U64[0];
 				}
-				else if constexpr (L == PackedLayout::PairRGBAQXYZ2)
+				else if constexpr (LayoutTakesColourOverCarry(L))
 				{
 					const GSVector4i mask = GSVector4i::load(0x0c080400);
-					const GSVector4i rgba = GSVector4i::load<false>(&rv[off_a]).shuffle8(mask);
+					const GSVector4i rgba = GSVector4i::load<false>(&rv[LayoutOffColour<L>(off)]).shuffle8(mask);
 					v.U32[3] = carry.U32[2]; // the latch, where the carry parks it
 					v.U32[2] = static_cast<u32>(GSVector4i::store(rgba));
 				}
@@ -333,7 +363,7 @@ namespace GSVertexKernels
 			{
 				GSVector4i zf = GSVector4i::loadl(&rv[off_xyz].U64[1]);
 				const GSVector4i xyuv =
-					xy.upl16(xy.srl<4>()).upl32(GSVector4i::load(static_cast<int>(uvfog)));
+					xy.upl16(xy.srl<4>()).upl32(GSVector4i::load(static_cast<int>(LayoutUVFog<L>(rv, off_a, uvfog))));
 				zf = zf.srl32<4>() & GSVector4i::x00ffffff().upl32(GSVector4i::x000000ff());
 				m1 = xyuv.upl32(zf);
 			}
@@ -401,7 +431,7 @@ namespace GSVertexKernels
 				m0 = GSVector4i(vreinterpretq_s32_u64(
 					vsetq_lane_u64(st, vreinterpretq_u64_s32(carry.v4s), 0)));
 			}
-			else if constexpr (L == PackedLayout::PairRGBAQXYZ2)
+			else if constexpr (LayoutTakesColourOverCarry(L))
 			{
 				// pat_m0 is {S, T} from the first vector, the colour packed out of
 				// the second's four low bytes, and the first's lane 2 last -- which
@@ -409,7 +439,7 @@ namespace GSVertexKernels
 				// pattern builds this layout's vertex unchanged, with no fix-up:
 				// the carried Q has already had one applied by whoever latched it.
 				const uint8x16x2_t carry_rgba = {vreinterpretq_u8_s32(carry.v4s),
-					vld1q_u8(reinterpret_cast<const u8*>(rv + off_a))};
+					vld1q_u8(reinterpret_cast<const u8*>(rv + LayoutOffColour<L>(off)))};
 				m0 = GSVector4i(vreinterpretq_s32_u8(vqtbl2q_u8(carry_rgba, k.pat_m0)));
 			}
 			else
@@ -425,7 +455,7 @@ namespace GSVertexKernels
 				const uint8x16x2_t xyzf_pair = {
 					xyzf, vreinterpretq_u8_u32(vshrq_n_u32(vreinterpretq_u32_u8(xyzf), 4))};
 				uint32x4_t v1 = vreinterpretq_u32_u8(vqtbl2q_u8(xyzf_pair, k.pat_m1));
-				v1 = vsetq_lane_u32(static_cast<u32>(uvfog), v1, 2);
+				v1 = vsetq_lane_u32(static_cast<u32>(LayoutUVFog<L>(rv, off_a, uvfog)), v1, 2);
 				m1 = GSVector4i(vreinterpretq_s32_u32(v1));
 			}
 			else
