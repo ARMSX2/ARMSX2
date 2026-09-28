@@ -473,7 +473,9 @@ struct GameScreenView: View {
             // child overlay; the child covers the screen and the card reappears on dismiss.
             GameOverlayContainer(
                 onTapOutside: { overlayRoute = .hidden },
-                frameMode: .landscapePanel
+                frameMode: .landscapePanel,
+                // Room for the controller shortcut bar, which shows while this card is up.
+                bottomReserve: controllerInput?.hasConnectedController == true ? 66 : 0
             ) { metrics in
                 QuickMenuView(
                     settings: settings,
@@ -816,7 +818,7 @@ struct GameScreenView: View {
             retroAchievementsToastOverlay
         }
         .overlay {
-            if showsGameplayControllerShortcutHelp {
+            if showsGameplayControllerShortcutHelp, overlayRoute == .hidden {
                 GameplayControllerShortcutHelpOverlay(
                     settings: settings,
                     controllerInput: controllerInput
@@ -826,6 +828,16 @@ struct GameScreenView: View {
         }
         .overlay {
             runtimeQuickMenuOverlay
+        }
+        .overlay {
+            // The same shortcut bar under the pause menu. It goes the moment the menu closes.
+            if overlayRoute == .paused {
+                GameplayControllerShortcutHelpOverlay(
+                    settings: settings,
+                    controllerInput: controllerInput
+                )
+                    .transition(.identity)
+            }
         }
         .overlay {
             if let prompt = saveStateShortcutPrompt {
