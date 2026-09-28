@@ -794,8 +794,9 @@ private fun UnifiedTouchLayer(
     val turboById = hitButtons.filter { it.turbo > 0 }.associate { it.id to it.turbo }
     // The D-pad is the layer's too (#765), so a thumb can glide off it onto a button and onto it
     // from one. Its square is its hit area, as for the widget. Inside it the directions come from
-    // dpadStateAt, the widget's own math, and follow the thumb in every glide mode, so rolling
-    // from Up to Right still lets go of Up. radius = half the square's side.
+    // dpadStateAt, the widget's own math, and obey the glide mode like buttons: Follow tracks the
+    // thumb, Hold first keeps the first direction, Hold all every direction crossed.
+    // radius = half the square's side.
     val dpadHit = layout.buttons.firstOrNull { it.enabled && it.id.kind == TouchButtonId.Kind.DPAD }?.let { cfg ->
         val sizePx = with(density) { cfg.sizeDp.dp.toPx() }
         UnifiedHit(id = cfg.id, cx = widthPx * cfg.xFrac, cy = heightPx * cfg.yFrac, radius = sizePx / 2f)
@@ -894,16 +895,26 @@ private fun UnifiedTouchLayer(
                     // past the pad's edge it keeps steering from the pad's centre, as the widget
                     // always did, until it reaches a control, which it then glides onto.
                     //   dpadOwned  -- fingers driving the D-pad now.
-                    //   dir        -- the directions this finger holds now.
-                    //   carriedDir -- the direction it held when it reached P½, kept like carried.
+                    //   dir        -- the directions under this finger now.
+                    //   dirFirst   -- its first direction, when a direction came before any button
+                    //                 (Hold first keeps whichever the thumb touched first).
+                    //   dirLatched -- every direction it has crossed (Hold all).
+                    //   carriedDir -- the directions it held when it reached P½, kept like carried.
                     val dpadOwned = mutableSetOf<androidx.compose.ui.input.pointer.PointerId>()
                     val dir = mutableMapOf<androidx.compose.ui.input.pointer.PointerId, DpadState>()
+                    val dirFirst = mutableMapOf<androidx.compose.ui.input.pointer.PointerId, DpadState>()
+                    val dirLatched = mutableMapOf<androidx.compose.ui.input.pointer.PointerId, DpadState>()
                     val carriedDir = mutableMapOf<androidx.compose.ui.input.pointer.PointerId, DpadState>()
                     fun dirContribution(id: androidx.compose.ui.input.pointer.PointerId): DpadState {
                         val d = dir[id] ?: DpadState()
-                        if (modifier[id] == null) return d
+                        val base = when (glideMode) {
+                            TouchControls.GlideMode.FOLLOW -> d
+                            TouchControls.GlideMode.HOLD_FIRST -> (dirFirst[id] ?: DpadState()) or d
+                            TouchControls.GlideMode.HOLD_ALL -> dirLatched[id] ?: DpadState()
+                        }
+                        if (modifier[id] == null) return base
                         val onButton = current[id].orEmpty().any { !isPressure(it) }
-                        return if (onButton) d else d or (carriedDir[id] ?: DpadState())
+                        return if (onButton) base else base or (carriedDir[id] ?: DpadState())
                     }
                     // What one finger holds down. FOLLOW and HOLD_ALL read exactly what the old
                     // glide=false and glide=true read, so those two are unchanged.
@@ -945,6 +956,8 @@ private fun UnifiedTouchLayer(
                                     carried.remove(ch.id)
                                     dpadOwned.remove(ch.id)
                                     dir.remove(ch.id)
+                                    dirFirst.remove(ch.id)
+                                    dirLatched.remove(ch.id)
                                     carriedDir.remove(ch.id)
                                     continue
                                 }
@@ -963,17 +976,22 @@ private fun UnifiedTouchLayer(
                                 if (reached.isNotEmpty()) {
                                     if (ch.id !in modifier) {
                                         carried[ch.id] = contribution(ch.id).filterNot(::isPressure).toSet()
-                                        carriedDir[ch.id] = dir[ch.id] ?: DpadState()
+                                        carriedDir[ch.id] = dirContribution(ch.id)
                                     }
                                     modifier[ch.id] = modifier[ch.id].orEmpty() + reached
                                 }
                                 dir[ch.id] = d
+                                dirLatched[ch.id] = (dirLatched[ch.id] ?: DpadState()) or d
                                 // TEMP #765 glide diagnostics: remove after the test.
                                 if (current[ch.id] != h)
                                     android.util.Log.d("ARMSX2_GLIDE", "f=${ch.id.value} hits=${h.map { it.name }}")
                                 current[ch.id] = h
                                 latched.getOrPut(ch.id) { mutableSetOf() }.addAll(h)
-                                if (ch.id !in first && h.isNotEmpty()) first[ch.id] = h
+                                // The first thing this finger touched, button or direction, for Hold first.
+                                if (ch.id !in first && ch.id !in dirFirst) {
+                                    if (h.isNotEmpty()) first[ch.id] = h
+                                    else if (d.any()) dirFirst[ch.id] = d
+                                }
                             }
                             val agg = current.keys.flatMap { contribution(it) }.toSet()
                             // TEMP #765 glide diagnostics: remove after the test.
