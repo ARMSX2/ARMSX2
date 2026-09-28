@@ -1084,6 +1084,7 @@ final class ControllerAccessibilityNavigationSession {
         let bottom = scrollView.contentSize.height - scrollView.bounds.height + inset.bottom
         let y = direction == .down ? -inset.top : max(-inset.top, bottom)
         scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: y), animated: false)
+        expandTitleAtTop(scrollView)
         scrollView.layoutIfNeeded()
         Task { @MainActor [weak self] in
             await Task.yield()
@@ -1265,6 +1266,7 @@ final class ControllerAccessibilityNavigationSession {
             if !animateFocus(to: key, scrolling: scrollView, to: destination) {
                 startScrollPresentationTracking(for: key)
                 scrollView.setContentOffset(destination, animated: false)
+                expandTitleAtTop(scrollView)
             }
             return true
         }
@@ -1282,6 +1284,17 @@ final class ControllerAccessibilityNavigationSession {
             animated: true
         )
         return true
+    }
+
+    /// A collapsed large title only grows back while the content is pulled past the top,
+    /// so at the top, pull once and settle on the grown inset.
+    private func expandTitleAtTop(_ scrollView: UIScrollView) {
+        let x = scrollView.contentOffset.x
+        let top = -scrollView.adjustedContentInset.top
+        guard scrollView.contentOffset.y <= top + 0.5 else { return }
+        scrollView.setContentOffset(CGPoint(x: x, y: top - scrollView.bounds.height), animated: false)
+        scrollView.window?.layoutIfNeeded()
+        scrollView.setContentOffset(CGPoint(x: x, y: -scrollView.adjustedContentInset.top), animated: false)
     }
 
     private func isFullyVisible(_ view: UIView, in scrollView: UIScrollView) -> Bool {
@@ -1304,7 +1317,7 @@ final class ControllerAccessibilityNavigationSession {
         guard view.window != nil else { return nil }
         let targetFrame = view.convert(view.bounds, to: scrollView)
         let corridor = focusViewportFrame(in: scrollView)
-        let proposedY: CGFloat
+        var proposedY: CGFloat
         if targetFrame.height >= corridor.height {
             proposedY = scrollView.contentOffset.y
                 + targetFrame.minY - corridor.minY
@@ -1315,10 +1328,16 @@ final class ControllerAccessibilityNavigationSession {
             proposedY = scrollView.contentOffset.y
                 + (targetFrame.maxY - corridor.maxY)
         } else {
-            return nil
+            proposedY = scrollView.contentOffset.y
         }
 
         let minimumY = -scrollView.adjustedContentInset.top
+        // Moving up to within a margin of the top shows the whole top, if the row stays on screen.
+        let viewport = scrollViewportFrame(in: scrollView)
+        if proposedY <= scrollView.contentOffset.y, proposedY < minimumY + focusTopAlignmentMargin,
+           targetFrame.maxY <= viewport.maxY + minimumY - scrollView.contentOffset.y {
+            proposedY = minimumY
+        }
         let maximumY = max(
             minimumY,
             scrollView.contentSize.height - scrollView.bounds.height
@@ -1663,7 +1682,10 @@ final class ControllerAccessibilityNavigationSession {
                 displayedFrame = motion.style.frame(
                     from: motion.sourceFrame, to: destinationFrame, progress: progress
                 )
-                if progress >= 1 { focusMotion = nil }
+                if progress >= 1 {
+                    focusMotion = nil
+                    motion.scrollView.map(expandTitleAtTop)
+                }
             }
         }
         updateFocusedPresentation(frameOverride: displayedFrame)
