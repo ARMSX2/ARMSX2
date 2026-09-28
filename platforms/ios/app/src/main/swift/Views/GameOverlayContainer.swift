@@ -99,6 +99,8 @@ struct GameOverlayContainer<Content: View>: View {
     var onTapOutside: (() -> Void)? = nil
     var frameMode: OverlayFrameMode = .bounded
     var dimsBackground = true
+    /// Room kept free below the card, for the controller shortcut bar.
+    var bottomReserve: CGFloat = 0
     @ViewBuilder let content: (OverlayMetrics) -> Content
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -124,6 +126,9 @@ struct GameOverlayContainer<Content: View>: View {
                 let keyboardOverlap = max(0, geo.size.height - keyboardGeo.size.height)
                 // The card is centred, so the keyboard covers less of it than of the region.
                 let cardMargin = max(0, (geo.size.height - metrics.cardMaxHeight) / 2)
+                // What the bottom margin lacks, measured from the screen edge; the top margin stays.
+                let lift = bottomReserve > 0
+                    ? max(0, bottomReserve + geo.safeAreaInsets.bottom - cardMargin) : 0
 
                 ZStack {
                     backdrop(metrics: metrics)
@@ -142,9 +147,10 @@ struct GameOverlayContainer<Content: View>: View {
                         // One arm, so a flip cannot swap it and take the panel's state along.
                         let popScale: CGFloat = frameMode == .landscapePanel && metrics.variant == .phoneLandscape ? 0.97 : 0.96
                         hosted
-                            .frame(maxWidth: metrics.cardMaxWidth, maxHeight: metrics.cardMaxHeight)
+                            .frame(maxWidth: metrics.cardMaxWidth, maxHeight: metrics.cardMaxHeight - lift)
                             .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
                             .shadow(color: .black.opacity(0.28), radius: 22, x: 0, y: 12)
+                            .offset(y: -lift / 2)
                             .transition(reduceMotion ? .opacity : .scale(scale: popScale).combined(with: .opacity))
                     }
                 }
