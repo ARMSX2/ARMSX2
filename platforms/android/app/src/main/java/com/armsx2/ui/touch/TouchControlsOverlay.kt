@@ -1159,12 +1159,19 @@ private fun MacroWidget(cfg: TouchButtonCfg, edit: Boolean, inputEnabled: Boolea
         // stored, and then silently never drawn. Reported by Duda, who had analog_base working and
         // reasonably assumed the macro name was wrong.
         val skin = skinPainter(skinKeyFor(cfg.id))
+        // Lit while the macro fires, the blue P½ uses, so a press shows (#765): a macro gave no
+        // sign at all, even though its buttons were going down.
+        val pressed = TouchControls.macroPressed.containsValue(cfg.id)
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 // No dark circle behind custom art — the pack draws its own shape, and the backing
                 // would show as a disc behind a square button.
-                .then(if (skin == null) Modifier.clip(CircleShape).background(Color.Black.copy(alpha = 0.30f * opacity)) else Modifier)
+                .then(
+                    if (skin == null) Modifier.clip(CircleShape).background(
+                        if (pressed) Color(0xFF3A6EA5).copy(alpha = opacity) else Color.Black.copy(alpha = 0.30f * opacity)
+                    ) else Modifier
+                )
                 // Multi-touch on: UnifiedTouchLayer fires the macro, so a finger can glide on and off.
                 .then(if (inputEnabled) Modifier.macroPressGestures(cfg.id) else Modifier),
             contentAlignment = Alignment.Center,
@@ -1176,6 +1183,10 @@ private fun MacroWidget(cfg: TouchButtonCfg, edit: Boolean, inputEnabled: Boolea
                     contentScale = ContentScale.Fit,
                     alpha = opacity,
                     modifier = Modifier.fillMaxSize(),
+                )
+                // Custom art keeps its own look, with the same blue laid over it while pressed.
+                if (pressed) Box(
+                    Modifier.fillMaxSize().clip(CircleShape).background(Color(0xFF3A6EA5).copy(alpha = 0.45f * opacity))
                 )
             } else {
                 Text(

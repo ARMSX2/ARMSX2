@@ -668,6 +668,10 @@ object TouchControls {
     private val macroHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val macroRunnables = HashMap<String, Runnable>()
 
+    /** Macros firing right now, by the key of whoever fires them (a touch, a glide, a pad
+     *  trigger), so the on-screen button can light up while held the way P½ does. */
+    val macroPressed = androidx.compose.runtime.mutableStateMapOf<String, TouchButtonId>()
+
     /**
      * Press ([down]) or release a macro, honouring its [macroFrequency].
      *
@@ -697,8 +701,10 @@ object TouchControls {
             buttons.forEach { emit(it, false) }
             if (wantsPressure) pressureModifierHeld.value = false
             pressured.forEach { macroPressureHeld.remove(it) }
+            macroPressed.remove(runKey)
             return
         }
+        macroPressed[runKey] = id
         // Set BEFORE the buttons go down — pressureRangeFor is read at emit time, so the
         // order is what decides whether the press is soft.
         if (wantsPressure) pressureModifierHeld.value = true
