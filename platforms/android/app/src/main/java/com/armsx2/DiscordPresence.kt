@@ -233,8 +233,11 @@ object DiscordPresence {
     const val PLACE_MUSEUM = "In the Icon Museum"
     const val PLACE_ONLINE_ICONS = "Browsing Online Icons"
 
-    /** Discord's second line under a place. Shown, never parsed: see [place]. */
-    private const val PLACE_STATE = "PS2 save icons"
+    /** Discord's second line under a place: two braille blanks (U+2800), which Discord shows as
+     *  nothing, so it reads just "In the Icon Museum". It can't be left out: a friend's client
+     *  tells a place (or a game) from the library by the second line being there, and with none to
+     *  give the bridge puts "-" in it. Shown, never parsed: see [place]. */
+    private const val PLACE_STATE = "\u2800\u2800"
 
     /** The player is at [where] until [leave]. */
     fun enter(where: String) {
