@@ -821,6 +821,13 @@ public:
 	__fi VkSampler GetPointSampler() const { return m_point_sampler; }
 	__fi VkSampler GetLinearSampler() const { return m_linear_sampler; }
 
+	/// What frame generation needs to draw the ImGui overlay onto its generated frames the way
+	/// RenderImGui draws it onto the real one.
+	__fi VkPipeline GetImGuiPipeline() const { return m_imgui_pipeline; }
+	__fi VkPipelineLayout GetUtilityPipelineLayout() const { return m_utility_pipeline_layout; }
+	__fi VkDescriptorSetLayout GetUtilityDescriptorSetLayout() const { return m_utility_ds_layout; }
+	__fi bool UsesPushDescriptors() const { return m_use_push_descriptors; }
+
 	RenderAPI GetRenderAPI() const override;
 	bool HasSurface() const override;
 

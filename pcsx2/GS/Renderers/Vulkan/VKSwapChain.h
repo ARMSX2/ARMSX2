@@ -76,6 +76,7 @@ public:
 	/// present the interpolated frames through, so it needs the one vkAcquireNextImageKHR handed
 	/// back rather than whatever m_current_image happens to be.
 	__fi VkImage GetImage(u32 index) const { return m_images[index]->GetImage(); }
+	__fi GSTextureVK* GetTexture(u32 index) { return m_images[index].get(); }
 	__fi VkSemaphore GetImageAvailableSemaphore() const
 	{
 		return m_semaphores[m_current_semaphore].available_semaphore;

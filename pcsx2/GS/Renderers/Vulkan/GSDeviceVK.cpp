@@ -3517,16 +3517,14 @@ void GSDeviceVK::EndPresent()
 		GSLsfg::Shutdown();
 
 	// Frame generation on the game's own image instead of the finished screen, when the present
-	// was only the plain scaled blit it can repeat for each generated frame, and ImGui drew nothing
-	// over it (generated frames don't carry the overlay yet, so with it up this stays on the
-	// finished screen). Here, after Initialize/Shutdown, which may replace the image copied into,
-	// and in this frame's command buffer, where the game texture's layout is tracked.
+	// was only the plain scaled blit it can repeat for each generated frame (it draws the ImGui
+	// overlay onto them afresh as well). Here, after Initialize/Shutdown, which may replace the
+	// image copied into, and in this frame's command buffer, where the game texture's layout is
+	// tracked.
 	if (GSLsfg::IsActive())
 	{
-		const ImDrawData* const draw_data = ImGui::GetDrawData();
 		GSTextureVK* const current = static_cast<GSTextureVK*>(GetCurrent());
-		if (m_present_has_new_frame && m_present_geometry.plain && current &&
-			!(draw_data && draw_data->CmdLists.Size > 0))
+		if (m_present_has_new_frame && m_present_geometry.plain && current)
 		{
 			current->TransitionToLayout(cmdbuffer, GSTextureVK::Layout::TransferSrc);
 			GSLsfg::GameFrame frame;

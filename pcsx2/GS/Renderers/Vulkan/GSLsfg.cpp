@@ -20,7 +20,10 @@
 
 #ifdef ARMSX2_HAS_LSFG
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
+#include "GS/Renderers/Vulkan/GSTextureVK.h"
 #include "GS/Renderers/Vulkan/VKSwapChain.h"
+
+#include "imgui.h"
 
 #include "GS/Renderers/Vulkan/FrameGen/FrameGen.h"
 #include "GS/Renderers/Vulkan/FrameGen/LosslessDll.h"
@@ -360,9 +363,41 @@ namespace GSLsfg
 			std::array<VkSemaphore, VideoCore::FrameGen::MAX_GENERATIONS + 1> done_sems = {};
 			bool submitted = false; ///< false until the fence has ever been signalled
 			bool timed = false; ///< its timestamps were written by the last submit, to be read
+			/// This frame's ImGui overlay, copied for drawing onto its generated frames: the GS
+			/// reclaims its own copy when ITS frame is done, which can be before this slot is.
+			Vulkan::vk::Buffer overlay_vertices;
+			Vulkan::vk::Buffer overlay_indices;
+			VkDeviceSize overlay_vertex_bytes = 0;
+			VkDeviceSize overlay_index_bytes = 0;
+			/// Descriptor sets for the overlay's textures, when the device does not push them.
+			VkDescriptorPool overlay_pool = VK_NULL_HANDLE;
 		};
 		std::vector<FrameSlot> s_slots;
 		VkCommandPool s_cmd_pool = VK_NULL_HANDLE;
+		/// For drawing the ImGui overlay onto a generated frame: the GS's own non-clearing pass for
+		/// swap chain images, the one its ImGui pipeline and the images' framebuffers were made with.
+		/// The GS owns it.
+		VkRenderPass s_overlay_pass = VK_NULL_HANDLE;
+		/// One ImGui draw of this frame's overlay, prepared once (PrepareOverlay) and recorded onto
+		/// each generated frame (DrawOverlay).
+		struct OverlayDraw
+		{
+			VkRect2D scissor;
+			VkImageView view; ///< pushed, when the device pushes descriptors
+			VkImageLayout layout;
+			VkDescriptorSet set; ///< bound, when it doesn't
+			u32 index_count;
+			u32 first_index;
+			s32 vertex_offset;
+		};
+		std::vector<OverlayDraw> s_overlay_draws;
+		/// Descriptor sets per slot for the overlay's textures, one per change of texture between
+		/// draws. The OSD's text is all one font texture; running out only means that frame
+		/// generates from the finished screen instead.
+		constexpr u32 kOverlaySets = 256;
+		/// What frame generation last ran on, for the log: the game's image, or the finished screen.
+		VkExtent2D s_last_run_extent = {};
+		bool s_last_run_game = false;
 		/// LSFG's own GPU time: a timestamp at each end of a frame's command buffer (everything it
 		/// does for that frame, the passes over the real frame and every generated one with its
 		/// copy), read back once the slot's fence has signalled, so it never waits for the GPU.
@@ -410,7 +445,8 @@ namespace GSLsfg
 			if (gpu_ms > 0.0f && ++s_gpu_log_windows >= 10)
 			{
 				s_gpu_log_windows = 0;
-				Console.WriteLn("LSFG GPU: %.2f ms per frame (%ux%u%s).", gpu_ms, s_extent.width, s_extent.height,
+				Console.WriteLn("LSFG GPU: %.2f ms per frame (%ux%u %s%s).", gpu_ms, s_last_run_extent.width,
+					s_last_run_extent.height, s_last_run_game ? "game image" : "screen",
 					s_fp16_active.load(std::memory_order_relaxed) ? ", fp16" : "");
 			}
 			s_fps_window_start = now;
@@ -440,6 +476,186 @@ namespace GSLsfg
 				0, 0, nullptr, 0, nullptr, 1, &barrier);
 		}
 
+		/// Room for this frame's overlay in one of a slot's buffers, grown in steps so a busier
+		/// overlay doesn't allocate every frame. Only called once the slot's fence has signalled, so
+		/// a buffer it replaces is no longer read.
+		bool ReserveOverlayBuffer(Vulkan::vk::Buffer& buffer, VkDeviceSize& capacity, VkDeviceSize needed,
+			VkBufferUsageFlags usage)
+		{
+			if (buffer && capacity >= needed)
+				return true;
+			VkDeviceSize size = 64 * 1024;
+			while (size < needed)
+				size *= 2;
+			VkBufferCreateInfo ci = {};
+			ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+			ci.size = size;
+			ci.usage = usage;
+			ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+			buffer = s_allocator->CreateBuffer(ci, Vulkan::MemoryUsage::Upload);
+			capacity = (buffer && buffer.Mapped().data()) ? size : 0;
+			return capacity != 0;
+		}
+
+		/// This frame's ImGui overlay, for the generated frames: the game image they are made from has
+		/// none, so each gets it drawn on top afresh, exactly as GSDeviceVK::RenderImGui drew it on the
+		/// real frame. Nothing is stepped: the draw data ImGui::Render made for this frame is valid until
+		/// the next ImGuiManager::NewFrame, which comes after this present. It is copied into the slot's
+		/// own buffers, because the GS reclaims its stream buffers when ITS frame is done, which can be
+		/// before this slot is. False when there is something to draw and it can't be, and frame
+		/// generation then works on the finished screen, where the GS drew the overlay itself.
+		bool PrepareOverlay(FrameSlot& slot)
+		{
+			s_overlay_draws.clear();
+			if (!ImGui::GetCurrentContext())
+				return true;
+			const ImDrawData* const data = ImGui::GetDrawData();
+			if (!data || !data->Valid || data->CmdLists.Size == 0 || data->TotalIdxCount <= 0)
+				return true;
+			if (s_overlay_pass == VK_NULL_HANDLE)
+				return false;
+
+			static_assert(sizeof(ImDrawIdx) == sizeof(u16));
+			if (!ReserveOverlayBuffer(slot.overlay_vertices, slot.overlay_vertex_bytes,
+					sizeof(ImDrawVert) * static_cast<VkDeviceSize>(data->TotalVtxCount), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) ||
+				!ReserveOverlayBuffer(slot.overlay_indices, slot.overlay_index_bytes,
+					sizeof(ImDrawIdx) * static_cast<VkDeviceSize>(data->TotalIdxCount), VK_BUFFER_USAGE_INDEX_BUFFER_BIT))
+			{
+				return false;
+			}
+
+			GSDeviceVK* const dev = GSDeviceVK::GetInstance();
+			const bool push = dev->UsesPushDescriptors();
+			if (!push)
+				vkResetDescriptorPool(s_vk_device, slot.overlay_pool, 0);
+
+			u8* const vertices = slot.overlay_vertices.Mapped().data();
+			u8* const indices = slot.overlay_indices.Mapped().data();
+			u32 vertex_base = 0;
+			u32 index_base = 0;
+			// Like RenderImGui, a draw without a texture keeps the one before it.
+			VkImageView view = VK_NULL_HANDLE;
+			VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+			VkDescriptorSet set = VK_NULL_HANDLE;
+			for (int n = 0; n < data->CmdLists.Size; n++)
+			{
+				const ImDrawList* const list = data->CmdLists[n];
+				std::memcpy(vertices + vertex_base * sizeof(ImDrawVert), list->VtxBuffer.Data,
+					sizeof(ImDrawVert) * static_cast<size_t>(list->VtxBuffer.Size));
+				std::memcpy(indices + index_base * sizeof(ImDrawIdx), list->IdxBuffer.Data,
+					sizeof(ImDrawIdx) * static_cast<size_t>(list->IdxBuffer.Size));
+
+				for (int cmd_i = 0; cmd_i < list->CmdBuffer.Size; cmd_i++)
+				{
+					const ImDrawCmd* const pcmd = &list->CmdBuffer[cmd_i];
+					if (pcmd->UserCallback)
+						continue;
+
+					const GSVector4 clip = GSVector4::load<false>(&pcmd->ClipRect);
+					if ((clip.zwzw() <= clip.xyxy()).mask() != 0)
+						continue;
+
+					if (const GSTextureVK* const tex = reinterpret_cast<const GSTextureVK*>(pcmd->GetTexID()))
+					{
+						if (tex->GetView() != view)
+						{
+							view = tex->GetView();
+							layout = tex->GetVkLayout();
+							if (!push)
+							{
+								const VkDescriptorSetLayout ds_layout = dev->GetUtilityDescriptorSetLayout();
+								const VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+									nullptr, slot.overlay_pool, 1, &ds_layout};
+								if (vkAllocateDescriptorSets(s_vk_device, &ai, &set) != VK_SUCCESS)
+								{
+									s_overlay_draws.clear();
+									return false;
+								}
+								const VkDescriptorImageInfo info = {dev->GetLinearSampler(), view, layout};
+								const VkWriteDescriptorSet write = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0,
+									1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &info, nullptr, nullptr};
+								vkUpdateDescriptorSets(s_vk_device, 1, &write, 0, nullptr);
+							}
+						}
+					}
+					if (view == VK_NULL_HANDLE)
+						continue;
+
+					const GSVector4i scissor = GSVector4i(clip).max_i32(GSVector4i::zero());
+					OverlayDraw& draw = s_overlay_draws.emplace_back();
+					draw.scissor = {{scissor.left, scissor.top},
+						{static_cast<u32>(scissor.width()), static_cast<u32>(scissor.height())}};
+					draw.view = view;
+					draw.layout = layout;
+					draw.set = set;
+					draw.index_count = pcmd->ElemCount;
+					draw.first_index = index_base + pcmd->IdxOffset;
+					draw.vertex_offset = static_cast<s32>(vertex_base + pcmd->VtxOffset);
+				}
+
+				vertex_base += static_cast<u32>(list->VtxBuffer.Size);
+				index_base += static_cast<u32>(list->IdxBuffer.Size);
+			}
+			slot.overlay_vertices.Flush();
+			slot.overlay_indices.Flush();
+			return true;
+		}
+
+		/// Draws the prepared overlay onto swap chain image `index`, which must be in
+		/// COLOR_ATTACHMENT_OPTIMAL, and leaves it there. The state RenderImGui draws in: the present
+		/// pass's full-screen viewport, a scissor per draw, the linear sampler.
+		void DrawOverlay(VkCommandBuffer cmd, VkFramebuffer framebuffer, const FrameSlot& slot)
+		{
+			GSDeviceVK* const dev = GSDeviceVK::GetInstance();
+			const VkRenderPassBeginInfo rp = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, nullptr, s_overlay_pass,
+				framebuffer, {{0, 0}, s_extent}, 0, nullptr};
+			vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
+
+			const VkViewport viewport = {0.0f, 0.0f, static_cast<float>(s_extent.width),
+				static_cast<float>(s_extent.height), 0.0f, 1.0f};
+			vkCmdSetViewport(cmd, 0, 1, &viewport);
+			// Dynamic in the ImGui pipeline, so they have to be set, though its blend never reads them.
+			const float blend_constants[4] = {};
+			vkCmdSetBlendConstants(cmd, blend_constants);
+			vkCmdSetLineWidth(cmd, 1.0f);
+
+			const VkPipelineLayout layout = dev->GetUtilityPipelineLayout();
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, dev->GetImGuiPipeline());
+			const float uniforms[4] = {2.0f / static_cast<float>(s_extent.width),
+				2.0f / static_cast<float>(s_extent.height), -1.0f, -1.0f};
+			vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+				sizeof(uniforms), uniforms);
+			const VkBuffer vertex_buffer = *slot.overlay_vertices;
+			const VkDeviceSize vertex_offset = 0;
+			vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &vertex_offset);
+			vkCmdBindIndexBuffer(cmd, *slot.overlay_indices, 0, VK_INDEX_TYPE_UINT16);
+
+			const bool push = dev->UsesPushDescriptors();
+			VkImageView bound = VK_NULL_HANDLE;
+			for (const OverlayDraw& draw : s_overlay_draws)
+			{
+				vkCmdSetScissor(cmd, 0, 1, &draw.scissor);
+				if (draw.view != bound)
+				{
+					if (push)
+					{
+						const VkDescriptorImageInfo info = {dev->GetLinearSampler(), draw.view, draw.layout};
+						const VkWriteDescriptorSet write = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, VK_NULL_HANDLE,
+							0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &info, nullptr, nullptr};
+						vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &write);
+					}
+					else
+					{
+						vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &draw.set, 0, nullptr);
+					}
+					bound = draw.view;
+				}
+				vkCmdDrawIndexed(cmd, draw.index_count, 1, draw.first_index, draw.vertex_offset, 0);
+			}
+
+			vkCmdEndRenderPass(cmd);
+		}
+
 		void DestroyResources()
 		{
 			if (s_vk_device == VK_NULL_HANDLE)
@@ -458,6 +674,8 @@ namespace GSLsfg
 
 			for (FrameSlot& slot : s_slots)
 			{
+				if (slot.overlay_pool != VK_NULL_HANDLE)
+					vkDestroyDescriptorPool(s_vk_device, slot.overlay_pool, nullptr);
 				for (VkFence f : slot.acquire_fences)
 				{
 					if (f != VK_NULL_HANDLE)
@@ -472,6 +690,8 @@ namespace GSLsfg
 					vkDestroyFence(s_vk_device, slot.fence, nullptr);
 			}
 			s_slots.clear();
+			s_overlay_pass = VK_NULL_HANDLE;
+			s_overlay_draws.clear();
 
 			if (s_query_pool != VK_NULL_HANDLE)
 			{
@@ -584,6 +804,31 @@ namespace GSLsfg
 				if (!s_capture.image)
 					Console.Warning("LSFG: no image for the game frame; generating from the finished screen.");
 			}
+
+			// The ImGui overlay on generated frames, drawn with the GS's ImGui pipeline in the GS's own
+			// pass for swap chain images (the same key GSTextureVK::GetFramebuffer builds with). Not
+			// fatal either: without it the game's own image is not used while the overlay has
+			// something on screen, and generation works on the finished screen then.
+			s_overlay_pass = dev->GetImGuiPipeline() != VK_NULL_HANDLE ?
+								 dev->GetRenderPass(s_format, VK_FORMAT_UNDEFINED, VK_ATTACHMENT_LOAD_OP_LOAD,
+									 VK_ATTACHMENT_STORE_OP_STORE) :
+								 VK_NULL_HANDLE;
+			if (s_overlay_pass != VK_NULL_HANDLE && !dev->UsesPushDescriptors())
+			{
+				const VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kOverlaySets};
+				const VkDescriptorPoolCreateInfo pool_ci = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0,
+					kOverlaySets, 1, &size};
+				for (FrameSlot& slot : s_slots)
+				{
+					if (vkCreateDescriptorPool(s_vk_device, &pool_ci, nullptr, &slot.overlay_pool) != VK_SUCCESS)
+					{
+						s_overlay_pass = VK_NULL_HANDLE;
+						break;
+					}
+				}
+			}
+			if (s_overlay_pass == VK_NULL_HANDLE)
+				Console.Warning("LSFG: can't draw the overlay on generated frames; the finished screen is used while it is up.");
 
 			// Two timestamps per slot for frame generation's own GPU time, where the graphics queue
 			// keeps them (the same test GSDeviceVK makes for its GPU timing). Without, there is
@@ -821,7 +1066,7 @@ namespace GSLsfg
 	{
 		// Consumed on every call, generating or not, so a copy made for a frame that ends up declined
 		// can never be read as a later frame's.
-		const bool game_res = std::exchange(s_captured, false);
+		const bool captured = std::exchange(s_captured, false);
 
 		if (!s_active || !swap_chain || !s_frame_gen)
 			return false;
@@ -887,6 +1132,10 @@ namespace GSLsfg
 			slot.timed = false;
 		}
 
+		// The game's own image, when this frame's overlay can be drawn onto each generated frame; the
+		// finished screen, which has the overlay, when it can't.
+		const bool game_res = captured && PrepareOverlay(slot);
+
 		const VkCommandBufferBeginInfo begin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
 			VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr};
 		vkResetCommandBuffer(slot.cmd, 0);
@@ -908,6 +1157,7 @@ namespace GSLsfg
 				VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
 			s_frame_gen->Process(*s_device, cmdbuf, *s_capture.image, s_gen_images[0].view, s_capture_extent,
 				s_format, s_capture_extent);
+			s_last_run_extent = s_capture_extent;
 		}
 		else
 		{
@@ -928,7 +1178,9 @@ namespace GSLsfg
 				guest_extent = {static_cast<u32>(current->GetWidth()), static_cast<u32>(current->GetHeight())};
 			s_frame_gen->Process(*s_device, cmdbuf, real_image, s_gen_images[0].view, s_extent, s_format,
 				guest_extent);
+			s_last_run_extent = s_extent;
 		}
+		s_last_run_game = game_res;
 		s_fp16_active.store(s_frame_gen->UsingFp16(), std::memory_order_relaxed);
 
 		// Frame generation turned itself off: its shaders could not be loaded or built. That used
@@ -1038,8 +1290,24 @@ namespace GSLsfg
 					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 			}
 
-			TransitionImage(slot.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT);
+			// The overlay on top, afresh: the game image had none.
+			const VkFramebuffer overlay_fb = (game_res && !s_overlay_draws.empty()) ?
+												 swap_chain->GetTexture(image_index)->GetFramebuffer(false) :
+												 VK_NULL_HANDLE;
+			if (overlay_fb != VK_NULL_HANDLE)
+			{
+				TransitionImage(slot.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+					VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+				DrawOverlay(slot.cmd, overlay_fb, slot);
+				TransitionImage(slot.cmd, dst, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+					VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT);
+			}
+			else
+			{
+				TransitionImage(slot.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT);
+			}
 
 			acquired_index[acquired++] = image_index;
 		}
