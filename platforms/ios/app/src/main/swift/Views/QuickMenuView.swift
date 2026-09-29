@@ -1156,7 +1156,7 @@ struct LandscapeCommandBar: View {
     var showsStopButton = true
     var resumeTitle: String?
     var resumeImage = "play.fill"
-    var hint: String?
+    var hint: ControllerHintLine?
     @Environment(\.uiAccentColour) private var accentColour
     @Environment(\.controllerTextAppearance) private var textAppearance
 
@@ -1185,7 +1185,7 @@ struct LandscapeCommandBar: View {
                 }
                 Spacer(minLength: 8)
                 if let hint {
-                    Text(hint)
+                    hint
                         .font(.caption)
                         .foregroundStyle(textAppearance.secondaryColor ?? OverlayTheme.textSecondary)
                         .lineLimit(1)
@@ -1235,7 +1235,7 @@ struct QuickMenuFooter: View {
     var showsStopButton = true
     var resumeTitle: String?
     var resumeImage = "play.fill"
-    var hint: String?
+    var hint: ControllerHintLine?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1252,7 +1252,7 @@ struct QuickMenuFooter: View {
                     )
                 }
                 if let hint {
-                    Text(hint)
+                    hint
                         .font(.footnote)
                         .foregroundStyle(OverlayTheme.textSecondary)
                         .frame(maxWidth: .infinity, alignment: .leading)

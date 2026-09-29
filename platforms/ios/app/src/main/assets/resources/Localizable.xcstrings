@@ -4,9 +4,6 @@
     "%1$@ %2$@. Undo is available." : {
       "extractionState" : "manual"
     },
-    "%1$@ saves · %2$@ loads" : {
-      "extractionState" : "manual"
-    },
     "%1$@ · Slot %2$d" : {
       "extractionState" : "manual"
     },
@@ -181,9 +178,6 @@
         }
       }
     },
-    "%@ saves · loading is off in Hardcore" : {
-      "extractionState" : "manual"
-    },
     "%@ taps" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -242,9 +236,6 @@
           }
         }
       }
-    },
-    "%@ to undo" : {
-      "extractionState" : "manual"
     },
     "%@: ISO, CHD, BIN, CSO, ZSO, GZ, ELF" : {
       "comment" : "A label that describes the supported game file formats.",
@@ -13141,6 +13132,9 @@
         }
       }
     },
+    "Load" : {
+      "extractionState" : "manual"
+    },
     "Load %@" : {
       "extractionState" : "manual"
     },
@@ -19341,6 +19335,9 @@
     "Rename %@" : {
       "extractionState" : "manual"
     },
+    "Rename, lock, delete" : {
+      "extractionState" : "manual"
+    },
     "Renderer" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -23261,9 +23258,6 @@
           }
         }
       }
-    },
-    "Square: rename, lock, delete" : {
-      "extractionState" : "manual"
     },
     "Start" : {
       "extractionState" : "manual",

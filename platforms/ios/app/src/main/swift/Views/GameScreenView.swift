@@ -2240,7 +2240,7 @@ struct GameScreenView: View {
                     undo: saveStateUndo,
                     settings: settings,
                     hint: externalControllerConnected
-                        ? String(format: settings.localized("%@ to undo"), settings.controllerMacroUndoSaveState.title)
+                        ? ControllerHintLine(parts: [.init(settings.controllerMacroUndoSaveState, settings.localized("Undo"))])
                         : nil,
                     onUndo: undoSaveStateAction
                 )
