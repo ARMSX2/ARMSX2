@@ -24,6 +24,10 @@ import java.io.File
  * Track: "Calm Ambient 1 (Synthwave 4k)" by cynicmusic (The Cynic Project), released
  * CC0 / public domain on OpenGameArt. CC0 imposes no attribution requirement, but the
  * author asks for credit and we give it — see the About screen.
+ *
+ * Two screens play their own track in its place ([playTheme]): the Icon Museum, "Another
+ * August" by The Cynic Project (cynicmusic.com, pixelsphere.org), which asks for attribution,
+ * given in the About screen and MC Icon Info; and Online Icons, "Next to You", which doesn't.
  */
 object LibraryMusic {
     private const val TAG = "LibraryMusic"
@@ -55,6 +59,13 @@ object LibraryMusic {
 
     private var player: MediaPlayer? = null
     private var focusRequest: AudioFocusRequest? = null
+
+    /** A screen's own track playing in the library's place while it is open (the Icon Museum's,
+     *  Online Icons'), or null for the library track. See [playTheme]. */
+    private var theme: Int? = null
+
+    /** Where the library track was when a theme took over, so it goes on from there after. */
+    private var libraryPositionMs = 0
     /** True when we stopped for something temporary (a call, another app ducking us)
      *  and should resume ourselves when focus comes back — as opposed to being off. */
     private var pausedForFocus = false
@@ -188,7 +199,10 @@ object LibraryMusic {
                         .build()
                 )
                 val custom = customFile(context)
-                if (customName.value != null && custom.length() > 0L) {
+                val themeTrack = theme
+                if (themeTrack != null) {
+                    setDataSource(context, android.net.Uri.parse("android.resource://${context.packageName}/$themeTrack"))
+                } else if (customName.value != null && custom.length() > 0L) {
                     setDataSource(custom.absolutePath)
                 } else {
                     setDataSource(
@@ -199,10 +213,40 @@ object LibraryMusic {
                 isLooping = true
                 setVolume(gain(), gain())
                 prepare()
+                if (themeTrack == null && libraryPositionMs > 0) {
+                    runCatching { seekTo(libraryPositionMs) }
+                    libraryPositionMs = 0
+                }
                 start()
                 player = this
             }
         }.onFailure { Log.w(TAG, "start failed", it) }
+    }
+
+    /**
+     * Plays [track] (a raw resource) in the library track's place while a screen that has its own
+     * is open: the Icon Museum, Online Icons. Same switch, volume and deference to other apps'
+     * audio as the library track: it only takes over from our own music, never starts over
+     * someone's podcast. [endTheme] hands back, and the library track goes on where it was.
+     */
+    fun playTheme(context: Context, track: Int) {
+        if (theme == track) return
+        // Our own player going (or paused by focus) means the swap is ours to make; restarting
+        // past the other-media check, as restart() does, since our stream may still be reported.
+        val ours = player != null
+        if (theme == null) libraryPositionMs = runCatching { player?.currentPosition ?: 0 }.getOrDefault(0)
+        theme = track
+        stop(context)
+        start(context, force = ours)
+    }
+
+    /** Back to the library track, from where it was, when [track] is still the one playing. */
+    fun endTheme(context: Context, track: Int) {
+        if (theme != track) return
+        val ours = player != null
+        theme = null
+        stop(context)
+        start(context, force = ours)
     }
 
     /** Stop and release. Called when a game boots and when the toggle goes off. */
