@@ -2195,12 +2195,14 @@ private struct ControllerToolbarFocusModifier: ViewModifier {
     let action: GameLibraryControllerToolbarAction
     let controllerInput: MenuControllerInputRouter?
     let menuTabIsActive: Bool
+    /// A panel or menu opened from the toolbar draws its own focus.
+    let isCovered: Bool
     var baseHorizontalPadding: CGFloat = 0
     var minimumWidth: CGFloat = 36
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        let isFocused = menuTabIsActive
+        let isFocused = menuTabIsActive && !isCovered
             && controllerInput?.isControllerNavigationEnabled == true
             && controllerInput?.navigationZone == .topToolbar
             && focusState.selectedAction == action
@@ -5924,6 +5926,7 @@ struct GameListView: View {
             action: action,
             controllerInput: controllerInput,
             menuTabIsActive: menuTabIsActive,
+            isCovered: nonContextControllerNavigationPresentationActive || gameLibraryViewOptionsPresented,
             baseHorizontalPadding: baseHorizontalPadding,
             minimumWidth: minimumWidth
         )
