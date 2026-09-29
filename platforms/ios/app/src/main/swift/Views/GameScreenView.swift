@@ -447,7 +447,8 @@ struct GameScreenView: View {
                 onTapOutside: { overlayRoute = .hidden },
                 frameMode: .landscapePanel,
                 // Room for the controller shortcut bar, which shows while this card is up.
-                bottomReserve: controllerInput?.hasConnectedController == true ? 66 : 0
+                bottomReserve: controllerInput?.hasConnectedController == true
+                    ? GameplayControllerShortcutHelpOverlay.pauseCardReserve : 0
             ) { metrics in
                 QuickMenuView(
                     settings: settings,
@@ -797,7 +798,8 @@ struct GameScreenView: View {
             if overlayRoute == .paused {
                 GameplayControllerShortcutHelpOverlay(
                     settings: settings,
-                    controllerInput: controllerInput
+                    controllerInput: controllerInput,
+                    overPauseMenu: true
                 )
                     .transition(.identity)
             }

@@ -227,6 +227,14 @@ extension View {
 struct GameplayControllerShortcutHelpOverlay: View {
     let settings: SettingsStore
     let controllerInput: MenuControllerInputRouter?
+    /// Clear glass reads as part of the game; under the pause card it needs the card's frost.
+    var overPauseMenu = false
+
+    private static let height: CGFloat = 52
+    private static let bottomPadding: CGFloat = 6
+    /// What the pause card keeps free above the safe area: the bar and a gap. Any more and a
+    /// 12 Pro Max card drops below the height its two columns need.
+    static let pauseCardReserve = bottomPadding + height + 11
 
     @ViewBuilder
     var body: some View {
@@ -268,6 +276,7 @@ struct GameplayControllerShortcutHelpOverlay: View {
                 }
             }
             .padding(4)
+            .frame(height: Self.height)
             .frame(
                 maxWidth: min(
                     420,
@@ -282,8 +291,8 @@ struct GameplayControllerShortcutHelpOverlay: View {
             )
             .glassSurface(
                 tint: accent.opacity(0.05),
-                clear: true,
-                forceClear: true,
+                clear: !overPauseMenu,
+                forceClear: !overPauseMenu,
                 materializeTransition: true,
                 cornerRadius: 28
             )
@@ -295,7 +304,7 @@ struct GameplayControllerShortcutHelpOverlay: View {
                     )
             }
             .shadow(color: .black.opacity(0.12), radius: 12, y: 5)
-            .padding(.bottom, geometry.safeAreaInsets.bottom + 10)
+            .padding(.bottom, geometry.safeAreaInsets.bottom + Self.bottomPadding)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
         .allowsHitTesting(false)
