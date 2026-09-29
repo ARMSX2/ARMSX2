@@ -601,7 +601,8 @@ struct GameScreenView: View {
                             )
                         },
                         onLoaded: resumeGameplayAfterControllerRelease,
-                        onClose: { overlayRoute = .paused }
+                        onClose: { overlayRoute = .paused },
+                        onOpenControllerMacros: { openPauseMenuChild(.gameController) }
                     )
                 }
             case .changeDisc:
@@ -2552,7 +2553,8 @@ struct GameScreenView: View {
                     if let file {
                         SaveStateMetadataStore.shared.recordSave(
                             of: file,
-                            playedSeconds: ARMSX2Bridge.currentGamePlayedSeconds()
+                            playedSeconds: ARMSX2Bridge.currentGamePlayedSeconds(),
+                            fresh: !replacing
                         )
                     }
                     let previewData = file?.preview

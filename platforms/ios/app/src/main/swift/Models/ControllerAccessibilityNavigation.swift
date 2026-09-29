@@ -255,6 +255,7 @@ final class ControllerAccessibilityNavigationSession {
     @ObservationIgnored private var permitsAutomaticFocus = true
     @ObservationIgnored private var scrollToTarget: ((String, UnitPoint) -> Void)?
     @ObservationIgnored private var onBack: (@MainActor () -> Bool)?
+    @ObservationIgnored private var onContextMenu: (@MainActor (String) -> Bool)?
     @ObservationIgnored private var onPreviousTab: (@MainActor () -> Bool)?
     @ObservationIgnored private var onNextTab: (@MainActor () -> Bool)?
     @ObservationIgnored private var onBoundary: (@MainActor (MenuControllerCommand) -> Bool)?
@@ -335,6 +336,7 @@ final class ControllerAccessibilityNavigationSession {
         scopeKey: String,
         registrationID: UUID,
         onBack: (@MainActor () -> Bool)?,
+        onContextMenu: (@MainActor (String) -> Bool)?,
         onPreviousTab: (@MainActor () -> Bool)?,
         onNextTab: (@MainActor () -> Bool)?,
         onBoundary: (@MainActor (MenuControllerCommand) -> Bool)?,
@@ -357,6 +359,7 @@ final class ControllerAccessibilityNavigationSession {
         self.controllerInput = controllerInput
         self.registrationID = registrationID
         self.onBack = onBack
+        self.onContextMenu = onContextMenu
         self.onPreviousTab = onPreviousTab
         self.onNextTab = onNextTab
         self.onBoundary = onBoundary
@@ -871,7 +874,16 @@ final class ControllerAccessibilityNavigationSession {
         case .activate:
             guard let focusedKey else { return focusInitialIfPossible() }
             return activate(focusedKey)
-        case .toggleFavorite, .showContextMenu:
+        case .showContextMenu:
+            // Square opens the focused row's menu on screens that have one.
+            guard let onContextMenu else { return false }
+            if let focusedKey, let id = targets[focusedKey]?.navigationID, onContextMenu(id) {
+                controllerInput?.playFeedback(.activate)
+            } else {
+                controllerInput?.playFeedback(.boundary)
+            }
+            return true
+        case .toggleFavorite:
             return false
         case .left, .right:
             if let focusedKey {
@@ -2345,7 +2357,7 @@ final class ControllerAccessibilityNavigationSession {
         return false
     }
 
-    fileprivate static func explicitKey(_ id: String) -> String {
+    static func explicitKey(_ id: String) -> String {
         "controller.focus.id.\(id)"
     }
 
@@ -3361,6 +3373,7 @@ private struct ControllerAccessibilityNavigationModifier: ViewModifier {
     let orbStyle: ControllerNavigationOrbStyle
     let focusNeonExclusionLabels: [String]
     let onBack: (@MainActor () -> Bool)?
+    let onContextMenu: (@MainActor (String) -> Bool)?
     let onPreviousTab: (@MainActor () -> Bool)?
     let onNextTab: (@MainActor () -> Bool)?
     let onBoundary: (@MainActor (MenuControllerCommand) -> Bool)?
@@ -3590,6 +3603,7 @@ private struct ControllerAccessibilityNavigationModifier: ViewModifier {
             scopeKey: scopeKey,
             registrationID: registrationID,
             onBack: onBack,
+            onContextMenu: onContextMenu,
             onPreviousTab: onPreviousTab,
             onNextTab: onNextTab,
             onBoundary: onBoundary,
@@ -3659,6 +3673,7 @@ extension View {
         orbStyle: ControllerNavigationOrbStyle = .plain,
         focusNeonExclusionLabels: [String] = [],
         onBack: (@MainActor () -> Bool)? = nil,
+        onContextMenu: (@MainActor (String) -> Bool)? = nil,
         onPreviousTab: (@MainActor () -> Bool)? = nil,
         onNextTab: (@MainActor () -> Bool)? = nil,
         onBoundary: (@MainActor (MenuControllerCommand) -> Bool)? = nil,
@@ -3692,6 +3707,7 @@ extension View {
                 orbStyle: orbStyle,
                 focusNeonExclusionLabels: focusNeonExclusionLabels,
                 onBack: onBack,
+                onContextMenu: onContextMenu,
                 onPreviousTab: onPreviousTab,
                 onNextTab: onNextTab,
                 onBoundary: onBoundary,
