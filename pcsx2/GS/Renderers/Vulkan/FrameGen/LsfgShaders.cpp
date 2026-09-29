@@ -14,6 +14,7 @@ namespace Vulkan {
 
 LsfgShaders::LsfgShaders(const Device& device) {
     if (!device.IsVulkanMemoryModelSupported() || !device.HasNullDescriptor()) {
+        failure = "device lacks the Vulkan memory model or nullDescriptor";
         return;
     }
 
@@ -28,8 +29,26 @@ LsfgShaders::LsfgShaders(const Device& device) {
     const bool prefer_fp16 = false;
 
     VideoCore::FrameGen::ShaderModules code;
-    if (VideoCore::FrameGen::LoadShaderModules(code, allow_fp16, prefer_fp16) !=
-        VideoCore::FrameGen::LosslessStatus::Ok) {
+    switch (VideoCore::FrameGen::LoadShaderModules(code, allow_fp16, prefer_fp16)) {
+    case VideoCore::FrameGen::LosslessStatus::Ok:
+        break;
+    case VideoCore::FrameGen::LosslessStatus::NotInstalled:
+        failure = "no Lossless.dll";
+        return;
+    case VideoCore::FrameGen::LosslessStatus::UnreadableFile:
+        failure = "Lossless.dll unreadable";
+        return;
+    case VideoCore::FrameGen::LosslessStatus::NotPortableExecutable:
+        failure = "not a DLL";
+        return;
+    case VideoCore::FrameGen::LosslessStatus::MissingShaders:
+        failure = "no usable shaders in this Lossless.dll";
+        return;
+    case VideoCore::FrameGen::LosslessStatus::TranslationFailed:
+        failure = "shader translation failed";
+        return;
+    default:
+        failure = "shader cache unusable";
         return;
     }
 

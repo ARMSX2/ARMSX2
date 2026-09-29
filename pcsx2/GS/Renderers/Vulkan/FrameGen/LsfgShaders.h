@@ -24,11 +24,17 @@ public:
         return valid;
     }
 
+    /// Why the shaders are not valid, in a few words for the overlay; empty when they are.
+    [[nodiscard]] const char* FailureReason() const {
+        return failure;
+    }
+
     [[nodiscard]] VkShaderModule Get(u32 shader_id) const;
 
 private:
     std::map<u32, vk::ShaderModule> modules;
     bool valid{};
+    const char* failure = "";
 };
 
 } // namespace Vulkan

@@ -210,6 +210,14 @@ size_t FrameGen::WantedGenerations(size_t capacity) {
     return plan.generations;
 }
 
+const char* FrameGen::UnavailableReason() const {
+    if (!unavailable)
+        return "";
+    if (shaders && !shaders->IsValid())
+        return shaders->FailureReason();
+    return "no storage view";
+}
+
 size_t FrameGen::GeneratedFrameCount() const {
     return generated ? last_generations : 0;
 }

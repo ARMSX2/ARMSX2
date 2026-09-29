@@ -74,6 +74,9 @@ namespace GSLsfg
 		/// "failed": everything initialised, there is simply nowhere to put a generated frame.
 		std::atomic<bool> s_no_headroom{false};
 		std::atomic<bool> s_no_shaders{false};
+		// Why the shaders failed, in a few words, for the overlay; set with s_no_shaders.
+		std::mutex s_failure_mutex;
+		std::string s_failure_reason;
 
 		// TEMP (#626): the last second of the generation path, appended to the overlay line. See
 		// the Diag struct in the present path.
@@ -98,6 +101,8 @@ namespace GSLsfg
 		// A new DLL deserves a fresh attempt; the previous failure may have been this file.
 		s_init_failed.store(false, std::memory_order_relaxed);
 		s_no_shaders.store(false, std::memory_order_relaxed);
+		std::unique_lock failure_lock(s_failure_mutex);
+		s_failure_reason.clear();
 	}
 
 	void InvalidateDllVerdict()
@@ -216,8 +221,14 @@ namespace GSLsfg
 				break;
 			case Unavailable::InitFailed:
 				// Split out because the two have different fixes: "no shaders" means update
-				// Lossless Scaling, "failed" means this device or driver refused.
-				return s_no_shaders.load(std::memory_order_relaxed) ? "LSFG: no shaders" : "LSFG: failed";
+				// Lossless Scaling (or says what else stopped them), "failed" means this device or
+				// driver refused.
+				if (s_no_shaders.load(std::memory_order_relaxed))
+				{
+					std::unique_lock lock(s_failure_mutex);
+					return s_failure_reason.empty() ? "LSFG: no shaders" : fmt::format("LSFG: no shaders ({})", s_failure_reason);
+				}
+				return "LSFG: failed";
 			default:
 				return "LSFG: unavailable";
 		}
@@ -759,6 +770,22 @@ namespace GSLsfg
 		// frame is COPIED into the chain, never written through a view. Hand it one of ours.
 		s_frame_gen->Process(*s_device, cmdbuf, real_image, s_gen_images[0].view, s_extent, s_format,
 			s_extent);
+
+		// Frame generation turned itself off: its shaders could not be loaded or built. That used
+		// to be silent, the overlay reading the real rate as if all were well (#626, an Adreno 650
+		// under Turnip). Say why, once, on the overlay and in the log, and let the settings screen
+		// report it as the failure it is.
+		if (s_frame_gen->IsUnavailable() && !s_no_shaders.load(std::memory_order_relaxed))
+		{
+			const char* why = s_frame_gen->UnavailableReason();
+			Console.Error("LSFG: frame generation turned off: %s.", why);
+			{
+				std::unique_lock lock(s_failure_mutex);
+				s_failure_reason = why;
+			}
+			s_no_shaders.store(true, std::memory_order_relaxed);
+			s_init_failed.store(true, std::memory_order_relaxed);
+		}
 
 		// ★ The budget is what Vulkan allows us to HOLD, not the image count. Using
 		// GetImageCount() - 1 here is what crashed the driver: with min=3 and 3 images the real

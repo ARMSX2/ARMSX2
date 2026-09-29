@@ -19,6 +19,7 @@
 #include <span>
 #include <vector>
 
+#include "common/Console.h"
 #include "common/FileSystem.h"
 #include "common/Path.h"
 
@@ -659,9 +660,15 @@ LosslessStatus LoadShaderModules(ShaderModules& out_modules, bool allow_fp16, bo
         .flags = flags,
         .reserved = 0,
     };
+    // PORT: Eden returned CacheUnusable here, which threw away shaders that had just translated
+    // perfectly and turned frame generation off. Eden's cache lives in a folder it owns, where a
+    // write cannot fail; ours lives in the user's data folder, which can be an SD card whose
+    // filesystem refuses what a normal one allows (a Retroid Pocket Flip 2 reports flock ENOSYS
+    // there). Without a cache the translation just runs again next launch, which is slower and
+    // nothing worse, so the shaders are used either way.
     if (!WriteShaderCache(cache_path, header, out_modules)) {
         void(FileSystem::DeleteFilePath(cache_path.c_str()));
-        return LosslessStatus::CacheUnusable;
+        Console.Warning("LSFG: could not write the shader cache '%s'; using the shaders uncached.", cache_path.c_str());
     }
 
     return LosslessStatus::Ok;

@@ -57,8 +57,9 @@ public:
 
     [[nodiscard]] size_t GeneratedFrameCount() const;
 
-    /// TEMP (#626): whether a shader or device check turned generation off for the session.
+    /// Whether a shader or device check turned generation off for the session, and why.
     [[nodiscard]] bool IsUnavailable() const { return unavailable; }
+    [[nodiscard]] const char* UnavailableReason() const;
 
     /// Writes interpolated frame `generation` into `image`. Only valid while
     /// GeneratedFrameCount() is non-zero, and for `generation` below it.
