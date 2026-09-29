@@ -16,6 +16,9 @@ import java.util.zip.CRC32
  *    sit 16 KB into LEGION.DAT.
  * 3. Nowhere readable: packed in a compressed archive (Crash Twinsanity). Only a save helps then.
  *
+ * CVM files (CRI's ROFS, used by Persona, Tales and Sonic) are an ISO volume inside a file, so
+ * their contents join the file list as if they were on the disc itself.
+ *
  * Every candidate is confirmed by parsing it whole as an icon, and the PS2's network-settings icon
  * (SYS_NET.ICO, shipped on online games' discs) is never taken for the game's own. No icon.sys is
  * taken from a disc: the "PS2D" in an executable is nearly always code that writes one, not a
@@ -31,7 +34,7 @@ object DiscIcons {
         var step = 0
     }
 
-    private class DiscFile(val path: String, val lba: Long, val size: Long) {
+    private class DiscFile(val path: String, val lba: Long, val size: Long, val container: Boolean = false) {
         val name get() = path.substringAfterLast('\\')
         val ext get() = name.substringAfterLast('.', "")
         val base get() = name.substringBeforeLast('.')
@@ -74,7 +77,7 @@ object DiscIcons {
 
         // 2. Archives: their heads and tails, then every entry their tables list.
         stats.step = 2
-        val archives = files.filter { it !== boot && it.size >= 64 * 1024 && it.ext !in MEDIA }
+        val archives = files.filter { it !== boot && !it.container && it.size >= 64 * 1024 && it.ext !in MEDIA }
             .sortedByDescending { it.size }.take(40)
         val tables = ArrayList<Pair<DiscFile, LongArray>>()
         for (f in archives) {
@@ -117,17 +120,36 @@ object DiscIcons {
     // ---- the file system -----------------------------------------------------------------
 
     private fun files(disc: DiscImage): List<DiscFile> {
-        val pvd = disc.read(16, 1)
-        if (pvd.size < DiscImage.SECTOR || pvd[0] != 1.toByte() || String(pvd, 1, 5, Charsets.ISO_8859_1) != "CD001") return emptyList()
         val out = ArrayList<DiscFile>()
-        walk(disc, le32(pvd, 158), le32(pvd, 166), "", 0, out, HashSet())
+        val seen = HashSet<Long>()
+        if (!volume(disc, 0, "", out, seen)) return emptyList()
+        // CVMs: a 6 KB header, then an ISO volume whose sectors count from there.
+        val listed = out.toList()
+        for ((i, f) in listed.withIndex()) {
+            if (f.size < CVM_HEADER + 17L * DiscImage.SECTOR || !(f.ext == "CVM" || f.size >= 16L shl 20)) continue
+            val magic = disc.readBytes(f.lba * DiscImage.SECTOR, 4)
+            if (magic.size < 4 || String(magic, Charsets.ISO_8859_1) != "CVMH") continue
+            if (volume(disc, f.lba + CVM_HEADER / DiscImage.SECTOR, f.path, out, seen)) {
+                out[i] = DiscFile(f.path, f.lba, f.size, container = true)
+            }
+        }
         return out
     }
 
-    private fun walk(disc: DiscImage, lba: Long, length: Long, prefix: String, depth: Int, out: MutableList<DiscFile>, seen: MutableSet<Long>) {
-        if (depth > 8 || out.size > 50_000 || !seen.add(lba)) return
+    private const val CVM_HEADER = 0x1800
+
+    /** The files of the ISO volume whose sector 0 is disc sector [base], added to [out]. */
+    private fun volume(disc: DiscImage, base: Long, prefix: String, out: MutableList<DiscFile>, seen: MutableSet<Long>): Boolean {
+        val pvd = disc.read(base + 16, 1)
+        if (pvd.size < DiscImage.SECTOR || pvd[0] != 1.toByte() || String(pvd, 1, 5, Charsets.ISO_8859_1) != "CD001") return false
+        walk(disc, base, le32(pvd, 158), le32(pvd, 166), prefix, 0, out, seen)
+        return true
+    }
+
+    private fun walk(disc: DiscImage, base: Long, lba: Long, length: Long, prefix: String, depth: Int, out: MutableList<DiscFile>, seen: MutableSet<Long>) {
+        if (depth > 8 || out.size > 50_000 || !seen.add(base + lba)) return
         val sectors = ((length + DiscImage.SECTOR - 1) / DiscImage.SECTOR).coerceIn(1, 256).toInt()
-        val data = disc.read(lba, sectors)
+        val data = disc.read(base + lba, sectors)
         var o = 0
         while (o < data.size) {
             val n = data[o].toInt() and 0xFF
@@ -144,7 +166,7 @@ object DiscIcons {
             o += n
             if (raw.size == 1 && (raw[0].toInt() == 0 || raw[0].toInt() == 1)) continue // . and ..
             val path = prefix + "\\" + String(raw, Charsets.ISO_8859_1).substringBefore(';').uppercase()
-            if (directory) walk(disc, extent, size, path, depth + 1, out, seen) else out += DiscFile(path, extent, size)
+            if (directory) walk(disc, base, extent, size, path, depth + 1, out, seen) else out += DiscFile(path, base + extent, size)
         }
     }
 
