@@ -60,10 +60,15 @@ import kotlinx.coroutines.withContext
 @Composable
 internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Collection<String>) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    // Store music while it is open, in the library music's place.
+    // Store music while it is open, in the library music's place, and friends see "Browsing
+    // Online Icons".
     androidx.compose.runtime.DisposableEffect(Unit) {
         com.armsx2.LibraryMusic.playTheme(context, com.armsx2.R.raw.online_icons_music)
-        onDispose { com.armsx2.LibraryMusic.endTheme(context, com.armsx2.R.raw.online_icons_music) }
+        com.armsx2.DiscordPresence.enter(com.armsx2.DiscordPresence.PLACE_ONLINE_ICONS)
+        onDispose {
+            com.armsx2.LibraryMusic.endTheme(context, com.armsx2.R.raw.online_icons_music)
+            com.armsx2.DiscordPresence.leave(com.armsx2.DiscordPresence.PLACE_ONLINE_ICONS)
+        }
     }
     val generation = OnlineIcons.generation.intValue
     val status = OnlineIcons.status.value
