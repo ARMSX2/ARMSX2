@@ -135,12 +135,12 @@ struct SaveStateSlot: Identifiable {
     var occupied: Bool { file.occupied }
     var modifiedDate: Date? { file.modifiedDate }
 
-    /// The number shown at the start of the row.
-    var number: Int {
+    /// Auto-save and Quick Save show a symbol where the other rows show their slot number.
+    var symbol: String? {
         switch kind {
-        case .auto: 9
-        case .quick: 10
-        case .manual, .older: slot
+        case .auto: "cloud.fill"
+        case .quick: "bolt.fill"
+        case .manual, .older: nil
         }
     }
 
