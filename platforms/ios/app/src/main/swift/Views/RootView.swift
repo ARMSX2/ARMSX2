@@ -26,6 +26,10 @@ private struct MenuLargeTitleIsSourceEnvironmentKey: EnvironmentKey {
     static let defaultValue: Bool? = nil
 }
 
+private struct MenuTabBarContentMarginEnvironmentKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
 extension EnvironmentValues {
     var menuTabIsActive: Bool {
         get { self[MenuTabIsActiveEnvironmentKey.self] }
@@ -50,6 +54,12 @@ extension EnvironmentValues {
     var menuLargeTitleIsSource: Bool? {
         get { self[MenuLargeTitleIsSourceEnvironmentKey.self] }
         set { self[MenuLargeTitleIsSourceEnvironmentKey.self] = newValue }
+    }
+
+    /// Room a list needs below its last row to end just above the menu tab bar.
+    var menuTabBarContentMargin: CGFloat {
+        get { self[MenuTabBarContentMarginEnvironmentKey.self] }
+        set { self[MenuTabBarContentMarginEnvironmentKey.self] = newValue }
     }
 }
 
@@ -1812,6 +1822,13 @@ struct MenuTabView: View {
         20
     }
 
+    /// Settings lists don't get the tab bar's safe area inset and run on to the bottom of the
+    /// safe area, so they need room for the part the bar covers. Their own bottom padding is the gap.
+    private var settingsTabBarContentMargin: CGFloat {
+        let offset = verticalSizeClass == .compact ? ControllerFocusedMenuTabBar.compactOffset : 0
+        return bottomTabBarLayout.height + bottomTabBarLayout.bottomClearance - offset
+    }
+
     private var usesPageOwnedLibraryLargeTitle: Bool {
         !(selectedTab == 0 && hideGamesScreenTitle)
             && verticalSizeClass != .compact
@@ -2130,6 +2147,7 @@ struct MenuTabView: View {
                     tabContentBottomMargin,
                     for: .scrollContent
                 )
+                .environment(\.menuTabBarContentMargin, settingsTabBarContentMargin)
                 .safeAreaInset(edge: .bottom, spacing: tabBarContentSpacing) {
                     ControllerFocusedMenuTabBar(
                         selection: tabSelection,
@@ -2490,6 +2508,11 @@ private struct ControllerFocusedMenuTabBar: View {
     @Environment(\.uiBottomTabBarColour) private var accentColour
     @Environment(\.uiBottomTabBarUnselectedColour) private var secondaryTextColour
 
+    static var compactOffset: CGFloat {
+        if #available(iOS 26.0, *) { return 24.5 }
+        return -6
+    }
+
     private var controllerFocusedIndex: Int? {
         controllerInput.hasConnectedController
             && controllerInput.isControllerNavigationEnabled
@@ -2528,7 +2551,7 @@ private struct ControllerFocusedMenuTabBar: View {
                     )
                 }
                 // Align the native iOS 26 tab bar with compact-height content.
-                .offset(y: verticalSizeClass == .compact ? 24.5 : 0)
+                .offset(y: verticalSizeClass == .compact ? Self.compactOffset : 0)
             } else if controllerInput.hasConnectedController,
                       controllerInput.isControllerNavigationEnabled {
                 LegacyGlassMenuTabBar(
@@ -2550,7 +2573,7 @@ private struct ControllerFocusedMenuTabBar: View {
                     )
                 }
                 // Raise the legacy compact tab bar above the home indicator.
-                .offset(y: verticalSizeClass == .compact ? -6 : 0)
+                .offset(y: verticalSizeClass == .compact ? Self.compactOffset : 0)
             } else {
                 OriginalLegacyGlassMenuTabBar(
                     selection: $selection,
@@ -2559,7 +2582,7 @@ private struct ControllerFocusedMenuTabBar: View {
                     onReselect: onReselect
                 )
                 // Raise the legacy compact tab bar above the home indicator.
-                .offset(y: verticalSizeClass == .compact ? -6 : 0)
+                .offset(y: verticalSizeClass == .compact ? Self.compactOffset : 0)
             }
         }
         .padding(.bottom, layout.bottomClearance)
