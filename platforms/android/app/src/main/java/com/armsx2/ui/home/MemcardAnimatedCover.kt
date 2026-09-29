@@ -99,8 +99,8 @@ internal fun AnimatedPs2Icon(
     val moving = animate && lifecycle.isAtLeast(Lifecycle.State.STARTED)
     val spinning = MemcardCovers.spin.value
     // Seconds of animation and of turning so far, kept when motion pauses so it carries on from
-    // the same pose. Turning only counts while Spin is on, so switching it off stops the turn
-    // where it is and the animation carries on.
+    // the same pose. With Spin off the icon faces the way its still picture does, its animation
+    // playing on, and the turn starts again from there when Spin is back on.
     val clock = remember(key) { FloatArray(2) }
     val scratch = remember(key) { Ps2IconRenderer.Scratch() }
     LaunchedEffect(key, size, moving, spinning) {
@@ -118,7 +118,6 @@ internal fun AnimatedPs2Icon(
         val length = icon.frameLength.coerceAtLeast(1).toFloat()
         val frameOptions = options.copy(supersample = 1)
         val still = !icon.animated && !spinning
-        if (still && frame != null) return@LaunchedEffect
         val start = System.nanoTime()
         val baseAnimation = clock[0]
         val baseTurn = clock[1]
@@ -128,7 +127,7 @@ internal fun AnimatedPs2Icon(
             val began = System.nanoTime()
             val elapsed = if (moving) (began - start) / 1e9f else 0f
             val animation = baseAnimation + elapsed
-            val turn = baseTurn + if (spinning) elapsed else 0f
+            val turn = if (spinning) baseTurn + elapsed else 0f
             clock[0] = animation
             clock[1] = turn
             val pose = Ps2IconRenderer.Pose(

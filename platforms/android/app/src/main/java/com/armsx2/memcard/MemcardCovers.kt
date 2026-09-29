@@ -43,6 +43,10 @@ object MemcardCovers {
     /** Bump when the renderer changes, so every cached cover is drawn again. */
     private const val RENDER_VERSION = 5
 
+    /** Bump when [DiscIcons] learns to find more, so discs it came up empty on are looked at
+     *  once more (what it found stays found). 2: inside CVM containers. */
+    private const val DISC_SEARCH_VERSION = 2
+
     /** The library's 2D cover slot (0.72, coverAspectRatio in HomeScreen), with room to spare for
      *  large cover sizes. Every layout (grid, list, shelf, Recently Played) draws covers through
      *  the same GameCover, so one render serves them all. */
@@ -279,12 +283,14 @@ object MemcardCovers {
                 if (serial in cardCovers || serial in covers) continue
                 val key = discKey(game.uri)
                 val icn = File(icons, "$key.icn")
-                val none = File(icons, "$key.none")
+                // "Nothing here" is only as good as the search that said it.
+                val none = File(icons, "$key.none$DISC_SEARCH_VERSION")
                 if (none.isFile) continue
                 if (!icn.isFile) {
                     val found = runCatching { findOnDisc(app, game.uri) }
                         .onFailure { Log.w(TAG, "disc ${game.uri}", it) }.getOrNull()
                     if (found == null) {
+                        icons.listFiles { f -> f.name.startsWith("$key.none") }?.forEach { it.delete() }
                         runCatching { none.createNewFile() }
                         continue
                     }
