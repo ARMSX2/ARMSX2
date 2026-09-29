@@ -28,7 +28,7 @@ import java.io.File
  * Two screens play their own track in its place ([playTheme]): the Icon Museum, "Another
  * August" by The Cynic Project (cynicmusic.com, pixelsphere.org), which asks for attribution,
  * given in the About screen and MC Icon Info; and Online Icons, "Next to You", which doesn't.
- * Going in and out of them, the music crossfades from one track to the other.
+ * Going in and out of them, the two tracks mix for a few seconds before the old one slowly fades.
  */
 object LibraryMusic {
     private const val TAG = "LibraryMusic"
@@ -65,52 +65,58 @@ object LibraryMusic {
      *  Online Icons'), or null for the library track. See [playTheme]. */
     private var theme: Int? = null
 
-    /** Where the library track was when a theme took over, so it goes on from there after. */
+    /** Where the library track was when it last went quiet for a theme, so it goes on from there. */
     private var libraryPositionMs = 0
 
-    /** How long the music takes to cross from one track to the other as a screen with its own
-     *  opens or closes: the one playing fades out while the next fades in ([crossTo]). */
-    private const val CROSSFADE_MS = 900L
+    // ---- going in and out of a screen's own track ----
+    //
+    // The two tracks mix: the next fades in over FADE_IN_MS while the one before plays on at full
+    // for MIX_MS, then slowly fades out over FADE_OUT_MS. A quick crossfade sounded abrupt to
+    // testers, both ways ("let the tracks mix for a bit before SLOWLY fading out the previous
+    // track").
+    private const val FADE_IN_MS = 2500L
+    private const val MIX_MS = 2500L
+    private const val FADE_OUT_MS = 3000L
 
-    /** Back to the library ([endTheme]) the screen's track fades right out, and the library track,
-     *  which comes back mid-song, waits a moment and then fades in slowly: with the crossfade the
-     *  way in uses, it came back at almost full volume at once and the fade was hardly heard. */
-    private const val RETURN_OUT_MS = 1200L
-    private const val RETURN_IN_DELAY_MS = 300L
-    private const val RETURN_IN_MS = 1700L
+    /** Which track [player] is: a theme's raw resource, or null for the library track. */
+    private var playerTrack: Int? = null
 
-    /** The track fading out under [player] during a crossfade. */
-    private var outgoing: MediaPlayer? = null
-
-    /** How loud [player] and [outgoing] are now, as a share of [gain]; MediaPlayer can't say. */
+    /** How loud [player] is now, as a share of [gain] (MediaPlayer can't say), and its fade in:
+     *  from [inFrom] at [inStart]. */
     private var playerLevel = 1f
-    private var outgoingLevel = 0f
-    private var fadeFrom = 0f
-    private var fadeStart = 0L
-    private var fadeReturning = false
+    private var inFrom = 1f
+    private var inStart = 0L
+
+    /** A track on its way out: it plays on at [from] until [start] + [hold], then fades to nothing. */
+    private class Fading(val player: MediaPlayer, val track: Int?, val from: Float, val start: Long, val hold: Long) {
+        var level = from
+    }
+    private val fading = ArrayList<Fading>()
+
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private val fadeStep = object : Runnable {
         override fun run() {
-            val elapsed = (android.os.SystemClock.uptimeMillis() - fadeStart).toFloat()
-            val done: Boolean
-            if (fadeReturning) {
-                // Out, then in: squared ramps, so each is heard as a steady fade rather than a jump.
-                val u = (elapsed / RETURN_OUT_MS).coerceIn(0f, 1f)
-                val v = ((elapsed - RETURN_IN_DELAY_MS) / RETURN_IN_MS).coerceIn(0f, 1f)
-                outgoingLevel = fadeFrom * (1f - u) * (1f - u)
-                playerLevel = v * v
-                done = u >= 1f && v >= 1f
-            } else {
-                // Equal power, so the two together sound as loud as either alone.
-                val t = (elapsed / CROSSFADE_MS).coerceIn(0f, 1f)
-                playerLevel = kotlin.math.sin(t * Math.PI / 2).toFloat()
-                outgoingLevel = fadeFrom * kotlin.math.cos(t * Math.PI / 2).toFloat()
-                done = t >= 1f
+            val now = android.os.SystemClock.uptimeMillis()
+            val x = ((now - inStart).toFloat() / FADE_IN_MS).coerceIn(0f, 1f)
+            playerLevel = inFrom + (1f - inFrom) * smooth(x)
+            val each = fading.iterator()
+            while (each.hasNext()) {
+                val f = each.next()
+                val y = ((now - f.start - f.hold).toFloat() / FADE_OUT_MS).coerceIn(0f, 1f)
+                f.level = f.from * kotlin.math.cos(y * Math.PI / 2).toFloat()
+                if (y >= 1f) {
+                    release(f.player, f.track)
+                    each.remove()
+                }
             }
             applyLevels()
-            if (!done) main.postDelayed(this, 20) else releaseOutgoing()
+            if (x < 1f || fading.isNotEmpty()) main.postDelayed(this, 20)
         }
     }
+
+    /** Eases in and out: no sudden change at either end. */
+    private fun smooth(x: Float) = x * x * (3f - 2f * x)
+
     /** True when we stopped for something temporary (a call, another app ducking us)
      *  and should resume ourselves when focus comes back — as opposed to being off. */
     private var pausedForFocus = false
@@ -264,6 +270,7 @@ object LibraryMusic {
                 }
                 start()
                 player = this
+                playerTrack = themeTrack
             }
         }.onFailure { Log.w(TAG, "start failed", it) }
     }
@@ -276,67 +283,79 @@ object LibraryMusic {
      */
     fun playTheme(context: Context, track: Int) {
         if (theme == track) return
-        if (theme == null) libraryPositionMs = runCatching { player?.currentPosition ?: 0 }.getOrDefault(0)
         theme = track
-        crossTo(context, returning = false)
+        crossTo(context)
     }
 
     /** Back to the library track, from where it was, when [track] is still the one playing. */
     fun endTheme(context: Context, track: Int) {
         if (theme != track) return
         theme = null
-        crossTo(context, returning = true)
+        crossTo(context)
     }
 
     /**
-     * Crossfades to whatever should play now ([theme], else the library track): the one playing
-     * goes on while it fades out, and the next starts silent and fades in; [returning] to the
-     * library, out and then in, more slowly. A switch during a fade drops the track already fading
-     * out and fades the other from where it had got to.
+     * Goes over to whatever should play now ([theme], else the library track): the next fades in
+     * while the one playing mixes with it at full, then slowly fades out. Back and forth quickly,
+     * a track still on its way out comes back from where it had got to, and nothing restarts.
      */
-    private fun crossTo(context: Context, returning: Boolean) {
-        main.removeCallbacks(fadeStep)
-        releaseOutgoing()
-        val old = player
-        val oldLevel = playerLevel
+    private fun crossTo(context: Context) {
+        val want = theme
+        val now = android.os.SystemClock.uptimeMillis()
+        // Our own music going means the swap is ours to make; starting past the other-media
+        // check, as restart() does, since our stream may still be reported.
+        val ours = player != null || fading.isNotEmpty()
+        player?.let { p ->
+            // At full it mixes first; caught while still fading in, it fades out from there.
+            if (runCatching { p.isPlaying }.getOrDefault(false)) {
+                fading += Fading(p, playerTrack, playerLevel, now, if (playerLevel >= 0.99f) MIX_MS else 0L)
+            } else {
+                release(p, playerTrack)
+            }
+        }
         player = null
         pausedForFocus = false
-        playerLevel = 0f
-        // Our own player going (or paused by focus) means the swap is ours to make; starting past
-        // the other-media check, as restart() does, since our stream may still be reported.
-        start(context, force = old != null)
-        if (old != null && runCatching { old.isPlaying }.getOrDefault(false)) {
-            outgoing = old
-            outgoingLevel = oldLevel
+        val back = fading.firstOrNull { it.track == want }
+        if (back != null) {
+            fading.remove(back)
+            player = back.player
+            playerTrack = want
+            inFrom = back.level
+            playerLevel = back.level
         } else {
-            old?.let { runCatching { it.release() } }
+            inFrom = 0f
+            playerLevel = 0f
+            start(context, force = ours)
         }
-        fadeFrom = outgoingLevel
-        fadeReturning = returning
-        fadeStart = android.os.SystemClock.uptimeMillis()
+        inStart = now
+        main.removeCallbacks(fadeStep)
         main.post(fadeStep)
     }
 
     private fun applyLevels() {
         val g = gain()
         runCatching { player?.setVolume(g * playerLevel, g * playerLevel) }
-        runCatching { outgoing?.setVolume(g * outgoingLevel, g * outgoingLevel) }
+        for (f in fading) runCatching { f.player.setVolume(g * f.level, g * f.level) }
     }
 
-    private fun releaseOutgoing() {
-        outgoing?.let { p ->
-            runCatching { if (p.isPlaying) p.stop() }
-            runCatching { p.release() }
-        }
-        outgoing = null
-        outgoingLevel = 0f
+    /** Lets a player go; the library track's place is kept, so it goes on from there next time. */
+    private fun release(p: MediaPlayer, track: Int?) {
+        if (track == null) runCatching { libraryPositionMs = p.currentPosition }
+        runCatching { if (p.isPlaying) p.stop() }
+        runCatching { p.release() }
     }
 
-    /** Ends a crossfade at once, where it was going: the old track gone, the new at full. */
+    private fun releaseFading() {
+        for (f in fading) release(f.player, f.track)
+        fading.clear()
+    }
+
+    /** Ends the fades at once, where they were going: the old tracks gone, the new at full. */
     private fun settleFade() {
         main.removeCallbacks(fadeStep)
-        releaseOutgoing()
+        releaseFading()
         playerLevel = 1f
+        inFrom = 1f
         applyLevels()
     }
 
@@ -344,8 +363,9 @@ object LibraryMusic {
     fun stop(context: Context) {
         pausedForFocus = false
         main.removeCallbacks(fadeStep)
-        releaseOutgoing()
+        releaseFading()
         playerLevel = 1f
+        inFrom = 1f
         player?.let { p ->
             runCatching { if (p.isPlaying) p.stop() }
             runCatching { p.release() }
@@ -375,8 +395,9 @@ object LibraryMusic {
                 // rather than sitting paused forever holding a decoder.
                 pausedForFocus = false
                 main.removeCallbacks(fadeStep)
-                releaseOutgoing()
+                releaseFading()
                 playerLevel = 1f
+                inFrom = 1f
                 player?.let { p ->
                     runCatching { if (p.isPlaying) p.stop() }
                     runCatching { p.release() }
