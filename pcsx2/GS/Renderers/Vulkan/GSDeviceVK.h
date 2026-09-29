@@ -495,6 +495,7 @@ public:
 				u32 ds : 1;
 				u32 line_width : 1;
 				u32 feedback_loop_flags : 3;
+				u32 raster_order : 1;
 			};
 
 			u32 key;

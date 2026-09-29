@@ -2482,9 +2482,11 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 	// UseFeedbackLoopLayout() is false. The declared-loop road breaks that
 	// implication -- extension present, layout road forced, in-tile read off -- and without this
 	// term the subpass would declare rasterization-order access that no pipeline in it has.
+	// The declared-loop road that requests order per pipeline binds rasterization-order pipelines in
+	// this subpass, so the subpass declares it too.
 	VkSubpassDescriptionFlags subpass_flags =
 		(key.color_feedback_loop && m_optional_extensions.vk_ext_rasterization_order_attachment_access &&
-			!UseFeedbackLoopLayout()) ?
+			(!UseFeedbackLoopLayout() || m_features.declared_loop_overlap_needs_raster_order)) ?
 			VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_BIT_EXT :
 			0;
 	// Mobile ordered depth feedback: on the framebuffer_fetch path the depth self-dependency above
@@ -3923,7 +3925,11 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad()
 	road_inputs.rt_self_read_is_broken = rt_self_read_is_broken;
 	// A driverInfo tag saying this build orders overlapping self-reads inside a declared loop. It puts
 	// a user of our Turnip builds on the declared road with no setting touched.
-	road_inputs.driver_orders_declared_loop = GetMobileDriverProfile().orders_declared_feedback_loop;
+	// Where the driver orders overlapping primitives only on request, the request is a pipeline flag
+	// from VK_EXT_rasterization_order_attachment_access; without it the ordering cannot be asked for.
+	const bool order_on_request = GetMobileDriverProfile().declared_loop_orders_overlap_on_request;
+	road_inputs.driver_orders_declared_loop = GetMobileDriverProfile().orders_declared_feedback_loop &&
+		(!order_on_request || m_optional_extensions.vk_ext_rasterization_order_attachment_access);
 	// The database saying this part belongs on the declared loop with our own barriers kept: Turnip on
 	// Adreno 730 and up, where the copy road renders wrong.
 	road_inputs.driver_prefers_declared_loop_with_barriers =
@@ -3967,6 +3973,11 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad()
 	m_features.framebuffer_fetch = road.in_tile_read;
 	m_features.texture_barrier = road.texture_barrier;
 	m_features.declared_feedback_loop_orders_overlap = road.orders_overlapping_prims;
+	// Our generation-2 Turnip on Adreno 7xx: the driver orders the draw against earlier ones with a
+	// wait for idle, and orders overlapping primitives within it only on request.
+	const bool declared_ordered = road.orders_overlapping_prims && !road.in_tile_read && order_on_request;
+	m_features.declared_loop_overlap_needs_raster_order = declared_ordered;
+	m_features.ordered_read_costs_per_draw = declared_ordered;
 	// Turnip and Honeykrisp, where a per-draw barrier costs about what a copy does. Read only by
 	// GSCopyRoadBlendingPolicy.h; every other driver treats the barrier as cheap.
 	m_features.barrier_read_costs_per_draw = m_device_rules.self_read_costs_measured;
@@ -4238,7 +4249,8 @@ void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool de
 			fix_generation, m_device_driver_properties.driverInfo,
 			GetMobileDriverProfile().orders_declared_feedback_loop ?
 				"TRUSTED" :
-				"NOT trusted on this part -- the fix covers Adreno 650-699 on Turnip only");
+				"NOT trusted on this part -- generation 1 covers Turnip on Adreno 650-699, "
+				"generation 2 adds Adreno 730 and up");
 	}
 	// Printed whenever the profile carries the rule, in effect or not.
 	if (GetMobileDriverProfile().prefers_declared_loop_with_barriers)
@@ -7572,6 +7584,10 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 	// and rast-order draws.
 	if (m_features.framebuffer_fetch && p.IsRTFeedbackLoop())
 		gpb.AddBlendFlags(VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT);
+	// The declared-loop road on a driver that orders overlapping primitives only on request: only
+	// the draws the renderer marked get it, because the per-overlap wait is what costs.
+	else if (p.raster_order && m_features.declared_loop_overlap_needs_raster_order && p.IsRTFeedbackLoop())
+		gpb.AddBlendFlags(VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT);
 
 	// Mobile ordered depth feedback: the render pass declares ordered depth access (subpass flag
 	// above) whenever depth is sampled on the fbfetch path with the toggle on — the pipeline bound
@@ -9609,6 +9625,7 @@ void GSDeviceVK::UpdateHWPipelineSelector(GSHWDrawConfig& config, PipelineSelect
 		pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadAndWriteDepth;
 	else if (config.road.depth_read)
 		pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadDepth;
+	pipe.raster_order = config.raster_order && config.road.rt_loop;
 
 	// enable point size in the vertex shader if we're rendering points regardless of upscaling.
 	pipe.vs.point_size |= (config.topology == GSHWDrawConfig::Topology::Point);

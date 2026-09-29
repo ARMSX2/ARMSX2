@@ -921,6 +921,58 @@ TEST(GSGpuDriverProfile, ATaggedTurnipOnAdreno7xxGetsThePreferenceAndNotTheOrder
 	EXPECT_FALSE(OrdersDeclaredLoop(sel));
 }
 
+// Generation 2 carries the a7xx half of the fix: the driver orders a declared loop on A7XX too.
+// On the 730 and up that buys the ordering claim, alongside the preference, and the road policy
+// lets the ordering fact win (same road, barriers dropped).
+namespace
+{
+	constexpr const char* kGen2TurnipDriverInfo = "Mesa 26.3.0-devel (git-axfl2-001)";
+}
+
+TEST(GSGpuDriverProfile, AGeneration2TurnipOnAdreno7xxOrdersTheDeclaredLoop)
+{
+	for (const char* device_name : {"Adreno (TM) 740", "Adreno (TM) 750", "Adreno (TM) 730"})
+	{
+		const GpuProfileSelection sel = ResolveTurnipVK(device_name, kGen2TurnipDriverInfo);
+		EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno7xx) << device_name;
+		EXPECT_EQ(sel.driver.declared_loop_fix_generation, 2u) << device_name;
+		EXPECT_TRUE(OrdersDeclaredLoop(sel)) << device_name;
+		EXPECT_TRUE(PrefersDeclaredLoopWithBarriers(sel)) << device_name;
+		// Within a draw, the a7xx half orders overlapping primitives only for a pipeline that asks.
+		EXPECT_TRUE(sel.driver.declared_loop_orders_overlap_on_request) << device_name;
+	}
+}
+
+// Generation 2 keeps generation 1's a6xx claim: the a6xx half of the driver is unchanged.
+TEST(GSGpuDriverProfile, AGeneration2TurnipOnAdreno650StillOrdersTheDeclaredLoop)
+{
+	EXPECT_TRUE(OrdersDeclaredLoop(ResolveTurnipVK("Adreno (TM) 650", kGen2TurnipDriverInfo)));
+	// The a6xx half orders every declared-loop draw by itself; nothing is left to request.
+	EXPECT_FALSE(ResolveTurnipVK("Adreno (TM) 650", kGen2TurnipDriverInfo).driver.declared_loop_orders_overlap_on_request);
+	EXPECT_FALSE(ResolveTurnipVK("Adreno (TM) 740", kFixedTurnipDriverInfo).driver.declared_loop_orders_overlap_on_request);
+	EXPECT_FALSE(OrdersDeclaredLoop(ResolveTurnipVK("Adreno (TM) 610", kGen2TurnipDriverInfo)));
+}
+
+// The a7xx parts below 730 were never run; a generation-2 tag does not reach them.
+TEST(GSGpuDriverProfile, AGeneration2TurnipBelowAdreno730MakesNoOrderingClaim)
+{
+	for (const char* device_name : {"Adreno (TM) 702", "Adreno (TM) 710", "Adreno (TM) 720", "Adreno (TM) 725"})
+	{
+		const GpuProfileSelection sel = ResolveTurnipVK(device_name, kGen2TurnipDriverInfo);
+		EXPECT_EQ(sel.driver.declared_loop_fix_generation, 2u) << device_name;
+		EXPECT_FALSE(OrdersDeclaredLoop(sel)) << device_name;
+	}
+}
+
+// The tag cannot be carried by the blob; if a string says so anyway, it is not our build.
+TEST(GSGpuDriverProfile, TheQualcommBlobCarryingAGeneration2TagMakesNoOrderingClaim)
+{
+	const GpuProfileSelection sel = ResolveAdrenoVKWithInfo("Adreno (TM) 740",
+		kQualcommProprietaryDriverId, "Qualcomm", PackVulkanVersion(512, 780, 0), kGen2TurnipDriverInfo);
+	EXPECT_EQ(sel.driver.declared_loop_fix_generation, 2u);
+	EXPECT_FALSE(OrdersDeclaredLoop(sel));
+}
+
 // The Qualcomm blob on the same a740. Its only in-pass road is the input attachment with barriers,
 // which was measured right on The Godfather and wrong on Splashdown; nothing here was measured on
 // it and the declared road is not its road.

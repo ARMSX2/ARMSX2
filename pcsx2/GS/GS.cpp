@@ -263,6 +263,7 @@ static void GSApplyCopyRoadBlendingCap(Pcsx2Config::GSOptions& config)
 		f.framebuffer_fetch, f.texture_barrier, f.declared_feedback_loop_orders_overlap);
 	in.multidraw_fb_copy = f.multidraw_fb_copy;
 	in.barrier_costs_per_draw = f.barrier_read_costs_per_draw;
+	in.ordered_costs_per_draw = f.ordered_read_costs_per_draw;
 	in.title_cap = config.CopyRoadMaximumBlendingLevel;
 	in.configured_level = static_cast<int>(config.AccurateBlendingUnit);
 

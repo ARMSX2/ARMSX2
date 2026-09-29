@@ -7051,6 +7051,11 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 	if (GSDrawDropsBarriers(GetDrawRoadDevice(features), m_conf.tex_hazard == GSHWDrawConfig::TEX_HAZARD_RT,
 			m_prim_overlap != PRIM_OVERLAP_NO, m_conf.ps.IsFeedbackLoopDepth() && features.depth_feedback))
 	{
+		// Where the driver orders overlapping primitives only on request, request it for exactly the
+		// draws that would have taken a barrier between primitive groups: a full barrier with
+		// overlap that the swap below would not have reduced to one barrier.
+		m_conf.raster_order = features.declared_loop_overlap_needs_raster_order && m_conf.require_full_barrier &&
+		                      m_prim_overlap != PRIM_OVERLAP_NO && !m_conf.ps.shuffle && !m_channel_shuffle;
 		m_conf.require_one_barrier = false;
 		m_conf.require_full_barrier = false;
 	}

@@ -230,14 +230,21 @@ struct MobileDriverProfile
 	/// the barrier-keeping reference and tagged in driverInfo; every other driver keeps barriers.
 	bool orders_declared_feedback_loop = false;
 
+	/// With orders_declared_feedback_loop: the driver orders a declared-loop draw against earlier
+	/// draws on its own, but orders overlapping primitives WITHIN the draw only when the pipeline
+	/// requests rasterization-order attachment access. True for a generation-2 build on Adreno 7xx,
+	/// where the per-overlap wait is expensive and so is left to the draws that need it.
+	bool declared_loop_orders_overlap_on_request = false;
+
 	/// This driver's best in-pass self-read road is a declared attachment feedback loop with the
 	/// per-draw barriers kept: the declaration gives the layout and coherent destination read,
 	/// our barriers give the ordering. Weaker than orders_declared_feedback_loop, which lets the
 	/// barriers go and wins if both are set.
 	///
 	/// True for Turnip on Adreno 730 and up (measured on the 740), where the copy road renders
-	/// wrong. The barrier-less declared road races on a7xx because Turnip never emits the
-	/// ordering state there.
+	/// wrong. The barrier-less declared road races on a7xx under stock Turnip, which never emits
+	/// the ordering state there; a generation-2 build does, and then orders_declared_feedback_loop
+	/// is set as well and wins.
 	bool prefers_declared_loop_with_barriers = false;
 
 	std::string driver_name;

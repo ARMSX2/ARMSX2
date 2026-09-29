@@ -67,6 +67,11 @@ struct GSCopyRoadBlendingInputs
 	/// InPassBarrier; false means the barrier is cheap.
 	bool barrier_costs_per_draw = false;
 
+	/// FeatureSupport::ordered_read_costs_per_draw: the driver-ordered road still waits for the GPU
+	/// to drain before each draw that reads the destination (our generation-2 Turnip on Adreno 7xx).
+	/// Only meaningful on InPassOrdered.
+	bool ordered_costs_per_draw = false;
+
 	/// The database's copyRoadMaximumBlendingLevel for the running title, or -1 when unset.
 	int title_cap = -1;
 
@@ -82,8 +87,8 @@ constexpr bool DestinationReadCostsPerDraw(const GSCopyRoadBlendingInputs& in)
 	{
 		case GSSelfReadRoad::InPassOrdered:
 			// The driver orders the read (in-tile fetch, or a declared feedback loop the driver
-			// orders). Free.
-			return false;
+			// orders). Free, unless the driver's ordering is itself a wait per draw.
+			return in.ordered_costs_per_draw;
 
 		case GSSelfReadRoad::InPassBarrier:
 			// A barrier per draw: cheap on immediate-mode GPUs, a pipeline drain per draw on a
