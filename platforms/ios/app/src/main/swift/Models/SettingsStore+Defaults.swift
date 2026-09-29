@@ -29,6 +29,7 @@ extension SettingsStore {
         autoSaveEnabled = true
         autoSaveIntervalMinutes = 10
         autoSaveOnLeave = true
+        autoSaveOnLowBattery = true
         automaticLoadLastGame = false
         temporalSaveStateToLivePreviewChanges = true
         perGameLivePreviewDuration = 2

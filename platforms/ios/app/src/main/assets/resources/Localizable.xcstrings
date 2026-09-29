@@ -1693,7 +1693,7 @@
     "Auto-save" : {
       "extractionState" : "manual"
     },
-    "Auto-save has its own slot and never writes over yours." : {
+    "Auto-save has its own slot and never writes over yours. At 5% battery it saves at once, then every minute until you charge." : {
       "extractionState" : "manual"
     },
     "Auto-save Settings" : {
@@ -20843,6 +20843,9 @@
       "extractionState" : "manual"
     },
     "Save to %@, locked. Unlock it from More." : {
+      "extractionState" : "manual"
+    },
+    "Save when battery is low" : {
       "extractionState" : "manual"
     },
     "Save when leaving the game" : {
