@@ -2130,9 +2130,12 @@ private fun GameCover(
         com.armsx2.runtime.MainActivityRuntime.eState.value == com.armsx2.EmuState.STOPPED &&
         // Nothing to see under the screensaver or the Icon Viewer, so no frames drawn for it.
         !LibraryScreensaver.showing.value && !MemcardIconViewerState.open.value
-    val animating = moving && liveIn == null
+    // On the GPU a reflection draws the icon itself (the same key, so the same clock: it moves in
+    // step, for next to nothing); the software renderer's reflection reuses the tile's frames.
+    val gpu = IconGl.available.value
+    val animating = moving && (liveIn == null || gpu)
     var animReady by remember(game.serial, animating) { mutableStateOf(false) }
-    val mirroring = moving && liveIn != null
+    val mirroring = moving && liveIn != null && !gpu
     var mirrorShown by remember(game.serial, mirroring) { mutableStateOf(false) }
     val request = remember(model, use3d, coverRegion, coverPins) {
         ImageRequest.Builder(context)

@@ -256,6 +256,27 @@ object Ps2IconRenderer {
 
     /** Where [icon] sits in a [w] x [h] tile, into [buf]: see [draw]. */
     private fun frame(icon: Ps2Icon, w: Int, h: Int, options: Options, cp: Float, sp: Float, buf: Scratch) {
+        val f = framing(icon, w, h, options)
+        buf.cx = f.cx
+        buf.cz = f.cz
+        buf.scale = f.scale
+        buf.refY = f.refY
+        buf.baseY = f.baseY
+        buf.framedIcon = icon
+        buf.framedWidth = w
+        buf.framedHeight = h
+        buf.framedOptions = options
+    }
+
+    /** Where an icon sits in a tile, as [framing] works it out. [depthRange] bounds how far any
+     *  point gets from the axis in depth, for a GPU's depth buffer. */
+    internal class Framing(val cx: Float, val cz: Float, val scale: Float, val refY: Float, val baseY: Float, val depthRange: Float)
+
+    /** Where [icon] sits in a [w] x [h] tile: see [draw]. The software renderer and the GPU one
+     *  (IconGl) both use this, so the two agree to the pixel. */
+    internal fun framing(icon: Ps2Icon, w: Int, h: Int, options: Options): Framing {
+        val cp = cos(options.pitch)
+        val sp = sin(options.pitch)
         val all = icon.positions
         val count = icon.shapeCount * icon.vertexCount
         var lx = Float.MAX_VALUE; var hx = -Float.MAX_VALUE
@@ -270,6 +291,7 @@ object Ps2IconRenderer {
         // above it rises and falls on screen by r * sin(pitch) about its own height.
         var r2 = 1e-6f
         var top = Float.MAX_VALUE; var bottom = -Float.MAX_VALUE
+        var reachY = 0f
         for (i in 0 until count) {
             val dx = all[i * 3] - cx; val dz = all[i * 3 + 2] - cz
             val rr = dx * dx + dz * dz
@@ -277,22 +299,23 @@ object Ps2IconRenderer {
             val y = all[i * 3 + 1] * cp
             val swing = sqrt(rr) * sp
             top = min(top, y - swing); bottom = max(bottom, y + swing)
+            reachY = max(reachY, kotlin.math.abs(all[i * 3 + 1]))
         }
-        buf.cx = cx
-        buf.cz = cz
         // Width and height fitted separately: a standing figure in a tall tile uses the height.
-        buf.scale = min(
+        val scale = min(
             w * options.fill / (2f * sqrt(r2)).coerceAtLeast(1e-3f),
             h * options.fill / (bottom - top).coerceAtLeast(1e-3f),
         )
         // Where the icon lands on screen: its lowest point on the bottom edge, or its middle in
         // the middle.
-        buf.refY = if (options.anchorBottom) bottom else (top + bottom) / 2f
-        buf.baseY = if (options.anchorBottom) h * (1f - BOTTOM_MARGIN) else h / 2f
-        buf.framedIcon = icon
-        buf.framedWidth = w
-        buf.framedHeight = h
-        buf.framedOptions = options
+        return Framing(
+            cx = cx,
+            cz = cz,
+            scale = scale,
+            refY = if (options.anchorBottom) bottom else (top + bottom) / 2f,
+            baseY = if (options.anchorBottom) h * (1f - BOTTOM_MARGIN) else h / 2f,
+            depthRange = sqrt(r2) + reachY + 1e-3f,
+        )
     }
 
     /** Morph-target positions at [time]: each frame names a shape and a weight curve over time;
@@ -300,7 +323,7 @@ object Ps2IconRenderer {
     fun blend(icon: Ps2Icon, time: Float): FloatArray =
         blendInto(icon, time, FloatArray(icon.vertexCount * 3), FloatArray(icon.shapeCount))
 
-    private fun blendInto(icon: Ps2Icon, time: Float, out: FloatArray, weights: FloatArray): FloatArray {
+    internal fun blendInto(icon: Ps2Icon, time: Float, out: FloatArray, weights: FloatArray): FloatArray {
         val nv = icon.vertexCount
         out.fill(0f)
         weights.fill(0f)

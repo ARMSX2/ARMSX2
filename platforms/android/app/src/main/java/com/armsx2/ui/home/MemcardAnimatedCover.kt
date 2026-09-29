@@ -3,6 +3,7 @@ package com.armsx2.ui.home
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -13,7 +14,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -72,6 +76,61 @@ internal fun MemcardLiveMirror(live: State<ImageBitmap?>, modifier: Modifier = M
 
 /**
  * A PS2 save icon drawn live: playing its animation when [animate], and turning too when Spin is
+ * on ([MemcardCovers.spin]), or one still frame when not, at [aspect] (height / width) fitted into
+ * this composable. Drawn by the GPU ([IconGl]) when it can be, else by the software renderer. It
+ * starts from the pose the loaded icon's still picture uses, and [onFirstFrame] says when the first
+ * frame is on screen, so a still picture under it can step aside.
+ */
+@Composable
+internal fun AnimatedPs2Icon(
+    key: Any,
+    load: suspend () -> MemcardCovers.Loaded?,
+    options: Ps2IconRenderer.Options,
+    aspect: Float,
+    maxWidth: Int,
+    modifier: Modifier = Modifier,
+    animate: Boolean = true,
+    onFirstFrame: () -> Unit = {},
+    onFrame: (ImageBitmap) -> Unit = {},
+) {
+    if (IconGl.available.value) {
+        GpuPs2Icon(key, load, options, aspect, modifier, animate, onFirstFrame)
+    } else {
+        SoftwarePs2Icon(key, load, options, aspect, maxWidth, modifier, animate, onFirstFrame, onFrame)
+    }
+}
+
+/** The GPU's way: one [IconView] the GL thread draws into on the shared beat. */
+@Composable
+private fun GpuPs2Icon(
+    key: Any,
+    load: suspend () -> MemcardCovers.Loaded?,
+    options: Ps2IconRenderer.Options,
+    aspect: Float,
+    modifier: Modifier,
+    animate: Boolean,
+    onFirstFrame: () -> Unit,
+) {
+    val loaded by produceState<MemcardCovers.Loaded?>(null, key) {
+        value = withContext(Dispatchers.IO) { runCatching { load() }.getOrNull() }
+    }
+    val lifecycle by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
+    val visible = lifecycle.isAtLeast(Lifecycle.State.STARTED)
+    LaunchedEffect(visible) { IconGl.setVisible(visible) }
+    val firstFrame by rememberUpdatedState(onFirstFrame)
+    Box(modifier, contentAlignment = Alignment.Center) {
+        val ready = loaded ?: return@Box
+        // Fitted the way the still picture under it is (ContentScale.Fit), so they line up.
+        AndroidView(
+            factory = { context -> IconView(context) },
+            modifier = Modifier.aspectRatio(1f / aspect),
+            update = { view -> view.bind(key, ready, options, animate) { firstFrame() } },
+        )
+    }
+}
+
+/**
+ * The software renderer's way, for when the GPU's can't be used. A PS2 save icon drawn live: playing its animation when [animate], and turning too when Spin is
  * on ([MemcardCovers.spin]), or one still frame when not. Frames are rendered off the main thread
  * at this composable's width (capped at [maxWidth], since it runs every frame) and [aspect]
  * (height / width), into two bitmaps used in turn, reusing the renderer's buffers. It starts from
@@ -80,7 +139,7 @@ internal fun MemcardLiveMirror(live: State<ImageBitmap?>, modifier: Modifier = M
  * turning never changes, so it is drawn once and costs nothing after.
  */
 @Composable
-internal fun AnimatedPs2Icon(
+private fun SoftwarePs2Icon(
     key: Any,
     load: suspend () -> MemcardCovers.Loaded?,
     options: Ps2IconRenderer.Options,
