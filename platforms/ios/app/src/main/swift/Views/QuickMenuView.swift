@@ -880,7 +880,7 @@ struct QuickMenuView: View {
 
 }
 
-private extension PauseLayoutVariant {
+extension PauseLayoutVariant {
     /// Two columns only when the measured card can keep both columns comfortable.
     /// iPhone portrait always uses one column, while compact landscape and iPad
     /// layouts fall back to one column below their respective usable-size threshold.
@@ -1141,19 +1141,22 @@ struct ChangeDiscPanel: View {
     }
 }
 
-private struct LandscapeCommandBar: View {
+struct LandscapeCommandBar: View {
     let settings: SettingsStore
     let gameTitle: String?
     let stopControllerNavigationID: String
-    let resumeControllerNavigationID: String
+    /// No target means Circle is the pad's way back.
+    let resumeControllerNavigationID: String?
     let onStop: () -> Void
     let onResume: () -> Void
     let iconOnly: Bool
     var systemImage = "pause.circle.fill"
     var title: String?
     var ejects = false
+    var showsStopButton = true
     var resumeTitle: String?
     var resumeImage = "play.fill"
+    var hint: String?
     @Environment(\.uiAccentColour) private var accentColour
     @Environment(\.controllerTextAppearance) private var textAppearance
 
@@ -1181,13 +1184,21 @@ private struct LandscapeCommandBar: View {
                         .layoutPriority(-1)
                 }
                 Spacer(minLength: 8)
-                QuickMenuStopButton(
-                    controllerNavigationID: stopControllerNavigationID,
-                    accessibilityLabel: settings.localized(ejects ? "Eject Disc" : "Stop"),
-                    compact: true,
-                    ejects: ejects,
-                    action: onStop
-                )
+                if let hint {
+                    Text(hint)
+                        .font(.caption)
+                        .foregroundStyle(textAppearance.secondaryColor ?? OverlayTheme.textSecondary)
+                        .lineLimit(1)
+                }
+                if showsStopButton {
+                    QuickMenuStopButton(
+                        controllerNavigationID: stopControllerNavigationID,
+                        accessibilityLabel: settings.localized(ejects ? "Eject Disc" : "Stop"),
+                        compact: true,
+                        ejects: ejects,
+                        action: onStop
+                    )
+                }
                 Button(action: onResume) {
                     if iconOnly {
                         Image(systemName: resumeImage)
@@ -1203,12 +1214,7 @@ private struct LandscapeCommandBar: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
-                .controllerAccessibilityActionTarget(
-                    id: resumeControllerNavigationID,
-                    label: resumeControllerNavigationID,
-                    focusedColor: .white,
-                    action: onResume
-                )
+                .quickMenuResumeTarget(resumeControllerNavigationID, action: onResume)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 6)
@@ -1218,29 +1224,39 @@ private struct LandscapeCommandBar: View {
     }
 }
 
-private struct QuickMenuFooter: View {
+struct QuickMenuFooter: View {
     let settings: SettingsStore
     let compact: Bool
     let stopControllerNavigationID: String
-    let resumeControllerNavigationID: String
+    let resumeControllerNavigationID: String?
     let onStop: () -> Void
     let onResume: () -> Void
     var ejects = false
+    var showsStopButton = true
     var resumeTitle: String?
     var resumeImage = "play.fill"
+    var hint: String?
 
     var body: some View {
         VStack(spacing: 0) {
             OverlayTheme.separator
                 .frame(height: 0.5)
             HStack(spacing: compact ? 10 : 12) {
-                QuickMenuStopButton(
-                    controllerNavigationID: stopControllerNavigationID,
-                    accessibilityLabel: settings.localized(ejects ? "Eject Disc" : "Stop"),
-                    compact: compact,
-                    ejects: ejects,
-                    action: onStop
-                )
+                if showsStopButton {
+                    QuickMenuStopButton(
+                        controllerNavigationID: stopControllerNavigationID,
+                        accessibilityLabel: settings.localized(ejects ? "Eject Disc" : "Stop"),
+                        compact: compact,
+                        ejects: ejects,
+                        action: onStop
+                    )
+                }
+                if let hint {
+                    Text(hint)
+                        .font(.footnote)
+                        .foregroundStyle(OverlayTheme.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 Button(action: onResume) {
                     Label {
                         Text(resumeTitle ?? settings.localized("Resume"))
@@ -1252,16 +1268,22 @@ private struct QuickMenuFooter: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(compact ? .regular : .large)
-                .controllerAccessibilityActionTarget(
-                    id: resumeControllerNavigationID,
-                    label: resumeControllerNavigationID,
-                    focusedColor: .white,
-                    action: onResume
-                )
+                .quickMenuResumeTarget(resumeControllerNavigationID, action: onResume)
             }
             .padding(.horizontal, compact ? 18 : 20)
             .padding(.top, 8)
             .padding(.bottom, compact ? 10 : 14)
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func quickMenuResumeTarget(_ id: String?, action: @escaping () -> Void) -> some View {
+        if let id {
+            controllerAccessibilityActionTarget(id: id, label: id, focusedColor: .white, action: action)
+        } else {
+            self
         }
     }
 }

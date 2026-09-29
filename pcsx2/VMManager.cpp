@@ -3970,7 +3970,11 @@ void VMManager::SaveSessionTime(const std::string& prev_serial)
 
 u64 VMManager::GetSessionPlayedTime()
 {
-	return static_cast<u64>(std::round(Common::Timer::ConvertValueToSeconds(s_session_accumulated_playtime)));
+	u64 played = s_session_accumulated_playtime;
+	// The stretch since the last resume is only added on pause.
+	if (s_state.load(std::memory_order_acquire) == VMState::Running)
+		played += static_cast<u64>(Common::Timer::GetCurrentValue()) - s_session_resume_timestamp;
+	return static_cast<u64>(std::round(Common::Timer::ConvertValueToSeconds(played)));
 }
 
 #ifdef _WIN32

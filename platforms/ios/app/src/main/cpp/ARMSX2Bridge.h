@@ -294,6 +294,8 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (nonnull NSArray<ARMSX2SaveStateSlotInfo *> *)saveStateSlots;
 + (void)saveStateToSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(saveState(toSlot:completion:));
 + (void)loadStateFromSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(loadState(fromSlot:completion:));
+/// Seconds played in the running game: the played-time file plus this session.
++ (double)currentGamePlayedSeconds;
 
 // PNACH cheats/patches (pass nil for isoName to target the running game)
 + (nullable NSString *)pnachPathForCurrentGameAsCheat:(BOOL)asCheat NS_SWIFT_NAME(pnachPathForCurrentGame(asCheat:));

@@ -6,7 +6,7 @@ from ios_source import MODELS, SWIFT, block, read, without_comments
 
 
 NAVIGATION = MODELS / "ControllerAccessibilityNavigation.swift"
-GAME = SWIFT / "Views/GameScreenView.swift"
+PANEL = SWIFT / "Views/SaveStatesPanel.swift"
 
 
 class SaveStatesScroll(unittest.TestCase):
@@ -19,10 +19,11 @@ class SaveStatesScroll(unittest.TestCase):
         self.assertIn("scrollViewportFrame(in: scrollView)", check)
         self.assertNotIn("origin: scrollView.contentOffset", check)
 
-    def test_the_first_and_last_slots_stop(self):
-        links = block(without_comments(read(GAME)), "private var controllerDirectionalLinks")
-        self.assertIn("direction: .up, toLabel: boundary", links)
-        self.assertIn("direction: .down, toLabel: boundary", links)
+    def test_the_first_and_last_slots_wrap_only_on_a_new_press(self):
+        graph = block(without_comments(read(PANEL)), "init(rows: [[Target]])")
+        self.assertIn("requiresFreshPress: true", graph)
+        self.assertIn("nearest(in: above, to: target.column)", graph)
+        self.assertIn("confinesHorizontalFocusMovement: true", read(PANEL))
 
 
 if __name__ == "__main__":

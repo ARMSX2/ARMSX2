@@ -585,6 +585,25 @@ struct GameScreenView: View {
                 }
             case .controllerSkin:
                 runtimeControllerSkinPicker
+            case .saveStates:
+                GameOverlayContainer(frameMode: .landscapePanel, ipadPortraitHeightCap: .infinity) { metrics in
+                    SaveStatesPanel(
+                        settings: settings,
+                        variant: metrics.variant,
+                        landscape: screenIsLandscape,
+                        gameTitle: currentRuntimeGameName(),
+                        statusHandler: { message, isImportant in
+                            presentStatusMessage(
+                                message,
+                                displayDuration: isImportant
+                                    ? Self.importantStatusDisplayDuration
+                                    : Self.briefStatusDisplayDuration
+                            )
+                        },
+                        onLoaded: resumeGameplayAfterControllerRelease,
+                        onClose: { overlayRoute = .paused }
+                    )
+                }
             case .changeDisc:
                 GameOverlayContainer(frameMode: .landscapePanel) { metrics in
                     ChangeDiscPanel(
@@ -606,7 +625,7 @@ struct GameScreenView: View {
                 }
             case .resetROM:
                 runtimeResetROMAlert
-            case .speed, .saveStates, .cheats,
+            case .speed, .cheats,
                  .retroAchievements:
                 // These destinations are lazy sheet contents. Their route is
                 // retained only so dismissal returns to the pause card.
@@ -770,14 +789,6 @@ struct GameScreenView: View {
                 screenIsLandscape = landscape
             }
         }
-        .sheet(isPresented: childPresentedBinding(.saveStates)) {
-            SaveStatesPanel { message, isImportant in
-                presentStatusMessage(
-                    message,
-                    displayDuration: isImportant ? Self.importantStatusDisplayDuration : Self.briefStatusDisplayDuration
-                )
-            }
-        }
         .sheet(
             item: $saveStateShortcutSlotPicker,
             onDismiss: {
@@ -785,7 +796,7 @@ struct GameScreenView: View {
                 updateRuntimeControllerMenuOwnership()
             }
         ) { purpose in
-            SaveStatesPanel(mode: purpose) { message, isImportant in
+            SaveStateSlotPickerPanel(mode: purpose) { message, isImportant in
                 presentStatusMessage(
                     message,
                     displayDuration: isImportant
@@ -2327,8 +2338,8 @@ struct GameScreenView: View {
     }
 
     private func requestSaveToLastState() {
-        let slots = ARMSX2Bridge.saveStateSlots()
-        guard let firstSlot = slots.first else {
+        let quick = ARMSX2Bridge.saveStateSlots().first { $0.slot == SaveStateSlot.quickSlot }
+        guard let quick else {
             presentRetroAchievementsToast(
                 title: settings.localized("Save states are not ready yet."),
                 message: settings.localized(
@@ -2340,16 +2351,10 @@ struct GameScreenView: View {
             return
         }
 
-        if let latest = latestOccupiedSaveState(in: slots) {
-            if UserDefaults.standard.bool(
-                forKey: Self.replaceLastSaveStateAlwaysKey
-            ) {
-                performSaveStateShortcut(slot: latest.slot, replacing: true)
-            } else {
-                presentSaveStateShortcutPrompt(.replace(slot: latest.slot))
-            }
+        if quick.occupied, !UserDefaults.standard.bool(forKey: Self.replaceLastSaveStateAlwaysKey) {
+            presentSaveStateShortcutPrompt(.replace(slot: quick.slot))
         } else {
-            presentSaveStateShortcutPrompt(.create(slot: firstSlot.slot))
+            performSaveStateShortcut(slot: quick.slot, replacing: quick.occupied)
         }
     }
 
@@ -2366,10 +2371,10 @@ struct GameScreenView: View {
             return
         }
 
-        let slots = ARMSX2Bridge.saveStateSlots()
-        guard let latest = latestOccupiedSaveState(in: slots) else {
+        let quick = ARMSX2Bridge.saveStateSlots().first { $0.slot == SaveStateSlot.quickSlot }
+        guard let quick, quick.occupied else {
             presentRetroAchievementsToast(
-                title: settings.localized("No saved states found."),
+                title: settings.localized("No Quick Save yet"),
                 message: settings.localized("Create one by pressing")
                     + " \(settings.controllerMacroSaveGameState.title).",
                 badgePath: "",
@@ -2379,20 +2384,9 @@ struct GameScreenView: View {
         }
 
         if UserDefaults.standard.bool(forKey: Self.loadLastSaveStateAlwaysKey) {
-            performLoadStateShortcut(slot: latest.slot)
+            performLoadStateShortcut(slot: quick.slot)
         } else {
-            presentSaveStateShortcutPrompt(.load(slot: latest.slot))
-        }
-    }
-
-    private func latestOccupiedSaveState(
-        in slots: [ARMSX2SaveStateSlotInfo]
-    ) -> ARMSX2SaveStateSlotInfo? {
-        slots.filter(\.occupied).max { lhs, rhs in
-            let leftDate = lhs.modifiedDate ?? .distantPast
-            let rightDate = rhs.modifiedDate ?? .distantPast
-            if leftDate == rightDate { return lhs.slot < rhs.slot }
-            return leftDate < rightDate
+            presentSaveStateShortcutPrompt(.load(slot: quick.slot))
         }
     }
 
@@ -2429,10 +2423,10 @@ struct GameScreenView: View {
         switch prompt {
         case .create(let slot):
             "\(settings.localized("No saved states exist. Create one in slot")) \(slot)?"
-        case .replace(let slot):
-            "\(settings.localized("This replaces the saved state in slot")) \(slot)."
-        case .load(let slot):
-            "\(settings.localized("Load the most recently saved state from slot")) \(slot)?"
+        case .replace:
+            settings.localized("This replaces your Quick Save.")
+        case .load:
+            settings.localized("Load your Quick Save?")
         }
     }
 
@@ -2554,12 +2548,19 @@ struct GameScreenView: View {
             Task { @MainActor in
                 finishSaveStateShortcutOperation()
                 if success {
-                    let previewData = saveStatePreviewPNGData(for: slot)
+                    let file = ARMSX2Bridge.saveStateSlots().first { $0.slot == slot }.map(SaveStateFile.init)
+                    if let file {
+                        SaveStateMetadataStore.shared.recordSave(
+                            of: file,
+                            playedSeconds: ARMSX2Bridge.currentGamePlayedSeconds()
+                        )
+                    }
+                    let previewData = file?.preview
                     presentRetroAchievementsToast(
-                        title: settings.localized(
+                        title: settings.localized("Quick Saved"),
+                        message: settings.localized(
                             replacing ? "Saved State Replaced" : "Saved State Created"
                         ),
-                        message: "\(settings.localized("Saved to slot")) \(slot).",
                         badgePath: "",
                         duration: nil,
                         categoryTitle: settings.localized("Save Game State"),
@@ -2568,7 +2569,7 @@ struct GameScreenView: View {
                     )
                 } else {
                     presentImportantStatusMessage(
-                        "\(settings.localized("Could not save slot")) \(slot). \(settings.localized("Try again after gameplay has fully loaded."))"
+                        "\(settings.localized("Quick Save")): \(settings.localized("Try again after gameplay has fully loaded."))"
                     )
                 }
             }
@@ -2586,7 +2587,7 @@ struct GameScreenView: View {
                     // Load Always path, so an automatic load is never silent.
                     presentRetroAchievementsToast(
                         title: settings.localized("Saved State Loaded"),
-                        message: "\(settings.localized("Loaded from slot")) \(slot).",
+                        message: settings.localized("Quick Save"),
                         badgePath: "",
                         duration: nil,
                         categoryTitle: settings.localized("Load Game State"),
@@ -2595,7 +2596,7 @@ struct GameScreenView: View {
                     )
                 } else {
                     presentImportantStatusMessage(
-                        "\(settings.localized("Could not load slot")) \(slot). \(settings.localized("Make sure it has a saved state first."))"
+                        "\(settings.localized("Quick Save")): \(settings.localized("Make sure it has a saved state first."))"
                     )
                 }
             }
@@ -2988,7 +2989,7 @@ private struct RetroAchievementRow: View {
 
 // MARK: - Save States Panel
 
-private struct SaveStatesPanel: View {
+private struct SaveStateSlotPickerPanel: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.menuControllerInputRouter) private var controllerInput
     @State private var settings = SettingsStore.shared
@@ -3226,7 +3227,7 @@ private struct SaveStatesPanel: View {
     }
 
     private func refresh() {
-        slots = ARMSX2Bridge.saveStateSlots()
+        slots = ARMSX2Bridge.saveStateSlots().filter { $0.slot >= 1 }
         hardcoreActive = ARMSX2Bridge.isRetroAchievementsHardcoreActive()
     }
 

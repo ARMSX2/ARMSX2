@@ -1168,6 +1168,13 @@ void GameList::ClearPlayedTimeForSerial(const std::string& serial)
 }
 
 
+std::time_t GameList::GetPlayedTimeForSerial(const std::string& serial)
+{
+	const PlayedTimeMap played_time(LoadPlayedTimeMap(GetPlayedTimeFile()));
+	const auto it = played_time.find(serial);
+	return (it != played_time.end()) ? it->second.total_played_time : 0;
+}
+
 std::time_t GameList::GetCachedPlayedTimeForSerial(const std::string& serial)
 {
 	if (serial.empty())
