@@ -34,6 +34,10 @@ import java.net.HttpURLConnection
  */
 object OnlineIcons {
     const val BASE = "https://icons.ps2ktxpak.net/"
+
+    /** The download counter behind "Popular Today" (tools/memcard-icons/stats-worker): today's
+     *  most downloaded icons, and where the app says which icons it downloaded on purpose. */
+    const val STATS = "https://iconstats.ps2ktxpak.net/"
     private const val ZIP = "memcard-icons.zip"
     private const val TAG = "OnlineIcons"
     private const val DIR = "memcard_online"
@@ -43,6 +47,8 @@ object OnlineIcons {
     private const val MAX_LIST_BYTES = 16 shl 20
     private const val PROGRESS_STEP = 512L * 1024
     private const val PARALLEL = 8
+    private const val POPULAR = 6
+    private val HASH = Regex("[0-9a-f]{16}")
 
     sealed interface Status {
         data object Idle : Status
@@ -161,7 +167,7 @@ object OnlineIcons {
             if (code == HttpURLConnection.HTTP_NOT_FOUND || code == HttpURLConnection.HTTP_FORBIDDEN) {
                 conn.disconnect()
                 if (!syncLists()) return@launch "can't reach the icon server"
-                return@launch installEach(s, s.catalog().map { it.hash })
+                return@launch installEach(s, s.catalog().map { it.hash }, report = false)
             }
             if (code != HttpURLConnection.HTTP_OK) return@launch "the icon server said $code"
             val total = conn.contentLengthLong
@@ -187,19 +193,22 @@ object OnlineIcons {
         }
     }
 
-    /** Downloads these icons in the background; [status] counts them. */
+    /** Downloads these icons in the background, picked by the player, so they count toward
+     *  Popular Today; [status] counts them. */
     fun install(hashes: Collection<String>) {
         if (hashes.none { !isInstalled(it) }) return
-        launch { s -> installEach(s, hashes) }
+        launch { s -> installEach(s, hashes, report = true) }
     }
 
     /** Fetches each icon not on the device yet, [PARALLEL] at a time, taking any a preview already
-     *  fetched from there. Null when it went well, else why not. */
-    private suspend fun installEach(s: OnlineIconStore, hashes: Collection<String>): String? = coroutineScope {
+     *  fetched from there, and when [report], tells the counter which arrived. Null when it went
+     *  well, else why not. */
+    private suspend fun installEach(s: OnlineIconStore, hashes: Collection<String>, report: Boolean): String? = coroutineScope {
         val todo = hashes.filterNot { s.isInstalled(it) }.distinct()
         val queue = java.util.concurrent.ConcurrentLinkedQueue(todo)
         val done = java.util.concurrent.atomic.AtomicInteger()
         val failed = java.util.concurrent.atomic.AtomicInteger()
+        val arrived = java.util.concurrent.ConcurrentLinkedQueue<String>()
         status.value = Status.Working(0, todo.size.toLong(), bytes = false)
         (1..PARALLEL).map {
             async {
@@ -208,18 +217,55 @@ object OnlineIcons {
                     val hash = queue.poll() ?: break
                     val cached = previewFile(hash)?.takeIf { it.isFile }?.let { runCatching { it.readBytes() }.getOrNull() }
                     val ok = (cached != null && s.install(hash, cached)) || (fetchIcon(hash)?.let { s.install(hash, it) } == true)
-                    if (!ok) failed.incrementAndGet()
+                    if (ok) arrived += hash else failed.incrementAndGet()
                     previewFile(hash)?.delete()
                     val n = done.incrementAndGet()
                     if (n % 16 == 0 || n == todo.size) status.value = Status.Working(n.toLong(), todo.size.toLong(), bytes = false)
                 }
             }
         }.awaitAll()
+        if (report && arrived.isNotEmpty()) scope.launch { reportDownloads(arrived.toList()) }
         when {
             todo.isNotEmpty() && failed.get() == todo.size -> "can't reach the icon server"
             failed.get() > 0 -> "%d icons didn't download".format(failed.get())
             else -> null
         }
+    }
+
+    // ---- Popular Today ---------------------------------------------------------------------------
+
+    /** Today's most downloaded icons, most first, as the counter last said; null before it has. */
+    val popular = mutableStateOf<List<String>?>(null)
+
+    /** Asks the counter for today's most downloaded icons. Keeps the last answer when it can't. */
+    suspend fun refreshPopular() {
+        val list = withContext(Dispatchers.IO) {
+            val conn = open(STATS + "popular") ?: return@withContext null
+            try {
+                if (conn.responseCode != HttpURLConnection.HTTP_OK) null
+                else conn.inputStream.use { String(it.readBounded(64 * 1024), Charsets.UTF_8) }.lineSequence()
+                    .mapNotNull { line -> line.trim().substringBefore(' ').takeIf { HASH.matches(it) } }.distinct().take(POPULAR).toList()
+            } catch (e: Exception) {
+                null
+            } finally {
+                conn.disconnect()
+            }
+        }
+        if (list != null) popular.value = list
+    }
+
+    /** Tells the counter which icons the player downloaded on purpose: their hashes, nothing else.
+     *  One request however many; nothing is retried or kept if it fails. */
+    private fun reportDownloads(hashes: List<String>) {
+        val body = hashes.take(100).joinToString("\n").toByteArray()
+        // The body goes out in configure: the redirect helper reads the response right after it.
+        val conn = open(STATS + "hit", method = "POST") {
+            doOutput = true
+            setRequestProperty("Content-Type", "text/plain; charset=utf-8")
+            outputStream.use { it.write(body) }
+        } ?: return
+        runCatching { conn.responseCode }
+        conn.disconnect()
     }
 
     fun uninstall(hash: String) {

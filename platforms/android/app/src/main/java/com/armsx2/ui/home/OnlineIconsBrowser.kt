@@ -83,15 +83,32 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
     val mine = remember(generation, lists) { librarySerials().mapNotNullTo(HashSet()) { OnlineIcons.hashFor(it) } }
     val missingMine = mine - installed
 
-    var filter by remember { mutableIntStateOf(FILTER_ALL) }
+    // Popular Today, the tab it opens on: asked of the counter every time the browser opens.
+    var popularAsked by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        OnlineIcons.refreshPopular()
+        popularAsked = true
+    }
+    val popular = OnlineIcons.popular.value
+
+    var filter by remember { mutableIntStateOf(FILTER_POPULAR) }
     var query by remember { mutableStateOf("") }
-    val shown = remember(catalog, installed, mine, filter, query) {
+    val shown = remember(catalog, installed, mine, filter, query, popular) {
         val bySerial = OnlineIcons.hashFor(query.trim().uppercase().replace('_', '-').replace(".", ""))
         val q = query.trim().lowercase()
-        catalog.filter { e ->
-            (filter == FILTER_ALL || (filter == FILTER_MINE && e.hash in mine) || (filter == FILTER_DOWNLOADED && e.hash in installed)) &&
-                (q.isEmpty() || e.hash == bySerial || e.title.lowercase().contains(q) || e.label.lowercase().contains(q) ||
-                    e.contributors.lowercase().contains(q))
+        val matches = { e: OnlineIcons.Entry ->
+            q.isEmpty() || e.hash == bySerial || e.title.lowercase().contains(q) || e.label.lowercase().contains(q) ||
+                e.contributors.lowercase().contains(q)
+        }
+        if (filter == FILTER_POPULAR) {
+            // In the counter's order, most downloaded first; one entry per icon, the catalog's first.
+            val byHash = catalog.groupBy { it.hash }
+            popular.orEmpty().mapNotNull { byHash[it]?.first() }.filter(matches)
+        } else {
+            catalog.filter { e ->
+                (filter == FILTER_ALL || (filter == FILTER_MINE && e.hash in mine) || (filter == FILTER_DOWNLOADED && e.hash in installed)) &&
+                    matches(e)
+            }
         }
     }
     var page by remember { mutableIntStateOf(0) }
@@ -181,7 +198,10 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
 
                 // Which icons: all, the player's games', the downloaded ones; and search.
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for ((f, label) in listOf(FILTER_ALL to str("onlineicons.all"), FILTER_MINE to str("onlineicons.myGames"), FILTER_DOWNLOADED to str("onlineicons.installed"))) {
+                    for ((f, label) in listOf(
+                        FILTER_POPULAR to str("onlineicons.popular"), FILTER_ALL to str("onlineicons.all"),
+                        FILTER_MINE to str("onlineicons.myGames"), FILTER_DOWNLOADED to str("onlineicons.installed"),
+                    )) {
                         Chip(label, "online-icons.filter.$f", selected = filter == f) { filter = f }
                     }
                     val openKeyboard = { LibraryKeyboard.open(query, { query = it }, searchHint) }
@@ -218,6 +238,15 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
                     when {
                         lists == null && catalog.isEmpty() -> Message(str("onlineicons.loading"))
                         catalog.isEmpty() -> Message(str("onlineicons.offline"))
+                        shown.isEmpty() && filter == FILTER_POPULAR && query.isEmpty() -> Message(
+                            str(
+                                when {
+                                    popular == null && !popularAsked -> "onlineicons.loading"
+                                    popular == null -> "onlineicons.popularOffline"
+                                    else -> "onlineicons.popularNone"
+                                },
+                            ),
+                        )
                         shown.isEmpty() -> Message(str("onlineicons.none"))
                         else -> Column(verticalArrangement = Arrangement.spacedBy(TILE_GAP)) {
                             for (r in 0 until rows) Row(horizontalArrangement = Arrangement.spacedBy(TILE_GAP)) {
@@ -436,9 +465,10 @@ private fun megabytes(bytes: Long): String {
     }
 }
 
-private const val FILTER_ALL = 0
-private const val FILTER_MINE = 1
-private const val FILTER_DOWNLOADED = 2
+private const val FILTER_POPULAR = 0
+private const val FILTER_ALL = 1
+private const val FILTER_MINE = 2
+private const val FILTER_DOWNLOADED = 3
 private const val ALL = "*"
 private const val STILL_PX = 192
 private val TILE_W = 128.dp
