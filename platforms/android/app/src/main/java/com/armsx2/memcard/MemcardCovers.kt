@@ -2,34 +2,42 @@ package com.armsx2.memcard
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.net.Uri
 import android.util.Log
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import com.armsx2.EmuState
 import com.armsx2.MemoryCardBackup
 import com.armsx2.runtime.MainActivityRuntime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.security.MessageDigest
 
 /**
  * Memory Card Covers: a game's save icon, from the player's own memory cards, as its library cover.
  *
- * Reads only the cards in the app's memcards folder; nothing is bundled or downloaded. Each game
- * shows the icon of its newest save, rendered once into a cached PNG the library loads like any
- * other cover, so scrolling costs nothing extra. A game with no save keeps its box art, and a
- * cover the player set by hand still wins over both.
+ * Reads only the cards in the app's memcards folder and the player's own disc images; nothing is
+ * bundled or downloaded. Each game shows the icon of its newest save, rendered once into a cached
+ * PNG the library loads like any other cover, so scrolling costs nothing extra. A game with no
+ * save gets the icon from its own disc when [DiscIcons] can find it there (looked for once per
+ * disc, in the background), and keeps its box art when not. A cover set by hand wins over all.
  */
 object MemcardCovers {
     private const val TAG = "MemcardCovers"
     private const val KEY_ENABLED = "library.memcardCovers"
     private const val KEY_ANIMATE = "library.memcardCovers.animate"
     private const val CACHE_DIR = "memcard_covers"
+    private const val DISC_COVER_DIR = "disc_covers"
+    private const val DISC_ICON_DIR = "disc_icons"
 
     /** Bump when the renderer changes, so every cached cover is drawn again. */
     private const val RENDER_VERSION = 5
@@ -53,14 +61,28 @@ object MemcardCovers {
     /** Bumped whenever the covers change, so tiles resolve their cover again. */
     val generation = mutableIntStateOf(0)
 
+    // Covers from saves and covers from discs, kept apart so a rescan of the cards never loses the
+    // disc ones; a save's wins where both exist.
+    @Volatile private var cardCovers: Map<String, File> = emptyMap()
+    @Volatile private var discCovers: Map<String, File> = emptyMap()
     @Volatile private var bySerial: Map<String, File> = emptyMap()
 
-    /** Where each cover's save is, so it can be drawn moving. */
-    private class Source(val card: File, val folder: String)
+    /** Where each cover's icon comes from, so it can be drawn moving. */
+    private sealed interface Source
+    private class CardSource(val card: File, val folder: String) : Source
+    private class DiscSource(val icon: File) : Source
+    @Volatile private var cardSources: Map<String, Source> = emptyMap()
+    @Volatile private var discSources: Map<String, Source> = emptyMap()
     @Volatile private var sources: Map<String, Source> = emptyMap()
 
-    /** A save's icon, parsed, with the pose its still cover was drawn in. */
-    class Loaded(val icon: Ps2Icon, val sys: Ps2IconSys, val pose: Ps2IconRenderer.Pose)
+    private fun merge() {
+        bySerial = discCovers + cardCovers
+        sources = discSources + cardSources
+    }
+
+    /** A save's icon, parsed, with the pose its still cover was drawn in. A disc's icon has no
+     *  icon.sys, so it is lit the renderer's own way. */
+    class Loaded(val icon: Ps2Icon, val sys: Ps2IconSys?, val pose: Ps2IconRenderer.Pose)
 
     // Every tile on screen moves, so keep a screenful and then some: scrolling back and forth
     // shouldn't reread the cards. An icon is a few hundred KB at most.
@@ -89,8 +111,12 @@ object MemcardCovers {
     fun loadIcon(serial: String): Loaded? {
         val key = serial.uppercase()
         synchronized(loadedIcons) { loadedIcons[key]?.let { return it } }
-        val src = sources[key] ?: return null
-        val result = load(src.card, src.folder, COVER_OPTIONS) ?: return null
+        val result = when (val src = sources[key] ?: return null) {
+            is CardSource -> load(src.card, src.folder, COVER_OPTIONS)
+            is DiscSource -> Ps2Icon.parse(runCatching { src.icon.readBytes() }.getOrNull())?.let { icon ->
+                Loaded(icon, null, Ps2IconRenderer.choosePose(icon, null, COVER_OPTIONS))
+            }
+        } ?: return null
         synchronized(loadedIcons) { loadedIcons[key] = result }
         return result
     }
@@ -146,11 +172,15 @@ object MemcardCovers {
     fun coverFor(serial: String?): File? =
         if (!enabled.value || serial.isNullOrBlank()) null else bySerial[serial.uppercase()]
 
+    /** A library game, for looking on its disc: its serial and where its image is. */
+    class DiscGame(val serial: String, val uri: Uri)
+
     /** Scan every card in the memcards folder again, in the background, and render any cover that
      *  is new or changed. With several cards, each game takes its newest save across all of them.
      *  Cheap when nothing changed: a scan reads directories and each save's timestamps, and a
-     *  cover is only drawn once per save version. */
-    fun refresh(context: Context) {
+     *  cover is only drawn once per save version. Then, for [games] with no save, look on their
+     *  discs (see [discPass]). */
+    fun refresh(context: Context, games: List<DiscGame> = emptyList()) {
         if (!enabled.value) return
         val app = context.applicationContext
         scope.launch {
@@ -158,14 +188,96 @@ object MemcardCovers {
             scanLock.withLock {
                 val found = runCatching { scan(app) }.onFailure { Log.w(TAG, "scan failed", it) }.getOrNull()
                     ?: return@withLock
-                if (found != bySerial) {
-                    bySerial = found
+                if (found != cardCovers) {
+                    cardCovers = found
+                    merge()
                     // A changed save may be one already loaded for animating.
                     synchronized(loadedIcons) { loadedIcons.clear() }
                     withContext(Dispatchers.Main) { generation.intValue++ }
                 }
             }
+            if (games.isNotEmpty()) discPass(app, games)
         }
+    }
+
+    private var discJob: Job? = null
+
+    /**
+     * Games with no save still get a cover when their own disc has the icon (see [DiscIcons]).
+     * Each disc is looked at once, a second or so at most, one at a time, and what was found is
+     * kept, "nothing" included, so later passes only check the cache. Stops while a game is loaded,
+     * so it never competes with the emulator for the storage; the next pass picks up from there.
+     */
+    private fun discPass(app: Context, games: List<DiscGame>) {
+        discJob?.cancel()
+        discJob = scope.launch {
+            val icons = File(app.cacheDir, DISC_ICON_DIR).apply { mkdirs() }
+            val coversDir = File(app.cacheDir, DISC_COVER_DIR).apply { mkdirs() }
+            var changed = false
+            var lastShown = System.nanoTime()
+            val covers = HashMap(discCovers)
+            val srcs = HashMap(discSources)
+            for (game in games.distinctBy { it.serial }) {
+                if (!isActive || !enabled.value) break
+                if (MainActivityRuntime.eState.value != EmuState.STOPPED) break
+                val serial = game.serial.uppercase()
+                if (serial in cardCovers || serial in covers) continue
+                val key = discKey(game.uri)
+                val icn = File(icons, "$key.icn")
+                val none = File(icons, "$key.none")
+                if (none.isFile) continue
+                if (!icn.isFile) {
+                    val found = runCatching { findOnDisc(app, game.uri) }
+                        .onFailure { Log.w(TAG, "disc ${game.uri}", it) }.getOrNull()
+                    if (found == null) {
+                        runCatching { none.createNewFile() }
+                        continue
+                    }
+                    Log.i(TAG, "$serial: icon on its disc, ${found.where}")
+                    val tmp = File(icons, "$key.tmp")
+                    tmp.writeBytes(found.icon)
+                    if (!tmp.renameTo(icn)) { tmp.delete(); continue }
+                }
+                val png = File(coversDir, "${serial}_$key.png")
+                if (!png.isFile) {
+                    val icon = Ps2Icon.parse(icn.readBytes()) ?: continue
+                    runCatching { writePng(Ps2IconRenderer.render(icon, null, COVER_W, COVER_H, COVER_OPTIONS), png) }
+                        .onFailure { Log.w(TAG, "render disc icon $serial", it) }
+                    if (!png.isFile) continue
+                }
+                covers[serial] = png
+                srcs[serial] = DiscSource(icn)
+                changed = true
+                // Show them as they come rather than all at the end, a few at a time.
+                if (System.nanoTime() - lastShown > 1_500_000_000L) {
+                    publishDisc(covers, srcs)
+                    changed = false
+                    lastShown = System.nanoTime()
+                }
+            }
+            if (changed) publishDisc(covers, srcs)
+        }
+    }
+
+    private suspend fun publishDisc(covers: Map<String, File>, srcs: Map<String, Source>) {
+        discCovers = HashMap(covers)
+        discSources = HashMap(srcs)
+        merge()
+        withContext(Dispatchers.Main) { generation.intValue++ }
+    }
+
+    private fun findOnDisc(app: Context, uri: Uri): DiscIcons.Found? {
+        val pfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return null
+        val stream = FileInputStream(pfd.fileDescriptor)
+        val disc = DiscImage.open(ChannelSource(stream.channel) { stream.close(); pfd.close() }) ?: return null
+        return disc.use { DiscIcons.find(it) }
+    }
+
+    // A disc is known by where it is; the renderer's version is in it so a change redraws.
+    private fun discKey(uri: Uri): String {
+        val md = MessageDigest.getInstance("SHA-1")
+        md.update("$uri|$RENDER_VERSION".toByteArray())
+        return md.digest().take(8).joinToString("") { "%02x".format(it) }
     }
 
     private class Pick(val card: File, val folder: String, val modified: Long)
@@ -201,7 +313,7 @@ object MemcardCovers {
             }
             for ((serial, file) in wanted) if (file.isFile) out[serial] = file
         }
-        sources = out.keys.associateWith { serial -> picks.getValue(serial).let { Source(it.card, it.folder) } }
+        cardSources = out.keys.associateWith { serial -> picks.getValue(serial).let { CardSource(it.card, it.folder) } }
         // Drop covers no save points at any more.
         val keep = out.values.toSet()
         cacheDir.listFiles()?.forEach { if (it !in keep) it.delete() }
@@ -218,7 +330,10 @@ object MemcardCovers {
     private fun renderTo(save: Ps2Save, file: File) {
         val sys = Ps2IconSys.parse(save.read("icon.sys")) ?: return
         val icon = Ps2Icon.parse(save.read(sys.iconNormal)) ?: return
-        val px = Ps2IconRenderer.render(icon, sys, COVER_W, COVER_H, COVER_OPTIONS)
+        writePng(Ps2IconRenderer.render(icon, sys, COVER_W, COVER_H, COVER_OPTIONS), file)
+    }
+
+    private fun writePng(px: IntArray, file: File) {
         val bmp = Bitmap.createBitmap(px, COVER_W, COVER_H, Bitmap.Config.ARGB_8888)
         val tmp = File(file.parentFile, file.name + ".tmp")
         tmp.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }

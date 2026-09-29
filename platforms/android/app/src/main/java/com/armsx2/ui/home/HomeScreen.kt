@@ -117,6 +117,7 @@ import coil.request.ImageRequest
 import coil.size.Precision
 import com.armsx2.CustomCovers
 import com.armsx2.GameInfo
+import com.armsx2.GamePlatform
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.armsx2.i18n.str
@@ -236,12 +237,18 @@ fun HomeScreen(
     }
     LaunchedEffect(directories, nativeReady) { viewModel.load(directories, nativeReady) }
     // Memory Card Covers: look at the cards again when the library shows and when a game stops,
-    // which is when a new save appears. Nothing is drawn again unless a save changed.
+    // which is when a new save appears, then on the discs of games with no save. Nothing is drawn
+    // again unless a save changed, and no disc is looked at twice.
     remember { com.armsx2.memcard.MemcardCovers.load() }
     val memcardCoversOn = com.armsx2.memcard.MemcardCovers.enabled.value
     val emuState = MainActivityRuntime.eState.value
-    LaunchedEffect(memcardCoversOn, emuState) {
-        if (memcardCoversOn) com.armsx2.memcard.MemcardCovers.refresh(context)
+    LaunchedEffect(memcardCoversOn, emuState, state.allGames) {
+        if (memcardCoversOn) com.armsx2.memcard.MemcardCovers.refresh(
+            context,
+            state.allGames.filter { it.platform == GamePlatform.PS2 }.mapNotNull { g ->
+                g.serial?.takeIf { it.isNotBlank() }?.let { com.armsx2.memcard.MemcardCovers.DiscGame(it, g.uri) }
+            },
+        )
     }
     if (MemcardIconViewerState.open.value) MemcardIconViewer(onClose = { MemcardIconViewerState.open.value = false })
     if (MemcardIconViewerState.info.value) MemcardCoversInfo(onClose = { MemcardIconViewerState.info.value = false })
