@@ -3516,6 +3516,40 @@ void GSDeviceVK::EndPresent()
 	else if (GSLsfg::IsActive())
 		GSLsfg::Shutdown();
 
+	// Frame generation on the game's own image instead of the finished screen, when the present
+	// was only the plain scaled blit it can repeat for each generated frame, and ImGui drew nothing
+	// over it (generated frames don't carry the overlay yet, so with it up this stays on the
+	// finished screen). Here, after Initialize/Shutdown, which may replace the image copied into,
+	// and in this frame's command buffer, where the game texture's layout is tracked.
+	if (GSLsfg::IsActive())
+	{
+		const ImDrawData* const draw_data = ImGui::GetDrawData();
+		GSTextureVK* const current = static_cast<GSTextureVK*>(GetCurrent());
+		if (m_present_has_new_frame && m_present_geometry.plain && current &&
+			!(draw_data && draw_data->CmdLists.Size > 0))
+		{
+			current->TransitionToLayout(cmdbuffer, GSTextureVK::Layout::TransferSrc);
+			GSLsfg::GameFrame frame;
+			frame.image = current->GetImage();
+			const GSVector4i& src = m_present_geometry.src_rect;
+			const GSVector4& draw = m_present_geometry.draw_rect;
+			frame.src[0] = src.x;
+			frame.src[1] = src.y;
+			frame.src[2] = src.z;
+			frame.src[3] = src.w;
+			frame.draw[0] = draw.x;
+			frame.draw[1] = draw.y;
+			frame.draw[2] = draw.z;
+			frame.draw[3] = draw.w;
+			frame.linear = m_present_geometry.linear;
+			GSLsfg::CaptureGameFrame(cmdbuffer, &frame);
+		}
+		else
+		{
+			GSLsfg::CaptureGameFrame(cmdbuffer, nullptr);
+		}
+	}
+
 	SubmitCommandBuffer(m_swap_chain.get());
 	MoveToNextCommandBuffer();
 

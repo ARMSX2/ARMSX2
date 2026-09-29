@@ -1267,6 +1267,14 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				// path either has no output to draw or redraws the previous one. Frame generation
 				// reads it so it does not interpolate motion into frames the game never drew.
 				g_gs_device->NotePresentHasNewFrame();
+				// And how: the blit frame generation repeats for its generated frames when it runs on
+				// the game's own image, which needs the present to be only that blit. The upscalers and
+				// CAS above draw it themselves, a TV shader filters it, rotation turns it.
+				g_gs_device->NotePresentGeometry(src_rect, draw_rect, GSConfig.LinearPresent != GSPostBilinearMode::Off,
+					GSConfig.Upscaler == GSUpscaler::Off && GSConfig.CASMode == GSCASMode::Disabled &&
+						s_tv_shader_indices[GSConfig.TVShader] == PresentShader::COPY &&
+						GSConfig.LinearPresent != GSPostBilinearMode::BilinearSharp &&
+						GSConfig.Rotation == DisplayRotation::Rot0 && !g_gs_device->UsesLowerLeftOrigin());
 			}
 
 			EndPresentFrame();

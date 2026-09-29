@@ -121,4 +121,24 @@ namespace GSLsfg
 	/// or consumed and the caller must fall through to its ordinary present path.
 	bool PresentWithGeneration(VkQueue present_queue, VKSwapChain* swap_chain, VkSemaphore render_finished,
 		bool frame_has_new_content);
+
+	/// The game's own frame, before it was scaled to the screen, and how the present drew it.
+	struct GameFrame
+	{
+		VkImage image = VK_NULL_HANDLE; ///< in TRANSFER_SRC_OPTIMAL (the caller transitions it)
+		s32 src[4] = {};                ///< the visible area in it: left, top, right, bottom
+		float draw[4] = {};             ///< where the present drew it, in swap chain pixels
+		bool linear = false;            ///< the present's filter: bilinear, else nearest
+	};
+
+	/// Frame generation on the game's own image rather than the finished screen: copies [frame]
+	/// into frame generation's input, shrunk to fit the screen but never grown, so the passes run
+	/// at about the game's resolution, and PresentWithGeneration then puts each generated frame on
+	/// screen with the same scaled blit the real frame got. Recorded into [cmd], the frame's own
+	/// command buffer, where the game texture's layout is tracked: read from frame generation's
+	/// later submission instead, it would not be ordered against the GS drawing into the texture
+	/// again next frame. Only for a present that is nothing but that blit; null [frame] says this
+	/// frame is not, and PresentWithGeneration works on the finished screen as before.
+	/// Call AFTER Initialize/Shutdown for the frame, which may replace the image it copies into.
+	void CaptureGameFrame(VkCommandBuffer cmd, const GameFrame* frame);
 } // namespace GSLsfg
