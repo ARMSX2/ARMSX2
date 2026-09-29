@@ -32,6 +32,7 @@ struct GSSwPrimRenderState
 	{
 		GSVector4i rect; ///< pixels written, already scissored
 		s32 u, v; ///< 16.16 texel coordinate at the rect's top-left pixel
+		u32 alpha; ///< the vertex alpha in bits 24-31 when the texture's alpha is not used, else 0
 	};
 	std::vector<PaletteBlock> palette_blocks;
 
