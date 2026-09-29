@@ -1554,9 +1554,8 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 
 	scan.t = (scan.t + dt * prestep).xyzw(scan.t);
 
-	// A UV sprite's coordinate ramp runs a sixteenth of a texel low on any axis
-	// whose extent is not a power of two, from that axis's second pixel on
-	// (GSCoordinateWalk.h).
+	// A UV sprite's coordinate ramp runs a hair low on any axis whose extent is not
+	// a power of two, from that axis's second pixel on (GSCoordinateWalk.h).
 	const float ramp_u = m_local.gd->sel.fst ? GSSpriteRampBias(dt.x, extent.width()) : 0.0f;
 	const float ramp_v = m_local.gd->sel.fst ? GSSpriteRampBias(dt.y, extent.height()) : 0.0f;
 
@@ -1571,7 +1570,7 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 			// Only the sprite's own first row is exempt, so a scissored-off top
 			// leaves the term on every drawn row.
 			if (ramp_v != 0.0f && r.top != extent.y)
-				row.t -= GSVector4(0.0f, ramp_v, 0.0f, 0.0f);
+				row.t.y = GSCoordinateLowered(row.t.y, ramp_v);
 
 			if (ramp_u == 0.0f)
 			{
@@ -1581,7 +1580,7 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 			{
 				// The sprite's own first column is outside the scissor, so every
 				// pixel this row draws is past it.
-				row.t -= GSVector4(ramp_u, 0.0f, 0.0f, 0.0f);
+				row.t.x = GSCoordinateLowered(row.t.x, ramp_u);
 				DrawScanline(r.width(), r.left, r.top, row);
 			}
 			else if (m_local.gd->sel.notest)
@@ -1589,8 +1588,8 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 				// ⚠️ A notest scanline indexes its frame/depth address table by
 				// `left >> 2` and requires an aligned left, so the span cannot be
 				// split here. The term goes in the seed, leaving the first column a
-				// sixteenth low (hardware has it exact). Accepted inaccuracy.
-				row.t -= GSVector4(ramp_u, 0.0f, 0.0f, 0.0f);
+				// hair low (hardware has it exact). Accepted inaccuracy.
+				row.t.x = GSCoordinateLowered(row.t.x, ramp_u);
 				DrawScanline(r.width(), r.left, r.top, row);
 			}
 			else
@@ -1601,7 +1600,7 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 				if (r.width() > 1)
 				{
 					row.t += dscan.t;
-					row.t -= GSVector4(ramp_u, 0.0f, 0.0f, 0.0f);
+					row.t.x = GSCoordinateLowered(row.t.x, ramp_u);
 					DrawScanline(r.width() - 1, r.left + 1, r.top, row);
 				}
 			}

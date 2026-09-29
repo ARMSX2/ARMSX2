@@ -722,7 +722,7 @@ bool GSSwPrimRenderFunctions::IsPaletteBlockCopy(const GSRasterizerData& data, b
 //   arrive as sixteenths, so every product and sum below is exact in float and the coordinate at
 //   pixel k is the seed plus k whole texels, whatever the scanline's vector width.
 // - The sprite's own extent must be a power of two on both axes. Otherwise the rasterizer walks
-//   the coordinate a sixteenth low from the second pixel on (GSSpriteRampBias), which this does
+//   the coordinate a hair low from the second pixel on (GSSpriteRampBias), which this does
 //   not model.
 // - Under notest, a sprite the scissor cuts off-grid on the left or right is refused. Run() picks
 //   notest by checking a bounding box that is already clipped to the scissor, so a clipped sprite

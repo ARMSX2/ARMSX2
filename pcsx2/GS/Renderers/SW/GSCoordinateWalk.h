@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 // How the GS walks an affine texture coordinate.
 
@@ -206,37 +207,62 @@ __forceinline static GSVector4 GSCoordinateGradientOnGrain(const GSVector4& dsca
 // UV-route sprite ramp bias.
 //
 // A UV-route sprite whose coordinate ramps ascending along an axis whose own
-// pixel extent is not a power of two samples one sixteenth of a texel low on that
-// axis, from the second pixel along that axis onward. Only the ramping axis's own
-// extent matters; descending ramps are exact; the first row/column is exact.
+// pixel extent is not a power of two samples a hair below the exact coordinate on
+// that axis, from the second pixel along that axis onward. Only the ramping axis's
+// own extent matters; descending ramps are exact; the first row/column is exact.
 //
-// So a V ramp's first scanline is unadjusted and later ones use V - 1/16; a U
-// ramp's first column is unadjusted and later ones use U - 1/16. The rasterizer
+// So a V ramp's first scanline is unadjusted and later ones use V - hair; a U
+// ramp's first column is unadjusted and later ones use U - hair. The rasterizer
 // applies it (one subtract per row for V, a separate one-pixel span for U's first
 // column), so both scanline backends inherit it.
 //
 // Under a top or left clip this exempts the sprite's own first row/column, not
 // the first one the scissor leaves; which one hardware uses is unknown.
 //
-// In 16.16 texels a sixteenth of a texel is 4096.
-static constexpr float GS_UV_RAMP_BIAS = 4096.0f;
+// The bias is a hair, not a sixteenth: the two differ wherever the seed has bits
+// below a sixteenth. Spider-Man 3's vertical blur passes seed V at 1.53125 texels,
+// which puts the filter's sample point half a sixteenth above a sixteenth
+// boundary. A hair below it stays on the boundary's row; a whole sixteenth below
+// it reads the row above, and the console does not. Measured on that game's frame,
+// any bias from 1 to 2048 units (half a sixteenth) gives the same picture and 2049
+// units and up gives the sixteenth's. The captures that measured the term
+// (gs-tex1..7) seeded on whole sixteenths only, where a hair and a sixteenth land
+// on the same sixteenth, so nothing separates sizes inside that window; one unit is
+// the smallest bias and the size the triangle lag already uses (GSCoordinateLag.h).
+//
+// A unit is 1/65536 of a texel, so a sixteenth is GS_UV_SIXTEENTH = 4096 units.
+static constexpr float GS_UV_SIXTEENTH = 4096.0f;
+
+/// The ramp bias, in 16.16 units.
+static constexpr float GS_UV_RAMP_BIAS = 1.0f;
+
+/// `coord` lowered by `bias` units, and by at least one float step. Above 2^24
+/// units (256 texels) a float cannot hold a change of one unit; the subtract
+/// rounds to even and hands back `coord` for a coordinate on an even multiple of
+/// the float step, which a ramp's seed and whole-texel steps are. A texture 1024
+/// texels tall reaches 2^26. The scanline floors the coordinate onto the
+/// accumulator grid, so a float step is enough to move it.
+__forceinline static float GSCoordinateLowered(float coord, float bias)
+{
+	return std::min(coord - bias, std::nextafter(coord, -std::numeric_limits<float>::infinity()));
+}
 
 /// How far below the plane a UV-route sprite seeds one axis, given that axis's
 /// per-pixel step and its own extent in pixels.
 ///
 /// Applies only when the step is a whole number of sixteenths of a texel (an
-/// exact multiple of 4096 in 16.16); other steps are exact.
+/// exact multiple of GS_UV_SIXTEENTH in 16.16); other steps are exact.
 ///
 /// Likely mechanism: the per-pixel step is span/extent truncated slightly low, so
 /// the walk runs a hair behind the exact line. That only shows where the exact
 /// coordinate lands on a sixteenth boundary, i.e. when the step is a whole number
-/// of sixteenths.
+/// of sixteenths of a texel.
 __forceinline static float GSSpriteRampBias(float step, int extent)
 {
 	const bool dyadic = extent > 0 && (extent & (extent - 1)) == 0;
 
 	const s32 istep = static_cast<s32>(std::floor(step));
-	const bool whole_ulp = istep > 0 && (istep & (static_cast<s32>(GS_UV_RAMP_BIAS) - 1)) == 0;
+	const bool whole_ulp = istep > 0 && (istep & (static_cast<s32>(GS_UV_SIXTEENTH) - 1)) == 0;
 
 	return (whole_ulp && !dyadic) ? GS_UV_RAMP_BIAS : 0.0f;
 }

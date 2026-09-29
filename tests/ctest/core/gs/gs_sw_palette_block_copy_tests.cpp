@@ -609,7 +609,7 @@ TEST_F(GSSwPaletteBlockCopy, RefusesLinearFiltering)
 	EXPECT_EQ(Compare(c), 0u);
 }
 
-// A width that is not a power of two walks the coordinate a sixteenth low past its first column.
+// A width that is not a power of two walks the coordinate a hair low past its first column.
 TEST_F(GSSwPaletteBlockCopy, RefusesAnExtentThatIsNotAPowerOfTwo)
 {
 	Case c;
