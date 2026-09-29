@@ -147,8 +147,11 @@ internal fun AnimatedPs2Icon(
             eachFrame(image)
             if (first) { first = false; firstFrame() }
             if (!moving || still) break
-            val spentMs = (System.nanoTime() - began) / 1_000_000
-            delay((FRAME_MS - spentMs).coerceAtLeast(1))
+            // Every moving icon draws on the same beat of one clock, so a screenful changes together
+            // and the screen is redrawn once per beat. On beats of their own they changed at
+            // different moments and kept an Odin 3 redrawing the whole library at 120 Hz.
+            val now = android.os.SystemClock.uptimeMillis()
+            delay((FRAME_MS - now % FRAME_MS).coerceAtLeast(1))
         }
     }
     Box(modifier.onSizeChanged { size = it }) {

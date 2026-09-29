@@ -346,7 +346,7 @@ object Ps2IconRenderer {
             val over = sys?.background?.get(i) ?: 0
             val under = BROWSER_BACKGROUND[i]
             var mixed = 0
-            for (shift in intArrayOf(16, 8, 0)) {
+            for (shift in CHANNEL_SHIFTS) {
                 val a = (under shr shift) and 0xFF
                 val b = (over shr shift) and 0xFF
                 mixed = mixed or ((a + (b - a) * alpha).toInt().coerceIn(0, 255) shl shift)
@@ -358,7 +358,7 @@ object Ps2IconRenderer {
             for (x in 0 until w) {
                 val u = x / (w - 1f).coerceAtLeast(1f)
                 var out = 0xFF000000.toInt()
-                for (shift in intArrayOf(16, 8, 0)) {
+                for (shift in CHANNEL_SHIFTS) {
                     val tl = (c[0] shr shift) and 0xFF; val tr = (c[1] shr shift) and 0xFF
                     val bl = (c[2] shr shift) and 0xFF; val br = (c[3] shr shift) and 0xFF
                     val top = tl + (tr - tl) * u
@@ -369,6 +369,10 @@ object Ps2IconRenderer {
             }
         }
     }
+
+    // Red, green and blue in a packed 0xRRGGBB, made once: an intArrayOf() in a loop is a new array
+    // every time round.
+    private val CHANNEL_SHIFTS = intArrayOf(16, 8, 0)
 
     private fun triangle(
         a: Int, b: Int, c: Int,
@@ -386,56 +390,74 @@ object Ps2IconRenderer {
         val maxY = min(h - 1, max(y0, max(y1, y2)).toInt() + 1)
         if (minX > maxX || minY > maxY) return
         val inv = 1f / den
+        // The weights change by a constant from one pixel to the next along a row, so a pixel adds
+        // rather than multiplies; and the corners' values are read once, not per pixel.
+        val d0x = (y1 - y2) * inv; val d0y = (x2 - x1) * inv
+        val d1x = (y2 - y0) * inv; val d1y = (x0 - x2) * inv
+        val za = sz[a]; val zb = sz[b]; val zc = sz[c]
+        val ra = lit[a * 3]; val ga = lit[a * 3 + 1]; val ba = lit[a * 3 + 2]
+        val rb = lit[b * 3]; val gb = lit[b * 3 + 1]; val bb = lit[b * 3 + 2]
+        val rc = lit[c * 3]; val gc = lit[c * 3 + 1]; val bc = lit[c * 3 + 2]
+        val ua = uvs[a * 2]; val va = uvs[a * 2 + 1]
+        val ub = uvs[b * 2]; val vb = uvs[b * 2 + 1]
+        val uc = uvs[c * 2]; val vc = uvs[c * 2 + 1]
+        val fx0 = minX + 0.5f - x2
         for (py in minY..maxY) {
-            val fy = py + 0.5f
+            val fy = py + 0.5f - y2
+            var w0 = d0x * fx0 + d0y * fy
+            var w1 = d1x * fx0 + d1y * fy
+            var k = py * w + minX
             for (px in minX..maxX) {
-                val fx = px + 0.5f
-                val w0 = ((y1 - y2) * (fx - x2) + (x2 - x1) * (fy - y2)) * inv
-                if (w0 < 0f) continue
-                val w1 = ((y2 - y0) * (fx - x2) + (x0 - x2) * (fy - y2)) * inv
-                if (w1 < 0f) continue
                 val w2 = 1f - w0 - w1
-                if (w2 < 0f) continue
-                val z = w0 * sz[a] + w1 * sz[b] + w2 * sz[c]
-                val k = py * w + px
-                if (z <= depth[k]) continue
-                depth[k] = z
-                var r = 1f; var g = 1f; var bl = 1f
-                if (tex != null) {
-                    val u = w0 * uvs[a * 2] + w1 * uvs[b * 2] + w2 * uvs[c * 2]
-                    val v = w0 * uvs[a * 2 + 1] + w1 * uvs[b * 2 + 1] + w2 * uvs[c * 2 + 1]
-                    val t = sample(tex, u, v)
-                    r = ((t shr 16) and 0xFF) / 255f; g = ((t shr 8) and 0xFF) / 255f; bl = (t and 0xFF) / 255f
+                if (w0 >= 0f && w1 >= 0f && w2 >= 0f) {
+                    val z = w0 * za + w1 * zb + w2 * zc
+                    if (z > depth[k]) {
+                        depth[k] = z
+                        var r = w0 * ra + w1 * rb + w2 * rc
+                        var g = w0 * ga + w1 * gb + w2 * gc
+                        var bl = w0 * ba + w1 * bb + w2 * bc
+                        if (tex != null) {
+                            val t = sample(tex, w0 * ua + w1 * ub + w2 * uc, w0 * va + w1 * vb + w2 * vc)
+                            r *= ((t shr 16) and 0xFF) * INV_255
+                            g *= ((t shr 8) and 0xFF) * INV_255
+                            bl *= (t and 0xFF) * INV_255
+                        }
+                        color[k] = 0xFF000000.toInt() or
+                            ((r * 255f).toInt().coerceIn(0, 255) shl 16) or
+                            ((g * 255f).toInt().coerceIn(0, 255) shl 8) or
+                            (bl * 255f).toInt().coerceIn(0, 255)
+                    }
                 }
-                r *= w0 * lit[a * 3] + w1 * lit[b * 3] + w2 * lit[c * 3]
-                g *= w0 * lit[a * 3 + 1] + w1 * lit[b * 3 + 1] + w2 * lit[c * 3 + 1]
-                bl *= w0 * lit[a * 3 + 2] + w1 * lit[b * 3 + 2] + w2 * lit[c * 3 + 2]
-                color[k] = 0xFF000000.toInt() or
-                    ((r * 255f).toInt().coerceIn(0, 255) shl 16) or
-                    ((g * 255f).toInt().coerceIn(0, 255) shl 8) or
-                    (bl * 255f).toInt().coerceIn(0, 255)
+                w0 += d0x
+                w1 += d1x
+                k++
             }
         }
     }
 
-    /** Bilinear sample of the 128x128 texture, wrapping at the edges. */
+    private const val INV_255 = 1f / 255f
+
+    /** Bilinear sample of the 128x128 texture, wrapping at the edges (a mask, the size being a
+     *  power of two). Allocates nothing: it runs for every textured pixel of every frame. */
     private fun sample(tex: IntArray, u: Float, v: Float): Int {
-        val n = Ps2Icon.TEXTURE_SIZE
-        val fx = u * n - 0.5f
-        val fy = v * n - 0.5f
-        val x0 = kotlin.math.floor(fx).toInt(); val y0 = kotlin.math.floor(fy).toInt()
-        val ax = fx - x0; val ay = fy - y0
-        fun at(x: Int, y: Int) = tex[((y % n + n) % n) * n + ((x % n + n) % n)]
-        val c00 = at(x0, y0); val c10 = at(x0 + 1, y0); val c01 = at(x0, y0 + 1); val c11 = at(x0 + 1, y0 + 1)
-        var out = 0
-        for (shift in intArrayOf(16, 8, 0)) {
-            val a = (c00 shr shift) and 0xFF; val b = (c10 shr shift) and 0xFF
-            val c = (c01 shr shift) and 0xFF; val d = (c11 shr shift) and 0xFF
-            val top = a + (b - a) * ax
-            val bottom = c + (d - c) * ax
-            out = out or ((top + (bottom - top) * ay).toInt().coerceIn(0, 255) shl shift)
-        }
-        return out
+        val fx = u * 128f - 0.5f
+        val fy = v * 128f - 0.5f
+        val flx = kotlin.math.floor(fx)
+        val fly = kotlin.math.floor(fy)
+        val ax = fx - flx
+        val ay = fy - fly
+        val x0 = flx.toInt() and 127; val x1 = (x0 + 1) and 127
+        val y0 = (fly.toInt() and 127) shl 7; val y1 = (((fly.toInt() + 1)) and 127) shl 7
+        val c00 = tex[y0 or x0]; val c10 = tex[y0 or x1]; val c01 = tex[y1 or x0]; val c11 = tex[y1 or x1]
+        return (lerp2(c00 shr 16 and 0xFF, c10 shr 16 and 0xFF, c01 shr 16 and 0xFF, c11 shr 16 and 0xFF, ax, ay) shl 16) or
+            (lerp2(c00 shr 8 and 0xFF, c10 shr 8 and 0xFF, c01 shr 8 and 0xFF, c11 shr 8 and 0xFF, ax, ay) shl 8) or
+            lerp2(c00 and 0xFF, c10 and 0xFF, c01 and 0xFF, c11 and 0xFF, ax, ay)
+    }
+
+    private fun lerp2(a: Int, b: Int, c: Int, d: Int, ax: Float, ay: Float): Int {
+        val top = a + (b - a) * ax
+        val bottom = c + (d - c) * ax
+        return (top + (bottom - top) * ay).toInt().coerceIn(0, 255)
     }
 
     /** Averages each [ss] x [ss] block. Colour is averaged over the covered samples only and
