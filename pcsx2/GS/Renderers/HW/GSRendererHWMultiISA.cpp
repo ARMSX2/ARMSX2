@@ -814,24 +814,44 @@ bool GSSwPrimRenderFunctions::DrawPaletteBlocks(GSSwPrimRenderState& sw, const G
 	static constexpr int group_offset[4] = {0, 4, 16, 20};
 
 	u16 columns[max_width];
+	s32 offsets[max_width]; // the pixel's byte offset from its row's start, before the wrap; may be negative
 
 	for (const GSSwPrimRenderState::PaletteBlock& b : sw.palette_blocks)
 	{
 		const int width = b.rect.width();
+		int col_min = INT_MAX;
+		int col_max = INT_MIN;
 
 		for (int k = 0; k < width; k++)
+		{
+			const int x = b.rect.left + k;
+			const int col = gd.fzbc[x >> 2].x;
+			col_min = std::min(col_min, col);
+			col_max = std::max(col_max, col);
 			columns[k] = static_cast<u16>(texel(b.u + k * 65536, umin, umax, urepeat));
+			offsets[k] = col * 2 + group_offset[x & 3];
+		}
 
 		for (int y = b.rect.top; y < b.rect.bottom; y++)
 		{
 			const u8* row = tex + (texel(b.v + (y - b.rect.top) * 65536, vmin, vmax, vrepeat) << pitch_shift);
 			const int base = gd.fzbr[y].x;
 
-			for (int k = 0; k < width; k++)
+			if (base + col_min >= 0 && static_cast<u32>(base + col_max) < HALF_VM_SIZE)
 			{
-				const int x = b.rect.left + k;
-				const int fa = (base + gd.fzbc[x >> 2].x) % HALF_VM_SIZE;
-				*reinterpret_cast<u32*>(vm + fa * 2 + group_offset[x & 3]) = (clut[row[columns[k]]] & keep) | b.alpha;
+				// No pixel of this row wraps, so its address is the row's plus the column's.
+				u8* line = vm + static_cast<ptrdiff_t>(base) * 2;
+				for (int k = 0; k < width; k++)
+					*reinterpret_cast<u32*>(line + static_cast<ptrdiff_t>(offsets[k])) = (clut[row[columns[k]]] & keep) | b.alpha;
+			}
+			else
+			{
+				for (int k = 0; k < width; k++)
+				{
+					const int x = b.rect.left + k;
+					const int fa = (base + gd.fzbc[x >> 2].x) % HALF_VM_SIZE;
+					*reinterpret_cast<u32*>(vm + fa * 2 + group_offset[x & 3]) = (clut[row[columns[k]]] & keep) | b.alpha;
+				}
 			}
 		}
 	}
