@@ -106,7 +106,7 @@ namespace PerformanceMetrics
 	void SetGSSWThreadCount(u32 count);
 	void SetGSSWThread(u32 index, Threading::ThreadHandle thread);
 
-	/// Sets the timer for the GS back thread (GSBackThreadMode >= Lockstep). Registered by
+	/// Sets the timer for the GS back thread (exists only with GS multi-threading on). Registered by
 	/// the back thread itself at entry and cleared once it has joined; an empty handle means
 	/// no such thread exists, which is the default configuration. Under the pipelined split
 	/// the GS work is roughly halved between this thread and the MTGS thread, so the plain

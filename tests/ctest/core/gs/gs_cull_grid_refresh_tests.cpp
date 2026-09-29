@@ -56,7 +56,7 @@ TEST_F(GSCullGridRefresh, AHalfPixelOffsetChangeReachesTheRenderer)
 
 TEST_F(GSCullGridRefresh, EveryChangeReachesTheFrontParser)
 {
-	GSConfig.BackThreadModeResolved = GSBackThreadMode::Pipelined;
+	GSConfig.BackThreadResolved = true;
 	m_device_api = RenderAPI::Vulkan;
 	BringUp();
 	ASSERT_TRUE(m_gs->IsBackThreadRunning());

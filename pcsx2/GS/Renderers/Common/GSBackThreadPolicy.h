@@ -5,10 +5,9 @@
 
 #include "Config.h"
 
-// What the GS back-thread setting resolves to for the renderer about to open.
+// What the GS multi-threading setting resolves to for the renderer about to open.
 //
-// The setting names a mode, and the named mode is what the renderer gets, with one exception: a
-// Pipelined split that cannot pipeline. Two cases cannot:
+// A request for it is granted unless the split cannot work. Two cases cannot:
 //
 //   * a hardware renderer on a backend other than Vulkan -- the back thread would issue GL calls
 //     off the thread that owns the context;
@@ -16,27 +15,24 @@
 //     and no drain, so a back thread running behind the front leaves that memory arbitrarily far
 //     behind what the EE expects.
 //
-// Both used to degrade quietly to a slower shape of the split (inline records, or lockstep, which
-// drains the queue after every record and costs up to three times the frame time of Off). They
-// now resolve to Off, which renders the same pixels at the single-thread speed. Lockstep and inline
-// records remain reachable by asking for them; they are debugging rungs.
+// Both resolve to off, which renders the same pixels single-threaded.
 //
 // Resolved before the renderer is constructed, because the renderer's constructor starts the back
 // thread.
 
 enum class GSBackThreadReason : u8
 {
-	/// The request named a mode and got it.
+	/// The setting was granted as asked (on or off).
 	Requested,
-	/// Pipelined was requested, but the hardware renderer is not on Vulkan.
+	/// Requested, but the hardware renderer is not on Vulkan.
 	BackendCannotQueue,
-	/// Pipelined was requested, but downloads read live GS memory from the EE thread.
+	/// Requested, but downloads read live GS memory from the EE thread.
 	LiveMemoryDownloads,
 };
 
 struct GSBackThreadInputs
 {
-	GSBackThreadMode requested = GSBackThreadMode::Off;
+	bool requested = false;
 	/// A hardware renderer. The software renderer never touches the device off the present path,
 	/// so it queues on any API.
 	bool hardware_renderer = true;
@@ -47,34 +43,22 @@ struct GSBackThreadInputs
 
 struct GSBackThreadDecision
 {
-	GSBackThreadMode mode = GSBackThreadMode::Off;
+	bool on = false;
 	GSBackThreadReason reason = GSBackThreadReason::Requested;
 };
 
-constexpr GSBackThreadDecision GSDecideBackThreadMode(const GSBackThreadInputs& in)
+constexpr GSBackThreadDecision GSDecideBackThread(const GSBackThreadInputs& in)
 {
-	if (in.requested != GSBackThreadMode::Pipelined)
-		return {in.requested, GSBackThreadReason::Requested};
+	if (!in.requested)
+		return {false, GSBackThreadReason::Requested};
 
 	if (in.hardware_renderer && !in.vulkan)
-		return {GSBackThreadMode::Off, GSBackThreadReason::BackendCannotQueue};
+		return {false, GSBackThreadReason::BackendCannotQueue};
 
 	if (in.hardware_renderer && in.download_mode == GSHardwareDownloadMode::Unsynchronized)
-		return {GSBackThreadMode::Off, GSBackThreadReason::LiveMemoryDownloads};
+		return {false, GSBackThreadReason::LiveMemoryDownloads};
 
-	return {GSBackThreadMode::Pipelined, GSBackThreadReason::Requested};
-}
-
-constexpr const char* GSBackThreadModeName(GSBackThreadMode mode)
-{
-	switch (mode)
-	{
-		case GSBackThreadMode::Off: return "off";
-		case GSBackThreadMode::InlineRecords: return "inline records";
-		case GSBackThreadMode::Lockstep: return "lockstep";
-		case GSBackThreadMode::Pipelined: return "pipelined";
-	}
-	return "unknown";
+	return {true, GSBackThreadReason::Requested};
 }
 
 constexpr const char* GSBackThreadReasonText(GSBackThreadReason reason)

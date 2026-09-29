@@ -679,7 +679,7 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 				FormatProcessorStat(s_cpu_usage_gs_line, PerformanceMetrics::GetGSThreadUsage(), PerformanceMetrics::GetGSThreadAverageTime());
 				DRAW_LINE(osd_font, font_size, s_cpu_usage_gs_line.c_str(), OsdTextColor());
 
-				// Only exists under GSBackThreadMode >= Lockstep. The line above is the MTGS
+				// Only exists with GS multi-threading on. The line above is the MTGS
 				// thread alone, so without this one the split's second half is invisible.
 				if (PerformanceMetrics::HasGSBackThread())
 				{

@@ -389,9 +389,9 @@ data class DisplaySettings(
     val useAngleOpenGL: Boolean = false,
     /** EmuCore/GS/OverrideTextureBarriers — -1 Auto / 0 Off / 1 On. */
     val overrideTextureBarriers: Int = -1,
-    /** EmuCore/GS/GSBackThreadMode — GV7 GS front/back thread split.
-     * 0 Off (single-threaded), 1 Inline, 2 Lockstep, 3 Pipelined (fastest).
-     * Defaults to Off (opt-in); a per-game override can raise it. Restart-required. */
+    /** EmuCore/GS/GSBackThreadMode — GS Multi-threading (the GS front/back thread split).
+     * 0 off (single-threaded); any other value on. Written as 1; older builds wrote 3.
+     * Defaults to off (opt-in); a per-game override can turn it on. Restart-required. */
     val gsBackThreadMode: Int = 0,
     /** EmuCore/GS/DisableVertexShaderExpand — force CPU vertex expansion. Renderer-init; restart to apply. */
     val disableVertexShaderExpand: Boolean = false,
@@ -1719,7 +1719,7 @@ data class Settings(
         // reflects the toggle.
         put("EmuCore/GS", "AndroidUseAngleOpenGL", "bool", display.useAngleOpenGL.toString())
         put("EmuCore/GS", "OverrideTextureBarriers", "int", display.overrideTextureBarriers.coerceIn(-1, 1).toString())
-        put("EmuCore/GS", "GSBackThreadMode", "int", display.gsBackThreadMode.coerceIn(0, 3).toString())
+        put("EmuCore/GS", "GSBackThreadMode", "int", (if (display.gsBackThreadMode != 0) 1 else 0).toString())
         put("EmuCore/GS", "DisableVertexShaderExpand", "bool", display.disableVertexShaderExpand.toString())
         put("EmuCore/GS", "UseBlitSwapChain", "bool", display.useBlitSwapChain.toString())
         put("EmuCore/GS", "DisableShaderCache", "bool", display.disableShaderCache.toString())

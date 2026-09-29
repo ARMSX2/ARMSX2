@@ -896,7 +896,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(UserHacks_BilinearHack) &&
 		OpEqu(OverrideTextureBarriers) &&
 		OpEqu(DepthFeedbackMode) &&
-		OpEqu(BackThreadMode) &&
+		OpEqu(BackThread) &&
 
 		OpEqu(CAS_Sharpness) &&
 		OpEqu(FSR_Sharpness) &&
@@ -944,7 +944,7 @@ bool Pcsx2Config::GSOptions::operator!=(const GSOptions& right) const
 bool Pcsx2Config::GSOptions::IsRestartOption(const char* ini_key)
 {
 	// INI key names for the fields compared in RestartOptionsAreEqual below; keep the
-	// two in sync. Names match the field names except BackThreadMode, which is stored
+	// two in sync. Names match the field names except BackThread, which is stored
 	// as "GSBackThreadMode".
 	static constexpr const char* keys[] = {
 		"Renderer",
@@ -988,7 +988,7 @@ bool Pcsx2Config::GSOptions::RestartOptionsAreEqual(const GSOptions& right) cons
 		   OpEqu(ForceMaliFramebufferFetch) &&
 		   OpEqu(OverrideTextureBarriers) &&
 		   OpEqu(DepthFeedbackMode) &&
-		   OpEqu(BackThreadMode) &&
+		   OpEqu(BackThread) &&
 		   OpEqu(HWAA1) &&
 		   OpEqu(ExclusiveFullscreenControl);
 }
@@ -1165,7 +1165,9 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapIntEnumEx(TriFilter, "TriFilter");
 	SettingsWrapBitfieldEx(OverrideTextureBarriers, "OverrideTextureBarriers");
 	SettingsWrapIntEnumEx(DepthFeedbackMode, "DepthFeedbackMode");
-	SettingsWrapIntEnumEx(BackThreadMode, "GSBackThreadMode");
+	// An integer on disk: 0 is off, any other value on. Older builds stored a four-way mode whose
+	// "on" value was 3, and the settings UIs bind the key as an integer.
+	BackThread = wrap.EntryBitfield(CURRENT_SETTINGS_SECTION, "GSBackThreadMode", BackThread ? 1 : 0, BackThread ? 1 : 0) != 0;
 
 	SettingsWrapBitfield(ShadeBoost_Brightness);
 	SettingsWrapBitfield(ShadeBoost_Contrast);

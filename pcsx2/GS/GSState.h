@@ -60,6 +60,10 @@ public:
 	// first — the back thread may otherwise be mid-draw on the same GSDevice.
 	void DrainBackQueue();
 
+	/// Stops the back thread after draining it. Called by GS.cpp when the split cannot engage
+	/// after all; with no front object the renderer then parses and draws single-threaded.
+	void StopBackThread();
+
 	static constexpr int GetSaveStateSize(int version);
 
 private:
@@ -859,16 +863,14 @@ public:
 	void SubmitPcrtcSync();
 	void ExecPcrtcSyncRecord(const GSBackQueue::PcrtcSyncRecord& rec);
 
-	// GV7-1: sampled from GSConfig.BackThreadModeResolved at construction (the option is
-	// restart-required, so it can't change under a live GSState). Off = the
-	// front-side seam functions skip the record round-trip entirely and call the
-	// executor tails against live state; any other mode builds records.
+	// True only on the front parser object of the split: its seam functions build
+	// records and push them to the back thread. Everywhere else they skip the
+	// record round-trip and call the executor tails against live state.
 	bool m_back_records = false;
 
 	// GV7-1d-ii: the front<->back channel (record ring + wake semaphore + pool
-	// arenas/free rings, GSBackQueue.h). Single-object modes use this object's
-	// own storage; the two-object pipelined split points the front parser
-	// object's m_chan at the back object's channel. The destructor frees
+	// arenas/free rings, GSBackQueue.h). The back renderer object owns it; the
+	// front parser object's m_chan points at the back object's channel. The destructor frees
 	// m_chan_storage's pooled arrays — only ever this object's own storage, so
 	// a front pointing elsewhere frees nothing it doesn't own.
 	GSBackQueue::Channel m_chan_storage;
@@ -914,21 +916,16 @@ public:
 	void RotateTransferPayload();
 	void ExecReleasePayloadRecord(const GSBackQueue::ReleasePayloadRecord& rec);
 
-	// GV7-1d: the back thread (modes Lockstep and, for now, Pipelined — true
-	// pipelining needs the front-object split, so Pipelined runs lockstep until
-	// then). Lockstep = drain after every push, which is what makes executing
-	// against the shared single-object state safe. VSYNC records are NOT queued:
-	// present runs on the MTGS thread after a drain, so the back thread never
-	// touches the GSDevice on present paths (and for SW, at all). Queued modes
-	// engage only for Vulkan and SW renderers — a GL device is context-bound to
-	// the MTGS thread and HW draws would issue GL calls from the wrong thread.
-	bool m_back_queued = false;
-	bool m_back_lockstep = false;
+	// GV7-1d: the back thread, started by the back renderer object's constructor.
+	// VSYNC records are NOT queued: present runs on the MTGS thread after a drain,
+	// so the back thread never touches the GSDevice on present paths (and for SW,
+	// at all). The split engages only for Vulkan and SW renderers — a GL device is
+	// context-bound to the MTGS thread and HW draws would issue GL calls from the
+	// wrong thread (GSBackThreadPolicy.h).
 	std::thread m_back_thread;
 	std::atomic<bool> m_back_thread_exit{false};
 
 	void StartBackThread();
-	void StopBackThread();
 	void BackThreadLoop();
 	void ExecRecordSlot(const GSBackQueue::RecordSlot& slot);
 	virtual void ExecVsyncRecord(const GSBackQueue::VsyncRecord& rec);
@@ -936,6 +933,8 @@ public:
 	template <typename T>
 	void PushRecord(GSBackQueue::RecordType type, const T& rec)
 	{
+		// One producer: the ring is single-producer, and the MTGS thread is the only one allowed.
+		pxAssert(std::this_thread::get_id() == m_chan->drain_thread);
 		for (;;)
 		{
 			GSBackQueue::RecordSlot* slot = m_chan->ring.BeginPush();
@@ -949,14 +948,6 @@ public:
 			}
 			std::this_thread::yield(); // ring full — backpressure
 		}
-
-		// Spin-then-sleep: records usually execute in microseconds, so the spin
-		// catches nearly every drain without the futex round-trip. Lockstep is
-		// still per-record synchronization and inherently slow (measured 30->6
-		// fps on MQ65 with plain WaitForEmpty) — it's the bisect rung, not a
-		// shipping mode.
-		if (m_back_lockstep)
-			m_chan->sema.WaitForEmptyWithSpin();
 	}
 
 	GSVector4i GetTEX0Rect(GSDrawingContext prev_ctx);
@@ -1067,8 +1058,7 @@ public:
 // channel; the back object executes them on the back thread, installing record
 // state into its own members. The front never draws, and reaches the
 // authoritative local memory / texture cache only through m_mem_target after a
-// drain. Created by GS.cpp only when the back thread engaged under
-// GSBackThreadMode::Pipelined.
+// drain. Created by GS.cpp only when the back thread engaged (GS multi-threading on).
 class GSFrontState final : public GSState
 {
 public:

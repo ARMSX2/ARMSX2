@@ -865,15 +865,15 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     }
     // GS Multi-threading (GV7 front/back split). Restart-required like the renderer /
     // driver above, so it lives in the same group — hit Apply & Restart below to apply.
-    // Off = single-threaded; On = GS on a dedicated back thread (Pipelined, enum 3).
-    // The Inline/Lockstep dev rungs are not exposed. Description shown inline so users
-    // who never open full settings still understand what it does.
+    // Off (0) = single-threaded; on (any other value, written as 1) = GS rendering on a
+    // second thread. Description shown inline so users who never open full settings
+    // still understand what it does.
     MenuSwitchRow(
         str("renderer.gsBackThread.label"),
-        settings.display.gsBackThreadMode >= 3,
+        settings.display.gsBackThreadMode != 0,
         description = str("renderer.gsBackThread.description"),
     ) { on ->
-        viewModel.updateSettings { it.copy(display = it.display.copy(gsBackThreadMode = if (on) 3 else 0)) }
+        viewModel.updateSettings { it.copy(display = it.display.copy(gsBackThreadMode = if (on) 1 else 0)) }
     }
     // Coalesce Render Passes is deliberately NOT here. It only helps Dirge of Cerberus, and the
     // game database already turns it on for Dirge, so it lives in All Settings > Renderer >

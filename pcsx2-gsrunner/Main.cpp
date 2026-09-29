@@ -840,8 +840,8 @@ void Host::BeginPresentFrame()
 			sample.gpu_ms = PerformanceMetrics::GetLastGPUTime();
 
 			// Thread CPU time, sampled here on the GS thread itself, so the frame's
-			// delta is what this thread executed between two presents. Under a
-			// GSBackThreadMode above Off the back thread carries part of the work and
+			// delta is what this thread executed between two presents. With
+			// GS multi-threading on, the back thread carries part of the work and
 			// is not sampled here; the run summary says so, because a per-draw figure
 			// taken from half the work would read as a win.
 			const u64 gs_cpu_now = MTGS::GetThreadHandle().GetCPUTime();
@@ -1170,7 +1170,7 @@ static void PrintCommandLineHelp(const char* progname)
 						 "inside render target, preload frame with GS data, respectively.\n");
 	std::fprintf(stderr, "  -ini <path>: Load the [EmuCore/GS] section of an INI file as settings overrides. Applied in "
 						 "command-line order, so a later -set wins.\n");
-	std::fprintf(stderr, "  -backthread <mode>: GS back-thread mode (0=off, 1=inline-records, 2=lockstep, 3=pipelined). Defaults to 0.\n");
+	std::fprintf(stderr, "  -backthread <0|1>: GS multi-threading off or on (3 is accepted as on). Defaults to 0.\n");
 	std::fprintf(stderr, "  -window: Forces a window to be displayed.\n");
 	std::fprintf(stderr, "  -surfaceless: Disables showing a window.\n");
 	std::fprintf(stderr, "  -logfile <filename>: Writes emu log to filename.\n");
@@ -1563,17 +1563,17 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				const std::optional<int> parsed = ParseNumericArg<int>("-backthread", mode_arg);
 				if (!parsed.has_value())
 					return false;
+				// 3 was the pipelined mode's number when the setting had four modes; older scripts pass it.
 				const int mode = parsed.value();
-				if (mode < 0 || mode > 3)
+				if (mode != 0 && mode != 1 && mode != 3)
 				{
-					ArgError("-backthread: mode '{}' is out of range (0=off, 1=inline-records, 2=lockstep, "
-							 "3=pipelined).",
+					ArgError("-backthread: '{}' is not 0 (off) or 1 (on). The inline-records and lockstep modes were removed.",
 						mode_arg);
 					return false;
 				}
 
-				Console.WriteLn("Setting GS back-thread mode to %d.", mode);
-				s_settings_interface.SetIntValue("EmuCore/GS", "GSBackThreadMode", mode);
+				Console.WriteLn("GS multi-threading %s.", mode ? "on" : "off");
+				s_settings_interface.SetIntValue("EmuCore/GS", "GSBackThreadMode", mode ? 1 : 0);
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-swthreads"))
@@ -2532,7 +2532,7 @@ void GSRunner::DumpStats()
 		Console.WriteLn(fmt::format("@HWSTAT@ Maximum Frame Time: {:.3f} ms ({:.3f} FPS)", PerformanceMetrics::GetMaximumFrameTime(), 1000.0f / PerformanceMetrics::GetMaximumFrameTime()));
 		Console.WriteLn(fmt::format("@HWSTAT@ CPU Thread Usage: {:.3f} %", s_perf_sum_cpu_thread_usage / s_perf_updates));
 		Console.WriteLn(fmt::format("@HWSTAT@ GS Thread Usage: {:.3f} %", s_perf_sum_gs_thread_usage / s_perf_updates));
-		// Only emitted under GSBackThreadMode >= Lockstep. Omitted rather than reported as a
+		// Only emitted with GS multi-threading on. Omitted rather than reported as a
 		// flat zero, so a comparison across the two configurations doesn't read as a GS win
 		// that is really work moved onto an unlisted thread.
 		if (s_perf_saw_gs_back_thread)

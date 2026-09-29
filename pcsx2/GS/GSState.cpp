@@ -249,49 +249,25 @@ GSState::GSState(GSBackQueue::Channel* shared_chan, bool is_front_parser)
 	m_nativeres = GSConfig.UpscaleMultiplier == 1.0f;
 	SetCullGrid(ConfigCullGrid());
 	m_mipmap = GSConfig.Mipmap;
-	m_back_records = GSConfig.BackThreadModeResolved != GSBackThreadMode::Off;
 	if (shared_chan)
 	{
 		// Front parser object of the two-object split: records go to the back
 		// object's channel, whose thread is already running (GS.cpp only
 		// creates a front once the back engaged). The back object owns the
 		// thread and the pooled arrays; this object only stages and pushes.
-		pxAssertRel(m_back_records && shared_chan->consumer_running, "GS front object requires a running back thread");
+		// Pushes don't drain: the ring and the pools bound the runahead, and
+		// every seam that reaches back state drains explicitly first.
+		pxAssertRel(shared_chan->consumer_running, "GS front object requires a running back thread");
 		m_chan = shared_chan;
-		m_back_queued = true;
-		// True pipelining: pushes don't drain — the ring and the pool
-		// backpressure bound the runahead, and every seam that reaches back
-		// state drains explicitly first.
-		m_back_lockstep = false;
+		m_back_records = true;
 		AdoptTransferBuffer();
 	}
-	else if (m_back_records)
+	else if (GSConfig.BackThreadResolved)
 	{
-		Console.WriteLn("GS: back-thread mode %d (record path active).", static_cast<int>(GSConfig.BackThreadModeResolved));
-
-		AdoptTransferBuffer();
-
-		if (GSConfig.BackThreadModeResolved >= GSBackThreadMode::Lockstep)
-		{
-			// A GL device is context-bound to the MTGS thread; HW draws would
-			// issue GL calls from the back thread. SW never touches the device
-			// off the vsync path (which stays front-side), so it's fine on any
-			// API.
-			const bool device_ok = !GSConfig.UseHardwareRenderer() ||
-			                       (g_gs_device && g_gs_device->GetRenderAPI() == RenderAPI::Vulkan);
-			if (device_ok)
-			{
-				m_back_queued = true;
-				// True pipelining needs the front-object split — Pipelined runs
-				// lockstep until that lands.
-				m_back_lockstep = true;
-				StartBackThread();
-			}
-			else
-			{
-				Console.Warning("GS: back-thread mode requires Vulkan or SW renderer — falling back to inline records.");
-			}
-		}
+		// The back renderer object of the split. It never produces records: GS.cpp builds the
+		// front parser object on top of it, which does. GSBackThreadPolicy.h has already refused
+		// the split where it cannot work (a non-Vulkan hardware device, Unsynchronized downloads).
+		StartBackThread();
 	}
 
 	memset(&m_v, 0, sizeof(m_v));
@@ -353,7 +329,7 @@ GSState::~GSState()
 		delete node;
 	}
 
-	// m_tr.buff aliases a payload node in record modes; the arena owns it, and
+	// On the front m_tr.buff aliases a payload node; the arena owns it, and
 	// ~GSTransferBuffer must not free it a second time.
 	if (m_back_records)
 		m_tr.buff = nullptr;
@@ -744,9 +720,7 @@ void GSState::ResetDrawBuffers()
 GSBackQueue::DrawNode* GSState::AcquireDrawNode()
 {
 	// Recycle first; grow the arena while under the cap; past the cap the ring
-	// IS the backpressure (wait for the consumer to release one). Inline modes
-	// release synchronously, so the wait can only engage once draws execute on
-	// the back thread.
+	// IS the backpressure (wait for the consumer to release one).
 	for (;;)
 	{
 		if (GSBackQueue::DrawNode** slot = m_chan->draw_free.Peek())
@@ -832,10 +806,7 @@ void GSState::RotateTransferPayload()
 
 	GSBackQueue::ReleasePayloadRecord rec;
 	rec.node = m_tr_payload_node;
-	if (m_back_queued)
-		PushRecord(GSBackQueue::RecordType::ReleasePayload, rec);
-	else
-		ExecReleasePayloadRecord(rec);
+	PushRecord(GSBackQueue::RecordType::ReleasePayload, rec);
 
 	m_tr_payload_node = AcquirePayloadNode();
 	m_tr.buff = m_tr_payload_node->buff;
@@ -855,15 +826,11 @@ void GSState::StartBackThread()
 {
 	m_back_thread_exit.store(false, std::memory_order_release);
 	m_chan->consumer_running = true;
-	// Claim the empty-wait for this thread (the MTGS thread — every drain site,
-	// and the lockstep tail of PushRecord, run on it). See Channel::drain_thread.
+	// Claim the empty-wait for this thread (the MTGS thread — every drain site
+	// runs on it). See Channel::drain_thread.
 	m_chan->drain_thread = std::this_thread::get_id();
 	m_back_thread = std::thread(&GSState::BackThreadLoop, this);
-	// The drain policy is the PRODUCER's (the front object under the split
-	// runs pipelined while this back object's own flag stays lockstep), so
-	// report the configured mode, not this object's flag.
-	Console.WriteLn("GS: back thread started (%s).",
-		GSConfig.BackThreadModeResolved == GSBackThreadMode::Pipelined ? "pipelined" : "lockstep");
+	Console.WriteLn("GS: back thread started (pipelined).");
 }
 
 void GSState::StopBackThread()
@@ -877,7 +844,6 @@ void GSState::StopBackThread()
 	m_back_thread.join();
 	PerformanceMetrics::SetGSBackThread({});
 	m_chan->consumer_running = false;
-	m_back_queued = false;
 }
 
 void GSState::DrainBackQueue()
@@ -3818,7 +3784,7 @@ void GSState::FlushWrite()
 	// transfer Init rotates it out instead of reusing it.
 	m_tr_payload_referenced = m_back_records;
 
-	if (m_back_queued)
+	if (m_back_records)
 		PushRecord(GSBackQueue::RecordType::Transfer, rec);
 	else
 		ExecTransferRecord(rec);
@@ -4099,24 +4065,8 @@ void GSState::FlushPrim()
 		if (m_mem_target != this)
 			m_channel_shuffle_finish = false;
 
-		if (m_back_queued)
-		{
-			// The consumer releases the node after the tail runs.
-			PushRecord(GSBackQueue::RecordType::Draw, rec);
-		}
-		else
-		{
-			// Inline consume point: the executor is done with the node.
-			ExecDrawRecord(rec);
-			ReleaseDrawNode(node);
-		}
-
-		// The executor re-aimed m_vertex/m_index at the node's structs (in
-		// lockstep the drain inside PushRecord has already happened) — restore
-		// them to the parse slot before the reset below; this re-aim is what
-		// keeps the front parsing its own buffers.
-		m_vertex = &m_vertex_buffers[m_current_buffer_idx];
-		m_index = &m_index_buffers[m_current_buffer_idx];
+		// The consumer releases the node after the tail runs.
+		PushRecord(GSBackQueue::RecordType::Draw, rec);
 	}
 	else
 	{
@@ -4589,7 +4539,7 @@ void GSState::Write(const u8* mem, int len)
 			if (m_mem_target != this)
 				s_transfer_n++;
 
-			if (m_back_queued)
+			if (m_back_records)
 				PushRecord(GSBackQueue::RecordType::Transfer, rec);
 			else
 				ExecTransferRecord(rec);
@@ -4715,7 +4665,7 @@ void GSState::SubmitMove()
 	rec.dir = m_env.TRXDIR;
 	rec.draw_serial = s_n;
 
-	if (m_back_queued)
+	if (m_back_records)
 		PushRecord(GSBackQueue::RecordType::Move, rec);
 	else
 		ExecMoveRecord(rec);
@@ -4744,7 +4694,7 @@ void GSState::SubmitClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLU
 	rec.TEX0 = TEX0;
 	rec.TEXCLUT = TEXCLUT;
 
-	if (m_back_queued)
+	if (m_back_records)
 		PushRecord(GSBackQueue::RecordType::ClutLoad, rec);
 	else
 		ExecClutLoadRecord(rec);
@@ -4806,7 +4756,7 @@ void GSState::SubmitPcrtcSync()
 	std::memcpy(&rec.displays, &PCRTCDisplays, sizeof(rec.displays));
 	rec.scanmask_used = m_scanmask_used;
 
-	if (m_back_queued)
+	if (m_back_records)
 		PushRecord(GSBackQueue::RecordType::PcrtcSync, rec);
 	else
 		ExecPcrtcSyncRecord(rec);

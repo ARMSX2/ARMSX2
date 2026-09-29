@@ -422,7 +422,7 @@ namespace PINEServer
 			PerformanceMetrics::GetMaximumFrameTime(),
 			PerformanceMetrics::GetCPUThreadUsage(), PerformanceMetrics::GetCPUThreadAverageTime(),
 			PerformanceMetrics::GetGSThreadUsage(), PerformanceMetrics::GetGSThreadAverageTime(),
-			// Zero unless GSBackThreadMode >= Lockstep. gs_thread_* is the MTGS thread only,
+			// Zero unless GS multi-threading is on. gs_thread_* is the MTGS thread only,
 			// so under the split the two have to be read together to see the GS cost.
 			PerformanceMetrics::GetGSBackThreadUsage(), PerformanceMetrics::GetGSBackThreadAverageTime(),
 			PerformanceMetrics::GetVUThreadUsage(), PerformanceMetrics::GetVUThreadAverageTime(),

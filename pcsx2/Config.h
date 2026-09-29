@@ -596,19 +596,6 @@ enum class GSDepthFeedbackMode : u8
 	DepthAsRT = 3,
 };
 
-// GS front/back split. Off = the single-threaded path with no record
-// round-trip; InlineRecords = build + execute every record on the calling
-// thread (a validation / bisect rung); Lockstep = back thread runs but the
-// front drains after every record (a bisect rung); Pipelined = a front thread
-// parses while a back thread draws. GSBackThreadPolicy.h decides what a
-// request resolves to.
-enum class GSBackThreadMode : u8
-{
-	Off           = 0,
-	InlineRecords = 1,
-	Lockstep      = 2,
-	Pipelined     = 3,
-};
 
 enum class AchievementOverlayPosition : u8
 {
@@ -1059,12 +1046,14 @@ struct Pcsx2Config
 		TriFiltering TriFilter = DEFAULT_TRILINEAR_FILTERING_MODE;
 		s8 OverrideTextureBarriers = -1;
 		GSDepthFeedbackMode DepthFeedbackMode = GSDepthFeedbackMode::Auto;
-		/// The setting, as the user or the game database asked for it.
-		GSBackThreadMode BackThreadMode = GSBackThreadMode::Off;
-		/// What BackThreadMode resolved to for the open renderer. Derived, not loaded or saved, and
-		/// not compared -- set by OpenGSRenderer on GSConfig only, and read by the renderer's
-		/// constructor.
-		GSBackThreadMode BackThreadModeResolved = GSBackThreadMode::Off;
+		/// GS multi-threading: a front thread parses GIF data while a back thread draws. The setting,
+		/// as the user or the game database asked for it; stored as the integer "GSBackThreadMode",
+		/// where 0 is off and any other value on (older builds wrote 3).
+		bool BackThread = false;
+		/// What BackThread resolved to for the open renderer (GSBackThreadPolicy.h). Derived, not
+		/// loaded or saved, and not compared -- set by OpenGSRenderer on GSConfig only, and read by
+		/// the renderer's constructor.
+		bool BackThreadResolved = false;
 
 		// RetroArch (.slangp) shader chain, applied at present after ShadeBoost/FXAA via
 		// librashader. Disabled or an empty preset skips the chain entirely (zero cost),
