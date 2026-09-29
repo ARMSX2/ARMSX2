@@ -12,53 +12,58 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.Closeable
 import java.io.File
-import java.io.FileOutputStream
+import java.io.FilterInputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
-import java.util.zip.ZipFile
 
 /**
  * Online Icons: the save icons of the PS2 Icon Open Database (ps2iodb.com, founded by Issun and
  * built by its contributors), for games with no save on the player's cards and no icon found on
- * their disc, and for the Icon Museum. Downloaded once, when the player asks, as one zip that is
- * kept as it is: each icon inside is its own zstd frame, read out and decoded only when it is
- * drawn, so the whole set stays compressed on the device. tools/memcard-icons builds the zip.
+ * their disc, and for the Icon Museum. The player picks what to download, one icon, the ones for
+ * their games or the whole set, and can remove any of it again; what is downloaded stays on the
+ * device, compressed, in an [OnlineIconStore]. tools/memcard-icons publishes the files at [BASE].
  */
 object OnlineIcons {
-    const val URL = "https://icons.ps2ktxpak.net/memcard-icons.zip"
+    const val BASE = "https://icons.ps2ktxpak.net/"
+    private const val ZIP = "memcard-icons.zip"
     private const val TAG = "OnlineIcons"
     private const val DIR = "memcard_online"
-    private const val FILE = "memcard-icons.zip"
-    private const val KEY_ETAG = "library.onlineIcons.etag"
+    private const val PREVIEW_DIR = "memcard_online_preview"
+    private const val KEY_ETAG = "library.onlineIcons.etag."
+    private const val MAX_ICON_BYTES = 4 shl 20
+    private const val MAX_LIST_BYTES = 16 shl 20
     private const val PROGRESS_STEP = 512L * 1024
+    private const val PARALLEL = 8
 
     sealed interface Status {
         data object Idle : Status
-        /** [total] is -1 when the server didn't say. */
-        data class Downloading(val done: Long, val total: Long) : Status
-        /** Downloaded; making sure it is a set of icons before it replaces the one there is. */
-        data object Checking : Status
+        /** A download running: [done] of [total], bytes of the whole set when [bytes], else icons.
+         *  [total] is -1 when the server didn't say. */
+        data class Working(val done: Long, val total: Long, val bytes: Boolean) : Status
         data class Failed(val why: String) : Status
     }
 
-    /** What the download is doing, for the prompt and the menu row. */
+    /** What a download is doing, for the browser and the menu row. */
     val status = mutableStateOf<Status>(Status.Idle)
 
-    /** Bumped when a set is installed or removed, so covers and the Museum pick it up. */
+    /** Bumped when icons are downloaded or removed, or the catalog changes, so covers, the Museum
+     *  and the browser look again. */
     val generation = mutableIntStateOf(0)
 
     /** One icon in the catalog: which game, which of its saves, and who contributed it. */
     class Entry(val hash: String, val title: String, val label: String, val contributors: String)
 
-    @Volatile private var app: Context? = null
-    private val lock = Any()
-    private var current: OnlineIconSet? = null // guarded by lock
+    @Volatile private var store: OnlineIconStore? = null
+    @Volatile private var previews: File? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
 
@@ -66,42 +71,59 @@ object OnlineIcons {
     private val decode: (InputStream, Long) -> ByteArray = { input, max -> ZstdInputStream(input, max).use { it.readBytes() } }
 
     fun init(context: Context) {
-        if (app == null) app = context.applicationContext
+        if (store != null) return
+        store = OnlineIconStore(File(context.filesDir, DIR), decode)
+        previews = File(context.cacheDir, PREVIEW_DIR)
     }
 
-    private fun file(): File? = app?.let { File(File(it.filesDir, DIR), FILE) }
+    // ---- what is on the device ----------------------------------------------------------------
 
-    /** Whether a set is on the device. Read [generation] alongside, to be told when it changes. */
-    val installed: Boolean get() = file()?.isFile == true
+    /** The icon for [serial], by hash, whether downloaded or not. */
+    fun hashFor(serial: String): String? = store?.hashFor(serial)
 
-    private fun set(): OnlineIconSet? = synchronized(lock) {
-        current ?: file()?.takeIf { it.isFile }?.let { OnlineIconSet.open(it, decode) }?.also { current = it }
+    /** Every icon the set has, by title, downloaded or not. Empty before the first [syncLists]. */
+    fun catalog(): List<Entry> = store?.catalog().orEmpty()
+
+    fun isInstalled(hash: String): Boolean = store?.isInstalled(hash) == true
+    fun installedHashes(): Set<String> = store?.installedHashes().orEmpty()
+    fun installedBytes(): Long = store?.installedBytes() ?: 0L
+
+    /** A downloaded icon's bytes, icon.sys (964 bytes) and then the icon, or null. */
+    fun read(hash: String): ByteArray? = store?.read(hash)
+
+    // ---- the server ---------------------------------------------------------------------------
+
+    /** Fetches the index and the catalog when they changed. True when both are on the device,
+     *  fetched now or before (offline, the last ones do). */
+    suspend fun syncLists(): Boolean = withContext(Dispatchers.IO) {
+        val s = store ?: return@withContext false
+        var changed = false
+        for (name in listOf(OnlineIconStore.INDEX, OnlineIconStore.CATALOG)) {
+            val known = runCatching { MainActivityRuntime.prefs.getString(KEY_ETAG + name, null) }.getOrNull()
+                ?.takeIf { File(s.dir, name).isFile }
+            val conn = open(BASE + name) { if (known != null) setRequestProperty("If-None-Match", known) } ?: continue
+            try {
+                if (conn.responseCode != HttpURLConnection.HTTP_OK) continue // 304: the one here is current
+                val bytes = conn.inputStream.use { it.readBounded(MAX_LIST_BYTES) }
+                if (s.putList(name, bytes)) {
+                    changed = true
+                    runCatching { MainActivityRuntime.prefs.edit().putString(KEY_ETAG + name, conn.getHeaderField("ETag")).apply() }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "fetch $name", e)
+            } finally {
+                conn.disconnect()
+            }
+        }
+        if (changed) withContext(Dispatchers.Main) { generation.intValue++ }
+        File(s.dir, OnlineIconStore.INDEX).isFile && File(s.dir, OnlineIconStore.CATALOG).isFile
     }
 
-    /** The icon for [serial] in the downloaded set, by its hash, or null. */
-    fun hashFor(serial: String): String? = set()?.index?.get(serial.uppercase())
-
-    /** Every icon in the downloaded set, by title, for the Icon Museum. */
-    fun catalog(): List<Entry> = set()?.catalog.orEmpty()
-
-    /** How many different icons the downloaded set has. */
-    fun iconCount(): Int = set()?.catalog?.mapTo(HashSet()) { it.hash }?.size ?: 0
-
-    /** An icon's bytes, icon.sys (964 bytes) and then the icon, or null. Reads the zip. */
-    fun read(hash: String): ByteArray? = set()?.read(hash)
-
-    /** The size and version of the set on the server, or null when it can't be reached. */
-    class Remote(val bytes: Long, val etag: String?)
-
-    suspend fun remote(): Remote? = withContext(Dispatchers.IO) {
-        val conn = TextureCatalog.RedirectingHttps.open(URL, connectTimeoutMs = 10_000, readTimeoutMs = 10_000, tag = TAG) {
-            requestMethod = "HEAD"
-            setRequestProperty("User-Agent", userAgent())
-            setRequestProperty("Accept-Encoding", "identity")
-        } ?: return@withContext null
+    /** The whole set's download size, or null when the server can't be reached. */
+    suspend fun setSize(): Long? = withContext(Dispatchers.IO) {
+        val conn = open(BASE + ZIP, method = "HEAD") ?: return@withContext null
         try {
-            if (conn.responseCode != HttpURLConnection.HTTP_OK) null
-            else Remote(conn.contentLengthLong, conn.getHeaderField("ETag"))
+            if (conn.responseCode == HttpURLConnection.HTTP_OK) conn.contentLengthLong.takeIf { it > 0 } else null
         } catch (e: Exception) {
             null
         } finally {
@@ -109,169 +131,167 @@ object OnlineIcons {
         }
     }
 
-    /** Whether the server's set is newer than the one on the device. */
-    fun isUpdate(remote: Remote): Boolean {
-        val mine = runCatching { MainActivityRuntime.prefs.getString(KEY_ETAG, null) }.getOrNull()
-        return installed && remote.etag != null && remote.etag != mine
+    /**
+     * An icon's bytes for a preview: the downloaded one, else one fetched earlier for a preview,
+     * else fetched now into the preview cache (which the system may clear; downloading the icon
+     * afterwards takes it from there instead of fetching it again). Null when it can't be had.
+     */
+    suspend fun preview(hash: String): ByteArray? = withContext(Dispatchers.IO) {
+        read(hash)?.let { return@withContext it }
+        val s = store ?: return@withContext null
+        val cached = previewFile(hash)
+        cached?.takeIf { it.isFile }?.let { f ->
+            runCatching { decode(f.inputStream(), MAX_ICON_BYTES.toLong()) }.getOrNull()?.let { return@withContext it }
+        }
+        val compressed = fetchIcon(hash) ?: return@withContext null
+        val bytes = s.decodeChecked(hash, compressed) ?: return@withContext null
+        cached?.let { f -> runCatching { f.parentFile?.mkdirs(); f.writeBytes(compressed) } }
+        bytes
     }
 
-    /** Downloads the set in the background; [status] follows it. Does nothing if one is running. */
-    fun start() {
-        val ctx = app ?: return
-        if (job?.isActive == true) return
-        job = scope.launch {
-            setStatus(Status.Downloading(0, -1))
-            val why = try {
-                download(ctx)
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e // cancel() already reset status
-                Log.w(TAG, "download failed", e)
-                e.message ?: e.javaClass.simpleName
+    // ---- downloads ----------------------------------------------------------------------------
+
+    /** Downloads the whole set in the background, as one file unpacked as it arrives, or icon by
+     *  icon when the server hasn't got the one file; [status] follows it. What arrived stays if it
+     *  is stopped. */
+    fun installAll() = launch { s ->
+        val conn = open(BASE + ZIP) ?: return@launch "can't reach the icon server"
+        try {
+            val code = conn.responseCode
+            if (code == HttpURLConnection.HTTP_NOT_FOUND || code == HttpURLConnection.HTTP_FORBIDDEN) {
+                conn.disconnect()
+                if (!syncLists()) return@launch "can't reach the icon server"
+                return@launch installEach(s, s.catalog().map { it.hash })
             }
-            if (why == null) {
-                setStatus(Status.Idle)
-                withContext(Dispatchers.Main) { generation.intValue++ }
-            } else {
-                setStatus(Status.Failed(why))
+            if (code != HttpURLConnection.HTTP_OK) return@launch "the icon server said $code"
+            val total = conn.contentLengthLong
+            var shown = 0L
+            val counted = object : FilterInputStream(conn.inputStream) {
+                var done = 0L
+                override fun read(b: ByteArray, off: Int, len: Int): Int = super.read(b, off, len).also { n ->
+                    if (n > 0) {
+                        done += n
+                        if (done - shown >= PROGRESS_STEP) {
+                            shown = done
+                            status.value = Status.Working(done, total, bytes = true)
+                        }
+                    }
+                }
             }
+            val scopeActive = currentCoroutineContext()
+            val icons = counted.use { s.installFromZip(it) { scopeActive.isActive } }
+            currentCoroutineContext().ensureActive()
+            if (icons == 0) "the download had no icons" else null
+        } finally {
+            conn.disconnect()
         }
     }
 
-    /** Stops a download; the set there was, if any, stays. Call on the main thread. */
+    /** Downloads these icons in the background; [status] counts them. */
+    fun install(hashes: Collection<String>) {
+        if (hashes.none { !isInstalled(it) }) return
+        launch { s -> installEach(s, hashes) }
+    }
+
+    /** Fetches each icon not on the device yet, [PARALLEL] at a time, taking any a preview already
+     *  fetched from there. Null when it went well, else why not. */
+    private suspend fun installEach(s: OnlineIconStore, hashes: Collection<String>): String? = coroutineScope {
+        val todo = hashes.filterNot { s.isInstalled(it) }.distinct()
+        val queue = java.util.concurrent.ConcurrentLinkedQueue(todo)
+        val done = java.util.concurrent.atomic.AtomicInteger()
+        val failed = java.util.concurrent.atomic.AtomicInteger()
+        status.value = Status.Working(0, todo.size.toLong(), bytes = false)
+        (1..PARALLEL).map {
+            async {
+                while (true) {
+                    ensureActive()
+                    val hash = queue.poll() ?: break
+                    val cached = previewFile(hash)?.takeIf { it.isFile }?.let { runCatching { it.readBytes() }.getOrNull() }
+                    val ok = (cached != null && s.install(hash, cached)) || (fetchIcon(hash)?.let { s.install(hash, it) } == true)
+                    if (!ok) failed.incrementAndGet()
+                    previewFile(hash)?.delete()
+                    val n = done.incrementAndGet()
+                    if (n % 16 == 0 || n == todo.size) status.value = Status.Working(n.toLong(), todo.size.toLong(), bytes = false)
+                }
+            }
+        }.awaitAll()
+        when {
+            todo.isNotEmpty() && failed.get() == todo.size -> "can't reach the icon server"
+            failed.get() > 0 -> "%d icons didn't download".format(failed.get())
+            else -> null
+        }
+    }
+
+    fun uninstall(hash: String) {
+        store?.uninstall(hash)
+        generation.intValue++
+    }
+
+    fun uninstallAll() {
+        store?.uninstallAll()
+        generation.intValue++
+    }
+
+    /** Stops a download; what it already brought stays. Call on the main thread. */
     fun cancel() {
         job?.cancel()
         status.value = Status.Idle
     }
 
-    /** Deletes the downloaded set. Covers from it go back to box art. */
-    fun remove() {
-        synchronized(lock) {
-            current?.close()
-            current = null
-            file()?.delete()
-        }
-        runCatching { MainActivityRuntime.prefs.edit().remove(KEY_ETAG).apply() }
-        status.value = Status.Idle
-        generation.intValue++
-    }
+    val busy: Boolean get() = job?.isActive == true
 
-    /** Returns null when the new set is in place, else why not. */
-    private suspend fun download(ctx: Context): String? {
-        val dir = File(ctx.filesDir, DIR).apply { mkdirs() }
-        val part = File(dir, "$FILE.part")
-        part.delete()
-        try {
-            val conn = TextureCatalog.RedirectingHttps.open(URL, connectTimeoutMs = 20_000, readTimeoutMs = 30_000, tag = TAG) {
-                requestMethod = "GET"
-                setRequestProperty("User-Agent", userAgent())
-                // Keep Content-Length honest so the percentage means something.
-                setRequestProperty("Accept-Encoding", "identity")
-            } ?: return "can't reach the icon server"
-            val etag: String?
-            try {
-                if (conn.responseCode != HttpURLConnection.HTTP_OK) return "the icon server said ${conn.responseCode}"
-                etag = conn.getHeaderField("ETag")
-                val total = conn.contentLengthLong
-                var done = 0L
-                var shown = 0L
-                conn.inputStream.use { input ->
-                    FileOutputStream(part).use { out ->
-                        val buf = ByteArray(256 * 1024)
-                        while (true) {
-                            currentCoroutineContext().ensureActive()
-                            val n = input.read(buf)
-                            if (n < 0) break
-                            out.write(buf, 0, n)
-                            done += n
-                            if (done - shown >= PROGRESS_STEP) {
-                                shown = done
-                                setStatus(Status.Downloading(done, total))
-                            }
-                        }
-                    }
-                }
-                if (total > 0 && done != total) return "the download was cut short"
-                setStatus(Status.Downloading(done, total))
-            } finally {
-                conn.disconnect()
-            }
-
-            // A file that doesn't open as a set, or whose icons don't read, never replaces the set
-            // there is.
-            setStatus(Status.Checking)
-            val ok = OnlineIconSet.open(part, decode)?.use { check ->
-                val sample = check.index.values.firstOrNull()?.let { check.read(it) }
-                sample != null && Ps2IconSys.parse(sample) != null &&
-                    Ps2Icon.parse(sample.copyOfRange(Ps2IconSys.SIZE, sample.size)) != null
-            } == true
-            if (!ok) return "the download isn't a set of icons"
-            synchronized(lock) {
-                current?.close()
-                current = null
-                val target = File(dir, FILE)
-                if (!part.renameTo(target)) return "couldn't save the icons"
-            }
-            runCatching { MainActivityRuntime.prefs.edit().putString(KEY_ETAG, etag).apply() }
-            return null
-        } finally {
-            part.delete() // gone after a rename; what is left of a failed or cancelled one otherwise
-        }
-    }
-
-    private suspend fun setStatus(s: Status) = withContext(Dispatchers.Main) { status.value = s }
-
-    private fun userAgent(): String = "ARMSX2/" + runCatching { BuildConfig.VERSION_NAME }.getOrDefault("dev")
-}
-
-/**
- * One downloaded set: the zip, kept open, with its index and catalog read out of it. The zip holds
- * memcard-icons/index.txt.zst ("SERIAL HASH" lines), catalog.txt.zst ("HASH<tab>title<tab>which
- * save<tab>contributors" for every icon) and icons/HASH.zst (icon.sys, then the icon), each a zstd
- * frame; the zip itself stores them without compressing again.
- */
-internal class OnlineIconSet private constructor(
-    private val zip: ZipFile,
-    val index: Map<String, String>,
-    val catalog: List<OnlineIcons.Entry>,
-    private val decode: (InputStream, Long) -> ByteArray,
-) : Closeable {
-    /** An icon's bytes, or null when the set hasn't got it. */
-    fun read(hash: String): ByteArray? = synchronized(zip) {
-        val entry = zip.getEntry("${ROOT}icons/$hash.zst") ?: return null
-        runCatching { decode(zip.getInputStream(entry), MAX_ICON_BYTES) }.getOrNull()
-    }
-
-    override fun close() = synchronized(zip) { zip.close() }
-
-    companion object {
-        private const val ROOT = "memcard-icons/"
-        private const val MAX_TEXT_BYTES = 16L shl 20
-        private const val MAX_ICON_BYTES = 4L shl 20
-
-        /** Opens [file] as a set, or null when it isn't one (no index, or an empty one). */
-        fun open(file: File, decode: (InputStream, Long) -> ByteArray): OnlineIconSet? {
-            val zip = runCatching { ZipFile(file) }.getOrNull() ?: return null
-            try {
-                fun text(name: String): String? =
-                    zip.getEntry(ROOT + name)?.let { String(decode(zip.getInputStream(it), MAX_TEXT_BYTES), Charsets.UTF_8) }
-                val index = HashMap<String, String>()
-                text("index.txt.zst")?.lineSequence()?.forEach { line ->
-                    val space = line.indexOf(' ')
-                    if (space > 0 && !line.startsWith("#")) index[line.substring(0, space).uppercase()] = line.substring(space + 1).trim()
-                }
-                if (index.isEmpty()) {
-                    zip.close()
-                    return null
-                }
-                val catalog = text("catalog.txt.zst")?.lineSequence()?.mapNotNull { line ->
-                    val p = line.split('\t')
-                    if (p.size >= 2 && p[0].isNotBlank()) OnlineIcons.Entry(p[0], p[1], p.getOrElse(2) { "" }, p.getOrElse(3) { "" }) else null
-                }?.toList().orEmpty()
-                return OnlineIconSet(zip, index, catalog, decode)
+    /** Runs one download job at a time. [work] returns null when it went well, else why not. */
+    private fun launch(work: suspend (OnlineIconStore) -> String?) {
+        val s = store ?: return
+        if (job?.isActive == true) return
+        job = scope.launch {
+            status.value = Status.Working(0, -1, bytes = true)
+            val why = try {
+                work(s)
             } catch (e: Exception) {
-                zip.close()
-                return null
+                if (e is kotlinx.coroutines.CancellationException) throw e // cancel() reset status
+                Log.w(TAG, "download failed", e)
+                e.message ?: e.javaClass.simpleName
+            } finally {
+                withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) { generation.intValue++ }
             }
+            withContext(Dispatchers.Main) { status.value = if (why == null) Status.Idle else Status.Failed(why) }
         }
+    }
+
+    private fun previewFile(hash: String): File? = previews?.let { File(it, "$hash.zst") }
+
+    private fun fetchIcon(hash: String): ByteArray? {
+        val conn = open(BASE + "icons/$hash.zst") ?: return null
+        return try {
+            if (conn.responseCode == HttpURLConnection.HTTP_OK) conn.inputStream.use { it.readBounded(MAX_ICON_BYTES) } else null
+        } catch (e: Exception) {
+            Log.w(TAG, "fetch icon $hash", e)
+            null
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** HTTPS only, redirects included, the way the texture-pack installer fetches. */
+    private fun open(url: String, method: String = "GET", configure: HttpURLConnection.() -> Unit = {}): HttpURLConnection? =
+        TextureCatalog.RedirectingHttps.open(url, connectTimeoutMs = 15_000, readTimeoutMs = 30_000, tag = TAG) {
+            requestMethod = method
+            setRequestProperty("User-Agent", "ARMSX2/" + runCatching { BuildConfig.VERSION_NAME }.getOrDefault("dev"))
+            // Keep Content-Length honest so the percentage means something.
+            setRequestProperty("Accept-Encoding", "identity")
+            configure()
+        }
+
+    private fun InputStream.readBounded(max: Int): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(64 * 1024)
+        while (true) {
+            val n = read(buf)
+            if (n < 0) break
+            if (out.size() + n > max) throw java.io.IOException("larger than $max bytes")
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
     }
 }

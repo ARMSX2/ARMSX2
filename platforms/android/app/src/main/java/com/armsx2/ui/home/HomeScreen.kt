@@ -259,7 +259,9 @@ fun HomeScreen(
     if (MemcardIconViewerState.open.value) MemcardIconViewer(onClose = { MemcardIconViewerState.open.value = false }, titles = libraryTitles)
     if (MemcardIconViewerState.info.value) MemcardCoversInfo(onClose = { MemcardIconViewerState.info.value = false })
     if (MemcardIconViewerState.screensaver.value) ScreensaverSettings(onClose = { MemcardIconViewerState.screensaver.value = false })
-    if (MemcardIconViewerState.online.value) OnlineIconsPrompt(onClose = { MemcardIconViewerState.online.value = false })
+    if (MemcardIconViewerState.online.value) {
+        OnlineIconsBrowser(onClose = { MemcardIconViewerState.online.value = false }, librarySerials = { libraryTitles().keys })
+    }
     // The screensaver, after the library has sat untouched for a while.
     LibraryScreensaverHost(titles = libraryTitles)
     DisposableEffect(viewModel, onOpenMenu) {
@@ -1723,18 +1725,18 @@ private fun LibraryOverflowMenu(
                 closeThen { MemcardIconViewerState.screensaver.value = true }
             }
         }
-        // Online Icons: PS2IODB's icons, downloaded once; the row shows how far a download is.
+        // Online Icons: PS2IODB's icons to browse and download; the row shows how far a download
+        // is, else how many are on the device.
         run {
             val onlineStatus = com.armsx2.memcard.OnlineIcons.status.value
-            val onlineInstalled = remember(com.armsx2.memcard.OnlineIcons.generation.intValue) { com.armsx2.memcard.OnlineIcons.installed }
+            val onlineCount = remember(com.armsx2.memcard.OnlineIcons.generation.intValue) { com.armsx2.memcard.OnlineIcons.installedHashes().size }
             LibraryOverflowItem(
                 glyph = "⇩",
                 label = str("games.overflow.onlineIcons"),
                 trailing = when {
-                    onlineStatus is com.armsx2.memcard.OnlineIcons.Status.Downloading && onlineStatus.total > 0 ->
+                    onlineStatus is com.armsx2.memcard.OnlineIcons.Status.Working && onlineStatus.total > 0 ->
                         "${(onlineStatus.done * 100 / onlineStatus.total).toInt()}%"
-                    onlineStatus is com.armsx2.memcard.OnlineIcons.Status.Downloading -> str("onlineicons.downloadingShort")
-                    onlineInstalled -> str("onlineicons.installed")
+                    onlineCount > 0 -> "%,d".format(onlineCount)
                     else -> null
                 },
                 iconRes = com.armsx2.R.drawable.ic_download,

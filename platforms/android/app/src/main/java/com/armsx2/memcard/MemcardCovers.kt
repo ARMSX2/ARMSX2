@@ -210,7 +210,8 @@ object MemcardCovers {
             out += ShowIcon("card:${ref.card.path}|${ref.folder}", ref.title, ref.serial, FromCard(ref.card.nameWithoutExtension)) { loadForViewer(ref) }
         }
         out += discIcons(titles).sortedBy { it.title.lowercase() }
-        out += OnlineIcons.catalog().sortedBy { it.title.lowercase() }.map { e ->
+        val downloaded = OnlineIcons.installedHashes()
+        out += OnlineIcons.catalog().filter { it.hash in downloaded }.map { e ->
             ShowIcon("online:${e.hash}|${e.title}|${e.label}", e.title, null, FromOnline(e.label, e.contributors)) {
                 loadOnline(e.hash, Ps2IconRenderer.Options())
             }
@@ -244,7 +245,7 @@ object MemcardCovers {
         for (icon in discIcons(titles)) if (seen.add(icon.serial ?: icon.key)) out += icon
         for ((serial, title) in titles) {
             if (serial in seen) continue
-            val hash = OnlineIcons.hashFor(serial) ?: continue
+            val hash = OnlineIcons.hashFor(serial)?.takeIf { OnlineIcons.isInstalled(it) } ?: continue
             seen += serial
             out += ShowIcon("online:$hash", title, serial, FromOnline("", "")) { loadOnline(hash, Ps2IconRenderer.Options()) }
         }
@@ -300,21 +301,21 @@ object MemcardCovers {
     }
 
     /**
-     * Games with no save take their icon from the online set, when it is downloaded: drawn once
+     * Games with no save take their online icon when the player has downloaded it: drawn once
      * into a still cover, like the others, and shared by every serial that uses the same icon.
-     * Quick, so it runs before [discPass]; an icon found on a game's own disc still wins. With no
-     * set (never downloaded, or removed) the online covers go.
+     * Quick, so it runs before [discPass]; an icon found on a game's own disc still wins. An icon
+     * removed again takes its covers with it.
      */
     private suspend fun onlinePass(app: Context, games: List<DiscGame>) {
         val dir = File(app.cacheDir, ONLINE_COVER_DIR).apply { mkdirs() }
         val covers = HashMap<String, File>()
         val srcs = HashMap<String, Source>()
         var complete = true
-        if (OnlineIcons.installed) for (game in games.distinctBy { it.serial }) {
+        for (game in games.distinctBy { it.serial }) {
             if (!enabled.value) { complete = false; break }
             val serial = game.serial.uppercase()
             if (serial in cardCovers) continue
-            val hash = OnlineIcons.hashFor(serial) ?: continue
+            val hash = OnlineIcons.hashFor(serial)?.takeIf { OnlineIcons.isInstalled(it) } ?: continue
             val png = File(dir, "${hash}_$RENDER_VERSION.png")
             if (!png.isFile) {
                 val loaded = loadOnline(hash, COVER_OPTIONS) ?: continue
