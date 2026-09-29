@@ -4877,10 +4877,14 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
     if (!ARMSX2GetCurrentSaveStateIdentity(&serial, &crc))
         return @[];
 
-    NSMutableArray<ARMSX2SaveStateSlotInfo *> *slots = [NSMutableArray arrayWithCapacity:VMManager::NUM_SAVE_STATE_SLOTS];
+    NSMutableArray<ARMSX2SaveStateSlotInfo *> *slots = [NSMutableArray arrayWithCapacity:VMManager::NUM_SAVE_STATE_SLOTS + 2];
     NSFileManager *fm = [NSFileManager defaultManager];
 
-    for (s32 slot = 1; slot <= VMManager::NUM_SAVE_STATE_SLOTS; slot++) {
+    // -2 is the core's Auto-save file and 0 is Quick Save. Neither was ever a numbered slot on
+    // iOS, so neither can hold an older manual save that an automatic write would replace.
+    for (s32 slot = VMManager::SAVESTATE_SLOT_AUTOSAVE; slot <= VMManager::NUM_SAVE_STATE_SLOTS; slot++) {
+        if (slot == -1)
+            continue;
         const std::string path = VMManager::GetSaveStateFileName(serial.c_str(), crc, slot);
         const BOOL occupied = !path.empty() && FileSystem::FileExists(path.c_str());
         NSString *nsPath = ARMSX2NSStringFromStdString(path);
@@ -4908,7 +4912,7 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
     ARMSX2SaveStateCompletion callback = [completion copy];
     std::string serial;
     u32 crc = 0;
-    if (nativeSlot < 1 || nativeSlot > VMManager::NUM_SAVE_STATE_SLOTS || !ARMSX2GetCurrentSaveStateIdentity(&serial, &crc)) {
+    if (nativeSlot < 0 || nativeSlot > VMManager::NUM_SAVE_STATE_SLOTS || !ARMSX2GetCurrentSaveStateIdentity(&serial, &crc)) {
         NSLog(@"[ARMSX2 iOS SaveState] save rejected slot=%d validGame=0", nativeSlot);
         if (callback)
             dispatch_async(dispatch_get_main_queue(), ^{ callback(NO); });
@@ -4941,8 +4945,10 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
                 return;
             }
 
+            // SaveState keeps the old state as .backup whatever the INI says, and posts no
+            // "slot N" message: the panel and the macros show their own.
             std::string saveError;
-            VMManager::SaveStateToSlot(nativeSlot, false, [&saveError](const std::string& error) {
+            VMManager::SaveState(targetPath.c_str(), false, true, [&saveError](const std::string& error) {
                 saveError = error;
             });
             result = saveError.empty();
@@ -4973,7 +4979,8 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
     ARMSX2SaveStateCompletion callback = [completion copy];
     std::string serial;
     u32 crc = 0;
-    if (nativeSlot < 1 || nativeSlot > VMManager::NUM_SAVE_STATE_SLOTS || !ARMSX2GetCurrentSaveStateIdentity(&serial, &crc)) {
+    if (nativeSlot < VMManager::SAVESTATE_SLOT_AUTOSAVE || nativeSlot == -1 ||
+        nativeSlot > VMManager::NUM_SAVE_STATE_SLOTS || !ARMSX2GetCurrentSaveStateIdentity(&serial, &crc)) {
         NSLog(@"[ARMSX2 iOS SaveState] load rejected slot=%d validGame=0", nativeSlot);
         if (callback)
             dispatch_async(dispatch_get_main_queue(), ^{ callback(NO); });
@@ -5021,6 +5028,8 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
             }
 
             result = VMManager::LoadStateFromSlot(nativeSlot);
+            // Its message names slot -2 or 0; the app says what was loaded.
+            Host::RemoveKeyedOSDMessage("LoadStateFromSlot");
             NSLog(@"[ARMSX2 iOS SaveState] CPU load finished slot=%d result=%d", nativeSlot, result ? 1 : 0);
         }, true);
 
@@ -5030,6 +5039,14 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
         if (callback)
             dispatch_async(dispatch_get_main_queue(), ^{ callback(result ? YES : NO); });
     });
+}
+
++ (double)currentGamePlayedSeconds {
+    std::string serial;
+    if (!ARMSX2GetCurrentSaveStateIdentity(&serial, nullptr))
+        return 0;
+    return static_cast<double>(GameList::GetPlayedTimeForSerial(serial)) +
+        static_cast<double>(VMManager::GetSessionPlayedTime());
 }
 
 #pragma mark - PNACH cheats/patches
