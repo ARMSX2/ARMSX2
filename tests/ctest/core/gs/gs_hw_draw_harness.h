@@ -26,7 +26,8 @@
 namespace GSHWDrawHarness
 {
 	/// A GIF packet under construction: A+D register writes, then PACKED vertex records. The
-	/// vertex records are {UV, XYZ2}; a primitive without a texture ignores the UV.
+	/// vertex records are {UV, XYZ2}, or {STQ, XYZ2} if built with VertexST(); a primitive without a
+	/// texture ignores the UV.
 	class Packet
 	{
 	public:
@@ -45,6 +46,24 @@ namespace GSHWDrawHarness
 			uv.U32[0] = static_cast<u32>(u);
 			uv.U32[1] = static_cast<u32>(v);
 			m_verts.push_back(uv);
+
+			GIFPackedReg xyz = {};
+			xyz.U32[0] = static_cast<u32>(x);
+			xyz.U32[1] = static_cast<u32>(y);
+			xyz.U32[2] = z;
+			m_verts.push_back(xyz);
+		}
+
+		// S, T and Q as floats. A packed STQ holds Q back for the next RGBAQ, and none follows, so the
+		// vertex keeps the Q of the last RGBAQ written.
+		void VertexST(int x, int y, u32 z, float s, float t, float q)
+		{
+			GIFPackedReg st = {};
+			std::memcpy(&st.U32[0], &s, sizeof(s));
+			std::memcpy(&st.U32[1], &t, sizeof(t));
+			std::memcpy(&st.U32[2], &q, sizeof(q));
+			m_verts.push_back(st);
+			m_st = true;
 
 			GIFPackedReg xyz = {};
 			xyz.U32[0] = static_cast<u32>(x);
@@ -78,7 +97,7 @@ namespace GSHWDrawHarness
 				tag.PRIM = static_cast<u32>(prim.U64 & 0x7FF);
 				tag.FLG = GIF_FLG_PACKED;
 				tag.NREG = 2;
-				tag.REGS = static_cast<u64>(GIF_REG_UV) | (static_cast<u64>(GIF_REG_XYZ2) << 4);
+				tag.REGS = static_cast<u64>(m_st ? GIF_REG_STQ : GIF_REG_UV) | (static_cast<u64>(GIF_REG_XYZ2) << 4);
 				buf.push_back(AsPackedReg(tag));
 				buf.insert(buf.end(), m_verts.begin(), m_verts.end());
 			}
@@ -97,6 +116,7 @@ namespace GSHWDrawHarness
 
 		std::vector<GIFPackedReg> m_regs;
 		std::vector<GIFPackedReg> m_verts;
+		bool m_st = false;
 	};
 
 	/// The None backend with the last submitted draw kept.
