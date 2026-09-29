@@ -129,6 +129,11 @@ internal fun MemcardCoversInfo(onClose: () -> Unit) {
 @Composable
 internal fun MemcardIconViewer(onClose: () -> Unit, titles: () -> Map<String, String> = { emptyMap() }) {
     val context = LocalContext.current
+    // The Museum has its own music while it is open, in the library music's place.
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        com.armsx2.LibraryMusic.playTheme(context, com.armsx2.R.raw.museum_music)
+        onDispose { com.armsx2.LibraryMusic.endTheme(context, com.armsx2.R.raw.museum_music) }
+    }
     val saves by produceState<List<MemcardCovers.ShowIcon>?>(null) {
         value = withContext(Dispatchers.IO) { MemcardCovers.viewerIcons(context, titles()) }
     }
