@@ -1512,7 +1512,7 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 	// only: a sprite's ST is resolved at the vertex and lines and points have no
 	// plane. An AA1 edge pass walks its own float vertices, so AA1 keeps the exact
 	// plane. ARM64 only, like ltfx and uvwalk: the x86 generators lack it.
-	if (primclass == GS_TRIANGLE_CLASS && gd.sel.tfx != TFX_NONE && !gd.sel.fst && !gd.sel.aa1)
+	if (gd.sel.tfx != TFX_NONE && GSUseConsolePlane(primclass, PRIM->FST != 0, gd.sel.aa1 != 0, IsMipMapActive(), m_vt.m_eq.q != 0, m_vt.m_min.t.z))
 	{
 		gd.sel.stqplane = 1;
 		gd.plane_shift[0] = 16 + static_cast<s32>(context->TEX0.TW);
@@ -1526,6 +1526,15 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 bool GSRendererSW::IsCoverageAlphaSupported()
 {
 	return IsCoverageAlpha();
+}
+
+bool GSRendererSW::BuildsConsolePlane()
+{
+#ifdef ARCH_ARM64
+	return PRIM->TME && GSUseConsolePlane(m_vt.m_primclass, PRIM->FST != 0, PRIM->AA1 != 0, IsMipMapActive(), m_vt.m_eq.q != 0, m_vt.m_min.t.z);
+#else
+	return false;
+#endif
 }
 
 // The SW engine's flush rule, even when it runs as a hardware renderer's fallback: the

@@ -4290,7 +4290,7 @@ void GSState::DrawRecordTail(u64 draw_serial)
 	// Helps Manhunt (lights shining through objects).
 	// Can help with some alignment issues when upscaling too, and is for both Software and Hardware renderers.
 	// Sometimes hardware doesn't get affected, likely due to the difference in how GPU's handle textures (Persona minimap).
-	if (PRIM->TME && (GSUtil::GetPrimClass(PRIM->PRIM) == GS_PRIM_CLASS::GS_SPRITE_CLASS || m_vt.m_eq.z))
+	if (PRIM->TME && (GSUtil::GetPrimClass(PRIM->PRIM) == GS_PRIM_CLASS::GS_SPRITE_CLASS || m_vt.m_eq.z) && !BuildsConsolePlane())
 	{
 		if (!PRIM->FST) // STQ's
 		{

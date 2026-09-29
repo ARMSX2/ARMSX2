@@ -561,6 +561,11 @@ protected:
 	bool AA1LineCoverageFromPixelRuns();
 	bool AA1LineCoverageFromPixelRunsLive(bool tme, bool tcc);
 	virtual bool IsCoverageAlphaSupported();
+	// Whether the engine builds the console's own S, T and Q planes for the current draw
+	// (GSVertexQDivide.h GSUseConsolePlane). Then the texel rounding in DrawRecordTail
+	// must not touch the vertices: the console's plane is the same at every Z, and the
+	// rounding only fires under a constant one. Software renderer on ARM64 only.
+	virtual bool BuildsConsolePlane() { return false; }
 	// Which auto-flush rule ResetHandlers arms. The decision belongs to the renderer's DRAW
 	// ENGINE, not the process's renderer type: a renderer can run the SW engine as a fallback
 	// floor under a hardware GSCurrentRenderer, and the two flush shapes produce different
