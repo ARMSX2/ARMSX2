@@ -327,6 +327,13 @@ final class ControllerAccessibilityNavigationSession {
     private(set) var isScrollPresentationActive = false
 
     var registrationIdentifier: UUID? { registrationID }
+
+    /// A sheet or panel opened over this screen takes the input, so this screen's ring goes.
+    func ownsInput(in controllerInput: MenuControllerInputRouter?) -> Bool {
+        guard let inputSession = controllerInput?.navigationInputSessionID else { return true }
+        return inputSession == registrationID
+    }
+
     var focusedElementID: String? { focusedKey }
     var focusedFrame: CGRect? { focusPresentation.frame }
     var focusedOverlayFrame: CGRect? { focusPresentation.overlayFrame }
@@ -3132,6 +3139,7 @@ private struct ControllerAccessibilityFocusOverlay: View {
 
     var body: some View {
         if controllerInput?.navigationZone != .tabBar,
+           session.ownsInput(in: controllerInput),
            let frame = session.focusedOverlayFrame {
             let usesWindowFocusVisual = focusNeonExclusionLabels.contains(
                 session.focusedAccessibilityLabel ?? ""
@@ -3186,6 +3194,7 @@ private struct ControllerAccessibilityWindowFocusOverlay: View {
                 session.focusedAccessibilityLabel ?? ""
             ), controllerInput?.isNavigationCaptured != true,
                controllerInput?.navigationZone != .tabBar,
+               session.ownsInput(in: controllerInput),
                let frame = session.focusedFrame {
                 ControllerNavigationAnimatedOrbField(
                     targetID: session.focusedElementID ?? "focused-toolbar-element",
