@@ -9,6 +9,7 @@ struct SaveStatesPanel: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     let settings: SettingsStore
+    let undo: SaveStateUndoModel
     let variant: PauseLayoutVariant
     let landscape: Bool
     let gameTitle: String?
@@ -20,12 +21,11 @@ struct SaveStatesPanel: View {
     @State private var files: [SaveStateFile] = []
     @State private var metadataRevision = 0
     @State private var busySlot: Int?
-    @State private var pendingOverwrite: SaveStateSlot?
     @State private var hardcore = false
     @State private var menuSlot: Int?
     @State private var renameSlot: Int?
     @State private var renameText = ""
-    @State private var renameFocus: String?
+    @State private var focusOverride: String?
     @State private var keyboardRequest: SaveStateKeyboardRequest?
 
     static let scopeKey = "runtime.save-states"
@@ -51,7 +51,8 @@ struct SaveStatesPanel: View {
             return SaveStateGraph(rows: [ids.enumerated().map { .init(id: $1, column: $0) }], wraps: false)
         }
         if let row = row(menuSlot) {
-            return SaveStateGraph(rows: menuItems(for: row).map { [.init(id: $0.id, column: 0)] }, wraps: false)
+            let items = menuItems(for: row).filter(\.isEnabled)
+            return SaveStateGraph(rows: items.map { [.init(id: $0.id, column: 0)] }, wraps: false)
         }
         return SaveStateGraph(rows: targetRows)
     }
@@ -92,7 +93,8 @@ struct SaveStatesPanel: View {
                             title: settings.localized("Save States"),
                             showsStopButton: false,
                             resumeTitle: settings.localized("Back"),
-                            resumeImage: "chevron.left"
+                            resumeImage: "chevron.left",
+                            hint: squareHint
                         )
                         content
                     }
@@ -117,7 +119,8 @@ struct SaveStatesPanel: View {
                             onResume: onClose,
                             showsStopButton: false,
                             resumeTitle: settings.localized("Back"),
-                            resumeImage: "chevron.left"
+                            resumeImage: "chevron.left",
+                            hint: squareHint
                         )
                     }
                 }
@@ -165,7 +168,7 @@ struct SaveStatesPanel: View {
             // Room for the card header, and in two-line rows for the title above the buttons.
             focusTopAlignmentMargin: layout == .twoLine ? 96 : 40,
             focusBottomAlignmentMargin: 10,
-            preferredInitialFocusLabel: overlayOpen ? renameFocus : initialFocusID,
+            preferredInitialFocusLabel: focusOverride ?? (overlayOpen ? nil : initialFocusID),
             declaredTargetOrder: graph.order
         )
         .fullScreenCover(item: $keyboardRequest) { _ in
@@ -203,19 +206,6 @@ struct SaveStatesPanel: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2RetroAchievementsStateChanged"))) { _ in
             Task { await refresh() }
         }
-        .controllerPrompt(
-            "\(settings.localized("Overwrite Slot")) \(pendingOverwrite?.number ?? 0)?",
-            isPresented: Binding(
-                get: { pendingOverwrite != nil },
-                set: { if !$0 { pendingOverwrite = nil } }
-            ),
-            actions: [
-                .cancel,
-                .init(title: settings.localized("Overwrite"), isDestructive: true) {
-                    if let pendingOverwrite { performSave(pendingOverwrite) }
-                },
-            ]
-        )
         .environment(\.controllerTextAppearance, settings.controllerQuickMenuTextAppearance)
         .preferredColorScheme(.dark)
         .quickMenuLiquidGlassConfiguration()
@@ -284,6 +274,14 @@ struct SaveStatesPanel: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
         }
+        // An inset, not an overlay: the focus corridor leaves it out, so the focused row stays clear.
+        .safeAreaInset(edge: .bottom) {
+            if undo.item != nil {
+                SaveStateUndoToast(undo: undo, settings: settings, hint: undoHint) { undoLast() }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
+            }
+        }
         .mask {
             VStack(spacing: 0) {
                 LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
@@ -322,6 +320,17 @@ struct SaveStatesPanel: View {
                 )
             }
         }
+    }
+
+    private var squareHint: String? {
+        controllerInput?.hasConnectedController == true
+            ? settings.localized("Square: rename, lock, delete") : nil
+    }
+
+    private var undoHint: String? {
+        controllerInput?.hasConnectedController == true
+            ? String(format: settings.localized("%@ to undo"), settings.controllerMacroUndoSaveState.title)
+            : nil
     }
 
     /// The live macro bindings, shown only to controller players.
@@ -364,36 +373,66 @@ struct SaveStatesPanel: View {
         hardcore = ARMSX2Bridge.isRetroAchievementsHardcoreActive()
     }
 
+    /// Saving over a state needs no confirmation: the older one stays one Undo away.
     private func save(_ row: SaveStateSlot) {
         guard busySlot == nil, !row.isLocked else { return }
-        if row.occupied {
-            pendingOverwrite = row
-        } else {
-            performSave(row)
-        }
-    }
-
-    private func performSave(_ row: SaveStateSlot) {
         let slot = row.slot
         let number = row.number
-        let fresh = !row.occupied
+        let previous = row.metadata
+        let fileName = row.file.fileName
+        undo.finishIfTouching(slot: slot)
         busySlot = slot
-        ARMSX2Bridge.saveState(toSlot: slot) { success in
+        ARMSX2Bridge.saveState(toSlot: slot) { success, backupToken in
             Task { @MainActor in
                 let played = ARMSX2Bridge.currentGamePlayedSeconds()
                 await refresh()
-                if success, let file = files.first(where: { $0.slot == slot }) {
-                    SaveStateMetadataStore.shared.recordSave(of: file, playedSeconds: played, fresh: fresh)
-                    metadataRevision &+= 1
+                guard success, let saved = files.first(where: { $0.slot == slot }) else {
+                    busySlot = nil
+                    statusHandler(
+                        "\(settings.localized("Could not save slot")) \(number). \(settings.localized("Try again after gameplay has fully loaded."))",
+                        true
+                    )
+                    return
                 }
+                SaveStateMetadataStore.shared.recordSave(of: saved, playedSeconds: played, fresh: backupToken == nil)
+                metadataRevision &+= 1
                 busySlot = nil
-                statusHandler(
-                    success
-                        ? "\(settings.localized("State saved to slot")) \(number)"
-                        : "\(settings.localized("Could not save slot")) \(number). \(settings.localized("Try again after gameplay has fully loaded."))",
-                    !success
-                )
+                if let backupToken, let row = self.row(slot) {
+                    showUndo(
+                        .overwrite(slot: slot, backupToken: backupToken, fileName: fileName, previous: previous),
+                        verb: settings.localized("Replaced"),
+                        row: row,
+                        undoLabel: "Undo save over %@"
+                    )
+                    // The toast takes room at the bottom; reveal the focused row above it.
+                    place(Self.saveID(slot), inScope: Self.scopeKey, entering: true)
+                } else {
+                    statusHandler("\(settings.localized("State saved to slot")) \(number)", false)
+                }
             }
+        }
+    }
+
+    private func showUndo(_ action: SaveStateUndoModel.Action, verb: String, row: SaveStateSlot, undoLabel: String) {
+        let name = row.title(settings)
+        let defaultName = String(format: settings.localized("Slot %d"), row.number)
+        let caption = name == defaultName
+            ? verb : String(format: settings.localized("%1$@ · Slot %2$d"), verb, row.number)
+        undo.show(
+            .init(
+                action: action,
+                caption: caption,
+                name: name,
+                preview: row.file.preview,
+                undoLabel: String(format: settings.localized(undoLabel), name)
+            ),
+            announcement: String(format: settings.localized("%1$@ %2$@. Undo is available."), caption, name)
+        )
+    }
+
+    private func undoLast() {
+        undo.undo { ok in
+            if !ok { statusHandler(settings.localized("Could not undo."), true) }
         }
     }
 
@@ -401,11 +440,17 @@ struct SaveStatesPanel: View {
         guard busySlot == nil, !hardcore else { return }
         let number = row.number
         busySlot = row.slot
-        ARMSX2Bridge.loadState(fromSlot: row.slot) { success in
+        ARMSX2Bridge.loadState(
+            fromSlot: row.slot,
+            expectedModified: row.modifiedDate,
+            keepingUndo: true
+        ) { success, undoPath in
             Task { @MainActor in
                 busySlot = nil
                 if success {
-                    statusHandler("\(settings.localized("State loaded from slot")) \(number)", false)
+                    if let undoPath {
+                        showUndo(.load(path: undoPath), verb: settings.localized("Loaded"), row: row, undoLabel: "Undo load of %@")
+                    }
                     onLoaded()
                 } else {
                     await refresh()
@@ -432,7 +477,7 @@ struct SaveStatesPanel: View {
             ControllerAccessibilityNavigationSession.explicitKey(id),
             forScope: scope
         )
-        renameFocus = scope == Self.renameScope ? id : nil
+        focusOverride = id
         guard entering else { return }
         Task { @MainActor in
             await Task.yield()
@@ -456,6 +501,7 @@ struct SaveStatesPanel: View {
                     metadataRevision &+= 1
                     closeMenu()
                 },
+                deleteItem(for: row),
             ]
         case .quick:
             [
@@ -467,14 +513,50 @@ struct SaveStatesPanel: View {
                     menuSlot = nil
                     onOpenControllerMacros()
                 },
+                deleteItem(for: row),
             ]
         case .auto:
-            []
+            [deleteItem(for: row)]
+        }
+    }
+
+    /// A locked slot has to be unlocked before it can be deleted.
+    private func deleteItem(for row: SaveStateSlot) -> SaveStateMenuItem {
+        .init(
+            id: "save-state.menu.delete",
+            title: settings.localized(row.isLocked ? "Unlock to delete" : "Delete"),
+            systemImage: "trash",
+            isDestructive: true,
+            isEnabled: !row.isLocked
+        ) {
+            delete(row)
+        }
+    }
+
+    private func delete(_ row: SaveStateSlot) {
+        let slot = row.slot
+        let fileName = row.file.fileName
+        // Focus stays on the row's Save; the Auto-save row has none, so Quick Save's takes it.
+        let focusSlot = row.hasSave ? slot : rows.first { $0.kind == .quick }?.slot ?? slot
+        menuSlot = nil
+        place(Self.saveID(focusSlot), inScope: Self.scopeKey)
+        undo.finishIfTouching(slot: slot)
+        ARMSX2Bridge.deleteSaveState(inSlot: slot) { success in
+            Task { @MainActor in
+                await refresh()
+                if success {
+                    showUndo(.delete(slot: slot, fileName: fileName), verb: settings.localized("Deleted"), row: row, undoLabel: "Undo delete of %@")
+                    // The toast takes room at the bottom; reveal the focused row above it.
+                    place(Self.saveID(focusSlot), inScope: Self.scopeKey, entering: true)
+                } else {
+                    statusHandler(settings.localized("Could not delete this save."), true)
+                }
+            }
         }
     }
 
     private func openMenu(_ row: SaveStateSlot) {
-        guard let first = menuItems(for: row).first else { return }
+        guard let first = menuItems(for: row).first(where: \.isEnabled) else { return }
         // The menu scope remembers its last item; every menu opens on its first one.
         place(first.id, inScope: Self.menuScope)
         menuSlot = row.slot
@@ -1010,6 +1092,7 @@ struct SaveStateMenuItem {
     let title: String
     let systemImage: String
     var isDestructive = false
+    var isEnabled = true
     let action: () -> Void
 }
 
@@ -1050,6 +1133,8 @@ private struct SaveStateMenuView: View {
                     focusedNeonCornerRadius: 12,
                     action: item.action
                 )
+                .disabled(!item.isEnabled)
+                .opacity(item.isEnabled ? 1 : 0.45)
             }
         }
         .padding(4)
@@ -1161,5 +1246,82 @@ private struct SaveStateRenameCard: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .controllerAccessibilityActionTarget(id: ids.confirm, label: ids.confirm, action: onConfirm)
+    }
+}
+
+/// After a load, delete or save-over: what happened, and an Undo that lasts 8 seconds.
+struct SaveStateUndoToast: View {
+    let undo: SaveStateUndoModel
+    let settings: SettingsStore
+    let hint: String?
+    let onUndo: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AccessibilityFocusState private var focused: Bool
+
+    var body: some View {
+        if let item = undo.item {
+            HStack(spacing: 12) {
+                ZStack {
+                    Color.black
+                    if let data = item.preview, let image = UIImage(data: data) {
+                        Image(uiImage: image).resizable().scaledToFill()
+                    }
+                }
+                .frame(width: 56, height: 42)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.caption)
+                        .font(.caption)
+                        .foregroundStyle(OverlayTheme.textSecondary)
+                    Text(item.name)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(OverlayTheme.textPrimary)
+                        .lineLimit(2)
+                    if let hint {
+                        Text(hint)
+                            .font(.caption)
+                            .foregroundStyle(OverlayTheme.textSecondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Button(action: onUndo) {
+                    Label(settings.localized("Undo"), systemImage: "arrow.uturn.backward")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 104, height: 44)
+                        .background(Color.white.opacity(0.14), in: Capsule())
+                        .overlay(Capsule().stroke(Color.white.opacity(0.2)))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(item.undoLabel)
+            }
+            .padding(EdgeInsets(top: 8, leading: 10, bottom: 11, trailing: 10))
+            .overlay(alignment: .bottom) {
+                // Reduce Motion leaves the draining bar out; the window is the same 8 seconds.
+                if !reduceMotion {
+                    GeometryReader { proxy in
+                        Capsule().fill(Color.white.opacity(0.14))
+                            .overlay(alignment: .leading) {
+                                Capsule().fill(Color.white.opacity(0.75))
+                                    .frame(width: proxy.size.width * max(0, undo.remaining) / SaveStateUndoModel.duration)
+                            }
+                    }
+                    .frame(height: 3)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 3)
+                    .accessibilityHidden(true)
+                }
+            }
+            .background(Color(red: 0.133, green: 0.149, blue: 0.180), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Color.white.opacity(0.14)))
+            .shadow(color: .black.opacity(0.5), radius: 18, y: 14)
+            .frame(maxWidth: 460)
+            .accessibilityElement(children: .contain)
+            .accessibilityFocused($focused)
+            .accessibilityAction(.escape) { undo.finish() }
+            .onChange(of: focused) { _, value in undo.focusHeld = value }
+        }
     }
 }

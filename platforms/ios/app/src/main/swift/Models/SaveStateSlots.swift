@@ -1,7 +1,8 @@
 // SaveStateSlots.swift — The save-state rows and what the app keeps beside their files.
 // SPDX-License-Identifier: GPL-3.0+
 
-import Foundation
+import SwiftUI
+import UIKit
 
 /// What the bridge knows about one state file, read off the main thread: it opens every zip.
 struct SaveStateFile: Sendable {
@@ -84,6 +85,12 @@ final class SaveStateMetadataStore {
         entry.playedSeconds = playedSeconds
         entry.savedAt = modified
         file.states[state.fileName] = entry
+        write()
+    }
+
+    /// Puts an entry back as it was, or removes it.
+    func set(_ entry: SaveStateMetadata?, forFileNamed fileName: String) {
+        file.states[fileName] = entry
         write()
     }
 
@@ -223,5 +230,105 @@ enum SaveStateFormat {
             .units(allowed: [.hours, .minutes], width: .abbreviated).locale(locale(settings))
         )
         return String(format: settings.localized("%@ played"), text)
+    }
+}
+
+/// The one action that can still be undone, and its 8 second window.
+@MainActor
+@Observable
+final class SaveStateUndoModel {
+    enum Action {
+        case load(path: String)
+        case delete(slot: Int, fileName: String)
+        case overwrite(slot: Int, backupToken: String, fileName: String, previous: SaveStateMetadata?)
+    }
+
+    struct Item: Identifiable {
+        let id = UUID()
+        let action: Action
+        let caption: String
+        let name: String
+        let preview: Data?
+        let undoLabel: String
+    }
+
+    static let duration: Double = 8
+
+    private(set) var item: Item?
+    private(set) var remaining: Double = 0
+    /// Set while the toast holds VoiceOver focus.
+    var focusHeld = false
+    private var timer: Task<Void, Never>?
+
+    var slot: Int? {
+        switch item?.action {
+        case .delete(let slot, _), .overwrite(let slot, _, _, _): slot
+        case .load, nil: nil
+        }
+    }
+
+    func show(_ next: Item, announcement: String) {
+        finish()
+        item = next
+        remaining = Self.duration
+        AccessibilityNotification.Announcement(announcement).post()
+        timer = Task { [weak self] in
+            while let self, !Task.isCancelled, self.item?.id == next.id {
+                try? await Task.sleep(for: .milliseconds(100))
+                // The window waits while VoiceOver reads, the toast has its focus, or the app is away.
+                let paused = UIAccessibility.isVoiceOverRunning || self.focusHeld
+                    || UIApplication.shared.applicationState != .active
+                if !paused { self.remaining -= 0.1 }
+                if self.remaining <= 0 { self.finish() }
+            }
+        }
+    }
+
+    /// Ends the window: a deleted state is removed for good, a load's earlier moment dropped.
+    func finish() {
+        timer?.cancel()
+        timer = nil
+        guard let current = item else { return }
+        item = nil
+        switch current.action {
+        case .load(let path):
+            ARMSX2Bridge.discardUndoLoadState(atPath: path)
+        case .delete(let slot, let fileName):
+            ARMSX2Bridge.finishDeletingSaveState(inSlot: slot)
+            SaveStateMetadataStore.shared.set(nil, forFileNamed: fileName)
+        case .overwrite:
+            break
+        }
+    }
+
+    /// Any new write to a slot ends that slot's undo first.
+    func finishIfTouching(slot: Int) {
+        if self.slot == slot { finish() }
+    }
+
+    func undo(completion: @escaping @MainActor (Bool) -> Void) {
+        timer?.cancel()
+        timer = nil
+        guard let current = item else { return completion(false) }
+        item = nil
+        let done: @Sendable (Bool) -> Void = { ok in
+            Task { @MainActor in
+                NotificationCenter.default.post(name: Notification.Name("ARMSX2iOSRuntimeMenuStateChanged"), object: nil)
+                completion(ok)
+            }
+        }
+        switch current.action {
+        case .load(let path):
+            ARMSX2Bridge.undoLoadState(fromPath: path, completion: done)
+        case .delete(let slot, _):
+            ARMSX2Bridge.restoreDeletedSaveState(inSlot: slot, completion: done)
+        case .overwrite(let slot, let token, let fileName, let previous):
+            ARMSX2Bridge.undoSaveOver(inSlot: slot, backupToken: token) { ok in
+                Task { @MainActor in
+                    if ok { SaveStateMetadataStore.shared.set(previous, forFileNamed: fileName) }
+                    done(ok)
+                }
+            }
+        }
     }
 }
