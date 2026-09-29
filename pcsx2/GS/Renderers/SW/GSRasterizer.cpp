@@ -9,6 +9,7 @@
 #include "GS/Renderers/SW/GSColourWalk.h"
 #include "GS/Renderers/SW/GSDepthWalk.h"
 #include "GS/Renderers/SW/GSCoordinateWalk.h"
+#include "GS/Renderers/SW/GSPerspectivePlane.h"
 #include "GS/GSExtra.h"
 #include "PerformanceMetrics.h"
 #include "VMManager.h"
@@ -1067,7 +1068,8 @@ struct GSTriangleSetup
 };
 
 __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index, const GSVector4& fscissor_y,
-	GSTriangleSetup& out, GSColourWalk& cwalk, int block_width, const GSCoordinateGrain* grain)
+	GSTriangleSetup& out, GSColourWalk& cwalk, int block_width, const GSCoordinateGrain* grain,
+	GSPerspectivePlaneWalk* pwalk, const s32* plane_shift)
 {
 	GSVector4 y0011 = vertex[index[0]].p.yyyy(vertex[index[1]].p);
 	GSVector4 y1221 = vertex[index[1]].p.yyyy(vertex[index[2]].p).xzzx();
@@ -1171,6 +1173,37 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 	{
 		out.dscan.t = GSCoordinateGradientOnGrain(out.dscan.t, *grain,
 			GSSetupInvertsExactly(GSTriangleTwiceArea(v0.p, v1.p, v2.p)));
+	}
+
+	// A perspective triangle draws the console's S, T and Q planes instead
+	// (GSPerspectivePlane.h). The plane is built from the GIF's own values, so S and T
+	// come back out of the 2^(16 + TW) and 2^(16 + TH) the vertex conversion scaled
+	// them by, exactly. The per-pixel steps go into dscan as integers in units of
+	// g/2^14, in the lanes that hold s, t and q as floats otherwise; the row seeds
+	// (DrawTriangleSection) are integers the same way. Fog stays a float in lane w.
+	if (pwalk)
+	{
+		const GSVertexSW* sorted[3] = {&v0, &v1, &v2};
+		s32 x[3], y[3];
+		float st[3], tt[3], qt[3];
+
+		for (int k = 0; k < 3; k++)
+		{
+			x[k] = static_cast<s32>(sorted[k]->p.x * 16.0f);
+			y[k] = static_cast<s32>(sorted[k]->p.y * 16.0f);
+			st[k] = std::ldexp(sorted[k]->t.x, -plane_shift[0]);
+			tt[k] = std::ldexp(sorted[k]->t.y, -plane_shift[1]);
+			qt[k] = sorted[k]->t.z;
+		}
+
+		GSPerspectivePlaneSetup(x, y, st, tt, qt, pwalk->plane);
+
+		pwalk->stscale = GSVector4(std::ldexp(1.0f, plane_shift[0]), std::ldexp(1.0f, plane_shift[1]), 1.0f, 1.0f);
+		pwalk->qscale = GSVector4(std::ldexp(1.0f, pwalk->plane.exp - (GS_PLANE_GRID_BITS + 2)));
+
+		out.dscan.t = GSVector4::cast(GSVector4i(GSPerspectivePlaneStep(pwalk->plane, 0),
+							GSPerspectivePlaneStep(pwalk->plane, 1), GSPerspectivePlaneStep(pwalk->plane, 2), 0))
+		                  .blend32<8>(out.dscan.t);
 	}
 
 	// One anchor, walk direction and block grid for the whole primitive, both
@@ -1283,9 +1316,13 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 		index = grained_index;
 	}
 
+	// The plane and the affine grain are for different routes: the grain is gated on a
+	// constant Q of one, the plane on every other Q.
+	const bool takes_plane = m_local.gd->sel.stqplane != 0;
+
 	GSTriangleSetup s;
 	if (!SetupTriangle(vertex, index, m_fscissor_y, s, m_local.cwalk, block_width,
-			takes_grain ? &grain : nullptr))
+			takes_grain ? &grain : nullptr, takes_plane ? &m_local.pwalk : nullptr, m_local.gd->plane_shift))
 		return;
 
 	for (int n = 0; n < s.nsections; n++)
@@ -1388,8 +1425,23 @@ void GSRasterizer::DrawTriangleSection(int top, int bottom, int prim_top, GSVert
 
 			e->p.F64[1] = edge.p.F64[1] + dedge.p.F64[1] * dy + dscan.p.F64[1] * prestep
 			              - GSDepthWalkBias(dscan.p.F64[1], dedge.p.F64[1], top != prim_top);
-			e->t = (ledge.t + dedge.t * ldy + dscan.t * lprestep)
-			           .blend32<8>(GSColourWalkRowSeed(cwalk, cwalk.f, left, top));
+
+			if (m_local.gd->sel.stqplane)
+			{
+				// The plane's value at the row's first pixel, exactly, in the lanes s,
+				// t and q (GSPerspectivePlane.h); nothing here is a float.
+				const GSPerspectivePlane& plane = m_local.pwalk.plane;
+
+				e->t = GSVector4::cast(GSVector4i(GSPerspectivePlaneValue(plane, 0, left, top),
+							GSPerspectivePlaneValue(plane, 1, left, top), GSPerspectivePlaneValue(plane, 2, left, top), 0))
+				           .blend32<8>(GSColourWalkRowSeed(cwalk, cwalk.f, left, top));
+			}
+			else
+			{
+				e->t = (ledge.t + dedge.t * ldy + dscan.t * lprestep)
+				           .blend32<8>(GSColourWalkRowSeed(cwalk, cwalk.f, left, top));
+			}
+
 			e->c = GSColourWalkRowSeed(cwalk, cwalk.c, left, top);
 
 			AddScanlineInfo(e++, pixels, left, top);

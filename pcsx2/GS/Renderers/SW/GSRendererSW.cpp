@@ -1505,6 +1505,21 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 		}
 	}
 
+#ifdef ARCH_ARM64
+	// A perspective triangle draws the console's S, T and Q planes (GSPerspectivePlane.h)
+	// rather than the exact plane: the coordinate stays STQ (not the UV register, not
+	// the affine route a constant Q of one takes), so the scanline divides. Triangles
+	// only: a sprite's ST is resolved at the vertex and lines and points have no
+	// plane. An AA1 edge pass walks its own float vertices, so AA1 keeps the exact
+	// plane. ARM64 only, like ltfx and uvwalk: the x86 generators lack it.
+	if (primclass == GS_TRIANGLE_CLASS && gd.sel.tfx != TFX_NONE && !gd.sel.fst && !gd.sel.aa1)
+	{
+		gd.sel.stqplane = 1;
+		gd.plane_shift[0] = 16 + static_cast<s32>(context->TEX0.TW);
+		gd.plane_shift[1] = 16 + static_cast<s32>(context->TEX0.TH);
+	}
+#endif
+
 	return true;
 }
 
