@@ -64,7 +64,7 @@ object MemcardCovers {
     val animate = mutableStateOf(true)
 
     /** Moving icons turn as well ("Spin"), or only play their own animation, facing the same way
-     *  ("No spin"). In the library, the Icon Viewer and the screensaver alike. */
+     *  ("No spin"). In the library, the Icon Museum and the screensaver alike. */
     val spin = mutableStateOf(true)
 
     /** Bumped whenever the covers change, so tiles resolve their cover again. */
@@ -145,9 +145,9 @@ object MemcardCovers {
         }
     }.getOrNull()
 
-    // ---- Icon viewer ----------------------------------------------------------------------
+    // ---- Icon Museum ----------------------------------------------------------------------
 
-    /** One save with an icon, for the Icon Viewer: every save on every card, not just the one
+    /** One save with an icon, for the Icon Museum: every save on every card, not just the one
      *  per game a cover uses. */
     class SaveRef(val card: File, val folder: String, val title: String, val serial: String?, val modified: Long)
 
@@ -176,7 +176,7 @@ object MemcardCovers {
     class ShowIcon(val key: String, val title: String, val serial: String? = null, val card: String? = null, val load: () -> Loaded?)
 
     /**
-     * Everything the Icon Viewer shows: every save on every card, newest first, then the icons
+     * Everything the Icon Museum shows: every save on every card, newest first, then the icons
      * found on the discs of games with no save, by name. [titles] maps serials to the library's
      * names; a save keeps its own ("Adventure Slot 2"), it says which save it is. Reads the cards.
      */

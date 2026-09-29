@@ -1653,7 +1653,7 @@ private fun LibraryOverflowMenu(
         }
         OverflowSeparator()
         // Memory card covers, a section of its own: each game's PS2 save icon, from the player's own
-        // cards, as its cover (Off / Animated / Still, cycling like Cover region), the Icon Viewer,
+        // cards, as its cover (Off / Animated / Still, cycling like Cover region), the Icon Museum,
         // and a note on how it works.
         Text(
             text = str("games.section.memcardCovers"),
@@ -1688,10 +1688,14 @@ private fun LibraryOverflowMenu(
                 }
             }
         }
-        LibraryOverflowItem(glyph = "◈", label = str("games.overflow.iconViewer")) {
+        LibraryOverflowItem(
+            glyph = "🏛",
+            label = str("games.overflow.iconViewer"),
+            iconRes = com.armsx2.R.drawable.ic_museum,
+        ) {
             closeThen { MemcardIconViewerState.open.value = true }
         }
-        // Spin or No spin: whether moving icons turn, in the library, the viewer and the
+        // Spin or No spin: whether moving icons turn, in the library, the Icon Museum and the
         // screensaver. Their own animations play either way.
         run {
             val spin = com.armsx2.memcard.MemcardCovers.spin.value
@@ -2133,7 +2137,7 @@ private fun GameCover(
     // would show at once.
     val moving = memcard != null && com.armsx2.memcard.MemcardCovers.animate.value &&
         com.armsx2.runtime.MainActivityRuntime.eState.value == com.armsx2.EmuState.STOPPED &&
-        // Nothing to see under the screensaver or the Icon Viewer, so no frames drawn for it.
+        // Nothing to see under the screensaver or the Icon Museum, so no frames drawn for it.
         !LibraryScreensaver.showing.value && !MemcardIconViewerState.open.value
     // On the GPU a reflection draws the icon itself (the same key, so the same clock: it moves in
     // step, for next to nothing); the software renderer's reflection reuses the tile's frames.

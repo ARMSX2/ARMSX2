@@ -1,0 +1,31 @@
+<!-- The Icon Museum's row in the library menu: a classical museum front, a pediment over four
+     columns on a base. Drawn for ARMSX2 in the stroke style of ic_power, since no museum character
+     is in the bundled font (U+1F3DB would fall back to a colour emoji or a tofu box). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFFFF">
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M3 9.5L12 4l9 5.5z" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M6 12.5v5M10 12.5v5M14 12.5v5M18 12.5v5" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M3 20.5h18" />
+</vector>

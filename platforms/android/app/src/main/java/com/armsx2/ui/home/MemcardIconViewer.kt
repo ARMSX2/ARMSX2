@@ -47,7 +47,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Whether the Icon Viewer is open; set from the library's overflow menu. */
+/** Whether the Icon Museum is open; set from the library's overflow menu. */
 internal object MemcardIconViewerState {
     val open = mutableStateOf(false)
     /** The "MC Icon Info" note. */
@@ -93,7 +93,7 @@ internal fun MemcardCoversInfo(onClose: () -> Unit) {
 }
 
 /**
- * Icon Viewer: every save icon on the player's memory cards, one at a time, full screen and
+ * Icon Museum: every save icon on the player's memory cards, one at a time, full screen and
  * moving, each on its own icon.sys background with its title. Like ARMSX3's theme preview, it is
  * for looking at them without the library in the way. Swipe or press left and right to go
  * through them; Back closes it.
