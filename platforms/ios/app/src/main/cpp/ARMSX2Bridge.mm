@@ -398,6 +398,35 @@ static bool ARMSX2SaveStateIdentityMatches(const std::string& serial, u32 crc)
 
 // The core moves the old state to .backup before it writes, so a failed write leaves the slot
 // empty. RENAME_EXCL never replaces a file that is there after all.
+/// Identifies one file on disk, so an undo only touches the file it recorded.
+static NSString* ARMSX2FileToken(const std::string& path)
+{
+    struct stat info{};
+    if (path.empty() || stat(path.c_str(), &info) != 0)
+        return nil;
+    return [NSString stringWithFormat:@"%llu:%ld.%ld", static_cast<unsigned long long>(info.st_ino),
+        static_cast<long>(info.st_mtimespec.tv_sec), static_cast<long>(info.st_mtimespec.tv_nsec)];
+}
+
+/// A deleted state waits under this name until its undo runs out. No lookup matches it.
+static std::string ARMSX2HeldPath(const std::string& path)
+{
+    return path + ".held";
+}
+
+/// Puts a held state back if its slot is still empty. Never replaces a file.
+static bool ARMSX2RestoreHeldSaveState(const std::string& path)
+{
+    bool restored = true;
+    for (const std::string& file : {path, path + ".backup"})
+    {
+        const std::string held = ARMSX2HeldPath(file);
+        if (FileSystem::FileExists(held.c_str()))
+            restored = renamex_np(held.c_str(), file.c_str(), RENAME_EXCL) == 0 && restored;
+    }
+    return restored;
+}
+
 static void ARMSX2RestoreSaveStateBackup(const std::string& path)
 {
     const std::string backup = path + ".backup";
@@ -1105,7 +1134,13 @@ void ARMSX2IOSCompleteGameBoot(const std::string& game, bool loadLastSaveState)
     // before the first Execute(), so this is the one safe point to put it back.
     VMManager::WaitForSaveStateFlush();
     for (s32 slot = VMManager::SAVESTATE_SLOT_AUTOSAVE; slot <= VMManager::NUM_SAVE_STATE_SLOTS; ++slot)
-        ARMSX2RestoreSaveStateBackup(VMManager::GetSaveStateFileName(serial.c_str(), crc, slot));
+    {
+        const std::string path = VMManager::GetSaveStateFileName(serial.c_str(), crc, slot);
+        // A delete whose undo was cut short by a crash is kept, not finished.
+        if (!FileSystem::FileExists(path.c_str()))
+            ARMSX2RestoreHeldSaveState(path);
+        ARMSX2RestoreSaveStateBackup(path);
+    }
 
     if (!loadLastSaveState || !g_p44_settings_interface->GetBoolValue(
             "ARMSX2iOS/Boot", "AutomaticLoadLastSaveState", false))
@@ -3545,8 +3580,11 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     };
 
     for (s32 slot = VMManager::SAVESTATE_SLOT_AUTOSAVE; slot <= VMManager::NUM_SAVE_STATE_SLOTS; slot++) {
-        removePath(VMManager::GetSaveStateFileName(entry.serial.c_str(), entry.crc, slot));
-        removePath(VMManager::GetSaveStateFileName(entry.serial.c_str(), entry.crc, slot, true));
+        const std::string path = VMManager::GetSaveStateFileName(entry.serial.c_str(), entry.crc, slot);
+        removePath(path);
+        removePath(path + ".backup");
+        removePath(ARMSX2HeldPath(path));
+        removePath(ARMSX2HeldPath(path + ".backup"));
     }
 
     removePath(Patch::GetPnachFilename(entry.serial, entry.crc, true));
@@ -4907,15 +4945,16 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
     return slots;
 }
 
-+ (void)saveStateToSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion {
++ (void)saveStateToSlot:(NSInteger)slot
+             completion:(nullable void (^)(BOOL saved, NSString *_Nullable backupToken))completion {
     const s32 nativeSlot = static_cast<s32>(slot);
-    ARMSX2SaveStateCompletion callback = [completion copy];
+    void (^callback)(BOOL, NSString*) = [completion copy];
     std::string serial;
     u32 crc = 0;
     if (nativeSlot < 0 || nativeSlot > VMManager::NUM_SAVE_STATE_SLOTS || !ARMSX2GetCurrentSaveStateIdentity(&serial, &crc)) {
         NSLog(@"[ARMSX2 iOS SaveState] save rejected slot=%d validGame=0", nativeSlot);
         if (callback)
-            dispatch_async(dispatch_get_main_queue(), ^{ callback(NO); });
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(NO, nil); });
         return;
     }
 
@@ -4965,79 +5004,196 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
         }
         if (!result && existed)
             ARMSX2RestoreSaveStateBackup(targetPath);
+        // Only a save over an existing state moves one to .backup; that one is what Undo brings back.
+        NSString* backupToken = result && existed ? ARMSX2FileToken(targetPath + ".backup") : nil;
 
         NSLog(@"[ARMSX2 iOS SaveState] save finished slot=%d result=%d exists=%d",
               nativeSlot, result ? 1 : 0, (!targetPath.empty() && FileSystem::FileExists(targetPath.c_str())) ? 1 : 0);
 
         if (callback)
-            dispatch_async(dispatch_get_main_queue(), ^{ callback(result ? YES : NO); });
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(result ? YES : NO, backupToken); });
     });
 }
 
-+ (void)loadStateFromSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion {
++ (void)loadStateFromSlot:(NSInteger)slot
+         expectedModified:(nullable NSDate *)expectedModified
+              keepingUndo:(BOOL)keepingUndo
+               completion:(nullable void (^)(BOOL loaded, NSString *_Nullable undoPath))completion {
     const s32 nativeSlot = static_cast<s32>(slot);
-    ARMSX2SaveStateCompletion callback = [completion copy];
+    void (^callback)(BOOL, NSString*) = [completion copy];
     std::string serial;
     u32 crc = 0;
     if (nativeSlot < VMManager::SAVESTATE_SLOT_AUTOSAVE || nativeSlot == -1 ||
         nativeSlot > VMManager::NUM_SAVE_STATE_SLOTS || !ARMSX2GetCurrentSaveStateIdentity(&serial, &crc)) {
         NSLog(@"[ARMSX2 iOS SaveState] load rejected slot=%d validGame=0", nativeSlot);
         if (callback)
-            dispatch_async(dispatch_get_main_queue(), ^{ callback(NO); });
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(NO, nil); });
         return;
     }
 
     const std::string targetPath = VMManager::GetSaveStateFileName(serial.c_str(), crc, nativeSlot);
-    NSLog(@"[ARMSX2 iOS SaveState] load requested slot=%d path=%@ exists=%d",
-          nativeSlot, ARMSX2NSStringFromStdString(targetPath), (!targetPath.empty() && FileSystem::FileExists(targetPath.c_str())) ? 1 : 0);
+    // No serial in the name: Clear Cache removes temporary files that carry one.
+    NSString* undoPath = keepingUndo ? [NSTemporaryDirectory() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"ARMSX2-undo-load-%@.p2s", [[NSUUID UUID] UUIDString]]] : nil;
+    NSLog(@"[ARMSX2 iOS SaveState] load requested slot=%d path=%@ undo=%d",
+          nativeSlot, ARMSX2NSStringFromStdString(targetPath), keepingUndo ? 1 : 0);
 
     dispatch_async(ARMSX2SaveStateQueue(), ^{
+        // By value: the main-queue block below outlives this one.
+        auto finish = [callback, undoPath](bool loaded) {
+            void (^reply)(BOOL, NSString*) = callback;
+            NSString* undo = loaded ? undoPath : nil;
+            if (!loaded && undoPath)
+                [[NSFileManager defaultManager] removeItemAtPath:undoPath error:nil];
+            if (reply)
+                dispatch_async(dispatch_get_main_queue(), ^{ reply(loaded ? YES : NO, undo); });
+        };
         if (ARMSX2RetroAchievementsHardcoreActive()) {
             NSLog(@"[ARMSX2 iOS SaveState] load rejected slot=%d reason=hardcore-active", nativeSlot);
-            std::fprintf(stderr, "@@IOS_SAVESTATE_LOAD_BLOCKED@@ slot=%d reason=hardcore-active\n", nativeSlot);
-            std::fflush(stderr);
-            if (callback)
-                dispatch_async(dispatch_get_main_queue(), ^{ callback(NO); });
+            finish(false);
             return;
         }
 
-        bool result = false;
-        bool flushResult = false;
         VMManager::WaitForSaveStateFlush();
+        // An automatic save queued ahead of this load may have replaced the state that was shown.
+        if (expectedModified) {
+            struct stat info{};
+            const double modified = stat(targetPath.c_str(), &info) == 0
+                ? info.st_mtimespec.tv_sec + info.st_mtimespec.tv_nsec / 1e9 : 0;
+            if (std::fabs(modified - expectedModified.timeIntervalSince1970) >= 1) {
+                NSLog(@"[ARMSX2 iOS SaveState] load rejected slot=%d reason=state-changed", nativeSlot);
+                finish(false);
+                return;
+            }
+        }
+
+        bool flushResult = false;
         Host::RunOnCPUThread([serial, crc, &flushResult]() {
             flushResult = ARMSX2SaveStateIdentityMatches(serial, crc) &&
                 ARMSX2FlushNVRAMAndMemoryCards("pre-load-state");
         }, true);
-
-        NSInteger backupCount = 0;
         if (flushResult)
-            backupCount = ARMSX2BackupAssignedMemoryCards("pre-load-state", nativeSlot, serial, crc);
+            ARMSX2BackupAssignedMemoryCards("pre-load-state", nativeSlot, serial, crc);
 
-        Host::RunOnCPUThread([nativeSlot, serial, crc, flushResult, &result]() {
-            NSLog(@"[ARMSX2 iOS SaveState] CPU load start slot=%d", nativeSlot);
-            if (!flushResult || !ARMSX2SaveStateIdentityMatches(serial, crc)) {
-                NSLog(@"[ARMSX2 iOS SaveState] CPU load rejected slot=%d reason=pre-load-flush-failed", nativeSlot);
-                result = false;
+        bool result = false;
+        Host::RunOnCPUThread([nativeSlot, serial, crc, flushResult, undoPath, &result]() {
+            if (!flushResult || !ARMSX2SaveStateIdentityMatches(serial, crc) || MemcardBusy::IsBusy()) {
+                NSLog(@"[ARMSX2 iOS SaveState] CPU load rejected slot=%d", nativeSlot);
                 return;
             }
-
-            if (MemcardBusy::IsBusy()) {
-                NSLog(@"[ARMSX2 iOS SaveState] CPU load rejected slot=%d reason=memory-card-busy", nativeSlot);
-                result = false;
-                return;
+            if (undoPath) {
+                std::string undoError;
+                VMManager::SaveState(undoPath.fileSystemRepresentation, false, false,
+                    [&undoError](const std::string& error) { undoError = error; });
+                if (!undoError.empty() || !FileSystem::FileExists(undoPath.fileSystemRepresentation)) {
+                    NSLog(@"[ARMSX2 iOS SaveState] CPU load cancelled slot=%d reason=undo-state-failed", nativeSlot);
+                    return;
+                }
             }
-
             result = VMManager::LoadStateFromSlot(nativeSlot);
             // Its message names slot -2 or 0; the app says what was loaded.
             Host::RemoveKeyedOSDMessage("LoadStateFromSlot");
             NSLog(@"[ARMSX2 iOS SaveState] CPU load finished slot=%d result=%d", nativeSlot, result ? 1 : 0);
         }, true);
+        finish(result);
+    });
+}
 
-        NSLog(@"[ARMSX2 iOS SaveState] load callback slot=%d result=%d memcardBackups=%ld",
-              nativeSlot, result ? 1 : 0, static_cast<long>(backupCount));
-
++ (void)undoLoadStateFromPath:(nonnull NSString *)path completion:(nullable ARMSX2SaveStateCompletion)completion {
+    ARMSX2SaveStateCompletion callback = [completion copy];
+    std::string serial;
+    u32 crc = 0;
+    const bool validGame = ARMSX2GetCurrentSaveStateIdentity(&serial, &crc);
+    dispatch_async(ARMSX2SaveStateQueue(), ^{
+        bool result = false;
+        VMManager::WaitForSaveStateFlush();
+        if (validGame && FileSystem::FileExists(path.fileSystemRepresentation)) {
+            // No memory card backup here: undoing a load doubled them and pruned older ones away.
+            Host::RunOnCPUThread([serial, crc, path, &result]() {
+                if (!ARMSX2SaveStateIdentityMatches(serial, crc) || MemcardBusy::IsBusy() ||
+                    !FileSystem::FileExists(path.fileSystemRepresentation))
+                    return;
+                Error error;
+                result = VMManager::LoadState(path.fileSystemRepresentation, &error);
+            }, true);
+        }
+        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
         if (callback)
             dispatch_async(dispatch_get_main_queue(), ^{ callback(result ? YES : NO); });
+    });
+}
+
++ (void)discardUndoLoadStateAtPath:(nonnull NSString *)path {
+    dispatch_async(ARMSX2SaveStateQueue(), ^{
+        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+    });
+}
+
+/// Runs `body` on the save-state queue with the path of the running game's slot.
+static void ARMSX2WithSaveStateSlotPath(NSInteger slot, ARMSX2SaveStateCompletion completion,
+    bool (^body)(const std::string& path))
+{
+    ARMSX2SaveStateCompletion callback = [completion copy];
+    std::string serial;
+    u32 crc = 0;
+    const s32 nativeSlot = static_cast<s32>(slot);
+    if (nativeSlot < VMManager::SAVESTATE_SLOT_AUTOSAVE || nativeSlot == -1 ||
+        nativeSlot > VMManager::NUM_SAVE_STATE_SLOTS || !ARMSX2GetCurrentSaveStateIdentity(&serial, &crc)) {
+        if (callback)
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(NO); });
+        return;
+    }
+    const std::string path = VMManager::GetSaveStateFileName(serial.c_str(), crc, nativeSlot);
+    dispatch_async(ARMSX2SaveStateQueue(), ^{
+        VMManager::WaitForSaveStateFlush();
+        const bool result = body(path);
+        if (callback)
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(result ? YES : NO); });
+    });
+}
+
++ (void)deleteSaveStateInSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion {
+    ARMSX2WithSaveStateSlotPath(slot, completion, ^bool(const std::string& path) {
+        const std::string held = ARMSX2HeldPath(path);
+        if (renamex_np(path.c_str(), held.c_str(), RENAME_EXCL) != 0)
+            return false;
+        const std::string backup = path + ".backup";
+        if (FileSystem::FileExists(backup.c_str()))
+            renamex_np(backup.c_str(), ARMSX2HeldPath(backup).c_str(), RENAME_EXCL);
+        NSLog(@"[ARMSX2 iOS SaveState] delete held path=%@", ARMSX2NSStringFromStdString(path));
+        return true;
+    });
+}
+
++ (void)restoreDeletedSaveStateInSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion {
+    ARMSX2WithSaveStateSlotPath(slot, completion, ^bool(const std::string& path) {
+        return !FileSystem::FileExists(path.c_str()) && ARMSX2RestoreHeldSaveState(path);
+    });
+}
+
++ (void)finishDeletingSaveStateInSlot:(NSInteger)slot {
+    ARMSX2WithSaveStateSlotPath(slot, nil, ^bool(const std::string& path) {
+        FileSystem::DeleteFilePath(ARMSX2HeldPath(path).c_str());
+        FileSystem::DeleteFilePath(ARMSX2HeldPath(path + ".backup").c_str());
+        return true;
+    });
+}
+
++ (void)undoSaveOverInSlot:(NSInteger)slot backupToken:(nonnull NSString *)backupToken
+                completion:(nullable ARMSX2SaveStateCompletion)completion {
+    ARMSX2WithSaveStateSlotPath(slot, completion, ^bool(const std::string& path) {
+        const std::string backup = path + ".backup";
+        const std::string held = ARMSX2HeldPath(path);
+        // Another save since then replaced the backup; putting it back would lose that save.
+        if (![ARMSX2FileToken(backup) isEqualToString:backupToken] ||
+            renamex_np(path.c_str(), held.c_str(), RENAME_EXCL) != 0)
+            return false;
+        if (renamex_np(backup.c_str(), path.c_str(), RENAME_EXCL) != 0) {
+            renamex_np(held.c_str(), path.c_str(), RENAME_EXCL);
+            return false;
+        }
+        FileSystem::DeleteFilePath(held.c_str());
+        return true;
     });
 }
 

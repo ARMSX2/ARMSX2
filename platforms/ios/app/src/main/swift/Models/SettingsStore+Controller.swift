@@ -13,6 +13,7 @@ extension SettingsStore {
         case .decreaseSpeed: controllerMacroDecreaseSpeed
         case .enableFastForward: controllerMacroEnableFastForward
         case .disableFastForward: controllerMacroDisableFastForward
+        case .undoSaveState: controllerMacroUndoSaveState
         }
     }
 
@@ -28,6 +29,7 @@ extension SettingsStore {
         case .decreaseSpeed: controllerMacroDecreaseSpeed = binding
         case .enableFastForward: controllerMacroEnableFastForward = binding
         case .disableFastForward: controllerMacroDisableFastForward = binding
+        case .undoSaveState: controllerMacroUndoSaveState = binding
         }
         synchronizeControllerMacroGameplayInput()
     }

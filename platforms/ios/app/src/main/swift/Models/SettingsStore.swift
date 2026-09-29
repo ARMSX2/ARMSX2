@@ -1448,6 +1448,13 @@ final class SettingsStore {
     var controllerMacroDisableFastForward = ControllerMacroAction.disableFastForward.defaultBinding {
         didSet { commit(_controllerMacroDisableFastForwardConfig, controllerMacroDisableFastForward) }
     }
+    let _controllerMacroUndoSaveStateConfig = Setting<ControllerMacroBinding>(
+        section: "ARMSX2iOS/Gamepad", key: "MacroUndoSaveState",
+        default: ControllerMacroAction.undoSaveState.defaultBinding,
+        suppressible: false, codec: .rawString)
+    var controllerMacroUndoSaveState = ControllerMacroAction.undoSaveState.defaultBinding {
+        didSet { commit(_controllerMacroUndoSaveStateConfig, controllerMacroUndoSaveState) }
+    }
 
     let _autoOpenStikDebugConfig = Setting<Bool>(
         section: "ARMSX2iOS/JIT", key: "AutoOpenStikDebug", default: false,
@@ -2253,6 +2260,7 @@ final class SettingsStore {
         controllerMacroDecreaseSpeed = _controllerMacroDecreaseSpeedConfig.load()
         controllerMacroEnableFastForward = _controllerMacroEnableFastForwardConfig.load()
         controllerMacroDisableFastForward = _controllerMacroDisableFastForwardConfig.load()
+        controllerMacroUndoSaveState = _controllerMacroUndoSaveStateConfig.load()
         autoOpenStikDebug = _autoOpenStikDebugConfig.load()
         // Not load(): older builds wrote names this enum no longer spells that way.
         jitScriptProtocol = Self.loadedJITScriptProtocol()

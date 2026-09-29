@@ -1,7 +1,13 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "%1$@ %2$@. Undo is available." : {
+      "extractionState" : "manual"
+    },
     "%1$@ saves · %2$@ loads" : {
+      "extractionState" : "manual"
+    },
+    "%1$@ · Slot %2$d" : {
       "extractionState" : "manual"
     },
     "%1$d/%2$d" : {
@@ -236,6 +242,9 @@
           }
         }
       }
+    },
+    "%@ to undo" : {
+      "extractionState" : "manual"
     },
     "%@: ISO, CHD, BIN, CSO, ZSO, GZ, ELF" : {
       "comment" : "A label that describes the supported game file formats.",
@@ -4431,6 +4440,12 @@
         }
       }
     },
+    "Could not delete this save." : {
+      "extractionState" : "manual"
+    },
+    "Could not undo." : {
+      "extractionState" : "manual"
+    },
     "Cover Colours in Game Menus" : {
       "extractionState" : "manual"
     },
@@ -5576,6 +5591,9 @@
           }
         }
       }
+    },
+    "Deleted" : {
+      "extractionState" : "manual"
     },
     "Deletes downloaded achievement images and other files the emulator can rebuild." : {
       "extractionState" : "manual",
@@ -19343,6 +19361,9 @@
     "Replace it, or keep both copies?" : {
 
     },
+    "Replaced" : {
+      "extractionState" : "manual"
+    },
     "Requires an identified game CRC" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -23214,6 +23235,9 @@
         }
       }
     },
+    "Square: rename, lock, delete" : {
+      "extractionState" : "manual"
+    },
     "Start" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -26242,6 +26266,15 @@
         }
       }
     },
+    "Undo delete of %@" : {
+      "extractionState" : "manual"
+    },
+    "Undo load of %@" : {
+      "extractionState" : "manual"
+    },
+    "Undo save over %@" : {
+      "extractionState" : "manual"
+    },
     "Unknown" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -26313,6 +26346,9 @@
       }
     },
     "Unlock" : {
+      "extractionState" : "manual"
+    },
+    "Unlock to delete" : {
       "extractionState" : "manual"
     },
     "Unlocked" : {

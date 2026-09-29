@@ -278,6 +278,7 @@ enum ControllerMacroAction: String, CaseIterable, Identifiable, Sendable {
     case decreaseSpeed
     case enableFastForward
     case disableFastForward
+    case undoSaveState
 
     var id: String { rawValue }
 
@@ -290,6 +291,7 @@ enum ControllerMacroAction: String, CaseIterable, Identifiable, Sendable {
         case .decreaseSpeed: "Decrease Emulation Speed"
         case .enableFastForward: "Enable Fast Forward (1000%)"
         case .disableFastForward: "Disable Fast Forward (100%)"
+        case .undoSaveState: "Undo Save State"
         }
     }
 
@@ -298,9 +300,9 @@ enum ControllerMacroAction: String, CaseIterable, Identifiable, Sendable {
         case .quickMenu:
             "Opens the Quick Menu while a game is running."
         case .saveGameState:
-            "Creates or replaces the most recent save state."
+            "Saves to Quick Save."
         case .loadGameState:
-            "Loads the most recent save state."
+            "Loads Quick Save."
         case .increaseSpeed:
             "Adds 25% while pressed or held."
         case .decreaseSpeed:
@@ -309,6 +311,8 @@ enum ControllerMacroAction: String, CaseIterable, Identifiable, Sendable {
             "Enables Fast Forward and sets speed to 1000%."
         case .disableFastForward:
             "Disables Fast Forward and restores speed to 100%."
+        case .undoSaveState:
+            "Undoes the last load, delete or save-over while its notice shows. Press Start first."
         }
     }
 
@@ -328,6 +332,8 @@ enum ControllerMacroAction: String, CaseIterable, Identifiable, Sendable {
             ControllerMacroBinding(first: .start, second: .dpadUp)
         case .disableFastForward:
             ControllerMacroBinding(first: .start, second: .dpadDown)
+        case .undoSaveState:
+            ControllerMacroBinding(first: .start, second: .circle)
         }
     }
 
@@ -340,6 +346,7 @@ enum ControllerMacroAction: String, CaseIterable, Identifiable, Sendable {
         case .decreaseSpeed: .decreaseSpeed
         case .enableFastForward: .enableFastForward
         case .disableFastForward: .disableFastForward
+        case .undoSaveState: .undoSaveState
         }
     }
 
@@ -355,6 +362,7 @@ enum EmulationControllerShortcut: Hashable, Sendable {
     case decreaseSpeed
     case enableFastForward
     case disableFastForward
+    case undoSaveState
 }
 
 struct EmulationControllerShortcutRequest: Equatable, Sendable {
@@ -408,6 +416,9 @@ extension EnvironmentValues {
 @MainActor
 @Observable
 final class MenuControllerInputRouter {
+    /// While a save-state Undo is on screen, the macro chord also works over menus.
+    var saveStateUndoPending = false
+    private(set) var saveStateUndoRequest: UInt64 = 0
     private struct NavigationSessionTarget {
         let scopeKey: String
         let priority: Int
@@ -1397,6 +1408,12 @@ final class MenuControllerInputRouter {
         if element === gamepad.buttonA {
             updateButton(.primary, pressed: gamepad.buttonA.isPressed, command: .activate, profileID: profileID)
         } else if element === gamepad.buttonB {
+            // Over a menu, Start then Circle undoes a save-state action instead of going back.
+            if gamepad.buttonB.isPressed, saveStateUndoPending, frontmostManualNavigationCapture == nil,
+               SettingsStore.shared.controllerMacroUndoSaveState.isPressed(on: gamepad) {
+                saveStateUndoRequest &+= 1
+                return
+            }
             updateButton(.secondary, pressed: gamepad.buttonB.isPressed, command: .back, profileID: profileID)
         } else if element === gamepad.buttonX {
             updateButton(.square, pressed: gamepad.buttonX.isPressed, command: .showContextMenu, profileID: profileID)

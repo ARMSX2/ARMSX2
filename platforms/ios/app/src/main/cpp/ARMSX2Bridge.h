@@ -292,8 +292,24 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // Save states
 + (BOOL)hasValidSaveStateGame;
 + (nonnull NSArray<ARMSX2SaveStateSlotInfo *> *)saveStateSlots;
-+ (void)saveStateToSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(saveState(toSlot:completion:));
-+ (void)loadStateFromSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(loadState(fromSlot:completion:));
+/// `backupToken` names the older state the save moved to .backup, or is nil when the slot was empty.
++ (void)saveStateToSlot:(NSInteger)slot
+             completion:(nullable void (^)(BOOL saved, NSString *_Nullable backupToken))completion
+    NS_SWIFT_NAME(saveState(toSlot:completion:));
+/// Refuses when the slot's file is no longer the one last shown. With `keepingUndo`, the moment
+/// before the load is saved to `undoPath` first, and the load is skipped if that fails.
++ (void)loadStateFromSlot:(NSInteger)slot
+         expectedModified:(nullable NSDate *)expectedModified
+              keepingUndo:(BOOL)keepingUndo
+               completion:(nullable void (^)(BOOL loaded, NSString *_Nullable undoPath))completion
+    NS_SWIFT_NAME(loadState(fromSlot:expectedModified:keepingUndo:completion:));
++ (void)undoLoadStateFromPath:(nonnull NSString *)path completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(undoLoadState(fromPath:completion:));
++ (void)discardUndoLoadStateAtPath:(nonnull NSString *)path NS_SWIFT_NAME(discardUndoLoadState(atPath:));
+/// Delete holds the state beside the slot until `finishDeletingSaveStateInSlot`, so it can be undone.
++ (void)deleteSaveStateInSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(deleteSaveState(inSlot:completion:));
++ (void)restoreDeletedSaveStateInSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(restoreDeletedSaveState(inSlot:completion:));
++ (void)finishDeletingSaveStateInSlot:(NSInteger)slot NS_SWIFT_NAME(finishDeletingSaveState(inSlot:));
++ (void)undoSaveOverInSlot:(NSInteger)slot backupToken:(nonnull NSString *)backupToken completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(undoSaveOver(inSlot:backupToken:completion:));
 /// Seconds played in the running game: the played-time file plus this session.
 + (double)currentGamePlayedSeconds;
 

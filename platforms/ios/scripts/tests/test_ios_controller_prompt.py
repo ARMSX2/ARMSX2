@@ -42,10 +42,6 @@ class ControllerPromptDialogs(unittest.TestCase):
         self.assertIn("ControllerPrompt.shared.answer(index)", root)
         self.assertIn("ControllerPrompt.shared.answer(nil)", root)
 
-    def test_save_states_overwrite_asks_through_the_prompt(self):
-        game = without_comments(read(VIEWS / "GameScreenView.swift"))
-        self.assertIn('.controllerPrompt(\n                "\\(settings.localized("Overwrite Slot"))', game)
-
 
 if __name__ == "__main__":
     unittest.main()

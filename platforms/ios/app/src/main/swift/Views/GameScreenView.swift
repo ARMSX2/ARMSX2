@@ -221,36 +221,14 @@ private struct GameScreenSizePreferenceKey: PreferenceKey {
     }
 }
 
-/// Single source of truth for the in-game overlay stack, replacing the previous set of
-/// independent per-screen `@State` booleans.
-///
-/// - `.hidden`: gameplay; the VM is running and no overlay is up.
-/// - `.paused`: the pause-menu card is visible.
-/// - `.pausedPresenting`: the pause menu is logically open *underneath* a child screen (a
-///   sheet, the pad-layout overlay, the per-game settings overlay, or the reset alert). The
-///   pause card itself is not rendered in this state; the child covers the screen.
-///
-/// Dismissing any pause-launched child returns to `.paused` (never to `.hidden`), so closing
-/// Save States / Per-Game Settings / Cheats / RetroAchievements / Pad Layout / Reset ROM lands
-/// back on the pause menu instead of resuming gameplay. `Resume`, Back to Menu, Reset ROM and
-/// restart-with-disc are the only intentional paths to `.hidden`.
+/// The in-game overlay stack. `.hidden` is gameplay, `.paused` shows the pause card, and
+/// `.pausedPresenting` keeps the pause menu open under a child screen that covers it.
+/// Closing a child returns to `.paused`. Resume, Back to Menu, Reset ROM, restart with a
+/// disc and loading a save state return to gameplay.
 private enum OverlayRoute: Equatable {
     case hidden
     case paused
     case pausedPresenting(QuickMenuDestination)
-}
-
-private enum SaveStateShortcutPrompt: Equatable {
-    case create(slot: Int)
-    case replace(slot: Int)
-    case load(slot: Int)
-}
-
-private enum SaveStateSlotPickerPurpose: String, Equatable, Identifiable {
-    case save
-    case load
-
-    var id: String { rawValue }
 }
 
 /// Gameplay presentation used after Emulation-Only Mode finishes startup cleanup.
@@ -429,9 +407,8 @@ struct GameScreenView: View {
     @StateObject private var statusBanner = TransientBannerController<String>(defaultDisplayDuration: Self.briefStatusDisplayDuration)
     @StateObject private var achievementsBanner = TransientBannerController<RetroAchievementsToast>(defaultDisplayDuration: Self.retroAchievementsToastDisplayDuration, queuesConcurrentPresentations: true)
     @State private var runtimeOverlayPauseActive = false
-    @State private var saveStateShortcutPrompt: SaveStateShortcutPrompt?
-    @State private var saveStateShortcutSlotPicker: SaveStateSlotPickerPurpose?
     @State private var saveStateShortcutOperationActive = false
+    @State private var saveStateUndo = SaveStateUndoModel()
     @State private var runtimeShortcutSpeedPercent: Int?
     @State private var previousHideHomeIndicator = false
     @State private var previousHideStatusBar = false
@@ -456,10 +433,6 @@ struct GameScreenView: View {
     private static let briefStatusDisplayDuration: TimeInterval = 2.2
     private static let importantStatusDisplayDuration: TimeInterval = 6.0
     private static let retroAchievementsToastDisplayDuration: TimeInterval = 5.0
-    private static let replaceLastSaveStateAlwaysKey =
-        "ARMSX2iOSReplaceLastSaveStateAlways"
-    private static let loadLastSaveStateAlwaysKey =
-        "ARMSX2iOSLoadLastSaveStateAlways"
 
     private var displaySafeAreaInsets: UIEdgeInsets {
         UIApplication.shared.appWindowScene?.windows.first?.safeAreaInsets ?? .zero
@@ -589,6 +562,7 @@ struct GameScreenView: View {
                 GameOverlayContainer(frameMode: .landscapePanel, ipadPortraitHeightCap: .infinity) { metrics in
                     SaveStatesPanel(
                         settings: settings,
+                        undo: saveStateUndo,
                         variant: metrics.variant,
                         landscape: screenIsLandscape,
                         gameTitle: currentRuntimeGameName(),
@@ -775,35 +749,13 @@ struct GameScreenView: View {
             // Off the safe region, not the preference: the status bar moves one, not the other.
             .onChange(of: geo.size) { _, _ in syncFullscreenStateFromWindow() }
         }
-        // A presented gameplay overlay owns controller and accessibility focus.
-        // Hide the emulation surface beneath it so window-level native fallback
-        // discovery cannot select covered virtual-pad or menu-button controls.
-        .accessibilityHidden(
-            overlayRoute != .hidden
-                || saveStateShortcutPrompt != nil
-                || saveStateShortcutSlotPicker != nil
-        )
+        // An overlay owns focus; the pad and menu button under it stay out of reach.
+        .accessibilityHidden(overlayRoute != .hidden)
         .onPreferenceChange(GameScreenSizePreferenceKey.self) { size in
             // The window, so only a real rotation reaches this.
             let landscape = size.width > size.height
             if screenIsLandscape != landscape {
                 screenIsLandscape = landscape
-            }
-        }
-        .sheet(
-            item: $saveStateShortcutSlotPicker,
-            onDismiss: {
-                updateRuntimeOverlayPause()
-                updateRuntimeControllerMenuOwnership()
-            }
-        ) { purpose in
-            SaveStateSlotPickerPanel(mode: purpose) { message, isImportant in
-                presentStatusMessage(
-                    message,
-                    displayDuration: isImportant
-                        ? Self.importantStatusDisplayDuration
-                        : Self.briefStatusDisplayDuration
-                )
             }
         }
         .sheet(isPresented: childPresentedBinding(.speed)) {
@@ -851,45 +803,7 @@ struct GameScreenView: View {
                     .transition(.identity)
             }
         }
-        .overlay {
-            if let prompt = saveStateShortcutPrompt {
-                ControllerNavigationAlert(
-                    title: saveStateShortcutPromptTitle(prompt),
-                    message: saveStateShortcutPromptMessage(prompt),
-                    actions: saveStateShortcutPromptActions(prompt),
-                    // The action after Cancel: Create, Replace or Load.
-                    selectedIndex: 1,
-                    onSelect: { index in
-                        handleSaveStateShortcutPromptSelection(
-                            prompt,
-                            index: index
-                        )
-                    },
-                    onDismiss: cancelSaveStateShortcutPrompt
-                )
-                .controllerAccessibilityNavigation(
-                    controllerInput: controllerInput,
-                    scopeKey: "runtime.last-save-state-confirmation",
-                    priority: 340,
-                    orbStyle: .plain,
-                    onBack: {
-                        cancelSaveStateShortcutPrompt()
-                        return true
-                    },
-                    usesExplicitTargetGeometryOnly: true,
-                    preferredInitialFocusLabel: saveStateShortcutPromptActions(prompt)[1].title
-                )
-                .task(id: prompt) {
-                    // Registering is passive, so the ring waited for a press. Enter now.
-                    await Task.yield()
-                    guard !Task.isCancelled else { return }
-                    _ = controllerInput?.requestNavigationSessionEntry(
-                        preferLast: false,
-                        matchingScopePrefix: "runtime.last-save-state-confirmation"
-                    )
-                }
-            }
-        }
+        .overlay(alignment: .top) { saveStateUndoOverlay }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: overlayRoute)
         .onAppear {
             let nativeEmulationOnlyMode = ARMSX2Bridge.isEmulationOnlyModeActive()
@@ -919,10 +833,7 @@ struct GameScreenView: View {
             cancelMenuButtonReveal()
             leaveGameplaySystemChromeMode()
         }
-        // Single chokepoint for runtime pause: VM pause derives only from `overlayRoute`
-        // (any non-hidden route keeps the VM paused), so one observer covers every child
-        // open/dismiss regardless of which screen it was. This replaces the seven per-screen
-        // observers that existed for the old independent booleans.
+        // VM pause follows `overlayRoute` alone: any route but `.hidden` keeps it paused.
         .onChange(of: overlayRoute) { _, route in
             if route == .hidden { pauseMenuChild = nil }
             if route == .paused {
@@ -934,22 +845,12 @@ struct GameScreenView: View {
             updateRuntimeControllerMenuOwnership()
             scheduleInactiveQuickMenuResourceRelease(for: route)
         }
-        .onChange(of: saveStateShortcutPrompt) { _, _ in
-            updateRuntimeOverlayPause()
-            updateRuntimeControllerMenuOwnership()
-        }
-        .onChange(of: saveStateShortcutSlotPicker) { _, _ in
-            updateRuntimeOverlayPause()
-            updateRuntimeControllerMenuOwnership()
-        }
         .onChange(of: saveStateShortcutOperationActive) { _, _ in
             updateRuntimeOverlayPause()
         }
         .onChange(of: controllerInput?.latestQuickPauseRequest) { _, request in
             guard request != nil,
                   overlayRoute == .hidden,
-                  saveStateShortcutPrompt == nil,
-                  saveStateShortcutSlotPicker == nil,
                   !saveStateShortcutOperationActive else { return }
             if settings.hapticFeedback { HapticManager.medium.impactOccurred() }
             controllerInput?.setMenuActive(true)
@@ -1568,10 +1469,7 @@ struct GameScreenView: View {
     }
 
     private func updateRuntimeOverlayPause() {
-        // Pause derives centrally from the visible overlay or a save-state
-        // shortcut transaction. Keeping the operation flag active until its
-        // completion prevents gameplay from resuming between confirmation and
-        // the CPU-thread save/load work.
+        // A save-state macro keeps the VM paused until its CPU-thread work is done.
         let perGameEditorIsVisible: Bool
         if case .pausedPresenting(let destination) = overlayRoute {
             perGameEditorIsVisible = destination == .perGame
@@ -1583,8 +1481,6 @@ struct GameScreenView: View {
         let previewRunsGame = perGameEditorIsVisible
             && runtimePerGameLivePreviewPresentation.runsGame
         let shouldPause = (overlayRoute != .hidden && !previewRunsGame)
-            || saveStateShortcutPrompt != nil
-            || saveStateShortcutSlotPicker != nil
             || saveStateShortcutOperationActive
         guard runtimeOverlayPauseActive != shouldPause else { return }
 
@@ -1694,11 +1590,7 @@ struct GameScreenView: View {
     }
 
     private func updateRuntimeControllerMenuOwnership() {
-        controllerInput?.setMenuActive(
-            overlayRoute != .hidden
-                || saveStateShortcutPrompt != nil
-                || saveStateShortcutSlotPicker != nil
-        )
+        controllerInput?.setMenuActive(overlayRoute != .hidden)
     }
 
     /// Routes a pause-menu destination to the overlay FSM. `.perGame` needs the VM-safe
@@ -2272,8 +2164,6 @@ struct GameScreenView: View {
         _ shortcut: EmulationControllerShortcut
     ) {
         guard overlayRoute == .hidden,
-              saveStateShortcutPrompt == nil,
-              saveStateShortcutSlotPicker == nil,
               !saveStateShortcutOperationActive,
               ARMSX2Bridge.isVMRunning() else { return }
 
@@ -2302,6 +2192,8 @@ struct GameScreenView: View {
             runtimeShortcutSpeedPercent = 100
             settings.setRuntimeFastForwardEnabled(false)
             presentStatusMessage(settings.localized("Fast Forward: OFF (100%)"))
+        case .undoSaveState:
+            undoSaveStateAction()
         }
     }
 
@@ -2338,9 +2230,35 @@ struct GameScreenView: View {
         return nextPercent
     }
 
+    /// Over gameplay the toast sits at the top; inside Save States, at the bottom of the panel.
+    @ViewBuilder
+    private var saveStateUndoOverlay: some View {
+        Group {
+            if saveStateUndo.item != nil, overlayRoute != .pausedPresenting(.saveStates) {
+                SaveStateUndoToast(
+                    undo: saveStateUndo,
+                    settings: settings,
+                    hint: externalControllerConnected
+                        ? String(format: settings.localized("%@ to undo"), settings.controllerMacroUndoSaveState.title)
+                        : nil,
+                    onUndo: undoSaveStateAction
+                )
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .onChange(of: saveStateUndo.item?.id) { _, id in
+            controllerInput?.saveStateUndoPending = id != nil
+        }
+        .onChange(of: controllerInput?.saveStateUndoRequest) { _, _ in
+            undoSaveStateAction()
+        }
+    }
+
+    /// Saves to Quick Save at once. Saving over the last one leaves it one Undo away.
     private func requestSaveToLastState() {
-        let quick = ARMSX2Bridge.saveStateSlots().first { $0.slot == SaveStateSlot.quickSlot }
-        guard let quick else {
+        guard let quick = ARMSX2Bridge.saveStateSlots().first(where: { $0.slot == SaveStateSlot.quickSlot }) else {
             presentRetroAchievementsToast(
                 title: settings.localized("Save states are not ready yet."),
                 message: settings.localized(
@@ -2351,14 +2269,50 @@ struct GameScreenView: View {
             )
             return
         }
-
-        if quick.occupied, !UserDefaults.standard.bool(forKey: Self.replaceLastSaveStateAlwaysKey) {
-            presentSaveStateShortcutPrompt(.replace(slot: quick.slot))
-        } else {
-            performSaveStateShortcut(slot: quick.slot, replacing: quick.occupied)
+        let previous = SaveStateMetadataStore.shared.metadata(for: SaveStateFile(quick))
+        let fileName = quick.fileName
+        let slot = quick.slot
+        saveStateUndo.finishIfTouching(slot: slot)
+        beginSaveStateShortcutOperation()
+        ARMSX2Bridge.saveState(toSlot: slot) { success, backupToken in
+            Task { @MainActor in
+                finishSaveStateShortcutOperation()
+                guard success,
+                      let saved = ARMSX2Bridge.saveStateSlots().first(where: { $0.slot == slot })
+                        .map(SaveStateFile.init) else {
+                    presentImportantStatusMessage(
+                        "\(settings.localized("Quick Save")): \(settings.localized("Try again after gameplay has fully loaded."))"
+                    )
+                    return
+                }
+                SaveStateMetadataStore.shared.recordSave(
+                    of: saved,
+                    playedSeconds: ARMSX2Bridge.currentGamePlayedSeconds(),
+                    fresh: backupToken == nil
+                )
+                if let backupToken {
+                    showQuickSaveUndo(
+                        .overwrite(slot: slot, backupToken: backupToken, fileName: fileName, previous: previous),
+                        verb: settings.localized("Replaced"),
+                        preview: saved.preview,
+                        undoLabel: "Undo save over %@"
+                    )
+                } else {
+                    presentRetroAchievementsToast(
+                        title: settings.localized("Quick Saved"),
+                        message: settings.localized("Saved State Created"),
+                        badgePath: "",
+                        duration: nil,
+                        categoryTitle: settings.localized("Save Game State"),
+                        symbolName: "square.stack.3d.up.fill",
+                        imageData: saved.preview
+                    )
+                }
+            }
         }
     }
 
+    /// Loads Quick Save at once, keeping the moment before it one Undo away.
     private func requestLoadFromLastState() {
         guard !ARMSX2Bridge.isRetroAchievementsHardcoreActive() else {
             presentRetroAchievementsToast(
@@ -2372,8 +2326,8 @@ struct GameScreenView: View {
             return
         }
 
-        let quick = ARMSX2Bridge.saveStateSlots().first { $0.slot == SaveStateSlot.quickSlot }
-        guard let quick, quick.occupied else {
+        guard let quick = ARMSX2Bridge.saveStateSlots().first(where: { $0.slot == SaveStateSlot.quickSlot }),
+              quick.occupied else {
             presentRetroAchievementsToast(
                 title: settings.localized("No Quick Save yet"),
                 message: settings.localized("Create one by pressing")
@@ -2383,220 +2337,23 @@ struct GameScreenView: View {
             )
             return
         }
-
-        if UserDefaults.standard.bool(forKey: Self.loadLastSaveStateAlwaysKey) {
-            performLoadStateShortcut(slot: quick.slot)
-        } else {
-            presentSaveStateShortcutPrompt(.load(slot: quick.slot))
-        }
-    }
-
-    private func presentSaveStateShortcutPrompt(
-        _ prompt: SaveStateShortcutPrompt
-    ) {
-        saveStateShortcutPrompt = prompt
-        updateRuntimeOverlayPause()
-        updateRuntimeControllerMenuOwnership()
-    }
-
-    private func cancelSaveStateShortcutPrompt() {
-        saveStateShortcutPrompt = nil
-        updateRuntimeOverlayPause()
-        updateRuntimeControllerMenuOwnership()
-    }
-
-    private func saveStateShortcutPromptTitle(
-        _ prompt: SaveStateShortcutPrompt
-    ) -> String {
-        switch prompt {
-        case .create:
-            settings.localized("Create a Saved State?")
-        case .replace:
-            settings.localized("Are you sure to replace last Saved State?")
-        case .load:
-            settings.localized("Load Last Saved State?")
-        }
-    }
-
-    private func saveStateShortcutPromptMessage(
-        _ prompt: SaveStateShortcutPrompt
-    ) -> String {
-        switch prompt {
-        case .create(let slot):
-            "\(settings.localized("No saved states exist. Create one in slot")) \(slot)?"
-        case .replace:
-            settings.localized("This replaces your Quick Save.")
-        case .load:
-            settings.localized("Load your Quick Save?")
-        }
-    }
-
-    private func saveStateShortcutPromptActions(
-        _ prompt: SaveStateShortcutPrompt
-    ) -> [ControllerNavigationAlertAction] {
-        switch prompt {
-        case .create:
-            [
-                .init(id: "cancel", title: settings.localized("Cancel")),
-                .init(id: "create", title: settings.localized("Create")),
-                .init(
-                    id: "save-another",
-                    title: settings.localized("Save Another")
-                ),
-            ]
-        case .replace:
-            [
-                .init(id: "cancel", title: settings.localized("Cancel")),
-                .init(id: "replace", title: settings.localized("Replace")),
-                .init(
-                    id: "save-another",
-                    title: settings.localized("Save Another")
-                ),
-                .init(
-                    id: "replace-always",
-                    title: settings.localized("Replace Always"),
-                    isDestructive: true
-                ),
-            ]
-        case .load:
-            [
-                .init(id: "cancel", title: settings.localized("Cancel")),
-                .init(id: "load", title: settings.localized("Load")),
-                .init(
-                    id: "load-another",
-                    title: settings.localized("Load Another")
-                ),
-                .init(
-                    id: "load-always",
-                    title: settings.localized("Load Always"),
-                    isDestructive: true
-                ),
-            ]
-        }
-    }
-
-    private func handleSaveStateShortcutPromptSelection(
-        _ prompt: SaveStateShortcutPrompt,
-        index: Int
-    ) {
-        guard index > 0 else {
-            cancelSaveStateShortcutPrompt()
-            return
-        }
-
-        switch prompt {
-        case .create(let slot):
-            if index == 1 {
-                performSaveStateShortcut(slot: slot, replacing: false)
-            } else if index == 2 {
-                presentSaveStateSlotPicker(.save)
-            }
-        case .replace(let slot):
-            if index == 2 {
-                presentSaveStateSlotPicker(.save)
-                return
-            }
-            if index == 3 {
-                UserDefaults.standard.set(
-                    true,
-                    forKey: Self.replaceLastSaveStateAlwaysKey
-                )
-            }
-            if index == 1 || index == 3 {
-                performSaveStateShortcut(slot: slot, replacing: true)
-            }
-        case .load(let slot):
-            if index == 2 {
-                presentSaveStateSlotPicker(.load)
-                return
-            }
-            if index == 3 {
-                UserDefaults.standard.set(
-                    true,
-                    forKey: Self.loadLastSaveStateAlwaysKey
-                )
-            }
-            if index == 1 || index == 3 {
-                performLoadStateShortcut(slot: slot)
-            }
-        }
-    }
-
-    private func presentSaveStateSlotPicker(
-        _ purpose: SaveStateSlotPickerPurpose
-    ) {
-        saveStateShortcutPrompt = nil
-        saveStateShortcutSlotPicker = purpose
-        updateRuntimeOverlayPause()
-        updateRuntimeControllerMenuOwnership()
-    }
-
-    private func beginSaveStateShortcutOperation() {
-        saveStateShortcutOperationActive = true
-        saveStateShortcutPrompt = nil
-        updateRuntimeOverlayPause()
-        updateRuntimeControllerMenuOwnership()
-    }
-
-    private func finishSaveStateShortcutOperation() {
-        saveStateShortcutOperationActive = false
-        updateRuntimeOverlayPause()
-    }
-
-    private func performSaveStateShortcut(slot: Int, replacing: Bool) {
+        let preview = quick.previewPNGData
         beginSaveStateShortcutOperation()
-        ARMSX2Bridge.saveState(toSlot: slot) { success in
+        ARMSX2Bridge.loadState(
+            fromSlot: quick.slot,
+            expectedModified: quick.modifiedDate,
+            keepingUndo: true
+        ) { success, undoPath in
             Task { @MainActor in
                 finishSaveStateShortcutOperation()
-                if success {
-                    let file = ARMSX2Bridge.saveStateSlots().first { $0.slot == slot }.map(SaveStateFile.init)
-                    if let file {
-                        SaveStateMetadataStore.shared.recordSave(
-                            of: file,
-                            playedSeconds: ARMSX2Bridge.currentGamePlayedSeconds(),
-                            fresh: !replacing
-                        )
-                    }
-                    let previewData = file?.preview
-                    presentRetroAchievementsToast(
-                        title: settings.localized("Quick Saved"),
-                        message: settings.localized(
-                            replacing ? "Saved State Replaced" : "Saved State Created"
-                        ),
-                        badgePath: "",
-                        duration: nil,
-                        categoryTitle: settings.localized("Save Game State"),
-                        symbolName: "square.stack.3d.up.fill",
-                        imageData: previewData
+                if success, let undoPath {
+                    showQuickSaveUndo(
+                        .load(path: undoPath),
+                        verb: settings.localized("Loaded"),
+                        preview: preview,
+                        undoLabel: "Undo load of %@"
                     )
-                } else {
-                    presentImportantStatusMessage(
-                        "\(settings.localized("Quick Save")): \(settings.localized("Try again after gameplay has fully loaded."))"
-                    )
-                }
-            }
-        }
-    }
-
-    private func performLoadStateShortcut(slot: Int) {
-        beginSaveStateShortcutOperation()
-        ARMSX2Bridge.loadState(fromSlot: slot) { success in
-            Task { @MainActor in
-                finishSaveStateShortcutOperation()
-                if success {
-                    let previewData = saveStatePreviewPNGData(for: slot)
-                    // The completion toast remains visible for the persistent
-                    // Load Always path, so an automatic load is never silent.
-                    presentRetroAchievementsToast(
-                        title: settings.localized("Saved State Loaded"),
-                        message: settings.localized("Quick Save"),
-                        badgePath: "",
-                        duration: nil,
-                        categoryTitle: settings.localized("Load Game State"),
-                        symbolName: "square.stack.3d.up.fill",
-                        imageData: previewData
-                    )
-                } else {
+                } else if !success {
                     presentImportantStatusMessage(
                         "\(settings.localized("Quick Save")): \(settings.localized("Make sure it has a saved state first."))"
                     )
@@ -2605,10 +2362,42 @@ struct GameScreenView: View {
         }
     }
 
-    private func saveStatePreviewPNGData(for slot: Int) -> Data? {
-        ARMSX2Bridge.saveStateSlots()
-            .first(where: { $0.slot == slot })?
-            .previewPNGData
+    private func showQuickSaveUndo(
+        _ action: SaveStateUndoModel.Action,
+        verb: String,
+        preview: Data?,
+        undoLabel: String
+    ) {
+        let name = settings.localized("Quick Save")
+        let caption = String(format: settings.localized("%1$@ · Slot %2$d"), verb, 10)
+        saveStateUndo.show(
+            .init(
+                action: action,
+                caption: caption,
+                name: name,
+                preview: preview,
+                undoLabel: String(format: settings.localized(undoLabel), name)
+            ),
+            announcement: String(format: settings.localized("%1$@ %2$@. Undo is available."), caption, name)
+        )
+    }
+
+    private func undoSaveStateAction() {
+        guard saveStateUndo.item != nil else { return }
+        saveStateUndo.undo { ok in
+            if !ok { presentImportantStatusMessage(settings.localized("Could not undo.")) }
+        }
+    }
+
+    private func beginSaveStateShortcutOperation() {
+        saveStateShortcutOperationActive = true
+        updateRuntimeOverlayPause()
+        updateRuntimeControllerMenuOwnership()
+    }
+
+    private func finishSaveStateShortcutOperation() {
+        saveStateShortcutOperationActive = false
+        updateRuntimeOverlayPause()
     }
 
     // MARK: - Virtual Pad
@@ -2989,292 +2778,6 @@ private struct RetroAchievementRow: View {
     }
 }
 
-// MARK: - Save States Panel
-
-private struct SaveStateSlotPickerPanel: View {
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.menuControllerInputRouter) private var controllerInput
-    @State private var settings = SettingsStore.shared
-    @State private var slots: [ARMSX2SaveStateSlotInfo] = []
-    @State private var busySlot: Int? = nil
-    @State private var pendingOverwrite: ARMSX2SaveStateSlotInfo? = nil
-    @State private var hardcoreActive = false
-
-    private let mode: SaveStateSlotPickerPurpose?
-    let statusHandler: (String, Bool) -> Void
-
-    init(
-        mode: SaveStateSlotPickerPurpose? = nil,
-        statusHandler: @escaping (String, Bool) -> Void
-    ) {
-        self.mode = mode
-        self.statusHandler = statusHandler
-    }
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                if slots.isEmpty {
-                    VStack(spacing: 10) {
-                        Image(systemName: "hourglass")
-                            .font(.largeTitle)
-                            .foregroundStyle(.secondary)
-                        Text(settings.localized("Save states are not ready yet."))
-                            .font(.headline)
-                        Text(settings.localized("Wait until the game has fully identified, then try again."))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(32)
-                } else {
-                    // Save-state lists are small and every action must exist in
-                    // the controller graph before focus seeks beyond the
-                    // current viewport. A LazyVStack only mounted roughly four
-                    // slots, leaving the next semantic target with no scroll
-                    // anchor.
-                    VStack(spacing: 10) {
-                        ForEach(slots, id: \.slot) { slot in
-                            SaveStateSlotRow(
-                                info: slot,
-                                isBusy: busySlot == slot.slot,
-                                onSave: { save(slot) },
-                                onLoad: { load(slot) },
-                                onOverwrite: { pendingOverwrite = slot },
-                                loadDisabled: hardcoreActive,
-                                showsSaveAction: mode != .load,
-                                showsLoadAction: mode != .save,
-                                settings: settings
-                            )
-                        }
-                    }
-                    .padding()
-                }
-            }
-            .safeAreaInset(edge: .top) {
-                Text(settings.localized(hardcoreActive ?
-                    "Hardcore mode allows saving states for debugging, but loading states is blocked." :
-                    "Empty slots can save. Occupied slots can load or overwrite."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
-                    .background(.regularMaterial)
-            }
-            .navigationTitle(settings.localized("Save / Load States"))
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(settings.localized("Done")) {
-                        dismiss()
-                    }
-                }
-            }
-            .onAppear(perform: refresh)
-            .onReceive(NotificationCenter.default.publisher(for: runtimeMenuStateChangedNotification)) { _ in
-                refresh()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2RetroAchievementsStateChanged"))) { _ in
-                refresh()
-            }
-            .controllerPrompt(
-                "\(settings.localized("Overwrite Slot")) \(pendingOverwrite?.slot ?? 0)?",
-                isPresented: Binding(
-                    get: { pendingOverwrite != nil },
-                    set: { if !$0 { pendingOverwrite = nil } }
-                ),
-                actions: [
-                    .cancel,
-                    .init(title: settings.localized("Overwrite"), isDestructive: true) {
-                        if let pendingOverwrite { save(pendingOverwrite) }
-                    },
-                ]
-            )
-        }
-        .controllerAccessibilityTargetOrder(controllerTargetOrder)
-        .controllerAccessibilityNavigation(
-            controllerInput: controllerInput,
-            scopeKey: "runtime.save-state-picker.\(mode?.rawValue ?? "all")",
-            priority: 345,
-            orbStyle: .plain,
-            onBack: {
-                dismiss()
-                return true
-            },
-            directionalLinks: controllerDirectionalLinks,
-            prioritizesDirectionalLinks: true,
-            // Slot rows are a vertical list with an optional two-button
-            // horizontal action group. Confining the graph makes imperfect
-            // left-stick diagonals continue vertically; explicit Left/Right
-            // links still move between Load and Overwrite.
-            confinesHorizontalFocusMovement: true,
-            usesExplicitTargetGeometryOnly: true,
-            preferredInitialFocusLabel: preferredControllerTargetID
-        )
-    }
-
-    private var controllerTargetRows: [[String]] {
-        slots.compactMap { slot -> [String]? in
-            var targets: [String] = []
-            if slot.occupied {
-                if mode != .save, !hardcoreActive {
-                    targets.append(SaveStateSlotRow.loadTargetID(slot.slot))
-                }
-                if mode != .load {
-                    targets.append(SaveStateSlotRow.overwriteTargetID(slot.slot))
-                }
-            } else if mode != .load {
-                targets.append(SaveStateSlotRow.saveTargetID(slot.slot))
-            }
-            return targets.isEmpty ? nil : targets
-        }
-    }
-
-    private var controllerTargetOrder: [String] {
-        controllerTargetRows.flatMap { $0 }
-    }
-
-    private var controllerDirectionalLinks: [ControllerAccessibilityDirectionalLink] {
-        var links: [ControllerAccessibilityDirectionalLink] = []
-        let rows = controllerTargetRows
-
-        for (rowIndex, row) in rows.enumerated() {
-            for (columnIndex, target) in row.enumerated() {
-                if columnIndex > row.startIndex {
-                    links.append(ControllerAccessibilityDirectionalLink(
-                        fromLabel: target,
-                        direction: .left,
-                        toLabel: row[columnIndex - 1]
-                    ))
-                }
-                if columnIndex + 1 < row.endIndex {
-                    links.append(ControllerAccessibilityDirectionalLink(
-                        fromLabel: target,
-                        direction: .right,
-                        toLabel: row[columnIndex + 1]
-                    ))
-                }
-
-                // Up on Slot 1 swapped Load and Overwrite, so both list ends stop.
-                let boundary = ControllerAccessibilityDirectionalLink.navigationBoundary
-                if rowIndex == rows.startIndex {
-                    links.append(.init(fromLabel: target, direction: .up, toLabel: boundary))
-                }
-                if rowIndex + 1 == rows.endIndex {
-                    links.append(.init(fromLabel: target, direction: .down, toLabel: boundary))
-                }
-                let semanticColumn = saveStateActionColumn(target)
-                if rowIndex > rows.startIndex,
-                   let destination = nearestSaveStateTarget(
-                       in: rows[rowIndex - 1],
-                       toColumn: semanticColumn
-                   ) {
-                    links.append(ControllerAccessibilityDirectionalLink(
-                        fromLabel: target,
-                        direction: .up,
-                        toLabel: destination
-                    ))
-                }
-                if rowIndex + 1 < rows.endIndex,
-                   let destination = nearestSaveStateTarget(
-                       in: rows[rowIndex + 1],
-                       toColumn: semanticColumn
-                   ) {
-                    links.append(ControllerAccessibilityDirectionalLink(
-                        fromLabel: target,
-                        direction: .down,
-                        toLabel: destination
-                    ))
-                }
-            }
-        }
-        return links
-    }
-
-    /// Load is the leading action; Save and Overwrite occupy the trailing
-    /// action position. Keeping that semantic column across rows prevents
-    /// vertical stick movement from stepping sideways within one slot.
-    private func saveStateActionColumn(_ targetID: String) -> Int {
-        targetID.hasSuffix(".load") ? 0 : 1
-    }
-
-    private func nearestSaveStateTarget(
-        in row: [String],
-        toColumn column: Int
-    ) -> String? {
-        row.min {
-            abs(saveStateActionColumn($0) - column)
-                < abs(saveStateActionColumn($1) - column)
-        }
-    }
-
-    private var preferredControllerTargetID: String? {
-        switch mode {
-        case .load:
-            guard let latest = slots.filter(\.occupied).max(by: { lhs, rhs in
-                (lhs.modifiedDate ?? .distantPast) < (rhs.modifiedDate ?? .distantPast)
-            }) else { return nil }
-            return SaveStateSlotRow.loadTargetID(latest.slot)
-        case .save:
-            guard let slot = slots.first(where: { !$0.occupied }) ?? slots.first else {
-                return nil
-            }
-            return slot.occupied
-                ? SaveStateSlotRow.overwriteTargetID(slot.slot)
-                : SaveStateSlotRow.saveTargetID(slot.slot)
-        case nil:
-            return controllerTargetOrder.first
-        }
-    }
-
-    private func refresh() {
-        slots = ARMSX2Bridge.saveStateSlots().filter { $0.slot >= 1 }
-        hardcoreActive = ARMSX2Bridge.isRetroAchievementsHardcoreActive()
-    }
-
-    private func save(_ slot: ARMSX2SaveStateSlotInfo) {
-        let slotNumber = slot.slot
-        busySlot = slotNumber
-        ARMSX2Bridge.saveState(toSlot: slotNumber) { success in
-            Task { @MainActor in
-                busySlot = nil
-                refresh()
-                let message = success
-                    ? "\(settings.localized("State saved to slot")) \(slotNumber)"
-                    : "\(settings.localized("Could not save slot")) \(slotNumber). \(settings.localized("Try again after gameplay has fully loaded."))"
-                statusHandler(message, !success)
-                if success, mode == .save {
-                    dismiss()
-                }
-            }
-        }
-    }
-
-    private func load(_ slot: ARMSX2SaveStateSlotInfo) {
-        guard !hardcoreActive else {
-            statusHandler(settings.localized("Hardcore mode blocks loading save states."), true)
-            return
-        }
-
-        let slotNumber = slot.slot
-        busySlot = slotNumber
-        ARMSX2Bridge.loadState(fromSlot: slotNumber) { success in
-            Task { @MainActor in
-                busySlot = nil
-                refresh()
-                let message = success
-                    ? "\(settings.localized("State loaded from slot")) \(slotNumber)"
-                    : "\(settings.localized("Could not load slot")) \(slotNumber). \(settings.localized("Make sure it has a saved state first."))"
-                statusHandler(message, !success)
-                if success {
-                    dismiss()
-                }
-            }
-        }
-    }
-}
-
 // MARK: - Speed Control Panel
 
 private struct SpeedControlPanel: View {
@@ -3390,147 +2893,5 @@ private struct SpeedControlPanel: View {
 
     private static func formatPercent(_ scalar: Float) -> String {
         String(format: "%.0f%%", scalar * 100.0)
-    }
-}
-
-// MARK: - Save State Slot Row
-
-private struct SaveStateSlotRow: View {
-    let info: ARMSX2SaveStateSlotInfo
-    let isBusy: Bool
-    let onSave: () -> Void
-    let onLoad: () -> Void
-    let onOverwrite: () -> Void
-    let loadDisabled: Bool
-    let showsSaveAction: Bool
-    let showsLoadAction: Bool
-    let settings: SettingsStore
-
-    static func saveTargetID(_ slot: Int) -> String {
-        "save-state.slot.\(slot).save"
-    }
-
-    static func loadTargetID(_ slot: Int) -> String {
-        "save-state.slot.\(slot).load"
-    }
-
-    static func overwriteTargetID(_ slot: Int) -> String {
-        "save-state.slot.\(slot).overwrite"
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                SaveStatePreview(data: info.previewPNGData, occupied: info.occupied)
-                    .frame(width: 96, height: 72)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(settings.localized("Slot")) \(info.slot)")
-                        .font(.headline)
-
-                    if info.occupied {
-                        if let modifiedDate = info.modifiedDate {
-                            Text(Self.dateFormatter.string(from: modifiedDate))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Text(info.fileName)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    } else {
-                        Text(settings.localized("Empty"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Spacer(minLength: 8)
-
-                if isBusy {
-                    ProgressView()
-                        .frame(width: 88)
-                } else if !info.occupied && showsSaveAction {
-                    Button(action: onSave) {
-                        Label(settings.localized("Save"), systemImage: "square.and.arrow.down")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controllerAccessibilityActionTarget(
-                        id: Self.saveTargetID(info.slot),
-                        label: settings.localized("Save to Slot \(info.slot)")
-                    ) {
-                        onSave()
-                    }
-                }
-            }
-
-            if info.occupied && !isBusy && (showsLoadAction || showsSaveAction) {
-                HStack(spacing: 8) {
-                    if showsLoadAction {
-                        Button(action: onLoad) {
-                            Label(settings.localized("Load"), systemImage: "arrow.down.circle")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(loadDisabled)
-                        .frame(maxWidth: .infinity)
-                        .controllerAccessibilityActionTarget(
-                            id: Self.loadTargetID(info.slot),
-                            label: settings.localized("Load Slot \(info.slot)")
-                        ) {
-                            onLoad()
-                        }
-                    }
-
-                    if showsSaveAction {
-                        Button(action: onOverwrite) {
-                            Label(settings.localized("Overwrite"), systemImage: "arrow.triangle.2.circlepath")
-                        }
-                        .buttonStyle(.bordered)
-                        .frame(maxWidth: .infinity)
-                        .controllerAccessibilityActionTarget(
-                            id: Self.overwriteTargetID(info.slot),
-                            label: settings.localized("Overwrite Slot \(info.slot)")
-                        ) {
-                            onOverwrite()
-                        }
-                    }
-                }
-            }
-        }
-        .padding(12)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    private static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter
-    }()
-}
-
-// MARK: - Save State Preview
-
-private struct SaveStatePreview: View {
-    let data: Data?
-    let occupied: Bool
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(.black.opacity(0.12))
-
-            if let data, let image = UIImage(data: data) {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            } else {
-                Image(systemName: occupied ? "photo" : "tray")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .clipped()
     }
 }
