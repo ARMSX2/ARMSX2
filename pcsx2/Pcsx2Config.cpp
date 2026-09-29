@@ -925,6 +925,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(LsfgMultiplier) &&
 		OpEqu(LsfgDllPath) &&
 		OpEqu(LsfgPerformance) &&
+		OpEqu(LsfgFp16) &&
 		OpEqu(LsfgFlowScale) &&
 		OpEqu(LsfgTargetRate) &&
 
@@ -1189,6 +1190,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitfieldEx(LsfgMultiplier, "LsfgMultiplier");
 	SettingsWrapEntryEx(LsfgDllPath, "LsfgDllPath");
 	SettingsWrapEntryEx(LsfgPerformance, "LsfgPerformance");
+	SettingsWrapEntryEx(LsfgFp16, "LsfgFp16");
 	SettingsWrapBitfieldEx(LsfgFlowScale, "LsfgFlowScale");
 	SettingsWrapBitfieldEx(LsfgTargetRate, "LsfgTargetRate");
 

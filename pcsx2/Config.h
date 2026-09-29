@@ -1084,6 +1084,10 @@ struct Pcsx2Config
 		// that is already presenting the game, and the cheaper pipeline is what makes the
 		// feature pay for itself there. Falls back to 3.1 when the user's DLL predates 3.1p.
 		bool LsfgPerformance = true;
+		// LSFG's half-precision shader family. Off by default: phone GPUs run fp16 about twice as
+		// fast, but it needs shaderFloat16 on the device, which is asked for only while this is on
+		// (so turning it on takes effect when the next game starts), and drivers vary with fp16.
+		bool LsfgFp16 = false;
 		// Optical-flow resolution, as a percentage of the presented image (25..100). Lower is
 		// cheaper and blurrier. Handed to the library as a DIVISOR — see GSLsfg.cpp.
 		u8 LsfgFlowScale = 100;

@@ -1238,9 +1238,10 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
         multiplier = settings.graphics.lsfgMultiplier,
         dllPath = settings.graphics.lsfgDllPath,
         performance = settings.graphics.lsfgPerformance,
+        fp16 = settings.graphics.lsfgFp16,
         flowScale = settings.graphics.lsfgFlowScale,
         targetRate = settings.graphics.lsfgTargetRate,
-    ) { on, mult, dll, perf, flow, target ->
+    ) { on, mult, dll, perf, flow, target, half ->
         viewModel.updateSettings {
             it.copy(
                 graphics = it.graphics.copy(
@@ -1248,6 +1249,7 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
                     lsfgMultiplier = mult,
                     lsfgDllPath = dll,
                     lsfgPerformance = perf,
+                    lsfgFp16 = half,
                     lsfgFlowScale = flow,
                     lsfgTargetRate = target,
                 ),

@@ -31,9 +31,15 @@ public:
 
     [[nodiscard]] VkShaderModule Get(u32 shader_id) const;
 
+    /// The half-precision family is the one loaded (GSConfig.LsfgFp16 on, and the device has it).
+    [[nodiscard]] bool IsFp16() const {
+        return fp16;
+    }
+
 private:
     std::map<u32, vk::ShaderModule> modules;
     bool valid{};
+    bool fp16{};
     const char* failure = "";
 };
 

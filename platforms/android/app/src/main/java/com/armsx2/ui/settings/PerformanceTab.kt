@@ -402,15 +402,17 @@ fun PerformanceTab(state: MutableState<Settings>) {
             multiplier = s.graphics.lsfgMultiplier,
             dllPath = s.graphics.lsfgDllPath,
             performance = s.graphics.lsfgPerformance,
+            fp16 = s.graphics.lsfgFp16,
             flowScale = s.graphics.lsfgFlowScale,
             targetRate = s.graphics.lsfgTargetRate,
-        ) { on, mult, dll, perf, flow, target ->
+        ) { on, mult, dll, perf, flow, target, half ->
             apply(s.copy(
                 graphics = s.graphics.copy(
                     lsfgEnabled = on,
                     lsfgMultiplier = mult,
                     lsfgDllPath = dll,
                     lsfgPerformance = perf,
+                    lsfgFp16 = half,
                     lsfgFlowScale = flow,
                     lsfgTargetRate = target,
                 ),

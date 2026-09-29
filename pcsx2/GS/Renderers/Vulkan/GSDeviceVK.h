@@ -65,6 +65,9 @@ public:
 		/// alternative is recreating the device when frame generation is switched on.
 		bool vk_khr_vulkan_memory_model : 1;   ///< shaders declare the Vulkan memory model
 		bool vk_ext_robustness2_null_descriptor : 1; ///< nullDescriptor only; not the robust-access bits
+		/// shaderFloat16, for LSFG's half-precision shaders. Unlike the two above it is asked for
+		/// only while GSConfig.LsfgFp16 is on, so nobody else's device changes.
+		bool vk_khr_shader_float16_int8 : 1;
 		bool vk_ext_device_fault : 1;
 	};
 

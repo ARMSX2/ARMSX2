@@ -74,6 +74,8 @@ namespace GSLsfg
 		/// "failed": everything initialised, there is simply nowhere to put a generated frame.
 		std::atomic<bool> s_no_headroom{false};
 		std::atomic<bool> s_no_shaders{false};
+		/// The half-precision shaders are the ones running, for the overlay: "LSFG: 60.00 fp16".
+		std::atomic<bool> s_fp16_active{false};
 		// Why the shaders failed, in a few words, for the overlay; set with s_no_shaders.
 		std::mutex s_failure_mutex;
 		std::string s_failure_reason;
@@ -235,7 +237,8 @@ namespace GSLsfg
 		const float fps = s_display_fps.load(std::memory_order_relaxed);
 		if (fps <= 0.0f)
 			return "LSFG: starting";
-		return fmt::format("LSFG: {:.2f}", fps);
+		return s_fp16_active.load(std::memory_order_relaxed) ? fmt::format("LSFG: {:.2f} fp16", fps) :
+																fmt::format("LSFG: {:.2f}", fps);
 	}
 } // namespace GSLsfg
 
@@ -271,6 +274,7 @@ namespace GSLsfg
 		u32 s_multiplier = 1;
 		u8 s_flow_scale_percent = 100;
 		bool s_performance_requested = false;
+		bool s_fp16_requested = false;
 		VkExtent2D s_extent = {};
 		VkFormat s_format = VK_FORMAT_UNDEFINED;
 		VkDevice s_vk_device = VK_NULL_HANDLE;
@@ -524,6 +528,8 @@ namespace GSLsfg
 		s_active = false;
 		s_multiplier = 1;
 		s_performance_requested = false;
+		s_fp16_requested = false;
+		s_fp16_active.store(false, std::memory_order_relaxed);
 		s_flow_scale_percent = 100;
 		s_extent = {};
 		s_format = VK_FORMAT_UNDEFINED;
@@ -552,7 +558,8 @@ namespace GSLsfg
 
 		if (s_active && extent.width == s_extent.width && extent.height == s_extent.height &&
 			format == s_format && multiplier == s_multiplier &&
-			GSConfig.LsfgPerformance == s_performance_requested && flow_scale_percent == s_flow_scale_percent)
+			GSConfig.LsfgPerformance == s_performance_requested && GSConfig.LsfgFp16 == s_fp16_requested &&
+			flow_scale_percent == s_flow_scale_percent)
 		{
 			return true; // idempotent; nothing changed
 		}
@@ -565,6 +572,7 @@ namespace GSLsfg
 		s_multiplier = multiplier;
 		s_flow_scale_percent = flow_scale_percent;
 		s_performance_requested = GSConfig.LsfgPerformance;
+		s_fp16_requested = GSConfig.LsfgFp16;
 
 		// ★ ORDER MATTERS, and getting it wrong here is not a compile error.
 		//
@@ -716,8 +724,17 @@ namespace GSLsfg
 		const Vulkan::vk::CommandBuffer cmdbuf{slot.cmd};
 		// Process only null-checks the view (Eden uses it as a capability probe) — the presented
 		// frame is COPIED into the chain, never written through a view. Hand it one of ours.
+		//
+		// The last argument is the size the game was really drawn at, which the automatic flow scale
+		// (the default, 100%) compares with the screen, so the optical flow runs at about the detail
+		// the frame has. It was passed the screen size, the ratio was always 1, and the default was
+		// the most expensive setting there is. The frame just presented is the GS device's current.
+		VkExtent2D guest_extent = s_extent;
+		if (const GSTexture* const current = g_gs_device->GetCurrent())
+			guest_extent = {static_cast<u32>(current->GetWidth()), static_cast<u32>(current->GetHeight())};
 		s_frame_gen->Process(*s_device, cmdbuf, real_image, s_gen_images[0].view, s_extent, s_format,
-			s_extent);
+			guest_extent);
+		s_fp16_active.store(s_frame_gen->UsingFp16(), std::memory_order_relaxed);
 
 		// Frame generation turned itself off: its shaders could not be loaded or built. That used
 		// to be silent, the overlay reading the real rate as if all were well (#626, an Adreno 650

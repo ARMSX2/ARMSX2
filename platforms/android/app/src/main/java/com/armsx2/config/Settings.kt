@@ -720,6 +720,11 @@ data class GraphicsSettings(
      *  pipeline is what makes frame generation pay for itself there. Falls back to 3.1 by itself
      *  when the user's Lossless.dll predates 3.1p. */
     val lsfgPerformance: Boolean = true,
+    /** EmuCore/GS/LsfgFp16 — LSFG's half-precision shader family, which phone GPUs run about
+     *  twice as fast. Off by default: it needs shaderFloat16 on the Vulkan device, which is only
+     *  asked for while this is on (so turning it on takes effect when the next game starts), and
+     *  drivers vary with fp16. The overlay's LSFG line says "fp16" while it is running. */
+    val lsfgFp16: Boolean = false,
     /** EmuCore/GS/LsfgFlowScale — optical-flow resolution, as a PERCENTAGE of the presented
      *  image (25..100). Lower is cheaper and blurrier. The native side inverts it: the library
      *  takes a divisor, so 25% becomes 4.0. See GSLsfg.cpp. */
@@ -1474,6 +1479,7 @@ data class Settings(
                 lsfgMultiplier = intAt("EmuCore/GS/LsfgMultiplier") ?: this.graphics.lsfgMultiplier,
                 lsfgDllPath = strAt("EmuCore/GS/LsfgDllPath") ?: this.graphics.lsfgDllPath,
                 lsfgPerformance = boolAt("EmuCore/GS/LsfgPerformance") ?: this.graphics.lsfgPerformance,
+                lsfgFp16 = boolAt("EmuCore/GS/LsfgFp16") ?: this.graphics.lsfgFp16,
                 lsfgFlowScale = intAt("EmuCore/GS/LsfgFlowScale") ?: this.graphics.lsfgFlowScale,
                 lsfgTargetRate = intAt("EmuCore/GS/LsfgTargetRate") ?: this.graphics.lsfgTargetRate,
                 shaderChainParams = strAt("EmuCore/GS/ShaderChainParams")?.let { raw ->
@@ -1653,6 +1659,7 @@ data class Settings(
         put("EmuCore/GS", "LsfgMultiplier", "int", graphics.lsfgMultiplier.toString())
         put("EmuCore/GS", "LsfgDllPath", "string", graphics.lsfgDllPath)
         put("EmuCore/GS", "LsfgPerformance", "bool", graphics.lsfgPerformance.toString())
+        put("EmuCore/GS", "LsfgFp16", "bool", graphics.lsfgFp16.toString())
         // Clamped to the same 25..100 the native side enforces. A value outside it would be
         // coerced there anyway, and the two disagreeing is how a slider ends up looking stuck.
         put("EmuCore/GS", "LsfgFlowScale", "int", graphics.lsfgFlowScale.coerceIn(25, 100).toString())
@@ -1848,6 +1855,7 @@ data class Settings(
             graphics.lsfgMultiplier != other.graphics.lsfgMultiplier ||
             graphics.lsfgDllPath != other.graphics.lsfgDllPath ||
             graphics.lsfgPerformance != other.graphics.lsfgPerformance ||
+            graphics.lsfgFp16 != other.graphics.lsfgFp16 ||
             graphics.lsfgFlowScale != other.graphics.lsfgFlowScale ||
             graphics.lsfgTargetRate != other.graphics.lsfgTargetRate ||
             osd.osdPosition != other.osd.osdPosition ||
@@ -2091,6 +2099,7 @@ data class Settings(
         put("lsfgMultiplier", graphics.lsfgMultiplier)
         put("lsfgDllPath", graphics.lsfgDllPath)
         put("lsfgPerformance", graphics.lsfgPerformance)
+        put("lsfgFp16", graphics.lsfgFp16)
         put("lsfgFlowScale", graphics.lsfgFlowScale)
         put("lsfgTargetRate", graphics.lsfgTargetRate)
         put("casMode", graphics.casMode)
@@ -2477,6 +2486,7 @@ data class Settings(
                     lsfgMultiplier = json.optInt("lsfgMultiplier", def.graphics.lsfgMultiplier),
                     lsfgDllPath = json.optString("lsfgDllPath", def.graphics.lsfgDllPath),
                     lsfgPerformance = json.optBoolean("lsfgPerformance", def.graphics.lsfgPerformance),
+                    lsfgFp16 = json.optBoolean("lsfgFp16", def.graphics.lsfgFp16),
                     lsfgFlowScale = json.optInt("lsfgFlowScale", def.graphics.lsfgFlowScale),
                     lsfgTargetRate = json.optInt("lsfgTargetRate", def.graphics.lsfgTargetRate),
                     casMode = json.optInt("casMode", def.graphics.casMode),
@@ -2710,6 +2720,7 @@ data class Settings(
             if (current.graphics.lsfgMultiplier      != base.graphics.lsfgMultiplier)      j.put("lsfgMultiplier", current.graphics.lsfgMultiplier)
             if (current.graphics.lsfgDllPath         != base.graphics.lsfgDllPath)         j.put("lsfgDllPath", current.graphics.lsfgDllPath)
             if (current.graphics.lsfgPerformance     != base.graphics.lsfgPerformance)     j.put("lsfgPerformance", current.graphics.lsfgPerformance)
+            if (current.graphics.lsfgFp16            != base.graphics.lsfgFp16)            j.put("lsfgFp16", current.graphics.lsfgFp16)
             if (current.graphics.lsfgFlowScale       != base.graphics.lsfgFlowScale)       j.put("lsfgFlowScale", current.graphics.lsfgFlowScale)
             if (current.graphics.lsfgTargetRate      != base.graphics.lsfgTargetRate)      j.put("lsfgTargetRate", current.graphics.lsfgTargetRate)
             if (current.graphics.casMode             != base.graphics.casMode)             j.put("casMode", current.graphics.casMode)
@@ -3042,6 +3053,7 @@ data class Settings(
                 lsfgMultiplier = if (overrides.has("lsfgMultiplier")) overrides.getInt("lsfgMultiplier") else base.graphics.lsfgMultiplier,
                 lsfgDllPath = if (overrides.has("lsfgDllPath")) overrides.getString("lsfgDllPath") else base.graphics.lsfgDllPath,
                 lsfgPerformance = if (overrides.has("lsfgPerformance")) overrides.getBoolean("lsfgPerformance") else base.graphics.lsfgPerformance,
+                lsfgFp16 = if (overrides.has("lsfgFp16")) overrides.getBoolean("lsfgFp16") else base.graphics.lsfgFp16,
                 lsfgFlowScale = if (overrides.has("lsfgFlowScale")) overrides.getInt("lsfgFlowScale") else base.graphics.lsfgFlowScale,
                 lsfgTargetRate = if (overrides.has("lsfgTargetRate")) overrides.getInt("lsfgTargetRate") else base.graphics.lsfgTargetRate,
                 casMode = if (overrides.has("casMode")) overrides.getInt("casMode") else base.graphics.casMode,
