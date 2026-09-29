@@ -630,9 +630,16 @@ namespace GSLsfg
 		// Rebuild it now that the setting is actually on. Same size, so this is only about the
 		// image count. If the driver still will not give us headroom, say so rather than claiming
 		// to be running.
-		if (swap_chain->GetExtraAcquirableImages() == 0)
+		//
+		// And rebuild it when it is not FIFO. CreateSwapChain forces FIFO for frame generation, but
+		// again only when it was on AT CREATION. With vsync off the chain is MAILBOX with three
+		// images; on a driver whose minimum is two that already leaves one spare, so the check
+		// above never fired and generation ran in MAILBOX, where the real frame presented right
+		// after each generated one replaces it: every generated frame paid for, none displayed.
+		// (ARMSX3 hit the same in its a909a0d3a.)
+		if (swap_chain->GetExtraAcquirableImages() == 0 || swap_chain->GetPresentMode() != VK_PRESENT_MODE_FIFO_KHR)
 		{
-			Console.WriteLn("LSFG: swap chain has no spare images; rebuilding it.");
+			Console.WriteLn("LSFG: swap chain has no spare images or is not FIFO; rebuilding it.");
 			// Scale passed through explicitly: ResizeSwapChain defaults it to 1.0, which would
 			// silently drop a non-default surface scale while we are only after the image count.
 			if (!swap_chain->ResizeSwapChain(swap_chain->GetWidth(), swap_chain->GetHeight(),
