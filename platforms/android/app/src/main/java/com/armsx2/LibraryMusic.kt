@@ -72,6 +72,13 @@ object LibraryMusic {
      *  opens or closes: the one playing fades out while the next fades in ([crossTo]). */
     private const val CROSSFADE_MS = 900L
 
+    /** Back to the library ([endTheme]) the screen's track fades right out, and the library track,
+     *  which comes back mid-song, waits a moment and then fades in slowly: with the crossfade the
+     *  way in uses, it came back at almost full volume at once and the fade was hardly heard. */
+    private const val RETURN_OUT_MS = 1200L
+    private const val RETURN_IN_DELAY_MS = 300L
+    private const val RETURN_IN_MS = 1700L
+
     /** The track fading out under [player] during a crossfade. */
     private var outgoing: MediaPlayer? = null
 
@@ -80,15 +87,28 @@ object LibraryMusic {
     private var outgoingLevel = 0f
     private var fadeFrom = 0f
     private var fadeStart = 0L
+    private var fadeReturning = false
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private val fadeStep = object : Runnable {
         override fun run() {
-            val t = ((android.os.SystemClock.uptimeMillis() - fadeStart).toFloat() / CROSSFADE_MS).coerceIn(0f, 1f)
-            // Equal power, so the two together sound as loud as either alone.
-            playerLevel = kotlin.math.sin(t * Math.PI / 2).toFloat()
-            outgoingLevel = fadeFrom * kotlin.math.cos(t * Math.PI / 2).toFloat()
+            val elapsed = (android.os.SystemClock.uptimeMillis() - fadeStart).toFloat()
+            val done: Boolean
+            if (fadeReturning) {
+                // Out, then in: squared ramps, so each is heard as a steady fade rather than a jump.
+                val u = (elapsed / RETURN_OUT_MS).coerceIn(0f, 1f)
+                val v = ((elapsed - RETURN_IN_DELAY_MS) / RETURN_IN_MS).coerceIn(0f, 1f)
+                outgoingLevel = fadeFrom * (1f - u) * (1f - u)
+                playerLevel = v * v
+                done = u >= 1f && v >= 1f
+            } else {
+                // Equal power, so the two together sound as loud as either alone.
+                val t = (elapsed / CROSSFADE_MS).coerceIn(0f, 1f)
+                playerLevel = kotlin.math.sin(t * Math.PI / 2).toFloat()
+                outgoingLevel = fadeFrom * kotlin.math.cos(t * Math.PI / 2).toFloat()
+                done = t >= 1f
+            }
             applyLevels()
-            if (t < 1f) main.postDelayed(this, 20) else releaseOutgoing()
+            if (!done) main.postDelayed(this, 20) else releaseOutgoing()
         }
     }
     /** True when we stopped for something temporary (a call, another app ducking us)
@@ -258,22 +278,23 @@ object LibraryMusic {
         if (theme == track) return
         if (theme == null) libraryPositionMs = runCatching { player?.currentPosition ?: 0 }.getOrDefault(0)
         theme = track
-        crossTo(context)
+        crossTo(context, returning = false)
     }
 
     /** Back to the library track, from where it was, when [track] is still the one playing. */
     fun endTheme(context: Context, track: Int) {
         if (theme != track) return
         theme = null
-        crossTo(context)
+        crossTo(context, returning = true)
     }
 
     /**
      * Crossfades to whatever should play now ([theme], else the library track): the one playing
-     * goes on while it fades out, and the next starts silent and fades in. A switch during a
-     * fade drops the track already fading out and fades the other from where it had got to.
+     * goes on while it fades out, and the next starts silent and fades in; [returning] to the
+     * library, out and then in, more slowly. A switch during a fade drops the track already fading
+     * out and fades the other from where it had got to.
      */
-    private fun crossTo(context: Context) {
+    private fun crossTo(context: Context, returning: Boolean) {
         main.removeCallbacks(fadeStep)
         releaseOutgoing()
         val old = player
@@ -291,6 +312,7 @@ object LibraryMusic {
             old?.let { runCatching { it.release() } }
         }
         fadeFrom = outgoingLevel
+        fadeReturning = returning
         fadeStart = android.os.SystemClock.uptimeMillis()
         main.post(fadeStep)
     }
