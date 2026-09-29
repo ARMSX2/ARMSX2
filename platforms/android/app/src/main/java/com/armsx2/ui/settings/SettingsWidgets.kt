@@ -174,6 +174,7 @@ internal object SettingsControllerNav {
         val index = layers.indexOfLast { it.key == key }
         if (index < 0) return
         val gone = layers.removeAt(index)
+        if (lateFocus?.layer == key) lateFocus = null
         // Only the layer that was actually on top hands the selection back; a layer buried
         // under a still-open modal must not disturb what that modal has focused.
         if (index != layers.size) return
@@ -250,6 +251,29 @@ internal object SettingsControllerNav {
         registry[id] = Item(id, onConfirm, onLeft, onRight, layer)
         if (selectedId.value == id)
             selectedIndex.intValue = orderedIds().indexOf(id)
+        lateFocus?.let { late ->
+            when {
+                // The pad has moved since, or another modal is on top: that selection stands.
+                late.layer != activeLayer || selectedId.value != late.fallback -> lateFocus = null
+                id == late.id && layer == late.layer -> {
+                    lateFocus = null
+                    selectById(id)
+                }
+            }
+        }
+    }
+
+    /** A modal's initial focus that had not registered yet when the modal opened, because the
+     *  content it belongs to comes a moment later (the Icon Museum's panel, once its icons have
+     *  loaded). The modal opens on [fallback] meanwhile, and [id] takes over when it registers,
+     *  as long as the selection is still on [fallback]. */
+    private class LateFocus(val layer: String, val id: String, val fallback: String?)
+    private var lateFocus: LateFocus? = null
+
+    /** For PadModal: [id], the focus [layer] asked for on open, is not there yet. Select it when
+     *  it registers, unless the pad has moved by then. */
+    fun focusWhenRegistered(layer: String, id: String) {
+        lateFocus = LateFocus(layer, id, selectedId.value)
     }
 
     fun unregister(id: String) {
