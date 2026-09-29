@@ -196,8 +196,12 @@ object LibraryMusic {
         if (value) start(context) else stop(context)
     }
 
+    /** Always the application's AudioManager. Focus belongs to the AudioManager that asked for it,
+     *  so asking through another context's (the screen's, then the app's for the delayed start one
+     *  after the other) made us a second client: the system took focus from the first, our own
+     *  listener heard AUDIOFOCUS_LOSS and released the track that had just started. */
     private fun audioManager(context: Context): AudioManager? =
-        context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
 
     /**
      * True when another app is playing something the user is listening to: music, a podcast,
