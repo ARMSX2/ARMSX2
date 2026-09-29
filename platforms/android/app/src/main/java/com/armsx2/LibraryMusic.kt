@@ -28,6 +28,7 @@ import java.io.File
  * Two screens play their own track in its place ([playTheme]): the Icon Museum, "Another
  * August" by The Cynic Project (cynicmusic.com, pixelsphere.org), which asks for attribution,
  * given in the About screen and MC Icon Info; and Online Icons, "Next to You", which doesn't.
+ * Going in and out of them, the music crossfades from one track to the other.
  */
 object LibraryMusic {
     private const val TAG = "LibraryMusic"
@@ -66,6 +67,30 @@ object LibraryMusic {
 
     /** Where the library track was when a theme took over, so it goes on from there after. */
     private var libraryPositionMs = 0
+
+    /** How long the music takes to cross from one track to the other as a screen with its own
+     *  opens or closes: the one playing fades out while the next fades in ([crossTo]). */
+    private const val CROSSFADE_MS = 900L
+
+    /** The track fading out under [player] during a crossfade. */
+    private var outgoing: MediaPlayer? = null
+
+    /** How loud [player] and [outgoing] are now, as a share of [gain]; MediaPlayer can't say. */
+    private var playerLevel = 1f
+    private var outgoingLevel = 0f
+    private var fadeFrom = 0f
+    private var fadeStart = 0L
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private val fadeStep = object : Runnable {
+        override fun run() {
+            val t = ((android.os.SystemClock.uptimeMillis() - fadeStart).toFloat() / CROSSFADE_MS).coerceIn(0f, 1f)
+            // Equal power, so the two together sound as loud as either alone.
+            playerLevel = kotlin.math.sin(t * Math.PI / 2).toFloat()
+            outgoingLevel = fadeFrom * kotlin.math.cos(t * Math.PI / 2).toFloat()
+            applyLevels()
+            if (t < 1f) main.postDelayed(this, 20) else releaseOutgoing()
+        }
+    }
     /** True when we stopped for something temporary (a call, another app ducking us)
      *  and should resume ourselves when focus comes back — as opposed to being off. */
     private var pausedForFocus = false
@@ -118,8 +143,7 @@ object LibraryMusic {
         val p = percent.coerceIn(0, 100)
         volumePercent.value = p
         MainActivityRuntime.prefs.edit { putInt(VolumeKey, p) }
-        val g = p / 100f
-        runCatching { player?.setVolume(g, g) }
+        applyLevels()
     }
 
     /** True while the track is actually audible — drives the cold-start retry below. */
@@ -211,7 +235,8 @@ object LibraryMusic {
                     )
                 }
                 isLooping = true
-                setVolume(gain(), gain())
+                // Silent at first when a crossfade brings it in (crossTo), full otherwise.
+                setVolume(gain() * playerLevel, gain() * playerLevel)
                 prepare()
                 if (themeTrack == null && libraryPositionMs > 0) {
                     runCatching { seekTo(libraryPositionMs) }
@@ -231,27 +256,74 @@ object LibraryMusic {
      */
     fun playTheme(context: Context, track: Int) {
         if (theme == track) return
-        // Our own player going (or paused by focus) means the swap is ours to make; restarting
-        // past the other-media check, as restart() does, since our stream may still be reported.
-        val ours = player != null
         if (theme == null) libraryPositionMs = runCatching { player?.currentPosition ?: 0 }.getOrDefault(0)
         theme = track
-        stop(context)
-        start(context, force = ours)
+        crossTo(context)
     }
 
     /** Back to the library track, from where it was, when [track] is still the one playing. */
     fun endTheme(context: Context, track: Int) {
         if (theme != track) return
-        val ours = player != null
         theme = null
-        stop(context)
-        start(context, force = ours)
+        crossTo(context)
+    }
+
+    /**
+     * Crossfades to whatever should play now ([theme], else the library track): the one playing
+     * goes on while it fades out, and the next starts silent and fades in. A switch during a
+     * fade drops the track already fading out and fades the other from where it had got to.
+     */
+    private fun crossTo(context: Context) {
+        main.removeCallbacks(fadeStep)
+        releaseOutgoing()
+        val old = player
+        val oldLevel = playerLevel
+        player = null
+        pausedForFocus = false
+        playerLevel = 0f
+        // Our own player going (or paused by focus) means the swap is ours to make; starting past
+        // the other-media check, as restart() does, since our stream may still be reported.
+        start(context, force = old != null)
+        if (old != null && runCatching { old.isPlaying }.getOrDefault(false)) {
+            outgoing = old
+            outgoingLevel = oldLevel
+        } else {
+            old?.let { runCatching { it.release() } }
+        }
+        fadeFrom = outgoingLevel
+        fadeStart = android.os.SystemClock.uptimeMillis()
+        main.post(fadeStep)
+    }
+
+    private fun applyLevels() {
+        val g = gain()
+        runCatching { player?.setVolume(g * playerLevel, g * playerLevel) }
+        runCatching { outgoing?.setVolume(g * outgoingLevel, g * outgoingLevel) }
+    }
+
+    private fun releaseOutgoing() {
+        outgoing?.let { p ->
+            runCatching { if (p.isPlaying) p.stop() }
+            runCatching { p.release() }
+        }
+        outgoing = null
+        outgoingLevel = 0f
+    }
+
+    /** Ends a crossfade at once, where it was going: the old track gone, the new at full. */
+    private fun settleFade() {
+        main.removeCallbacks(fadeStep)
+        releaseOutgoing()
+        playerLevel = 1f
+        applyLevels()
     }
 
     /** Stop and release. Called when a game boots and when the toggle goes off. */
     fun stop(context: Context) {
         pausedForFocus = false
+        main.removeCallbacks(fadeStep)
+        releaseOutgoing()
+        playerLevel = 1f
         player?.let { p ->
             runCatching { if (p.isPlaying) p.stop() }
             runCatching { p.release() }
@@ -262,6 +334,7 @@ object LibraryMusic {
 
     /** Suspend without releasing — app backgrounded. */
     fun pause() {
+        settleFade()
         runCatching { player?.takeIf { it.isPlaying }?.pause() }
     }
 
@@ -279,6 +352,9 @@ object LibraryMusic {
                 // Permanent: another app took over for good. Drop the player entirely
                 // rather than sitting paused forever holding a decoder.
                 pausedForFocus = false
+                main.removeCallbacks(fadeStep)
+                releaseOutgoing()
+                playerLevel = 1f
                 player?.let { p ->
                     runCatching { if (p.isPlaying) p.stop() }
                     runCatching { p.release() }
