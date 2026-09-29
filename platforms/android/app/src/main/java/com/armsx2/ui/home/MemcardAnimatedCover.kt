@@ -135,13 +135,16 @@ internal fun AnimatedPs2Icon(
                 // At the console's 60 frames a second, looping, from the still picture's moment.
                 time = if (icon.animated) (loaded.pose.time + animation * 60f * icon.animSpeed) % length else loaded.pose.time,
             )
-            val px = withContext(Dispatchers.Default) {
-                if (first) Ps2IconRenderer.renderFrame(icon, loaded.sys, w, h, pose, options)
-                else Ps2IconRenderer.renderFrame(icon, loaded.sys, w, h, pose, frameOptions, scratch)
-            }
             val bmp = bitmaps[which]
             which = which xor 1
-            bmp.setPixels(px, 0, w, 0, 0, w, h)
+            // Into the bitmap off the main thread too: the conversion to the bitmap's own format
+            // was the main thread's biggest cost with a screenful moving. It is the bitmap not on
+            // screen, the other of the two.
+            withContext(Dispatchers.Default) {
+                val px = if (first) Ps2IconRenderer.renderFrame(icon, loaded.sys, w, h, pose, options)
+                    else Ps2IconRenderer.renderFrame(icon, loaded.sys, w, h, pose, frameOptions, scratch)
+                bmp.setPixels(px, 0, w, 0, 0, w, h)
+            }
             val image = bmp.asImageBitmap()
             frame = image
             eachFrame(image)

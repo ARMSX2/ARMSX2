@@ -423,9 +423,7 @@ object Ps2IconRenderer {
                             bl *= (t and 0xFF) * INV_255
                         }
                         color[k] = 0xFF000000.toInt() or
-                            ((r * 255f).toInt().coerceIn(0, 255) shl 16) or
-                            ((g * 255f).toInt().coerceIn(0, 255) shl 8) or
-                            (bl * 255f).toInt().coerceIn(0, 255)
+                            (byte(r * 255f) shl 16) or (byte(g * 255f) shl 8) or byte(bl * 255f)
                     }
                 }
                 w0 += d0x
@@ -454,10 +452,20 @@ object Ps2IconRenderer {
             lerp2(c00 and 0xFF, c10 and 0xFF, c01 and 0xFF, c11 and 0xFF, ax, ay)
     }
 
-    private fun lerp2(a: Int, b: Int, c: Int, d: Int, ax: Float, ay: Float): Int {
+    // Both inline, here where they run for every channel of every pixel: as calls (coerceIn is one,
+    // shared with the rest of the app once shrunk) they were a fifth of a moving cover's time.
+    @Suppress("NOTHING_TO_INLINE")
+    private inline fun lerp2(a: Int, b: Int, c: Int, d: Int, ax: Float, ay: Float): Int {
         val top = a + (b - a) * ax
         val bottom = c + (d - c) * ax
-        return (top + (bottom - top) * ay).toInt().coerceIn(0, 255)
+        return byte(top + (bottom - top) * ay)
+    }
+
+    /** 0..255 from a float, clamped. */
+    @Suppress("NOTHING_TO_INLINE")
+    private inline fun byte(v: Float): Int {
+        val i = v.toInt()
+        return if (i < 0) 0 else if (i > 255) 255 else i
     }
 
     /** Averages each [ss] x [ss] block. Colour is averaged over the covered samples only and
