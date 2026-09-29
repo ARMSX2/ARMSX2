@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -21,11 +22,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -123,8 +126,9 @@ internal fun MemcardCoversInfo(onClose: () -> Unit) {
  * Icon Museum: every save icon on the player's memory cards, then the ones found on discs and,
  * once downloaded, every icon of the online set, one at a time, full screen and moving, each on
  * its own icon.sys background with its title. Like ARMSX3's theme preview, it is for looking at
- * them without the library in the way. Swipe or press left and right to go through them; the
- * bookmark button (A on a controller) marks one to open at next time; Back closes it.
+ * them without the library in the way. Swipe or press left and right to go through them. Over it,
+ * Bookmark marks one to open at next time (A on the panel does too), Shuffle walks them in a
+ * random order, and Close closes; a controller reaches the three with Up. Back closes it too.
  */
 @Composable
 internal fun MemcardIconViewer(onClose: () -> Unit, titles: () -> Map<String, String> = { emptyMap() }) {
@@ -164,17 +168,8 @@ internal fun MemcardIconViewer(onClose: () -> Unit, titles: () -> Map<String, St
                 )
                 else -> ViewerPages(list)
             }
-            // Close, for touch; Back does the same from a controller.
-            Box(
-                Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(16.dp)
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.35f))
-                    .clickable(onClick = onClose),
-                contentAlignment = Alignment.Center,
-            ) {
+            // Close: a tap, A once up from the panel, or Back.
+            RoundButton("memcard-icon-viewer.close", onClose, Modifier.align(Alignment.TopEnd).padding(16.dp)) {
                 Text("×", color = Color.White, fontSize = 26.sp)
             }
         }
@@ -186,7 +181,23 @@ private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
     remember { MuseumBookmark.load() }
     // Opens at the bookmark, when it is still in the list.
     val start = remember(saves) { saves.indexOfFirst { it.key == MuseumBookmark.key.value }.coerceAtLeast(0) }
-    val pager = rememberPagerState(initialPage = start, pageCount = { saves.size })
+    // Shuffle: the same icons in a random order, walked the same way; off, back in order. Either
+    // way it stays on the icon it was showing ([follow]), and only the neighbours change.
+    var shuffleSeed by remember { mutableStateOf<Long?>(null) }
+    var follow by remember { mutableStateOf<String?>(null) }
+    val order = remember(saves, shuffleSeed) {
+        shuffleSeed?.let { seed -> saves.shuffled(kotlin.random.Random(seed)) } ?: saves
+    }
+    val pager = rememberPagerState(initialPage = start, pageCount = { order.size })
+    LaunchedEffect(order) {
+        val key = follow ?: return@LaunchedEffect
+        follow = null
+        order.indexOfFirst { it.key == key }.takeIf { it >= 0 }?.let { pager.scrollToPage(it) }
+    }
+    val toggleShuffle = {
+        follow = order[pager.currentPage.coerceIn(order.indices)].key
+        shuffleSeed = if (shuffleSeed == null) kotlin.random.Random.nextLong() else null
+    }
     val fromDisc = str("memcard.viewer.fromDisc")
     val onlineBy = str("memcard.viewer.onlineBy")
     val online = str("memcard.viewer.online")
@@ -194,12 +205,12 @@ private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
     val scope = rememberCoroutineScope()
     Box(Modifier.fillMaxSize()) {
         HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
-            val ref = saves[page]
+            val ref = order[page]
             ViewerPage(ref, animate = page == pager.settledPage)
         }
         // Title, serial and card, and where in the list this is. Also the controller's handle on
         // the viewer: left and right move through the saves, and A bookmarks the one shown.
-        val ref = saves[pager.currentPage.coerceIn(saves.indices)]
+        val ref = order[pager.currentPage.coerceIn(order.indices)]
         val isBookmarked = MuseumBookmark.key.value == ref.key
         val origin = when (val o = ref.origin) {
             is MemcardCovers.FromCard -> o.card
@@ -209,25 +220,26 @@ private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
                 if (o.contributors.isBlank()) online else onlineBy.replace("%s", o.contributors),
             ).joinToString("  ·  ")
         }
-        // Bookmark, for touch, across from Close; A on the panel does the same from a controller.
-        Box(
-            Modifier
-                .align(Alignment.TopStart)
-                .padding(16.dp)
-                .size(44.dp)
-                .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.35f))
-                .clickable { MuseumBookmark.toggle(ref.key) },
-            contentAlignment = Alignment.Center,
-        ) {
-            androidx.compose.material3.Icon(
-                painter = androidx.compose.ui.res.painterResource(
-                    if (isBookmarked) com.armsx2.R.drawable.ic_bookmark_filled else com.armsx2.R.drawable.ic_bookmark,
-                ),
-                contentDescription = str("memcard.viewer.bookmark"),
-                tint = Color.White,
-                modifier = Modifier.size(22.dp),
-            )
+        // Bookmark and Shuffle, across from Close: taps, or A once up from the panel.
+        Row(Modifier.align(Alignment.TopStart).padding(16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            RoundButton("memcard-icon-viewer.bookmark", { MuseumBookmark.toggle(ref.key) }) {
+                androidx.compose.material3.Icon(
+                    painter = androidx.compose.ui.res.painterResource(
+                        if (isBookmarked) com.armsx2.R.drawable.ic_bookmark_filled else com.armsx2.R.drawable.ic_bookmark,
+                    ),
+                    contentDescription = str("memcard.viewer.bookmark"),
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+            RoundButton("memcard-icon-viewer.shuffle", toggleShuffle, active = shuffleSeed != null) {
+                androidx.compose.material3.Icon(
+                    painter = androidx.compose.ui.res.painterResource(com.armsx2.R.drawable.ic_shuffle),
+                    contentDescription = str("memcard.viewer.shuffle"),
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
         }
         Column(
             Modifier
@@ -239,8 +251,8 @@ private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
                     controllerId = "memcard-icon-viewer",
                     shape = RoundedCornerShape(18.dp),
                     onLeft = { scope.launch { pager.animateScrollToPage((pager.currentPage - 1).coerceAtLeast(0)) } },
-                    onRight = { scope.launch { pager.animateScrollToPage((pager.currentPage + 1).coerceAtMost(saves.size - 1)) } },
-                    onConfirm = { MuseumBookmark.toggle(saves[pager.currentPage.coerceIn(saves.indices)].key) },
+                    onRight = { scope.launch { pager.animateScrollToPage((pager.currentPage + 1).coerceAtMost(order.size - 1)) } },
+                    onConfirm = { MuseumBookmark.toggle(order[pager.currentPage.coerceIn(order.indices)].key) },
                 )
                 .padding(horizontal = 22.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -264,13 +276,34 @@ private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
                 textAlign = TextAlign.Center,
             )
             Text(
-                listOfNotNull("%,d / %,d".format(pager.currentPage + 1, saves.size), bookmarked.takeIf { isBookmarked })
+                listOfNotNull("%,d / %,d".format(pager.currentPage + 1, order.size), bookmarked.takeIf { isBookmarked })
                     .joinToString("  ·  "),
                 color = Color.White.copy(alpha = 0.55f),
                 fontSize = 12.sp,
             )
         }
     }
+}
+
+/** A round button over the Museum: tapped, or reached from the panel with Up and pressed with A.
+ *  [active] lights it, for a mode that is on (Shuffle). */
+@Composable
+private fun RoundButton(
+    id: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    active: Boolean = false,
+    content: @Composable () -> Unit,
+) {
+    Box(
+        modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(if (active) Color(0xFF3D5AFE).copy(alpha = 0.85f) else Color.Black.copy(alpha = 0.35f))
+            .clickable(onClick = onClick)
+            .controllerFocusable(id, shape = RoundedCornerShape(22.dp), onConfirm = onClick),
+        contentAlignment = Alignment.Center,
+    ) { content() }
 }
 
 @Composable

@@ -704,6 +704,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "memcard.viewer.online" to "PS2IODB",
     "memcard.viewer.onlineBy" to "PS2IODB, by %s",
     "memcard.viewer.bookmark" to "Bookmark",
+    "memcard.viewer.shuffle" to "Shuffle",
     "memcard.viewer.bookmarked" to "Bookmarked",
     "memcard.info.title" to "Memory card covers",
     "memcard.info.body" to "Games show their PS2 save icon instead of box art, from your memory cards, the game's disc or Online Icons. Online Icons counts downloads anonymously for Popular Today.\n\nIcon Museum shows every icon you have. Bookmark one to open there next time.\n\nIcons: PS2 Icon Open Database (ps2iodb.com), by Issun and its contributors. Museum music: \"Another August\" by The Cynic Project (cynicmusic.com, pixelsphere.org).",
