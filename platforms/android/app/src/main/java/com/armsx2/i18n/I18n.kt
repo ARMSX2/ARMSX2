@@ -703,7 +703,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "memcard.viewer.bookmark" to "Bookmark",
     "memcard.viewer.bookmarked" to "Bookmarked",
     "memcard.info.title" to "Memory card covers",
-    "memcard.info.body" to "Your library shows each game's PS2 save icon instead of its box art, like the PS2's own memory card screen. Icons come from your memory cards first, then from the game's disc, and otherwise from the PS2 Icon Open Database once you download it under Online Icons. A game with no icon anywhere keeps its box art.\n\nIcon Museum shows every icon you have, full screen and moving; bookmark one to open there next time. Icon motion sets whether they spin or face you.\n\nCredits: downloaded icons come from the PS2 Icon Open Database (ps2iodb.com), founded by Issun and built by its contributors. Icon Museum music: \"Another August\" by The Cynic Project (cynicmusic.com, pixelsphere.org).",
+    "memcard.info.body" to "Games show their PS2 save icon instead of box art, from your memory cards, the game's disc or Online Icons.\n\nIcon Museum shows every icon you have. Bookmark one to open there next time.\n\nIcons: PS2 Icon Open Database (ps2iodb.com), by Issun and its contributors. Museum music: \"Another August\" by The Cynic Project (cynicmusic.com, pixelsphere.org).",
     "games.overflow.memcardCovers.animated" to "Animated",
     "games.overflow.memcardCovers.still" to "Still",
     "games.overflow.coverStyle" to "Cover style",

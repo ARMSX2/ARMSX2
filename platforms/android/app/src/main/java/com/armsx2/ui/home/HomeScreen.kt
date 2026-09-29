@@ -1920,6 +1920,10 @@ private fun LazyGridScope.emptyLibrary(noFolders: Boolean) {
     }
 }
 
+/** Whether grid and shelf covers carry their game's name: when "Name on grid" is on, and always
+ *  under Memory Card Covers, where an icon tells less than box art about which game it is. */
+private fun coverNames(): Boolean = GridLabels.show.value || com.armsx2.memcard.MemcardCovers.enabled.value
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun GameGridCard(
@@ -1941,7 +1945,7 @@ private fun GameGridCard(
                 .aspectRatio(coverAspectRatio())
                 .coverFrame(selected, 2.dp, MaterialTheme.colorScheme.primary, memcard = showsMemcardCover(game)),
         )
-        if (GridLabels.show.value) {
+        if (coverNames()) {
             Spacer(Modifier.height(4.dp))
             Text(
                 game.displayTitle(EnglishTitles.enabled.value),
@@ -2513,7 +2517,7 @@ private fun GameShelf(
     // base lands on the top face and the reflection lays over the shelf in front.
     // "Name on grid" also labels shelf covers (previously only the flat grid honoured it) — reserve
     // a line under the reflection for the title so it isn't clipped by the plank.
-    val nameHeight = if (GridLabels.show.value) 18.dp else 0.dp
+    val nameHeight = if (coverNames()) 18.dp else 0.dp
     val rowHeight = coverHeight + reflectionHeight + nameHeight
     Box(modifier.fillMaxWidth().height(coverHeight + plankHeight - surfaceInset + nameHeight)) {
         Image(
@@ -2614,8 +2618,9 @@ private fun ShelfGameCard(game: GameInfo, width: Dp, reflectionHeight: Dp, selec
             // Fade the reflection out toward the front of the shelf.
             Box(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0x55000000)))))
         }
-        // Title under the cover when "Name on grid" is on — shelf covers honour it too now.
-        if (GridLabels.show.value) {
+        // Title under the cover when "Name on grid" is on — shelf covers honour it too now — and
+        // always under Memory Card Covers (see coverNames).
+        if (coverNames()) {
             Text(
                 game.displayTitle(EnglishTitles.enabled.value),
                 style = MaterialTheme.typography.labelSmall,
