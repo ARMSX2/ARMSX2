@@ -7,8 +7,10 @@ PS2IODB keys its icons by title, not serial. For each serial in GameIndex.yaml:
   2. otherwise an icon whose PS2IODB title matches the serial's GameIndex name
 In both, the serial's own region's icon wins, then the main save's ("Save Data", "Game Data").
 
-Writes OUT_DIR/index.txt ("SERIAL HASH" lines), OUT_DIR/icons/HASH.bin for every icon it names,
-and OUT_DIR/why.txt with the reason for each serial, to review.
+Writes OUT_DIR/index.txt ("SERIAL HASH" lines), OUT_DIR/icons/HASH.bin for every icon PS2IODB
+has (the index names most; the rest are for the Icon Museum), OUT_DIR/catalog.txt ("HASH<tab>title
+<tab>which save<tab>contributors" for every icon, for the Museum and its credits) and OUT_DIR/why.txt
+with the reason for each serial, to review.
 
 usage: build_index.py IODB_DIR GAMEINDEX OUT_DIR
 """
@@ -71,9 +73,22 @@ src = open(os.path.join(IODB, "Titles.ts"), encoding="utf-8").read()
 titles = collections.defaultdict(list)  # norm title -> [(label, code, order)]
 codes_of_title = collections.defaultdict(list)  # PS2IODB title -> its icons
 title_of_code = {}
-for m in re.finditer(r"new (?:Game|Application)\(`((?:[^`\\]|\\.)*)`\s*,\s*(?:`([^`]*)`|g\s*=>\s*\[(.*?)\n\s*\]\))", src, re.S):
-    title, code, block = m.group(1), m.group(2), m.group(3)
-    entries = [("", code)] if code else re.findall(r"new Icon\(g,\s*`((?:[^`\\]|\\.)*)`,\s*`([^`]*)`", block or "")
+
+
+def qstr(n):
+    """A quoted string in Titles.ts, which mostly uses backticks but sometimes ' or "."""
+    return r"""(?:`(?P<%sb>(?:[^`\\]|\\.)*)`|'(?P<%ss>(?:[^'\\]|\\.)*)'|"(?P<%sd>(?:[^"\\]|\\.)*)")""" % (n, n, n)
+
+
+def qval(m, n):
+    return next((v for v in (m.group(n + "b"), m.group(n + "s"), m.group(n + "d")) if v is not None), "")
+
+
+GAME = r"new (?:Game|Application)\(\s*" + qstr("t")
+ICON = r"new Icon\(\s*g\s*,\s*" + qstr("l") + r"\s*,\s*" + qstr("c")  # "new Icon(g , 'x', 'code'" occurs
+for m in re.finditer(GAME + r"\s*,\s*(?:" + qstr("c") + r"|g\s*=>\s*\[(?P<block>.*?)\n\s*\]\))", src, re.S):
+    title, code, block = qval(m, "t"), qval(m, "c") or None, m.group("block")
+    entries = [("", code)] if code else [(qval(i, "l"), qval(i, "c")) for i in re.finditer(ICON, block or "")]
     for i, (label, c) in enumerate(entries):
         if c in by_code:
             for name in {title} | set(title.split(" / ")):  # "A / B" titles carry two names
@@ -136,8 +151,26 @@ for s in sorted(x for x in serials if not x.endswith("-00000")):
         if c:
             index[s] = by_code[c]["hash"]; why[s] = "iodb-title " + c; used_iodb.add(c)
 
-# copy the icons the index uses
-hashes = set(index.values())
+# Every icon's title, which save it is (Game Data, Japan...) and who contributed it, from the
+# lines of Titles.ts: single-icon titles on one line, multi-icon titles as a Game line then Icons.
+catalog = {}
+game = None
+for line in src.splitlines():
+    g = re.search(GAME, line)
+    if g:
+        game = qval(g, "t")
+        c = re.search(GAME + r"\s*,\s*" + qstr("c"), line)
+        if c: catalog[qval(c, "c")] = (game, "", re.findall(r"Contributors\.(\w+)", line))
+        continue
+    i = re.search(ICON, line)
+    if i and game: catalog[qval(i, "c")] = (game, qval(i, "l"), re.findall(r"Contributors\.(\w+)", line))
+with open(os.path.join(OUT, "catalog.txt"), "w", encoding="utf-8") as f:
+    for r in sorted(records, key=lambda r: r["code"]):
+        title, label, who = catalog.get(r["code"], (r["code"], "", []))
+        f.write("%s\t%s\t%s\t%s\n" % (r["hash"], title.replace("\t", " "), label.replace("\t", " "), ", ".join(who)))
+
+# copy every icon: the index's, and the rest for the Museum
+hashes = {r["hash"] for r in records}
 for h in hashes:
     p = os.path.join(IODB, "icons", h + ".bin")
     if os.path.exists(p):
@@ -153,8 +186,8 @@ with open(os.path.join(OUT, "why.txt"), "w") as f:
 
 kinds = collections.Counter(w.split()[0] for w in why.values())
 size = sum(os.path.getsize(os.path.join(OUT, "icons", h + ".bin")) for h in hashes if os.path.exists(os.path.join(OUT, "icons", h + ".bin")))
-print("serials: %d  %s  icons: %d (%.1f MB)  PS2IODB icons used: %d of %d" % (
-    len(index), dict(kinds), len(hashes), size / 1e6, len(used_iodb), len(records)))
+print("serials: %d  %s  icons: %d in the index, %d in all (%.1f MB)  catalog: %d, %d without a title" % (
+    len(index), dict(kinds), len(set(index.values())), len(hashes), size / 1e6, len(records), sum(1 for r in records if r["code"] not in catalog)))
 us = [s for s in gi if s[:4] in ("SLUS", "SCUS")]
 print("US serials covered: %d of %d; all GameIndex serials: %d of %d" % (
     sum(1 for s in us if s in index), len(us), sum(1 for s in gi if s in index), len(gi)))

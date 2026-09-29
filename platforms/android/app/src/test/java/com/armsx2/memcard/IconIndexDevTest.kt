@@ -10,7 +10,7 @@ import java.io.File
 import javax.imageio.ImageIO
 
 /**
- * Checks a built icon index before it is published: every icon it names must parse with the app's
+ * Checks a built icon index before it is published: every icon in it must parse with the app's
  * own readers and render, and ICON_INDEX_SHOW=SLUS-20312,... draws those serials' icons to a sheet
  * to look at. Skipped unless ICON_INDEX_DIR (index.txt plus icons/) is set.
  */
@@ -23,7 +23,10 @@ class IconIndexDevTest {
             .associate { it.substringBefore(' ') to it.substringAfter(' ').trim() }
         val bad = ArrayList<String>()
         var animated = 0
-        for (hash in index.values.toSet()) {
+        // Every icon file, not only the ones the index names: the rest are the Icon Museum's.
+        val all = File(dir, "icons").listFiles().orEmpty().filter { it.name.endsWith(".bin") }.map { it.name.removeSuffix(".bin") }
+        org.junit.Assert.assertTrue("icons the index names but the folder lacks", all.containsAll(index.values.toSet()))
+        for (hash in all) {
             val bytes = File(dir, "icons/$hash.bin").takeIf { it.isFile }?.readBytes()
             val sys = bytes?.let { Ps2IconSys.parse(it.copyOfRange(0, minOf(it.size, Ps2IconSys.SIZE))) }
             val icon = bytes?.takeIf { it.size > Ps2IconSys.SIZE }?.let { Ps2Icon.parse(it.copyOfRange(Ps2IconSys.SIZE, it.size)) }
@@ -32,7 +35,7 @@ class IconIndexDevTest {
             runCatching { Ps2IconRenderer.render(icon, sys, 48, 64, Ps2IconRenderer.Options(time = icon.frameLength / 2f)) }
                 .onFailure { bad += "$hash: render ${it.javaClass.simpleName} ${it.message}" }
         }
-        println("ICON INDEX ${index.size} serials, ${index.values.toSet().size} icons, $animated animated, ${bad.size} bad")
+        println("ICON INDEX ${index.size} serials, ${index.values.toSet().size} icons indexed, ${all.size} in all, $animated animated, ${bad.size} bad")
         bad.take(20).forEach { println("  $it") }
         org.junit.Assert.assertTrue(bad.joinToString("\n"), bad.isEmpty())
 
