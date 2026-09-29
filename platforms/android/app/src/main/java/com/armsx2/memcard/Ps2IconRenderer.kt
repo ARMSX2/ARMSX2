@@ -54,6 +54,18 @@ object Ps2IconRenderer {
         internal var sz = FloatArray(0)
         internal var lit = FloatArray(0)
 
+        // The framing of the icon last drawn here: fixed for an icon at a size, so worked out once
+        // rather than over every vertex of every shape each frame.
+        internal var framedIcon: Ps2Icon? = null
+        internal var framedWidth = 0
+        internal var framedHeight = 0
+        internal var framedOptions: Options? = null
+        internal var cx = 0f
+        internal var cz = 0f
+        internal var scale = 0f
+        internal var refY = 0f
+        internal var baseY = 0f
+
         internal fun fit(pixels: Int, vertices: Int, shapes: Int) {
             if (color.size != pixels) { color = IntArray(pixels); depth = FloatArray(pixels) }
             if (sx.size != vertices) {
@@ -173,37 +185,16 @@ object Ps2IconRenderer {
         val cp = cos(options.pitch)
         val sp = sin(options.pitch)
 
-        val all = icon.positions
-        val count = icon.shapeCount * icon.vertexCount
-        var lx = Float.MAX_VALUE; var hx = -Float.MAX_VALUE
-        var lz = Float.MAX_VALUE; var hz = -Float.MAX_VALUE
-        for (i in 0 until count) {
-            lx = min(lx, all[i * 3]); hx = max(hx, all[i * 3])
-            lz = min(lz, all[i * 3 + 2]); hz = max(hz, all[i * 3 + 2])
+        if (buf.framedIcon !== icon || buf.framedWidth != w || buf.framedHeight != h ||
+            buf.framedOptions?.let { it.pitch == options.pitch && it.fill == options.fill && it.anchorBottom == options.anchorBottom } != true
+        ) {
+            frame(icon, w, h, options, cp, sp, buf)
         }
-        val cx = (lx + hx) / 2f
-        val cz = (lz + hz) / 2f
-        // A point r from the axis swings from r in front to r behind over a turn, so seen from
-        // above it rises and falls on screen by r * sin(pitch) about its own height.
-        var r2 = 1e-6f
-        var top = Float.MAX_VALUE; var bottom = -Float.MAX_VALUE
-        for (i in 0 until count) {
-            val dx = all[i * 3] - cx; val dz = all[i * 3 + 2] - cz
-            val rr = dx * dx + dz * dz
-            r2 = max(r2, rr)
-            val y = all[i * 3 + 1] * cp
-            val swing = sqrt(rr) * sp
-            top = min(top, y - swing); bottom = max(bottom, y + swing)
-        }
-        // Width and height fitted separately: a standing figure in a tall tile uses the height.
-        val scale = min(
-            w * options.fill / (2f * sqrt(r2)).coerceAtLeast(1e-3f),
-            h * options.fill / (bottom - top).coerceAtLeast(1e-3f),
-        )
-        // Where the icon lands on screen: its lowest point on the bottom edge, or its middle in
-        // the middle.
-        val refY = if (options.anchorBottom) bottom else (top + bottom) / 2f
-        val baseY = if (options.anchorBottom) h * (1f - BOTTOM_MARGIN) else h / 2f
+        val cx = buf.cx
+        val cz = buf.cz
+        val scale = buf.scale
+        val refY = buf.refY
+        val baseY = buf.baseY
 
         // Transform and light each vertex once.
         val sx = buf.sx; val syy = buf.sy; val sz = buf.sz
@@ -261,6 +252,47 @@ object Ps2IconRenderer {
             coverage = n / color.size.toFloat(),
             luma = if (n == 0) 0f else sum / n,
         )
+    }
+
+    /** Where [icon] sits in a [w] x [h] tile, into [buf]: see [draw]. */
+    private fun frame(icon: Ps2Icon, w: Int, h: Int, options: Options, cp: Float, sp: Float, buf: Scratch) {
+        val all = icon.positions
+        val count = icon.shapeCount * icon.vertexCount
+        var lx = Float.MAX_VALUE; var hx = -Float.MAX_VALUE
+        var lz = Float.MAX_VALUE; var hz = -Float.MAX_VALUE
+        for (i in 0 until count) {
+            lx = min(lx, all[i * 3]); hx = max(hx, all[i * 3])
+            lz = min(lz, all[i * 3 + 2]); hz = max(hz, all[i * 3 + 2])
+        }
+        val cx = (lx + hx) / 2f
+        val cz = (lz + hz) / 2f
+        // A point r from the axis swings from r in front to r behind over a turn, so seen from
+        // above it rises and falls on screen by r * sin(pitch) about its own height.
+        var r2 = 1e-6f
+        var top = Float.MAX_VALUE; var bottom = -Float.MAX_VALUE
+        for (i in 0 until count) {
+            val dx = all[i * 3] - cx; val dz = all[i * 3 + 2] - cz
+            val rr = dx * dx + dz * dz
+            r2 = max(r2, rr)
+            val y = all[i * 3 + 1] * cp
+            val swing = sqrt(rr) * sp
+            top = min(top, y - swing); bottom = max(bottom, y + swing)
+        }
+        buf.cx = cx
+        buf.cz = cz
+        // Width and height fitted separately: a standing figure in a tall tile uses the height.
+        buf.scale = min(
+            w * options.fill / (2f * sqrt(r2)).coerceAtLeast(1e-3f),
+            h * options.fill / (bottom - top).coerceAtLeast(1e-3f),
+        )
+        // Where the icon lands on screen: its lowest point on the bottom edge, or its middle in
+        // the middle.
+        buf.refY = if (options.anchorBottom) bottom else (top + bottom) / 2f
+        buf.baseY = if (options.anchorBottom) h * (1f - BOTTOM_MARGIN) else h / 2f
+        buf.framedIcon = icon
+        buf.framedWidth = w
+        buf.framedHeight = h
+        buf.framedOptions = options
     }
 
     /** Morph-target positions at [time]: each frame names a shape and a weight curve over time;

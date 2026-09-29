@@ -252,6 +252,11 @@ fun HomeScreen(
     }
     if (MemcardIconViewerState.open.value) MemcardIconViewer(onClose = { MemcardIconViewerState.open.value = false })
     if (MemcardIconViewerState.info.value) MemcardCoversInfo(onClose = { MemcardIconViewerState.info.value = false })
+    if (MemcardIconViewerState.screensaver.value) ScreensaverSettings(onClose = { MemcardIconViewerState.screensaver.value = false })
+    // The screensaver, after the library has sat untouched for a while.
+    LibraryScreensaverHost(titles = {
+        state.allGames.mapNotNull { g -> g.serial?.uppercase()?.let { it to g.displayTitle(EnglishTitles.enabled.value) } }.toMap()
+    })
     DisposableEffect(viewModel, onOpenMenu) {
         HomeInputController.bind(viewModel, onOpenMenu, onOpenGameMenu = { menuGame = it })
         onDispose { HomeInputController.unbind(viewModel) }
@@ -1680,6 +1685,30 @@ private fun LibraryOverflowMenu(
         LibraryOverflowItem(glyph = "◈", label = str("games.overflow.iconViewer")) {
             closeThen { MemcardIconViewerState.open.value = true }
         }
+        // Spin or No spin: whether moving icons turn, in the library, the viewer and the
+        // screensaver. Their own animations play either way.
+        run {
+            val spin = com.armsx2.memcard.MemcardCovers.spin.value
+            LibraryOverflowItem(
+                glyph = "↻",
+                label = str("games.overflow.iconMotion"),
+                trailing = if (spin) str("games.overflow.iconMotion.spin") else str("games.overflow.iconMotion.noSpin"),
+            ) {
+                closeThen { com.armsx2.memcard.MemcardCovers.setSpin(!spin) }
+            }
+        }
+        run {
+            remember { LibraryScreensaver.load() }
+            LibraryOverflowItem(
+                glyph = "☾",
+                label = str("games.overflow.screensaver"),
+                trailing = if (LibraryScreensaver.enabled.value) {
+                    str("screensaver.minutes").replace("%d", LibraryScreensaver.minutes.intValue.toString())
+                } else str("common.off"),
+            ) {
+                closeThen { MemcardIconViewerState.screensaver.value = true }
+            }
+        }
         LibraryOverflowItem(glyph = "?", label = str("games.overflow.memcardInfo")) {
             closeThen { MemcardIconViewerState.info.value = true }
         }
@@ -2097,7 +2126,9 @@ private fun GameCover(
     // is hidden once the first moving frame is up, or the two (both transparent around the icon)
     // would show at once.
     val moving = memcard != null && com.armsx2.memcard.MemcardCovers.animate.value &&
-        com.armsx2.runtime.MainActivityRuntime.eState.value == com.armsx2.EmuState.STOPPED
+        com.armsx2.runtime.MainActivityRuntime.eState.value == com.armsx2.EmuState.STOPPED &&
+        // Nothing to see under the screensaver or the Icon Viewer, so no frames drawn for it.
+        !LibraryScreensaver.showing.value && !MemcardIconViewerState.open.value
     val animating = moving && liveIn == null
     var animReady by remember(game.serial, animating) { mutableStateOf(false) }
     val mirroring = moving && liveIn != null

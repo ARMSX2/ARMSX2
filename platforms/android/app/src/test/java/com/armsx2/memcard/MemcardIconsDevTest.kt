@@ -70,6 +70,36 @@ class MemcardIconsDevTest {
         ImageIO.write(sheet, "png", File(out, "film.png"))
     }
 
+    /** Frames drawn with a reused Scratch (buffers and framing kept between frames) are the same
+     *  pixels as frames drawn fresh, and cost less. */
+    @Test
+    fun scratchFramesMatchFreshOnes() {
+        val cards = System.getenv("MEMCARD_TEST_CARDS")?.split(':')?.filter { it.isNotBlank() }.orEmpty()
+        Assume.assumeTrue(cards.isNotEmpty())
+        val opts = Ps2IconRenderer.Options(background = false, anchorBottom = true, supersample = 1)
+        var icons = 0; var frames = 0; var freshNs = 0L; var reusedNs = 0L
+        for (path in cards) Ps2MemoryCard.open(File(path))?.use { card ->
+            for (save in card.saves()) {
+                val sys = Ps2IconSys.parse(save.read("icon.sys")) ?: continue
+                val icon = Ps2Icon.parse(save.read(sys.iconNormal)) ?: continue
+                icons++
+                val scratch = Ps2IconRenderer.Scratch()
+                for (k in 0 until 12) {
+                    val pose = Ps2IconRenderer.Pose(k * 0.5f, k * 3f)
+                    var t = System.nanoTime()
+                    val fresh = Ps2IconRenderer.renderFrame(icon, sys, 240, 333, pose, opts)
+                    freshNs += System.nanoTime() - t
+                    t = System.nanoTime()
+                    val reused = Ps2IconRenderer.renderFrame(icon, sys, 240, 333, pose, opts, scratch)
+                    reusedNs += System.nanoTime() - t
+                    org.junit.Assert.assertArrayEquals("${save.folder} frame $k", fresh, reused)
+                    frames++
+                }
+            }
+        }
+        println("SCRATCH $icons icons, $frames frames identical; fresh %.2f ms/frame, reused %.2f ms/frame".format(freshNs / 1e6 / frames, reusedNs / 1e6 / frames))
+    }
+
     @Test
     fun contactSheet() {
         val cards = System.getenv("MEMCARD_TEST_CARDS")?.split(':')?.filter { it.isNotBlank() }.orEmpty()

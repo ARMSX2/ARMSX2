@@ -71,11 +71,13 @@ internal fun MemcardLiveMirror(live: State<ImageBitmap?>, modifier: Modifier = M
 }
 
 /**
- * A PS2 save icon drawn live: turning and playing its animation when [animate], or one still
- * frame when not. Frames are rendered off the main thread at this composable's width (capped at
- * [maxWidth], since it runs every frame) and [aspect] (height / width), into two bitmaps used in
- * turn, reusing the renderer's buffers. It starts from the pose the loaded icon's still picture
- * uses, and holds still while the app is out of sight, carrying on from there when it is back.
+ * A PS2 save icon drawn live: playing its animation when [animate], and turning too when Spin is
+ * on ([MemcardCovers.spin]), or one still frame when not. Frames are rendered off the main thread
+ * at this composable's width (capped at [maxWidth], since it runs every frame) and [aspect]
+ * (height / width), into two bitmaps used in turn, reusing the renderer's buffers. It starts from
+ * the pose the loaded icon's still picture uses, and holds still while the app is out of sight,
+ * carrying on from there when it is back. An icon with no animation of its own that is not
+ * turning never changes, so it is drawn once and costs nothing after.
  */
 @Composable
 internal fun AnimatedPs2Icon(
@@ -95,10 +97,13 @@ internal fun AnimatedPs2Icon(
     val eachFrame by rememberUpdatedState(onFrame)
     val lifecycle by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
     val moving = animate && lifecycle.isAtLeast(Lifecycle.State.STARTED)
-    // Seconds of motion so far, kept when the motion pauses so it carries on from the same pose.
-    val clock = remember(key) { FloatArray(1) }
+    val spinning = MemcardCovers.spin.value
+    // Seconds of animation and of turning so far, kept when motion pauses so it carries on from
+    // the same pose. Turning only counts while Spin is on, so switching it off stops the turn
+    // where it is and the animation carries on.
+    val clock = remember(key) { FloatArray(2) }
     val scratch = remember(key) { Ps2IconRenderer.Scratch() }
-    LaunchedEffect(key, size, moving) {
+    LaunchedEffect(key, size, moving, spinning) {
         if (size.width <= 0 || size.height <= 0) return@LaunchedEffect
         if (!moving && frame != null) return@LaunchedEffect
         val loaded = withContext(Dispatchers.IO) { load() } ?: return@LaunchedEffect
@@ -112,18 +117,24 @@ internal fun AnimatedPs2Icon(
         val icon = loaded.icon
         val length = icon.frameLength.coerceAtLeast(1).toFloat()
         val frameOptions = options.copy(supersample = 1)
+        val still = !icon.animated && !spinning
+        if (still && frame != null) return@LaunchedEffect
         val start = System.nanoTime()
-        val base = clock[0]
+        val baseAnimation = clock[0]
+        val baseTurn = clock[1]
         // The very first frame is drawn as smoothly as the still picture it replaces.
         var first = frame == null
         while (isActive) {
             val began = System.nanoTime()
-            val seconds = if (moving) base + (began - start) / 1e9f else base
-            clock[0] = seconds
+            val elapsed = if (moving) (began - start) / 1e9f else 0f
+            val animation = baseAnimation + elapsed
+            val turn = baseTurn + if (spinning) elapsed else 0f
+            clock[0] = animation
+            clock[1] = turn
             val pose = Ps2IconRenderer.Pose(
-                yaw = loaded.pose.yaw + seconds * TURN_PER_SECOND,
+                yaw = loaded.pose.yaw + turn * TURN_PER_SECOND,
                 // At the console's 60 frames a second, looping, from the still picture's moment.
-                time = if (icon.animated) (loaded.pose.time + seconds * 60f * icon.animSpeed) % length else loaded.pose.time,
+                time = if (icon.animated) (loaded.pose.time + animation * 60f * icon.animSpeed) % length else loaded.pose.time,
             )
             val px = withContext(Dispatchers.Default) {
                 if (first) Ps2IconRenderer.renderFrame(icon, loaded.sys, w, h, pose, options)
@@ -136,7 +147,7 @@ internal fun AnimatedPs2Icon(
             frame = image
             eachFrame(image)
             if (first) { first = false; firstFrame() }
-            if (!moving) break
+            if (!moving || still) break
             val spentMs = (System.nanoTime() - began) / 1_000_000
             delay((FRAME_MS - spentMs).coerceAtLeast(1))
         }

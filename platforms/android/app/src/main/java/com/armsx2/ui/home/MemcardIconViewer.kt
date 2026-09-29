@@ -52,6 +52,8 @@ internal object MemcardIconViewerState {
     val open = mutableStateOf(false)
     /** The "MC Icon Info" note. */
     val info = mutableStateOf(false)
+    /** The screensaver's settings. */
+    val screensaver = mutableStateOf(false)
 }
 
 /** How Memory Card Covers works, from the library menu's "MC Icon Info". */

@@ -35,6 +35,7 @@ object MemcardCovers {
     private const val TAG = "MemcardCovers"
     private const val KEY_ENABLED = "library.memcardCovers"
     private const val KEY_ANIMATE = "library.memcardCovers.animate"
+    private const val KEY_SPIN = "library.memcardCovers.spin"
     private const val CACHE_DIR = "memcard_covers"
     private const val DISC_COVER_DIR = "disc_covers"
     private const val DISC_ICON_DIR = "disc_icons"
@@ -57,6 +58,10 @@ object MemcardCovers {
     /** Covers turn and play their animations, as on the PS2's memory card screen ("Animated"),
      *  rather than standing still ("Still"). Each tile on screen draws its own frames. */
     val animate = mutableStateOf(true)
+
+    /** Moving icons turn as well ("Spin"), or only play their own animation, facing the same way
+     *  ("No spin"). In the library, the Icon Viewer and the screensaver alike. */
+    val spin = mutableStateOf(true)
 
     /** Bumped whenever the covers change, so tiles resolve their cover again. */
     val generation = mutableIntStateOf(0)
@@ -99,6 +104,12 @@ object MemcardCovers {
         loaded = true
         enabled.value = runCatching { MainActivityRuntime.prefs.getBoolean(KEY_ENABLED, false) }.getOrDefault(false)
         animate.value = runCatching { MainActivityRuntime.prefs.getBoolean(KEY_ANIMATE, true) }.getOrDefault(true)
+        spin.value = runCatching { MainActivityRuntime.prefs.getBoolean(KEY_SPIN, true) }.getOrDefault(true)
+    }
+
+    fun setSpin(on: Boolean) {
+        MainActivityRuntime.prefs.edit().putBoolean(KEY_SPIN, on).apply()
+        spin.value = on
     }
 
     fun setAnimate(on: Boolean) {
@@ -155,6 +166,33 @@ object MemcardCovers {
 
     /** A save's icon for the viewer, which shows it on its own background. Reads the card. */
     fun loadForViewer(ref: SaveRef): Loaded? = load(ref.card, ref.folder, Ps2IconRenderer.Options())
+
+    /** An icon the screensaver can show: what to call it and how to load it (off the main thread). */
+    class ShowIcon(val key: String, val title: String, val load: () -> Loaded?)
+
+    /**
+     * One icon per game for the screensaver: each game's newest save across the cards, then, for a
+     * game with no save, the icon found on its disc. [titles] maps serials to the library's names,
+     * which read better than a save's own ("MGS3 GAME DATA 001"). Reads the cards.
+     */
+    fun showIcons(context: Context, titles: Map<String, String>): List<ShowIcon> {
+        val out = ArrayList<ShowIcon>()
+        val seen = HashSet<String>()
+        for (ref in allSaves(context)) { // newest first
+            val serial = ref.serial?.uppercase()
+            if (!seen.add(serial ?: "${ref.card.path}|${ref.folder}")) continue
+            out += ShowIcon("card:${ref.card.path}|${ref.folder}", serial?.let { titles[it] } ?: ref.title) { loadForViewer(ref) }
+        }
+        for ((serial, src) in discSources) {
+            if (src !is DiscSource || !seen.add(serial)) continue
+            out += ShowIcon("disc:$serial", titles[serial] ?: serial) {
+                Ps2Icon.parse(runCatching { src.icon.readBytes() }.getOrNull())?.let { icon ->
+                    Loaded(icon, null, Ps2IconRenderer.choosePose(icon, null, Ps2IconRenderer.Options()))
+                }
+            }
+        }
+        return out
+    }
 
     private fun cardFiles(context: Context): List<File> =
         (MemoryCardBackup.cardsDir(context).listFiles() ?: emptyArray()).filter { f ->
