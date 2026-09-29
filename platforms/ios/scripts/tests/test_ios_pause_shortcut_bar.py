@@ -26,7 +26,7 @@ class PauseShortcutBar(unittest.TestCase):
 
     def test_the_card_leaves_room_only_with_a_controller(self):
         pause = block(without_comments(read(GAME)), "private var pauseMenuOverlay")
-        self.assertIn("bottomReserve: controllerInput?.hasConnectedController == true ? 66 : 0", pause)
+        self.assertIn("? GameplayControllerShortcutHelpOverlay.pauseCardReserve : 0", pause)
         container = without_comments(read(CONTAINER))
         self.assertIn("bottomReserve + geo.safeAreaInsets.bottom - cardMargin", container)
         self.assertIn(".offset(y: -lift / 2)", container)
