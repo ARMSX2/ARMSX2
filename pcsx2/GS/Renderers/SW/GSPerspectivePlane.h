@@ -112,11 +112,33 @@ __forceinline static float GSPlaneCutMantissa(float v)
 }
 
 /// One value as an integer count of the grid 2^(exp - 14), floored, as a
-/// fixed-point register drops low bits. Exact: a float scaled by a power of two
-/// fits a double.
+/// fixed-point register drops low bits. `exp` is at or above the value's own
+/// exponent, so the count is the 24-bit significand shifted right by at least
+/// 23 - 14 bits: exact, with no floating point. A negative value floors away from zero.
 __forceinline static s32 GSPlaneOnGrid(float v, int exp)
 {
-	return static_cast<s32>(std::floor(std::ldexp(static_cast<double>(v), GS_PLANE_GRID_BITS - exp)));
+	u32 bits;
+
+	std::memcpy(&bits, &v, sizeof(bits));
+
+	const u32 field = (bits >> 23) & 0xff;
+
+	// Zero and denormals are below every grid the exponent can name.
+	if (field == 0)
+		return 0;
+
+	const u32 significand = (bits & 0x7fffffu) | 0x800000u;
+	const int shift = 23 - GS_PLANE_GRID_BITS + exp - (static_cast<int>(field) - 127);
+	const bool negative = (bits >> 31) != 0;
+
+	if (shift >= 32)
+		return negative ? -1 : 0;
+
+	if (!negative)
+		return static_cast<s32>(significand >> shift);
+
+	// floor(-x) = -ceil(x)
+	return -static_cast<s32>((significand + ((1u << shift) - 1)) >> shift);
 }
 
 /// Which vertex anchors the plane, by the colour walk's rule (GSColourWalk.h) in
@@ -281,8 +303,8 @@ __forceinline static s64 GSPerspectiveGradient(s64 numerator, s64 cross)
 
 		GSPlaneU128 k = GSPlaneShiftLeft(GSPlaneMul(n, w), 23);
 
-		GSPlaneDivide(k, static_cast<u32>(a));
-		GSPlaneDivide(k, static_cast<u32>(a));
+		// floor(floor(k / a) / a) = floor(k / a^2), and a^2 is below 2^20.
+		GSPlaneDivide(k, static_cast<u32>(a * a));
 
 		magnitude = GSPlaneShiftRight(k, 2 * top);
 	}

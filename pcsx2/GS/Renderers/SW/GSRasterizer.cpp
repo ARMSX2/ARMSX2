@@ -1187,19 +1187,32 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 		s32 x[3], y[3];
 		float st[3], tt[3], qt[3];
 
+		// Exact powers of two, built from the exponent field: 2^n for n in [-126, 127].
+		const auto pow2f = [](int n) {
+			const u32 bits = static_cast<u32>(n + 127) << 23;
+			float f;
+
+			std::memcpy(&f, &bits, sizeof(f));
+
+			return f;
+		};
+
+		const float unscale_s = pow2f(-plane_shift[0]);
+		const float unscale_t = pow2f(-plane_shift[1]);
+
 		for (int k = 0; k < 3; k++)
 		{
 			x[k] = static_cast<s32>(sorted[k]->p.x * 16.0f);
 			y[k] = static_cast<s32>(sorted[k]->p.y * 16.0f);
-			st[k] = std::ldexp(sorted[k]->t.x, -plane_shift[0]);
-			tt[k] = std::ldexp(sorted[k]->t.y, -plane_shift[1]);
+			st[k] = sorted[k]->t.x * unscale_s;
+			tt[k] = sorted[k]->t.y * unscale_t;
 			qt[k] = sorted[k]->t.z;
 		}
 
 		GSPerspectivePlaneSetup(x, y, st, tt, qt, pwalk->plane);
 
-		pwalk->stscale = GSVector4(std::ldexp(1.0f, plane_shift[0]), std::ldexp(1.0f, plane_shift[1]), 1.0f, 1.0f);
-		pwalk->qscale = GSVector4(std::ldexp(1.0f, pwalk->plane.exp - (GS_PLANE_GRID_BITS + 2)));
+		pwalk->stscale = GSVector4(pow2f(plane_shift[0]), pow2f(plane_shift[1]), 1.0f, 1.0f);
+		pwalk->qscale = GSVector4(pow2f(std::max(pwalk->plane.exp - (GS_PLANE_GRID_BITS + 2), -126)));
 
 		out.dscan.t = GSVector4::cast(GSVector4i(GSPerspectivePlaneStep(pwalk->plane, 0),
 							GSPerspectivePlaneStep(pwalk->plane, 1), GSPerspectivePlaneStep(pwalk->plane, 2), 0))
