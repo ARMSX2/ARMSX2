@@ -55,7 +55,8 @@ import kotlinx.coroutines.withContext
  * with previews and download one at a time, the ones for the player's games, or all of them, and
  * to remove any again. A paged grid rather than a lazy list: the controller moves between the
  * tiles that are composed, and left or right at the edge of a page turns it. Search matches
- * titles, which save it is, contributors and disc serials. Downloads go on if it is closed.
+ * titles, which save it is, contributors and disc serials, and Shuffle deals All out in a random
+ * order, a new one each time it goes on. Downloads go on if it is closed.
  */
 @Composable
 internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Collection<String>) {
@@ -93,7 +94,11 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
 
     var filter by remember { mutableIntStateOf(FILTER_POPULAR) }
     var query by remember { mutableStateOf("") }
-    val shown = remember(catalog, installed, mine, filter, query, popular) {
+    // Shuffle, on All: the whole set in a random order, a new one each time it goes on, and the
+    // same one while it stays on, whatever gets downloaded meanwhile.
+    var shuffleSeed by remember { mutableStateOf<Long?>(null) }
+    val shuffled = remember(catalog, shuffleSeed) { shuffleSeed?.let { catalog.shuffled(kotlin.random.Random(it)) } }
+    val shown = remember(catalog, installed, mine, filter, query, popular, shuffled) {
         val bySerial = OnlineIcons.hashFor(query.trim().uppercase().replace('_', '-').replace(".", ""))
         val q = query.trim().lowercase()
         val matches = { e: OnlineIcons.Entry ->
@@ -105,14 +110,14 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
             val byHash = catalog.groupBy { it.hash }
             popular.orEmpty().mapNotNull { byHash[it]?.first() }.filter(matches)
         } else {
-            catalog.filter { e ->
+            (if (filter == FILTER_ALL) shuffled ?: catalog else catalog).filter { e ->
                 (filter == FILTER_ALL || (filter == FILTER_MINE && e.hash in mine) || (filter == FILTER_DOWNLOADED && e.hash in installed)) &&
                     matches(e)
             }
         }
     }
     var page by remember { mutableIntStateOf(0) }
-    LaunchedEffect(filter, query) { page = 0 }
+    LaunchedEffect(filter, query, shuffleSeed) { page = 0 }
     // A second press removes: one icon (its hash) or everything (ALL).
     var removing by remember { mutableStateOf<String?>(null) }
     var tapped by remember { mutableStateOf<String?>(null) }
@@ -203,6 +208,12 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
                         FILTER_MINE to str("onlineicons.myGames"), FILTER_DOWNLOADED to str("onlineicons.installed"),
                     )) {
                         Chip(label, "online-icons.filter.$f", selected = filter == f) { filter = f }
+                    }
+                    if (filter == FILTER_ALL) {
+                        Chip(
+                            str("memcard.viewer.shuffle"), "online-icons.shuffle",
+                            selected = shuffleSeed != null, icon = com.armsx2.R.drawable.ic_shuffle,
+                        ) { shuffleSeed = if (shuffleSeed == null) kotlin.random.Random.nextLong() else null }
                     }
                     val openKeyboard = { LibraryKeyboard.open(query, { query = it }, searchHint) }
                     Box(
@@ -412,7 +423,8 @@ private class PreviewCache {
     }
 }
 
-/** A small rounded button: an action, a filter, or a page arrow. */
+/** A small rounded button: an action, a filter, or a page arrow. With [icon], the picture stands
+ *  in for [label], which then only names it for accessibility (Shuffle). */
 @Composable
 private fun Chip(
     label: String,
@@ -420,6 +432,7 @@ private fun Chip(
     selected: Boolean = false,
     enabled: Boolean = true,
     warn: Boolean = false,
+    icon: Int? = null,
     onClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(19.dp)
@@ -440,7 +453,16 @@ private fun Chip(
             .padding(horizontal = 14.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = Color.White.copy(alpha = if (enabled) 1f else 0.4f), fontSize = 13.sp, maxLines = 1)
+        if (icon != null) {
+            androidx.compose.material3.Icon(
+                painter = androidx.compose.ui.res.painterResource(icon),
+                contentDescription = label,
+                tint = Color.White.copy(alpha = if (enabled) 1f else 0.4f),
+                modifier = Modifier.size(18.dp),
+            )
+        } else {
+            Text(label, color = Color.White.copy(alpha = if (enabled) 1f else 0.4f), fontSize = 13.sp, maxLines = 1)
+        }
     }
 }
 
