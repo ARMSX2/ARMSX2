@@ -77,11 +77,6 @@ namespace GSLsfg
 		// Why the shaders failed, in a few words, for the overlay; set with s_no_shaders.
 		std::mutex s_failure_mutex;
 		std::string s_failure_reason;
-
-		// TEMP (#626): the last second of the generation path, appended to the overlay line. See
-		// the Diag struct in the present path.
-		std::mutex s_diag_mutex;
-		std::string s_diag_text;
 	} // namespace
 
 	void NoteRendererCapability(bool is_vulkan, u32 adreno_generation)
@@ -240,12 +235,7 @@ namespace GSLsfg
 		const float fps = s_display_fps.load(std::memory_order_relaxed);
 		if (fps <= 0.0f)
 			return "LSFG: starting";
-		std::string diag;
-		{
-			std::unique_lock lock(s_diag_mutex);
-			diag = s_diag_text;
-		}
-		return fmt::format("LSFG: {:.2f}{}", fps, diag);
+		return fmt::format("LSFG: {:.2f}", fps);
 	}
 } // namespace GSLsfg
 
@@ -342,37 +332,6 @@ namespace GSLsfg
 
 		u64 s_frame_index = 0;
 
-		// TEMP (#626, Adreno 6xx on Turnip): bmd's 6xx ran with frame generation active and the
-		// overlay reading exactly the real rate, so nothing generated reached the screen and
-		// nothing said why. This counts, per one-second window, what each step of the path below
-		// did, and appends it to the overlay line: n frames with new content, w generations the
-		// pacer wanted, r ready, b the spare-image budget, q images acquired, p generated frames
-		// presented; nc frames without new content, d other declines, t slot-fence timeouts; ae,
-		// fe, pe the last failing VkResult of the acquire, its fence wait and a generated present;
-		// U when frame generation turned itself off. Remove once the 6xx case is understood.
-		struct Diag
-		{
-			u32 entered = 0, wanted = 0, ready = 0, budget = 0, acquired = 0, presented = 0;
-			u32 no_content = 0, declined = 0, slot_timeouts = 0;
-			int acquire_error = 0, fence_error = 0, present_error = 0;
-			bool unavailable = false;
-		};
-		Diag s_diag;
-
-		void PublishDiag()
-		{
-			const Diag& d = s_diag;
-			std::string text = fmt::format(" [n{} w{} r{} b{} q{} p{} nc{} d{} t{} ae{} fe{} pe{}{}]", d.entered, d.wanted,
-				d.ready, d.budget, d.acquired, d.presented, d.no_content, d.declined, d.slot_timeouts, d.acquire_error,
-				d.fence_error, d.present_error, d.unavailable ? " U" : "");
-			Console.WriteLn("LSFG diag:%s", text.c_str());
-			{
-				std::unique_lock lock(s_diag_mutex);
-				s_diag_text = std::move(text);
-			}
-			s_diag = {};
-		}
-
 		// The one-second display-rate window. Reset with everything else in Shutdown so a stale
 		// number cannot outlive the session it came from.
 		u64 s_fps_window_start = 0;
@@ -399,7 +358,6 @@ namespace GSLsfg
 				return;
 
 			s_display_fps.store(static_cast<float>((s_fps_real + s_fps_generated) / secs), std::memory_order_relaxed);
-			PublishDiag();
 			s_fps_window_start = now;
 			s_fps_real = 0;
 			s_fps_generated = 0;
@@ -576,11 +534,6 @@ namespace GSLsfg
 		s_fps_window_start = 0;
 		s_fps_real = 0;
 		s_fps_generated = 0;
-		s_diag = {};
-		{
-			std::unique_lock lock(s_diag_mutex);
-			s_diag_text.clear();
-		}
 	}
 
 	bool Initialize(VKSwapChain* swap_chain, u32 multiplier)
@@ -706,18 +659,15 @@ namespace GSLsfg
 		// them is wrong AND costs a full generation pass per frame to do it.
 		if (!frame_has_new_content)
 		{
-			s_diag.no_content++;
 			s_frame_index = 0;
 			NoteFramesDisplayed(1, 0);
 			return false;
 		}
-		s_diag.entered++;
 
 		// A resize between Initialize and here would have us reading mismatched extents. Decline
 		// the frame; the caller presents normally and the next Initialize picks up the new size.
 		if (swap_chain->GetWidth() != s_extent.width || swap_chain->GetHeight() != s_extent.height)
 		{
-			s_diag.declined++;
 			NoteFramesDisplayed(1, 0);
 			return false;
 		}
@@ -725,7 +675,6 @@ namespace GSLsfg
 		const u32 real_index = swap_chain->GetCurrentImageIndex();
 		if (s_gen_images.empty())
 		{
-			s_diag.declined++;
 			NoteFramesDisplayed(1, 0);
 			return false;
 		}
@@ -747,7 +696,6 @@ namespace GSLsfg
 			static constexpr u64 kSlotTimeoutNs = 200ull * 1000 * 1000;
 			if (vkWaitForFences(s_vk_device, 1, &slot.fence, VK_TRUE, kSlotTimeoutNs) != VK_SUCCESS)
 			{
-				s_diag.slot_timeouts++;
 				NoteFramesDisplayed(1, 0);
 				return false;
 			}
@@ -797,10 +745,6 @@ namespace GSLsfg
 			std::min<size_t>(s_multiplier - 1u, acquire_budget));
 		const size_t available = s_frame_gen->GeneratedFrameCount();
 		const size_t generations = std::min(wanted, available);
-		s_diag.wanted += static_cast<u32>(wanted);
-		s_diag.ready += static_cast<u32>(available);
-		s_diag.budget = static_cast<u32>(acquire_budget);
-		s_diag.unavailable = s_frame_gen->IsUnavailable();
 
 		// 2. Acquire a swap chain image per generated frame and record its generation pass. The
 		//    acquires happen BEFORE the single submit below because that submit has to wait on
@@ -820,24 +764,15 @@ namespace GSLsfg
 			const VkResult acq = vkAcquireNextImageKHR(s_vk_device, swap_chain->GetSwapChain(),
 				kGeneratedAcquireTimeoutNs, VK_NULL_HANDLE, slot.acquire_fences[i], &image_index);
 			if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR)
-			{
-				s_diag.acquire_error = static_cast<int>(acq);
 				break; // nothing free, out of date, or lost — still present the real frame
-			}
 			if (image_index >= swap_chain->GetImageCount())
-			{
-				s_diag.acquire_error = 9999;
 				break;
-			}
 
 			// Block until the image is genuinely ours before recording anything that touches it.
 			// This is what the semaphore wait in the submit used to do.
-			if (const VkResult fw = vkWaitForFences(s_vk_device, 1, &slot.acquire_fences[i], VK_TRUE,
-					kGeneratedAcquireTimeoutNs); fw != VK_SUCCESS)
-			{
-				s_diag.fence_error = static_cast<int>(fw);
+			if (vkWaitForFences(s_vk_device, 1, &slot.acquire_fences[i], VK_TRUE,
+					kGeneratedAcquireTimeoutNs) != VK_SUCCESS)
 				break;
-			}
 			vkResetFences(s_vk_device, 1, &slot.acquire_fences[i]);
 
 			GenImage& gen = s_gen_images[(s_frame_index % s_slots.size()) * per_frame_images + i];
@@ -912,14 +847,9 @@ namespace GSLsfg
 			// different transform), so it fired every frame.
 			const VkResult pres = vkQueuePresentKHR(present_queue, &present);
 			if (pres != VK_SUCCESS && pres != VK_SUBOPTIMAL_KHR)
-			{
-				s_diag.present_error = static_cast<int>(pres);
 				break;
-			}
 			presented_generated++;
 		}
-		s_diag.acquired += static_cast<u32>(acquired);
-		s_diag.presented += presented_generated;
 
 		// 5. The real frame goes out last, after whatever generated frames made it.
 		const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1,
