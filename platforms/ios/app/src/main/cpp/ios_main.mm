@@ -958,7 +958,13 @@ void ARMSX2DrainCPUThreadTasks()
             s_cpuTasks.pop_front();
         }
 
-        if (task && task->function) {
+        bool runs = false;
+        {
+            std::lock_guard<std::mutex> lock(task->mutex);
+            runs = task->function && !task->cancelled;
+            task->started = runs;
+        }
+        if (runs) {
             std::fprintf(stderr, "@@CPU_TASK_RUN@@ id=%llu\n", task->id);
             std::fflush(stderr);
             task->function();
@@ -966,6 +972,24 @@ void ARMSX2DrainCPUThreadTasks()
 
         {
             std::lock_guard<std::mutex> lock(task->mutex);
+            task->complete = true;
+        }
+        task->cv.notify_all();
+    }
+}
+
+// A task left over from a VM that ended must not run in the next one.
+void ARMSX2DiscardCPUThreadTasks()
+{
+    std::deque<std::shared_ptr<CPUThreadTask>> tasks;
+    {
+        std::lock_guard<std::mutex> lock(s_cpuTaskMutex);
+        tasks.swap(s_cpuTasks);
+    }
+    for (const auto& task : tasks) {
+        {
+            std::lock_guard<std::mutex> lock(task->mutex);
+            task->cancelled = true;
             task->complete = true;
         }
         task->cv.notify_all();

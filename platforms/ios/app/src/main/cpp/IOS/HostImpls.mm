@@ -226,10 +226,16 @@ namespace Host
             task->id, static_cast<int>(VMManager::GetState()));
         std::fflush(stderr);
         if (!task->cv.wait_for(lock, std::chrono::seconds(1), [&task] { return task->complete; })) {
-            std::fprintf(stderr, "@@CPU_TASK_TIMEOUT@@ id=%llu state=%d queued=1\n",
-                task->id, static_cast<int>(VMManager::GetState()));
-            std::fflush(stderr);
-            return;
+            // Callers capture their locals by reference. A task that has not started is
+            // dropped; one that has is waited for, so neither writes into a dead frame.
+            if (!task->started) {
+                task->cancelled = true;
+                std::fprintf(stderr, "@@CPU_TASK_TIMEOUT@@ id=%llu state=%d cancelled=1\n",
+                    task->id, static_cast<int>(VMManager::GetState()));
+                std::fflush(stderr);
+                return;
+            }
+            task->cv.wait(lock, [&task] { return task->complete; });
         }
         std::fprintf(stderr, "@@CPU_TASK_WAIT_OK@@ id=%llu\n", task->id);
         std::fflush(stderr);

@@ -26,6 +26,8 @@ struct CPUThreadTask
     std::mutex mutex;
     std::condition_variable cv;
     bool complete = false;
+    bool started = false;
+    bool cancelled = false;
 };
 
 @class ARMSX2GameView;
@@ -75,6 +77,8 @@ extern std::deque<std::shared_ptr<CPUThreadTask>> s_cpuTasks;
 
 // Drains the CPU task queue.
 void ARMSX2DrainCPUThreadTasks();
+// Marks every queued task done without running it.
+void ARMSX2DiscardCPUThreadTasks();
 
 extern "C" void ARMSX2_PostRetroAchievementsStateChanged(void);
 // Posts a RetroAchievements toast to the SwiftUI layer. `duration` is the on-screen

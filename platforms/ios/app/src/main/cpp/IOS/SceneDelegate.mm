@@ -881,6 +881,7 @@ static void ARMSX2StartJITKeepalive()
             // Block new canaries, cancel periodic validation, then wait for a
             // callback which already passed the busy check. JIT execution may
             // begin only after that callback has restored the probed code byte.
+            ARMSX2DiscardCPUThreadTasks();
             s_vmThreadActive.store(true, std::memory_order_release);
             ARMSX2StopJITKeepalive();
             DarwinMisc::WaitForJITValidation();
@@ -1138,6 +1139,7 @@ static void ARMSX2StartJITKeepalive()
 
             // --- Post-shutdown: reset state, notify UI ---
             s_vmThreadActive.store(false);
+            ARMSX2DiscardCPUThreadTasks();
             ARMSX2StartJITKeepalive(); // VM stopped — JIT idle, restart monitoring
             s_vmHeartbeatGeneration.fetch_add(1, std::memory_order_acq_rel);
             s_requestVMStop.store(false);

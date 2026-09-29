@@ -387,6 +387,27 @@ static BOOL ARMSX2GetCurrentSaveStateIdentity(std::string* serial, u32* crc)
 	return YES;
 }
 
+// A queued task can outlive the game that asked for it and must not touch another game's slots.
+static bool ARMSX2SaveStateIdentityMatches(const std::string& serial, u32 crc)
+{
+    std::string currentSerial;
+    u32 currentCRC = 0;
+    return ARMSX2GetCurrentSaveStateIdentity(&currentSerial, &currentCRC) &&
+        currentSerial == serial && currentCRC == crc;
+}
+
+// The core moves the old state to .backup before it writes, so a failed write leaves the slot
+// empty. RENAME_EXCL never replaces a file that is there after all.
+static void ARMSX2RestoreSaveStateBackup(const std::string& path)
+{
+    const std::string backup = path + ".backup";
+    if (path.empty() || FileSystem::FileExists(path.c_str()) || !FileSystem::FileExists(backup.c_str()))
+        return;
+    const bool restored = renamex_np(backup.c_str(), path.c_str(), RENAME_EXCL) == 0;
+    NSLog(@"[ARMSX2 iOS SaveState] backup restore path=%@ result=%d",
+          ARMSX2NSStringFromStdString(path), restored ? 1 : 0);
+}
+
 static NSString* const ARMSX2ExternalGameDirectoriesDefaultsKey = @"ARMSX2iOSExternalGameDirectories";
 
 static BOOL ARMSX2IsPathInsideDirectory(NSString* path, NSString* directory)
@@ -1074,16 +1095,22 @@ void ARMSX2IOSCompleteGameBoot(const std::string& game, bool loadLastSaveState)
 
     g_p44_settings_interface->SetStringValue("ARMSX2iOS/Boot", "LastGame", game.c_str());
     g_p44_settings_interface->Save();
-    if (!loadLastSaveState || !g_p44_settings_interface->GetBoolValue(
-            "ARMSX2iOS/Boot", "AutomaticLoadLastSaveState", false))
-        return;
 
     std::string serial;
     u32 crc = 0;
     if (!ARMSX2GetCurrentSaveStateIdentity(&serial, &crc))
         return;
 
+    // A save cut off mid-write (the app was killed) left only its .backup. Nothing writes
+    // before the first Execute(), so this is the one safe point to put it back.
     VMManager::WaitForSaveStateFlush();
+    for (s32 slot = VMManager::SAVESTATE_SLOT_AUTOSAVE; slot <= VMManager::NUM_SAVE_STATE_SLOTS; ++slot)
+        ARMSX2RestoreSaveStateBackup(VMManager::GetSaveStateFileName(serial.c_str(), crc, slot));
+
+    if (!loadLastSaveState || !g_p44_settings_interface->GetBoolValue(
+            "ARMSX2iOS/Boot", "AutomaticLoadLastSaveState", false))
+        return;
+
     const auto slot = ARMSX2LatestSaveStateSlot(serial, crc);
     if (!slot)
         return; // No saved state: continue the normal boot silently.
@@ -3517,7 +3544,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
             removed++;
     };
 
-    for (s32 slot = -1; slot <= VMManager::NUM_SAVE_STATE_SLOTS; slot++) {
+    for (s32 slot = VMManager::SAVESTATE_SLOT_AUTOSAVE; slot <= VMManager::NUM_SAVE_STATE_SLOTS; slot++) {
         removePath(VMManager::GetSaveStateFileName(entry.serial.c_str(), entry.crc, slot));
         removePath(VMManager::GetSaveStateFileName(entry.serial.c_str(), entry.crc, slot, true));
     }
@@ -4893,9 +4920,15 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
 
     dispatch_async(ARMSX2SaveStateQueue(), ^{
         bool result = false;
+        bool existed = false;
         VMManager::WaitForSaveStateFlush();
-        Host::RunOnCPUThread([nativeSlot, &result]() {
+        Host::RunOnCPUThread([nativeSlot, serial, crc, &targetPath, &result, &existed]() {
             NSLog(@"[ARMSX2 iOS SaveState] CPU save start slot=%d", nativeSlot);
+            if (!ARMSX2SaveStateIdentityMatches(serial, crc)) {
+                NSLog(@"[ARMSX2 iOS SaveState] CPU save rejected slot=%d reason=game-changed", nativeSlot);
+                return;
+            }
+            existed = FileSystem::FileExists(targetPath.c_str());
             if (MemcardBusy::IsBusy()) {
                 NSLog(@"[ARMSX2 iOS SaveState] CPU save rejected slot=%d reason=memory-card-busy", nativeSlot);
                 result = false;
@@ -4924,6 +4957,8 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
             VMManager::WaitForSaveStateFlush();
             result = targetPath.empty() ? result : FileSystem::FileExists(targetPath.c_str());
         }
+        if (!result && existed)
+            ARMSX2RestoreSaveStateBackup(targetPath);
 
         NSLog(@"[ARMSX2 iOS SaveState] save finished slot=%d result=%d exists=%d",
               nativeSlot, result ? 1 : 0, (!targetPath.empty() && FileSystem::FileExists(targetPath.c_str())) ? 1 : 0);
@@ -4962,17 +4997,18 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
         bool result = false;
         bool flushResult = false;
         VMManager::WaitForSaveStateFlush();
-        Host::RunOnCPUThread([&flushResult]() {
-            flushResult = ARMSX2FlushNVRAMAndMemoryCards("pre-load-state");
+        Host::RunOnCPUThread([serial, crc, &flushResult]() {
+            flushResult = ARMSX2SaveStateIdentityMatches(serial, crc) &&
+                ARMSX2FlushNVRAMAndMemoryCards("pre-load-state");
         }, true);
 
         NSInteger backupCount = 0;
         if (flushResult)
             backupCount = ARMSX2BackupAssignedMemoryCards("pre-load-state", nativeSlot, serial, crc);
 
-        Host::RunOnCPUThread([nativeSlot, flushResult, &result]() {
+        Host::RunOnCPUThread([nativeSlot, serial, crc, flushResult, &result]() {
             NSLog(@"[ARMSX2 iOS SaveState] CPU load start slot=%d", nativeSlot);
-            if (!flushResult) {
+            if (!flushResult || !ARMSX2SaveStateIdentityMatches(serial, crc)) {
                 NSLog(@"[ARMSX2 iOS SaveState] CPU load rejected slot=%d reason=pre-load-flush-failed", nativeSlot);
                 result = false;
                 return;
