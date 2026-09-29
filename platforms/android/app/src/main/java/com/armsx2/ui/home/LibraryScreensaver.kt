@@ -131,8 +131,12 @@ object LibraryScreensaver {
     }
 
     /** Every key event, first thing. True: it woke the screensaver (or is that press's release)
-     *  and nothing else should see it. */
+     *  and nothing else should see it. The volume keys neither wake it nor stop at it: they turn
+     *  the volume, of its music too. */
     fun onKey(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP || event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
+            event.keyCode == KeyEvent.KEYCODE_VOLUME_MUTE
+        ) return false
         resetIdle()
         if (showing.value) {
             if (event.action == KeyEvent.ACTION_DOWN) {

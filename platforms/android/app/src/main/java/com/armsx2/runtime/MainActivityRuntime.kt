@@ -3230,6 +3230,9 @@ open class MainActivityRuntime : ComponentActivity() {
         if (com.armsx2.ui.common.PadModals.visible &&
             !com.armsx2.ui.home.LibraryKeyboard.visible.value
         ) {
+            // Except the phone's own volume keys, which are the system's with a modal up or not:
+            // swallowing them left the volume stuck while any menu or prompt was open.
+            if (isVolumeKey(kc)) return false
             val firstDown = event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0
             when (kc) {
                 KeyEvent.KEYCODE_DPAD_UP -> if (firstDown) modalNavMove(0, -1)
