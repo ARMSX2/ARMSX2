@@ -61,6 +61,10 @@ namespace GSBackQueue
 		GIFRegBITBLTBUF blit;
 		GIFRegTRXPOS pos;
 		GIFRegTRXREG reg;
+		// Move() skips when XDIR is 3 and sets it to 3 when done. The back object's
+		// m_env is otherwise only refreshed by draw records, so without this every
+		// move after the first in a run with no draw between them is dropped.
+		GIFRegTRXDIR dir;
 		u64 draw_serial; // consumed once GV7-0d makes serials record-carried
 	};
 

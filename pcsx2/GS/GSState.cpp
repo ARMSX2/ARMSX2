@@ -4754,6 +4754,7 @@ void GSState::SubmitMove()
 	rec.blit = m_env.BITBLTBUF;
 	rec.pos = m_env.TRXPOS;
 	rec.reg = m_env.TRXREG;
+	rec.dir = m_env.TRXDIR;
 	rec.draw_serial = s_n;
 
 	if (m_back_queued)
@@ -4770,6 +4771,7 @@ void GSState::ExecMoveRecord(const GSBackQueue::MoveRecord& rec)
 	m_env.BITBLTBUF = rec.blit;
 	m_env.TRXPOS = rec.pos;
 	m_env.TRXREG = rec.reg;
+	m_env.TRXDIR = rec.dir;
 
 	Move();
 }
