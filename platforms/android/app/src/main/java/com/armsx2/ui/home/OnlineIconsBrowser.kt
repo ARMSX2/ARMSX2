@@ -422,8 +422,8 @@ private fun Message(text: String) {
     }
 }
 
-/** Every page turn clicks, from the arrows or from a page's edge. It also keeps the controller's
- *  confirm from adding its select chime, which sounds after silent actions. */
+/** Every page turn clicks, from the arrows or from a page's edge, and once: the controller's
+ *  confirm adds its own select sound only after actions that made none. */
 private fun turnPage() = com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.PAGE)
 
 /** A size the way people say it: "63 MB", "3.2 MB", "180 KB". */
