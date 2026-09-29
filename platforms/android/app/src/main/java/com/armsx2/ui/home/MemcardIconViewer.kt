@@ -22,7 +22,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -127,8 +126,9 @@ internal fun MemcardCoversInfo(onClose: () -> Unit) {
  * once downloaded, every icon of the online set, one at a time, full screen and moving, each on
  * its own icon.sys background with its title. Like ARMSX3's theme preview, it is for looking at
  * them without the library in the way. Swipe or press left and right to go through them. Over it,
- * Bookmark marks one to open at next time (A on the panel does too), Shuffle walks them in a
- * random order, and Close closes; a controller reaches the three with Up. Back closes it too.
+ * Bookmark marks one to open at next time (A on the panel does too), Shuffle makes every step
+ * land on a random icon, and Close closes; a controller reaches the three with Up. Back closes it
+ * too.
  */
 @Composable
 internal fun MemcardIconViewer(onClose: () -> Unit, titles: () -> Map<String, String> = { emptyMap() }) {
@@ -179,24 +179,26 @@ internal fun MemcardIconViewer(onClose: () -> Unit, titles: () -> Map<String, St
 @Composable
 private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
     remember { MuseumBookmark.load() }
+    // One page per icon: the pages are keyed by icon, and a key may only be used once.
+    val icons = remember(saves) { saves.distinctBy { it.key } }
     // Opens at the bookmark, when it is still in the list.
-    val start = remember(saves) { saves.indexOfFirst { it.key == MuseumBookmark.key.value }.coerceAtLeast(0) }
-    // Shuffle: the same icons in a random order, walked the same way; off, back in order. Either
-    // way it stays on the icon it was showing ([follow]), and only the neighbours change.
-    var shuffleSeed by remember { mutableStateOf<Long?>(null) }
-    var follow by remember { mutableStateOf<String?>(null) }
-    val order = remember(saves, shuffleSeed) {
-        shuffleSeed?.let { seed -> saves.shuffled(kotlin.random.Random(seed)) } ?: saves
-    }
+    val start = remember(icons) { icons.indexOfFirst { it.key == MuseumBookmark.key.value }.coerceAtLeast(0) }
+    // Shuffle: every other icon in a random order around the one showing, which keeps its place,
+    // so turning it on moves nothing and every step from there lands on a random icon. Off, the
+    // icons are back in order and the pager goes to where this one sits in it.
+    var shuffled by remember { mutableStateOf<List<MemcardCovers.ShowIcon>?>(null) }
+    val order = shuffled ?: icons
     val pager = rememberPagerState(initialPage = start, pageCount = { order.size })
-    LaunchedEffect(order) {
-        val key = follow ?: return@LaunchedEffect
-        follow = null
-        order.indexOfFirst { it.key == key }.takeIf { it >= 0 }?.let { pager.scrollToPage(it) }
-    }
     val toggleShuffle = {
-        follow = order[pager.currentPage.coerceIn(order.indices)].key
-        shuffleSeed = if (shuffleSeed == null) kotlin.random.Random.nextLong() else null
+        val at = pager.currentPage.coerceIn(order.indices)
+        val here = order[at]
+        if (shuffled == null) {
+            val rest = icons.filter { it.key != here.key }.shuffled()
+            shuffled = rest.take(at) + here + rest.drop(at)
+        } else {
+            shuffled = null
+            pager.requestScrollToPage(icons.indexOfFirst { it.key == here.key }.coerceAtLeast(0))
+        }
     }
     val fromDisc = str("memcard.viewer.fromDisc")
     val onlineBy = str("memcard.viewer.onlineBy")
@@ -204,7 +206,9 @@ private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
     val bookmarked = str("memcard.viewer.bookmarked")
     val scope = rememberCoroutineScope()
     Box(Modifier.fillMaxSize()) {
-        HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
+        // Keyed by icon, so a page never goes on showing another icon when the order changes
+        // under it, and the pager keeps its place by icon.
+        HorizontalPager(state = pager, key = { order[it].key }, modifier = Modifier.fillMaxSize()) { page ->
             val ref = order[page]
             ViewerPage(ref, animate = page == pager.settledPage)
         }
@@ -232,7 +236,7 @@ private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
                     modifier = Modifier.size(22.dp),
                 )
             }
-            RoundButton("memcard-icon-viewer.shuffle", toggleShuffle, active = shuffleSeed != null) {
+            RoundButton("memcard-icon-viewer.shuffle", toggleShuffle, active = shuffled != null) {
                 androidx.compose.material3.Icon(
                     painter = androidx.compose.ui.res.painterResource(com.armsx2.R.drawable.ic_shuffle),
                     contentDescription = str("memcard.viewer.shuffle"),
@@ -250,8 +254,9 @@ private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
                 .controllerFocusable(
                     controllerId = "memcard-icon-viewer",
                     shape = RoundedCornerShape(18.dp),
-                    onLeft = { scope.launch { pager.animateScrollToPage((pager.currentPage - 1).coerceAtLeast(0)) } },
-                    onRight = { scope.launch { pager.animateScrollToPage((pager.currentPage + 1).coerceAtMost(order.size - 1)) } },
+                    // From the page it is already heading to, so a press during the slide counts.
+                    onLeft = { scope.launch { pager.animateScrollToPage((pager.targetPage - 1).coerceAtLeast(0)) } },
+                    onRight = { scope.launch { pager.animateScrollToPage((pager.targetPage + 1).coerceAtMost(order.size - 1)) } },
                     onConfirm = { MuseumBookmark.toggle(order[pager.currentPage.coerceIn(order.indices)].key) },
                 )
                 .padding(horizontal = 22.dp, vertical = 12.dp),
