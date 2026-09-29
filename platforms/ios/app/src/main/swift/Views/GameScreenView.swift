@@ -427,7 +427,6 @@ struct GameScreenView: View {
     @State private var emulationOnlyActivationInFlight = false
     @State private var pendingEmulationOnlyPresentation: EmulationOnlyPresentation?
 
-    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private static let briefStatusDisplayDuration: TimeInterval = 2.2
@@ -862,19 +861,19 @@ struct GameScreenView: View {
             guard let request else { return }
             handleEmulationControllerShortcut(request.shortcut)
         }
-        .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .background {
-                wasBackgrounded = true
-            } else if newPhase == .active {
-                syncFullscreenStateFromWindow()
-                // Returning to a running game from the background: open the pause menu
-                // so resuming is deliberate, not a drop straight back into gameplay.
-                if wasBackgrounded && overlayRoute == .hidden {
-                    refreshRuntimeMenuState()
-                    overlayRoute = .paused
-                }
-                wasBackgrounded = false
+        // Not scenePhase: this view lives in SDL's UIKit scene, where it stays .background.
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            wasBackgrounded = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            syncFullscreenStateFromWindow()
+            // Returning to a running game from the background: open the pause menu
+            // so resuming is deliberate, not a drop straight back into gameplay.
+            if wasBackgrounded && overlayRoute == .hidden {
+                refreshRuntimeMenuState()
+                overlayRoute = .paused
             }
+            wasBackgrounded = false
         }
         .onChange(of: fullScreen) { _, isEnabled in
             applyFullscreenState(isEnabled)
