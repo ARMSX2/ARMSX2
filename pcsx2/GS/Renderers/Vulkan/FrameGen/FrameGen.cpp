@@ -12,6 +12,8 @@
 #include <array>
 #include <cmath>
 
+#include "common/Console.h"
+
 #include "FrameGen.h"
 #include "LsfgChain.h"
 #include "LsfgCommon.h"
@@ -261,6 +263,12 @@ void FrameGen::Rebuild(const Device& device, VkExtent2D extent, VkFormat format,
     built_flow_scale = flow_scale;
 
     chain.emplace(device, memory_allocator, *shaders, extent, format, built_flow_scale);
+    // Once per rebuild (start, a resize, a change of motion detail): says what LSFG runs at, so
+    // the automatic motion detail can be checked on a device, and so rebuilds that come too often
+    // (a game changing resolution back and forth) show up in the log.
+    Console.WriteLn("LSFG: passes built at %ux%u, motion at %.0f%% (%ux%u).", extent.width, extent.height,
+                    built_flow_scale * 100.0f, static_cast<u32>(static_cast<f32>(extent.width) * built_flow_scale),
+                    static_cast<u32>(static_cast<f32>(extent.height) * built_flow_scale));
     built_extent = extent;
     built_format = format;
     frame_count = 0;

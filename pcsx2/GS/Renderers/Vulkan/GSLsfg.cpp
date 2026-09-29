@@ -76,6 +76,8 @@ namespace GSLsfg
 		std::atomic<bool> s_no_shaders{false};
 		/// The half-precision shaders are the ones running, for the overlay: "LSFG: 60.00 fp16".
 		std::atomic<bool> s_fp16_active{false};
+		/// Frame generation's own GPU time per frame, ms, averaged over a second; 0 when unmeasured.
+		std::atomic<float> s_gpu_ms{0.0f};
 		// Why the shaders failed, in a few words, for the overlay; set with s_no_shaders.
 		std::mutex s_failure_mutex;
 		std::string s_failure_reason;
@@ -237,8 +239,14 @@ namespace GSLsfg
 		const float fps = s_display_fps.load(std::memory_order_relaxed);
 		if (fps <= 0.0f)
 			return "LSFG: starting";
-		return s_fp16_active.load(std::memory_order_relaxed) ? fmt::format("LSFG: {:.2f} fp16", fps) :
-																fmt::format("LSFG: {:.2f}", fps);
+		// "LSFG: 60.00 fp16 · 1.23 ms": the display rate, the shader family when it is fp16, and
+		// frame generation's own GPU time per frame.
+		std::string text = fmt::format("LSFG: {:.2f}", fps);
+		if (s_fp16_active.load(std::memory_order_relaxed))
+			text += " fp16";
+		if (const float gpu_ms = s_gpu_ms.load(std::memory_order_relaxed); gpu_ms > 0.0f)
+			text += fmt::format(" \u00b7 {:.2f} ms", gpu_ms);
+		return text;
 	}
 } // namespace GSLsfg
 
@@ -330,9 +338,20 @@ namespace GSLsfg
 			std::array<VkFence, VideoCore::FrameGen::MAX_GENERATIONS> acquire_fences = {};
 			std::array<VkSemaphore, VideoCore::FrameGen::MAX_GENERATIONS + 1> done_sems = {};
 			bool submitted = false; ///< false until the fence has ever been signalled
+			bool timed = false; ///< its timestamps were written by the last submit, to be read
 		};
 		std::vector<FrameSlot> s_slots;
 		VkCommandPool s_cmd_pool = VK_NULL_HANDLE;
+		/// LSFG's own GPU time: a timestamp at each end of a frame's command buffer (everything it
+		/// does for that frame, the passes over the real frame and every generated one with its
+		/// copy), read back once the slot's fence has signalled, so it never waits for the GPU.
+		/// Averaged over the display-rate window, for the overlay and the log.
+		VkQueryPool s_query_pool = VK_NULL_HANDLE;
+		double s_ns_per_tick = 0.0;
+		u64 s_tick_mask = 0;
+		double s_gpu_ns_sum = 0.0;
+		u32 s_gpu_samples = 0;
+		u32 s_gpu_log_windows = 0;
 
 		u64 s_frame_index = 0;
 
@@ -362,6 +381,17 @@ namespace GSLsfg
 				return;
 
 			s_display_fps.store(static_cast<float>((s_fps_real + s_fps_generated) / secs), std::memory_order_relaxed);
+			const float gpu_ms = s_gpu_samples ? static_cast<float>(s_gpu_ns_sum / s_gpu_samples / 1e6) : 0.0f;
+			s_gpu_ms.store(gpu_ms, std::memory_order_relaxed);
+			s_gpu_ns_sum = 0.0;
+			s_gpu_samples = 0;
+			// In the log every ten seconds, so a session can be measured without the overlay.
+			if (gpu_ms > 0.0f && ++s_gpu_log_windows >= 10)
+			{
+				s_gpu_log_windows = 0;
+				Console.WriteLn("LSFG GPU: %.2f ms per frame (%ux%u%s).", gpu_ms, s_extent.width, s_extent.height,
+					s_fp16_active.load(std::memory_order_relaxed) ? ", fp16" : "");
+			}
 			s_fps_window_start = now;
 			s_fps_real = 0;
 			s_fps_generated = 0;
@@ -418,6 +448,15 @@ namespace GSLsfg
 					vkDestroyFence(s_vk_device, slot.fence, nullptr);
 			}
 			s_slots.clear();
+
+			if (s_query_pool != VK_NULL_HANDLE)
+			{
+				vkDestroyQueryPool(s_vk_device, s_query_pool, nullptr);
+				s_query_pool = VK_NULL_HANDLE;
+			}
+			s_gpu_ns_sum = 0.0;
+			s_gpu_samples = 0;
+			s_gpu_ms.store(0.0f, std::memory_order_relaxed);
 
 			if (s_cmd_pool != VK_NULL_HANDLE)
 			{
@@ -499,6 +538,27 @@ namespace GSLsfg
 				vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 				if (vkCreateImageView(s_vk_device, &vci, nullptr, &g.view) != VK_SUCCESS)
 					return false;
+			}
+
+			// Two timestamps per slot for frame generation's own GPU time, where the graphics queue
+			// keeps them (the same test GSDeviceVK makes for its GPU timing). Without, there is
+			// simply no number on the overlay.
+			const VkPhysicalDeviceLimits& limits = dev->GetDeviceProperties().limits;
+			u32 family_count = 0;
+			vkGetPhysicalDeviceQueueFamilyProperties(dev->GetPhysicalDevice(), &family_count, nullptr);
+			std::vector<VkQueueFamilyProperties> families(family_count);
+			vkGetPhysicalDeviceQueueFamilyProperties(dev->GetPhysicalDevice(), &family_count, families.data());
+			const u32 family = dev->GetGraphicsQueueFamilyIndex();
+			const u32 valid_bits = family < family_count ? families[family].timestampValidBits : 0;
+			if (limits.timestampComputeAndGraphics && limits.timestampPeriod > 0.0f && valid_bits > 0)
+			{
+				const VkQueryPoolCreateInfo query_ci = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0,
+					VK_QUERY_TYPE_TIMESTAMP, 2 * count, 0};
+				if (vkCreateQueryPool(s_vk_device, &query_ci, nullptr, &s_query_pool) == VK_SUCCESS)
+				{
+					s_ns_per_tick = limits.timestampPeriod;
+					s_tick_mask = valid_bits >= 64 ? ~0ull : ((1ull << valid_bits) - 1);
+				}
 			}
 
 			return true;
@@ -703,7 +763,8 @@ namespace GSLsfg
 		// anything in it. Without this, the reset below hits a command buffer that may still be
 		// executing and the submit below resubmits one that is still pending — both undefined,
 		// and both were reliably fatal on the first frame that recorded a real dispatch chain.
-		FrameSlot& slot = s_slots[s_frame_index % s_slots.size()];
+		const u32 slot_index = static_cast<u32>(s_frame_index % s_slots.size());
+		FrameSlot& slot = s_slots[slot_index];
 		if (slot.submitted)
 		{
 			// Bounded rather than UINT64_MAX: a lost surface must not wedge the GS thread. If it
@@ -716,12 +777,29 @@ namespace GSLsfg
 			}
 		}
 		vkResetFences(s_vk_device, 1, &slot.fence);
+		// The slot's last frame is finished, so its timestamps are ready: no wait.
+		if (slot.timed)
+		{
+			u64 ticks[2] = {};
+			if (vkGetQueryPoolResults(s_vk_device, s_query_pool, slot_index * 2, 2, sizeof(ticks), ticks,
+					sizeof(u64), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+			{
+				s_gpu_ns_sum += static_cast<double>((ticks[1] - ticks[0]) & s_tick_mask) * s_ns_per_tick;
+				s_gpu_samples++;
+			}
+			slot.timed = false;
+		}
 
 		const VkCommandBufferBeginInfo begin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
 			VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr};
 		vkResetCommandBuffer(slot.cmd, 0);
 		if (vkBeginCommandBuffer(slot.cmd, &begin) != VK_SUCCESS)
 			return false;
+		if (s_query_pool != VK_NULL_HANDLE)
+		{
+			vkCmdResetQueryPool(slot.cmd, s_query_pool, slot_index * 2, 2);
+			vkCmdWriteTimestamp(slot.cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, s_query_pool, slot_index * 2);
+		}
 
 		// The ported passes expect a presentable image in GENERAL; PCSX2 hands it over in
 		// PRESENT_SRC_KHR and needs it back that way.
@@ -826,6 +904,8 @@ namespace GSLsfg
 		TransitionImage(slot.cmd, real_image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 			VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT);
 
+		if (s_query_pool != VK_NULL_HANDLE)
+			vkCmdWriteTimestamp(slot.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s_query_pool, slot_index * 2 + 1);
 		if (vkEndCommandBuffer(slot.cmd) != VK_SUCCESS)
 			return false;
 
@@ -853,6 +933,7 @@ namespace GSLsfg
 		if (vkQueueSubmit(GSDeviceVK::GetInstance()->GetGraphicsQueue(), 1, &submit, slot.fence) != VK_SUCCESS)
 			return false;
 		slot.submitted = true;
+		slot.timed = s_query_pool != VK_NULL_HANDLE;
 
 		s_frame_index++;
 
