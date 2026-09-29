@@ -613,10 +613,6 @@ struct SettingsRootView: View {
     /// control enters from the persistent bottom tab bar.
     private static let topNavigationFocusClearance: CGFloat = 96
 
-    /// Visual clearance above RootView's persistent bottom tab bar. Keep this
-    /// identical for the root List and every pushed settings destination.
-    private static let bottomNavigationBarClearance: CGFloat = 92
-
     let resetToRootRequest: Int
     let onNavigationPathActivityChanged: (Bool) -> Void
     let controllerInput: MenuControllerInputRouter?
@@ -637,6 +633,8 @@ struct SettingsRootView: View {
     @State private var rememberedRootScrollPositionID = ""
     @State private var rootScrollPositionID: String?
     @Environment(\.menuTabIsActive) private var menuTabIsActive
+    /// Clearance above RootView's tab bar, the same for the root List and every pushed page.
+    @Environment(\.menuTabBarContentMargin) private var tabBarContentMargin
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 #if targetEnvironment(macCatalyst)
     @State private var selectedPane: SettingsPane? = .emulator
@@ -896,25 +894,15 @@ struct SettingsRootView: View {
             // overlay inset, so Help can always settle above the persistent
             // bottom tab bar.
             Color.clear
-                .frame(height: Self.bottomNavigationBarClearance)
+                .frame(height: tabBarContentMargin)
                 .listRowInsets(EdgeInsets())
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
                 .accessibilityHidden(true)
         }
-        // The root's upper clearance is a real first List row. A content
-        // margin cannot extend the scroll range before Language, which caused
-        // a tab-bar Down handoff to clamp the focus outline at the screen edge.
-        // RootView's persistent tab bar lives outside this NavigationStack, so
-        // its menu-wide scroll margin does not reliably reach the nested List.
-        // Reserve the clearance here while controller navigation is active;
-        // Local Multiplayer and every later row can then be mounted/revealed
-        // before the Help-only boundary permits entry into the tab bar.
-        .contentMargins(
-            .bottom,
-            controllerInput == nil ? 0 : 192,
-            for: .scrollContent
-        )
+        // The tail row clears the tab bar. Zero keeps RootView's library margin
+        // from adding a second, empty scroll range below Help.
+        .contentMargins(.bottom, 0, for: .scrollContent)
         .scrollDisabled(false)
         .scrollBounceBehavior(.always)
         .scrollPosition(id: $rootScrollPositionID, anchor: .top)
@@ -999,14 +987,8 @@ struct SettingsRootView: View {
             // again.
             if navigationPath.last == pane {
                 presentedSettingsDetail(for: pane)
-                // Destination Forms sit underneath the persistent menu tab
-                // bar just like the root List. Give their final controls enough
-                // real scroll range to be revealed above that foreground bar.
-                .contentMargins(
-                    .bottom,
-                    controllerInput == nil ? 0 : 192,
-                    for: .scrollContent
-                )
+                // The safe area spacer already clears the tab bar.
+                .contentMargins(.bottom, 0, for: .scrollContent)
                 .background {
                     if pane != .appearance {
                         settingsRightStickScrollTarget(
@@ -1364,7 +1346,7 @@ struct SettingsRootView: View {
             // its last row to settle above the persistent tab bar.
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 Color.clear
-                    .frame(height: Self.bottomNavigationBarClearance)
+                    .frame(height: tabBarContentMargin)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
             }

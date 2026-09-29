@@ -1004,13 +1004,9 @@ struct AppearanceSettingsView: View {
         )
         .tint(settings.controllerNavigationAccentColor)
         .controllerAccessibilityTargetOrder(Self.controllerTargetOrder)
-        // Keep this margin on the Form itself so it reliably reaches the
-        // private UIKit list created by Form.
-        .contentMargins(
-            .bottom,
-            controllerNavigationActive ? 192 : 0,
-            for: .scrollContent
-        )
+        // On the Form itself, which reliably reaches its private UIKit list. The
+        // pushed-page spacer already clears the tab bar.
+        .contentMargins(.bottom, 0, for: .scrollContent)
         .background {
             ControllerRightStickScrollTarget(
                 controllerInput: controllerInput,
