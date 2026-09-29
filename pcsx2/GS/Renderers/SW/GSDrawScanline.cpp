@@ -248,21 +248,25 @@ static __forceinline VectorI GSSaturateCoordinate(const VectorI& c)
 }
 
 // The GS does not divide the texture coordinate by Q. It multiplies by a
-// reciprocal truncated toward zero, so a perspective coordinate is slightly
-// short of the true quotient. An exact divide differs from the console.
+// reciprocal on a coarse grid, so a perspective coordinate is not the true
+// quotient. An exact divide differs from the console.
 //
-// Clearing the low nine of float32's 23 mantissa bits keeps fourteen and rounds
-// toward zero. Fourteen is the narrowest width consistent with the console;
-// thirteen drops some coordinates a sixteenth low. Nothing distinguishes it from
-// wider grids.
+// ARM64 (GSPerspectivePlane.h has the measurement): fifteen bits below the leading
+// bit, rounded as floor(x + 0.7), which is what the console's reciprocal is when S,
+// T and Q are the plane rule's. The rounding constant is fitted, not derived.
 //
-// This is an approximation. The truncation and its width match hardware, but
-// the GS walks S and Q in fixed point rather than evaluating a plane and
-// dividing, so the result is not purely a function of Q on hardware. That walk
-// has not been modelled.
+// Elsewhere: clearing the low nine of float32's 23 mantissa bits keeps fourteen and
+// rounds toward zero. Fourteen is the narrowest width consistent with the console;
+// thirteen drops some coordinates a sixteenth low. That is the x86 generators'
+// reciprocal and this must match them.
 __forceinline static VectorF GSPerspectiveRecip(const VectorF& q)
 {
+#ifdef ARCH_ARM64
+	return VectorF::cast((VectorI::cast(VectorF(1.0f) / q) + VectorI(static_cast<s32>(GS_RECIP_ROUND_UP)))
+	                     & VectorI(~((1 << GS_RECIP_GRID_SHIFT) - 1)));
+#else
 	return VectorF::cast(VectorI::cast(VectorF(1.0f) / q) & VectorI(0xfffffe00));
+#endif
 }
 
 /// The walk's carried colour, as the byte the GS stores.

@@ -871,8 +871,9 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 			armAsm->Scvtf(v0.V4S(), v0.V4S());
 			armAsm->Fmov(v1.V4S(), 1.0f);
 			armAsm->Fdiv(v0.V4S(), v1.V4S(), v0.V4S());
+			armAsm->Movi(v1.V4S(), GS_RECIP_ROUND_UP);
+			armAsm->Add(v0.V4S(), v0.V4S(), v1.V4S());
 			armAsm->Bic(v0.V4S(), 0xff, 0);
-			armAsm->Bic(v0.V4S(), 0x01, 8);
 
 			armAsm->Ldr(v1, _local(pwalk.stscale));
 			armAsm->Sshr(v2.V4S(), _temp_s.V4S(), GS_PLANE_PIXEL_SHIFT);
@@ -888,8 +889,9 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 		{
 			armAsm->Fmov(v0.V4S(), 1.0f);
 			armAsm->Fdiv(v0.V4S(), v0.V4S(), _temp_q.V4S());
+			armAsm->Movi(v1.V4S(), GS_RECIP_ROUND_UP);
+			armAsm->Add(v0.V4S(), v0.V4S(), v1.V4S());
 			armAsm->Bic(v0.V4S(), 0xff, 0);
-			armAsm->Bic(v0.V4S(), 0x01, 8);
 
 			armAsm->Fmul(v2.V4S(), _temp_s.V4S(), v0.V4S());
 			armAsm->Fmul(v3.V4S(), _temp_t.V4S(), v0.V4S());
@@ -1273,8 +1275,9 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 			armAsm->Scvtf(local2.V4S(), local2.V4S());
 			armAsm->Fmov(local1.V4S(), 1.0f);
 			armAsm->Fdiv(local2.V4S(), local1.V4S(), local2.V4S());
+			armAsm->Movi(local1.V4S(), GS_RECIP_ROUND_UP);
+			armAsm->Add(local2.V4S(), local2.V4S(), local1.V4S());
 			armAsm->Bic(local2.V4S(), 0xff, 0);
-			armAsm->Bic(local2.V4S(), 0x01, 8);
 
 			armAsm->Ldr(v0, _local(pwalk.stscale));
 			armAsm->Sshr(local0.V4S(), _temp_s.V4S(), GS_PLANE_PIXEL_SHIFT);
@@ -1290,8 +1293,9 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 		{
 			armAsm->Fmov(local2.V4S(), 1.0f);
 			armAsm->Fdiv(local2.V4S(), local2.V4S(), _temp_q.V4S());
+			armAsm->Movi(local0.V4S(), GS_RECIP_ROUND_UP);
+			armAsm->Add(local2.V4S(), local2.V4S(), local0.V4S());
 			armAsm->Bic(local2.V4S(), 0xff, 0);
-			armAsm->Bic(local2.V4S(), 0x01, 8);
 
 			armAsm->Fmul(local0.V4S(), _temp_s.V4S(), local2.V4S());
 			armAsm->Fmul(local1.V4S(), _temp_t.V4S(), local2.V4S());

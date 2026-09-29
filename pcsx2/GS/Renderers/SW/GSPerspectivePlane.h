@@ -385,6 +385,23 @@ __forceinline static s32 GSPerspectivePlanePixel(s32 accumulator)
 	return accumulator >> GS_PLANE_PIXEL_SHIFT;
 }
 
+// The per-pixel reciprocal of Q.
+//
+// With the plane rule fixing S, T and Q, the console's per-pixel 1/Q is a function of
+// Q alone (gs-sm3c `score`: 603,826 readings, 2,497 distinct Q, no two disagreeing),
+// on a grid of fifteen bits below its leading bit. A fourteen-bit grid is excluded.
+// The rounding is not truncation: r = floor(x + 0.7) on that grid, x = 1/Q in grid
+// units, with 0.7 fitted on half of the game's triangles and held on the other half
+// (97.85% of gs-sm3b's `bil` arm, against 94.1% for truncating fourteen bits). It is
+// a description, not a derived mechanism.
+//
+// On a float32 quotient the grid is 2^8 units of the mantissa's last bit, and 0.7 of
+// it is 179: add that to the bits and clear the low eight, so a carry out of the
+// mantissa rounds up to the next power of two, as it should. ARM64 only, with the
+// generators that read it.
+static constexpr int GS_RECIP_GRID_SHIFT = 8;
+static constexpr u32 GS_RECIP_ROUND_UP = 179;
+
 /// One primitive's plane and the two scales the scanline reads. Lives in
 /// GSScanlineLocalData so the setup, the rasterizer's row seeds and the scanline
 /// see one copy, and so tests can inspect it.

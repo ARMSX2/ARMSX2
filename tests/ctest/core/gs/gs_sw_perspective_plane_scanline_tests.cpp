@@ -9,7 +9,7 @@
 // scanline and once with the generated one, vertices in and framebuffer out,
 // against a texture whose every texel names itself, so a stored word says which
 // texel a pixel sampled. The expected texel is the header's plane through the
-// scanline's divide (a multiply by a reciprocal cut to fourteen mantissa bits, the
+// scanline's divide (a multiply by a reciprocal on a fifteen-bit grid, the
 // coordinate's truncation to a sixteenth; there is no lag on this route), so
 // what is on trial is the rasterizer's row seeds, the setup's steps and the
 // scanline's floor to g/4 and its conversion to float.
@@ -110,7 +110,7 @@ GSVertexSW Vertex(const Scene& sc, int i)
 }
 
 /// What the scanline's divide makes of one pixel's plane values: the multiply by a
-/// reciprocal truncated to fourteen mantissa bits, then the coordinate's truncation
+/// reciprocal on a fifteen-bit grid rounded as floor(x + 0.7), then the coordinate's truncation
 /// toward zero to a sixteenth (no lag on the plane route), and REPEAT addressing. The ARM64 scanline
 /// (GSDrawScanlineCodeGenerator SampleTexture) and its C++ twin are the two things
 /// this reads.
@@ -124,7 +124,7 @@ void Reference(const GSPerspectivePlane& p, int x, int y, int& u, int& v)
 	u32 rb;
 
 	std::memcpy(&rb, &r, sizeof(rb));
-	rb &= 0xfffffe00u;
+	rb = (rb + GS_RECIP_ROUND_UP) & ~((1u << GS_RECIP_GRID_SHIFT) - 1);
 	std::memcpy(&r, &rb, sizeof(r));
 
 	s32 cu = static_cast<s32>(sh * r * std::ldexp(1.0f, 16 + kTW));

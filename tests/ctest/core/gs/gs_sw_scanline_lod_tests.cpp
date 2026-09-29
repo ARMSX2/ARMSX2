@@ -77,14 +77,16 @@ struct Span
 
 // The reciprocal the scanline multiplies by, in scalar, so a test can say what it
 // expects rather than only that the two paths agree. Same rule as
-// GSPerspectiveRecip: a float32 reciprocal with its low ten mantissa bits cleared.
-float TruncRecip(float q)
+// GSPerspectiveRecip: a float32 reciprocal on a grid of fifteen bits below its
+// leading bit, rounded as floor(x + 0.7) -- 179 of the 256 units of the mantissa's
+// last bit under the grid, added and then the low eight bits cleared.
+float GridRecip(float q)
 {
 	float r = 1.0f / q;
 	u32 bits;
 
 	std::memcpy(&bits, &r, sizeof(bits));
-	bits &= 0xfffffc00u;
+	bits = (bits + GS_RECIP_ROUND_UP) & ~((1u << GS_RECIP_GRID_SHIFT) - 1);
 	std::memcpy(&r, &bits, sizeof(bits));
 
 	return r;
@@ -357,23 +359,28 @@ u8* SwScanlineLodTest::s_code = nullptr;
 size_t SwScanlineLodTest::s_code_used = 0;
 GSLocalMemory* SwScanlineLodTest::s_mem = nullptr;
 
-// ---- the truncated perspective reciprocal -------------------------------------
+// ---- the perspective reciprocal -------------------------------------------------
 
-// The GS multiplies by a reciprocal truncated to thirteen mantissa bits rather than
-// dividing, so a perspective coordinate lands a little short of the true quotient --
-// which changes the sampled texel wherever the exact quotient lands on a boundary.
-TEST_F(SwScanlineLodTest, PerspectiveSamplesTheTruncatedReciprocal)
+// The GS multiplies by a reciprocal on a coarse grid rather than dividing, so a
+// perspective coordinate is not the true quotient: fifteen bits below the
+// reciprocal's leading bit, rounded as floor(x + 0.7) (GSPerspectivePlane.h). That
+// rounds UP by up to a grid step, which the old truncation to fourteen bits did not,
+// and it changes the sampled texel wherever the exact quotient sits just short of a
+// boundary.
+//
+// q = 3 has a reciprocal with bits below the grid, and s is placed a sixth of a
+// sixteenth of a texel under the boundary of texel 2: the exact quotient and the old
+// truncated reciprocal both read texel 1, the grid's rounded-up one reads texel 2.
+TEST_F(SwScanlineLodTest, PerspectiveSamplesTheGridReciprocal)
 {
 	GSScanlineSelector sel = BaseSelector();
 	sel.fst = 0; // perspective
 	sel.ltf = 0; // nearest, so the stored pixel is one texel and not a blend
 
 	// s and q are constant across the span, so nothing here depends on the DDA: the
-	// only thing between s/q and the texel is the reciprocal. q = 3 is a value whose
-	// float32 reciprocal has mantissa bits below the truncation, and s is three
-	// texels' worth of it, so the exact quotient lands exactly on texel 2.
+	// only thing between s/q and the texel is the reciprocal.
 	const float q = 3.0f;
-	const float s = 3.0f * 2.0f * static_cast<float>(kTexel);
+	const float s = 3.0f * 2.0f * static_cast<float>(kTexel) - 0.09375f;
 
 	Span span{};
 	span.s0 = s;
@@ -383,18 +390,25 @@ TEST_F(SwScanlineLodTest, PerspectiveSamplesTheTruncatedReciprocal)
 	span.dt = 0.0f;
 	span.dq = 0.0f;
 
+	u32 old_bits;
+	float old_r = 1.0f / q;
+	std::memcpy(&old_bits, &old_r, sizeof(old_bits));
+	old_bits &= 0xfffffe00u;
+	std::memcpy(&old_r, &old_bits, sizeof(old_r));
+
 	const int exact = static_cast<int>(s / q) >> 16;
-	const int truncated = static_cast<int>(s * TruncRecip(q)) >> 16;
-	ASSERT_EQ(exact, 2);
-	ASSERT_EQ(truncated, 1) << "the shape of this test is wrong: the two models must differ here";
+	const int old_truncated = static_cast<int>(s * old_r) >> 16;
+	const int grid = static_cast<int>(s * GridRecip(q)) >> 16;
+	ASSERT_EQ(exact, 1);
+	ASSERT_EQ(old_truncated, 1);
+	ASSERT_EQ(grid, 2) << "the shape of this test is wrong: the grid must differ from both here";
 
 	const Row got = Both(sel, span, AddressTexture(), nullptr, "perspective recip");
 
 	for (int i = 0; i < 4; i++)
 	{
-		EXPECT_EQ(got.px[i] & 0xff, static_cast<u32>(truncated))
-			<< "pixel " << i << ": the coordinate came out of an exact divide, not the "
-							   "hardware's truncated reciprocal";
+		EXPECT_EQ(got.px[i] & 0xff, static_cast<u32>(grid))
+			<< "pixel " << i << ": the coordinate did not come from the fifteen-bit rounded reciprocal";
 	}
 }
 
