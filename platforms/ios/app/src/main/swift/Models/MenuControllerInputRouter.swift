@@ -531,6 +531,9 @@ final class MenuControllerInputRouter {
         ObjectIdentifier: [ControllerMacroAction: Task<Void, Never>]
     ] = [:]
     @ObservationIgnored private var navigationSessions: [UUID: NavigationSessionTarget] = [:]
+    /// The session the router hands input to. Nil while a screen captures input itself, as the
+    /// pause menu does, and then every session keeps drawing its own ring.
+    private(set) var navigationInputSessionID: UUID?
     @ObservationIgnored private var rememberedNavigationFocusKeys: [String: String] = [:]
     @ObservationIgnored private var navigationSessionSequence: UInt64 = 0
     @ObservationIgnored private var pendingNavigationSessionCommands: [
@@ -1002,6 +1005,9 @@ final class MenuControllerInputRouter {
     }
 
     private func updateNavigationCaptureState() {
+        // The same owner emit() picks when no screen holds a manual capture.
+        let inputSession = manualNavigationCaptures.isEmpty ? frontmostNavigationSessionEntry?.key : nil
+        if navigationInputSessionID != inputSession { navigationInputSessionID = inputSession }
         let next = isMenuActive
             && isControllerNavigationEnabled
             && activeNavigationInputMode == .controller
