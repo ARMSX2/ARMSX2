@@ -564,6 +564,16 @@ struct EmulatorSettingsView: View {
             "settings.emulator.fast-boot",
             "settings.emulator.automatic-load-last-save-state",
             "settings.emulator.automatic-load-last-game",
+            "settings.emulator.auto-save",
+        ]
+        if settings.autoSaveEnabled {
+            order += [
+                "settings.emulator.auto-save-interval",
+                "settings.emulator.auto-save-on-leave",
+                "settings.emulator.auto-save-on-low-battery",
+            ]
+        }
+        order += [
             "settings.emulator.host-filesystem",
             "settings.emulator.fastmem",
             "settings.emulator.frame-limiter",
