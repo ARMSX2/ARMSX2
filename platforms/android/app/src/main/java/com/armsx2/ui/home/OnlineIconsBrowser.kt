@@ -23,6 +23,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -55,8 +56,8 @@ import kotlinx.coroutines.withContext
  * with previews and download one at a time, the ones for the player's games, or all of them, and
  * to remove any again. A paged grid rather than a lazy list: the controller moves between the
  * tiles that are composed, and left or right at the edge of a page turns it. Search matches
- * titles, which save it is, contributors and disc serials, and Shuffle deals All out in a random
- * order, a new one each time it goes on. Downloads go on if it is closed.
+ * titles, which save it is, contributors and disc serials. With Shuffle on, All and Downloaded
+ * deal a page of random icons at every turn. Downloads go on if it is closed.
  */
 @Composable
 internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Collection<String>) {
@@ -94,11 +95,13 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
 
     var filter by remember { mutableIntStateOf(FILTER_POPULAR) }
     var query by remember { mutableStateOf("") }
-    // Shuffle, on All: the whole set in a random order, a new one each time it goes on, and the
-    // same one while it stays on, whatever gets downloaded meanwhile.
-    var shuffleSeed by remember { mutableStateOf<Long?>(null) }
-    val shuffled = remember(catalog, shuffleSeed) { shuffleSeed?.let { catalog.shuffled(kotlin.random.Random(it)) } }
-    val shown = remember(catalog, installed, mine, filter, query, popular, shuffled) {
+    // Shuffle, on All and Downloaded, as in the Icon Museum: turning it on leaves the page as it
+    // is, and from then on every turn, either way, deals a page of random icons from the tab
+    // ([dealt]) instead of the next in order. Off, the tab is back in order from there.
+    var shuffleOn by remember { mutableStateOf(false) }
+    var dealt by remember { mutableStateOf<List<OnlineIcons.Entry>?>(null) }
+    var perPageNow by remember { mutableIntStateOf(1) }
+    val shown = remember(catalog, installed, mine, filter, query, popular) {
         val bySerial = OnlineIcons.hashFor(query.trim().uppercase().replace('_', '-').replace(".", ""))
         val q = query.trim().lowercase()
         val matches = { e: OnlineIcons.Entry ->
@@ -110,14 +113,18 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
             val byHash = catalog.groupBy { it.hash }
             popular.orEmpty().mapNotNull { byHash[it]?.first() }.filter(matches)
         } else {
-            (if (filter == FILTER_ALL) shuffled ?: catalog else catalog).filter { e ->
+            catalog.filter { e ->
                 (filter == FILTER_ALL || (filter == FILTER_MINE && e.hash in mine) || (filter == FILTER_DOWNLOADED && e.hash in installed)) &&
                     matches(e)
             }
         }
     }
     var page by remember { mutableIntStateOf(0) }
-    LaunchedEffect(filter, query, shuffleSeed) { page = 0 }
+    val shownSet = remember(shown) { shown.toHashSet() }
+    LaunchedEffect(filter, query) {
+        page = 0
+        dealt = null
+    }
     // A second press removes: one icon (its hash) or everything (ALL).
     var removing by remember { mutableStateOf<String?>(null) }
     var tapped by remember { mutableStateOf<String?>(null) }
@@ -132,6 +139,7 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
     val failedFormat = str("onlineicons.failed")
     val searchHint = str("onlineicons.search")
     val byFormat = str("onlineicons.by")
+    val shuffleLabel = str("memcard.viewer.shuffle")
 
     com.armsx2.ui.common.PadModal(key = "online-icons", onDismiss = onClose, scrimAlpha = 1f, initialFocusId = "online-icons.tile.0") {
         Box(Modifier.fillMaxSize().background(Color(0xFF0A0F1E))) {
@@ -209,11 +217,17 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
                     )) {
                         Chip(label, "online-icons.filter.$f", selected = filter == f) { filter = f }
                     }
-                    if (filter == FILTER_ALL) {
-                        Chip(
-                            str("memcard.viewer.shuffle"), "online-icons.shuffle",
-                            selected = shuffleSeed != null, icon = com.armsx2.R.drawable.ic_shuffle,
-                        ) { shuffleSeed = if (shuffleSeed == null) kotlin.random.Random.nextLong() else null }
+                    if (filter == FILTER_ALL || filter == FILTER_DOWNLOADED) {
+                        Chip(shuffleLabel, "online-icons.shuffle", selected = shuffleOn, icon = com.armsx2.R.drawable.ic_shuffle) {
+                            if (shuffleOn) {
+                                // Back in order, at the page the first icon showing sits on.
+                                dealt?.firstOrNull()?.let { anchor ->
+                                    page = shown.indexOf(anchor).coerceAtLeast(0) / perPageNow.coerceAtLeast(1)
+                                }
+                                dealt = null
+                            }
+                            shuffleOn = !shuffleOn
+                        }
                     }
                     val openKeyboard = { LibraryKeyboard.open(query, { query = it }, searchHint) }
                     Box(
@@ -241,11 +255,28 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
                     val cols = (maxWidth / TILE_W).toInt().coerceAtLeast(1)
                     val rows = ((maxHeight - FOOTER_H) / TILE_H).toInt().coerceAtLeast(1)
                     val perPage = cols * rows
+                    SideEffect { perPageNow = perPage }
                     val pages = ((shown.size + perPage - 1) / perPage).coerceAtLeast(1)
                     // The list can shrink under the page (a filter, a search, a removal).
                     val current = page.coerceAtMost(pages - 1)
                     val first = current * perPage
-                    val onPage = shown.subList(first.coerceAtMost(shown.size), (first + perPage).coerceAtMost(shown.size))
+                    // Shuffling: Shuffle on, on a tab of its own, with more than a page to deal from.
+                    val shuffling = shuffleOn && (filter == FILTER_ALL || filter == FILTER_DOWNLOADED) && shown.size > perPage
+                    val onPage = (if (shuffling) dealt?.filter { it in shownSet }?.takeIf { it.isNotEmpty() } else null)
+                        ?: shown.subList(first.coerceAtMost(shown.size), (first + perPage).coerceAtMost(shown.size))
+                    // A turn, either way: while shuffling, a page of random icons from the tab, none of
+                    // them the ones showing when there are enough; otherwise the next page in order.
+                    val turn = { by: Int ->
+                        turnPage()
+                        if (shuffling) {
+                            val showing = onPage.toHashSet()
+                            val fresh = shown.filterNot { it in showing }
+                            dealt = (if (fresh.size >= perPage) fresh else shown).shuffled().take(perPage)
+                        } else {
+                            dealt = null
+                            page = current + by
+                        }
+                    }
                     when {
                         lists == null && catalog.isEmpty() -> Message(str("onlineicons.loading"))
                         catalog.isEmpty() -> Message(str("onlineicons.offline"))
@@ -275,18 +306,16 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
                                     }
                                     // At the edge of a page, left and right turn it, and the
                                     // selection lands on the other edge of the new one.
-                                    val left: (() -> Unit)? = if (c == 0 && current > 0) {
+                                    val left: (() -> Unit)? = if (c == 0 && (shuffling || current > 0)) {
                                         {
-                                            turnPage()
-                                            page = current - 1
+                                            turn(-1)
                                             SettingsControllerNav.selectById("online-icons.tile.${r * cols + cols - 1}")
                                         }
                                     } else null
-                                    val right: (() -> Unit)? = if (c == cols - 1 && current < pages - 1) {
+                                    val right: (() -> Unit)? = if (c == cols - 1 && (shuffling || current < pages - 1)) {
                                         {
-                                            turnPage()
-                                            page = current + 1
-                                            val last = (shown.size - page * perPage).coerceAtMost(perPage) - 1
+                                            turn(1)
+                                            val last = if (shuffling) perPage - 1 else (shown.size - (current + 1) * perPage).coerceAtMost(perPage) - 1
                                             SettingsControllerNav.selectById("online-icons.tile.${minOf(r * cols, last)}")
                                         }
                                     } else null
@@ -319,12 +348,13 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
                             modifier = Modifier.weight(1f),
                         )
                         if (pages > 1) {
-                            Chip("‹", "online-icons.prev", enabled = current > 0) { turnPage(); page = current - 1 }
+                            Chip("‹", "online-icons.prev", enabled = shuffling || current > 0) { turn(-1) }
                             Text(
-                                pageFormat.replace("%1\$s", "%,d".format(current + 1)).replace("%2\$s", "%,d".format(pages)),
+                                if (shuffling) shuffleLabel
+                                else pageFormat.replace("%1\$s", "%,d".format(current + 1)).replace("%2\$s", "%,d".format(pages)),
                                 color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, modifier = Modifier.padding(horizontal = 8.dp),
                             )
-                            Chip("›", "online-icons.next", enabled = current < pages - 1) { turnPage(); page = current + 1 }
+                            Chip("›", "online-icons.next", enabled = shuffling || current < pages - 1) { turn(1) }
                         }
                     }
                 }
