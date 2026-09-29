@@ -3142,49 +3142,7 @@ void GSState::ApplyTEX0(GIFRegTEX0& TEX0)
 	m_env.CTXT[i].TEX0 = TEX0;
 
 	if (wt)
-	{
-		GIFRegBITBLTBUF BITBLTBUF = {};
-		GSVector4i r;
-
-		if (TEX0.CSM == 0)
-		{
-			BITBLTBUF.SBP = TEX0.CBP;
-			BITBLTBUF.SBW = 1;
-			BITBLTBUF.SPSM = TEX0.CPSM;
-
-			r.left = 0;
-			r.top = 0;
-			r.right = GSLocalMemory::m_psm[TEX0.CPSM].bs.x;
-			r.bottom = GSLocalMemory::m_psm[TEX0.CPSM].bs.y;
-
-			int blocks = 4;
-
-			if (GSLocalMemory::m_psm[TEX0.CPSM].trbpp == 16)
-				blocks >>= 1;
-
-			if (GSLocalMemory::m_psm[TEX0.PSM].trbpp == 4)
-				blocks >>= 1;
-
-			// Invalidating videomem is slow, so *only* do it when it's definitely a CLUT draw in HW mode.
-			for (int j = 0; j < blocks; j++, BITBLTBUF.SBP++)
-				InvalidateLocalMem(BITBLTBUF, r, true);
-		}
-		else
-		{
-			BITBLTBUF.SBP = TEX0.CBP;
-			BITBLTBUF.SBW = m_env.TEXCLUT.CBW;
-			BITBLTBUF.SPSM = TEX0.CPSM;
-
-			r.left = m_env.TEXCLUT.COU;
-			r.top = m_env.TEXCLUT.COV;
-			r.right = r.left + GSLocalMemory::m_psm[TEX0.CPSM].pal;
-			r.bottom = r.top + 1;
-
-			InvalidateLocalMem(BITBLTBUF, r, true);
-		}
-
 		SubmitClutLoad(m_env.CTXT[i].TEX0, m_env.TEXCLUT);
-	}
 
 	u64 mask = 0x1fffffffffull; // TBP0 TBW PSM TW TH TCC TFX
 	if ((TEX0.PSM & 0x7) >= 3)
@@ -4794,6 +4752,51 @@ void GSState::SubmitClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLU
 
 void GSState::ExecClutLoadRecord(const GSBackQueue::ClutLoadRecord& rec)
 {
+	// The palette's source memory must be current before it is read: the software renderer
+	// waits for rasterizer threads still drawing into it, the hardware renderer reads back
+	// targets that overlap it. This runs here rather than at submit because only the object
+	// that owns local memory can do either.
+	const GIFRegTEX0& TEX0 = rec.TEX0;
+	GIFRegBITBLTBUF BITBLTBUF = {};
+	GSVector4i r;
+
+	if (TEX0.CSM == 0)
+	{
+		BITBLTBUF.SBP = TEX0.CBP;
+		BITBLTBUF.SBW = 1;
+		BITBLTBUF.SPSM = TEX0.CPSM;
+
+		r.left = 0;
+		r.top = 0;
+		r.right = GSLocalMemory::m_psm[TEX0.CPSM].bs.x;
+		r.bottom = GSLocalMemory::m_psm[TEX0.CPSM].bs.y;
+
+		int blocks = 4;
+
+		if (GSLocalMemory::m_psm[TEX0.CPSM].trbpp == 16)
+			blocks >>= 1;
+
+		if (GSLocalMemory::m_psm[TEX0.PSM].trbpp == 4)
+			blocks >>= 1;
+
+		// Invalidating videomem is slow, so *only* do it when it's definitely a CLUT draw in HW mode.
+		for (int j = 0; j < blocks; j++, BITBLTBUF.SBP++)
+			InvalidateLocalMem(BITBLTBUF, r, true);
+	}
+	else
+	{
+		BITBLTBUF.SBP = TEX0.CBP;
+		BITBLTBUF.SBW = rec.TEXCLUT.CBW;
+		BITBLTBUF.SPSM = TEX0.CPSM;
+
+		r.left = rec.TEXCLUT.COU;
+		r.top = rec.TEXCLUT.COV;
+		r.right = r.left + GSLocalMemory::m_psm[TEX0.CPSM].pal;
+		r.bottom = r.top + 1;
+
+		InvalidateLocalMem(BITBLTBUF, r, true);
+	}
+
 	m_mem.m_clut.WriteLoad(rec.TEX0, rec.TEXCLUT);
 }
 
