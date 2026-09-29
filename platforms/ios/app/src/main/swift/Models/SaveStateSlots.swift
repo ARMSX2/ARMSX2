@@ -350,22 +350,35 @@ final class SaveStateAutoSave {
     private var sinceLoad: Double = 0
     private var sinceWrite: Double = 0
     private var saving = false
+    private var wasLowBattery = false
 
     /// A boot or a load starts both clocks again.
     func restart() {
         sinceLoad = 0
         sinceWrite = 0
+        wasLowBattery = false
     }
 
     func didWrite() { sinceWrite = 0 }
 
-    /// Counts seconds of play. Past the interval it tries every tick until a save lands.
+    /// Counts seconds of play. Past the interval it tries every tick until a save lands. On a
+    /// low battery it saves at once and then every minute: iOS gives no warning before power-off.
     func tick(_ seconds: Double) {
         sinceLoad += seconds
         sinceWrite += seconds
         let settings = SettingsStore.shared
-        guard settings.autoSaveEnabled, sinceWrite >= Double(settings.autoSaveIntervalMinutes * 60) else { return }
+        let lowBattery = settings.autoSaveOnLowBattery && Self.batteryIsLow
+        if lowBattery && !wasLowBattery { sinceWrite = .infinity }
+        wasLowBattery = lowBattery
+        let interval = lowBattery ? 60 : Double(settings.autoSaveIntervalMinutes * 60)
+        guard settings.autoSaveEnabled, sinceWrite >= interval else { return }
         save(leaving: false) { _ in }
+    }
+
+    /// iOS reports the level in 5% steps, so 5% is the last reading before the phone dies.
+    private static var batteryIsLow: Bool {
+        let device = UIDevice.current
+        return device.batteryState == .unplugged && device.batteryLevel >= 0 && device.batteryLevel <= 0.05
     }
 
     /// Reports false without writing while an undo is pending or the game has only just started.

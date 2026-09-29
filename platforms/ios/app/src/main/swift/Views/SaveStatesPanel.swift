@@ -43,6 +43,7 @@ struct SaveStatesPanel: View {
     private static let autoSaveEnabled = "save-state.autosave.enabled"
     private static let autoSaveInterval = "save-state.autosave.interval"
     private static let autoSaveOnLeave = "save-state.autosave.leave"
+    private static let autoSaveOnLowBattery = "save-state.autosave.battery"
     private static let autoSaveDone = "save-state.autosave.done"
 
     private var overlayOpen: Bool { menuSlot != nil || renameSlot != nil || autoSaveOpen }
@@ -55,7 +56,7 @@ struct SaveStatesPanel: View {
     private var currentGraph: SaveStateGraph {
         if autoSaveOpen {
             let ids = settings.autoSaveEnabled
-                ? [Self.autoSaveEnabled, Self.autoSaveInterval, Self.autoSaveOnLeave, Self.autoSaveDone]
+                ? [Self.autoSaveEnabled, Self.autoSaveInterval, Self.autoSaveOnLeave, Self.autoSaveOnLowBattery, Self.autoSaveDone]
                 : [Self.autoSaveEnabled, Self.autoSaveDone]
             return SaveStateGraph(rows: ids.map { [.init(id: $0, column: 0)] }, wraps: false)
         }
@@ -683,7 +684,7 @@ struct SaveStatesPanel: View {
                     .onTapGesture { closeAutoSave() }
                 SaveStateAutoSaveCard(
                     settings: settings,
-                    ids: (Self.autoSaveEnabled, Self.autoSaveInterval, Self.autoSaveOnLeave, Self.autoSaveDone),
+                    ids: (Self.autoSaveEnabled, Self.autoSaveInterval, Self.autoSaveOnLeave, Self.autoSaveOnLowBattery, Self.autoSaveDone),
                     onDone: closeAutoSave
                 )
                 .frame(maxWidth: 460)
@@ -1310,10 +1311,10 @@ private struct SaveStateRenameCard: View {
     }
 }
 
-/// The same three settings as in Settings > Emulator.
+/// The same settings as in Settings > Emulator.
 private struct SaveStateAutoSaveCard: View {
     @Bindable var settings: SettingsStore
-    let ids: (enabled: String, interval: String, leave: String, done: String)
+    let ids: (enabled: String, interval: String, leave: String, battery: String, done: String)
     let onDone: () -> Void
 
     @Environment(\.uiAccentColour) private var accentColour
@@ -1350,6 +1351,9 @@ private struct SaveStateAutoSaveCard: View {
                 Toggle(settings.localized("Save when leaving the game"), isOn: $settings.autoSaveOnLeave)
                     .padding(8)
                     .controllerAccessibilityToggleTarget(id: ids.leave, label: ids.leave, isOn: $settings.autoSaveOnLeave)
+                Toggle(settings.localized("Save when battery is low"), isOn: $settings.autoSaveOnLowBattery)
+                    .padding(8)
+                    .controllerAccessibilityToggleTarget(id: ids.battery, label: ids.battery, isOn: $settings.autoSaveOnLowBattery)
             }
             .disabled(!settings.autoSaveEnabled)
             Button(settings.localized("Done"), action: onDone)

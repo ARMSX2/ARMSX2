@@ -184,8 +184,12 @@ struct EmulatorSettingsView: View {
                         .controllerAccessibilityTargetID(
                             "settings.emulator.auto-save-on-leave"
                         )
+                    Toggle(settings.localized("Save when battery is low"), isOn: $settings.autoSaveOnLowBattery)
+                        .controllerAccessibilityTargetID(
+                            "settings.emulator.auto-save-on-low-battery"
+                        )
                 }
-                Text(settings.localized("Auto-save has its own slot and never writes over yours."))
+                Text(settings.localized("Auto-save has its own slot and never writes over yours. At 5% battery it saves at once, then every minute until you charge."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
