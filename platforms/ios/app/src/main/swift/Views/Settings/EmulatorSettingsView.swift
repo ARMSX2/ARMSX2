@@ -161,6 +161,35 @@ struct EmulatorSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section(settings.localized("Save States")) {
+                Toggle(settings.localized("Auto-save"), isOn: $settings.autoSaveEnabled)
+                    .controllerAccessibilityTargetID(
+                        "settings.emulator.auto-save"
+                    )
+                if settings.autoSaveEnabled {
+                    Picker(settings.localized("Save every"), selection: $settings.autoSaveIntervalMinutes) {
+                        ForEach(SettingsStore.autoSaveIntervals, id: \.self) { minutes in
+                            Text(String(format: settings.localized("%d min"), minutes)).tag(minutes)
+                        }
+                    }
+                    .controllerAccessibilityOptionsPickerTarget(
+                        id: "settings.emulator.auto-save-interval",
+                        label: settings.localized("Save every"),
+                        selection: $settings.autoSaveIntervalMinutes,
+                        options: SettingsStore.autoSaveIntervals.map {
+                            (id: $0, title: String(format: settings.localized("%d min"), $0))
+                        }
+                    )
+                    Toggle(settings.localized("Save when leaving the game"), isOn: $settings.autoSaveOnLeave)
+                        .controllerAccessibilityTargetID(
+                            "settings.emulator.auto-save-on-leave"
+                        )
+                }
+                Text(settings.localized("Auto-save has its own slot and never writes over yours."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section(settings.localized("Host Filesystem")) {
                 Toggle(settings.localized("Enable Host Filesystem"), isOn: $settings.hostFilesystem)
                     .controllerAccessibilityTargetID(

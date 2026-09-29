@@ -408,7 +408,7 @@ struct GameScreenView: View {
     @StateObject private var achievementsBanner = TransientBannerController<RetroAchievementsToast>(defaultDisplayDuration: Self.retroAchievementsToastDisplayDuration, queuesConcurrentPresentations: true)
     @State private var runtimeOverlayPauseActive = false
     @State private var saveStateShortcutOperationActive = false
-    @State private var saveStateUndo = SaveStateUndoModel()
+    private let saveStateUndo = SaveStateUndoModel.shared
     @State private var runtimeShortcutSpeedPercent: Int?
     @State private var previousHideHomeIndicator = false
     @State private var previousHideStatusBar = false
@@ -2254,6 +2254,17 @@ struct GameScreenView: View {
         .onChange(of: controllerInput?.saveStateUndoRequest) { _, _ in
             undoSaveStateAction()
         }
+        .task(id: appState.emulationSessionID) {
+            SaveStateAutoSave.shared.restart()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                // Only play counts: not the pause card, the live preview, or time in the library.
+                if overlayRoute == .hidden, !runtimeOverlayPauseActive, appState.currentScreen == .playing,
+                   UIApplication.shared.applicationState == .active, ARMSX2Bridge.isVMRunning() {
+                    SaveStateAutoSave.shared.tick(5)
+                }
+            }
+        }
     }
 
     /// Saves to Quick Save at once. Saving over the last one leaves it one Undo away.
@@ -2290,6 +2301,7 @@ struct GameScreenView: View {
                     playedSeconds: ARMSX2Bridge.currentGamePlayedSeconds(),
                     fresh: backupToken == nil
                 )
+                SaveStateAutoSave.shared.didWrite()
                 if let backupToken {
                     showQuickSaveUndo(
                         .overwrite(slot: slot, backupToken: backupToken, fileName: fileName, previous: previous),
@@ -2347,6 +2359,7 @@ struct GameScreenView: View {
             Task { @MainActor in
                 finishSaveStateShortcutOperation()
                 if success, let undoPath {
+                    SaveStateAutoSave.shared.restart()
                     showQuickSaveUndo(
                         .load(path: undoPath),
                         verb: settings.localized("Loaded"),
