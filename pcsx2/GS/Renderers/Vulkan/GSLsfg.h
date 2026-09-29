@@ -57,6 +57,11 @@ namespace GSLsfg
 	/// "LSFG: unavailable" / "failed" / "no shaders" / "starting" / "LSFG: 118.80".
 	std::string GetStatusText();
 
+	/// Frame generation is switched on and something is wrong: unavailable, failed, no shaders,
+	/// or no display image to spare. The overlay shows its line for this even when the rest of the
+	/// overlay is off, since "on but silent" can't be told from "on and broken".
+	bool StatusIsProblem();
+
 	/// Frames reaching the DISPLAY per second — real plus generated — over the last one-second
 	/// window. Deliberately not the emulator's FPS, which frame generation does not change: what
 	/// changes is how many frames get presented, and that is only visible if something counts it.

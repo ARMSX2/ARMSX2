@@ -120,6 +120,7 @@ extern "C" const char* ARMSX2_iOSGetDeviceStatsOverlayLine();
 namespace GSLsfg
 {
 	std::string GetStatusText();
+	bool StatusIsProblem();
 }
 #endif
 
@@ -132,6 +133,16 @@ static std::string LsfgStatusText()
 	return GSLsfg::GetStatusText();
 #else
 	return {};
+#endif
+}
+
+/// Frame generation is on and something is wrong with it; see GSLsfg::StatusIsProblem.
+static bool LsfgStatusIsProblem()
+{
+#ifdef ENABLE_VULKAN
+	return GSLsfg::StatusIsProblem();
+#else
+	return false;
 #endif
 }
 
@@ -276,8 +287,14 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 	// reasons: it is driven by the LSFG setting and not by any OsdShow* flag, and the shrink-to-fit
 	// below keys off this word changing — sharing a bit would leave the block sized for the wrong
 	// set of lines the moment the LSFG line appeared or went away.
+	//
+	// The line comes with the rest of the performance overlay, so with the overlay off a healthy
+	// frame generation shows nothing (it stayed on screen whatever the overlay said, and with it,
+	// ImGui always drew, which kept frame generation off the game's own image). A problem still
+	// shows on its own: "on but silent" can't be told from "on and broken".
 	const std::string lsfg_status = LsfgStatusText();
-	enabled_lines |= static_cast<u32>(!lsfg_status.empty()) << 12;
+	const bool lsfg_line = !lsfg_status.empty() && (enabled_lines != 0 || LsfgStatusIsProblem());
+	enabled_lines |= static_cast<u32>(lsfg_line) << 12;
 	if (enabled_lines == 0)
 		return;
 

@@ -248,6 +248,12 @@ namespace GSLsfg
 			text += fmt::format(" \u00b7 {:.2f} ms", gpu_ms);
 		return text;
 	}
+
+	bool StatusIsProblem()
+	{
+		return GSConfig.LsfgEnabled &&
+			   (GetUnavailableReason() != Unavailable::Available || s_no_headroom.load(std::memory_order_relaxed));
+	}
 } // namespace GSLsfg
 
 #ifndef ARMSX2_HAS_LSFG
