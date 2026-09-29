@@ -29,6 +29,8 @@ struct SaveStateFile: Sendable {
 /// Kept per state file, keyed by its file name. An entry only counts while `savedAt` still
 /// matches the file, so a state replaced from the Files app never shows another state's details.
 struct SaveStateMetadata: Codable, Equatable {
+    var name: String?
+    var locked: Bool?
     var playedSeconds: Double?
     var savedAt: Date?
 
@@ -74,11 +76,22 @@ final class SaveStateMetadataStore {
         return entry
     }
 
-    /// Records the play time for a state that was just written.
-    func recordSave(of state: SaveStateFile, playedSeconds: Double) {
+    /// Records the play time for a state that was just written. Saving over a state keeps its
+    /// name and lock; a state written into an empty slot starts without either.
+    func recordSave(of state: SaveStateFile, playedSeconds: Double, fresh: Bool) {
         guard state.occupied, let modified = state.modifiedDate else { return }
-        file.states[state.fileName, default: SaveStateMetadata()].playedSeconds = playedSeconds
-        file.states[state.fileName]?.savedAt = modified
+        var entry = fresh ? SaveStateMetadata() : file.states[state.fileName] ?? SaveStateMetadata()
+        entry.playedSeconds = playedSeconds
+        entry.savedAt = modified
+        file.states[state.fileName] = entry
+        write()
+    }
+
+    func update(_ state: SaveStateFile, _ change: (inout SaveStateMetadata) -> Void) {
+        guard state.occupied, let modified = state.modifiedDate else { return }
+        var entry = metadata(for: state) ?? SaveStateMetadata(savedAt: modified)
+        change(&entry)
+        file.states[state.fileName] = entry
         write()
     }
 
@@ -126,6 +139,14 @@ struct SaveStateSlot: Identifiable {
 
     @MainActor
     func title(_ settings: SettingsStore) -> String {
+        if isNameable, let name = metadata?.name, !name.isEmpty {
+            return name
+        }
+        return defaultTitle(settings)
+    }
+
+    @MainActor
+    func defaultTitle(_ settings: SettingsStore) -> String {
         switch kind {
         case .manual: String(format: settings.localized("Slot %d"), slot)
         case .older: String(format: settings.localized("Older Slot %d"), slot)
@@ -134,7 +155,19 @@ struct SaveStateSlot: Identifiable {
         }
     }
 
+    var isNameable: Bool { kind == .manual || kind == .older }
+    var isLocked: Bool { isNameable && occupied && metadata?.locked == true }
     var hasSave: Bool { kind != .auto }
+    var hasMore: Bool { occupied && kind != .auto }
+
+    static let nameLimit = 32
+
+    /// One line, trimmed, at most `nameLimit` characters.
+    static func cleanName(_ text: String) -> String {
+        let line = text.replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(line.prefix(nameLimit))
+    }
 
     /// Rows 1–8 always, Older 9 and 10 only while they hold a state, then Auto-save and Quick Save.
     static func rows(

@@ -20,7 +20,7 @@ class SaveStatesScroll(unittest.TestCase):
         self.assertNotIn("origin: scrollView.contentOffset", check)
 
     def test_the_first_and_last_slots_wrap_only_on_a_new_press(self):
-        graph = block(without_comments(read(PANEL)), "init(rows: [[Target]])")
+        graph = block(without_comments(read(PANEL)), "init(rows: [[Target]], wraps: Bool = true)")
         self.assertIn("requiresFreshPress: true", graph)
         self.assertIn("nearest(in: above, to: target.column)", graph)
         self.assertIn("confinesHorizontalFocusMovement: true", read(PANEL))

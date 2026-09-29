@@ -15,16 +15,50 @@ struct SaveStatesPanel: View {
     let statusHandler: (String, Bool) -> Void
     let onLoaded: () -> Void
     let onClose: () -> Void
+    let onOpenControllerMacros: () -> Void
 
     @State private var files: [SaveStateFile] = []
     @State private var metadataRevision = 0
     @State private var busySlot: Int?
     @State private var pendingOverwrite: SaveStateSlot?
     @State private var hardcore = false
+    @State private var menuSlot: Int?
+    @State private var renameSlot: Int?
+    @State private var renameText = ""
+    @State private var renameFocus: String?
+    @State private var keyboardRequest: SaveStateKeyboardRequest?
 
     static let scopeKey = "runtime.save-states"
+    private static let menuScope = "runtime.save-states.menu"
+    private static let renameScope = "runtime.save-states.rename"
     static func saveID(_ slot: Int) -> String { "save-state.slot.\(slot).save" }
     static func loadID(_ slot: Int) -> String { "save-state.slot.\(slot).load" }
+    static func moreID(_ slot: Int) -> String { "save-state.slot.\(slot).more" }
+    private static let renameName = "save-state.rename.name"
+    private static let renameClear = "save-state.rename.clear"
+    private static let renameCancel = "save-state.rename.cancel"
+    private static let renameConfirm = "save-state.rename.confirm"
+
+    private var overlayOpen: Bool { menuSlot != nil || renameSlot != nil }
+
+    private var currentScope: String {
+        renameSlot != nil ? Self.renameScope : menuSlot != nil ? Self.menuScope : Self.scopeKey
+    }
+
+    private var currentGraph: SaveStateGraph {
+        if renameSlot != nil {
+            let ids = [Self.renameName, Self.renameClear, Self.renameCancel, Self.renameConfirm]
+            return SaveStateGraph(rows: [ids.enumerated().map { .init(id: $1, column: $0) }], wraps: false)
+        }
+        if let row = row(menuSlot) {
+            return SaveStateGraph(rows: menuItems(for: row).map { [.init(id: $0.id, column: 0)] }, wraps: false)
+        }
+        return SaveStateGraph(rows: targetRows)
+    }
+
+    private func row(_ slot: Int?) -> SaveStateSlot? {
+        slot.flatMap { slot in rows.first { $0.slot == slot } }
+    }
 
     private var rows: [SaveStateSlot] {
         _ = metadataRevision
@@ -41,7 +75,7 @@ struct SaveStatesPanel: View {
     }
 
     var body: some View {
-        let graph = SaveStateGraph(rows: targetRows)
+        let graph = currentGraph
         Group {
             if layout == .line || layout == .wideLine {
                 OverlayPanelScaffold {
@@ -89,13 +123,37 @@ struct SaveStatesPanel: View {
                 }
             }
         }
+        // The list sits under the row menu and the rename card: out of the pad's reach and VoiceOver's.
+        .environment(\.controllerAccessibilityTargetsSuppressed, overlayOpen)
+        .accessibilityHidden(overlayOpen)
+        .overlayPreferenceValue(SaveStateMoreAnchorKey.self) { anchors in
+            menuOverlay(anchors)
+        }
+        .overlay { renameOverlay }
         .controllerAccessibilityNavigation(
             controllerInput: controllerInput,
-            scopeKey: Self.scopeKey,
+            scopeKey: currentScope,
             priority: 320,
             orbStyle: .liquidGlass,
             onBack: {
-                onClose()
+                if renameSlot != nil {
+                    closeRename()
+                } else if menuSlot != nil {
+                    closeMenu()
+                } else {
+                    onClose()
+                }
+                return true
+            },
+            onContextMenu: { id in
+                if menuSlot != nil {
+                    closeMenu()
+                    return true
+                }
+                guard renameSlot == nil, let row = row(Self.slot(inTargetID: id)), row.hasMore else {
+                    return false
+                }
+                openMenu(row)
                 return true
             },
             boundaryRules: graph.freshPressRules,
@@ -107,9 +165,28 @@ struct SaveStatesPanel: View {
             // Room for the card header, and in two-line rows for the title above the buttons.
             focusTopAlignmentMargin: layout == .twoLine ? 96 : 40,
             focusBottomAlignmentMargin: 10,
-            preferredInitialFocusLabel: initialFocusID,
+            preferredInitialFocusLabel: overlayOpen ? renameFocus : initialFocusID,
             declaredTargetOrder: graph.order
         )
+        .fullScreenCover(item: $keyboardRequest) { _ in
+            OrbitKeysKeyboardView(
+                title: settings.localized("Rename"),
+                initialText: renameText,
+                startsInNormalKeyboard: true,
+                onCommit: { text in
+                    renameText = SaveStateSlot.cleanName(text)
+                    keyboardRequest = nil
+                    place(Self.renameConfirm, inScope: Self.renameScope, entering: true)
+                },
+                onCancel: { keyboardRequest = nil }
+            )
+            .presentationBackground(.clear)
+            .appStatusBarHidden()
+        }
+        .onChange(of: landscape) { _, _ in
+            // The menu is anchored to a row that a new layout may have scrolled away.
+            if menuSlot != nil { closeMenu() }
+        }
         .task(id: files.isEmpty) {
             // Registering is passive, as in the pause menu, so ask to enter once the rows exist.
             guard !files.isEmpty else { return }
@@ -186,6 +263,7 @@ struct SaveStatesPanel: View {
                 controllerInput: controllerInput,
                 axes: .vertical,
                 priority: 320,
+                isEnabled: !overlayOpen,
                 pointsPerSecond: 680
             )
             .frame(height: 0)
@@ -239,7 +317,8 @@ struct SaveStatesPanel: View {
                     primaryID: controllerInput?.hasConnectedController == true ? nil : initialFocusID,
                     quickSaveLine: quickSaveLine,
                     onSave: { save(row) },
-                    onLoad: { load(row) }
+                    onLoad: { load(row) },
+                    onMore: { openMenu(row) }
                 )
             }
         }
@@ -262,8 +341,9 @@ struct SaveStatesPanel: View {
     private var targetRows: [[SaveStateGraph.Target]] {
         rows.map { row in
             var targets: [SaveStateGraph.Target] = []
-            if row.hasSave { targets.append(.init(id: Self.saveID(row.slot), column: 0)) }
+            if row.hasSave, !row.isLocked { targets.append(.init(id: Self.saveID(row.slot), column: 0)) }
             if row.occupied, !hardcore { targets.append(.init(id: Self.loadID(row.slot), column: 1)) }
+            if row.hasMore { targets.append(.init(id: Self.moreID(row.slot), column: 2)) }
             return targets
         }
         .filter { !$0.isEmpty }
@@ -285,7 +365,7 @@ struct SaveStatesPanel: View {
     }
 
     private func save(_ row: SaveStateSlot) {
-        guard busySlot == nil else { return }
+        guard busySlot == nil, !row.isLocked else { return }
         if row.occupied {
             pendingOverwrite = row
         } else {
@@ -296,13 +376,14 @@ struct SaveStatesPanel: View {
     private func performSave(_ row: SaveStateSlot) {
         let slot = row.slot
         let number = row.number
+        let fresh = !row.occupied
         busySlot = slot
         ARMSX2Bridge.saveState(toSlot: slot) { success in
             Task { @MainActor in
                 let played = ARMSX2Bridge.currentGamePlayedSeconds()
                 await refresh()
                 if success, let file = files.first(where: { $0.slot == slot }) {
-                    SaveStateMetadataStore.shared.recordSave(of: file, playedSeconds: played)
+                    SaveStateMetadataStore.shared.recordSave(of: file, playedSeconds: played, fresh: fresh)
                     metadataRevision &+= 1
                 }
                 busySlot = nil
@@ -333,6 +414,147 @@ struct SaveStatesPanel: View {
                         true
                     )
                 }
+            }
+        }
+    }
+
+    // MARK: Row menu and rename
+
+    static func slot(inTargetID id: String) -> Int? {
+        let parts = id.split(separator: ".")
+        guard parts.count == 4, parts[0] == "save-state", parts[1] == "slot" else { return nil }
+        return Int(parts[2])
+    }
+
+    /// Focus lands on `id` when `scope` next becomes the active one; `entering` asks for it now.
+    private func place(_ id: String, inScope scope: String, entering: Bool = false) {
+        controllerInput?.rememberNavigationFocusKey(
+            ControllerAccessibilityNavigationSession.explicitKey(id),
+            forScope: scope
+        )
+        renameFocus = scope == Self.renameScope ? id : nil
+        guard entering else { return }
+        Task { @MainActor in
+            await Task.yield()
+            _ = controllerInput?.requestNavigationSessionEntry(preferLast: false, matchingScopePrefix: scope)
+        }
+    }
+
+    private func menuItems(for row: SaveStateSlot) -> [SaveStateMenuItem] {
+        switch row.kind {
+        case .manual, .older:
+            [
+                .init(id: "save-state.menu.rename", title: settings.localized("Rename"), systemImage: "pencil") {
+                    openRename(row)
+                },
+                .init(
+                    id: "save-state.menu.lock",
+                    title: settings.localized(row.isLocked ? "Unlock" : "Lock"),
+                    systemImage: row.isLocked ? "lock.open" : "lock"
+                ) {
+                    SaveStateMetadataStore.shared.update(row.file) { $0.locked = row.isLocked ? nil : true }
+                    metadataRevision &+= 1
+                    closeMenu()
+                },
+            ]
+        case .quick:
+            [
+                .init(
+                    id: "save-state.menu.macros",
+                    title: settings.localized("Controller Macros"),
+                    systemImage: "gamecontroller"
+                ) {
+                    menuSlot = nil
+                    onOpenControllerMacros()
+                },
+            ]
+        case .auto:
+            []
+        }
+    }
+
+    private func openMenu(_ row: SaveStateSlot) {
+        guard let first = menuItems(for: row).first else { return }
+        // The menu scope remembers its last item; every menu opens on its first one.
+        place(first.id, inScope: Self.menuScope)
+        menuSlot = row.slot
+    }
+
+    private func closeMenu() {
+        guard let slot = menuSlot else { return }
+        place(Self.moreID(slot), inScope: Self.scopeKey)
+        menuSlot = nil
+    }
+
+    private func openRename(_ row: SaveStateSlot) {
+        renameText = row.metadata?.name ?? ""
+        place(Self.renameName, inScope: Self.renameScope)
+        menuSlot = nil
+        renameSlot = row.slot
+    }
+
+    private func closeRename() {
+        guard let slot = renameSlot else { return }
+        place(Self.moreID(slot), inScope: Self.scopeKey)
+        renameSlot = nil
+    }
+
+    private func commitRename() {
+        guard let row = row(renameSlot) else { return }
+        let name = SaveStateSlot.cleanName(renameText)
+        SaveStateMetadataStore.shared.update(row.file) { $0.name = name.isEmpty ? nil : name }
+        metadataRevision &+= 1
+        closeRename()
+    }
+
+    @ViewBuilder
+    private func menuOverlay(_ anchors: [Int: Anchor<CGRect>]) -> some View {
+        if let row = row(menuSlot), let anchor = anchors[row.slot] {
+            GeometryReader { proxy in
+                let button = proxy[anchor]
+                let items = menuItems(for: row)
+                let width = min(240, proxy.size.width - 24)
+                let height = 40 + CGFloat(items.count) * 44
+                // Below the button when it fits in the card, above it otherwise.
+                let below = button.maxY + 10 + height <= proxy.size.height - 8
+                ZStack(alignment: .topLeading) {
+                    Color.black.opacity(0.3)
+                        .contentShape(Rectangle())
+                        .onTapGesture { closeMenu() }
+                    SaveStateMenuView(
+                        title: row.title(settings),
+                        subtitle: row.modifiedDate.map { SaveStateFormat.savedAt($0, settings: settings) },
+                        items: items
+                    )
+                    .frame(width: width)
+                    .offset(
+                        x: min(max(12, button.maxX - width), proxy.size.width - width - 12),
+                        y: below ? button.maxY + 10 : max(8, button.minY - 10 - height)
+                    )
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var renameOverlay: some View {
+        if let row = row(renameSlot) {
+            ZStack(alignment: .top) {
+                Color.black.opacity(0.45)
+                    .contentShape(Rectangle())
+                    .onTapGesture { closeRename() }
+                SaveStateRenameCard(
+                    settings: settings,
+                    title: String(format: settings.localized("Rename %@"), row.title(settings)),
+                    placeholder: row.defaultTitle(settings),
+                    wide: layout == .line || layout == .wideLine,
+                    text: $renameText,
+                    ids: (Self.renameName, Self.renameClear, Self.renameCancel, Self.renameConfirm),
+                    onEdit: { keyboardRequest = SaveStateKeyboardRequest(slot: row.slot) },
+                    onCancel: closeRename,
+                    onConfirm: commitRename
+                )
+                .padding(14)
             }
         }
     }
@@ -388,7 +610,7 @@ struct SaveStateGraph {
     let links: [ControllerAccessibilityDirectionalLink]
     let freshPressRules: [ControllerAccessibilityBoundaryRule]
 
-    init(rows: [[Target]]) {
+    init(rows: [[Target]], wraps: Bool = true) {
         let boundary = ControllerAccessibilityDirectionalLink.navigationBoundary
         var links: [ControllerAccessibilityDirectionalLink] = []
         var rules: [ControllerAccessibilityBoundaryRule] = []
@@ -403,19 +625,22 @@ struct SaveStateGraph {
                 let right = position + 1 < row.count ? row[position + 1].id : boundary
                 links.append(.init(fromLabel: target.id, direction: .left, toLabel: left))
                 links.append(.init(fromLabel: target.id, direction: .right, toLabel: right))
-                let wraps = rows.count > 1
+                let first = index == 0
+                let last = index == rows.count - 1
+                let upWraps = first && (!wraps || rows.count < 2)
+                let downWraps = last && (!wraps || rows.count < 2)
                 links.append(.init(
                     fromLabel: target.id, direction: .up,
-                    toLabel: wraps ? nearest(in: above, to: target.column) : boundary
+                    toLabel: upWraps ? boundary : nearest(in: above, to: target.column)
                 ))
                 links.append(.init(
                     fromLabel: target.id, direction: .down,
-                    toLabel: wraps ? nearest(in: below, to: target.column) : boundary
+                    toLabel: downWraps ? boundary : nearest(in: below, to: target.column)
                 ))
-                if index == 0 {
+                if wraps, first {
                     rules.append(.init(direction: .up, fromLabel: target.id, requiresFreshPress: true))
                 }
-                if index == rows.count - 1 {
+                if wraps, last {
                     rules.append(.init(direction: .down, fromLabel: target.id, requiresFreshPress: true))
                 }
             }
@@ -437,6 +662,7 @@ private struct SaveStateRowView: View {
     let quickSaveLine: String?
     let onSave: () -> Void
     let onLoad: () -> Void
+    let onMore: () -> Void
 
     @Environment(\.uiAccentColour) private var accentColour
 
@@ -517,10 +743,18 @@ private struct SaveStateRowView: View {
 
     private var info: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(layout == .stacked ? .body.weight(.semibold) : .subheadline.weight(.semibold))
-                .foregroundStyle(row.occupied ? OverlayTheme.textPrimary : OverlayTheme.textSecondary)
-                .lineLimit(1)
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(layout == .stacked ? .body.weight(.semibold) : .subheadline.weight(.semibold))
+                    .foregroundStyle(row.occupied ? OverlayTheme.textPrimary : OverlayTheme.textSecondary)
+                    .lineLimit(1)
+                if row.isLocked {
+                    Image(systemName: "lock.fill")
+                        .font(.caption2)
+                        .foregroundStyle(OverlayTheme.textSecondary)
+                        .accessibilityLabel(settings.localized("Locked"))
+                }
+            }
             if layout == .stacked || layout == .twoLine {
                 savedLine
                 playedLine
@@ -575,9 +809,12 @@ private struct SaveStateRowView: View {
             SaveStateButton(
                 id: saveID,
                 title: settings.localized("Save"),
-                systemImage: "square.and.arrow.down",
+                systemImage: row.isLocked ? "lock.fill" : "square.and.arrow.down",
                 accessibilityLabel: String(
-                    format: settings.localized(row.occupied ? "Save over %@" : "Save to %@"),
+                    format: settings.localized(
+                        row.isLocked ? "Save to %@, locked. Unlock it from More."
+                            : row.occupied ? "Save over %@" : "Save to %@"
+                    ),
                     title
                 ),
                 tonal: true,
@@ -587,6 +824,7 @@ private struct SaveStateRowView: View {
                 width: layout.buttonWidth,
                 action: onSave
             )
+            .disabled(row.isLocked)
         } else {
             placeholder
         }
@@ -609,6 +847,28 @@ private struct SaveStateRowView: View {
             .disabled(hardcore)
         } else {
             placeholder
+        }
+        if row.hasMore {
+            Button(action: onMore) {
+                Image(systemName: "ellipsis")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(OverlayTheme.textPrimary)
+                    .frame(width: 44, height: 44)
+                    .background(Color.white.opacity(0.10), in: Circle())
+                    .overlay(Circle().stroke(Color.white.opacity(0.14), lineWidth: 1))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(String(format: settings.localized("More for %@"), title))
+            .anchorPreference(key: SaveStateMoreAnchorKey.self, value: .bounds) { [row.slot: $0] }
+            .controllerAccessibilityActionTarget(
+                id: SaveStatesPanel.moreID(row.slot),
+                label: SaveStatesPanel.moreID(row.slot),
+                focusedNeonCornerRadius: 22,
+                action: onMore
+            )
+        } else {
+            Color.clear.frame(width: 44, height: 44)
         }
     }
 
@@ -731,4 +991,175 @@ private func onAccent(_ accent: Color) -> Color {
     }
     let luminance = 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
     return (luminance + 0.05) / 0.05 >= 1.05 / (luminance + 0.05) ? .black : .white
+}
+
+struct SaveStateMoreAnchorKey: PreferenceKey {
+    static let defaultValue: [Int: Anchor<CGRect>] = [:]
+    static func reduce(value: inout [Int: Anchor<CGRect>], nextValue: () -> [Int: Anchor<CGRect>]) {
+        value.merge(nextValue()) { _, next in next }
+    }
+}
+
+struct SaveStateKeyboardRequest: Identifiable {
+    let slot: Int
+    var id: Int { slot }
+}
+
+struct SaveStateMenuItem {
+    let id: String
+    let title: String
+    let systemImage: String
+    var isDestructive = false
+    let action: () -> Void
+}
+
+private struct SaveStateMenuView: View {
+    let title: String
+    let subtitle: String?
+    let items: [SaveStateMenuItem]
+
+    @Environment(\.uiCriticalTextColour) private var criticalTextColour
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text([title, subtitle].compactMap { $0 }.joined(separator: " · "))
+                .font(.caption)
+                .foregroundStyle(OverlayTheme.textSecondary)
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .padding(.bottom, 6)
+            ForEach(items, id: \.id) { item in
+                Button(action: item.action) {
+                    HStack {
+                        Text(item.title)
+                        Spacer()
+                        Image(systemName: item.systemImage)
+                    }
+                    .font(.callout)
+                    .foregroundStyle(item.isDestructive ? criticalTextColour : OverlayTheme.textPrimary)
+                    .padding(.horizontal, 16)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .controllerAccessibilityActionTarget(
+                    id: item.id,
+                    label: item.id,
+                    focusedColor: item.isDestructive ? criticalTextColour : nil,
+                    focusedNeonCornerRadius: 12,
+                    action: item.action
+                )
+            }
+        }
+        .padding(4)
+        .background(OverlayTheme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.white.opacity(0.12)))
+        .shadow(color: .black.opacity(0.55), radius: 24, y: 18)
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(.isModal)
+    }
+}
+
+/// Up to 32 characters. With a controller the name is typed on OrbitKeys, which has no limit
+/// of its own, so the name is cut when it comes back.
+private struct SaveStateRenameCard: View {
+    let settings: SettingsStore
+    let title: String
+    let placeholder: String
+    let wide: Bool
+    @Binding var text: String
+    let ids: (name: String, clear: String, cancel: String, confirm: String)
+    let onEdit: () -> Void
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    @Environment(\.uiAccentColour) private var accentColour
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(OverlayTheme.textPrimary)
+                .lineLimit(1)
+            if wide {
+                HStack(alignment: .top, spacing: 10) {
+                    field
+                    buttons
+                }
+            } else {
+                field
+                HStack(spacing: 10) { buttons }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(OverlayTheme.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Color.white.opacity(0.14)))
+        .shadow(color: .black.opacity(0.5), radius: 25, y: 20)
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(.isModal)
+    }
+
+    private var field: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(settings.localized("Name"))
+                .font(.caption)
+                .foregroundStyle(OverlayTheme.textSecondary)
+            HStack(spacing: 0) {
+                TextField(placeholder, text: $text)
+                    .font(.callout)
+                    .foregroundStyle(OverlayTheme.textPrimary)
+                    .submitLabel(.done)
+                    .onSubmit(onConfirm)
+                    .onChange(of: text) { _, value in
+                        if value.count > SaveStateSlot.nameLimit {
+                            text = String(value.prefix(SaveStateSlot.nameLimit))
+                        }
+                    }
+                    .padding(.leading, 12)
+                    .frame(minHeight: 44)
+                    .controllerAccessibilityActionTarget(
+                        id: ids.name,
+                        label: ids.name,
+                        focusedNeonCornerRadius: 12,
+                        action: onEdit
+                    )
+                Button { text = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(OverlayTheme.textSecondary)
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(settings.localized("Clear name"))
+                .controllerAccessibilityActionTarget(
+                    id: ids.clear,
+                    label: ids.clear,
+                    focusedNeonCornerRadius: 22
+                ) { text = "" }
+            }
+            .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(accentColour, lineWidth: 2))
+            HStack {
+                Text(String(format: settings.localized("Empty shows “%@”. Saving over keeps the name."), placeholder))
+                Spacer(minLength: 8)
+                Text(String(format: settings.localized("%1$d/%2$d"), text.count, SaveStateSlot.nameLimit))
+                    .monospacedDigit()
+            }
+            .font(.caption)
+            .foregroundStyle(OverlayTheme.textSecondary)
+        }
+    }
+
+    @ViewBuilder
+    private var buttons: some View {
+        Button(settings.localized("Cancel"), action: onCancel)
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .controllerAccessibilityActionTarget(id: ids.cancel, label: ids.cancel, action: onCancel)
+        Button(settings.localized("Rename"), action: onConfirm)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .controllerAccessibilityActionTarget(id: ids.confirm, label: ids.confirm, action: onConfirm)
+    }
 }
