@@ -24,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,6 +43,7 @@ import androidx.compose.ui.unit.sp
 import com.armsx2.i18n.str
 import com.armsx2.memcard.MemcardCovers
 import com.armsx2.memcard.Ps2IconRenderer
+import com.armsx2.runtime.MainActivityRuntime
 import com.armsx2.ui.settings.controllerFocusable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -54,6 +56,31 @@ internal object MemcardIconViewerState {
     val info = mutableStateOf(false)
     /** The screensaver's settings. */
     val screensaver = mutableStateOf(false)
+    /** The Online Icons download prompt. */
+    val online = mutableStateOf(false)
+}
+
+/** The Icon Museum's bookmark: the icon it opens at, by [MemcardCovers.ShowIcon.key]. With the
+ *  online set there are thousands, and nobody should have to page back to where they were. */
+internal object MuseumBookmark {
+    private const val KEY = "library.iconMuseum.bookmark"
+    val key = mutableStateOf<String?>(null)
+    private var loaded = false
+
+    fun load() {
+        if (loaded) return
+        loaded = true
+        key.value = runCatching { MainActivityRuntime.prefs.getString(KEY, null) }.getOrNull()
+    }
+
+    /** Bookmarks [k], or takes the bookmark off it when it is the one bookmarked. */
+    fun toggle(k: String) {
+        val next = if (key.value == k) null else k
+        runCatching {
+            MainActivityRuntime.prefs.edit().apply { if (next == null) remove(KEY) else putString(KEY, next) }.apply()
+        }
+        key.value = next
+    }
 }
 
 /** How Memory Card Covers works, from the library menu's "MC Icon Info". */
@@ -93,10 +120,11 @@ internal fun MemcardCoversInfo(onClose: () -> Unit) {
 }
 
 /**
- * Icon Museum: every save icon on the player's memory cards, one at a time, full screen and
- * moving, each on its own icon.sys background with its title. Like ARMSX3's theme preview, it is
- * for looking at them without the library in the way. Swipe or press left and right to go
- * through them; Back closes it.
+ * Icon Museum: every save icon on the player's memory cards, then the ones found on discs and,
+ * once downloaded, every icon of the online set, one at a time, full screen and moving, each on
+ * its own icon.sys background with its title. Like ARMSX3's theme preview, it is for looking at
+ * them without the library in the way. Swipe or press left and right to go through them; the
+ * bookmark button (A on a controller) marks one to open at next time; Back closes it.
  */
 @Composable
 internal fun MemcardIconViewer(onClose: () -> Unit, titles: () -> Map<String, String> = { emptyMap() }) {
@@ -145,8 +173,14 @@ internal fun MemcardIconViewer(onClose: () -> Unit, titles: () -> Map<String, St
 
 @Composable
 private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
-    val pager = rememberPagerState(pageCount = { saves.size })
+    remember { MuseumBookmark.load() }
+    // Opens at the bookmark, when it is still in the list.
+    val start = remember(saves) { saves.indexOfFirst { it.key == MuseumBookmark.key.value }.coerceAtLeast(0) }
+    val pager = rememberPagerState(initialPage = start, pageCount = { saves.size })
     val fromDisc = str("memcard.viewer.fromDisc")
+    val onlineBy = str("memcard.viewer.onlineBy")
+    val online = str("memcard.viewer.online")
+    val bookmarked = str("memcard.viewer.bookmarked")
     val scope = rememberCoroutineScope()
     Box(Modifier.fillMaxSize()) {
         HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
@@ -154,8 +188,37 @@ private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
             ViewerPage(ref, animate = page == pager.settledPage)
         }
         // Title, serial and card, and where in the list this is. Also the controller's handle on
-        // the viewer: left and right move through the saves.
+        // the viewer: left and right move through the saves, and A bookmarks the one shown.
         val ref = saves[pager.currentPage.coerceIn(saves.indices)]
+        val isBookmarked = MuseumBookmark.key.value == ref.key
+        val origin = when (val o = ref.origin) {
+            is MemcardCovers.FromCard -> o.card
+            MemcardCovers.FromDisc -> fromDisc
+            is MemcardCovers.FromOnline -> listOfNotNull(
+                o.label.ifBlank { null },
+                if (o.contributors.isBlank()) online else onlineBy.replace("%s", o.contributors),
+            ).joinToString("  ·  ")
+        }
+        // Bookmark, for touch, across from Close; A on the panel does the same from a controller.
+        Box(
+            Modifier
+                .align(Alignment.TopStart)
+                .padding(16.dp)
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.35f))
+                .clickable { MuseumBookmark.toggle(ref.key) },
+            contentAlignment = Alignment.Center,
+        ) {
+            androidx.compose.material3.Icon(
+                painter = androidx.compose.ui.res.painterResource(
+                    if (isBookmarked) com.armsx2.R.drawable.ic_bookmark_filled else com.armsx2.R.drawable.ic_bookmark,
+                ),
+                contentDescription = str("memcard.viewer.bookmark"),
+                tint = Color.White,
+                modifier = Modifier.size(22.dp),
+            )
+        }
         Column(
             Modifier
                 .align(Alignment.BottomCenter)
@@ -167,6 +230,7 @@ private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
                     shape = RoundedCornerShape(18.dp),
                     onLeft = { scope.launch { pager.animateScrollToPage((pager.currentPage - 1).coerceAtLeast(0)) } },
                     onRight = { scope.launch { pager.animateScrollToPage((pager.currentPage + 1).coerceAtMost(saves.size - 1)) } },
+                    onConfirm = { MuseumBookmark.toggle(saves[pager.currentPage.coerceIn(saves.indices)].key) },
                 )
                 .padding(horizontal = 22.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -182,12 +246,16 @@ private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
                 textAlign = TextAlign.Center,
             )
             Text(
-                listOfNotNull(ref.serial, ref.card ?: fromDisc).joinToString("  ·  "),
+                listOfNotNull(ref.serial, origin).joinToString("  ·  "),
                 color = Color.White.copy(alpha = 0.72f),
                 fontSize = 13.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
             )
             Text(
-                "${pager.currentPage + 1} / ${saves.size}",
+                listOfNotNull("%,d / %,d".format(pager.currentPage + 1, saves.size), bookmarked.takeIf { isBookmarked })
+                    .joinToString("  ·  "),
                 color = Color.White.copy(alpha = 0.55f),
                 fontSize = 12.sp,
             )

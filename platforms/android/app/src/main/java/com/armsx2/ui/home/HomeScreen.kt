@@ -240,9 +240,12 @@ fun HomeScreen(
     // which is when a new save appears, then on the discs of games with no save. Nothing is drawn
     // again unless a save changed, and no disc is looked at twice.
     remember { com.armsx2.memcard.MemcardCovers.load() }
+    remember { com.armsx2.memcard.OnlineIcons.init(context) }
     val memcardCoversOn = com.armsx2.memcard.MemcardCovers.enabled.value
     val emuState = MainActivityRuntime.eState.value
-    LaunchedEffect(memcardCoversOn, emuState, state.allGames) {
+    // A set of online icons downloaded or deleted changes covers too.
+    val onlineIcons = com.armsx2.memcard.OnlineIcons.generation.intValue
+    LaunchedEffect(memcardCoversOn, emuState, state.allGames, onlineIcons) {
         if (memcardCoversOn) com.armsx2.memcard.MemcardCovers.refresh(
             context,
             state.allGames.filter { it.platform == GamePlatform.PS2 }.mapNotNull { g ->
@@ -256,6 +259,7 @@ fun HomeScreen(
     if (MemcardIconViewerState.open.value) MemcardIconViewer(onClose = { MemcardIconViewerState.open.value = false }, titles = libraryTitles)
     if (MemcardIconViewerState.info.value) MemcardCoversInfo(onClose = { MemcardIconViewerState.info.value = false })
     if (MemcardIconViewerState.screensaver.value) ScreensaverSettings(onClose = { MemcardIconViewerState.screensaver.value = false })
+    if (MemcardIconViewerState.online.value) OnlineIconsPrompt(onClose = { MemcardIconViewerState.online.value = false })
     // The screensaver, after the library has sat untouched for a while.
     LibraryScreensaverHost(titles = libraryTitles)
     DisposableEffect(viewModel, onOpenMenu) {
@@ -1717,6 +1721,25 @@ private fun LibraryOverflowMenu(
                 } else str("common.off"),
             ) {
                 closeThen { MemcardIconViewerState.screensaver.value = true }
+            }
+        }
+        // Online Icons: PS2IODB's icons, downloaded once; the row shows how far a download is.
+        run {
+            val onlineStatus = com.armsx2.memcard.OnlineIcons.status.value
+            val onlineInstalled = remember(com.armsx2.memcard.OnlineIcons.generation.intValue) { com.armsx2.memcard.OnlineIcons.installed }
+            LibraryOverflowItem(
+                glyph = "⇩",
+                label = str("games.overflow.onlineIcons"),
+                trailing = when {
+                    onlineStatus is com.armsx2.memcard.OnlineIcons.Status.Downloading && onlineStatus.total > 0 ->
+                        "${(onlineStatus.done * 100 / onlineStatus.total).toInt()}%"
+                    onlineStatus is com.armsx2.memcard.OnlineIcons.Status.Downloading -> str("onlineicons.downloadingShort")
+                    onlineInstalled -> str("onlineicons.installed")
+                    else -> null
+                },
+                iconRes = com.armsx2.R.drawable.ic_download,
+            ) {
+                closeThen { MemcardIconViewerState.online.value = true }
             }
         }
         LibraryOverflowItem(glyph = "?", label = str("games.overflow.memcardInfo")) {

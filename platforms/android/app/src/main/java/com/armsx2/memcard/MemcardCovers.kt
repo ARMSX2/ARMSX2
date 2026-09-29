@@ -25,11 +25,12 @@ import java.security.MessageDigest
 /**
  * Memory Card Covers: a game's save icon, from the player's own memory cards, as its library cover.
  *
- * Reads only the cards in the app's memcards folder and the player's own disc images; nothing is
- * bundled or downloaded. Each game shows the icon of its newest save, rendered once into a cached
- * PNG the library loads like any other cover, so scrolling costs nothing extra. A game with no
- * save gets the icon from its own disc when [DiscIcons] can find it there (looked for once per
- * disc, in the background), and keeps its box art when not. A cover set by hand wins over all.
+ * Reads the cards in the app's memcards folder, the player's own disc images and, once the player
+ * has downloaded them, the [OnlineIcons]; nothing is bundled. Each game shows the icon of its
+ * newest save, rendered once into a cached PNG the library loads like any other cover, so
+ * scrolling costs nothing extra. A game with no save gets the icon from its own disc when
+ * [DiscIcons] can find it there (looked for once per disc, in the background), else the online
+ * one, and keeps its box art when there is neither. A cover set by hand wins over all.
  */
 object MemcardCovers {
     private const val TAG = "MemcardCovers"
@@ -39,6 +40,7 @@ object MemcardCovers {
     private const val CACHE_DIR = "memcard_covers"
     private const val DISC_COVER_DIR = "disc_covers"
     private const val DISC_ICON_DIR = "disc_icons"
+    private const val ONLINE_COVER_DIR = "online_covers"
 
     /** Bump when the renderer changes, so every cached cover is drawn again. */
     private const val RENDER_VERSION = 5
@@ -70,23 +72,26 @@ object MemcardCovers {
     /** Bumped whenever the covers change, so tiles resolve their cover again. */
     val generation = mutableIntStateOf(0)
 
-    // Covers from saves and covers from discs, kept apart so a rescan of the cards never loses the
-    // disc ones; a save's wins where both exist.
+    // Covers from saves, from discs and from the online set, kept apart so a rescan of one never
+    // loses the others; a save's wins over a disc's, and a disc's over the online one.
     @Volatile private var cardCovers: Map<String, File> = emptyMap()
     @Volatile private var discCovers: Map<String, File> = emptyMap()
+    @Volatile private var onlineCovers: Map<String, File> = emptyMap()
     @Volatile private var bySerial: Map<String, File> = emptyMap()
 
     /** Where each cover's icon comes from, so it can be drawn moving. */
     private sealed interface Source
     private class CardSource(val card: File, val folder: String) : Source
     private class DiscSource(val icon: File) : Source
+    private class OnlineSource(val hash: String) : Source
     @Volatile private var cardSources: Map<String, Source> = emptyMap()
     @Volatile private var discSources: Map<String, Source> = emptyMap()
+    @Volatile private var onlineSources: Map<String, Source> = emptyMap()
     @Volatile private var sources: Map<String, Source> = emptyMap()
 
     private fun merge() {
-        bySerial = discCovers + cardCovers
-        sources = discSources + cardSources
+        bySerial = onlineCovers + discCovers + cardCovers
+        sources = onlineSources + discSources + cardSources
     }
 
     /** A save's icon, parsed, with the pose its still cover was drawn in. A disc's icon has no
@@ -131,9 +136,19 @@ object MemcardCovers {
             is DiscSource -> Ps2Icon.parse(runCatching { src.icon.readBytes() }.getOrNull())?.let { icon ->
                 Loaded(icon, null, Ps2IconRenderer.choosePose(icon, null, COVER_OPTIONS))
             }
+            is OnlineSource -> loadOnline(src.hash, COVER_OPTIONS)
         } ?: return null
         synchronized(loadedIcons) { loadedIcons[key] = result }
         return result
+    }
+
+    /** An icon from the online set, which comes with its save's icon.sys. Reads the zip. */
+    private fun loadOnline(hash: String, options: Ps2IconRenderer.Options): Loaded? {
+        val bytes = OnlineIcons.read(hash) ?: return null
+        if (bytes.size <= Ps2IconSys.SIZE) return null
+        val sys = Ps2IconSys.parse(bytes) ?: return null
+        val icon = Ps2Icon.parse(bytes.copyOfRange(Ps2IconSys.SIZE, bytes.size)) ?: return null
+        return Loaded(icon, sys, Ps2IconRenderer.choosePose(icon, sys, options))
     }
 
     private fun load(cardFile: File, folder: String, options: Ps2IconRenderer.Options): Loaded? = runCatching {
@@ -171,27 +186,41 @@ object MemcardCovers {
     /** A save's icon for the viewer, which shows it on its own background. Reads the card. */
     fun loadForViewer(ref: SaveRef): Loaded? = load(ref.card, ref.folder, Ps2IconRenderer.Options())
 
-    /** An icon the viewer or the screensaver can show: what to call it, where it is from (a card's
-     *  name, or null for a disc), and how to load it (off the main thread). */
-    class ShowIcon(val key: String, val title: String, val serial: String? = null, val card: String? = null, val load: () -> Loaded?)
+    /** Where an icon the viewer shows is from: a save on a card (by the card's name), a disc, or the
+     *  online set (which save of the game it is, and who contributed it to PS2IODB). */
+    sealed interface Origin
+    class FromCard(val card: String) : Origin
+    data object FromDisc : Origin
+    class FromOnline(val label: String, val contributors: String) : Origin
+
+    /** An icon the viewer or the screensaver can show: what to call it, where it is from, and how
+     *  to load it (off the main thread). [key] stays the same while the icon does: the Icon
+     *  Museum's bookmark is one. */
+    class ShowIcon(val key: String, val title: String, val serial: String?, val origin: Origin, val load: () -> Loaded?)
 
     /**
      * Everything the Icon Museum shows: every save on every card, newest first, then the icons
-     * found on the discs of games with no save, by name. [titles] maps serials to the library's
-     * names; a save keeps its own ("Adventure Slot 2"), it says which save it is. Reads the cards.
+     * found on the discs of games with no save, by name, then every icon of the online set, by
+     * title. [titles] maps serials to the library's names; a save keeps its own ("Adventure Slot
+     * 2"), it says which save it is. Reads the cards.
      */
     fun viewerIcons(context: Context, titles: Map<String, String>): List<ShowIcon> {
         val out = ArrayList<ShowIcon>()
         for (ref in allSaves(context)) {
-            out += ShowIcon("card:${ref.card.path}|${ref.folder}", ref.title, ref.serial, ref.card.nameWithoutExtension) { loadForViewer(ref) }
+            out += ShowIcon("card:${ref.card.path}|${ref.folder}", ref.title, ref.serial, FromCard(ref.card.nameWithoutExtension)) { loadForViewer(ref) }
         }
         out += discIcons(titles).sortedBy { it.title.lowercase() }
+        out += OnlineIcons.catalog().sortedBy { it.title.lowercase() }.map { e ->
+            ShowIcon("online:${e.hash}|${e.title}|${e.label}", e.title, null, FromOnline(e.label, e.contributors)) {
+                loadOnline(e.hash, Ps2IconRenderer.Options())
+            }
+        }
         return out
     }
 
     private fun discIcons(titles: Map<String, String>): List<ShowIcon> = discSources.mapNotNull { (serial, src) ->
         if (src !is DiscSource) return@mapNotNull null
-        ShowIcon("disc:$serial", titles[serial] ?: serial, serial, null) {
+        ShowIcon("disc:$serial", titles[serial] ?: serial, serial, FromDisc) {
             Ps2Icon.parse(runCatching { src.icon.readBytes() }.getOrNull())?.let { icon ->
                 Loaded(icon, null, Ps2IconRenderer.choosePose(icon, null, Ps2IconRenderer.Options()))
             }
@@ -200,8 +229,9 @@ object MemcardCovers {
 
     /**
      * One icon per game for the screensaver: each game's newest save across the cards, then, for a
-     * game with no save, the icon found on its disc. [titles] maps serials to the library's names,
-     * which read better than a save's own ("MGS3 GAME DATA 001"). Reads the cards.
+     * game with no save, the icon found on its disc, else its online one. [titles] maps serials to
+     * the library's names, which read better than a save's own ("MGS3 GAME DATA 001"). Reads the
+     * cards.
      */
     fun showIcons(context: Context, titles: Map<String, String>): List<ShowIcon> {
         val out = ArrayList<ShowIcon>()
@@ -209,9 +239,15 @@ object MemcardCovers {
         for (ref in allSaves(context)) { // newest first
             val serial = ref.serial?.uppercase()
             if (!seen.add(serial ?: "${ref.card.path}|${ref.folder}")) continue
-            out += ShowIcon("card:${ref.card.path}|${ref.folder}", serial?.let { titles[it] } ?: ref.title, serial, ref.card.nameWithoutExtension) { loadForViewer(ref) }
+            out += ShowIcon("card:${ref.card.path}|${ref.folder}", serial?.let { titles[it] } ?: ref.title, serial, FromCard(ref.card.nameWithoutExtension)) { loadForViewer(ref) }
         }
         for (icon in discIcons(titles)) if (seen.add(icon.serial ?: icon.key)) out += icon
+        for ((serial, title) in titles) {
+            if (serial in seen) continue
+            val hash = OnlineIcons.hashFor(serial) ?: continue
+            seen += serial
+            out += ShowIcon("online:$hash", title, serial, FromOnline("", "")) { loadOnline(hash, Ps2IconRenderer.Options()) }
+        }
         return out
     }
 
@@ -237,11 +273,12 @@ object MemcardCovers {
     /** Scan every card in the memcards folder again, in the background, and render any cover that
      *  is new or changed. With several cards, each game takes its newest save across all of them.
      *  Cheap when nothing changed: a scan reads directories and each save's timestamps, and a
-     *  cover is only drawn once per save version. Then, for [games] with no save, look on their
-     *  discs (see [discPass]). */
+     *  cover is only drawn once per save version. Then, for [games] with no save, take the online
+     *  icon if the set is downloaded (see [onlinePass]) and look on their discs (see [discPass]). */
     fun refresh(context: Context, games: List<DiscGame> = emptyList()) {
         if (!enabled.value) return
         val app = context.applicationContext
+        OnlineIcons.init(app)
         scope.launch {
             // One scan at a time; a request during a scan waits and then sees the finished cache.
             scanLock.withLock {
@@ -255,8 +292,51 @@ object MemcardCovers {
                     withContext(Dispatchers.Main) { generation.intValue++ }
                 }
             }
-            if (games.isNotEmpty()) discPass(app, games)
+            if (games.isNotEmpty()) {
+                runCatching { onlinePass(app, games) }.onFailure { Log.w(TAG, "online icons", it) }
+                discPass(app, games)
+            }
         }
+    }
+
+    /**
+     * Games with no save take their icon from the online set, when it is downloaded: drawn once
+     * into a still cover, like the others, and shared by every serial that uses the same icon.
+     * Quick, so it runs before [discPass]; an icon found on a game's own disc still wins. With no
+     * set (never downloaded, or removed) the online covers go.
+     */
+    private suspend fun onlinePass(app: Context, games: List<DiscGame>) {
+        val dir = File(app.cacheDir, ONLINE_COVER_DIR).apply { mkdirs() }
+        val covers = HashMap<String, File>()
+        val srcs = HashMap<String, Source>()
+        var complete = true
+        if (OnlineIcons.installed) for (game in games.distinctBy { it.serial }) {
+            if (!enabled.value) { complete = false; break }
+            val serial = game.serial.uppercase()
+            if (serial in cardCovers) continue
+            val hash = OnlineIcons.hashFor(serial) ?: continue
+            val png = File(dir, "${hash}_$RENDER_VERSION.png")
+            if (!png.isFile) {
+                val loaded = loadOnline(hash, COVER_OPTIONS) ?: continue
+                runCatching { writePng(Ps2IconRenderer.render(loaded.icon, loaded.sys, COVER_W, COVER_H, COVER_OPTIONS), png) }
+                    .onFailure { Log.w(TAG, "render online icon $serial", it) }
+                if (!png.isFile) continue
+            }
+            covers[serial] = png
+            srcs[serial] = OnlineSource(hash)
+        }
+        // Drawn for an icon no longer used (a newer set, another renderer version): gone.
+        if (complete) {
+            val keep = covers.values.toSet()
+            dir.listFiles()?.forEach { if (it !in keep) it.delete() }
+        }
+        if (covers == onlineCovers) return
+        val changed = (covers.keys + onlineCovers.keys).filter { covers[it] != onlineCovers[it] }
+        onlineCovers = covers
+        onlineSources = srcs
+        merge()
+        synchronized(loadedIcons) { changed.forEach { loadedIcons.remove(it) } }
+        withContext(Dispatchers.Main) { generation.intValue++ }
     }
 
     private var discJob: Job? = null
@@ -321,9 +401,12 @@ object MemcardCovers {
     }
 
     private suspend fun publishDisc(covers: Map<String, File>, srcs: Map<String, Source>) {
+        val added = covers.keys - discCovers.keys
         discCovers = HashMap(covers)
         discSources = HashMap(srcs)
         merge()
+        // A game that was showing its online icon may be moving it already.
+        synchronized(loadedIcons) { added.forEach { loadedIcons.remove(it) } }
         withContext(Dispatchers.Main) { generation.intValue++ }
     }
 
