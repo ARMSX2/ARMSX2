@@ -32,11 +32,22 @@ class SaveStateFileRules(unittest.TestCase):
 
     def test_saves_check_the_game_and_keep_the_old_state(self):
         bridge = without_comments(read(BRIDGE))
-        save = block(bridge, "+ (void)saveStateToSlot:")
+        save = block(bridge, "static void ARMSX2WriteSaveState(")
         self.assertIn("ARMSX2SaveStateIdentityMatches(serial, crc)", save)
         self.assertIn("if (!result && existed)", save)
         restore = block(bridge, "static void ARMSX2RestoreSaveStateBackup(")
         self.assertIn("RENAME_EXCL", restore)
+
+    def test_auto_save_writes_only_its_own_slot(self):
+        """Nobody asked for an auto-save, so it must never land in a slot the player saved to, and
+        it checks the memory cards on the CPU thread, at the moment it saves."""
+        bridge = without_comments(read(BRIDGE))
+        auto = block(bridge, "+ (void)autoSaveLeavingGame:")
+        self.assertIn("ARMSX2WriteSaveState(VMManager::SAVESTATE_SLOT_AUTOSAVE, true,", auto)
+        save = block(bridge, "static void ARMSX2WriteSaveState(")
+        cpu = save[save.find("Host::RunOnCPUThread("):]
+        self.assertIn("FileMcd_IsAutoEjecting()", cpu)
+        self.assertIn("MemcardBusy::IsBusy()", cpu)
 
 
 if __name__ == "__main__":

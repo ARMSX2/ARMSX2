@@ -683,7 +683,7 @@ void FileMcd_Reopen(std::string new_serial)
 	FileMcd_EmuOpen();
 }
 
-static bool FileMcd_IsAutoEjecting()
+bool FileMcd_IsAutoEjecting()
 {
 	for (size_t port = 0; port < SIO::PORTS; ++port)
 	{

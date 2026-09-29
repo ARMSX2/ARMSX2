@@ -26,6 +26,9 @@ extension SettingsStore {
         vu1Recompiler = true
         fastBoot = false
         automaticLoadLastSaveState = false
+        autoSaveEnabled = true
+        autoSaveIntervalMinutes = 10
+        autoSaveOnLeave = true
         automaticLoadLastGame = false
         temporalSaveStateToLivePreviewChanges = true
         perGameLivePreviewDuration = 2

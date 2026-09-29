@@ -317,6 +317,9 @@
         }
       }
     },
+    "%d min" : {
+      "extractionState" : "manual"
+    },
     "0 = Default. Negative = underclock (stable). Positive = overclock (fast but risky)." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1688,6 +1691,12 @@
       }
     },
     "Auto-save" : {
+      "extractionState" : "manual"
+    },
+    "Auto-save has its own slot and never writes over yours." : {
+      "extractionState" : "manual"
+    },
+    "Auto-save Settings" : {
       "extractionState" : "manual"
     },
     "Available" : {
@@ -7952,6 +7961,9 @@
           }
         }
       }
+    },
+    "Every %d min" : {
+      "extractionState" : "manual"
     },
     "Every %d min and when you exit" : {
       "extractionState" : "manual"
@@ -20694,6 +20706,9 @@
         }
       }
     },
+    "Save every" : {
+      "extractionState" : "manual"
+    },
     "Save over %@" : {
       "extractionState" : "manual"
     },
@@ -20822,6 +20837,9 @@
       "extractionState" : "manual"
     },
     "Save to %@, locked. Unlock it from More." : {
+      "extractionState" : "manual"
+    },
+    "Save when leaving the game" : {
       "extractionState" : "manual"
     },
     "Saved for" : {

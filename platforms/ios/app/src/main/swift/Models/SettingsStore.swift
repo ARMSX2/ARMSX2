@@ -295,6 +295,23 @@ final class SettingsStore {
     var automaticLoadLastSaveState = false {
         didSet { commit(_automaticLoadLastSaveStateConfig, automaticLoadLastSaveState) }
     }
+    let _autoSaveEnabledConfig = Setting<Bool>(
+        section: "ARMSX2iOS/SaveStates", key: "AutoSave", default: true, codec: .bool)
+    var autoSaveEnabled = true {
+        didSet { commit(_autoSaveEnabledConfig, autoSaveEnabled) }
+    }
+    static let autoSaveIntervals = [5, 10, 15, 30]
+    let _autoSaveIntervalConfig = Setting<Int>(
+        section: "ARMSX2iOS/SaveStates", key: "AutoSaveIntervalMinutes", default: 10,
+        codec: .int(in: 5...30))
+    var autoSaveIntervalMinutes = 10 {
+        didSet { commit(_autoSaveIntervalConfig, autoSaveIntervalMinutes) }
+    }
+    let _autoSaveOnLeaveConfig = Setting<Bool>(
+        section: "ARMSX2iOS/SaveStates", key: "AutoSaveOnLeave", default: true, codec: .bool)
+    var autoSaveOnLeave = true {
+        didSet { commit(_autoSaveOnLeaveConfig, autoSaveOnLeave) }
+    }
     let _automaticLoadLastGameConfig = Setting<Bool>(
         section: "ARMSX2iOS/Boot", key: "AutomaticLoadLastGame", default: false,
         codec: .bool)
@@ -2043,6 +2060,9 @@ final class SettingsStore {
         vu1Recompiler = _vu1RecompilerConfig.load()
         fastBoot = Self.loadedFastBoot()
         automaticLoadLastSaveState = _automaticLoadLastSaveStateConfig.load()
+        autoSaveEnabled = _autoSaveEnabledConfig.load()
+        autoSaveIntervalMinutes = _autoSaveIntervalConfig.load()
+        autoSaveOnLeave = _autoSaveOnLeaveConfig.load()
         automaticLoadLastGame = _automaticLoadLastGameConfig.load()
         fastmem = ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "EnableFastmem", defaultValue: true)
         emulationOnlyModeEnabled = _emulationOnlyModeConfig.load()

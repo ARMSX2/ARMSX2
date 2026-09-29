@@ -165,7 +165,8 @@ struct SaveStateSlot: Identifiable {
     var isNameable: Bool { kind == .manual || kind == .older }
     var isLocked: Bool { isNameable && occupied && metadata?.locked == true }
     var hasSave: Bool { kind != .auto }
-    var hasMore: Bool { occupied && kind != .auto }
+    /// Auto-save keeps its "..." while empty: its settings live there.
+    var hasMore: Bool { occupied || kind == .auto }
 
     static let nameLimit = 32
 
@@ -252,6 +253,7 @@ final class SaveStateUndoModel {
         let undoLabel: String
     }
 
+    static let shared = SaveStateUndoModel()
     static let duration: Double = 8
 
     private(set) var item: Item?
@@ -319,7 +321,12 @@ final class SaveStateUndoModel {
         }
         switch current.action {
         case .load(let path):
-            ARMSX2Bridge.undoLoadState(fromPath: path, completion: done)
+            ARMSX2Bridge.undoLoadState(fromPath: path) { ok in
+                Task { @MainActor in
+                    if ok { SaveStateAutoSave.shared.restart() }
+                    done(ok)
+                }
+            }
         case .delete(let slot, _):
             ARMSX2Bridge.restoreDeletedSaveState(inSlot: slot, completion: done)
         case .overwrite(let slot, let token, let fileName, let previous):
@@ -328,6 +335,56 @@ final class SaveStateUndoModel {
                     if ok { SaveStateMetadataStore.shared.set(previous, forFileNamed: fileName) }
                     done(ok)
                 }
+            }
+        }
+    }
+}
+
+/// Auto-save's play clock, and the save itself: on a timer during play and when the game closes.
+@MainActor
+final class SaveStateAutoSave {
+    static let shared = SaveStateAutoSave()
+    /// A save this soon after a boot or a load would replace the Auto-save with a quick look.
+    static let settleSeconds: Double = 120
+
+    private var sinceLoad: Double = 0
+    private var sinceWrite: Double = 0
+    private var saving = false
+
+    /// A boot or a load starts both clocks again.
+    func restart() {
+        sinceLoad = 0
+        sinceWrite = 0
+    }
+
+    func didWrite() { sinceWrite = 0 }
+
+    /// Counts seconds of play. Past the interval it tries every tick until a save lands.
+    func tick(_ seconds: Double) {
+        sinceLoad += seconds
+        sinceWrite += seconds
+        let settings = SettingsStore.shared
+        guard settings.autoSaveEnabled, sinceWrite >= Double(settings.autoSaveIntervalMinutes * 60) else { return }
+        save(leaving: false) { _ in }
+    }
+
+    /// Reports false without writing while an undo is pending or the game has only just started.
+    func save(leaving: Bool, completion: @escaping @MainActor (Bool) -> Void) {
+        guard !saving, sinceLoad >= Self.settleSeconds, SaveStateUndoModel.shared.item == nil else {
+            return completion(false)
+        }
+        saving = true
+        ARMSX2Bridge.autoSave(leavingGame: leaving) { ok in
+            Task { @MainActor in
+                let played = ARMSX2Bridge.currentGamePlayedSeconds()
+                self.saving = false
+                if ok {
+                    self.sinceWrite = 0
+                    if let file = await SaveStateFile.current().first(where: { $0.slot == SaveStateSlot.autoSlot }) {
+                        SaveStateMetadataStore.shared.recordSave(of: file, playedSeconds: played, fresh: true)
+                    }
+                }
+                completion(ok)
             }
         }
     }

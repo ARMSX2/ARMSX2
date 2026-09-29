@@ -27,10 +27,12 @@ struct SaveStatesPanel: View {
     @State private var renameText = ""
     @State private var focusOverride: String?
     @State private var keyboardRequest: SaveStateKeyboardRequest?
+    @State private var autoSaveOpen = false
 
     static let scopeKey = "runtime.save-states"
     private static let menuScope = "runtime.save-states.menu"
     private static let renameScope = "runtime.save-states.rename"
+    private static let autoSaveScope = "runtime.save-states.autosave"
     static func saveID(_ slot: Int) -> String { "save-state.slot.\(slot).save" }
     static func loadID(_ slot: Int) -> String { "save-state.slot.\(slot).load" }
     static func moreID(_ slot: Int) -> String { "save-state.slot.\(slot).more" }
@@ -38,14 +40,25 @@ struct SaveStatesPanel: View {
     private static let renameClear = "save-state.rename.clear"
     private static let renameCancel = "save-state.rename.cancel"
     private static let renameConfirm = "save-state.rename.confirm"
+    private static let autoSaveEnabled = "save-state.autosave.enabled"
+    private static let autoSaveInterval = "save-state.autosave.interval"
+    private static let autoSaveOnLeave = "save-state.autosave.leave"
+    private static let autoSaveDone = "save-state.autosave.done"
 
-    private var overlayOpen: Bool { menuSlot != nil || renameSlot != nil }
+    private var overlayOpen: Bool { menuSlot != nil || renameSlot != nil || autoSaveOpen }
 
     private var currentScope: String {
-        renameSlot != nil ? Self.renameScope : menuSlot != nil ? Self.menuScope : Self.scopeKey
+        if autoSaveOpen { return Self.autoSaveScope }
+        return renameSlot != nil ? Self.renameScope : menuSlot != nil ? Self.menuScope : Self.scopeKey
     }
 
     private var currentGraph: SaveStateGraph {
+        if autoSaveOpen {
+            let ids = settings.autoSaveEnabled
+                ? [Self.autoSaveEnabled, Self.autoSaveInterval, Self.autoSaveOnLeave, Self.autoSaveDone]
+                : [Self.autoSaveEnabled, Self.autoSaveDone]
+            return SaveStateGraph(rows: ids.map { [.init(id: $0, column: 0)] }, wraps: false)
+        }
         if renameSlot != nil {
             let ids = [Self.renameName, Self.renameClear, Self.renameCancel, Self.renameConfirm]
             return SaveStateGraph(rows: [ids.enumerated().map { .init(id: $1, column: $0) }], wraps: false)
@@ -133,13 +146,16 @@ struct SaveStatesPanel: View {
             menuOverlay(anchors)
         }
         .overlay { renameOverlay }
+        .overlay { autoSaveOverlay }
         .controllerAccessibilityNavigation(
             controllerInput: controllerInput,
             scopeKey: currentScope,
             priority: 320,
             orbStyle: .liquidGlass,
             onBack: {
-                if renameSlot != nil {
+                if autoSaveOpen {
+                    closeAutoSave()
+                } else if renameSlot != nil {
                     closeRename()
                 } else if menuSlot != nil {
                     closeMenu()
@@ -153,7 +169,7 @@ struct SaveStatesPanel: View {
                     closeMenu()
                     return true
                 }
-                guard renameSlot == nil, let row = row(Self.slot(inTargetID: id)), row.hasMore else {
+                guard renameSlot == nil, !autoSaveOpen, let row = row(Self.slot(inTargetID: id)), row.hasMore else {
                     return false
                 }
                 openMenu(row)
@@ -395,6 +411,7 @@ struct SaveStatesPanel: View {
                     return
                 }
                 SaveStateMetadataStore.shared.recordSave(of: saved, playedSeconds: played, fresh: backupToken == nil)
+                SaveStateAutoSave.shared.didWrite()
                 metadataRevision &+= 1
                 busySlot = nil
                 if let backupToken, let row = self.row(slot) {
@@ -448,6 +465,7 @@ struct SaveStatesPanel: View {
             Task { @MainActor in
                 busySlot = nil
                 if success {
+                    SaveStateAutoSave.shared.restart()
                     if let undoPath {
                         showUndo(.load(path: undoPath), verb: settings.localized("Loaded"), row: row, undoLabel: "Undo load of %@")
                     }
@@ -516,7 +534,17 @@ struct SaveStatesPanel: View {
                 deleteItem(for: row),
             ]
         case .auto:
-            [deleteItem(for: row)]
+            [
+                .init(
+                    id: "save-state.menu.autosave",
+                    title: settings.localized("Auto-save Settings"),
+                    systemImage: "gearshape"
+                ) {
+                    place(Self.autoSaveEnabled, inScope: Self.autoSaveScope)
+                    menuSlot = nil
+                    autoSaveOpen = true
+                },
+            ] + (row.occupied ? [deleteItem(for: row)] : [])
         }
     }
 
@@ -581,6 +609,11 @@ struct SaveStatesPanel: View {
         renameSlot = nil
     }
 
+    private func closeAutoSave() {
+        place(Self.moreID(SaveStateSlot.autoSlot), inScope: Self.scopeKey)
+        autoSaveOpen = false
+    }
+
     private func commitRename() {
         guard let row = row(renameSlot) else { return }
         let name = SaveStateSlot.cleanName(renameText)
@@ -636,6 +669,24 @@ struct SaveStatesPanel: View {
                     onCancel: closeRename,
                     onConfirm: commitRename
                 )
+                .padding(14)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var autoSaveOverlay: some View {
+        if autoSaveOpen {
+            ZStack(alignment: .top) {
+                Color.black.opacity(0.45)
+                    .contentShape(Rectangle())
+                    .onTapGesture { closeAutoSave() }
+                SaveStateAutoSaveCard(
+                    settings: settings,
+                    ids: (Self.autoSaveEnabled, Self.autoSaveInterval, Self.autoSaveOnLeave, Self.autoSaveDone),
+                    onDone: closeAutoSave
+                )
+                .frame(maxWidth: 460)
                 .padding(14)
             }
         }
@@ -877,7 +928,11 @@ private struct SaveStateRowView: View {
 
     private var chip: String? {
         switch row.kind {
-        case .auto: String(format: settings.localized("Every %d min and when you exit"), 10)
+        case .auto:
+            !settings.autoSaveEnabled ? settings.localized("Off") : String(
+                format: settings.localized(settings.autoSaveOnLeave ? "Every %d min and when you exit" : "Every %d min"),
+                settings.autoSaveIntervalMinutes
+            )
         case .quick: quickSaveLine
         case .manual, .older: nil
         }
@@ -1246,6 +1301,73 @@ private struct SaveStateRenameCard: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .controllerAccessibilityActionTarget(id: ids.confirm, label: ids.confirm, action: onConfirm)
+    }
+}
+
+/// The same three settings as in Settings > Emulator.
+private struct SaveStateAutoSaveCard: View {
+    @Bindable var settings: SettingsStore
+    let ids: (enabled: String, interval: String, leave: String, done: String)
+    let onDone: () -> Void
+
+    @Environment(\.uiAccentColour) private var accentColour
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(settings.localized("Auto-save Settings"))
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 8)
+            Toggle(settings.localized("Auto-save"), isOn: $settings.autoSaveEnabled)
+                .padding(8)
+                .controllerAccessibilityToggleTarget(id: ids.enabled, label: ids.enabled, isOn: $settings.autoSaveEnabled)
+            Group {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(settings.localized("Save every"))
+                        .font(.caption)
+                        .foregroundStyle(OverlayTheme.textSecondary)
+                        .padding(.horizontal, 8)
+                    Picker(settings.localized("Save every"), selection: $settings.autoSaveIntervalMinutes) {
+                        ForEach(SettingsStore.autoSaveIntervals, id: \.self) { minutes in
+                            Text(String(format: settings.localized("%d min"), minutes)).tag(minutes)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .controllerAccessibilityAdjustableTarget(
+                        id: ids.interval,
+                        label: ids.interval,
+                        value: String(format: settings.localized("%d min"), settings.autoSaveIntervalMinutes),
+                        onActivate: { stepInterval(1, wraps: true) },
+                        onIncrement: { stepInterval(1) },
+                        onDecrement: { stepInterval(-1) }
+                    )
+                }
+                Toggle(settings.localized("Save when leaving the game"), isOn: $settings.autoSaveOnLeave)
+                    .padding(8)
+                    .controllerAccessibilityToggleTarget(id: ids.leave, label: ids.leave, isOn: $settings.autoSaveOnLeave)
+            }
+            .disabled(!settings.autoSaveEnabled)
+            Button(settings.localized("Done"), action: onDone)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .controllerAccessibilityActionTarget(id: ids.done, label: ids.done, action: onDone)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .foregroundStyle(OverlayTheme.textPrimary)
+        .tint(accentColour)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(OverlayTheme.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Color.white.opacity(0.14)))
+        .shadow(color: .black.opacity(0.5), radius: 25, y: 20)
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(.isModal)
+    }
+
+    private func stepInterval(_ offset: Int, wraps: Bool = false) {
+        let all = SettingsStore.autoSaveIntervals
+        let next = (all.firstIndex(of: settings.autoSaveIntervalMinutes) ?? 1) + offset
+        settings.autoSaveIntervalMinutes = wraps
+            ? all[(next + all.count) % all.count] : all[min(max(next, 0), all.count - 1)]
     }
 }
 

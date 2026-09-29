@@ -107,6 +107,7 @@ final class AppState: @unchecked Sendable {
 
     @ObservationIgnored private var systemChromeNotificationsEnabled = false
     @ObservationIgnored private var pendingBootAction: (() -> Void)?
+    @ObservationIgnored private var leaveSave = 0
     @ObservationIgnored private var shutdownObserver: NSObjectProtocol?
 
     @ObservationIgnored private var autoBootObserver: NSObjectProtocol?
@@ -132,6 +133,8 @@ final class AppState: @unchecked Sendable {
             forName: NSNotification.Name("ARMSX2iOSVMDidShutdown"),
             object: nil, queue: .main
         ) { [weak self] _ in
+            // Also when the VM stopped by itself: an Undo must not reach the next game.
+            MainActor.assumeIsolated { SaveStateUndoModel.shared.finish() }
             self?.vmShutdownPending = false
             self?.cancelGameplayLaunchTransition()
             self?.isEmulationOnlyMode = false
@@ -456,6 +459,23 @@ final class AppState: @unchecked Sendable {
     private func requestShutdownIfNeeded() {
         guard !vmShutdownPending else { return }
         vmShutdownPending = true
+        Task { @MainActor in
+            // Undo can't reach a closed game, so a deleted state goes for good now.
+            SaveStateUndoModel.shared.finish()
+            let settings = SettingsStore.shared
+            guard settings.autoSaveEnabled, settings.autoSaveOnLeave else { return ARMSX2Bridge.requestVMStop() }
+            leaveSave &+= 1
+            let id = leaveSave
+            SaveStateAutoSave.shared.save(leaving: true) { _ in self.stopAfterLeaveSave(id) }
+            // Stop never waits long on a save stuck behind other work.
+            try? await Task.sleep(for: .seconds(2))
+            stopAfterLeaveSave(id)
+        }
+    }
+
+    private func stopAfterLeaveSave(_ id: Int) {
+        guard leaveSave == id else { return }
+        leaveSave &+= 1
         ARMSX2Bridge.requestVMStop()
     }
 
