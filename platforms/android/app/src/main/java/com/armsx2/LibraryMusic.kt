@@ -70,39 +70,54 @@ object LibraryMusic {
 
     // ---- going in and out of a screen's own track ----
     //
-    // The two tracks mix: the next fades in over FADE_IN_MS while the one before plays on at full
-    // for MIX_MS, then slowly fades out over FADE_OUT_MS. A quick crossfade sounded abrupt to
-    // testers, both ways ("let the tracks mix for a bit before SLOWLY fading out the previous
-    // track").
-    private const val FADE_IN_MS = 2500L
-    private const val MIX_MS = 2500L
-    private const val FADE_OUT_MS = 3000L
+    // The Icon Museum's track mixes with the library's: the next fades in over MIX_IN_MS while the
+    // one before plays on at full for MIX_HOLD_MS, then slowly fades out over MIX_OUT_MS. A quick
+    // crossfade sounded abrupt to testers ("let the tracks mix for a bit before SLOWLY fading out
+    // the previous track").
+    private const val MIX_IN_MS = 2500L
+    private const val MIX_HOLD_MS = 2500L
+    private const val MIX_OUT_MS = 3000L
+
+    // Online Icons' track clashed with the library's in a mix, so those two go one after the other:
+    // the one playing fades out, a moment's quiet, then the next fades in.
+    private const val SEQ_OUT_MS = 1500L
+    private const val SEQ_GAP_MS = 600L
+    private const val SEQ_IN_MS = 2000L
+    private val oneAfterTheOther = setOf(R.raw.online_icons_music)
 
     /** Which track [player] is: a theme's raw resource, or null for the library track. */
     private var playerTrack: Int? = null
 
     /** How loud [player] is now, as a share of [gain] (MediaPlayer can't say), and its fade in:
-     *  from [inFrom] at [inStart]. */
+     *  from [inFrom], starting at [inStart] (which can be ahead, one after the other), over [inMs]. */
     private var playerLevel = 1f
     private var inFrom = 1f
     private var inStart = 0L
+    private var inMs = MIX_IN_MS
 
-    /** A track on its way out: it plays on at [from] until [start] + [hold], then fades to nothing. */
-    private class Fading(val player: MediaPlayer, val track: Int?, val from: Float, val start: Long, val hold: Long) {
+    /** A track on its way out: it plays on at [from] until [start] + [hold], then fades to nothing
+     *  over [outMs]. */
+    private class Fading(val player: MediaPlayer, val track: Int?, val from: Float, val start: Long, val hold: Long, val outMs: Long) {
         var level = from
     }
+
+    /** One after the other, the next track starts only when its fade in does, so the quiet before
+     *  it doesn't use up the start of the song. */
+    private var pendingContext: Context? = null
+    private var pendingForce = false
+    private val pendingStart = Runnable { pendingContext?.let { start(it, force = pendingForce) } }
     private val fading = ArrayList<Fading>()
 
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private val fadeStep = object : Runnable {
         override fun run() {
             val now = android.os.SystemClock.uptimeMillis()
-            val x = ((now - inStart).toFloat() / FADE_IN_MS).coerceIn(0f, 1f)
+            val x = ((now - inStart).toFloat() / inMs).coerceIn(0f, 1f)
             playerLevel = inFrom + (1f - inFrom) * smooth(x)
             val each = fading.iterator()
             while (each.hasNext()) {
                 val f = each.next()
-                val y = ((now - f.start - f.hold).toFloat() / FADE_OUT_MS).coerceIn(0f, 1f)
+                val y = ((now - f.start - f.hold).toFloat() / f.outMs).coerceIn(0f, 1f)
                 f.level = f.from * kotlin.math.cos(y * Math.PI / 2).toFloat()
                 if (y >= 1f) {
                     release(f.player, f.track)
@@ -295,26 +310,38 @@ object LibraryMusic {
     }
 
     /**
-     * Goes over to whatever should play now ([theme], else the library track): the next fades in
-     * while the one playing mixes with it at full, then slowly fades out. Back and forth quickly,
-     * a track still on its way out comes back from where it had got to, and nothing restarts.
+     * Goes over to whatever should play now ([theme], else the library track). With the Icon
+     * Museum the next fades in while the one playing mixes with it at full, then slowly fades out;
+     * with Online Icons the one playing fades out, and after a moment's quiet the next fades in.
+     * Back and forth quickly, a track still on its way out comes back from where it had got to,
+     * and nothing restarts.
      */
     private fun crossTo(context: Context) {
         val want = theme
         val now = android.os.SystemClock.uptimeMillis()
+        main.removeCallbacks(pendingStart)
         // Our own music going means the swap is ours to make; starting past the other-media
         // check, as restart() does, since our stream may still be reported.
         val ours = player != null || fading.isNotEmpty()
+        val leaving = player?.let { playerTrack }
+        val sequential = want in oneAfterTheOther || leaving in oneAfterTheOther
+        var waitMs = 0L
         player?.let { p ->
-            // At full it mixes first; caught while still fading in, it fades out from there.
             if (runCatching { p.isPlaying }.getOrDefault(false)) {
-                fading += Fading(p, playerTrack, playerLevel, now, if (playerLevel >= 0.99f) MIX_MS else 0L)
+                fading += if (sequential) {
+                    waitMs = SEQ_OUT_MS + SEQ_GAP_MS
+                    Fading(p, playerTrack, playerLevel, now, 0L, SEQ_OUT_MS)
+                } else {
+                    // At full it mixes first; caught while still fading in, it fades out from there.
+                    Fading(p, playerTrack, playerLevel, now, if (playerLevel >= 0.99f) MIX_HOLD_MS else 0L, MIX_OUT_MS)
+                }
             } else {
                 release(p, playerTrack)
             }
         }
         player = null
         pausedForFocus = false
+        inMs = if (sequential) SEQ_IN_MS else MIX_IN_MS
         val back = fading.firstOrNull { it.track == want }
         if (back != null) {
             fading.remove(back)
@@ -322,12 +349,19 @@ object LibraryMusic {
             playerTrack = want
             inFrom = back.level
             playerLevel = back.level
+            inStart = now
         } else {
             inFrom = 0f
             playerLevel = 0f
-            start(context, force = ours)
+            inStart = now + waitMs
+            if (waitMs > 0) {
+                pendingContext = context.applicationContext
+                pendingForce = ours
+                main.postDelayed(pendingStart, waitMs)
+            } else {
+                start(context, force = ours)
+            }
         }
-        inStart = now
         main.removeCallbacks(fadeStep)
         main.post(fadeStep)
     }
@@ -353,6 +387,7 @@ object LibraryMusic {
     /** Ends the fades at once, where they were going: the old tracks gone, the new at full. */
     private fun settleFade() {
         main.removeCallbacks(fadeStep)
+        main.removeCallbacks(pendingStart)
         releaseFading()
         playerLevel = 1f
         inFrom = 1f
@@ -363,6 +398,7 @@ object LibraryMusic {
     fun stop(context: Context) {
         pausedForFocus = false
         main.removeCallbacks(fadeStep)
+        main.removeCallbacks(pendingStart)
         releaseFading()
         playerLevel = 1f
         inFrom = 1f
@@ -395,6 +431,7 @@ object LibraryMusic {
                 // rather than sitting paused forever holding a decoder.
                 pausedForFocus = false
                 main.removeCallbacks(fadeStep)
+                main.removeCallbacks(pendingStart)
                 releaseFading()
                 playerLevel = 1f
                 inFrom = 1f
