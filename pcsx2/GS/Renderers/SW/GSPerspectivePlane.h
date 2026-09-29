@@ -19,6 +19,9 @@
 // reproduces every plane those captures read, 100% of the pixels of gs-sm3d's
 // 62 single-triangle arms and of its 56 predicted ones.
 //
+//   0. A vertex with a negative Q is negated whole: the setup works on Q's magnitude
+//      and carries Q's sign in S and T, so (S, T, Q) becomes (-S, -T, |Q|) and S/Q is
+//      unchanged. Found by trying it, not read off a capture (see below).
 //   1. Each of the nine inputs (S, T and Q at three vertices) loses its low eight
 //      mantissa bits, toward zero. The register keeps fifteen.
 //   2. One exponent E = floor(log2 max|v|) over all nine values, so S, T and Q
@@ -48,6 +51,14 @@
 // Only the low 32 bits are carried: a pixel inside the triangle has a value inside
 // +-2^30, so wrapped arithmetic gives the right answer wherever it is read.
 //
+// Rule 0 was not measured directly. Without it the 53 triangles of the game's draw
+// with a vertex Q at or below zero (5.1% of its pixels, the "sliver" class the model
+// could not explain) agree with the console on 12% of their coordinates; with it, 91%
+// on U and 99% on V (gs-sm3b's `bil` arm). OutRun 2006's frame has every Q negative on
+// 3,499 of its 3,539 perspective draws: exact-word identity with the console is 80.1%
+// on the exact plane, 75.5% on a plane built on the raw negative Q, and 98.0% with the
+// rule. gs-tri1e (Q swept through zero) would test it directly.
+//
 // Modelled rather than measured:
 //   * The power-of-two exemption. A twice-area that is a power of two takes an
 //     exact reciprocal (GSSetupInvertsExactly). The table-and-Newton form below
@@ -60,8 +71,7 @@
 //   * The mantissa cut for values the front end has already cut (GSState.cpp does
 //     so under constant Z), which is a finer grid and so changes nothing for a
 //     positive value.
-//   * A vertex Q at or below zero. The console's plane there is not explained
-//     (0.8% of the game draw's readings); this applies the same rules.
+//   * A vertex with Q exactly zero, which has no sign to carry and no quotient.
 //
 // The divide is not in this file. The scanline still multiplies by a truncated
 // reciprocal of Q.
@@ -296,7 +306,11 @@ __forceinline static void GSPerspectivePlaneSetup(const s32 x[3], const s32 y[3]
 	{
 		for (int i = 0; i < 3; i++)
 		{
-			cut[k][i] = GSPlaneCutMantissa(in[k][i]);
+			// Rule 0. Negating is exact and the cut below is symmetric in sign, so the
+			// order of the two does not matter.
+			const float value = (q[i] < 0.0f) ? -in[k][i] : in[k][i];
+
+			cut[k][i] = GSPlaneCutMantissa(value);
 
 			u32 bits;
 

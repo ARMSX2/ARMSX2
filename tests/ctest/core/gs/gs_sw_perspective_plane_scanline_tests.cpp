@@ -78,16 +78,21 @@ struct Scene
 	float s[3], t[3], q[3];
 };
 
-// Four triangles, chosen by search so that the plane rule and the exact plane differ
+// Six triangles, chosen by search so that the plane rule and the exact plane differ
 // in the texel they name on 3% to 6% of the pixels (50, 63 and 80 of about 1,200 to
 // 1,400 on the first three), and the last so that its twice-area is a power of two.
 // A is led by Q >= 2 (E = 1), B has negative coordinates under REPEAT (E = 0), C is
-// led by S (E = 1 with every Q below 2), D is the power-of-two area.
+// led by S (E = 1 with every Q below 2), D is the power-of-two area, E and F are A with
+// some or all of its vertices negated whole.
 const Scene kScenes[] = {
 	{"A", {104, 962, 379}, {150, 328, 936}, {0.547561646f, 1.88167548f, 0.400869966f}, {2.19578218f, 1.75813711f, 1.84474099f}, {3.09918571f, 2.01724887f, 2.0887816f}},
 	{"B", {100, 868, 176}, {77, 672, 925}, {-0.546903789f, 0.468648851f, 0.0164142307f}, {0.0105292341f, 0.810239851f, 0.0555147342f}, {0.659195065f, 1.73486447f, 0.913543701f}},
 	{"C", {109, 977, 469}, {17, 221, 921}, {3.04391146f, 3.31216383f, 2.9509778f}, {0.666566133f, 0.681976318f, 0.623073995f}, {1.94477153f, 1.89738989f, 1.86753953f}},
 	{"D", {128, 384, 128}, {128, 128, 384}, {0.5f, 2.3125f, 1.0f}, {0.25f, 0.75f, 3.0999999f}, {2.29999995f, 3.4000001f, 2.70000005f}},
+	// A with every S, T and Q negated: a vertex with a negative Q is negated whole, so it draws as A does.
+	{"E", {104, 962, 379}, {150, 328, 936}, {-0.547561646f, -1.88167548f, -0.400869966f}, {-2.19578218f, -1.75813711f, -1.84474099f}, {-3.09918571f, -2.01724887f, -2.0887816f}},
+	// A with the first and last vertices negated: mixed signs, still A.
+	{"F", {104, 962, 379}, {150, 328, 936}, {-0.547561646f, 1.88167548f, -0.400869966f}, {-2.19578218f, 1.75813711f, -1.84474099f}, {-3.09918571f, 2.01724887f, -2.0887816f}},
 };
 
 /// The floats the vertex conversion hands the scanline: S and T scaled by
@@ -462,6 +467,24 @@ TEST_F(SwPerspectivePlaneTest, TheGeneratedScanlineDrawsThePlane)
 		ExpectThePlane(sc, got, drawn);
 
 		EXPECT_GT(drawn, 100) << sc.name << ": the triangle drew almost nothing";
+	}
+}
+
+// ★ NEGATING A VERTEX WHOLE DRAWS THE SAME PICTURE.
+//
+// E is A with every vertex negated and F is A with two of them negated. A vertex with
+// a negative Q is negated whole by the setup, so both must store A's words exactly.
+TEST_F(SwPerspectivePlaneTest, ANegatedVertexDrawsAsTheOriginalDoes)
+{
+	for (int jit = 0; jit <= 1; jit++)
+	{
+		std::vector<u32> a, e, f;
+		ASSERT_TRUE(Draw(kScenes[0], jit != 0, true, a));
+		ASSERT_TRUE(Draw(kScenes[4], jit != 0, true, e));
+		ASSERT_TRUE(Draw(kScenes[5], jit != 0, true, f));
+
+		EXPECT_EQ(a, e) << (jit ? "generated" : "C++") << " scanline, every vertex negated";
+		EXPECT_EQ(a, f) << (jit ? "generated" : "C++") << " scanline, two vertices negated";
 	}
 }
 

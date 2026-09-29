@@ -12,10 +12,12 @@
 // hung from one vertex, and every pixel floored to g/4. GSPerspectivePlane.h has the
 // rules and what is modelled rather than measured.
 //
-// This half is the arithmetic. gs_sw_perspective_plane_golden.inc holds 200
+// This half is the arithmetic. gs_sw_perspective_plane_golden.inc holds 212
 // triangles: the game's own draw (Spider-Man 3, draw 16033), gs-tri1's nudges of
 // its triangle 54, and synthetic families (all four anchor shapes, y ties and
-// vertical long edges, Q crossing 2.0, power-of-two areas, negative gradients).
+// vertical long edges, Q crossing 2.0, power-of-two areas, negative gradients, vertices with
+// a negative Q). The models the expected values come from have no rule for a negative Q,
+// so the generator negates such a vertex whole first, as GSPerspectivePlane.h does.
 // Their expected values are gs-sm3d's Fraction model (analysis/model.py), NOT this
 // header's integers: exact rationals against integers is the whole comparison.
 // Regenerate with hardware-oracle/captures/gs-sm3b/analysis-impl/gen_golden.py.
@@ -110,7 +112,7 @@ const int kIdentity[3] = {0, 1, 2};
 // synthetic ones.
 TEST(GsSwPerspectivePlane, EveryGoldenTriangleMatchesTheFractionModel)
 {
-	ASSERT_GE(std::size(kGolden), 200u);
+	ASSERT_GE(std::size(kGolden), 212u);
 
 	for (const Golden& g : kGolden)
 	{
@@ -404,6 +406,71 @@ TEST(GsSwPerspectivePlane, OneExponentIsSharedByAllNineValues)
 
 		GSPerspectivePlaneSetup(x, y, s, t, q, p);
 		EXPECT_EQ(p.exp, 3);
+	}
+}
+
+// ★ A VERTEX WITH A NEGATIVE Q IS NEGATED WHOLE.
+//
+// The setup works on Q's magnitude and carries its sign in S and T, so (S, T, Q) at
+// such a vertex becomes (-S, -T, |Q|) and S/Q is unchanged. Without it the game
+// draw's 53 triangles with a vertex Q at or below zero read 12% of their pixels right
+// and OutRun 2006's frame, on which nearly every draw has every Q negative, falls
+// from 80% to 75% exact words; with it they read 91% and 98%.
+TEST(GsSwPerspectivePlane, ANegativeQVertexIsNegatedWhole)
+{
+	const s32 x[3] = {0, 3200, 1600};
+	const s32 y[3] = {0, 800, 4800};
+	const float s[3] = {0.5f, -0.75f, 1.25f};
+	const float t[3] = {-0.25f, 0.5f, 0.125f};
+
+	const auto same = [](const GSPerspectivePlane& a, const GSPerspectivePlane& b) {
+		EXPECT_EQ(a.valid, b.valid);
+		EXPECT_EQ(a.exp, b.exp);
+		EXPECT_EQ(a.anchor, b.anchor);
+		EXPECT_EQ(a.xa, b.xa);
+		EXPECT_EQ(a.ya, b.ya);
+
+		for (int k = 0; k < 3; k++)
+		{
+			EXPECT_EQ(a.value[k], b.value[k]) << k;
+			EXPECT_EQ(a.gx[k], b.gx[k]) << k;
+			EXPECT_EQ(a.gy[k], b.gy[k]) << k;
+		}
+	};
+
+	// Every Q negative: the plane is the negated triangle's.
+	{
+		const float q[3] = {-0.5f, -1.75f, -1.0f};
+		const float ns[3] = {-s[0], -s[1], -s[2]}, nt[3] = {-t[0], -t[1], -t[2]}, nq[3] = {0.5f, 1.75f, 1.0f};
+		GSPerspectivePlane a, b;
+
+		GSPerspectivePlaneSetup(x, y, s, t, q, a);
+		GSPerspectivePlaneSetup(x, y, ns, nt, nq, b);
+		ASSERT_TRUE(a.valid);
+		same(a, b);
+	}
+
+	// One negative: that vertex is negated and the others are not.
+	{
+		const float q[3] = {-0.5f, 1.75f, 1.0f};
+		const float ms[3] = {-s[0], s[1], s[2]}, mt[3] = {-t[0], t[1], t[2]}, mq[3] = {0.5f, 1.75f, 1.0f};
+		GSPerspectivePlane a, b;
+
+		GSPerspectivePlaneSetup(x, y, s, t, q, a);
+		GSPerspectivePlaneSetup(x, y, ms, mt, mq, b);
+		ASSERT_TRUE(a.valid);
+		same(a, b);
+	}
+
+	// A positive Q is untouched: the plane is not the plane of anything negated.
+	{
+		const float q[3] = {0.5f, 1.75f, 1.0f};
+		const float ns[3] = {-s[0], -s[1], -s[2]}, nt[3] = {-t[0], -t[1], -t[2]};
+		GSPerspectivePlane a, b;
+
+		GSPerspectivePlaneSetup(x, y, s, t, q, a);
+		GSPerspectivePlaneSetup(x, y, ns, nt, q, b);
+		EXPECT_NE(a.gx[0], b.gx[0]);
 	}
 }
 
