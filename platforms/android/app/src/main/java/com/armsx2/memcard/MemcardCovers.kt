@@ -167,8 +167,32 @@ object MemcardCovers {
     /** A save's icon for the viewer, which shows it on its own background. Reads the card. */
     fun loadForViewer(ref: SaveRef): Loaded? = load(ref.card, ref.folder, Ps2IconRenderer.Options())
 
-    /** An icon the screensaver can show: what to call it and how to load it (off the main thread). */
-    class ShowIcon(val key: String, val title: String, val load: () -> Loaded?)
+    /** An icon the viewer or the screensaver can show: what to call it, where it is from (a card's
+     *  name, or null for a disc), and how to load it (off the main thread). */
+    class ShowIcon(val key: String, val title: String, val serial: String? = null, val card: String? = null, val load: () -> Loaded?)
+
+    /**
+     * Everything the Icon Viewer shows: every save on every card, newest first, then the icons
+     * found on the discs of games with no save, by name. [titles] maps serials to the library's
+     * names; a save keeps its own ("Adventure Slot 2"), it says which save it is. Reads the cards.
+     */
+    fun viewerIcons(context: Context, titles: Map<String, String>): List<ShowIcon> {
+        val out = ArrayList<ShowIcon>()
+        for (ref in allSaves(context)) {
+            out += ShowIcon("card:${ref.card.path}|${ref.folder}", ref.title, ref.serial, ref.card.nameWithoutExtension) { loadForViewer(ref) }
+        }
+        out += discIcons(titles).sortedBy { it.title.lowercase() }
+        return out
+    }
+
+    private fun discIcons(titles: Map<String, String>): List<ShowIcon> = discSources.mapNotNull { (serial, src) ->
+        if (src !is DiscSource) return@mapNotNull null
+        ShowIcon("disc:$serial", titles[serial] ?: serial, serial, null) {
+            Ps2Icon.parse(runCatching { src.icon.readBytes() }.getOrNull())?.let { icon ->
+                Loaded(icon, null, Ps2IconRenderer.choosePose(icon, null, Ps2IconRenderer.Options()))
+            }
+        }
+    }
 
     /**
      * One icon per game for the screensaver: each game's newest save across the cards, then, for a
@@ -181,16 +205,9 @@ object MemcardCovers {
         for (ref in allSaves(context)) { // newest first
             val serial = ref.serial?.uppercase()
             if (!seen.add(serial ?: "${ref.card.path}|${ref.folder}")) continue
-            out += ShowIcon("card:${ref.card.path}|${ref.folder}", serial?.let { titles[it] } ?: ref.title) { loadForViewer(ref) }
+            out += ShowIcon("card:${ref.card.path}|${ref.folder}", serial?.let { titles[it] } ?: ref.title, serial, ref.card.nameWithoutExtension) { loadForViewer(ref) }
         }
-        for ((serial, src) in discSources) {
-            if (src !is DiscSource || !seen.add(serial)) continue
-            out += ShowIcon("disc:$serial", titles[serial] ?: serial) {
-                Ps2Icon.parse(runCatching { src.icon.readBytes() }.getOrNull())?.let { icon ->
-                    Loaded(icon, null, Ps2IconRenderer.choosePose(icon, null, Ps2IconRenderer.Options()))
-                }
-            }
-        }
+        for (icon in discIcons(titles)) if (seen.add(icon.serial ?: icon.key)) out += icon
         return out
     }
 

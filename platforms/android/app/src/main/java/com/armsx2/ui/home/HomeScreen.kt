@@ -250,13 +250,14 @@ fun HomeScreen(
             },
         )
     }
-    if (MemcardIconViewerState.open.value) MemcardIconViewer(onClose = { MemcardIconViewerState.open.value = false })
+    val libraryTitles = {
+        state.allGames.mapNotNull { g -> g.serial?.uppercase()?.let { it to g.displayTitle(EnglishTitles.enabled.value) } }.toMap()
+    }
+    if (MemcardIconViewerState.open.value) MemcardIconViewer(onClose = { MemcardIconViewerState.open.value = false }, titles = libraryTitles)
     if (MemcardIconViewerState.info.value) MemcardCoversInfo(onClose = { MemcardIconViewerState.info.value = false })
     if (MemcardIconViewerState.screensaver.value) ScreensaverSettings(onClose = { MemcardIconViewerState.screensaver.value = false })
     // The screensaver, after the library has sat untouched for a while.
-    LibraryScreensaverHost(titles = {
-        state.allGames.mapNotNull { g -> g.serial?.uppercase()?.let { it to g.displayTitle(EnglishTitles.enabled.value) } }.toMap()
-    })
+    LibraryScreensaverHost(titles = libraryTitles)
     DisposableEffect(viewModel, onOpenMenu) {
         HomeInputController.bind(viewModel, onOpenMenu, onOpenGameMenu = { menuGame = it })
         onDispose { HomeInputController.unbind(viewModel) }

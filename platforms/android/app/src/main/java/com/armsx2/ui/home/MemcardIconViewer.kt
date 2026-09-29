@@ -99,10 +99,10 @@ internal fun MemcardCoversInfo(onClose: () -> Unit) {
  * through them; Back closes it.
  */
 @Composable
-internal fun MemcardIconViewer(onClose: () -> Unit) {
+internal fun MemcardIconViewer(onClose: () -> Unit, titles: () -> Map<String, String> = { emptyMap() }) {
     val context = LocalContext.current
-    val saves by produceState<List<MemcardCovers.SaveRef>?>(null) {
-        value = withContext(Dispatchers.IO) { MemcardCovers.allSaves(context) }
+    val saves by produceState<List<MemcardCovers.ShowIcon>?>(null) {
+        value = withContext(Dispatchers.IO) { MemcardCovers.viewerIcons(context, titles()) }
     }
     com.armsx2.ui.common.PadModal(
         key = "memcard-icon-viewer",
@@ -144,8 +144,9 @@ internal fun MemcardIconViewer(onClose: () -> Unit) {
 }
 
 @Composable
-private fun ViewerPages(saves: List<MemcardCovers.SaveRef>) {
+private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
     val pager = rememberPagerState(pageCount = { saves.size })
+    val fromDisc = str("memcard.viewer.fromDisc")
     val scope = rememberCoroutineScope()
     Box(Modifier.fillMaxSize()) {
         HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
@@ -181,7 +182,7 @@ private fun ViewerPages(saves: List<MemcardCovers.SaveRef>) {
                 textAlign = TextAlign.Center,
             )
             Text(
-                listOfNotNull(ref.serial, ref.card.nameWithoutExtension).joinToString("  ·  "),
+                listOfNotNull(ref.serial, ref.card ?: fromDisc).joinToString("  ·  "),
                 color = Color.White.copy(alpha = 0.72f),
                 fontSize = 13.sp,
             )
@@ -195,9 +196,9 @@ private fun ViewerPages(saves: List<MemcardCovers.SaveRef>) {
 }
 
 @Composable
-private fun ViewerPage(ref: MemcardCovers.SaveRef, animate: Boolean) {
+private fun ViewerPage(ref: MemcardCovers.ShowIcon, animate: Boolean) {
     val loaded by produceState<MemcardCovers.Loaded?>(null, ref) {
-        value = withContext(Dispatchers.IO) { MemcardCovers.loadForViewer(ref) }
+        value = withContext(Dispatchers.IO) { runCatching { ref.load() }.getOrNull() }
     }
     // The save's own background gradient, drawn once small and stretched: it is a smooth blend of
     // four corners, so nothing is lost.
@@ -214,7 +215,7 @@ private fun ViewerPage(ref: MemcardCovers.SaveRef, animate: Boolean) {
         }
         if (loaded != null) {
             AnimatedPs2Icon(
-                key = ref.folder + "|" + ref.card.path,
+                key = ref.key,
                 load = { loaded },
                 options = Ps2IconRenderer.Options(background = false, fill = 0.9f),
                 aspect = 1f,
