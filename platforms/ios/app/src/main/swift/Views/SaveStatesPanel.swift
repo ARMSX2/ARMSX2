@@ -339,29 +339,24 @@ struct SaveStatesPanel: View {
         }
     }
 
-    private var squareHint: String? {
+    private var squareHint: ControllerHintLine? {
         controllerInput?.hasConnectedController == true
-            ? settings.localized("Square: rename, lock, delete") : nil
+            ? ControllerHintLine(parts: [.init(.square, settings.localized("Rename, lock, delete"))]) : nil
     }
 
-    private var undoHint: String? {
+    private var undoHint: ControllerHintLine? {
         controllerInput?.hasConnectedController == true
-            ? String(format: settings.localized("%@ to undo"), settings.controllerMacroUndoSaveState.title)
+            ? ControllerHintLine(parts: [.init(settings.controllerMacroUndoSaveState, settings.localized("Undo"))])
             : nil
     }
 
     /// The live macro bindings, shown only to controller players.
-    private var quickSaveLine: String? {
+    private var quickSaveLine: ControllerHintLine? {
         guard controllerInput?.hasConnectedController == true else { return nil }
-        let save = settings.controllerMacroSaveGameState.title
-        if hardcore {
-            return String(format: settings.localized("%@ saves · loading is off in Hardcore"), save)
-        }
-        return String(
-            format: settings.localized("%1$@ saves · %2$@ loads"),
-            save,
-            settings.controllerMacroLoadGameState.title
-        )
+        let save = ControllerHintLine.Part(settings.controllerMacroSaveGameState, settings.localized("Save"))
+        // Hardcore's banner already says loading is off.
+        if hardcore { return ControllerHintLine(parts: [save]) }
+        return ControllerHintLine(parts: [save, .init(settings.controllerMacroLoadGameState, settings.localized("Load"))])
     }
 
     private var targetRows: [[SaveStateGraph.Target]] {
@@ -793,7 +788,7 @@ private struct SaveStateRowView: View {
     let isBusy: Bool
     let hardcore: Bool
     let primaryID: String?
-    let quickSaveLine: String?
+    let quickSaveLine: ControllerHintLine?
     let onSave: () -> Void
     let onLoad: () -> Void
     let onMore: () -> Void
@@ -896,6 +891,11 @@ private struct SaveStateRowView: View {
                     .font(.caption2)
                     .foregroundStyle(OverlayTheme.textSecondary)
             }
+            if row.kind == .quick, let quickSaveLine {
+                quickSaveLine
+                    .font(.caption2)
+                    .foregroundStyle(OverlayTheme.textSecondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
@@ -935,8 +935,7 @@ private struct SaveStateRowView: View {
                 format: settings.localized(settings.autoSaveOnLeave ? "Every %d min and when you exit" : "Every %d min"),
                 settings.autoSaveIntervalMinutes
             )
-        case .quick: quickSaveLine
-        case .manual, .older: nil
+        case .quick, .manual, .older: nil
         }
     }
 
@@ -1380,7 +1379,7 @@ private struct SaveStateAutoSaveCard: View {
 struct SaveStateUndoToast: View {
     let undo: SaveStateUndoModel
     let settings: SettingsStore
-    let hint: String?
+    let hint: ControllerHintLine?
     let onUndo: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1407,7 +1406,7 @@ struct SaveStateUndoToast: View {
                         .foregroundStyle(OverlayTheme.textPrimary)
                         .lineLimit(2)
                     if let hint {
-                        Text(hint)
+                        hint
                             .font(.caption)
                             .foregroundStyle(OverlayTheme.textSecondary)
                     }

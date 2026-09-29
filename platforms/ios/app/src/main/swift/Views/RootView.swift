@@ -224,6 +224,129 @@ extension View {
 /// Non-interactive, one-shot startup guidance for the controller macros.
 /// GameScreenView inserts this beneath its Quick Menu; RootView uses the same
 /// view only when Emulation-Only Mode replaces the complete gameplay hierarchy.
+/// A pad button the way the connected controller draws it: □ on a DualSense, X on an Xbox pad.
+/// Start and Select stay words in a chip, which read better than their icons.
+struct ControllerButtonGlyph: View {
+    let button: ControllerMacroButton
+    let tint: Color
+    var symbolFont: Font = .caption.weight(.semibold)
+    var chipFont: Font = .caption2.weight(.semibold)
+
+    /// `current` follows the controller the player used last, so the artwork can't come from a
+    /// second, idle one.
+    static var connectedGamepad: GCExtendedGamepad? {
+        if let current = GCController.current?.extendedGamepad { return current }
+        return GCController.controllers().lazy.compactMap(\.extendedGamepad).first
+    }
+
+    var body: some View {
+        if let title = chipTitle {
+            Text(title)
+                .font(chipFont)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(tint.opacity(0.10), in: Capsule(style: .continuous))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .stroke(tint.opacity(0.22), lineWidth: 0.65)
+                }
+                .accessibilityLabel(title)
+        } else if let element, let symbol = element.sfSymbolsName, !symbol.isEmpty {
+            Image(systemName: symbol)
+                .font(symbolFont)
+                .symbolRenderingMode(.hierarchical)
+                .accessibilityLabel(element.localizedName ?? button.title)
+        } else {
+            Text(shortTitle)
+                .font(chipFont.bold())
+                .accessibilityLabel(button.title)
+        }
+    }
+
+    private var chipTitle: String? {
+        switch button {
+        case .select: SettingsStore.shared.localized("Select")
+        case .pause, .start: SettingsStore.shared.localized("Start")
+        default: nil
+        }
+    }
+
+    private var element: GCControllerElement? {
+        guard let gamepad = Self.connectedGamepad else { return nil }
+        switch button {
+        case .select, .pause, .start: return nil
+        case .l3: return gamepad.leftThumbstickButton
+        case .r3: return gamepad.rightThumbstickButton
+        case .l1: return gamepad.leftShoulder
+        case .r1: return gamepad.rightShoulder
+        case .l2: return gamepad.leftTrigger
+        case .r2: return gamepad.rightTrigger
+        case .cross: return gamepad.buttonA
+        case .circle: return gamepad.buttonB
+        case .square: return gamepad.buttonX
+        case .triangle: return gamepad.buttonY
+        case .dpadUp: return gamepad.dpad.up
+        case .dpadDown: return gamepad.dpad.down
+        case .dpadLeft: return gamepad.dpad.left
+        case .dpadRight: return gamepad.dpad.right
+        }
+    }
+
+    private var shortTitle: String {
+        switch button {
+        case .cross: "✕"
+        case .circle: "○"
+        case .square: "□"
+        case .triangle: "△"
+        case .dpadUp: "↑"
+        case .dpadDown: "↓"
+        case .dpadLeft: "←"
+        case .dpadRight: "→"
+        default: button.title
+        }
+    }
+}
+
+/// Controls and what they do, in one line: "□ Rename, lock, delete", "Start + R2 Save · Start + L2 Load".
+struct ControllerHintLine: View {
+    struct Part {
+        let buttons: [ControllerMacroButton]
+        let label: String
+
+        init(_ binding: ControllerMacroBinding, _ label: String) {
+            buttons = [binding.first, binding.second]
+            self.label = label
+        }
+
+        init(_ button: ControllerMacroButton, _ label: String) {
+            buttons = [button]
+            self.label = label
+        }
+    }
+
+    let parts: [Part]
+
+    @Environment(\.uiAccentColour) private var accentColour
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(parts.indices, id: \.self) { index in
+                if index > 0 { Text("·") }
+                ForEach(parts[index].buttons.indices, id: \.self) { position in
+                    if position > 0 {
+                        Image(systemName: "plus").imageScale(.small)
+                    }
+                    ControllerButtonGlyph(button: parts[index].buttons[position], tint: accentColour)
+                        .foregroundStyle(accentColour)
+                }
+                Text(parts[index].label)
+            }
+        }
+        .lineLimit(1)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 struct GameplayControllerShortcutHelpOverlay: View {
     let settings: SettingsStore
     let controllerInput: MenuControllerInputRouter?
@@ -239,40 +362,31 @@ struct GameplayControllerShortcutHelpOverlay: View {
     @ViewBuilder
     var body: some View {
         if controllerInput?.hasConnectedController == true,
-           let gamepad = connectedController?.extendedGamepad {
-            shortcutContent(gamepad: gamepad)
+           ControllerButtonGlyph.connectedGamepad != nil {
+            shortcutContent
         }
     }
 
-    private func shortcutContent(gamepad: GCExtendedGamepad) -> some View {
+    private var shortcutContent: some View {
         GeometryReader { geometry in
             let accent = themedAccentColor
             HStack(spacing: 0) {
                 shortcutTile(
                     title: settings.localized("Menu")
                 ) {
-                    macroBadge(
-                        settings.controllerMacroQuickMenu,
-                        gamepad: gamepad
-                    )
+                    macroBadge(settings.controllerMacroQuickMenu)
                 }
 
                 shortcutTile(
                     title: settings.localized("Speed")
                 ) {
-                    macroBadge(
-                        settings.controllerMacroIncreaseSpeed,
-                        gamepad: gamepad
-                    )
+                    macroBadge(settings.controllerMacroIncreaseSpeed)
                 }
 
                 shortcutTile(
                     title: settings.localized("State")
                 ) {
-                    macroBadge(
-                        settings.controllerMacroSaveGameState,
-                        gamepad: gamepad
-                    )
+                    macroBadge(settings.controllerMacroSaveGameState)
                 }
             }
             .padding(4)
@@ -319,17 +433,6 @@ struct GameplayControllerShortcutHelpOverlay: View {
         )
     }
 
-    private var connectedController: GCController? {
-        // `current` follows the controller the player most recently used, so
-        // its mapping-aware element artwork cannot accidentally come from a
-        // second, idle controller.
-        if let current = GCController.current,
-           current.extendedGamepad != nil {
-            return current
-        }
-        return GCController.controllers().first { $0.extendedGamepad != nil }
-    }
-
     private var themedAccentColor: Color {
         settings.controllerBottomTabBarColor
     }
@@ -342,116 +445,23 @@ struct GameplayControllerShortcutHelpOverlay: View {
         settings.controllerBottomTabBarUnselectedColor
     }
 
-    private func macroBadge(
-        _ binding: ControllerMacroBinding,
-        gamepad: GCExtendedGamepad
-    ) -> some View {
+    private func macroBadge(_ binding: ControllerMacroBinding) -> some View {
         HStack(spacing: 5) {
-            controllerButtonSymbol(binding.first, gamepad: gamepad)
+            glyph(binding.first)
             plusSymbol
-            controllerButtonSymbol(binding.second, gamepad: gamepad)
+            glyph(binding.second)
         }
         .lineLimit(1)
         .fixedSize(horizontal: true, vertical: false)
     }
 
-    @ViewBuilder
-    private func controllerButtonSymbol(
-        _ button: ControllerMacroButton,
-        gamepad: GCExtendedGamepad
-    ) -> some View {
-        if let text = textualButtonTitle(for: button) {
-            Text(text)
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(
-                    themedAccentColor.opacity(0.10),
-                    in: Capsule(style: .continuous)
-                )
-                .overlay {
-                    Capsule(style: .continuous)
-                        .stroke(themedAccentColor.opacity(0.22), lineWidth: 0.65)
-                }
-                .accessibilityLabel(text)
-        } else if let element = controllerElement(for: button, gamepad: gamepad),
-                  let symbolName = element.sfSymbolsName,
-                  !symbolName.isEmpty {
-            Image(systemName: symbolName)
-                .font(.system(size: 16, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
-                .accessibilityLabel(element.localizedName ?? button.title)
-        } else {
-            Text(shortTitle(for: button))
-                .font(.system(size: 11, weight: .bold, design: .rounded))
-        }
-    }
-
-    private func controllerElement(
-        for button: ControllerMacroButton,
-        gamepad: GCExtendedGamepad
-    ) -> GCControllerElement? {
-        switch button {
-        case .select, .pause, .start:
-            // Start and Select intentionally remain text in this compact
-            // launch guide, even when the controller exposes artwork.
-            return nil
-        case .l3:
-            return gamepad.leftThumbstickButton
-        case .r3:
-            return gamepad.rightThumbstickButton
-        case .l1:
-            return gamepad.leftShoulder
-        case .r1:
-            return gamepad.rightShoulder
-        case .l2:
-            return gamepad.leftTrigger
-        case .r2:
-            return gamepad.rightTrigger
-        case .cross:
-            return gamepad.buttonA
-        case .circle:
-            return gamepad.buttonB
-        case .square:
-            return gamepad.buttonX
-        case .triangle:
-            return gamepad.buttonY
-        case .dpadUp:
-            return gamepad.dpad.up
-        case .dpadDown:
-            return gamepad.dpad.down
-        case .dpadLeft:
-            return gamepad.dpad.left
-        case .dpadRight:
-            return gamepad.dpad.right
-        }
-    }
-
-    private func textualButtonTitle(
-        for button: ControllerMacroButton
-    ) -> String? {
-        switch button {
-        case .select:
-            return settings.localized("Select")
-        case .pause, .start:
-            return settings.localized("Start")
-        default:
-            return nil
-        }
-    }
-
-    private func shortTitle(for button: ControllerMacroButton) -> String {
-        switch button {
-        case .cross: "✕"
-        case .circle: "○"
-        case .square: "□"
-        case .triangle: "△"
-        case .dpadUp: "↑"
-        case .dpadDown: "↓"
-        case .dpadLeft: "←"
-        case .dpadRight: "→"
-        default: button.title
-        }
+    private func glyph(_ button: ControllerMacroButton) -> some View {
+        ControllerButtonGlyph(
+            button: button,
+            tint: themedAccentColor,
+            symbolFont: .system(size: 16, weight: .semibold),
+            chipFont: .system(size: 10, weight: .semibold, design: .rounded)
+        )
     }
 
     @ViewBuilder
