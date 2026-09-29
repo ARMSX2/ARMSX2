@@ -269,85 +269,90 @@ fun HomeScreen(
         // (behind the gesture bar) so it never leaves an exposed strip at the bottom —
         // that strip was the "blue bar" in landscape.
         backgroundLayer = {
-            val libraryBg = LibraryBackground.uri.value
-            if (libraryBg == null) {
-                // Default: the live PS3-XMB wave (XmbGlView — a GLES3 port of linkev's
-                // grid-displacement mesh, matching iOS). When GL can't init — older Mali without
-                // float-texture filtering, or any EGL failure — we fall back to LibraryWaveBackground,
-                // a procedural PPSSPP-style animated background drawn on the hardware 2D Canvas (no
-                // GLES3, runs anywhere) that reads the SAME colour prefs as the GL wave, so Mali users
-                // finally get an animated, recolourable backdrop instead of the old fixed GIF. The
-                // bundled still is the cheap floor shown during GL startup (and, once the wave is up,
-                // sits hidden behind it). Custom backgrounds below override all of this.
-                if (LibraryBackground.flurry.value) {
-                    // Flurry, in the same shell as the XMB wave: if GL cannot come up we fall back
-                    // to the 2D backdrop rather than leaving a hole, exactly as XmbGlView does.
-                    var flurryGl by remember { mutableStateOf<Boolean?>(null) }
-                    if (flurryGl == false) {
+            // Nothing of the library shows behind the screensaver, whose scrim is opaque from its
+            // first frame, so the backdrop stops while it is up: every frame the wave, Flurry or a GIF
+            // drew there still had the whole screen composited again, for nobody.
+            if (!LibraryScreensaver.showing.value) {
+                val libraryBg = LibraryBackground.uri.value
+                if (libraryBg == null) {
+                    // Default: the live PS3-XMB wave (XmbGlView — a GLES3 port of linkev's
+                    // grid-displacement mesh, matching iOS). When GL can't init — older Mali without
+                    // float-texture filtering, or any EGL failure — we fall back to LibraryWaveBackground,
+                    // a procedural PPSSPP-style animated background drawn on the hardware 2D Canvas (no
+                    // GLES3, runs anywhere) that reads the SAME colour prefs as the GL wave, so Mali users
+                    // finally get an animated, recolourable backdrop instead of the old fixed GIF. The
+                    // bundled still is the cheap floor shown during GL startup (and, once the wave is up,
+                    // sits hidden behind it). Custom backgrounds below override all of this.
+                    if (LibraryBackground.flurry.value) {
+                        // Flurry, in the same shell as the XMB wave: if GL cannot come up we fall back
+                        // to the 2D backdrop rather than leaving a hole, exactly as XmbGlView does.
+                        var flurryGl by remember { mutableStateOf<Boolean?>(null) }
+                        if (flurryGl == false) {
+                            LibraryWaveBackground(Modifier.fillMaxSize())
+                        } else {
+                            AndroidView(
+                                factory = {
+                                    // currentSpec() resolves which saver AND resolves a "random"
+                                    // preset to a concrete one — read once here, at view creation,
+                                    // so random means once per library open and not once per frame.
+                                    SaverGlView(it, LibraryBackground.currentSpec()).apply {
+                                        onGlStatus = { ok -> flurryGl = ok }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxSize(),
+                                // Stops the render thread. Without it the EGL thread outlives the
+                                // composition and keeps drawing to a dead surface.
+                                onRelease = { it.stop() },
+                            )
+                        }
+                    } else if (LibraryBackground.animated2D.value) {
+                        // User opted into the lightweight 2D animated wave everywhere (#Luminz) — the same
+                        // backdrop GL-fail devices get; skip the GLES3 XmbGlView entirely.
                         LibraryWaveBackground(Modifier.fillMaxSize())
                     } else {
+                        var xmbGlState by remember { mutableStateOf<Boolean?>(null) } // null=starting, true=up, false=failed
+                        if (xmbGlState == false) {
+                            LibraryWaveBackground(Modifier.fillMaxSize())
+                        } else {
+                            Image(
+                                painter = painterResource(R.drawable.library_bg_xmb),
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop,
+                            )
+                        }
                         AndroidView(
-                            factory = {
-                                // currentSpec() resolves which saver AND resolves a "random"
-                                // preset to a concrete one — read once here, at view creation,
-                                // so random means once per library open and not once per frame.
-                                SaverGlView(it, LibraryBackground.currentSpec()).apply {
-                                    onGlStatus = { ok -> flurryGl = ok }
-                                }
-                            },
+                            factory = { XmbGlView(it).apply { onGlStatus = { ok -> xmbGlState = ok } } },
                             modifier = Modifier.fillMaxSize(),
-                            // Stops the render thread. Without it the EGL thread outlives the
-                            // composition and keeps drawing to a dead surface.
-                            onRelease = { it.stop() },
                         )
                     }
-                } else if (LibraryBackground.animated2D.value) {
-                    // User opted into the lightweight 2D animated wave everywhere (#Luminz) — the same
-                    // backdrop GL-fail devices get; skip the GLES3 XmbGlView entirely.
-                    LibraryWaveBackground(Modifier.fillMaxSize())
                 } else {
-                    var xmbGlState by remember { mutableStateOf<Boolean?>(null) } // null=starting, true=up, false=failed
-                    if (xmbGlState == false) {
-                        LibraryWaveBackground(Modifier.fillMaxSize())
-                    } else {
-                        Image(
-                            painter = painterResource(R.drawable.library_bg_xmb),
-                            contentDescription = null,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop,
-                        )
-                    }
-                    AndroidView(
-                        factory = { XmbGlView(it).apply { onGlStatus = { ok -> xmbGlState = ok } } },
+                    // User-picked still image / GIF (Coil handles both).
+                    AsyncImage(
+                        model = ImageRequest.Builder(context).data(libraryBg).crossfade(true).build(),
+                        contentDescription = null,
                         modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
                     )
                 }
-            } else {
-                // User-picked still image / GIF (Coil handles both).
-                AsyncImage(
-                    model = ImageRequest.Builder(context).data(libraryBg).crossfade(true).build(),
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                )
-            }
-            // Scrim so covers and text stay readable over the backdrop. A user-picked image can
-            // be any brightness, so it gets the full dark scrim. The XMB is our own controlled
-            // backdrop (dark at the top where the content sits) and a heavy scrim just muddied
-            // its blue into navy — so it gets only a whisper of dimming, letting the vivid blue
-            // read through.
-            val scrimTop = if (libraryBg == null) 0.06f else 0.55f
-            val scrimBottom = if (libraryBg == null) 0.20f else 0.80f
-            Box(
-                Modifier.fillMaxSize().background(
-                    Brush.verticalGradient(
-                        listOf(
-                            MaterialTheme.colorScheme.background.copy(alpha = scrimTop),
-                            MaterialTheme.colorScheme.background.copy(alpha = scrimBottom),
+                // Scrim so covers and text stay readable over the backdrop. A user-picked image can
+                // be any brightness, so it gets the full dark scrim. The XMB is our own controlled
+                // backdrop (dark at the top where the content sits) and a heavy scrim just muddied
+                // its blue into navy — so it gets only a whisper of dimming, letting the vivid blue
+                // read through.
+                val scrimTop = if (libraryBg == null) 0.06f else 0.55f
+                val scrimBottom = if (libraryBg == null) 0.20f else 0.80f
+                Box(
+                    Modifier.fillMaxSize().background(
+                        Brush.verticalGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.background.copy(alpha = scrimTop),
+                                MaterialTheme.colorScheme.background.copy(alpha = scrimBottom),
+                            ),
                         ),
                     ),
-                ),
-            )
+                )
+            }
         },
     ) {
         BoxWithConstraints(modifier.fillMaxSize()) {
