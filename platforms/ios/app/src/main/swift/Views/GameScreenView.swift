@@ -2383,7 +2383,7 @@ struct GameScreenView: View {
         undoLabel: String
     ) {
         let name = settings.localized("Quick Save")
-        let caption = String(format: settings.localized("%1$@ · Slot %2$d"), verb, 10)
+        let caption = verb
         saveStateUndo.show(
             .init(
                 action: action,
