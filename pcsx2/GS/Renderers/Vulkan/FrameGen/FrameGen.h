@@ -57,6 +57,9 @@ public:
 
     [[nodiscard]] size_t GeneratedFrameCount() const;
 
+    /// TEMP (#626): whether a shader or device check turned generation off for the session.
+    [[nodiscard]] bool IsUnavailable() const { return unavailable; }
+
     /// Writes interpolated frame `generation` into `image`. Only valid while
     /// GeneratedFrameCount() is non-zero, and for `generation` below it.
     void GenerateInto(const Device& device, vk::CommandBuffer cmdbuf, VkImage image,
