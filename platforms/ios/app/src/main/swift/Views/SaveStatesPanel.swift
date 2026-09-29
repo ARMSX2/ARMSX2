@@ -185,7 +185,7 @@ struct SaveStatesPanel: View {
             // Room for the card header, and in two-line rows for the title above the buttons.
             focusTopAlignmentMargin: layout == .twoLine ? 96 : 40,
             focusBottomAlignmentMargin: 10,
-            preferredInitialFocusLabel: focusOverride ?? (overlayOpen ? nil : initialFocusID),
+            preferredInitialFocusLabel: focusOverride ?? (overlayOpen ? nil : targetRows.first?.first?.id),
             declaredTargetOrder: graph.order
         )
         .fullScreenCover(item: $keyboardRequest) { _ in
@@ -329,7 +329,7 @@ struct SaveStatesPanel: View {
                     isLatest: row.slot == latest,
                     isBusy: busySlot == row.slot,
                     hardcore: hardcore,
-                    primaryID: controllerInput?.hasConnectedController == true ? nil : initialFocusID,
+                    primaryID: controllerInput?.hasConnectedController == true ? nil : suggestedSaveID,
                     quickSaveLine: quickSaveLine,
                     onSave: { save(row) },
                     onLoad: { load(row) },
@@ -370,8 +370,8 @@ struct SaveStatesPanel: View {
         .filter { !$0.isEmpty }
     }
 
-    /// The first empty manual slot, else Quick Save.
-    private var initialFocusID: String? {
+    /// Touch fills in Save on the first empty manual slot, else on Quick Save.
+    private var suggestedSaveID: String? {
         let current = rows
         if let empty = current.first(where: { $0.kind == .manual && !$0.occupied }) {
             return Self.saveID(empty.slot)
