@@ -282,7 +282,7 @@ struct SaveStatesPanel: View {
                 )
                 card(
                     title: settings.localized("Auto and quick"),
-                    detail: settings.localized("Slots 9 and 10"),
+                    detail: nil,
                     rows: current.filter { $0.kind == .auto || $0.kind == .quick },
                     latest: latest
                 )
@@ -309,13 +309,13 @@ struct SaveStatesPanel: View {
         }
     }
 
-    private func card(title: String, detail: String, rows: [SaveStateSlot], latest: Int?) -> some View {
+    private func card(title: String, detail: String?, rows: [SaveStateSlot], latest: Int?) -> some View {
         OverlaySectionCard {
             HStack {
                 Text(title)
                     .textCase(.uppercase)
                 Spacer()
-                Text(detail)
+                if let detail { Text(detail) }
             }
             .font(.caption2)
             .foregroundStyle(OverlayTheme.textSecondary)
@@ -393,7 +393,7 @@ struct SaveStatesPanel: View {
     private func save(_ row: SaveStateSlot) {
         guard busySlot == nil, !row.isLocked else { return }
         let slot = row.slot
-        let number = row.number
+        let title = row.title(settings)
         let previous = row.metadata
         let fileName = row.file.fileName
         undo.finishIfTouching(slot: slot)
@@ -405,7 +405,7 @@ struct SaveStatesPanel: View {
                 guard success, let saved = files.first(where: { $0.slot == slot }) else {
                     busySlot = nil
                     statusHandler(
-                        "\(settings.localized("Could not save slot")) \(number). \(settings.localized("Try again after gameplay has fully loaded."))",
+                        "\(String(format: settings.localized("Could not save to %@."), title)) \(settings.localized("Try again after gameplay has fully loaded."))",
                         true
                     )
                     return
@@ -424,7 +424,7 @@ struct SaveStatesPanel: View {
                     // The toast takes room at the bottom; reveal the focused row above it.
                     place(Self.saveID(slot), inScope: Self.scopeKey, entering: true)
                 } else {
-                    statusHandler("\(settings.localized("State saved to slot")) \(number)", false)
+                    statusHandler(String(format: settings.localized("Saved to %@"), title), false)
                 }
             }
         }
@@ -432,9 +432,9 @@ struct SaveStatesPanel: View {
 
     private func showUndo(_ action: SaveStateUndoModel.Action, verb: String, row: SaveStateSlot, undoLabel: String) {
         let name = row.title(settings)
-        let defaultName = String(format: settings.localized("Slot %d"), row.number)
-        let caption = name == defaultName
-            ? verb : String(format: settings.localized("%1$@ · Slot %2$d"), verb, row.number)
+        // A renamed slot keeps its number beside the name; the default names already say which row it is.
+        let caption = name == row.defaultTitle(settings)
+            ? verb : String(format: settings.localized("%1$@ · Slot %2$d"), verb, row.slot)
         undo.show(
             .init(
                 action: action,
@@ -455,7 +455,7 @@ struct SaveStatesPanel: View {
 
     private func load(_ row: SaveStateSlot) {
         guard busySlot == nil, !hardcore else { return }
-        let number = row.number
+        let title = row.title(settings)
         busySlot = row.slot
         ARMSX2Bridge.loadState(
             fromSlot: row.slot,
@@ -473,7 +473,7 @@ struct SaveStatesPanel: View {
                 } else {
                     await refresh()
                     statusHandler(
-                        "\(settings.localized("Could not load slot")) \(number). \(settings.localized("Make sure it has a saved state first."))",
+                        "\(String(format: settings.localized("Could not load %@."), title)) \(settings.localized("Make sure it has a saved state first."))",
                         true
                     )
                 }
@@ -828,13 +828,19 @@ private struct SaveStateRowView: View {
     }
 
     private var number: some View {
-        Text("\(row.number)")
-            .font(.footnote.weight(.semibold))
-            .lineLimit(1)
-            .minimumScaleFactor(0.6)
-            .foregroundStyle(OverlayTheme.textSecondary)
-            .frame(width: 18)
-            .accessibilityHidden(true)
+        Group {
+            if let symbol = row.symbol {
+                Image(systemName: symbol)
+            } else {
+                Text("\(row.slot)")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+            }
+        }
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(OverlayTheme.textSecondary)
+        .frame(width: 18)
+        .accessibilityHidden(true)
     }
 
     private var thumbnail: some View {

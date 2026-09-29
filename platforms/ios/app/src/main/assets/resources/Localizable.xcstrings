@@ -4452,6 +4452,12 @@
     "Could not delete this save." : {
       "extractionState" : "manual"
     },
+    "Could not load %@." : {
+      "extractionState" : "manual"
+    },
+    "Could not save to %@." : {
+      "extractionState" : "manual"
+    },
     "Could not undo." : {
       "extractionState" : "manual"
     },
@@ -20936,6 +20942,9 @@
         }
       }
     },
+    "Saved to %@" : {
+      "extractionState" : "manual"
+    },
     "Scanline and CRT effects are subtle on high-resolution displays and are more visible at a lower Internal Resolution." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -22681,9 +22690,6 @@
       }
     },
     "Slots 1–8" : {
-      "extractionState" : "manual"
-    },
-    "Slots 9 and 10" : {
       "extractionState" : "manual"
     },
     "Sockets" : {
