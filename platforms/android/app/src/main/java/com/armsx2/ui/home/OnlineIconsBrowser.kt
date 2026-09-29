@@ -232,10 +232,15 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
                                     // At the edge of a page, left and right turn it, and the
                                     // selection lands on the other edge of the new one.
                                     val left: (() -> Unit)? = if (c == 0 && current > 0) {
-                                        { page = current - 1; SettingsControllerNav.selectById("online-icons.tile.${r * cols + cols - 1}") }
+                                        {
+                                            turnPage()
+                                            page = current - 1
+                                            SettingsControllerNav.selectById("online-icons.tile.${r * cols + cols - 1}")
+                                        }
                                     } else null
                                     val right: (() -> Unit)? = if (c == cols - 1 && current < pages - 1) {
                                         {
+                                            turnPage()
                                             page = current + 1
                                             val last = (shown.size - page * perPage).coerceAtMost(perPage) - 1
                                             SettingsControllerNav.selectById("online-icons.tile.${minOf(r * cols, last)}")
@@ -270,12 +275,12 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
                             modifier = Modifier.weight(1f),
                         )
                         if (pages > 1) {
-                            Chip("‹", "online-icons.prev", enabled = current > 0) { page = current - 1 }
+                            Chip("‹", "online-icons.prev", enabled = current > 0) { turnPage(); page = current - 1 }
                             Text(
                                 pageFormat.replace("%1\$s", "%,d".format(current + 1)).replace("%2\$s", "%,d".format(pages)),
                                 color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, modifier = Modifier.padding(horizontal = 8.dp),
                             )
-                            Chip("›", "online-icons.next", enabled = current < pages - 1) { page = current + 1 }
+                            Chip("›", "online-icons.next", enabled = current < pages - 1) { turnPage(); page = current + 1 }
                         }
                     }
                 }
@@ -409,6 +414,10 @@ private fun Message(text: String) {
         Text(text, color = Color.White.copy(alpha = 0.75f), textAlign = TextAlign.Center, modifier = Modifier.padding(24.dp))
     }
 }
+
+/** Every page turn clicks, from the arrows or from a page's edge. It also keeps the controller's
+ *  confirm from adding its select chime, which sounds after silent actions. */
+private fun turnPage() = com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.PAGE)
 
 /** A size the way people say it: "63 MB", "3.2 MB", "180 KB". */
 private fun megabytes(bytes: Long): String {

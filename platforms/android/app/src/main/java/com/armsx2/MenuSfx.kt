@@ -53,6 +53,7 @@ object MenuSfx {
         WAKE("wake", R.raw.sfx_wake),            // chime when waking back to the app
         POPUP_OPEN("popup_open", R.raw.sfx_popup_open),   // a dialog/popup appears (hardcore confirm, info)
         POPUP_CLOSE("popup_close", R.raw.sfx_popup_close), // ...and dismisses
+        PAGE("page", R.raw.sfx_page),            // a short click as Online Icons turns a page
     }
 
     /** On by default — the bundled sounds give the launcher its "personality" out of the box. */
