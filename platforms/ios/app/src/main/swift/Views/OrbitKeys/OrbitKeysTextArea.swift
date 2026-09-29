@@ -280,8 +280,8 @@ struct OrbitKeysTextField: View {
       : (compact ? CGFloat(22) : 24)
 
     OrbitKeysThinCaretTextView(
-      text: model.text,
-      cursorOffset: model.cursorUTF16Offset,
+      text: model.masksText ? String(repeating: "•", count: model.characters.count) : model.text,
+      cursorOffset: model.masksText ? model.cursor : model.cursorUTF16Offset,
       fontSize: usesExpandedMetrics ? 20 : (compact ? 14 : 15),
       accentColor: UIColor(themeAccent)
     )
@@ -299,7 +299,8 @@ struct OrbitKeysTextField: View {
       cornerRadius: 16
     )
     .accessibilityLabel(
-      model.text.isEmpty ? "Text field, empty" : "Text field, \(model.text)"
+      model.text.isEmpty ? "Text field, empty"
+        : model.masksText ? "Secure text field, \(model.characters.count) characters" : "Text field, \(model.text)"
     )
   }
 }

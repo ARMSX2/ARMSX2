@@ -22,6 +22,7 @@ struct OrbitKeysKeyboardView: View {
     initialText: String,
     game: ISOEntry? = nil,
     startsInNormalKeyboard: Bool = false,
+    masksText: Bool = false,
     onCommit: @escaping (String) -> Void,
     onCancel: @escaping () -> Void
   ) {
@@ -33,7 +34,8 @@ struct OrbitKeysKeyboardView: View {
       wrappedValue: OrbitKeysModel(
         initialText: initialText,
         startsControllerDiscovery: true,
-        startsInNormalKeyboard: startsInNormalKeyboard
+        startsInNormalKeyboard: startsInNormalKeyboard,
+        masksText: masksText
       )
     )
   }

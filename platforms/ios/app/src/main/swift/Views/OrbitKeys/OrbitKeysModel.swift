@@ -357,13 +357,18 @@ final class OrbitKeysModel: ObservableObject {
     clearGlassLevel > 0.001
   }
 
+  /// A password shows as dots.
+  let masksText: Bool
+
   init(
     initialText: String = "",
     startsControllerDiscovery: Bool = true,
     startsInNormalKeyboard: Bool = false,
+    masksText: Bool = false,
     onCommit: @escaping (String) -> Void = { _ in }
   ) {
     committedText = initialText
+    self.masksText = masksText
     if startsInNormalKeyboard {
       // Rename always opens on the conventional QWERTY layout. The alternate
       // OrbitKeys grid remains available from keyboard Settings.

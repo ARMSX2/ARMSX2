@@ -7,6 +7,7 @@ private let retroAchievementsNotification = Notification.Name("ARMSX2RetroAchiev
 
 struct RetroAchievementsSettingsView: View {
     @State private var settings = SettingsStore.shared
+    @Environment(\.menuControllerInputRouter) private var controllerInput
     @State private var state: [String: Any] = [:]
     @State private var achievementsEnabled = false
     @State private var hardcoreEnabled = false
@@ -120,22 +121,14 @@ struct RetroAchievementsSettingsView: View {
                         .controllerAccessibilityTargetID("settings.achievements.logout")
 
                         if !bool("loggedIn") {
-                            Button {
-                                username = string("username")
-                                password = ""
-                                showingLogin = true
-                            } label: {
+                            Button(action: openLogin) {
                                 Text(settings.localized(loggingIn ? "Logging In..." : "Log In Again"))
                             }
                             .controllerAccessibilityTargetID("settings.achievements.login-again")
                             .disabled(!achievementsEnabled || loggingIn)
                         }
                     } else {
-                        Button {
-                            username = string("username")
-                            password = ""
-                            showingLogin = true
-                        } label: {
+                        Button(action: openLogin) {
                             Text(settings.localized(loggingIn ? "Logging In..." : "Log In"))
                         }
                         .controllerAccessibilityTargetID("settings.achievements.login")
@@ -264,6 +257,7 @@ struct RetroAchievementsSettingsView: View {
                 username: username,
                 password: password,
                 loggingIn: loggingIn,
+                controllerInput: controllerInput,
                 onLogin: { enteredUsername, enteredPassword in
                     username = enteredUsername
                     password = enteredPassword
@@ -360,6 +354,18 @@ struct RetroAchievementsSettingsView: View {
         }
     }
 
+    private func openLogin() {
+        username = string("username")
+        password = ""
+        // Each sign-in starts at a field, not on the Log In it last ended on.
+        let field = username.isEmpty ? "achievements.login.username" : "achievements.login.password"
+        controllerInput?.rememberNavigationFocusKey(
+            ControllerAccessibilityNavigationSession.explicitKey(field),
+            forScope: "settings.achievements.login"
+        )
+        showingLogin = true
+    }
+
     private func beginLogin() {
         let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedUsername.isEmpty, !password.isEmpty else {
@@ -417,8 +423,16 @@ private struct RetroAchievementsLoginSheet: View {
     @State var username: String
     @State var password: String
     let loggingIn: Bool
+    let controllerInput: MenuControllerInputRouter?
     let onLogin: (String, String) -> Void
     let onCancel: () -> Void
+    // A controller can't type into the fields, so it types on OrbitKeys.
+    @State private var keyboardField: LoginField?
+
+    private enum LoginField: String, Identifiable {
+        case username, password
+        var id: String { rawValue }
+    }
 
     private var canSubmit: Bool {
         !loggingIn &&
@@ -435,6 +449,10 @@ private struct RetroAchievementsLoginSheet: View {
                         .autocorrectionDisabled()
                         .textContentType(.username)
                         .submitLabel(.next)
+                        .controllerAccessibilityActionTarget(
+                            id: "achievements.login.username",
+                            label: settings.localized("Username")
+                        ) { keyboardField = .username }
 
                     SecureField(settings.localized("Password"), text: $password)
                         .textContentType(.password)
@@ -444,6 +462,10 @@ private struct RetroAchievementsLoginSheet: View {
                                 onLogin(username, password)
                             }
                         }
+                        .controllerAccessibilityActionTarget(
+                            id: "achievements.login.password",
+                            label: settings.localized("Password")
+                        ) { keyboardField = .password }
                 } footer: {
                     Text(settings.localized("Use your RetroAchievements account credentials."))
                 }
@@ -467,8 +489,44 @@ private struct RetroAchievementsLoginSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(settings.localized("Log In")) { onLogin(username, password) }
                         .disabled(!canSubmit)
+                        .controllerAccessibilityActionTarget(
+                            id: "achievements.login.submit",
+                            label: settings.localized("Log In")
+                        ) { if canSubmit { onLogin(username, password) } }
                 }
             }
+        }
+        .controllerAccessibilityNavigation(
+            controllerInput: controllerInput,
+            isActive: keyboardField == nil && !loggingIn,
+            scopeKey: "settings.achievements.login",
+            priority: 600,
+            onBack: {
+                onCancel()
+                return true
+            },
+            usesExplicitTargetGeometryOnly: true,
+            preferredInitialFocusLabel: username.isEmpty ? "achievements.login.username" : "achievements.login.password",
+            declaredTargetOrder: ["achievements.login.username", "achievements.login.password", "achievements.login.submit"]
+        )
+        .fullScreenCover(item: $keyboardField) { field in
+            OrbitKeysKeyboardView(
+                title: settings.localized(field == .username ? "Username" : "Password"),
+                initialText: field == .username ? username : password,
+                startsInNormalKeyboard: true,
+                masksText: field == .password,
+                onCommit: { text in
+                    if field == .username {
+                        username = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    } else {
+                        password = text
+                    }
+                    keyboardField = nil
+                },
+                onCancel: { keyboardField = nil }
+            )
+            .presentationBackground(.clear)
+            .appStatusBarHidden()
         }
         .interactiveDismissDisabled(loggingIn)
         .presentationDetents([.medium])
