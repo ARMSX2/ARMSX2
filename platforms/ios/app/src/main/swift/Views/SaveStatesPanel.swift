@@ -855,19 +855,6 @@ private struct SaveStateRowView: View {
                     .scaledToFill()
                     .frame(width: size.width, height: size.height)
             }
-            if isLatest {
-                Text(settings.localized("Latest"))
-                    .font(.caption2.weight(.bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                    // The thumbnail keeps its size, so its badge can't grow with the text.
-                    .dynamicTypeSize(...DynamicTypeSize.large)
-                    .foregroundStyle(onAccent(accentColour))
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(accentColour, in: Capsule())
-                    .padding(3)
-            }
         }
         .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
@@ -917,8 +904,16 @@ private struct SaveStateRowView: View {
     @ViewBuilder
     private var savedLine: some View {
         if row.occupied, let date = row.modifiedDate {
-            Label(SaveStateFormat.savedAt(date, settings: settings), systemImage: "clock")
-                .saveStateMeta(layout)
+            let savedAt = SaveStateFormat.savedAt(date, settings: settings)
+            if isLatest {
+                // Inside the meta style, so the accent wins over its grey.
+                Label(settings.localized("Latest") + " · " + savedAt, systemImage: "star.fill")
+                    .foregroundStyle(accentColour)
+                    .saveStateMeta(layout)
+            } else {
+                Label(savedAt, systemImage: "clock")
+                    .saveStateMeta(layout)
+            }
         } else {
             Text(settings.localized("Empty"))
                 .saveStateMeta(layout)
