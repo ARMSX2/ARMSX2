@@ -26,7 +26,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -246,14 +245,14 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
                                             SettingsControllerNav.selectById("online-icons.tile.${minOf(r * cols, last)}")
                                         }
                                     } else null
-                                    // Keyed by the icon, so a slot that shows another icon after a
-                                    // page turn starts afresh rather than keeping the last preview.
-                                    androidx.compose.runtime.key(entry.hash) {
-                                        Tile(
-                                            entry, "online-icons.tile.$slot", have, removing == entry.hash, previews,
-                                            selectedByTouch = tapped == entry.hash, onPress = press, onLeft = left, onRight = right,
-                                        )
-                                    }
+                                    // One composition per slot, kept across page turns: rebuilding a
+                                    // tile unregisters its slot's id, and the registry then moved the
+                                    // selection to the first control, Download all. What depends on
+                                    // the icon inside it is keyed by the icon instead.
+                                    Tile(
+                                        entry, "online-icons.tile.$slot", have, removing == entry.hash, previews,
+                                        selectedByTouch = tapped == entry.hash, onPress = press, onLeft = left, onRight = right,
+                                    )
                                 }
                             }
                         }
@@ -308,9 +307,10 @@ private fun Tile(
     onLeft: (() -> Unit)?,
     onRight: (() -> Unit)?,
 ) {
-    val preview by produceState(previews.get(entry.hash), entry.hash) {
-        value = previews.get(entry.hash) ?: previews.load(entry.hash)
-    }
+    // Per icon, not per slot: after a page turn the slot shows another icon, and must not show the
+    // last one's preview while the new one loads.
+    var preview by remember(entry.hash) { mutableStateOf(previews.get(entry.hash)) }
+    LaunchedEffect(entry.hash) { if (preview == null) preview = previews.load(entry.hash) }
     val selected = SettingsControllerNav.isSelected(id) || selectedByTouch
     val shape = RoundedCornerShape(14.dp)
     Box(
@@ -324,17 +324,19 @@ private fun Tile(
     ) {
         val p = preview
         Box(Modifier.align(Alignment.TopCenter).padding(top = 6.dp).size(TILE_W - 34.dp)) {
-            when {
-                p == null -> Unit
-                selected -> AnimatedPs2Icon(
-                    key = "online-browser:${entry.hash}",
-                    load = { p.loaded },
-                    options = Ps2IconRenderer.Options(background = false, fill = 0.9f),
-                    aspect = 1f,
-                    maxWidth = 320,
-                    modifier = Modifier.fillMaxSize(),
-                )
-                else -> Image(p.still, contentDescription = null, modifier = Modifier.fillMaxSize())
+            androidx.compose.runtime.key(entry.hash) {
+                when {
+                    p == null -> Unit
+                    selected -> AnimatedPs2Icon(
+                        key = "online-browser:${entry.hash}",
+                        load = { p.loaded },
+                        options = Ps2IconRenderer.Options(background = false, fill = 0.9f),
+                        aspect = 1f,
+                        maxWidth = 320,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    else -> Image(p.still, contentDescription = null, modifier = Modifier.fillMaxSize())
+                }
             }
         }
         Text(
