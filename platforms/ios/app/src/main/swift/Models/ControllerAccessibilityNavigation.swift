@@ -239,7 +239,12 @@ final class ControllerAccessibilityNavigationSession {
     @ObservationIgnored private weak var controllerInput: MenuControllerInputRouter?
     @ObservationIgnored private weak var scopeView: UIView?
     @ObservationIgnored private weak var window: UIWindow?
-    @ObservationIgnored private var scopeFrame = CGRect.zero
+    @ObservationIgnored private var measuredScopeFrame = CGRect.zero
+    /// Measured when read: an ancestor can move the scope without laying it out again.
+    private var scopeFrame: CGRect {
+        guard let scopeView, let window = scopeView.window else { return measuredScopeFrame }
+        return scopeView.convert(scopeView.bounds, to: window)
+    }
     @ObservationIgnored private var scopeKey = ""
     @ObservationIgnored private var registrationID: UUID?
     @ObservationIgnored private var targets: [String: Target] = [:]
@@ -485,10 +490,10 @@ final class ControllerAccessibilityNavigationSession {
         let nextFrame = nextWindow.map { view.convert(view.bounds, to: $0) }
             ?? .zero
         guard scopeView !== view || window !== nextWindow
-                || scopeFrame != nextFrame else { return }
+                || measuredScopeFrame != nextFrame else { return }
         scopeView = view
         window = nextWindow
-        scopeFrame = nextFrame
+        measuredScopeFrame = nextFrame
         scheduleFocusedPresentationUpdate()
     }
 
@@ -527,7 +532,7 @@ final class ControllerAccessibilityNavigationSession {
         declaredOrderIndex.removeAll(keepingCapacity: false)
         scopeView = nil
         window = nil
-        scopeFrame = .zero
+        measuredScopeFrame = .zero
         // The mounted modifier still owns its ScrollViewReader. Its onDisappear
         // clears this callback; temporary deactivation must not discard it.
         permitsAutomaticFocus = true
