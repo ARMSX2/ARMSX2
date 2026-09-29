@@ -863,8 +863,10 @@ private fun UnifiedTouchLayer(
                     }
                 }
                 fun releaseAll() {
-                    pressed.forEach { glidePress(it, false) }
+                    // P½ last, so letting it go can't re-send a button still down at full pressure.
+                    pressed.filter { it.kind != TouchButtonId.Kind.PRESSURE }.forEach { glidePress(it, false) }
                     releaseDpad(pressedDir)
+                    pressed.filter { it.kind == TouchButtonId.Kind.PRESSURE }.forEach { glidePress(it, false) }
                     updatePressed(emptySet(), DpadState())
                 }
                 awaitPointerEventScope {
@@ -989,10 +991,19 @@ private fun UnifiedTouchLayer(
                                 }
                             }
                             val agg = current.keys.flatMap { contribution(it) }.toSet()
-                            (pressed - agg).forEach { glidePress(it, false) }
-                            (agg - pressed).forEach { glidePress(it, true) }
                             val aggDir = current.keys.fold(DpadState()) { acc, f -> acc or dirContribution(f) }
-                            if (aggDir != pressedDir) applyDpadDiff(pressedDir, aggDir)
+                            // P½ re-sends every held pressure button at its new strength as it goes
+                            // down or up, so what lets go goes first, then P½, then what presses.
+                            // The other way round, lifting "hold Square, slide onto P½" in Follow let
+                            // P½ go first and put Square back at full pressure for an instant on its
+                            // way up; and a button pressed along with P½ started at full.
+                            val released = pressed - agg
+                            val added = agg - pressed
+                            released.filterNot(::isPressure).forEach { glidePress(it, false) }
+                            applyDpadDiff(pressedDir, pressedDir and aggDir)
+                            (released + added).filter(::isPressure).forEach { glidePress(it, it in added) }
+                            added.filterNot(::isPressure).forEach { glidePress(it, true) }
+                            applyDpadDiff(pressedDir and aggDir, aggDir)
                             // Per-finger consume: only claim changes for fingers WE own
                             // (mapped to >=1 control). Never blanket-consume the whole
                             // event — that would starve co-occurring gestures like the
@@ -1576,6 +1587,7 @@ private data class DpadState(
 ) {
     fun any() = up || down || left || right
     infix fun or(o: DpadState) = DpadState(up || o.up, down || o.down, left || o.left, right || o.right)
+    infix fun and(o: DpadState) = DpadState(up && o.up, down && o.down, left && o.left, right && o.right)
 }
 
 /**
