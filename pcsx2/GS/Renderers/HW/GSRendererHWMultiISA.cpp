@@ -32,6 +32,7 @@ public:
 
 private:
 	static bool IsPaletteBlockCopy(const GSRasterizerData& data, bool uv);
+	static bool OnUVGrid(const GSRasterizerData& data);
 	static bool DrawPaletteBlocks(GSSwPrimRenderState& sw, const GSRasterizerData& data);
 };
 
@@ -224,10 +225,11 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 			gd.sel.wms = context->CLAMP.WMS;
 			gd.sel.wmt = context->CLAMP.WMT;
 
-			if (gd.sel.tfx == TFX_MODULATE && gd.sel.tcc && vt.m_eq.rgba == 0xffff && vt.m_min.c.eq(GSVector4i(128)))
+			// Modulate by a vertex colour of 0x80 returns the texel unchanged, so it is decal. Without
+			// TCC both take alpha from the vertex, so only the colour channels need to be 0x80.
+			const u32 modulated = gd.sel.tcc ? 0xffff : 0x0fff;
+			if (gd.sel.tfx == TFX_MODULATE && vt.m_eq.rgba == 0xffff && ((vt.m_min.c == GSVector4i(128)).mask() & modulated) == modulated)
 			{
-				// modulate does not do anything when vertex color is 0x80
-
 				gd.sel.tfx = TFX_DECAL;
 			}
 
@@ -614,6 +616,30 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 	return true;
 }
 
+// ST coordinates reach the scanline as a 16.16 value computed from S, T and Q, so in general they
+// are not held to sixteenths of a texel as UV is. A draw whose converted coordinates all happen to
+// land on that grid, inside the range a UV can encode, is indistinguishable from the UV draw from
+// here on: the selector is the same (a sprite's fst is set whenever Q is constant), and the
+// rasterizer and the copy read the same converted vertices.
+bool GSSwPrimRenderFunctions::OnUVGrid(const GSRasterizerData& data)
+{
+	constexpr float sixteenth = 4096.0f;
+	constexpr float limit = 16384.0f * sixteenth; // UV is a 14-bit count of sixteenths
+
+	for (int i = 0; i < data.vertex_count; i++)
+	{
+		const GSVector4 t = data.vertex[i].t;
+		for (int c = 0; c < 2; c++)
+		{
+			const float x = t.F32[c];
+			if (!(x >= 0.0f && x < limit) || (x / sixteenth) != std::floor(x / sixteenth))
+				return false;
+		}
+	}
+
+	return true;
+}
+
 // The palette block copy: a sprite draw that writes each texel's palette entry one-to-one into a
 // 32-bit frame. Games that expand paletted textures on the GS draw thousands of these a frame, and
 // the rasterizer spends most of its time on each in setup that this shape does not need.
@@ -628,11 +654,6 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 // (gd.fzbr/fzbc).
 bool GSSwPrimRenderFunctions::IsPaletteBlockCopy(const GSRasterizerData& data, bool uv)
 {
-	// UV coordinates only. A sprite's ST also reaches the scanline as a 16.16 integer, but after a
-	// divide, so it is not held to sixteenths and DrawPaletteBlocks() would not be exact on it.
-	if (!uv)
-		return false;
-
 	const GSScanlineGlobalData& gd = data.global;
 	GSScanlineSelector sel = gd.sel;
 
@@ -651,9 +672,13 @@ bool GSSwPrimRenderFunctions::IsPaletteBlockCopy(const GSRasterizerData& data, b
 	sel.datm = 0;
 	sel.notest = 0;
 
+	// Without TCC the alpha written is the vertex's own (DrawPaletteBlocks() writes it); the colour
+	// channels are still the palette entry.
+	sel.tcc = 1;
+
 	// Everything else must be exactly this: a textured sprite with a nearest, non-mipmapped UV
-	// lookup through the palette, decal with texture alpha (the output is the palette entry), a
-	// 32-bit frame write with no test, no depth, no blend, no fog, no dither and no alpha
+	// lookup through the palette, decal (the output is the palette entry, with the vertex alpha in
+	// place of the entry's when TCC is off), a 32-bit frame write with no test, no depth, no blend, no fog, no dither and no alpha
 	// correction. Any other bit set, known or added later, sends the draw to the rasterizer.
 	GSScanlineSelector want;
 	want.key = 0;
@@ -684,7 +709,10 @@ bool GSSwPrimRenderFunctions::IsPaletteBlockCopy(const GSRasterizerData& data, b
 	if (data.scanmsk_value & 2)
 		return false;
 
-	return data.index && data.index_count >= 2 && (data.index_count & 1) == 0 && gd.tex[0] && gd.clut;
+	if (!(data.index && data.index_count >= 2 && (data.index_count & 1) == 0 && gd.tex[0] && gd.clut))
+		return false;
+
+	return uv || OnUVGrid(data);
 }
 
 // Mirrors GSRasterizer::DrawSprite and the scanline's nearest lookup for the one shape
@@ -746,11 +774,18 @@ bool GSSwPrimRenderFunctions::DrawPaletteBlocks(GSSwPrimRenderState& sw, const G
 		if (notest && ((r.left | r.right) & (notest_grid - 1)) != 0)
 			return false;
 
+		// Without TCC the alpha is the sprite's flat colour, which the scanline takes from its second
+		// vertex, truncated and brought down from the seven-bit fraction with unsigned saturation.
+		u32 alpha = 0;
+		if (!data.global.sel.tcc)
+			alpha = static_cast<u32>(std::clamp(static_cast<int>(v1.c.w) >> 7, 0, 255)) << 24;
+
 		const GSVector4 seed = t0 + dt * (GSVector4(r.left, r.top) - p0);
-		sw.palette_blocks.push_back({r, static_cast<s32>(seed.x), static_cast<s32>(seed.y)});
+		sw.palette_blocks.push_back({r, static_cast<s32>(seed.x), static_cast<s32>(seed.y), alpha});
 	}
 
 	const GSScanlineGlobalData& gd = data.global;
+	const u32 keep = gd.sel.tcc ? 0xFFFFFFFFu : 0x00FFFFFFu;
 
 	// The coordinate as the scanline forms it, wrapped by gd.t: repeat is (c & min) | max, clamp is
 	// min(max(c, min), max). The scanline also truncates a negative coordinate toward zero and
@@ -779,24 +814,44 @@ bool GSSwPrimRenderFunctions::DrawPaletteBlocks(GSSwPrimRenderState& sw, const G
 	static constexpr int group_offset[4] = {0, 4, 16, 20};
 
 	u16 columns[max_width];
+	s32 offsets[max_width]; // the pixel's byte offset from its row's start, before the wrap; may be negative
 
 	for (const GSSwPrimRenderState::PaletteBlock& b : sw.palette_blocks)
 	{
 		const int width = b.rect.width();
+		int col_min = INT_MAX;
+		int col_max = INT_MIN;
 
 		for (int k = 0; k < width; k++)
+		{
+			const int x = b.rect.left + k;
+			const int col = gd.fzbc[x >> 2].x;
+			col_min = std::min(col_min, col);
+			col_max = std::max(col_max, col);
 			columns[k] = static_cast<u16>(texel(b.u + k * 65536, umin, umax, urepeat));
+			offsets[k] = col * 2 + group_offset[x & 3];
+		}
 
 		for (int y = b.rect.top; y < b.rect.bottom; y++)
 		{
 			const u8* row = tex + (texel(b.v + (y - b.rect.top) * 65536, vmin, vmax, vrepeat) << pitch_shift);
 			const int base = gd.fzbr[y].x;
 
-			for (int k = 0; k < width; k++)
+			if (base + col_min >= 0 && static_cast<u32>(base + col_max) < HALF_VM_SIZE)
 			{
-				const int x = b.rect.left + k;
-				const int fa = (base + gd.fzbc[x >> 2].x) % HALF_VM_SIZE;
-				*reinterpret_cast<u32*>(vm + fa * 2 + group_offset[x & 3]) = clut[row[columns[k]]];
+				// No pixel of this row wraps, so its address is the row's plus the column's.
+				u8* line = vm + static_cast<ptrdiff_t>(base) * 2;
+				for (int k = 0; k < width; k++)
+					*reinterpret_cast<u32*>(line + static_cast<ptrdiff_t>(offsets[k])) = (clut[row[columns[k]]] & keep) | b.alpha;
+			}
+			else
+			{
+				for (int k = 0; k < width; k++)
+				{
+					const int x = b.rect.left + k;
+					const int fa = (base + gd.fzbc[x >> 2].x) % HALF_VM_SIZE;
+					*reinterpret_cast<u32*>(vm + fa * 2 + group_offset[x & 3]) = (clut[row[columns[k]]] & keep) | b.alpha;
+				}
 			}
 		}
 	}

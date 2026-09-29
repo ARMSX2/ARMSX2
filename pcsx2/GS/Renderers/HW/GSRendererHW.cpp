@@ -6082,6 +6082,24 @@ bool GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 					m_conf.indices_per_prim = 6;
 					ExpandLineIndices();
 				}
+				else if (no_rt && unscale_pt_ln && features.vs_expand)
+				{
+					// Above native, a line that writes only depth takes the same vertex-shader expansion,
+					// centred on the line, as the AA1 colour lines do. Games that outline with AA1 lines
+					// (the Sly titles) follow each colour line with the same line as a depth-only draw.
+					// The colour line is expanded above native (AA1LineExpandsAboveNative), so pixel runs
+					// here would lay its depth in native-pixel blocks that no longer match the colour.
+					// That shows once a later depth-tested draw lands behind the outline, as the vault
+					// glow in Sly Cooper does: the glow fills in around the blocks and the outline comes
+					// out stepped. The expansion rather than a hardware wide line, because the colour
+					// line is expanded too and the two should cover the same device pixels on every driver.
+					GL_INS("HW: Depth-only line expand above native.");
+					m_conf.vs.expand = GSHWDrawConfig::VSExpand::Line;
+					m_conf.cb_vs.point_size = GSVector2(16.0f * sx, 16.0f * sy);
+					m_conf.topology = GSHWDrawConfig::Topology::Triangle;
+					m_conf.indices_per_prim = 6;
+					ExpandLineIndices();
+				}
 				else
 				{
 					// An AA1 line's pixels carry the GS's coverage as their alpha. IsCoverageAlphaSupported()
@@ -7033,6 +7051,11 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 	if (GSDrawDropsBarriers(GetDrawRoadDevice(features), m_conf.tex_hazard == GSHWDrawConfig::TEX_HAZARD_RT,
 			m_prim_overlap != PRIM_OVERLAP_NO, m_conf.ps.IsFeedbackLoopDepth() && features.depth_feedback))
 	{
+		// Where the driver orders overlapping primitives only on request, request it for exactly the
+		// draws that would have taken a barrier between primitive groups: a full barrier with
+		// overlap that the swap below would not have reduced to one barrier.
+		m_conf.raster_order = features.declared_loop_overlap_needs_raster_order && m_conf.require_full_barrier &&
+		                      m_prim_overlap != PRIM_OVERLAP_NO && !m_conf.ps.shuffle && !m_channel_shuffle;
 		m_conf.require_one_barrier = false;
 		m_conf.require_full_barrier = false;
 	}

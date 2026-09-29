@@ -643,15 +643,24 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 	// Two driver facts that do not come from the rule table. Both default false, so an
 	// unmeasured driver keeps its current road.
 	//
-	// Ordering: Turnip with a fix-generation tag, on Adreno 6xx at 650 and up only. The fix changes
-	// emission for A6XX only, so a tagged build on a7xx carries nothing to trust. On Adreno 610 the
-	// declared road renders inconsistently run to run while the copy road is stable, so parts below
-	// 650 keep their barriers and copy road. A Qualcomm driver cannot carry a Mesa git tag.
+	// Ordering: Turnip with a fix-generation tag. Generation 1 changes emission for A6XX only, so it
+	// is trusted on Adreno 6xx at 650 and up; on Adreno 610 the declared road renders inconsistently
+	// run to run while the copy road is stable, so parts below 650 keep their barriers and copy
+	// road. Generation 2 adds the A7XX half (the per-overlap prim mode and the per-draw flush for a
+	// declared loop), measured on the Adreno 740; it is trusted on Adreno 730 and up, the range the
+	// a7xx road preference below already covers. A Qualcomm driver cannot carry a Mesa git tag.
 	profile.declared_loop_fix_generation = ParseFixGeneration(context.driver_info);
-	profile.orders_declared_feedback_loop = (profile.declared_loop_fix_generation >= 1) &&
-		                                    (context.api == MobileGpuApi::Vulkan) && (profile.driver == MobileGpuDriver::MesaTurnip) &&
-		                                    (selection.gpu.architecture == MobileGpuArchitecture::Adreno6xx) &&
-		                                    (selection.gpu.model_number >= 650);
+	const bool tagged_turnip_vk = (context.api == MobileGpuApi::Vulkan) && (profile.driver == MobileGpuDriver::MesaTurnip);
+	const bool a6xx_fix = (profile.declared_loop_fix_generation >= 1) &&
+		                  (selection.gpu.architecture == MobileGpuArchitecture::Adreno6xx) &&
+		                  (selection.gpu.model_number >= 650);
+	const bool a7xx_fix = (profile.declared_loop_fix_generation >= 2) &&
+		                  (selection.gpu.architecture == MobileGpuArchitecture::Adreno7xx) &&
+		                  (selection.gpu.model_number >= 730);
+	profile.orders_declared_feedback_loop = tagged_turnip_vk && (a6xx_fix || a7xx_fix);
+	// The a7xx half orders a draw against earlier draws; within a draw it orders overlapping
+	// primitives only for a pipeline that requests rasterization-order access.
+	profile.declared_loop_orders_overlap_on_request = tagged_turnip_vk && a7xx_fix && !a6xx_fix;
 
 	// The a7xx preference is about the part, not the build, so it needs no tag: on Adreno 740 the
 	// declared loop with our barriers is correct and stable where the copy road renders wrong.

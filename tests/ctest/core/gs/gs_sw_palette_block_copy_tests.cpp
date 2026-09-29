@@ -54,6 +54,10 @@ namespace
 		GIFRegRGBAQ rgbaq;
 		GIFRegPRIM prim;
 		std::vector<Sprite> sprites;
+		/// With FST 0: sprite UVs are sent as the ST that converts back to them, times Q. A nonzero
+		/// nudge, in texels, moves S off the sixteenth grid. The GS rounds ST down to a precision
+		/// set by Q's exponent before any renderer sees it, so a nudge below that precision is lost.
+		float st_nudge = 0.0f;
 		bool must_refuse = false; ///< carries a change the copy has to send to the rasterizer
 	};
 
@@ -154,10 +158,25 @@ namespace
 			r.RGBAQ = d.rgbaq;
 			p.Reg(GIF_A_D_REG_RGBAQ, r);
 
-			for (const Sprite& s : d.sprites)
+			if (d.prim.FST)
 			{
-				p.Vertex(s.x0, s.y0, 0, s.u0, s.v0);
-				p.Vertex(s.x1, s.y1, 0, s.u1, s.v1);
+				for (const Sprite& s : d.sprites)
+				{
+					p.Vertex(s.x0, s.y0, 0, s.u0, s.v0);
+					p.Vertex(s.x1, s.y1, 0, s.u1, s.v1);
+				}
+			}
+			else
+			{
+				// S = U / (16 * width) * Q, which the vertex conversion turns back into U sixteenths.
+				const float q = d.rgbaq.Q;
+				const float su = q / static_cast<float>(16 << d.tex0.TW);
+				const float sv = q / static_cast<float>(16 << d.tex0.TH);
+				for (const Sprite& s : d.sprites)
+				{
+					p.VertexST(s.x0, s.y0, 0, (s.u0 + 16 * d.st_nudge) * su, s.v0 * sv, q);
+					p.VertexST(s.x1, s.y1, 0, (s.u1 + 16 * d.st_nudge) * su, s.v1 * sv, q);
+				}
 			}
 
 			p.Send(gs, d.prim);
@@ -320,8 +339,10 @@ namespace
 				d.tex0.PSM = tex_psms[pick(5)];
 				d.tex0.TW = chance(90) ? 3 + pick(8) : pick(3);
 				d.tex0.TH = chance(90) ? 3 + pick(8) : pick(3);
-				d.tex0.TCC = 1;
-				d.tex0.TFX = TFX_DECAL;
+				// Without TCC the copy writes the vertex alpha; modulate is taken when the vertex colour
+				// makes it decal, and otherwise refused.
+				d.tex0.TCC = chance(75) ? 1 : 0;
+				d.tex0.TFX = chance(75) ? TFX_DECAL : TFX_MODULATE;
 				d.tex0.CBP = pick(0x4000);
 				d.tex0.CPSM = clut_psms[pick(3)];
 				d.tex0.CSM = chance(80) ? 0 : 1;
@@ -482,7 +503,7 @@ namespace
 
 				switch (perturb)
 				{
-					case 5: d.tex0.TCC = 0; break;
+					case 5: d.tex0.TFX = TFX_MODULATE; d.rgbaq.R = 0x80 ^ (1 + pick(127)); break;
 					case 6: d.tex0.TFX = 2 + pick(2); break; // highlight, highlight2
 					case 7: d.tex1.MMAG = 1; d.tex1.MMIN = 1; break;
 					case 8: d.clamp.WMS = 2 + pick(2); break;
@@ -496,13 +517,20 @@ namespace
 					case 16: d.dthe.DTHE = 1; break;
 					case 17: d.fba.FBA = 1; break;
 					case 18: d.scanmsk.MSK = 2 + pick(2); break;
-					case 19: d.prim.FST = 0; break;
+					case 19:
+						// ST that lands on the sixteenth grid is taken, at a Q of one or not. S nudged
+						// off it is refused unless the GS's own ST rounding puts it back.
+						d.prim.FST = 0;
+						d.rgbaq.Q = chance(50) ? 1.0f : (chance(50) ? 2.0f : 0.5f);
+						if (chance(50))
+							d.st_nudge = 1.0f / (1 << (4 + pick(4)));
+						break;
 					default: break;
 				}
 				// An alpha test the renderer proves always passes, or a blend it proves opaque, leaves
 				// the scanline the copy's own shape, so those two are compared but not required to
 				// refuse.
-				d.must_refuse = perturb >= 0 && perturb != 12 && perturb != 14;
+				d.must_refuse = perturb >= 0 && perturb != 12 && perturb != 14 && perturb != 19;
 
 				c.draws.push_back(d);
 			}
@@ -630,22 +658,75 @@ TEST_F(GSSwPaletteBlockCopy, RefusesARegionClamp)
 	EXPECT_EQ(Compare(c), 0u);
 }
 
-TEST_F(GSSwPaletteBlockCopy, RefusesTextureColourWithVertexAlpha)
+// Without TCC the texel's colour goes out with the vertex's alpha.
+TEST_F(GSSwPaletteBlockCopy, TakesTextureColourWithVertexAlpha)
 {
 	Case c;
 	c.seed = 11;
 	c.draws.push_back(Tile(1));
 	c.draws.back().tex0.TCC = 0;
-	EXPECT_EQ(Compare(c), 0u);
+	c.draws.back().rgbaq.A = 0x37;
+	EXPECT_EQ(Compare(c), 1u);
 }
 
-// ST coordinates reach the scanline after a divide, so they are not held to sixteenths.
-TEST_F(GSSwPaletteBlockCopy, RefusesSTCoordinates)
+// Modulate by a colour of 0x80 is decal; by any other colour it is not.
+TEST_F(GSSwPaletteBlockCopy, TakesModulateByHalfAndRefusesAnyOtherColour)
+{
+	Case c;
+	c.seed = 15;
+	c.draws.push_back(Tile(1));
+	c.draws.back().tex0.TFX = TFX_MODULATE;
+	c.draws.push_back(Tile(2));
+	c.draws.back().tex0.TFX = TFX_MODULATE;
+	c.draws.back().tex0.TCC = 0;
+	c.draws.back().rgbaq.A = 0x11;
+	EXPECT_EQ(Compare(c), 2u);
+
+	Case r;
+	r.seed = 16;
+	r.draws.push_back(Tile(1));
+	r.draws.back().tex0.TFX = TFX_MODULATE;
+	r.draws.back().tex0.TCC = 0;
+	r.draws.back().rgbaq.G = 0x7F;
+	EXPECT_EQ(Compare(r), 0u);
+}
+
+// Jak 3 expands paletted character textures with ST sprites whose S and T land exactly on texels.
+// Converted, they are the UV draw.
+TEST_F(GSSwPaletteBlockCopy, TakesSTCoordinatesOnTheSixteenthGrid)
 {
 	Case c;
 	c.seed = 13;
+	Draw d = Tile(1);
+	d.tex0.PSM = PSMT8;
+	d.tex0.TW = 9;
+	d.tex0.TH = 8;
+	d.tex0.TBW = 8;
+	d.tex0.TCC = 0;
+	d.tex0.TFX = TFX_MODULATE;
+	d.prim.FST = 0;
+	d.sprites.clear();
+	for (int i = 0; i < 16; i++)
+	{
+		const int x = (i & 3) * 32;
+		const int y = (i >> 2) * 32;
+		d.sprites.push_back({(2048 + x) * 16, (2048 + y) * 16, (2048 + x + 32) * 16, (2048 + y + 32) * 16,
+			(64 + x) * 16, (128 + y) * 16, (64 + x + 32) * 16, (128 + y + 32) * 16});
+	}
+	c.draws.push_back(d);
+	d.rgbaq.Q = 2.0f;
+	c.draws.push_back(d);
+	EXPECT_EQ(Compare(c), 2u);
+}
+
+// ST whose conversion leaves a fraction below a sixteenth of a texel is not held to the grid.
+TEST_F(GSSwPaletteBlockCopy, RefusesSTCoordinatesOffTheSixteenthGrid)
+{
+	Case c;
+	c.seed = 17;
 	c.draws.push_back(Tile(1));
 	c.draws.back().prim.FST = 0;
+	c.draws.back().st_nudge = 1.0f / 32.0f;
 	EXPECT_EQ(Compare(c), 0u);
 }
 
