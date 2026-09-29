@@ -6,8 +6,6 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -30,6 +28,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -222,6 +221,7 @@ internal fun LibraryScreensaverHost(titles: () -> Map<String, String>) {
 // How long each game's icon holds the screen, and the fade between two.
 private const val HOLD_MS = 9_000
 private const val FADE_MS = 1_400
+private const val DRIFT_STEP_MS = 42L // the moving icons' beat
 
 @Composable
 private fun Screensaver(titles: () -> Map<String, String>) {
@@ -277,13 +277,23 @@ private fun SlideshowPage(icon: MemcardCovers.ShowIcon, seed: Int) {
     val random = remember(seed, icon.key) { Random(icon.key.hashCode() * 31 + seed) }
     val from = remember(seed, icon.key) { floatArrayOf(random.nextFloat() - 0.5f, random.nextFloat() - 0.5f) }
     val to = remember(seed, icon.key) { floatArrayOf(random.nextFloat() - 0.5f, random.nextFloat() - 0.5f) }
-    val drift = remember(seed, icon.key) { Animatable(0f) }
-    LaunchedEffect(drift) { drift.animateTo(1f, tween(HOLD_MS + 2 * FADE_MS, easing = LinearEasing)) }
+    // Stepped on the icons' beat rather than animated every refresh: it moves a few pixels a second,
+    // and a per-refresh animation kept the whole screen redrawing at the panel's 120 Hz for it.
+    var drift by remember(seed, icon.key) { mutableFloatStateOf(0f) }
+    LaunchedEffect(seed, icon.key) {
+        val start = SystemClock.uptimeMillis()
+        val total = (HOLD_MS + 2 * FADE_MS).toFloat()
+        while (isActive && drift < 1f) {
+            val now = SystemClock.uptimeMillis()
+            drift = ((now - start) / total).coerceAtMost(1f)
+            delay(DRIFT_STEP_MS - now % DRIFT_STEP_MS)
+        }
+    }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         background?.let {
             Image(it, contentDescription = null, contentScale = ContentScale.FillBounds, modifier = Modifier.fillMaxSize().alpha(0.45f))
         }
-        val t = drift.value
+        val t = drift
         val dx = maxWidth * 0.36f * (from[0] + (to[0] - from[0]) * t)
         val dy = maxHeight * 0.22f * (from[1] + (to[1] - from[1]) * t)
         val side = min(maxWidth, maxHeight) * 0.56f
