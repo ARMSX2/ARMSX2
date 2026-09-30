@@ -2331,18 +2331,14 @@ struct MenuTabView: View {
         case .activate:
             let focusedIndex = controllerTabFocusState.focusedIndex
             let transitionsTab = selectedTab != focusedIndex
+            // Cross opens the tab and moves into its page, as L1 and R1 do from a page.
             if selectedTab == focusedIndex {
                 if focusedIndex == 2 {
                     settingsRootResetRequest += 1
                 }
+                scheduleControllerContentEntry(for: focusedIndex)
             } else {
-                // Cross selects this tab and leaves the bar as focus owner.
-                // Up is the explicit transition into the selected page.
-                selectTab(
-                    focusedIndex,
-                    playsAudio: false,
-                    entersControllerContent: false
-                )
+                selectTab(focusedIndex, playsAudio: false)
             }
             controllerInput.playFeedback(
                 transitionsTab ? .tabTransition : .activate
