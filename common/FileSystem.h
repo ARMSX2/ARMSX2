@@ -127,6 +127,9 @@ namespace FileSystem
 	/// Open a content:// URI (passed through from the Java SAF layer) and return
 	/// its raw fd. Defined in the Android JNI layer (native-lib.cpp).
 	int OpenFDFileContent(const char* filename);
+	/// Enumerate CHD siblings through the granted Android document tree. Returned
+	/// paths are document URIs; their opaque IDs need not have file extensions.
+	std::vector<std::string> FindContentChdSiblings(const char* filename);
 	/// Create a directory tree via the Java File API (NativeApp.createDirectoryPath).
 	/// Fallback for when libc mkdir() is denied on FUSE-emulated external storage
 	/// (user-picked custom data folders) despite all-files access. Returns true if

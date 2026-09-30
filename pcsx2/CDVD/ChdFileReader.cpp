@@ -272,11 +272,20 @@ static chd_file* OpenCHD(const std::string& filename, FileSystem::ManagedCFilePt
 	// Have to do *.* and filter on the extension manually because Linux is case sensitive.
 	chd_file* parent_chd = nullptr;
 	const std::string parent_dir(Path::GetDirectory(filename));
+	// SAF document IDs are opaque (and may contain encoded slashes). Neither
+	// GetDirectory() nor an OS directory iterator can find their siblings.
+	bool content_uri = false;
+#if defined(__ANDROID__)
+	content_uri = filename.starts_with("content://");
+#endif
 	const std::unique_lock hash_cache_lock(s_chd_hash_cache_mutex);
 
 	// Memoize which hashes came from what files, to avoid reading them repeatedly.
 	for (auto it = s_chd_hash_cache.begin(); it != s_chd_hash_cache.end(); ++it)
 	{
+		// Ordinary path directory comparisons do not describe a SAF directory.
+		if (content_uri)
+			break;
 		if (!StringUtil::compareNoCase(parent_dir, Path::GetDirectory(it->first)))
 			continue;
 
@@ -308,11 +317,26 @@ static chd_file* OpenCHD(const std::string& filename, FileSystem::ManagedCFilePt
 	{
 		// Look for files in the same directory as the chd.
 		FileSystem::FindResultsArray parent_files;
-		FileSystem::FindFiles(
-			parent_dir.c_str(), "*.*", FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_HIDDEN_FILES | FILESYSTEM_FIND_KEEP_ARRAY, &parent_files);
+#if defined(__ANDROID__)
+		if (content_uri)
+		{
+			for (std::string& sibling : FileSystem::FindContentChdSiblings(filename.c_str()))
+			{
+				FILESYSTEM_FIND_DATA fd{};
+				fd.FileName = std::move(sibling);
+				parent_files.push_back(std::move(fd));
+			}
+		}
+		else
+#endif
+		{
+			FileSystem::FindFiles(
+				parent_dir.c_str(), "*.*", FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_HIDDEN_FILES | FILESYSTEM_FIND_KEEP_ARRAY, &parent_files);
+		}
 		for (FILESYSTEM_FIND_DATA& fd : parent_files)
 		{
-			if (!StringUtil::EndsWithNoCase(Path::GetExtension(fd.FileName), "chd"))
+			// The Android bridge already filters by the document's display name.
+			if (!content_uri && !StringUtil::EndsWithNoCase(Path::GetExtension(fd.FileName), "chd"))
 				continue;
 
 			// Re-check the header, it might have changed since we last opened.
@@ -321,12 +345,15 @@ static chd_file* OpenCHD(const std::string& filename, FileSystem::ManagedCFilePt
 			if (!parent_fp || chd_read_header_file(parent_fp.get(), &parent_header) != CHDERR_NONE)
 				continue;
 
-			// Don't duplicate in the cache. But update it, in case the file changed.
-			auto cache_it = std::find_if(s_chd_hash_cache.begin(), s_chd_hash_cache.end(), [&fd](const auto& it) { return it.first == fd.FileName; });
-			if (cache_it != s_chd_hash_cache.end())
-				std::memcpy(&cache_it->second, &parent_header, sizeof(parent_header));
-			else
-				s_chd_hash_cache.emplace_back(fd.FileName, parent_header);
+			if (!content_uri)
+			{
+				// Don't duplicate in the cache. But update it, in case the file changed.
+				auto cache_it = std::find_if(s_chd_hash_cache.begin(), s_chd_hash_cache.end(), [&fd](const auto& it) { return it.first == fd.FileName; });
+				if (cache_it != s_chd_hash_cache.end())
+					std::memcpy(&cache_it->second, &parent_header, sizeof(parent_header));
+				else
+					s_chd_hash_cache.emplace_back(fd.FileName, parent_header);
+			}
 
 			if (!IsHeaderParentCHD(header, parent_header))
 				continue;

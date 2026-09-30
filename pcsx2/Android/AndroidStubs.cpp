@@ -33,6 +33,11 @@
 // frontend's retro_rumble_interface) instead of the JNI one, so nothing
 // declares it in this build and a stub would only be a symbol nobody names.
 
+std::vector<std::string> FileSystem::FindContentChdSiblings(const char* filename)
+{
+	return {};
+}
+
 int FileSystem::OpenFDFileContent(const char* filename)
 {
 	return -1;

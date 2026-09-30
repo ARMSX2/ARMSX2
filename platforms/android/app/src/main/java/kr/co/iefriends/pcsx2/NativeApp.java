@@ -1034,6 +1034,11 @@ public class NativeApp {
 	}
 
 	// Call jni
+	public static String[] findSiblingChds(String uriString) {
+		Context context = getContext();
+		return context != null ? ContentChdFiles.findSiblings(context.getContentResolver(), Uri.parse(uriString)) : new String[0];
+	}
+
 	public static int openContentUri(String uriString) {
 		Context _context = getContext();
 		if(_context != null) {

@@ -106,6 +106,7 @@ namespace Common
 namespace FileSystem
 {
 	int OpenFDFileContent(const char* filename) { return -1; }
+	std::vector<std::string> FindContentChdSiblings(const char* filename) { return {}; }
 	bool CreateDirectoryViaJava(const char* path) { return false; }
 	bool CreateFileViaJava(const char* path) { return false; }
 }
