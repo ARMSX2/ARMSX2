@@ -389,3 +389,69 @@ TEST_F(GSSplitSeamStalled, DisplayBlitIsNotCountedForABufferDisplayedLater)
 
 	EXPECT_EQ(g_perfmon.GetDisplayFramebufferSpriteBlits(), 0);
 }
+
+namespace
+{
+	/// A bare parser object, to set up draw-buffer slots directly.
+	class DrawBufferProbe final : public GSState
+	{
+	public:
+		void Draw() override {}
+
+		// Grows slot `i` once past the size every slot starts at.
+		void GrowSlot(int i)
+		{
+			m_vertex = &m_vertex_buffers[i];
+			m_index = &m_index_buffers[i];
+			GrowVertexBuffer();
+		}
+
+		// Slot 0 empty, slot 1 current and holding `count` vertices and indices.
+		void PendInSecondSlot(u32 count)
+		{
+			m_used_buffers_idx = 2;
+			m_current_buffer_idx = 1;
+			m_vertex_buffers[0].head = m_vertex_buffers[0].tail = m_vertex_buffers[0].next = 0;
+			m_index_buffers[0].tail = 0;
+
+			GSVertexBuff& vb = m_vertex_buffers[1];
+			GSIndexBuff& ib = m_index_buffers[1];
+			for (u32 n = 0; n < count; n++)
+			{
+				std::memset(&vb.buff[n], 0, sizeof(GSVertex));
+				vb.buff[n].XYZ.Z = n;
+				ib.buff[n] = static_cast<u16>(n);
+			}
+			vb.head = 0;
+			vb.tail = count;
+			vb.next = count;
+			ib.tail = count;
+		}
+
+		const GSVertexBuff& VertexSlot(int i) const { return m_vertex_buffers[i]; }
+		const GSIndexBuff& IndexSlot(int i) const { return m_index_buffers[i]; }
+	};
+} // namespace
+
+// With draw buffering on, ResetDrawBufferIdx moves a pending draw from a later slot down into an
+// empty earlier one. The earlier slot's arrays can be smaller than what is pending (slots grow on
+// their own, and the split's flush trades a slot's arrays for a pool node's), so the move must
+// not copy into them. After the move the first slot holds the draw in arrays large enough for it.
+TEST(GSDrawBufferCompaction, MovesAPendingDrawLargerThanTheEmptySlot)
+{
+	DrawBufferProbe probe;
+	probe.GrowSlot(1);
+	const u32 small = probe.VertexSlot(0).maxcount;
+	ASSERT_GT(probe.VertexSlot(1).maxcount, small);
+
+	const u32 count = small + 100;
+	probe.PendInSecondSlot(count);
+	probe.ResetDrawBufferIdx();
+
+	const auto& vb = probe.VertexSlot(0);
+	ASSERT_EQ(vb.tail, count);
+	EXPECT_GE(vb.maxcount, count);
+	EXPECT_EQ(probe.IndexSlot(0).tail, count);
+	EXPECT_EQ(vb.buff[count - 1].XYZ.Z, count - 1);
+	EXPECT_EQ(probe.IndexSlot(0).buff[count - 1], static_cast<u16>(count - 1));
+}

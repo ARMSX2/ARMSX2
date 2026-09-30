@@ -629,13 +629,18 @@ void GSState::ResetDrawBufferIdx()
 				continue;
 			}
 
-			memcpy(m_vertex_buffers[entry_ptr].buff, m_vertex_buffers[i].buff, sizeof(GSVertex) * m_vertex_buffers[i].tail);
+			// Hand the pending arrays to the empty slot rather than copying into its own. Slots
+			// grow independently, and on the split every flush exchanges a slot's arrays for a
+			// pool node's, so the destination's arrays can be smaller than what is pending.
+			std::swap(m_vertex_buffers[entry_ptr].buff, m_vertex_buffers[i].buff);
+			std::swap(m_vertex_buffers[entry_ptr].buff_copy, m_vertex_buffers[i].buff_copy);
+			std::swap(m_vertex_buffers[entry_ptr].maxcount, m_vertex_buffers[i].maxcount);
+			std::swap(m_index_buffers[entry_ptr].buff, m_index_buffers[i].buff);
 
 			m_vertex_buffers[entry_ptr].head = m_vertex_buffers[i].head;
 			m_vertex_buffers[entry_ptr].tail = m_vertex_buffers[i].tail;
 			m_vertex_buffers[entry_ptr].next = m_vertex_buffers[i].next;
 
-			memcpy(m_index_buffers[entry_ptr].buff, m_index_buffers[i].buff, sizeof(u16) * m_index_buffers[i].tail);
 			m_index_buffers[entry_ptr].tail = m_index_buffers[i].tail;
 
 			if (m_vertex_buffers[entry_ptr].tail != 0)
