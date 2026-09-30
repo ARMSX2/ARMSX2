@@ -756,7 +756,9 @@ int GSfreeze(FreezeAction mode, freezeData* data)
 	{
 		// Since Defrost doesn't do a hardware reset (since it would be clearing
 		// local memory just before it's overwritten), we have to manually wipe
-		// out the current textures.
+		// out the current textures. Queued draws first: the back thread may be
+		// mid-draw on the device.
+		g_gs_renderer->DrainBackQueue();
 		g_gs_device->ClearCurrent();
 
 		return GSParseTarget()->Defrost(data);
