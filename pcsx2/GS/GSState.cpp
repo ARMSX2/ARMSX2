@@ -4747,6 +4747,11 @@ void GSState::ExecClutLoadRecord(const GSBackQueue::ClutLoadRecord& rec)
 		InvalidateLocalMem(BITBLTBUF, r, true);
 	}
 
+	// The load decision (which palette is current, and that it is clean) was recorded on the
+	// submitting object. With multi-threading on that is the front, and the draw-time palette
+	// readers on this object (CSM2 offsets, PossibleCLUTDraw) need it too. With it off this
+	// repeats the same assignment.
+	m_mem.m_clut.WriteDecision(rec.TEX0, rec.TEXCLUT);
 	m_mem.m_clut.WriteLoad(rec.TEX0, rec.TEXCLUT);
 }
 
