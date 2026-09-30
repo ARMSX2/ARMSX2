@@ -188,6 +188,8 @@ struct SaveStatesPanel: View {
             preferredInitialFocusLabel: focusOverride ?? (overlayOpen ? nil : targetRows.first?.first?.id),
             declaredTargetOrder: graph.order
         )
+        // The keyboard has its own text bar; the Rename card under it only got in the way.
+        .opacity(keyboardRequest == nil ? 1 : 0)
         .fullScreenCover(item: $keyboardRequest) { _ in
             OrbitKeysKeyboardView(
                 title: settings.localized("Rename"),
