@@ -56,7 +56,9 @@ struct OrbitKeysKeyboardView: View {
       let presentationSpacing: CGFloat = previewHeight > 0 ? 10 : 0
 
       ZStack {
-        Color.clear
+        // The cover is see-through, so without a backdrop the panel that opened the keyboard
+        // shows between its parts and its text bar lands on that panel's own field.
+        Color.black.opacity(0.82)
           .ignoresSafeArea()
           .contentShape(Rectangle())
           .onTapGesture(perform: model.commitAndClose)
