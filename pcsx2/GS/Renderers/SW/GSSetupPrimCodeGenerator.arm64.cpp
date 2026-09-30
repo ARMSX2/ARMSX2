@@ -225,6 +225,50 @@ void GSSetupPrimCodeGenerator::Texture()
 	// pixel walks nowhere and does not trail.
 	//
 
+	if (m_sel.stqplane)
+	{
+		// The console's S, T and Q planes (GSPerspectivePlane.h). dscan.t holds the
+		// steps as integers, in units of g/2^14, already what the accumulator adds per
+		// pixel; nothing is floored here. There is no coordinate lag on this route (see
+		// CSetupPrim), and the lane offsets are the step times each lane's distance from
+		// the span's anchor. Every lane wraps at 32 bits, as the accumulator does.
+		//
+		// v0 holds dscan.t.
+		armAsm->Movi(_vscratch.V4S(), 0);
+		armAsm->Str(_vscratch, _local(tclag.u));
+		armAsm->Str(_vscratch, _local(tclag.v));
+
+		// m_local.d4.stq = step * 4;
+		armAsm->Shl(v2.V4S(), v0.V4S(), 2);
+		armAsm->Str(v2, MemOperand(_locals, offsetof(GSScanlineLocalData, d4.stq)));
+
+		armAsm->Mov(_scratchaddr, reinterpret_cast<intptr_t>(g_const.m_lane));
+
+		for (int j = 0; j < 3; j++)
+		{
+			// GSVector4i ds = step.xxxx(), dt = step.yyyy(), dq = step.zzzz();
+
+			armAsm->Dup(v2.V4S(), v0.V4S(), j);
+
+			for (int i = 0; i < (m_sel.notest ? 1 : 4); i++)
+			{
+				// m_local.d[i].s/t/q = ds/dt/dq * m_lane[i];
+
+				armAsm->Ldr(_vscratch, MemOperand(_scratchaddr, i * sizeof(g_const.m_lane[0])));
+				armAsm->Mul(v1.V4S(), v2.V4S(), _vscratch.V4S());
+
+				switch (j)
+				{
+					case 0: armAsm->Str(v1, _local(d[i].s)); break;
+					case 1: armAsm->Str(v1, _local(d[i].t)); break;
+					case 2: armAsm->Str(v1, _local(d[i].q)); break;
+				}
+			}
+		}
+
+		return;
+	}
+
 	if (m_sel.uvwalk)
 	{
 		// The texel accumulator is seed + n * floor(step) on a 12.15 grid

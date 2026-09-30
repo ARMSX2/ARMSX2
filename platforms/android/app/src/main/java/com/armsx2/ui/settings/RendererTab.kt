@@ -114,19 +114,17 @@ fun RendererTab(state: MutableState<Settings>) {
             // one, so the control lives with the driver rather than buried lower in the tab.
             ClearShaderCacheRow()
             SettingsDivider()
-            // GS Multi-threading (GV7 front/back split), placed right under the
-            // renderer/driver picker. Off = today's single-threaded path (the
-            // default — opt-in); On = the GS runs on a dedicated back thread
-            // (Pipelined, enum value 3). The enum's Inline/Lockstep rungs (1/2)
-            // are dev-only and deliberately not exposed. Restart-required (in
-            // RestartOptionsAreEqual); native-lib snapshots the field across a
-            // live apply, so it only takes effect on the next game boot.
+            // GS Multi-threading (the GS front/back thread split), placed right under the
+            // renderer/driver picker. Off (0, the default) = single-threaded GS; on (any
+            // other value; written as 1, older builds wrote 3) = GS rendering on a second
+            // thread. Restart-required (in RestartOptionsAreEqual); native-lib snapshots the
+            // field across a live apply, so it only takes effect on the next game boot.
             ToggleRow(
                 str("renderer.gsBackThread.label"),
-                s.display.gsBackThreadMode >= 3,
+                s.display.gsBackThreadMode != 0,
                 description = str("renderer.gsBackThread.description"),
             ) {
-                apply(s.copy(display = s.display.copy(gsBackThreadMode = if (it) 3 else 0)))
+                apply(s.copy(display = s.display.copy(gsBackThreadMode = if (it) 1 else 0)))
             }
             SettingsDivider()
             // A value that matches no preset is a CUSTOM one (set below, per-game, or from an INI).

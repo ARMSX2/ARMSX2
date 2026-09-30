@@ -50,6 +50,9 @@ add_pcsx2_test(gs_vertex_tests
 	gs_sw_stq_blit_tests.cpp
 	gs_sw_coordinate_field_tests.cpp
 	gs_sw_coordinate_grain_tests.cpp
+	gs_sw_sprite_ramp_tests.cpp
+	gs_sw_perspective_plane_tests.cpp
+	gs_sw_perspective_plane_scanline_tests.cpp
 	gs_sw_scanline_lod_tests.cpp
 	gs_sw_textured_block_width_tests.cpp
 	gs_sw_depth_walk_tests.cpp

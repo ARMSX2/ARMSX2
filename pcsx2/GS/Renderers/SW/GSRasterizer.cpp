@@ -9,6 +9,7 @@
 #include "GS/Renderers/SW/GSColourWalk.h"
 #include "GS/Renderers/SW/GSDepthWalk.h"
 #include "GS/Renderers/SW/GSCoordinateWalk.h"
+#include "GS/Renderers/SW/GSPerspectivePlane.h"
 #include "GS/GSExtra.h"
 #include "PerformanceMetrics.h"
 #include "VMManager.h"
@@ -1067,7 +1068,8 @@ struct GSTriangleSetup
 };
 
 __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index, const GSVector4& fscissor_y,
-	GSTriangleSetup& out, GSColourWalk& cwalk, int block_width, const GSCoordinateGrain* grain)
+	GSTriangleSetup& out, GSColourWalk& cwalk, int block_width, const GSCoordinateGrain* grain,
+	GSPerspectivePlaneWalk* pwalk, const s32* plane_shift)
 {
 	GSVector4 y0011 = vertex[index[0]].p.yyyy(vertex[index[1]].p);
 	GSVector4 y1221 = vertex[index[1]].p.yyyy(vertex[index[2]].p).xzzx();
@@ -1171,6 +1173,50 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 	{
 		out.dscan.t = GSCoordinateGradientOnGrain(out.dscan.t, *grain,
 			GSSetupInvertsExactly(GSTriangleTwiceArea(v0.p, v1.p, v2.p)));
+	}
+
+	// A perspective triangle draws the console's S, T and Q planes instead
+	// (GSPerspectivePlane.h). The plane is built from the GIF's own values, so S and T
+	// come back out of the 2^(16 + TW) and 2^(16 + TH) the vertex conversion scaled
+	// them by, exactly. The per-pixel steps go into dscan as integers in units of
+	// g/2^14, in the lanes that hold s, t and q as floats otherwise; the row seeds
+	// (DrawTriangleSection) are integers the same way. Fog stays a float in lane w.
+	if (pwalk)
+	{
+		const GSVertexSW* sorted[3] = {&v0, &v1, &v2};
+		s32 x[3], y[3];
+		float st[3], tt[3], qt[3];
+
+		// Exact powers of two, built from the exponent field: 2^n for n in [-126, 127].
+		const auto pow2f = [](int n) {
+			const u32 bits = static_cast<u32>(n + 127) << 23;
+			float f;
+
+			std::memcpy(&f, &bits, sizeof(f));
+
+			return f;
+		};
+
+		const float unscale_s = pow2f(-plane_shift[0]);
+		const float unscale_t = pow2f(-plane_shift[1]);
+
+		for (int k = 0; k < 3; k++)
+		{
+			x[k] = static_cast<s32>(sorted[k]->p.x * 16.0f);
+			y[k] = static_cast<s32>(sorted[k]->p.y * 16.0f);
+			st[k] = sorted[k]->t.x * unscale_s;
+			tt[k] = sorted[k]->t.y * unscale_t;
+			qt[k] = sorted[k]->t.z;
+		}
+
+		GSPerspectivePlaneSetup(x, y, st, tt, qt, pwalk->plane);
+
+		pwalk->stscale = GSVector4(pow2f(plane_shift[0]), pow2f(plane_shift[1]), 1.0f, 1.0f);
+		pwalk->qscale = GSVector4(pow2f(std::max(pwalk->plane.exp - (GS_PLANE_GRID_BITS + 2), -126)));
+
+		out.dscan.t = GSVector4::cast(GSVector4i(GSPerspectivePlaneStep(pwalk->plane, 0),
+							GSPerspectivePlaneStep(pwalk->plane, 1), GSPerspectivePlaneStep(pwalk->plane, 2), 0))
+		                  .blend32<8>(out.dscan.t);
 	}
 
 	// One anchor, walk direction and block grid for the whole primitive, both
@@ -1283,9 +1329,13 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 		index = grained_index;
 	}
 
+	// The plane and the affine grain are for different routes: the grain is gated on a
+	// constant Q of one, the plane on every other Q.
+	const bool takes_plane = m_local.gd->sel.stqplane != 0;
+
 	GSTriangleSetup s;
 	if (!SetupTriangle(vertex, index, m_fscissor_y, s, m_local.cwalk, block_width,
-			takes_grain ? &grain : nullptr))
+			takes_grain ? &grain : nullptr, takes_plane ? &m_local.pwalk : nullptr, m_local.gd->plane_shift))
 		return;
 
 	for (int n = 0; n < s.nsections; n++)
@@ -1388,8 +1438,23 @@ void GSRasterizer::DrawTriangleSection(int top, int bottom, int prim_top, GSVert
 
 			e->p.F64[1] = edge.p.F64[1] + dedge.p.F64[1] * dy + dscan.p.F64[1] * prestep
 			              - GSDepthWalkBias(dscan.p.F64[1], dedge.p.F64[1], top != prim_top);
-			e->t = (ledge.t + dedge.t * ldy + dscan.t * lprestep)
-			           .blend32<8>(GSColourWalkRowSeed(cwalk, cwalk.f, left, top));
+
+			if (m_local.gd->sel.stqplane)
+			{
+				// The plane's value at the row's first pixel, exactly, in the lanes s,
+				// t and q (GSPerspectivePlane.h); nothing here is a float.
+				const GSPerspectivePlane& plane = m_local.pwalk.plane;
+
+				e->t = GSVector4::cast(GSVector4i(GSPerspectivePlaneValue(plane, 0, left, top),
+							GSPerspectivePlaneValue(plane, 1, left, top), GSPerspectivePlaneValue(plane, 2, left, top), 0))
+				           .blend32<8>(GSColourWalkRowSeed(cwalk, cwalk.f, left, top));
+			}
+			else
+			{
+				e->t = (ledge.t + dedge.t * ldy + dscan.t * lprestep)
+				           .blend32<8>(GSColourWalkRowSeed(cwalk, cwalk.f, left, top));
+			}
+
 			e->c = GSColourWalkRowSeed(cwalk, cwalk.c, left, top);
 
 			AddScanlineInfo(e++, pixels, left, top);
@@ -1489,9 +1554,8 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 
 	scan.t = (scan.t + dt * prestep).xyzw(scan.t);
 
-	// A UV sprite's coordinate ramp runs a sixteenth of a texel low on any axis
-	// whose extent is not a power of two, from that axis's second pixel on
-	// (GSCoordinateWalk.h).
+	// A UV sprite's coordinate ramp runs a hair low on any axis whose extent is not
+	// a power of two, from that axis's second pixel on (GSCoordinateWalk.h).
 	const float ramp_u = m_local.gd->sel.fst ? GSSpriteRampBias(dt.x, extent.width()) : 0.0f;
 	const float ramp_v = m_local.gd->sel.fst ? GSSpriteRampBias(dt.y, extent.height()) : 0.0f;
 
@@ -1506,7 +1570,7 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 			// Only the sprite's own first row is exempt, so a scissored-off top
 			// leaves the term on every drawn row.
 			if (ramp_v != 0.0f && r.top != extent.y)
-				row.t -= GSVector4(0.0f, ramp_v, 0.0f, 0.0f);
+				row.t.y = GSCoordinateLowered(row.t.y, ramp_v);
 
 			if (ramp_u == 0.0f)
 			{
@@ -1516,7 +1580,7 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 			{
 				// The sprite's own first column is outside the scissor, so every
 				// pixel this row draws is past it.
-				row.t -= GSVector4(ramp_u, 0.0f, 0.0f, 0.0f);
+				row.t.x = GSCoordinateLowered(row.t.x, ramp_u);
 				DrawScanline(r.width(), r.left, r.top, row);
 			}
 			else if (m_local.gd->sel.notest)
@@ -1524,8 +1588,8 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 				// ⚠️ A notest scanline indexes its frame/depth address table by
 				// `left >> 2` and requires an aligned left, so the span cannot be
 				// split here. The term goes in the seed, leaving the first column a
-				// sixteenth low (hardware has it exact). Accepted inaccuracy.
-				row.t -= GSVector4(ramp_u, 0.0f, 0.0f, 0.0f);
+				// hair low (hardware has it exact). Accepted inaccuracy.
+				row.t.x = GSCoordinateLowered(row.t.x, ramp_u);
 				DrawScanline(r.width(), r.left, r.top, row);
 			}
 			else
@@ -1536,7 +1600,7 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 				if (r.width() > 1)
 				{
 					row.t += dscan.t;
-					row.t -= GSVector4(ramp_u, 0.0f, 0.0f, 0.0f);
+					row.t.x = GSCoordinateLowered(row.t.x, ramp_u);
 					DrawScanline(r.width() - 1, r.left + 1, r.top, row);
 				}
 			}

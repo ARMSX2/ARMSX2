@@ -281,36 +281,31 @@ static void GSApplyCopyRoadBlendingCap(Pcsx2Config::GSOptions& config)
 	config.AccurateBlendingUnit = static_cast<AccBlendLevel>(level);
 }
 
-// Resolves the back-thread setting for the renderer about to open, into GSConfig only, for the same
+// Resolves the GS multi-threading setting for the renderer about to open, into GSConfig only, for the same
 // reason as the blending cap above: it depends on the device and the download mode, so it is
 // re-derived every time a renderer opens and never written back into the player's settings. Must run before the renderer
 // is constructed, because the renderer's constructor starts the back thread.
 static void GSResolveBackThreadMode(Pcsx2Config::GSOptions& config, GSRendererType renderer)
 {
 	GSBackThreadInputs in;
-	in.requested = config.BackThreadMode;
+	in.requested = config.BackThread;
 	in.hardware_renderer = (renderer != GSRendererType::SW && renderer != GSRendererType::Null);
 	in.vulkan = g_gs_device && g_gs_device->GetRenderAPI() == RenderAPI::Vulkan;
 	in.download_mode = config.HWDownloadMode;
 
-	const GSBackThreadDecision decision = GSDecideBackThreadMode(in);
-	config.BackThreadModeResolved = decision.mode;
+	const GSBackThreadDecision decision = GSDecideBackThread(in);
+	config.BackThreadResolved = decision.on;
 
-	// A request for the split that does not get it is worth a warning.
-	if (decision.mode != config.BackThreadMode)
-	{
-		Console.Warning("GS: back thread %s, not pipelined (%s).", GSBackThreadModeName(decision.mode),
-			GSBackThreadReasonText(decision.reason));
-	}
+	// A request for the split that does not get it is worth a warning. The "GS: back thread"
+	// wording is what measurement scripts grep for.
+	if (decision.on != config.BackThread)
+		Console.Warning("GS: back thread off, not pipelined (%s).", GSBackThreadReasonText(decision.reason));
 	else
-	{
-		Console.WriteLn("GS: back thread %s (%s).", GSBackThreadModeName(decision.mode),
-			GSBackThreadReasonText(decision.reason));
-	}
+		Console.WriteLn("GS: back thread %s (%s).", decision.on ? "pipelined" : "off", GSBackThreadReasonText(decision.reason));
 }
 
 // GV7-1d-ii: the front parser object of the two-object split (GSState.h).
-// Non-null only when GSBackThreadMode::Pipelined engaged; all GIF-parse entry
+// Non-null only when GS multi-threading engaged; all GIF-parse entry
 // points below route to it, while draw/present/TC stay on g_gs_renderer.
 std::unique_ptr<GSFrontState> g_gs_front;
 
@@ -377,7 +372,7 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 	// engaged. GSResolveBackThreadMode has already turned a pipelined request into
 	// Off where it cannot pipeline (a non-Vulkan HW device, Unsynchronized
 	// downloads); the check below is what remains of the original refusal.
-	if (GSConfig.BackThreadModeResolved == GSBackThreadMode::Pipelined && g_gs_renderer->IsBackThreadRunning())
+	if (GSConfig.BackThreadResolved && g_gs_renderer->IsBackThreadRunning())
 	{
 		// Which thread performs the readback is the wrong question here; what it reads is the
 		// right one. Unsynchronized takes GS local memory directly, with no lock and no drain,
@@ -401,7 +396,10 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 
 		if (ee_thread_reads_live_memory && GSConfig.UseHardwareRenderer())
 		{
-			Console.Warning("GS: pipelined mode is unsupported with EE-thread reads of live GS memory — running lockstep.");
+			// Without a front object nothing produces records, so the renderer parses and draws on
+			// this thread exactly as with multi-threading off.
+			g_gs_renderer->StopBackThread();
+			Console.Warning("GS: back thread off, not pipelined (EE-thread reads of live GS memory).");
 		}
 		else
 		{
@@ -606,11 +604,15 @@ void GSclose()
 
 void GSreset(bool hardware_reset)
 {
-	// Front first: its Reset flushes pending buffered draws into records; the
-	// back's Reset then drains (executing them, like serial pre-reset draws)
-	// before resetting memory/TC.
+	// Front first: its Reset flushes pending buffered draws into records. They
+	// must finish before the back's Reset runs, because GSRendererHW::Reset
+	// reads back and removes every texture-cache entry and GSRenderer::Reset
+	// clears the current display texture before GSState::Reset drains.
 	if (g_gs_front)
+	{
 		g_gs_front->Reset(hardware_reset);
+		g_gs_renderer->DrainBackQueue();
+	}
 	g_gs_renderer->Reset(hardware_reset);
 }
 
@@ -754,7 +756,9 @@ int GSfreeze(FreezeAction mode, freezeData* data)
 	{
 		// Since Defrost doesn't do a hardware reset (since it would be clearing
 		// local memory just before it's overwritten), we have to manually wipe
-		// out the current textures.
+		// out the current textures. Queued draws first: the back thread may be
+		// mid-draw on the device.
+		g_gs_renderer->DrainBackQueue();
 		g_gs_device->ClearCurrent();
 
 		return GSParseTarget()->Defrost(data);
@@ -1097,19 +1101,21 @@ void GSgetTitleStats(std::string& info)
 
 void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
 {
+	// GV7-2: everything below mutates state the back thread may be reading
+	// mid-draw: GSConfig itself (read on every draw, and its strings are moved
+	// out just below), settings, ImGui font textures, TC purges. The front only
+	// parses on this (MTGS) thread, so a single drain up front quiesces the back
+	// thread for the whole apply.
+	if (g_gs_renderer)
+		g_gs_renderer->DrainBackQueue();
+
 	Pcsx2Config::GSOptions old_config(std::move(GSConfig));
 	GSConfig = new_config;
-	// The resolved back-thread mode belongs to the open renderer. A changed request reopens it
-	// below (BackThreadMode is a restart option), which resolves again.
-	GSConfig.BackThreadModeResolved = old_config.BackThreadModeResolved;
+	// The resolved back-thread setting belongs to the open renderer. A changed request reopens it
+	// below (BackThread is a restart option), which resolves again.
+	GSConfig.BackThreadResolved = old_config.BackThreadResolved;
 	if (!g_gs_renderer)
 		return;
-
-	// GV7-2: everything below mutates renderer/device state the back thread may
-	// be reading mid-draw (settings, ImGui font textures, TC purges). The front
-	// only parses on this (MTGS) thread, so a single drain up front quiesces the
-	// back thread for the whole apply.
-	g_gs_renderer->DrainBackQueue();
 
 	// Handle OSD scale changes by pushing a window resize through.
 	if (new_config.OsdScale != old_config.OsdScale)

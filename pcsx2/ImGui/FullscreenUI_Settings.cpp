@@ -3420,15 +3420,15 @@ void FullscreenUI::DrawGraphicsSettingsPage(SettingsInterface* bsi, bool show_ad
 				"EmuCore/GS", "HWDownloadMode", static_cast<int>(GSHardwareDownloadMode::Enabled), s_hw_download, std::size(s_hw_download),
 				true);
 		}
-		static constexpr const char* s_back_thread_modes[] = {
-			FSUI_NSTR("Disabled (Default)"),
-			FSUI_NSTR("Inline Records (Debug)"),
-			FSUI_NSTR("Lockstep (Debug)"),
-			FSUI_NSTR("Pipelined (Second GS Thread)"),
+		// An int list rather than a toggle: the key holds an integer (0 off, anything else on), and a
+		// toggle would write "true", which the integer read does not accept.
+		static constexpr const char* s_gs_multithreading[] = {
+			FSUI_NSTR("Disabled"),
+			FSUI_NSTR("Enabled"),
 		};
-		DrawIntListSetting(bsi, FSUI_ICONSTR(ICON_FA_MICROCHIP, "GS Back Thread"),
-			FSUI_CSTR("Pipelined splits GS emulation across two threads on multi-core systems. The debug modes are much slower — do not use them for play."),
-			"EmuCore/GS", "GSBackThreadMode", static_cast<int>(GSBackThreadMode::Off), s_back_thread_modes, std::size(s_back_thread_modes), true);
+		DrawIntListSetting(bsi, FSUI_ICONSTR(ICON_FA_MICROCHIP, "GS Multi-threading"),
+			FSUI_CSTR("Runs GS rendering on a second thread. Helps heavy rendering such as high upscaling; if a game shows graphics glitches, turn it back off."),
+			"EmuCore/GS", "GSBackThreadMode", 0, s_gs_multithreading, std::size(s_gs_multithreading), true);
 #if !defined(__APPLE__)
 		DrawIntListSetting(bsi, FSUI_ICONSTR(ICON_FA_EXPAND, "Allow Exclusive Fullscreen"),
 			FSUI_CSTR("Overrides the driver's heuristics for enabling exclusive fullscreen, or direct flip/scanout."), "EmuCore/GS",
@@ -6198,7 +6198,6 @@ TRANSLATE_NOOP("FullscreenUI", "Forces the use of FIFO over Mailbox presentation
 TRANSLATE_NOOP("FullscreenUI", "Uses a blit presentation model instead of flipping when using the Direct3D 11 graphics API. This usually results in slower performance, but may be required for some streaming applications, or to uncap framerates on some systems.");
 TRANSLATE_NOOP("FullscreenUI", "Displays additional, very high upscaling multipliers dependent on GPU and driver capability.");
 TRANSLATE_NOOP("FullscreenUI", "Changes synchronization behavior for GS downloads.");
-TRANSLATE_NOOP("FullscreenUI", "Pipelined splits GS emulation across two threads on multi-core systems. The debug modes are much slower — do not use them for play.");
 TRANSLATE_NOOP("FullscreenUI", "Overrides the driver's heuristics for enabling exclusive fullscreen, or direct flip/scanout.");
 TRANSLATE_NOOP("FullscreenUI", "Forces texture barrier functionality to the specified value.");
 TRANSLATE_NOOP("FullscreenUI", "Change the compression algorithm used when creating a GS dump.");
@@ -6630,6 +6629,8 @@ TRANSLATE_NOOP("FullscreenUI", "Half");
 TRANSLATE_NOOP("FullscreenUI", "Force Bilinear");
 TRANSLATE_NOOP("FullscreenUI", "Force Nearest");
 TRANSLATE_NOOP("FullscreenUI", "Disabled (Default)");
+TRANSLATE_NOOP("FullscreenUI", "GS Multi-threading");
+TRANSLATE_NOOP("FullscreenUI", "Runs GS rendering on a second thread. Helps heavy rendering such as high upscaling; if a game shows graphics glitches, turn it back off.");
 TRANSLATE_NOOP("FullscreenUI", "Enabled (Sprites Only)");
 TRANSLATE_NOOP("FullscreenUI", "Enabled (All Primitives)");
 TRANSLATE_NOOP("FullscreenUI", "Enabled (Exact Match)");
@@ -6649,9 +6650,6 @@ TRANSLATE_NOOP("FullscreenUI", "NxAGSS");
 TRANSLATE_NOOP("FullscreenUI", "Uncompressed");
 TRANSLATE_NOOP("FullscreenUI", "LZMA (xz)");
 TRANSLATE_NOOP("FullscreenUI", "Zstandard (zst)");
-TRANSLATE_NOOP("FullscreenUI", "Inline Records (Debug)");
-TRANSLATE_NOOP("FullscreenUI", "Lockstep (Debug)");
-TRANSLATE_NOOP("FullscreenUI", "Pipelined (Second GS Thread)");
 TRANSLATE_NOOP("FullscreenUI", "Top Left");
 TRANSLATE_NOOP("FullscreenUI", "Top Center");
 TRANSLATE_NOOP("FullscreenUI", "Top Right");
@@ -6836,7 +6834,6 @@ TRANSLATE_NOOP("FullscreenUI", "Disable Mailbox Presentation");
 TRANSLATE_NOOP("FullscreenUI", "Use Blit Swap Chain");
 TRANSLATE_NOOP("FullscreenUI", "Extended Upscaling Multipliers");
 TRANSLATE_NOOP("FullscreenUI", "Hardware Download Mode");
-TRANSLATE_NOOP("FullscreenUI", "GS Back Thread");
 TRANSLATE_NOOP("FullscreenUI", "Allow Exclusive Fullscreen");
 TRANSLATE_NOOP("FullscreenUI", "Override Texture Barriers");
 TRANSLATE_NOOP("FullscreenUI", "GS Dump Compression");

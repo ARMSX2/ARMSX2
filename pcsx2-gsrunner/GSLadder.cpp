@@ -69,21 +69,23 @@ namespace GSLadder
 		}
 
 		/// Runs on the GS thread, in order behind every packet queued before it.
-		void CaptureOnGSThread(u32 packet_index, u32 tag)
+		struct Rect { u32 bp, bw, psm, x, y, w, h; };
+
+		void CaptureOnGSThread(u32 packet_index, u32 tag, Rect rc)
 		{
 			GSRenderer* r = g_gs_renderer.get();
 			if (!r)
 				return;
 
-			const u32 w = s_opts.w;
-			const u32 h = s_opts.h;
+			const u32 w = rc.w;
+			const u32 h = rc.h;
 
 			OutDesc d = {};
-			d.bp = s_opts.bp;
-			d.bw = s_opts.bw;
-			d.psm = s_opts.psm;
-			d.x = s_opts.x;
-			d.y = s_opts.y;
+			d.bp = rc.bp;
+			d.bw = rc.bw;
+			d.psm = rc.psm;
+			d.x = rc.x;
+			d.y = rc.y;
 			d.w = w;
 			d.h = h;
 			d.tag = tag;
@@ -109,12 +111,22 @@ namespace GSLadder
 
 			// Ask for the download a game's own readback would trigger. A no-op under
 			// the software renderer, where local memory is already the result.
+			//
+			// ⚠️ Everything below addresses through `rc`, the rectangle THIS rung was
+			// asked for, and not through `s_opts`, the cadence rectangle. They are the
+			// same for a cadence rung and for a vsync rung, and they are different for
+			// every named rung whose region is not the cadence's -- which is what
+			// `-ladder-at` exists to take. Reading through the cadence base there
+			// silently returned a rung-sized window of the WRONG region under the
+			// named rung's descriptor: right shape, right tag, right packet, wrong
+			// memory. Measured on Stuntman, where a rung over 0x2d60 returned the
+			// frame buffer's words at (0,0) and nothing in the file said so.
 			GIFRegBITBLTBUF bb = {};
-			bb.SBP = s_opts.bp;
-			bb.SBW = s_opts.bw;
-			bb.SPSM = s_opts.psm;
-			r->InvalidateLocalMem(bb, GSVector4i(static_cast<int>(s_opts.x), static_cast<int>(s_opts.y),
-										 static_cast<int>(s_opts.x + w), static_cast<int>(s_opts.y + h)));
+			bb.SBP = rc.bp;
+			bb.SBW = rc.bw;
+			bb.SPSM = rc.psm;
+			r->InvalidateLocalMem(bb, GSVector4i(static_cast<int>(rc.x), static_cast<int>(rc.y),
+										 static_cast<int>(rc.x + w), static_cast<int>(rc.y + h)));
 
 			const u32* vm = r->m_mem.vm32();
 			s_pixels.resize(d.offset + d.bytes);
@@ -127,8 +139,8 @@ namespace GSLadder
 			{
 				for (u32 col = 0; col < w; col++)
 				{
-					const u32 addr = GSLocalMemory::PixelAddress32(static_cast<int>(s_opts.x + col),
-						static_cast<int>(s_opts.y + row), s_opts.bp, s_opts.bw);
+					const u32 addr = GSLocalMemory::PixelAddress32(static_cast<int>(rc.x + col),
+						static_cast<int>(rc.y + row), rc.bp, rc.bw);
 					dst[row * w + col] = vm[addr];
 				}
 			}
@@ -157,11 +169,24 @@ namespace GSLadder
 				s_frames++;
 
 			const bool rung = is_vsync || (s_opts.every != 0 && ((packet_index + 1) % s_opts.every) == 0);
-			if (!rung)
-				return;
 
-			const u32 tag = ++s_tag;
-			MTGS::RunOnGSThread([packet_index, tag]() { CaptureOnGSThread(packet_index, tag); });
+			const Rect cadence{s_opts.bp, s_opts.bw, s_opts.psm, s_opts.x, s_opts.y, s_opts.w, s_opts.h};
+			if (rung)
+			{
+				const u32 tag = ++s_tag;
+				MTGS::RunOnGSThread([packet_index, tag, cadence]() { CaptureOnGSThread(packet_index, tag, cadence); });
+			}
+
+			// ...and any checkpoint named for exactly this packet, with its own region.
+			for (size_t ai = 0; ai < s_opts.at.size(); ai++)
+			{
+				if (s_opts.at[ai].packet != packet_index)
+					continue;
+				const Rect rc{s_opts.at[ai].bp, s_opts.at[ai].bw, s_opts.at[ai].psm,
+					s_opts.at[ai].x, s_opts.at[ai].y, s_opts.at[ai].w, s_opts.at[ai].h};
+				const u32 tag = 0x20000u + static_cast<u32>(ai);
+				MTGS::RunOnGSThread([packet_index, tag, rc]() { CaptureOnGSThread(packet_index, tag, rc); });
+			}
 		}
 	} // namespace
 
@@ -201,11 +226,20 @@ namespace GSLadder
 		// then disagrees with the console at every rung for a reason that has nothing to
 		// do with either renderer. That is exactly what it did on the first run.
 		GSDumpReplayer::SetInitialStateHook(
-			[]() { MTGS::RunOnGSThread([]() { CaptureOnGSThread(0, 0); }); });
+			[]() {
+				const Rect rc{s_opts.bp, s_opts.bw, s_opts.psm, s_opts.x, s_opts.y, s_opts.w, s_opts.h};
+				MTGS::RunOnGSThread([rc]() { CaptureOnGSThread(0, 0, rc); });
+			});
 		GSDumpReplayer::SetPacketHook(&OnPacket);
 
 		LADDER_LOG("armed: base block %u, buffer width %u, format %u, %ux%u at (%u,%u), every %u packets\n",
 			opts.bp, opts.bw, opts.psm, opts.w, opts.h, opts.x, opts.y, opts.every);
+		for (size_t ai = 0; ai < opts.at.size(); ai++)
+		{
+			LADDER_LOG("  named rung %zu: after packet %u, base block %u, buffer width %u, format %u, %ux%u at (%u,%u)\n",
+				ai, opts.at[ai].packet, opts.at[ai].bp, opts.at[ai].bw, opts.at[ai].psm,
+				opts.at[ai].w, opts.at[ai].h, opts.at[ai].x, opts.at[ai].y);
+		}
 		return true;
 	}
 

@@ -23,8 +23,9 @@
 // draw buffering) → back (local memory, texture cache, draw, present) boundary.
 // Every record carries its register snapshot, so the consumer needs no live
 // register state machine. Records are built by the front-side seam functions
-// (FlushWrite / Move / ...) and consumed by GSState::Exec*Record — executed
-// inline today, and on the back thread once the GV7-1 queue lands.
+// (FlushWrite / Move / ...) and consumed by GSState::Exec*Record on the back
+// thread. With GS multi-threading off the seam functions call the Exec*Record
+// bodies directly and no record is built.
 // Seam classification: scratchpad/gv7-2026-07/SEAM-AUDIT.md.
 
 namespace GSBackQueue
@@ -61,6 +62,10 @@ namespace GSBackQueue
 		GIFRegBITBLTBUF blit;
 		GIFRegTRXPOS pos;
 		GIFRegTRXREG reg;
+		// Move() skips when XDIR is 3 and sets it to 3 when done. The back object's
+		// m_env is otherwise only refreshed by draw records, so without this every
+		// move after the first in a run with no draw between them is dropped.
+		GIFRegTRXDIR dir;
 		u64 draw_serial; // consumed once GV7-0d makes serials record-carried
 	};
 
@@ -118,7 +123,7 @@ namespace GSBackQueue
 	};
 
 	// GV7-1c: pooled transfer staging buffer (4MB, the GSTransferBuffer size).
-	// In record modes m_tr.buff aliases the current node's buffer: the front
+	// On the front, m_tr.buff aliases the current node's buffer: the front
 	// stages into it and TRANSFER records reference slices of it (disjoint
 	// ranges, so front-appends and back-reads never overlap). At the next
 	// transfer Init after any slice referenced the buffer, the front rotates to
@@ -217,7 +222,8 @@ namespace GSBackQueue
 	};
 
 	// End of frame: the whole VSync() body (Merge -> present -> capture ->
-	// perfmon frame tick) runs back-side.
+	// perfmon frame tick). Never queued: SubmitVsync drains the back thread and
+	// runs it on the MTGS thread.
 	struct VsyncRecord
 	{
 		u32 field;
@@ -386,10 +392,9 @@ namespace GSBackQueue
 	using RecordRing = SpscRing<RecordSlot, 512>;
 
 	// GV7-1d-ii: everything shared between the producing (front) and consuming
-	// (back) sides of the split. In single-object modes the GSState uses its own
-	// channel; under the two-object pipelined split the front parser object
-	// points at the back object's channel, so records, pool nodes, and drain
-	// waits all target one shared instance. The channel's storage owner (the
+	// (back) sides of the split. The front parser object points at the back
+	// object's channel, so records, pool nodes, and drain waits all target one
+	// shared instance. The channel's storage owner (the
 	// back object) frees the pooled arrays in its destructor; the producer must
 	// be destroyed or drained first.
 	struct Channel

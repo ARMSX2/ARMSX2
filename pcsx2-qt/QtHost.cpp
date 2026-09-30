@@ -983,7 +983,7 @@ void EmuThread::updatePerformanceMetrics(bool force)
 				              .arg(PerformanceMetrics::GetGSThreadUsage(), 0, 'f', 0);
 			}
 
-			// The GS figure above is the MTGS thread alone; under GSBackThreadMode >= Lockstep
+			// The GS figure above is the MTGS thread alone; with GS multi-threading on
 			// roughly half the GS work runs on a second thread this line would otherwise hide.
 			if (PerformanceMetrics::HasGSBackThread())
 				gs_stat += tr(" | GSB: %1%").arg(PerformanceMetrics::GetGSBackThreadUsage(), 0, 'f', 0);

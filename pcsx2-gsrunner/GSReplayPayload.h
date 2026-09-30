@@ -6,6 +6,7 @@
 #include "common/Pcsx2Defs.h"
 
 #include <string>
+#include <vector>
 
 /// Turns a recorded GS dump into a payload a PlayStation 2 can replay.
 ///
@@ -58,6 +59,22 @@ namespace GSReplayPayload
 		/// hundreds -- and a ladder is only worth running when the rungs are dense
 		/// enough to name a draw rather than a frame.
 		u32 ladder_every = 0;
+
+		/// A checkpoint placed after one named packet, with its own rectangle. The
+		/// cadence above reads one region over and over; these read wherever the
+		/// question is -- the render-target pages a later draw samples, or a CLUT
+		/// page -- and several can ride in one payload.
+		///
+		/// The index is the DUMP PACKET index, which is the number both arms already
+		/// agree on: gsrunner's `-ladder-every` counts the same packets and its rungs
+		/// are named by the same value, so neither side has to interpret the other's
+		/// draw numbering.
+		struct At
+		{
+			u32 packet;
+			u32 bp, bw, psm, x, y, w, h;
+		};
+		std::vector<At> at;
 	};
 
 	/// Emits `opts.output_path` from the dump at `dump_path`. Returns false and explains

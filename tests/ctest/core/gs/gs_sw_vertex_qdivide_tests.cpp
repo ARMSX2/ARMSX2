@@ -244,3 +244,24 @@ TEST(SwVertexQDivideTest, AConstantNonUnitQTriangleIsNotDivided)
 	EXPECT_FALSE(GSUseAffineRoute(GS_TRIANGLE_CLASS, true, 1.5f));
 	EXPECT_FALSE(GSUseVertexQDivide(GS_TRIANGLE_CLASS, false, true, 1.5f));
 }
+
+// Which triangles draw the console's own S, T and Q planes (GSPerspectivePlane.h), and
+// so must be left alone by the front end's texel rounding: a triangle on the
+// perspective route that is not AA1. The affine route (a constant Q of one) keeps the
+// exact plane and the rounding the grain rule is written against; a mipmapped draw
+// never takes it, so a constant Q of one there is still perspective.
+TEST(SwVertexQDivideTest, OnlyAPerspectiveTriangleDrawsTheConsolePlane)
+{
+	// primclass, fst, aa1, mipmap, eq_q, min_q
+	EXPECT_TRUE(GSUseConsolePlane(GS_TRIANGLE_CLASS, false, false, false, false, 0.75f));
+	EXPECT_TRUE(GSUseConsolePlane(GS_TRIANGLE_CLASS, false, false, false, true, 1.5f));  // gs-persp4's s-only
+	EXPECT_TRUE(GSUseConsolePlane(GS_TRIANGLE_CLASS, false, false, false, true, 2.0f));  // gs-sm3d: Q = 2.0
+	EXPECT_TRUE(GSUseConsolePlane(GS_TRIANGLE_CLASS, false, false, true, true, 1.0f));   // mipmapped: perspective
+
+	EXPECT_FALSE(GSUseConsolePlane(GS_TRIANGLE_CLASS, false, false, false, true, 1.0f)); // the affine route
+	EXPECT_FALSE(GSUseConsolePlane(GS_TRIANGLE_CLASS, true, false, false, false, 0.75f)); // the UV register
+	EXPECT_FALSE(GSUseConsolePlane(GS_TRIANGLE_CLASS, false, true, false, false, 0.75f)); // AA1
+	EXPECT_FALSE(GSUseConsolePlane(GS_SPRITE_CLASS, false, false, false, false, 0.75f));
+	EXPECT_FALSE(GSUseConsolePlane(GS_LINE_CLASS, false, false, false, false, 0.75f));
+	EXPECT_FALSE(GSUseConsolePlane(GS_POINT_CLASS, false, false, false, false, 0.75f));
+}

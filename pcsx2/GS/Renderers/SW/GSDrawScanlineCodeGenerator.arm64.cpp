@@ -452,9 +452,20 @@ void GSDrawScanlineCodeGenerator::Init()
 				armAsm->Dup(v3.V4S(), v4.V4S(), 1);
 				armAsm->Dup(v4.V4S(), v4.V4S(), 2);
 
-				armAsm->Fadd(_temp_s.V4S(), v2.V4S(), _temp_s.V4S());
-				armAsm->Fadd(_temp_t.V4S(), v3.V4S(), _temp_t.V4S());
-				armAsm->Fadd(_temp_q.V4S(), v4.V4S(), _temp_q.V4S());
+				if (m_sel.stqplane)
+				{
+					// Integer accumulators in units of g/2^14 (GSPerspectivePlane.h); the
+					// seed and the lane offsets are integers in the same lanes.
+					armAsm->Add(_temp_s.V4S(), v2.V4S(), _temp_s.V4S());
+					armAsm->Add(_temp_t.V4S(), v3.V4S(), _temp_t.V4S());
+					armAsm->Add(_temp_q.V4S(), v4.V4S(), _temp_q.V4S());
+				}
+				else
+				{
+					armAsm->Fadd(_temp_s.V4S(), v2.V4S(), _temp_s.V4S());
+					armAsm->Fadd(_temp_t.V4S(), v3.V4S(), _temp_t.V4S());
+					armAsm->Fadd(_temp_q.V4S(), v4.V4S(), _temp_q.V4S());
+				}
 			}
 
 			armAsm->Ldr(_d4_stq, _local(d4.stq));
@@ -608,9 +619,19 @@ void GSDrawScanlineCodeGenerator::Step()
 				armAsm->Dup(_vscratch2.V4S(), _d4_stq.V4S(), 1);
 				armAsm->Dup(v1.V4S(), _d4_stq.V4S(), 2);
 
-				armAsm->Fadd(_temp_s.V4S(), _temp_s.V4S(), _vscratch.V4S());
-				armAsm->Fadd(_temp_t.V4S(), _temp_t.V4S(), _vscratch2.V4S());
-				armAsm->Fadd(_temp_q.V4S(), _temp_q.V4S(), v1.V4S());
+				if (m_sel.stqplane)
+				{
+					// The plane's accumulators are integers (GSPerspectivePlane.h).
+					armAsm->Add(_temp_s.V4S(), _temp_s.V4S(), _vscratch.V4S());
+					armAsm->Add(_temp_t.V4S(), _temp_t.V4S(), _vscratch2.V4S());
+					armAsm->Add(_temp_q.V4S(), _temp_q.V4S(), v1.V4S());
+				}
+				else
+				{
+					armAsm->Fadd(_temp_s.V4S(), _temp_s.V4S(), _vscratch.V4S());
+					armAsm->Fadd(_temp_t.V4S(), _temp_t.V4S(), _vscratch2.V4S());
+					armAsm->Fadd(_temp_q.V4S(), _temp_q.V4S(), v1.V4S());
+				}
 			}
 		}
 
@@ -814,8 +835,20 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 	// exactly Q < the crossing constant, so the per-pixel MMAG/MMIN choice is one
 	// compare. Cheap enough to emit twice rather than hold a register.
 	const auto emit_ltfx_mask = [this](const VRegister& dst) {
+		VRegister q = _temp_q;
+
+		if (m_sel.stqplane)
+		{
+			// Q as a float: the count of g/4 times 2^(E - 16) (GSPerspectivePlane.h).
+			armAsm->Sshr(_vscratch.V4S(), _temp_q.V4S(), GS_PLANE_PIXEL_SHIFT);
+			armAsm->Scvtf(_vscratch.V4S(), _vscratch.V4S());
+			armAsm->Ldr(_vscratch2, _local(pwalk.qscale));
+			armAsm->Fmul(_vscratch.V4S(), _vscratch.V4S(), _vscratch2.V4S());
+			q = _vscratch;
+		}
+
 		armAsm->Ldr(dst, _global(ltfx_q));
-		armAsm->Fcmgt(dst.V4S(), dst.V4S(), _temp_q.V4S());
+		armAsm->Fcmgt(dst.V4S(), dst.V4S(), q.V4S());
 
 		if (m_sel.ltfx_ge)
 			armAsm->Mvn(dst.V16B(), dst.V16B());
@@ -827,13 +860,43 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 		// Clearing the low nine bits of the float32 mantissa is that grid; two BICs
 		// rather than a shift pair so the sign survives a negative Q. See
 		// GSDrawScanline.cpp for why the width is fourteen.
-		armAsm->Fmov(v0.V4S(), 1.0f);
-		armAsm->Fdiv(v0.V4S(), v0.V4S(), _temp_q.V4S());
-		armAsm->Bic(v0.V4S(), 0xff, 0);
-		armAsm->Bic(v0.V4S(), 0x01, 8);
+		if (m_sel.stqplane)
+		{
+			// The console's planes (GSPerspectivePlane.h): the accumulators are integers
+			// in units of g/2^14. Floor each to g/4 (the shift) and convert, so S/Q is a
+			// quotient of two counts and the power of two that takes it to 16.16 texels
+			// (2^(16 + TW), 2^(16 + TH)) rides on the product. The reciprocal is taken
+			// of the count: cutting its mantissa commutes with a power-of-two scale.
+			armAsm->Sshr(v0.V4S(), _temp_q.V4S(), GS_PLANE_PIXEL_SHIFT);
+			armAsm->Scvtf(v0.V4S(), v0.V4S());
+			armAsm->Fmov(v1.V4S(), 1.0f);
+			armAsm->Fdiv(v0.V4S(), v1.V4S(), v0.V4S());
+			armAsm->Movi(v1.V4S(), GS_RECIP_ROUND_UP);
+			armAsm->Add(v0.V4S(), v0.V4S(), v1.V4S());
+			armAsm->Bic(v0.V4S(), 0xff, 0);
 
-		armAsm->Fmul(v2.V4S(), _temp_s.V4S(), v0.V4S());
-		armAsm->Fmul(v3.V4S(), _temp_t.V4S(), v0.V4S());
+			armAsm->Ldr(v1, _local(pwalk.stscale));
+			armAsm->Sshr(v2.V4S(), _temp_s.V4S(), GS_PLANE_PIXEL_SHIFT);
+			armAsm->Sshr(v3.V4S(), _temp_t.V4S(), GS_PLANE_PIXEL_SHIFT);
+			armAsm->Scvtf(v2.V4S(), v2.V4S());
+			armAsm->Scvtf(v3.V4S(), v3.V4S());
+			armAsm->Fmul(v2.V4S(), v2.V4S(), v0.V4S());
+			armAsm->Fmul(v3.V4S(), v3.V4S(), v0.V4S());
+			armAsm->Fmul(v2.V4S(), v2.V4S(), v1.S(), 0);
+			armAsm->Fmul(v3.V4S(), v3.V4S(), v1.S(), 1);
+		}
+		else
+		{
+			armAsm->Fmov(v0.V4S(), 1.0f);
+			armAsm->Fdiv(v0.V4S(), v0.V4S(), _temp_q.V4S());
+			armAsm->Movi(v1.V4S(), GS_RECIP_ROUND_UP);
+			armAsm->Add(v0.V4S(), v0.V4S(), v1.V4S());
+			armAsm->Bic(v0.V4S(), 0xff, 0);
+
+			armAsm->Fmul(v2.V4S(), _temp_s.V4S(), v0.V4S());
+			armAsm->Fmul(v3.V4S(), _temp_t.V4S(), v0.V4S());
+		}
+
 		ureg = v2;
 		vreg = v3;
 
@@ -1205,13 +1268,38 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 	if (!m_sel.fst)
 	{
 		// Truncated reciprocal, as in SampleTexture above.
-		armAsm->Fmov(local2.V4S(), 1.0f);
-		armAsm->Fdiv(local2.V4S(), local2.V4S(), _temp_q.V4S());
-		armAsm->Bic(local2.V4S(), 0xff, 0);
-		armAsm->Bic(local2.V4S(), 0x01, 8);
+		if (m_sel.stqplane)
+		{
+			// As in SampleTexture: the accumulators are integers in units of g/2^14.
+			armAsm->Sshr(local2.V4S(), _temp_q.V4S(), GS_PLANE_PIXEL_SHIFT);
+			armAsm->Scvtf(local2.V4S(), local2.V4S());
+			armAsm->Fmov(local1.V4S(), 1.0f);
+			armAsm->Fdiv(local2.V4S(), local1.V4S(), local2.V4S());
+			armAsm->Movi(local1.V4S(), GS_RECIP_ROUND_UP);
+			armAsm->Add(local2.V4S(), local2.V4S(), local1.V4S());
+			armAsm->Bic(local2.V4S(), 0xff, 0);
 
-		armAsm->Fmul(local0.V4S(), _temp_s.V4S(), local2.V4S());
-		armAsm->Fmul(local1.V4S(), _temp_t.V4S(), local2.V4S());
+			armAsm->Ldr(v0, _local(pwalk.stscale));
+			armAsm->Sshr(local0.V4S(), _temp_s.V4S(), GS_PLANE_PIXEL_SHIFT);
+			armAsm->Sshr(local1.V4S(), _temp_t.V4S(), GS_PLANE_PIXEL_SHIFT);
+			armAsm->Scvtf(local0.V4S(), local0.V4S());
+			armAsm->Scvtf(local1.V4S(), local1.V4S());
+			armAsm->Fmul(local0.V4S(), local0.V4S(), local2.V4S());
+			armAsm->Fmul(local1.V4S(), local1.V4S(), local2.V4S());
+			armAsm->Fmul(local0.V4S(), local0.V4S(), v0.S(), 0);
+			armAsm->Fmul(local1.V4S(), local1.V4S(), v0.S(), 1);
+		}
+		else
+		{
+			armAsm->Fmov(local2.V4S(), 1.0f);
+			armAsm->Fdiv(local2.V4S(), local2.V4S(), _temp_q.V4S());
+			armAsm->Movi(local0.V4S(), GS_RECIP_ROUND_UP);
+			armAsm->Add(local2.V4S(), local2.V4S(), local0.V4S());
+			armAsm->Bic(local2.V4S(), 0xff, 0);
+
+			armAsm->Fmul(local0.V4S(), _temp_s.V4S(), local2.V4S());
+			armAsm->Fmul(local1.V4S(), _temp_t.V4S(), local2.V4S());
+		}
 
 		armAsm->Fcvtzs(local0.V4S(), local0.V4S());
 		armAsm->Fcvtzs(local1.V4S(), local1.V4S());
@@ -1239,8 +1327,21 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 		// The logarithm is a 128-entry table on the top seven fractional bits of Q's
 		// mantissa (GSLevelOfDetail.h), not a polynomial log2.
 
+		// Q as a float. The plane rule keeps a count of g/4 (GSPerspectivePlane.h), so
+		// it is the count times 2^(E - 16); local2 held the reciprocal and is spent.
+		VRegister qf = _temp_q;
+
+		if (m_sel.stqplane)
+		{
+			armAsm->Sshr(local2.V4S(), _temp_q.V4S(), GS_PLANE_PIXEL_SHIFT);
+			armAsm->Scvtf(local2.V4S(), local2.V4S());
+			armAsm->Ldr(v1, _local(pwalk.qscale));
+			armAsm->Fmul(local2.V4S(), local2.V4S(), v1.V4S());
+			qf = local2;
+		}
+
 		// -e = 127 - ((q >> 23) & 0xff)
-		armAsm->Ushr(v0.V4S(), _temp_q.V4S(), 23);
+		armAsm->Ushr(v0.V4S(), qf.V4S(), 23);
 		armAsm->Movi(v1.V4S(), 0xff);
 		armAsm->And(v0.V16B(), v0.V16B(), v1.V16B());
 		armAsm->Movi(v1.V4S(), 127);
@@ -1254,7 +1355,7 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 
 		// - T[idx], idx = (q >> 16) & 0x7f. One extract-add-load triple per lane,
 		// as in ReadTexelImpl, which is why the table is held as words.
-		armAsm->Ushr(v4.V4S(), _temp_q.V4S(), 16);
+		armAsm->Ushr(v4.V4S(), qf.V4S(), 16);
 		armAsm->Movi(v1.V4S(), 0x7f);
 		armAsm->And(v4.V16B(), v4.V16B(), v1.V16B());
 

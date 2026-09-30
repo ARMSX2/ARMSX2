@@ -47,3 +47,17 @@ __forceinline static bool GSUseAffineRoute(u32 primclass, bool eq_q, float min_q
 
 	return eq_q && min_q == 1.0f;
 }
+
+// Whether a triangle draws the console's own S, T and Q planes (GSPerspectivePlane.h):
+// a triangle whose coordinate is STQ and takes the perspective route, so not the UV
+// register, not the affine route a constant Q of one takes (a mipmapped draw never
+// takes it, GSRendererSW), and not AA1, whose edge pass walks its own float vertices.
+//
+// One answer for two callers. The renderer sets the scanline's plane bit from it, and
+// the front end (GSState) asks it before rounding the vertices: the console's plane
+// does not depend on Z, and the front end's texel rounding only fires under a constant
+// one, so it must leave a draw that builds the plane alone.
+__forceinline static bool GSUseConsolePlane(u32 primclass, bool fst, bool aa1, bool mipmap, bool eq_q, float min_q)
+{
+	return primclass == GS_TRIANGLE_CLASS && !fst && !aa1 && (mipmap || !GSUseAffineRoute(primclass, eq_q, min_q));
+}

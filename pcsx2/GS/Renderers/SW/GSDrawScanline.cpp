@@ -177,6 +177,7 @@ bool GSDrawScanline::SetupDraw(GSRasterizerData& data, bool allow_compile)
 	sel.tcc = global.sel.tcc;
 	sel.fst = global.sel.fst;
 	sel.uvwalk = global.sel.uvwalk;
+	sel.stqplane = global.sel.stqplane;
 	sel.fge = global.sel.fge;
 	sel.prim = global.sel.prim;
 	sel.fb = global.sel.fb;
@@ -247,21 +248,25 @@ static __forceinline VectorI GSSaturateCoordinate(const VectorI& c)
 }
 
 // The GS does not divide the texture coordinate by Q. It multiplies by a
-// reciprocal truncated toward zero, so a perspective coordinate is slightly
-// short of the true quotient. An exact divide differs from the console.
+// reciprocal on a coarse grid, so a perspective coordinate is not the true
+// quotient. An exact divide differs from the console.
 //
-// Clearing the low nine of float32's 23 mantissa bits keeps fourteen and rounds
-// toward zero. Fourteen is the narrowest width consistent with the console;
-// thirteen drops some coordinates a sixteenth low. Nothing distinguishes it from
-// wider grids.
+// ARM64 (GSPerspectivePlane.h has the measurement): fifteen bits below the leading
+// bit, rounded as floor(x + 0.7), which is what the console's reciprocal is when S,
+// T and Q are the plane rule's. The rounding constant is fitted, not derived.
 //
-// This is an approximation. The truncation and its width match hardware, but
-// the GS walks S and Q in fixed point rather than evaluating a plane and
-// dividing, so the result is not purely a function of Q on hardware. That walk
-// has not been modelled.
+// Elsewhere: clearing the low nine of float32's 23 mantissa bits keeps fourteen and
+// rounds toward zero. Fourteen is the narrowest width consistent with the console;
+// thirteen drops some coordinates a sixteenth low. That is the x86 generators'
+// reciprocal and this must match them.
 __forceinline static VectorF GSPerspectiveRecip(const VectorF& q)
 {
+#ifdef ARCH_ARM64
+	return VectorF::cast((VectorI::cast(VectorF(1.0f) / q) + VectorI(static_cast<s32>(GS_RECIP_ROUND_UP)))
+	                     & VectorI(~((1 << GS_RECIP_GRID_SHIFT) - 1)));
+#else
 	return VectorF::cast(VectorI::cast(VectorF(1.0f) / q) & VectorI(0xfffffe00));
+#endif
 }
 
 /// The walk's carried colour, as the byte the GS stores.
@@ -599,6 +604,47 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 		    && GSSetupInvertsExactly(GSTriangleTwiceArea(
 		           vertex[index[0]].p, vertex[index[1]].p, vertex[index[2]].p));
 
+#ifdef ARCH_ARM64
+		if (sel.stqplane)
+		{
+			// The steps arrive as integers in units of g/2^14, already what the accumulator
+			// adds per pixel (GSPerspectivePlane.h), so there is nothing to floor. A lane's
+			// offset is the step times its distance from the span's anchor, and the
+			// arithmetic wraps as the accumulator does.
+			//
+			// No coordinate lag: the plane already carries the shortfall the lag stands in
+			// for (the gradient truncated onto g/1024, the reciprocal a hair short of
+			// exact), and gs-sm3d's whole-draw arms read 100.0000% of 771,234 pixels
+			// without it and 92.3% with it. The lag stays on the routes it was measured
+			// on: the UV register and STQ at Q = 1.
+			const GSVector4i step = GSVector4i::cast(dscan.t);
+
+			const auto times = [](s32 a, s32 b) { return static_cast<s32>(static_cast<u32>(a) * static_cast<u32>(b)); };
+
+			local.tclag.u = VectorI(0);
+			local.tclag.v = VectorI(0);
+
+			LOCAL_STEP.stq = GSVector4::cast(GSVector4i(times(step.x, vlen), times(step.y, vlen), times(step.z, vlen), 0));
+
+			for (int i = 0; i < vlen; i++)
+			{
+				alignas(sizeof(VectorI)) s32 ls[vlen], lt[vlen], lq[vlen];
+
+				for (int l = 0; l < vlen; l++)
+				{
+					// Lane l is l - i pixels from the span's anchor (as m_shift / m_lane).
+					ls[l] = times(step.x, l - i);
+					lt[l] = times(step.y, l - i);
+					lq[l] = times(step.z, l - i);
+				}
+
+				local.d[i].s = VectorF::cast(VectorI::template load<true>(ls));
+				local.d[i].t = VectorF::cast(VectorI::template load<true>(lt));
+				local.d[i].q = VectorF::cast(VectorI::template load<true>(lq));
+			}
+		}
+		else
+#endif
 		if (sel.uvwalk)
 		{
 			// The GS texel accumulator is seed + n * floor(step) on a 12.15 grid
@@ -942,6 +988,16 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				s = VectorF::cast(u);
 				t = VectorF::cast(v);
 			}
+#ifdef ARCH_ARM64
+			else if (sel.stqplane)
+			{
+				// Integer accumulators in units of g/2^14 (GSPerspectivePlane.h); the divide
+				// floors them to g/4 per pixel.
+				s = VectorF::cast(VectorI::cast(scan.t.xxxx()) + VectorI::cast(local.d[skip].s));
+				t = VectorF::cast(VectorI::cast(scan.t.yyyy()) + VectorI::cast(local.d[skip].t));
+				q = VectorF::cast(VectorI::cast(scan.t.zzzz()) + VectorI::cast(local.d[skip].q));
+			}
+#endif
 			else
 			{
 #if _M_SSE >= 0x501
@@ -1074,6 +1130,27 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 
 			if (sel.fb && sel.tfx != TFX_NONE)
 			{
+				// What the divide reads. Legacy: the accumulators as floats, S and T
+				// already scaled to 16.16 texels. The plane rule (GSPerspectivePlane.h)
+				// carries integers: floor each to g/4 and convert, so S/Q is a quotient
+				// of counts and the power of two that takes it to 16.16 texels rides on
+				// the reciprocal. Q as the float the level of detail and the filter
+				// crossover want is the count times 2^(E - 16).
+				VectorF sh = s, th = t, qr = q, qf = q;
+				VectorF uscale(1.0f), vscale(1.0f);
+
+#ifdef ARCH_ARM64
+				if (sel.stqplane)
+				{
+					sh = VectorF(VectorI::cast(s).sra32<GS_PLANE_PIXEL_SHIFT>());
+					th = VectorF(VectorI::cast(t).sra32<GS_PLANE_PIXEL_SHIFT>());
+					qr = VectorF(VectorI::cast(q).sra32<GS_PLANE_PIXEL_SHIFT>());
+					qf = qr * VectorF(local.pwalk.qscale);
+					uscale = VectorF(local.pwalk.stscale).xxxx();
+					vscale = VectorF(local.pwalk.stscale).yyyy();
+				}
+#endif
+
 				VectorI u, v, uv[2];
 				VectorI lodi, lodf;
 				VectorI minuv, maxuv;
@@ -1084,10 +1161,10 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				{
 					if (!sel.fst)
 					{
-						const VectorF r = GSPerspectiveRecip(q);
+						const VectorF r = GSPerspectiveRecip(qr);
 
-						u = VectorI(s * r);
-						v = VectorI(t * r);
+						u = VectorI(sh * (r * uscale));
+						v = VectorI(th * (r * vscale));
 					}
 					else
 					{
@@ -1112,7 +1189,7 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 
 						for (int i = 0; i < vlen; i++)
 						{
-							const s32 lod16 = GSLevelOfDetail16(q.F32[i], global.lodtab,
+							const s32 lod16 = GSLevelOfDetail16(qf.F32[i], global.lodtab,
 								global.lodk, global.lodshift);
 
 							lod.I32[i] = std::min(std::max(lod16 << 12, 0), global.lodmxl);
@@ -1471,7 +1548,7 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 
 					if (sel.ltfx)
 					{
-						lin = VectorI::cast(q < global.ltfx_q);
+						lin = VectorI::cast(qf < global.ltfx_q);
 
 						if (sel.ltfx_ge)
 							lin = ~lin;
@@ -1479,10 +1556,10 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 
 					if (!sel.fst)
 					{
-						const VectorF r = GSPerspectiveRecip(q);
+						const VectorF r = GSPerspectiveRecip(qr);
 
-						u = VectorI(s * r);
-						v = VectorI(t * r);
+						u = VectorI(sh * (r * uscale));
+						v = VectorI(th * (r * vscale));
 					}
 					else
 					{
@@ -2186,6 +2263,16 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 						t = VectorF::cast(VectorI::cast(t) + stq.yyyy());
 					}
 				}
+#ifdef ARCH_ARM64
+				else if (sel.stqplane)
+				{
+					const VectorI stq = VectorI::cast(VectorF(LOCAL_STEP.stq));
+
+					s = VectorF::cast(VectorI::cast(s) + stq.xxxx());
+					t = VectorF::cast(VectorI::cast(t) + stq.yyyy());
+					q = VectorF::cast(VectorI::cast(q) + stq.zzzz());
+				}
+#endif
 				else
 				{
 					VectorF stq(LOCAL_STEP.stq);

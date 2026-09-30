@@ -6,6 +6,7 @@
 #include "GS/GSLocalMemory.h"
 #include "GS/GSVector.h"
 #include "GS/Renderers/SW/GSColourWalk.h"
+#include "GS/Renderers/SW/GSPerspectivePlane.h"
 
 #include <cstdio>
 #include <string>
@@ -72,6 +73,12 @@ union GSScanlineSelector
 		// conversion, and a constant-Q triangle's ST plane. The first two use the
 		// accumulator, the third does not. See GSCoordinateWalk.h.
 		u32 uvwalk : 1;
+
+		// A perspective triangle (STQ, not the affine route) whose S, T and Q are the
+		// console's planes, carried as integer accumulators in units of g/2^14 and
+		// floored to g/4 before the divide. See GSPerspectivePlane.h. ARM64 only, like
+		// ltfx and uvwalk: the x86 generators keep the exact plane.
+		u32 stqplane : 1;
 	};
 
 	struct
@@ -197,6 +204,10 @@ struct alignas(32) GSScanlineGlobalData // per batch variables, this is like a p
 	// is at least two, so zero safely means "no rule".
 	s32 coord_grain_floor[2] = {};
 
+	// The plane rule's per-draw input: 16 + TEX0.TW and 16 + TEX0.TH, the power of
+	// two the vertex conversion scaled S and T by. Only read when sel.stqplane is set.
+	s32 plane_shift[2] = {};
+
 #ifdef ARCH_ARM64
 	// Mini version of constant data for ARM64, we don't need all of it
 	alignas(16) u32 const_test_128b[8][4] = {
@@ -291,6 +302,11 @@ struct alignas(32) GSScanlineLocalData // per prim variables, each thread has it
 	/// The setup's colour interpolator decision for this primitive: gradients,
 	/// anchor and block grid. Kept here so a test's setup_prim hook can read it.
 	GSColourWalk cwalk;
+
+	/// The setup's plane for a perspective triangle (GSPerspectivePlane.h), read by
+	/// the rasterizer's row seeds and by the scanline's divide. Only live when
+	/// gd->sel.stqplane is set.
+	GSPerspectivePlaneWalk pwalk;
 
 	const GSScanlineGlobalData* gd;
 };

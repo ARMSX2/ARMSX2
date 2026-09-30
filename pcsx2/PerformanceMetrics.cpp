@@ -391,7 +391,7 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 	s_log_accum_frames += s_frames_since_last_update;
 	if (s_log_accum_time >= LOG_INTERVAL)
 	{
-		// The back thread only exists under GSBackThreadMode >= Lockstep, so the field is
+		// The back thread only exists with GS multi-threading on, so the field is
 		// omitted rather than logged as a permanent 0% in the default configuration.
 		char gs_back[32] = {};
 		if (HasGSBackThread())
