@@ -453,6 +453,7 @@ private struct ControllerNavigationAlertDetailRow: View {
             RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .fill(isSelected ? Color.black.opacity(0.24) : .clear)
         }
+        .controllerFocusBoxPresentation(isVisible: isSelected, cornerRadius: 11)
         .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         .onTapGesture {
             guard detail.onPrevious == nil, detail.onNext == nil else { return }
@@ -965,14 +966,10 @@ struct ControllerNavigationAlert: View {
                                         cornerRadius: 11,
                                         style: .continuous
                                     )
-                                    .stroke(
-                                        buttonTint.opacity(
-                                            isSelected ? 0.88 : 0.48
-                                        ),
-                                        lineWidth: isSelected ? 1.25 : 0.8
-                                    )
+                                    .stroke(buttonTint.opacity(0.48), lineWidth: 0.8)
                                 }
                             }
+                            .controllerFocusBoxPresentation(isVisible: isSelected, cornerRadius: 11)
                     }
                     .buttonStyle(.plain)
                     .frame(maxWidth: .infinity)
