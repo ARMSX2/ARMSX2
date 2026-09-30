@@ -1561,6 +1561,11 @@ void GSRendererHW::UpdateRenderFixes()
 	}
 }
 
+bool GSRendererHW::DrawClearsScanMask() const
+{
+	return m_gsc == &GSHwHack::GSC_IRem;
+}
+
 bool GSRendererHW::IsBadFrame()
 {
 	if (m_gsc)

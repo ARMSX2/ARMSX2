@@ -4080,6 +4080,18 @@ void GSState::FlushPrim()
 
 		// The consumer releases the node after the tail runs.
 		PushRecord(GSBackQueue::RecordType::Draw, rec);
+
+		// GSC_IRem clears SCANMSK in the parse environment at the start of the draw, and on a
+		// single object that clear lasts until the game writes SCANMSK again. On the split the
+		// hook clears the back's installed copy, which the next record overwrites, so repeat it
+		// here for every draw that reaches Draw(). Not exact for a draw the hook's own skip
+		// counter lets through (back-side state): a single object leaves the mask set there.
+		if (m_mem_target != this && m_mem_target->DrawClearsScanMask() &&
+			!(m_context->TEST.ZTE && m_context->TEST.ZTST == ZTST_NEVER))
+		{
+			m_env.SCANMSK.MSK = 0;
+			m_prev_env.SCANMSK.MSK = 0;
+		}
 	}
 	else
 	{

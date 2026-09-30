@@ -847,6 +847,10 @@ public:
 	virtual void InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r) {}
 	virtual void InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut = false) {}
 
+	/// True when this renderer's draws clear SCANMSK in the parse environment (the GSC_IRem hook).
+	/// The split front asks the back, and repeats the clear on its own environment.
+	virtual bool DrawClearsScanMask() const { return false; }
+
 	virtual void Move();
 
 	// The front/back seam: the front builds a self-contained

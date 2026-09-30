@@ -426,6 +426,7 @@ public:
 	void Destroy() override;
 
 	void UpdateRenderFixes() override;
+	bool DrawClearsScanMask() const override;
 
 	bool CanUpscale() override;
 	float GetUpscaleMultiplier() override;

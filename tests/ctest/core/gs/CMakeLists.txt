@@ -79,6 +79,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_texture_cache_move_tests.cpp
 	gs_dither_scale_tests.cpp
 	gs_cull_grid_refresh_tests.cpp
+	gs_split_seam_tests.cpp
 	gs_cull_grid_native_target_tests.cpp
 	gs_point_safe_features_tests.cpp
 	gs_field_shift_detector_tests.cpp
