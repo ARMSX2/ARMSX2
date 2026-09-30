@@ -233,6 +233,16 @@ namespace GSBackQueue
 		bool idle_frame;
 	};
 
+	// The privileged-register fields a draw reads, as they stood when the draw was flushed. The
+	// registers themselves are one block shared with MTGS, which rewrites it at the vsync packet
+	// (and the EE thread in WaitGS) while queued draws have not run yet.
+	struct DrawPrivRegs
+	{
+		u32 dispfb_fbp[2]; // DISP[n].DISPFB.FBP
+		bool display_enabled[2]; // PMODE.EN1 / EN2
+		bool field_render; // SMODE2.FFMD && isReallyInterlaced()
+	};
+
 	// One flushed draw (today's FlushPrim tail: vertex trace -> texel rounding ->
 	// Draw() -> perfmon). Self-contained: the executor installs the env snapshots
 	// and scalars, then runs the tail against the referenced buffers, which it
@@ -262,6 +272,7 @@ namespace GSBackQueue
 		int flush_reason; // GSState::GSFlushReason (class-scoped enum, stored widened)
 		bool channel_shuffle_finish;
 		bool packed_uv_hack_flag;
+		DrawPrivRegs priv;
 	};
 
 	// ------------------------------------------------------------------

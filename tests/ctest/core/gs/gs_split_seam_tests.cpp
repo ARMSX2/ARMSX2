@@ -39,6 +39,8 @@ namespace
 			BringUp();
 			ASSERT_TRUE(m_gs->IsBackThreadRunning());
 			g_gs_front = std::make_unique<GSFrontState>(m_gs);
+			g_gs_front->SetRegsMem(reinterpret_cast<u8*>(m_priv_regs.get()));
+			g_gs_front->ResetPCRTC();
 		}
 
 		// One untextured 64x64 sprite into a 32-bit frame at `fbp`, with `scanmsk` written first.
@@ -343,4 +345,47 @@ TEST_F(GSSplitSeamStalled, IdleFrameIsDecidedAfterTheBackCatchesUp)
 
 	EXPECT_EQ(m_stall->m_vsyncs, 1);
 	EXPECT_FALSE(m_stall->m_idle_frame);
+}
+
+// A draw into the displayed buffer counts as a display blit (internal frame-rate detection and
+// skip-duplicate-frames). A single object tests it against DISPFB as it stands when the draw is
+// flushed. MTGS rewrites the privileged registers at the next vsync packet, before that vsync
+// drains the back, so the back must not read them live.
+TEST_F(GSSplitSeamStalled, DisplayBlitIsCountedAgainstTheRegistersAtFlush)
+{
+	BringUpStalled();
+	m_priv_regs->PMODE.EN1 = 1;
+	m_priv_regs->DISP[0].DISPFB.FBP = 0x10;
+	g_perfmon.GetDisplayFramebufferSpriteBlits(); // reset the counter
+
+	StallTheBack();
+	Sprite(*g_gs_front, 0x10, 0);
+
+	// The next frame's registers arrive while the draw is still queued: the game flipped buffers.
+	m_priv_regs->DISP[0].DISPFB.FBP = 0x80;
+
+	m_stall->m_gate.store(true, std::memory_order_release);
+	g_gs_front->DrainBackQueue();
+
+	EXPECT_EQ(g_perfmon.GetDisplayFramebufferSpriteBlits(), 1);
+}
+
+// The same flip in the other direction: a draw into what was not the displayed buffer when it was
+// flushed does not count, whatever DISPFB says by the time the back runs it.
+TEST_F(GSSplitSeamStalled, DisplayBlitIsNotCountedForABufferDisplayedLater)
+{
+	BringUpStalled();
+	m_priv_regs->PMODE.EN1 = 1;
+	m_priv_regs->DISP[0].DISPFB.FBP = 0x80;
+	g_perfmon.GetDisplayFramebufferSpriteBlits();
+
+	StallTheBack();
+	Sprite(*g_gs_front, 0x10, 0);
+
+	m_priv_regs->DISP[0].DISPFB.FBP = 0x10;
+
+	m_stall->m_gate.store(true, std::memory_order_release);
+	g_gs_front->DrainBackQueue();
+
+	EXPECT_EQ(g_perfmon.GetDisplayFramebufferSpriteBlits(), 0);
 }

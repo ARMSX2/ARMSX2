@@ -639,6 +639,10 @@ public:
 	GIFPath m_path[4] = {};
 	const GIFRegPRIM* PRIM = nullptr;
 	GSPrivRegSet* m_regs = nullptr;
+	// What the current draw reads of m_regs, captured when it was flushed (FlushPrim). Draw-time
+	// code reads this, never m_regs, because under the split the draw runs after MTGS may have
+	// written the next frame's registers.
+	GSBackQueue::DrawPrivRegs m_draw_priv = {};
 	GSLocalMemory m_mem;
 	GSDrawingEnvironment m_env = {};
 	GSDrawingEnvironment m_prev_env = {};
@@ -867,6 +871,7 @@ public:
 	void SubmitClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
 	void ExecClutLoadRecord(const GSBackQueue::ClutLoadRecord& rec);
 	void ExecDrawRecord(const GSBackQueue::DrawRecord& rec);
+	GSBackQueue::DrawPrivRegs CaptureDrawPrivRegs();
 	void DrawRecordTail(u64 draw_serial);
 	void SubmitPcrtcSync();
 	void ExecPcrtcSyncRecord(const GSBackQueue::PcrtcSyncRecord& rec);

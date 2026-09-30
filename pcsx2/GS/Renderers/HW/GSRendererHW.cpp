@@ -9610,7 +9610,7 @@ __ri void GSRendererHW::EmulateTextureSampler(const GSTextureCache::Target* rt, 
 	grid.texel_coordinates = !!PRIM->FST;
 	grid.nearest = !bilinear;
 	grid.mipmapped = trilinear_manual || trilinear_auto;
-	grid.field_render = m_regs->SMODE2.FFMD && isReallyInterlaced();
+	grid.field_render = m_draw_priv.field_render;
 	grid.scale = scale_rt;
 
 	// The per-sprite walk is the only part of this with a cost, so it runs only where the rest of
@@ -11106,8 +11106,9 @@ GSRendererHW::CLUTDrawTestResult GSRendererHW::PossibleCLUTDraw()
 
 	// Writing to the framebuffer for output. We're not interested. - Note: This stops NFS HP2 Busted screens working, but they're glitchy anyway
 	// what NFS HP2 really needs is a kind of shuffle with mask, 32bit target is interpreted as 16bit and masked.
-	if ((m_regs->DISP[0].DISPFB.Block() == m_cached_ctx.FRAME.Block()) || (m_regs->DISP[1].DISPFB.Block() == m_cached_ctx.FRAME.Block()) ||
-		(m_process_texture && ((m_regs->DISP[0].DISPFB.Block() == m_cached_ctx.TEX0.TBP0) || (m_regs->DISP[1].DISPFB.Block() == m_cached_ctx.TEX0.TBP0)) && !(m_mem.m_clut.IsInvalid() & 2)))
+	const u32 dispfb_bp[2] = {m_draw_priv.dispfb_fbp[0] << 5, m_draw_priv.dispfb_fbp[1] << 5};
+	if ((dispfb_bp[0] == m_cached_ctx.FRAME.Block()) || (dispfb_bp[1] == m_cached_ctx.FRAME.Block()) ||
+		(m_process_texture && ((dispfb_bp[0] == m_cached_ctx.TEX0.TBP0) || (dispfb_bp[1] == m_cached_ctx.TEX0.TBP0)) && !(m_mem.m_clut.IsInvalid() & 2)))
 		return CLUTDrawTestResult::NotCLUTDraw;
 
 	// Ignore large render targets, make sure it's staying in page width.

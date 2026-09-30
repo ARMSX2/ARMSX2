@@ -4031,6 +4031,8 @@ void GSState::FlushPrim()
 	// Front side: draw serials are front-assigned — the front decides draw order.
 	s_n++;
 
+	const GSBackQueue::DrawPrivRegs priv = CaptureDrawPrivRegs();
+
 	if (m_back_records)
 	{
 		// Hand the live buffers to a pool node: snapshot the buffer structs into
@@ -4067,6 +4069,7 @@ void GSState::FlushPrim()
 		rec.flush_reason = m_state_flush_reason;
 		rec.channel_shuffle_finish = m_channel_shuffle_finish;
 		rec.packed_uv_hack_flag = m_isPackedUV_HackFlag;
+		rec.priv = priv;
 
 		// m_channel_shuffle_finish is written on BOTH sides: the front's
 		// ApplyTEX0 sets it as a one-shot "abort shuffle skip" message, while
@@ -4098,6 +4101,7 @@ void GSState::FlushPrim()
 		// Off path: every field the record would carry is captured from live
 		// state and installed back over the same live state, so the round-trip
 		// is an identity — skip it and run the tail directly.
+		m_draw_priv = priv;
 		DrawRecordTail(s_n);
 	}
 
@@ -4167,6 +4171,7 @@ void GSState::ExecDrawRecord(const GSBackQueue::DrawRecord& rec)
 	else
 		m_channel_shuffle_finish = rec.channel_shuffle_finish;
 	m_isPackedUV_HackFlag = rec.packed_uv_hack_flag;
+	m_draw_priv = rec.priv;
 
 	// On a split back object nobody ran FlushDraw here — aim the draw pointers
 	// at the installed draw env exactly as FlushDraw does on the front, and
@@ -4190,6 +4195,17 @@ void GSState::ExecDrawRecord(const GSBackQueue::DrawRecord& rec)
 	}
 }
 
+GSBackQueue::DrawPrivRegs GSState::CaptureDrawPrivRegs()
+{
+	GSBackQueue::DrawPrivRegs priv;
+	priv.dispfb_fbp[0] = m_regs->DISP[0].DISPFB.FBP;
+	priv.dispfb_fbp[1] = m_regs->DISP[1].DISPFB.FBP;
+	priv.display_enabled[0] = m_regs->PMODE.EN1;
+	priv.display_enabled[1] = m_regs->PMODE.EN2;
+	priv.field_render = m_regs->SMODE2.FFMD && isReallyInterlaced();
+	return priv;
+}
+
 // The draw executor's tail: everything from vertex trace to Draw() + perfmon,
 // running against installed (or, on the record-off path, live) state.
 void GSState::DrawRecordTail(u64 draw_serial)
@@ -4199,8 +4215,8 @@ void GSState::DrawRecordTail(u64 draw_serial)
 	// internal frame rate detection based on sprite blits to the display framebuffer
 	{
 		const u32 FRAME_FBP = m_context->FRAME.FBP;
-		if ((m_regs->DISP[0].DISPFB.FBP == FRAME_FBP && m_regs->PMODE.EN1) ||
-			(m_regs->DISP[1].DISPFB.FBP == FRAME_FBP && m_regs->PMODE.EN2))
+		if ((m_draw_priv.dispfb_fbp[0] == FRAME_FBP && m_draw_priv.display_enabled[0]) ||
+			(m_draw_priv.dispfb_fbp[1] == FRAME_FBP && m_draw_priv.display_enabled[1]))
 		{
 			g_perfmon.AddDisplayFramebufferSpriteBlit();
 		}
