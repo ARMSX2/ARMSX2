@@ -892,8 +892,9 @@ extension PauseLayoutVariant {
             return width >= 500 && height >= 320
         case .phoneLandscape:
             // Notched 19.5:9 iPhones retain at least 640 points after safe-area
-            // clearance; smaller 16:9 phones continue using the compact column.
-            return width >= 640 && height >= 300
+            // clearance; smaller 16:9 phones continue using the compact column. The height
+            // leaves room for the controller shortcut bar under a 12 Pro Max card.
+            return width >= 640 && height >= 280
         }
     }
 }

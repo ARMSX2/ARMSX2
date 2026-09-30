@@ -130,8 +130,9 @@ struct GameOverlayContainer<Content: View>: View {
                 // The card is centred, so the keyboard covers less of it than of the region.
                 let cardMargin = max(0, (geo.size.height - metrics.cardMaxHeight) / 2)
                 // What the bottom margin lacks, measured from the screen edge; the top margin stays.
-                let lift = bottomReserve > 0
-                    ? max(0, bottomReserve + geo.safeAreaInsets.bottom - cardMargin) : 0
+                let barBase = geo.safeAreaInsets.bottom
+                    - GameplayControllerShortcutHelpOverlay.homeIndicatorSink(geo.safeAreaInsets.bottom)
+                let lift = bottomReserve > 0 ? max(0, bottomReserve + barBase - cardMargin) : 0
 
                 ZStack {
                     backdrop(metrics: metrics)
