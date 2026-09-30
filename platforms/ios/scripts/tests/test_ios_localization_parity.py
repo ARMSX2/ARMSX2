@@ -22,7 +22,7 @@ class TestLocalizationParity(unittest.TestCase):
         self.assertEqual(data.get("version"), "1.1")
         self.assertEqual(data.get("sourceLanguage"), "en")
         self.assertIn("strings", data)
-        self.assertEqual(len(data["strings"]), 697)
+        self.assertEqual(len(data["strings"]), 699)
 
     def test_info_plist_cfbundlelocalizations(self):
         self.assertTrue(INFO_PLIST_PATH.exists(), f"Missing {INFO_PLIST_PATH}")

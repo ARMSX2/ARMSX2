@@ -311,6 +311,9 @@
     "%d min" : {
       "extractionState" : "manual"
     },
+    "%d s" : {
+      "extractionState" : "manual"
+    },
     "0 = Default. Negative = underclock (stable). Positive = overclock (fast but risky)." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -26288,6 +26291,9 @@
       }
     },
     "Undo delete of %@" : {
+      "extractionState" : "manual"
+    },
+    "Undo lasts" : {
       "extractionState" : "manual"
     },
     "Undo load of %@" : {

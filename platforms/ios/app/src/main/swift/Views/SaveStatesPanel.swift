@@ -1375,7 +1375,7 @@ private struct SaveStateAutoSaveCard: View {
     }
 }
 
-/// After a load, delete or save-over: what happened, and an Undo that lasts 8 seconds.
+/// After a load, delete or save-over: what happened, and an Undo that lasts as long as Settings says.
 struct SaveStateUndoToast: View {
     let undo: SaveStateUndoModel
     let settings: SettingsStore
@@ -1425,13 +1425,13 @@ struct SaveStateUndoToast: View {
             }
             .padding(EdgeInsets(top: 8, leading: 10, bottom: 11, trailing: 10))
             .overlay(alignment: .bottom) {
-                // Reduce Motion leaves the draining bar out; the window is the same 8 seconds.
+                // Reduce Motion leaves the draining bar out; the window is just as long.
                 if !reduceMotion {
                     GeometryReader { proxy in
                         Capsule().fill(Color.white.opacity(0.14))
                             .overlay(alignment: .leading) {
                                 Capsule().fill(Color.white.opacity(0.75))
-                                    .frame(width: proxy.size.width * max(0, undo.remaining) / SaveStateUndoModel.duration)
+                                    .frame(width: proxy.size.width * max(0, undo.remaining) / undo.duration)
                             }
                     }
                     .frame(height: 3)

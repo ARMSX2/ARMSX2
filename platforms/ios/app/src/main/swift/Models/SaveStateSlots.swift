@@ -254,7 +254,9 @@ final class SaveStateUndoModel {
     }
 
     static let shared = SaveStateUndoModel()
-    static let duration: Double = 8
+
+    /// The window of the toast on screen, from Settings, so the bar drains over the same span.
+    private(set) var duration: Double = 5
 
     private(set) var item: Item?
     private(set) var remaining: Double = 0
@@ -272,7 +274,8 @@ final class SaveStateUndoModel {
     func show(_ next: Item, announcement: String) {
         finish()
         item = next
-        remaining = Self.duration
+        duration = Double(SettingsStore.shared.undoSeconds)
+        remaining = duration
         AccessibilityNotification.Announcement(announcement).post()
         timer = Task { [weak self] in
             while let self, !Task.isCancelled, self.item?.id == next.id {

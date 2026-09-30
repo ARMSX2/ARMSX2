@@ -317,6 +317,11 @@ final class SettingsStore {
     var autoSaveOnLowBattery = true {
         didSet { commit(_autoSaveOnLowBatteryConfig, autoSaveOnLowBattery) }
     }
+    let _undoSecondsConfig = Setting<Int>(
+        section: "ARMSX2iOS/SaveStates", key: "UndoSeconds", default: 5, codec: .int(in: 1...10))
+    var undoSeconds = 5 {
+        didSet { commit(_undoSecondsConfig, undoSeconds) }
+    }
     let _automaticLoadLastGameConfig = Setting<Bool>(
         section: "ARMSX2iOS/Boot", key: "AutomaticLoadLastGame", default: false,
         codec: .bool)
@@ -2069,6 +2074,7 @@ final class SettingsStore {
         autoSaveIntervalMinutes = _autoSaveIntervalConfig.load()
         autoSaveOnLeave = _autoSaveOnLeaveConfig.load()
         autoSaveOnLowBattery = _autoSaveOnLowBatteryConfig.load()
+        undoSeconds = _undoSecondsConfig.load()
         automaticLoadLastGame = _automaticLoadLastGameConfig.load()
         fastmem = ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "EnableFastmem", defaultValue: true)
         emulationOnlyModeEnabled = _emulationOnlyModeConfig.load()

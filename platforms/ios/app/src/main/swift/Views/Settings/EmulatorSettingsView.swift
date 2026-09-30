@@ -189,6 +189,17 @@ struct EmulatorSettingsView: View {
                             "settings.emulator.auto-save-on-low-battery"
                         )
                 }
+                Picker(settings.localized("Undo lasts"), selection: $settings.undoSeconds) {
+                    ForEach(1...10, id: \.self) { seconds in
+                        Text(String(format: settings.localized("%d s"), seconds)).tag(seconds)
+                    }
+                }
+                .controllerAccessibilityOptionsPickerTarget(
+                    id: "settings.emulator.undo-seconds",
+                    label: settings.localized("Undo lasts"),
+                    selection: $settings.undoSeconds,
+                    options: (1...10).map { (id: $0, title: String(format: settings.localized("%d s"), $0)) }
+                )
                 Text(settings.localized("Auto-save has its own slot and never writes over yours. At 5% battery it saves at once, then every minute until you charge."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -574,6 +585,7 @@ struct EmulatorSettingsView: View {
             ]
         }
         order += [
+            "settings.emulator.undo-seconds",
             "settings.emulator.host-filesystem",
             "settings.emulator.fastmem",
             "settings.emulator.frame-limiter",
