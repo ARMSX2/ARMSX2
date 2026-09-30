@@ -1101,19 +1101,21 @@ void GSgetTitleStats(std::string& info)
 
 void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
 {
+	// GV7-2: everything below mutates state the back thread may be reading
+	// mid-draw: GSConfig itself (read on every draw, and its strings are moved
+	// out just below), settings, ImGui font textures, TC purges. The front only
+	// parses on this (MTGS) thread, so a single drain up front quiesces the back
+	// thread for the whole apply.
+	if (g_gs_renderer)
+		g_gs_renderer->DrainBackQueue();
+
 	Pcsx2Config::GSOptions old_config(std::move(GSConfig));
 	GSConfig = new_config;
-	// The resolved back-thread mode belongs to the open renderer. A changed request reopens it
-	// below (BackThreadMode is a restart option), which resolves again.
+	// The resolved back-thread setting belongs to the open renderer. A changed request reopens it
+	// below (BackThread is a restart option), which resolves again.
 	GSConfig.BackThreadResolved = old_config.BackThreadResolved;
 	if (!g_gs_renderer)
 		return;
-
-	// GV7-2: everything below mutates renderer/device state the back thread may
-	// be reading mid-draw (settings, ImGui font textures, TC purges). The front
-	// only parses on this (MTGS) thread, so a single drain up front quiesces the
-	// back thread for the whole apply.
-	g_gs_renderer->DrainBackQueue();
 
 	// Handle OSD scale changes by pushing a window resize through.
 	if (new_config.OsdScale != old_config.OsdScale)
