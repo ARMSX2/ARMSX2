@@ -285,15 +285,19 @@ static void GSApplyCopyRoadBlendingCap(Pcsx2Config::GSOptions& config)
 // reason as the blending cap above: it depends on the device and the download mode, so it is
 // re-derived every time a renderer opens and never written back into the player's settings. Must run before the renderer
 // is constructed, because the renderer's constructor starts the back thread.
-static void GSResolveBackThreadMode(Pcsx2Config::GSOptions& config, GSRendererType renderer)
+static GSBackThreadDecision GSDecideBackThreadFor(const Pcsx2Config::GSOptions& config, GSRendererType renderer)
 {
 	GSBackThreadInputs in;
 	in.requested = config.BackThread;
 	in.hardware_renderer = (renderer != GSRendererType::SW && renderer != GSRendererType::Null);
 	in.vulkan = g_gs_device && g_gs_device->GetRenderAPI() == RenderAPI::Vulkan;
 	in.download_mode = config.HWDownloadMode;
+	return GSDecideBackThread(in);
+}
 
-	const GSBackThreadDecision decision = GSDecideBackThread(in);
+static void GSResolveBackThreadMode(Pcsx2Config::GSOptions& config, GSRendererType renderer)
+{
+	const GSBackThreadDecision decision = GSDecideBackThreadFor(config, renderer);
 	config.BackThreadResolved = decision.on;
 
 	// A request for the split that does not get it is worth a warning. The "GS: back thread"
@@ -1153,6 +1157,18 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
 	// GSConfig was just replaced wholesale, so the cap has to be re-derived; old_config carries
 	// the previous run's capped value and new_config carries none.
 	GSApplyCopyRoadBlendingCap(GSConfig);
+
+	// The download mode is an input to the back-thread decision, which only runs when a renderer
+	// opens. Reopen the renderer when a change would decide differently: Unsynchronized reads
+	// live GS memory from the EE thread, which a running back thread leaves behind.
+	if (GSConfig.HWDownloadMode != old_config.HWDownloadMode &&
+		GSDecideBackThreadFor(GSConfig, GSCurrentRenderer).on != GSConfig.BackThreadResolved)
+	{
+		if (!GSreopen(false, true, GSCurrentRenderer, &old_config))
+			pxFailRel("Failed to reopen GS renderer for a download mode change");
+
+		return;
+	}
 
 	// Options which aren't using the global struct yet, so we need to recreate all GS objects.
 	if (GSConfig.SWExtraThreads != old_config.SWExtraThreads ||

@@ -33,6 +33,7 @@ namespace
 		// The renderer with its back thread running, and a front parser object on top of it.
 		void BringUpSplit()
 		{
+			GSConfig.BackThread = true;
 			GSConfig.BackThreadResolved = true;
 			m_device_api = RenderAPI::Vulkan;
 			BringUp();
@@ -193,4 +194,40 @@ TEST_F(GSSplitSeam, MoveHookThatDeclinesLeavesTransferDirectionOffOnTheFront)
 	g_gs_front->DrainBackQueue();
 
 	EXPECT_EQ(g_gs_front->m_env.TRXDIR.XDIR, 3u);
+}
+
+// Unsynchronized downloads read live GS memory from the EE thread, which the back thread makes
+// unsafe, so the policy turns the split off for them when a renderer opens. Switching to that
+// mode in game must reach the policy too.
+TEST_F(GSSplitSeam, SwitchingToUnsynchronizedDownloadsTurnsTheSplitOff)
+{
+	BringUpSplit();
+
+	Pcsx2Config::GSOptions changed = GSConfig;
+	changed.HWDownloadMode = GSHardwareDownloadMode::Unsynchronized;
+	GSUpdateConfig(changed);
+	m_gs = nullptr; // a reopen replaces the renderer
+
+	EXPECT_FALSE(g_gs_front);
+	ASSERT_TRUE(g_gs_renderer);
+	EXPECT_FALSE(g_gs_renderer->IsBackThreadRunning());
+	EXPECT_FALSE(GSConfig.BackThreadResolved);
+}
+
+// And back: leaving Unsynchronized with the split requested turns it on again.
+TEST_F(GSSplitSeam, LeavingUnsynchronizedDownloadsTurnsTheSplitOn)
+{
+	BringUpSplit();
+
+	Pcsx2Config::GSOptions changed = GSConfig;
+	changed.HWDownloadMode = GSHardwareDownloadMode::Unsynchronized;
+	GSUpdateConfig(changed);
+	changed = GSConfig;
+	changed.HWDownloadMode = GSHardwareDownloadMode::Enabled;
+	GSUpdateConfig(changed);
+	m_gs = nullptr;
+
+	EXPECT_TRUE(g_gs_front);
+	ASSERT_TRUE(g_gs_renderer);
+	EXPECT_TRUE(g_gs_renderer->IsBackThreadRunning());
 }
