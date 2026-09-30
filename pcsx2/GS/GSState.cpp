@@ -10,6 +10,7 @@
 #include "GS/GSUtil.h"
 #include "GS/GSVertexKick.h"
 #include "PerformanceMetrics.h"
+#include "VMManager.h"
 
 #include "common/Console.h"
 #include "common/BitUtils.h"
@@ -881,20 +882,15 @@ void GSState::BackThreadLoop()
 
 	Threading::ThreadHandle handle(Threading::ThreadHandle::GetForCallingThread());
 
-	// A new thread inherits the spawner's affinity mask, and the spawner here is
-	// the MTGS thread — which EnableThreadPinning may have pinned to a single
-	// core (always the case when the back thread is respawned via GSreopen).
-	// Sharing that one core would time-slice front and back and silently
-	// re-serialize the split, so clear to all cores. VMManager owns any future
-	// explicit pinning policy for this thread.
-	handle.SetAffinity(0);
-
-	// Nothing places this thread (VMManager pins the EE, VU and MTGS threads only), so say where
-	// the scheduler first put it. One sample, not a residency figure: it can migrate at any time.
+	// VMManager places this thread next to the MTGS thread (see SetEmuThreadAffinities). The
+	// registration applies that placement now, including replacing the MTGS thread's mask this
+	// thread inherited, which may be a single core and would re-serialize the split.
+	const u64 placed = VMManager::Internal::RegisterGSBackThread(&handle);
 #if defined(__linux__)
-	Console.WriteLn("GS: back thread is unpinned (any core); first ran on CPU %d.", sched_getcpu());
+	Console.WriteLn("GS: back thread starts on CPU mask 0x%llx (0 = any; re-placed when thread affinities are applied); first ran on CPU %d.",
+		static_cast<unsigned long long>(placed), sched_getcpu());
 #else
-	Console.WriteLn("GS: back thread is unpinned (any core).");
+	Console.WriteLn("GS: back thread starts on CPU mask 0x%llx (0 = any; re-placed when thread affinities are applied).", static_cast<unsigned long long>(placed));
 #endif
 
 	// Half the GS work runs here under the split, and the OSD's "GS" figure is the MTGS
@@ -917,6 +913,9 @@ void GSState::BackThreadLoop()
 		}
 		m_chan->space.NotifyIdle();
 	}
+
+	// Before the thread exits, so a placement change never targets a dead thread id.
+	VMManager::Internal::RegisterGSBackThread(nullptr);
 }
 
 void GSState::ExecRecordSlot(const GSBackQueue::RecordSlot& slot)

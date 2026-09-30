@@ -171,6 +171,15 @@ static u64 s_gs_pin_mask = 0;
 static std::string s_gs_pin_effective("none");
 static const char* s_gs_pin_source = "none";
 
+// -gsbackpin. Where the GS back thread (GS multi-threading) runs. Without the flag it is
+// placed by VMManager exactly as the app places it -- next to the MTGS thread -- and
+// re-derived next to the -gspin set when -gspin moves the MTGS thread. "any" restores the
+// old unplaced behaviour (every processor), for A/B runs. s_gs_back_pin_applied is what
+// the stats JSON records: "vmmanager", "near-gspin", "any", or the CPU list given.
+static std::string s_gs_back_pin_request;
+static u64 s_gs_back_pin_mask = 0;
+static std::string s_gs_back_pin_applied("vmmanager");
+
 // The CPU set this process started with, captured before anything has pinned anything.
 // It is the reference that tells "nobody narrowed this thread" apart from "something
 // did": a read-back on its own cannot say which, and both answers are one comma list.
@@ -1204,6 +1213,9 @@ static void PrintCommandLineHelp(const char* progname)
 						 "its CPU time without anything in the renderer changing. The pin is read back afterwards and "
 						 "both the request and the result are written to -stats-json; a pin that did not take warns and "
 						 "the run continues.\n");
+	std::fprintf(stderr, "  -gsbackpin <cpu[,cpu...]|any>: Where the GS back thread (GS multi-threading) runs. Default: "
+						 "where VMManager puts it in the app, next to the GS thread (or next to the -gspin set when that "
+						 "is given). 'any' leaves it on every processor, the behaviour before it was placed.\n");
 	std::fprintf(stderr, "  -affinity <0-7>: Thread-placement mode handed to VMManager before the VM boots. "
 						 "0 = unpinned (every emu thread gets every processor), 1-6 = explicit per-core placements by "
 						 "EE/VU/GS priority, 7 = Performance Cores (confine the emu threads to the big tier). The "
@@ -1753,6 +1765,19 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				}
 				s_gs_pin_request = cpus;
 				Console.WriteLn(fmt::format("Pinning the GS thread to CPU(s) {}", s_gs_pin_request));
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-gsbackpin"))
+			{
+				const std::string cpus(StringUtil::StripWhitespace(argv[++i]));
+				if (cpus != "any" && (!ParseCpuList(cpus, &s_gs_back_pin_mask) || s_gs_back_pin_mask == 0))
+				{
+					ArgError("-gsbackpin: '{}' is not a CPU list or 'any' (expected e.g. 5 or 4,5,6,7).", cpus);
+					return false;
+				}
+				if (cpus == "any")
+					s_gs_back_pin_mask = 0;
+				s_gs_back_pin_request = cpus;
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-affinity"))
@@ -2409,6 +2434,7 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(), "    \"gs_pin_requested\": \"%s\",\n    \"gs_pin_effective\": \"%s\",\n",
 		s_gs_pin_request.empty() ? "none" : json_escape(s_gs_pin_request).c_str(), json_escape(s_gs_pin_effective).c_str());
 	std::fprintf(fp.get(), "    \"gs_pin_source\": \"%s\",\n", s_gs_pin_source);
+	std::fprintf(fp.get(), "    \"gs_back_pin\": \"%s\",\n", json_escape(s_gs_back_pin_applied).c_str());
 	// The thread-placement mode VMManager ran under, who chose it, and the CPU set this
 	// process inherited before anything narrowed it. affinity_mode is -1 with source
 	// "unsupported" on a build with no affinity path. inherited_cpu_mask is a hex mask
@@ -2748,6 +2774,28 @@ static void ApplyGSThreadPin()
 	}
 }
 
+// Places the GS back thread after ApplyGSThreadPin, for the same reason that runs after
+// VMManager::Initialize: VMManager places the back thread during Initialize, and this has
+// to be the last word. The back thread may start before or after this; VMManager hands a
+// thread that registers later the placement set here.
+static void ApplyGSBackThreadPin()
+{
+	if (!s_gs_back_pin_request.empty())
+	{
+		VMManager::Internal::SetGSBackThreadAffinity(s_gs_back_pin_mask);
+		s_gs_back_pin_applied = s_gs_back_pin_request;
+		Console.WriteLn(fmt::format("GS back thread placed on CPU(s) {} (-gsbackpin)",
+			s_gs_back_pin_mask ? FormatCpuMask(s_gs_back_pin_mask) : std::string("any")));
+	}
+	else if (!s_gs_pin_request.empty() && s_gs_pin_mask != 0)
+	{
+		const u64 mask = VMManager::Internal::PlaceGSBackThreadNearGSThread();
+		s_gs_back_pin_applied = "near-gspin";
+		Console.WriteLn(fmt::format("GS back thread placed next to the -gspin set: CPU(s) {}",
+			mask ? FormatCpuMask(mask) : std::string("any")));
+	}
+}
+
 static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 {
 	ret->store(EXIT_FAILURE);
@@ -2769,6 +2817,7 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			// Moving this call any earlier means that pin quietly overwrites -gspin, and
 			// the only visible symptom would be that the flag stops doing anything.
 			ApplyGSThreadPin();
+			ApplyGSBackThreadPin();
 
 			// run until end
 			GSDumpReplayer::SetLoopCount(s_loop_count);

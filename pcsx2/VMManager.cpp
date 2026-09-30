@@ -65,11 +65,12 @@
 #include "fmt/format.h"
 
 #include <atomic>
+#include <bit>
 #include <mutex>
 #include <sstream>
 #include <common/RedtapeWilCom.h>
 
-#if defined(__ANDROID__)
+#if defined(__linux__)
 // Performance-core selection: std::popcount/max_element for the mask, and plain POSIX I/O
 // for the sysfs capacity nodes (they report st_size == 0, so buffered reads come back empty).
 #include <algorithm>
@@ -4019,7 +4020,7 @@ static u32 GetProcessorIdForProcessor(const cpuinfo_processor* proc)
 #endif
 }
 
-#if defined(__ANDROID__)
+#if defined(__linux__)
 // Per-CPU scheduler capacity, as the kernel's own EAS uses it. Read with plain POSIX I/O:
 // these sysfs nodes report st_size == 0, so any size-based read comes back EMPTY.
 // Returns 0 when the node is missing (older kernels) or unreadable.
@@ -4103,6 +4104,7 @@ static u64 GetPerformanceCoresMask()
 	}
 	return mask;
 }
+#endif
 
 // Widen a mask of individual processors to every processor sharing their clusters. cpuinfo
 // splits ARM clusters by MIDR, so this is "the same core type", which is what a helper thread
@@ -4130,6 +4132,63 @@ static u64 ClusterMaskForProcessorMask(u64 processor_mask)
 		}
 	}
 	return mask;
+}
+
+// Where the back thread goes when the MTGS (front) thread is confined to gs_mask and the
+// processors in occupied are pinned to other busy emu threads. Every draw crosses between
+// front and back through a shared ring, so the back wants the front's cache: measured on the
+// M2 (Spider-Man 3, 2x), back on the front's P-cluster 8.6 ms/frame, the other P-cluster
+// 11.5-12.0 ms, an E-core 22-23 ms. So, in order: the rest of the front's cluster if it is in
+// the performance tier, then the rest of the tier, each first without the occupied processors
+// and then with them. Never the front's own core(s) while anything else is left: both threads
+// are busy, and a back thread allowed onto a single-core front's core gets migrated there
+// whenever the front sleeps and then preempted by every front wake (SD865, front pinned to
+// one core: 560-930 back preemptions per frame against ~2). If the topology gives no answer,
+// every processor except the front's; 0 (unpinned) only when there is nothing else.
+static u64 ChooseGSBackThreadAffinity(u64 gs_mask, u64 occupied)
+{
+	if (gs_mask == 0)
+		return 0;
+
+#if defined(__linux__)
+	const u64 tier = GetPerformanceCoresMask();
+#else
+	const u64 tier = 0; // No capacity source on Windows; the cluster alone decides.
+#endif
+	const u64 cluster = ClusterMaskForProcessorMask(gs_mask) & ~gs_mask;
+	const u64 fast_cluster = tier ? (cluster & tier) : cluster;
+	const u64 fast_rest = tier & ~gs_mask;
+	u64 others = 0;
+	const u32 count = cpuinfo_get_processors_count();
+	for (u32 i = 0; i < count; i++)
+	{
+		if (const cpuinfo_processor* proc = cpuinfo_get_processor(i))
+			others |= static_cast<u64>(1) << GetProcessorIdForProcessor(proc);
+	}
+	others &= ~gs_mask;
+	for (const u64 candidate : {fast_cluster & ~occupied, fast_rest & ~occupied, fast_cluster, fast_rest, others})
+	{
+		if (candidate != 0)
+			return candidate;
+	}
+	return 0;
+}
+
+#if defined(__linux__) && !defined(__ANDROID__)
+// Desktop Linux with thread pinning off: the performance tier, or 0 when the machine has no
+// slower tier to keep away from (every processor qualifies) or it cannot be read.
+static u64 GetUnpinnedGSTierMask()
+{
+	const u64 tier = GetPerformanceCoresMask();
+	u64 all = 0;
+	const u32 count = cpuinfo_get_processors_count();
+	for (u32 i = 0; i < count; i++)
+	{
+		const cpuinfo_processor* proc = cpuinfo_get_processor(i);
+		if (proc && proc->smt_id == 0)
+			all |= static_cast<u64>(1) << GetProcessorIdForProcessor(proc);
+	}
+	return (tier != 0 && tier != all && std::popcount(tier) >= 2) ? tier : 0;
 }
 #endif
 
@@ -4273,6 +4332,58 @@ void VMManager::EnsureCPUInfoInitialized()
 	std::call_once(s_processor_list_initialized, InitializeProcessorList);
 }
 
+// The GS back thread (GS multi-threading) belongs to the renderer, which the MTGS thread creates
+// and destroys whenever a renderer opens, so the thread registers itself here instead of
+// VMManager holding its handle. One mutex covers the handle and the mask: a placement change on
+// the CPU thread can coincide with the back thread starting or exiting, and SetAffinity must
+// never be handed the id of a thread that has already exited. A thread that registers after a
+// placement was chosen picks that placement up; one that registers before gets it pushed.
+static std::mutex s_gs_back_thread_mutex;
+static Threading::ThreadHandle s_gs_back_thread_handle;
+static u64 s_gs_back_thread_affinity = 0; // 0 = any processor
+
+static void SetGSBackThreadAffinityLocked(u64 mask)
+{
+	std::unique_lock lock(s_gs_back_thread_mutex);
+	s_gs_back_thread_affinity = mask;
+	if (s_gs_back_thread_handle)
+		s_gs_back_thread_handle.SetAffinity(mask);
+}
+
+u64 VMManager::Internal::RegisterGSBackThread(const Threading::ThreadHandle* handle)
+{
+	std::unique_lock lock(s_gs_back_thread_mutex);
+	s_gs_back_thread_handle = handle ? *handle : Threading::ThreadHandle();
+	// Applied even when 0: the new thread inherited the MTGS thread's mask, which may be a
+	// single core, and sharing that core would serialize the split again.
+	if (s_gs_back_thread_handle)
+		s_gs_back_thread_handle.SetAffinity(s_gs_back_thread_affinity);
+	return s_gs_back_thread_affinity;
+}
+
+void VMManager::Internal::SetGSBackThreadAffinity(u64 mask)
+{
+	SetGSBackThreadAffinityLocked(mask);
+}
+
+u64 VMManager::Internal::PlaceGSBackThreadNearGSThread()
+{
+	EnsureCPUInfoInitialized();
+	const auto pinned = [](const Threading::ThreadHandle& h) -> u64 {
+		const u64 mask = h ? h.GetAffinity() : 0;
+		return (std::popcount(mask) == 1) ? mask : 0;
+	};
+	const u64 gs_mask = MTGS::GetThreadHandle() ? MTGS::GetThreadHandle().GetAffinity() : 0;
+	const u64 occupied = gs_mask | pinned(s_vm_thread_handle) | pinned(vu1Thread.GetThreadHandle());
+#if defined(__linux__) || defined(_WIN32)
+	const u64 mask = ChooseGSBackThreadAffinity(gs_mask, occupied);
+#else
+	const u64 mask = 0; // No topology here (Darwin cannot pin threads anyway).
+#endif
+	SetGSBackThreadAffinityLocked(mask);
+	return mask;
+}
+
 #if defined(__ANDROID__)
 // Android "Affinity Control Mode", set by the app from NativeApp.setAffinityMode() before the VM
 // boots (see SetEmuThreadAffinities below for the semantics of each value):
@@ -4311,6 +4422,7 @@ void VMManager::SetEmuThreadAffinities()
 		MTGS::GetThreadHandle().SetAffinity(0);
 		vu1Thread.GetThreadHandle().SetAffinity(0);
 		s_vm_thread_handle.SetAffinity(0);
+		SetGSBackThreadAffinityLocked(0);
 		s_software_renderer_processor_list = {};
 		s_thread_affinities_set = false;
 		s_perf_cluster_mask.store(0, std::memory_order_relaxed);
@@ -4324,6 +4436,7 @@ void VMManager::SetEmuThreadAffinities()
 		MTGS::GetThreadHandle().SetAffinity(0);
 		vu1Thread.GetThreadHandle().SetAffinity(0);
 		s_vm_thread_handle.SetAffinity(0);
+		SetGSBackThreadAffinityLocked(0);
 		s_software_renderer_processor_list = {};
 		s_thread_affinities_set = false;
 		s_perf_cluster_mask.store(0, std::memory_order_relaxed);
@@ -4352,6 +4465,15 @@ void VMManager::SetEmuThreadAffinities()
 			s_vm_thread_handle.SetAffinity(perf_mask);
 			MTGS::GetThreadHandle().SetAffinity(perf_mask);
 			vu1Thread.GetThreadHandle().SetAffinity(android_mtvu ? perf_mask : 0);
+			// The GS back thread (GS multi-threading) is busy 50-100% of the frame in GS-heavy
+			// titles, so it joins the tier only when the tier has a processor for it as well;
+			// otherwise it stays unpinned. It is placed separately so that it can never cost the
+			// other threads their placement. Set whether or not multi-threading is on: the mask
+			// is only used if a back thread starts.
+			const bool back_fits = static_cast<u32>(std::popcount(perf_mask)) >= threads_to_place + 1;
+			INFO_LOG("  GS back thread {}", back_fits ? "shares the performance cores" :
+														"left unpinned (no processor left for it in the tier)");
+			SetGSBackThreadAffinityLocked(back_fits ? perf_mask : 0);
 			s_thread_affinities_set = true;
 			// Already a whole tier — hand it to helper threads unchanged.
 			s_perf_cluster_mask.store(perf_mask, std::memory_order_relaxed);
@@ -4364,6 +4486,7 @@ void VMManager::SetEmuThreadAffinities()
 		MTGS::GetThreadHandle().SetAffinity(0);
 		vu1Thread.GetThreadHandle().SetAffinity(0);
 		s_vm_thread_handle.SetAffinity(0);
+		SetGSBackThreadAffinityLocked(0);
 		s_software_renderer_processor_list = {};
 		s_thread_affinities_set = false;
 		s_perf_cluster_mask.store(0, std::memory_order_relaxed);
@@ -4404,15 +4527,23 @@ void VMManager::SetEmuThreadAffinities()
 	MTGS::GetThreadHandle().SetAffinity(android_gs_affinity);
 	const u64 android_vu_affinity = android_mtvu ? affinity_for_rank(vu_rank) : 0;
 	vu1Thread.GetThreadHandle().SetAffinity(android_vu_affinity);
+	const u64 android_gs_back_affinity = ChooseGSBackThreadAffinity(
+		android_gs_affinity, android_ee_affinity | android_gs_affinity | android_vu_affinity);
+	INFO_LOG("  GS back thread may run on 0x{:x}", android_gs_back_affinity);
+	SetGSBackThreadAffinityLocked(android_gs_back_affinity);
 	s_thread_affinities_set = true;
 	s_perf_cluster_mask.store(
 		ClusterMaskForProcessorMask(android_ee_affinity | android_gs_affinity | android_vu_affinity),
 		std::memory_order_relaxed);
 	return;
 #else
-	const bool new_pin_enable = (GetState() != VMState::Shutdown && EmuConfig.EnableThreadPinning);
-	if (s_thread_affinities_set == new_pin_enable)
-		return;
+	// Runs on every call rather than only when pinning toggles: the GS pair is placed even with
+	// pinning off, and a VM boot with pinning off is exactly the call a toggle check would skip.
+	// Threads we never narrowed are left alone, so a mask inherited from taskset survives.
+	const bool vm_running = (GetState() != VMState::Shutdown);
+	const bool new_pin_enable = (vm_running && EmuConfig.EnableThreadPinning);
+	const bool was_pinned = s_thread_affinities_set;
+	static bool s_gs_tier_confined = false;
 
 	// Track whether pinning is *currently effective*, not just EmuConfig.EnableThreadPinning
 	// (matches refresh-experimental — a shutdown call with pinning enabled must not leave this
@@ -4433,12 +4564,31 @@ void VMManager::SetEmuThreadAffinities()
 		if (new_pin_enable)
 			ERROR_LOG("Insufficient processors for thread pinning.");
 
-		MTGS::GetThreadHandle().SetAffinity(0);
-		vu1Thread.GetThreadHandle().SetAffinity(0);
-		s_vm_thread_handle.SetAffinity(0);
+		if (was_pinned)
+		{
+			vu1Thread.GetThreadHandle().SetAffinity(0);
+			s_vm_thread_handle.SetAffinity(0);
+		}
 		s_software_renderer_processor_list = {};
+
+		// With pinning off, the GS front and back threads still stay off the slow tier of a
+		// big.LITTLE part: a back thread on an M2 E-core measured 22-23 ms/frame against 8.6 ms
+		// on a P-core, and Stuntman unpinned put it on E-cores for 46-88% of its cycles. Both
+		// get the same mask so the pair stays consistent. EE and VU are left to the scheduler.
+#if defined(__linux__)
+		const u64 gs_tier = vm_running ? GetUnpinnedGSTierMask() : 0;
+#else
+		const u64 gs_tier = 0;
+#endif
+		if (gs_tier != 0)
+			INFO_LOG("Thread pinning off: GS thread and GS back thread confined to the performance tier 0x{:x}", gs_tier);
+		if (gs_tier != 0 || was_pinned || s_gs_tier_confined)
+			MTGS::GetThreadHandle().SetAffinity(gs_tier);
+		SetGSBackThreadAffinityLocked(gs_tier);
+		s_gs_tier_confined = (gs_tier != 0);
 		return;
 	}
+	s_gs_tier_confined = false;
 
 	// steal vu's thread if mtvu is off
 	const u32 ee_index = s_processor_list[0];
@@ -4465,6 +4615,15 @@ void VMManager::SetEmuThreadAffinities()
 	INFO_LOG("  GS thread is on processor {} (0x{:x})", gs_index, gs_affinity);
 	MTGS::GetThreadHandle().SetAffinity(gs_affinity);
 
+	const u64 occupied = ee_affinity | gs_affinity | (mtvu ? (static_cast<u64>(1) << vu_index) : 0);
+#if defined(__linux__) || defined(_WIN32)
+	const u64 gs_back_affinity = ChooseGSBackThreadAffinity(gs_affinity, occupied);
+#else
+	const u64 gs_back_affinity = 0; // No topology here (Darwin cannot pin threads anyway).
+#endif
+	INFO_LOG("  GS back thread may run on 0x{:x}", gs_back_affinity);
+	SetGSBackThreadAffinityLocked(gs_back_affinity);
+
 #ifdef __ANDROID__
 	// Bump the emu-critical threads slightly above default so Android's
 	// scheduler favors them over app/UI housekeeping under load. EPERM is
@@ -4478,6 +4637,7 @@ void VMManager::SetEmuThreadAffinities()
 	// Try to find some threads for the software renderer.
 	// They should be in the same cluster as the main GS thread. If they're not, for example,
 	// we had 4 P cores and 6 E cores, let the OS schedule them instead.
+	s_software_renderer_processor_list.clear();
 	s_software_renderer_processor_list.reserve(s_processor_list.size() - (mtvu ? 3 : 2));
 	const u32 gs_cluster_id = cpuinfo_get_processor(gs_index)->cluster->cluster_id;
 	for (size_t i = mtvu ? 3 : 2; i < s_processor_list.size(); i++)
