@@ -14,9 +14,10 @@
 #include <cstring>
 #include <string>
 
+#include <mutex>
+
 #if defined(ARMSX2_USE_ADRENOTOOLS)
 #include <dlfcn.h>
-#include <mutex>
 #include "common/FileSystem.h"
 #include "common/Path.h"
 #include "adrenotools/driver.h"
@@ -45,6 +46,15 @@ void Vulkan::ResetVulkanLibraryFunctionPointers()
 }
 
 static DynamicLibrary s_vulkan_library;
+
+static std::mutex s_custom_driver_status_mutex;
+static Vulkan::CustomDriverStatus s_custom_driver_status;
+
+Vulkan::CustomDriverStatus Vulkan::GetCustomDriverStatus()
+{
+	std::lock_guard lock(s_custom_driver_status_mutex);
+	return s_custom_driver_status;
+}
 
 #if defined(ARMSX2_USE_ADRENOTOOLS)
 namespace
@@ -212,7 +222,21 @@ bool Vulkan::LoadVulkanLibrary(Error* error)
 	// User-picked custom driver (e.g. Mesa Turnip from K11MCH1/AdrenoToolsDrivers)
 	// takes priority.
 	const CustomDriverRequest custom_driver = GetCustomDriverRequest();
-	if (custom_driver.IsSet() && TryOpenAdrenotoolsDriver(s_vulkan_library, custom_driver, error))
+	const bool custom_opened = custom_driver.IsSet() && TryOpenAdrenotoolsDriver(s_vulkan_library, custom_driver, error);
+	{
+		std::lock_guard lock(s_custom_driver_status_mutex);
+		s_custom_driver_status = {};
+		s_custom_driver_status.requested = custom_driver.IsSet();
+		s_custom_driver_status.opened = custom_opened;
+		s_custom_driver_status.required = custom_driver.required;
+		s_custom_driver_status.dir = custom_driver.dir;
+		s_custom_driver_status.name = custom_driver.name;
+		s_custom_driver_status.redirect_dir = custom_driver.redirect_dir;
+		s_custom_driver_status.hook_lib_dir = custom_driver.hook_lib_dir;
+		if (custom_driver.IsSet() && !custom_opened)
+			s_custom_driver_status.failure = error ? error->GetDescription() : std::string("custom driver load failed");
+	}
+	if (custom_opened)
 	{
 		Error::Clear(error);
 	}
