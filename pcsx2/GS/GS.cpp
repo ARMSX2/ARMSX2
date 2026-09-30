@@ -416,11 +416,13 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 
 static void CloseGSRenderer()
 {
-	GSTextureReplacements::Shutdown();
-
 	// The front must go first: its destructor drains the shared channel, and
-	// the back object owns that channel and the pooled arrays.
+	// the back object owns that channel and the pooled arrays. It also has to
+	// precede the texture-replacement shutdown, which frees replacement textures
+	// and clears the maps the back's texture cache reads while it draws.
 	g_gs_front.reset();
+
+	GSTextureReplacements::Shutdown();
 
 	if (g_gs_renderer)
 	{
