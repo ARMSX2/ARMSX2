@@ -8,6 +8,7 @@
 #include "GS/Renderers/Common/GSInterlaceModePolicy.h"
 #include "GS/Renderers/Common/GSPresentationPolicy.h"
 #include "GS/Renderers/Common/GSSnapshotPolicy.h"
+#include "GS/DriverReport/GSDriverReport.h"
 #include "GS/GSDump.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
@@ -1368,6 +1369,9 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 			}
 
 			delete[] fd.data;
+
+			// Which driver drew this, beside the dump. Never fails the dump.
+			GSDriverReport::WriteSidecarForDump(m_snapshot);
 
 			Host::AddKeyedOSDMessage("GSDump",
 				fmt::format(TRANSLATE_FS("GS", "Saving {0} GS dump {1} to '{2}'"),

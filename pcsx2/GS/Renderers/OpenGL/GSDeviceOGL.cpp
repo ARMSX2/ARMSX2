@@ -7,6 +7,7 @@
 #include "GS/Renderers/OpenGL/GLState.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 #include "GS/Renderers/Common/GSGPUProfile.h"
+#include "GS/DriverReport/GSDriverReport.h"
 #include "GS/GSState.h"
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/GSGL.h"
@@ -1723,6 +1724,40 @@ std::string GSDeviceOGL::GetDriverInfo() const
 	const char* gl_shading_language_version = reinterpret_cast<const char*>(glGetString(GL_SHADING_LANGUAGE_VERSION));
 	return fmt::format(
 		"OpenGL Context:\n{}\n{} {}\nGLSL: {}", gl_version, gl_vendor, gl_renderer, gl_shading_language_version);
+}
+
+void GSDeviceOGL::CollectDriverReport(GSDriverReport::BackendReport& out) const
+{
+	using namespace GSDriverReport;
+	GSDevice::CollectDriverReport(out);
+
+	// GL has no driver identity beyond its strings; they and the extension list are the evidence.
+	out.steps.Run("gl.strings", [&](std::string&) {
+		const auto str = [](GLenum name) {
+			const char* s = reinterpret_cast<const char*>(glGetString(name));
+			return std::string(s ? s : "");
+		};
+		JsonWriter w;
+		w.BeginObject();
+		w.KeyString("vendor", str(GL_VENDOR));
+		w.KeyString("renderer", str(GL_RENDERER));
+		w.KeyString("version", str(GL_VERSION));
+		w.KeyString("shading_language_version", str(GL_SHADING_LANGUAGE_VERSION));
+		GLint count = 0;
+		glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+		w.Key("extensions");
+		w.BeginArray();
+		for (GLint i = 0; i < count; i++)
+		{
+			const char* e = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i)));
+			if (e)
+				w.String(e);
+		}
+		w.EndArray();
+		w.EndObject();
+		out.gl_json = w.TakeString();
+		return true;
+	});
 }
 
 GSDevice::PresentResult GSDeviceOGL::DoBeginPresent(bool frame_skip)

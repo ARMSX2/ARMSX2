@@ -70,6 +70,12 @@ else()
 	add_subdirectory(pcsx2-gsrunner EXCLUDE_FROM_ALL)
 endif()
 
+# armsx2-driverdiag: the driver report as a command-line tool, for Linux and Android devices.
+# Always opt-in (`--target armsx2-driverdiag`); nothing that ships contains it.
+if(UNIX AND NOT APPLE)
+	add_subdirectory(pcsx2-driverdiag EXCLUDE_FROM_ALL)
+endif()
+
 # eerunner — headless EE (R5900) JIT-vs-interpreter divergence localizer.
 # Built on demand (`--target pcsx2-eerunner`); EXCLUDE_FROM_ALL otherwise.
 if(ENABLE_EERUNNER)

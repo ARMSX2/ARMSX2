@@ -440,6 +440,14 @@
     </ClCompile>
     <ClCompile Include="GS\GSDump.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSFunctionMap.cpp" />
+    <ClCompile Include="GS\DriverReport\GSDriverReport.cpp" />
+    <ClCompile Include="GS\DriverReport\GSDriverReportClassify.cpp" />
+    <ClCompile Include="GS\DriverReport\GSDriverReportJson.cpp" />
+    <ClCompile Include="GS\DriverReport\GSDriverReportProfile.cpp" />
+    <ClCompile Include="GS\DriverReport\GSDriverReportSystem.cpp" />
+    <ClCompile Include="GS\DriverReport\GSDriverReportVulkan.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="GS\Renderers\Common\GSGPUDriverProfile.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSGPUProfile.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSGPUProfileMali.cpp" />
@@ -977,6 +985,12 @@
     <ClInclude Include="GS\Renderers\Common\GSSnapshotPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSStreamRingFlushRange.h" />
     <ClInclude Include="GS\Renderers\Common\GSStreamRingGrowth.h" />
+    <ClInclude Include="GS\DriverReport\GSDriverReport.h" />
+    <ClInclude Include="GS\DriverReport\GSDriverReportClassify.h" />
+    <ClInclude Include="GS\DriverReport\GSDriverReportJson.h" />
+    <ClInclude Include="GS\DriverReport\GSDriverReportProfile.h" />
+    <ClInclude Include="GS\DriverReport\GSDriverReportSystem.h" />
+    <ClInclude Include="GS\DriverReport\GSDriverReportVulkan.h" />
     <ClInclude Include="GS\Renderers\Common\GSStreamRingMemoryPolicy.h" />
     <ClInclude Include="GS\GSXXH.h" />
     <ClInclude Include="GS\MultiISA.h" />

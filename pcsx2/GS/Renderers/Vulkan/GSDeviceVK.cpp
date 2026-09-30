@@ -45,6 +45,11 @@ namespace
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 #include "GS/Renderers/Common/GSMeasurementOverrides.h"
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
+#include "GS/DriverReport/GSDriverReport.h"
+#include "GS/DriverReport/GSDriverReportClassify.h"
+#include "GS/DriverReport/GSDriverReportProfile.h"
+#include "GS/DriverReport/GSDriverReportVulkan.h"
+#include "GS/Renderers/Common/GSStreamRingMemoryPolicy.h"
 
 #include "BuildVersion.h"
 #include "Config.h"
@@ -170,6 +175,9 @@ static std::mutex s_instance_mutex;
 // empty) list so the existing required-extension scan loops stay valid.
 static constexpr std::array<const char*, 0> s_required_device_extensions = {};
 
+// The instance extensions the last CreateVulkanInstance enabled, for the driver report.
+static std::vector<std::string> s_enabled_instance_extensions;
+
 GSDeviceVK::GSDeviceVK()
 {
 #ifdef ENABLE_OGL_DEBUG
@@ -230,6 +238,7 @@ VkInstance GSDeviceVK::CreateVulkanInstance(const WindowInfo& wi, OptionalExtens
 		return nullptr;
 	}
 
+	s_enabled_instance_extensions.assign(enabled_extensions.begin(), enabled_extensions.end());
 	return instance;
 }
 
@@ -486,7 +495,8 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 		m_physical_device, nullptr, &extension_count, available_extension_list.data());
 	pxAssert(res == VK_SUCCESS);
 
-	auto SupportsExtension = [&available_extension_list, extension_list](const char* name, bool required) {
+	m_missing_device_extensions.clear();
+	auto SupportsExtension = [this, &available_extension_list, extension_list](const char* name, bool required) {
 		if (std::find_if(available_extension_list.begin(), available_extension_list.end(),
 				[name](const VkExtensionProperties& properties) { return !strcmp(name, properties.extensionName); }) !=
 			available_extension_list.end())
@@ -504,6 +514,9 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 		if (required)
 			Console.Error("VK: Missing required extension %s.", name);
 
+		if (std::find(m_missing_device_extensions.begin(), m_missing_device_extensions.end(), name) ==
+			m_missing_device_extensions.end())
+			m_missing_device_extensions.emplace_back(name);
 		return false;
 	};
 
@@ -755,6 +768,7 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 	ExtensionList enabled_extensions;
 	if (!SelectDeviceExtensions(&enabled_extensions, surface != VK_NULL_HANDLE))
 		return false;
+	m_enabled_device_extensions.assign(enabled_extensions.begin(), enabled_extensions.end());
 
 	device_info.enabledExtensionCount = static_cast<uint32_t>(enabled_extensions.size());
 	device_info.ppEnabledExtensionNames = enabled_extensions.data();
@@ -3838,6 +3852,8 @@ bool GSDeviceVK::CheckFeatures()
 	const bool declare_depth_loop = ResolveDepthFeedback(road);
 	ResolveStreamRingMemory();
 	LogResolvedFeatures(road, declare_depth_loop);
+	m_report_self_read_road = GSSelfReadRoadName(road);
+	m_report_declare_depth_loop = declare_depth_loop;
 	return CheckFormatSupport();
 }
 
@@ -9851,4 +9867,100 @@ void GSDeviceVK::SendHWDraw(const GSHWDrawConfig& config, GSTextureVK* draw_rt, 
 
 	if (config.ps.HasColorROV() || config.ps.HasDepthROV())
 		g_perfmon.Put(GSPerfMon::DrawCallsROV, 1);
+}
+
+void GSDeviceVK::CollectDriverReport(GSDriverReport::BackendReport& out) const
+{
+	using namespace GSDriverReport;
+
+	// The base object is replaced below by one carrying the whole resolver result.
+	GSDevice::CollectDriverReport(out);
+
+	out.has_served_facts = true;
+	out.vendor_id = m_device_properties.vendorID;
+	out.device_name = m_device_properties.deviceName;
+	if (m_optional_extensions.vk_khr_driver_properties)
+	{
+		out.driver_id = static_cast<u32>(m_device_driver_properties.driverID);
+		out.driver_name = m_device_driver_properties.driverName;
+		out.driver_info = m_device_driver_properties.driverInfo;
+	}
+
+	VulkanLiveFacts live;
+	live.enabled_instance_extensions = s_enabled_instance_extensions;
+	live.enabled_device_extensions = m_enabled_device_extensions;
+	live.missing_device_extensions = m_missing_device_extensions;
+	live.instance_api_version = VK_API_VERSION_1_1;
+	{
+		JsonWriter vw;
+		WriteVulkanInstance(vw, out.steps, "vulkan", m_instance, m_physical_device, &live, nullptr);
+		out.vulkan_json = vw.TakeString();
+	}
+
+	JsonWriter w;
+	w.BeginObject();
+	w.KeyString("device_name", m_name);
+	w.KeyUInt("max_texture_size", m_max_texture_size);
+	w.KeyString("self_read_road", m_report_self_read_road);
+
+	w.Key("roads");
+	w.BeginObject();
+	w.KeyBool("texture_barrier", m_features.texture_barrier);
+	w.KeyBool("framebuffer_fetch_in_tile", m_features.framebuffer_fetch);
+	w.KeyBool("feedback_loop_layout", UseFeedbackLoopLayout());
+	w.KeyBool("declared_loop_orders_overlap", m_features.declared_feedback_loop_orders_overlap);
+	w.KeyString("feedback_loop_declaration", m_declare_loop_per_draw ? "dynamic per draw" : "pipeline create flag");
+	w.KeyBool("depth_loop_declared", m_report_declare_depth_loop);
+	w.KeyBool("depth_feedback", m_features.depth_feedback);
+	w.KeyBool("push_descriptors", m_use_push_descriptors);
+	w.KeyString("stream_rings", GSStreamRingMemoryRoadName(m_stream_ring_memory.road));
+	w.KeyUInt("stream_ring_memory_type", m_stream_ring_memory.type_index);
+	w.KeyBool("gpu_timing_supported", m_gpu_timing_supported);
+	w.KeyBool("present_spinning_supported", m_spinning_supported);
+	w.KeyBool("measurement_overrides_set", g_gs_measurement_overrides.Any());
+	w.EndObject();
+
+	w.Key("features");
+	WriteFeatureSupport(w, m_features);
+
+	w.Key("profile");
+	{
+		ServedDriverFacts facts;
+		facts.vendor_id = out.vendor_id;
+		facts.driver_id = out.driver_id;
+		facts.driver_name = out.driver_name;
+		facts.driver_info = out.driver_info;
+		facts.device_name = out.device_name;
+		WriteGpuProfile(w, m_gpu_profile, &m_device_rules, ClassifyServedDriver(facts).answered);
+	}
+
+	w.Key("optional_extensions");
+	w.BeginObject();
+#define OPT(name) w.KeyBool(#name, m_optional_extensions.name)
+	OPT(vk_ext_provoking_vertex);
+	OPT(vk_ext_memory_budget);
+	OPT(vk_ext_calibrated_timestamps);
+	OPT(vk_ext_rasterization_order_attachment_access);
+	OPT(vk_ext_roaa_depth);
+	OPT(vk_ext_full_screen_exclusive);
+	OPT(vk_ext_line_rasterization);
+	OPT(vk_swapchain_maintenance1);
+	OPT(vk_swapchain_maintenance1_is_khr);
+	OPT(vk_khr_push_descriptor);
+	OPT(vk_khr_driver_properties);
+	OPT(vk_khr_shader_non_semantic_info);
+	OPT(vk_ext_attachment_feedback_loop_layout);
+	OPT(vk_ext_attachment_feedback_loop_dynamic_state);
+	OPT(vk_ext_fragment_shader_interlock);
+	OPT(vk_khr_vulkan_memory_model);
+	OPT(vk_ext_robustness2_null_descriptor);
+	OPT(vk_ext_device_fault);
+#undef OPT
+	w.EndObject();
+
+	w.Key("enabled_core_features");
+	WriteVulkanCoreFeatures(w, m_device_features);
+
+	w.EndObject();
+	out.backend_json = w.TakeString();
 }
