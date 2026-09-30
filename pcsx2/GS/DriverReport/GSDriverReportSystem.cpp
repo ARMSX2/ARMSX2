@@ -278,126 +278,20 @@ namespace GSDriverReport
 #ifdef DRIVER_REPORT_LINUX
 	namespace
 	{
-		struct LibraryScan
-		{
-			std::string path;
-			int64_t size = -1;
-			int64_t mtime = 0;
-			std::string error;
-			std::vector<std::string> strings;
-		};
-
-		bool IsVersionLike(std::string_view s)
-		{
-			static constexpr std::string_view markers[] = {
-				"QUALCOMM build",
-				"Build Date",
-				"Build Config",
-				"Compiler Version",
-				"Driver Version",
-				"Driver Path",
-				"libmali",
-				"Mesa ",
-				"git-",
-				"ANGLE (",
-				"Vulkan driver",
-			};
-			// Mangled C++ symbols carry these words without being versions.
-			if (s.substr(0, 2) == "_Z")
-				return false;
-			for (std::string_view m : markers)
-			{
-				if (s.find(m) != std::string_view::npos)
-					return true;
-			}
-			// Arm's release tag: "v1.r44p1-..." or "r44p1-01eac0".
-			for (size_t i = 0; i + 4 < s.size(); i++)
-			{
-				if (s[i] == 'r' && std::isdigit(static_cast<unsigned char>(s[i + 1])) &&
-					std::isdigit(static_cast<unsigned char>(s[i + 2])) && s[i + 3] == 'p' &&
-					std::isdigit(static_cast<unsigned char>(s[i + 4])) && (i == 0 || s[i - 1] == '.' || s[i - 1] == '-' || s[i - 1] == ' '))
-					return true;
-			}
-			return false;
-		}
-
-		LibraryScan ScanLibrary(const std::string& path)
-		{
-			static constexpr size_t MAX_STRINGS = 24;
-			static constexpr size_t MIN_RUN = 6;
-			static constexpr size_t MAX_RUN = 300;
-
-			LibraryScan scan;
-			scan.path = path;
-			struct stat st;
-			if (stat(path.c_str(), &st) != 0)
-			{
-				scan.error = ErrnoString(errno);
-				return scan;
-			}
-			scan.size = static_cast<int64_t>(st.st_size);
-			scan.mtime = static_cast<int64_t>(st.st_mtime);
-
-			const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
-			if (fd < 0)
-			{
-				scan.error = ErrnoString(errno);
-				return scan;
-			}
-			std::vector<char> buf(1 << 20);
-			std::string run;
-			bool run_too_long = false;
-			const auto flush = [&]() {
-				if (!run_too_long && run.size() >= MIN_RUN && scan.strings.size() < MAX_STRINGS && IsVersionLike(run) &&
-					std::find(scan.strings.begin(), scan.strings.end(), run) == scan.strings.end())
-					scan.strings.push_back(run);
-				run.clear();
-				run_too_long = false;
-			};
-			for (;;)
-			{
-				const ssize_t n = read(fd, buf.data(), buf.size());
-				if (n < 0 && errno == EINTR)
-					continue;
-				if (n <= 0)
-					break;
-				for (ssize_t i = 0; i < n; i++)
-				{
-					const unsigned char c = static_cast<unsigned char>(buf[i]);
-					if (c >= 0x20 && c < 0x7F)
-					{
-						if (run.size() < MAX_RUN)
-							run.push_back(static_cast<char>(c));
-						else
-							run_too_long = true;
-					}
-					else
-					{
-						flush();
-					}
-				}
-				if (scan.strings.size() >= MAX_STRINGS)
-					break;
-			}
-			flush();
-			close(fd);
-			return scan;
-		}
-
 		std::vector<std::string> VendorLibraryPaths()
 		{
 			std::vector<std::string> paths;
-			const auto add_matching = [&paths](const char* dir, std::string_view prefix) {
+			const auto add_matching = [&paths](const char* dir, std::string_view prefix, std::string_view suffix) {
 				for (const std::string& name : ListDir(dir))
 				{
-					if (name.compare(0, prefix.size(), prefix) == 0 && name.size() > 3 &&
-						name.compare(name.size() - 3, 3, ".so") == 0)
+					if (name.compare(0, prefix.size(), prefix) == 0 && name.size() > suffix.size() &&
+						name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0)
 						paths.push_back(std::string(dir) + "/" + name);
 				}
 			};
 #if defined(__ANDROID__)
-			add_matching("/vendor/lib64/hw", "vulkan.");
-			add_matching("/vendor/lib64/egl", "lib");
+			add_matching("/vendor/lib64/hw", "vulkan.", ".so");
+			add_matching("/vendor/lib64/egl", "lib", ".so");
 			for (const char* p : {"/vendor/lib64/libGLES_mali.so", "/vendor/lib64/libllvm-glnext.so",
 					 "/vendor/lib64/libllvm-qgl.so", "/vendor/lib64/libgsl.so", "/system/lib64/libvulkan.so"})
 			{
@@ -407,7 +301,7 @@ namespace GSDriverReport
 #else
 			// Desktop and handheld Linux: the Vulkan ICD manifests name the driver libraries.
 			for (const char* dir : {"/usr/share/vulkan/icd.d", "/etc/vulkan/icd.d"})
-				add_matching(dir, "");
+				add_matching(dir, "", ".json");
 #endif
 			return paths;
 		}
@@ -416,55 +310,44 @@ namespace GSDriverReport
 
 	void WriteVendorLibraries(JsonWriter& w, StepLog& steps)
 	{
-#ifdef DRIVER_REPORT_LINUX
-		static std::mutex s_mutex;
-		static bool s_done = false;
-		static std::vector<LibraryScan> s_scans;
-		static double s_scan_ms = 0.0;
-
-		bool cached = false;
-		steps.Run("vendor_libraries", [&](std::string&) {
-			std::lock_guard lock(s_mutex);
-			cached = s_done;
-			if (!s_done)
-			{
-				const double start = StepLog::NowMs();
-				for (const std::string& p : VendorLibraryPaths())
-					s_scans.push_back(ScanLibrary(p));
-				s_scan_ms = StepLog::NowMs() - start;
-				s_done = true;
-			}
-			return true;
-		});
-
-		std::lock_guard lock(s_mutex);
+		// Identity only: path, size and time. The libraries' embedded strings were tried and gave
+		// noise; the exact vendor release is in the served driver's own driverInfo.
 		w.BeginObject();
-		w.KeyBool("cached", cached);
-		w.KeyDouble("scan_ms", s_scan_ms);
-		w.Key("files");
-		w.BeginArray();
-		for (const LibraryScan& s : s_scans)
-		{
-			w.BeginObject();
-			w.KeyString("path", s.path);
-			w.KeyInt("size", s.size);
-			w.KeyInt("mtime", s.mtime);
-			if (!s.error.empty())
-				w.KeyString("error", s.error);
-			w.Key("version_strings");
-			w.BeginArray();
-			for (const std::string& str : s.strings)
-				w.String(str);
-			w.EndArray();
-			w.EndObject();
-		}
-		w.EndArray();
-		w.EndObject();
-#else
-		(void)steps;
+#if defined(__ANDROID__)
+		w.Key("properties");
 		w.BeginObject();
+		for (const char* p : {"ro.hardware.vulkan", "ro.hardware.egl", "ro.hardware.gralloc", "ro.hardware",
+				 "ro.gfx.driver.0", "ro.gfx.driver.1"})
+			w.KeyString(p, GetProp(p));
 		w.EndObject();
 #endif
+#ifdef DRIVER_REPORT_LINUX
+		steps.Run("vendor_libraries", [&](std::string&) {
+			w.Key("files");
+			w.BeginArray();
+			for (const std::string& path : VendorLibraryPaths())
+			{
+				w.BeginObject();
+				w.KeyString("path", path);
+				struct stat st;
+				if (stat(path.c_str(), &st) == 0)
+				{
+					w.KeyInt("size", static_cast<int64_t>(st.st_size));
+					w.KeyInt("mtime", static_cast<int64_t>(st.st_mtime));
+				}
+				else
+				{
+					w.KeyString("error", ErrnoString(errno));
+				}
+				w.EndObject();
+			}
+			w.EndArray();
+			return true;
+		});
+#else
+		(void)steps;
+#endif
+		w.EndObject();
 	}
 
 	// ---------------------------------------------------------------------------------------------

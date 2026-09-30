@@ -18,8 +18,8 @@ namespace GSDriverReport
 	/// the build fingerprints, uname, /proc/version and the CPU cores.
 	void WriteDeviceFacts(JsonWriter& w, StepLog& steps);
 
-	/// The vendor Vulkan/GLES libraries on disk, with the version strings found inside them.
-	/// Scanned once per process and cached; a library does not change under a running app.
+	/// The vendor Vulkan/GLES libraries on disk (path, size, time) and, on Android, the
+	/// ro.hardware.* properties that choose among them.
 	void WriteVendorLibraries(JsonWriter& w, StepLog& steps);
 
 	/// The selected custom driver pack, as far as it can be read.
