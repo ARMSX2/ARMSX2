@@ -299,9 +299,12 @@ namespace GSDriverReport
 				"libmali",
 				"Mesa ",
 				"git-",
-				"ANGLE",
+				"ANGLE (",
 				"Vulkan driver",
 			};
+			// Mangled C++ symbols carry these words without being versions.
+			if (s.substr(0, 2) == "_Z")
+				return false;
 			for (std::string_view m : markers)
 			{
 				if (s.find(m) != std::string_view::npos)
