@@ -46,6 +46,7 @@ namespace
 #include "GS/Renderers/Common/GSMeasurementOverrides.h"
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
 #include "GS/DriverReport/GSDriverReport.h"
+#include "GS/DriverReport/GSDriverReportClassify.h"
 #include "GS/DriverReport/GSDriverReportProfile.h"
 #include "GS/DriverReport/GSDriverReportVulkan.h"
 #include "GS/Renderers/Common/GSStreamRingMemoryPolicy.h"
@@ -9866,7 +9867,15 @@ void GSDeviceVK::CollectDriverReport(GSDriverReport::BackendReport& out) const
 	WriteFeatureSupport(w, m_features);
 
 	w.Key("profile");
-	WriteGpuProfile(w, m_gpu_profile, &m_device_rules);
+	{
+		ServedDriverFacts facts;
+		facts.vendor_id = out.vendor_id;
+		facts.driver_id = out.driver_id;
+		facts.driver_name = out.driver_name;
+		facts.driver_info = out.driver_info;
+		facts.device_name = out.device_name;
+		WriteGpuProfile(w, m_gpu_profile, &m_device_rules, ClassifyServedDriver(facts).answered);
+	}
 
 	w.Key("optional_extensions");
 	w.BeginObject();

@@ -23,7 +23,8 @@ namespace GSDriverReport
 		}
 	}
 
-	void WriteGpuProfile(JsonWriter& w, const GpuProfileSelection& selection, const VulkanDeviceRules* rules)
+	void WriteGpuProfile(JsonWriter& w, const GpuProfileSelection& selection, const VulkanDeviceRules* rules,
+		std::string_view identified_driver)
 	{
 		w.BeginObject();
 		w.KeyString("override", GpuProfileDetector::OverrideToConfigString(selection.override_mode));
@@ -54,6 +55,8 @@ namespace GSDriverReport
 		w.BeginObject();
 		w.KeyString("api", GpuProfileDetector::ApiToString(d.api));
 		w.KeyString("driver", GpuProfileDetector::DriverToString(d.driver));
+		if (!identified_driver.empty())
+			w.KeyString("identified_driver", identified_driver);
 		w.KeyString("driver_name", d.driver_name);
 		w.Key("version");
 		w.BeginObject();

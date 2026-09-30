@@ -306,7 +306,11 @@ namespace GSDriverReport
 			Load<PFN_vkGetPhysicalDeviceFormatProperties>(instance, "vkGetPhysicalDeviceFormatProperties");
 
 		w.BeginObject();
-		w.KeyBool("selected", selected);
+		// "The running renderer uses this device"; null where no renderer is running.
+		if (live)
+			w.KeyBool("selected", selected);
+		else
+			w.KeyNull("selected");
 
 		// Device extensions first: they decide which structs may be chained below.
 		std::vector<VkExtensionProperties> extensions;
@@ -806,8 +810,14 @@ namespace GSDriverReport
 				VulkanDeviceRules rules;
 				const std::string name = CStr(props.deviceName, sizeof(props.deviceName));
 				const GpuProfileSelection sel = ResolveVulkanProfile(ctx, name, &rules);
+				ServedDriverFacts facts;
+				facts.vendor_id = props.vendorID;
+				facts.driver_id = driver_id;
+				facts.driver_name = driver_name;
+				facts.driver_info = driver_info;
+				facts.device_name = name;
 				w.Key("armsx2_profile");
-				WriteGpuProfile(w, sel, &rules);
+				WriteGpuProfile(w, sel, &rules, ClassifyServedDriver(facts).answered);
 				return true;
 			});
 		}
