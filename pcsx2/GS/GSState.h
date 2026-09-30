@@ -851,6 +851,10 @@ public:
 	/// The split front asks the back, and repeats the clear on its own environment.
 	virtual bool DrawClearsScanMask() const { return false; }
 
+	/// True when a local-to-local move can be taken by a GameDB move hook, which leaves TRXDIR at
+	/// 2 where the ordinary move sets it to 3.
+	virtual bool HasMoveHook() const { return false; }
+
 	virtual void Move();
 
 	// The front/back seam: the front builds a self-contained

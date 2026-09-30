@@ -58,6 +58,48 @@ namespace
 			prim.PRIM = GS_SPRITE;
 			p.Send(gs, prim);
 		}
+
+		// A local-to-local move of a 64x32 CT32 block, started by the TRXDIR write.
+		static void LocalMove(GSState& gs)
+		{
+			Packet p;
+			GIFReg r = {};
+
+			r.U64 = 0;
+			r.BITBLTBUF.SBP = 0x0;
+			r.BITBLTBUF.SBW = 1;
+			r.BITBLTBUF.SPSM = PSMCT32;
+			r.BITBLTBUF.DBP = 0x1000;
+			r.BITBLTBUF.DBW = 1;
+			r.BITBLTBUF.DPSM = PSMCT32;
+			p.Reg(GIF_A_D_REG_BITBLTBUF, r);
+
+			r.U64 = 0;
+			p.Reg(GIF_A_D_REG_TRXPOS, r);
+
+			r.U64 = 0;
+			r.TRXREG.RRW = 64;
+			r.TRXREG.RRH = 32;
+			p.Reg(GIF_A_D_REG_TRXREG, r);
+
+			r.U64 = 0;
+			r.TRXDIR.XDIR = 2;
+			p.Reg(GIF_A_D_REG_TRXDIR, r);
+
+			p.Send(gs, GIFRegPRIM{});
+		}
+
+		// A GIF IMAGE tag with `qwords` of data behind it.
+		static void Image(GSState& gs, u32 qwords)
+		{
+			std::vector<GIFPackedReg> buf(qwords + 1);
+			GIFTag tag = {};
+			tag.NLOOP = qwords;
+			tag.EOP = 1;
+			tag.FLG = GIF_FLG_IMAGE;
+			std::memcpy(&buf[0], &tag, sizeof(tag));
+			gs.Transfer<0>(reinterpret_cast<const u8*>(buf.data()), static_cast<u32>(buf.size()));
+		}
 	};
 } // namespace
 
@@ -101,4 +143,54 @@ TEST_F(GSSplitSeam, ScanMaskStaysWithoutTheIRemHook)
 	g_gs_front->DrainBackQueue();
 
 	EXPECT_EQ(g_gs_front->m_env.SCANMSK.MSK, 2u);
+}
+
+// Move() ends a local-to-local transfer by setting TRXDIR to 3 (off), so a later IMAGE tag, a FIFO
+// read or a savestate sees no transfer in progress. This is the single-object reference.
+TEST_F(GSSplitSeam, MoveLeavesTransferDirectionOffOnASingleObject)
+{
+	BringUp();
+
+	LocalMove(*m_gs);
+
+	EXPECT_EQ(m_gs->m_env.TRXDIR.XDIR, 3u);
+}
+
+// On the split the move runs on the back. The front must still end with TRXDIR off.
+TEST_F(GSSplitSeam, MoveLeavesTransferDirectionOffOnTheFront)
+{
+	BringUpSplit();
+
+	LocalMove(*g_gs_front);
+	g_gs_front->DrainBackQueue();
+
+	EXPECT_EQ(g_gs_front->m_env.TRXDIR.XDIR, 3u);
+}
+
+// An IMAGE tag after a finished move does nothing on a single object. On the front it must not
+// run a move of its own against the front's unused local memory.
+TEST_F(GSSplitSeam, ImageTagAfterAMoveDoesNotMoveOnTheFront)
+{
+	BringUpSplit();
+
+	LocalMove(*g_gs_front);
+	Image(*g_gs_front, 4);
+	g_gs_front->DrainBackQueue();
+
+	EXPECT_TRUE(g_gs_front->m_draw_transfers.empty());
+	EXPECT_EQ(g_gs_front->m_env.TRXDIR.XDIR, 3u);
+}
+
+// With a move hook armed the front cannot know whether the hook took the move (which leaves
+// TRXDIR at 2) or declined it. MV_Ico declines a CT32 to CT32 move, so the answer is 3.
+TEST_F(GSSplitSeam, MoveHookThatDeclinesLeavesTransferDirectionOffOnTheFront)
+{
+	GSConfig.MoveHandlerFunctionId = GSLookupMoveHandlerFunctionId("MV_Ico");
+	BringUpSplit();
+	m_gs->UpdateRenderFixes();
+
+	LocalMove(*g_gs_front);
+	g_gs_front->DrainBackQueue();
+
+	EXPECT_EQ(g_gs_front->m_env.TRXDIR.XDIR, 3u);
 }
