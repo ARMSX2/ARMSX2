@@ -102,6 +102,100 @@ namespace
 			gs.Transfer<0>(reinterpret_cast<const u8*>(buf.data()), static_cast<u32>(buf.size()));
 		}
 	};
+
+	/// A renderer whose back thread can be held at a known point: the first palette-source
+	/// invalidation of a palette load waits until the test opens the gate. Records queued behind
+	/// that load stay unexecuted until then. VSync only records its idle-frame argument.
+	class StallRenderer final : public GSRendererHW
+	{
+	public:
+		void InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut = false) override
+		{
+			if (clut)
+			{
+				m_stalled.store(true, std::memory_order_release);
+				while (!m_gate.load(std::memory_order_acquire))
+					std::this_thread::yield();
+			}
+			GSRendererHW::InvalidateLocalMem(BITBLTBUF, r, clut);
+		}
+
+		void VSync(u32 field, bool registers_written, bool idle_frame) override
+		{
+			m_vsyncs++;
+			m_idle_frame = idle_frame;
+		}
+
+		std::atomic<bool> m_gate{true};
+		std::atomic<bool> m_stalled{false};
+		int m_vsyncs = 0;
+		bool m_idle_frame = false;
+	};
+
+	class GSSplitSeamStalled : public GSSplitSeam
+	{
+	protected:
+		void BringUpStalled()
+		{
+			GSConfig.BackThread = true;
+			GSConfig.BackThreadResolved = true;
+
+			auto device = std::make_unique<CaptureDevice>();
+			device->m_api = RenderAPI::Vulkan;
+			g_gs_device = std::move(device);
+			ASSERT_TRUE(g_gs_device->Create(GSVSyncMode::Disabled, false));
+
+			m_priv_regs = std::make_unique<GSPrivRegSet>();
+			std::memset(m_priv_regs.get(), 0, sizeof(GSPrivRegSet));
+
+			auto renderer = std::make_unique<StallRenderer>();
+			m_stall = renderer.get();
+			g_gs_renderer = std::move(renderer);
+			g_gs_renderer->SetRegsMem(reinterpret_cast<u8*>(m_priv_regs.get()));
+			g_gs_renderer->ResetPCRTC();
+			ASSERT_TRUE(m_stall->IsBackThreadRunning());
+
+			g_gs_front = std::make_unique<GSFrontState>(m_stall);
+			g_gs_front->SetRegsMem(reinterpret_cast<u8*>(m_priv_regs.get()));
+			g_gs_front->ResetPCRTC();
+		}
+
+		// A TEX0 write that loads a palette, which the front ships as a ClutLoad record. With the
+		// gate closed the back thread stops inside that record.
+		void StallTheBack()
+		{
+			m_stall->m_gate.store(false, std::memory_order_release);
+
+			Packet p;
+			GIFReg r = {};
+			r.U64 = 0;
+			r.TEX0.TBP0 = 0x1000;
+			r.TEX0.TBW = 1;
+			r.TEX0.PSM = PSMT8;
+			r.TEX0.TW = 6;
+			r.TEX0.TH = 6;
+			r.TEX0.CBP = 0x2000;
+			r.TEX0.CPSM = PSMCT32;
+			r.TEX0.CLD = 1;
+			p.Reg(GIF_A_D_REG_TEX0_1, r);
+			p.Send(*g_gs_front, GIFRegPRIM{});
+
+			while (!m_stall->m_stalled.load(std::memory_order_acquire))
+				std::this_thread::yield();
+		}
+
+		// Opens the gate from another thread after a delay, for a call that has to be made while
+		// the back is still stalled and may itself wait for the back.
+		std::thread OpenGateLater()
+		{
+			return std::thread([this]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				m_stall->m_gate.store(true, std::memory_order_release);
+			});
+		}
+
+		StallRenderer* m_stall = nullptr;
+	};
 } // namespace
 
 // GSC_IRem clears SCANMSK in the parse environment from inside a draw. On a single object that
@@ -230,4 +324,23 @@ TEST_F(GSSplitSeam, LeavingUnsynchronizedDownloadsTurnsTheSplitOn)
 	EXPECT_TRUE(g_gs_front);
 	ASSERT_TRUE(g_gs_renderer);
 	EXPECT_TRUE(g_gs_renderer->IsBackThreadRunning());
+}
+
+// SubmitVsync decides whether the frame was idle from the back's draw and transfer serials. On
+// a single object every draw of the frame has executed by then. On the split the answer is only
+// right after the back has run everything the frame queued.
+TEST_F(GSSplitSeamStalled, IdleFrameIsDecidedAfterTheBackCatchesUp)
+{
+	BringUpStalled();
+	ASSERT_TRUE(m_stall->IsIdleFrame());
+
+	StallTheBack();
+	Sprite(*g_gs_front, 0, 0);
+
+	std::thread opener = OpenGateLater();
+	m_stall->SubmitVsync(0, false);
+	opener.join();
+
+	EXPECT_EQ(m_stall->m_vsyncs, 1);
+	EXPECT_FALSE(m_stall->m_idle_frame);
 }
