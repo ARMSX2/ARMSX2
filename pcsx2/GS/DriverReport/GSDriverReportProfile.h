@@ -1,0 +1,20 @@
+// SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
+// SPDX-License-Identifier: GPL-3.0+
+
+#pragma once
+
+#include "GS/DriverReport/GSDriverReportJson.h"
+#include "GS/Renderers/Common/GSGPUProfile.h"
+
+namespace GSDriverReport
+{
+	/// Writes what the driver-profile resolver decided: the GPU identity, the driver it matched,
+	/// the bug and workaround sets by name, and the self-read facts the renderer's road choice
+	/// reads. `rules` is optional (null off Vulkan).
+	void WriteGpuProfile(JsonWriter& w, const GpuProfileSelection& selection, const VulkanDeviceRules* rules);
+
+	/// Resolves the profile the Vulkan backend would resolve for a device with these properties,
+	/// with the profile override on Auto. For the command-line tool, which has no running backend.
+	GpuProfileSelection ResolveVulkanProfile(const MobileDriverContext& context, std::string_view device_name,
+		VulkanDeviceRules* rules_out);
+} // namespace GSDriverReport

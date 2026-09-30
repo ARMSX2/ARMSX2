@@ -21,6 +21,11 @@
 #include <string>
 #include <vector>
 
+namespace GSDriverReport
+{
+	struct BackendReport;
+}
+
 enum class Filter
 {
 	Nearest = 0,
@@ -1986,6 +1991,10 @@ public:
 
 	/// Returns a string of information about the graphics driver being used.
 	virtual std::string GetDriverInfo() const = 0;
+
+	/// Fills this device's part of the driver report written beside a GS dump. Runs on the GS
+	/// thread. Backends that know more than the base (Vulkan, OpenGL) extend it.
+	virtual void CollectDriverReport(GSDriverReport::BackendReport& out) const;
 
 	/// Enables/disables GPU frame timing.
 	virtual bool SetGPUTimingEnabled(bool enabled) = 0;

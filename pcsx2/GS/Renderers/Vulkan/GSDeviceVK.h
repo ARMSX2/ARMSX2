@@ -452,6 +452,13 @@ private:
 	OptionalExtensions m_optional_extensions = {};
 	bool m_colorclip_fallback_to_hdr = false;
 
+	// For the driver report written beside a GS dump: what the device was created with and the
+	// self-read road CheckFeatures chose. Recorded only; nothing reads them to decide anything.
+	std::vector<std::string> m_enabled_device_extensions;
+	std::vector<std::string> m_missing_device_extensions;
+	std::string m_report_self_read_road;
+	bool m_report_declare_depth_loop = false;
+
 	u32 m_max_framebuffer_width = 0;
 	u32 m_max_framebuffer_height = 0;
 public:
@@ -830,6 +837,7 @@ public:
 	bool SupportsExclusiveFullscreen() const override;
 	void DestroySurface() override;
 	std::string GetDriverInfo() const override;
+	void CollectDriverReport(GSDriverReport::BackendReport& out) const override;
 
 	void SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle) override;
 

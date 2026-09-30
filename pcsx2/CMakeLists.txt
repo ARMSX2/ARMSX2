@@ -537,6 +537,11 @@ set(pcsx2GSSources
 	GS/GSUtil.cpp
 	GS/GSVector.cpp
 	GS/MultiISA.cpp
+	GS/DriverReport/GSDriverReport.cpp
+	GS/DriverReport/GSDriverReportClassify.cpp
+	GS/DriverReport/GSDriverReportJson.cpp
+	GS/DriverReport/GSDriverReportProfile.cpp
+	GS/DriverReport/GSDriverReportSystem.cpp
 	GS/Renderers/Common/GSDevice.cpp
 	GS/Renderers/Common/GSDirtyRect.cpp
 	GS/Renderers/Common/GSFieldShiftDetector.cpp
@@ -567,8 +572,19 @@ set(pcsx2GSSources
 	GS/Renderers/SW/GSTextureCacheSW.cpp
 	)
 
+# The Mali kernel-driver probe for the driver report: MIT-licensed C, Linux and Android only.
+if(UNIX AND NOT APPLE)
+	list(APPEND pcsx2GSSources GS/DriverReport/mali_kbase_probe.c)
+	set_source_files_properties(GS/DriverReport/mali_kbase_probe.c PROPERTIES SKIP_PRECOMPILE_HEADERS ON COMPILE_OPTIONS "-std=c11")
+endif()
+
 # GS headers
 set(pcsx2GSHeaders
+	GS/DriverReport/GSDriverReport.h
+	GS/DriverReport/GSDriverReportClassify.h
+	GS/DriverReport/GSDriverReportJson.h
+	GS/DriverReport/GSDriverReportProfile.h
+	GS/DriverReport/GSDriverReportSystem.h
 	GS/GSAlignedClass.h
 	GS/GSBlock.h
 	GS/GSBackQueue.h
@@ -745,6 +761,7 @@ if(USE_VULKAN)
 		GS/Renderers/Vulkan/VKBuilders.cpp
 		GS/Renderers/Vulkan/VKLibretro.cpp
 		GS/Renderers/Vulkan/VKLoader.cpp
+		GS/DriverReport/GSDriverReportVulkan.cpp
 		GS/Renderers/Vulkan/VKShaderCache.cpp
 		GS/Renderers/Vulkan/VKStreamBuffer.cpp
 		GS/Renderers/Vulkan/VKSwapChain.cpp

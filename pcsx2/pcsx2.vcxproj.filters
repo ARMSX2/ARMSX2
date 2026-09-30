@@ -1115,6 +1115,24 @@
     <ClCompile Include="GS\Renderers\Common\GSFunctionMap.cpp">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClCompile>
+    <ClCompile Include="GS\DriverReport\GSDriverReport.cpp">
+      <Filter>System\Ps2\GS</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\DriverReport\GSDriverReportClassify.cpp">
+      <Filter>System\Ps2\GS</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\DriverReport\GSDriverReportJson.cpp">
+      <Filter>System\Ps2\GS</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\DriverReport\GSDriverReportProfile.cpp">
+      <Filter>System\Ps2\GS</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\DriverReport\GSDriverReportSystem.cpp">
+      <Filter>System\Ps2\GS</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\DriverReport\GSDriverReportVulkan.cpp">
+      <Filter>System\Ps2\GS</Filter>
+    </ClCompile>
     <ClCompile Include="GS\Renderers\Common\GSGPUDriverProfile.cpp">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClCompile>
@@ -2598,6 +2616,24 @@
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSStreamRingGrowth.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\DriverReport\GSDriverReport.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\DriverReport\GSDriverReportClassify.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\DriverReport\GSDriverReportJson.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\DriverReport\GSDriverReportProfile.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\DriverReport\GSDriverReportSystem.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\DriverReport\GSDriverReportVulkan.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSStreamRingMemoryPolicy.h">
