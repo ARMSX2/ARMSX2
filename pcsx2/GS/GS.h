@@ -112,6 +112,9 @@ bool GSIsDumpRecording();
 // Not the same question as the BackThreadMode setting, which downgrades to lockstep when the
 // split is unsupported, so this is the only way to tell whether the mode really engaged.
 bool GSHasFrontParser();
+// Waits until the GS back thread has executed every queued record. MTGS thread only. No-op with
+// GS multi-threading off.
+void GSDrainBackQueue();
 void GSStopGSDump();
 void GSPresentCurrentFrame();
 void GSThrottlePresentation();

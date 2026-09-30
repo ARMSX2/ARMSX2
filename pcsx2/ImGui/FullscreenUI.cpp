@@ -3,6 +3,7 @@
 
 #include "BuildVersion.h"
 #include "CDVD/CDVDcommon.h"
+#include "GS/GS.h"
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSTexture.h"
 #include "Achievements.h"
@@ -603,6 +604,8 @@ void FullscreenUI::Render()
 		LoadCustomBackground();
 	}
 
+	if (!s_cleanup_textures.empty())
+		GSDrainBackQueue();
 	for (std::unique_ptr<GSTexture>& tex : s_cleanup_textures)
 		g_gs_device->Recycle(tex.release());
 	s_cleanup_textures.clear();
@@ -790,6 +793,9 @@ bool FullscreenUI::LoadSvgResources()
 
 void FullscreenUI::DestroyResources()
 {
+	// Creates or releases device textures, whose pool the GS back thread also uses.
+	GSDrainBackQueue();
+
 	s_banner_texture.reset();
 	for (auto& tex : s_game_compatibility_textures)
 		tex.reset();
@@ -1916,6 +1922,8 @@ bool FullscreenUI::InitializeSaveStateListEntry(
 	li->timestamp = sd.ModificationTime;
 	li->path = std::move(filename);
 
+	// Creates or releases device textures, whose pool the GS back thread also uses.
+	GSDrainBackQueue();
 	li->preview_texture.reset();
 
 	u32 screenshot_width, screenshot_height;

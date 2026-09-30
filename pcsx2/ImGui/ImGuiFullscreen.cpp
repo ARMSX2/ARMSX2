@@ -3,6 +3,7 @@
 
 #include "fmt/format.h"
 #include "Host.h"
+#include "GS/GS.h"
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSTexture.h"
 #include "ImGui/FullscreenUI.h"
@@ -326,6 +327,9 @@ std::optional<RGBA8Image> ImGuiFullscreen::LoadTextureImage(const char* path)
 
 std::shared_ptr<GSTexture> ImGuiFullscreen::UploadTexture(const char* path, const RGBA8Image& image)
 {
+	// Creates or releases device textures, whose pool the GS back thread also uses.
+	GSDrainBackQueue();
+
 	GSTexture* texture = g_gs_device->CreateTexture(image.GetWidth(), image.GetHeight(), 1, GSTexture::Format::Color);
 	if (!texture)
 	{
@@ -341,7 +345,10 @@ std::shared_ptr<GSTexture> ImGuiFullscreen::UploadTexture(const char* path, cons
 	}
 
 	DevCon.WriteLn("Uploaded texture resource '%s' (%ux%u)", path, image.GetWidth(), image.GetHeight());
-	return std::shared_ptr<GSTexture>(texture, [](GSTexture* tex) { g_gs_device->Recycle(tex); });
+	return std::shared_ptr<GSTexture>(texture, [](GSTexture* tex) {
+		GSDrainBackQueue();
+		g_gs_device->Recycle(tex);
+	});
 }
 
 std::shared_ptr<GSTexture> ImGuiFullscreen::LoadTexture(std::string_view path)

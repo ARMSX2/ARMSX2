@@ -12,6 +12,7 @@
 #include "common/TextureDecompress.h"
 
 #include "Config.h"
+#include "GS/GS.h"
 #include "Host.h"
 #include "IconsFontAwesome.h"
 #include "GS/GSExtra.h"
@@ -519,6 +520,9 @@ static bool GetWrongCasePath(std::string* output, const char* dir, std::string_v
 
 void GSTextureReplacements::ReloadReplacementMap()
 {
+	// The back thread's texture cache looks replacements up in these maps while it draws.
+	GSDrainBackQueue();
+
 	SyncWorkerThread();
 	ScopedGuard startup_complete_guard([]() { NotifyStartupCompleteForCurrentGame(); });
 

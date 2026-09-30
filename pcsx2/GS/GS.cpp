@@ -441,6 +441,11 @@ static void DrainBackQueueBeforeDeviceMutation()
 		g_gs_renderer->DrainBackQueue();
 }
 
+void GSDrainBackQueue()
+{
+	DrainBackQueueBeforeDeviceMutation();
+}
+
 bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_renderer,
 	std::optional<const Pcsx2Config::GSOptions*> old_config)
 {
@@ -546,6 +551,10 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_r
 
 u32 GSClearShaderCacheOnGSThread()
 {
+	// Stops the pipeline precompile and replaces the pipeline cache the back thread compiles
+	// against.
+	GSDrainBackQueue();
+
 	if (g_gs_device)
 		g_gs_device->PrepareShaderCacheClear();
 	const u32 removed = GSCacheFile::DeleteAll(EmuFolders::Cache);
@@ -816,6 +825,10 @@ void GSThrottlePresentation()
 
 void GSGameChanged(const std::string& serial, u32 crc)
 {
+	// Stops the pipeline precompile and closes the pipeline-key file the back thread records
+	// into, and resets hack state its draws use.
+	DrainBackQueueBeforeDeviceMutation();
+
 	if (g_gs_device)
 		g_gs_device->SetGameIdentity(GSIsHardwareRenderer() ? serial : std::string(), crc);
 
@@ -1705,7 +1718,11 @@ BEGIN_HOTKEY_LIST(g_gs_hotkeys){"Screenshot", TRANSLATE_NOOP("Hotkeys", "Graphic
 					Host::OSD_QUICK_DURATION);
 
 				EmuConfig.GS.AccurateBlendingUnit = new_blend_mode;
-				MTGS::RunOnGSThread([new_blend_mode]() { GSConfig.AccurateBlendingUnit = new_blend_mode; });
+				MTGS::RunOnGSThread([new_blend_mode]() {
+					// Read by every queued draw; switch between draws, not under them.
+					GSDrainBackQueue();
+					GSConfig.AccurateBlendingUnit = new_blend_mode;
+				});
 			}},
 	{"ToggleTextureDumping", TRANSLATE_NOOP("Hotkeys", "Graphics"), TRANSLATE_NOOP("Hotkeys", "Toggle Texture Dumping"),
 		[](s32 pressed) {

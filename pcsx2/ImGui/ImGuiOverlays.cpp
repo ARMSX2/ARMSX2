@@ -1709,6 +1709,9 @@ void SaveStateSelectorUI::Close()
 
 void SaveStateSelectorUI::RefreshList(const std::string& serial, u32 crc)
 {
+	// Creates or releases device textures, whose pool the GS back thread also uses.
+	GSDrainBackQueue();
+
 	for (ListEntry& entry : s_slots)
 	{
 		if (entry.preview_texture)
@@ -1728,6 +1731,7 @@ void SaveStateSelectorUI::Clear()
 		if (li.preview_texture)
 		{
 			MTGS::RunOnGSThread([tex = li.preview_texture.release()]() {
+				GSDrainBackQueue();
 				g_gs_device->Recycle(tex);
 			});
 		}
@@ -1740,6 +1744,8 @@ void SaveStateSelectorUI::Clear()
 
 void SaveStateSelectorUI::DestroyTextures()
 {
+	// Creates or releases device textures, whose pool the GS back thread also uses.
+	GSDrainBackQueue();
 	Close();
 
 	for (ListEntry& entry : s_slots)
