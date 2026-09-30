@@ -212,6 +212,12 @@ namespace
 		watchdog.join();
 	}
 
+	// Strict: one fixed timeout far longer than any test, so the producer only
+	// wakes when the consumer posts and a lost wake-up hangs (and trips the
+	// deadline). Shipping: the default adaptive timeouts, which end most waits.
+	constexpr u32 kStrictTimeoutUs = 60'000'000;
+	u32 TimeoutFor(bool strict, u32 shipping) { return strict ? kStrictTimeoutUs : shipping; }
+
 	void BusyFor(std::chrono::nanoseconds ns)
 	{
 		const auto end = std::chrono::steady_clock::now() + ns;
@@ -265,7 +271,7 @@ namespace
 				{
 					on_item(*p);
 					ring.Pop();
-					space.NotifyRetired();
+					space.NotifyRetired([&ring]() { return ring.Size(); });
 				}
 				space.NotifyIdle();
 			}
@@ -288,17 +294,19 @@ TEST(GsBackQueue, SpaceWaitRingFullSlowConsumer)
 	// varying speed. Refill 1 on a tiny ring makes the producer arm on almost
 	// every push, which is where a lost wake-up would show.
 	constexpr u32 kRefills[] = {1, 4, 16};
-	for (int mode = 0; mode < 3; mode++)
+	for (int run = 0; run < 6; run++)
 	{
+		const int mode = run % 3;
+		const bool strict = run < 3;
 		for (u32 refill : kRefills)
 		{
 			for (u32 seed = 0; seed < 4; seed++)
 			{
 				RunWithDeadline("SpaceWaitRingFullSlowConsumer", std::chrono::seconds(120), [&]() {
-					constexpr u64 kValues = 50'000;
+					constexpr u64 kValues = 30'000;
 					SpscRing<u64, 16> ring;
 					Threading::WorkSema work;
-					SpaceWait space;
+					SpaceWait space(TimeoutFor(strict, 50), TimeoutFor(strict, 20), TimeoutFor(strict, 2000));
 					std::atomic<bool> exit{false};
 					u64 expected = 0;
 					u64 bad = 0;
@@ -317,7 +325,7 @@ TEST(GsBackQueue, SpaceWaitRingFullSlowConsumer)
 						u64* slot;
 						while (!(slot = ring.BeginPush()))
 						{
-							space.Wait(refill, [&]() { return ring.Capacity() - ring.Size() >= refill; });
+							space.Wait([&]() { return ring.Capacity() - ring.Size() >= refill; });
 						}
 						*slot = i;
 						ring.CommitPush();
@@ -326,8 +334,8 @@ TEST(GsBackQueue, SpaceWaitRingFullSlowConsumer)
 					}
 
 					StopConsumer(consumer, work, exit);
-					EXPECT_EQ(bad, 0u) << "mode " << mode << " refill " << refill << " seed " << seed;
-					EXPECT_EQ(expected, kValues) << "mode " << mode << " refill " << refill << " seed " << seed;
+					EXPECT_EQ(bad, 0u) << "strict " << strict << " mode " << mode << " refill " << refill << " seed " << seed;
+					EXPECT_EQ(expected, kValues) << "strict " << strict << " mode " << mode << " refill " << refill << " seed " << seed;
 					EXPECT_TRUE(ring.IsEmpty());
 				});
 			}
@@ -342,14 +350,16 @@ TEST(GsBackQueue, SpaceWaitPoolEmptySlowConsumer)
 	// checks the node, returns it to the free ring, then retires the record.
 	// The pool is smaller than the record ring, so the pool is what runs out.
 	constexpr u32 kNodes = 8;
-	for (int mode = 0; mode < 3; mode++)
+	for (int run = 0; run < 6; run++)
 	{
+		const int mode = run % 3;
+		const bool strict = run < 3;
 		for (u32 refill : {1u, 2u, kNodes / 4})
 		{
 			for (u32 seed = 0; seed < 4; seed++)
 			{
 				RunWithDeadline("SpaceWaitPoolEmptySlowConsumer", std::chrono::seconds(120), [&]() {
-					constexpr u64 kValues = 50'000;
+					constexpr u64 kValues = 30'000;
 					struct Node
 					{
 						u64 value;
@@ -363,7 +373,7 @@ TEST(GsBackQueue, SpaceWaitPoolEmptySlowConsumer)
 						free_nodes.CommitPush();
 					}
 					Threading::WorkSema work;
-					SpaceWait space;
+					SpaceWait space(TimeoutFor(strict, 50), TimeoutFor(strict, 20), TimeoutFor(strict, 2000));
 					std::atomic<bool> exit{false};
 					u64 expected = 0;
 					u64 bad = 0;
@@ -395,21 +405,21 @@ TEST(GsBackQueue, SpaceWaitPoolEmptySlowConsumer)
 								free_nodes.Pop();
 								break;
 							}
-							space.Wait(refill, [&]() { return free_nodes.Size() >= refill; });
+							space.Wait([&]() { return free_nodes.Size() >= refill; });
 						}
 						node->value = i;
 
 						Node** slot;
 						while (!(slot = ring.BeginPush()))
-							space.Wait(1, [&]() { return ring.Capacity() - ring.Size() >= 1; });
+							space.Wait([&]() { return ring.Capacity() - ring.Size() >= 1; });
 						*slot = node;
 						ring.CommitPush();
 						work.NotifyOfWork();
 					}
 
 					StopConsumer(consumer, work, exit);
-					EXPECT_EQ(bad, 0u) << "mode " << mode << " refill " << refill << " seed " << seed;
-					EXPECT_EQ(expected, kValues) << "mode " << mode << " refill " << refill << " seed " << seed;
+					EXPECT_EQ(bad, 0u) << "strict " << strict << " mode " << mode << " refill " << refill << " seed " << seed;
+					EXPECT_EQ(expected, kValues) << "strict " << strict << " mode " << mode << " refill " << refill << " seed " << seed;
 					EXPECT_EQ(free_nodes.Size(), kNodes);
 				});
 			}

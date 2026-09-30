@@ -14,6 +14,7 @@
 #include "common/HostSys.h"
 #include "common/Threading.h"
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <thread>
@@ -362,32 +363,47 @@ namespace GSBackQueue
 	// Where the producer sleeps when the ring is full or a pool is empty, and
 	// how the consumer wakes it.
 	//
-	// The producer spins briefly on its condition, then arms the wait by storing
-	// how many records the consumer should retire before waking it, re-checks,
-	// and sleeps. The consumer loads that word once per retired record (relaxed,
-	// so ~free while nobody waits) and posts after that many, or when it runs out
-	// of records. Waking per batch rather than per record keeps a behind back
-	// thread from paying a futex wake for every record it retires.
+	// The producer spins briefly on its condition, then arms the wait, re-checks,
+	// and sleeps with a timeout. The timeout is what normally ends the sleep: the
+	// producer wakes on its own and re-checks, so the consumer pays nothing. A
+	// futex post costs the consumer ~5us on a Dimensity 8300, and the consumer is
+	// usually the bottleneck when the producer waits, so posting per batch made
+	// frames slower there. The consumer posts only as a starvation guard: when it
+	// is down to kLowWater queued records while the producer is still asleep, or
+	// when it runs out of records. The producer halves its timeout after each
+	// such post and lengthens it slowly after each wake that came too early
+	// (still no space), so it settles just short of where the guard fires.
 	//
 	// Lost wake-ups: the producer's "arm; fence; read cursors" and the
 	// consumer's "free; fence; read armed word" in NotifyIdle are a Dekker pair,
 	// so at least one side sees the other. The per-record check in
-	// NotifyRetired has no fence and may see the arming late; that only delays
-	// the wake, because the consumer always passes NotifyIdle before it sleeps,
-	// and by then the ring is empty and every pool node is back, so any
-	// condition the producer can wait on holds.
+	// NotifyRetired has no fence and may see the arming late, which only delays
+	// the wake: the consumer passes NotifyIdle before it sleeps, and by then the
+	// ring is empty and every pool node is back, so any condition the producer
+	// can wait on holds. Independently of all that, a missed post costs at most
+	// one timeout, never a hang.
 	//
-	// Exactly one Post per armed wait that the consumer claims, and the producer
-	// takes it even when it disarms itself, so the semaphore count returns to
+	// Exactly one Post per armed wait that the consumer claims. A producer that
+	// disarms itself (condition met on re-check, or timed out) and finds the
+	// wait already claimed takes that post, so the semaphore count returns to
 	// zero after every wait.
 	class alignas(64) SpaceWait
 	{
 	public:
+		// Timeouts in microseconds. The tests pin all three to one long value so
+		// that a lost wake-up shows up as a hang instead of a timeout.
+		explicit SpaceWait(u32 initial_timeout_us = 50, u32 min_timeout_us = 20, u32 max_timeout_us = 2000)
+			: m_timeout_us(initial_timeout_us)
+			, m_min_timeout_us(min_timeout_us)
+			, m_max_timeout_us(max_timeout_us)
+		{
+		}
+
 		// Producer. Returns once ready() is true. Pass a ready() that needs a
 		// batch of space, not a single slot, or the spin below succeeds after
 		// every record and the producer never sleeps.
 		template <typename Ready>
-		void Wait(u32 wake_after, Ready&& ready)
+		void Wait(Ready&& ready)
 		{
 			for (u32 spun = 0; spun < kSpinNs; spun += ShortSpin())
 			{
@@ -397,29 +413,37 @@ namespace GSBackQueue
 
 			for (;;)
 			{
-				m_wanted.store(wake_after, std::memory_order_relaxed);
+				m_armed.store(true, std::memory_order_relaxed);
 				std::atomic_thread_fence(std::memory_order_seq_cst);
 				if (ready())
 				{
-					// Disarm. A zero means the consumer already claimed the wait and
-					// has posted or is about to; take that post.
-					if (m_wanted.exchange(0, std::memory_order_relaxed) == 0)
-						m_sema.Wait();
+					Disarm();
 					return;
 				}
-				m_sema.Wait();
-				if (ready())
+
+				bool posted = m_sema.TimedWait(m_timeout_us);
+				if (!posted)
+					posted = Disarm();
+
+				const bool done = ready();
+				if (posted)
+					m_timeout_us = std::max(m_min_timeout_us, m_timeout_us / 2);
+				else if (!done)
+					m_timeout_us = std::min(m_max_timeout_us, m_timeout_us + m_timeout_us / 8 + 1);
+				if (done)
 					return;
 			}
 		}
 
-		// Consumer, after each retired record and after returning its pool node.
-		void NotifyRetired()
+		// Consumer, after each retired record (and after returning its pool
+		// node). queued() is the number of records still in the ring; it is only
+		// called while the producer is waiting.
+		template <typename Queued>
+		void NotifyRetired(Queued&& queued)
 		{
-			const u32 wanted = m_wanted.load(std::memory_order_relaxed);
-			if (wanted == 0) [[likely]]
+			if (!m_armed.load(std::memory_order_relaxed)) [[likely]]
 				return;
-			if (++m_retired >= wanted)
+			if (queued() <= kLowWater)
 				Wake();
 		}
 
@@ -427,24 +451,37 @@ namespace GSBackQueue
 		void NotifyIdle()
 		{
 			std::atomic_thread_fence(std::memory_order_seq_cst);
-			if (m_wanted.load(std::memory_order_relaxed) != 0)
+			if (m_armed.load(std::memory_order_relaxed))
 				Wake();
 		}
 
 	private:
 		static constexpr u32 kSpinNs = 4000;
+		// Queued records left when the guard posts. At ~3us a draw on the
+		// slowest target this is ~50us of work, about one futex wake-up.
+		static constexpr u32 kLowWater = 16;
 
 		void Wake()
 		{
-			m_retired = 0;
-			if (m_wanted.exchange(0, std::memory_order_relaxed) != 0)
+			if (m_armed.exchange(false, std::memory_order_relaxed))
 				m_sema.Post();
 		}
 
-		std::atomic<u32> m_wanted{0}; // 0 = nobody waiting; else records to retire before waking
-		// Consumer-only. Can carry a few counts over from a wait the producer
-		// disarmed itself; that only wakes the next wait early, and it re-checks.
-		u32 m_retired = 0;
+		// Producer. Returns true if the consumer had already claimed the wait,
+		// after taking the post it sends.
+		bool Disarm()
+		{
+			if (m_armed.exchange(false, std::memory_order_relaxed))
+				return false;
+			m_sema.Wait();
+			return true;
+		}
+
+		std::atomic<bool> m_armed{false};
+		// Producer-only.
+		u32 m_timeout_us;
+		u32 m_min_timeout_us;
+		u32 m_max_timeout_us;
 		Threading::KernelSemaphore m_sema;
 	};
 
@@ -525,7 +562,8 @@ namespace GSBackQueue
 
 		// How much the producer waits for once it has to wait at all: an eighth
 		// of the ring, a quarter of the draw pool, one payload node (they are
-		// 4 MB and rotate once per transfer).
+		// 4 MB and rotate once per transfer). Waiting for a batch keeps the
+		// producer's spin from succeeding after every retired record.
 		static constexpr u32 kRingRefill = RecordRing::Capacity() / 8;
 		static constexpr u32 kDrawRefill = kMaxDrawNodes / 4;
 		static constexpr u32 kPayloadRefill = 1;

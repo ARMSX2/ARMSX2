@@ -9,6 +9,8 @@
 #include "common/RedtapeWindows.h"
 #endif
 
+#include <cerrno>
+#include <ctime>
 #include <limits>
 
 // --------------------------------------------------------------------------------------
@@ -199,6 +201,25 @@ void Threading::KernelSemaphore::Wait()
 	WaitForSingleObject(m_sema, INFINITE);
 #else
 	sem_wait(&m_sema);
+#endif
+}
+
+bool Threading::KernelSemaphore::TimedWait(u32 microseconds)
+{
+#ifdef _WIN32
+	return WaitForSingleObject(m_sema, (microseconds + 999) / 1000) == WAIT_OBJECT_0;
+#else
+	// sem_timedwait takes an absolute CLOCK_REALTIME deadline. A clock step
+	// only makes this wait shorter or longer, never lost.
+	timespec deadline;
+	clock_gettime(CLOCK_REALTIME, &deadline);
+	deadline.tv_nsec += static_cast<long>(microseconds % 1000000) * 1000;
+	deadline.tv_sec += microseconds / 1000000 + deadline.tv_nsec / 1000000000;
+	deadline.tv_nsec %= 1000000000;
+	int res;
+	while ((res = sem_timedwait(&m_sema, &deadline)) != 0 && errno == EINTR)
+		;
+	return res == 0;
 #endif
 }
 
