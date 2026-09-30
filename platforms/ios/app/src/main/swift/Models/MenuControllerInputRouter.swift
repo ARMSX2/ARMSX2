@@ -312,7 +312,7 @@ enum ControllerMacroAction: String, CaseIterable, Identifiable, Sendable {
         case .disableFastForward:
             "Disables Fast Forward and restores speed to 100%."
         case .undoSaveState:
-            "Undoes the last load, delete or save-over while its notice shows. Press Start first."
+            "Undoes the last load, delete or save-over while its notice shows. Hold the first button, then press the second."
         }
     }
 
@@ -418,6 +418,7 @@ extension EnvironmentValues {
 final class MenuControllerInputRouter {
     /// While a save-state Undo is on screen, the macro chord also works over menus.
     var saveStateUndoPending = false
+    @ObservationIgnored private var undoChordHeld = false
     private(set) var saveStateUndoRequest: UInt64 = 0
     private struct NavigationSessionTarget {
         let scopeKey: String
@@ -1380,6 +1381,16 @@ final class MenuControllerInputRouter {
         }
     }
 
+    /// Over a menu, the Undo macro undoes a save-state action instead of what its last button does.
+    /// Any binding works, so it can sit on one side of the pad.
+    private func completesUndoChord(_ gamepad: GCExtendedGamepad) -> Bool {
+        let held = SettingsStore.shared.controllerMacroUndoSaveState.isPressed(on: gamepad)
+        defer { undoChordHeld = held }
+        guard held, !undoChordHeld, saveStateUndoPending, frontmostManualNavigationCapture == nil else { return false }
+        saveStateUndoRequest &+= 1
+        return true
+    }
+
     private func handleExtendedInput(
         _ gamepad: GCExtendedGamepad,
         element: GCControllerElement
@@ -1396,6 +1407,7 @@ final class MenuControllerInputRouter {
         }
 
         guard isMenuActive else { return }
+        if completesUndoChord(gamepad) { return }
 
         if isDirectionalElement(element, of: gamepad.dpad)
             || isDirectionalElement(element, of: gamepad.leftThumbstick) {
@@ -1414,12 +1426,6 @@ final class MenuControllerInputRouter {
         if element === gamepad.buttonA {
             updateButton(.primary, pressed: gamepad.buttonA.isPressed, command: .activate, profileID: profileID)
         } else if element === gamepad.buttonB {
-            // Over a menu, Start then Circle undoes a save-state action instead of going back.
-            if gamepad.buttonB.isPressed, saveStateUndoPending, frontmostManualNavigationCapture == nil,
-               SettingsStore.shared.controllerMacroUndoSaveState.isPressed(on: gamepad) {
-                saveStateUndoRequest &+= 1
-                return
-            }
             updateButton(.secondary, pressed: gamepad.buttonB.isPressed, command: .back, profileID: profileID)
         } else if element === gamepad.buttonX {
             updateButton(.square, pressed: gamepad.buttonX.isPressed, command: .showContextMenu, profileID: profileID)
