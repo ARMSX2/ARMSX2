@@ -1209,7 +1209,7 @@ object ControllerMappings {
     // pressed) under prefKey + MOD_SUFFIX. UNKNOWN modifier = single-button.
     private const val MOD_SUFFIX = ".mod"
 
-    private data class RuntimeHotkey(
+    internal data class RuntimeHotkey(
         val action: SysHotkey,
         val keyCode: Int,
         val modifierCode: Int,
@@ -1440,17 +1440,16 @@ object ControllerMappings {
         }?.action
     }
 
-    /** Combo-aware match for the just-pressed [keyCode] given the set of
-     *  currently-held physical keys. Combos (modifier held) win over a plain
-     *  single binding on the same key, so e.g. Select+R1 fires its action
-     *  instead of a bare-R1 binding while Select is held. */
     fun matchHotkey(keyCode: Int, heldKeys: Set<Int>): SysHotkey? {
+        return matchHotkey(keyCode, heldKeys, runtimeBindings().hotkeys)
+    }
+
+    internal fun matchHotkey(keyCode: Int, heldKeys: Set<Int>, bindings: List<RuntimeHotkey>): SysHotkey? {
         if (keyCode == KeyEvent.KEYCODE_UNKNOWN) return null
-        val bindings = runtimeBindings().hotkeys
         bindings.firstOrNull {
-            it.keyCode == keyCode &&
-                it.modifierCode != KeyEvent.KEYCODE_UNKNOWN &&
-                heldKeys.contains(it.modifierCode)
+            it.modifierCode != KeyEvent.KEYCODE_UNKNOWN &&
+                ((it.keyCode == keyCode && heldKeys.contains(it.modifierCode)) ||
+                    (it.modifierCode == keyCode && heldKeys.contains(it.keyCode)))
         }?.let { return it.action }
         return bindings.firstOrNull {
             it.keyCode == keyCode && it.modifierCode == KeyEvent.KEYCODE_UNKNOWN
