@@ -153,6 +153,10 @@ static MemorySettingsInterface s_settings_interface;
 static s32 s_clear_shader_cache_frame = -1;
 
 static std::string s_output_prefix;
+// -take-gsdump: a one-frame GS dump (and its driver report) written at this base path on the first
+// loop's second presented frame. Empty = off.
+static std::string s_take_gsdump_base;
+static bool s_take_gsdump_queued = false;
 static s32 s_loop_count = 1;
 static std::optional<bool> s_use_window;
 static bool s_no_console = false;
@@ -731,6 +735,14 @@ void Host::BeginPresentFrame()
 	// has to open and close.
 	RenderDocCapture::OnPresentFrame(s_dump_frame_number);
 
+	// Before the per-frame screenshot below: only one snapshot request can be pending at a time.
+	if (!s_take_gsdump_base.empty() && !s_take_gsdump_queued && s_loop_number == 0 && s_dump_frame_number >= 1)
+	{
+		s_take_gsdump_queued = GSQueueSnapshot(s_take_gsdump_base + ".png", 1);
+		if (s_take_gsdump_queued)
+			Console.WriteLn(fmt::format("Taking a GS dump at frame {} to '{}'.", s_dump_frame_number, s_take_gsdump_base));
+	}
+
 	if (s_loop_number == 0 && !s_output_prefix.empty())
 	{
 		// when we wrap around, don't race other files
@@ -1131,6 +1143,9 @@ static void PrintCommandLineHelp(const char* progname)
 						 "run cannot even create an instance under it.\n");
 	std::fprintf(stderr, "  -renderdoc-frame N[,C]: Capture dump frame N (base 0, minimum 1) and the C-1 frames after it, "
 						 "one .rdc each. Defaults to 1,1. Only used if -renderdoc is used.\n");
+	std::fprintf(stderr, "  -take-gsdump <path>: write a one-frame GS dump of the replay, with its driver report, to "
+						 "<path>.gs.zst and <path>.driver.json (plus the dump's screenshot <path>.png), on the first "
+						 "loop's second frame.\n");
 	std::fprintf(stderr, "  -custom-driver <dir> <libname> <hooklibdir>: Android only. Load the Vulkan driver <libname> "
 						 "out of <dir> through libadrenotools instead of the system loader, e.g. a Mesa Turnip pack in "
 						 "/data/local/tmp. <hooklibdir> holds libhook_impl.so, libmain_hook.so and "
@@ -1478,6 +1493,16 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					if (!v.has_value())
 						return false;
 					s_renderdoc_frame_count = std::max(1u, v.value());
+				}
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-take-gsdump"))
+			{
+				s_take_gsdump_base = StringUtil::StripWhitespace(argv[++i]);
+				if (s_take_gsdump_base.empty())
+				{
+					ArgError("-take-gsdump: the path is empty.");
+					return false;
 				}
 				continue;
 			}
