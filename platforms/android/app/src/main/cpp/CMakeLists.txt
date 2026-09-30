@@ -231,6 +231,10 @@ add_subdirectory(3rdparty/adrenotools)
 # --target pcsx2-gsrunner.
 add_subdirectory("${ARMSX2_ROOT}/pcsx2-gsrunner" "${CMAKE_BINARY_DIR}/pcsx2-gsrunner" EXCLUDE_FROM_ALL)
 
+# armsx2-driverdiag, the driver report as an adb-shell tool. EXCLUDE_FROM_ALL and an executable, so
+# no APK build compiles or packages it; build it explicitly with --target armsx2-driverdiag.
+add_subdirectory("${ARMSX2_ROOT}/pcsx2-driverdiag" "${CMAKE_BINARY_DIR}/pcsx2-driverdiag" EXCLUDE_FROM_ALL)
+
 # librashader: RetroArch (.slangp) shader chains for the GS post-process path, for BOTH
 # the Vulkan and OpenGL(ES) renderers. Rust-built and fetched at configure time from a
 # pinned commit (see the subdir's CMakeLists for why it can't be vendored). OPTIONAL:
