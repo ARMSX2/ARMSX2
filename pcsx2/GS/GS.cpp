@@ -604,11 +604,15 @@ void GSclose()
 
 void GSreset(bool hardware_reset)
 {
-	// Front first: its Reset flushes pending buffered draws into records; the
-	// back's Reset then drains (executing them, like serial pre-reset draws)
-	// before resetting memory/TC.
+	// Front first: its Reset flushes pending buffered draws into records. They
+	// must finish before the back's Reset runs, because GSRendererHW::Reset
+	// reads back and removes every texture-cache entry and GSRenderer::Reset
+	// clears the current display texture before GSState::Reset drains.
 	if (g_gs_front)
+	{
 		g_gs_front->Reset(hardware_reset);
+		g_gs_renderer->DrainBackQueue();
+	}
 	g_gs_renderer->Reset(hardware_reset);
 }
 
