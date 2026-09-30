@@ -355,9 +355,11 @@ struct GameplayControllerShortcutHelpOverlay: View {
 
     private static let height: CGFloat = 52
     private static let bottomPadding: CGFloat = 6
-    /// What the pause card keeps free above the safe area: the bar and a gap. Any more and a
-    /// 12 Pro Max card drops below the height its two columns need.
+    /// What the pause card keeps free above the safe area: the bar and a gap.
     static let pauseCardReserve = bottomPadding + height + 11
+
+    /// The bar sits this far into the home indicator strip, which holds nothing it could cover.
+    static func homeIndicatorSink(_ bottomInset: CGFloat) -> CGFloat { min(14, bottomInset) }
 
     @ViewBuilder
     var body: some View {
@@ -418,7 +420,7 @@ struct GameplayControllerShortcutHelpOverlay: View {
                     )
             }
             .shadow(color: .black.opacity(0.12), radius: 12, y: 5)
-            .padding(.bottom, geometry.safeAreaInsets.bottom + Self.bottomPadding)
+            .padding(.bottom, geometry.safeAreaInsets.bottom - Self.homeIndicatorSink(geometry.safeAreaInsets.bottom) + Self.bottomPadding)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
         .allowsHitTesting(false)
