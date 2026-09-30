@@ -1006,7 +1006,10 @@ public:
 	PRIM_OVERLAP PrimitiveOverlap(bool save_drawlist = false);
 	bool SpriteDrawWithoutGaps();
 	bool SpriteUnionCoversDrawRect();
-	void CalculatePrimitiveCoversWithoutGaps();
+	/// Sets m_primitive_covers_without_gaps, and m_primitive_union_covers_rect unless `union_cover`
+	/// is false: that flag has one reader on the GPU road, and the sprite-union test behind it is
+	/// the costly part for a draw of many sprites.
+	void CalculatePrimitiveCoversWithoutGaps(bool union_cover = true);
 	GIFRegTEX0 GetTex0Layer(u32 lod);
 	template <u32 primclass>
 	void RewriteVerticesIfLargeSTImpl(const GSVector4& large_val, bool check_clamp_mode);

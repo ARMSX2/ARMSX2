@@ -233,7 +233,9 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 				gd.sel.tfx = TFX_DECAL;
 			}
 
-			hw.CalculatePrimitiveCoversWithoutGaps();
+			// GetTextureMinMax() reads whether the sprites tile the draw; nothing here reads whether
+			// their union covers it.
+			hw.CalculatePrimitiveCoversWithoutGaps(false);
 
 			bool mipmap = hw.IsMipMapActive();
 

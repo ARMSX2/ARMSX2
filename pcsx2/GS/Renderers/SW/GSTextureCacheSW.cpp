@@ -193,17 +193,13 @@ void GSTextureCacheSW::Texture::Reset(u32 tw0, const GIFRegTEX0& TEX0, const GIF
 		memset(&m_valid[vr.begin], 0, vr.Size() * sizeof(m_valid[0]));
 	m_valid_dirty.MakeEmpty();
 
-	m_sharedbits = GSUtil::HasSharedBitsPtr(m_TEX0.PSM);
-
 	m_offset = g_gs_renderer->m_mem.GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM);
-	m_pages = m_offset.pageLooperForRect(GSVector4i(0, 0, 1 << TEX0.TW, 1 << TEX0.TH));
-
 	m_repeating = m_TEX0.IsRepeating(); // repeating mode always works, it is just slightly slower
 
-	if (m_repeating)
-	{
-		m_p2t = g_gs_renderer->m_mem.GetPage2TileMap(m_TEX0);
-	}
+	// m_sharedbits, m_pages and m_p2t are left as they were: only the software renderer's cache
+	// reads them, to invalidate a texture when its pages are written, and a texture that is reset
+	// never lives in that cache. Working them out cost a page walk on every draw of the hardware
+	// renderer's CPU sprite road.
 }
 
 bool GSTextureCacheSW::Texture::Update(const GSVector4i& rect)

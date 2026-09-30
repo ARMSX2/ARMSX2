@@ -6789,7 +6789,7 @@ bool GSState::SpriteUnionCoversDrawRect()
 	return true;
 }
 
-void GSState::CalculatePrimitiveCoversWithoutGaps()
+void GSState::CalculatePrimitiveCoversWithoutGaps(bool union_cover)
 {
 	m_primitive_covers_without_gaps = FullCover;
 	m_primitive_union_covers_rect = false;
@@ -6821,7 +6821,7 @@ void GSState::CalculatePrimitiveCoversWithoutGaps()
 	m_primitive_covers_without_gaps = SpriteDrawWithoutGaps() ? (m_primitive_covers_without_gaps == GapsFound ? SpriteNoGaps : m_primitive_covers_without_gaps) : GapsFound;
 
 	// Asked only where the tiling test refused, and answered onto a flag of its own.
-	if (m_primitive_covers_without_gaps == GapsFound)
+	if (union_cover && m_primitive_covers_without_gaps == GapsFound)
 		m_primitive_union_covers_rect = SpriteUnionCoversDrawRect();
 }
 
