@@ -946,7 +946,10 @@ public:
 				m_chan->sema.NotifyOfWork();
 				break;
 			}
-			std::this_thread::yield(); // ring full — backpressure
+			// Ring full: sleep until the back has retired a batch.
+			m_chan->space.Wait(GSBackQueue::Channel::kRingRefill, [this]() {
+				return GSBackQueue::RecordRing::Capacity() - m_chan->ring.Size() >= GSBackQueue::Channel::kRingRefill;
+			});
 		}
 	}
 

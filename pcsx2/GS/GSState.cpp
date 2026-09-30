@@ -720,7 +720,7 @@ void GSState::ResetDrawBuffers()
 GSBackQueue::DrawNode* GSState::AcquireDrawNode()
 {
 	// Recycle first; grow the arena while under the cap; past the cap the ring
-	// IS the backpressure (wait for the consumer to release one).
+	// IS the backpressure (wait for the consumer to release a batch).
 	for (;;)
 	{
 		if (GSBackQueue::DrawNode** slot = m_chan->draw_free.Peek())
@@ -733,7 +733,9 @@ GSBackQueue::DrawNode* GSState::AcquireDrawNode()
 		if (m_chan->draw_arena.size() < GSBackQueue::Channel::kMaxDrawNodes)
 			break;
 
-		std::this_thread::yield();
+		m_chan->space.Wait(GSBackQueue::Channel::kDrawRefill, [this]() {
+			return m_chan->draw_free.Size() >= GSBackQueue::Channel::kDrawRefill;
+		});
 	}
 
 	// Fresh node, arrays sized like the buffer they're about to replace
@@ -784,7 +786,9 @@ GSBackQueue::PayloadNode* GSState::AcquirePayloadNode()
 		if (m_chan->payload_arena.size() < GSBackQueue::Channel::kMaxPayloadNodes)
 			break;
 
-		std::this_thread::yield();
+		m_chan->space.Wait(GSBackQueue::Channel::kPayloadRefill, [this]() {
+			return m_chan->payload_free.Size() >= GSBackQueue::Channel::kPayloadRefill;
+		});
 	}
 
 	constexpr size_t alloc_size = 1024 * 1024 * 4; // = GSTransferBuffer's buffer
@@ -901,7 +905,9 @@ void GSState::BackThreadLoop()
 		{
 			ExecRecordSlot(*slot);
 			m_chan->ring.Pop();
+			m_chan->space.NotifyRetired();
 		}
+		m_chan->space.NotifyIdle();
 	}
 }
 

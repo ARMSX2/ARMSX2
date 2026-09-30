@@ -11,6 +11,7 @@
 #include "GS/GSVertexKick.h"
 #include "GS/Renderers/Common/GSVertex.h"
 
+#include "common/HostSys.h"
 #include "common/Threading.h"
 
 #include <atomic>
@@ -358,6 +359,95 @@ namespace GSBackQueue
 		u32 m_cached_head = 0; // producer's shadow of m_head
 	};
 
+	// Where the producer sleeps when the ring is full or a pool is empty, and
+	// how the consumer wakes it.
+	//
+	// The producer spins briefly on its condition, then arms the wait by storing
+	// how many records the consumer should retire before waking it, re-checks,
+	// and sleeps. The consumer loads that word once per retired record (relaxed,
+	// so ~free while nobody waits) and posts after that many, or when it runs out
+	// of records. Waking per batch rather than per record keeps a behind back
+	// thread from paying a futex wake for every record it retires.
+	//
+	// Lost wake-ups: the producer's "arm; fence; read cursors" and the
+	// consumer's "free; fence; read armed word" in NotifyIdle are a Dekker pair,
+	// so at least one side sees the other. The per-record check in
+	// NotifyRetired has no fence and may see the arming late; that only delays
+	// the wake, because the consumer always passes NotifyIdle before it sleeps,
+	// and by then the ring is empty and every pool node is back, so any
+	// condition the producer can wait on holds.
+	//
+	// Exactly one Post per armed wait that the consumer claims, and the producer
+	// takes it even when it disarms itself, so the semaphore count returns to
+	// zero after every wait.
+	class alignas(64) SpaceWait
+	{
+	public:
+		// Producer. Returns once ready() is true. Pass a ready() that needs a
+		// batch of space, not a single slot, or the spin below succeeds after
+		// every record and the producer never sleeps.
+		template <typename Ready>
+		void Wait(u32 wake_after, Ready&& ready)
+		{
+			for (u32 spun = 0; spun < kSpinNs; spun += ShortSpin())
+			{
+				if (ready())
+					return;
+			}
+
+			for (;;)
+			{
+				m_wanted.store(wake_after, std::memory_order_relaxed);
+				std::atomic_thread_fence(std::memory_order_seq_cst);
+				if (ready())
+				{
+					// Disarm. A zero means the consumer already claimed the wait and
+					// has posted or is about to; take that post.
+					if (m_wanted.exchange(0, std::memory_order_relaxed) == 0)
+						m_sema.Wait();
+					return;
+				}
+				m_sema.Wait();
+				if (ready())
+					return;
+			}
+		}
+
+		// Consumer, after each retired record and after returning its pool node.
+		void NotifyRetired()
+		{
+			const u32 wanted = m_wanted.load(std::memory_order_relaxed);
+			if (wanted == 0) [[likely]]
+				return;
+			if (++m_retired >= wanted)
+				Wake();
+		}
+
+		// Consumer, when the ring is empty and before it waits for work.
+		void NotifyIdle()
+		{
+			std::atomic_thread_fence(std::memory_order_seq_cst);
+			if (m_wanted.load(std::memory_order_relaxed) != 0)
+				Wake();
+		}
+
+	private:
+		static constexpr u32 kSpinNs = 4000;
+
+		void Wake()
+		{
+			m_retired = 0;
+			if (m_wanted.exchange(0, std::memory_order_relaxed) != 0)
+				m_sema.Post();
+		}
+
+		std::atomic<u32> m_wanted{0}; // 0 = nobody waiting; else records to retire before waking
+		// Consumer-only. Can carry a few counts over from a wait the producer
+		// disarmed itself; that only wakes the next wait early, and it re-checks.
+		u32 m_retired = 0;
+		Threading::KernelSemaphore m_sema;
+	};
+
 	// Tagged slot sized for the largest record (DRAW). All records are trivially
 	// copyable (asserted below), so slots are reused with no destructor
 	// bookkeeping.
@@ -402,6 +492,10 @@ namespace GSBackQueue
 		RecordRing ring;
 		Threading::WorkSema sema;
 
+		// The producer's wait for ring or pool space (separate from `sema`, whose
+		// one empty-waiter slot belongs to the drain).
+		SpaceWait space;
+
 		// Set while the back thread is running. Read/written only on the MTGS
 		// thread (start/stop/drain all happen there), so a plain bool is enough.
 		bool consumer_running = false;
@@ -428,5 +522,12 @@ namespace GSBackQueue
 		static constexpr u32 kMaxPayloadNodes = 8;
 		std::vector<PayloadNode*> payload_arena;
 		SpscRing<PayloadNode*, kMaxPayloadNodes> payload_free;
+
+		// How much the producer waits for once it has to wait at all: an eighth
+		// of the ring, a quarter of the draw pool, one payload node (they are
+		// 4 MB and rotate once per transfer).
+		static constexpr u32 kRingRefill = RecordRing::Capacity() / 8;
+		static constexpr u32 kDrawRefill = kMaxDrawNodes / 4;
+		static constexpr u32 kPayloadRefill = 1;
 	};
 } // namespace GSBackQueue
