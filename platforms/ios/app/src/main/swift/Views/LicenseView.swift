@@ -52,8 +52,20 @@ struct LicenseView: View {
                     .foregroundStyle(.secondary)
             }
             .padding(.vertical, 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .controllerAccessibilityActionTarget(
+                id: Self.targetID(entry),
+                label: entry.name,
+                activationFeedback: .boundary
+            ) {}
         }
+        .controllerAccessibilityTargetOrder(licenses.map(Self.targetID))
         .navigationTitle("Licenses")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private static func targetID(_ entry: LicenseEntry) -> String {
+        "settings.licenses.\(entry.name)"
     }
 }
