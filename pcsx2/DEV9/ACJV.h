@@ -11,9 +11,11 @@
 #include "common/Pcsx2Types.h"
 #include "common/Pcsx2Defs.h"
 #include "common/ARCADE.h"
+// InputBindingInfo, complete: the layouts below keep spans of it, and NDK 28's libc++ (the Play build's)
+// rejects a span of an incomplete type there.
+#include "Config.h"
 
 class SettingsInterface;
-struct InputBindingInfo;
 
 #define ACJV_BASE_ADDDR 0x12400000
 #define ACJV_RANGE      0x1240
