@@ -134,10 +134,13 @@ struct TextureCatalogView: View {
                 Text("\(pack.serials.joined(separator: ", ")) · \(size(pack.bytes))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Link(pack.authors.joined(separator: ", "), destination: pack.source)
-                    .font(.caption)
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(2)
+                // The label's own alignment: a button style centres a wrapped title.
+                Link(destination: pack.source) {
+                    Text(pack.authors.joined(separator: ", "))
+                        .multilineTextAlignment(.leading)
+                }
+                .font(.caption)
+                .lineLimit(2)
                 if active == pack.id, let progress {
                     ProgressView(progress)
                         .labelsHidden()
