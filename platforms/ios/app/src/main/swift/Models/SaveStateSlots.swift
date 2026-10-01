@@ -359,6 +359,7 @@ final class SaveStateAutoSave {
     private var sinceWrite: Double = 0
     private var saving = false
     private var wasLowBattery = false
+    private var playedSinceAutoSave = false
 
     /// A boot or a load starts both clocks again.
     func restart() {
@@ -374,6 +375,7 @@ final class SaveStateAutoSave {
     func tick(_ seconds: Double) {
         sinceLoad += seconds
         sinceWrite += seconds
+        playedSinceAutoSave = true
         let settings = SettingsStore.shared
         let lowBattery = settings.autoSaveOnLowBattery && Self.batteryIsLow
         if lowBattery && !wasLowBattery { sinceWrite = .infinity }
@@ -394,6 +396,8 @@ final class SaveStateAutoSave {
         guard !saving, sinceLoad >= Self.settleSeconds, SaveStateUndoModel.shared.item == nil else {
             return completion(false)
         }
+        // Back to Menu already saved and nothing has been played since.
+        if leaving && !playedSinceAutoSave { return completion(true) }
         saving = true
         ARMSX2Bridge.autoSave(leavingGame: leaving) { ok in
             Task { @MainActor in
@@ -401,6 +405,7 @@ final class SaveStateAutoSave {
                 self.saving = false
                 if ok {
                     self.sinceWrite = 0
+                    self.playedSinceAutoSave = false
                     if let file = await SaveStateFile.current().first(where: { $0.slot == SaveStateSlot.autoSlot }) {
                         SaveStateMetadataStore.shared.recordSave(of: file, playedSeconds: played, fresh: true)
                     }

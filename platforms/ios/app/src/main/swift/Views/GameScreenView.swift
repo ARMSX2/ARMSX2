@@ -480,6 +480,10 @@ struct GameScreenView: View {
                     },
                     onBackToMenu: {
                         appState.returnToMenu()
+                        // The game stays open behind the menu, and the app can be closed from there.
+                        if settings.autoSaveEnabled, settings.autoSaveOnLeave {
+                            SaveStateAutoSave.shared.save(leaving: true) { _ in }
+                        }
                     },
                     onStop: {
                         MenuAudioPackManager.shared
