@@ -1157,9 +1157,10 @@ fun HomeScreen(
                 // Discs only: sets up the host:-loading ("quick load") layout for a game that
                 // wants one, by extracting this disc's files and pairing a modified ELF with it.
                 // Android cannot mount an ISO, so this is the only way the method is reachable
-                // here at all.
+                // here at all. An arcade game is not a disc either.
                 if (!game.uri.toString().endsWith(".elf", ignoreCase = true) &&
-                    !game.extension.equals("ELF", ignoreCase = true)
+                    !game.extension.equals("ELF", ignoreCase = true) &&
+                    game.extension != com.armsx2.arcade.Arcade.BADGE
                 ) {
                     GameMenuAction("⚡", str("games.quickLoad"), "game-menu.quickload") {
                         menuGame = null

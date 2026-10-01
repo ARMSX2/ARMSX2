@@ -1936,6 +1936,28 @@ private val BASE_EN: Map<String, String> = mapOf(
     "touch.stateAction.load" to "LOAD",
     "touch.stateAction.save" to "SAVE",
     "touch.stateAction.screenshot" to "SHOT",
+
+    // Namco System 246/256 arcade games (.acgame)
+    "arcade.notice.title" to "Arcade game",
+    "arcade.error.unreadable" to "This arcade game file could not be read, or it has no game ID. Its [game] section needs a gameid line: NM followed by five digits.",
+    "arcade.error.bios" to "Arcade games need the BIOS of a Namco System 246 or 256 board. Import it in the BIOS settings: it is used for arcade games only, and your console BIOS stays as it is.",
+    "arcade.error.notInLibrary" to "The files next to this arcade game cannot be reached. Add the folder it is in to your game folders, then start it from the library.",
+    "arcade.error.elf" to "The boot program %s was not found. It goes in the arcade game's folder, the one named after its game ID unless the .acgame says otherwise.",
+    "arcade.error.media" to "The game image %s was not found. It goes in the arcade game's folder, the one named after its game ID unless the .acgame says otherwise.",
+    "arcade.error.dongle" to "The security dongle %s was not found. Put it in the memory cards folder, or next to the .acgame.",
+    "arcade.error.card" to "The memory card %s was not found. Put it in the memory cards folder, or next to the .acgame.",
+    "arcade.error.boot" to "The arcade game did not start. %s",
+    "arcade.coin.p1" to "Insert coin",
+    "arcade.coin.p1.detail" to "Player 1. Select on a controller does the same.",
+    "arcade.coin.p2" to "Insert coin, player 2",
+    "arcade.coin.p2.detail" to "Select on player 2's controller does the same.",
+    "arcade.service" to "Service",
+    "arcade.service.detail" to "The cabinet's Service button: a credit without a coin.",
+    "arcade.test" to "Test switch",
+    "arcade.test.detail" to "Opens the game's test menu, or closes it.",
+    "bios.arcade.badge" to "Arcade",
+    "bios.arcade.use" to "Use for arcade games",
+    "bios.arcade.active" to "Arcade games",
 )
 
 /**

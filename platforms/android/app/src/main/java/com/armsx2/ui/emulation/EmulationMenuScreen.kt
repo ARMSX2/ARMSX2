@@ -666,6 +666,7 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
                 android.widget.Toast.makeText(context, gsDumpQueued, android.widget.Toast.LENGTH_LONG).show()
                 viewModel.resume()
             },
+        ) + arcadeActions(viewModel) + listOf(
             MenuAction(str("action.close"), MainActivityRuntime.currentGame.value?.title.orEmpty(), "■", Danger) {
                 MainActivityRuntime.closeGame()
             },
@@ -1574,6 +1575,33 @@ private fun HardcoreBadge() {
             fontWeight = FontWeight.Bold,
         )
     }
+}
+
+/**
+ * The arcade cabinet's own buttons, while an arcade game runs: coins, Service and the Test switch.
+ * Each goes back to the game, which only sees a press it is running for.
+ */
+@Composable
+private fun arcadeActions(viewModel: EmulationMenuViewModel): List<MenuAction> {
+    if (com.armsx2.arcade.Arcade.sessionMode.intValue < 0) return emptyList()
+    return listOf(
+        MenuAction(str("arcade.coin.p1"), str("arcade.coin.p1.detail"), "¢", null) {
+            com.armsx2.arcade.Arcade.insertCoin(0)
+            viewModel.resume()
+        },
+        MenuAction(str("arcade.coin.p2"), str("arcade.coin.p2.detail"), "¢", null) {
+            com.armsx2.arcade.Arcade.insertCoin(1)
+            viewModel.resume()
+        },
+        MenuAction(str("arcade.service"), str("arcade.service.detail"), "✚", null) {
+            viewModel.resume()
+            com.armsx2.arcade.Arcade.pressService()
+        },
+        MenuAction(str("arcade.test"), str("arcade.test.detail"), "⚙", null) {
+            com.armsx2.arcade.Arcade.toggleTest()
+            viewModel.resume()
+        },
+    )
 }
 
 private data class MenuAction(

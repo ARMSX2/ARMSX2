@@ -136,6 +136,7 @@ fun BiosManagerScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Bio
                         showGameAssign = state.gameKey != null,
                         perGameActive = state.perGameBios?.equals(item.file.name, ignoreCase = true) == true,
                         onSelect = { viewModel.select(item.file) },
+                        onSelectArcade = { viewModel.selectArcade(item) },
                         onAssignGame = { viewModel.assignToGame(item) },
                         onClearGame = { viewModel.clearGameBios() },
                         onDelete = { deleteTarget = item },
@@ -257,6 +258,7 @@ private fun BiosRow(
     showGameAssign: Boolean,
     perGameActive: Boolean,
     onSelect: () -> Unit,
+    onSelectArcade: () -> Unit,
     onAssignGame: () -> Unit,
     onClearGame: () -> Unit,
     onDelete: () -> Unit,
@@ -286,10 +288,30 @@ private fun BiosRow(
                     Spacer(Modifier.width(6.dp))
                     StatusChip(str("bios.thisGame.active"), Success)
                 }
+                // A Namco arcade board's BIOS: for arcade games, and only those.
+                if (item.arcade) {
+                    Spacer(Modifier.width(6.dp))
+                    StatusChip(
+                        if (item.arcadeSelected) str("bios.arcade.active") else str("bios.arcade.badge"),
+                        if (item.arcadeSelected) Success else MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                if (item.arcade && !item.arcadeSelected) {
+                    OutlinedButton(
+                        onClick = onSelectArcade,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.controllerFocusable(
+                            "bios.arcade.${item.file.absolutePath}",
+                            RoundedCornerShape(12.dp),
+                            onConfirm = onSelectArcade,
+                        ),
+                    ) { Text(str("bios.arcade.use")) }
+                    Spacer(Modifier.width(8.dp))
+                }
                 // Per-game BIOS: pin this BIOS to the loaded game, or revert it to global.
-                if (showGameAssign) {
+                if (showGameAssign && !item.arcade) {
                     if (perGameActive) {
                         TextButton(
                             onClick = onClearGame,
@@ -304,7 +326,7 @@ private fun BiosRow(
                     }
                     Spacer(Modifier.width(8.dp))
                 }
-                if (!item.selected) OutlinedButton(
+                if (!item.selected && !item.arcade) OutlinedButton(
                     onClick = onSelect,
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.controllerFocusable(

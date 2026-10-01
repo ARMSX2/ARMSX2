@@ -362,8 +362,9 @@ fun TouchControlsOverlay() {
         }
         // With a GunCon 2 attached, a touch on empty screen IS the shot, so the gun owns empty
         // screen outright: the gesture layer and the Half-Screen Sticks, which want the same fingers,
-        // stand down while it is attached, and the regular stick widgets come back.
-        val gunAttached = Lightgun.enabled.value
+        // stand down while it is attached, and the regular stick widgets come back. An arcade game
+        // whose controls are a light gun or a touch panel takes the touchscreen the same way.
+        val gunAttached = Lightgun.active
         val halfSticks = TouchControls.fullHalfSticks.value && !gunAttached
         // Lightgun aiming. Below the widgets, so the gun buttons, pause, D-pad and sticks win a
         // finger that starts on them. The multi-touch buttons have no handler of their own, so their
