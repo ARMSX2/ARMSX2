@@ -882,7 +882,9 @@ struct RootView: View {
             menuControllerInput.setMenuActive(menuScreenActive)
             StikDebugLauncher.autoOpenIfNeeded(reason: "app launch")
             ShaderCatalogInstaller.sweepStagedDownloads()
-            TexturePackLibrary.sweepStaging(in: TexturePackLibrary.root)
+            let textureRoot = TexturePackLibrary.root
+            // A pack the app was killed while unpacking can hold 100,000 files.
+            Task.detached(priority: .utility) { TexturePackLibrary.sweepStaging(in: textureRoot) }
             scheduleGameplayControllerHelpIfReady()
         }
         .task {
