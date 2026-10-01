@@ -52,8 +52,30 @@ object CustomDriver {
         val label: String,
         val releasesUrl: String,
         val idPrefix: String,
+        /** Whether to list this source for the device's GL_RENDERER (null when unknown).
+         *  Sources that only build for one GPU family say so here; the rest list everywhere. */
+        val supports: (renderer: String?) -> Boolean = { true },
     )
+
+    /** Mali architecture v11: the G615 and G715 (Immortalis-G715 included), the only GPUs
+     *  our libmali packs drive so far. GL_RENDERER reads like "Mali-G615 MC6" or
+     *  "Mali-G715-Immortalis MC11". */
+    private val MALI_V11 = Regex("""\bG[67]15\b""", RegexOption.IGNORE_CASE)
+    internal fun isMaliV11(renderer: String?): Boolean =
+        renderer != null &&
+            (renderer.contains("Mali", ignoreCase = true) || renderer.contains("Immortalis", ignoreCase = true)) &&
+            MALI_V11.containsMatchIn(renderer)
+
     private val DRIVER_SOURCES = listOf(
+        // Our own Vulkan driver for Mali, replacing Arm's on the kbase kernel driver. One
+        // adrenotools pack per release (meta.json + libvulkan_armsx2_mali.so), loaded the
+        // same way as the Turnip packs. Listed only on the GPUs it supports.
+        DriverSource(
+            "ARMSX2 · libmali",
+            "https://api.github.com/repos/bmdhacks/armsx2-libmali/releases",
+            "armsx2libmali",
+            supports = ::isMaliV11,
+        ),
         // Our own Turnip: Mesa with the ARMSX2 driver patches, built as adrenotools packs.
         // The emulator recognises these builds by the `(git-axfl<N>-…)` token in
         // driverInfo and takes the barrier-less in-pass read road on Adreno 650 and up
@@ -189,13 +211,13 @@ object CustomDriver {
 
     // ---- GitHub release list ------------------------------------------------
 
-    /** Fetch the K11MCH1/AdrenoToolsDrivers releases and flatten into
-     *  one RemoteDriver per .zip asset. Suspending — caller must wrap
+    /** Fetch every source that supports [renderer] (the system GL_RENDERER)
+     *  and flatten into one RemoteDriver per .zip asset. Suspending — caller must wrap
      *  in `withContext(Dispatchers.IO)` (the JNI call blocks the
      *  calling thread). Returns empty list on any network/parse error;
      *  callers can detect "I had drivers shown a moment ago, now
      *  nothing" by tracking the previous size. */
-    fun fetchRemote(): List<RemoteDriver> {
+    fun fetchRemote(renderer: String?): List<RemoteDriver> {
         val userAgent = "ARMSX2/" + runCatching {
             NativeApp.getBuildVersion()
         }.getOrNull().orEmpty().ifEmpty { "dev" }
@@ -204,6 +226,7 @@ object CustomDriver {
         // Sequential per source; one dead/rate-limited source returns empty and
         // never blanks the others. Dedup by id guards the LazyVerticalGrid key set.
         for (src in DRIVER_SOURCES) {
+            if (!src.supports(renderer)) continue
             for (rd in fetchSource(src, userAgent)) {
                 if (seen.add(rd.id)) out += rd
             }
