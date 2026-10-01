@@ -780,7 +780,7 @@ NM00019:
   media: DVD
   input: button
   clampModes:
-  eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
+    eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves effect rendering on various levels.
     halfPixelOffset: 2 # Align post.
@@ -843,7 +843,7 @@ NM00026:
   media: DVD
   input: button
   clampModes:
-  eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
+    eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves effect rendering on various levels.
     halfPixelOffset: 2 # Align post.
