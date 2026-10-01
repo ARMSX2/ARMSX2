@@ -425,8 +425,9 @@ data class GameInfo(
 
     private fun coverUrlFor(s: String): String {
         // A Namco System 246/256 game (its NM game ID) has its cover in ARMSX2's own arcade covers,
-        // one per game ID and flat in either style: there are no 3D cases of arcade games to show.
-        if (ARCADE_GAME_ID.matches(s)) return "$ARCADE_COVERS/$s.png"
+        // one per game ID, flat or as a case like the PS2 ones.
+        if (ARCADE_GAME_ID.matches(s))
+            return if (CoverArtStyle.use3d.value) "$ARCADE_COVERS/3d/$s.png" else "$ARCADE_COVERS/$s.png"
         val repo = when (platform) {
             GamePlatform.PS2 -> "ps2-covers"
             GamePlatform.PS1 -> "psx-covers"
@@ -569,7 +570,7 @@ object CustomCovers {
  *  touches Arcade and its Compose state). */
 private val ARCADE_GAME_ID = Regex("NM\\d{5}")
 
-/** ARMSX2's arcade covers: covers/<game ID>.png, made from baddeolv's logo pack and in type. */
+/** ARMSX2's arcade covers: covers/<game ID>.png flat, covers/3d/<game ID>.png as a case. */
 private const val ARCADE_COVERS = "https://raw.githubusercontent.com/ARMSX2/arcade-covers/main/covers"
 
 /** Map a PS1/PS2 serial prefix to a region label. */
