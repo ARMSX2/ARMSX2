@@ -13,6 +13,7 @@
 #include "ps2/pgif.h"
 #include "SPU2/spu2.h"
 #include "R3000A.h"
+#include "common/ARCADE.h"
 
 #include "CDVD/Ps1CD.h"
 #include "CDVD/CDVD.h"
@@ -178,10 +179,14 @@ void _hwWrite32( u32 mem, u32 value )
 						u64 cycle = psxRegs.cycle;
 						//pgifInit();
 						psxReset();
-						PSXCLK =  33868800;
-						SPU2::Reset(true);
-						setPs1CDVDSpeed(cdvd.Speed);
-						psxHu32(HW_ICFG) = 0x8;
+						// An arcade board has no PS1 mode: keep its clocks and CD speed (PCSX2x6).
+						if (!Arcade::IsActive())
+						{
+							PSXCLK =  33868800;
+							SPU2::Reset(true);
+							setPs1CDVDSpeed(cdvd.Speed);
+							psxHu32(HW_ICFG) = 0x8;
+						}
 						psxHu32(HW_ICTRL) = 1;
 						psxRegs.cycle = cycle;
 					}

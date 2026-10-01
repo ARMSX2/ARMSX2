@@ -963,7 +963,7 @@ std::vector<AvailableMcdInfo> FileMcd_GetAvailableCards(bool include_in_use_card
 		// We only want relevant file types.
 		if (!(fd.FileName.ends_with(".ps2") || fd.FileName.ends_with(".mcr") ||
 				fd.FileName.ends_with(".mcd") || fd.FileName.ends_with(".bin") ||
-				fd.FileName.ends_with(".mc2")))
+				fd.FileName.ends_with(".mc2") || fd.FileName.ends_with(".conquestcard"))) // Soul Calibur II arcade card
 			continue;
 
 		if (fd.Attributes & FILESYSTEM_FILE_ATTRIBUTE_DIRECTORY)

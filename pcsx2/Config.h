@@ -1526,6 +1526,20 @@ struct Pcsx2Config
 
 	// ------------------------------------------------------------------------
 
+	// Namco System 246/256 arcade board logging (PCSX2x6). Off unless set by hand in the ini.
+	struct ArcadeOptions
+	{
+		bool SRAMVerboseReads = false;
+		bool RAMVerboseReads = false;
+		bool ATAVerboseReads = false;
+		bool UARTVerbose = false;
+
+		void LoadSave(SettingsWrapper& wrap);
+
+		bool operator==(const ArcadeOptions& right) const;
+		bool operator!=(const ArcadeOptions& right) const;
+	};
+
 	struct AchievementsOptions
 	{
 		static constexpr u32 MINIMUM_NOTIFICATION_DURATION = 3;
@@ -1635,6 +1649,8 @@ struct Pcsx2Config
 	FilenameOptions BaseFilenames;
 
 	AchievementsOptions Achievements;
+
+	ArcadeOptions Arcade;
 
 	// Memorycard options - first 2 are default slots, last 6 are multitap 1 and 2
 	// slots (3 each)

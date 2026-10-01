@@ -7,6 +7,7 @@
 #include "Gif_Unit.h"
 #include "MTGS.h"
 #include "VMManager.h"
+#include "common/ARCADE.h"
 
 #include <list>
 
@@ -74,7 +75,10 @@ static __fi void gsCSRwrite( const tGS_CSR& csr )
 	if (csr.FINISH)	{
 		CSRreg.FINISH = false;
 		gifUnit.gsFINISH.gsFINISHFired = false; //Clear the previously fired FINISH (YS, Indiecar 2005, MGS3)
-		gifUnit.gsFINISH.gsFINISHPending = false;
+		// On an arcade board, clearing the status bit does not cancel a FINISH still queued behind the
+		// draw delay (GS->EE readback; PCSX2x6).
+		if (!Arcade::IsActive())
+			gifUnit.gsFINISH.gsFINISHPending = false;
 	}
 	if(csr.HSINT)	CSRreg.HSINT	= false;
 	if(csr.VSINT)	CSRreg.VSINT	= false;

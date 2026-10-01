@@ -3,6 +3,7 @@
 
 #define _PC_ // disables MIPS opcode macros.
 
+#include "common/ARCADE.h"
 #include "common/Assertions.h"
 #include "common/ByteSwap.h"
 #include "common/FileSystem.h"
@@ -350,6 +351,8 @@ std::string Patch::GetPnachTemplate(const std::string_view serial, u32 crc, bool
 	{
 		if (all_crcs)
 			return fmt::format("{}_*.pnach", serial);
+		else if (include_serial && crc == 0 && Arcade::IsGameId(serial))
+			return fmt::format("{}{}.pnach", serial, add_wildcard ? "*" : ""); // arcade: the gameid alone (PCSX2x6)
 		else if (include_serial)
 			return fmt::format("{}_{:08X}{}.pnach", serial, crc, add_wildcard ? "*" : "");
 	}
@@ -664,6 +667,22 @@ void Patch::ReloadEnabledLists()
 				[](const std::string& it) { return (it == NI_PATCH_NAME); }))
 		{
 			s_enabled_patches.emplace_back(NI_PATCH_NAME);
+		}
+	}
+
+	// An arcade game's labeled patches are on unless disabled: they are what makes a board's game run
+	// here, not optional tweaks (PCSX2x6).
+	if (Arcade::IsActive())
+	{
+		for (const PatchGroup& group : s_game_patches)
+		{
+			if (group.name.empty() || group.name == WS_PATCH_NAME || group.name == NI_PATCH_NAME)
+				continue;
+			if (std::none_of(s_enabled_patches.begin(), s_enabled_patches.end(),
+					[&group](const std::string& it) { return (it == group.name); }))
+			{
+				s_enabled_patches.emplace_back(group.name);
+			}
 		}
 	}
 

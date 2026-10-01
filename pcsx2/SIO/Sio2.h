@@ -40,6 +40,7 @@ public:
 	// does not accidentally use dmaBlockSize.
 	size_t dmaBlockSize = 0;
 	bool queueComplete = false;
+	size_t transferBytes = 0; // bytes written since the queue started; arcade boards time the transfer by it
 
 	Sio2();
 	~Sio2();
@@ -61,6 +62,8 @@ public:
 	void Infrared();
 	void Memcard();
 
+	friend void sio2DelayedInterrupt();
+
 	void Write(u8 data);
 	u8 Read();
 };
@@ -68,3 +71,4 @@ public:
 extern std::deque<u8> g_Sio2FifoIn;
 extern std::deque<u8> g_Sio2FifoOut;
 extern Sio2 g_Sio2;
+extern void sio2DelayedInterrupt();

@@ -15,8 +15,22 @@
 #include "smap.h"
 #include "net.h"
 #include "pcap_io.h"
+#include "ACJV.h" // ACJV::GetGameId (phyLinkUp)
+#include "common/ARCADE.h"
 
 bool has_link = true;
+
+static bool phyLinkUp()
+{
+	// Battle Gear 3 / Tuned: no Ethernet link, so NESYS sees "no network" and boots standalone (PCSX2x6).
+	if (Arcade::IsActive())
+	{
+		const std::string& gameId = ACJV::GetGameId();
+		if (gameId == "NM00010" || gameId == "NM00015")
+			return false;
+	}
+	return has_link;
+}
 volatile bool fireIntR = false;
 std::mutex frame_counter_mutex;
 std::mutex reset_mutex;
@@ -286,11 +300,11 @@ void emac3_write(u32 addr)
 					switch (reg)
 					{
 						case SMAP_DsPHYTER_BMSR:
-							if (has_link)
+							if (phyLinkUp())
 								val |= SMAP_PHY_BMSR_LINK | SMAP_PHY_BMSR_ANCP;
 							break;
 						case SMAP_DsPHYTER_PHYSTS:
-							if (has_link)
+							if (phyLinkUp())
 								val |= SMAP_PHY_STS_LINK | SMAP_PHY_STS_100M | SMAP_PHY_STS_FDX | SMAP_PHY_STS_ANCP;
 							break;
 					}

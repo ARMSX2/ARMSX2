@@ -11,6 +11,7 @@
 
 #include "Sif.h"
 #include "DEV9/DEV9.h"
+#include "common/ARCADE.h"
 
 using namespace R3000A;
 
@@ -189,6 +190,11 @@ void psxDma9(u32 madr, u32 bcr, u32 chcr)
 	sif0.iop.end = false;
 
 	SIF0Dma();
+
+	// On an arcade board, clear DMA9's busy bit once SIF0 is idle, so each queued sceSifSetDma kicks
+	// again and reads its reused bounce buffer fresh; otherwise movies corrupt (PCSX2x6).
+	if (Arcade::IsActive() && !sif0.iop.busy)
+		HW_DMA9_CHCR &= ~0x01000000;
 }
 
 void psxDma10(u32 madr, u32 bcr, u32 chcr)

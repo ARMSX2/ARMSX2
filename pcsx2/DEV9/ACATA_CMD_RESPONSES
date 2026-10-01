@@ -1,0 +1,98 @@
+// SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
+// SPDX-License-Identifier: GPL-3.0+
+
+// Namco System 246/256 arcade hardware, ported from PCSX2x6
+// (https://github.com/PS2Homebrew-arcade/pcsx2x6) by Matías Israelson (El_isra), Tovarichtch and
+// DiscoStarslayer. Only reached while an arcade game runs (Arcade::IsActive(), common/ARCADE.h).
+
+
+static const uint16_t ATA_R_IDENTIFY_PACKET_DEVICE[256] {
+    0x8500,
+    0,0,0,0,0,0,0,0,0,
+    /* serial [10]*/
+    0x2020,0x2020,0x2020,0x2020,0x2020,
+    /* firmware [15]*/
+    0x312E,0x3030,0x2020,0x2020,
+    /* model [19]*/
+    0x4C45,0x4354,0x4F52,0x4120,//[22
+    0x4445,0x204D,0x4945,0x5244,//[26
+    0x4120,0x2020,0x2020,0x2020,//[30
+    0x2020,0x2020,0x2020,0x2020,//[34
+    0x2020,0x2020,0x2020,0x2020,//[38
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //[50
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,// [61
+    0x0007, //Word 62: Single-word DMA
+    0x0007, //Word 63: Multiword DMA modes 0,1,2 supported
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,//[80]
+    0,0,0,0,0,0,0,//[87]
+    0x0000,//Word 88 — Ultra DMA
+};
+
+static const uint16_t ATA_R_IDENTIFY_DEVICE[256] =
+{
+    // 0
+    0x0040, // fixed disk
+    0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,
+
+    // 8
+    0x0000,0x0000,
+
+    // serial (10-19)
+    0x2020, 0x2020, 0x2020, 0x2020, 0x2020,
+    0x2020, 0x2020, 0x2020, 0x2020, 0x2020,
+
+    // firmware rev (23-26)
+    0x312E, // "1."
+    0x3030, // "00"
+    0x2020,
+    0x2020,
+
+    // model number (27-46)
+    // "PCSX2x6"
+    // byte swapped per ATA spec
+    0x5043, // PC
+    0x5358, // SX
+    0x3278, // 2x
+    0x3620, // 6
+    0x2020, 0x2020, 0x2020, 0x2020, 0x2020, 0x2020, 0x2020, 0x2020, 0x2020, 0x2020, 0x2020, 0x2020, 0x2020, 0x2020, 0x2020, 0x2020,
+    // 47
+    0x0000,
+    // 48
+    0x0000,
+    // 49 capabilities
+    0x0200, // LBA supported
+    // 50
+    0x0000,
+    // 51-52
+    0x0000,
+    0x0000,
+    // 53 valid fields
+    0x0007,
+    // 54-58
+    0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+    // 59
+    0x0000,
+    // 60-61 total LBA sectors
+    0x0000, // low 16
+    0x0010, // high 16
+              // = 0x00100000 sectors
+              // = 512MB
+
+    // 62-79
+    0x0000,0x0000,0x0000,0x0000,
+    0x0000,0x0000,0x0000,0x0000,
+    0x0000,0x0000,0x0000,0x0000,
+    0x0000,0x0000,0x0000,0x0000,
+    0x0000,0x0000,
+    // 80 ATA version
+    0x001E,
+    // 81
+    0x0000,
+    // 82-87 command sets
+    0x0000,
+    0x0000,
+    0x0000,
+    0x0000,
+    0x0000,
+    0x0000,
+};

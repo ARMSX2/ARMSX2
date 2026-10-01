@@ -9,6 +9,8 @@
 #include "Host.h"
 #include "MTGS.h"
 #include "R3000A.h"
+#include "Common.h"
+#include "common/ARCADE.h"
 #include "VMManager.h"
 
 #include "common/Error.h"
@@ -43,7 +45,8 @@ float DCFilterIn[2], DCFilterOut[2];
 
 u32 SPU2::GetConsoleSampleRate()
 {
-	return s_psxmode ? PSX_SAMPLE_RATE : SAMPLE_RATE;
+	// One sample every 768 IOP cycles: 48 kHz on a console, more on an arcade System 256 (PCSX2x6).
+	return s_psxmode ? PSX_SAMPLE_RATE : (Arcade::IsActive() ? (PSXCLK / 768) : SAMPLE_RATE);
 }
 
 // --------------------------------------------------------------------------------------

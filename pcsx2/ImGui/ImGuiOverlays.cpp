@@ -29,6 +29,8 @@
 #include "SIO/Pad/PadBase.h"
 #include "USB/USB.h"
 #include "VMManager.h"
+#include "DEV9/ACJV.h"
+#include "common/ARCADE.h"
 
 #include "common/BitUtils.h"
 #include "common/Error.h"
@@ -251,6 +253,7 @@ namespace ImGuiManager
 	static void DrawInputRecordingOverlay(float& position_y, float scale, float margin, float spacing);
 	static void DrawTextureReplacementsOverlay(float& position_y, float scale, float margin, float spacing);
 	static void DrawIndicatorsOverlay(float& position_y, float scale, float margin, float spacing);
+	static void DrawArcadeGunCrosshairs(float scale);
 } // namespace ImGuiManager
 
 __ri void ImGuiManager::FormatProcessorStat(SmallStringBase& text, double usage, double time)
@@ -2143,8 +2146,37 @@ void ImGuiManager::RenderOverlays()
 	DrawSettingsOverlay(scale, margin, bottom_margin, spacing);
 	DrawShaderCompileIndicator(scale, margin, bottom_margin, spacing);
 	DrawInputsOverlay(scale, margin, bottom_margin, spacing);
+	DrawArcadeGunCrosshairs(scale);
 	if (SaveStateSelectorUI::s_open)
 		SaveStateSelectorUI::Draw();
+}
+
+// An arcade light gun aimed with a stick has nothing on screen to show where it points (a finger on a
+// touchscreen, or a real gun, needs nothing): a crosshair per player, while that player's stick aims.
+void ImGuiManager::DrawArcadeGunCrosshairs(float scale)
+{
+	if (!Arcade::IsActive() || ACJV::GetMode() != JVS_MODE::LIGHTGUN)
+		return;
+
+	static constexpr ImU32 colors[2] = {IM_COL32(255, 72, 72, 230), IM_COL32(72, 160, 255, 230)};
+	ImDrawList* const dl = ImGui::GetBackgroundDrawList();
+	const float radius = 11.0f * scale;
+	const float thickness = std::max(2.0f * scale, 1.0f);
+	for (u32 player = 0; player < 2; player++)
+	{
+		float dx, dy;
+		if (!ACJV::GetGunStickAim(player, &dx, &dy))
+			continue;
+		float x, y;
+		GSTranslateDisplayToWindowCoordinates(dx, dy, &x, &y);
+		const ImVec2 c(x, y);
+		dl->AddCircle(c, radius, IM_COL32(0, 0, 0, 160), 0, thickness + 2.0f * scale);
+		dl->AddCircle(c, radius, colors[player], 0, thickness);
+		dl->AddLine(ImVec2(c.x - radius * 1.6f, c.y), ImVec2(c.x - radius * 0.5f, c.y), colors[player], thickness);
+		dl->AddLine(ImVec2(c.x + radius * 0.5f, c.y), ImVec2(c.x + radius * 1.6f, c.y), colors[player], thickness);
+		dl->AddLine(ImVec2(c.x, c.y - radius * 1.6f), ImVec2(c.x, c.y - radius * 0.5f), colors[player], thickness);
+		dl->AddLine(ImVec2(c.x, c.y + radius * 0.5f), ImVec2(c.x, c.y + radius * 1.6f), colors[player], thickness);
+	}
 }
 
 std::string SaveStateSelectorUI::GetSaveStateTimestampSummary(const std::time_t& modification_time)
