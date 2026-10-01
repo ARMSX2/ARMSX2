@@ -7,6 +7,7 @@
 // default and the board only exists for the length of an arcade session, behind Arcade::IsActive().
 
 #pragma once
+#include <atomic>
 #include <string>
 #include <string_view>
 
@@ -36,9 +37,10 @@ namespace Arcade
 	/// True from the moment an arcade game starts booting until its VM is gone. Every change the
 	/// arcade board makes to the console (memory map, DEV9, timings, memory card handshake...) is
 	/// gated on it, so a retail game runs exactly as it would without any of this code.
-	/// Set and cleared by VMManager only, on the CPU thread, outside any running VM.
-	extern bool s_session;
-	static inline bool IsActive() { return s_session; }
+	/// Set and cleared by VMManager only, on the CPU thread, outside any running VM. Atomic because the GS,
+	/// UI and JNI threads read it too; a relaxed load is a plain load, so the hot paths pay nothing.
+	extern std::atomic<bool> s_session;
+	static inline bool IsActive() { return s_session.load(std::memory_order_relaxed); }
 
 	/// An arcade game ID as an .acgame names it: "NM" and five digits (PCSX2x6's convention).
 	static inline bool IsGameId(std::string_view id)

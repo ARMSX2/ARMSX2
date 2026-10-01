@@ -227,7 +227,7 @@ static std::string s_game_settings_override;
 
 // Namco System 246/256 arcade boards (PCSX2x6, see common/ARCADE.h): what the running arcade game's .acgame
 // set up, for OpenArcadeGame() and the settings reloads of its session.
-bool Arcade::s_session = false;
+std::atomic<bool> Arcade::s_session{false};
 std::string ArcadeiLinkID;
 static std::string s_arcade_gameid;
 static std::string s_arcade_title;
