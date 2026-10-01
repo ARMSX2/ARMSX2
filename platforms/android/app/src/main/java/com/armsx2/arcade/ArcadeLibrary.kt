@@ -240,8 +240,8 @@ object ArcadeLibrary {
                 }
             }.getOrNull() ?: fail("arcade.import.error.boot")
 
-            val dongleName = "$id.${extension(context, dongle, "ps2")}"
-            val cardName = card?.let { "${id}_card.${extension(context, it, "bin")}" }
+            val dongleName = "$id.${cardExtension(dongleBytes)}"
+            val cardName = cardBytes?.let { "${id}_card.${cardExtension(it)}" }
             val imageName = "$id.${extension(context, image, "chd")}"
             val acgameName = "$id.${Arcade.EXTENSION}"
             val acgame = acgame(title, dongleName, imageName, cardName).toByteArray(Charsets.UTF_8)
@@ -316,6 +316,15 @@ object ArcadeLibrary {
         if (bytes.isEmpty() || bytes.size > MAX_CARD_BYTES) fail(errorKey, displayName(context, uri))
         return bytes
     }
+
+    /**
+     * The extension the core reads a memory card file right by, from what the file holds, never from
+     * its name. The core takes a .bin as a card without its ECC (512-byte pages) and converts it as it
+     * opens and closes it (FileMemoryCard), so a dump WITH its ECC, 528-byte pages as PCSX2 keeps cards
+     * (8,650,752 bytes for 8 MB, often called dongle.bin), has to be .ps2 or that conversion garbles it.
+     * Without ECC a card is a whole number of megabytes; with it, it is not.
+     */
+    private fun cardExtension(bytes: ByteArray): String = if (bytes.size % (1 shl 20) == 0) "bin" else "ps2"
 
     /** [bytes], read from [source], into [dir] as [name], unless [source] already IS that file. */
     private fun put(context: Context, source: Uri, bytes: ByteArray, dir: DocumentFile, name: String) {
