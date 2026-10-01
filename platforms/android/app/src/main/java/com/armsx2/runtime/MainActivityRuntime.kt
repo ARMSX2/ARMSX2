@@ -2597,6 +2597,13 @@ open class MainActivityRuntime : ComponentActivity() {
         // before any game runs. Referencing NativeApp also loads the native lib (static init).
         runCatching { kr.co.iefriends.pcsx2.NativeApp.setAdpfEnabled(prefs.getBoolean("ui.adpf", false)) }
 
+        // Arcade holds Compose state the first frame reads (its launch notice), and the emucore
+        // init below reaches it first, from its own thread (loadArcadeBios). A state made on another
+        // thread while a composition is running cannot be read by that composition: the first frame
+        // threw "Reading a state that was created after the snapshot was taken" and the app could
+        // not open. So it is made here, on the main thread, before either of them starts.
+        com.armsx2.arcade.Arcade.loadArcadeBios()
+
         // Defer asset copy + emucore init until setup is complete. On the
         // first-ever run, `systemDir` isn't picked yet at onCreate time —
         // so initializeOnce would resolve to the app-private fallback and
