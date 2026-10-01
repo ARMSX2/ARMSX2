@@ -61,16 +61,18 @@ object ArcadeLibrary {
      *  System SUPER256), [media] CD, DVD or HDD. */
     data class Title(val id: String, val name: String, val board: String, val media: String)
 
-    /** An imported game (an .acgame in the arcade folder with its image), and what it still lacks. */
-    data class Installed(val id: String, val name: String, val missing: List<Part>)
+    /** An imported game (an .acgame in the arcade folder with its image), and what it still lacks.
+     *  [board] and [media] are the database's, blank for a game it does not know. */
+    data class Installed(val id: String, val name: String, val board: String, val media: String, val missing: List<Part>)
 
     /** A game's files: its image (disc or hard drive), its dongle, Soul Calibur II's Conquest card, its
      *  boot program. The first three are imported one at a time; the boot program comes with each. */
     enum class Part { IMAGE, DONGLE, CARD, BOOT }
 
-    /** What of a game is in the arcade folder: the file names of its image, dongle and Conquest card
-     *  where [Arcade.prepare] will find them, null for each one that is not there. */
-    data class GameFiles(val id: String, val image: String?, val dongle: String?, val card: String?)
+    /** What of a game is in the arcade folder: whether its .acgame is ([exists]), and the file names of
+     *  its image, dongle and Conquest card where [Arcade.prepare] will find them, null for each one that
+     *  is not there. */
+    data class GameFiles(val id: String, val exists: Boolean, val image: String?, val dongle: String?, val card: String?)
 
     // ---- The folder --------------------------------------------------------------------------------
 
@@ -215,7 +217,7 @@ object ArcadeLibrary {
      *  [titles] names the games whose .acgame has none. */
     fun installed(context: Context, titles: List<Title>): List<Installed> {
         val children = children(context)
-        val dbNames = titles.associate { it.id to it.name }
+        val db = titles.associateBy { it.id }
         return children.mapNotNull { child ->
             if (child.isDirectory || !Arcade.isAcGameName(child.name)) return@mapNotNull null
             val game = Arcade.read(context, child.file.uri.toString()) ?: return@mapNotNull null
@@ -227,24 +229,86 @@ object ArcadeLibrary {
                 if (game.card.isNotEmpty() && !present.card(game.card)) add(Part.CARD)
                 if (!present.boot) add(Part.BOOT)
             }
-            Installed(game.gameId, game.name.ifBlank { dbNames[game.gameId] ?: game.gameId }, missing)
+            val known = db[game.gameId]
+            Installed(
+                game.gameId, game.name.ifBlank { known?.name ?: game.gameId },
+                known?.board.orEmpty(), known?.media.orEmpty(), missing,
+            )
         }.sortedBy { it.name.lowercase() }
     }
 
     /** What of the game [id] is in the arcade folder, by its .acgame: none of it without one. */
     fun files(context: Context, id: String): GameFiles {
         val children = children(context)
-        val game = children
-            .firstOrNull { !it.isDirectory && it.name.equals("$id.${Arcade.EXTENSION}", ignoreCase = true) }
-            ?.let { Arcade.read(context, it.file.uri.toString()) }
-            ?: return GameFiles(id, null, null, null)
+        val acgame = children.firstOrNull { !it.isDirectory && it.name.equals("$id.${Arcade.EXTENSION}", ignoreCase = true) }
+            ?: return GameFiles(id, false, null, null, null)
+        val game = Arcade.read(context, acgame.file.uri.toString()) ?: return GameFiles(id, true, null, null, null)
         val present = Present(context, children, game)
         return GameFiles(
             id,
+            exists = true,
             image = game.mediaSrc.takeIf { present.image },
             dongle = game.dongle.takeIf { present.card(it) },
             card = game.card.takeIf { it.isNotEmpty() && present.card(it) },
         )
+    }
+
+    /**
+     * Uninstalls the game [id] from the arcade folder: the files its .acgame names there (its image and
+     * boot program, its dongle and card), anything else named for it in its own folder (an older image a
+     * later import replaced), what an import cut short left of them (<name>.part), its folder once that
+     * is empty, then the .acgame, last, so an uninstall cut short is finished from the same place. Nothing
+     * else: the memory cards folder's copies of its cards and its SRAM (its board settings) stay, for if
+     * it is imported again. [onProgress] goes file by file; a failure's message names the file.
+     */
+    suspend fun uninstall(context: Context, id: String, onProgress: (Float) -> Unit): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val root = folder()?.let { DocumentFile.fromTreeUri(context, it) }
+            if (root == null || !root.canWrite()) fail("arcade.import.error.folder")
+            val children = children(context)
+            val acgameName = "$id.${Arcade.EXTENSION}"
+            val acgame = children.firstOrNull { !it.isDirectory && it.name.equals(acgameName, ignoreCase = true) }
+                ?: return@runCatching onProgress(1f)
+            val game = Arcade.read(context, acgame.file.uri.toString())
+
+            fun names(vararg files: String?): Set<String> = files.filterNotNull().filter { it.isNotEmpty() }
+                .map { File(it).name.lowercase() }.flatMap { listOf(it, "$it.part") }.toSet()
+            val cards = names(game?.dongle, game?.card)
+            val own = names(game?.mediaSrc, game?.elf)
+            val subdir = game?.subdir.orEmpty()
+            val dir = subdir.takeIf { it.isNotEmpty() }
+                ?.let { s -> children.firstOrNull { it.isDirectory && it.name.equals(s, ignoreCase = true) } }
+            // In the template's folder, named for the game, everything named for the game is the game's.
+            val template = dir != null && subdir.equals(id, ignoreCase = true)
+            val prefix = "${id.lowercase()}."
+            val inDir = dir?.let { d ->
+                runCatching { d.file.listFiles().map { Child(it, it.name.orEmpty(), it.isDirectory) } }.getOrDefault(emptyList())
+            }.orEmpty().filter { f ->
+                val n = f.name.lowercase()
+                !f.isDirectory && (n in own || n in cards || (template && n.startsWith(prefix)))
+            }
+            val besideNames = cards + (if (subdir.isEmpty()) own else emptySet()) + "${acgameName.lowercase()}.part"
+            val beside = children.filter { !it.isDirectory && it.name.lowercase() in besideNames }
+
+            val doomed = inDir + beside
+            val steps = doomed.size + 2  // and its folder, and its .acgame
+            var done = 0
+            for (f in doomed) {
+                deleteDocument(context, f.file, f.name)
+                onProgress(++done / steps.toFloat())
+            }
+            if (dir != null && runCatching { dir.file.listFiles().isEmpty() }.getOrDefault(false))
+                deleteDocument(context, dir.file, dir.name)
+            onProgress(++done / steps.toFloat())
+            deleteDocument(context, acgame.file, acgame.name)
+            onProgress(1f)
+            println("@@ANDROID_ARCADE@@ uninstalled $id (${doomed.size + 1} files)")
+        }
+    }
+
+    private fun deleteDocument(context: Context, file: DocumentFile, name: String) {
+        if (!runCatching { DocumentsContract.deleteDocument(context.contentResolver, file.uri) }.getOrDefault(false))
+            fail("arcade.uninstall.error", name)
     }
 
     /**

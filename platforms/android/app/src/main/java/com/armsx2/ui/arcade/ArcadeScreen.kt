@@ -21,6 +21,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -80,6 +81,7 @@ fun ArcadeScreen(onBack: () -> Unit, viewModel: ArcadeViewModel = viewModel()) {
     var choosingGame by rememberSaveable { mutableStateOf(false) }
     var game by rememberSaveable(stateSaver = TitleSaver) { mutableStateOf<ArcadeLibrary.Title?>(null) }
     var picking by rememberSaveable { mutableStateOf<ArcadeLibrary.Part?>(null) }
+    var confirmUninstall by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(game?.id) { viewModel.showFiles(game?.id) }
 
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -95,7 +97,8 @@ fun ArcadeScreen(onBack: () -> Unit, viewModel: ArcadeViewModel = viewModel()) {
     val folderReady = state.folderName != null
     val bootReady = state.bootGames > 0
     // The list of games comes from the core's database, there a moment after the app starts.
-    val importReady = folderReady && bootReady && state.importing == null && state.titles.isNotEmpty()
+    val busy = state.importing != null || state.removing != null
+    val importReady = folderReady && bootReady && !busy && state.titles.isNotEmpty()
 
     val scroll = rememberScrollState()
     ControllerAutoScroll(scroll)
@@ -166,7 +169,11 @@ fun ArcadeScreen(onBack: () -> Unit, viewModel: ArcadeViewModel = viewModel()) {
                 enabled = importReady,
                 onClick = { choosingGame = true },
             )
-            InstalledGames(state.installed)
+            InstalledGames(
+                games = state.installed,
+                enabled = !busy,
+                onOpen = { g -> game = ArcadeLibrary.Title(g.id, g.name, g.board, g.media) },
+            )
             Spacer(Modifier.height(12.dp))
         }
     }
@@ -182,19 +189,42 @@ fun ArcadeScreen(onBack: () -> Unit, viewModel: ArcadeViewModel = viewModel()) {
         )
     }
     game?.let { g ->
+        val files = state.files?.takeIf { it.id == g.id }
         GameImports(
             title = g,
-            files = state.files?.takeIf { it.id == g.id },
-            enabled = state.importing == null,
+            files = files,
+            enabled = !busy,
             onImport = { part ->
                 picking = part
                 partPicker.launch(arrayOf("*/*"))
             },
-            onClose = { game = null },
+            onUninstall = if (files?.exists == true) ({ confirmUninstall = true }) else null,
+            onClose = {
+                confirmUninstall = false
+                game = null
+            },
         )
+        if (confirmUninstall) {
+            com.armsx2.ui.common.ConfirmOverlay(
+                title = str("arcade.uninstall.title").format(g.name),
+                message = str("arcade.uninstall.desc"),
+                confirmLabel = str("arcade.uninstall.button"),
+                destructive = true,
+                idPrefix = "arcade.uninstall",
+                onConfirm = {
+                    confirmUninstall = false
+                    game = null
+                    viewModel.uninstall(g)
+                },
+                onDismiss = { confirmUninstall = false },
+            )
+        }
     }
     state.importing?.let { importing ->
-        ImportProgress(importing.name, viewModel.importProgress.floatValue)
+        Progress("arcade-importing", str("arcade.import.copying").format(importing.name), viewModel.importProgress.floatValue)
+    }
+    state.removing?.let { removing ->
+        Progress("arcade-removing", str("arcade.uninstall.progress").format(removing.name), viewModel.removeProgress.floatValue)
     }
     (state.error ?: state.message)?.let { text ->
         com.armsx2.ui.common.NotifyOverlay(
@@ -271,18 +301,21 @@ private fun StepCard(
     }
 }
 
+/** The games in the arcade folder, each opening its imports: to replace a part, or to uninstall it. */
 @Composable
-private fun InstalledGames(games: List<ArcadeLibrary.Installed>) {
+private fun InstalledGames(
+    games: List<ArcadeLibrary.Installed>,
+    enabled: Boolean,
+    onOpen: (ArcadeLibrary.Installed) -> Unit,
+) {
     GlassPanel(Modifier.fillMaxWidth()) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(str("arcade.step.games"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            if (games.isEmpty()) {
-                Text(
-                    str("arcade.games.none"),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Text(
+                str(if (games.isEmpty()) "arcade.games.none" else "arcade.games.hint"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             val partNames = mapOf(
                 ArcadeLibrary.Part.DONGLE to str("arcade.part.dongle"),
                 ArcadeLibrary.Part.CARD to str("arcade.part.card"),
@@ -291,16 +324,32 @@ private fun InstalledGames(games: List<ArcadeLibrary.Installed>) {
             val ready = str("arcade.games.ready")
             val missing = str("arcade.games.missing")
             games.forEach { g ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(g.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(g.id, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Surface(
+                    onClick = { onOpen(g) },
+                    enabled = enabled,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .controllerFocusable(
+                            if (enabled) "arcade.games.${g.id}" else null,
+                            RoundedCornerShape(12.dp),
+                            onConfirm = { onOpen(g) },
+                        ),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                ) {
+                    Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(g.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(g.id, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text(
+                            if (g.missing.isEmpty()) ready else missing.format(g.missing.joinToString(", ") { partNames[it].orEmpty() }),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (g.missing.isEmpty()) Success else MaterialTheme.colorScheme.error,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text("›", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    Text(
-                        if (g.missing.isEmpty()) ready else missing.format(g.missing.joinToString(", ") { partNames[it].orEmpty() }),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (g.missing.isEmpty()) Success else MaterialTheme.colorScheme.error,
-                    )
                 }
             }
         }
@@ -379,7 +428,7 @@ private fun GameChooser(
 /**
  * One game's imports: its image (disc or hard drive), its dongle and, for Soul Calibur II, its Conquest
  * card. Each from a picker of its own, in any order, each showing whether it is in and, under them all,
- * what the game still needs.
+ * what the game still needs. [onUninstall], when the game is in the folder at all, removes it again.
  */
 @Composable
 private fun GameImports(
@@ -387,6 +436,7 @@ private fun GameImports(
     files: ArcadeLibrary.GameFiles?,
     enabled: Boolean,
     onImport: (ArcadeLibrary.Part) -> Unit,
+    onUninstall: (() -> Unit)?,
     onClose: () -> Unit,
 ) {
     val layer = "arcade-game"
@@ -472,14 +522,31 @@ private fun GameImports(
                     files.dongle != null -> str(if (drive) "arcade.import.state.needDrive" else "arcade.import.state.needDisc")
                     else -> ""
                 }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                if (needs.isNotEmpty()) {
                     Text(
                         needs,
                         style = MaterialTheme.typography.bodySmall,
                         color = if (ready) Success else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f),
                     )
-                    Spacer(Modifier.width(12.dp))
+                    Spacer(Modifier.height(10.dp))
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    if (onUninstall != null) {
+                        val error = MaterialTheme.colorScheme.error
+                        OutlinedButton(
+                            onClick = onUninstall,
+                            enabled = enabled,
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, error.copy(alpha = if (enabled) 0.7f else 0.25f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = error),
+                            modifier = Modifier.controllerFocusable(
+                                if (enabled) "$layer.uninstall" else null,
+                                RoundedCornerShape(12.dp),
+                                onConfirm = onUninstall,
+                            ),
+                        ) { Text(str("arcade.uninstall.button")) }
+                    }
+                    Spacer(Modifier.weight(1f))
                     OutlinedButton(
                         onClick = onClose,
                         shape = RoundedCornerShape(12.dp),
@@ -491,10 +558,11 @@ private fun GameImports(
     }
 }
 
-/** The copy, which for a DVD or hard drive image takes a while. Nothing to press: it ends by itself. */
+/** An import's copy (for a DVD or hard drive image, a while) or an uninstall: [title] and how far it is.
+ *  Nothing to press: it ends by itself. [key] is its pad layer. */
 @Composable
-private fun ImportProgress(name: String, progress: Float) {
-    com.armsx2.ui.common.PadModal(key = "arcade-importing", onDismiss = null) {
+private fun Progress(key: String, title: String, progress: Float) {
+    com.armsx2.ui.common.PadModal(key = key, onDismiss = null) {
         Surface(
             modifier = Modifier.padding(24.dp).widthIn(max = 420.dp),
             shape = RoundedCornerShape(20.dp),
@@ -503,7 +571,7 @@ private fun ImportProgress(name: String, progress: Float) {
             tonalElevation = 6.dp,
         ) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(str("arcade.import.copying").format(name), style = MaterialTheme.typography.titleMedium)
+                Text(title, style = MaterialTheme.typography.titleMedium)
                 LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
                 Text(
                     "${(progress * 100).toInt()}%",

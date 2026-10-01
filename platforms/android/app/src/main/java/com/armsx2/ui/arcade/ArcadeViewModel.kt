@@ -30,6 +30,8 @@ data class ArcadeUiState(
     val files: ArcadeLibrary.GameFiles? = null,
     /** The game being imported, while it is. */
     val importing: ArcadeLibrary.Title? = null,
+    /** The game being uninstalled, while it is. */
+    val removing: ArcadeLibrary.Title? = null,
     val message: String? = null,
     val error: String? = null,
 )
@@ -41,6 +43,7 @@ class ArcadeViewModel(application: Application) : AndroidViewModel(application) 
     // Apart from [state]: written by the copy on its own thread, many times a second.
     val downloadProgress = mutableFloatStateOf(0f)
     val importProgress = mutableFloatStateOf(0f)
+    val removeProgress = mutableFloatStateOf(0f)
 
     private var refreshJob: Job? = null
 
@@ -79,6 +82,7 @@ class ArcadeViewModel(application: Application) : AndroidViewModel(application) 
                 files = next.files?.takeIf { it.id == filesOf },
                 downloading = state.value.downloading,
                 importing = state.value.importing,
+                removing = state.value.removing,
                 message = state.value.message,
                 error = state.value.error,
             )
@@ -108,7 +112,7 @@ class ArcadeViewModel(application: Application) : AndroidViewModel(application) 
 
     /** Imports one part of [title] from [source]. Done, its imports show it in; a failure says why. */
     fun import(title: ArcadeLibrary.Title, part: ArcadeLibrary.Part, source: Uri) {
-        if (state.value.importing != null) return
+        if (state.value.importing != null || state.value.removing != null) return
         state.value = state.value.copy(importing = title)
         importProgress.floatValue = 0f
         viewModelScope.launch {
@@ -121,6 +125,27 @@ class ArcadeViewModel(application: Application) : AndroidViewModel(application) 
             )
             // The library shows the game without a tap on its refresh button.
             if (result.isSuccess) LibraryRefresh.request()
+            refresh()
+        }
+    }
+
+    /** Uninstalls [title] from the arcade folder (ArcadeLibrary.uninstall says what goes and what stays). */
+    fun uninstall(title: ArcadeLibrary.Title) {
+        if (state.value.importing != null || state.value.removing != null) return
+        state.value = state.value.copy(removing = title)
+        removeProgress.floatValue = 0f
+        viewModelScope.launch {
+            val result = ArcadeLibrary.uninstall(getApplication(), title.id) { p -> removeProgress.floatValue = p }
+            state.value = state.value.copy(
+                removing = null,
+                message = if (result.isSuccess) I18n.get("arcade.uninstall.done").format(title.name) else null,
+                error = result.exceptionOrNull()?.let { e ->
+                    I18n.get("arcade.uninstall.failed").format(e.message ?: e.toString())
+                },
+            )
+            // Gone from the library too, without a tap on its refresh button; and a failure part way
+            // still changed the folder.
+            LibraryRefresh.request()
             refresh()
         }
     }
