@@ -271,12 +271,12 @@ final class SaveStateUndoModel {
         }
     }
 
-    func show(_ next: Item, announcement: String) {
+    func show(_ next: Item, announcement: String?) {
         finish()
         item = next
         duration = Double(SettingsStore.shared.undoSeconds)
         remaining = duration
-        AccessibilityNotification.Announcement(announcement).post()
+        if let announcement { AccessibilityNotification.Announcement(announcement).post() }
         timer = Task { [weak self] in
             while let self, !Task.isCancelled, self.item?.id == next.id {
                 try? await Task.sleep(for: .milliseconds(100))
@@ -325,7 +325,13 @@ final class SaveStateUndoModel {
         case .load(let path):
             ARMSX2Bridge.undoLoadState(fromPath: path) { ok in
                 Task { @MainActor in
-                    if ok { SaveStateAutoSave.shared.restart() }
+                    if ok {
+                        SaveStateAutoSave.shared.restart()
+                    } else if self.item == nil {
+                        self.show(current, announcement: nil)
+                    } else {
+                        ARMSX2Bridge.discardUndoLoadState(atPath: path)
+                    }
                     done(ok)
                 }
             }

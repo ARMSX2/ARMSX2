@@ -5148,7 +5148,8 @@ static void ARMSX2WriteSaveState(s32 nativeSlot, bool automatic, bool leaving, v
                 result = VMManager::LoadState(path.fileSystemRepresentation, &error);
             }, true);
         }
-        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+        if (result)
+            [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
         if (callback)
             dispatch_async(dispatch_get_main_queue(), ^{ callback(result ? YES : NO); });
     });
