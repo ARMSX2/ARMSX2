@@ -2775,6 +2775,56 @@ void Host::PumpMessagesOnCPUThread() {
         function();
 }
 
+std::vector<std::string> FileSystem::FindContentChdSiblings(const char* filename)
+{
+    std::vector<std::string> files;
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    if (!env)
+        return files;
+
+    jclass native_app = env->FindClass("kr/co/iefriends/pcsx2/NativeApp");
+    if (!native_app || env->ExceptionCheck())
+    {
+        env->ExceptionClear();
+        if (native_app)
+            env->DeleteLocalRef(native_app);
+        return files;
+    }
+    jmethodID method = env->GetStaticMethodID(native_app, "findSiblingChds", "(Ljava/lang/String;)[Ljava/lang/String;");
+    jstring path = method ? env->NewStringUTF(filename) : nullptr;
+    auto siblings = path ? static_cast<jobjectArray>(env->CallStaticObjectMethod(native_app, method, path)) : nullptr;
+    if (env->ExceptionCheck())
+        env->ExceptionClear();
+    else if (siblings)
+    {
+        const jsize count = env->GetArrayLength(siblings);
+        for (jsize i = 0; i < count; i++)
+        {
+            auto sibling = static_cast<jstring>(env->GetObjectArrayElement(siblings, i));
+            const char* uri = sibling ? env->GetStringUTFChars(sibling, nullptr) : nullptr;
+            if (uri)
+            {
+                files.emplace_back(uri);
+                env->ReleaseStringUTFChars(sibling, uri);
+            }
+            if (sibling)
+                env->DeleteLocalRef(sibling);
+            if (env->ExceptionCheck())
+            {
+                env->ExceptionClear();
+                files.clear();
+                break;
+            }
+        }
+    }
+    if (siblings)
+        env->DeleteLocalRef(siblings);
+    if (path)
+        env->DeleteLocalRef(path);
+    env->DeleteLocalRef(native_app);
+    return files;
+}
+
 int FileSystem::OpenFDFileContent(const char* filename)
 {
     auto *env = static_cast<JNIEnv *>(SDL_GetAndroidJNIEnv());
