@@ -344,7 +344,9 @@ static std::string FindBiosImage()
 		if (fd.Size < MIN_BIOS_SIZE || fd.Size > MAX_BIOS_SIZE)
 			continue;
 
-		if (IsBIOS(fd.FileName.c_str(), version, description, region, zone))
+		// An arcade board's BIOS (COH-H) cannot run a console game: one dumped at 4 MB or more would
+		// otherwise pass for a console BIOS here.
+		if (IsBIOS(fd.FileName.c_str(), version, description, region, zone) && zone != "COH-H")
 		{
 			Console.WriteLn("Using BIOS '%s' (%s %s)", fd.FileName.c_str(), description.c_str(), zone.c_str());
 			return std::move(fd.FileName);
