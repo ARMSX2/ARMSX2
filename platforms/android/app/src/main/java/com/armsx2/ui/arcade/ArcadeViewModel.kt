@@ -45,6 +45,9 @@ class ArcadeViewModel(application: Application) : AndroidViewModel(application) 
     val importProgress = mutableFloatStateOf(0f)
     val removeProgress = mutableFloatStateOf(0f)
 
+    // Set by the progress window's Cancel, read by the copy at every megabyte.
+    private val cancelRequested = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private var refreshJob: Job? = null
 
     /** The game whose imports are open, whose files [refresh] looks at too. */
@@ -115,18 +118,28 @@ class ArcadeViewModel(application: Application) : AndroidViewModel(application) 
         if (state.value.importing != null || state.value.removing != null) return
         state.value = state.value.copy(importing = title)
         importProgress.floatValue = 0f
+        cancelRequested.set(false)
         viewModelScope.launch {
-            val result = ArcadeLibrary.import(getApplication(), title, part, source) { p -> importProgress.floatValue = p }
+            val result = ArcadeLibrary.import(
+                getApplication(), title, part, source,
+                onProgress = { p -> importProgress.floatValue = p },
+                stop = cancelRequested::get,
+            )
+            // A cancelled import says nothing: the player asked for it, and nothing of it is left.
+            val failure = result.exceptionOrNull()?.takeIf { it !is ArcadeLibrary.ImportCancelled }
             state.value = state.value.copy(
                 importing = null,
-                error = result.exceptionOrNull()?.let { e ->
-                    I18n.get("arcade.import.failed").format(e.message ?: e.toString())
-                },
+                error = failure?.let { e -> I18n.get("arcade.import.failed").format(e.message ?: e.toString()) },
             )
             // The library shows the game without a tap on its refresh button.
             if (result.isSuccess) LibraryRefresh.request()
             refresh()
         }
+    }
+
+    /** Stops the import in progress at its next megabyte, leaving nothing of it behind. */
+    fun cancelImport() {
+        cancelRequested.set(true)
     }
 
     /** Uninstalls [title] from the arcade folder (ArcadeLibrary.uninstall says what goes and what stays). */

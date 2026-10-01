@@ -69,6 +69,9 @@ object ArcadeLibrary {
      *  boot program. The first three are imported one at a time; the boot program comes with each. */
     enum class Part { IMAGE, DONGLE, CARD, BOOT }
 
+    /** An import the player cancelled (the progress window's Cancel); nothing of it is left behind. */
+    class ImportCancelled : Exception("import cancelled")
+
     /** What of a game is in the arcade folder: whether its .acgame is ([exists]), and the file names of
      *  its image, dongle and Conquest card where [Arcade.prepare] will find them, null for each one that
      *  is not there. */
@@ -272,7 +275,7 @@ object ArcadeLibrary {
             val game = Arcade.read(context, acgame.file.uri.toString())
 
             fun names(vararg files: String?): Set<String> = files.filterNotNull().filter { it.isNotEmpty() }
-                .map { File(it).name.lowercase() }.flatMap { listOf(it, "$it.part") }.toSet()
+                .map { File(it).name.lowercase() }.flatMap { listOf(it, "$it.part", "$it.old") }.toSet()
             val cards = names(game?.dongle, game?.card)
             val own = names(game?.mediaSrc, game?.elf)
             val subdir = game?.subdir.orEmpty()
@@ -287,7 +290,8 @@ object ArcadeLibrary {
                 val n = f.name.lowercase()
                 !f.isDirectory && (n in own || n in cards || (template && n.startsWith(prefix)))
             }
-            val besideNames = cards + (if (subdir.isEmpty()) own else emptySet()) + "${acgameName.lowercase()}.part"
+            val besideNames = cards + (if (subdir.isEmpty()) own else emptySet()) +
+                "${acgameName.lowercase()}.part" + "${acgameName.lowercase()}.old"
             val beside = children.filter { !it.isDirectory && it.name.lowercase() in besideNames }
 
             val doomed = inDir + beside
@@ -327,6 +331,7 @@ object ArcadeLibrary {
         part: Part,
         source: Uri,
         onProgress: (Float) -> Unit,
+        stop: () -> Boolean = { false },
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val root = folder()?.let { DocumentFile.fromTreeUri(context, it) }
@@ -372,7 +377,7 @@ object ArcadeLibrary {
             if (boot != null) write(context, dir, "boot.elf", boot)
 
             when (part) {
-                Part.IMAGE -> copy(context, source, dir, name, gzip, onProgress)
+                Part.IMAGE -> copy(context, source, dir, name, gzip, onProgress, stop)
                 else -> {
                     put(context, source, bytes!!, root, name)
                     installCard(context, bytes, name)
@@ -538,14 +543,22 @@ object ArcadeLibrary {
     /** Copies [source] into [dir] as [name], unpacking it on the way when it is gzipped ([gunzip]),
      *  replacing a file of that name, unless [source] already IS that file (picked from the arcade
      *  folder itself). */
-    private fun copy(context: Context, source: Uri, dir: DocumentFile, name: String, gunzip: Boolean, onProgress: (Float) -> Unit) {
+    private fun copy(
+        context: Context,
+        source: Uri,
+        dir: DocumentFile,
+        name: String,
+        gunzip: Boolean,
+        onProgress: (Float) -> Unit,
+        stop: () -> Boolean,
+    ) {
         if (!gunzip && dir.findFile(name)?.takeIf { it.isFile }?.let { same(it.uri, source) } == true) {
             onProgress(1f)
             return
         }
         // Unpacking, the progress is how much of the packed file has been read.
         val packedRead = if (gunzip) LongArray(1) else null
-        write(context, dir, name, size(context, source), onProgress, packedRead?.let { c -> { c[0] } }) {
+        write(context, dir, name, size(context, source), onProgress, packedRead?.let { c -> { c[0] } }, stop) {
             val raw = runCatching { context.contentResolver.openInputStream(source) }.getOrNull()
             if (raw == null || packedRead == null) raw else GZIPInputStream(CountingInputStream(raw, packedRead), 1 shl 16)
         }
@@ -556,8 +569,10 @@ object ArcadeLibrary {
 
     /**
      * Writes [name] in [dir] from [open], replacing a file of that name. Into a temporary file first,
-     * swapped in only once it is complete: a copy that fails half way, or a source that turns out to be
-     * the very file being replaced, can then never leave the real one cut short.
+     * swapped in only once it is complete: a copy that fails half way, is cancelled ([stop]), or reads the
+     * very file being replaced can then never leave the real one cut short. The old file steps aside as
+     * <name>.old and goes only once the new one has its name, so the folder always holds a whole copy
+     * under a name: the new one, or the old one to go back to.
      */
     private fun write(
         context: Context,
@@ -566,6 +581,7 @@ object ArcadeLibrary {
         total: Long,
         onProgress: (Float) -> Unit,
         position: (() -> Long)? = null,
+        stop: () -> Boolean = { false },
         open: () -> InputStream?,
     ) {
         val resolver = context.contentResolver
@@ -576,25 +592,37 @@ object ArcadeLibrary {
             val input = open() ?: fail("arcade.import.error.read")
             input.use { i ->
                 (resolver.openOutputStream(part.uri, "w") ?: fail("arcade.import.error.folder")).use { o ->
-                    copy(i, o, total, Long.MAX_VALUE, onProgress, position)
+                    copy(i, o, total, Long.MAX_VALUE, onProgress, position, stop)
                 }
             }
         } catch (e: Exception) {
             runCatching { DocumentsContract.deleteDocument(resolver, part.uri) }
-            if (e is IllegalStateException) throw e
+            if (e is ImportCancelled || e is IllegalStateException) throw e
             // A gzipped dump that is damaged or cut short.
             if (e is ZipException || e is java.io.EOFException) fail("arcade.import.error.read")
             val full = e.message?.let { it.contains("ENOSPC") || it.contains("No space left", ignoreCase = true) } == true
             fail(if (full) "arcade.import.error.space" else "arcade.import.error.write", name)
         }
-        dir.findFile(name)?.takeIf { it.isFile }?.let { old ->
-            if (!runCatching { DocumentsContract.deleteDocument(resolver, old.uri) }.getOrDefault(false)) {
-                runCatching { DocumentsContract.deleteDocument(resolver, part.uri) }
-                fail("arcade.import.error.write", name)
-            }
+        dir.findFile("$name.old")?.let { runCatching { DocumentsContract.deleteDocument(resolver, it.uri) } }
+        val old = dir.findFile(name)?.takeIf { it.isFile }
+        val aside = old?.let { o -> runCatching { DocumentsContract.renameDocument(resolver, o.uri, "$name.old") }.getOrNull() }
+        if (old != null && aside == null &&
+            !runCatching { DocumentsContract.deleteDocument(resolver, old.uri) }.getOrDefault(false)
+        ) {
+            // A provider that renames nothing would not delete the old file either.
+            runCatching { DocumentsContract.deleteDocument(resolver, part.uri) }
+            fail("arcade.import.error.write", name)
         }
-        if (runCatching { DocumentsContract.renameDocument(resolver, part.uri, name) }.getOrNull() != null)
+        if (runCatching { DocumentsContract.renameDocument(resolver, part.uri, name) }.getOrNull() != null) {
+            aside?.let { runCatching { DocumentsContract.deleteDocument(resolver, it) } }
             return
+        }
+        if (aside != null) {
+            // The old file could be renamed but the new one could not: the old one goes back.
+            runCatching { DocumentsContract.renameDocument(resolver, aside, name) }
+            runCatching { DocumentsContract.deleteDocument(resolver, part.uri) }
+            fail("arcade.import.error.write", name)
+        }
         // A provider that cannot rename: copy the finished file across instead.
         val final = dir.createFile(OCTET_STREAM, name) ?: fail("arcade.import.error.folder")
         val copied = runCatching {
@@ -618,11 +646,13 @@ object ArcadeLibrary {
         max: Long,
         onProgress: (Float) -> Unit,
         position: (() -> Long)? = null,
+        stop: () -> Boolean = { false },
     ) {
         val buffer = ByteArray(COPY_BUFFER)
         var done = 0L
         var reported = -1
         while (true) {
+            if (stop()) throw ImportCancelled()
             val n = input.read(buffer)
             if (n < 0) break
             done += n

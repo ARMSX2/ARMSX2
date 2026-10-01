@@ -31,6 +31,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -221,7 +222,10 @@ fun ArcadeScreen(onBack: () -> Unit, viewModel: ArcadeViewModel = viewModel()) {
         }
     }
     state.importing?.let { importing ->
-        Progress("arcade-importing", str("arcade.import.copying").format(importing.name), viewModel.importProgress.floatValue)
+        Progress(
+            "arcade-importing", str("arcade.import.copying").format(importing.name), viewModel.importProgress.floatValue,
+            onCancel = viewModel::cancelImport,
+        )
     }
     state.removing?.let { removing ->
         Progress("arcade-removing", str("arcade.uninstall.progress").format(removing.name), viewModel.removeProgress.floatValue)
@@ -559,9 +563,9 @@ private fun GameImports(
 }
 
 /** An import's copy (for a DVD or hard drive image, a while) or an uninstall: [title] and how far it is.
- *  Nothing to press: it ends by itself. [key] is its pad layer. */
+ *  It ends by itself; [onCancel], where there is one, stops it early. [key] is its pad layer. */
 @Composable
-private fun Progress(key: String, title: String, progress: Float) {
+private fun Progress(key: String, title: String, progress: Float, onCancel: (() -> Unit)? = null) {
     com.armsx2.ui.common.PadModal(key = key, onDismiss = null) {
         Surface(
             modifier = Modifier.padding(24.dp).widthIn(max = 420.dp),
@@ -578,6 +582,26 @@ private fun Progress(key: String, title: String, progress: Float) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (onCancel != null) {
+                    // Pressed once: the copy stops at its next megabyte, so the button just waits for that.
+                    var cancelling by remember { mutableStateOf(false) }
+                    val cancel = {
+                        cancelling = true
+                        onCancel()
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        OutlinedButton(
+                            onClick = cancel,
+                            enabled = !cancelling,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.controllerFocusable(
+                                if (cancelling) null else "$key.cancel",
+                                RoundedCornerShape(12.dp),
+                                onConfirm = cancel,
+                            ),
+                        ) { Text(str("action.cancel")) }
+                    }
+                }
             }
         }
     }
