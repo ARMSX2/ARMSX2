@@ -23,11 +23,16 @@ bool LockSave = false; //why? because I dont wanna wipe an SRAM image that alrea
 
 // ARMSX2: through FileSystem (whose create path works on Android's emulated storage), and with the file
 // closed after a good read too.
+// ARMSX2: each session decides afresh whether its SRAM may be saved. The lock used to be cleared on the
+// line after it was set, so an SRAM file of another size (a game's settings and high scores) was written
+// over with the blank buffer at shutdown; and nothing cleared it for the next session, whose good read
+// then never saved. Saving is allowed only over a whole SRAM read, or where there is no file yet.
 int ACSRAM::ReadFile() {
     Error error;
+    LockSave = false;
     FILE* FD = FileSystem::OpenCFile(ACSRAM::filepath.c_str(), "rb", &error);
     if (FD) {
-        // unlike PS2 NVRAM, which we can do a generic damage/invalid detection attempt. 
+        // unlike PS2 NVRAM, which we can do a generic damage/invalid detection attempt.
         // ACSRAM is per-game, and not all of them strongly check if it has valid data
         // this is even problematic on real hardware, where such games can behave erratically when ran on a machine whose ACSRAM has payload of another game
         if (std::fread(compbuf, sizeof(compbuf), 1, FD) == 1) {
@@ -37,15 +42,16 @@ int ACSRAM::ReadFile() {
             return 1;
         } else {
             Console.ErrorFmt("ACSRAM: Could not read all the data. locking save");
-            LockSave = true; // file opened but failed to read? forbid from saving 
+            LockSave = true; // file opened but failed to read? forbid from saving
         }
 	    std::fclose(FD);
     } else {
         Console.ErrorFmt("ACSRAM: Could not open input image file '{}': {}", ACSRAM::filepath, error.GetDescription());
+        // A file that is there but would not open is kept as it is too.
+        LockSave = FileSystem::FileExists(ACSRAM::filepath.c_str());
     }
     Console.Warning("ACSRAM: failed to read SRAM. Preparing blank buffer");
     ACSRAM::Clear(0x0);
-    LockSave = false;
     return 0;
 }
 
