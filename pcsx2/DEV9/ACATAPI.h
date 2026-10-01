@@ -39,6 +39,7 @@ namespace ACATAPI
 {
     void handle_cmd(atapi_packet_t P);
     void Reset();
+    void ResetTransfers(); // no PIO or DMA transfer left half done (the MODE SENSE page stays)
     void Setup(); // change ACATA stuff to handle CDROM instead of HDD
     u16 pio_read_word();
     bool has_pio_data();

@@ -1590,6 +1590,17 @@ bool VMManager::AutoDetectSource(const std::string& filename, Error* error)
 	}
 }
 
+// The board as a freshly started emulator has it: no interrupt or DMA pending, nothing half transferred
+// in the drive, its registers zero, JVS off until the game starts it. At a game's start and at every
+// reset of it (ARMSX2: the board outlives a game here, where PCSX2x6 started a new process). The
+// board's RAM and SRAM, which a reset keeps, are left alone.
+static void ResetArcadeBoard()
+{
+	ACCORE::Reset();
+	ACATA::Reset();
+	ACJV::enabled = false;
+}
+
 // Namco System 246/256 (PCSX2x6). An .acgame is an INI naming what the board needs; only the gameid is
 // mandatory, everything else has a default (PCSX2x6's game config documentation):
 //   [game] name, gameid (NM and five digits), platform (246, 256 or super256, else the game database's)
@@ -1739,8 +1750,7 @@ bool VMManager::OpenArcadeGame(const VMBootParameters& boot_params, Error* error
 
 	// From here on the board exists, for this boot and every reset of it. It starts as a freshly started
 	// emulator would have it, whatever the last arcade game left behind.
-	ACCORE::Reset();
-	ACJV::enabled = false;
+	ResetArcadeBoard();
 	Arcade::s_session = true;
 	s_arcade_gameid = gameid;
 	s_arcade_title = ini.GetStringValue("game", "name", "");
@@ -2401,6 +2411,8 @@ void VMManager::Reset()
 	SysMemory::Reset();
 	cpuReset();
 	hwReset();
+	if (Arcade::IsActive())
+		ResetArcadeBoard();
 
 	if (g_InputRecording.isActive())
 	{

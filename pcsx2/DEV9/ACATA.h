@@ -108,4 +108,7 @@ namespace ACATA
         int IO_CloseImage();
     }
     void SetImage(std::string path, ACMEDIATYPE media); // the media image to serve (path or content:// URI)
+    // The drive as a freshly started emulator has it: every register and transfer zero, as at a game's
+    // start and every reset of it (ARMSX2: the board outlives a game here; PCSX2x6 started a new process).
+    void Reset();
 }

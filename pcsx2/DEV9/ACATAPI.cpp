@@ -59,6 +59,16 @@ static bool atapi_read_sectors(u32 lba, u32 nsec, u8* dst) {
 
 void ACATAPI::Reset() { mode_page_01_set = false; }
 
+void ACATAPI::ResetTransfers() {
+    atapi_pio_len = 0;
+    atapi_pio_pos = 0;
+    atapi_pio_chunk = 0;
+    atapi_pio_chunk_busy = 0;
+    atapi_pio_write_len = 0;
+    atapi_pio_write_pos = 0;
+    atapi_dma_len = 0;
+}
+
 static void atapi_pio_write_setup(u32 len) {
     atapi_pio_write_len = len;
     atapi_pio_write_pos = 0;

@@ -453,3 +453,17 @@ u16 ACATA::R_STATUS;
 u16 ACATA::R_COMMAND;
 u16 ACATA::R_STATUS_ALT;
 u16 ACATA::R_CONTROL;
+
+void ACATA::Reset() {
+	ata_pio_len = 0;
+	ata_pio_pos = 0;
+	atacmd_responding = -1;
+	atacmd_response_traverse = 0;
+	ACATA::last_read = 0;
+	ACATA::last_write = 0;
+	R_DATA = R_FEATURE = R_ERROR = R_NSECTOR = R_SECTOR = R_LCYL = R_HCYL = R_SELECT = 0;
+	R_STATUS = R_COMMAND = R_STATUS_ALT = R_CONTROL = 0;
+	TH::nsector = 0;
+	TH::LBA = 0;
+	ACATAPI::ResetTransfers();
+}
