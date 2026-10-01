@@ -84,6 +84,8 @@ struct TexturePacksView<Options: View>: View {
         .navigationTitle(settings.localized("Texture Packs"))
         .navigationBarTitleDisplayMode(.inline)
         .task { await reload() }
+        // Without a declared order, focus would stay on a removed pack's button.
+        .controllerAccessibilityTargetOrder(packTargets)
         .onChange(of: packTargets, initial: true) { _, targets in controllerTargets = targets }
         .sheet(isPresented: $showCatalog, onDismiss: { Task { await reload() } }) {
             NavigationStack {
