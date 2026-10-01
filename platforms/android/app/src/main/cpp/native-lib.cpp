@@ -3762,6 +3762,14 @@ Java_kr_co_iefriends_pcsx2_NativeApp_hasActiveVM(JNIEnv *env, jclass clazz) {
 }
 
 
+// Whether this session's save states have a name. They are named by the disc's serial and CRC, and a CRC
+// of 0 means no game, so a session without one gets none. An arcade game is the exception: its own
+// program comes off its dongle after the boot program, so the core never has a disc CRC for it, but its
+// serial, the game ID, is set from the start and names its states as surely ("NM00031 (00000000).00.p2s").
+static bool SaveStatesHaveName() {
+    return VMManager::GetDiscCRC() != 0 || (Arcade::IsActive() && !VMManager::GetDiscSerial().empty());
+}
+
 extern "C"
 JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_saveStateToSlot(JNIEnv *env, jclass clazz, jint p_slot) {
@@ -3796,7 +3804,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_saveStateToSlot(JNIEnv *env, jclass clazz, 
     };
     if (!VMManager::HasValidVM())
         return fail("no_vm");
-    if (VMManager::GetDiscCRC() == 0)
+    if (!SaveStatesHaveName())
         return fail("crc_zero");
     // GetSaveStateFileName returns "" for an empty serial, which VMManager reports as "cannot
     // generate filename" — guarded here so it is named rather than surfacing as a generic failure.
@@ -3863,7 +3871,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadStateFromSlot(JNIEnv *env, jclass clazz
     if (!VMManager::HasValidVM())
         return fail("no_vm");
     const u32 _crc = VMManager::GetDiscCRC();
-    if (_crc == 0)
+    if (!SaveStatesHaveName())
         return fail("crc_zero");
     if (!VMManager::HasSaveStateInSlot(VMManager::GetDiscSerial().c_str(), _crc, p_slot))
         return fail("no_state_in_slot");
@@ -4005,7 +4013,7 @@ JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_saveAutosaveState(JNIEnv *env, jclass clazz) {
     if (!VMManager::HasValidVM())
         return false;
-    if (VMManager::GetDiscCRC() == 0)
+    if (!SaveStatesHaveName())
         return false;
     const ScopedVMPause pause_guard;
     if (!pause_guard.parked()) {
@@ -4035,7 +4043,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadAutosaveState(JNIEnv *env, jclass clazz
     if (!VMManager::HasValidVM())
         return false;
     const u32 _crc = VMManager::GetDiscCRC();
-    if (_crc == 0)
+    if (!SaveStatesHaveName())
         return false;
     if (!VMManager::HasSaveStateInSlot(VMManager::GetDiscSerial().c_str(), _crc,
                                        VMManager::SAVESTATE_SLOT_AUTOSAVE))
@@ -4079,7 +4087,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_hasAutosaveState(JNIEnv *env, jclass clazz)
     if (!VMManager::HasValidVM())
         return false;
     const u32 _crc = VMManager::GetDiscCRC();
-    if (_crc == 0)
+    if (!SaveStatesHaveName())
         return false;
     return VMManager::HasSaveStateInSlot(VMManager::GetDiscSerial().c_str(), _crc,
                                          VMManager::SAVESTATE_SLOT_AUTOSAVE);
