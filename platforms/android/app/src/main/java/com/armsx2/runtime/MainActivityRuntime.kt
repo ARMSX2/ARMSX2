@@ -3064,13 +3064,12 @@ open class MainActivityRuntime : ComponentActivity() {
         }
     }
 
-    // Physical buttons currently held down. Drives two-button hotkey combos
-    // (e.g. Select + R1) — kept current at the top of dispatchKeyEvent so a
-    // combo's modifier can be checked the instant its main key is pressed.
     private val heldKeys = HashSet<Int>()
+    private val gameplayHotkeyKeysDown = HashSet<Int>()
     private val fastForwardHold = HotkeyHoldState()
 
-    private fun startFastForwardHold(mainKey: Int) {
+    private fun startFastForwardHold() {
+        val mainKey = ControllerMappings.hotkeyCode(ControllerMappings.SysHotkey.FAST_FORWARD)
         val modifier = ControllerMappings.hotkeyModCode(ControllerMappings.SysHotkey.FAST_FORWARD)
             .takeUnless { it == KeyEvent.KEYCODE_UNKNOWN }
         fastForwardHold.start(mainKey, modifier)
@@ -3598,6 +3597,8 @@ open class MainActivityRuntime : ComponentActivity() {
                 }
             }
             val matched = ControllerMappings.matchHotkey(kc, matchKeys)
+            if (!down && matched != null && gameplayHotkeyKeysDown.remove(kc))
+                dispatchGameplayKey(event)
             when (matched) {
                 // Pressure modifier is a hold, handled (and consumed) earlier in
                 // dispatchKeyEvent; it never reaches this one-shot action switch.
@@ -3692,7 +3693,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     // current limiter mode (Nominal if frame-limit is on, else Unlimited)
                     // — not blindly Nominal, which would re-enable a disabled limiter.
                     // Release was handled above using the binding active at press time.
-                    if (down && event.repeatCount == 0) startFastForwardHold(kc)
+                    if (down && event.repeatCount == 0) startFastForwardHold()
                     return true
                 }
                 ControllerMappings.SysHotkey.FAST_FORWARD_TOGGLE -> {
@@ -3777,6 +3778,10 @@ open class MainActivityRuntime : ComponentActivity() {
                     code, port, fromController,
                 )
             }
+            if (ControllerMappings.isHotkeyKeyOrModifier(physicalCode)) {
+                if (type == KeyEventType.KeyDown) gameplayHotkeyKeysDown.add(physicalCode)
+                else gameplayHotkeyKeysDown.remove(physicalCode)
+            }
             return true
         }
 
@@ -3808,6 +3813,10 @@ open class MainActivityRuntime : ComponentActivity() {
             handleTurbo(physicalCode, edge, target, port)
         } else {
             sendKeyAction(edge, target, port, fromController)
+        }
+        if (ControllerMappings.isHotkeyKeyOrModifier(physicalCode)) {
+            if (type == KeyEventType.KeyDown) gameplayHotkeyKeysDown.add(physicalCode)
+            else gameplayHotkeyKeysDown.remove(physicalCode)
         }
         return true
     }
@@ -5602,6 +5611,7 @@ open class MainActivityRuntime : ComponentActivity() {
      * L2/R2 alone so nothing else changes; the owner is dropped on its release.
      */
     private val triggerHotkeyOwner = HashMap<Int, Boolean>()
+    private val triggerPadTargets = Array(8) { HashMap<Int, Int>() }
 
     private fun sendTrigger(event: MotionEvent, left: Boolean, port: Int) {
         // -1 = no trigger axis on this side; its L2/R2 is a key event, key path owns it.
@@ -5638,7 +5648,7 @@ open class MainActivityRuntime : ComponentActivity() {
             if (ours) ControllerMappings.matchHotkey(code, if (pressed) heldKeys else heldKeys + code)?.let { hk ->
                 when (hk) {
                     ControllerMappings.SysHotkey.FAST_FORWARD -> {
-                        if (pressed) startFastForwardHold(code)
+                        if (pressed) startFastForwardHold()
                     }
                     ControllerMappings.SysHotkey.PRESSURE_MOD ->
                         com.armsx2.ui.touch.TouchControls.pressureModifierHeld.value = pressed
@@ -5657,7 +5667,14 @@ open class MainActivityRuntime : ComponentActivity() {
         // A trigger bound to a hotkey or a macro doesn't also drive the pad — the precedence
         // the key path and emitCustom already apply. The hotkey match is combo-aware, so a
         // trigger that is merely a MODIFIER keeps working as L2/R2.
-        if (ControllerMappings.matchHotkey(code, heldKeys) != null) return
+        val hotkeyKeys = if (pressed) heldKeys else heldKeys + code
+        if (ControllerMappings.matchHotkey(code, hotkeyKeys) != null) {
+            triggerPadTargets[port].remove(code)?.let { target ->
+                if (target in 110..123) accumAnalog(target, 0f)
+                else NativeApp.setPadButtonForPort(port, target, 0, false)
+            }
+            return
+        }
         if (com.armsx2.ui.touch.TouchControls.macroForPhysicalCode(code) != null) return
 
         // Honor the L2/R2 binding: triggers arrive as motion axes, never through the
@@ -5681,6 +5698,8 @@ open class MainActivityRuntime : ComponentActivity() {
             // and whether [shapeTrigger] applied a curve — never this write itself.
             NativeApp.setPadButtonForPort(port, target, (out * 32767).toInt(), out > 0f)
         }
+        if (out > 0f) triggerPadTargets[port][code] = target
+        else triggerPadTargets[port].remove(code)
     }
 
     /** Set in onPause when the screen goes off (a real sleep), consumed in onResume so the sleep
