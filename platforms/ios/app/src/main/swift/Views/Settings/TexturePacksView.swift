@@ -189,6 +189,7 @@ struct TexturePacksView<Options: View>: View {
         importing = false
         switch result {
         case .success(let serial):
+            try? TexturePackLibrary.markImport(in: TexturePackLibrary.root.appendingPathComponent("\(serial)/replacements"))
             // With replacement off a new pack changes nothing on screen and reads as broken.
             settings.loadTextureReplacements = true
             if serial == running {

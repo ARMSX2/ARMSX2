@@ -19,6 +19,8 @@ while let command = commands.popFirst() {
     case "mark":
         let id = commands.popFirst()!, serial = commands.popFirst()!
         try TexturePackLibrary.markCatalogPack(id, in: root.appendingPathComponent("\\(serial)/replacements"))
+    case "import":
+        try TexturePackLibrary.markImport(in: root.appendingPathComponent("\\(commands.popFirst()!)/replacements"))
     default:
         try TexturePackLibrary.remove(TexturePackLibrary.installed(in: root).first { $0.serial == command }!)
     }
@@ -80,6 +82,16 @@ class TexturePackLibraryTests(unittest.TestCase):
             self.assertEqual(ids, "p1,p2,p3")
             self.assertEqual(sorted(p.name for p in root.iterdir()), ["SLES-50000", "SLUS-20486"])
             self.assertEqual(self.run_driver(root, "SLUS-20486"), ["SLES-50000 true true", "p3"])
+
+    def test_a_folder_that_took_an_import_stays_in_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for serial in ("SLUS-20486", "SLES-50000"):
+                (root / serial / "replacements").mkdir(parents=True)
+                (root / serial / "replacements" / "a.png").write_bytes(b"x" * 100)
+            listed, _ = self.run_driver(root, "mark", "p1", "SLUS-20486", "import", "SLUS-20486",
+                                        "import", "SLES-50000", "mark", "p2", "SLES-50000")
+            self.assertEqual(listed, "SLES-50000 true false,SLUS-20486 true false")
 
 
 if __name__ == "__main__":

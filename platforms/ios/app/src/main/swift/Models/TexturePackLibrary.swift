@@ -42,12 +42,22 @@ enum TexturePackLibrary {
         return Set(serialFolders.flatMap { markedIDs(in: $0.appendingPathComponent("replacements", isDirectory: true)) })
     }
 
-    // Catalog packs can be downloaded again, so they stay out of iCloud backup; imports don't.
+    // Catalog packs can be downloaded again, so they stay out of iCloud backup. An import can't, and
+    // a folder that ever took one stays in backup, whichever came first.
     static func markCatalogPack(_ id: String, in folder: URL) throws {
         try Set(markedIDs(in: folder) + [id]).sorted().joined(separator: "\n")
             .write(to: folder.appendingPathComponent(catalogMarker), atomically: true, encoding: .utf8)
+        try setExcludedFromBackup(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(importMarker).path), folder)
+    }
+
+    static func markImport(in folder: URL) throws {
+        try Data().write(to: folder.appendingPathComponent(importMarker))
+        try setExcludedFromBackup(false, folder)
+    }
+
+    private static func setExcludedFromBackup(_ excluded: Bool, _ folder: URL) throws {
         var values = URLResourceValues()
-        values.isExcludedFromBackup = true
+        values.isExcludedFromBackup = excluded
         var folder = folder
         try folder.setResourceValues(values)
     }
@@ -77,6 +87,7 @@ enum TexturePackLibrary {
     }
 
     private static let catalogMarker = ".armsx2-catalog"
+    private static let importMarker = ".armsx2-import"
 
     private static func markedIDs(in folder: URL) -> [String] {
         let text = (try? String(contentsOf: folder.appendingPathComponent(catalogMarker), encoding: .utf8)) ?? ""
