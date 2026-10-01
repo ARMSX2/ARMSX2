@@ -3511,7 +3511,6 @@ struct GameListView: View {
             }
 				.sheet(isPresented: $showGameImporter) {
 					ImportDocumentPicker(
-						allowedContentTypes: FileImportHandler.gameContentTypes,
 						allowsMultipleSelection: true,
 						legacyDocumentTypes: ["public.item", "public.data", "public.content"]
 	                ) { result in

@@ -527,86 +527,6 @@ struct GraphicsSettingsView: View {
                 Text(settings.localized("These hardware fixes are for compatibility. Most games should use Automatic or Default values."))
             }
 
-            Section(settings.localized("Texture Replacement")) {
-                Toggle(settings.localized("Load Replacement Textures"), isOn: $settings.loadTextureReplacements)
-                Text(settings.localized("Loads PNG or DDS texture packs from Documents/textures/[Game Serial]/replacements/. Texture packs use app storage and may be large. Requires restart."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Toggle(settings.localized("Async Loading"), isOn: $settings.loadTextureReplacementsAsync)
-                    .disabled(!settings.loadTextureReplacements)
-                Text(settings.localized("Loads replacement textures in the background to reduce boot stalls."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Toggle(settings.localized("Precache Textures"), isOn: $settings.precacheTextureReplacements)
-                    .disabled(!settings.loadTextureReplacements)
-                Text(settings.localized("Loads all replacements when the game starts. Faster in-game, but uses more RAM."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Picker(settings.localized("Texture Preloading"), selection: $settings.texturePreloading) {
-                    Text(settings.localized("Off")).tag(0)
-                    Text(settings.localized("Partial")).tag(1)
-                    Text(settings.localized("Full")).tag(2)
-                }
-                .controllerAccessibilityOptionsPickerTarget(
-                    label: settings.localized("Texture Preloading"),
-                    selection: $settings.texturePreloading,
-                    options: [
-                        (0, settings.localized("Off")),
-                        (1, settings.localized("Partial")),
-                        (2, settings.localized("Full")),
-                    ]
-                )
-                Text(settings.localized("Core texture preloading mode. Full can improve replacement behavior but may increase memory use."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if settings.loadTextureReplacements && (settings.precacheTextureReplacements || settings.texturePreloading > 0) {
-                    Text(settings.localized("Large texture packs can use a lot of RAM when preload/precache is active and may cause stalls or crashes."))
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-            }
-
-            Section(settings.localized("Texture Dumping")) {
-                Toggle(settings.localized("Dump Replaceable Textures"), isOn: $settings.dumpReplaceableTextures)
-                    .controllerAccessibilityToggleTarget(
-                        id: "settings.graphics.dump-replaceable-textures",
-                        label: settings.localized("Dump Replaceable Textures"),
-                        isOn: $settings.dumpReplaceableTextures
-                    )
-                Text(settings.localized("Writes discovered textures to Documents/textures/[Game Serial]/dumps/. This can heavily reduce performance and grow app storage quickly."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if settings.dumpReplaceableTextures {
-                    Text(settings.localized("Texture dumping can heavily slow games and create very large dump folders. Turn it off after collecting the textures you need."))
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-
-                textureDumpToggle(
-                    "Dump Mipmaps",
-                    id: "settings.graphics.dump-mipmaps",
-                    value: textureDumpBinding(\.dumpReplaceableMipmaps)
-                )
-                textureDumpToggle(
-                    "Dump During FMV",
-                    id: "settings.graphics.dump-during-fmv",
-                    value: textureDumpBinding(\.dumpTexturesWithFMVActive)
-                )
-                textureDumpToggle(
-                    "Dump Direct Textures",
-                    id: "settings.graphics.dump-direct-textures",
-                    value: textureDumpBinding(\.dumpDirectTextures)
-                )
-                textureDumpToggle(
-                    "Dump Palette Textures",
-                    id: "settings.graphics.dump-palette-textures",
-                    value: textureDumpBinding(\.dumpPaletteTextures)
-                )
-            }
-
             Section {
                 ConfirmedSettingsResetButton(
                     settings.localized("Reset Graphics to Defaults"),
@@ -647,35 +567,6 @@ struct GraphicsSettingsView: View {
             message: settings.localized(shaderCacheResult ?? ""),
             actions: [.ok]
         )
-    }
-
-    private func textureDumpBinding(
-        _ keyPath: ReferenceWritableKeyPath<SettingsStore, Bool>
-    ) -> Binding<Bool> {
-        Binding(
-            get: { settings[keyPath: keyPath] },
-            set: { newValue in
-                guard settings.dumpReplaceableTextures else { return }
-                settings[keyPath: keyPath] = newValue
-            }
-        )
-    }
-
-    private func textureDumpToggle(
-        _ title: String,
-        id: String,
-        value: Binding<Bool>
-    ) -> some View {
-        Toggle(settings.localized(title), isOn: value)
-            .controllerAccessibilityToggleTarget(
-                id: id,
-                label: settings.localized(title),
-                isOn: value
-            )
-            // Keep dependent rows in the controller graph even while their
-            // master switch is off. A disabled row disappears from the graph
-            // and used to strand focus at Dump Replaceable Textures.
-            .opacity(settings.dumpReplaceableTextures ? 1 : 0.5)
     }
 
     /// Empties Documents/cache: achievement images, plus the VU program cache when that is turned on.

@@ -41,9 +41,10 @@ struct PerGameSettingsPanel: View {
     @State private var settings = SettingsStore.shared
     @State private var layoutPresets = PadLayoutPresetStore.shared
     @State private var skinLibrary = VPadSkinLibraryStore.shared
+    @State private var textureControllerTargets: [String] = []
 
     private enum PerGameSettingsCategory: String, CaseIterable, Identifiable, Hashable {
-        case general, graphics, framePacing, audio, cpu, gameController, pad, fixes, cheats, retroAchievements
+        case general, graphics, textures, framePacing, audio, cpu, gameController, pad, fixes, cheats, retroAchievements
 
         var id: Self { self }
 
@@ -51,6 +52,7 @@ struct PerGameSettingsPanel: View {
             switch self {
             case .general: return "General"
             case .graphics: return "Graphics"
+            case .textures: return "Texture Packs"
             case .framePacing: return "Frame Pacing"
             case .audio: return "Audio"
             case .cpu: return "CPU & Speedhacks"
@@ -66,6 +68,7 @@ struct PerGameSettingsPanel: View {
             switch self {
             case .general: return "slider.horizontal.3"
             case .graphics: return "paintbrush"
+            case .textures: return "photo.stack"
             case .framePacing: return "speedometer"
             case .audio: return "speaker.wave.2"
             case .cpu: return "cpu"
@@ -1227,6 +1230,7 @@ struct PerGameSettingsPanel: View {
         switch category {
         case .general:  generalTab
         case .graphics: graphicsTab
+        case .textures: texturesTab
         case .framePacing: framePacingTab
         case .audio:    audioTab
         case .cpu:      cpuTab
@@ -1305,9 +1309,6 @@ struct PerGameSettingsPanel: View {
             perGameDisableDepth: $perGameDisableDepth,
             perGameCPUCLUT: $perGameCPUCLUT,
             perGameGPUTargetCLUT: $perGameGPUTargetCLUT,
-            perGameLoadTextureReplacements: $perGameLoadTextureReplacements,
-            perGameLoadTextureReplacementsAsync: $perGameLoadTextureReplacementsAsync,
-            perGamePrecacheTextureReplacements: $perGamePrecacheTextureReplacements,
             savesToRunningGame: savesToRunningGame,
             onBrowseShaderPreset: { shaderPresetRequest = ShaderPresetBrowserRequest() },
             settings: settings,
@@ -1322,6 +1323,18 @@ struct PerGameSettingsPanel: View {
             volumePercent: $volumePercent,
             globalVolumePercent: $globalVolumePercent,
             perGameFastForwardVolume: $perGameFastForwardVolume,
+            settings: settings
+        )
+    }
+
+    private var texturesTab: some View {
+        TexturesTab(
+            enabled: $enabled,
+            perGameLoadTextureReplacements: $perGameLoadTextureReplacements,
+            perGameLoadTextureReplacementsAsync: $perGameLoadTextureReplacementsAsync,
+            perGamePrecacheTextureReplacements: $perGamePrecacheTextureReplacements,
+            controllerTargets: $textureControllerTargets,
+            serial: game.metadata["serial"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
             settings: settings
         )
     }
@@ -1756,9 +1769,6 @@ struct PerGameSettingsPanel: View {
                 "per-game.graphics.disable-depth-emulation",
                 "per-game.graphics.cpu-clut-render",
                 "per-game.graphics.gpu-target-clut",
-                "per-game.graphics.load-replacement-textures",
-                "per-game.graphics.async-loading",
-                "per-game.graphics.precache-textures",
             ]
             return order
 
@@ -1854,6 +1864,14 @@ struct PerGameSettingsPanel: View {
             ] + SettingsStore.gameFixOptions.map {
                 "per-game.fixes.\($0.key)"
             }
+
+        case .textures:
+            guard enabled else { return textureControllerTargets }
+            return textureControllerTargets + [
+                "per-game.textures.load-replacement-textures",
+                "per-game.textures.async-loading",
+                "per-game.textures.precache-textures",
+            ]
 
         case .cheats:
             var order = ["per-game.cheats.manager"]

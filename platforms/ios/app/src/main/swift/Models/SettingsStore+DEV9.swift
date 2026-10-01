@@ -4,17 +4,13 @@
 import Foundation
 
 extension SettingsStore {
-    /// Marks the DEV9 HDD image file as excluded from iCloud/iTunes backup so a
-    /// multi-gigabyte image does not fill the user's backup. Targets only the
-    /// image file (not the inis directory, which also holds small config files
-    /// worth backing up). Called when HDD is enabled and on settings reload so
-    /// the flag is applied once the core has created the image.
+    /// Keeps the multi-gigabyte DEV9 HDD image, but not the rest of inis, out of iCloud backup.
+    /// Resolved as the core's GetHDDPath does, and run at launch as well as on enable, since
+    /// players copy the image in themselves and the core never creates it on iOS.
     func excludeHddImageFromBackup() {
-        let documents = ARMSX2Bridge.documentsDirectory()
         let fileName = dev9HddFile.isEmpty ? "DEV9hdd.raw" : dev9HddFile
-        var imageURL = URL(fileURLWithPath: (documents as NSString)
-            .appendingPathComponent("iPSX2/inis"))
-            .appendingPathComponent(fileName)
+        let inis = URL(fileURLWithPath: ARMSX2Bridge.documentsDirectory()).appendingPathComponent("inis", isDirectory: true)
+        var imageURL = URL(fileURLWithPath: fileName, relativeTo: inis).absoluteURL
         guard FileManager.default.fileExists(atPath: imageURL.path) else { return }
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
@@ -24,6 +20,7 @@ extension SettingsStore {
     func normalizeDEV9Settings() {
         if dev9HddEnabled {
             ARMSX2Bridge.setINIString("DEV9/Hdd", key: "HddFile", value: dev9HddFile.isEmpty ? "DEV9hdd.raw" : dev9HddFile)
+            excludeHddImageFromBackup()
         }
 
         if dev9EthernetEnabled {

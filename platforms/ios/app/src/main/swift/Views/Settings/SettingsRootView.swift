@@ -17,6 +17,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case emulator
     case graphics
     case shaders
+    case texturePacks
     case framePacing
     case audio
     case network
@@ -57,6 +58,8 @@ enum SettingsPane: String, CaseIterable, Identifiable {
             return "Graphics"
         case .shaders:
             return "Shaders"
+        case .texturePacks:
+            return "Texture Packs"
         case .framePacing:
             return "Frame Pacing"
         case .audio:
@@ -108,6 +111,8 @@ enum SettingsPane: String, CaseIterable, Identifiable {
             return "paintbrush"
         case .shaders:
             return "camera.filters"
+        case .texturePacks:
+            return "photo.stack"
         case .framePacing:
             return "speedometer"
         case .audio:
@@ -765,6 +770,11 @@ struct SettingsRootView: View {
                 }
                 .controllerSettingsDestination(.shaders, path: $navigationPath)
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
+                NavigationLink(value: SettingsPane.texturePacks) {
+                    Label(settings.localized("Texture Packs"), systemImage: "photo.stack")
+                }
+                .controllerSettingsDestination(.texturePacks, path: $navigationPath)
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
                 NavigationLink(value: SettingsPane.framePacing) {
                     Label(settings.localized("Frame Pacing"), systemImage: "speedometer")
                 }
@@ -1221,6 +1231,7 @@ struct SettingsRootView: View {
             "settings.root.graphics",
         ]
         result.append("settings.root.shaders")
+        result.append("settings.root.texturePacks")
         result.append(contentsOf: [
             "settings.root.framePacing",
             "settings.root.audio",
@@ -1386,6 +1397,8 @@ struct SettingsRootView: View {
             GraphicsSettingsView()
         case .shaders:
             ShaderSettingsView()
+        case .texturePacks:
+            TexturePacksView { TextureReplacementSettings() }
         case .framePacing:
             FramePacingSettingsView()
         case .audio:

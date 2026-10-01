@@ -14,7 +14,7 @@ struct ImportDocumentPicker: UIViewControllerRepresentable {
 	let onComplete: (Result<[URL], Error>) -> Void
 
 	init(
-		allowedContentTypes: [UTType],
+		allowedContentTypes: [UTType] = [],
 		allowsMultipleSelection: Bool,
 		legacyDocumentTypes: [String]? = nil,
 		legacyDocumentMode: UIDocumentPickerMode = .import,

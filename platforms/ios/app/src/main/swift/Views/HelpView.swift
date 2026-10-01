@@ -55,7 +55,7 @@ private let helpData: [HelpSection] = [
         ),
         HelpItem(
             question: "Texture packs",
-            answer: "Graphics settings can load PNG/DDS replacement textures from Documents/textures/[Game Serial]/replacements/ and dump discovered textures to Documents/textures/[Game Serial]/dumps/. Dumping is for creators and can slow games down, so leave it off unless you are building a pack."
+            answer: "Settings > Texture Packs downloads packs from the shared catalog or imports a zip or tar.zst. They go to Documents/textures/[Game Serial]/replacements/. The same page can dump the textures a game uses to Documents/textures/[Game Serial]/dumps/. Dumping is for creators and can slow games down, so leave it off unless you are building a pack."
         ),
         HelpItem(
             question: "Frame Limiter",
