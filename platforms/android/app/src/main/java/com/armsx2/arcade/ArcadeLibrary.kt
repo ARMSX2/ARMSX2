@@ -52,6 +52,8 @@ object ArcadeLibrary {
     /** The smallest PS2 memory card (8 MB without its ECC). Arcade sets carry small board ROMs that are
      *  easily taken for the dongle; anything smaller than this is not one. */
     private const val MIN_CARD_BYTES = 8L shl 20
+    /** An .acgame is a few lines (Arcade's own limit). */
+    private const val MAX_ACGAME_BYTES = 64 * 1024
     private const val OCTET_STREAM = "application/octet-stream"
     private val BOOT_ENTRY = Regex("""(?:^|/)bin/(NM\d{5})/boot\.elf$""", RegexOption.IGNORE_CASE)
 
@@ -62,7 +64,13 @@ object ArcadeLibrary {
     /** An imported game (an .acgame in the arcade folder with its image), and what it still lacks. */
     data class Installed(val id: String, val name: String, val missing: List<Part>)
 
-    enum class Part { DONGLE, CARD, BOOT }
+    /** A game's files: its image (disc or hard drive), its dongle, Soul Calibur II's Conquest card, its
+     *  boot program. The first three are imported one at a time; the boot program comes with each. */
+    enum class Part { IMAGE, DONGLE, CARD, BOOT }
+
+    /** What of a game is in the arcade folder: the file names of its image, dongle and Conquest card
+     *  where [Arcade.prepare] will find them, null for each one that is not there. */
+    data class GameFiles(val id: String, val image: String?, val dongle: String?, val card: String?)
 
     // ---- The folder --------------------------------------------------------------------------------
 
@@ -175,130 +183,207 @@ object ArcadeLibrary {
 
     private class Child(val file: DocumentFile, val name: String, val isDirectory: Boolean)
 
+    /** The arcade folder's files and folders. Every name and kind is a provider query, so each one's
+     *  is asked for once, here. */
+    private fun children(context: Context): List<Child> {
+        val root = folder()?.let { DocumentFile.fromTreeUri(context, it) } ?: return emptyList()
+        return runCatching { root.listFiles().map { Child(it, it.name.orEmpty(), it.isDirectory) } }.getOrDefault(emptyList())
+    }
+
+    /** Which of [game]'s files are where [Arcade.prepare] looks for them: among [children] (the arcade
+     *  folder's), and for a memory card file also in the memory cards folder. */
+    private class Present(context: Context, children: List<Child>, private val game: Arcade.AcGame) {
+        private val beside = children.filter { !it.isDirectory }.map { it.name.lowercase() }.toSet()
+        private val inDir = if (game.subdir.isEmpty()) beside else children
+            .firstOrNull { it.isDirectory && it.name.equals(game.subdir, ignoreCase = true) }
+            ?.let { d -> runCatching { d.file.listFiles().mapNotNull { it.name?.lowercase() }.toSet() }.getOrNull() }
+            .orEmpty()
+        private val cards = Arcade.memcardsDir(context)
+
+        val image: Boolean get() = game.mediaSrc.lowercase() in inDir
+        val boot: Boolean get() = game.elf.lowercase() in inDir
+
+        fun card(name: String): Boolean {
+            val file = File(name).name
+            return File(cards, file).let { it.isFile && it.length() > 0 } ||
+                file.lowercase() in beside || file.lowercase() in inDir
+        }
+    }
+
     /** The games imported into the arcade folder (an .acgame whose image is there, as the library
      *  lists them), with what each one still lacks: where [Arcade.prepare] looks for it, it is not.
      *  [titles] names the games whose .acgame has none. */
     fun installed(context: Context, titles: List<Title>): List<Installed> {
-        val root = folder()?.let { DocumentFile.fromTreeUri(context, it) } ?: return emptyList()
-        // Every name and kind is a provider query, so each child's is asked for once.
-        val children = runCatching {
-            root.listFiles().map { Child(it, it.name.orEmpty(), it.isDirectory) }
-        }.getOrDefault(emptyList())
-        val beside = children.filter { !it.isDirectory }.map { it.name.lowercase() }.toSet()
-        val cards = Arcade.memcardsDir(context)
+        val children = children(context)
         val dbNames = titles.associate { it.id to it.name }
         return children.mapNotNull { child ->
             if (child.isDirectory || !Arcade.isAcGameName(child.name)) return@mapNotNull null
             val game = Arcade.read(context, child.file.uri.toString()) ?: return@mapNotNull null
-            val inDir = if (game.subdir.isEmpty()) beside else children
-                .firstOrNull { it.isDirectory && it.name.equals(game.subdir, ignoreCase = true) }
-                ?.let { d -> runCatching { d.file.listFiles().mapNotNull { it.name?.lowercase() }.toSet() }.getOrNull() }
-                .orEmpty()
-            fun card(name: String): Boolean {
-                val file = File(name).name
-                return File(cards, file).let { it.isFile && it.length() > 0 } ||
-                    file.lowercase() in beside || file.lowercase() in inDir
-            }
+            val present = Present(context, children, game)
             // Without its image it is not imported yet (PCSX2x6's template writes an .acgame for every game).
-            if (game.mediaSrc.lowercase() !in inDir) return@mapNotNull null
+            if (!present.image) return@mapNotNull null
             val missing = buildList {
-                if (!card(game.dongle)) add(Part.DONGLE)
-                if (game.card.isNotEmpty() && !card(game.card)) add(Part.CARD)
-                if (game.elf.lowercase() !in inDir) add(Part.BOOT)
+                if (!present.card(game.dongle)) add(Part.DONGLE)
+                if (game.card.isNotEmpty() && !present.card(game.card)) add(Part.CARD)
+                if (!present.boot) add(Part.BOOT)
             }
             Installed(game.gameId, game.name.ifBlank { dbNames[game.gameId] ?: game.gameId }, missing)
         }.sortedBy { it.name.lowercase() }
     }
 
+    /** What of the game [id] is in the arcade folder, by its .acgame: none of it without one. */
+    fun files(context: Context, id: String): GameFiles {
+        val children = children(context)
+        val game = children
+            .firstOrNull { !it.isDirectory && it.name.equals("$id.${Arcade.EXTENSION}", ignoreCase = true) }
+            ?.let { Arcade.read(context, it.file.uri.toString()) }
+            ?: return GameFiles(id, null, null, null)
+        val present = Present(context, children, game)
+        return GameFiles(
+            id,
+            image = game.mediaSrc.takeIf { present.image },
+            dongle = game.dongle.takeIf { present.card(it) },
+            card = game.card.takeIf { it.isNotEmpty() && present.card(it) },
+        )
+    }
+
     /**
-     * Imports [title] into the arcade folder: its boot program, its [image] (copied, which for a hard
-     * drive or DVD image takes a while; [onProgress] follows it), its [dongle] (and [card], Soul
-     * Calibur II's Conquest card), and an .acgame naming them. The dongle and card also go into the
-     * memory cards folder, where the core mounts them from, replacing an older copy there only after
-     * keeping it as a .bak. A failure's message says what went wrong, in the player's language.
+     * Imports one [part] of [title] into the arcade folder from [source]: its image (copied, which for a
+     * hard drive or DVD image takes a while; [onProgress] follows it), its dongle, or Soul Calibur II's
+     * Conquest card, each on its own and in any order, with the boot program alongside. The game's
+     * .acgame names its files: a new one is PCSX2x6's template, naming a part not imported yet as the
+     * core assumes it is called; in one that is there already only the imported part's line changes.
+     * The dongle and card also go into the memory cards folder, where the core mounts them from,
+     * replacing an older copy there only after keeping it as a .bak. A failure's message says what went
+     * wrong, in the player's language.
      */
     suspend fun import(
         context: Context,
         title: Title,
-        image: Uri,
-        dongle: Uri,
-        card: Uri?,
+        part: Part,
+        source: Uri,
         onProgress: (Float) -> Unit,
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val root = folder()?.let { DocumentFile.fromTreeUri(context, it) }
             if (root == null || !root.canWrite()) fail("arcade.import.error.folder")
             val id = title.id
+            val acgameName = "$id.${Arcade.EXTENSION}"
+            val existing = root.findFile(acgameName)?.takeIf { it.isFile }
+            val text = existing?.let { readText(context, it.uri) }
+            val before = text?.let(Arcade::parse)
 
-            // The dongle, and Soul Calibur II's Conquest card: memory card files, read whole first, so
-            // that picking something else (the image again, say) fails before anything is written.
-            val dongleBytes = readCard(context, dongle, "arcade.import.error.dongle")
-            val cardBytes = card?.let { readCard(context, it, "arcade.import.error.card") }
-
-            // The boot program, from the boot files.
-            val boot = runCatching {
-                ZipFile(bootFiles(context)).use { zip ->
-                    val entry = zip.entries().asSequence().firstOrNull {
-                        BOOT_ENTRY.find(it.name)?.groupValues?.get(1).equals(id, ignoreCase = true)
-                    } ?: return@use null
-                    zip.getInputStream(entry).use { it.readBytes() }
-                }
-            }.getOrNull() ?: fail("arcade.import.error.boot")
-
-            val dongleName = "$id.${cardExtension(dongleBytes)}"
-            val cardName = cardBytes?.let { "${id}_card.${cardExtension(it)}" }
+            // A memory card file is read whole first, so that picking something else (the image, say)
+            // fails before anything is written.
+            val bytes = when (part) {
+                Part.DONGLE -> readCard(context, source, "arcade.import.error.dongle")
+                Part.CARD -> readCard(context, source, "arcade.import.error.card")
+                else -> null
+            }
             // A disc dump often comes gzipped (an .iso.gz), which the board's drive cannot read: it is
             // unpacked as it is copied, so the phone never needs room for both.
-            val imageGzip = isGzip(context, image)
-            val imageName = "$id.${extension(context, image, if (imageGzip) "iso" else "chd", underGzip = imageGzip)}"
-            val acgameName = "$id.${Arcade.EXTENSION}"
-            val acgame = acgame(title, dongleName, imageName, cardName).toByteArray(Charsets.UTF_8)
+            val gzip = part == Part.IMAGE && isGzip(context, source)
+            val (key, name) = when (part) {
+                Part.IMAGE -> "mediasrc" to "$id.${extension(context, source, if (gzip) "iso" else "chd", underGzip = gzip)}"
+                Part.DONGLE -> "dongle" to "$id.${cardExtension(bytes!!)}"
+                Part.CARD -> "card" to "${id}_card.${cardExtension(bytes!!)}"
+                Part.BOOT -> error("the boot program comes with every part")
+            }
+            val acgame = (if (text == null || before == null) acgame(title, part, name) else withData(text, key, name))
+                .toByteArray(Charsets.UTF_8)
 
-            // A new game's .acgame goes first: from then on the library and this screen know the
-            // folder and the files beside it are this game's, so an import cut short (the app closed
-            // during the copy) lists nothing stray, and shows here with what it is missing. One that
-            // is there already stays as it is until everything is copied, so a failed import again
-            // leaves that game as it was.
-            val existed = root.findFile(acgameName)?.isFile == true
-            if (!existed) write(context, root, acgameName, acgame)
+            // The boot program goes where the template puts it; an .acgame laid out otherwise keeps its own.
+            val subdir = before?.subdir ?: id
+            val template = before == null || (subdir.equals(id, ignoreCase = true) && before.elf.equals("boot.elf", ignoreCase = true))
+            val boot = if (template) bootProgram(context, id) else null
 
-            val dir = root.findFile(id)?.takeIf { it.isDirectory } ?: root.createDirectory(id)
-                ?: fail("arcade.import.error.folder")
-            write(context, dir, "boot.elf", boot)
+            // A new game's .acgame goes first: from then on the library and this screen know the folder
+            // and the files beside it are this game's, so an import cut short (the app closed during the
+            // copy) lists nothing stray. One that is there already changes only once the part is in, so a
+            // failed import leaves that game as it was.
+            if (before == null) write(context, root, acgameName, acgame)
 
-            put(context, dongle, dongleBytes, root, dongleName)
-            installCard(context, dongleBytes, dongleName)
-            if (card != null && cardBytes != null && cardName != null) {
-                put(context, card, cardBytes, root, cardName)
-                installCard(context, cardBytes, cardName)
+            val dir = if (subdir.isEmpty()) root else root.findFile(subdir)?.takeIf { it.isDirectory }
+                ?: root.createDirectory(subdir) ?: fail("arcade.import.error.folder")
+            if (boot != null) write(context, dir, "boot.elf", boot)
+
+            when (part) {
+                Part.IMAGE -> copy(context, source, dir, name, gzip, onProgress)
+                else -> {
+                    put(context, source, bytes!!, root, name)
+                    installCard(context, bytes, name)
+                }
             }
 
-            // The image, last: it is the long one.
-            copy(context, image, dir, imageName, imageGzip, onProgress)
-
-            if (existed) write(context, root, acgameName, acgame)
-            println("@@ANDROID_ARCADE@@ imported $id ($imageName, $dongleName${cardName?.let { ", $it" } ?: ""})")
+            if (before != null) write(context, root, acgameName, acgame)
+            println("@@ANDROID_ARCADE@@ imported $id ${part.name.lowercase()}: $name")
         }
     }
 
-    /** The .acgame PCSX2x6's template writes, plus the card when there is one. */
-    private fun acgame(title: Title, dongle: String, image: String, card: String?): String = buildString {
+    /** [id]'s boot program, from the boot files. */
+    private fun bootProgram(context: Context, id: String): ByteArray = runCatching {
+        ZipFile(bootFiles(context)).use { zip ->
+            val entry = zip.entries().asSequence().firstOrNull {
+                BOOT_ENTRY.find(it.name)?.groupValues?.get(1).equals(id, ignoreCase = true)
+            } ?: return@use null
+            zip.getInputStream(entry).use { it.readBytes() }
+        }
+    }.getOrNull() ?: fail("arcade.import.error.boot")
+
+    /** The .acgame PCSX2x6's template writes for [title], with [part] called [name]. A part not imported
+     *  yet has the name the core assumes for it (Arcade.parse), the one its import most often gives it. */
+    private fun acgame(title: Title, part: Part, name: String): String = buildString {
+        val id = title.id
         append("[game]\n")
         append("name=").append(title.name).append('\n')
-        append("gameid=").append(title.id).append('\n')
+        append("gameid=").append(id).append('\n')
         when (title.board) {
             "System256" -> append("platform=256\n")
             "System SUPER256" -> append("platform=super256\n")
             "System246" -> append("platform=246\n")
         }
         append("\n[data]\n")
-        append("subdir=").append(title.id).append('\n')
+        append("subdir=").append(id).append('\n')
         append("elf=boot.elf\n")
-        append("dongle=").append(dongle).append('\n')
-        if (card != null) append("card=").append(card).append('\n')
-        append("mediasrc=").append(image).append('\n')
+        append("dongle=").append(if (part == Part.DONGLE) name else "$id.ps2").append('\n')
+        if (part == Part.CARD) append("card=").append(name).append('\n')
+        append("mediasrc=").append(if (part == Part.IMAGE) name else "$id.chd").append('\n')
         if (title.media.isNotBlank()) append("media=").append(title.media).append('\n')
     }
+
+    /**
+     * [text], an .acgame, with [key] in its [data] section set to [value]: every line for it replaced
+     * (the core takes the last), or one added under the section's header when it has none; everything
+     * else as it was. Sections and keys in any case, as the core reads them (Arcade.parse).
+     */
+    private fun withData(text: String, key: String, value: String): String {
+        val lines = text.removePrefix("\uFEFF").lines().toMutableList()
+        var section = ""
+        var header = -1
+        var found = false
+        for (i in lines.indices) {
+            val line = lines[i].trim()
+            if (line.startsWith("[") && line.endsWith("]")) {
+                section = line.substring(1, line.length - 1).trim().lowercase()
+                if (section == "data" && header < 0) header = i
+                continue
+            }
+            val eq = line.indexOf('=')
+            if (section == "data" && eq > 0 && line.substring(0, eq).trim().equals(key, ignoreCase = true)) {
+                lines[i] = "$key=$value"
+                found = true
+            }
+        }
+        if (found) return lines.joinToString("\n")
+        if (header < 0) return text.removePrefix("\uFEFF").trimEnd() + "\n\n[data]\n$key=$value\n"
+        lines.add(header + 1, "$key=$value")
+        return lines.joinToString("\n")
+    }
+
+    /** An .acgame's text, or null when it cannot be read or is too big to be one. */
+    private fun readText(context: Context, uri: Uri): String? = runCatching {
+        context.contentResolver.openInputStream(uri)?.use(::readBounded)
+    }.getOrNull()?.takeIf { it.size <= MAX_ACGAME_BYTES }?.toString(Charsets.UTF_8)
 
     /** A memory card file (a dongle or a card), read whole and unpacked if gzipped (a .bin.gz):
      *  [errorKey]'s message when it cannot be one, being smaller or far bigger than any memory card. */

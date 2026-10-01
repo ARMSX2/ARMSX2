@@ -26,6 +26,8 @@ data class ArcadeUiState(
     /** The games that can be imported: known to the database and in the boot files. */
     val titles: List<ArcadeLibrary.Title> = emptyList(),
     val installed: List<ArcadeLibrary.Installed> = emptyList(),
+    /** What is in the folder of the game whose imports are open (see [ArcadeViewModel.showFiles]). */
+    val files: ArcadeLibrary.GameFiles? = null,
     /** The game being imported, while it is. */
     val importing: ArcadeLibrary.Title? = null,
     val message: String? = null,
@@ -42,11 +44,22 @@ class ArcadeViewModel(application: Application) : AndroidViewModel(application) 
 
     private var refreshJob: Job? = null
 
+    /** The game whose imports are open, whose files [refresh] looks at too. */
+    private var filesOf: String? = null
+
+    /** Opens the imports of the game [id] (null: closes them): what of it is in the folder, kept current. */
+    fun showFiles(id: String?) {
+        filesOf = id
+        state.value = state.value.copy(files = null)
+        if (id != null) refresh()
+    }
+
     fun refresh() {
         // The newest look wins: one still reading from before a change must not land after it.
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
             val app = getApplication<Application>()
+            val filesId = filesOf
             val next = withContext(Dispatchers.IO) {
                 val boot = ArcadeLibrary.bootGames(app)
                 val titles = ArcadeLibrary.titles()
@@ -57,10 +70,13 @@ class ArcadeViewModel(application: Application) : AndroidViewModel(application) 
                     bios = ArcadeLibrary.biosName(app),
                     titles = titles.filter { it.id in boot },
                     installed = ArcadeLibrary.installed(app, titles),
+                    files = filesId?.let { ArcadeLibrary.files(app, it) },
                 )
             }
-            // Keep whatever started while this was reading (a download, an import).
+            // Keep whatever started while this was reading (a download, an import), and the files only
+            // while they are still the open game's.
             state.value = next.copy(
+                files = next.files?.takeIf { it.id == filesOf },
                 downloading = state.value.downloading,
                 importing = state.value.importing,
                 message = state.value.message,
@@ -90,15 +106,15 @@ class ArcadeViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun import(title: ArcadeLibrary.Title, image: Uri, dongle: Uri, card: Uri?) {
+    /** Imports one part of [title] from [source]. Done, its imports show it in; a failure says why. */
+    fun import(title: ArcadeLibrary.Title, part: ArcadeLibrary.Part, source: Uri) {
         if (state.value.importing != null) return
         state.value = state.value.copy(importing = title)
         importProgress.floatValue = 0f
         viewModelScope.launch {
-            val result = ArcadeLibrary.import(getApplication(), title, image, dongle, card) { p -> importProgress.floatValue = p }
+            val result = ArcadeLibrary.import(getApplication(), title, part, source) { p -> importProgress.floatValue = p }
             state.value = state.value.copy(
                 importing = null,
-                message = if (result.isSuccess) I18n.get("arcade.import.done").format(title.name) else null,
                 error = result.exceptionOrNull()?.let { e ->
                     I18n.get("arcade.import.failed").format(e.message ?: e.toString())
                 },

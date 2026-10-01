@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0+
 package com.armsx2.ui.arcade
 
-import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -65,8 +64,8 @@ private val TitleSaver = Saver<ArcadeLibrary.Title?, List<String>>(
 
 /**
  * NAMCO System 246/256: everything an arcade game needs, in the order it needs it. A folder for the
- * games, the boot files they start from, the board's BIOS, then one import per game (the game, its
- * image, its dongle), after which the library shows it with no refresh to tap.
+ * games, the boot files they start from, the board's BIOS, then the games: each one's image and dongle
+ * imported on their own, after which the library shows it with no refresh to tap.
  */
 @Composable
 fun ArcadeScreen(onBack: () -> Unit, viewModel: ArcadeViewModel = viewModel()) {
@@ -75,46 +74,22 @@ fun ArcadeScreen(onBack: () -> Unit, viewModel: ArcadeViewModel = viewModel()) {
     // Again once the core is up: the list of games comes from its database.
     LaunchedEffect(nativeReady) { viewModel.refresh() }
 
-    // An import is a game, then its image, then its dongle (then Soul Calibur II's Conquest card).
-    // Saveable: a picker can outlive the activity, and its answer still belongs to this import.
+    // An import is a game, then each of its parts on its own (its image, its dongle, Soul Calibur II's
+    // Conquest card), each from a picker of its own. Saveable: a picker can outlive the activity, and
+    // its answer still belongs to this game and part.
     var choosingGame by rememberSaveable { mutableStateOf(false) }
     var game by rememberSaveable(stateSaver = TitleSaver) { mutableStateOf<ArcadeLibrary.Title?>(null) }
-    var image by rememberSaveable { mutableStateOf<Uri?>(null) }
-    var dongle by rememberSaveable { mutableStateOf<Uri?>(null) }
-    var askCard by rememberSaveable { mutableStateOf(false) }
-
-    fun startImport(card: Uri?) {
-        val g = game
-        val i = image
-        val d = dongle
-        game = null
-        image = null
-        dongle = null
-        if (g != null && i != null && d != null) viewModel.import(g, i, d, card)
-    }
+    var picking by rememberSaveable { mutableStateOf<ArcadeLibrary.Part?>(null) }
+    LaunchedEffect(game?.id) { viewModel.showFiles(game?.id) }
 
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         uri?.let(viewModel::chooseFolder)
     }
-    val cardPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        startImport(uri)
-    }
-    val donglePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri == null) {
-            game = null
-            image = null
-            return@rememberLauncherForActivityResult
-        }
-        dongle = uri
-        if (game?.id == SOUL_CALIBUR_II) askCard = true else startImport(null)
-    }
-    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri == null) {
-            game = null
-            return@rememberLauncherForActivityResult
-        }
-        image = uri
-        donglePicker.launch(arrayOf("*/*"))
+    val partPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val g = game
+        val part = picking
+        picking = null
+        if (uri != null && g != null && part != null) viewModel.import(g, part, uri)
     }
 
     val folderReady = state.folderName != null
@@ -202,26 +177,20 @@ fun ArcadeScreen(onBack: () -> Unit, viewModel: ArcadeViewModel = viewModel()) {
             onPick = { picked ->
                 choosingGame = false
                 game = picked
-                imagePicker.launch(arrayOf("*/*"))
             },
             onDismiss = { choosingGame = false },
         )
     }
-    if (askCard) {
-        com.armsx2.ui.common.ConfirmOverlay(
-            title = str("arcade.import.card"),
-            message = str("arcade.import.card.desc"),
-            confirmLabel = str("arcade.import.card.add"),
-            dismissLabel = str("arcade.import.card.skip"),
-            idPrefix = "arcade.card",
-            onConfirm = {
-                askCard = false
-                cardPicker.launch(arrayOf("*/*"))
+    game?.let { g ->
+        GameImports(
+            title = g,
+            files = state.files?.takeIf { it.id == g.id },
+            enabled = state.importing == null,
+            onImport = { part ->
+                picking = part
+                partPicker.launch(arrayOf("*/*"))
             },
-            onDismiss = {
-                askCard = false
-                startImport(null)
-            },
+            onClose = { game = null },
         )
     }
     state.importing?.let { importing ->
@@ -401,6 +370,121 @@ private fun GameChooser(
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.controllerFocusable("$layer.cancel", RoundedCornerShape(12.dp), onConfirm = onDismiss),
                     ) { Text(str("action.cancel")) }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One game's imports: its image (disc or hard drive), its dongle and, for Soul Calibur II, its Conquest
+ * card. Each from a picker of its own, in any order, each showing whether it is in and, under them all,
+ * what the game still needs.
+ */
+@Composable
+private fun GameImports(
+    title: ArcadeLibrary.Title,
+    files: ArcadeLibrary.GameFiles?,
+    enabled: Boolean,
+    onImport: (ArcadeLibrary.Part) -> Unit,
+    onClose: () -> Unit,
+) {
+    val layer = "arcade-game"
+    val drive = title.media.equals("HDD", ignoreCase = true)
+    // Blank while the folder is still being looked at, rather than a moment of "not imported".
+    val none = if (files == null) "" else str("arcade.import.none")
+    val choose = str("arcade.import.choose")
+    val replace = str("arcade.import.replace")
+    com.armsx2.ui.common.PadModal(key = layer, onDismiss = onClose) {
+        Surface(
+            modifier = Modifier.padding(24.dp).widthIn(max = 520.dp),
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+            tonalElevation = 6.dp,
+        ) {
+            Column(
+                Modifier
+                    .padding(20.dp)
+                    .heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.86f).dp),
+            ) {
+                Text(title.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    listOf(title.id, ArcadeLibrary.boardName(title.board), title.media).filter { it.isNotBlank() }.joinToString("  ·  "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    str("arcade.import.parts.desc"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+                Column(
+                    Modifier
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    StepCard(
+                        number = 1,
+                        title = str(if (drive) "arcade.import.drive" else "arcade.import.disc"),
+                        description = str(if (drive) "arcade.import.drive.desc" else "arcade.import.disc.desc"),
+                        status = files?.image ?: none,
+                        done = files?.image != null,
+                        button = if (files?.image != null) replace else choose,
+                        id = "$layer.image",
+                        enabled = enabled,
+                        onClick = { onImport(ArcadeLibrary.Part.IMAGE) },
+                    )
+                    StepCard(
+                        number = 2,
+                        title = str("arcade.import.dongle"),
+                        description = str("arcade.import.dongle.desc"),
+                        status = files?.dongle ?: none,
+                        done = files?.dongle != null,
+                        button = if (files?.dongle != null) replace else choose,
+                        id = "$layer.dongle",
+                        enabled = enabled,
+                        onClick = { onImport(ArcadeLibrary.Part.DONGLE) },
+                    )
+                    if (title.id == SOUL_CALIBUR_II) {
+                        StepCard(
+                            number = 3,
+                            title = str("arcade.import.cardPart"),
+                            description = str("arcade.import.card.desc"),
+                            status = files?.card ?: none,
+                            done = files?.card != null,
+                            button = if (files?.card != null) replace else choose,
+                            id = "$layer.card",
+                            enabled = enabled,
+                            onClick = { onImport(ArcadeLibrary.Part.CARD) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+                val ready = files?.image != null && files.dongle != null
+                val needs = when {
+                    files == null -> ""
+                    ready -> str("arcade.import.state.ready")
+                    files.image != null -> str("arcade.import.state.needDongle")
+                    files.dongle != null -> str(if (drive) "arcade.import.state.needDrive" else "arcade.import.state.needDisc")
+                    else -> ""
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        needs,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (ready) Success else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    OutlinedButton(
+                        onClick = onClose,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.controllerFocusable("$layer.close", RoundedCornerShape(12.dp), onConfirm = onClose),
+                    ) { Text(str("action.close")) }
                 }
             }
         }
