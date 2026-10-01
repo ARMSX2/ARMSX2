@@ -424,9 +424,7 @@ data class GameInfo(
     val discCoverUrl: String? get() = serial?.let { coverUrlFor(it) }
 
     private fun coverUrlFor(s: String): String {
-        // A Namco System 246/256 game (its NM game ID) has its cover in ARMSX2's own arcade covers: its
-        // real flyer or arcade art, the same in either style, since arcade games never came in cases.
-        if (ARCADE_GAME_ID.matches(s)) return "$ARCADE_COVERS/$s.png"
+        arcadeCoverUrl(s)?.let { return it }
         val repo = when (platform) {
             GamePlatform.PS2 -> "ps2-covers"
             GamePlatform.PS1 -> "psx-covers"
@@ -569,8 +567,17 @@ object CustomCovers {
  *  touches Arcade and its Compose state). */
 private val ARCADE_GAME_ID = Regex("NM\\d{5}")
 
-/** ARMSX2's arcade covers: covers/<game ID>.png, each game's own flyer or arcade art. */
-private const val ARCADE_COVERS = "https://raw.githubusercontent.com/ARMSX2/arcade-covers/main/covers"
+/** A Namco System 246/256 game's cover (its NM game ID) in ARMSX2's own arcade covers, in the chosen
+ *  style: its real art on a PS2-style case insert, flat or as a case like the PS2 ones. Null for any
+ *  other serial. Friends' Discord rows use it too, so an arcade game looks the same there. */
+internal fun arcadeCoverUrl(serial: String): String? = when {
+    !ARCADE_GAME_ID.matches(serial) -> null
+    CoverArtStyle.use3d.value -> "$ARCADE_COVERS/3d/$serial.png"
+    else -> "$ARCADE_COVERS/$serial.jpg"
+}
+
+/** ARMSX2's arcade covers, on bmd's covers server: <game ID>.jpg flat, 3d/<game ID>.png as a case. */
+private const val ARCADE_COVERS = "https://covers.ps2ktxpak.net/arcade-covers"
 
 /** Map a PS1/PS2 serial prefix to a region label. */
 // GameDB region cache (serial -> mapped label, or "" = looked up & not in DB / no JNI).

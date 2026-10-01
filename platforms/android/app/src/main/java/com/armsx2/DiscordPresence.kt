@@ -62,7 +62,7 @@ data class DiscordFriend(
      * this device's choice to make, not theirs.
      */
     val coverUrl: String? get() = serial.takeIf { it.isNotBlank() }?.let { s ->
-        if (CoverArtStyle.use3d.value)
+        arcadeCoverUrl(s) ?: if (CoverArtStyle.use3d.value)
             "https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/3d/$s.png"
         else
             "https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/default/$s.jpg"
