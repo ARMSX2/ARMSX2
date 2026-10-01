@@ -162,7 +162,16 @@ object Arcade {
         if (!hasArcadeBios(context)) fail("arcade.error.bios")
         val files = locate(context, location) ?: fail("arcade.error.notInLibrary")
 
-        val elf = files.find(game.elf, inSubdir = game.subdir) ?: fail("arcade.error.elf", game.elf)
+        val found = files.find(game.elf, inSubdir = game.subdir) ?: fail("arcade.error.elf", game.elf)
+        // The BIOS loads the boot program through host:, which reads from the boot program's own folder.
+        // A content:// URI (a folder picked through Android's picker, as on the Play build) has no folder
+        // the core can read, so the boot program goes to the core as a copy beside the game's SRAM, made
+        // fresh every boot (it is small).
+        val elf = if (!found.startsWith("content://")) found else {
+            val copy = File(sramFile(context, game).parentFile, File(game.elf).name)
+            if (!files.copy(found, copy)) fail("arcade.error.elf", game.elf)
+            copy.absolutePath
+        }
         val media = files.find(game.mediaSrc, inSubdir = game.subdir) ?: fail("arcade.error.media", game.mediaSrc)
 
         // The dongle, and the second card if the game has one: in the memory cards folder, or copied
