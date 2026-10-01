@@ -13,6 +13,7 @@
 #include "R5900.h"
 
 #include <gtest/gtest.h>
+#include <cstring>
 
 using namespace recompiler_tests;
 using namespace mips;

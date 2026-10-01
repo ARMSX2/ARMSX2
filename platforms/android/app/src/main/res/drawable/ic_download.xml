@@ -1,0 +1,16 @@
+<!-- The library menu's "Online Icons" row: an arrow down into a tray. Drawn for ARMSX2 in the
+     stroke style of ic_power. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFFFF">
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M12 4v11M7 10.5l5 5 5-5M5 19.5h14" />
+</vector>

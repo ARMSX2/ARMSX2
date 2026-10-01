@@ -28,12 +28,7 @@ struct BackgroundSourcePicker: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .confirmationDialog(dialogTitle, isPresented: $isPresented, titleVisibility: .visible) {
-                Button(settings.localized("Choose from Photos")) { showPhotoPicker = true }
-                Button(settings.localized("Choose from Files")) { showFilePicker = true }
-                if currentAsset != nil { Button(settings.localized("Remove"), role: .destructive) { onImport(nil) } }
-                Button(settings.localized("Cancel"), role: .cancel) {}
-            }
+            .controllerPrompt(dialogTitle, isPresented: $isPresented, actions: sourceActions)
             .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhotoItem, matching: .any(of: [.images, .videos]))
             .onChange(of: selectedPhotoItem) { _, item in
                 guard let item else { return }
@@ -41,15 +36,32 @@ struct BackgroundSourcePicker: ViewModifier {
                 Task { @MainActor in await importPhotoItem(item) }
             }
             .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.image, .audiovisualContent], allowsMultipleSelection: false) { handleFileImport($0) }
-            .alert(settings.localized("Large Background File"), isPresented: $showLargeFileWarning) {
-                Button(settings.localized("Cancel"), role: .cancel) { pendingFileURL = nil }
-                Button(settings.localized("Import Anyway")) { importPendingFileURL() }
-            } message: {
-                Text(settings.localized("This background file is very large and may affect performance or battery life."))
-            }
-            .alert(settings.localized("Background image could not be loaded."), isPresented: $showLoadError) {
-                Button(settings.localized("OK")) {}
-            }
+            .controllerPrompt(
+                settings.localized("Large Background File"),
+                isPresented: $showLargeFileWarning,
+                message: settings.localized("This background file is very large and may affect performance or battery life."),
+                actions: [
+                    .init(title: settings.localized("Cancel"), isCancel: true) { pendingFileURL = nil },
+                    .init(title: settings.localized("Import Anyway")) { importPendingFileURL() },
+                ]
+            )
+            .controllerPrompt(
+                settings.localized("Background image could not be loaded."),
+                isPresented: $showLoadError,
+                actions: [.ok]
+            )
+    }
+
+    private var sourceActions: [ControllerPrompt.Action] {
+        var actions: [ControllerPrompt.Action] = [
+            .cancel,
+            .init(title: settings.localized("Choose from Photos")) { showPhotoPicker = true },
+            .init(title: settings.localized("Choose from Files")) { showFilePicker = true },
+        ]
+        if currentAsset != nil {
+            actions.append(.init(title: settings.localized("Remove"), isDestructive: true) { onImport(nil) })
+        }
+        return actions
     }
 
     private var dialogTitle: String {

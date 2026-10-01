@@ -7,59 +7,37 @@
 
 #include <cstring>
 
-// The console's logarithm is a 128-entry table, not a curve.
+// The GS computes the LOD logarithm from a 128-entry table, not a curve.
 //
-// Measured on real hardware. The GS indexes a table with the TOP SEVEN fractional
-// bits of Q's mantissa and gets the logarithm back to (4 + L) fractional bits. The
-// level of detail, in SIXTEENTHS of a level, is
+// The table is indexed by the top seven fractional bits of Q's own mantissa (not
+// 1/Q's) and returns the logarithm to (4 + L) fractional bits. In sixteenths of a
+// level:
 //
 //     LOD16 = K + (-e) * 2^(4+L) - T[L][idx]
 //
-// with `e` Q's IEEE exponent, `idx` those seven mantissa bits, and K TEX1's own
-// field, which is already in sixteenths. Everything after that is integer
-// arithmetic on that one number.
+// with `e` Q's IEEE exponent, `idx` those seven bits, and K TEX1's field (already
+// in sixteenths). The same entries serve every octave; the exponent enters only
+// through the shift.
 //
-// Three things the measurement settles that a curve cannot:
+// Index 115 (mantissa 1.8984375) steps BACKWARDS by one in T0 and T1, so the LOD
+// there is a sixteenth higher than both neighbours. This matches the console; do
+// not smooth it. T2 and T3 are monotone.
 //
-//   * The table is indexed from Q's OWN mantissa, not the reciprocal's. Every
-//     step of the curve lands on an exact multiple of 1/128 of Q's mantissa; a
-//     table on 1/Q would step at values that are not dyadic in Q.
+// T3 is round(log2(1 + idx/128) * 128) and T2 is ceil(T3/2). T1 and T0 are close
+// to (T3+1)>>2 and (T3+2)>>3 but not equal, so all four are stored as tables.
 //
-//   * It repeats per octave exactly. The same 128 entries reproduce every
-//     reading at exponent -7 as at -1; the exponent enters only through the
-//     shift.
-//
-//   * ⚠️ One entry is BROKEN, and it is reproduced here rather than smoothed.
-//     At index 115 -- mantissa 1.8984375 -- T0 and T1 both step BACKWARDS by
-//     one, so the level of detail there is a sixteenth higher than either
-//     neighbour's and a level can fall and rise again inside a single Q ramp.
-//     T2 and T3 are monotone. It is in two independent runs and in sixteen
-//     independent K values. Do not "fix" it.
-//
-// T3 is round(log2(1 + idx/128) * 128) on 128 of 128 entries and T2 is
-// ceil(T3/2) on 128 of 128, both exactly. T1 and T0 are within one unit of
-// (T3+1)>>2 and (T3+2)>>3 but are NOT those -- 114 and 116 of 128 -- so all four
-// are carried as measured.
-//
-// ⚠️ Our own log2 is not the problem and a better one is a no-op: it was measured
-// at -0.0023..+0.0010 levels over the boundary mantissas that matter. The gap was
-// always the console's curve, and the console's curve is this table.
-//
-// ⚠️ On a RAMPED Q -- and only there -- the level settles once per four-pixel
-// group, from the group's second column. The group's phase follows the primitive
-// rather than the screen, so what supplies the group's Q is the perspective walk's
-// business. It is deliberately NOT in this file, and this file is per pixel.
+// On a ramped Q the level settles once per four-pixel group, from the group's
+// second column, with phase following the primitive. That belongs to the
+// perspective walk; this file is per pixel.
 
 /// The seven bits of Q's mantissa the table is indexed by.
 static constexpr int GS_LOD_TABLE_BITS = 7;
 static constexpr int GS_LOD_TABLE_SIZE = 1 << GS_LOD_TABLE_BITS;
 
-/// The four measured tables, one per TEX1.L, in units of 2^-(4+L) of a level.
+/// The four tables, one per TEX1.L, in units of 2^-(4+L) of a level.
 ///
-/// Held as 32-bit words rather than the 8 bits every entry fits in: the scanline
-/// generator reads them one lane at a time with the same extract-add-load triple
-/// it uses for texels, and a word-sized entry keeps that to three instructions
-/// per lane. Two kilobytes for all four rows.
+/// 32-bit entries rather than 8-bit so the scanline generator can fetch them with
+/// the same three-instruction per-lane sequence it uses for texels.
 inline constexpr s32 GSLevelOfDetailTable[4][GS_LOD_TABLE_SIZE] = {
 	{
 		  0,   0,   0,   0,   1,   1,   1,   1,   1,   2,   2,   2,   2,   2,   2,   2,

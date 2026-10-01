@@ -1,5 +1,6 @@
 // [P63] Stubs for macOS native build — symbols not available without full UI
 #include <TargetConditionals.h>
+#include <cstring>
 #if !TARGET_OS_IPHONE
 
 #include "Host.h"

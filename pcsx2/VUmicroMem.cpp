@@ -5,7 +5,9 @@
 #include "VUmicro.h"
 #include "MTVU.h"
 
-alignas(16) VURegs vuRegs[2];
+VuStateStore vuState;
+
+static_assert(sizeof(VuStateStore::vu1Mem) == VU1_MEMSIZE, "the store holds all of VU1's data memory");
 
 void vuMemAllocate()
 {
@@ -13,7 +15,9 @@ void vuMemAllocate()
 	VU0.Micro	= curpos; curpos += VU0_PROGSIZE;
 	VU0.Mem		= curpos; curpos += VU0_MEMSIZE;
 	VU1.Micro	= curpos; curpos += VU1_PROGSIZE;
-	VU1.Mem		= curpos; curpos += VU1_MEMSIZE;
+	// VU1's data memory lives in the store instead; its slot in the
+	// reservation is left unused rather than renumbering what follows.
+	VU1.Mem		= vuState.vu1Mem;
 }
 
 void vuMemRelease()

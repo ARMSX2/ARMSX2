@@ -222,14 +222,41 @@ object DiscordPresence {
     }
 
     /** Re-publish the current game; used on (re)connect and whenever the running game changes. */
+    /**
+     * Where in ARMSX2 the player is, when it is neither a game nor the plain library:
+     * [PLACE_MUSEUM], [PLACE_ONLINE_ICONS]. Published the way a game is (as the title, with no
+     * serial and no cover), so a friend's client of any version shows it where it would show a
+     * game's name, and Discord reads it under ARMSX2. The bridge captions the image with the title
+     * when there is no serial, which a friend's client knows not to take for one. Null: the library.
+     */
+    val place = mutableStateOf<String?>(null)
+    const val PLACE_MUSEUM = "In the Icon Museum"
+    const val PLACE_ONLINE_ICONS = "Browsing Online Icons"
+
+    /** Discord's second line under a place: two braille blanks (U+2800), which Discord shows as
+     *  nothing, so it reads just "In the Icon Museum". It can't be left out: a friend's client
+     *  tells a place (or a game) from the library by the second line being there, and with none to
+     *  give the bridge puts "-" in it. Shown, never parsed: see [place]. */
+    private const val PLACE_STATE = "\u2800\u2800"
+
+    /** The player is at [where] until [leave]. */
+    fun enter(where: String) {
+        place.value = where
+    }
+
+    fun leave(where: String) {
+        if (place.value == where) place.value = null
+    }
+
     private fun pushPresence() {
         val game = MainActivityRuntime.currentGame.value
         lastRaPresence = raPresence()
+        val where = place.value.takeIf { game == null }
         send(DiscordIpc.MSG_SET_PLAYING, Bundle().apply {
             putString(DiscordIpc.DATA_SERIAL, game?.serial.orEmpty())
-            putString(DiscordIpc.DATA_TITLE, game?.let { it.displayTitle(false) }.orEmpty())
+            putString(DiscordIpc.DATA_TITLE, game?.let { it.displayTitle(false) } ?: where.orEmpty())
             putString(DiscordIpc.DATA_COVER, game?.coverUrl.orEmpty())
-            putString(DiscordIpc.DATA_RA, lastRaPresence)
+            putString(DiscordIpc.DATA_RA, if (where != null) PLACE_STATE else lastRaPresence)
         })
     }
 
@@ -510,7 +537,7 @@ object DiscordPresence {
             // pushPresence reads currentGame itself, so this only needs to know it changed. The
             // cover it sends is the same URL the library renders — Discord takes a URL, so there
             // is nothing to upload per game and a title with no published cover falls back.
-            snapshotFlow { MainActivityRuntime.currentGame.value }.collect { pushPresence() }
+            snapshotFlow { MainActivityRuntime.currentGame.value to place.value }.collect { pushPresence() }
         }
     }
 }

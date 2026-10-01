@@ -7,6 +7,7 @@
 #include "GS/Renderers/OpenGL/GLState.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 #include "GS/Renderers/Common/GSGPUProfile.h"
+#include "GS/DriverReport/GSDriverReport.h"
 #include "GS/GSState.h"
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/GSGL.h"
@@ -70,6 +71,80 @@ namespace ReplaceGL
 
 } // namespace ReplaceGL
 
+namespace Emulate_DSA_EXT
+{
+	// Texture entry point
+	static void GLAPIENTRY BindTextureUnit(GLuint unit, GLuint texture)
+	{
+		glBindMultiTextureEXT(GL_TEXTURE0 + unit, GL_TEXTURE_2D, texture);
+	}
+
+	static void GLAPIENTRY CreateTexture(GLenum target, GLsizei n, GLuint* textures)
+	{
+		glGenTextures(n, textures);
+	}
+
+	static void GLAPIENTRY TextureStorage(
+		GLuint texture, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height)
+	{
+		glTextureStorage2DEXT(texture, GL_TEXTURE_2D, levels, internalformat, width, height);
+	}
+
+	static void GLAPIENTRY TextureSubImage(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
+		GLsizei height, GLenum format, GLenum type, const void* pixels)
+	{
+		glTextureSubImage2DEXT(texture, GL_TEXTURE_2D, level, xoffset, yoffset, width, height, format, type, pixels);
+	}
+
+	static void GLAPIENTRY CopyTextureSubImage(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height)
+	{
+		glCopyTextureSubImage2DEXT(texture, GL_TEXTURE_2D, level, xoffset, yoffset, x, y, width, height);
+	}
+
+	static void GLAPIENTRY CompressedTextureSubImage(GLuint texture, GLint level, GLint xoffset, GLint yoffset,
+		GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const void* data)
+	{
+		glCompressedTextureSubImage2DEXT(texture, GL_TEXTURE_2D, level, xoffset, yoffset, width, height, format, imageSize, data);
+	}
+
+	static void GLAPIENTRY GetTexureImage(
+		GLuint texture, GLint level, GLenum format, GLenum type, GLsizei bufSize, void* pixels)
+	{
+		glGetTextureImageEXT(texture, GL_TEXTURE_2D, level, format, type, pixels);
+	}
+
+	static void GLAPIENTRY TextureParameteri(GLuint texture, GLenum pname, GLint param)
+	{
+		glTextureParameteriEXT(texture, GL_TEXTURE_2D, pname, param);
+	}
+
+	static void GLAPIENTRY GenerateTextureMipmap(GLuint texture)
+	{
+		glGenerateTextureMipmapEXT(texture, GL_TEXTURE_2D);
+	}
+
+	// Misc entry point
+	static void GLAPIENTRY CreateSamplers(GLsizei n, GLuint* samplers)
+	{
+		glGenSamplers(n, samplers);
+	}
+
+	// Replace function pointer to emulate DSA EXT behavior
+	static void Init()
+	{
+		glBindTextureUnit = BindTextureUnit;
+		glCreateTextures = CreateTexture;
+		glTextureStorage2D = TextureStorage;
+		glTextureSubImage2D = TextureSubImage;
+		glCopyTextureSubImage2D = CopyTextureSubImage;
+		glCompressedTextureSubImage2D = CompressedTextureSubImage;
+		glGetTextureImage = GetTexureImage;
+		glTextureParameteri = TextureParameteri;
+		glGenerateTextureMipmap = GenerateTextureMipmap;
+		glCreateSamplers = CreateSamplers;
+	}
+} // namespace Emulate_DSA_EXT
+
 namespace Emulate_DSA
 {
 	// Texture entry point
@@ -81,7 +156,7 @@ namespace Emulate_DSA
 
 	static void GLAPIENTRY CreateTexture(GLenum target, GLsizei n, GLuint* textures)
 	{
-		glGenTextures(1, textures);
+		glGenTextures(n, textures);
 	}
 
 	static void GLAPIENTRY TextureStorage(
@@ -600,6 +675,7 @@ bool GSDeviceOGL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 				return false;
 			m_interlace.ps[i].SetFormattedName("Merge pipe %zu", i);
 			m_interlace.ps[i].RegisterUniform("ZrH");
+			m_interlace.ps[i].RegisterUniform("FieldPad");
 		}
 	}
 
@@ -676,7 +752,7 @@ bool GSDeviceOGL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	// This extension allow FS depth to range from -1 to 1. So
 	// gl_position.z could range from [0, 1]
 	// Change depth convention
-	if (GLAD_GL_ARB_clip_control)
+	if (GLAD_GL_VERSION_4_5 || GLAD_GL_ARB_clip_control)
 		glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
 	else if (m_is_gles && GLAD_GL_EXT_clip_control)
 		// GLES has no ARB_clip_control; GL_EXT_clip_control (advertised by Adreno, and
@@ -842,9 +918,9 @@ bool GSDeviceOGL::CreateTextureFX()
 
 bool GSDeviceOGL::CheckFeatures()
 {
-	//bool vendor_id_amd = false;
-	//bool vendor_id_nvidia = false;
-	//bool vendor_id_intel = false;
+	bool vendor_id_amd = false;
+	bool vendor_id_nvidia = false;
+	bool vendor_id_intel = false;
 
 	memset(&m_bugs, 0, sizeof(m_bugs));
 
@@ -865,18 +941,18 @@ bool GSDeviceOGL::CheckFeatures()
 		std::strstr(vendor_str, "ATI"))
 	{
 		Console.WriteLn(Color_StrongRed, "GL: AMD GPU detected.");
-		//vendor_id_amd = true;
+		vendor_id_amd = true;
 	}
 	else if (std::strstr(vendor_str, "NVIDIA Corporation"))
 	{
 		Console.WriteLn(Color_StrongGreen, "GL: NVIDIA GPU detected.");
-		//vendor_id_nvidia = true;
+		vendor_id_nvidia = true;
 		m_bugs.broken_blend_coherency = true;
 	}
 	else if (std::strstr(vendor_str, "Intel"))
 	{
 		Console.WriteLn(Color_StrongBlue, "GL: Intel GPU detected.");
-		//vendor_id_intel = true;
+		vendor_id_intel = true;
 	}
 	else if (std::strstr(vendor_str, "ARM") || std::strstr(renderer_str, "Mali"))
 	{
@@ -986,7 +1062,7 @@ bool GSDeviceOGL::CheckFeatures()
 			extensions.append(ext);
 		}
 	}
-	DevCon.WriteLn(std::move(extensions));
+	DbgConWriter.WriteLn(std::move(extensions));
 
 	if (!m_is_gles) {
 		if (!GLAD_GL_ARB_shading_language_420pack)
@@ -1015,7 +1091,6 @@ bool GSDeviceOGL::CheckFeatures()
 	{
 		glScissorIndexed = ReplaceGL::ScissorIndexed;
 		glViewportIndexedf = ReplaceGL::ViewportIndexedf;
-		Console.Warning("GL_ARB_viewport_array is not supported! Function pointer will be replaced.");
 	}
 
 	if (!GLAD_GL_ARB_texture_barrier)
@@ -1033,10 +1108,12 @@ bool GSDeviceOGL::CheckFeatures()
 		}
 	}
 
-	if (!GLAD_GL_ARB_direct_state_access)
+	if (!GLAD_GL_VERSION_4_5 && !GLAD_GL_ARB_direct_state_access)
 	{
-		Console.Warning("GL_ARB_direct_state_access is not supported, this will reduce performance.");
-		Emulate_DSA::Init();
+		if (GLAD_GL_EXT_direct_state_access)
+			Emulate_DSA_EXT::Init();
+		else
+			Emulate_DSA::Init();
 	}
 
 	// glDrawElementsBaseVertex entered core in GL ES 3.2. ANGLE-over-Vulkan caps its context at
@@ -1108,7 +1185,7 @@ bool GSDeviceOGL::CheckFeatures()
 	// API. See the matching gate in GSDeviceVK::CheckFeatures for the measurements. Mali is
 	// deliberately not included: the Vulkan path opts it out for early-ZS, but that has not been
 	// tested on a Mali GL driver.
-	m_features.no_ps2_z_quantization = GSConfig.DisablePS2DepthQuantization || vendor_id_apple;
+	m_features.no_ps2_z_quantization = vendor_id_apple;
 
 	// GLES may omit dual-source blending (GL_EXT/ARB_blend_func_extended); desktop GL always has it.
 	// When absent, GSRendererHW emulates SRC1 blend equations in-shader per-draw rather than forcing
@@ -1120,21 +1197,11 @@ bool GSDeviceOGL::CheckFeatures()
 	// GSFramebufferFetchPolicy.h for why it is a separate pure function). Nothing below may write
 	// m_features.framebuffer_fetch -- read `fbfetch` instead if you need to know what was decided.
 	//
-	// Which drivers cannot survive the in-tile read is a fact about the DRIVER, so it lives in the
-	// driver-bug database with the rest of them rather than in a substring test here.
-	// UseRenderTargetCopyForFeedback is the same workaround the Vulkan backend keys its RT-copy
-	// fallback on -- fetch and the texture barrier are two spellings of one in-tile read, so a
-	// driver that fails the read fails both, and one bit answers for both APIs. Note that no GL
-	// rule sets it today: the r44p1 GL rule was deliberately lifted (2.6.6.4 field evidence beat
-	// the MGS3 corruption report -- the full account sits above the GL rules in
-	// GSGPUDriverProfile.cpp), while r44p1's Vulkan rule remains because there the read is a
-	// device loss, and on Vulkan the RT copy is an ordinary image copy rather than a tile flush.
-	//
-	// This replaced a hand-rolled search for "r44p1" in GL_VERSION. The database matches a PARSED
-	// driver revision instead, which is what lets a rule say "exactly r44p1" rather than "contains
-	// r44p1" -- and what would let the next bad blob be a table row. gs_gpu_driver_profile_tests
-	// pins the real device string through the resolver, because a rule that silently matches
-	// nothing would put the device straight back on the faulting path with no diagnostic.
+	// Which drivers cannot survive the in-tile read is a fact about the driver, so it lives in the
+	// driver-bug database. UseRenderTargetCopyForFeedback is the bit the Vulkan backend keys its
+	// render-target copy on: fetch and the texture barrier are two spellings of one in-tile read,
+	// so one bit answers for both APIs. No GL rule sets it today; GSGPUDriverProfile.cpp says why
+	// r44p1 has a Vulkan rule and no GL one.
 	const bool fbfetch_driver_blocklisted =
 		GetMobileDriverProfile().UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback);
 	const GSFramebufferFetchDecision fbfetch = DecideGLFramebufferFetch(GLAD_GL_ARM_shader_framebuffer_fetch,
@@ -1150,7 +1217,7 @@ bool GSDeviceOGL::CheckFeatures()
 	switch (fbfetch.veto)
 	{
 		case GSFramebufferFetchVeto::DriverBlocklist:
-			Console.WriteLn("Mali r44p1: disabling framebuffer fetch (GL context-lost workaround; matches the Vulkan gate).");
+			Console.WriteLn("GL: framebuffer fetch disabled for this driver build by the driver-bug database.");
 			break;
 		case GSFramebufferFetchVeto::UserSetting:
 			Host::AddOSDMessage(
@@ -1165,7 +1232,7 @@ bool GSDeviceOGL::CheckFeatures()
 		m_features.texture_barrier = m_features.framebuffer_fetch; // Force Disabled
 		m_features.multidraw_fb_copy = false;
 		Host::AddOSDMessage(
-			"Texture Barrier is disabled, blending will not be accurate.", Host::OSD_ERROR_DURATION);
+			"Texture Barriers are disabled, blending will not be accurate.", Host::OSD_ERROR_DURATION);
 	}
 	else if (GSConfig.OverrideTextureBarriers == 1)
 	{
@@ -1183,7 +1250,7 @@ bool GSDeviceOGL::CheckFeatures()
 
 		// Pick the blend fallback's shape now that we know whether there is a barrier. GLES always
 		// arrives here with multidraw_fb_copy set (there is no ARB/NV texture barrier), and on a
-		// device where fetch is also off -- the r44p1 blocklist, the user's setting, or simply no
+		// device where fetch is also off -- a driver-bug database veto, the user's setting, or no
 		// fetch extension -- that leaves the per-primitive render-target copy as the blend path,
 		// which on a tiler means a tile flush and resolve per primitive group. See
 		// GLUsesPerPrimitiveFbCopy for the measurement; the short version is 0.33 fps.
@@ -1224,28 +1291,6 @@ bool GSDeviceOGL::CheckFeatures()
 		m_features.depth_feedback |= GSConfig.DepthFeedbackMode == GSDepthFeedbackMode::Auto;
 	}
 
-	// ARMSX2 (Adreno GLES only; inert on every other GPU/profile). Adreno's driver
-	// rejects a fragment shader declaring TWO framebuffer-fetch `inout` outputs (o_col0
-	// colour + o_col1 depth), which the depth-as-colour SW-Z path emits for accurate-
-	// alpha-test draws -> link failure -> garbage (Everybody's Golf 4 / Minna no Golf 4).
-	// Route depth feedback through the depth path (a single fetch output) so it links, and
-	// read prior depth via the coherent ARM depth-stencil fetch (gl_LastFragDepthARM) when
-	// available -- the mode-1 depth sampler read is incoherent on GLES (no barrier on a
-	// sampled depth attachment) and makes occluded triangles poke through as white shards.
-	// Only overrides Auto; an explicit DepthFeedbackMode choice is honoured. The GPU
-	// profile is already resolved above (SetRuntimeGPUProfile), so IsAdrenoGPUProfile()
-	// is valid here.
-	if (m_features.framebuffer_fetch && IsAdrenoGPUProfile() &&
-		GSConfig.DepthFeedbackMode == GSDepthFeedbackMode::Auto)
-	{
-		m_features.depth_feedback = true;
-		m_arm_depth_fetch = GLAD_GL_ARM_shader_framebuffer_fetch_depth_stencil;
-		Console.WriteLn(m_arm_depth_fetch
-			? "GL: Adreno - depth feedback via coherent ARM depth-stencil fetch (gl_LastFragDepthARM)."
-			: "GL: Adreno - routing depth feedback through the depth sampler "
-			  "(avoids the dual framebuffer-fetch output link failure).");
-	}
-
 	// Mobile tile-based GPU profiles. Both Mali and Adreno prefer fresh
 	// textures over reused ones (avoids tile-flush stalls on partial
 	// writes), so the texture-pool hint is shared. Mali additionally
@@ -1279,7 +1324,7 @@ bool GSDeviceOGL::CheckFeatures()
 		// ⚠️ This block must NOT re-enable framebuffer fetch, and nothing here may write
 		// m_features.framebuffer_fetch. It used to set it unconditionally true off the raw
 		// GLAD_GL_ARM_shader_framebuffer_fetch extension rather than the decision made ~100 lines
-		// above, which resurrected fetch after both the r44p1 driver guard and the user's
+		// above, which resurrected fetch after both the driver-bug database veto and the user's
 		// DisableFramebufferFetch setting -- so on Mali GL there was no way to turn fetch off at
 		// all. Demotion stays keyed on the extension because that is what it has always meant (a
 		// Mali profile that cannot reach the ARM shader path is on the wrong profile), but fetch
@@ -1314,29 +1359,16 @@ bool GSDeviceOGL::CheckFeatures()
 	{
 		Console.WriteLn(Color_Cyan, "GL: Adreno profile active (EXT/PLS framebuffer fetch).");
 
-		// Adreno's GLES driver rejects a fragment shader that declares TWO
-		// framebuffer-fetch `inout` outputs. The depth-as-colour feedback path
-		// (DEPTH_FEEDBACK_SUPPORT 2) emits exactly that whenever the colour output
-		// already needs fetch AND a SW-Z depth draw is in flight -- o_col0 (colour
-		// fetch) at location 0 and o_col1 (depth fetch) at location 1 both become
-		// `inout`. That combination is produced by the accurate-alpha-test RGB-only
-		// + depth-write path, so any game carrying accurateAlphaTest (e.g. Everybody's
-		// Golf 4 / Minna no Golf 4, SCKA-20057 / SCPS-15059) fails to link those draws
-		// -> "Output o_col1 location or component exceeds max allowed" -> garbage
-		// (black-boxed faces, a floating RT rectangle, blue bars). Vulkan is unaffected
-		// (real depth attachment, no second fetch output). Route depth feedback through
-		// the real depth sampler (DEPTH_FEEDBACK_SUPPORT 1) so only o_col0 is a fetch
-		// output and the program links. test_and_sample_depth is already true above,
-		// and texture_barrier==true here keeps the DS-clone path (bind at ~3402) inert.
-		// Only override Auto -- an explicit DepthFeedbackMode choice is honoured.
+		// Adreno's GLES driver will not link a fragment shader with two framebuffer-fetch outputs.
+		// The depth-as-colour path (DEPTH_FEEDBACK_SUPPORT 2) emits two whenever a draw needs the
+		// colour fetch and a software depth write at once, as accurate alpha test does. Depth
+		// feedback goes through the depth attachment instead (DEPTH_FEEDBACK_SUPPORT 1), leaving
+		// colour the only fetch output. An explicit DepthFeedbackMode is honoured.
 		if (m_features.framebuffer_fetch && GSConfig.DepthFeedbackMode == GSDepthFeedbackMode::Auto)
 		{
 			m_features.depth_feedback = true;
-			// The mode-1 depth SAMPLER read is incoherent on GLES (no texture_barrier
-			// for a sampled depth attachment) -> stale reads make occluded/interior
-			// triangles poke through as white shards. When the coherent ARM depth-
-			// stencil fetch extension is present, read prior depth via gl_LastFragDepthARM
-			// instead (tile-local, one output, no sampler, no feedback-loop bind).
+			// The depth sampler read is not coherent on GLES. The ARM depth-stencil fetch is, so
+			// prior depth comes from gl_LastFragDepthARM where the extension exists.
 			m_arm_depth_fetch = GLAD_GL_ARM_shader_framebuffer_fetch_depth_stencil;
 			Console.WriteLn(m_arm_depth_fetch
 				? "GL: Adreno - depth feedback via coherent ARM depth-stencil fetch (gl_LastFragDepthARM)."
@@ -1367,15 +1399,13 @@ bool GSDeviceOGL::CheckFeatures()
 			active_fetch_backend, fetch_veto_reason);
 	}
 
-	if (GLAD_GL_ARB_shader_storage_buffer_object)
+	if (GLAD_GL_VERSION_4_3 || GLAD_GL_ARB_shader_storage_buffer_object)
 	{
 		GLint max_vertex_ssbos = 0;
 		glGetIntegerv(GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS, &max_vertex_ssbos);
 		DevCon.WriteLn("GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS: %d", max_vertex_ssbos);
-		m_features.vs_expand = (!GSConfig.DisableVertexShaderExpand && max_vertex_ssbos > 0 && GLAD_GL_ARB_gpu_shader5);
+		m_features.vs_expand = (!GSConfig.DisableVertexShaderExpand && max_vertex_ssbos > 0);
 	}
-	if (!m_features.vs_expand)
-		Console.Warning("GL: Vertex expansion is not supported. This will reduce performance.");
 
 	GLint point_range[2] = {};
 	glGetIntegerv(GL_ALIASED_POINT_SIZE_RANGE, point_range);
@@ -1387,18 +1417,118 @@ bool GSDeviceOGL::CheckFeatures()
 	glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture_size);
 	m_max_texture_size = std::max(1024u, static_cast<u32>(max_texture_size));
 
-	Console.WriteLn("GL: Using %s for point expansion, %s for line expansion and %s for sprite expansion.",
-		m_features.point_expand ? "hardware" : (m_features.vs_expand ? "vertex expanding" : "UNSUPPORTED"),
-		m_features.line_expand ? "hardware" : (m_features.vs_expand ? "vertex expanding" : "UNSUPPORTED"),
-		m_features.vs_expand ? "vertex expanding" : "CPU");
+	// Unlikely to be supported on Windows if device is stuck on GL 3.3 which is usually equivalent to feature level 10.0.
+	// This should also target any proprietary drivers on linux.
+	// Open source drivers shouldn't be hit since they have different vendor names.
+	if ((vendor_id_amd || vendor_id_nvidia || vendor_id_intel) && GLAD_GL_VERSION_3_3 && !GLAD_GL_VERSION_4_0)
+		m_rgba16_unorm_hw_blend = false;
+	else
+		m_rgba16_unorm_hw_blend = true;
 
-	if (!GLAD_GL_ARB_conservative_depth)
-	{
-		Console.Warning("GLAD_GL_ARB_conservative_depth is not supported. This will reduce performance.");
-	}
-	
 	m_features.aa1 = GSConfig.HWAA1 && m_features.vs_expand && m_features.feedback_loops();
-	
+
+	// Log the extension support.
+
+	constexpr int LABEL_WIDTH = 26;
+	constexpr int STATUS_WIDTH = 15;
+
+	Console.WriteLnFmt(
+		"GL: {1:<{0}} {3:<{2}} => Using: {4}",
+		LABEL_WIDTH, "Viewport Array:",
+		STATUS_WIDTH, GLAD_GL_ARB_viewport_array ? "Supported" : "Fallback",
+		GLAD_GL_ARB_viewport_array ? "GL_ARB_viewport_array" : "Emulation");
+
+	Console.WriteLnFmt(
+		"GL: {1:<{0}} {3:<{2}} => Using: {4}",
+		LABEL_WIDTH, "Direct State Access:",
+		STATUS_WIDTH, GLAD_GL_VERSION_4_5 || GLAD_GL_ARB_direct_state_access || GLAD_GL_EXT_direct_state_access ? "Supported" : "Fallback",
+		GLAD_GL_VERSION_4_5             ? "OpenGL 4.5 Core" :
+		GLAD_GL_ARB_direct_state_access ? "GL_ARB_direct_state_access" :
+		GLAD_GL_EXT_direct_state_access ? "GL_EXT_direct_state_access" :
+										  "Emulation");
+
+	Console.WriteLnFmt(
+		"GL: {1:<{0}} {3:<{2}} => Using: {4}",
+		LABEL_WIDTH, "Copy Image:",
+		STATUS_WIDTH, GLAD_GL_VERSION_4_3 || GLAD_GL_ARB_copy_image || GLAD_GL_EXT_copy_image || GLAD_GL_NV_copy_image ? "Supported" : "Fallback",
+		GLAD_GL_VERSION_4_3    ? "OpenGL 4.3 Core" :
+		GLAD_GL_ARB_copy_image ? "GL_ARB_copy_image" :
+		GLAD_GL_EXT_copy_image ? "GL_EXT_copy_image" :
+								 "Framebuffer Copy");
+
+	Console.WriteLnFmt(
+		"GL: {1:<{0}} {3:<{2}} => Using: {4}",
+		LABEL_WIDTH, "Clip Control:",
+		STATUS_WIDTH, GLAD_GL_VERSION_4_5 || GLAD_GL_ARB_clip_control ? "Supported" : "Fallback",
+		GLAD_GL_VERSION_4_5      ? "OpenGL 4.5 Core" :
+		GLAD_GL_ARB_clip_control ? "GL_ARB_clip_control" :
+								   "Shader Fallback");
+	Console.WriteLnFmt(
+		"GL: {1:<{0}} {3:<{2}} => Using: {4}",
+		LABEL_WIDTH, "Conservative Depth:",
+		STATUS_WIDTH, GLAD_GL_VERSION_4_2 || GLAD_GL_ARB_conservative_depth || GLAD_GL_AMD_conservative_depth ? "Supported" : "Not Supported",
+		GLAD_GL_VERSION_4_2            ? "OpenGL 4.2 Core" :
+		GLAD_GL_ARB_conservative_depth ? "GL_ARB_conservative_depth" :
+		GLAD_GL_AMD_conservative_depth ? "GL_AMD_conservative_depth" :
+										 "None");
+
+	Console.WriteLnFmt(
+		"GL: {1:<{0}} {3:<{2}} => Using: {4}",
+		LABEL_WIDTH, "Texture Barriers:",
+		STATUS_WIDTH, GSConfig.OverrideTextureBarriers == 0 ? "Forced Disabled" : GSConfig.OverrideTextureBarriers == 1 ? "Forced Enabled" :
+																														  "Auto",
+		GSConfig.OverrideTextureBarriers == 0 ? "Disabled" :
+		GSConfig.OverrideTextureBarriers == 1 ?
+												(!GLAD_GL_ARB_texture_barrier && !GLAD_GL_NV_texture_barrier &&
+															GLAD_GL_ARB_shader_image_load_store ?
+														"Memory Barrier (GL_ARB_shader_image_load_store)" :
+													GLAD_GL_ARB_texture_barrier ? "GL_ARB_texture_barrier" :
+													GLAD_GL_NV_texture_barrier  ? "GL_NV_texture_barrier" :
+																				  "No Barriers") :
+		m_features.framebuffer_fetch ? "Framebuffer Fetch" :
+		GLAD_GL_ARB_texture_barrier  ? "GL_ARB_texture_barrier" :
+		GLAD_GL_NV_texture_barrier   ? "GL_NV_texture_barrier" :
+									   "Framebuffer Copy");
+
+	Console.WriteLnFmt(
+		"GL: {1:<{0}} {3:<{2}} => Using: {4}",
+		LABEL_WIDTH, "RGBA16 HW Blending:",
+		STATUS_WIDTH, m_rgba16_unorm_hw_blend ? "Supported" : "Fallback",
+		m_rgba16_unorm_hw_blend ? "RGBA16 UNORM" : "RGBA16F Fallback");
+
+	Console.WriteLnFmt(
+		"GL: {1:<{0}} {3:<{2}} => Using: {4}",
+		LABEL_WIDTH, "Point Expansion:",
+		STATUS_WIDTH, m_features.point_expand ? "Supported" : (m_features.vs_expand ? "Fallback" : "Not Supported"),
+		m_features.point_expand ? "Hardware" : (m_features.vs_expand ? "Vertex Expansion" : "None"));
+
+	Console.WriteLnFmt(
+		"GL: {1:<{0}} {3:<{2}} => Using: {4}",
+		LABEL_WIDTH, "Line Expansion:",
+		STATUS_WIDTH, m_features.line_expand ? "Supported" : (m_features.vs_expand ? "Fallback" : "Not Supported"),
+		m_features.line_expand ? "Hardware" : (m_features.vs_expand ? "Vertex Expansion" : "None"));
+
+	Console.WriteLnFmt(
+		"GL: {1:<{0}} {3:<{2}} => Using: {4}",
+		LABEL_WIDTH, "Sprite Expansion:",
+		STATUS_WIDTH, m_features.vs_expand ? "Supported" : "Fallback",
+		m_features.vs_expand ? "Vertex Expansion" : "CPU");
+
+	Console.WriteLnFmt(
+		"GL: {1:<{0}} {3:<{2}} => Using: {4}",
+		LABEL_WIDTH, "DXTn Texture Compression:",
+		STATUS_WIDTH, m_features.dxt_textures ? "Supported" : "Not Supported",
+		GLAD_GL_EXT_texture_compression_s3tc ? "GL_EXT_texture_compression_s3tc" : "None");
+
+	Console.WriteLnFmt(
+		"GL: {1:<{0}} {3:<{2}} => Using: {4}",
+		LABEL_WIDTH, "BC6/7 Texture Compression:",
+		STATUS_WIDTH, m_features.bptc_textures ? "Supported" : "Not Supported",
+		GLAD_GL_VERSION_4_2                  ? "OpenGL 4.2 Core" :
+		GLAD_GL_ARB_texture_compression_bptc ? "GL_ARB_texture_compression_bptc" :
+		GLAD_GL_EXT_texture_compression_bptc ? "GL_EXT_texture_compression_bptc" :
+											   "None");
+
 	return true;
 }
 
@@ -1594,6 +1724,40 @@ std::string GSDeviceOGL::GetDriverInfo() const
 	const char* gl_shading_language_version = reinterpret_cast<const char*>(glGetString(GL_SHADING_LANGUAGE_VERSION));
 	return fmt::format(
 		"OpenGL Context:\n{}\n{} {}\nGLSL: {}", gl_version, gl_vendor, gl_renderer, gl_shading_language_version);
+}
+
+void GSDeviceOGL::CollectDriverReport(GSDriverReport::BackendReport& out) const
+{
+	using namespace GSDriverReport;
+	GSDevice::CollectDriverReport(out);
+
+	// GL has no driver identity beyond its strings; they and the extension list are the evidence.
+	out.steps.Run("gl.strings", [&](std::string&) {
+		const auto str = [](GLenum name) {
+			const char* s = reinterpret_cast<const char*>(glGetString(name));
+			return std::string(s ? s : "");
+		};
+		JsonWriter w;
+		w.BeginObject();
+		w.KeyString("vendor", str(GL_VENDOR));
+		w.KeyString("renderer", str(GL_RENDERER));
+		w.KeyString("version", str(GL_VERSION));
+		w.KeyString("shading_language_version", str(GL_SHADING_LANGUAGE_VERSION));
+		GLint count = 0;
+		glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+		w.Key("extensions");
+		w.BeginArray();
+		for (GLint i = 0; i < count; i++)
+		{
+			const char* e = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i)));
+			if (e)
+				w.String(e);
+		}
+		w.EndArray();
+		w.EndObject();
+		out.gl_json = w.TakeString();
+		return true;
+	});
 }
 
 GSDevice::PresentResult GSDeviceOGL::DoBeginPresent(bool frame_skip)
@@ -2257,8 +2421,6 @@ std::string GSDeviceOGL::GenGlslHeader(const std::string_view entry, GLenum type
 		{
 			header = "#version 330 core\n";
 			header += "#extension GL_ARB_shading_language_420pack : require\n";
-			if (GLAD_GL_ARB_gpu_shader5)
-				header += "#extension GL_ARB_gpu_shader5 : require\n";
 			if (m_features.vs_expand)
 				header += "#extension GL_ARB_shader_storage_buffer_object: require\n";
 		}
@@ -2297,9 +2459,17 @@ std::string GSDeviceOGL::GenGlslHeader(const std::string_view entry, GLenum type
 	header += fmt::format("#define DRIVER_STORE_BITWISE_NEGATION_IN_TEMPORARY {}\n",
 		UsesMobileDriverWorkaround(DriverWorkaround::StoreBitwiseNegationInTemporary) ? 1 : 0);
 
-	if (GLAD_GL_ARB_conservative_depth)
+	if (GLAD_GL_VERSION_4_2 || GLAD_GL_ARB_conservative_depth || GLAD_GL_AMD_conservative_depth)
 	{
-		header += "#extension GL_ARB_conservative_depth : enable\n";
+		if (!GLAD_GL_VERSION_4_2 && GLAD_GL_ARB_conservative_depth)
+		{
+			header += "#extension GL_ARB_conservative_depth : enable\n";
+		}
+		else if (!GLAD_GL_VERSION_4_2 && GLAD_GL_AMD_conservative_depth)
+		{
+			header += "#extension GL_AMD_conservative_depth : enable\n";
+		}
+
 		header += "#define PS_HAS_CONSERVATIVE_DEPTH 1\n";
 	}
 	else
@@ -2321,7 +2491,7 @@ std::string GSDeviceOGL::GenGlslHeader(const std::string_view entry, GLenum type
 	}
 
 	// Must match the glClipControl(EXT) enable above: desktop ARB, or GLES with EXT.
-	if (GLAD_GL_ARB_clip_control || (m_is_gles && GLAD_GL_EXT_clip_control))
+	if (GLAD_GL_VERSION_4_5 || GLAD_GL_ARB_clip_control || (m_is_gles && GLAD_GL_EXT_clip_control))
 		header += "#define HAS_CLIP_CONTROL 1\n";
 	else
 		header += "#define HAS_CLIP_CONTROL 0\n";
@@ -2472,6 +2642,7 @@ std::string GSDeviceOGL::GetPSSource(const PSSelector& sel)
 		+ fmt::format("#define PS_DATE {}\n", sel.date)
 		+ fmt::format("#define PS_TCOFFSETHACK {}\n", sel.tcoffsethack)
 		+ fmt::format("#define PS_REGION_RECT {}\n", sel.region_rect)
+		+ fmt::format("#define PS_NATIVE_TEXEL_GRID {}\n", sel.native_texel_grid)
 		+ fmt::format("#define PS_BLEND_A {}\n", sel.blend_a)
 		+ fmt::format("#define PS_BLEND_B {}\n", sel.blend_b)
 		+ fmt::format("#define PS_BLEND_C {}\n", sel.blend_c)
@@ -2903,7 +3074,7 @@ void GSDeviceOGL::DoMultiStretchRects(const MultiStretchRect* rects, u32 num_rec
 	DrawIndexedPrimitive();
 }
 
-void GSDeviceOGL::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter)
+void GSDeviceOGL::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const MergeTopBand* top_band, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter)
 {
 	GL_PUSH("DoMerge");
 
@@ -2923,6 +3094,8 @@ void GSDeviceOGL::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex,
 		// 2nd output is enabled and selected. Copy it to destination so we can blend it with 1st output
 		// Note: value outside of dRect must contains the background color (c)
 		StretchRect(sTex[1], sRect[1], dTex, PMODE.SLBG ? dRect[2] : dRect[1], ShaderConvert::COPY, filter);
+		if (top_band[1].enabled)
+			StretchRect(sTex[1], top_band[1].src, dTex, top_band[1].dst, ShaderConvert::COPY, filter);
 	}
 
 	// Upload constant to select YUV algo
@@ -2953,11 +3126,15 @@ void GSDeviceOGL::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex,
 			m_merge_obj.ps[1].Bind();
 			m_merge_obj.ps[1].Uniform4fv(0, GSVector4::unorm8(c).v);
 			DoStretchRect(sTex[0], sRect[0], dTex, dRect[0], m_merge_obj.ps[1], true, OMColorMaskSelector(), filter);
+			if (top_band[0].enabled)
+				DoStretchRect(sTex[0], top_band[0].src, dTex, top_band[0].dst, m_merge_obj.ps[1], true, OMColorMaskSelector(), filter);
 		}
 		else
 		{
 			// Blend with 2 * input alpha
 			DoStretchRect(sTex[0], sRect[0], dTex, dRect[0], m_merge_obj.ps[0], true, OMColorMaskSelector(), filter);
+			if (top_band[0].enabled)
+				DoStretchRect(sTex[0], top_band[0].src, dTex, top_band[0].dst, m_merge_obj.ps[0], true, OMColorMaskSelector(), filter);
 		}
 	}
 
@@ -2971,6 +3148,7 @@ void GSDeviceOGL::DoInterlace(GSTexture* sTex, const GSVector4& sRect, GSTexture
 
 	m_interlace.ps[static_cast<int>(shader)].Bind();
 	m_interlace.ps[static_cast<int>(shader)].Uniform4fv(0, cb.ZrH.F32);
+	m_interlace.ps[static_cast<int>(shader)].Uniform4fv(1, cb.FieldPad.F32);
 
 	DoStretchRect(sTex, sRect, dTex, dRect, m_interlace.ps[static_cast<int>(shader)], filter);
 }
@@ -3522,7 +3700,7 @@ void GSDeviceOGL::RenderImGui()
 {
 	ImGui::Render();
 	const ImDrawData* draw_data = ImGui::GetDrawData();
-	if (draw_data->CmdListsCount == 0)
+	if (draw_data->CmdLists.Size == 0)
 		return;
 
 	UpdateImGuiTextures();
@@ -3553,7 +3731,7 @@ void GSDeviceOGL::RenderImGui()
 	GSVector4i last_scissor = GSVector4i::xffffffff();
 
 	// Render command lists
-	for (int n = 0; n < draw_data->CmdListsCount; n++)
+	for (int n = 0; n < draw_data->CmdLists.Size; n++)
 	{
 		const ImDrawList* cmd_list = draw_data->CmdLists[n];
 
@@ -3918,7 +4096,7 @@ void GSDeviceOGL::DoRenderHW(GSHWDrawConfig& config)
 		{
 			config.colclip_update_area = config.drawarea;
 
-			colclip_rt = CreateFeedbackTarget(rtsize.x, rtsize.y, GSTexture::Format::ColorClip, false);
+			colclip_rt = CreateFeedbackTarget(rtsize.x, rtsize.y, m_rgba16_unorm_hw_blend ? GSTexture::Format::ColorClip : GSTexture::Format::ColorHDR, false);
 
 			if (!colclip_rt)
 			{
@@ -3926,8 +4104,6 @@ void GSDeviceOGL::DoRenderHW(GSHWDrawConfig& config)
 
 				return;
 			}
-
-			OMSetRenderTargets(colclip_rt, nullptr, config.ds, nullptr);
 
 			g_gs_device->SetColorClipTexture(colclip_rt);
 

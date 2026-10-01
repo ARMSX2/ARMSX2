@@ -143,27 +143,35 @@ struct SettingsPresetsView: View {
                 }
             }
         }
-        .alert(item: $message) { message in
-            Alert(
-                title: Text(settings.localized(message.title)),
-                message: Text(settings.localized(message.text)),
-                dismissButton: .default(Text(settings.localized("OK")))
-            )
-        }
-        .alert(
+        .controllerPrompt(
+            settings.localized(message?.title ?? ""),
+            isPresented: Binding(
+                get: { message != nil },
+                set: { if !$0 { message = nil } }
+            ),
+            message: settings.localized(message?.text ?? ""),
+            actions: [.ok]
+        )
+        .controllerPrompt(
             settings.localized("Reset Settings?"),
-            isPresented: $isResetSettingsConfirmationPresented
-        ) {
-            Button(settings.localized("Cancel"), role: .cancel) {}
-            Button(settings.localized("Reset Settings"), role: .destructive) {
-                BuiltInSettingsPreset.defaultPreset.apply(
-                    settings: settings,
-                    skinLibrary: skinLibrary
-                )
-            }
-        } message: {
-            Text(settings.localized("This will reset all settings to their original values."))
-        }
+            isPresented: $isResetSettingsConfirmationPresented,
+            message: settings.localized("This will reset all settings to their original values."),
+            actions: [
+                .cancel,
+                .init(title: settings.localized("Reset Settings"), isDestructive: true) {
+                    BuiltInSettingsPreset.defaultPreset.apply(
+                        settings: settings,
+                        skinLibrary: skinLibrary
+                    )
+                    let completion = settings.localized("All Settings Restored")
+                    announceSettingsResetSuccess(completion)
+                    message = SettingsPresetsMessage(
+                        title: "Settings Restored",
+                        text: "All emulator settings were restored to their original values."
+                    )
+                },
+            ]
+        )
     }
 
     private var folderAccessSection: some View {
@@ -218,7 +226,7 @@ struct SettingsPresetsView: View {
         } header: {
             Text(settings.localized("ARMSX2 Import Folder"))
         } footer: {
-            Text(settings.localized("Selecting the ARMSX2 folder checks its BIOS, GAMES, PRESETS, and SKINS folders once. ZIP skins are imported, newly imported games receive missing covers, and a skin ZIP whose name starts with 1 becomes the default skin and layout. The saved permission is not scanned again on app launch; use Scan Selected Folder when you want to check it again. Existing imported files are not overwritten."))
+            Text(settings.localized("Selecting the ARMSX2 folder checks its BIOS, GAMES, PRESETS, and SKINS folders. PRESETS/logo.png becomes the Games logo, and PRESETS/audiopack.zip becomes the UI audio pack. ZIP skins are imported, newly imported games receive missing covers, and a skin ZIP whose name starts with 1 becomes the default skin and layout. The saved permission is not scanned again on app launch; use Scan Selected Folder when you want to check it again. Existing imported files are not overwritten."))
                 .lineLimit(nil)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -238,7 +246,7 @@ struct SettingsPresetsView: View {
                         VStack(alignment: .leading, spacing: 5) {
                             Text(settings.localized(preset.rawValue))
                                 .font(.body.weight(.semibold))
-                                .foregroundStyle(.primary)
+                                .controllerFocusedTextColor()
                             Text(settings.localized(preset.summary))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -265,6 +273,15 @@ struct SettingsPresetsView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .controllerAccessibilityActionTarget(
+                    label: settings.localized(preset.rawValue)
+                ) {
+                    if preset == .defaultPreset {
+                        isResetSettingsConfirmationPresented = true
+                    } else {
+                        preset.apply(settings: settings, skinLibrary: skinLibrary)
+                    }
+                }
             }
         } header: {
             Text(settings.localized("Device Presets"))

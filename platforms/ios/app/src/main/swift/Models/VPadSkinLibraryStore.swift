@@ -274,6 +274,7 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         from sourceURL: URL,
         originalImportName: String? = nil,
         catalogID: String? = nil,
+        preferredLayoutFileName: String? = nil,
         replacingSkinID: String? = nil,
         layoutPresets: PadLayoutPresetStore
     ) async throws -> VPadSkinImportResult {
@@ -284,6 +285,7 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
             from: sourceURL,
             originalImportName: originalImportName,
             catalogID: catalogID,
+            preferredLayoutFileName: preferredLayoutFileName,
             replacingSkinID: replacingSkinID,
             layoutPresets: layoutPresets
         )
@@ -335,6 +337,7 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         from sourceURL: URL,
         originalImportName: String?,
         catalogID: String?,
+        preferredLayoutFileName: String?,
         replacingSkinID: String?,
         layoutPresets: PadLayoutPresetStore
     ) async throws -> VPadSkinImportResult {
@@ -417,7 +420,8 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
 
         var layoutURL: URL?
         var namedLayoutMissing = false
-        if let layoutName = manifest?.layout?.trimmingCharacters(in: .whitespacesAndNewlines),
+        let preferredLayoutName = manifest?.layout ?? preferredLayoutFileName
+        if let layoutName = preferredLayoutName?.trimmingCharacters(in: .whitespacesAndNewlines),
            !layoutName.isEmpty {
             layoutURL = files.first { $0.lastPathComponent.caseInsensitiveCompare(URL(fileURLWithPath: layoutName).lastPathComponent) == .orderedSame }
             namedLayoutMissing = layoutURL == nil

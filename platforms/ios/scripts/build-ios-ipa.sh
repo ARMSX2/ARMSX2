@@ -2,6 +2,22 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# --fast builds a development IPA: no PCSX2 core LTO and the Swift UI at -Onone.
+FAST_SETTINGS=()
+if [[ "${1:-}" == "--fast" ]]; then
+	BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build-ios-fast-xcode}"
+	IPA_NAME="${IPA_NAME:-ARMSX2-iOS-development.ipa}"
+	LTO_PCSX2_CORE=OFF
+	FAST_SETTINGS=(
+		SWIFT_OPTIMIZATION_LEVEL=-Onone
+		SWIFT_COMPILATION_MODE=singlefile
+		SWIFT_ENABLE_BATCH_MODE=NO
+		COMPILER_INDEX_STORE_ENABLE=NO
+		DEBUG_INFORMATION_FORMAT=dwarf
+		COPY_PHASE_STRIP=NO
+		STRIP_INSTALLED_PRODUCT=NO
+	)
+fi
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build-ios-xcode}"
 PROJECT="$BUILD_DIR/ARMSX2iOS.xcodeproj"
 IPA_NAME="${IPA_NAME:-ARMSX2-iOS-unsigned.ipa}"
@@ -12,6 +28,64 @@ ENTITLEMENTS_FILE="${ENTITLEMENTS_FILE:-$ROOT_DIR/app/src/main/cpp/Entitlements.
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 AD_HOC_SIGN="${AD_HOC_SIGN:-0}"
 
+LIBRASHADER_RUST_TARGET="aarch64-apple-ios"
+
+require_tool() {
+	if ! command -v "$1" >/dev/null 2>&1; then
+		echo "error: required tool '$1' was not found." >&2
+		exit 1
+	fi
+}
+
+ensure_librashader_toolchain() {
+	if [[ -z "${CARGO_HOME:-}" && -x "$BUILD_DIR/cargo-home/bin/cargo" ]]; then
+		export RUSTUP_HOME="$BUILD_DIR/rustup-home" CARGO_HOME="$BUILD_DIR/cargo-home"
+		export PATH="$CARGO_HOME/bin:$PATH"
+	fi
+
+	if ! command -v cargo >/dev/null 2>&1 \
+		|| ! command -v rustc >/dev/null 2>&1; then
+		# Only a machine without Rust gets the build-local homes. Pointing an
+		# existing rustup at them left it with no toolchain.
+		export RUSTUP_HOME="${RUSTUP_HOME:-$BUILD_DIR/rustup-home}"
+		export CARGO_HOME="${CARGO_HOME:-$BUILD_DIR/cargo-home}"
+		require_tool curl
+		local rustup_platform rustup_url installer expected_hash actual_hash
+		case "$(uname -m)" in
+			arm64) rustup_platform="aarch64-apple-darwin" ;;
+			x86_64) rustup_platform="x86_64-apple-darwin" ;;
+			*) echo "error: unsupported Rust host architecture: $(uname -m)" >&2; exit 1 ;;
+		esac
+		rustup_url="https://static.rust-lang.org/rustup/dist/$rustup_platform/rustup-init"
+		installer="$BUILD_DIR/rustup-init"
+		echo "Installing the project-local Rust toolchain required by librashader..."
+		curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+			"$rustup_url" --output "$installer"
+		expected_hash="$(curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+			"$rustup_url.sha256" | awk '{print $1}')"
+		actual_hash="$(shasum -a 256 "$installer" | awk '{print $1}')"
+		if [[ -z "$expected_hash" || "$actual_hash" != "$expected_hash" ]]; then
+			echo "error: rustup-init checksum verification failed." >&2
+			exit 1
+		fi
+		chmod u+x "$installer"
+		"$installer" -y --no-modify-path --profile minimal --default-toolchain stable
+		export PATH="$CARGO_HOME/bin:$PATH"
+	fi
+
+	if command -v rustup >/dev/null 2>&1; then
+		rustup target add "$LIBRASHADER_RUST_TARGET"
+	fi
+
+	local target_libdir
+	target_libdir="$(rustc --print target-libdir --target "$LIBRASHADER_RUST_TARGET" 2>/dev/null || true)"
+	if [[ -z "$target_libdir" || ! -d "$target_libdir" ]]; then
+		echo "error: Rust target $LIBRASHADER_RUST_TARGET is required for the iOS shader chain." >&2
+		echo "Install it with: rustup target add $LIBRASHADER_RUST_TARGET" >&2
+		exit 1
+	fi
+}
+
 refresh_generated_git_metadata() {
 	local short_hash full_hash git_date pbxproj svnrev_file
 	short_hash="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
@@ -21,7 +95,9 @@ refresh_generated_git_metadata() {
 
 	pbxproj="$PROJECT/project.pbxproj"
 	if [[ -f "$pbxproj" ]]; then
-		SHORT_HASH="$short_hash" perl -0pi -e 's/ARMSX2_GIT_HASH=\\"[0-9A-Fa-f]+\\"/ARMSX2_GIT_HASH=\\"$ENV{SHORT_HASH}\\"/g' "$pbxproj"
+		SHORT_HASH="$short_hash" perl -0pi -e \
+			's/ARMSX2_GIT_HASH=\\"[0-9A-Fa-f]+\\"/ARMSX2_GIT_HASH=\\"$ENV{SHORT_HASH}\\"/g' \
+			"$pbxproj"
 	fi
 
 	svnrev_file="$BUILD_DIR/common/include/svnrev.h"
@@ -35,6 +111,7 @@ refresh_generated_git_metadata() {
 }
 
 mkdir -p "$BUILD_DIR"
+ensure_librashader_toolchain
 
 if ! command -v xcodebuild >/dev/null 2>&1; then
 	echo "error: xcodebuild was not found. Install full Xcode from Apple, then run:" >&2
@@ -57,13 +134,18 @@ echo "Metal compiler: $(xcrun --sdk iphoneos --find metal)"
 echo
 
 if command -v cmake >/dev/null 2>&1; then
-	"$ROOT_DIR/scripts/generate-ios-xcode.sh"
+	BUILD_DIR="$BUILD_DIR" LTO_PCSX2_CORE="${LTO_PCSX2_CORE:-ON}" \
+		"$ROOT_DIR/scripts/generate-ios-xcode.sh"
 elif [[ ! -d "$PROJECT" ]]; then
 	echo "error: cmake is required to generate the iOS Xcode project." >&2
 	echo "Install CMake from https://cmake.org/download/ or through your package manager." >&2
 	exit 1
 else
 	echo "cmake not found; reusing existing generated Xcode project."
+fi
+if ! grep -q "ARMSX2_HAS_LIBRASHADER" "$PROJECT/project.pbxproj"; then
+	echo "error: production project omitted librashader; refusing to package a shader-disabled IPA." >&2
+	exit 1
 fi
 refresh_generated_git_metadata
 
@@ -76,6 +158,7 @@ xcodebuild \
 	CODE_SIGNING_ALLOWED=NO \
 	CODE_SIGNING_REQUIRED=NO \
 	CODE_SIGN_IDENTITY="" \
+	${FAST_SETTINGS[@]+"${FAST_SETTINGS[@]}"} \
 	build 2>&1 | tee "$BUILD_LOG"
 XCODEBUILD_STATUS=${PIPESTATUS[0]}
 set -e
@@ -133,11 +216,18 @@ if [[ -n "$SIGN_IDENTITY" || "$AD_HOC_SIGN" == "1" ]]; then
 	codesign -d --entitlements :- "$STAGED_APP" 2>&1 | sed -n '1,80p'
 fi
 
-(cd "$STAGING_DIR" && zip -qry "$BUILD_DIR/$IPA_NAME" Payload)
+OUTPUT_IPA="$BUILD_DIR/$IPA_NAME"
+# zip updates an existing archive in place and preserves entries that no longer
+# exist in Payload. Always create the IPA from an empty output path so removed
+# app resources cannot survive a later incremental package.
+if [[ -e "$OUTPUT_IPA" ]]; then
+	rm "$OUTPUT_IPA"
+fi
+(cd "$STAGING_DIR" && zip -qry "$OUTPUT_IPA" Payload)
 
 if [[ -n "$SIGN_IDENTITY" || "$AD_HOC_SIGN" == "1" ]]; then
 	echo "Created signed IPA:"
 else
 	echo "Created unsigned IPA:"
 fi
-echo "  $BUILD_DIR/$IPA_NAME"
+echo "  $OUTPUT_IPA"

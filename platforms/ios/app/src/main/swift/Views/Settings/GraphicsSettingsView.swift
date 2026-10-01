@@ -98,21 +98,14 @@ struct GraphicsSettingsView: View {
     var body: some View {
         Form {
             Section {
-                intPicker("GS Back Thread", selection: $settings.backThreadMode, options: [
-                    ("Disabled (Default)", 0),
-                    ("Inline Records (Debug)", 1),
-                    ("Lockstep (Debug)", 2),
-                    ("Pipelined (Second GS Thread)", 3),
-                ])
-                if settings.backThreadMode == 1 || settings.backThreadMode == 2 {
-                    Text(settings.localized("Debug mode — much slower than the default. Do not use for play."))
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
+                Toggle(settings.localized("GS Multi-threading"), isOn: Binding(
+                    get: { settings.backThreadMode != 0 },
+                    set: { settings.backThreadMode = $0 ? 1 : 0 }
+                ))
             } header: {
                 Text(settings.localized("Performance"))
             } footer: {
-                Text(settings.localized("Pipelined splits GS emulation across two threads on multi-core systems and competes for cores with EE/VU threads. The debug modes are much slower — do not use them for play. Requires restart."))
+                Text(settings.localized("GS Multi-threading runs GS rendering on a second thread and competes for cores with the EE/VU threads. It needs the software renderer here. Requires restart."))
             }
 
             Section(settings.localized("Renderer")) {
@@ -121,6 +114,13 @@ struct GraphicsSettingsView: View {
                         Text(settings.localized(option.title)).tag(option.id)
                     }
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    label: settings.localized("Renderer"),
+                    selection: $settings.renderer,
+                    options: SettingsOptions.renderer.map {
+                        (id: $0.id, title: settings.localized($0.title))
+                    }
+                )
                 .disabled(gameIsLoaded)
                 if gameIsLoaded {
                     Text(settings.localized("Close the running game to change the renderer."))
@@ -160,6 +160,13 @@ struct GraphicsSettingsView: View {
                         Text(settings.localized(option.title)).tag(option.id)
                     }
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    label: settings.localized("Internal Resolution"),
+                    selection: $settings.upscaleMultiplier,
+                    options: UpscaleOptions.all.map {
+                        (id: $0.id, title: settings.localized($0.title))
+                    }
+                )
                 Text(settings.localized("Lower values can help performance on heavy games. Higher values improve visual quality but reduce performance significantly. Applies immediately; the renderer may briefly stutter while it reinits."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -176,6 +183,14 @@ struct GraphicsSettingsView: View {
                         Text(settings.localized("Off (Bilinear)")).tag(0)
                         Text(settings.localized("MetalFX Spatial")).tag(1)
                     }
+                    .controllerAccessibilityOptionsPickerTarget(
+                        label: settings.localized("Spatial Upscaler"),
+                        selection: $settings.upscaler,
+                        options: [
+                            (0, settings.localized("Off (Bilinear)")),
+                            (1, settings.localized("MetalFX Spatial")),
+                        ]
+                    )
                     Text(settings.localized(
                         "GPU-accelerated upscaling via MetalFX. Renders at the native PS2 "
                         + "resolution and upscales to the display for sharper visuals at "
@@ -193,6 +208,16 @@ struct GraphicsSettingsView: View {
                     Text(settings.localized("Bilinear (PS2 Default)")).tag(2)
                     Text(settings.localized("Bilinear (Forced excl. Sprite)")).tag(3)
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    label: settings.localized("Texture Filtering"),
+                    selection: $settings.textureFiltering,
+                    options: [
+                        (0, settings.localized("Nearest (Pixelated)")),
+                        (1, settings.localized("Bilinear (Forced)")),
+                        (2, settings.localized("Bilinear (PS2 Default)")),
+                        (3, settings.localized("Bilinear (Forced excl. Sprite)")),
+                    ]
+                )
 
                 Toggle(settings.localized("Hardware Mipmapping"), isOn: $settings.hardwareMipmapping)
                 Text(settings.localized("Emulates PS2 texture mipmaps in the hardware renderer. Leave on by default; turn off only if a game has mipmap shimmer, stripes, or bad texture LOD behavior. Requires reset/relaunch for safest results."))
@@ -235,6 +260,13 @@ struct GraphicsSettingsView: View {
                     Text(settings.localized("Adaptive (TFF)")).tag(8)
                     Text(settings.localized("Adaptive (BFF)")).tag(9)
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    label: settings.localized("Deinterlace"),
+                    selection: $settings.interlaceMode,
+                    options: SettingsOptions.deinterlace.map {
+                        (id: $0.id, title: settings.localized($0.title))
+                    }
+                )
 
                 Picker(settings.localized("Aspect Ratio"), selection: $settings.aspectRatio) {
                     Text(settings.localized("Auto 4:3 / 3:2 (Default)")).tag(1)
@@ -243,6 +275,17 @@ struct GraphicsSettingsView: View {
                     Text("10:7").tag(4)
                     Text(settings.localized("Stretch to Window")).tag(0)
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    label: settings.localized("Aspect Ratio"),
+                    selection: $settings.aspectRatio,
+                    options: [
+                        (1, settings.localized("Auto 4:3 / 3:2 (Default)")),
+                        (2, "4:3"),
+                        (3, settings.localized("16:9 (Widescreen)")),
+                        (4, "10:7"),
+                        (0, settings.localized("Stretch to Window")),
+                    ]
+                )
             }
 
             Section {
@@ -267,6 +310,18 @@ struct GraphicsSettingsView: View {
                     Text(settings.localized("Full (Slow)")).tag(4)
                     Text(settings.localized("Ultra (Very Slow)")).tag(5)
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    label: settings.localized("Blending Accuracy"),
+                    selection: $settings.blendingAccuracy,
+                    options: [
+                        (0, settings.localized("Minimum (Fast)")),
+                        (1, settings.localized("Basic (Default)")),
+                        (2, settings.localized("Medium")),
+                        (3, settings.localized("High")),
+                        (4, settings.localized("Full (Slow)")),
+                        (5, settings.localized("Ultra (Very Slow)")),
+                    ]
+                )
                 Text(settings.localized("Higher accuracy fixes transparency issues but reduces performance."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -276,6 +331,15 @@ struct GraphicsSettingsView: View {
                     Text(settings.localized("Unscaled")).tag(1)
                     Text(settings.localized("Scaled (Default)")).tag(2)
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    label: settings.localized("Dithering"),
+                    selection: $settings.dithering,
+                    options: [
+                        (0, settings.localized("Off")),
+                        (1, settings.localized("Unscaled")),
+                        (2, settings.localized("Scaled (Default)")),
+                    ]
+                )
             }
 
             Section {
@@ -296,16 +360,13 @@ struct GraphicsSettingsView: View {
                 Text(settings.localized("Adjusts brightness, contrast, saturation, and gamma of the output image. Applies immediately."))
             }
 
-            if ARMSX2Bridge.isShaderChainSupported() {
-                Section {
-                    // A flag the Form reads, not a link: feat/controller-navigation asserts no
-                    // file under Views/ carries that token, and this row has no shared pane row
-                    // to convert with.
-                    Button {
-                        showingShaderSettings = true
-                    } label: {
-                        Label(settings.localized("Shaders"), systemImage: "camera.filters")
-                    }
+            Section {
+                // Shader preset management remains available even when this
+                // particular binary was built without the optional renderer.
+                Button {
+                    showingShaderSettings = true
+                } label: {
+                    Label(settings.localized("Shaders"), systemImage: "camera.filters")
                 }
             }
 
@@ -317,7 +378,8 @@ struct GraphicsSettingsView: View {
                 Text(settings.localized("GameDB Graphics Fixes are safest for most games, and turning this on drops all of them. You don't need it to change one sprite or texture-offset value below: changing one keeps your answer for that setting and leaves the rest automatic. Skipdraw still needs this on."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                // MaskUpscalingHacks() zeroes these unless the multiplier is above 1, so the toggles read on and do nothing.
+                // MaskUpscalingHacks() zeroes these unless the multiplier is above 1, so the
+                // toggles read on and do nothing.
                 if settings.upscaleMultiplier <= 1.0 {
                     Text(settings.localized("Half-pixel Offset, Round Sprite, Align Sprite, Merge Sprite, Wild Arms Offset and the texture offsets only apply above 1x Internal Resolution. At 1x or below they are ignored."))
                         .font(.caption)
@@ -330,6 +392,16 @@ struct GraphicsSettingsView: View {
                     Text("PS2").tag(1)
                     Text(settings.localized("Forced")).tag(2)
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    label: settings.localized("Trilinear Filtering"),
+                    selection: $settings.trilinearFiltering,
+                    options: [
+                        (-1, settings.localized("Automatic / Default")),
+                        (0, settings.localized("Off")),
+                        (1, "PS2"),
+                        (2, settings.localized("Forced")),
+                    ]
+                )
                 if settings.trilinearFiltering != -1 {
                     Text(settings.localized("Non-automatic trilinear filtering may break textures in some games."))
                         .font(.caption)
@@ -347,6 +419,21 @@ struct GraphicsSettingsView: View {
                     Text(settings.localized("Align to Native")).tag(4)
                     Text(settings.localized("Align to Native + Texture Offset")).tag(5)
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    label: settings.localized("Half-pixel Offset"),
+                    selection: claiming(
+                        "UserHacks_HalfPixelOffset",
+                        $settings.halfPixelOffset
+                    ),
+                    options: [
+                        (0, settings.localized("Off")),
+                        (1, settings.localized("Normal / Vertex")),
+                        (2, settings.localized("Special / Texture")),
+                        (3, settings.localized("Special / Texture Aggressive")),
+                        (4, settings.localized("Align to Native")),
+                        (5, settings.localized("Align to Native + Texture Offset")),
+                    ]
+                )
                 hackNote("UserHacks_HalfPixelOffset", shown: settings.halfPixelOffset)
 
                 Picker(settings.localized("Round Sprite"), selection: claiming("UserHacks_round_sprite_offset", $settings.roundSprite)) {
@@ -354,6 +441,18 @@ struct GraphicsSettingsView: View {
                     Text(settings.localized("Half")).tag(1)
                     Text(settings.localized("Full")).tag(2)
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    label: settings.localized("Round Sprite"),
+                    selection: claiming(
+                        "UserHacks_round_sprite_offset",
+                        $settings.roundSprite
+                    ),
+                    options: [
+                        (0, settings.localized("Off")),
+                        (1, settings.localized("Half")),
+                        (2, settings.localized("Full")),
+                    ]
+                )
                 hackNote("UserHacks_round_sprite_offset", shown: settings.roundSprite)
 
                 Toggle(settings.localized("Align Sprite"), isOn: claiming("UserHacks_align_sprite_X", $settings.alignSprite))
@@ -429,10 +528,17 @@ struct GraphicsSettingsView: View {
             }
 
             Section {
-                Button(settings.localized("Reset Graphics to Defaults")) {
+                ConfirmedSettingsResetButton(
+                    settings.localized("Reset Graphics to Defaults"),
+                    confirmationTitle: settings.localized("Reset Graphics?"),
+                    confirmationMessage: settings.localized("This restores every global Graphics option to its original value."),
+                    completionMessage: settings.localized("Defaults Restored"),
+                    controllerTargetID: "settings.graphics.reset-defaults"
+                ) {
                     settings.resetGraphicsDefaults()
                 }
-                .foregroundStyle(.red)
+                .buttonStyle(.automatic)
+                .uiCriticalForegroundStyle()
             }
         }
         .navigationTitle(settings.localized("Graphics"))
@@ -446,23 +552,21 @@ struct GraphicsSettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2GraphicsHackStateChanged"))) { _ in
             settings.refreshGraphicsHackStatus()
         }
-        .confirmationDialog(
+        .controllerPrompt(
             settings.localized("Clear Emulator Cache?"),
             isPresented: $showShaderCacheClearConfirm,
-            titleVisibility: .visible
-        ) {
-            Button(settings.localized("Clear"), role: .destructive) {
-                clearShaderCache()
-            }
-            Button(settings.localized("Cancel"), role: .cancel) {}
-        } message: {
-            Text(settings.localized("Achievement images download again the next time they are shown."))
-        }
-        .alert(settings.localized("Emulator Cache"), isPresented: $showShaderCacheResult) {
-            Button(settings.localized("OK")) {}
-        } message: {
-            Text(settings.localized(shaderCacheResult ?? ""))
-        }
+            message: settings.localized("Achievement images download again the next time they are shown."),
+            actions: [
+                .cancel,
+                .init(title: settings.localized("Clear"), isDestructive: true) { clearShaderCache() },
+            ]
+        )
+        .controllerPrompt(
+            settings.localized("Emulator Cache"),
+            isPresented: $showShaderCacheResult,
+            message: settings.localized(shaderCacheResult ?? ""),
+            actions: [.ok]
+        )
     }
 
     /// Empties Documents/cache: achievement images, plus the VU program cache when that is turned on.
@@ -496,10 +600,18 @@ struct GraphicsSettingsView: View {
                 Text(settings.localized(option.0)).tag(option.1)
             }
         }
+        .controllerAccessibilityOptionsPickerTarget(
+            label: settings.localized(title),
+            selection: selection,
+            options: options.map { option in
+                (id: option.1, title: settings.localized(option.0))
+            }
+        )
     }
 
     /// Same picker over a shared `SettingsOptions` list, which the per-game tabs read too.
     private func intPicker(_ title: String, selection: Binding<Int>, shared: [(id: Int, title: String)]) -> some View {
         intPicker(title, selection: selection, options: shared.map { ($0.title, $0.id) })
     }
+
 }

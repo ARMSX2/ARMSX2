@@ -38,6 +38,11 @@ struct MemoryCardSettingsView: View {
                         Text(card).tag(card)
                     }
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    label: settings.localized("Slot 1"),
+                    selection: $slot1Card,
+                    options: cardPickerOptions
+                )
                 .onChange(of: slot1Card) { _, newValue in
                     ARMSX2Bridge.setMemoryCard(name: newValue, forSlot: 1, enabled: !newValue.isEmpty)
                 }
@@ -48,6 +53,11 @@ struct MemoryCardSettingsView: View {
                         Text(card).tag(card)
                     }
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    label: settings.localized("Slot 2"),
+                    selection: $slot2Card,
+                    options: cardPickerOptions
+                )
                 .onChange(of: slot2Card) { _, newValue in
                     ARMSX2Bridge.setMemoryCard(name: newValue, forSlot: 2, enabled: !newValue.isEmpty)
                 }
@@ -70,6 +80,13 @@ struct MemoryCardSettingsView: View {
                             Text("\(size) MB").tag(size)
                         }
                     }
+                    .controllerAccessibilityOptionsPickerTarget(
+                        label: settings.localized("Size"),
+                        selection: $newCardSizeMB,
+                        options: cardSizes.map {
+                            (id: $0, title: "\($0) MB")
+                        }
+                    )
                 }
 
                 Button {
@@ -100,13 +117,23 @@ struct MemoryCardSettingsView: View {
                                 Image(systemName: "square.and.arrow.up")
                             }
                             .buttonStyle(.borderless)
+                            .controllerAccessibilityActionTarget(
+                                label: settings.localized("Export") + " " + card
+                            ) {
+                                pendingExportCard = card
+                            }
                             Button {
                                 pendingDeleteCard = card
                             } label: {
                                 Image(systemName: "trash")
-                                    .foregroundStyle(.red)
+                                    .uiCriticalForegroundStyle()
                             }
                             .buttonStyle(.borderless)
+                            .controllerAccessibilityActionTarget(
+                                label: settings.localized("Delete") + " " + card
+                            ) {
+                                pendingDeleteCard = card
+                            }
                         }
                     }
                 }
@@ -127,36 +154,33 @@ struct MemoryCardSettingsView: View {
         .navigationTitle(settings.localized("Memory Cards"))
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: refresh)
-        .alert(settings.localized("Memory Cards"), isPresented: $showResult) {
-            Button(settings.localized("OK")) {}
-        } message: {
-            Text(settings.localized(resultMessage ?? ""))
-        }
-        .confirmationDialog(
+        .controllerPrompt(
+            settings.localized("Memory Cards"),
+            isPresented: $showResult,
+            message: settings.localized(resultMessage ?? ""),
+            actions: [.ok]
+        )
+        .controllerPrompt(
             settings.localized("Delete Memory Card?"),
             isPresented: Binding(
                 get: { pendingDeleteCard != nil },
                 set: { if !$0 { pendingDeleteCard = nil } }
             ),
-            titleVisibility: .visible
-        ) {
-            Button(settings.localized("Delete"), role: .destructive) {
-                if let card = pendingDeleteCard {
-                    let success = ARMSX2Bridge.deleteMemoryCard(named: card)
-                    refresh()
-                    resultMessage = success ? "Memory card deleted." : "Could not delete the memory card. It may be in use."
-                    showResult = true
-                }
-                pendingDeleteCard = nil
-            }
-            Button(settings.localized("Cancel"), role: .cancel) {
-                pendingDeleteCard = nil
-            }
-        } message: {
-            if let card = pendingDeleteCard {
-                Text(settings.localized("Delete \"\(card)\"? Saves on it will be lost, and it will be removed from any slot it is assigned to."))
-            }
-        }
+            message: pendingDeleteCard.map {
+                settings.localized("Delete \"\($0)\"? Saves on it will be lost, and it will be removed from any slot it is assigned to.")
+            } ?? "",
+            actions: [
+                .cancel,
+                .init(title: settings.localized("Delete"), isDestructive: true) {
+                    if let card = pendingDeleteCard {
+                        let success = ARMSX2Bridge.deleteMemoryCard(named: card)
+                        refresh()
+                        resultMessage = success ? "Memory card deleted." : "Could not delete the memory card. It may be in use."
+                        showResult = true
+                    }
+                },
+            ]
+        )
         .sheet(item: Binding(
             get: { pendingExportCard.map { ExportableCard(name: $0) } },
             set: { pendingExportCard = $0?.name }
@@ -191,6 +215,11 @@ struct MemoryCardSettingsView: View {
                 }
             }
         }
+    }
+
+    private var cardPickerOptions: [(id: String, title: String)] {
+        [("", settings.localized("Unplugged"))]
+            + availableCards.map { (id: $0, title: $0) }
     }
 
     private func refresh() {

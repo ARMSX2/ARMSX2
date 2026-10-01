@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #import "ARMSX2Bridge.h"
+#import <GameController/GameController.h>
 
 // Xcode names the generated Swift bridge header after the Swift module.
 #if __has_include("ARMSX2iOS-Swift.h")
@@ -71,6 +72,16 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 #include "IOS/TexturePackTar.h"
 #include "IOS/TexturePackZstd.h"
 
+// Owned by SceneDelegate's persistent VM worker. Keep these declarations
+// narrow: IOSRuntime.h also exposes the render view with its concrete type,
+// while this bridge intentionally uses UIKit's UIView surface.
+extern std::atomic<bool> s_vmThreadActive;
+extern std::atomic<bool> s_requestVMBoot;
+extern std::mutex s_vmMutex;
+extern void ARMSX2ConfigureControllerMacroInput(u32 input_mask, u32 modifier_mask);
+extern void ARMSX2ConsumeControllerMacroInput(u32 input_mask);
+#include "IconsFontAwesome.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -134,6 +145,9 @@ static void ARMSX2FlushINISave()
 
 static NSDate* s_lastNVMSaveDate = nil;
 static ARMSX2RetroAchievementsToastInfo* s_pendingRetroAchievementsNotification = nil;
+// CPU-thread-owned temporary mute state for the Per-Game live-preview overlay.
+// The prior user mute state is restored when the preview returns to editing.
+static std::optional<bool> s_per_game_preview_original_audio_muted;
 
 @implementation ARMSX2SaveStateSlotInfo
 @end
@@ -378,6 +392,56 @@ static BOOL ARMSX2GetCurrentSaveStateIdentity(std::string* serial, u32* crc)
     if (crc)
         *crc = currentCRC;
 	return YES;
+}
+
+// A queued task can outlive the game that asked for it and must not touch another game's slots.
+static bool ARMSX2SaveStateIdentityMatches(const std::string& serial, u32 crc)
+{
+    std::string currentSerial;
+    u32 currentCRC = 0;
+    return ARMSX2GetCurrentSaveStateIdentity(&currentSerial, &currentCRC) &&
+        currentSerial == serial && currentCRC == crc;
+}
+
+/// Identifies one file on disk, so an undo only touches the file it recorded.
+static NSString* ARMSX2FileToken(const std::string& path)
+{
+    struct stat info{};
+    if (path.empty() || stat(path.c_str(), &info) != 0)
+        return nil;
+    return [NSString stringWithFormat:@"%llu:%ld.%ld", static_cast<unsigned long long>(info.st_ino),
+        static_cast<long>(info.st_mtimespec.tv_sec), static_cast<long>(info.st_mtimespec.tv_nsec)];
+}
+
+/// A deleted state waits under this name until its undo runs out. No lookup matches it.
+static std::string ARMSX2HeldPath(const std::string& path)
+{
+    return path + ".held";
+}
+
+/// Puts a held state back if its slot is still empty. Never replaces a file.
+static bool ARMSX2RestoreHeldSaveState(const std::string& path)
+{
+    bool restored = true;
+    for (const std::string& file : {path, path + ".backup"})
+    {
+        const std::string held = ARMSX2HeldPath(file);
+        if (FileSystem::FileExists(held.c_str()))
+            restored = renamex_np(held.c_str(), file.c_str(), RENAME_EXCL) == 0 && restored;
+    }
+    return restored;
+}
+
+// The core moves the old state to .backup before it writes, so a failed write leaves the slot
+// empty. RENAME_EXCL never replaces a file that is there after all.
+static void ARMSX2RestoreSaveStateBackup(const std::string& path)
+{
+    const std::string backup = path + ".backup";
+    if (path.empty() || FileSystem::FileExists(path.c_str()) || !FileSystem::FileExists(backup.c_str()))
+        return;
+    const bool restored = renamex_np(backup.c_str(), path.c_str(), RENAME_EXCL) == 0;
+    NSLog(@"[ARMSX2 iOS SaveState] backup restore path=%@ result=%d",
+          ARMSX2NSStringFromStdString(path), restored ? 1 : 0);
 }
 
 static NSString* const ARMSX2ExternalGameDirectoriesDefaultsKey = @"ARMSX2iOSExternalGameDirectories";
@@ -668,10 +732,9 @@ static BOOL ARMSX2PerGameIdentityForCurrentGame(std::string* serial, u32* crc);
 
 // There is one process-wide InputIsoFile, shared between the running VM and every
 // metadata scan, so scanning the disc a game is playing from closes it out from
-// under the game. GameList.h says as much above PopulateEntryFromPath: do not call
-// it while the system is running. Everything after that reads zero blocks and the
-// game starves while the emulator carries on at full speed, which is a miserable
-// thing to debug from a bug report.
+// under the game. GameList.h documents this above PopulateEntryFromPath: do not
+// call it while the system is running. Subsequent reads return zero blocks and
+// starve the game while the emulator continues running.
 static bool ARMSX2PathIsRunningDisc(NSString* resolvedPath)
 {
     if (resolvedPath.length == 0 || !VMManager::HasValidVM())
@@ -683,9 +746,7 @@ static bool ARMSX2PathIsRunningDisc(NSString* resolvedPath)
 
 static void ARMSX2NoteRunningDiscScan(NSString* path)
 {
-    // Once is enough. This went unnoticed for a long time precisely because it was
-    // silent; if something finds a new way in, it should show up in an ordinary log
-    // rather than needing a special build with a backtrace in it.
+    // Report the first rejected scan without flooding the normal runtime log.
     static bool warned = false;
     if (warned)
         return;
@@ -707,7 +768,13 @@ static BOOL ARMSX2PopulateGameListEntryForISO(NSString* isoName, GameList::Entry
     // Any VM, not just one playing this particular file. InputIsoFile::Open closes
     // whatever is already open before it opens anything, so scanning some unrelated
     // image while a game is running kills that game's disc just the same.
-    if (VMManager::HasValidVM())
+    // HasValidVM becomes false BEFORE Shutdown closes the shared disc reader.
+    // Hold the boot gate through an idle scan; the worker claims it before
+    // Initialize and retains ownership until Shutdown has finished.
+    const std::lock_guard<std::mutex> bootLock(s_vmMutex);
+    if (s_vmThreadActive.load(std::memory_order_acquire)
+        || s_requestVMBoot.load(std::memory_order_acquire)
+        || VMManager::HasValidVM())
     {
         ARMSX2NoteRunningDiscScan(path);
 
@@ -859,6 +926,40 @@ static dispatch_queue_t ARMSX2SaveStateQueue()
     return queue;
 }
 
+static NSMutableDictionary<NSString*, NSDictionary<NSString*, id>*>* ARMSX2PerGameLivePreviewTransactions()
+{
+    static NSMutableDictionary<NSString*, NSDictionary<NSString*, id>*>* transactions;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        transactions = [[NSMutableDictionary alloc] init];
+    });
+    return transactions;
+}
+
+static bool ARMSX2RestorePerGameLivePreviewSettings(NSDictionary<NSString*, id>* transaction)
+{
+    NSString* settingsPath = transaction[@"settingsPath"];
+    id originalSettings = transaction[@"originalSettings"];
+    if (settingsPath.length == 0 || !originalSettings)
+        return false;
+
+    NSFileManager* fm = [NSFileManager defaultManager];
+    if ([originalSettings isKindOfClass:NSData.class])
+        return [(NSData*)originalSettings writeToFile:settingsPath atomically:YES];
+
+    if ([fm fileExistsAtPath:settingsPath])
+        return [fm removeItemAtPath:settingsPath error:nil];
+    return true;
+}
+
+static void ARMSX2RemovePerGameLivePreviewTransaction(NSString* token, NSDictionary<NSString*, id>* transaction)
+{
+    NSString* statePath = transaction[@"statePath"];
+    if (statePath.length > 0)
+        [[NSFileManager defaultManager] removeItemAtPath:statePath error:nil];
+    [ARMSX2PerGameLivePreviewTransactions() removeObjectForKey:token];
+}
+
 static NSString* ARMSX2SanitizedBackupPathComponent(NSString* value)
 {
     if (value.length == 0)
@@ -996,6 +1097,84 @@ static bool ARMSX2FlushNVRAMAndMemoryCards(const char* reason)
     NSLog(@"[ARMSX2Bridge] Save-state flush complete reason=%s nvmDate=%@",
           reason ? reason : "unknown", s_lastNVMSaveDate);
     return true;
+}
+
+static std::optional<s32> ARMSX2LatestSaveStateSlot(const std::string& serial, u32 crc)
+{
+    std::optional<s32> latestSlot;
+    timespec latestTime{};
+    // Include shared autosave/resume files as well as numbered slots, never
+    // another game's state or a .backup. No screenshots are decoded.
+    for (s32 slot = VMManager::SAVESTATE_SLOT_AUTOSAVE; slot <= VMManager::NUM_SAVE_STATE_SLOTS; ++slot)
+    {
+        const std::string path = VMManager::GetSaveStateFileName(serial.c_str(), crc, slot);
+        struct stat info{};
+        if (path.empty() || !FileSystem::StatFile(path.c_str(), &info) ||
+            !S_ISREG(info.st_mode) || info.st_size == 0)
+            continue;
+
+        const timespec modified = info.st_mtimespec;
+        if (!latestSlot || modified.tv_sec > latestTime.tv_sec ||
+            (modified.tv_sec == latestTime.tv_sec && modified.tv_nsec >= latestTime.tv_nsec))
+        {
+            latestSlot = slot;
+            latestTime = modified;
+        }
+    }
+    return latestSlot;
+}
+
+void ARMSX2IOSCompleteGameBoot(const std::string& game, bool loadLastSaveState)
+{
+    if (game.empty() || !g_p44_settings_interface)
+        return; // BIOS-only boot must not replace the remembered game.
+
+    g_p44_settings_interface->SetStringValue("ARMSX2iOS/Boot", "LastGame", game.c_str());
+    g_p44_settings_interface->Save();
+
+    std::string serial;
+    u32 crc = 0;
+    if (!ARMSX2GetCurrentSaveStateIdentity(&serial, &crc))
+        return;
+
+    // A save cut off mid-write (the app was killed) left only its .backup. Nothing writes
+    // before the first Execute(), so this is the one safe point to put it back.
+    VMManager::WaitForSaveStateFlush();
+    for (s32 slot = VMManager::SAVESTATE_SLOT_AUTOSAVE; slot <= VMManager::NUM_SAVE_STATE_SLOTS; ++slot)
+    {
+        const std::string path = VMManager::GetSaveStateFileName(serial.c_str(), crc, slot);
+        // A delete whose undo was cut short by a crash is kept, not finished.
+        if (!FileSystem::FileExists(path.c_str()))
+            ARMSX2RestoreHeldSaveState(path);
+        ARMSX2RestoreSaveStateBackup(path);
+    }
+
+    if (!loadLastSaveState || !g_p44_settings_interface->GetBoolValue(
+            "ARMSX2iOS/Boot", "AutomaticLoadLastSaveState", false))
+        return;
+
+    const auto slot = ARMSX2LatestSaveStateSlot(serial, crc);
+    if (!slot)
+        return; // No saved state: continue the normal boot silently.
+
+    if (ARMSX2RetroAchievementsHardcoreActive())
+    {
+        Host::AddIconOSDMessage("AutomaticLoadState", ICON_FA_FOLDER_OPEN,
+            "Automatic state load skipped: RetroAchievements Hardcore Mode is active.", Host::OSD_QUICK_DURATION);
+        return;
+    }
+
+    if (!ARMSX2FlushNVRAMAndMemoryCards("automatic-state-load"))
+        return;
+    ARMSX2BackupAssignedMemoryCards("automatic-state-load", *slot, serial, crc);
+    const std::string path = VMManager::GetSaveStateFileName(serial.c_str(), crc, *slot);
+    Error error;
+    // LoadState resets a partially loaded VM on failure, unlike LoadStateFromSlot.
+    // Run here on the CPU thread, before the first VMManager::Execute().
+    const bool loaded = VMManager::LoadState(path.c_str(), &error);
+    Host::AddIconOSDMessage("AutomaticLoadState", ICON_FA_FOLDER_OPEN,
+        loaded ? "Loaded last saved state." : "Could not load the last saved state. Starting normally.",
+        Host::OSD_QUICK_DURATION);
 }
 
 static BOOL ARMSX2IsControllerSkinImageName(NSString* name)
@@ -1215,6 +1394,9 @@ static NSMutableDictionary<NSString*, id>* ARMSX2BuildGlobalGameSettingsResult()
         @"globalVolumePercent": @(globalVolumePercent),
         @"volumePercent": @(globalVolumePercent),
         @"hasVolumeOverride": @NO,
+        // An empty snapshot is still authoritative: no identity/INI was
+        // available, so Swift must not retry the same disc probe per row.
+        @"perGameINI": @{},
     } mutableCopy];
 }
 
@@ -1253,9 +1435,88 @@ static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, i
     result[@"serial"] = ARMSX2NSStringFromStdString(serial);
     result[@"crc"] = [NSString stringWithFormat:@"%08X", crc];
 
+    // Publish one typed snapshot from the already-open INI so every row shares
+    // the same game identity and both library and running-game callers perform
+    // exactly one file read.
+    NSMutableDictionary<NSString*, id>* prefetchedINI = [NSMutableDictionary dictionary];
+    result[@"perGameINI"] = prefetchedINI;
+
     INISettingsInterface si(settingsPath);
     if (!si.Load())
         return;
+
+    const auto snapshotKey = [](const char* section, const char* key) {
+        return [NSString stringWithFormat:@"%s\n%s", section, key];
+    };
+    const auto snapshotBool = [&](const char* section, const char* key) {
+        if (si.ContainsValue(section, key))
+            prefetchedINI[snapshotKey(section, key)] = @(si.GetBoolValue(section, key, false));
+    };
+    const auto snapshotInt = [&](const char* section, const char* key) {
+        if (si.ContainsValue(section, key))
+            prefetchedINI[snapshotKey(section, key)] = @(si.GetIntValue(section, key, 0));
+    };
+    const auto snapshotFloat = [&](const char* section, const char* key) {
+        if (si.ContainsValue(section, key))
+            prefetchedINI[snapshotKey(section, key)] = @(si.GetFloatValue(section, key, 0.0f));
+    };
+    const auto snapshotString = [&](const char* section, const char* key) {
+        if (si.ContainsValue(section, key))
+            prefetchedINI[snapshotKey(section, key)] = ARMSX2NSStringFromStdString(
+                si.GetStringValue(section, key, ""));
+    };
+
+    static constexpr const char* kBoolSnapshotKeys[][2] = {
+        {"EmuCore", "EnableWideScreenPatches"},
+        {"EmuCore", "EnableNoInterlacingPatches"},
+        {"EmuCore/GS", "ShaderChainEnabled"},
+        {"EmuCore/CPU/Recompiler", "EnableIOP"},
+        {"EmuCore/CPU/Recompiler", "EnableVU0"},
+        {"EmuCore/CPU/Recompiler", "EnableVU1"},
+        {"EmuCore/CPU/Recompiler", "fpuOverflow"},
+        {"EmuCore/CPU/Recompiler", "fpuExtraOverflow"},
+        {"EmuCore/CPU/Recompiler", "fpuFullMode"},
+        {"EmuCore/CPU/Recompiler", "vu0Overflow"},
+        {"EmuCore/CPU/Recompiler", "vu0ExtraOverflow"},
+        {"EmuCore/CPU/Recompiler", "vu0SignOverflow"},
+        {"EmuCore/GS", "LoadTextureReplacements"},
+        {"EmuCore/GS", "LoadTextureReplacementsAsync"},
+        {"EmuCore/GS", "PrecacheTextureReplacements"},
+        {"EmuCore/GS", "SyncToHostRefreshRate"},
+        {"Achievements", "Enabled"},
+        {"Achievements", "ChallengeMode"},
+    };
+    static constexpr const char* kIntSnapshotKeys[][2] = {
+        {"EmuCore/Speedhacks", "EECycleSkip"},
+        {"EmuCore/GS", "ShadeBoost_Brightness"},
+        {"EmuCore/GS", "ShadeBoost_Contrast"},
+        {"EmuCore/GS", "ShadeBoost_Saturation"},
+        {"EmuCore/GS", "ShadeBoost_Gamma"},
+        {"EmuCore/GS", "dithering_ps2"},
+        {"SPU2/Output", "FastForwardVolume"},
+        {"EmuCore/CPU", "FPU.Roundmode"},
+        {"EmuCore/CPU", "VU0.Roundmode"},
+        {"EmuCore/CPU", "VU1.Roundmode"},
+        {"EmuCore/GS", "HWDownloadMode"},
+        {"EmuCore/GS", "UserHacks_CPUCLUTRender"},
+        {"EmuCore/GS", "UserHacks_GPUTargetCLUTMode"},
+        {"EmuCore/GS", "VsyncQueueSize"},
+        {"SPU2/Output", "BufferMS"},
+        {"SPU2/Output", "OutputLatencyMS"},
+        {"ARMSX2iOS/FramePacing", "Preset"},
+    };
+    static constexpr const char* kFloatSnapshotKeys[][2] = {
+        {"Framerate", "NominalScalar"},
+        {"ARMSX2iOS/FramePacing", "TargetFPS"},
+    };
+
+    for (const auto& entry : kBoolSnapshotKeys)
+        snapshotBool(entry[0], entry[1]);
+    for (const auto& entry : kIntSnapshotKeys)
+        snapshotInt(entry[0], entry[1]);
+    for (const auto& entry : kFloatSnapshotKeys)
+        snapshotFloat(entry[0], entry[1]);
+    snapshotString("EmuCore/GS", "ShaderChainPresetRef");
 
     if (si.ContainsValue("EmuCore/Speedhacks", "vuThread") &&
         !si.GetBoolValue("EmuCore/Speedhacks", "vuThread", true) &&
@@ -2025,6 +2286,14 @@ enum ARMSX2ShaderPackFailure {
     ARMSX2ShaderPackWriteFailed,
 };
 
+enum ARMSX2AudioPackFailure {
+    ARMSX2AudioPackBadArgument = 1,
+    ARMSX2AudioPackUnreadable,
+    ARMSX2AudioPackTooLarge,
+    ARMSX2AudioPackInvalidContents,
+    ARMSX2AudioPackWriteFailed,
+};
+
 static NSArray<NSURL*>* ARMSX2FailShaderPackExtraction(NSError** error, NSInteger code, NSString* message)
 {
     if (error) {
@@ -2034,6 +2303,50 @@ static NSArray<NSURL*>* ARMSX2FailShaderPackExtraction(NSError** error, NSIntege
     }
     NSLog(@"[ARMSX2 iOS Shaders] %@", message);
     return @[];
+}
+
+static NSArray<NSURL*>* ARMSX2FailAudioPackExtraction(NSError** error, NSInteger code, NSString* message)
+{
+    if (error) {
+        *error = [NSError errorWithDomain:@"ARMSX2AudioPackExtraction"
+                                     code:code
+                                 userInfo:@{NSLocalizedDescriptionKey: message}];
+    }
+    NSLog(@"[ARMSX2 iOS Audio Pack] %@", message);
+    return @[];
+}
+
+static NSArray<NSString*>* ARMSX2RequiredAudioPackRoles()
+{
+    static NSArray<NSString*>* roles;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        roles = [[NSArray alloc] initWithObjects:@"background", @"navigation", @"select",
+                                                  @"switch_toggle_on",
+                                                  @"switch_toggle_off", @"return",
+                                                  @"stopping_game", @"context_menu",
+                                                  @"achievement_toast", @"ui_toast",
+                                                  @"tab_transition", @"launch_game",
+                                                  @"no_jit", nil];
+    });
+    return roles;
+}
+
+static NSArray<NSString*>* ARMSX2SupportedAudioPackRoles()
+{
+    static NSArray<NSString*>* roles;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // startup is intentionally optional and is used only when a custom pack provides it.
+        roles = [[NSArray alloc] initWithObjects:@"startup", @"background", @"navigation",
+                                                  @"select", @"switch_toggle_on",
+                                                  @"switch_toggle_off", @"return",
+                                                  @"stopping_game", @"context_menu",
+                                                  @"achievement_toast", @"ui_toast",
+                                                  @"tab_transition", @"launch_game",
+                                                  @"no_jit", nil];
+    });
+    return roles;
 }
 
 static BOOL ARMSX2IsArchiveJunkName(NSString* name)
@@ -2180,6 +2493,15 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     g_touchPadState[PadDualshock2::Inputs::PAD_R_LEFT] = left > 0.01f;
     g_touchPadState[PadDualshock2::Inputs::PAD_R_DOWN] = down > 0.01f;
     g_touchPadState[PadDualshock2::Inputs::PAD_R_UP] = up > 0.01f;
+}
+
++ (void)configureControllerMacroInputMask:(uint32_t)inputMask
+                             modifierMask:(uint32_t)modifierMask {
+    ARMSX2ConfigureControllerMacroInput(inputMask, modifierMask);
+}
+
++ (void)consumeControllerMacroInputMask:(uint32_t)inputMask {
+    ARMSX2ConsumeControllerMacroInput(inputMask);
 }
 
 + (nonnull NSString *)biosName {
@@ -2494,6 +2816,157 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     return extracted;
 }
 
++ (nonnull NSArray<NSURL *> *)extractAudioPackArchiveAtURL:(nonnull NSURL *)archiveURL
+                                               toDirectory:(nonnull NSURL *)destinationDirectory
+                                                     error:(NSError * _Nullable * _Nullable)error
+{
+    static const zip_uint64_t kMaxAudioFileBytes = 64 * 1024 * 1024;
+    static const zip_uint64_t kMaxAudioPackBytes = 256 * 1024 * 1024;
+    static const zip_int64_t kMaxAudioPackEntries = 128;
+
+    if (error)
+        *error = nil;
+    if (!archiveURL.isFileURL || !destinationDirectory.isFileURL) {
+        return ARMSX2FailAudioPackExtraction(error, ARMSX2AudioPackBadArgument,
+            @"Audio pack extraction needs file URLs.");
+    }
+
+    NSFileManager* manager = [NSFileManager defaultManager];
+    NSError* directoryError = nil;
+    if (![manager createDirectoryAtURL:destinationDirectory
+           withIntermediateDirectories:YES
+                            attributes:nil
+                                 error:&directoryError]) {
+        return ARMSX2FailAudioPackExtraction(error, ARMSX2AudioPackWriteFailed,
+            [NSString stringWithFormat:@"Could not create %@: %@", destinationDirectory.path,
+                                       directoryError.localizedDescription]);
+    }
+
+    zip_error_t ze = {};
+    auto zf = zip_open_managed(archiveURL.path.UTF8String, ZIP_RDONLY, &ze);
+    if (!zf) {
+        return ARMSX2FailAudioPackExtraction(error, ARMSX2AudioPackUnreadable,
+            [NSString stringWithFormat:@"Could not open %@: %s", archiveURL.lastPathComponent,
+                                       zip_error_strerror(&ze)]);
+    }
+
+    const zip_int64_t count = zip_get_num_entries(zf.get(), 0);
+    if (count < 0 || count > kMaxAudioPackEntries) {
+        return ARMSX2FailAudioPackExtraction(error, ARMSX2AudioPackTooLarge,
+            [NSString stringWithFormat:@"%@ has too many archive entries.", archiveURL.lastPathComponent]);
+    }
+
+    NSArray<NSString*>* requiredRoles = ARMSX2RequiredAudioPackRoles();
+    NSArray<NSString*>* supportedRoles = ARMSX2SupportedAudioPackRoles();
+    NSSet<NSString*>* allowedRoles = [NSSet setWithArray:supportedRoles];
+    NSMutableDictionary<NSString*, NSNumber*>* entryIndices = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString*, NSString*>* outputNames = [NSMutableDictionary dictionary];
+    zip_uint64_t declaredTotalBytes = 0;
+
+    for (zip_uint64_t i = 0; i < static_cast<zip_uint64_t>(count); i++) {
+        zip_stat_t stat = {};
+        if (zip_stat_index(zf.get(), i, ZIP_FL_ENC_GUESS, &stat) != 0 || !stat.name)
+            continue;
+
+        NSString* entryName = [NSString stringWithUTF8String:stat.name];
+        if (entryName.length == 0 || [entryName hasSuffix:@"/"] || ARMSX2IsArchiveJunkName(entryName))
+            continue;
+
+        NSString* leafName = entryName.lastPathComponent;
+        NSString* fileExtension = leafName.pathExtension.lowercaseString;
+        if (![fileExtension isEqualToString:@"mp3"] && ![fileExtension isEqualToString:@"wav"])
+            continue;
+
+        NSString* role = leafName.stringByDeletingPathExtension.lowercaseString;
+        if (![allowedRoles containsObject:role])
+            continue;
+        if (entryIndices[role]) {
+            return ARMSX2FailAudioPackExtraction(error, ARMSX2AudioPackInvalidContents,
+                [NSString stringWithFormat:@"%@ contains more than one %@ audio file.",
+                                           archiveURL.lastPathComponent, role]);
+        }
+
+        zip_uint8_t opsys = 0;
+        zip_uint32_t attributes = 0;
+        if (zip_file_get_external_attributes(zf.get(), i, 0, &opsys, &attributes) == 0 &&
+            opsys == ZIP_OPSYS_UNIX && ((attributes >> 16) & S_IFMT) == S_IFLNK) {
+            return ARMSX2FailAudioPackExtraction(error, ARMSX2AudioPackInvalidContents,
+                [NSString stringWithFormat:@"%@ contains a symlink for %@.",
+                                           archiveURL.lastPathComponent, role]);
+        }
+
+        if (!(stat.valid & ZIP_STAT_SIZE) || stat.size == 0 || stat.size > kMaxAudioFileBytes) {
+            return ARMSX2FailAudioPackExtraction(error, ARMSX2AudioPackTooLarge,
+                [NSString stringWithFormat:@"The %@ audio file is empty or too large.", role]);
+        }
+        declaredTotalBytes += stat.size;
+        if (declaredTotalBytes > kMaxAudioPackBytes) {
+            return ARMSX2FailAudioPackExtraction(error, ARMSX2AudioPackTooLarge,
+                [NSString stringWithFormat:@"%@ unpacks to more than an audio pack should.",
+                                           archiveURL.lastPathComponent]);
+        }
+
+        entryIndices[role] = @(i);
+        outputNames[role] = [NSString stringWithFormat:@"%@.%@", role, fileExtension];
+    }
+
+    NSMutableArray<NSString*>* missing = [NSMutableArray array];
+    for (NSString* role in requiredRoles) {
+        if (!entryIndices[role])
+            [missing addObject:role];
+    }
+    if (missing.count > 0) {
+        return ARMSX2FailAudioPackExtraction(error, ARMSX2AudioPackInvalidContents,
+            [NSString stringWithFormat:@"%@ is missing: %@.", archiveURL.lastPathComponent,
+                                       [missing componentsJoinedByString:@", "]]);
+    }
+
+    NSMutableArray<NSURL*>* extracted = [NSMutableArray arrayWithCapacity:supportedRoles.count];
+    zip_uint64_t actualTotalBytes = 0;
+    for (NSString* role in supportedRoles) {
+        if (!entryIndices[role])
+            continue;
+        const zip_uint64_t index = entryIndices[role].unsignedLongLongValue;
+        auto file = zip_fopen_index_managed(zf.get(), index, ZIP_FL_ENC_GUESS);
+        if (!file) {
+            for (NSURL* url in extracted)
+                [manager removeItemAtURL:url error:nil];
+            return ARMSX2FailAudioPackExtraction(error, ARMSX2AudioPackUnreadable,
+                [NSString stringWithFormat:@"Could not read %@ from %@.", role,
+                                           archiveURL.lastPathComponent]);
+        }
+
+        std::optional<std::vector<u8>> data = ReadBinaryFileInZip(file.get());
+        if (!data.has_value() || data->empty() || data->size() > kMaxAudioFileBytes) {
+            for (NSURL* url in extracted)
+                [manager removeItemAtURL:url error:nil];
+            return ARMSX2FailAudioPackExtraction(error, ARMSX2AudioPackUnreadable,
+                [NSString stringWithFormat:@"The %@ audio file could not be read.", role]);
+        }
+        actualTotalBytes += data->size();
+        if (actualTotalBytes > kMaxAudioPackBytes) {
+            for (NSURL* url in extracted)
+                [manager removeItemAtURL:url error:nil];
+            return ARMSX2FailAudioPackExtraction(error, ARMSX2AudioPackTooLarge,
+                [NSString stringWithFormat:@"%@ unpacks to more than an audio pack should.",
+                                           archiveURL.lastPathComponent]);
+        }
+
+        NSURL* destinationURL = [destinationDirectory
+            URLByAppendingPathComponent:outputNames[role] isDirectory:NO];
+        NSData* audioData = [NSData dataWithBytes:data->data() length:data->size()];
+        if (![audioData writeToURL:destinationURL atomically:YES]) {
+            for (NSURL* url in extracted)
+                [manager removeItemAtURL:url error:nil];
+            return ARMSX2FailAudioPackExtraction(error, ARMSX2AudioPackWriteFailed,
+                [NSString stringWithFormat:@"Could not write %@.", destinationURL.path]);
+        }
+        [extracted addObject:destinationURL];
+    }
+
+    return extracted;
+}
+
 + (nullable NSData *)peekSkinManifestDataAtURL:(NSURL *)archiveURL {
     static const zip_uint64_t kMaxManifestBytes = 16 * 1024 * 1024;
 
@@ -2787,6 +3260,17 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     return currentPath.length > 0 ? currentPath.lastPathComponent : nil;
 }
 
+// Unlike currentGameISOName there is no INI fallback, so an ejected drive reads as empty.
++ (nullable NSString *)discInDriveName {
+    if (!VMManager::HasValidVM())
+        return nil;
+    const std::string discPath = VMManager::GetDiscPath();
+    if (discPath.empty())
+        return nil;
+    NSString *fileName = ARMSX2NSStringFromStringView(Path::GetFileName(discPath));
+    return fileName.length > 0 ? fileName : nil;
+}
+
 + (nonnull NSString *)isoDirectory {
     NSString *docsPath = [self documentsDirectory];
     NSString *isoDir = [docsPath stringByAppendingPathComponent:@"iso"];
@@ -2990,6 +3474,27 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     return result;
 }
 
+// The library already paid the cost of identifying every game while it built
+// its card model. Reuse that serial/CRC here instead of opening and probing the
+// disc image a second time just because SwiftUI is presenting its settings.
++ (nonnull NSDictionary<NSString *, id> *)gameSettingsForSerial:(nullable NSString *)serial
+                                                            crc:(nullable NSString *)crcString {
+    NSMutableDictionary<NSString*, id>* result = ARMSX2BuildGlobalGameSettingsResult();
+    if (crcString.length == 0)
+        return result;
+
+    unsigned int parsedCRC = 0;
+    NSScanner* scanner = [NSScanner scannerWithString:crcString];
+    if (![scanner scanHexInt:&parsedCRC] || parsedCRC == 0)
+        return result;
+
+    const std::string settingsSerial = serial.length > 0
+        ? std::string(serial.UTF8String)
+        : std::string();
+    ARMSX2ApplyPerGameSettingsOverrides(result, settingsSerial, static_cast<u32>(parsedCRC));
+    return result;
+}
+
 + (nullable NSDictionary<NSString *, id> *)gameSettingsForCurrentGame {
     if (!VMManager::HasValidVM())
         return nil;
@@ -3081,9 +3586,12 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
             removed++;
     };
 
-    for (s32 slot = -1; slot <= VMManager::NUM_SAVE_STATE_SLOTS; slot++) {
-        removePath(VMManager::GetSaveStateFileName(entry.serial.c_str(), entry.crc, slot));
-        removePath(VMManager::GetSaveStateFileName(entry.serial.c_str(), entry.crc, slot, true));
+    for (s32 slot = VMManager::SAVESTATE_SLOT_AUTOSAVE; slot <= VMManager::NUM_SAVE_STATE_SLOTS; slot++) {
+        const std::string path = VMManager::GetSaveStateFileName(entry.serial.c_str(), entry.crc, slot);
+        removePath(path);
+        removePath(path + ".backup");
+        removePath(ARMSX2HeldPath(path));
+        removePath(ARMSX2HeldPath(path + ".backup"));
     }
 
     removePath(Patch::GetPnachFilename(entry.serial, entry.crc, true));
@@ -3368,6 +3876,26 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
         EmuConfig.SPU2.StandardVolume = clampedValue;
         EmuConfig.SPU2.FastForwardVolume = clampedValue;
         SPU2::CheckForConfigChanges(oldConfig);
+    }, false);
+}
+
++ (void)setPerGameLivePreviewAudioMuted:(BOOL)muted {
+    Host::RunOnCPUThread([muted]() {
+        if (muted) {
+            if (!VMManager::HasValidVM())
+                return;
+            if (!s_per_game_preview_original_audio_muted.has_value())
+                s_per_game_preview_original_audio_muted = SPU2::IsOutputMuted();
+            SPU2::SetOutputMuted(true);
+            return;
+        }
+
+        if (!s_per_game_preview_original_audio_muted.has_value())
+            return;
+        const bool restore_muted = s_per_game_preview_original_audio_muted.value();
+        s_per_game_preview_original_audio_muted.reset();
+        if (VMManager::HasValidVM())
+            SPU2::SetOutputMuted(restore_muted);
     }, false);
 }
 
@@ -3796,14 +4324,16 @@ static void ARMSX2ShaderPresetFailure(libra_error_t err, NSError** error)
 // used to queue a reload of its own. One tap came out the other side as seventy-odd
 // full config reloads, each re-reading the INI, re-running GameDB and rebuilding the
 // GS config. Let the last write in a burst be the one that reloads.
+static std::atomic<uint64_t> s_ARMSX2PerGameSettingsReloadGeneration{0};
+
 static void ARMSX2RequestPerGameSettingsReload()
 {
-    static std::atomic<uint64_t> s_generation{0};
-    const uint64_t mine = s_generation.fetch_add(1, std::memory_order_relaxed) + 1;
+    const uint64_t mine = s_ARMSX2PerGameSettingsReloadGeneration.fetch_add(1, std::memory_order_relaxed) + 1;
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(0.05 * NSEC_PER_SEC)),
         dispatch_get_main_queue(), ^{
-            if (s_generation.load(std::memory_order_relaxed) != mine)
+            // Someone wrote after us, so they own the reload.
+            if (s_ARMSX2PerGameSettingsReloadGeneration.load(std::memory_order_relaxed) != mine)
                 return;
 
             Host::RunOnCPUThread([]() {
@@ -3814,6 +4344,185 @@ static void ARMSX2RequestPerGameSettingsReload()
                 ARMSX2_CaptureGraphicsHackState();
             });
         });
+}
+
++ (void)beginPerGameLivePreviewWithCompletion:(nullable ARMSX2TemporaryStateCreationCompletion)completion
+{
+    ARMSX2TemporaryStateCreationCompletion callback = [completion copy];
+    std::string serial;
+    u32 crc = 0;
+    if (ARMSX2RetroAchievementsHardcoreActive() ||
+        !ARMSX2PerGameIdentityForCurrentGame(&serial, &crc))
+    {
+        if (callback)
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(nil); });
+        return;
+    }
+
+    NSString* token = [[NSUUID UUID] UUIDString];
+    NSString* statePath = [NSTemporaryDirectory()
+        stringByAppendingPathComponent:[NSString stringWithFormat:@"ARMSX2-per-game-preview-%@.p2s", token]];
+    NSString* settingsPath = ARMSX2NSStringFromStdString(ARMSX2PerGameSettingsPath(serial, crc));
+    NSData* originalSettings = [NSData dataWithContentsOfFile:settingsPath];
+    id originalSettingsRecord = originalSettings ?: NSNull.null;
+
+    dispatch_async(ARMSX2SaveStateQueue(), ^{
+        bool saved = false;
+        Host::RunOnCPUThread([&saved, statePath]() {
+            if (!VMManager::HasValidVM() || MemcardBusy::IsBusy())
+                return;
+
+            std::string error;
+            VMManager::SaveState(statePath.fileSystemRepresentation, false, false,
+                [&error](const std::string& message) { error = message; });
+            saved = error.empty() && FileSystem::FileExists(statePath.fileSystemRepresentation);
+        }, true);
+
+        if (saved)
+        {
+            ARMSX2PerGameLivePreviewTransactions()[token] = @{
+                @"statePath": statePath,
+                @"settingsPath": settingsPath,
+                @"originalSettings": originalSettingsRecord,
+            };
+        }
+        else
+        {
+            [[NSFileManager defaultManager] removeItemAtPath:statePath error:nil];
+        }
+
+        if (callback)
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(saved ? token : nil); });
+    });
+}
+
++ (void)refreshPerGameLivePreviewBaselineForToken:(nonnull NSString *)token
+                                        afterSave:(BOOL)afterSave
+{
+    std::string serial;
+    u32 crc = 0;
+    if (!ARMSX2PerGameIdentityForCurrentGame(&serial, &crc))
+        return;
+
+    // Read before Swift writes the next preview, so the baseline is the committed file,
+    // including a Save or a Pad tab write made since the last preview.
+    NSString* settingsPath = ARMSX2NSStringFromStdString(ARMSX2PerGameSettingsPath(serial, crc));
+    id committed = [NSData dataWithContentsOfFile:settingsPath] ?: NSNull.null;
+    dispatch_async(ARMSX2SaveStateQueue(), ^{
+        NSDictionary<NSString*, id>* transaction = ARMSX2PerGameLivePreviewTransactions()[token];
+        if (![transaction[@"settingsPath"] isEqualToString:settingsPath] ||
+            (!afterSave && [transaction[@"restorePending"] boolValue]))
+            return;
+        NSMutableDictionary<NSString*, id>* updated = [transaction mutableCopy];
+        updated[@"originalSettings"] = committed;
+        // A Save is committed even after a failed restore. Write it again here: an
+        // apply still running when Save wrote the file has put older bytes back.
+        updated[@"restorePending"] = @(afterSave && !ARMSX2RestorePerGameLivePreviewSettings(updated));
+        ARMSX2PerGameLivePreviewTransactions()[token] = updated;
+    });
+}
+
++ (void)applyPerGameLivePreviewForToken:(nonnull NSString *)token
+                              completion:(nullable ARMSX2SaveStateCompletion)completion
+{
+    ARMSX2SaveStateCompletion callback = [completion copy];
+    dispatch_async(ARMSX2SaveStateQueue(), ^{
+        NSDictionary<NSString*, id>* transaction = ARMSX2PerGameLivePreviewTransactions()[token];
+        bool applied = false;
+        if (transaction)
+        {
+            // Invalidate the delayed reloads requested by the individual compatibility
+            // keys. The single synchronous reload below sees the complete preview.
+            s_ARMSX2PerGameSettingsReloadGeneration.fetch_add(1, std::memory_order_relaxed);
+            Host::RunOnCPUThread([&applied]() {
+                if (!VMManager::HasValidVM())
+                    return;
+                VMManager::ReloadGameSettings();
+                ARMSX2_ApplyEffectivePresentFPSCap();
+                if (MTGS::IsOpen())
+                    MTGS::ApplySettings();
+                ARMSX2_CaptureGraphicsHackState();
+                applied = true;
+            }, true);
+
+            // Preview values belong to the running VM only. Put the committed file back
+            // at once so an interrupted preview cannot become a save; finish retries a miss.
+            const bool restored = ARMSX2RestorePerGameLivePreviewSettings(transaction);
+            const bool pending = !restored;
+            if (pending != [transaction[@"restorePending"] boolValue])
+            {
+                NSMutableDictionary<NSString*, id>* updated = [transaction mutableCopy];
+                updated[@"restorePending"] = @(pending);
+                ARMSX2PerGameLivePreviewTransactions()[token] = updated;
+            }
+            applied = restored && applied;
+        }
+
+        if (callback)
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(applied ? YES : NO); });
+    });
+}
+
++ (void)restorePerGameLivePreviewStateForToken:(nonnull NSString *)token
+                                      completion:(nullable ARMSX2SaveStateCompletion)completion
+{
+    ARMSX2SaveStateCompletion callback = [completion copy];
+    dispatch_async(ARMSX2SaveStateQueue(), ^{
+        NSDictionary<NSString*, id>* transaction = ARMSX2PerGameLivePreviewTransactions()[token];
+        NSString* statePath = transaction[@"statePath"];
+        bool restored = false;
+        if (statePath.length > 0)
+        {
+            Host::RunOnCPUThread([&restored, statePath]() {
+                if (!VMManager::HasValidVM())
+                    return;
+                Error error;
+                restored = VMManager::LoadState(statePath.fileSystemRepresentation, &error);
+            }, true);
+        }
+
+        if (callback)
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(restored ? YES : NO); });
+    });
+}
+
++ (void)finishPerGameLivePreviewForToken:(nonnull NSString *)token
+                               completion:(nullable ARMSX2SaveStateCompletion)completion
+{
+    ARMSX2SaveStateCompletion callback = [completion copy];
+    dispatch_async(ARMSX2SaveStateQueue(), ^{
+        NSDictionary<NSString*, id>* transaction = ARMSX2PerGameLivePreviewTransactions()[token];
+        bool finished = transaction != nil;
+        if (transaction)
+        {
+            s_ARMSX2PerGameSettingsReloadGeneration.fetch_add(1, std::memory_order_relaxed);
+            if ([transaction[@"restorePending"] boolValue])
+                finished = ARMSX2RestorePerGameLivePreviewSettings(transaction);
+
+            NSString* statePath = transaction[@"statePath"];
+            Host::RunOnCPUThread([&finished, statePath]() {
+                if (!finished || !VMManager::HasValidVM())
+                {
+                    finished = false;
+                    return;
+                }
+
+                // Every apply put the committed file back, so reloading it drops the
+                // preview; the state load restores the gameplay moment before exit.
+                VMManager::ReloadGameSettings();
+                ARMSX2_ApplyEffectivePresentFPSCap();
+                if (MTGS::IsOpen())
+                    MTGS::ApplySettings();
+                ARMSX2_CaptureGraphicsHackState();
+                Error error;
+                finished = VMManager::LoadState(statePath.fileSystemRepresentation, &error);
+            }, true);
+            ARMSX2RemovePerGameLivePreviewTransaction(token, transaction);
+        }
+
+        if (callback)
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(finished ? YES : NO); });
+    });
 }
 
 template <typename R, typename F>
@@ -4006,6 +4715,50 @@ static void ARMSX2MutatePerGameINI(NSString* isoName, NSString* section, NSStrin
             EmuConfig.EmulationSpeed.NominalScalar, EmuConfig.EmulationSpeed.TurboScalar,
             EmuConfig.EmulationSpeed.SlomoScalar);
         std::fflush(stderr);
+    }, false);
+}
+
++ (void)setRuntimeFastForwardEnabled:(BOOL)enabled speedPercent:(int)percent
+{
+    const int normalizedPercent = std::clamp(percent, 125, 1000);
+    const float turboScalar = static_cast<float>(normalizedPercent) / 100.0f;
+    if (!VMManager::HasValidVM())
+        return;
+
+    // Apply the scalar and limiter as one CPU-thread transaction. Separate INI
+    // and limiter updates can otherwise briefly restore the previous mode.
+    Host::RunOnCPUThread([enabled, normalizedPercent, turboScalar]() {
+        if (!VMManager::HasValidVM())
+            return;
+
+        EmuConfig.EmulationSpeed.TurboScalar = turboScalar;
+        if (!enabled)
+            EmuConfig.EmulationSpeed.NominalScalar = 1.0f;
+        VMManager::SetLimiterMode(
+            enabled ? LimiterModeType::Turbo : LimiterModeType::Nominal);
+        const LimiterModeType appliedMode = VMManager::GetLimiterMode();
+        GSSetPresentCapSuspended(
+            appliedMode == LimiterModeType::Turbo && GSGetMaxPresentInterval() != 0);
+        VMManager::UpdateTargetSpeed();
+    }, false);
+}
+
++ (void)setRuntimeEmulationSpeedPercent:(int)percent
+{
+    int normalizedPercent = std::clamp(percent, 25, 1000);
+    if (ARMSX2RetroAchievementsHardcoreActive() && normalizedPercent < 100) {
+        ARMSX2LogRetroAchievementsHardcoreBlock("slowdown_runtime_shortcut");
+        normalizedPercent = 100;
+    }
+    const float scalar = static_cast<float>(normalizedPercent) / 100.0f;
+
+    // This shortcut is session-only. Persisted frame-pacing configuration
+    // remains untouched, while the active VM target speed changes immediately.
+    Host::RunOnCPUThread([scalar, normalizedPercent]() {
+        if (!VMManager::HasValidVM())
+            return;
+        EmuConfig.EmulationSpeed.NominalScalar = scalar;
+        VMManager::UpdateTargetSpeed();
     }, false);
 }
 
@@ -4376,6 +5129,10 @@ static NSString* ARMSX2UnpackTextureTarZstd(NSURL* archiveURL, NSURL* staging, u
 }
 
 + (void)requestVMBoot {
+    [self requestVMBootLoadingLastSaveState:YES];
+}
+
++ (void)requestVMBootLoadingLastSaveState:(BOOL)loadLastSaveState {
 	std::string bootISO;
 	if (g_p44_settings_interface)
 		bootISO = g_p44_settings_interface->GetStringValue("GameISO", "BootISO", "");
@@ -4384,7 +5141,8 @@ static NSString* ARMSX2UnpackTextureTarZstd(NSURL* archiveURL, NSURL* staging, u
 		(!EmuConfig.BaseFilenames.Bios.empty() && FileSystem::FileExists(biosPath.c_str())) ? 1 : 0,
 		EmuConfig.BaseFilenames.Bios.c_str(), bootISO.c_str());
 	std::fflush(stderr);
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSRequestVMBoot" object:nil];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSRequestVMBoot"
+        object:nil userInfo:@{@"loadLastSaveState": @(loadLastSaveState)}];
 }
 
 + (void)testControllerRumble {
@@ -4403,10 +5161,14 @@ static NSString* ARMSX2UnpackTextureTarZstd(NSURL* archiveURL, NSURL* staging, u
     if (!ARMSX2GetCurrentSaveStateIdentity(&serial, &crc))
         return @[];
 
-    NSMutableArray<ARMSX2SaveStateSlotInfo *> *slots = [NSMutableArray arrayWithCapacity:VMManager::NUM_SAVE_STATE_SLOTS];
+    NSMutableArray<ARMSX2SaveStateSlotInfo *> *slots = [NSMutableArray arrayWithCapacity:VMManager::NUM_SAVE_STATE_SLOTS + 2];
     NSFileManager *fm = [NSFileManager defaultManager];
 
-    for (s32 slot = 1; slot <= VMManager::NUM_SAVE_STATE_SLOTS; slot++) {
+    // -2 is the core's Auto-save file and 0 is Quick Save. Neither was ever a numbered slot on
+    // iOS, so neither can hold an older manual save that an automatic write would replace.
+    for (s32 slot = VMManager::SAVESTATE_SLOT_AUTOSAVE; slot <= VMManager::NUM_SAVE_STATE_SLOTS; slot++) {
+        if (slot == -1)
+            continue;
         const std::string path = VMManager::GetSaveStateFileName(serial.c_str(), crc, slot);
         const BOOL occupied = !path.empty() && FileSystem::FileExists(path.c_str());
         NSString *nsPath = ARMSX2NSStringFromStdString(path);
@@ -4429,124 +5191,296 @@ static NSString* ARMSX2UnpackTextureTarZstd(NSURL* archiveURL, NSURL* staging, u
     return slots;
 }
 
-+ (void)saveStateToSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion {
-    const s32 nativeSlot = static_cast<s32>(slot);
-    ARMSX2SaveStateCompletion callback = [completion copy];
+// Manual saves, Quick Save and Auto-save all write here. Auto-save runs during play, so it skips
+// any moment a state would catch half done, and zips on its own thread unless the game is closing.
+static void ARMSX2WriteSaveState(s32 nativeSlot, bool automatic, bool leaving, void (^callback)(BOOL, NSString*))
+{
     std::string serial;
     u32 crc = 0;
-    if (nativeSlot < 1 || nativeSlot > VMManager::NUM_SAVE_STATE_SLOTS || !ARMSX2GetCurrentSaveStateIdentity(&serial, &crc)) {
+    if (!ARMSX2GetCurrentSaveStateIdentity(&serial, &crc)) {
         NSLog(@"[ARMSX2 iOS SaveState] save rejected slot=%d validGame=0", nativeSlot);
         if (callback)
-            dispatch_async(dispatch_get_main_queue(), ^{ callback(NO); });
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(NO, nil); });
         return;
     }
 
     const std::string targetPath = VMManager::GetSaveStateFileName(serial.c_str(), crc, nativeSlot);
-    NSLog(@"[ARMSX2 iOS SaveState] save requested slot=%d path=%@", nativeSlot, ARMSX2NSStringFromStdString(targetPath));
+    NSLog(@"[ARMSX2 iOS SaveState] save requested slot=%d automatic=%d path=%@", nativeSlot, automatic ? 1 : 0,
+          ARMSX2NSStringFromStdString(targetPath));
 
+    dispatch_async(ARMSX2SaveStateQueue(), ^{
+        bool started = false;
+        bool existed = false;
+        // With zip_on_thread the core reports a failed zip later, from the zip thread.
+        auto saveError = std::make_shared<std::string>();
+        VMManager::WaitForSaveStateFlush();
+        // The live preview runs the game on trial settings; a state saved now would keep them.
+        const bool previewing = ARMSX2PerGameLivePreviewTransactions().count > 0;
+        if (!(automatic && previewing)) {
+            Host::RunOnCPUThread([nativeSlot, serial, crc, automatic, leaving, &targetPath, &started, &existed, saveError]() {
+                NSLog(@"[ARMSX2 iOS SaveState] CPU save start slot=%d", nativeSlot);
+                if (!ARMSX2SaveStateIdentityMatches(serial, crc)) {
+                    NSLog(@"[ARMSX2 iOS SaveState] CPU save rejected slot=%d reason=game-changed", nativeSlot);
+                    return;
+                }
+                existed = FileSystem::FileExists(targetPath.c_str());
+                if (MemcardBusy::IsBusy()) {
+                    NSLog(@"[ARMSX2 iOS SaveState] CPU save rejected slot=%d reason=memory-card-busy", nativeSlot);
+                    return;
+                }
+                if (automatic && (FileMcd_IsAutoEjecting() || (!leaving && VMManager::GetState() != VMState::Running))) {
+                    NSLog(@"[ARMSX2 iOS SaveState] CPU save skipped slot=%d reason=not-running-or-ejecting", nativeSlot);
+                    return;
+                }
+
+                if (automatic) {
+                    // Closing and reopening the cards, as a manual save does, stalls a running game.
+                    cdvdSaveNVRAM();
+                    FileMcd_Flush();
+                } else if (!ARMSX2FlushNVRAMAndMemoryCards("pre-save-state")) {
+                    NSLog(@"[ARMSX2 iOS SaveState] CPU save rejected slot=%d reason=pre-save-flush-failed", nativeSlot);
+                    return;
+                }
+
+                // SaveState keeps the old state as .backup whatever the INI says, and posts no
+                // "slot N" message: the panel and the macros show their own.
+                started = true;
+                VMManager::SaveState(targetPath.c_str(), automatic && !leaving, true, [saveError](const std::string& error) {
+                    *saveError = error;
+                });
+                if (automatic)
+                    Host::RemoveKeyedOSDMessage("MemcardBusy"); // The core's in-game save hint would repeat every interval.
+                else if (saveError->empty())
+                    ARMSX2FlushNVRAMAndMemoryCards("post-save-state");
+                NSLog(@"[ARMSX2 iOS SaveState] CPU save finished slot=%d", nativeSlot);
+            }, true);
+        }
+
+        VMManager::WaitForSaveStateFlush();
+        const bool result = started && saveError->empty() && FileSystem::FileExists(targetPath.c_str());
+        if (!saveError->empty())
+            NSLog(@"[ARMSX2 iOS SaveState] save failed slot=%d error=%@", nativeSlot, ARMSX2NSStringFromStdString(*saveError));
+        if (!result && existed)
+            ARMSX2RestoreSaveStateBackup(targetPath);
+        // Only a save over an existing state moves one to .backup; that one is what Undo brings back.
+        NSString* backupToken = result && existed ? ARMSX2FileToken(targetPath + ".backup") : nil;
+
+        NSLog(@"[ARMSX2 iOS SaveState] save finished slot=%d result=%d exists=%d",
+              nativeSlot, result ? 1 : 0, FileSystem::FileExists(targetPath.c_str()) ? 1 : 0);
+
+        if (callback)
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(result ? YES : NO, backupToken); });
+    });
+}
+
++ (void)saveStateToSlot:(NSInteger)slot
+             completion:(nullable void (^)(BOOL saved, NSString *_Nullable backupToken))completion {
+    void (^callback)(BOOL, NSString*) = [completion copy];
+    if (slot < 0 || slot > VMManager::NUM_SAVE_STATE_SLOTS) {
+        if (callback)
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(NO, nil); });
+        return;
+    }
+    ARMSX2WriteSaveState(static_cast<s32>(slot), false, false, callback);
+}
+
++ (void)autoSaveLeavingGame:(BOOL)leaving completion:(nullable ARMSX2SaveStateCompletion)completion {
+    ARMSX2SaveStateCompletion callback = [completion copy];
+    ARMSX2WriteSaveState(VMManager::SAVESTATE_SLOT_AUTOSAVE, true, leaving, ^(BOOL saved, NSString*) {
+        if (callback)
+            callback(saved);
+    });
+}
+
++ (void)loadStateFromSlot:(NSInteger)slot
+         expectedModified:(nullable NSDate *)expectedModified
+              keepingUndo:(BOOL)keepingUndo
+               completion:(nullable void (^)(BOOL loaded, NSString *_Nullable undoPath))completion {
+    const s32 nativeSlot = static_cast<s32>(slot);
+    void (^callback)(BOOL, NSString*) = [completion copy];
+    std::string serial;
+    u32 crc = 0;
+    if (nativeSlot < VMManager::SAVESTATE_SLOT_AUTOSAVE || nativeSlot == -1 ||
+        nativeSlot > VMManager::NUM_SAVE_STATE_SLOTS || !ARMSX2GetCurrentSaveStateIdentity(&serial, &crc)) {
+        NSLog(@"[ARMSX2 iOS SaveState] load rejected slot=%d validGame=0", nativeSlot);
+        if (callback)
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(NO, nil); });
+        return;
+    }
+
+    const std::string targetPath = VMManager::GetSaveStateFileName(serial.c_str(), crc, nativeSlot);
+    // No serial in the name: Clear Cache removes temporary files that carry one.
+    NSString* undoPath = keepingUndo ? [NSTemporaryDirectory() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"ARMSX2-undo-load-%@.p2s", [[NSUUID UUID] UUIDString]]] : nil;
+    NSLog(@"[ARMSX2 iOS SaveState] load requested slot=%d path=%@ undo=%d",
+          nativeSlot, ARMSX2NSStringFromStdString(targetPath), keepingUndo ? 1 : 0);
+
+    dispatch_async(ARMSX2SaveStateQueue(), ^{
+        // By value: the main-queue block below outlives this one.
+        auto finish = [callback, undoPath](bool loaded) {
+            void (^reply)(BOOL, NSString*) = callback;
+            NSString* undo = loaded ? undoPath : nil;
+            if (!loaded && undoPath)
+                [[NSFileManager defaultManager] removeItemAtPath:undoPath error:nil];
+            if (reply)
+                dispatch_async(dispatch_get_main_queue(), ^{ reply(loaded ? YES : NO, undo); });
+        };
+        if (ARMSX2RetroAchievementsHardcoreActive()) {
+            NSLog(@"[ARMSX2 iOS SaveState] load rejected slot=%d reason=hardcore-active", nativeSlot);
+            finish(false);
+            return;
+        }
+
+        VMManager::WaitForSaveStateFlush();
+        // An automatic save queued ahead of this load may have replaced the state that was shown.
+        if (expectedModified) {
+            struct stat info{};
+            const double modified = stat(targetPath.c_str(), &info) == 0
+                ? info.st_mtimespec.tv_sec + info.st_mtimespec.tv_nsec / 1e9 : 0;
+            if (std::fabs(modified - expectedModified.timeIntervalSince1970) >= 1) {
+                NSLog(@"[ARMSX2 iOS SaveState] load rejected slot=%d reason=state-changed", nativeSlot);
+                finish(false);
+                return;
+            }
+        }
+
+        bool flushResult = false;
+        Host::RunOnCPUThread([serial, crc, &flushResult]() {
+            flushResult = ARMSX2SaveStateIdentityMatches(serial, crc) &&
+                ARMSX2FlushNVRAMAndMemoryCards("pre-load-state");
+        }, true);
+        if (flushResult)
+            ARMSX2BackupAssignedMemoryCards("pre-load-state", nativeSlot, serial, crc);
+
+        bool result = false;
+        Host::RunOnCPUThread([nativeSlot, serial, crc, flushResult, undoPath, &result]() {
+            if (!flushResult || !ARMSX2SaveStateIdentityMatches(serial, crc) || MemcardBusy::IsBusy()) {
+                NSLog(@"[ARMSX2 iOS SaveState] CPU load rejected slot=%d", nativeSlot);
+                return;
+            }
+            if (undoPath) {
+                std::string undoError;
+                VMManager::SaveState(undoPath.fileSystemRepresentation, false, false,
+                    [&undoError](const std::string& error) { undoError = error; });
+                if (!undoError.empty() || !FileSystem::FileExists(undoPath.fileSystemRepresentation)) {
+                    NSLog(@"[ARMSX2 iOS SaveState] CPU load cancelled slot=%d reason=undo-state-failed", nativeSlot);
+                    return;
+                }
+            }
+            result = VMManager::LoadStateFromSlot(nativeSlot);
+            // Its message names slot -2 or 0; the app says what was loaded.
+            Host::RemoveKeyedOSDMessage("LoadStateFromSlot");
+            NSLog(@"[ARMSX2 iOS SaveState] CPU load finished slot=%d result=%d", nativeSlot, result ? 1 : 0);
+        }, true);
+        finish(result);
+    });
+}
+
++ (void)undoLoadStateFromPath:(nonnull NSString *)path completion:(nullable ARMSX2SaveStateCompletion)completion {
+    ARMSX2SaveStateCompletion callback = [completion copy];
+    std::string serial;
+    u32 crc = 0;
+    const bool validGame = ARMSX2GetCurrentSaveStateIdentity(&serial, &crc);
     dispatch_async(ARMSX2SaveStateQueue(), ^{
         bool result = false;
         VMManager::WaitForSaveStateFlush();
-        Host::RunOnCPUThread([nativeSlot, &result]() {
-            NSLog(@"[ARMSX2 iOS SaveState] CPU save start slot=%d", nativeSlot);
-            if (MemcardBusy::IsBusy()) {
-                NSLog(@"[ARMSX2 iOS SaveState] CPU save rejected slot=%d reason=memory-card-busy", nativeSlot);
-                result = false;
-                return;
-            }
-
-            if (!ARMSX2FlushNVRAMAndMemoryCards("pre-save-state")) {
-                NSLog(@"[ARMSX2 iOS SaveState] CPU save rejected slot=%d reason=pre-save-flush-failed", nativeSlot);
-                result = false;
-                return;
-            }
-
-            std::string saveError;
-            VMManager::SaveStateToSlot(nativeSlot, false, [&saveError](const std::string& error) {
-                saveError = error;
-            });
-            result = saveError.empty();
-            if (result)
-                ARMSX2FlushNVRAMAndMemoryCards("post-save-state");
-            else
-                NSLog(@"[ARMSX2 iOS SaveState] CPU save failed slot=%d error=%@", nativeSlot, ARMSX2NSStringFromStdString(saveError));
-            NSLog(@"[ARMSX2 iOS SaveState] CPU save finished slot=%d result=%d", nativeSlot, result ? 1 : 0);
-        }, true);
-
-        if (result) {
-            VMManager::WaitForSaveStateFlush();
-            result = targetPath.empty() ? result : FileSystem::FileExists(targetPath.c_str());
+        if (validGame && FileSystem::FileExists(path.fileSystemRepresentation)) {
+            // No memory card backup here: undoing a load doubled them and pruned older ones away.
+            Host::RunOnCPUThread([serial, crc, path, &result]() {
+                if (!ARMSX2SaveStateIdentityMatches(serial, crc) || MemcardBusy::IsBusy() ||
+                    !FileSystem::FileExists(path.fileSystemRepresentation))
+                    return;
+                Error error;
+                result = VMManager::LoadState(path.fileSystemRepresentation, &error);
+            }, true);
         }
-
-        NSLog(@"[ARMSX2 iOS SaveState] save finished slot=%d result=%d exists=%d",
-              nativeSlot, result ? 1 : 0, (!targetPath.empty() && FileSystem::FileExists(targetPath.c_str())) ? 1 : 0);
-
+        if (result)
+            [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
         if (callback)
             dispatch_async(dispatch_get_main_queue(), ^{ callback(result ? YES : NO); });
     });
 }
 
-+ (void)loadStateFromSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion {
-    const s32 nativeSlot = static_cast<s32>(slot);
++ (void)discardUndoLoadStateAtPath:(nonnull NSString *)path {
+    dispatch_async(ARMSX2SaveStateQueue(), ^{
+        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+    });
+}
+
+/// Runs `body` on the save-state queue with the path of the running game's slot.
+static void ARMSX2WithSaveStateSlotPath(NSInteger slot, ARMSX2SaveStateCompletion completion,
+    bool (^body)(const std::string& path))
+{
     ARMSX2SaveStateCompletion callback = [completion copy];
     std::string serial;
     u32 crc = 0;
-    if (nativeSlot < 1 || nativeSlot > VMManager::NUM_SAVE_STATE_SLOTS || !ARMSX2GetCurrentSaveStateIdentity(&serial, &crc)) {
-        NSLog(@"[ARMSX2 iOS SaveState] load rejected slot=%d validGame=0", nativeSlot);
+    const s32 nativeSlot = static_cast<s32>(slot);
+    if (nativeSlot < VMManager::SAVESTATE_SLOT_AUTOSAVE || nativeSlot == -1 ||
+        nativeSlot > VMManager::NUM_SAVE_STATE_SLOTS || !ARMSX2GetCurrentSaveStateIdentity(&serial, &crc)) {
         if (callback)
             dispatch_async(dispatch_get_main_queue(), ^{ callback(NO); });
         return;
     }
-
-    const std::string targetPath = VMManager::GetSaveStateFileName(serial.c_str(), crc, nativeSlot);
-    NSLog(@"[ARMSX2 iOS SaveState] load requested slot=%d path=%@ exists=%d",
-          nativeSlot, ARMSX2NSStringFromStdString(targetPath), (!targetPath.empty() && FileSystem::FileExists(targetPath.c_str())) ? 1 : 0);
-
+    const std::string path = VMManager::GetSaveStateFileName(serial.c_str(), crc, nativeSlot);
     dispatch_async(ARMSX2SaveStateQueue(), ^{
-        if (ARMSX2RetroAchievementsHardcoreActive()) {
-            NSLog(@"[ARMSX2 iOS SaveState] load rejected slot=%d reason=hardcore-active", nativeSlot);
-            std::fprintf(stderr, "@@IOS_SAVESTATE_LOAD_BLOCKED@@ slot=%d reason=hardcore-active\n", nativeSlot);
-            std::fflush(stderr);
-            if (callback)
-                dispatch_async(dispatch_get_main_queue(), ^{ callback(NO); });
-            return;
-        }
-
-        bool result = false;
-        bool flushResult = false;
         VMManager::WaitForSaveStateFlush();
-        Host::RunOnCPUThread([&flushResult]() {
-            flushResult = ARMSX2FlushNVRAMAndMemoryCards("pre-load-state");
-        }, true);
-
-        NSInteger backupCount = 0;
-        if (flushResult)
-            backupCount = ARMSX2BackupAssignedMemoryCards("pre-load-state", nativeSlot, serial, crc);
-
-        Host::RunOnCPUThread([nativeSlot, flushResult, &result]() {
-            NSLog(@"[ARMSX2 iOS SaveState] CPU load start slot=%d", nativeSlot);
-            if (!flushResult) {
-                NSLog(@"[ARMSX2 iOS SaveState] CPU load rejected slot=%d reason=pre-load-flush-failed", nativeSlot);
-                result = false;
-                return;
-            }
-
-            if (MemcardBusy::IsBusy()) {
-                NSLog(@"[ARMSX2 iOS SaveState] CPU load rejected slot=%d reason=memory-card-busy", nativeSlot);
-                result = false;
-                return;
-            }
-
-            result = VMManager::LoadStateFromSlot(nativeSlot);
-            NSLog(@"[ARMSX2 iOS SaveState] CPU load finished slot=%d result=%d", nativeSlot, result ? 1 : 0);
-        }, true);
-
-        NSLog(@"[ARMSX2 iOS SaveState] load callback slot=%d result=%d memcardBackups=%ld",
-              nativeSlot, result ? 1 : 0, static_cast<long>(backupCount));
-
+        const bool result = body(path);
         if (callback)
             dispatch_async(dispatch_get_main_queue(), ^{ callback(result ? YES : NO); });
     });
+}
+
++ (void)deleteSaveStateInSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion {
+    ARMSX2WithSaveStateSlotPath(slot, completion, ^bool(const std::string& path) {
+        const std::string held = ARMSX2HeldPath(path);
+        if (renamex_np(path.c_str(), held.c_str(), RENAME_EXCL) != 0)
+            return false;
+        const std::string backup = path + ".backup";
+        if (FileSystem::FileExists(backup.c_str()))
+            renamex_np(backup.c_str(), ARMSX2HeldPath(backup).c_str(), RENAME_EXCL);
+        NSLog(@"[ARMSX2 iOS SaveState] delete held path=%@", ARMSX2NSStringFromStdString(path));
+        return true;
+    });
+}
+
++ (void)restoreDeletedSaveStateInSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion {
+    ARMSX2WithSaveStateSlotPath(slot, completion, ^bool(const std::string& path) {
+        return !FileSystem::FileExists(path.c_str()) && ARMSX2RestoreHeldSaveState(path);
+    });
+}
+
++ (void)finishDeletingSaveStateInSlot:(NSInteger)slot {
+    ARMSX2WithSaveStateSlotPath(slot, nil, ^bool(const std::string& path) {
+        FileSystem::DeleteFilePath(ARMSX2HeldPath(path).c_str());
+        FileSystem::DeleteFilePath(ARMSX2HeldPath(path + ".backup").c_str());
+        return true;
+    });
+}
+
++ (void)undoSaveOverInSlot:(NSInteger)slot backupToken:(nonnull NSString *)backupToken
+                completion:(nullable ARMSX2SaveStateCompletion)completion {
+    ARMSX2WithSaveStateSlotPath(slot, completion, ^bool(const std::string& path) {
+        const std::string backup = path + ".backup";
+        const std::string held = ARMSX2HeldPath(path);
+        // Another save since then replaced the backup; putting it back would lose that save.
+        if (![ARMSX2FileToken(backup) isEqualToString:backupToken] ||
+            renamex_np(path.c_str(), held.c_str(), RENAME_EXCL) != 0)
+            return false;
+        if (renamex_np(backup.c_str(), path.c_str(), RENAME_EXCL) != 0) {
+            renamex_np(held.c_str(), path.c_str(), RENAME_EXCL);
+            return false;
+        }
+        FileSystem::DeleteFilePath(held.c_str());
+        return true;
+    });
+}
+
++ (double)currentGamePlayedSeconds {
+    std::string serial;
+    if (!ARMSX2GetCurrentSaveStateIdentity(&serial, nullptr))
+        return 0;
+    return static_cast<double>(GameList::GetPlayedTimeForSerial(serial)) +
+        static_cast<double>(VMManager::GetSessionPlayedTime());
 }
 
 #pragma mark - PNACH cheats/patches

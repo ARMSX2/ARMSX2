@@ -13,7 +13,7 @@ class GSTexture;
 
 class alignas(32) GSClut final : public GSAlignedClass<32>
 {
-	static constexpr u32 CLUT_ALLOC_SIZE = 4096 * 2;
+	static constexpr u32 CLUT_ALLOC_SIZE = 4096;
 
 	static const GSVector4i m_bm;
 	static const GSVector4i m_gm;
@@ -24,7 +24,6 @@ class alignas(32) GSClut final : public GSAlignedClass<32>
 	u32 m_CBP[2] = {};
 	u16* m_clut = nullptr;
 	u32* m_buff32 = nullptr;
-	u64* m_buff64 = nullptr;
 
 	struct alignas(32) WriteState
 	{
@@ -139,5 +138,4 @@ public:
 	u32 operator[](size_t i) const { return m_buff32[i]; }
 
 	operator const u32*() const { return m_buff32; }
-	operator const u64*() const { return m_buff64; }
 };

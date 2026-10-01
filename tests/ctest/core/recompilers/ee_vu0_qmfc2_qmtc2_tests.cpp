@@ -18,6 +18,7 @@
 #include "VU.h"
 
 #include <gtest/gtest.h>
+#include <cstring>
 
 namespace recompiler_tests {
 

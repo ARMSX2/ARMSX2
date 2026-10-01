@@ -20,7 +20,6 @@ GSClut::GSClut(GSLocalMemory* mem)
 		pxFailRel("Failed to allocate CLUT storage.");
 
 	m_buff32 = reinterpret_cast<u32*>(reinterpret_cast<u8*>(m_clut) + 2048); // 1k
-	m_buff64 = reinterpret_cast<u64*>(reinterpret_cast<u8*>(m_clut) + 4096); // 2k
 	m_write.dirty = 1;
 	m_read.dirty = true;
 
@@ -380,7 +379,6 @@ void GSClut::Read32(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA)
 					else
 						ReadCLUT_T32_I4(clut, m_buff32);
 
-					ExpandCLUT64_T32_I8(m_buff32, (u64*)m_buff64); // sw renderer does not need m_buff64 anymore
 					break;
 			}
 		}
@@ -399,7 +397,6 @@ void GSClut::Read32(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA)
 					clut += TEX0.CSA << 4;
 					// TODO: merge these functions
 					Expand16(clut, m_buff32, 16, TEXA);
-					ExpandCLUT64_T32_I8(m_buff32, (u64*)m_buff64); // sw renderer does not need m_buff64 anymore
 					break;
 			}
 		}

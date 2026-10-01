@@ -347,16 +347,15 @@ void GSSetupPrimCodeGenerator::Texture()
 	}
 
 	// The coordinate a triangle samples at trails the exact plane in the direction
-	// the walk is going, by less than a sixteenth of a texel. Console-measured; the
-	// reasoning is on CSetupPrim in GSDrawScanline.cpp. Sprites take nothing.
+	// the walk is going, by less than a sixteenth of a texel (see CSetupPrim in
+	// GSDrawScanline.cpp). Sprites take nothing.
 	//
 	// A positive float has the integer order of its bits, so an integer compare
-	// against zero names the axes that walk forward without touching the FPU;
-	// subtracting the resulting all-ones from zero leaves the one unit the scanline
-	// takes off, and zero on the still and backward axes.
+	// against zero finds the axes that walk forward; 0 - (all-ones) leaves the one
+	// unit the scanline subtracts, and zero on still and backward axes.
 	//
-	// This has to sit AFTER the d4.stq store: xym1 still holds t * 4 until then, and
-	// the compare below overwrites it. xym0 is t and stays live for the loop after.
+	// Must sit after the d4.stq store: xym1 holds t * 4 until then, and the compare
+	// overwrites it. xym0 is t and stays live for the loop after.
 	if (m_sel.prim != GS_SPRITE_CLASS)
 	{
 		for (int j = 0; j < 2; j++)

@@ -714,15 +714,16 @@ const char* Pcsx2Config::GSOptions::GetRendererName(GSRendererType type)
 	switch (type)
 	{
 			// clang-format off
-		case GSRendererType::Auto:  return "Auto";
-		case GSRendererType::DX11:  return "Direct3D 11";
-		case GSRendererType::DX12:  return "Direct3D 12";
-		case GSRendererType::Metal: return "Metal";
-		case GSRendererType::OGL:   return "OpenGL";
-		case GSRendererType::VK:    return "Vulkan";
-		case GSRendererType::SW:    return "Software";
-		case GSRendererType::Null:  return "Null";
-		default:                    return "";
+		case GSRendererType::Auto:   return "Auto";
+		case GSRendererType::DX11:   return "Direct3D 11";
+		case GSRendererType::DX12:   return "Direct3D 12";
+		case GSRendererType::Metal:  return "Metal";
+		case GSRendererType::OGL:    return "OpenGL";
+		case GSRendererType::VK:     return "Vulkan";
+		case GSRendererType::SW:     return "Software";
+		case GSRendererType::Null:   return "Null";
+		case GSRendererType::NullHW: return "Null (HW)";
+		default:                     return "";
 			// clang-format on
 	}
 }
@@ -746,13 +747,12 @@ Pcsx2Config::GSOptions::GSOptions()
 	UseDebugDevice = false;
 	UseBlitSwapChain = false;
 	DisableShaderCache = false;
+	PrecompilePipelines = true;
 	DisableFramebufferFetch = false;
-	DisableDualSourceBlend = false;
-	DisablePS2DepthQuantization = false;
 	DisableVertexShaderExpand = false;
-	EnableAdrenoFramebufferFetch = false;
 	ForceMaliFramebufferFetch = false;
 	SkipDuplicateFrames = true;
+	AdvancedFrameDisplay = false;
 	OsdMessagesPos = OsdOverlayPos::TopLeft;
 	OsdPerformancePos = OsdOverlayPos::TopRight;
 	OsdShowSpeed = false;
@@ -862,6 +862,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(UpscaleMultiplier) &&
 
 		OpEqu(AccurateBlendingUnit) &&
+		OpEqu(CopyRoadMaximumBlendingLevel) &&
 		OpEqu(TextureFiltering) &&
 		OpEqu(TexturePreloading) &&
 		OpEqu(GSDumpCompression) &&
@@ -895,7 +896,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(UserHacks_BilinearHack) &&
 		OpEqu(OverrideTextureBarriers) &&
 		OpEqu(DepthFeedbackMode) &&
-		OpEqu(BackThreadMode) &&
+		OpEqu(BackThread) &&
 
 		OpEqu(CAS_Sharpness) &&
 		OpEqu(FSR_Sharpness) &&
@@ -924,6 +925,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(LsfgMultiplier) &&
 		OpEqu(LsfgDllPath) &&
 		OpEqu(LsfgPerformance) &&
+		OpEqu(LsfgFp16) &&
 		OpEqu(LsfgFlowScale) &&
 		OpEqu(LsfgTargetRate) &&
 
@@ -943,7 +945,7 @@ bool Pcsx2Config::GSOptions::operator!=(const GSOptions& right) const
 bool Pcsx2Config::GSOptions::IsRestartOption(const char* ini_key)
 {
 	// INI key names for the fields compared in RestartOptionsAreEqual below; keep the
-	// two in sync. Names match the field names except BackThreadMode, which is stored
+	// two in sync. Names match the field names except BackThread, which is stored
 	// as "GSBackThreadMode".
 	static constexpr const char* keys[] = {
 		"Renderer",
@@ -952,11 +954,9 @@ bool Pcsx2Config::GSOptions::IsRestartOption(const char* ini_key)
 		"DebugLabels",
 		"UseBlitSwapChain",
 		"DisableShaderCache",
+		"PrecompilePipelines",
 		"DisableFramebufferFetch",
-		"DisableDualSourceBlend",
-		"DisablePS2DepthQuantization",
 		"DisableVertexShaderExpand",
-		"EnableAdrenoFramebufferFetch",
 		"ForceMaliFramebufferFetch",
 		"OverrideTextureBarriers",
 		"DepthFeedbackMode",
@@ -983,15 +983,13 @@ bool Pcsx2Config::GSOptions::RestartOptionsAreEqual(const GSOptions& right) cons
 		   OpEqu(DebugLabels) &&
 		   OpEqu(UseBlitSwapChain) &&
 		   OpEqu(DisableShaderCache) &&
+		   OpEqu(PrecompilePipelines) &&
 		   OpEqu(DisableFramebufferFetch) &&
-		   OpEqu(DisableDualSourceBlend) &&
-		   OpEqu(DisablePS2DepthQuantization) &&
 		   OpEqu(DisableVertexShaderExpand) &&
-		   OpEqu(EnableAdrenoFramebufferFetch) &&
 		   OpEqu(ForceMaliFramebufferFetch) &&
 		   OpEqu(OverrideTextureBarriers) &&
 		   OpEqu(DepthFeedbackMode) &&
-		   OpEqu(BackThreadMode) &&
+		   OpEqu(BackThread) &&
 		   OpEqu(HWAA1) &&
 		   OpEqu(ExclusiveFullscreenControl);
 }
@@ -1039,13 +1037,12 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(DumpDrawLog);
 	SettingsWrapBitBool(UseBlitSwapChain);
 	SettingsWrapBitBool(DisableShaderCache);
+	SettingsWrapBitBool(PrecompilePipelines);
 	SettingsWrapBitBool(DisableFramebufferFetch);
-	SettingsWrapBitBool(DisableDualSourceBlend);
-	SettingsWrapBitBool(DisablePS2DepthQuantization);
 	SettingsWrapBitBool(DisableVertexShaderExpand);
-	SettingsWrapBitBool(EnableAdrenoFramebufferFetch);
 	SettingsWrapBitBool(ForceMaliFramebufferFetch);
 	SettingsWrapBitBool(SkipDuplicateFrames);
+	SettingsWrapBitBool(AdvancedFrameDisplay);
 	SettingsWrapBitBool(OsdShowSpeed);
 	SettingsWrapBitBool(OsdShowFPS);
 	SettingsWrapBitBool(OsdShowVPS);
@@ -1092,7 +1089,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapIntEnumEx(UserHacks_Limit24BitDepth, "UserHacks_Limit24BitDepth");
 	SettingsWrapBitBoolEx(UserHacks_EstimateTextureRegion, "UserHacks_EstimateTextureRegion");
 	SettingsWrapBitBoolEx(UserHacks_DrawBuffering, "UserHacks_DrawBuffering");
-	SettingsWrapBitBoolEx(UserHacks_RewriteLargeST, "UserHacks_RewriteLargeST");
+	SettingsWrapBitBoolEx(UserHacks_RewriteLargeSTCoords, "UserHacks_RewriteLargeST");
 	SettingsWrapBitBoolEx(FXAA, "fxaa");
 	SettingsWrapBitBool(ShadeBoost);
 	SettingsWrapBitBoolEx(DumpGSData, "DumpGSData");
@@ -1169,7 +1166,9 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapIntEnumEx(TriFilter, "TriFilter");
 	SettingsWrapBitfieldEx(OverrideTextureBarriers, "OverrideTextureBarriers");
 	SettingsWrapIntEnumEx(DepthFeedbackMode, "DepthFeedbackMode");
-	SettingsWrapIntEnumEx(BackThreadMode, "GSBackThreadMode");
+	// An integer on disk: 0 is off, any other value on. Older builds stored a four-way mode whose
+	// "on" value was 3, and the settings UIs bind the key as an integer.
+	BackThread = wrap.EntryBitfield(CURRENT_SETTINGS_SECTION, "GSBackThreadMode", BackThread ? 1 : 0, BackThread ? 1 : 0) != 0;
 
 	SettingsWrapBitfield(ShadeBoost_Brightness);
 	SettingsWrapBitfield(ShadeBoost_Contrast);
@@ -1193,6 +1192,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitfieldEx(LsfgMultiplier, "LsfgMultiplier");
 	SettingsWrapEntryEx(LsfgDllPath, "LsfgDllPath");
 	SettingsWrapEntryEx(LsfgPerformance, "LsfgPerformance");
+	SettingsWrapEntryEx(LsfgFp16, "LsfgFp16");
 	SettingsWrapBitfieldEx(LsfgFlowScale, "LsfgFlowScale");
 	SettingsWrapBitfieldEx(LsfgTargetRate, "LsfgTargetRate");
 
@@ -1282,7 +1282,7 @@ void Pcsx2Config::GSOptions::MaskUserHacks(bool respect_claims)
 	if (!keep(GSUserHackOverride::GPUTargetCLUT))
 		UserHacks_GPUTargetCLUTMode = GSGPUTargetCLUTMode::Disabled;
 	if (!keep(GSUserHackOverride::RewriteLargeST))
-		UserHacks_RewriteLargeST = false;
+		UserHacks_RewriteLargeSTCoords = false;
 
 	// No UI reaches these two, so there is nothing for a player to claim.
 	UserHacks_DisableSafeFeatures = false;

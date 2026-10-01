@@ -102,9 +102,19 @@ private let helpData: [HelpSection] = [
 struct HelpView: View {
     @State private var settings = SettingsStore.shared
     @State private var copyStatusMessage: String?
+    @State private var expandedItemIDs: Set<UUID> = []
 #if targetEnvironment(macCatalyst)
     @State private var selectedTopic: HelpTopic? = .item(section: 0, item: 0)
 #endif
+
+    static var controllerTargetOrder: [String] {
+        helpData.flatMap(\.items).map { targetID($0) }
+            + ["settings.help.copy-troubleshooting"]
+    }
+
+    private static func targetID(_ item: HelpItem) -> String {
+        "settings.help.item.\(item.id.uuidString)"
+    }
 
     private var backgroundConfigured: Bool {
         settings.hasCustomBackground && settings.backgroundEnabledInSettings
@@ -151,7 +161,7 @@ struct HelpView: View {
             ForEach(helpData) { section in
                 Section {
                     ForEach(section.items) { item in
-                        DisclosureGroup {
+                        DisclosureGroup(isExpanded: expandedBinding(for: item)) {
                             Text(settings.localized(item.answer))
                                 .font(.body)
                                 .foregroundStyle(.secondary)
@@ -161,7 +171,13 @@ struct HelpView: View {
                                 .font(.body)
                                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                                 .contentShape(Rectangle())
+                                .controllerAccessibilityActionTarget(
+                                    label: settings.localized(item.question)
+                                ) {
+                                    toggle(item)
+                                }
                         }
+                        .controllerAccessibilityTargetID(Self.targetID(item))
                     }
                 } header: {
                     Label(settings.localized(section.title), systemImage: section.icon)
@@ -181,6 +197,12 @@ struct HelpView: View {
                 } label: {
                     Label(settings.localized("Copy Troubleshooting Info"), systemImage: "doc.on.doc")
                 }
+                .controllerAccessibilityActionTarget(
+                    id: "settings.help.copy-troubleshooting",
+                    label: settings.localized("Copy Troubleshooting Info")
+                ) {
+                    copyTroubleshootingInfo()
+                }
                 if let copyStatusMessage {
                     Text(settings.localized(copyStatusMessage))
                         .font(.caption)
@@ -190,9 +212,31 @@ struct HelpView: View {
                 Label(settings.localized("About"), systemImage: "info.circle")
             }
         }
+        .controllerAccessibilityTargetOrder(Self.controllerTargetOrder)
         .navigationTitle(settings.localized("Help"))
         .navigationBarTitleDisplayMode(.inline)
 #endif
+    }
+
+    private func expandedBinding(for item: HelpItem) -> Binding<Bool> {
+        Binding(
+            get: { expandedItemIDs.contains(item.id) },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedItemIDs.insert(item.id)
+                } else {
+                    expandedItemIDs.remove(item.id)
+                }
+            }
+        )
+    }
+
+    private func toggle(_ item: HelpItem) {
+        if expandedItemIDs.contains(item.id) {
+            expandedItemIDs.remove(item.id)
+        } else {
+            expandedItemIDs.insert(item.id)
+        }
     }
 
     @ViewBuilder

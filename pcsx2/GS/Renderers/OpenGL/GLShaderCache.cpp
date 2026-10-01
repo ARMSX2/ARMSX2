@@ -8,29 +8,13 @@
 #include "Config.h"
 #include "ShaderCacheVersion.h"
 
-#include "common/FileSystem.h"
 #include "common/Console.h"
-#include "common/MD5Digest.h"
 #include "common/Path.h"
-#include "common/StringUtil.h"
 #include "common/Timer.h"
 
-namespace {
-#pragma pack(push, 1)
-struct CacheIndexEntry
-{
-	u64 vertex_source_hash_low;
-	u64 vertex_source_hash_high;
-	u32 vertex_source_length;
-	u64 fragment_source_hash_low;
-	u64 fragment_source_hash_high;
-	u32 fragment_source_length;
-	u32 file_offset;
-	u32 blob_size;
-	u32 blob_format;
-};
-#pragma pack(pop)
-}
+#include "fmt/format.h"
+
+#include <cstring>
 
 GLShaderCache::GLShaderCache() = default;
 
@@ -39,33 +23,13 @@ GLShaderCache::~GLShaderCache()
 	Close();
 }
 
-bool GLShaderCache::CacheIndexKey::operator==(const CacheIndexKey& key) const
-{
-	return (vertex_source_hash_low == key.vertex_source_hash_low &&
-			vertex_source_hash_high == key.vertex_source_hash_high &&
-			vertex_source_length == key.vertex_source_length &&
-			fragment_source_hash_low == key.fragment_source_hash_low &&
-			fragment_source_hash_high == key.fragment_source_hash_high &&
-			fragment_source_length == key.fragment_source_length);
-}
-
-bool GLShaderCache::CacheIndexKey::operator!=(const CacheIndexKey& key) const
-{
-	return (vertex_source_hash_low != key.vertex_source_hash_low ||
-			vertex_source_hash_high != key.vertex_source_hash_high ||
-			vertex_source_length != key.vertex_source_length ||
-			fragment_source_hash_low != key.fragment_source_hash_low ||
-			fragment_source_hash_high != key.fragment_source_hash_high ||
-			fragment_source_length != key.fragment_source_length);
-}
-
 bool GLShaderCache::Open(bool is_gles)
 {
 	m_program_binary_supported = GLAD_GL_ARB_get_program_binary || is_gles;
+	GLint num_formats = 0;
 	if (m_program_binary_supported)
 	{
 		// check that there's at least one format and the extension isn't being "faked"
-		GLint num_formats = 0;
 		glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &num_formats);
 		Console.WriteLn("%u program binary formats supported by driver", num_formats);
 		m_program_binary_supported = (num_formats > 0);
@@ -77,245 +41,99 @@ bool GLShaderCache::Open(bool is_gles)
 		return true;
 	}
 
-	// Compute an identity signature for the live driver. Program binaries are only valid for the
-	// exact driver that produced them; if the cache was written by a different driver (e.g. the
-	// device's native GLES driver, then the user switched the renderer to ANGLE which reports a
-	// completely different vendor/renderer/version), reusing those binaries feeds foreign blobs to
-	// glProgramBinary() and crashes some drivers on the first cached draw. Fold vendor/renderer/
-	// version (and the binary format list) into an FNV-1a hash so any driver change invalidates it.
-	{
-		u32 sig = 0x811c9dc5u;
-		const auto fold = [&sig](const char* s) {
-			if (!s)
-				return;
-			for (; *s; ++s)
-				sig = (sig ^ static_cast<u8>(*s)) * 0x01000193u;
-		};
-		fold(reinterpret_cast<const char*>(glGetString(GL_VENDOR)));
-		fold(reinterpret_cast<const char*>(glGetString(GL_RENDERER)));
-		fold(reinterpret_cast<const char*>(glGetString(GL_VERSION)));
-		GLint num_formats = 0;
-		glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &num_formats);
-		if (num_formats > 0)
-		{
-			std::vector<GLint> formats(static_cast<size_t>(num_formats));
-			glGetIntegerv(GL_PROGRAM_BINARY_FORMATS, formats.data());
-			for (const GLint f : formats)
-				sig = (sig ^ static_cast<u32>(f)) * 0x01000193u;
-		}
-		m_driver_signature = sig;
-	}
+	if (GSConfig.DisableShaderCache)
+		return true;
 
-	if (!GSConfig.DisableShaderCache)
-	{
-		const std::string index_filename = GetIndexFileName();
-		const std::string blob_filename = GetBlobFileName();
+	// Program binaries are driver binaries, valid only for the driver that produced them: a foreign
+	// one (the device's own GLES driver, then ANGLE) crashes some drivers on the first cached draw
+	// instead of failing to load. So the driver's strings and binary formats are the stamp.
+	//
+	// No build identity: an entry's key is the full vertex and fragment source text, and programs
+	// linked with a pre-link callback (link state the source does not show) are never cached, so
+	// the same key always means the same program.
+	const auto gl_string = [](GLenum name) {
+		const char* str = reinterpret_cast<const char*>(glGetString(name));
+		return std::string_view(str ? str : "");
+	};
+	std::vector<GLint> formats(static_cast<size_t>(num_formats));
+	glGetIntegerv(GL_PROGRAM_BINARY_FORMATS, formats.data());
 
-		if (ReadExisting(index_filename, blob_filename))
-			return true;
+	GSCacheFile::Stamp stamp;
+	stamp.Add("shader_cache_version", SHADER_CACHE_VERSION);
+	stamp.Add("api", is_gles ? "gles" : "gl");
+	stamp.Add("vendor", gl_string(GL_VENDOR));
+	stamp.Add("renderer", gl_string(GL_RENDERER));
+	stamp.Add("version", gl_string(GL_VERSION));
+	stamp.Add("glsl_version", gl_string(GL_SHADING_LANGUAGE_VERSION));
+	stamp.AddHex("binary_formats", formats.data(), formats.size() * sizeof(GLint));
 
-		return CreateNew(index_filename, blob_filename);
-	}
+	// Named for the driver, so switching between two (the device's GLES driver and ANGLE) keeps both.
+	GSCacheFile::CleanStaleTempFiles(EmuFolders::Cache);
+	const std::string stem = "gl_programs_" + GSCacheFile::ShortName(stamp.GetDigest());
+	GSCacheFile::PruneOtherIdentities(EmuFolders::Cache, "gl_programs", stem, 3);
+	if (!m_store.Open(Path::Combine(EmuFolders::Cache, stem), GSCacheFile::KIND_GL_PROGRAMS, stamp, KEY_SIZE))
+		Console.Warning("GL: running without a program cache");
 
-	return true;
-}
-
-bool GLShaderCache::CreateNew(const std::string& index_filename, const std::string& blob_filename)
-{
-	if (FileSystem::FileExists(index_filename.c_str()))
-	{
-		Console.Warning("Removing existing index file '%s'", index_filename.c_str());
-		FileSystem::DeleteFilePath(index_filename.c_str());
-	}
-	if (FileSystem::FileExists(blob_filename.c_str()))
-	{
-		Console.Warning("Removing existing blob file '%s'", blob_filename.c_str());
-		FileSystem::DeleteFilePath(blob_filename.c_str());
-	}
-
-	m_index_file = FileSystem::OpenCFile(index_filename.c_str(), "wb");
-	if (!m_index_file)
-	{
-		Console.Error("Failed to open index file '%s' for writing", index_filename.c_str());
-		return false;
-	}
-
-	const u32 file_version = SHADER_CACHE_VERSION;
-	if (std::fwrite(&file_version, sizeof(file_version), 1, m_index_file) != 1 ||
-		std::fwrite(&m_driver_signature, sizeof(m_driver_signature), 1, m_index_file) != 1)
-	{
-		Console.Error("Failed to write version to index file '%s'", index_filename.c_str());
-		std::fclose(m_index_file);
-		m_index_file = nullptr;
-		FileSystem::DeleteFilePath(index_filename.c_str());
-		return false;
-	}
-
-	m_blob_file = FileSystem::OpenCFile(blob_filename.c_str(), "w+b");
-	if (!m_blob_file)
-	{
-		Console.Error("Failed to open blob file '%s' for writing", blob_filename.c_str());
-		std::fclose(m_index_file);
-		m_index_file = nullptr;
-		FileSystem::DeleteFilePath(index_filename.c_str());
-		return false;
-	}
-
-	return true;
-}
-
-bool GLShaderCache::ReadExisting(const std::string& index_filename, const std::string& blob_filename)
-{
-	m_index_file = FileSystem::OpenCFile(index_filename.c_str(), "r+b");
-	if (!m_index_file)
-	{
-		// special case here: when there's a sharing violation (i.e. two instances running),
-		// we don't want to blow away the cache. so just continue without a cache.
-		if (errno == EACCES)
-		{
-			Console.WriteLn("Failed to open shader cache index with EACCES, are you running two instances?");
-			return true;
-		}
-
-		return false;
-	}
-
-	u32 file_version = 0;
-	if (std::fread(&file_version, sizeof(file_version), 1, m_index_file) != 1 || file_version != SHADER_CACHE_VERSION)
-	{
-		Console.Error("Bad file/data version in '%s'", index_filename.c_str());
-		std::fclose(m_index_file);
-		m_index_file = nullptr;
-		return false;
-	}
-
-	u32 file_driver_signature = 0;
-	if (std::fread(&file_driver_signature, sizeof(file_driver_signature), 1, m_index_file) != 1 ||
-		file_driver_signature != m_driver_signature)
-	{
-		// Cache was produced by a different GL driver (e.g. native GLES vs ANGLE). Its program
-		// binaries are not portable across drivers, so discard and recompile rather than risk
-		// feeding foreign blobs to glProgramBinary().
-		Console.WriteLn("GL driver signature changed (0x%08X -> 0x%08X), invalidating shader cache '%s'.",
-			file_driver_signature, m_driver_signature, index_filename.c_str());
-		std::fclose(m_index_file);
-		m_index_file = nullptr;
-		return false;
-	}
-
-	m_blob_file = FileSystem::OpenCFile(blob_filename.c_str(), "a+b");
-	if (!m_blob_file)
-	{
-		Console.Error("Blob file '%s' is missing", blob_filename.c_str());
-		std::fclose(m_index_file);
-		m_index_file = nullptr;
-		return false;
-	}
-
-	std::fseek(m_blob_file, 0, SEEK_END);
-	const u32 blob_file_size = static_cast<u32>(std::ftell(m_blob_file));
-
-	for (;;)
-	{
-		CacheIndexEntry entry;
-		if (std::fread(&entry, sizeof(entry), 1, m_index_file) != 1 ||
-			(entry.file_offset + entry.blob_size) > blob_file_size)
-		{
-			if (std::feof(m_index_file))
-				break;
-
-			Console.Error("Failed to read entry from '%s', corrupt file?", index_filename.c_str());
-			m_index.clear();
-			std::fclose(m_blob_file);
-			m_blob_file = nullptr;
-			std::fclose(m_index_file);
-			m_index_file = nullptr;
-			return false;
-		}
-
-		const CacheIndexKey key{entry.vertex_source_hash_low, entry.vertex_source_hash_high, entry.vertex_source_length,
-			entry.fragment_source_hash_low, entry.fragment_source_hash_high, entry.fragment_source_length};
-		const CacheIndexData data{entry.file_offset, entry.blob_size, entry.blob_format};
-		m_index.emplace(key, data);
-	}
-
-	Console.WriteLn("Read %zu entries from '%s'", m_index.size(), index_filename.c_str());
 	return true;
 }
 
 void GLShaderCache::Close()
 {
-	m_index.clear();
-	if (m_index_file)
-	{
-		std::fclose(m_index_file);
-		m_index_file = nullptr;
-	}
-	if (m_blob_file)
-	{
-		std::fclose(m_blob_file);
-		m_blob_file = nullptr;
-	}
+	m_store.Close();
 }
 
-bool GLShaderCache::Recreate()
+GLShaderCache::CacheKey GLShaderCache::GetCacheKey(
+	const std::string_view vertex_shader, const std::string_view fragment_shader, bool compute)
 {
-	Close();
-
-	const std::string index_filename = GetIndexFileName();
-	const std::string blob_filename = GetBlobFileName();
-
-	return CreateNew(index_filename, blob_filename);
+	CacheKey key = {};
+	const GSCacheFile::Digest vs = GSCacheFile::Hash128(vertex_shader.data(), vertex_shader.size());
+	const GSCacheFile::Digest fs = GSCacheFile::Hash128(fragment_shader.data(), fragment_shader.size());
+	const u32 vs_length = static_cast<u32>(vertex_shader.size());
+	const u32 fs_length = static_cast<u32>(fragment_shader.size());
+	const u32 type = compute ? 1 : 0;
+	u8* p = key.data();
+	std::memcpy(p, vs.bytes, sizeof(vs.bytes));
+	std::memcpy(p + 16, &vs_length, sizeof(u32));
+	std::memcpy(p + 20, fs.bytes, sizeof(fs.bytes));
+	std::memcpy(p + 36, &fs_length, sizeof(u32));
+	std::memcpy(p + 40, &type, sizeof(u32));
+	return key;
 }
 
-GLShaderCache::CacheIndexKey GLShaderCache::GetCacheKey(
-	const std::string_view vertex_shader, const std::string_view fragment_shader)
+std::optional<GLProgram> GLShaderCache::GetCachedProgram(const CacheKey& key)
 {
-	union ShaderHash
-	{
-		struct
-		{
-			u64 low;
-			u64 high;
-		};
-		u8 bytes[16];
-	};
+	std::vector<u8> data;
+	u32 format = 0;
+	if (!m_store.Lookup(key.data(), &data, &format))
+		return std::nullopt;
 
-	ShaderHash vertex_hash = {};
-	ShaderHash fragment_hash = {};
+#ifdef PCSX2_DEVBUILD
+	Common::Timer timer;
+#endif
 
-	MD5Digest digest;
-	if (!vertex_shader.empty())
+	GLProgram prog;
+	if (prog.CreateFromBinary(data.data(), static_cast<u32>(data.size()), format))
 	{
-		digest.Update(vertex_shader.data(), static_cast<u32>(vertex_shader.length()));
-		digest.Final(vertex_hash.bytes);
+#ifdef PCSX2_DEVBUILD
+		Console.WriteLn("Time to create program from binary: %.2fms", timer.GetTimeMilliseconds());
+#endif
+		return std::optional<GLProgram>(std::move(prog));
 	}
 
-	if (!fragment_shader.empty())
-	{
-		digest.Reset();
-		digest.Update(fragment_shader.data(), static_cast<u32>(fragment_shader.length()));
-		digest.Final(fragment_hash.bytes);
-	}
-
-	return CacheIndexKey{vertex_hash.low, vertex_hash.high, static_cast<u32>(vertex_shader.length()), fragment_hash.low,
-		fragment_hash.high, static_cast<u32>(fragment_shader.length())};
-}
-
-std::string GLShaderCache::GetIndexFileName() const
-{
-	return Path::Combine(EmuFolders::Cache, "gl_programs.idx");
-}
-
-std::string GLShaderCache::GetBlobFileName() const
-{
-	return Path::Combine(EmuFolders::Cache, "gl_programs.bin");
+	// The entry passed its checksum, so the driver itself refused a binary it made: it changed
+	// without its strings changing. Nothing else in the store can be trusted either.
+	Console.Warning(
+		"Failed to create program from binary, this may be due to a driver or GPU Change. Recreating cache.");
+	m_store.Recreate();
+	return std::nullopt;
 }
 
 std::optional<GLProgram> GLShaderCache::GetProgram(
 	const std::string_view vertex_shader, const std::string_view fragment_shader, const PreLinkCallback& callback)
 {
-	if (!m_program_binary_supported || !m_blob_file)
+	// A pre-link callback sets link state the source does not show, so such a program is not
+	// content-addressed by its key and is never cached.
+	if (!m_program_binary_supported || !m_store.IsOpen() || callback)
 	{
 #ifdef PCSX2_DEVBUILD
 		Common::Timer timer;
@@ -329,39 +147,14 @@ std::optional<GLProgram> GLShaderCache::GetProgram(
 		return res;
 	}
 
-	const auto key = GetCacheKey(vertex_shader, fragment_shader);
-	auto iter = m_index.find(key);
-	if (iter == m_index.end())
-		return CompileAndAddProgram(key, vertex_shader, fragment_shader, callback);
+	const CacheKey key = GetCacheKey(vertex_shader, fragment_shader, false);
+	if (std::optional<GLProgram> cached = GetCachedProgram(key))
+		return cached;
 
-	std::vector<u8> data(iter->second.blob_size);
-	if (std::fseek(m_blob_file, iter->second.file_offset, SEEK_SET) != 0 ||
-		std::fread(data.data(), 1, iter->second.blob_size, m_blob_file) != iter->second.blob_size)
-	{
-		Console.Error("Read blob from file failed");
-		return {};
-	}
-
-#ifdef PCSX2_DEVBUILD
-	Common::Timer timer;
-#endif
-
-	GLProgram prog;
-	if (prog.CreateFromBinary(data.data(), static_cast<u32>(data.size()), iter->second.blob_format))
-	{
-#ifdef PCSX2_DEVBUILD
-		Console.WriteLn("Time to create program from binary: %.2fms", timer.GetTimeMilliseconds());
-#endif
-
-		return std::optional<GLProgram>(std::move(prog));
-	}
-
-	Console.Warning(
-		"Failed to create program from binary, this may be due to a driver or GPU Change. Recreating cache.");
-	if (!Recreate())
-		return CompileProgram(vertex_shader, fragment_shader, callback, false);
-	else
-		return CompileAndAddProgram(key, vertex_shader, fragment_shader, callback);
+	std::optional<GLProgram> prog = CompileProgram(vertex_shader, fragment_shader, callback, true);
+	if (prog.has_value())
+		AddProgram(key, *prog);
+	return prog;
 }
 
 bool GLShaderCache::GetProgram(GLProgram* out_program, const std::string_view vertex_shader,
@@ -375,37 +168,17 @@ bool GLShaderCache::GetProgram(GLProgram* out_program, const std::string_view ve
 	return true;
 }
 
-bool GLShaderCache::WriteToBlobFile(const CacheIndexKey& key, const std::vector<u8>& prog_data, u32 prog_format)
+void GLShaderCache::AddProgram(const CacheKey& key, GLProgram& prog)
 {
-	if (!m_blob_file || std::fseek(m_blob_file, 0, SEEK_END) != 0)
-		return false;
+	if (!m_store.IsWritable())
+		return;
 
-	CacheIndexData data;
-	data.file_offset = static_cast<u32>(std::ftell(m_blob_file));
-	data.blob_size = static_cast<u32>(prog_data.size());
-	data.blob_format = prog_format;
+	std::vector<u8> prog_data;
+	u32 prog_format = 0;
+	if (!prog.GetBinary(&prog_data, &prog_format))
+		return;
 
-	CacheIndexEntry entry = {};
-	entry.vertex_source_hash_low = key.vertex_source_hash_low;
-	entry.vertex_source_hash_high = key.vertex_source_hash_high;
-	entry.vertex_source_length = key.vertex_source_length;
-	entry.fragment_source_hash_low = key.fragment_source_hash_low;
-	entry.fragment_source_hash_high = key.fragment_source_hash_high;
-	entry.fragment_source_length = key.fragment_source_length;
-	entry.file_offset = data.file_offset;
-	entry.blob_size = data.blob_size;
-	entry.blob_format = data.blob_format;
-
-	if (std::fwrite(prog_data.data(), 1, entry.blob_size, m_blob_file) != entry.blob_size ||
-		std::fflush(m_blob_file) != 0 || std::fwrite(&entry, sizeof(entry), 1, m_index_file) != 1 ||
-		std::fflush(m_index_file) != 0)
-	{
-		Console.Error("Failed to write shader blob to file");
-		return false;
-	}
-
-	m_index.emplace(key, data);
-	return true;
+	m_store.Insert(key.data(), prog_data.data(), prog_data.size(), prog_format);
 }
 
 std::optional<GLProgram> GLShaderCache::CompileProgram(const std::string_view vertex_shader,
@@ -450,46 +223,9 @@ std::optional<GLProgram> GLShaderCache::CompileComputeProgram(
 	return std::optional<GLProgram>(std::move(prog));
 }
 
-std::optional<GLProgram> GLShaderCache::CompileAndAddProgram(const CacheIndexKey& key,
-	const std::string_view vertex_shader, const std::string_view fragment_shader, const PreLinkCallback& callback)
-{
-#ifdef PCSX2_DEVBUILD
-	Common::Timer timer;
-#endif
-
-	std::optional<GLProgram> prog = CompileProgram(vertex_shader, fragment_shader, callback, true);
-	if (!prog)
-		return std::nullopt;
-
-#ifdef PCSX2_DEVBUILD
-	const float compile_time = timer.GetTimeMilliseconds();
-	timer.Reset();
-#endif
-
-	std::vector<u8> prog_data;
-	u32 prog_format = 0;
-	if (!prog->GetBinary(&prog_data, &prog_format))
-		return std::nullopt;
-
-#ifdef PCSX2_DEVBUILD
-	const float binary_time = timer.GetTimeMilliseconds();
-	timer.Reset();
-#endif
-
-	WriteToBlobFile(key, prog_data, prog_format);
-
-#ifdef PCSX2_DEVBUILD
-	const float write_time = timer.GetTimeMilliseconds();
-	Console.WriteLn("Compiled and cached shader: Compile: %.2fms, Binary: %.2fms, Write: %.2fms", compile_time,
-		binary_time, write_time);
-#endif
-
-	return prog;
-}
-
 std::optional<GLProgram> GLShaderCache::GetComputeProgram(const std::string_view glsl, const PreLinkCallback& callback)
 {
-	if (!m_program_binary_supported || !m_blob_file)
+	if (!m_program_binary_supported || !m_store.IsOpen() || callback)
 	{
 #ifdef PCSX2_DEVBUILD
 		Common::Timer timer;
@@ -503,39 +239,14 @@ std::optional<GLProgram> GLShaderCache::GetComputeProgram(const std::string_view
 		return res;
 	}
 
-	const auto key = GetCacheKey(glsl, std::string_view());
-	auto iter = m_index.find(key);
-	if (iter == m_index.end())
-		return CompileAndAddComputeProgram(key, glsl, callback);
+	const CacheKey key = GetCacheKey(glsl, std::string_view(), true);
+	if (std::optional<GLProgram> cached = GetCachedProgram(key))
+		return cached;
 
-	std::vector<u8> data(iter->second.blob_size);
-	if (std::fseek(m_blob_file, iter->second.file_offset, SEEK_SET) != 0 ||
-		std::fread(data.data(), 1, iter->second.blob_size, m_blob_file) != iter->second.blob_size)
-	{
-		Console.Error("Read blob from file failed");
-		return {};
-	}
-
-#ifdef PCSX2_DEVBUILD
-	Common::Timer timer;
-#endif
-
-	GLProgram prog;
-	if (prog.CreateFromBinary(data.data(), static_cast<u32>(data.size()), iter->second.blob_format))
-	{
-#ifdef PCSX2_DEVBUILD
-		Console.WriteLn("Time to create program from binary: %.2fms", timer.GetTimeMilliseconds());
-#endif
-
-		return std::optional<GLProgram>(std::move(prog));
-	}
-
-	Console.Warning(
-		"Failed to create program from binary, this may be due to a driver or GPU Change. Recreating cache.");
-	if (!Recreate())
-		return CompileComputeProgram(glsl, callback, false);
-	else
-		return CompileAndAddComputeProgram(key, glsl, callback);
+	std::optional<GLProgram> prog = CompileComputeProgram(glsl, callback, true);
+	if (prog.has_value())
+		AddProgram(key, *prog);
+	return prog;
 }
 
 bool GLShaderCache::GetComputeProgram(
@@ -547,41 +258,4 @@ bool GLShaderCache::GetComputeProgram(
 
 	*out_program = std::move(*prog);
 	return true;
-}
-
-std::optional<GLProgram> GLShaderCache::CompileAndAddComputeProgram(
-	const CacheIndexKey& key, const std::string_view glsl, const PreLinkCallback& callback)
-{
-#ifdef PCSX2_DEVBUILD
-	Common::Timer timer;
-#endif
-
-	std::optional<GLProgram> prog = CompileComputeProgram(glsl, callback, true);
-	if (!prog)
-		return std::nullopt;
-
-#ifdef PCSX2_DEVBUILD
-	const float compile_time = timer.GetTimeMilliseconds();
-	timer.Reset();
-#endif
-
-	std::vector<u8> prog_data;
-	u32 prog_format = 0;
-	if (!prog->GetBinary(&prog_data, &prog_format))
-		return std::nullopt;
-
-#ifdef PCSX2_DEVBUILD
-	const float binary_time = timer.GetTimeMilliseconds();
-	timer.Reset();
-#endif
-
-	WriteToBlobFile(key, prog_data, prog_format);
-
-#ifdef PCSX2_DEVBUILD
-	const float write_time = timer.GetTimeMilliseconds();
-	Console.WriteLn("Compiled and cached compute shader: Compile: %.2fms, Binary: %.2fms, Write: %.2fms", compile_time,
-		binary_time, write_time);
-#endif
-
-	return prog;
 }

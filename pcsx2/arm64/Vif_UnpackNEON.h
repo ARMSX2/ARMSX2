@@ -9,6 +9,9 @@
 #include "Vif_Dynarec.h"
 #include "arm64/AsmHelpers.h"
 
+#include <utility>
+#include <vector>
+
 // Shared with microVU — single definition in arm64/microVU_Misc-arm64.inl
 // (mirrors x86, where newVif.h declares the helper defined in microVU_Misc.inl).
 extern void mVUmergeRegs(const vixl::aarch64::VRegister& dest, const vixl::aarch64::VRegister& src, int xyzw, bool modXYZW = false);
@@ -137,6 +140,12 @@ public:
 	void CompileRoutine();
 
 protected:
+	// (destination offset, source offset) of the rows of a straight copy,
+	// collected by CompileRoutine and emitted by EmitCopyRows.
+	using CopyRow = std::pair<s64, s64>;
+
+	void EmitCopyRows(const std::vector<CopyRow>& rows) const;
+
 	virtual void doMaskWrite(const vixl::aarch64::VRegister& regX) const;
 	void SetMasks(int cS) const;
 	void writeBackRow() const;

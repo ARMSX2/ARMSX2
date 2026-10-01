@@ -3,6 +3,198 @@
 
 import SwiftUI
 import UIKit
+#if canImport(GameController)
+import GameController
+#endif
+
+/// Owns the controller delivery boundary for the complete SDL/SwiftUI window.
+@MainActor
+@objc(ARMSX2ControllerEventHostViewController)
+final class ARMSX2ControllerEventHostViewController: GCEventViewController {
+    private let contentController: UIViewController
+
+    @objc init(contentController: UIViewController) {
+        self.contentController = contentController
+        super.init(nibName: nil, bundle: nil)
+        controllerUserInteractionEnabled = false
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemGroupedBackground
+
+        if #available(iOS 26.0, *) {
+            let controllerEvents = GCEventInteraction()
+            controllerEvents.handledEventTypes = .gamepad
+            controllerEvents.receivesEventsInView = false
+            view.addInteraction(controllerEvents)
+        }
+
+        addChild(contentController)
+        contentController.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(contentController.view)
+        NSLayoutConstraint.activate([
+            contentController.view.topAnchor.constraint(equalTo: view.topAnchor),
+            contentController.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            contentController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            contentController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
+        contentController.didMove(toParent: self)
+    }
+
+    override var childForStatusBarHidden: UIViewController? {
+        children.last
+    }
+
+    override var childForStatusBarStyle: UIViewController? {
+        children.last
+    }
+
+    override var childForHomeIndicatorAutoHidden: UIViewController? {
+        children.last
+    }
+
+    override var childForScreenEdgesDeferringSystemGestures: UIViewController? {
+        children.last
+    }
+
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        contentController.supportedInterfaceOrientations
+    }
+
+    override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation {
+        contentController.preferredInterfaceOrientationForPresentation
+    }
+
+    override func pressesBegan(
+        _ presses: Set<UIPress>,
+        with event: UIPressesEvent?
+    ) {
+        if ControllerEventDeliveryCoordinator.shared
+            .handleMenuPressesEvent(presses) {
+            return
+        }
+        super.pressesBegan(presses, with: event)
+    }
+
+    override func pressesChanged(
+        _ presses: Set<UIPress>,
+        with event: UIPressesEvent?
+    ) {
+        if ControllerEventDeliveryCoordinator.shared.shouldConsumeDirectionalPresses,
+           presses.contains(where: { $0.type.isDirectional }) {
+            return
+        }
+        super.pressesChanged(presses, with: event)
+    }
+
+    override func pressesEnded(
+        _ presses: Set<UIPress>,
+        with event: UIPressesEvent?
+    ) {
+        if ControllerEventDeliveryCoordinator.shared.shouldConsumeDirectionalPresses,
+           presses.contains(where: { $0.type.isDirectional }) {
+            return
+        }
+        super.pressesEnded(presses, with: event)
+    }
+
+    override func pressesCancelled(
+        _ presses: Set<UIPress>,
+        with event: UIPressesEvent?
+    ) {
+        if ControllerEventDeliveryCoordinator.shared.shouldConsumeDirectionalPresses,
+           presses.contains(where: { $0.type.isDirectional }) {
+            return
+        }
+        super.pressesCancelled(presses, with: event)
+    }
+}
+
+private extension UIPress.PressType {
+    var isDirectional: Bool {
+        self == .upArrow || self == .downArrow
+            || self == .leftArrow || self == .rightArrow
+    }
+}
+
+private extension UIKeyboardHIDUsage {
+    var menuControllerCommand: MenuControllerCommand? {
+        switch rawValue {
+        case 82: .up
+        case 81: .down
+        case 80: .left
+        case 79: .right
+        default: nil
+        }
+    }
+}
+
+/// A deliberately small bridge between UIKit presses and the SwiftUI-owned
+/// menu router, which reads controllers through their GameController profile.
+@MainActor
+final class ControllerEventDeliveryCoordinator {
+    static let shared = ControllerEventDeliveryCoordinator()
+
+    private weak var router: MenuControllerInputRouter?
+    private(set) var rightStickScrolling = false
+    private var menuActive = false
+
+    private init() {}
+
+    var shouldConsumeDirectionalPresses: Bool {
+        menuActive
+    }
+
+    /// A controller's UIKit copy of a press must not reach SwiftUI, where a
+    /// focused NavigationLink takes a duplicate direction as activation on iPad.
+    /// Keyboard arrows are bridged here, for Simulator and hardware keyboards.
+    func handleMenuPressesEvent(_ presses: Set<UIPress>) -> Bool {
+        guard menuActive else { return false }
+        if let keyboardPress = presses.first(where: {
+            $0.key?.keyCode.menuControllerCommand != nil
+        }) {
+            if keyboardPress.phase == .began,
+               let command = keyboardPress.key?.keyCode.menuControllerCommand {
+                router?.handleKeyboardDirectionalPress(command)
+            }
+            return true
+        }
+
+        // The iPad crash report shows a keyless _UIGameControllerEvent being
+        // converted into a UIKit presses event. Its L1 shoulder recognizer then
+        // moved native focus and selected a SwiftUI NavigationLink while the
+        // custom Settings graph was switching tabs. Profile-driven screens own
+        // every such keyless controller press, so UIKit must not see the copy.
+        return presses.contains(where: { $0.key == nil })
+    }
+
+    func install(router: MenuControllerInputRouter) {
+        self.router = router
+    }
+
+    func setMenuActive(_ active: Bool) {
+        menuActive = active
+        if !active { rightStickScrolling = false }
+    }
+
+    func setRightStickScrolling(_ active: Bool) {
+        rightStickScrolling = active
+    }
+}
+
+extension View {
+    /// A full-screen cover gets its own controller, which answers for the status
+    /// bar itself, so it repeats the choice the app's hosting controller makes.
+    func appStatusBarHidden() -> some View {
+        statusBarHidden(AppState.shared.hideStatusBar)
+    }
+}
 
 /// Custom hosting controller that respects fullScreen state for status bar hiding
 class ARMSX2HostingController<Content: View>: UIHostingController<Content> {
@@ -53,6 +245,9 @@ class ARMSX2HostingController<Content: View>: UIHostingController<Content> {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         applyNativeContentScale(to: view)
+        // The intro preference is seeded before this child is attached. Ask
+        // the complete parent chain again once UIKit has a visible window.
+        systemChromeNeedsUpdate()
     }
 
     /// Force SwiftUI to re-evaluate its layout when the device rotates.
@@ -80,8 +275,16 @@ class ARMSX2HostingController<Content: View>: UIHostingController<Content> {
     }
 
     @objc private func systemChromeNeedsUpdate() {
-        setNeedsStatusBarAppearanceUpdate()
-        setNeedsUpdateOfHomeIndicatorAutoHidden()
+        // UIKit asks the window's controller hierarchy for system chrome.
+        // Updating only this nested hosting controller can leave the SDL and
+        // GCEvent parents with their cached answer for the entire intro.
+        // Invalidate every owner up to the window root.
+        var controller: UIViewController? = self
+        while let current = controller {
+            current.setNeedsStatusBarAppearanceUpdate()
+            current.setNeedsUpdateOfHomeIndicatorAutoHidden()
+            controller = current.parent
+        }
     }
 
     private func applyNativeContentScale(to view: UIView) {
@@ -97,6 +300,30 @@ class ARMSX2HostingController<Content: View>: UIHostingController<Content> {
 
 
 @objc public class SwiftUIHost: NSObject {
+    @MainActor
+    @objc(handleControllerPressesEvent:)
+    public static func handleControllerPressesEvent(
+        _ event: UIPressesEvent
+    ) -> Bool {
+        ControllerEventDeliveryCoordinator.shared
+            .handleMenuPressesEvent(event.allPresses)
+    }
+
+    @MainActor
+    @objc(createControllerEventHostWithContentController:)
+    public static func createControllerEventHost(
+        contentController: UIViewController
+    ) -> UIViewController {
+        ARMSX2ControllerEventHostViewController(
+            contentController: contentController
+        )
+    }
+
+    @MainActor
+    @objc public static func suppressAutomaticGameStartup() {
+        AppState.shared.suppressAutomaticGameStartup()
+    }
+
     @MainActor
     @objc public static func createMenuController() -> UIViewController {
         let hostingController = ARMSX2HostingController(rootView: RootView())

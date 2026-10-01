@@ -526,7 +526,10 @@ final class SwipeCameraInputDriver: NSObject {
     func start() {
         guard displayLink == nil else { return }
         let link = CADisplayLink(target: self, selector: #selector(update(_:)))
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 60)
+        UIFrameRateSettings.shared.configuration.apply(
+            to: link,
+            domain: .touchNavigation
+        )
         link.add(to: .main, forMode: .common)
         displayLink = link
     }
@@ -1321,7 +1324,10 @@ private struct DynamicAimCrosshairView: View {
             runtime.isCameraSettling ||
             runtime.isShooting ||
             runtime.isRapidFiring
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isAnimating)) { timeline in
+        AdaptiveAnimationTimeline(
+            domain: .touchNavigation,
+            paused: !isAnimating
+        ) { timeline in
             Canvas(rendersAsynchronously: true) { context, canvasSize in
                 let metrics = animationMetrics(at: timeline.date.timeIntervalSinceReferenceDate)
                 var transformed = context

@@ -43,6 +43,30 @@ TEST(GSInterlaceModePolicy, ExplicitModesMapToExpectedShadersAndFields)
 	EXPECT_EQ(SelectGSInterlaceMode(8, false, false, false, false).shader_mode, 3);
 }
 
+TEST(GSInterlaceModePolicy, FieldRenderAtIntegerUpscaleIsPresentedDirectly)
+{
+	// At an integer upscale of 2 or more the field render already holds every display line of the
+	// screen at that field's moment, so there is nothing for a weave to reconstruct.
+	const GSInterlaceModeSelection selection = SelectGSInterlaceMode(0, true, false, true, false, true);
+	EXPECT_EQ(selection.shader_mode, -1);
+	EXPECT_TRUE(selection.present_field_direct);
+}
+
+TEST(GSInterlaceModePolicy, FieldDirectNeedsAutomaticFieldModeAndNoScanmask)
+{
+	// 1x and every fractional scale: the caller says the render is not the whole picture.
+	EXPECT_FALSE(SelectGSInterlaceMode(0, true, false, true, false, false).present_field_direct);
+	EXPECT_EQ(SelectGSInterlaceMode(0, true, false, true, false, false).shader_mode, 3);
+	// Frame mode, even where a game moves its framebuffer per field.
+	EXPECT_FALSE(SelectGSInterlaceMode(0, true, true, false, false, true).present_field_direct);
+	EXPECT_EQ(SelectGSInterlaceMode(0, true, true, false, false, true).shader_mode, 3);
+	// SCANMSK keeps its pass.
+	EXPECT_FALSE(SelectGSInterlaceMode(0, true, false, true, true, true).present_field_direct);
+	// Every explicitly chosen mode is left exactly as it was.
+	for (int mode = 1; mode < 10; mode++)
+		EXPECT_FALSE(SelectGSInterlaceMode(mode, false, false, true, false, true).present_field_direct);
+}
+
 TEST(GSPresentationPolicy, SkipsOnlyBlankFramesBeforeFirstOutput)
 {
 	EXPECT_TRUE(ShouldSkipAndroidBlankFrame(true, false, true, 1));
@@ -76,4 +100,37 @@ TEST(GSPresentationPolicy, KeepsAlternatingMidGameFadeFramesOnSubmissionPath)
 	}
 
 	EXPECT_EQ(skipped, (std::array<bool, 6>{true, false, false, false, false, false}));
+}
+
+// The undrawn band the shifted field leaves. The deinterlace shaders read row `end` for every row
+// in [first, end).
+
+TEST(GSFieldPadRows, ADisplayAtTheTopPadsItsFirstRows)
+{
+	// 2x, the display rect at merge row 0, shifted by one native line.
+	const GSFieldPadRows pad = GSComputeFieldPadRows(0.0f, 2.0f);
+	EXPECT_EQ(pad.first, 0.0f);
+	EXPECT_EQ(pad.end, 2.0f);
+}
+
+TEST(GSFieldPadRows, ADisplayLowerDownPadsItsOwnFirstRows)
+{
+	// 2x, the display rect starting at merge row 40: rows 40 and 41 are the hole.
+	const GSFieldPadRows pad = GSComputeFieldPadRows(40.0f, 42.0f);
+	EXPECT_EQ(pad.first, 40.0f);
+	EXPECT_EQ(pad.end, 42.0f);
+}
+
+TEST(GSFieldPadRows, AFractionalScaleCountsWholeRows)
+{
+	// 1.5x, rect at 30, shifted 1.5 rows: row 30 is the hole, row 31 is drawn.
+	const GSFieldPadRows pad = GSComputeFieldPadRows(30.0f, 31.5f);
+	EXPECT_EQ(pad.first, 30.0f);
+	EXPECT_EQ(pad.end, 31.0f);
+}
+
+TEST(GSFieldPadRows, NoShiftNoPad)
+{
+	const GSFieldPadRows pad = GSComputeFieldPadRows(40.0f, 40.0f);
+	EXPECT_EQ(pad.first, pad.end);
 }

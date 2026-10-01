@@ -50,6 +50,16 @@ if(WIN32)
 	)
 endif(WIN32)
 
+option(BAKE_SHADERS_IN_CPP "Bake shaders into C++ source files" OFF)
+if(BAKE_SHADERS_IN_CPP)
+	include(ShaderToCpp)
+	shader_to_cpp(SHADER_FILES SHADER_FILES_CPP CPP_OUTPUT_DIR)
+	add_custom_target(GeneratedShaders DEPENDS ${SHADER_FILES} ${SHADER_FILES_CPP})
+	add_dependencies(PCSX2 GeneratedShaders)
+	target_compile_definitions(PCSX2_FLAGS INTERFACE BAKE_SHADERS_IN_CPP=1)
+	target_include_directories(PCSX2_FLAGS INTERFACE ${CPP_OUTPUT_DIR})
+endif()
+
 # Main pcsx2 source
 set(pcsx2Sources
 	Achievements.cpp
@@ -512,6 +522,7 @@ endif()
 
 set(pcsx2GSSources
 	GS/GS.cpp
+	GS/GSCacheFile.cpp
 	GS/GSClut.cpp
 	GS/GSDrawingContext.cpp
 	GS/GSDrawingEnvironment.cpp
@@ -526,8 +537,14 @@ set(pcsx2GSSources
 	GS/GSUtil.cpp
 	GS/GSVector.cpp
 	GS/MultiISA.cpp
+	GS/DriverReport/GSDriverReport.cpp
+	GS/DriverReport/GSDriverReportClassify.cpp
+	GS/DriverReport/GSDriverReportJson.cpp
+	GS/DriverReport/GSDriverReportProfile.cpp
+	GS/DriverReport/GSDriverReportSystem.cpp
 	GS/Renderers/Common/GSDevice.cpp
 	GS/Renderers/Common/GSDirtyRect.cpp
+	GS/Renderers/Common/GSFieldShiftDetector.cpp
 	GS/Renderers/Common/GSFunctionMap.cpp
 	# The GPU driver-bug database is keyed on the DRIVER, not the platform: Turnip, PanVK and the
 	# Qualcomm blob all ship outside Android too (ARM Linux handhelds — Rocknix, Batocera). Building
@@ -547,6 +564,7 @@ set(pcsx2GSSources
 	GS/Renderers/Null/GSRendererNull.cpp
 	GS/Renderers/HW/GSDrawLog.cpp
 	GS/Renderers/HW/GSHwHack.cpp
+	GS/Renderers/HW/GSLineRuns.cpp
 	GS/Renderers/HW/GSRendererHW.cpp
 	GS/Renderers/HW/GSTextureCache.cpp
 	GS/Renderers/HW/GSTextureReplacementLoaders.cpp
@@ -554,12 +572,25 @@ set(pcsx2GSSources
 	GS/Renderers/SW/GSTextureCacheSW.cpp
 	)
 
+# The Mali kernel-driver probe for the driver report: MIT-licensed C, Linux and Android only.
+if(UNIX AND NOT APPLE)
+	list(APPEND pcsx2GSSources GS/DriverReport/mali_kbase_probe.c)
+	set_source_files_properties(GS/DriverReport/mali_kbase_probe.c PROPERTIES SKIP_PRECOMPILE_HEADERS ON COMPILE_OPTIONS "-std=c11")
+endif()
+
 # GS headers
 set(pcsx2GSHeaders
+	GS/DriverReport/GSDriverReport.h
+	GS/DriverReport/GSDriverReportClassify.h
+	GS/DriverReport/GSDriverReportJson.h
+	GS/DriverReport/GSDriverReportProfile.h
+	GS/DriverReport/GSDriverReportSystem.h
 	GS/GSAlignedClass.h
 	GS/GSBlock.h
 	GS/GSBackQueue.h
+	GS/GSCacheFile.h
 	GS/GSClut.h
+	GS/GSCompileStats.h
 	GS/GSDrawingContext.h
 	GS/GSDrawingEnvironment.h
 	GS/GSDump.h
@@ -583,36 +614,47 @@ set(pcsx2GSHeaders
 	GS/GSXXH.h
 	GS/MultiISA.h
 	GS/Renderers/Common/GSBlendConstantPolicy.h
+	GS/Renderers/Common/GSBackThreadPolicy.h
+	GS/Renderers/Common/GSCopyRoadBlendingPolicy.h
+	GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h
 	GS/Renderers/Common/GSDevice.h
 	GS/Renderers/Common/GSDirtyRect.h
+	GS/Renderers/Common/GSDrawRoad.h
 	GS/Renderers/Common/GSFastList.h
 	GS/Renderers/Common/GSFastStencilShadow.h
-	GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h
+	GS/Renderers/Common/GSFieldShiftDetector.h
+	GS/Renderers/Common/GSFieldShiftPolicy.h
 	GS/Renderers/Common/GSFramebufferFetchPolicy.h
+	GS/Renderers/Common/GSMeasurementOverrides.h
 	GS/Renderers/Common/GSFunctionMap.h
 	GS/Renderers/Common/GSGPUProfile.h
 	GS/Renderers/Common/GSGPUProfilePrivate.h
 	GS/Renderers/Common/GSInterlaceModePolicy.h
+	GS/Renderers/Common/GSNativeTexelGridPolicy.h
 	GS/Renderers/Common/GSPassScheduler.h
 	GS/Renderers/Common/GSPresentationPolicy.h
 	GS/Renderers/Common/GSRenderer.h
 	GS/Renderers/Common/GSSwPrimRender.h
 	GS/Renderers/Common/GSShaderEnums.h
-	GS/Renderers/Common/GSSelfReadCopyPolicy.h
+	GS/Renderers/Common/GSSelfReadRoadPolicy.h
 	GS/Renderers/Common/GSSnapshotPolicy.h
 	GS/Renderers/Common/GSStreamRingFlushRange.h
+	GS/Renderers/Common/GSStreamRingGrowth.h
 	GS/Renderers/Common/GSStreamRingMemoryPolicy.h
 	GS/Renderers/Common/GSTexture.h
 	GS/Renderers/Common/GSVertex.h
 	GS/Renderers/Common/GSVertexTrace.h
 	GS/Renderers/Null/GSDeviceNone.h
+	GS/Renderers/Null/GSNullDeviceProfile.h
 	GS/Renderers/Null/GSRendererNull.h
 	GS/Renderers/HW/GSAlphaKnownBits.h
 	GS/Renderers/HW/GSDepthCoverage.h
 	GS/Renderers/HW/GSDrawAlphaMask.h
 	GS/Renderers/HW/GSDrawLog.h
 	GS/Renderers/HW/GSHwHack.h
+	GS/Renderers/HW/GSLineRuns.h
 	GS/Renderers/HW/GSLineWalk.h
+	GS/Renderers/HW/GSPointPlace.h
 	GS/Renderers/HW/GSRendererHW.h
 	GS/Renderers/HW/GSSpriteEdgeSnap.h
 	GS/Renderers/HW/GSTextureCache.h
@@ -627,6 +669,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/SW/GSDrawScanlineCodeGenerator.all.h
 	GS/Renderers/SW/GSDrawScanline.h
 	GS/Renderers/SW/GSNewCodeGenerator.h
+	GS/Renderers/SW/GSPerspectivePlane.h
 	GS/Renderers/SW/GSRasterizer.h
 	GS/Renderers/SW/GSRendererSW.h
 	GS/Renderers/SW/GSScanlineEnvironment.h
@@ -682,7 +725,7 @@ if(USE_OPENGL)
 	if(WIN32)
 		list(APPEND pcsx2GSSources GS/Renderers/OpenGL/GLContextWGL.cpp)
 		list(APPEND pcsx2GSHeaders GS/Renderers/OpenGL/GLContextWGL.h)
-		target_link_libraries(PCSX2_FLAGS INTERFACE opengl32.lib WinPixEventRuntime::WinPixEventRuntime)
+		target_link_libraries(PCSX2_FLAGS INTERFACE opengl32.lib)
 	else()
 		# The libretro core builds with X11_API and WAYLAND_API off - it has no
 		# window of its own - but it still needs the EGL context class, because
@@ -718,6 +761,7 @@ if(USE_VULKAN)
 		GS/Renderers/Vulkan/VKBuilders.cpp
 		GS/Renderers/Vulkan/VKLibretro.cpp
 		GS/Renderers/Vulkan/VKLoader.cpp
+		GS/DriverReport/GSDriverReportVulkan.cpp
 		GS/Renderers/Vulkan/VKShaderCache.cpp
 		GS/Renderers/Vulkan/VKStreamBuffer.cpp
 		GS/Renderers/Vulkan/VKSwapChain.cpp
@@ -1066,7 +1110,7 @@ if(APPLE)
 	)
 endif()
 
-if(WIN32)
+if(WIN32 AND ARCH_X86)
 	# RAIntegration is only supported on Windows.
 	target_compile_definitions(PCSX2_FLAGS INTERFACE ENABLE_RAINTEGRATION)
 	target_link_libraries(PCSX2_FLAGS INTERFACE rainterface)
@@ -1196,21 +1240,10 @@ set(pcsx2x86Sources
 # x86 headers
 set(pcsx2x86Headers
 	x86/BaseblockEx.h
-	x86/iCOP0.h
 	x86/iCore.h
-	x86/iFPU.h
-	x86/iMMI.h
 	x86/iR3000A.h
-	x86/iR5900Arit.h
-	x86/iR5900AritImm.h
-	x86/iR5900Branch.h
 	x86/iR5900.h
 	x86/iR5900Analysis.h
-	x86/iR5900Jump.h
-	x86/iR5900LoadStore.h
-	x86/iR5900Move.h
-	x86/iR5900MultDiv.h
-	x86/iR5900Shift.h
 	x86/microVU_Alloc.inl
 	x86/microVU_Analyze.inl
 	x86/microVU_Branch.inl
@@ -1237,6 +1270,7 @@ set(pcsx2x86Headers
 # ARM64
 set(pcsx2arm64Sources
 	arm64/AsmHelpers.cpp
+	arm64/FPU-divunit-arm64.cpp
 	arm64/iCore-arm64.cpp
 	arm64/iR3000A-arm64.cpp
 	arm64/iR3000Atables-arm64.cpp
@@ -1267,6 +1301,7 @@ set(pcsx2arm64Sources
 
 set(pcsx2arm64Headers
 	arm64/AsmHelpers.h
+	arm64/FPU-divunit-arm64.h
 	arm64/iCore-arm64.h
 	arm64/iR3000A-arm64.h
 	arm64/iR5900-arm64.h
@@ -1507,6 +1542,70 @@ if(ARMSX2_EMBED_RESOURCES)
 	target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_EMBEDDED_RESOURCES)
 endif()
 
+# The GS caches' build identity: a hash of the GS code and the shader sources (see
+# cmake/GSCacheBuildId.cmake). Source files only, by extension, and never a dotfile or a symlink, so
+# editor backups and lock files cannot change it. An edit to a listed file reruns the hash through
+# DEPENDS. A file added or removed changes its directory's modification time, and the directories are
+# configure dependencies, so CMake reruns and the list follows; this keeps a dry run clean, which a
+# CONFIGURE_DEPENDS glob does not. The list goes through a file for the same reason as the embedded
+# resources' list.
+set(ARMSX2_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
+set(ARMSX2_GS_CACHE_ID_EXTENSIONS cpp c h hpp inl mm glsl hlsl fx metal)
+set(ARMSX2_GS_CACHE_ID_INPUTS "")
+set(ARMSX2_GS_CACHE_ID_DIRS "")
+foreach(root IN ITEMS "${ARMSX2_REPO_ROOT}/pcsx2/GS" "${ARMSX2_REPO_ROOT}/bin/resources/shaders")
+	file(GLOB_RECURSE entries LIST_DIRECTORIES true "${root}/*")
+	list(APPEND ARMSX2_GS_CACHE_ID_DIRS "${root}")
+	foreach(f IN LISTS entries)
+		get_filename_component(name "${f}" NAME)
+		if(IS_SYMLINK "${f}" OR name MATCHES "^\\.")
+			continue()
+		endif()
+		if(IS_DIRECTORY "${f}")
+			list(APPEND ARMSX2_GS_CACHE_ID_DIRS "${f}")
+			continue()
+		endif()
+		get_filename_component(ext "${f}" LAST_EXT)
+		string(REGEX REPLACE "^\\." "" ext "${ext}")
+		if(ext IN_LIST ARMSX2_GS_CACHE_ID_EXTENSIONS)
+			list(APPEND ARMSX2_GS_CACHE_ID_INPUTS "${f}")
+		endif()
+	endforeach()
+endforeach()
+list(APPEND ARMSX2_GS_CACHE_ID_INPUTS "${ARMSX2_REPO_ROOT}/pcsx2/ShaderCacheVersion.h")
+list(SORT ARMSX2_GS_CACHE_ID_INPUTS)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${ARMSX2_GS_CACHE_ID_DIRS})
+set(ARMSX2_GS_CACHE_ID_REL "")
+foreach(f IN LISTS ARMSX2_GS_CACHE_ID_INPUTS)
+	file(RELATIVE_PATH rel "${ARMSX2_REPO_ROOT}" "${f}")
+	string(APPEND ARMSX2_GS_CACHE_ID_REL "${rel}\n")
+endforeach()
+set(ARMSX2_GS_CACHE_ID_DIR "${CMAKE_CURRENT_BINARY_DIR}/gs_cache_id")
+# Rewritten only when the list changes, so a reconfigure does not rehash for nothing.
+set(ARMSX2_GS_CACHE_ID_OLD "")
+if(EXISTS "${ARMSX2_GS_CACHE_ID_DIR}/inputs.list")
+	file(READ "${ARMSX2_GS_CACHE_ID_DIR}/inputs.list" ARMSX2_GS_CACHE_ID_OLD)
+endif()
+if(NOT ARMSX2_GS_CACHE_ID_OLD STREQUAL ARMSX2_GS_CACHE_ID_REL)
+	file(WRITE "${ARMSX2_GS_CACHE_ID_DIR}/inputs.list" "${ARMSX2_GS_CACHE_ID_REL}")
+endif()
+add_custom_command(
+	OUTPUT "${ARMSX2_GS_CACHE_ID_DIR}/gs_cache_build_id.h"
+	COMMAND ${CMAKE_COMMAND}
+		-DOUT=${ARMSX2_GS_CACHE_ID_DIR}/gs_cache_build_id.h
+		-DROOT=${ARMSX2_REPO_ROOT}
+		-DLIST=${ARMSX2_GS_CACHE_ID_DIR}/inputs.list
+		-P "${ARMSX2_REPO_ROOT}/cmake/GSCacheBuildId.cmake"
+	DEPENDS ${ARMSX2_GS_CACHE_ID_INPUTS}
+		"${ARMSX2_GS_CACHE_ID_DIR}/inputs.list"
+		"${ARMSX2_REPO_ROOT}/cmake/GSCacheBuildId.cmake"
+	COMMENT "Hashing the GS sources for the shader cache identity"
+	VERBATIM)
+target_sources(PCSX2 PRIVATE "${ARMSX2_GS_CACHE_ID_DIR}/gs_cache_build_id.h")
+set_source_files_properties(GS/GSCacheFile.cpp PROPERTIES
+	OBJECT_DEPENDS "${ARMSX2_GS_CACHE_ID_DIR}/gs_cache_build_id.h"
+	INCLUDE_DIRECTORIES "${ARMSX2_GS_CACHE_ID_DIR}")
+
 # common Sources
 target_sources(PCSX2 PRIVATE
 	${pcsx2CDVDSources}
@@ -1595,6 +1694,7 @@ target_link_libraries(PCSX2_FLAGS INTERFACE
 if(WIN32)
 	target_link_libraries(PCSX2_FLAGS INTERFACE
 		WIL::WIL
+		WinPixEventRuntime::WinPixEventRuntime
 		D3D12MemAlloc
 		setupapi.lib
 		ws2_32.lib
@@ -1606,6 +1706,7 @@ if(WIN32)
 		hid.lib
 		PowrProf.lib
 		d3dcompiler.lib
+		dxcompiler.lib
 		d3d11.lib
 		d3d12.lib
 		dxgi.lib
@@ -1690,7 +1791,7 @@ function(pcsx2_copy_runtime_resources target)
 		if("${file}" MATCHES "^\\.") # Don't copy macOS garbage (mainly Finder's .DS_Store files) into application
 			continue()
 		endif()
-		if (NOT WIN32 AND "${path}" MATCHES "/dx11/") # Don't include unneccessary stuff
+		if (NOT WIN32 AND "${path}" MATCHES "/dx11/") # Don't include unnecessary stuff
 			continue()
 		endif()
 		if (NOT BUNDLE_EMOJI_FONT AND "${path}" MATCHES "fonts/Twemoji")
@@ -1768,15 +1869,17 @@ if (APPLE)
 			${COREMEDIA_LIBRARY}
 		)
 	endif()
-	# Weak-link MetalFX so older OS versions still load. Skip on the iOS simulator:
-	# MetalFX.framework isn't in the iphonesimulator SDK (see PCSX2_HAS_METALFX in
-	# GSDeviceMTL.h), so linking it there fails with "framework not found".
+	# Weak-link MetalFX so older OS versions still load. Skip it where the SDK
+	# does not carry the framework at all - the iOS simulator and tvOS (see
+	# PCSX2_HAS_METALFX in GSDeviceMTL.h) - because linking it there fails with
+	# "framework not found".
 	#
 	# ARMSX2_REAL_DEVICE is the iOS app's own switch and nothing sets it for the
 	# libretro core, which is only ever built against a device SDK - and without
 	# the framework the link is short MTLFXSpatialScalerDescriptor, because the
 	# header is there and PCSX2_HAS_METALFX is 1.
-	if(ARMSX2_REAL_DEVICE OR ENABLE_LIBRETRO OR NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+	if(NOT CMAKE_SYSTEM_NAME STREQUAL "tvOS"
+	   AND (ARMSX2_REAL_DEVICE OR ENABLE_LIBRETRO OR NOT CMAKE_SYSTEM_NAME STREQUAL "iOS"))
 		target_link_options(PCSX2_FLAGS INTERFACE "SHELL:-weak_framework MetalFX")
 	endif()
 endif()
@@ -1817,7 +1920,7 @@ function(setup_main_executable target)
 				break()
 			endif()
 		endforeach()
-		set(DEPS_TO_COPY freetype.dll harfbuzz.dll jpeg62.dll libpng16.dll libsharpyuv.dll libwebp.dll libwebpdemux.dll libwebpmux.dll lz4.dll SDL3.dll shaderc_shared.dll z.dll zstd.dll plutovg.dll plutosvg.dll ryml.dll)
+		set(DEPS_TO_COPY freetype.dll harfbuzz.dll jpeg62.dll libpng16.dll libsharpyuv.dll libwebp.dll libwebpdemux.dll libwebpmux.dll lz4.dll SDL3.dll shaderc_shared.dll z.dll zstd.dll plutovg.dll plutosvg.dll ryml.dll dxcompiler.dll)
 		set(DEPS_TO_COPY
 			$<IF:$<CONFIG:Debug>,kddockwidgets-qt6d.dll,kddockwidgets-qt6.dll>
 			${DEPS_TO_COPY}

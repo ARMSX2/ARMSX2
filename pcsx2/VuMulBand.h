@@ -31,6 +31,6 @@ struct VuMulBandSlot
 
 extern VuMulBandSlot g_vuMulBand[2];
 
-void vuMulShortTailBandLanes(const u32* fs, const u32* ft, u32* product);
+EEFPU_MODEL_CALL void vuMulShortTailBandLanes(const u32* fs, const u32* ft, u32* product);
 EEFPU_MODEL_CALL void vuMulShortTailBandVu0();
 EEFPU_MODEL_CALL void vuMulShortTailBandVu1();

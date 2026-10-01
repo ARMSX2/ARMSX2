@@ -24,6 +24,10 @@ layout(location = 0) out vec4 o_col0;
 layout(push_constant) uniform cb0
 {
 	vec4 ZrH;
+	// xy: the device rows [x, y) of the merge that were not drawn for the field being read, starting
+	// where the circuit's display rect starts; z and w are unused. GSRenderer::Merge offsets a
+	// field's picture down by one native line and the merge target is cleared, so nothing drew them.
+	vec4 FieldPad;
 };
 
 layout(set = 0, binding = 0) uniform sampler2D samp0;
@@ -38,7 +42,14 @@ void ps_main0()
 	const int vpos  = int(gl_FragCoord.y); // vertical position of destination texture
 
 	if ((vpos & 1) == field)
-		o_col0 = textureLod(samp0, v_tex, 0);
+	{
+		// Rows [pad.x, pad.y) were never drawn for this field, so read the first row that was
+		// instead of the cleared hole. The band starts where the display rect does. At 1x it is
+		// one row and the field's own lowest row is its next, so nothing moves; at 2x it is two
+		// rows and this is what fills the black device row.
+		const float src_row = (float(vpos) >= FieldPad.x && float(vpos) < FieldPad.y) ? FieldPad.y : float(vpos);
+		o_col0 = textureLod(samp0, v_tex + vec2(0.0f, (src_row - float(vpos)) * ZrH.y), 0);
+	}
 	else
 		discard;
 }
@@ -89,7 +100,14 @@ void ps_main3()
 	// if the index of current destination line belongs to the current fiels we update it, otherwise
 	// we leave the old line in the destination buffer
 	if ((vpos & 1) == field)
-		o_col0 = textureLod(samp0, v_tex, 0);
+	{
+		// Same undrawn band as the weave shader. This pass writes one bank of a target twice the
+		// source's height, so the source row a fragment reads is its row within the bank, and one
+		// source row is 1 / vres of the texture coordinate.
+		const int   srow    = int(gl_FragCoord.y) - bank * vres;
+		const float src_row = (float(srow) >= FieldPad.x && float(srow) < FieldPad.y) ? FieldPad.y : float(srow);
+		o_col0 = textureLod(samp0, v_tex + vec2(0.0f, (src_row - float(srow)) / float(vres)), 0);
+	}
 	else
 		discard;
 }

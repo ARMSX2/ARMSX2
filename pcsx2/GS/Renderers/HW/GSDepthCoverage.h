@@ -12,11 +12,9 @@
 /// at the largest Z the format can hold. A GREATER test is refused there whatever the geometry,
 /// because the answer depends on what the depth buffer holds and the draw does not know.
 ///
-/// It does know in one case: a depth buffer that still holds, in every pixel, the value it was
-/// cleared to. Then the comparison is arithmetic. That case is not exotic -- xenosaga opens every
-/// frame with a full-screen sprite testing GREATER at maximum Z against a depth buffer created and
-/// cleared in that same draw, and the only reason the renderer will not credit that write as
-/// covering its target is this conjunct.
+/// The exception is a depth buffer that still holds its clear value in every pixel; then the
+/// comparison is arithmetic. Xenosaga opens every frame with a full-screen sprite testing GREATER
+/// at maximum Z against a depth buffer cleared in that same draw.
 namespace GSDepthCoverage
 {
 	/// Whether every pixel of a draw passes the depth test, against a buffer that holds buffer_z
@@ -44,8 +42,7 @@ namespace GSDepthCoverage
 			case ZTST_GREATER:
 				return draw_z > buffer_z;
 			default:
-				// NEVER and ALWAYS are the caller's, and it already answers them without needing
-				// to know anything about the buffer.
+				// NEVER and ALWAYS are handled by the caller.
 				return false;
 		}
 	}

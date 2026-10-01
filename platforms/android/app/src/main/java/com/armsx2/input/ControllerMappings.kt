@@ -2,6 +2,7 @@ package com.armsx2.input
 
 import android.content.SharedPreferences
 import android.view.KeyEvent
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import com.armsx2.runtime.MainActivityRuntime
 import androidx.core.content.edit
@@ -447,19 +448,36 @@ object ControllerMappings {
     // PS2 Multitap master switch. OFF (default) = classic 2-player co-op. ON = up to 8
     // controllers routed to the 2 ports x 4 slots. Extra pads (slots 2-7) reuse the P1
     // button mapping. Also drives PadRouter's routing gate.
+    //
+    // Scoped like the rest of the Controls tab: a per-game value shadows the global one for that
+    // game only. It used to be one global switch, so turning it on in a game's own settings turned
+    // it on for every game.
     private const val KEY_MULTITAP = "pad.multitap.enabled"
-    fun multitapEnabled(): Boolean = MainActivityRuntime.prefs.getBoolean(KEY_MULTITAP, false)
-    fun setMultitapEnabled(on: Boolean) {
-        MainActivityRuntime.prefs.edit { putBoolean(KEY_MULTITAP, on) }
-        com.armsx2.input.PadRouter.multitapEnabled = on
-        if (MainActivityRuntime.nativeReady.value) {
+    /** Runtime (per-game aware): the running game's own value, else global. Read at boot. */
+    fun multitapEnabled(): Boolean = resolveBoolean(KEY_MULTITAP, false)
+    /** Scope-explicit, for the Controls tab. */
+    fun multitapEnabledScope(serial: String?): Boolean = scopedBoolean(KEY_MULTITAP, serial, false)
+    fun setMultitapEnabled(on: Boolean, serial: String? = null) {
+        val before = multitapEnabled()
+        MainActivityRuntime.prefs.edit { putBoolean(scopedKey(KEY_MULTITAP, serial), on) }
+        // Armed live only when the running game's own answer changed: a global edit under a game
+        // with a value of its own, or another game's value, leaves the running one alone.
+        val after = multitapEnabled()
+        com.armsx2.input.PadRouter.multitapEnabled = after
+        if (after != before && MainActivityRuntime.nativeReady.value) {
             kotlin.concurrent.thread(name = "armsx2-multitap") {
                 runCatching {
-                    kr.co.iefriends.pcsx2.NativeApp.setMultitap(0, on)
-                    kr.co.iefriends.pcsx2.NativeApp.setMultitap(1, on)
+                    kr.co.iefriends.pcsx2.NativeApp.setMultitap(0, after)
+                    kr.co.iefriends.pcsx2.NativeApp.setMultitap(1, after)
                 }
             }
         }
+    }
+    /** For the in-game switches (quick menu, Controllers screen): they show the running game's
+     *  answer, so they edit the game's own value when it has one, and the global one otherwise. */
+    fun setMultitapEnabledForRunningGame(on: Boolean) {
+        val serial = runtimeSerial()?.takeIf { MainActivityRuntime.prefs.contains(gameKey(it, KEY_MULTITAP)) }
+        setMultitapEnabled(on, serial)
     }
 
     // ---- Gyroscope / motion controls (per-game aware) ---------------------
@@ -484,6 +502,15 @@ object ControllerMappings {
     const val GYRO_STICK_RIGHT = 0
     const val GYRO_STICK_LEFT = 1
     private const val KEY_GYRO_AIM_STICK = "pad.gyro.aimStick"
+    // Which stick Steer mode drives, same values; Left by default, as it always was (#592).
+    private const val KEY_GYRO_STEER_STICK = "pad.gyro.steerStick"
+    // Separate X and Y sensitivity (#592). Off: one slider sets both, and Steer mode is X only,
+    // as it always was. On: each axis has its own 0-300%, where 0 turns that axis off, and Steer
+    // mode also reads tipping the device forward and back as Y. The two default to the single
+    // slider's value, so switching this on starts from the same feel.
+    private const val KEY_GYRO_SPLIT = "pad.gyro.splitAxes"
+    private const val KEY_GYRO_SENS_X = "pad.gyro.sensitivityX"
+    private const val KEY_GYRO_SENS_Y = "pad.gyro.sensitivityY"
 
     // Runtime (per-game aware): read by the sensor lifecycle while a game runs.
     fun gyroMode(): Int = resolveInt(KEY_GYRO_MODE, GYRO_OFF).coerceIn(0, 2)
@@ -492,6 +519,10 @@ object ControllerMappings {
     fun gyroInvertX(): Boolean = resolveBoolean(KEY_GYRO_INVX, false)
     fun gyroInvertY(): Boolean = resolveBoolean(KEY_GYRO_INVY, false)
     fun gyroAimStick(): Int = resolveInt(KEY_GYRO_AIM_STICK, GYRO_STICK_RIGHT).coerceIn(0, 1)
+    fun gyroSteerStick(): Int = resolveInt(KEY_GYRO_STEER_STICK, GYRO_STICK_LEFT).coerceIn(0, 1)
+    fun gyroSplitAxes(): Boolean = resolveBoolean(KEY_GYRO_SPLIT, false)
+    fun gyroSensitivityX(): Int = resolveInt(KEY_GYRO_SENS_X, gyroSensitivity()).coerceIn(0, 300)
+    fun gyroSensitivityY(): Int = resolveInt(KEY_GYRO_SENS_Y, gyroSensitivity()).coerceIn(0, 300)
 
     // Scope-explicit (Pad UI): read the global tier (serial=null) or a per-game tier.
     fun gyroModeScope(serial: String?): Int = scopedInt(KEY_GYRO_MODE, serial, GYRO_OFF).coerceIn(0, 2)
@@ -500,6 +531,12 @@ object ControllerMappings {
     fun gyroInvertXScope(serial: String?): Boolean = scopedBoolean(KEY_GYRO_INVX, serial, false)
     fun gyroInvertYScope(serial: String?): Boolean = scopedBoolean(KEY_GYRO_INVY, serial, false)
     fun gyroAimStickScope(serial: String?): Int = scopedInt(KEY_GYRO_AIM_STICK, serial, GYRO_STICK_RIGHT).coerceIn(0, 1)
+    fun gyroSteerStickScope(serial: String?): Int = scopedInt(KEY_GYRO_STEER_STICK, serial, GYRO_STICK_LEFT).coerceIn(0, 1)
+    fun gyroSplitAxesScope(serial: String?): Boolean = scopedBoolean(KEY_GYRO_SPLIT, serial, false)
+    fun gyroSensitivityXScope(serial: String?): Int =
+        scopedInt(KEY_GYRO_SENS_X, serial, gyroSensitivityScope(serial)).coerceIn(0, 300)
+    fun gyroSensitivityYScope(serial: String?): Int =
+        scopedInt(KEY_GYRO_SENS_Y, serial, gyroSensitivityScope(serial)).coerceIn(0, 300)
 
     fun setGyroMode(value: Int, serial: String? = null) =
         MainActivityRuntime.prefs.edit { putInt(scopedKey(KEY_GYRO_MODE, serial), value) }
@@ -513,6 +550,14 @@ object ControllerMappings {
         MainActivityRuntime.prefs.edit { putBoolean(scopedKey(KEY_GYRO_INVY, serial), on) }
     fun setGyroAimStick(value: Int, serial: String? = null) =
         MainActivityRuntime.prefs.edit { putInt(scopedKey(KEY_GYRO_AIM_STICK, serial), value) }
+    fun setGyroSteerStick(value: Int, serial: String? = null) =
+        MainActivityRuntime.prefs.edit { putInt(scopedKey(KEY_GYRO_STEER_STICK, serial), value) }
+    fun setGyroSplitAxes(on: Boolean, serial: String? = null) =
+        MainActivityRuntime.prefs.edit { putBoolean(scopedKey(KEY_GYRO_SPLIT, serial), on) }
+    fun setGyroSensitivityX(value: Int, serial: String? = null) =
+        MainActivityRuntime.prefs.edit { putInt(scopedKey(KEY_GYRO_SENS_X, serial), value) }
+    fun setGyroSensitivityY(value: Int, serial: String? = null) =
+        MainActivityRuntime.prefs.edit { putInt(scopedKey(KEY_GYRO_SENS_Y, serial), value) }
 
     // ---- Custom per-direction stick→button binding (StickMode.CUSTOM) ----
 
@@ -912,6 +957,120 @@ object ControllerMappings {
         MainActivityRuntime.releaseLatches()
     }
 
+    // ---- Analog-trigger pressure (L2/R2, per player) ----------------------
+    // The PS2's L2/R2 are PRESSURE-sensitive (0-255) and the axis path has always sent a
+    // proportional value, so on most pads analog triggers already work. What breaks them is a
+    // pad that reports a trigger BOTH ways: the axis ramps 0..1 while the driver ALSO
+    // synthesises a KEYCODE_BUTTON_L2/R2 key event partway through the pull, and that key event
+    // writes a FULL press over the axis value — a half-pulled trigger snaps to 100% (Odin 2 Portal).
+    //
+    // OFF (the DEFAULT) is byte-for-byte today's behaviour: proportional value sent, key event
+    // untouched, no curve. Pads that never had the collision are therefore completely
+    // unaffected by this setting existing — the opt-in convention the rest of this file follows.
+    // ON makes the trigger AXIS the sole owner of that button's pad state: the digital key event
+    // is dropped (only on pads that actually have an axis to fall back on) and the response
+    // curve below applies.
+    //
+    // Keyed by the PHYSICAL side, not the PS2 target: it describes how this pad reports its
+    // trigger, which does not change when the row is remapped. The L2 row is the left trigger,
+    // R2 the right.
+    private const val TRIGGER_PRESSURE_PREFIX = "pad.triggerPressure."
+    private fun triggerPressureKey(action: Action, player: Int) =
+        playerPrefix(player) + TRIGGER_PRESSURE_PREFIX + action.id
+
+    /** True for the two trigger rows (L2/R2) — the only actions these options apply to. */
+    fun isTriggerAction(action: Action): Boolean = action.id == "l2" || action.id == "r2"
+
+    /** The left trigger is the "l2" row, the right the "r2" row. */
+    private fun triggerActionFor(left: Boolean): Action? =
+        actions.firstOrNull { it.id == (if (left) "l2" else "r2") }
+
+    fun isTriggerPressureAction(action: Action, player: Int = 0): Boolean =
+        MainActivityRuntime.prefs.getBoolean(triggerPressureKey(action, player), false)
+
+    fun setTriggerPressureAction(action: Action, player: Int, on: Boolean) {
+        MainActivityRuntime.prefs.edit { putBoolean(triggerPressureKey(action, player), on) }
+        invalidateRuntimeCaches()
+    }
+
+    /** True when the [left]/right PHYSICAL trigger is in analog-pressure mode for [player]. */
+    fun isTriggerPressure(left: Boolean, player: Int = 0): Boolean =
+        runtimeBindings().triggerPressure[if (player == P2) P2 else P1][if (left) 0 else 1]
+
+    // ---- Analog-trigger response curve (L2/R2, per player) ----------------
+    // A handheld's triggers have a far shorter throw than a DualShock's, so a LINEAR map spends
+    // the whole PS2 pressure range over a few millimetres and feels twitchy — the Odin 2 Portal's
+    // measured travel is the full 0..32767 with ~450 distinct steps, so the range and the
+    // resolution are both there; it is the SHAPE that needs to change, not calibration.
+    //
+    // Applied as output = travel^exponent, stored as a percentage (100 = 1.00 = linear, i.e.
+    // exactly today's behaviour). Above 1.0 the low end is stretched, so easing onto the
+    // trigger gives fine control and full pressure still needs a full pull — what a racing
+    // game wants. Below 1.0 does the reverse for games that want to reach full quickly.
+    //
+    // Keyed by the PHYSICAL side rather than the PS2 target, unlike the pressure flag: a curve
+    // describes how this pad's trigger travels under a finger, which does not change when the
+    // row is remapped to a different PS2 button. The L2 row drives the left trigger, R2 the
+    // right; in the default mapping the two keyings coincide anyway.
+    private const val TRIGGER_CURVE_PREFIX = "pad.triggerCurve."
+    private fun triggerCurveKey(action: Action, player: Int) =
+        playerPrefix(player) + TRIGGER_CURVE_PREFIX + action.id
+
+    /** 100 = linear. The stored percentage, for the Pad tab's slider. */
+    fun triggerCurveAction(action: Action, player: Int = 0): Int =
+        MainActivityRuntime.prefs.getInt(triggerCurveKey(action, player), 100)
+
+    fun setTriggerCurveAction(action: Action, player: Int, percent: Int) {
+        MainActivityRuntime.prefs.edit {
+            putInt(triggerCurveKey(action, player), percent.coerceIn(50, 250))
+        }
+        invalidateRuntimeCaches()
+    }
+
+    /** Exponent for the [left]/right PHYSICAL trigger — 1f when untouched, so the common case
+     *  costs a `pow(x, 1f)` the callers skip outright. */
+    fun triggerCurve(left: Boolean, player: Int = 0): Float =
+        runtimeBindings().triggerCurves[if (player == P2) P2 else P1][if (left) 0 else 1]
+
+    // ---- Live trigger readout (Pad tab) -----------------------------------
+    // The pressure row shows the trigger's CURRENT travel next to the toggle, so a user can
+    // see at a glance whether their pad has analog triggers at all and what the PS2 would
+    // receive — the question "is this even analog on my handheld?" otherwise has no answer
+    // short of a third-party gamepad tester.
+    //
+    // Sampled by MainActivityRuntime.noteTriggerLive from the RAW motion dispatch, ahead of
+    // every gameplay gate, because sendTrigger only runs while a game is RUNNING and this row
+    // lives in a settings screen where it never fires. Armed only while the Pad tab is on
+    // screen so the probe costs nothing the rest of the time.
+    //
+    // Per PLAYER, so two pads paired for local co-op each feed their own row instead of both
+    // writing one indicator and fighting over it, and so the number reflects the settings of
+    // the player being edited rather than P1's.
+    //
+    // With pressure ON this is also exactly what the PS2 receives. With it OFF it is the
+    // trigger's travel only: the digital key event is left alone in that mode, so on a pad
+    // that reports a trigger both ways the game sees a full press once that key fires,
+    // whatever this reads. The row mutes the number when OFF for that reason.
+    @Volatile var triggerMonitorActive = false
+
+    /** Live post-deadzone travel as a percentage, or -1 when this pad reports no analog axis
+     *  on that side (a digital-trigger pad, where the row's toggle can do nothing). Index 0 =
+     *  left / L2, 1 = right / R2. */
+    val triggerLive = Array(2) { arrayOf(mutableIntStateOf(-1), mutableIntStateOf(-1)) }
+
+    /** Clamp any unified pad slot to the two mapping tiers the settings have, exactly as
+     *  [playerPrefix] does — the multitap slots share Player 1's. */
+    fun liveTier(player: Int): Int = if (player == P2) P2 else P1
+
+    /** Arm/disarm the probe, clearing stale readings so a disconnected pad doesn't leave the
+     *  last percentage frozen on screen. */
+    fun setTriggerMonitor(on: Boolean) {
+        if (on) {
+            for (tier in triggerLive) for (side in tier) side.intValue = -1
+        }
+        triggerMonitorActive = on
+    }
+
     /** True when a physical button's PS2 target [targetKeyCode] is latch-flagged. */
     fun isLatchTarget(targetKeyCode: Int, player: Int = 0): Boolean {
         return targetKeyCode in runtimeBindings().latchTargets[if (player == P2) P2 else P1]
@@ -1027,6 +1186,22 @@ object ControllerMappings {
         // the panel goes to the monitor, and turning it off meant unplugging or digging into App
         // settings (SoraNo, on a Thor). Appended last for the persisted-by-ordinal reason above.
         SECOND_SCREEN("pad.secondscreen.keycode", "Second Screen Panel (toggle)"),
+        // The pressure modifier as a toggle (#304): press once for soft presses, again for full.
+        // The hold binding needs a finger on its button for the whole gesture, and a handheld with
+        // no spare button has nothing to give it; bound to a two-button combo, this one costs no
+        // button at all. Appended last for the persisted-by-ordinal reason above.
+        PRESSURE_MOD_TOGGLE("pad.pressuremodtoggle.keycode", "Pressure Modifier (toggle)"),
+    }
+
+    /**
+     * The hotkeys in the order the screens list them. The enum's order is persisted (ordinals,
+     * append only), so a later addition lands at the end even when it belongs beside an older
+     * one: the Pressure Modifier toggle sat far below the hold binding it pairs with.
+     */
+    val hotkeysInDisplayOrder: List<SysHotkey> by lazy {
+        val out = SysHotkey.entries.filter { it != SysHotkey.PRESSURE_MOD_TOGGLE }.toMutableList()
+        out.add(out.indexOf(SysHotkey.PRESSURE_MOD) + 1, SysHotkey.PRESSURE_MOD_TOGGLE)
+        out
     }
 
     // A hotkey is either a single button or a two-button combo. The main key is
@@ -1050,6 +1225,8 @@ object ControllerMappings {
         val targets: Array<Map<Int, Int>>,
         val turboTargets: Array<Set<Int>>,
         val latchTargets: Array<Set<Int>>,
+        val triggerPressure: Array<BooleanArray>,
+        val triggerCurves: Array<FloatArray>,
         val hotkeys: List<RuntimeHotkey>,
         val dpadAsLeftStick: Boolean,
     )
@@ -1081,6 +1258,21 @@ object ControllerMappings {
                 .map { it.targetKeyCode }
                 .toSet()
         }
+        // [left, right] per player, resolved once so the motion path never reads preferences.
+        val triggerPressure = Array(2) { player ->
+            booleanArrayOf(
+                triggerActionFor(true)?.let { isTriggerPressureAction(it, player) } ?: false,
+                triggerActionFor(false)?.let { isTriggerPressureAction(it, player) } ?: false,
+            )
+        }
+        // [left, right] exponent per player, resolved once here so the motion path never
+        // touches preferences. Index 0 = the "l2" row / left trigger, 1 = "r2" / right.
+        val triggerCurves = Array(2) { player ->
+            floatArrayOf(
+                (triggerActionFor(true)?.let { triggerCurveAction(it, player) } ?: 100) / 100f,
+                (triggerActionFor(false)?.let { triggerCurveAction(it, player) } ?: 100) / 100f,
+            )
+        }
         val hotkeys = SysHotkey.values().map { action ->
             RuntimeHotkey(action, hotkeyCode(action), hotkeyModCode(action))
         }
@@ -1089,6 +1281,8 @@ object ControllerMappings {
             targets,
             turboTargets,
             latchTargets,
+            triggerPressure,
+            triggerCurves,
             hotkeys,
             resolveBoolean(KEY_DPAD_AS_LSTICK, false),
         )

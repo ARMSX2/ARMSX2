@@ -107,7 +107,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 	SettingWidgetBinder::BindWidgetToIntSetting(
 		sif, m_hw.trilinearFiltering, "EmuCore/GS", "TriFilter", static_cast<int>(TriFiltering::Automatic), -1);
 	SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_hw.anisotropicFiltering, "EmuCore/GS", "MaxAnisotropy",
-		s_anisotropic_filtering_entries, s_anisotropic_filtering_values, "0");
+		s_anisotropic_filtering_entries, s_anisotropic_filtering_values, "0", "GraphicsSettingsWidget");
 	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_hw.dithering, "EmuCore/GS", "dithering_ps2", 2);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_hw.mipmapping, "EmuCore/GS", "hw_mipmap", true);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_hw.accurateAlphaTest, "EmuCore/GS", "HWAccurateAlphaTest", false);
@@ -154,7 +154,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_fixes.readTCOnClose, "EmuCore/GS", "UserHacks_ReadTCOnClose", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_fixes.estimateTextureRegion, "EmuCore/GS", "UserHacks_EstimateTextureRegion", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_fixes.drawBuffering, "EmuCore/GS", "UserHacks_DrawBuffering", false);
-	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_fixes.rewriteLargeST, "EmuCore/GS", "UserHacks_RewriteLargeST", false);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_fixes.rewriteLargeSTCoords, "EmuCore/GS", "UserHacks_RewriteLargeST", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_fixes.gpuPaletteConversion, "EmuCore/GS", "paltex", false);
 	connect(m_fixes.cpuSpriteRenderBW, &QComboBox::currentIndexChanged, this,
 		&GraphicsSettingsWidget::onCPUSpriteRenderBWChanged);
@@ -242,9 +242,14 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_advanced.gsDumpCompression, "EmuCore/GS", "GSDumpCompression", static_cast<int>(GSDumpCompressionMethod::Zstandard));
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_advanced.disableFramebufferFetch, "EmuCore/GS", "DisableFramebufferFetch", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_advanced.disableShaderCache, "EmuCore/GS", "DisableShaderCache", false);
+	// The caches are shared by every game, so the action belongs to the global settings only.
+	if (dialog()->isPerGameSettings())
+		m_advanced.clearShaderCache->setVisible(false);
+	else
+		connect(m_advanced.clearShaderCache, &QPushButton::clicked, this, &GraphicsSettingsWidget::onClearShaderCacheClicked);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_advanced.disableVertexShaderExpand, "EmuCore/GS", "DisableVertexShaderExpand", false);
 	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_advanced.gsDownloadMode, "EmuCore/GS", "HWDownloadMode", static_cast<int>(GSHardwareDownloadMode::Enabled));
-	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_advanced.gsBackThreadMode, "EmuCore/GS", "GSBackThreadMode", static_cast<int>(GSBackThreadMode::Off));
+	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_advanced.gsMultithreading, "EmuCore/GS", "GSBackThreadMode", 0);
 	SettingWidgetBinder::BindWidgetToFloatSetting(sif, m_advanced.ntscFrameRate, "EmuCore/GS", "FrameRateNTSC", 59.94f);
 	SettingWidgetBinder::BindWidgetToFloatSetting(sif, m_advanced.palFrameRate, "EmuCore/GS", "FrameRatePAL", 50.00f);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_advanced.spinCPUDuringReadbacks, "EmuCore/GS", "HWSpinCPUForReadbacks", false);
@@ -606,8 +611,8 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 		dialog()->registerWidgetHelp(m_fixes.drawBuffering, tr("Draw Buffering"), tr("Unchecked"),
 			tr("Attempts to reduce draw calls in games which do heavy context switching for blending purposes."));
 		
-		dialog()->registerWidgetHelp(m_fixes.rewriteLargeST, tr("Rewrite Large ST"), tr("Unchecked"),
-			tr("Rewrite large ST coordinates and clamp the values (mainly for Ridge Racer V)."));
+		dialog()->registerWidgetHelp(m_fixes.rewriteLargeSTCoords, tr("Rewrite Large ST"), tr("Unchecked"),
+			tr("Rewrite large ST coordinates and clamp the values (mainly for Ridge Racer V and Destruction Derby Arena)."));
 	}
 
 	// Upscaling Fixes tab
@@ -732,6 +737,10 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 		dialog()->registerWidgetHelp(m_advanced.disableShaderCache, tr("Disable Shader Cache"), tr("Unchecked"),
 			tr("Prevents the loading and saving of shaders/pipelines to disk."));
 
+		dialog()->registerWidgetHelp(m_advanced.clearShaderCache, tr("Clear Shader Cache"), tr("N/A"),
+			tr("Deletes every compiled shader and pipeline the renderers have saved to disk. They are rebuilt as games need "
+			   "them, so the next start of each game may stutter briefly."));
+
 		dialog()->registerWidgetHelp(m_advanced.disableVertexShaderExpand, tr("Disable Vertex Shader Expand"), tr("Unchecked"),
 			tr("Falls back to the CPU for expanding sprites/lines."));
 
@@ -753,11 +762,11 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 			   "Can result in a large speed boost on slower systems, at the cost of many broken graphical effects. "
 			   "If games are broken and you have this option enabled, please disable it first."));
 
-		dialog()->registerWidgetHelp(m_advanced.gsBackThreadMode, tr("GS Back Thread"), tr("Disabled"),
-			tr("Pipelined splits GS emulation across two threads: one parses GIF data and builds vertices while the other runs draws, "
-			   "the texture cache, and the GPU device. Can significantly reduce GS thread time on multi-core systems with spare cores, "
-			   "but competes for cores with the EE/VU threads. The Inline Records and Lockstep modes are debugging tools and much "
-			   "slower — do not use them for play."));
+		dialog()->registerWidgetHelp(m_advanced.gsMultithreading, tr("GS Multi-threading"), tr("Unchecked"),
+			tr("Runs GS rendering on a second thread: one thread parses GS data and builds vertices while the other runs draws, "
+			   "the texture cache and the GPU device. Helps most when rendering is heavy per draw, such as at high upscaling; "
+			   "adds overhead to games with very many small draws, and competes for cores with the EE/VU threads. "
+			   "If a game shows graphics glitches, turn it back off. Takes effect when the game restarts."));
 
 		dialog()->registerWidgetHelp(m_advanced.ntscFrameRate, tr("NTSC Frame Rate"), tr("59.94 Hz"),
 			tr("Determines what frame rate NTSC games run at."));
@@ -1177,6 +1186,15 @@ void GraphicsSettingsWidget::onUpscaleMultiplierChanged()
 		if (m_hw.upscaleMultiplier->itemData(i, TemporaryMultiplierRole).toBool())
 			m_hw.upscaleMultiplier->removeItem(i);
 	}
+}
+
+void GraphicsSettingsWidget::onClearShaderCacheClicked()
+{
+	// Through the CPU thread to the GS thread when a renderer is open, so the renderer empties its
+	// open caches in place and writes nothing back.
+	Host::RunOnCPUThread([]() { GSClearShaderCache(); });
+	QMessageBox::information(QtUtils::GetRootWidget(this), tr("Clear Shader Cache"),
+		tr("The shader cache has been cleared. Shaders are rebuilt as games need them."));
 }
 
 #include "moc_GraphicsSettingsWidget.cpp"

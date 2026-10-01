@@ -11,10 +11,41 @@ struct PerGameTab<Content: View>: View {
         Form {
             content
         }
+        .perGameRightStickScroll()
         .scrollContentBackground(.hidden)
+        .background(Color.clear)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(OverlayTheme.shell, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarBackground(.hidden, for: .navigationBar)
+    }
+}
+
+extension View {
+    /// The right stick scrolls a per-game tab's Form, which every tab needs on its own.
+    func perGameRightStickScroll() -> some View {
+        modifier(PerGameRightStickScroll())
+    }
+}
+
+private struct PerGameRightStickScroll: ViewModifier {
+    @Environment(\.menuControllerInputRouter) private var controllerInput
+    @Environment(\.controllerAccessibilityTargetsSuppressed)
+    private var controllerTargetsSuppressed
+
+    func body(content: Content) -> some View {
+        content.background {
+            // Keep the analog-scroll owner alive independently of lazy Form
+            // cells. Its full-pane bounds let the local UIKit lookup resolve
+            // this Form's scroll view without scanning the entire window.
+            ControllerRightStickScrollTarget(
+                controllerInput: controllerInput,
+                axes: .vertical,
+                priority: 220,
+                isEnabled: !controllerTargetsSuppressed,
+                searchesNearbyScrollViews: true
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(false)
+        }
     }
 }

@@ -16,15 +16,19 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <cstdio>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
 class VKSwapChain;
+struct GSSelfReadRoadDecision;
 
 class GSDeviceVK final : public GSDevice
 {
@@ -49,12 +53,21 @@ public:
 		bool vk_khr_driver_properties : 1;
 		bool vk_khr_shader_non_semantic_info : 1;
 		bool vk_ext_attachment_feedback_loop_layout : 1;
+		/// VK_EXT_attachment_feedback_loop_dynamic_state — the per-draw spelling of the
+		/// feedback-loop declaration, and Turnip's default one since 2026-09-22. Requested on
+		/// Adreno wherever the feedback-loop LAYOUT extension is also there, because off that road
+		/// there is nothing to declare; `-loop-create-flag` suppresses the request. See
+		/// GSDynamicFeedbackLoopPolicy.h.
+		bool vk_ext_attachment_feedback_loop_dynamic_state : 1;
 		bool vk_ext_fragment_shader_interlock : 1;
 		/// Both are required by the LSFG frame-generation shaders and by NOTHING else in the
 		/// renderer. They are requested anyway whenever the driver really has them, because the
 		/// alternative is recreating the device when frame generation is switched on.
 		bool vk_khr_vulkan_memory_model : 1;   ///< shaders declare the Vulkan memory model
 		bool vk_ext_robustness2_null_descriptor : 1; ///< nullDescriptor only; not the robust-access bits
+		/// shaderFloat16, for LSFG's half-precision shaders. Unlike the two above it is asked for
+		/// only while GSConfig.LsfgFp16 is on, so nobody else's device changes.
+		bool vk_khr_shader_float16_int8 : 1;
 		bool vk_ext_device_fault : 1;
 	};
 
@@ -67,6 +80,7 @@ public:
 	__fi u32 GetGraphicsQueueFamilyIndex() const { return m_graphics_queue_family_index; }
 	__fi u32 GetPresentQueueFamilyIndex() const { return m_present_queue_family_index; }
 	__fi const VkPhysicalDeviceProperties& GetDeviceProperties() const { return m_device_properties; }
+	__fi const VkPhysicalDeviceDriverPropertiesKHR& GetDeviceDriverProperties() const { return m_device_driver_properties; }
 	__fi const OptionalExtensions& GetOptionalExtensions() const { return m_optional_extensions; }
 
 	/// Which memory the six stream rings are allocated from, decided once in CheckFeatures from the
@@ -74,11 +88,31 @@ public:
 	/// else should, and nothing may change it after the rings exist.
 	__fi const GSStreamRingMemoryDecision& GetStreamRingMemory() const { return m_stream_ring_memory; }
 
-	// The interaction between raster order attachment access and fbfetch is unclear.
+	// Which spelling the in-pass self-read uses: the attachment-feedback-loop layout with an
+	// ordinary sampler, or a subpass input attachment with subpassLoad. The two are mutually
+	// exclusive everywhere in this backend -- image usage bit, shader variant, descriptor type and
+	// render-pass input reference all branch on this one answer -- and it is fixed for the life of
+	// the device.
+	//
+	// The negated rasterization-order term is a PREFERENCE, not a correctness gate: where a device
+	// advertises that extension its subpassLoad is ordered in tile memory, which is the cheap road,
+	// so take it. (The helper used to carry the comment "the interaction is unclear", which was
+	// inherited hedging with no measurement behind it.) The preference is right on Mali, vacuous on
+	// desktop -- which does not advertise the extension and so already takes the layout road, with
+	// the pipeline create flag and everything else it implies -- and wrong on Adreno under Turnip,
+	// where the in-tile read is the broken one.
+	//
+	// m_force_feedback_loop_layout is how the declared-loop road overrides the preference
+	// on that one part. It is false unless the self-read road declares a feedback loop -- the
+	// experiment key, or a driver the database recognises as one that orders declared loops -- so
+	// the expression is unchanged on every device that is neither; see GSSelfReadRoadPolicy.h. It
+	// is written once in CheckFeatures, which runs before the first image, descriptor layout or
+	// render pass exists, and never again -- none of those can be changed afterwards.
 	__fi bool UseFeedbackLoopLayout() const
 	{
 		return m_optional_extensions.vk_ext_attachment_feedback_loop_layout &&
-		       !m_optional_extensions.vk_ext_rasterization_order_attachment_access;
+		       (m_force_feedback_loop_layout ||
+		        !m_optional_extensions.vk_ext_rasterization_order_attachment_access);
 	}
 
 	// Helpers for getting constants
@@ -91,36 +125,45 @@ public:
 		return static_cast<u32>(m_device_properties.limits.optimalBufferCopyRowPitchAlignment);
 	}
 
-	/// Returns true if running on an NVIDIA GPU.
-	__fi bool IsDeviceNVIDIA() const { return (m_device_properties.vendorID == 0x10DE); }
-
-	/// Returns true if running on an AMD GPU.
-	__fi bool IsDeviceAMD() const { return (m_device_properties.vendorID == 0x1002); }
-
-	/// Returns true if running on an Intel GPU (vendorID 0x8086).
-	__fi bool IsDeviceIntel() const { return (m_device_properties.vendorID == 0x8086u); }
-
-	/// Returns true if running on a Broadcom V3D GPU (vendorID 0x14E4) — i.e. the
-	/// Raspberry Pi's VideoCore under Mesa's V3DV, reached via the Linux arm64 build.
-	__fi bool IsDeviceBroadcom() const { return (m_device_properties.vendorID == 0x14E4u); }
-
-	/// Returns true if running on an ARM Mali GPU (vendorID 0x13B5).
-	__fi bool IsDeviceMali() const { return (m_device_properties.vendorID == 0x13B5u); }
-
-	/// Returns true if running on a Qualcomm Adreno GPU (vendorID 0x5143).
-	__fi bool IsDeviceAdreno() const { return (m_device_properties.vendorID == 0x5143u); }
+	// Vendor checks by Vulkan vendor ID. They work before the driver properties are known, which
+	// SelectDeviceExtensions needs. Rules that also key on the driver or the device name are in
+	// m_device_rules.
+	__fi bool IsDeviceNVIDIA() const { return (m_device_properties.vendorID == GpuVendorID::NVIDIA); }
+	__fi bool IsDeviceAMD() const { return (m_device_properties.vendorID == GpuVendorID::AMD); }
+	__fi bool IsDeviceIntel() const { return (m_device_properties.vendorID == GpuVendorID::Intel); }
+	/// The Raspberry Pi's VideoCore under Mesa's V3DV, reached via the Linux arm64 build.
+	__fi bool IsDeviceBroadcom() const { return (m_device_properties.vendorID == GpuVendorID::Broadcom); }
+	__fi bool IsDeviceMali() const { return (m_device_properties.vendorID == GpuVendorID::ARM); }
+	__fi bool IsDeviceAdreno() const { return (m_device_properties.vendorID == GpuVendorID::Qualcomm); }
 
 	// Adreno-5xx / pre-0x801EA000 driver bug: colorWriteMask is ignored while a depth
 	// test is active (PPSSPP #10421). Cached in CheckFeatures, consumed in CreateTFXPipeline.
 	bool m_broken_colormask_with_depth = false;
 
-	/// Returns true if running on an Imagination PowerVR GPU (vendorID 0x1010).
-	__fi bool IsDevicePowerVR() const { return (m_device_properties.vendorID == 0x1010u); }
+	// Declare the feedback loop per draw with vkCmdSetAttachmentFeedbackLoopEnableEXT instead of
+	// with the pipeline create flag, so a driver that programs its coherent primitive mode from
+	// the declaration applies it to the draws that read rather than to every pipeline in the
+	// latched pass. ⚠️ TRUE on an ordinary Turnip run since 2026-09-22: the create flag costs
+	// 2.8x on wrc3@1x there and it is what the flagless path was taking. Every driver but Turnip
+	// and Honeykrisp keeps the create flag. Decided by
+	// GSDynamicFeedbackLoopPolicy.h, written once in CheckFeatures before the first pipeline
+	// exists -- a pipeline's dynamic-state list cannot be changed afterwards -- and read in
+	// CreateTFXPipeline and per draw in DoRenderHW.
+	bool m_declare_loop_per_draw = false;
+	// A draw in the current render pass has declared a feedback loop (GSLoopEnableWritesForDraw).
+	bool m_loop_declared_in_pass = false;
 
-	/// Returns true if running on a Samsung Xclipse (Exynos AMD-RDNA2) GPU.
-	/// NOTE: 0x144D (Samsung) is unverified across driver revisions — a real Xclipse tester
-	/// must confirm this fires; if it reports a different vendorID the gate is simply inert.
-	__fi bool IsDeviceXclipse() const { return (m_device_properties.vendorID == 0x144Du); }
+	// Take the attachment-feedback-loop spelling even on a device that advertises
+	// rasterization-order attachment access. Decided by GSSelfReadRoadPolicy.h, written once in
+	// CheckFeatures before any image or render pass exists, and read by UseFeedbackLoopLayout()
+	// above. Two things set it: the driver database recognising a driver build measured to order
+	// declared loops, and gsrunner's -declare-feedback-loop, which is experiment scaffolding
+	// and still outranks the database where it is set.
+	bool m_force_feedback_loop_layout = false;
+
+	__fi bool IsDevicePowerVR() const { return (m_device_properties.vendorID == GpuVendorID::Imagination); }
+	/// Samsung Xclipse (Exynos, AMD RDNA2).
+	__fi bool IsDeviceXclipse() const { return (m_device_properties.vendorID == GpuVendorID::Samsung); }
 
 	/// Returns true if running on an Apple GPU, under either MoltenVK or Asahi's Honeykrisp.
 	/// Unlike the checks above this gates on driverID, because Apple silicon does not report
@@ -179,6 +222,10 @@ public:
 	// commands can be retreived by calling GetCurrentFenceCounter().
 	u64 GetCompletedFenceCounter() const { return m_completed_fence_counter; }
 
+	// Polls the submitted command buffers' fences without blocking and retires every one that has
+	// signalled, advancing GetCompletedFenceCounter().
+	void ScanForCommandBufferCompletion();
+
 	// Gets the fence that will be signaled when the currently executing command buffer is
 	// queued and executed. Do not wait for this fence before the buffer is executed.
 	u64 GetCurrentFenceCounter() const { return m_frame_resources[m_current_frame].fence_counter; }
@@ -195,6 +242,10 @@ public:
 	void WaitForFenceCounter(u64 fence_counter);
 
 	void WaitForGPUIdle();
+
+	// A stream ring replaced its buffer (VKStreamBuffer::Grow). Rebinds whatever refers to it by
+	// handle, from the command buffer being recorded on.
+	void OnStreamRingReplaced(const VKStreamBuffer& ring);
 
 private:
 	// Helper method to create a Vulkan instance.
@@ -251,6 +302,7 @@ private:
 	bool SelectDeviceFeatures();
 	bool CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer);
 	bool ProcessDeviceExtensions();
+	void ResolveDeviceIdentity();
 
 	bool CreateAllocator();
 	bool CreateCommandBuffers();
@@ -262,7 +314,6 @@ private:
 
 	void CommandBufferCompleted(u32 index);
 	void ActivateCommandBuffer(u32 index);
-	void ScanForCommandBufferCompletion();
 	void WaitForCommandBufferCompletion(u32 index);
 
 	/// VK_EXT_device_fault post-mortem: on VK_ERROR_DEVICE_LOST, logs the driver's
@@ -277,7 +328,6 @@ private:
 	void CalibrateSpinTimestamp();
 	u64 GetCPUTimestamp();
 
-	// For pipeline statistics
 	enum class QueryState
 	{
 		None,
@@ -310,7 +360,7 @@ private:
 		u32 submit_timestamp = 0;
 		bool init_buffer_used = false;
 		bool needs_fence_wait = false;
-		bool timestamp_written = false;
+		QueryState timestamp_query_state = QueryState::None;
 		QueryState pipeline_statistics_query = QueryState::None;
 
 		std::vector<std::function<void()>> cleanup_resources;
@@ -339,9 +389,14 @@ private:
 	// some type it declares, so growing the chain for it would never help. Warned once.
 	bool m_frame_pool_layout_refused_warned = false;
 
-	// Set false for Mali (vendorID 0x13B5) in CreateDevice: its driver crashes inside
-	// vkCmdPushDescriptorSetKHR, so texture binding falls back to per-frame descriptor sets.
+	// Cleared in ProcessDeviceExtensions where VulkanDeviceRules::avoid_push_descriptors says so;
+	// texture binding then uses per-frame descriptor sets.
 	bool m_use_push_descriptors = true;
+
+	// The resolved GPU and driver profile, and the device rules keyed on the device's identity.
+	// Both are resolved in ProcessDeviceExtensions, as soon as the driver properties are known.
+	GpuProfileSelection m_gpu_profile;
+	VulkanDeviceRules m_device_rules;
 
 	GSStreamRingMemoryDecision m_stream_ring_memory;
 
@@ -400,6 +455,13 @@ private:
 	OptionalExtensions m_optional_extensions = {};
 	bool m_colorclip_fallback_to_hdr = false;
 
+	// For the driver report written beside a GS dump: what the device was created with and the
+	// self-read road CheckFeatures chose. Recorded only; nothing reads them to decide anything.
+	std::vector<std::string> m_enabled_device_extensions;
+	std::vector<std::string> m_missing_device_extensions;
+	std::string m_report_self_read_road;
+	bool m_report_declare_depth_loop = false;
+
 	u32 m_max_framebuffer_width = 0;
 	u32 m_max_framebuffer_height = 0;
 public:
@@ -443,6 +505,7 @@ public:
 				u32 ds : 1;
 				u32 line_width : 1;
 				u32 feedback_loop_flags : 3;
+				u32 raster_order : 1;
 			};
 
 			u32 key;
@@ -555,11 +618,63 @@ private:
 		return m_convert[ShaderConvertSelector(shader).Index()];
 	}
 
+	/// Guards m_tfx_vertex_shaders and m_tfx_fragment_shaders, which precompile workers fill too.
+	std::mutex m_tfx_shader_mutex;
 	std::unordered_map<u32, VkShaderModule> m_tfx_vertex_shaders;
 	std::unordered_map<GSHWDrawConfig::PSSelector, VkShaderModule, GSHWDrawConfig::PSSelectorHash>
 		m_tfx_fragment_shaders;
+	/// GS thread only. A precompiled pipeline moves in here when it is first drawn with.
 	std::unordered_map<PipelineSelector, VkPipeline, PipelineSelectorHash> m_tfx_pipelines;
 	u32 m_tfx_pipeline_compile_counter = 0;
+
+	// Pipeline precompile. Each game's TFX pipeline keys are appended to a file in the cache
+	// directory as they are first created; when that game starts again, worker threads build the
+	// recorded pipelines in first-use order, ahead of the draws that need them. The pipelines are
+	// the ones the GS thread would have built -- same key, same CreateTFXPipeline -- so this moves
+	// work off the GS thread without changing what is drawn.
+	struct TFXPrecompileJob
+	{
+		enum class State : u8
+		{
+			Queued, ///< Not started. The GS thread may take it and build it itself.
+			Running, ///< A worker is building it. The GS thread waits for it.
+			Done,
+		};
+		State state = State::Queued;
+		VkPipeline pipeline = VK_NULL_HANDLE;
+	};
+	std::mutex m_precompile_mutex; ///< Guards the queue, the jobs and m_precompile_stop.
+	std::condition_variable m_precompile_done_cv;
+	std::deque<PipelineSelector> m_precompile_queue;
+	std::unordered_map<PipelineSelector, TFXPrecompileJob, PipelineSelectorHash> m_precompile_jobs;
+	std::vector<std::thread> m_precompile_workers;
+	bool m_precompile_stop = false;
+	u64 m_precompile_start = 0; ///< Common::Timer value when the workers started; read by the workers.
+	bool m_precompile_active = false; ///< GS thread only: whether m_precompile_jobs can be non-empty.
+	/// GS thread only: the keys the game's key file holds (record index and last session drawn), the
+	/// open file, and this session's number in it.
+	struct RecordedTFXKey
+	{
+		u32 index;
+		u32 last_session;
+	};
+	std::unordered_map<PipelineSelector, RecordedTFXKey, PipelineSelectorHash> m_recorded_tfx_keys;
+	std::FILE* m_tfx_key_file = nullptr;
+	u32 m_tfx_key_session = 0;
+
+	void SetGameIdentity(const std::string& serial, u32 crc) override;
+	void PrepareShaderCacheClear() override;
+	/// Joins the workers and destroys every pipeline built but not drawn with. GS thread only.
+	void StopPipelinePrecompile();
+	void PrecompileWorker();
+	/// The result of a precompile job for p, waiting if a worker is building it (the only wait). nullopt
+	/// if there is no job, the job had not started, or the worker's build failed: the job is dropped
+	/// and the caller builds p itself.
+	std::optional<VkPipeline> TakePrecompiledTFXPipeline(const PipelineSelector& p);
+	void RecordTFXPipelineKey(const PipelineSelector& p);
+	/// What CreateTFXPipeline reads besides the key. A key file written under a different value is
+	/// discarded, so a key is never built on a device configuration it was not recorded on.
+	std::string GetTFXPipelineKeyFingerprint() const;
 
 	VkRenderPass m_utility_color_render_pass_load = VK_NULL_HANDLE;
 	VkRenderPass m_utility_color_render_pass_clear = VK_NULL_HANDLE;
@@ -592,7 +707,7 @@ private:
 
 	GSTexture* CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format) override;
 
-	void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const GSRegPMODE& PMODE,
+	void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const MergeTopBand* top_band, const GSRegPMODE& PMODE,
 		const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter) final;
 	void DoInterlace(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
 		ShaderInterlace shader, Filter filter, const InterlaceConstantBuffer& cb) final;
@@ -641,7 +756,25 @@ private:
 	VkShaderModule GetUtilityFragmentShader(const std::string& source, const char* replace_main);
 
 	bool CreateDeviceAndSwapChain();
+
+	/// Fills m_features and the device-constant state beside it. Runs once, after the device
+	/// exists and before any image, render pass or pipeline. The pieces below run in this order;
+	/// each reads only what an earlier one has made final.
 	bool CheckFeatures();
+	/// Publishes the GPU and driver profile to the device.
+	void PublishGPUProfile();
+	/// Framebuffer fetch, texture barriers and the declared-loop spelling: the self-read road.
+	GSSelfReadRoadDecision ResolveSelfReadRoad();
+	/// Feature bits that depend on the device alone, plus the road bits already set.
+	void ResolveFeatureTable();
+	/// The fast stencil shadow and the feedback-loop carry's device facts.
+	void ResolveFeedbackConsumers(const GSSelfReadRoadDecision& road);
+	/// Depth sampling and depth feedback. Returns whether the depth loop is declared.
+	bool ResolveDepthFeedback(const GSSelfReadRoadDecision& road);
+	void ResolveStreamRingMemory();
+	void LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool declare_depth_loop);
+	/// Format support, texture size limits and ROV. False if a required format is missing.
+	bool CheckFormatSupport();
 	bool CreateNullTexture();
 	bool CreateBuffers();
 
@@ -696,6 +829,13 @@ public:
 	__fi VkSampler GetPointSampler() const { return m_point_sampler; }
 	__fi VkSampler GetLinearSampler() const { return m_linear_sampler; }
 
+	/// What frame generation needs to draw the ImGui overlay onto its generated frames the way
+	/// RenderImGui draws it onto the real one.
+	__fi VkPipeline GetImGuiPipeline() const { return m_imgui_pipeline; }
+	__fi VkPipelineLayout GetUtilityPipelineLayout() const { return m_utility_pipeline_layout; }
+	__fi VkDescriptorSetLayout GetUtilityDescriptorSetLayout() const { return m_utility_ds_layout; }
+	__fi bool UsesPushDescriptors() const { return m_use_push_descriptors; }
+
 	RenderAPI GetRenderAPI() const override;
 	bool HasSurface() const override;
 
@@ -707,6 +847,7 @@ public:
 	bool SupportsExclusiveFullscreen() const override;
 	void DestroySurface() override;
 	std::string GetDriverInfo() const override;
+	void CollectDriverReport(GSDriverReport::BackendReport& out) const override;
 
 	void SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle) override;
 
@@ -715,6 +856,9 @@ public:
 	bool IsPresenting() const;
 
 	bool SetGPUTimingEnabled(bool enabled) override;
+	void StartGPUTiming(u32 index);
+	void EndGPUTiming(u32 index);
+	void ReadGPUTiming(u32 index);
 	float GetAndResetAccumulatedGPUTime() override;
 
 	bool SetGPUPipelineStatisticsEnabled(bool enabled) override;
@@ -740,7 +884,6 @@ public:
 	void Draw(const GSHWDrawConfig& config, int offset, int count);
 
 	std::unique_ptr<GSDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format) override;
-	void DoHintReadbackSource(GSTexture* tex) override;
 
 	void DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY) override;
 
@@ -792,6 +935,13 @@ public:
 	VkDependencyFlags GetFeedbackBarrierDependencyFlags() const;
 	void SendHWDraw(const GSHWDrawConfig& config, GSTextureVK* draw_rt, GSTextureVK* draw_ds,
 		bool one_barrier, bool full_barrier);
+
+	/// The per-draw half of the dynamic feedback-loop spelling. Declares this draw's loop (or its
+	/// absence) with vkCmdSetAttachmentFeedbackLoopEnableEXT. A no-op
+	/// unless m_declare_loop_per_draw. Must be called AFTER the pipeline bind and before the
+	/// draw: the Mesa runtime resets the dynamic value on every bind, so it cannot be set once
+	/// per pass. See GSDynamicFeedbackLoopPolicy.h.
+	void DeclareDrawFeedbackLoop(const GSHWDrawConfig& config, const PipelineSelector& pipe);
 
 	//////////////////////////////////////////////////////////////////////////
 	// Vulkan State
@@ -886,6 +1036,7 @@ private:
 
 	void InitializeState();
 	bool CreatePersistentDescriptorSets();
+	VkDescriptorSet CreateTFXUBODescriptorSet();
 
 	void SetInitialState(VkCommandBuffer cmdbuf);
 	void ApplyBaseState(u32 flags, VkCommandBuffer cmdbuf);
@@ -922,14 +1073,9 @@ private:
 	// ~0u = no readback seen yet, window shut.
 	u32 m_render_passes_since_submit = 0;
 	u32 m_readback_frame = ~0u;
-
-	// Textures recently used as synchronous-readback sources (see DoHintReadbackSource).
-	// A draw INTO one of these is almost certainly the producer of the next readback,
-	// so DoRenderHW kicks the command buffer first: the queued backlog drains while the
-	// producing pass records, leaving the readback to wait on one small pass + copy
-	// instead of the whole backlog. Compared by pointer only, never dereferenced —
-	// a recycled allocation at worst causes one extra readback-window submit.
-	std::array<GSTexture*, 2> m_recent_readback_sources = {};
+	// The kick's spacing, in unsubmitted render passes (see DoRenderHW). Only gsrunner's
+	// -readback-kick-passes moves it.
+	u32 m_readback_kick_passes = 8;
 
 	GSVector4i m_scissor = GSVector4i::zero();
 	VkViewport m_viewport = {0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};

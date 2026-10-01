@@ -247,6 +247,8 @@ namespace Vulkan
 		/// Both are hard requirements of the LSFG shaders, checked once before anything is built.
 		[[nodiscard]] bool IsVulkanMemoryModelSupported() const { return m_vulkan_memory_model; }
 		[[nodiscard]] bool HasNullDescriptor() const { return m_null_descriptor; }
+		/// shaderFloat16 was enabled on the device (only while LSFG's half precision is on).
+		[[nodiscard]] bool IsFloat16Supported() const { return m_float16; }
 
 		[[nodiscard]] GSDeviceVK* Raw() const { return m_device; }
 
@@ -255,6 +257,7 @@ namespace Vulkan
 		vk::LogicalDevice m_logical;
 		bool m_vulkan_memory_model = false;
 		bool m_null_descriptor = false;
+		bool m_float16 = false;
 	};
 
 	/// Adapter over PCSX2's VMA allocator.

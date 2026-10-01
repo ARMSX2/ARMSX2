@@ -27,10 +27,11 @@ using GSMTLView = UIView;
 #include <AppKit/AppKit.h>
 using GSMTLView = NSView;
 #endif
-// MetalFX upscaler: macOS 13+ / iOS 16+, weak-linked on device. The simulator
-// SDK has no MetalFX headers, so PCSX2_HAS_METALFX is 0 there and every
-// MetalFX reference is compiled out; m_features.metalfx_spatial stays false.
-#if TARGET_OS_SIMULATOR
+// MetalFX upscaler: macOS 13+ / iOS 16+, weak-linked on device. Neither the
+// simulator nor the tvOS SDK ships MetalFX headers, so PCSX2_HAS_METALFX is 0
+// there and every MetalFX reference is compiled out; m_features.metalfx_spatial
+// stays false.
+#if TARGET_OS_SIMULATOR || TARGET_OS_TV
 	#define PCSX2_HAS_METALFX 0
 #else
 	#define PCSX2_HAS_METALFX 1
@@ -417,7 +418,7 @@ public:
 
 	GSTexture* CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format) override;
 
-	void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter) override;
+	void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const MergeTopBand* top_band, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter) override;
 	void DoInterlace(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect, ShaderInterlace shader, Filter filter, const InterlaceConstantBuffer& cb) override;
 	void DoFXAA(GSTexture* sTex, GSTexture* dTex) override;
 	void DoShadeBoost(GSTexture* sTex, GSTexture* dTex, const float params[4]) override;

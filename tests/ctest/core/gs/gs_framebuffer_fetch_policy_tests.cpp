@@ -179,64 +179,6 @@ TEST(GSFramebufferFetchPolicy, ProfileDemotionIgnoresTheVetoInputs)
 	}
 }
 
-// The barrier half of the same policy (FbFetchDropsDrawBarriers).
-//
-// Same class of bug as the one above, in the opposite direction: not a decision re-made in three
-// places, but one decision standing in for two different questions. "Can I read the destination
-// without a barrier?" and "are overlapping primitives ordered against each other?" were both
-// answered by features.framebuffer_fetch, and only the first of them is what fetch actually
-// guarantees on GL. The blending path asks for a full barrier so overlapping primitives observe
-// each other; DetermineBarriers then deleted it because fetch was available. Measured on the GL
-// arm, that cost 101x the per-pixel error of the RT-copy path and made the frame nondeterministic.
-
-TEST(GSFramebufferFetchPolicy, GLFetchKeepsTheBarrierWhenPrimitivesOverlap)
-{
-	// The regression. GL's fetch orders nothing, so an overlapping draw must keep its barrier --
-	// the software blend path enabled for it reads a destination its own predecessor writes.
-	EXPECT_FALSE(FbFetchDropsDrawBarriers(false, true, false));
-}
-
-TEST(GSFramebufferFetchPolicy, NonOverlappingDrawsDropTheBarrierOnEveryBackend)
-{
-	// With no overlap, a live in-tile read and a pre-draw snapshot are the same value, so the
-	// barrier buys nothing. This is the common case and the reason the fix is nearly free.
-	EXPECT_TRUE(FbFetchDropsDrawBarriers(false, false, false));
-	EXPECT_TRUE(FbFetchDropsDrawBarriers(true, false, false));
-}
-
-TEST(GSFramebufferFetchPolicy, OrderingBackendsKeepTheBarrierFreeFastPath)
-{
-	// Vulkan's rasterization-order attachment access and Metal's programmable blending order
-	// overlapping fragments by contract. Making them pay for a barrier would reintroduce exactly
-	// the render-pass breaks the fetch path exists to remove, for no correctness gain.
-	EXPECT_TRUE(FbFetchDropsDrawBarriers(true, true, false));
-}
-
-TEST(GSFramebufferFetchPolicy, DepthFeedbackBarriersSurviveEveryFetchCapability)
-{
-	// Depth feedback reads through a texture rather than the colour attachment, so no colour-fetch
-	// capability says anything about it.
-	for (bool orders : {false, true})
-	{
-		for (bool overlap : {false, true})
-		{
-			SCOPED_TRACE(testing::Message() << "orders=" << orders << " overlap=" << overlap);
-			EXPECT_FALSE(FbFetchDropsDrawBarriers(orders, overlap, true));
-		}
-	}
-}
-
-TEST(GSFramebufferFetchPolicy, DroppingBarriersNeverDependsOnOverlapAloneWithoutAnOrderingGuarantee)
-{
-	// The invariant that fails if someone reinstates the unconditional drop: without an ordering
-	// guarantee, the answer must track overlap exactly.
-	for (bool overlap : {false, true})
-	{
-		SCOPED_TRACE(testing::Message() << "overlap=" << overlap);
-		EXPECT_EQ(FbFetchDropsDrawBarriers(false, overlap, false), !overlap);
-	}
-}
-
 // Which GL fetch extension orders overlapping primitives (FbFetchOrdersOverlappingPrims).
 //
 // The regression these pin: the ordering question was answered "no" for the whole GL API, on a
@@ -253,8 +195,6 @@ TEST(GSFramebufferFetchPolicy, ArmFetchOrdersOverlappingPrimitives)
 	// all previous fragments destined for the current pixel to complete". That is the same
 	// contract Vulkan and Metal provide, so it earns the same barrier-free path.
 	EXPECT_TRUE(FbFetchOrdersOverlappingPrims(GSFramebufferFetchBackend::ARM));
-	EXPECT_TRUE(FbFetchDropsDrawBarriers(
-		FbFetchOrdersOverlappingPrims(GSFramebufferFetchBackend::ARM), /*prims_may_overlap=*/true, false));
 }
 
 TEST(GSFramebufferFetchPolicy, ExtFetchDoesNotOrderOverlappingPrimitives)
@@ -262,8 +202,6 @@ TEST(GSFramebufferFetchPolicy, ExtFetchDoesNotOrderOverlappingPrimitives)
 	// The EXT path is where the reordering was actually measured (Mesa 25.3.6 / Apple M2: 18% of an
 	// MGS3 frame changing between identical replays). It keeps its barrier.
 	EXPECT_FALSE(FbFetchOrdersOverlappingPrims(GSFramebufferFetchBackend::EXT));
-	EXPECT_FALSE(FbFetchDropsDrawBarriers(
-		FbFetchOrdersOverlappingPrims(GSFramebufferFetchBackend::EXT), /*prims_may_overlap=*/true, false));
 }
 
 TEST(GSFramebufferFetchPolicy, AVetoedFetchNeverClaimsAnOrderingGuarantee)
@@ -370,9 +308,9 @@ namespace
 		in.roaa_available = true;
 		in.is_adreno = true;
 		in.broken_destination_read = true;
-		// The Android build ships this key on, so the SD865 arrives here with it set. It is not
-		// what decides the answer, and pinning it set is the point.
-		in.adreno_fetch_key = true;
+		// Set as on an Android build. It is not what decides the answer, and pinning it set is the
+		// point.
+		in.any_vendor_trusted = true;
 		return in;
 	}
 } // namespace
@@ -432,7 +370,7 @@ TEST(GSVulkanFramebufferFetchPolicy, TheUserCanAlwaysTurnFetchOff)
 					in.is_adreno = adreno;
 					in.force_mali_fetch_key = forced;
 					in.broken_destination_read = denied;
-					in.adreno_fetch_key = true;
+					in.any_vendor_trusted = true;
 					SCOPED_TRACE(testing::Message() << "mali=" << mali << " adreno=" << adreno
 													<< " forced=" << forced << " denied=" << denied);
 
@@ -457,20 +395,20 @@ TEST(GSVulkanFramebufferFetchPolicy, TheForceKeyChangesNothingOffMali)
 			{
 				for (bool denied : {false, true})
 				{
-					for (bool adreno_key : {false, true})
+					for (bool any_vendor : {false, true})
 					{
 						GSVulkanFramebufferFetchInputs in;
 						in.roaa_available = roaa;
 						in.is_adreno = adreno;
 						in.is_xclipse = xclipse;
 						in.broken_destination_read = denied;
-						in.adreno_fetch_key = adreno_key;
+						in.any_vendor_trusted = any_vendor;
 
 						GSVulkanFramebufferFetchInputs forced = in;
 						forced.force_mali_fetch_key = true;
 						SCOPED_TRACE(testing::Message()
 									 << "roaa=" << roaa << " adreno=" << adreno << " xclipse=" << xclipse
-									 << " denied=" << denied << " adreno_key=" << adreno_key);
+									 << " denied=" << denied << " any_vendor=" << any_vendor);
 
 						EXPECT_EQ(DecideVulkanFramebufferFetch(in).enabled,
 							DecideVulkanFramebufferFetch(forced).enabled);

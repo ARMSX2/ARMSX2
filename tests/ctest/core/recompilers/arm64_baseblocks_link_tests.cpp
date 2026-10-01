@@ -9,6 +9,7 @@
 #include "arm64/BaseblockEx-arm64.h"
 
 #include <gtest/gtest.h>
+#include <cstring>
 
 namespace
 {

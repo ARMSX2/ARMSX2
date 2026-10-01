@@ -62,8 +62,8 @@
     - apt-get update
     - >-
       apt-get -y install
-      build-essential ca-certificates cmake curl git ninja-build nasm pkg-config
-      wget
+      build-essential ca-certificates cmake curl flex bison git ninja-build
+      nasm pkg-config wget
       zlib1g-dev libaio-dev libasound2-dev libcurl4-openssl-dev
       libdbus-1-dev libdrm-dev libegl-dev libevdev-dev libfontconfig1-dev
       libgbm-dev libgudev-1.0-dev libinput-dev libjpeg-dev libopengl-dev

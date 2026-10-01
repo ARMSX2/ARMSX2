@@ -11,8 +11,10 @@
 #include "GS/GSVertexKick.h"
 #include "GS/Renderers/Common/GSVertex.h"
 
+#include "common/HostSys.h"
 #include "common/Threading.h"
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <thread>
@@ -23,8 +25,9 @@
 // draw buffering) → back (local memory, texture cache, draw, present) boundary.
 // Every record carries its register snapshot, so the consumer needs no live
 // register state machine. Records are built by the front-side seam functions
-// (FlushWrite / Move / ...) and consumed by GSState::Exec*Record — executed
-// inline today, and on the back thread once the GV7-1 queue lands.
+// (FlushWrite / Move / ...) and consumed by GSState::Exec*Record on the back
+// thread. With GS multi-threading off the seam functions call the Exec*Record
+// bodies directly and no record is built.
 // Seam classification: scratchpad/gv7-2026-07/SEAM-AUDIT.md.
 
 namespace GSBackQueue
@@ -61,6 +64,10 @@ namespace GSBackQueue
 		GIFRegBITBLTBUF blit;
 		GIFRegTRXPOS pos;
 		GIFRegTRXREG reg;
+		// Move() skips when XDIR is 3 and sets it to 3 when done. The back object's
+		// m_env is otherwise only refreshed by draw records, so without this every
+		// move after the first in a run with no draw between them is dropped.
+		GIFRegTRXDIR dir;
 		u64 draw_serial; // consumed once GV7-0d makes serials record-carried
 	};
 
@@ -118,7 +125,7 @@ namespace GSBackQueue
 	};
 
 	// GV7-1c: pooled transfer staging buffer (4MB, the GSTransferBuffer size).
-	// In record modes m_tr.buff aliases the current node's buffer: the front
+	// On the front, m_tr.buff aliases the current node's buffer: the front
 	// stages into it and TRANSFER records reference slices of it (disjoint
 	// ranges, so front-appends and back-reads never overlap). At the next
 	// transfer Init after any slice referenced the buffer, the front rotates to
@@ -217,12 +224,23 @@ namespace GSBackQueue
 	};
 
 	// End of frame: the whole VSync() body (Merge -> present -> capture ->
-	// perfmon frame tick) runs back-side.
+	// perfmon frame tick). Never queued: SubmitVsync drains the back thread and
+	// runs it on the MTGS thread.
 	struct VsyncRecord
 	{
 		u32 field;
 		bool registers_written;
 		bool idle_frame;
+	};
+
+	// The privileged-register fields a draw reads, as they stood when the draw was flushed. The
+	// registers themselves are one block shared with MTGS, which rewrites it at the vsync packet
+	// (and the EE thread in WaitGS) while queued draws have not run yet.
+	struct DrawPrivRegs
+	{
+		u32 dispfb_fbp[2]; // DISP[n].DISPFB.FBP
+		bool display_enabled[2]; // PMODE.EN1 / EN2
+		bool field_render; // SMODE2.FFMD && isReallyInterlaced()
 	};
 
 	// One flushed draw (today's FlushPrim tail: vertex trace -> texel rounding ->
@@ -241,6 +259,10 @@ namespace GSBackQueue
 		GSDrawingEnvironment next_env;
 		GSVertex next_v;
 		GSVector4i draw_rect; // temp_draw_rect at flush
+		// temp_native_draw_rect at flush. Carried beside draw_rect, and installed
+		// beside it, so the shipped rect and its native-grid twin cannot drift
+		// apart on the pipelined path.
+		GSVector4i native_draw_rect;
 		VertexBuff* vertex; // = &node->vb/&node->ib on the record path
 		IndexBuff* index;
 		DrawNode* node; // released by the consumer after the tail runs (null in tests)
@@ -250,6 +272,7 @@ namespace GSBackQueue
 		int flush_reason; // GSState::GSFlushReason (class-scoped enum, stored widened)
 		bool channel_shuffle_finish;
 		bool packed_uv_hack_flag;
+		DrawPrivRegs priv;
 	};
 
 	// ------------------------------------------------------------------
@@ -295,8 +318,17 @@ namespace GSBackQueue
 		SlotT* BeginPush()
 		{
 			const u32 tail = m_tail.load(std::memory_order_relaxed);
-			if (tail - m_head.load(std::memory_order_acquire) == kCount)
-				return nullptr;
+			// m_cached_head is a shadow of the consumer's cursor that only ever
+			// lags, so a full reading off it is worth re-testing against the
+			// real thing while a not-full reading is always true. That keeps the
+			// consumer's line out of the push path: it is re-read once per
+			// kCount pushes instead of once per push.
+			if (tail - m_cached_head == kCount)
+			{
+				m_cached_head = m_head.load(std::memory_order_acquire);
+				if (tail - m_cached_head == kCount)
+					return nullptr;
+			}
 			return &m_slots[tail & (kCount - 1)];
 		}
 
@@ -310,8 +342,16 @@ namespace GSBackQueue
 		SlotT* Peek()
 		{
 			const u32 head = m_head.load(std::memory_order_relaxed);
-			if (head == m_tail.load(std::memory_order_acquire))
-				return nullptr;
+			// Mirror of BeginPush: an empty reading off the shadow is re-tested,
+			// a non-empty one is always true. The consumer runs behind whenever
+			// there is work, so the shadow answers nearly every call and the
+			// producer's line is touched about once per drained batch.
+			if (head == m_cached_tail)
+			{
+				m_cached_tail = m_tail.load(std::memory_order_acquire);
+				if (head == m_cached_tail)
+					return nullptr;
+			}
 			return &m_slots[head & (kCount - 1)];
 		}
 
@@ -322,8 +362,138 @@ namespace GSBackQueue
 
 	private:
 		std::unique_ptr<SlotT[]> m_slots;
+		// One line per side: each holds that side's own cursor and its shadow of
+		// the other's, so neither side writes a line the other reads on its fast
+		// path. The shadows are plain u32 — they are private to their owner.
 		alignas(64) std::atomic<u32> m_head{0}; // consumer cursor
+		u32 m_cached_tail = 0; // consumer's shadow of m_tail
 		alignas(64) std::atomic<u32> m_tail{0}; // producer cursor
+		u32 m_cached_head = 0; // producer's shadow of m_head
+	};
+
+	// Where the producer sleeps when the ring is full or a pool is empty, and
+	// how the consumer wakes it.
+	//
+	// The producer spins briefly on its condition, then arms the wait, re-checks,
+	// and sleeps with a timeout. The timeout is what normally ends the sleep: the
+	// producer wakes on its own and re-checks, so the consumer pays nothing. A
+	// futex post costs the consumer ~5us on a Dimensity 8300, and the consumer is
+	// usually the bottleneck when the producer waits, so posting per batch made
+	// frames slower there. The consumer posts only as a starvation guard: when it
+	// is down to kLowWater queued records while the producer is still asleep, or
+	// when it runs out of records. The producer halves its timeout after each
+	// such post and lengthens it slowly after each wake that came too early
+	// (still no space), so it settles just short of where the guard fires.
+	//
+	// Lost wake-ups: the producer's "arm; fence; read cursors" and the
+	// consumer's "free; fence; read armed word" in NotifyIdle are a Dekker pair,
+	// so at least one side sees the other. The per-record check in
+	// NotifyRetired has no fence and may see the arming late, which only delays
+	// the wake: the consumer passes NotifyIdle before it sleeps, and by then the
+	// ring is empty and every pool node is back, so any condition the producer
+	// can wait on holds. Independently of all that, a missed post costs at most
+	// one timeout, never a hang.
+	//
+	// Exactly one Post per armed wait that the consumer claims. A producer that
+	// disarms itself (condition met on re-check, or timed out) and finds the
+	// wait already claimed takes that post, so the semaphore count returns to
+	// zero after every wait.
+	class alignas(64) SpaceWait
+	{
+	public:
+		// Timeouts in microseconds. The tests pin all three to one long value so
+		// that a lost wake-up shows up as a hang instead of a timeout.
+		explicit SpaceWait(u32 initial_timeout_us = 50, u32 min_timeout_us = 20, u32 max_timeout_us = 2000)
+			: m_timeout_us(initial_timeout_us)
+			, m_min_timeout_us(min_timeout_us)
+			, m_max_timeout_us(max_timeout_us)
+		{
+		}
+
+		// Producer. Returns once ready() is true. Pass a ready() that needs a
+		// batch of space, not a single slot, or the spin below succeeds after
+		// every record and the producer never sleeps.
+		template <typename Ready>
+		void Wait(Ready&& ready)
+		{
+			for (u32 spun = 0; spun < kSpinNs; spun += ShortSpin())
+			{
+				if (ready())
+					return;
+			}
+
+			for (;;)
+			{
+				m_armed.store(true, std::memory_order_relaxed);
+				std::atomic_thread_fence(std::memory_order_seq_cst);
+				if (ready())
+				{
+					Disarm();
+					return;
+				}
+
+				bool posted = m_sema.TimedWait(m_timeout_us);
+				if (!posted)
+					posted = Disarm();
+
+				const bool done = ready();
+				if (posted)
+					m_timeout_us = std::max(m_min_timeout_us, m_timeout_us / 2);
+				else if (!done)
+					m_timeout_us = std::min(m_max_timeout_us, m_timeout_us + m_timeout_us / 8 + 1);
+				if (done)
+					return;
+			}
+		}
+
+		// Consumer, after each retired record (and after returning its pool
+		// node). queued() is the number of records still in the ring; it is only
+		// called while the producer is waiting.
+		template <typename Queued>
+		void NotifyRetired(Queued&& queued)
+		{
+			if (!m_armed.load(std::memory_order_relaxed)) [[likely]]
+				return;
+			if (queued() <= kLowWater)
+				Wake();
+		}
+
+		// Consumer, when the ring is empty and before it waits for work.
+		void NotifyIdle()
+		{
+			std::atomic_thread_fence(std::memory_order_seq_cst);
+			if (m_armed.load(std::memory_order_relaxed))
+				Wake();
+		}
+
+	private:
+		static constexpr u32 kSpinNs = 4000;
+		// Queued records left when the guard posts. At ~3us a draw on the
+		// slowest target this is ~50us of work, about one futex wake-up.
+		static constexpr u32 kLowWater = 16;
+
+		void Wake()
+		{
+			if (m_armed.exchange(false, std::memory_order_relaxed))
+				m_sema.Post();
+		}
+
+		// Producer. Returns true if the consumer had already claimed the wait,
+		// after taking the post it sends.
+		bool Disarm()
+		{
+			if (m_armed.exchange(false, std::memory_order_relaxed))
+				return false;
+			m_sema.Wait();
+			return true;
+		}
+
+		std::atomic<bool> m_armed{false};
+		// Producer-only.
+		u32 m_timeout_us;
+		u32 m_min_timeout_us;
+		u32 m_max_timeout_us;
+		Threading::KernelSemaphore m_sema;
 	};
 
 	// Tagged slot sized for the largest record (DRAW). All records are trivially
@@ -360,16 +530,19 @@ namespace GSBackQueue
 	using RecordRing = SpscRing<RecordSlot, 512>;
 
 	// GV7-1d-ii: everything shared between the producing (front) and consuming
-	// (back) sides of the split. In single-object modes the GSState uses its own
-	// channel; under the two-object pipelined split the front parser object
-	// points at the back object's channel, so records, pool nodes, and drain
-	// waits all target one shared instance. The channel's storage owner (the
+	// (back) sides of the split. The front parser object points at the back
+	// object's channel, so records, pool nodes, and drain waits all target one
+	// shared instance. The channel's storage owner (the
 	// back object) frees the pooled arrays in its destructor; the producer must
 	// be destroyed or drained first.
 	struct Channel
 	{
 		RecordRing ring;
 		Threading::WorkSema sema;
+
+		// The producer's wait for ring or pool space (separate from `sema`, whose
+		// one empty-waiter slot belongs to the drain).
+		SpaceWait space;
 
 		// Set while the back thread is running. Read/written only on the MTGS
 		// thread (start/stop/drain all happen there), so a plain bool is enough.
@@ -397,5 +570,13 @@ namespace GSBackQueue
 		static constexpr u32 kMaxPayloadNodes = 8;
 		std::vector<PayloadNode*> payload_arena;
 		SpscRing<PayloadNode*, kMaxPayloadNodes> payload_free;
+
+		// How much the producer waits for once it has to wait at all: an eighth
+		// of the ring, a quarter of the draw pool, one payload node (they are
+		// 4 MB and rotate once per transfer). Waiting for a batch keeps the
+		// producer's spin from succeeding after every retired record.
+		static constexpr u32 kRingRefill = RecordRing::Capacity() / 8;
+		static constexpr u32 kDrawRefill = kMaxDrawNodes / 4;
+		static constexpr u32 kPayloadRefill = 1;
 	};
 } // namespace GSBackQueue

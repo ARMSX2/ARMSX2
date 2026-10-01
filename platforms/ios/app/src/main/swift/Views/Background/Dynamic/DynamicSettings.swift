@@ -10,6 +10,7 @@ import UIKit
 enum DynamicParticleStyle: String, CaseIterable, Identifiable, Codable {
   case xmb3
   case xmbMart
+  case armsx2BouncingLogo
   case ps1Dust
   case ps4Glow
   case ps5Drift
@@ -20,15 +21,17 @@ enum DynamicParticleStyle: String, CaseIterable, Identifiable, Codable {
   var title: String {
     switch self {
     case .xmb3:
-      return "XMB3 Sparkles"
+      return "Glass Sparkles"
     case .xmbMart:
-      return "PlayStation 3 XMB by Mart"
+      return "Glass Ribbons by Mart"
+    case .armsx2BouncingLogo:
+      return "ARMSX2 Bouncing Logo"
     case .ps1Dust:
-      return "PS1 Dust"
+      return "Pixel Dust"
     case .ps4Glow:
-      return "PS4 Glow"
+      return "Soft Glow"
     case .ps5Drift:
-      return "PS5 Drift"
+      return "Ribbon Drift"
     case .mixed:
       return "Mixed"
     }
@@ -97,8 +100,49 @@ struct DynamicParticleSettings: Equatable, Codable {
   var faceButtonOpacity = 0.86
   var faceButtonRotation = 1.0
   var faceButtonPulse = 0.75
+  // Optional storage keeps older saved themes decodable. The logo is an
+  // independent overlay now, rather than a mutually exclusive particle style.
+  var armsx2LogoEnabled: Bool?
+  var armsx2LogoSpeed: Double?
+  var armsx2LogoSize: Double?
+  var armsx2LogoOpacity: Double?
+  var armsx2LogoOrbsEnabled: Bool?
+  var armsx2LogoOrbOpacity: Double?
   var playStation3XMB = PlayStation3XMBSettings()
   var backgrounds = DynamicBackgroundMotionSettings()
+
+  var isARMSX2LogoEnabled: Bool {
+    get { armsx2LogoEnabled ?? (style == .armsx2BouncingLogo) }
+    set {
+      armsx2LogoEnabled = newValue
+      if style == .armsx2BouncingLogo { style = .xmb3 }
+    }
+  }
+
+  var resolvedARMSX2LogoSpeed: Double {
+    get { armsx2LogoSpeed ?? 0.55 }
+    set { armsx2LogoSpeed = newValue }
+  }
+
+  var resolvedARMSX2LogoSize: Double {
+    get { armsx2LogoSize ?? 1.0 }
+    set { armsx2LogoSize = newValue }
+  }
+
+  var resolvedARMSX2LogoOpacity: Double {
+    get { armsx2LogoOpacity ?? 0.70 }
+    set { armsx2LogoOpacity = newValue }
+  }
+
+  var showsARMSX2LogoOrbs: Bool {
+    get { armsx2LogoOrbsEnabled ?? true }
+    set { armsx2LogoOrbsEnabled = newValue }
+  }
+
+  var resolvedARMSX2LogoOrbOpacity: Double {
+    get { armsx2LogoOrbOpacity ?? 0.72 }
+    set { armsx2LogoOrbOpacity = newValue }
+  }
 }
 
 struct ThemeMultiColorSelection: Equatable, Codable {
@@ -988,6 +1032,8 @@ struct DynamicParticleSettingsControls: View {
   let dynamicBackground: DynamicBackgroundStyle
   let resetAllSettingsAndPalettes: () -> Void
 
+  @State private var logoStore = ARMSX2LogoStore.shared
+
   @AppStorage("ARMSX2iOSDynamicAddParticlesExpanded")
   private var showsAddParticlesSettings = true
   @AppStorage("ARMSX2iOSDynamicBackgroundsExpanded")
@@ -996,11 +1042,16 @@ struct DynamicParticleSettingsControls: View {
   private var showsMultiColorSettings = false
   @AppStorage("ARMSX2iOSDynamicFaceButtonsExpanded")
   private var showsFaceButtonSettings = false
+  @AppStorage("ARMSX2iOSDynamicARMSX2LogoExpanded")
+  private var showsARMSX2LogoSettings = true
   private let defaults = DynamicParticleSettings()
 
   var body: some View {
     particleSection
-      .onAppear { showsBackgroundSettings = true }
+      .onAppear {
+        showsBackgroundSettings = true
+        migrateLegacyLogoStyleIfNeeded()
+      }
       .onChange(of: dynamicBackground) { _, _ in
         showsBackgroundSettings = true
       }
@@ -1040,6 +1091,15 @@ struct DynamicParticleSettingsControls: View {
         faceButtonSettings
       }
 
+      dynamicSettingsGroup(
+        "Add Logo",
+        isExpanded: $showsARMSX2LogoSettings
+      ) {
+        armsx2LogoSettings
+      }
+      .disabled(!logoStore.hasLogo)
+      .opacity(logoStore.hasLogo ? 1 : 0.48)
+
 
       particleSlider(
         "See background preview before applying",
@@ -1065,14 +1125,20 @@ struct DynamicParticleSettingsControls: View {
       )
       .dynamicSettingsCard()
 
-      Button(role: .destructive, action: resetAllSettingsAndPalettes) {
-        Label("Reset Dynamic Background Settings", systemImage: "arrow.counterclockwise")
-          .font(.subheadline.weight(.bold))
-          .frame(maxWidth: .infinity)
-          .frame(height: 44)
+      ConfirmedSettingsResetButton(
+        "Reset Dynamic Background Settings",
+        confirmationTitle: "Reset Dynamic Background Settings?",
+        confirmationMessage: "This restores every dynamic background control and selected palette to its default value.",
+        completionMessage: "Defaults Restored",
+        controllerTargetID: "dynamic-background.reset-all"
+      ) {
+        resetAllSettingsAndPalettes()
       }
+      .font(.subheadline.weight(.bold))
+      .frame(maxWidth: .infinity)
+      .frame(height: 44)
       .buttonStyle(.plain)
-      .foregroundStyle(.red)
+      .uiCriticalForegroundStyle()
       .glassSurface(
         tint: Color.red.opacity(0.12),
         interactive: true,
@@ -1093,7 +1159,7 @@ struct DynamicParticleSettingsControls: View {
 
       HStack {
         Picker("Particle style", selection: $particleSettings.style) {
-          ForEach(DynamicParticleStyle.allCases) { style in
+          ForEach(DynamicParticleStyle.allCases.filter { $0 != .armsx2BouncingLogo }) { style in
             Text(style.title).tag(style)
           }
         }
@@ -1116,6 +1182,13 @@ struct DynamicParticleSettingsControls: View {
         range: 0.1...3.0,
         step: 0.1,
         formattedValue: String(format: "%.1fx", particleSettings.speed)
+      )
+      particleSlider(
+        "Particle Opacity",
+        value: $particleSettings.opacity,
+        range: 0.05...1.0,
+        step: 0.01,
+        formattedValue: "\(Int(particleSettings.opacity * 100))%"
       )
       particleSlider(
         "Direction of speed",
@@ -1175,13 +1248,6 @@ struct DynamicParticleSettingsControls: View {
         range: 0.15...1.35,
         step: 0.01,
         formattedValue: "\(Int(particleSettings.brightness * 100))%"
-      )
-      particleSlider(
-        "Particle opacity",
-        value: $particleSettings.opacity,
-        range: 0.05...1.5,
-        step: 0.01,
-        formattedValue: "\(Int(particleSettings.opacity * 100))%"
       )
       particleSlider(
         "Depth variation",
@@ -1294,6 +1360,95 @@ struct DynamicParticleSettingsControls: View {
         formattedValue: "\(Int(particleSettings.faceButtonPulse * 100))%"
       )
     }
+  }
+
+  private var armsx2LogoSettings: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack {
+        Toggle("Show Logo", isOn: logoEnabledBinding)
+        settingResetButton("Add Logo") {
+          particleSettings.isARMSX2LogoEnabled = false
+        }
+      }
+
+      Group {
+        particleSlider(
+          "Logo speed",
+          value: logoSpeedBinding,
+          range: 0.15...1.5,
+          step: 0.05,
+          formattedValue: String(format: "%.2fx", particleSettings.resolvedARMSX2LogoSpeed),
+          resetValue: 0.55
+        )
+        particleSlider(
+          "Logo size",
+          value: logoSizeBinding,
+          range: 0.5...1.8,
+          step: 0.05,
+          formattedValue: "\(Int(particleSettings.resolvedARMSX2LogoSize * 100))%",
+          resetValue: 1.0
+        )
+        particleSlider(
+          "Logo opacity",
+          value: logoOpacityBinding,
+          range: 0.0...1.0,
+          step: 0.01,
+          formattedValue: "\(Int(particleSettings.resolvedARMSX2LogoOpacity * 100))%",
+          resetValue: 0.70
+        )
+        particleSlider(
+          "Logo Orbs opacity",
+          value: logoOrbOpacityBinding,
+          range: 0.05...1.0,
+          step: 0.01,
+          formattedValue: "\(Int(particleSettings.resolvedARMSX2LogoOrbOpacity * 100))%",
+          resetValue: 0.72
+        )
+      }
+      .disabled(!particleSettings.isARMSX2LogoEnabled)
+      .opacity(particleSettings.isARMSX2LogoEnabled ? 1 : 0.58)
+    }
+  }
+
+  private var logoEnabledBinding: Binding<Bool> {
+    Binding(
+      get: { particleSettings.isARMSX2LogoEnabled },
+      set: { particleSettings.isARMSX2LogoEnabled = $0 }
+    )
+  }
+
+  private var logoSpeedBinding: Binding<Double> {
+    Binding(
+      get: { particleSettings.resolvedARMSX2LogoSpeed },
+      set: { particleSettings.resolvedARMSX2LogoSpeed = $0 }
+    )
+  }
+
+  private var logoSizeBinding: Binding<Double> {
+    Binding(
+      get: { particleSettings.resolvedARMSX2LogoSize },
+      set: { particleSettings.resolvedARMSX2LogoSize = $0 }
+    )
+  }
+
+  private var logoOpacityBinding: Binding<Double> {
+    Binding(
+      get: { particleSettings.resolvedARMSX2LogoOpacity },
+      set: { particleSettings.resolvedARMSX2LogoOpacity = $0 }
+    )
+  }
+
+  private var logoOrbOpacityBinding: Binding<Double> {
+    Binding(
+      get: { particleSettings.resolvedARMSX2LogoOrbOpacity },
+      set: { particleSettings.resolvedARMSX2LogoOrbOpacity = $0 }
+    )
+  }
+
+  private func migrateLegacyLogoStyleIfNeeded() {
+    guard particleSettings.style == .armsx2BouncingLogo else { return }
+    particleSettings.armsx2LogoEnabled = true
+    particleSettings.style = .xmb3
   }
 
   private func dynamicSettingsGroup<Content: View>(

@@ -65,6 +65,7 @@ typedef NS_ENUM(NSInteger, ARMSX2PadButton) {
 @end
 
 typedef void (^ARMSX2SaveStateCompletion)(BOOL success);
+typedef void (^ARMSX2TemporaryStateCreationCompletion)(NSString * _Nullable token);
 typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonnull message);
 
 @interface ARMSX2Bridge : NSObject
@@ -80,11 +81,24 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (void)setPadButton:(ARMSX2PadButton)button pressed:(BOOL)pressed;
 + (void)setLeftStickX:(float)x Y:(float)y;
 + (void)setRightStickX:(float)x Y:(float)y;
++ (void)configureControllerMacroInputMask:(uint32_t)inputMask
+                             modifierMask:(uint32_t)modifierMask
+    NS_SWIFT_NAME(configureControllerMacroInput(mask:modifierMask:));
++ (void)consumeControllerMacroInputMask:(uint32_t)inputMask
+    NS_SWIFT_NAME(consumeControllerMacroInput(mask:));
 
 // VM control
 + (void)requestVMStop;
 + (void)setVMPaused:(BOOL)paused;
 + (void)setFullScreen:(BOOL)enabled;
+
+// Silent, private save-state transaction used by the in-game Per-Game Settings
+// live preview. These states never occupy a user slot and never emit an OSD.
++ (void)beginPerGameLivePreviewWithCompletion:(nullable ARMSX2TemporaryStateCreationCompletion)completion NS_SWIFT_NAME(beginPerGameLivePreview(completion:));
++ (void)refreshPerGameLivePreviewBaselineForToken:(nonnull NSString *)token afterSave:(BOOL)afterSave NS_SWIFT_NAME(refreshPerGameLivePreviewBaseline(token:afterSave:));
++ (void)applyPerGameLivePreviewForToken:(nonnull NSString *)token completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(applyPerGameLivePreview(token:completion:));
++ (void)restorePerGameLivePreviewStateForToken:(nonnull NSString *)token completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(restorePerGameLivePreviewState(token:completion:));
++ (void)finishPerGameLivePreviewForToken:(nonnull NSString *)token completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(finishPerGameLivePreview(token:completion:));
 + (BOOL)isSDLFullscreen;
 
 // Info
@@ -111,6 +125,13 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
                                                       error:(NSError * _Nullable * _Nullable)error
     NS_SWIFT_NAME(extractShaderPackArchive(at:to:error:));
 
+// Extracts one MP3 or WAV for each required UI-audio role. Archive folders are
+// ignored and the validated files are flattened into the destination.
++ (nonnull NSArray<NSURL *> *)extractAudioPackArchiveAtURL:(nonnull NSURL *)archiveURL
+                                               toDirectory:(nonnull NSURL *)destinationDirectory
+                                                     error:(NSError * _Nullable * _Nullable)error
+    NS_SWIFT_NAME(extractAudioPackArchive(at:to:error:));
+
 // Extracts the first .ps2 file from a ZIP into the memory-card directory.
 + (nullable NSString *)extractMemoryCardArchiveAtURL:(nonnull NSURL *)archiveURL
     NS_SWIFT_NAME(extractMemoryCardArchive(at:));
@@ -133,16 +154,20 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // Audio
 + (int)emulatorVolumePercent;
 + (void)setEmulatorVolumePercent:(int)value;
++ (void)setPerGameLivePreviewAudioMuted:(BOOL)muted;
 
 // ISO management
 + (nullable NSString *)currentISOPath;
 + (nullable NSString *)currentGameISOName;
++ (nullable NSString *)discInDriveName;
 + (nonnull NSString *)isoDirectory;
 + (nonnull NSString *)documentsDirectory;
 + (nonnull NSArray<NSString *> *)availableISOs;
 + (nonnull NSArray<NSDictionary<NSString *, id> *> *)availableISOEntries;
 + (nonnull NSDictionary<NSString *, NSString *> *)gameMetadataForISO:(nonnull NSString *)isoName;
 + (nonnull NSDictionary<NSString *, id> *)gameSettingsForISO:(nullable NSString *)isoName NS_SWIFT_NAME(gameSettings(forISO:));
++ (nonnull NSDictionary<NSString *, id> *)gameSettingsForSerial:(nullable NSString *)serial
+                                                            crc:(nullable NSString *)crc NS_SWIFT_NAME(gameSettings(forSerial:crc:));
 + (nullable NSDictionary<NSString *, id> *)gameSettingsForCurrentGame;
 + (void)setGameSettings:(nonnull NSDictionary<NSString *, id> *)settings forISO:(nullable NSString *)isoName NS_SWIFT_NAME(setGameSettings(_:forISO:));
 + (nullable NSString *)linkedDiscPathForELF:(nonnull NSString *)elfName NS_SWIFT_NAME(linkedDiscPath(forELF:));
@@ -248,6 +273,10 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // Runtime speed control
 + (int)limiterMode;
 + (void)setLimiterMode:(int)mode;
++ (void)setRuntimeFastForwardEnabled:(BOOL)enabled speedPercent:(int)percent
+    NS_SWIFT_NAME(setRuntimeFastForward(enabled:speedPercent:));
++ (void)setRuntimeEmulationSpeedPercent:(int)percent
+    NS_SWIFT_NAME(setRuntimeEmulationSpeedPercent(_:));
 + (void)setPresentFPSCap:(float)fps NS_SWIFT_NAME(setPresentFPSCap(_:));
 
 // Runtime disc identity
@@ -263,13 +292,36 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (BOOL)isVMRunning;
 + (BOOL)hasBIOS;
 + (void)requestVMBoot;
++ (void)requestVMBootLoadingLastSaveState:(BOOL)loadLastSaveState NS_SWIFT_NAME(requestVMBoot(loadLastSaveState:));
 + (void)testControllerRumble;
 
 // Save states
 + (BOOL)hasValidSaveStateGame;
 + (nonnull NSArray<ARMSX2SaveStateSlotInfo *> *)saveStateSlots;
-+ (void)saveStateToSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(saveState(toSlot:completion:));
-+ (void)loadStateFromSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(loadState(fromSlot:completion:));
+/// `backupToken` names the older state the save moved to .backup, or is nil when the slot was empty.
++ (void)saveStateToSlot:(NSInteger)slot
+             completion:(nullable void (^)(BOOL saved, NSString *_Nullable backupToken))completion
+    NS_SWIFT_NAME(saveState(toSlot:completion:));
+/// Writes the Auto-save slot. It skips a paused game, unless `leaving`, and any moment a memory card
+/// or the live preview is at work, and then reports NO.
++ (void)autoSaveLeavingGame:(BOOL)leaving completion:(nullable ARMSX2SaveStateCompletion)completion
+    NS_SWIFT_NAME(autoSave(leavingGame:completion:));
+/// Refuses when the slot's file is no longer the one last shown. With `keepingUndo`, the moment
+/// before the load is saved to `undoPath` first, and the load is skipped if that fails.
++ (void)loadStateFromSlot:(NSInteger)slot
+         expectedModified:(nullable NSDate *)expectedModified
+              keepingUndo:(BOOL)keepingUndo
+               completion:(nullable void (^)(BOOL loaded, NSString *_Nullable undoPath))completion
+    NS_SWIFT_NAME(loadState(fromSlot:expectedModified:keepingUndo:completion:));
++ (void)undoLoadStateFromPath:(nonnull NSString *)path completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(undoLoadState(fromPath:completion:));
++ (void)discardUndoLoadStateAtPath:(nonnull NSString *)path NS_SWIFT_NAME(discardUndoLoadState(atPath:));
+/// Delete holds the state beside the slot until `finishDeletingSaveStateInSlot`, so it can be undone.
++ (void)deleteSaveStateInSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(deleteSaveState(inSlot:completion:));
++ (void)restoreDeletedSaveStateInSlot:(NSInteger)slot completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(restoreDeletedSaveState(inSlot:completion:));
++ (void)finishDeletingSaveStateInSlot:(NSInteger)slot NS_SWIFT_NAME(finishDeletingSaveState(inSlot:));
++ (void)undoSaveOverInSlot:(NSInteger)slot backupToken:(nonnull NSString *)backupToken completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(undoSaveOver(inSlot:backupToken:completion:));
+/// Seconds played in the running game: the played-time file plus this session.
++ (double)currentGamePlayedSeconds;
 
 // PNACH cheats/patches (pass nil for isoName to target the running game)
 + (nullable NSString *)pnachPathForCurrentGameAsCheat:(BOOL)asCheat NS_SWIFT_NAME(pnachPathForCurrentGame(asCheat:));

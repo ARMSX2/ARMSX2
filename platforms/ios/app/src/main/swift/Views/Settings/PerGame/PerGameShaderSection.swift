@@ -3,6 +3,10 @@
 
 import SwiftUI
 
+private struct PerGameShaderCatalogRequest: Identifiable {
+    let id = "per-game-shader-catalog"
+}
+
 /// Three states, not the global section's two: Use Global, Off, and a preset of this game's own.
 /// The preset row is a Button and not a link, because the wide panel has no navigation stack.
 struct PerGameShaderSection: View {
@@ -11,6 +15,10 @@ struct PerGameShaderSection: View {
     @Binding var presetRef: String
     let settings: SettingsStore
     let onBrowse: () -> Void
+    var showsClearPresetAction = true
+
+    @Environment(\.menuControllerInputRouter) private var controllerInput
+    @State private var catalogRequest: PerGameShaderCatalogRequest?
 
     var body: some View {
         Section {
@@ -19,7 +27,42 @@ struct PerGameShaderSection: View {
                 Text(settings.localized("Off")).tag(0)
                 Text(settings.localized("On")).tag(1)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                id: "per-game.graphics.shader-chain",
+                label: settings.localized("Shader Chain"),
+                selection: $chain,
+                options: [
+                    (-1, settings.localized("Use Global")),
+                    (0, settings.localized("Off")),
+                    (1, settings.localized("On")),
+                ]
+            )
             .disabled(!enabled)
+
+            Button {
+                catalogRequest = PerGameShaderCatalogRequest()
+            } label: {
+                Label(
+                    settings.localized("Download Shaders"),
+                    systemImage: "arrow.down.circle"
+                )
+            }
+            .controllerAccessibilityActionTarget(
+                id: "per-game.graphics.download-shaders",
+                label: settings.localized("Download Shaders")
+            ) {
+                catalogRequest = PerGameShaderCatalogRequest()
+            }
+            .sheet(item: $catalogRequest) { _ in
+                NavigationStack {
+                    ShaderCatalogBrowserView(
+                        localized: settings.localized,
+                        onSelect: selectDownloadedPreset,
+                        controllerInput: controllerInput
+                    )
+                }
+                .presentationDetents([.large])
+            }
 
             if chain == 1 {
                 Button(action: onBrowse) {
@@ -36,15 +79,27 @@ struct PerGameShaderSection: View {
                     }
                 }
                 .tint(.primary)
+                .controllerAccessibilityActionTarget(
+                    id: "per-game.graphics.shader-preset",
+                    label: settings.localized("Preset"),
+                    action: onBrowse
+                )
                 .disabled(!enabled)
 
-                if !presetRef.isEmpty {
+                if showsClearPresetAction, !presetRef.isEmpty {
                     Button(role: .destructive) {
                         presetRef = ""
                     } label: {
                         Text(settings.localized("Clear Preset"))
                     }
+                    .controllerAccessibilityActionTarget(
+                        id: "per-game.graphics.clear-shader-preset",
+                        label: settings.localized("Clear Preset")
+                    ) {
+                        presetRef = ""
+                    }
                     .disabled(!enabled)
+                    .foregroundStyle(.red)
                 }
             }
         } header: {
@@ -56,5 +111,10 @@ struct PerGameShaderSection: View {
 
     private var presetName: String {
         ShaderPresetLibrary.displayName(for: presetRef) ?? settings.localized("None")
+    }
+
+    private func selectDownloadedPreset(_ token: String) {
+        chain = 1
+        presetRef = token
     }
 }

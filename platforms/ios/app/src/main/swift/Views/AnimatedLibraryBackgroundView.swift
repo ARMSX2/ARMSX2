@@ -18,13 +18,18 @@ struct AnimatedLibraryBackgroundView: View {
     @State private var frames: [AnimatedBackgroundLoader.Frame] = []
     @State private var staticImage: UIImage?
     @State private var loadFailed = false
+    @State private var frameRates = UIFrameRateSettings.shared
 
     var body: some View {
         Group {
             if reduceMotion || frames.isEmpty {
                 staticFirstFrame
             } else {
-                AnimatedFramePlayer(frames: frames, fitMode: fitMode)
+                AnimatedFramePlayer(
+                    frames: frames,
+                    fitMode: fitMode,
+                    frameRateConfiguration: frameRates.configuration
+                )
             }
         }
         .task(id: "\(url.path)|\(reduceMotion)") {
@@ -83,12 +88,16 @@ struct AnimatedLibraryBackgroundView: View {
 private struct AnimatedFramePlayer: UIViewRepresentable {
     let frames: [AnimatedBackgroundLoader.Frame]
     let fitMode: BackgroundFitMode
+    let frameRateConfiguration: UIFrameRateConfiguration
 
     func makeUIView(context: Context) -> AnimatedBackgroundImageView {
-        AnimatedBackgroundImageView()
+        let view = AnimatedBackgroundImageView()
+        view.frameRateConfiguration = frameRateConfiguration
+        return view
     }
 
     func updateUIView(_ uiView: AnimatedBackgroundImageView, context: Context) {
+        uiView.frameRateConfiguration = frameRateConfiguration
         uiView.configure(with: frames, fitMode: fitMode)
     }
 
@@ -108,6 +117,17 @@ private final class AnimatedBackgroundImageView: UIView {
     private var accumulated: CFTimeInterval = 0
     private var lastTimestamp: CFTimeInterval = 0
     private var releasedForGameplay = false
+    var frameRateConfiguration = UIFrameRateSettings.shared.configuration {
+        didSet {
+            guard frameRateConfiguration != oldValue,
+                  let displayLink else { return }
+            frameRateConfiguration.apply(
+                to: displayLink,
+                domain: .dynamicBackground,
+                maximum: 30
+            )
+        }
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -174,10 +194,10 @@ private final class AnimatedBackgroundImageView: UIView {
         guard !releasedForGameplay, displayLink == nil, !frames.isEmpty,
               UIApplication.shared.applicationState != .background else { return }
         let link = CADisplayLink(target: self, selector: #selector(tick))
-        link.preferredFrameRateRange = CAFrameRateRange(
-            minimum: 10,
-            maximum: 30,
-            preferred: 30
+        frameRateConfiguration.apply(
+            to: link,
+            domain: .dynamicBackground,
+            maximum: 30
         )
         link.add(to: .main, forMode: .common)
         displayLink = link

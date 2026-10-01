@@ -66,6 +66,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableFloatStateOf
@@ -76,10 +78,12 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -113,6 +117,7 @@ import coil.request.ImageRequest
 import coil.size.Precision
 import com.armsx2.CustomCovers
 import com.armsx2.GameInfo
+import com.armsx2.GamePlatform
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.armsx2.i18n.str
@@ -231,6 +236,34 @@ fun HomeScreen(
         }
     }
     LaunchedEffect(directories, nativeReady) { viewModel.load(directories, nativeReady) }
+    // Memory Card Covers: look at the cards again when the library shows and when a game stops,
+    // which is when a new save appears, then on the discs of games with no save. Nothing is drawn
+    // again unless a save changed, and no disc is looked at twice.
+    remember { com.armsx2.memcard.MemcardCovers.load() }
+    remember { com.armsx2.memcard.OnlineIcons.init(context) }
+    val memcardCoversOn = com.armsx2.memcard.MemcardCovers.enabled.value
+    val emuState = MainActivityRuntime.eState.value
+    // A set of online icons downloaded or deleted changes covers too.
+    val onlineIcons = com.armsx2.memcard.OnlineIcons.generation.intValue
+    LaunchedEffect(memcardCoversOn, emuState, state.allGames, onlineIcons) {
+        if (memcardCoversOn) com.armsx2.memcard.MemcardCovers.refresh(
+            context,
+            state.allGames.filter { it.platform == GamePlatform.PS2 }.mapNotNull { g ->
+                g.serial?.takeIf { it.isNotBlank() }?.let { com.armsx2.memcard.MemcardCovers.DiscGame(it, g.uri) }
+            },
+        )
+    }
+    val libraryTitles = {
+        state.allGames.mapNotNull { g -> g.serial?.uppercase()?.let { it to g.displayTitle(EnglishTitles.enabled.value) } }.toMap()
+    }
+    if (MemcardIconViewerState.open.value) MemcardIconViewer(onClose = { MemcardIconViewerState.open.value = false }, titles = libraryTitles)
+    if (MemcardIconViewerState.info.value) MemcardCoversInfo(onClose = { MemcardIconViewerState.info.value = false })
+    if (MemcardIconViewerState.screensaver.value) ScreensaverSettings(onClose = { MemcardIconViewerState.screensaver.value = false })
+    if (MemcardIconViewerState.online.value) {
+        OnlineIconsBrowser(onClose = { MemcardIconViewerState.online.value = false }, librarySerials = { libraryTitles().keys })
+    }
+    // The screensaver, after the library has sat untouched for a while.
+    LibraryScreensaverHost(titles = libraryTitles)
     DisposableEffect(viewModel, onOpenMenu) {
         HomeInputController.bind(viewModel, onOpenMenu, onOpenGameMenu = { menuGame = it })
         onDispose { HomeInputController.unbind(viewModel) }
@@ -242,85 +275,90 @@ fun HomeScreen(
         // (behind the gesture bar) so it never leaves an exposed strip at the bottom —
         // that strip was the "blue bar" in landscape.
         backgroundLayer = {
-            val libraryBg = LibraryBackground.uri.value
-            if (libraryBg == null) {
-                // Default: the live PS3-XMB wave (XmbGlView — a GLES3 port of linkev's
-                // grid-displacement mesh, matching iOS). When GL can't init — older Mali without
-                // float-texture filtering, or any EGL failure — we fall back to LibraryWaveBackground,
-                // a procedural PPSSPP-style animated background drawn on the hardware 2D Canvas (no
-                // GLES3, runs anywhere) that reads the SAME colour prefs as the GL wave, so Mali users
-                // finally get an animated, recolourable backdrop instead of the old fixed GIF. The
-                // bundled still is the cheap floor shown during GL startup (and, once the wave is up,
-                // sits hidden behind it). Custom backgrounds below override all of this.
-                if (LibraryBackground.flurry.value) {
-                    // Flurry, in the same shell as the XMB wave: if GL cannot come up we fall back
-                    // to the 2D backdrop rather than leaving a hole, exactly as XmbGlView does.
-                    var flurryGl by remember { mutableStateOf<Boolean?>(null) }
-                    if (flurryGl == false) {
+            // Nothing of the library shows behind the screensaver, whose scrim is opaque from its
+            // first frame, so the backdrop stops while it is up: every frame the wave, Flurry or a GIF
+            // drew there still had the whole screen composited again, for nobody.
+            if (!LibraryScreensaver.showing.value) {
+                val libraryBg = LibraryBackground.uri.value
+                if (libraryBg == null) {
+                    // Default: the live PS3-XMB wave (XmbGlView — a GLES3 port of linkev's
+                    // grid-displacement mesh, matching iOS). When GL can't init — older Mali without
+                    // float-texture filtering, or any EGL failure — we fall back to LibraryWaveBackground,
+                    // a procedural PPSSPP-style animated background drawn on the hardware 2D Canvas (no
+                    // GLES3, runs anywhere) that reads the SAME colour prefs as the GL wave, so Mali users
+                    // finally get an animated, recolourable backdrop instead of the old fixed GIF. The
+                    // bundled still is the cheap floor shown during GL startup (and, once the wave is up,
+                    // sits hidden behind it). Custom backgrounds below override all of this.
+                    if (LibraryBackground.flurry.value) {
+                        // Flurry, in the same shell as the XMB wave: if GL cannot come up we fall back
+                        // to the 2D backdrop rather than leaving a hole, exactly as XmbGlView does.
+                        var flurryGl by remember { mutableStateOf<Boolean?>(null) }
+                        if (flurryGl == false) {
+                            LibraryWaveBackground(Modifier.fillMaxSize())
+                        } else {
+                            AndroidView(
+                                factory = {
+                                    // currentSpec() resolves which saver AND resolves a "random"
+                                    // preset to a concrete one — read once here, at view creation,
+                                    // so random means once per library open and not once per frame.
+                                    SaverGlView(it, LibraryBackground.currentSpec()).apply {
+                                        onGlStatus = { ok -> flurryGl = ok }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxSize(),
+                                // Stops the render thread. Without it the EGL thread outlives the
+                                // composition and keeps drawing to a dead surface.
+                                onRelease = { it.stop() },
+                            )
+                        }
+                    } else if (LibraryBackground.animated2D.value) {
+                        // User opted into the lightweight 2D animated wave everywhere (#Luminz) — the same
+                        // backdrop GL-fail devices get; skip the GLES3 XmbGlView entirely.
                         LibraryWaveBackground(Modifier.fillMaxSize())
                     } else {
+                        var xmbGlState by remember { mutableStateOf<Boolean?>(null) } // null=starting, true=up, false=failed
+                        if (xmbGlState == false) {
+                            LibraryWaveBackground(Modifier.fillMaxSize())
+                        } else {
+                            Image(
+                                painter = painterResource(R.drawable.library_bg_xmb),
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop,
+                            )
+                        }
                         AndroidView(
-                            factory = {
-                                // currentSpec() resolves which saver AND resolves a "random"
-                                // preset to a concrete one — read once here, at view creation,
-                                // so random means once per library open and not once per frame.
-                                SaverGlView(it, LibraryBackground.currentSpec()).apply {
-                                    onGlStatus = { ok -> flurryGl = ok }
-                                }
-                            },
+                            factory = { XmbGlView(it).apply { onGlStatus = { ok -> xmbGlState = ok } } },
                             modifier = Modifier.fillMaxSize(),
-                            // Stops the render thread. Without it the EGL thread outlives the
-                            // composition and keeps drawing to a dead surface.
-                            onRelease = { it.stop() },
                         )
                     }
-                } else if (LibraryBackground.animated2D.value) {
-                    // User opted into the lightweight 2D animated wave everywhere (#Luminz) — the same
-                    // backdrop GL-fail devices get; skip the GLES3 XmbGlView entirely.
-                    LibraryWaveBackground(Modifier.fillMaxSize())
                 } else {
-                    var xmbGlState by remember { mutableStateOf<Boolean?>(null) } // null=starting, true=up, false=failed
-                    if (xmbGlState == false) {
-                        LibraryWaveBackground(Modifier.fillMaxSize())
-                    } else {
-                        Image(
-                            painter = painterResource(R.drawable.library_bg_xmb),
-                            contentDescription = null,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop,
-                        )
-                    }
-                    AndroidView(
-                        factory = { XmbGlView(it).apply { onGlStatus = { ok -> xmbGlState = ok } } },
+                    // User-picked still image / GIF (Coil handles both).
+                    AsyncImage(
+                        model = ImageRequest.Builder(context).data(libraryBg).crossfade(true).build(),
+                        contentDescription = null,
                         modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
                     )
                 }
-            } else {
-                // User-picked still image / GIF (Coil handles both).
-                AsyncImage(
-                    model = ImageRequest.Builder(context).data(libraryBg).crossfade(true).build(),
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                )
-            }
-            // Scrim so covers and text stay readable over the backdrop. A user-picked image can
-            // be any brightness, so it gets the full dark scrim. The XMB is our own controlled
-            // backdrop (dark at the top where the content sits) and a heavy scrim just muddied
-            // its blue into navy — so it gets only a whisper of dimming, letting the vivid blue
-            // read through.
-            val scrimTop = if (libraryBg == null) 0.06f else 0.55f
-            val scrimBottom = if (libraryBg == null) 0.20f else 0.80f
-            Box(
-                Modifier.fillMaxSize().background(
-                    Brush.verticalGradient(
-                        listOf(
-                            MaterialTheme.colorScheme.background.copy(alpha = scrimTop),
-                            MaterialTheme.colorScheme.background.copy(alpha = scrimBottom),
+                // Scrim so covers and text stay readable over the backdrop. A user-picked image can
+                // be any brightness, so it gets the full dark scrim. The XMB is our own controlled
+                // backdrop (dark at the top where the content sits) and a heavy scrim just muddied
+                // its blue into navy — so it gets only a whisper of dimming, letting the vivid blue
+                // read through.
+                val scrimTop = if (libraryBg == null) 0.06f else 0.55f
+                val scrimBottom = if (libraryBg == null) 0.20f else 0.80f
+                Box(
+                    Modifier.fillMaxSize().background(
+                        Brush.verticalGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.background.copy(alpha = scrimTop),
+                                MaterialTheme.colorScheme.background.copy(alpha = scrimBottom),
+                            ),
                         ),
                     ),
-                ),
-            )
+                )
+            }
         },
     ) {
         BoxWithConstraints(modifier.fillMaxSize()) {
@@ -1620,6 +1658,96 @@ private fun LibraryOverflowMenu(
             closeThen { onSort(HomeSort.RecentlyPlayed) }
         }
         OverflowSeparator()
+        // Memory card covers, a section of its own: each game's PS2 save icon, from the player's own
+        // cards, as its cover (Off / Animated / Still, cycling like Cover region), the Icon Museum,
+        // and a note on how it works.
+        Text(
+            text = str("games.section.memcardCovers"),
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Bold,
+        )
+        run {
+            val coversCtx = androidx.compose.ui.platform.LocalContext.current
+            remember { com.armsx2.memcard.MemcardCovers.load() }
+            val on = com.armsx2.memcard.MemcardCovers.enabled.value
+            val animated = com.armsx2.memcard.MemcardCovers.animate.value
+            LibraryOverflowItem(
+                glyph = "▤",
+                label = str("games.overflow.memcardCovers"),
+                trailing = when {
+                    !on -> str("common.off")
+                    animated -> str("games.overflow.memcardCovers.animated")
+                    else -> str("games.overflow.memcardCovers.still")
+                },
+            ) {
+                closeThen {
+                    when {
+                        !on -> {
+                            com.armsx2.memcard.MemcardCovers.setAnimate(true)
+                            com.armsx2.memcard.MemcardCovers.setEnabled(coversCtx, true)
+                        }
+                        animated -> com.armsx2.memcard.MemcardCovers.setAnimate(false)
+                        else -> com.armsx2.memcard.MemcardCovers.setEnabled(coversCtx, false)
+                    }
+                }
+            }
+        }
+        LibraryOverflowItem(
+            glyph = "🏛",
+            label = str("games.overflow.iconViewer"),
+            iconRes = com.armsx2.R.drawable.ic_museum,
+        ) {
+            closeThen { MemcardIconViewerState.open.value = true }
+        }
+        // Spin or No spin: whether moving icons turn, in the library, the Icon Museum and the
+        // screensaver. Their own animations play either way.
+        run {
+            val spin = com.armsx2.memcard.MemcardCovers.spin.value
+            LibraryOverflowItem(
+                glyph = "↻",
+                label = str("games.overflow.iconMotion"),
+                trailing = if (spin) str("games.overflow.iconMotion.spin") else str("games.overflow.iconMotion.noSpin"),
+            ) {
+                closeThen { com.armsx2.memcard.MemcardCovers.setSpin(!spin) }
+            }
+        }
+        run {
+            remember { LibraryScreensaver.load() }
+            LibraryOverflowItem(
+                glyph = "☾",
+                label = str("games.overflow.screensaver"),
+                trailing = if (LibraryScreensaver.enabled.value) {
+                    str("screensaver.minutes").replace("%d", LibraryScreensaver.minutes.intValue.toString())
+                } else str("common.off"),
+            ) {
+                closeThen { MemcardIconViewerState.screensaver.value = true }
+            }
+        }
+        // Online Icons: PS2IODB's icons to browse and download; the row shows how far a download
+        // is, else how many are on the device.
+        run {
+            val onlineStatus = com.armsx2.memcard.OnlineIcons.status.value
+            val onlineCount = remember(com.armsx2.memcard.OnlineIcons.generation.intValue) { com.armsx2.memcard.OnlineIcons.installedHashes().size }
+            LibraryOverflowItem(
+                glyph = "⇩",
+                label = str("games.overflow.onlineIcons"),
+                trailing = when {
+                    onlineStatus is com.armsx2.memcard.OnlineIcons.Status.Working && onlineStatus.total > 0 ->
+                        "${(onlineStatus.done * 100 / onlineStatus.total).toInt()}%"
+                    onlineCount > 0 -> "%,d".format(onlineCount)
+                    else -> null
+                },
+                iconRes = com.armsx2.R.drawable.ic_download,
+            ) {
+                closeThen { MemcardIconViewerState.online.value = true }
+            }
+        }
+        LibraryOverflowItem(glyph = "?", label = str("games.overflow.memcardInfo")) {
+            closeThen { MemcardIconViewerState.info.value = true }
+        }
+        OverflowSeparator()
         LibraryOverflowItem(
             glyph = if (use3dCovers) "3D" else "2D",
             label = str("games.overflow.coverStyle"),
@@ -1792,6 +1920,10 @@ private fun LazyGridScope.emptyLibrary(noFolders: Boolean) {
     }
 }
 
+/** Whether grid and shelf covers carry their game's name: when "Name on grid" is on, and always
+ *  under Memory Card Covers, where an icon tells less than box art about which game it is. */
+private fun coverNames(): Boolean = GridLabels.show.value || com.armsx2.memcard.MemcardCovers.enabled.value
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun GameGridCard(
@@ -1811,9 +1943,9 @@ private fun GameGridCard(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(coverAspectRatio())
-                .coverFrame(selected, 2.dp, MaterialTheme.colorScheme.primary),
+                .coverFrame(selected, 2.dp, MaterialTheme.colorScheme.primary, memcard = showsMemcardCover(game)),
         )
-        if (GridLabels.show.value) {
+        if (coverNames()) {
             Spacer(Modifier.height(4.dp))
             Text(
                 game.displayTitle(EnglishTitles.enabled.value),
@@ -1867,7 +1999,7 @@ private fun RecentGameCard(game: GameInfo, selected: Boolean = false, onClick: (
         GameCover(
             game,
             Modifier.fillMaxWidth().aspectRatio(coverAspectRatio())
-                .coverFrame(selected, 2.5.dp, Color(0xFF3DA5FF)),
+                .coverFrame(selected, 2.5.dp, Color(0xFF3DA5FF), memcard = showsMemcardCover(game)),
         )
         Spacer(Modifier.height(5.dp))
         Text(game.displayTitle(EnglishTitles.enabled.value), style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1968,8 +2100,10 @@ private fun coverAspectRatio(): Float = if (CoverArtStyle.use3d.value) 0.646f el
  * keeps the theme's identity. Whichever of the two the background happens to match, the other one
  * still reads.
  */
-private fun Modifier.coverFrame(selected: Boolean, selectedWidth: Dp, selectedColor: Color): Modifier {
-    val idle = !CoverArtStyle.use3d.value
+private fun Modifier.coverFrame(selected: Boolean, selectedWidth: Dp, selectedColor: Color, memcard: Boolean = false): Modifier {
+    // A Memory Card Cover is just the icon, so no idle outline shaped like a cover around it. The
+    // selection frame stays: it is how a controller player sees where they are.
+    val idle = !CoverArtStyle.use3d.value && !memcard
     val contrast = MaterialTheme.colorScheme.inverseSurface
     return when {
         selected -> this
@@ -1977,6 +2111,18 @@ private fun Modifier.coverFrame(selected: Boolean, selectedWidth: Dp, selectedCo
             .border(selectedWidth, selectedColor, RoundedCornerShape(12.dp))
         idle -> this.border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f), RoundedCornerShape(12.dp))
         else -> this
+    }
+}
+
+/** This game's tile shows a Memory Card Cover (the feature is on, it has a save icon, and no cover
+ *  set by hand outranks it). */
+@Composable
+private fun showsMemcardCover(game: GameInfo): Boolean {
+    if (!com.armsx2.memcard.MemcardCovers.enabled.value) return false
+    val generation = com.armsx2.memcard.MemcardCovers.generation.intValue
+    val customMap = LocalCustomCoverMap.current
+    return remember(game.uri, game.serial, customMap, generation) {
+        CustomCovers.matchIn(customMap, game) == null && com.armsx2.memcard.MemcardCovers.coverFor(game.serial) != null
     }
 }
 
@@ -1989,6 +2135,10 @@ private fun GameCover(
     // covers whose source art is a touch taller than the 0.7 slot.
     contentScale: ContentScale = ContentScale.Fit,
     placeholderText: Boolean = true,
+    /** Where a moving Memory Card Cover puts each frame, for a reflection to show. */
+    liveOut: MutableState<ImageBitmap?>? = null,
+    /** This is a reflection: show those frames rather than a still picture. */
+    liveIn: State<ImageBitmap?>? = null,
 ) {
     val context = LocalContext.current
     // Read the 3D-cover flag explicitly (not just via game.coverUrl, which is
@@ -2002,7 +2152,29 @@ private fun GameCover(
     val coverPins = com.armsx2.CoverRegionIndex.perGameGeneration.intValue
     val customCoverMap = LocalCustomCoverMap.current
     val custom = remember(game.uri, customCoverMap) { CustomCovers.matchIn(customCoverMap, game) }
-    val model = custom ?: game.coverUrl
+    // A save icon from the player's own memory cards, when Memory Card Covers is on. A cover set
+    // by hand still wins; box art is what's left.
+    val memcardOn = com.armsx2.memcard.MemcardCovers.enabled.value
+    val memcardGeneration = com.armsx2.memcard.MemcardCovers.generation.intValue
+    val memcard = remember(game.serial, memcardOn, memcardGeneration) {
+        if (custom == null) com.armsx2.memcard.MemcardCovers.coverFor(game.serial) else null
+    }
+    val model = custom ?: memcard ?: game.coverUrl
+    // In Animated mode a Memory Card Cover moves, as on the console, except while a game is
+    // loaded (the library shown over it shouldn't take the game's CPU). The still picture under it
+    // is hidden once the first moving frame is up, or the two (both transparent around the icon)
+    // would show at once.
+    val moving = memcard != null && com.armsx2.memcard.MemcardCovers.animate.value &&
+        com.armsx2.runtime.MainActivityRuntime.eState.value == com.armsx2.EmuState.STOPPED &&
+        // Nothing to see under the screensaver or the Icon Museum, so no frames drawn for it.
+        !LibraryScreensaver.showing.value && !MemcardIconViewerState.open.value
+    // On the GPU a reflection draws the icon itself (the same key, so the same clock: it moves in
+    // step, for next to nothing); the software renderer's reflection reuses the tile's frames.
+    val gpu = IconGl.available.value
+    val animating = moving && (liveIn == null || gpu)
+    var animReady by remember(game.serial, animating) { mutableStateOf(false) }
+    val mirroring = moving && liveIn != null && !gpu
+    var mirrorShown by remember(game.serial, mirroring) { mutableStateOf(false) }
     val request = remember(model, use3d, coverRegion, coverPins) {
         ImageRequest.Builder(context)
             .data(model)
@@ -2022,7 +2194,7 @@ private fun GameCover(
             SubcomposeAsyncImage(
                 model = request,
                 contentDescription = game.displayTitle(EnglishTitles.enabled.value),
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().then(if ((animating && animReady) || mirrorShown) Modifier.alpha(0f) else Modifier),
                 contentScale = contentScale,
                 loading = { CoverPlaceholder(game.displayTitle(EnglishTitles.enabled.value), game.serial, showText = placeholderText) },
                 error = {
@@ -2044,6 +2216,12 @@ private fun GameCover(
                     }
                 },
             )
+            if (animating) {
+                game.serial?.let { MemcardAnimatedCover(it, Modifier.matchParentSize(), onFirstFrame = { animReady = true }, live = liveOut) }
+            }
+            if (mirroring && liveIn != null) {
+                MemcardLiveMirror(liveIn, Modifier.matchParentSize(), onShown = { shown -> mirrorShown = shown })
+            }
         }
     }
 }
@@ -2339,7 +2517,7 @@ private fun GameShelf(
     // base lands on the top face and the reflection lays over the shelf in front.
     // "Name on grid" also labels shelf covers (previously only the flat grid honoured it) — reserve
     // a line under the reflection for the title so it isn't clipped by the plank.
-    val nameHeight = if (GridLabels.show.value) 18.dp else 0.dp
+    val nameHeight = if (coverNames()) 18.dp else 0.dp
     val rowHeight = coverHeight + reflectionHeight + nameHeight
     Box(modifier.fillMaxWidth().height(coverHeight + plankHeight - surfaceInset + nameHeight)) {
         Image(
@@ -2406,6 +2584,8 @@ private fun ShelfGameCard(game: GameInfo, width: Dp, reflectionHeight: Dp, selec
     // Long-press opens the game context menu (per-game settings, hide, etc.) — same as the grid /
     // list / recents cards. Without this the shelf layout had no way to reach per-game settings.
     Column(modifier = Modifier.width(width).combinedClickable(onClick = { onLaunch(game) }, onLongClick = { onDetails(game) })) {
+        // A moving Memory Card Cover's frames, shared with its reflection.
+        val live = remember(game.serial) { mutableStateOf<ImageBitmap?>(null) }
         // Square corners in shelf view — rounding fought the 3D box-art edges. The
         // grid/cover view keeps rounded corners (GameCover's 12.dp default).
         // ContentScale.Fit shows the WHOLE cover — Crop was trimming the top off the
@@ -2420,6 +2600,7 @@ private fun ShelfGameCard(game: GameInfo, width: Dp, reflectionHeight: Dp, selec
                 ),
             cornerRadius = 0.dp,
             contentScale = ContentScale.Fit,
+            liveOut = live,
         )
         // A faint mirror of the cover on the shelf surface just in front of it.
         // clipToBounds keeps it to reflectionHeight — without it the full flipped
@@ -2432,12 +2613,14 @@ private fun ShelfGameCard(game: GameInfo, width: Dp, reflectionHeight: Dp, selec
                 cornerRadius = 0.dp,
                 contentScale = ContentScale.Fit,
                 placeholderText = false,
+                liveIn = live,
             )
             // Fade the reflection out toward the front of the shelf.
             Box(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0x55000000)))))
         }
-        // Title under the cover when "Name on grid" is on — shelf covers honour it too now.
-        if (GridLabels.show.value) {
+        // Title under the cover when "Name on grid" is on — shelf covers honour it too now — and
+        // always under Memory Card Covers (see coverNames).
+        if (coverNames()) {
             Text(
                 game.displayTitle(EnglishTitles.enabled.value),
                 style = MaterialTheme.typography.labelSmall,

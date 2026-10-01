@@ -60,6 +60,10 @@ public:
 	// first — the back thread may otherwise be mid-draw on the same GSDevice.
 	void DrainBackQueue();
 
+	/// Stops the back thread after draining it. Called by GS.cpp when the split cannot engage
+	/// after all; with no front object the renderer then parses and draws single-threaded.
+	void StopBackThread();
+
 	static constexpr int GetSaveStateSize(int version);
 
 private:
@@ -268,6 +272,14 @@ protected:
 		int m_backed_up_ctx = 0;
 		u32 m_dirty_regs = 0;
 		GSVector4i draw_rect = GSVector4i::zero();
+		// draw_rect asked on the native pixel grid, whatever the upscale (see
+		// GSVertexKernels::PrimNativeDrawRect). Read by CheckOverlapVertsSlow and by
+		// nothing else -- draw_rect above keeps the shipped rounding because it
+		// reaches the texture cache. Equal to draw_rect at native resolution, by
+		// construction rather than by a branch. Only maintained while
+		// GSConfig.UserHacks_DrawBuffering is set, which is the only way the
+		// heuristic that reads it is reachable.
+		GSVector4i native_draw_rect = GSVector4i::zero();
 		bool related_draw = false;
 	};
 
@@ -325,6 +337,18 @@ protected:
 		GSVector4i* temp_rect;
 		const GSVector4i* scissor_in;
 
+		// The same accumulation on the native pixel grid, for the draw-buffering
+		// overlap heuristic. Shares acc_state: every accepted prim contributes to
+		// both, an empty native rect contributing the union's identity element
+		// rather than nothing, so "did this chunk accumulate, and does it replace or
+		// union" has one answer. Only tracked when draw buffering is on
+		// (track_native, i.e. GSState::m_track_native_draw_rect); the rect is dead
+		// state otherwise, and at the native grid it would be a second copy of the
+		// same number.
+		GSVector4i native_acc_rect;
+		GSVector4i* temp_native_rect;
+		bool track_native;
+
 		__fi void Load(GSState& s)
 		{
 			vb = s.m_vertex;
@@ -340,6 +364,8 @@ protected:
 			acc_state = 0;
 			temp_rect = &s.temp_draw_rect;
 			scissor_in = &s.m_context->scissor.in;
+			temp_native_rect = &s.temp_native_draw_rect;
+			track_native = s.m_track_native_draw_rect;
 		}
 
 		__fi void Store() const
@@ -354,6 +380,12 @@ protected:
 			{
 				const GSVector4i merged = (acc_state == 2) ? acc_rect : temp_rect->runion(acc_rect);
 				*temp_rect = merged.rintersect(*scissor_in);
+
+				if (track_native)
+				{
+					const GSVector4i nat = (acc_state == 2) ? native_acc_rect : temp_native_rect->runion(native_acc_rect);
+					*temp_native_rect = nat.rintersect(*scissor_in);
+				}
 			}
 		}
 	};
@@ -368,6 +400,44 @@ protected:
 	GSVertexKernels::CullBounds m_cull_bounds_raw = {};
 
 	void RefreshKickMirror();
+
+	// One kick-mirror entry for a vertex of `primclass`. Which coordinate space
+	// the outcode compares in, and how wide a band is, both follow the cull grid
+	// (GSVertexKick.h): bands against the banded bounds at native, raw 12.4
+	// against the plain cull rect everywhere else. primclass is a constant at the
+	// hot call site, so the selection folds away there.
+	__fi GSVertexKernels::CullMirrorEntry MakeKickMirror(int primclass, int wx, int wy) const
+	{
+		const bool rounded = (primclass == GS_TRIANGLE_CLASS || primclass == GS_SPRITE_CLASS);
+		const int shift = !rounded ? 0 :
+		                             ((primclass == GS_SPRITE_CLASS) ? m_cull_grid.sprite_shift : m_cull_grid.shift);
+
+		if (shift == 4)
+			return GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, m_cull_bounds_band, 4);
+
+		// shift 0 means this class has no grid, so nothing reads the bands; pack
+		// them at the native width rather than at a degenerate one.
+		return GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, m_cull_bounds_raw, (shift != 0) ? shift : 4,
+			m_cull_grid.band_bias_x, m_cull_grid.band_bias_y);
+	}
+
+	// The cull grid the current config asks for.
+	static GSVertexKernels::CullGrid ConfigCullGrid();
+
+	// The cull grid this object's engine samples on. The hardware renderer's depends on the upscale
+	// and the half-pixel-offset mode, so it is ConfigCullGrid(); the software renderer is always
+	// native; the front parser culls for whichever engine is behind it. UpdateSettings re-applies
+	// it on every settings change, so no input of the grid can change without the grid following.
+	virtual GSVertexKernels::CullGrid EngineCullGrid() const { return ConfigCullGrid(); }
+
+public:
+	// The cull grid a scale and a half-pixel-offset mode ask for. Pure and public
+	// so gs_vertex_tests can pin the mode decisions without standing up a GS.
+	// `native_scale_targets`: some targets may render at scale 1 while the rest render at `scale`
+	// (native scaling, native palette draws), so the grid has to hold both sets of sample points.
+	static GSVertexKernels::CullGrid CullGridFor(float scale, GSHalfPixelOffset hpo, bool native_scale_targets = false);
+
+protected:
 
 	template <u32 prim, bool auto_flush> void VertexKick(u32 skip);
 	template <u32 prim, bool auto_flush> void VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const GSVector4i& v0, const GSVector4i& v1, VertexKickCursor& c);
@@ -412,9 +482,11 @@ protected:
 		{
 			// outrun-a/-b and mgs3's NOP-padded triple, 13,900 handler calls
 			// across the corpus; spiderman3's and stuntman's {RGBAQ, XYZ2},
-			// 13,560.
+			// 13,560; and the UV triple, which is the whole triangle stream of
+			// both Baldur's Gate: Dark Alliance titles.
 			return layout == GSVertexKernels::PackedLayout::NopTripleXYZF2 ||
-				   layout == GSVertexKernels::PackedLayout::PairRGBAQXYZ2;
+				   layout == GSVertexKernels::PackedLayout::PairRGBAQXYZ2 ||
+				   layout == GSVertexKernels::PackedLayout::UvTripleXYZF2;
 		}
 		else if constexpr (prim == GS_SPRITE)
 		{
@@ -490,7 +562,14 @@ protected:
 	bool IsMipMapActive();
 	bool IsCoverageAlpha();
 	bool IsCoverageAlphaFixedOne();
+	bool AA1LineCoverageFromPixelRuns();
+	bool AA1LineCoverageFromPixelRunsLive(bool tme, bool tcc);
 	virtual bool IsCoverageAlphaSupported();
+	// Whether the engine builds the console's own S, T and Q planes for the current draw
+	// (GSVertexQDivide.h GSUseConsolePlane). Then the texel rounding in DrawRecordTail
+	// must not touch the vertices: the console's plane is the same at every Z, and the
+	// rounding only fires under a constant one. Software renderer on ARM64 only.
+	virtual bool BuildsConsolePlane() { return false; }
 	// Which auto-flush rule ResetHandlers arms. The decision belongs to the renderer's DRAW
 	// ENGINE, not the process's renderer type: a renderer can run the SW engine as a fallback
 	// floor under a hardware GSCurrentRenderer, and the two flush shapes produce different
@@ -560,6 +639,10 @@ public:
 	GIFPath m_path[4] = {};
 	const GIFRegPRIM* PRIM = nullptr;
 	GSPrivRegSet* m_regs = nullptr;
+	// What the current draw reads of m_regs, captured when it was flushed (FlushPrim). Draw-time
+	// code reads this, never m_regs, because under the split the draw runs after MTGS may have
+	// written the next frame's registers.
+	GSBackQueue::DrawPrivRegs m_draw_priv = {};
 	GSLocalMemory m_mem;
 	GSDrawingEnvironment m_env = {};
 	GSDrawingEnvironment m_prev_env = {};
@@ -567,6 +650,10 @@ public:
 	const GSDrawingEnvironment* m_draw_env = &m_env;
 	GSDrawingContext* m_context = nullptr;
 	GSVector4i temp_draw_rect;
+	// temp_draw_rect on the native pixel grid. Tracks temp_draw_rect at every write
+	// site so the two cannot drift; read only by CheckOverlapVertsSlow, through
+	// m_env_buffers[i].native_draw_rect.
+	GSVector4i temp_native_draw_rect;
 	// Owned by the renderer, which opens and closes it on the present path. The transfer
 	// and ReadFIFO packets that fill it are produced on the parse path, which is the front
 	// object under the split — hence GetDumpSink() rather than a bare m_dump read. Both
@@ -579,6 +666,25 @@ public:
 	bool m_are_quads = false;
 	bool m_are_quads_shuffle = false;
 	bool m_nativeres = false;
+	// The sample-point grid the per-prim cull rounds onto (GSVertexKick.h). Set
+	// from config beside m_nativeres, which keeps its own, narrower meaning: the
+	// scale is exactly 1. The software engine pins this native the same way it
+	// pins m_nativeres.
+	GSVertexKernels::CullGrid m_cull_grid = GSVertexKernels::MakeCullGrid(4, 4);
+	// Whether the vertex kick maintains the native-grid draw rect beside the
+	// shipped one. Only where it can differ: draw buffering on, and a grid that is
+	// not the native one. At the native grid the two rects are the same value by
+	// construction, so tracking there is pure cost -- measured at +1.1% to +3.8% of
+	// GS-thread CPU on the three drawBuffering dumps in the corpus.
+	bool m_track_native_draw_rect = false;
+
+	// Set them together: forgetting the second is a silent cost above native and a
+	// silently stale rect below it.
+	__fi void SetCullGrid(const GSVertexKernels::CullGrid& grid)
+	{
+		m_cull_grid = grid;
+		m_track_native_draw_rect = GSConfig.UserHacks_DrawBuffering && grid.shift != 4;
+	}
 	bool m_mipmap = false;
 	bool m_texflush_flag = false;
 	// This engine draws the alpha stencil counter through the blend unit, so IsAutoFlushDraw leaves the
@@ -745,6 +851,14 @@ public:
 	virtual void InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r) {}
 	virtual void InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut = false) {}
 
+	/// True when this renderer's draws clear SCANMSK in the parse environment (the GSC_IRem hook).
+	/// The split front asks the back, and repeats the clear on its own environment.
+	virtual bool DrawClearsScanMask() const { return false; }
+
+	/// True when a local-to-local move can be taken by a GameDB move hook, which leaves TRXDIR at
+	/// 2 where the ordinary move sets it to 3.
+	virtual bool HasMoveHook() const { return false; }
+
 	virtual void Move();
 
 	// The front/back seam: the front builds a self-contained
@@ -757,20 +871,19 @@ public:
 	void SubmitClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
 	void ExecClutLoadRecord(const GSBackQueue::ClutLoadRecord& rec);
 	void ExecDrawRecord(const GSBackQueue::DrawRecord& rec);
+	GSBackQueue::DrawPrivRegs CaptureDrawPrivRegs();
 	void DrawRecordTail(u64 draw_serial);
 	void SubmitPcrtcSync();
 	void ExecPcrtcSyncRecord(const GSBackQueue::PcrtcSyncRecord& rec);
 
-	// GV7-1: sampled from GSConfig.BackThreadMode at construction (the option is
-	// restart-required, so it can't change under a live GSState). Off = the
-	// front-side seam functions skip the record round-trip entirely and call the
-	// executor tails against live state; any other mode builds records.
+	// True only on the front parser object of the split: its seam functions build
+	// records and push them to the back thread. Everywhere else they skip the
+	// record round-trip and call the executor tails against live state.
 	bool m_back_records = false;
 
 	// GV7-1d-ii: the front<->back channel (record ring + wake semaphore + pool
-	// arenas/free rings, GSBackQueue.h). Single-object modes use this object's
-	// own storage; the two-object pipelined split points the front parser
-	// object's m_chan at the back object's channel. The destructor frees
+	// arenas/free rings, GSBackQueue.h). The back renderer object owns it; the
+	// front parser object's m_chan points at the back object's channel. The destructor frees
 	// m_chan_storage's pooled arrays — only ever this object's own storage, so
 	// a front pointing elsewhere frees nothing it doesn't own.
 	GSBackQueue::Channel m_chan_storage;
@@ -816,21 +929,16 @@ public:
 	void RotateTransferPayload();
 	void ExecReleasePayloadRecord(const GSBackQueue::ReleasePayloadRecord& rec);
 
-	// GV7-1d: the back thread (modes Lockstep and, for now, Pipelined — true
-	// pipelining needs the front-object split, so Pipelined runs lockstep until
-	// then). Lockstep = drain after every push, which is what makes executing
-	// against the shared single-object state safe. VSYNC records are NOT queued:
-	// present runs on the MTGS thread after a drain, so the back thread never
-	// touches the GSDevice on present paths (and for SW, at all). Queued modes
-	// engage only for Vulkan and SW renderers — a GL device is context-bound to
-	// the MTGS thread and HW draws would issue GL calls from the wrong thread.
-	bool m_back_queued = false;
-	bool m_back_lockstep = false;
+	// GV7-1d: the back thread, started by the back renderer object's constructor.
+	// VSYNC records are NOT queued: present runs on the MTGS thread after a drain,
+	// so the back thread never touches the GSDevice on present paths (and for SW,
+	// at all). The split engages only for Vulkan and SW renderers — a GL device is
+	// context-bound to the MTGS thread and HW draws would issue GL calls from the
+	// wrong thread (GSBackThreadPolicy.h).
 	std::thread m_back_thread;
 	std::atomic<bool> m_back_thread_exit{false};
 
 	void StartBackThread();
-	void StopBackThread();
 	void BackThreadLoop();
 	void ExecRecordSlot(const GSBackQueue::RecordSlot& slot);
 	virtual void ExecVsyncRecord(const GSBackQueue::VsyncRecord& rec);
@@ -838,6 +946,8 @@ public:
 	template <typename T>
 	void PushRecord(GSBackQueue::RecordType type, const T& rec)
 	{
+		// One producer: the ring is single-producer, and the MTGS thread is the only one allowed.
+		pxAssert(std::this_thread::get_id() == m_chan->drain_thread);
 		for (;;)
 		{
 			GSBackQueue::RecordSlot* slot = m_chan->ring.BeginPush();
@@ -849,16 +959,11 @@ public:
 				m_chan->sema.NotifyOfWork();
 				break;
 			}
-			std::this_thread::yield(); // ring full — backpressure
+			// Ring full: sleep until the back has retired a batch.
+			m_chan->space.Wait([this]() {
+				return GSBackQueue::RecordRing::Capacity() - m_chan->ring.Size() >= GSBackQueue::Channel::kRingRefill;
+			});
 		}
-
-		// Spin-then-sleep: records usually execute in microseconds, so the spin
-		// catches nearly every drain without the futex round-trip. Lockstep is
-		// still per-record synchronization and inherently slow (measured 30->6
-		// fps on MQ65 with plain WaitForEmpty) — it's the bisect rung, not a
-		// shipping mode.
-		if (m_back_lockstep)
-			m_chan->sema.WaitForEmptyWithSpin();
 	}
 
 	GSVector4i GetTEX0Rect(GSDrawingContext prev_ctx);
@@ -914,7 +1019,10 @@ public:
 	PRIM_OVERLAP PrimitiveOverlap(bool save_drawlist = false);
 	bool SpriteDrawWithoutGaps();
 	bool SpriteUnionCoversDrawRect();
-	void CalculatePrimitiveCoversWithoutGaps();
+	/// Sets m_primitive_covers_without_gaps, and m_primitive_union_covers_rect unless `union_cover`
+	/// is false: that flag has one reader on the GPU road, and the sprite-union test behind it is
+	/// the costly part for a draw of many sprites.
+	void CalculatePrimitiveCoversWithoutGaps(bool union_cover = true);
 	GIFRegTEX0 GetTex0Layer(u32 lod);
 	template <u32 primclass>
 	void RewriteVerticesIfLargeSTImpl(const GSVector4& large_val, bool check_clamp_mode);
@@ -969,8 +1077,7 @@ public:
 // channel; the back object executes them on the back thread, installing record
 // state into its own members. The front never draws, and reaches the
 // authoritative local memory / texture cache only through m_mem_target after a
-// drain. Created by GS.cpp only when the back thread engaged under
-// GSBackThreadMode::Pipelined.
+// drain. Created by GS.cpp only when the back thread engaged (GS multi-threading on).
 class GSFrontState final : public GSState
 {
 public:
@@ -984,6 +1091,9 @@ public:
 	// that draw EXECUTED, so it drains the back queue — memoized per
 	// (draw epoch, live ALPHA) so at most one drain per AA1 draw.
 	bool IsCoverageAlphaSupported() override;
+
+	// The back object's grid: this object culls the primitives the back will draw.
+	GSVertexKernels::CullGrid EngineCullGrid() const override { return m_back->m_cull_grid; }
 
 	// Once per frame, after the (drained) vsync executed on the back object:
 	// re-mirror present-side state the back mutated (Merge's scanmask

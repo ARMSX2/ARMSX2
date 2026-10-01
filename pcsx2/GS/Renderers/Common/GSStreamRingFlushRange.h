@@ -7,30 +7,22 @@
 
 // What a non-coherent stream ring still owes the GPU, as at most two byte ranges.
 //
-// On the cached non-coherent road (GSStreamRingMemoryPolicy.h) every committed region has to be
-// cleaned out of the CPU's caches before the GPU reads it. That clean used to be issued once per
-// commit, inside VKStreamBuffer::CommitMemory. Cache maintenance is priced per byte and the call
-// is priced per call, so a title with many small commits pays the call price many times over the
-// same bytes: on the MQ65 the per-commit road won 20-30% of the GS thread on the upload-heavy
-// titles and lost 10.1% on ac3 (1,626 draws a frame) and 5.8% on outrun-a (650 draws), entirely
-// CPU-side.
+// On the cached non-coherent road (GSStreamRingMemoryPolicy.h) every committed region must be
+// cleaned from the CPU caches before the GPU reads it. Cache maintenance costs per byte, the call
+// costs per call, and a title with many small commits pays the call cost many times; so the clean
+// is issued once per ring per submit rather than per commit. The GPU cannot read the data before
+// that submit, so the same bytes are covered.
 //
-// The GPU cannot read any of it until the queue submission that consumes it, so one clean per ring
-// per submit covers exactly the same bytes. This tracks which bytes those are.
+// Two ranges because the ring can wrap between submits: a high range to the end of the buffer and
+// a low range from zero. A second wrap cannot happen (reusing the high range's bytes requires a
+// completed fence, hence a submit, hence a flush), but Add reports overflow instead of assuming it,
+// and the caller flushes early.
 //
-// Two ranges, not one, because the ring can wrap between two submits: the writes since the last
-// flush are then a high range running to the end of the buffer and a low range starting at zero.
-// A second wrap would need a third range and cannot happen -- reusing the high range's bytes means
-// the GPU has consumed them, which means a fence completed, which means a submit, which means a
-// flush -- but Add reports the overflow rather than assuming it, and the caller flushes early.
+// Gaps inside a range (alignment padding between commits) are absorbed. Cleaning them only writes
+// back what the CPU last put there and invalidates nothing, and only the CPU writes a ring.
 //
-// Gaps inside a range are absorbed rather than split out. The gaps are alignment padding between
-// one commit and the next, cleaning them writes back whatever the CPU last put there and never
-// invalidates anything, and nothing but the CPU ever writes a ring. Splitting them out would trade
-// the byte price this is trying to keep for the call price it is trying to lose.
-//
-// Pure and backend-neutral so the wrap and coalescing cases can be pinned on a host whose own
-// rings are coherent and never take this road. See gs_stream_ring_flush_tests.cpp.
+// Pure and backend-neutral so wrap and coalescing can be tested on hosts with coherent rings. See
+// gs_stream_ring_flush_tests.cpp.
 
 struct GSStreamRingFlushRanges
 {
@@ -48,8 +40,8 @@ struct GSStreamRingFlushRanges
 	Range ranges[MAX_RANGES] = {};
 	u32 count = 0;
 
-	/// How many committed regions the pending ranges cover. The number of flushes the per-commit
-	/// road would have issued for the same bytes, which is the whole point of the comparison.
+	/// How many committed regions the pending ranges cover (the flushes a per-commit clean would
+	/// have issued).
 	u32 commits = 0;
 
 	__fi bool IsEmpty() const { return count == 0; }
@@ -79,9 +71,8 @@ struct GSStreamRingFlushRanges
 		Range& last = ranges[count - 1];
 		if (offset >= last.begin)
 		{
-			// Forward of the newest range's start: extend it, swallowing any alignment gap. The
-			// max is for a commit that lands entirely inside what is already pending, which the
-			// ring does not do but which must not shrink the range if it ever does.
+			// At or past the newest range's start: extend it, absorbing any alignment gap. The max
+			// keeps a commit inside the pending range from shrinking it.
 			last.end = (end > last.end) ? end : last.end;
 			commits++;
 			return true;

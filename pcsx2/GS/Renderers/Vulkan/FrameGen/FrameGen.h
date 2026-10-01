@@ -57,6 +57,12 @@ public:
 
     [[nodiscard]] size_t GeneratedFrameCount() const;
 
+    /// Whether a shader or device check turned generation off for the session, and why.
+    [[nodiscard]] bool IsUnavailable() const { return unavailable; }
+    /// The half-precision shader family is the one running (see LsfgShaders::IsFp16).
+    [[nodiscard]] bool UsingFp16() const { return shaders && shaders->IsFp16(); }
+    [[nodiscard]] const char* UnavailableReason() const;
+
     /// Writes interpolated frame `generation` into `image`. Only valid while
     /// GeneratedFrameCount() is non-zero, and for `generation` below it.
     void GenerateInto(const Device& device, vk::CommandBuffer cmdbuf, VkImage image,

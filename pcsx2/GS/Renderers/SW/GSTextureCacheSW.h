@@ -28,11 +28,9 @@ public:
 		std::array<u16, GS_MAX_PAGES> m_erase_it;
 		const u32* RESTRICT m_sharedbits;
 
-		// Keeping the pixel buffer across Reset(). m_buff_size is the allocation's capacity,
-		// grow-only; m_buff_stale says Reset() saw the texture's shape move and Update() therefore
-		// owes the rasterizer a buffer that reads zero outside what it unswizzles; m_dirty and
-		// m_valid_dirty are what that costs instead of a blanket memset. GSSwTextureDirty.h states
-		// the invariant and why it is byte-exact.
+		// Pixel buffer kept across Reset(). m_buff_size: grow-only capacity. m_buff_stale: shape
+		// changed, so Update() must zero what earlier draws wrote. m_dirty / m_valid_dirty track
+		// those bytes so no blanket memset is needed. Invariant in GSSwTextureDirty.h.
 		size_t m_buff_size = 0;
 		bool m_buff_stale = false;
 		GSSwTextureDirty m_dirty;

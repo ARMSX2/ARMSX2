@@ -493,12 +493,12 @@ static void mVUemitSpinFF(mV, const mVUSpinLoop& spin)
 // Cycle Test (emits code to check remaining cycles)
 //------------------------------------------------------------------
 
-// Test remaining cycles; if insufficient, save block state via copyPLState +
-// mVUendProgram(0) and exit to the dispatcher. Otherwise deduct cycles and
-// continue into the block. Ported from x86 microVU_Compile.inl:449.
-// The copyPLState + mVUendProgram(0) on early-exit is required so that
-// a cycle-timeout block has its pipeline state saved; without it, the block
-// manager would see stale pState on re-entry and create a new variant.
+// Test remaining cycles; if insufficient, hand the block to mVU.cycleBreak,
+// which saves its state and exits to the dispatcher. Otherwise deduct cycles
+// and continue into the block. Ported from x86 microVU_Compile.inl:449.
+// Saving the pipeline state on the early exit is required so that a
+// cycle-timeout block has one; without it, the block manager would see stale
+// pState on re-entry and create a new variant.
 static void mVUtestCycles(mV, microFlagCycles& mFC)
 {
 	iPC = mVUstartPC;
@@ -527,19 +527,31 @@ static void mVUtestCycles(mV, microFlagCycles& mFC)
 	a64::Label skip;
 	armAsm->B(&skip, a64::pl); // pl = N clear = non-negative
 
-	// Early exit path: save pipeline state then exit via mVUendProgram(0).
-	// The resume variant additionally parks this block's hostEntry in
-	// mVU.resumeEntry — a budget break resumes at this very block (the
-	// state saved here IS this block's entry state), so the next dispatch
-	// can skip mVUlookupProg (VE-07).
-	armMoveAddressToReg(a64::x0, &mVUpBlock->pState);
-	armEmitCall(mVU.copyPLStateResume);
+	// Early exit path: mVU.cycleBreak saves the pipeline state and exits.
+	// It parks this block's hostEntry in mVU.resumeEntry — a budget break
+	// resumes at this very block, the state saved there being this block's
+	// entry state — so the next dispatch can skip mVUlookupProg (VE-07).
+	//
+	// What the stub cannot know stays here: the block pointer, the resume
+	// PC, and the three flag operands, still picked by the getLastFlagInst
+	// mVUendProgram's own exits use. mVUendProgram's compile-time work
+	// comes with them — its mVUregs backup and restore bracket nothing at
+	// isEbit 0, but the condition carry and the register flush do. Flushing
+	// in front of the jump rather than behind the state copy also keeps a
+	// live q0-q5 out of the stub's way, which the call ahead of it never did.
+	mVUclearBranchCondCarry(mVU);
+	mVU.regAlloc->flushAll();
 	if (EmuConfig.Gamefixes.VUSyncHack || EmuConfig.Gamefixes.FullVU0SyncHack)
 	{
 		armAsm->Mov(a64::w9, mVUcycles);
 		armAsm->Str(a64::w9, mVUstateMem(offsetof(VURegs, nextBlockCycles)));
 	}
-	mVUendProgram(mVU, &mFC, 0);
+	armMoveAddressToReg(a64::x0, &mVUpBlock->pState);
+	mVUallocMFLAGa(mVU, gprT1, getLastFlagInst(mVUpBlock->pState, mFC.xMac, 1, 0));
+	mVUallocCFLAGa(mVU, gprT2, getLastFlagInst(mVUpBlock->pState, mFC.xClip, 2, 0));
+	armAsm->Mov(gprT3, getFlagReg(getLastFlagInst(mVUpBlock->pState, mFC.xStatus, 0, 0)));
+	armAsm->Mov(a64::w1, xPC);
+	armEmitJmp(mVU.cycleBreak);
 
 	armAsm->Bind(&skip);
 
@@ -556,6 +568,10 @@ static void mVUtestCycles(mV, microFlagCycles& mFC)
 //------------------------------------------------------------------
 // Execute VU Instruction (Upper + Lower)
 //------------------------------------------------------------------
+
+#ifdef PCSX2_RECOMPILER_TESTS
+u32 g_mvuPreloadPairCount = 0;
+#endif
 
 // Pre-populate NEON/GPR caches with VF/VI registers the next few ops will
 // read. Ported from pcsx2/x86/microVU_Compile.inl:603-690. Runs once at
@@ -589,11 +605,18 @@ static void mvuPreloadRegisters(microVU& mVU, u32 endCount)
 	int free_regs = mVU.regAlloc->getFreeNeonCount();
 	int free_gprs = mVU.regAlloc->getFreeGPRCount();
 
-	auto preloadVF = [&mVU, &vfs_loaded, &free_regs](u8 reg)
+	// The VF preloads are queued rather than emitted here so the loop below
+	// can see two of them at once: VF[n] sits at 16n in the state block, so
+	// a pair one register apart is a single Ldp. A queue entry per VF is
+	// enough because vfs_loaded admits each at most once.
+	u8 vfQueue[32];
+	u32 vfQueued = 0;
+
+	auto preloadVF = [&vfs_loaded, &free_regs, &vfQueue, &vfQueued](u8 reg)
 	{
 		if (free_regs <= REQUIRED_FREE_NEON || reg == 0 || (vfs_loaded & (1u << reg)) != 0)
 			return;
-		mVU.regAlloc->clearNeeded(mVU.regAlloc->allocReg(reg));
+		vfQueue[vfQueued++] = reg;
 		vfs_loaded |= (1u << reg);
 		free_regs--;
 	};
@@ -654,6 +677,30 @@ static void mvuPreloadRegisters(microVU& mVU, u32 endCount)
 		// emit. Mirrors the flagInfo "clear each compile" fix in mVUinitFirstPass.
 		if (info->isEOB)
 			break;
+	}
+
+	// Emitting the queue after the walk also moves the VF loads past the VI
+	// ones the walk interleaves between them, which joins runs that were
+	// split. Neither order is load-bearing: every one of these is a read of
+	// block-entry state into a fresh slot, and the VI writebacks that can
+	// land among them touch VURegs::VI, not VF.
+	for (u32 i = 0; i < vfQueued; i++)
+	{
+		const int a = vfQueue[i];
+		if (i + 1 < vfQueued)
+		{
+			const int b = vfQueue[i + 1];
+			if (a - b == 1 || b - a == 1)
+			{
+				mVU.regAlloc->allocRegPair(a, b);
+#ifdef PCSX2_RECOMPILER_TESTS
+				g_mvuPreloadPairCount++;
+#endif
+				i++;
+				continue;
+			}
+		}
+		mVU.regAlloc->clearNeeded(mVU.regAlloc->allocReg(a));
 	}
 
 	iPC = orig_pc;
@@ -1135,6 +1182,7 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 	mVUbranch = 0;
 	u32 x = 0;
 
+	mVUemitClampConsts(mVU);
 	mvuPreloadRegisters(mVU, endCount);
 
 	for (; x < endCount; x++)

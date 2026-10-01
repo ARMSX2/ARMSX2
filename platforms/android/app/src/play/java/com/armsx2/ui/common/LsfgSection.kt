@@ -18,9 +18,10 @@ fun LsfgSection(
     multiplier: Int,
     dllPath: String,
     performance: Boolean,
+    fp16: Boolean,
     flowScale: Int,
     targetRate: Int,
-    onChange: (enabled: Boolean, multiplier: Int, dllPath: String, performance: Boolean, flowScale: Int, targetRate: Int) -> Unit,
+    onChange: (enabled: Boolean, multiplier: Int, dllPath: String, performance: Boolean, flowScale: Int, targetRate: Int, fp16: Boolean) -> Unit,
 ) {
 }
 
@@ -31,8 +32,9 @@ fun LsfgEmulationCard(
     multiplier: Int,
     dllPath: String,
     performance: Boolean,
+    fp16: Boolean,
     flowScale: Int,
     targetRate: Int,
-    onChange: (enabled: Boolean, multiplier: Int, dllPath: String, performance: Boolean, flowScale: Int, targetRate: Int) -> Unit,
+    onChange: (enabled: Boolean, multiplier: Int, dllPath: String, performance: Boolean, flowScale: Int, targetRate: Int, fp16: Boolean) -> Unit,
 ) {
 }

@@ -336,10 +336,19 @@
     <None Include="x86\microVU_Upper.inl">
       <Filter>System\Ps2\EmotionEngine\VU\Dynarec\microVU</Filter>
     </None>
+    <None Include="GS\Renderers\Vulkan\VKEntryPoints.inl">
+      <Filter>System\Ps2\GS\Renderers\Vulkan</Filter>
+    </None>
     <None Include="..\bin\resources\shaders\common\fxaa.fx">
       <Filter>System\Ps2\GS\Shaders\Common</Filter>
     </None>
+    <None Include="..\bin\resources\shaders\opengl\cas.glsl">
+      <Filter>System\Ps2\GS\Shaders\OpenGL</Filter>
+    </None>
     <None Include="..\bin\resources\shaders\opengl\convert.glsl">
+      <Filter>System\Ps2\GS\Shaders\OpenGL</Filter>
+    </None>
+    <None Include="..\bin\resources\shaders\opengl\imgui.glsl">
       <Filter>System\Ps2\GS\Shaders\OpenGL</Filter>
     </None>
     <None Include="..\bin\resources\shaders\opengl\interlace.glsl">
@@ -348,53 +357,41 @@
     <None Include="..\bin\resources\shaders\opengl\merge.glsl">
       <Filter>System\Ps2\GS\Shaders\OpenGL</Filter>
     </None>
-    <None Include="..\bin\resources\shaders\opengl\tfx_vgs.glsl">
-      <Filter>System\Ps2\GS\Shaders\OpenGL</Filter>
-    </None>
-    <None Include="..\bin\resources\shaders\opengl\tfx_fs.glsl">
+    <None Include="..\bin\resources\shaders\opengl\present.glsl">
       <Filter>System\Ps2\GS\Shaders\OpenGL</Filter>
     </None>
     <None Include="..\bin\resources\shaders\opengl\shadeboost.glsl">
       <Filter>System\Ps2\GS\Shaders\OpenGL</Filter>
     </None>
-    <None Include="..\bin\resources\shaders\opengl\imgui.glsl">
+    <None Include="..\bin\resources\shaders\opengl\tfx_fs.glsl">
       <Filter>System\Ps2\GS\Shaders\OpenGL</Filter>
     </None>
-    <None Include="..\bin\resources\shaders\opengl\present.glsl">
+    <None Include="..\bin\resources\shaders\opengl\tfx_vgs.glsl">
       <Filter>System\Ps2\GS\Shaders\OpenGL</Filter>
     </None>
-    <None Include="..\bin\resources\shaders\vulkan\interlace.glsl">
+    <None Include="..\bin\resources\shaders\vulkan\cas.glsl">
       <Filter>System\Ps2\GS\Shaders\Vulkan</Filter>
     </None>
     <None Include="..\bin\resources\shaders\vulkan\convert.glsl">
       <Filter>System\Ps2\GS\Shaders\Vulkan</Filter>
     </None>
-    <None Include="..\bin\resources\shaders\vulkan\merge.glsl">
+    <None Include="..\bin\resources\shaders\vulkan\imgui.glsl">
       <Filter>System\Ps2\GS\Shaders\Vulkan</Filter>
     </None>
-    <None Include="..\bin\resources\shaders\vulkan\tfx.glsl">
+    <None Include="..\bin\resources\shaders\vulkan\interlace.glsl">
+      <Filter>System\Ps2\GS\Shaders\Vulkan</Filter>
+    </None>
+    <None Include="..\bin\resources\shaders\vulkan\merge.glsl">
       <Filter>System\Ps2\GS\Shaders\Vulkan</Filter>
     </None>
     <None Include="..\bin\resources\shaders\vulkan\present.glsl">
       <Filter>System\Ps2\GS\Shaders\Vulkan</Filter>
     </None>
-    <None Include="..\bin\resources\shaders\vulkan\imgui.glsl">
-      <Filter>System\Ps2\GS\Shaders\Vulkan</Filter>
-    </None>
     <None Include="..\bin\resources\shaders\vulkan\shadeboost.glsl">
       <Filter>System\Ps2\GS\Shaders\Vulkan</Filter>
     </None>
-    <None Include="..\bin\resources\shaders\dx11\tfx.fx">
-      <Filter>System\Ps2\GS\Shaders\Direct3D</Filter>
-    </None>
-    <None Include="..\bin\resources\shaders\dx11\shadeboost.fx">
-      <Filter>System\Ps2\GS\Shaders\Direct3D</Filter>
-    </None>
-    <None Include="..\bin\resources\shaders\dx11\merge.fx">
-      <Filter>System\Ps2\GS\Shaders\Direct3D</Filter>
-    </None>
-    <None Include="..\bin\resources\shaders\dx11\interlace.fx">
-      <Filter>System\Ps2\GS\Shaders\Direct3D</Filter>
+    <None Include="..\bin\resources\shaders\vulkan\tfx.glsl">
+      <Filter>System\Ps2\GS\Shaders\Vulkan</Filter>
     </None>
     <None Include="..\bin\resources\shaders\dx11\convert.fx">
       <Filter>System\Ps2\GS\Shaders\Direct3D</Filter>
@@ -402,11 +399,23 @@
     <None Include="..\bin\resources\shaders\dx11\imgui.fx">
       <Filter>System\Ps2\GS\Shaders\Direct3D</Filter>
     </None>
+    <None Include="..\bin\resources\shaders\dx11\interlace.fx">
+      <Filter>System\Ps2\GS\Shaders\Direct3D</Filter>
+    </None>
+    <None Include="..\bin\resources\shaders\dx11\merge.fx">
+      <Filter>System\Ps2\GS\Shaders\Direct3D</Filter>
+    </None>
     <None Include="..\bin\resources\shaders\dx11\present.fx">
       <Filter>System\Ps2\GS\Shaders\Direct3D</Filter>
     </None>
-    <None Include="GS\Renderers\Vulkan\VKEntryPoints.inl">
-      <Filter>System\Ps2\GS\Renderers\Vulkan</Filter>
+    <None Include="..\bin\resources\shaders\dx11\shadeboost.fx">
+      <Filter>System\Ps2\GS\Shaders\Direct3D</Filter>
+    </None>
+    <None Include="..\bin\resources\shaders\dx11\tfx.fx">
+      <Filter>System\Ps2\GS\Shaders\Direct3D</Filter>
+    </None>
+    <None Include="..\bin\resources\shaders\dx11\cas.hlsl">
+      <Filter>System\Ps2\GS\Shaders\Direct3D</Filter>
     </None>
   </ItemGroup>
   <ItemGroup>
@@ -980,6 +989,9 @@
     <ClCompile Include="GS\GSBlock.cpp">
       <Filter>System\Ps2\GS</Filter>
     </ClCompile>
+    <ClCompile Include="GS\GSCacheFile.cpp">
+      <Filter>System\Ps2\GS</Filter>
+    </ClCompile>
     <ClCompile Include="GS\GSClut.cpp">
       <Filter>System\Ps2\GS</Filter>
     </ClCompile>
@@ -1064,6 +1076,9 @@
     <ClCompile Include="GS\Renderers\Null\GSRendererNull.cpp">
       <Filter>System\Ps2\GS\Renderers\Null</Filter>
     </ClCompile>
+    <ClCompile Include="GS\Renderers\HW\GSLineRuns.cpp">
+      <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
+    </ClCompile>
     <ClCompile Include="GS\Renderers\HW\GSRendererHW.cpp">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClCompile>
@@ -1082,6 +1097,9 @@
     <ClCompile Include="GS\Renderers\Common\GSDirtyRect.cpp">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClCompile>
+    <ClCompile Include="GS\Renderers\Common\GSFieldShiftDetector.cpp">
+      <Filter>System\Ps2\GS\Renderers\Common</Filter>
+    </ClCompile>
     <ClCompile Include="GS\Renderers\Common\GSDevice.cpp">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClCompile>
@@ -1096,6 +1114,24 @@
     </ClCompile>
     <ClCompile Include="GS\Renderers\Common\GSFunctionMap.cpp">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\DriverReport\GSDriverReport.cpp">
+      <Filter>System\Ps2\GS</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\DriverReport\GSDriverReportClassify.cpp">
+      <Filter>System\Ps2\GS</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\DriverReport\GSDriverReportJson.cpp">
+      <Filter>System\Ps2\GS</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\DriverReport\GSDriverReportProfile.cpp">
+      <Filter>System\Ps2\GS</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\DriverReport\GSDriverReportSystem.cpp">
+      <Filter>System\Ps2\GS</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\DriverReport\GSDriverReportVulkan.cpp">
+      <Filter>System\Ps2\GS</Filter>
     </ClCompile>
     <ClCompile Include="GS\Renderers\Common\GSGPUDriverProfile.cpp">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
@@ -1586,40 +1622,7 @@
     <ClInclude Include="COP0.h">
       <Filter>System\Ps2\EmotionEngine\EE</Filter>
     </ClInclude>
-    <ClInclude Include="x86\iCOP0.h">
-      <Filter>System\Ps2\EmotionEngine\EE\Dynarec</Filter>
-    </ClInclude>
-    <ClInclude Include="x86\iFPU.h">
-      <Filter>System\Ps2\EmotionEngine\EE\Dynarec</Filter>
-    </ClInclude>
-    <ClInclude Include="x86\iMMI.h">
-      <Filter>System\Ps2\EmotionEngine\EE\Dynarec</Filter>
-    </ClInclude>
     <ClInclude Include="x86\iR5900.h">
-      <Filter>System\Ps2\EmotionEngine\EE\Dynarec</Filter>
-    </ClInclude>
-    <ClInclude Include="x86\iR5900Arit.h">
-      <Filter>System\Ps2\EmotionEngine\EE\Dynarec</Filter>
-    </ClInclude>
-    <ClInclude Include="x86\iR5900AritImm.h">
-      <Filter>System\Ps2\EmotionEngine\EE\Dynarec</Filter>
-    </ClInclude>
-    <ClInclude Include="x86\iR5900Branch.h">
-      <Filter>System\Ps2\EmotionEngine\EE\Dynarec</Filter>
-    </ClInclude>
-    <ClInclude Include="x86\iR5900Jump.h">
-      <Filter>System\Ps2\EmotionEngine\EE\Dynarec</Filter>
-    </ClInclude>
-    <ClInclude Include="x86\iR5900LoadStore.h">
-      <Filter>System\Ps2\EmotionEngine\EE\Dynarec</Filter>
-    </ClInclude>
-    <ClInclude Include="x86\iR5900Move.h">
-      <Filter>System\Ps2\EmotionEngine\EE\Dynarec</Filter>
-    </ClInclude>
-    <ClInclude Include="x86\iR5900MultDiv.h">
-      <Filter>System\Ps2\EmotionEngine\EE\Dynarec</Filter>
-    </ClInclude>
-    <ClInclude Include="x86\iR5900Shift.h">
       <Filter>System\Ps2\EmotionEngine\EE\Dynarec</Filter>
     </ClInclude>
     <ClInclude Include="IopBios.h">
@@ -1928,6 +1931,9 @@
     <ClInclude Include="GS\GSBlock.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\GSCacheFile.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\GSClut.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
@@ -1935,6 +1941,9 @@
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\GSLocalMemory.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\GSCompileStats.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\GSPerfMon.h">
@@ -2037,6 +2046,9 @@
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\SW\GSLevelOfDetail.h">
+      <Filter>System\Ps2\GS\Renderers\Software</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\SW\GSPerspectivePlane.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\SW\GSScanlineEnvironment.h">
@@ -2552,10 +2564,19 @@
     <ClInclude Include="GS\GSVertexKickKernel.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
-    <ClInclude Include="GS\Renderers\Common\GSFeedbackLoopCarryPolicy.h">
+    <ClInclude Include="GS\Renderers\Common\GSFieldShiftDetector.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSFieldShiftPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSBlendConstantPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSBackThreadPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSCopyRoadBlendingPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSFastStencilShadow.h">
@@ -2564,10 +2585,22 @@
     <ClInclude Include="GS\Renderers\Common\GSFramebufferFetchPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
-    <ClInclude Include="GS\Renderers\Common\GSSelfReadCopyPolicy.h">
+    <ClInclude Include="GS\Renderers\Common\GSMeasurementOverrides.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSDynamicFeedbackLoopPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSDrawRoad.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSSelfReadRoadPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSInterlaceModePolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSNativeTexelGridPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSPassScheduler.h">
@@ -2580,6 +2613,27 @@
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSStreamRingFlushRange.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSStreamRingGrowth.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\DriverReport\GSDriverReport.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\DriverReport\GSDriverReportClassify.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\DriverReport\GSDriverReportJson.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\DriverReport\GSDriverReportProfile.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\DriverReport\GSDriverReportSystem.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\DriverReport\GSDriverReportVulkan.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSStreamRingMemoryPolicy.h">
@@ -2597,13 +2651,22 @@
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\HW\GSLineRuns.h">
+      <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\HW\GSLineWalk.h">
+      <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\HW\GSPointPlace.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\HW\GSSpriteEdgeSnap.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Null\GSDeviceNone.h">
+      <Filter>System\Ps2\GS\Renderers\Null</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Null\GSNullDeviceProfile.h">
       <Filter>System\Ps2\GS\Renderers\Null</Filter>
     </ClInclude>
     <ClInclude Include="MTGS.h">

@@ -157,6 +157,7 @@
     </widget>
     <addaction name="actionViewToolbar"/>
     <addaction name="actionViewLockToolbar"/>
+    <addaction name="actionCustomizeToolbar"/>
     <addaction name="actionViewStatusBar"/>
     <addaction name="actionViewStatusBarVerbose"/>
     <addaction name="separator"/>
@@ -195,6 +196,7 @@
     </widget>
     <addaction name="actionOpenDataDirectory"/>
     <addaction name="actionCoverDownloader"/>
+    <addaction name="actionControllerTester"/>
     <addaction name="actionToggleSoftwareRendering"/>
     <addaction name="separator"/>
     <addaction name="actionEditCheats"/>
@@ -686,6 +688,11 @@
     <string>Loc&amp;k Toolbar</string>
    </property>
   </action>
+  <action name="actionCustomizeToolbar">
+   <property name="text">
+    <string>&amp;Customize Toolbar...</string>
+   </property>
+  </action>
   <action name="actionViewStatusBar">
    <property name="checkable">
     <bool>true</bool>
@@ -999,6 +1006,14 @@
    </property>
    <property name="text">
     <string>&amp;Cover Downloader...</string>
+   </property>
+  </action>
+  <action name="actionControllerTester">
+   <property name="icon">
+    <iconset theme="controller-line"/>
+   </property>
+   <property name="text">
+    <string>Controller &amp;Tester</string>
    </property>
   </action>
   <action name="actionShowAdvancedSettings">

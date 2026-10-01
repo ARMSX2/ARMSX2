@@ -9,6 +9,16 @@ extern void* mVUcompile(microVU& mVU, u32 startPC, uptr pState);
 void mVU0clearlpStateJIT() { if (!microVU0.prog.cleared) std::memset(&microVU0.prog.lpState, 0, sizeof(microVU0.prog.lpState)); }
 void mVU1clearlpStateJIT() { if (!microVU1.prog.cleared) std::memset(&microVU1.prog.lpState, 0, sizeof(microVU1.prog.lpState)); }
 
+// Where a program that ends on the E bit leaves through.
+__fi const u8* mVUexitEBit(mV)
+{
+	if (!(mVU.index && THREAD_VU1))
+		return mVU.exitFunct;
+
+	pxAssert(mVU.exitFunctEBit);
+	return mVU.exitFunctEBit;
+}
+
 // The incoming ring phase, as recorded by the predecessor: phase P means the live
 // instance is (P - 1) & 3. Status/Mac/Clip occupy flagInfo bits 2-3 / 4-5 / 6-7.
 __fi int getIncomingFlagInst(microRegInfo& pState, int flagType)
@@ -291,9 +301,7 @@ void mVUendProgram(mV, microFlagCycles* mFC, int isEbit)
 		// reaches here. mVUendProgram intentionally does NOT copy pipeline state
 		// (matching mVUendProgram in x86 microVU_Branch.inl), so a Q/P-pipeline
 		// countdown still carried by lpState is preserved for the next program.
-		if (mVU.index && THREAD_VU1)
-			armEmitCall((void*)mVUEBit);
-		armEmitJmp(mVU.exitFunct);
+		armEmitJmp(mVUexitEBit(mVU));
 	}
 
 	memcpy(&mVUregs, &stateBackup, sizeof(mVUregs));
@@ -425,9 +433,7 @@ void normJumpCompile(mV, microFlagCycles& mFC, bool isEvilJump)
 	{
 		mVUendProgram(mVU, &mFC, 2);
 		armAsm->Str(RWARG1, mVUstateMem(offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI)));
-		if (mVU.index && THREAD_VU1)
-			armEmitCall((void*)mVUEBit);
-		armEmitJmp(mVU.exitFunct);
+		armEmitJmp(mVUexitEBit(mVU));
 	}
 
 	if (!mVU.index)
@@ -678,9 +684,7 @@ void normBranch(mV, microFlagCycles& mFC)
 		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
 		armAsm->Mov(a64::w9, xPC);
 		armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
-		if (mVU.index && THREAD_VU1)
-			armEmitCall((void*)mVUEBit);
-		armEmitJmp(mVU.exitFunct);
+		armEmitJmp(mVUexitEBit(mVU));
 		iPC = tempPC;
 	}
 	if (mVUup.eBit)
@@ -834,18 +838,14 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 			armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
 			armAsm->Mov(a64::w9, xPC);
 			armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
-			if (mVU.index && THREAD_VU1)
-				armEmitCall((void*)mVUEBit);
-			armEmitJmp(mVU.exitFunct);
+			armEmitJmp(mVUexitEBit(mVU));
 		armAsm->Bind(&mJMP);
 		incPC(-4);
 		iPC = branchAddr(mVU) / 4;
 		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
 		armAsm->Mov(a64::w9, xPC);
 		armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
-		if (mVU.index && THREAD_VU1)
-			armEmitCall((void*)mVUEBit);
-		armEmitJmp(mVU.exitFunct);
+		armEmitJmp(mVUexitEBit(mVU));
 
 		iPC = tempPC;
 	}
@@ -873,9 +873,7 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 			armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
 			armAsm->Mov(a64::w9, xPC);
 			armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
-			if (mVU.index && THREAD_VU1)
-				armEmitCall((void*)mVUEBit);
-			armEmitJmp(mVU.exitFunct);
+			armEmitJmp(mVUexitEBit(mVU));
 		armAsm->Bind(&taken);
 		incPC(-4);
 
@@ -884,9 +882,7 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
 		armAsm->Mov(a64::w9, xPC);
 		armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
-		if (mVU.index && THREAD_VU1)
-			armEmitCall((void*)mVUEBit);
-		armEmitJmp(mVU.exitFunct);
+		armEmitJmp(mVUexitEBit(mVU));
 		return;
 	}
 
@@ -1038,9 +1034,7 @@ void normJump(mV, microFlagCycles& mFC)
 		mVUendProgram(mVU, &mFC, 2);
 		mVUldrField(mVU, gprT1, &mVU.branch);
 		armAsm->Str(gprT1, mVUstateMem(offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI)));
-		if (mVU.index && THREAD_VU1)
-			armEmitCall((void*)mVUEBit);
-		armEmitJmp(mVU.exitFunct);
+		armEmitJmp(mVUexitEBit(mVU));
 	}
 	else
 	{

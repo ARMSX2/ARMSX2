@@ -7,6 +7,10 @@ SamplerState Sampler;
 cbuffer cb0
 {
 	float4 ZrH;
+	// xy: the device rows [x, y) of the merge that were not drawn for the field being read, starting
+	// where the circuit's display rect starts; z and w are unused. GSRenderer::Merge offsets a
+	// field's picture down by one native line and the merge target is cleared, so nothing drew them.
+	float4 FieldPad;
 };
 
 struct PS_INPUT
@@ -24,7 +28,14 @@ float4 ps_main0(PS_INPUT input) : SV_Target0
 	const int vpos  = int(input.p.y); // vertical position of destination texture
 
 	if ((vpos & 1) == field)
-		return Texture.SampleLevel(Sampler, input.t, 0);
+	{
+		// Rows [pad.x, pad.y) were never drawn for this field, so read the first row that was
+		// instead of the cleared hole. The band starts where the display rect does. At 1x it is
+		// one row and the field's own lowest row is its next, so nothing moves; at 2x it is two
+		// rows and this is what fills the black device row.
+		const float src_row = (float(vpos) >= FieldPad.x && float(vpos) < FieldPad.y) ? FieldPad.y : float(vpos);
+		return Texture.SampleLevel(Sampler, input.t + float2(0.0f, (src_row - float(vpos)) * ZrH.y), 0);
+	}
 	else
 		discard;
 
@@ -71,7 +82,14 @@ float4 ps_main3(PS_INPUT input) : SV_Target0
 	// if the index of current destination line belongs to the current fiels we update it, otherwise
 	// we leave the old line in the destination buffer
 	if ((vpos & 1) == field)
-		return Texture.SampleLevel(Sampler, input.t, 0);
+	{
+		// Same undrawn band as the weave shader. This pass writes one bank of a target twice the
+		// source's height, so the source row a fragment reads is its row within the bank, and one
+		// source row is 1 / vres of the texture coordinate.
+		const int   srow    = int(input.p.y) - bank * vres;
+		const float src_row = (float(srow) >= FieldPad.x && float(srow) < FieldPad.y) ? FieldPad.y : float(srow);
+		return Texture.SampleLevel(Sampler, input.t + float2(0.0f, (src_row - float(srow)) / float(vres)), 0);
+	}
 	else
 		discard;
 

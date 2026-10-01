@@ -269,6 +269,7 @@ namespace Vulkan
 		const GSDeviceVK::OptionalExtensions& ext = dev->GetOptionalExtensions();
 		m_vulkan_memory_model = ext.vk_khr_vulkan_memory_model;
 		m_null_descriptor = ext.vk_ext_robustness2_null_descriptor;
+		m_float16 = ext.vk_khr_shader_float16_int8;
 	}
 
 	// --- MemoryAllocator -------------------------------------------------------------------

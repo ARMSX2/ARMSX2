@@ -318,13 +318,84 @@ final class PadLayoutPresetStore: @unchecked Sendable {
         validPresetID(gameAssignments[identity.id]?.layoutPresetID)
     }
 
-    func setPreset(_ presetID: String?, for identity: PadLayoutGameIdentity) {
-        var assignment = gameAssignments[identity.id] ?? VPadGameAssignment()
-        if let presetID, validPresetID(presetID) != nil {
-            assignment.layoutPresetID = presetID
-        } else {
-            assignment.layoutPresetID = nil
+    /// Catalog skins are matched by disc serial, while PCSX2's runtime settings
+    /// identity also includes a CRC. Keep the accepted automatic assignment at
+    /// serial scope so a different executable/disc CRC cannot silently fall
+    /// back to Global Default. Accepting another skin is an explicit choice, so
+    /// it also replaces stale exact-CRC skin assignments for the same game.
+    /// Existing exact layout choices are preserved unless a valid catalog
+    /// layout was selected alongside the skin.
+    func setAutomaticAssignment(
+        skinID: String,
+        layoutPresetID: String?,
+        forSerial rawSerial: String,
+        using skinLibrary: VPadSkinLibraryStore
+    ) {
+        let serial = PadLayoutGameIdentity.normalizedSerial(rawSerial)
+        guard !serial.isEmpty,
+              skinLibrary.descriptor(id: skinID) != nil else {
+            return
         }
+        let assignment = VPadGameAssignment(
+            layoutPresetID: validPresetID(layoutPresetID),
+            skinID: skinID
+        )
+        gameAssignments[automaticAssignmentKey(forSerial: serial)] = assignment
+        let exactAssignmentPrefix = "\(serial)|"
+        for key in Array(gameAssignments.keys)
+        where key.hasPrefix(exactAssignmentPrefix) {
+            var exactAssignment = gameAssignments[key] ?? VPadGameAssignment()
+            exactAssignment.skinID = skinID
+            if let layoutPresetID = assignment.layoutPresetID {
+                exactAssignment.layoutPresetID = layoutPresetID
+            }
+            gameAssignments[key] = exactAssignment
+        }
+        persist()
+    }
+
+    func automaticSkinID(forSerial rawSerial: String) -> String? {
+        let serial = PadLayoutGameIdentity.normalizedSerial(rawSerial)
+        guard !serial.isEmpty else { return nil }
+        return gameAssignments[automaticAssignmentKey(forSerial: serial)]?.skinID
+    }
+
+    /// Changes only the skin component of a serial-scoped assignment. Quick
+    /// Menu skin cycling must not erase a separately chosen controller layout.
+    /// Exact runtime identities are updated too so the active game redraws on
+    /// the same frame instead of waiting for another launch.
+    func setAutomaticSkin(
+        _ skinID: String,
+        forSerial rawSerial: String,
+        using skinLibrary: VPadSkinLibraryStore
+    ) {
+        let serial = PadLayoutGameIdentity.normalizedSerial(rawSerial)
+        guard !serial.isEmpty,
+              skinLibrary.descriptor(id: skinID) != nil else { return }
+
+        let automaticKey = automaticAssignmentKey(forSerial: serial)
+        var automatic = gameAssignments[automaticKey] ?? VPadGameAssignment()
+        automatic.skinID = skinID
+        gameAssignments[automaticKey] = automatic
+
+        let exactAssignmentPrefix = "\(serial)|"
+        for key in Array(gameAssignments.keys)
+        where key.hasPrefix(exactAssignmentPrefix) {
+            var exact = gameAssignments[key] ?? VPadGameAssignment()
+            exact.skinID = skinID
+            gameAssignments[key] = exact
+        }
+        persist()
+    }
+
+    @MainActor
+    func setPreset(_ presetID: String?, for identity: PadLayoutGameIdentity) {
+        let presetID = validPresetID(presetID)
+        if presetID == nil {
+            clearAutomaticAssignment(\.layoutPresetID, forSerial: identity.serial)
+        }
+        var assignment = gameAssignments[identity.id] ?? VPadGameAssignment()
+        assignment.layoutPresetID = presetID
         setAssignment(assignment, for: identity)
         persist()
     }
@@ -340,6 +411,7 @@ final class PadLayoutPresetStore: @unchecked Sendable {
         persist()
     }
 
+    @MainActor
     func setSkin(_ skinID: String?, for identity: PadLayoutGameIdentity, using skinLibrary: VPadSkinLibraryStore) {
         if let skinID, skinLibrary.descriptor(id: skinID) != nil {
             setSkin(skinID, for: identity)
@@ -348,7 +420,9 @@ final class PadLayoutPresetStore: @unchecked Sendable {
         }
     }
 
+    @MainActor
     func clearSkin(for identity: PadLayoutGameIdentity) {
+        clearAutomaticAssignment(\.skinID, forSerial: identity.serial)
         var assignment = gameAssignments[identity.id] ?? VPadGameAssignment()
         assignment.skinID = nil
         setAssignment(assignment, for: identity)
@@ -393,27 +467,58 @@ final class PadLayoutPresetStore: @unchecked Sendable {
         persist()
     }
 
+    @MainActor
     func clearVPadOverrides(for identity: PadLayoutGameIdentity) {
+        clearAutomaticAssignment(\.skinID, \.layoutPresetID, forSerial: identity.serial)
         gameAssignments.removeValue(forKey: identity.id)
         persist()
     }
 
-    func effectivePreset(for identity: PadLayoutGameIdentity?) -> PadLayoutPreset? {
+    func effectivePreset(
+        for identity: PadLayoutGameIdentity?,
+        fallbackSerial: String? = nil
+    ) -> PadLayoutPreset? {
         if let identity,
            let assignedID = presetID(for: identity),
+           let preset = preset(id: assignedID) {
+            return preset
+        }
+        let serial = identity?.serial
+            ?? PadLayoutGameIdentity.normalizedSerial(fallbackSerial)
+        if !serial.isEmpty,
+           let assignedID = gameAssignments[
+               automaticAssignmentKey(forSerial: serial)
+           ]?.layoutPresetID,
            let preset = preset(id: assignedID) {
             return preset
         }
         return preset(id: globalPresetID)
     }
 
-    func effectiveSnapshot(for identity: PadLayoutGameIdentity?) -> PadLayoutSnapshot? {
-        effectivePreset(for: identity)?.snapshot
+    func effectiveSnapshot(
+        for identity: PadLayoutGameIdentity?,
+        fallbackSerial: String? = nil
+    ) -> PadLayoutSnapshot? {
+        effectivePreset(
+            for: identity,
+            fallbackSerial: fallbackSerial
+        )?.snapshot
     }
 
-    func effectiveSkinDescriptor(for identity: PadLayoutGameIdentity?, using skinLibrary: VPadSkinLibraryStore) -> VPadSkinDescriptor {
+    func effectiveSkinDescriptor(
+        for identity: PadLayoutGameIdentity?,
+        fallbackSerial: String? = nil,
+        using skinLibrary: VPadSkinLibraryStore
+    ) -> VPadSkinDescriptor {
         if let identity,
            let assignedID = skinID(for: identity),
+           let descriptor = skinLibrary.descriptor(id: assignedID) {
+            return descriptor
+        }
+        let serial = identity?.serial
+            ?? PadLayoutGameIdentity.normalizedSerial(fallbackSerial)
+        if !serial.isEmpty,
+           let assignedID = automaticSkinID(forSerial: serial),
            let descriptor = skinLibrary.descriptor(id: assignedID) {
             return descriptor
         }
@@ -486,6 +591,26 @@ final class PadLayoutPresetStore: @unchecked Sendable {
         } else {
             gameAssignments[identity.id] = assignment
         }
+    }
+
+    private func automaticAssignmentKey(forSerial serial: String) -> String {
+        "automatic-serial|\(serial)"
+    }
+
+    // A catalog pick is also stored for the whole serial, and one accepted before
+    // the game boots is applied again then, so a reset has to clear both.
+    @MainActor
+    private func clearAutomaticAssignment(
+        _ fields: WritableKeyPath<VPadGameAssignment, String?>...,
+        forSerial serial: String
+    ) {
+        AutomaticCustomSkinManager.shared.forgetAcceptedAssignment(forSerial: serial)
+        let key = automaticAssignmentKey(forSerial: serial)
+        guard var automatic = gameAssignments[key] else { return }
+        for field in fields {
+            automatic[keyPath: field] = nil
+        }
+        gameAssignments[key] = automatic.isEmpty ? nil : automatic
     }
 
     private func sanitizedName(_ name: String, fallback: String) -> String {

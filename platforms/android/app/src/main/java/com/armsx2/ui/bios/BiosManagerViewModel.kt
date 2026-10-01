@@ -68,7 +68,7 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
                     .sortedWith(compareByDescending<InstalledBios> { it.selected }.thenBy { it.file.name.lowercase() })
             }
             val perGame = key?.let {
-                runCatching { ConfigStore.resolveForGame(it).biosFilename.takeIf { f -> f.isNotBlank() } }.getOrNull()
+                runCatching { ConfigStore.resolveForGame(it).system.biosFilename.takeIf { f -> f.isNotBlank() } }.getOrNull()
             }
             state.value = state.value.copy(items = result, busy = false, gameKey = key, perGameBios = perGame)
         }
@@ -81,7 +81,7 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
         val key = state.value.gameKey ?: return
         val resolved = ConfigStore.resolveForGame(key)
         val ok = runCatching {
-            ConfigStore.save(SettingsScope.Game, key, resolved.copy(biosFilename = item.file.name))
+            ConfigStore.save(SettingsScope.Game, key, resolved.copy(system = resolved.system.copy(biosFilename = item.file.name)))
         }.isSuccess
         if (!ok) state.value = state.value.copy(error = "Unable to set a per-game BIOS.")
         refresh()
@@ -91,7 +91,7 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
     fun clearGameBios() {
         val key = state.value.gameKey ?: return
         val resolved = ConfigStore.resolveForGame(key)
-        runCatching { ConfigStore.save(SettingsScope.Game, key, resolved.copy(biosFilename = "")) }
+        runCatching { ConfigStore.save(SettingsScope.Game, key, resolved.copy(system = resolved.system.copy(biosFilename = ""))) }
         refresh()
     }
 

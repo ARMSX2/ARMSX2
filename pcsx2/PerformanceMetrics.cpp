@@ -31,6 +31,7 @@
 static const float UPDATE_INTERVAL = 0.5f;
 
 static float s_fps = 0.0f;
+static PerformanceMetrics::AverageFPS s_avg_vps;
 static float s_internal_fps = 0.0f;
 static float s_minimum_frame_time = 0.0f;
 static float s_minimum_frame_time_accumulator = 0.0f;
@@ -131,7 +132,8 @@ static bool s_adpf_create_failed = false;
 static bool s_adpf_report_warned = false;
 static bool s_adpf_paused = false; // reporting suspended (unlimited/vsync/interrupted), edge-logged
 static int64_t s_adpf_target_ns = 0;
-static Common::Timer::Value s_adpf_work_start = 0; // start of the current active-work period (0 = none)
+static Common::Timer::Value s_adpf_work_start = 0; // start of the current active-work segment (0 = none)
+static int64_t s_adpf_work_accum_ns = 0; // this frame's segments closed so far; -1 = frame incomplete, skip it
 
 // The frame deadline in ns: emulated refresh scaled by the limiter's target speed, so turbo /
 // slow-motion move the deadline correctly. Returns 0 when there is no finite deadline (Unlimited,
@@ -220,6 +222,7 @@ void PerformanceMetrics::Clear()
 	Reset();
 
 	s_fps = 0.0f;
+	s_avg_vps.ClearStats();
 	s_internal_fps = 0.0f;
 	s_minimum_frame_time = 0.0f;
 	s_average_frame_time = 0.0f;
@@ -314,6 +317,7 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 	s_average_frame_time = std::exchange(s_average_frame_time_accumulator, 0.0f) / static_cast<float>(s_unskipped_frames_since_last_update);
 	s_maximum_frame_time = std::exchange(s_maximum_frame_time_accumulator, 0.0f);
 	s_fps = static_cast<float>(s_frames_since_last_update) / time;
+	s_avg_vps.UpdateAvgFPS(s_fps);
 	s_average_gpu_time = s_accumulated_gpu_time / static_cast<float>(s_unskipped_frames_since_last_update);
 	s_average_gpu_vs_invocations = static_cast<double>(s_accumulated_gpu_vs_invocations) / static_cast<double>(s_unskipped_frames_since_last_update);
 	s_average_gpu_ps_invocations = static_cast<double>(s_accumulated_gpu_ps_invocations) / static_cast<double>(s_unskipped_frames_since_last_update);
@@ -387,7 +391,7 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 	s_log_accum_frames += s_frames_since_last_update;
 	if (s_log_accum_time >= LOG_INTERVAL)
 	{
-		// The back thread only exists under GSBackThreadMode >= Lockstep, so the field is
+		// The back thread only exists with GS multi-threading on, so the field is
 		// omitted rather than logged as a permanent 0% in the default configuration.
 		char gs_back[32] = {};
 		if (HasGSBackThread())
@@ -474,10 +478,11 @@ void PerformanceMetrics::AdpfShutdown()
 	s_adpf_tids.clear();
 	s_adpf_create_failed = false;
 	s_adpf_work_start = 0;
+	s_adpf_work_accum_ns = 0;
 #endif
 }
 
-void PerformanceMetrics::AdpfOnFrameWorkComplete()
+void PerformanceMetrics::AdpfEndWorkSegment(bool frame_end)
 {
 #if defined(__ANDROID__)
 	// Sampled at Throttle() entry — the instant the frame's active CPU work finished, before the
@@ -491,14 +496,32 @@ void PerformanceMetrics::AdpfOnFrameWorkComplete()
 		return;
 	AdpfEnsureSession();
 	if (!s_adpf_session || s_adpf_work_start == 0)
+	{
+		// No open segment (first frame, or just resumed from a pause). If this is the frame's
+		// first wait, its second segment alone would under-report the frame, so skip it.
+		s_adpf_work_accum_ns = frame_end ? 0 : -1;
 		return;
+	}
+	const int64_t segment_ns = static_cast<int64_t>(Common::Timer::ConvertValueToSeconds(now - s_adpf_work_start) * 1.0e9);
+	if (!frame_end)
+	{
+		if (s_adpf_work_accum_ns >= 0)
+			s_adpf_work_accum_ns += segment_ns;
+		return;
+	}
+	if (s_adpf_work_accum_ns < 0)
+	{
+		s_adpf_work_accum_ns = 0;
+		return;
+	}
+	const int64_t work_ns = s_adpf_work_accum_ns + segment_ns;
+	s_adpf_work_accum_ns = 0;
 	const int64_t target = AdpfTargetNs();
 	if (target > 0 && target != s_adpf_target_ns)
 	{
 		s_adpf.updateTarget(s_adpf_session, target);
 		s_adpf_target_ns = target;
 	}
-	const int64_t work_ns = static_cast<int64_t>(Common::Timer::ConvertValueToSeconds(now - s_adpf_work_start) * 1.0e9);
 	// Drop absurd outliers (savestate load, renderer recreation, debugger stall): a period several
 	// times the deadline is not a real frame and would spam a spurious max-frequency demand.
 	if (work_ns <= 0 || (s_adpf_target_ns > 0 && work_ns > s_adpf_target_ns * 4))
@@ -541,6 +564,7 @@ void PerformanceMetrics::AdpfPauseFrameWork()
 		s_adpf_paused = true;
 	}
 	s_adpf_work_start = 0;
+	s_adpf_work_accum_ns = 0;
 #endif
 }
 
@@ -583,6 +607,11 @@ bool PerformanceMetrics::IsInternalFPSValid()
 float PerformanceMetrics::GetFPS()
 {
 	return s_fps;
+}
+
+float PerformanceMetrics::GetAvgVPS()
+{
+	return s_avg_vps.GetAvgFPS();
 }
 
 float PerformanceMetrics::GetInternalFPS()

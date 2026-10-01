@@ -68,15 +68,14 @@ public class NativeApp {
 			externalFilesDir = context.getDataDir();
 		}
 
-		// DataRoot: prefer the user-chosen system folder only when the SAF tree
-		// URI resolves to a POSIX path that native code can actually write.
-		// Falls back to externalFilesDir when unset, unresolvable, or blocked
-		// by scoped storage.
-		String chosen = MainActivityRuntime.Companion.systemDirPosix();
-		if (chosen != null && !MainActivityRuntime.Companion.validateSystemDirWritable(chosen)) {
-			chosen = null;
+		// DataRoot: the folder MainActivityRuntime.kickoffEmucoreInit pinned. It is
+		// decided there, once, so the core and every Kotlin screen use the same folder;
+		// deciding again here could come out differently and split the player's saves
+		// across two folders.
+		String dataPath = MainActivityRuntime.Companion.currentInitDataRoot();
+		if (dataPath == null || dataPath.isEmpty()) {
+			dataPath = externalFilesDir.getAbsolutePath();
 		}
-		String dataPath = (chosen != null) ? chosen : externalFilesDir.getAbsolutePath();
 
 		// BIOS folder: the directory that actually holds the configured BIOS file.
 		// The setup wizard (and the migration in MainActivityRuntime.kickoffEmucoreInit) keep the
@@ -229,8 +228,9 @@ public class NativeApp {
 
 	/**
 	 * Set the emulated device in a USB port. {@code type} is a core type name
-	 * ("guncon2", "None", ...); port is 0 or 1. Restart recommended — swapping a USB
-	 * device on a running VM is the emulated equivalent of unplugging it.
+	 * ("guncon2", "None", ...); port is 0 or 1. A running game gets the device plugged
+	 * in straight away, but a restart is still recommended: many games only look for USB
+	 * devices at boot.
 	 */
 	public static native void usbSetDeviceType(int port, String type);
 
@@ -244,7 +244,8 @@ public class NativeApp {
 	/** Pick a subtype for whatever device is in {@code port}; devices without subtypes ignore it. */
 	public static native void usbSetDeviceSubtype(int port, int subtype);
 
-	/** Aim, in WINDOW PIXELS (our SurfaceView is the whole window, so raw touch x/y). */
+	/** Aim, as a fraction (0..1) of the screen area the game surface covers. Native scales it
+	 *  to the surface buffer, which can have fewer pixels than the screen. */
 	public static native void usbLightgunAim(float x, float y);
 
 	/** Press/release one GUNCON_* binding on a port. */
@@ -463,12 +464,13 @@ public class NativeApp {
 	public static native void resetKeyStatus();
 
 	// ---- USB keyboard (#254: EQOA / Konami-keyboard games) ----
-	/** Attach ({@code true}) or detach ({@code false}) an emulated USB HID
-	 *  keyboard on USB port {@code port} (0 = USB1, 1 = USB2). Persists
-	 *  [USB{port+1}] Type = hidkbd/None and, when a VM is running, recreates the
-	 *  device live so the game sees the (dis)connect. Call off the UI thread — a
-	 *  live change briefly parks the emulation pipeline. */
-	public static native void usbSetKeyboardEnabled(int port, boolean enabled);
+	/** Plug the devices the settings name for both USB ports into a running game, and
+	 *  unplug what they no longer name. Called after Settings.applyTo writes [USB1] Type
+	 *  for the keyboard switch; a no-op with no VM running. */
+	public static native void usbApplyPorts();
+
+	/** Show the free-software notice when a game boots (#453). On by default. */
+	public static native void setFreeSoftwareNotice(boolean show);
 	/** Feed one Android hardware {@link android.view.KeyEvent} to the emulated USB
 	 *  keyboard on {@code port}. {@code androidKeyCode} is {@code KeyEvent.keyCode};
 	 *  {@code pressed} is the down/up state. Returns {@code true} iff a USB keyboard

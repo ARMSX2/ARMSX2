@@ -6,20 +6,16 @@
 #include "common/Pcsx2Types.h"
 
 // What the next VSync should do about a queued snapshot request and a dump that may already be
-// recording. The two are independent: a screenshot is a request to write one image, a recording
-// is a budget of frames already being spent, and neither may reach into the other.
-//
-// They used to share a single frame counter, so the screenshot hotkey (a request for zero dump
-// frames) zeroed the budget of a running multi-frame dump and the following VSync closed it as
-// though the user had asked it to stop. The two branches were also alternatives rather than
-// independent, so the frame a screenshot landed on never reached the dump and two guest frames
-// merged into one on replay.
+// recording. The two are independent: a screenshot writes one image, a recording spends a frame
+// budget, and neither may touch the other. In particular a screenshot must not zero a running
+// dump's budget, and the frame a screenshot lands on must still reach the dump (otherwise two
+// guest frames merge into one on replay).
 struct GSSnapshotAction
 {
 	/// Freeze state and start a recording from this frame.
 	bool open_dump;
-	/// The request asked for a dump but one is already recording. Only one can exist, so the
-	/// request yields -- but it must say so rather than quietly writing just the screenshot.
+	/// A dump was requested while one is recording. Only one can exist, so the request is refused,
+	/// and must be reported rather than silently writing just the screenshot.
 	bool refuse_dump;
 	/// Hand this frame's VSync to a recording that is already running.
 	bool record_vsync;
@@ -27,9 +23,8 @@ struct GSSnapshotAction
 	bool dump_is_last;
 };
 
-/// `requested_dump_frames` is what the queued request asked for (0 = screenshot only);
-/// `dump_frames_remaining` is the budget of the recording already running, which no request
-/// can touch.
+/// `requested_dump_frames`: the queued request (0 = screenshot only). `dump_frames_remaining`:
+/// the running recording's budget, which no request can touch.
 constexpr GSSnapshotAction SelectGSSnapshotAction(
 	bool snapshot_pending, u32 requested_dump_frames, bool dump_open, u32 dump_frames_remaining)
 {
@@ -37,9 +32,8 @@ constexpr GSSnapshotAction SelectGSSnapshotAction(
 	return GSSnapshotAction{
 		wants_dump && !dump_open,
 		wants_dump && dump_open,
-		// A recording takes every frame it is open for, including one a snapshot lands on. Not
-		// the frame it was opened on: that state was frozen into the dump's header, so replay
-		// starts from the frame after.
+		// A recording takes every frame it is open for, including one a snapshot lands on, but not
+		// the frame it was opened on (frozen into the header; replay starts after it).
 		dump_open,
 		dump_open && dump_frames_remaining == 0,
 	};

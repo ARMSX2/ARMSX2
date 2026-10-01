@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <string>
+
 class Error;
 
 #define VK_NO_PROTOTYPES
@@ -100,13 +102,41 @@ namespace Vulkan
 	void UnloadVulkanLibrary();
 	void ResetVulkanLibraryFunctionPointers();
 
-#if defined(__ANDROID__)
+	// The definition in VKLoader.cpp is guarded on ARMSX2_USE_ADRENOTOOLS, so the
+	// declaration has to be too. It used to say __ANDROID__, which is a wider set:
+	// every Android build that does not link adrenotools saw a declaration with no
+	// definition behind it, and only the fact that the single caller lived in the one
+	// CMake tree that force-sets ARMSX2_USE_ADRENOTOOLS kept that from being a link
+	// error. Adding a second caller (pcsx2-gsrunner) is what makes it matter.
+#if defined(ARMSX2_USE_ADRENOTOOLS)
 	/// Configures a custom Vulkan driver (e.g. Mesa Turnip) to load via
 	/// libadrenotools instead of the system loader. Must be called BEFORE
 	/// LoadVulkanLibrary — the first MTGS::Open triggers enumerate which
 	/// is the first load, so the setter has to run before VM start.
 	/// Pass empty strings to revert to the system loader on next load.
+	/// `required` decides what happens when the driver cannot be opened: false falls
+	/// through to the system loader so the boot proceeds (what the app wants — the user
+	/// gets a picture), true fails LoadVulkanLibrary (what a measurement run wants — a
+	/// run on the vendor driver that claims to be on a pack is worse than no run).
 	void SetCustomDriverPath(const char* driver_dir, const char* driver_name,
-		const char* redirect_dir, const char* hook_lib_dir);
+		const char* redirect_dir, const char* hook_lib_dir, bool required);
 #endif
+
+	/// What the last LoadVulkanLibrary was asked for and what it got. Read by the driver report,
+	/// because a custom driver that fails to open falls back to the system loader silently.
+	struct CustomDriverStatus
+	{
+		/// A custom driver was configured when the library was loaded.
+		bool requested = false;
+		/// ... and it opened. False with `requested` means the system loader answered instead.
+		bool opened = false;
+		bool required = false;
+		std::string dir;
+		std::string name;
+		std::string redirect_dir;
+		std::string hook_lib_dir;
+		/// Why it did not open, when it did not.
+		std::string failure;
+	};
+	CustomDriverStatus GetCustomDriverStatus();
 } // namespace Vulkan

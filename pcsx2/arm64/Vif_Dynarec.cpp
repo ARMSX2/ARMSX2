@@ -323,6 +323,54 @@ void VifUnpackNEON_Dynarec::ProcessMasks()
 	inputMasked = rowcol_mask == 0x55;
 }
 
+// The rows of a straight copy, in the order CompileRoutine collected them.
+// Adjacent rows that step one quadword in both operands go out as a pair; a
+// fill's repeated source and a skip's gap break the run and leave the rows
+// either side of it on the single form. The pair form's offset field reaches
+// 1008 bytes off the base, an eighth of what a 256-row unpack spans, so a base
+// that has run out of reach is stepped on. Nothing reads the two bases after
+// the routine's `ret`, and a straight copy is the whole of the routine.
+void VifUnpackNEON_Dynarec::EmitCopyRows(const std::vector<CopyRow>& rows) const
+{
+	constexpr s64 pair_reach = 1008;
+
+	const a64::Register dst_base = dstIndirect.GetBaseRegister();
+	const a64::Register src_base = srcIndirect.GetBaseRegister();
+	s64 dst_bias = 0;
+	s64 src_bias = 0;
+
+	for (size_t i = 0; i < rows.size();)
+	{
+		const bool paired = (i + 1) < rows.size() &&
+							rows[i + 1].first == rows[i].first + 16 &&
+							rows[i + 1].second == rows[i].second + 16;
+
+		if (paired)
+		{
+			if ((rows[i].first - dst_bias) > pair_reach)
+			{
+				armAsm->Add(dst_base, dst_base, rows[i].first - dst_bias);
+				dst_bias = rows[i].first;
+			}
+			if ((rows[i].second - src_bias) > pair_reach)
+			{
+				armAsm->Add(src_base, src_base, rows[i].second - src_bias);
+				src_bias = rows[i].second;
+			}
+
+			armAsm->Ldp(destReg, workReg, a64::MemOperand(src_base, rows[i].second - src_bias));
+			armAsm->Stp(destReg, workReg, a64::MemOperand(dst_base, rows[i].first - dst_bias));
+			i += 2;
+		}
+		else
+		{
+			armAsm->Ldr(destReg, a64::MemOperand(src_base, rows[i].second - src_bias));
+			armAsm->Str(destReg, a64::MemOperand(dst_base, rows[i].first - dst_bias));
+			i += 1;
+		}
+	}
+}
+
 void VifUnpackNEON_Dynarec::CompileRoutine()
 {
 	const int wl = vB.wl ? vB.wl : 256; //0 is taken as 256 (KH2)
@@ -342,6 +390,13 @@ void VifUnpackNEON_Dynarec::CompileRoutine()
 	// Value passed determines # of col regs we need to load
 	SetMasks(isFill ? blockSize : cycleSize);
 
+	// An unmasked V4-32 unpack with no mode is a straight quadword copy per
+	// row — xUPK_V4_32 loads destReg, xMovDest stores it, and nothing sits
+	// between the two. Collect those rows rather than emit them, so
+	// EmitCopyRows can see which ones are adjacent.
+	const bool straight_copy = (upkNum == 0xc) && !doMask && !doMode;
+	std::vector<CopyRow> copy_rows;
+
 	while (vNum)
 	{
 		// Determine if reads/processing can be skipped.
@@ -350,8 +405,13 @@ void VifUnpackNEON_Dynarec::CompileRoutine()
 		if (vCL < cycleSize)
 		{
 			ModUnpack(upkNum, false);
-			xUnpack(upkNum);
-			xMovDest();
+			if (straight_copy)
+				copy_rows.emplace_back(dstIndirect.GetOffset(), srcIndirect.GetOffset());
+			else
+			{
+				xUnpack(upkNum);
+				xMovDest();
+			}
 			ModUnpack(upkNum, true);
 
 			dstIndirect = armOffsetMemOperand(dstIndirect, 16);
@@ -363,8 +423,13 @@ void VifUnpackNEON_Dynarec::CompileRoutine()
 		}
 		else if (isFill)
 		{
-			xUnpack(upkNum);
-			xMovDest();
+			if (straight_copy)
+				copy_rows.emplace_back(dstIndirect.GetOffset(), srcIndirect.GetOffset());
+			else
+			{
+				xUnpack(upkNum);
+				xMovDest();
+			}
 
 			// dstIndirect += 16;
 			dstIndirect = armOffsetMemOperand(dstIndirect, 16);
@@ -380,6 +445,9 @@ void VifUnpackNEON_Dynarec::CompileRoutine()
 			vCL = 0;
 		}
 	}
+
+	if (straight_copy)
+		EmitCopyRows(copy_rows);
 
 	if (doMode >= 2)
 		writeBackRow();

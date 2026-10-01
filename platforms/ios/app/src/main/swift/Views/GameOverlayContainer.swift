@@ -41,7 +41,7 @@ struct OverlayMetrics {
     let scrimOpacity: Double
 
     /// `size` is already the safe region, insets removed. Do not take them off again.
-    init(size: CGSize, isIPad: Bool, reduceTransparency: Bool) {
+    init(size: CGSize, isIPad: Bool, reduceTransparency: Bool, ipadPortraitHeightCap: CGFloat = 640) {
         let isLandscape = size.width > size.height
 
         if isIPad {
@@ -51,7 +51,7 @@ struct OverlayMetrics {
             let widthMargin: CGFloat = isLandscape ? 96 : 64
             let heightMargin: CGFloat = isLandscape ? 88 : 72
             let widthCap: CGFloat = isLandscape ? 980 : 620
-            let heightCap: CGFloat = isLandscape ? 760 : 640
+            let heightCap: CGFloat = isLandscape ? 760 : ipadPortraitHeightCap
             cardMaxWidth = max(0, min(widthCap, size.width - widthMargin))
             cardMaxHeight = max(0, min(heightCap, size.height - heightMargin))
             scrimOpacity = reduceTransparency ? OverlayTheme.scrimPadReduceTransparency : OverlayTheme.scrimPad
@@ -98,6 +98,11 @@ enum OverlayFrameMode {
 struct GameOverlayContainer<Content: View>: View {
     var onTapOutside: (() -> Void)? = nil
     var frameMode: OverlayFrameMode = .bounded
+    var dimsBackground = true
+    /// Room kept free below the card, for the controller shortcut bar.
+    var bottomReserve: CGFloat = 0
+    /// Save States lists ten rows, so it may use the whole height of an upright iPad.
+    var ipadPortraitHeightCap: CGFloat = 640
     @ViewBuilder let content: (OverlayMetrics) -> Content
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -118,11 +123,16 @@ struct GameOverlayContainer<Content: View>: View {
                 let metrics = OverlayMetrics(
                     size: geo.size,
                     isIPad: isIPad,
-                    reduceTransparency: reduceTransparency
+                    reduceTransparency: reduceTransparency,
+                    ipadPortraitHeightCap: ipadPortraitHeightCap
                 )
                 let keyboardOverlap = max(0, geo.size.height - keyboardGeo.size.height)
                 // The card is centred, so the keyboard covers less of it than of the region.
                 let cardMargin = max(0, (geo.size.height - metrics.cardMaxHeight) / 2)
+                // What the bottom margin lacks, measured from the screen edge; the top margin stays.
+                let barBase = geo.safeAreaInsets.bottom
+                    - GameplayControllerShortcutHelpOverlay.homeIndicatorSink(geo.safeAreaInsets.bottom)
+                let lift = bottomReserve > 0 ? max(0, bottomReserve + barBase - cardMargin) : 0
 
                 ZStack {
                     backdrop(metrics: metrics)
@@ -141,9 +151,10 @@ struct GameOverlayContainer<Content: View>: View {
                         // One arm, so a flip cannot swap it and take the panel's state along.
                         let popScale: CGFloat = frameMode == .landscapePanel && metrics.variant == .phoneLandscape ? 0.97 : 0.96
                         hosted
-                            .frame(maxWidth: metrics.cardMaxWidth, maxHeight: metrics.cardMaxHeight)
+                            .frame(maxWidth: metrics.cardMaxWidth, maxHeight: metrics.cardMaxHeight - lift)
                             .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
                             .shadow(color: .black.opacity(0.28), radius: 22, x: 0, y: 12)
+                            .offset(y: -lift / 2)
                             .transition(reduceMotion ? .opacity : .scale(scale: popScale).combined(with: .opacity))
                     }
                 }
@@ -158,8 +169,13 @@ struct GameOverlayContainer<Content: View>: View {
     /// taps, so gameplay gets none while an overlay is up.
     @ViewBuilder
     private func backdrop(metrics: OverlayMetrics) -> some View {
-        let scrim = OverlayTheme.scrimBase
-            .opacity(metrics.scrimOpacity)
+        let scrim = Group {
+            if dimsBackground {
+                OverlayTheme.scrimBase.opacity(metrics.scrimOpacity)
+            } else {
+                Color.clear
+            }
+        }
             .ignoresSafeArea()
             .contentShape(Rectangle())
 

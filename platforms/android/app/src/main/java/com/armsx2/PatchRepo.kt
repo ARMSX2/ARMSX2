@@ -48,7 +48,8 @@ object PatchRepo {
     // (exact) and fall back to serial (handles a dump whose CRC differs from the
     // one the cheat author used — common, and the patch-codes warning covers the
     // revision-mismatch risk). Ordered by coverage.
-    private data class CheatSource(val raw: String, val tree: String)
+    // [folders]: when set, only files under these folders count.
+    private data class CheatSource(val raw: String, val tree: String, val folders: List<String> = emptyList())
     private val CHEAT_SOURCES = listOf(
         CheatSource(
             "https://raw.githubusercontent.com/shadowninja826/pcsx2_pnach_cheats/main",
@@ -58,14 +59,44 @@ object PatchRepo {
             "https://raw.githubusercontent.com/xs1l3n7x/pcsx2_cheats_collection/main",
             "https://api.github.com/repos/xs1l3n7x/pcsx2_cheats_collection/git/trees/main?recursive=1",
         ),
-        // PCSX2 CheatsDB (~20k pnach files). Contributed as XDiaoXuanX/PCSX2-CheatDB; that repo is
-        // gone (404) and the author moved it here, so this is the live URL — don't restore the old
-        // one, a dead source costs an API call and a failed fetch on every lookup miss.
-        CheatSource(
-            "https://raw.githubusercontent.com/XiGuanChi/PCSX2-CheatsDB/main",
-            "https://api.github.com/repos/XiGuanChi/PCSX2-CheatsDB/git/trees/main?recursive=1",
-        ),
     )
+
+    /**
+     * The large cheat database, searched only when the player asks for it ([fetchLargeCheats]),
+     * the way ARMSX3 keeps Artemis apart from the RPCS3 patches.
+     *
+     * ★ Its file list is 6.3 MB for 23,000 files, nearly four times every other source combined, and a
+     * search has to download all of it to find one game. That was most of the cost of every
+     * search, and on a slow connection it was what "loads forever" meant.
+     *
+     * Only its own cheat folders count. About half the repository is copies of sources searched
+     * anyway: PCSX2's patch database twice (patches-v2, patches-v3), Gabominated's patches
+     * ("PCSX2 Patches"), and xs1l3n7x's cheats (cheats-v5). Everything from it was filed as a
+     * cheat, so a game's widescreen patch came back a second time as a "cheat" that installed into
+     * cheats/ and only applied with cheats on. cheats-v1 and cheats-v2 name files
+     * "<CRC> - <title> <SERIAL>.pnach", which is why the whole list is needed to find one.
+     *
+     * Contributed as XDiaoXuanX/PCSX2-CheatDB; that repo is gone (404) and the author moved it
+     * here, so this is the live URL. Don't restore the old one.
+     */
+    private val LARGE_CHEAT_SOURCE = CheatSource(
+        "https://raw.githubusercontent.com/XiGuanChi/PCSX2-CheatsDB/main",
+        "https://api.github.com/repos/XiGuanChi/PCSX2-CheatsDB/git/trees/main?recursive=1",
+        folders = listOf("cheats-v1/", "cheats-v2/", "cheats-v6/"),
+    )
+
+    // ---- failed file lists ---------------------------------------------------------------
+    //
+    // ★ A file list that failed is not asked for again straight away. Nothing remembered a
+    // failure, so every search re-requested every missing list, and each request spends GitHub's
+    // anonymous API allowance: 60 an hour per IP address, shared by everyone behind the same
+    // mobile carrier address. A few searches on a bad connection used it up, after which GitHub
+    // refused every list for up to an hour and games without bundled patches found nothing.
+    private val treeRetryAfter = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /** GitHub's anonymous allowance resets hourly, so asking again sooner cannot succeed. */
+    private const val TREE_RETRY_RATE_LIMITED_MS = 60L * 60 * 1000
+    /** A timeout or a dropped connection may be gone in a moment. */
+    private const val TREE_RETRY_FAILED_MS = 5L * 60 * 1000
     // ---- on-disk tree cache -------------------------------------------------------------
     //
     // ★ The repository trees are the whole cost of a search, and they were re-fetched from
@@ -226,12 +257,24 @@ object PatchRepo {
     // spelled slightly differently across them ("Infinite Health" vs "infinite  health") — an
     // exact-name set let those through as near-duplicates, so the list "repeated forever".
     private val WS_RE = Regex("\\s+")
-    private fun cheatKey(name: String) = name.trim().lowercase().replace(WS_RE, " ")
+    internal fun cheatKey(name: String) = name.trim().lowercase().replace(WS_RE, " ")
 
-    /** Fetch + parse community cheats for a game across all sources. Matches
+    /** Only the patches the app ships for [serial]: offline and instant, so the browser can show
+     *  them while the online sources are still loading. */
+    fun bundledForSerial(serial: String, bundledZip: File?): Result {
+        val s = serial.trim().uppercase()
+        val (gt, es, crc) = bundledPatchesForSerial(bundledZip, s)
+        return Result(gt, es, null, s, crc)
+    }
+
+    /** Fetch + parse community cheats for a game across [sources]. Matches
      *  each repo's tree by CRC (exact) first, then by serial as a fallback;
      *  dedupes entries by normalized name (earlier sources win). Null if nothing found. */
-    private suspend fun fetchCheats(serial: String?, crc: String): Pair<String, List<Entry>>? {
+    private suspend fun fetchCheats(
+        serial: String?,
+        crc: String,
+        sources: List<CheatSource> = CHEAT_SOURCES,
+    ): Pair<String, List<Entry>>? {
         val c = crc.uppercase()
         val s = serial?.uppercase()
         val haveCrc = CRC_RE.matches(c)
@@ -240,20 +283,15 @@ object PatchRepo {
         var gametitle = ""
         val entries = mutableListOf<Entry>()
         val seenNames = HashSet<String>()
-        for (src in CHEAT_SOURCES) {
-            // Between sources: four repositories, each a multi-megabyte tree. This is the check
-            // that matters most — it is where the bulk of the time goes.
+        for (src in sources) {
+            // Between sources, each a file list that may have to be downloaded. This is the check
+            // that matters most: it is where the bulk of the time goes.
             currentCoroutineContext().ensureActive()
             val tree = cheatTree(src)
             if (tree.isEmpty()) continue
-            var matches = if (haveCrc)
-                tree.filter { it.substringAfterLast('/').uppercase().contains(c) }
-            else emptyList()
-            if (matches.isEmpty() && s != null)
-                matches = tree.filter { it.substringAfterLast('/').uppercase().startsWith("${s}_") }
-            for (m in matches) {
+            for (m in matchCheatFiles(tree, if (haveCrc) c else null, s)) {
                 currentCoroutineContext().ensureActive()
-                val text = get("${src.raw}/${m.replace(" ", "%20")}") ?: continue
+                val text = get("${src.raw}/${rawPath(m)}") ?: continue
                 val (gt, es) = parse(text, "cheats")
                 if (gametitle.isEmpty()) gametitle = gt
                 for (e in es) if (seenNames.add(cheatKey(e.name))) entries += e
@@ -262,19 +300,91 @@ object PatchRepo {
         return if (entries.isEmpty()) null else gametitle to entries
     }
 
-    /** Cached file listing for a cheat source. */
+    /**
+     * The files in [tree] that belong to a game: every file whose name holds [crc], or when none
+     * does, the ones named for [serial], either "<SERIAL>_<CRC>.pnach" or "<CRC> - <title>
+     * <SERIAL>.pnach" as the large database names most of its files.
+     */
+    internal fun matchCheatFiles(tree: List<String>, crc: String?, serial: String?): List<String> {
+        val c = crc?.uppercase()
+        val s = serial?.uppercase()
+        val byCrc = if (c != null) tree.filter { it.substringAfterLast('/').uppercase().contains(c) } else emptyList()
+        if (byCrc.isNotEmpty() || s == null) return byCrc
+        return tree.filter {
+            val base = it.substringAfterLast('/').uppercase()
+            base.startsWith("${s}_") || base.endsWith(" $s.PNACH")
+        }
+    }
+
+    /**
+     * A repository path as a URL path, each segment percent-encoded. Escaping only spaces was not
+     * enough once file names carry game titles: "Resident Evil Outbreak File #2" cut the URL off
+     * at the '#' (404) and "120%" made it invalid (400).
+     */
+    internal fun rawPath(path: String): String =
+        path.split('/').joinToString("/") { java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20") }
+
+    /** [paths] under any of [folders]; all of them when [folders] is empty. */
+    internal fun inFolders(paths: List<String>, folders: List<String>): List<String> =
+        if (folders.isEmpty()) paths else paths.filter { p -> folders.any { p.startsWith(it) } }
+
+    /** Cached file listing for a cheat source, limited to its [CheatSource.folders]. The disk cache
+     *  keeps the whole list, so changing the folders never needs a fresh download. */
     private suspend fun cheatTree(src: CheatSource): List<String> {
         cheatTreeCache[src.raw]?.let { return it }
-        readTreeCache(src.tree)?.let { cheatTreeCache[src.raw] = it; return it }
-        currentCoroutineContext().ensureActive()
-        val json = get(src.tree) ?: return emptyList()
-        currentCoroutineContext().ensureActive() // the regex below is the CPU-heavy part
-        val paths = TREE_PATH_RE.findAll(json).map { it.groupValues[1] }.toList()
-        if (paths.isNotEmpty()) {
-            cheatTreeCache[src.raw] = paths
-            writeTreeCache(src.tree, paths)
+        val all = readTreeCache(src.tree) ?: run {
+            currentCoroutineContext().ensureActive()
+            val json = fetchTree(src.tree) ?: return emptyList()
+            currentCoroutineContext().ensureActive() // the regex below is the CPU-heavy part
+            TREE_PATH_RE.findAll(json).map { it.groupValues[1] }.toList()
+                .also { if (it.isNotEmpty()) writeTreeCache(src.tree, it) }
         }
+        val paths = inFolders(all, src.folders)
+        if (paths.isNotEmpty()) cheatTreeCache[src.raw] = paths
         return paths
+    }
+
+    /**
+     * Cheats for a game from the large cheat database only, for the browser's separate button.
+     *
+     * Needs the disc CRC for most matches; without a booted game it comes from [crc] (an earlier
+     * search's), else from the bundled patch database, else the serial alone is tried.
+     */
+    suspend fun fetchLargeCheats(serial: String, crc: String?, bundledZip: File? = null): Result {
+        val s = serial.trim().uppercase()
+        val c = crc?.trim()?.uppercase()?.takeIf { CRC_RE.matches(it) }
+            ?: bundledPatchesForSerial(bundledZip, s).third.takeIf { CRC_RE.matches(it) }
+            ?: ""
+        val found = fetchCheats(s, c, listOf(LARGE_CHEAT_SOURCE))
+            ?: return Result("", emptyList(), null, s, c)
+        return Result(found.first, found.second, null, s, c)
+    }
+
+    /** True while a default source's file list is being left alone after a failure, so a search
+     *  that found nothing can say the database was unreachable rather than empty. */
+    fun listingsUnavailable(): Boolean {
+        val now = System.currentTimeMillis()
+        return (listOf(TREE_URL, GABO_TREE) + CHEAT_SOURCES.map { it.tree })
+            .any { (treeRetryAfter[it] ?: 0L) > now }
+    }
+
+    /** [listingsUnavailable] for the large cheat database. */
+    fun largeListingUnavailable(): Boolean =
+        (treeRetryAfter[LARGE_CHEAT_SOURCE.tree] ?: 0L) > System.currentTimeMillis()
+
+    /** A GitHub file list, or null when it failed or failed recently. See [treeRetryAfter]. */
+    private fun fetchTree(url: String): String? {
+        treeRetryAfter[url]?.let { if (System.currentTimeMillis() < it) return null }
+        val resp = runCatching { HttpClient.doRequest(url, "GET", null, USER_AGENT, 15000) }.getOrNull()
+        if (resp != null && resp.statusCode == 200 && resp.data.isNotEmpty()) {
+            treeRetryAfter.remove(url)
+            return String(resp.data, Charsets.UTF_8)
+        }
+        val code = resp?.statusCode ?: -1
+        val wait = if (code == 403 || code == 429) TREE_RETRY_RATE_LIMITED_MS else TREE_RETRY_FAILED_MS
+        treeRetryAfter[url] = System.currentTimeMillis() + wait
+        Log.w(TAG, "file list $url: status=$code, not asked for again for ${wait / 60000} min")
+        return null
     }
 
     /** Browse by serial only — for games picked from the library before being
@@ -391,7 +501,7 @@ object PatchRepo {
     private fun gaboTree(): List<String> {
         gaboTreeCache?.let { return it }
         readTreeCache(GABO_TREE)?.let { gaboTreeCache = it; return it }
-        val json = get(GABO_TREE) ?: return emptyList()
+        val json = fetchTree(GABO_TREE) ?: return emptyList()
         val paths = TREE_PATH_RE.findAll(json).map { it.groupValues[1] }.toList()
         if (paths.isNotEmpty()) {
             gaboTreeCache = paths
@@ -404,7 +514,7 @@ object PatchRepo {
     private fun repoTree(): List<String> {
         treeCache?.let { return it }
         readTreeCache(TREE_URL)?.let { treeCache = it; return it }
-        val json = get(TREE_URL) ?: return emptyList()
+        val json = fetchTree(TREE_URL) ?: return emptyList()
         val paths = TREE_PATH_RE.findAll(json).map { it.groupValues[1] }.toList()
         if (paths.isNotEmpty()) {
             treeCache = paths

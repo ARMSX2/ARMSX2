@@ -56,18 +56,29 @@ static __fi void mVUemitAddSub(mV, const a64::VRegister& to, const a64::VRegiste
 	}
 }
 
+// Both operands of one arithmetic step, so the clone-write copy in front of
+// each folds rather than only the last one made (mVUclampOperands). `from` is
+// the older allocation at every call site below: a body hands out Ft, or the
+// accumulator, before the register the step writes into.
+static __fi void mVUclampStepOperands(mV, const a64::VRegister& to, const a64::VRegister& from,
+	int preClamped, int xyzw)
+{
+	if (!clampE)
+		return;
+	mVUclampOperands(mVU, {(preClamped & preClampFrom) ? a64::NoVReg : from,
+	                       (preClamped & preClampTo) ? a64::NoVReg : to}, xyzw, true);
+}
+
 static void NEON_ADDPS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)
 {
-	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, _X_Y_Z_W);
-	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, _X_Y_Z_W);
+	mVUclampStepOperands(mVU, to, from, preClamped, _X_Y_Z_W);
 	mVUemitAddSub(mVU, to, from, false, false);
 	mVUclamp4(mVU, to, RQSCRATCH3, _X_Y_Z_W);
 }
 
 static void NEON_SUBPS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)
 {
-	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, _X_Y_Z_W);
-	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, _X_Y_Z_W);
+	mVUclampStepOperands(mVU, to, from, preClamped, _X_Y_Z_W);
 	mVUemitAddSub(mVU, to, from, true, false);
 	mVUclamp4(mVU, to, RQSCRATCH3, _X_Y_Z_W);
 }
@@ -135,40 +146,35 @@ static __fi void mVUemitMul(mV, const a64::VRegister& to, const a64::VRegister& 
 	armAsm->Str(fs, a64::MemOperand(a64::x8, offsetof(VuMulBandSlot, fs)));
 	armAsm->Str(aliasFt ? fs : from, a64::MemOperand(a64::x8, offsetof(VuMulBandSlot, ft)));
 	armAsm->Str(to, a64::MemOperand(a64::x8, offsetof(VuMulBandSlot, product)));
-	armEmitEeFpuModelCall(reinterpret_cast<const void*>(
-		mVU.index ? &vuMulShortTailBandVu1 : &vuMulShortTailBandVu0));
+	mVUemitModelCall(mVU, mVUModelStubMulShortTailBand);
 	armAsm->Ldr(to, a64::MemOperand(a64::x8, offsetof(VuMulBandSlot, product)));
 	armAsm->Bind(&done);
 }
 
 static void NEON_MULPS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)
 {
-	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, _X_Y_Z_W);
-	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, _X_Y_Z_W);
+	mVUclampStepOperands(mVU, to, from, preClamped, _X_Y_Z_W);
 	mVUemitMul(mVU, to, from, false);
 	mVUclamp4(mVU, to, RQSCRATCH3, _X_Y_Z_W);
 }
 
 static void NEON_ADDSS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)
 {
-	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, 0x8);
-	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, 0x8);
+	mVUclampStepOperands(mVU, to, from, preClamped, 0x8);
 	mVUemitAddSub(mVU, to, from, false, true);
 	mVUclamp4(mVU, to, RQSCRATCH3, 0x8);
 }
 
 static void NEON_SUBSS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)
 {
-	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, 0x8);
-	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, 0x8);
+	mVUclampStepOperands(mVU, to, from, preClamped, 0x8);
 	mVUemitAddSub(mVU, to, from, true, true);
 	mVUclamp4(mVU, to, RQSCRATCH3, 0x8);
 }
 
 static void NEON_MULSS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)
 {
-	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, 0x8);
-	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, 0x8);
+	mVUclampStepOperands(mVU, to, from, preClamped, 0x8);
 	mVUemitMul(mVU, to, from, true);
 	mVUclamp4(mVU, to, RQSCRATCH3, 0x8);
 }
@@ -182,8 +188,7 @@ static void NEON_MULSS(mV, const a64::VRegister& to, const a64::VRegister& from,
 // cover part of a series, and it moves no row of autocases_efu.h.
 static void NEON_MULSS_Series(mV, const a64::VRegister& to, const a64::VRegister& from)
 {
-	mVUclamp3(mVU, to, RQSCRATCH3, 0x8);
-	mVUclamp3(mVU, from, RQSCRATCH3, 0x8);
+	mVUclampStepOperands(mVU, to, from, 0, 0x8);
 	armAsm->Fmul(to.S(), to.S(), from.S());
 	mVUclamp4(mVU, to, RQSCRATCH3, 0x8);
 }
@@ -670,8 +675,8 @@ static void mVU_FMACa(microVU& mVU, int recPass, int opCase, int opType, bool is
 		const mVUfmacUO uo = mVUemitFmacUO(mVU, opType, Fs, Ft);
 		pxAssert(!uo.overflow.IsValid() || bcLane < 0);
 
-		if ((clampType & cFt) && bcLane < 0) mVUclamp2(mVU, Ft, a64::NoVReg, _X_Y_Z_W);
-		if (clampType & cFs)                 mVUclamp2(mVU, Fs, a64::NoVReg, _X_Y_Z_W);
+		mVUclampOperands(mVU, {((clampType & cFt) && bcLane < 0) ? Ft : a64::NoVReg,
+		                       (clampType & cFs) ? Fs : a64::NoVReg}, _X_Y_Z_W);
 
 		// AX-14 fold (== Dup + NEON_MULPS under the no-clamp gate). vm MUST be
 		// the scalar .S() view: vixl's by-element emitter keys element size off
@@ -735,8 +740,8 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 		if (_XYZW_SS2)
 			shuffleSSto0(ACC, offsetReg); // Rotate target lane to lane 0
 
-		if ((clampType & cFt) && bcLane < 0) mVUclamp2(mVU, Ft, a64::NoVReg, _X_Y_Z_W);
-		if (clampType & cFs)                 mVUclamp2(mVU, Fs, a64::NoVReg, _X_Y_Z_W);
+		mVUclampOperands(mVU, {((clampType & cFt) && bcLane < 0) ? Ft : a64::NoVReg,
+		                       (clampType & cFs) ? Fs : a64::NoVReg}, _X_Y_Z_W);
 
 		// mVUclamp4 does not run behind the AX-14 lane fold, which replaces
 		// NEON_*[2], nor in the sign-preserving mode, which clamps operands only.
@@ -760,6 +765,7 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 				// mirroring the load+Ins pattern mVU_FMACa uses for its ACC.
 				const a64::VRegister& accSS = mVU.regAlloc->allocReg();
 				armAsm->Mov(accSS.V16B(), ACC.V16B());
+				mVU.regAlloc->noteClone(accSS.GetCode(), ACC.GetCode());
 				NEON_SS[opType](mVU, accSS, Fs, prodClamped ? preClampFrom : 0);
 				armAsm->Ins(ACC.V4S(), 0, accSS.V4S(), 0);
 				mVU.regAlloc->clearNeeded(accSS);
@@ -776,6 +782,7 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 		{
 			const a64::VRegister& tempACC = mVU.regAlloc->allocReg();
 			armAsm->Mov(tempACC.V16B(), ACC.V16B());
+			mVU.regAlloc->noteClone(tempACC.GetCode(), ACC.GetCode());
 			NEON_PS[opType](mVU, tempACC, Fs, prodClamped ? preClampFrom : 0);
 			mVUmergeRegs(ACC, tempACC, _X_Y_Z_W);
 			mVUupdateFlags(mVU, ACC, Fs, tempFt);
@@ -815,9 +822,9 @@ static void mVU_FMACc(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 		if (_XYZW_SS2)
 			shuffleSSto0(ACC, offsetReg); // Rotate target lane to lane 0
 
-		if ((clampType & cFt) && bcLane < 0) mVUclamp2(mVU, Ft,  a64::NoVReg, _X_Y_Z_W);
-		if (clampType & cFs)                 mVUclamp2(mVU, Fs,  a64::NoVReg, _X_Y_Z_W);
-		if (clampType & cACC)                mVUclamp2(mVU, ACC, a64::NoVReg, _X_Y_Z_W);
+		mVUclampOperands(mVU, {((clampType & cFt) && bcLane < 0) ? Ft : a64::NoVReg,
+		                       (clampType & cFs) ? Fs : a64::NoVReg,
+		                       (clampType & cACC) ? ACC : a64::NoVReg}, _X_Y_Z_W);
 
 		const bool prodClamped = (bcLane < 0) && !CHECK_VU_SIGN_OVERFLOW(mVU.index);
 
@@ -865,9 +872,9 @@ static void mVU_FMACd(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 		Fs = mVU.regAlloc->allocReg(_Fs_,  0, _X_Y_Z_W);
 		Fd = mVU.regAlloc->allocReg(32, _Fd_, _X_Y_Z_W);
 
-		if ((clampType & cFt) && bcLane < 0) mVUclamp2(mVU, Ft, a64::NoVReg, _X_Y_Z_W);
-		if (clampType & cFs)                 mVUclamp2(mVU, Fs, a64::NoVReg, _X_Y_Z_W);
-		if (clampType & cACC)                mVUclamp2(mVU, Fd, a64::NoVReg, _X_Y_Z_W);
+		mVUclampOperands(mVU, {((clampType & cFt) && bcLane < 0) ? Ft : a64::NoVReg,
+		                       (clampType & cFs) ? Fs : a64::NoVReg,
+		                       (clampType & cACC) ? Fd : a64::NoVReg}, _X_Y_Z_W);
 
 		const bool prodClamped = (bcLane < 0) && !CHECK_VU_SIGN_OVERFLOW(mVU.index);
 
@@ -1178,27 +1185,20 @@ mVUop(mVU_CLIP)
 		// t1 lanes: [0]=+x>w, [1]=+y>w, [2]=+z>w
 		// Fs lanes: [0]=-x>w, [1]=-y>w, [2]=-z>w
 		// Required layout: bit0=+x>w, bit1=-x>w, bit2=+y>w, bit3=-y>w, bit4=+z>w, bit5=-z>w
+		//
+		// A comparison leaves its lane all ones or all zero, so its low
+		// halfword carries the answer whole: UZP1 on the halfword view packs
+		// all eight into one register and one weight apiece moves each to its
+		// bit. The weights are distinct powers of two, so the lane sum ADDV
+		// forms is the OR the layout wants.
+		armAsm->Ldr(RQSCRATCH3, mVUglobMem(&mVUglob.clipWeights[0]));
+		armAsm->Uzp1(t1.V8H(), t1.V8H(), Fs.V8H());
+		armAsm->And(t1.V16B(), t1.V16B(), RQSCRATCH3.V16B());
+		armAsm->Addv(t1.H(), t1.V8H());
+		armAsm->Umov(gprT2.W(), t1.V8H(), 0);
 
-		armAsm->Ushr(t1.V4S(), t1.V4S(), 31);
-		armAsm->Ushr(Fs.V4S(), Fs.V4S(), 31);
-
-		// Build clip result in gprT2
-		armAsm->Umov(gprT2.W(), t1.V4S(), 0); // +x > w → bit 0
-		armAsm->Umov(a64::w12, Fs.V4S(), 0);   // -x > w → bit 1
-		armAsm->Orr(gprT2.W(), gprT2.W(), a64::Operand(a64::w12, a64::LSL, 1));
-
-		armAsm->Umov(a64::w12, t1.V4S(), 1);   // +y > w → bit 2
-		armAsm->Orr(gprT2.W(), gprT2.W(), a64::Operand(a64::w12, a64::LSL, 2));
-		armAsm->Umov(a64::w12, Fs.V4S(), 1);   // -y > w → bit 3
-		armAsm->Orr(gprT2.W(), gprT2.W(), a64::Operand(a64::w12, a64::LSL, 3));
-
-		armAsm->Umov(a64::w12, t1.V4S(), 2);   // +z > w → bit 4
-		armAsm->Orr(gprT2.W(), gprT2.W(), a64::Operand(a64::w12, a64::LSL, 4));
-		armAsm->Umov(a64::w12, Fs.V4S(), 2);   // -z > w → bit 5
-		armAsm->Orr(gprT2.W(), gprT2.W(), a64::Operand(a64::w12, a64::LSL, 5));
-
-		// Combine with shifted previous clip flag
-		armAsm->And(gprT2.W(), gprT2.W(), 0x3f);
+		// Combine with shifted previous clip flag; the weighted sum cannot
+		// reach past bit 5, so it needs no mask of its own.
 		armAsm->And(gprT1.W(), gprT1.W(), 0xffffff);
 		armAsm->Orr(gprT1.W(), gprT1.W(), gprT2.W());
 

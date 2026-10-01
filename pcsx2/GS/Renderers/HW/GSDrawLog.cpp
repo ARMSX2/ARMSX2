@@ -16,9 +16,7 @@
 
 namespace GSDrawLog
 {
-	// Bounded capture: ~64 frames of a heavy 2048-draw frame. At sizeof(Record) this is
-	// a few MB, which is cheap next to keeping the GS thread free of I/O, and it stops a
-	// long live session producing a file nobody can open.
+	// About 64 frames of 2048 draws; a few MB.
 	static constexpr size_t MAX_RECORDS = 64 * 2048;
 
 	static std::vector<Record> s_records;
@@ -29,9 +27,8 @@ namespace GSDrawLog
 
 	bool IsActive()
 	{
-		// Tracks the setting directly rather than an explicit start, so recording works
-		// when DumpDrawLog is already true at GS open -- there is no config edge to
-		// detect in that case.
+		// Reads the setting directly so recording works when DumpDrawLog is already set
+		// at GS open, where there is no config change to detect.
 		return GSConfig.DumpDrawLog;
 	}
 
@@ -75,15 +72,13 @@ namespace GSDrawLog
 		if (!IsActive())
 			return;
 
-		// Lazily reserved on the first recorded draw, so enabling the setting at any
-		// point still avoids per-draw reallocation.
+		// Reserve on the first recorded draw, since the setting can be enabled at any time.
 		if (s_records.capacity() < MAX_RECORDS) [[unlikely]]
 			s_records.reserve(MAX_RECORDS);
 
 		if (s_records.size() >= MAX_RECORDS)
 		{
-			// Stop recording rather than evicting: a contiguous prefix is easier to
-			// reason about than a ring whose frame numbering wraps mid-file.
+			// Keep a contiguous prefix rather than a ring buffer.
 			s_truncated = true;
 			return;
 		}

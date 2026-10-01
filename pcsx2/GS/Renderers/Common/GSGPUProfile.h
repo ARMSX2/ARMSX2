@@ -24,11 +24,9 @@ enum class RuntimeGpuProfile : u8
 	Adreno,
 	PowerVR,
 	Xclipse,
-	/// Apple Silicon (M-series / A-series). A TBDR like the mobile parts, but it is NOT one of
-	/// them and must never inherit their workarounds — before this existed, desktop GL resolved
-	/// anything not-Mali to Adreno, so an M2 ran Adreno-only paths (reported by bmd: "GL: Adreno -
-	/// routing depth feedback through the depth sampler"). Distinct from Unknown so the tiler-ness
-	/// can be acted on deliberately later rather than by accident.
+	/// Apple Silicon. A tiler like the mobile parts, but it must never inherit their workarounds;
+	/// without this value desktop GL resolved it to Adreno and ran Adreno-only paths. Distinct
+	/// from Unknown so its tiler-ness can be acted on deliberately.
 	Apple,
 };
 
@@ -54,15 +52,10 @@ enum class MobileGpuArchitecture : u8
 	PowerVR,
 };
 
-// ---------------------------------------------------------------------------------------------
 // Driver identity and known-bug model, ported from EmuCoreX (sashkinbro) with his approval.
-//
-// The GPU family alone is not enough to decide behaviour: the same Mali part behaves differently
-// under Arm's proprietary driver than under Mesa PanVK, which is a lesson this tree learned the
-// expensive way (the r44p1 DEVICE_LOST fix had to be gated on driverID, not vendorID, and the
-// 8 Elite push-descriptor disable likewise). Recording it as driver + version + a bug set means
-// the next device-specific quirk is a table entry rather than another bespoke branch.
-// ---------------------------------------------------------------------------------------------
+// The GPU family alone does not decide behaviour: the same Mali part behaves differently under
+// Arm's driver and under Mesa PanVK. Rules are keyed on driver + version + a bug set, so a new
+// device quirk is a table entry rather than another branch.
 
 enum class MobileGpuApi : u8
 {
@@ -128,23 +121,19 @@ enum class DriverBug : u8
 	BrokenExtendedDynamicState,
 	BrokenPrimitiveTopologyDynamicState,
 	BrokenGraphicsPipelineLibrary,
-	/// The driver advertises an in-tile destination read (Vulkan rasterization-order attachment
-	/// access) and returns zero or stale colour from it -- black or intermittently missing
-	/// textures rather than a crash. Distinct from BrokenSubpassFeedback, which is about the
-	/// in-pass self-read losing whole draws or the device.
+	/// The driver advertises rasterization-order attachment access and returns zero or stale
+	/// colour from the destination read (black or missing textures). Distinct from
+	/// BrokenSubpassFeedback, where the in-pass self-read loses whole draws or the device.
 	BrokenRoaaDestinationRead,
-	/// The driver ignores the blend constant: a factor of CONST_COLOR / INV_CONST_COLOR is applied
-	/// as if the constant were zero, so the term it scales survives at full strength or vanishes
-	/// entirely. Conditional -- the same driver applies the same factor correctly on most content,
-	/// and the trigger is run history rather than anything the draw carries -- so it cannot be
-	/// probed for at start-up and there is no emission order that avoids it.
+	/// The driver sometimes applies CONST_COLOR / INV_CONST_COLOR as if the constant were zero.
+	/// The trigger is run history, not anything the draw carries, so it cannot be probed at
+	/// start-up and no emission order avoids it.
 	BrokenBlendConstant,
 	Count,
 };
 
-/// What we actually DO about a bug. Kept separate from [DriverBug] because the same mitigation
-/// answers several defects, and because a workaround can be forced on for testing without
-/// claiming the device has the bug.
+/// What we do about a bug. Separate from DriverBug because one mitigation answers several
+/// defects, and a workaround can be forced on for testing without claiming the bug.
 enum class DriverWorkaround : u8
 {
 	RewriteBooleanNegation,
@@ -153,11 +142,10 @@ enum class DriverWorkaround : u8
 	UseDescriptorSets,
 	DisableProvokingVertex,
 	DisableAttachmentFeedbackLoopLayout,
-	/// Read the render target from a separate COPY instead of in-pass, for drivers where no form
-	/// of attachment self-read works. Turns texture barriers off, which also disables framebuffer
-	/// fetch (it is the same in-tile read), so the RT is never bound as an attachment and sampled
-	/// at once. Expensive — a full render-target copy per feedback draw — so it is a last resort
-	/// for drivers that fail BOTH the input-attachment and feedback-loop-layout reads.
+	/// Read the render target from a copy instead of in-pass. Turns texture barriers off, which
+	/// also disables framebuffer fetch, so the RT is never bound and sampled at once. Costs a full
+	/// RT copy per feedback draw: a last resort for drivers that fail both the input-attachment
+	/// and the feedback-loop-layout reads.
 	UseRenderTargetCopyForFeedback,
 	EmulateColorWriteMask,
 	PreferCoherentReadback,
@@ -167,34 +155,20 @@ enum class DriverWorkaround : u8
 	RewriteUniformIndexing,
 	ForceFifoPresent,
 	AlignSwapchainWidthTo32,
-	/// Report no stencil buffer, so depth targets are created as plain D32_SFLOAT and neither a
-	/// stencil attachment nor the stencil DATE pre-pass is ever emitted. For drivers that hang on
-	/// a depth-stencil attachment rather than merely rendering it wrong; DATE falls back to
+	/// Report no stencil buffer: depth targets are plain D32_SFLOAT and no stencil DATE pre-pass
+	/// is emitted. For drivers that hang on a depth-stencil attachment. DATE falls back to
 	/// primitive-ID tracking, then Full, then Off.
 	DisableStencilBuffer,
-	/// Steer the Auto renderer to Vulkan on this part. Declared by a rule on the OPENGL side,
-	/// because the Auto decision asks the database through the GL strings the app probes at
-	/// startup -- there is no Vulkan device yet when it is made.
-	///
-	/// The odd one out in this enum: it answers "which of the device's two roads is the better
-	/// one", not "what do we do about a defect". It lives here anyway because the Auto decision
-	/// already reads a workaround bit (UseRenderTargetCopyForFeedback: a driver whose GL cannot
-	/// read the target in tile memory is better served by Vulkan), so this is the same mechanism
-	/// with a different reason rather than a second one. Nothing in either backend consumes it;
-	/// GSUtil::AndroidAutoPrefersVulkan is its only reader.
+	/// Steer the Auto renderer to Vulkan on this part. Declared by an OpenGL-side rule, because
+	/// Auto is decided from the GL strings before any Vulkan device exists. A preference, not a
+	/// defect workaround; GSUtil::AndroidAutoPrefersVulkan is its only reader.
 	PreferVulkanRenderer,
 	/// Allocate the Vulkan stream rings from a HOST_CACHED memory type instead of the
-	/// write-combined one VMA otherwise picks. For GPUs whose host-visible write-combined memory
-	/// makes CPU writes into a ring more expensive than cached stores plus whatever cache
-	/// maintenance the type needs. Which cached type the rings then get is the memory table's
-	/// business, not this bit's: coherent if the device has such a type, otherwise non-coherent,
-	/// paying the per-region clean VKStreamBuffer::CommitMemory already issues.
-	///
-	/// The second preference in this enum rather than a defect: nothing renders differently either
-	/// way, and the flush it may turn on is the one the Vulkan spec requires of any non-coherent
-	/// mapping. Without this bit the rings stay write-combined however cached-friendly the memory
-	/// table looks, including on a device with a cached COHERENT type -- that road was measured on
-	/// the SD865 and lost. See GSStreamRingMemoryPolicy.h.
+	/// write-combined one VMA picks, for GPUs where write-combined CPU writes cost more than
+	/// cached stores plus cache maintenance. The memory table picks coherent if available, else
+	/// non-coherent with the clean VKStreamBuffer::CommitMemory already issues. A preference, not
+	/// a defect. Without this bit the rings stay write-combined even when a cached coherent type
+	/// exists (that road lost on the SD865). See GSStreamRingMemoryPolicy.h.
 	PreferCachedStreamRingMemory,
 	Count,
 };
@@ -245,6 +219,34 @@ struct MobileDriverProfile
 	DriverProfileConfidence confidence = DriverProfileConfidence::Unknown;
 	/// True when nothing in the table matched and the safe defaults are in force.
 	bool conservative_fallback = true;
+
+	/// Generation of the declared-feedback-loop ordering fix this driver build carries, from its
+	/// driverInfo tag; 0 when there is no tag. See ParseDeclaredLoopFixGeneration.
+	u32 declared_loop_fix_generation = 0;
+
+	/// This driver orders overlapping self-reads inside a declared attachment feedback loop.
+	/// ⚠️ No extension promises this: stock Turnip emits the ordering mode and does not deliver
+	/// it (see GSSelfReadRoadPolicy.h). True only for our own builds, measured byte-identical to
+	/// the barrier-keeping reference and tagged in driverInfo; every other driver keeps barriers.
+	bool orders_declared_feedback_loop = false;
+
+	/// With orders_declared_feedback_loop: the driver orders a declared-loop draw against earlier
+	/// draws on its own, but orders overlapping primitives WITHIN the draw only when the pipeline
+	/// requests rasterization-order attachment access. True for a generation-2 build on Adreno 7xx,
+	/// where the per-overlap wait is expensive and so is left to the draws that need it.
+	bool declared_loop_orders_overlap_on_request = false;
+
+	/// This driver's best in-pass self-read road is a declared attachment feedback loop with the
+	/// per-draw barriers kept: the declaration gives the layout and coherent destination read,
+	/// our barriers give the ordering. Weaker than orders_declared_feedback_loop, which lets the
+	/// barriers go and wins if both are set.
+	///
+	/// True for Turnip on Adreno 730 and up (measured on the 740), where the copy road renders
+	/// wrong. The barrier-less declared road races on a7xx under stock Turnip, which never emits
+	/// the ordering state there; a generation-2 build does, and then orders_declared_feedback_loop
+	/// is set as well and wins.
+	bool prefers_declared_loop_with_barriers = false;
+
 	std::string driver_name;
 
 	constexpr bool HasBug(DriverBug bug) const
@@ -281,6 +283,53 @@ struct MobileGpuIdentity
 	std::string name = "Unknown";
 };
 
+/// PCI vendor IDs as Vulkan reports them in VkPhysicalDeviceProperties::vendorID. Apple silicon
+/// reports a different ID per driver, so it is identified by driver instead.
+namespace GpuVendorID
+{
+constexpr u32 AMD = 0x1002;
+constexpr u32 NVIDIA = 0x10DE;
+constexpr u32 Intel = 0x8086;
+constexpr u32 ARM = 0x13B5;
+constexpr u32 Qualcomm = 0x5143;
+constexpr u32 Imagination = 0x1010;
+constexpr u32 Broadcom = 0x14E4;
+/// Samsung Xclipse. Not confirmed on a device: a driver reporting another ID leaves every check
+/// against this one inert.
+constexpr u32 Samsung = 0x144D;
+} // namespace GpuVendorID
+
+/// Vulkan device rules keyed on the device's own identity (vendor ID, device name, driver ID,
+/// driverInfo) rather than matched in the driver-bug database. Each keeps the exact condition the
+/// backend has always applied, which is not always the database's: the push-descriptor rule covers
+/// Mali on every driver, where the database names Arm's.
+struct VulkanDeviceRules
+{
+	/// Mali-G615: timestamp queries never resolve, and the present spin that waits on them stalls.
+	bool broken_timestamp_queries = false;
+	/// Mali on a driver whose driverInfo names r44p1: the attachment-feedback-loop layout is not
+	/// used. The rest of the r44p1 workaround is rule vk-arm-r44p1-attachment-self-read.
+	bool avoid_feedback_loop_layout = false;
+	/// Mali crashes inside vkCmdPushDescriptorSetKHR. Adreno is trusted with push descriptors on the
+	/// Qualcomm driver and Turnip only.
+	bool avoid_push_descriptors = false;
+	/// Adreno on the Qualcomm driver selects the wrong provoking vertex.
+	bool broken_provoking_vertex = false;
+	/// Adreno 5xx, or a Qualcomm driver older than 0x801EA000, ignores colorWriteMask while a depth
+	/// test is active. That version is in the Qualcomm encoding, so Turnip is excluded outright.
+	bool broken_colormask_with_depth = false;
+	/// Mali-G57: the FastMAD history banks read back stale, so deinterlace uses weave and blend.
+	bool broken_mad_deinterlace = false;
+	/// Adreno 8xx on the Qualcomm driver: rasterization-order reads return stale colour above
+	/// Basic blending. Turnip on the same parts is fine.
+	bool adreno8xx_proprietary = false;
+	/// Turnip or Honeykrisp: the drivers on which the in-pass self-read was measured. A per-draw
+	/// barrier there costs about what a per-draw copy does, and the loop is declared per draw.
+	bool self_read_costs_measured = false;
+	/// Honeykrisp: the barrier-ordered road's fast stencil shadow and carry were measured there.
+	bool barrier_road_measured = false;
+};
+
 struct GpuProfileSelection
 {
 	GpuProfileOverride override_mode = GpuProfileOverride::Auto;
@@ -307,21 +356,25 @@ public:
 
 	static GpuProfileSelection Resolve(std::string_view override_value, std::string_view gpu_vendor,
 		std::string_view gpu_renderer_or_name);
-	/// Overload that also resolves the driver profile. The three-argument form keeps working and
-	/// simply leaves GpuProfileSelection::driver in its conservative-fallback state.
+	/// Also resolves the driver profile. The three-argument form leaves
+	/// GpuProfileSelection::driver in its conservative-fallback state.
 	static GpuProfileSelection Resolve(std::string_view override_value, std::string_view gpu_vendor,
 		std::string_view gpu_renderer_or_name, const MobileDriverContext& driver_context);
 
 	static constexpr u64 BugMask(DriverBug bug) { return u64{1} << static_cast<u8>(bug); }
 
-	/// Bugs to report as present whatever the database says, OR'd into every resolved profile.
-	///
-	/// This is how a test harness reaches a workaround road on a machine whose driver does not
-	/// have the defect -- the driver-bug database is keyed on device identity, so on the dev box
-	/// the rerouted path is simply unreachable and untestable otherwise. It exists for the
-	/// gsrunner and is set once before the VM starts; nothing in the emulator calls it, and it
-	/// deliberately is not a setting, because a user has no way to know which bugs their driver
-	/// actually has.
+	/// Bugs OR'd into every resolved profile whatever the database says, so a test harness can
+	/// reach a workaround road on a driver without the defect. Set once by gsrunner before the VM
+	/// starts. Deliberately not a user setting: users cannot know which bugs their driver has.
 	static void SetForcedBugs(u64 mask);
 	static u64 GetForcedBugs();
+
+	/// The generation from a `git-axfl<G>-` build tag in a Vulkan driverInfo string, or 0 if none.
+	/// Exposed for tests; the resolver publishes it as declared_loop_fix_generation.
+	static u32 ParseDeclaredLoopFixGeneration(std::string_view driver_info);
+
+	/// The Vulkan device rules for a device. `selection` is the result of Resolve on the same
+	/// context; `device_name` is VkPhysicalDeviceProperties::deviceName.
+	static VulkanDeviceRules ResolveVulkanDeviceRules(const GpuProfileSelection& selection,
+		const MobileDriverContext& context, std::string_view device_name);
 };

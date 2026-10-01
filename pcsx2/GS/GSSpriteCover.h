@@ -10,20 +10,16 @@
 
 /// Does the union of a draw's sprites cover a rectangle?
 ///
-/// GSState::SpriteDrawWithoutGaps() asks a different question -- do these sprites *tile*, in one of
-/// three patterns it recognises -- and answers no for a set that overlaps. Two sprites drawn one on
-/// top of the other, each spanning the whole target, are not a tiling and are refused, although
-/// either one of them covers everything on its own.
+/// GSState::SpriteDrawWithoutGaps() asks whether sprites tile in one of three recognised patterns,
+/// and refuses overlapping sets, e.g. two full-target sprites drawn on top of each other.
 ///
-/// The rule is a header of its own because it is pure rectangle arithmetic, so it can be tested
-/// without a GS device, and because the answer is deliberately not the same fact as
-/// m_primitive_covers_without_gaps: widening that value moves pixels through the render-target
-/// alpha scale decision, on titles that have nothing to do with sprite cover.
+/// Deliberately separate from m_primitive_covers_without_gaps: widening that value changes the
+/// render-target alpha scale decision on unrelated titles. Kept in its own header so it can be
+/// tested without a GS device.
 namespace GSSpriteCover
 {
-	/// Above this many sprites the answer is no, whatever the geometry. The class that pays is a
-	/// handful of coincident screen-sized sprites; larger sets exist in the corpus and change no
-	/// verdict on any title, so refusing them costs nothing and keeps the sweep trivially bounded.
+	/// Above this many sprites the answer is no. The target case is a handful of coincident
+	/// screen-sized sprites; the cap keeps the sweep bounded.
 	inline constexpr u32 MaxSprites = 8;
 
 	/// Whether the union of `count` pixel rectangles covers every pixel of `r`.
@@ -37,8 +33,7 @@ namespace GSSpriteCover
 		if (count == 0 || count > MaxSprites || r.rempty())
 			return false;
 
-		// One sprite that contains the rectangle answers on its own, which is the whole of the
-		// class this exists for.
+		// Fast path: one sprite contains the rectangle.
 		for (u32 i = 0; i < count; i++)
 		{
 			if (rects[i].x <= r.x && rects[i].y <= r.y && rects[i].z >= r.z && rects[i].w >= r.w)

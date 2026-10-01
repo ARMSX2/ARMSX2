@@ -146,7 +146,8 @@ object PadModals {
  * @param onDismiss B / BACK / a tap outside. Null makes the modal insistent — it still swallows
  *   the press, it just does not close.
  * @param initialFocusId the row to focus on open. Falls back to the first row in the layer, so
- *   a modal is never left with nothing selected.
+ *   a modal is never left with nothing selected. A row that is not there yet because the content
+ *   is still loading gets the selection when it appears, unless the pad has moved by then.
  * @param scrollState the body's scroll state, when the content can outgrow the panel. Up/Down
  *   scroll it once the selection has nowhere left to move, which is the only way a pad can read
  *   a panel that has just one focusable in it.
@@ -329,8 +330,12 @@ fun PadModalHost() {
                     if (!entry.focusClaimed) {
                         entry.focusClaimed = true
                         val wanted = entry.initialFocusId.value
-                        if (wanted == null || !SettingsControllerNav.selectById(wanted))
+                        if (wanted == null || !SettingsControllerNav.selectById(wanted)) {
                             SettingsControllerNav.selectFirstInLayer()
+                            // Not composed yet (content still loading): it takes over when it is.
+                            if (wanted != null)
+                                SettingsControllerNav.focusWhenRegistered(entry.key, wanted)
+                        }
                     }
                 }
             }

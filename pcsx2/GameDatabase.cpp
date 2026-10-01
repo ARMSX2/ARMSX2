@@ -421,7 +421,7 @@ static const char* s_gs_hw_fix_names[] = {
 	"nativePaletteDraw",
 	"estimateTextureRegion",
 	"drawBuffering",
-	"rewriteLargeST",
+	"rewriteLargeSTCoords",
 	"PCRTCOffsets",
 	"PCRTCOverscan",
 	"coalesceRenderPasses",
@@ -440,6 +440,7 @@ static const char* s_gs_hw_fix_names[] = {
 	"gpuPaletteConversion",
 	"minimumBlendingLevel",
 	"maximumBlendingLevel",
+	"copyRoadMaximumBlendingLevel",
 	"recommendedBlendingLevel",
 	"recommendedAccurateAlphaTest",
 	"recommendedHWAA1",
@@ -463,6 +464,10 @@ static std::optional<GameDatabaseSchema::GSHWFixId> GameDatabaseSchema::parseHWF
 			return static_cast<GameDatabaseSchema::GSHWFixId>(i);
 	}
 
+	// ARMSX2 2.6.9 shipped this fix before upstream renamed it; custom databases may still use it.
+	if (name == "rewriteLargeST")
+		return GameDatabaseSchema::GSHWFixId::RewriteLargeSTCoords;
+
 	return std::nullopt;
 }
 
@@ -476,6 +481,7 @@ bool GameDatabaseSchema::isUserHackHWFix(GSHWFixId id)
 		case GSHWFixId::TrilinearFiltering:
 		case GSHWFixId::MinimumBlendingLevel:
 		case GSHWFixId::MaximumBlendingLevel:
+		case GSHWFixId::CopyRoadMaximumBlendingLevel:
 		case GSHWFixId::RecommendedBlendingLevel:
 		case GSHWFixId::PCRTCOffsets:
 		case GSHWFixId::PCRTCOverscan:
@@ -538,7 +544,7 @@ static std::optional<GSUserHackOverride> UserHackOverrideForHWFix(GameDatabaseSc
 			return GSUserHackOverride::CPUCLUTRender;
 		case GameDatabaseSchema::GSHWFixId::GPUTargetCLUT:
 			return GSUserHackOverride::GPUTargetCLUT;
-		case GameDatabaseSchema::GSHWFixId::RewriteLargeST:
+		case GameDatabaseSchema::GSHWFixId::RewriteLargeSTCoords:
 			return GSUserHackOverride::RewriteLargeST;
 		default:
 			return std::nullopt;
@@ -765,8 +771,8 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 		case GSHWFixId::DrawBuffering:
 			return (static_cast<int>(config.UserHacks_DrawBuffering) == value);
 		
-		case GSHWFixId::RewriteLargeST:
-			return (static_cast<int>(config.UserHacks_RewriteLargeST) == value);
+		case GSHWFixId::RewriteLargeSTCoords:
+			return (static_cast<int>(config.UserHacks_RewriteLargeSTCoords) == value);
 
 		case GSHWFixId::PCRTCOffsets:
 			return (static_cast<int>(config.PCRTCOffsets) == value);
@@ -830,6 +836,12 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 			return (static_cast<int>(config.AccurateBlendingUnit) >= value);
 
 		case GSHWFixId::MaximumBlendingLevel:
+			return (static_cast<int>(config.AccurateBlendingUnit) <= value);
+
+		case GSHWFixId::CopyRoadMaximumBlendingLevel:
+			// The cap is a ceiling the GS applies later, and only on the roads that charge for a
+			// destination read, so a player already at or below it has nothing left for this fix
+			// to do, on any device.
 			return (static_cast<int>(config.AccurateBlendingUnit) <= value);
 
 		case GSHWFixId::RecommendedBlendingLevel:
@@ -981,8 +993,8 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
 				config.UserHacks_DrawBuffering = (value > 0);
 				break;
 
-			case GSHWFixId::RewriteLargeST:
-				config.UserHacks_RewriteLargeST = (value > 0);
+			case GSHWFixId::RewriteLargeSTCoords:
+				config.UserHacks_RewriteLargeSTCoords = (value > 0);
 				break;
 
 			case GSHWFixId::PCRTCOffsets:
@@ -1101,6 +1113,17 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
 			{
 				if (value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum))
 					config.AccurateBlendingUnit = std::min(config.AccurateBlendingUnit, static_cast<AccBlendLevel>(value));
+			}
+			break;
+
+			case GSHWFixId::CopyRoadMaximumBlendingLevel:
+			{
+				// Recorded, not applied. Whether the cap bites depends on how the device serves a
+				// render-target self-read, and that is not known here -- the GS device may not
+				// exist yet, and it is the GS thread's to read when it does. So the value rides to
+				// GSConfig and GS.cpp asks GSCopyRoadBlendingPolicy.h once the device is up.
+				if (value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum))
+					config.CopyRoadMaximumBlendingLevel = static_cast<s8>(value);
 			}
 			break;
 

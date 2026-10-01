@@ -152,6 +152,10 @@ namespace Threading
 		~KernelSemaphore();
 		void Post();
 		void Wait();
+		/// Wait at most `microseconds`. Returns true if the semaphore was taken,
+		/// false on timeout. Resolution is the platform's timer: about 50us of
+		/// slack on Linux/Android, 1ms steps on Windows.
+		bool TimedWait(u32 microseconds);
 		bool TryWait();
 	};
 

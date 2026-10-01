@@ -33,23 +33,23 @@ fun RendererBackendSection(state: MutableState<Settings>) {
     SegmentedRow(
         label = str("backend.graphicsApi.label"),
         options = listOf(str("backend.renderer.auto"), "OpenGL", "Vulkan", str("backend.renderer.software")),
-        selectedIndex = rendererIds.indexOf(settings.renderer).coerceAtLeast(0),
+        selectedIndex = rendererIds.indexOf(settings.output.renderer).coerceAtLeast(0),
         onChange = { index ->
             val renderer = rendererIds[index]
-            InGameOverlay.saveSettings(settings.copy(renderer = renderer))
+            InGameOverlay.saveSettings(settings.copy(output = settings.output.copy(renderer = renderer)))
             MainActivityRuntime.renderer.value = renderer
             if (renderer != "vulkan") selectDriver(null)
         },
     )
 
-    if (settings.renderer == "vulkan") {
+    if (settings.output.renderer == "vulkan") {
         SettingsDivider()
         com.armsx2.ui.common.DriverManagerSection()
-    } else if (settings.renderer == "opengl") {
+    } else if (settings.output.renderer == "opengl") {
         // OpenGL's "custom driver" is ANGLE — the GL analogue of the Vulkan driver list.
         SettingsDivider()
-        com.armsx2.ui.common.AngleDriverSection(settings.useAngleOpenGL) { on ->
-            InGameOverlay.saveSettings(settings.copy(useAngleOpenGL = on))
+        com.armsx2.ui.common.AngleDriverSection(settings.display.useAngleOpenGL) { on ->
+            InGameOverlay.saveSettings(settings.copy(display = settings.display.copy(useAngleOpenGL = on)))
         }
     }
 
@@ -68,5 +68,5 @@ private fun selectDriver(id: String?) {
     // UI mirror; persist scope-aware (per-game when the settings scope is Game). The driver
     // load itself happens at the next renderer (re)start via applyRendererPrefs.
     MainActivityRuntime.customDriverId.value = id
-    InGameOverlay.saveSettings(InGameOverlay.settingsState.value.copy(customDriverId = id ?: ""))
+    InGameOverlay.saveSettings(InGameOverlay.settingsState.value.copy(output = InGameOverlay.settingsState.value.output.copy(customDriverId = id ?: "")))
 }

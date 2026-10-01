@@ -15,28 +15,22 @@
 // them as byte << 7).  Fog rides the same interpolator in the same unit, carried
 // in t.w, and takes every rule below unchanged.
 //
-// Measured on real hardware.  Five properties, each fitted on the geometry that
-// isolates it and then scored together:
+// Five rules:
 //
-//   1. THE GRADIENT IS TEN BITS.  The setup's own product -- a channel delta
-//      times the cross product's eight-bit truncated reciprocal -- is then
-//      truncated toward zero to 1/8 of a unit, which is ten fractional bits of a
-//      colour level.
+//   1. THE GRADIENT IS TEN BITS.  The setup's product (channel delta times the
+//      cross product's eight-bit truncated reciprocal) is truncated toward zero
+//      to 1/8 of a unit, ten fractional bits of a colour level.
 //
-//   2. THE WALK INSIDE A BLOCK IS COARSER STILL.  It ramps by gc, the gradient
-//      truncated toward zero to a multiple of eight units (a sixteenth of a
-//      level), and makes the difference up in one jump of dw = W*(g - gc) -- a
-//      whole number of units.  W of those ramps and one jump is exactly W*g, so
-//      a whole block still steps the true gradient.
+//   2. THE WALK INSIDE A BLOCK IS COARSER.  It ramps by gc, the gradient
+//      truncated toward zero to a multiple of eight units, and makes up the
+//      difference in one jump of dw = W*(g - gc).  W ramps plus one jump is
+//      exactly W*g, so a whole block steps the true gradient.
 //
 //   2b. THE BLOCK IS EIGHT PIXELS WIDE ONLY WHEN TEXTURING, FOG AND AA1 ARE ALL
-//      OFF, and four if any one of them is on.  Nothing else about the walk
-//      changes with it, and the three do not compound: blending, a depth test
-//      with depth writes, and a 16-bit or 24-bit target all leave the draw
-//      byte-identical to the plain one.  The width belongs to the DDA and not to
-//      the texture function -- a draw with TCC=0 takes the four-wide block on the
-//      ALPHA channel, which never enters the texture unit.  The FOG lane takes
-//      the same width as colour on every factor.  GSBlockWalk.h has the rest.
+//      OFF, else four.  The three do not compound, and blending, depth and
+//      target format do not affect it.  The width belongs to the DDA, not the
+//      texture unit (TCC=0 still narrows the alpha channel).  Fog takes the same
+//      width as colour.  See GSBlockWalk.h.
 //
 //   3. THE PRIMITIVE HAS ONE ANCHOR, not one per section.  Order the vertices
 //      the hardware's way: top is the smallest y, ties to the smaller x; bottom
@@ -65,26 +59,20 @@
 //     j       = floor(d*(x - S) / W)
 //
 // with tz8 truncating toward zero to 1/8 of a unit and yf the pair's own row.
-// The horizontal tz8 is measured -- a half-pixel anchor separates toward-zero
-// from exact, from floor and from round-half-up.  The vertical one is the same
-// operation by symmetry: every vertex y we could measure is a whole number, so it
-// is not separately pinned.
+// The vertical tz8 is assumed by symmetry with the horizontal one.
 //
-// WHAT THIS MEANS FOR THE SCANLINE, which is the point of the shape.  Take an
-// absolute base xv that is a multiple of eight -- which is a multiple of W at
-// either width -- and a lane i measured from it:
+// For the scanline: take an absolute base xv that is a multiple of eight (so a
+// multiple of W at either width) and a lane i measured from it:
 //
 //     V(xv + i) = base(xv) + off[i],  off[i] = i*gc + dw*floor((i - phase) / W)
 //     base(xv + 8) = base(xv) + 8g,  exactly, at either width
 //
-// The second line is why the eight-entry table below serves both widths: eight
-// pixels is one block or two, and either way they advance by 8g.  At W = 4 the
-// offsets repeat with period four, so entry s + 4 comes out equal to entry s and
-// a scanline that indexes by `left & 7` reads the same numbers one indexing by
-// `left & 3` would.  Nothing in the scanline knows the width.
+// So one eight-entry table serves both widths: eight pixels is one block or two
+// and advances by 8g either way.  At W = 4 the offsets repeat with period four,
+// so indexing by `left & 7` reads the same as `left & 3`.  The scanline does not
+// need to know the width.
 //
-// The derivation, once, because the closed form above is where a width mistake
-// would hide.  With d = +1 and r = S mod W, the block index at x is
+// Derivation of phase: with d = +1 and r = S mod W, the block index at x is
 // j(x) = floor((x - S) / W), so between the base and lane i
 //
 //     j(xv + i) - j(xv) = floor((i - r)/W) - floor(-r/W)
@@ -95,12 +83,10 @@
 // r + 1 there.  Hence one expression for both directions, with
 // phase = (d > 0 ? S : S + 1) & (W - 1).
 //
-// So the walk is still "seed, add a lane table, add a per-vector step", and the
-// per-vector step is constant when the vector is a whole number of blocks and
-// alternates when a block is two vectors.  On a four-lane host that is the split
-// GSBlockWalk.h describes at W = 8 and no split at W = 4, and it falls out of the
-// same table: the two phases of the pair come out equal.
-// GSDrawScanline::SetupColourWalkTables builds all of it, once per primitive.
+// So the walk is "seed, add a lane table, add a per-vector step".  The step is
+// constant when a vector is a whole number of blocks and alternates when a block
+// is two vectors (four-lane host at W = 8; see GSBlockWalk.h).
+// GSDrawScanline::SetupColourWalkTables builds the tables.
 
 /// Truncate toward zero to 1/8 of a colour unit -- rule 1's grid.
 __forceinline static GSVector4 GSColourWalkTruncUnit(const GSVector4& v)
@@ -131,9 +117,8 @@ struct GSColourWalkGradient
 	int phase;     ///< S's position in the w-pixel period, 0..w-1
 };
 
-/// One primitive's colour interpolator, decided once by the setup and read by
-/// the row seed and by the table builder. It lives in GSScanlineLocalData so
-/// that a test's setup_prim hook can read the decision.
+/// One primitive's colour interpolator, set up once and read by the row seed and
+/// the table builder. Lives in GSScanlineLocalData so tests can inspect it.
 struct GSColourWalk
 {
 	GSColourWalkGradient c;
@@ -145,6 +130,29 @@ struct GSColourWalk
 	int d;           ///< +1 walking right, -1 walking left
 	int top_anchor;  ///< the anchor is the spine's TOP end
 	int live;        ///< this primitive walks a gradient at all
+
+	/// Which row's tables GSDrawScanline::SetupColourWalkTables last built, so a
+	/// row wanting the same tables skips the rebuild. The tables depend only on
+	/// this walk and the row's fractional part, so rows with equal fractions share
+	/// them.
+	///
+	/// Kept inside the walk so clearing the walk invalidates it.
+	/// GSRasterizer::SetupPrim marks it stale for every primitive with a walk.
+	/// A walkless primitive keeps GSColourWalkTablesZero from the one before.
+	struct
+	{
+		GSVector4 cfrac; ///< the colour fraction those tables were built from
+		GSVector4 ffrac; ///< the fog fraction, likewise
+		int state;       ///< GSColourWalkTablesState
+	} tables;
+};
+
+/// What the tables named by GSColourWalk::tables currently hold.
+enum GSColourWalkTablesState : int
+{
+	GSColourWalkTablesStale = 0, ///< a new primitive; nothing there can be reused
+	GSColourWalkTablesZero,      ///< the tables hold the zeros a walkless primitive wants
+	GSColourWalkTablesBuilt,     ///< the tables hold the row whose fractions are recorded
 };
 
 __forceinline static void GSColourWalkGradientInit(GSColourWalkGradient& out,
@@ -165,9 +173,8 @@ __forceinline static void GSColourWalkGradientInit(GSColourWalkGradient& out,
 
 /// Derive one triangle's walk. v0, v1, v2 are the setup's y-sorted vertices;
 /// dscan and dedge carry the gradients already truncated to the 1/8-unit grid.
-/// `w` is the block width, the same for both lanes -- fog is not a second
-/// interpolator, it is this one with F in it, and every constant here is the same
-/// for both.
+/// `w` is the block width, shared by colour and fog (fog uses the same
+/// interpolator).
 __forceinline static void GSSetupColourWalk(const GSVertexSW& v0, const GSVertexSW& v1, const GSVertexSW& v2,
 	const GSVertexSW& dscan, const GSVertexSW& dedge, int w, GSColourWalk& out)
 {
@@ -206,10 +213,8 @@ __forceinline static void GSSetupColourWalk(const GSVertexSW& v0, const GSVertex
 	out.xr = r->p.x;
 	out.yr = r->p.y;
 
-	// ⚠️ The left-walking origin is (ceil(xR) - 1) | 1, NOT floor(xR) | 1. The two
-	// agree for every anchor whose x has a fraction and differ by two pixels for
-	// one that does not, which is measured and is the whole of what an anchor
-	// sweep separates.
+	// The left-walking origin is (ceil(xR) - 1) | 1, not floor(xR) | 1. They
+	// differ by two pixels when xR is a whole number; this one matches the console.
 	out.S = (out.d > 0) ? (static_cast<int>(std::ceil(out.xr)) & ~1)
 	                    : ((static_cast<int>(std::ceil(out.xr)) - 1) | 1);
 	out.A = out.S + 2 * out.d;
@@ -225,20 +230,15 @@ __forceinline static void GSSetupColourWalk(const GSVertexSW& v0, const GSVertex
 /// The value at (x, y), floored to the colour unit so that the scanline's own
 /// float-to-int conversion cannot disagree with it on a negative fraction.
 ///
-/// ⚠️ This is the walk at EVERY pixel, not only at a span's first. The gradient's
-/// ramp and the block jump go into ONE floor here, and
-/// GSDrawScanline::SetupColourWalkTables builds the lane and step tables so that
-/// adding them to this reproduces the same single floor at every other pixel --
-/// which is why those tables follow the ROW rather than the primitive. A seed
-/// floored once with the jump added separately afterwards is a different
-/// function wherever dw is not whole, which is every four-wide block, and the
-/// console refuses it.
+/// The ramp and the block jump go into ONE floor. SetupColourWalkTables builds
+/// per-row tables that reproduce that single floor at every pixel. Flooring the
+/// seed and adding the jump afterwards gives different results wherever dw is
+/// not whole (every four-wide block).
 __forceinline static GSVector4 GSColourWalkRowSeed(const GSColourWalk& w, const GSColourWalkGradient& a, int x, int y)
 {
 	const int yf = w.top_anchor ? (y & ~1) : (y | 1);
-	// Floor division by the block width. The anchor is the spine end the walk
-	// runs away from, so d*(x - S) is never negative inside the primitive; the
-	// shift is written rather than a divide so that it stays a floor if it ever is.
+	// Floor division by the block width. d*(x - S) is non-negative inside the
+	// primitive; the shift keeps it a floor if that ever changes.
 	const int j = (w.d * (x - w.S)) >> a.wshift;
 
 	const GSVector4 p = a.pa + GSColourWalkTruncUnit(a.gy * GSVector4(static_cast<float>(yf) - w.yr));

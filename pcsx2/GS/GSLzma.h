@@ -291,6 +291,14 @@ public:
 	__fi const std::string& GetSerial() const { return m_serial; }
 	__fi u32 GetCRC() const { return m_crc; }
 
+	/// False for every dump written before the provenance record existed, so it means
+	/// "the file does not say", not "no". See GSDumpProvenance in GSDump.h.
+	__fi bool HasProvenance() const { return m_has_provenance; }
+
+	/// Whether the capture read every live render target back into local memory before
+	/// freezing the state. Meaningless unless HasProvenance().
+	__fi bool TargetsWereReadBack() const { return m_targets_read_back; }
+
 	__fi const ByteArray& GetRegsData() const { return m_regs_data; }
 	__fi const ByteArray& GetStateData() const { return m_state_data; }
 	__fi const GSDataArray& GetPackets() const { return m_dump_packets; }
@@ -310,6 +318,8 @@ protected:
 private:
 	std::string m_serial;
 	u32 m_crc = 0;
+	bool m_has_provenance = false;
+	bool m_targets_read_back = false;
 
 	std::vector<u8> m_regs_data;
 	std::vector<u8> m_state_data;

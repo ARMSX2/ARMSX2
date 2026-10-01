@@ -208,7 +208,7 @@
               "minimum": 0,
               "maximum": 1
             },
-            "rewriteLargeST": {
+            "rewriteLargeSTCoords": {
               "type": "integer",
               "minimum": 0,
               "maximum": 1
@@ -314,6 +314,11 @@
               "maximum": 5
             },
             "maximumBlendingLevel": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 5
+            },
+            "copyRoadMaximumBlendingLevel": {
               "type": "integer",
               "minimum": 0,
               "maximum": 5

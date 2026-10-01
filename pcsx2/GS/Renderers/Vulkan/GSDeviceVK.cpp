@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/GS.h"
+#include "GS/GSCacheFile.h"
+#include "GS/GSCompileStats.h"
+#include "GS/GSShaderCompileIndicator.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
@@ -38,19 +41,30 @@ namespace
 } // namespace
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
-#include "GS/Renderers/Common/GSFeedbackLoopCarryPolicy.h"
+#include "GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
+#include "GS/Renderers/Common/GSMeasurementOverrides.h"
+#include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
+#include "GS/DriverReport/GSDriverReport.h"
+#include "GS/DriverReport/GSDriverReportClassify.h"
+#include "GS/DriverReport/GSDriverReportProfile.h"
+#include "GS/DriverReport/GSDriverReportVulkan.h"
+#include "GS/Renderers/Common/GSStreamRingMemoryPolicy.h"
 
 #include "BuildVersion.h"
+#include "Config.h"
 #include "Host.h"
+#include "ShaderCacheVersion.h"
 #include "ImGui/ImGuiManager.h"
 
 #include "common/Console.h"
 #include "common/BitUtils.h"
 #include "common/Error.h"
+#include "common/FileSystem.h"
 #include "common/HostSys.h"
 #include "common/Path.h"
 #include "common/ScopedGuard.h"
+#include "common/Threading.h"
 #include "common/Timer.h"
 
 #include "imgui.h"
@@ -66,6 +80,7 @@ namespace
 #include <bit>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <utility>
 
@@ -96,7 +111,29 @@ enum : u32
 	VERTEX_UNIFORM_BUFFER_SIZE = 4 * 1024 * 1024,
 	FRAGMENT_UNIFORM_BUFFER_SIZE = 4 * 1024 * 1024,
 	TEXTURE_BUFFER_SIZE = 32 * 1024 * 1024,
+
+	// The vertex ring starts at VERTEX_BUFFER_SIZE and doubles, up to this, only when a frame's
+	// vertices would otherwise make the GS thread wait for the GPU (GSStreamRingGrowth.h). A title
+	// whose frames fit never pays for more.
+	VERTEX_BUFFER_MAX_SIZE = 64 * 1024 * 1024,
+
+	// The smallest start gsrunner's -vertex-ring-kib may choose.
+	VERTEX_BUFFER_MIN_START_SIZE = 64 * 1024,
 };
+
+static constexpr u32 CountDoublings(u32 from, u32 to)
+{
+	u32 n = 0;
+	for (; from < to; from *= 2)
+		n++;
+	return n;
+}
+
+// How many persistent TFX UBO sets can be alive at once: the current one plus one retiring per
+// vertex-ring growth, since each growth rebinds the ring by handle. Sized for the smallest start,
+// though the shipped 16 -> 32 -> 64 MiB is only two growths.
+static constexpr u32 MAX_TFX_UBO_DESCRIPTOR_SETS =
+	1 + CountDoublings(VERTEX_BUFFER_MIN_START_SIZE, VERTEX_BUFFER_MAX_SIZE);
 
 
 #ifdef ENABLE_OGL_DEBUG
@@ -138,6 +175,9 @@ static std::mutex s_instance_mutex;
 // empty) list so the existing required-extension scan loops stay valid.
 static constexpr std::array<const char*, 0> s_required_device_extensions = {};
 
+// The instance extensions the last CreateVulkanInstance enabled, for the driver report.
+static std::vector<std::string> s_enabled_instance_extensions;
+
 GSDeviceVK::GSDeviceVK()
 {
 #ifdef ENABLE_OGL_DEBUG
@@ -145,6 +185,11 @@ GSDeviceVK::GSDeviceVK()
 #endif
 
 	std::memset(&m_pipeline_selector, 0, sizeof(m_pipeline_selector));
+	if (g_gs_measurement_overrides.readback_kick_passes != 0)
+	{
+		m_readback_kick_passes = g_gs_measurement_overrides.readback_kick_passes;
+		Console.WriteLn("VK: measurement override: readback kick after %u unsubmitted render passes", m_readback_kick_passes);
+	}
 }
 
 GSDeviceVK::~GSDeviceVK() = default;
@@ -193,6 +238,7 @@ VkInstance GSDeviceVK::CreateVulkanInstance(const WindowInfo& wi, OptionalExtens
 		return nullptr;
 	}
 
+	s_enabled_instance_extensions.assign(enabled_extensions.begin(), enabled_extensions.end());
 	return instance;
 }
 
@@ -449,7 +495,8 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 		m_physical_device, nullptr, &extension_count, available_extension_list.data());
 	pxAssert(res == VK_SUCCESS);
 
-	auto SupportsExtension = [&available_extension_list, extension_list](const char* name, bool required) {
+	m_missing_device_extensions.clear();
+	auto SupportsExtension = [this, &available_extension_list, extension_list](const char* name, bool required) {
 		if (std::find_if(available_extension_list.begin(), available_extension_list.end(),
 				[name](const VkExtensionProperties& properties) { return !strcmp(name, properties.extensionName); }) !=
 			available_extension_list.end())
@@ -467,6 +514,9 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 		if (required)
 			Console.Error("VK: Missing required extension %s.", name);
 
+		if (std::find(m_missing_device_extensions.begin(), m_missing_device_extensions.end(), name) ==
+			m_missing_device_extensions.end())
+			m_missing_device_extensions.emplace_back(name);
 		return false;
 	};
 
@@ -496,18 +546,23 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 	m_optional_extensions.vk_ext_rasterization_order_attachment_access =
 		SupportsExtension(VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME, false) ||
 		SupportsExtension(VK_ARM_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME, false);
-	// VK_EXT_attachment_feedback_loop_layout: the in-tile feedback-loop path is what lets
-	// accurate blending run WITHOUT the per-primitive texture-barrier "slideshow". We used to
-	// blanket-disable it on Mali (vendorID 0x13B5) after the EmuCoreX dev saw stale-color /
-	// device-lost on SOME MediaTek-Mali blobs — but that demoted EVERY modern Mali (e.g.
-	// Mali-G615 on r44p1) to the barrier path, costing ~3-4x on blend-heavy games. izzy2lost's
-	// PSX2 (PCSX2_ARM64) keeps it enabled on Mali and runs those same devices full-speed, so
-	// the disable was over-broad. Enable wherever the driver advertises it; the authoritative
-	// feature-bit reconciliation below (attachmentFeedbackLoopLayout == VK_TRUE) still filters
-	// blobs that don't truly support it. If a specific old blob regresses, narrow by driver
-	// version rather than re-blocking the whole vendor.
+	// VK_EXT_attachment_feedback_loop_layout: enabled wherever the driver advertises it, and the
+	// feature bit is reconciled after device creation. A driver that fails under it is excluded by
+	// driver version (see the r44p1 rule), not by vendor.
 	m_optional_extensions.vk_ext_attachment_feedback_loop_layout =
 		SupportsExtension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME, false);
+	// VK_EXT_attachment_feedback_loop_dynamic_state: the per-draw spelling of the feedback-loop
+	// declaration, the DEFAULT spelling on Turnip wherever the layout road above is live -- there
+	// the create-flag spelling puts the driver's serialising primitive mode on every pipeline in a
+	// latched pass and costs 2.8x on wrc3@1x. See GSDynamicFeedbackLoopPolicy.h. Requested on
+	// Adreno only: every other driver keeps the create flag it always had, so the device it
+	// creates is the one it created before. `-loop-create-flag` keeps the old device reachable
+	// for measuring the fallback. Whether it is USED is decided in CheckFeatures, which is where
+	// the road is known.
+	m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state =
+		m_optional_extensions.vk_ext_attachment_feedback_loop_layout && IsDeviceAdreno() &&
+		!g_gs_measurement_overrides.loop_create_flag &&
+		SupportsExtension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME, false);
 	m_optional_extensions.vk_ext_line_rasterization = SupportsExtension(VK_EXT_LINE_RASTERIZATION_EXTENSION_NAME, false);
 	m_optional_extensions.vk_khr_driver_properties = SupportsExtension(VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME, false);
 	// VK_EXT_device_fault: post-mortem for VK_ERROR_DEVICE_LOST. The ~1-in-60 SD865
@@ -548,6 +603,10 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 	// model is 1.2 and nullDescriptor never became core at all — so both come in as extensions.
 	m_optional_extensions.vk_khr_vulkan_memory_model = SupportsExtension(VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME, false);
 	m_optional_extensions.vk_ext_robustness2_null_descriptor = SupportsExtension(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME, false);
+	// LSFG's half-precision shaders, only while that option is on (the rest of the renderer has no
+	// fp16), so it takes effect from the next device, which is the next game.
+	m_optional_extensions.vk_khr_shader_float16_int8 =
+		GSConfig.LsfgFp16 && SupportsExtension(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME, false);
 
 	return true;
 }
@@ -709,6 +768,7 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 	ExtensionList enabled_extensions;
 	if (!SelectDeviceExtensions(&enabled_extensions, surface != VK_NULL_HANDLE))
 		return false;
+	m_enabled_device_extensions.assign(enabled_extensions.begin(), enabled_extensions.end());
 
 	device_info.enabledExtensionCount = static_cast<uint32_t>(enabled_extensions.size());
 	device_info.ppEnabledExtensionNames = enabled_extensions.data();
@@ -736,6 +796,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT};
 	VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT attachment_feedback_loop_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT};
+	VkPhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT attachment_feedback_loop_dynamic_feature = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_FEATURES_EXT};
 	// VK_EXT_swapchain_maintenance1 types/enums are aliases of VK_KHR_swapchain_maintenance1 types/enums.
 	VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchain_maintenance1_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR};
@@ -745,6 +807,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES};
 	VkPhysicalDeviceRobustness2FeaturesEXT robustness2_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
+	VkPhysicalDeviceShaderFloat16Int8FeaturesKHR float16_int8_feature = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR};
 	VkPhysicalDeviceFaultFeaturesEXT device_fault_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
 
@@ -776,6 +840,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES};
 		VkPhysicalDeviceRobustness2FeaturesEXT probe_r2 = {
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
+		VkPhysicalDeviceShaderFloat16Int8FeaturesKHR probe_f16 = {
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR};
 		VkPhysicalDeviceFaultFeaturesEXT probe_fault = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
 
 		// Only chain what we would actually enable: querying a struct whose extension is absent is
@@ -797,6 +863,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 			Vulkan::AddPointerToChain(&probe, &probe_vmm);
 		if (m_optional_extensions.vk_ext_robustness2_null_descriptor)
 			Vulkan::AddPointerToChain(&probe, &probe_r2);
+		if (m_optional_extensions.vk_khr_shader_float16_int8)
+			Vulkan::AddPointerToChain(&probe, &probe_f16);
 		if (m_optional_extensions.vk_ext_device_fault)
 			Vulkan::AddPointerToChain(&probe, &probe_fault);
 		vkGetPhysicalDeviceFeatures2(m_physical_device, &probe);
@@ -841,6 +909,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 			m_optional_extensions.vk_ext_robustness2_null_descriptor, probe_r2.nullDescriptor == VK_TRUE);
 		m_optional_extensions.vk_ext_device_fault = keep("VK_EXT_device_fault",
 			m_optional_extensions.vk_ext_device_fault, probe_fault.deviceFault == VK_TRUE);
+		m_optional_extensions.vk_khr_shader_float16_int8 = keep("VK_KHR_shader_float16_int8 (shaderFloat16)",
+			m_optional_extensions.vk_khr_shader_float16_int8, probe_f16.shaderFloat16 == VK_TRUE);
 
 		// Depth ROAA is an optional sub-feature: a driver can offer the extension and colour
 		// access yet not depth.
@@ -871,6 +941,11 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		attachment_feedback_loop_feature.attachmentFeedbackLoopLayout = VK_TRUE;
 		Vulkan::AddPointerToChain(&device_info, &attachment_feedback_loop_feature);
 	}
+	if (m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state)
+	{
+		attachment_feedback_loop_dynamic_feature.attachmentFeedbackLoopDynamicState = VK_TRUE;
+		Vulkan::AddPointerToChain(&device_info, &attachment_feedback_loop_dynamic_feature);
+	}
 	if (m_optional_extensions.vk_swapchain_maintenance1)
 	{
 		swapchain_maintenance1_feature.swapchainMaintenance1 = VK_TRUE;
@@ -896,6 +971,12 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 	{
 		device_fault_feature.deviceFault = VK_TRUE;
 		Vulkan::AddPointerToChain(&device_info, &device_fault_feature);
+	}
+	if (m_optional_extensions.vk_khr_shader_float16_int8)
+	{
+		// shaderFloat16 only; shaderInt8 is nothing we use.
+		float16_int8_feature.shaderFloat16 = VK_TRUE;
+		Vulkan::AddPointerToChain(&device_info, &float16_int8_feature);
 	}
 
 	VkResult res = vkCreateDevice(m_physical_device, &device_info, nullptr, &m_device);
@@ -930,29 +1011,22 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		queue_family_properties[m_graphics_queue_family_index].timestampValidBits,
 		m_device_properties.limits.timestampPeriod);
 
+	m_gpu_pipeline_statistics_supported = (m_device_features.pipelineStatisticsQuery != 0);
+	DevCon.WriteLn("GPU pipeline statistics is %s", m_gpu_pipeline_statistics_supported ? "supported" : "not supported");
+
+	if (!ProcessDeviceExtensions())
+		return false;
+
 #if defined(__ANDROID__)
-	// Mali-G615 (Valhall 4th-gen) on the r44p1 blob advertises timestampValidBits>0, but its
-	// timestamp query pool never resolves even after the command-buffer fence signals —
-	// vkGetQueryPoolResults returns VK_NOT_READY every frame ("(CommandBufferCompleted)
-	// vkGetQueryPoolResults failed: VK_NOT_READY"), and the present spin-manager that leans on
-	// those timestamps stalls into a multi-second freeze (Burnout 3 at native res). Disable GPU
-	// timing + present spinning on THIS GPU only: other Mali report better results with them on,
-	// so the gate is deliberately narrow (deviceName match, not a blanket Mali rule). Costs only
-	// the GPU-time OSD stat and a present-pacing optimisation; rendering correctness is unaffected.
-	if (m_device_properties.vendorID == 0x13B5u &&
-		std::string_view(m_device_properties.deviceName).find("Mali-G615") != std::string_view::npos)
+	// Mali-G615's timestamp queries never resolve, and the present spin that waits on them stalls
+	// for seconds. Other Mali parts keep both. Costs the GPU-time stat and present pacing only.
+	if (m_device_rules.broken_timestamp_queries)
 	{
 		Console.WriteLn("Mali-G615: disabling GPU timing + present spinning (r44p1 timestamp-query VK_NOT_READY freeze).");
 		m_gpu_timing_supported = false;
 		m_spinning_supported = false;
 	}
 #endif
-
-	m_gpu_pipeline_statistics_supported = (m_device_features.pipelineStatisticsQuery != 0);
-	DevCon.WriteLn("GPU pipeline statistics is %s", m_gpu_pipeline_statistics_supported ? "supported" : "not supported");
-
-	if (!ProcessDeviceExtensions())
-		return false;
 
 	if (m_spinning_supported)
 	{
@@ -995,6 +1069,8 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR, nullptr, VK_FALSE};
 	VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT attachment_feedback_loop_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT};
+	VkPhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT attachment_feedback_loop_dynamic_feature = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_FEATURES_EXT};
 	VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT fragment_shader_interlock_ext_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT };
 
@@ -1007,6 +1083,8 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 		Vulkan::AddPointerToChain(&features2, &rasterization_order_access_feature);
 	if (m_optional_extensions.vk_ext_attachment_feedback_loop_layout)
 		Vulkan::AddPointerToChain(&features2, &attachment_feedback_loop_feature);
+	if (m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state)
+		Vulkan::AddPointerToChain(&features2, &attachment_feedback_loop_dynamic_feature);
 	if (m_optional_extensions.vk_swapchain_maintenance1)
 		Vulkan::AddPointerToChain(&features2, &swapchain_maintenance1_feature);
 	if (m_optional_extensions.vk_ext_fragment_shader_interlock)
@@ -1040,23 +1118,20 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 
 	// query
 	vkGetPhysicalDeviceProperties2(m_physical_device, &properties2);
+	ResolveDeviceIdentity();
 
-	// The Mali r44p1 blob mishandles the in-tile attachment-feedback-loop blend path and
-	// loses the device under it — VK_ERROR_DEVICE_LOST on every game, but ONLY on this driver
-	// (Motorola Edge 60 Pro / Mali-G615 r44p1; other Mali blobs, including other G615 units,
-	// run it fine). The extension-select comment above anticipated exactly this: "if a specific
-	// old blob regresses, narrow by driver version rather than re-blocking the whole vendor."
-	// Demote only r44p1 to the slower-but-stable per-primitive barrier path.
-	if (m_device_properties.vendorID == 0x13B5u && m_optional_extensions.vk_khr_driver_properties &&
-		std::string_view(m_device_driver_properties.driverInfo).find("r44p1") != std::string_view::npos)
+	// Mali r44p1 loses the device under an in-pass self-read. This alone does not avoid it: the
+	// driver-bug database also puts r44p1 on the render-target copy road.
+	if (m_device_rules.avoid_feedback_loop_layout)
 	{
-		// NOTE: this layout disable alone did NOT stop the DEVICE_LOST — the per-primitive barrier /
-		// fbfetch path it falls back to lowers to the same faulting in-tile silicon. The real fix
-		// forces r44p1 onto the RT-copy blend path by ALSO disabling texture_barrier; see the matching
-		// "Mali r44p1:" block where m_features.texture_barrier is resolved.
 		Console.WriteLn("Mali r44p1: disabling attachment-feedback-loop blend path (DEVICE_LOST workaround).");
 		m_optional_extensions.vk_ext_attachment_feedback_loop_layout = false;
 	}
+
+	// After every write to the layout bit: the per-draw declaration has nothing to declare without it.
+	m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state &=
+		(attachment_feedback_loop_dynamic_feature.attachmentFeedbackLoopDynamicState == VK_TRUE) &&
+		m_optional_extensions.vk_ext_attachment_feedback_loop_layout;
 
 	// Decide whether to bind textures via VK_KHR_push_descriptor. It's optional
 	// now — when it's absent (some Mali, e.g. Mali-G52), unusable, or known-buggy
@@ -1068,32 +1143,16 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 			push_descriptor_properties.maxPushDescriptors, NUM_TFX_TEXTURES);
 		m_use_push_descriptors = false;
 	}
-	// Mali (ARM, vendorID 0x13B5) advertises VK_KHR_push_descriptor but its driver
-	// null-derefs inside vkCmdPushDescriptorSetKHR on the first textured draw, so
-	// never use it there even when present.
-	if (m_use_push_descriptors && properties2.properties.vendorID == 0x13B5u)
-		m_use_push_descriptors = false;
-	// Adreno (Qualcomm, 0x5143): the pre-transplant backend measured a per-draw TFX
-	// texture-rebind stall with push descriptors on Turnip (RP6), and a descriptor-set
-	// fallback regression on the proprietary driver (8 Elite), so it allowed only the
-	// proprietary driver. That Turnip measurement was of the OLD backend's binding code;
-	// this backend has always shipped push descriptors on Turnip
-	// (Adreno 610/650) and outperforms the fallback there. Allow the two drivers we have
-	// evidence for; keep the conservative disable only for an unknown Adreno driver.
-	if (m_use_push_descriptors && properties2.properties.vendorID == 0x5143u &&
-		m_device_driver_properties.driverID != VK_DRIVER_ID_QUALCOMM_PROPRIETARY &&
-		m_device_driver_properties.driverID != VK_DRIVER_ID_MESA_TURNIP)
+	// Mali crashes in vkCmdPushDescriptorSetKHR even where it advertises the extension, and an
+	// Adreno driver other than Qualcomm's or Turnip is untested with it.
+	if (m_use_push_descriptors && m_device_rules.avoid_push_descriptors)
 		m_use_push_descriptors = false;
 	if (!m_use_push_descriptors)
 		Console.Warning("VK: Using non-push-descriptor texture binding fallback.");
 
-	// The Adreno PROPRIETARY driver mis-selects the provoking vertex with
-	// VK_EXT_provoking_vertex (Eden strips it on Qualcomm); drop it there so GSRendererHW's
-	// software provoking-vertex-first path runs instead. Turnip keeps the extension: the
-	// this backend has shipped it on Turnip with no flat-shading reports, and the SW fallback
-	// costs GS-thread CPU per flat-shaded batch.
-	if (m_optional_extensions.vk_ext_provoking_vertex && properties2.properties.vendorID == 0x5143u &&
-		m_device_driver_properties.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY)
+	// Qualcomm's Adreno driver selects the wrong provoking vertex, so GSRendererHW's software
+	// provoking-vertex-first path runs instead. Turnip keeps the extension.
+	if (m_optional_extensions.vk_ext_provoking_vertex && m_device_rules.broken_provoking_vertex)
 		m_optional_extensions.vk_ext_provoking_vertex = false;
 
 	if (m_optional_extensions.vk_ext_line_rasterization && !line_rasterization_feature.bresenhamLines)
@@ -1163,6 +1222,33 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 		m_optional_extensions.vk_ext_fragment_shader_interlock ? "supported" : "NOT supported");
 
 	return true;
+}
+
+void GSDeviceVK::ResolveDeviceIdentity()
+{
+	// The driver context feeds the driver-bug database, ported from sashkinbro/EmuCoreX with his
+	// approval. Needs m_device_driver_properties, so it runs as soon as ProcessDeviceExtensions has them.
+	// Resolved on every platform: the driver-bug database is keyed on the driver, and Turnip on an
+	// ARM Linux handheld is the same driver as Turnip on a phone. Resolution is pure data;
+	// PublishGPUProfile hands it to the device, and the rules act only where they are queried.
+	MobileDriverContext driver_context;
+	driver_context.api = MobileGpuApi::Vulkan;
+	driver_context.vendor_id = m_device_properties.vendorID;
+	driver_context.device_id = m_device_properties.deviceID;
+	driver_context.driver_version = m_device_properties.driverVersion;
+	driver_context.api_version = m_device_properties.apiVersion;
+	driver_context.max_draw_indirect_count = m_device_properties.limits.maxDrawIndirectCount;
+	if (m_optional_extensions.vk_khr_driver_properties)
+	{
+		driver_context.driver_id = static_cast<u32>(m_device_driver_properties.driverID);
+		driver_context.driver_name = m_device_driver_properties.driverName;
+		driver_context.driver_info = m_device_driver_properties.driverInfo;
+	}
+	m_gpu_profile = GpuProfileDetector::Resolve(
+		GSConfig.AndroidGpuProfileOverride, std::string_view(), m_device_properties.deviceName,
+		driver_context);
+	m_device_rules =
+		GpuProfileDetector::ResolveVulkanDeviceRules(m_gpu_profile, driver_context, m_device_properties.deviceName);
 }
 
 bool GSDeviceVK::CreateAllocator()
@@ -1283,9 +1369,12 @@ bool GSDeviceVK::CreateCommandBuffers()
 
 bool GSDeviceVK::CreateGlobalDescriptorPool()
 {
+	// The TFX UBO set holds two dynamic uniform buffers and up to two storage buffers, and up to
+	// MAX_TFX_UBO_DESCRIPTOR_SETS of it coexist while the vertex ring grows; the extra storage
+	// buffer is the spin set's.
 	static constexpr const VkDescriptorPoolSize pool_sizes[] = {
-		{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 2},
-		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
+		{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 2 * MAX_TFX_UBO_DESCRIPTOR_SETS},
+		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 * MAX_TFX_UBO_DESCRIPTOR_SETS + 1},
 	};
 
 	VkDescriptorPoolCreateInfo pool_create_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr,
@@ -1663,6 +1752,77 @@ std::vector<std::string> GSDeviceVK::GetExtendedStats() const
 	return lines;
 }
 
+void GSDeviceVK::StartGPUTiming(u32 index)
+{
+	if (m_gpu_timing_enabled || m_spin_timer)
+	{
+		FrameResources& resources = m_frame_resources[index];
+		vkCmdResetQueryPool(resources.command_buffers[1], m_timestamp_query_pool, index * 2, 2);
+		vkCmdWriteTimestamp(
+			resources.command_buffers[1], VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, m_timestamp_query_pool, index * 2);
+		resources.timestamp_query_state = QueryState::Querying;
+	}
+}
+
+void GSDeviceVK::EndGPUTiming(u32 index)
+{
+	FrameResources& resources = m_frame_resources[index];
+
+	const bool wants_timestamp = m_gpu_timing_enabled || m_spin_timer;
+
+	if (wants_timestamp && resources.timestamp_query_state == QueryState::Querying)
+	{
+		vkCmdWriteTimestamp(m_current_command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, m_timestamp_query_pool,
+			m_current_frame * 2 + 1);
+		resources.timestamp_query_state = QueryState::Ready;
+	}
+}
+
+void GSDeviceVK::ReadGPUTiming(u32 index)
+{
+	FrameResources& resources = m_frame_resources[index];
+
+	const bool wants_timestamps = m_gpu_timing_enabled || resources.spin_id >= 0;
+
+	if (wants_timestamps && resources.timestamp_query_state == QueryState::Ready)
+	{
+		std::array<u64, 2> timestamps;
+		const VkResult res =
+			vkGetQueryPoolResults(m_device, m_timestamp_query_pool, index * 2, static_cast<u32>(timestamps.size()),
+				sizeof(u64) * timestamps.size(), timestamps.data(), sizeof(u64), VK_QUERY_RESULT_64_BIT);
+		if (res == VK_SUCCESS)
+		{
+			// if we didn't write the timestamp at the start of the cmdbuffer (just enabled timing), the first TS will be zero
+			if (timestamps[0] > 0 && m_gpu_timing_enabled)
+			{
+				const double ns_diff =
+					(timestamps[1] - timestamps[0]) * static_cast<double>(m_device_properties.limits.timestampPeriod);
+				m_accumulated_gpu_time += ns_diff / 1000000.0;
+			}
+			if (resources.spin_id >= 0)
+			{
+				if (m_optional_extensions.vk_ext_calibrated_timestamps && timestamps[1] > 0)
+				{
+					const u64 end = timestamps[1] * m_spin_timestamp_scale + m_spin_timestamp_offset;
+					m_spin_manager.DrawCompleted(resources.spin_id, resources.submit_timestamp, end);
+				}
+				else if (!m_optional_extensions.vk_ext_calibrated_timestamps && timestamps[0] > 0)
+				{
+					const u64 begin = timestamps[0] * m_spin_timestamp_scale;
+					const u64 end = timestamps[1] * m_spin_timestamp_scale;
+					m_spin_manager.DrawCompleted(resources.spin_id, begin, end);
+				}
+			}
+		}
+		else
+		{
+			LOG_VULKAN_ERROR(res, "vkGetQueryPoolResults failed: ");
+		}
+
+		resources.timestamp_query_state = QueryState::None;
+	}
+}
+
 void GSDeviceVK::ScanForCommandBufferCompletion()
 {
 	for (u32 check_index = (m_current_frame + 1) % NUM_COMMAND_BUFFERS; check_index != m_current_frame;
@@ -1786,12 +1946,7 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 		}
 	}
 
-	bool wants_timestamp = m_gpu_timing_enabled || m_spin_timer;
-	if (wants_timestamp && resources.timestamp_written)
-	{
-		vkCmdWriteTimestamp(m_current_command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, m_timestamp_query_pool,
-			m_current_frame * 2 + 1);
-	}
+	EndGPUTiming(m_current_frame);
 
 	if (resources.pipeline_statistics_query == QueryState::Querying)
 	{
@@ -1961,43 +2116,7 @@ void GSDeviceVK::CommandBufferCompleted(u32 index)
 		it();
 	resources.cleanup_resources.clear();
 
-	bool wants_timestamps = m_gpu_timing_enabled || resources.spin_id >= 0;
-
-	if (wants_timestamps && resources.timestamp_written)
-	{
-		std::array<u64, 2> timestamps;
-		VkResult res =
-			vkGetQueryPoolResults(m_device, m_timestamp_query_pool, index * 2, static_cast<u32>(timestamps.size()),
-				sizeof(u64) * timestamps.size(), timestamps.data(), sizeof(u64), VK_QUERY_RESULT_64_BIT);
-		if (res == VK_SUCCESS)
-		{
-			// if we didn't write the timestamp at the start of the cmdbuffer (just enabled timing), the first TS will be zero
-			if (timestamps[0] > 0 && m_gpu_timing_enabled)
-			{
-				const double ns_diff =
-					(timestamps[1] - timestamps[0]) * static_cast<double>(m_device_properties.limits.timestampPeriod);
-				m_accumulated_gpu_time += ns_diff / 1000000.0;
-			}
-			if (resources.spin_id >= 0)
-			{
-				if (m_optional_extensions.vk_ext_calibrated_timestamps && timestamps[1] > 0)
-				{
-					u64 end = timestamps[1] * m_spin_timestamp_scale + m_spin_timestamp_offset;
-					m_spin_manager.DrawCompleted(resources.spin_id, resources.submit_timestamp, end);
-				}
-				else if (!m_optional_extensions.vk_ext_calibrated_timestamps && timestamps[0] > 0)
-				{
-					u64 begin = timestamps[0] * m_spin_timestamp_scale;
-					u64 end = timestamps[1] * m_spin_timestamp_scale;
-					m_spin_manager.DrawCompleted(resources.spin_id, begin, end);
-				}
-			}
-		}
-		else
-		{
-			LOG_VULKAN_ERROR(res, "vkGetQueryPoolResults failed: ");
-		}
-	}
+	ReadGPUTiming(index);
 }
 
 void GSDeviceVK::MoveToNextCommandBuffer()
@@ -2047,13 +2166,7 @@ void GSDeviceVK::ActivateCommandBuffer(u32 index)
 	if (res != VK_SUCCESS)
 		LOG_VULKAN_ERROR(res, "vkBeginCommandBuffer failed: ");
 
-	bool wants_timestamp = m_gpu_timing_enabled || m_spin_timer;
-	if (wants_timestamp)
-	{
-		vkCmdResetQueryPool(resources.command_buffers[1], m_timestamp_query_pool, index * 2, 2);
-		vkCmdWriteTimestamp(
-			resources.command_buffers[1], VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, m_timestamp_query_pool, index * 2);
-	}
+	StartGPUTiming(index);
 
 	if (resources.pipeline_statistics_query == QueryState::Ready)
 	{
@@ -2084,7 +2197,6 @@ void GSDeviceVK::ActivateCommandBuffer(u32 index)
 
 	resources.fence_counter = m_next_fence_counter++;
 	resources.init_buffer_used = false;
-	resources.timestamp_written = wants_timestamp;
 
 	m_current_frame = index;
 	m_current_command_buffer = resources.command_buffers[1];
@@ -2394,8 +2506,19 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 		dep.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 	}
 
+	// ⚠️ The `!UseFeedbackLoopLayout()` term is not redundant, and it is a no-op on every device
+	// that exists today. The rasterization-order subpass flag is legal only when every pipeline
+	// bound in the subpass carries the matching blend flag, and CreateTFXPipeline gates that one on
+	// m_features.framebuffer_fetch. Those two agree everywhere today because the layout road
+	// requires the rasterization-order extension to be ABSENT, so this condition already implies
+	// UseFeedbackLoopLayout() is false. The declared-loop road breaks that
+	// implication -- extension present, layout road forced, in-tile read off -- and without this
+	// term the subpass would declare rasterization-order access that no pipeline in it has.
+	// The declared-loop road that requests order per pipeline binds rasterization-order pipelines in
+	// this subpass, so the subpass declares it too.
 	VkSubpassDescriptionFlags subpass_flags =
-		(key.color_feedback_loop && m_optional_extensions.vk_ext_rasterization_order_attachment_access) ?
+		(key.color_feedback_loop && m_optional_extensions.vk_ext_rasterization_order_attachment_access &&
+			(!UseFeedbackLoopLayout() || m_features.declared_loop_overlap_needs_raster_order)) ?
 			VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_BIT_EXT :
 			0;
 	// Mobile ordered depth feedback: on the framebuffer_fetch path the depth self-dependency above
@@ -2810,7 +2933,17 @@ bool GSDeviceVK::AllocatePreinitializedGPUBuffer(u32 size, VkBuffer* gpu_buffer,
 	const VkBufferCopy buf_copy = {0u, 0u, size};
 	fill_callback(cpu_ai.pMappedData);
 	vmaFlushAllocation(m_allocator, cpu_allocation, 0, size);
-	vkCmdCopyBuffer(GetCurrentInitCommandBuffer(), cpu_buffer, *gpu_buffer, 1, &buf_copy);
+	const VkCommandBuffer cmdbuf = GetCurrentInitCommandBuffer();
+	vkCmdCopyBuffer(cmdbuf, cpu_buffer, *gpu_buffer, 1, &buf_copy);
+
+	// The init buffer is submitted ahead of the draw buffer in the same vkQueueSubmit, which orders
+	// nothing on its own: the first draw that binds this index buffer could read it before the copy
+	// lands. Synchronization validation reports it on the first frame.
+	const VkBufferMemoryBarrier barrier = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, nullptr,
+		VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_INDEX_READ_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+		*gpu_buffer, 0, size};
+	vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 0, nullptr,
+		1, &barrier, 0, nullptr);
 	DeferBufferDestruction(cpu_buffer, cpu_allocation);
 	return true;
 }
@@ -3258,12 +3391,16 @@ GSDevice::PresentResult GSDeviceVK::DoBeginPresent(bool frame_skip)
 		vkCmdEndQuery(m_current_command_buffer, m_pipeline_statistics_query_pool, m_current_frame);
 	}
 
+	// SUBOPTIMAL is a success: the image is acquired and presentable. Adreno returns it when the
+	// compositor changes state (the touch overlay redrawing), and rebuilding the swap chain for it
+	// blanks the window. Rebuilding would not clear it either, since preTransform stays identity.
+	// Real size changes arrive as a host resize, an Android surface change, or OUT_OF_DATE.
 	VkResult res = m_resize_requested ? VK_ERROR_OUT_OF_DATE_KHR : m_swap_chain->AcquireNextImage();
-	if (res != VK_SUCCESS)
+	if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
 	{
 		m_swap_chain->ReleaseCurrentImage();
 
-		if (res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_OUT_OF_DATE_KHR)
+		if (res == VK_ERROR_OUT_OF_DATE_KHR)
 		{
 			ResizeWindow(0, 0, m_window_info.surface_scale);
 			ImGuiManager::WindowResized();
@@ -3394,6 +3531,38 @@ void GSDeviceVK::EndPresent()
 		GSLsfg::Initialize(m_swap_chain.get(), GSConfig.LsfgMultiplier);
 	else if (GSLsfg::IsActive())
 		GSLsfg::Shutdown();
+
+	// Frame generation on the game's own image instead of the finished screen, when the present
+	// was only the plain scaled blit it can repeat for each generated frame (it draws the ImGui
+	// overlay onto them afresh as well). Here, after Initialize/Shutdown, which may replace the
+	// image copied into, and in this frame's command buffer, where the game texture's layout is
+	// tracked.
+	if (GSLsfg::IsActive())
+	{
+		GSTextureVK* const current = static_cast<GSTextureVK*>(GetCurrent());
+		if (m_present_has_new_frame && m_present_geometry.plain && current)
+		{
+			current->TransitionToLayout(cmdbuffer, GSTextureVK::Layout::TransferSrc);
+			GSLsfg::GameFrame frame;
+			frame.image = current->GetImage();
+			const GSVector4i& src = m_present_geometry.src_rect;
+			const GSVector4& draw = m_present_geometry.draw_rect;
+			frame.src[0] = src.x;
+			frame.src[1] = src.y;
+			frame.src[2] = src.z;
+			frame.src[3] = src.w;
+			frame.draw[0] = draw.x;
+			frame.draw[1] = draw.y;
+			frame.draw[2] = draw.z;
+			frame.draw[3] = draw.w;
+			frame.linear = m_present_geometry.linear;
+			GSLsfg::CaptureGameFrame(cmdbuffer, &frame);
+		}
+		else
+		{
+			GSLsfg::CaptureGameFrame(cmdbuffer, nullptr);
+		}
+	}
 
 	SubmitCommandBuffer(m_swap_chain.get());
 	MoveToNextCommandBuffer();
@@ -3676,83 +3845,49 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 
 bool GSDeviceVK::CheckFeatures()
 {
-	const VkPhysicalDeviceLimits& limits = m_device_properties.limits;
-	//const u32 vendorID = m_device_properties.vendorID;
-	//const bool isAMD = (vendorID == 0x1002 || vendorID == 0x1022);
-	//const bool isNVIDIA = (vendorID == 0x10DE);
+	PublishGPUProfile();
+	const GSSelfReadRoadDecision road = ResolveSelfReadRoad();
+	ResolveFeatureTable();
+	ResolveFeedbackConsumers(road);
+	const bool declare_depth_loop = ResolveDepthFeedback(road);
+	ResolveStreamRingMemory();
+	LogResolvedFeatures(road, declare_depth_loop);
+	m_report_self_read_road = GSSelfReadRoadName(road);
+	m_report_declare_depth_loop = declare_depth_loop;
+	return CheckFormatSupport();
+}
 
-	// NOTE (2026-07-12): we deliberately do NOT force the Mali runtime GPU profile here.
-	// The old band-aid clamped blending accuracy up to Full on Mali (via the profile) to
-	// dodge the broken HW dual-source unit — which is exactly why Mali used to "need
-	// Blending=Max". sashkinbro/EmuCoreX replaced that with the correct, targeted fix:
-	// m_features.dual_source_blend = dualSrcBlend (below), so GSRendererHW SW-blends ONLY
-	// the specific SRC1/blend-mix/PABE draws instead of globally clamping. We already carry
-	// that path, and the Vulkan renderer never reads the runtime profile anyway (only
-	// GSDeviceOGL does), so the force was dead weight that diverged from his known-good tree.
+void GSDeviceVK::PublishGPUProfile()
+{
+	// The runtime profile does not raise blending accuracy on Mali: without dualSrcBlend, GSRendererHW
+	// blends only the SRC1 draws in the shader (dual_source_blend, below).
 
-	// Set when the user (or auto-detection) selects the Xclipse GPU profile; forces the
-	// Xclipse fbfetch-off path below even if the 0x144D vendorID guess doesn't fire on
-	// their driver. Declared outside the Android block so it stays a harmless false on
-	// desktop. Populated from the resolved mobile profile just below.
-	bool force_xclipse_profile = false;
-
-	// The driver context feeds the driver-bug database (ported from EmuCoreX/sashkinbro with his
-	// approval). Vulkan is the good case: VkPhysicalDeviceDriverProperties names the blob outright,
-	// which is what the r44p1 DEVICE_LOST and 8-Elite push-descriptor fixes both learned the hard
-	// way — gate on driverID, never on vendorID, or Turnip/PanVK inherit proprietary workarounds.
-	// ProcessDeviceExtensions() has already filled m_device_driver_properties by the time we get
-	// here (CreateDeviceAndSwapChain runs before CheckFeatures), so one resolve sees everything.
-	//
-	// Resolved on EVERY platform, not just Android: the database is keyed on the DRIVER, and the
-	// same drivers ship off Android. Turnip on an ARM Linux handheld (Rocknix/Batocera) is the
-	// same Mesa stack with the same defects as Turnip on a phone, and it was the #442 reproducer.
-	// Gating this on __ANDROID__ made every rule silently dead on exactly the devices we test on.
-	// Resolution is pure data — a rule only changes behaviour where something queries HasBug()/
-	// UsesWorkaround(), and every such query is an explicit, per-defect decision.
-	//
-	// The MOBILE-SPECIFIC consequences below stay Android-only on purpose:
-	//   - SetRuntimeGPUProfile(): off Android the GL detector classifies every non-Mali GPU as
-	//     Adreno, so publishing the runtime profile here would hand desktop callers a wrong answer.
-	//   - GS tuning / GPU identity: their only consumers are themselves __ANDROID__-gated, and
-	//     changing desktop texture-pool sizing is not this code's business.
-	MobileDriverContext driver_context;
-	driver_context.api = MobileGpuApi::Vulkan;
-	driver_context.vendor_id = m_device_properties.vendorID;
-	driver_context.device_id = m_device_properties.deviceID;
-	driver_context.driver_version = m_device_properties.driverVersion;
-	driver_context.api_version = m_device_properties.apiVersion;
-	driver_context.max_draw_indirect_count = m_device_properties.limits.maxDrawIndirectCount;
-	if (m_optional_extensions.vk_khr_driver_properties)
-	{
-		driver_context.driver_id = static_cast<u32>(m_device_driver_properties.driverID);
-		driver_context.driver_name = m_device_driver_properties.driverName;
-		driver_context.driver_info = m_device_driver_properties.driverInfo;
-	}
-	const GpuProfileSelection mobile_profile = GpuProfileDetector::Resolve(
-		GSConfig.AndroidGpuProfileOverride, std::string_view(), m_device_properties.deviceName,
-		driver_context);
+	// The mobile-specific consequences stay Android-only: off Android the GL detector classifies
+	// every non-Mali GPU as Adreno, so the runtime profile would be a wrong answer there, and the
+	// GS tuning and GPU identity have only Android consumers.
+	const GpuProfileSelection& mobile_profile = m_gpu_profile;
 	SetMobileDriverProfile(mobile_profile.driver);
 #if defined(__ANDROID__)
-	// ★ Vulkan resolved mobile_profile and pushed every OTHER piece of it into the device
-	// (GPU identity, GS tuning) but never the runtime profile itself, so
-	// IsMaliGPUProfile()/IsAdrenoGPUProfile() answered from the default for the entire Vulkan
-	// lifetime, and the profile printed in VK logs was whatever the default happened to be
-	// rather than the detected GPU.
+	// So that IsMaliGPUProfile() and IsAdrenoGPUProfile() answer for the Vulkan device too.
 	SetRuntimeGPUProfile(mobile_profile.runtime_profile);
-	force_xclipse_profile = (mobile_profile.override_mode == GpuProfileOverride::Xclipse) ||
-		(mobile_profile.runtime_profile == RuntimeGpuProfile::Xclipse);
-	// Per-vendor GS tuning (pool sizes/ages + constrained) — drives GSDevice pool sizing above.
-	// This is what constrains texture/target caching on weaker Mali (e.g. G615). From EmuCoreX.
+	// Per-model pool sizes and ages, which drive GSDevice's pool sizing. From sashkinbro/EmuCoreX.
 	SetMobileGPUIdentity(mobile_profile.gpu);
 	SetMobileGSTuning(mobile_profile.gs_tuning);
 
-	// Hand the resolved architecture to frame generation, which needs Adreno 7xx or newer. Done
-	// here rather than asked for on demand so the settings screen can still say WHY the row is
-	// unavailable after the game stops and the device is gone.
+	// Hand the resolved architecture to frame generation, which needs Adreno 7xx or newer, or a
+	// 6xx on Turnip. Done here rather than asked for on demand so the settings screen can still
+	// say WHY the row is unavailable after the game stops and the device is gone.
 	{
 		u32 adreno_generation = 0;
 		switch (mobile_profile.gpu.architecture)
 		{
+			// Adreno 6xx only under Turnip, which is where frame generation already runs on these
+			// GPUs (Winlator, GameHub). Nothing shows the Qualcomm driver on 6xx doing it (#626).
+			// Either way Initialize() still checks the features the shaders need.
+			case MobileGpuArchitecture::Adreno6xx:
+				if (mobile_profile.driver.driver == MobileGpuDriver::MesaTurnip)
+					adreno_generation = 6;
+				break;
 			case MobileGpuArchitecture::Adreno7xx: adreno_generation = 7; break;
 			case MobileGpuArchitecture::Adreno8xx: adreno_generation = 8; break;
 			// Adreno X (X1-85 and up) postdates 7xx and carries the same feature set.
@@ -3775,209 +3910,62 @@ bool GSDeviceVK::CheckFeatures()
 		static_cast<unsigned long long>(mobile_profile.driver.bugs),
 		static_cast<unsigned long long>(mobile_profile.driver.workarounds));
 	DevCon.WriteLn("VK: GPU profile hints: %s", mobile_profile.hints.c_str());
+}
 
-	// BrokenSubpassFeedback + BrokenAttachmentFeedbackLoopLayout: on these drivers an in-pass
-	// render-target self-read can silently drop the whole draw, in BOTH shapes — the subpassLoad
-	// input attachment and the feedback-loop-layout texelFetch sampler. Reading a separate copy of
-	// the target is the only reliable form.
+GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad()
+{
+	// A forced Xclipse profile (Android settings) counts as an Xclipse device.
+	bool force_xclipse_profile = false;
+#if defined(__ANDROID__)
+	force_xclipse_profile = (m_gpu_profile.override_mode == GpuProfileOverride::Xclipse) ||
+		(m_gpu_profile.runtime_profile == RuntimeGpuProfile::Xclipse);
+#endif
+
+	// UseRenderTargetCopyForFeedback: on these drivers an in-pass render-target self-read returns the
+	// content from the start of the pass, stale across earlier draws and across earlier primitives of
+	// the same draw, in both in-pass shapes (subpassLoad and the feedback-loop layout sampler). Only a
+	// separate copy of the target reads correctly. It affects every draw that reads the target,
+	// including destination-alpha tests and write masks, not only draws that sample it.
 	//
-	// This was originally narrowed to replacement textures, on the evidence that Tales of the
-	// Abyss + an HD pack lost its whole 2D text layer in-tile (at 1x as well as 4x, so not
-	// tile-size related) while NFS Underground pushed 608 barrier draws per frame through the same
-	// in-tile self-read with no pack and rendered correctly. That read the pattern backwards: the
-	// self-read is not reliable for ordinary blending either, it just fails subtly enough there to
-	// look fine. OutRun 2006 has no pack and renders its sea as high-contrast two-tone speckle -
-	// 4.0% of the frame differs from the software renderer by more than 16 levels in-tile, and
-	// 0.13% through the RT copy (Turnip/Adreno 650, water dump, 2026-08-02). Both in-pass shapes
-	// are byte-identical wrong, which is what says driver rather than draw.
+	// ⚠️ Breaking the pass instead of copying is exact but slower: on Turnip the copy road keeps the
+	// untiled sysmem mode these passes run fastest in, and every in-pass alternative leaves it. One copy
+	// cannot serve several draws either, because each feedback draw reads what the previous one wrote.
 	//
-	// So it applies to every draw on an affected driver now. The cost is real and scales with
-	// upscale - measured on device, RT copy vs in-tile, median frame time over two runs each:
-	//
-	//              1x      3x      4x
-	//   FlatOut 2  +7.5%  +10.5%  +24.6%   (copies/frame 23 -> 477, render passes 100 -> 538)
-	//   OutRun    +20.5%   +9.9%   +0.5%
-	//   GoW II     -3.2%   +2.9%
-	//   RG lamps   -1.5%   +9.3%
-	//
-	// The old note recorded +38%/+40% at 3x/4x on NFSU. Nothing here reproduces that on the titles
-	// available now; FlatOut 2 makes a bigger structural change (more copies, more render passes)
-	// for a third of the cost at 3x. Treat the old figure as an upper bound on a build we can no
-	// longer run, not as a contradiction.
-	//
-	// WHICH draws does it get wrong? All of them, on every affected title, and worse than it
-	// looks. Scored per frame against the software renderer, in-tile (Turnip/Adreno 650,
-	// 2026-08-02):
-	//
-	//   FlatOut 2   31.3% of the frame wrong by >16 levels   <- worst measured, once read as clean
-	//   Katamari     7.5%
-	//   OutRun       4.6%   (a separate scoring run from the 4.0% above, different frames)
-	//   NFSU         0.00% by >16 levels, but ~40% of pixels off by 1-16
-	//
-	// NFSU is the whole lesson: corrupt everywhere and invisible, which is exactly what made
-	// "only titles with a texture pack" look like a real gate. There is no title-level
-	// discriminator to find. Nor a useful draw-level one - most corrupted draws never sample the
-	// target, they read it for the destination-alpha test and the write mask, so "self-read"
-	// understates what the workaround protects.
-	//
-	// Two symptoms, one behaviour (per-draw bisect + Turnip source reading, 2026-08-03): an
-	// in-pass read returns render-pass-START content — stale across the pass's earlier DRAWS, and
-	// stale across the earlier PRIMITIVES of its own draw (God of War II's ~10.9k-primitive
-	// accumulation strip collapses to exactly one layer: error = -(k-1) on a pixel covered by k
-	// layers, i.e. every fragment reads the pre-draw value). The explicit vkCmdPipelineBarrier
-	// self-dependency changes nothing, and neither does forcing rasterization-order access on
-	// every pipeline (TU_DEBUG=rast_order, byte-identical) — the read simply does not observe
-	// unresolved tile writes.
-	//
-	// ⚠️ DO NOT ATTEMPT TO REPLACE THE COPY WITH A PASS BREAK. It was fully built and validated
-	// (2026-08-03): break the pass before each one-barrier feedback draw and sample the live
-	// attachment, so the stale read returns exactly the pre-draw snapshot the copy provides. It
-	// IS byte-exact — but only in shapes that cost 2-5x whole-frame. The complete map, every cell
-	// measured on the SD865:
-	//
-	//   - This workload's speed lives in Turnip's untiled sysmem NO_FLUSH mode: the bandwidth
-	//     autotuner renders most of these small single-draw passes untiled, and the shipped COPY
-	//     path depends on it too (TU_DEBUG=gmem: Katamari 4.2 -> 10.0 ms, NFSU 10.8 -> 48 ms).
-	//   - A live self-read under sysmem NO_FLUSH is a data race: nondeterministic frames
-	//     run-to-run, byte-compare passes by luck. Every fix abandons NO_FLUSH: declaring the
-	//     loop via an input-attachment reference triggers feedback_invalidate (replayed per
-	//     tile); the rasterization-order pipeline flag makes sysmem execution
-	//     FLUSH_PER_OVERLAP_AND_OVERWRITE (per-overlap pipeline flush — these draws overlap
-	//     heavily); pinning gmem pays the gmem tax directly. All land at 2x Katamari / 5x NFSU.
-	//   - The copy is the unique shape that is correct, deterministic, AND compatible with
-	//     sysmem NO_FLUSH — the shader reads a separate texture, so the driver owes it nothing.
-	//     That is WHY the copy path is also the fastest: its measured "cost" (0.6 ms/frame on
-	//     Katamari vs no read at all) cannot be recovered by removing the copy, because removing
-	//     the copy removes the rendering mode.
-	//
-	// ⚠️ Reusing the clone ACROSS draws was also fully built and refuted (2026-08-05): a snapshot
-	// cache keyed on "no pass end since the copy" with per-draw written-area tracking, verified
-	// byte-exact on ten dumps — and it hit 0 times in ~4,800 feedback draws across the corpus.
-	// The reads are byte-dependent on the writes: these draws read the RT at (or overlapping) the
-	// destination pixels of the PREVIOUS feedback draw (blend/fbmask/tex-is-fb chains), so the
-	// snapshot is stale by construction the moment it could be reused. That geometry is GS-state,
-	// not GPU behaviour, so no driver revision changes it. Batching several copies into one pass
-	// break fails on the same dependency: copy N is only valid after draw N-1 has executed. The
-	// per-feedback-draw break+copy bracket is structural for this workload.
-	//
-	// OverrideTextureBarriers = 1 remains the documented way back to the in-tile path for A/B
-	// work and for a future driver revision that fixes the read.
+	// OverrideTextureBarriers = 1 still reaches the in-pass read.
 	const bool rt_self_read_is_broken =
 		GetMobileDriverProfile().UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback);
 
-	// framebuffer_fetch: the tiler-native ordered Cd read (ROAA / subpassLoad in tile
-	// memory). It lets DetermineBarriers() (GSRendererHW.cpp) drop every per-primitive
-	// barrier and makes ROV (m_features.rov below) auto-disable — the fast, correct path
-	// for blend-heavy games on a TBDR.
-	//
-	// MALI (0x13B5): ENABLED by default when ROAA is present. The Mali profile forces SW
-	// blend, so fbfetch reads Cd in-shader and never touches Mali's broken HW dual-source
-	// unit; without fbfetch the per-PRIMITIVE texture-barrier path tanks blend-heavy games
-	// (GT4 = 10-20fps slideshow). No-op on any Mali lacking the extension.
-	//
-	// ADRENO / other non-Mali: opt-in via EnableAdrenoFramebufferFetch — but that is true only
-	// where the Pcsx2Config default (false) actually holds, i.e. DESKTOP. The Android build ships
-	// the key ON; see the deny-list note below before reasoning about who gets fbfetch.
-	// ROV is the wrong primitive on a tiler (fragment_shader_interlock serializes same-pixel
-	// fragments + bypasses tile memory), so on Adreno fbfetch is the way to make accurate
-	// blending fast. Historically kept off because the Adreno-840 PROPRIETARY driver returned
-	// STALE ROAA reads above Basic blending (alpha cutouts / invisible floors, A/B 2026-06-10);
-	// that was never confirmed on other Adreno gens or on Turnip/Mesa, which is why it started
-	// life as a ship-dark toggle to be A/B-verified per device+driver. Gated on ROAA presence, so
-	// it is a no-op on any device that does not expose the extension.
-	const bool is_mali_vk = (m_device_properties.vendorID == 0x13B5u);
+	// framebuffer_fetch: the ordered in-tile read of the destination (rasterization-order attachment
+	// access). It lets DetermineBarriers drop the per-primitive barriers, and turns ROV off.
+	//   Mali: on wherever the extension is. Mali forces software blending, and without fetch its only
+	//     destination read is a barrier per primitive.
+	//   Adreno: on wherever the extension is, on every OS, except the parts the database denies and
+	//     the Adreno 8xx Qualcomm driver.
+	//   Other vendors: trusted on Android builds only.
+	const bool is_mali_vk = IsDeviceMali();
 	const bool is_adreno = IsDeviceAdreno();
-	// Turnip/Mesa is the open Adreno driver and does NOT exhibit the proprietary
-	// blob's stale-ROAA reads (the reason Adreno fbfetch shipped opt-in), so default
-	// it ON there — the fast blend path on a tiler that drops the per-primitive
-	// barriers spiking GS on transparency-heavy scenes. Proprietary Adreno is opt-in
-	// via EnableAdrenoFramebufferFetch on desktop only (Android ships that key on);
-	// DisableFramebufferFetch still overrides everywhere.
-	//
-	// ⚠️ In practice this is currently moot on Adreno: UseRenderTargetCopyForFeedback turns texture
-	// barriers off below, and "fbfetch needs barriers" then clears framebuffer_fetch regardless of
-	// what this resolves to. Framebuffer fetch IS the in-tile self-read, so a driver that cannot
-	// do that read cannot have it. Kept as-is so a driver that stops carrying the bug recovers the
-	// fast path for free.
-	const bool is_turnip = (m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_TURNIP);
-	// Samsung Xclipse (Exynos AMD-RDNA2) has no working ROAA-based framebuffer fetch — force it off
-	// there so we never route the fast-blend path into a broken unit. Inert if the 0x144D vendorID
-	// guess is wrong (a real Xclipse tester must confirm IsDeviceXclipse() fires). The user
-	// can also force it from Settings → Renderer → GPU Profile (force_xclipse_profile) for
-	// drivers where the 0x144D vendorID doesn't report.
+	// Moot on Adreno today: the copy workaround turns barriers off, and fetch needs them. A driver that
+	// loses the bug gets the fast road back with no change here.
+	// Xclipse has no working rasterization-order fetch.
 	const bool is_xclipse_vk = IsDeviceXclipse() || force_xclipse_profile;
-	// deviceName is null-terminated by Vulkan. Kept for the FastMAD deinterlace fallback below;
-	// the G57 fbfetch deny lives in the driver-bug database now.
-	const bool is_mali_g57 = is_mali_vk &&
-		(std::string_view(m_device_properties.deviceName).find("Mali-G57") != std::string_view::npos);
-	// The parts that expose ROAA and return zero or stale destination colour through it (black or
-	// intermittently missing textures) are rules vk-mediatek-mali-roaa-destination-read and
-	// vk-arm-g57-roaa-destination-read in the driver-bug database. That is where the exemption for
-	// a part we have measured lives, and it is why this is a table lookup rather than the inline
-	// `IsMediaTekSoC() || deviceName contains Mali-G57` test it replaces -- the inline one could
-	// not express "except MT6897", and it could not fire at all off Android, where the SoC is
-	// never pushed into the device.
+	// Parts that return zero or stale destination colour through rasterization-order access are denied
+	// by the driver-bug database (vk-mediatek-mali-roaa-destination-read,
+	// vk-arm-g57-roaa-destination-read), which also holds the MT6897 exemption.
 	//
-	// ForceMaliFramebufferFetch (default OFF) lets a user on a MediaTek part the database still
-	// denies re-enable fbfetch and A/B their own driver. The deny is a per-VENDOR guess, not a
-	// per-driver fact, and it is expensive where it is wrong: Mali reports dualSrcBlend=false, so
-	// GSRendererHW force-SW-blends every SRC1/blend-mix/PABE draw, and with fbfetch off the only
-	// way to read Cd is the per-PRIMITIVE texture barrier -- the "GT4 slideshow" path described
-	// above. Issue #339 is that collision on a Dimensity 8350 + Mali-G615 (Shadow of the Colossus
-	// lost perf when SW blend fixed its visuals). If a newer MediaTek driver reports ROAA
-	// honestly, this recovers the fast blend path; if it still lies, the user sees the
-	// black/missing textures and turns it back off -- which is why it must default OFF and stay a
-	// separate setting.
-	//
-	// Deliberately NOT reusing EnableAdrenoFramebufferFetch: that one is default-ON on Android
-	// (Settings.kt adrenoFbFetch = true, plus a ConfigStore migration that flips old saves ON),
-	// so keying off it would silently force fbfetch on for EVERY MediaTek Mali user -- the exact
-	// breakage this block exists to prevent.
-	//
-	// Xclipse stays excluded even when forced: it has no working ROAA fbfetch at all, so honouring
-	// the force there would route the fast path into a unit that cannot do it.
-	// ANGLE is likewise no escape for the user -- it translates GLES onto this same Vulkan driver.
-	// The working workaround remains the native GL renderer, whose fbfetch comes from
-	// GL_ARM_shader_framebuffer_fetch (GSDeviceOGL) and never touches the Vulkan ROAA path.
-	//
-	// ⚠️ The key is MALI-ONLY, and it is the policy function below that makes it so. It reads as a
-	// Mali escape hatch and is named for one, but it used to sit in a term any vendor could reach:
-	// on an Adreno part whose database entry denies the destination read, setting it lifted that
-	// deny too and put Adreno on the in-tile road that ARMSX2 #442 says it cannot take.
+	// ForceMaliFramebufferFetch (off by default) lifts that deny on Mali only, so a user can test
+	// whether their driver really has the defect; where the deny is wrong it costs a barrier per
+	// primitive on every software-blended draw. It never lifts the Xclipse gate, and the policy function
+	// keeps it Mali-only so it cannot put an Adreno part the database denies on the in-tile road.
 	const bool roaa_destination_read_is_broken =
 		GetMobileDriverProfile().HasBug(DriverBug::BrokenRoaaDestinationRead);
-	// is_adreno (not just is_turnip): the removed `if (is_adreno)` block used to force fbfetch on
-	// for the whole vendor, so making it opt-in here would silently drop the proprietary blob onto
-	// the per-primitive barrier path — a regression unrelated to #442. Keeping the vendor listed
-	// preserves that default while letting DisableFramebufferFetch actually take effect, which the
-	// old unconditional force ate (see feedback_adreno_fbfetch_ini_override_measurement_trap).
+	// Adreno is listed as a vendor, not only Turnip, so the Qualcomm driver keeps fetch by default and
+	// DisableFramebufferFetch still turns it off. On Android the vendor terms are a deny list: any GPU
+	// with the extension takes fetch unless the database, Xclipse or the Adreno 8xx gate says otherwise.
+	// Add a vendor that returns stale reads beside Xclipse rather than narrowing this to an allow list.
 	//
-	// ⚠️ The EnableAdrenoFramebufferFetch term is NOT a no-op, and the vendor terms below are NOT an
-	// allow-list on Android. That key defaults to false only in Pcsx2Config.cpp (desktop, where this
-	// really does restrict fbfetch to Mali+Adreno). The Android build ships it TRUE
-	// (Settings.kt adrenoFbFetch = true) and force-flips existing saves to true via a one-time
-	// ConfigStore migration, so there the disjunction is (is_mali_vk || is_adreno || true) == true
-	// and the vendor terms restrict NOTHING: every GPU advertising ROAA takes the fbfetch path,
-	// including PowerVR/Broadcom and any vendor not named here. Only the two negative terms still
-	// bite — the database's destination-read deny and is_xclipse_vk.
-	//
-	// So the effective Android policy is a DENY-list (ROAA is trusted unless the vendor is known to
-	// lie about it), not an allow-list. Do NOT "restore" the allow-list as a tidy-up: that would
-	// REMOVE fbfetch from PowerVR et al. and drop them onto the ~3-4x-slower per-primitive barrier
-	// path, on hardware nobody here can test. The deny-list shape is also the more future-proof one
-	// — a new vendor with working ROAA gets the fast path instead of being stranded until someone
-	// adds it to a list. If a non-Mali/non-Adreno vendor is ever REPORTED returning stale/empty
-	// ROAA, add it alongside is_xclipse_vk rather than re-narrowing this.
-	// 8 Elite (Adreno 8xx on the Qualcomm PROPRIETARY driver): that blob returns STALE ROAA reads
-	// above Basic blending — invisible floors / alpha cutouts (A/B 2026-06-10, the "Adreno-840
-	// proprietary" case in the note above). Never reproduced on 6xx/7xx or on Turnip/Mesa. So keep
-	// the fast in-tile fbfetch path for every other Adreno, but route the 8xx proprietary blob onto
-	// the correct texture-barrier path — restoring the historical 8-Elite exclusion. A hard gate like
-	// is_xclipse_vk (the toggle can't force it back on), since it's a correctness bug, not a perf
-	// trade; Turnip on 8xx (open driver, no stale reads) is unaffected and keeps the fast path.
-	const bool is_adreno8xx_proprietary = is_adreno &&
-		m_device_driver_properties.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY &&
-		mobile_profile.gpu.architecture == MobileGpuArchitecture::Adreno8xx;
+	// The Qualcomm driver on Adreno 8xx returns stale rasterization-order reads above Basic blending;
+	// Turnip on the same parts does not. A hard gate, like Xclipse.
+	const bool is_adreno8xx_proprietary = m_device_rules.adreno8xx_proprietary;
 	// Every term above, in one place, in GSFramebufferFetchPolicy.h beside the OpenGL decision. The
 	// facts are collected here; which of them wins is pinned there and in gs_vertex_tests.
 	GSVulkanFramebufferFetchInputs fetch_inputs;
@@ -3989,7 +3977,9 @@ bool GSDeviceVK::CheckFeatures()
 	fetch_inputs.is_adreno8xx_proprietary = is_adreno8xx_proprietary;
 	fetch_inputs.broken_destination_read = roaa_destination_read_is_broken;
 	fetch_inputs.force_mali_fetch_key = GSConfig.ForceMaliFramebufferFetch;
-	fetch_inputs.adreno_fetch_key = GSConfig.EnableAdrenoFramebufferFetch;
+#ifdef __ANDROID__
+	fetch_inputs.any_vendor_trusted = true;
+#endif
 	const GSVulkanFramebufferFetchDecision fetch_decision = DecideVulkanFramebufferFetch(fetch_inputs);
 	if (fetch_decision.force_key_ignored)
 	{
@@ -3999,35 +3989,92 @@ bool GSDeviceVK::CheckFeatures()
 						"key only lifts the Mali destination-read deny. Framebuffer fetch is unchanged.",
 			m_device_properties.deviceName, m_device_properties.vendorID);
 	}
-	m_features.framebuffer_fetch = fetch_decision.enabled;
-	m_features.texture_barrier = GSConfig.OverrideTextureBarriers != 0;
-	// No working in-pass render-target self-read (ARMSX2 #442, Qualcomm/Turnip). Force the RT-COPY
-	// path: with texture barriers off, GSRendererHW reads Cd from a separate copy of the target
-	// (draw_rt_clone) instead of sampling the live attachment, and "fbfetch needs barriers" below
-	// (framebuffer_fetch &= texture_barrier) drops the in-tile read too. Expensive — one RT copy
-	// per feedback draw — but it is the only shape this driver renders correctly.
+	// Which self-read road this device takes, and what that implies for barriers, the in-tile read, the
+	// layout spelling and primitive ordering. See GSSelfReadRoadPolicy.h.
+	GSSelfReadRoadInputs road_inputs;
+	road_inputs.in_tile_read_available = fetch_decision.enabled;
+	road_inputs.layout_road_available = m_optional_extensions.vk_ext_attachment_feedback_loop_layout;
+	road_inputs.roaa_available = m_optional_extensions.vk_ext_rasterization_order_attachment_access;
+	road_inputs.rt_self_read_is_broken = rt_self_read_is_broken;
+	// A driverInfo tag saying this build orders overlapping self-reads inside a declared loop. It puts
+	// a user of our Turnip builds on the declared road with no setting touched.
+	// Where the driver orders overlapping primitives only on request, the request is a pipeline flag
+	// from VK_EXT_rasterization_order_attachment_access; without it the ordering cannot be asked for.
+	const bool order_on_request = GetMobileDriverProfile().declared_loop_orders_overlap_on_request;
+	road_inputs.driver_orders_declared_loop = GetMobileDriverProfile().orders_declared_feedback_loop &&
+		(!order_on_request || m_optional_extensions.vk_ext_rasterization_order_attachment_access);
+	// The database saying this part belongs on the declared loop with our own barriers kept: Turnip on
+	// Adreno 730 and up, where the copy road renders wrong.
+	road_inputs.driver_prefers_declared_loop_with_barriers =
+		GetMobileDriverProfile().prefers_declared_loop_with_barriers;
+	road_inputs.override_texture_barriers = GSConfig.OverrideTextureBarriers;
+	// Harness-only (gsrunner -declare-feedback-loop); Off on every other run.
+	road_inputs.arm = static_cast<u8>(g_gs_measurement_overrides.self_read_arm);
+	const GSSelfReadRoadDecision road = DecideSelfReadRoad(road_inputs);
+
+	// Before anything that can create an image, a descriptor layout or a render pass, because each
+	// of those bakes the spelling in permanently.
+	m_force_feedback_loop_layout = road.force_feedback_loop_layout;
+
+	// Which spelling the loop is declared in: per draw (the default on Turnip and Honeykrisp) or
+	// with the pipeline create flag (every other driver, as before). Resolved here for the same
+	// reason as the line above -- a pipeline's dynamic-state list is fixed at creation, so this
+	// has to be final before the first one exists.
+	const GSDynamicFeedbackLoopInputs dynamic_loop_inputs = {
+		.spelling = g_gs_measurement_overrides.LoopSpelling(),
+		.layout_road_live = UseFeedbackLoopLayout(),
+		.dynamic_state_available = m_optional_extensions.vk_ext_attachment_feedback_loop_dynamic_state,
+		.device_measured = m_device_rules.self_read_costs_measured};
+	m_declare_loop_per_draw = GSDeclaresLoopPerDraw(dynamic_loop_inputs);
+	if (GSLoopSpellingFallsBackToCreateFlag(dynamic_loop_inputs))
+	{
+		// The loop is declared, but in the spelling that costs on Turnip. Say so.
+		Console.Warning("VK: no VK_EXT_attachment_feedback_loop_dynamic_state here, so the feedback "
+						"loop is declared with the PIPELINE CREATE FLAG rather than per draw. "
+						"Measured on Turnip only: that spelling costs up to 2.8x on a self-read-heavy "
+						"title (wrc3@1x, SD865).");
+	}
+
+	// With the copy workaround in effect, texture barriers are off: GSRendererHW reads the destination
+	// from a copy of the target, and the in-tile read goes with the barriers. tfx.glsl picks the read
+	// from DISABLE_TEXTURE_BARRIER or HAS_FEEDBACK_LOOP_LAYOUT; turning framebuffer_fetch off alone would
+	// leave subpassLoad in place, which is just as broken.
 	//
-	// tfx.glsl selects the read purely from two defines: DISABLE_TEXTURE_BARRIER (this path) or
-	// HAS_FEEDBACK_LOOP_LAYOUT. Both compile texelFetch; the difference is whether the sampled
-	// image is a copy or the live attachment, and only the copy works here. Turning
-	// framebuffer_fetch off on its own does NOT change the variant — it leaves subpassLoad in
-	// place, which is equally broken.
-	//
-	// Only applied when OverrideTextureBarriers is on auto (-1). An explicit 1 still wins, so the
-	// in-tile path stays reachable for A/B-ing this workaround's cost and for a future driver
-	// revision that fixes the read; an explicit 0 already lands here anyway.
-	if (rt_self_read_is_broken && GSConfig.OverrideTextureBarriers < 0)
+	// The workaround applies on auto only (OverrideTextureBarriers = -1). The declared-loop driver facts
+	// are auto answers too, and outrank the copy on the parts the database names: the workaround was
+	// measured on the tiled in-pass read, and Turnip does not tile a declared loop.
+	m_features.framebuffer_fetch = road.in_tile_read;
+	m_features.texture_barrier = road.texture_barrier;
+	m_features.declared_feedback_loop_orders_overlap = road.orders_overlapping_prims;
+	// Our generation-2 Turnip on Adreno 7xx: the driver orders the draw against earlier ones with a
+	// wait for idle, and orders overlapping primitives within it only on request.
+	const bool declared_ordered = road.orders_overlapping_prims && !road.in_tile_read && order_on_request;
+	m_features.declared_loop_overlap_needs_raster_order = declared_ordered;
+	m_features.ordered_read_costs_per_draw = declared_ordered;
+	// Turnip and Honeykrisp, where a per-draw barrier costs about what a copy does. Read only by
+	// GSCopyRoadBlendingPolicy.h; every other driver treats the barrier as cheap.
+	m_features.barrier_read_costs_per_draw = m_device_rules.self_read_costs_measured;
+	if (rt_self_read_is_broken && GSConfig.OverrideTextureBarriers < 0 && !m_features.texture_barrier)
 	{
 		Console.WriteLn("VK: driver has an unreliable in-pass render-target self-read — forcing the "
 						"RT-copy blend path.");
-		m_features.texture_barrier = false;
 	}
-	// (Mali r44p1 used to get its own copy of the block above, testing driverInfo for "r44p1" and
-	// clearing texture_barrier a second time. It is now rule vk-arm-r44p1-attachment-self-read in
-	// the driver-bug database, so rt_self_read_is_broken already covers it and the duplicate is
-	// gone. One difference, deliberate: the table-driven path respects OverrideTextureBarriers,
-	// which the hand-rolled test ignored -- and the comment above documents forcing barriers on as
-	// the way back to the in-tile path for A/B work, so honouring it is the intent.)
+	if (road.arm_unavailable)
+	{
+		// A silently inert arm is a device measurement that runs base twice and calls it an A/B.
+		Console.Error("VK: -declare-feedback-loop %u was requested and CANNOT be applied "
+					  "(VK_EXT_attachment_feedback_loop_layout %s, OverrideTextureBarriers=%d). "
+					  "This build is running the device's own self-read road.",
+			static_cast<unsigned>(g_gs_measurement_overrides.self_read_arm),
+			m_optional_extensions.vk_ext_attachment_feedback_loop_layout ? "present" : "ABSENT",
+			static_cast<int>(GSConfig.OverrideTextureBarriers));
+	}
+
+	return road;
+}
+
+void GSDeviceVK::ResolveFeatureTable()
+{
 	m_features.multidraw_fb_copy = false;
 	m_features.broken_point_sampler = false;
 
@@ -4036,18 +4083,10 @@ bool GSDeviceVK::CheckFeatures()
 
 	m_features.prefer_new_textures = true;
 #if defined(__ANDROID__)
-	// Weak mobile parts would rather reuse than grow the pool, and full preloading blows
-	// their texture budget. Both from the resolved GPU profile; sashkinbro/EmuCoreX.
+	// Weak mobile parts would rather reuse than grow the pool; from the resolved GPU profile.
+	// sashkinbro/EmuCoreX.
 	m_features.prefer_new_textures = GetMobileGSTuning().prefer_new_textures;
-	// The profile no longer forces Texture Preloading down to Partial. It silently contradicted an
-	// explicit user setting — our default is Full, and the downgrade fired for every "constrained"
-	// profile, which includes the conservative fallback used by any GPU the table does not
-	// recognise, so the UI said Full while the renderer ran Partial and only a log line said
-	// otherwise. It was also order-dependent: GSConfig is a global reassigned wholesale on each
-	// ApplySettings, while this override only re-runs when the device is recreated, so preloading
-	// could differ between a fresh boot and a mid-session settings change. sashkinbro dropped it
-	// too ("Restore fast mobile GS paths"); Full is upstream's default because it is usually the
-	// faster path, and a pool-size heuristic is not a measurement of texture-memory pressure.
+	// The profile leaves Texture Preloading alone: the user's setting outranks a pool-size heuristic.
 #endif
 	m_features.provoking_vertex_last = m_optional_extensions.vk_ext_provoking_vertex;
 	m_features.vs_expand = !GSConfig.DisableVertexShaderExpand;
@@ -4063,8 +4102,10 @@ bool GSDeviceVK::CheckFeatures()
 			((props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0);
 	}
 
-	// Fbfetch is useless if we don't have barriers enabled.
-	m_features.framebuffer_fetch &= m_features.texture_barrier;
+	// Fbfetch is useless if we don't have barriers enabled. DecideSelfReadRoad already folds this
+	// in -- the in-tile read IS the in-pass read, so it cannot outlive the bit that permits one --
+	// and this is here to catch a future edit to that function that forgets it.
+	pxAssert(!m_features.framebuffer_fetch || m_features.texture_barrier);
 
 	// Which spelling of the in-pass self-read this backend uses, published so GSRendererHW can tell
 	// the two apart without knowing about Vulkan extensions. The layout road samples the attachment
@@ -4074,36 +4115,17 @@ bool GSDeviceVK::CheckFeatures()
 	// rather than being left to rely on that.
 	m_features.feedback_loop_layout = UseFeedbackLoopLayout();
 
-	// The Vulkan spelling of framebuffer fetch *is* rasterization-order attachment access, whose
-	// contract is that overlapping fragments in one draw observe each other in primitive order.
-	// So the ordering a full barrier would provide is already guaranteed, and keeping the barrier
-	// would only reintroduce the render-pass breaks this path exists to avoid.
+	// Vulkan's framebuffer fetch is rasterization-order attachment access, which orders overlapping
+	// fragments within a draw, so a full barrier would add only pass breaks. Derived after the last
+	// write to framebuffer_fetch so the two bits cannot disagree.
 	//
-	// Derived AFTER every write to framebuffer_fetch above, including the RT-copy workaround's
-	// texture_barrier mask. Deriving it beside the first assignment left the pair disagreeing on
-	// Adreno — no fetch, but "fetch orders overlap" still true — which is inert only for as long as
-	// every reader sits inside an `if (features.framebuffer_fetch)` gate, as DetermineBarriers
-	// currently does. Keep this the last word on the bit rather than relying on that.
-	//
-	// ⚠️ Delivering that contract for an in-pass SELF-read is a separate question from ordering, and
-	// Turnip answers the two differently depending on tiling. Read against mesa-26.1.2: the tiled
-	// path sets GRAS_SC_CNTL.SINGLE_PRIM_MODE = FLUSH_PER_OVERLAP under rasterization-order access,
-	// which the a6xx register docs define as waiting for any overlapping primitive prior to the
-	// current one — the ordering really is requested. The stronger FLUSH_PER_OVERLAP_AND_OVERWRITE,
-	// whose documented extra guarantee is that UCHE and CCU stay in sync "when fetching the previous
-	// value for the current pixel", is only ever set on the UNTILED sysmem path (and there a feedback
-	// loop alone is enough to get it). The device agrees: forcing ROAA on every pipeline changed
-	// nothing while tiled, and the same draw came out correct under TU_DEBUG=sysmem. So what fails
-	// on Adreno is read VISIBILITY while tiled — writes sit unresolved in GMEM while the fetch goes
-	// out through UCHE — not primitive ordering. Adreno never reaches this line with fetch enabled,
-	// so nothing here depends on it; a tiler whose fetch is a genuine tile-local read is a different
-	// case and is not implicated by any of the above.
+	// ⚠️ Ordering is not visibility. On Turnip a tiled in-pass self-read does not see unresolved tile
+	// writes even with rasterization-order access. Adreno never reaches here with fetch enabled.
 	m_features.framebuffer_fetch_orders_overlap = m_features.framebuffer_fetch;
 
-	// Mali Vulkan stacks frequently report dualSrcBlend=false. When absent, GSRendererHW SW-blends
-	// the specific draws that need SRC1 instead of relying on a global high blending-accuracy level
-	// (which is why Mali no longer needs Blending=Max by hand). Ported from sashkinbro/EmuCoreX.
-	m_features.dual_source_blend = m_device_features.dualSrcBlend && !GSConfig.DisableDualSourceBlend;
+	// Without dualSrcBlend (common on Mali), GSRendererHW blends the SRC1 draws in the shader.
+	// Ported from sashkinbro/EmuCoreX.
+	m_features.dual_source_blend = m_device_features.dualSrcBlend;
 
 	// A driver that ignores the blend constant cannot be asked for a constant-colour blend factor at
 	// all, so a fixed (AFIX) factor travels through the second fragment output instead. Read from the
@@ -4113,145 +4135,104 @@ bool GSDeviceVK::CheckFeatures()
 	// by the time this reads it.
 	m_features.broken_blend_constant = GetMobileDriverProfile().HasBug(DriverBug::BrokenBlendConstant);
 
-	// The alpha stencil counter through the blend unit (GSFastStencilShadow.h). Decided here because
-	// both inputs are final by now: texture_barrier after the RT-copy workaround above, and
-	// dual_source_blend just above. With barriers off every frame read on this backend is a pass break
-	// plus a copy, which is the cost the blend removes; today that is exactly the Adreno parts.
-	m_features.fast_stencil_shadow =
-		GSFastStencilShadow::DeviceQualifies(GetRenderAPI(), m_features.texture_barrier, m_features.dual_source_blend);
-
-	// Mali-G57 r13p0-class drivers can expose alternating/stale FastMAD history banks instead of the
-	// reconstructed frame; GSRenderer::Merge falls those back to weave+blend. Ported from sashkinbro/EmuCoreX.
-	m_features.broken_mad_deinterlace = is_mali_g57;
-
-	// Concurrent depth test + depth-as-texture rides the same feedback-sync path as texture_barrier;
-	// a driver with broken barriers has no chance doing GENERAL-layout depth feedback either.
-	// Additionally, Adreno/turnip hangs the tiler sampling the live depth buffer while it is also the
-	// depth attachment (tex == ds) — force it off there so tex == ds takes a depth copy instead of an
-	// in-pass self-read.
-	m_features.test_and_sample_depth = m_features.texture_barrier && !is_adreno;
-
 	// Use D32F depth instead of D32S8 when we have framebuffer fetch.
 	m_features.stencil_buffer &= !m_features.framebuffer_fetch;
 
-	// Which memory the six stream rings get. Decided here, with the other device-shaped decisions,
-	// because it is one: the rings are allocated once at device init and the choice cannot be
-	// revisited afterwards. GSStreamRingMemoryPolicy.h carries the reasoning and the device
-	// numbers; what this does is read the memory-type table, ask the driver database its one
-	// question, and hand VKStreamBuffer::Create the answer. Leaving a cached road is opt-in: with
-	// no rule for this GPU the answer is the write-combined selection every device had before the
-	// policy existed, whatever the table offers.
-	{
-		VkPhysicalDeviceMemoryProperties memory_properties = {};
-		vkGetPhysicalDeviceMemoryProperties(m_physical_device, &memory_properties);
+	// Turnip before Mesa 26.2 hangs on EARLY_Z_LATE_Z with a D32S8 attachment and a discarding shader,
+	// which is SetupDATE's stencil pre-pass (rule vk-turnip-d32s8-early-z-late-z-hang). Without a stencil
+	// buffer depth is plain D32_SFLOAT, and DATE falls back to primitive-ID tracking, then Full, then Off.
+	if (UsesMobileDriverWorkaround(DriverWorkaround::DisableStencilBuffer) ||
+		g_gs_measurement_overrides.disable_stencil_buffer)
+		m_features.stencil_buffer = false;
 
-		// The policy mirrors the Vulkan property bits so it stays backend-neutral and testable.
-		// If Vulkan ever renumbers them this is where it breaks, loudly, at compile time.
-		static_assert(GS_MEMORY_PROPERTY_DEVICE_LOCAL == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		static_assert(GS_MEMORY_PROPERTY_HOST_VISIBLE == VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		static_assert(GS_MEMORY_PROPERTY_HOST_COHERENT == VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		static_assert(GS_MEMORY_PROPERTY_HOST_CACHED == VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+	// Mali-G57 drivers can return stale FastMAD history; GSRenderer::Merge then weaves and blends.
+	// Ported from sashkinbro/EmuCoreX.
+	m_features.broken_mad_deinterlace = m_device_rules.broken_mad_deinterlace;
 
-		u32 type_flags[VK_MAX_MEMORY_TYPES] = {};
-		for (u32 i = 0; i < memory_properties.memoryTypeCount; i++)
-			type_flags[i] = static_cast<u32>(memory_properties.memoryTypes[i].propertyFlags);
-
-		GSStreamRingMemoryInputs inputs;
-		inputs.type_flags = type_flags;
-		inputs.type_count = memory_properties.memoryTypeCount;
-		inputs.prefer_cached_over_write_combined =
-			UsesMobileDriverWorkaround(DriverWorkaround::PreferCachedStreamRingMemory);
-		m_stream_ring_memory = GSDecideStreamRingMemory(inputs);
-	}
-
-	// @@MALI_TELEMETRY@@ One-line device/driver banner so Mali (and Adreno) field reports are
-	// actionable: which GPU/driver, and — critically — which accurate-blend path was resolved:
-	// in-tile framebuffer_fetch (cheap) vs the per-primitive barrier fallback (the tile-flush
-	// slideshow). ROAA=yes but fbfetch=NO on Mali means the barrier path is active. See the
-	// Mali driver-support deep dive.
-	Console.WriteLn("VK: GPU '%s' vendor=0x%04X driver='%s' (%s) | ROAA=%s fbfetch=%s texbarrier=%s "
-					"inpAttFB=%s dualSrc=%s blendConst=%s fastShadow=%s testSampleDepth=%s madFallback=%s pushdesc=%s "
-					"streamRings=%s(type %u)",
-		m_device_properties.deviceName,
-		m_device_properties.vendorID,
-		m_device_driver_properties.driverName,
-		m_device_driver_properties.driverInfo,
-		m_optional_extensions.vk_ext_rasterization_order_attachment_access ? "yes" : "NO",
-		m_features.framebuffer_fetch ? "yes(in-tile)" : "NO(barrier-fallback)",
-		m_features.texture_barrier ? "on" : "off",
-		// inputAttachmentFeedback: the subpassInput/INPUT_ATTACHMENT descriptor path is active
-		// when texture_barrier is on AND feedback_loop_layout is unavailable (Mali). This is the
-		// path sashkinbro's stale-tile descriptor fix targets — the rainbow-blink suspect.
-		(m_features.texture_barrier && !UseFeedbackLoopLayout()) ? "yes" : "NO",
-		m_features.dual_source_blend ? "yes" : "NO(sw-blend-fallback)",
-		m_features.broken_blend_constant ? "BROKEN(afix-via-src1)" : "ok",
-		m_features.fast_stencil_shadow ? "yes(blend)" : "NO(rt-read)",
-		m_features.test_and_sample_depth ? "on" : "off",
-		m_features.broken_mad_deinterlace ? "weave+blend(G57)" : "motion-adaptive",
-		m_use_push_descriptors ? "on" : "off",
-		GSStreamRingMemoryRoadName(m_stream_ring_memory.road), m_stream_ring_memory.type_index);
-
-	// Adreno colorWriteMask-with-depthtest bug (PPSSPP #10421 / thin3d_vulkan.cpp): on
-	// Adreno 5xx and pre-0x801EA000 drivers the pipeline colorWriteMask is ignored while a
-	// depth test is active, so masked RGBA channels get written. PS2 FBMASK relies on the
-	// write mask; we emulate the one case Vulkan blend can express (RGB fully masked, alpha
-	// independent) in CreateTFXPipeline. No user toggle; excludes Adreno 6xx/7xx/8xx.
-	// The 0x801EA000 threshold is in the PROPRIETARY blob's driverVersion encoding; Turnip
-	// reports Mesa's version (e.g. Mesa 26.1.2 -> 0x06801002), which is always below it and
-	// made the workaround misfire on every Turnip device. The blob bug does not exist in
-	// Mesa, so exclude Turnip outright.
-	m_broken_colormask_with_depth = IsDeviceAdreno() && !is_turnip &&
-		(m_device_properties.deviceID < 0x06000000u || m_device_properties.driverVersion < 0x801EA000u);
+	// Adreno 5xx and old Qualcomm drivers ignore colorWriteMask while a depth test is active (PPSSPP
+	// #10421). CreateTFXPipeline emulates the one case blending can express: RGB fully masked, alpha
+	// independent.
+	m_broken_colormask_with_depth = m_device_rules.broken_colormask_with_depth;
 	if (m_broken_colormask_with_depth)
 		Console.WriteLn("VK: Adreno colorWriteMask-with-depthtest workaround active (deviceID=0x%08X driver=0x%08X)",
 			m_device_properties.deviceID, m_device_properties.driverVersion);
 
-	// Turnip below Mesa 26.2 wedges the GPU on A6XX_EARLY_Z_LATE_Z + a D32S8 depth-stencil
-	// attachment + a discarding fragment shader, which is SetupDATE's stencil pre-pass quad once a
-	// stencil buffer exists (round 20260903-0135, A650 / turnip 26.1.2, 8 of 8 titles lost the
-	// device; fixed in Mesa a70d2af590d / MR !41858, first shipped in 26.2). Bounded to that
-	// driver by the vk-turnip-d32s8-early-z-late-z-hang rule rather than to the Adreno vendor
-	// ID, which is what this used to be.
-	//
-	// Stencil off means depth is created as plain D32_SFLOAT and neither a stencil attachment nor
-	// the stencil DATE pre-pass is emitted; DATE falls back to PrimID tracking, then Full, then Off.
-	if (UsesMobileDriverWorkaround(DriverWorkaround::DisableStencilBuffer))
-		m_features.stencil_buffer = false;
+	// Declaring gl_FragDepth for PS2 Z quantization makes the pipeline DepthReplacing, which turns early
+	// depth off on a tiler, so Mali skips it. Apple GPUs skip it for correctness: depth written from the
+	// shader does not bit-match the fixed-function depth a later pass tests against, and a GEQUAL retest
+	// of the same geometry drops pixels along shared edges.
+	m_features.no_ps2_z_quantization = IsDeviceMali() || IsDeviceAppleGPU();
 
-	// On tiler GPUs, declaring gl_FragDepth (for PS2 32-bit Z quantization) emits
-	// SPIR-V ExecutionMode DepthReplacing, which disables early-ZS for the entire
-	// pipeline. Default-on for Mali; opt-out via INI for Z-precision-sensitive titles.
-	//
-	// Apple GPUs additionally miscompare. Depth stored through gl_FragDepth does not
-	// bit-match the fixed-function interpolation that a later read-only pass tests
-	// against, so a GEQUAL retest of the same geometry drops out along shared triangle
-	// edges and whatever was drawn underneath shows through as pinpoints. The floor
-	// only ever lowers the stored value, so it masks the mismatch rather than causing
-	// it: on Black (SLUS-21376) a dark wall shows 7062 stray pixels with the depth
-	// write on the shader path and the floor removed, 748 with the floor, and 0 with
-	// the shader path skipped entirely. God of War II's Athena statue speckles the
-	// same way. Biasing the stored value one PS2 Z unit down also clears it, which
-	// puts the disagreement below a single Z unit.
-	m_features.no_ps2_z_quantization =
-		GSConfig.DisablePS2DepthQuantization || IsDeviceMali() || IsDeviceAppleGPU();
-
+	const VkPhysicalDeviceLimits& limits = m_device_properties.limits;
 	// whether we can do point/line expand depends on the range of the device
 	const float f_upscale = static_cast<float>(GSConfig.UpscaleMultiplier);
 	m_features.point_expand = (m_device_features.largePoints && limits.pointSizeRange[0] <= f_upscale &&
 							   limits.pointSizeRange[1] >= f_upscale);
 	m_features.line_expand =
 		(m_device_features.wideLines && limits.lineWidthRange[0] <= f_upscale && limits.lineWidthRange[1] >= f_upscale);
+}
 
-	// Mobile tile-native ordered depth feedback ("mobile ROV"), opt-in via HWROV. Reads the
-	// depth buffer in-tile (subpassLoad on a depth input attachment) instead of copying it to a
-	// colour RT (DoBeginDSAsRT), so SW-Z / DATE / alpha-test / AA1 depth passes fuse in-pass rather
-	// than round-tripping. It needs an ordered in-tile depth read: ROAA on the depth aspect on the
-	// framebuffer_fetch path (Mali-default / opt-in Adreno), or the render-pass self-dependency on
-	// the texture_barrier path. Gated behind HWROV so toggle-off is byte-for-byte the well-tested
-	// avoid/copy fallback (same as D3D11). Mali r44p1 excludes itself: texture_barrier is forced
-	// off for it above, so framebuffer_fetch is off and the ordered read is unavailable.
-	// Read at device init, so the depth half applies on game restart (HWROV's colour half is live).
-	// Desktop keeps canonical feedback-loop behaviour.
+void GSDeviceVK::ResolveFeedbackConsumers(const GSSelfReadRoadDecision& road)
+{
+	// The alpha stencil counter through the blend unit (GSFastStencilShadow.h). It keys on the road, not
+	// on texture_barrier: declaring the feedback loop turns texture_barrier on, and the counter is most
+	// of what keeps the declared road cheap. loop_declared rather than arm_applied, because a driver
+	// fact reaches the same road without the experiment key.
+	m_features.fast_stencil_shadow = GSFastStencilShadow::DeviceQualifies(
+		{.api = GetRenderAPI(),
+			.dual_source_blend = m_features.dual_source_blend,
+			.road = road.road,
+			.loop_declared = road.loop_declared,
+			// The barrier road's counter was timed on the M2 only; desktop Vulkan on the same road
+			// keeps the answer it had before the road existed.
+			.barrier_road_measured = m_device_rules.barrier_road_measured});
+
+	// The device half of the feedback-loop carry (GSDrawRoad.h). Every input is final here; the
+	// renderer adds the per-draw terms.
+	GSFeedbackLoopCarryInputs carry;
+	carry.device_always_carries = IsDeviceBroadcom();
+	carry.device_is_measured_vendor = IsDeviceMali();
+	carry.device_is_layout_road_vendor = IsDeviceAdreno();
+	// texture_barrier is what makes SendHWDraw issue the reader's feedback barrier at all. With it
+	// off there is no ordering, so the layout road carries nothing. Consulted only on the layout
+	// road; framebuffer_fetch is itself masked by texture_barrier.
+	carry.barriers_order_reads = m_features.texture_barrier;
+	carry.device_is_barrier_road_vendor = m_device_rules.barrier_road_measured;
+	carry.framebuffer_fetch = m_features.framebuffer_fetch;
+	carry.feedback_loop_layout = UseFeedbackLoopLayout();
+	m_features.feedback_carry = GSFeedbackCarryForDevice(carry);
+}
+
+bool GSDeviceVK::ResolveDepthFeedback(const GSSelfReadRoadDecision& road)
+{
+	// Testing and sampling the same depth buffer rides the texture barrier. Adreno hangs the tiler
+	// sampling the live depth buffer while it is also the attachment, so tex == ds takes a copy there.
+	m_features.test_and_sample_depth = m_features.texture_barrier && !IsDeviceAdreno();
+
+	// The depth probe (gsrunner -declare-depth-feedback-loop). No in-pass depth read has been run on
+	// Adreno; the exclusion above is for a hang. The probe asks whether a declared loop, which Turnip
+	// never tiles, avoids it. ⚠️ It may lock up the device.
+	//
+	// On any declared colour loop, from the key or from a driver fact, the depth read stays off unless
+	// the probe asks for it: turning barriers on for colour must not enable an unmeasured depth road.
+	const bool declare_depth_loop = road.loop_declared && g_gs_measurement_overrides.declare_depth_loop;
+	if (declare_depth_loop)
+		m_features.test_and_sample_depth = true;
+	else if (road.loop_declared)
+	{
+		// Barriers are on for the colour loop; that alone must not enable the depth road.
+		m_features.test_and_sample_depth = false;
+	}
+	if (g_gs_measurement_overrides.declare_depth_loop && !road.loop_declared)
+	{
+		Console.Error("VK: -declare-depth-feedback-loop needs a declared colour feedback loop, and this "
+					  "device is not on that road. The depth probe is NOT running.");
+	}
+
+	// Android: depth feedback reads the depth buffer in the pass (a depth input attachment) instead of
+	// copying it to a colour target, opt-in through HWROV. It needs an ordered in-pass depth read:
+	// rasterization-order depth access on the fetch road, or the pass self-dependency on the barrier
+	// road. HWROV off keeps the copy. Read at device creation, so it applies on game restart.
 #if defined(__ANDROID__)
 	const bool depth_feedback_ordered =
 		m_features.framebuffer_fetch ? m_optional_extensions.vk_ext_roaa_depth : m_features.texture_barrier;
@@ -4263,7 +4244,118 @@ bool GSDeviceVK::CheckFeatures()
 #else
 	m_features.depth_feedback = m_features.feedback_loops();
 #endif
+	// On a declared loop, depth_feedback would follow texture_barrier on by itself; it is on only when
+	// the depth probe asks for it.
+	if (road.loop_declared)
+		m_features.depth_feedback = declare_depth_loop;
 	m_features.aa1 = GSConfig.HWAA1 && m_features.vs_expand && m_features.feedback_loops();
+
+	return declare_depth_loop;
+}
+
+void GSDeviceVK::ResolveStreamRingMemory()
+{
+	// The rings are allocated once at device creation, so their memory type is chosen here and never
+	// revisited. GSStreamRingMemoryPolicy.h has the reasoning. With no driver rule the answer is the
+	// write-combined type VMA would pick.
+	VkPhysicalDeviceMemoryProperties memory_properties = {};
+	vkGetPhysicalDeviceMemoryProperties(m_physical_device, &memory_properties);
+
+	// The policy mirrors the Vulkan property bits so it stays backend-neutral and testable.
+	// If Vulkan ever renumbers them this is where it breaks, loudly, at compile time.
+	static_assert(GS_MEMORY_PROPERTY_DEVICE_LOCAL == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	static_assert(GS_MEMORY_PROPERTY_HOST_VISIBLE == VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+	static_assert(GS_MEMORY_PROPERTY_HOST_COHERENT == VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	static_assert(GS_MEMORY_PROPERTY_HOST_CACHED == VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+
+	u32 type_flags[VK_MAX_MEMORY_TYPES] = {};
+	for (u32 i = 0; i < memory_properties.memoryTypeCount; i++)
+		type_flags[i] = static_cast<u32>(memory_properties.memoryTypes[i].propertyFlags);
+
+	GSStreamRingMemoryInputs inputs;
+	inputs.type_flags = type_flags;
+	inputs.type_count = memory_properties.memoryTypeCount;
+	inputs.prefer_cached_over_write_combined =
+		UsesMobileDriverWorkaround(DriverWorkaround::PreferCachedStreamRingMemory);
+	m_stream_ring_memory = GSDecideStreamRingMemory(inputs);
+}
+
+void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool declare_depth_loop)
+{
+	// One line naming the GPU, the driver and the blend road it resolved to, so a field report says
+	// which path the device is on. ROAA=yes with fbfetch=NO means the per-primitive barrier path.
+	Console.WriteLn("VK: GPU '%s' vendor=0x%04X driver='%s' (%s) | ROAA=%s fbfetch=%s texbarrier=%s "
+					"inpAttFB=%s dualSrc=%s blendConst=%s fastShadow=%s testSampleDepth=%s madFallback=%s pushdesc=%s "
+					"streamRings=%s(type %u)",
+		m_device_properties.deviceName,
+		m_device_properties.vendorID,
+		m_device_driver_properties.driverName,
+		m_device_driver_properties.driverInfo,
+		m_optional_extensions.vk_ext_rasterization_order_attachment_access ? "yes" : "NO",
+		m_features.framebuffer_fetch ? "yes(in-tile)" : "NO(barrier-fallback)",
+		m_features.texture_barrier ? "on" : "off",
+		// The input-attachment descriptor path: barriers on and no feedback-loop layout (Mali), the
+		// path sashkinbro's stale-tile descriptor fix targets.
+		(m_features.texture_barrier && !UseFeedbackLoopLayout()) ? "yes" : "NO",
+		m_features.dual_source_blend ? "yes" : "NO(sw-blend-fallback)",
+		m_features.broken_blend_constant ? "BROKEN(afix-via-src1)" : "ok",
+		m_features.fast_stencil_shadow ? "yes(blend)" : "NO(rt-read)",
+		m_features.test_and_sample_depth ? "on" : "off",
+		m_features.broken_mad_deinterlace ? "weave+blend(G57)" : "motion-adaptive",
+		m_use_push_descriptors ? "on" : "off",
+		GSStreamRingMemoryRoadName(m_stream_ring_memory.road), m_stream_ring_memory.type_index);
+
+	// The self-read road and what selected it (the road name carries the experiment key or the driver
+	// fact), and on the declared road which Vulkan declarations are made. After the banner because
+	// depth_feedback is final only now.
+	Console.WriteLn("VK: self-read road = %s [texbarrier=%s intile=%s layout=%s ordersOverlap=%s]",
+		GSSelfReadRoadName(road), m_features.texture_barrier ? "on" : "off",
+		m_features.framebuffer_fetch ? "on" : "off", UseFeedbackLoopLayout() ? "on" : "off",
+		m_features.declared_feedback_loop_orders_overlap ? "claimed" : "no");
+	// Printed whenever a driver claims the fix, including when the part disqualifies it, so a user who
+	// installed the driver pack can see the tag was read.
+	if (const u32 fix_generation = GetMobileDriverProfile().declared_loop_fix_generation;
+		fix_generation != 0)
+	{
+		Console.WriteLn("VK: driver claims feedback-loop fix generation %u (driverInfo '%s'); "
+						"declared-loop ordering %s.",
+			fix_generation, m_device_driver_properties.driverInfo,
+			GetMobileDriverProfile().orders_declared_feedback_loop ?
+				"TRUSTED" :
+				"NOT trusted on this part -- generation 1 covers Turnip on Adreno 650-699, "
+				"generation 2 adds Adreno 730 and up");
+	}
+	// Printed whenever the profile carries the rule, in effect or not.
+	if (GetMobileDriverProfile().prefers_declared_loop_with_barriers)
+	{
+		const bool in_effect = road.selected_by_driver_fact && road.road == GSSelfReadRoad::InPassBarrier;
+		Console.WriteLn("VK: driver rule: Turnip a7xx -- declared feedback loop with the per-draw "
+						"barriers KEPT; %s.",
+			in_effect ? "in effect" : "NOT in effect, overridden here");
+	}
+	if (UseFeedbackLoopLayout() && m_features.texture_barrier)
+	{
+		Console.WriteLn("VK: declares COLOR_ATTACHMENT_FEEDBACK_LOOP %s + "
+						"ATTACHMENT_FEEDBACK_LOOP_OPTIMAL layout + pass-to-pass sampler ordering; "
+						"depth loop %s (test_and_sample_depth=%s depth_feedback=%s).",
+			m_declare_loop_per_draw ? "per draw" : "pipeline create flag",
+			declare_depth_loop ? "DECLARED" : "not declared",
+			m_features.test_and_sample_depth ? "on" : "off", m_features.depth_feedback ? "on" : "off");
+	}
+
+	// The gsrunner flags that move a road for an A/B. Printed only when one is set, so a device
+	// measurement's log says which arm it is while an ordinary run says nothing.
+	if (g_gs_measurement_overrides.Any())
+	{
+		Console.WriteLn("VK: measurement overrides: loop-spelling=%s(%s; %s) declare-arm=%u depth-loop=%s "
+						"stencil-buffer=%s",
+			g_gs_measurement_overrides.loop_create_flag ? "pipeline create flag" : "dynamic per draw",
+			g_gs_measurement_overrides.loop_create_flag ? "forced" : "default",
+			m_declare_loop_per_draw ? "applied" : "pipeline create flag in effect",
+			static_cast<unsigned>(g_gs_measurement_overrides.self_read_arm),
+			g_gs_measurement_overrides.declare_depth_loop ? "DECLARED" : "off",
+			g_gs_measurement_overrides.disable_stencil_buffer ? "FORCED OFF" : "device");
+	}
 
 	DevCon.WriteLn("Optional features:%s%s%s%s%s%s", m_features.primitive_id ? " primitive_id" : "",
 		m_features.texture_barrier ? " texture_barrier" : "", m_features.framebuffer_fetch ? " framebuffer_fetch" : "",
@@ -4273,7 +4365,10 @@ bool GSDeviceVK::CheckFeatures()
 	DevCon.WriteLn("Using %s for point expansion and %s for line expansion.",
 		m_features.point_expand ? "hardware" : "vertex expanding",
 		m_features.line_expand ? "hardware" : "vertex expanding");
+}
 
+bool GSDeviceVK::CheckFormatSupport()
+{
 	bool has_rov_storage_flags = true;
 
 	// Check texture format support before we try to create them.
@@ -4499,17 +4594,6 @@ GSTexture* GSDeviceVK::CreateSurface(GSTexture::Usage usage, int width, int heig
 std::unique_ptr<GSDownloadTexture> GSDeviceVK::CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format)
 {
 	return GSDownloadTextureVK::Create(width, height, format);
-}
-
-void GSDeviceVK::DoHintReadbackSource(GSTexture* tex)
-{
-	// MRU ring of 2 (see the member comment): per-frame readback patterns re-read the
-	// same one or two targets, and the next draw into one of them predicts a readback.
-	if (m_recent_readback_sources[0] == tex || m_recent_readback_sources[1] == tex)
-		return;
-
-	m_recent_readback_sources[1] = m_recent_readback_sources[0];
-	m_recent_readback_sources[0] = tex;
 }
 
 void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
@@ -5006,7 +5090,7 @@ void GSDeviceVK::DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u
 }
 
 void GSDeviceVK::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect,
-	const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter)
+	const MergeTopBand* top_band, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter)
 {
 	GL_PUSH("DoMerge");
 
@@ -5054,6 +5138,8 @@ void GSDeviceVK::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, 
 			BeginClearRenderPass(m_utility_color_render_pass_clear, darea, c);
 			SetPipeline(GetConvertPipeline(ShaderConvert::COPY));
 			DrawStretchRect(sRect[1], PMODE.SLBG ? dRect[2] : dRect[1], dsize);
+			if (top_band[1].enabled)
+				DrawStretchRect(top_band[1].src, top_band[1].dst, dsize);
 			dTex->SetState(GSTexture::State::Dirty);
 			dcleared = true;
 		}
@@ -5106,6 +5192,8 @@ void GSDeviceVK::DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, 
 		SetPipeline(m_merge[PMODE.MMOD]);
 		SetUtilityPushConstants(&bg_color, sizeof(bg_color));
 		DrawStretchRect(sRect[0], dRect[0], dTex->GetSize());
+		if (top_band[0].enabled)
+			DrawStretchRect(top_band[0].src, top_band[0].dst, dTex->GetSize());
 	}
 
 	if (feedback_write_1)
@@ -5451,7 +5539,22 @@ void GSDeviceVK::OMSetRenderTargets(
 	{
 		// Framebuffer unchanged, but check for clears
 		// Use an attachment clear to wipe it out without restarting the render pass
-		if (IsDeviceNVIDIA())
+		//
+		// Unless the open pass's render area is narrower than the attachment: a
+		// vkCmdClearAttachments rect has to lie inside the render area, so a whole-attachment
+		// clear issued into a narrower pass would stop at the pass's edge and leave the rest of
+		// the target holding stale pixels. A colclip resolve pass and a stretch-rect pass can both
+		// open narrower than their attachment today, so this is reachable now, not hypothetical.
+		// End the pass instead and leave the Cleared state alone, which puts the clear on the next
+		// pass's load op -- exactly what happens when this is reached outside a pass.
+		const bool clear_pending = (vkRt && vkRt->GetState() == GSTexture::State::Cleared) ||
+								   (vkDs && vkDs->GetState() == GSTexture::State::Cleared);
+		if (clear_pending &&
+			!m_current_render_pass_area.rcontains(GSVector4i::loadh(vkRt ? vkRt->GetSize() : vkDs->GetSize())))
+		{
+			EndRenderPass();
+		}
+		else if (IsDeviceNVIDIA())
 		{
 			// Using vkCmdClearAttachments() within a render pass on NVIDIA seems to cause dependency issues
 			// between draws that are testing depth which precede it. The result is flickering where Z tests
@@ -5841,9 +5944,26 @@ void GSDeviceVK::FlushStreamRingWrites()
 
 bool GSDeviceVK::CreateBuffers()
 {
+	// With vertex expansion the whole ring is bound as one storage buffer, so it cannot outgrow
+	// the device's storage-buffer range.
+	u32 vertex_size = VERTEX_BUFFER_SIZE;
+	u32 vertex_max_size = VERTEX_BUFFER_MAX_SIZE;
+	if (g_gs_measurement_overrides.vertex_ring_start_kib != 0)
+		vertex_size = std::clamp<u32>(g_gs_measurement_overrides.vertex_ring_start_kib,
+						  VERTEX_BUFFER_MIN_START_SIZE / 1024, VERTEX_BUFFER_MAX_SIZE / 1024) * 1024;
+	if (g_gs_measurement_overrides.vertex_ring_no_growth)
+		vertex_max_size = vertex_size;
+	if (m_features.vs_expand)
+	{
+		vertex_max_size = static_cast<u32>(std::min<u64>(vertex_max_size, m_device_properties.limits.maxStorageBufferRange));
+		vertex_max_size = std::max<u32>(vertex_max_size, vertex_size);
+	}
+	if (g_gs_measurement_overrides.vertex_ring_start_kib != 0 || g_gs_measurement_overrides.vertex_ring_no_growth)
+		Console.WriteLn("VK: measurement overrides: vertex ring %u KiB, growth to %u KiB", vertex_size / 1024, vertex_max_size / 1024);
+
 	if (!m_vertex_stream_buffer.Create(
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | (m_features.vs_expand ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0),
-			VERTEX_BUFFER_SIZE, "vertex"))
+			vertex_size, "vertex", vertex_max_size))
 	{
 		Host::ReportErrorAsync("GS", "Failed to allocate vertex buffer");
 		return false;
@@ -5944,7 +6064,7 @@ bool GSDeviceVK::CreatePipelineLayouts()
 	// attachment (not vendor-scoped). Keep this condition identical to the writes in ApplyTFXState.
 	// Vendor-scoped per sashkinbro/EmuCoreX 30b09c8 (Fix Adreno Vulkan accurate blending flicker).
 	const VkDescriptorType feedback_descriptor_type =
-		(m_features.texture_barrier && !UseFeedbackLoopLayout() && m_device_properties.vendorID == 0x13B5u) ?
+		(m_features.texture_barrier && !UseFeedbackLoopLayout() && IsDeviceMali()) ?
 			VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT :
 			VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 	dslb.AddBinding(TFX_TEXTURE_RT, feedback_descriptor_type, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -6680,7 +6800,7 @@ void GSDeviceVK::RenderImGui()
 {
 	ImGui::Render();
 	const ImDrawData* draw_data = ImGui::GetDrawData();
-	if (draw_data->CmdListsCount == 0)
+	if (draw_data->CmdLists.Size == 0)
 		return;
 
 	UpdateImGuiTextures();
@@ -6741,7 +6861,7 @@ void GSDeviceVK::RenderImGui()
 		py = pcy + phys_h * 0.5f;
 	};
 
-	for (int n = 0; n < draw_data->CmdListsCount; n++)
+	for (int n = 0; n < draw_data->CmdLists.Size; n++)
 	{
 		const ImDrawList* cmd_list = draw_data->CmdLists[n];
 
@@ -6825,7 +6945,7 @@ void GSDeviceVK::RenderImGui()
 void GSDeviceVK::RenderBlankFrame()
 {
 	VkResult res = m_swap_chain->AcquireNextImage();
-	if (res != VK_SUCCESS)
+	if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
 	{
 		Console.Error("VK: Failed to acquire image for blank frame present");
 		return;
@@ -7075,6 +7195,9 @@ bool GSDeviceVK::DoSGSR(GSTexture* sTex, GSTexture* dTex, const std::array<u32, 
 
 void GSDeviceVK::DestroyResources()
 {
+	// Before anything a worker reads is destroyed.
+	StopPipelinePrecompile();
+
 	if (m_tfx_ubo_descriptor_set != VK_NULL_HANDLE)
 		FreePersistentDescriptorSet(m_tfx_ubo_descriptor_set);
 
@@ -7237,10 +7360,17 @@ void GSDeviceVK::DestroyResources()
 
 VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
 {
-	const auto it = m_tfx_vertex_shaders.find(sel.key);
-	if (it != m_tfx_vertex_shaders.end())
-		return it->second;
+	// Precompile workers call this too. The lock covers the map only; two threads that miss on the
+	// same key both compile it and the loser's module is dropped.
+	{
+		std::unique_lock lock(m_tfx_shader_mutex);
+		const auto it = m_tfx_vertex_shaders.find(sel.key);
+		if (it != m_tfx_vertex_shaders.end())
+			return it->second;
+	}
 
+	GSCompileStats::Add(GSCompileStats::ShaderSources, 1);
+	std::optional<GSCompileStats::ScopedTimer> source_timer(std::in_place, GSCompileStats::ShaderSourceNs);
 	std::stringstream ss;
 	AddShaderHeader(ss);
 	AddShaderStageMacro(ss, true, false, false);
@@ -7251,21 +7381,32 @@ VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
 	AddMacro(ss, "VS_EXPAND", static_cast<int>(sel.expand));
 	AddMacro(ss, "VS_PROVOKING_VERTEX_LAST", static_cast<int>(m_features.provoking_vertex_last));
 	ss << m_tfx_source;
+	std::string source = ss.str();
+	source_timer.reset();
 
-	VkShaderModule mod = g_vulkan_shader_cache->GetVertexShader(ss.str());
+	VkShaderModule mod = g_vulkan_shader_cache->GetVertexShader(source);
 	if (mod)
 		Vulkan::SetObjectName(m_device, mod, "TFX Vertex %08X", sel.key);
 
-	m_tfx_vertex_shaders.emplace(sel.key, mod);
-	return mod;
+	std::unique_lock lock(m_tfx_shader_mutex);
+	const auto [it, inserted] = m_tfx_vertex_shaders.emplace(sel.key, mod);
+	if (!inserted && mod != VK_NULL_HANDLE)
+		vkDestroyShaderModule(m_device, mod, nullptr);
+	return it->second;
 }
 
 VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector& sel)
 {
-	const auto it = m_tfx_fragment_shaders.find(sel);
-	if (it != m_tfx_fragment_shaders.end())
-		return it->second;
+	// Same locking as GetTFXVertexShader.
+	{
+		std::unique_lock lock(m_tfx_shader_mutex);
+		const auto it = m_tfx_fragment_shaders.find(sel);
+		if (it != m_tfx_fragment_shaders.end())
+			return it->second;
+	}
 
+	GSCompileStats::Add(GSCompileStats::ShaderSources, 1);
+	std::optional<GSCompileStats::ScopedTimer> source_timer(std::in_place, GSCompileStats::ShaderSourceNs);
 	std::stringstream ss;
 	AddShaderHeader(ss);
 	AddShaderStageMacro(ss, false, false, true);
@@ -7297,6 +7438,7 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_DATE", sel.date);
 	AddMacro(ss, "PS_TCOFFSETHACK", sel.tcoffsethack);
 	AddMacro(ss, "PS_REGION_RECT", sel.region_rect);
+	AddMacro(ss, "PS_NATIVE_TEXEL_GRID", sel.native_texel_grid);
 	AddMacro(ss, "PS_BLEND_A", sel.blend_a);
 	AddMacro(ss, "PS_BLEND_B", sel.blend_b);
 	AddMacro(ss, "PS_BLEND_C", sel.blend_c);
@@ -7337,13 +7479,18 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_ROV_COLOR", sel.rov_color);
 	AddMacro(ss, "PS_ROV_DEPTH", static_cast<u32>(sel.rov_depth));
 	ss << m_tfx_source;
+	std::string source = ss.str();
+	source_timer.reset();
 
-	VkShaderModule mod = g_vulkan_shader_cache->GetFragmentShader(ss.str());
+	VkShaderModule mod = g_vulkan_shader_cache->GetFragmentShader(source);
 	if (mod)
 		Vulkan::SetObjectName(m_device, mod, "TFX Fragment %016" PRIX64 "_%016" PRIX64, sel.key_hi, sel.key_lo);
 
-	m_tfx_fragment_shaders.emplace(sel, mod);
-	return mod;
+	std::unique_lock lock(m_tfx_shader_mutex);
+	const auto [it, inserted] = m_tfx_fragment_shaders.emplace(sel, mod);
+	if (!inserted && mod != VK_NULL_HANDLE)
+		vkDestroyShaderModule(m_device, mod, nullptr);
+	return it->second;
 }
 
 VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
@@ -7398,10 +7545,24 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 	// Ported from sashkinbro/EmuCoreX ("Fix Vulkan attachment feedback pipelines").
 	if (UseFeedbackLoopLayout())
 	{
-		if (p.IsRTFeedbackLoop())
-			gpb.AddPipelineFlags(VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
-		if (p.IsTestingAndSamplingDepth())
-			gpb.AddPipelineFlags(VK_PIPELINE_CREATE_DEPTH_STENCIL_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
+		// The same declaration, spelled per draw -- the default spelling since 2026-09-22. The dynamic
+		// state goes on exactly the pipelines the create flag would have gone on, so the
+		// population declared is the population declared before and only WHEN it is stated
+		// changes; that is why the two are byte-identical. The two spellings
+		// are mutually exclusive by more than taste: the Vulkan runtime filters the create flags
+		// out of a pipeline that declares the state dynamic. See GSDynamicFeedbackLoopPolicy.h.
+		if (m_declare_loop_per_draw)
+		{
+			if (p.IsRTFeedbackLoop() || p.IsTestingAndSamplingDepth())
+				gpb.AddDynamicState(VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT);
+		}
+		else
+		{
+			if (p.IsRTFeedbackLoop())
+				gpb.AddPipelineFlags(VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
+			if (p.IsTestingAndSamplingDepth())
+				gpb.AddPipelineFlags(VK_PIPELINE_CREATE_DEPTH_STENCIL_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
+		}
 	}
 
 	gpb.SetPrimitiveTopology(topology_lookup[p.topology]);
@@ -7496,6 +7657,10 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 	// and rast-order draws.
 	if (m_features.framebuffer_fetch && p.IsRTFeedbackLoop())
 		gpb.AddBlendFlags(VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT);
+	// The declared-loop road on a driver that orders overlapping primitives only on request: only
+	// the draws the renderer marked get it, because the per-overlap wait is what costs.
+	else if (p.raster_order && m_features.declared_loop_overlap_needs_raster_order && p.IsRTFeedbackLoop())
+		gpb.AddBlendFlags(VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT);
 
 	// Mobile ordered depth feedback: the render pass declares ordered depth access (subpass flag
 	// above) whenever depth is sampled on the fbfetch path with the toggle on — the pipeline bound
@@ -7505,7 +7670,11 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 		m_optional_extensions.vk_ext_roaa_depth)
 		gpb.AddDepthStencilFlags(VK_PIPELINE_DEPTH_STENCIL_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_DEPTH_ACCESS_BIT_EXT);
 
-	VkPipeline pipeline = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true));
+	// Marked dirty after the create, not before: a precompile worker's create can straddle a flush
+	// on the GS thread, and a flag set before it would be cleared by that flush and the new entry
+	// never written.
+	VkPipeline pipeline = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(false));
+	g_vulkan_shader_cache->GetPipelineCache(true);
 	if (pipeline)
 	{
 		Vulkan::SetObjectName(
@@ -7526,6 +7695,19 @@ VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 	// at 4x+ and hits a burst of new variants at once — which is the other half of "turn fast-forward
 	// off and it hangs for a few seconds". Timed so the stall is measurable instead of inferred;
 	// only slow compiles are logged, so this costs nothing in the common case.
+	GSCompileStats::Add(GSCompileStats::TFXPipelineMisses, 1);
+	const GSCompileStats::ScopedTimer stall_timer(GSCompileStats::GSThreadStallNs);
+
+	if (m_precompile_active)
+	{
+		if (const std::optional<VkPipeline> precompiled = TakePrecompiledTFXPipeline(p))
+		{
+			m_tfx_pipelines.emplace(p, *precompiled);
+			RecordTFXPipelineKey(p);
+			return *precompiled;
+		}
+	}
+
 	const Common::Timer::Value tfx_compile_start = Common::Timer::GetCurrentValue();
 	VkPipeline pipeline = CreateTFXPipeline(p);
 	const double tfx_compile_ms =
@@ -7536,6 +7718,8 @@ VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 			tfx_compile_ms, m_tfx_pipeline_compile_counter + 1);
 	}
 	m_tfx_pipelines.emplace(p, pipeline);
+	if (pipeline != VK_NULL_HANDLE)
+		RecordTFXPipelineKey(p);
 
 	// Persist the pipeline cache every N new compiles so an Android OOM-kill
 	// or crash mid-session doesn't throw away pipelines that compiled after
@@ -7553,6 +7737,412 @@ VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 		g_vulkan_shader_cache->FlushPipelineCache();
 	}
 	return pipeline;
+}
+
+namespace
+{
+#pragma pack(push, 4)
+	struct TFXKeyFileRecord
+	{
+		GSDeviceVK::PipelineSelector key;
+		/// The last session that drew with this key.
+		u32 last_session;
+		/// GSCacheFile::SealRecord's checksum of the fields above.
+		u32 checksum;
+	};
+#pragma pack(pop)
+	static constexpr u32 TFX_KEY_RECORD_SIZE = sizeof(TFXKeyFileRecord);
+
+	/// Keys drawn with in this many of the game's most recent sessions are built ahead of use; older
+	/// ones stay in the file but cost no memory. A key not drawn with in KEEP_SESSIONS is dropped.
+	static constexpr u32 PRECOMPILE_SESSIONS = 4;
+	static constexpr u32 KEEP_SESSIONS = 32;
+
+	/// Key files kept in the directory, one per game and device configuration; the least recently
+	/// played go first.
+	static constexpr size_t MAX_TFX_KEY_FILES = 128;
+
+	/// Pipelines built ahead of use, in the order the game first used them.
+	static size_t GetMaxPrecompiledTFXPipelines()
+	{
+		static constexpr u64 GB = 1024ull * 1024 * 1024;
+		return (GetPhysicalMemory() >= 6 * GB) ? 2048 : 768;
+	}
+
+	/// Keys come from a file this build wrote (the stamp holds the build identity) and each record
+	/// passed its checksum, so these always hold. They are checked anyway, since a bad key would be
+	/// compiled on a worker thread: every field that indexes a table or names an enum, and every bit
+	/// a real key leaves zero.
+	static bool IsLoadableTFXKey(const GSDeviceVK::PipelineSelector& p)
+	{
+		// The bytes after the last member are padding, zero in every selector a draw builds.
+		static constexpr size_t USED_BYTES = sizeof(GSHWDrawConfig::PSSelector) + sizeof(u32) +
+											 sizeof(GSHWDrawConfig::BlendState) + 4 * sizeof(u8);
+		static_assert(USED_BYTES <= sizeof(GSDeviceVK::PipelineSelector));
+		u8 tail[sizeof(GSDeviceVK::PipelineSelector) - USED_BYTES];
+		std::memcpy(tail, reinterpret_cast<const u8*>(&p) + USED_BYTES, sizeof(tail));
+		if (std::any_of(std::begin(tail), std::end(tail), [](u8 b) { return b != 0; }))
+			return false;
+
+		return p.topology <= static_cast<u32>(GSHWDrawConfig::Topology::Triangle) && (p.key >> 8) == 0 &&
+			   p.pad == 0 && p.bs.op <= GSDevice::OP_REV_SUBTRACT &&
+			   p.vs.expand <= GSHWDrawConfig::VSExpand::TriangleAA1 && p.vs._free == 0 && p.dss._free == 0 &&
+			   p.cms._free == 0 && p.ps.atst <= GSShader::PS_ATST::NOTEQUAL && p.ps.afail <= GSShader::PS_AFAIL::RGB_ONLY_SW_Z &&
+			   p.ps.rov_depth <= GSShader::PS_ROV_DEPTH::READ_ONLY &&
+			   p.ps.blend_hw <= static_cast<u32>(HWBlendType::INV_SRC_DST_BLEND_HALF);
+	}
+
+	/// Builds whose lists are kept: two builds sharing a data root (stable and nightly) each keep
+	/// theirs, and the lists of builds no longer run are removed.
+	static constexpr size_t KEEP_BUILDS = 3;
+
+	/// The build token of a key file name, `<serial>_<crc>_<config>_<build>[_debug].bin`.
+	static std::string_view TFXKeyFileBuild(std::string_view name)
+	{
+		name = name.substr(0, name.rfind('.'));
+		if (name.size() > 6 && name.substr(name.size() - 6) == "_debug")
+			name = name.substr(0, name.size() - 6);
+		const size_t pos = name.rfind('_');
+		return (pos == std::string_view::npos) ? std::string_view() : name.substr(pos + 1);
+	}
+
+	static void PruneTFXKeyFiles(const std::string& dir, std::string_view current_build)
+	{
+		FileSystem::FindResultsArray files;
+		if (!FileSystem::FindFiles(dir.c_str(), "*.bin", FILESYSTEM_FIND_FILES, &files))
+			return;
+
+		// Newest use of each build's lists; the current build always stays.
+		std::vector<std::pair<std::string, s64>> builds;
+		for (const FILESYSTEM_FIND_DATA& fd : files)
+		{
+			const std::string build(TFXKeyFileBuild(Path::GetFileName(fd.FileName)));
+			auto it = std::find_if(builds.begin(), builds.end(), [&build](const auto& b) { return b.first == build; });
+			if (it == builds.end())
+				builds.emplace_back(build, static_cast<s64>(fd.ModificationTime));
+			else
+				it->second = std::max(it->second, static_cast<s64>(fd.ModificationTime));
+		}
+		std::sort(builds.begin(), builds.end(), [&current_build](const auto& a, const auto& b) {
+			if ((a.first == current_build) != (b.first == current_build))
+				return a.first == current_build;
+			return a.second > b.second;
+		});
+		if (builds.size() > KEEP_BUILDS)
+			builds.resize(KEEP_BUILDS);
+
+		std::vector<FILESYSTEM_FIND_DATA> kept;
+		for (FILESYSTEM_FIND_DATA& fd : files)
+		{
+			const std::string_view build = TFXKeyFileBuild(Path::GetFileName(fd.FileName));
+			if (std::none_of(builds.begin(), builds.end(), [&build](const auto& b) { return b.first == build; }))
+				FileSystem::DeleteFilePath(fd.FileName.c_str());
+			else
+				kept.push_back(std::move(fd));
+		}
+
+		if (kept.size() <= MAX_TFX_KEY_FILES)
+			return;
+		std::sort(kept.begin(), kept.end(), [](const FILESYSTEM_FIND_DATA& a, const FILESYSTEM_FIND_DATA& b) {
+			return a.ModificationTime < b.ModificationTime;
+		});
+		for (size_t i = 0; i < kept.size() - MAX_TFX_KEY_FILES; i++)
+			FileSystem::DeleteFilePath(kept[i].FileName.c_str());
+	}
+} // namespace
+
+std::string GSDeviceVK::GetTFXPipelineKeyFingerprint() const
+{
+	// The driver version is left out on purpose: an update keeps the key list. Anything that
+	// changes what a key builds -- features, workaround rules, attachment formats, the shader
+	// header -- is in.
+	std::stringstream ss;
+	ss << m_device_properties.vendorID << ' ' << m_device_properties.deviceID << ' '
+	   << static_cast<u32>(m_device_driver_properties.driverID) << ' ' << SHADER_CACHE_VERSION << ' '
+	   << sizeof(PipelineSelector) << ' ' << m_features.framebuffer_fetch << m_features.depth_feedback
+	   << m_features.provoking_vertex_last << m_features.texture_barrier << m_features.rov
+	   << m_features.primitive_id << m_features.vs_expand << m_optional_extensions.vk_ext_line_rasterization
+	   << m_optional_extensions.vk_ext_roaa_depth << UseFeedbackLoopLayout() << m_declare_loop_per_draw
+	   << m_broken_colormask_with_depth << ' ';
+	for (const GSTexture::Format fmt : {GSTexture::Format::Color, GSTexture::Format::ColorHQ,
+			 GSTexture::Format::ColorHDR, GSTexture::Format::ColorClip, GSTexture::Format::DepthStencil,
+			 GSTexture::Format::PrimID})
+	{
+		ss << static_cast<u32>(LookupNativeFormat(fmt)) << ' ';
+	}
+	AddShaderHeader(ss);
+	return ss.str();
+}
+
+void GSDeviceVK::SetGameIdentity(const std::string& serial, u32 crc)
+{
+	StopPipelinePrecompile();
+
+	if (!GSConfig.PrecompilePipelines || GSConfig.DisableShaderCache || serial.empty())
+		return;
+
+	const std::string dir = Path::Combine(EmuFolders::Cache, "vulkan_pipeline_keys");
+	if (!FileSystem::EnsureDirectoryExists(dir.c_str(), false))
+		return;
+
+	// The build identity is in the stamp because what a key means is defined by this build's code:
+	// a list from another build could name pipelines no draw of this one produces, or ones that do
+	// not compile. The device configuration is in the file name as well, so a switch of driver
+	// family or of a covered setting keeps both lists; the driver version is not, so a driver update
+	// keeps the list, which is the point of it.
+	const std::string fingerprint = GetTFXPipelineKeyFingerprint();
+	const GSCacheFile::Digest fingerprint_digest = GSCacheFile::Hash128(fingerprint.data(), fingerprint.size());
+	GSCacheFile::Stamp stamp;
+	stamp.Add("build", GSCacheFile::GetBuildId());
+	stamp.Add("device", fingerprint);
+
+	const std::string& build_id = GSCacheFile::GetBuildId();
+	const std::string build_token = GSCacheFile::ShortName(GSCacheFile::Hash128(build_id.data(), build_id.size()));
+	const std::string path = Path::Combine(dir,
+		Path::SanitizeFileName(fmt::format("{}_{:08X}_{:02x}{:02x}{:02x}{:02x}_{}{}.bin", serial, crc,
+			fingerprint_digest.bytes[0], fingerprint_digest.bytes[1], fingerprint_digest.bytes[2],
+			fingerprint_digest.bytes[3], build_token, GSConfig.UseDebugDevice ? "_debug" : "")));
+	GSCacheFile::CleanStaleTempFiles(dir);
+
+	// Read what the last sessions recorded, drop what has gone stale, and write it back with this
+	// session's number. A record that fails its checksum, or a torn one at the end, is dropped here.
+	std::vector<TFXKeyFileRecord> records;
+	u32 session = 1;
+	if (std::optional<std::vector<u8>> data = FileSystem::ReadBinaryFile(path.c_str()); data.has_value())
+	{
+		u64 last_session = 0;
+		u32 dropped = 0;
+		std::vector<std::vector<u8>> raw;
+		const GSCacheFile::ReadResult res = GSCacheFile::ParseRecordFile(
+			*data, GSCacheFile::KIND_VK_PIPELINE_KEYS, stamp, TFX_KEY_RECORD_SIZE, &last_session, &raw, &dropped);
+		if (res != GSCacheFile::ReadResult::Ok)
+		{
+			INFO_LOG("Vulkan: discarding the pipeline key list '{}': {}", Path::GetFileName(path),
+				GSCacheFile::ReadResultString(res));
+		}
+		else
+		{
+			if (dropped > 0)
+				WARNING_LOG("Vulkan: {} damaged records in the pipeline key list '{}'", dropped, Path::GetFileName(path));
+			session = static_cast<u32>(last_session) + 1;
+			records.reserve(raw.size());
+			for (const std::vector<u8>& bytes : raw)
+			{
+				TFXKeyFileRecord rec;
+				std::memcpy(&rec, bytes.data(), sizeof(rec));
+				if (rec.last_session >= session || session - rec.last_session > KEEP_SESSIONS ||
+					!IsLoadableTFXKey(rec.key) || m_recorded_tfx_keys.find(rec.key) != m_recorded_tfx_keys.end())
+				{
+					continue;
+				}
+				m_recorded_tfx_keys.emplace(rec.key, RecordedTFXKey{static_cast<u32>(records.size()), rec.last_session});
+				records.push_back(rec);
+			}
+		}
+	}
+	m_tfx_key_session = session;
+
+	{
+		std::vector<u8> out = GSCacheFile::MakeRecordFileHeader(
+			GSCacheFile::KIND_VK_PIPELINE_KEYS, stamp, TFX_KEY_RECORD_SIZE, session);
+		const size_t header_size = out.size();
+		out.resize(header_size + records.size() * sizeof(TFXKeyFileRecord));
+		if (!records.empty())
+			std::memcpy(out.data() + header_size, records.data(), records.size() * sizeof(TFXKeyFileRecord));
+		if (!GSCacheFile::WriteFileAtomic(path, out.data(), out.size()))
+		{
+			m_recorded_tfx_keys.clear();
+			ERROR_LOG("Vulkan: could not write the pipeline key file '{}'", path);
+			return;
+		}
+	}
+	m_tfx_key_file = FileSystem::OpenCFile(path.c_str(), "r+b");
+	if (!m_tfx_key_file)
+	{
+		m_recorded_tfx_keys.clear();
+		ERROR_LOG("Vulkan: could not open the pipeline key file '{}'", path);
+		return;
+	}
+	PruneTFXKeyFiles(dir, build_token);
+
+	const size_t max_jobs = GetMaxPrecompiledTFXPipelines();
+	for (const TFXKeyFileRecord& rec : records)
+	{
+		if (m_precompile_jobs.size() >= max_jobs)
+			break;
+		if (session - rec.last_session > PRECOMPILE_SESSIONS || m_tfx_pipelines.find(rec.key) != m_tfx_pipelines.end())
+			continue;
+		m_precompile_jobs.emplace(rec.key, TFXPrecompileJob());
+		m_precompile_queue.push_back(rec.key);
+	}
+
+	if (m_precompile_queue.empty())
+		return;
+
+	// Half the cores less one, at most four: enough to stay ahead of a game's first frames without
+	// taking the cores the EE, GS and VU threads run on.
+	const u32 hw = std::max(std::thread::hardware_concurrency(), 2u);
+	const u32 num_workers = std::min<u32>(std::clamp(hw / 2 - 1, 1u, 4u), static_cast<u32>(m_precompile_queue.size()));
+	m_precompile_active = true;
+	m_precompile_start = Common::Timer::GetCurrentValue();
+	for (u32 i = 0; i < num_workers; i++)
+		m_precompile_workers.emplace_back(&GSDeviceVK::PrecompileWorker, this);
+
+	INFO_LOG("Vulkan: building {} of {} recorded pipelines for {} (session {}) on {} threads",
+		m_precompile_queue.size(), records.size(), serial, session, num_workers);
+}
+
+void GSDeviceVK::PrepareShaderCacheClear()
+{
+	// Joins the workers and closes the key list; recording resumes at the next game change.
+	StopPipelinePrecompile();
+	// The driver's cache would otherwise be written back, cleared files and all, at the next flush.
+	if (g_vulkan_shader_cache)
+		g_vulkan_shader_cache->ResetPipelineCache();
+}
+
+void GSDeviceVK::PrecompileWorker()
+{
+	Threading::SetNameOfCurrentThread("GS precompile"); // Linux keeps 15 characters.
+	GSShaderCompileIndicator::t_background = true;
+
+	// A thread inherits its creator's affinity, and the GS thread may be pinned to one core.
+	const Threading::ThreadHandle self = Threading::ThreadHandle::GetForCallingThread();
+	self.SetAffinity(0);
+	self.SetNicePriority(5);
+
+	u32 built = 0;
+	std::unique_lock lock(m_precompile_mutex);
+	while (!m_precompile_stop && !m_precompile_queue.empty())
+	{
+		const PipelineSelector p = m_precompile_queue.front();
+		m_precompile_queue.pop_front();
+
+		// Gone if the GS thread took it off the queue to build it itself.
+		const auto it = m_precompile_jobs.find(p);
+		if (it == m_precompile_jobs.end() || it->second.state != TFXPrecompileJob::State::Queued)
+			continue;
+		it->second.state = TFXPrecompileJob::State::Running;
+
+		lock.unlock();
+		const VkPipeline pipeline = CreateTFXPipeline(p);
+		lock.lock();
+
+		// Still present: the GS thread erases a Running job only after it has become Done.
+		TFXPrecompileJob& job = m_precompile_jobs.at(p);
+		job.pipeline = pipeline;
+		job.state = TFXPrecompileJob::State::Done;
+		m_precompile_done_cv.notify_all();
+		built++;
+	}
+
+	GSCompileStats::Add(GSCompileStats::PrecompileBuilt, built);
+	const double cpu_ms = static_cast<double>(self.GetCPUTime()) * 1000.0 / static_cast<double>(Threading::GetThreadTicksPerSecond());
+	const double wall_ms = Common::Timer::ConvertValueToMilliseconds(Common::Timer::GetCurrentValue() - m_precompile_start);
+	INFO_LOG("Vulkan: precompile worker built {} pipelines, {:.1f} ms CPU, finished {:.1f} ms after start, last on CPU {}",
+		built, cpu_ms, wall_ms, self.GetCurrentCpu());
+}
+
+std::optional<VkPipeline> GSDeviceVK::TakePrecompiledTFXPipeline(const PipelineSelector& p)
+{
+	std::unique_lock lock(m_precompile_mutex);
+	const auto it = m_precompile_jobs.find(p);
+	if (it == m_precompile_jobs.end())
+		return std::nullopt;
+
+	if (it->second.state == TFXPrecompileJob::State::Queued)
+	{
+		// Building it here is no slower than waiting behind the queue for a worker.
+		m_precompile_jobs.erase(it);
+		return std::nullopt;
+	}
+
+	if (it->second.state == TFXPrecompileJob::State::Running)
+	{
+		const Common::Timer wait_timer;
+		m_precompile_done_cv.wait(lock, [this, &p]() {
+			return m_precompile_jobs.at(p).state == TFXPrecompileJob::State::Done;
+		});
+		const u64 waited_ns = static_cast<u64>(wait_timer.GetTimeNanoseconds());
+		GSShaderCompileIndicator::OnCompileDone(waited_ns, wait_timer.GetStartValue());
+		GSCompileStats::Add(GSCompileStats::PrecompileWaits, 1);
+		GSCompileStats::Add(GSCompileStats::PrecompileWaitNs, waited_ns);
+	}
+
+	const auto done = m_precompile_jobs.find(p);
+	const VkPipeline pipeline = done->second.pipeline;
+	m_precompile_jobs.erase(done);
+
+	// A worker's failure may be one the GS thread would not have had (memory pressure from several
+	// compiles at once), so it gets its own attempt rather than a permanent null for the session.
+	if (pipeline == VK_NULL_HANDLE)
+		return std::nullopt;
+	return pipeline;
+}
+
+void GSDeviceVK::StopPipelinePrecompile()
+{
+	{
+		std::unique_lock lock(m_precompile_mutex);
+		m_precompile_stop = true;
+		m_precompile_queue.clear();
+	}
+	for (std::thread& worker : m_precompile_workers)
+		worker.join();
+	m_precompile_workers.clear();
+	m_precompile_stop = false;
+
+	// Built and not drawn with this session. Never bound, so no command buffer holds them and they
+	// can go now rather than occupy driver memory until the device closes.
+	for (const auto& [key, job] : m_precompile_jobs)
+	{
+		if (job.pipeline != VK_NULL_HANDLE)
+			vkDestroyPipeline(m_device, job.pipeline, nullptr);
+	}
+	m_precompile_jobs.clear();
+	m_precompile_active = false;
+
+	m_recorded_tfx_keys.clear();
+	if (m_tfx_key_file)
+	{
+		std::fclose(m_tfx_key_file);
+		m_tfx_key_file = nullptr;
+	}
+}
+
+void GSDeviceVK::RecordTFXPipelineKey(const PipelineSelector& p)
+{
+	if (!m_tfx_key_file)
+		return;
+
+	// A key already in the file gets this session's number; a new one is appended.
+	const auto it = m_recorded_tfx_keys.find(p);
+	if (it != m_recorded_tfx_keys.end() && it->second.last_session == m_tfx_key_session)
+		return;
+
+	const u32 index = (it != m_recorded_tfx_keys.end()) ? it->second.index : static_cast<u32>(m_recorded_tfx_keys.size());
+	// Copied byte for byte into a zeroed record. A member-wise copy leaves the selector's tail padding
+	// undefined, the maps compare selectors with memcmp, and a key read back with stray padding would
+	// never match a draw: its precompiled pipeline would go unused and the key be recorded again.
+	TFXKeyFileRecord rec;
+	std::memset(&rec, 0, sizeof(rec));
+	std::memcpy(&rec.key, &p, sizeof(p));
+	rec.last_session = m_tfx_key_session;
+	GSCacheFile::SealRecord(&rec, TFX_KEY_RECORD_SIZE);
+	if (FileSystem::FSeek64(m_tfx_key_file,
+			static_cast<s64>(GSCacheFile::GetRecordFileHeaderSize()) + static_cast<s64>(index) * sizeof(rec), SEEK_SET) != 0 ||
+		std::fwrite(&rec, sizeof(rec), 1, m_tfx_key_file) != 1 || std::fflush(m_tfx_key_file) != 0)
+	{
+		Console.Error("Vulkan: failed to write to the pipeline key file, recording stopped");
+		std::fclose(m_tfx_key_file);
+		m_tfx_key_file = nullptr;
+		return;
+	}
+
+	if (it != m_recorded_tfx_keys.end())
+		it->second.last_session = m_tfx_key_session;
+	else
+		m_recorded_tfx_keys.emplace(p, RecordedTFXKey{index, m_tfx_key_session});
 }
 
 bool GSDeviceVK::BindDrawPipeline(const PipelineSelector& p)
@@ -7595,30 +8185,58 @@ void GSDeviceVK::InitializeState()
 
 bool GSDeviceVK::CreatePersistentDescriptorSets()
 {
+	m_tfx_ubo_descriptor_set = CreateTFXUBODescriptorSet();
+	return (m_tfx_ubo_descriptor_set != VK_NULL_HANDLE);
+}
+
+VkDescriptorSet GSDeviceVK::CreateTFXUBODescriptorSet()
+{
 	const VkDevice dev = m_device;
 	Vulkan::DescriptorSetUpdateBuilder dsub;
 
-	// Allocate UBO descriptor sets for TFX.
-	m_tfx_ubo_descriptor_set = AllocatePersistentDescriptorSet(m_tfx_ubo_ds_layout);
-	if (m_tfx_ubo_descriptor_set == VK_NULL_HANDLE)
-		return false;
-	dsub.AddBufferDescriptorWrite(m_tfx_ubo_descriptor_set, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+	const VkDescriptorSet set = AllocatePersistentDescriptorSet(m_tfx_ubo_ds_layout);
+	if (set == VK_NULL_HANDLE)
+		return VK_NULL_HANDLE;
+	dsub.AddBufferDescriptorWrite(set, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
 		m_vertex_uniform_stream_buffer.GetBuffer(), 0, sizeof(GSHWDrawConfig::VSConstantBuffer));
-	dsub.AddBufferDescriptorWrite(m_tfx_ubo_descriptor_set, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+	dsub.AddBufferDescriptorWrite(set, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
 		m_fragment_uniform_stream_buffer.GetBuffer(), 0, sizeof(GSHWDrawConfig::PSConstantBuffer));
 	if (m_features.vs_expand)
 	{
-		dsub.AddBufferDescriptorWrite(m_tfx_ubo_descriptor_set, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			m_vertex_stream_buffer.GetBuffer(), 0, VERTEX_BUFFER_SIZE);
+		dsub.AddBufferDescriptorWrite(set, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			m_vertex_stream_buffer.GetBuffer(), 0, m_vertex_stream_buffer.GetCurrentSize());
 	}
 	if (m_features.aa1)
 	{
-		dsub.AddBufferDescriptorWrite(m_tfx_ubo_descriptor_set, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		dsub.AddBufferDescriptorWrite(set, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			m_expand_index_stream_buffer.GetBuffer(), 0, INDEX_BUFFER_SIZE);
 	}
 	dsub.Update(dev);
-	Vulkan::SetObjectName(dev, m_tfx_ubo_descriptor_set, "Persistent TFX UBO set");
-	return true;
+	Vulkan::SetObjectName(dev, set, "Persistent TFX UBO set");
+	return set;
+}
+
+void GSDeviceVK::OnStreamRingReplaced(const VKStreamBuffer& ring)
+{
+	// Only the vertex ring is created with room to grow.
+	pxAssert(&ring == &m_vertex_stream_buffer);
+
+	// Draws already recorded keep the old buffer, which retires with this command buffer. Later
+	// draws, in this command buffer and every one after it, bind the new one.
+	SetInitialState(m_current_command_buffer);
+
+	if (m_features.vs_expand)
+	{
+		// The persistent set is in use by recorded and in-flight command buffers, so it cannot be
+		// rewritten in place: build a new one and free the old one when this command buffer retires.
+		const VkDescriptorSet old_set = m_tfx_ubo_descriptor_set;
+		m_tfx_ubo_descriptor_set = CreateTFXUBODescriptorSet();
+		if (m_tfx_ubo_descriptor_set == VK_NULL_HANDLE)
+			pxFailRel("Failed to allocate the TFX UBO descriptor set for the grown vertex ring");
+		m_frame_resources[m_current_frame].cleanup_resources.push_back(
+			[this, old_set]() { FreePersistentDescriptorSet(old_set); });
+		m_dirty_flags |= DIRTY_FLAG_TFX_UBO;
+	}
 }
 
 GSDeviceVK::WaitType GSDeviceVK::GetWaitType(bool wait, bool spin)
@@ -8003,6 +8621,7 @@ void GSDeviceVK::BeginRenderPass(VkRenderPass rp, const GSVector4i& rect)
 		EndRenderPass();
 
 	m_current_render_pass = rp;
+	m_loop_declared_in_pass = false;
 	m_current_render_pass_area = rect;
 	CountRenderPassArea(rect);
 
@@ -8030,6 +8649,7 @@ void GSDeviceVK::BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, c
 		EndRenderPass();
 
 	m_current_render_pass = rp;
+	m_loop_declared_in_pass = false;
 	m_current_render_pass_area = rect;
 	CountRenderPassArea(rect);
 
@@ -8257,7 +8877,7 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 		}
 		if (flags & DIRTY_FLAG_TFX_TEXTURE_RT)
 		{
-			if (m_features.texture_barrier && !UseFeedbackLoopLayout() && m_device_properties.vendorID == 0x13B5u)
+			if (m_features.texture_barrier && !UseFeedbackLoopLayout() && IsDeviceMali())
 			{
 				dsub.AddInputAttachmentDescriptorWrite(
 					ds, TFX_TEXTURE_RT, m_tfx_textures[TFX_TEXTURE_RT]->GetView(), VK_IMAGE_LAYOUT_GENERAL);
@@ -8275,7 +8895,7 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 		}
 		if (flags & DIRTY_FLAG_TFX_TEXTURE_DEPTH)
 		{
-			if (m_features.texture_barrier && !UseFeedbackLoopLayout() && m_device_properties.vendorID == 0x13B5u)
+			if (m_features.texture_barrier && !UseFeedbackLoopLayout() && IsDeviceMali())
 			{
 				dsub.AddInputAttachmentDescriptorWrite(
 					ds, TFX_TEXTURE_DEPTH, m_tfx_textures[TFX_TEXTURE_DEPTH]->GetView(), VK_IMAGE_LAYOUT_GENERAL);
@@ -8506,12 +9126,26 @@ GSTextureVK* GSDeviceVK::SetupPrimitiveTrackingDATE(GSHWDrawConfig& config)
 void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 {
 	// Mid-frame kick (see m_render_passes_since_submit in the header): while a
-	// readback-prone frame is recording, submit accumulated work at a render-pass
-	// boundary so the GPU executes concurrently with GS-thread recording instead of
-	// only starting when the readback fence-waits on it. Draw entry is the safe spot:
-	// nothing is staged yet, and every binding below re-applies via dirty flags.
-	// Gated to outside-a-render-pass (no forced tile flush on tilers) and to frames
-	// near an actual readback (games that never read back see zero change).
+	// readback-prone frame is recording, submit the work recorded so far once enough of it has
+	// piled up, so the GPU executes it while the GS thread records the rest instead of starting
+	// only when the readback fence-waits on it. Draw entry is the safe spot: nothing is staged
+	// yet, and every binding below re-applies via dirty flags.
+	//
+	// A kick happens only at a render-pass boundary: with no pass open, or when the draw shares
+	// neither target with the open pass and so ends it anyway (the keep-the-pass test further
+	// down). Ending a pass the draw would have continued costs a tile store on a tiler, so a draw
+	// that keeps either target never kicks. A colour-clip target in progress or an ROV draw
+	// changes which image the draw binds, so neither is predicted and both wait for the next
+	// boundary. Most passes end at a target switch rather than with no pass open, so without
+	// that boundary many readback frames never kick before their readback at all.
+	//
+	// A kick needs m_readback_kick_passes unsubmitted passes, the open one included. Every submit sleeps
+	// in the driver on Android's Adreno drivers, and the governor answers the sleeps by lowering
+	// the GS thread's clock, so kicking at every boundary costs more there than the earlier
+	// start saves.
+	//
+	// Frames count as readback-prone for readback_window_frames after a synchronous readback,
+	// so a game that never reads back sees zero change.
 	//
 	// Do not read the threshold as a submit budget. It sets how often we *offer* to kick;
 	// what we get is decided by the fence gate below, and that gate binds by a wide margin.
@@ -8519,32 +9153,29 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	// needs the first to have retired. Measured on Rogue Galaxy (M2/Honeykrisp, 60 frames,
 	// ~116 RPs/frame): the arithmetic "RPs-per-frame / threshold" predicts ~14 kicks/frame
 	// and the real number is 2, because ~3300 of ~3400 offers find the next command buffer
-	// still executing. So raising the threshold buys far less than it looks like it should,
-	// and lowering it buys nothing. Sweeping it 8->16 measured -2% total GPU stall on Rogue
-	// Galaxy and +12% on OutRun 2006, i.e. no free lunch in either direction.
-	constexpr u32 kick_threshold = 8;
+	// still executing. So raising the threshold buys far less than it looks like it should.
+	// Sweeping it 8->16 measured -2% total GPU stall on Rogue Galaxy and +12% on OutRun 2006.
 	constexpr u32 readback_window_frames = 3;
-	// A draw into a recent readback source is (almost certainly) producing the data for
-	// the next readback, which follows immediately — kick regardless of the threshold so
-	// the backlog drains during this pass's recording and the readback waits only on the
-	// pass itself plus the copy (see m_recent_readback_sources).
-	const bool produces_readback_data =
-		config.rt && (config.rt == m_recent_readback_sources[0] || config.rt == m_recent_readback_sources[1]);
 	const bool near_readback = m_readback_frame != ~0u && (m_frame - m_readback_frame) <= readback_window_frames;
-	if (near_readback &&
-		(m_render_passes_since_submit >= kick_threshold ||
-			(produces_readback_data && m_render_passes_since_submit > 0)) &&
-		!InRenderPass())
+	const bool at_pass_boundary = !InRenderPass() ||
+		(!config.ps.HasColorROV() && !config.ps.HasDepthROV() && !g_gs_device->GetColorClipTexture() &&
+			!(config.rt && config.rt == m_current_render_target) && !(config.ds && config.ds == m_current_depth_target));
+	const u32 unsubmitted_passes = m_render_passes_since_submit + (InRenderPass() ? 1u : 0u);
+	if (near_readback && at_pass_boundary && unsubmitted_passes >= m_readback_kick_passes)
 	{
 		// The kick must never block: submitting cycles to the next command buffer, and
 		// ActivateCommandBuffer fence-waits if that buffer's previous submission is still
 		// executing — a hidden GPU-sync worse than the backlog the kick drains. Only kick
 		// when the next buffer is verifiably complete; otherwise keep recording and retry
-		// at the next draw (the counter keeps the gate open).
+		// at the next boundary.
 		ScanForCommandBufferCompletion();
 		const u32 next_buffer = (m_current_frame + 1) % NUM_COMMAND_BUFFERS;
 		if (m_frame_resources[next_buffer].fence_counter <= m_completed_fence_counter)
+		{
+			// Submitting does not close an open pass, and this one ends at this draw anyway.
+			EndRenderPass();
 			ExecuteCommandBuffer(WaitType::None);
+		}
 	}
 
 	const GSVector2i rtsize(config.rt ? config.rt->GetSize() : config.ds->GetSize());
@@ -8753,77 +9384,19 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			m_pipeline_selector.ds = true;
 		}
 
-		// Carry the feedback-loop flag across a run of draws on the same target.
-		//
-		// The rule: once a target run has a reader, the flag stays set for the following
-		// non-readers on that target until the pass ends for another reason. Without it the
-		// flag is draw-local, so OMSetRenderTargets ends and restarts the pass on every
-		// reader/non-reader alternation, and an isolated reader costs two pass boundaries.
-		//
-		// Two device classes carry, for the same reason and on different evidence:
-		//
-		// Broadcom/V3D (Raspberry Pi, via the Linux arm64 build) is tile-based and pays
-		// heavily to close and reopen a tile render pass. Its carry is unconditional and
-		// predates the key below.
-		//
-		// The framebuffer-fetch path reads the attachment in-tile through subpassLoad under
-		// rasterization-order attachment access, so a pass declared self-reading by a draw
-		// that never reads is the same pass with one unused input attachment — it costs
-		// nothing to leave the flag set. Gated to Mali, where it was measured: OutRun 2006
-		// 599.5 render passes a frame down to 31.1, Xenosaga 75,899 per run down to 133 and
-		// its frame time from about 32 ms to 16.7, frames identical either way on all 22
-		// corpus dumps.
-		//
-		// Everything else keeps feedback-loop state draw-local: carrying it over can leave
-		// later draws in the previous feedback render pass/layout and cause Vulkan-only
-		// flicker. That matches sashkinbro/EmuCoreX, which removes the carry globally. A
-		// vendor-scoped carry was tried once before and reverted — do NOT widen this past
-		// the two cases above without a device round of its own.
-		//
-		// Gated PER TARGET, not on the enclosing condition — that only requires ONE of rt/ds
-		// to match, so a draw keeping the RT but swapping the depth target would otherwise
-		// inherit a stale depth feedback layout: precisely the flicker mode described above.
-		GSFeedbackLoopCarryInputs carry;
-		carry.device_always_carries = IsDeviceBroadcom();
-		carry.device_is_measured_vendor = IsDeviceMali();
-		carry.framebuffer_fetch = m_features.framebuffer_fetch;
-		carry.feedback_loop_layout = UseFeedbackLoopLayout();
-		// SendHWDraw only receives a target to barrier against when the pipeline's matching
-		// feedback bit is set, so carrying the bit onto a draw that still asks for a barrier
-		// would emit one where none was emitted before. On the fetch path a non-reader never
-		// asks for one, so this term never fires there; it keeps the carry from being the
-		// thing that introduces a barrier if that ever stops being true.
-		const bool alpha_pass_barrier = config.alpha_second_pass.enable &&
-		                                (config.alpha_second_pass.require_one_barrier || config.alpha_second_pass.require_full_barrier);
-		carry.draw_needs_own_barrier =
-			config.require_one_barrier || config.require_full_barrier || alpha_pass_barrier;
-		// A pass carrying the depth feedback bits is a pass in which nothing wrote the depth
-		// being sampled -- that is what makes an in-tile depth read well defined, since the
-		// renderer only lets a draw sample its own depth buffer when it does not write it.
-		// Carrying those bits onto a depth writer says the opposite of what the draw does, and
-		// puts a depth writer and a depth sampler in one pass. So the carried word for a depth
-		// writer drops the depth bits; the colour carry is unaffected, because there is no
-		// read-only colour flag to contradict -- the colour attachment is written by every draw
-		// in the pass either way, and the RT bit only adds an input attachment and an ordering
-		// guarantee over a read this draw does not perform. Reasoning in full in
-		// GSFeedbackLoopCarryPolicy.h. The alpha second pass is included because it rebinds
-		// pipe.dss inside the pass this decision opens.
-		carry.draw_writes_depth = pipe.dss.zwe ||
-		                          (config.alpha_second_pass.enable && config.alpha_second_pass.depth.zwe);
-
-		if (CarryFeedbackLoopAcrossTargetRun(carry))
+		// Keep the open pass's feedback bits across a run of draws on the same target, as the
+		// renderer decided (GSDrawRoad.h). Per target: a draw that keeps the RT but swaps the depth
+		// buffer must not inherit the old depth feedback layout.
+		if (config.road.carry_rt && draw_rt && m_current_render_target == draw_rt)
+			pipe.feedback_loop_flags |= m_current_framebuffer_feedback_loop & FeedbackLoopFlag_ReadAndWriteRT;
+		if (config.road.carry_depth && draw_ds && m_current_depth_target == draw_ds)
 		{
-			if (draw_rt && m_current_render_target == draw_rt)
-				pipe.feedback_loop_flags |= m_current_framebuffer_feedback_loop & FeedbackLoopFlag_ReadAndWriteRT;
-			if (draw_ds && m_current_depth_target == draw_ds && CarryDepthFeedbackAcrossTargetRun(carry))
-			{
-				pipe.feedback_loop_flags |= (m_current_framebuffer_feedback_loop &
-					(FeedbackLoopFlag_ReadAndWriteDepth | FeedbackLoopFlag_ReadDepth));
-			}
+			pipe.feedback_loop_flags |= (m_current_framebuffer_feedback_loop &
+				(FeedbackLoopFlag_ReadAndWriteDepth | FeedbackLoopFlag_ReadDepth));
 		}
 	}
 
-	if (draw_rt && ((config.require_one_barrier && (config.IsFeedbackLoopRT(config.ps) || config.IsFeedbackLoopRT(config.alpha_second_pass.ps)))) && !m_features.texture_barrier)
+	if (draw_rt && config.road.clone_rt)
 	{
 		// Requires a copy of the RT.
 		draw_rt_clone = static_cast<GSTextureVK*>(CreateTexture(rtsize.x, rtsize.y, 1, draw_rt->GetFormat(), true));
@@ -8840,8 +9413,10 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 				const u32 size_indiv = config.drawarea.width() * config.drawarea.height() +
 				                       config.samplearea.width() * config.samplearea.height();
 
-				// Do an individual copy if the union is larger than the sum of individual areas.
-				if (size_union > size_indiv)
+				// Do an individual copy if the union is larger than the sum of individual areas. Only
+				// when they are disjoint: two copies into the same texels with no barrier between them
+				// are a write-after-write hazard, even though both write the same bytes.
+				if (size_union > size_indiv && config.drawarea.rintersect(config.samplearea).rempty())
 				{
 					const GSVector4i snapped_drawarea = ProcessCopyArea(GSVector4i(0, 0, rtsize.x, rtsize.y), config.drawarea);
 					const GSVector4i snapped_samplearea = ProcessCopyArea(GSVector4i(0, 0, rtsize.x, rtsize.y), config.samplearea);
@@ -8926,6 +9501,14 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 		// Only draw to the active area of the colclip hw target. Except when depth is cleared, we need to use the full
 		// buffer size, otherwise it'll only clear the draw part of the depth buffer.
+		//
+		// A TFX pass is opened at the full render target on purpose. Sizing it to its draws instead
+		// (grow to the union of what it holds, pad 2 px, align to the render-area granularity)
+		// removed 98% of Stuntman's render-pass area and moved GPU time by +0.01%..+0.09% on Apple
+		// silicon, +0.59 ms on a Snapdragon 865, and flat to +40% on a Mali-G615. None of Turnip,
+		// Honeykrisp or the Mali driver charge for render-pass AREA -- each charges roughly 12-34
+		// microseconds per PASS, and a narrower area only forces more of them. Commit f9b5395855 has
+		// the mechanism this reverted, and the measurements behind these numbers.
 		const GSVector4i render_area = (pipe.ps.colclip_hw && (config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertAndResolve) && ds_op != VK_ATTACHMENT_LOAD_OP_CLEAR)
 		                             ? config.drawarea
 		                             : GSVector4i::loadh(rtsize);
@@ -8988,8 +9571,11 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 	// now we can do the actual draw
 	if (BindDrawPipeline(pipe))
+	{
+		DeclareDrawFeedbackLoop(config, pipe);
 		SendHWDraw(config, pipe.IsRTFeedbackLoop() ? draw_rt : nullptr, pipe.IsDepthFeedbackLoop() ? draw_ds : nullptr,
 			config.require_one_barrier, config.require_full_barrier);
+	}
 
 	// blend second pass
 	if (config.blend_multi_pass.enable)
@@ -9003,6 +9589,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		pipe.ps.dither = config.blend_multi_pass.dither;
 		if (BindDrawPipeline(pipe))
 		{
+			DeclareDrawFeedbackLoop(config, pipe);
 			// TODO: This probably should have barriers, in case we want to use it conditionally.
 			Draw(config);
 		}
@@ -9024,6 +9611,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		pipe.bs = config.blend;
 		if (BindDrawPipeline(pipe))
 		{
+			DeclareDrawFeedbackLoop(config, pipe);
 			SendHWDraw(config, pipe.IsRTFeedbackLoop() ? draw_rt : nullptr, pipe.IsDepthFeedbackLoop() ? draw_ds : nullptr,
 				config.alpha_second_pass.require_one_barrier, config.alpha_second_pass.require_full_barrier);
 		}
@@ -9101,28 +9689,16 @@ void GSDeviceVK::UpdateHWPipelineSelector(GSHWDrawConfig& config, PipelineSelect
 	pipe.rt = config.rt != nullptr && !config.ps.HasColorROV();
 	pipe.ds = config.ds != nullptr && !config.ps.HasDepthROV();
 	pipe.line_width = config.line_expand;
+	// Set from the read, not from the barrier request: the ordered roads drop a reader's barriers
+	// and the read is still in the pass.
 	pipe.feedback_loop_flags = FeedbackLoopFlag_None;
-	if (m_features.texture_barrier)
-	{
-		if (config.IsFeedbackLoopRT(config.ps))
-			pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadAndWriteRT;
-
-		if (config.IsFeedbackLoopDepth(config.ps))
-			pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadAndWriteDepth;
-	}
-	// With framebuffer fetch, an RT-reading shader (IsFeedbackLoopRT: tex_is_fb / fbmask / date >= 5 /
-	// sw_blend) reads the render target via subpassLoad, which requires it bound as an input attachment -
-	// i.e. an RT feedback loop. DetermineBarriers clears the barrier flags for framebuffer fetch (the read
-	// is coherent), so the barrier-gated block above skips these draws and the input attachment is never
-	// bound. Wire the RT feedback loop here so IsRTFeedbackLoop() drives the input-attachment binding,
-	// feedback render pass and rasterization-order blend flag. Only the subpassLoad path needs this; the
-	// feedback-loop-layout path samples a texture and is handled elsewhere.
-	if (m_features.framebuffer_fetch && !UseFeedbackLoopLayout() && config.IsFeedbackLoopRT(config.ps))
+	if (config.road.rt_loop)
 		pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadAndWriteRT;
-	if (pipe.ds && !(pipe.feedback_loop_flags & FeedbackLoopFlag_ReadAndWriteDepth))
-	{
-		pipe.feedback_loop_flags |= (config.tex && config.tex == config.ds) ? FeedbackLoopFlag_ReadDepth : FeedbackLoopFlag_None;
-	}
+	if (config.road.depth_loop)
+		pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadAndWriteDepth;
+	else if (config.road.depth_read)
+		pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadDepth;
+	pipe.raster_order = config.raster_order && config.road.rt_loop;
 
 	// enable point size in the vertex shader if we're rendering points regardless of upscaling.
 	pipe.vs.point_size |= (config.topology == GSHWDrawConfig::Topology::Point);
@@ -9176,6 +9752,41 @@ VkDependencyFlags GSDeviceVK::GetFeedbackBarrierDependencyFlags() const
 {
 	return UseFeedbackLoopLayout() ? (VK_DEPENDENCY_BY_REGION_BIT | VK_DEPENDENCY_FEEDBACK_LOOP_BIT_EXT) :
 	                                 VK_DEPENDENCY_BY_REGION_BIT;
+}
+
+void GSDeviceVK::DeclareDrawFeedbackLoop(const GSHWDrawConfig& config, const PipelineSelector& pipe)
+{
+	if (!m_declare_loop_per_draw)
+		return;
+
+	// ⚠️ Only the pipelines that would have carried the create flag declare the state dynamic, and
+	// only they may be SET: calling a dynamic-state setter for state the bound pipeline specified
+	// statically is itself illegal (VUID-vkCmdDraw*-None-08608, which the Khronos layer raises on
+	// every ordinary draw if this early-out is missing). A pipeline without the dynamic state has
+	// no loop to declare anyway -- its static value is "none", which is what those draws want.
+	if (!pipe.IsRTFeedbackLoop() && !pipe.IsTestingAndSamplingDepth())
+		return;
+
+	// The colour aspect is narrowed to the draws that actually read the target. That is the whole
+	// point: the flag word on the pipeline selector is carried across the non-readers that follow
+	// a reader, so asking it alone would declare the loop for every draw in the latched pass,
+	// which is what the pipeline create flag already does. The depth aspect is a straight mirror
+	// of the create flag it replaces -- nothing in the per-draw work declares a depth loop.
+	VkImageAspectFlags aspects = 0;
+	if (pipe.IsRTFeedbackLoop() && config.IsFeedbackLoopRT(pipe.ps))
+		aspects |= VK_IMAGE_ASPECT_COLOR_BIT;
+	if (pipe.IsTestingAndSamplingDepth())
+		aspects |= VK_IMAGE_ASPECT_DEPTH_BIT;
+
+	// ⚠️ Issued after the pipeline bind, every draw, deliberately. The Mesa runtime resets this
+	// value while filling a bound pipeline's static state, so a value set once per pass would be
+	// gone by the second draw. VK_IMAGE_ASPECT_NONE is the legal way to say "no loop". The first
+	// reader of a pass writes it twice; see GSLoopEnableWritesForDraw.
+	const GSLoopEnableWrites writes = GSLoopEnableWritesForDraw(aspects, m_loop_declared_in_pass);
+	for (u32 i = 0; i < writes.count; i++)
+		vkCmdSetAttachmentFeedbackLoopEnableEXT(GetCurrentCommandBuffer(), writes.values[i]);
+	if (aspects != 0)
+		m_loop_declared_in_pass = true;
 }
 
 void GSDeviceVK::SendHWDraw(const GSHWDrawConfig& config, GSTextureVK* draw_rt, GSTextureVK* draw_ds,
@@ -9256,4 +9867,100 @@ void GSDeviceVK::SendHWDraw(const GSHWDrawConfig& config, GSTextureVK* draw_rt, 
 
 	if (config.ps.HasColorROV() || config.ps.HasDepthROV())
 		g_perfmon.Put(GSPerfMon::DrawCallsROV, 1);
+}
+
+void GSDeviceVK::CollectDriverReport(GSDriverReport::BackendReport& out) const
+{
+	using namespace GSDriverReport;
+
+	// The base object is replaced below by one carrying the whole resolver result.
+	GSDevice::CollectDriverReport(out);
+
+	out.has_served_facts = true;
+	out.vendor_id = m_device_properties.vendorID;
+	out.device_name = m_device_properties.deviceName;
+	if (m_optional_extensions.vk_khr_driver_properties)
+	{
+		out.driver_id = static_cast<u32>(m_device_driver_properties.driverID);
+		out.driver_name = m_device_driver_properties.driverName;
+		out.driver_info = m_device_driver_properties.driverInfo;
+	}
+
+	VulkanLiveFacts live;
+	live.enabled_instance_extensions = s_enabled_instance_extensions;
+	live.enabled_device_extensions = m_enabled_device_extensions;
+	live.missing_device_extensions = m_missing_device_extensions;
+	live.instance_api_version = VK_API_VERSION_1_1;
+	{
+		JsonWriter vw;
+		WriteVulkanInstance(vw, out.steps, "vulkan", m_instance, m_physical_device, &live, nullptr);
+		out.vulkan_json = vw.TakeString();
+	}
+
+	JsonWriter w;
+	w.BeginObject();
+	w.KeyString("device_name", m_name);
+	w.KeyUInt("max_texture_size", m_max_texture_size);
+	w.KeyString("self_read_road", m_report_self_read_road);
+
+	w.Key("roads");
+	w.BeginObject();
+	w.KeyBool("texture_barrier", m_features.texture_barrier);
+	w.KeyBool("framebuffer_fetch_in_tile", m_features.framebuffer_fetch);
+	w.KeyBool("feedback_loop_layout", UseFeedbackLoopLayout());
+	w.KeyBool("declared_loop_orders_overlap", m_features.declared_feedback_loop_orders_overlap);
+	w.KeyString("feedback_loop_declaration", m_declare_loop_per_draw ? "dynamic per draw" : "pipeline create flag");
+	w.KeyBool("depth_loop_declared", m_report_declare_depth_loop);
+	w.KeyBool("depth_feedback", m_features.depth_feedback);
+	w.KeyBool("push_descriptors", m_use_push_descriptors);
+	w.KeyString("stream_rings", GSStreamRingMemoryRoadName(m_stream_ring_memory.road));
+	w.KeyUInt("stream_ring_memory_type", m_stream_ring_memory.type_index);
+	w.KeyBool("gpu_timing_supported", m_gpu_timing_supported);
+	w.KeyBool("present_spinning_supported", m_spinning_supported);
+	w.KeyBool("measurement_overrides_set", g_gs_measurement_overrides.Any());
+	w.EndObject();
+
+	w.Key("features");
+	WriteFeatureSupport(w, m_features);
+
+	w.Key("profile");
+	{
+		ServedDriverFacts facts;
+		facts.vendor_id = out.vendor_id;
+		facts.driver_id = out.driver_id;
+		facts.driver_name = out.driver_name;
+		facts.driver_info = out.driver_info;
+		facts.device_name = out.device_name;
+		WriteGpuProfile(w, m_gpu_profile, &m_device_rules, ClassifyServedDriver(facts).answered);
+	}
+
+	w.Key("optional_extensions");
+	w.BeginObject();
+#define OPT(name) w.KeyBool(#name, m_optional_extensions.name)
+	OPT(vk_ext_provoking_vertex);
+	OPT(vk_ext_memory_budget);
+	OPT(vk_ext_calibrated_timestamps);
+	OPT(vk_ext_rasterization_order_attachment_access);
+	OPT(vk_ext_roaa_depth);
+	OPT(vk_ext_full_screen_exclusive);
+	OPT(vk_ext_line_rasterization);
+	OPT(vk_swapchain_maintenance1);
+	OPT(vk_swapchain_maintenance1_is_khr);
+	OPT(vk_khr_push_descriptor);
+	OPT(vk_khr_driver_properties);
+	OPT(vk_khr_shader_non_semantic_info);
+	OPT(vk_ext_attachment_feedback_loop_layout);
+	OPT(vk_ext_attachment_feedback_loop_dynamic_state);
+	OPT(vk_ext_fragment_shader_interlock);
+	OPT(vk_khr_vulkan_memory_model);
+	OPT(vk_ext_robustness2_null_descriptor);
+	OPT(vk_ext_device_fault);
+#undef OPT
+	w.EndObject();
+
+	w.Key("enabled_core_features");
+	WriteVulkanCoreFeatures(w, m_device_features);
+
+	w.EndObject();
+	out.backend_json = w.TakeString();
 }

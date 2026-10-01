@@ -419,7 +419,7 @@ namespace FullscreenUI
 	void DrawMemoryCardSettingsPage();
 	void DrawNetworkHDDSettingsPage();
 	void DrawFoldersSettingsPage();
-	void DrawAchievementsSettingsPage(std::unique_lock<std::mutex>& settings_lock);
+	void DrawAchievementsSettingsPage();
 	void DrawControllerSettingsPage();
 	void DrawHotkeySettingsPage();
 	void DrawAdvancedSettingsPage();

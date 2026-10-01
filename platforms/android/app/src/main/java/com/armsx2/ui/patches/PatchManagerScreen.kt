@@ -28,6 +28,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.OutlinedTextField
@@ -303,47 +304,47 @@ private fun PatchOptions(state: PatchManagerUiState, viewModel: PatchManagerView
         Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
             SectionTitle(str("ra.options.header"), str("scope.global"))
             SettingSwitchRow(
-                str("patches.cheats.label"), str("patches.pasteImportHint"), state.settings.enableCheats,
-                onCheckedChange = { value -> viewModel.update { it.copy(enableCheats = value) } },
+                str("patches.cheats.label"), str("patches.pasteImportHint"), state.settings.emuCore.enableCheats,
+                onCheckedChange = { value -> viewModel.update { it.copy(emuCore = it.emuCore.copy(enableCheats = value)) } },
                 modifier = Modifier.controllerFocusable(
                     "patches.enableCheats",
-                    onConfirm = { viewModel.update { it.copy(enableCheats = !state.settings.enableCheats) } },
+                    onConfirm = { viewModel.update { it.copy(emuCore = it.emuCore.copy(enableCheats = !state.settings.emuCore.enableCheats)) } },
                 ),
             )
             SettingSwitchRow(
                 // Own description rather than the shared "applies at boot" line: this one silently
                 // auto-applies a patch to every game that has one, which reads nothing like
                 // "enable widescreen patches" and cost a long GT4 rendering hunt to track down.
-                str("patches.widescreen.label"), str("patches.widescreen.description"), state.settings.enableWideScreenPatches,
-                onCheckedChange = { value -> viewModel.update { it.copy(enableWideScreenPatches = value) } },
+                str("patches.widescreen.label"), str("patches.widescreen.description"), state.settings.emuCore.enableWideScreenPatches,
+                onCheckedChange = { value -> viewModel.update { it.copy(emuCore = it.emuCore.copy(enableWideScreenPatches = value)) } },
                 modifier = Modifier.controllerFocusable(
                     "patches.widescreen",
-                    onConfirm = { viewModel.update { it.copy(enableWideScreenPatches = !state.settings.enableWideScreenPatches) } },
+                    onConfirm = { viewModel.update { it.copy(emuCore = it.emuCore.copy(enableWideScreenPatches = !state.settings.emuCore.enableWideScreenPatches)) } },
                 ),
             )
             SettingSwitchRow(
-                str("patches.noInterlacing.label"), str("patches.applyAtBoot"), state.settings.enableNoInterlacingPatches,
-                onCheckedChange = { value -> viewModel.update { it.copy(enableNoInterlacingPatches = value) } },
+                str("patches.noInterlacing.label"), str("patches.applyAtBoot"), state.settings.emuCore.enableNoInterlacingPatches,
+                onCheckedChange = { value -> viewModel.update { it.copy(emuCore = it.emuCore.copy(enableNoInterlacingPatches = value)) } },
                 modifier = Modifier.controllerFocusable(
                     "patches.noInterlacing",
-                    onConfirm = { viewModel.update { it.copy(enableNoInterlacingPatches = !state.settings.enableNoInterlacingPatches) } },
+                    onConfirm = { viewModel.update { it.copy(emuCore = it.emuCore.copy(enableNoInterlacingPatches = !state.settings.emuCore.enableNoInterlacingPatches)) } },
                 ),
             )
             // HostFS (host: filesystem) — lets ELF/homebrew and certain advanced mods read
             // from the host. Native field + apply already exist; this restores the toggle.
             SettingSwitchRow(
-                str("patches.hostFs.label"), str("patches.hostFs.description"), state.settings.hostFs,
-                onCheckedChange = { value -> viewModel.update { it.copy(hostFs = value) } },
+                str("patches.hostFs.label"), str("patches.hostFs.description"), state.settings.emuCore.hostFs,
+                onCheckedChange = { value -> viewModel.update { it.copy(emuCore = it.emuCore.copy(hostFs = value)) } },
                 modifier = Modifier.controllerFocusable(
                     "patches.hostFs",
-                    onConfirm = { viewModel.update { it.copy(hostFs = !state.settings.hostFs) } },
+                    onConfirm = { viewModel.update { it.copy(emuCore = it.emuCore.copy(hostFs = !state.settings.emuCore.hostFs)) } },
                 ),
             )
             // Where host: actually reads from. Worth stating outright: on Android the root
             // CANNOT be the folder holding the disc, because a SAF content:// URI has no
             // parent directory to derive one from (see Hle_SetHostRoot). Without this line
             // the natural assumption is "next to the ISO", which silently reads nothing.
-            if (state.settings.hostFs) {
+            if (state.settings.emuCore.hostFs) {
                 Text(
                     str("patches.hostFs.folder"),
                     style = MaterialTheme.typography.bodySmall,
@@ -370,13 +371,14 @@ private fun OnlineBrowser(
             // render in another game's tab (the reported "GT4 shows GTA:SA's cheats").
             val forThisGame = state.onlineForGameKey == (game?.uri?.toString() ?: "")
             val entries = if (forThisGame) state.onlineEntries else emptyList()
+            val searching = state.onlineLoading && forThisGame
+            val largeSearching = state.largeLoading && forThisGame
             when {
-                // Says how long, and that leaving is safe. The scan reads four community
-                // repositories — tens of thousands of files between them — so a minute or two is
-                // normal, and users reported assuming it had hung. The second line matters as
+                // Says how long, and that leaving is safe. On a slow connection the file lists
+                // take a while, and users reported assuming it had hung. The second line matters as
                 // much as the first: the search now stops when this screen closes, so nobody has
                 // to sit and wait to protect their device.
-                state.onlineLoading && forThisGame -> Column {
+                searching && entries.isEmpty() -> Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(10.dp))
@@ -389,11 +391,14 @@ private fun OnlineBrowser(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                entries.isEmpty() -> Button(
-                    onClick = { viewModel.fetchOnline(game) },
-                    modifier = Modifier.controllerFocusable("patches.online.fetch", onConfirm = { viewModel.fetchOnline(game) }),
-                ) {
-                    Text(str("patches.online.fetch"))
+                entries.isEmpty() -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { viewModel.fetchOnline(game) },
+                        modifier = Modifier.controllerFocusable("patches.online.fetch", onConfirm = { viewModel.fetchOnline(game) }),
+                    ) {
+                        Text(str("patches.online.fetch"))
+                    }
+                    LargeCheatSearch(largeSearching) { viewModel.fetchLargeCheats(game) }
                 }
                 else -> {
                     if (state.onlineTitle.isNotBlank()) {
@@ -417,6 +422,18 @@ private fun OnlineBrowser(
                             onClick = { viewModel.fetchOnline(game) },
                             modifier = Modifier.controllerFocusable("patches.online.refresh", onConfirm = { viewModel.fetchOnline(game) }),
                         ) { Text(str("games.card.refresh")) }
+                    }
+                    // The patches the app ships are already listed; the online sources are still on
+                    // their way. The large database waits until they are in, since this search
+                    // replaces the list when it finishes.
+                    if (searching) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(10.dp))
+                            Text(str("patches.online.loading"), style = MaterialTheme.typography.bodySmall)
+                        }
+                    } else {
+                        LargeCheatSearch(largeSearching) { viewModel.fetchLargeCheats(game) }
                     }
                     // Patches and cheats each get their own collapsible section. Patches (few — the
                     // whole point of searching) expand by default; cheats (often thousands) collapse
@@ -442,6 +459,36 @@ private fun OnlineBrowser(
                 }
             }
         }
+    }
+}
+
+/**
+ * The large cheat database's own button: kept apart from the regular search the way ARMSX3 keeps
+ * Artemis apart from the RPCS3 patches, because its file list alone outweighs everything else the
+ * search downloads. A spinner while it runs.
+ */
+@Composable
+private fun LargeCheatSearch(searching: Boolean, onSearch: () -> Unit) {
+    if (searching) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(10.dp))
+            Text(str("patches.online.large.loading"), style = MaterialTheme.typography.bodySmall)
+        }
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        OutlinedButton(
+            onClick = onSearch,
+            modifier = Modifier.controllerFocusable("patches.online.large", onConfirm = onSearch),
+        ) {
+            Text(str("patches.online.large"))
+        }
+        Text(
+            str("patches.online.large.hint"),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

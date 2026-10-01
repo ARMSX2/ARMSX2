@@ -781,7 +781,7 @@ object SecondScreen {
                     // save path, so it lands in the same scope (per-game when the game has one).
                     val cur = com.armsx2.ui.InGameOverlay.settingsState.value
                     com.armsx2.ui.InGameOverlay.saveSettings(
-                        cur.copy(aspectRatio = (cur.aspectRatio + 1) % 9),
+                        cur.copy(output = cur.output.copy(aspectRatio = (cur.output.aspectRatio + 1) % 9)),
                     )
                 }
                 SecondScreenTile.SLOT ->
@@ -959,7 +959,7 @@ object SecondScreen {
                         tileFace(tile.icon, MainActivityRuntime.currentSaveSlot.intValue.toString())
                     SecondScreenTile.ASPECT -> tileFace(
                         tile.icon,
-                        aspectLabel(com.armsx2.ui.InGameOverlay.settingsState.value.aspectRatio),
+                        aspectLabel(com.armsx2.ui.InGameOverlay.settingsState.value.output.aspectRatio),
                     )
                     else -> null
                 }

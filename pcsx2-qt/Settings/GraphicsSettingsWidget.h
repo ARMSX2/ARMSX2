@@ -44,6 +44,7 @@ private Q_SLOTS:
 	void onTextureDumpChanged();
 	void onTextureReplacementChanged();
 	void onShadeBoostChanged();
+	void onClearShaderCacheClicked();
 
 private:
 	GSRendererType getEffectiveRenderer() const;

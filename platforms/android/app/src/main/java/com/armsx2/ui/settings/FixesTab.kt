@@ -53,88 +53,88 @@ fun FixesTab(state: MutableState<Settings>) {
         SettingsDivider()
         ToggleRow(
             str("fixes.antiBlur.label"),
-            s.antiBlur,
+            s.display.antiBlur,
             description = str("fixes.antiBlur.desc"),
-        ) { apply(s.copy(antiBlur = it)) }
+        ) { apply(s.copy(display = s.display.copy(antiBlur = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.screenOffsets.label"),
-            s.screenOffsets,
+            s.display.screenOffsets,
             description = str("fixes.screenOffsets.desc"),
-        ) { apply(s.copy(screenOffsets = it)) }
+        ) { apply(s.copy(display = s.display.copy(screenOffsets = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.showOverscan.label"),
-            s.showOverscan,
+            s.display.showOverscan,
             description = str("fixes.showOverscan.desc"),
-        ) { apply(s.copy(showOverscan = it)) }
+        ) { apply(s.copy(display = s.display.copy(showOverscan = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.disableInterlaceOffset.label"),
-            s.disableInterlaceOffset,
+            s.display.disableInterlaceOffset,
             description = str("fixes.disableInterlaceOffset.desc"),
-        ) { apply(s.copy(disableInterlaceOffset = it)) }
+        ) { apply(s.copy(display = s.display.copy(disableInterlaceOffset = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.syncToHostRefresh.label"),
-            s.syncToHostRefresh,
+            s.display.syncToHostRefresh,
             description = str("fixes.syncToHostRefresh.desc"),
-        ) { apply(s.copy(syncToHostRefresh = it)) }
+        ) { apply(s.copy(display = s.display.copy(syncToHostRefresh = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.disableFramebufferFetch.label"),
-            s.disableFramebufferFetch,
+            s.display.disableFramebufferFetch,
             description = str("fixes.disableFramebufferFetch.desc"),
-        ) { apply(s.copy(disableFramebufferFetch = it)) }
+        ) { apply(s.copy(display = s.display.copy(disableFramebufferFetch = it))) }
         SettingsDivider()
         SegmentedRow(
             label = str("fixes.overrideTextureBarriers.label"),
             options = listOf(str("fixes.opt.auto"), str("fixes.opt.off"), str("fixes.opt.on")),
-            selectedIndex = (s.overrideTextureBarriers + 1).coerceIn(0, 2),
+            selectedIndex = (s.display.overrideTextureBarriers + 1).coerceIn(0, 2),
             description = str("fixes.overrideTextureBarriers.desc"),
-            onChange = { apply(s.copy(overrideTextureBarriers = it - 1)) },
+            onChange = { apply(s.copy(display = s.display.copy(overrideTextureBarriers = it - 1))) },
         )
         SettingsDivider()
         ToggleRow(
             str("fixes.hwAccurateAlphaTest.label"),
-            s.hwAccurateAlphaTest,
+            s.display.hwAccurateAlphaTest,
             description = str("fixes.hwAccurateAlphaTest.desc"),
-        ) { apply(s.copy(hwAccurateAlphaTest = it)) }
+        ) { apply(s.copy(display = s.display.copy(hwAccurateAlphaTest = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.disableVertexShaderExpand.label"),
-            s.disableVertexShaderExpand,
+            s.display.disableVertexShaderExpand,
             description = str("fixes.disableVertexShaderExpand.desc"),
-        ) { apply(s.copy(disableVertexShaderExpand = it)) }
+        ) { apply(s.copy(display = s.display.copy(disableVertexShaderExpand = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.useBlitSwapChain.label"),
-            s.useBlitSwapChain,
+            s.display.useBlitSwapChain,
             description = str("fixes.useBlitSwapChain.desc"),
-        ) { apply(s.copy(useBlitSwapChain = it)) }
+        ) { apply(s.copy(display = s.display.copy(useBlitSwapChain = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.disableShaderCache.label"),
-            s.disableShaderCache,
+            s.display.disableShaderCache,
             description = str("fixes.disableShaderCache.desc"),
-        ) { apply(s.copy(disableShaderCache = it)) }
+        ) { apply(s.copy(display = s.display.copy(disableShaderCache = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.integerScaling.label"),
-            s.integerScaling,
+            s.hwFixes.integerScaling,
             description = str("fixes.integerScaling.desc"),
-        ) { apply(s.copy(integerScaling = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(integerScaling = it))) }
         SettingsDivider()
         // Display zoom (#383) — one AetherSX2-style slider that zooms into the picture, trimming
         // every edge by the same amount so it fills more of the screen without distorting. At
         // 100% it's off and the manual per-edge crops below apply instead; above 100% it takes
         // over. Nicer than juggling the four crops for the common "just zoom in a bit" case.
         IntSliderRow(
-            str("fixes.zoom.label"), s.displayZoom, 100, 150,
+            str("fixes.zoom.label"), s.hwFixes.displayZoom, 100, 150,
             description = str("fixes.zoom.desc"),
             valueFormatter = { "$it%" },
-            onReset = { apply(s.copy(displayZoom = 100)) },
-        ) { apply(s.copy(displayZoom = it)) }
+            onReset = { apply(s.copy(hwFixes = s.hwFixes.copy(displayZoom = 100))) },
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(displayZoom = it))) }
         SettingsDivider()
         // Overscan crop (issue #293). Trims native PS2 pixels off each edge before aspect
         // and integer scaling. Plenty of games leave garbage or a black band in the region
@@ -148,31 +148,31 @@ fun FixesTab(state: MutableState<Settings>) {
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
         )
         IntSliderRow(
-            str("fixes.crop.left"), s.cropLeft, 0, 128,
-            onReset = { apply(s.copy(cropLeft = 0)) },
-        ) { apply(s.copy(cropLeft = it)) }
+            str("fixes.crop.left"), s.hwFixes.cropLeft, 0, 128,
+            onReset = { apply(s.copy(hwFixes = s.hwFixes.copy(cropLeft = 0))) },
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(cropLeft = it))) }
         IntSliderRow(
-            str("fixes.crop.top"), s.cropTop, 0, 128,
-            onReset = { apply(s.copy(cropTop = 0)) },
-        ) { apply(s.copy(cropTop = it)) }
+            str("fixes.crop.top"), s.hwFixes.cropTop, 0, 128,
+            onReset = { apply(s.copy(hwFixes = s.hwFixes.copy(cropTop = 0))) },
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(cropTop = it))) }
         IntSliderRow(
-            str("fixes.crop.right"), s.cropRight, 0, 128,
-            onReset = { apply(s.copy(cropRight = 0)) },
-        ) { apply(s.copy(cropRight = it)) }
+            str("fixes.crop.right"), s.hwFixes.cropRight, 0, 128,
+            onReset = { apply(s.copy(hwFixes = s.hwFixes.copy(cropRight = 0))) },
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(cropRight = it))) }
         IntSliderRow(
-            str("fixes.crop.bottom"), s.cropBottom, 0, 128,
+            str("fixes.crop.bottom"), s.hwFixes.cropBottom, 0, 128,
             description = str("fixes.crop.desc"),
-            onReset = { apply(s.copy(cropBottom = 0)) },
-        ) { apply(s.copy(cropBottom = it)) }
+            onReset = { apply(s.copy(hwFixes = s.hwFixes.copy(cropBottom = 0))) },
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(cropBottom = it))) }
         SettingsDivider()
         SegmentedRow(
             label = str("fixes.dithering.label"),
             // "Force 32bit" (native Dithering==3) removes PS2 16-bit color banding — many
             // games look noticeably cleaner with it on.
             options = listOf(str("fixes.opt.off"), str("fixes.opt.scaled"), str("fixes.opt.unscaled"), str("fixes.opt.force32")),
-            selectedIndex = s.dithering.coerceIn(0, 3),
+            selectedIndex = s.hwFixes.dithering.coerceIn(0, 3),
             description = str("fixes.dithering.desc"),
-            onChange = { apply(s.copy(dithering = it)) },
+            onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(dithering = it))) },
         )
         }
 
@@ -185,75 +185,75 @@ fun FixesTab(state: MutableState<Settings>) {
         SegmentedRow(
             label = str("fixes.upscalingFixes.label"),
             options = listOf(str("fixes.opt.off"), str("fixes.opt.normal"), str("fixes.opt.aggr"), str("fixes.opt.normalPlus"), str("fixes.opt.aggrPlus")),
-            selectedIndex = s.nativeScaling.coerceIn(0, 4),
+            selectedIndex = s.hwFixes.nativeScaling.coerceIn(0, 4),
             description = str("fixes.upscalingFixes.desc"),
-            onChange = { apply(s.copy(nativeScaling = it)) },
+            onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(nativeScaling = it))) },
         )
         SettingsDivider()
         SegmentedRow(
             label = str("fixes.halfPixelOffset.label"),
             options = listOf(str("fixes.opt.off"), str("fixes.opt.normal"), str("fixes.opt.special"), str("fixes.opt.aggr"), str("fixes.opt.native"), str("fixes.opt.nwTex")),
-            selectedIndex = s.halfPixelOffset.coerceIn(0, 5),
+            selectedIndex = s.hwFixes.halfPixelOffset.coerceIn(0, 5),
             description = str("fixes.halfPixelOffset.desc"),
-            onChange = { apply(s.copy(halfPixelOffset = it)) },
+            onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(halfPixelOffset = it))) },
         )
         SettingsDivider()
         SegmentedRow(
             label = str("fixes.roundSprite.label"),
             options = listOf(str("fixes.opt.off"), str("fixes.opt.half"), str("fixes.opt.full")),
-            selectedIndex = s.roundSprite.coerceIn(0, 2),
+            selectedIndex = s.hwFixes.roundSprite.coerceIn(0, 2),
             description = str("fixes.roundSprite.desc"),
-            onChange = { apply(s.copy(roundSprite = it)) },
+            onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(roundSprite = it))) },
         )
         SettingsDivider()
         SegmentedRow(
             label = str("fixes.bilinearDirty.label"),
             options = listOf(str("fixes.opt.off"), str("fixes.opt.normal"), str("fixes.opt.half"), str("fixes.opt.forced")),
-            selectedIndex = s.bilinearUpscale.coerceIn(0, 3),
+            selectedIndex = s.hwFixes.bilinearUpscale.coerceIn(0, 3),
             description = str("fixes.bilinearDirty.desc"),
-            onChange = { apply(s.copy(bilinearUpscale = it)) },
+            onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(bilinearUpscale = it))) },
         )
         SettingsDivider()
         ToggleRow(
             str("fixes.alignSprite.label"),
-            s.alignSprite,
+            s.hwFixes.alignSprite,
             description = str("fixes.alignSprite.desc"),
-        ) { apply(s.copy(alignSprite = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(alignSprite = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.mergeSprite.label"),
-            s.mergeSprite,
+            s.hwFixes.mergeSprite,
             description = str("fixes.mergeSprite.desc"),
-        ) { apply(s.copy(mergeSprite = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(mergeSprite = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.wildArmsOffset.label"),
-            s.forceEvenSpritePosition,
+            s.hwFixes.forceEvenSpritePosition,
             description = str("fixes.wildArmsOffset.desc"),
-        ) { apply(s.copy(forceEvenSpritePosition = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(forceEvenSpritePosition = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.unscaledPaletteDraw.label"),
-            s.unscaledPaletteDraw,
+            s.hwFixes.unscaledPaletteDraw,
             description = str("fixes.unscaledPaletteDraw.desc"),
-        ) { apply(s.copy(unscaledPaletteDraw = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(unscaledPaletteDraw = it))) }
         SettingsDivider()
         IntSliderRow(
             label = str("fixes.textureOffsetX.label"),
-            value = s.textureOffsetX.coerceIn(0, 1000),
+            value = s.hwFixes.textureOffsetX.coerceIn(0, 1000),
             min = 0,
             max = 1000,
             description = str("fixes.textureOffsetX.desc"),
-            onChange = { apply(s.copy(textureOffsetX = it)) },
+            onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(textureOffsetX = it))) },
         )
         SettingsDivider()
         IntSliderRow(
             label = str("fixes.textureOffsetY.label"),
-            value = s.textureOffsetY.coerceIn(0, 1000),
+            value = s.hwFixes.textureOffsetY.coerceIn(0, 1000),
             min = 0,
             max = 1000,
             description = str("fixes.textureOffsetY.desc"),
-            onChange = { apply(s.copy(textureOffsetY = it)) },
+            onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(textureOffsetY = it))) },
         )
         }
 
@@ -265,156 +265,156 @@ fun FixesTab(state: MutableState<Settings>) {
         SettingsDivider()
         ToggleRow(
             str("fixes.manualHardwareFixes.label"),
-            s.manualUserHacks,
+            s.hwFixes.manualUserHacks,
             description = str("fixes.manualHardwareFixes.desc"),
-        ) { apply(s.copy(manualUserHacks = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(manualUserHacks = it))) }
         SettingsDivider()
         SegmentedRow(
             label = str("fixes.autoFlush.label"),
             options = listOf(str("fixes.opt.off"), str("fixes.opt.sprites"), str("fixes.opt.on")),
-            selectedIndex = s.autoFlush.coerceIn(0, 2),
+            selectedIndex = s.hwFixes.autoFlush.coerceIn(0, 2),
             description = str("fixes.autoFlush.desc"),
-            onChange = { apply(s.copy(autoFlush = it)) },
+            onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(autoFlush = it))) },
         )
         SettingsDivider()
         SegmentedRow(
             label = str("fixes.textureInsideRt.label"),
             options = listOf(str("fixes.opt.off"), str("fixes.opt.inside"), str("fixes.opt.merge")),
-            selectedIndex = s.textureInsideRt.coerceIn(0, 2),
+            selectedIndex = s.hwFixes.textureInsideRt.coerceIn(0, 2),
             description = str("fixes.textureInsideRt.desc"),
-            onChange = { apply(s.copy(textureInsideRt = it)) },
+            onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(textureInsideRt = it))) },
         )
         SettingsDivider()
         SegmentedRow(
             label = str("fixes.gpuTargetClut.label"),
             options = listOf(str("fixes.opt.off"), str("fixes.opt.inside"), str("fixes.opt.forced")),
-            selectedIndex = s.gpuTargetClut.coerceIn(0, 2),
+            selectedIndex = s.hwFixes.gpuTargetClut.coerceIn(0, 2),
             description = str("fixes.gpuTargetClut.desc"),
-            onChange = { apply(s.copy(gpuTargetClut = it)) },
+            onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(gpuTargetClut = it))) },
         )
         SettingsDivider()
         SegmentedRow(
             label = str("fixes.cpuSpriteBw.label"),
             options = listOf(str("fixes.opt.off"), "64", "128", "256"),
-            selectedIndex = s.cpuSpriteRenderBw.coerceIn(0, 3),
+            selectedIndex = s.hwFixes.cpuSpriteRenderBw.coerceIn(0, 3),
             description = str("fixes.cpuSpriteBw.desc"),
-            onChange = { apply(s.copy(cpuSpriteRenderBw = it)) },
+            onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(cpuSpriteRenderBw = it))) },
         )
         SettingsDivider()
         SegmentedGridRow(
             label = str("fixes.cpuSpriteRender.label"),
             options = listOf(str("fixes.opt.off"), str("fixes.opt.sprite"), str("fixes.opt.triangle"), str("fixes.opt.aggressive"), str("fixes.opt.full"), str("fixes.opt.max")),
-            selectedIndex = s.cpuSpriteRenderLevel.coerceIn(0, 5),
+            selectedIndex = s.hwFixes.cpuSpriteRenderLevel.coerceIn(0, 5),
             columns = 3,
             description = str("fixes.cpuSpriteRender.desc"),
-            onChange = { apply(s.copy(cpuSpriteRenderLevel = it)) },
+            onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(cpuSpriteRenderLevel = it))) },
         )
         SettingsDivider()
         SegmentedRow(
             label = str("fixes.cpuClutRender.label"),
             options = listOf(str("fixes.opt.off"), str("fixes.opt.normal"), str("fixes.opt.aggr")),
-            selectedIndex = s.cpuClutRender.coerceIn(0, 2),
+            selectedIndex = s.hwFixes.cpuClutRender.coerceIn(0, 2),
             description = str("fixes.cpuClutRender.desc"),
-            onChange = { apply(s.copy(cpuClutRender = it)) },
+            onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(cpuClutRender = it))) },
         )
         SettingsDivider()
         SegmentedRow(
             label = str("fixes.limit24BitDepth.label"),
             options = listOf(str("fixes.opt.off"), str("fixes.opt.upper"), str("fixes.opt.lower")),
-            selectedIndex = s.limit24BitDepth.coerceIn(0, 2),
+            selectedIndex = s.hwFixes.limit24BitDepth.coerceIn(0, 2),
             description = str("fixes.limit24BitDepth.desc"),
-            onChange = { apply(s.copy(limit24BitDepth = it)) },
+            onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(limit24BitDepth = it))) },
         )
         SettingsDivider()
         ToggleRow(
             str("fixes.gpuPaletteConversion.label"),
-            s.gpuPaletteConversion,
+            s.hwFixes.gpuPaletteConversion,
             description = str("fixes.gpuPaletteConversion.desc"),
-        ) { apply(s.copy(gpuPaletteConversion = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(gpuPaletteConversion = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.cpuFramebufferConversion.label"),
-            s.cpuFramebufferConversion,
+            s.hwFixes.cpuFramebufferConversion,
             description = str("fixes.cpuFramebufferConversion.desc"),
-        ) { apply(s.copy(cpuFramebufferConversion = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(cpuFramebufferConversion = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.readTargetsWhenClosing.label"),
-            s.readTargetsWhenClosing,
+            s.hwFixes.readTargetsWhenClosing,
             description = str("fixes.readTargetsWhenClosing.desc"),
-        ) { apply(s.copy(readTargetsWhenClosing = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(readTargetsWhenClosing = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.preloadFrameData.label"),
-            s.preloadFrameData,
+            s.hwFixes.preloadFrameData,
             description = str("fixes.preloadFrameData.desc"),
-        ) { apply(s.copy(preloadFrameData = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(preloadFrameData = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.estimateTextureRegion.label"),
-            s.estimateTextureRegion,
+            s.hwFixes.estimateTextureRegion,
             description = str("fixes.estimateTextureRegion.desc"),
-        ) { apply(s.copy(estimateTextureRegion = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(estimateTextureRegion = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.drawBuffering.label"),
-            s.drawBuffering,
+            s.hwFixes.drawBuffering,
             description = str("fixes.drawBuffering.desc"),
-        ) { apply(s.copy(drawBuffering = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(drawBuffering = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.disableDepthEmulation.label"),
-            s.disableDepthEmulation,
+            s.hwFixes.disableDepthEmulation,
             description = str("fixes.disableDepthEmulation.desc"),
-        ) { apply(s.copy(disableDepthEmulation = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(disableDepthEmulation = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.disablePartialInvalidation.label"),
-            s.disablePartialInvalidation,
+            s.hwFixes.disablePartialInvalidation,
             description = str("fixes.disablePartialInvalidation.desc"),
-        ) { apply(s.copy(disablePartialInvalidation = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(disablePartialInvalidation = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.disableSafeFeatures.label"),
-            s.disableSafeFeatures,
+            s.hwFixes.disableSafeFeatures,
             description = str("fixes.disableSafeFeatures.desc"),
-        ) { apply(s.copy(disableSafeFeatures = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(disableSafeFeatures = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.disableRenderFixes.label"),
-            s.disableRenderFixes,
+            s.hwFixes.disableRenderFixes,
             description = str("fixes.disableRenderFixes.desc"),
-        ) { apply(s.copy(disableRenderFixes = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(disableRenderFixes = it))) }
         SettingsDivider()
         IntSliderRow(
             label = str("fixes.skipDrawStart.label"),
-            value = s.skipDrawStart.coerceIn(0, 5000),
+            value = s.hwFixes.skipDrawStart.coerceIn(0, 5000),
             min = 0,
             max = 5000,
             description = str("fixes.skipDrawStart.desc"),
-            onChange = { apply(s.copy(skipDrawStart = it)) },
+            onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(skipDrawStart = it))) },
         )
         SettingsDivider()
         IntSliderRow(
             label = str("fixes.skipDrawEnd.label"),
-            value = s.skipDrawEnd.coerceIn(0, 5000),
+            value = s.hwFixes.skipDrawEnd.coerceIn(0, 5000),
             min = 0,
             max = 5000,
             description = str("fixes.skipDrawEnd.desc"),
-            onChange = { apply(s.copy(skipDrawEnd = it)) },
+            onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(skipDrawEnd = it))) },
         )
         SettingsDivider()
         ToggleRow(
             str("fixes.spinGpuReadbacks.label"),
-            s.spinGpuReadbacks,
+            s.hwFixes.spinGpuReadbacks,
             description = str("fixes.spinGpuReadbacks.desc"),
-        ) { apply(s.copy(spinGpuReadbacks = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(spinGpuReadbacks = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.spinCpuReadbacks.label"),
-            s.spinCpuReadbacks,
+            s.hwFixes.spinCpuReadbacks,
             description = str("fixes.spinCpuReadbacks.desc"),
-        ) { apply(s.copy(spinCpuReadbacks = it)) }
+        ) { apply(s.copy(hwFixes = s.hwFixes.copy(spinCpuReadbacks = it))) }
         }
 
         CollapsibleSection(str("fixes.section.software")) {
@@ -425,32 +425,32 @@ fun FixesTab(state: MutableState<Settings>) {
         SettingsDivider()
         ToggleRow(
             str("fixes.autoFlushSw.label"),
-            s.autoFlushSw,
+            s.output.autoFlushSw,
             description = str("fixes.autoFlushSw.desc"),
-        ) { apply(s.copy(autoFlushSw = it)) }
+        ) { apply(s.copy(output = s.output.copy(autoFlushSw = it))) }
         SettingsDivider()
         ToggleRow(
             str("fixes.mipmapSw.label"),
-            s.mipmapSw,
+            s.output.mipmapSw,
             description = str("fixes.mipmapSw.desc"),
-        ) { apply(s.copy(mipmapSw = it)) }
+        ) { apply(s.copy(output = s.output.copy(mipmapSw = it))) }
         SettingsDivider()
         IntSliderRow(
             label = str("fixes.swThreads.label"),
-            value = s.swThreads.coerceIn(0, 10),
+            value = s.output.swThreads.coerceIn(0, 10),
             min = 0,
             max = 10,
             description = str("fixes.swThreads.desc"),
-            onChange = { apply(s.copy(swThreads = it)) },
+            onChange = { apply(s.copy(output = s.output.copy(swThreads = it))) },
         )
         SettingsDivider()
         IntSliderRow(
             label = str("fixes.swThreadTileHeight.label"),
-            value = s.swThreadsHeight.coerceIn(0, 8),
+            value = s.output.swThreadsHeight.coerceIn(0, 8),
             min = 0,
             max = 8,
             description = str("fixes.swThreadTileHeight.desc"),
-            onChange = { apply(s.copy(swThreadsHeight = it)) },
+            onChange = { apply(s.copy(output = s.output.copy(swThreadsHeight = it))) },
         )
         }
         SettingsDivider()
@@ -459,32 +459,32 @@ fun FixesTab(state: MutableState<Settings>) {
         // rather than in the tab people open to change speed settings.
         CollapsibleSection(str("perf.gamedbFixes.title")) {
             HelpText(str("perf.gamedbFixes.help"))
-            ToggleRow(str("perf.fix.skipBios"), s.enableFastBoot, description = str("perf.fix.skipBios.desc")) { apply(s.copy(enableFastBoot = it)) }
-            ToggleRow(str("perf.fix.gamedbFixes"), s.enableGameFixes, description = str("perf.fix.gamedbFixes.desc")) { apply(s.copy(enableGameFixes = it)) }
+            ToggleRow(str("perf.fix.skipBios"), s.emuCore.enableFastBoot, description = str("perf.fix.skipBios.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableFastBoot = it))) }
+            ToggleRow(str("perf.fix.gamedbFixes"), s.emuCore.enableGameFixes, description = str("perf.fix.gamedbFixes.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = it))) }
             // Compatibility patches sat in the Patches screen under the name "Enable Patches",
             // where nothing said they were the per-game COMPATIBILITY set PCSX2 ships — users
             // read it as "turn patches on/off" and switched it off, or blamed it for a
             // widescreen hack it never controlled. It is the same class of thing as the GameDB
             // fixes above, so it belongs beside them. Widescreen / cheats / no-interlacing stay
             // in the Patches screen; those really are patch choices.
-            ToggleRow(str("perf.fix.compatPatches"), s.enablePatches, description = str("perf.fix.compatPatches.desc")) { apply(s.copy(enablePatches = it)) }
-            ToggleRow(str("perf.fix.skipMpeg"), s.gamefixSkipMpeg, description = str("perf.fix.skipMpeg.desc")) { apply(s.copy(enableGameFixes = true, gamefixSkipMpeg = it)) }
-            if (s.gamefixSkipMpeg) HelpText(str("perf.fix.skipMpeg.warning"))
-            ToggleRow(str("perf.fix.fmvSoftware"), s.gamefixSoftwareRendererFmv, description = str("perf.fix.fmvSoftware.desc")) { apply(s.copy(enableGameFixes = true, gamefixSoftwareRendererFmv = it)) }
-            ToggleRow(str("perf.fix.eeTiming"), s.gamefixEETiming, description = str("perf.fix.eeTiming.desc")) { apply(s.copy(enableGameFixes = true, gamefixEETiming = it)) }
-            ToggleRow(str("perf.fix.instantDma"), s.gamefixInstantDma, description = str("perf.fix.instantDma.desc")) { apply(s.copy(enableGameFixes = true, gamefixInstantDma = it)) }
-            ToggleRow(str("perf.fix.blitFps"), s.gamefixBlitInternalFps, description = str("perf.fix.blitFps.desc")) { apply(s.copy(enableGameFixes = true, gamefixBlitInternalFps = it)) }
-            ToggleRow(str("perf.fix.ophFlag"), s.gamefixOphFlag, description = str("perf.fix.ophFlag.desc")) { apply(s.copy(enableGameFixes = true, gamefixOphFlag = it)) }
-            ToggleRow(str("perf.fix.gifFifo"), s.gamefixGifFifo, description = str("perf.fix.gifFifo.desc")) { apply(s.copy(enableGameFixes = true, gamefixGifFifo = it)) }
-            ToggleRow(str("perf.fix.dmaBusy"), s.gamefixDmaBusy, description = str("perf.fix.dmaBusy.desc")) { apply(s.copy(enableGameFixes = true, gamefixDmaBusy = it)) }
-            ToggleRow(str("perf.fix.vif1Stall"), s.gamefixVif1Stall, description = str("perf.fix.vif1Stall.desc")) { apply(s.copy(enableGameFixes = true, gamefixVif1Stall = it)) }
-            ToggleRow(str("perf.fix.iBit"), s.gamefixIbit, description = str("perf.fix.iBit.desc")) { apply(s.copy(enableGameFixes = true, gamefixIbit = it)) }
-            ToggleRow(str("perf.fix.fullVu0Sync"), s.gamefixFullVu0Sync, description = str("perf.fix.fullVu0Sync.desc")) { apply(s.copy(enableGameFixes = true, gamefixFullVu0Sync = it)) }
-            ToggleRow(str("perf.fix.vuAddSub"), s.gamefixVuAddSub, description = str("perf.fix.vuAddSub.desc")) { apply(s.copy(enableGameFixes = true, gamefixVuAddSub = it)) }
-            ToggleRow(str("perf.fix.vuOverflow"), s.gamefixVuOverflow, description = str("perf.fix.vuOverflow.desc")) { apply(s.copy(enableGameFixes = true, gamefixVuOverflow = it)) }
-            ToggleRow(str("perf.fix.extraXgkick"), s.gamefixXgkick, description = str("perf.fix.extraXgkick.desc")) { apply(s.copy(enableGameFixes = true, gamefixXgkick = it)) }
-            ToggleRow(str("perf.fix.goemonTlb"), s.gamefixGoemonTlb, description = str("perf.fix.goemonTlb.desc")) { apply(s.copy(enableGameFixes = true, gamefixGoemonTlb = it)) }
-            ToggleRow(str("perf.fix.vuSync"), s.gamefixVuSync, description = str("perf.fix.vuSync.desc")) { apply(s.copy(enableGameFixes = true, gamefixVuSync = it)) }
+            ToggleRow(str("perf.fix.compatPatches"), s.emuCore.enablePatches, description = str("perf.fix.compatPatches.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enablePatches = it))) }
+            ToggleRow(str("perf.fix.skipMpeg"), s.emuCore.gamefixSkipMpeg, description = str("perf.fix.skipMpeg.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = true, gamefixSkipMpeg = it))) }
+            if (s.emuCore.gamefixSkipMpeg) HelpText(str("perf.fix.skipMpeg.warning"))
+            ToggleRow(str("perf.fix.fmvSoftware"), s.emuCore.gamefixSoftwareRendererFmv, description = str("perf.fix.fmvSoftware.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = true, gamefixSoftwareRendererFmv = it))) }
+            ToggleRow(str("perf.fix.eeTiming"), s.emuCore.gamefixEETiming, description = str("perf.fix.eeTiming.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = true, gamefixEETiming = it))) }
+            ToggleRow(str("perf.fix.instantDma"), s.emuCore.gamefixInstantDma, description = str("perf.fix.instantDma.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = true, gamefixInstantDma = it))) }
+            ToggleRow(str("perf.fix.blitFps"), s.emuCore.gamefixBlitInternalFps, description = str("perf.fix.blitFps.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = true, gamefixBlitInternalFps = it))) }
+            ToggleRow(str("perf.fix.ophFlag"), s.emuCore.gamefixOphFlag, description = str("perf.fix.ophFlag.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = true, gamefixOphFlag = it))) }
+            ToggleRow(str("perf.fix.gifFifo"), s.emuCore.gamefixGifFifo, description = str("perf.fix.gifFifo.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = true, gamefixGifFifo = it))) }
+            ToggleRow(str("perf.fix.dmaBusy"), s.emuCore.gamefixDmaBusy, description = str("perf.fix.dmaBusy.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = true, gamefixDmaBusy = it))) }
+            ToggleRow(str("perf.fix.vif1Stall"), s.emuCore.gamefixVif1Stall, description = str("perf.fix.vif1Stall.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = true, gamefixVif1Stall = it))) }
+            ToggleRow(str("perf.fix.iBit"), s.emuCore.gamefixIbit, description = str("perf.fix.iBit.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = true, gamefixIbit = it))) }
+            ToggleRow(str("perf.fix.fullVu0Sync"), s.emuCore.gamefixFullVu0Sync, description = str("perf.fix.fullVu0Sync.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = true, gamefixFullVu0Sync = it))) }
+            ToggleRow(str("perf.fix.vuAddSub"), s.emuCore.gamefixVuAddSub, description = str("perf.fix.vuAddSub.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = true, gamefixVuAddSub = it))) }
+            ToggleRow(str("perf.fix.vuOverflow"), s.emuCore.gamefixVuOverflow, description = str("perf.fix.vuOverflow.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = true, gamefixVuOverflow = it))) }
+            ToggleRow(str("perf.fix.extraXgkick"), s.emuCore.gamefixXgkick, description = str("perf.fix.extraXgkick.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = true, gamefixXgkick = it))) }
+            ToggleRow(str("perf.fix.goemonTlb"), s.emuCore.gamefixGoemonTlb, description = str("perf.fix.goemonTlb.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = true, gamefixGoemonTlb = it))) }
+            ToggleRow(str("perf.fix.vuSync"), s.emuCore.gamefixVuSync, description = str("perf.fix.vuSync.desc")) { apply(s.copy(emuCore = s.emuCore.copy(enableGameFixes = true, gamefixVuSync = it))) }
         }
         SettingsDivider()
         RecompilerSection(state)
@@ -511,10 +511,10 @@ private fun PineSection(state: MutableState<Settings>) {
         HelpText(str("fixes.section.pine.help"))
         ToggleRow(
             str("fixes.pine.enable"),
-            s.pineEnabled,
-            description = "${str("fixes.pine.enable.desc")} (127.0.0.1:${s.pineSlot})",
-        ) { apply(s.copy(pineEnabled = it)) }
-        if (s.pineEnabled) HelpText("adb forward tcp:${s.pineSlot} tcp:${s.pineSlot}")
+            s.emuCore.pineEnabled,
+            description = "${str("fixes.pine.enable.desc")} (127.0.0.1:${s.emuCore.pineSlot})",
+        ) { apply(s.copy(emuCore = s.emuCore.copy(pineEnabled = it))) }
+        if (s.emuCore.pineEnabled) HelpText("adb forward tcp:${s.emuCore.pineSlot} tcp:${s.emuCore.pineSlot}")
     }
 }
 
@@ -536,10 +536,10 @@ private fun RecompilerSection(state: MutableState<Settings>) {
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
         )
-        ToggleRow("EE (R5900)", settings.recEE) { apply(settings.copy(recEE = it)) }
-        ToggleRow("IOP (R3000)", settings.recIOP) { apply(settings.copy(recIOP = it)) }
-        ToggleRow("VU0", settings.recVU0) { apply(settings.copy(recVU0 = it)) }
-        ToggleRow("VU1", settings.recVU1) { apply(settings.copy(recVU1 = it)) }
-        ToggleRow("Fastmem", settings.enableFastmem) { apply(settings.copy(enableFastmem = it)) }
+        ToggleRow("EE (R5900)", settings.cpu.recEE) { apply(settings.copy(cpu = settings.cpu.copy(recEE = it))) }
+        ToggleRow("IOP (R3000)", settings.cpu.recIOP) { apply(settings.copy(cpu = settings.cpu.copy(recIOP = it))) }
+        ToggleRow("VU0", settings.cpu.recVU0) { apply(settings.copy(cpu = settings.cpu.copy(recVU0 = it))) }
+        ToggleRow("VU1", settings.cpu.recVU1) { apply(settings.copy(cpu = settings.cpu.copy(recVU1 = it))) }
+        ToggleRow("Fastmem", settings.cpu.enableFastmem) { apply(settings.copy(cpu = settings.cpu.copy(enableFastmem = it))) }
     }
 }

@@ -41,6 +41,13 @@ struct VuSnapshot
 	int index = 0;
 	VURegs regs{};
 	std::vector<VuMemWindow> mem_windows;
+	// VU0's window onto VU1's register file. An address index with bit 0x400
+	// set does not reach VU0's data memory at all: it reaches 64 quadwords of
+	// VU1's registers, VF0..VF31 then VI0..VI31, which a VU0 program both
+	// reads and writes. So it is state under test for a VU0 program, and one
+	// engine's write to it has to be taken back before the other runs. VU1
+	// has no such window; this is empty for index 1.
+	std::vector<u8> vu1_window;
 
 	// Snapshots `vuRegs[index]` plus the requested data-memory windows from
 	// `VU.Mem`. Captures the full struct verbatim; the diff function decides

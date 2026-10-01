@@ -101,6 +101,12 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
             state.value = state.value.copy(error = "Couldn't resolve that folder.")
             return
         }
+        // Check now, while the player can pick again. Unchecked, an unwritable folder was only
+        // found out at the next launch.
+        if (!MainActivityRuntime.validateSystemDirWritable(path)) {
+            state.value = state.value.copy(error = com.armsx2.i18n.I18n.get("setup.systemDir.error.tryAnother"))
+            return
+        }
         MainActivityRuntime.systemDir.value = path
         MainActivityRuntime.prefs.edit().putString("systemDir", path).apply()
         state.value = state.value.copy(systemLocation = StorageLocation.Custom, error = null)
@@ -269,7 +275,10 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
         if (!canContinue()) return
         val previousRoot = MainActivityRuntime.currentInitDataRoot()
         MainActivityRuntime.finishSetup()
+        // No folder chosen means app-private storage, which is what the pin holds in that case;
+        // comparing against null restarted the app every time setup was reopened.
         val selectedRoot = MainActivityRuntime.systemDirPosix()
+            ?: getApplication<Application>().getExternalFilesDir(null)?.absolutePath
         if (MainActivityRuntime.nativeReady.value && previousRoot != null && previousRoot != selectedRoot) {
             MainActivityRuntime.restartApp(getApplication())
         }

@@ -6,7 +6,7 @@
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/GSExtra.h"
 
-#if defined(_DEBUG) || defined(PCSX2_DEVBUILD)
+#if (defined(_DEBUG) || defined(PCSX2_DEVBUILD)) && !defined(PCSX2_GS_NO_DEBUG_LABELS)
 #define ENABLE_OGL_DEBUG // enable GS debug logging
 //#define ENABLE_TRACE_REG // print GS reg write
 //#define ENABLE_EXTRA_LOG // print extra log

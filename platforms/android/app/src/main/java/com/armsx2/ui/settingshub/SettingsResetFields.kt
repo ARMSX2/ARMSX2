@@ -33,11 +33,11 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
         // LsfgSection lives on this tab. lsfgDllPath is deliberately NOT here: Reset restores
         // settings, and forgetting which file the user imported is not a setting being restored,
         // it is making them go and find their Lossless.dll again.
-        "lsfgEnabled", "lsfgMultiplier", "lsfgPerformance", "lsfgFlowScale", "lsfgTargetRate",
+        "lsfgEnabled", "lsfgMultiplier", "lsfgPerformance", "lsfgFp16", "lsfgFlowScale", "lsfgTargetRate",
     ),
     // RendererTab.kt
     SettingsCategory.Graphics to listOf(
-        "accurateBlendingUnit", "adrenoFbFetch", "aspectRatio", "casMode", "casSharpness",
+        "accurateBlendingUnit", "aspectRatio", "casMode", "casSharpness",
         "customAspectRatio", "deinterlaceMode", "displayBilinear", "dumpReplaceableTextures", "fmvAspectRatio",
         "forceMaliFbFetch", "fsrSharpness", "fxaa", "gpuProfile", "gsBackThreadMode", "hardwareDownloadMode",
         "hwAa1", "hwAccurateAlphaTest", "hwMipmap", "hwRov", "loadTextureReplacements",

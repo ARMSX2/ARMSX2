@@ -984,7 +984,8 @@ void MTGS::RunOnGSThread(AsyncCallType func)
 void MTGS::GameChanged()
 {
 	pxAssertRel(IsOpen(), "MTGS is running");
-	RunOnGSThread(GSGameChanged);
+	// Read here on the CPU thread; the GS thread must not wait on the VM info lock.
+	RunOnGSThread([serial = VMManager::GetDiscSerial(), crc = VMManager::GetDiscCRC()]() { GSGameChanged(serial, crc); });
 }
 
 void MTGS::ApplySettings()

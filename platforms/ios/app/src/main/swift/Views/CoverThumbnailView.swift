@@ -11,6 +11,7 @@ struct CoverThumbnailView: View {
     let coverSignature: String?
     let width: CGFloat
     let height: CGFloat
+    var cornerRadius: CGFloat = 10
 
     @State private var image: UIImage?
 
@@ -20,9 +21,9 @@ struct CoverThumbnailView: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(Color(.secondarySystemGroupedBackground))
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .strokeBorder(.white.opacity(0.12), lineWidth: 1)
 
             if let image {
@@ -43,7 +44,9 @@ struct CoverThumbnailView: View {
             }
         }
         .frame(width: width, height: height)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .clipShape(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        )
         .task(id: cacheID) {
             await loadThumbnail()
         }
@@ -58,7 +61,13 @@ struct CoverThumbnailView: View {
         }
 
         let scale = UIScreen.main.scale
-        if let cached = CoverThumbnailCache.shared.cachedImage(for: coverURL, signature: coverSignature, width: width, height: height, scale: scale) {
+        if let cached = CoverThumbnailCache.shared.cachedImage(
+            for: coverURL,
+            signature: coverSignature,
+            width: width,
+            height: height,
+            scale: scale
+        ) {
             image = cached
             return
         }
@@ -121,12 +130,15 @@ private actor CoverThumbnailDecodeCoordinator {
     }
 
     private let limiter = CoverThumbnailDecodeLimiter(
-        maximumConcurrentDecodes: 6
+        // Four decodes fill the visible rail quickly without returning to the
+        // unbounded work that can starve native scrolling.
+        maximumConcurrentDecodes: 4
     )
     private var requests: [String: Request] = [:]
 
     func image(
         for key: String,
+        priority: TaskPriority,
         decode: @escaping @Sendable () -> UIImage?
     ) async -> UIImage? {
         if let request = requests[key] {
@@ -135,7 +147,7 @@ private actor CoverThumbnailDecodeCoordinator {
 
         let token = UUID()
         let limiter = self.limiter
-        let task: Task<UIImage?, Never> = Task.detached(priority: .userInitiated) {
+        let task: Task<UIImage?, Never> = Task.detached(priority: priority) {
             await limiter.acquire()
             guard !Task.isCancelled else {
                 await limiter.release()
@@ -155,15 +167,28 @@ private actor CoverThumbnailDecodeCoordinator {
     }
 }
 
+struct CoverThumbnailPreheatItem: Hashable, Sendable {
+    let url: URL
+    let signature: String?
+}
+
 final class CoverThumbnailCache: @unchecked Sendable {
     static let shared = CoverThumbnailCache()
 
+    private final class WeakImage {
+        weak var value: UIImage?
+        init(_ value: UIImage) { self.value = value }
+    }
+
     private let cache = NSCache<NSString, UIImage>()
     private let stateLock = NSLock()
+    private var latestImageBySource: [String: WeakImage] = [:]
     private var generation: UInt64 = 0
     private var acceptsImages = true
 
     private init() {
+        // Match Master's smooth revisit behavior: scrolling back to a recently
+        // visible card should not immediately decode it again.
         cache.countLimit = 768
         cache.totalCostLimit = 96 * 1024 * 1024
     }
@@ -195,6 +220,16 @@ final class CoverThumbnailCache: @unchecked Sendable {
         ) {
             return cached
         }
+        stateLock.lock()
+        let visibleCardImage = acceptsImages
+            ? latestImageBySource[
+                sourceKey(for: url, signature: signature)
+            ]?.value
+            : nil
+        stateLock.unlock()
+        if let visibleCardImage {
+            return visibleCardImage
+        }
 
         let sourceOptions = [
             kCGImageSourceShouldCache: false,
@@ -222,7 +257,14 @@ final class CoverThumbnailCache: @unchecked Sendable {
         return UIImage(contentsOfFile: url.path)
     }
 
-    func thumbnail(for url: URL, signature: String?, width: CGFloat, height: CGFloat, scale: CGFloat) async -> UIImage? {
+    func thumbnail(
+        for url: URL,
+        signature: String?,
+        width: CGFloat,
+        height: CGFloat,
+        scale: CGFloat,
+        priority: TaskPriority = .userInitiated
+    ) async -> UIImage? {
         let key = cacheKey(for: url, signature: signature, width: width, height: height, scale: scale)
         guard let request = beginRequest(for: key) else { return nil }
         if let cachedImage = request.cachedImage {
@@ -231,23 +273,58 @@ final class CoverThumbnailCache: @unchecked Sendable {
         let requestGeneration = request.generation
 
         let path = url.path
-        let maxPixelSize = max(1, Int(max(width, height) * scale))
+        let maxPixelSize = thumbnailPixelSize(width: width, height: height, scale: scale)
         let image = await CoverThumbnailDecodeCoordinator.shared.image(
-            for: key as String
+            for: (key as String) + "|generation:\(requestGeneration)",
+            priority: priority
         ) {
-            Self.decodeThumbnail(
-                at: url,
-                path: path,
-                maxPixelSize: maxPixelSize,
-                scale: scale
-            )
+            guard self.isCurrentGeneration(requestGeneration) else { return nil }
+            return autoreleasepool {
+                Self.decodeThumbnail(
+                    at: url,
+                    path: path,
+                    maxPixelSize: maxPixelSize,
+                    scale: scale
+                )
+            }
         }
 
         guard !Task.isCancelled, let image else { return nil }
         let cost = max(1, Int(image.size.width * image.scale * image.size.height * image.scale * 4))
-        guard insert(image, for: key, cost: cost, generation: requestGeneration) else { return nil }
+        guard insert(
+            image,
+            for: key,
+            sourceKey: sourceKey(for: url, signature: signature),
+            cost: cost,
+            generation: requestGeneration
+        ) else { return nil }
 
         return image
+    }
+
+    /// Warms only the small look-ahead window selected by the cover-flow
+    /// controller. These requests remain utility priority and share in-flight
+    /// work with visible CoverThumbnailView instances.
+    func preheat(
+        _ items: [CoverThumbnailPreheatItem],
+        width: CGFloat,
+        height: CGFloat,
+        scale: CGFloat
+    ) async {
+        await withTaskGroup(of: Void.self) { group in
+            for item in items {
+                group.addTask(priority: .utility) { [self] in
+                    _ = await thumbnail(
+                        for: item.url,
+                        signature: item.signature,
+                        width: width,
+                        height: height,
+                        scale: scale,
+                        priority: .utility
+                    )
+                }
+            }
+        }
     }
 
     private static func decodeThumbnail(
@@ -304,7 +381,22 @@ final class CoverThumbnailCache: @unchecked Sendable {
         generation &+= 1
         acceptsImages = false
         cache.removeAllObjects()
+        latestImageBySource.removeAll(keepingCapacity: false)
         stateLock.unlock()
+    }
+
+    func releaseInactiveLibraryImages() {
+        stateLock.lock()
+        generation &+= 1
+        cache.removeAllObjects()
+        latestImageBySource.removeAll(keepingCapacity: false)
+        stateLock.unlock()
+    }
+
+    private func isCurrentGeneration(_ value: UInt64) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return acceptsImages && generation == value
     }
 
     private func beginRequest(for key: NSString) -> (generation: UInt64, cachedImage: UIImage?)? {
@@ -314,17 +406,34 @@ final class CoverThumbnailCache: @unchecked Sendable {
         return (generation, cache.object(forKey: key))
     }
 
-    private func insert(_ image: UIImage, for key: NSString, cost: Int, generation requestGeneration: UInt64) -> Bool {
+    private func insert(
+        _ image: UIImage,
+        for key: NSString,
+        sourceKey: String,
+        cost: Int,
+        generation requestGeneration: UInt64
+    ) -> Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
         guard acceptsImages, generation == requestGeneration else { return false }
         cache.setObject(image, forKey: key, cost: cost)
+        // Keep only a weak source lookup; NSCache remains the sole cache owner
+        // and can still evict decoded covers under memory pressure.
+        latestImageBySource[sourceKey] = WeakImage(image)
         return true
     }
 
+    private func sourceKey(for url: URL, signature: String?) -> String {
+        signature ?? url.path
+    }
+
     private func cacheKey(for url: URL, signature: String?, width: CGFloat, height: CGFloat, scale: CGFloat) -> NSString {
-        let pixelWidth = Int(width * scale)
-        let pixelHeight = Int(height * scale)
-        return "\(signature ?? url.path)|\(pixelWidth)x\(pixelHeight)" as NSString
+        let pixels = thumbnailPixelSize(width: width, height: height, scale: scale)
+        return "\(signature ?? url.path)|\(pixels)@\(scale)" as NSString
+    }
+
+    private func thumbnailPixelSize(width: CGFloat, height: CGFloat, scale: CGFloat) -> Int {
+        // Reuse a decode while sliders change by a few pixels.
+        max(32, Int(ceil(max(width, height) * scale / 32)) * 32)
     }
 }

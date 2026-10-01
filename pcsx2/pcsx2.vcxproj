@@ -24,6 +24,7 @@
     <Import Condition="$(Configuration.Contains(Devel))" Project="$(SolutionDir)common\vsprops\CodeGen_Devel.props" />
     <Import Condition="$(Configuration.Contains(Release))" Project="$(SolutionDir)common\vsprops\CodeGen_Release.props" />
     <Import Condition="!$(Configuration.Contains(Release))" Project="$(SolutionDir)common\vsprops\IncrementalLinking.props" />
+    <Import Project="$(SolutionDir)common\vsprops\ShaderToCpp.props" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup>
@@ -69,8 +70,101 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ShaderToCpp Include="..\bin\resources\shaders\vulkan\cas.glsl">
+      <VarName>vulkan_cas</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\vulkan\convert.glsl">
+      <VarName>vulkan_convert</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\vulkan\imgui.glsl">
+      <VarName>vulkan_imgui</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\vulkan\interlace.glsl">
+      <VarName>vulkan_interlace</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\vulkan\merge.glsl">
+      <VarName>vulkan_merge</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\vulkan\present.glsl">
+      <VarName>vulkan_present</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\vulkan\shadeboost.glsl">
+      <VarName>vulkan_shadeboost</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\vulkan\tfx.glsl">
+      <VarName>vulkan_tfx</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\opengl\cas.glsl">
+      <VarName>opengl_cas</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\opengl\convert.glsl">
+      <VarName>opengl_convert</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\opengl\imgui.glsl">
+      <VarName>opengl_imgui</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\opengl\interlace.glsl">
+      <VarName>opengl_interlace</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\opengl\merge.glsl">
+      <VarName>opengl_merge</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\opengl\shadeboost.glsl">
+      <VarName>opengl_shadeboost</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\opengl\tfx_fs.glsl">
+      <VarName>opengl_tfx_fs</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\opengl\tfx_vgs.glsl">
+      <VarName>opengl_tfx_vgs</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\opengl\present.glsl">
+      <VarName>opengl_present</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\dx11\cas.hlsl">
+      <VarName>dx11_cas</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\dx11\convert.fx">
+      <VarName>dx11_convert</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\dx11\interlace.fx">
+      <VarName>dx11_interlace</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\dx11\merge.fx">
+      <VarName>dx11_merge</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\dx11\shadeboost.fx">
+      <VarName>dx11_shadeboost</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\dx11\tfx.fx">
+      <VarName>dx11_tfx</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\dx11\imgui.fx">
+      <VarName>dx11_imgui</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\dx11\present.fx">
+      <VarName>dx11_present</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\common\fxaa.fx">
+      <VarName>common_fxaa</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\common\ffx_a.h">
+      <VarName>common_ffx_a</VarName>
+    </ShaderToCpp>
+    <ShaderToCpp Include="..\bin\resources\shaders\common\ffx_cas.h">
+      <VarName>common_ffx_cas</VarName>
+    </ShaderToCpp>
+    <None Include="..\bin\resources\shaders\common\fxaa.fx" />
+    <None Include="..\bin\resources\shaders\opengl\cas.glsl" />
+    <None Include="..\bin\resources\shaders\opengl\convert.glsl" />
     <None Include="..\bin\resources\shaders\opengl\imgui.glsl" />
+    <None Include="..\bin\resources\shaders\opengl\interlace.glsl" />
+    <None Include="..\bin\resources\shaders\opengl\merge.glsl" />
     <None Include="..\bin\resources\shaders\opengl\present.glsl" />
+    <None Include="..\bin\resources\shaders\opengl\shadeboost.glsl" />
+    <None Include="..\bin\resources\shaders\opengl\tfx_fs.glsl" />
+    <None Include="..\bin\resources\shaders\opengl\tfx_vgs.glsl" />
+    <None Include="..\bin\resources\shaders\vulkan\cas.glsl" />
     <None Include="..\bin\resources\shaders\vulkan\convert.glsl" />
     <None Include="..\bin\resources\shaders\vulkan\imgui.glsl" />
     <None Include="..\bin\resources\shaders\vulkan\interlace.glsl" />
@@ -78,20 +172,14 @@
     <None Include="..\bin\resources\shaders\vulkan\present.glsl" />
     <None Include="..\bin\resources\shaders\vulkan\shadeboost.glsl" />
     <None Include="..\bin\resources\shaders\vulkan\tfx.glsl" />
-    <None Include="..\bin\resources\shaders\opengl\convert.glsl" />
-    <None Include="..\bin\resources\shaders\opengl\interlace.glsl" />
-    <None Include="..\bin\resources\shaders\opengl\merge.glsl" />
-    <None Include="..\bin\resources\shaders\opengl\shadeboost.glsl" />
-    <None Include="..\bin\resources\shaders\opengl\tfx_fs.glsl" />
-    <None Include="..\bin\resources\shaders\opengl\tfx_vgs.glsl" />
     <None Include="..\bin\resources\shaders\dx11\convert.fx" />
-    <None Include="..\bin\resources\shaders\common\fxaa.fx" />
+    <None Include="..\bin\resources\shaders\dx11\imgui.fx" />
     <None Include="..\bin\resources\shaders\dx11\interlace.fx" />
     <None Include="..\bin\resources\shaders\dx11\merge.fx" />
+    <None Include="..\bin\resources\shaders\dx11\present.fx" />
     <None Include="..\bin\resources\shaders\dx11\shadeboost.fx" />
     <None Include="..\bin\resources\shaders\dx11\tfx.fx" />
-    <None Include="..\bin\resources\shaders\dx11\imgui.fx" />
-    <None Include="..\bin\resources\shaders\dx11\present.fx" />
+    <None Include="..\bin\resources\shaders\dx11\cas.hlsl" />
     <None Include="GS\Renderers\Vulkan\VKEntryPoints.inl">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </None>
@@ -336,6 +424,7 @@
     <ClCompile Include="GS\GS.cpp" />
     <ClCompile Include="GS\GSBlock.cpp" />
     <ClCompile Include="GS\GSCapture.cpp" />
+    <ClCompile Include="GS\GSCacheFile.cpp" />
     <ClCompile Include="GS\GSClut.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSDevice.cpp" />
     <ClCompile Include="GS\Renderers\DX11\GSDevice11.cpp" />
@@ -343,6 +432,7 @@
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="GS\Renderers\Common\GSDirtyRect.cpp" />
+    <ClCompile Include="GS\Renderers\Common\GSFieldShiftDetector.cpp" />
     <ClCompile Include="GS\GSDrawingContext.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSDrawScanline.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSDrawScanlineCodeGenerator.all.cpp">
@@ -350,6 +440,14 @@
     </ClCompile>
     <ClCompile Include="GS\GSDump.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSFunctionMap.cpp" />
+    <ClCompile Include="GS\DriverReport\GSDriverReport.cpp" />
+    <ClCompile Include="GS\DriverReport\GSDriverReportClassify.cpp" />
+    <ClCompile Include="GS\DriverReport\GSDriverReportJson.cpp" />
+    <ClCompile Include="GS\DriverReport\GSDriverReportProfile.cpp" />
+    <ClCompile Include="GS\DriverReport\GSDriverReportSystem.cpp" />
+    <ClCompile Include="GS\DriverReport\GSDriverReportVulkan.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="GS\Renderers\Common\GSGPUDriverProfile.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSGPUProfile.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSGPUProfileMali.cpp" />
@@ -364,6 +462,7 @@
     <ClCompile Include="GS\GSRingHeap.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSRasterizer.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSRenderer.cpp" />
+    <ClCompile Include="GS\Renderers\HW\GSLineRuns.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSRendererHW.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSRendererHWMultiISA.cpp" />
     <ClCompile Include="GS\Renderers\Null\GSRendererNull.cpp" />
@@ -789,6 +888,7 @@
     <ClInclude Include="GS\GSAlignedClass.h" />
     <ClInclude Include="GS\GSBlock.h" />
     <ClInclude Include="GS\GSCapture.h" />
+    <ClInclude Include="GS\GSCacheFile.h" />
     <ClInclude Include="GS\GSClut.h" />
     <ClInclude Include="GS\Renderers\Common\GSShaderEnums.h" />
     <ClInclude Include="GS\Renderers\Common\GSDevice.h" />
@@ -813,6 +913,7 @@
     <ClInclude Include="GS\Renderers\Common\GSGPUProfilePrivate.h" />
     <ClInclude Include="GS\GSLocalMemory.h" />
     <ClInclude Include="GS\GSLzma.h" />
+    <ClInclude Include="GS\GSCompileStats.h" />
     <ClInclude Include="GS\GSPerfMon.h" />
     <ClInclude Include="GS\GSPng.h" />
     <ClInclude Include="GS\GSRingHeap.h" />
@@ -822,6 +923,7 @@
     <ClInclude Include="GS\Renderers\HW\GSRendererHW.h" />
     <ClInclude Include="GS\Renderers\Null\GSRendererNull.h" />
     <ClInclude Include="GS\Renderers\Null\GSDeviceNone.h" />
+    <ClInclude Include="GS\Renderers\Null\GSNullDeviceProfile.h" />
     <ClInclude Include="GS\Renderers\SW\GSRendererSW.h" />
     <ClInclude Include="GS\Renderers\SW\GSBlockWalk.h" />
     <ClInclude Include="GS\Renderers\SW\GSColourWalk.h" />
@@ -829,6 +931,7 @@
     <ClInclude Include="GS\Renderers\SW\GSCoordinateWalk.h" />
     <ClInclude Include="GS\Renderers\SW\GSDepthWalk.h" />
     <ClInclude Include="GS\Renderers\SW\GSLevelOfDetail.h" />
+    <ClInclude Include="GS\Renderers\SW\GSPerspectivePlane.h" />
     <ClInclude Include="GS\Renderers\SW\GSScanlineEnvironment.h" />
     <ClInclude Include="GS\Renderers\SW\GSVertexQDivide.h" />
     <ClInclude Include="GS\Renderers\SW\GSSetupPrimCodeGenerator.all.h">
@@ -858,20 +961,36 @@
     <ClInclude Include="GS\Renderers\HW\GSDepthCoverage.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawAlphaMask.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h" />
+    <ClInclude Include="GS\Renderers\HW\GSLineRuns.h" />
     <ClInclude Include="GS\Renderers\HW\GSLineWalk.h" />
+    <ClInclude Include="GS\Renderers\HW\GSPointPlace.h" />
     <ClInclude Include="GS\Renderers\HW\GSSpriteEdgeSnap.h" />
     <ClInclude Include="GS\Renderers\SW\GSVertexSW.h" />
     <ClInclude Include="GS\Renderers\Common\GSVertexTrace.h" />
-    <ClInclude Include="GS\Renderers\Common\GSFeedbackLoopCarryPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSFieldShiftDetector.h" />
+    <ClInclude Include="GS\Renderers\Common\GSFieldShiftPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSBlendConstantPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSBackThreadPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSCopyRoadBlendingPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSDynamicFeedbackLoopPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSFastStencilShadow.h" />
     <ClInclude Include="GS\Renderers\Common\GSFramebufferFetchPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSMeasurementOverrides.h" />
     <ClInclude Include="GS\Renderers\Common\GSInterlaceModePolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSNativeTexelGridPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSPassScheduler.h" />
     <ClInclude Include="GS\Renderers\Common\GSPresentationPolicy.h" />
-    <ClInclude Include="GS\Renderers\Common\GSSelfReadCopyPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSDrawRoad.h" />
+    <ClInclude Include="GS\Renderers\Common\GSSelfReadRoadPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSSnapshotPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSStreamRingFlushRange.h" />
+    <ClInclude Include="GS\Renderers\Common\GSStreamRingGrowth.h" />
+    <ClInclude Include="GS\DriverReport\GSDriverReport.h" />
+    <ClInclude Include="GS\DriverReport\GSDriverReportClassify.h" />
+    <ClInclude Include="GS\DriverReport\GSDriverReportJson.h" />
+    <ClInclude Include="GS\DriverReport\GSDriverReportProfile.h" />
+    <ClInclude Include="GS\DriverReport\GSDriverReportSystem.h" />
+    <ClInclude Include="GS\DriverReport\GSDriverReportVulkan.h" />
     <ClInclude Include="GS\Renderers\Common\GSStreamRingMemoryPolicy.h" />
     <ClInclude Include="GS\GSXXH.h" />
     <ClInclude Include="GS\MultiISA.h" />
@@ -963,18 +1082,7 @@
     <ClInclude Include="R5900.h" />
     <ClInclude Include="R5900OpcodeTables.h" />
     <ClInclude Include="COP0.h" />
-    <ClInclude Include="x86\iCOP0.h" />
-    <ClInclude Include="x86\iFPU.h" />
-    <ClInclude Include="x86\iMMI.h" />
     <ClInclude Include="x86\iR5900.h" />
-    <ClInclude Include="x86\iR5900Arit.h" />
-    <ClInclude Include="x86\iR5900AritImm.h" />
-    <ClInclude Include="x86\iR5900Branch.h" />
-    <ClInclude Include="x86\iR5900Jump.h" />
-    <ClInclude Include="x86\iR5900LoadStore.h" />
-    <ClInclude Include="x86\iR5900Move.h" />
-    <ClInclude Include="x86\iR5900MultDiv.h" />
-    <ClInclude Include="x86\iR5900Shift.h" />
     <ClInclude Include="IopBios.h" />
     <ClInclude Include="IopCounters.h" />
     <ClInclude Include="IopDma.h" />
@@ -1093,5 +1201,6 @@
   </ItemGroup>
   <Import Condition="$(Configuration.Contains(Debug)) Or $(Configuration.Contains(Devel))" Project="$(SolutionDir)3rdparty\winpixeventruntime\WinPixEventRuntime.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="$(SolutionDir)common\vsprops\ShaderToCpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>

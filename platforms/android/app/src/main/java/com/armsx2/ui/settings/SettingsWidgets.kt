@@ -95,6 +95,12 @@ private val focusBlue = Color(0xFF3DA5FF)
 
 val LocalSettingsScrollState = staticCompositionLocalOf<ScrollState?> { null }
 
+/** The resolved CollapsibleSection titles a settings-search jump must open — the destination's
+ * section chain from the search index. Set only while search is resolving a jump, empty the rest
+ * of the time. Knowing the chain up front is what lets a collapsed section open for the jump
+ * without ever composing its rows to discover where the target lives. */
+internal val LocalSettingsSearchOpenSections = staticCompositionLocalOf<Set<String>> { emptySet() }
+
 /** The exclusive input layer the surrounding content belongs to — null on a base screen, a
  *  modal's key inside PadModal's host, which is the only thing that ever provides it.
  *
@@ -168,6 +174,7 @@ internal object SettingsControllerNav {
         val index = layers.indexOfLast { it.key == key }
         if (index < 0) return
         val gone = layers.removeAt(index)
+        if (lateFocus?.layer == key) lateFocus = null
         // Only the layer that was actually on top hands the selection back; a layer buried
         // under a still-open modal must not disturb what that modal has focused.
         if (index != layers.size) return
@@ -244,6 +251,29 @@ internal object SettingsControllerNav {
         registry[id] = Item(id, onConfirm, onLeft, onRight, layer)
         if (selectedId.value == id)
             selectedIndex.intValue = orderedIds().indexOf(id)
+        lateFocus?.let { late ->
+            when {
+                // The pad has moved since, or another modal is on top: that selection stands.
+                late.layer != activeLayer || selectedId.value != late.fallback -> lateFocus = null
+                id == late.id && layer == late.layer -> {
+                    lateFocus = null
+                    selectById(id)
+                }
+            }
+        }
+    }
+
+    /** A modal's initial focus that had not registered yet when the modal opened, because the
+     *  content it belongs to comes a moment later (the Icon Museum's panel, once its icons have
+     *  loaded). The modal opens on [fallback] meanwhile, and [id] takes over when it registers,
+     *  as long as the selection is still on [fallback]. */
+    private class LateFocus(val layer: String, val id: String, val fallback: String?)
+    private var lateFocus: LateFocus? = null
+
+    /** For PadModal: [id], the focus [layer] asked for on open, is not there yet. Select it when
+     *  it registers, unless the pad has moved by then. */
+    fun focusWhenRegistered(layer: String, id: String) {
+        lateFocus = LateFocus(layer, id, selectedId.value)
     }
 
     fun unregister(id: String) {
@@ -260,16 +290,14 @@ internal object SettingsControllerNav {
         scrollVelocity.floatValue = 0f
     }
 
-    /** Highlight + scroll to the row whose id derives from [label] — used by settings search
-     *  to jump to a specific control after switching tabs. The shared row widgets register
-     *  label-based ids (toggle:/segmented:/segmented-grid:/slider:<label>[:hash]); sliders
-     *  append a composition hash, so those are matched by prefix. Returns true once a row
-     *  matched (the target tab must already be composed — retry until it is). */
+    /** Highlight + scroll to the row or section header whose id derives from [label] — used by
+     *  settings search after its jump has opened the destination's sections. Sliders append a
+     *  composition hash, so those are matched by prefix. Returns true only after the destination
+     *  control is visibly composed and registered. */
     fun selectByLabel(label: String): Boolean {
         val ids = orderedIds()
-        val exact = setOf("toggle:$label", "segmented:$label", "segmented-grid:$label", "slider:$label")
-        val id = ids.firstOrNull { it in exact }
-            ?: ids.firstOrNull { it.startsWith("slider:$label:") }
+        val id = ids.firstOrNull { settingsRowMatchesLabel(it, label) }
+            ?: ids.firstOrNull { settingsSectionMatchesLabel(it, label) }
             ?: return false
         selectedId.value = id
         selectedIndex.intValue = ids.indexOf(id)
@@ -471,6 +499,15 @@ internal fun ControllerAutoScroll(scroll: ScrollState) {
     }
 }
 
+/** The registry ids used by the shared settings rows. Slider ids may carry an additional
+ * composition suffix, but other prefixes must match the whole label. */
+internal fun settingsRowMatchesLabel(id: String, label: String): Boolean =
+    id == "toggle:$label" || id == "segmented:$label" ||
+        id == "segmented-grid:$label" || id == "slider:$label" ||
+        id.startsWith("slider:$label:")
+
+internal fun settingsSectionMatchesLabel(id: String, label: String): Boolean = id == "section.$label"
+
 internal fun Modifier.controllerFocusable(
     controllerId: String? = null,
     shape: RoundedCornerShape = RoundedCornerShape(16.dp),
@@ -602,6 +639,12 @@ fun CollapsibleSection(
     var expanded by androidx.compose.runtime.saveable.rememberSaveable(title) {
         mutableStateOf(initiallyExpanded)
     }
+    if (!expanded && title in LocalSettingsSearchOpenSections.current) {
+        // A settings-search jump targets a row (or this header) behind a collapsed section. Open
+        // it before the jump selects its destination — the chain names every section to open, so
+        // this needs no look at the rows this section would show.
+        SideEffect { expanded = true }
+    }
     val toggle = {
         expanded = !expanded
         com.armsx2.MenuSfx.play(
@@ -632,7 +675,8 @@ fun CollapsibleSection(
         )
     }
     // Collapsed content is not composed at all, so its rows also drop out of the controller-focus
-    // registry — a pad cannot land on a setting the user cannot see.
+    // registry — a pad cannot land on a setting the user cannot see. A search jump opens the
+    // section (above) before it selects anything, so the destination is always a visible row.
     if (expanded) content()
 }
 

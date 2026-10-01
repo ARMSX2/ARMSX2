@@ -68,12 +68,17 @@ object LibraryKeyboard {
     const val DONE = "done"
     const val SHIFT = "shift"
 
+    // This keyboard also fills the settings text fields (DEV9 addresses and DNS, host names, the
+    // HDD image path, memory card and game names), so it carries the symbols those need: "." for
+    // an address or a file name, "/" for a path, ":" "-" "_" for host names and file names. They
+    // sit where a physical keyboard puts them where possible (". /" after "m") and fill the short
+    // rows, so the grid keeps its five rows and still fits a landscape handheld.
     val rows: List<List<String>> = listOf(
         listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"),
         listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"),
-        listOf("a", "s", "d", "f", "g", "h", "j", "k", "l"),
-        listOf(SHIFT, "z", "x", "c", "v", "b", "n", "m"),
-        listOf(SPACE, BACKSPACE, CLEAR, DONE),
+        listOf("a", "s", "d", "f", "g", "h", "j", "k", "l", ":"),
+        listOf(SHIFT, "z", "x", "c", "v", "b", "n", "m", ".", "/"),
+        listOf("-", "_", SPACE, BACKSPACE, CLEAR, DONE),
     )
 
     /** Use the Android system IME instead of these on-screen keys. Opt-in: the built-in keyboard
@@ -149,7 +154,7 @@ object LibraryKeyboard {
     fun backspace() = pressKey(BACKSPACE)
 
     private fun weightOf(key: String): Float = when (key) {
-        SPACE -> 4f
+        SPACE -> 3f
         DONE -> 2f
         BACKSPACE, CLEAR, SHIFT -> 1.6f
         else -> 1f
@@ -193,7 +198,9 @@ object LibraryKeyboard {
                     else MaterialTheme.colorScheme.onSurface,
                     fontSize = 18.sp,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                    // Keep the END visible: that is where typing happens, and a long path or
+                    // address cut off at the end would leave the new characters off screen.
+                    overflow = TextOverflow.StartEllipsis,
                     modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                 )
                 rows.forEachIndexed { r, keys ->

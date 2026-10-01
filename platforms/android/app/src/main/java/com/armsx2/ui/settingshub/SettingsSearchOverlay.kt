@@ -46,7 +46,9 @@ import com.armsx2.ui.home.LibraryKeyboard
  * moves the result selection, A jumps, Y re-opens the keyboard, B closes. Touch works throughout.
  */
 internal object SettingsSearch {
-    data class Result(val label: String, val category: SettingsCategory)
+    /** [sections] holds the resolved CollapsibleSection titles that must open for the result
+     *  to be visible — the chain from the search entry, resolved like [label]. */
+    data class Result(val label: String, val category: SettingsCategory, val sections: List<String> = emptyList())
 
     val visible = mutableStateOf(false)
     val query = mutableStateOf("")
@@ -55,9 +57,9 @@ internal object SettingsSearch {
     /** Latest filtered results, published by the overlay each recomposition for the dispatcher. */
     @Volatile
     var results: List<Result> = emptyList()
-    private var onJump: (SettingsCategory, String) -> Unit = { _, _ -> }
+    private var onJump: (SettingsCategory, String, List<String>) -> Unit = { _, _, _ -> }
 
-    fun open(onJump: (SettingsCategory, String) -> Unit) {
+    fun open(onJump: (SettingsCategory, String, List<String>) -> Unit) {
         com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.SELECT)
         this.onJump = onJump
         query.value = ""
@@ -80,7 +82,7 @@ internal object SettingsSearch {
     fun activate() {
         val r = results.getOrNull(selected.intValue) ?: return
         close()
-        onJump(r.category, r.label)
+        onJump(r.category, r.label, r.sections)
     }
 
     /** Re-open the keyboard to edit the query (Y from result-browse mode). */
@@ -111,7 +113,7 @@ internal fun SettingsSearchOverlay(scope: BoxScope, gameSpecific: Boolean) {
                     val en = if (e.isI18nKey) (EN[e.text] ?: "") else e.text
                     // Match the localized label AND the English source, so search works in any language.
                     if (label.contains(q, ignoreCase = true) || en.contains(q, ignoreCase = true)) {
-                        SettingsSearch.Result(label, e.category)
+                        SettingsSearch.Result(label, e.category, e.sections.map { I18n.get(it) })
                     } else {
                         null
                     }

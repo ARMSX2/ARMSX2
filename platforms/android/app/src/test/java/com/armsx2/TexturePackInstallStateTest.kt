@@ -127,4 +127,32 @@ class TexturePackInstallStateTest {
             ),
         )
     }
+
+    // ---- Multi-region packs: which serial folder they install into ----
+    // The core reads replacements only from the running disc's own serial folder, so a pack listing
+    // NTSC first must still land under PAL for a PAL player.
+
+    private val ntsc = "SLUS-20946"
+    private val pal = "SLES-53058"
+    private fun multiRegion() = pack(TextureCatalog.ArchiveFormat.TAR_ZSTD).copy(serials = listOf(ntsc, pal))
+
+    @Test
+    fun gameInContextPicksItsOwnSerial() {
+        assertEquals(pal, multiRegion().installSerialFor(pal.lowercase(), setOf(ntsc)))
+    }
+
+    @Test
+    fun ownedCopyBeatsTheFirstListedSerial() {
+        assertEquals(pal, multiRegion().installSerialFor(null, setOf(pal)))
+    }
+
+    @Test
+    fun contextOutsideThePackFallsBackToTheLibrary() {
+        assertEquals(pal, multiRegion().installSerialFor("SCUS-97328", setOf("SCUS-97328", pal)))
+    }
+
+    @Test
+    fun nothingKnownKeepsTheFirstListedSerial() {
+        assertEquals(ntsc, multiRegion().installSerialFor(null, emptySet()))
+    }
 }

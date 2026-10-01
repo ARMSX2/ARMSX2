@@ -70,18 +70,24 @@ class DeepLinkLibraryExportConfirmation(unittest.TestCase):
             "and RootView has nothing to watch")
 
     def test_the_prompt_names_the_destination_and_offers_a_way_out(self):
-        window = self.root[at(self.root, GATE, "RootView"):][:1400]
         self.assertIn(
-            PERFORM, window,
-            "the alert bound to pendingLibraryExport never calls %s, so confirming it "
-            "sends nothing" % PERFORM)
+            GATE, block(self.root, "private var activeControllerAlertKind"),
+            "no root alert watches pendingLibraryExport, so a library link does nothing")
+
+        def case(function):
+            body = block(self.root, function)
+            return body[at(body, "case .libraryExport", function):][:500]
+
         self.assertIn(
-            ".host", window,
+            PERFORM, case("private func selectControllerAlertAction("),
+            "the library export alert never calls %s, so confirming it sends nothing" % PERFORM)
+        self.assertIn(
+            ".host", case("private func controllerAlertMessage("),
             "the alert does not name the callback's host. A prompt that hides who is "
             "receiving the list is not a decision anyone can make")
         self.assertIn(
-            "role: .cancel", window,
-            "the alert has no cancel role, so there is no way to refuse it")
+            'id: "cancel"', case("private func controllerAlertActions("),
+            "the alert has no Cancel, so there is no way to refuse it")
 
     def test_nothing_else_calls_the_second_half(self):
         call = "ARMSX2DeepLinkHandler." + PERFORM + "("

@@ -8,31 +8,23 @@
 // Carrying a fixed blend factor (ALPHA.C == 2, AFIX) to the blend unit through the second
 // fragment output instead of through the API's blend constant.
 //
-// There are two hardware expressions of the same number. A fixed factor is a per-draw constant, so
-// the natural one is the blend constant: the blend state asks for CONST_COLOR / INV_CONST_COLOR and
-// the backend hands the value to vkCmdSetBlendConstants. The other is the second fragment output,
-// which the blend unit already reads for the As equations (SRC1_COLOR / INV_SRC1_COLOR); the shader
-// writes AFIX/128 there and the factor arrives the same way As does. Both feed the same fixed-
-// function multiply, and for AFIX <= 128 both feed it the same value.
+// A fixed factor normally goes through the blend constant (CONST_COLOR / INV_CONST_COLOR,
+// vkCmdSetBlendConstants). Alternatively the shader writes AFIX/128 to the second fragment output,
+// which the blend unit already reads for the As equations (SRC1_COLOR / INV_SRC1_COLOR). For
+// AFIX <= 128 both feed the same value to the same fixed-function multiply.
 //
-// Mesa Turnip applies VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR as if the constant were zero on some
-// draws -- the destination survives at full strength instead of at 1/128 -- while honouring
-// ONE_MINUS_SRC1_COLOR correctly in the same render pass on the same frame. Katamari Damacy's ball
-// is the visible case: every layer accumulates and the ball saturates towards white. The trigger is
-// run history, not anything the draw carries, so no emission change reaches it; re-emitting the
-// constant before every draw that reads it (17 -> 58 vkCmdSetBlendConstants a frame) moves zero
-// pixels. Reproduced on Adreno 650 and 610 (Mesa 26.1.2) and Adreno 740 (26.3.0-devel), with the
-// Qualcomm blob correct on the same silicon; the applied factor was solved out of a RenderDoc
-// capture over 648 texels and comes out at 1.0 where the state asks for 1/128.
+// Mesa Turnip (Adreno 6xx/7xx) sometimes applies ONE_MINUS_CONSTANT_COLOR as if the constant were
+// zero, leaving the destination at full strength, while handling ONE_MINUS_SRC1_COLOR correctly in
+// the same pass. Katamari Damacy's ball saturates towards white. The trigger depends on run
+// history, not on the draw, and re-emitting the constant per draw does not help. The Qualcomm
+// proprietary driver is correct on the same hardware.
 //
-// So on a device the driver-bug database marks BrokenBlendConstant, stop asking for the constant and
-// send the same number through the second output. That is a pure rewrite of the blend state plus one
-// pixel-shader selector bit; it changes HOW the factor reaches the blender and never WHETHER a draw
-// is blended in hardware.
+// On devices the driver-bug database marks BrokenBlendConstant, the constant is sent through the
+// second output instead. This rewrites the blend state and sets one pixel-shader selector bit; it
+// changes HOW the factor reaches the blender, never WHETHER a draw is hardware-blended.
 //
-// Kept here, as pure functions, because the no-change half is the half that matters: every device
-// without the bug bit must take byte-identical decisions, and that cannot be observed on the one
-// device that takes the changed road.
+// Pure functions so the no-change case (every device without the bit takes identical decisions)
+// can be tested off-device.
 namespace GSBlendConstantPolicy
 {
 	/// The dual-source twin of a constant-colour blend factor. Every other factor is unchanged.
@@ -66,17 +58,16 @@ namespace GSBlendConstantPolicy
 		       GSDevice::IsDualSourceBlendFactor(bs.dst_factor_alpha);
 	}
 
-	/// The same blend state with every constant-colour factor moved to its dual-source twin, and the
-	/// blend constant dropped -- nothing reads it any more, so the backend has no reason to set it.
+	/// The blend state with constant-colour factors moved to their dual-source twins and the blend
+	/// constant dropped, since nothing reads it.
 	static constexpr GSHWDrawConfig::BlendState RemapToSecondOutput(const GSHWDrawConfig::BlendState& bs)
 	{
 		return GSHWDrawConfig::BlendState(bs.enable, RemapFactor(bs.src_factor), RemapFactor(bs.dst_factor), bs.op,
 			RemapFactor(bs.src_factor_alpha), RemapFactor(bs.dst_factor_alpha), false, 0);
 	}
 
-	/// Everything about the draw the decision reads, beyond the blend state itself. All of it is
-	/// pixel-shader selector state, because the question the guards answer is "would the second
-	/// output still be exactly vec4(AFIX/128) when the blend unit reads it?".
+	/// Pixel-shader selector state the decision reads, beyond the blend state. The guards ask whether
+	/// the second output would still be exactly vec4(AFIX/128) when the blend unit reads it.
 	struct DrawInputs
 	{
 		/// The driver-bug database says this device ignores the blend constant.
@@ -85,25 +76,23 @@ namespace GSBlendConstantPolicy
 		bool dual_source_blend = true;
 		/// GSHWDrawConfig::PSSelector::blend_c -- 2 is the fixed factor, AFIX.
 		u8 blend_c = 0;
-		/// GSHWDrawConfig::PSSelector::pabe. PABE reads the second output's alpha as the SOURCE
-		/// alpha to decide per pixel whether to blend at all; AFIX is not that number.
+		/// GSHWDrawConfig::PSSelector::pabe. PABE reads the second output's alpha as the source alpha
+		/// to decide per pixel whether to blend.
 		bool pabe = false;
-		/// GSHWDrawConfig::PSSelector::blend_factor_in_alpha. The no-dual-source substitution,
-		/// which is already using the factor for something else on a device that has no SRC1.
+		/// GSHWDrawConfig::PSSelector::blend_factor_in_alpha: the no-dual-source substitution, which
+		/// already uses the output for something else.
 		bool blend_factor_in_alpha = false;
-		/// The blend multi-pass second draw reads the second output, so its value is spoken for and
-		/// the two passes share one pixel shader selector.
+		/// The blend multi-pass second draw reads the second output, and both passes share one pixel
+		/// shader selector.
 		bool multi_pass_reads_second_output = false;
 	};
 
 	/// May this draw's fixed factor travel through the second fragment output?
 	///
-	/// The guards, in order: the device must have the defect and a second output to use; the factor
-	/// must actually be the fixed one and actually be reaching the blender as a constant; AFIX must
-	/// be at or below 1.0, because above it the constant path has its own clamp behaviour that this
-	/// change deliberately does not touch; and nothing else may already own the second output --
-	/// once ps_blend rewrites it (every blend_hw type that does comes with a SRC1 factor in the same
-	/// state) or PABE claims it, it is no longer AFIX/128 when the blend unit reads it.
+	/// Guards: the device has the defect and a second output; the factor is AFIX and reaches the
+	/// blender as a constant; AFIX <= 1.0 (above that the constant path has its own clamp behaviour,
+	/// left untouched); and nothing else owns the second output (ps_blend rewriting it, which always
+	/// comes with a SRC1 factor in the state, or PABE).
 	static constexpr bool CanRouteFixedFactorToSecondOutput(
 		const GSHWDrawConfig::BlendState& bs, const DrawInputs& in)
 	{

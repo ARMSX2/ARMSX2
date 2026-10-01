@@ -64,7 +64,7 @@ namespace
 		{"UserHacks_CPUSpriteRenderLevel", GSHWFixId::CPUSpriteRenderLevel, GSUserHackOverride::CPUSpriteRenderLevel},
 		{"UserHacks_CPUCLUTRender", GSHWFixId::CPUCLUTRender, GSUserHackOverride::CPUCLUTRender},
 		{"UserHacks_GPUTargetCLUTMode", GSHWFixId::GPUTargetCLUT, GSUserHackOverride::GPUTargetCLUT},
-		{"UserHacks_RewriteLargeST", GSHWFixId::RewriteLargeST, GSUserHackOverride::RewriteLargeST},
+		{"UserHacks_RewriteLargeST", GSHWFixId::RewriteLargeSTCoords, GSUserHackOverride::RewriteLargeST},
 
 		// Settings the database contends that were never part of the user-hack
 		// vocabulary. They have no hack bit because MaskUserHacks() does not strip
@@ -81,11 +81,12 @@ namespace
 		{"deinterlace_mode", GSHWFixId::Deinterlace, GSUserHackOverride::MaxCount},
 		{"HWDownloadMode", GSHWFixId::HWDownloadMode, GSUserHackOverride::MaxCount},
 
-		// One control, two database fixes: the database clamps the blend level from
-		// both ends, so claiming the setting has to silence both clamps or the player
-		// still gets moved.
+		// One control, three database fixes: the database clamps the blend level from
+		// both ends and caps it again on the render-target-copy road, so claiming the
+		// setting has to silence all three clamps or the player still gets moved.
 		{"accurate_blending_unit", GSHWFixId::MinimumBlendingLevel, GSUserHackOverride::MaxCount},
 		{"accurate_blending_unit", GSHWFixId::MaximumBlendingLevel, GSUserHackOverride::MaxCount},
+		{"accurate_blending_unit", GSHWFixId::CopyRoadMaximumBlendingLevel, GSUserHackOverride::MaxCount},
 	};
 
 	// ⚠️ These are the settings keys, NOT GamefixOptions::GetGameFixName(), which

@@ -23,9 +23,28 @@ struct SkinBrowserView: View {
     @State private var detailAlert: String?
     @State private var previewSkin: CatalogSkin?
     @State private var skinPendingRemoval: CatalogSkin?
+    @State private var showsSearchKeyboard = false
+    @Environment(\.menuControllerInputRouter) private var controllerInput
 
     var body: some View {
         List {
+            if controllerInput?.isControllerNavigationEnabled == true {
+                Button {
+                    showsSearchKeyboard = true
+                } label: {
+                    Label(
+                        searchText.isEmpty ? settings.localized("Search skins") : searchText,
+                        systemImage: "magnifyingglass"
+                    )
+                }
+                .controllerAccessibilityActionTarget(
+                    id: "skin.search",
+                    label: settings.localized("Search skins")
+                ) {
+                    showsSearchKeyboard = true
+                }
+            }
+
             lastUpdatedRow
 
             if catalog.isLoading {
@@ -53,6 +72,12 @@ struct SkinBrowserView: View {
                         Text(settings.localized(option.rawValue)).tag(option)
                     }
                 }
+                .controllerAccessibilityOptionsPickerTarget(
+                    id: "skin.filter",
+                    label: settings.localized("Skins"),
+                    selection: $filter,
+                    options: Filter.allCases.map { (id: $0, title: settings.localized($0.rawValue)) }
+                )
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .listRowSeparator(.hidden)
@@ -68,39 +93,61 @@ struct SkinBrowserView: View {
                 skinRow(skin)
             }
         }
-        // Pin this to the drawer. Left alone, iOS 26 puts the field at the
-        // bottom of the screen, which is where our tab bar lives, and the bar
-        // wins on z order. Always rather than automatic, so the field is
-        // sitting there instead of needing a pull down to find it.
+        // Pinned to the drawer, since iOS 26 otherwise puts it at the bottom under our tab bar.
+        // Always for touch, so it needs no pull down; automatic in controller mode, where the
+        // Search skins row replaces it and a pad can't pull it down.
         .searchable(
             text: $searchText,
-            placement: .navigationBarDrawer(displayMode: .always),
+            placement: .navigationBarDrawer(
+                displayMode: controllerInput?.isControllerNavigationEnabled == true
+                    ? .automatic : .always
+            ),
             prompt: Text(settings.localized("Search skins"))
         )
         .navigationTitle(settings.localized("Skins"))
         .navigationBarTitleDisplayMode(.inline)
+        .controllerAccessibilityTargetOrder(
+            controllerColumns.order,
+            links: controllerColumns.links
+        )
         .task { await catalog.fetch() }
         .refreshable { await catalog.fetch(force: true) }
-        .alert(settings.localized("Skin Install"), isPresented: isDetailAlertPresented) {
-            Button(settings.localized("OK"), role: .cancel) {}
-        } message: {
-            Text(detailAlert ?? "")
-        }
-        .alert(
+        .controllerPrompt(
+            settings.localized("Skin Install"),
+            isPresented: isDetailAlertPresented,
+            message: detailAlert ?? "",
+            actions: [.ok]
+        )
+        .controllerPrompt(
             settings.localized("Remove Skin?"),
             isPresented: isRemoveAlertPresented,
-            presenting: skinPendingRemoval
-        ) { skin in
-            Button(String(format: settings.localized("Remove %@"), skin.name), role: .destructive) {
-                installer.uninstall(skin)
-                skinPendingRemoval = nil
-            }
-            Button(settings.localized("Cancel"), role: .cancel) { skinPendingRemoval = nil }
-        } message: { _ in
-            Text(settings.localized("This deletes the installed skin. Linked layout presets are kept."))
-        }
+            message: settings.localized("This deletes the installed skin. Linked layout presets are kept."),
+            actions: [
+                .cancel,
+                .init(
+                    title: String(format: settings.localized("Remove %@"), skinPendingRemoval?.name ?? ""),
+                    isDestructive: true
+                ) {
+                    if let skin = skinPendingRemoval { installer.uninstall(skin) }
+                },
+            ]
+        )
         .sheet(item: $previewSkin) { skin in
-            SkinPreviewSheet(skin: skin)
+            SkinPreviewSheet(skin: skin, controllerInput: controllerInput)
+        }
+        .fullScreenCover(isPresented: $showsSearchKeyboard) {
+            OrbitKeysKeyboardView(
+                title: settings.localized("Search skins"),
+                initialText: searchText,
+                startsInNormalKeyboard: true,
+                onCommit: { text in
+                    searchText = text
+                    showsSearchKeyboard = false
+                },
+                onCancel: { showsSearchKeyboard = false }
+            )
+            .presentationBackground(.clear)
+            .appStatusBarHidden()
         }
     }
 
@@ -183,6 +230,41 @@ struct SkinBrowserView: View {
         return settings.localized("No skins match that search.")
     }
 
+    /// Previews and actions are two columns, so Down stays in the one it started in
+    /// and Left or Right crosses over. Only targets that mount are listed.
+    private var controllerColumns: (order: [String], links: [ControllerAccessibilityDirectionalLink]) {
+        let installed = installedFiles
+        var previews: [String] = []
+        var actions: [String] = []
+        for skin in filteredSkins {
+            if SkinCatalog.previewURL(for: skin) != nil {
+                previews.append("skin.preview.\(skin.file)")
+            }
+            if !installer.installing.contains(skin.file), !installed.contains(skin.file) {
+                actions.append("skin.get.\(skin.file)")
+            }
+            if installer.errors[skin.file] != nil || installer.notices[skin.file] != nil {
+                actions.append("skin.detail.\(skin.file)")
+            }
+        }
+        let boundary = ControllerAccessibilityDirectionalLink.navigationBoundary
+        var links: [ControllerAccessibilityDirectionalLink] = []
+        if let last = previews.last {
+            links.append(.init(fromLabel: last, direction: .down, toLabel: boundary))
+        }
+        if let first = actions.first {
+            links.append(.init(fromLabel: first, direction: .up, toLabel: boundary))
+        }
+        var header: [String] = []
+        if controllerInput?.isControllerNavigationEnabled == true {
+            header.append("skin.search")
+        }
+        if !catalog.skins.isEmpty {
+            header.append("skin.filter")
+        }
+        return (header + previews + actions, links)
+    }
+
     private func subtitle(for skin: CatalogSkin) -> String? {
         var parts: [String] = []
         if let author = skin.author, !author.isEmpty {
@@ -214,7 +296,15 @@ struct SkinBrowserView: View {
                     .cornerRadius(8)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(String(format: settings.localized("Preview %@"), skin.name))
+                .accessibilityLabel(
+                    String(format: settings.localized("Preview %@"), skin.name)
+                )
+                .controllerAccessibilityActionTarget(
+                    id: "skin.preview.\(skin.file)",
+                    label: String(format: settings.localized("Preview %@"), skin.name)
+                ) {
+                    previewSkin = skin
+                }
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -256,6 +346,9 @@ struct SkinBrowserView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .controllerAccessibilityActionTarget(id: "skin.get.\(skin.file)", label: "Get \(skin.name)") {
+                    Task { await installer.install(skin) }
+                }
             }
 
             if let error = installer.errors[skin.file] {
@@ -266,7 +359,21 @@ struct SkinBrowserView: View {
                         .foregroundStyle(.orange)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(String(format: settings.localized("Show the error from %@"), skin.name))
+                .accessibilityLabel(
+                    String(
+                        format: settings.localized("Show the error from %@"),
+                        skin.name
+                    )
+                )
+                .controllerAccessibilityActionTarget(
+                    id: "skin.detail.\(skin.file)",
+                    label: String(
+                        format: settings.localized("Show the error from %@"),
+                        skin.name
+                    )
+                ) {
+                    detailAlert = error
+                }
             } else if let notice = installer.notices[skin.file] {
                 Button {
                     detailAlert = notice
@@ -275,7 +382,25 @@ struct SkinBrowserView: View {
                         .foregroundStyle(.yellow)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(String(format: settings.localized("Show what %@ reported during install"), skin.name))
+                .accessibilityLabel(
+                    String(
+                        format: settings.localized(
+                            "Show what %@ reported during install"
+                        ),
+                        skin.name
+                    )
+                )
+                .controllerAccessibilityActionTarget(
+                    id: "skin.detail.\(skin.file)",
+                    label: String(
+                        format: settings.localized(
+                            "Show what %@ reported during install"
+                        ),
+                        skin.name
+                    )
+                ) {
+                    detailAlert = notice
+                }
             }
         }
         .swipeActions(edge: .trailing) {
@@ -292,6 +417,7 @@ struct SkinBrowserView: View {
 
 private struct SkinPreviewSheet: View {
     let skin: CatalogSkin
+    let controllerInput: MenuControllerInputRouter?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -310,5 +436,17 @@ private struct SkinPreviewSheet: View {
                 }
             }
         }
+        // Without a scope of its own, Back reached the Settings page underneath and
+        // popped the Skins page while the preview stayed up.
+        .controllerAccessibilityNavigation(
+            controllerInput: controllerInput,
+            scopeKey: "skin-browser.preview",
+            priority: 720,
+            onBack: {
+                dismiss()
+                return true
+            },
+            usesExplicitTargetGeometryOnly: true
+        )
     }
 }

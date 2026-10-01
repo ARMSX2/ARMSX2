@@ -4,7 +4,7 @@
 import re
 import unittest
 
-from ios_source import ROOT, SWIFT, at, block, read
+from ios_source import ROOT, SWIFT, at, block, read, store_text
 
 DEVICE = ROOT / "pcsx2/GS/Renderers/Metal/GSDeviceMTL.mm"
 COMMON = ROOT / "pcsx2/GS/Renderers/Common/GSDevice.cpp"
@@ -35,8 +35,8 @@ class ShaderChainRetry(unittest.TestCase):
                       "RetryShaderChain doesn't move the counter")
 
     def test_every_way_back_to_a_preset_retries_it(self):
-        store = read(SWIFT / "Models/SettingsStore.swift")
-        self.assertIn(RETRY, block(store, "private func applyShaderChainSelection()"),
+        store = store_text()
+        self.assertIn(RETRY, block(store, "func applyShaderChainSelection()"),
                       "picking a preset in Settings or the pause menu doesn't retry it")
         self.assertIn(RETRY, block(store, "var shaderChainEnabled: Bool"),
                       "turning Shaders on doesn't retry the preset")

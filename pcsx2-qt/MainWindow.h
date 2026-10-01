@@ -87,11 +87,15 @@ public:
 	/// Default filter for opening a disc image.
 	static const char* DISC_IMAGE_FILTER;
 
+	/// Default layout for the toolbar.
+	static const char* DEFAULT_TOOLBAR_LAYOUT;
+
 public:
 	MainWindow();
 	~MainWindow();
 
 	void initialize();
+	void rebuildToolbar();
 	void connectVMThreadSignals(EmuThread* thread);
 	void startupUpdateCheck();
 	void resetSettings(bool ui);
@@ -181,6 +185,8 @@ private Q_SLOTS:
 	void onFullscreenUIStateChange(bool running);
 	void onViewToolbarActionToggled(bool checked);
 	void onViewLockToolbarActionToggled(bool checked);
+	void onCustomizeToolbarTriggered();
+	void onToolbarContextMenuRequested(const QPoint& pos);
 	void onViewStatusBarActionToggled(bool checked);
 	void onViewGameListActionTriggered();
 	void onViewGameGridActionTriggered();
@@ -191,6 +197,7 @@ private Q_SLOTS:
 	void onAboutActionTriggered();
 	void onToolsOpenDataDirectoryTriggered();
 	void onToolsCoverDownloaderTriggered();
+	void onToolsControllerTesterTriggered();
 #if !defined(__APPLE__)
 	void onCreateGameShortcutTriggered();
 #endif

@@ -627,6 +627,9 @@ extern u32 maxrecmem;
 extern const void* g_fpuGuardMaskStub;
 #endif
 
+void cop2DynGenModelStubs();
+void fpuDynGenModelStubs();
+
 extern u32 pc;             // recompiler pc
 extern int g_branch;       // set for branch
 extern u32 target;         // branch target

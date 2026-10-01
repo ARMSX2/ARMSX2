@@ -17,6 +17,11 @@
 
 enum class CDVD_SourceType : uint8_t;
 
+namespace Threading
+{
+	class ThreadHandle;
+}
+
 enum class VMState
 {
 	Shutdown,
@@ -32,6 +37,7 @@ struct VMBootParameters
 	std::string filename;
 	std::string elf_override;
 	std::string save_state;
+	std::string game_config;
 	std::optional<s32> state_index;
 	std::optional<CDVD_SourceType> source_type;
 
@@ -357,6 +363,9 @@ namespace VMManager
 		/// Returns true if fast booting is active (requested but ELF not started).
 		bool IsFastBootInProgress();
 
+		// Returns the current disc/BIOS region, if set.
+		std::string GetCurrentRegion();
+
 		/// Disables fast boot if it was requested, and found to be incompatible.
 		void DisableFastBoot();
 
@@ -370,10 +379,23 @@ namespace VMManager
 		void FrameRateChanged();
 
 		/// Throttles execution, or limits the frame rate.
-		void Throttle();
+		void Throttle(bool vsync_start);
 
 		/// Resets/clears all execution/code caches.
 		void ClearCPUExecutionCaches();
+
+		/// Called by the GS back thread (GS multi-threading) on itself when it starts, and with
+		/// nullptr just before it exits. Applies the placement SetEmuThreadAffinities chose for it,
+		/// and lets later placement changes reach it. Returns the mask applied; 0 = any processor.
+		u64 RegisterGSBackThread(const Threading::ThreadHandle* handle);
+
+		/// Overrides the GS back thread's placement until affinities are next applied; 0 = any
+		/// processor. For measurement tools.
+		void SetGSBackThreadAffinity(u64 mask);
+
+		/// Re-derives the GS back thread's placement from where the MTGS thread is allowed to run
+		/// now, for tools that move the MTGS thread themselves. Returns the mask applied.
+		u64 PlaceGSBackThreadNearGSThread();
 
 		/// Returns a list of processors in the system, suitable for pinning for the software renderer.
 		const std::vector<u32>& GetSoftwareRendererProcessorList();

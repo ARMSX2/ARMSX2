@@ -43,7 +43,8 @@ void GSDumpBase::AddHeader(const std::string& serial, u32 crc,
 	// Compute full header size (with serial).
 	// This acts as the state size for loading older dumps.
 	const u32 screenshot_size = screenshot_width * screenshot_height * sizeof(screenshot_pixels[0]);
-	const u32 header_size = sizeof(GSDumpHeader) + static_cast<u32>(serial.size()) + screenshot_size;
+	const u32 header_size = sizeof(GSDumpHeader) + static_cast<u32>(serial.size()) + screenshot_size +
+	                        sizeof(GSDumpProvenance);
 	AppendRawData(&header_size, 4);
 
 	// Write hader.
@@ -62,6 +63,16 @@ void GSDumpBase::AddHeader(const std::string& serial, u32 crc,
 		AppendRawData(serial.data(), serial.size());
 	if (screenshot_pixels)
 		AppendRawData(screenshot_pixels, screenshot_size);
+
+	// The provenance record closes the header block. The flag is unconditional because
+	// the capture path is: GSRenderer::VSync reads the texture cache back before it
+	// freezes, whatever the config says, and on the software renderer local memory is
+	// already the result. A dump without this record was written before that was true
+	// and its memory cannot be trusted where the hardware renderer drew.
+	GSDumpProvenance provenance = {};
+	provenance.magic = GSDumpProvenance::MAGIC;
+	provenance.flags = GSDumpProvenance::TargetsReadBack;
+	AppendRawData(&provenance, sizeof(provenance));
 
 	// Then the real state data.
 	AppendRawData(fd.data, fd.size);

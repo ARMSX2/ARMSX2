@@ -24,11 +24,23 @@ public:
         return valid;
     }
 
+    /// Why the shaders are not valid, in a few words for the overlay; empty when they are.
+    [[nodiscard]] const char* FailureReason() const {
+        return failure;
+    }
+
     [[nodiscard]] VkShaderModule Get(u32 shader_id) const;
+
+    /// The half-precision family is the one loaded (GSConfig.LsfgFp16 on, and the device has it).
+    [[nodiscard]] bool IsFp16() const {
+        return fp16;
+    }
 
 private:
     std::map<u32, vk::ShaderModule> modules;
     bool valid{};
+    bool fp16{};
+    const char* failure = "";
 };
 
 } // namespace Vulkan

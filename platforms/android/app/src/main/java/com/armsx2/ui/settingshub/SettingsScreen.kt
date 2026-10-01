@@ -70,8 +70,10 @@ import com.armsx2.ui.settings.RendererTab
 import com.armsx2.ui.settings.SegmentedRow
 import com.armsx2.ui.settings.SkinsTab
 import com.armsx2.ui.settings.LocalSettingsScrollState
+import com.armsx2.ui.settings.LocalSettingsSearchOpenSections
 
 private data class SettingsSection(val category: SettingsCategory, val titleKey: String, val glyph: String)
+private data class PendingSettingsJump(val category: SettingsCategory, val label: String, val sections: List<String>)
 
 /**
  * Lets L1/R1 flick between settings tabs, the way the old Refresh UI did.
@@ -88,8 +90,8 @@ object SettingsCategoryNav {
     var cycle: ((Int) -> Unit)? = null
 }
 
-/** Retains the settings page's scroll offset across close/reopen. The selected category already
- *  persists in the view-model, so restoring this one offset returns you to where you were (esp.
+/** Retains the settings page's scroll offset across close/reopen. The selected category is
+ *  remembered by SettingsViewModel (#729), so restoring this one offset returns you to where you were (esp.
  *  useful in long lists like Fixes) instead of snapping to the top every time. */
 private object SettingsScrollMemory {
     var lastOffset = 0
@@ -123,11 +125,11 @@ fun SettingsScreen(
     var showReset by remember { mutableStateOf(false) }
     // Settings-search "jump to control": holds the resolved label of the target row while the
     // freshly-switched tab composes + lays out, then selects it (highlight + scroll into view).
-    var pendingJump by remember { mutableStateOf<String?>(null) }
+    var pendingJump by remember { mutableStateOf<PendingSettingsJump?>(null) }
     val openSearch = {
-        SettingsSearch.open { category, label ->
+        SettingsSearch.open { category, label, sections ->
             viewModel.selectCategory(category)
-            pendingJump = label
+            pendingJump = PendingSettingsJump(category, label, sections)
         }
     }
     val screenScroll = rememberScrollState(initial = SettingsScrollMemory.lastOffset)
@@ -154,24 +156,26 @@ fun SettingsScreen(
             screenScroll.animateScrollTo(0)
         }
     }
-    // Search-jump: after selectCategory swaps the tab, retry selecting the target row until its
-    // tab has composed + registered (rows self-register via controllerFocusable); the row's own
-    // bringIntoView then scrolls it on-screen and draws the focus ring.
-    LaunchedEffect(pendingJump) {
-        val anchor = pendingJump ?: return@LaunchedEffect
-        var tries = 0
-        while (tries < 40 && !com.armsx2.ui.settings.SettingsControllerNav.selectByLabel(anchor)) {
-            kotlinx.coroutines.delay(25)
-            tries++
-        }
-        pendingJump = null
-    }
     val ui = viewModel.uiState.value
     val contentReady = ui.game?.uri?.toString() == scopeGame?.uri?.toString()
     val displayedCategory = if (scopeGame != null && ui.category == SettingsCategory.General) {
         SettingsCategory.Performance
     } else {
         ui.category
+    }
+    // Wait for the destination tab, not merely for a row with the same label in the old tab.
+    // The jump's section chain (LocalSettingsSearchOpenSections, below) opens the sections that
+    // wrap the target; once the row composes and registers, its own bringIntoView places the
+    // selected control on-screen.
+    LaunchedEffect(pendingJump, displayedCategory, contentReady) {
+        val jump = pendingJump ?: return@LaunchedEffect
+        if (!contentReady || displayedCategory != jump.category) return@LaunchedEffect
+        var tries = 0
+        while (tries < 40 && !com.armsx2.ui.settings.SettingsControllerNav.selectByLabel(jump.label)) {
+            kotlinx.coroutines.delay(25)
+            tries++
+        }
+        pendingJump = null
     }
 
     // L1/R1 tab cycling — registered only while this screen is composed. The visible-tab
@@ -267,7 +271,14 @@ fun SettingsScreen(
                         },
                     )
                     Spacer(Modifier.height(10.dp))
-                    SettingsPanel(displayedCategory, viewModel, Modifier.fillMaxWidth())
+                    CompositionLocalProvider(
+                        LocalSettingsSearchOpenSections provides (
+                            pendingJump?.takeIf { it.category == displayedCategory }?.sections?.toSet()
+                                ?: emptySet()
+                        ),
+                    ) {
+                        SettingsPanel(displayedCategory, viewModel, Modifier.fillMaxWidth())
+                    }
                     Spacer(Modifier.height(16.dp))
                 }
             }

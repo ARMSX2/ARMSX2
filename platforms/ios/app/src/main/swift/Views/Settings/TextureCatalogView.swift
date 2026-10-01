@@ -26,6 +26,7 @@ private final class TaskTap: NSObject, URLSessionTaskDelegate {
 struct TextureCatalogView: View {
     // Set in per-game settings, where only that game's packs are listed.
     private let serial: String?
+    private let controllerInput: MenuControllerInputRouter?
     @Environment(\.dismiss) private var dismiss
     @State private var settings = SettingsStore.shared
     @State private var packs: [TextureCatalogPack]?
@@ -37,29 +38,31 @@ struct TextureCatalogView: View {
     // Nil while the active pack unpacks, which can't be cancelled.
     @State private var progress: Progress?
     @State private var job: Task<Void, Never>?
-    @State private var failure: String?
 
-    init(serial: String? = nil) {
+    init(serial: String? = nil, controllerInput: MenuControllerInputRouter? = nil) {
         self.serial = serial.map { TextureCatalog.normalizedSerial($0) ?? $0 }
+        self.controllerInput = controllerInput
     }
 
     var body: some View {
         List {
-            if let packs {
-                let shown = packs.filter { (serial.map($0.serials.contains) ?? true) && matches($0) }
-                if shown.isEmpty {
+            if packs != nil {
+                if yours.isEmpty && others.isEmpty {
                     Text(settings.localized(searchText.isEmpty ? "No texture packs for this game yet." : "Nothing here matches that search."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                section(settings.localized("Your Games"), shown.filter { !owned.isDisjoint(with: $0.serials) })
-                section(settings.localized("Other Games"), shown.filter { owned.isDisjoint(with: $0.serials) })
+                section(settings.localized("Your Games"), yours)
+                section(settings.localized("Other Games"), others)
             } else if loadFailed {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(settings.localized("Can't reach the texture pack server. Check your connection and try again."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button(settings.localized("Retry")) { Task { await load() } }
+                        .controllerAccessibilityActionTarget(id: "texture-catalog.retry", label: settings.localized("Retry")) {
+                            Task { await load() }
+                        }
                 }
             } else {
                 HStack { Spacer(); ProgressView(); Spacer() }
@@ -76,18 +79,42 @@ struct TextureCatalogView: View {
         }
         // Closing mid-install would cancel the download or reload the pack list before the pack lands.
         .interactiveDismissDisabled(active != nil)
+        .controllerAccessibilityNavigation(
+            controllerInput: controllerInput,
+            scopeKey: "texture-catalog",
+            priority: 720,
+            onBack: {
+                if active == nil { dismiss() }
+                return true
+            },
+            usesExplicitTargetGeometryOnly: true,
+            focusScrollBehavior: .maintainWithinViewport,
+            focusTopAlignmentMargin: 20,
+            focusBottomAlignmentMargin: 20,
+            preferredInitialFocusLabel: controllerTargetOrder.first,
+            declaredTargetOrder: controllerTargetOrder
+        )
         .task { await load() }
-        .alert(
-            settings.localized("Texture Packs"),
-            isPresented: Binding(
-                get: { failure != nil },
-                set: { if !$0 { failure = nil } }
-            )
-        ) {
-            Button(settings.localized("OK")) { failure = nil }
-        } message: {
-            Text(failure ?? "")
+    }
+
+    private var shown: [TextureCatalogPack] {
+        (packs ?? []).filter { (serial.map($0.serials.contains) ?? true) && matches($0) }
+    }
+
+    private var yours: [TextureCatalogPack] { shown.filter { !owned.isDisjoint(with: $0.serials) } }
+    private var others: [TextureCatalogPack] { shown.filter { owned.isDisjoint(with: $0.serials) } }
+
+    // Only buttons that are on screen: Get hides while another pack installs.
+    private var controllerTargetOrder: [String] {
+        if packs == nil { return loadFailed ? ["texture-catalog.retry"] : [] }
+        return (yours + others).compactMap { pack in
+            if active == pack.id { return progress == nil ? nil : "texture-catalog.cancel.\(pack.id)" }
+            return active == nil && !installedIDs.contains(pack.id) ? "texture-catalog.get.\(pack.id)" : nil
         }
+    }
+
+    private func fail(_ message: String) {
+        ControllerPrompt.shared.ask(settings.localized("Texture Packs"), message: message, actions: [.ok])
     }
 
     @ViewBuilder
@@ -122,6 +149,12 @@ struct TextureCatalogView: View {
             if active == pack.id {
                 if progress != nil {
                     Button(settings.localized("Cancel")) { job?.cancel() }
+                        .controllerAccessibilityActionTarget(
+                            id: "texture-catalog.cancel.\(pack.id)",
+                            label: settings.localized("Cancel")
+                        ) {
+                            job?.cancel()
+                        }
                 } else {
                     ProgressView()
                 }
@@ -131,6 +164,12 @@ struct TextureCatalogView: View {
                     .foregroundStyle(.secondary)
             } else {
                 Button(settings.localized("Get")) {
+                    job = Task { await install(pack) }
+                }
+                .controllerAccessibilityActionTarget(
+                    id: "texture-catalog.get.\(pack.id)",
+                    label: pack.name
+                ) {
                     job = Task { await install(pack) }
                 }
                 .disabled(active != nil)
@@ -190,8 +229,8 @@ struct TextureCatalogView: View {
             let available = (try? staging.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
                 .volumeAvailableCapacityForImportantUsage ?? .max
             guard available >= needed else {
-                failure = String(format: settings.localized("%@ needs %@ of free space and %@ is available."),
-                                 pack.name, size(needed), size(available))
+                fail(String(format: settings.localized("%@ needs %@ of free space and %@ is available."),
+                            pack.name, size(needed), size(available)))
                 return
             }
 
@@ -214,7 +253,7 @@ struct TextureCatalogView: View {
             }
         } catch is CancellationError {
         } catch {
-            failure = settings.localized(error.localizedDescription)
+            fail(settings.localized(error.localizedDescription))
         }
     }
 

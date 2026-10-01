@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <functional>
+
 #include "common/WindowInfo.h"
 #include "SaveState.h"
 #include "pcsx2/Config.h"
@@ -56,6 +58,14 @@ s16 GSLookupGetSkipCountFunctionId(const std::string_view name);
 s16 GSLookupBeforeDrawFunctionId(const std::string_view name);
 s16 GSLookupMoveHandlerFunctionId(const std::string_view name);
 
+/// Deletes every GS shader and pipeline cache file. While the GS thread runs the work is posted
+/// there, where the open caches can be emptied and nothing is written back afterwards, so call it
+/// from the CPU thread. `done` receives the number of files removed or emptied, on the thread that
+/// did the work.
+void GSClearShaderCache(std::function<void(u32)> done = {});
+/// The same, for a caller already on the GS thread (the fullscreen UI), or when no GS thread runs.
+u32 GSClearShaderCacheOnGSThread();
+
 bool GSopen(const Pcsx2Config::GSOptions& config, GSRendererType renderer, u8* basemem,
 	GSVSyncMode vsync_mode, bool allow_present_throttle);
 bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_renderer,
@@ -102,10 +112,13 @@ bool GSIsDumpRecording();
 // Not the same question as the BackThreadMode setting, which downgrades to lockstep when the
 // split is unsupported, so this is the only way to tell whether the mode really engaged.
 bool GSHasFrontParser();
+// Waits until the GS back thread has executed every queued record. MTGS thread only. No-op with
+// GS multi-threading off.
+void GSDrainBackQueue();
 void GSStopGSDump();
 void GSPresentCurrentFrame();
 void GSThrottlePresentation();
-void GSGameChanged();
+void GSGameChanged(const std::string& serial, u32 crc);
 void GSSetDisplayAlignment(GSDisplayAlignment alignment);
 void GSSetPortraitRenderTopAlign(bool enabled);
 /// Pixels kept clear at the top of a portrait window (display cutout / camera).

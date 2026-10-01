@@ -5,12 +5,14 @@
 
 #include "common/Pcsx2Defs.h"
 
+#include <algorithm>
+#include <cmath>
+
 /// The pixels a GS line primitive lights.
 ///
-/// This is the software renderer's line walk (GSRasterizer::DrawEdgeLine), which the gs-prim
-/// console capture matched on all 188 of its line cases, restated in the 1/16-pixel integers the
-/// vertex buffer holds. Every quantity the walk uses is a whole number of those units, so the
-/// integer form here lands on the same pixels as the float form there.
+/// The software renderer's line walk (GSRasterizer::DrawEdgeLine), which matches console output,
+/// restated in the vertex buffer's 1/16-pixel integers. Every quantity is a whole number of those
+/// units, so this lands on the same pixels as the float version.
 ///
 /// The rule:
 ///
@@ -49,15 +51,19 @@ namespace GSLineWalk
 		return y_good && (dist > 8 || dx >= 0);
 	}
 
-	/// Calls pixel(x, y) for every pixel the line from (x0, y0) to (x1, y1) lights, in the order the
-	/// GS walks them, and returns how many there were. Pixel coordinates are whole pixels relative
-	/// to XYOFFSET. A zero-length line lights nothing.
-	template <typename Pixel>
-	inline int Walk(int x0, int y0, int x1, int y1, Pixel&& pixel)
+	/// The walk itself. Calls step(x, y, D, scale) once per whole-pixel step along the major axis,
+	/// in the order the GS takes them, and returns how many steps there were. D is the decision
+	/// value -- the minor coordinate's signed distance from the centre of the pixel the step landed
+	/// on, in units of 1/scale of a pixel -- from which AA1 coverage is computed. Walk() and
+	/// WalkAA1() share this so there is one copy of the walk.
+	///
+	/// WalkStepsOnAxis is the same walk for a caller that already knows the major axis, which it
+	/// must have chosen by the same rule: X when |dx| >= |dy|.
+	template <bool step_x, typename Step>
+	inline int WalkStepsOnAxis(int x0, int y0, int x1, int y1, Step&& step_fn)
 	{
 		const int dx = x1 - x0;
 		const int dy = y1 - y0;
-		const bool step_x = Abs(dx) >= Abs(dy);
 		const bool pos_x = dx >= 0;
 		const bool pos_y = dy >= 0;
 		const int dxi = pos_x ? 1 : -1;
@@ -117,7 +123,7 @@ namespace GSLineWalk
 		int count = 0;
 		for (;;)
 		{
-			pixel(xi, yi);
+			step_fn(xi, yi, D, scale);
 			count++;
 			if ((step_x ? xi : yi) == end)
 				break;
@@ -134,5 +140,50 @@ namespace GSLineWalk
 			}
 		}
 		return count;
+	}
+
+	template <typename Step>
+	inline int WalkSteps(int x0, int y0, int x1, int y1, Step&& step_fn)
+	{
+		if (Abs(x1 - x0) >= Abs(y1 - y0))
+			return WalkStepsOnAxis<true>(x0, y0, x1, y1, step_fn);
+		return WalkStepsOnAxis<false>(x0, y0, x1, y1, step_fn);
+	}
+
+	/// Calls pixel(x, y) for every pixel the line from (x0, y0) to (x1, y1) lights, in the order the
+	/// GS walks them, and returns how many there were. Pixel coordinates are whole pixels relative
+	/// to XYOFFSET. A zero-length line lights nothing.
+	template <typename Pixel>
+	inline int Walk(int x0, int y0, int x1, int y1, Pixel&& pixel)
+	{
+		return WalkSteps(x0, y0, x1, y1, [&](int x, int y, s64, s64) { pixel(x, y); });
+	}
+
+	/// The pixels an AA1 line lights, and the coverage each one carries.
+	///
+	/// An AA1 line lights two pixels per step: the walk's pixel and its minor-axis neighbour on the
+	/// side the exact line leans. They split full coverage between them, so a line exactly on a
+	/// row of pixel centres writes that row at full coverage and the next at zero. The
+	/// zero-coverage pixel still writes its alpha to memory, as on the console.
+	///
+	/// Calls pixel(x, y, cov, side) twice per step, side 0 for the walk's own pixel and 1 for its
+	/// neighbour, and returns the number of pixels. `cov` is the software renderer's 16-bit edge
+	/// value; the scanline reads its top 7 bits, so the alpha runs 0 to 127.
+	///
+	/// Matches GSRasterizer::DrawEdgeLine's antialiased path value for value, including the float
+	/// division, so both renderers produce the same coverage (gs_line_walk_tests.cpp).
+	template <typename Pixel>
+	inline int WalkAA1(int x0, int y0, int x1, int y1, Pixel&& pixel)
+	{
+		const bool step_x = Abs(x1 - x0) >= Abs(y1 - y0);
+
+		return 2 * WalkSteps(x0, y0, x1, y1, [&](int x, int y, s64 D, s64 scale) {
+			const float cov = 0xffff * std::abs(static_cast<float>(D) / static_cast<float>(scale));
+			const int covi = std::clamp(static_cast<int>(cov), 0, 0xffff);
+			const int offset = (D >= 0) ? 1 : -1;
+
+			pixel(x, y, 0xffff - covi, 0);
+			pixel(x + (step_x ? 0 : offset), y + (step_x ? offset : 0), covi, 1);
+		});
 	}
 } // namespace GSLineWalk

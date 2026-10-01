@@ -17,7 +17,11 @@ import kr.co.iefriends.pcsx2.NativeApp
  * a drum pad with nothing extra to configure. Aiming for the lightgun is the one thing that needs
  * more than a button, and lives in [Lightgun].
  *
- * ★ Changing a port is RESTART-REQUIRED: the game probes the port at boot and caches what it found.
+ * ★ Restart the game after changing a port. The new device is plugged into a running game straight
+ * away (NativeApp.usbApplyPorts), but many games only look for USB devices at boot.
+ *
+ * Port 1 is shared with the USB keyboard switch (Settings.system.usbKeyboard): while that is on, the
+ * keyboard takes the port, and while it is off, the port carries what was picked here.
  */
 object UsbDevices {
     data class Device(val type: String, val display: String, val subtypes: List<String>)
@@ -37,7 +41,11 @@ object UsbDevices {
 
     private var cached: List<Device>? = null
 
-    /** Devices this build can emulate, straight from the core. Cached — it cannot change at runtime. */
+    /**
+     * Devices this build can emulate, straight from the core. Cached once it has an answer, since
+     * that cannot change at runtime. An empty answer is not cached: it means the core's registry
+     * was not filled yet, and keeping it would leave the picker empty for the whole session (#752).
+     */
     fun available(): List<Device> {
         cached?.let { return it }
         val raw = runCatching { NativeApp.usbDeviceTypes() }.getOrNull().orEmpty()
@@ -47,9 +55,17 @@ object UsbDevices {
             if (parts.size < 2) return@mapNotNull null
             Device(parts[0], parts[1], parts.drop(2))
         }
-        cached = list
+        if (list.isNotEmpty()) cached = list
         return list
     }
+
+    /**
+     * The device the picker put on [port], read from its preference rather than [portType]. The
+     * settings apply at game launch writes Port 1 from this, and it can run before [load] has
+     * (a game started straight from a shortcut).
+     */
+    fun storedType(port: Int): String =
+        runCatching { MainActivityRuntime.prefs.getString(KEY_TYPE.format(port), NONE) }.getOrNull() ?: NONE
 
     fun load() {
         for (p in 0..1) {

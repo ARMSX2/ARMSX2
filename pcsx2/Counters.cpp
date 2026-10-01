@@ -215,7 +215,7 @@ static void vSyncInfoCalc(vSyncTimingInfo* info, double framesPerSecond, u32 sca
 	// Dynasty Warriors 3 Xtreme Legends - fake save corruption when loading save
 	// Jak II - random speedups
 	// Shadow of Rome - FMV audio issues
-	const bool ntsc_hblank = gsVideoMode != GS_VideoMode::PAL && gsVideoMode != GS_VideoMode::DVD_PAL;
+	const bool ntsc_hblank = gsVideoMode != GS_VideoMode::PAL && gsVideoMode != GS_VideoMode::DVD_PAL && (gsVideoMode != GS_VideoMode::Uninitialized || framesPerSecond != (Pcsx2Config::GSOptions::DEFAULT_FRAME_RATE_PAL / 2));
 	const u64 HalfFrame = Frame / 2;
 	const float extra_scanlines = static_cast<float>(IsProgressiveVideoMode()) * (ntsc_hblank ? 0.5f : 1.5f);
 	const u64 Blank = Scanline * ((ntsc_hblank ? 22.5f : 24.5f) + extra_scanlines);
@@ -307,10 +307,12 @@ double GetVerticalFrequency()
 	// https://web.archive.org/web/20120629231826fw_/http://ntsc-tv.com/index.html
 	// https://web.archive.org/web/20200831051302/https://www.hdretrovision.com/240p/
 
+	std::string cur_region = VMManager::Internal::GetCurrentRegion();
+
 	switch (gsVideoMode)
 	{
 		case GS_VideoMode::Uninitialized: // SetGsCrt hasn't executed yet, give some temporary values.
-			return 60.00;
+			return (cur_region == "PAL") ? Pcsx2Config::GSOptions::DEFAULT_FRAME_RATE_PAL : Pcsx2Config::GSOptions::DEFAULT_FRAME_RATE_NTSC;
 		case GS_VideoMode::PAL:
 		case GS_VideoMode::DVD_PAL:
 			return (IsProgressiveVideoMode() == false) ? EmuConfig.GS.FrameratePAL : EmuConfig.GS.FrameratePAL - 0.24f;
@@ -352,9 +354,9 @@ void UpdateVSyncRate(bool force)
 		{
 			case GS_VideoMode::Uninitialized: // SYSCALL instruction hasn't executed yet, give some temporary values.
 				if (gsIsInterlaced)
-					total_scanlines = SCANLINES_TOTAL_NTSC_I;
+					total_scanlines = (vertical_frequency == Pcsx2Config::GSOptions::DEFAULT_FRAME_RATE_PAL) ? SCANLINES_TOTAL_PAL_I : SCANLINES_TOTAL_NTSC_I;
 				else
-					total_scanlines = SCANLINES_TOTAL_NTSC_NI;
+					total_scanlines = (vertical_frequency == Pcsx2Config::GSOptions::DEFAULT_FRAME_RATE_PAL) ? SCANLINES_TOTAL_PAL_NI : SCANLINES_TOTAL_NTSC_NI;
 				break;
 			case GS_VideoMode::PAL:
 			case GS_VideoMode::DVD_PAL:
@@ -504,11 +506,14 @@ static __fi void VSyncStart(u64 sCycle)
 
 	// Don't bother throttling if we're going to pause.
 	if (!VMManager::Internal::IsExecutionInterrupted())
-		VMManager::Internal::Throttle();
+		VMManager::Internal::Throttle(true);
 	else
 		PerformanceMetrics::AdpfPauseFrameWork(); // interrupted → no Throttle → drop the ADPF period so the resume report excludes the pause
 
-	gsPostVsyncStart(); // MUST be after framelimit; doing so before causes funk with frame times!
+	if (!EmuConfig.GS.AdvancedFrameDisplay)
+	{
+		gsPostVsyncStart(); // MUST be after framelimit; doing so before causes funk with frame times!
+	}
 
 	// Poll input after MTGS frame push, just in case it has to stall to catch up.
 	VMManager::Internal::PollInputOnCPUThread();
@@ -578,6 +583,15 @@ static __fi void GSVSync()
 static __fi void VSyncEnd(u64 sCycle)
 {
 	EECNT_LOG("    ================  EE COUNTER VSYNC END (frame: %d)  ================", g_FrameCount);
+	if (!VMManager::Internal::IsExecutionInterrupted())
+		VMManager::Internal::Throttle(false);
+	else
+		PerformanceMetrics::AdpfPauseFrameWork();
+
+	if (EmuConfig.GS.AdvancedFrameDisplay)
+	{
+		gsPostVsyncStart();
+	}
 
 	g_FrameCount++;
 	if (!GSSMODE1reg.SINT)

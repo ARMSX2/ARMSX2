@@ -9,16 +9,15 @@
 
 /// What a render target's alpha byte is known to hold, bit by bit.
 ///
-/// GSTextureCache::Target already tracks an alpha min/max range, and that range cannot carry a
-/// bit through a mask. A write that masks bit 7 leaves bit 7 exactly as it was, but min/max has
-/// to widen to cover both the old and the new values, so a target written only through a partial
-/// alpha mask sits at 0..255 forever. A per-bit (bits, value) pair can still say "bit 7 is zero
-/// everywhere" across such a write.
+/// The alpha min/max range on GSTextureCache::Target cannot carry a bit through a mask: a write
+/// masking bit 7 leaves that bit unchanged, but min/max must widen to cover old and new values,
+/// so a target written through a partial alpha mask ends up at 0..255. A per-bit (bits, value)
+/// pair can still say "bit 7 is zero everywhere".
 ///
-/// The pair is a strict refinement of the range, maintained beside it at the same sites. Nothing
-/// reads it except the exact FBMSK-drop rule; the range stays authoritative everywhere else.
+/// The pair refines the range and is updated at the same sites. Only the exact FBMSK-drop rules
+/// read it; the range stays authoritative everywhere else.
 ///
-/// These rules live in a header of their own so they can be tested without a GS device.
+/// Kept in its own header so it can be tested without a GS device.
 namespace GSAlphaKnownBits
 {
 	struct Known
@@ -51,11 +50,10 @@ namespace GSAlphaKnownBits
 	/// The bounds of {a | 0x80 : a in [lo, hi]} -- what a draw writes once FBA has forced alpha
 	/// bit 7 on.
 	///
-	/// ORing 0x80 into the two endpoints is a bound only while the range does not straddle 128.
-	/// [0x00, 0x80] becomes 0x80..0xFF, not the 0x80..0x80 the endpoint OR produces, and
-	/// [0x64, 0xC8] comes out inverted at 0xE4..0xC8. Either one, handed to ConstantBits, claims
-	/// bits the draw does not hold. AA1 coverage is what makes a straddling range common: the
-	/// vertex trace widens to 0..128 for it.
+	/// ORing 0x80 into the endpoints is only a bound when the range does not straddle 128:
+	/// [0x00, 0x80] becomes 0x80..0xFF, not 0x80..0x80, and [0x64, 0xC8] would come out inverted.
+	/// Either would make ConstantBits claim bits the draw does not hold. AA1 coverage commonly
+	/// produces a straddling range (the vertex trace widens to 0..128).
 	inline constexpr Range AfterFBA(u8 lo, u8 hi)
 	{
 		if (lo < 128 && hi >= 128)
@@ -67,9 +65,8 @@ namespace GSAlphaKnownBits
 	/// a fragment alpha somewhere in [src_lo, src_hi].
 	///
 	/// full_cover means every pixel of the valid rect took the write, so the written bits become
-	/// whatever the source is constant on, whatever was there before. Otherwise only some pixels
-	/// took it, and a written bit stays known only where the source agrees with what was already
-	/// known. The bits the mask held back keep their knowledge either way, which is the point.
+	/// whatever the source is constant on. Otherwise a written bit stays known only where the
+	/// source agrees with what was already known. Bits the mask held back keep their knowledge.
 	inline constexpr Known AfterWrite(Known prev, u8 written, u8 src_lo, u8 src_hi, bool full_cover)
 	{
 		const u8 held = static_cast<u8>(~written);
@@ -129,10 +126,8 @@ namespace GSAlphaKnownBits
 
 	/// Whether the pair and an alpha range can describe the same pixels.
 	///
-	/// Necessary, not sufficient: the pair pins bits, the range bounds values, and deciding
-	/// emptiness of their intersection exactly needs a search the assert does not deserve. What it
-	/// does catch is the failure that matters -- the two drifting apart because a write site
-	/// updated one and not the other.
+	/// Necessary, not sufficient; an exact test would need a search. It catches the two drifting
+	/// apart because a write site updated one and not the other.
 	inline constexpr bool RangeAdmits(int lo, int hi, Known k)
 	{
 		if ((k.value & ~k.bits) != 0)

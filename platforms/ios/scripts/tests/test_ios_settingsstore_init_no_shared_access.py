@@ -7,7 +7,7 @@ init() reaches re-enters the once token. ALLOWLIST holds the accesses that canno
 import re
 import unittest
 
-from ios_source import SWIFT, block, without_comments
+from ios_source import SWIFT, block, store_text, without_comments
 
 
 MODELS = SWIFT / "Models"
@@ -202,7 +202,8 @@ class TestIosSettingsStoreInitNoSharedAccess(unittest.TestCase):
 
     def test_setting_commit_routes_through_the_guarded_helper(self):
         """A setter must not reload GS settings while init is still loading them."""
-        body = without_comments(block(self.settings_store, "private func commit<T>("))
+        store = store_text()
+        body = without_comments(block(store, "func commit<T>("))
         self.assertRegex(
             body, r"\brequestGraphicsApplyGuarded\(\)",
             "commit() does not call requestGraphicsApplyGuarded()",
@@ -211,7 +212,7 @@ class TestIosSettingsStoreInitNoSharedAccess(unittest.TestCase):
             body, RAW_APPLY,
             "commit() calls requestGraphicsApply() instead of requestGraphicsApplyGuarded()",
         )
-        guard = without_comments(block(self.settings_store, "func requestGraphicsApplyGuarded("))
+        guard = without_comments(block(store, "func requestGraphicsApplyGuarded("))
         self.assertRegex(
             guard, r"guard\s+!suppressINIWrites\s+else\s*\{\s*return\s*\}",
             "requestGraphicsApplyGuarded() does not return early while suppressINIWrites is set",

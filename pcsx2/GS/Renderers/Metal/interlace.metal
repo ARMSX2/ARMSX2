@@ -15,7 +15,14 @@ fragment float4 ps_interlace0(ConvertShaderData data [[stage_in]], ConvertPSRes 
 	const int vpos  = int(data.p.y);      // vertical position of destination texture
 
 	if ((vpos & 1) == field)
-		return res.sample_level(data.t, 0);
+	{
+		// Rows [pad.x, pad.y) were never drawn for this field, so read the first row that was
+		// instead of the cleared hole. The band starts where the display rect does. At 1x it is
+		// one row and the field's own lowest row is its next, so nothing moves; at 2x it is two
+		// rows and this is what fills the black device row.
+		const float src_row = (float(vpos) >= uniform.field_pad.x && float(vpos) < uniform.field_pad.y) ? uniform.field_pad.y : float(vpos);
+		return res.sample_level(data.t + float2(0.0f, (src_row - float(vpos)) * uniform.ZrH.y), 0);
+	}
 	else
 		discard_fragment();
 
@@ -63,7 +70,14 @@ fragment float4 ps_interlace3(ConvertShaderData data [[stage_in]], ConvertPSRes 
 	// if the index of current destination line belongs to the current fiels we update it, otherwise
 	// we leave the old line in the destination buffer
 	if ((vpos & 1) == field)
-		return res.sample_level(data.t, 0);
+	{
+		// Same undrawn band as the weave shader. This pass writes one bank of a target twice the
+		// source's height, so the source row a fragment reads is its row within the bank, and one
+		// source row is 1 / vres of the texture coordinate.
+		const int   srow    = int(data.p.y) - bank * vres;
+		const float src_row = (float(srow) >= uniform.field_pad.x && float(srow) < uniform.field_pad.y) ? uniform.field_pad.y : float(srow);
+		return res.sample_level(data.t + float2(0.0f, (src_row - float(srow)) / float(vres)), 0);
+	}
 	else
 		discard_fragment();
 

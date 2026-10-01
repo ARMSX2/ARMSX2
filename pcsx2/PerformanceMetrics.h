@@ -15,6 +15,55 @@ namespace PerformanceMetrics
 		DISPFBBlit
 	};
 
+	class AverageFPS
+	{
+	private:
+		static constexpr size_t FPS_BUFFER_SIZE = 16;
+		std::array<float, FPS_BUFFER_SIZE> fps_buff{};
+		size_t count = 0;
+		size_t pos = 0;
+		float avg_fps = 0.0f;
+
+	public:
+		void ClearStats()
+		{
+			count = 0;
+			pos = 0;
+			fps_buff.fill(0.0f);
+			avg_fps = 0.0f;
+		}
+
+		void UpdateAvgFPS(float new_fps_val)
+		{
+			// If the change is quite dramatic, the user has either turned off the frame limiter or the game is dying.
+			// Clear it to catch it up quickly.
+			if (count > 0)
+			{
+				const float last_fps_val = fps_buff[(pos - 1) & (FPS_BUFFER_SIZE - 1)];
+				if (std::abs(last_fps_val - new_fps_val) > last_fps_val * 0.20f)
+					ClearStats();
+			}
+
+			fps_buff[pos] = new_fps_val;
+			pos = (pos + 1) & (FPS_BUFFER_SIZE - 1); // if you use values which don't become all 1's, make it %.
+			count = std::min(count + 1, FPS_BUFFER_SIZE);
+
+			float avg_sum = 0.0f;
+
+			for (size_t i = 0; i < count; i++)
+			{
+				avg_sum += fps_buff[i];
+			}
+
+			avg_fps = avg_sum / static_cast<float>(count);
+		}
+
+		float GetAvgFPS()
+		{
+			return avg_fps;
+		}
+	};
+
 	static constexpr u32 NUM_FRAME_TIME_SAMPLES = 150;
 	using FrameTimeHistory = std::array<float, NUM_FRAME_TIME_SAMPLES>;
 
@@ -40,11 +89,13 @@ namespace PerformanceMetrics
 	/// ADPF work-period brackets, driven by the frame limiter (VMManager::Internal::Throttle).
 	/// The reported duration must be the active EE/GS/VU work per frame, EXCLUDING the deliberate
 	/// limiter sleep and present wait, per the PerformanceHintManager contract (reportActualWork
-	/// = the last workload cycle, not the frame interval). OnFrameWorkComplete() reports the
-	/// period that just ended (called at Throttle entry, before the sleep); BeginFrameWork()
-	/// opens a new period after the sleep; PauseFrameWork() invalidates it when we are not
-	/// frame-limiting (unlimited / host-vsync pacing), so no bogus duration is reported.
-	void AdpfOnFrameWorkComplete();
+	/// = the last workload cycle, not the frame interval). The limiter waits twice per frame, at
+	/// vsync start and at vsync end, so a frame's work is two segments. EndWorkSegment() closes the
+	/// segment that just ended (called at Throttle entry, before the sleep) and, at the frame's
+	/// last wait, reports both segments as one period; BeginFrameWork() opens the next segment
+	/// after the sleep; PauseFrameWork() invalidates the frame when we are not frame-limiting
+	/// (unlimited / host-vsync pacing / interrupted), so no bogus duration is reported.
+	void AdpfEndWorkSegment(bool frame_end);
 	void AdpfBeginFrameWork();
 	void AdpfPauseFrameWork();
 
@@ -55,7 +106,7 @@ namespace PerformanceMetrics
 	void SetGSSWThreadCount(u32 count);
 	void SetGSSWThread(u32 index, Threading::ThreadHandle thread);
 
-	/// Sets the timer for the GS back thread (GSBackThreadMode >= Lockstep). Registered by
+	/// Sets the timer for the GS back thread (exists only with GS multi-threading on). Registered by
 	/// the back thread itself at entry and cleared once it has joined; an empty handle means
 	/// no such thread exists, which is the default configuration. Under the pipelined split
 	/// the GS work is roughly halved between this thread and the MTGS thread, so the plain
@@ -68,6 +119,7 @@ namespace PerformanceMetrics
 	bool IsInternalFPSValid();
 
 	float GetFPS();
+	float GetAvgVPS();
 	float GetInternalFPS();
 	float GetSpeed();
 	float GetAverageFrameTime();

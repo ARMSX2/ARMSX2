@@ -27,7 +27,7 @@ import com.armsx2.runtime.MainActivityRuntime
 import kotlinx.coroutines.flow.first
 
 /** A full manager screen shown as an overlay over the paused game (in-game menu). */
-enum class InGameScreen { Settings, Achievements, Memcard, Patches, Controls, Skins, Textures, SaveState, LoadState }
+enum class InGameScreen { Settings, Achievements, Memcard, Patches, Controls, Skins, Textures, SaveState, LoadState, Hotkeys }
 
 object WindowImpl {
     val toolbarVisible = mutableStateOf(true)
@@ -177,6 +177,13 @@ object WindowImpl {
                         // WITH the running game is what surfaces the per-game skin toggle.
                         InGameScreen.Skins -> com.armsx2.ui.settingshub.SettingsScreen(
                             initialCategory = com.armsx2.navigation.SettingsCategory.Skins,
+                            game = MainActivityRuntime.currentGame.value,
+                            onBack = dismiss,
+                        )
+                        // Same for Hotkeys, from the quick menu's Controller tab: binding one is
+                        // something you find you need mid-game, like the Pressure Modifier toggle.
+                        InGameScreen.Hotkeys -> com.armsx2.ui.settingshub.SettingsScreen(
+                            initialCategory = com.armsx2.navigation.SettingsCategory.Hotkeys,
                             game = MainActivityRuntime.currentGame.value,
                             onBack = dismiss,
                         )

@@ -4,6 +4,7 @@
 #pragma once
 
 #include "GS/Renderers/Common/GSDevice.h"
+#include "GS/Renderers/Null/GSNullDeviceProfile.h"
 
 #include <vector>
 
@@ -51,10 +52,22 @@ private:
 	std::vector<u8> m_buffer;
 };
 
-class GSDeviceNone final : public GSDevice
+// Not final: tests/ctest/core/gs/gs_sprite_pass_order_tests.cpp derives from this to keep the
+// GSHWDrawConfig the backend is handed, which is how it reads the geometry a real GSRendererHW
+// draw submits without a graphics API. Nothing in the tree holds a GSDeviceNone* -- every caller
+// goes through GSDevice* (g_gs_device) -- so dropping final devirtualizes nothing and generates
+// no different code.
+class GSDeviceNone : public GSDevice
 {
 public:
 	GSDeviceNone() = default;
+
+	// Which device this one reports the features of. Set once before the VM starts (gsrunner's
+	// -nullhw-profile) and read in Create(); a static because the device object is built deep
+	// inside GSopen and there is no user-facing setting for a measurement-only renderer. See
+	// GSNullDeviceProfile.h for why the features are not left at their defaults.
+	static void SetFeatureProfile(GSNullDeviceProfile::Id id) { s_feature_profile = id; }
+	static GSNullDeviceProfile::Id GetFeatureProfile() { return s_feature_profile; }
 
 	bool Create(GSVSyncMode vsync_mode, bool allow_present_throttle) override;
 
@@ -91,9 +104,11 @@ public:
 	void ClearSamplerCache() override;
 
 protected:
+	static inline GSNullDeviceProfile::Id s_feature_profile = GSNullDeviceProfile::kDefault;
+
 	GSTexture* CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format) override;
 
-	void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const GSRegPMODE& PMODE,
+	void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const MergeTopBand* top_band, const GSRegPMODE& PMODE,
 		const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter) override;
 	void DoInterlace(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
 		ShaderInterlace shader, Filter filter, const InterlaceConstantBuffer& cb) override;

@@ -43,6 +43,15 @@ public:
 	// Masks to the register's architectural width: 32-bit for the special VIs
 	// (REG_R/I/Q/P/flags/TPC/FBRST/VPU_STAT), low 16 for the rest. For REG_Q/P
 	// prefer SetQ/SetP, which also write the q.UL/p.UL float slot.
+	//
+	// Seeding REG_CLIP_FLAG, REG_MAC_FLAG or REG_STATUS_FLAG does not give a
+	// program an incoming flag, and the two engines disagree about what it
+	// does do: the recompiler reads its flag from the micro_*flags ring and
+	// sees nothing, the interpreter's FCGET/FMAND/FSAND read the VI slot and
+	// see the seed, so Run()'s own diff fires. A flag-writing op folds into
+	// the VURegs clipflag/macflag/statusflag scalar, which is neither of
+	// those. Build the incoming value in-band, from an earlier op in the
+	// same program.
 	void SetVi(u32 reg_idx, u32 value);
 	void SetQ(u32 bits);
 	void SetP(u32 bits);

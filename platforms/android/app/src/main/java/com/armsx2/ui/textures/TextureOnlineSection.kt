@@ -55,8 +55,10 @@ import com.armsx2.ui.settings.controllerFocusable
  *
  * The whole catalog is browsable with no game running. Each pack names the serials it belongs to, so
  * the install target comes from the pack itself rather than from whatever happens to be loaded —
- * requiring a running game was a restriction the data never justified. Packs matching something in
- * your library are listed first; the rest stay visible so you can grab them before you own the disc.
+ * requiring a running game was a restriction the data never justified. For a multi-region pack it
+ * is the serial of the copy the player has ([TextureCatalog.Pack.installSerialFor]). Packs matching
+ * something in your library are listed first; the rest stay visible so you can grab them before you
+ * own the disc.
  */
 /** Rows composed per page in the online catalogue. Small enough that the first frame is cheap,
  *  large enough to fill a phone screen without immediately needing 'Show more'. */
@@ -64,10 +66,15 @@ private const val ONLINE_PAGE = 20
 
 @Composable
 fun TextureOnlineSection(
-    /** Serial of the game in context, if any. Only affects ordering — never what gets installed. */
+    /** Serial of the game in context, if any. Sorts its packs first, and is where a pack covering
+     *  it installs. */
     serial: String?,
     /** Serials present in the user's library, so owned games float to the top. */
     librarySerials: Set<String> = emptySet(),
+    /** Serials of games the player can boot (the library scan and the game in context), upper-case.
+     *  Picks a multi-region pack's install folder. Unlike [librarySerials] it leaves out installed
+     *  pack folders, so a pack installed under the wrong region's serial cannot vouch for itself. */
+    ownedSerials: Set<String> = emptySet(),
     modifier: Modifier = Modifier,
     onInstalled: () -> Unit,
 ) {
@@ -286,9 +293,9 @@ fun TextureOnlineSection(
                     ordered.forEach { pack ->
                         PackRow(pack, installed[pack.id], busyPackId, progressText,
                             progressFraction, uriHandler::openUri,
-                            // Install target is the pack's own serial, so this works with no game
-                            // running and cannot drop a pack into the wrong game's folder.
-                            onGet = { startInstall(pack, pack.serials.first()) },
+                            // Install target is one of the pack's own serials, so this works with no
+                            // game running and cannot drop a pack into another game's folder.
+                            onGet = { startInstall(pack, pack.installSerialFor(serial, ownedSerials)) },
                             onCancel = { cancelRequested = true },
                             canCancel = !commitStarted)
                     }
@@ -305,7 +312,7 @@ fun TextureOnlineSection(
                         shown.forEach { pack ->
                             PackRow(pack, installed[pack.id], busyPackId, progressText,
                                 progressFraction, uriHandler::openUri,
-                                onGet = { startInstall(pack, pack.serials.first()) },
+                                onGet = { startInstall(pack, pack.installSerialFor(serial, ownedSerials)) },
                                 onCancel = { cancelRequested = true },
                                 canCancel = !commitStarted)
                         }

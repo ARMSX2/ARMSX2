@@ -45,6 +45,7 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_superblock_tests.cpp
 	ee_rec_branch_in_delay_tests.cpp
 	ee_rec_callret_tests.cpp
+	ee_rec_cond_veneer_tests.cpp
 	ee_rec_cop0_tests.cpp
 	ee_rec_fpu_tests.cpp
 	ee_rec_fpu_divunit_rounding_tests.cpp
@@ -91,6 +92,14 @@ add_pcsx2_test(recompiler_tests
 	vu0_clamp_modes_tests.cpp
 	vu_ftoi_saturation_tests.cpp
 	vu_madda_acc_lane_tests.cpp
+	vu_ss_clamp_lane_tests.cpp
+	vu_clip_flag_tests.cpp
+	vu_clamp_consts_residency_tests.cpp
+	vu_merge_fold_tests.cpp
+	vu_flag_queue_reorder_tests.cpp
+	vu_preload_pair_tests.cpp
+	vu_mem_addressing_tests.cpp
+	vu_mem_addressing_console_tests.cpp
 	vu_broadcast_lane_tests.cpp
 	vu_minmax_order_tests.cpp
 	vu_pq_boundary_tests.cpp
@@ -124,6 +133,10 @@ add_pcsx2_test(recompiler_tests
 	mvu_persist_roundtrip_tests.cpp
 	mvu_progcache_disk_tests.cpp
 	mvu_waitmtvu_stub_tests.cpp
+	mvu_ebit_exit_tests.cpp
+	mvu_options_sentinel_tests.cpp
+	mvu_model_stub_tests.cpp
+	model_call_contract_tests.cpp
 	mvu_ibit_hack_tests.cpp
 	vu0_macro_zero_sign_console_tests.cpp
 	# Conformance against real-hardware captures rather than against the other
@@ -140,6 +153,7 @@ add_pcsx2_test(recompiler_tests
 	ee_fpu_compare_console_tests.cpp
 	ee_fpu_divunit_console_tests.cpp
 	ee_fpu_divunit_exhaustive_tests.cpp
+	ee_fpu_divunit_arm64_form_tests.cpp
 	ee_fpu_guarded_addsub_console_tests.cpp
 	ee_fpu_ou_rounding_console_tests.cpp
 	ee_fpu_underflow_console_tests.cpp

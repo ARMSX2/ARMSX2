@@ -7,19 +7,23 @@ import SwiftUI
 struct TexturePacksView<Options: View>: View {
     private let serial: String?
     private let options: Options
+    // The per-game panel declares its whole controller order, so it reads this page's part from here.
+    @Binding private var controllerTargets: [String]
+    @Environment(\.menuControllerInputRouter) private var controllerInput
     @State private var settings = SettingsStore.shared
     @State private var packs: [TexturePack]?
     @State private var titles: [String: String] = [:]
-    @State private var pendingRemoval: TexturePack?
-    @State private var failure: String?
     @State private var showCatalog = false
     @State private var showPicker = false
     @State private var importing = false
 
-    init(serial: String? = nil, @ViewBuilder options: () -> Options) {
+    init(serial: String? = nil, controllerTargets: Binding<[String]> = .constant([]), @ViewBuilder options: () -> Options) {
         self.serial = serial
+        self._controllerTargets = controllerTargets
         self.options = options()
     }
+
+    private var targetPrefix: String { serial == nil ? "settings.textures" : "per-game.textures" }
 
     var body: some View {
         let running = ARMSX2Bridge.currentTextureSerial()
@@ -37,10 +41,22 @@ struct TexturePacksView<Options: View>: View {
                 } label: {
                     Label(settings.localized("Download Texture Packs"), systemImage: "arrow.down.circle")
                 }
+                .controllerAccessibilityActionTarget(
+                    id: "\(targetPrefix).download",
+                    label: settings.localized("Download Texture Packs")
+                ) {
+                    showCatalog = true
+                }
                 Button {
                     showPicker = true
                 } label: {
                     Label(settings.localized("Import"), systemImage: "square.and.arrow.down")
+                }
+                .controllerAccessibilityActionTarget(
+                    id: "\(targetPrefix).import",
+                    label: settings.localized("Import")
+                ) {
+                    showPicker = true
                 }
                 .disabled(importing)
             }
@@ -68,9 +84,10 @@ struct TexturePacksView<Options: View>: View {
         .navigationTitle(settings.localized("Texture Packs"))
         .navigationBarTitleDisplayMode(.inline)
         .task { await reload() }
+        .onChange(of: packTargets, initial: true) { _, targets in controllerTargets = targets }
         .sheet(isPresented: $showCatalog, onDismiss: { Task { await reload() } }) {
             NavigationStack {
-                TextureCatalogView(serial: serial)
+                TextureCatalogView(serial: serial, controllerInput: controllerInput)
             }
         }
         .sheet(isPresented: $showPicker) {
@@ -87,42 +104,28 @@ struct TexturePacksView<Options: View>: View {
                     }
                 case .failure(let error):
                     if !FileImportHandler.isUserCancelledPickerError(error) {
-                        failure = error.localizedDescription
+                        fail(error.localizedDescription)
                     }
                 }
             }
         }
-        .confirmationDialog(
-            String(format: settings.localized("Remove %@"), pendingRemoval.map(name) ?? ""),
-            isPresented: Binding(
-                get: { pendingRemoval != nil },
-                set: { if !$0 { pendingRemoval = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let pack = pendingRemoval {
-                Button(String(format: settings.localized("Remove %@"), name(pack)), role: .destructive) {
-                    pendingRemoval = nil
-                    Task { await remove(pack) }
-                }
-            }
-            Button(settings.localized("Cancel"), role: .cancel) {
-                pendingRemoval = nil
-            }
-        } message: {
-            Text(settings.localized("This cannot be undone."))
-        }
-        .alert(
-            settings.localized("Texture Packs"),
-            isPresented: Binding(
-                get: { failure != nil },
-                set: { if !$0 { failure = nil } }
-            )
-        ) {
-            Button(settings.localized("OK")) { failure = nil }
-        } message: {
-            Text(failure ?? "")
-        }
+    }
+
+    private var packTargets: [String] {
+        ["\(targetPrefix).download"] + (importing ? [] : ["\(targetPrefix).import"])
+            + (packs ?? []).map { "\(targetPrefix).remove.\($0.id)" }
+    }
+
+    private func confirmRemoval(_ pack: TexturePack) {
+        let title = String(format: settings.localized("Remove %@"), name(pack))
+        ControllerPrompt.shared.ask(title, message: settings.localized("This cannot be undone."), actions: [
+            .cancel,
+            .init(title: settings.localized("Remove"), isDestructive: true) { Task { await remove(pack) } },
+        ])
+    }
+
+    private func fail(_ message: String) {
+        ControllerPrompt.shared.ask(settings.localized("Texture Packs"), message: message, actions: [.ok])
     }
 
     private func row(_ pack: TexturePack, running: Bool) -> some View {
@@ -142,12 +145,18 @@ struct TexturePacksView<Options: View>: View {
             Spacer()
 
             Button(role: .destructive) {
-                pendingRemoval = pack
+                confirmRemoval(pack)
             } label: {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
             .accessibilityLabel(String(format: settings.localized("Remove %@"), name(pack)))
+            .controllerAccessibilityActionTarget(
+                id: "\(targetPrefix).remove.\(pack.id)",
+                label: String(format: settings.localized("Remove %@"), name(pack))
+            ) {
+                confirmRemoval(pack)
+            }
         }
         .padding(.vertical, 4)
     }
@@ -184,7 +193,7 @@ struct TexturePacksView<Options: View>: View {
                 ARMSX2Bridge.reloadTextureReplacements()
             }
         case .failure(let error):
-            failure = error.localizedDescription
+            fail(error.localizedDescription)
         }
         await reload()
     }
@@ -193,7 +202,7 @@ struct TexturePacksView<Options: View>: View {
         do {
             try await Task.detached(priority: .utility) { try TexturePackLibrary.remove(pack) }.value
         } catch {
-            failure = "\(settings.localized("Some files could not be removed:"))\n\(error.localizedDescription)"
+            fail("\(settings.localized("Some files could not be removed:"))\n\(error.localizedDescription)")
         }
         if pack.serial == ARMSX2Bridge.currentTextureSerial() {
             ARMSX2Bridge.reloadTextureReplacements()
@@ -229,6 +238,15 @@ struct TextureReplacementSettings: View {
                 Text(settings.localized("Partial")).tag(1)
                 Text(settings.localized("Full")).tag(2)
             }
+            .controllerAccessibilityOptionsPickerTarget(
+                label: settings.localized("Texture Preloading"),
+                selection: $settings.texturePreloading,
+                options: [
+                    (0, settings.localized("Off")),
+                    (1, settings.localized("Partial")),
+                    (2, settings.localized("Full")),
+                ]
+            )
             Text(settings.localized("Core texture preloading mode. Full can improve replacement behavior but may increase memory use."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -241,6 +259,11 @@ struct TextureReplacementSettings: View {
 
         Section(settings.localized("Texture Dumping")) {
             Toggle(settings.localized("Dump Replaceable Textures"), isOn: $settings.dumpReplaceableTextures)
+                .controllerAccessibilityToggleTarget(
+                    id: "settings.textures.dump-replaceable-textures",
+                    label: settings.localized("Dump Replaceable Textures"),
+                    isOn: $settings.dumpReplaceableTextures
+                )
             Text(settings.localized("Writes discovered textures to Documents/textures/[Game Serial]/dumps/. This can heavily reduce performance and grow app storage quickly."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -250,15 +273,56 @@ struct TextureReplacementSettings: View {
                     .foregroundStyle(.orange)
             }
 
-            Toggle(settings.localized("Dump Mipmaps"), isOn: $settings.dumpReplaceableMipmaps)
-                .disabled(!settings.dumpReplaceableTextures)
-            Toggle(settings.localized("Dump During FMV"), isOn: $settings.dumpTexturesWithFMVActive)
-                .disabled(!settings.dumpReplaceableTextures)
-            Toggle(settings.localized("Dump Direct Textures"), isOn: $settings.dumpDirectTextures)
-                .disabled(!settings.dumpReplaceableTextures)
-            Toggle(settings.localized("Dump Palette Textures"), isOn: $settings.dumpPaletteTextures)
-                .disabled(!settings.dumpReplaceableTextures)
+            textureDumpToggle(
+                "Dump Mipmaps",
+                id: "settings.textures.dump-mipmaps",
+                value: textureDumpBinding(\.dumpReplaceableMipmaps)
+            )
+            textureDumpToggle(
+                "Dump During FMV",
+                id: "settings.textures.dump-during-fmv",
+                value: textureDumpBinding(\.dumpTexturesWithFMVActive)
+            )
+            textureDumpToggle(
+                "Dump Direct Textures",
+                id: "settings.textures.dump-direct-textures",
+                value: textureDumpBinding(\.dumpDirectTextures)
+            )
+            textureDumpToggle(
+                "Dump Palette Textures",
+                id: "settings.textures.dump-palette-textures",
+                value: textureDumpBinding(\.dumpPaletteTextures)
+            )
         }
+    }
+
+    private func textureDumpBinding(
+        _ keyPath: ReferenceWritableKeyPath<SettingsStore, Bool>
+    ) -> Binding<Bool> {
+        Binding(
+            get: { settings[keyPath: keyPath] },
+            set: { newValue in
+                guard settings.dumpReplaceableTextures else { return }
+                settings[keyPath: keyPath] = newValue
+            }
+        )
+    }
+
+    private func textureDumpToggle(
+        _ title: String,
+        id: String,
+        value: Binding<Bool>
+    ) -> some View {
+        Toggle(settings.localized(title), isOn: value)
+            .controllerAccessibilityToggleTarget(
+                id: id,
+                label: settings.localized(title),
+                isOn: value
+            )
+            // Keep dependent rows in the controller graph even while their
+            // master switch is off. A disabled row disappears from the graph
+            // and used to strand focus at Dump Replaceable Textures.
+            .opacity(settings.dumpReplaceableTextures ? 1 : 0.5)
     }
 }
 

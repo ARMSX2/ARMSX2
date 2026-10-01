@@ -26,6 +26,8 @@ struct CPUThreadTask
     std::mutex mutex;
     std::condition_variable cv;
     bool complete = false;
+    bool started = false;
+    bool cancelled = false;
 };
 
 @class ARMSX2GameView;
@@ -75,6 +77,8 @@ extern std::deque<std::shared_ptr<CPUThreadTask>> s_cpuTasks;
 
 // Drains the CPU task queue.
 void ARMSX2DrainCPUThreadTasks();
+// Marks every queued task done without running it.
+void ARMSX2DiscardCPUThreadTasks();
 
 extern "C" void ARMSX2_PostRetroAchievementsStateChanged(void);
 // Posts a RetroAchievements toast to the SwiftUI layer. `duration` is the on-screen
@@ -100,6 +104,7 @@ bool ARMSX2IOSRuntimeTelemetryEnabled();
 // ---------------------------------------------------------------------------
 extern UIViewController* __unsafe_unretained s_menuVC;
 extern UIViewController* __unsafe_unretained s_rootVC;
+extern UIViewController* __unsafe_unretained s_sdlRootVC;
 
 // ---------------------------------------------------------------------------
 // Gamepad / haptics subsystem
@@ -123,6 +128,8 @@ struct PadBase;
 void ARMSX2ApplyIOSGamepadInput(unsigned int gamepad_index, struct SDL_Gamepad* gamepad,
                                 PadBase* pad, bool preserve_touch);
 void ARMSX2InstallNativeGamepadDpadObserversOnMain();
+void ARMSX2ConfigureControllerMacroInput(u32 input_mask, u32 modifier_mask);
+void ARMSX2ConsumeControllerMacroInput(u32 input_mask);
 
 // ---------------------------------------------------------------------------
 // Launch / settings helpers
@@ -141,6 +148,8 @@ void ARMSX2ApplyIOSOsdPresetFromConfig(const char* reason);
 void ARMSX2SanitizeFrameLimiterConfig(const char* reason);
 void ARMSX2IOSLogMemoryCardConfig(const char* reason);
 bool ARMSX2ResolveFastBootForISO(const std::string& isoPath);
+// Successful game boot only, on the CPU thread before its first Execute().
+void ARMSX2IOSCompleteGameBoot(const std::string& game, bool loadLastSaveState);
 void ARMSX2ConfigureImGuiFonts(const char* reason);
 void ARMSX2ApplyJITScriptProtocol(const char* reason);
 void ARMSX2ApplyIOSMultitapConfig(const char* reason);

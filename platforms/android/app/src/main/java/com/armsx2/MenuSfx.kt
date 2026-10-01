@@ -41,7 +41,7 @@ object MenuSfx {
      *  (case- and extension-insensitive); [defaultRes] is the bundled fallback clip. */
     enum class Event(val fileName: String, val defaultRes: Int, val altRes: Int = 0) {
         NAV("nav", R.raw.sfx_nav_a, R.raw.sfx_nav_b), // alternates two soft ticks as the highlight moves
-        SELECT("select", R.raw.sfx_select),      // confirm / launch a game
+        SELECT("select", R.raw.sfx_click),       // confirm / launch a game: a short click, not the old chime
         SUBMENU("submenu", R.raw.sfx_submenu),   // open a settings menu / sub-screen
         MENU_OPEN("menu", R.raw.sfx_menu),       // open the in-game pause menu
         BACK("back", R.raw.sfx_back),
@@ -53,6 +53,7 @@ object MenuSfx {
         WAKE("wake", R.raw.sfx_wake),            // chime when waking back to the app
         POPUP_OPEN("popup_open", R.raw.sfx_popup_open),   // a dialog/popup appears (hardcore confirm, info)
         POPUP_CLOSE("popup_close", R.raw.sfx_popup_close), // ...and dismisses
+        PAGE("page", R.raw.sfx_click),           // the same click as Online Icons turns a page
     }
 
     /** On by default — the bundled sounds give the launcher its "personality" out of the box. */

@@ -546,7 +546,8 @@ object TouchControls {
 
     fun macroTargetFor(code: Int): MacroTarget? = macroAssignableTargets.firstOrNull { it.code == code }
 
-    /** Codes macro [id] fires, in display order (empty if unconfigured).
+    /** Codes macro [id] fires, in the order they were picked (empty if unconfigured).
+     *  Macros saved before #746 were stored in display order, so they read back unchanged.
      *
      *  Reads BOTH forms: this used to store TouchButtonId names, so an existing macro's
      *  "CROSS,R1" still resolves — each token is mapped to its keycode. New writes are
@@ -558,14 +559,16 @@ object TouchControls {
         val codes = raw.split(",").mapNotNull { token ->
             token.toIntOrNull()
                 ?: runCatching { TouchButtonId.valueOf(token).keycode }.getOrNull()
-        }.toSet()
-        // Display order, and anything unrecognised drops out.
-        return macroAssignableTargets.map { it.code }.filter { it in codes }
+        }.distinct()
+        // Stored order, and anything unrecognised drops out.
+        val known = macroAssignableTargets.mapTo(HashSet()) { it.code }
+        return codes.filter { it in known }
     }
 
     fun setMacroCodes(id: TouchButtonId, codes: List<Int>) {
-        val wanted = codes.toSet()
-        val csv = macroAssignableTargets.map { it.code }.filter { it in wanted }.joinToString(",")
+        // In the order given, which is the order they were picked: Press in order reads it (#746).
+        val known = macroAssignableTargets.mapTo(HashSet()) { it.code }
+        val csv = codes.distinct().filter { it in known }.joinToString(",")
         MainActivityRuntime.prefs.edit { putString(KEY_MACRO_PREFIX + id.name, csv) }
         invalidateRuntimeMacroCache()
         macroBindTick.intValue++
@@ -632,6 +635,22 @@ object TouchControls {
         macroBindTick.intValue++
     }
 
+    // ---- Press in order (#746) -------------------------------------------------------
+    // A macro presses all its buttons in one instant, so the game gets them as a single state.
+    // Some inputs need one held before the next arrives (L2, then L-Stick Up, then Triangle), and
+    // the order the buttons were picked in could not say so. Opt-in per macro; off keeps every
+    // existing macro exactly as it was.
+
+    private const val KEY_MACRO_ORDER_PREFIX = "touch.macro.inorder."
+
+    fun macroInOrder(id: TouchButtonId): Boolean =
+        MainActivityRuntime.prefs.getBoolean(KEY_MACRO_ORDER_PREFIX + id.name, false)
+
+    fun setMacroInOrder(id: TouchButtonId, on: Boolean) {
+        MainActivityRuntime.prefs.edit { putBoolean(KEY_MACRO_ORDER_PREFIX + id.name, on) }
+        macroBindTick.intValue++
+    }
+
     /** Pressure-sensitive buttons a macro with its own pressure is holding, and that pressure.
      *  Read by [pressureRangeFor]; touch and pad input arrive on different threads. */
     private val macroPressureHeld = java.util.concurrent.ConcurrentHashMap<Int, Int>()
@@ -648,6 +667,10 @@ object TouchControls {
 
     private val macroHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val macroRunnables = HashMap<String, Runnable>()
+
+    /** Macros firing right now, by the key of whoever fires them (a touch, a glide, a pad
+     *  trigger), so the on-screen button can light up while held the way P½ does. */
+    val macroPressed = androidx.compose.runtime.mutableStateMapOf<String, TouchButtonId>()
 
     /**
      * Press ([down]) or release a macro, honouring its [macroFrequency].
@@ -678,14 +701,34 @@ object TouchControls {
             buttons.forEach { emit(it, false) }
             if (wantsPressure) pressureModifierHeld.value = false
             pressured.forEach { macroPressureHeld.remove(it) }
+            macroPressed.remove(runKey)
             return
         }
+        macroPressed[runKey] = id
         // Set BEFORE the buttons go down — pressureRangeFor is read at emit time, so the
         // order is what decides whether the press is soft.
         if (wantsPressure) pressureModifierHeld.value = true
         pressured.forEach { macroPressureHeld[it] = pressure }
         if (buttons.isEmpty()) return
         val frames = macroFrequency(id)
+        if (frames <= 0 && buttons.size > 1 && macroInOrder(id)) {
+            // Press in order (#746): one button per sampled state, in the order they were picked,
+            // each staying down; the release above lets them all go together. Kept in
+            // macroRunnables until then, so a release mid-sequence cancels the rest and key
+            // auto-repeat can't start it over.
+            if (macroRunnables.containsKey(runKey)) return
+            var next = 0
+            val runnable = object : Runnable {
+                override fun run() {
+                    emit(buttons[next], true)
+                    next++
+                    if (next < buttons.size) macroHandler.postDelayed(this, MACRO_MIN_STATE_MS)
+                }
+            }
+            macroRunnables[runKey] = runnable
+            runnable.run()
+            return
+        }
         if (frames <= 0) {
             buttons.forEach { emit(it, true) }
             return
@@ -1484,9 +1527,21 @@ enum class TouchButtonId(val label: String, val keycode: Int, val kind: Kind) {
     // additionally hit-tests this widget's own circle so a thumb that glides up off
     // the stick latches it without lifting; see StickWidget. Its keycode is chosen in
     // Pad settings (analogExtraKeycode), so the enum entry carries none.
-    ANALOG_EXTRA("Extra", 0, Kind.ANALOGEXTRA);
+    ANALOG_EXTRA("Extra", 0, Kind.ANALOGEXTRA),
 
-    enum class Kind { FACE, SHOULDER, MENU, DPAD, STICK, PAUSE, PRESSURE, FASTFORWARD, MACRO, STATEACTION, ANALOGEXTRA }
+    // The GunCon 2's own buttons, while a gun is attached to a USB port (Pad settings, USB
+    // devices). Full layout widgets, so they can be moved, resized and hidden like any other
+    // control; they used to be a fixed column down the right edge, on top of the face buttons. The
+    // trigger is the touch itself, so it has none. The label is the editor's name for the widget;
+    // the button shows it without the "Gun " prefix.
+    GUN_A("Gun A", 0, Kind.GUN),
+    GUN_B("Gun B", 0, Kind.GUN),
+    GUN_C("Gun C", 0, Kind.GUN),
+    GUN_START("Gun Start", 0, Kind.GUN),
+    GUN_SELECT("Gun Sel", 0, Kind.GUN),
+    GUN_CAL("Gun Cal", 0, Kind.GUN);
+
+    enum class Kind { FACE, SHOULDER, MENU, DPAD, STICK, PAUSE, PRESSURE, FASTFORWARD, MACRO, STATEACTION, ANALOGEXTRA, GUN }
 }
 
 /** Position + size for a single widget. xFrac / yFrac are anchor-point
@@ -1612,6 +1667,14 @@ data class TouchLayout(val buttons: List<TouchButtonCfg>) {
                 // clear of the D-pad's right edge (which reaches x 0.40) instead, still an easy left
                 // thumb reach and in open space. Drag it wherever you like — it is a normal widget.
                 TouchButtonCfg(TouchButtonId.ANALOG_EXTRA, 0.44f, 0.72f, 48f),
+                // GunCon 2 buttons: two rows of three between the shoulder pairs, above the face
+                // diamond and the left stick. Only on screen while a gun is attached.
+                TouchButtonCfg(TouchButtonId.GUN_A,      0.36f, 0.415f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_B,      0.50f, 0.415f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_C,      0.64f, 0.415f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_START,  0.36f, 0.485f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_SELECT, 0.50f, 0.485f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_CAL,    0.64f, 0.485f, 46f),
             ).let { placed ->
                 // Splice in anything the landscape default has that this list does not (pause,
                 // pressure, save/load-state buttons...) so a new widget never goes missing in
@@ -1670,6 +1733,16 @@ data class TouchLayout(val buttons: List<TouchButtonCfg>) {
                 // this flag, so it is `enabled` here — see the ANALOG_EXTRA gate in the overlay's
                 // widget loop.
                 TouchButtonCfg(TouchButtonId.ANALOG_EXTRA, 0.10f, 0.34f, 48f),
+                // GunCon 2 buttons: a row across the top, between the shoulders and clear of the
+                // pause button, and above the picture on a wide screen, since the picture is what
+                // you aim at. Only on screen while a gun is attached (the GUN gate in the overlay's
+                // widget loop), so they are `enabled` here like the extra analog button.
+                TouchButtonCfg(TouchButtonId.GUN_A,      0.30f, 0.08f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_B,      0.38f, 0.08f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_C,      0.46f, 0.08f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_START,  0.54f, 0.08f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_SELECT, 0.62f, 0.08f, 46f),
+                TouchButtonCfg(TouchButtonId.GUN_CAL,    0.70f, 0.08f, 46f),
                 // Analog sticks — bottom inside, between DPad/face cluster
                 // and the center, so thumb travel is short.
                 TouchButtonCfg(TouchButtonId.L_STICK,  0.28f, 0.80f, 130f),

@@ -302,4 +302,49 @@ TEST(Vu0ClampModes, OverflowOnNegativeVmulClampsToNegMaxFloat)
 	RunAndExpectJitClamps(h, vf::vf1, 0xFF7FFFFFu);
 }
 
+// =========================================================================
+//  A single-lane dest field, which every test above misses: they all write
+//  four lanes, and mVUclamp1 answers a single-lane dest with a sequence of
+//  its own that computes the clamped scalar off to one side and writes lane
+//  0 alone, so lanes 1-3 survive (VuSsClampLane).
+//
+//  The operand carries the out-of-range word rather than the arithmetic
+//  producing one. A product that overflows cannot tell whether the clamp ran:
+//  the recompiler rounds toward zero, where the host multiply saturates at
+//  +/-FLT_MAX by itself and lands on the same word the clamp would have
+//  written. An infinity read out of a VF register reaches the clamp
+//  untouched, and only the max's bound turns +Inf into +MAX_FLOAT, only the
+//  min's -Inf into -MAX_FLOAT.
+// =========================================================================
+
+TEST(Vu0ClampModes, SingleLaneOperandInfinityClampsToMaxFloat)
+{
+	ClampGuard cg;
+	cg.Set(/*overflow*/true, /*extra*/true, false, false);
+
+	VuTestHarness h(0);
+	h.SetVfBits(vf::vf2, 0, 0, 0x7F800000u, 0); // +Inf in the dest field's lane
+	h.SetVfBits(vf::vf3, 0x3F800000u, 0x3F800000u, 0x3F800000u, 0x3F800000u);
+	h.LoadProgram({
+		UpperOnly(VMUL_U(mask::z, vf::vf1, vf::vf2, vf::vf3)),
+		EBitNopPair(),
+	});
+	RunAndExpectJitClamps(h, vf::vf1, 0x7F7FFFFFu, "z");
+}
+
+TEST(Vu0ClampModes, SingleLaneOperandNegInfinityClampsToNegMaxFloat)
+{
+	ClampGuard cg;
+	cg.Set(/*overflow*/true, /*extra*/true, false, false);
+
+	VuTestHarness h(0);
+	h.SetVfBits(vf::vf2, 0, 0xFF800000u, 0, 0); // -Inf in the dest field's lane
+	h.SetVfBits(vf::vf3, 0x3F800000u, 0x3F800000u, 0x3F800000u, 0x3F800000u);
+	h.LoadProgram({
+		UpperOnly(VMUL_U(mask::y, vf::vf1, vf::vf2, vf::vf3)),
+		EBitNopPair(),
+	});
+	RunAndExpectJitClamps(h, vf::vf1, 0xFF7FFFFFu, "y");
+}
+
 } // namespace recompiler_tests

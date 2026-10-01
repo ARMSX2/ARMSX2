@@ -482,15 +482,12 @@ object CustomCovers {
     /** Bumped on set/remove so cover tiles re-resolve. */
     val version = mutableStateOf(0)
 
-    // MainActivityRuntime.assetCopyRoot() can flip between the chosen system dir and the
-    // app-private fallback depending on a transient write-probe — so covers got
-    // stored under one root and looked up under another ("sometimes there,
-    // sometimes not"). Cache the covers root on first resolve so set + load always
-    // agree, and share this exact cache with the library cover loader.
-    @Volatile
-    private var cachedCoversRoot: File? = null
+    // Not cached. This used to remember the first answer because assetCopyRoot re-ran a write
+    // check on every call and could flip between the chosen folder and app-private storage.
+    // It now returns the folder pinned at startup, and a cache filled before startup finished
+    // would hold on to the wrong one.
     fun coversRoot(context: Context): File =
-        cachedCoversRoot ?: File(MainActivityRuntime.assetCopyRoot(context), "covers").also { cachedCoversRoot = it }
+        File(MainActivityRuntime.assetCopyRoot(context), "covers")
 
     private fun dir(context: Context): File = File(coversRoot(context), "custom")
 
@@ -498,10 +495,13 @@ object CustomCovers {
         game.uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
             ?.substringBeforeLast('.')?.trim()?.takeIf { it.isNotEmpty() }
 
-    /** Names the user might give the cover file, highest priority first. */
+    /** Names the user might give the cover file, highest priority first. The ROM filename comes
+     *  first: it is the one key two versions of a game don't share. GTA: San Andreas v1.03 and
+     *  v3.00 are both SLUS-20946, so a cover keyed by serial showed on both (#517). A cover named
+     *  by serial still applies to every version that has none of its own. */
     private fun keys(game: GameInfo): List<String> = buildList {
-        game.serial?.takeIf { it.isNotBlank() }?.let { add(it) }
         filenameStem(game)?.let { add(it) }
+        game.serial?.takeIf { it.isNotBlank() }?.let { add(it) }
         game.title.takeIf { it.isNotBlank() }?.let { add(it) }
     }
 
@@ -531,17 +531,21 @@ object CustomCovers {
      *  (does its own listing) — used off the scroll path. */
     fun fileFor(context: Context, game: GameInfo): File? = matchIn(loadAll(context), game)
 
-    /** Path the in-app picker writes to (serial if present, else ROM filename). */
+    /** Path the in-app picker writes to: the ROM filename, so the cover belongs to this file
+     *  alone (see [keys]); the serial or title only when there is no filename. */
     private fun targetFor(context: Context, game: GameInfo): File {
-        val key = game.serial?.takeIf { it.isNotBlank() }
-            ?: filenameStem(game) ?: game.title.ifBlank { "cover" }
+        val key = filenameStem(game)
+            ?: game.serial?.takeIf { it.isNotBlank() } ?: game.title.ifBlank { "cover" }
         return File(dir(context), sanitize(key) + ".png")
     }
 
-    /** Copy [source] in as [game]'s cover, replacing any prior one. */
+    /** Copy [source] in as [game]'s cover, replacing its own prior one in any format. Only its
+     *  own: the cover showing may be a serial-named one that other versions of the game use. */
     fun set(context: Context, game: GameInfo, source: Uri): Boolean = runCatching {
-        remove(context, game)
         val target = targetFor(context, game)
+        dir(context).listFiles()
+            ?.filter { it.isFile && it.nameWithoutExtension.equals(target.nameWithoutExtension, ignoreCase = true) }
+            ?.forEach { it.delete() }
         target.parentFile?.mkdirs()
         context.contentResolver.openInputStream(source)?.use { ins ->
             target.outputStream().use { outs -> ins.copyTo(outs) }

@@ -285,7 +285,7 @@ struct EeCop2RecState
 	alignas(16) u32 maxFloat[4];      // +FLT_MAX per lane (clamp upper bound)
 	alignas(16) u32 minFloat[4];      // -FLT_MAX per lane (pre-negated lower bound)
 	alignas(16) u32 destMasks[16][4]; // per-XYZW lane-select masks (lane = ~0 if written)
-	alignas(16) u32 clipWeightPos[4]; // VCLIP positive per-lane clip-bit weights
+	alignas(16) u16 clipWeights[8];   // VCLIP per-comparison clip-bit weights
 	alignas(16) u32 deficitPark[4];   // multiply-deficit scratch (block-transient)
 	alignas(16) u32 bandFs[4];        // short-tail band operands and product
 	alignas(16) u32 bandFt[4];        // (block-transient)
@@ -303,10 +303,11 @@ struct cpuRegistersPack
 	// fields with single [RSTATE, #imm] accesses. Prediction-only state: NOT
 	// savestate-serialized (Freeze(cpuRegs) covers cpuRegisters alone) and
 	// reset by recResetRaw. eeCallRetOff is a byte offset into the ring,
-	// 16-aligned, wrapped by the emitted And; u64 so JIT stores stay whole-
-	// register. x86 builds carry the 16 bytes and never touch them.
+	// 16-aligned; the ring is exactly 64KB, so the field's own width is the
+	// wrap and the emitted code needs no mask. x86 builds carry the bytes and
+	// never touch them.
 	alignas(16) u64 eeCallRetBase;
-	u64 eeCallRetOff;
+	u16 eeCallRetOff;
 
 	// COP2 macro-mode constants/scratch — in the pack for the same reason as
 	// the call-ret fields: one [RSTATE, #imm] instruction per access from

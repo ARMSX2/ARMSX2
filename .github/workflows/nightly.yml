@@ -135,14 +135,14 @@ jobs:
             echo "- RetroArch on Linux arm64: Linux-arm64-libretro-core.tar.zst, a 4K-page build"
             echo "- Bare-display kmsdrm handhelds: Linux-arm64-SDL-handheld.tar.zst, a 4K-page build (Rocknix and Batocera run compositors, so use the Qt AppImage there instead)"
             echo "- Android: Android-arm64.apk (installs as ARMSX2 Nightly, alongside the stable app)"
-            echo "- iOS: iOS-arm64.ipa, unsigned, sideload it"
+            echo "- iOS: iOS-arm64.ipa, unsigned, sideload it (installs as ARMSX2 Nightly, alongside the stable app)"
             echo
             # Temporary while old com.armsx2 nightlies are still installed. The old updater shows
             # this body, so it is how those users learn there is no in-place route back to stable.
-            echo 'Coming from an old nightly? It is now a separate app (ARMSX2 Nightly) that installs'
-            echo 'beside the stable app. The old nightly cannot install a stable over itself, because'
-            echo 'Android refuses that version downgrade, so to return to stable: back up your saves'
-            echo 'and memory cards, uninstall the old nightly, then install a stable APK.'
+            echo 'Coming from an old nightly? Nightlies are now a separate app, ARMSX2 Nightly, next to stable.'
+            echo
+            echo '- Android: stable cannot install over an old nightly. Back up your saves and memory cards, uninstall the old nightly, then install the stable APK.'
+            echo '- iOS: your old nightly is the ARMSX2 iOS app and still has your saves. Copy them into ARMSX2 Nightly with the Files app.'
             echo
             echo "## What's new"
             if [ -s changes.txt ]; then cat changes.txt; else echo "- No notable changes since the last nightly."; fi
@@ -350,8 +350,13 @@ jobs:
           IOS_RA_UA_VERSION: ${{ secrets.IOS_RA_UA_VERSION }}
         run: bash .github/workflows/scripts/common/write-ra-ua-secret.sh
 
+      # Its own bundle ID so it installs beside the stable app, and a timestamped version
+      # so each nightly reads as newer than the last.
       - name: Build unsigned IPA
-        run: ./platforms/ios/scripts/build-ios-ipa.sh
+        env:
+          BUNDLE_ID: com.armsx2.ios.nightly
+          DISPLAY_NAME: ARMSX2 Nightly
+        run: VERSION_SUFFIX="-nightly.$(date -u +%Y%m%d.%H%M)" ./platforms/ios/scripts/build-ios-ipa.sh
 
       # The client doesn't report a rejected agent, so fail when the identity is missing.
       - name: Verify the client identity reached the binary

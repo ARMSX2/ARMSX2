@@ -86,7 +86,9 @@ object GpuInfo {
         return when {
             model != null && model >= 800 -> Recommendation("GameHub 8Elite", "Turnip tuned for Snapdragon 8 Elite / Adreno 8xx")
             model != null && model >= 700 -> Recommendation("Mr Purple", "purple-turnip builds for Adreno 7xx")
-            model != null && model in 600..699 -> Recommendation("KIMCHI", "AdrenoTools Turnip for Adreno 6xx")
+            // The in-pass read fix is trusted on the 650 and up only; below that the pack buys nothing.
+            model != null && model in 650..699 -> Recommendation("ARMSX2 Turnip", "ARMSX2's Turnip with the in-pass read fix for Adreno 650 and up")
+            model != null && model in 600..649 -> Recommendation("KIMCHI", "AdrenoTools Turnip for Adreno 6xx")
             else -> Recommendation("KIMCHI", "AdrenoTools Turnip (Adreno)")
         }
     }

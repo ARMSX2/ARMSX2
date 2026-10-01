@@ -10,6 +10,7 @@
 
 #include "oboe/Oboe.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -120,8 +121,15 @@ oboe::DataCallbackResult OboeAudioStream::onAudioReady(oboe::AudioStream* p_audi
 	}
 #endif
 
-	if (p_audioData != nullptr)
-		ReadFrames(reinterpret_cast<SampleType*>(p_audioData), p_numFrames);
+	// ReadFrames() allocas up to the request size, so keep each read bounded.
+	SampleType* out = static_cast<SampleType*>(p_audioData);
+	for (u32 left = (out != nullptr) ? static_cast<u32>(p_numFrames) : 0; left > 0;)
+	{
+		const u32 frames = std::min<u32>(left, 2048);
+		ReadFrames(out, frames);
+		out += frames * m_output_channels;
+		left -= frames;
+	}
 	return oboe::DataCallbackResult::Continue;
 }
 
@@ -225,10 +233,12 @@ bool OboeAudioStream::Open()
 	builder.setSharingMode(oboe::SharingMode::Shared);
 	builder.setFormat(oboe::AudioFormat::Float);
 	builder.setSampleRate(m_sample_rate);
-	builder.setChannelCount(m_output_channels == 2 ? oboe::ChannelCount::Stereo : oboe::ChannelCount::Mono);
+	builder.setChannelCount(m_output_channels);
 	builder.setDeviceId(oboe::kUnspecified);
+	// No fixed callback size: Oboe's block adapter would drain 2048 frames (~43 ms) from a ring
+	// that targets 50 ms in one go, and Bluetooth routes pull in irregular bursts, so two such
+	// drains close together run the ring dry. Native bursts drain it as the device consumes.
 	builder.setBufferCapacityInFrames(2048 * 2);
-	builder.setFramesPerDataCallback(2048);
 	builder.setDataCallback(this);
 	builder.setErrorCallback(this);
 
@@ -237,6 +247,14 @@ bool OboeAudioStream::Open()
 	if (result != oboe::Result::OK)
 	{
 		Console.Error("(Oboe) openStream() failed: %d", result);
+		return false;
+	}
+	// ReadFrames() writes m_output_channels samples per frame into the callback buffer.
+	if (m_stream->getChannelCount() != m_output_channels)
+	{
+		Console.Error("(Oboe) Stream opened with %d channels, need %d", m_stream->getChannelCount(), static_cast<int>(m_output_channels));
+		m_stream->close();
+		m_stream.reset();
 		return false;
 	}
 	return true;
