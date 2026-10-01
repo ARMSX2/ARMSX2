@@ -20,6 +20,8 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
+import java.util.zip.GZIPInputStream
+import java.util.zip.ZipException
 import java.util.zip.ZipFile
 
 /**
@@ -47,6 +49,9 @@ object ArcadeLibrary {
     /** Above any memory card file (the biggest the core makes, 64 MB with its ECC, is 66 MB): only a
      *  wrong pick, a game image say, is bigger, and reading that whole would run out of memory. */
     private const val MAX_CARD_BYTES = 72L shl 20
+    /** The smallest PS2 memory card (8 MB without its ECC). Arcade sets carry small board ROMs that are
+     *  easily taken for the dongle; anything smaller than this is not one. */
+    private const val MIN_CARD_BYTES = 8L shl 20
     private const val OCTET_STREAM = "application/octet-stream"
     private val BOOT_ENTRY = Regex("""(?:^|/)bin/(NM\d{5})/boot\.elf$""", RegexOption.IGNORE_CASE)
 
@@ -242,7 +247,10 @@ object ArcadeLibrary {
 
             val dongleName = "$id.${cardExtension(dongleBytes)}"
             val cardName = cardBytes?.let { "${id}_card.${cardExtension(it)}" }
-            val imageName = "$id.${extension(context, image, "chd")}"
+            // A disc dump often comes gzipped (an .iso.gz), which the board's drive cannot read: it is
+            // unpacked as it is copied, so the phone never needs room for both.
+            val imageGzip = isGzip(context, image)
+            val imageName = "$id.${extension(context, image, if (imageGzip) "iso" else "chd", underGzip = imageGzip)}"
             val acgameName = "$id.${Arcade.EXTENSION}"
             val acgame = acgame(title, dongleName, imageName, cardName).toByteArray(Charsets.UTF_8)
 
@@ -266,7 +274,7 @@ object ArcadeLibrary {
             }
 
             // The image, last: it is the long one.
-            copy(context, image, dir, imageName, onProgress)
+            copy(context, image, dir, imageName, imageGzip, onProgress)
 
             if (existed) write(context, root, acgameName, acgame)
             println("@@ANDROID_ARCADE@@ imported $id ($imageName, $dongleName${cardName?.let { ", $it" } ?: ""})")
@@ -292,29 +300,52 @@ object ArcadeLibrary {
         if (title.media.isNotBlank()) append("media=").append(title.media).append('\n')
     }
 
-    /** A memory card file (a dongle or a card), read whole: [errorKey]'s message when it cannot be
-     *  one, being empty or far bigger than any memory card. */
+    /** A memory card file (a dongle or a card), read whole and unpacked if gzipped (a .bin.gz):
+     *  [errorKey]'s message when it cannot be one, being smaller or far bigger than any memory card. */
     private fun readCard(context: Context, uri: Uri, errorKey: String): ByteArray {
         // A game image picked by mistake is told apart by its size, before any of it is read.
         if (size(context, uri) > MAX_CARD_BYTES) fail(errorKey, displayName(context, uri))
-        val bytes = try {
-            (context.contentResolver.openInputStream(uri) ?: fail("arcade.import.error.read")).use { input ->
-                val out = java.io.ByteArrayOutputStream()
-                val chunk = ByteArray(64 * 1024)
-                while (out.size() <= MAX_CARD_BYTES) {
-                    val n = input.read(chunk)
-                    if (n < 0) break
-                    out.write(chunk, 0, n)
-                }
-                out.toByteArray()
-            }
+        val read = try {
+            (context.contentResolver.openInputStream(uri) ?: fail("arcade.import.error.read")).use(::readBounded)
         } catch (e: IOException) {
             fail("arcade.import.error.read")
         } catch (e: SecurityException) {
             fail("arcade.import.error.read")
         }
-        if (bytes.isEmpty() || bytes.size > MAX_CARD_BYTES) fail(errorKey, displayName(context, uri))
+        val bytes = if (!isGzip(read)) read else try {
+            GZIPInputStream(read.inputStream()).use(::readBounded)
+        } catch (e: IOException) {
+            fail(errorKey, displayName(context, uri))
+        }
+        if (bytes.size < MIN_CARD_BYTES || bytes.size > MAX_CARD_BYTES) fail(errorKey, displayName(context, uri))
         return bytes
+    }
+
+    /** All of [input], or, once it is bigger than any memory card, no more of it than that. */
+    private fun readBounded(input: InputStream): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        val chunk = ByteArray(64 * 1024)
+        while (out.size() <= MAX_CARD_BYTES) {
+            val n = input.read(chunk)
+            if (n < 0) break
+            out.write(chunk, 0, n)
+        }
+        return out.toByteArray()
+    }
+
+    private fun isGzip(bytes: ByteArray): Boolean = bytes.size >= 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte()
+
+    /** Whether a picked document is gzipped, by its first two bytes. */
+    private fun isGzip(context: Context, uri: Uri): Boolean = runCatching {
+        context.contentResolver.openInputStream(uri)?.use { s -> s.read() == 0x1f && s.read() == 0x8b }
+    }.getOrNull() == true
+
+    /** Counts what is read through it into [count] (its one element): how far into a packed file the
+     *  unpacking is, since the unpacked size is not known until the end. */
+    private class CountingInputStream(input: InputStream, private val count: LongArray) : java.io.FilterInputStream(input) {
+        override fun read(): Int = super.read().also { if (it >= 0) count[0]++ }
+        override fun read(b: ByteArray, off: Int, len: Int): Int = super.read(b, off, len).also { if (it > 0) count[0] += it }
+        override fun skip(n: Long): Long = super.skip(n).also { if (it > 0) count[0] += it }
     }
 
     /**
@@ -355,15 +386,19 @@ object ArcadeLibrary {
         }
     }
 
-    /** Copies [source] into [dir] as [name], replacing a file of that name, unless [source] already
-     *  IS that file (picked from the arcade folder itself). */
-    private fun copy(context: Context, source: Uri, dir: DocumentFile, name: String, onProgress: (Float) -> Unit) {
-        if (dir.findFile(name)?.takeIf { it.isFile }?.let { same(it.uri, source) } == true) {
+    /** Copies [source] into [dir] as [name], unpacking it on the way when it is gzipped ([gunzip]),
+     *  replacing a file of that name, unless [source] already IS that file (picked from the arcade
+     *  folder itself). */
+    private fun copy(context: Context, source: Uri, dir: DocumentFile, name: String, gunzip: Boolean, onProgress: (Float) -> Unit) {
+        if (!gunzip && dir.findFile(name)?.takeIf { it.isFile }?.let { same(it.uri, source) } == true) {
             onProgress(1f)
             return
         }
-        write(context, dir, name, size(context, source), onProgress) {
-            runCatching { context.contentResolver.openInputStream(source) }.getOrNull()
+        // Unpacking, the progress is how much of the packed file has been read.
+        val packedRead = if (gunzip) LongArray(1) else null
+        write(context, dir, name, size(context, source), onProgress, packedRead?.let { c -> { c[0] } }) {
+            val raw = runCatching { context.contentResolver.openInputStream(source) }.getOrNull()
+            if (raw == null || packedRead == null) raw else GZIPInputStream(CountingInputStream(raw, packedRead), 1 shl 16)
         }
     }
 
@@ -375,7 +410,15 @@ object ArcadeLibrary {
      * swapped in only once it is complete: a copy that fails half way, or a source that turns out to be
      * the very file being replaced, can then never leave the real one cut short.
      */
-    private fun write(context: Context, dir: DocumentFile, name: String, total: Long, onProgress: (Float) -> Unit, open: () -> InputStream?) {
+    private fun write(
+        context: Context,
+        dir: DocumentFile,
+        name: String,
+        total: Long,
+        onProgress: (Float) -> Unit,
+        position: (() -> Long)? = null,
+        open: () -> InputStream?,
+    ) {
         val resolver = context.contentResolver
         val partName = "$name.part"
         dir.findFile(partName)?.let { runCatching { DocumentsContract.deleteDocument(resolver, it.uri) } }
@@ -384,12 +427,14 @@ object ArcadeLibrary {
             val input = open() ?: fail("arcade.import.error.read")
             input.use { i ->
                 (resolver.openOutputStream(part.uri, "w") ?: fail("arcade.import.error.folder")).use { o ->
-                    copy(i, o, total, Long.MAX_VALUE, onProgress)
+                    copy(i, o, total, Long.MAX_VALUE, onProgress, position)
                 }
             }
         } catch (e: Exception) {
             runCatching { DocumentsContract.deleteDocument(resolver, part.uri) }
             if (e is IllegalStateException) throw e
+            // A gzipped dump that is damaged or cut short.
+            if (e is ZipException || e is java.io.EOFException) fail("arcade.import.error.read")
             val full = e.message?.let { it.contains("ENOSPC") || it.contains("No space left", ignoreCase = true) } == true
             fail(if (full) "arcade.import.error.space" else "arcade.import.error.write", name)
         }
@@ -405,7 +450,7 @@ object ArcadeLibrary {
         val final = dir.createFile(OCTET_STREAM, name) ?: fail("arcade.import.error.folder")
         val copied = runCatching {
             resolver.openInputStream(part.uri)!!.use { i ->
-                resolver.openOutputStream(final.uri, "w")!!.use { o -> copy(i, o, total, Long.MAX_VALUE) {} }
+                resolver.openOutputStream(final.uri, "w")!!.use { o -> copy(i, o, total, Long.MAX_VALUE, onProgress = {}) }
             }
         }.isSuccess
         if (!copied) {
@@ -416,7 +461,15 @@ object ArcadeLibrary {
         runCatching { DocumentsContract.deleteDocument(resolver, part.uri) }
     }
 
-    private fun copy(input: InputStream, out: java.io.OutputStream, total: Long, max: Long, onProgress: (Float) -> Unit) {
+    /** [position] is where the reading is, when that is not how much has been written (unpacking). */
+    private fun copy(
+        input: InputStream,
+        out: java.io.OutputStream,
+        total: Long,
+        max: Long,
+        onProgress: (Float) -> Unit,
+        position: (() -> Long)? = null,
+    ) {
         val buffer = ByteArray(COPY_BUFFER)
         var done = 0L
         var reported = -1
@@ -427,7 +480,7 @@ object ArcadeLibrary {
             if (done > max) throw IOException("larger than $max bytes")
             out.write(buffer, 0, n)
             if (total > 0) {
-                val percent = ((done * 100) / total).toInt().coerceIn(0, 100)
+                val percent = (((position?.invoke() ?: done) * 100) / total).toInt().coerceIn(0, 100)
                 if (percent != reported) {
                     reported = percent
                     onProgress(percent / 100f)
@@ -449,9 +502,11 @@ object ArcadeLibrary {
         }
     }.getOrNull() ?: uri.lastPathSegment.orEmpty()).substringAfterLast('/')
 
-    /** The extension of a picked document's name, lower case, or [default] when it has none. */
-    private fun extension(context: Context, uri: Uri, default: String): String {
-        val ext = displayName(context, uri).substringAfterLast('.', "").lowercase()
+    /** The extension of a picked document's name, lower case, or [default] when it has none; with
+     *  [underGzip], the one under its .gz (an .iso.gz holds an .iso). */
+    private fun extension(context: Context, uri: Uri, default: String, underGzip: Boolean = false): String {
+        val name = displayName(context, uri).let { if (underGzip && it.endsWith(".gz", ignoreCase = true)) it.dropLast(3) else it }
+        val ext = name.substringAfterLast('.', "").lowercase()
         return ext.takeIf { it.isNotEmpty() && it.length <= 12 && it.all(Char::isLetterOrDigit) } ?: default
     }
 
