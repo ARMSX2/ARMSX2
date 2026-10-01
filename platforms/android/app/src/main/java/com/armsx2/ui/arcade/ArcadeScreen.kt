@@ -315,7 +315,6 @@ private fun InstalledGames(games: List<ArcadeLibrary.Installed>) {
                 )
             }
             val partNames = mapOf(
-                ArcadeLibrary.Part.IMAGE to str("arcade.part.image"),
                 ArcadeLibrary.Part.DONGLE to str("arcade.part.dongle"),
                 ArcadeLibrary.Part.CARD to str("arcade.part.card"),
                 ArcadeLibrary.Part.BOOT to str("arcade.part.boot"),

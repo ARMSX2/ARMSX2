@@ -1957,7 +1957,6 @@ private val BASE_EN: Map<String, String> = mapOf(
     "arcade.test.detail" to "Opens the game's test menu, or closes it.",
     "bios.arcade.badge" to "Arcade",
     "bios.arcade.use" to "Use for arcade games",
-    "bios.arcade.active" to "Arcade games",
 
     // The NAMCO System 246/256 screen (drawer)
     "arcade.title" to "NAMCO System 246/256",
@@ -2005,7 +2004,6 @@ private val BASE_EN: Map<String, String> = mapOf(
     "arcade.games.none" to "No arcade games in this folder yet.",
     "arcade.games.ready" to "Ready to play",
     "arcade.games.missing" to "Missing: %s",
-    "arcade.part.image" to "image",
     "arcade.part.dongle" to "dongle",
     "arcade.part.card" to "Conquest card",
     "arcade.part.boot" to "boot file",

@@ -272,6 +272,11 @@ static void LoadIrx(const std::string& filename, u8* dest, size_t maxSize)
 // EXTINFO serial of the System 256 board BIOS (also on Super System 256 boards).
 static constexpr const char* ARCADE_S256_BIOS_SERIAL = "20040519-145634";
 
+// The boards' BIOS is a 2MB flash chip, and that is how it is dumped (MAME's sys246/sys256 sets,
+// r27v1602f.7d / .8g). LoadBIOS reads any size into the 4MB ROM, as PCSX2x6 does; only the search
+// has to know a 2MB file can be one.
+static constexpr u32 MIN_ARCADE_BIOS_SIZE = 2 * _1mb;
+
 // Whether the file is a Namco arcade board's BIOS (a COH-H dump), and whether it is the System 256 one.
 static bool IsArcadeBIOS(const char* filename, bool* is_s256 = nullptr)
 {
@@ -303,7 +308,7 @@ static std::string FindArcadeBiosImage()
 	std::string found;
 	for (const FILESYSTEM_FIND_DATA& fd : results)
 	{
-		if (fd.Size < MIN_BIOS_SIZE || fd.Size > MAX_BIOS_SIZE)
+		if (fd.Size < MIN_ARCADE_BIOS_SIZE || fd.Size > MAX_BIOS_SIZE)
 			continue;
 
 		bool is_s256 = false;

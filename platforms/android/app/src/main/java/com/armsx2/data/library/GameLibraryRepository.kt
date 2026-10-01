@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.ParcelFileDescriptor
+import android.provider.DocumentsContract
 import androidx.core.content.edit
 import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
@@ -208,7 +209,9 @@ class GameLibraryRepository(private val context: Context) {
             val extension = name.substringAfterLast('.', "").lowercase()
             if (extension !in gameExtensions) return@forEach
             if (extension == Arcade.EXTENSION) {
-                output.putIfAbsent(file.uri.toString(), createArcadeGame(file.uri, name, arcade.games[file.uri.toString()]))
+                val game = arcade.games[file.uri.toString()]
+                if (game != null && !treeHasMedia(game, children, names)) return@forEach
+                output.putIfAbsent(file.uri.toString(), createArcadeGame(file.uri, name, game))
                 return@forEach
             }
             val probe = if (extension in probeExtensions) probeDocument(file.uri) else null
@@ -237,7 +240,9 @@ class GameLibraryRepository(private val context: Context) {
             if (extension !in accept) return@forEach
             val uri = Uri.fromFile(file)
             if (extension == Arcade.EXTENSION) {
-                output.putIfAbsent(uri.toString(), createArcadeGame(uri, file.name, arcade.games[file.absolutePath]))
+                val game = arcade.games[file.absolutePath]
+                if (game != null && !rawHasMedia(game, directory)) return@forEach
+                output.putIfAbsent(uri.toString(), createArcadeGame(uri, file.name, game))
                 return@forEach
             }
             val probe = if (extension in probeExtensions) probeRaw(file) else null
@@ -291,6 +296,30 @@ class GameLibraryRepository(private val context: Context) {
         fun ownsFolder(name: String?): Boolean = name != null && name.lowercase() in folders
         fun ownsFile(name: String?): Boolean = name != null && name.lowercase() in files
     }
+
+    /*
+     * Whether an arcade game's image is where Arcade.prepare looks for it: in its subdir, or beside the
+     * .acgame when it has none. An .acgame without its image is a game not imported yet (PCSX2x6's
+     * library template writes one for every game it knows), so it is listed once its image is there.
+     */
+    private fun treeHasMedia(game: Arcade.AcGame, children: Array<DocumentFile>, names: Map<DocumentFile, String?>): Boolean {
+        if (game.subdir.isEmpty()) return children.any { names[it].equals(game.mediaSrc, ignoreCase = true) }
+        val dir = children.firstOrNull { names[it].equals(game.subdir, ignoreCase = true) && it.isDirectory } ?: return false
+        return childNames(dir).any { it.equals(game.mediaSrc, ignoreCase = true) }
+    }
+
+    private fun rawHasMedia(game: Arcade.AcGame, directory: File): Boolean {
+        File(game.mediaSrc).takeIf { it.isAbsolute }?.let { return it.isFile }
+        val folder = if (game.subdir.isEmpty()) directory else File(directory, game.subdir)
+        return folder.list()?.any { it.equals(game.mediaSrc, ignoreCase = true) } == true
+    }
+
+    /** The names in a document folder, in one query (a DocumentFile asks for each child's separately). */
+    private fun childNames(dir: DocumentFile): List<String> = runCatching {
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(dir.uri, DocumentsContract.getDocumentId(dir.uri))
+        context.contentResolver.query(children, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)
+            ?.use { c -> buildList { while (c.moveToNext()) c.getString(0)?.let(::add) } }
+    }.getOrNull().orEmpty()
 
     /** An .acgame: its own name for the game first (PCSX2x6 shows that one too), then the game
      *  database's for its game ID. One that cannot be read is still listed, under its file name, so

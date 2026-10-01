@@ -54,10 +54,10 @@ object ArcadeLibrary {
      *  System SUPER256), [media] CD, DVD or HDD. */
     data class Title(val id: String, val name: String, val board: String, val media: String)
 
-    /** An .acgame in the arcade folder, and what it still lacks. */
+    /** An imported game (an .acgame in the arcade folder with its image), and what it still lacks. */
     data class Installed(val id: String, val name: String, val missing: List<Part>)
 
-    enum class Part { IMAGE, DONGLE, CARD, BOOT }
+    enum class Part { DONGLE, CARD, BOOT }
 
     // ---- The folder --------------------------------------------------------------------------------
 
@@ -170,8 +170,9 @@ object ArcadeLibrary {
 
     private class Child(val file: DocumentFile, val name: String, val isDirectory: Boolean)
 
-    /** The .acgame files in the arcade folder, with what each one still lacks: where
-     *  [Arcade.prepare] looks for it, it is not. [titles] names the games whose .acgame has none. */
+    /** The games imported into the arcade folder (an .acgame whose image is there, as the library
+     *  lists them), with what each one still lacks: where [Arcade.prepare] looks for it, it is not.
+     *  [titles] names the games whose .acgame has none. */
     fun installed(context: Context, titles: List<Title>): List<Installed> {
         val root = folder()?.let { DocumentFile.fromTreeUri(context, it) } ?: return emptyList()
         // Every name and kind is a provider query, so each child's is asked for once.
@@ -193,8 +194,9 @@ object ArcadeLibrary {
                 return File(cards, file).let { it.isFile && it.length() > 0 } ||
                     file.lowercase() in beside || file.lowercase() in inDir
             }
+            // Without its image it is not imported yet (PCSX2x6's template writes an .acgame for every game).
+            if (game.mediaSrc.lowercase() !in inDir) return@mapNotNull null
             val missing = buildList {
-                if (game.mediaSrc.lowercase() !in inDir) add(Part.IMAGE)
                 if (!card(game.dongle)) add(Part.DONGLE)
                 if (game.card.isNotEmpty() && !card(game.card)) add(Part.CARD)
                 if (game.elf.lowercase() !in inDir) add(Part.BOOT)
@@ -450,7 +452,7 @@ object ArcadeLibrary {
      *  the first arcade one (BiosTools' FindArcadeBiosImage order). Its file name, or null. */
     fun biosName(context: Context): String? {
         val dir = MainActivityRuntime.internalBiosDir(context)
-        val files = dir.listFiles()?.filter { it.isFile && it.length() in (4L shl 20)..(8L shl 20) }.orEmpty()
+        val files = dir.listFiles()?.filter { it.isFile && it.length() in Arcade.ARCADE_BIOS_SIZES }.orEmpty()
         val arcade = files.mapNotNull { f ->
             val info = runCatching {
                 NativeApp.getBiosInfoFromFd(ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY).detachFd())

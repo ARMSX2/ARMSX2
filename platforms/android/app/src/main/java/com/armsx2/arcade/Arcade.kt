@@ -190,14 +190,15 @@ object Arcade {
     /** Whether the BIOS folder has an arcade board's BIOS for the core to boot (VMManager picks it). */
     private fun hasArcadeBios(context: Context): Boolean {
         val dir = MainActivityRuntime.internalBiosDir(context)
-        fun arcade(file: File) = file.isFile && file.length() in BIOS_SIZES &&
+        fun arcade(file: File) = file.isFile && file.length() in ARCADE_BIOS_SIZES &&
             runCatching { NativeApp.isArcadeBios(file.absolutePath) }.getOrDefault(false)
         arcadeBios.value?.let { if (arcade(File(dir, it))) return true }
         return dir.listFiles()?.any(::arcade) == true
     }
 
-    /** What the core accepts as a BIOS image (BiosTools' MIN/MAX_BIOS_SIZE). */
-    private val BIOS_SIZES = (4L shl 20)..(8L shl 20)
+    /** What the core takes as an arcade BIOS (BiosTools' MIN_ARCADE_BIOS_SIZE to MAX_BIOS_SIZE): the
+     *  boards' BIOS is a 2 MB flash chip, dumped that way (MAME's sys246/sys256, r27v1602f.*). */
+    val ARCADE_BIOS_SIZES = (2L shl 20)..(8L shl 20)
 
     private fun fail(key: String, vararg args: Any): Nothing =
         throw IllegalStateException(if (args.isEmpty()) I18n.get(key) else I18n.get(key).format(*args))

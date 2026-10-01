@@ -76,7 +76,11 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
                             InstalledBios(file, it, file.absolutePath == selectedPath, arcade, arcade && file.name == arcadePick)
                         }
                     }
-                    .sortedWith(compareByDescending<InstalledBios> { it.selected }.thenBy { it.file.name.lowercase() })
+                    .sortedWith(
+                        compareByDescending<InstalledBios> { it.selected }
+                            .thenByDescending { it.arcadeSelected }
+                            .thenBy { it.file.name.lowercase() },
+                    )
             }
             val perGame = key?.let {
                 runCatching { ConfigStore.resolveForGame(it).system.biosFilename.takeIf { f -> f.isNotBlank() } }.getOrNull()
