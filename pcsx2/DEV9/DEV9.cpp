@@ -26,6 +26,7 @@
 #include "Config.h"
 #include "smap.h"
 #include "IopHw.h"
+#include "IopMem.h"
 #include "ACATA.h"
 #include "ACATAPI.h"
 #include "ACCORE.h"
@@ -1208,9 +1209,17 @@ static void ArcadeReadDMA8Mem(u32* pMem, int size)
 	}
 	else if (ACCORE::DMA::PendTrasnfType == ACCORE::DMA::ATAPI || ACCORE::DMA::PendTrasnfType == ACCORE::DMA::ATA)
 	{
-		ACATA::TH::IO_Read(pMem, size);
+		// ARMSX2: never past the end of IOP memory, whatever the DMA was set up with. And a read the
+		// image cannot supply ends as the drive's uncorrectable-data error, which the game handles as a
+		// drive error, instead of stopping the emulator.
+		const std::ptrdiff_t offset = reinterpret_cast<u8*>(pMem) - iopMem->Main;
+		if (offset >= 0 && offset < static_cast<std::ptrdiff_t>(Ps2MemSize::ExposedIopRam))
+			size = std::min<int>(size, static_cast<int>(Ps2MemSize::ExposedIopRam - offset));
+		const bool ok = ACATA::TH::IO_Read(pMem, static_cast<u32>(std::max(size, 0)));
 		ACCORE::DMA::PendTrasnfType = ACCORE::DMA::NONE;
-		ACATA::R_STATUS = ATA_STAT_READY;
+		ACATA::R_STATUS = ok ? ATA_STAT_READY : (ATA_STAT_READY | ATA_STAT_ERR);
+		if (!ok)
+			ACATA::R_ERROR = ATA_ERR_ECC;
 		ACATA::R_NSECTOR = 0x03;
 		psxDMA8Interrupt();
 		ACCORE::intr(ACCORE::INTRN_ATA);

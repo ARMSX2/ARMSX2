@@ -99,7 +99,10 @@ namespace ACATA
         extern u32 nsector;
         extern s64 LBA;
 
-        void IO_Read(u32* addr, u32 val); //alternate version to vomit data straight away to a ptr
+        // Reads the sectors the last READ DMA asked for straight into addr, never more than size bytes,
+        // the DMA's own transfer. False when the image cannot supply them: the caller reports a drive
+        // error, and what was not read is zeroed.
+        bool IO_Read(u32* addr, u32 size);
         void IO_Write(u32* addr, u32 size);
         int IO_OpenImage();
         int IO_CloseImage();

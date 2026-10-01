@@ -15,7 +15,9 @@
 #include "ACATA.h"
 #include "ACATA_IO_CHD.h"
 
+#include <algorithm>
 #include <cstring>
+#include <vector>
 
 #if __POSIX__
 #define INVALID_HANDLE_VALUE -1
@@ -41,41 +43,53 @@ s64 ACATA::TH::LBA;
 ChdImage CHD;
 
 
-void ACATA::TH::IO_Read(u32* addr, u32 size) {
-	const s64 lba = LBA;
-	const u64 pos = lba * sectorsize;
-	u64 size2 = sectorsize*nsector;
-	if (size != (size2)) Console.Error("ACATA:IO_Read> mismatch on request and read...\n%ld vs %ld (sec:%d,lba:%d)",
-			 size, (size2), sectorsize, nsector);
-	
-	if (isCHD) {
-		u32 scale = sectorsize / CHD.GetSectorSize();
-		u64 chd_lba = LBA * scale;
-		u32 chd_count = nsector * scale;
-		if (!CHD.ReadSectors(chd_lba, chd_count, (void*)addr)) {
-			Console.ErrorFmt("ACATA:IO_ReadCHD: lba:{} nsector:{} failed", chd_lba, chd_count);
-			pxAssert(false);
-			abort();
-		}
+// ARMSX2: the read is bounded by the DMA's transfer, not only by the sector count the game put in the
+// command: a command asking for more than its DMA moves read straight on past the DMA's buffer, over the
+// rest of IOP memory. And a read the image cannot supply (a truncated dump, a CHD read error) reports a
+// drive error instead of abort()ing the whole app.
+bool ACATA::TH::IO_Read(u32* addr, u32 size) {
+	const u64 wanted = (u64)sectorsize * nsector;
+	if (size != wanted)
+		Console.Error("ACATA:IO_Read> the DMA moves %u bytes, the command asked for %llu (%u sectors of %u)",
+			size, static_cast<unsigned long long>(wanted), nsector, sectorsize);
+	const u32 bytes = static_cast<u32>(std::min<u64>(size, wanted));
+	const u32 whole = sectorsize ? bytes / sectorsize : 0; // whole sectors that fit
+	const u32 part = sectorsize ? bytes % sectorsize : 0;  // and the start of one more, where the DMA ends inside it
+	u8* dst = reinterpret_cast<u8*>(addr);
+	bool ok = true;
 
+	if (isCHD) {
+		const u32 scale = sectorsize / CHD.GetSectorSize();
+		const u64 chd_lba = LBA * scale;
+		if (whole && !CHD.ReadSectors(chd_lba, whole * scale, dst)) {
+			Console.ErrorFmt("ACATA:IO_ReadCHD: lba:{} nsector:{} failed", chd_lba, whole * scale);
+			ok = false;
+		}
+		if (ok && part) {
+			std::vector<u8> sector(sectorsize);
+			ok = CHD.ReadSectors(chd_lba + (u64)whole * scale, scale, sector.data());
+			if (ok)
+				std::memcpy(dst + (size_t)whole * sectorsize, sector.data(), part);
+			else
+				Console.ErrorFmt("ACATA:IO_ReadCHD: lba:{} failed", chd_lba + (u64)whole * scale);
+		}
 	} else {
-		//Console.WriteLn("%s: from %08X, len %08x", __FUNCTION__, pos, (size2));
+		const u64 pos = (u64)LBA * sectorsize;
 		if (FileSystem::FSeek64(IMAGE, pos, SEEK_SET) != 0) {
 			Console.ErrorFmt("ACATA:IO_Read: failed to seek pos:{}", pos);
-			pxAssert(false);
-			abort();
-		}
-
-		if (std::fread(addr, sectorsize, nsector, IMAGE) != static_cast<size_t>(nsector)) {
-			Console.ErrorFmt("ACATA:IO_Read: size:{} at:{} failed", size2, pos);
-			pxAssert(false);
-			abort();
+			ok = false;
+		} else if (std::fread(dst, 1, bytes, IMAGE) != bytes) {
+			Console.ErrorFmt("ACATA:IO_Read: size:{} at:{} failed (the image ends early?)", bytes, pos);
+			ok = false;
 		}
 	}
+	if (!ok)
+		std::memset(dst, 0, bytes);
 	{
 		std::lock_guard ioSignallock(ioMutex);
 		ioRead = false;
 	}
+	return ok;
 }
 
 void ACATA::TH::IO_Write(u32* addr, u32 size) {
