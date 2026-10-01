@@ -2455,6 +2455,7 @@ open class MainActivityRuntime : ComponentActivity() {
         com.armsx2.EnglishTitles.load()
         com.armsx2.CustomNames.load()
         com.armsx2.HiddenGames.load()
+        com.armsx2.ArcadeOnly.load()
         com.armsx2.LibraryTitles.load()
         com.armsx2.LibraryRecentShelf.load()
         // Discord needs an Activity to launch its sign-in browser and has no other way to obtain

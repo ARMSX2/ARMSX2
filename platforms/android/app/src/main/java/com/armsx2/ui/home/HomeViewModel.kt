@@ -172,6 +172,12 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         state.value = buildState(state.value)
     }
 
+    /** Only the arcade games, or every game (the ⋮ menu's Arcade games only). */
+    fun setArcadeOnly(value: Boolean) {
+        com.armsx2.ArcadeOnly.set(value)
+        state.value = buildState(state.value.copy(selectedIndex = 0))
+    }
+
     /** Drop one game from Recently Played (it returns when next launched). */
     fun removeFromRecent(game: GameInfo) {
         repository.removeFromRecent(game)
@@ -185,7 +191,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun buildState(base: HomeUiState): HomeUiState {
-        val recents = repository.recentGames(base.allGames)
+        // Arcade games only narrows Recently Played as well as the library.
+        val recents = repository.recentGames(base.allGames.filter(com.armsx2.ArcadeOnly::shows))
         val recentOrder = recents.mapIndexed { index, game -> game.uri.toString() to index }.toMap()
         val forceEn = com.armsx2.EnglishTitles.enabled.value
         // A category filter narrows the pool before anything else. Cleared implicitly when the
@@ -196,6 +203,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         val filtered = base.allGames.filter { game ->
             val query = base.query.trim()
             (members == null || game.settingsKey?.let { it in members } == true) &&
+            com.armsx2.ArcadeOnly.shows(game) &&
             // Exclude games the user marked hidden (long-press → Hide), unless "Show hidden" is on.
             (com.armsx2.HiddenGames.showHidden.value || !com.armsx2.HiddenGames.isHidden(game)) &&
                 (query.isBlank() ||

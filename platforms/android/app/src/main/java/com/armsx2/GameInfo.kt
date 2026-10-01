@@ -276,6 +276,24 @@ object HiddenGames {
     }
 }
 
+/** Library toggle (the ⋮ menu's Arcade games only): the library shows only the Namco System 246/256
+ *  arcade games, or every game. Kept across launches. */
+object ArcadeOnly {
+    private const val KEY = "library.arcadeOnly"
+    val enabled = mutableStateOf(false)
+    fun load() {
+        enabled.value = MainActivityRuntime.prefs.getBoolean(KEY, false)
+    }
+    fun set(value: Boolean) {
+        enabled.value = value
+        MainActivityRuntime.prefs.edit().putBoolean(KEY, value).apply()
+    }
+    /** Whether [game] is an arcade game: what the library badges as one. */
+    fun isArcade(game: GameInfo): Boolean = game.extension == com.armsx2.arcade.Arcade.BADGE
+    /** Whether [game] stays in the library: any game while this is off, an arcade one while it is on. */
+    fun shows(game: GameInfo): Boolean = !enabled.value || isArcade(game)
+}
+
 /**
  * Library toggle: show the game title under each cover on the shelves. Off by
  * default — the cover already carries the title and a label under every card
