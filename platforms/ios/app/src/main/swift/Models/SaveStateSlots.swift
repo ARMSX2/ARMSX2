@@ -280,9 +280,8 @@ final class SaveStateUndoModel {
         timer = Task { [weak self] in
             while let self, !Task.isCancelled, self.item?.id == next.id {
                 try? await Task.sleep(for: .milliseconds(100))
-                // The window waits while VoiceOver reads, the toast has its focus, or the app is away.
-                let paused = UIAccessibility.isVoiceOverRunning || self.focusHeld
-                    || UIApplication.shared.applicationState != .active
+                // The window waits while the toast has VoiceOver focus or the app is away.
+                let paused = self.focusHeld || UIApplication.shared.applicationState != .active
                 if !paused { self.remaining -= 0.1 }
                 if self.remaining <= 0 { self.finish() }
             }
