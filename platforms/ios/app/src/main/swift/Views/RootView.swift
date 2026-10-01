@@ -221,9 +221,6 @@ extension View {
     }
 }
 
-/// Non-interactive, one-shot startup guidance for the controller macros.
-/// GameScreenView inserts this beneath its Quick Menu; RootView uses the same
-/// view only when Emulation-Only Mode replaces the complete gameplay hierarchy.
 /// A pad button the way the connected controller draws it: □ on a DualSense, X on an Xbox pad.
 /// Start and Select stay words in a chip, which read better than their icons.
 struct ControllerButtonGlyph: View {
@@ -347,6 +344,9 @@ struct ControllerHintLine: View {
     }
 }
 
+/// Non-interactive, one-shot startup guidance for the controller macros.
+/// GameScreenView inserts this beneath its Quick Menu; RootView uses the same
+/// view only when Emulation-Only Mode replaces the complete gameplay hierarchy.
 struct GameplayControllerShortcutHelpOverlay: View {
     let settings: SettingsStore
     let controllerInput: MenuControllerInputRouter?
