@@ -12,12 +12,14 @@ sealed interface AppRoute {
     // Carries an optional game so the per-game BIOS picker can key on it directly
     // (from the library long-press) without the game being loaded; null = global,
     // opened from the drawer (falls back to the currently loaded game if any).
-    data class BiosManager(val game: GameInfo? = null) : AppRoute
+    // returnToArcade: opened from the arcade screen's BIOS step, so Back goes back there.
+    data class BiosManager(val game: GameInfo? = null, val returnToArcade: Boolean = false) : AppRoute
     data class MemoryCardManager(val game: GameInfo? = null) : AppRoute
     data object SaveManager : AppRoute
     data object ControllerManager : AppRoute
     data object PatchManager : AppRoute
     data object TextureManager : AppRoute
+    data object Arcade : AppRoute
     data object Achievements : AppRoute
     data object Language : AppRoute
     data object News : AppRoute
@@ -62,7 +64,7 @@ object UiNavigator {
             drawerOpen.value = false
             return true
         }
-        when (route.value) {
+        when (val current = route.value) {
             AppRoute.Language -> {
                 route.value = AppRoute.Settings(SettingsCategory.General)
                 return true
@@ -72,6 +74,10 @@ object UiNavigator {
                 return true
             }
             AppRoute.Home -> Unit
+            is AppRoute.BiosManager -> {
+                route.value = if (current.returnToArcade) AppRoute.Arcade else AppRoute.Home
+                return true
+            }
             else -> {
                 route.value = AppRoute.Home
                 return true

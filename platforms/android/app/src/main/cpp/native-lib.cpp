@@ -2748,6 +2748,31 @@ Java_kr_co_iefriends_pcsx2_NativeApp_arcadeTestModeOn(JNIEnv*, jclass) {
     return (VMManager::HasValidVM() && Arcade::IsActive() && ACJV::GetDIPSwitchState(0)) ? JNI_TRUE : JNI_FALSE;
 }
 
+/// Every arcade game the database knows, one per line: game ID, name, board (System246, System256 or
+/// System SUPER256) and media (CD, DVD or HDD), tab separated. For the arcade screen's import list.
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getArcadeGames(JNIEnv* env, jclass) {
+    const auto clean = [](std::string s) {
+        std::replace(s.begin(), s.end(), '\t', ' ');
+        std::replace(s.begin(), s.end(), '\n', ' ');
+        return s;
+    };
+    std::string out;
+    for (const auto& [id, entry] : GameDatabase::findArcadeGames())
+    {
+        out += id;
+        out += '\t';
+        out += clean(entry->name);
+        out += '\t';
+        out += clean(entry->region);
+        out += '\t';
+        out += clean(entry->arcade.media);
+        out += '\n';
+    }
+    return env->NewStringUTF(out.c_str());
+}
+
 /// Whether a BIOS file is a Namco arcade board's (COH-H), and so usable for arcade games.
 extern "C"
 JNIEXPORT jboolean JNICALL

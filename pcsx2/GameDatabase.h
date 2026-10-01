@@ -182,6 +182,10 @@ namespace GameDatabase
 	void ensureLoaded();
 	const GameDatabaseSchema::GameEntry* findGame(const std::string_view serial);
 
+	/// Every Namco System 246/256 arcade game on record, by game ID (NM and five digits, upper case),
+	/// in ID order. For frontends that offer them for import.
+	std::vector<std::pair<std::string, const GameDatabaseSchema::GameEntry*>> findArcadeGames();
+
 	struct TrackHash
 	{
 		static constexpr u32 SIZE = 16;

@@ -276,13 +276,17 @@ class GameLibraryRepository(private val context: Context) {
     /**
      * The files the arcade games (.acgame) in one folder keep for themselves: their own folder (the
      * subdir, by default the game ID) or, for one without, the boot program and media image beside
-     * it. Those are parts of the arcade game, not games, and a boot program listed as an ELF would
-     * boot without its board.
+     * it, and the dongle and card, which can be beside it whatever its subdir (Arcade.prepare looks
+     * there). Those are parts of the arcade game, not games: a boot program listed as an ELF would
+     * boot without its board, and a dongle named .bin would be listed as a disc.
      */
     private class ArcadeClaims(val games: Map<String, Arcade.AcGame?>) {
         private val folders = games.values.filterNotNull().mapNotNull { it.subdir.takeIf(String::isNotEmpty)?.lowercase() }.toSet()
-        private val files = games.values.filterNotNull().filter { it.subdir.isEmpty() }
-            .flatMap { listOf(it.elf.lowercase(), it.mediaSrc.lowercase(), it.sram.lowercase()) }.toSet()
+        private val files = games.values.filterNotNull().flatMap { game ->
+            val cards = listOf(game.dongle, game.card).filter(String::isNotEmpty).map { File(it).name.lowercase() }
+            if (game.subdir.isNotEmpty()) cards
+            else cards + listOf(game.elf.lowercase(), game.mediaSrc.lowercase(), game.sram.lowercase())
+        }.toSet()
 
         fun ownsFolder(name: String?): Boolean = name != null && name.lowercase() in folders
         fun ownsFile(name: String?): Boolean = name != null && name.lowercase() in files

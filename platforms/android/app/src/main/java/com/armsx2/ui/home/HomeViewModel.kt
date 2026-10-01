@@ -72,6 +72,27 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** The last [com.armsx2.data.library.LibraryRefresh] request this library has scanned for. */
+    private var handledRefreshRequest = 0
+
+    /** Scans [romDirectories] again for a LibraryRefresh request it has not handled yet, after a
+     *  scan already running, so the files that request is about are certainly in the result. */
+    fun onRefreshRequested(request: Int, romDirectories: List<String>) {
+        if (request <= handledRefreshRequest) return
+        handledRefreshRequest = request
+        // The request can be for a folder just added to the library (the arcade folder).
+        directories = romDirectories
+        val running = scanJob?.takeIf { it.isActive }
+        if (running == null) {
+            refresh()
+            return
+        }
+        scope.launch {
+            running.join()
+            refresh()
+        }
+    }
+
     fun refresh() {
         if (directories.isEmpty() || scanJob?.isActive == true) return
         scanJob = scope.launch {

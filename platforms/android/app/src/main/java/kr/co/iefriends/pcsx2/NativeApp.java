@@ -293,6 +293,10 @@ public class NativeApp {
 	/** Whether a BIOS file is an arcade board's (COH-H). */
 	public static native boolean isArcadeBios(String path);
 
+	/** Every arcade game the database knows, one per line: game ID, name, board (System246,
+	 *  System256 or System SUPER256) and media (CD, DVD or HDD), tab separated. */
+	public static native String getArcadeGames();
+
 	public static native String getGameTitle(String path);
 	public static native String getGameSerial();
 	public static native String getGameCRC();

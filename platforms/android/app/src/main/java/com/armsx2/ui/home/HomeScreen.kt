@@ -236,6 +236,11 @@ fun HomeScreen(
         }
     }
     LaunchedEffect(directories, nativeReady) { viewModel.load(directories, nativeReady) }
+    // Another screen changed what is in the game folders (an arcade game imported): scan again.
+    val refreshRequest = com.armsx2.data.library.LibraryRefresh.requests.intValue
+    LaunchedEffect(refreshRequest, nativeReady, directories) {
+        if (nativeReady) viewModel.onRefreshRequested(refreshRequest, directories)
+    }
     // Memory Card Covers: look at the cards again when the library shows and when a game stops,
     // which is when a new save appears, then on the discs of games with no save. Nothing is drawn
     // again unless a save changed, and no disc is looked at twice.

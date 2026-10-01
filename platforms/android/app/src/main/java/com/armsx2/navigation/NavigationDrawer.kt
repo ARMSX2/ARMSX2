@@ -110,7 +110,8 @@ private data class DrawerItem(
     // close the drawer instead of navigating to a screen.
     val destination: AppRoute? = null,
     val iconRes: Int? = null,
-    // Null = tint the icon like the row's text. Only the trophy pins a fixed colour.
+    // Null = tint the icon like the row's text. Only the trophy pins a fixed colour; Color.Unspecified
+    // draws a multi-colour icon as it is (the arcade logo).
     val iconTint: Color? = null,
     val onAction: (() -> Unit)? = null,
     // Overlay the live "friends online" count on this row's glyph. Only Friends uses it — the
@@ -212,6 +213,10 @@ private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, on
         DrawerItem("tab.controls", "🕹️", AppRoute.ControllerManager),
         DrawerItem("patches.dialog.patchesAndCheats", "🪄", AppRoute.PatchManager),
         DrawerItem("renderer.section.texturePacks", "🖌️", AppRoute.TextureManager),
+        // Namco System 246/256 arcade games: their folder, boot files, BIOS and imports. The ARMSX2
+        // logo in PCSX2x6's red, in its own colours.
+        DrawerItem("arcade.title", "👾", AppRoute.Arcade, iconRes = com.armsx2.R.drawable.ic_arcade,
+            iconTint = Color.Unspecified),
     )
     // Link-out rows: they reuse the existing onAction path (like Boot BIOS) rather than a
     // destination, so they leave the drawer via startActivity and close it behind them.
@@ -360,6 +365,7 @@ private fun sameDestination(current: AppRoute, target: AppRoute): Boolean = when
     AppRoute.ControllerManager -> current is AppRoute.ControllerManager
     AppRoute.PatchManager -> current is AppRoute.PatchManager
     AppRoute.TextureManager -> current is AppRoute.TextureManager
+    AppRoute.Arcade -> current is AppRoute.Arcade
     AppRoute.Achievements -> current is AppRoute.Achievements
     AppRoute.Language -> current is AppRoute.Language
     AppRoute.News -> current is AppRoute.News
