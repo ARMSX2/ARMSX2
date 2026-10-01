@@ -97,12 +97,41 @@ fi
 echo "-- package (must be $PKG) --"
 unzip -p "$OUTPUT_AAB" base/manifest/AndroidManifest.xml | strings | grep -oE "come\.nanodata\.armsx2" | head -1 \
 	|| { echo "FATAL wrong package" >&2; exit 1; }
+# The leak checks below read files extracted from the bundle, whole. They used to pipe `unzip -p` into
+# `grep -q`, the Discord trap above turned inside out: on a hit grep exits at once, unzip dies of SIGPIPE
+# if it is still writing, pipefail reports the pipeline as failed, and the `if` took the "absent OK"
+# branch. The cores and dex are far too big for unzip to finish first, so those checks could never
+# fail: shown 2026-10-01 on copies of the 2.7.2 bundle with LsfgChain in a core and perf.lsfg in the
+# dex, both "absent OK" (the small manifest's checks happened to work). unzip's errors went to
+# /dev/null too, so a bundle with no dex passed as well.
+VERIFY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/play-aab-verify.XXXXXX")"
+trap 'rm -rf "$VERIFY_DIR"' EXIT
+unzip -q "$OUTPUT_AAB" base/manifest/AndroidManifest.xml 'base/lib/arm64-v8a/libemucore_*.so' 'base/dex/*.dex' \
+	-d "$VERIFY_DIR" || { echo "FATAL could not extract the manifest, cores and dex to check" >&2; exit 1; }
+MANIFEST="$VERIFY_DIR/base/manifest/AndroidManifest.xml"
+CORES=("$VERIFY_DIR"/base/lib/arm64-v8a/libemucore_*.so)
+DEXES=("$VERIFY_DIR"/base/dex/*.dex)
+[[ -f "$MANIFEST" && -f "${CORES[0]}" && -f "${DEXES[0]}" ]] \
+	|| { echo "FATAL could not extract the manifest, cores and dex to check" >&2; exit 1; }
+# Sets MATCHES to how many lines of the files match the pattern (grep -a: binary read as text). A file
+# grep cannot read fails the build rather than counting as clean.
+matches() { # pattern file...
+	local pattern="$1" n f
+	shift
+	MATCHES=0
+	for f in "$@"; do
+		n=$(LC_ALL=C grep -a -c -e "$pattern" "$f") || [[ $? -eq 1 ]] || { echo "FATAL could not read $f" >&2; exit 1; }
+		MATCHES=$((MATCHES + n))
+	done
+}
 echo "-- MANAGE_EXTERNAL_STORAGE must be ABSENT (play flavor) --"
-if unzip -p "$OUTPUT_AAB" base/manifest/AndroidManifest.xml | strings | grep -q "MANAGE_EXTERNAL_STORAGE"; then
+matches "MANAGE_EXTERNAL_STORAGE" "$MANIFEST"
+if [[ $MATCHES -gt 0 ]]; then
 	echo "  !! FATAL: MANAGE_EXTERNAL_STORAGE present in play AAB" >&2; exit 1
 else echo "  absent OK"; fi
 echo "-- REQUEST_INSTALL_PACKAGES must be ABSENT (self-updating violates Play policy) --"
-if unzip -p "$OUTPUT_AAB" base/manifest/AndroidManifest.xml | strings | grep -q "REQUEST_INSTALL_PACKAGES"; then
+matches "REQUEST_INSTALL_PACKAGES" "$MANIFEST"
+if [[ $MATCHES -gt 0 ]]; then
 	echo "  !! FATAL: REQUEST_INSTALL_PACKAGES present in play AAB (in-app updater leaked into the Play build)" >&2; exit 1
 else echo "  absent OK"; fi
 echo "-- no frame-generation code in the core (github flavour only) --"
@@ -111,7 +140,8 @@ echo "-- no frame-generation code in the core (github flavour only) --"
 # from "is that file packaged" — which can no longer be true either way, and would therefore
 # pass forever without proving anything — to looking inside the core for a symbol only the
 # ported implementation defines.
-if unzip -p "$OUTPUT_AAB" 'base/lib/arm64-v8a/libemucore_*.so' 2>/dev/null | LC_ALL=C grep -aq "LsfgChain"; then
+matches "LsfgChain" "${CORES[@]}"
+if [[ $MATCHES -gt 0 ]]; then
 	echo "  !! FATAL: frame-generation code present in the play core (ARMSX2_ENABLE_LSFG leaked ON)" >&2; exit 1
 else echo "  absent OK"; fi
 echo "-- no frame-generation text at all (the Play build has no LSFG whatsoever) --"
@@ -125,7 +155,8 @@ echo "-- no frame-generation text at all (the Play build has no LSFG whatsoever)
 # grep -a, not `strings`: Xcode's strings(1) tries to parse a .dex as a Mach-O fat binary, fails,
 # and prints nothing, which reads exactly like a pass.
 for forbidden in Lossless perf.lsfg; do
-	if unzip -p "$OUTPUT_AAB" 'base/dex/*.dex' 2>/dev/null | LC_ALL=C grep -aq "$forbidden"; then
+	matches "$forbidden" "${DEXES[@]}"
+	if [[ $MATCHES -gt 0 ]]; then
 		echo "  !! FATAL: '$forbidden' present in play AAB (frame generation leaked into the Play build)" >&2; exit 1
 	fi
 done
