@@ -1134,6 +1134,20 @@ bool GSDeviceOGL::CheckFeatures()
 			Console.Error("GL: glDrawElementsBaseVertex is unavailable (no core/OES/EXT) — draws will fail.");
 	}
 
+	// Same ES 3.2-vs-3.1 gap for the ranged variant. The draws over the index stream buffer pass the
+	// index range so the driver doesn't have to scan for it: without a range, Mali scans the indices
+	// and caches the result per (buffer, offset, count) in CPU memory, and since the stream buffer is
+	// never respecified and every draw lands at a new offset, that cache grows for the whole session
+	// (320 MB in a single allocation, killed by lmkd after ~2 h on a 4 GB device). If no variant is
+	// available, DrawElementsInRange() falls back to the unranged call.
+	if (!glDrawRangeElementsBaseVertex)
+	{
+		if (GLAD_GL_OES_draw_elements_base_vertex && glDrawRangeElementsBaseVertexOES)
+			glDrawRangeElementsBaseVertex = glDrawRangeElementsBaseVertexOES;
+		else if (GLAD_GL_EXT_draw_elements_base_vertex && glDrawRangeElementsBaseVertexEXT)
+			glDrawRangeElementsBaseVertex = glDrawRangeElementsBaseVertexEXT;
+	}
+
 	// glColorMaski (indexed color mask) is core in GLSL ES 3.2 but only extension-provided on
 	// an ES 3.1 context; GLAD leaves the unsuffixed pointer null on ANGLE (which caps at ES 3.1),
 	// so GSDeviceOGL::OMSetColorMaskState calls a null pointer → SIGSEGV mid-render (VSync→Merge→
@@ -2107,10 +2121,20 @@ void GSDeviceOGL::DrawIndexedPrimitive()
 	DrawIndexedPrimitive(0, m_index.count);
 }
 
+// Every index of the draw is in [0, vertex_count), relative to base_vertex. Passing that range keeps
+// the driver from scanning the indices and caching the result (see the note in CheckFeatures()).
+static void DrawElementsInRange(GLenum mode, u32 vertex_count, GLsizei count, const void* indices, GLint base_vertex)
+{
+	if (glDrawRangeElementsBaseVertex && vertex_count > 0)
+		glDrawRangeElementsBaseVertex(mode, 0, vertex_count - 1, count, GL_UNSIGNED_SHORT, indices, base_vertex);
+	else
+		glDrawElementsBaseVertex(mode, count, GL_UNSIGNED_SHORT, indices, base_vertex);
+}
+
 void GSDeviceOGL::DrawIndexedPrimitive(int offset, int count)
 {
 	g_perfmon.Put(GSPerfMon::DrawCalls, 1);
-	glDrawElementsBaseVertex(m_draw_topology, count, GL_UNSIGNED_SHORT,
+	DrawElementsInRange(m_draw_topology, m_vertex.count, count,
 		reinterpret_cast<void*>((static_cast<u32>(m_index.start) + static_cast<u32>(offset)) * sizeof(u16)),
 		static_cast<GLint>(m_vertex.start));
 }
@@ -3772,8 +3796,10 @@ void GSDeviceOGL::RenderImGui()
 				glBindTextureUnit(0, texture_id);
 			}
 
-			glDrawElementsBaseVertex(GL_TRIANGLES, (GLsizei)pcmd->ElemCount, GL_UNSIGNED_SHORT,
-				(void*)(intptr_t)((pcmd->IdxOffset + m_index.start) * sizeof(ImDrawIdx)), pcmd->VtxOffset + vertex_start);
+			// VtxOffset is folded into the base vertex, so the indices reach at most the end of VtxBuffer.
+			DrawElementsInRange(GL_TRIANGLES, static_cast<u32>(cmd_list->VtxBuffer.Size) - pcmd->VtxOffset,
+				(GLsizei)pcmd->ElemCount, (void*)(intptr_t)((pcmd->IdxOffset + m_index.start) * sizeof(ImDrawIdx)),
+				pcmd->VtxOffset + vertex_start);
 		}
 
 		g_perfmon.Put(GSPerfMon::DrawCalls, cmd_list->CmdBuffer.Size);
