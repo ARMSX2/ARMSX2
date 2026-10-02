@@ -1342,6 +1342,9 @@ internal fun AnalogSticksSection(
     editSerial: String? = null,
 ) {
     CollapsibleSection(str("pad.section.analogSticks"), initiallyExpanded = false) {
+        // Redraw when a switch below changes a setting; Compose can't observe the prefs themselves.
+        @Suppress("UNUSED_EXPRESSION")
+        refreshToken.intValue
         // Extra button on the ON-SCREEN left stick: a sprint/jump button just above it that
         // you can reach by GLIDING the same thumb up off the stick, without lifting off and
         // losing your heading (GTA / Silent Hill sprint, GoW / KH jump).
