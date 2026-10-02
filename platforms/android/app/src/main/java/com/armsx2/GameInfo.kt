@@ -594,8 +594,8 @@ internal fun arcadeCoverUrl(serial: String): String? = when {
     else -> "$ARCADE_COVERS/$serial.jpg"
 }
 
-/** ARMSX2's arcade covers, on bmd's covers server: <game ID>.jpg flat, 3d/<game ID>.png as a case. */
-private const val ARCADE_COVERS = "https://covers.ps2ktxpak.net/arcade-covers"
+/** ARMSX2's arcade covers, on bmd's arcade server: <game ID>.jpg flat, 3d/<game ID>.png as a case. */
+private const val ARCADE_COVERS = "https://arcade.ps2ktxpak.net/arcade-covers"
 
 /** Map a PS1/PS2 serial prefix to a region label. */
 // GameDB region cache (serial -> mapped label, or "" = looked up & not in DB / no JNI).
