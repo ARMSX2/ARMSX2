@@ -281,3 +281,45 @@ TEST(GSSpriteEdgeSnap, TheNativePushIgnoresFractionsUnderAHalf)
 	EXPECT_FALSE(NativeSpritePushApplies(0, 0, true));
 	EXPECT_FALSE(NativeSpritePushApplies(4, 4, true));
 }
+
+// Under the Native half-pixel offset the vertex transform lands native coordinate n on the
+// middle of native pixel n's device block, so the far edge that stops on the block boundary is
+// half a pixel short of the whole coordinate (grid_shift 8). Gran Turismo 4's menu text is the
+// case: a glyph ending at y=163.25 was pushed to 164.0, which at 2x drew one device row of
+// pixel 164 with the glyph's last row and doubled its shadow.
+TEST(GSSpriteEdgeSnap, UnderTheNativeOffsetTheEdgeStopsHalfAPixelShort)
+{
+	constexpr int kNative = 8;
+	// GT4 glyph: y 156.25 .. 163.25, V 6224 .. 6448 (two texels a pixel, give or take).
+	const Delta d = FarEdge(0, 2500, 16, 2612, 0, 6224, 16, 6448, true, kNative);
+	EXPECT_EQ(d.dy, 4); // to 163.5, not 164.0
+	EXPECT_EQ(d.dv, 8);
+
+	// An edge already past the block boundary under this offset is not pulled back: the snap
+	// only ever moves outwards.
+	EXPECT_EQ(FarEdge(0, 0, 16, 16 * 10 + 12, 0, 0, 16, 16 * 10 + 12, true, kNative).dy, 0);
+	EXPECT_EQ(FarEdge(0, 0, 16, 16 * 10, 0, 0, 16, 16 * 10, true, kNative).dy, 0);
+
+	// The ordinary transform still snaps to the whole pixel.
+	EXPECT_EQ(FarEdge(0, 2500, 16, 2612, 0, 6224, 16, 6448, true).dy, 12);
+}
+
+// The sample limit is the coordinate the sprite's last native pixel read: the GS samples pixel k
+// at k, and the last pixel covered is ceil(edge) - 1 whichever offset placed the edge.
+TEST(GSSpriteEdgeSnap, TheSampleLimitIsWhereTheLastNativePixelSampled)
+{
+	// One texel per pixel from 0: pixel 9 samples texel 9.
+	EXPECT_FLOAT_EQ(FarSampleLimit(0, 16 * 10, 0, 16 * 10, true), 16.0f * 9);
+	// Same sprite with its far edge left half a pixel short by the Native offset: still pixel 9.
+	EXPECT_FLOAT_EQ(FarSampleLimit(0, 16 * 10 - 8, 0, 16 * 10 - 8, true), 16.0f * 9);
+	// GT4 glyph after the Native snap: y 156.25 .. 163.5, V 6224 .. 6456; pixel 163 samples V 6440.
+	EXPECT_FLOAT_EQ(FarSampleLimit(2500, 2616, 6224, 6456, true), 6440.0f);
+	// A coordinate that runs backwards gets a lower limit, and the shader caps it from below.
+	EXPECT_FLOAT_EQ(FarSampleLimit(0, 16 * 10, 16 * 10, 0, true), 16.0f);
+}
+
+TEST(GSSpriteEdgeSnap, AnUnmovedAxisHasNoSampleLimit)
+{
+	EXPECT_EQ(FarSampleLimit(0, 16 * 10, 0, 16 * 10, false), kNoSampleLimit);
+	EXPECT_EQ(FarSampleLimit(0, 16 * 10, 16 * 10, 0, false), -kNoSampleLimit);
+}

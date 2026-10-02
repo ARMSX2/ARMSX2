@@ -2993,6 +2993,11 @@ bool GSRendererHW::SnapSpriteEdgesToPixelGrid()
 	};
 
 	const bool limit_uv = adjust_uv && g_gs_device->Features().sprite_edge_clamp;
+
+	// The Native half-pixel offset maps native coordinate n to the middle of its device block
+	// (DetermineVSConfig: ox2 = -1 / unscaled, so device = scale * (n + 0.5)), so the edge that
+	// stops on a block boundary is half a pixel short of the whole coordinate.
+	const int grid_shift = (GSConfig.UserHacks_HalfPixelOffset == GSHalfPixelOffset::Native) ? 8 : 0;
 	if (limit_uv)
 		m_sprite_edge_limits.resize(count / 2);
 	bool moved = false;
@@ -3008,7 +3013,7 @@ bool GSRendererHW::SnapSpriteEdgesToPixelGrid()
 		const int y1 = static_cast<int>(v[i + 1].XYZ.Y) - oy;
 		const GSSpriteEdgeSnap::Delta d = GSSpriteEdgeSnap::DropAbuttingAxes(
 			GSSpriteEdgeSnap::FarEdge(x0, y0, x1, y1, static_cast<int>(v[i].U), static_cast<int>(v[i].V),
-				static_cast<int>(v[i + 1].U), static_cast<int>(v[i + 1].V), adjust_uv),
+				static_cast<int>(v[i + 1].U), static_cast<int>(v[i + 1].V), adjust_uv, grid_shift),
 			x1, y1, prev, next);
 
 		if (!d.IsZero())

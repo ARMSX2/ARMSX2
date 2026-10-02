@@ -37,16 +37,30 @@ namespace GSSpriteEdgeSnap
 	/// ceil(a / 16) * 16, negative a included: >> rounds towards -inf.
 	inline constexpr int SnapUp(int a) { return ((a + 15) >> 4) << 4; }
 
+	/// Where a far edge at `a` has to sit for the upscaled raster to stop on the boundary of the
+	/// last native pixel the GS covers, which is pixel ceil(a) - 1.
+	///
+	/// `grid_shift` is how far, in 1/16 pixel, the draw's vertex transform puts that boundary
+	/// before a whole native coordinate. It is zero for the ordinary transform, which lands native
+	/// coordinate n on the start of native pixel n's device block, and 8 under the Native
+	/// half-pixel offset, which lands it on the middle of the block: there the edge that stops on
+	/// the boundary is ceil(a) - 0.5, and ceil(a) itself draws half a native pixel too many.
+	inline constexpr int FarTarget(int a, int grid_shift) { return SnapUp(a) - grid_shift; }
+
 	/// The pixel-grid snap for one sprite. X and Y are relative to XYOFFSET; adjust_uv says the
 	/// sprite samples a texture with FST coordinates, so the UV has to slide with the position.
+	/// `grid_shift` is FarTarget's. The edge only ever moves outwards.
 	///
 	/// Returns a zero delta when the sprite already ends on the grid, its far edge is not right of
 	/// / below its near edge, or the implied UV slide is not a whole 1/16-texel step. Rounding a
 	/// fractional slide would resample the whole sprite to gain one edge pixel.
-	inline constexpr Delta FarEdge(int x0, int y0, int x1, int y1, int u0, int v0, int u1, int v1, bool adjust_uv)
+	inline constexpr Delta FarEdge(int x0, int y0, int x1, int y1, int u0, int v0, int u1, int v1, bool adjust_uv,
+		int grid_shift = 0)
 	{
-		const int dx = (x1 > x0) ? (SnapUp(x1) - x1) : 0;
-		const int dy = (y1 > y0) ? (SnapUp(y1) - y1) : 0;
+		const int tx = FarTarget(x1, grid_shift);
+		const int ty = FarTarget(y1, grid_shift);
+		const int dx = (x1 > x0 && tx > x1) ? (tx - x1) : 0;
+		const int dy = (y1 > y0 && ty > y1) ? (ty - y1) : 0;
 		if ((dx | dy) == 0)
 			return {};
 
@@ -72,19 +86,19 @@ namespace GSSpriteEdgeSnap
 	/// The texture coordinate a sprite's last native pixel samples on one axis, which is as far as
 	/// any of its device pixels may sample once the snap has pushed the far edge out to `a1`.
 	///
-	/// The GS samples pixel k at k, so the last pixel of a sprite ending on the boundary a1 samples
-	/// at a1 - 16 (1/16 units, relative to XYOFFSET). The coordinate is interpolated there along
-	/// the sprite's own gradient. At 1x every pixel samples at or before that point, so the limit
-	/// changes nothing at native.
+	/// The GS samples pixel k at k, and the last pixel a sprite covers is ceil(a1) - 1, so it
+	/// samples at SnapUp(a1) - 16 (1/16 units, relative to XYOFFSET) wherever the snap put the
+	/// edge. The coordinate is interpolated there along the sprite's own gradient. At 1x every
+	/// pixel samples at or before that point, so the limit changes nothing at native.
 	///
-	/// `t0`/`t1` are the near and far texture coordinates after the snap. An unmoved axis gets no
-	/// limit, signed for the direction the coordinate runs.
+	/// `a1`, `t0` and `t1` are the far edge and the near and far texture coordinates after the
+	/// snap. An unmoved axis gets no limit, signed for the direction the coordinate runs.
 	inline constexpr float FarSampleLimit(int a0, int a1, int t0, int t1, bool moved)
 	{
 		if (!moved || a1 <= a0)
 			return ((t1 - t0) * (a1 - a0) >= 0) ? kNoSampleLimit : -kNoSampleLimit;
 
-		const int last = (a1 - 16 > a0) ? (a1 - 16) : a0;
+		const int last = (SnapUp(a1) - 16 > a0) ? (SnapUp(a1) - 16) : a0;
 		return static_cast<float>(t0) +
 		       static_cast<float>(t1 - t0) * static_cast<float>(last - a0) / static_cast<float>(a1 - a0);
 	}
