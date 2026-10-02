@@ -304,6 +304,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
     NS_SWIFT_NAME(saveState(toSlot:completion:));
 /// Writes the Auto-save slot. It skips a paused game, unless `leaving`, and any moment a memory card
 /// or the live preview is at work, and then reports NO.
++ (void)logAutoSaveSkipped:(nonnull NSString *)reason;
 + (void)autoSaveLeavingGame:(BOOL)leaving completion:(nullable ARMSX2SaveStateCompletion)completion
     NS_SWIFT_NAME(autoSave(leavingGame:completion:));
 /// Refuses when the slot's file is no longer the one last shown. With `keepingUndo`, the moment

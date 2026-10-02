@@ -5211,25 +5211,32 @@ static void ARMSX2WriteSaveState(s32 nativeSlot, bool automatic, bool leaving, v
     dispatch_async(ARMSX2SaveStateQueue(), ^{
         bool started = false;
         bool existed = false;
+        // Why an automatic save didn't run, for emulog.txt: the system log is out of a tester's reach.
+        const char* skipped = "the CPU thread never ran it";
         // With zip_on_thread the core reports a failed zip later, from the zip thread.
         auto saveError = std::make_shared<std::string>();
         VMManager::WaitForSaveStateFlush();
         // The live preview runs the game on trial settings; a state saved now would keep them.
         const bool previewing = ARMSX2PerGameLivePreviewTransactions().count > 0;
-        if (!(automatic && previewing)) {
-            Host::RunOnCPUThread([nativeSlot, serial, crc, automatic, leaving, &targetPath, &started, &existed, saveError]() {
+        if (automatic && previewing)
+            skipped = "a per-game live preview was open";
+        else {
+            Host::RunOnCPUThread([nativeSlot, serial, crc, automatic, leaving, &targetPath, &started, &existed, &skipped, saveError]() {
                 NSLog(@"[ARMSX2 iOS SaveState] CPU save start slot=%d", nativeSlot);
                 if (!ARMSX2SaveStateIdentityMatches(serial, crc)) {
                     NSLog(@"[ARMSX2 iOS SaveState] CPU save rejected slot=%d reason=game-changed", nativeSlot);
+                    skipped = "another game was running";
                     return;
                 }
                 existed = FileSystem::FileExists(targetPath.c_str());
                 if (MemcardBusy::IsBusy()) {
                     NSLog(@"[ARMSX2 iOS SaveState] CPU save rejected slot=%d reason=memory-card-busy", nativeSlot);
+                    skipped = "the game wrote to a memory card in the last few seconds";
                     return;
                 }
                 if (automatic && (FileMcd_IsAutoEjecting() || (!leaving && VMManager::GetState() != VMState::Running))) {
                     NSLog(@"[ARMSX2 iOS SaveState] CPU save skipped slot=%d reason=not-running-or-ejecting", nativeSlot);
+                    skipped = "the game was paused or a memory card was ejecting";
                     return;
                 }
 
@@ -5267,6 +5274,11 @@ static void ARMSX2WriteSaveState(s32 nativeSlot, bool automatic, bool leaving, v
 
         NSLog(@"[ARMSX2 iOS SaveState] save finished slot=%d result=%d exists=%d",
               nativeSlot, result ? 1 : 0, FileSystem::FileExists(targetPath.c_str()) ? 1 : 0);
+        if (automatic && result)
+            Console.WriteLn("[SaveState] Auto-save written%s.", leaving ? " on leave" : "");
+        else if (automatic)
+            Console.WriteLn("[SaveState] Auto-save%s not written: %s.", leaving ? " on leave" : "",
+                started ? (saveError->empty() ? "the file is missing" : saveError->c_str()) : skipped);
 
         if (callback)
             dispatch_async(dispatch_get_main_queue(), ^{ callback(result ? YES : NO, backupToken); });
@@ -5282,6 +5294,10 @@ static void ARMSX2WriteSaveState(s32 nativeSlot, bool automatic, bool leaving, v
         return;
     }
     ARMSX2WriteSaveState(static_cast<s32>(slot), false, false, callback);
+}
+
++ (void)logAutoSaveSkipped:(nonnull NSString *)reason {
+    Console.WriteLn("[SaveState] Auto-save on leave not written: %s.", reason.UTF8String);
 }
 
 + (void)autoSaveLeavingGame:(BOOL)leaving completion:(nullable ARMSX2SaveStateCompletion)completion {
