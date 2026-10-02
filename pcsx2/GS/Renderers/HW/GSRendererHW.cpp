@@ -2962,11 +2962,20 @@ bool GSRendererHW::CanUseSwSpriteRender()
 //
 // At native resolution ceil(x) is already where the coverage started, so this is a no-op in
 // both coverage and sampling; Draw only calls it for sprites into an upscaled target.
-void GSRendererHW::SnapSpriteEdgesToPixelGrid()
+//
+// The pushed edge still samples further along the gradient than the native sprite ever did:
+// the device pixels in the last native pixel's right half, and the ones the push adds, land
+// past the texel the last native pixel read, and where the game packs sprites into one
+// texture that is the neighbour's texel (We Love Katamari's title letters grow a line on
+// their right and bottom edges). So for every sprite it moves it also works out the
+// coordinate the last native pixel sampled, and when the device can clamp to it, writes that
+// limit into the sprite's ST, which an FST sprite does not otherwise read. Returns whether it
+// wrote limits.
+bool GSRendererHW::SnapSpriteEdgesToPixelGrid()
 {
 	// STQ sprites interpolate through Q; leave those alone rather than guess a gradient.
 	if (m_process_texture && !PRIM->FST)
-		return;
+		return false;
 
 	const bool adjust_uv = m_process_texture && PRIM->FST;
 	const int ox = static_cast<int>(m_context->XYOFFSET.OFX);
@@ -2983,26 +2992,52 @@ void GSRendererHW::SnapSpriteEdgesToPixelGrid()
 			std::min(static_cast<int>(v[j].XYZ.Y), static_cast<int>(v[j + 1].XYZ.Y)) - oy, true};
 	};
 
+	const bool limit_uv = adjust_uv && g_gs_device->Features().sprite_edge_clamp;
+	if (limit_uv)
+		m_sprite_edge_limits.resize(count / 2);
+	bool moved = false;
+
 	for (u32 i = 0; i + 1 < count; i += 2)
 	{
 		const GSSpriteEdgeSnap::NearCorner prev = (i >= 2) ? near_corner(i - 2) : GSSpriteEdgeSnap::NearCorner{};
 		const GSSpriteEdgeSnap::NearCorner next = (i + 3 < count) ? near_corner(i + 2) : GSSpriteEdgeSnap::NearCorner{};
 
+		const int x0 = static_cast<int>(v[i].XYZ.X) - ox;
+		const int y0 = static_cast<int>(v[i].XYZ.Y) - oy;
 		const int x1 = static_cast<int>(v[i + 1].XYZ.X) - ox;
 		const int y1 = static_cast<int>(v[i + 1].XYZ.Y) - oy;
 		const GSSpriteEdgeSnap::Delta d = GSSpriteEdgeSnap::DropAbuttingAxes(
-			GSSpriteEdgeSnap::FarEdge(static_cast<int>(v[i].XYZ.X) - ox, static_cast<int>(v[i].XYZ.Y) - oy, x1, y1,
-				static_cast<int>(v[i].U), static_cast<int>(v[i].V), static_cast<int>(v[i + 1].U),
-				static_cast<int>(v[i + 1].V), adjust_uv),
+			GSSpriteEdgeSnap::FarEdge(x0, y0, x1, y1, static_cast<int>(v[i].U), static_cast<int>(v[i].V),
+				static_cast<int>(v[i + 1].U), static_cast<int>(v[i + 1].V), adjust_uv),
 			x1, y1, prev, next);
-		if (d.IsZero())
-			continue;
 
-		v[i + 1].XYZ.X = static_cast<u16>(static_cast<int>(v[i + 1].XYZ.X) + d.dx);
-		v[i + 1].XYZ.Y = static_cast<u16>(static_cast<int>(v[i + 1].XYZ.Y) + d.dy);
-		v[i + 1].U = static_cast<u16>(static_cast<int>(v[i + 1].U) + d.du);
-		v[i + 1].V = static_cast<u16>(static_cast<int>(v[i + 1].V) + d.dv);
+		if (!d.IsZero())
+		{
+			moved = true;
+			v[i + 1].XYZ.X = static_cast<u16>(static_cast<int>(v[i + 1].XYZ.X) + d.dx);
+			v[i + 1].XYZ.Y = static_cast<u16>(static_cast<int>(v[i + 1].XYZ.Y) + d.dy);
+			v[i + 1].U = static_cast<u16>(static_cast<int>(v[i + 1].U) + d.du);
+			v[i + 1].V = static_cast<u16>(static_cast<int>(v[i + 1].V) + d.dv);
+		}
+
+		if (limit_uv)
+		{
+			m_sprite_edge_limits[i / 2] = GSVector2(
+				GSSpriteEdgeSnap::FarSampleLimit(x0, x1 + d.dx, static_cast<int>(v[i].U), static_cast<int>(v[i + 1].U), d.dx != 0),
+				GSSpriteEdgeSnap::FarSampleLimit(y0, y1 + d.dy, static_cast<int>(v[i].V), static_cast<int>(v[i + 1].V), d.dy != 0));
+		}
 	}
+
+	if (!moved || !limit_uv)
+		return false;
+
+	for (u32 i = 0; i + 1 < count; i += 2)
+	{
+		const GSVector2& limit = m_sprite_edge_limits[i / 2];
+		v[i].ST.S = v[i + 1].ST.S = limit.x;
+		v[i].ST.T = v[i + 1].ST.T = limit.y;
+	}
+	return true;
 }
 
 template <bool linear>
@@ -3208,7 +3243,7 @@ void GSRendererHW::CorrectSpriteCoverageForUpscale(GSTextureCache::Target* rt)
 	// sprite. Snapping on top of that would move some of them a second time, so leave the
 	// batch alone when it fired.
 	if (!align_sprite_x)
-		SnapSpriteEdgesToPixelGrid();
+		m_sprite_edge_clamp = SnapSpriteEdgesToPixelGrid();
 
 	// Noting to do if no texture is sampled
 	const bool draw_sprite_tex = PRIM->TME && (m_vt.m_primclass == GS_SPRITE_CLASS);
@@ -3216,6 +3251,8 @@ void GSRendererHW::CorrectSpriteCoverageForUpscale(GSTextureCache::Target* rt)
 	{
 		if ((GSConfig.UserHacks_RoundSprite > 1) || (GSConfig.UserHacks_RoundSprite == 1 && !m_vt.IsLinear()))
 		{
+			// It rewrites the UVs the limits were taken from.
+			m_sprite_edge_clamp = false;
 			if (m_vt.IsLinear())
 				RoundSpriteOffset<true>();
 			else
@@ -7027,6 +7064,14 @@ void GSRendererHW::DetermineVSConfig(GSTextureCache::Target* rt, float rtscale, 
 		}
 	}
 
+	// The snap's far-edge limits are in the sprite's own texture coordinates, so unlike the native
+	// texel grid they hold whatever offset the transform above gives the vertices.
+	if (m_sprite_edge_clamp && m_conf.vs.tme && m_conf.vs.fst && m_conf.ps.fst)
+	{
+		m_conf.vs.sprite_edge_clamp = 1;
+		m_conf.ps.sprite_edge_clamp = 1;
+	}
+
 	m_conf.vs.iip = !IsFlatShaded();
 }
 
@@ -10782,6 +10827,7 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 
 	// Last pass that moves a vertex: both rebuilds above have run, so nothing downstream can
 	// discard the correction by reading bounds taken before it.
+	m_sprite_edge_clamp = false;
 	CorrectSpriteCoverageForUpscale(rt);
 
 	if (EmulateDATEEarlyFail(date_options, rt))

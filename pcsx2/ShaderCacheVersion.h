@@ -38,4 +38,6 @@
 // 126: the 2026-09 upstream sync: the AA1 triangle-expand vertex shaders, the tfx type-mismatch fixes,
 // the software-blend shuffle denormalize, and the GL gpu_shader5 removal change shader
 // source text. Upstream numbered their last of these 118.
-static constexpr u32 SHADER_CACHE_VERSION = 126; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117, their 118 = our 126
+// 127: a sprite whose far edge the pixel-grid snap pushed out samples no further than its last
+// native pixel, so tfx.glsl (Vulkan) gains VS_SPRITE_EDGE_CLAMP and PS_SPRITE_EDGE_CLAMP.
+static constexpr u32 SHADER_CACHE_VERSION = 127; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117, their 118 = our 126

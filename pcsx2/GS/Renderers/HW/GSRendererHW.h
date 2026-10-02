@@ -212,7 +212,7 @@ private:
 	bool CanUseSwPrimRender(bool no_rt, bool no_ds, bool draw_sprite_tex);
 	bool (*SwPrimRender)(GSRendererHW&, bool invalidate_tc, bool add_ee_transfer);
 
-	void SnapSpriteEdgesToPixelGrid();
+	bool SnapSpriteEdgesToPixelGrid();
 
 	template <bool linear>
 	void RoundSpriteOffset();
@@ -368,6 +368,10 @@ private:
 	// EmulateChannelShuffle replaced this draw's sprites with a quad of its own. Reset per draw in
 	// DrawPrims; CorrectSpriteCoverageForUpscale leaves such a quad alone.
 	bool m_channel_shuffle_rebuilt_quad = false;
+	// The pixel-grid snap moved a sprite in this draw and wrote every sprite's far-edge sample
+	// limit into its ST. Reset per draw in DrawPrims.
+	bool m_sprite_edge_clamp = false;
+	std::vector<GSVector2> m_sprite_edge_limits;
 
 	GSTextureCache::Target* m_last_rt;
 

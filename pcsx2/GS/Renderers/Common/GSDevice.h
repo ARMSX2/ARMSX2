@@ -716,7 +716,7 @@ struct alignas(16) GSHWDrawConfig
 				u8 iip : 1;
 				u8 point_size : 1;		///< Set when points need to be expanded without VS expanding.
 				VSExpand expand : 3;
-				u8 _free : 1;
+				u8 sprite_edge_clamp : 1; ///< ST carries each sprite's far-edge sample limit; see PSSelector::sprite_edge_clamp.
 			};
 			u8 key;
 		};
@@ -857,6 +857,11 @@ struct alignas(16) GSHWDrawConfig
 				// writes the per-triangle alpha step to both outputs instead of a colour, for a blend
 				// of source DST_ALPHA and destination SRC1_ALPHA. Reads nothing.
 				u32 stencil_counter : 1;
+
+				// A sprite whose far edge the pixel-grid snap pushed out reads no further than its
+				// last native pixel did. The limit rides in the vertex ST, which an FST sprite does
+				// not otherwise use; see CorrectSpriteCoverageForUpscale.
+				u32 sprite_edge_clamp : 1;
 			};
 
 			struct
@@ -1536,6 +1541,7 @@ public:
 	{
 		bool broken_point_sampler : 1; ///< Issue with AMD cards, see tfx shader for details
 		bool vs_expand            : 1; ///< Supports expanding points/lines/sprites in the vertex shader
+		bool sprite_edge_clamp    : 1; ///< The shaders implement PSSelector::sprite_edge_clamp.
 		bool primitive_id         : 1; ///< Supports primitive ID for use with prim tracking destination alpha algorithm
 		bool texture_barrier      : 1; ///< Supports sampling rt and hopefully texture barrier
 		bool multidraw_fb_copy    : 1; ///< Replacement for texture barrier.

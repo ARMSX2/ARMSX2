@@ -4090,6 +4090,7 @@ void GSDeviceVK::ResolveFeatureTable()
 #endif
 	m_features.provoking_vertex_last = m_optional_extensions.vk_ext_provoking_vertex;
 	m_features.vs_expand = !GSConfig.DisableVertexShaderExpand;
+	m_features.sprite_edge_clamp = true;
 
 	if (!m_features.texture_barrier)
 		Console.Warning("VK: Texture buffers are disabled. This may break some graphical effects.");
@@ -7379,6 +7380,7 @@ VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
 	AddMacro(ss, "VS_IIP", sel.iip);
 	AddMacro(ss, "VS_POINT_SIZE", sel.point_size);
 	AddMacro(ss, "VS_EXPAND", static_cast<int>(sel.expand));
+	AddMacro(ss, "VS_SPRITE_EDGE_CLAMP", sel.sprite_edge_clamp);
 	AddMacro(ss, "VS_PROVOKING_VERTEX_LAST", static_cast<int>(m_features.provoking_vertex_last));
 	ss << m_tfx_source;
 	std::string source = ss.str();
@@ -7439,6 +7441,7 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_TCOFFSETHACK", sel.tcoffsethack);
 	AddMacro(ss, "PS_REGION_RECT", sel.region_rect);
 	AddMacro(ss, "PS_NATIVE_TEXEL_GRID", sel.native_texel_grid);
+	AddMacro(ss, "PS_SPRITE_EDGE_CLAMP", sel.sprite_edge_clamp);
 	AddMacro(ss, "PS_BLEND_A", sel.blend_a);
 	AddMacro(ss, "PS_BLEND_B", sel.blend_b);
 	AddMacro(ss, "PS_BLEND_C", sel.blend_c);
@@ -7786,7 +7789,7 @@ namespace
 
 		return p.topology <= static_cast<u32>(GSHWDrawConfig::Topology::Triangle) && (p.key >> 8) == 0 &&
 			   p.pad == 0 && p.bs.op <= GSDevice::OP_REV_SUBTRACT &&
-			   p.vs.expand <= GSHWDrawConfig::VSExpand::TriangleAA1 && p.vs._free == 0 && p.dss._free == 0 &&
+			   p.vs.expand <= GSHWDrawConfig::VSExpand::TriangleAA1 && p.dss._free == 0 &&
 			   p.cms._free == 0 && p.ps.atst <= GSShader::PS_ATST::NOTEQUAL && p.ps.afail <= GSShader::PS_AFAIL::RGB_ONLY_SW_Z &&
 			   p.ps.rov_depth <= GSShader::PS_ROV_DEPTH::READ_ONLY &&
 			   p.ps.blend_hw <= static_cast<u32>(HWBlendType::INV_SRC_DST_BLEND_HALF);

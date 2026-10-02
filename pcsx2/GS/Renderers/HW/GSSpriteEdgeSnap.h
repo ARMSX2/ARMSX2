@@ -65,6 +65,30 @@ namespace GSSpriteEdgeSnap
 		return {dx, dy, (lx != 0) ? ((lu * dx) / lx) : 0, (ly != 0) ? ((lv * dy) / ly) : 0};
 	}
 
+	/// No limit, for an axis the snap did not move. The shader caps a coordinate from above where it
+	/// grows towards the far edge and from below where it shrinks, so "none" is the far side's infinity.
+	inline constexpr float kNoSampleLimit = 1e20f;
+
+	/// The texture coordinate a sprite's last native pixel samples on one axis, which is as far as
+	/// any of its device pixels may sample once the snap has pushed the far edge out to `a1`.
+	///
+	/// The GS samples pixel k at k, so the last pixel of a sprite ending on the boundary a1 samples
+	/// at a1 - 16 (1/16 units, relative to XYOFFSET). The coordinate is interpolated there along
+	/// the sprite's own gradient. At 1x every pixel samples at or before that point, so the limit
+	/// changes nothing at native.
+	///
+	/// `t0`/`t1` are the near and far texture coordinates after the snap. An unmoved axis gets no
+	/// limit, signed for the direction the coordinate runs.
+	inline constexpr float FarSampleLimit(int a0, int a1, int t0, int t1, bool moved)
+	{
+		if (!moved || a1 <= a0)
+			return ((t1 - t0) * (a1 - a0) >= 0) ? kNoSampleLimit : -kNoSampleLimit;
+
+		const int last = (a1 - 16 > a0) ? (a1 - 16) : a0;
+		return static_cast<float>(t0) +
+		       static_cast<float>(t1 - t0) * static_cast<float>(last - a0) / static_cast<float>(a1 - a0);
+	}
+
 	/// One sprite's near corner, as the batch walk hands it to the abutment test below. `present`
 	/// is false at the two ends of the batch, where there is no neighbour to compare against.
 	struct NearCorner
