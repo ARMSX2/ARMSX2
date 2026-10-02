@@ -67,6 +67,10 @@ public:
 		// frame, in how many titles, actually take it. Always zero at native scale.
 		NativeTexelGridDraws,
 
+		// Draws whose snapped sprites sample no further than their last native pixel
+		// (PSSelector::sprite_edge_clamp). Always zero at native scale.
+		SpriteEdgeClampDraws,
+
 		// Draws on the CPU sprite road written by the palette block copy rather than the
 		// rasterizer (GSRendererHWMultiISA.cpp). Exists so a run can show the copy was reached.
 		SwPaletteBlockCopies,

@@ -7070,6 +7070,7 @@ void GSRendererHW::DetermineVSConfig(GSTextureCache::Target* rt, float rtscale, 
 	{
 		m_conf.vs.sprite_edge_clamp = 1;
 		m_conf.ps.sprite_edge_clamp = 1;
+		g_perfmon.Put(GSPerfMon::SpriteEdgeClampDraws, 1);
 	}
 
 	m_conf.vs.iip = !IsFlatShaded();

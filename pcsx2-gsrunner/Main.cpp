@@ -467,6 +467,8 @@ static double s_last_pipeline_switches = 0;
 static u64 s_total_pipeline_switches = 0;
 static double s_last_native_texel_grid_draws = 0;
 static u64 s_total_native_texel_grid_draws = 0;
+static double s_last_sprite_edge_clamp_draws = 0;
+static u64 s_total_sprite_edge_clamp_draws = 0;
 static double s_last_sw_palette_block_copies = 0;
 static u64 s_total_sw_palette_block_copies = 0;
 static bool s_vm_hash = false;
@@ -834,6 +836,7 @@ void Host::BeginPresentFrame()
 		sample.pipeline_switches = update_stat(GSPerfMon::PipelineSwitches, s_total_pipeline_switches, s_last_pipeline_switches);
 		sample.native_texel_grid_draws = update_stat(
 			GSPerfMon::NativeTexelGridDraws, s_total_native_texel_grid_draws, s_last_native_texel_grid_draws);
+		update_stat(GSPerfMon::SpriteEdgeClampDraws, s_total_sprite_edge_clamp_draws, s_last_sprite_edge_clamp_draws);
 		sample.sw_palette_block_copies = update_stat(
 			GSPerfMon::SwPaletteBlockCopies, s_total_sw_palette_block_copies, s_last_sw_palette_block_copies);
 
@@ -2422,6 +2425,7 @@ static void WriteStatsJson(const std::string& path)
 		s_total_hash_cache_hit, s_total_hash_cache_miss);
 	std::fprintf(fp.get(), "    \"pipeline_switches\": %s,\n", j_u64(s_total_pipeline_switches).c_str());
 	std::fprintf(fp.get(), "    \"native_texel_grid_draws\": %" PRIu64 ",\n", s_total_native_texel_grid_draws);
+	std::fprintf(fp.get(), "    \"sprite_edge_clamp_draws\": %" PRIu64 ",\n", s_total_sprite_edge_clamp_draws);
 	std::fprintf(fp.get(), "    \"sw_palette_block_copies\": %" PRIu64 ",\n", s_total_sw_palette_block_copies);
 	std::fprintf(fp.get(), "    \"gpu_blocking_waits\": %s,\n", j_u64(s_total_gpu_blocking_waits).c_str());
 	std::fprintf(fp.get(), "    \"gs_cpu_ms\": %.3f,\n    \"gs_cpu_us_per_draw\": %.3f,\n    \"gs_cpu_us_per_draw_call\": %.3f,\n",
@@ -2577,6 +2581,8 @@ void GSRunner::DumpStats()
 		Ratio(s_total_hash_cache_hit, s_total_hash_cache_hit + s_total_hash_cache_miss)));
 	Console.WriteLn(fmt::format("@HWSTAT@ Native Texel Grid Draws: {} (avg {})", s_total_native_texel_grid_draws,
 		static_cast<u64>(std::ceil(s_total_native_texel_grid_draws / static_cast<double>(s_total_drawn_frames)))));
+	Console.WriteLn(fmt::format("@HWSTAT@ Sprite Edge Clamp Draws: {} (avg {})", s_total_sprite_edge_clamp_draws,
+		static_cast<u64>(std::ceil(s_total_sprite_edge_clamp_draws / static_cast<double>(s_total_drawn_frames)))));
 	if (s_perf_enable)
 	{
 		Console.WriteLn(fmt::format("@HWSTAT@ Minimum Frame Time: {:.3f} ms ({:.3f} FPS)", PerformanceMetrics::GetMinimumFrameTime(), 1000.0f / PerformanceMetrics::GetMinimumFrameTime()));
