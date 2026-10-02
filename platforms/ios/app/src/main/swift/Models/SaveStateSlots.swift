@@ -394,6 +394,11 @@ final class SaveStateAutoSave {
     /// Reports false without writing while an undo is pending or the game has only just started.
     func save(leaving: Bool, completion: @escaping @MainActor (Bool) -> Void) {
         guard !saving, sinceLoad >= Self.settleSeconds, SaveStateUndoModel.shared.item == nil else {
+            if leaving {
+                ARMSX2Bridge.logAutoSaveSkipped(saving ? "another auto-save was still running"
+                    : sinceLoad < Self.settleSeconds ? "under 2 minutes of play since the game started or a state loaded"
+                    : "an Undo was still pending")
+            }
             return completion(false)
         }
         // Back to Menu already saved and nothing has been played since.
