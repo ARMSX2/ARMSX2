@@ -44,8 +44,8 @@ object Thermals {
      *  Tensor all name theirs differently, and several expose a dozen CPU zones (one per
      *  cluster or core); the first match is taken because a single representative reading is
      *  what a stat tile wants, not the hottest-of-twelve. */
-    private val CPU_HINTS = listOf("cpu-0-0", "cpuss", "mtktscpu", "cpu_thermal", "cpu")
-    private val GPU_HINTS = listOf("gpuss", "mtktsgpu", "gpu_thermal", "gpu")
+    private val CPU_HINTS = listOf("cpu-0-0", "cpuss", "mtktscpu", "cpu_thermal", "cpu", "big", "mid", "little")
+    private val GPU_HINTS = listOf("gpuss", "mtktsgpu", "gpu_thermal", "gpu", "g3d")
 
     private var scanned = false
     private var cpuZone: File? = null

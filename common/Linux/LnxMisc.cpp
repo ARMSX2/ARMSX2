@@ -91,19 +91,49 @@ u64 GetAvailablePhysicalMemory()
 
 // On AArch64 every tick consumer (frame limiter, present pacer, perf metrics) derives time from
 // the architected timer: GetCPUTicks() reads CNTVCT_EL0 and GetTickFrequency() reads CNTFRQ_EL0.
-// Some kernels — Exynos 88xx boards on LineageOS-family ROMs are a known case — leave CNTFRQ_EL0
-// uninitialized (it reads 0). GetTickFrequency() then returns 0, ticks-per-frame collapses to 0
-// (the log literally shows "ticks per frame: 0"), Throttle() never sleeps, and the emulation runs
-// completely unpaced with every speed control dead. Detect the missing frequency once and fall
-// back to the CLOCK_MONOTONIC nanosecond domain, keeping GetCPUTicks() and GetTickFrequency()
-// in the same time domain.
+// Two firmware anomalies are handled here:
+// 1. Missing frequency: Some kernels (e.g. Exynos 88xx boards on LineageOS-family ROMs) leave
+//    CNTFRQ_EL0 uninitialized (it reads 0). GetTickFrequency() then returns 0, ticks-per-frame
+//    collapses to 0, Throttle() never sleeps, and speed control is broken.
+// 2. Uninitialized / mismatching frequency: On a rooted Galaxy S22 Ultra (Exynos 2200), the timer
+//    frequency register read uninitialized values (e.g. 1.4 to 4.05 GHz, such as 3,461,385,769) while
+//    the counter CNTVCT_EL0 actually ran at 25.6 MHz. In this case, ticks-per-frame was calculated at
+//    ~70-80 million, causing Throttle() to stall for 2.7+ seconds per frame (~0.3 FPS lockup).
+// ARM generic timers operate in the MHz range (19.2/24/25.6/26/50 MHz, and up to 1.0 GHz with ARMv8.6 FEAT_ECV).
+// Any frequency outside [1 MHz, 1.05 GHz] is invalid. Furthermore, we calibrate CNTFRQ_EL0 against
+// CLOCK_MONOTONIC (~1ms) on startup: if the measured CNTVCT_EL0 tick rate diverges from CNTFRQ_EL0 by >25%,
+// we reject the architected timer and cleanly fall back to the CLOCK_MONOTONIC nanosecond domain.
 #if defined(__aarch64__)
 static bool ArchTimerUsable()
 {
 	static const bool usable = []() {
-		u64 freq;
+		u64 freq = 0;
 		asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
-		return freq >= 1000000u; // real ARM timers are MHz-range (19.2/24/26/50 MHz, 1GHz with ECV)
+		if (freq < 1000000u || freq > 1050000000u)
+			return false;
+
+		// Verify that CNTVCT_EL0 increments at the claimed CNTFRQ_EL0 rate
+		// by sampling against CLOCK_MONOTONIC for ~1ms.
+		struct timespec t0, t1;
+		u64 v0, v1;
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+		asm volatile("mrs %0, cntvct_el0" : "=r"(v0)::"memory");
+
+		do {
+			clock_gettime(CLOCK_MONOTONIC, &t1);
+		} while ((t1.tv_sec - t0.tv_sec) * 1000000000ULL + (t1.tv_nsec - t0.tv_nsec) < 1000000ULL);
+
+		asm volatile("mrs %0, cntvct_el0" : "=r"(v1)::"memory");
+		const u64 elapsed_ns = (t1.tv_sec - t0.tv_sec) * 1000000000ULL + (t1.tv_nsec - t0.tv_nsec);
+		if (elapsed_ns == 0)
+			return false;
+
+		const u64 measured_freq = ((v1 - v0) * 1000000000ULL) / elapsed_ns;
+		const s64 diff = static_cast<s64>(freq) - static_cast<s64>(measured_freq);
+		if (std::abs(diff) > static_cast<s64>(freq / 4))
+			return false;
+
+		return true;
 	}();
 	return usable;
 }
