@@ -1784,8 +1784,6 @@ private fun MenuSwitchRow(
             .controllerFocusable(
                 "pause.switch.$title",
                 onConfirm = { if (enabled) onCheckedChange(!checked) },
-                onLeft = { if (enabled) onCheckedChange(false) },
-                onRight = { if (enabled) onCheckedChange(true) },
             ),
         enabled = enabled,
         shape = RoundedCornerShape(16.dp),

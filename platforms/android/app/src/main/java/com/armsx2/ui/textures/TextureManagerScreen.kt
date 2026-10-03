@@ -125,7 +125,6 @@ private fun TextureOptions(state: TextureManagerUiState, viewModel: TextureManag
                 str("renderer.loadTexturePacks.description"),
                 state.settings.graphics.loadTextureReplacements,
                 onCheckedChange = { value -> viewModel.update { it.copy(graphics = it.graphics.copy(loadTextureReplacements = value)) } },
-                leftRightToggles = false,
                 modifier = Modifier.controllerFocusable(
                     "textureMgr.opt.loadReplacements",
                     RoundedCornerShape(22.dp),
@@ -137,7 +136,6 @@ private fun TextureOptions(state: TextureManagerUiState, viewModel: TextureManag
                 str("renderer.asyncTextureLoading.description"),
                 state.settings.graphics.loadTextureReplacementsAsync,
                 onCheckedChange = { value -> viewModel.update { it.copy(graphics = it.graphics.copy(loadTextureReplacementsAsync = value)) } },
-                leftRightToggles = false,
                 modifier = Modifier.controllerFocusable(
                     "textureMgr.opt.asyncLoading",
                     RoundedCornerShape(22.dp),
@@ -149,7 +147,6 @@ private fun TextureOptions(state: TextureManagerUiState, viewModel: TextureManag
                 str("renderer.precacheTexturePacks.description"),
                 state.settings.graphics.precacheTextureReplacements,
                 onCheckedChange = { value -> viewModel.update { it.copy(graphics = it.graphics.copy(precacheTextureReplacements = value)) } },
-                leftRightToggles = false,
                 modifier = Modifier.controllerFocusable(
                     "textureMgr.opt.precache",
                     RoundedCornerShape(22.dp),

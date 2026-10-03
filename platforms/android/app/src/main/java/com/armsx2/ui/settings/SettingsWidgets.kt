@@ -616,8 +616,8 @@ internal fun Modifier.controllerFocusable(
                     onConfirm?.invoke()
                     onConfirm != null
                 }
-                // Left/Right adjust the value in place (stepper −/+, toggle off/on,
-                // dropdown prev/next) when this row has an adjust handler. Consumed
+                // Left/Right adjust the value in place (stepper −/+, dropdown
+                // prev/next) when this row has an adjust handler. Consumed
                 // only when a handler exists, so plain nav rows still let Left/Right
                 // move focus. This is what makes sliders/steppers adjustable with a
                 // controller when the row is driven by Compose focus, rather than by
@@ -750,9 +750,8 @@ fun ToggleRow(
     description: String? = null,
     onChange: (Boolean) -> Unit,
 ) {
-    // Menu SFX: a distinct on/off blip on every flip. Touch, the switch, and the controller's
-    // confirm/left/right all route through this, so one wrapper covers every input path; the
-    // left/right guards below keep it silent when nothing actually changes.
+    // Menu SFX: a distinct on/off blip on every flip. Touch, the switch, and the controller's A
+    // all route through this, so one wrapper covers every input path.
     val emit: (Boolean) -> Unit = {
         com.armsx2.MenuSfx.play(if (it) com.armsx2.MenuSfx.Event.TOGGLE_ON else com.armsx2.MenuSfx.Event.TOGGLE_OFF)
         onChange(it)
@@ -764,9 +763,9 @@ fun ToggleRow(
             .padding(vertical = 5.dp)
             .controllerFocusable(
                 controllerId = "toggle:$label",
+                // Only A flips it: Left/Right are for moving, and on a switch they flipped it by
+                // accident on the way past.
                 onConfirm = { emit(!value) },
-                onLeft = { if (value) emit(false) },
-                onRight = { if (!value) emit(true) },
             ),
         shape = RoundedCornerShape(22.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),

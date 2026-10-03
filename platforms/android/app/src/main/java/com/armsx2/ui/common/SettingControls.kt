@@ -26,9 +26,6 @@ fun SettingSwitchRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
-    /** Left/Right switch it off/on. False on screens in columns, where Left/Right move to the next
-     *  column instead and only A switches it (the texture and patch managers). */
-    leftRightToggles: Boolean = true,
 ) {
     // Match ToggleRow: menu SFX on every flip, and a "toggle:$title" nav id so the controller can
     // reach the row (the updater switches were touch-only before) and settings-search can jump to it.
@@ -42,9 +39,8 @@ fun SettingSwitchRow(
             .controllerFocusable(
                 controllerId = "toggle:$title",
                 shape = RoundedCornerShape(22.dp),
+                // Only A flips it, like every switch: Left/Right are for moving.
                 onConfirm = { emit(!checked) },
-                onLeft = if (leftRightToggles) ({ if (checked) emit(false) }) else null,
-                onRight = if (leftRightToggles) ({ if (!checked) emit(true) }) else null,
             ),
         shape = RoundedCornerShape(22.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),

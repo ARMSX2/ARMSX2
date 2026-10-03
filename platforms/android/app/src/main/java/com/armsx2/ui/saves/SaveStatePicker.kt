@@ -345,12 +345,7 @@ private const val AUTOSAVE_INTERVAL_MAX_MIN = 30
 private fun ToggleRow(controllerId: String, label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(
         Modifier.fillMaxWidth()
-            .controllerFocusable(
-                controllerId,
-                onConfirm = { onChange(!checked) },
-                onLeft = { onChange(false) },
-                onRight = { onChange(true) },
-            )
+            .controllerFocusable(controllerId, onConfirm = { onChange(!checked) })
             .clickable { onChange(!checked) },
         verticalAlignment = Alignment.CenterVertically,
     ) {

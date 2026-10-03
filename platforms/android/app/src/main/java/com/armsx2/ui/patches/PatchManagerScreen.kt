@@ -311,7 +311,6 @@ private fun PatchOptions(state: PatchManagerUiState, viewModel: PatchManagerView
             SettingSwitchRow(
                 str("patches.cheats.label"), str("patches.pasteImportHint"), state.settings.emuCore.enableCheats,
                 onCheckedChange = { value -> viewModel.update { it.copy(emuCore = it.emuCore.copy(enableCheats = value)) } },
-                leftRightToggles = false,
                 modifier = Modifier.controllerFocusable(
                     "patches.enableCheats",
                     onConfirm = { viewModel.update { it.copy(emuCore = it.emuCore.copy(enableCheats = !state.settings.emuCore.enableCheats)) } },
@@ -323,7 +322,6 @@ private fun PatchOptions(state: PatchManagerUiState, viewModel: PatchManagerView
                 // "enable widescreen patches" and cost a long GT4 rendering hunt to track down.
                 str("patches.widescreen.label"), str("patches.widescreen.description"), state.settings.emuCore.enableWideScreenPatches,
                 onCheckedChange = { value -> viewModel.update { it.copy(emuCore = it.emuCore.copy(enableWideScreenPatches = value)) } },
-                leftRightToggles = false,
                 modifier = Modifier.controllerFocusable(
                     "patches.widescreen",
                     onConfirm = { viewModel.update { it.copy(emuCore = it.emuCore.copy(enableWideScreenPatches = !state.settings.emuCore.enableWideScreenPatches)) } },
@@ -332,7 +330,6 @@ private fun PatchOptions(state: PatchManagerUiState, viewModel: PatchManagerView
             SettingSwitchRow(
                 str("patches.noInterlacing.label"), str("patches.applyAtBoot"), state.settings.emuCore.enableNoInterlacingPatches,
                 onCheckedChange = { value -> viewModel.update { it.copy(emuCore = it.emuCore.copy(enableNoInterlacingPatches = value)) } },
-                leftRightToggles = false,
                 modifier = Modifier.controllerFocusable(
                     "patches.noInterlacing",
                     onConfirm = { viewModel.update { it.copy(emuCore = it.emuCore.copy(enableNoInterlacingPatches = !state.settings.emuCore.enableNoInterlacingPatches)) } },
@@ -343,7 +340,6 @@ private fun PatchOptions(state: PatchManagerUiState, viewModel: PatchManagerView
             SettingSwitchRow(
                 str("patches.hostFs.label"), str("patches.hostFs.description"), state.settings.emuCore.hostFs,
                 onCheckedChange = { value -> viewModel.update { it.copy(emuCore = it.emuCore.copy(hostFs = value)) } },
-                leftRightToggles = false,
                 modifier = Modifier.controllerFocusable(
                     "patches.hostFs",
                     onConfirm = { viewModel.update { it.copy(emuCore = it.emuCore.copy(hostFs = !state.settings.emuCore.hostFs)) } },
