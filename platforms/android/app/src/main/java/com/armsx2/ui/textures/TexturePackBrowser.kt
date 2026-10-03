@@ -97,17 +97,31 @@ internal fun TexturePackBrowser(
     var page by rememberSaveable { mutableIntStateOf(0) }
     var openPackId by rememberSaveable { mutableStateOf<String?>(null) }
 
-    val shownPacks = remember(packs, links, installed, filter, query, sortMode) {
+    // Popular Today: asked of the counter every time the browser opens, as Online Icons does.
+    LaunchedEffect(Unit) { TexturePackStats.refreshPopular() }
+    val popular = TexturePackStats.popular.value
+    val popularAsked = TexturePackStats.asked.value
+
+    val shownPacks = remember(packs, links, installed, filter, query, sortMode, popular) {
         val q = query.trim().lowercase()
-        packs.filter { p ->
-            val keep = when (filter) {
-                FILTER_MINE -> p.matchesSerial(contextSerial) || p.serials.any { it.uppercase() in librarySerials }
-                FILTER_INSTALLED -> installed[p.id] != null
-                else -> true
-            }
-            keep && (q.isEmpty() || p.name.lowercase().contains(q) || p.gameTitle.lowercase().contains(q) ||
-                p.serials.any { it.lowercase().contains(q) } || creatorOf(p, links[p.id]).lowercase().contains(q))
-        }.sortedWith(if (sortMode == SORT_SERIAL) BY_SERIAL else BY_GAME)
+        val matches = { p: TextureCatalog.Pack ->
+            q.isEmpty() || p.name.lowercase().contains(q) || p.gameTitle.lowercase().contains(q) ||
+                p.serials.any { it.lowercase().contains(q) } || creatorOf(p, links[p.id]).lowercase().contains(q)
+        }
+        if (filter == FILTER_POPULAR) {
+            // In the counter's order, most downloaded first.
+            val byId = packs.associateBy { it.id }
+            popular.orEmpty().mapNotNull { byId[it] }.filter(matches)
+        } else {
+            packs.filter { p ->
+                val keep = when (filter) {
+                    FILTER_MINE -> p.matchesSerial(contextSerial) || p.serials.any { it.uppercase() in librarySerials }
+                    FILTER_INSTALLED -> installed[p.id] != null
+                    else -> true
+                }
+                keep && matches(p)
+            }.sortedWith(if (sortMode == SORT_SERIAL) BY_SERIAL else BY_GAME)
+        }
     }
     val groups = remember(shownPacks, links) { creatorGroups(shownPacks, links) }
     val creatorTotal = remember(packs, links) { creatorGroups(packs, links).count { it.key.isNotEmpty() } }
@@ -120,9 +134,17 @@ internal fun TexturePackBrowser(
         else -> null
     }
     val count = packItems?.size ?: groups.size
+    // Shuffle, on All only, as in Online Icons: turning it on leaves the page as it is, and from then
+    // on every turn, either way, deals a page of random cubes ([dealt], indices into the list) instead
+    // of the next in order. Off, the list is back in order from the page the first cube showing is on.
+    var shuffleOn by remember { mutableStateOf(false) }
+    var dealt by remember { mutableStateOf<List<Int>?>(null) }
     // A new filter, search or sort starts at the first page. Going into a creator and back out does
     // not: those two set the page themselves (openCreator, backToCreators).
-    LaunchedEffect(filter, query, sortMode) { page = 0 }
+    LaunchedEffect(filter, query, sortMode) {
+        page = 0
+        dealt = null
+    }
     // How many cubes a page holds, as last laid out, for working out which page a creator is on.
     var perPageNow by remember { mutableIntStateOf(1) }
     // A cube for the pad to land on once the page that has it is drawn: going in or out of a creator
@@ -139,12 +161,14 @@ internal fun TexturePackBrowser(
     val openCreator = { key: String ->
         creatorKey = key
         page = 0
+        dealt = null
         if (padSelecting()) selectNext = "$LAYER.tile.0"
     }
     // Back to the creators, on the page with the one just left and that one selected, not the first.
     val backToCreators = {
         val left = creatorKey
         creatorKey = null
+        dealt = null
         val index = groups.indexOfFirst { it.key == left }
         if (index >= 0) {
             val per = perPageNow.coerceAtLeast(1)
@@ -173,6 +197,7 @@ internal fun TexturePackBrowser(
                         title = if (viewingCreator) creator?.name?.ifEmpty { unknownName } ?: unknownName
                         else str("textures.online.title"),
                         subtitle = if (viewingCreator) packCount(creator?.packs?.size ?: 0)
+                        else if (filter == FILTER_POPULAR) str("textures.browser.popularNote")
                         else str("textures.browser.counts")
                             .replace("%1\$s", "%,d".format(packs.size))
                             .replace("%2\$s", "%,d".format(creatorTotal)) +
@@ -195,6 +220,15 @@ internal fun TexturePackBrowser(
                         },
                         onFilter = { filter = it },
                         onQuery = { query = it },
+                        shuffleOn = shuffleOn,
+                        onShuffle = {
+                            if (shuffleOn) {
+                                // Back in order, at the page the first cube showing sits on.
+                                dealt?.firstOrNull()?.let { anchor -> page = anchor / perPageNow.coerceAtLeast(1) }
+                                dealt = null
+                            }
+                            shuffleOn = !shuffleOn
+                        },
                     )
                     BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                         // Cubes as large as two rows allow on a handheld held sideways, more rows where
@@ -211,13 +245,32 @@ internal fun TexturePackBrowser(
                         val pages = ((count + perPage - 1) / perPage).coerceAtLeast(1)
                         val current = page.coerceAtMost(pages - 1)
                         val first = current * perPage
+                        // Shuffling: Shuffle on, on All, with more than a page to deal from.
+                        val shuffling = shuffleOn && filter == FILTER_ALL && count > perPage
+                        val onPage: List<Int> = (if (shuffling) dealt?.filter { it < count }?.takeIf { it.isNotEmpty() } else null)
+                            ?: (first until minOf(first + perPage, count)).toList()
+                        // A turn, either way: while shuffling, a page of random cubes, none of them the
+                        // ones showing when there are enough; otherwise the next page in order.
                         val turn = { by: Int ->
                             com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.PAGE)
-                            page = current + by
+                            if (shuffling) {
+                                val showing = onPage.toHashSet()
+                                val fresh = (0 until count).filterNot { it in showing }
+                                dealt = (if (fresh.size >= perPage) fresh else (0 until count).toList()).shuffled().take(perPage)
+                            } else {
+                                dealt = null
+                                page = current + by
+                            }
                         }
                         if (count == 0) {
                             Text(
-                                str("textures.browser.none"),
+                                if (filter == FILTER_POPULAR && query.isEmpty()) str(
+                                    when {
+                                        popular == null && !popularAsked -> "textures.online.loading"
+                                        popular == null -> "textures.browser.popularOffline"
+                                        else -> "textures.browser.popularNone"
+                                    },
+                                ) else str("textures.browser.none"),
                                 color = Color.White.copy(alpha = 0.75f),
                                 textAlign = TextAlign.Center,
                                 modifier = Modifier.align(Alignment.Center).padding(24.dp),
@@ -227,20 +280,20 @@ internal fun TexturePackBrowser(
                                 for (r in 0 until rows) Row(horizontalArrangement = Arrangement.spacedBy(GAP)) {
                                     for (c in 0 until cols) {
                                         val slot = r * cols + c
-                                        val index = first + slot
-                                        if (index >= count) break
+                                        val index = onPage.getOrNull(slot) ?: break
                                         // At the edge of a page, left and right turn it, and the selection
                                         // lands on the other edge of the new one.
-                                        val left: (() -> Unit)? = if (c == 0 && current > 0) {
+                                        val left: (() -> Unit)? = if (c == 0 && (shuffling || current > 0)) {
                                             {
                                                 turn(-1)
                                                 SettingsControllerNav.selectById("$LAYER.tile.${r * cols + cols - 1}")
                                             }
                                         } else null
-                                        val right: (() -> Unit)? = if (c == cols - 1 && current < pages - 1) {
+                                        val right: (() -> Unit)? = if (c == cols - 1 && (shuffling || current < pages - 1)) {
                                             {
                                                 turn(1)
-                                                val last = (count - (current + 1) * perPage).coerceAtMost(perPage) - 1
+                                                val last = if (shuffling) perPage - 1
+                                                else (count - (current + 1) * perPage).coerceAtMost(perPage) - 1
                                                 SettingsControllerNav.selectById("$LAYER.tile.${minOf(r * cols, last)}")
                                             }
                                         } else null
@@ -280,7 +333,7 @@ internal fun TexturePackBrowser(
                         Footer(
                             modifier = Modifier.align(Alignment.BottomCenter),
                             selected = SettingsControllerNav.currentSelectedId()?.removePrefix("$LAYER.tile.")?.toIntOrNull()
-                                ?.let { first + it }?.takeIf { it < count }?.let { i ->
+                                ?.let { onPage.getOrNull(it) }?.let { i ->
                                     if (packItems != null) {
                                         val p = packItems[i]
                                         listOf(p.name, creatorOf(p, links[p.id]).ifEmpty { unknownName }, packMb(p.sizeBytes))
@@ -292,6 +345,7 @@ internal fun TexturePackBrowser(
                                 } ?: "",
                             current = current,
                             pages = pages,
+                            shuffling = shuffling,
                             onTurn = turn,
                         )
                     }
@@ -388,6 +442,8 @@ private fun Controls(
     onSort: (Int) -> Unit,
     onFilter: (Int) -> Unit,
     onQuery: (String) -> Unit,
+    shuffleOn: Boolean,
+    onShuffle: () -> Unit,
 ) {
     val chips = @Composable {
         if (viewingCreator) {
@@ -404,11 +460,19 @@ private fun Controls(
         }
         Spacer(Modifier.width(10.dp))
         for ((f, label) in listOf(
+            FILTER_POPULAR to str("textures.browser.popular"),
             FILTER_ALL to str("textures.browser.all"),
             FILTER_MINE to str("textures.browser.mine"),
             FILTER_INSTALLED to str("textures.browser.installed"),
         )) {
             BrowserChip(label, "$LAYER.filter.$f", selected = filter == f, outlined = true) { onFilter(f) }
+            Spacer(Modifier.width(6.dp))
+        }
+        if (filter == FILTER_ALL) {
+            BrowserChip(
+                str("textures.browser.shuffle"), "$LAYER.shuffle", selected = shuffleOn,
+                icon = com.armsx2.R.drawable.ic_shuffle, onClick = onShuffle,
+            )
             Spacer(Modifier.width(6.dp))
         }
     }
@@ -457,7 +521,7 @@ private fun Controls(
 
 /** The selected cube's name and creator, and the page with its arrows. */
 @Composable
-private fun Footer(modifier: Modifier, selected: String, current: Int, pages: Int, onTurn: (Int) -> Unit) {
+private fun Footer(modifier: Modifier, selected: String, current: Int, pages: Int, shuffling: Boolean, onTurn: (Int) -> Unit) {
     Row(modifier.fillMaxWidth().height(FOOTER_H), verticalAlignment = Alignment.CenterVertically) {
         Text(
             selected,
@@ -465,12 +529,13 @@ private fun Footer(modifier: Modifier, selected: String, current: Int, pages: In
             modifier = Modifier.weight(1f),
         )
         if (pages > 1) {
-            BrowserChip("‹", "$LAYER.prev", enabled = current > 0) { onTurn(-1) }
+            BrowserChip("‹", "$LAYER.prev", enabled = shuffling || current > 0) { onTurn(-1) }
             Text(
-                str("textures.browser.page").replace("%1\$s", "%,d".format(current + 1)).replace("%2\$s", "%,d".format(pages)),
+                if (shuffling) str("textures.browser.shuffle")
+                else str("textures.browser.page").replace("%1\$s", "%,d".format(current + 1)).replace("%2\$s", "%,d".format(pages)),
                 color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, modifier = Modifier.padding(horizontal = 8.dp),
             )
-            BrowserChip("›", "$LAYER.next", enabled = current < pages - 1) { onTurn(1) }
+            BrowserChip("›", "$LAYER.next", enabled = shuffling || current < pages - 1) { onTurn(1) }
         }
     }
 }
@@ -632,6 +697,7 @@ private fun BrowserChip(
     outlined: Boolean = false,
     enabled: Boolean = true,
     dark: Boolean = true,
+    icon: Int? = null,
     onClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(19.dp)
@@ -654,7 +720,16 @@ private fun BrowserChip(
             .padding(horizontal = 14.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = ink.copy(alpha = if (enabled) 1f else 0.4f), fontSize = 13.sp, maxLines = 1)
+        if (icon != null) {
+            androidx.compose.material3.Icon(
+                painter = androidx.compose.ui.res.painterResource(icon),
+                contentDescription = label,
+                tint = ink.copy(alpha = if (enabled) 1f else 0.4f),
+                modifier = Modifier.size(18.dp),
+            )
+        } else {
+            Text(label, color = ink.copy(alpha = if (enabled) 1f else 0.4f), fontSize = 13.sp, maxLines = 1)
+        }
     }
 }
 
@@ -701,6 +776,7 @@ private const val SORT_CREATOR = 2
 private const val FILTER_ALL = 0
 private const val FILTER_MINE = 1
 private const val FILTER_INSTALLED = 2
+private const val FILTER_POPULAR = 3
 /** A cube's height to aim for; the rows that fit decide the real one. */
 private val ROW_TARGET = 196.dp
 /** Height over width: a little taller than square, for the cover and the name under it. */

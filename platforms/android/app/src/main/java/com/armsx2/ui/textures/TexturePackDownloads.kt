@@ -84,7 +84,11 @@ internal object TexturePackDownloads {
                 outcome.error == null -> I18n.get("textures.online.cancelled")
                 else -> outcome.error
             }
-            if (outcome.ok) installedCount.intValue++
+            if (outcome.ok) {
+                installedCount.intValue++
+                // For Popular Today: an install the player chose, counted anonymously.
+                TexturePackStats.countDownload(pack.id)
+            }
         }
     }
 
