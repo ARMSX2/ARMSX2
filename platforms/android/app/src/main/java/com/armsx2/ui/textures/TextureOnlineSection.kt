@@ -11,10 +11,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
@@ -30,7 +27,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -46,7 +42,6 @@ import com.armsx2.TexturePackLinks
 import com.armsx2.i18n.I18n
 import com.armsx2.i18n.str
 import com.armsx2.ui.common.GlassPanel
-import com.armsx2.ui.common.PadModal
 import com.armsx2.ui.common.SearchField
 import com.armsx2.ui.common.SectionTitle
 import com.armsx2.ui.home.LibraryKeyboard
@@ -342,6 +337,9 @@ fun TextureOnlineSection(
                         PackWindow(
                             pack = openPack,
                             links = links[openPack.id],
+                            creator = creatorOf(openPack, links[openPack.id]),
+                            sizeText = "${mb(openPack.sizeBytes)} · " +
+                                str("textures.pack.files").replace("%d", openPack.fileCount.toString()),
                             action = TexturePackInstallState.actionFor(installed[openPack.id], openPack),
                             anyBusy = busyPackId != null,
                             openUrl = uriHandler::openUri,
@@ -472,194 +470,6 @@ private fun PackRow(
 /** Who made the pack: the archive's name for them when it lists the pack, else the catalog's. */
 private fun creatorOf(pack: TextureCatalog.Pack, links: TexturePackLinks.Links?): String =
     links?.creator ?: pack.authors.joinToString(", ")
-
-/**
- * A pack's window, opened by its Get button: what it is (texture type, status, size), who made it,
- * and every link for it (its source page, the creator's tip and socials pages), with Download last.
- */
-@Composable
-private fun PackWindow(
-    pack: TextureCatalog.Pack,
-    links: TexturePackLinks.Links?,
-    action: InstallAction,
-    anyBusy: Boolean,
-    openUrl: (String) -> Unit,
-    onDownload: () -> Unit,
-    onClose: () -> Unit,
-) {
-    val layer = "tex-pack"
-    val bodyScroll = rememberScrollState()
-    // One install at a time, as before; and an installed pack that is up to date has nothing to get.
-    val canDownload = !anyBusy && action != InstallAction.INSTALLED
-    PadModal(
-        key = layer,
-        onDismiss = onClose,
-        initialFocusId = if (canDownload) "$layer.download" else "$layer.close",
-        scrollState = bodyScroll,
-    ) {
-        Surface(
-            modifier = Modifier
-                .padding(24.dp)
-                .widthIn(max = 460.dp),
-            shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surface,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
-            tonalElevation = 6.dp,
-        ) {
-            Column(Modifier.padding(20.dp)) {
-                // The body scrolls inside the window, so a long description on a short landscape
-                // screen never pushes Download off it.
-                Column(Modifier.weight(1f, fill = false).verticalScroll(bodyScroll)) {
-                    Text(pack.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        listOf(pack.gameTitle, pack.serials.joinToString(", ")).filter { it.isNotBlank() }
-                            .joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    val creator = creatorOf(pack, links)
-                    if (creator.isNotEmpty()) {
-                        Spacer(Modifier.height(6.dp))
-                        Text(str("textures.online.by").replace("%s", creator), style = MaterialTheme.typography.bodyMedium)
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    links?.type?.let { PackFact(str("textures.pack.type"), typeLabel(it)) }
-                    links?.status?.let { PackFact(str("textures.pack.status"), statusLabel(it)) }
-                    PackFact(
-                        str("textures.pack.size"),
-                        "${mb(pack.sizeBytes)} · " +
-                            str("textures.pack.files").replace("%d", pack.fileCount.toString()),
-                    )
-                    if (pack.description.isNotBlank()) {
-                        Spacer(Modifier.height(10.dp))
-                        Text(
-                            pack.description,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Spacer(Modifier.height(14.dp))
-                    val source = links?.source ?: pack.sourceUrl
-                    if (source.isNotEmpty()) {
-                        PackLink(str("textures.online.source"), "$layer.source") { openUrl(source) }
-                    }
-                    links?.tip?.let { tip -> PackLink(str("textures.pack.tip"), "$layer.tip") { openUrl(tip) } }
-                    links?.socials?.let { socials ->
-                        PackLink(str("textures.pack.socials"), "$layer.socials") { openUrl(socials) }
-                    }
-                }
-                Spacer(Modifier.height(16.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    WindowButton(
-                        label = str("action.close"),
-                        id = "$layer.close",
-                        onClick = onClose,
-                        container = MaterialTheme.colorScheme.surfaceVariant,
-                        content = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    WindowButton(
-                        label = when (action) {
-                            InstallAction.INSTALLED -> str("textures.online.installed")
-                            InstallAction.CONFLICT, InstallAction.UPDATE -> str("textures.online.update")
-                            InstallAction.INSTALL -> str("textures.pack.download")
-                        },
-                        id = "$layer.download",
-                        onClick = onDownload,
-                        container = MaterialTheme.colorScheme.primaryContainer,
-                        content = MaterialTheme.colorScheme.onPrimaryContainer,
-                        enabled = canDownload,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PackFact(label: String, value: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f),
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-    }
-}
-
-@Composable
-private fun PackLink(label: String, id: String, onClick: () -> Unit) {
-    Surface(
-        onClick = onClick,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 3.dp)
-            .controllerFocusable(controllerId = id, shape = RoundedCornerShape(12.dp), onConfirm = onClick),
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-    ) {
-        Text(
-            label,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-        )
-    }
-}
-
-@Composable
-private fun WindowButton(
-    label: String,
-    id: String,
-    onClick: () -> Unit,
-    container: Color,
-    content: Color,
-    enabled: Boolean = true,
-) {
-    Surface(
-        onClick = onClick,
-        enabled = enabled,
-        // A button that cannot act is not a stop for the pad either.
-        modifier = if (enabled) Modifier.controllerFocusable(
-            controllerId = id,
-            shape = RoundedCornerShape(14.dp),
-            onConfirm = onClick,
-        ) else Modifier,
-        shape = RoundedCornerShape(14.dp),
-        color = if (enabled) container else container.copy(alpha = 0.4f),
-    ) {
-        Text(
-            label,
-            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
-            style = MaterialTheme.typography.labelLarge,
-            color = if (enabled) content else content.copy(alpha = 0.5f),
-        )
-    }
-}
-
-/** The archive's texture types, in the app's language; one it adds later shows as it words it. */
-@Composable
-private fun typeLabel(raw: String): String = when (raw.lowercase()) {
-    "ai upscale" -> str("textures.pack.type.aiUpscale")
-    "handcrafted" -> str("textures.pack.type.handcrafted")
-    "mixed" -> str("textures.pack.type.mixed")
-    "port" -> str("textures.pack.type.port")
-    "button replacement" -> str("textures.pack.type.buttons")
-    else -> raw
-}
-
-/** The archive's pack statuses, in the app's language; one it adds later shows as it words it. */
-@Composable
-private fun statusLabel(raw: String): String = when (raw.lowercase()) {
-    "complete" -> str("textures.pack.status.complete")
-    "in-progress" -> str("textures.pack.status.inProgress")
-    "incomplete" -> str("textures.pack.status.incomplete")
-    "partial" -> str("textures.pack.status.partial")
-    else -> raw
-}
 
 private fun mb(bytes: Long): String = when {
     bytes >= 1024L * 1024 * 1024 -> String.format(java.util.Locale.US, "%.1f GB", bytes / 1024.0 / 1024 / 1024)

@@ -40,6 +40,7 @@
  "textures.pack.tip": "제작자 후원 ↗",
  "textures.pack.socials": "소셜 미디어 ↗",
  "textures.pack.download": "다운로드",
+ "textures.pack.creator": "제작자",
  "textures.pack.type.aiUpscale": "AI 업스케일",
  "textures.pack.type.handcrafted": "수작업",
  "textures.pack.type.mixed": "혼합",

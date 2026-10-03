@@ -26,6 +26,10 @@ object TexturePackLinks {
         val type: String? = null,
         /** Worded as the archive words it: "Complete", "In-Progress", "Incomplete", "Partial". */
         val status: String? = null,
+        /** The creator's own page (their GBAtemp profile, else their socials or GitHub). */
+        val creatorPage: String? = null,
+        /** The creator's profile picture: their GBAtemp, YouTube or GitHub one. */
+        val avatar: String? = null,
     )
 
     @Volatile private var loaded: Map<String, Links>? = null
@@ -44,17 +48,25 @@ object TexturePackLinks {
     }
 
     internal fun parse(body: String): Map<String, Links> {
-        val packs = JSONObject(body).optJSONObject("packs") ?: return emptyMap()
+        val root = JSONObject(body)
+        val packs = root.optJSONObject("packs") ?: return emptyMap()
+        // A pack names its creator; their page and picture are kept once per creator, not per pack.
+        val creators = root.optJSONObject("creators")
         val out = HashMap<String, Links>(packs.length())
         for (id in packs.keys()) {
             val o = packs.optJSONObject(id) ?: continue
+            val creator = o.text("creator")
+            // "Panda_Venom, Yonko": the first named is the one whose page and picture show.
+            val person = creator?.substringBefore(", ")?.let { creators?.optJSONObject(it) }
             out[id] = Links(
                 source = o.url("source"),
-                creator = o.text("creator"),
+                creator = creator,
                 tip = o.url("tip"),
                 socials = o.url("socials"),
                 type = o.text("type"),
                 status = o.text("status"),
+                creatorPage = person?.url("page"),
+                avatar = person?.url("avatar"),
             )
         }
         return out

@@ -3,10 +3,13 @@
 Builds the texture pack links the app shows in a pack's window (source, tip, socials, texture type,
 status) from Sad Origami's Texture Packs Archive sheet, matched to the online catalog's packs.
 
-usage: texture-pack-links.py <archive.xlsx> <out.json> <catalog.json> [--review <review.txt>]
+usage: texture-pack-links.py <archive.xlsx> <out.json> <catalog.json> [--avatars] [--review <review.txt>]
 
   e.g. texture-pack-links.py "Texture Packs Archive.xlsx" app/src/main/assets/texture-pack-links.json \
-           textures.json --review review.txt
+           textures.json --avatars --review review.txt
+
+--avatars looks up each creator's profile picture online (GBAtemp, YouTube, GitHub) and checks it
+loads; without it the file has none, so the app shows each creator's initials instead.
 
 The xlsx is the sheet downloaded as Excel; the catalog is the textures.json the app reads,
 https://dl.ps2ktxpak.net/textures.json. Standard library only. A pack is linked only when the sheet
@@ -17,8 +20,11 @@ import difflib
 import json
 import re
 import sys
+import time
 import unicodedata
+import urllib.error
 import urllib.parse
+import urllib.request
 import zipfile
 import xml.etree.ElementTree as ET
 
@@ -405,12 +411,107 @@ def link_listing(e, sheet):
                 type=r["type"], status=r["status"]), how + (", unknown creator" if not names else "")
 
 
+# ---- creators' pages and profile pictures -----------------------------------------------------
+
+USER_AGENT = "ARMSX2-texture-pack-links (+https://github.com/ARMSX2/ARMSX2)"
+
+
+def fetch(url, follow=True):
+    """(status, headers, body) for a GET, or None when the request fails outright."""
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    opener = urllib.request.build_opener() if follow else urllib.request.build_opener(NoRedirect)
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with opener.open(req, timeout=30) as r:
+            return r.status, r.headers, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers, b""
+    except Exception:
+        return None
+
+
+def is_image(url):
+    r = fetch(url)
+    return bool(r) and r[0] == 200 and (r[1].get("Content-Type") or "").startswith("image/")
+
+
+def gbatemp_avatar(profile):
+    """A GBAtemp member's profile picture (384 px), at XenForo's fixed path, if they set one."""
+    m = re.search(r"gbatemp\.net/members/(?:[^/]*\.)?(\d+)/?", profile or "")
+    if not m:
+        return None
+    member = int(m.group(1))
+    url = "https://gbatemp.net/data/avatars/h/%d/%d.jpg" % (member // 1000, member)
+    return url if is_image(url) else None
+
+
+def youtube_avatar(socials):
+    """A YouTube channel's picture, for a channel-id link (handle links do not resolve this way)."""
+    if not re.search(r"youtube\.com/channel/UC[\w-]+", socials or ""):
+        return None
+    r = fetch(socials)
+    m = r and r[0] == 200 and re.search(rb'<meta property="og:image" content="(https://yt3\.[^"]+)"', r[2])
+    if not m:
+        return None
+    url = re.sub(r"=s\d+-.*$", "=s400-c-k-c0x00ffffff-no-rj", m.group(1).decode())
+    return url if is_image(url) else None
+
+
+def github_avatar(owner):
+    if not owner:
+        return None
+    r = fetch("https://github.com/%s.png?size=400" % owner, follow=False)
+    location = r and r[1].get("Location")
+    return location if location and is_image(location) else None
+
+
+def github_owner(name, sources):
+    """The GitHub account behind one of a creator's sources, when it is theirs by name."""
+    for s in sources:
+        m = re.match(r"https://github\.com/([^/]+)/", s or "")
+        if m and name_key(m.group(1)) == name_key(name):
+            return m.group(1)
+    return None
+
+
+def creators(sheet, packs, entries, resolve):
+    """Each creator's page and profile picture: name -> {"page", "avatar"}. The picture is the one on
+    their GBAtemp profile, else their YouTube channel's, else their GitHub one; Patreon's are left out,
+    because its image links expire within weeks. Pictures are looked up only with resolve."""
+    sources = {}
+    for pid, p in packs.items():
+        name = p.get("creator", "").split(", ")[0]
+        if name:
+            sources.setdefault(name, []).extend([p.get("source"), entries[pid].get("sourceUrl")])
+    out = {}
+    for name in sorted(sources):
+        profile = sheet.usual(name, "author_url")
+        socials = sheet.usual(name, "socials")
+        owner = github_owner(name, sources[name])
+        page = profile or socials or (owner and "https://github.com/" + owner)
+        rec = {"page": page} if page else {}
+        if resolve:
+            avatar = gbatemp_avatar(profile) or youtube_avatar(socials) or github_avatar(owner)
+            if avatar:
+                rec["avatar"] = avatar
+            time.sleep(0.3)
+        if rec:
+            out[name] = rec
+    return out
+
+
 def main(argv):
     review_path = None
     if "--review" in argv:
         i = argv.index("--review")
         review_path = argv[i + 1]
         del argv[i:i + 2]
+    resolve = "--avatars" in argv
+    if resolve:
+        argv.remove("--avatars")
     xlsx, out, catalogs = argv[1], argv[2], argv[3:]
     sheet = Sheet(listings(xlsx))
     entries = {}
@@ -425,12 +526,18 @@ def main(argv):
             continue
         # Only what the sheet adds: a field it has nothing for is left out, and the app falls back.
         packs[pid] = {k: v for k, v in fields.items() if v and v not in ("Unknown", "N/A", "TBD", "TBA")}
+    people = creators(sheet, packs, entries, resolve)
+    line = lambda k, v: "  %s: %s" % (json.dumps(k), json.dumps(v, ensure_ascii=False))
     with open(out, "w") as f:
         f.write('{\n "about": "Texture Packs Archive by Sad Origami (solo.to/sadorigami): each pack\'s source, '
-                'its creator, their tip and socials links, texture type and status.",\n "packs": {\n')
-        f.write(",\n".join("  %s: %s" % (json.dumps(k), json.dumps(v, ensure_ascii=False))
-                           for k, v in sorted(packs.items())))
+                'its creator, their tip and socials links, texture type and status; each creator\'s page '
+                'and profile picture.",\n "creators": {\n')
+        f.write(",\n".join(line(k, v) for k, v in sorted(people.items())))
+        f.write('\n },\n "packs": {\n')
+        f.write(",\n".join(line(k, v) for k, v in sorted(packs.items())))
         f.write("\n }\n}\n")
+    if resolve:
+        print("creators: %d, with a profile picture: %d" % (len(people), sum(1 for v in people.values() if "avatar" in v)))
     if review_path:
         with open(review_path, "w") as f:
             for how, e, fields in sorted(review, key=lambda x: (x[0], x[1]["gameTitle"])):

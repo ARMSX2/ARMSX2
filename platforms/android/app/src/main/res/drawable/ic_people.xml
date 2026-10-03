@@ -1,0 +1,16 @@
+<!-- A texture pack's Socials tile: two people. Drawn for ARMSX2 in the stroke style of
+     ic_download. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFFFF">
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M9 11a3.25 3.25 0 1 0 0-6.5 3.25 3.25 0 0 0 0 6.5zM3 19.5c0-3.2 2.7-5.5 6-5.5s6 2.3 6 5.5M15.5 4.7a3.25 3.25 0 0 1 0 6.1M17.5 14.3c2.1 0.6 3.5 2.6 3.5 5.2" />
+</vector>

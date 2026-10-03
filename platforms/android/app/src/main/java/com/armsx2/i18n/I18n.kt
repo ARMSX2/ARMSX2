@@ -1611,6 +1611,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "textures.pack.tip" to "Tip the creator \u2197",
     "textures.pack.socials" to "Socials \u2197",
     "textures.pack.download" to "Download",
+    "textures.pack.creator" to "Creator",
     "textures.pack.type.aiUpscale" to "AI upscale",
     "textures.pack.type.handcrafted" to "Handcrafted",
     "textures.pack.type.mixed" to "Mixed",
