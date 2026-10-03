@@ -157,7 +157,7 @@ fun AboutScreen(onBack: () -> Unit, viewModel: AboutViewModel = viewModel()) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                     )
-                    // The texture screen's track is CC0 too; its author says credit is appreciated.
+                    // The texture screen's track is The Cynic Project's too, and asks for the same credit.
                     Text(
                         str("app.credits.texturesMusic"),
                         style = MaterialTheme.typography.bodySmall,

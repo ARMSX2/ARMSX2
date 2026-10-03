@@ -276,7 +276,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "app.menuSfx.importNone" to "No matching files. Name them select, back, menu, toggle_on, toggle_off, reset, or slider.",
     "app.credits.music" to "Music: \"Calm Ambient 1 (Synthwave 4k)\" by The Cynic Project / cynicmusic.com / pixelsphere.org (CC0)",
     "app.credits.museumMusic" to "Icon Museum music: \"Another August\" by The Cynic Project / cynicmusic.com / pixelsphere.org",
-    "app.credits.texturesMusic" to "Texture packs music: \"Heavenly Loop\" by isaiah658 (CC0)",
+    "app.credits.texturesMusic" to "Texture packs music: \"November Snow\" by The Cynic Project / cynicmusic.com / pixelsphere.org (CC0)",
     "app.credits.sfx" to "Menu sounds: \"Interface SFX Pack 1\" from obsydianx.itch.io (CC0)",
     "app.language" to "Language",
     "app.language.desc" to "Choose the app language. Applies instantly.",
