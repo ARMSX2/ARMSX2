@@ -1883,6 +1883,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_reloadPatches(JNIEnv *env, jclass clazz) {
     // Blocking because the UI wants the resulting cheat count back.
     u32 active_cheats = 0;
     Host::RunOnCPUThread([&active_cheats]() {
+        // The VM can end between the check above and this task (CloseCPUThreadQueue runs it then).
+        if (!VMManager::HasValidVM()) {
+            active_cheats = Patch::GetActiveCheatsCount();
+            return;
+        }
         // setEnabledPatches may have just CREATED gamesettings/<serial>_<CRC>.ini for a game
         // that booted without one — no LAYER_GAME is installed then, so the per-game Enable
         // list is invisible to ReloadEnabledLists. ReloadGameSettings re-reads the file,
@@ -2775,6 +2780,25 @@ void Host::PumpMessagesOnCPUThread() {
         function();
 }
 
+// Hand the CPU thread role back on every exit of runVMThread. Under the lock the id goes empty, so
+// from here on RunOnCPUThread runs inline in its caller; the queue is taken, not cleared, and what
+// was in it runs here. Clearing it instead dropped every task posted during CPUThreadShutdown(), and
+// a blocking caller of one of those never woke. A drained task sees the same post-teardown world an
+// inline call made a moment later would, so the lambdas that relied only on their JNI entry's VM
+// check re-check inside (HasValidVM / MTGS::IsOpen).
+static void CloseCPUThreadQueue()
+{
+    std::deque<std::function<void()>> queue;
+    {
+        std::lock_guard lock(s_cpu_thread_mutex);
+        s_cpu_thread_id = std::thread::id();
+        queue.swap(s_cpu_thread_queue);
+    }
+
+    for (auto& function : queue)
+        function();
+}
+
 std::vector<std::string> FileSystem::FindContentChdSiblings(const char* filename)
 {
     std::vector<std::string> files;
@@ -2937,6 +2961,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
     const char* error;
     if (!VMManager::PerformEarlyHardwareChecks(&error)) {
         Console.Error("Early hardware check failed: %s", error ? error : "unknown error");
+        CloseCPUThreadQueue();
         return false;
     }
 
@@ -2962,6 +2987,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
     if (!VMManager::Internal::CPUThreadInitialize()) {
         Console.Error("@@ANDROID_CPU_THREAD_INIT_FAILED@@");
         VMManager::Internal::CPUThreadShutdown();
+        CloseCPUThreadQueue();
         return false;
     }
 
@@ -3070,11 +3096,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
     ////
     Host::PumpMessagesOnCPUThread();
     VMManager::Internal::CPUThreadShutdown();
-    {
-        std::lock_guard lock(s_cpu_thread_mutex);
-        s_cpu_thread_id = std::thread::id();
-        s_cpu_thread_queue.clear();
-    }
+    CloseCPUThreadQueue();
 
     return true;
 }
@@ -3239,6 +3261,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_flushShaderCache(JNIEnv *env, jclass clazz)
     if (!s_last_flush_time.compare_exchange_strong(last, now, std::memory_order_acq_rel))
         return;
     Host::RunOnCPUThread([]() {
+        // Re-checked here: run from CloseCPUThreadQueue, the GS thread is already gone.
+        if (!MTGS::IsOpen())
+            return;
         MTGS::RunOnGSThread([]() {
             if (g_vulkan_shader_cache)
                 g_vulkan_shader_cache->FlushPipelineCache();
@@ -3374,6 +3399,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_saveStateToSlot(JNIEnv *env, jclass clazz, 
     // around. It is thread identity, not the park, that makes the ring pushes legal.
     std::string save_error;
     Host::RunOnCPUThread([p_slot, &save_error]() {
+        // The VM can end while this waits in the queue (CloseCPUThreadQueue runs it then).
+        if (!VMManager::HasValidVM()) {
+            save_error = "VM shut down";
+            return;
+        }
         VMManager::SaveStateToSlot(p_slot, /*zip_on_thread=*/false,
             [&save_error](const std::string& error) { save_error = error; });
     }, /*block=*/true);
@@ -3435,6 +3465,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadStateFromSlot(JNIEnv *env, jclass clazz
     // rather than as a second queued job also stops it racing the resume in the pause guard's dtor.
     bool loaded = false;
     Host::RunOnCPUThread([p_slot, &loaded]() {
+        // The VM can end while this waits in the queue (CloseCPUThreadQueue runs it then).
+        if (!VMManager::HasValidVM())
+            return;
         loaded = VMManager::LoadStateFromSlot(p_slot);
         if (loaded)
             MTGS::PresentCurrentFrame();
@@ -3473,6 +3506,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_changeDisc(JNIEnv *env, jclass clazz, jstri
         return false;
     bool ok = false;
     Host::RunOnCPUThread([&path, &ok]() {
+        // The VM can end while this waits in the queue (CloseCPUThreadQueue runs it then).
+        if (!VMManager::HasValidVM())
+            return;
         ok = VMManager::ChangeDisc(CDVD_SourceType::Iso, path);
     }, /*block=*/true);
     return ok;
@@ -3568,6 +3604,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_saveAutosaveState(JNIEnv *env, jclass clazz
     // pushes to the single-producer MTGS ring, whose write position is owned by the CPU thread.
     std::string save_error;
     Host::RunOnCPUThread([&save_error]() {
+        // The VM can end while this waits in the queue (CloseCPUThreadQueue runs it then).
+        if (!VMManager::HasValidVM()) {
+            save_error = "VM shut down";
+            return;
+        }
         VMManager::SaveStateToSlot(VMManager::SAVESTATE_SLOT_AUTOSAVE, /*zip_on_thread=*/false,
             [&save_error](const std::string& error) { save_error = error; });
     }, /*block=*/true);
@@ -3606,6 +3647,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadAutosaveState(JNIEnv *env, jclass clazz
     // happens to redraw. Run in the same task so it cannot race the resume in the guard's dtor.
     bool loaded = false;
     Host::RunOnCPUThread([&loaded]() {
+        // The VM can end while this waits in the queue (CloseCPUThreadQueue runs it then).
+        if (!VMManager::HasValidVM())
+            return;
         loaded = VMManager::LoadStateFromSlot(VMManager::SAVESTATE_SLOT_AUTOSAVE);
         if (loaded)
             MTGS::PresentCurrentFrame();
@@ -3816,24 +3860,23 @@ void Host::OnSaveStateSaved(const std::string_view filename)
 void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false */)
 {
     const std::thread::id current_thread = std::this_thread::get_id();
-    bool run_inline = false;
+    std::mutex wait_mutex;
+    std::condition_variable wait_cv;
+    bool done = false;
     {
-        std::lock_guard lock(s_cpu_thread_mutex);
-        run_inline = (s_cpu_thread_id == std::thread::id() || s_cpu_thread_id == current_thread);
-    }
-    if (run_inline)
-    {
-        function();
-        return;
-    }
-
-    if (block)
-    {
-        std::mutex wait_mutex;
-        std::condition_variable wait_cv;
-        bool done = false;
+        // Decide and enqueue under ONE hold of the lock. Deciding in one hold and pushing in a
+        // second lets CloseCPUThreadQueue() run in between: the task then lands in a queue nobody
+        // drains any more, and a blocking caller sleeps forever.
+        std::unique_lock lock(s_cpu_thread_mutex);
+        if (s_cpu_thread_id == std::thread::id() || s_cpu_thread_id == current_thread)
         {
-            std::lock_guard lock(s_cpu_thread_mutex);
+            lock.unlock();
+            function();
+            return;
+        }
+
+        if (block)
+        {
             s_cpu_thread_queue.push_back([&]() {
                 function();
                 {
@@ -3843,15 +3886,15 @@ void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false 
                 wait_cv.notify_one();
             });
         }
+        else
+        {
+            s_cpu_thread_queue.push_back(std::move(function));
+            return;
+        }
+    }
 
-        std::unique_lock wait_lock(wait_mutex);
-        wait_cv.wait(wait_lock, [&]() { return done; });
-    }
-    else
-    {
-        std::lock_guard lock(s_cpu_thread_mutex);
-        s_cpu_thread_queue.push_back(std::move(function));
-    }
+    std::unique_lock wait_lock(wait_mutex);
+    wait_cv.wait(wait_lock, [&]() { return done; });
 }
 
 // Post to the GS thread from anywhere. Mirrors pcsx2-qt's implementation (QtHost.cpp) — the
@@ -5034,7 +5077,11 @@ extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_reloadGameSettingsLayer(JNIEnv*, jclass) {
     if (!VMManager::HasValidVM())
         return;
-    Host::RunOnCPUThread([]() { VMManager::ReloadGameSettingsLayer(); }, /*block=*/true);
+    // Re-checked inside: the VM can end while this waits in the queue (CloseCPUThreadQueue runs it).
+    Host::RunOnCPUThread([]() {
+        if (VMManager::HasValidVM())
+            VMManager::ReloadGameSettingsLayer();
+    }, /*block=*/true);
 }
 
 // What the game database sets for [serial], one line per setting a per-game key can claim:
