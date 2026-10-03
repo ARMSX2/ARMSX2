@@ -5,8 +5,13 @@ status) from Sad Origami's Texture Packs Archive sheet, matched to the online ca
 
 usage: texture-pack-links.py <archive.xlsx> <out.json> <catalog.json> [--avatars] [--review <review.txt>]
 
-  e.g. texture-pack-links.py "Texture Packs Archive.xlsx" app/src/main/assets/texture-pack-links.json \
+  e.g. texture-pack-links.py "Texture Packs Archive.xlsx" texture-pack-links.json \
            textures.json --avatars --review review.txt
+
+The file is not in the app: it is uploaded next to the catalog, as
+https://dl.ps2ktxpak.net/texture-pack-links.json, and the app downloads it (TexturePackLinks.kt), so a
+new upload changes every player's links without a release. Its "schemaVersion" is the format the app
+reads; change it only for a change older apps must not read (they keep their last copy).
 
 --avatars looks up each creator's profile picture online (GBAtemp, YouTube, GitHub) and checks it
 loads; without it the file has none, so the app shows each creator's initials instead.
@@ -543,8 +548,8 @@ def main(argv):
         packs[pid] = {k: v for k, v in fields.items() if v and v not in ("Unknown", "N/A", "TBD", "TBA")}
     people = creators(sheet, packs, entries, resolve)
     line = lambda k, v: "  %s: %s" % (json.dumps(k), json.dumps(v, ensure_ascii=False))
-    with open(out, "w") as f:
-        f.write('{\n "about": "Texture Packs Archive by Sad Origami (solo.to/sadorigami): each pack\'s source, '
+    with open(out, "w", encoding="utf-8") as f:
+        f.write('{\n "schemaVersion": 1,\n "about": "Texture Packs Archive by Sad Origami (solo.to/sadorigami): each pack\'s source, '
                 'its creator, their tip and socials links, texture type and status; each creator\'s page '
                 'and profile picture.",\n "creators": {\n')
         f.write(",\n".join(line(k, v) for k, v in sorted(people.items())))

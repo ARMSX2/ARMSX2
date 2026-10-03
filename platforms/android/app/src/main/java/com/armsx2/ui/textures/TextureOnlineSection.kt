@@ -45,6 +45,7 @@ import com.armsx2.ui.common.SectionTitle
 import com.armsx2.ui.settings.SettingsControllerNav
 import com.armsx2.ui.settings.controllerFocusable
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 
 /**
@@ -83,8 +84,10 @@ fun TextureOnlineSection(
 
     LaunchedEffect(Unit) {
         loading = true
+        // Two files on the same server, asked for side by side.
         val (result, packLinks) = withContext(Dispatchers.IO) {
-            TextureCatalog.fetch(context) to TexturePackLinks.all(context)
+            val packLinks = async { TexturePackLinks.fetch(context) }
+            TextureCatalog.fetch(context) to packLinks.await()
         }
         links = packLinks
         packs = result?.packs.orEmpty()
