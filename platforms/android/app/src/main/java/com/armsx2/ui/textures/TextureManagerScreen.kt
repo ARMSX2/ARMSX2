@@ -52,6 +52,9 @@ fun TextureManagerScreen(onBack: () -> Unit, viewModel: TextureManagerViewModel 
     val state = viewModel.state.value
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> uri?.let(viewModel::importFolder) }
     LaunchedEffect(Unit) { viewModel.refresh() }
+    // Options on the left, packs on the right: the controller keeps to a column and crosses with
+    // Left/Right.
+    com.armsx2.ui.settings.ColumnControllerNav()
     // The texture screen has its own music while it is open, in the library music's place.
     val context = androidx.compose.ui.platform.LocalContext.current
     androidx.compose.runtime.DisposableEffect(Unit) {
@@ -64,10 +67,12 @@ fun TextureManagerScreen(onBack: () -> Unit, viewModel: TextureManagerViewModel 
             ArmsTopBar(
                 title = str("renderer.section.texturePacks"),
                 subtitle = state.activeSerial ?: str("games.info.perGameSettings.body"),
-                leading = { RoundAction("←", str("action.back"), onBack) },
+                // Reachable by the controller, so Up from the first control comes back to the top of
+                // the screen, which no control above it used to let it scroll to.
+                leading = { RoundAction("←", str("action.back"), onBack, controllerId = "textureMgr.top.back") },
                 actions = {
-                    RoundAction("＋", str("action.import"), { folderPicker.launch(null) })
-                    RoundAction("↻", str("games.card.refresh"), viewModel::refresh)
+                    RoundAction("＋", str("action.import"), { folderPicker.launch(null) }, controllerId = "textureMgr.top.import")
+                    RoundAction("↻", str("games.card.refresh"), viewModel::refresh, controllerId = "textureMgr.top.refresh")
                 },
             )
             BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -120,12 +125,11 @@ private fun TextureOptions(state: TextureManagerUiState, viewModel: TextureManag
                 str("renderer.loadTexturePacks.description"),
                 state.settings.graphics.loadTextureReplacements,
                 onCheckedChange = { value -> viewModel.update { it.copy(graphics = it.graphics.copy(loadTextureReplacements = value)) } },
+                leftRightToggles = false,
                 modifier = Modifier.controllerFocusable(
                     "textureMgr.opt.loadReplacements",
                     RoundedCornerShape(22.dp),
                     onConfirm = { viewModel.update { it.copy(graphics = it.graphics.copy(loadTextureReplacements = !state.settings.graphics.loadTextureReplacements)) } },
-                    onLeft = { viewModel.update { it.copy(graphics = it.graphics.copy(loadTextureReplacements = false)) } },
-                    onRight = { viewModel.update { it.copy(graphics = it.graphics.copy(loadTextureReplacements = true)) } },
                 ),
             )
             SettingSwitchRow(
@@ -133,12 +137,11 @@ private fun TextureOptions(state: TextureManagerUiState, viewModel: TextureManag
                 str("renderer.asyncTextureLoading.description"),
                 state.settings.graphics.loadTextureReplacementsAsync,
                 onCheckedChange = { value -> viewModel.update { it.copy(graphics = it.graphics.copy(loadTextureReplacementsAsync = value)) } },
+                leftRightToggles = false,
                 modifier = Modifier.controllerFocusable(
                     "textureMgr.opt.asyncLoading",
                     RoundedCornerShape(22.dp),
                     onConfirm = { viewModel.update { it.copy(graphics = it.graphics.copy(loadTextureReplacementsAsync = !state.settings.graphics.loadTextureReplacementsAsync)) } },
-                    onLeft = { viewModel.update { it.copy(graphics = it.graphics.copy(loadTextureReplacementsAsync = false)) } },
-                    onRight = { viewModel.update { it.copy(graphics = it.graphics.copy(loadTextureReplacementsAsync = true)) } },
                 ),
             )
             SettingSwitchRow(
@@ -146,12 +149,11 @@ private fun TextureOptions(state: TextureManagerUiState, viewModel: TextureManag
                 str("renderer.precacheTexturePacks.description"),
                 state.settings.graphics.precacheTextureReplacements,
                 onCheckedChange = { value -> viewModel.update { it.copy(graphics = it.graphics.copy(precacheTextureReplacements = value)) } },
+                leftRightToggles = false,
                 modifier = Modifier.controllerFocusable(
                     "textureMgr.opt.precache",
                     RoundedCornerShape(22.dp),
                     onConfirm = { viewModel.update { it.copy(graphics = it.graphics.copy(precacheTextureReplacements = !state.settings.graphics.precacheTextureReplacements)) } },
-                    onLeft = { viewModel.update { it.copy(graphics = it.graphics.copy(precacheTextureReplacements = false)) } },
-                    onRight = { viewModel.update { it.copy(graphics = it.graphics.copy(precacheTextureReplacements = true)) } },
                 ),
             )
         }

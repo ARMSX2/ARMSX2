@@ -81,17 +81,22 @@ fun PatchManagerScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Pa
     // Keyed on the game (this screen shares one Activity-scoped VM with the settings tab), and
     // resets the online browser first so a previous game's fetched results don't linger here.
     LaunchedEffect(game?.uri) { viewModel.resetOnlineForGame(); viewModel.refresh() }
+    // Options on the left, files on the right: the controller keeps to a column and crosses with
+    // Left/Right.
+    com.armsx2.ui.settings.ColumnControllerNav()
 
     ArmsBackdrop {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
             ArmsTopBar(
                 title = str("patches.dialog.patchesAndCheats"),
-                leading = { RoundAction("←", str("action.back"), onBack) },
+                // Reachable by the controller, so Up from the first control comes back to the top of
+                // the screen; with nothing above that control, the page could not scroll back to it.
+                leading = { RoundAction("←", str("action.back"), onBack, controllerId = "patches.top.back") },
                 actions = {
-                    RoundAction("＋", str("action.import"), { picker.launch(arrayOf("text/plain", "application/octet-stream", "*/*")) })
-                    RoundAction("🗀", str("patches.import.folder"), { folderPicker.launch(null) })
-                    RoundAction("✎", str("patches.editor.new"), viewModel::newEditor)
-                    RoundAction("↻", str("games.card.refresh"), viewModel::refresh)
+                    RoundAction("＋", str("action.import"), { picker.launch(arrayOf("text/plain", "application/octet-stream", "*/*")) }, controllerId = "patches.top.import")
+                    RoundAction("🗀", str("patches.import.folder"), { folderPicker.launch(null) }, controllerId = "patches.top.folder")
+                    RoundAction("✎", str("patches.editor.new"), viewModel::newEditor, controllerId = "patches.top.new")
+                    RoundAction("↻", str("games.card.refresh"), viewModel::refresh, controllerId = "patches.top.refresh")
                 },
             )
             PatchDisclaimer()
@@ -306,6 +311,7 @@ private fun PatchOptions(state: PatchManagerUiState, viewModel: PatchManagerView
             SettingSwitchRow(
                 str("patches.cheats.label"), str("patches.pasteImportHint"), state.settings.emuCore.enableCheats,
                 onCheckedChange = { value -> viewModel.update { it.copy(emuCore = it.emuCore.copy(enableCheats = value)) } },
+                leftRightToggles = false,
                 modifier = Modifier.controllerFocusable(
                     "patches.enableCheats",
                     onConfirm = { viewModel.update { it.copy(emuCore = it.emuCore.copy(enableCheats = !state.settings.emuCore.enableCheats)) } },
@@ -317,6 +323,7 @@ private fun PatchOptions(state: PatchManagerUiState, viewModel: PatchManagerView
                 // "enable widescreen patches" and cost a long GT4 rendering hunt to track down.
                 str("patches.widescreen.label"), str("patches.widescreen.description"), state.settings.emuCore.enableWideScreenPatches,
                 onCheckedChange = { value -> viewModel.update { it.copy(emuCore = it.emuCore.copy(enableWideScreenPatches = value)) } },
+                leftRightToggles = false,
                 modifier = Modifier.controllerFocusable(
                     "patches.widescreen",
                     onConfirm = { viewModel.update { it.copy(emuCore = it.emuCore.copy(enableWideScreenPatches = !state.settings.emuCore.enableWideScreenPatches)) } },
@@ -325,6 +332,7 @@ private fun PatchOptions(state: PatchManagerUiState, viewModel: PatchManagerView
             SettingSwitchRow(
                 str("patches.noInterlacing.label"), str("patches.applyAtBoot"), state.settings.emuCore.enableNoInterlacingPatches,
                 onCheckedChange = { value -> viewModel.update { it.copy(emuCore = it.emuCore.copy(enableNoInterlacingPatches = value)) } },
+                leftRightToggles = false,
                 modifier = Modifier.controllerFocusable(
                     "patches.noInterlacing",
                     onConfirm = { viewModel.update { it.copy(emuCore = it.emuCore.copy(enableNoInterlacingPatches = !state.settings.emuCore.enableNoInterlacingPatches)) } },
@@ -335,6 +343,7 @@ private fun PatchOptions(state: PatchManagerUiState, viewModel: PatchManagerView
             SettingSwitchRow(
                 str("patches.hostFs.label"), str("patches.hostFs.description"), state.settings.emuCore.hostFs,
                 onCheckedChange = { value -> viewModel.update { it.copy(emuCore = it.emuCore.copy(hostFs = value)) } },
+                leftRightToggles = false,
                 modifier = Modifier.controllerFocusable(
                     "patches.hostFs",
                     onConfirm = { viewModel.update { it.copy(emuCore = it.emuCore.copy(hostFs = !state.settings.emuCore.hostFs)) } },
