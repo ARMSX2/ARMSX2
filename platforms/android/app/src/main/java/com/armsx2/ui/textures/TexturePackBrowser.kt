@@ -120,7 +120,38 @@ internal fun TexturePackBrowser(
         else -> null
     }
     val count = packItems?.size ?: groups.size
-    LaunchedEffect(filter, query, sortMode, creatorKey) { page = 0 }
+    // A new filter, search or sort starts at the first page. Going into a creator and back out does
+    // not: those two set the page themselves (openCreator, backToCreators).
+    LaunchedEffect(filter, query, sortMode) { page = 0 }
+    // How many cubes a page holds, as last laid out, for working out which page a creator is on.
+    var perPageNow by remember { mutableIntStateOf(1) }
+    // A cube for the pad to land on once the page that has it is drawn: going in or out of a creator
+    // changes what every slot holds, and the slot wanted may not exist until then.
+    var selectNext by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(selectNext) {
+        val id = selectNext ?: return@LaunchedEffect
+        androidx.compose.runtime.withFrameNanos { }
+        SettingsControllerNav.selectById(id)
+        selectNext = null
+    }
+    // Only a controller has a selection to move; a touch leaves none, and gets none.
+    val padSelecting = { SettingsControllerNav.currentSelectedId() != null }
+    val openCreator = { key: String ->
+        creatorKey = key
+        page = 0
+        if (padSelecting()) selectNext = "$LAYER.tile.0"
+    }
+    // Back to the creators, on the page with the one just left and that one selected, not the first.
+    val backToCreators = {
+        val left = creatorKey
+        creatorKey = null
+        val index = groups.indexOfFirst { it.key == left }
+        if (index >= 0) {
+            val per = perPageNow.coerceAtLeast(1)
+            page = index / per
+            if (padSelecting()) selectNext = "$LAYER.tile.${index % per}"
+        }
+    }
 
     val unknownName = str("textures.creators.unknown")
     val onePack = str("textures.creators.onePack")
@@ -130,7 +161,7 @@ internal fun TexturePackBrowser(
     PadModal(
         key = LAYER,
         // Back from a creator's packs goes to the creators first; from anywhere else it closes.
-        onDismiss = { if (viewingCreator) creatorKey = null else onClose() },
+        onDismiss = { if (viewingCreator) backToCreators() else onClose() },
         scrimAlpha = 1f,
         initialFocusId = "$LAYER.tile.0",
     ) {
@@ -154,8 +185,14 @@ internal fun TexturePackBrowser(
                         sortMode = sortMode,
                         filter = filter,
                         query = query,
-                        onBack = { creatorKey = null },
-                        onSort = { sortMode = it; creatorKey = null },
+                        onBack = backToCreators,
+                        // Creator again, from inside a creator, is the way back to the creators.
+                        onSort = { mode ->
+                            if (mode == SORT_CREATOR && viewingCreator) backToCreators() else {
+                                sortMode = mode
+                                creatorKey = null
+                            }
+                        },
                         onFilter = { filter = it },
                         onQuery = { query = it },
                     )
@@ -170,6 +207,7 @@ internal fun TexturePackBrowser(
                         val cols = ((maxWidth + GAP) / (tileH / ASPECT + GAP)).toInt().coerceAtLeast(1)
                         val tileW = minOf((maxWidth - GAP * (cols - 1)) / cols, tileH * 1.3f)
                         val perPage = rows * cols
+                        androidx.compose.runtime.SideEffect { perPageNow = perPage }
                         val pages = ((count + perPage - 1) / perPage).coerceAtLeast(1)
                         val current = page.coerceAtMost(pages - 1)
                         val first = current * perPage
@@ -231,7 +269,7 @@ internal fun TexturePackBrowser(
                                                 name = group.name.ifEmpty { unknownName },
                                                 subtitle = packCount(group.packs.size),
                                                 id = id, width = tileW, height = tileH,
-                                                onOpen = { creatorKey = group.key },
+                                                onOpen = { openCreator(group.key) },
                                                 onLeft = left, onRight = right,
                                             )
                                         }
