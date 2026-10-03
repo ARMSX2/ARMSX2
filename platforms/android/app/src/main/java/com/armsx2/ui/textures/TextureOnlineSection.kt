@@ -11,7 +11,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
@@ -27,11 +30,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -39,9 +42,11 @@ import com.armsx2.TextureCatalog
 import com.armsx2.TexturePackInstallState
 import com.armsx2.TexturePackInstallState.InstallAction
 import com.armsx2.TexturePackInstaller
+import com.armsx2.TexturePackLinks
 import com.armsx2.i18n.I18n
 import com.armsx2.i18n.str
 import com.armsx2.ui.common.GlassPanel
+import com.armsx2.ui.common.PadModal
 import com.armsx2.ui.common.SearchField
 import com.armsx2.ui.common.SectionTitle
 import com.armsx2.ui.home.LibraryKeyboard
@@ -86,6 +91,10 @@ fun TextureOnlineSection(
     var failed by remember { mutableStateOf(false) }
     var fromCache by remember { mutableStateOf(false) }
     var packs by remember { mutableStateOf<List<TextureCatalog.Pack>>(emptyList()) }
+    var links by remember { mutableStateOf<Map<String, TexturePackLinks.Links>>(emptyMap()) }
+    // The pack whose window is open. Get opens it rather than downloading, so the creator's links
+    // are in front of people before the pack is; Download in there is what installs.
+    var openPackId by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
     var busyPackId by remember { mutableStateOf<String?>(null) }
     var progressText by remember { mutableStateOf("") }
     var progressFraction by remember { mutableStateOf(0f) }
@@ -111,9 +120,10 @@ fun TextureOnlineSection(
 
     LaunchedEffect(Unit) {
         loading = true
-        val result = withContext(Dispatchers.IO) {
-            TextureCatalog.fetch(context)
+        val (result, packLinks) = withContext(Dispatchers.IO) {
+            TextureCatalog.fetch(context) to TexturePackLinks.all(context)
         }
+        links = packLinks
         packs = result?.packs.orEmpty()
         fromCache = result?.fromCache == true
         failed = result == null
@@ -183,7 +193,8 @@ fun TextureOnlineSection(
                         p.name.lowercase().contains(needle) ||
                             p.gameTitle.lowercase().contains(needle) ||
                             p.serials.any { it.lowercase().contains(needle) } ||
-                            p.authors.any { it.lowercase().contains(needle) }
+                            p.authors.any { it.lowercase().contains(needle) } ||
+                            links[p.id]?.creator?.lowercase()?.contains(needle) == true
                     }
 
                     SegmentedRow(
@@ -291,11 +302,9 @@ fun TextureOnlineSection(
                     // "Your games" is never truncated: it is short by construction and it is what
                     // someone came here for. Only the long "Other games" tail pages.
                     ordered.forEach { pack ->
-                        PackRow(pack, installed[pack.id], busyPackId, progressText,
-                            progressFraction, uriHandler::openUri,
-                            // Install target is one of the pack's own serials, so this works with no
-                            // game running and cannot drop a pack into another game's folder.
-                            onGet = { startInstall(pack, pack.installSerialFor(serial, ownedSerials)) },
+                        PackRow(pack, links[pack.id], installed[pack.id], busyPackId, progressText,
+                            progressFraction,
+                            onOpen = { openPackId = pack.id },
                             onCancel = { cancelRequested = true },
                             canCancel = !commitStarted)
                     }
@@ -310,9 +319,9 @@ fun TextureOnlineSection(
                         Spacer(Modifier.height(4.dp))
                         val shown = others.take(othersShown)
                         shown.forEach { pack ->
-                            PackRow(pack, installed[pack.id], busyPackId, progressText,
-                                progressFraction, uriHandler::openUri,
-                                onGet = { startInstall(pack, pack.installSerialFor(serial, ownedSerials)) },
+                            PackRow(pack, links[pack.id], installed[pack.id], busyPackId, progressText,
+                                progressFraction,
+                                onOpen = { openPackId = pack.id },
                                 onCancel = { cancelRequested = true },
                                 canCancel = !commitStarted)
                         }
@@ -327,6 +336,24 @@ fun TextureOnlineSection(
                                 modifier = Modifier.controllerFocusable("tex.showMore", onConfirm = more),
                             ) { Text(str("textures.online.showMore").replace("%d", remaining.toString())) }
                         }
+                    }
+
+                    val openPack = openPackId?.let { id -> packs.firstOrNull { it.id == id } }
+                    if (openPack != null) {
+                        PackWindow(
+                            pack = openPack,
+                            links = links[openPack.id],
+                            action = TexturePackInstallState.actionFor(installed[openPack.id], openPack),
+                            anyBusy = busyPackId != null,
+                            openUrl = uriHandler::openUri,
+                            onDownload = {
+                                openPackId = null
+                                // Install target is one of the pack's own serials, so this works with
+                                // no game running and cannot drop a pack into another game's folder.
+                                startInstall(openPack, openPack.installSerialFor(serial, ownedSerials))
+                            },
+                            onClose = { openPackId = null },
+                        )
                     }
 
                     if (status.isNotEmpty()) {
@@ -361,20 +388,18 @@ fun TextureOnlineSection(
 @Composable
 private fun PackRow(
     pack: TextureCatalog.Pack,
+    links: TexturePackLinks.Links?,
     installed: TexturePackInstallState.Installed?,
     busyPackId: String?,
     progressText: String,
     progressFraction: Float,
-    openUrl: (String) -> Unit,
-    onGet: () -> Unit,
+    onOpen: () -> Unit,
     onCancel: () -> Unit,
     canCancel: Boolean,
 ) {
     val busy = busyPackId == pack.id
-    val anyBusy = busyPackId != null
     // One shared eligibility rule (revision-aware for B2 tar+zstd, version-based for legacy ZIP).
     val action = TexturePackInstallState.actionFor(installed, pack)
-    val upToDate = action == InstallAction.INSTALLED
 
     Surface(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -388,14 +413,16 @@ private fun PackRow(
                     Text(pack.name, style = MaterialTheme.typography.titleSmall,
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(
-                        "${pack.serials.joinToString(", ")} · ${mb(pack.sizeBytes)} · ${pack.fileCount} files",
+                        "${pack.serials.joinToString(", ")} · ${mb(pack.sizeBytes)} · " +
+                            str("textures.pack.files").replace("%d", pack.fileCount.toString()),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
-                    if (pack.authors.isNotEmpty()) {
+                    val creator = creatorOf(pack, links)
+                    if (creator.isNotEmpty()) {
                         Text(
-                            str("textures.online.by").replace("%s", pack.authors.joinToString(", ")),
+                            str("textures.online.by").replace("%s", creator),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -418,12 +445,13 @@ private fun PackRow(
                         InstallAction.CONFLICT, InstallAction.UPDATE -> str("textures.online.update")
                         InstallAction.INSTALL -> str("textures.online.get")
                     }
+                    // Opens the pack's window, whatever its state: an installed pack's creator links
+                    // are still worth reaching. Whether it can download is the window's business.
                     Button(
-                        onClick = onGet,
-                        enabled = !anyBusy && !upToDate,
+                        onClick = onOpen,
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.controllerFocusable(
-                            "tex.get.${pack.id}", RoundedCornerShape(14.dp), onConfirm = onGet,
+                            "tex.get.${pack.id}", RoundedCornerShape(14.dp), onConfirm = onOpen,
                         ),
                     ) { Text(label) }
                 }
@@ -438,17 +466,200 @@ private fun PackRow(
                 Text(progressText, style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (pack.sourceUrl.isNotEmpty() && !busy) {
-                val open = { openUrl(pack.sourceUrl) }
-                TextButton(
-                    onClick = open,
-                    modifier = Modifier.controllerFocusable("tex.src.${pack.id}", onConfirm = open),
-                ) {
-                    Text(str("textures.online.source"), fontSize = 12.sp, fontWeight = FontWeight.Normal)
+        }
+    }
+}
+
+/** Who made the pack: the archive's name for them when it lists the pack, else the catalog's. */
+private fun creatorOf(pack: TextureCatalog.Pack, links: TexturePackLinks.Links?): String =
+    links?.creator ?: pack.authors.joinToString(", ")
+
+/**
+ * A pack's window, opened by its Get button: what it is (texture type, status, size), who made it,
+ * and every link for it (its source page, the creator's tip and socials pages), with Download last.
+ */
+@Composable
+private fun PackWindow(
+    pack: TextureCatalog.Pack,
+    links: TexturePackLinks.Links?,
+    action: InstallAction,
+    anyBusy: Boolean,
+    openUrl: (String) -> Unit,
+    onDownload: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val layer = "tex-pack"
+    val bodyScroll = rememberScrollState()
+    // One install at a time, as before; and an installed pack that is up to date has nothing to get.
+    val canDownload = !anyBusy && action != InstallAction.INSTALLED
+    PadModal(
+        key = layer,
+        onDismiss = onClose,
+        initialFocusId = if (canDownload) "$layer.download" else "$layer.close",
+        scrollState = bodyScroll,
+    ) {
+        Surface(
+            modifier = Modifier
+                .padding(24.dp)
+                .widthIn(max = 460.dp),
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+            tonalElevation = 6.dp,
+        ) {
+            Column(Modifier.padding(20.dp)) {
+                // The body scrolls inside the window, so a long description on a short landscape
+                // screen never pushes Download off it.
+                Column(Modifier.weight(1f, fill = false).verticalScroll(bodyScroll)) {
+                    Text(pack.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        listOf(pack.gameTitle, pack.serials.joinToString(", ")).filter { it.isNotBlank() }
+                            .joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    val creator = creatorOf(pack, links)
+                    if (creator.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(str("textures.online.by").replace("%s", creator), style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    links?.type?.let { PackFact(str("textures.pack.type"), typeLabel(it)) }
+                    links?.status?.let { PackFact(str("textures.pack.status"), statusLabel(it)) }
+                    PackFact(
+                        str("textures.pack.size"),
+                        "${mb(pack.sizeBytes)} · " +
+                            str("textures.pack.files").replace("%d", pack.fileCount.toString()),
+                    )
+                    if (pack.description.isNotBlank()) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            pack.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    val source = links?.source ?: pack.sourceUrl
+                    if (source.isNotEmpty()) {
+                        PackLink(str("textures.online.source"), "$layer.source") { openUrl(source) }
+                    }
+                    links?.tip?.let { tip -> PackLink(str("textures.pack.tip"), "$layer.tip") { openUrl(tip) } }
+                    links?.socials?.let { socials ->
+                        PackLink(str("textures.pack.socials"), "$layer.socials") { openUrl(socials) }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    WindowButton(
+                        label = str("action.close"),
+                        id = "$layer.close",
+                        onClick = onClose,
+                        container = MaterialTheme.colorScheme.surfaceVariant,
+                        content = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    WindowButton(
+                        label = when (action) {
+                            InstallAction.INSTALLED -> str("textures.online.installed")
+                            InstallAction.CONFLICT, InstallAction.UPDATE -> str("textures.online.update")
+                            InstallAction.INSTALL -> str("textures.pack.download")
+                        },
+                        id = "$layer.download",
+                        onClick = onDownload,
+                        container = MaterialTheme.colorScheme.primaryContainer,
+                        content = MaterialTheme.colorScheme.onPrimaryContainer,
+                        enabled = canDownload,
+                    )
                 }
             }
         }
     }
+}
+
+@Composable
+private fun PackFact(label: String, value: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
+private fun PackLink(label: String, id: String, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .controllerFocusable(controllerId = id, shape = RoundedCornerShape(12.dp), onConfirm = onClick),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+    ) {
+        Text(
+            label,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+@Composable
+private fun WindowButton(
+    label: String,
+    id: String,
+    onClick: () -> Unit,
+    container: Color,
+    content: Color,
+    enabled: Boolean = true,
+) {
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        // A button that cannot act is not a stop for the pad either.
+        modifier = if (enabled) Modifier.controllerFocusable(
+            controllerId = id,
+            shape = RoundedCornerShape(14.dp),
+            onConfirm = onClick,
+        ) else Modifier,
+        shape = RoundedCornerShape(14.dp),
+        color = if (enabled) container else container.copy(alpha = 0.4f),
+    ) {
+        Text(
+            label,
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+            style = MaterialTheme.typography.labelLarge,
+            color = if (enabled) content else content.copy(alpha = 0.5f),
+        )
+    }
+}
+
+/** The archive's texture types, in the app's language; one it adds later shows as it words it. */
+@Composable
+private fun typeLabel(raw: String): String = when (raw.lowercase()) {
+    "ai upscale" -> str("textures.pack.type.aiUpscale")
+    "handcrafted" -> str("textures.pack.type.handcrafted")
+    "mixed" -> str("textures.pack.type.mixed")
+    "port" -> str("textures.pack.type.port")
+    "button replacement" -> str("textures.pack.type.buttons")
+    else -> raw
+}
+
+/** The archive's pack statuses, in the app's language; one it adds later shows as it words it. */
+@Composable
+private fun statusLabel(raw: String): String = when (raw.lowercase()) {
+    "complete" -> str("textures.pack.status.complete")
+    "in-progress" -> str("textures.pack.status.inProgress")
+    "incomplete" -> str("textures.pack.status.incomplete")
+    "partial" -> str("textures.pack.status.partial")
+    else -> raw
 }
 
 private fun mb(bytes: Long): String = when {
