@@ -72,6 +72,14 @@ NAME_ALIASES = {
     "IceBullet": "Curse_Arms",  # Curse_Arms's Ko-fi and YouTube are both "icebullet"
 }
 
+# A creator's links where the sheet's lead nowhere, checked by hand: name -> {field: url}.
+CREATOR_LINKS = {
+    # The sheet's @ironhulk33 YouTube link is dead; this is his channel (the user, 2026-10-02).
+    "ironhulk33": {"socials": "https://www.youtube.com/channel/UC_00zPyx8PXENf7OSqZRw_g"},
+    # His Ko-fi page is gone; he takes support on Patreon.
+    "Bl4ckH4nd": {"tip": "https://www.patreon.com/Bl4ckH4nd"},
+}
+
 # The page a creator asked us to send people to, over the sheet's per-pack links.
 CREATOR_PAGES = {
     # ironhulk33 (2026-10-02): his public MediaFire folder, PS2 subfolder.
@@ -343,6 +351,9 @@ def link(e, sheet):
     for when they asked for one."""
     fields, how = link_listing(e, sheet)
     if fields and fields.get("creator"):
+        for name, fixes in CREATOR_LINKS.items():
+            if name_key(name) == name_key(fields["creator"].split(", ")[0]):
+                fields.update(fixes)
         for name, page in CREATOR_PAGES.items():
             if name_key(name) in {name_key(c) for c in fields["creator"].split(",")}:
                 fields["source"] = page
@@ -489,7 +500,7 @@ def creators(sheet, packs, entries, resolve):
     out = {}
     for name in sorted(sources):
         profile = sheet.usual(name, "author_url")
-        socials = sheet.usual(name, "socials")
+        socials = CREATOR_LINKS.get(name, {}).get("socials") or sheet.usual(name, "socials")
         owner = github_owner(name, sources[name])
         page = profile or socials or (owner and "https://github.com/" + owner)
         rec = {"page": page} if page else {}
@@ -523,6 +534,10 @@ def main(argv):
         fields, how = link(e, sheet)
         review.append((how, e, fields))
         if not fields:
+            # A pack no one has named a creator for says so, rather than showing the catalog's
+            # sentence about it as a name.
+            if not catalog_creators(e):
+                packs[pid] = {"unknown": True}
             continue
         # Only what the sheet adds: a field it has nothing for is left out, and the app falls back.
         packs[pid] = {k: v for k, v in fields.items() if v and v not in ("Unknown", "N/A", "TBD", "TBA")}
@@ -545,7 +560,7 @@ def main(argv):
                         catalog_creators(e) or "?", e["sourceUrl"]))
                 if fields:
                     f.write("%-48s   -> %s\n" % ("", fields))
-    linked = len(packs)
+    linked = sum(1 for v in packs.values() if not v.get("unknown"))
     print("catalog packs: %d, linked: %d, left as they are: %d" % (len(entries), linked, len(entries) - linked))
 
 

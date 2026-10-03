@@ -1,11 +1,13 @@
 package com.armsx2.ui.textures
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -14,61 +16,53 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import coil.compose.SubcomposeAsyncImage
 import com.armsx2.TextureCatalog
-import com.armsx2.TexturePackInstallState
-import com.armsx2.TexturePackInstallState.InstallAction
-import com.armsx2.TexturePackInstaller
 import com.armsx2.TexturePackLinks
-import com.armsx2.i18n.I18n
 import com.armsx2.i18n.str
+import com.armsx2.ui.common.GameCoverPlaceholder
 import com.armsx2.ui.common.GlassPanel
-import com.armsx2.ui.common.SearchField
 import com.armsx2.ui.common.SectionTitle
-import com.armsx2.ui.home.LibraryKeyboard
-import com.armsx2.ui.settings.SegmentedRow
+import com.armsx2.ui.settings.SettingsControllerNav
 import com.armsx2.ui.settings.controllerFocusable
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
- * Browse and install texture packs from our online catalog (see TextureCatalog). New packs reach us
- * over Discord and are uploaded by hand, so that is where the submit link goes.
+ * The texture screen's door to the online packs: what the catalog holds, a strip of covers (packs for
+ * the player's games first), a download in progress, and Browse, which opens the packs full screen
+ * ([TexturePackBrowser]). The catalog loads here, so the browser opens on it at once.
  *
  * The whole catalog is browsable with no game running. Each pack names the serials it belongs to, so
- * the install target comes from the pack itself rather than from whatever happens to be loaded —
- * requiring a running game was a restriction the data never justified. For a multi-region pack it
- * is the serial of the copy the player has ([TextureCatalog.Pack.installSerialFor]). Packs matching
- * something in your library are listed first; the rest stay visible so you can grab them before you
- * own the disc.
+ * the install target comes from the pack itself rather than from whatever happens to be loaded; for a
+ * multi-region pack it is the serial of the copy the player has ([TextureCatalog.Pack.installSerialFor]).
+ * New packs reach us over Discord and are uploaded by hand, so that is where the submit link goes.
  */
-/** Rows composed per page in the online catalogue. Small enough that the first frame is cheap,
- *  large enough to fill a phone screen without immediately needing 'Show more'. */
-private const val ONLINE_PAGE = 20
-
 @Composable
 fun TextureOnlineSection(
-    /** Serial of the game in context, if any. Sorts its packs first, and is where a pack covering
-     *  it installs. */
+    /** Serial of the game in context, if any. The browser opens on its packs, and a pack covering it
+     *  installs there. */
     serial: String?,
-    /** Serials present in the user's library, so owned games float to the top. */
+    /** Serials present in the user's library, for the browser's My games. */
     librarySerials: Set<String> = emptySet(),
     /** Serials of games the player can boot (the library scan and the game in context), upper-case.
      *  Picks a multi-region pack's install folder. Unlike [librarySerials] it leaves out installed
@@ -77,8 +71,7 @@ fun TextureOnlineSection(
     modifier: Modifier = Modifier,
     onInstalled: () -> Unit,
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
 
     var loading by remember { mutableStateOf(true) }
@@ -86,31 +79,7 @@ fun TextureOnlineSection(
     var fromCache by remember { mutableStateOf(false) }
     var packs by remember { mutableStateOf<List<TextureCatalog.Pack>>(emptyList()) }
     var links by remember { mutableStateOf<Map<String, TexturePackLinks.Links>>(emptyMap()) }
-    // The pack whose window is open. Get opens it rather than downloading, so the creator's links
-    // are in front of people before the pack is; Download in there is what installs.
-    var openPackId by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
-    var busyPackId by remember { mutableStateOf<String?>(null) }
-    var progressText by remember { mutableStateOf("") }
-    var progressFraction by remember { mutableStateOf(0f) }
-    var cancelRequested by remember { mutableStateOf(false) }
-    // True once the installer reports Installing: the commit (directory swap + state write) is a
-    // short synchronous transaction, and cancelling mid-way is not meaningful — Cancel is hidden.
-    var commitStarted by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("") }
-    // The catalog is 113 packs and growing, so it folds away once someone has what they came for.
-    // Saveable, so it survives rotation and does not spring back open.
-    var listOpen by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
-    var query by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
-    // 0 = game title, 1 = serial. The catalog arrives in contribution order, which scatters a
-    // game's packs across the list when several authors cover the same title — so sorting is
-    // what actually groups them, and the sort key decides which grouping you get.
-    var sortMode by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(0) }
-    // How many of the long 'Other games' tail are composed. Reset whenever the filter changes, so
-    // a new search starts cheap instead of inheriting a big window from the previous one.
-    var othersShown by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(ONLINE_PAGE) }
-
-    val installRevision = TexturePackInstallState.revision.value
-    val installed = remember(installRevision) { TexturePackInstallState.all() }
+    var browserOpen by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         loading = true
@@ -124,40 +93,29 @@ fun TextureOnlineSection(
         loading = false
     }
 
+    // A pack that finished installing, with the browser open or after it closed, refreshes the
+    // installed packs on the texture screen.
+    val installedCount = TexturePackDownloads.installedCount.intValue
+    var seen by remember { mutableIntStateOf(installedCount) }
+    LaunchedEffect(installedCount) {
+        if (installedCount != seen) {
+            seen = installedCount
+            onInstalled()
+        }
+    }
+
+    val open = { if (packs.isNotEmpty()) browserOpen = true }
+    // A touch opens it with nothing selected: closing it then hands the controller back nothing,
+    // rather than a selection left somewhere down the screen that the page would scroll to.
+    val openByTouch = {
+        SettingsControllerNav.clearSelection()
+        open()
+    }
     GlassPanel(modifier) {
         Column {
-            val toggle = { listOpen = !listOpen }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .controllerFocusable("textures.online.toggle", onConfirm = toggle)
-                    .clickable(onClick = toggle),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                SectionTitle(
-                    str("textures.online.title"),
-                    str("textures.online.subtitle"),
-                    Modifier.weight(1f),
-                )
-                if (packs.isNotEmpty()) {
-                    Text(
-                        packs.size.toString(),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                }
-                Text(
-                    if (listOpen) "\u25be" else "\u25b8",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-
-            if (!listOpen) {
-                // collapsed: header only
-            } else when {
+            SectionTitle(str("textures.online.title"), str("textures.online.subtitle"))
+            Spacer(Modifier.height(12.dp))
+            when {
                 loading -> Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(10.dp))
@@ -171,307 +129,100 @@ fun TextureOnlineSection(
                 )
 
                 else -> {
-                    // Search across everything a person might type: pack name, game title, serial
-                    // and author. Uses the in-app keyboard like the library search, so it works on a
-                    // handheld with no touchscreen keyboard and honours the system-IME preference.
-                    val open = { LibraryKeyboard.open(query, { query = it }, I18n.get("textures.online.search")) }
-                    SearchField(
-                        value = query,
-                        onClick = open,
-                        placeholder = str("textures.online.search"),
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                    )
-                    androidx.compose.runtime.LaunchedEffect(query, sortMode) { othersShown = ONLINE_PAGE }
-                    val needle = query.trim().lowercase()
-                    val packs = if (needle.isEmpty()) packs else packs.filter { p ->
-                        p.name.lowercase().contains(needle) ||
-                            p.gameTitle.lowercase().contains(needle) ||
-                            p.serials.any { it.lowercase().contains(needle) } ||
-                            p.authors.any { it.lowercase().contains(needle) } ||
-                            links[p.id]?.creator?.lowercase()?.contains(needle) == true
-                    }
-
-                    SegmentedRow(
-                        label = str("textures.online.sort.label"),
-                        options = listOf(
-                            str("textures.online.sort.game"),
-                            str("textures.online.sort.serial"),
-                        ),
-                        selectedIndex = sortMode,
-                        onChange = { sortMode = it },
-                    )
-
-                    // Group every pack for one game together, then order authors' packs within a
-                    // game by pack name so the grouping is stable rather than catalog-order luck.
-                    // Serial mode keys on the pack's first serial (sorted, so a multi-region pack
-                    // lands in a predictable place instead of wherever the YAML happened to list).
-                    // Keys are lower-cased rather than passing CASE_INSENSITIVE_ORDER, so "Zelda"
-                    // doesn't sort before "ape escape".
-                    val byGame = compareBy<TextureCatalog.Pack>(
-                        { it.gameTitle.lowercase() },
-                        { it.serials.minOrNull().orEmpty().lowercase() },
-                        { it.name.lowercase() },
-                    )
-                    val bySerial = compareBy<TextureCatalog.Pack>(
-                        { it.serials.minOrNull().orEmpty().lowercase() },
-                        { it.gameTitle.lowercase() },
-                        { it.name.lowercase() },
-                    )
-                    val comparator = if (sortMode == 1) bySerial else byGame
-
-                    // Ordering only: the game in context first, then anything in the library, then
-                    // the rest of the catalog. Nothing is hidden — a pack you cannot use today is
-                    // still a pack you may want tomorrow.
-                    val (owned, others0) = packs.partition { p ->
-                        p.matchesSerial(serial) || p.serials.any { librarySerials.contains(it.uppercase()) }
-                    }
-                    // Current game still wins outright; the chosen sort orders everything under it.
-                    val ordered = owned.sortedWith(
-                        compareByDescending<TextureCatalog.Pack> { it.matchesSerial(serial) }.then(comparator)
-                    )
-                    val others = others0.sortedWith(comparator)
-
-                    val startInstall: (TextureCatalog.Pack, String) -> Unit = { pack, targetSerial ->
-                        busyPackId = pack.id
-                        cancelRequested = false
-                        commitStarted = false
-                        status = ""
-                        progressFraction = 0f
-                        progressText = I18n.get("textures.online.starting")
-                        scope.launch {
-                            val outcome = withContext(Dispatchers.IO) {
-                                TexturePackInstaller.install(
-                                    context, pack, targetSerial,
-                                    onProgress = { p ->
-                                        when (p) {
-                                            is TexturePackInstaller.Progress.Downloading -> {
-                                                progressFraction =
-                                                    if (p.total > 0) (p.read.toFloat() / p.total) else 0f
-                                                progressText = I18n.get("textures.online.downloading")
-                                                    .replace("%1s", mb(p.read)).replace("%2s", mb(p.total))
-                                            }
-                                            TexturePackInstaller.Progress.Verifying ->
-                                                progressText = I18n.get("textures.online.verifying")
-                                            is TexturePackInstaller.Progress.Extracting -> {
-                                                progressFraction =
-                                                    if (p.total > 0) (p.done.toFloat() / p.total) else 0f
-                                                progressText = I18n.get("textures.online.extracting")
-                                                    .replace("%1s", p.done.toString())
-                                                    .replace("%2s", p.total.toString())
-                                            }
-                                            TexturePackInstaller.Progress.Installing -> {
-                                                commitStarted = true
-                                                progressText = I18n.get("textures.online.installing")
-                                            }
-                                        }
-                                    },
-                                    isCancelled = { cancelRequested },
-                                )
-                            }
-                            busyPackId = null
-                            progressText = ""
-                            status = when {
-                                outcome.ok -> I18n.get("textures.online.done")
-                                outcome.error == null -> I18n.get("textures.online.cancelled")
-                                else -> outcome.error
-                            }
-                            if (outcome.ok) onInstalled()
-                        }
-                    }
-
-                    if (ordered.isEmpty() && others.isEmpty()) {
-                        Text(
-                            str("textures.online.empty"),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-
-                    // PAGINATED, not a full render. This whole screen sits inside a
-                    // verticalScroll(), which rules out a LazyColumn (nested scrollables in the
-                    // same axis have unbounded height), so every row used to compose up front —
-                    // the catalogue is 113 packs and growing, and that is what "the entire texture
-                    // pack tab just lags the app" is. Compose a windowful and extend on demand.
-                    //
-                    // "Your games" is never truncated: it is short by construction and it is what
-                    // someone came here for. Only the long "Other games" tail pages.
-                    ordered.forEach { pack ->
-                        PackRow(pack, links[pack.id], installed[pack.id], busyPackId, progressText,
-                            progressFraction,
-                            onOpen = { openPackId = pack.id },
-                            onCancel = { cancelRequested = true },
-                            canCancel = !commitStarted)
-                    }
-
-                    if (others.isNotEmpty()) {
-                        Spacer(Modifier.height(10.dp))
-                        Text(
-                            str("textures.online.otherGames"),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        val shown = others.take(othersShown)
-                        shown.forEach { pack ->
-                            PackRow(pack, links[pack.id], installed[pack.id], busyPackId, progressText,
-                                progressFraction,
-                                onOpen = { openPackId = pack.id },
-                                onCancel = { cancelRequested = true },
-                                canCancel = !commitStarted)
-                        }
-                        val remaining = others.size - shown.size
-                        if (remaining > 0) {
-                            Spacer(Modifier.height(6.dp))
-                            val more = { othersShown += ONLINE_PAGE }
-                            // Says how many are left, so the cap never reads as "that's all there
-                            // is" — a silent truncation here would look like a missing pack.
-                            TextButton(
-                                onClick = more,
-                                modifier = Modifier.controllerFocusable("tex.showMore", onConfirm = more),
-                            ) { Text(str("textures.online.showMore").replace("%d", remaining.toString())) }
-                        }
-                    }
-
-                    val openPack = openPackId?.let { id -> packs.firstOrNull { it.id == id } }
-                    if (openPack != null) {
-                        PackWindow(
-                            pack = openPack,
-                            links = links[openPack.id],
-                            creator = creatorOf(openPack, links[openPack.id]),
-                            sizeText = "${mb(openPack.sizeBytes)} · " +
-                                str("textures.pack.files").replace("%d", openPack.fileCount.toString()),
-                            action = TexturePackInstallState.actionFor(installed[openPack.id], openPack),
-                            anyBusy = busyPackId != null,
-                            openUrl = uriHandler::openUri,
-                            onDownload = {
-                                openPackId = null
-                                // Install target is one of the pack's own serials, so this works with
-                                // no game running and cannot drop a pack into another game's folder.
-                                startInstall(openPack, openPack.installSerialFor(serial, ownedSerials))
-                            },
-                            onClose = { openPackId = null },
-                        )
-                    }
-
-                    if (status.isNotEmpty()) {
-                        Spacer(Modifier.height(8.dp))
-                        Text(status, style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-
+                    CoverStrip(packs, serial, librarySerials, ownedSerials, onClick = openByTouch)
                     Spacer(Modifier.height(8.dp))
-                    // New packs come to us over Discord and are uploaded to the catalog by hand;
-                    // there is no public repo to send people to, so the link is the server itself.
-                    val contact = { uriHandler.openUri(com.armsx2.navigation.DiscordUrl) }
-                    TextButton(
-                        onClick = contact,
-                        modifier = Modifier.controllerFocusable("tex.contribute", onConfirm = contact),
-                    ) { Text(str("textures.online.submitDiscord")) }
-
-                    if (fromCache) {
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            str("textures.online.cached"),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PackRow(
-    pack: TextureCatalog.Pack,
-    links: TexturePackLinks.Links?,
-    installed: TexturePackInstallState.Installed?,
-    busyPackId: String?,
-    progressText: String,
-    progressFraction: Float,
-    onOpen: () -> Unit,
-    onCancel: () -> Unit,
-    canCancel: Boolean,
-) {
-    val busy = busyPackId == pack.id
-    // One shared eligibility rule (revision-aware for B2 tar+zstd, version-based for legacy ZIP).
-    val action = TexturePackInstallState.actionFor(installed, pack)
-
-    Surface(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.40f)),
-    ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(pack.name, style = MaterialTheme.typography.titleSmall,
-                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    val creators = remember(packs, links) { creatorGroups(packs, links).count { it.key.isNotEmpty() } }
                     Text(
-                        "${pack.serials.joinToString(", ")} · ${mb(pack.sizeBytes)} · " +
-                            str("textures.pack.files").replace("%d", pack.fileCount.toString()),
+                        str("textures.browser.counts")
+                            .replace("%1\$s", "%,d".format(packs.size))
+                            .replace("%2\$s", "%,d".format(creators)),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
-                    val creator = creatorOf(pack, links)
-                    if (creator.isNotEmpty()) {
-                        Text(
-                            str("textures.online.by").replace("%s", creator),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                Spacer(Modifier.width(8.dp))
-                if (busy) {
-                    val cancel = onCancel
-                    TextButton(
-                        onClick = cancel,
-                        enabled = canCancel,
-                        modifier = Modifier.controllerFocusable("tex.cancel.${pack.id}", onConfirm = cancel),
-                    ) { Text(str("action.cancel")) }
-                } else {
-                    val label = when (action) {
-                        InstallAction.INSTALLED -> str("textures.online.installed")
-                        // CONFLICT (equal revision, different digest) still offers Update: the fix
-                        // for a mismatched archive is to install the good one over it.
-                        InstallAction.CONFLICT, InstallAction.UPDATE -> str("textures.online.update")
-                        InstallAction.INSTALL -> str("textures.online.get")
-                    }
-                    // Opens the pack's window, whatever its state: an installed pack's creator links
-                    // are still worth reaching. Whether it can download is the window's business.
-                    Button(
-                        onClick = onOpen,
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.controllerFocusable(
-                            "tex.get.${pack.id}", RoundedCornerShape(14.dp), onConfirm = onOpen,
-                        ),
-                    ) { Text(label) }
                 }
             }
-            if (busy) {
+            DownloadStatus(Modifier.fillMaxWidth().padding(top = 10.dp), dark = false)
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = openByTouch,
+                enabled = packs.isNotEmpty(),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .controllerFocusable("textures.online.browse", RoundedCornerShape(14.dp), onConfirm = open),
+            ) { Text(str("textures.browser.open"), fontWeight = FontWeight.SemiBold) }
+            Spacer(Modifier.height(4.dp))
+            // New packs come to us over Discord and are uploaded to the catalog by hand; there is no
+            // public repo to send people to, so the link is the server itself.
+            val contact = { uriHandler.openUri(com.armsx2.navigation.DiscordUrl) }
+            TextButton(
+                onClick = contact,
+                modifier = Modifier.controllerFocusable("tex.contribute", onConfirm = contact),
+            ) { Text(str("textures.online.submitDiscord")) }
+            if (fromCache) {
                 Spacer(Modifier.height(6.dp))
-                LinearProgressIndicator(
-                    progress = { progressFraction.coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth(),
+                Text(
+                    str("textures.online.cached"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(Modifier.height(4.dp))
-                Text(progressText, style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
+
+    if (browserOpen && packs.isNotEmpty()) {
+        TexturePackBrowser(
+            packs = packs,
+            links = links,
+            contextSerial = serial,
+            librarySerials = librarySerials,
+            ownedSerials = ownedSerials,
+            onClose = { browserOpen = false },
+        )
+    }
 }
 
-/** Who made the pack: the archive's name for them when it lists the pack, else the catalog's. */
-private fun creatorOf(pack: TextureCatalog.Pack, links: TexturePackLinks.Links?): String =
-    links?.creator ?: pack.authors.joinToString(", ")
-
-private fun mb(bytes: Long): String = when {
-    bytes >= 1024L * 1024 * 1024 -> String.format(java.util.Locale.US, "%.1f GB", bytes / 1024.0 / 1024 / 1024)
-    else -> "${bytes / 1024 / 1024} MB"
+/**
+ * A row of covers, as many as fit: the player's games' packs first, then a pick of the rest that
+ * changes from day to day, one cover per game. A look at what is in there; tapping opens it.
+ */
+@Composable
+private fun CoverStrip(
+    packs: List<TextureCatalog.Pack>,
+    contextSerial: String?,
+    librarySerials: Set<String>,
+    ownedSerials: Set<String>,
+    onClick: () -> Unit,
+) {
+    val picks = remember(packs, contextSerial, librarySerials) {
+        val mine = packs.filter { p -> p.matchesSerial(contextSerial) || p.serials.any { it.uppercase() in librarySerials } }
+        val day = java.time.LocalDate.now().toEpochDay()
+        (mine.sortedBy { it.gameTitle.lowercase() } + (packs - mine.toSet()).shuffled(kotlin.random.Random(day)))
+            .distinctBy { it.gameTitle.lowercase() }
+    }
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val width = 58.dp
+        val gap = 8.dp
+        val n = ((maxWidth + gap) / (width + gap)).toInt().coerceIn(1, 14)
+        Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+            picks.take(n).forEach { pack ->
+                val coverSerial = pack.installSerialFor(contextSerial, ownedSerials)
+                Box(
+                    Modifier
+                        .size(width, width * 1.4f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable(onClick = onClick),
+                ) {
+                    SubcomposeAsyncImage(
+                        model = packCoverUrl(coverSerial),
+                        contentDescription = pack.gameTitle,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                        loading = { GameCoverPlaceholder(pack.gameTitle.ifEmpty { pack.name }, coverSerial) },
+                        error = { GameCoverPlaceholder(pack.gameTitle.ifEmpty { pack.name }, coverSerial) },
+                    )
+                }
+            }
+        }
+    }
 }

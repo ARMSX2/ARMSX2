@@ -157,6 +157,13 @@ fun AboutScreen(onBack: () -> Unit, viewModel: AboutViewModel = viewModel()) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                     )
+                    // The texture screen's track is CC0 too; its author says credit is appreciated.
+                    Text(
+                        str("app.credits.texturesMusic"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    )
                     // Bundled menu sound effects — also CC0, credited voluntarily.
                     Text(
                         str("app.credits.sfx"),

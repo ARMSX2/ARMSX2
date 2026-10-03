@@ -30,6 +30,9 @@ object TexturePackLinks {
         val creatorPage: String? = null,
         /** The creator's profile picture: their GBAtemp, YouTube or GitHub one. */
         val avatar: String? = null,
+        /** No one has named this pack's creator: the catalog's authors field is a sentence about
+         *  that, not a name, and is not shown as one. */
+        val unknownCreator: Boolean = false,
     )
 
     @Volatile private var loaded: Map<String, Links>? = null
@@ -67,6 +70,7 @@ object TexturePackLinks {
                 status = o.text("status"),
                 creatorPage = person?.url("page"),
                 avatar = person?.url("avatar"),
+                unknownCreator = o.optBoolean("unknown", false),
             )
         }
         return out

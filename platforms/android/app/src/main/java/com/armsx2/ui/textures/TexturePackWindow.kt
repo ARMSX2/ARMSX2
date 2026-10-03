@@ -385,7 +385,7 @@ private fun CreatorTile(
             )
         }
         TileLabel(
-            title = name.ifEmpty { str("textures.pack.creator") },
+            title = name.ifEmpty { str("textures.creators.unknown") },
             subtitle = str("textures.pack.creator") + if (onClick != null) " ↗" else "",
         )
     }
@@ -425,7 +425,7 @@ private fun LinkTile(
 }
 
 @Composable
-private fun TileFrame(
+internal fun TileFrame(
     id: String,
     size: Dp,
     borderColor: Color,
@@ -447,7 +447,7 @@ private fun TileFrame(
 
 /** A tile's name over a dark fade, as on the save state tiles. */
 @Composable
-private fun BoxScope.TileLabel(title: String, subtitle: String) {
+internal fun BoxScope.TileLabel(title: String, subtitle: String) {
     Box(
         Modifier
             .align(Alignment.BottomStart)
@@ -572,14 +572,14 @@ private fun socialsColors(url: String): List<Color> {
 }
 
 @Composable
-private fun avatarRequest(url: String): ImageRequest {
+internal fun avatarRequest(url: String): ImageRequest {
     val context = LocalContext.current
     // Software bitmaps, so the creator's colour can be read out of the picture.
     return remember(url) { ImageRequest.Builder(context).data(url).allowHardware(false).crossfade(true).build() }
 }
 
 /** "Panda_Venom" -> "PV", "Bl4ckH4nd" -> "BH", "mvp899" -> "M". */
-private fun initials(name: String): String {
+internal fun initials(name: String): String {
     val parts = name.split(Regex("[\\s_.|,-]+")).filter { it.isNotEmpty() }
     val letters = when {
         parts.isEmpty() -> "?"
@@ -590,11 +590,11 @@ private fun initials(name: String): String {
 }
 
 /** A creator's colour from their name alone: stable, and different from one creator to the next. */
-private fun nameColor(name: String): Color =
+internal fun nameColor(name: String): Color =
     readable(Color.hsl(((name.hashCode() % 360 + 360) % 360).toFloat(), 0.55f, 0.47f))
 
 /** Darkened until white text on it reads well: a yellow or a lime would not, as picked. */
-private fun readable(color: Color): Color {
+internal fun readable(color: Color): Color {
     var c = color
     repeat(8) { if (c.luminance() > 0.3f) c = lerp(c, Color.Black, 0.12f) }
     return c
