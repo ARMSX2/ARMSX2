@@ -73,14 +73,21 @@ public final class DiscordNative {
     /** False when the SDK was not staged at build time. */
     public static native boolean available();
 
-    /** Create the client; a non-empty token skips the browser and connects directly. Idempotent. */
-    public static native void start(String savedToken);
+    /** Create the client; a non-empty token skips the browser and connects directly, and the
+     *  refresh token renews it when Discord stops taking it. Idempotent. */
+    public static native void start(String savedToken, String savedRefresh);
 
     /** Full browser authorization. Needs an Activity bound via DiscordSocialSdkInit first. */
     public static native void authorize();
 
     /** The freshly-issued token, exactly once, so the caller can persist it. Empty otherwise. */
     public static native String takeToken();
+
+    /** The refresh token issued with {@link #takeToken()}'s, exactly once. Empty otherwise. */
+    public static native String takeRefreshToken();
+
+    /** True once after Discord refused the sign-in and it could not be renewed. */
+    public static native boolean takeAuthExpired();
 
     /** Mirrors BridgeStatus in discord_bridge.cpp. */
     public static native int status();

@@ -523,6 +523,7 @@
   "friends.connect": "Kết nối Discord",
   "friends.connected": "Đã kết nối Discord",
   "friends.connecting": "Đang kết nối Discord…",
+  "friends.expired": "Phiên đăng nhập Discord của bạn đã hết hạn. Hãy kết nối lại.",
   "friends.disconnect": "Ngắt kết nối",
   "friends.explain": "Liên kết Discord để hiện game bạn đang chơi và xem bạn bè nào đang dùng ARMSX2. Dùng danh sách bạn bè Discord sẵn có của bạn. ARMSX2 không lưu tài khoản nào và không chạy máy chủ nào. Chỉ hoạt động khi ứng dụng đang mở.",
   "friends.inLibrary": "Đang ở thư viện",

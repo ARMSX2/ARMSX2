@@ -523,6 +523,7 @@
  "friends.connect": "Discord 연결",
  "friends.connected": "Discord 연결됨",
  "friends.connecting": "Discord에 연결 중…",
+ "friends.expired": "Discord 로그인이 만료되었습니다. 다시 연결하세요.",
  "friends.disconnect": "연결 해제",
  "friends.explain": "Discord를 연결하면 플레이 중인 게임을 표시하고 어떤 친구가 ARMSX2를 사용 중인지 볼 수 있습니다. 기존 Discord 친구 목록을 그대로 사용합니다. ARMSX2는 계정을 보관하지 않으며 서버도 운영하지 않습니다. 앱이 열려 있는 동안에만 동작합니다.",
  "friends.inLibrary": "라이브러리 둘러보는 중",

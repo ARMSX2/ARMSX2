@@ -518,6 +518,7 @@
  "friends.connect": "Collega Discord",
  "friends.connected": "Discord collegato",
  "friends.connecting": "Connessione a Discord…",
+ "friends.expired": "Il tuo accesso a Discord è scaduto. Collegalo di nuovo.",
  "friends.disconnect": "Scollega",
  "friends.explain": "Collega Discord per mostrare a cosa stai giocando e vedere quali amici sono su ARMSX2. Usa i tuoi amici Discord esistenti. ARMSX2 non conserva alcun account e non gestisce alcun server. Attivo solo mentre l'app è aperta.",
  "friends.inLibrary": "Nella libreria",

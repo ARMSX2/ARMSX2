@@ -518,6 +518,7 @@
  "friends.connect": "Conectar Discord",
  "friends.connected": "Discord conectado",
  "friends.connecting": "Conectando con Discord…",
+ "friends.expired": "Tu sesión de Discord ha caducado. Vuelve a conectarlo.",
  "friends.disconnect": "Desconectar",
  "friends.explain": "Vincula Discord para mostrar a qué estás jugando y ver qué amigos están en ARMSX2. Usa tus amigos de Discord actuales. ARMSX2 no guarda ninguna cuenta ni ejecuta ningún servidor. Solo mientras la app está abierta.",
  "friends.inLibrary": "En la biblioteca",

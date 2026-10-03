@@ -571,6 +571,7 @@
  "friends.connect": "اتصال Discord",
  "friends.connected": "Discord متصل است",
  "friends.connecting": "در حال اتصال به Discord…",
+ "friends.expired": "ورود شما به Discord منقضی شده است. دوباره متصل کنید.",
  "friends.disconnect": "قطع اتصال",
  "friends.explain": "Discord را متصل کنید تا بازی فعلی‌تان نمایش داده شود و ببینید کدام دوستانتان در ARMSX2 هستند. از دوستان فعلی شما در Discord استفاده می‌کند. ARMSX2 هیچ حسابی نگه نمی‌دارد و هیچ سروری اجرا نمی‌کند. فقط تا زمانی که برنامه باز است.",
  "friends.inLibrary": "در کتابخانه",

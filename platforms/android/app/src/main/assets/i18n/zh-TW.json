@@ -525,6 +525,7 @@
  "friends.connect": "連接 Discord",
  "friends.connected": "已連接 Discord",
  "friends.connecting": "正在連接 Discord…",
+ "friends.expired": "Discord 登入已過期，請重新連接。",
  "friends.disconnect": "中斷連接",
  "friends.explain": "連結 Discord 後，可顯示你正在玩的遊戲，並查看哪些好友正在使用 ARMSX2。沿用你現有的 Discord 好友名單。ARMSX2 不保留任何帳號，也不架設任何伺服器。僅在應用程式開啟時運作。",
  "friends.inLibrary": "正在瀏覽遊戲庫",

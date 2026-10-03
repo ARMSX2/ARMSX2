@@ -523,6 +523,7 @@
   "friends.connect": "Discordと連携",
   "friends.connected": "Discordと連携済み",
   "friends.connecting": "Discordに接続中…",
+  "friends.expired": "Discordのサインインの有効期限が切れました。もう一度連携してください。",
   "friends.disconnect": "連携を解除",
   "friends.explain": "Discordと連携すると、プレイ中のゲームを表示したり、ARMSX2を使っているフレンドを確認したりできます。既存のDiscordフレンドをそのまま使用します。ARMSX2はアカウントを保持せず、サーバーも運用しません。アプリを開いている間のみ動作します。",
   "friends.inLibrary": "ライブラリを閲覧中",

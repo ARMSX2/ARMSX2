@@ -73,6 +73,7 @@ object DiscordPresence {
     private const val TAG = "DiscordPresence"
     private const val PREF_ENABLED = "discord.enabled"
     private const val PREF_TOKEN = "discord.token"
+    private const val PREF_REFRESH = "discord.refresh"
     private const val PREF_NOTIFY = "discord.notifyInGame"
 
     /** Seconds between RA rich-presence re-checks. Discord rate-limits presence updates, so this
@@ -123,7 +124,7 @@ object DiscordPresence {
             Log.i(TAG, "helper process connected")
             // Re-issue whatever the helper needs to know: a reconnect means a fresh process that
             // remembers nothing, so anything set before the bind has to be replayed.
-            send(DiscordIpc.MSG_START, Bundle().apply { putString(DiscordIpc.DATA_TOKEN, savedToken) })
+            send(DiscordIpc.MSG_START, savedSignIn())
             pushPresence()
         }
 
@@ -286,6 +287,23 @@ object DiscordPresence {
             runCatching { MainActivityRuntime.prefs.edit().putString(PREF_TOKEN, value).apply() }
         }
 
+    /** Renews [savedToken] when Discord stops taking it (an access token lasts about a week).
+     *  Empty for a sign-in made before 2.8, which then has to be made again once it runs out. */
+    private var savedRefresh: String
+        get() = runCatching { MainActivityRuntime.prefs.getString(PREF_REFRESH, "") ?: "" }.getOrDefault("")
+        set(value) {
+            runCatching { MainActivityRuntime.prefs.edit().putString(PREF_REFRESH, value).apply() }
+        }
+
+    /** Discord refused the sign-in and it could not be renewed: the panel says so under Connect
+     *  until the player connects again. */
+    private var signInExpired = false
+
+    private fun savedSignIn() = Bundle().apply {
+        putString(DiscordIpc.DATA_TOKEN, savedToken)
+        putString(DiscordIpc.DATA_REFRESH, savedRefresh)
+    }
+
     /** Announce on the in-game OSD when a friend joins. Default on: it is the point of the feature. */
     var notifyInGame: Boolean
         get() = runCatching { MainActivityRuntime.prefs.getBoolean(PREF_NOTIFY, true) }.getOrDefault(true)
@@ -345,7 +363,7 @@ object DiscordPresence {
         //
         // A no-op when the bind is still in flight: send() drops it, and onServiceConnected covers
         // that case a moment later.
-        send(DiscordIpc.MSG_START, Bundle().apply { putString(DiscordIpc.DATA_TOKEN, savedToken) })
+        send(DiscordIpc.MSG_START, savedSignIn())
         startPolling()
         startPresenceWatch()
     }
@@ -359,6 +377,7 @@ object DiscordPresence {
         }
         if (!started) start()
         bindHelper()
+        signInExpired = false
         error.value = null
         Log.i(TAG, "authorize() requested (started=$started, enabled=$enabled)")
         send(DiscordIpc.MSG_AUTHORIZE)
@@ -369,6 +388,8 @@ object DiscordPresence {
         presenceJob?.cancel(); presenceJob = null
         started = false
         savedToken = ""
+        savedRefresh = ""
+        signInExpired = false
         knownFriends = emptySet()
         seededFriends = false
         justOnline.value = null
@@ -422,6 +443,15 @@ object DiscordPresence {
                     savedToken = fresh
                     Log.i(TAG, "authorization stored")
                 }
+                snap.getString(DiscordIpc.DATA_FRESH_REFRESH)?.takeIf { it.isNotBlank() }?.let { savedRefresh = it }
+                if (snap.getBoolean(DiscordIpc.DATA_AUTH_EXPIRED, false)) {
+                    // Discord refused the sign-in and it could not be renewed. Forget it, so the
+                    // panel offers Connect again instead of retrying a dead token forever.
+                    savedToken = ""
+                    savedRefresh = ""
+                    signInExpired = true
+                    Log.i(TAG, "sign-in expired: signed out")
+                }
 
                 // Reconnect after a drop. The SDK does not retry, and its connection does not
                 // survive the app being backgrounded for long — swapping apps, or a device
@@ -431,9 +461,7 @@ object DiscordPresence {
                         sinceRetry = 0
                         retryAfter = (retryAfter * 2).coerceAtMost(60)
                         Log.i(TAG, "connection dropped — reconnecting (next retry in $retryAfter s)")
-                        send(DiscordIpc.MSG_START, Bundle().apply {
-                            putString(DiscordIpc.DATA_TOKEN, savedToken)
-                        })
+                        send(DiscordIpc.MSG_START, savedSignIn())
                     }
                 } else if (s == CONNECTED) {
                     sinceRetry = 0
@@ -467,7 +495,11 @@ object DiscordPresence {
                     if (raPresence() != lastRaPresence) pushPresence()
                 }
 
-                error.value = if (s == FAILED) snap.getString(DiscordIpc.DATA_ERROR) else null
+                error.value = when {
+                    s == FAILED -> snap.getString(DiscordIpc.DATA_ERROR)
+                    signInExpired -> com.armsx2.i18n.I18n.get("friends.expired")
+                    else -> null
+                }
             }
         }
     }

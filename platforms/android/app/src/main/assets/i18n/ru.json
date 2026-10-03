@@ -570,6 +570,7 @@
   "friends.connect": "Подключить Discord",
   "friends.connected": "Discord подключен",
   "friends.connecting": "Подключение к Discord…",
+  "friends.expired": "Срок действия входа в Discord истёк. Подключите его снова.",
   "friends.disconnect": "Отключить",
   "friends.explain": "Подключите Discord, чтобы показывать, во что вы играете, и видеть, кто из друзей сейчас в ARMSX2. Используется ваш список друзей в Discord. ARMSX2 не создает учетных записей и не держит своего сервера. Работает, только пока приложение открыто.",
   "friends.inLibrary": "В библиотеке",

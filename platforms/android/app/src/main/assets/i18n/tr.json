@@ -523,6 +523,7 @@
  "friends.connect": "Discord'u Bağla",
  "friends.connected": "Discord bağlandı",
  "friends.connecting": "Discord'a bağlanılıyor…",
+ "friends.expired": "Discord oturumunuzun süresi doldu. Yeniden bağlayın.",
  "friends.disconnect": "Bağlantıyı Kes",
  "friends.explain": "Ne oynadığınızı göstermek ve hangi arkadaşlarınızın ARMSX2'de olduğunu görmek için Discord'u bağlayın. Mevcut Discord arkadaşlarınızı kullanır. ARMSX2 hesap tutmaz ve sunucu çalıştırmaz. Yalnızca uygulama açıkken çalışır.",
  "friends.inLibrary": "Kitaplıkta",

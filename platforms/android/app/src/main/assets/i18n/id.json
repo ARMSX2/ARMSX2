@@ -523,6 +523,7 @@
   "friends.connect": "Hubungkan Discord",
   "friends.connected": "Discord terhubung",
   "friends.connecting": "Menghubungkan ke Discord…",
+  "friends.expired": "Login Discord Anda sudah kedaluwarsa. Hubungkan lagi.",
   "friends.disconnect": "Putuskan",
   "friends.explain": "Tautkan Discord untuk menampilkan game yang sedang Anda mainkan dan melihat teman mana yang ada di ARMSX2. Memakai teman Discord Anda yang sudah ada. ARMSX2 tidak menyimpan akun dan tidak menjalankan server. Hanya selama aplikasi terbuka.",
   "friends.inLibrary": "Di pustaka",

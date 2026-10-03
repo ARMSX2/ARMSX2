@@ -165,6 +165,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "friends.explain" to "Link Discord to show what you're playing and see which friends are in ARMSX2. Uses your existing Discord friends. ARMSX2 keeps no account and runs no server. Only while the app is open.",
     "friends.connect" to "Connect Discord",
     "friends.connecting" to "Connecting to Discord…",
+    "friends.expired" to "Your Discord sign-in expired. Connect again.",
     "friends.connected" to "Discord connected",
     "friends.disconnect" to "Disconnect",
     "friends.playingNow" to "In ARMSX2 now",

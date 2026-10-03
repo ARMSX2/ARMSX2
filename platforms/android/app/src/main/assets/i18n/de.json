@@ -395,6 +395,7 @@
  "friends.connect": "Discord verbinden",
  "friends.connected": "Discord verbunden",
  "friends.connecting": "Verbindung zu Discord wird hergestellt…",
+ "friends.expired": "Die Discord-Anmeldung ist abgelaufen. Bitte erneut verbinden.",
  "friends.disconnect": "Trennen",
  "friends.explain": "Discord verknüpfen, um das aktuelle Spiel anzuzeigen und zu sehen, welche Freunde gerade in ARMSX2 sind. Nutzt die vorhandenen Discord-Freunde. ARMSX2 speichert keine Kontodaten und betreibt keinen Server. Nur solange die App geöffnet ist.",
  "friends.inLibrary": "In der Bibliothek",

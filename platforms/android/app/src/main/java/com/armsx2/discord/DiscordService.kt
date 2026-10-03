@@ -99,7 +99,10 @@ class DiscordService : Service() {
         when (msg.what) {
             DiscordIpc.MSG_START -> {
                 if (!loaded) return
-                startWhenEngineBound(msg.data?.getString(DiscordIpc.DATA_TOKEN).orEmpty())
+                startWhenEngineBound(
+                    msg.data?.getString(DiscordIpc.DATA_TOKEN).orEmpty(),
+                    msg.data?.getString(DiscordIpc.DATA_REFRESH).orEmpty(),
+                )
             }
 
             DiscordIpc.MSG_AUTHORIZE -> {
@@ -153,12 +156,12 @@ class DiscordService : Service() {
      * SDK's statics are per-process and Android restarts :discord whenever it likes, so the
      * binding has to be re-established on demand rather than assumed.
      */
-    private fun startWhenEngineBound(token: String) {
+    private fun startWhenEngineBound(token: String, refresh: String) {
         if (DiscordAuthActivity.engineBound) {
-            doStart(token)
+            doStart(token, refresh)
             return
         }
-        DiscordAuthActivity.onEngineBound = { handler.post { doStart(token) } }
+        DiscordAuthActivity.onEngineBound = { handler.post { doStart(token, refresh) } }
         runCatching {
             startActivity(
                 Intent(this, DiscordAuthActivity::class.java)
@@ -171,8 +174,8 @@ class DiscordService : Service() {
         }
     }
 
-    private fun doStart(token: String) {
-        runCatching { DiscordNative.start(token) }
+    private fun doStart(token: String, refresh: String) {
+        runCatching { DiscordNative.start(token, refresh) }
             .onSuccess { started = true }
             .onFailure { Log.w(TAG, "start failed: ${it.message}") }
     }
@@ -193,6 +196,10 @@ class DiscordService : Service() {
                 // Surfaces exactly once, right after a successful sign-in; the app persists it so
                 // the browser is a one-time cost rather than a per-launch one.
                 putString(DiscordIpc.DATA_FRESH_TOKEN, runCatching { DiscordNative.takeToken() }.getOrDefault(""))
+                // With it, the refresh token that renews it; and once, the news that Discord refused
+                // the sign-in and it could not be renewed.
+                putString(DiscordIpc.DATA_FRESH_REFRESH, runCatching { DiscordNative.takeRefreshToken() }.getOrDefault(""))
+                putBoolean(DiscordIpc.DATA_AUTH_EXPIRED, runCatching { DiscordNative.takeAuthExpired() }.getOrDefault(false))
             }
         }
         runCatching {

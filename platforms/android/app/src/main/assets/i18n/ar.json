@@ -523,6 +523,7 @@
  "friends.connect": "ربط Discord",
  "friends.connected": "تم ربط Discord",
  "friends.connecting": "جارٍ الاتصال بـ Discord…",
+ "friends.expired": "انتهت صلاحية تسجيل دخولك إلى Discord. اربط Discord مرة أخرى.",
  "friends.disconnect": "قطع الاتصال",
  "friends.explain": "اربط Discord لإظهار ما تلعبه ومعرفة أيّ أصدقائك موجودون في ARMSX2. يستخدم أصدقاءك الحاليين على Discord. لا يحتفظ ARMSX2 بأي حساب ولا يشغّل أي خادم. يعمل فقط أثناء فتح التطبيق.",
  "friends.inLibrary": "في المكتبة",

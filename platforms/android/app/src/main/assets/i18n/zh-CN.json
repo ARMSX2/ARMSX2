@@ -525,6 +525,7 @@
  "friends.connect": "连接 Discord",
  "friends.connected": "已连接 Discord",
  "friends.connecting": "正在连接 Discord…",
+ "friends.expired": "Discord 登录已过期，请重新连接。",
  "friends.disconnect": "断开连接",
  "friends.explain": "关联 Discord 后，可显示你正在玩的游戏，并查看哪些好友正在使用 ARMSX2。使用你现有的 Discord 好友列表。ARMSX2 不保存任何账号，也不运行任何服务器。仅在应用打开时生效。",
  "friends.inLibrary": "正在浏览游戏库",

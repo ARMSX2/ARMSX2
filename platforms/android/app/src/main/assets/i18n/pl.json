@@ -523,6 +523,7 @@
  "friends.connect": "Połącz z Discordem",
  "friends.connected": "Połączono z Discordem",
  "friends.connecting": "Łączenie z Discordem…",
+ "friends.expired": "Logowanie do Discorda wygasło. Połącz ponownie.",
  "friends.disconnect": "Rozłącz",
  "friends.explain": "Połącz się z Discordem, aby pokazywać, w co grasz, i widzieć, którzy znajomi są w ARMSX2. Korzysta z istniejącej listy znajomych na Discordzie. ARMSX2 nie przechowuje kont i nie uruchamia żadnego serwera. Działa tylko, gdy aplikacja jest otwarta.",
  "friends.inLibrary": "W bibliotece",
