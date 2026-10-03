@@ -102,12 +102,13 @@ for so in emucore_4k emucore_16k; do
 	[[ "$sz" -gt 10000000 ]] || { echo "FATAL: lib${so}.so too small ($sz bytes)" >&2; exit 1; }
 done
 
-# --- merge: 4k APK as base, drop old signatures + both cores, re-add STORED ---
+# --- merge: 4k APK as base, drop old signatures + both cores, re-add them compressed ---
+# (not stored: Android extracts every library at install anyway, see build-release-apk.sh)
 UNS="$WORK/universal-unsigned.apk"; ALN="$WORK/universal-aligned.apk"
 cp -f "$WORK/base-emucore_4k.apk" "$UNS"
 zip -qd "$UNS" "META-INF/*" >/dev/null 2>&1 || true
 zip -qd "$UNS" "lib/arm64-v8a/libemucore_4k.so" "lib/arm64-v8a/libemucore_16k.so" >/dev/null 2>&1 || true
-( cd "$WORK/lib-stage" && zip -qr -0 "$UNS" lib )
+( cd "$WORK/lib-stage" && zip -qr -9 "$UNS" lib )
 "$ZIPALIGN" -f -P 16 4 "$UNS" "$ALN"
 
 # --- sign ---------------------------------------------------------------------

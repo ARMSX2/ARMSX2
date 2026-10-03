@@ -110,12 +110,15 @@ for so in libemucore_4k $([[ -z "${ONLY_4K:-}" ]] && echo libemucore_16k); do
 	[[ "$sz" -gt 10000000 ]] || { echo "FATAL $so too small ($sz)" >&2; exit 1; }
 done
 
-# merge: 4k release apk as base, drop old signatures + both cores, re-add both cores STORED
+# merge: 4k release apk as base, drop old signatures + both cores, re-add both cores compressed.
+# Not stored: the app installs with extractNativeLibs (useLegacyPackaging, which adrenotools' hooks
+# need), so Android copies every library out of the APK at install and loads that copy. Stored, the
+# two cores only made the APK about 31 MB bigger and sat on the device twice.
 UNSIGNED="$WORK/universal-unsigned.apk"; ALIGNED="$WORK/universal-aligned.apk"
 cp -f "$WORK/base-4k.apk" "$UNSIGNED"
 zip -qd "$UNSIGNED" "META-INF/*" >/dev/null 2>&1 || true
 zip -qd "$UNSIGNED" "lib/arm64-v8a/libemucore_4k.so" "lib/arm64-v8a/libemucore_16k.so" >/dev/null 2>&1 || true
-( cd "$WORK/lib-stage" && zip -qr -0 "$UNSIGNED" lib )
+( cd "$WORK/lib-stage" && zip -qr -9 "$UNSIGNED" lib )
 "$ZIPALIGN" -f -P 16 4 "$UNSIGNED" "$ALIGNED"
 
 # ROTATION SIGN: old debug key (API<=32) --next-signer--> new release key (API33+) + lineage.

@@ -110,7 +110,8 @@ cp -f "$BASE_APK" "$UNSIGNED_APK"
 zip -qd "$UNSIGNED_APK" "META-INF/*" >/dev/null 2>&1 || true
 zip -qd "$UNSIGNED_APK" "lib/arm64-v8a/libemucore_4k.so" "lib/arm64-v8a/libemucore_16k.so" >/dev/null 2>&1 || true
 
-(cd "$LIB_STAGE" && zip -qr -0 "$UNSIGNED_APK" lib)
+# Compressed, not stored: Android extracts every library at install anyway (see build-release-apk.sh).
+(cd "$LIB_STAGE" && zip -qr -9 "$UNSIGNED_APK" lib)
 
 "$ZIPALIGN" -f -P 16 4 "$UNSIGNED_APK" "$ALIGNED_APK"
 "$APKSIGNER" sign \
