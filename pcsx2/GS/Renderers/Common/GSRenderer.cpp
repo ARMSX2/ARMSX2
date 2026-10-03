@@ -1558,6 +1558,31 @@ void GSTranslateWindowToDisplayCoordinates(float window_x, float window_y, float
 	*display_y = rel_y / draw_height;
 }
 
+// The other way: where on the window a normalized display position is (an arcade light gun's stick aim,
+// for its crosshair).
+void GSTranslateDisplayToWindowCoordinates(float display_x, float display_y, float* window_x, float* window_y)
+{
+	*window_x = s_last_draw_rect.x + display_x * (s_last_draw_rect.z - s_last_draw_rect.x);
+	*window_y = s_last_draw_rect.y + display_y * (s_last_draw_rect.w - s_last_draw_rect.y);
+}
+
+// The same mapping without collapsing a position off the picture to (-1,-1): the caller gets graded
+// coordinates beyond [0,1] (an arcade lightgun's aim beside the screen, PCSX2x6).
+void GSTranslateWindowToDisplayCoordinatesUnclamped(float window_x, float window_y, float* display_x, float* display_y)
+{
+	const float draw_width = s_last_draw_rect.z - s_last_draw_rect.x;
+	const float draw_height = s_last_draw_rect.w - s_last_draw_rect.y;
+	if (draw_width <= 0.0f || draw_height <= 0.0f)
+	{
+		*display_x = -1.0f;
+		*display_y = -1.0f;
+		return;
+	}
+
+	*display_x = (window_x - s_last_draw_rect.x) / draw_width;
+	*display_y = (window_y - s_last_draw_rect.y) / draw_height;
+}
+
 void GSSetDisplayAlignment(GSDisplayAlignment alignment)
 {
 	s_display_alignment = alignment;

@@ -155,9 +155,10 @@ static constexpr s32 kExecuteBlockSafetyCap = 1 << 20;
 bool g_eeRecLastBlockFF = false;
 #endif
 
-// Self-modifying code detection
-static u16 manual_page[Ps2MemSize::MainRam / 4096] = {};
-static u8 manual_counter[Ps2MemSize::MainRam / 4096] = {};
+// Self-modifying code detection. Sized for the 128 MB map (Ps2MemSize::TotalRam), as on x86; a 32 MB
+// machine only ever touches the first quarter.
+static u16 manual_page[Ps2MemSize::TotalRam / 4096] = {};
+static u8 manual_counter[Ps2MemSize::TotalRam / 4096] = {};
 
 // Forward declarations
 static void recRecompile(const u32 startpc);
@@ -3260,9 +3261,14 @@ static bool memory_protect_recompiled_code(u32 startpc, u32 size)
 //  Reserve / Reset / Shutdown / Execute
 // =====================================================================================================
 
+// Guest RAM the LUT, recRAM and recRAMCopy below were last sized for (Ps2MemSize::ExposedRam):
+// 32 MB, or 128 MB while a Namco System 246/256 arcade game runs (memSetExtraMemMode).
+static u32 s_reservedRam = 0;
+
 static void recReserveRAM()
 {
-	recLutEntries = (Ps2MemSize::MainRam + Ps2MemSize::Rom + Ps2MemSize::Rom1 + Ps2MemSize::Rom2) / 4;
+	s_reservedRam = Ps2MemSize::ExposedRam;
+	recLutEntries = (Ps2MemSize::ExposedRam + Ps2MemSize::Rom + Ps2MemSize::Rom1 + Ps2MemSize::Rom2) / 4;
 
 	if (recLutReserve_RAM.size() != recLutEntries)
 		recLutReserve_RAM.resize(recLutEntries);
@@ -3271,7 +3277,7 @@ static void recReserveRAM()
 
 	BASEBLOCK* curpos = recLutReserve_RAM.data();
 	recRAM = curpos;
-	curpos += (Ps2MemSize::MainRam / 4);
+	curpos += (Ps2MemSize::ExposedRam / 4);
 	recROM = curpos;
 	curpos += (Ps2MemSize::Rom / 4);
 	recROM1 = curpos;
@@ -3279,13 +3285,12 @@ static void recReserveRAM()
 	recROM2 = curpos;
 	curpos += (Ps2MemSize::Rom2 / 4);
 
-	// MainRam, deliberately — this whole rec is MainRam-only: recLutEntries and
-	// the recRAM advance above, the (MainRam / _64kb) alias mask in recResetRaw,
-	// and manual_page / manual_counter. Upstream x86 uses ExposedRam throughout
-	// instead (iR5900.cpp:564-577). Widening this buffer alone would desync the
-	// snapshots from a LUT that aliases high RAM back into the low 32 MB.
-	if (recRAMCopy.size() != Ps2MemSize::MainRam)
-		recRAMCopy.resize(Ps2MemSize::MainRam);
+	// ExposedRam, like everything else that covers guest RAM here: recLutEntries and the recRAM
+	// advance above, the alias mask and page loop in recResetRaw, and manual_page / manual_counter
+	// (x86 iR5900.cpp:564-577 does the same). They have to move together: a buffer wider than the
+	// LUT would hand two blocks aliased to one LUT entry two different snapshots.
+	if (recRAMCopy.size() != Ps2MemSize::ExposedRam)
+		recRAMCopy.resize(Ps2MemSize::ExposedRam);
 }
 
 static void recReserve()
@@ -3337,6 +3342,12 @@ static void recReserve()
 static void recResetRaw()
 {
 	Console.WriteLn(Color_Green, "iR5900-ARM64 Recompiler reset.");
+
+	// The RAM map changed size since the last reset (an arcade session's 128 MB, or back to 32 MB
+	// after one). Mirrors x86 recResetRaw; everything that points into the old arrays is rebuilt
+	// below.
+	if (s_reservedRam != Ps2MemSize::ExposedRam)
+		recReserveRAM();
 
 	// The code-cache rewind below dangles every host landing pointer in the
 	// call-ret ring — sentinel-fill so no stale frame can match. (recClear
@@ -3404,7 +3415,7 @@ static void recResetRaw()
 	Console.WriteLn(Color_Green, "EE ARM64: Dispatcher generated at %p (%zu bytes)", dispStart, (size_t)(dispEnd - dispStart));
 
 	iopClearRecLUT(recLutReserve_RAM.data(),
-		Ps2MemSize::MainRam + Ps2MemSize::Rom + Ps2MemSize::Rom1 + Ps2MemSize::Rom2);
+		Ps2MemSize::ExposedRam + Ps2MemSize::Rom + Ps2MemSize::Rom1 + Ps2MemSize::Rom2);
 
 	BASEBLOCK* unmapped = recLutUnmapped.data();
 
@@ -3414,10 +3425,10 @@ static void recResetRaw()
 	for (int i = 0; i < _64kb / 4; i++)
 		unmapped[i].SetFnptr((uptr)UnmappedRecLUTPage);
 
-	// Map EE RAM (32MB, mirrored)
-	for (int i = 0; i < 0x200; i++)
+	// Map EE RAM: 32 MB, or 128 MB with the extended map
+	for (int i = 0; i < static_cast<int>(Ps2MemSize::ExposedRam / _64kb); i++)
 	{
-		u32 mask = (Ps2MemSize::MainRam / _64kb) - 1;
+		u32 mask = (Ps2MemSize::ExposedRam / _64kb) - 1;
 		recLUT_SetPage(recLUT, hwLUT, recRAM, 0x0000, i, i & mask);
 		recLUT_SetPage(recLUT, hwLUT, recRAM, 0x2000, i, i & mask);
 		recLUT_SetPage(recLUT, hwLUT, recRAM, 0x3000, i, i & mask);
@@ -4527,7 +4538,7 @@ StartRecomp:
 	// mismatched and recompile-looped — which is why this was disabled; the
 	// old-block-region compare is the correct x86 semantics
 	// (OverlapWalkIgnoresUnmodifiedNeighbors pins the no-false-positive side).
-	if (HWADDR(pc) <= Ps2MemSize::MainRam)
+	if (HWADDR(pc) <= Ps2MemSize::ExposedRam)
 	{
 		BASEBLOCKEX* oldBlock;
 		int i = recBlocks.LastIndex(HWADDR(pc) - 4);
@@ -4557,7 +4568,7 @@ StartRecomp:
 			// the compare never matches — each then recClears the other
 			// forever. Clamp keeps a block straddling the top of RAM in bounds.
 			const u32 cmplen = std::min<u32>(oldBlock->size * 4,
-				Ps2MemSize::MainRam - oldBlock->startpc);
+				Ps2MemSize::ExposedRam - oldBlock->startpc);
 			if (memcmp(&recRAMCopy[oldBlock->startpc], PSM(oldBlock->startpc), cmplen))
 			{
 				recClear(startpc, (pc - startpc) / 4);

@@ -4,6 +4,9 @@
 #include "Common.h"
 #include "Host.h"
 #include "IopDma.h"
+#include "IopHw.h"
+#include "R3000A.h"
+#include "common/ARCADE.h"
 #include "Recording/InputRecording.h"
 #include "SIO/Memcard/MemoryCardProtocol.h"
 #include "SIO/Multitap/MultitapProtocol.h"
@@ -87,6 +90,7 @@ void Sio2::SoftReset()
 	// Clear dmaBlockSize, in case the next SIO2 command is not sent over DMA11.
 	dmaBlockSize = 0;
 	queueComplete = false;
+	transferBytes = 0;
 
 	// Anything in g_Sio2FifoIn which was not necessary to consume should be cleared out prior to the next SIO2 cycle.
 	while (!g_Sio2FifoIn.empty())
@@ -114,8 +118,40 @@ void Sio2::SetCtrl(u32 value)
 
 	if (this->ctrl & Sio2Ctrl::START_TRANSFER)
 	{
-		Interrupt();
+		if (!Arcade::IsActive())
+		{
+			Interrupt();
+			return;
+		}
+
+		// An arcade board's dongle and pads are timed: the interrupt arrives once the bytes have gone
+		// over the serial line at the port's baud rate (PCSX2x6).
+		this->ctrl &= ~Sio2Ctrl::START_TRANSFER;
+
+		const u32 cmd0 = CmdQueue[0];
+		const u32 cmdPort = cmd0 & 0x3;
+		const u32 send1 = PortCtrl0[cmdPort];
+		const u32 send2 = PortCtrl1[cmdPort];
+		const bool useBaud1 = (cmd0 >> 30) & 1;
+		const u32 baudDiv = useBaud1 ? (send1 >> 24) : ((send1 >> 16) & 0xFF);
+		const u32 interBytePer = (send2 >> 16) & 0xFF;
+		const u32 cyclesPerByte = 8 * (baudDiv + 1) + interBytePer;
+
+		// Byte count from the queued command lengths (more accurate than the DMA transfer size).
+		u32 serialBytes = 0;
+		for (size_t i = 0; i < queuePosition; i++)
+			serialBytes += (CmdQueue[i] >> 8) & Sio2Cmd::COMMAND_LENGTH_MASK;
+		if (serialBytes == 0)
+			serialBytes = static_cast<u32>(transferBytes);
+
+		const u32 delay = serialBytes * cyclesPerByte + 64;
+		PSX_INT(IopEvt_SIO2, delay);
 	}
+}
+
+void sio2DelayedInterrupt()
+{
+	g_Sio2.Interrupt();
 }
 
 void Sio2::SetCmd(size_t position, u32 value)
@@ -379,6 +415,8 @@ void Sio2::Memcard()
 
 void Sio2::Write(u8 data)
 {
+	transferBytes++;
+
 	Sio2Log.WriteLn("%s(%02X) SIO2 DATA Write", __FUNCTION__, data);
 
 	if (!queueRead)
@@ -512,6 +550,9 @@ bool Sio2::DoState(StateWrapper& sw)
 	sw.Do(&processedLength);
 	sw.Do(&dmaBlockSize);
 	sw.Do(&queueComplete);
+	// Arcade sessions only, so a console's savestates keep their layout.
+	if (Arcade::IsActive())
+		sw.Do(&transferBytes);
 
 	sw.Do(&g_Sio2FifoIn);
 	sw.Do(&g_Sio2FifoOut);

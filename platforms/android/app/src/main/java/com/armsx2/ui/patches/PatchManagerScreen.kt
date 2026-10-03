@@ -81,17 +81,22 @@ fun PatchManagerScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Pa
     // Keyed on the game (this screen shares one Activity-scoped VM with the settings tab), and
     // resets the online browser first so a previous game's fetched results don't linger here.
     LaunchedEffect(game?.uri) { viewModel.resetOnlineForGame(); viewModel.refresh() }
+    // Options on the left, files on the right: the controller keeps to a column and crosses with
+    // Left/Right.
+    com.armsx2.ui.settings.ColumnControllerNav()
 
     ArmsBackdrop {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
             ArmsTopBar(
                 title = str("patches.dialog.patchesAndCheats"),
-                leading = { RoundAction("←", str("action.back"), onBack) },
+                // Reachable by the controller, so Up from the first control comes back to the top of
+                // the screen; with nothing above that control, the page could not scroll back to it.
+                leading = { RoundAction("←", str("action.back"), onBack, controllerId = "patches.top.back") },
                 actions = {
-                    RoundAction("＋", str("action.import"), { picker.launch(arrayOf("text/plain", "application/octet-stream", "*/*")) })
-                    RoundAction("🗀", str("patches.import.folder"), { folderPicker.launch(null) })
-                    RoundAction("✎", str("patches.editor.new"), viewModel::newEditor)
-                    RoundAction("↻", str("games.card.refresh"), viewModel::refresh)
+                    RoundAction("＋", str("action.import"), { picker.launch(arrayOf("text/plain", "application/octet-stream", "*/*")) }, controllerId = "patches.top.import")
+                    RoundAction("🗀", str("patches.import.folder"), { folderPicker.launch(null) }, controllerId = "patches.top.folder")
+                    RoundAction("✎", str("patches.editor.new"), viewModel::newEditor, controllerId = "patches.top.new")
+                    RoundAction("↻", str("games.card.refresh"), viewModel::refresh, controllerId = "patches.top.refresh")
                 },
             )
             PatchDisclaimer()

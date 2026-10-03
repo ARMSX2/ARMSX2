@@ -7,6 +7,7 @@
 #include "common/StringUtil.h"
 #include "ps2/BiosTools.h"
 #include "R5900.h"
+#include "common/ARCADE.h"
 #include "R3000A.h"
 #include "ps2/pgif.h" // pgif init
 #include "VUmicro.h"
@@ -291,9 +292,12 @@ static __fi bool _cpuTestInterrupts()
 
 		if (cpuRegs.interrupt & ((1 << DMAC_VIF0) | (1 << DMAC_FROM_IPU) | (1 << DMAC_TO_IPU)
 			| (1 << DMAC_FROM_SPR) | (1 << DMAC_TO_SPR) | (1 << DMAC_MFIFO_VIF) | (1 << DMAC_MFIFO_GIF)
-			| (1 << VIF_VU0_FINISH) | (1 << VIF_VU1_FINISH) | (1 << IPU_PROCESS)))
+			| (1 << VIF_VU0_FINISH) | (1 << VIF_VU1_FINISH) | (1 << IPU_PROCESS) | (1 << DMAC_GIF_UNIT)))
 		{
 			TESTINT(DMAC_VIF0, vif0Interrupt);
+
+			// Only an arcade board schedules it: CSR.FINISH after its GS draw delay (Gif_FinishIRQ).
+			TESTINT(DMAC_GIF_UNIT, Gif_FinishIRQEvent);
 
 			TESTINT(DMAC_FROM_IPU, ipu0Interrupt);
 			TESTINT(DMAC_TO_IPU, ipu1Interrupt);
@@ -730,13 +734,30 @@ void eeloadHook()
 		if (!elfname.empty())
 		{
 			// Find and save location of default/fallback call "rom0:OSDSYS"; to be used later by eeloadHook2()
-			for (g_osdsys_str = EELOAD_START; g_osdsys_str < EELOAD_START + EELOAD_SIZE; g_osdsys_str += 8) // strings are 64-bit aligned
+			if (Arcade::IsActive())
 			{
-				if (!strcmp((char*)PSM(g_osdsys_str), "rom0:OSDSYS"))
+				// An arcade board's EELOAD names OSDSYS more than once: point every one of them at the game,
+				// and let launch arguments go in at the last (PCSX2x6).
+				g_osdsys_str = 0;
+				for (u32 scan = EELOAD_START; scan < EELOAD_START + EELOAD_SIZE; scan += 8) // strings are 64-bit aligned
 				{
-					// Overwrite OSDSYS with game's ELF name
-					strcpy((char*)PSM(g_osdsys_str), elfname.c_str());
-					break;
+					if (!strcmp((char*)PSM(scan), "rom0:OSDSYS"))
+					{
+						strcpy((char*)PSM(scan), elfname.c_str());
+						g_osdsys_str = scan;
+					}
+				}
+			}
+			else
+			{
+				for (g_osdsys_str = EELOAD_START; g_osdsys_str < EELOAD_START + EELOAD_SIZE; g_osdsys_str += 8) // strings are 64-bit aligned
+				{
+					if (!strcmp((char*)PSM(g_osdsys_str), "rom0:OSDSYS"))
+					{
+						// Overwrite OSDSYS with game's ELF name
+						strcpy((char*)PSM(g_osdsys_str), elfname.c_str());
+						break;
+					}
 				}
 			}
 		}

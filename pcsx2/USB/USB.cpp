@@ -20,7 +20,8 @@
 #include <stdexcept>
 #include <string>
 
-#define PSXCLK 36864000 /* 36.864 MHz */
+#include "Common.h" // PSXCLK: faster on an arcade System 256
+#include "common/ARCADE.h"
 
 namespace USB
 {
@@ -523,7 +524,9 @@ void USBasync(u32 cycles)
 
 int usb_get_ticks_per_second()
 {
-	return PSXCLK;
+	// 36.864 MHz, as it always was on a console (PS1 mode's slower PSXCLK included); an arcade System 256's
+	// IOP is faster, and its USB counts its cycles (PCSX2x6).
+	return Arcade::IsActive() ? static_cast<int>(PSXCLK) : 36864000;
 }
 
 s64 usb_get_clock()

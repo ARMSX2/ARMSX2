@@ -42,6 +42,9 @@
 #include "Input/InputManager.h"
 #include "USB/USB.h"
 #include "USB/deviceproxy.h"
+#include "DEV9/ACJV.h"
+#include "DEV9/ACSRAM.h"
+#include "common/ARCADE.h"
 #include "USB/qemu-usb/hid.h"
 #include "ImGui/ImGuiFullscreen.h"
 #include "Achievements.h"
@@ -1107,6 +1110,333 @@ static GenericInputBinding PadKeyToGeneric(jint key) {
     }
 }
 
+// ---- Namco System 246/256 arcade controls ----------------------------------------------------------
+//
+// An arcade board reads no DualShock: its controls come in over JVS (pcsx2/DEV9/ACJV, from PCSX2x6).
+// While an arcade game runs, every pad press (physical pad, on-screen buttons, macros, everything
+// through applyPadButton) also works the cabinet, laid out the way PCSX2x6 lays it out for each kind of
+// game; every JVS binding table there carries, as its generic mapping, the PS2 port's button for it.
+//   Start: Start. Select: a coin, for that player.
+//   D-pad, and the left stick past half way: the lever.
+//   Square, Triangle, L1, Cross, Circle, R1: buttons 1 to 6, unless the game has a table of its own
+//     (fighting, racing and quiz games), which then says which button is which.
+//   Racing: the left stick steers, R2 accelerates, L2 brakes, the D-pad works the menus.
+//   Twin levers (Zoids): the sticks are the levers, L2/R2 the triggers, L1/R1 the buttons.
+//   Drums (Taiko): the D-pad hits the left half of the drum face (Don), the face buttons the right
+//     half, L1/L2 the left rim (Ka), R1/R2 the right rim.
+//   Light guns: R2 or Cross fires, L1 or L2 is the pedal (Time Crisis' cover, Vampire Night's reload),
+//     the right stick aims. On the touchscreen the gun layer aims and fires (usbLightgunAim/Button).
+//   Touch panel games: the gun layer is the panel.
+// The DualShock gets every press as well, which nothing on the board reads.
+namespace
+{
+	struct ArcadePad
+	{
+		bool down[static_cast<size_t>(GenericInputBinding::Count)] = {};
+		float lx_left = 0.0f, lx_right = 0.0f, ly_up = 0.0f, ly_down = 0.0f;
+		float rx_left = 0.0f, rx_right = 0.0f, ry_up = 0.0f, ry_down = 0.0f;
+		float l2 = 0.0f, r2 = 0.0f;
+		u16 pad_bits = 0;      // JVS switches the pad holds
+		u16 ext_bits = 0;      // JVS switches the touch gun, the touch panel and the Service button hold
+		bool stick_aim = false; // light guns: the right stick took the aim over from the touchscreen
+		bool pad_reload = false; // Vampire Night: the pedal button forces the camera-lost report
+		bool touch_offscreen = false; // a touch fired beside the screen
+	};
+	ArcadePad s_arcade_pad[2];
+
+	// GunCon 2 bind indices (usb-lightgun/guncon2.cpp), which the touch gun layer sends.
+	enum : jint
+	{
+		ARCADE_GUN_C = 1,
+		ARCADE_GUN_B = 2,
+		ARCADE_GUN_A = 3,
+		ARCADE_GUN_TRIGGER = 13,
+		ARCADE_GUN_SELECT = 14,
+		ARCADE_GUN_START = 15,
+		ARCADE_GUN_SHOOT_OFFSCREEN = 16,
+	};
+
+	constexpr float ARCADE_LEVER_THRESHOLD = 0.5f;
+	constexpr float ARCADE_AIM_DEADZONE = 0.2f;
+} // namespace
+
+static bool ArcadeHeld(const ArcadePad& p, GenericInputBinding b) {
+	return p.down[static_cast<size_t>(b)];
+}
+
+static void ArcadeInsertCoin(u32 player) {
+	// The game takes coins off the same counter, on the CPU thread.
+	Host::RunOnCPUThread([player]() {
+		if (Arcade::IsActive())
+			ACJV::InsertCoin(player);
+	});
+}
+
+// The switches this player's controls own in the current game: everything, except on a light gun
+// game, where the gun's sensor bit belongs to ACJV's aim code and the rest of the word is unwired.
+static u16 ArcadeOwnedBits(u32 player) {
+	if (ACJV::GetMode() != JVS_MODE::LIGHTGUN)
+		return 0xFFFF;
+	const GunMapping& gm = ACJV::GetGunMapping();
+	const u16 start = (player == 0) ? gm.p1_start : gm.p2_start;
+	return static_cast<u16>(((player == 0) ? (gm.p1_trigger | gm.pedal) : gm.p2_trigger) |
+		(start ? start : static_cast<u16>(JVS_BTN_START)));
+}
+
+static void ArcadeCommit(u32 player) {
+	const ArcadePad& p = s_arcade_pad[player];
+	const u16 owned = ArcadeOwnedBits(player);
+	const u16 want = p.pad_bits | p.ext_bits;
+	ACJV::SetButtonState(player, owned & want, true);
+	ACJV::SetButtonState(player, owned & static_cast<u16>(~want), false);
+	if (ACJV::GetMode() == JVS_MODE::LIGHTGUN && player == 0)
+		ACJV::SetGunForceOffscreen(s_arcade_pad[0].pad_reload || s_arcade_pad[0].touch_offscreen);
+}
+
+// Recomputes the cabinet controls one player's pad holds.
+static void ArcadeApplyPad(u32 player) {
+	ArcadePad& p = s_arcade_pad[player];
+	const JVS_MODE mode = ACJV::GetMode();
+	using GIB = GenericInputBinding;
+	u16 bits = 0;
+
+	const auto lever = [&p](bool left_stick) {
+		u16 dir = 0;
+		if (ArcadeHeld(p, GIB::DPadUp) || (left_stick && p.ly_up >= ARCADE_LEVER_THRESHOLD))
+			dir |= JVS_BTN_UP;
+		if (ArcadeHeld(p, GIB::DPadDown) || (left_stick && p.ly_down >= ARCADE_LEVER_THRESHOLD))
+			dir |= JVS_BTN_DOWN;
+		if (ArcadeHeld(p, GIB::DPadLeft) || (left_stick && p.lx_left >= ARCADE_LEVER_THRESHOLD))
+			dir |= JVS_BTN_LEFT;
+		if (ArcadeHeld(p, GIB::DPadRight) || (left_stick && p.lx_right >= ARCADE_LEVER_THRESHOLD))
+			dir |= JVS_BTN_RIGHT;
+		return dir;
+	};
+	const auto table = [&p](std::span<const InputBindingInfo> buttons) {
+		u16 sw = 0;
+		for (const InputBindingInfo& bi : buttons)
+		{
+			if (bi.generic_mapping != GIB::Unknown && ArcadeHeld(p, bi.generic_mapping))
+				sw |= bi.bind_index;
+		}
+		return sw;
+	};
+	const auto six_buttons = [&p]() {
+		u16 sw = 0;
+		if (ArcadeHeld(p, GIB::Square)) sw |= JVS_BTN_1;
+		if (ArcadeHeld(p, GIB::Triangle)) sw |= JVS_BTN_2;
+		if (ArcadeHeld(p, GIB::L1)) sw |= JVS_BTN_3;
+		if (ArcadeHeld(p, GIB::Cross)) sw |= JVS_BTN_4;
+		if (ArcadeHeld(p, GIB::Circle)) sw |= JVS_BTN_5;
+		if (ArcadeHeld(p, GIB::R1)) sw |= JVS_BTN_6;
+		return sw;
+	};
+
+	switch (mode)
+	{
+		case JVS_MODE::LIGHTGUN:
+		{
+			const GunMapping& gm = ACJV::GetGunMapping();
+			const u16 trigger = (player == 0) ? gm.p1_trigger : gm.p2_trigger;
+			const u16 start = (player == 0) ? gm.p1_start : gm.p2_start;
+			if (ArcadeHeld(p, GIB::R2) || ArcadeHeld(p, GIB::Cross))
+				bits |= trigger;
+			if (ArcadeHeld(p, GIB::Start))
+				bits |= start ? start : static_cast<u16>(JVS_BTN_START);
+			const bool pedal = ArcadeHeld(p, GIB::L1) || ArcadeHeld(p, GIB::L2);
+			if (player == 0)
+			{
+				if (gm.pedal)
+					bits |= pedal ? gm.pedal : 0;
+				else
+					p.pad_reload = pedal;
+			}
+			// The right stick aims across the whole picture, like PCSX2x6's stick aim. Once moved it
+			// keeps the aim until the touchscreen takes it back (usbLightgunAim).
+			const float ax = p.rx_right - p.rx_left;
+			const float ay = p.ry_down - p.ry_up;
+			if (!p.stick_aim && (std::abs(ax) > ARCADE_AIM_DEADZONE || std::abs(ay) > ARCADE_AIM_DEADZONE))
+			{
+				p.stick_aim = true;
+				ACJV::SetGunAimSource(player, true);
+			}
+			if (p.stick_aim)
+				ACJV::SetGunRelativeAim(player, 0.5f + ax * 0.5f, 0.5f + ay * 0.5f);
+		}
+		break;
+
+		case JVS_MODE::DRIVE:
+		{
+			// One player per cabinet.
+			if (player != 0)
+				break;
+			ACJV::SetWheelAxis(0, p.lx_right);
+			ACJV::SetWheelAxis(1, p.lx_left);
+			ACJV::SetWheelAxis(2, p.r2);
+			ACJV::SetWheelAxis(3, p.l2);
+			const std::span<const InputBindingInfo> buttons = ACJV::GetRacingButtons();
+			bits |= lever(false) | (buttons.empty() ? six_buttons() : table(buttons));
+			if (ArcadeHeld(p, GIB::Start))
+				bits |= JVS_BTN_START;
+		}
+		break;
+
+		case JVS_MODE::TWINSTICK:
+		{
+			// One player per cabinet (versus is between cabinets).
+			if (player != 0)
+				break;
+			if (ArcadeHeld(p, GIB::DPadUp) || p.ly_up >= ARCADE_LEVER_THRESHOLD) bits |= 0x0001;
+			if (ArcadeHeld(p, GIB::DPadDown) || p.ly_down >= ARCADE_LEVER_THRESHOLD) bits |= 0x8000;
+			if (ArcadeHeld(p, GIB::DPadLeft) || p.lx_left >= ARCADE_LEVER_THRESHOLD) bits |= 0x4000;
+			if (ArcadeHeld(p, GIB::DPadRight) || p.lx_right >= ARCADE_LEVER_THRESHOLD) bits |= 0x2000;
+			if (p.ry_up >= ARCADE_LEVER_THRESHOLD) bits |= 0x0010;
+			if (p.ry_down >= ARCADE_LEVER_THRESHOLD) bits |= 0x0008;
+			if (p.rx_left >= ARCADE_LEVER_THRESHOLD) bits |= 0x0004;
+			if (p.rx_right >= ARCADE_LEVER_THRESHOLD) bits |= 0x0002;
+			bits |= table(ACJV::GetTwinstickBindings()) & static_cast<u16>(0x0400 | 0x1000 | 0x0200 | 0x0800 | JVS_BTN_START);
+		}
+		break;
+
+		case JVS_MODE::DRUM:
+		{
+			// 1P: Don left/right on channels 0/3, Ka left/right on 5/4. 2P: 2/7 and 1/6 (ACJV_Inputs.h).
+			const bool p1 = (player == 0);
+			ACJV::SetDrumHit(p1 ? 0 : 2, ArcadeHeld(p, GIB::DPadUp) || ArcadeHeld(p, GIB::DPadDown) ||
+				ArcadeHeld(p, GIB::DPadLeft) || ArcadeHeld(p, GIB::DPadRight));
+			ACJV::SetDrumHit(p1 ? 3 : 7, ArcadeHeld(p, GIB::Cross) || ArcadeHeld(p, GIB::Circle) ||
+				ArcadeHeld(p, GIB::Square) || ArcadeHeld(p, GIB::Triangle));
+			ACJV::SetDrumHit(p1 ? 5 : 1, ArcadeHeld(p, GIB::L1) || ArcadeHeld(p, GIB::L2));
+			ACJV::SetDrumHit(p1 ? 4 : 6, ArcadeHeld(p, GIB::R1) || ArcadeHeld(p, GIB::R2));
+			if (ArcadeHeld(p, GIB::Start))
+				bits |= JVS_BTN_START;
+		}
+		break;
+
+		default: // fighting, standard, touch panel and unknown games
+		{
+			std::span<const InputBindingInfo> buttons;
+			if (mode == JVS_MODE::FIGHTING)
+				buttons = ACJV::GetFightingButtons();
+			else if (mode == JVS_MODE::STANDARD)
+				buttons = ACJV::GetStandardButtons();
+			bits |= lever(true) | (buttons.empty() ? six_buttons() : table(buttons));
+			if (ArcadeHeld(p, GIB::Start))
+				bits |= JVS_BTN_START;
+		}
+		break;
+	}
+
+	p.pad_bits = bits;
+	ArcadeCommit(player);
+}
+
+// One pad event, as applyPadButton receives it, for the arcade board. Caller holds s_pad_mutex.
+static void ArcadePadEvent(u32 player, jint key, float state) {
+	if (player > 1)
+		return;
+	ArcadePad& p = s_arcade_pad[player];
+	switch (key)
+	{
+		case 110: p.ly_up = state; break;
+		case 111: p.lx_right = state; break;
+		case 112: p.ly_down = state; break;
+		case 113: p.lx_left = state; break;
+		case 120: p.ry_up = state; break;
+		case 121: p.rx_right = state; break;
+		case 122: p.ry_down = state; break;
+		case 123: p.rx_left = state; break;
+		case 104: p.l2 = state; break;
+		case 105: p.r2 = state; break;
+		default: break;
+	}
+	const GenericInputBinding generic = PadKeyToGeneric(key);
+	if (generic != GenericInputBinding::Unknown)
+	{
+		bool& down = p.down[static_cast<size_t>(generic)];
+		const bool now = state >= ARCADE_LEVER_THRESHOLD;
+		if (generic == GenericInputBinding::Select && now && !down)
+			ArcadeInsertCoin(player);
+		down = now;
+	}
+	ArcadeApplyPad(player);
+}
+
+// A press from the touch gun layer (or its on-screen gun buttons), on a light gun or touch panel game.
+// Caller holds s_pad_mutex.
+static void ArcadeGunButton(u32 player, jint bind, bool pressed) {
+	if (player > 1)
+		return;
+	ArcadePad& p = s_arcade_pad[player];
+	const auto ext = [&p](u16 bit, bool on) {
+		p.ext_bits = on ? static_cast<u16>(p.ext_bits | bit) : static_cast<u16>(p.ext_bits & ~bit);
+	};
+	if (bind == ARCADE_GUN_SELECT)
+	{
+		if (pressed)
+			ArcadeInsertCoin(player);
+		return;
+	}
+
+	if (ACJV::GetMode() == JVS_MODE::TOUCH)
+	{
+		switch (bind)
+		{
+			case ARCADE_GUN_TRIGGER:
+			case ARCADE_GUN_SHOOT_OFFSCREEN: ACJV::SetTouchPressed(pressed); break;
+			case ARCADE_GUN_A: ext(JVS_BTN_1, pressed); break;
+			case ARCADE_GUN_B: ext(JVS_BTN_2, pressed); break;
+			case ARCADE_GUN_C: ext(JVS_BTN_3, pressed); break;
+			case ARCADE_GUN_START: ext(JVS_BTN_START, pressed); break;
+			default: break;
+		}
+	}
+	else if (ACJV::GetMode() == JVS_MODE::LIGHTGUN)
+	{
+		const GunMapping& gm = ACJV::GetGunMapping();
+		const u16 trigger = (player == 0) ? gm.p1_trigger : gm.p2_trigger;
+		const u16 start = (player == 0) ? gm.p1_start : gm.p2_start;
+		switch (bind)
+		{
+			case ARCADE_GUN_TRIGGER: ext(trigger, pressed); break;
+			case ARCADE_GUN_SHOOT_OFFSCREEN:
+				// Fired beside the screen: what Vampire Night reloads with. The other boards read the aim,
+				// which a touch at the edge still has on the picture, so it is an ordinary shot there.
+				ext(trigger, pressed);
+				p.touch_offscreen = pressed;
+				break;
+			case ARCADE_GUN_A:
+			case ARCADE_GUN_B:
+				if (player == 0 && gm.pedal)
+					ext(gm.pedal, pressed);
+				else if (player == 0)
+					p.touch_offscreen = pressed;
+				break;
+			case ARCADE_GUN_START: ext(start ? start : static_cast<u16>(JVS_BTN_START), pressed); break;
+			default: break;
+		}
+	}
+	else
+	{
+		return;
+	}
+	ArcadeCommit(player);
+}
+
+// A new arcade game is up (or the last one is gone): nothing held, the touchscreen is P1's aim and P2
+// aims with their own stick.
+static void ArcadeInputReset() {
+	std::lock_guard<std::mutex> lk(s_pad_mutex);
+	for (ArcadePad& p : s_arcade_pad)
+		p = ArcadePad();
+	ACJV::SetGunAimSource(0, false);
+	ACJV::SetGunAimSource(1, true);
+	ACJV::SetGunRelativeAim(1, -1.0f, -1.0f);
+	ACJV::SetGunForceOffscreen(false);
+	ACJV::SetTouchPressBound(true);
+	ACJV::SetTouchPressed(false);
+}
+
 static void applyPadButton(u32 port, jint p_key, jint p_range, jboolean p_keyPressed) {
     PadDualshock2::Inputs _key;
     switch (p_key) {
@@ -1166,6 +1496,10 @@ static void applyPadButton(u32 port, jint p_key, jint p_range, jboolean p_keyPre
                 USB::SetDeviceBindValue(port, static_cast<u32>(bind), state);
         }
     }
+
+    // An arcade board's controls (see ArcadePadEvent).
+    if (Arcade::IsActive())
+        ArcadePadEvent(port, p_key, state);
 
     Pad::SetControllerState(port, static_cast<u32>(_key), state);
 }
@@ -2294,7 +2628,15 @@ Java_kr_co_iefriends_pcsx2_NativeApp_usbLightgunAim(JNIEnv*, jclass, jfloat x, j
     }
     if (width <= 0.0f || height <= 0.0f)
         return;
-    // Pointer 0: GunCon2State::GetAbsolutePosition reads index 0 specifically.
+    // An arcade light gun aims with the touchscreen again, if the right stick had taken over.
+    if (Arcade::IsActive() && s_arcade_pad[0].stick_aim)
+    {
+        std::lock_guard<std::mutex> lk(s_pad_mutex);
+        s_arcade_pad[0].stick_aim = false;
+        ACJV::SetGunAimSource(0, false);
+    }
+    // Pointer 0: GunCon2State::GetAbsolutePosition reads index 0 specifically, and so do the arcade
+    // board's gun and touch panel (ACJV).
     InputManager::UpdatePointerAbsolutePosition(0, x * width, y * height);
 }
 
@@ -2306,8 +2648,141 @@ Java_kr_co_iefriends_pcsx2_NativeApp_usbLightgunButton(JNIEnv*, jclass, jint por
         return;
     // Against a settings change swapping the device out (ApplyUsbPortsToRunningVM).
     std::lock_guard<std::mutex> lk(s_pad_mutex);
+    // An arcade board has no GunCon 2: the gun layer works its gun or touch panel (ArcadeGunButton).
+    if (Arcade::IsActive())
+    {
+        ArcadeGunButton(static_cast<u32>(port), bind, pressed == JNI_TRUE);
+        return;
+    }
     USB::SetDeviceBindValue(static_cast<u32>(port), static_cast<u32>(bind),
         (pressed == JNI_TRUE) ? 1.0f : 0.0f);
+}
+
+// ---- Namco System 246/256 arcade sessions -------------------------------------------------------------
+
+// Where the frontend found the files an .acgame names (its ELF, media image and SRAM file); taken by
+// the next runVMThread. See VMBootParameters::arcade_*.
+static std::mutex s_arcade_launch_mutex;
+static std::string s_arcade_launch_elf;
+static std::string s_arcade_launch_media;
+static std::string s_arcade_launch_sram;
+
+// Why the last boot failed, empty when it did not. An arcade game has more ways to fail (the dongle,
+// the BIOS, the media) than the frontend can check for, and this is how it can say which.
+static std::mutex s_last_boot_error_mutex;
+static std::string s_last_boot_error;
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setArcadeLaunchFiles(JNIEnv* env, jclass, jstring elf,
+                                                          jstring media, jstring sram) {
+    std::lock_guard<std::mutex> lock(s_arcade_launch_mutex);
+    s_arcade_launch_elf = elf ? GetJavaString(env, elf) : std::string();
+    s_arcade_launch_media = media ? GetJavaString(env, media) : std::string();
+    s_arcade_launch_sram = sram ? GetJavaString(env, sram) : std::string();
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getLastBootError(JNIEnv* env, jclass) {
+    std::lock_guard<std::mutex> lock(s_last_boot_error_mutex);
+    return env->NewStringUTF(s_last_boot_error.c_str());
+}
+
+/// The cabinet controls a game ID gets (JVS_MODE: 0 generic, 1 light gun, 2 fighting, 3 racing,
+/// 4 drums, 5 touch panel, 6 standard, 7 twin levers), for the frontend to lay out its controls before
+/// the game is up.
+extern "C"
+JNIEXPORT jint JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_arcadeModeForGameId(JNIEnv* env, jclass, jstring gameid) {
+    const std::string id = gameid ? GetJavaString(env, gameid) : std::string();
+    return static_cast<jint>(ACJV::ResolveModeFromGameId(id));
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_isArcadeSession(JNIEnv*, jclass) {
+    return (VMManager::HasValidVM() && Arcade::IsActive()) ? JNI_TRUE : JNI_FALSE;
+}
+
+/// A coin in player 1's (0) or player 2's (1) slot.
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_arcadeInsertCoin(JNIEnv*, jclass, jint player) {
+    if (!VMManager::HasValidVM() || !Arcade::IsActive() || player < 0 || player > 1)
+        return;
+    ArcadeInsertCoin(static_cast<u32>(player));
+}
+
+/// The cabinet's Service button: a credit without a coin, and the way through the test menus.
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_arcadeService(JNIEnv*, jclass, jboolean pressed) {
+    if (!VMManager::HasValidVM() || !Arcade::IsActive())
+        return;
+    std::lock_guard<std::mutex> lk(s_pad_mutex);
+    ArcadePad& p = s_arcade_pad[0];
+    if (pressed == JNI_TRUE)
+        p.ext_bits |= JVS_BTN_SERVICE;
+    else
+        p.ext_bits &= static_cast<u16>(~JVS_BTN_SERVICE);
+    ArcadeCommit(0);
+}
+
+/// Flips the board's Test switch: on, the game goes to its test menu (settings, input tests); off again
+/// to leave it.
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_arcadeToggleTest(JNIEnv*, jclass) {
+    if (!VMManager::HasValidVM() || !Arcade::IsActive())
+        return;
+    Host::RunOnCPUThread([]() {
+        if (Arcade::IsActive())
+            ACJV::ToggleDIPSwitchState(0);
+    });
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_arcadeTestModeOn(JNIEnv*, jclass) {
+    return (VMManager::HasValidVM() && Arcade::IsActive() && ACJV::GetDIPSwitchState(0)) ? JNI_TRUE : JNI_FALSE;
+}
+
+/// Every arcade game the database knows, one per line: game ID, name, board (System246, System256 or
+/// System SUPER256) and media (CD, DVD or HDD), tab separated. For the arcade screen's import list.
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getArcadeGames(JNIEnv* env, jclass) {
+    const auto clean = [](std::string s) {
+        std::replace(s.begin(), s.end(), '\t', ' ');
+        std::replace(s.begin(), s.end(), '\n', ' ');
+        return s;
+    };
+    std::string out;
+    for (const auto& [id, entry] : GameDatabase::findArcadeGames())
+    {
+        out += id;
+        out += '\t';
+        out += clean(entry->name);
+        out += '\t';
+        out += clean(entry->region);
+        out += '\t';
+        out += clean(entry->arcade.media);
+        out += '\n';
+    }
+    return env->NewStringUTF(out.c_str());
+}
+
+/// Whether a BIOS file is a Namco arcade board's (COH-H), and so usable for arcade games.
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_isArcadeBios(JNIEnv* env, jclass, jstring path) {
+    if (!path)
+        return JNI_FALSE;
+    const std::string p = GetJavaString(env, path);
+    u32 version, region;
+    std::string description, zone;
+    return (IsBIOS(p.c_str(), version, description, region, zone) && zone == "COH-H") ? JNI_TRUE : JNI_FALSE;
 }
 
 // One-time repair for enable lists poisoned by the old bulk auto-sync.
@@ -2942,6 +3417,20 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
 
     VMBootParameters boot_params;
     boot_params.filename = _szPath;
+    {
+        // An arcade game's files, as the frontend found them (setArcadeLaunchFiles). One boot only.
+        std::lock_guard<std::mutex> lock(s_arcade_launch_mutex);
+        boot_params.arcade_elf = std::move(s_arcade_launch_elf);
+        boot_params.arcade_media = std::move(s_arcade_launch_media);
+        boot_params.arcade_sram = std::move(s_arcade_launch_sram);
+        s_arcade_launch_elf.clear();
+        s_arcade_launch_media.clear();
+        s_arcade_launch_sram.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(s_last_boot_error_mutex);
+        s_last_boot_error.clear();
+    }
     // fast_boot is deliberately left UNSET so VMManager::Initialize falls back to
     // EmuConfig.EnableFastBoot, which it reads late and on purpose ("Read fast boot setting
     // late so it can be overridden per-game").
@@ -2993,6 +3482,8 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
     if (boot_result == VMBootResult::StartupSuccess)
     {
         Console.Error("VM INIT");
+        if (Arcade::IsActive())
+            ArcadeInputReset();
         // Boot-shape diagnostic for the "Skip BIOS OFF lands in the BIOS browser instead of
         // the game" report. The boot path itself is stock upstream, so the answer has to be
         // one of these four values, and one emulog line settles which:
@@ -3066,6 +3557,8 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
     {
         Console.Error("@@ANDROID_VM_INIT_FAILED@@ result=%d error=%s",
             static_cast<int>(boot_result), boot_error.GetDescription().c_str());
+        std::lock_guard<std::mutex> lock(s_last_boot_error_mutex);
+        s_last_boot_error = boot_error.GetDescription();
     }
     ////
     Host::PumpMessagesOnCPUThread();
@@ -3113,6 +3606,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_pause(JNIEnv *env, jclass clazz) {
             // so the console is stopped and nothing can be written behind us.
             if (VMManager::HasValidVM())
                 FileMcd_Flush();
+            // An arcade board's settings memory (what its test menu saves), for the same reason.
+            if (VMManager::HasValidVM() && Arcade::IsActive())
+                ACSRAM::WriteFile();
         });
 
         if (!s_execute_exit.load(std::memory_order_acquire) && Cpu)
@@ -3134,6 +3630,8 @@ Java_kr_co_iefriends_pcsx2_NativeApp_pause(JNIEnv *env, jclass clazz) {
                 cdvdSaveNVRAM();
             if (VMManager::HasValidVM())
                 FileMcd_Flush();
+            if (VMManager::HasValidVM() && Arcade::IsActive())
+                ACSRAM::WriteFile();
         });
         Console.WriteLn("@@ANDROID_PAUSE@@ already_paused nvm_and_mcd_flush_queued");
     }
@@ -3314,6 +3812,14 @@ Java_kr_co_iefriends_pcsx2_NativeApp_hasActiveVM(JNIEnv *env, jclass clazz) {
 }
 
 
+// Whether this session's save states have a name. They are named by the disc's serial and CRC, and a CRC
+// of 0 means no game, so a session without one gets none. An arcade game is the exception: its own
+// program comes off its dongle after the boot program, so the core never has a disc CRC for it, but its
+// serial, the game ID, is set from the start and names its states as surely ("NM00031 (00000000).00.p2s").
+static bool SaveStatesHaveName() {
+    return VMManager::GetDiscCRC() != 0 || (Arcade::IsActive() && !VMManager::GetDiscSerial().empty());
+}
+
 extern "C"
 JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_saveStateToSlot(JNIEnv *env, jclass clazz, jint p_slot) {
@@ -3348,7 +3854,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_saveStateToSlot(JNIEnv *env, jclass clazz, 
     };
     if (!VMManager::HasValidVM())
         return fail("no_vm");
-    if (VMManager::GetDiscCRC() == 0)
+    if (!SaveStatesHaveName())
         return fail("crc_zero");
     // GetSaveStateFileName returns "" for an empty serial, which VMManager reports as "cannot
     // generate filename" — guarded here so it is named rather than surfacing as a generic failure.
@@ -3415,7 +3921,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadStateFromSlot(JNIEnv *env, jclass clazz
     if (!VMManager::HasValidVM())
         return fail("no_vm");
     const u32 _crc = VMManager::GetDiscCRC();
-    if (_crc == 0)
+    if (!SaveStatesHaveName())
         return fail("crc_zero");
     if (!VMManager::HasSaveStateInSlot(VMManager::GetDiscSerial().c_str(), _crc, p_slot))
         return fail("no_state_in_slot");
@@ -3557,7 +4063,7 @@ JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_saveAutosaveState(JNIEnv *env, jclass clazz) {
     if (!VMManager::HasValidVM())
         return false;
-    if (VMManager::GetDiscCRC() == 0)
+    if (!SaveStatesHaveName())
         return false;
     const ScopedVMPause pause_guard;
     if (!pause_guard.parked()) {
@@ -3587,7 +4093,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadAutosaveState(JNIEnv *env, jclass clazz
     if (!VMManager::HasValidVM())
         return false;
     const u32 _crc = VMManager::GetDiscCRC();
-    if (_crc == 0)
+    if (!SaveStatesHaveName())
         return false;
     if (!VMManager::HasSaveStateInSlot(VMManager::GetDiscSerial().c_str(), _crc,
                                        VMManager::SAVESTATE_SLOT_AUTOSAVE))
@@ -3631,7 +4137,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_hasAutosaveState(JNIEnv *env, jclass clazz)
     if (!VMManager::HasValidVM())
         return false;
     const u32 _crc = VMManager::GetDiscCRC();
-    if (_crc == 0)
+    if (!SaveStatesHaveName())
         return false;
     return VMManager::HasSaveStateInSlot(VMManager::GetDiscSerial().c_str(), _crc,
                                          VMManager::SAVESTATE_SLOT_AUTOSAVE);

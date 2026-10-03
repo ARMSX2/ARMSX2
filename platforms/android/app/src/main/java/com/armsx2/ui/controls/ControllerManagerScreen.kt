@@ -118,8 +118,6 @@ private fun ControllerOptions(
                 modifier = Modifier.controllerFocusable(
                     "controls.rumble",
                     onConfirm = { viewModel.setRumble(!state.rumble) },
-                    onLeft = { if (state.rumble) viewModel.setRumble(false) },
-                    onRight = { if (!state.rumble) viewModel.setRumble(true) },
                 ),
             )
             SettingSwitchRow(
@@ -127,8 +125,6 @@ private fun ControllerOptions(
                 modifier = Modifier.controllerFocusable(
                     "controls.multitap",
                     onConfirm = { viewModel.setMultitap(!state.multitap) },
-                    onLeft = { if (state.multitap) viewModel.setMultitap(false) },
-                    onRight = { if (!state.multitap) viewModel.setMultitap(true) },
                 ),
             )
             SettingSwitchRow(
@@ -136,8 +132,6 @@ private fun ControllerOptions(
                 modifier = Modifier.controllerFocusable(
                     "controls.dpadAsStick",
                     onConfirm = { viewModel.setDpadAsStick(!state.dpadAsStick) },
-                    onLeft = { if (state.dpadAsStick) viewModel.setDpadAsStick(false) },
-                    onRight = { if (!state.dpadAsStick) viewModel.setDpadAsStick(true) },
                 ),
             )
         }

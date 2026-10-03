@@ -39,9 +39,8 @@ fun SettingSwitchRow(
             .controllerFocusable(
                 controllerId = "toggle:$title",
                 shape = RoundedCornerShape(22.dp),
+                // Only A flips it, like every switch: Left/Right are for moving.
                 onConfirm = { emit(!checked) },
-                onLeft = { if (checked) emit(false) },
-                onRight = { if (!checked) emit(true) },
             ),
         shape = RoundedCornerShape(22.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),

@@ -2082,6 +2082,25 @@ Pcsx2Config::AchievementsOptions::AchievementsOptions()
 	LBOverlays = true;
 }
 
+void Pcsx2Config::ArcadeOptions::LoadSave(SettingsWrapper& wrap)
+{
+	SettingsWrapSection("Arcade");
+	SettingsWrapEntry(ATAVerboseReads);
+	SettingsWrapEntry(RAMVerboseReads);
+	SettingsWrapEntry(SRAMVerboseReads);
+	SettingsWrapEntry(UARTVerbose);
+}
+
+bool Pcsx2Config::ArcadeOptions::operator==(const ArcadeOptions& right) const
+{
+	return OpEqu(ATAVerboseReads) && OpEqu(RAMVerboseReads) && OpEqu(SRAMVerboseReads) && OpEqu(UARTVerbose);
+}
+
+bool Pcsx2Config::ArcadeOptions::operator!=(const ArcadeOptions& right) const
+{
+	return !this->operator==(right);
+}
+
 void Pcsx2Config::AchievementsOptions::LoadSave(SettingsWrapper& wrap)
 {
 	SettingsWrapSection("Achievements");
@@ -2208,6 +2227,7 @@ void Pcsx2Config::LoadSaveCore(SettingsWrapper& wrap)
 	Trace.LoadSave(wrap);
 
 	Achievements.LoadSave(wrap);
+	Arcade.LoadSave(wrap);
 
 	SettingsWrapEntry(GzipIsoIndexTemplate);
 	SettingsWrapEntry(PINESlot);

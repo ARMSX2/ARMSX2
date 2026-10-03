@@ -1,4 +1,5 @@
--- D1 schema for the Online Icons download counter (worker.js). Run once in the database's console.
+-- D1 schema for the Online Icons and texture pack download counters (worker.js). Run once in the
+-- database's console; the texture tables can be run on their own, after the icon ones.
 
 -- Downloads per icon per UTC day.
 CREATE TABLE IF NOT EXISTS hits (
@@ -16,4 +17,21 @@ CREATE TABLE IF NOT EXISTS seen (
     who TEXT NOT NULL,
     hash TEXT NOT NULL,
     PRIMARY KEY (day, who, hash)
+);
+
+-- Texture packs: downloads per pack per UTC day, and who already counted which pack today, the
+-- same way as the icons. "id" is the pack's id in the texture catalog (textures.json).
+CREATE TABLE IF NOT EXISTS tex_hits (
+    day TEXT NOT NULL,
+    id TEXT NOT NULL,
+    n INTEGER NOT NULL,
+    PRIMARY KEY (day, id)
+);
+CREATE INDEX IF NOT EXISTS tex_hits_by_day ON tex_hits (day, n DESC);
+
+CREATE TABLE IF NOT EXISTS tex_seen (
+    day TEXT NOT NULL,
+    who TEXT NOT NULL,
+    id TEXT NOT NULL,
+    PRIMARY KEY (day, who, id)
 );

@@ -129,6 +129,15 @@ namespace GameDatabaseSchema
 		std::unordered_map<u32, std::string> patches;
 		std::vector<Patch::DynamicPatch> dynaPatches;
 
+		// Arcade (Namco System 246/256) entries only: the boot program, the media type (CD, DVD or HDD)
+		// and the JVS input kind the game expects (PCSX2x6).
+		struct ArcadeInfo
+		{
+			std::string bootprog;
+			std::string media;
+			std::string input;
+		} arcade;
+
 		// Returns the list of memory card serials as a `/` delimited string
 		std::string memcardFiltersAsString() const;
 		const std::string* findPatch(u32 crc) const;
@@ -172,6 +181,10 @@ namespace GameDatabase
 {
 	void ensureLoaded();
 	const GameDatabaseSchema::GameEntry* findGame(const std::string_view serial);
+
+	/// Every Namco System 246/256 arcade game on record, by game ID (NM and five digits, upper case),
+	/// in ID order. For frontends that offer them for import.
+	std::vector<std::pair<std::string, const GameDatabaseSchema::GameEntry*>> findArcadeGames();
 
 	struct TrackHash
 	{

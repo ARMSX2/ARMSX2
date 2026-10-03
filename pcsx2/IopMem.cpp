@@ -7,6 +7,13 @@
 #include "ps2/pgif.h" // for PSX kernel TTY in iopMemWrite32
 #include "SPU2/spu2.h"
 #include "DEV9/DEV9.h"
+#include "DEV9/ACATA.h"
+#include "DEV9/ACCORE.h"
+#include "DEV9/ACJV.h"
+#include "DEV9/ACRAM.h"
+#include "DEV9/ACSRAM.h"
+#include "DEV9/ACUART.h"
+#include "common/ARCADE.h"
 #include "IopHw.h"
 
 uptr *psxMemWLUT = nullptr;
@@ -93,6 +100,104 @@ void iopMemReset()
 	//for (i=0; i<0x0008; i++) psxMemWLUT[i + 0xbfc0] = (uptr)&psR[i << 16];
 
 	std::memset(iopMem, 0, sizeof(*iopMem));
+	ACRAM::Clear(); // an arcade board's RAM resets with the IOP's (no-op on a console)
+}
+
+// ---- Namco System 246/256 arcade board (PCSX2x6) ------------------------------------------------
+// The board's devices sit in IOP address space a console leaves empty: SRAM at 0x1250, ACRAM at 0x14xx,
+// the ATA/ATAPI drive at 0x16xx, the JVS I/O at 0x1240, ACCORE and the UART at 0x1241, its interrupt
+// lines at 0x13xx. Only an arcade session routes there (Arcade::IsActive()); a console's accesses take
+// the paths below exactly as before. The IOP firmware does byte reads and writes on the board's 16-bit
+// registers, which go through the 16-bit handlers.
+
+static __fi u8 ArcadeByteOf(u32 mem, u16 val16)
+{
+	return (mem & 1) ? static_cast<u8>(val16 >> 8) : static_cast<u8>(val16);
+}
+
+static __fi u16 ArcadeMergeByte(u32 mem, u16 cur, u8 value)
+{
+	return (mem & 1) ? static_cast<u16>((cur & 0x00FF) | (static_cast<u16>(value) << 8)) :
+	                   static_cast<u16>((cur & 0xFF00) | value);
+}
+
+static bool ArcadeRead8(u32 mem, u32 t, u8* out)
+{
+	if (t == ACSRAM_RANGE)
+		*out = static_cast<u8>(ACSRAM::Read16(mem));
+	else if ((t & 0xFF00) == ACRAM_RANGE)
+		*out = ArcadeByteOf(mem, ACRAM::Read16(mem & ~1));
+	else if ((t & 0xFF00) == ACATA_RANGE)
+		*out = ArcadeByteOf(mem, ACATA::read16(mem & ~1));
+	else if (t == ACJV_RANGE)
+		*out = ArcadeByteOf(mem, ACJV::Read16(mem & ~1));
+	else if (t == 0x1241)
+		*out = ArcadeByteOf(mem, ACCORE::Read16(mem & ~1));
+	else
+		return false;
+	return true;
+}
+
+static bool ArcadeRead16(u32 mem, u32 t, u16* out)
+{
+	if (t == 0x1241)
+		*out = IS_ACUART_RANGE(mem) ? ACUART::Read16(mem) : ACCORE::Read16(mem);
+	else if (t == ACJV_RANGE)
+		*out = ACJV::Read16(mem);
+	else if (t == ACSRAM_RANGE)
+		*out = ACSRAM::Read16(mem);
+	else if ((t & 0xFF00) == ACRAM_RANGE)
+		*out = ACRAM::Read16(mem);
+	else if ((t & 0xFF00) == ACATA_RANGE)
+		*out = ACATA::read16(mem);
+	else
+		return false;
+	return true;
+}
+
+static bool ArcadeWrite8(u32 mem, u32 t, u8 value)
+{
+	if ((t & 0xFF00) == ACRAM_RANGE)
+		ACRAM::Write16(mem & ~1, ArcadeMergeByte(mem, ACRAM::Read16(mem & ~1), value));
+	else if ((t & 0xFF00) == ACATA_RANGE)
+		ACATA::write16(mem & ~1, ArcadeMergeByte(mem, ACATA::read16(mem & ~1), value));
+	else if (t == ACJV_RANGE)
+	{
+		if (ACJV::enabled)
+			ACJV::Write16(mem & ~1, value);
+	}
+	else if (t == 0x1241)
+		ACCORE::Write16(mem & ~1, value);
+	else
+		return false;
+	return true;
+}
+
+static bool ArcadeWrite16(u32 mem, u32 t, u16 value)
+{
+	if ((t & 0xFF00) == ACATA_RANGE)
+		ACATA::write16(mem, value);
+	else if (t == ACJV_RANGE)
+	{
+		if (ACJV::enabled)
+			ACJV::Write16(mem, value);
+	}
+	else if ((t & 0xFF00) == ACRAM_RANGE)
+		ACRAM::Write16(mem, value);
+	else if (t == ACSRAM_RANGE)
+		ACSRAM::Write16(mem, value);
+	else if (t == 0x1241)
+	{
+		if (IS_ACUART_RANGE(mem))
+			ACUART::Write16(mem, value);
+		else
+			ACCORE::Write16(mem, value);
+	}
+	else if ((t & 0xFF00) == 0x1300)
+		ACCORE::Interrupt(mem, value);
+	else
+		return false;
+	return true;
 }
 
 u8 iopMemRead8(u32 mem)
@@ -111,6 +216,10 @@ u8 iopMemRead8(u32 mem)
 			default:
 				return psxHu8(mem);
 		}
+	}
+	else if (u8 arcade_val; Arcade::IsActive() && ArcadeRead8(mem, t, &arcade_val))
+	{
+		return arcade_val;
 	}
 	else if (t == 0x1f40)
 	{
@@ -149,6 +258,10 @@ u16 iopMemRead16(u32 mem)
 			default:
 				return psxHu16(mem);
 		}
+	}
+	else if (u16 arcade_val; Arcade::IsActive() && ArcadeRead16(mem, t, &arcade_val))
+	{
+		return arcade_val;
 	}
 	else
 	{
@@ -279,6 +392,9 @@ void iopMemWrite8(u32 mem, u8 value)
 	{
 		psxHw4Write8(mem, value);
 	}
+	else if (Arcade::IsActive() && ArcadeWrite8(mem, t, value))
+	{
+	}
 	else
 	{
 		u8* p = (u8 *)(psxMemWLUT[mem >> 16]);
@@ -321,6 +437,7 @@ void iopMemWrite16(u32 mem, u16 value)
 				psxHu16(mem) = value;
 				break;
 		}
+	} else if (Arcade::IsActive() && ArcadeWrite16(mem, t, value)) {
 	} else
 	{
 		u8* p = (u8 *)(psxMemWLUT[mem >> 16]);
@@ -394,6 +511,8 @@ void iopMemWrite32(u32 mem, u32 value)
 				psxHu32(mem) = value;
 			break;
 		}
+	} else if (Arcade::IsActive() && (t & 0xFF00) == ACATA_RANGE) {
+		Console.Error("%-16s %08X:  %08X", "ACATA::Write32", mem, value);
 	} else
 	{
 		//see also Hw.c

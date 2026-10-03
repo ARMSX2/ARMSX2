@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "common/ARCADE.h"
 #include "common/FileSystem.h"
 #include "common/Path.h"
 #include "common/StringUtil.h"
@@ -168,15 +169,28 @@ static bool LoadBiosVersion(std::FILE* fp, u32& version, std::string& descriptio
 
 		char vermaj[3] = {romver[0], romver[1], 0};
 		char vermin[3] = {romver[2], romver[3], 0};
-		description = StringUtil::StdStringFromFormat("%-7s v%s.%s(%c%c/%c%c/%c%c%c%c)  %s %s",
-			zone.c_str(),
-			vermaj, vermin,
-			romver[12], romver[13], // day
-			romver[10], romver[11], // month
-			romver[6], romver[7], romver[8], romver[9], // year!
-			(romver[5] == 'C') ? "Console" : (romver[5] == 'D') ? "Devel" :
-																  "",
-			serial.c_str());
+		// An arcade COH-H BIOS: every one reads v1.0(06/03/2000), the date its image for the arcade TOOL
+		// was built, so name the board by its EXTINFO serial instead (PCSX2x6).
+		if (zone == "COH-H")
+		{
+			const char* board = (serial == "20040519-145634") ? "System 256" : // also Super System 256
+			                    (serial == "20021119-163841") ? "System 246 Rack C" :
+			                    (serial == "20000901-114731") ? "COH-H Board (A-000-010)" :
+			                                                    "Arcade board";
+			description = StringUtil::StdStringFromFormat("%-7s %s %s", zone.c_str(), board, serial.c_str());
+		}
+		else
+		{
+			description = StringUtil::StdStringFromFormat("%-7s v%s.%s(%c%c/%c%c/%c%c%c%c)  %s %s",
+				zone.c_str(),
+				vermaj, vermin,
+				romver[12], romver[13], // day
+				romver[10], romver[11], // month
+				romver[6], romver[7], romver[8], romver[9], // year!
+				(romver[5] == 'C') ? "Console" : (romver[5] == 'D') ? "Devel" :
+																	  "",
+				serial.c_str());
+		}
 
 		version = static_cast<u32>(strtol(vermaj, (char**)NULL, 0) << 8);
 		version |= strtol(vermin, (char**)NULL, 0);
@@ -255,8 +269,68 @@ static void LoadIrx(const std::string& filename, u8* dest, size_t maxSize)
 	return;
 }
 
+// EXTINFO serial of the System 256 board BIOS (also on Super System 256 boards).
+static constexpr const char* ARCADE_S256_BIOS_SERIAL = "20040519-145634";
+
+// The boards' BIOS is a 2MB flash chip, and that is how it is dumped (MAME's sys246/sys256 sets,
+// r27v1602f.7d / .8g). LoadBIOS reads any size into the 4MB ROM, as PCSX2x6 does; only the search
+// has to know a 2MB file can be one.
+static constexpr u32 MIN_ARCADE_BIOS_SIZE = 2 * _1mb;
+
+// Whether the file is a Namco arcade board's BIOS (a COH-H dump), and whether it is the System 256 one.
+static bool IsArcadeBIOS(const char* filename, bool* is_s256 = nullptr)
+{
+	const auto fp = FileSystem::OpenManagedCFile(filename, "rb");
+	if (!fp)
+		return false;
+
+	u32 version, region;
+	std::string description, zone, serial;
+	if (!LoadBiosVersion(fp.get(), version, description, region, zone, serial) || zone != "COH-H")
+		return false;
+
+	if (is_s256)
+		*is_s256 = (serial == ARCADE_S256_BIOS_SERIAL);
+	return true;
+}
+
+// An arcade game takes the board's own BIOS and nothing else: a console BIOS lacks the FILEIO, MCMAN and
+// SIO2MAN behaviour the arcade games are written against. Any COH-H dump will do, the System 256 one
+// first, because it runs System 246 games as well (PCSX2x6's advice).
+static std::string FindArcadeBiosImage()
+{
+	Console.WriteLn("Searching for an arcade (COH-H) BIOS image in '%s'...", EmuFolders::Bios.c_str());
+
+	FileSystem::FindResultsArray results;
+	if (!FileSystem::FindFiles(EmuFolders::Bios.c_str(), "*", FILESYSTEM_FIND_FILES, &results))
+		return std::string();
+
+	std::string found;
+	for (const FILESYSTEM_FIND_DATA& fd : results)
+	{
+		if (fd.Size < MIN_ARCADE_BIOS_SIZE || fd.Size > MAX_BIOS_SIZE)
+			continue;
+
+		bool is_s256 = false;
+		if (!IsArcadeBIOS(fd.FileName.c_str(), &is_s256))
+			continue;
+
+		if (is_s256)
+			return std::move(fd.FileName);
+		if (found.empty())
+			found = std::move(fd.FileName);
+	}
+
+	if (found.empty())
+		Console.Error("Unable to find an arcade (COH-H) BIOS image");
+	return found;
+}
+
 static std::string FindBiosImage()
 {
+	if (Arcade::IsActive())
+		return FindArcadeBiosImage();
+
 	Console.WriteLn("Searching for a BIOS image in '%s'...", EmuFolders::Bios.c_str());
 
 	FileSystem::FindResultsArray results;
@@ -270,7 +344,9 @@ static std::string FindBiosImage()
 		if (fd.Size < MIN_BIOS_SIZE || fd.Size > MAX_BIOS_SIZE)
 			continue;
 
-		if (IsBIOS(fd.FileName.c_str(), version, description, region, zone))
+		// An arcade board's BIOS (COH-H) cannot run a console game: one dumped at 4 MB or more would
+		// otherwise pass for a console BIOS here.
+		if (IsBIOS(fd.FileName.c_str(), version, description, region, zone) && zone != "COH-H")
 		{
 			Console.WriteLn("Using BIOS '%s' (%s %s)", fd.FileName.c_str(), description.c_str(), zone.c_str());
 			return std::move(fd.FileName);
@@ -334,6 +410,14 @@ bool LoadBIOS()
 	pxAssertMsg(eeMem->ROM, "PS2 system memory has not been initialized yet.");
 
 	std::string path = EmuConfig.FullpathToBios();
+
+	// The arcade BIOS a player picked has to be one; otherwise, look for one (FindBiosImage).
+	if (Arcade::IsActive() && !path.empty() && FileSystem::FileExists(path.c_str()) && !IsArcadeBIOS(path.c_str()))
+	{
+		Console.Warning("Arcade BIOS '%s' is not a COH-H BIOS, looking for one.", EmuConfig.BaseFilenames.Bios.c_str());
+		path.clear();
+	}
+
 	if (path.empty() || !FileSystem::FileExists(path.c_str()))
 	{
 		if (!path.empty())

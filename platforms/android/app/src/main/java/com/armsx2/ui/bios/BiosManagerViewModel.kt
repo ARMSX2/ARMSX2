@@ -22,6 +22,10 @@ data class InstalledBios(
     val file: File,
     val info: BiosInfo,
     val selected: Boolean,
+    /** A Namco arcade board's BIOS (COH-H), for arcade games only. */
+    val arcade: Boolean = false,
+    /** The one picked for arcade games (Arcade.arcadeBios). */
+    val arcadeSelected: Boolean = false,
 )
 
 data class BiosManagerUiState(
@@ -57,6 +61,8 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
         scope.launch {
             state.value = state.value.copy(busy = true, error = null)
             val selectedPath = MainActivityRuntime.bios.value
+            com.armsx2.arcade.Arcade.loadArcadeBios()
+            val arcadePick = com.armsx2.arcade.Arcade.arcadeBios.value
             val key = gameContextKey?.takeIf { it.isNotBlank() }
                 ?: MainActivityRuntime.currentGame.value?.settingsKey?.takeIf { it.isNotBlank() }
             val result = withContext(Dispatchers.IO) {
@@ -64,8 +70,17 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
                     .listFiles()
                     .orEmpty()
                     .filter(File::isFile)
-                    .mapNotNull { file -> probe(file)?.let { InstalledBios(file, it, file.absolutePath == selectedPath) } }
-                    .sortedWith(compareByDescending<InstalledBios> { it.selected }.thenBy { it.file.name.lowercase() })
+                    .mapNotNull { file ->
+                        probe(file)?.let {
+                            val arcade = com.armsx2.arcade.Arcade.isArcadeBios(it)
+                            InstalledBios(file, it, file.absolutePath == selectedPath, arcade, arcade && file.name == arcadePick)
+                        }
+                    }
+                    .sortedWith(
+                        compareByDescending<InstalledBios> { it.selected }
+                            .thenByDescending { it.arcadeSelected }
+                            .thenBy { it.file.name.lowercase() },
+                    )
             }
             val perGame = key?.let {
                 runCatching { ConfigStore.resolveForGame(it).system.biosFilename.takeIf { f -> f.isNotBlank() } }.getOrNull()
@@ -99,7 +114,13 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
         scope.launch {
             state.value = state.value.copy(busy = true, error = null)
             val result = withContext(Dispatchers.IO) { importFile(uri) }
-            result.onSuccess { file -> select(file) }
+            // An arcade board's BIOS cannot run console games: it is offered to arcade games instead
+            // of taking over as the console BIOS.
+            result.onSuccess { file ->
+                val arcade = withContext(Dispatchers.IO) { probe(file)?.let(com.armsx2.arcade.Arcade::isArcadeBios) } == true
+                if (!arcade) select(file)
+                else if (com.armsx2.arcade.Arcade.arcadeBios.value == null) com.armsx2.arcade.Arcade.setArcadeBios(file.name)
+            }
                 .onFailure { state.value = state.value.copy(error = it.message ?: "BIOS import failed.") }
             refresh()
         }
@@ -160,6 +181,13 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
             state.value = state.value.copy(error = "Unable to delete ${item.file.name}.")
             return
         }
+        if (item.arcadeSelected) com.armsx2.arcade.Arcade.setArcadeBios(null)
+        refresh()
+    }
+
+    /** Use [item] for arcade games (Arcade.arcadeBios). */
+    fun selectArcade(item: InstalledBios) {
+        com.armsx2.arcade.Arcade.setArcadeBios(item.file.name)
         refresh()
     }
 

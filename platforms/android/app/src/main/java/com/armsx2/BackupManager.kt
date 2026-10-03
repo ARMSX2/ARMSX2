@@ -42,6 +42,8 @@ object BackupManager {
         // card is mostly erased space, so the compressed rotation is small next to sstates.
         "sstates", "memcards", "memcard-backups", "covers", "gamesettings", "inputprofiles",
         "cheats", "patches", "snaps",
+        // Arcade games' board settings (their SRAM, what each test menu saves; Arcade.sramFile).
+        "arcade",
     )
     private val INCLUDED_FILES = listOf(
         "armsx2-settings.json", "PCSX2-Android.ini", "achievements.ini",

@@ -112,6 +112,9 @@ private data class DrawerItem(
     val iconRes: Int? = null,
     // Null = tint the icon like the row's text. Only the trophy pins a fixed colour.
     val iconTint: Color? = null,
+    // A full-colour picture drawn in the glyph's place and box, so it sits with the emoji rows around
+    // it (the arcade logo among the managers).
+    val glyphIcon: Int? = null,
     val onAction: (() -> Unit)? = null,
     // Overlay the live "friends online" count on this row's glyph. Only Friends uses it — the
     // point is to be visible from the drawer without opening the screen.
@@ -212,6 +215,9 @@ private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, on
         DrawerItem("tab.controls", "🕹️", AppRoute.ControllerManager),
         DrawerItem("patches.dialog.patchesAndCheats", "🪄", AppRoute.PatchManager),
         DrawerItem("renderer.section.texturePacks", "🖌️", AppRoute.TextureManager),
+        // Namco System 246/256 arcade games: their folder, boot files, BIOS and imports. The ARMSX2
+        // logo in PCSX2x6's red.
+        DrawerItem("arcade.title", "👾", AppRoute.Arcade, glyphIcon = com.armsx2.R.drawable.ic_arcade),
     )
     // Link-out rows: they reuse the existing onAction path (like Boot BIOS) rather than a
     // destination, so they leave the drawer via startActivity and close it behind them.
@@ -296,6 +302,7 @@ private fun DrawerSection(
             glyph = item.glyph,
             iconRes = item.iconRes,
             iconTint = item.iconTint,
+            glyphIcon = item.glyphIcon,
             friendsBadge = item.friendsBadge,
             selected = item.destination != null && sameDestination(selected, item.destination),
             onClick = { item.onAction?.invoke() ?: item.destination?.let(onNavigate) },
@@ -312,6 +319,7 @@ private fun DrawerRow(
     // Null tints the icon like the row's text. Only the trophy wants a fixed brand colour;
     // the About rows' marks must follow the row so they don't render gold.
     iconTint: Color? = null,
+    glyphIcon: Int? = null,
     friendsBadge: Boolean = false,
     selected: Boolean,
     onClick: () -> Unit,
@@ -332,7 +340,11 @@ private fun DrawerRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (iconRes != null) {
+            if (glyphIcon != null) {
+                Box(Modifier.width(32.dp)) {
+                    com.armsx2.ui.common.GlyphSizedImage(glyph, 22.sp, painterResource(glyphIcon), FontWeight.Bold)
+                }
+            } else if (iconRes != null) {
                 Box(Modifier.width(32.dp), contentAlignment = Alignment.Center) {
                     Icon(painterResource(iconRes), contentDescription = null, tint = iconTint ?: contentColor, modifier = Modifier.size(24.dp))
                 }
@@ -360,6 +372,7 @@ private fun sameDestination(current: AppRoute, target: AppRoute): Boolean = when
     AppRoute.ControllerManager -> current is AppRoute.ControllerManager
     AppRoute.PatchManager -> current is AppRoute.PatchManager
     AppRoute.TextureManager -> current is AppRoute.TextureManager
+    AppRoute.Arcade -> current is AppRoute.Arcade
     AppRoute.Achievements -> current is AppRoute.Achievements
     AppRoute.Language -> current is AppRoute.Language
     AppRoute.News -> current is AppRoute.News

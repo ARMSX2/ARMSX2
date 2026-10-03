@@ -154,6 +154,8 @@ void GSgetTitleStats(std::string& info);
 /// Converts window position to normalized display coordinates (0..1). A value less than 0 or greater than 1 is
 /// returned if the position lies outside the display area.
 void GSTranslateWindowToDisplayCoordinates(float window_x, float window_y, float* display_x, float* display_y);
+void GSTranslateWindowToDisplayCoordinatesUnclamped(float window_x, float window_y, float* display_x, float* display_y);
+void GSTranslateDisplayToWindowCoordinates(float display_x, float display_y, float* window_x, float* window_y);
 
 void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config);
 void GSSetSoftwareRendering(bool software_renderer, GSInterlaceMode new_interlace);

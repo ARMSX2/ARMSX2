@@ -786,8 +786,10 @@ open class MainActivityRuntime : ComponentActivity() {
                     if (affinity != bootCfg.output.affinityMode)
                         println("@@ANDROID_AFFINITY@@ sustained performance on -> affinity forced to Disabled")
                     runCatching { NativeApp.setAffinityMode(affinity) }
-                    // The hold itself waits for the VM to come up. BIOS boots skip it.
-                    if (bootCfg.output.autoProgressiveScan)
+                    // The hold itself waits for the VM to come up. BIOS boots skip it, and so do
+                    // arcade games, where Triangle+Cross are two of the cabinet's buttons.
+                    val arcadeLaunch = com.armsx2.arcade.Arcade.isArcadeLaunch(m_szGamefile, currentGame.value)
+                    if (bootCfg.output.autoProgressiveScan && !arcadeLaunch)
                         startAutoProgressiveScanHold()
                     // Bank a copy of the cards this boot will mount, while they are still closed.
                     // Cheap and silent: it only writes when the card verifies AND its contents
@@ -803,7 +805,10 @@ open class MainActivityRuntime : ComponentActivity() {
                         }
                     }
                     stagePerGameSettingsFile(currentGame.value?.settingsKey)
-                    NativeApp.runVMThread(m_szGamefile)
+                    if (arcadeLaunch)
+                        runArcadeGame(m_szGamefile)
+                    else
+                        NativeApp.runVMThread(m_szGamefile)
                 } finally {
                     // runVMThread blocks until the VM exits (Stopping/Shutdown
                     // observed). Drop back to STOPPED only after native has
@@ -866,6 +871,31 @@ open class MainActivityRuntime : ComponentActivity() {
                 n++
             }
             return n + (if (sawJoyCon) 1 else 0)
+        }
+
+        /**
+         * Runs an arcade game (.acgame): its files found and its dongle put in place first (Arcade),
+         * and anything that keeps it from starting said over the library, not only in the log. An
+         * arcade game has more of those than a disc: the dongle, the board's BIOS, the media.
+         */
+        private fun runArcadeGame(path: String) {
+            val ctx = instance?.applicationContext ?: return
+            val launch = com.armsx2.arcade.Arcade.prepare(ctx, path).getOrElse {
+                println("@@ANDROID_ARCADE@@ not started: $it")
+                com.armsx2.arcade.Arcade.notice.value = it.message ?: it.toString()
+                return
+            }
+            println("@@ANDROID_ARCADE@@ ${launch.game.gameId} mode=${launch.mode} elf=${launch.elf.take(200)} media=${launch.media.take(200)}")
+            NativeApp.setArcadeLaunchFiles(launch.elf, launch.media, launch.sram)
+            com.armsx2.arcade.Arcade.sessionMode.intValue = launch.mode
+            try {
+                NativeApp.runVMThread(path)
+            } finally {
+                com.armsx2.arcade.Arcade.sessionMode.intValue = -1
+            }
+            runCatching { NativeApp.getLastBootError() }.getOrNull()?.takeIf { it.isNotBlank() }?.let { error ->
+                com.armsx2.arcade.Arcade.notice.value = com.armsx2.i18n.I18n.get("arcade.error.boot").format(error)
+            }
         }
 
         /**
@@ -2160,6 +2190,11 @@ open class MainActivityRuntime : ComponentActivity() {
                     NativeApp.commitSettings()
                 }
             }
+            // The arcade games' BIOS, kept apart from the console one (Arcade.arcadeBios).
+            runCatching {
+                com.armsx2.arcade.Arcade.loadArcadeBios()
+                com.armsx2.arcade.Arcade.pushArcadeBios()
+            }
 
             // Mirror the canonical (app-private) BIOS into the user's data root at
             // <dataRoot>/bios so it's visible/backup-able next to cache/covers/etc.
@@ -2420,6 +2455,7 @@ open class MainActivityRuntime : ComponentActivity() {
         com.armsx2.EnglishTitles.load()
         com.armsx2.CustomNames.load()
         com.armsx2.HiddenGames.load()
+        com.armsx2.ArcadeOnly.load()
         com.armsx2.LibraryTitles.load()
         com.armsx2.LibraryRecentShelf.load()
         // Discord needs an Activity to launch its sign-in browser and has no other way to obtain
@@ -2562,6 +2598,13 @@ open class MainActivityRuntime : ComponentActivity() {
         // before any game runs. Referencing NativeApp also loads the native lib (static init).
         runCatching { kr.co.iefriends.pcsx2.NativeApp.setAdpfEnabled(prefs.getBoolean("ui.adpf", false)) }
 
+        // Arcade holds Compose state the first frame reads (its launch notice), and the emucore
+        // init below reaches it first, from its own thread (loadArcadeBios). A state made on another
+        // thread while a composition is running cannot be read by that composition: the first frame
+        // threw "Reading a state that was created after the snapshot was taken" and the app could
+        // not open. So it is made here, on the main thread, before either of them starts.
+        com.armsx2.arcade.Arcade.loadArcadeBios()
+
         // Defer asset copy + emucore init until setup is complete. On the
         // first-ever run, `systemDir` isn't picked yet at onCreate time —
         // so initializeOnce would resolve to the app-private fallback and
@@ -2623,6 +2666,8 @@ open class MainActivityRuntime : ComponentActivity() {
             if (com.armsx2.BuildConfig.IN_APP_UPDATER) {
                 com.armsx2.update.AutoUpdateGate()
             }
+            // Why an arcade game did not start, when it did not.
+            com.armsx2.arcade.ArcadeNotice()
             // First-time setup deferral: when the wizard finishes and
             // setupComplete flips to true, kick off the heavy emucore
             // init now that `MainActivityRuntime.systemDir` reflects the user's pick.

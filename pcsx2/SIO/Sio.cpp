@@ -6,6 +6,7 @@
 #include "SIO/SioTypes.h"
 #include "SIO/Memcard/MemoryCardProtocol.h"
 #include "Counters.h"
+#include "common/ARCADE.h"
 
 #include "Host.h"
 #include "IconsPromptFont.h"
@@ -26,7 +27,8 @@ void sioNextFrame() {
 void sioSetGameSerial( const std::string& serial ) {
 	for ( uint port = 0; port < 2; ++port ) {
 		for ( uint slot = 0; slot < 4; ++slot ) {
-			if ( mcds[port][slot].ReIndex( serial ) ) {
+			// An arcade board's dongle never leaves its slot, so it is never ejected (PCSX2x6).
+			if ( mcds[port][slot].ReIndex( serial ) && !Arcade::IsActive() ) {
 				AutoEject::Set( port, slot );
 			}
 		}

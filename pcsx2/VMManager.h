@@ -46,6 +46,13 @@ struct VMBootParameters
 	std::optional<bool> start_turbo;
 	std::optional<bool> start_unlimited;
 	bool disable_achievements_hardcore_mode = false;
+
+	/// An arcade game (.acgame, Namco System 246/256) on a host whose game folders are not plain paths
+	/// (Android's documents): where the host found the boot ELF, the media image and the SRAM file the
+	/// .acgame names. An empty one is looked for next to the .acgame.
+	std::string arcade_elf;
+	std::string arcade_media;
+	std::string arcade_sram;
 };
 
 enum class VMBootResult
@@ -268,6 +275,9 @@ namespace VMManager
 
 	/// Returns true if the specified path is an ELF.
 	bool IsElfFileName(const std::string_view path);
+
+	/// Returns true if the specified path is an arcade game (.acgame, Namco System 246/256).
+	bool IsArcadeGameFileName(const std::string_view path);
 
 	/// Returns true if the specified path is a blockdump.
 	bool IsBlockDumpFileName(const std::string_view path);

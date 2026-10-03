@@ -8,6 +8,7 @@
 #include "R3000A.h"
 #include "IopHw.h"
 #include "Config.h"
+#include "common/ARCADE.h"
 
 static constexpr int CYCLES_PER_WORD = 24;
 
@@ -250,7 +251,10 @@ void V_Core::FinishDMAwrite()
 		DMA7LogWrite(DMAPtr, ReadSize << 1);
 #endif
 
-	u32 buff1end = ActiveTSA + std::min(ReadSize, (u32)0x100 + std::abs(DMAICounter / CYCLES_PER_WORD));
+	// An arcade board moves the whole block at once. The deferred partial transfer cost ~170ms there,
+	// where the hardware takes under 0.1ms, and corrupted streamed audio (TK5DR attract; PCSX2x6).
+	u32 buff1end = Arcade::IsActive() ? ActiveTSA + ReadSize :
+		ActiveTSA + std::min(ReadSize, (u32)0x100 + std::abs(DMAICounter / CYCLES_PER_WORD));
 	u32 buff2end = 0;
 	if (buff1end > 0x100000)
 	{
@@ -346,6 +350,10 @@ void V_Core::FinishDMAwrite()
 	ReadSize -= TDA - ActiveTSA;
 
 	DMAICounter = (DMAICounter - ReadSize) * CYCLES_PER_WORD;
+
+	// After a full transfer, don't leave a large stale counter that delays the IRQ (arcade; PCSX2x6).
+	if (Arcade::IsActive() && ReadSize == 0 && DMAICounter > CYCLES_PER_WORD)
+		DMAICounter = CYCLES_PER_WORD;
 
 	CounterUpdate(DMAICounter);
 

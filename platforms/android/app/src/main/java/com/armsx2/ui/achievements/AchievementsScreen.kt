@@ -198,8 +198,6 @@ private fun AchievementAccount(
                 modifier = Modifier.controllerFocusable(
                     "ra.enabled",
                     onConfirm = { viewModel.setEnabled(!state.enabled) },
-                    onLeft = { if (state.enabled) viewModel.setEnabled(false) },
-                    onRight = { if (!state.enabled) viewModel.setEnabled(true) },
                 ),
             )
             SettingSwitchRow(
@@ -210,8 +208,6 @@ private fun AchievementAccount(
                 modifier = Modifier.controllerFocusable(
                     "ra.hardcore",
                     onConfirm = { viewModel.requestToggleHardcore() },
-                    onLeft = { if (state.hardcore) viewModel.requestToggleHardcore() },
-                    onRight = { if (!state.hardcore) viewModel.requestToggleHardcore() },
                 ),
             )
             SettingSwitchRow(
@@ -222,8 +218,6 @@ private fun AchievementAccount(
                 modifier = Modifier.controllerFocusable(
                     "ra.notifications",
                     onConfirm = { viewModel.setOption("notifications", !state.notifications) },
-                    onLeft = { if (state.notifications) viewModel.setOption("notifications", false) },
-                    onRight = { if (!state.notifications) viewModel.setOption("notifications", true) },
                 ),
             )
             // How long an unlock toast lingers (seconds). Only meaningful while unlock toasts are on,
@@ -247,8 +241,6 @@ private fun AchievementAccount(
                 modifier = Modifier.controllerFocusable(
                     "ra.leaderboardNotifications",
                     onConfirm = { viewModel.setOption("leaderboardNotifications", !state.leaderboardNotifications) },
-                    onLeft = { if (state.leaderboardNotifications) viewModel.setOption("leaderboardNotifications", false) },
-                    onRight = { if (!state.leaderboardNotifications) viewModel.setOption("leaderboardNotifications", true) },
                 ),
             )
             if (state.leaderboardNotifications) {
@@ -293,8 +285,6 @@ private fun AchievementAccount(
                 modifier = Modifier.controllerFocusable(
                     "ra.overlays",
                     onConfirm = { viewModel.setOption("overlays", !state.overlays) },
-                    onLeft = { if (state.overlays) viewModel.setOption("overlays", false) },
-                    onRight = { if (!state.overlays) viewModel.setOption("overlays", true) },
                 ),
             )
             SettingSwitchRow(
@@ -305,8 +295,6 @@ private fun AchievementAccount(
                 modifier = Modifier.controllerFocusable(
                     "ra.lbOverlays",
                     onConfirm = { viewModel.setOption("lbOverlays", !state.lbOverlays) },
-                    onLeft = { if (state.lbOverlays) viewModel.setOption("lbOverlays", false) },
-                    onRight = { if (!state.lbOverlays) viewModel.setOption("lbOverlays", true) },
                 ),
             )
             // Where challenge indicators / leaderboard trackers sit (native AchievementOverlayPosition).
@@ -328,8 +316,6 @@ private fun AchievementAccount(
                 modifier = Modifier.controllerFocusable(
                     "ra.soundEffects",
                     onConfirm = { viewModel.setOption("soundEffects", !state.soundEffects) },
-                    onLeft = { if (state.soundEffects) viewModel.setOption("soundEffects", false) },
-                    onRight = { if (!state.soundEffects) viewModel.setOption("soundEffects", true) },
                 ),
             )
             // Volume of that unlock sound — only meaningful while the effect is on, so it slides
@@ -355,8 +341,6 @@ private fun AchievementAccount(
                 modifier = Modifier.controllerFocusable(
                     "ra.encoreMode",
                     onConfirm = { viewModel.setOption("encoreMode", !state.encoreMode) },
-                    onLeft = { if (state.encoreMode) viewModel.setOption("encoreMode", false) },
-                    onRight = { if (!state.encoreMode) viewModel.setOption("encoreMode", true) },
                 ),
             )
             SettingSwitchRow(
@@ -367,8 +351,6 @@ private fun AchievementAccount(
                 modifier = Modifier.controllerFocusable(
                     "ra.spectatorMode",
                     onConfirm = { viewModel.setOption("spectatorMode", !state.spectatorMode) },
-                    onLeft = { if (state.spectatorMode) viewModel.setOption("spectatorMode", false) },
-                    onRight = { if (!state.spectatorMode) viewModel.setOption("spectatorMode", true) },
                 ),
             )
             SettingSwitchRow(
@@ -379,8 +361,6 @@ private fun AchievementAccount(
                 modifier = Modifier.controllerFocusable(
                     "ra.unofficialTestMode",
                     onConfirm = { viewModel.setOption("unofficialTestMode", !state.unofficialTestMode) },
-                    onLeft = { if (state.unofficialTestMode) viewModel.setOption("unofficialTestMode", false) },
-                    onRight = { if (!state.unofficialTestMode) viewModel.setOption("unofficialTestMode", true) },
                 ),
             )
             Surface(

@@ -7,6 +7,7 @@
 #include "SIO/Sio2.h"
 #include "SIO/Sio0.h"
 
+#include "common/ARCADE.h"
 #include "common/Assertions.h"
 #include "common/Console.h"
 
@@ -517,7 +518,9 @@ void MemoryCardProtocol::AuthF3()
 	}
 	else
 	{
-		mcd->term = Terminator::READY;
+		// An arcade dongle keeps the terminator it has through this step (PCSX2x6).
+		if (!Arcade::IsActive())
+			mcd->term = Terminator::READY;
 		The2bTerminator(5);
 	}
 }

@@ -25,9 +25,11 @@ import java.io.File
  * CC0 / public domain on OpenGameArt. CC0 imposes no attribution requirement, but the
  * author asks for credit and we give it — see the About screen.
  *
- * Two screens play their own track in its place ([playTheme]): the Icon Museum, "Another
+ * Three screens play their own track in its place ([playTheme]): the Icon Museum, "Another
  * August" by The Cynic Project (cynicmusic.com, pixelsphere.org), which asks for attribution,
- * given in the About screen and MC Icon Info; and Online Icons, "Next to You", which doesn't.
+ * given in the About screen and MC Icon Info; Online Icons, "Next to You", which doesn't; and the
+ * texture screen, "November Snow" by The Cynic Project, CC0 from the Pixelsphere soundtrack, which
+ * asks for the same attribution, given in the About screen.
  * Going in and out of them, the two tracks mix for a few seconds before the old one slowly fades.
  */
 object LibraryMusic {

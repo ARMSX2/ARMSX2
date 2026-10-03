@@ -1841,14 +1841,11 @@ private fun MacroConfigDialog(
                                 .fillMaxWidth()
                                 .height(52.dp)
                                 .clickable { toggle() }
-                                // Left/Right clear and set, matching every other toggle in the app,
-                                // so the row behaves the same inside this panel as outside it.
+                                // Only A ticks it, like every other switch in the app.
                                 .controllerFocusable(
                                     controllerId = "$layer.${t.code}",
                                     shape = RoundedCornerShape(10.dp),
                                     onConfirm = toggle,
-                                    onLeft = { if (on) selected.remove(t.code) },
-                                    onRight = { if (!on) selected.add(t.code) },
                                 )
                                 .padding(horizontal = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,

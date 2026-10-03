@@ -604,3 +604,478 @@ SLUS-20686:
   gsHWFixes:
     autoFlush: 1
     copyRoadMaximumBlendingLevel: 0
+
+# ---------------------------------------------------------------------------------------------
+# Namco System 246/256 arcade games. Added 2026-10-01 by jpolo1224 with the arcade port (branch
+# namco-arcade), copied verbatim from PCSX2x6's GameIndex.yaml at 583f0e9090 (2026-09-09,
+# https://github.com/PS2Homebrew-arcade/pcsx2x6). They give an .acgame's gameid its title, its
+# board (region: System246 / System256 / System SUPER256), its media and JVS input kind, and the
+# GS fixes PCSX2x6 found. Arcade-only serials (NMxxxxx): no retail game is affected.
+# Verified: not yet on Android hardware; PCSX2x6 reports 89% of these playable on PC.
+# ---------------------------------------------------------------------------------------------
+# NM00001 Ridge Racer V - Arcade Battle: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00001:
+  name: Ridge Racer V - Arcade Battle
+  region: System246
+  bootprog: START
+  media: CD
+  input: driving
+  clampModes:
+    vuClampMode: 2
+  gsHWFixes:
+    alignSprite: 1
+    textureInsideRT: 1
+    halfPixelOffset: 2
+    roundSprite: 1
+    gpuPaletteConversion: 2
+    cpuSpriteRenderBW: 1
+    cpuSpriteRenderLevel: 1
+# NM00002 Bloody Roar 3: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00002:
+  name: Bloody Roar 3
+  region: System246
+  bootprog: BDRGAME
+  media: CD
+  input: button
+# NM00003 Vampire Night: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00003:
+  name: Vampire Night
+  region: System246
+  bootprog: VPNGAME
+  media: CD
+  input: lightgun
+# NM10003 Technic Beat: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM10003:
+  name: Technic Beat
+  region: System246
+  bootprog: VPNGAME
+  media: DVD
+  input: button
+# NM00004 Tekken 4: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00004:
+  name: Tekken 4
+  region: System246
+  bootprog: TK4LOAD
+  media: DVD
+  input: button
+  gsHWFixes:
+    alignSprite: 1
+# NM00005 Wangan Midnight R: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00005:
+  name: Wangan Midnight R
+  region: System246
+  bootprog: AL3LOAD
+  media: CD
+  input: driving
+# NM00006 Smash Court Pro Tournament: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00006:
+  name: Smash Court Pro Tournament
+  region: System246
+  bootprog: SCPTLOAD
+  media: CD
+  input: button
+# NM00007 Soul Calibur II: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00007:
+  name: Soul Calibur II
+  region: System246
+  bootprog: SCSLOAD
+  media: DVD
+  input: button
+  clampModes:
+    vuClampMode: 2 # Respawn issues, Fixes SPS, avoids teleporting characters.
+  gameFixes:
+    - EETimingHack # Fixes bad colours on character select when in Progressive Scan.
+    - SoftwareRendererFMVHack # Horizontal bottom line in FMV.
+  gsHWFixes:
+    alignSprite: 1 # Fixes vertical lines.
+    nativeScaling: 2 # Fixes misaligned bloom
+# NM00008 Wangan Midnight: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00008:
+  name: Wangan Midnight
+  region: System246
+  bootprog: WGNLOAD
+  media: CD
+  input: driving
+# NM00009 Netchuu! Pro Baseball 2002: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00009:
+  name: Netchuu! Pro Baseball 2002
+  region: System246
+  bootprog: NPBLOAD
+  media: CD
+  input: button
+# NM00010 Battle Gear 3: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00010:
+  name: Battle Gear 3
+  region: System246
+  bootprog: BGRLOAD
+  media: HDD
+  input: driving
+  clampModes:
+    eeClampMode: 3
+    vuClampMode: 3
+# NM00011 Pride GP 2003: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00011:
+  name: Pride GP 2003
+  region: System246
+  bootprog: FGTLOAD
+  media: DVD
+  input: button
+# NM00012 Time Crisis 3: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00012:
+  name: Time Crisis 3
+  region: System246
+  bootprog: TC3LOAD
+  media: DVD
+  input: lightgun
+# NM00013 Mobile Suit Gundam Zeta - A.E.U.G. vs. Titans: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00013:
+  name: Mobile Suit Gundam Zeta - A.E.U.G. vs. Titans
+  region: System246
+  bootprog: GDMLOAD
+  media: DVD
+  input: button
+# NM00014 Dragon Chronicle - Legendary Master Ark: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00014:
+  name: Dragon Chronicle - Legendary Master Ark
+  region: System246
+  bootprog: DGNLOAD
+  media: CD
+  input: touchscreen
+# NM00015 Battle Gear 3 Tuned: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00015:
+  name: Battle Gear 3 Tuned
+  region: System246
+  bootprog: BGTLOAD
+  media: HDD
+  input: driving
+  clampModes:
+    eeClampMode: 3
+    vuClampMode: 3
+# NM00016 Zoids Infinity: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00016:
+  name: Zoids Infinity
+  region: System246
+  bootprog: ZOILOAD
+  media: HDD
+  input: twinstick
+# NM00017 Mobile Suit Gundam Zeta - A.E.U.G. vs. Titans DX: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00017:
+  name: Mobile Suit Gundam Zeta - A.E.U.G. vs. Titans DX
+  region: System246
+  bootprog: GDXLOAD
+  media: DVD
+  input: button
+# NM00018 Capcom Fighting Jam: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00018:
+  name: Capcom Fighting Jam
+  region: System246
+  bootprog: FJMLOAD
+  media: DVD
+  input: button
+# NM00019 Tekken 5: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00019:
+  name: Tekken 5
+  region: System256
+  bootprog: TK5LOAD
+  media: DVD
+  input: button
+  clampModes:
+    eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
+  gsHWFixes:
+    recommendedBlendingLevel: 3 # Improves effect rendering on various levels.
+    halfPixelOffset: 2 # Align post.
+    alignSprite: 1 # Fixes vertical lines.
+    nativeScaling: 1 # Fixes depth of field effect.
+    textureInsideRT: 1 # Fixes heat haze half screen problem.
+    cpuSpriteRenderBW: 1
+    getSkipCount: "GSC_NamcoGames"
+    bilinearDirtyUpscale: 1 # Fixed the issue where a sphere would appear as a cube when backlit.
+    autoFlush: 1
+# NM00020 Dragon Chronicle Online - Great Sky Battle: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00020:
+  name: Dragon Chronicle Online - Great Sky Battle
+  region: System246
+  bootprog: DCOLOAD
+  media: CD
+  input: touchscreen
+# NM00021 Cobra - The Arcade: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00021:
+  name: Cobra - The Arcade
+  region: System256
+  bootprog: CBRLOAD
+  media: HDD
+  input: lightgun
+# NM00022 The IDOLM@STER: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00022:
+  name: The IDOLM@STER
+  region: System256
+  bootprog: IDLLOAD
+  media: HDD
+  input: touchscreen
+# NM00023 Taiko Drum Master 7: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00023:
+  name: Taiko Drum Master 7
+  region: System256
+  bootprog: TA7LOAD
+  media: DVD
+  input: drum
+  gsHWFixes:
+    alignSprite: 1 # Fixes vertical lines.
+# NM00024 Mobile Suit Gundam SEED - Federation vs. Z.A.F.T.: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00024:
+  name: Mobile Suit Gundam SEED - Federation vs. Z.A.F.T.
+  region: System246
+  bootprog: SEDLOAD
+  media: DVD
+  input: button
+# NM00025 Zoids Infinity - EX: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00025:
+  name: Zoids Infinity - EX
+  region: System246
+  bootprog: ZO2LOAD
+  media: HDD
+  input: twinstick
+# NM00026 Tekken 5 - Dark Resurrection: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00026:
+  name: Tekken 5 - Dark Resurrection
+  region: System256
+  bootprog: T55LOAD
+  media: DVD
+  input: button
+  clampModes:
+    eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
+  gsHWFixes:
+    recommendedBlendingLevel: 3 # Improves effect rendering on various levels.
+    halfPixelOffset: 2 # Align post.
+    alignSprite: 1 # Fixes vertical lines.
+    nativeScaling: 1 # Fixes depth of field effect.
+    textureInsideRT: 1 # Fixes heat haze half screen problem.
+    cpuSpriteRenderBW: 1
+    getSkipCount: "GSC_NamcoGames"
+    bilinearDirtyUpscale: 1 # Fixes the issue where a sphere would appear as a cube when backlit.
+    autoFlush: 1
+# NM00027 Super Dragon Ball Z: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00027:
+  name: Super Dragon Ball Z
+  region: System256
+  bootprog: DBALOAD
+  media: DVD
+  input: button
+# NM00028 Druaga Online - The Story of Aon: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00028:
+  name: Druaga Online - The Story of Aon
+  region: System256
+  bootprog: DRULOAD
+  media: DVD
+  input: touchscreen
+# NM00029 Kinnikuman Muscle Grand Prix: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00029:
+  name: Kinnikuman Muscle Grand Prix
+  region: System256
+  bootprog: KINLOAD
+  media: DVD
+  input: button
+# NM00030 Mobile Suit Gundam Quiz Warrior: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00030:
+  name: Mobile Suit Gundam Quiz Warrior
+  region: System246
+  bootprog: GQZLOAD
+  media: DVD
+  input: button
+# NM00031 Soul Calibur III - Arcade Edition: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00031:
+  name: Soul Calibur III - Arcade Edition
+  region: System246
+  bootprog: SC3LOAD
+  media: DVD
+  input: button
+  clampModes:
+    vuClampMode: 2 # Respawn issues, Fixes SPS, avoids teleporting characters.
+  gameFixes:
+    - EETimingHack # Fixes bad colours on character select when in Progressive Scan.
+  gsHWFixes:
+    alignSprite: 1 # Fixes vertical lines.
+    nativeScaling: 2 # Fixes misaligned bloom.
+# NM00032 Time Crisis 4: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00032:
+  name: Time Crisis 4
+  region: System SUPER256
+  bootprog: TC4LOAD
+  media: HDD
+  input: lightgun
+# NM00033 Taiko Drum Master 8: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00033:
+  name: Taiko Drum Master 8
+  region: System256
+  bootprog: TA8LOAD
+  media: DVD
+  input: drum
+  gsHWFixes:
+    alignSprite: 1 # Fixes vertical lines.
+# NM00034 Mobile Suit Gundam SEED Destiny - Federation vs. Z.A.F.T. II: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00034:
+  name: Mobile Suit Gundam SEED Destiny - Federation vs. Z.A.F.T. II
+  region: System246
+  bootprog: SE2LOAD
+  media: DVD
+  input: button
+# NM00035 The Battle of YuYu Hakusho - Deathmatch! Dark Martial Arts Association: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00035:
+  name: The Battle of YuYu Hakusho - Deathmatch! Dark Martial Arts Association
+  region: System256
+  bootprog: YUULOAD
+  media: DVD
+  input: button
+# NM00036 Whole Brain Training With Everybody: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00036:
+  name: Whole Brain Training With Everybody
+  region: System256
+  bootprog: NTRLOAD
+  media: DVD
+  input: touchscreen
+# NM00037 Quiz & Variety Suku Suku Inufuku 2 - More Suku Suku: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00037:
+  name: Quiz & Variety Suku Suku Inufuku 2 - More Suku Suku
+  region: System246
+  bootprog: DR2LOAD
+  media: CD
+  input: button
+# NM00038 Taiko Drum Master 9: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00038:
+  name: Taiko Drum Master 9
+  region: System256
+  bootprog: TA9LOAD
+  media: DVD
+  input: drum
+  gsHWFixes:
+    alignSprite: 1 # Fixes vertical lines.
+# NM00039 MotoGP: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00039:
+  name: MotoGP
+  region: System256
+  bootprog: MGPLOAD
+  media: HDD
+  input: driving
+# NM00040 Kinnikuman Muscle Grand Prix 2: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00040:
+  name: Kinnikuman Muscle Grand Prix 2
+  region: System246
+  bootprog: KI2LOAD
+  media: DVD
+  input: button
+# NM00041 Taiko Drum Master 10: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00041:
+  name: Taiko Drum Master 10
+  region: System256
+  bootprog: T10LOAD
+  media: DVD
+  input: drum
+  gsHWFixes:
+    alignSprite: 1 # Fixes vertical lines.
+# NM00042 Sengoku Basara X: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00042:
+  name: Sengoku Basara X
+  region: System246
+  bootprog: BASLOAD
+  media: DVD
+  input: button
+# NM00043 Mobile Suit Gundam - Gundam vs. Gundam: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00043:
+  name: Mobile Suit Gundam - Gundam vs. Gundam
+  region: System256
+  bootprog: GDNLOAD
+  media: DVD
+  input: button
+# NM00044 Taiko Drum Master 11: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00044:
+  name: Taiko Drum Master 11
+  region: System256
+  bootprog: T11LOAD
+  media: DVD
+  input: drum
+  gsHWFixes:
+    alignSprite: 1 # Fixes vertical lines.
+# NM00045 Taiko Drum Master 11 Asian Edition Taiwan: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00045:
+  name: Taiko Drum Master 11 Asian Edition Taiwan
+  region: System256
+  bootprog: TEALOAD
+  media: DVD
+  input: drum
+  gsHWFixes:
+    alignSprite: 1
+# NM00046 Taiko Drum Master 11 - Asian Edition: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00046:
+  name: Taiko Drum Master 11 - Asian Edition
+  region: System256
+  bootprog: TEBLOAD
+  media: DVD
+  input: drum
+  gsHWFixes:
+    alignSprite: 1
+# NM00047 Ace Driver 3 - Final Turn: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00047:
+  name: Ace Driver 3 - Final Turn
+  region: System256
+  bootprog: NRALOAD
+  media: HDD
+  input: driving
+# NM00048 Fate - Unlimited Codes: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00048:
+  name: Fate - Unlimited Codes
+  region: System246
+  bootprog: FTELOAD
+  media: HDD
+  input: button
+# NM00051 Taiko Drum Master 12: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00051: 
+  name: Taiko Drum Master 12
+  region: System256
+  bootprog: T12LOAD
+  media: HDD
+  input: drum
+  gsHWFixes:
+    alignSprite: 1 # Fixes vertical lines.
+# NM00052 Mobile Suit Gundam - Gundam vs. Gundam NEXT: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00052:
+  name: Mobile Suit Gundam - Gundam vs. Gundam NEXT
+  region: System256
+  bootprog: GNXLOAD
+  media: HDD
+  input: button
+# NM00053 Taiko Drum Master 12 - Asian Edition Taiwan: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00053:
+  name: Taiko Drum Master 12 - Asian Edition Taiwan
+  region: System256
+  bootprog: TECLOAD
+  media: HDD
+  input: drum
+  gsHWFixes:
+    alignSprite: 1
+# NM00054 Taiko Drum Master 12 - Asian Edition: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00054:
+  name: Taiko Drum Master 12 - Asian Edition
+  region: System256
+  bootprog: TEDLOAD
+  media: HDD
+  input: drum
+  gsHWFixes:
+    alignSprite: 1
+# NM00056 Taiko Drum Master 13: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00056:
+  name: Taiko Drum Master 13
+  region: System256
+  bootprog: T13LOAD
+  media: HDD
+  input: drum
+  gsHWFixes:
+    alignSprite: 1 # Fixes vertical lines.
+# NM00057 Taiko Drum Master 14: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
+NM00057:
+  name: Taiko Drum Master 14
+  region: System256
+  bootprog: T14LOAD
+  media: HDD
+  input: drum
+  gsHWFixes:
+    alignSprite: 1 # Fixes vertical lines.

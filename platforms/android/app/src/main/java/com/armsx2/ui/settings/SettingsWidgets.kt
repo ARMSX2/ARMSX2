@@ -199,7 +199,17 @@ internal object SettingsControllerNav {
     // (e.g. the memcard "New Card" form, which registers after the card list but
     // is drawn above it).
     private val positions = HashMap<String, Pair<Float, Float>>()
+    // Measured width per id, for telling which column a control sits in (see [columnScreens]).
+    private val widths = HashMap<String, Float>()
     private val selectedId = mutableStateOf<String?>(null)
+
+    /** How many screens laid out in side-by-side columns are up (the texture and patch managers),
+     *  held through [ColumnControllerNav]. While any is, and no modal owns input, Up/Down keep to
+     *  the selection's column and Left/Right reach the next column even where nothing sits level
+     *  with the selection; otherwise a two-column screen walked up and down both columns
+     *  interleaved, and Left/Right did nothing. A count, so two such screens overlapping in a
+     *  transition cannot switch it off for each other. */
+    internal var columnScreens = 0
     val selectedIndex = mutableIntStateOf(-1)
     val scrollVelocity = mutableFloatStateOf(0f)
 
@@ -208,8 +218,9 @@ internal object SettingsControllerNav {
      *  scroll to the very top when a category chip regains focus. */
     fun currentSelectedId(): String? = selectedId.value
 
-    fun setPosition(id: String, x: Float, y: Float) {
+    fun setPosition(id: String, x: Float, y: Float, width: Float = 0f) {
         positions[id] = y to x
+        widths[id] = width
     }
 
     private fun orderedIds(): List<String> {
@@ -279,6 +290,7 @@ internal object SettingsControllerNav {
     fun unregister(id: String) {
         registry.remove(id)
         positions.remove(id)
+        widths.remove(id)
         if (selectedId.value == id)
             selectedId.value = orderedIds().firstOrNull()
         selectedIndex.intValue = orderedIds().indexOf(selectedId.value)
@@ -370,11 +382,45 @@ internal object SettingsControllerNav {
         // built to prevent that. And it makes the scan deterministic: positions is a
         // HashMap, so the old iteration order was arbitrary, and any tie between two
         // equally-good candidates was settled differently from run to run.
-        val candidates = orderedIds().mapNotNull { id ->
+        val all = orderedIds().mapNotNull { id ->
             if (id == curId) null else positions[id]?.let { id to it }
         }
+        val columns = columnScreens > 0 && activeLayer == null
+        // In a column layout, Up/Down look in the selection's own column first: the controls whose
+        // width overlaps its width. Only when that column has nothing more that way do they look
+        // everywhere, as before, so a column's end is never a dead end.
+        val curWidth = curId?.let { widths[it] } ?: 0f
+        val inColumn = { id: String, p: Pair<Float, Float> ->
+            val w = widths[id] ?: 0f
+            p.second < cx + curWidth && cx < p.second + w
+        }
+        val target = (if (columns && dy != 0) spatialTarget(dx, dy, cy, cx, rowTol, all.filter { (id, p) -> inColumn(id, p) }) else null)
+            ?: spatialTarget(dx, dy, cy, cx, rowTol, all)
+            // Left/Right with nothing level with the selection: in a column layout, the nearest
+            // control that way, the closest in height first.
+            ?: if (columns && dx != 0) {
+                all.filter { (_, p) -> if (dx > 0) p.second - cx > 1f else p.second - cx < -1f }
+                    .minByOrNull { (_, p) -> abs(p.first - cy) + abs(p.second - cx) * 0.25f }?.first
+            } else null
 
-        val target: String? = if (dy != 0) {
+        if (target == null) return false
+        selectedId.value = target
+        selectedIndex.intValue = orderedIds().indexOf(target)
+        com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.NAV)
+        return true
+    }
+
+    /** The control a move lands on among [candidates] (id to (y, x)), or null: the rules
+     *  [moveSpatial] describes. */
+    private fun spatialTarget(
+        dx: Int,
+        dy: Int,
+        cy: Float,
+        cx: Float,
+        rowTol: Float,
+        candidates: List<Pair<String, Pair<Float, Float>>>,
+    ): String? {
+        return if (dy != 0) {
             // Vertical: step exactly ONE row in the travel direction, then land on the
             // item in that row whose x is closest to the current x. Row-based (not a
             // per-item distance score) so Up and Down are symmetric and can never skip
@@ -417,12 +463,6 @@ internal object SettingsControllerNav {
             }
             bestId
         }
-
-        if (target == null) return false
-        selectedId.value = target
-        selectedIndex.intValue = orderedIds().indexOf(target)
-        com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.NAV)
-        return true
     }
 
     fun adjust(delta: Int): Boolean {
@@ -499,6 +539,16 @@ internal fun ControllerAutoScroll(scroll: ScrollState) {
     }
 }
 
+/** Marks the calling screen as laid out in side-by-side columns for the controller, for as long as
+ *  it is composed (see [SettingsControllerNav.columnScreens]). */
+@Composable
+internal fun ColumnControllerNav() {
+    DisposableEffect(Unit) {
+        SettingsControllerNav.columnScreens++
+        onDispose { SettingsControllerNav.columnScreens-- }
+    }
+}
+
 /** The registry ids used by the shared settings rows. Slider ids may carry an additional
  * composition suffix, but other prefixes must match the whole label. */
 internal fun settingsRowMatchesLabel(id: String, label: String): Boolean =
@@ -552,7 +602,7 @@ internal fun Modifier.controllerFocusable(
             if (controllerId != null)
                 Modifier.onGloballyPositioned {
                     val p = it.positionInRoot()
-                    SettingsControllerNav.setPosition(controllerId, p.x, p.y)
+                    SettingsControllerNav.setPosition(controllerId, p.x, p.y, it.size.width.toFloat())
                 }
             else Modifier,
         )
@@ -566,8 +616,8 @@ internal fun Modifier.controllerFocusable(
                     onConfirm?.invoke()
                     onConfirm != null
                 }
-                // Left/Right adjust the value in place (stepper −/+, toggle off/on,
-                // dropdown prev/next) when this row has an adjust handler. Consumed
+                // Left/Right adjust the value in place (stepper −/+, dropdown
+                // prev/next) when this row has an adjust handler. Consumed
                 // only when a handler exists, so plain nav rows still let Left/Right
                 // move focus. This is what makes sliders/steppers adjustable with a
                 // controller when the row is driven by Compose focus, rather than by
@@ -700,9 +750,8 @@ fun ToggleRow(
     description: String? = null,
     onChange: (Boolean) -> Unit,
 ) {
-    // Menu SFX: a distinct on/off blip on every flip. Touch, the switch, and the controller's
-    // confirm/left/right all route through this, so one wrapper covers every input path; the
-    // left/right guards below keep it silent when nothing actually changes.
+    // Menu SFX: a distinct on/off blip on every flip. Touch, the switch, and the controller's A
+    // all route through this, so one wrapper covers every input path.
     val emit: (Boolean) -> Unit = {
         com.armsx2.MenuSfx.play(if (it) com.armsx2.MenuSfx.Event.TOGGLE_ON else com.armsx2.MenuSfx.Event.TOGGLE_OFF)
         onChange(it)
@@ -714,9 +763,9 @@ fun ToggleRow(
             .padding(vertical = 5.dp)
             .controllerFocusable(
                 controllerId = "toggle:$label",
+                // Only A flips it: Left/Right are for moving, and on a switch they flipped it by
+                // accident on the way past.
                 onConfirm = { emit(!value) },
-                onLeft = { if (value) emit(false) },
-                onRight = { if (!value) emit(true) },
             ),
         shape = RoundedCornerShape(22.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),

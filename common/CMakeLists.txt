@@ -41,6 +41,7 @@ target_sources(common PRIVATE
 
 target_sources(common PRIVATE
 	AlignedMalloc.h
+	ARCADE.h
 	Assertions.h
 	boost_spsc_queue.hpp
 	BitUtils.h

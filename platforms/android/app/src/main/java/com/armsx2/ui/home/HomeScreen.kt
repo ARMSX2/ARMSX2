@@ -236,6 +236,11 @@ fun HomeScreen(
         }
     }
     LaunchedEffect(directories, nativeReady) { viewModel.load(directories, nativeReady) }
+    // Another screen changed what is in the game folders (an arcade game imported): scan again.
+    val refreshRequest = com.armsx2.data.library.LibraryRefresh.requests.intValue
+    LaunchedEffect(refreshRequest, nativeReady, directories) {
+        if (nativeReady) viewModel.onRefreshRequested(refreshRequest, directories)
+    }
     // Memory Card Covers: look at the cards again when the library shows and when a game stops,
     // which is when a new save appears, then on the discs of games with no save. Nothing is drawn
     // again unless a save changed, and no disc is looked at twice.
@@ -484,6 +489,10 @@ fun HomeScreen(
                     title = str("games.section.library"),
                     subtitle = if (state.scanning) {
                         str("games.scanningRoms")
+                    } else if (com.armsx2.ArcadeOnly.enabled.value) {
+                        // Arcade games only says so where the game count is, so the rest of the
+                        // library is never just missing.
+                        "${str("games.library.arcadeGames")}: ${state.allGames.count(com.armsx2.ArcadeOnly::isArcade)}"
                     } else {
                         "${str("games.library.totalGames")}: ${state.allGames.size}"
                     },
@@ -558,6 +567,7 @@ fun HomeScreen(
                                 customNames = com.armsx2.CustomNames.enabled.value,
                                 englishTitles = EnglishTitles.enabled.value,
                                 showHidden = com.armsx2.HiddenGames.showHidden.value,
+                                arcadeOnly = com.armsx2.ArcadeOnly.enabled.value,
                                 hasCustomBackground = LibraryBackground.uri.value != null,
                                 onDismiss = { overflowMenu = false },
                                 onOpenNavigation = onOpenMenu,
@@ -567,6 +577,7 @@ fun HomeScreen(
                                 onToggleCustomNames = { com.armsx2.CustomNames.set(!com.armsx2.CustomNames.enabled.value) },
                                 onToggleEnglishTitles = { EnglishTitles.set(!EnglishTitles.enabled.value) },
                                 onToggleShowHidden = { viewModel.setShowHidden(!com.armsx2.HiddenGames.showHidden.value) },
+                                onToggleArcadeOnly = { viewModel.setArcadeOnly(!com.armsx2.ArcadeOnly.enabled.value) },
                                 onChooseBackground = { backgroundPicker.launch(arrayOf("image/*")) },
                                 onClearBackground = LibraryBackground::clear,
                                 onExitApp = { showExitConfirm = true },
@@ -895,7 +906,13 @@ fun HomeScreen(
                         }
                     }
                 } else if (state.visibleGames.isEmpty()) {
-                    emptyLibrary(state.query.isBlank())
+                    // Arcade games only with none to show: not the no-folders screen, which a blank
+                    // search otherwise means.
+                    if (com.armsx2.ArcadeOnly.enabled.value && state.query.isBlank()) {
+                        arcadeOnlyEmpty { viewModel.setArcadeOnly(false) }
+                    } else {
+                        emptyLibrary(state.query.isBlank())
+                    }
                 } else if (state.layout == LibraryLayout.Shelf) {
                     // Fill each plank: chunk by how many covers fit the shelf width.
                     val shelfCoverW = ((if (compact) 84f else 100f) * coverScale).dp
@@ -1157,9 +1174,10 @@ fun HomeScreen(
                 // Discs only: sets up the host:-loading ("quick load") layout for a game that
                 // wants one, by extracting this disc's files and pairing a modified ELF with it.
                 // Android cannot mount an ISO, so this is the only way the method is reachable
-                // here at all.
+                // here at all. An arcade game is not a disc either.
                 if (!game.uri.toString().endsWith(".elf", ignoreCase = true) &&
-                    !game.extension.equals("ELF", ignoreCase = true)
+                    !game.extension.equals("ELF", ignoreCase = true) &&
+                    game.extension != com.armsx2.arcade.Arcade.BADGE
                 ) {
                     GameMenuAction("⚡", str("games.quickLoad"), "game-menu.quickload") {
                         menuGame = null
@@ -1596,6 +1614,7 @@ private fun LibraryOverflowMenu(
     customNames: Boolean,
     englishTitles: Boolean,
     showHidden: Boolean,
+    arcadeOnly: Boolean,
     hasCustomBackground: Boolean,
     onDismiss: () -> Unit,
     onOpenNavigation: () -> Unit,
@@ -1605,6 +1624,7 @@ private fun LibraryOverflowMenu(
     onToggleCustomNames: () -> Unit,
     onToggleEnglishTitles: () -> Unit,
     onToggleShowHidden: () -> Unit,
+    onToggleArcadeOnly: () -> Unit,
     onChooseBackground: () -> Unit,
     onClearBackground: () -> Unit,
     onExitApp: () -> Unit,
@@ -1801,6 +1821,17 @@ private fun LibraryOverflowMenu(
         ) {
             closeThen(onToggleShowHidden)
         }
+        // Only the arcade games (Namco System 246/256), or every game; the drawer's red arcade logo,
+        // in its own colour.
+        LibraryOverflowItem(
+            glyph = "◍",
+            label = str("games.overflow.arcadeOnly"),
+            trailing = if (arcadeOnly) str("common.on") else str("common.off"),
+            iconRes = com.armsx2.R.drawable.ic_arcade,
+            iconTint = Color.Unspecified,
+        ) {
+            closeThen(onToggleArcadeOnly)
+        }
         OverflowSeparator()
         LibraryOverflowItem("▧", str("games.background.choose")) {
             closeThen(onChooseBackground)
@@ -1915,6 +1946,19 @@ private fun LazyGridScope.emptyLibrary(noFolders: Boolean) {
             message = if (noFolders) str("games.empty.noFolders.body") else str("games.search.hint"),
             actionLabel = if (noFolders) str("games.toolbar.setup") else null,
             onAction = if (noFolders) MainActivityRuntime::reopenSetup else null,
+            modifier = Modifier.fillMaxWidth().height(260.dp),
+        )
+    }
+}
+
+/** Arcade games only, and the library has none to show: says so, and offers the way back to every game. */
+private fun LazyGridScope.arcadeOnlyEmpty(onShowAll: () -> Unit) {
+    item(span = { GridItemSpan(maxLineSpan) }) {
+        EmptyState(
+            title = str("games.empty.arcade.title"),
+            message = str("games.empty.arcade.body"),
+            actionLabel = str("games.empty.arcade.showAll"),
+            onAction = onShowAll,
             modifier = Modifier.fillMaxWidth().height(260.dp),
         )
     }

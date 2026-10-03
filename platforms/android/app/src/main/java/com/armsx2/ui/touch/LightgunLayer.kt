@@ -30,7 +30,7 @@ import kr.co.iefriends.pcsx2.NativeApp
  */
 @Composable
 fun LightgunLayer(widthPx: Float, heightPx: Float, blockers: GunBlockers) {
-    if (!Lightgun.enabled.value) return
+    if (!Lightgun.active) return
     if (widthPx <= 0f || heightPx <= 0f) return
     Box(Modifier.fillMaxSize().then(LightgunInputElement(LightgunParams(widthPx, heightPx, blockers))))
 }

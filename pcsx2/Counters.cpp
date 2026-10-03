@@ -202,7 +202,7 @@ void rcntInit()
 
 static void vSyncInfoCalc(vSyncTimingInfo* info, double framesPerSecond, u32 scansPerFrame)
 {
-	constexpr double clock = static_cast<double>(PS2CLK);
+	const double clock = static_cast<double>(PS2CLK); // faster on an arcade System 256 (Common.h)
 
 	const u64 Frame = clock * 10000ULL / framesPerSecond;
 	const u64 Scanline = Frame / scansPerFrame;

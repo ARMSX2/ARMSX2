@@ -136,6 +136,7 @@ fun BiosManagerScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Bio
                         showGameAssign = state.gameKey != null,
                         perGameActive = state.perGameBios?.equals(item.file.name, ignoreCase = true) == true,
                         onSelect = { viewModel.select(item.file) },
+                        onSelectArcade = { viewModel.selectArcade(item) },
                         onAssignGame = { viewModel.assignToGame(item) },
                         onClearGame = { viewModel.clearGameBios() },
                         onDelete = { deleteTarget = item },
@@ -257,6 +258,7 @@ private fun BiosRow(
     showGameAssign: Boolean,
     perGameActive: Boolean,
     onSelect: () -> Unit,
+    onSelectArcade: () -> Unit,
     onAssignGame: () -> Unit,
     onClearGame: () -> Unit,
     onDelete: () -> Unit,
@@ -264,12 +266,25 @@ private fun BiosRow(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        color = if (item.selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, if (item.selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+        // The arcade BIOS in use is as plainly in use as the console one.
+        color = if (item.selected || item.arcadeSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+        border = BorderStroke(
+            1.dp,
+            if (item.selected || item.arcadeSelected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+        ),
     ) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(item.info.regionFlag, fontSize = 30.sp)
+                // An arcade board's BIOS shows the arcade mark (the ARMSX2 logo in red) in the flag's place.
+                if (item.arcade) {
+                    com.armsx2.ui.common.GlyphSizedImage(
+                        item.info.regionFlag, 30.sp,
+                        androidx.compose.ui.res.painterResource(com.armsx2.R.drawable.ic_arcade),
+                    )
+                } else {
+                    Text(item.info.regionFlag, fontSize = 30.sp)
+                }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(item.file.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -286,10 +301,31 @@ private fun BiosRow(
                     Spacer(Modifier.width(6.dp))
                     StatusChip(str("bios.thisGame.active"), Success)
                 }
+                // A Namco arcade board's BIOS: for arcade games, and only those.
+                if (item.arcade) {
+                    Spacer(Modifier.width(6.dp))
+                    StatusChip(str("bios.arcade.badge"), MaterialTheme.colorScheme.primary)
+                    if (item.arcadeSelected) {
+                        Spacer(Modifier.width(6.dp))
+                        StatusChip(str("backend.driver.active"), Success)
+                    }
+                }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                if (item.arcade && !item.arcadeSelected) {
+                    OutlinedButton(
+                        onClick = onSelectArcade,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.controllerFocusable(
+                            "bios.arcade.${item.file.absolutePath}",
+                            RoundedCornerShape(12.dp),
+                            onConfirm = onSelectArcade,
+                        ),
+                    ) { Text(str("bios.arcade.use")) }
+                    Spacer(Modifier.width(8.dp))
+                }
                 // Per-game BIOS: pin this BIOS to the loaded game, or revert it to global.
-                if (showGameAssign) {
+                if (showGameAssign && !item.arcade) {
                     if (perGameActive) {
                         TextButton(
                             onClick = onClearGame,
@@ -304,7 +340,7 @@ private fun BiosRow(
                     }
                     Spacer(Modifier.width(8.dp))
                 }
-                if (!item.selected) OutlinedButton(
+                if (!item.selected && !item.arcade) OutlinedButton(
                     onClick = onSelect,
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.controllerFocusable(

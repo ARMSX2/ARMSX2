@@ -1,0 +1,16 @@
+<!-- A texture pack's Tip the creator tile: a heart. Drawn for ARMSX2 in the stroke style of
+     ic_download. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFFFF">
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M12 19.5c-4.5-3-8-6-8-10A4 4 0 0 1 12 7.2 4 4 0 0 1 20 9.5c0 4-3.5 7-8 10z" />
+</vector>

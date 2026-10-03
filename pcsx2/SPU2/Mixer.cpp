@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "Host/AudioStream.h"
+#include "common/ARCADE.h"
 #include "SPU2/Debug.h"
 #include "SPU2/defs.h"
 #include "SPU2/spu2.h"
@@ -582,13 +583,28 @@ static __forceinline StereoOut32 MixCore(const uint coreidx, const VoiceMixSet& 
 void spu2Mix()
 {
 	// Note: Playmode 4 is SPDIF, which overrides other inputs.
+	// An arcade board's SPDIF (Time Crisis 4's EXSOUND board) consumes core 0's input at the HiFi rate,
+	// two samples per read, and has no transmitter we emulate: its raw ADMA input is mixed directly,
+	// bypassing InpVol (PCSX2x6). A console's SPDIF stays silent here, as before.
+	const bool arcade_spdif = Arcade::IsActive() && (PlayMode & 4);
+	StereoOut32 RawInput0;
+	if (arcade_spdif)
+	{
+		const StereoOut32 hifi = Cores[0].ReadInput_HiFi();
+		RawInput0.Left = static_cast<s16>(hifi.Left & 0xFFFF);
+		RawInput0.Right = static_cast<s16>(hifi.Left >> 16);
+	}
+	else
+	{
+		RawInput0 = Cores[0].ReadInput();
+	}
 	StereoOut32 InputData[2] =
 		{
 			// SPDIF is on Core 0:
 			// Fixme:
 			// 1. We do not have an AC3 decoder for the bitstream.
 			// 2. Games usually provide a normal ADMA stream as well and want to see it getting read!
-			/*(PlayMode&4) ? StereoOut32::Empty : */ ApplyVolume(Cores[0].ReadInput(), Cores[0].InpVol),
+			/*(PlayMode&4) ? StereoOut32::Empty : */ ApplyVolume(RawInput0, Cores[0].InpVol),
 
 			// CDDA is on Core 1:
 			(PlayMode & 8) ? StereoOut32::Empty : ApplyVolume(Cores[1].ReadInput(), Cores[1].InpVol)};
@@ -606,7 +622,13 @@ void spu2Mix()
 
 	StereoOut32 Ext(MixCore(0, VoiceData[0], InputData[0], StereoOut32::Empty));
 
-	if ((PlayMode & 4) || (Cores[0].Mute != 0))
+	if (arcade_spdif)
+	{
+		Ext.Left += RawInput0.Left;
+		Ext.Right += RawInput0.Right;
+	}
+
+	if ((!Arcade::IsActive() && (PlayMode & 4)) || (Cores[0].Mute != 0))
 		Ext = StereoOut32::Empty;
 	else
 	{

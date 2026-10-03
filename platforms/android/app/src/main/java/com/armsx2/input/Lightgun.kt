@@ -34,6 +34,18 @@ object Lightgun {
     /** USB port index: 0 = Port 1, 1 = Port 2. */
     val port = mutableStateOf(0)
 
+    /**
+     * Whether the touchscreen is a gun right now: a GunCon 2 is attached, or an arcade game is running
+     * whose controls are a light gun or a touch panel. The arcade board has no GunCon 2; native sends
+     * the same aim and shots to its gun or panel instead (ArcadeGunButton), as player 1.
+     */
+    val active: Boolean
+        get() = enabled.value || com.armsx2.arcade.Arcade.usesGunLayer
+
+    /** The port the shots go to: player 1's on an arcade board. */
+    private val gunPort: Int
+        get() = if (com.armsx2.arcade.Arcade.usesGunLayer) 0 else port.value
+
     fun load() {
         enabled.value = MainActivityRuntime.prefs.getBoolean(KEY_ENABLED, false)
         port.value = MainActivityRuntime.prefs.getInt(KEY_PORT, 0).coerceIn(0, 1)
@@ -101,7 +113,7 @@ object Lightgun {
 
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     private val releaseCalibration = Runnable {
-        runCatching { NativeApp.usbLightgunButton(port.value, NativeApp.GUNCON_RECALIBRATE, false) }
+        runCatching { NativeApp.usbLightgunButton(gunPort, NativeApp.GUNCON_RECALIBRATE, false) }
     }
 
     /**
@@ -113,7 +125,7 @@ object Lightgun {
      * pixels: raw screen pixels put every shot below and right of the finger whenever they differ.
      */
     fun aim(x: Float, y: Float, widthPx: Float, heightPx: Float) {
-        if (!enabled.value || widthPx <= 0f || heightPx <= 0f) return
+        if (!active || widthPx <= 0f || heightPx <= 0f) return
         runCatching { NativeApp.usbLightgunAim(x / widthPx, y / heightPx) }
     }
 
@@ -128,10 +140,10 @@ object Lightgun {
      */
     fun calibrationShot(x: Float, y: Float, widthPx: Float, heightPx: Float) {
         calibrateNext.value = false
-        if (!enabled.value) return
+        if (!active) return
         aim(x, y, widthPx, heightPx)
         mainHandler.removeCallbacks(releaseCalibration)
-        runCatching { NativeApp.usbLightgunButton(port.value, NativeApp.GUNCON_RECALIBRATE, true) }
+        runCatching { NativeApp.usbLightgunButton(gunPort, NativeApp.GUNCON_RECALIBRATE, true) }
         mainHandler.postDelayed(releaseCalibration, CALIBRATION_PRESS_MS)
     }
 
@@ -143,26 +155,26 @@ object Lightgun {
      * the games are unplayable past the first magazine.
      */
     fun trigger(down: Boolean, x: Float, y: Float, widthPx: Float, heightPx: Float) {
-        if (!enabled.value) return
+        if (!active) return
         if (down == triggerDown) return
         triggerDown = down
         val margin = minOf(widthPx, heightPx) * EDGE_RELOAD_FRAC
         val offscreen = x <= margin || y <= margin || x >= widthPx - margin || y >= heightPx - margin
         val bind = if (offscreen) NativeApp.GUNCON_SHOOT_OFFSCREEN else NativeApp.GUNCON_TRIGGER
-        runCatching { NativeApp.usbLightgunButton(port.value, bind, down) }
+        runCatching { NativeApp.usbLightgunButton(gunPort, bind, down) }
         // Release BOTH on lift: a drag that starts on-screen and ends in the reload margin would
         // otherwise leave the on-screen trigger stuck down.
         if (!down) {
             runCatching {
-                NativeApp.usbLightgunButton(port.value, NativeApp.GUNCON_TRIGGER, false)
-                NativeApp.usbLightgunButton(port.value, NativeApp.GUNCON_SHOOT_OFFSCREEN, false)
+                NativeApp.usbLightgunButton(gunPort, NativeApp.GUNCON_TRIGGER, false)
+                NativeApp.usbLightgunButton(gunPort, NativeApp.GUNCON_SHOOT_OFFSCREEN, false)
             }
         }
     }
 
     /** Press/release one of the gun's own buttons (A / B / C / Start / Select / Recalibrate). */
     fun button(bind: Int, down: Boolean) {
-        if (!enabled.value) return
-        runCatching { NativeApp.usbLightgunButton(port.value, bind, down) }
+        if (!active) return
+        runCatching { NativeApp.usbLightgunButton(gunPort, bind, down) }
     }
 }

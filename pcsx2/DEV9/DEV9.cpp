@@ -25,6 +25,16 @@
 #include "DEV9.h"
 #include "Config.h"
 #include "smap.h"
+#include "IopHw.h"
+#include "IopMem.h"
+#include "ACATA.h"
+#include "ACATAPI.h"
+#include "ACCORE.h"
+#include "ACDEV.h"
+#include "ACJV.h"
+#include "ACRAM.h"
+#include "ACUART.h"
+#include "common/ARCADE.h"
 
 #if defined(__ANDROID__)
 #include "common/FileSystem.h"
@@ -322,6 +332,9 @@ int DEV9irqHandler(void)
 	//dev9Ru16(SPD_R_INTR_STAT)|= dev9.irqcause;
 	//DevCon.WriteLn("DEV9: DEV9irqHandler %x, %x", dev9.irqcause, dev9.irqmask);
 	if (dev9.irqcause & dev9.irqmask)
+		return 1;
+	// An arcade board's ATA/ATAPI interrupts go through ACCORE (PCSX2x6).
+	if (Arcade::IsActive() && ACCORE::hasPendingInterrupt())
 		return 1;
 	return 0;
 }
@@ -1046,6 +1059,16 @@ u16 DEV9read16(u32 addr)
 
 u32 DEV9read32(u32 addr)
 {
+	if (Arcade::IsActive())
+	{
+		// rom0:ACDEV makes ROMDRV look for a romdir filesystem here; only the arcade TOOLs had one (PCSX2x6).
+		if (addr >= ACDEV_BASE && addr < ACDEV_ROMDIR_POKE_END)
+			return 0;
+		const u32 hard = dev9Ru32(addr);
+		Console.Error("DEV9: Unknown 32bit read at address %lx value %x", addr, hard);
+		return hard;
+	}
+
 	if (!EmuConfig.DEV9.EthEnable && !EmuConfig.DEV9.HddEnable)
 		return 0;
 
@@ -1132,7 +1155,10 @@ void DEV9write16(u32 addr, u16 value)
 	}
 
 	dev9Ru16(addr) = value;
-	Console.Error("DEV9: *Unknown 16bit write at address %lx value %x", addr, value);
+	// An arcade board's ACFLASH module probes its flash chips here (Intel 28F640J5: 0x00ff, 0x0090, 0x0090,
+	// 0x00ff; Fujitsu 29F033C: 0xaaaa, 0x5555, 0x9090, 0xf0f0); that is expected (PCSX2x6).
+	if (!Arcade::IsActive() || addr != 0x10000000)
+		Console.Error("DEV9: *Unknown 16bit write at address %lx value %x", addr, value);
 	return;
 }
 
@@ -1172,8 +1198,51 @@ void DEV9write32(u32 addr, u32 value)
 	}
 }
 
+// An arcade board's DMA8 serves its ATA/ATAPI drive and ACRAM (PCSX2x6). size is in bytes here, as
+// psxDma8 passes it.
+static void ArcadeReadDMA8Mem(u32* pMem, int size)
+{
+	// Instant ATAPI DMA: the data was read into a buffer during the ATAPI command.
+	if (ACATAPI::dma_read(pMem, size))
+	{
+		psxDMA8Interrupt();
+	}
+	else if (ACCORE::DMA::PendTrasnfType == ACCORE::DMA::ATAPI || ACCORE::DMA::PendTrasnfType == ACCORE::DMA::ATA)
+	{
+		// ARMSX2: never past the end of IOP memory, whatever the DMA was set up with. And a read the
+		// image cannot supply ends as the drive's uncorrectable-data error, which the game handles as a
+		// drive error, instead of stopping the emulator.
+		const std::ptrdiff_t offset = reinterpret_cast<u8*>(pMem) - iopMem->Main;
+		if (offset >= 0 && offset < static_cast<std::ptrdiff_t>(Ps2MemSize::ExposedIopRam))
+			size = std::min<int>(size, static_cast<int>(Ps2MemSize::ExposedIopRam - offset));
+		const bool ok = ACATA::TH::IO_Read(pMem, static_cast<u32>(std::max(size, 0)));
+		ACCORE::DMA::PendTrasnfType = ACCORE::DMA::NONE;
+		ACATA::R_STATUS = ok ? ATA_STAT_READY : (ATA_STAT_READY | ATA_STAT_ERR);
+		if (!ok)
+			ACATA::R_ERROR = ATA_ERR_ECC;
+		ACATA::R_NSECTOR = 0x03;
+		psxDMA8Interrupt();
+		ACCORE::intr(ACCORE::INTRN_ATA);
+	}
+	else
+	{
+		const u32 dma_target = psxHu32(0x1410); // a DMA that targets ACRAM (0x14xxxxxx)
+		if ((dma_target & 0xFF000000) == 0x14000000)
+			ACRAM::DmaRead(pMem, size, ACRAM::BankFromDmaTarget(dma_target));
+		else
+			Console.Error("DEV9: arcade DMA read of 0x%-8X bytes with no transfer pending (%d)", size, ACCORE::DMA::PendTrasnfType);
+		psxDMA8Interrupt();
+	}
+}
+
 void DEV9readDMA8Mem(u32* pMem, int size)
 {
+	if (Arcade::IsActive())
+	{
+		ArcadeReadDMA8Mem(pMem, size);
+		return;
+	}
+
 	if (!EmuConfig.DEV9.EthEnable && !EmuConfig.DEV9.HddEnable)
 		return;
 
@@ -1202,6 +1271,28 @@ void DEV9readDMA8Mem(u32* pMem, int size)
 
 void DEV9writeDMA8Mem(u32* pMem, int size)
 {
+	if (Arcade::IsActive())
+	{
+		// An arcade board's ATA writes and ACRAM fills (PCSX2x6); anything else falls through to the
+		// console's DEV9 below, as PCSX2x6 does.
+		if (ACCORE::DMA::PendTrasnfType == ACCORE::DMA::ATA_WRITE)
+		{
+			ACATA::TH::IO_Write(pMem, size);
+			ACCORE::DMA::PendTrasnfType = ACCORE::DMA::NONE;
+			ACATA::R_STATUS = ATA_STAT_READY;
+			psxDMA8Interrupt();
+			ACCORE::intr(ACCORE::INTRN_ATA);
+			return;
+		}
+		const u32 dma_target = psxHu32(0x1410);
+		if ((dma_target & 0xFF000000) == 0x14000000)
+		{
+			ACRAM::DmaWrite(pMem, size, ACRAM::BankFromDmaTarget(dma_target));
+			psxDMA8Interrupt();
+			return;
+		}
+	}
+
 	if (!EmuConfig.DEV9.EthEnable && !EmuConfig.DEV9.HddEnable)
 		return;
 
@@ -1228,6 +1319,15 @@ void DEV9writeDMA8Mem(u32* pMem, int size)
 
 void DEV9async(u32 cycles)
 {
+	if (Arcade::IsActive())
+	{
+		// An arcade board's drive-board UART and its JVS I/O frame tick here instead (PCSX2x6).
+		if (ACUART::s_device)
+			ACUART::s_device->Tick(cycles);
+		ACJV::UpdateFcaFrame();
+		return;
+	}
+
 	smap_async(cycles);
 	dev9.ata->Async(cycles);
 }

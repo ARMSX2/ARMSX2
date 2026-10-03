@@ -10,6 +10,7 @@
 #include "IconsFontAwesome.h"
 #include "vtlb.h"
 
+#include "common/ARCADE.h"
 #include "common/Console.h"
 #include "common/EnumOps.h"
 #include "common/Error.h"
@@ -100,6 +101,14 @@ const char* GameDatabaseSchema::GameEntry::compatAsString() const
 void GameDatabase::populateEntry(GameDatabaseSchema::GameEntry& gameEntry, const std::string_view serial,
 	const ryml::NodeRef& node, bool is_override)
 {
+	// Arcade entries (PCSX2x6).
+	if (node.has_child("bootprog"))
+		node["bootprog"] >> gameEntry.arcade.bootprog;
+	if (node.has_child("media"))
+		node["media"] >> gameEntry.arcade.media;
+	if (node.has_child("input"))
+		node["input"] >> gameEntry.arcade.input;
+
 	if (node.has_child("name"))
 	{
 		node["name"] >> gameEntry.name;
@@ -1389,6 +1398,21 @@ const GameDatabaseSchema::GameEntry* GameDatabase::findGame(const std::string_vi
 
 	auto iter = s_game_db.find(StringUtil::toLower(serial));
 	return (iter != s_game_db.end()) ? &iter->second : nullptr;
+}
+
+std::vector<std::pair<std::string, const GameDatabaseSchema::GameEntry*>> GameDatabase::findArcadeGames()
+{
+	GameDatabase::ensureLoaded();
+
+	std::vector<std::pair<std::string, const GameDatabaseSchema::GameEntry*>> games;
+	for (const auto& [serial, entry] : s_game_db)
+	{
+		std::string id = StringUtil::toUpper(serial);
+		if (Arcade::IsGameId(id))
+			games.emplace_back(std::move(id), &entry);
+	}
+	std::sort(games.begin(), games.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+	return games;
 }
 
 bool GameDatabase::TrackHash::parseHash(const std::string_view str)

@@ -19,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Modifier
 import com.armsx2.ui.achievements.AchievementsScreen
+import com.armsx2.ui.arcade.ArcadeScreen
 import com.armsx2.ui.bios.BiosManagerScreen
 import com.armsx2.ui.controls.ControllerManagerScreen
 import com.armsx2.ui.about.AboutScreen
@@ -92,13 +93,17 @@ fun AppNavigation() {
                     onBack = UiNavigator::home,
                     onOpenAbout = { UiNavigator.navigate(AppRoute.About) },
                 )
-                is AppRoute.BiosManager -> BiosManagerScreen(onBack = UiNavigator::home, game = destination.game)
+                is AppRoute.BiosManager -> BiosManagerScreen(
+                    onBack = if (destination.returnToArcade) ({ UiNavigator.navigate(AppRoute.Arcade) }) else UiNavigator::home,
+                    game = destination.game,
+                )
                 is AppRoute.MemoryCardManager ->
                     MemoryCardScreen(onBack = UiNavigator::home, game = destination.game)
                 AppRoute.SaveManager -> SaveManagerScreen(onBack = UiNavigator::home)
                 AppRoute.ControllerManager -> ControllerManagerScreen(onBack = UiNavigator::home)
                 AppRoute.PatchManager -> PatchManagerScreen(onBack = UiNavigator::home)
                 AppRoute.TextureManager -> TextureManagerScreen(onBack = UiNavigator::home)
+                AppRoute.Arcade -> ArcadeScreen(onBack = UiNavigator::home)
                 AppRoute.Achievements -> AchievementsScreen(onBack = UiNavigator::home)
                 AppRoute.Language -> LanguageScreen(
                     onBack = { UiNavigator.navigate(AppRoute.Settings(SettingsCategory.General)) },

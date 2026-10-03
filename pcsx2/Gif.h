@@ -273,6 +273,7 @@ struct GIFregisters
 static GIFregisters& gifRegs = (GIFregisters&)eeHw[0x3000];
 
 extern void gifInterrupt();
+extern void Gif_FinishIRQEvent();
 extern void GIFdma();
 extern void dmaGIF();
 extern void mfifoGIFtransfer();
