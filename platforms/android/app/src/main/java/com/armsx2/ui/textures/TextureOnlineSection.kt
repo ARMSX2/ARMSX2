@@ -54,9 +54,8 @@ import com.armsx2.ui.settings.SegmentedRow
 import com.armsx2.ui.settings.controllerFocusable
 
 /**
- * Browse and install texture packs from the online catalog: ours on B2 first, with sashkinbro's
- * original catalog (used with his approval) as the fallback -- see TextureCatalog. New packs reach
- * us over Discord and are uploaded by hand, so that is where the submit link goes.
+ * Browse and install texture packs from our online catalog (see TextureCatalog). New packs reach us
+ * over Discord and are uploaded by hand, so that is where the submit link goes.
  *
  * The whole catalog is browsable with no game running. Each pack names the serials it belongs to, so
  * the install target comes from the pack itself rather than from whatever happens to be loaded —

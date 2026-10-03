@@ -3,17 +3,15 @@
 Builds the texture pack links the app shows in a pack's window (source, tip, socials, texture type,
 status) from Sad Origami's Texture Packs Archive sheet, matched to the online catalog's packs.
 
-usage: texture-pack-links.py <archive.xlsx> <out.json> <catalog.json> [<catalog.json> ...]
-       [--review <review.txt>]
+usage: texture-pack-links.py <archive.xlsx> <out.json> <catalog.json> [--review <review.txt>]
 
   e.g. texture-pack-links.py "Texture Packs Archive.xlsx" app/src/main/assets/texture-pack-links.json \
-           dl-textures.json sashkinbro-textures.json --review review.txt
+           textures.json --review review.txt
 
-The xlsx is the sheet downloaded as Excel. The catalogs are the textures.json files the app reads
-(https://dl.ps2ktxpak.net/textures.json first, sashkinbro's EmuCoreX-Textures one as its fallback);
-packs are matched by id across them. Standard library only. A pack is linked only when the sheet says
-which of its listings the pack is; one it cannot place keeps the catalog's own source and nothing
-else. --review writes every pack's outcome, for reading before the file goes in.
+The xlsx is the sheet downloaded as Excel; the catalog is the textures.json the app reads,
+https://dl.ps2ktxpak.net/textures.json. Standard library only. A pack is linked only when the sheet
+says which of its listings the pack is; one it cannot place keeps the catalog's own source and
+nothing else. --review writes every pack's outcome, for reading before the file goes in.
 """
 import difflib
 import json
@@ -318,12 +316,6 @@ UNCONFIRMED = {
     "packs-community-archive-crash-bandicoot-wrath-of-cortex-hd-remaster-community-archive-slus-20238-20260728",
     "original-texture-creator-is-not-identified-in-the-public-mirror-preserved-by-the-pcsx2-hd-texture-"
     "packs-community-archive-yu-gi-oh-duelist-of-the-roses-hd-remaster-community-archive-slus-20515-20260728",
-    "pcsx2-hd-texture-packs-community-archive-mortal-kombat-deadly-alliance-hd-remaster-community-archive-"
-    "variant-slus-20423-20260912",
-    "pcsx2-hd-texture-packs-community-archive-the-simpsons-hit-run-hd-remaster-community-archive-variant-"
-    "slus-20624-20260912",
-    "pcsx2-hd-texture-packs-community-archive-nightmare-before-christmas-oogie-s-revenge-hd-remaster-"
-    "community-archive-variant-slus-20860-20260912",
 }
 
 # Hosts that only mirror packs: a creator's own page beats them as the source.
