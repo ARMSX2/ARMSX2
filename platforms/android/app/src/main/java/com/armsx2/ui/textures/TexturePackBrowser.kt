@@ -74,7 +74,8 @@ import com.armsx2.ui.settings.controllerFocusable
 internal fun TexturePackBrowser(
     packs: List<TextureCatalog.Pack>,
     links: Map<String, TexturePackLinks.Links>,
-    /** The game in context, if any: the browser opens on My games, and its packs install there. */
+    /** The game in context, if any: the browser opens on My games rather than Popular Today, and its
+     *  packs install there. */
     contextSerial: String?,
     /** Serials in the player's library, for My games. */
     librarySerials: Set<String>,
@@ -90,7 +91,8 @@ internal fun TexturePackBrowser(
     val fraction = TexturePackDownloads.progressFraction.floatValue
 
     var sortMode by rememberSaveable { mutableIntStateOf(SORT_GAME) }
-    var filter by rememberSaveable { mutableIntStateOf(if (contextSerial != null) FILTER_MINE else FILTER_ALL) }
+    // Opens on Popular Today, as Online Icons does; from a game's own texture settings, on its packs.
+    var filter by rememberSaveable { mutableIntStateOf(if (contextSerial != null) FILTER_MINE else FILTER_POPULAR) }
     var query by rememberSaveable { mutableStateOf("") }
     // The creator whose packs are showing, in creator mode; null shows the creators.
     var creatorKey by rememberSaveable { mutableStateOf<String?>(null) }
