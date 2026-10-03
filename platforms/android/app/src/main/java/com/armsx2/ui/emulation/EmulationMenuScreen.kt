@@ -516,7 +516,7 @@ private fun MenuTab(tab: EmulationMenuTab, active: Boolean, onSelect: (Emulation
 }
 
 // Rail tab icons. No monochrome Unicode exists for gamepad/wrench/trophy/display, so those
-// use color emoji (the bundled NotoColorEmoji renders them); Session keeps its clean text
+// use color emoji (Android's own emoji font draws them); Session keeps its clean text
 // glyph. Performance uses the high-voltage emoji so it reads as a yellow lightning bolt.
 // Options carries the settings gear; the full-settings shortcut below the rail divider uses
 // a distinct "open" glyph so there aren't two gears.

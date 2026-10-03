@@ -68,14 +68,17 @@ if (armsx2SigningPropertiesFile.isFile && !armsx2PlaySigningReady) {
 // src/main/assets, generate the APK's assets/resources from it at build time:
 // sync bin/resources (minus the Windows-only dx11 shaders the mobile backends
 // never compile) plus the canonical mobile GameDB overlay into a generated
-// assets root. Genuine Android-only extras (patches.zip, the Noto color emoji
-// font) stay committed under src/main/assets/resources and AGP merges the roots.
+// assets root. Genuine Android-only extras (patches.zip) stay committed under
+// src/main/assets/resources and AGP merges the roots.
 val generateSharedResources by tasks.registering(Sync::class) {
     val repoRoot = rootProject.layout.projectDirectory.dir("../..")
     from(repoRoot.dir("bin/resources")) {
         // Windows-only DX11 shaders the mobile backends never compile. The path is
         // shaders/dx11/ (relative to bin/resources), so "dx11/**" alone never matched.
         exclude("**/dx11/**")
+        // The desktop builds' emoji font. Nothing on Android loads it: the in-game overlay seeds
+        // Roboto only (ImGuiManager::LoadFontData), and the app draws emoji with the system's font.
+        exclude("fonts/Twemoji*")
     }
     from(repoRoot.file("bin/resources-overlay/armsx2_overrides.yaml"))
     into(layout.buildDirectory.dir("generated/sharedResources/resources"))
