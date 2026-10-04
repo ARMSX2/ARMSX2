@@ -40,6 +40,7 @@ namespace
 	constexpr u64 kLibretroRetireFrames = 6;
 } // namespace
 #include "GS/Renderers/Common/GSDevice.h"
+#include "GS/Renderers/Common/GSAlphaBitLogicOp.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
@@ -629,6 +630,8 @@ bool GSDeviceVK::SelectDeviceFeatures()
 	m_device_features.geometryShader = available_features.geometryShader;
 	m_device_features.fragmentStoresAndAtomics = available_features.fragmentStoresAndAtomics;
 	m_device_features.pipelineStatisticsQuery = available_features.pipelineStatisticsQuery;
+	// Pipelines with logicOpEnable need the feature enabled at device creation (GSAlphaBitLogicOp.h).
+	m_device_features.logicOp = available_features.logicOp;
 
 	return true;
 }
@@ -4188,6 +4191,13 @@ void GSDeviceVK::ResolveFeedbackConsumers(const GSSelfReadRoadDecision& road)
 			// keeps the answer it had before the road existed.
 			.barrier_road_measured = m_device_rules.barrier_road_measured});
 
+	// Alpha bit 7 through a logic op (GSAlphaBitLogicOp.h), where the read it replaces waits for the
+	// GPU to drain. gsrunner -alpha-bit-logic-op forces the road question to yes, so a desktop GPU on
+	// its own road can check the pictures against the read.
+	m_features.alpha_bit_logic_op = GSAlphaBitLogicOp::DeviceQualifies(m_device_features.logicOp != 0,
+		m_features.ordered_read_costs_per_draw || g_gs_measurement_overrides.alpha_bit_logic_op,
+		m_broken_colormask_with_depth);
+
 	// The device half of the feedback-loop carry (GSDrawRoad.h). Every input is final here; the
 	// renderer adds the per-draw terms.
 	GSFeedbackLoopCarryInputs carry;
@@ -4349,14 +4359,17 @@ void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool de
 	if (g_gs_measurement_overrides.Any())
 	{
 		Console.WriteLn("VK: measurement overrides: loop-spelling=%s(%s; %s) declare-arm=%u depth-loop=%s "
-						"stencil-buffer=%s",
+						"stencil-buffer=%s alpha-bit-logic-op=%s",
 			g_gs_measurement_overrides.loop_create_flag ? "pipeline create flag" : "dynamic per draw",
 			g_gs_measurement_overrides.loop_create_flag ? "forced" : "default",
 			m_declare_loop_per_draw ? "applied" : "pipeline create flag in effect",
 			static_cast<unsigned>(g_gs_measurement_overrides.self_read_arm),
 			g_gs_measurement_overrides.declare_depth_loop ? "DECLARED" : "off",
-			g_gs_measurement_overrides.disable_stencil_buffer ? "FORCED OFF" : "device");
+			g_gs_measurement_overrides.disable_stencil_buffer ? "FORCED OFF" : "device",
+			g_gs_measurement_overrides.alpha_bit_logic_op ? (m_features.alpha_bit_logic_op ? "FORCED ON" : "FORCED but no logicOp") : "device");
 	}
+	if (m_features.alpha_bit_logic_op)
+		Console.WriteLn("VK: alpha bit 7 marks through a logic op (no target read).");
 
 	DevCon.WriteLn("Optional features:%s%s%s%s%s%s", m_features.primitive_id ? " primitive_id" : "",
 		m_features.texture_barrier ? " texture_barrier" : "", m_features.framebuffer_fetch ? " framebuffer_fetch" : "",
@@ -7614,6 +7627,14 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 		gpb.SetBlendAttachment(0, true, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_MIN, VK_BLEND_FACTOR_ONE,
 			VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD, VK_COLOR_COMPONENT_R_BIT);
 	}
+	else if (p.cms.logic_op != GSAlphaBitLogicOp::Off)
+	{
+		// GSAlphaBitLogicOp: blending off, alpha written alone, and the logic op combines the
+		// shader's 0x80 with the stored alpha.
+		gpb.SetBlendAttachment(0, false, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD,
+			VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD, p.cms.wrgba);
+		gpb.SetLogicOp(true, (p.cms.logic_op == GSAlphaBitLogicOp::SetBit) ? VK_LOGIC_OP_OR : VK_LOGIC_OP_AND_INVERTED);
+	}
 	else if (pbs.enable)
 	{
 		// clang-format off
@@ -9573,7 +9594,25 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		UploadHWDrawVerticesAndIndices(config);
 
 	// now we can do the actual draw
-	if (BindDrawPipeline(pipe))
+	if (config.logic_op_split != 0)
+	{
+		// An alpha-bit draw whose primitives set the bit and then clear it, or the reverse
+		// (GSAlphaBitLogicOp.h): two runs in submission order, one op each. Nothing reads the target.
+		pxAssert(config.colormask.logic_op != GSAlphaBitLogicOp::Off && !config.require_one_barrier &&
+				 !config.require_full_barrier && config.logic_op_split < m_index.count);
+		if (BindDrawPipeline(pipe))
+		{
+			DeclareDrawFeedbackLoop(config, pipe);
+			Draw(config, 0, config.logic_op_split);
+		}
+		pipe.cms.logic_op = GSAlphaBitLogicOp::OtherOp(config.colormask.logic_op);
+		if (BindDrawPipeline(pipe))
+		{
+			DeclareDrawFeedbackLoop(config, pipe);
+			Draw(config, config.logic_op_split, m_index.count - config.logic_op_split);
+		}
+	}
+	else if (BindDrawPipeline(pipe))
 	{
 		DeclareDrawFeedbackLoop(config, pipe);
 		SendHWDraw(config, pipe.IsRTFeedbackLoop() ? draw_rt : nullptr, pipe.IsDepthFeedbackLoop() ? draw_ds : nullptr,

@@ -518,6 +518,13 @@ void Vulkan::GraphicsPipelineBuilder::SetBlendFlags(u32 flags)
 	m_blend_state.flags = flags;
 }
 
+void Vulkan::GraphicsPipelineBuilder::SetLogicOp(bool enable, VkLogicOp op)
+{
+	m_blend_state.logicOpEnable = enable ? VK_TRUE : VK_FALSE;
+	m_blend_state.logicOp = op;
+	m_ci.pColorBlendState = &m_blend_state;
+}
+
 void Vulkan::GraphicsPipelineBuilder::ClearBlendAttachments()
 {
 	m_blend_attachments = {};

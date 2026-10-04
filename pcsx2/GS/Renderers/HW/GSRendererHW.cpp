@@ -9,6 +9,7 @@
 #include "GS/Renderers/HW/GSPointPlace.h"
 #include "GS/Renderers/HW/GSSpriteEdgeSnap.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
+#include "GS/Renderers/Common/GSAlphaBitLogicOp.h"
 #include "GS/Renderers/Common/GSBlendConstantPolicy.h"
 #include "GS/Renderers/Common/GSDrawRoad.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
@@ -11109,6 +11110,38 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 		GL_INS("HW: RT alpha is now %s", rt->m_rt_alpha_scale ? "scaled" : "NOT scaled");
 		rt->m_rt_alpha_scale = new_scale_rt_alpha;
 		m_conf.ps.rta_correction = rt->m_rt_alpha_scale;
+	}
+
+	// Alpha bit 7 through the colour output stage's logic op instead of the shader-emulated mask's
+	// read of the target (GSAlphaBitLogicOp.h). Here because the target's alpha representation is
+	// final: the op works on stored bits, so a scaled (RTA-corrected) or wider target does not
+	// qualify.
+	if (rt && g_gs_device->Features().alpha_bit_logic_op && m_conf.ps.fbmask &&
+		m_cached_ctx.FRAME.PSM == PSMCT32 && m_cached_ctx.FRAME.FBMSK == 0x7FFFFFFFu && m_conf.colormask.wrgba == 0x8 &&
+		m_vt.m_primclass == GS_TRIANGLE_CLASS && !PRIM->TME && !PRIM->FGE && !PRIM->AA1 &&
+		!m_conf.ps.rta_correction && !m_conf.ps.colclip && !m_conf.ps.colclip_hw && !m_conf.ps.date &&
+		m_conf.ps.dst_fmt == GSLocalMemory::PSM_FMT_32 && !m_conf.ps.shuffle && !m_channel_shuffle && !m_texture_shuffle &&
+		!m_conf.blend_multi_pass.enable && !m_conf.alpha_second_pass.enable &&
+		m_conf.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::Off &&
+		m_conf.tex_hazard == GSHWDrawConfig::TEX_HAZARD_NONE && rt->GetTexture()->GetFormat() == GSTexture::Format::Color)
+	{
+		// The mask must have been the draw's only read of the target.
+		GSHWDrawConfig::PSSelector ps = m_conf.ps;
+		ps.fbmask = 0;
+		const GSAlphaBitLogicOp::Runs runs = m_conf.IsFeedbackLoopRT(ps) ? GSAlphaBitLogicOp::Runs() :
+			GSAlphaBitLogicOp::ClassifyTriangles(m_vertex->buff, m_index->buff, m_index->tail, PRIM->IIP, m_context->FBA.FBA);
+		if (runs.first_op != GSAlphaBitLogicOp::Off)
+		{
+			GL_INS("HW: alpha bit 7 through a logic op (%s first, split at %u)",
+				(runs.first_op == GSAlphaBitLogicOp::SetBit) ? "set" : "clear", runs.first_indices);
+			m_conf.ps = ps;
+			m_conf.ps.fba = 1; // the shader's alpha is exactly 0x80 for both ops
+			m_conf.blend = {};
+			m_conf.colormask.logic_op = runs.first_op;
+			m_conf.logic_op_split = runs.first_indices;
+			m_conf.require_one_barrier = false;
+			m_conf.require_full_barrier = false;
+		}
 	}
 
 	// Call before computing the full drawlist in case ROV is used and we don't need it.

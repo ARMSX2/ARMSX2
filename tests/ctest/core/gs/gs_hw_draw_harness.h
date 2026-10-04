@@ -158,6 +158,7 @@ namespace GSHWDrawHarness
 			m_colormask = config.colormask;
 			m_depth = config.depth;
 			m_alpha_test = config.alpha_test;
+			m_logic_op_split = config.logic_op_split;
 		}
 
 		/// The feature bits the renderer reads per draw, for a test that puts the device on a road
@@ -183,6 +184,7 @@ namespace GSHWDrawHarness
 		GSHWDrawConfig::ColorMaskSelector m_colormask;
 		GSHWDrawConfig::DepthStencilSelector m_depth;
 		GSHWDrawConfig::AlphaTestMode m_alpha_test = GSHWDrawConfig::AlphaTestMode::NONE;
+		u32 m_logic_op_split = 0;
 	};
 
 	class Renderer final : public GSRendererHW

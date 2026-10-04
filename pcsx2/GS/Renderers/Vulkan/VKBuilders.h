@@ -123,6 +123,7 @@ namespace Vulkan
 			u32 attachment, VkColorComponentFlags write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
 			                                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
 		void AddBlendFlags(u32 flags);
+		void SetLogicOp(bool enable, VkLogicOp op = VK_LOGIC_OP_COPY);
 		void SetBlendFlags(u32 flags);
 		void AddDepthStencilFlags(u32 flags);
 		void ClearBlendAttachments();

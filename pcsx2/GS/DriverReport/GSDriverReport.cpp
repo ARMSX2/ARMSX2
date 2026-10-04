@@ -52,6 +52,7 @@ namespace GSDriverReport
 		FEATURE(texture_barrier);
 		FEATURE(multidraw_fb_copy);
 		FEATURE(cheap_rt_feedback_read);
+		FEATURE(alpha_bit_logic_op);
 		FEATURE(fast_stencil_shadow);
 		FEATURE(provoking_vertex_last);
 		FEATURE(point_expand);
