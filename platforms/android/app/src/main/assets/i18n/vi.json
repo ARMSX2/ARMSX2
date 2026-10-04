@@ -1830,6 +1830,7 @@
   "games.empty.arcade.showAll": "Hiện mọi trò chơi",
   "arcade.games.ready": "Sẵn sàng chơi",
   "arcade.games.missing": "Còn thiếu: %s",
+  "arcade.games.attract": "Chỉ chế độ trình diễn",
   "arcade.part.dongle": "dongle",
   "arcade.part.card": "thẻ Conquest",
   "arcade.part.boot": "tệp khởi động",

@@ -1830,6 +1830,7 @@
  "games.empty.arcade.showAll": "แสดงเกมทั้งหมด",
  "arcade.games.ready": "พร้อมเล่น",
  "arcade.games.missing": "ขาด: %s",
+ "arcade.games.attract": "โหมดเดโมเท่านั้น",
  "arcade.part.dongle": "ดองเกิล",
  "arcade.part.card": "การ์ด Conquest",
  "arcade.part.boot": "ไฟล์บูต",

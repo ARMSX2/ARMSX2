@@ -1830,6 +1830,7 @@
  "games.empty.arcade.showAll": "عرض كل الألعاب",
  "arcade.games.ready": "جاهزة للعب",
  "arcade.games.missing": "ينقص: %s",
+ "arcade.games.attract": "وضع العرض التوضيحي فقط",
  "arcade.part.dongle": "الدونغل",
  "arcade.part.card": "بطاقة Conquest",
  "arcade.part.boot": "ملف الإقلاع",

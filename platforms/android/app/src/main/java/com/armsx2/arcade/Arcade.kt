@@ -37,6 +37,11 @@ object Arcade {
     /** The library badge for an arcade game (GameInfo.extension). */
     const val BADGE = "ARCADE"
 
+    /** The games that start but only reach their attract demo, in PCSX2x6 as here (its compatibility
+     *  list, https://github.com/PS2Homebrew-arcade/pcsx2x6/issues/9): Dragon Chronicle, Dragon Chronicle
+     *  Online and The IDOLM@STER. The NAMCO screen says so instead of "Ready to play". */
+    val ATTRACT_ONLY = setOf("NM00014", "NM00020", "NM00022")
+
     private const val MAX_ACGAME_BYTES = 64 * 1024
     private val GAME_ID = Regex("NM\\d{5}")
 

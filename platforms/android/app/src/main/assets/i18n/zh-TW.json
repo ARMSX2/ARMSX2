@@ -1830,6 +1830,7 @@
  "games.empty.arcade.showAll": "顯示所有遊戲",
  "arcade.games.ready": "可以遊玩",
  "arcade.games.missing": "缺少：%s",
+ "arcade.games.attract": "僅展示模式",
  "arcade.part.dongle": "加密鎖",
  "arcade.part.card": "Conquest 記憶卡",
  "arcade.part.boot": "啟動檔案",

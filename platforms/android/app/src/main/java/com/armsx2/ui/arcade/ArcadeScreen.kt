@@ -209,6 +209,7 @@ private fun ArcadeGames(games: List<ArcadeGame>) {
             Text(str("arcade.step.games"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             val ready = str("arcade.games.ready")
             val missing = str("arcade.games.missing")
+            val attract = str("arcade.games.attract")
             games.forEachIndexed { index, g ->
                 Surface(
                     modifier = Modifier
@@ -223,10 +224,19 @@ private fun ArcadeGames(games: List<ArcadeGame>) {
                             Text(g.id, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Spacer(Modifier.width(10.dp))
+                        // A game that only reaches its attract demo is not "ready to play", nor broken.
                         Text(
-                            if (g.missing.isEmpty()) ready else missing.format(g.missing.joinToString(", ")),
+                            when {
+                                g.missing.isNotEmpty() -> missing.format(g.missing.joinToString(", "))
+                                g.attractOnly -> attract
+                                else -> ready
+                            },
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (g.missing.isEmpty()) Success else MaterialTheme.colorScheme.error,
+                            color = when {
+                                g.missing.isNotEmpty() -> MaterialTheme.colorScheme.error
+                                g.attractOnly -> MaterialTheme.colorScheme.onSurfaceVariant
+                                else -> Success
+                            },
                         )
                     }
                 }

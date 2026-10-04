@@ -1830,6 +1830,7 @@
   "games.empty.arcade.showAll": "すべてのゲームを表示",
   "arcade.games.ready": "プレイ可能",
   "arcade.games.missing": "不足: %s",
+  "arcade.games.attract": "デモ画面のみ",
   "arcade.part.dongle": "ドングル",
   "arcade.part.card": "Conquest カード",
   "arcade.part.boot": "起動ファイル",

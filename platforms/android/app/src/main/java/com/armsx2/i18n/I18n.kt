@@ -2028,6 +2028,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "arcade.games.lookAgain" to "Look again",
     "arcade.games.ready" to "Ready to play",
     "arcade.games.missing" to "Missing: %s",
+    "arcade.games.attract" to "Attract mode only",
     "arcade.part.dongle" to "dongle",
     "arcade.part.card" to "Conquest card",
     "arcade.part.boot" to "boot file",

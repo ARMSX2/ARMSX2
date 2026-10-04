@@ -1830,6 +1830,7 @@
  "games.empty.arcade.showAll": "Tüm oyunları göster",
  "arcade.games.ready": "Oynamaya hazır",
  "arcade.games.missing": "Eksik: %s",
+ "arcade.games.attract": "Yalnızca tanıtım modu",
  "arcade.part.dongle": "dongle",
  "arcade.part.card": "Conquest kartı",
  "arcade.part.boot": "önyükleme dosyası",

@@ -17,8 +17,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** An arcade game the library found, and what still keeps it from starting (empty: ready to play). */
-data class ArcadeGame(val title: String, val id: String, val missing: List<String>)
+/** An arcade game the library found, what still keeps it from starting (empty: ready to play), and
+ *  whether it only reaches its attract demo so far (Arcade.ATTRACT_ONLY). */
+data class ArcadeGame(val title: String, val id: String, val missing: List<String>, val attractOnly: Boolean = false)
 
 data class ArcadeUiState(
     val loaded: Boolean = false,
@@ -70,7 +71,8 @@ class ArcadeViewModel(application: Application) : AndroidViewModel(application) 
     private fun arcadeGames(games: List<com.armsx2.GameInfo>): List<ArcadeGame> {
         val app = getApplication<Application>()
         return games.filter { it.extension == Arcade.BADGE }.map { game ->
-            ArcadeGame(game.title, game.serial.orEmpty(), Arcade.missing(app, game.uri.toString()))
+            val id = game.serial.orEmpty()
+            ArcadeGame(game.title, id, Arcade.missing(app, game.uri.toString()), id.uppercase() in Arcade.ATTRACT_ONLY)
         }.sortedBy { it.title.lowercase() }
     }
 

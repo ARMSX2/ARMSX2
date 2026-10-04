@@ -1830,6 +1830,7 @@
   "games.empty.arcade.showAll": "Tampilkan semua game",
   "arcade.games.ready": "Siap dimainkan",
   "arcade.games.missing": "Kurang: %s",
+  "arcade.games.attract": "Hanya mode demo",
   "arcade.part.dongle": "dongle",
   "arcade.part.card": "kartu Conquest",
   "arcade.part.boot": "file boot",

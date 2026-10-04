@@ -1830,6 +1830,7 @@
  "games.empty.arcade.showAll": "모든 게임 표시",
  "arcade.games.ready": "플레이 준비 완료",
  "arcade.games.missing": "누락: %s",
+ "arcade.games.attract": "데모 화면만",
  "arcade.part.dongle": "동글",
  "arcade.part.card": "Conquest 카드",
  "arcade.part.boot": "부팅 파일",

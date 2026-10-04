@@ -1832,6 +1832,7 @@
  "games.empty.arcade.showAll": "Mostrar todos os jogos",
  "arcade.games.ready": "Pronto para jogar",
  "arcade.games.missing": "Faltando: %s",
+ "arcade.games.attract": "Só modo demonstração",
  "arcade.part.dongle": "dongle",
  "arcade.part.card": "cartão do Conquest",
  "arcade.part.boot": "arquivo de inicialização",

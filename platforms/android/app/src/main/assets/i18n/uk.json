@@ -1829,6 +1829,7 @@
   "games.empty.arcade.showAll": "Показати всі ігри",
   "arcade.games.ready": "Готова до гри",
   "arcade.games.missing": "Бракує: %s",
+  "arcade.games.attract": "Лише демо-режим",
   "arcade.part.dongle": "донгл",
   "arcade.part.card": "карта Conquest",
   "arcade.part.boot": "файл запуску",

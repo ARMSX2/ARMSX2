@@ -1830,6 +1830,7 @@
  "games.empty.arcade.showAll": "Alle Spiele zeigen",
  "arcade.games.ready": "Spielbereit",
  "arcade.games.missing": "Fehlt: %s",
+ "arcade.games.attract": "Nur Demo-Modus",
  "arcade.part.dongle": "Dongle",
  "arcade.part.card": "Conquest-Karte",
  "arcade.part.boot": "Startdatei",
