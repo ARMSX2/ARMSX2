@@ -2,37 +2,35 @@
 package com.armsx2.ui.arcade
 
 import android.app.Application
-import android.net.Uri
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.armsx2.arcade.Arcade
 import com.armsx2.arcade.ArcadeLibrary
+import com.armsx2.data.library.GameLibraryRepository
 import com.armsx2.data.library.LibraryRefresh
 import com.armsx2.i18n.I18n
+import com.armsx2.runtime.MainActivityRuntime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** An arcade game the library found, and what still keeps it from starting (empty: ready to play). */
+data class ArcadeGame(val title: String, val id: String, val missing: List<String>)
+
 data class ArcadeUiState(
     val loaded: Boolean = false,
-    val folderName: String? = null,
     /** How many games the downloaded boot files cover, 0 when there are none. */
     val bootGames: Int = 0,
     val downloading: Boolean = false,
     /** The arcade BIOS file the core will boot with, or null for none. */
     val bios: String? = null,
-    /** The games that can be imported: known to the database and in the boot files. */
-    val titles: List<ArcadeLibrary.Title> = emptyList(),
-    val installed: List<ArcadeLibrary.Installed> = emptyList(),
-    /** What is in the folder of the game whose imports are open (see [ArcadeViewModel.showFiles]). */
-    val files: ArcadeLibrary.GameFiles? = null,
-    /** The game being imported, while it is. */
-    val importing: ArcadeLibrary.Title? = null,
-    /** The game being uninstalled, while it is. */
-    val removing: ArcadeLibrary.Title? = null,
-    val message: String? = null,
+    /** The arcade games in the player's game folders, as the library found them last. */
+    val games: List<ArcadeGame> = emptyList(),
+    /** While the game folders are looked through again. */
+    val looking: Boolean = false,
     val error: String? = null,
 )
 
@@ -40,63 +38,54 @@ class ArcadeViewModel(application: Application) : AndroidViewModel(application) 
     var state = mutableStateOf(ArcadeUiState())
         private set
 
-    // Apart from [state]: written by the copy on its own thread, many times a second.
+    // Apart from [state]: written by the download on its own thread, many times a second.
     val downloadProgress = mutableFloatStateOf(0f)
-    val importProgress = mutableFloatStateOf(0f)
-    val removeProgress = mutableFloatStateOf(0f)
-
-    // Set by the progress window's Cancel, read by the copy at every megabyte.
-    private val cancelRequested = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private var refreshJob: Job? = null
 
-    /** The game whose imports are open, whose files [refresh] looks at too. */
-    private var filesOf: String? = null
-
-    /** Opens the imports of the game [id] (null: closes them): what of it is in the folder, kept current. */
-    fun showFiles(id: String?) {
-        filesOf = id
-        state.value = state.value.copy(files = null)
-        if (id != null) refresh()
-    }
-
+    /** Reads everything the screen shows again: the boot files, the BIOS, and the arcade games the
+     *  library found, each checked for what it still lacks. */
     fun refresh() {
         // The newest look wins: one still reading from before a change must not land after it.
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
             val app = getApplication<Application>()
-            val filesId = filesOf
             val next = withContext(Dispatchers.IO) {
-                val boot = ArcadeLibrary.bootGames(app)
-                val titles = ArcadeLibrary.titles()
                 state.value.copy(
                     loaded = true,
-                    folderName = ArcadeLibrary.folderName(app),
-                    bootGames = boot.size,
+                    bootGames = ArcadeLibrary.bootGames(app).size,
                     bios = ArcadeLibrary.biosName(app),
-                    titles = titles.filter { it.id in boot },
-                    installed = ArcadeLibrary.installed(app, titles),
-                    files = filesId?.let { ArcadeLibrary.files(app, it) },
+                    games = arcadeGames(GameLibraryRepository(app).loadCached().games),
                 )
             }
-            // Keep whatever started while this was reading (a download, an import), and the files only
-            // while they are still the open game's.
+            // Keep whatever started while this was reading (a download, a look through the folders).
             state.value = next.copy(
-                files = next.files?.takeIf { it.id == filesOf },
                 downloading = state.value.downloading,
-                importing = state.value.importing,
-                removing = state.value.removing,
-                message = state.value.message,
+                looking = state.value.looking,
                 error = state.value.error,
             )
         }
     }
 
-    fun chooseFolder(uri: Uri) {
-        ArcadeLibrary.setFolder(getApplication(), uri)
-        // A folder new to the library, or one with games in it already: the library scans again.
-        LibraryRefresh.request()
-        refresh()
+    private fun arcadeGames(games: List<com.armsx2.GameInfo>): List<ArcadeGame> {
+        val app = getApplication<Application>()
+        return games.filter { it.extension == Arcade.BADGE }.map { game ->
+            ArcadeGame(game.title, game.serial.orEmpty(), Arcade.missing(app, game.uri.toString()))
+        }.sortedBy { it.title.lowercase() }
+    }
+
+    /** Looks through the game folders again, for games put there since the library last did; the
+     *  library itself looks again too, the next time it is on screen. */
+    fun lookAgain() {
+        if (state.value.looking) return
+        val directories = MainActivityRuntime.romsDirs.value
+        state.value = state.value.copy(looking = true)
+        viewModelScope.launch {
+            runCatching { GameLibraryRepository(getApplication()).scan(directories) }
+            LibraryRefresh.request()
+            state.value = state.value.copy(looking = false)
+            refresh()
+        }
     }
 
     fun downloadBootFiles() {
@@ -113,57 +102,7 @@ class ArcadeViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    /** Imports one part of [title] from [source]. Done, its imports show it in; a failure says why. */
-    fun import(title: ArcadeLibrary.Title, part: ArcadeLibrary.Part, source: Uri) {
-        if (state.value.importing != null || state.value.removing != null) return
-        state.value = state.value.copy(importing = title)
-        importProgress.floatValue = 0f
-        cancelRequested.set(false)
-        viewModelScope.launch {
-            val result = ArcadeLibrary.import(
-                getApplication(), title, part, source,
-                onProgress = { p -> importProgress.floatValue = p },
-                stop = cancelRequested::get,
-            )
-            // A cancelled import says nothing: the player asked for it, and nothing of it is left.
-            val failure = result.exceptionOrNull()?.takeIf { it !is ArcadeLibrary.ImportCancelled }
-            state.value = state.value.copy(
-                importing = null,
-                error = failure?.let { e -> I18n.get("arcade.import.failed").format(e.message ?: e.toString()) },
-            )
-            // The library shows the game without a tap on its refresh button.
-            if (result.isSuccess) LibraryRefresh.request()
-            refresh()
-        }
-    }
-
-    /** Stops the import in progress at its next megabyte, leaving nothing of it behind. */
-    fun cancelImport() {
-        cancelRequested.set(true)
-    }
-
-    /** Uninstalls [title] from the arcade folder (ArcadeLibrary.uninstall says what goes and what stays). */
-    fun uninstall(title: ArcadeLibrary.Title) {
-        if (state.value.importing != null || state.value.removing != null) return
-        state.value = state.value.copy(removing = title)
-        removeProgress.floatValue = 0f
-        viewModelScope.launch {
-            val result = ArcadeLibrary.uninstall(getApplication(), title.id) { p -> removeProgress.floatValue = p }
-            state.value = state.value.copy(
-                removing = null,
-                message = if (result.isSuccess) I18n.get("arcade.uninstall.done").format(title.name) else null,
-                error = result.exceptionOrNull()?.let { e ->
-                    I18n.get("arcade.uninstall.failed").format(e.message ?: e.toString())
-                },
-            )
-            // Gone from the library too, without a tap on its refresh button; and a failure part way
-            // still changed the folder.
-            LibraryRefresh.request()
-            refresh()
-        }
-    }
-
     fun dismissMessage() {
-        state.value = state.value.copy(message = null, error = null)
+        state.value = state.value.copy(error = null)
     }
 }

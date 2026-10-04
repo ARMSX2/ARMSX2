@@ -889,7 +889,8 @@ open class MainActivityRuntime : ComponentActivity() {
             NativeApp.setArcadeLaunchFiles(launch.elf, launch.media, launch.sram)
             com.armsx2.arcade.Arcade.sessionMode.intValue = launch.mode
             try {
-                NativeApp.runVMThread(path)
+                // The game's .acgame, or for a game kept as its own files the one written for it.
+                NativeApp.runVMThread(launch.manifest)
             } finally {
                 com.armsx2.arcade.Arcade.sessionMode.intValue = -1
             }

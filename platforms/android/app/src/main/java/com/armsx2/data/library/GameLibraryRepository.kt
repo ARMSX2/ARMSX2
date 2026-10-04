@@ -13,6 +13,7 @@ import com.armsx2.FilenameParser
 import com.armsx2.GameInfo
 import com.armsx2.GamePlatform
 import com.armsx2.arcade.Arcade
+import com.armsx2.arcade.ArcadeFiles
 import com.armsx2.runtime.MainActivityRuntime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -33,7 +34,9 @@ class GameLibraryRepository(private val context: Context) {
     private val exportScope = CoroutineScope(Dispatchers.IO)
     private val exportLock = Any()
 
-    fun cacheKey(directories: List<String>): String = directories.sorted().joinToString("|")
+    /** What a cached library was scanned from: its folders, and the rules it was scanned by
+     *  ([SCAN_RULES]), so a library cached under older rules is scanned again, once. */
+    fun cacheKey(directories: List<String>): String = "rules$SCAN_RULES|" + directories.sorted().joinToString("|")
 
     fun loadCached(): CachedLibrary {
         val cachedKey = MainActivityRuntime.prefs.getString("gamesCacheKey", null)
@@ -199,6 +202,14 @@ class GameLibraryRepository(private val context: Context) {
         val names = children.associateWith { it.name }
         val arcade = ArcadeClaims(children.filter { Arcade.isAcGameName(names[it]) && !it.isDirectory }
             .associate { it.uri.toString() to Arcade.read(context, it.uri.toString()) })
+        // Arcade games kept as their own files: an image named after its game is the game, and nothing of
+        // its set is a PS2 game. A folder's own name only matters when one of its files could be arcade.
+        val loose = ArcadeFiles.find(
+            names = names.values.filterNotNull(),
+            folderId = ArcadeFiles.idIn(runCatching { directory.name }.getOrNull()),
+            covered = arcade.gameIds,
+            sizeOf = { n -> children.firstOrNull { names[it] == n }?.let { runCatching { it.length() }.getOrNull() } ?: 0L },
+        )
         children.forEach { file ->
             if (file.isDirectory) {
                 if (!arcade.ownsFolder(names[file])) scanDocumentTree(file, output, depth + 1)
@@ -206,6 +217,11 @@ class GameLibraryRepository(private val context: Context) {
             }
             val name = names[file] ?: return@forEach
             if (arcade.ownsFile(name)) return@forEach
+            if (name.lowercase() in loose.claimed) {
+                loose.games.firstOrNull { it.image == name }
+                    ?.let { output.putIfAbsent(file.uri.toString(), createLooseArcadeGame(file.uri, it, loose)) }
+                return@forEach
+            }
             val extension = name.substringAfterLast('.', "").lowercase()
             if (extension !in gameExtensions) return@forEach
             if (extension == Arcade.EXTENSION) {
@@ -227,15 +243,27 @@ class GameLibraryRepository(private val context: Context) {
     ) {
         if (depth > MaxScanDepth) return
         val children = runCatching { directory.listFiles() }.getOrNull() ?: return
-        val arcade = ArcadeClaims(if (Arcade.EXTENSION !in accept) emptyMap() else children
+        val arcadeScan = Arcade.EXTENSION in accept
+        val arcade = ArcadeClaims(if (!arcadeScan) emptyMap() else children
             .filter { it.isFile && Arcade.isAcGameName(it.name) }
             .associate { it.absolutePath to Arcade.read(context, it.absolutePath) })
+        val loose = if (!arcadeScan) null else ArcadeFiles.find(
+            names = children.map { it.name },
+            folderId = ArcadeFiles.idIn(directory.name),
+            covered = arcade.gameIds,
+            sizeOf = { n -> File(directory, n).length() },
+        )
         children.forEach { file ->
             if (file.isDirectory) {
                 if (!arcade.ownsFolder(file.name)) scanRawDirectory(file, output, depth + 1, accept)
                 return@forEach
             }
             if (arcade.ownsFile(file.name)) return@forEach
+            if (loose != null && file.name.lowercase() in loose.claimed) {
+                loose.games.firstOrNull { it.image == file.name }
+                    ?.let { Uri.fromFile(file).let { uri -> output.putIfAbsent(uri.toString(), createLooseArcadeGame(uri, it, loose)) } }
+                return@forEach
+            }
             val extension = file.extension.lowercase()
             if (extension !in accept) return@forEach
             val uri = Uri.fromFile(file)
@@ -286,6 +314,7 @@ class GameLibraryRepository(private val context: Context) {
      * boot without its board, and a dongle named .bin would be listed as a disc.
      */
     private class ArcadeClaims(val games: Map<String, Arcade.AcGame?>) {
+        val gameIds: Set<String> = games.values.filterNotNull().map { it.gameId }.toSet()
         private val folders = games.values.filterNotNull().mapNotNull { it.subdir.takeIf(String::isNotEmpty)?.lowercase() }.toSet()
         private val files = games.values.filterNotNull().flatMap { game ->
             val cards = listOf(game.dongle, game.card).filter(String::isNotEmpty).map { File(it).name.lowercase() }
@@ -324,6 +353,25 @@ class GameLibraryRepository(private val context: Context) {
     /** An .acgame: its own name for the game first (PCSX2x6 shows that one too), then the game
      *  database's for its game ID. One that cannot be read is still listed, under its file name, so
      *  launching it can say what is wrong with it. */
+    /** An arcade game kept as its own files ([ArcadeFiles]): its image, under the game database's name.
+     *  Two images of one game in a folder (two revisions of its disc) each say which file they are. */
+    private fun createLooseArcadeGame(uri: Uri, found: ArcadeFiles.Found, folder: ArcadeFiles.Folder): GameInfo {
+        val db = dbTitles(found.id)
+        val name = db?.name?.takeIf { it.isNotEmpty() } ?: found.id
+        val alone = folder.games.count { it.id == found.id } == 1
+        val compatibility = runCatching { NativeApp.getCompatibilityForSerial(found.id) }.getOrDefault(0).minus(1).coerceIn(0, 5)
+        return GameInfo(
+            uri = uri,
+            title = if (alone) name else "$name (${found.image.substringBeforeLast('.')})",
+            serial = found.id,
+            compatibility = compatibility,
+            extension = Arcade.BADGE,
+            platform = GamePlatform.PS2,
+            titleSort = if (alone) db?.sort.orEmpty() else "",
+            titleEn = if (alone) db?.en.orEmpty() else "",
+        )
+    }
+
     private fun createArcadeGame(uri: Uri, name: String, game: Arcade.AcGame?): GameInfo {
         val db = game?.gameId?.let { dbTitles(it) }
         val compatibility = game?.gameId
@@ -401,6 +449,10 @@ class GameLibraryRepository(private val context: Context) {
     data class CachedLibrary(val key: String?, val games: List<GameInfo>)
 
     private companion object {
+        /** Bumped when a scan finds different games in the same folders. 2: arcade games kept as their
+         *  own files (ArcadeFiles), and their sets no longer listed as PS2 games. */
+        const val SCAN_RULES = 2
+
         const val MaxScanDepth = 12
         val probeExtensions = setOf("iso", "bin", "chd", "img", "mdf", "nrg", "dump")
     }
