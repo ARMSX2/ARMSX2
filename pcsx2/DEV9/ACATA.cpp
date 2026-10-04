@@ -7,6 +7,7 @@
 
 #include "ACATA.h"
 #include "ACATAPI.h"
+#include "ACATA_IO_CHD.h"
 #include "ACCORE.h"
 #include "common/Console.h"
 #include "common/FileSystem.h"
@@ -40,7 +41,9 @@ static void ata_build_identify()
 	ata_identify_buf[47] = 0x8010;
 	ata_identify_buf[49] = 0x0300;
 	ata_identify_buf[53] = 0x0007;
-	if (ACATA::TH::IMAGE) {
+	// ARMSX2: by the open image's size, which a CHD has as well: it has no IMAGE file, and the drive
+	// used to report no sectors at all for one.
+	{
 		if (ACATA::TH::IMAGESIZE > 0) {
 			ata_total_sectors = (u32)(ACATA::TH::IMAGESIZE / ATA_SECTORSIZE);
 			ata_identify_buf[60] = ata_total_sectors & 0xFFFF;
@@ -265,14 +268,22 @@ void ACATA::handle_cmd(u16 val) {
         u32 count = R_NSECTOR ? R_NSECTOR : 256;
         u32 total = count * ATA_SECTORSIZE;
         ACATA_LOG("CMD:ATA_C_READ_SECTOR lba:%08X sectors:%02X", lba, count);
-        if (!ACATA::TH::IMAGE || total > sizeof(ata_pio_buf)) {
+        // ARMSX2: a CHD hard drive (512-byte units) is read through the CHD, as DMA reads are; it has no
+        // IMAGE file, and every PIO read from one used to be refused.
+        const bool chd = ACATA::TH::isCHD && CHD.GetSectorSize() == ATA_SECTORSIZE;
+        if ((!ACATA::TH::IMAGE && !chd) || total > sizeof(ata_pio_buf)) {
             R_STATUS |= ATA_STAT_ERR;
             R_ERROR = ATA_ERR_ABORT;
             ACCORE::intr(ACCORE::INTRN_ATA);
             break;
         }
-        FileSystem::FSeek64(ACATA::TH::IMAGE, (s64)lba * ATA_SECTORSIZE, SEEK_SET);
-        size_t rd = fread(ata_pio_buf, 1, total, ACATA::TH::IMAGE);
+        size_t rd = 0;
+        if (chd)
+            rd = CHD.ReadSectors(lba, count, ata_pio_buf) ? total : 0;
+        else {
+            FileSystem::FSeek64(ACATA::TH::IMAGE, (s64)lba * ATA_SECTORSIZE, SEEK_SET);
+            rd = fread(ata_pio_buf, 1, total, ACATA::TH::IMAGE);
+        }
         if (rd != total) {
             Console.Error("ATA_C_READ_SECTOR: short read (%zu/%u) at LBA %u", rd, total, lba);
             R_STATUS |= ATA_STAT_ERR;

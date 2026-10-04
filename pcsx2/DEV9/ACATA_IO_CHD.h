@@ -28,7 +28,7 @@ public:
     ChdImage(const ChdImage&) = delete;
     ChdImage& operator=(const ChdImage&) = delete;
 
-    bool Open(const std::string& path);
+    bool Open(const std::string& path, std::string* why = nullptr); // why: the reason it failed
     void Close();
 
     bool IsOpen() const;

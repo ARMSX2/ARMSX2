@@ -44,7 +44,7 @@ ChdImage::~ChdImage()
     Close();
 }
 
-bool ChdImage::Open(const std::string& path)
+bool ChdImage::Open(const std::string& path, std::string* why)
 {
     Close();
 
@@ -52,6 +52,8 @@ bool ChdImage::Open(const std::string& path)
     std::FILE* fp = FileSystem::OpenCFile(path.c_str(), "rb", &error);
     if (!fp) {
         Console.ErrorFmt("{} failed to open '{}': {}", __FUNCTION__, path, error.GetDescription());
+        if (why)
+            *why = error.GetDescription();
         return false;
     }
 
@@ -67,6 +69,8 @@ bool ChdImage::Open(const std::string& path)
     if (err != CHDERR_NONE) {
         m_chd = nullptr;
         Console.ErrorFmt("{} failed to open CHD: {}", __FUNCTION__, chd_error_string(err));
+        if (why)
+            *why = chd_error_string(err);
         return false;
     }
 

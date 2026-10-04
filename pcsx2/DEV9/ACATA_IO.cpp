@@ -11,6 +11,7 @@
 #include "common/Console.h"
 #include "common/Error.h"
 #include "common/FileSystem.h"
+#include "fmt/format.h"
 
 #include "ACATA.h"
 #include "ACATA_IO_CHD.h"
@@ -171,13 +172,18 @@ int ACATA::TH::IO_OpenImage() {
 	unitbytes = 0;
 	unitdataoff = 0;
 	if (isCHD) {
-		if (CHD.Open(ACATA::imgpath)) {
+		// ARMSX2: with the reason, so a report tells a damaged file from one libchdr refuses.
+		std::string why;
+		if (CHD.Open(ACATA::imgpath, &why)) {
 			u32 secsize = CHD.GetSectorSize();
 			if (secsize != sectorsize) 
 				Console.ErrorFmt("ACATA: CHD sectorsize mismatches declaration {} vs {}", secsize, sectorsize);
 			sectorsize = secsize;
 			ACATA::TH::IMAGESIZE = (CHD.GetSectorCount() * sectorsize);
-		} else return EIO;
+		} else {
+			open_error = fmt::format("Cannot open the arcade game's media image '{}': {}.", ACATA::imgpath, why);
+			return EIO;
+		}
 		Console.WriteLn("%s: CHD image opened ok", __FUNCTION__);
 	} else {
 		// ARMSX2: through FileSystem, which also opens an Android content:// document (read-only: a hard
