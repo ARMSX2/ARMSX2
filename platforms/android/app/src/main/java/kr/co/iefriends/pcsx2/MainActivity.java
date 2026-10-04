@@ -367,6 +367,15 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /** Whether this launch rewrites the files copyFile keeps in step with the APK (the shaders, the GameDB,
+     *  our overrides): only when this install of the app has not written them into the data folder yet,
+     *  which MainActivityRuntime reads from the folder's marker. Rewriting them at every launch took long
+     *  enough, on a data folder on an SD card, for Android to report the app as not responding. */
+    public static volatile boolean refreshShippedAssets = true;
+
+    /** Copies that failed since the last pass began: the marker is written only after a clean one. */
+    public static volatile int copyFailures = 0;
+
     public static void copyFile(Context p_context, String srcFile, String destFile) {
         AssetManager assetMgr = p_context.getAssets();
 
@@ -381,9 +390,9 @@ public class MainActivity extends AppCompatActivity {
         // GameDB override (armsx2_overrides.yaml — the whole point of that file is
         // shipping per-game fixes like VP2/LEGO Batman; without force-refresh an
         // existing user keeps the original copy and override edits never land).
-        final boolean forceFresh = srcFile.contains("shaders")
+        final boolean forceFresh = refreshShippedAssets && (srcFile.contains("shaders")
                 || srcFile.endsWith("GameIndex.yaml")
-                || srcFile.endsWith("armsx2_overrides.yaml");
+                || srcFile.endsWith("armsx2_overrides.yaml"));
         try {
             is = assetMgr.open(srcFile);
             File destFileObj = new File(destFile);
@@ -399,7 +408,7 @@ public class MainActivity extends AppCompatActivity {
             if (!_exists) {
                 os = new FileOutputStream(destFile);
 
-                byte[] buffer = new byte[1024];
+                byte[] buffer = new byte[64 * 1024];
                 int read;
                 while ((read = is.read(buffer)) != -1) {
                     os.write(buffer, 0, read);
@@ -409,6 +418,7 @@ public class MainActivity extends AppCompatActivity {
                 os.close();
             }
         } catch (IOException e) {
+            copyFailures++;
             Log.e("ARMSX2", "copyFile failed: " + srcFile + " -> " + destFile + ": " + e.getMessage());
             try { if (is != null) is.close(); } catch (IOException ignored) {}
             try { if (os != null) os.close(); } catch (IOException ignored) {}
