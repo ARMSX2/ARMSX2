@@ -4660,6 +4660,7 @@ void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& 
 										{static_cast<u32>(r.width()), static_cast<u32>(r.height())}},
 				0u, 1u};
 			vkCmdClearAttachments(GetCurrentCommandBuffer(), 1, &ca, 1, &cr);
+			m_date_copy.valid = false; // see OMSetRenderTargets
 
 			return;
 		}
@@ -5637,6 +5638,8 @@ void GSDeviceVK::OMSetRenderTargets(
 				const GSVector2i size = vkRt ? vkRt->GetSize() : vkDs->GetSize();
 				const VkClearRect cr = {{{0, 0}, {static_cast<u32>(size.x), static_cast<u32>(size.y)}}, 0u, 1u};
 				vkCmdClearAttachments(GetCurrentCommandBuffer(), num_ca, cas.data(), 1, &cr);
+				// A clear inside the pass rewrites alpha the shared DATE stencil copy describes.
+				m_date_copy.valid = false;
 			}
 		}
 	}
