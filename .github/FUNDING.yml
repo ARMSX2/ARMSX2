@@ -1,4 +1,5 @@
-# These are supported funding model platforms
+# ARMSX2 first; PCSX2 too, since ARMSX2 is built on their work.
 
+custom: ["https://armsx2.net/donate"]
 github: [PCSX2]
 liberapay: PCSX2
