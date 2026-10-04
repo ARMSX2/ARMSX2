@@ -2381,6 +2381,7 @@ static void DumpBlendMultipass(DrawConfigWriter& out, const GSHWDrawConfig::Blen
 	out.WriteLn("no_color1: {}", bmp.no_color1);
 	out.WriteLn("blend_hw: {} ({})", GetPSBlendHWName(static_cast<HWBlendType>(bmp.blend_hw)), bmp.blend_hw);
 	out.WriteLn("dither: {}", bmp.dither);
+	out.WriteLn("clear_sw_blend: {}", bmp.clear_sw_blend);
 
 	out.WriteLn("blend:");
 	DumpBlendState(out.WithIndent(), bmp.blend);
