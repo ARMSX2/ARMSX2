@@ -1,11 +1,11 @@
 import unittest
 
-from ios_source import SWIFT, at, block, without_comments
+from ios_source import at, block, swift, without_comments
 
 
-QUICK_MENU = SWIFT / "Views/QuickMenuView.swift"
-GAME_SCREEN = SWIFT / "Views/GameScreenView.swift"
-WORKSPACE = SWIFT / "Views/Settings/ShaderWorkspaceView.swift"
+QUICK_MENU = swift("QuickMenuView.swift")
+GAME_SCREEN = swift("GameScreenView.swift")
+WORKSPACE = swift("ShaderWorkspaceView.swift")
 
 SECTION = "ShaderChainSection("
 ROUTER = "openPauseMenuChild"

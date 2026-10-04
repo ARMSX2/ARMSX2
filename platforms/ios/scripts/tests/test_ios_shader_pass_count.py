@@ -2,7 +2,7 @@
 
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
 class ShaderPassCount(unittest.TestCase):
@@ -10,7 +10,7 @@ class ShaderPassCount(unittest.TestCase):
     Shaders crashed every time it opened."""
 
     def test_the_count_is_bounded_before_the_range(self):
-        inspect = block(without_comments(read(SWIFT / "Models/ShaderPassLibrary.swift")),
+        inspect = block(without_comments(read(swift("ShaderPassLibrary.swift"))),
                         "nonisolated static func inspect(")
         self.assertLess(inspect.index("(0...64).contains($0)"), inspect.index("Array(0..<$0)"),
                         "the shaders count reaches 0..<count unchecked")

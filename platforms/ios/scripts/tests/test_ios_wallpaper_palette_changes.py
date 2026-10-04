@@ -2,10 +2,10 @@
 
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-PRESENTATION = SWIFT / "Views/Background/Dynamic/DynamicBackgroundPresentation.swift"
+PRESENTATION = swift("DynamicBackgroundPresentation.swift")
 
 
 class PaletteChangesStayInPlace(unittest.TestCase):

@@ -1,12 +1,11 @@
 import re
 import unittest
 
-from ios_source import CPP, ROOT, SWIFT, block, store_text
+from ios_source import ROOT, block, bridge_text, store_text, swift
 
 
-BRIDGE = CPP / "ARMSX2Bridge.mm"
-GRAPHICS_VIEW = SWIFT / "Views/Settings/GraphicsSettingsView.swift"
-STORE_GRAPHICS = SWIFT / "Models/SettingsStore+Graphics.swift"
+GRAPHICS_VIEW = swift("GraphicsSettingsView.swift")
+STORE_GRAPHICS = swift("SettingsStore+Graphics.swift")
 OVERRIDES = ROOT / "pcsx2/PerGameOverrides.cpp"
 
 HACK_TABLE = re.compile(r'\{"([\w_]+)", GSUserHackOverride::\w+')
@@ -15,7 +14,7 @@ PINNED_KEYS = re.compile(r'\{"([\w_]+)", GSHWFixId::\w+, GSUserHackOverride::(?!
 
 class HackClaimPlumbing(unittest.TestCase):
     def setUp(self):
-        self.bridge = BRIDGE.read_text()
+        self.bridge = bridge_text()
         self.view = GRAPHICS_VIEW.read_text()
         self.store = store_text()
         self.store_graphics = STORE_GRAPHICS.read_text()

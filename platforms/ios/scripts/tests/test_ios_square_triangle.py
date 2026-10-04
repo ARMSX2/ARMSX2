@@ -2,10 +2,10 @@
 
 import unittest
 
-from ios_source import SWIFT, read
+from ios_source import read, swift
 
 
-ROUTER = SWIFT / "Models/MenuControllerInputRouter.swift"
+ROUTER = swift("MenuControllerInputRouter.swift")
 
 
 class SquareTriangle(unittest.TestCase):

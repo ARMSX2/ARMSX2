@@ -1,11 +1,9 @@
 import re
 import unittest
-from pathlib import Path
-
 
 # Repo root. The Metal renderer used to be vendored under platforms/ios; it is
 # shared core now, so everything below is relative to the top of the tree.
-ROOT = Path(__file__).resolve().parents[4]
+from ios_source import ROOT
 
 
 class IOSMetalBarrierTests(unittest.TestCase):

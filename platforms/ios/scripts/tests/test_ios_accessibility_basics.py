@@ -2,11 +2,11 @@
 
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-LIBRARY = SWIFT / "Views/GameListView.swift"
-OVERLAYS = SWIFT / "Views/ControllerGameContextMenu.swift"
+LIBRARY = swift("GameListView.swift")
+OVERLAYS = swift("ControllerGameContextMenu.swift")
 
 
 class CardTextFollowsLargerText(unittest.TestCase):
@@ -21,7 +21,7 @@ class CardTextFollowsLargerText(unittest.TestCase):
                 self.assertIn("* dynamicTypeTextScale", block(library, scale))
 
     def test_the_library_stops_growing_at_ax3(self):
-        root = without_comments(read(SWIFT / "Views/RootView.swift"))
+        root = without_comments(read(swift("RootView.swift")))
         self.assertEqual(root.count(".dynamicTypeSize(...DynamicTypeSize.accessibility3)"), 2,
                          "a GameListView is placed without the AX3 cap")
 

@@ -2,11 +2,10 @@
 
 import unittest
 
-from ios_source import CPP, SWIFT, at, block, read, without_comments
+from ios_source import at, block, bridge_text, read, swift, without_comments
 
 
-PANEL = SWIFT / "Views/PerGameSettingsPanel.swift"
-BRIDGE = CPP / "ARMSX2Bridge.mm"
+PANEL = swift("PerGameSettingsPanel.swift")
 
 
 class LivePreviewKeepsCommittedWrites(unittest.TestCase):
@@ -17,7 +16,7 @@ class LivePreviewKeepsCommittedWrites(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.panel = without_comments(read(PANEL))
-        cls.bridge = without_comments(read(BRIDGE))
+        cls.bridge = without_comments(bridge_text())
 
     def test_each_preview_write_refreshes_the_baseline_first(self):
         loop = block(self.panel, "private func runLivePreviewLoop(")

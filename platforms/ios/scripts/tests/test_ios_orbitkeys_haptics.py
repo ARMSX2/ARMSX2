@@ -2,10 +2,10 @@
 
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-MODEL = SWIFT / "Views/OrbitKeys/OrbitKeysModel.swift"
+MODEL = swift("OrbitKeysModel.swift")
 
 
 class KeyboardHapticsGoThroughTheRouter(unittest.TestCase):

@@ -7,11 +7,11 @@ slang-shaders-prescale-zero-guard.patch, records the two bundled files and rever
 the repository root. This one cannot: there is nothing here to reverse. Reverse it inside
 a slang-shaders checkout instead:
 
-    git apply -R -p9 platforms/ios/patches/slang-shaders-catalogue-prescale-zero-guard.patch
+    git apply -R -p6 platforms/ios/patches/slang-shaders-catalogue-prescale-zero-guard.patch
 
 The path prefix on every hunk is a strip-level convention, not a claim that these files
 live under assets/. shader_manifest.py finds a patch by that prefix and applies it with
--p9, so the prefix has to be there for the generator to see the file at all.
+-p6, so the prefix has to be there for the generator to see the file at all.
 
 Each shader derives a whole-number scale from output size over source size, then divides
 by it. RetroArch feeds them a small console framebuffer, so the ratio never falls below
@@ -45,10 +45,10 @@ empty for the run to be trustworthy at all.
 Signed off with the whole-tree catalogue on 2026-08-18. shader_manifest.py records every
 file here as modified, with its upstream and served hashes.
 
-diff --git a/platforms/ios/app/src/main/assets/shaders/presets/bezel/scanline-classic/shaders/digital-upsample.slang b/platforms/ios/app/src/main/assets/shaders/presets/bezel/scanline-classic/shaders/digital-upsample.slang
+diff --git a/platforms/ios/assets/shaders/presets/bezel/scanline-classic/shaders/digital-upsample.slang b/platforms/ios/assets/shaders/presets/bezel/scanline-classic/shaders/digital-upsample.slang
 index 00e4ddd..cc11250 100644
---- a/platforms/ios/app/src/main/assets/shaders/presets/bezel/scanline-classic/shaders/digital-upsample.slang
-+++ b/platforms/ios/app/src/main/assets/shaders/presets/bezel/scanline-classic/shaders/digital-upsample.slang
+--- a/platforms/ios/assets/shaders/presets/bezel/scanline-classic/shaders/digital-upsample.slang
++++ b/platforms/ios/assets/shaders/presets/bezel/scanline-classic/shaders/digital-upsample.slang
 @@ -1,4 +1,9 @@
  #version 450
 +// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
@@ -68,10 +68,10 @@ index 00e4ddd..cc11250 100644
  
      // Normalized cutoff frequency: always 0.5 for zero-insertion upsampling
      fc_norm = vec2(0.5);
-diff --git a/platforms/ios/app/src/main/assets/shaders/presets/bezel/uborder/shaders/content_bezel_shaders/base_shaders/crt/crt-aperture-bezel-reflections.h b/platforms/ios/app/src/main/assets/shaders/presets/bezel/uborder/shaders/content_bezel_shaders/base_shaders/crt/crt-aperture-bezel-reflections.h
+diff --git a/platforms/ios/assets/shaders/presets/bezel/uborder/shaders/content_bezel_shaders/base_shaders/crt/crt-aperture-bezel-reflections.h b/platforms/ios/assets/shaders/presets/bezel/uborder/shaders/content_bezel_shaders/base_shaders/crt/crt-aperture-bezel-reflections.h
 index eb7e6e6..f16d7b6 100644
---- a/platforms/ios/app/src/main/assets/shaders/presets/bezel/uborder/shaders/content_bezel_shaders/base_shaders/crt/crt-aperture-bezel-reflections.h
-+++ b/platforms/ios/app/src/main/assets/shaders/presets/bezel/uborder/shaders/content_bezel_shaders/base_shaders/crt/crt-aperture-bezel-reflections.h
+--- a/platforms/ios/assets/shaders/presets/bezel/uborder/shaders/content_bezel_shaders/base_shaders/crt/crt-aperture-bezel-reflections.h
++++ b/platforms/ios/assets/shaders/presets/bezel/uborder/shaders/content_bezel_shaders/base_shaders/crt/crt-aperture-bezel-reflections.h
 @@ -1,3 +1,8 @@
 +// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
 +// to at least 1: PCSX2 renders internally at up to 8x, and once the source is taller
@@ -90,10 +90,10 @@ index eb7e6e6..f16d7b6 100644
      float offset = 1.0 / scale * 0.5;
      
      if (bool(mod(scale, 2.0))) offset = 0.0;
-diff --git a/platforms/ios/app/src/main/assets/shaders/presets/bezel/uborder/shaders/content_shaders/crt-aperture.slang b/platforms/ios/app/src/main/assets/shaders/presets/bezel/uborder/shaders/content_shaders/crt-aperture.slang
+diff --git a/platforms/ios/assets/shaders/presets/bezel/uborder/shaders/content_shaders/crt-aperture.slang b/platforms/ios/assets/shaders/presets/bezel/uborder/shaders/content_shaders/crt-aperture.slang
 index 1829b1f..34102a2 100644
---- a/platforms/ios/app/src/main/assets/shaders/presets/bezel/uborder/shaders/content_shaders/crt-aperture.slang
-+++ b/platforms/ios/app/src/main/assets/shaders/presets/bezel/uborder/shaders/content_shaders/crt-aperture.slang
+--- a/platforms/ios/assets/shaders/presets/bezel/uborder/shaders/content_shaders/crt-aperture.slang
++++ b/platforms/ios/assets/shaders/presets/bezel/uborder/shaders/content_shaders/crt-aperture.slang
 @@ -1,4 +1,9 @@
  #version 450
 +// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
@@ -113,10 +113,10 @@ index 1829b1f..34102a2 100644
      float offset = 1.0 / scale * 0.5;
      
      if (bool(mod(scale, 2.0))) offset = 0.0;
-diff --git a/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-potato/shader-files/crt-potato.slang b/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-potato/shader-files/crt-potato.slang
+diff --git a/platforms/ios/assets/shaders/presets/crt/shaders/crt-potato/shader-files/crt-potato.slang b/platforms/ios/assets/shaders/presets/crt/shaders/crt-potato/shader-files/crt-potato.slang
 index 0451858..e3c5691 100644
---- a/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-potato/shader-files/crt-potato.slang
-+++ b/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-potato/shader-files/crt-potato.slang
+--- a/platforms/ios/assets/shaders/presets/crt/shaders/crt-potato/shader-files/crt-potato.slang
++++ b/platforms/ios/assets/shaders/presets/crt/shaders/crt-potato/shader-files/crt-potato.slang
 @@ -1,4 +1,9 @@
  #version 450
 +// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
@@ -145,10 +145,10 @@ index 0451858..e3c5691 100644
  
  #define curr_rgb  texture(Source, vTexCoord)
  #define mask_rgb  texture(MASK, fract((vTexCoord.xy * params.OutputSize.xy) / maskSize))
-diff --git a/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-potato/shader-files/ultra_potato.slang b/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-potato/shader-files/ultra_potato.slang
+diff --git a/platforms/ios/assets/shaders/presets/crt/shaders/crt-potato/shader-files/ultra_potato.slang b/platforms/ios/assets/shaders/presets/crt/shaders/crt-potato/shader-files/ultra_potato.slang
 index 8c67f21..d63d267 100644
---- a/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-potato/shader-files/ultra_potato.slang
-+++ b/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-potato/shader-files/ultra_potato.slang
+--- a/platforms/ios/assets/shaders/presets/crt/shaders/crt-potato/shader-files/ultra_potato.slang
++++ b/platforms/ios/assets/shaders/presets/crt/shaders/crt-potato/shader-files/ultra_potato.slang
 @@ -1,4 +1,9 @@
  #version 450
 +// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
@@ -177,10 +177,10 @@ index 8c67f21..d63d267 100644
  
  void main()
  {
-diff --git a/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/gameboy/shader-files/gb-pass0.slang b/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/gameboy/shader-files/gb-pass0.slang
+diff --git a/platforms/ios/assets/shaders/presets/handheld/shaders/gameboy/shader-files/gb-pass0.slang b/platforms/ios/assets/shaders/presets/handheld/shaders/gameboy/shader-files/gb-pass0.slang
 index 6709f45..ca4a6f8 100644
---- a/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/gameboy/shader-files/gb-pass0.slang
-+++ b/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/gameboy/shader-files/gb-pass0.slang
+--- a/platforms/ios/assets/shaders/presets/handheld/shaders/gameboy/shader-files/gb-pass0.slang
++++ b/platforms/ios/assets/shaders/presets/handheld/shaders/gameboy/shader-files/gb-pass0.slang
 @@ -1,4 +1,9 @@
  #version 450
 +// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
@@ -200,10 +200,10 @@ index 6709f45..ca4a6f8 100644
          }
          vec2 scaled_video_out = (registers.SourceSize.xy * vec2(video_scale_factor));
          scale_bounds = scaled_video_out / registers.OutputSize.xy;
-diff --git a/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/lcd-shader/lcd-pass-0.slang b/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/lcd-shader/lcd-pass-0.slang
+diff --git a/platforms/ios/assets/shaders/presets/handheld/shaders/lcd-shader/lcd-pass-0.slang b/platforms/ios/assets/shaders/presets/handheld/shaders/lcd-shader/lcd-pass-0.slang
 index 264cb92..c8b0780 100644
---- a/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/lcd-shader/lcd-pass-0.slang
-+++ b/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/lcd-shader/lcd-pass-0.slang
+--- a/platforms/ios/assets/shaders/presets/handheld/shaders/lcd-shader/lcd-pass-0.slang
++++ b/platforms/ios/assets/shaders/presets/handheld/shaders/lcd-shader/lcd-pass-0.slang
 @@ -1,4 +1,9 @@
  #version 450
 +// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
@@ -223,10 +223,10 @@ index 264cb92..c8b0780 100644
  #define scaled_video_out	(params.SourceSize.xy * video_scale)				//size of the scaled video
  #define half_pixel		(0.5 * params.OutputSize.zw)					//it's... half a pixel
  
-diff --git a/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/retro-tiles.slang b/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/retro-tiles.slang
+diff --git a/platforms/ios/assets/shaders/presets/handheld/shaders/retro-tiles.slang b/platforms/ios/assets/shaders/presets/handheld/shaders/retro-tiles.slang
 index c7bb17f..5a17f98 100644
---- a/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/retro-tiles.slang
-+++ b/platforms/ios/app/src/main/assets/shaders/presets/handheld/shaders/retro-tiles.slang
+--- a/platforms/ios/assets/shaders/presets/handheld/shaders/retro-tiles.slang
++++ b/platforms/ios/assets/shaders/presets/handheld/shaders/retro-tiles.slang
 @@ -1,4 +1,9 @@
  #version 450
 +// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
@@ -246,10 +246,10 @@ index c7bb17f..5a17f98 100644
      box_scale = vec2(min(box_scale.x, box_scale.y));
  
      vec2 scale = (param.OutputSize.xy / param.SourceSize.xy) / box_scale;
-diff --git a/platforms/ios/app/src/main/assets/shaders/presets/misc/shaders/bead.slang b/platforms/ios/app/src/main/assets/shaders/presets/misc/shaders/bead.slang
+diff --git a/platforms/ios/assets/shaders/presets/misc/shaders/bead.slang b/platforms/ios/assets/shaders/presets/misc/shaders/bead.slang
 index 97d3203..ff84db8 100644
---- a/platforms/ios/app/src/main/assets/shaders/presets/misc/shaders/bead.slang
-+++ b/platforms/ios/app/src/main/assets/shaders/presets/misc/shaders/bead.slang
+--- a/platforms/ios/assets/shaders/presets/misc/shaders/bead.slang
++++ b/platforms/ios/assets/shaders/presets/misc/shaders/bead.slang
 @@ -1,4 +1,9 @@
  #version 450
 +// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
@@ -269,10 +269,10 @@ index 97d3203..ff84db8 100644
     box_scale = vec2(min(box_scale.x, box_scale.y));
  
     vec2 scale = (params.OutputSize.xy * params.SourceSize.zw) / box_scale;
-diff --git a/platforms/ios/app/src/main/assets/shaders/presets/scanlines/shaders/scanline-fract.slang b/platforms/ios/app/src/main/assets/shaders/presets/scanlines/shaders/scanline-fract.slang
+diff --git a/platforms/ios/assets/shaders/presets/scanlines/shaders/scanline-fract.slang b/platforms/ios/assets/shaders/presets/scanlines/shaders/scanline-fract.slang
 index 85cc5c5..f8d4354 100644
---- a/platforms/ios/app/src/main/assets/shaders/presets/scanlines/shaders/scanline-fract.slang
-+++ b/platforms/ios/app/src/main/assets/shaders/presets/scanlines/shaders/scanline-fract.slang
+--- a/platforms/ios/assets/shaders/presets/scanlines/shaders/scanline-fract.slang
++++ b/platforms/ios/assets/shaders/presets/scanlines/shaders/scanline-fract.slang
 @@ -1,4 +1,9 @@
  #version 450
 +// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped

@@ -7,13 +7,13 @@ can become stale quickly.
 Swift UI sources live in:
 
 ```sh
-app/src/main/swift
+platforms/ios/Swift
 ```
 
 The iOS CMake entry point lives in:
 
 ```sh
-app/src/main/cpp/CMakeLists.txt
+platforms/ios/CMakeLists.txt
 ```
 
 ## Requirements
@@ -40,13 +40,13 @@ git submodule update --init --recursive
 This creates:
 
 ```sh
-build-ios-xcode/ARMSX2iOS.xcodeproj
+build/device/ARMSX2iOS.xcodeproj
 ```
 
 Open it with:
 
 ```sh
-open build-ios-xcode/ARMSX2iOS.xcodeproj
+open build/device/ARMSX2iOS.xcodeproj
 ```
 
 Use the `ARMSX2iOS` scheme.
@@ -62,12 +62,12 @@ For sideloading or external resigning:
 The IPA is written to:
 
 ```sh
-build-ios-xcode/ARMSX2-iOS-unsigned.ipa
+build/device/ARMSX2-iOS-unsigned.ipa
 ```
 
 For a quicker development build, `./scripts/build-ios-ipa.sh --fast` turns off
 PCSX2 core LTO and compiles the Swift UI at `-Onone`. It builds in
-`build-ios-fast-xcode` and writes `ARMSX2-iOS-development.ipa` there.
+`build/device-fast` and writes `ARMSX2-iOS-development.ipa` there.
 
 ## Automatic Signing
 
@@ -83,7 +83,7 @@ iOS device.
 
 ## Notes
 
-- `build-ios-xcode/` is generated output and should not be committed.
+- `build/` is generated output and should not be committed.
 - The build target is iOS device arm64 by default.
 - Minimum iOS version is 17.4.
 - JIT availability depends on how the app is signed and launched. Unsigned IPAs

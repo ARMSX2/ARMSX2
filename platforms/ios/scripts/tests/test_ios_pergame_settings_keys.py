@@ -9,11 +9,10 @@ reports it. These tests compare the key sets instead.
 import re
 import unittest
 
-from ios_source import CPP, SWIFT, block, read
+from ios_source import block, bridge_text, read, swift
 
 
-BRIDGE_MM = CPP / "ARMSX2Bridge.mm"
-PANEL = SWIFT / "Views/PerGameSettingsPanel.swift"
+PANEL = swift("PerGameSettingsPanel.swift")
 
 WRITER = "static void ARMSX2WriteGameSettingsForIdentity"
 BUILDER = "static NSMutableDictionary<NSString*, id>* ARMSX2BuildGlobalGameSettingsResult"
@@ -23,12 +22,12 @@ SWIFT_DICT = "let settingsDict: [String: Any] = ["
 
 def setter_keys():
     """Keys ARMSX2WriteGameSettingsForIdentity reads out of the dictionary."""
-    return set(re.findall(r's\[@"([A-Za-z]+)"\]', block(read(BRIDGE_MM), WRITER)))
+    return set(re.findall(r's\[@"([A-Za-z]+)"\]', block(bridge_text(), WRITER)))
 
 
 def getter_keys():
     """Keys gameSettingsForISO puts into the dictionary it returns."""
-    source = read(BRIDGE_MM)
+    source = bridge_text()
     body = block(source, BUILDER) + block(source, OVERRIDES)
     return (set(re.findall(r'@"([A-Za-z]+)"\s*:', body))
             | set(re.findall(r'result\[@"([A-Za-z]+)"\]', body)))

@@ -3,11 +3,11 @@
 import re
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-BIOS = SWIFT / "Views/BIOSListView.swift"
-ROOT = SWIFT / "Views/RootView.swift"
+BIOS = swift("BIOSListView.swift")
+ROOT = swift("RootView.swift")
 
 
 class BIOSOnTheSharedNavigation(unittest.TestCase):

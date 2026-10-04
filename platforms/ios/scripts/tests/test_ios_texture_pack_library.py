@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ios_source import SWIFT
+from ios_source import swift
 
 
-LIBRARY = SWIFT / "Models/TexturePackLibrary.swift"
+LIBRARY = swift("TexturePackLibrary.swift")
 
 DRIVER = """
 import Foundation

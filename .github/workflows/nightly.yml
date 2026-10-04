@@ -364,13 +364,13 @@ jobs:
           IOS_RA_UA_VERSION: ${{ secrets.IOS_RA_UA_VERSION }}
         run: >
           bash .github/workflows/scripts/common/verify-ra-ua-agent.sh
-          platforms/ios/build-ios-xcode/Release-iphoneos/ARMSX2iOS.app/ARMSX2iOS
+          platforms/ios/build/device/Release-iphoneos/ARMSX2iOS.app/ARMSX2iOS
 
       - name: Upload IPA
         uses: actions/upload-artifact@v7
         with:
           name: armsx2-ios-arm64
-          path: platforms/ios/build-ios-xcode/ARMSX2-iOS-unsigned.ipa
+          path: platforms/ios/build/device/ARMSX2-iOS-unsigned.ipa
           if-no-files-found: warn
 
   # ---- publish: gather artifacts -> dated pre-release --------------------

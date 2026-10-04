@@ -2,10 +2,10 @@
 
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-LIBRARY = SWIFT / "Views/GameListView.swift"
+LIBRARY = swift("GameListView.swift")
 
 
 class GameInfoPanelSurface(unittest.TestCase):

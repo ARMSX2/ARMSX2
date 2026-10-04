@@ -2,11 +2,11 @@
 
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-GAME = SWIFT / "Views/GameScreenView.swift"
-CONTAINER = SWIFT / "Views/GameOverlayContainer.swift"
+GAME = swift("GameScreenView.swift")
+CONTAINER = swift("GameOverlayContainer.swift")
 
 
 class PauseShortcutBar(unittest.TestCase):

@@ -9,13 +9,13 @@ the link parks its callback, and RootView asks before the second half runs.
 
 import unittest
 
-from ios_source import CPP, SWIFT, at, block, without_comments
+from ios_source import RUNTIME_DIR, SWIFT, at, block, swift, without_comments
 
 
-HANDLER = SWIFT / "Models/ARMSX2DeepLinkHandler.swift"
-APP_STATE = SWIFT / "Models/AppState.swift"
-ROOT_VIEW = SWIFT / "Views/RootView.swift"
-SCENE = CPP / "IOS/SceneDelegate.mm"
+HANDLER = swift("ARMSX2DeepLinkHandler.swift")
+APP_STATE = swift("AppState.swift")
+ROOT_VIEW = swift("RootView.swift")
+SCENE = RUNTIME_DIR / "SceneDelegate.mm"
 
 PARK = "AppState.shared.pendingLibraryExport = callback"
 OPEN = "UIApplication.shared.open"

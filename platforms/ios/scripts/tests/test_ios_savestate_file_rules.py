@@ -2,13 +2,12 @@
 
 import unittest
 
-from ios_source import CPP, block, read, without_comments
+from ios_source import RUNTIME_DIR, block, bridge_text, read, without_comments
 
 
-HOST = CPP / "IOS/HostImpls.mm"
-MAIN = CPP / "ios_main.mm"
-SCENE = CPP / "IOS/SceneDelegate.mm"
-BRIDGE = CPP / "ARMSX2Bridge.mm"
+HOST = RUNTIME_DIR / "HostImpls.mm"
+MAIN = RUNTIME_DIR / "ios_main.mm"
+SCENE = RUNTIME_DIR / "SceneDelegate.mm"
 
 
 class SaveStateFileRules(unittest.TestCase):
@@ -31,7 +30,7 @@ class SaveStateFileRules(unittest.TestCase):
         self.assertIn("ARMSX2DiscardCPUThreadTasks();", after_stop)
 
     def test_saves_check_the_game_and_keep_the_old_state(self):
-        bridge = without_comments(read(BRIDGE))
+        bridge = without_comments(bridge_text())
         save = block(bridge, "static void ARMSX2WriteSaveState(")
         self.assertIn("ARMSX2SaveStateIdentityMatches(serial, crc)", save)
         self.assertIn("if (!result && existed)", save)
@@ -41,7 +40,7 @@ class SaveStateFileRules(unittest.TestCase):
     def test_auto_save_writes_only_its_own_slot(self):
         """Nobody asked for an auto-save, so it must never land in a slot the player saved to, and
         it checks the memory cards on the CPU thread, at the moment it saves."""
-        bridge = without_comments(read(BRIDGE))
+        bridge = without_comments(bridge_text())
         auto = block(bridge, "+ (void)autoSaveLeavingGame:")
         self.assertIn("ARMSX2WriteSaveState(VMManager::SAVESTATE_SLOT_AUTOSAVE, true,", auto)
         save = block(bridge, "static void ARMSX2WriteSaveState(")

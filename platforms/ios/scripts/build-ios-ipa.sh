@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # --fast builds a development IPA: no PCSX2 core LTO and the Swift UI at -Onone.
 FAST_SETTINGS=()
 if [[ "${1:-}" == "--fast" ]]; then
-	BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build-ios-fast-xcode}"
+	BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build/device-fast}"
 	IPA_NAME="${IPA_NAME:-ARMSX2-iOS-development.ipa}"
 	LTO_PCSX2_CORE=OFF
 	FAST_SETTINGS=(
@@ -18,13 +18,13 @@ if [[ "${1:-}" == "--fast" ]]; then
 		STRIP_INSTALLED_PRODUCT=NO
 	)
 fi
-BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build-ios-xcode}"
+BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build/device}"
 PROJECT="$BUILD_DIR/ARMSX2iOS.xcodeproj"
 IPA_NAME="${IPA_NAME:-ARMSX2-iOS-unsigned.ipa}"
 APP_PATH="$BUILD_DIR/Release-iphoneos/ARMSX2iOS.app"
 STAGING_DIR="$BUILD_DIR/ipa-staging"
 BUILD_LOG="$BUILD_DIR/xcodebuild.log"
-ENTITLEMENTS_FILE="${ENTITLEMENTS_FILE:-$ROOT_DIR/app/src/main/cpp/Entitlements.plist}"
+ENTITLEMENTS_FILE="${ENTITLEMENTS_FILE:-$ROOT_DIR/Entitlements.plist}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 AD_HOC_SIGN="${AD_HOC_SIGN:-0}"
 
@@ -184,7 +184,7 @@ mkdir -p "$STAGING_DIR/Payload"
 ditto "$APP_PATH" "$STAGING_DIR/Payload/ARMSX2iOS.app"
 STAGED_APP="$STAGING_DIR/Payload/ARMSX2iOS.app"
 
-CONTROLLER_SKINS_DIR="$ROOT_DIR/app/src/main/assets/app_icons/controller_skins"
+CONTROLLER_SKINS_DIR="$ROOT_DIR/assets/controller_skins"
 if [[ -d "$CONTROLLER_SKINS_DIR" ]]; then
 	ditto "$CONTROLLER_SKINS_DIR" "$STAGED_APP/controller_skins"
 fi

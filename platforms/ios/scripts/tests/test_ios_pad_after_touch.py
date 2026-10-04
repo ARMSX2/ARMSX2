@@ -2,11 +2,11 @@
 
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-NAVIGATION = SWIFT / "Models/ControllerAccessibilityNavigation.swift"
-CHEATS = SWIFT / "Views/CheatsPatchesManagerView.swift"
+NAVIGATION = swift("ControllerAccessibilityNavigation.swift")
+CHEATS = swift("CheatsPatchesManagerView.swift")
 
 
 class PadAfterTouch(unittest.TestCase):

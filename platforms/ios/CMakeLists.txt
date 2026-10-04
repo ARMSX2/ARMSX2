@@ -86,7 +86,7 @@ set(TOP_CMAKE_WAS_SOURCED TRUE)
 # Absolute path to the repository root (single source of truth for the core).
 # The PCSX2 core / common / 3rdparty are NO LONGER vendored under this iOS app;
 # they are built from the repo root. See REFACTOR_STATUS.md.
-get_filename_component(ARMSX2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../.." ABSOLUTE)
+get_filename_component(ARMSX2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 
 # The iOS-aware modules vendored beside this entry point come first so they win
 # over their root namesakes: BuildParameters sets Apple-Silicon ARM64 flags and
@@ -131,11 +131,19 @@ add_subdirectory(3rdparty/librashader)
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	enable_language(Swift)
 
+	# An empty glob would configure fine and ship an app without these files.
+	function(armsx2_require_files var)
+		if(NOT ${var})
+			message(FATAL_ERROR "${var} is empty; its glob matched nothing")
+		endif()
+	endfunction()
+
 	# Swift sources are globbed so newly-added files are picked up automatically at
 	# configure time. CONFIGURE_DEPENDS makes CMake re-scan when files change.
 	file(GLOB_RECURSE SWIFT_SOURCES CONFIGURE_DEPENDS
-		${CMAKE_SOURCE_DIR}/../swift/*.swift
+		${CMAKE_SOURCE_DIR}/Swift/*.swift
 	)
+	armsx2_require_files(SWIFT_SOURCES)
 
 	configure_file("${CMAKE_SOURCE_DIR}/Info.plist.in" "${CMAKE_BINARY_DIR}/Info.plist" @ONLY)
 
@@ -172,17 +180,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	endif()
 
 	set(IOS_RUNTIME_SOURCES
-		ios_main.mm
-		IOS/AppDelegate.mm
-		IOS/GamepadHaptics.mm
-		IOS/HostImpls.mm
-		IOS/PlaySoundAsync.mm
-		IOS/SceneDelegate.mm
+		Runtime/ios_main.mm
+		Runtime/AppDelegate.mm
+		Runtime/GamepadHaptics.mm
+		Runtime/HostImpls.mm
+		Runtime/PlaySoundAsync.mm
+		Runtime/SceneDelegate.mm
 	)
 	# Only the bridge. The files in IOS_RUNTIME_SOURCES still release by hand, and
 	# test_ios_airplay.py pins one of those lines out of SceneDelegate.mm.
-	set_source_files_properties(ARMSX2Bridge.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
-	add_executable(ARMSX2iOS ${IOS_RUNTIME_SOURCES} ARMSX2Bridge.mm ${SWIFT_SOURCES})
+	set_source_files_properties(Bridge/ARMSX2Bridge.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+	add_executable(ARMSX2iOS ${IOS_RUNTIME_SOURCES} Bridge/ARMSX2Bridge.mm ${SWIFT_SOURCES})
 	set_target_properties(ARMSX2iOS PROPERTIES
 		MACOSX_BUNDLE TRUE
 		MACOSX_BUNDLE_GUI_IDENTIFIER "${ARMSX2_BUNDLE_IDENTIFIER}"
@@ -209,7 +217,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${ARMSX2_DEVELOPMENT_TEAM}"
 		XCODE_ATTRIBUTE_PROVISIONING_PROFILE_SPECIFIER ""
 		XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${ARMSX2_CODE_SIGN_ENTITLEMENTS}"
-			XCODE_ATTRIBUTE_SWIFT_OBJC_BRIDGING_HEADER "${CMAKE_SOURCE_DIR}/ARMSX2-Bridging-Header.h"
+			XCODE_ATTRIBUTE_SWIFT_OBJC_BRIDGING_HEADER "${CMAKE_SOURCE_DIR}/Bridge/ARMSX2-Bridging-Header.h"
 			XCODE_ATTRIBUTE_SWIFT_VERSION "6.0"
 			# Debug compiles Swift per file; Release is whole-module, as on base. If a
 			# Release build runs out of frontend memory, per-file goes back for Release.
@@ -220,35 +228,34 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 			XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "@executable_path/Frameworks /usr/lib/swift"
 			XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS "$(inherited) $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) /usr/lib/swift"
 			XCODE_ATTRIBUTE_OTHER_SWIFT_FLAGS ""
-			XCODE_ATTRIBUTE_MTL_HEADER_SEARCH_PATHS "${ARMSX2_ROOT}/pcsx2/GS/Renderers/Metal ${ARMSX2_ROOT}/3rdparty/include ${CMAKE_SOURCE_DIR}/../assets ${CMAKE_SOURCE_DIR}/../assets/resources"
+			XCODE_ATTRIBUTE_MTL_HEADER_SEARCH_PATHS "${ARMSX2_ROOT}/pcsx2/GS/Renderers/Metal ${ARMSX2_ROOT}/3rdparty/include"
 			XCODE_ATTRIBUTE_MTL_ENABLE_DEBUG_INFO "$<IF:$<CONFIG:Debug>,INCLUDE_SOURCE,>"
 		)
 
-		set(BOOT_SPLASH_VIDEO "${CMAKE_SOURCE_DIR}/../res/raw/boot_intro.mp4")
+		set(BOOT_SPLASH_VIDEO "${CMAKE_SOURCE_DIR}/assets/video/boot_intro.mp4")
 		set(IOS_APP_ICON_FILES
-			"${CMAKE_SOURCE_DIR}/../assets/Assets.xcassets/AppIcon.appiconset/icon-20.png"
-			"${CMAKE_SOURCE_DIR}/../assets/Assets.xcassets/AppIcon.appiconset/icon-29.png"
-			"${CMAKE_SOURCE_DIR}/../assets/Assets.xcassets/AppIcon.appiconset/icon-40.png"
-			"${CMAKE_SOURCE_DIR}/../assets/Assets.xcassets/AppIcon.appiconset/icon-58.png"
-			"${CMAKE_SOURCE_DIR}/../assets/Assets.xcassets/AppIcon.appiconset/icon-60.png"
-			"${CMAKE_SOURCE_DIR}/../assets/Assets.xcassets/AppIcon.appiconset/icon-76.png"
-			"${CMAKE_SOURCE_DIR}/../assets/Assets.xcassets/AppIcon.appiconset/icon-80.png"
-			"${CMAKE_SOURCE_DIR}/../assets/Assets.xcassets/AppIcon.appiconset/icon-87.png"
-			"${CMAKE_SOURCE_DIR}/../assets/Assets.xcassets/AppIcon.appiconset/icon-120.png"
-			"${CMAKE_SOURCE_DIR}/../assets/Assets.xcassets/AppIcon.appiconset/icon-152.png"
-			"${CMAKE_SOURCE_DIR}/../assets/Assets.xcassets/AppIcon.appiconset/icon-167.png"
-			"${CMAKE_SOURCE_DIR}/../assets/Assets.xcassets/AppIcon.appiconset/icon-180.png"
-			"${CMAKE_SOURCE_DIR}/../assets/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
+			"${CMAKE_SOURCE_DIR}/assets/Assets.xcassets/AppIcon.appiconset/icon-20.png"
+			"${CMAKE_SOURCE_DIR}/assets/Assets.xcassets/AppIcon.appiconset/icon-29.png"
+			"${CMAKE_SOURCE_DIR}/assets/Assets.xcassets/AppIcon.appiconset/icon-40.png"
+			"${CMAKE_SOURCE_DIR}/assets/Assets.xcassets/AppIcon.appiconset/icon-58.png"
+			"${CMAKE_SOURCE_DIR}/assets/Assets.xcassets/AppIcon.appiconset/icon-60.png"
+			"${CMAKE_SOURCE_DIR}/assets/Assets.xcassets/AppIcon.appiconset/icon-76.png"
+			"${CMAKE_SOURCE_DIR}/assets/Assets.xcassets/AppIcon.appiconset/icon-80.png"
+			"${CMAKE_SOURCE_DIR}/assets/Assets.xcassets/AppIcon.appiconset/icon-87.png"
+			"${CMAKE_SOURCE_DIR}/assets/Assets.xcassets/AppIcon.appiconset/icon-120.png"
+			"${CMAKE_SOURCE_DIR}/assets/Assets.xcassets/AppIcon.appiconset/icon-152.png"
+			"${CMAKE_SOURCE_DIR}/assets/Assets.xcassets/AppIcon.appiconset/icon-167.png"
+			"${CMAKE_SOURCE_DIR}/assets/Assets.xcassets/AppIcon.appiconset/icon-180.png"
+			"${CMAKE_SOURCE_DIR}/assets/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
 		)
 		foreach(IOS_APP_ICON_FILE IN LISTS IOS_APP_ICON_FILES)
-			if(EXISTS "${IOS_APP_ICON_FILE}")
-				target_sources(ARMSX2iOS PRIVATE "${IOS_APP_ICON_FILE}")
-				set_source_files_properties("${IOS_APP_ICON_FILE}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
-			endif()
+			target_sources(ARMSX2iOS PRIVATE "${IOS_APP_ICON_FILE}")
+			set_source_files_properties("${IOS_APP_ICON_FILE}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 		endforeach()
 		# Alternate app icons (user-selectable from Settings). Bundled as loose
 		# Resources and referenced by name in Info.plist CFBundleAlternateIcons.
-		file(GLOB IOS_ALTERNATE_APP_ICON_FILES "${CMAKE_SOURCE_DIR}/../assets/app_icons/alternate_app_icons/*.png")
+		file(GLOB IOS_ALTERNATE_APP_ICON_FILES "${CMAKE_SOURCE_DIR}/assets/app_icons/alternate_app_icons/*.png")
+		armsx2_require_files(IOS_ALTERNATE_APP_ICON_FILES)
 		foreach(IOS_ALTERNATE_APP_ICON_FILE IN LISTS IOS_ALTERNATE_APP_ICON_FILES)
 			if(EXISTS "${IOS_ALTERNATE_APP_ICON_FILE}")
 				target_sources(ARMSX2iOS PRIVATE "${IOS_ALTERNATE_APP_ICON_FILE}")
@@ -256,7 +263,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 			endif()
 		endforeach()
 		# Preview thumbnails for the SwiftUI icon picker.
-		file(GLOB IOS_ALTERNATE_APP_ICON_PREVIEWS "${CMAKE_SOURCE_DIR}/../assets/app_icons/alternate_app_icons/previews/*.png")
+		file(GLOB IOS_ALTERNATE_APP_ICON_PREVIEWS "${CMAKE_SOURCE_DIR}/assets/app_icons/alternate_app_icons/previews/*.png")
+		armsx2_require_files(IOS_ALTERNATE_APP_ICON_PREVIEWS)
 		foreach(IOS_ALTERNATE_APP_ICON_PREVIEW IN LISTS IOS_ALTERNATE_APP_ICON_PREVIEWS)
 			if(EXISTS "${IOS_ALTERNATE_APP_ICON_PREVIEW}")
 				target_sources(ARMSX2iOS PRIVATE "${IOS_ALTERNATE_APP_ICON_PREVIEW}")
@@ -264,17 +272,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 			endif()
 		endforeach()
 		# Full-resolution icon images exported for Home Screen shortcuts.
-		file(GLOB IOS_ALTERNATE_APP_ICON_EXPORTS "${CMAKE_SOURCE_DIR}/../assets/app_icons/alternate_app_icons/exports/*.png")
+		file(GLOB IOS_ALTERNATE_APP_ICON_EXPORTS "${CMAKE_SOURCE_DIR}/assets/app_icons/alternate_app_icons/exports/*.png")
+		armsx2_require_files(IOS_ALTERNATE_APP_ICON_EXPORTS)
 		foreach(IOS_ALTERNATE_APP_ICON_EXPORT IN LISTS IOS_ALTERNATE_APP_ICON_EXPORTS)
 			if(EXISTS "${IOS_ALTERNATE_APP_ICON_EXPORT}")
 				target_sources(ARMSX2iOS PRIVATE "${IOS_ALTERNATE_APP_ICON_EXPORT}")
 				set_source_files_properties("${IOS_ALTERNATE_APP_ICON_EXPORT}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 			endif()
 		endforeach()
-		if(EXISTS "${BOOT_SPLASH_VIDEO}")
-			target_sources(ARMSX2iOS PRIVATE "${BOOT_SPLASH_VIDEO}")
-			set_source_files_properties("${BOOT_SPLASH_VIDEO}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
-		endif()
+		target_sources(ARMSX2iOS PRIVATE "${BOOT_SPLASH_VIDEO}")
+		set_source_files_properties("${BOOT_SPLASH_VIDEO}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 
 		# UI defaults come directly from the Android resource tree. There is no
 		# duplicate iOS audio pack to become stale; startup remains custom-pack-only.
@@ -293,17 +300,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		set_source_files_properties(${IOS_DEFAULT_UI_AUDIO_FILES} PROPERTIES
 			MACOSX_PACKAGE_LOCATION "Resources/ui_audio/default")
 
-		file(GLOB IOS_CONTROLLER_ICON_FILES "${CMAKE_SOURCE_DIR}/../assets/app_icons/controller_icons_nether/*.png")
-		if(IOS_CONTROLLER_ICON_FILES)
-			target_sources(ARMSX2iOS PRIVATE ${IOS_CONTROLLER_ICON_FILES})
-			set_source_files_properties(${IOS_CONTROLLER_ICON_FILES} PROPERTIES
-				MACOSX_PACKAGE_LOCATION Resources)
-		endif()
+		file(GLOB IOS_CONTROLLER_ICON_FILES "${CMAKE_SOURCE_DIR}/assets/controller_icons/*.png")
+		armsx2_require_files(IOS_CONTROLLER_ICON_FILES)
+		target_sources(ARMSX2iOS PRIVATE ${IOS_CONTROLLER_ICON_FILES})
+		set_source_files_properties(${IOS_CONTROLLER_ICON_FILES} PROPERTIES
+			MACOSX_PACKAGE_LOCATION Resources)
 
-		file(GLOB_RECURSE IOS_CONTROLLER_SKIN_FILES "${CMAKE_SOURCE_DIR}/../assets/app_icons/controller_skins/*.png")
+		file(GLOB_RECURSE IOS_CONTROLLER_SKIN_FILES "${CMAKE_SOURCE_DIR}/assets/controller_skins/*.png")
+		armsx2_require_files(IOS_CONTROLLER_SKIN_FILES)
 		foreach(IOS_CONTROLLER_SKIN_FILE IN LISTS IOS_CONTROLLER_SKIN_FILES)
 			file(RELATIVE_PATH IOS_CONTROLLER_SKIN_RELATIVE_FILE
-				"${CMAKE_SOURCE_DIR}/../assets/app_icons"
+				"${CMAKE_SOURCE_DIR}/assets"
 				"${IOS_CONTROLLER_SKIN_FILE}")
 			get_filename_component(IOS_CONTROLLER_SKIN_RELATIVE_DIR
 				"${IOS_CONTROLLER_SKIN_RELATIVE_FILE}" DIRECTORY)
@@ -317,10 +324,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		# controller skins above, which iOS then flattens to the .app root — the shipped
 		# path is <app>/shaders/..., with no Resources/ component.
 		file(GLOB_RECURSE IOS_SHADER_PRESET_FILES CONFIGURE_DEPENDS
-			"${CMAKE_SOURCE_DIR}/../assets/shaders/*")
+			"${CMAKE_SOURCE_DIR}/assets/shaders/*")
+		armsx2_require_files(IOS_SHADER_PRESET_FILES)
 		foreach(IOS_SHADER_PRESET_FILE IN LISTS IOS_SHADER_PRESET_FILES)
 			file(RELATIVE_PATH IOS_SHADER_PRESET_RELATIVE_FILE
-				"${CMAKE_SOURCE_DIR}/../assets"
+				"${CMAKE_SOURCE_DIR}/assets"
 				"${IOS_SHADER_PRESET_FILE}")
 			get_filename_component(IOS_SHADER_PRESET_RELATIVE_DIR
 				"${IOS_SHADER_PRESET_RELATIVE_FILE}" DIRECTORY)
@@ -411,7 +419,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 
 	target_include_directories(ARMSX2iOS PRIVATE
 		${CMAKE_CURRENT_BINARY_DIR}
-		${CMAKE_SOURCE_DIR}
+		${CMAKE_SOURCE_DIR}/Bridge
+		${CMAKE_SOURCE_DIR}/Runtime
 		${ARMSX2_ROOT}
 		${ARMSX2_ROOT}/common
 		${ARMSX2_ROOT}/pcsx2
@@ -458,21 +467,26 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	# only genuine iOS-only extra still committed under assets/resources.
 	set(ARMSX2_SHARED_RESOURCES "${ARMSX2_ROOT}/bin/resources")
 	file(GLOB METAL_SHADERS "${ARMSX2_ROOT}/pcsx2/GS/Renderers/Metal/*.metal")
+	armsx2_require_files(METAL_SHADERS)
 	file(GLOB FONTS "${ARMSX2_SHARED_RESOURCES}/fonts/*.ttf" "${ARMSX2_SHARED_RESOURCES}/fonts/*.otf")
+	armsx2_require_files(FONTS)
 	file(GLOB_RECURSE IOS_SHADER_RESOURCES "${ARMSX2_SHARED_RESOURCES}/shaders/*")
 	list(FILTER IOS_SHADER_RESOURCES EXCLUDE REGEX "/dx11/")
+	armsx2_require_files(IOS_SHADER_RESOURCES)
 	file(GLOB_RECURSE IOS_SOUND_RESOURCES "${ARMSX2_SHARED_RESOURCES}/sounds/*")
+	armsx2_require_files(IOS_SOUND_RESOURCES)
 	# The texture upscaler's filter set, read from <Resources>/upscale/raisr/ps2 at run time.
 	file(GLOB_RECURSE IOS_UPSCALE_RESOURCES "${ARMSX2_SHARED_RESOURCES}/upscale/*")
+	armsx2_require_files(IOS_UPSCALE_RESOURCES)
 	set(IOS_TOP_LEVEL_RESOURCES
 		"${ARMSX2_SHARED_RESOURCES}/GameIndex.yaml"
 		"${ARMSX2_SHARED_RESOURCES}/RedumpDatabase.yaml"
 		"${ARMSX2_SHARED_RESOURCES}/game_controller_db.txt"
 		"${ARMSX2_ROOT}/bin/resources-overlay/armsx2_overrides.yaml"
-		"${CMAKE_SOURCE_DIR}/../assets/resources/patches.zip"
-		"${CMAKE_SOURCE_DIR}/../assets/resources/Localizable.xcstrings"
-		"${CMAKE_SOURCE_DIR}/../assets/resources/Purple-Milk.armsx2-theme.json"
-		"${CMAKE_SOURCE_DIR}/../assets/resources/Ender-Pearl-Pul.armsx2-theme.json"
+		"${CMAKE_SOURCE_DIR}/assets/resources/patches.zip"
+		"${CMAKE_SOURCE_DIR}/assets/resources/Localizable.xcstrings"
+		"${CMAKE_SOURCE_DIR}/assets/resources/Purple-Milk.armsx2-theme.json"
+		"${CMAKE_SOURCE_DIR}/assets/resources/Ender-Pearl-Pul.armsx2-theme.json"
 	)
 
 	target_sources(ARMSX2iOS PRIVATE ${METAL_SHADERS} ${FONTS} ${IOS_SHADER_RESOURCES})
@@ -482,10 +496,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	)
 	set_source_files_properties(${FONTS} PROPERTIES MACOSX_PACKAGE_LOCATION Resources/fonts)
 	foreach(IOS_TOP_LEVEL_RESOURCE IN LISTS IOS_TOP_LEVEL_RESOURCES)
-		if(EXISTS "${IOS_TOP_LEVEL_RESOURCE}")
-			target_sources(ARMSX2iOS PRIVATE "${IOS_TOP_LEVEL_RESOURCE}")
-			set_source_files_properties("${IOS_TOP_LEVEL_RESOURCE}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
-		endif()
+		target_sources(ARMSX2iOS PRIVATE "${IOS_TOP_LEVEL_RESOURCE}")
+		set_source_files_properties("${IOS_TOP_LEVEL_RESOURCE}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 	endforeach()
 	foreach(IOS_SHADER_RESOURCE IN LISTS IOS_SHADER_RESOURCES)
 		get_filename_component(IOS_SHADER_DIR "${IOS_SHADER_RESOURCE}" DIRECTORY)

@@ -2,12 +2,11 @@
 
 import unittest
 
-from ios_source import CPP, SWIFT, block, read, without_comments
+from ios_source import block, bridge_text, read, swift, without_comments
 
 
-GAME = SWIFT / "Views/GameScreenView.swift"
-QUICK = SWIFT / "Views/QuickMenuView.swift"
-BRIDGE = CPP / "ARMSX2Bridge.mm"
+GAME = swift("GameScreenView.swift")
+QUICK = swift("QuickMenuView.swift")
 
 
 class ChangeDiscPanel(unittest.TestCase):
@@ -34,7 +33,7 @@ class ChangeDiscPanel(unittest.TestCase):
                 self.assertIn(part, panel)
 
     def test_the_drive_is_read_without_the_ini_fallback(self):
-        accessor = block(read(BRIDGE), "+ (nullable NSString *)discInDriveName")
+        accessor = block(bridge_text(), "+ (nullable NSString *)discInDriveName")
         self.assertIn("VMManager::GetDiscPath()", accessor)
         self.assertNotIn("currentISOPath", accessor)
 

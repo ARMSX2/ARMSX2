@@ -4,12 +4,11 @@
 import re
 import unittest
 
-from ios_source import CPP, ROOT, SWIFT, at, block, read
+from ios_source import ROOT, at, block, bridge_text, read, swift
 
-BRIDGE = CPP / "ARMSX2Bridge.mm"
-PARAMS = SWIFT / "Models/ShaderParams.swift"
-IMPORTER = SWIFT / "Models/ShaderPackImporter.swift"
-SECTION = SWIFT / "Views/Settings/ShaderChainSection.swift"
+PARAMS = swift("ShaderParams.swift")
+IMPORTER = swift("ShaderPackImporter.swift")
+SECTION = swift("ShaderChainSection.swift")
 METAL = ROOT / "pcsx2/GS/Renderers/Metal/GSDeviceMTL.mm"
 COMMON = ROOT / "pcsx2/GS/Renderers/Common/GSDevice.cpp"
 
@@ -18,7 +17,7 @@ class ShaderPresetLoadFailure(unittest.TestCase):
     def test_both_bridge_failures_pass_the_error_on(self):
         body = re.search(
             r"(?ms)^\+ \(nullable NSString \*\)shaderPresetParametersAtPath:.*?\n\}\n",
-            read(BRIDGE))
+            bridge_text())
         self.assertIsNotNone(body, "shaderPresetParametersAtPath: is gone")
         self.assertEqual(
             body.group(0).count("ARMSX2ShaderPresetFailure(err, error);"), 2,

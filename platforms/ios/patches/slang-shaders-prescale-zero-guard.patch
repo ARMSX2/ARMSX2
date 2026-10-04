@@ -25,10 +25,10 @@ shaders/ATTRIBUTION.md. Reverse it to recover the upstream bytes:
 test_ios_shader_prescale_guard.py fails if either guard is dropped, which is what a
 re-sync from upstream would otherwise do silently.
 
-diff --git a/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-aperture.slang b/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-aperture.slang
+diff --git a/platforms/ios/assets/shaders/presets/crt/shaders/crt-aperture.slang b/platforms/ios/assets/shaders/presets/crt/shaders/crt-aperture.slang
 index 8ca5192..9463c32 100755
---- a/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-aperture.slang
-+++ b/platforms/ios/app/src/main/assets/shaders/presets/crt/shaders/crt-aperture.slang
+--- a/platforms/ios/assets/shaders/presets/crt/shaders/crt-aperture.slang
++++ b/platforms/ios/assets/shaders/presets/crt/shaders/crt-aperture.slang
 @@ -1,4 +1,9 @@
  #version 450
 +// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
@@ -48,10 +48,10 @@ index 8ca5192..9463c32 100755
      float offset = 1.0 / scale * 0.5;
      
      if (bool(mod(scale, 2.0))) offset = 0.0;
-diff --git a/platforms/ios/app/src/main/assets/shaders/presets/pixel-art-scaling/shaders/sharp-bilinear.slang b/platforms/ios/app/src/main/assets/shaders/presets/pixel-art-scaling/shaders/sharp-bilinear.slang
+diff --git a/platforms/ios/assets/shaders/presets/pixel-art-scaling/shaders/sharp-bilinear.slang b/platforms/ios/assets/shaders/presets/pixel-art-scaling/shaders/sharp-bilinear.slang
 index 90508aa..083b790 100644
---- a/platforms/ios/app/src/main/assets/shaders/presets/pixel-art-scaling/shaders/sharp-bilinear.slang
-+++ b/platforms/ios/app/src/main/assets/shaders/presets/pixel-art-scaling/shaders/sharp-bilinear.slang
+--- a/platforms/ios/assets/shaders/presets/pixel-art-scaling/shaders/sharp-bilinear.slang
++++ b/platforms/ios/assets/shaders/presets/pixel-art-scaling/shaders/sharp-bilinear.slang
 @@ -1,4 +1,9 @@
  #version 450
 +// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped

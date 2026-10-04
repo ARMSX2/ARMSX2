@@ -2,12 +2,12 @@
 
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-STORE = SWIFT / "Models/SettingsStore.swift"
-LIBRARY = SWIFT / "Views/GameListView.swift"
-APPEARANCE = SWIFT / "Views/Settings/AppearanceSettingsView.swift"
+STORE = swift("SettingsStore.swift")
+LIBRARY = swift("GameListView.swift")
+APPEARANCE = swift("AppearanceSettingsView.swift")
 
 
 class GameMenuCoverColours(unittest.TestCase):

@@ -2,11 +2,11 @@
 
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-APPEARANCE = SWIFT / "Models/SettingsStore+Appearance.swift"
-DYNAMIC = SWIFT / "Views/Background/Dynamic/DynamicBackgroundPresentation.swift"
+APPEARANCE = swift("SettingsStore+Appearance.swift")
+DYNAMIC = swift("DynamicBackgroundPresentation.swift")
 
 
 class NoJITThemeRespectsTheUpgrader(unittest.TestCase):

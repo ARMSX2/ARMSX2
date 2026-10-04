@@ -187,26 +187,26 @@ jobs:
         run: bash .github/workflows/scripts/common/write-ra-ua-secret.sh
 
       - name: Configure (CMake, Xcode generator, real device SDK, no signing)
-        working-directory: platforms/ios/app/src/main/cpp
+        working-directory: platforms/ios
         run: >
-          cmake -G Xcode -B build
+          cmake -G Xcode -B build/device
           -DCMAKE_SYSTEM_NAME=iOS
           -DCMAKE_OSX_ARCHITECTURES=arm64
           -DARMSX2_REAL_DEVICE=ON
 
       - name: Build (iphoneos SDK, unsigned)
-        working-directory: platforms/ios/app/src/main/cpp
+        working-directory: platforms/ios
         run: >
-          cmake --build build --config Release
+          cmake --build build/device --config Release
           -- -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 
       - name: Package unsigned .ipa
-        working-directory: platforms/ios/app/src/main/cpp
+        working-directory: platforms/ios
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
           IPA_NAME="ARMSX2-iOS-${SHORT_SHA}.ipa"
 
-          APP_PATH=$(find build -name "ARMSX2iOS.app" -type d | head -1)
+          APP_PATH=$(find build/device -name "ARMSX2iOS.app" -type d | head -1)
           if [ -z "$APP_PATH" ]; then
             echo "ERROR: ARMSX2iOS.app not found in build output"
             exit 1
@@ -232,11 +232,11 @@ jobs:
         if: >-
           github.repository == 'ARMSX2/ARMSX2' &&
           github.event_name == 'push' && github.ref == 'refs/heads/master'
-        working-directory: platforms/ios/app/src/main/cpp
+        working-directory: platforms/ios
         env:
           IOS_RA_UA_VERSION: ${{ secrets.IOS_RA_UA_VERSION }}
         run: |
-          APP_PATH=$(find build -name "ARMSX2iOS.app" -type d | head -1)
+          APP_PATH=$(find build/device -name "ARMSX2iOS.app" -type d | head -1)
           bash "$GITHUB_WORKSPACE/.github/workflows/scripts/common/verify-ra-ua-agent.sh" \
             "$APP_PATH/ARMSX2iOS"
 

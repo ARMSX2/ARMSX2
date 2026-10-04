@@ -3,13 +3,13 @@ and a move is a visible change to this file."""
 
 import unittest
 
-from ios_source import SWIFT, read
+from ios_source import read, swift
 
 
 class SkinCatalogSource(unittest.TestCase):
     def test_the_catalog_comes_from_the_agreed_repository(self):
         self.assertIn('static let repo = "bagasromadon/ARMSX2-CustomControllerSkins"',
-                      read(SWIFT / "Models/SkinCatalog.swift"),
+                      read(swift("SkinCatalog.swift")),
                       "the skin catalog moved to another repository")
 
 

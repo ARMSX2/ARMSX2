@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ios_source import CPP, ROOT
+from ios_source import ROOT, RUNTIME_DIR
 
 try:
     from compression import zstd
@@ -13,7 +13,7 @@ except ImportError:
     zstd = None
 
 
-HEADER = CPP / "IOS/TexturePackTar.h"
+HEADER = RUNTIME_DIR / "TexturePackTar.h"
 ZSTD = ROOT / "platforms/android/app/src/main/cpp/3rdparty/zstd/lib"
 ZSTD_SOURCES = ["common/debug.c", "common/entropy_common.c", "common/error_private.c", "common/fse_decompress.c",
                 "common/xxhash.c", "common/zstd_common.c", "decompress/huf_decompress.c", "decompress/zstd_ddict.c",

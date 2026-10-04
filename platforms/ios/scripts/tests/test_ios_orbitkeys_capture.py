@@ -2,10 +2,10 @@
 
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-HOST = SWIFT / "Views/OrbitKeys/OrbitKeysKeyboardHost.swift"
+HOST = swift("OrbitKeysKeyboardHost.swift")
 
 
 class KeyboardCapturesTheRouter(unittest.TestCase):

@@ -7,10 +7,8 @@ init() reaches re-enters the once token. ALLOWLIST holds the accesses that canno
 import re
 import unittest
 
-from ios_source import SWIFT, block, store_text, without_comments
+from ios_source import at, block, store_text, swift, without_comments
 
-
-MODELS = SWIFT / "Models"
 
 SHARED_TOKEN = re.compile(r"([A-Z]\w*)\s*\.\s*shared(?:\.[a-zA-Z_]\w*)?")
 BARE_START = re.compile(r"FrameTimeDynamicResolutionController\.shared\.setEnabled")
@@ -23,10 +21,10 @@ RAW_APPLY = re.compile(r"\brequestGraphicsApply\(\)")
 
 class TestIosSettingsStoreInitNoSharedAccess(unittest.TestCase):
 
-    SETTINGS_STORE = MODELS / "SettingsStore.swift"
-    FRAME_PACING = MODELS / "SettingsStore+FramePacing.swift"
-    FTDRC = MODELS / "FrameTimeDynamicResolutionController.swift"
-    VPAD_SKIN_LIB = MODELS / "VPadSkinLibraryStore.swift"
+    SETTINGS_STORE = swift("SettingsStore.swift")
+    FRAME_PACING = swift("SettingsStore+FramePacing.swift")
+    FTDRC = swift("FrameTimeDynamicResolutionController.swift")
+    VPAD_SKIN_LIB = swift("VPadSkinLibraryStore.swift")
 
     # Each entry is a regex, the scan it answers for, and why the access cannot re-enter
     # the once token. The regex has to match over the token it excuses.

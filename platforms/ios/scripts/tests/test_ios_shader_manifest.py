@@ -18,10 +18,10 @@ import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from ios_source import CPP, ROOT
+from ios_source import BRIDGE_DIR, ROOT
 
 GENERATOR = ROOT / "platforms/ios/scripts/shader_manifest.py"
-BRIDGE = CPP / "ARMSX2Bridge.mm"
+BRIDGE = BRIDGE_DIR / "ARMSX2Bridge.mm"
 REAL_PATCH = ROOT / "platforms/ios/patches/slang-shaders-prescale-zero-guard.patch"
 
 
@@ -121,9 +121,9 @@ class Tree:
 
 
 def prescale_patch(relative, before, after):
-    """A patch shaped like the repo's own: twelve components deep, so -p9 is required."""
-    head = "a/platforms/ios/app/src/main/assets/shaders/presets/" + relative
-    tail = "b/platforms/ios/app/src/main/assets/shaders/presets/" + relative
+    """A patch shaped like the repo's own: nine components deep, so -p6 is required."""
+    head = "a/platforms/ios/assets/shaders/presets/" + relative
+    tail = "b/platforms/ios/assets/shaders/presets/" + relative
     return (
         "Clamp a derived prescale so the frame does not go black above 1.5x.\n"
         "\n"

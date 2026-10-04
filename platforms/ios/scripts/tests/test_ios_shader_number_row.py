@@ -1,10 +1,10 @@
 import unittest
 
-from ios_source import SWIFT, block, without_comments
+from ios_source import block, swift, without_comments
 
 
-SECTION = SWIFT / "Views/Settings/ShaderChainSection.swift"
-PARAMS = SWIFT / "Models/ShaderParams.swift"
+SECTION = swift("ShaderChainSection.swift")
+PARAMS = swift("ShaderParams.swift")
 
 
 class ShaderParameterRowPolicy(unittest.TestCase):

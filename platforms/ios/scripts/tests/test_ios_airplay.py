@@ -1,20 +1,17 @@
 import plistlib
 import unittest
-from pathlib import Path
 
-
-ROOT = Path(__file__).resolve().parents[4]
-IOS = ROOT / "platforms/ios/app/src/main"
+from ios_source import IOS_ROOT, RUNTIME_DIR, SWIFT, swift
 
 
 class AirPlayTests(unittest.TestCase):
     def test_external_display_owns_render_while_phone_keeps_controls(self):
-        manifest = plistlib.loads((IOS / "cpp/Info.plist.in").read_bytes())["UIApplicationSceneManifest"]
+        manifest = plistlib.loads((IOS_ROOT / "Info.plist.in").read_bytes())["UIApplicationSceneManifest"]
         configurations = manifest["UISceneConfigurations"]
         self.assertFalse(manifest["UIApplicationSupportsMultipleScenes"])
 
-        header = (IOS / "cpp/IOS/PCSX2SceneDelegate.h").read_text()
-        scene_delegate = (IOS / "cpp/IOS/SceneDelegate.mm").read_text()
+        header = (RUNTIME_DIR / "PCSX2SceneDelegate.h").read_text()
+        scene_delegate = (RUNTIME_DIR / "SceneDelegate.mm").read_text()
         expected_scenes = {
             "UIWindowSceneSessionRoleApplication": ("Default Configuration", "PCSX2SceneDelegate"),
             "UIWindowSceneSessionRoleExternalDisplayNonInteractive": (
@@ -30,11 +27,11 @@ class AirPlayTests(unittest.TestCase):
                     f"@interface {delegate} : UIResponder <UIWindowSceneDelegate", header
                 )
                 self.assertIn(f"@implementation {delegate}", scene_delegate)
-        self.assertIn("IOS/SceneDelegate.mm", (IOS / "cpp/CMakeLists.txt").read_text())
+        self.assertIn("Runtime/SceneDelegate.mm", (IOS_ROOT / "CMakeLists.txt").read_text())
 
-        game_screen = (IOS / "swift/Views/GameScreenView.swift").read_text()
-        metal_view = (IOS / "swift/Views/MetalGameView.swift").read_text()
-        app_delegate = (IOS / "cpp/IOS/AppDelegate.mm").read_text()
+        game_screen = swift("GameScreenView.swift").read_text()
+        metal_view = swift("MetalGameView.swift").read_text()
+        app_delegate = (RUNTIME_DIR / "AppDelegate.mm").read_text()
         self.assertIn("PhoneGameSurface()", game_screen)
         self.assertNotIn("MetalGameView()", game_screen)
         self.assertIn("if appState.externalDisplayConnected", metal_view)
@@ -51,16 +48,15 @@ class AirPlayTests(unittest.TestCase):
         )
 
     def test_scene_lookups_never_land_on_the_tv(self):
-        swift = IOS / "swift"
         walkers = [
-            path.relative_to(swift).as_posix()
-            for path in sorted(swift.rglob("*.swift"))
+            path.relative_to(SWIFT).as_posix()
+            for path in sorted(SWIFT.rglob("*.swift"))
             if "connectedScenes" in path.read_text()
         ]
-        self.assertEqual(walkers, ["Models/SwiftUIHost.swift"])
+        self.assertEqual(walkers, ["App/SwiftUIHost.swift"])
         self.assertIn(
             "connectedScenes.first { $0.session.role == .windowApplication }",
-            (swift / "Models/SwiftUIHost.swift").read_text(),
+            swift("SwiftUIHost.swift").read_text(),
         )
 
 

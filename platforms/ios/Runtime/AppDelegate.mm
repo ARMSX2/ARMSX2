@@ -21,19 +21,11 @@
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
 
-#if __has_include("ARMSX2iOS-Swift.h")
 #import "ARMSX2iOS-Swift.h"
-#define ARMSX2_HAS_SWIFTUI 1
-#elif __has_include("ARMSX2-Swift.h")
-#import "ARMSX2-Swift.h"
-#define ARMSX2_HAS_SWIFTUI 1
-#else
-#define ARMSX2_HAS_SWIFTUI 0
-#endif
 
 #include "IOSRuntime.h"
-#import "IOS/PCSX2AppDelegate.h"
-#import "IOS/PCSX2SceneDelegate.h"
+#import "PCSX2AppDelegate.h"
+#import "PCSX2SceneDelegate.h"
 
 // Written fresh on every build, see cmake/WriteGitHash.cmake.
 #include "armsx2_git_hash.h"
@@ -45,13 +37,11 @@
 
 - (void)sendEvent:(UIEvent *)event
 {
-#if ARMSX2_HAS_SWIFTUI
     if ([event isKindOfClass:[UIPressesEvent class]] &&
         [SwiftUIHost handleControllerPressesEvent:(UIPressesEvent *)event])
     {
         return;
     }
-#endif
     [super sendEvent:event];
 }
 

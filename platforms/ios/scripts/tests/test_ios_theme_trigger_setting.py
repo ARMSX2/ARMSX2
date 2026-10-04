@@ -2,12 +2,12 @@
 
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-SETTINGS = SWIFT / "Models/UIFrameRateSettings.swift"
-ROUTER = SWIFT / "Models/MenuControllerInputRouter.swift"
-APPEARANCE = SWIFT / "Views/Settings/AppearanceSettingsView.swift"
+SETTINGS = swift("UIFrameRateSettings.swift")
+ROUTER = swift("MenuControllerInputRouter.swift")
+APPEARANCE = swift("AppearanceSettingsView.swift")
 
 
 class ThemeTriggerSetting(unittest.TestCase):

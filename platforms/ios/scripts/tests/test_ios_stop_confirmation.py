@@ -2,12 +2,12 @@
 
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-MENU = SWIFT / "Views/ControllerGameContextMenu.swift"
-LIBRARY = SWIFT / "Views/GameListView.swift"
-QUICK_MENU = SWIFT / "Views/QuickMenuView.swift"
+MENU = swift("ControllerGameContextMenu.swift")
+LIBRARY = swift("GameListView.swift")
+QUICK_MENU = swift("QuickMenuView.swift")
 
 
 class StopConfirmation(unittest.TestCase):

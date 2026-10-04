@@ -3,7 +3,7 @@
 import re
 import unittest
 
-from ios_source import SWIFT, read, without_comments
+from ios_source import read, swift, without_comments
 
 
 class TouchBlockerNeedsTheMenu(unittest.TestCase):
@@ -11,7 +11,7 @@ class TouchBlockerNeedsTheMenu(unittest.TestCase):
     with a pad the window-level recognizer kept cancelling touches in game."""
 
     def test_blocking_requires_an_active_menu(self):
-        root = without_comments(read(SWIFT / "Views/RootView.swift"))
+        root = without_comments(read(swift("RootView.swift")))
         blocks = re.search(r"blocksUnderlyingTouches:(.*?),\n", root, re.S)
         self.assertIsNotNone(blocks)
         self.assertIn("menuControllerInput.isMenuActive", blocks.group(1),

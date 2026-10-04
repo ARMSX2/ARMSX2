@@ -30,9 +30,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_OUT = ROOT / "platforms/ios/build-ios-shader-manifest"
+DEFAULT_OUT = ROOT / "platforms/ios/build/shader-manifest"
 DEFAULT_PATCHES = ROOT / "platforms/ios/patches"
-BRIDGE = ROOT / "platforms/ios/app/src/main/cpp/ARMSX2Bridge.mm"
+BRIDGE = ROOT / "platforms/ios/Bridge/ARMSX2Bridge.mm"
 
 # The patch context lines were cut against files byte-identical to this commit, and the
 # row-for-row cross-check against the bundled-preset audit holds only here, because its
@@ -255,7 +255,7 @@ def patch_targets(text):
     targets = []
     for line in text.splitlines():
         if line.startswith("+++ b/"):
-            targets.append(strip_components(line[4:].strip(), 9))
+            targets.append(strip_components(line[4:].strip(), 6))
     return targets
 
 
@@ -300,8 +300,8 @@ def apply_patches(checkout, directory):
                          "run without the patches would serve that bug." % directory)
 
     for patch, _ in patches:
-        if git_apply(checkout, ["--check", "-R", "-p9", str(patch)]).returncode == 0:
-            reverted = git_apply(checkout, ["-R", "-p9", str(patch)])
+        if git_apply(checkout, ["--check", "-R", "-p6", str(patch)]).returncode == 0:
+            reverted = git_apply(checkout, ["-R", "-p6", str(patch)])
             if reverted.returncode != 0:
                 raise SystemExit("cannot restore %s to upstream: %s"
                                  % (patch.name, reverted.stderr.strip()))
@@ -318,10 +318,10 @@ def apply_patches(checkout, directory):
             checkout.forget(target)
             before[target] = checkout.data(target)
 
-        applied = git_apply(checkout, ["-p9", str(patch)])
+        applied = git_apply(checkout, ["-p6", str(patch)])
         if applied.returncode != 0:
-            raise SystemExit("git apply -p9 failed for %s: %s\nThe strip level is right "
-                             "for a twelve-component patch path, so the checkout is at "
+            raise SystemExit("git apply -p6 failed for %s: %s\nThe strip level is right "
+                             "for a nine-component patch path, so the checkout is at "
                              "the wrong commit. Do not fall back to bare upstream: "
                              "upstream still turns the frame black at 2x."
                              % (patch.name, applied.stderr.strip()))

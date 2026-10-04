@@ -79,7 +79,7 @@ endif()
 # the need for this — do not delete it on the assumption someone fixed it.
 # Reverse-check-then-apply keeps re-configure idempotent: git apply fails on an
 # already-patched tree, and FetchContent re-runs PATCH_COMMAND more often than expected.
-get_filename_component(_lrs_ios_root "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../.." ABSOLUTE)
+get_filename_component(_lrs_ios_root "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set(_lrs_patch "${_lrs_ios_root}/patches/librashader-ctypes-apple-vendor.patch")
 
 include(FetchContent)

@@ -2,11 +2,11 @@
 
 import unittest
 
-from ios_source import MODELS, SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-ROUTER = MODELS / "MenuControllerInputRouter.swift"
-SETTINGS = SWIFT / "Views/Settings/SettingsRootView.swift"
+ROUTER = swift("MenuControllerInputRouter.swift")
+SETTINGS = swift("SettingsRootView.swift")
 
 
 class SettingsFocusPerLaunch(unittest.TestCase):

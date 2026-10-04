@@ -2,10 +2,10 @@
 
 import unittest
 
-from ios_source import SWIFT, read, without_comments
+from ios_source import read, swift, without_comments
 
 
-VIRTUAL_PAD = SWIFT / "Views/Settings/VirtualPadSettingsView.swift"
+VIRTUAL_PAD = swift("VirtualPadSettingsView.swift")
 
 
 class BrowseSkinsIsATarget(unittest.TestCase):

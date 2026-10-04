@@ -2,10 +2,10 @@
 
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-INSTALLER = SWIFT / "Models/SkinInstaller.swift"
+INSTALLER = swift("SkinInstaller.swift")
 
 
 class SkinPickersDownloadOnApply(unittest.TestCase):
@@ -26,8 +26,8 @@ class SkinPickersDownloadOnApply(unittest.TestCase):
 
     def test_applying_a_listed_skin_installs_it(self):
         self.assertIn("installCatalogSkin(", block(self.installer, "func installIfNeeded("))
-        library = without_comments(read(SWIFT / "Views/GameListView.swift"))
-        game = without_comments(read(SWIFT / "Views/GameScreenView.swift"))
+        library = without_comments(read(swift("GameListView.swift")))
+        game = without_comments(read(swift("GameScreenView.swift")))
         self.assertIn("== skinAtPick", block(library, "private func completeAutomaticCustomSkinLaunch("),
                       "a download must not land over a skin chosen after the pick")
         self.assertIn("installIfNeeded(", block(library, "private func completeAutomaticCustomSkinLaunch("),
