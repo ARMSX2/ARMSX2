@@ -1,10 +1,9 @@
 import unittest
 
-from ios_source import CPP, block, without_comments
+from ios_source import BRIDGE_DIR, block, bridge_text, without_comments
 
 
-BRIDGE = CPP / "ARMSX2Bridge.mm"
-HEADER = CPP / "ARMSX2Bridge.h"
+HEADER = BRIDGE_DIR / "ARMSX2Bridge.h"
 
 SHADER_EXTRACTOR = "extractShaderPackArchiveAtURL"
 SKIN_EXTRACTOR = "extractControllerSkinArchiveAtURL"
@@ -15,7 +14,7 @@ SKIN_CAPS = ("kMaxSkinArchiveEntries", "kMaxSkinArchiveTotalEntries")
 
 class ShaderPackExtractorPolicy(unittest.TestCase):
     def setUp(self):
-        self.source = BRIDGE.read_text(encoding="utf-8")
+        self.source = bridge_text()
         self.header = HEADER.read_text(encoding="utf-8")
         self.code = without_comments(
             block(self.source, f"+ (nonnull NSArray<NSURL *> *){SHADER_EXTRACTOR}:"))

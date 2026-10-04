@@ -4,11 +4,10 @@
 import re
 import unittest
 
-from ios_source import SWIFT, block, read, store_text, without_comments
+from ios_source import block, read, store_text, swift, without_comments
 
 
-MODELS = SWIFT / "Models"
-PARAMS = MODELS / "ShaderParams.swift"
+PARAMS = swift("ShaderParams.swift")
 
 PUSH = "ShaderParams.pushStored("
 BRIDGE = "ARMSX2Bridge.setShaderChainParameters("

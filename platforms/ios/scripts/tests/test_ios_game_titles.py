@@ -3,7 +3,7 @@
 import re
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
 class CustomTitleKey(unittest.TestCase):
@@ -12,7 +12,7 @@ class CustomTitleKey(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.library = without_comments(read(SWIFT / "Views/GameListView.swift"))
+        cls.library = without_comments(read(swift("GameListView.swift")))
 
     def test_rename_keys_by_the_boot_name(self):
         self.assertIn("for: game.bootName", block(self.library, "private func renameGame("),

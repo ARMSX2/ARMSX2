@@ -1,14 +1,13 @@
 import unittest
 
-from ios_source import CPP, SWIFT, block, without_comments
+from ios_source import BRIDGE_DIR, SWIFT, block, bridge_text, swift, without_comments
 
 
-BRIDGE_H = CPP / "ARMSX2Bridge.h"
-BRIDGE_MM = CPP / "ARMSX2Bridge.mm"
-SELECTION = SWIFT / "Models/PerGameShaderSelection.swift"
-APP_STATE = SWIFT / "Models/AppState.swift"
-PANEL = SWIFT / "Views/PerGameSettingsPanel.swift"
-SECTION = SWIFT / "Views/Settings/PerGame/PerGameShaderSection.swift"
+BRIDGE_H = BRIDGE_DIR / "ARMSX2Bridge.h"
+SELECTION = swift("PerGameShaderSelection.swift")
+APP_STATE = swift("AppState.swift")
+PANEL = swift("PerGameSettingsPanel.swift")
+SECTION = swift("PerGameShaderSection.swift")
 
 STRING_METHODS = (
     "getPerGameINIString:",
@@ -50,7 +49,7 @@ class PerGameShaderSelectionPolicy(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.header = BRIDGE_H.read_text(encoding="utf-8")
-        cls.impl = BRIDGE_MM.read_text(encoding="utf-8")
+        cls.impl = bridge_text()
         cls.selection = without_comments(SELECTION.read_text(encoding="utf-8"))
         cls.app_state = without_comments(APP_STATE.read_text(encoding="utf-8"))
         cls.panel = without_comments(PANEL.read_text(encoding="utf-8"))

@@ -5,15 +5,7 @@
 #import <GameController/GameController.h>
 
 // Xcode names the generated Swift bridge header after the Swift module.
-#if __has_include("ARMSX2iOS-Swift.h")
 #import "ARMSX2iOS-Swift.h"
-#define ARMSX2_HAS_SWIFTUI_HOST 1
-#elif __has_include("ARMSX2-Swift.h")
-#import "ARMSX2-Swift.h"
-#define ARMSX2_HAS_SWIFTUI_HOST 1
-#else
-#define ARMSX2_HAS_SWIFTUI_HOST 0
-#endif
 
 // MetalFX spatial upscaler is iOS 16+ device and weak-linked (see PCSX2 CMake).
 // The iOS Simulator SDK does not ship the MetalFX framework, so the import is
@@ -68,9 +60,9 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 #include "common/Path.h"
 #include "common/ZipHelpers.h"
 #include "common/Error.h"
-#include "IOS/TexturePackPaths.h"
-#include "IOS/TexturePackTar.h"
-#include "IOS/TexturePackZstd.h"
+#include "TexturePackPaths.h"
+#include "TexturePackTar.h"
+#include "TexturePackZstd.h"
 
 // Owned by SceneDelegate's persistent VM worker. Declared narrowly here: IOSRuntime.h gives
 // the render view its concrete type, and this bridge deliberately uses UIKit's UIView.
@@ -3749,12 +3741,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 
     // GameEventHaptics is @MainActor-isolated; dispatch to the main queue.
     dispatch_async(dispatch_get_main_queue(), ^{
-#if ARMSX2_HAS_SWIFTUI_HOST
         [SwiftUIHost triggerDeviceHapticWithLarge:large small:small];
-#else
-        (void)large;
-        (void)small;
-#endif
     });
 }
 

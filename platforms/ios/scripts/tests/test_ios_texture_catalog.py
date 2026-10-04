@@ -5,10 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ios_source import SWIFT
+from ios_source import swift
 
 
-CATALOG = SWIFT / "Models/TextureCatalog.swift"
+CATALOG = swift("TextureCatalog.swift")
 
 DRIVER = """
 import Foundation

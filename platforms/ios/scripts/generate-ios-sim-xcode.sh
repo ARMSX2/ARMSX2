@@ -10,8 +10,8 @@ set -euo pipefail
 # compile-guarded by PCSX2_HAS_METALFX=0 (see GSDeviceMTL.h).
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOURCE_DIR="$ROOT_DIR/app/src/main/cpp"
-BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build-ios-sim-xcode}"
+SOURCE_DIR="$ROOT_DIR"
+BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build/sim}"
 BUNDLE_ID="${BUNDLE_ID:-com.armsx2.ios}"
 
 if ! command -v cmake >/dev/null 2>&1; then

@@ -8,15 +8,7 @@
 #import <GameController/GameController.h>
 
 // SwiftUI integration — Xcode names the generated header after the Swift module.
-#if __has_include("ARMSX2iOS-Swift.h")
 #import "ARMSX2iOS-Swift.h"
-#define ARMSX2_HAS_SWIFTUI 1
-#elif __has_include("ARMSX2-Swift.h")
-#import "ARMSX2-Swift.h"
-#define ARMSX2_HAS_SWIFTUI 1
-#else
-#define ARMSX2_HAS_SWIFTUI 0
-#endif
 #import <SwiftUI/SwiftUI.h>
 
 // ... other includes ...
@@ -84,8 +76,8 @@ struct rc_client_t;
 #include <mach-o/dyld.h>
 #include "common/Darwin/DarwinMisc.h"
 
-#include "IOS/IOSRuntime.h"
-#import "IOS/ARMSX2GameView.h"
+#include "IOSRuntime.h"
+#import "ARMSX2GameView.h"
 
 // Global Log View
 UITextView* g_logView = nil;

@@ -2,10 +2,10 @@
 
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-ROOT_VIEW = SWIFT / "Views/RootView.swift"
+ROOT_VIEW = swift("RootView.swift")
 
 
 class RootAlertWindow(unittest.TestCase):

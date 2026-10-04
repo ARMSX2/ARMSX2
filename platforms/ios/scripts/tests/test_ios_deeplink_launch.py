@@ -8,13 +8,13 @@ libraryPayload and Copy Launch Link hand out a launchURL that other frontends st
 import re
 import unittest
 
-from ios_source import CPP, ROOT, SWIFT
+from ios_source import IOS_ROOT, ROOT, swift
 
-HANDLER = SWIFT / "Models/ARMSX2DeepLinkHandler.swift"
-GAME_LIST = SWIFT / "Views/GameListView.swift"
-APP_STATE = SWIFT / "Models/AppState.swift"
-ROOT_VIEW = SWIFT / "Views/RootView.swift"
-INFO = CPP / "Info.plist.in"
+HANDLER = swift("ARMSX2DeepLinkHandler.swift")
+GAME_LIST = swift("GameListView.swift")
+APP_STATE = swift("AppState.swift")
+ROOT_VIEW = swift("RootView.swift")
+INFO = IOS_ROOT / "Info.plist.in"
 
 LAUNCH_VERBS = ("launch", "boot", "play")
 GAME_KEYS = ('"game"', '"iso"', '"file"', '"name"')

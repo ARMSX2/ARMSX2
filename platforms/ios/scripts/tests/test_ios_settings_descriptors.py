@@ -1,11 +1,10 @@
 import re
 import unittest
 
-from ios_source import SWIFT, block
+from ios_source import block, store_text, swift
 
 
-MODELS = SWIFT / "Models"
-STORE = MODELS / "SettingsStore.swift"
+STORE = swift("SettingsStore.swift")
 
 DESCRIPTOR = re.compile(r"let _(\w+)Config = Setting<([^>]+)>\(")
 COMMIT = re.compile(r"commit\(_(\w+)Config, (\w+)\)")
@@ -71,8 +70,7 @@ class SettingsDescriptorTests(unittest.TestCase):
         cls.init_body = block(cls.source, "private init()")
         # The whole store, extensions included, so a read that moved into a
         # helper file cannot slip past the checks below.
-        cls.store_source = "\n".join(
-            path.read_text(encoding="utf-8") for path in sorted(MODELS.glob("SettingsStore*.swift")))
+        cls.store_source = store_text()
         cls.by_hand = set(re.findall(r'getINI\w+\(\s*"([^"]+)",\s*key: "([^"]+)"', cls.store_source))
 
     def test_the_descriptors_were_actually_found(self):
@@ -124,7 +122,7 @@ class SettingsDescriptorTests(unittest.TestCase):
         """Reaching SettingsStore.shared from a file init() runs re-enters its own swift_once."""
         for name in ("SettingCodec.swift", "Setting.swift"):
             with self.subTest(file=name):
-                self.assertNotIn("SettingsStore.shared", (MODELS / name).read_text(encoding="utf-8"))
+                self.assertNotIn("SettingsStore.shared", swift(name).read_text(encoding="utf-8"))
 
     def test_no_two_descriptors_claim_the_same_key(self):
         seen = {}

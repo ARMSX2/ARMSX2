@@ -4,28 +4,14 @@ build/
 .idea/
 .project
 .settings/
-/build-ios*/
-/build-sim*/
-/build-maccatalyst/
 /ipa-package/
 *.ipa
 
 # OS junk & editor/files
 .DS_Store
-app/.DS_Store
-app/src/.DS_Store
-app/src/main/.DS_Store
-app/src/main/cpp/bin
-
-# Sensitive credentials
-app/src/main/assets/discord_creds.env
 
 # Temporary/log/output files
 log.txt
 *.log
 
-# Third-party (vendored) native or generated sources
-app/src/main/cpp/3rdparty/rcheevos/.build
-app/src/main/cpp/3rdparty/discord_social_sdk/cdiscord.h
-app/src/main/cpp/3rdparty/discord_social_sdk/discordpp.h
 macos

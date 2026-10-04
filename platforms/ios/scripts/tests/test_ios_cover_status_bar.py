@@ -2,7 +2,7 @@
 
 import unittest
 
-from ios_source import SWIFT, read, without_comments
+from ios_source import SWIFT, read, swift, without_comments
 
 
 class CoverStatusBar(unittest.TestCase):
@@ -24,7 +24,7 @@ class CoverStatusBar(unittest.TestCase):
                 start = end
 
     def test_the_layout_editor_hides_it(self):
-        editor = without_comments(read(SWIFT / "Views/Settings/PadLayoutEditView.swift"))
+        editor = without_comments(read(swift("PadLayoutEditView.swift")))
         self.assertIn(".statusBarHidden()", editor)
 
 

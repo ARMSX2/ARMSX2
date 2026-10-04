@@ -1,12 +1,11 @@
 import re
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, store_text, swift, without_comments
 
 
-MODELS = SWIFT / "Models"
-STORE = MODELS / "SettingsStore.swift"
-LIBRARY = MODELS / "ShaderPresetLibrary.swift"
+STORE = swift("SettingsStore.swift")
+LIBRARY = swift("ShaderPresetLibrary.swift")
 
 # A value carrying one of these is a container path, which changes on every install.
 CONTAINER_SOURCES = (
@@ -26,8 +25,7 @@ class ShaderPresetPathTests(unittest.TestCase):
         cls.store = without_comments(read(STORE))
         cls.library = without_comments(read(LIBRARY))
         # Extensions live in sibling files, so a write that moved into one is still caught.
-        cls.store_all = "\n".join(
-            without_comments(read(p)) for p in sorted(MODELS.glob("SettingsStore*.swift")))
+        cls.store_all = without_comments(store_text())
 
     def test_the_selection_is_a_setting_backed_token(self):
         self.assertRegex(

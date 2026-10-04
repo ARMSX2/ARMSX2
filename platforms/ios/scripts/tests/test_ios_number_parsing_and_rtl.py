@@ -4,12 +4,12 @@
 import re
 import subprocess
 import unittest
-from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
-NUMBER_ROW_PATH = ROOT_DIR / "app/src/main/swift/Views/Settings/NumberRow.swift"
-APP_LANGUAGE_PATH = ROOT_DIR / "app/src/main/swift/Models/AppLanguage.swift"
-DYNAMIC_COLOURS_PATH = ROOT_DIR / "app/src/main/swift/Views/Background/Dynamic/DynamicColours.swift"
+from ios_source import swift
+
+NUMBER_ROW_PATH = swift("NumberRow.swift")
+APP_LANGUAGE_PATH = swift("AppLanguage.swift")
+DYNAMIC_COLOURS_PATH = swift("DynamicColours.swift")
 
 class TestNumberParsingAndRTL(unittest.TestCase):
     def test_app_language_english_number_locale(self):

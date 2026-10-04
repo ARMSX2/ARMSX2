@@ -2,11 +2,11 @@
 
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-STORE = SWIFT / "Models/PadLayoutPresetStore.swift"
-INSTALLER = SWIFT / "Models/SkinInstaller.swift"
+STORE = swift("PadLayoutPresetStore.swift")
+INSTALLER = swift("SkinInstaller.swift")
 
 
 class PadResetsClearTheCatalogPick(unittest.TestCase):

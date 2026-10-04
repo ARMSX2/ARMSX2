@@ -7,11 +7,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
-RESOURCES_DIR = ROOT_DIR / "app/src/main/assets/resources"
+from ios_source import ASSETS, IOS_ROOT, swift
+
+RESOURCES_DIR = ASSETS / "resources"
 XSTRINGS_PATH = RESOURCES_DIR / "Localizable.xcstrings"
-INFO_PLIST_PATH = ROOT_DIR / "app/src/main/cpp/Info.plist.in"
-APP_LANGUAGE_PATH = ROOT_DIR / "app/src/main/swift/Models/AppLanguage.swift"
+INFO_PLIST_PATH = IOS_ROOT / "Info.plist.in"
+APP_LANGUAGE_PATH = swift("AppLanguage.swift")
 
 EXPECTED_LANGUAGES = ["en", "zh-Hans", "ar", "es", "fr", "de", "it", "pt", "ja", "ko"]
 

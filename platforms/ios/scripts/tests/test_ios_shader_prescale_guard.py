@@ -7,10 +7,10 @@ the ratio is zero and the frame goes black. The guard is a max(..., 1.0) around 
 
 import re
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[4]
-PRESETS = ROOT / "platforms/ios/app/src/main/assets/shaders/presets"
+from ios_source import ASSETS
+
+PRESETS = ASSETS / "shaders/presets"
 
 # A prescale is a floor() over the output/source height ratio, in either the divide or
 # the reciprocal-multiply spelling. SourceSize.w and .zw are 1/height and 1/size.

@@ -1,11 +1,11 @@
 import re
 import unittest
 
-from ios_source import CPP, without_comments
+from ios_source import IOS_ROOT, RUNTIME_DIR, without_comments
 
 
-DELEGATE = CPP / "IOS/AppDelegate.mm"
-LIBRASHADER_CMAKE = CPP / "3rdparty/librashader/CMakeLists.txt"
+DELEGATE = RUNTIME_DIR / "AppDelegate.mm"
+LIBRASHADER_CMAKE = IOS_ROOT / "3rdparty/librashader/CMakeLists.txt"
 
 CACHE_ENV = "XDG_CACHE_HOME"
 REPORT = "PCSX2 iOS: shader cache "

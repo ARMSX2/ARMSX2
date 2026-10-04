@@ -49,19 +49,11 @@
 #import <GameController/GameController.h>
 
 // Xcode names the generated Swift bridge header after the Swift module.
-#if __has_include("ARMSX2iOS-Swift.h")
 #import "ARMSX2iOS-Swift.h"
-#define ARMSX2_HAS_SWIFTUI 1
-#elif __has_include("ARMSX2-Swift.h")
-#import "ARMSX2-Swift.h"
-#define ARMSX2_HAS_SWIFTUI 1
-#else
-#define ARMSX2_HAS_SWIFTUI 0
-#endif
 
 #include "IOSRuntime.h"
-#import "IOS/ARMSX2GameView.h"
-#import "IOS/PCSX2SceneDelegate.h"
+#import "ARMSX2GameView.h"
+#import "PCSX2SceneDelegate.h"
 #import "ARMSX2Bridge.h"
 
 // Defined below, next to the VM worker state it reads.
@@ -232,7 +224,6 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
         uiWindow.windowScene = windowScene;
         self.window = uiWindow;
         self.window.backgroundColor = [UIColor systemGroupedBackgroundColor];
-#if ARMSX2_HAS_SWIFTUI
         // SDL creates the original render controller. Keep it as a child of a
         // GCEventViewController so UIKit can own menu focus without changing the
         // CAMetalLayer host used by emulation.
@@ -246,7 +237,6 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
                 s_rootVC = eventHost;
             }
         }
-#endif
         // Before the window is on screen, so there is no wrong first frame.
         [self syncRootViewToWindow];
         [self.window makeKeyAndVisible];
@@ -279,7 +269,6 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
     }
     
     // --- [UI] Startup Logic: Show menu first, boot on user action ---
-#if ARMSX2_HAS_SWIFTUI
     {
         UIViewController *rootVC = self.window.rootViewController;
         if (rootVC) {
@@ -396,18 +385,6 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
             }
         });
     }
-#else
-    // Fallback: no SwiftUI — auto-boot like before
-    if (!EmuConfig.BaseFilenames.Bios.empty() && FileSystem::FileExists(Path::Combine(EmuFolders::Bios, EmuConfig.BaseFilenames.Bios).c_str())) {
-#if TARGET_OS_SIMULATOR
-        [self startVMThread];
-#else
-        [self checkJITAndStartVM];
-#endif
-    } else {
-        Console.Warning("No valid BIOS found. Showing selection UI.");
-    }
-#endif
 }
 
 #pragma mark - Deep-link handling
@@ -1235,21 +1212,17 @@ static void ARMSX2StartJITKeepalive()
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
     if (![scene isKindOfClass:[UIWindowScene class]]) return;
 
-#if ARMSX2_HAS_SWIFTUI
     self.window = [[[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene] autorelease];
     self.window.backgroundColor = UIColor.blackColor;
     self.window.rootViewController = [SwiftUIHost createExternalDisplayController];
     [self.window makeKeyAndVisible];
     [SwiftUIHost setExternalDisplayConnected:YES];
     Console.WriteLn("[AirPlay] External display connected");
-#endif
 }
 
 - (void)sceneDidDisconnect:(UIScene *)scene {
-#if ARMSX2_HAS_SWIFTUI
     [SwiftUIHost setExternalDisplayConnected:NO];
     Console.WriteLn("[AirPlay] External display disconnected");
-#endif
     self.window = nil;
 }
 

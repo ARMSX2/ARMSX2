@@ -3,10 +3,10 @@
 import re
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-GALLERY = SWIFT / "Models/ThemeGalleryStore.swift"
+GALLERY = swift("ThemeGalleryStore.swift")
 
 
 class SavedThemesSurviveABadEntry(unittest.TestCase):
@@ -37,7 +37,7 @@ class ImportedBackgroundNames(unittest.TestCase):
     path, so a shared theme with "../" in the name reached the memory cards and the BIOS."""
 
     def test_only_a_plain_file_name_decodes(self):
-        decoder = block(without_comments(read(SWIFT / "Models/BackgroundAsset.swift")),
+        decoder = block(without_comments(read(swift("BackgroundAsset.swift"))),
                         "init(from decoder: Decoder)")
         self.assertIn("SkinAssetPath.isSafeRelative(filename)", decoder,
                       "BackgroundAsset decodes a filename without the path check")
@@ -56,7 +56,7 @@ class ImportedNumbers(unittest.TestCase):
                         "importTheme decodes the document before checking its numbers")
 
     def test_wallpaper_counts_are_clamped_before_int(self):
-        rates = without_comments(read(SWIFT / "Models/UIFrameRateSettings.swift"))
+        rates = without_comments(read(swift("UIFrameRateSettings.swift")))
         for helper in ("scaledDynamicEffectCount(", "scaledDynamicFaceButtonCount(",
                        "scaledDynamicGeometryCount("):
             with self.subTest(helper=helper):

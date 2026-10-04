@@ -2,11 +2,11 @@
 
 import unittest
 
-from ios_source import SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-CHEATS = SWIFT / "Views/CheatsPatchesManagerView.swift"
-LIBRARY = SWIFT / "Views/GameListView.swift"
+CHEATS = swift("CheatsPatchesManagerView.swift")
+LIBRARY = swift("GameListView.swift")
 
 
 class CheatsPanelSize(unittest.TestCase):

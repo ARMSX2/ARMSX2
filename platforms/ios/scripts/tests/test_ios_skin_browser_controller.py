@@ -2,11 +2,11 @@
 
 import unittest
 
-from ios_source import MODELS, SWIFT, block, read, without_comments
+from ios_source import block, read, swift, without_comments
 
 
-BROWSER = SWIFT / "Views/Settings/SkinBrowserView.swift"
-NAVIGATION = MODELS / "ControllerAccessibilityNavigation.swift"
+BROWSER = swift("SkinBrowserView.swift")
+NAVIGATION = swift("ControllerAccessibilityNavigation.swift")
 
 
 class SkinBrowserController(unittest.TestCase):

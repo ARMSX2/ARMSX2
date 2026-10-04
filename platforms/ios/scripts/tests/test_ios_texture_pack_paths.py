@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ios_source import CPP
+from ios_source import RUNTIME_DIR
 
 
-HEADER = CPP / "IOS/TexturePackPaths.h"
+HEADER = RUNTIME_DIR / "TexturePackPaths.h"
 
 DRIVER = r"""
 #include "TexturePackPaths.h"

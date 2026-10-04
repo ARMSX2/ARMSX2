@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOURCE_DIR="$ROOT_DIR/app/src/main/cpp"
-BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build-ios-xcode}"
+SOURCE_DIR="$ROOT_DIR"
+BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build/device}"
 BUNDLE_ID="${BUNDLE_ID:-com.armsx2.ios}"
 TEAM_ID="${TEAM_ID:-}"
 DISPLAY_NAME="${DISPLAY_NAME:-ARMSX2 iOS}"

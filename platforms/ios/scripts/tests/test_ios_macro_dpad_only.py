@@ -2,11 +2,11 @@
 
 import unittest
 
-from ios_source import CPP, MODELS, block, read, without_comments
+from ios_source import RUNTIME_DIR, block, read, swift, without_comments
 
 
-ROUTER = MODELS / "MenuControllerInputRouter.swift"
-GAMEPAD = CPP / "IOS/GamepadHaptics.mm"
+ROUTER = swift("MenuControllerInputRouter.swift")
+GAMEPAD = RUNTIME_DIR / "GamepadHaptics.mm"
 
 
 class MacrosReadOnlyTheDPad(unittest.TestCase):

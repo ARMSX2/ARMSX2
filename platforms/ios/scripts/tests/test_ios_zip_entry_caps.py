@@ -11,10 +11,9 @@ stat.size fails here instead of on someone's phone.
 import re
 import unittest
 
-from ios_source import CPP, without_comments
+from ios_source import bridge_text, without_comments
 
 
-BRIDGE = CPP / "ARMSX2Bridge.mm"
 
 READ = "ReadBinaryFileInZip("
 # The guard has to compare the bytes in hand against a named bound. A bare literal
@@ -28,7 +27,7 @@ GUARD_LINES = 2
 class ZipEntryCaps(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.lines = without_comments(BRIDGE.read_text(encoding="utf-8")).split("\n")
+        cls.lines = without_comments(bridge_text()).split("\n")
         cls.sites = [i for i, line in enumerate(cls.lines) if READ in line]
 
     def guard_at(self, index):

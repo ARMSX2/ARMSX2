@@ -3,7 +3,7 @@
 import re
 import unittest
 
-from ios_source import SWIFT, read, without_comments
+from ios_source import read, swift, without_comments
 
 
 class ClearGlassUpgrade(unittest.TestCase):
@@ -11,7 +11,7 @@ class ClearGlassUpgrade(unittest.TestCase):
     had Clear Liquid Glass off got clear glass on every Settings page."""
 
     def test_the_sub_key_defaults_to_the_main_toggle(self):
-        store = without_comments(read(SWIFT / "Models/SettingsStore.swift"))
+        store = without_comments(read(swift("SettingsStore.swift")))
         main = re.search(r'let (\w+) = UserDefaults\.standard\.object\(\s*'
                          r'forKey: "ARMSX2iOSClearLiquidGlassUI"\s*\) as\? Bool \?\? true', store)
         self.assertIsNotNone(main, "the stored main toggle is not read before the sub-settings key")

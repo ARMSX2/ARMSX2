@@ -2,10 +2,10 @@
 
 import unittest
 
-from ios_source import SWIFT, read, without_comments
+from ios_source import read, swift, without_comments
 
 
-SETTINGS = SWIFT / "Views/Settings/SettingsRootView.swift"
+SETTINGS = swift("SettingsRootView.swift")
 
 
 class SettingsLandscapeTop(unittest.TestCase):

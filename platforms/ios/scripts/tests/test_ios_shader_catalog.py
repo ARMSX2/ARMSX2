@@ -4,13 +4,13 @@
 import re
 import unittest
 
-from ios_source import SWIFT, at, block, read
+from ios_source import at, block, read, swift
 
-INSTALLER = SWIFT / "Models/ShaderCatalogInstaller.swift"
-CATALOG = SWIFT / "Models/ShaderCatalog.swift"
-BROWSER = SWIFT / "Views/Settings/ShaderCatalogBrowserView.swift"
-ROOT_VIEW = SWIFT / "Views/RootView.swift"
-PER_GAME = SWIFT / "Models/PerGameShaderSelection.swift"
+INSTALLER = swift("ShaderCatalogInstaller.swift")
+CATALOG = swift("ShaderCatalog.swift")
+BROWSER = swift("ShaderCatalogBrowserView.swift")
+ROOT_VIEW = swift("RootView.swift")
+PER_GAME = swift("PerGameShaderSelection.swift")
 
 
 class Downloader(unittest.TestCase):
@@ -86,7 +86,7 @@ class Downloader(unittest.TestCase):
 
     def test_the_base_pack_replaces_its_folder_instead_of_landing_beside_it(self):
         """Downloading RetroArch Slang Shaders again replaces shaders/shaders_slang."""
-        importer = read(SWIFT / "Models/ShaderPackImporter.swift")
+        importer = read(swift("ShaderPackImporter.swift"))
         self.assertIn('"https://buildbot.libretro.com/assets/frontend/shaders_slang.zip"', importer)
         install = at(importer, "install(archiveAt: staged, named: key)", "the base pack install")
         cleared = at(importer, "installedName = nil", "clearing the landed folder name")
@@ -111,8 +111,8 @@ class Downloader(unittest.TestCase):
 class BrowserReachability(unittest.TestCase):
     """Where the Download Shaders row sits, and whether both hosts can push it."""
 
-    SECTION = SWIFT / "Views/Settings/ShaderChainSection.swift"
-    PAGE = SWIFT / "Views/Settings/ShaderSettingsView.swift"
+    SECTION = swift("ShaderChainSection.swift")
+    PAGE = swift("ShaderSettingsView.swift")
 
     def test_the_download_row_sits_above_install(self):
         text = read(self.SECTION)
@@ -161,7 +161,7 @@ class BrowserReachability(unittest.TestCase):
         self.assertRegex(
             read(self.SECTION), r"onClose:\s*\{\s*browseRequest = nil\s*\}",
             "the Shaders section no longer closes the preset sheet on a pick")
-        browser = read(SWIFT / "Views/Settings/ShaderPresetBrowserView.swift")
+        browser = read(swift("ShaderPresetBrowserView.swift"))
         select = block(browser, "private func select(")
         self.assertLess(at(select, "onSelect(", "the pick"), at(select, "onClose()", "the close"),
                         "select() does not close the sheet through onClose after the pick")
