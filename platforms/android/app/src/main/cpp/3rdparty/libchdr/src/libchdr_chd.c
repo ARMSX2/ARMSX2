@@ -91,7 +91,9 @@
 #define CHD_MAX_HUNK_SIZE				(128 * 1024 * 1024) /* hunk size probably shouldn't be more than 128MB */
 
 /* we're currently only using this for CD/DVDs, if we end up with more than 10GB data, it's probably invalid */
-#define CHD_MAX_FILE_SIZE				(10ULL * 1024 * 1024 * 1024)
+/* ARMSX2: room for any arcade System 246/256 hard drive image, past the 80GB PCSX2x6 allows. The check is
+   only there to refuse a corrupt header's absurd size. */
+#define CHD_MAX_FILE_SIZE				(256ULL * 1024 * 1024 * 1024)
 
 #define COOKIE_VALUE				0xbaadf00d
 #define MAX_ZLIB_ALLOCS				64
