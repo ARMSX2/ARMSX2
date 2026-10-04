@@ -451,6 +451,12 @@ void ACATA::SetImage(std::string path, ACMEDIATYPE media) {
 	Console.WriteLnFmt("ACATA: image '{}', media type {}", ACATA::imgpath, static_cast<int>(ACATA::MediaType));
 }
 
+std::string ACATA::writespath;
+
+void ACATA::SetWritesFile(std::string path) {
+	ACATA::writespath = std::move(path);
+}
+
 
 u16 ACATA::R_DATA;
 u16 ACATA::R_FEATURE;

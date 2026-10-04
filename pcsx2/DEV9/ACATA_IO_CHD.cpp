@@ -118,6 +118,8 @@ void ChdImage::Close()
 
     m_cachedHunk = UINT32_MAX;
 
+    m_writes.Close();
+
     m_hunkSize = 0;
     m_unitBytes = 0;
     m_frameDataOffset = 0;
@@ -216,9 +218,24 @@ bool ChdImage::ReadSector(u64 lba, void* buffer)
     else
     {
         std::memcpy(buffer, m_hunkBuffer.data() + offset, m_unitBytes);
+        // ARMSX2: the sector as the game last wrote it, when it has (ChdWrites).
+        m_writes.Apply(lba, 1, static_cast<u8*>(buffer));
     }
 
     return true;
+}
+
+void ChdImage::OpenWrites(const std::string& path)
+{
+    const chd_header* hdr = m_chd ? chd_get_header(m_chd) : nullptr;
+    if (!hdr || path.empty() || m_type != ACMEDIATYPE::ACHDD)
+        return;
+    m_writes.Open(path, hdr->sha1, hdr->logicalbytes, m_unitBytes);
+}
+
+bool ChdImage::WriteSectors(u64 lba, u32 count, const void* buffer)
+{
+    return m_chd && m_writes.Write(lba, count, static_cast<const u8*>(buffer));
 }
 
 bool ChdImage::ReadSectors(u64 lba,

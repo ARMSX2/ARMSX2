@@ -9,6 +9,7 @@
 
 #include "common/ARCADE.h"
 #include "ACATA.h"
+#include "ACATA_IO_WRITES.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -39,6 +40,11 @@ public:
 
     bool ReadSector(u64 lba, void* buffer);
     bool ReadSectors(u64 lba, u32 count, void* buffer);
+
+    // ARMSX2: a hard drive's writes, which the CHD cannot take, kept in [path] and read back over it
+    // (ChdWrites). After Open().
+    void OpenWrites(const std::string& path);
+    bool WriteSectors(u64 lba, u32 count, const void* buffer);
     
     static bool IsChdFileName(const std::string& path);
     static bool IsChdImage(const std::string& path); // by name, or failing that by its header
@@ -60,6 +66,8 @@ private:
     std::vector<u8> m_hunkBuffer;
 
     u32 m_cachedHunk = UINT32_MAX;
+
+    ChdWrites m_writes;
 };
 
 extern ChdImage CHD;

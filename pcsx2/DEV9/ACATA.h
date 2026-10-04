@@ -108,6 +108,9 @@ namespace ACATA
         int IO_CloseImage();
     }
     void SetImage(std::string path, ACMEDIATYPE media); // the media image to serve (path or content:// URI)
+    // ARMSX2: where a CHD hard drive's writes are kept, beside the game's SRAM (ChdImage::OpenWrites).
+    extern std::string writespath;
+    void SetWritesFile(std::string path);
     // The drive as a freshly started emulator has it: every register and transfer zero, as at a game's
     // start and every reset of it (ARMSX2: the board outlives a game here; PCSX2x6 started a new process).
     void Reset();

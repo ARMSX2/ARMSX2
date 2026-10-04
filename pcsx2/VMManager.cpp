@@ -1794,6 +1794,8 @@ bool VMManager::OpenArcadeGame(const VMBootParameters& boot_params, Error* error
 	}
 
 	ACATA::SetImage(media, media_type);
+	// What the game writes to a hard drive that is a CHD is kept beside its SRAM (ChdWrites).
+	ACATA::SetWritesFile(Path::Combine(Path::GetDirectory(sram), "hdd-writes.bin"));
 	if (ACATA::TH::IO_OpenImage() != 0)
 	{
 		if (!ACATA::TH::open_error.empty())
