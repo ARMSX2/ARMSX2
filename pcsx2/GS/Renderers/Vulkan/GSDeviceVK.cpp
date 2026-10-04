@@ -9367,6 +9367,16 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 				// Built over the whole target, since the draws that share it can land anywhere.
 				m_date_copy.valid = false;
 				SetupDATE(draw_rt, config.ds, config.datm, GSVector4i::loadh(rtsize));
+				// The pass this opens holds the run that used to read the target, and a pass holding a
+				// declared feedback loop is never tiled on Turnip. Without a read left in it the
+				// driver's autotuner may tile it, and Indiana Jones' corpus scene then took 9.6 ms at
+				// 2x where it takes 7.0 untiled (Nova, axfl2-001). Declaring the loop on this one draw
+				// keeps the pass untiled, as it was, for one wait per run.
+				if (draw_rt && UseFeedbackLoopLayout())
+				{
+					pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadAndWriteRT;
+					m_declare_rt_loop_without_read = true;
+				}
 			}
 			break;
 	}
@@ -9850,6 +9860,7 @@ VkDependencyFlags GSDeviceVK::GetFeedbackBarrierDependencyFlags() const
 
 void GSDeviceVK::DeclareDrawFeedbackLoop(const GSHWDrawConfig& config, const PipelineSelector& pipe)
 {
+	const bool rt_loop_without_read = std::exchange(m_declare_rt_loop_without_read, false);
 	if (!m_declare_loop_per_draw)
 		return;
 
@@ -9867,7 +9878,7 @@ void GSDeviceVK::DeclareDrawFeedbackLoop(const GSHWDrawConfig& config, const Pip
 	// which is what the pipeline create flag already does. The depth aspect is a straight mirror
 	// of the create flag it replaces -- nothing in the per-draw work declares a depth loop.
 	VkImageAspectFlags aspects = 0;
-	if (pipe.IsRTFeedbackLoop() && config.IsFeedbackLoopRT(pipe.ps))
+	if (pipe.IsRTFeedbackLoop() && (config.IsFeedbackLoopRT(pipe.ps) || rt_loop_without_read))
 		aspects |= VK_IMAGE_ASPECT_COLOR_BIT;
 	if (pipe.IsTestingAndSamplingDepth())
 		aspects |= VK_IMAGE_ASPECT_DEPTH_BIT;

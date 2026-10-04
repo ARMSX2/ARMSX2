@@ -1088,6 +1088,9 @@ private:
 		u64 pass_serial = 0;
 	};
 	DateCopy m_date_copy;
+	/// The next DeclareDrawFeedbackLoop declares the colour loop although the draw does not read (see
+	/// the shared DATE copy's setup in DoRenderHW).
+	bool m_declare_rt_loop_without_read = false;
 	bool DateCopyLive(const GSHWDrawConfig& config);
 	u32 m_readback_frame = ~0u;
 	// The kick's spacing, in unsubmitted render passes (see DoRenderHW). Only gsrunner's
