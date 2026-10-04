@@ -93,4 +93,33 @@ namespace GSAlphaBitLogicOp
 		}
 		return runs;
 	}
+
+	// The destination-alpha test that follows the marks. On the per-draw-wait road it reads the
+	// target too. Stencil DATE does not, but its copy of "does this pixel pass" into the stencil
+	// buffer ends the render pass. That copy stays true for the rest of the pass while every draw
+	// that writes the target's alpha keeps it true: a DATE draw whose written alpha keeps bit 7 on
+	// the passing side, and a logic-op mark that writes the stencil where it writes the bit. So a run
+	// of DATE draws interleaved with marks (Indiana Jones: 291 a frame in one pass) pays for one copy.
+	// Any other alpha write, a stencil clear, or the end of the pass drops the copy.
+	enum DateCopy : u8
+	{
+		NoDateCopy = 0,
+		UsesDateCopy = 1,
+	};
+
+	/// Whether a DATE draw leaves every pixel it writes passing, so the copy is as true after it as
+	/// before. It writes only where the test passed, so it is enough that the alpha it writes keeps
+	/// bit 7 at DATM.
+	constexpr bool KeepsDATEResult(bool datm, bool alpha_write, int alpha_min, int alpha_max, bool fba)
+	{
+		if (!alpha_write)
+			return true;
+		return datm ? (fba || alpha_min >= 0x80) : (!fba && alpha_max < 0x80);
+	}
+
+	/// The stencil value a mark leaves where it writes, for a copy built for `datm` (1 = passes).
+	constexpr u8 StencilWriteFor(u8 op, bool datm)
+	{
+		return ((op == SetBit) == datm) ? 2 : 1; // DepthStencilSelector::alpha_bit_stencil
+	}
 } // namespace GSAlphaBitLogicOp

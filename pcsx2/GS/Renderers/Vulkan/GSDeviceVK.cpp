@@ -7619,6 +7619,14 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 			VK_STENCIL_OP_KEEP, VK_COMPARE_OP_EQUAL, 1u, 1u, 1u};
 		gpb.SetStencilState(true, sos, sos);
 	}
+	else if (p.dss.alpha_bit_stencil)
+	{
+		// GSAlphaBitLogicOp: a mark keeps the shared DATE copy true by writing it where the depth test
+		// passes, which is exactly where its logic op writes the bit.
+		const VkStencilOpState sos{VK_STENCIL_OP_KEEP, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS,
+			1u, 1u, (p.dss.alpha_bit_stencil == 2) ? 1u : 0u};
+		gpb.SetStencilState(true, sos, sos);
+	}
 
 	// Blending
 	if (IsDATEModePrimIDInit(p.ps.date))
@@ -8707,6 +8715,7 @@ void GSDeviceVK::EndRenderPass()
 	m_current_render_pass = VK_NULL_HANDLE;
 	g_perfmon.Put(GSPerfMon::RenderPasses, 1);
 	m_render_passes_since_submit++;
+	m_render_pass_serial++;
 
 	vkCmdEndRenderPass(GetCurrentCommandBuffer());
 }
@@ -9147,6 +9156,12 @@ GSTextureVK* GSDeviceVK::SetupPrimitiveTrackingDATE(GSHWDrawConfig& config)
 	return image;
 }
 
+bool GSDeviceVK::DateCopyLive(const GSHWDrawConfig& config)
+{
+	return m_date_copy.valid && InRenderPass() && m_date_copy.pass_serial == m_render_pass_serial &&
+	       m_date_copy.rt == config.rt && m_date_copy.ds == config.ds;
+}
+
 void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 {
 	// Mid-frame kick (see m_render_passes_since_submit in the header): while a
@@ -9200,6 +9215,17 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			EndRenderPass();
 			ExecuteCommandBuffer(WaitType::None);
 		}
+	}
+
+	// The shared destination-alpha stencil copy (GSAlphaBitLogicOp.h) survives only draws that keep
+	// it true: DATE draws sharing it, and logic-op marks, which write it where they write the bit.
+	// Any other draw that writes alpha drops it. A draw on other targets ends the pass, which drops
+	// it too (DateCopyLive).
+	if (m_date_copy.valid && config.date_copy == GSAlphaBitLogicOp::NoDateCopy &&
+		config.colormask.logic_op == GSAlphaBitLogicOp::Off &&
+		(config.colormask.wa || (config.alpha_second_pass.enable && config.alpha_second_pass.colormask.wa)))
+	{
+		m_date_copy.valid = false;
 	}
 
 	const GSVector2i rtsize(config.rt ? config.rt->GetSize() : config.ds->GetSize());
@@ -9329,7 +9355,16 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		break;
 
 		case GSHWDrawConfig::DestinationAlphaMode::Stencil:
-			SetupDATE(draw_rt, config.ds, config.datm, config.drawarea);
+			if (config.date_copy == GSAlphaBitLogicOp::NoDateCopy)
+			{
+				SetupDATE(draw_rt, config.ds, config.datm, config.drawarea);
+			}
+			else if (!DateCopyLive(config) || m_date_copy.datm != config.datm)
+			{
+				// Built over the whole target, since the draws that share it can land anywhere.
+				m_date_copy.valid = false;
+				SetupDATE(draw_rt, config.ds, config.datm, GSVector4i::loadh(rtsize));
+			}
 			break;
 	}
 
@@ -9563,10 +9598,15 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		}
 	}
 
+	// The pass the shared copy lives in is open now: this draw built the copy or found it live.
+	if (config.date_copy != GSAlphaBitLogicOp::NoDateCopy && config.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::Stencil)
+		m_date_copy = {true, config.rt, config.ds, config.datm, m_render_pass_serial};
+
 	// Guard on stencil_buffer: devices without a stencil attachment (e.g. Adreno, forced D32F) have no
 	// stencil aspect to clear.
 	if (config.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::StencilOne && m_features.stencil_buffer)
 	{
+		m_date_copy.valid = false;
 		const VkClearAttachment ca = {VK_IMAGE_ASPECT_STENCIL_BIT, 0u, {.depthStencil = {0.0f, 1u}}};
 		const VkClearRect rc = {{{config.drawarea.left, config.drawarea.top},
 									{static_cast<u32>(config.drawarea.width()), static_cast<u32>(config.drawarea.height())}},
@@ -9594,22 +9634,33 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		UploadHWDrawVerticesAndIndices(config);
 
 	// now we can do the actual draw
-	if (config.logic_op_split != 0)
+	if (config.colormask.logic_op != GSAlphaBitLogicOp::Off)
 	{
-		// An alpha-bit draw whose primitives set the bit and then clear it, or the reverse
-		// (GSAlphaBitLogicOp.h): two runs in submission order, one op each. Nothing reads the target.
-		pxAssert(config.colormask.logic_op != GSAlphaBitLogicOp::Off && !config.require_one_barrier &&
-				 !config.require_full_barrier && config.logic_op_split < m_index.count);
+		// An alpha-bit mark (GSAlphaBitLogicOp.h): one run, or two in submission order when its
+		// primitives set the bit and then clear it (or the reverse), one op each. Nothing reads the
+		// target. Where a shared DATE stencil copy is live, each run writes it where it writes the bit.
+		pxAssert(!config.require_one_barrier && !config.require_full_barrier && config.logic_op_split < m_index.count);
+		const bool keep_copy = DateCopyLive(config) && pipe.ds &&
+			(m_date_copy.datm == SetDATM::DATM0 || m_date_copy.datm == SetDATM::DATM1);
+		if (!keep_copy)
+			m_date_copy.valid = false;
+		const bool datm = m_date_copy.datm == SetDATM::DATM1;
+		const u32 split = config.logic_op_split ? config.logic_op_split : m_index.count;
+		pipe.dss.alpha_bit_stencil = keep_copy ? GSAlphaBitLogicOp::StencilWriteFor(config.colormask.logic_op, datm) : 0;
 		if (BindDrawPipeline(pipe))
 		{
 			DeclareDrawFeedbackLoop(config, pipe);
-			Draw(config, 0, config.logic_op_split);
+			Draw(config, 0, split);
 		}
-		pipe.cms.logic_op = GSAlphaBitLogicOp::OtherOp(config.colormask.logic_op);
-		if (BindDrawPipeline(pipe))
+		if (split < m_index.count)
 		{
-			DeclareDrawFeedbackLoop(config, pipe);
-			Draw(config, config.logic_op_split, m_index.count - config.logic_op_split);
+			pipe.cms.logic_op = GSAlphaBitLogicOp::OtherOp(config.colormask.logic_op);
+			pipe.dss.alpha_bit_stencil = keep_copy ? GSAlphaBitLogicOp::StencilWriteFor(pipe.cms.logic_op, datm) : 0;
+			if (BindDrawPipeline(pipe))
+			{
+				DeclareDrawFeedbackLoop(config, pipe);
+				Draw(config, split, m_index.count - split);
+			}
 		}
 	}
 	else if (BindDrawPipeline(pipe))

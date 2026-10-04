@@ -375,6 +375,13 @@ private:
 
 	GSTextureCache::Target* m_last_rt;
 
+	// GSAlphaBitLogicOp: the target whose last destination-alpha draw could have shared a stencil
+	// copy, and its DATM. A second such draw with only marks or nothing on that target in between
+	// takes Stencil DATE and reuses the copy.
+	GSTexture* m_date_chain_rt = nullptr;
+	u8 m_date_chain_datm = 0;
+	bool m_date_draw_shares_copy = false; ///< This draw's DATE keeps a shared copy true (set by EmulateDATESelectMethod).
+
 	GIFRegFRAME m_split_clear_start = {};
 	GIFRegZBUF m_split_clear_start_Z = {};
 	u32 m_split_clear_pages = 0; // if zero, inactive

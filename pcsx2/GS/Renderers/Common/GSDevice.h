@@ -1057,8 +1057,11 @@ struct alignas(16) GSHWDrawConfig
 				u8 zwe  : 1;
 				u8 date : 1;
 				u8 date_one : 1;
+				// GSAlphaBitLogicOp: a logic-op mark that also keeps the destination-alpha stencil copy
+				// true: 0 leaves the stencil alone, 1 writes 0 (the test now fails), 2 writes 1.
+				u8 alpha_bit_stencil : 2;
 
-				u8 _free : 3;
+				u8 _free : 1;
 			};
 			u8 key;
 		};
@@ -1339,6 +1342,7 @@ struct alignas(16) GSHWDrawConfig
 	u32 nindices;          ///< Number of indices
 	u32 indices_per_prim;  ///< Number of indices that make up one primitive
 	u32 logic_op_split;    ///< With colormask.logic_op set: the indices before this one take that op, the rest the opposite (GSAlphaBitLogicOp.h). 0 = one op for the whole draw.
+	u8 date_copy;          ///< GSAlphaBitLogicOp::DateCopy: 1 = a Stencil DATE draw that may reuse the stencil copy left by the previous one in the same render pass, and leaves it true.
 	const std::vector<size_t>* drawlist;          ///< For reducing barriers on sprites
 	const std::vector<GSVector4i>* drawlist_bbox; ///< For RT copy when barriers not available.
 	GSVector4i scissor; ///< Scissor rect

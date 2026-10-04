@@ -159,6 +159,7 @@ namespace GSHWDrawHarness
 			m_depth = config.depth;
 			m_alpha_test = config.alpha_test;
 			m_logic_op_split = config.logic_op_split;
+			m_date_copy = config.date_copy;
 		}
 
 		/// The feature bits the renderer reads per draw, for a test that puts the device on a road
@@ -185,6 +186,7 @@ namespace GSHWDrawHarness
 		GSHWDrawConfig::DepthStencilSelector m_depth;
 		GSHWDrawConfig::AlphaTestMode m_alpha_test = GSHWDrawConfig::AlphaTestMode::NONE;
 		u32 m_logic_op_split = 0;
+		u8 m_date_copy = 0;
 	};
 
 	class Renderer final : public GSRendererHW

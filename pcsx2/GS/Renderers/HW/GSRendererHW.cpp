@@ -6716,6 +6716,7 @@ bool GSRendererHW::EmulateDATEEarlyFail(DATEOptions& date, GSTextureCache::Targe
 
 void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureCache::Target* rt, int& blend_alpha_min, int& blend_alpha_max)
 {
+	m_date_draw_shares_copy = false;
 	if (!date_options.enabled)
 		return;
 
@@ -6737,6 +6738,22 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 	{
 		blend_alpha_min = std::min(blend_alpha_min, 127);
 		blend_alpha_max = std::min(blend_alpha_max, 127);
+	}
+
+	// A run of destination-alpha draws on one target, separated by nothing but alpha-bit marks, can
+	// share one stencil copy of the test result where a read waits per draw (GSAlphaBitLogicOp.h).
+	// The first draw of a run reads as before and starts the chain; the second and later take
+	// Stencil DATE, which EmulateDATEGetConfig picks when no other mode is asked for, and the backend
+	// builds the copy once and keeps it while the pass stays open.
+	m_date_draw_shares_copy = features.alpha_bit_logic_op && features.stencil_buffer && m_conf.ds && rt &&
+		!PRIM->AA1 && !m_texture_shuffle && !m_channel_shuffle && !rt->m_rt_alpha_scale &&
+		GSAlphaBitLogicOp::KeepsDATEResult(m_cached_ctx.TEST.DATM, m_conf.colormask.wa, GetAlphaMinMax().min,
+			GetAlphaMinMax().max, m_context->FBA.FBA);
+	if (m_date_draw_shares_copy && m_date_chain_rt == rt->GetTexture() && m_date_chain_datm == m_cached_ctx.TEST.DATM)
+	{
+		GL_PERF("DATE: Stencil, sharing the copy with the previous DATE draw");
+		m_conf.date_copy = GSAlphaBitLogicOp::UsesDateCopy;
+		return;
 	}
 
 	// It is way too complex to emulate texture shuffle with DATE, so use accurate path.
@@ -11203,6 +11220,23 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	if (GSConfig.SaveHWConfig && GSConfig.ShouldDump(s_n, g_perfmon.GetFrame()))
 	{
 		GSHWDrawConfig::DumpConfig(GetDrawDumpPath("%05d_hwconfig.txt", s_n), m_conf);
+	}
+
+	// Where the next destination-alpha draw on this target may share a stencil copy: after a DATE
+	// draw that keeps it, through marks and draws that leave alpha alone; anything else ends the chain.
+	if (g_gs_device->Features().alpha_bit_logic_op)
+	{
+		GSTexture* const target = rt ? rt->GetTexture() : nullptr;
+		if (m_date_draw_shares_copy && m_conf.destination_alpha != GSHWDrawConfig::DestinationAlphaMode::Off)
+		{
+			m_date_chain_rt = target;
+			m_date_chain_datm = m_cached_ctx.TEST.DATM;
+		}
+		else if (target != m_date_chain_rt || m_conf.destination_alpha != GSHWDrawConfig::DestinationAlphaMode::Off ||
+				 (m_conf.colormask.wa && m_conf.colormask.logic_op == GSAlphaBitLogicOp::Off))
+		{
+			m_date_chain_rt = nullptr;
+		}
 	}
 
 	m_conf.road = DecideDrawRoad(m_conf, g_gs_device->Features());
