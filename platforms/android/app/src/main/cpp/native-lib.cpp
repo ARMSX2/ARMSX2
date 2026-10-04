@@ -1120,7 +1120,8 @@ static GenericInputBinding PadKeyToGeneric(jint key) {
 //   D-pad, and the left stick past half way: the lever.
 //   Square, Triangle, L1, Cross, Circle, R1: buttons 1 to 6, unless the game has a table of its own
 //     (fighting, racing and quiz games), which then says which button is which.
-//   Racing: the left stick steers, R2 accelerates, L2 brakes, the D-pad works the menus.
+//   Racing: the left stick steers, R2 accelerates, L2 brakes, the D-pad works the menus, and Square or
+//     Cross (button 1) or Circle (button 5) enters them, where the game's racing controls leave those free.
 //   Twin levers (Zoids): the sticks are the levers, L2/R2 the triggers, L1/R1 the buttons.
 //   Drums (Taiko): the D-pad hits the left half of the drum face (Don), the face buttons the right
 //     half, L1/L2 the left rim (Ka), R1/R2 the right rim.
@@ -1278,6 +1279,25 @@ static void ArcadeApplyPad(u32 player) {
 			bits |= lever(false) | (buttons.empty() ? six_buttons() : table(buttons));
 			if (ArcadeHeld(p, GIB::Start))
 				bits |= JVS_BTN_START;
+			// A test menu's ENTER switch is a cabinet button no racing control uses: in Ace Driver 3 the
+			// lever moves the highlight, and neither Start nor View enters. So the face buttons the game's
+			// racing table leaves free work the cabinet's free buttons: Square and Cross button 1 (Ridge
+			// Racer V's board takes ENTER from Square in PCSX2x6), Circle button 5.
+			if (!buttons.empty())
+			{
+				u16 taken = 0;
+				for (const InputBindingInfo& bi : buttons)
+					taken |= static_cast<u16>(bi.bind_index);
+				const auto free_button = [&](GIB pad, u16 bit) {
+					const bool used = std::any_of(buttons.begin(), buttons.end(),
+						[pad](const InputBindingInfo& bi) { return bi.generic_mapping == pad; });
+					if (!used && !(taken & bit) && ArcadeHeld(p, pad))
+						bits |= bit;
+				};
+				free_button(GIB::Square, JVS_BTN_1);
+				free_button(GIB::Cross, JVS_BTN_1);
+				free_button(GIB::Circle, JVS_BTN_5);
+			}
 		}
 		break;
 
