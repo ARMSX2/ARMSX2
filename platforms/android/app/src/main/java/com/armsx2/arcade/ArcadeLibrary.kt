@@ -124,25 +124,22 @@ object ArcadeLibrary {
 
     // ---- The arcade BIOS --------------------------------------------------------------------------
 
-    /** The arcade BIOS the core will boot with: the one picked, else the first System 256 one, else
-     *  the first arcade one (BiosTools' FindArcadeBiosImage order). Its file name, or null. */
-    fun biosName(context: Context): String? {
+    /** The arcade BIOS the core boots arcade games with, every one there in use: each game takes its
+     *  own board's (BiosTools' FindArcadeBiosFor). Their boards as the core names them ("System 246 Rack
+     *  C, System 256"), else their file names; null for none. */
+    fun biosNames(context: Context): String? {
         val dir = MainActivityRuntime.internalBiosDir(context)
         val files = dir.listFiles()?.filter { it.isFile && it.length() in Arcade.ARCADE_BIOS_SIZES }.orEmpty()
-        val arcade = files.mapNotNull { f ->
+        val names = files.mapNotNull { f ->
             val info = runCatching {
                 NativeApp.getBiosInfoFromFd(ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY).detachFd())
             }.getOrNull()
-            if (info != null && Arcade.isArcadeBios(info)) f to info else null
+            // The core's description is the zone, the board and the EXTINFO serial.
+            if (info == null || !Arcade.isArcadeBios(info)) null
+            else info.description.trim().removePrefix(info.zone).trim().substringBeforeLast(' ', "").trim().ifEmpty { f.name }
         }
-        Arcade.loadArcadeBios()
-        Arcade.arcadeBios.value?.let { picked -> arcade.firstOrNull { it.first.name == picked }?.let { return it.first.name } }
-        return (arcade.firstOrNull { it.second.description.contains(S256_BIOS_SERIAL) } ?: arcade.firstOrNull())?.first?.name
+        return names.distinct().sorted().takeIf { it.isNotEmpty() }?.joinToString(", ")
     }
-
-    /** The EXTINFO serial of the System 256 BIOS, which the core's BIOS description ends with
-     *  (BiosTools' ARCADE_S256_BIOS_SERIAL). */
-    private const val S256_BIOS_SERIAL = "20040519-145634"
 
     private fun copy(input: InputStream, out: java.io.OutputStream, total: Long, max: Long, onProgress: (Float) -> Unit) {
         val buffer = ByteArray(COPY_BUFFER)

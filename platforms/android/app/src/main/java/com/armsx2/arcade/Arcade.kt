@@ -177,6 +177,7 @@ object Arcade {
         val location = pathOf(at)
         val game = read(context, location) ?: return@runCatching prepareLoose(context, location)
         if (!hasArcadeBios(context)) fail("arcade.error.bios")
+        requireBiosFor(game.gameId)
         val files = locate(context, location) ?: fail("arcade.error.notInLibrary")
 
         val found = files.find(game.elf, inSubdir = game.subdir) ?: fail("arcade.error.elf", game.elf)
@@ -231,6 +232,7 @@ object Arcade {
             else -> fail("arcade.error.unreadable")
         }
         if (!hasArcadeBios(context)) fail("arcade.error.bios")
+        requireBiosFor(id)
 
         val dir = gameDir(context, id).apply { mkdirs() }
         val boot = ArcadeLibrary.bootProgram(context, id) ?: fail("arcade.error.bootFiles")
@@ -310,12 +312,18 @@ object Arcade {
     fun missing(context: Context, at: String): List<String> = runCatching {
         val location = pathOf(at)
         val parts = ArrayList<String>()
-        if (!hasArcadeBios(context)) parts.add(I18n.get("arcade.part.bios"))
+        val bios = hasArcadeBios(context)
+        if (!bios) parts.add(I18n.get("arcade.part.bios"))
+        // An arcade BIOS the game does not run on is none for it (Battle Gear 3 and the System 256 one).
+        fun biosFor(id: String) {
+            if (bios) biosNeed(id).takeIf { it.isNotEmpty() }?.let { parts.add(I18n.get("arcade.part.biosBoard").format(it)) }
+        }
         val files = locate(context, location) ?: return@runCatching parts
         val game = read(context, location)
         val cards = memcardsDir(context)
         fun inCards(name: String) = File(cards, File(name).name).let { it.isFile && it.length() > 0 }
         if (game != null) {
+            biosFor(game.gameId)
             if (files.find(game.elf, inSubdir = game.subdir) == null) parts.add(I18n.get("arcade.part.boot"))
             if (!inCards(game.dongle) && files.find(game.dongle, inSubdir = game.subdir, alsoBeside = true) == null)
                 parts.add(I18n.get("arcade.part.dongle"))
@@ -327,6 +335,7 @@ object Arcade {
         val siblings = files.list()
         val folderId = ArcadeFiles.idIn(files.folderName())
         val id = ArcadeFiles.idIn(name) ?: folderId ?: return@runCatching parts
+        biosFor(id)
         if (id !in ArcadeLibrary.bootGames(context)) parts.add(I18n.get("arcade.part.boot"))
         val size = siblings.firstOrNull { it.first == name }?.second ?: 0L
         if (ArcadeFiles.kindOf(name) { size } == ArcadeFiles.Kind.PACKED_IMAGE) parts.add(I18n.get("arcade.part.unpacked"))
@@ -342,9 +351,18 @@ object Arcade {
         val dir = MainActivityRuntime.internalBiosDir(context)
         fun arcade(file: File) = file.isFile && file.length() in ARCADE_BIOS_SIZES &&
             runCatching { NativeApp.isArcadeBios(file.absolutePath) }.getOrDefault(false)
-        arcadeBios.value?.let { if (arcade(File(dir, it))) return true }
         return dir.listFiles()?.any(::arcade) == true
     }
+
+    /** Fails when the game [id] runs on none of the arcade BIOS files there, naming the one it needs. */
+    private fun requireBiosFor(id: String) {
+        biosNeed(id).takeIf { it.isNotEmpty() }?.let { fail("arcade.error.biosBoard", it) }
+    }
+
+    /** The board whose BIOS the game [id] needs when none of the arcade BIOS files there runs it ("System
+     *  246" for Battle Gear 3, which rejects the System 256 one), else "". The core's own choice at boot. */
+    private fun biosNeed(id: String): String =
+        if (!MainActivityRuntime.nativeReady.value) "" else runCatching { NativeApp.getArcadeBiosNeed(id) }.getOrDefault("")
 
     /** What the core takes as an arcade BIOS (BiosTools' MIN_ARCADE_BIOS_SIZE to MAX_BIOS_SIZE): the
      *  boards' BIOS is a 2 MB flash chip, dumped that way (MAME's sys246/sys256, r27v1602f.*). */
@@ -504,33 +522,18 @@ object Arcade {
 
     // ---- The arcade BIOS ---------------------------------------------------------------------------
 
-    private const val PREF_ARCADE_BIOS = "arcadeBios"
-
     /**
-     * The BIOS file (in the BIOS folder) the player picked for arcade games, or null to let the core
-     * choose: the best arcade (COH-H) BIOS it finds, the System 256 one first, which runs System 246
-     * games too. Never the console BIOS: an arcade BIOS cannot run console games, nor the other way.
+     * There is no arcade BIOS to pick: every one in the BIOS folder is in use, and each game starts with
+     * its own board's (the core's FindArcadeBiosFor), a System 246 game with the System 246 BIOS and a
+     * System 256 game with the System 256 one. Never the console BIOS: an arcade BIOS cannot run console
+     * games, nor the other way. 2.8 had one picked for every arcade game; that pick is forgotten, in the
+     * app's preferences and in the core's settings ([Filenames] ArcadeBIOS), once the core is up.
      */
-    val arcadeBios = mutableStateOf<String?>(null)
-
-    fun loadArcadeBios() {
-        arcadeBios.value = MainActivityRuntime.prefs.getString(PREF_ARCADE_BIOS, null)?.takeIf { it.isNotBlank() }
-    }
-
-    fun setArcadeBios(fileName: String?) {
-        val name = fileName?.takeIf { it.isNotBlank() }
-        arcadeBios.value = name
-        MainActivityRuntime.prefs.edit().apply {
-            if (name == null) remove(PREF_ARCADE_BIOS) else putString(PREF_ARCADE_BIOS, name)
-        }.apply()
-        pushArcadeBios()
-    }
-
-    /** Hands the core the arcade BIOS choice ([Filenames] ArcadeBIOS), once its settings exist. */
-    fun pushArcadeBios() {
+    fun forgetArcadeBiosPick() {
+        MainActivityRuntime.prefs.edit().remove("arcadeBios").apply()
         if (!MainActivityRuntime.nativeReady.value) return
         runCatching {
-            NativeApp.setSetting("Filenames", "ArcadeBIOS", "string", arcadeBios.value.orEmpty())
+            NativeApp.setSetting("Filenames", "ArcadeBIOS", "string", "")
             NativeApp.commitSettings()
         }
     }

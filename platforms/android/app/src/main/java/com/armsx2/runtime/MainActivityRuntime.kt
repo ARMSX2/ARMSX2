@@ -2211,11 +2211,8 @@ open class MainActivityRuntime : ComponentActivity() {
                     NativeApp.commitSettings()
                 }
             }
-            // The arcade games' BIOS, kept apart from the console one (Arcade.arcadeBios).
-            runCatching {
-                com.armsx2.arcade.Arcade.loadArcadeBios()
-                com.armsx2.arcade.Arcade.pushArcadeBios()
-            }
+            // The arcade games' BIOS is never picked: each game takes its own board's (Arcade.forgetArcadeBiosPick).
+            runCatching { com.armsx2.arcade.Arcade.forgetArcadeBiosPick() }
 
             // Mirror the canonical (app-private) BIOS into the user's data root at
             // <dataRoot>/bios so it's visible/backup-able next to cache/covers/etc.
@@ -2620,11 +2617,11 @@ open class MainActivityRuntime : ComponentActivity() {
         runCatching { kr.co.iefriends.pcsx2.NativeApp.setAdpfEnabled(prefs.getBoolean("ui.adpf", false)) }
 
         // Arcade holds Compose state the first frame reads (its launch notice), and the emucore
-        // init below reaches it first, from its own thread (loadArcadeBios). A state made on another
+        // init below reaches it first, from its own thread (forgetArcadeBiosPick). A state made on another
         // thread while a composition is running cannot be read by that composition: the first frame
         // threw "Reading a state that was created after the snapshot was taken" and the app could
         // not open. So it is made here, on the main thread, before either of them starts.
-        com.armsx2.arcade.Arcade.loadArcadeBios()
+        com.armsx2.arcade.Arcade.forgetArcadeBiosPick()
 
         // Defer asset copy + emucore init until setup is complete. On the
         // first-ever run, `systemDir` isn't picked yet at onCreate time —

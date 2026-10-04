@@ -25,7 +25,7 @@ data class ArcadeUiState(
     /** How many games the downloaded boot files cover, 0 when there are none. */
     val bootGames: Int = 0,
     val downloading: Boolean = false,
-    /** The arcade BIOS file the core will boot with, or null for none. */
+    /** The arcade BIOS there, all in use (each game takes its own board's), or null for none. */
     val bios: String? = null,
     /** The arcade games in the player's game folders, as the library found them last. */
     val games: List<ArcadeGame> = emptyList(),
@@ -54,7 +54,7 @@ class ArcadeViewModel(application: Application) : AndroidViewModel(application) 
                 state.value.copy(
                     loaded = true,
                     bootGames = ArcadeLibrary.bootGames(app).size,
-                    bios = ArcadeLibrary.biosName(app),
+                    bios = ArcadeLibrary.biosNames(app),
                     games = arcadeGames(GameLibraryRepository(app).loadCached().games),
                 )
             }

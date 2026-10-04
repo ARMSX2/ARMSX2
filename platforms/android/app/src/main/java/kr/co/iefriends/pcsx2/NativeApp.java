@@ -293,6 +293,10 @@ public class NativeApp {
 	/** Whether a BIOS file is an arcade board's (COH-H). */
 	public static native boolean isArcadeBios(String path);
 
+	/** The board whose BIOS the arcade game needs when none of the arcade BIOS files there runs it
+	 *  ("System 246" for Battle Gear 3, which rejects the System 256 one), else "": the core's choice at boot. */
+	public static native String getArcadeBiosNeed(String gameId);
+
 	/** Every arcade game the database knows, one per line: game ID, name, board (System246,
 	 *  System256 or System SUPER256) and media (CD, DVD or HDD), tab separated. */
 	public static native String getArcadeGames();

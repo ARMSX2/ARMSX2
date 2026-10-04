@@ -1983,6 +1983,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "arcade.notice.title" to "Arcade game",
     "arcade.error.unreadable" to "This arcade game file could not be read, or it has no game ID. Its [game] section needs a gameid line: NM followed by five digits.",
     "arcade.error.bios" to "Arcade games need the BIOS of a Namco System 246 or 256 board. Import it in the BIOS settings: it is used for arcade games only, and your console BIOS stays as it is.",
+    "arcade.error.biosBoard" to "This game does not run on the arcade BIOS you have. Import the %s BIOS in BIOS Location too: each arcade game starts with its own board's BIOS.",
     "arcade.error.notInLibrary" to "The files next to this arcade game cannot be reached. Add the folder it is in to your game folders, then start it from the library.",
     "arcade.error.elf" to "The boot program %s was not found. It goes in the arcade game's folder, the one named after its game ID unless the .acgame says otherwise.",
     "arcade.error.media" to "The game image %s was not found. It goes in the arcade game's folder, the one named after its game ID unless the .acgame says otherwise.",
@@ -2001,7 +2002,6 @@ private val BASE_EN: Map<String, String> = mapOf(
     "arcade.test" to "Test switch",
     "arcade.test.detail" to "Opens the game's test menu, or closes it.",
     "bios.arcade.badge" to "Arcade",
-    "bios.arcade.use" to "Use for arcade games",
 
     // The NAMCO System 246/256 screen (drawer)
     "arcade.title" to "NAMCO System 246/256",
@@ -2015,7 +2015,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "arcade.boot.downloading" to "Downloading",
     "arcade.boot.failed" to "The boot files could not be downloaded. Check your connection and try again.",
     "arcade.step.bios" to "Arcade BIOS",
-    "arcade.step.bios.desc" to "The BIOS of a Namco System 246 or 256 board. Import it in BIOS Location: it is used for arcade games only, and your PS2 BIOS stays as it is.",
+    "arcade.step.bios.desc" to "The BIOS of a Namco System 246 or 256 board, or both: each arcade game starts with its own board's BIOS. Import them in BIOS Location: they are used for arcade games only, and your PS2 BIOS stays as it is.",
     "arcade.bios.none" to "No arcade BIOS yet",
     "arcade.bios.found" to "Using %s",
     "arcade.bios.open" to "Open BIOS Location",
@@ -2032,6 +2032,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "arcade.part.card" to "Conquest card",
     "arcade.part.boot" to "boot file",
     "arcade.part.bios" to "arcade BIOS",
+    "arcade.part.biosBoard" to "%s BIOS",
     "arcade.part.unpacked" to "an unpacked image",
     "arcade.board.246" to "System 246",
     "arcade.board.256" to "System 256",

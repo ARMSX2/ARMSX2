@@ -277,8 +277,9 @@ static constexpr const char* ARCADE_S256_BIOS_SERIAL = "20040519-145634";
 // has to know a 2MB file can be one.
 static constexpr u32 MIN_ARCADE_BIOS_SIZE = 2 * _1mb;
 
-// Whether the file is a Namco arcade board's BIOS (a COH-H dump), and whether it is the System 256 one.
-static bool IsArcadeBIOS(const char* filename, bool* is_s256 = nullptr)
+// Whether the file is a Namco arcade board's BIOS (a COH-H dump), and its EXTINFO serial, which names the
+// board it is from.
+static bool IsArcadeBIOS(const char* filename, std::string* board_serial = nullptr)
 {
 	const auto fp = FileSystem::OpenManagedCFile(filename, "rb");
 	if (!fp)
@@ -289,8 +290,8 @@ static bool IsArcadeBIOS(const char* filename, bool* is_s256 = nullptr)
 	if (!LoadBiosVersion(fp.get(), version, description, region, zone, serial) || zone != "COH-H")
 		return false;
 
-	if (is_s256)
-		*is_s256 = (serial == ARCADE_S256_BIOS_SERIAL);
+	if (board_serial)
+		*board_serial = std::move(serial);
 	return true;
 }
 
@@ -311,11 +312,11 @@ static std::string FindArcadeBiosImage()
 		if (fd.Size < MIN_ARCADE_BIOS_SIZE || fd.Size > MAX_BIOS_SIZE)
 			continue;
 
-		bool is_s256 = false;
-		if (!IsArcadeBIOS(fd.FileName.c_str(), &is_s256))
+		std::string serial;
+		if (!IsArcadeBIOS(fd.FileName.c_str(), &serial))
 			continue;
 
-		if (is_s256)
+		if (serial == ARCADE_S256_BIOS_SERIAL)
 			return std::move(fd.FileName);
 		if (found.empty())
 			found = std::move(fd.FileName);
@@ -324,6 +325,103 @@ static std::string FindArcadeBiosImage()
 	if (found.empty())
 		Console.Error("Unable to find an arcade (COH-H) BIOS image");
 	return found;
+}
+
+// The board an arcade BIOS dump is from, by its EXTINFO serial (PCSX2x6's names, as in LoadBiosVersion).
+enum class ArcadeBoard
+{
+	S256, // System 256, also on Super System 256 boards
+	S246C, // System 246 Rack C
+	CohA000010, // Sony's COH-H board (A-000-010)
+	Other,
+};
+
+static ArcadeBoard ArcadeBoardOf(const std::string& serial)
+{
+	if (serial == ARCADE_S256_BIOS_SERIAL)
+		return ArcadeBoard::S256;
+	if (serial == "20021119-163841")
+		return ArcadeBoard::S246C;
+	if (serial == "20000901-114731")
+		return ArcadeBoard::CohA000010;
+	return ArcadeBoard::Other;
+}
+
+// The arcade games that do not start on one board's BIOS, from PCSX2x6's compatibility list
+// (https://github.com/PS2Homebrew-arcade/pcsx2x6/issues/9), and the board whose BIOS they need instead.
+// Battle Gear 3 and Battle Gear 3 Tuned reject the System 256 BIOS (the game stops at "RACK ERROR!!");
+// Bloody Roar 3 crashes on Sony's COH-H board BIOS, and runs on the System 246 Rack C and System 256 ones.
+struct ArcadeBiosRule
+{
+	const char* gameid;
+	ArcadeBoard refuses;
+	const char* needs;
+};
+static constexpr ArcadeBiosRule s_arcade_bios_rules[] = {
+	{"NM00002", ArcadeBoard::CohA000010, "System 246"},
+	{"NM00010", ArcadeBoard::S256, "System 246"},
+	{"NM00015", ArcadeBoard::S256, "System 246"},
+};
+
+std::string FindArcadeBiosFor(const std::string& gameid, bool s256_game, const std::string& picked, std::string* needs)
+{
+	struct Dump
+	{
+		std::string name;
+		ArcadeBoard board;
+	};
+	std::vector<Dump> dumps;
+	FileSystem::FindResultsArray results;
+	if (FileSystem::FindFiles(EmuFolders::Bios.c_str(), "*", FILESYSTEM_FIND_FILES, &results))
+	{
+		for (const FILESYSTEM_FIND_DATA& fd : results)
+		{
+			std::string serial;
+			if (fd.Size >= MIN_ARCADE_BIOS_SIZE && fd.Size <= MAX_BIOS_SIZE && IsArcadeBIOS(fd.FileName.c_str(), &serial))
+				dumps.push_back({std::string(Path::GetFileName(fd.FileName)), ArcadeBoardOf(serial)});
+		}
+	}
+
+	const ArcadeBiosRule* rule = nullptr;
+	for (const ArcadeBiosRule& r : s_arcade_bios_rules)
+	{
+		if (gameid == r.gameid)
+			rule = &r;
+	}
+	const auto runs = [rule](const Dump& d) { return !rule || d.board != rule->refuses; };
+	// One of [board]'s dumps the game runs on, the picked one when it is one of them.
+	const auto of_board = [&dumps, &runs, &picked](ArcadeBoard board) -> const Dump* {
+		const Dump* found = nullptr;
+		for (const Dump& d : dumps)
+		{
+			if (d.board != board || !runs(d))
+				continue;
+			if (d.name == picked)
+				return &d;
+			if (!found)
+				found = &d;
+		}
+		return found;
+	};
+
+	// The game's own board's BIOS: a System 246 game takes the System 246 one, a System 256 game the System
+	// 256 one. Without it, the other (the System 256 BIOS runs System 246 games as well, PCSX2x6's advice),
+	// then Sony's COH-H board's, then any other.
+	const ArcadeBoard order[] = {
+		s256_game ? ArcadeBoard::S256 : ArcadeBoard::S246C,
+		s256_game ? ArcadeBoard::S246C : ArcadeBoard::S256,
+		ArcadeBoard::CohA000010,
+		ArcadeBoard::Other,
+	};
+	for (const ArcadeBoard board : order)
+	{
+		if (const Dump* d = of_board(board))
+			return d->name;
+	}
+
+	if (needs && rule && !dumps.empty())
+		*needs = rule->needs;
+	return {};
 }
 
 static std::string FindBiosImage()

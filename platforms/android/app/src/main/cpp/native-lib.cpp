@@ -2785,6 +2785,18 @@ Java_kr_co_iefriends_pcsx2_NativeApp_isArcadeBios(JNIEnv* env, jclass, jstring p
     return (IsBIOS(p.c_str(), version, description, region, zone) && zone == "COH-H") ? JNI_TRUE : JNI_FALSE;
 }
 
+/// The board whose BIOS an arcade game needs when none of the arcade BIOS files in the BIOS folder runs it
+/// ("System 246" for Battle Gear 3, which rejects the System 256 one), else "" (one does, or there is no
+/// arcade BIOS at all, which isArcadeBios tells). The same choice the core makes at boot (FindArcadeBiosFor).
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getArcadeBiosNeed(JNIEnv* env, jclass, jstring gameId) {
+    std::string needs;
+    if (gameId)
+        FindArcadeBiosFor(GetJavaString(env, gameId), false, {}, &needs);
+    return env->NewStringUTF(needs.c_str());
+}
+
 // One-time repair for enable lists poisoned by the old bulk auto-sync.
 //
 // Until this release, opening the Patch Manager persisted every uncommented group of every .pnach

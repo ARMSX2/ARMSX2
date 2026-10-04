@@ -234,6 +234,7 @@ static std::string s_arcade_gameid;
 static std::string s_arcade_title;
 static std::string s_arcade_dongle; // memory card file in slot 1: the game's security dongle
 static std::string s_arcade_card;   // memory card file in slot 2, empty for none
+static std::string s_arcade_bios;   // the BIOS (in the BIOS folder) the game runs on, empty to search at boot
 static std::string s_input_profile_name;
 static u32 s_frame_advance_count = 0;
 static bool s_fast_boot_requested = false;
@@ -833,9 +834,9 @@ void VMManager::LoadCoreSettings(SettingsInterface& si)
 // written back: the player's own BIOS, memory cards and multitap are all there again for the next game.
 void VMManager::ApplyArcadeSessionSettings(SettingsInterface& si)
 {
-	// The board's own BIOS, which the player may pick; empty = the best COH-H dump in the BIOS folder
-	// (LoadBIOS).
-	EmuConfig.BaseFilenames.Bios = si.GetStringValue("Filenames", "ArcadeBIOS", "");
+	// The board's own BIOS: the one OpenArcadeGame() found the game runs on (FindArcadeBiosFor), else the one
+	// the player picked; empty = the best COH-H dump in the BIOS folder (LoadBIOS).
+	EmuConfig.BaseFilenames.Bios = !s_arcade_bios.empty() ? s_arcade_bios : si.GetStringValue("Filenames", "ArcadeBIOS", "");
 
 	// mc0: holds the game's security dongle, mc1: a second card only a few games read (Soul Calibur
 	// II's Conquest card), or nothing.
@@ -1749,6 +1750,22 @@ bool VMManager::OpenArcadeGame(const VMBootParameters& boot_params, Error* error
 		return false;
 	}
 
+	// The board's BIOS (FindArcadeBiosFor): every arcade BIOS in the BIOS folder is in use, and the game
+	// takes its own board's, so with the System 246 and System 256 BIOS both there no game needs one picked.
+	std::string picked;
+	{
+		auto lock = Host::GetSettingsLock();
+		picked = Host::GetSettingsInterface()->GetStringValue("Filenames", "ArcadeBIOS", "");
+	}
+	std::string needs;
+	std::string bios = FindArcadeBiosFor(gameid, platform == "256" || platform == "super256", picked, &needs);
+	if (bios.empty() && !needs.empty())
+	{
+		Error::SetStringFmt(error,
+			TRANSLATE_FS("VMManager", "This game does not run on the arcade BIOS in the BIOS folder. It needs the {} BIOS."), needs);
+		return false;
+	}
+
 	// From here on the board exists, for this boot and every reset of it. It starts as a freshly started
 	// emulator would have it, whatever the last arcade game left behind.
 	ResetArcadeBoard();
@@ -1757,6 +1774,7 @@ bool VMManager::OpenArcadeGame(const VMBootParameters& boot_params, Error* error
 	s_arcade_title = ini.GetStringValue("game", "name", "");
 	s_arcade_dongle = std::move(dongle);
 	s_arcade_card = card;
+	s_arcade_bios = std::move(bios);
 	ArcadeiLinkID = region;
 	PS2CLK = clock;
 
@@ -1808,6 +1826,7 @@ bool VMManager::OpenArcadeGame(const VMBootParameters& boot_params, Error* error
 	Console.WriteLn(Color_StrongGreen, fmt::format("  dongle: {}{}", s_arcade_dongle,
 		s_arcade_card.empty() ? std::string() : fmt::format(", card: {}", s_arcade_card)));
 	Console.WriteLn(Color_StrongGreen, fmt::format("  sram: {}", sram));
+	Console.WriteLn(Color_StrongGreen, fmt::format("  bios: {}", s_arcade_bios.empty() ? std::string("(searched at boot)") : s_arcade_bios));
 	return true;
 }
 
@@ -1830,6 +1849,7 @@ void VMManager::CloseArcadeGame()
 	s_arcade_title = {};
 	s_arcade_dongle = {};
 	s_arcade_card = {};
+	s_arcade_bios = {};
 	Arcade::s_session = false;
 }
 
