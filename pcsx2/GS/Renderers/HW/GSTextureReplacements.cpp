@@ -1255,6 +1255,9 @@ void GSTextureReplacements::SyncWorkerThread()
 
 void GSTextureReplacements::CancelPendingLoadsAndDumps()
 {
+	// The pending and loaded lists belong to the cache mutex, and the worker can be inside a load
+	// that changes them. Lock in the order the loader does: cache mutex, then worker mutex.
+	std::unique_lock<std::mutex> cache_lock(s_replacement_texture_cache_mutex);
 	std::unique_lock<std::mutex> lock(s_worker_thread_mutex);
 	while (!s_worker_thread_queue.empty())
 		s_worker_thread_queue.pop_back();
