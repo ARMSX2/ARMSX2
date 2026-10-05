@@ -160,6 +160,16 @@ target_compile_definitions(gs_texture_upscaler_tests PRIVATE
 	GS_UPSCALER_RESOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../../../bin/resources/upscale/raisr"
 )
 
+# The upscaler's job queue and mip chain builder are header only and need nothing from the emulator.
+add_pcsx2_test(gs_texture_upscale_support_tests
+	gs_texture_upscale_support_tests.cpp
+)
+
+target_include_directories(gs_texture_upscale_support_tests PRIVATE
+	${CMAKE_CURRENT_SOURCE_DIR}/../../../../pcsx2
+	${CMAKE_CURRENT_SOURCE_DIR}/../../../..
+)
+
 # Same as pcsx2/CMakeLists.txt: the scalar and NEON paths only match bit for bit if nothing is
 # contracted beyond the explicit fused multiply-adds.
 if(NOT MSVC)
