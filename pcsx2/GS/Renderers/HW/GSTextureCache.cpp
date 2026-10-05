@@ -8370,9 +8370,6 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 		return;
 	}
 
-	GSTexture::GSMap m;
-	const bool mapped = t->Map(m);
-
 	GIFRegTEXA TEXA = {};
 	TEXA.AEM = 0;
 	TEXA.TA0 = 0;
@@ -8412,36 +8409,19 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 
 		const GSVector4i read_r = m_dirty.GetDirtyRect(i, m_TEX0, total_rect, true);
 		const GSVector4i t_r(read_r - t_offset);
-		if (mapped)
+
+		// Unswizzle into the scratch buffer: unswizzling straight into mapped upload memory is slow where that memory is write-combined.
+		const int pitch = VectorAlign(read_r.width() * sizeof(u32));
+		g_gs_renderer->m_mem.ReadTexture(off, read_r, s_unswizzle_buffer, pitch, TEXA);
+
+		if (((m_TEX0.PSM & 0xf) != PSMCT24 || m_valid_alpha_high || m_valid_alpha_low) && m_dirty[i].rgba.c.a && bpp >= 16)
 		{
-			if (((m_TEX0.PSM & 0xf) != PSMCT24 || m_valid_alpha_high || m_valid_alpha_low) && m_dirty[i].rgba.c.a && bpp >= 16)
-			{
-				// TODO: Only read once in 32bit and copy to the mapped texture. Bit out of scope of this PR and not a huge impact.
-				const int pitch = VectorAlign(read_r.width() * sizeof(u32));
-				g_gs_renderer->m_mem.ReadTexture(off, read_r, s_unswizzle_buffer, pitch, TEXA);
-
-				std::pair<u8, u8> new_alpha_minmax = GSGetRGBA8AlphaMinMax(s_unswizzle_buffer, read_r.width(), read_r.height(), pitch);
-				alpha_minmax.first = std::min(alpha_minmax.first, new_alpha_minmax.first);
-				alpha_minmax.second = std::max(alpha_minmax.second, new_alpha_minmax.second);
-			}
-
-			g_gs_renderer->m_mem.ReadTexture(
-				off, read_r, m.bits + t_r.y * static_cast<u32>(m.pitch) + (t_r.x * sizeof(u32)), m.pitch, TEXA);
+			std::pair<u8, u8> new_alpha_minmax = GSGetRGBA8AlphaMinMax(s_unswizzle_buffer, read_r.width(), read_r.height(), pitch);
+			alpha_minmax.first = std::min(alpha_minmax.first, new_alpha_minmax.first);
+			alpha_minmax.second = std::max(alpha_minmax.second, new_alpha_minmax.second);
 		}
-		else
-		{
-			const int pitch = VectorAlign(read_r.width() * sizeof(u32));
-			g_gs_renderer->m_mem.ReadTexture(off, read_r, s_unswizzle_buffer, pitch, TEXA);
 
-			if (((m_TEX0.PSM & 0xf) != PSMCT24 || m_valid_alpha_high || m_valid_alpha_low) &&m_dirty[i].rgba.c.a && bpp >= 16)
-			{
-				std::pair<u8, u8> new_alpha_minmax = GSGetRGBA8AlphaMinMax(s_unswizzle_buffer, read_r.width(), read_r.height(), pitch);
-				alpha_minmax.first = std::min(alpha_minmax.first, new_alpha_minmax.first);
-				alpha_minmax.second = std::max(alpha_minmax.second, new_alpha_minmax.second);
-			}
-
-			t->Update(t_r, s_unswizzle_buffer, pitch);
-		}
+		t->Update(t_r, s_unswizzle_buffer, pitch);
 
 		GSDevice::MultiStretchRect& drect = drects[ndrects++];
 		drect.src = t;
@@ -8462,9 +8442,6 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 			drect.wmask = 0xF;
 		}
 	}
-
-	if (mapped)
-		t->Unmap();
 
 	if (ndrects > 0)
 	{
