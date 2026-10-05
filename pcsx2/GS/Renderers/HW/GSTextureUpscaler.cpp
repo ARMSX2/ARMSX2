@@ -74,7 +74,7 @@ namespace GSTextureUpscaler
 		inline float MulAdd(float a, float b, float c)
 		{
 #if GSTU_NEON || defined(__FP_FAST_FMAF)
-			return __builtin_fmaf(a, b, c);
+			return std::fma(a, b, c);
 #else
 			return a * b + c;
 #endif
