@@ -415,6 +415,10 @@ constexpr AbiPin kPins[] = {
 	// moves — mVUtestCycles runs at the top of every block, so every probe
 	// carries the arm.
 	{38, {0x1b6417d39088c445, 0x4fb21f7df2e0eba1, 0x5b22843577880a34, 0x367caabd4ce98b70, 0x931e4ce41aaddfee, 0x528f4bc3805ce760, 0x474ca3bc38053234, 0xf3c90aa7361cb856, 0x97abca8e1e797c8e, 0x3a85dc8fbf46e675, 0x2179f3c725e74523, 0x28d99b6d7e13c0c8, 0x0f96630605ddf7d5, 0x008451d3443b1898, 0x6635ce78819a2162, 0x3ad5ab94e92fe23a, 0x631b8efb8b3cb5e5, 0xa19f8472ae85bb94, 0x205545fc7b500ddb, 0xfd15d794fe441fbf, 0x51aad4123c80fc0f, 0xc4b3d7d6d8249b94, 0x742e2538da750e4d, 0xebe95cc4b6a325c2, 0x025ba9f9ef343b1c, 0x1b2a82838a2443b2}},
+	// abi 39: the sign-preserving clamp's all-lane row reads the resident bounds
+	// instead of loading them. The probes that compile at vuClampMode 3 and 4
+	// move; the single-lane forms keep their Ldp, and modes 0 to 2 never emit it.
+	{39, {0x1b6417d39088c445, 0x4fb21f7df2e0eba1, 0x5b22843577880a34, 0x367caabd4ce98b70, 0x931e4ce41aaddfee, 0x528f4bc3805ce760, 0x474ca3bc38053234, 0xf3c90aa7361cb856, 0x97abca8e1e797c8e, 0x3a85dc8fbf46e675, 0xa1e2f7d5c83033f5, 0x28d99b6d7e13c0c8, 0x191cc45df004b45c, 0x008451d3443b1898, 0xb4d7293333bb33b9, 0x22851a1d6e1da4f7, 0x218d866b851d4396, 0xf59d5b3e255ec796, 0x205545fc7b500ddb, 0xfd15d794fe441fbf, 0x51aad4123c80fc0f, 0xc4b3d7d6d8249b94, 0x742e2538da750e4d, 0xebe95cc4b6a325c2, 0x025ba9f9ef343b1c, 0x7b59f4d79964c4b3}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,

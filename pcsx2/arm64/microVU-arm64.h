@@ -171,7 +171,10 @@
 //  38 — mVUtestCycles' budget-break exit is one shared stub reached by B,
 //       carrying the block pointer and the resume PC, instead of the block
 //       pointer, a call and mVUendProgram(0) inline in every block.
-static constexpr u32 kMvuCompilerAbiVersion = 38;
+//  39 — the sign-preserving clamp's all-lane row reads qmmClampMax and
+//       qmmClampMin rather than loading the same two bounds from mVUglob, so
+//       each full-width operand clamp loses its Ldp.
+static constexpr u32 kMvuCompilerAbiVersion = 39;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

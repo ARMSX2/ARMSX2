@@ -128,6 +128,20 @@ void mVUclamp2(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& re
 		if (cloned == mVUcloneTakeHere)
 			cloned = mVU.regAlloc->takeCloneSource(reg.GetCode());
 		const a64::VRegister src = (cloned >= 0) ? a64::VRegister(cloned, 128) : reg;
+		// The all-lane row is the pair mVUemitClampConsts keeps resident:
+		// signBounds[1] is maxvals then minvals, so qmmClampMax holds the same
+		// words as its first half and qmmClampMin as its second, in every lane.
+		// Both are loaded at block entry and after every C call under this same
+		// CHECK_VU_OVERFLOW test, and microRegAlloc keeps them out of the VF
+		// pool, so they are intact here and the reload is not needed. The
+		// single-lane row has sentinel lanes the resident pair does not, and
+		// COP2 macro mode keeps its own copy (SL-13), so both take the Ldp below.
+		if (row == 1 && CHECK_VU_OVERFLOW(mVU.index) && !mVU.cop2)
+		{
+			armAsm->Smin(reg.V4S(), src.V4S(), qmmClampMax.V4S());
+			armAsm->Umin(reg.V4S(), reg.V4S(), qmmClampMin.V4S());
+			return;
+		}
 		// The row's two bounds are adjacent, so they arrive in one Ldp. Both
 		// scratches die two instructions later, which is inside every caller's
 		// own use of them: the U/O models hold their predicates in allocator
