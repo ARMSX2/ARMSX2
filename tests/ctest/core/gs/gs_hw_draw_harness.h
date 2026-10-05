@@ -138,8 +138,10 @@ namespace GSHWDrawHarness
 		bool m_rgba = false;
 	};
 
-	/// The None backend with the last submitted draw kept.
-	class CaptureDevice final : public GSDeviceNone
+	/// The None backend with the last submitted draw kept. Not final: a test that needs to see more of
+	/// what the device is handed derives from it and returns the derived device from
+	/// Fixture::NewDevice().
+	class CaptureDevice : public GSDeviceNone
 	{
 	public:
 		void DoRenderHW(GSHWDrawConfig& config) override
@@ -218,9 +220,12 @@ namespace GSHWDrawHarness
 			GSConfig.HWMipmap = false;
 		}
 
+		/// The device BringUp() installs.
+		virtual std::unique_ptr<CaptureDevice> NewDevice() { return std::make_unique<CaptureDevice>(); }
+
 		void BringUp()
 		{
-			auto device = std::make_unique<CaptureDevice>();
+			auto device = NewDevice();
 			device->m_api = m_device_api;
 			m_device = device.get();
 			g_gs_device = std::move(device);
