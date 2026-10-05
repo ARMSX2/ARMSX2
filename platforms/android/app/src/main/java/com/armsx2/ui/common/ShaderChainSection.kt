@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -409,10 +410,30 @@ private fun ShaderPresetPicker(preset: String, onPresetChange: (String) -> Unit)
                 )
             }
             currentFolder?.presets.orEmpty().forEach { p -> PresetRow(p, preset, onPresetChange) }
+            // Without this the list is just the None row until the scan returns, which reads
+            // as "the list is broken". A first scan (no index yet) walks the whole tree.
+            if (scanning.value && scan.value == null) ScanningRow()
             if (root?.count == 0 && !scanning.value) {
                 HelpText(str("renderer.shaderChain.empty") + "\n\n" + scan.value?.dir.orEmpty())
             }
         }
+    }
+}
+
+/** Not controller-focusable: there is nothing to do with it but wait. */
+@Composable
+private fun ScanningRow() {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+        Spacer(Modifier.width(10.dp))
+        Text(
+            str("renderer.shaderChain.scanning"),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
