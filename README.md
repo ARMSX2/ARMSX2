@@ -9,36 +9,32 @@ The ARMSX2 team is eternally indebted to the [PCSX2 project](https://pcsx2.net) 
 
 ## About This Fork
 
-[![Project Demo](https://img.youtube.com/vi/a1_zydGhVaE/maxresdefault.jpg)](https://www.youtube.com/watch?v=a1_zydGhVaE)
+<img width="1920" height="1080" alt="ARMSX2" src="https://github.com/user-attachments/assets/c4170730-9fc0-4e75-9c66-bb605397a6b2" />
+
+▶️ Watch: [PS2 Emulation on Android Has LEVELED UP](https://www.youtube.com/watch?v=noFBhUGmSYU) (Retro Game Corps)
 
 The upstream PCSX2 project ships an ARM64 *interpreter* build for ARM, but its high-performance **JIT recompilers** (EE, IOP, VU0, VU1, and vtlb fast memory) are x86-64 only. 
 
 **This fork exists to close that gap.** The goal is to preserve the correctness features of 20 years of PCSX2 development, while generating the fastest native ARM performance possible.
 
 **Current status:**
-- ✅ EE (Emotion Engine) recompiler — integer, float, MMI, COP0/COP1/COP2, branches, load/store
-- ✅ IOP (I/O Processor / R3000A) recompiler — full integer, load/store, branches, coprocessors
-- ✅ VU (Vector Unit) recompiler — microVU skeleton + Upper FMAC vector ISA complete; Lower ISA and runtime complete
-- ✅ vtlb fast memory
-- ✅ Native ARM64 binary builds and boots the PS2 BIOS
-- ✅ 2D games are already playable
-- ✅ 3D games run
+- ✅ EE, VU (COP2, mVU, VU1), IOP jits fully complete with extensive unit test framework
+- ✅ Enhanced interpreter with no known accuracy divergence tested against real ps2 hardware
+- ✅ hardware-accurate floating point emulation in jit
+- ✅ hardware-accurate software renderer
+- ✅ Custom Adreno and Mali drivers with corresponding renderer backend
 
 ### Why LLMs / AI Were Used
 
-A word on methodology:
-
-The x86-64 JIT code in upstream ARMSX2 is **already proven correct** — it has run thousands of PS2 titles for years. The challenge in this port is not emulator design or JIT theory; it is **mechanical translation** of a large, well-understood x86-64 assembly codebase into equivalent ARM64 assembly (via VIXL) while preserving the exact same register-allocation contracts, block lifecycle, and recompiler semantics.
-
-Large language models (LLMs) were used as an **accelerant for this translation work** — pattern-matching x86 JIT boilerplate to ARM64 equivalents, scaffolding emit routines, and keeping the porting velocity high. The JIT *logic* (block compiler, dispatcher, analysis passes, flag pipelines, clamping rules, Tri-Ace hacks, etc.) is taken directly from the upstream x86 implementation and validated against it. **Nothing was hallucinated from scratch.**
-
-In other words: the hard engineering was done by the PCSX2 team over two decades. The hard *typing* — translating ~50k lines of x86 emitter code into ARM64 — is what AI helped compress.
+Our development team has seasoned developers with previous compiler experience, credits on shipped PS2 games, and contributions to many emulators for other platforms.
+However, we still use AI for development. Our goal is to produce the best emulator we can *by any means*. We are sensitive to the political issues surrounding AI, and we do not want our usage to be considered as a blanket endorsement of the technology.
+Still, we're just too passionate about making a good emulator to not use every tool at our disposal, even if it makes us look worse in the eyes of some. This isn't about us, it's about the emulator.
 
 ## System Requirements
 
-ARMSX2 targets ARM64 across desktop (macOS, Windows, Linux) and mobile (Android, iOS/iPadOS), all from the single shared core. Our [setup documentation page](https://pcsx2.net/docs/setup/requirements) contains additional details on software and hardware requirements.
+ARMSX2 targets ARM64 across desktop (macOS, Windows, Linux) and mobile (Android, iOS/iPadOS), all from the single shared core. See [System Requirements](https://armsx2.net/docs/system-requirements) for details, and the [ARMSX2 docs](https://armsx2.net/docs/) for setup guides.
 
-Please note that a BIOS dump from a legitimately-owned PS2 console is required to use the emulator. For more information, visit [this page](https://pcsx2.net/docs/setup/bios/).
+Please note that a BIOS dump from a legitimately-owned PS2 console is required to use the emulator. See [Dumping your BIOS](https://armsx2.net/docs/dumping-bios) and [Importing your BIOS](https://armsx2.net/docs/importing-bios).
 
 ## Building
 

@@ -129,13 +129,12 @@ elseif("${_PCSX2_TARGET_PROCESSOR}" STREQUAL "arm64" OR "${_PCSX2_TARGET_PROCESS
        "${CMAKE_OSX_ARCHITECTURES}" STREQUAL "arm64")
 	set(ARCH_ARM64 TRUE)
 	if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-		message(STATUS "Building for iOS (ARM64, A12 baseline).")
-		# They do not share it. The oldest phone that can install at our deployment
-		# target is an A12, which has no SHA3, and an M1 baseline lets clang fold
-		# XOR chains in the hash and CRC loops into eor3. An A12 then SIGILLs on
-		# the first one it reaches, which the game list scan hits on launch.
-		# -mcpu implies its own architecture, so there is no -march to disagree.
-		add_compile_options("-mcpu=apple-a12")
+		message(STATUS "Building for iOS (ARM64, A10 baseline).")
+		# They do not share it. The oldest device that can install at our deployment
+		# target is an A10 iPad (6th and 7th generation), not an A12 phone. An A12
+		# baseline uses ARMv8.3 ldapr for every static guard, so an A10 SIGILLs
+		# before main. -mcpu implies its own architecture, so no -march disagrees.
+		add_compile_options("-mcpu=apple-a10")
 	elseif(APPLE)
 		message(STATUS "Building for Apple Silicon (ARM64).")
 		# Min spec is an M1.

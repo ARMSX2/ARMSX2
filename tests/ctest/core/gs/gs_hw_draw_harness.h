@@ -54,6 +54,21 @@ namespace GSHWDrawHarness
 			m_verts.push_back(xyz);
 		}
 
+		// A vertex with its own colour: {RGBAQ, UV, XYZ2}. A strip whose alpha varies from vertex to
+		// vertex keeps the blend's As per fragment, where a flat alpha is turned into the fixed factor.
+		void VertexRGBA(int x, int y, u32 z, int u, int v, u8 r, u8 g, u8 b, u8 a)
+		{
+			GIFPackedReg rgba = {};
+			rgba.U32[0] = r;
+			rgba.U32[1] = g;
+			rgba.U32[2] = b;
+			rgba.U32[3] = a;
+			m_verts.push_back(rgba);
+			m_rgba = true;
+
+			Vertex(x, y, z, u, v);
+		}
+
 		// S, T and Q as floats. A packed STQ holds Q back for the next RGBAQ, and none follows, so the
 		// vertex keeps the Q of the last RGBAQ written.
 		void VertexST(int x, int y, u32 z, float s, float t, float q)
@@ -91,13 +106,16 @@ namespace GSHWDrawHarness
 			if (!m_verts.empty())
 			{
 				GIFTag tag = {};
-				tag.NLOOP = static_cast<u32>(m_verts.size() / 2);
+				const u32 regs_per_vertex = m_rgba ? 3 : 2;
+				tag.NLOOP = static_cast<u32>(m_verts.size() / regs_per_vertex);
 				tag.EOP = 1;
 				tag.PRE = 1;
 				tag.PRIM = static_cast<u32>(prim.U64 & 0x7FF);
 				tag.FLG = GIF_FLG_PACKED;
-				tag.NREG = 2;
-				tag.REGS = static_cast<u64>(m_st ? GIF_REG_STQ : GIF_REG_UV) | (static_cast<u64>(GIF_REG_XYZ2) << 4);
+				tag.NREG = regs_per_vertex;
+				tag.REGS = m_rgba ?
+					(static_cast<u64>(GIF_REG_RGBA) | (static_cast<u64>(GIF_REG_UV) << 4) | (static_cast<u64>(GIF_REG_XYZ2) << 8)) :
+					(static_cast<u64>(m_st ? GIF_REG_STQ : GIF_REG_UV) | (static_cast<u64>(GIF_REG_XYZ2) << 4));
 				buf.push_back(AsPackedReg(tag));
 				buf.insert(buf.end(), m_verts.begin(), m_verts.end());
 			}
@@ -117,6 +135,7 @@ namespace GSHWDrawHarness
 		std::vector<GIFPackedReg> m_regs;
 		std::vector<GIFPackedReg> m_verts;
 		bool m_st = false;
+		bool m_rgba = false;
 	};
 
 	/// The None backend with the last submitted draw kept.
@@ -134,6 +153,13 @@ namespace GSHWDrawHarness
 			m_destination_alpha = config.destination_alpha;
 			m_require_one_barrier = config.require_one_barrier;
 			m_require_full_barrier = config.require_full_barrier;
+			m_blend = config.blend;
+			m_blend_multi_pass = config.blend_multi_pass;
+			m_colormask = config.colormask;
+			m_depth = config.depth;
+			m_alpha_test = config.alpha_test;
+			m_logic_op_split = config.logic_op_split;
+			m_date_copy = config.date_copy;
 		}
 
 		/// The feature bits the renderer reads per draw, for a test that puts the device on a road
@@ -154,6 +180,13 @@ namespace GSHWDrawHarness
 		GSHWDrawConfig::DestinationAlphaMode m_destination_alpha = GSHWDrawConfig::DestinationAlphaMode::Off;
 		bool m_require_one_barrier = false;
 		bool m_require_full_barrier = false;
+		GSHWDrawConfig::BlendState m_blend;
+		GSHWDrawConfig::BlendMultiPass m_blend_multi_pass = {};
+		GSHWDrawConfig::ColorMaskSelector m_colormask;
+		GSHWDrawConfig::DepthStencilSelector m_depth;
+		GSHWDrawConfig::AlphaTestMode m_alpha_test = GSHWDrawConfig::AlphaTestMode::NONE;
+		u32 m_logic_op_split = 0;
+		u8 m_date_copy = 0;
 	};
 
 	class Renderer final : public GSRendererHW

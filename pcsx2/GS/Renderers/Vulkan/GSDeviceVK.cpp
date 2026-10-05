@@ -40,6 +40,7 @@ namespace
 	constexpr u64 kLibretroRetireFrames = 6;
 } // namespace
 #include "GS/Renderers/Common/GSDevice.h"
+#include "GS/Renderers/Common/GSAlphaBitLogicOp.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
@@ -629,6 +630,8 @@ bool GSDeviceVK::SelectDeviceFeatures()
 	m_device_features.geometryShader = available_features.geometryShader;
 	m_device_features.fragmentStoresAndAtomics = available_features.fragmentStoresAndAtomics;
 	m_device_features.pipelineStatisticsQuery = available_features.pipelineStatisticsQuery;
+	// Pipelines with logicOpEnable need the feature enabled at device creation (GSAlphaBitLogicOp.h).
+	m_device_features.logicOp = available_features.logicOp;
 
 	return true;
 }
@@ -4188,6 +4191,13 @@ void GSDeviceVK::ResolveFeedbackConsumers(const GSSelfReadRoadDecision& road)
 			// keeps the answer it had before the road existed.
 			.barrier_road_measured = m_device_rules.barrier_road_measured});
 
+	// Alpha bit 7 through a logic op (GSAlphaBitLogicOp.h), where the read it replaces waits for the
+	// GPU to drain. gsrunner -alpha-bit-logic-op forces the road question to yes, so a desktop GPU on
+	// its own road can check the pictures against the read.
+	m_features.alpha_bit_logic_op = GSAlphaBitLogicOp::DeviceQualifies(m_device_features.logicOp != 0,
+		m_features.ordered_read_costs_per_draw || g_gs_measurement_overrides.alpha_bit_logic_op,
+		m_broken_colormask_with_depth);
+
 	// The device half of the feedback-loop carry (GSDrawRoad.h). Every input is final here; the
 	// renderer adds the per-draw terms.
 	GSFeedbackLoopCarryInputs carry;
@@ -4349,14 +4359,17 @@ void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool de
 	if (g_gs_measurement_overrides.Any())
 	{
 		Console.WriteLn("VK: measurement overrides: loop-spelling=%s(%s; %s) declare-arm=%u depth-loop=%s "
-						"stencil-buffer=%s",
+						"stencil-buffer=%s alpha-bit-logic-op=%s",
 			g_gs_measurement_overrides.loop_create_flag ? "pipeline create flag" : "dynamic per draw",
 			g_gs_measurement_overrides.loop_create_flag ? "forced" : "default",
 			m_declare_loop_per_draw ? "applied" : "pipeline create flag in effect",
 			static_cast<unsigned>(g_gs_measurement_overrides.self_read_arm),
 			g_gs_measurement_overrides.declare_depth_loop ? "DECLARED" : "off",
-			g_gs_measurement_overrides.disable_stencil_buffer ? "FORCED OFF" : "device");
+			g_gs_measurement_overrides.disable_stencil_buffer ? "FORCED OFF" : "device",
+			g_gs_measurement_overrides.alpha_bit_logic_op ? (m_features.alpha_bit_logic_op ? "FORCED ON" : "FORCED but no logicOp") : "device");
 	}
+	if (m_features.alpha_bit_logic_op)
+		Console.WriteLn("VK: alpha bit 7 marks through a logic op (no target read).");
 
 	DevCon.WriteLn("Optional features:%s%s%s%s%s%s", m_features.primitive_id ? " primitive_id" : "",
 		m_features.texture_barrier ? " texture_barrier" : "", m_features.framebuffer_fetch ? " framebuffer_fetch" : "",
@@ -4647,6 +4660,7 @@ void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& 
 										{static_cast<u32>(r.width()), static_cast<u32>(r.height())}},
 				0u, 1u};
 			vkCmdClearAttachments(GetCurrentCommandBuffer(), 1, &ca, 1, &cr);
+			m_date_copy.valid = false; // see OMSetRenderTargets
 
 			return;
 		}
@@ -5624,6 +5638,8 @@ void GSDeviceVK::OMSetRenderTargets(
 				const GSVector2i size = vkRt ? vkRt->GetSize() : vkDs->GetSize();
 				const VkClearRect cr = {{{0, 0}, {static_cast<u32>(size.x), static_cast<u32>(size.y)}}, 0u, 1u};
 				vkCmdClearAttachments(GetCurrentCommandBuffer(), num_ca, cas.data(), 1, &cr);
+				// A clear inside the pass rewrites alpha the shared DATE stencil copy describes.
+				m_date_copy.valid = false;
 			}
 		}
 	}
@@ -7606,6 +7622,14 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 			VK_STENCIL_OP_KEEP, VK_COMPARE_OP_EQUAL, 1u, 1u, 1u};
 		gpb.SetStencilState(true, sos, sos);
 	}
+	else if (p.dss.alpha_bit_stencil)
+	{
+		// GSAlphaBitLogicOp: a mark keeps the shared DATE copy true by writing it where the depth test
+		// passes, which is exactly where its logic op writes the bit.
+		const VkStencilOpState sos{VK_STENCIL_OP_KEEP, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS,
+			1u, 1u, (p.dss.alpha_bit_stencil == 2) ? 1u : 0u};
+		gpb.SetStencilState(true, sos, sos);
+	}
 
 	// Blending
 	if (IsDATEModePrimIDInit(p.ps.date))
@@ -7613,6 +7637,14 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 		// image DATE prepass
 		gpb.SetBlendAttachment(0, true, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_MIN, VK_BLEND_FACTOR_ONE,
 			VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD, VK_COLOR_COMPONENT_R_BIT);
+	}
+	else if (p.cms.logic_op != GSAlphaBitLogicOp::Off)
+	{
+		// GSAlphaBitLogicOp: blending off, alpha written alone, and the logic op combines the
+		// shader's 0x80 with the stored alpha.
+		gpb.SetBlendAttachment(0, false, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD,
+			VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD, p.cms.wrgba);
+		gpb.SetLogicOp(true, (p.cms.logic_op == GSAlphaBitLogicOp::SetBit) ? VK_LOGIC_OP_OR : VK_LOGIC_OP_AND_INVERTED);
 	}
 	else if (pbs.enable)
 	{
@@ -8686,6 +8718,7 @@ void GSDeviceVK::EndRenderPass()
 	m_current_render_pass = VK_NULL_HANDLE;
 	g_perfmon.Put(GSPerfMon::RenderPasses, 1);
 	m_render_passes_since_submit++;
+	m_render_pass_serial++;
 
 	vkCmdEndRenderPass(GetCurrentCommandBuffer());
 }
@@ -9126,6 +9159,12 @@ GSTextureVK* GSDeviceVK::SetupPrimitiveTrackingDATE(GSHWDrawConfig& config)
 	return image;
 }
 
+bool GSDeviceVK::DateCopyLive(const GSHWDrawConfig& config)
+{
+	return m_date_copy.valid && InRenderPass() && m_date_copy.pass_serial == m_render_pass_serial &&
+	       m_date_copy.rt == config.rt && m_date_copy.ds == config.ds;
+}
+
 void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 {
 	// Mid-frame kick (see m_render_passes_since_submit in the header): while a
@@ -9179,6 +9218,17 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			EndRenderPass();
 			ExecuteCommandBuffer(WaitType::None);
 		}
+	}
+
+	// The shared destination-alpha stencil copy (GSAlphaBitLogicOp.h) survives only draws that keep
+	// it true: DATE draws sharing it, and logic-op marks, which write it where they write the bit.
+	// Any other draw that writes alpha drops it. A draw on other targets ends the pass, which drops
+	// it too (DateCopyLive).
+	if (m_date_copy.valid && config.date_copy == GSAlphaBitLogicOp::NoDateCopy &&
+		config.colormask.logic_op == GSAlphaBitLogicOp::Off &&
+		(config.colormask.wa || (config.alpha_second_pass.enable && config.alpha_second_pass.colormask.wa)))
+	{
+		m_date_copy.valid = false;
 	}
 
 	const GSVector2i rtsize(config.rt ? config.rt->GetSize() : config.ds->GetSize());
@@ -9308,7 +9358,26 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		break;
 
 		case GSHWDrawConfig::DestinationAlphaMode::Stencil:
-			SetupDATE(draw_rt, config.ds, config.datm, config.drawarea);
+			if (config.date_copy == GSAlphaBitLogicOp::NoDateCopy)
+			{
+				SetupDATE(draw_rt, config.ds, config.datm, config.drawarea);
+			}
+			else if (!DateCopyLive(config) || m_date_copy.datm != config.datm)
+			{
+				// Built over the whole target, since the draws that share it can land anywhere.
+				m_date_copy.valid = false;
+				SetupDATE(draw_rt, config.ds, config.datm, GSVector4i::loadh(rtsize));
+				// The pass this opens holds the run that used to read the target, and a pass holding a
+				// declared feedback loop is never tiled on Turnip. Without a read left in it the
+				// driver's autotuner may tile it, and Indiana Jones' corpus scene then took 9.6 ms at
+				// 2x where it takes 7.0 untiled (Nova, axfl2-001). Declaring the loop on this one draw
+				// keeps the pass untiled, as it was, for one wait per run.
+				if (draw_rt && UseFeedbackLoopLayout())
+				{
+					pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadAndWriteRT;
+					m_declare_rt_loop_without_read = true;
+				}
+			}
 			break;
 	}
 
@@ -9542,10 +9611,15 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		}
 	}
 
+	// The pass the shared copy lives in is open now: this draw built the copy or found it live.
+	if (config.date_copy != GSAlphaBitLogicOp::NoDateCopy && config.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::Stencil)
+		m_date_copy = {true, config.rt, config.ds, config.datm, m_render_pass_serial};
+
 	// Guard on stencil_buffer: devices without a stencil attachment (e.g. Adreno, forced D32F) have no
 	// stencil aspect to clear.
 	if (config.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::StencilOne && m_features.stencil_buffer)
 	{
+		m_date_copy.valid = false;
 		const VkClearAttachment ca = {VK_IMAGE_ASPECT_STENCIL_BIT, 0u, {.depthStencil = {0.0f, 1u}}};
 		const VkClearRect rc = {{{config.drawarea.left, config.drawarea.top},
 									{static_cast<u32>(config.drawarea.width()), static_cast<u32>(config.drawarea.height())}},
@@ -9573,7 +9647,36 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		UploadHWDrawVerticesAndIndices(config);
 
 	// now we can do the actual draw
-	if (BindDrawPipeline(pipe))
+	if (config.colormask.logic_op != GSAlphaBitLogicOp::Off)
+	{
+		// An alpha-bit mark (GSAlphaBitLogicOp.h): one run, or two in submission order when its
+		// primitives set the bit and then clear it (or the reverse), one op each. Nothing reads the
+		// target. Where a shared DATE stencil copy is live, each run writes it where it writes the bit.
+		pxAssert(!config.require_one_barrier && !config.require_full_barrier && config.logic_op_split < m_index.count);
+		const bool keep_copy = DateCopyLive(config) && pipe.ds &&
+			(m_date_copy.datm == SetDATM::DATM0 || m_date_copy.datm == SetDATM::DATM1);
+		if (!keep_copy)
+			m_date_copy.valid = false;
+		const bool datm = m_date_copy.datm == SetDATM::DATM1;
+		const u32 split = config.logic_op_split ? config.logic_op_split : m_index.count;
+		pipe.dss.alpha_bit_stencil = keep_copy ? GSAlphaBitLogicOp::StencilWriteFor(config.colormask.logic_op, datm) : 0;
+		if (BindDrawPipeline(pipe))
+		{
+			DeclareDrawFeedbackLoop(config, pipe);
+			Draw(config, 0, split);
+		}
+		if (split < m_index.count)
+		{
+			pipe.cms.logic_op = GSAlphaBitLogicOp::OtherOp(config.colormask.logic_op);
+			pipe.dss.alpha_bit_stencil = keep_copy ? GSAlphaBitLogicOp::StencilWriteFor(pipe.cms.logic_op, datm) : 0;
+			if (BindDrawPipeline(pipe))
+			{
+				DeclareDrawFeedbackLoop(config, pipe);
+				Draw(config, split, m_index.count - split);
+			}
+		}
+	}
+	else if (BindDrawPipeline(pipe))
 	{
 		DeclareDrawFeedbackLoop(config, pipe);
 		SendHWDraw(config, pipe.IsRTFeedbackLoop() ? draw_rt : nullptr, pipe.IsDepthFeedbackLoop() ? draw_ds : nullptr,
@@ -9587,9 +9690,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			SetBlendConstants(config.blend_multi_pass.blend.constant);
 
 		pipe.bs = config.blend_multi_pass.blend;
-		pipe.ps.no_color1 = config.blend_multi_pass.no_color1;
-		pipe.ps.blend_hw = config.blend_multi_pass.blend_hw;
-		pipe.ps.dither = config.blend_multi_pass.dither;
+		config.blend_multi_pass.ApplyTo(pipe.ps);
 		if (BindDrawPipeline(pipe))
 		{
 			DeclareDrawFeedbackLoop(config, pipe);
@@ -9759,6 +9860,7 @@ VkDependencyFlags GSDeviceVK::GetFeedbackBarrierDependencyFlags() const
 
 void GSDeviceVK::DeclareDrawFeedbackLoop(const GSHWDrawConfig& config, const PipelineSelector& pipe)
 {
+	const bool rt_loop_without_read = std::exchange(m_declare_rt_loop_without_read, false);
 	if (!m_declare_loop_per_draw)
 		return;
 
@@ -9776,7 +9878,7 @@ void GSDeviceVK::DeclareDrawFeedbackLoop(const GSHWDrawConfig& config, const Pip
 	// which is what the pipeline create flag already does. The depth aspect is a straight mirror
 	// of the create flag it replaces -- nothing in the per-draw work declares a depth loop.
 	VkImageAspectFlags aspects = 0;
-	if (pipe.IsRTFeedbackLoop() && config.IsFeedbackLoopRT(pipe.ps))
+	if (pipe.IsRTFeedbackLoop() && (config.IsFeedbackLoopRT(pipe.ps) || rt_loop_without_read))
 		aspects |= VK_IMAGE_ASPECT_COLOR_BIT;
 	if (pipe.IsTestingAndSamplingDepth())
 		aspects |= VK_IMAGE_ASPECT_DEPTH_BIT;

@@ -9,6 +9,7 @@
 #include "GS/Renderers/HW/GSPointPlace.h"
 #include "GS/Renderers/HW/GSSpriteEdgeSnap.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
+#include "GS/Renderers/Common/GSAlphaBitLogicOp.h"
 #include "GS/Renderers/Common/GSBlendConstantPolicy.h"
 #include "GS/Renderers/Common/GSDrawRoad.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
@@ -6715,6 +6716,7 @@ bool GSRendererHW::EmulateDATEEarlyFail(DATEOptions& date, GSTextureCache::Targe
 
 void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureCache::Target* rt, int& blend_alpha_min, int& blend_alpha_max)
 {
+	m_date_draw_shares_copy = false;
 	if (!date_options.enabled)
 		return;
 
@@ -6736,6 +6738,22 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 	{
 		blend_alpha_min = std::min(blend_alpha_min, 127);
 		blend_alpha_max = std::min(blend_alpha_max, 127);
+	}
+
+	// A run of destination-alpha draws on one target, separated by nothing but alpha-bit marks, can
+	// share one stencil copy of the test result where a read waits per draw (GSAlphaBitLogicOp.h).
+	// The first draw of a run reads as before and starts the chain; the second and later take
+	// Stencil DATE, which EmulateDATEGetConfig picks when no other mode is asked for, and the backend
+	// builds the copy once and keeps it while the pass stays open.
+	m_date_draw_shares_copy = features.alpha_bit_logic_op && features.stencil_buffer && m_conf.ds && rt &&
+		!PRIM->AA1 && !m_texture_shuffle && !m_channel_shuffle && !rt->m_rt_alpha_scale &&
+		GSAlphaBitLogicOp::KeepsDATEResult(m_cached_ctx.TEST.DATM, m_conf.colormask.wa, GetAlphaMinMax().min,
+			GetAlphaMinMax().max, m_context->FBA.FBA);
+	if (m_date_draw_shares_copy && m_date_chain_rt == rt->GetTexture() && m_date_chain_datm == m_cached_ctx.TEST.DATM)
+	{
+		GL_PERF("DATE: Stencil, sharing the copy with the previous DATE draw");
+		m_conf.date_copy = GSAlphaBitLogicOp::UsesDateCopy;
+		return;
 	}
 
 	// It is way too complex to emulate texture shuffle with DATE, so use accurate path.
@@ -8152,8 +8170,9 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 	blend_mix &= !(bmix1_multi_pass1 || bmix1_multi_pass2 || bmix3_multi_pass);
 
 	// The over-one blend-mix promotion (see the Basic case below), named here so the barrier
-	// strength it needs can be decided at emission time.
-	const bool blend_mix_alpha_over_one = blend_mix && (alpha_c0_high_max_one || alpha_c2_high_one);
+	// strength it needs can be decided at emission time. A draw the two-pass road below takes
+	// is no longer promoted, so it is cleared there.
+	bool blend_mix_alpha_over_one = blend_mix && (alpha_c0_high_max_one || alpha_c2_high_one);
 
 	const bool one_barrier =
 		GSDrawAlphaMask::OneBarrierWithHeldMask(m_conf.require_one_barrier, m_held_alpha_mask.fbmask != 0) ||
@@ -8186,6 +8205,72 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 		|| (!(blend_flag & BLEND_HW2) && !blend_multipass_group && (alpha_c2_high_one || alpha_c0_high_max_one) && no_prim_overlap)
 		// Ad blends are completely wrong without sw blend (Ad is 0.5 not 1 for 128). We can spare a barrier for it.
 		|| (blend_ad && !blend_multipass_group && no_prim_overlap && !new_rt_alpha_scale));
+
+	// (Cd - Cs)*As and (Cs - Cd)*As with As above 1.0, on a device where reading the destination
+	// means copying the render target and ending the render pass. The promotion in the Basic case
+	// below sends these draws to software blending, which pays that copy per draw. Two hardware
+	// passes over the same geometry give the same picture without reading the destination:
+	//
+	//   Pass 1: the blend mix the draw already takes where As <= 1. The shader outputs
+	//           Color = Cs * min(As, 1), offset by the mix's rounding term, and SRC1 = As; the unit
+	//           computes Cd * a - Color (or Color - Cd * a) with a = SRC1 clamped to 1 by the
+	//           fixed-point attachment. So pass 1 leaves min(As, 1) * (Cd - Cs), up to the rounding
+	//           term: exactly the mix's result where As <= 1, and Cd - Cs where As > 1.
+	//   Pass 2: Cd1 * max(0, As - 1) + Cd1, with Cd1 what pass 1 left. Where As <= 1 the
+	//           multiplier is 0 and Cd1 comes back untouched; where As > 1 the result is As * Cd1.
+	//
+	// Per fragment that is clamp(As * clamp(Cd - Cs)). The GS computes clamp((Cd - Cs) * As); As is
+	// never negative, so the sign of the difference survives the product and the two agree, up to
+	// the rounding of the second multiply.
+	//
+	// What it gets wrong: pass 2 runs after every primitive of the draw has had its pass 1. A
+	// fragment with As > 1 that a later primitive of the same draw painted over gets its
+	// multiplier applied to the later primitive's result, not its own. The copy road's single
+	// pre-draw snapshot is wrong for overlapping primitives too, which is why the promotion
+	// excludes PRIM_OVERLAP_YES; this road keeps that exclusion.
+	//
+	// The guards, each a reason pass 2 would not be a plain rescale of pass 1:
+	//   - Pass 2 runs pass 1's pixel shader with the blend type, the second output, the dither and
+	//     the software-blend bits replaced (BlendMultiPass::ApplyTo), so whatever else the shader
+	//     does to the colour it does to the multiplier: fbmask, shuffles, AA1 coverage, PABE.
+	//     Dither and 16-bit targets quantise the colour after the blend, which pass 2 cannot
+	//     repeat. On Brian Lara's pitch, a dithered 16-bit target, the road measured worse than
+	//     the promotion.
+	//   - An alpha test that keeps part of the fragment runs a second pass of its own, DATE tests
+	//     the destination alpha, and a draw that samples the target or depth sees it change
+	//     between the passes.
+	//   - Pass 2 keeps the depth state. With depth writes off it tests against the buffer pass 1
+	//     saw. With them on, GEQUAL passes against the fragment's own z (a fragment a later
+	//     primitive covered fails and is skipped, the overdraw case above) and ALWAYS has no
+	//     test, but GREATER fails against the fragment's own z.
+	//   - Pass 1 reads the second colour output, so no dual-source blend means no road, and Metal
+	//     does not run blend_multi_pass.
+	const bool depth_ok_for_second_pass =
+		m_conf.depth.ztst == ZTST_ALWAYS || m_conf.depth.ztst == ZTST_GEQUAL ||
+		(m_conf.depth.ztst == ZTST_GREATER && !m_conf.depth.zwe);
+	const bool over_one_two_pass =
+		blend_mix_alpha_over_one && blend_mix1 &&
+		// Cd and Cs in either order, As per fragment, nothing added: the two table rows
+		// 1002 and 0102.
+		m_conf.ps.blend_c == 0 && m_conf.ps.blend_d == 2 && (m_conf.ps.blend_a + m_conf.ps.blend_b) == 1 &&
+		// Only where the promotion would have fired, and not where something else already
+		// sends the draw to software blending or to the exact two-pass road above.
+		is_basic_blend && !barriers_supported && m_prim_overlap != PRIM_OVERLAP_YES &&
+		!blend_requires_barrier && !prefer_sw_blend && !free_blend && !blend_ad_alpha_masked && !PABE &&
+		// The backend must run the second pass and have the second colour output pass 1 needs.
+		features.dual_source_blend && !features.framebuffer_fetch && !GSConfig.UseDebugBlend &&
+		g_gs_device->GetRenderAPI() != RenderAPI::Metal &&
+		// Shader-side effects on the colour, see above.
+		!m_conf.ps.dither && GSConfig.Dithering < 3 && m_conf.ps.dst_fmt != GSLocalMemory::PSM_FMT_16 &&
+		!m_conf.ps.fbmask && !m_conf.ps.shuffle && !m_channel_shuffle && m_conf.ps.aa1 == GSHWDrawConfig::PS_AA1::NONE && !m_conf.ps.fixed_one_a &&
+		// Passes that must not run twice or see the target change between runs.
+		(m_conf.alpha_test == GSHWDrawConfig::AlphaTestMode::NONE || m_conf.alpha_test == GSHWDrawConfig::AlphaTestMode::KEEP) &&
+		!date_options.enabled && !m_conf.ps.tex_is_fb && m_conf.tex_hazard == GSHWDrawConfig::TEX_HAZARD_NONE &&
+		(!m_conf.tex || m_conf.tex != m_conf.rt) && !m_conf.ps.IsFeedbackLoopDepth() &&
+		depth_ok_for_second_pass;
+	// Not promoted: the blend mix below is pass 1.
+	if (over_one_two_pass)
+		blend_mix_alpha_over_one = false;
 
 	// NOTE: an old Mali "clamp blending accuracy up to Full" band-aid used to live here. The real
 	// cause of Mali needing Full/Maximum by hand was missing hardware dual-source blending, now
@@ -8637,6 +8722,21 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 			// For mixed blend, the source blend is done in the shader (so we use CONST_ONE as a factor).
 			m_conf.blend = {true, GSDevice::CONST_ONE, blend.dst, blend.op, GSDevice::CONST_ONE, GSDevice::CONST_ZERO, m_conf.ps.blend_c == 2, AFIX};
 			m_conf.ps.blend_mix = (blend.op == GSDevice::OP_REV_SUBTRACT) ? 2 : 1;
+
+			if (over_one_two_pass)
+			{
+				// Pass 1 is the mix just set up. Pass 2 rescales what it left by As where As > 1:
+				// the shader writes max(0, As - 1) as the colour (HWBlendType::SRC_ALPHA_DST_FACTOR,
+				// which only means that with the software-blend bits clear), source factor DST_COLOR
+				// makes that Cd1 * max(0, As - 1), and the destination factor adds Cd1 back. Pass 1
+				// wrote the alpha, so pass 2 keeps the destination's, and it has no use for the
+				// second output.
+				m_conf.blend_multi_pass.enable = true;
+				m_conf.blend_multi_pass.clear_sw_blend = true;
+				m_conf.blend_multi_pass.blend_hw = static_cast<u8>(HWBlendType::SRC_ALPHA_DST_FACTOR);
+				m_conf.blend_multi_pass.blend = {true, GSDevice::DST_COLOR, GSDevice::CONST_ONE, GSDevice::OP_ADD, GSDevice::CONST_ZERO, GSDevice::CONST_ONE, false, 0};
+				m_conf.blend_multi_pass.no_color1 = true;
+			}
 		}
 		else
 		{
@@ -11029,6 +11129,38 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 		m_conf.ps.rta_correction = rt->m_rt_alpha_scale;
 	}
 
+	// Alpha bit 7 through the colour output stage's logic op instead of the shader-emulated mask's
+	// read of the target (GSAlphaBitLogicOp.h). Here because the target's alpha representation is
+	// final: the op works on stored bits, so a scaled (RTA-corrected) or wider target does not
+	// qualify.
+	if (rt && g_gs_device->Features().alpha_bit_logic_op && m_conf.ps.fbmask &&
+		m_cached_ctx.FRAME.PSM == PSMCT32 && m_cached_ctx.FRAME.FBMSK == 0x7FFFFFFFu && m_conf.colormask.wrgba == 0x8 &&
+		m_vt.m_primclass == GS_TRIANGLE_CLASS && !PRIM->TME && !PRIM->FGE && !PRIM->AA1 &&
+		!m_conf.ps.rta_correction && !m_conf.ps.colclip && !m_conf.ps.colclip_hw && !m_conf.ps.date &&
+		m_conf.ps.dst_fmt == GSLocalMemory::PSM_FMT_32 && !m_conf.ps.shuffle && !m_channel_shuffle && !m_texture_shuffle &&
+		!m_conf.blend_multi_pass.enable && !m_conf.alpha_second_pass.enable &&
+		m_conf.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::Off &&
+		m_conf.tex_hazard == GSHWDrawConfig::TEX_HAZARD_NONE && rt->GetTexture()->GetFormat() == GSTexture::Format::Color)
+	{
+		// The mask must have been the draw's only read of the target.
+		GSHWDrawConfig::PSSelector ps = m_conf.ps;
+		ps.fbmask = 0;
+		const GSAlphaBitLogicOp::Runs runs = m_conf.IsFeedbackLoopRT(ps) ? GSAlphaBitLogicOp::Runs() :
+			GSAlphaBitLogicOp::ClassifyTriangles(m_vertex->buff, m_index->buff, m_index->tail, PRIM->IIP, m_context->FBA.FBA);
+		if (runs.first_op != GSAlphaBitLogicOp::Off)
+		{
+			GL_INS("HW: alpha bit 7 through a logic op (%s first, split at %u)",
+				(runs.first_op == GSAlphaBitLogicOp::SetBit) ? "set" : "clear", runs.first_indices);
+			m_conf.ps = ps;
+			m_conf.ps.fba = 1; // the shader's alpha is exactly 0x80 for both ops
+			m_conf.blend = {};
+			m_conf.colormask.logic_op = runs.first_op;
+			m_conf.logic_op_split = runs.first_indices;
+			m_conf.require_one_barrier = false;
+			m_conf.require_full_barrier = false;
+		}
+	}
+
 	// Call before computing the full drawlist in case ROV is used and we don't need it.
 	DetermineROVUsage(rt, ds);
 	ConvertTextureTypeROV(rt, ds);
@@ -11088,6 +11220,23 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	if (GSConfig.SaveHWConfig && GSConfig.ShouldDump(s_n, g_perfmon.GetFrame()))
 	{
 		GSHWDrawConfig::DumpConfig(GetDrawDumpPath("%05d_hwconfig.txt", s_n), m_conf);
+	}
+
+	// Where the next destination-alpha draw on this target may share a stencil copy: after a DATE
+	// draw that keeps it, through marks and draws that leave alpha alone; anything else ends the chain.
+	if (g_gs_device->Features().alpha_bit_logic_op)
+	{
+		GSTexture* const target = rt ? rt->GetTexture() : nullptr;
+		if (m_date_draw_shares_copy && m_conf.destination_alpha != GSHWDrawConfig::DestinationAlphaMode::Off)
+		{
+			m_date_chain_rt = target;
+			m_date_chain_datm = m_cached_ctx.TEST.DATM;
+		}
+		else if (target != m_date_chain_rt || m_conf.destination_alpha != GSHWDrawConfig::DestinationAlphaMode::Off ||
+				 (m_conf.colormask.wa && m_conf.colormask.logic_op == GSAlphaBitLogicOp::Off))
+		{
+			m_date_chain_rt = nullptr;
+		}
 	}
 
 	m_conf.road = DecideDrawRoad(m_conf, g_gs_device->Features());

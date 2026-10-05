@@ -1185,6 +1185,8 @@ static void PrintCommandLineHelp(const char* progname)
 						 "are printed at start-up. Ignored unless the renderer is nullhw.\n");
 	std::fprintf(stderr, "  -no-stencil-buffer: Vulkan only. Report no stencil buffer and create depth as plain D32F, as "
 						 "Turnip before Mesa 26.2 does, so destination-alpha tests take the no-stencil choices.\n");
+	std::fprintf(stderr, "  -alpha-bit-logic-op: Vulkan only. Set and clear alpha bit 7 (FBMSK 0x7FFFFFFF draws) with a "
+						 "logic op on any device with the logicOp feature, not only where a target read waits per draw.\n");
 	std::fprintf(stderr, "  -vertex-ring-kib <n>: Vulkan only. Start the vertex ring at n KiB instead of the shipped "
 						 "size; it still grows on demand to its cap.\n");
 	std::fprintf(stderr, "  -readback-kick-passes <n>: Vulkan only. In a frame near a readback, submit at a render-pass "
@@ -1904,6 +1906,14 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// choices on a device that has D32S8, for an A/B on one binary.
 				g_gs_measurement_overrides.disable_stencil_buffer = true;
 				Console.WriteLn("Forcing the stencil buffer off (depth as plain D32F)");
+				continue;
+			}
+			else if (CHECK_ARG("-alpha-bit-logic-op"))
+			{
+				// Not a setting: where the logic op pays is a driver fact. This takes it on any Vulkan
+				// device with the logicOp feature, to check its pictures against the read.
+				g_gs_measurement_overrides.alpha_bit_logic_op = true;
+				Console.WriteLn("Forcing the alpha-bit logic op on (Vulkan, where logicOp exists)");
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-vertex-ring-kib"))

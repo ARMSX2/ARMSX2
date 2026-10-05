@@ -47,6 +47,11 @@ struct GSMeasurementOverrides
 	/// N unsubmitted render passes (0 = the shipped spacing). Read once, when the device is created.
 	u32 readback_kick_passes = 0;
 
+	/// -alpha-bit-logic-op: take the alpha-bit logic op (GSAlphaBitLogicOp.h) on any Vulkan device
+	/// with the logicOp feature, not only where a read waits per draw. For checking its pictures
+	/// against the read on a GPU that does not need it.
+	bool alpha_bit_logic_op = false;
+
 	GSLoopDeclarationSpelling LoopSpelling() const
 	{
 		return loop_create_flag ? GSLoopDeclarationSpelling::PipelineCreateFlag : kDefaultLoopDeclarationSpelling;
@@ -54,7 +59,8 @@ struct GSMeasurementOverrides
 
 	bool Any() const
 	{
-		return self_read_arm != GSSelfReadArm::Off || declare_depth_loop || loop_create_flag || disable_stencil_buffer;
+		return self_read_arm != GSSelfReadArm::Off || declare_depth_loop || loop_create_flag || disable_stencil_buffer ||
+		       alpha_bit_logic_op;
 	}
 };
 

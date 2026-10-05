@@ -17,6 +17,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_framebuffer_fetch_policy_tests.cpp
 	gs_draw_road_tests.cpp
 	gs_date_road_tests.cpp
+	gs_alpha_bit_logic_op_tests.cpp
 	gs_copy_road_blending_tests.cpp
 	gs_native_texel_grid_tests.cpp
 	gs_self_read_road_tests.cpp
@@ -72,6 +73,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_null_device_profile_tests.cpp
 	gs_sw_texture_dirty_tests.cpp
 	gs_blend_constant_policy_tests.cpp
+	gs_over_one_two_pass_tests.cpp
 	gs_autoflush_engine_level_tests.cpp
 	gs_draw_buffer_overlap_tests.cpp
 	gs_ktx_tests.cpp

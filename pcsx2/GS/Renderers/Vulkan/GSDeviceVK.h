@@ -1072,6 +1072,26 @@ private:
 	//     kick switch itself off partway through every frame at nobody's request.
 	// ~0u = no readback seen yet, window shut.
 	u32 m_render_passes_since_submit = 0;
+
+	/// Render passes ended so far; a stencil copy belongs to the pass it was built in.
+	u64 m_render_pass_serial = 0;
+
+	/// GSAlphaBitLogicOp: the destination-alpha stencil copy that DATE draws with
+	/// GSHWDrawConfig::date_copy share, while it stays true. Valid only inside the pass it was
+	/// built in, for these targets and this DATM.
+	struct DateCopy
+	{
+		bool valid = false;
+		const GSTexture* rt = nullptr;
+		const GSTexture* ds = nullptr;
+		SetDATM datm = SetDATM::DATM0;
+		u64 pass_serial = 0;
+	};
+	DateCopy m_date_copy;
+	/// The next DeclareDrawFeedbackLoop declares the colour loop although the draw does not read (see
+	/// the shared DATE copy's setup in DoRenderHW).
+	bool m_declare_rt_loop_without_read = false;
+	bool DateCopyLive(const GSHWDrawConfig& config);
 	u32 m_readback_frame = ~0u;
 	// The kick's spacing, in unsubmitted render passes (see DoRenderHW). Only gsrunner's
 	// -readback-kick-passes moves it.

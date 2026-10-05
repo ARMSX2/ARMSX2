@@ -2579,6 +2579,9 @@
     <ClInclude Include="GS\Renderers\Common\GSCopyRoadBlendingPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSAlphaBitLogicOp.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSFastStencilShadow.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>

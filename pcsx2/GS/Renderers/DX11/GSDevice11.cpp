@@ -3309,9 +3309,7 @@ void GSDevice11::DoRenderHW(GSHWDrawConfig& config)
 
 	if (config.blend_multi_pass.enable)
 	{
-		config.ps.no_color1 = config.blend_multi_pass.no_color1;
-		config.ps.blend_hw = config.blend_multi_pass.blend_hw;
-		config.ps.dither = config.blend_multi_pass.dither;
+		config.blend_multi_pass.ApplyTo(config.ps);
 		SetupPS(config.ps, &config.cb_ps, config.sampler);
 		SetupOM(config.depth, OMBlendSelector(config.colormask, config.blend_multi_pass.blend), config.blend_multi_pass.blend.constant);
 		Draw(config);
