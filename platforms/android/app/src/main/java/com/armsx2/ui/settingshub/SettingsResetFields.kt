@@ -46,7 +46,7 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
         "affinityMode", "precacheTextureReplacements",
         "shadeBoost", "shadeBoostBrightness", "shadeBoostContrast", "shadeBoostGamma",
         "shadeBoostSaturation", "shaderChainEnabled", "shaderChainParams", "shaderChainPreset",
-        "textureFiltering", "texturePreloading", "triFilter", "tvShader", "upscaleFloat",
+        "textureFiltering", "texturePreloading", "textureUpscaleMode", "triFilter", "tvShader", "upscaleFloat",
         "upscaler", "vsyncEnable",
     ),
     // AudioTab.kt

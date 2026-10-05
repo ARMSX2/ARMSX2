@@ -97,6 +97,7 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("renderer.loadTexturePacks.label", true, SettingsCategory.Graphics, listOf("renderer.section.displayResolution")),
     SettingsSearchEntry("renderer.asyncTextureLoading.label", true, SettingsCategory.Graphics, listOf("renderer.section.displayResolution")),
     SettingsSearchEntry("renderer.precacheTexturePacks.label", true, SettingsCategory.Graphics, listOf("renderer.section.displayResolution")),
+    SettingsSearchEntry("renderer.textureUpscale.label", true, SettingsCategory.Graphics, listOf("renderer.section.displayResolution")),
     SettingsSearchEntry("renderer.dumpReplaceableTextures.label", true, SettingsCategory.Graphics, listOf("renderer.section.displayResolution")),
     SettingsSearchEntry("renderer.texturePackOsd.label", true, SettingsCategory.Graphics, listOf("renderer.section.displayResolution")),
     SettingsSearchEntry("renderer.rov.label", true, SettingsCategory.Graphics, listOf("renderer.section.blendingAdvanced")),
