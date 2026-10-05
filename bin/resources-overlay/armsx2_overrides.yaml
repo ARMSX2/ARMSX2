@@ -605,6 +605,58 @@ SLUS-20686:
     autoFlush: 1
     copyRoadMaximumBlendingLevel: 0
 
+# Gran Turismo 4 — Unsynchronized hardware download mode (3) on tile-based GPUs (Mali / Adreno).
+# Source: Richpol99, 2026-10-04.
+# The cost it saves: on tile-based mobile GPUs (Mali and Adreno), synchronous readbacks of
+# rearview mirror and lighting effect render targets cause the EE thread to stall waiting
+# on the GS thread to flush tile memory, causing heavy frame drops on dusk/night tracks
+# (such as Seattle, Special Stage Route 5, and Tokyo R246) and during bumper/cockpit view.
+# Unsynchronized readbacks allow the EE thread to proceed without waiting on the GS download,
+# maintaining full frame rates while preserving car body reflections and Polyphony channel shuffle.
+# gsHWFixes is a clear-then-replace map in this overlay, so every upstream key is restated.
+SCUS-97328:            # Gran Turismo 4 (NTSC-U)
+  gsHWFixes:
+    autoFlush: 1 # Fixes missing lens flare and intensity.
+    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post-processing.
+    halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed.
+    hwDownloadMode: 3 # Unsynchronized readbacks prevent EE stalls on tiler GPUs.
+    recommendedBlendingLevel: 3 # Improves car reflections and paint sheen.
+SCES-51719:            # Gran Turismo 4 (PAL)
+  gsHWFixes:
+    autoFlush: 1 # Fixes missing lens flare and intensity.
+    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post-processing.
+    halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed.
+    hwDownloadMode: 3 # Unsynchronized readbacks prevent EE stalls on tiler GPUs.
+    recommendedBlendingLevel: 3 # Improves car reflections and paint sheen.
+SCPS-17001:            # Gran Turismo 4 (NTSC-J)
+  gsHWFixes:
+    autoFlush: 1 # Fixes missing lens flare and intensity.
+    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post-processing.
+    halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed.
+    hwDownloadMode: 3 # Unsynchronized readbacks prevent EE stalls on tiler GPUs.
+    recommendedBlendingLevel: 3 # Improves car reflections and paint sheen.
+SCPS-19304:            # Gran Turismo 4 [PlayStation 2 the Best] (NTSC-J)
+  gsHWFixes:
+    autoFlush: 1 # Fixes missing lens flare and intensity.
+    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post-processing.
+    halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed.
+    hwDownloadMode: 3 # Unsynchronized readbacks prevent EE stalls on tiler GPUs.
+    recommendedBlendingLevel: 3 # Improves car reflections and paint sheen.
+SCAJ-30007:            # Gran Turismo 4 (Asia)
+  gsHWFixes:
+    autoFlush: 1 # Fixes missing lens flare and intensity.
+    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post-processing.
+    halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed.
+    hwDownloadMode: 3 # Unsynchronized readbacks prevent EE stalls on tiler GPUs.
+    recommendedBlendingLevel: 3 # Improves car reflections and paint sheen.
+SCUS-97436:            # Gran Turismo 4 [Online Public Beta] / Spec II (NTSC-U)
+  gsHWFixes:
+    autoFlush: 1 # Fixes missing lens flare and intensity.
+    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post-processing.
+    halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed.
+    hwDownloadMode: 3 # Unsynchronized readbacks prevent EE stalls on tiler GPUs.
+    recommendedBlendingLevel: 3 # Improves car reflections and paint sheen.
+
 # ---------------------------------------------------------------------------------------------
 # Namco System 246/256 arcade games. Added 2026-10-01 by jpolo1224 with the arcade port (branch
 # namco-arcade), copied verbatim from PCSX2x6's GameIndex.yaml at 583f0e9090 (2026-09-09,
