@@ -4,7 +4,8 @@
 // Tests for the parts of the texture upscaler that have no GS dependencies
 // (GS/Renderers/HW/GSTextureUpscaleSupport.h): the bounded newest-first job queue, the scale a
 // texture is upscaled by, the count of guest mip levels an upscaled texture can take, the one or
-// two 2x passes of a level's upscale, and the CPU box filtered mip chain.
+// two 2x passes of a level's upscale, the pass that clamps an upscaled image to the range of its
+// source, and the CPU box filtered mip chain.
 //
 // The upscale tests run the real engine with the real Smooth filters in bin/resources/upscale/raisr.
 
@@ -13,6 +14,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <set>
 #include <string>
@@ -361,14 +363,17 @@ namespace
 		return img;
 	}
 
-	// The reference for a 4x level: the engine's own 2x entry points, chained by hand with the same
-	// size rule, into a tightly packed result.
+	// The reference for a 4x level: the engine's own 2x entry points, each RAISR pass clamped to the
+	// range of its source, chained by hand with the same size rule, into a tightly packed result.
 	std::vector<u8> ChainByHand(const GSTextureUpscaler::FilterSet& f, const std::vector<u8>& src, u32 w, u32 h, u32 pitch)
 	{
 		const auto pass = [&f](const u8* in, u32 iw, u32 ih, u32 ipitch, std::vector<u8>* out) {
 			out->assign(static_cast<size_t>(iw) * 2 * ih * 2 * 4, 0);
 			if (std::min(iw, ih) >= 8)
+			{
 				GSTextureUpscaler::UpscaleRGBA8x2(f, in, iw, ih, ipitch, out->data(), iw * 2 * 4);
+				ClampUpscaledToSourceRange(in, iw, ih, ipitch, out->data(), iw * 2 * 4);
+			}
 			else
 				GSTextureUpscaler::BilinearRGBA8x2(in, iw, ih, ipitch, out->data(), iw * 2 * 4);
 		};
@@ -380,7 +385,7 @@ namespace
 	}
 } // namespace
 
-TEST(GsTextureUpscaleChain, ScaleTwoIsOneEnginePass)
+TEST(GsTextureUpscaleChain, ScaleTwoIsOneClampedEnginePass)
 {
 	const auto f = LoadSmooth();
 	ASSERT_TRUE(f);
@@ -389,6 +394,7 @@ TEST(GsTextureUpscaleChain, ScaleTwoIsOneEnginePass)
 
 	std::vector<u8> expect(static_cast<size_t>(w) * 2 * h * 2 * 4);
 	GSTextureUpscaler::UpscaleRGBA8x2(*f, src.data(), w, h, w * 4, expect.data(), w * 2 * 4);
+	ClampUpscaledToSourceRange(src.data(), w, h, w * 4, expect.data(), w * 2 * 4);
 
 	std::vector<u8> got(expect.size(), 0xEE);
 	UpscaleRGBA8(*f, src.data(), w, h, w * 4, 2, got.data(), w * 2 * 4);
@@ -700,4 +706,162 @@ TEST(GsTextureUpscaleMips, NoLevelsRequested)
 	EXPECT_TRUE(mips.empty());
 	BuildBoxMipChain(base.data(), 4, 4, 16, 0, &mips);
 	EXPECT_TRUE(mips.empty());
+}
+
+// ---------------------------------------------------------------------------------------------
+//  ClampUpscaledToSourceRange
+// ---------------------------------------------------------------------------------------------
+
+namespace
+{
+	// Smallest and largest value of channel c over the four source texels output pixel (x, y) is
+	// interpolated from, worked out from the sample position rather than from the index formulas the
+	// code under test uses: x / 2 - 0.25 lies between floor() and floor() + 1, clamped to the image.
+	void SupportRange(const std::vector<u8>& src, u32 w, u32 h, u32 pitch, u32 x, u32 y, u32 c, u8* lo, u8* hi)
+	{
+		const double sx = (x + 0.5) / 2.0 - 0.5;
+		const double sy = (y + 0.5) / 2.0 - 0.5;
+		const int x0 = static_cast<int>(std::floor(sx));
+		const int y0 = static_cast<int>(std::floor(sy));
+		*lo = 255;
+		*hi = 0;
+		for (int dy = 0; dy <= 1; dy++)
+		{
+			for (int dx = 0; dx <= 1; dx++)
+			{
+				const u32 tx = static_cast<u32>(std::clamp(x0 + dx, 0, static_cast<int>(w) - 1));
+				const u32 ty = static_cast<u32>(std::clamp(y0 + dy, 0, static_cast<int>(h) - 1));
+				const u8 v = src[static_cast<size_t>(ty) * pitch + tx * 4 + c];
+				*lo = std::min(*lo, v);
+				*hi = std::max(*hi, v);
+			}
+		}
+	}
+
+	std::vector<u8> RandomBytes(size_t n, u32 seed)
+	{
+		std::vector<u8> v(n);
+		u32 s = seed ? seed : 1;
+		for (u8& b : v)
+		{
+			s ^= s << 13;
+			s ^= s >> 17;
+			s ^= s << 5;
+			b = static_cast<u8>(s >> 11);
+		}
+		return v;
+	}
+} // namespace
+
+TEST(GsTextureUpscaleClamp, MatchesABruteForceReferenceOnRandomData)
+{
+	// Odd sizes, a single row and column, and padded pitches, with random "upscaled" output that
+	// is out of range almost everywhere.
+	const std::pair<u32, u32> sizes[] = {{1, 1}, {1, 6}, {7, 1}, {2, 2}, {3, 5}, {8, 8}, {13, 9}, {32, 17}};
+	for (const auto& s : sizes)
+	{
+		const u32 w = s.first, h = s.second;
+		SCOPED_TRACE(std::to_string(w) + "x" + std::to_string(h));
+		const u32 src_pitch = w * 4 + 8;
+		const u32 dst_pitch = w * 8 + 12;
+		const std::vector<u8> src = RandomBytes(static_cast<size_t>(src_pitch) * h, w * 977 + h);
+		const std::vector<u8> before = RandomBytes(static_cast<size_t>(dst_pitch) * h * 2, w * 31 + h * 7 + 5);
+		std::vector<u8> dst = before;
+
+		ClampUpscaledToSourceRange(src.data(), w, h, src_pitch, dst.data(), dst_pitch);
+
+		for (u32 y = 0; y < h * 2; y++)
+		{
+			for (u32 x = 0; x < w * 2; x++)
+			{
+				for (u32 c = 0; c < 4; c++)
+				{
+					u8 lo, hi;
+					SupportRange(src, w, h, src_pitch, x, y, c, &lo, &hi);
+					const u8 in = before[static_cast<size_t>(y) * dst_pitch + x * 4 + c];
+					const u8 want = std::min(std::max(in, lo), hi);
+					ASSERT_EQ(dst[static_cast<size_t>(y) * dst_pitch + x * 4 + c], want) << x << "," << y << " ch " << c;
+				}
+			}
+			// The bytes past the end of the row are not ours to touch.
+			for (u32 i = w * 8; i < dst_pitch; i++)
+				ASSERT_EQ(dst[static_cast<size_t>(y) * dst_pitch + i], before[static_cast<size_t>(y) * dst_pitch + i]) << "padding";
+		}
+	}
+}
+
+TEST(GsTextureUpscaleClamp, OutputInsideTheRangeIsNotTouched)
+{
+	// A nearest 2x copy takes each value from one of the four texels it is interpolated from, so
+	// it is always inside the range and must come out identical.
+	const u32 w = 11, h = 6;
+	const std::vector<u8> src = RandomBytes(static_cast<size_t>(w) * 4 * h, 4242);
+	std::vector<u8> dst(static_cast<size_t>(w) * 8 * h * 2);
+	for (u32 y = 0; y < h * 2; y++)
+	{
+		for (u32 x = 0; x < w * 2; x++)
+		{
+			for (u32 c = 0; c < 4; c++)
+				dst[(static_cast<size_t>(y) * w * 2 + x) * 4 + c] = src[(static_cast<size_t>(y / 2) * w + x / 2) * 4 + c];
+		}
+	}
+
+	const std::vector<u8> copy = dst;
+	ClampUpscaledToSourceRange(src.data(), w, h, w * 4, dst.data(), w * 8);
+	EXPECT_EQ(dst, copy);
+}
+
+TEST(GsTextureUpscaleClamp, ARingingEdgeComesOutFlatOnBothSides)
+{
+	// A vertical step from 113 to 223 between source columns 7 and 8, with the values from the
+	// Katamari swatch that showed this. The "upscaler output" overshoots the way the sharp RAISR
+	// filters do: 82 and 87 below the dark side, 252 and 248 above the bright side.
+	const u32 w = 16, h = 4;
+	const std::vector<u8> src = MakeImage(w, h, w * 4, [](u32 x, u32, u32 c) -> u8 {
+		return c == 3 ? 128 : (x < 8 ? 113 : 223);
+	});
+
+	std::vector<u8> dst(static_cast<size_t>(w) * 8 * h * 2);
+	for (u32 y = 0; y < h * 2; y++)
+	{
+		for (u32 x = 0; x < w * 2; x++)
+		{
+			static const u8 shape[] = {82, 87, 94, 113, 150, 190, 223, 252, 248, 232, 223, 218};
+			u8 v = (x < 8 ? 113 : 223);
+			if (x >= 10 && x < 22)
+				v = shape[x - 10];
+			for (u32 c = 0; c < 3; c++)
+				dst[(static_cast<size_t>(y) * w * 2 + x) * 4 + c] = v;
+			dst[(static_cast<size_t>(y) * w * 2 + x) * 4 + 3] = 128;
+		}
+	}
+
+	ClampUpscaledToSourceRange(src.data(), w, h, w * 4, dst.data(), w * 8);
+
+	for (u32 y = 0; y < h * 2; y++)
+	{
+		for (u32 x = 0; x < w * 2; x++)
+		{
+			const u8 v = dst[(static_cast<size_t>(y) * w * 2 + x) * 4];
+			ASSERT_GE(v, 113) << x << "," << y;
+			ASSERT_LE(v, 223) << x << "," << y;
+			// Output columns 15 and 16 are the only ones whose four source texels include both
+			// sides of the step. Everything left of them reads only 113 and everything right of
+			// them only 223, so those come out exactly flat.
+			if (x <= 14)
+				ASSERT_EQ(v, 113) << x << "," << y;
+			if (x >= 17)
+				ASSERT_EQ(v, 223) << x << "," << y;
+		}
+	}
+}
+
+TEST(GsTextureUpscaleClamp, EmptyImageIsANoOp)
+{
+	std::vector<u8> dst(16, 0x55);
+	ClampUpscaledToSourceRange(nullptr, 0, 0, 0, dst.data(), 0);
+	ClampUpscaledToSourceRange(dst.data(), 4, 0, 16, dst.data(), 32);
+	ClampUpscaledToSourceRange(dst.data(), 0, 4, 0, dst.data(), 0);
+	for (u8 b : dst)
+		EXPECT_EQ(b, 0x55);
 }

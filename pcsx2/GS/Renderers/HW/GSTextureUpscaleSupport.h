@@ -17,7 +17,8 @@
 
 /// Pieces of the texture upscaler that need no GS, GPU or settings state, so they can be unit
 /// tested on their own: the bounded newest-first job queue, the scale a texture is upscaled by,
-/// the one or two 2x passes that make up a level's upscale, and the CPU mip chain builder.
+/// the one or two 2x passes that make up a level's upscale, the pass that keeps an upscaled image
+/// inside the range of its source, and the CPU mip chain builder.
 namespace GSTextureUpscaleSupport
 {
 	/// The largest side, in pixels, of a texture that a 4x job upscales by 4. A bigger one gets 2x:
@@ -35,14 +36,75 @@ namespace GSTextureUpscaleSupport
 		return (want_4x && std::max(width, height) <= MAX_4X_SOURCE_SIZE) ? 4 : 2;
 	}
 
-	/// One 2x pass: RAISR, or bilinear when the image is too small for it.
+	/// Clamps a 2x upscaled RGBA8 image, per channel, to the range of the four source texels each
+	/// output pixel is interpolated from.
+	///
+	/// dst is (2 * width) by (2 * height), written by an upscaler that shares the centre aligned 2x
+	/// bilinear grid: output pixel x reads source position x / 2 - 0.25, between source columns
+	/// (x + 1) / 2 - 1 and (x + 1) / 2, and likewise for rows, both clamped to the image.
+	///
+	/// A sharpening filter overshoots at a hard edge. Beside a step from 113 to 223 the RAISR
+	/// engine writes values down to 82 on the dark side and up to 252 on the bright side, which are
+	/// colours that neither side of the edge has. Sampled with a bilinear filter the extra detail
+	/// reads as a halo; sampled with a nearest filter and magnified, which games do to read a flat
+	/// colour out of a swatch atlas, every one of those texels becomes a visible block. After this
+	/// pass no output pixel is darker than the darkest or brighter than the brightest of the four
+	/// texels it comes from. Output that was already inside that range is not touched, and a region
+	/// of flat texels whose neighbours are flat in the same colour comes out exactly flat.
+	inline void ClampUpscaledToSourceRange(const u8* src, u32 width, u32 height, u32 src_pitch, u8* dst, u32 dst_pitch)
+	{
+		if (width == 0 || height == 0)
+			return;
+
+		const size_t row_bytes = static_cast<size_t>(width) * 4;
+		std::vector<u8> lo(row_bytes);
+		std::vector<u8> hi(row_bytes);
+
+		for (u32 y = 0; y < height * 2; y++)
+		{
+			// The two source rows this output row is interpolated from, reduced to a per-column
+			// minimum and maximum.
+			const u32 below = (y + 1) / 2;
+			const u8* row0 = src + static_cast<size_t>(below > 0 ? below - 1 : 0) * src_pitch;
+			const u8* row1 = src + static_cast<size_t>(std::min(below, height - 1)) * src_pitch;
+			for (size_t i = 0; i < row_bytes; i++)
+			{
+				lo[i] = std::min(row0[i], row1[i]);
+				hi[i] = std::max(row0[i], row1[i]);
+			}
+
+			u8* out = dst + static_cast<size_t>(y) * dst_pitch;
+			for (u32 x = 0; x < width * 2; x++)
+			{
+				const u32 right = (x + 1) / 2;
+				const size_t c0 = static_cast<size_t>(right > 0 ? right - 1 : 0) * 4;
+				const size_t c1 = static_cast<size_t>(std::min(right, width - 1)) * 4;
+				u8* px = out + static_cast<size_t>(x) * 4;
+				for (size_t c = 0; c < 4; c++)
+				{
+					const u8 low = std::min(lo[c0 + c], lo[c1 + c]);
+					const u8 high = std::max(hi[c0 + c], hi[c1 + c]);
+					px[c] = std::min(std::max(px[c], low), high);
+				}
+			}
+		}
+	}
+
+	/// One 2x pass: RAISR clamped to the range of its source (the filters overshoot at hard edges,
+	/// and a game that reads a flat swatch with a nearest sampler shows every overshooting texel), or
+	/// bilinear when the image is too small for RAISR. Bilinear cannot leave that range.
 	inline void UpscalePass2x(const GSTextureUpscaler::FilterSet& filters, const u8* src, u32 w, u32 h, u32 src_pitch,
 		u8* dst, u32 dst_pitch)
 	{
 		if (std::min(w, h) >= MIN_RAISR_LEVEL_SIZE)
+		{
 			GSTextureUpscaler::UpscaleRGBA8x2(filters, src, w, h, src_pitch, dst, dst_pitch);
+			ClampUpscaledToSourceRange(src, w, h, src_pitch, dst, dst_pitch);
+		}
 		else
+		{
 			GSTextureUpscaler::BilinearRGBA8x2(src, w, h, src_pitch, dst, dst_pitch);
+		}
 	}
 
 	/// Upscales an RGBA8 image by scale, which is 2 or 4. dst is (w * scale) x (h * scale). A 4x

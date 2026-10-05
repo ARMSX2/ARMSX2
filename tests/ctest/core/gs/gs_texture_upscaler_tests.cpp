@@ -6,6 +6,7 @@
 // The filters under test are the real ones in bin/resources/upscale/raisr. All images are
 // generated here; none come from a third party.
 
+#include "GS/Renderers/HW/GSTextureUpscaleSupport.h"
 #include "GS/Renderers/HW/GSTextureUpscaler.h"
 
 #include <gtest/gtest.h>
@@ -844,6 +845,65 @@ TEST(GSTextureUpscaler, AlphaStaysInsideTheSourceRange)
 				ASSERT_GE(a, lo) << i;
 				ASSERT_LE(a, hi) << i;
 				ASSERT_EQ(a, bil.px[i * 4 + 3]) << "alpha is the plain bilinear upscale, pixel " << i;
+			}
+		}
+	}
+}
+
+TEST(GSTextureUpscaler, HardEdgeOvershootIsRemovedByTheRangeClamp)
+{
+	// Two flat colours meeting at a vertical edge, the shape of a swatch in a texture atlas. The
+	// engine is a sharpening filter and writes values beyond both colours beside the edge; the
+	// clamp the texture cache applies to its output must take every one of them back inside, and
+	// leave the flat parts exactly flat.
+	constexpr u32 kSize = 24;
+	constexpr u8 kDark = 113;
+	constexpr u8 kLight = 223;
+	Image src(kSize, kSize);
+	for (u32 y = 0; y < kSize; y++)
+	{
+		for (u32 x = 0; x < kSize; x++)
+		{
+			const u8 v = (x < kSize / 2) ? kDark : kLight;
+			u8* p = src.At(x, y);
+			p[0] = p[1] = p[2] = v;
+			p[3] = 128;
+		}
+	}
+
+	for (const char* set : {"sharp", "smooth"})
+	{
+		SCOPED_TRACE(set);
+		const auto fs = LoadSet(set);
+		ASSERT_TRUE(fs);
+
+		Image out = Upscale(*fs, src);
+		u8 lo = 255, hi = 0;
+		for (u32 i = 0; i < out.w * out.h; i++)
+		{
+			lo = std::min(lo, out.px[i * 4]);
+			hi = std::max(hi, out.px[i * 4]);
+		}
+		// The sharp set overshoots here. If it ever stopped, the checks below would pass without
+		// the clamp doing anything, so say so rather than pass.
+		if (std::string(set) == "sharp")
+			ASSERT_TRUE(lo < kDark || hi > kLight) << "the engine no longer overshoots this edge: " << int(lo) << ".." << int(hi);
+
+		GSTextureUpscaleSupport::ClampUpscaledToSourceRange(src.px.data(), src.w, src.h, src.w * 4, out.px.data(), out.w * 4);
+
+		for (u32 y = 0; y < out.h; y++)
+		{
+			for (u32 x = 0; x < out.w; x++)
+			{
+				const u8* p = out.At(x, y);
+				ASSERT_GE(p[0], kDark) << x << "," << y;
+				ASSERT_LE(p[0], kLight) << x << "," << y;
+				// Output columns 23 and 24 are the two whose source texels span the edge.
+				if (x < kSize - 1)
+					ASSERT_EQ(p[0], kDark) << x << "," << y;
+				if (x > kSize)
+					ASSERT_EQ(p[0], kLight) << x << "," << y;
+				ASSERT_EQ(p[3], 128);
 			}
 		}
 	}
