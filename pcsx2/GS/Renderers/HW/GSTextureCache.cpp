@@ -7313,17 +7313,27 @@ extern bool FMVstarted;
 
 GSTextureCache::HashCacheEntry* GSTextureCache::LookupHashCache(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, bool& paltex, const u32* clut, const GSVector2i* lod, SourceRegion region)
 {
+	const int tw = region.HasX() ? region.GetWidth() : (1 << TEX0.TW);
+	const int th = region.HasY() ? region.GetHeight() : (1 << TEX0.TH);
+
 	// don't bother hashing if we're not dumping or replacing.
 	const bool dump = GSConfig.DumpReplaceableTextures && (!FMVstarted || GSConfig.DumpTexturesWithFMVActive) &&
 	                  (clut ? GSConfig.DumpPaletteTextures : GSConfig.DumpDirectTextures);
 	const bool replace = GSConfig.LoadTextureReplacements && GSTextureReplacements::HasAnyReplacementTextures();
+
+	// Upscaled textures come back the way pack textures do, so they are keyed the same way, palette
+	// included. Not while an FMV plays (every frame is a new texture), and not when the palette
+	// lives on the GPU: the CPU copy that would be hashed is not the one the draw will use.
+	const bool upscale = GSTextureReplacements::IsUpscaleActive() && !FMVstarted &&
+	                     !(clut && g_gs_renderer->m_mem.m_clut.GetGPUTexture()) &&
+	                     GSTextureReplacements::CanUpscaleTexture(tw, th);
 	bool can_cache = (TEX0.PSM >= PSMT8H && TEX0.PSM <= PSMT4HH) ? CanPreloadTextureSize(TEX0.TW, TEX0.TH) : CanCacheTextureSize(TEX0.TW, TEX0.TH);
-	if (!dump && !replace && !can_cache)
+	if (!dump && !replace && !upscale && !can_cache)
 		return nullptr;
 
 	// need the hash either for replacing, dumping or caching.
 	// if dumping/replacing is on, we compute the clut hash regardless, since replacements aren't indexed
-	HashCacheKey key{HashCacheKey::Create(TEX0, TEXA, (dump || replace || !paltex) ? clut : nullptr, lod, region)};
+	HashCacheKey key{HashCacheKey::Create(TEX0, TEXA, (dump || replace || upscale || !paltex) ? clut : nullptr, lod, region)};
 
 	// handle dumping first, this is mostly isolated.
 	if (dump)
@@ -7348,7 +7358,7 @@ GSTextureCache::HashCacheEntry* GSTextureCache::LookupHashCache(const GIFRegTEX0
 	auto it = m_hash_cache.find(key);
 
 	// if this fails, and paltex is on, try indexed texture
-	const bool needs_second_lookup = paltex && (dump || replace);
+	const bool needs_second_lookup = paltex && (dump || replace || upscale);
 	if (needs_second_lookup && it == m_hash_cache.end())
 		it = m_hash_cache.find(key.WithRemovedCLUTHash());
 
@@ -7369,9 +7379,9 @@ GSTextureCache::HashCacheEntry* GSTextureCache::LookupHashCache(const GIFRegTEX0
 	GL_CACHE("TC: HC Miss: %" PRIx64 " %" PRIx64 " R-%ux%u", key.TEX0Hash, key.CLUTHash, key.region_width, key.region_height);
 
 	// check for a replacement texture with the full clut key
+	bool replacement_texture_pending = false;
 	if (replace)
 	{
-		bool replacement_texture_pending = false;
 		std::pair<u8, u8> alpha_minmax;
 		GSTexture* replacement_tex = GSTextureReplacements::LookupReplacementTexture(key, lod != nullptr,
 			&replacement_texture_pending, &alpha_minmax);
@@ -7402,6 +7412,51 @@ GSTextureCache::HashCacheEntry* GSTextureCache::LookupHashCache(const GIFRegTEX0
 		}
 	}
 
+	// No pack texture for this one, and none on its way, so it can be upscaled. A finished result is
+	// used as it stands; otherwise one is queued, the native texture is used meanwhile, and the
+	// result is swapped in when it lands, as for a pack texture loaded asynchronously.
+	if (upscale && !replacement_texture_pending)
+	{
+		GSTextureReplacements::UpscaleRequest request = {};
+		request.key = key;
+		request.TEXA = TEXA;
+		request.region = region;
+		request.mipmap = (lod != nullptr);
+		request.cpu_mips = (lod != nullptr && !GSConfig.HWMipmap);
+
+		// The levels the native path would upload: the base, plus the guest mips when the lod range
+		// is set and hardware mipmapping is on.
+		request.guest_levels = 1;
+		request.level_tex0[0] = TEX0;
+		if (lod && GSConfig.HWMipmap)
+		{
+			const int levels = std::min(lod->y - lod->x + 1, GSDevice::GetMipmapLevelsForSize(tw, th));
+			request.guest_levels = static_cast<u32>(std::clamp(levels, 1, static_cast<int>(std::size(request.level_tex0))));
+			for (u32 i = 1; i < request.guest_levels; i++)
+				request.level_tex0[i] = g_gs_renderer->GetTex0Layer(lod->x + i);
+		}
+
+		bool upscale_pending = false;
+		std::pair<u8, u8> upscale_alpha_minmax;
+		GSTexture* upscaled_tex = GSTextureReplacements::LookupUpscaledTexture(request, g_gs_renderer->m_mem,
+			&upscale_pending, &upscale_alpha_minmax);
+		if (upscaled_tex)
+		{
+			// Same as a found pack texture: it is not indexed, so paltex goes.
+			paltex = false;
+			const HashCacheEntry entry{upscaled_tex, 1u, 0u, upscale_alpha_minmax, true, true};
+			m_hash_cache_replacement_memory_usage += entry.texture->GetMemUsage();
+			return &m_hash_cache.emplace(key, entry).first->second;
+		}
+		else if (upscale_pending)
+		{
+			// The upscaled texture is not indexed either, so what gets drawn meanwhile must not be,
+			// and it has to be in the hash cache for the result to swap with.
+			paltex = false;
+			can_cache = true;
+		}
+	}
+
 	// Using paltex without full preloading is a disaster case here. basically, unless *all* textures are
 	// replaced, any texture can get populated without the hash cache, which means it'll get partial invalidated,
 	// and unless it's 100% removed, this partial texture will always take precedence over future hash cache
@@ -7420,8 +7475,6 @@ GSTextureCache::HashCacheEntry* GSTextureCache::LookupHashCache(const GIFRegTEX0
 		return nullptr;
 
 	// expand/upload texture
-	const int tw = region.HasX() ? region.GetWidth() : (1 << TEX0.TW);
-	const int th = region.HasY() ? region.GetHeight() : (1 << TEX0.TH);
 	const int tlevels = lod ? (GSConfig.HWMipmap ? std::min(lod->y - lod->x + 1, GSDevice::GetMipmapLevelsForSize(tw, th)) : -1) : 1;
 	GSTexture* tex = g_gs_device->CreateTexture(tw, th, tlevels, paltex ? GSTexture::Format::UNorm8 : GSTexture::Format::Color);
 	if (!tex)

@@ -854,6 +854,7 @@
     <ClInclude Include="GS\Renderers\DX12\GSDevice12.h" />
     <ClInclude Include="GS\Renderers\DX12\GSTexture12.h" />
     <ClInclude Include="GS\Renderers\HW\GSTextureReplacements.h" />
+    <ClInclude Include="GS\Renderers\HW\GSTextureUpscaleSupport.h" />
     <ClInclude Include="GS\Renderers\HW\GSTextureUpscaler.h" />
     <ClInclude Include="GS\Renderers\Vulkan\GSDeviceVK.h">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
