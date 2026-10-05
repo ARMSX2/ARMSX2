@@ -186,6 +186,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 	SettingWidgetBinder::BindWidgetToBoolSetting(
 		sif, m_texture.loadTextureReplacementsAsync, "EmuCore/GS", "LoadTextureReplacementsAsync", true);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_texture.precacheTextureReplacements, "EmuCore/GS", "PrecacheTextureReplacements", false);
+	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_texture.textureUpscaleMode, "EmuCore/GS", "TextureUpscaleMode", static_cast<int>(GSTextureUpscaleMode::Off));
 	SettingWidgetBinder::BindWidgetToFolderSetting(sif, m_texture.texturesDirectory, m_texture.texturesBrowse, m_texture.texturesOpen, m_texture.texturesReset,
 		"Folders", "Textures", Path::Combine(EmuFolders::DataRoot, "textures"));
 	connect(m_texture.dumpReplaceableTextures, &QCheckBox::checkStateChanged, this, &GraphicsSettingsWidget::onTextureDumpChanged);
@@ -669,6 +670,11 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 		dialog()->registerWidgetHelp(m_texture.loadTextureReplacements, tr("Load Textures"), tr("Unchecked"), tr("Loads replacement textures where available and user-provided."));
 
 		dialog()->registerWidgetHelp(m_texture.precacheTextureReplacements, tr("Precache Textures"), tr("Unchecked"), tr("Preloads all replacement textures to memory. Not necessary with asynchronous loading."));
+
+		dialog()->registerWidgetHelp(m_texture.textureUpscaleMode, tr("Upscale Textures"), tr("Off (Default)"),
+			tr("Upscales game textures 2x on the CPU in the background using RAISR, so textures sharpen a moment after they first appear. "
+			   "Sharp is crisper, Smooth is softer. Uses more memory and some CPU. Texture packs take priority. "
+			   "Hardware renderers only."));
 
 		if (!dialog()->isPerGameSettings())
 		{
