@@ -1353,7 +1353,13 @@ vec4 sample_color(vec2 st)
 #if PS_AEM_FMT == FMT_32 && PS_PAL_FMT == 0 && PS_RTA_SRC_CORRECTION
 	t.a = t.a * (128.5f / 255.0f);
 #endif
-	return trunc(t * 255.0f + 0.05f);
+	t = trunc(t * 255.0f + 0.05f);
+#if PS_REPLACEMENT_ALPHA_SNAP
+	// A pack texture's opaque alpha, which ASTC moves off 0x80 (GSReplacementAlphaSnap.h).
+	if (abs(t.a - 128.0f) <= 8.0f)
+		t.a = 128.0f;
+#endif
+	return t;
 }
 
 #endif // NEEDS_TEX

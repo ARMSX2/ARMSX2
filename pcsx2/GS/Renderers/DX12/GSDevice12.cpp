@@ -3362,6 +3362,7 @@ const ID3DBlob* GSDevice12::GetTFXPixelShader(const GSHWDrawConfig::PSSelector& 
 	sm.AddMacro("PS_COLCLIP_HW", sel.colclip_hw);
 	sm.AddMacro("PS_RTA_CORRECTION", sel.rta_correction);
 	sm.AddMacro("PS_RTA_SRC_CORRECTION", sel.rta_source_correction);
+	sm.AddMacro("PS_REPLACEMENT_ALPHA_SNAP", sel.replacement_alpha_snap);
 	sm.AddMacro("PS_COLCLIP", sel.colclip);
 	sm.AddMacro("PS_BLEND_A", sel.blend_a);
 	sm.AddMacro("PS_BLEND_B", sel.blend_b);

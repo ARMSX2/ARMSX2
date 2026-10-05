@@ -648,6 +648,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSDrawRoad.h
 	GS/Renderers/Common/GSFastList.h
 	GS/Renderers/Common/GSAlphaBitLogicOp.h
+	GS/Renderers/Common/GSReplacementAlphaSnap.h
 	GS/Renderers/Common/GSFastStencilShadow.h
 	GS/Renderers/Common/GSFieldShiftDetector.h
 	GS/Renderers/Common/GSFieldShiftPolicy.h

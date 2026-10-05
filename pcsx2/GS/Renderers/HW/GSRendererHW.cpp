@@ -14,6 +14,7 @@
 #include "GS/Renderers/Common/GSDrawRoad.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/Renderers/Common/GSNativeTexelGridPolicy.h"
+#include "GS/Renderers/Common/GSReplacementAlphaSnap.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
@@ -11005,6 +11006,12 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 
 	// Perform alpha test first pass setup here as bending depends on it.
 	EmulateAlphaTest(date_options);
+
+	// A pack texture's opaque alpha drifts off 0x80 (ASTC, or the upscaler); a test against 0x80 needs it back.
+	// Set before EmulateAlphaTestSecondPass copies ps, so the second pass snaps the same way.
+	m_conf.ps.replacement_alpha_snap = GSReplacementAlphaSnap::Wanted(
+		tex && tex->m_from_hash_cache && tex->m_from_hash_cache->is_replacement, m_cached_ctx.TEX0.TCC,
+		m_cached_ctx.TEST.ATE, m_cached_ctx.TEST.ATST, m_cached_ctx.TEST.AREF);
 
 	// AA1: Set alpha source to coverage 128 when AA1 is not supported.
 	m_conf.ps.fixed_one_a = IsCoverageAlphaFixedOne();

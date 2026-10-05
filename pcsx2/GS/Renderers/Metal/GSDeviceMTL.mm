@@ -2433,6 +2433,7 @@ void GSDeviceMTL::MRESetHWPipelineState(GSHWDrawConfig::VSSelector vssel, GSHWDr
 		setFnConstantB(m_fn_constants, pssel.colclip_hw,            GSMTLConstantIndex_PS_COLCLIP_HW);
 		setFnConstantB(m_fn_constants, pssel.rta_correction,        GSMTLConstantIndex_PS_RTA_CORRECTION);
 		setFnConstantB(m_fn_constants, pssel.rta_source_correction, GSMTLConstantIndex_PS_RTA_SRC_CORRECTION);
+		setFnConstantB(m_fn_constants, pssel.replacement_alpha_snap, GSMTLConstantIndex_PS_REPLACEMENT_ALPHA_SNAP);
 		setFnConstantB(m_fn_constants, pssel.colclip,               GSMTLConstantIndex_PS_COLCLIP);
 		setFnConstantI(m_fn_constants, pssel.blend_mix,             GSMTLConstantIndex_PS_BLEND_MIX);
 		setFnConstantB(m_fn_constants, pssel.round_inv,             GSMTLConstantIndex_PS_ROUND_INV);

@@ -40,4 +40,5 @@
 // source text. Upstream numbered their last of these 118.
 // 127: a sprite whose far edge the pixel-grid snap pushed out samples no further than its last
 // native pixel, so tfx.glsl (Vulkan) gains VS_SPRITE_EDGE_CLAMP and PS_SPRITE_EDGE_CLAMP.
-static constexpr u32 SHADER_CACHE_VERSION = 127; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117, their 118 = our 126
+// 128: every backend's tfx shader gains PS_REPLACEMENT_ALPHA_SNAP (pack texture alpha near 0x80).
+static constexpr u32 SHADER_CACHE_VERSION = 128; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117, their 118 = our 126

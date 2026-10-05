@@ -2283,6 +2283,7 @@ static void DumpPSSelector(DrawConfigWriter& out, const GSHWDrawConfig::PSSelect
 	out.WriteLn("colclip_hw: {}", ps.colclip_hw);
 	out.WriteLn("rta_correction: {}", ps.rta_correction);
 	out.WriteLn("rta_source_correction: {}", ps.rta_source_correction);
+	out.WriteLn("replacement_alpha_snap: {}", ps.replacement_alpha_snap);
 	out.WriteLn("colclip: {}", ps.colclip);
 	out.WriteLn("blend_mix: {}", ps.blend_mix);
 	out.WriteLn("round_inv: {}", ps.round_inv);

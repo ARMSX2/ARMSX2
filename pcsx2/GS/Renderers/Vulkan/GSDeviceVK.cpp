@@ -7479,6 +7479,7 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_COLCLIP_HW", sel.colclip_hw);
 	AddMacro(ss, "PS_RTA_CORRECTION", sel.rta_correction);
 	AddMacro(ss, "PS_RTA_SRC_CORRECTION", sel.rta_source_correction);
+	AddMacro(ss, "PS_REPLACEMENT_ALPHA_SNAP", sel.replacement_alpha_snap);
 	AddMacro(ss, "PS_DITHER", sel.dither);
 	AddMacro(ss, "PS_DITHER_ADJUST", sel.dither_adjust);
 	AddMacro(ss, "PS_ZCLAMP", sel.zclamp);
