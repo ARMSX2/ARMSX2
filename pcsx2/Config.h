@@ -502,6 +502,7 @@ enum class GSTextureUpscaleMode : u8
 	Off,
 	RaisrSharp, ///< RAISR 2x, filters trained on mixed degradations.
 	RaisrSmooth, ///< RAISR 2x, filters trained on bicubic degradation only.
+	RaisrSmooth4x, ///< The Smooth filters run twice (4x) on textures up to 512 pixels; larger ones get one pass (2x).
 };
 
 enum class GSHWAutoFlushLevel : u8

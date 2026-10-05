@@ -142,6 +142,7 @@ namespace
 		u32 generation;
 		std::shared_ptr<const GSTextureUpscaler::FilterSet> filters;
 		std::vector<UpscaleSourceLevel> levels;
+		u32 scale; // 2, or 4 for a texture upscaled by two passes of the 2x filter
 		u32 cpu_mip_levels; // total levels of a CPU built chain, or 0 for none
 		bool mipmap;
 	};
@@ -249,6 +250,10 @@ namespace GSTextureReplacements
 	static std::shared_ptr<const GSTextureUpscaler::FilterSet> s_upscale_filters;
 	static std::atomic<bool> s_upscale_ready{false};
 
+	/// The 4x mode is on, so textures up to GSTextureUpscaleSupport::MAX_4X_SOURCE_SIZE are
+	/// upscaled by 4 instead of 2. Set with the filters.
+	static std::atomic<bool> s_upscale_four_x{false};
+
 	/// Names of textures with an upscale job queued or running (cache mutex). Kept apart from
 	/// s_pending_async_load_textures so a mode change can drop these without touching pack loads.
 	static std::unordered_set<TextureName> s_pending_upscale_textures;
@@ -267,6 +272,7 @@ namespace GSTextureReplacements
 	static u32 s_upscale_busy = 0;
 
 	static std::atomic<u64> s_upscale_stat_queued{0};
+	static std::atomic<u64> s_upscale_stat_queued_4x{0};
 	static std::atomic<u64> s_upscale_stat_upscaled{0};
 	static std::atomic<u64> s_upscale_stat_injected{0};
 	static std::atomic<u64> s_upscale_stat_cache_hits{0};
@@ -816,6 +822,7 @@ void GSTextureReplacements::Shutdown()
 	{
 		std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
 		s_upscale_ready.store(false, std::memory_order_relaxed);
+		s_upscale_four_x.store(false, std::memory_order_relaxed);
 		s_upscale_filters.reset();
 	}
 
@@ -1442,6 +1449,7 @@ GSTextureReplacements::UpscaleStats GSTextureReplacements::GetUpscaleStats()
 {
 	UpscaleStats stats;
 	stats.queued = s_upscale_stat_queued.load(std::memory_order_relaxed);
+	stats.queued_4x = s_upscale_stat_queued_4x.load(std::memory_order_relaxed);
 	stats.upscaled = s_upscale_stat_upscaled.load(std::memory_order_relaxed);
 	stats.injected = s_upscale_stat_injected.load(std::memory_order_relaxed);
 	stats.cache_hits = s_upscale_stat_cache_hits.load(std::memory_order_relaxed);
@@ -1460,15 +1468,16 @@ void GSTextureReplacements::LogUpscaleStats(const char* when)
 	if (stats.queued == 0 && stats.cache_hits == 0 && stats.skipped_size == 0)
 		return;
 
-	Console.WriteLnFmt("Texture upscaling ({}): {} queued ({} with guest mips, {} with a generated chain), {} upscaled, "
-					   "{} injected, {} cache hits, {} dropped, {} failed, {} skipped by size, {:.1f} ms of CPU.",
-		when, stats.queued, stats.guest_mip_jobs, stats.cpu_mip_jobs, stats.upscaled, stats.injected, stats.cache_hits,
-		stats.dropped, stats.failed, stats.skipped_size, static_cast<double>(stats.cpu_ns) / 1000000.0);
+	Console.WriteLnFmt("Texture upscaling ({}): {} queued ({} at 4x, {} with guest mips, {} with a generated chain), "
+					   "{} upscaled, {} injected, {} cache hits, {} dropped, {} failed, {} skipped by size, {:.1f} ms of CPU.",
+		when, stats.queued, stats.queued_4x, stats.guest_mip_jobs, stats.cpu_mip_jobs, stats.upscaled, stats.injected,
+		stats.cache_hits, stats.dropped, stats.failed, stats.skipped_size, static_cast<double>(stats.cpu_ns) / 1000000.0);
 }
 
 void GSTextureReplacements::ResetUpscaleStats()
 {
 	s_upscale_stat_queued.store(0, std::memory_order_relaxed);
+	s_upscale_stat_queued_4x.store(0, std::memory_order_relaxed);
 	s_upscale_stat_upscaled.store(0, std::memory_order_relaxed);
 	s_upscale_stat_injected.store(0, std::memory_order_relaxed);
 	s_upscale_stat_cache_hits.store(0, std::memory_order_relaxed);
@@ -1551,11 +1560,17 @@ GSTexture* GSTextureReplacements::LookupUpscaledTexture(const UpscaleRequest& re
 	if (base_w <= 0 || base_h <= 0)
 		return nullptr;
 
-	const u32 guest_levels = GSTextureUpscaleSupport::UpscaledMipLevelCount(
-		static_cast<u32>(base_w), static_cast<u32>(base_h), std::min<u32>(request.guest_levels, std::size(request.level_tex0)));
+	// The scale is a property of the texture: with the 4x mode on, textures up to 512 pixels get 4x
+	// and bigger ones 2x. Every level of the job, and the CPU built chain, use it.
+	const u32 scale = GSTextureUpscaleSupport::UpscaleScaleForSize(
+		s_upscale_four_x.load(std::memory_order_relaxed), static_cast<u32>(base_w), static_cast<u32>(base_h));
+
+	const u32 guest_levels = GSTextureUpscaleSupport::UpscaledMipLevelCount(static_cast<u32>(base_w),
+		static_cast<u32>(base_h), std::min<u32>(request.guest_levels, std::size(request.level_tex0)), scale);
 
 	UpscaleJob job;
 	job.name = name;
+	job.scale = scale;
 	job.mipmap = request.mipmap;
 	job.cpu_mip_levels = 0;
 	job.generation = 0;
@@ -1577,7 +1592,7 @@ GSTexture* GSTextureReplacements::LookupUpscaledTexture(const UpscaleRequest& re
 	// The native texture would get a driver generated chain here, sized for its own base. Ours is
 	// built from the upscaled base on the worker, with the count a texture of that size gets.
 	if (request.cpu_mips)
-		job.cpu_mip_levels = static_cast<u32>(GSDevice::GetMipmapLevelsForSize(base_w * 2, base_h * 2));
+		job.cpu_mip_levels = static_cast<u32>(GSDevice::GetMipmapLevelsForSize(base_w * scale, base_h * scale));
 
 	std::vector<UpscaleJob> dropped;
 	{
@@ -1588,6 +1603,8 @@ GSTexture* GSTextureReplacements::LookupUpscaledTexture(const UpscaleRequest& re
 		job.generation = s_upscale_generation.load(std::memory_order_relaxed);
 		job.filters = s_upscale_filters;
 		s_upscale_stat_queued.fetch_add(1, std::memory_order_relaxed);
+		if (job.scale == 4)
+			s_upscale_stat_queued_4x.fetch_add(1, std::memory_order_relaxed);
 		if (job.levels.size() > 1)
 			s_upscale_stat_guest_mip_jobs.fetch_add(1, std::memory_order_relaxed);
 		if (job.cpu_mip_levels > 1)
@@ -1612,21 +1629,17 @@ GSTexture* GSTextureReplacements::LookupUpscaledTexture(const UpscaleRequest& re
 
 void GSTextureReplacements::BuildUpscaledTexture(const UpscaleJob& job, ReplacementTexture* rtex)
 {
-	// Levels below 8 pixels on a side have too little to filter, and get a plain bilinear 2x.
+	// Each level goes up by the job's scale, as one 2x pass or two. A level (and, at 4x, the
+	// intermediate image) under 8 pixels on a side has too little to filter and gets a plain
+	// bilinear 2x instead.
 	const auto upscale_level = [&job](const UpscaleSourceLevel& src, u8* dst, u32 dst_pitch) {
-		if (std::min(src.width, src.height) >= 8)
-		{
-			GSTextureUpscaler::UpscaleRGBA8x2(*job.filters, src.pixels, src.width, src.height, src.pitch, dst, dst_pitch);
-		}
-		else
-		{
-			GSTextureUpscaler::BilinearRGBA8x2(src.pixels, src.width, src.height, src.pitch, dst, dst_pitch);
-		}
+		GSTextureUpscaleSupport::UpscaleRGBA8(
+			*job.filters, src.pixels, src.width, src.height, src.pitch, job.scale, dst, dst_pitch);
 	};
 
 	const UpscaleSourceLevel& base = job.levels.front();
-	rtex->width = base.width * 2;
-	rtex->height = base.height * 2;
+	rtex->width = base.width * job.scale;
+	rtex->height = base.height * job.scale;
 	rtex->format = GSTexture::Format::Color;
 	rtex->pitch = rtex->width * sizeof(u32);
 	rtex->data.resize(static_cast<size_t>(rtex->pitch) * rtex->height);
@@ -1636,8 +1649,8 @@ void GSTextureReplacements::BuildUpscaledTexture(const UpscaleJob& job, Replacem
 	{
 		const UpscaleSourceLevel& src = job.levels[i];
 		ReplacementTexture::MipData mip;
-		mip.width = src.width * 2;
-		mip.height = src.height * 2;
+		mip.width = src.width * job.scale;
+		mip.height = src.height * job.scale;
 		mip.pitch = mip.width * sizeof(u32);
 		mip.data.resize(static_cast<size_t>(mip.pitch) * mip.height);
 		upscale_level(src, mip.data.data(), mip.pitch);
@@ -1848,7 +1861,8 @@ void GSTextureReplacements::SetUpscaleMode()
 
 	std::shared_ptr<const GSTextureUpscaler::FilterSet> filters;
 	const GSTextureUpscaleMode mode = GSConfig.TextureUpscaleMode;
-	if (mode == GSTextureUpscaleMode::RaisrSharp || mode == GSTextureUpscaleMode::RaisrSmooth)
+	if (mode == GSTextureUpscaleMode::RaisrSharp || mode == GSTextureUpscaleMode::RaisrSmooth ||
+		mode == GSTextureUpscaleMode::RaisrSmooth4x)
 	{
 		const std::string dir = Path::Combine(
 			Path::Combine(Path::Combine(EmuFolders::Resources, "upscale"), "raisr"),
@@ -1872,6 +1886,7 @@ void GSTextureReplacements::SetUpscaleMode()
 		std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
 		DropGeneratedReplacementsLocked();
 		s_upscale_filters = filters;
+		s_upscale_four_x.store(mode == GSTextureUpscaleMode::RaisrSmooth4x, std::memory_order_relaxed);
 		s_upscale_ready.store(filters != nullptr, std::memory_order_relaxed);
 	}
 

@@ -5,17 +5,67 @@
 
 #include "common/Pcsx2Types.h"
 
+#include "GS/Renderers/HW/GSTextureUpscaler.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <deque>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
 
 /// Pieces of the texture upscaler that need no GS, GPU or settings state, so they can be unit
-/// tested on their own: the bounded newest-first job queue and the CPU mip chain builder.
+/// tested on their own: the bounded newest-first job queue, the scale a texture is upscaled by,
+/// the one or two 2x passes that make up a level's upscale, and the CPU mip chain builder.
 namespace GSTextureUpscaleSupport
 {
+	/// The largest side, in pixels, of a texture that a 4x job upscales by 4. A bigger one gets 2x:
+	/// at 1024 a 4x result would be 4096 on a side, 64 MB for one level, and CPU time to match.
+	inline constexpr u32 MAX_4X_SOURCE_SIZE = 512;
+
+	/// A level with a side under this has too little for the filter to work on and gets a plain
+	/// bilinear 2x pass instead.
+	inline constexpr u32 MIN_RAISR_LEVEL_SIZE = 8;
+
+	/// The scale (2 or 4) a texture of this base size is upscaled by. want_4x is the 4x mode being
+	/// on; it still only applies to textures of at most MAX_4X_SOURCE_SIZE on both sides.
+	inline u32 UpscaleScaleForSize(bool want_4x, u32 width, u32 height)
+	{
+		return (want_4x && std::max(width, height) <= MAX_4X_SOURCE_SIZE) ? 4 : 2;
+	}
+
+	/// One 2x pass: RAISR, or bilinear when the image is too small for it.
+	inline void UpscalePass2x(const GSTextureUpscaler::FilterSet& filters, const u8* src, u32 w, u32 h, u32 src_pitch,
+		u8* dst, u32 dst_pitch)
+	{
+		if (std::min(w, h) >= MIN_RAISR_LEVEL_SIZE)
+			GSTextureUpscaler::UpscaleRGBA8x2(filters, src, w, h, src_pitch, dst, dst_pitch);
+		else
+			GSTextureUpscaler::BilinearRGBA8x2(src, w, h, src_pitch, dst, dst_pitch);
+	}
+
+	/// Upscales an RGBA8 image by scale, which is 2 or 4. dst is (w * scale) x (h * scale). A 4x
+	/// upscale is two 2x passes, the second one run on the first one's result; each pass picks RAISR
+	/// or bilinear by the size of the image it is given, so a 4x4 level is bilinear to 8x8 and then
+	/// RAISR to 16x16. src and dst must not overlap. Pitches are in bytes.
+	inline void UpscaleRGBA8(const GSTextureUpscaler::FilterSet& filters, const u8* src, u32 w, u32 h, u32 src_pitch,
+		u32 scale, u8* dst, u32 dst_pitch)
+	{
+		if (scale != 4)
+		{
+			UpscalePass2x(filters, src, w, h, src_pitch, dst, dst_pitch);
+			return;
+		}
+
+		const u32 mid_w = w * 2;
+		const u32 mid_h = h * 2;
+		const u32 mid_pitch = mid_w * sizeof(u32);
+		const std::unique_ptr<u8[]> mid(new u8[static_cast<size_t>(mid_pitch) * mid_h]);
+		UpscalePass2x(filters, src, w, h, src_pitch, mid.get(), mid_pitch);
+		UpscalePass2x(filters, mid.get(), mid_w, mid_h, mid_pitch, dst, dst_pitch);
+	}
+
 	/// A newest-first queue with a cap on the number of items and on their total cost. It is not
 	/// synchronized; the caller holds its own lock around every call.
 	///
@@ -88,21 +138,22 @@ namespace GSTextureUpscaleSupport
 	};
 
 	/// Mip level count, base included, of an upscaled texture that is built from `requested` guest
-	/// levels of a (width x height) texture.
+	/// levels of a (width x height) texture, each upscaled by `scale`.
 	///
-	/// Guest level i is max(1, width >> i) by max(1, height >> i), and upscaling doubles it. A GPU
-	/// texture of 2*width by 2*height has levels of max(1, (2*width) >> i) by max(1, (2*height) >> i).
-	/// The two agree while neither dimension has been clamped to one pixel (and for non power of two
-	/// region widths, only until a level is odd). From the first level where they differ, an
-	/// upscaled level would not fit its slot, so the chain stops there. The sampler clamps to the
-	/// last level, which only matters for levels already a single pixel on one side.
-	inline u32 UpscaledMipLevelCount(u32 width, u32 height, u32 requested)
+	/// Guest level i is max(1, width >> i) by max(1, height >> i), and upscaling multiplies it by
+	/// scale. A GPU texture of scale*width by scale*height has levels of max(1, (scale*width) >> i)
+	/// by max(1, (scale*height) >> i). The two agree while neither dimension has been clamped to one
+	/// pixel (and for non power of two region sizes, only until a level is odd). From the first level
+	/// where they differ, an upscaled level would not fit its slot, so the chain stops there. The
+	/// sampler clamps to the last level, which only matters for levels already a single pixel on one
+	/// side.
+	inline u32 UpscaledMipLevelCount(u32 width, u32 height, u32 requested, u32 scale)
 	{
 		if (requested <= 1)
 			return 1;
 
-		const u32 big_w = width * 2;
-		const u32 big_h = height * 2;
+		const u32 big_w = width * scale;
+		const u32 big_h = height * scale;
 		u32 count = 1;
 		for (u32 level = 1; level < requested; level++)
 		{
@@ -110,7 +161,7 @@ namespace GSTextureUpscaleSupport
 			const u32 guest_h = std::max(height >> level, 1u);
 			const u32 slot_w = std::max(big_w >> level, 1u);
 			const u32 slot_h = std::max(big_h >> level, 1u);
-			if (guest_w * 2 != slot_w || guest_h * 2 != slot_h)
+			if (guest_w * scale != slot_w || guest_h * scale != slot_h)
 				break;
 
 			count = level + 1;

@@ -1139,7 +1139,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapIntEnumEx(TexturePreloading, "texture_preloading");
 	SettingsWrapIntEnumEx(TextureUpscaleMode, "TextureUpscaleMode");
 	// Persisted as an integer, so a hand-edited or newer value must not become an invalid enumerator.
-	if (static_cast<u8>(TextureUpscaleMode) > static_cast<u8>(GSTextureUpscaleMode::RaisrSmooth))
+	if (static_cast<u8>(TextureUpscaleMode) > static_cast<u8>(GSTextureUpscaleMode::RaisrSmooth4x))
 		TextureUpscaleMode = GSTextureUpscaleMode::Off;
 	SettingsWrapIntEnumEx(GSDumpCompression, "GSDumpCompression");
 	SettingsWrapIntEnumEx(HWDownloadMode, "HWDownloadMode");

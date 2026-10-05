@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 // Tests for the parts of the texture upscaler that have no GS dependencies
-// (GS/Renderers/HW/GSTextureUpscaleSupport.h): the bounded newest-first job queue, the count of
-// guest mip levels an upscaled texture can take, and the CPU box filtered mip chain.
+// (GS/Renderers/HW/GSTextureUpscaleSupport.h): the bounded newest-first job queue, the scale a
+// texture is upscaled by, the count of guest mip levels an upscaled texture can take, the one or
+// two 2x passes of a level's upscale, and the CPU box filtered mip chain.
+//
+// The upscale tests run the real engine with the real Smooth filters in bin/resources/upscale/raisr.
 
 #include "GS/Renderers/HW/GSTextureUpscaleSupport.h"
 
@@ -12,7 +15,12 @@
 #include <algorithm>
 #include <memory>
 #include <set>
+#include <string>
 #include <vector>
+
+#ifndef GS_UPSCALER_RESOURCE_DIR
+#error "GS_UPSCALER_RESOURCE_DIR must name bin/resources/upscale/raisr"
+#endif
 
 using namespace GSTextureUpscaleSupport;
 
@@ -196,7 +204,7 @@ TEST(GsTextureUpscaleLevels, PowerOfTwoSquareTakesEveryLevel)
 			full++;
 
 		for (u32 requested = 1; requested <= std::min(full, 7u); requested++)
-			EXPECT_EQ(UpscaledMipLevelCount(size, size, requested), requested) << size << " x" << requested;
+			EXPECT_EQ(UpscaledMipLevelCount(size, size, requested, 2), requested) << size << " x" << requested;
 	}
 }
 
@@ -205,25 +213,318 @@ TEST(GsTextureUpscaleLevels, StopsWhereOneSideHasReachedOnePixel)
 	// Guest level 4 of a 256x16 texture is 16x1, doubled 32x2, which is the 512x32 texture's own
 	// level 4. Guest level 5 is 8x1 (the height stays at one pixel), doubled 16x2, but the
 	// 512x32 texture's level 5 is 16x1, so it does not fit.
-	EXPECT_EQ(UpscaledMipLevelCount(256, 16, 9), 5u);
-	EXPECT_EQ(UpscaledMipLevelCount(256, 16, 5), 5u);
-	EXPECT_EQ(UpscaledMipLevelCount(256, 16, 3), 3u);
-	EXPECT_EQ(UpscaledMipLevelCount(16, 256, 9), 5u);
+	EXPECT_EQ(UpscaledMipLevelCount(256, 16, 9, 2), 5u);
+	EXPECT_EQ(UpscaledMipLevelCount(256, 16, 5, 2), 5u);
+	EXPECT_EQ(UpscaledMipLevelCount(256, 16, 3, 2), 3u);
+	EXPECT_EQ(UpscaledMipLevelCount(16, 256, 9, 2), 5u);
 }
 
 TEST(GsTextureUpscaleLevels, StopsAtAnOddRegionSize)
 {
 	// A 100x60 region: 50x30 and 25x15 double to 100x60 and 50x30, which are the 200x120
 	// texture's levels 1 and 2; guest level 3 is 12x7, doubled 24x14, against a slot of 25x15.
-	EXPECT_EQ(UpscaledMipLevelCount(100, 60, 4), 3u);
-	EXPECT_EQ(UpscaledMipLevelCount(100, 60, 3), 3u);
+	EXPECT_EQ(UpscaledMipLevelCount(100, 60, 4, 2), 3u);
+	EXPECT_EQ(UpscaledMipLevelCount(100, 60, 3, 2), 3u);
 }
 
 TEST(GsTextureUpscaleLevels, AlwaysAtLeastTheBase)
 {
-	EXPECT_EQ(UpscaledMipLevelCount(64, 64, 0), 1u);
-	EXPECT_EQ(UpscaledMipLevelCount(64, 64, 1), 1u);
-	EXPECT_EQ(UpscaledMipLevelCount(100, 60, 1), 1u);
+	EXPECT_EQ(UpscaledMipLevelCount(64, 64, 0, 2), 1u);
+	EXPECT_EQ(UpscaledMipLevelCount(64, 64, 1, 2), 1u);
+	EXPECT_EQ(UpscaledMipLevelCount(100, 60, 1, 2), 1u);
+}
+
+TEST(GsTextureUpscaleLevels, ScaleFourKnownSizes)
+{
+	// A 4x texture of a 64x64 guest texture is 256x256, with levels 256, 128, 64, 32, 16, 8, 4, 2, 1.
+	// Guest level i is 64 >> i, and quadrupled it is the same size, down to the seventh level.
+	for (u32 requested = 1; requested <= 7; requested++)
+		EXPECT_EQ(UpscaledMipLevelCount(64, 64, requested, 4), requested);
+
+	// A 256x16 guest level 4 is 16x1, quadrupled 64x4, which is the 1024x64 texture's level 4. Level 5
+	// is 8x1, quadrupled 32x4, against a slot of 32x2.
+	EXPECT_EQ(UpscaledMipLevelCount(256, 16, 9, 4), 5u);
+	EXPECT_EQ(UpscaledMipLevelCount(16, 256, 9, 4), 5u);
+
+	// A 100x60 region: 50x30 and 25x15 quadruple to 200x120 and 100x60, which are levels 1 and 2 of
+	// the 400x240 texture. Guest level 3 is 12x7, quadrupled 48x28, against a slot of 50x30.
+	EXPECT_EQ(UpscaledMipLevelCount(100, 60, 7, 4), 3u);
+}
+
+TEST(GsTextureUpscaleLevels, EveryReturnedLevelFitsItsSlotAndTheNextOneDoesNot)
+{
+	for (u32 scale : {2u, 4u})
+	{
+		for (u32 w = 1; w <= 130; w++)
+		{
+			for (u32 h : {1u, 2u, 3u, 8u, 17u, 64u, 100u})
+			{
+				const u32 requested = 7;
+				const u32 count = UpscaledMipLevelCount(w, h, requested, scale);
+				ASSERT_GE(count, 1u);
+				ASSERT_LE(count, requested);
+
+				for (u32 level = 0; level < std::min(count + 1, requested); level++)
+				{
+					const bool fits = std::max(w >> level, 1u) * scale == std::max((w * scale) >> level, 1u) &&
+					                  std::max(h >> level, 1u) * scale == std::max((h * scale) >> level, 1u);
+					if (level < count)
+						EXPECT_TRUE(fits) << w << "x" << h << " scale " << scale << " level " << level;
+					else
+						EXPECT_FALSE(fits) << w << "x" << h << " scale " << scale << " level " << level;
+				}
+			}
+		}
+	}
+}
+
+TEST(GsTextureUpscaleLevels, ScaleFourTakesTheSameLevelsAsScaleTwo)
+{
+	// Multiplying by a power of two moves every level's size by the same shift, so a level that
+	// fits at 2x fits at 4x. Pinned over a range of sizes so a change to either shows up.
+	for (u32 w = 1; w <= 300; w++)
+	{
+		for (u32 h : {1u, 5u, 16u, 96u, 300u})
+			EXPECT_EQ(UpscaledMipLevelCount(w, h, 7, 4), UpscaledMipLevelCount(w, h, 7, 2)) << w << "x" << h;
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+//  UpscaleScaleForSize
+// ---------------------------------------------------------------------------------------------
+
+TEST(GsTextureUpscaleScale, FourTimesUpToFiveHundredTwelve)
+{
+	EXPECT_EQ(UpscaleScaleForSize(true, 512, 512), 4u);
+	EXPECT_EQ(UpscaleScaleForSize(true, 512, 64), 4u);
+	EXPECT_EQ(UpscaleScaleForSize(true, 64, 512), 4u);
+	EXPECT_EQ(UpscaleScaleForSize(true, 8, 8), 4u);
+	EXPECT_EQ(UpscaleScaleForSize(true, 100, 60), 4u);
+}
+
+TEST(GsTextureUpscaleScale, LargerTexturesFallBackToTwoTimes)
+{
+	// Either side over 512 is enough.
+	EXPECT_EQ(UpscaleScaleForSize(true, 513, 16), 2u);
+	EXPECT_EQ(UpscaleScaleForSize(true, 16, 513), 2u);
+	EXPECT_EQ(UpscaleScaleForSize(true, 600, 600), 2u);
+	EXPECT_EQ(UpscaleScaleForSize(true, 1024, 1024), 2u);
+	EXPECT_EQ(UpscaleScaleForSize(true, 1024, 8), 2u);
+}
+
+TEST(GsTextureUpscaleScale, TwoTimesWhenTheFourTimesModeIsOff)
+{
+	EXPECT_EQ(UpscaleScaleForSize(false, 8, 8), 2u);
+	EXPECT_EQ(UpscaleScaleForSize(false, 512, 512), 2u);
+	EXPECT_EQ(UpscaleScaleForSize(false, 1024, 1024), 2u);
+}
+
+// ---------------------------------------------------------------------------------------------
+//  UpscaleRGBA8: one or two 2x passes
+// ---------------------------------------------------------------------------------------------
+
+namespace
+{
+	std::shared_ptr<const GSTextureUpscaler::FilterSet> LoadSmooth()
+	{
+		std::string error;
+		auto filters = GSTextureUpscaler::FilterSet::Load(std::string(GS_UPSCALER_RESOURCE_DIR) + "/smooth", &error);
+		EXPECT_TRUE(filters) << error;
+		return filters;
+	}
+
+	// A busy image, so the filter has something to do and a chaining mistake shows in the bytes.
+	std::vector<u8> BusyImage(u32 w, u32 h, u32 pitch)
+	{
+		return MakeImage(w, h, pitch, [](u32 x, u32 y, u32 c) -> u8 {
+			switch (c)
+			{
+				case 0: return static_cast<u8>(((x / 3) ^ (y / 2)) & 1 ? 230 : 25);
+				case 1: return static_cast<u8>((x * 11 + y * 5) & 0xFF);
+				case 2: return static_cast<u8>(60 + ((x + y) % 7) * 20);
+				default: return static_cast<u8>(40 + ((x * 37 + y * 101) % 161));
+			}
+		});
+	}
+
+	// A pitch-w*4 image of one colour.
+	std::vector<u8> ConstantImage(u32 w, u32 h, u8 r, u8 g, u8 b, u8 a)
+	{
+		std::vector<u8> img(static_cast<size_t>(w) * h * 4);
+		for (size_t i = 0; i < static_cast<size_t>(w) * h; i++)
+		{
+			img[i * 4 + 0] = r;
+			img[i * 4 + 1] = g;
+			img[i * 4 + 2] = b;
+			img[i * 4 + 3] = a;
+		}
+		return img;
+	}
+
+	// The reference for a 4x level: the engine's own 2x entry points, chained by hand with the same
+	// size rule, into a tightly packed result.
+	std::vector<u8> ChainByHand(const GSTextureUpscaler::FilterSet& f, const std::vector<u8>& src, u32 w, u32 h, u32 pitch)
+	{
+		const auto pass = [&f](const u8* in, u32 iw, u32 ih, u32 ipitch, std::vector<u8>* out) {
+			out->assign(static_cast<size_t>(iw) * 2 * ih * 2 * 4, 0);
+			if (std::min(iw, ih) >= 8)
+				GSTextureUpscaler::UpscaleRGBA8x2(f, in, iw, ih, ipitch, out->data(), iw * 2 * 4);
+			else
+				GSTextureUpscaler::BilinearRGBA8x2(in, iw, ih, ipitch, out->data(), iw * 2 * 4);
+		};
+
+		std::vector<u8> mid, out;
+		pass(src.data(), w, h, pitch, &mid);
+		pass(mid.data(), w * 2, h * 2, w * 2 * 4, &out);
+		return out;
+	}
+} // namespace
+
+TEST(GsTextureUpscaleChain, ScaleTwoIsOneEnginePass)
+{
+	const auto f = LoadSmooth();
+	ASSERT_TRUE(f);
+	const u32 w = 24, h = 16;
+	const std::vector<u8> src = BusyImage(w, h, w * 4);
+
+	std::vector<u8> expect(static_cast<size_t>(w) * 2 * h * 2 * 4);
+	GSTextureUpscaler::UpscaleRGBA8x2(*f, src.data(), w, h, w * 4, expect.data(), w * 2 * 4);
+
+	std::vector<u8> got(expect.size(), 0xEE);
+	UpscaleRGBA8(*f, src.data(), w, h, w * 4, 2, got.data(), w * 2 * 4);
+	EXPECT_EQ(got, expect);
+}
+
+TEST(GsTextureUpscaleChain, ScaleFourIsTwoEnginePassesOnTheFirstResult)
+{
+	const auto f = LoadSmooth();
+	ASSERT_TRUE(f);
+	const std::pair<u32, u32> sizes[] = {{16, 16}, {24, 10}, {9, 33}, {64, 8}};
+	for (const auto& [w, h] : sizes)
+	{
+		const std::vector<u8> src = BusyImage(w, h, w * 4);
+		const std::vector<u8> expect = ChainByHand(*f, src, w, h, w * 4);
+
+		std::vector<u8> got(static_cast<size_t>(w) * 4 * h * 4 * 4, 0xEE);
+		UpscaleRGBA8(*f, src.data(), w, h, w * 4, 4, got.data(), w * 4 * 4);
+		EXPECT_EQ(got, expect) << w << "x" << h;
+	}
+}
+
+TEST(GsTextureUpscaleChain, SmallLevelsUseBilinearAndTheIntermediateCanStillUseTheFilter)
+{
+	const auto f = LoadSmooth();
+	ASSERT_TRUE(f);
+
+	// 4x4 is under 8, so its first pass is bilinear; the 8x8 result is not, so the second pass is the
+	// filter. 3x3 stays under 8 after one pass (6x6), so both passes are bilinear. 6x20 is under 8 on
+	// one side only, which is enough.
+	const std::pair<u32, u32> sizes[] = {{4, 4}, {3, 3}, {6, 20}, {2, 2}, {1, 9}};
+	for (const auto& [w, h] : sizes)
+	{
+		const std::vector<u8> src = BusyImage(w, h, w * 4);
+		const std::vector<u8> expect = ChainByHand(*f, src, w, h, w * 4);
+
+		std::vector<u8> got(static_cast<size_t>(w) * 4 * h * 4 * 4, 0xEE);
+		UpscaleRGBA8(*f, src.data(), w, h, w * 4, 4, got.data(), w * 4 * 4);
+		EXPECT_EQ(got, expect) << w << "x" << h;
+	}
+
+	// The filter pass must actually differ from a second bilinear pass on 4x4, or the test above
+	// would not tell the two apart.
+	const std::vector<u8> src = BusyImage(4, 4, 16);
+	std::vector<u8> mid(8 * 8 * 4), bilinear_twice(16 * 16 * 4), filtered(16 * 16 * 4);
+	GSTextureUpscaler::BilinearRGBA8x2(src.data(), 4, 4, 16, mid.data(), 32);
+	GSTextureUpscaler::BilinearRGBA8x2(mid.data(), 8, 8, 32, bilinear_twice.data(), 64);
+	UpscaleRGBA8(*f, src.data(), 4, 4, 16, 4, filtered.data(), 64);
+	EXPECT_NE(filtered, bilinear_twice);
+}
+
+TEST(GsTextureUpscaleChain, ConstantImageStaysConstantAtFourTimes)
+{
+	const auto f = LoadSmooth();
+	ASSERT_TRUE(f);
+
+	const u32 w = 20, h = 12, scale = 4;
+	const u32 dst_pitch = w * scale * 4 + 32; // padding after each row, poisoned
+	const std::vector<u8> src = ConstantImage(w, h, 200, 100, 50, 77);
+	std::vector<u8> dst(static_cast<size_t>(dst_pitch) * h * scale + 64, 0xEE);
+
+	UpscaleRGBA8(*f, src.data(), w, h, w * 4, scale, dst.data(), dst_pitch);
+
+	for (u32 y = 0; y < h * scale; y++)
+	{
+		for (u32 x = 0; x < w * scale; x++)
+		{
+			const u8* px = &dst[static_cast<size_t>(y) * dst_pitch + x * 4];
+			EXPECT_EQ(px[0], 200) << x << "," << y;
+			EXPECT_EQ(px[1], 100) << x << "," << y;
+			EXPECT_EQ(px[2], 50) << x << "," << y;
+			EXPECT_EQ(px[3], 77) << x << "," << y;
+		}
+
+		// The pitch padding and nothing past the last row are touched.
+		for (u32 i = w * scale * 4; i < dst_pitch; i++)
+			EXPECT_EQ(dst[static_cast<size_t>(y) * dst_pitch + i], 0xEE) << "row " << y << " pad " << i;
+	}
+	for (size_t i = static_cast<size_t>(dst_pitch) * h * scale; i < dst.size(); i++)
+		ASSERT_EQ(dst[i], 0xEE) << "past the end at " << i;
+}
+
+TEST(GsTextureUpscaleChain, ReadsASourceWithRowPadding)
+{
+	const auto f = LoadSmooth();
+	ASSERT_TRUE(f);
+
+	const u32 w = 17, h = 11;
+	const std::vector<u8> tight = BusyImage(w, h, w * 4);
+	const std::vector<u8> padded = BusyImage(w, h, w * 4 + 20); // padding is poisoned by MakeImage
+
+	std::vector<u8> a(static_cast<size_t>(w) * 16 * h * 4), b(a.size());
+	UpscaleRGBA8(*f, tight.data(), w, h, w * 4, 4, a.data(), w * 4 * 4);
+	UpscaleRGBA8(*f, padded.data(), w, h, w * 4 + 20, 4, b.data(), w * 4 * 4);
+	EXPECT_EQ(a, b);
+}
+
+TEST(GsTextureUpscaleChain, AlphaStaysInTheSourceRangeAtFourTimes)
+{
+	const auto f = LoadSmooth();
+	ASSERT_TRUE(f);
+
+	// Alpha anywhere in 40..200 (BusyImage). Both passes upscale it bilinearly, so the result cannot
+	// leave that range, and the range taken from the result is valid for the renderer.
+	const u32 w = 32, h = 32;
+	const std::vector<u8> src = BusyImage(w, h, w * 4);
+	std::vector<u8> dst(static_cast<size_t>(w) * 16 * h * 4);
+	UpscaleRGBA8(*f, src.data(), w, h, w * 4, 4, dst.data(), w * 4 * 4);
+	for (size_t i = 3; i < dst.size(); i += 4)
+	{
+		ASSERT_GE(dst[i], 40);
+		ASSERT_LE(dst[i], 200);
+	}
+}
+
+TEST(GsTextureUpscaleChain, ASixHundredSquareTextureIsUpscaledByTwoNotFour)
+{
+	const auto f = LoadSmooth();
+	ASSERT_TRUE(f);
+
+	// What the job does with a texture over 512 when the 4x mode is on: the scale comes back as 2,
+	// and the output is 1200x1200, not 2400x2400.
+	const u32 w = 600, h = 600;
+	const u32 scale = UpscaleScaleForSize(true, w, h);
+	ASSERT_EQ(scale, 2u);
+
+	const std::vector<u8> src = ConstantImage(w, h, 10, 20, 30, 255);
+	const size_t out_bytes = static_cast<size_t>(w) * scale * h * scale * 4;
+	std::vector<u8> dst(out_bytes + 64, 0xEE);
+	UpscaleRGBA8(*f, src.data(), w, h, w * 4, scale, dst.data(), w * scale * 4);
+
+	EXPECT_EQ(dst[0], 10);
+	EXPECT_EQ(dst[out_bytes - 4], 10);
+	EXPECT_EQ(dst[out_bytes - 1], 255);
+	for (size_t i = out_bytes; i < dst.size(); i++)
+		ASSERT_EQ(dst[i], 0xEE) << "past the end at " << i;
 }
 
 // ---------------------------------------------------------------------------------------------

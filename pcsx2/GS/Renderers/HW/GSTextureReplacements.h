@@ -90,6 +90,7 @@ namespace GSTextureReplacements
 	struct UpscaleStats
 	{
 		u64 queued;
+		u64 queued_4x; ///< Of those, the jobs that upscale by 4 (two 2x passes).
 		u64 upscaled; ///< Jobs that finished and were kept.
 		u64 injected; ///< Results swapped into the hash cache after the native texture was drawn.
 		u64 cache_hits; ///< Lookups answered from the replacement cache.
