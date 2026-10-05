@@ -495,6 +495,15 @@ enum class GSUpscaler : u8
 	SGSREdge,      ///< SGSR's edge-direction variant: same pass, directional Lanczos, dearer.
 };
 
+/// Generates larger copies of game textures on the CPU, in the background, and feeds them to the
+/// renderer the way a texture pack would. Persisted as an integer: append, never renumber.
+enum class GSTextureUpscaleMode : u8
+{
+	Off,
+	RaisrSharp, ///< RAISR 2x, filters trained on mixed degradations.
+	RaisrSmooth, ///< RAISR 2x, filters trained on bicubic degradation only.
+};
+
 enum class GSHWAutoFlushLevel : u8
 {
 	Disabled,
@@ -1017,6 +1026,7 @@ struct Pcsx2Config
 		s8 CopyRoadMaximumBlendingLevel = -1;
 		BiFiltering TextureFiltering = DEFAULT_TEXTURE_FILTERING_MODE;
 		TexturePreloadingLevel TexturePreloading = TexturePreloadingLevel::Full;
+		GSTextureUpscaleMode TextureUpscaleMode = GSTextureUpscaleMode::Off;
 		GSDumpCompressionMethod GSDumpCompression = GSDumpCompressionMethod::Zstandard;
 		GSHardwareDownloadMode HWDownloadMode = GSHardwareDownloadMode::Enabled;
 		GSCASMode CASMode = DEFAULT_CAS_MODE;
