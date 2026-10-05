@@ -141,3 +141,27 @@ if(UNIX)
 		common
 	)
 endif()
+
+# The RAISR texture upscaler engine has no GS, GPU or settings dependencies, so its tests compile
+# it directly rather than linking the emulator: this builds in seconds and shows the engine
+# stands alone. It reads the real filters from bin/resources/upscale/raisr.
+set(raisr_engine_source ${CMAKE_CURRENT_SOURCE_DIR}/../../../../pcsx2/GS/Renderers/HW/GSTextureUpscaler.cpp)
+add_pcsx2_test(gs_texture_upscaler_tests
+	gs_texture_upscaler_tests.cpp
+	${raisr_engine_source}
+)
+
+target_include_directories(gs_texture_upscaler_tests PRIVATE
+	${CMAKE_CURRENT_SOURCE_DIR}/../../../../pcsx2
+	${CMAKE_CURRENT_SOURCE_DIR}/../../../..
+)
+
+target_compile_definitions(gs_texture_upscaler_tests PRIVATE
+	GS_UPSCALER_RESOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../../../bin/resources/upscale/raisr"
+)
+
+# Same as pcsx2/CMakeLists.txt: the scalar and NEON paths only match bit for bit if nothing is
+# contracted beyond the explicit fused multiply-adds.
+if(NOT MSVC)
+	set_source_files_properties(${raisr_engine_source} PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
