@@ -673,8 +673,9 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 
 		dialog()->registerWidgetHelp(m_texture.textureUpscaleMode, tr("Upscale Textures"), tr("Off (Default)"),
 			tr("Upscales game textures 2x on the CPU in the background using RAISR, so textures sharpen a moment after they first appear. "
-			   "Sharp is crisper, Smooth is softer. Uses more memory and some CPU. Texture packs take priority. "
-			   "Hardware renderers only."));
+			   "Sharp is crisper, Smooth is softer. Uses more memory and some CPU. "
+			   "4x costs roughly 5x the CPU of 2x and 16x the native memory per texture, and only shows more detail at high internal resolutions. "
+			   "Texture packs take priority. Hardware renderers only."));
 
 		if (!dialog()->isPerGameSettings())
 		{

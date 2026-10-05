@@ -98,6 +98,11 @@
           <string>RAISR 2x (Smooth)</string>
          </property>
         </item>
+        <item>
+         <property name="text">
+          <string>RAISR 4x (Smooth)</string>
+         </property>
+        </item>
        </widget>
       </item>
      </layout>
