@@ -42,20 +42,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Arcade controls: what each pad button does on an arcade game's cabinet, the player's own layout for
- * each game (ArcadeControls). In All Settings > Controls, for any arcade game in the library ([pickGame]),
- * the one being played first; in the pause menu's Controls, for the game being played ([gameId]).
+ * Arcade controls: what each pad button does on an arcade game's cabinet (ArcadeControls). In All Settings >
+ * Controls ([pickGame]): the layout for every arcade game (All arcade games), or any arcade game's own in the
+ * library, the one being played first. In the pause menu's Controls: the game being played ([gameId]).
  */
 @Composable
 internal fun ArcadeControlsSection(gameId: String?, pickGame: Boolean) {
     CollapsibleSection(str("arcade.controls.section"), initiallyExpanded = false) {
         val app = LocalContext.current.applicationContext as android.app.Application
-        val chosen = remember { mutableStateOf(gameId) }
+        val chosen = remember { mutableStateOf(gameId ?: if (pickGame) ArcadeControls.GLOBAL else null) }
         // The library's arcade games (ID, name); null while they are read.
         val games = remember { mutableStateOf<List<Pair<String, String>>?>(null) }
         if (pickGame) {
             LaunchedEffect(Unit) {
-                val found = withContext(Dispatchers.IO) {
+                games.value = withContext(Dispatchers.IO) {
                     runCatching {
                         GameLibraryRepository(app).loadCached().games
                             .filter { it.extension == Arcade.BADGE && !it.serial.isNullOrBlank() }
@@ -64,31 +64,71 @@ internal fun ArcadeControlsSection(gameId: String?, pickGame: Boolean) {
                             .sortedBy { it.second.lowercase() }
                     }.getOrDefault(emptyList())
                 }
-                games.value = found
-                if (chosen.value == null) chosen.value = found.firstOrNull()?.first
             }
         }
+        val global = chosen.value == ArcadeControls.GLOBAL
         Text(
-            str("arcade.controls.intro"),
+            str(if (global) "arcade.controls.allIntro" else "arcade.controls.intro"),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 14.sp,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
         )
-        val list = games.value
-        if (pickGame && list != null && list.isEmpty() && chosen.value == null) {
-            Text(
-                str("arcade.controls.none"),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 15.sp,
-                modifier = Modifier.padding(6.dp),
-            )
-        } else {
-            if (pickGame && list != null) {
-                val title = list.firstOrNull { it.first == chosen.value }?.second ?: chosen.value.orEmpty()
-                ArcadeGamePickerRow(chosen.value, title, list) { chosen.value = it }
-            }
-            chosen.value?.let { ArcadeLayoutRows(it) }
+        if (pickGame) {
+            val choices = listOf(ArcadeControls.GLOBAL to str("arcade.controls.all")) + games.value.orEmpty()
+            val title = choices.firstOrNull { it.first == chosen.value }?.second ?: chosen.value.orEmpty()
+            ArcadeGamePickerRow(chosen.value, title, choices) { chosen.value = it }
         }
+        when (val id = chosen.value) {
+            null -> Unit
+            ArcadeControls.GLOBAL -> GlobalLayoutRows()
+            else -> ArcadeLayoutRows(id)
+        }
+    }
+}
+
+/** The All arcade games layout: the pad button each pad button acts as, in every arcade game. */
+@Composable
+private fun GlobalLayoutRows() {
+    val tick = remember { mutableIntStateOf(0) }
+    val picking = remember { mutableStateOf<Int?>(null) }
+    @Suppress("UNUSED_EXPRESSION")
+    tick.intValue // read again after a change
+    val changes = ArcadeControls.globalChanges()
+    Column {
+        ArcadeControls.buttons.forEach { button ->
+            val target = changes[button] ?: button
+            ArcadeValueRow(
+                label = ArcadeControls.buttonName(button),
+                value = if (target == ArcadeControls.NOTHING) str("arcade.controls.nothing") else ArcadeControls.buttonName(target),
+                highlight = changes.containsKey(button),
+                id = "arcadectl:all:$button",
+                enabled = true,
+            ) { picking.value = button }
+        }
+        Spacer(Modifier.height(4.dp))
+        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Spacer(Modifier.weight(1f))
+            PickerButton(str("arcade.controls.reset"), "arcadectl:all:reset") {
+                ArcadeControls.reset(ArcadeControls.GLOBAL)
+                tick.intValue++
+            }
+        }
+    }
+    picking.value?.let { button ->
+        val current = changes[button] ?: button
+        ArcadePicker(
+            title = str("arcade.controls.pick").format(ArcadeControls.buttonName(button)),
+            layer = "arcade-all-picker",
+            items = ArcadeControls.buttons.map { ArcadeControls.buttonName(it) to it.toString() },
+            selected = { v -> if (v == null) current == ArcadeControls.NOTHING else v == current.toString() },
+            onPick = { v ->
+                ArcadeControls.setGlobal(button, v?.toIntOrNull() ?: ArcadeControls.NOTHING)
+                picking.value = null
+                tick.intValue++
+            },
+            onDismiss = { picking.value = null },
+            extra = str("arcade.controls.nothing"),
+        )
     }
 }
 
