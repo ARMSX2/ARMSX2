@@ -358,12 +358,12 @@ struct ArcadeBiosRule
 	const char* needs;
 };
 static constexpr ArcadeBiosRule s_arcade_bios_rules[] = {
-	{"NM00002", ArcadeBoard::CohA000010, "System 246"},
+	{"NM00002", ArcadeBoard::CohA000010, "System 256"},
 	{"NM00010", ArcadeBoard::S256, "System 246"},
 	{"NM00015", ArcadeBoard::S256, "System 246"},
 };
 
-std::string FindArcadeBiosFor(const std::string& gameid, bool s256_game, const std::string& picked, std::string* needs)
+std::string FindArcadeBiosFor(const std::string& gameid, const std::string& picked, std::string* needs)
 {
 	struct Dump
 	{
@@ -404,16 +404,10 @@ std::string FindArcadeBiosFor(const std::string& gameid, bool s256_game, const s
 		return found;
 	};
 
-	// The game's own board's BIOS: a System 246 game takes the System 246 one, a System 256 game the System
-	// 256 one. Without it, the other (the System 256 BIOS runs System 246 games as well, PCSX2x6's advice),
-	// then Sony's COH-H board's, then any other.
-	const ArcadeBoard order[] = {
-		s256_game ? ArcadeBoard::S256 : ArcadeBoard::S246C,
-		s256_game ? ArcadeBoard::S246C : ArcadeBoard::S256,
-		ArcadeBoard::CohA000010,
-		ArcadeBoard::Other,
-	};
-	for (const ArcadeBoard board : order)
+	// The System 256 BIOS first, for every game: it runs System 246 games as well (PCSX2x6's default), and
+	// they sound right on it; Soul Calibur III's sound buzzed on the System 246 Rack C one. Then the System 246
+	// Rack C BIOS (Battle Gear 3, which refuses the System 256 one, starts here), Sony's COH-H board's, any other.
+	for (const ArcadeBoard board : {ArcadeBoard::S256, ArcadeBoard::S246C, ArcadeBoard::CohA000010, ArcadeBoard::Other})
 	{
 		if (const Dump* d = of_board(board))
 			return d->name;

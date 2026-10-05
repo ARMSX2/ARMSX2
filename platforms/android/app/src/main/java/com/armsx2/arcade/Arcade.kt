@@ -531,9 +531,9 @@ object Arcade {
     // ---- The arcade BIOS ---------------------------------------------------------------------------
 
     /**
-     * There is no arcade BIOS to pick: every one in the BIOS folder is in use, and each game starts with
-     * its own board's (the core's FindArcadeBiosFor), a System 246 game with the System 246 BIOS and a
-     * System 256 game with the System 256 one. Never the console BIOS: an arcade BIOS cannot run console
+     * There is no arcade BIOS to pick: every one in the BIOS folder is in use (the core's FindArcadeBiosFor),
+     * the System 256 one for every game (PCSX2x6's default) and the System 246 one for a game that refuses
+     * it (Battle Gear 3). Never the console BIOS: an arcade BIOS cannot run console
      * games, nor the other way. 2.8 had one picked for every arcade game; that pick is forgotten, in the
      * app's preferences and in the core's settings ([Filenames] ArcadeBIOS), once the core is up.
      */

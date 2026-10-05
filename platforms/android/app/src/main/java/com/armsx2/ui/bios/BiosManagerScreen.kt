@@ -264,7 +264,7 @@ private fun BiosRow(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        // Every arcade BIOS is in use (each game takes its own board's), as plainly as the console one.
+        // Every arcade BIOS is in use (each game starts with one it runs on), as plainly as the console one.
         color = if (item.selected || item.arcade) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
         border = BorderStroke(
             1.dp,

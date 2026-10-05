@@ -23,7 +23,7 @@ data class InstalledBios(
     val info: BiosInfo,
     val selected: Boolean,
     /** A Namco arcade board's BIOS (COH-H), for arcade games only. Every one is in use: each arcade
-     *  game starts with its own board's (Arcade.forgetArcadeBiosPick). */
+     *  game starts with one it runs on (Arcade.forgetArcadeBiosPick). */
     val arcade: Boolean = false,
 )
 

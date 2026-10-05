@@ -1750,15 +1750,15 @@ bool VMManager::OpenArcadeGame(const VMBootParameters& boot_params, Error* error
 		return false;
 	}
 
-	// The board's BIOS (FindArcadeBiosFor): every arcade BIOS in the BIOS folder is in use, and the game
-	// takes its own board's, so with the System 246 and System 256 BIOS both there no game needs one picked.
+	// The board's BIOS (FindArcadeBiosFor): every arcade BIOS in the BIOS folder is in use, the System 256 one
+	// for every game and the System 246 one for a game that refuses it (Battle Gear 3), so none is picked.
 	std::string picked;
 	{
 		auto lock = Host::GetSettingsLock();
 		picked = Host::GetSettingsInterface()->GetStringValue("Filenames", "ArcadeBIOS", "");
 	}
 	std::string needs;
-	std::string bios = FindArcadeBiosFor(gameid, platform == "256" || platform == "super256", picked, &needs);
+	std::string bios = FindArcadeBiosFor(gameid, picked, &needs);
 	if (bios.empty() && !needs.empty())
 	{
 		Error::SetStringFmt(error,

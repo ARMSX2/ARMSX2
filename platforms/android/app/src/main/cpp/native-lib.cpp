@@ -3023,7 +3023,7 @@ JNIEXPORT jstring JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_getArcadeBiosNeed(JNIEnv* env, jclass, jstring gameId) {
     std::string needs;
     if (gameId)
-        FindArcadeBiosFor(GetJavaString(env, gameId), false, {}, &needs);
+        FindArcadeBiosFor(GetJavaString(env, gameId), {}, &needs);
     return env->NewStringUTF(needs.c_str());
 }
 

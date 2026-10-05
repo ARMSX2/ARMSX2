@@ -2216,7 +2216,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     NativeApp.commitSettings()
                 }
             }
-            // The arcade games' BIOS is never picked: each game takes its own board's (Arcade.forgetArcadeBiosPick).
+            // The arcade games' BIOS is never picked: each game starts with one it runs on (Arcade.forgetArcadeBiosPick).
             runCatching { com.armsx2.arcade.Arcade.forgetArcadeBiosPick() }
 
             // Mirror the canonical (app-private) BIOS into the user's data root at

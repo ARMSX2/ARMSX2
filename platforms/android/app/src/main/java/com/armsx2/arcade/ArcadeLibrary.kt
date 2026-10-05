@@ -124,9 +124,9 @@ object ArcadeLibrary {
 
     // ---- The arcade BIOS --------------------------------------------------------------------------
 
-    /** The arcade BIOS the core boots arcade games with, every one there in use: each game takes its
-     *  own board's (BiosTools' FindArcadeBiosFor). Their boards as the core names them ("System 246 Rack
-     *  C, System 256"), else their file names; null for none. */
+    /** The arcade BIOS the core boots arcade games with, every one there in use: the System 256 one for
+     *  every game, another for a game that refuses it (BiosTools' FindArcadeBiosFor). Their boards as the
+     *  core names them ("System 246 Rack C, System 256"), else their file names; null for none. */
     fun biosNames(context: Context): String? {
         val dir = MainActivityRuntime.internalBiosDir(context)
         val files = dir.listFiles()?.filter { it.isFile && it.length() in Arcade.ARCADE_BIOS_SIZES }.orEmpty()
