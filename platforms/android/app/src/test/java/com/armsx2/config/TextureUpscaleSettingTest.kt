@@ -29,24 +29,28 @@ class TextureUpscaleSettingTest {
         assertEquals("0", withMode(0).emittedKeys()[iniKey])
         assertEquals("1", withMode(1).emittedKeys()[iniKey])
         assertEquals("2", withMode(2).emittedKeys()[iniKey])
+        assertEquals("3", withMode(3).emittedKeys()[iniKey])
     }
 
     @Test
     fun clampsToTheCoreEnumRange() {
         assertEquals("0", withMode(-3).emittedKeys()[iniKey])
-        assertEquals("2", withMode(9).emittedKeys()[iniKey])
+        // 3 is the highest core value (RaisrSmooth4x); anything above it is held there.
+        assertEquals("3", withMode(4).emittedKeys()[iniKey])
+        assertEquals("3", withMode(9).emittedKeys()[iniKey])
     }
 
     @Test
     fun readsBackFromTheNativeIni() {
         assertEquals(2, Settings().readFromIni(mapOf(iniKey to "2")).graphics.textureUpscaleMode)
+        assertEquals(3, Settings().readFromIni(mapOf(iniKey to "3")).graphics.textureUpscaleMode)
         // A key the INI does not have leaves the current value alone.
         assertEquals(1, withMode(1).readFromIni(emptyMap()).graphics.textureUpscaleMode)
     }
 
     @Test
     fun roundTripsThroughStoredJson() {
-        for (mode in 0..2) {
+        for (mode in 0..3) {
             assertEquals(mode, Settings.fromJson(withMode(mode).toJson()).graphics.textureUpscaleMode)
         }
     }
@@ -54,10 +58,12 @@ class TextureUpscaleSettingTest {
     @Test
     fun perGameOverrideRoundTrips() {
         val global = Settings()
-        val game = withMode(2, global)
-        val overrides = Settings.diff(global, game)
-        assertEquals(2, overrides.getInt("textureUpscaleMode"))
-        assertEquals(2, Settings.merge(global, overrides).graphics.textureUpscaleMode)
+        for (mode in 2..3) {
+            val game = withMode(mode, global)
+            val overrides = Settings.diff(global, game)
+            assertEquals(mode, overrides.getInt("textureUpscaleMode"))
+            assertEquals(mode, Settings.merge(global, overrides).graphics.textureUpscaleMode)
+        }
 
         // Unchanged from global: nothing is stored, so the game follows later global changes.
         assertFalse(Settings.diff(global, global).has("textureUpscaleMode"))
@@ -67,6 +73,8 @@ class TextureUpscaleSettingTest {
     @Test
     fun changingItTriggersALiveGsReconfigure() {
         assertTrue(withMode(1).gsDiffersFrom(Settings()))
+        // 2x Smooth to 4x Smooth is a different job scale, so it reconfigures too.
+        assertTrue(withMode(3).gsDiffersFrom(withMode(2)))
         assertFalse(Settings().gsDiffersFrom(Settings()))
     }
 

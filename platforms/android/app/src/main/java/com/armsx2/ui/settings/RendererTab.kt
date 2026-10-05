@@ -206,12 +206,18 @@ fun RendererTab(state: MutableState<Settings>) {
                 apply(s.copy(graphics = s.graphics.copy(precacheTextureReplacements = it)))
             }
             SettingsDivider()
-            // The option index is the core's GSTextureUpscaleMode value (0 Off, 1 Sharp, 2 Smooth),
-            // so it is stored as-is, unlike the display upscaler above.
+            // The option index is the core's GSTextureUpscaleMode value (0 Off, 1 Sharp, 2 Smooth,
+            // 3 Smooth 4x), so it is stored as-is, unlike the display upscaler above. Four chips
+            // scroll sideways in SegmentedRow like the other four and five option rows here.
             SegmentedRow(
                 label = str("renderer.textureUpscale.label"),
-                options = listOf(str("common.off"), str("renderer.textureUpscale.sharp"), str("renderer.textureUpscale.smooth")),
-                selectedIndex = s.graphics.textureUpscaleMode.coerceIn(0, 2),
+                options = listOf(
+                    str("common.off"),
+                    str("renderer.textureUpscale.sharp"),
+                    str("renderer.textureUpscale.smooth"),
+                    str("renderer.textureUpscale.smooth4x"),
+                ),
+                selectedIndex = s.graphics.textureUpscaleMode.coerceIn(0, 3),
                 description = str("renderer.textureUpscale.description"),
                 onChange = { apply(s.copy(graphics = s.graphics.copy(textureUpscaleMode = it))) },
             )

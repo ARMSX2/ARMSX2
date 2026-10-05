@@ -775,8 +775,8 @@ data class GraphicsSettings(
     /** EmuCore/GS/PrecacheTextureReplacements. */
     val precacheTextureReplacements: Boolean = false,
     /** EmuCore/GS/TextureUpscaleMode — GSTextureUpscaleMode: 0 Off / 1 RAISR 2x Sharp /
-     *  2 RAISR 2x Smooth. The picker index is the enum value. Persisted as an integer by the
-     *  core, so new modes get appended, never renumbered. */
+     *  2 RAISR 2x Smooth / 3 RAISR 4x Smooth. The picker index is the enum value. Persisted as an
+     *  integer by the core, so new modes get appended, never renumbered. */
     val textureUpscaleMode: Int = 0,
     /** EmuCore/GS/DumpReplaceableTextures. */
     val dumpReplaceableTextures: Boolean = false,
@@ -1695,9 +1695,9 @@ data class Settings(
         put("EmuCore/GS", "LoadTextureReplacements", "bool", graphics.loadTextureReplacements.toString())
         put("EmuCore/GS", "LoadTextureReplacementsAsync", "bool", graphics.loadTextureReplacementsAsync.toString())
         put("EmuCore/GS", "PrecacheTextureReplacements", "bool", graphics.precacheTextureReplacements.toString())
-        // Upper bound is the highest GSTextureUpscaleMode value (RaisrSmooth); it has to move when
+        // Upper bound is the highest GSTextureUpscaleMode value (RaisrSmooth4x); it has to move when
         // the core enum grows, same as Upscaler above.
-        put("EmuCore/GS", "TextureUpscaleMode", "int", graphics.textureUpscaleMode.coerceIn(0, 2).toString())
+        put("EmuCore/GS", "TextureUpscaleMode", "int", graphics.textureUpscaleMode.coerceIn(0, 3).toString())
         put("EmuCore/GS", "DumpReplaceableTextures", "bool", graphics.dumpReplaceableTextures.toString())
         put("EmuCore/GS", "OsdShowTextureReplacements", "bool", graphics.osdShowTextureReplacements.toString())
         put("EmuCore/GS", "OsdShowFPS", "bool", osd.osdShowFps.toString())
