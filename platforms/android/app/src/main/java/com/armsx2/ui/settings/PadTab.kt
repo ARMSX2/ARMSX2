@@ -779,6 +779,9 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 }
             }
         }
+        // Arcade controls: what each pad button does on an arcade game's cabinet, the player's own
+        // layout per game (ArcadeControls). For any arcade game in the library, the one being played first.
+        ArcadeControlsSection(gameId = com.armsx2.arcade.Arcade.sessionGameId.value, pickGame = true)
         CollapsibleSection(str("pad.section.onScreenControls"), initiallyExpanded = false) {
             // Controller hotkeys now live in their own dedicated "Hotkeys" tab
             // (see HotkeysTab) so they're easier to find than buried under Pad.
@@ -1283,9 +1286,9 @@ private fun StickTargetPickerDialog(
     }
 }
 
-/** Shared footer button for the two pickers below. */
+/** Shared footer button for the pickers here and in ArcadeControlsSection. */
 @Composable
-private fun PickerButton(label: String, id: String, onClick: () -> Unit) {
+internal fun PickerButton(label: String, id: String, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
         modifier = Modifier.controllerFocusable(
@@ -1306,7 +1309,7 @@ private fun PickerButton(label: String, id: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun StickPickItem(label: String, selected: Boolean, id: String, onClick: () -> Unit) {
+internal fun StickPickItem(label: String, selected: Boolean, id: String, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()

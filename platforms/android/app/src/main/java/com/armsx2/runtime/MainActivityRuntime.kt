@@ -888,11 +888,16 @@ open class MainActivityRuntime : ComponentActivity() {
             println("@@ANDROID_ARCADE@@ ${launch.game.gameId} mode=${launch.mode} elf=${launch.elf.take(200)} media=${launch.media.take(200)}")
             NativeApp.setArcadeLaunchFiles(launch.elf, launch.media, launch.sram)
             com.armsx2.arcade.Arcade.sessionMode.intValue = launch.mode
+            com.armsx2.arcade.Arcade.sessionGameId.value = launch.game.gameId
+            // The player's own layout for this game's cabinet (Arcade controls), before any press arrives.
+            com.armsx2.arcade.ArcadeControls.apply(launch.game.gameId)
             try {
                 // The game's .acgame, or for a game kept as its own files the one written for it.
                 NativeApp.runVMThread(launch.manifest)
             } finally {
                 com.armsx2.arcade.Arcade.sessionMode.intValue = -1
+                com.armsx2.arcade.Arcade.sessionGameId.value = null
+                com.armsx2.arcade.ArcadeControls.apply(null)
             }
             runCatching { NativeApp.getLastBootError() }.getOrNull()?.takeIf { it.isNotBlank() }?.let { error ->
                 com.armsx2.arcade.Arcade.notice.value = com.armsx2.i18n.I18n.get("arcade.error.boot").format(error)

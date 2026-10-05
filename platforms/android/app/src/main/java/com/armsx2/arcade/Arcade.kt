@@ -48,6 +48,9 @@ object Arcade {
     /** The running arcade game's controls (NativeApp.ARCADE_MODE_*), or -1 when none is running. */
     val sessionMode = mutableIntStateOf(-1)
 
+    /** The running arcade game's ID, or null when none is running (its Arcade controls in the pause menu). */
+    val sessionGameId = mutableStateOf<String?>(null)
+
     /** A message about the last arcade launch, shown over the library until dismissed. */
     val notice = mutableStateOf<String?>(null)
 

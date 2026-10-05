@@ -152,6 +152,10 @@ namespace ACJV {
     std::span<const InputBindingInfo> GetDrumBindings();
     std::span<const InputBindingInfo> GetTwinstickBindings(); // Zoids
     std::span<const InputBindingInfo> GetFightingButtons(); // empty if none
+    // ARMSX2: the same for any game, not only the running one (the Arcade controls settings).
+    std::span<const InputBindingInfo> GetFightingButtons(const std::string& gameid);
+    std::span<const InputBindingInfo> GetStandardButtons(const std::string& gameid);
+    std::span<const InputBindingInfo> GetRacingButtons(const std::string& gameid);
     struct LayoutInfo { const char* name; std::span<const InputBindingInfo> buttons; bool one_player; const char* note = nullptr; }; // Fighting/Standard share this; note = optional hint under the buttons
     std::span<const LayoutInfo> GetFightingLayouts();
     std::span<const InputBindingInfo> GetStandardButtons(); // empty if none

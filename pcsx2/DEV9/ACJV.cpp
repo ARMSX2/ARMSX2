@@ -469,7 +469,12 @@ JVS_MODE ACJV::ResolveModeFromGameId(const std::string& gameid)
 
 std::span<const InputBindingInfo> ACJV::GetFightingButtons()
 {
-	auto it = s_fighting_layouts.find(s_gameid);
+	return GetFightingButtons(s_gameid);
+}
+
+std::span<const InputBindingInfo> ACJV::GetFightingButtons(const std::string& gameid)
+{
+	auto it = s_fighting_layouts.find(gameid);
 	if (it == s_fighting_layouts.end())
 		return {};
 	switch (it->second)
@@ -496,7 +501,12 @@ std::span<const ACJV::LayoutInfo> ACJV::GetFightingLayouts()
 
 std::span<const InputBindingInfo> ACJV::GetStandardButtons()
 {
-	auto it = s_standard_layouts.find(s_gameid);
+	return GetStandardButtons(s_gameid);
+}
+
+std::span<const InputBindingInfo> ACJV::GetStandardButtons(const std::string& gameid)
+{
+	auto it = s_standard_layouts.find(gameid);
 	if (it == s_standard_layouts.end())
 		return {};
 	switch (it->second)
@@ -517,7 +527,12 @@ std::span<const ACJV::LayoutInfo> ACJV::GetStandardLayouts()
 
 std::span<const InputBindingInfo> ACJV::GetRacingButtons()
 {
-	auto it = s_racing_layouts.find(s_gameid);
+	return GetRacingButtons(s_gameid);
+}
+
+std::span<const InputBindingInfo> ACJV::GetRacingButtons(const std::string& gameid)
+{
+	auto it = s_racing_layouts.find(gameid);
 	if (it == s_racing_layouts.end())
 		return {};
 	switch (it->second)

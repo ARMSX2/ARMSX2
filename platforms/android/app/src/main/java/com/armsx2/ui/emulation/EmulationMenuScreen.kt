@@ -1380,6 +1380,8 @@ private fun ControlsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     // Macros — edit each M1-M4 button set here in-game too (physical-trigger binding stays
     // in All Settings › Controls, which hosts the key-capture listener).
     com.armsx2.ui.settings.MacrosSection()
+    // Arcade controls for the arcade game being played: what each button does on its cabinet.
+    com.armsx2.arcade.Arcade.sessionGameId.value?.let { com.armsx2.ui.settings.ArcadeControlsSection(it, pickGame = false) }
 }
 
 @Composable

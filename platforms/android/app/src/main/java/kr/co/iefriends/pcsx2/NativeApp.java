@@ -297,6 +297,14 @@ public class NativeApp {
 	 *  ("System 246" for Battle Gear 3, which rejects the System 256 one), else "": the core's choice at boot. */
 	public static native String getArcadeBiosNeed(String gameId);
 
+	/** The jobs the pad's buttons do on an arcade game's cabinet, for the Arcade controls settings:
+	 *  "mode\tN" first, then a job a line (name, default pad keys, fixed), as native-lib.cpp says. */
+	public static native String getArcadeControls(String gameId);
+
+	/** The player's own layout for the arcade game being played: pairs of pad keys (a button, then the
+	 *  button whose job it does, -1 for none). Null or empty: the cabinet's own layout. */
+	public static native void setArcadeRemap(int[] pairs);
+
 	/** Every arcade game the database knows, one per line: game ID, name, board (System246,
 	 *  System256 or System SUPER256) and media (CD, DVD or HDD), tab separated. */
 	public static native String getArcadeGames();
