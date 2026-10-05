@@ -1710,6 +1710,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "renderer.shaderPack.noneInstalled" to "No shader packs installed",
     "renderer.shaderPack.presets" to "presets",
     "renderer.shaderPack.starting" to "Starting…",
+    "renderer.shaderPack.indexing" to "Indexing presets…",
     "renderer.textureFiltering.description" to "Controls texture smoothing. PS2 is safest; Forced can soften or brighten some games.",
     "renderer.textureFiltering.label" to "Texture Filtering",
     "renderer.texturePackOsd.description" to "Shows texture replacement status messages in-game.",

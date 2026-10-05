@@ -235,7 +235,8 @@ object ShaderParams {
                         .append(String.format(Locale.US, "%.6f", value)).append("\"\n")
                 }
             }
-            out.writeText(text)
+            // Through the index so the picker lists the new preset without a full rescan.
+            ShaderIndex.changeFiles(ShaderRepo.shadersRoot(context), listOf(out)) { out.writeText(text) }
             out.absolutePath
         } catch (t: Throwable) {
             Log.w(TAG, "could not save preset '$name'", t)
@@ -261,5 +262,8 @@ object ShaderParams {
             }.getOrDefault(false)
 
     fun deleteSavedPreset(context: Context, presetPath: String): Boolean =
-        isSavedPreset(context, presetPath) && runCatching { File(presetPath).delete() }.getOrDefault(false)
+        isSavedPreset(context, presetPath) && runCatching {
+            val file = File(presetPath)
+            ShaderIndex.changeFiles(ShaderRepo.shadersRoot(context), listOf(file)) { file.delete() }
+        }.getOrDefault(false)
 }

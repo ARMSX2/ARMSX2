@@ -153,14 +153,15 @@ object ShaderRepo {
 
     /** Enumerate installed packs. Any directory under `shaders/` counts —
      *  both our downloads and hand-dropped packs — so the list matches what
-     *  the preset picker actually sees. Blocking IO (it walks the tree to
-     *  count presets, which is thousands of files for a full pack): call from
+     *  the preset picker actually sees. Preset counts come from [ShaderIndex],
+     *  which walks the whole tree when it has no valid index: call from
      *  Dispatchers.IO. */
     fun listInstalled(context: Context): List<InstalledPack> {
         val root = shadersRoot(context)
         val dirs = root.listFiles { f ->
             f.isDirectory && !f.name.startsWith(".") && f.name != USER_PRESET_DIR
         } ?: return emptyList()
+        val counts = ShaderIndex.load(root).groupingBy { it.relPath.substringBefore('/') }.eachCount()
         return dirs.map { dir ->
             InstalledPack(
                 id = dir.name,
@@ -168,7 +169,7 @@ object ShaderRepo {
                 // friendly name comes back for free. Hand-dropped packs fall
                 // back to the folder name.
                 name = SHADER_SOURCES.firstOrNull { it.id == dir.name }?.name ?: dir.name,
-                presetCount = countPresets(dir),
+                presetCount = counts[dir.name] ?: 0,
                 dir = dir,
             )
         }.sortedBy { it.name.lowercase() }
@@ -176,7 +177,7 @@ object ShaderRepo {
 
     /** Recursively remove an installed pack. */
     fun delete(pack: InstalledPack) {
-        pack.dir.deleteRecursively()
+        ShaderIndex.change(pack.dir.absoluteFile.parentFile) { pack.dir.deleteRecursively() }
     }
 
     // ---- Import a pack the user already has ---------------------------------
@@ -223,22 +224,29 @@ object ShaderRepo {
      */
     fun importFromZip(ctx: Context, zipUri: Uri): String? {
         val id = importId(ctx, DocumentFile.fromSingleUri(ctx, zipUri)?.name ?: "shader pack")
-        val target = File(shadersRoot(ctx), id)
+        val root = shadersRoot(ctx)
+        val target = File(root, id)
         val staged = File(ctx.cacheDir, "shaderpack-import-$id.zip")
-        return try {
+        val result = try {
             ctx.contentResolver.openInputStream(zipUri)?.use { ins ->
                 staged.outputStream().use { ins.copyTo(it) }
             } ?: return null
-            target.mkdirs()
-            if (extract(staged, target, null) { false }) keepIfPresets(target, id)
-            else { target.deleteRecursively(); null }
+            ShaderIndex.change(root) {
+                target.mkdirs()
+                if (extract(staged, target, null) { false }) keepIfPresets(target, id)
+                else { target.deleteRecursively(); null }
+            }
         } catch (t: Throwable) {
             Log.w(TAG, "zip import failed", t)
-            target.deleteRecursively()
+            ShaderIndex.change(root) { target.deleteRecursively() }
             null
         } finally {
             staged.delete()
         }
+        // Rebuild the index now, while the user is still waiting on the import, rather than
+        // on the next open of the preset picker.
+        ShaderIndex.load(root)
+        return result
     }
 
     /**
@@ -254,15 +262,21 @@ object ShaderRepo {
     fun importFromTree(ctx: Context, treeUri: Uri): String? {
         val tree = DocumentFile.fromTreeUri(ctx, treeUri) ?: return null
         val id = importId(ctx, tree.name ?: "shader pack")
-        val target = File(shadersRoot(ctx), id)
-        return try {
-            copyTree(ctx, tree, target, 0)
-            keepIfPresets(target, id)
-        } catch (t: Throwable) {
-            Log.w(TAG, "folder import failed", t)
-            target.deleteRecursively()
-            null
+        val root = shadersRoot(ctx)
+        val target = File(root, id)
+        val result = ShaderIndex.change(root) {
+            try {
+                copyTree(ctx, tree, target, 0)
+                keepIfPresets(target, id)
+            } catch (t: Throwable) {
+                Log.w(TAG, "folder import failed", t)
+                target.deleteRecursively()
+                null
+            }
         }
+        // As for a zip import: index while the user is still waiting.
+        ShaderIndex.load(root)
+        return result
     }
 
     private fun copyTree(ctx: Context, dir: DocumentFile, dest: File, depth: Int) {
@@ -306,7 +320,9 @@ object ShaderRepo {
      * [onDownload] gets (bytesRead, totalBytes) — totalBytes is -1 if the
      * server sent no Content-Length — and [onExtract] gets (entriesDone,
      * entriesTotal). Both are throttled, so they're safe to route straight at
-     * Compose state.
+     * Compose state. [onIndex] is called once the files are in place and the
+     * preset index ([ShaderIndex]) is being rebuilt — a walk of the whole tree,
+     * done here so the preset picker doesn't have to do it on its next open.
      *
      * [isCancelled] is polled between chunks and between entries; when it goes
      * true the partial work is discarded and null is returned (same as any
@@ -319,6 +335,7 @@ object ShaderRepo {
         source: ShaderSource,
         onDownload: ((Long, Long) -> Unit)? = null,
         onExtract: ((Int, Int) -> Unit)? = null,
+        onIndex: (() -> Unit)? = null,
         isCancelled: () -> Boolean = { false },
     ): InstalledPack? {
         // Staging lives OUTSIDE shaders/ so a half-extracted pack is never
@@ -357,18 +374,22 @@ object ShaderRepo {
             // structure lands beside the base pack's `crt/` and the relative references
             // resolve. Renaming onto a target would replace the base pack outright.
             // Standalone: the original rename into shaders/<id>.
-            val targetDir: File
-            if (source.requiresPack != null) {
-                targetDir = shadersRoot(context)
-                mergeInto(tmpDir, targetDir)
-            } else {
-                targetDir = File(shadersRoot(context), source.id)
-                if (targetDir.exists()) targetDir.deleteRecursively()
-                if (!tmpDir.renameTo(targetDir)) {
-                    Log.w(TAG, "install: rename $tmpDir -> $targetDir failed")
-                    return null
+            val root = shadersRoot(context)
+            val targetDir = if (source.requiresPack != null) root else File(root, source.id)
+            val committed = ShaderIndex.change(root) {
+                if (source.requiresPack != null) {
+                    mergeInto(tmpDir, targetDir)
+                    true
+                } else {
+                    if (targetDir.exists()) targetDir.deleteRecursively()
+                    tmpDir.renameTo(targetDir).also { ok ->
+                        if (!ok) Log.w(TAG, "install: rename $tmpDir -> $targetDir failed")
+                    }
                 }
             }
+            onIndex?.invoke()
+            ShaderIndex.load(root)
+            if (!committed) return null
             Log.i(TAG, "install: ${source.id} -> $targetDir ($presets presets)")
             return InstalledPack(source.id, source.name, presets, targetDir)
         } finally {
