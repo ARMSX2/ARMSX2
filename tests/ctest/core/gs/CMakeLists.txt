@@ -88,6 +88,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_channel_shuffle_cover_tests.cpp
 	gs_sw_palette_block_copy_tests.cpp
 	gs_cache_file_tests.cpp
+	gs_hash_cache_inject_tests.cpp
 )
 
 target_include_directories(gs_vertex_tests PRIVATE
