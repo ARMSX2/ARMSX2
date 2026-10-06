@@ -46,8 +46,9 @@ namespace GSTextureUpscaleSupport
 	/// (x + 1) / 2 - 1 and (x + 1) / 2, and likewise for rows, both clamped to the image.
 	///
 	/// A sharpening filter overshoots at a hard edge. Beside a step from 113 to 223 the RAISR
-	/// engine writes values down to 82 on the dark side and up to 252 on the bright side, which are
-	/// colours that neither side of the edge has. Sampled with a bilinear filter the extra detail
+	/// engine writes values down to 102 on the dark side and up to 229 on the bright side, which are
+	/// colours that neither side of the edge has (Intel's Sharp set, no longer shipped, went to 82
+	/// and 252). Sampled with a bilinear filter the extra detail
 	/// reads as a halo; sampled with a nearest filter and magnified, which games do to read a flat
 	/// colour out of a swatch atlas, every one of those texels becomes a visible block. After this
 	/// pass no output pixel is darker than the darkest or brighter than the brightest of the four
