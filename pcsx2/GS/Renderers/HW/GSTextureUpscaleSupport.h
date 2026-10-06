@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
 #include <deque>
 #include <memory>
 #include <optional>
@@ -98,10 +99,10 @@ namespace GSTextureUpscaleSupport
 	/// bands appear once the threshold is 0x38 or lower.
 	inline constexpr u32 HARD_ALPHA_STEP = 0x60;
 
-	/// Where a 2x upscale has interpolated across a hard alpha edge, takes alpha from the source
-	/// texel the output pixel lies inside instead. Everywhere else the alpha in dst is left as the
-	/// upscaler wrote it, which is the bilinear upscale of the source. Only alpha bytes change.
-	/// Same layout as ClampUpscaledToSourceRange.
+	/// Where a 2x upscale has interpolated across a hard alpha edge, takes the whole pixel, colour and
+	/// alpha, from the source texel the output pixel lies inside instead. Everywhere else dst is left
+	/// as the upscaler wrote it, which is the bilinear (or filtered) upscale of the source. Same layout
+	/// as ClampUpscaledToSourceRange.
 	///
 	/// An output pixel counts as being on a hard edge when the four source texels it is interpolated
 	/// from differ in alpha by HARD_ALPHA_STEP or more.
@@ -115,6 +116,16 @@ namespace GSTextureUpscaleSupport
 	/// With the texel's own alpha at the edge, a nearest sampled draw gets the original's mask and
 	/// blend alpha under any alpha test. A bilinear sampled draw gets a mask edge half a texel wide
 	/// instead of a texel, as it would from any 2x copy of the texture.
+	///
+	/// Colour comes with it because the colour of a transparent texel is whatever the game stored, and
+	/// nothing is meant to show it. In the eyes it is black, against dark grey for the opaque texels.
+	/// Interpolation blends that black into the output pixel next to the edge on the opaque side, and
+	/// the clamp to the source range cannot stop it, since the black texel is one of the four sources.
+	/// With the alpha kept exact that pixel is drawn, a dark outline round each rectangle. A pixel
+	/// that is the texel it lies inside is what a nearest sample of the original gives, so it is right
+	/// however the game draws the texture: alpha tested, blended, or with alpha ignored, which shows
+	/// the transparent texels' colour as it is. Filling the transparent texels with the opaque colour
+	/// before the upscale would also hide the outline, but it changes what that last kind of draw shows.
 	///
 	/// Alpha is not kept as the source texel's everywhere because gradients are also stored in
 	/// alpha. Black bakes its lighting into 256x256 lightmaps and reads them with a bilinear sampler
@@ -141,8 +152,8 @@ namespace GSTextureUpscaleSupport
 				hi[x] = std::max(row0[static_cast<size_t>(x) * 4], row1[static_cast<size_t>(x) * 4]);
 			}
 
-			const u8* own = src + static_cast<size_t>(y / 2) * src_pitch + 3;
-			u8* out = dst + static_cast<size_t>(y) * dst_pitch + 3;
+			const u8* own = src + static_cast<size_t>(y / 2) * src_pitch;
+			u8* out = dst + static_cast<size_t>(y) * dst_pitch;
 			for (u32 x = 0; x < width * 2; x++)
 			{
 				const u32 right = (x + 1) / 2;
@@ -151,15 +162,16 @@ namespace GSTextureUpscaleSupport
 				const u32 low = std::min(lo[c0], lo[c1]);
 				const u32 high = std::max(hi[c0], hi[c1]);
 				if (high - low >= HARD_ALPHA_STEP)
-					out[static_cast<size_t>(x) * 4] = own[static_cast<size_t>(x / 2) * 4];
+					std::memcpy(out + static_cast<size_t>(x) * 4, own + static_cast<size_t>(x / 2) * 4, 4);
 			}
 		}
 	}
 
 	/// One 2x pass: RAISR clamped to the range of its source (the filters overshoot at hard edges,
 	/// and a game that reads a flat swatch with a nearest sampler shows every overshooting texel), or
-	/// bilinear when the image is too small for RAISR. Bilinear cannot leave that range. Hard alpha
-	/// edges are kept on either road (KeepHardAlphaEdges2x).
+	/// bilinear when the image is too small for RAISR. Bilinear cannot leave that range. On either
+	/// road, output pixels on a hard alpha edge are replaced by the source texel they lie inside
+	/// (KeepHardAlphaEdges2x), so a mask's edge is exact in colour as well as alpha.
 	inline void UpscalePass2x(const GSTextureUpscaler::FilterSet& filters, const u8* src, u32 w, u32 h, u32 src_pitch,
 		u8* dst, u32 dst_pitch)
 	{

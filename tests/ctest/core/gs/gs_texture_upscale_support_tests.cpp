@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <memory>
 #include <set>
 #include <string>
@@ -343,12 +344,17 @@ TEST(GsTextureUpscaleScale, TwoTimesWhenTheFourTimesModeIsOff)
 
 namespace
 {
-	std::shared_ptr<const GSTextureUpscaler::FilterSet> LoadSmooth()
+	std::shared_ptr<const GSTextureUpscaler::FilterSet> LoadFilters(const char* set)
 	{
 		std::string error;
-		auto filters = GSTextureUpscaler::FilterSet::Load(std::string(GS_UPSCALER_RESOURCE_DIR) + "/smooth", &error);
+		auto filters = GSTextureUpscaler::FilterSet::Load(std::string(GS_UPSCALER_RESOURCE_DIR) + "/" + set, &error);
 		EXPECT_TRUE(filters) << error;
 		return filters;
+	}
+
+	std::shared_ptr<const GSTextureUpscaler::FilterSet> LoadSmooth()
+	{
+		return LoadFilters("smooth");
 	}
 
 	// A busy image, so the filter has something to do and a chaining mistake shows in the bytes.
@@ -379,10 +385,10 @@ namespace
 		return img;
 	}
 
-	// What the alpha of a 2x image should be after KeepHardAlphaEdges2x, worked out from the sample
-	// position: where the four source texels an output pixel is interpolated from (x / 2 - 0.25, clamped
-	// to the image) differ by HARD_ALPHA_STEP or more, the pixel takes the alpha of the texel it lies
-	// inside; everywhere else out keeps the alpha it has.
+	// What a 2x image should be after KeepHardAlphaEdges2x, worked out from the sample position: where
+	// the four source texels an output pixel is interpolated from (x / 2 - 0.25, clamped to the image)
+	// differ in alpha by HARD_ALPHA_STEP or more, the pixel is the texel it lies inside, colour and
+	// alpha; everywhere else out keeps the pixel it has.
 	void ApplyHardAlphaEdgesReference(const u8* in, u32 iw, u32 ih, u32 ipitch, u8* out, u32 opitch)
 	{
 		for (u32 y = 0; y < ih * 2; y++)
@@ -405,7 +411,7 @@ namespace
 				}
 
 				if (hi - lo >= static_cast<int>(HARD_ALPHA_STEP))
-					out[static_cast<size_t>(y) * opitch + x * 4 + 3] = in[static_cast<size_t>(y / 2) * ipitch + (x / 2) * 4 + 3];
+					std::memcpy(out + static_cast<size_t>(y) * opitch + x * 4, in + static_cast<size_t>(y / 2) * ipitch + (x / 2) * 4, 4);
 			}
 		}
 	}
@@ -579,10 +585,11 @@ namespace
 	}
 } // namespace
 
-TEST(GsTextureUpscaleAlpha, KeepHardAlphaEdges2xChangesOnlyAlphaAtHardEdges)
+TEST(GsTextureUpscaleAlpha, KeepHardAlphaEdges2xChangesOnlyTheHardEdgePixels)
 {
 	// Random alpha over its whole range gives mostly hard edges; alpha confined to a narrow band gives
-	// none, and a mix of the two gives both. Padding and colour bytes must come out as they went in.
+	// none, and a mix of the two gives both. A pixel off a hard edge, and the padding, must come out
+	// as they went in; one on a hard edge is the whole texel it lies inside.
 	const std::pair<u32, u32> sizes[] = {{1, 1}, {1, 6}, {7, 1}, {3, 5}, {16, 9}};
 	for (const u32 band : {256u, 40u, 100u})
 	{
@@ -652,6 +659,61 @@ TEST(GsTextureUpscaleAlpha, ABinaryMaskKeepsItsExactEdges)
 				UpscaleRGBA8(*f, src.data(), w, h, w * 4 + 8, scale, dst.data(), dst_pitch);
 				ExpectAlphaIsTheContainingTexelsAlpha(src, w, h, w * 4 + 8, dst, dst_pitch, scale);
 			}
+		}
+	}
+}
+
+TEST(GsTextureUpscaleAlpha, DarkTransparentTexelsDoNotDarkenTheOpaqueSide)
+{
+	// Katamari's King of All Cosmos eye mask: the texels around the two rectangles are black and
+	// alpha 0, the rectangles dark grey and alpha 0x80. The colour of a transparent texel is the
+	// game's to choose and nothing on screen is meant to show it, but interpolating across the edge
+	// blends it into the opaque pixel next to the edge, and the clamp to the range of the four source
+	// texels allows that because the black texel is one of them. With the alpha edge kept exact that
+	// pixel is drawn, a dark outline round each rectangle. No pixel on the opaque side may come out
+	// darker than the opaque colour, which is the darkest thing in the opaque texels.
+	const u8 opaque[3] = {62, 60, 56};
+	const u32 w = 64, h = 32;
+	std::vector<u8> src(static_cast<size_t>(w) * h * 4, 0);
+	for (u32 y = 0; y < h; y++)
+	{
+		for (u32 x = 0; x < w; x++)
+		{
+			if ((x >= 16 && x < 28 && y >= 6 && y < 13) || (x >= 37 && x < 48 && y >= 6 && y < 13))
+			{
+				u8* px = &src[(static_cast<size_t>(y) * w + x) * 4];
+				std::memcpy(px, opaque, 3);
+				px[3] = 0x80;
+			}
+		}
+	}
+
+	for (const char* set : {"smooth", "sharp"})
+	{
+		const auto f = LoadFilters(set);
+		ASSERT_TRUE(f);
+		for (const u32 scale : {2u, 4u})
+		{
+			SCOPED_TRACE(std::string(set) + " at " + std::to_string(scale) + "x");
+			const u32 dst_pitch = w * scale * 4;
+			std::vector<u8> dst(static_cast<size_t>(dst_pitch) * h * scale, 0xEE);
+			UpscaleRGBA8(*f, src.data(), w, h, w * 4, scale, dst.data(), dst_pitch);
+
+			u32 checked = 0;
+			for (u32 y = 0; y < h * scale; y++)
+			{
+				for (u32 x = 0; x < w * scale; x++)
+				{
+					if (src[(static_cast<size_t>(y / scale) * w + x / scale) * 4 + 3] != 0x80)
+						continue;
+
+					checked++;
+					const u8* px = &dst[static_cast<size_t>(y) * dst_pitch + x * 4];
+					for (u32 c = 0; c < 3; c++)
+						ASSERT_GE(px[c], opaque[c]) << "channel " << c << " at " << x << "," << y;
+				}
+			}
+			ASSERT_GT(checked, 0u);
 		}
 	}
 }
