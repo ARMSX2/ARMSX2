@@ -129,6 +129,9 @@ void GSRendererHW::UpdateSettings(const Pcsx2Config::GSOptions& old_config)
 
 void GSRendererHW::VSync(u32 field, bool registers_written, bool idle_frame)
 {
+	if (GSTextureCache::IsHashMemoVerify()) [[unlikely]]
+		g_texture_cache->VerifyWriteStamps(m_mem);
+
 	// Retire whatever the GPU finished since the last frame. Runs unconditionally: after the
 	// mode is switched off there can still be a tail of queued downloads to drain.
 	g_texture_cache->ProcessPendingDownloads();
@@ -2892,6 +2895,7 @@ void GSRendererHW::SwSpriteRender()
 		}
 	}
 
+	m_mem.MarkPagesWritten(dpo, m_r);
 	g_texture_cache->InvalidateVideoMem(dpo, m_r);
 }
 
@@ -12202,6 +12206,7 @@ void GSRendererHW::ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, 
 			for (u32 current_page = off.bp() >> 5; top < page_aligned_bottom; top += pgs.y, current_page += fbw)
 			{
 				current_page &= (GS_MAX_PAGES - 1);
+				m_mem.MarkPageRangeWritten(current_page, pages_wide);
 				GSVector4i* ptr = reinterpret_cast<GSVector4i*>(m_mem.vm8() + current_page * GS_PAGE_SIZE);
 				GSVector4i* const ptr_end = ptr + iterations_per_page;
 				if (drawing_mask)
@@ -12228,6 +12233,7 @@ void GSRendererHW::ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, 
 			for (u32 current_page = off.bp() >> 5; top < page_aligned_bottom; top += pgs.y, current_page += fbw)
 			{
 				current_page &= (GS_MAX_PAGES - 1);
+				m_mem.MarkPageRangeWritten(current_page, pages_wide);
 				GSVector4i* ptr = reinterpret_cast<GSVector4i*>(m_mem.vm8() + current_page * GS_PAGE_SIZE);
 				GSVector4i* const ptr_end = ptr + iterations_per_page;
 				while (ptr != ptr_end)
@@ -12250,6 +12256,7 @@ void GSRendererHW::ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, 
 			for (u32 current_page = off.bp() >> 5; top < page_aligned_bottom; top += pgs.y, current_page += fbw)
 			{
 				current_page &= (GS_MAX_PAGES - 1);
+				m_mem.MarkPageRangeWritten(current_page, pages_wide);
 				GSVector4i* ptr = reinterpret_cast<GSVector4i*>(m_mem.vm8() + current_page * GS_PAGE_SIZE);
 				GSVector4i* const ptr_end = ptr + iterations_per_page;
 				if (converted_mask)
@@ -12313,6 +12320,10 @@ void GSRendererHW::ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, 
 				vm[pa.value(x)] = converted_color | (vm[pa.value(x)] & converted_mask);
 		}
 	}
+
+	// The fast path marked its pages by the page numbers it stepped through, which come from the cached FRAME.FBW
+	// and can differ from off's width after a width change. This marks the rows written pixel by pixel.
+	m_mem.MarkPagesWritten(off, r);
 }
 
 bool GSRendererHW::OI_BlitFMV(GSTextureCache::Target* _rt, GSTextureCache::Source* tex, const GSVector4i& r_draw)

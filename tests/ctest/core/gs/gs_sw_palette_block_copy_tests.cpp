@@ -191,6 +191,7 @@ namespace
 
 			m_gs->GetSwPrimState().palette_block_copy = copy;
 			std::memcpy(m_gs->m_mem.m_vm8, vm.data(), vm.size());
+			m_gs->m_mem.MarkAllPagesWritten();
 
 			for (const Draw& d : c.draws)
 			{

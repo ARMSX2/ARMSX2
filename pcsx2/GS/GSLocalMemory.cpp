@@ -653,6 +653,44 @@ void GSLocalMemory::Move(const GIFRegBITBLTBUF& BITBLTBUF, const GIFRegTRXPOS& T
 			[this, &spsm, mask](u32 soff) { return (this->*spsm.rpa)(soff) & mask; },
 			[this, &dpsm, mask](u32 doff, u32 v) { (this->*dpsm.wpa)(doff, ((this->*dpsm.rpa)(doff) & ~mask) | v); });
 	}
+
+	// The direction only changes the order of the walk, not the set of pixels it writes.
+	if (w > 0 && h > 0)
+		MarkPagesWritten(dpo, GSVector4i(TRXPOS.DSAX, TRXPOS.DSAY, TRXPOS.DSAX + w, TRXPOS.DSAY + h));
+}
+
+void GSLocalMemory::MarkPagesWritten(const GSOffset& off, const GSVector4i& r)
+{
+	if (!HasPageSet(r)) [[unlikely]]
+	{
+		MarkAllPagesWritten();
+		return;
+	}
+
+	const u64 seq = ++m_write_seq;
+	off.loopPages(r, [this, seq](u32 page) { m_page_stamp[page] = seq; });
+}
+
+void GSLocalMemory::MarkPageRangeWritten(u32 first_page, u32 count)
+{
+	if (count == 0)
+		return;
+
+	if (count >= GS_MAX_PAGES) [[unlikely]]
+	{
+		MarkAllPagesWritten();
+		return;
+	}
+
+	const u64 seq = ++m_write_seq;
+	for (u32 i = 0, page = first_page % GS_MAX_PAGES; i < count; i++, page = (page + 1) % GS_MAX_PAGES)
+		m_page_stamp[page] = seq;
+}
+
+void GSLocalMemory::MarkAllPagesWritten()
+{
+	const u64 seq = ++m_write_seq;
+	std::fill(std::begin(m_page_stamp), std::end(m_page_stamp), seq);
 }
 
 void GSLocalMemory::ReadTexture(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA)

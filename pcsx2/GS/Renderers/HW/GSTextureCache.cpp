@@ -35,6 +35,69 @@ static u8* s_unswizzle_buffer;
 /// List of candidates for purging when the hash cache gets too large.
 static std::vector<std::pair<GSTextureCache::HashCacheMap::iterator, s32>> s_hash_cache_purge_list;
 
+// Verify mode of the hash memo (GSTextureCache::SetHashMemoVerify).
+static GSTextureCache::HashMemoVerifyReport s_hash_memo_verify_report;
+static constexpr u64 HASH_MEMO_VERIFY_PRINT_LIMIT = 20; // lines printed per kind of finding
+
+/// What the last sweep of verify mode saw of each page of local memory.
+struct GSTextureCache::HashMemoSweep
+{
+	u64 hash[GS_MAX_PAGES];
+	u64 stamp[GS_MAX_PAGES];
+	bool primed = false;
+};
+
+void GSTextureCache::SetHashMemoVerify(bool enable)
+{
+	s_hash_memo_verify = enable;
+	s_hash_memo_verify_report = {};
+}
+
+GSTextureCache::HashMemoVerifyReport GSTextureCache::GetHashMemoVerifyReport()
+{
+	return s_hash_memo_verify_report;
+}
+
+void GSTextureCache::VerifyWriteStamps(const GSLocalMemory& mem)
+{
+	if (!m_hash_memo_sweep)
+		m_hash_memo_sweep = std::make_unique<HashMemoSweep>();
+	HashMemoSweep& sweep = *m_hash_memo_sweep;
+
+	s_hash_memo_verify_report.sweeps++;
+	for (u32 page = 0; page < GS_MAX_PAGES; page++)
+	{
+		const u64 hash = GSXXH3_64bits(mem.m_vm8 + page * GS_PAGE_SIZE, GS_PAGE_SIZE);
+		const u64 stamp = mem.PageStamp(page);
+
+		// A mark always moves the stamp, so bytes that changed under the same stamp were stored unmarked.
+		if (sweep.primed && hash != sweep.hash[page] && stamp == sweep.stamp[page])
+		{
+			if (++s_hash_memo_verify_report.missed_writers <= HASH_MEMO_VERIFY_PRINT_LIMIT)
+				Console.Error("TC: hash memo MISSED WRITER: page %u changed with no mark (frame %u, stamp %" PRIu64 ")", page, static_cast<u32>(g_perfmon.GetFrame()), stamp);
+		}
+
+		sweep.hash[page] = hash;
+		sweep.stamp[page] = stamp;
+	}
+	sweep.primed = true;
+}
+
+/// Counts a memo hit and compares its hash with the one computed afresh. False if they differ.
+static bool VerifyHashMemoHit(const GIFRegTEX0& TEX0, u64 memo, u64 fresh)
+{
+	s_hash_memo_verify_report.hits++;
+	if (memo == fresh)
+		return true;
+
+	if (++s_hash_memo_verify_report.mismatches <= HASH_MEMO_VERIFY_PRINT_LIMIT)
+	{
+		Console.Error("TC: hash memo MISMATCH: tbp0 0x%x psm %u tw %u th %u memo %016" PRIx64 " fresh %016" PRIx64,
+			static_cast<u32>(TEX0.TBP0), static_cast<u32>(TEX0.PSM), static_cast<u32>(TEX0.TW), static_cast<u32>(TEX0.TH), memo, fresh);
+	}
+	return false;
+}
+
 #ifdef PCSX2_DEVBUILD
 // We can only set one texture name per command buffer, which would break our fancy texture cache RT/DS/texture naming.
 // So, when debug device is enabled, don't reuse any textures that are drawable.
@@ -9529,16 +9592,17 @@ GSTextureCache::SourceRegion GSTextureCache::SourceRegion::Create(GIFRegTEX0 TEX
 	return region;
 }
 
-using BlockHashState = XXH3_state_t;
+using BlockHashState = GSXXH3BlockState;
 
 __fi static void BlockHashReset(BlockHashState& st)
 {
-	XXH3_64bits_reset(&st);
+	GSXXH3_block_reset(st);
 }
 
 __fi static void BlockHashAccumulate(BlockHashState& st, const u8* bp)
 {
-	GSXXH3_64bits_update(&st, bp, GS_BLOCK_SIZE);
+	static_assert(GS_BLOCK_SIZE == 256, "GSXXH3_64bits_block hashes exactly 256 bytes");
+	GSXXH3_64bits_block(&st, bp);
 }
 
 __fi static void BlockHashAccumulate(BlockHashState& st, const u8* bp, u32 size)
@@ -9551,17 +9615,38 @@ __fi static GSTextureCache::HashType FinishBlockHash(BlockHashState& st)
 	return GSXXH3_64bits_digest(&st);
 }
 
-static void HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTextureCache::SourceRegion region, BlockHashState& hash_st, u8* temp)
+namespace
+{
+	/// The texels of a texture level that its hash covers.
+	struct HashLevelGeometry
+	{
+		int tw, th;
+		GSVector4i rect; ///< The texels, relative to the base pointer.
+		GSVector4i block_rect; ///< The same texels widened to whole blocks.
+	};
+} // namespace
+
+static HashLevelGeometry GetHashLevelGeometry(const GIFRegTEX0& TEX0, GSTextureCache::SourceRegion region)
 {
 	const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[TEX0.PSM];
-	const GSVector2i& bs = psm.bs;
 	const int tw = region.HasX() ? region.GetWidth() : (1 << TEX0.TW);
 	const int th = region.HasY() ? region.GetHeight() : (1 << TEX0.TH);
 
 	// From GSLocalMemory foreachBlock(), used for reading textures.
 	// We want to hash the exact same blocks here.
 	const GSVector4i rect(region.GetRect(tw, th));
-	const GSVector4i block_rect(rect.ralign<Align_Outside>(bs));
+	return {tw, th, rect, rect.ralign<Align_Outside>(psm.bs)};
+}
+
+static void HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTextureCache::SourceRegion region, BlockHashState& hash_st, u8* temp)
+{
+	const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[TEX0.PSM];
+	const GSVector2i& bs = psm.bs;
+	const HashLevelGeometry geometry = GetHashLevelGeometry(TEX0, region);
+	const int tw = geometry.tw;
+	const int th = geometry.th;
+	const GSVector4i& rect = geometry.rect;
+	const GSVector4i& block_rect = geometry.block_rect;
 	GSLocalMemory& mem = g_gs_renderer->m_mem;
 	const GSOffset off = mem.GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM);
 
@@ -9682,6 +9767,22 @@ GSTextureCache::HashCacheKey::HashCacheKey()
 	TEXA.U64 = 0;
 }
 
+// True if a hash of the level has not been read from pages written since step `seq` of local memory.
+static bool HashLevelUnwritten(const GSLocalMemory& mem, const GIFRegTEX0& TEX0, const GSVector4i& block_rect, u64 seq)
+{
+	bool unwritten = true;
+	mem.GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM).pageLooperForRect(block_rect).loopPagesWithBreak([&](u32 page) {
+		unwritten = mem.PageStamp(page) <= seq;
+		return unwritten;
+	});
+	return unwritten;
+}
+
+// The bits of TEX0 that HashTextureLevel reads: TBP0, TBW, PSM, TW and TH.
+static constexpr u64 HASH_MEMO_TEX0_BITS = 0x00000003FFFFFFFFULL;
+// The bits of TEXA that the texture reads can depend on: TA0, AEM and TA1.
+static constexpr u64 HASH_MEMO_TEXA_BITS = 0x000000FF000080FFULL;
+
 GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, const u32* clut, const GSVector2i* lod, SourceRegion region)
 {
 	const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[TEX0.PSM];
@@ -9693,25 +9794,111 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 	ret.region_width = static_cast<u16>(region.GetWidth());
 	ret.region_height = static_cast<u16>(region.GetHeight());
 
-	BlockHashState hash_st;
-	BlockHashReset(hash_st);
+	// The levels to hash: the base, then the mipmaps of the chain when they are enabled.
+	const int basemip = lod ? lod->x : 0;
+	const u32 levels = lod ? static_cast<u32>(std::max(lod->y - lod->x, 0)) + 1 : 1;
 
-	// base level is always hashed
-	HashTextureLevel(TEX0, TEXA, region, hash_st, s_unswizzle_buffer);
+	GIFRegTEX0 level_tex0[HASH_MEMO_MAX_LEVELS];
+	level_tex0[0] = TEX0;
+	for (u32 i = 1; i < std::min(levels, HASH_MEMO_MAX_LEVELS); i++)
+		level_tex0[i] = g_gs_renderer->GetTex0Layer(basemip + i);
 
-	if (lod)
-	{
+	const auto hash_levels = [&]() {
+		BlockHashState hash_st;
+		BlockHashReset(hash_st);
+
+		// base level is always hashed
+		HashTextureLevel(TEX0, TEXA, region, hash_st, s_unswizzle_buffer);
+
 		// hash and combine full mipmaps when enabled
-		const int basemip = lod->x;
-		const int nmips = lod->y - lod->x + 1;
-		for (int i = 1; i < nmips; i++)
+		for (u32 i = 1; i < levels; i++)
 		{
-			const GIFRegTEX0 MIP_TEX0{g_gs_renderer->GetTex0Layer(basemip + i)};
+			const GIFRegTEX0 MIP_TEX0 = (i < HASH_MEMO_MAX_LEVELS) ? level_tex0[i] : g_gs_renderer->GetTex0Layer(basemip + i);
 			HashTextureLevel(MIP_TEX0, TEXA, region.AdjustForMipmap(i), hash_st, s_unswizzle_buffer);
 		}
+
+		return FinishBlockHash(hash_st);
+	};
+
+	// A texture whose memory has not been written since it was last hashed hashes to the same value, so
+	// that value is reused. The hash is a function of the bytes of the pages the levels cover, and of
+	// everything HashTextureLevel reads besides them: the TEX0 bits above, the TEXA bits, and the region
+	// (the clut is not part of TEX0Hash). Only the whole key matching counts.
+	//
+	// Only a texture of some size is memoised. A frame hashes a hundred or more textures, most of them a
+	// few KiB and most of those written again before the next frame, and a memo of 32 entries that took
+	// them all would lose the one large texture that hits to the small ones that do not.
+	const HashLevelGeometry base_geometry = GetHashLevelGeometry(TEX0, region);
+	const int base_blocks = (base_geometry.block_rect.width() / psm.bs.x) * (base_geometry.block_rect.height() / psm.bs.y);
+	GSTextureCache* const tc = g_texture_cache.get();
+	if (!tc || levels > HASH_MEMO_MAX_LEVELS || base_blocks < HASH_MEMO_MIN_BLOCKS)
+	{
+		ret.TEX0Hash = hash_levels();
+		return ret;
 	}
 
-	ret.TEX0Hash = FinishBlockHash(hash_st);
+	const auto level_geometry = [&](u32 i) { return i ? GetHashLevelGeometry(level_tex0[i], region.AdjustForMipmap(i)) : base_geometry; };
+
+	HashMemo& memo = tc->m_hash_memo;
+	GSLocalMemory& mem = g_gs_renderer->m_mem;
+	const u64 texa = TEXA.U64 & HASH_MEMO_TEXA_BITS;
+	const u64 base_tex0 = TEX0.U64 & HASH_MEMO_TEX0_BITS;
+	HashMemoEntry& entry = memo.entries[((base_tex0 * 0x9E3779B97F4A7C15ULL) ^ (region.bits * 0xC2B2AE3D27D4EB4FULL) ^ (levels * 0x165667B19E3779F9ULL)) >> (64 - 5)];
+	static_assert(HASH_MEMO_ENTRIES == 32, "the index above takes 5 bits");
+	memo.stats.lookups++;
+
+	bool key_matches = entry.levels == levels && entry.texa == texa && entry.region == region.bits;
+	for (u32 i = 0; key_matches && i < levels; i++)
+		key_matches = entry.tex0[i] == (level_tex0[i].U64 & HASH_MEMO_TEX0_BITS);
+
+	if (key_matches)
+	{
+		// The pages each level reads, from the same rectangle HashTextureLevel reads. A level whose rectangle
+		// has no page set was never stored, so a matching entry has one for every level.
+		bool unwritten = true;
+		for (u32 i = 0; unwritten && i < levels; i++)
+		{
+			unwritten = HashLevelUnwritten(mem, level_tex0[i], level_geometry(i).block_rect, entry.seq);
+		}
+
+		if (unwritten)
+		{
+			memo.stats.hits++;
+			ret.TEX0Hash = entry.hash;
+
+			if (s_hash_memo_verify) [[unlikely]]
+			{
+				const HashType fresh = hash_levels();
+				if (!VerifyHashMemoHit(TEX0, entry.hash, fresh))
+				{
+					ret.TEX0Hash = fresh;
+					entry.levels = 0;
+				}
+			}
+			return ret;
+		}
+
+		memo.stats.stale++;
+	}
+
+	// The sequence is noted before the pages are read: a store after this has a stamp past it.
+	const u64 seq = mem.WriteSeq();
+	ret.TEX0Hash = hash_levels();
+
+	bool has_page_sets = true;
+	for (u32 i = 0; has_page_sets && i < levels; i++)
+		has_page_sets = GSLocalMemory::HasPageSet(level_geometry(i).block_rect);
+
+	if (has_page_sets)
+	{
+		entry.seq = seq;
+		entry.hash = ret.TEX0Hash;
+		entry.texa = texa;
+		entry.region = region.bits;
+		entry.levels = levels;
+		for (u32 i = 0; i < levels; i++)
+			entry.tex0[i] = level_tex0[i].U64 & HASH_MEMO_TEX0_BITS;
+	}
 
 	return ret;
 }

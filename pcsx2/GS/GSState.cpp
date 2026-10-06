@@ -3887,6 +3887,16 @@ void GSState::ExecTransferRecord(const GSBackQueue::TransferRecord& rec)
 	const int async_start_y = m_exec_tr_y;
 	wi(m_mem, m_exec_tr_x, m_exec_tr_y, rec.payload, rec.len, blit, pos, reg);
 
+	// The whole rectangle, not the shrunk `r`: a slice after the first starts below the top of the rectangle.
+	// One pixel more on the right and bottom: a 4-bit write of odd width stores the second pixel of its last
+	// pair of each row one pixel past the right edge, and an odd pixel count ends in the next row. The writers
+	// take the address from rec.blit but, in some paths, the swizzle from rec.env_blit.DPSM, so if the two
+	// differ mark both layouts.
+	const GSVector4i written(rec.rect.x, rec.rect.y, rec.rect.z + 1, rec.rect.w + 1);
+	m_mem.MarkPagesWritten(m_mem.GetOffset(rec.blit.DBP, rec.blit.DBW, rec.blit.DPSM), written);
+	if (rec.env_blit.DPSM != rec.blit.DPSM)
+		m_mem.MarkPagesWritten(m_mem.GetOffset(rec.blit.DBP, rec.blit.DBW, rec.env_blit.DPSM), written);
+
 	// This EE upload is authoritative: replay it into the shadow and bump the covered
 	// pages so an already-queued (older) GPU download can't roll them back.
 	if (GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous && m_async_readback_mem)
@@ -5565,6 +5575,7 @@ int GSState::Defrost(const freezeData* fd)
 	}
 
 	ReadState(m_mem_target->m_mem.m_vm8, data, m_mem_target->m_mem.m_vmsize);
+	m_mem_target->m_mem.MarkAllPagesWritten();
 
 	// Local memory was replaced wholesale — re-seed the asynchronous shadow (and bump every
 	// page generation, retiring any download still in flight from before the load).
