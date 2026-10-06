@@ -200,6 +200,9 @@ struct MobileDriverContext
 	/// ARM name) is supported and its rasterizationOrderColorAttachmentAccess feature reads true,
 	/// as the device settled it after vkCreateDevice. Vulkan only; false for GL and when unknown.
 	bool roaa_color_access = false;
+	/// VkPhysicalDevicePushDescriptorPropertiesKHR::maxPushDescriptors, or 0 when
+	/// VK_KHR_push_descriptor is not enabled on the device. Vulkan only.
+	u32 max_push_descriptors = 0;
 	std::string_view driver_name;
 	std::string_view driver_info;
 	std::string_view api_version_string;
@@ -312,10 +315,14 @@ constexpr u32 Broadcom = 0x14E4;
 constexpr u32 Samsung = 0x144D;
 } // namespace GpuVendorID
 
+/// The push descriptors the Vulkan backend needs: one per texture slot of its TFX descriptor set
+/// (GSDeviceVK::NUM_TFX_TEXTURES, which a static_assert in GSDeviceVK.cpp holds equal to this).
+constexpr u32 VULKAN_PUSH_DESCRIPTORS_REQUIRED = 7;
+
 /// Vulkan device rules keyed on the device's own identity (vendor ID, device name, driver ID,
 /// driverInfo) rather than matched in the driver-bug database. Each keeps the exact condition the
 /// backend has always applied, which is not always the database's: the push-descriptor rule covers
-/// Mali on every driver, where the database names Arm's.
+/// Mali on every driver but malisx2, where the database names Arm's.
 struct VulkanDeviceRules
 {
 	/// Mali-G615: timestamp queries never resolve, and the present spin that waits on them stalls.
@@ -324,7 +331,8 @@ struct VulkanDeviceRules
 	/// used. The rest of the r44p1 workaround is rule vk-arm-r44p1-attachment-self-read.
 	bool avoid_feedback_loop_layout = false;
 	/// Mali crashes inside vkCmdPushDescriptorSetKHR. Adreno is trusted with push descriptors on the
-	/// Qualcomm driver and Turnip only.
+	/// Qualcomm driver and Turnip only. malisx2 is exempt when it advertises the extension with
+	/// enough descriptors (exempt_malisx2_push_descriptors).
 	bool avoid_push_descriptors = false;
 	/// Adreno on the Qualcomm driver selects the wrong provoking vertex.
 	bool broken_provoking_vertex = false;
@@ -341,6 +349,11 @@ struct VulkanDeviceRules
 	bool self_read_costs_measured = false;
 	/// Honeykrisp: the barrier-ordered road's fast stencil shadow and carry were measured there.
 	bool barrier_road_measured = false;
+	/// malisx2 would have taken avoid_push_descriptors as Mali, and is exempt: the crash is Arm's
+	/// blob's, and this driver advertises VK_KHR_push_descriptor with at least
+	/// VULKAN_PUSH_DESCRIPTORS_REQUIRED descriptors. Recorded so a log shows the exemption, not just
+	/// the absence of the avoid.
+	bool exempt_malisx2_push_descriptors = false;
 };
 
 /// A VulkanDeviceRules flag and the name the log and the driver report print it under.
@@ -362,6 +375,7 @@ inline constexpr VulkanDeviceRuleName VULKAN_DEVICE_RULE_NAMES[] = {
 	{"adreno8xx_proprietary", &VulkanDeviceRules::adreno8xx_proprietary},
 	{"self_read_costs_measured", &VulkanDeviceRules::self_read_costs_measured},
 	{"barrier_road_measured", &VulkanDeviceRules::barrier_road_measured},
+	{"exempt_malisx2_push_descriptors", &VulkanDeviceRules::exempt_malisx2_push_descriptors},
 };
 static_assert(sizeof(VulkanDeviceRules) == sizeof(VULKAN_DEVICE_RULE_NAMES) / sizeof(VULKAN_DEVICE_RULE_NAMES[0]),
 	"VulkanDeviceRules is all bool flags; every one needs a VULKAN_DEVICE_RULE_NAMES entry");

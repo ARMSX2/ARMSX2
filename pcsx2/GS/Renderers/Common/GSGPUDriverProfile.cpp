@@ -815,7 +815,13 @@ VulkanDeviceRules GpuProfileDetector::ResolveVulkanDeviceRules(const GpuProfileS
 	// agree on every r44p1 device seen.
 	rules.avoid_feedback_loop_layout =
 		mali && context.driver_info.find("r44p1") != std::string_view::npos;
-	rules.avoid_push_descriptors = mali || (adreno && !qualcomm_driver && !turnip);
+	// The Mali crash is in Arm's blob. malisx2 reports Arm's identity but is our own driver, and is
+	// trusted with push descriptors once it advertises as many as the backend binds; a build without
+	// the extension, or with fewer, keeps the avoid.
+	rules.exempt_malisx2_push_descriptors = mali && GpuProfileDetector::IsMaliSX2Driver(context.driver_info) &&
+	                                        context.max_push_descriptors >= VULKAN_PUSH_DESCRIPTORS_REQUIRED;
+	rules.avoid_push_descriptors =
+		(mali && !rules.exempt_malisx2_push_descriptors) || (adreno && !qualcomm_driver && !turnip);
 	rules.broken_provoking_vertex = adreno && qualcomm_driver;
 	rules.broken_colormask_with_depth =
 		adreno && !turnip && (context.device_id < 0x06000000u || context.driver_version < 0x801EA000u);

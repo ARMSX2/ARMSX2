@@ -1121,7 +1121,10 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 
 	// query
 	vkGetPhysicalDeviceProperties2(m_physical_device, &properties2);
-	ResolveDeviceIdentity();
+	// The properties struct is chained only when the extension is enabled; without it the device has
+	// no push descriptors to count.
+	ResolveDeviceIdentity(
+		m_optional_extensions.vk_khr_push_descriptor ? push_descriptor_properties.maxPushDescriptors : 0);
 
 	// Mali r44p1 loses the device under an in-pass self-read. This alone does not avoid it: the
 	// driver-bug database also puts r44p1 on the render-target copy road.
@@ -1136,6 +1139,9 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 		(attachment_feedback_loop_dynamic_feature.attachmentFeedbackLoopDynamicState == VK_TRUE) &&
 		m_optional_extensions.vk_ext_attachment_feedback_loop_layout;
 
+	// The rule resolver exempts malisx2 from the Mali avoid at the descriptor count checked below.
+	static_assert(NUM_TFX_TEXTURES == VULKAN_PUSH_DESCRIPTORS_REQUIRED);
+
 	// Decide whether to bind textures via VK_KHR_push_descriptor. It's optional
 	// now — when it's absent (some Mali, e.g. Mali-G52), unusable, or known-buggy
 	// we fall back to per-frame allocated descriptor sets so Vulkan still runs.
@@ -1146,8 +1152,9 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 			push_descriptor_properties.maxPushDescriptors, NUM_TFX_TEXTURES);
 		m_use_push_descriptors = false;
 	}
-	// Mali crashes in vkCmdPushDescriptorSetKHR even where it advertises the extension, and an
-	// Adreno driver other than Qualcomm's or Turnip is untested with it.
+	// Arm's Mali blob crashes in vkCmdPushDescriptorSetKHR even where it advertises the extension, and
+	// an Adreno driver other than Qualcomm's or Turnip is untested with it. malisx2 is exempt from the
+	// Mali half in the rule (exempt_malisx2_push_descriptors).
 	if (m_use_push_descriptors && m_device_rules.avoid_push_descriptors)
 		m_use_push_descriptors = false;
 	if (!m_use_push_descriptors)
@@ -1227,7 +1234,7 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 	return true;
 }
 
-void GSDeviceVK::ResolveDeviceIdentity()
+void GSDeviceVK::ResolveDeviceIdentity(u32 max_push_descriptors)
 {
 	// The driver context feeds the driver-bug database, ported from sashkinbro/EmuCoreX with his
 	// approval. Needs m_device_driver_properties, so it runs as soon as ProcessDeviceExtensions has them,
@@ -1246,6 +1253,7 @@ void GSDeviceVK::ResolveDeviceIdentity()
 	// (CreateDevice's probe, ProcessDeviceExtensions' reconcile). Rows written for Arm's blob read
 	// this to decide whether to leave a malisx2 build alone.
 	driver_context.roaa_color_access = m_optional_extensions.vk_ext_rasterization_order_attachment_access;
+	driver_context.max_push_descriptors = max_push_descriptors;
 	if (m_optional_extensions.vk_khr_driver_properties)
 	{
 		driver_context.driver_id = static_cast<u32>(m_device_driver_properties.driverID);

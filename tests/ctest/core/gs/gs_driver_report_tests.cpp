@@ -257,6 +257,7 @@ TEST(GSDriverReport, GpuProfileWritesEveryVulkanDeviceRuleByName)
 		"\"adreno8xx_proprietary\": false",
 		"\"self_read_costs_measured\": false",
 		"\"barrier_road_measured\": true",
+		"\"exempt_malisx2_push_descriptors\": false",
 	};
 	for (const char* line : expected)
 	{

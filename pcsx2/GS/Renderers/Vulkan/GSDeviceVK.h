@@ -307,7 +307,7 @@ private:
 	bool SelectDeviceFeatures();
 	bool CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer);
 	bool ProcessDeviceExtensions();
-	void ResolveDeviceIdentity();
+	void ResolveDeviceIdentity(u32 max_push_descriptors);
 
 	bool CreateAllocator();
 	bool CreateCommandBuffers();
