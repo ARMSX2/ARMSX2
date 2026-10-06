@@ -1419,7 +1419,7 @@ open class MainActivityRuntime : ComponentActivity() {
             vmStopControl.execute {
                 println("@@ANDROID_STOP_JAVA@@ begin saveAutosave=$doAutosave forced=$saveAutosave restart=$restartAfterStop")
                 if (doAutosave)
-                    NativeApp.saveAutosaveState()
+                    NativeApp.saveAutosaveState(autosaveKeep())
                 NativeApp.shutdown()
                 println("@@ANDROID_STOP_JAVA@@ shutdown_return active=${NativeApp.hasActiveVM()} runLoop=$vmRunLoopActive state=${eState.value}")
                 if (!vmRunLoopActive && (eState.value == EmuState.STOPPED || !NativeApp.hasActiveVM())) {
@@ -1608,6 +1608,17 @@ open class MainActivityRuntime : ComponentActivity() {
          *  savestate costs a visible hitch, so it is never turned on for you. */
         const val KEY_AUTOSAVE_INTERVAL_MIN = "autoSaveIntervalMin"
 
+        /** How many autosaves a game keeps, the newest and the ones before it (save state
+         *  picker, "Autosaves to keep"): each autosave moves the earlier ones a place older, so
+         *  one written just before a death is not the only one left. */
+        const val KEY_AUTOSAVE_KEEP = "autosaveKeep"
+        const val AUTOSAVE_KEEP_DEFAULT = 3
+        const val AUTOSAVE_KEEP_MAX = 5
+
+        fun autosaveKeep(): Int =
+            runCatching { prefs.getInt(KEY_AUTOSAVE_KEEP, AUTOSAVE_KEEP_DEFAULT) }
+                .getOrDefault(AUTOSAVE_KEEP_DEFAULT).coerceIn(1, AUTOSAVE_KEEP_MAX)
+
         /** How long a quick save or load waits for the game to finish writing its memory card: the
          *  card counts as busy for 300 frames, five seconds, after the last write (quickState). */
         private const val QUICK_STATE_WAIT_MS = 10_000L
@@ -1653,7 +1664,7 @@ open class MainActivityRuntime : ComponentActivity() {
                         continue
                     }
                     if (now - lastSaveAt < minutes * 60_000L) continue
-                    runCatching { NativeApp.saveAutosaveState() }
+                    runCatching { NativeApp.saveAutosaveState(autosaveKeep()) }
                     // Stamped AFTER the write: a savestate takes real time, and starting
                     // the next interval from before it would make saves creep earlier.
                     lastSaveAt = android.os.SystemClock.elapsedRealtime()

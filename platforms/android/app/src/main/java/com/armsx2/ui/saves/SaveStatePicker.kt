@@ -98,6 +98,14 @@ fun SaveStatePickerScreen(mode: SaveMode, onBack: () -> Unit) {
             runCatching { NativeApp.hasAutosaveState() }.getOrDefault(false)
         } else false
     }
+    // The autosaves before the newest that are on disk ("Autosaves to keep"), 2 = the one before it.
+    val olderAutosaves by produceState(initialValue = emptyList<Int>(), mode, hasAutosave) {
+        value = if (mode == SaveMode.Load && hasAutosave) withContext(Dispatchers.IO) {
+            (2..MainActivityRuntime.AUTOSAVE_KEEP_MAX).filter { n ->
+                runCatching { NativeApp.getAutosavePathAt(n) }.getOrNull() != null
+            }
+        } else emptyList()
+    }
     // i18n KEY of the last slot-tap failure, shown in place of silently closing the picker.
     var failure by remember { mutableStateOf<String?>(null) }
     // Import an external save-state file into this game's next free slot. A green success line +
@@ -195,6 +203,14 @@ fun SaveStatePickerScreen(mode: SaveMode, onBack: () -> Unit) {
                         AutosaveTile {
                             scope.launch(Dispatchers.IO) {
                                 NativeApp.loadAutosaveState()
+                                withContext(Dispatchers.Main) { onBack() }
+                            }
+                        }
+                    }
+                    items(olderAutosaves, key = { "autosave_$it" }) { n ->
+                        AutosaveTile(n) {
+                            scope.launch(Dispatchers.IO) {
+                                NativeApp.loadAutosaveStateAt(n)
                                 withContext(Dispatchers.Main) { onBack() }
                             }
                         }
@@ -299,6 +315,7 @@ private fun AutoOptions(modifier: Modifier = Modifier) {
     var interval by remember {
         mutableIntStateOf(prefs.getInt(MainActivityRuntime.KEY_AUTOSAVE_INTERVAL_MIN, 0))
     }
+    var keep by remember { mutableIntStateOf(MainActivityRuntime.autosaveKeep()) }
     // str() is @Composable; valueFormatter is a plain lambda, so resolve up-front.
     val offLabel = str("savestate.autoSaveInterval.off")
     val everyLabel = str("savestate.autoSaveInterval.every")
@@ -333,6 +350,25 @@ private fun AutoOptions(modifier: Modifier = Modifier) {
                     prefs.edit().putInt(MainActivityRuntime.KEY_AUTOSAVE_INTERVAL_MIN, value).apply()
                 },
             )
+            Spacer(Modifier.height(6.dp))
+            // How many autosaves the two kinds above leave, the newest and the ones before it: an
+            // autosave written just before a death should not be the only one.
+            IntSliderRow(
+                label = str("savestate.autosaveKeep.label"),
+                value = keep,
+                min = 1,
+                max = MainActivityRuntime.AUTOSAVE_KEEP_MAX,
+                description = str("savestate.autosaveKeep.description"),
+                valueFormatter = { it.toString() },
+                onReset = if (keep == MainActivityRuntime.AUTOSAVE_KEEP_DEFAULT) null else ({
+                    keep = MainActivityRuntime.AUTOSAVE_KEEP_DEFAULT
+                    prefs.edit().putInt(MainActivityRuntime.KEY_AUTOSAVE_KEEP, keep).apply()
+                }),
+                onChange = { value ->
+                    keep = value
+                    prefs.edit().putInt(MainActivityRuntime.KEY_AUTOSAVE_KEEP, value).apply()
+                },
+            )
         }
     }
 }
@@ -359,10 +395,13 @@ private fun ToggleRow(controllerId: String, label: String, checked: Boolean, onC
     }
 }
 
+/** The [n]th newest autosave's tile: 1 the newest, 2 the one before it, and so on. */
 @Composable
-private fun AutosaveTile(onPick: () -> Unit) {
-    val gamePath by produceState<String?>(initialValue = null) {
-        value = withContext(Dispatchers.IO) { runCatching { NativeApp.getAutosaveGamePath() }.getOrNull() }
+private fun AutosaveTile(n: Int = 1, onPick: () -> Unit) {
+    val gamePath by produceState<String?>(initialValue = null, n) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { if (n == 1) NativeApp.getAutosaveGamePath() else NativeApp.getAutosavePathAt(n) }.getOrNull()
+        }
     }
     val stamp by produceState(initialValue = 0L, gamePath) {
         val path = gamePath
@@ -370,16 +409,17 @@ private fun AutosaveTile(onPick: () -> Unit) {
             runCatching { java.io.File(path).takeIf { it.isFile }?.lastModified() ?: 0L }.getOrDefault(0L)
         }
     }
-    val image by produceState<android.graphics.Bitmap?>(initialValue = null) {
+    val image by produceState<android.graphics.Bitmap?>(initialValue = null, n) {
         value = withContext(Dispatchers.IO) {
             runCatching {
-                val bytes = NativeApp.getAutosaveImage() ?: return@runCatching null
+                val bytes = (if (n == 1) NativeApp.getAutosaveImage() else NativeApp.getAutosaveImageAt(n))
+                    ?: return@runCatching null
                 if (bytes.isEmpty()) null else BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }.getOrNull()
         }
     }
     TileFrame(
-        controllerId = "save.autosave",
+        controllerId = if (n == 1) "save.autosave" else "save.autosave.$n",
         borderColor = Color(0xFFFFB347).copy(alpha = 0.7f),
         backgroundColor = Color(0xFF2F2820),
         onClick = onPick,
@@ -389,7 +429,7 @@ private fun AutosaveTile(onPick: () -> Unit) {
                 Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         }
         BottomLabel(
-            title = str("savestate.autosave.title"),
+            title = if (n == 1) str("savestate.autosave.title") else str("savestate.autosave.older").format(n),
             subtitle = formatSlotStamp(stamp)
                 ?: gamePath?.substringAfterLast('/')?.substringBeforeLast('.')
                 ?: str("savestate.autosave.savedOnExit"),

@@ -4299,19 +4299,103 @@ Java_kr_co_iefriends_pcsx2_NativeApp_getSaveStateImage(JNIEnv *env, jclass clazz
 // stored as `{serial} (CRC).autosave.p2s`. Lets "Save State And Exit"
 // avoid clobbering user slot 0; the load picker surfaces the autosave
 // tile only when hasAutosaveState() returns true.
+//
+// That file is always the NEWEST autosave. The player can keep up to five ("Autosaves to keep"),
+// so that an autosave written just before a death is not the only one: each new autosave moves the
+// ones before it a place older, as `{serial} (CRC).autosave.N.p2s`, N = 2 to 5, oldest last.
+
+static constexpr int kAutosaveKeepMax = 5;
+
+// The running game's newest autosave file, "" when save states have no name.
+static std::string NewestAutosaveFileName()
+{
+    return VMManager::GetSaveStateFileName(VMManager::GetDiscSerial().c_str(), VMManager::GetDiscCRC(),
+        VMManager::SAVESTATE_SLOT_AUTOSAVE);
+}
+
+// The [n]th newest autosave beside [newest]: 1 is the newest itself, 2 the one before it, and so on.
+static std::string AutosaveFileName(const std::string& newest, int n)
+{
+    if (n <= 1 || !newest.ends_with(".p2s"))
+        return newest;
+    return fmt::format("{}.{}.p2s", std::string_view(newest).substr(0, newest.size() - 4), n);
+}
+
+// Makes room for a new autosave: every autosave moves a place older, so that [keep] remain once it
+// is written. The oldest is only set aside, as .drop, until then: FinishAutosaveRotation deletes it
+// after a save, or puts everything back after a failed one, so a failed autosave loses nothing.
+// Autosaves past [keep] (the setting lowered since) are deleted. True when anything moved.
+static bool RotateAutosaves(const std::string& newest, int keep)
+{
+    for (int n = keep + 1; n <= kAutosaveKeepMax; n++)
+    {
+        const std::string extra = AutosaveFileName(newest, n);
+        if (FileSystem::FileExists(extra.c_str()))
+            FileSystem::DeleteFilePath(extra.c_str());
+    }
+    if (keep <= 1 || !FileSystem::FileExists(newest.c_str()))
+        return false;
+    const std::string oldest = AutosaveFileName(newest, keep);
+    const std::string drop = oldest + ".drop";
+    if (FileSystem::FileExists(drop.c_str()))
+        FileSystem::DeleteFilePath(drop.c_str());
+    if (FileSystem::FileExists(oldest.c_str()))
+        FileSystem::RenamePath(oldest.c_str(), drop.c_str());
+    for (int n = keep - 1; n >= 2; n--)
+    {
+        const std::string from = AutosaveFileName(newest, n);
+        if (FileSystem::FileExists(from.c_str()))
+            FileSystem::RenamePath(from.c_str(), AutosaveFileName(newest, n + 1).c_str());
+    }
+    return FileSystem::RenamePath(newest.c_str(), AutosaveFileName(newest, 2).c_str());
+}
+
+static void FinishAutosaveRotation(const std::string& newest, int keep, bool saved)
+{
+    const std::string drop = AutosaveFileName(newest, keep) + ".drop";
+    if (saved)
+    {
+        if (FileSystem::FileExists(drop.c_str()))
+            FileSystem::DeleteFilePath(drop.c_str());
+        return;
+    }
+    // The save failed: everything back where it was, over whatever half-written file it left.
+    const std::string second = AutosaveFileName(newest, 2);
+    if (FileSystem::FileExists(second.c_str()))
+        FileSystem::RenamePath(second.c_str(), newest.c_str());
+    for (int n = 3; n <= keep; n++)
+    {
+        const std::string from = AutosaveFileName(newest, n);
+        if (FileSystem::FileExists(from.c_str()))
+            FileSystem::RenamePath(from.c_str(), AutosaveFileName(newest, n - 1).c_str());
+    }
+    if (FileSystem::FileExists(drop.c_str()))
+        FileSystem::RenamePath(drop.c_str(), AutosaveFileName(newest, keep).c_str());
+}
 
 extern "C"
 JNIEXPORT jboolean JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_saveAutosaveState(JNIEnv *env, jclass clazz) {
+Java_kr_co_iefriends_pcsx2_NativeApp_saveAutosaveState(JNIEnv *env, jclass clazz, jint p_keep) {
     if (!VMManager::HasValidVM())
         return false;
     if (!SaveStatesHaveName())
         return false;
+    // The core refuses a save while the game writes its memory card (VMManager rechecks); refused
+    // here first, so the older autosaves are not moved for a save that cannot happen.
+    if (MemcardBusy::IsBusy()) {
+        Console.Error("saveAutosaveState: the memory card is busy, refusing to save");
+        return false;
+    }
     const ScopedVMPause pause_guard;
     if (!pause_guard.parked()) {
         Console.Error("saveAutosaveState: CPU thread failed to park, refusing to save");
         return false;
     }
+    const std::string newest = NewestAutosaveFileName();
+    if (newest.empty())
+        return false;
+    const int keep = std::clamp<int>(p_keep, 1, kAutosaveKeepMax);
+    const bool rotated = RotateAutosaves(newest, keep);
     // Marshalled for the same reason as saveStateToSlot: the park stops the EE, but the freeze
     // pushes to the single-producer MTGS ring, whose write position is owned by the CPU thread.
     std::string save_error;
@@ -4319,14 +4403,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_saveAutosaveState(JNIEnv *env, jclass clazz
         VMManager::SaveStateToSlot(VMManager::SAVESTATE_SLOT_AUTOSAVE, /*zip_on_thread=*/false,
             [&save_error](const std::string& error) { save_error = error; });
     }, /*block=*/true);
-    if (!save_error.empty()) {
+    if (!save_error.empty())
         Console.Error("saveAutosaveState: %s", save_error.c_str());
-        return false;
-    }
-    const std::string filename = VMManager::GetSaveStateFileName(
-        VMManager::GetDiscSerial().c_str(), VMManager::GetDiscCRC(),
-        VMManager::SAVESTATE_SLOT_AUTOSAVE);
-    return !filename.empty() && FileSystem::FileExists(filename.c_str());
+    const bool saved = save_error.empty() && FileSystem::FileExists(newest.c_str());
+    if (rotated)
+        FinishAutosaveRotation(newest, keep, saved);
+    return saved;
 }
 
 extern "C"
@@ -4396,36 +4478,82 @@ Java_kr_co_iefriends_pcsx2_NativeApp_getAutosaveGamePath(JNIEnv *env, jclass cla
     return nullptr;
 }
 
+// The screenshot inside the save state [filename], as PNG bytes, or null.
+static jbyteArray SaveStateScreenshotPng(JNIEnv* env, const std::string& filename)
+{
+    jbyteArray retArr = nullptr;
+    if (filename.empty())
+        return retArr;
+    zip_error_t ze = {};
+    auto zf = zip_open_managed(filename.c_str(), ZIP_RDONLY, &ze);
+    if (!zf)
+        return retArr;
+    auto zff = zip_fopen_managed(zf.get(), "Screenshot.png", 0);
+    if (!zff)
+        return retArr;
+    std::optional<std::vector<u8>> optdata(ReadBinaryFileInZip(zff.get()));
+    if (!optdata.has_value())
+        return retArr;
+    std::vector<u8> vec = std::move(optdata.value());
+    auto length = static_cast<jsize>(vec.size());
+    retArr = env->NewByteArray(length);
+    if (retArr != nullptr)
+        env->SetByteArrayRegion(retArr, 0, length, reinterpret_cast<const jbyte *>(vec.data()));
+    return retArr;
+}
+
 extern "C"
 JNIEXPORT jbyteArray JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_getAutosaveImage(JNIEnv *env, jclass clazz) {
-    jbyteArray retArr = nullptr;
+    return SaveStateScreenshotPng(env, NewestAutosaveFileName());
+}
 
-    std::string _filename = VMManager::GetSaveStateFileName(VMManager::GetDiscSerial().c_str(),
-                                                            VMManager::GetDiscCRC(),
-                                                            VMManager::SAVESTATE_SLOT_AUTOSAVE);
-    if (!_filename.empty())
-    {
-        zip_error_t ze = {};
-        auto zf = zip_open_managed(_filename.c_str(), ZIP_RDONLY, &ze);
-        if (zf) {
-            auto zff = zip_fopen_managed(zf.get(), "Screenshot.png", 0);
-            if (zff) {
-                std::optional<std::vector<u8>> optdata(ReadBinaryFileInZip(zff.get()));
-                if (optdata.has_value()) {
-                    std::vector<u8> vec = std::move(optdata.value());
-                    auto length = static_cast<jsize>(vec.size());
-                    retArr = env->NewByteArray(length);
-                    if (retArr != nullptr) {
-                        env->SetByteArrayRegion(retArr, 0, length,
-                                                reinterpret_cast<const jbyte *>(vec.data()));
-                    }
-                }
-            }
-        }
+// The older autosaves ([n] = 2 to 5, 1 being the newest above), for the load picker's tiles.
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getAutosavePathAt(JNIEnv *env, jclass clazz, jint p_n) {
+    if (p_n < 1 || p_n > kAutosaveKeepMax)
+        return nullptr;
+    const std::string filename = AutosaveFileName(NewestAutosaveFileName(), p_n);
+    if (filename.empty() || !FileSystem::FileExists(filename.c_str()))
+        return nullptr;
+    return env->NewStringUTF(filename.c_str());
+}
+
+extern "C"
+JNIEXPORT jbyteArray JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getAutosaveImageAt(JNIEnv *env, jclass clazz, jint p_n) {
+    if (p_n < 1 || p_n > kAutosaveKeepMax)
+        return nullptr;
+    return SaveStateScreenshotPng(env, AutosaveFileName(NewestAutosaveFileName(), p_n));
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_loadAutosaveStateAt(JNIEnv *env, jclass clazz, jint p_n) {
+    if (!VMManager::HasValidVM() || !SaveStatesHaveName() || p_n < 1 || p_n > kAutosaveKeepMax)
+        return false;
+    const std::string filename = AutosaveFileName(NewestAutosaveFileName(), p_n);
+    if (filename.empty() || !FileSystem::FileExists(filename.c_str()))
+        return false;
+    const ScopedVMPause pause_guard;
+    if (!pause_guard.parked()) {
+        Console.Error("loadAutosaveStateAt: CPU thread failed to park, refusing to load");
+        return false;
     }
-
-    return retArr;
+    // Marshalled and presented as loadAutosaveState does. LoadState refuses in hardcore mode and
+    // while the memory card is busy, as a slot load does.
+    bool loaded = false;
+    Host::RunOnCPUThread([&loaded, &filename]() {
+        Error error;
+        loaded = VMManager::LoadState(filename.c_str(), &error);
+        if (loaded)
+            MTGS::PresentCurrentFrame();
+        else
+            Console.Error(fmt::format("loadAutosaveStateAt: {}", error.GetDescription()));
+    }, /*block=*/true);
+    return loaded;
 }
 
 
