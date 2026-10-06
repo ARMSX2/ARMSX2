@@ -136,6 +136,13 @@ public:
 		std::pair<u8, u8> alpha_minmax;
 		bool valid_alpha_minmax;
 		bool is_replacement;
+
+		/// The texture is an upscale the texture upscaler generated, not a texture pack's.
+		bool generated = false;
+
+		/// The guest's own texels, uploaded the first time a draw reads this texture as colours
+		/// (GetNativeTexture). Owned by the entry; null until then and for any other entry.
+		GSTexture* native = nullptr;
 	};
 
 	using HashCacheMap = std::unordered_map<HashCacheKey, HashCacheEntry, HashCacheKeyHash>;
@@ -710,7 +717,15 @@ public:
 	void InvalidateTemporaryZ();
 
 	/// Injects a texture into the hash cache, by using GSTexture::Swap(), transitively applying to all sources. Ownership of tex is transferred.
-	void InjectHashCacheTexture(const HashCacheKey& key, GSTexture* tex, const std::pair<u8, u8>& alpha_minmax);
+	/// generated says it is an upscale made by the texture upscaler rather than a pack texture.
+	void InjectHashCacheTexture(const HashCacheKey& key, GSTexture* tex, const std::pair<u8, u8>& alpha_minmax, bool generated);
+
+	/// The unscaled texture for a source whose hash cache texture is a generated upscale, for a draw
+	/// that reads texels as colours (GSTexelAddressedDraw.h). It is uploaded from guest memory on
+	/// the first call and kept with the hash cache entry. Returns null for any other source, and
+	/// when the upload fails. Not valid across a change to the guest's texture or palette: call it
+	/// from the draw that looked the source up.
+	GSTexture* GetNativeTexture(const Source* s);
 };
 
 extern std::unique_ptr<GSTextureCache> g_texture_cache;

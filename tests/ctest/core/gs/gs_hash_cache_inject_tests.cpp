@@ -35,7 +35,7 @@ namespace
 
 		// No placeholder exists for this key, as if it had been evicted while the file was loading.
 		ASSERT_EQ(g_texture_cache->GetHashCacheReplacementMemoryUsage(), 0u);
-		g_texture_cache->InjectHashCacheTexture(GSTextureCache::HashCacheKey(), tex, {0, 255});
+		g_texture_cache->InjectHashCacheTexture(GSTextureCache::HashCacheKey(), tex, {0, 255}, false);
 		EXPECT_EQ(g_texture_cache->GetHashCacheReplacementMemoryUsage(), tex_bytes);
 
 		// It gets the same grace as any other unreferenced entry, so a draw can still find it...

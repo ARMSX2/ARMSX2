@@ -5,10 +5,12 @@
 // (GS/Renderers/HW/GSTextureUpscaleSupport.h): the bounded newest-first job queue, the scale a
 // texture is upscaled by, the count of guest mip levels an upscaled texture can take, the one or
 // two 2x passes of a level's upscale, the pass that clamps an upscaled image to the range of its
-// source, and the CPU box filtered mip chain.
+// source, the CPU box filtered mip chain, and the rule for which draws read texels as colours
+// (GS/Renderers/HW/GSTexelAddressedDraw.h, header only like the rest).
 //
 // The upscale tests run the real engine with the real Smooth filters in bin/resources/upscale/raisr.
 
+#include "GS/Renderers/HW/GSTexelAddressedDraw.h"
 #include "GS/Renderers/HW/GSTextureUpscaleSupport.h"
 
 #include <gtest/gtest.h>
@@ -864,4 +866,102 @@ TEST(GsTextureUpscaleClamp, EmptyImageIsANoOp)
 	ClampUpscaledToSourceRange(dst.data(), 0, 4, 0, dst.data(), 0);
 	for (u8 b : dst)
 		EXPECT_EQ(b, 0x55);
+}
+
+// ---------------------------------------------------------------------------------------------
+//  GSTexelAddressedDraw.h
+// ---------------------------------------------------------------------------------------------
+
+TEST(GsTexelAddressedDraw, KatamariWallMagnifiesItsTexels)
+{
+	// The wall triangle of Katamari Damacy's room: texture coordinates over 5.6 x 3.6 texels of the
+	// swatch atlas, spread over 180 x 225 native pixels, so 32 and 62 pixels to a texel.
+	EXPECT_TRUE(GSPrimitiveMagnifiesTexels(5.6f, 3.6f, 180.0f, 225.0f));
+}
+
+TEST(GsTexelAddressedDraw, AStretchedTextureDoesNot)
+{
+	// The stain texture drawn over the same wall: 65 x 11 texels over 70 x 18 pixels.
+	EXPECT_FALSE(GSPrimitiveMagnifiesTexels(65.0f, 11.0f, 70.0f, 18.0f));
+	// A sprite copied 1:1, and one stretched 2:1.
+	EXPECT_FALSE(GSPrimitiveMagnifiesTexels(64.0f, 64.0f, 64.0f, 64.0f));
+	EXPECT_FALSE(GSPrimitiveMagnifiesTexels(32.0f, 32.0f, 64.0f, 64.0f));
+}
+
+TEST(GsTexelAddressedDraw, TheThresholdIsEightPixelsPerTexelOnBothAxes)
+{
+	EXPECT_TRUE(GSPrimitiveMagnifiesTexels(10.0f, 10.0f, 80.0f, 80.0f));
+	EXPECT_FALSE(GSPrimitiveMagnifiesTexels(10.0f, 10.0f, 79.0f, 80.0f));
+	EXPECT_FALSE(GSPrimitiveMagnifiesTexels(10.0f, 10.0f, 80.0f, 79.0f));
+	// One axis magnified a long way does not make up for the other.
+	EXPECT_FALSE(GSPrimitiveMagnifiesTexels(1.0f, 40.0f, 1000.0f, 40.0f));
+}
+
+TEST(GsTexelAddressedDraw, AFlatColourPrimitiveAlwaysMagnifies)
+{
+	// Every vertex on the same texel position: one texel is read for the whole primitive.
+	EXPECT_TRUE(GSPrimitiveMagnifiesTexels(0.0f, 0.0f, 3.0f, 3.0f));
+	EXPECT_TRUE(GSPrimitiveMagnifiesTexels(0.0f, 0.0f, 0.0f, 0.0f));
+	EXPECT_TRUE(GSPrimitiveMagnifiesTexels(0.0f, 0.0f, 512.0f, 448.0f));
+}
+
+TEST(GsTexelAddressedDraw, NotANumberAndNegativeExtentsDoNotPass)
+{
+	const float nan = std::nanf("");
+	EXPECT_FALSE(GSPrimitiveMagnifiesTexels(nan, 1.0f, 100.0f, 100.0f));
+	EXPECT_FALSE(GSPrimitiveMagnifiesTexels(1.0f, nan, 100.0f, 100.0f));
+	EXPECT_FALSE(GSPrimitiveMagnifiesTexels(1.0f, 1.0f, nan, 100.0f));
+	EXPECT_FALSE(GSPrimitiveMagnifiesTexels(1.0f, 1.0f, 100.0f, nan));
+	EXPECT_FALSE(GSPrimitiveMagnifiesTexels(-1.0f, 1.0f, 100.0f, 100.0f));
+	EXPECT_FALSE(GSPrimitiveMagnifiesTexels(1.0f, 1.0f, -100.0f, 100.0f));
+}
+
+TEST(GsTexelAddressedDraw, TheVoteIsByArea)
+{
+	GSTexelAddressedVote empty;
+	EXPECT_FALSE(empty.Passes());
+
+	// Half and more passes, under half does not.
+	GSTexelAddressedVote half;
+	half.Add(50.0, true);
+	half.Add(50.0, false);
+	EXPECT_TRUE(half.Passes());
+
+	GSTexelAddressedVote under;
+	under.Add(49.0, true);
+	under.Add(51.0, false);
+	EXPECT_FALSE(under.Passes());
+
+	// The Katamari wall call: two big magnified fans and a few slivers, against the small
+	// stretched stain triangles that share the call.
+	GSTexelAddressedVote wall;
+	wall.Add(20250.0, true);
+	wall.Add(15000.0, true);
+	wall.Add(300.0, true);
+	wall.Add(40.0, false);
+	wall.Add(35.0, false);
+	wall.Add(60.0, false);
+	EXPECT_TRUE(wall.Passes());
+
+	// A character: hundreds of small triangles over a detailed texture, and one flat colour
+	// triangle for the eyes. The eyes must not take the whole draw off the upscaled texture.
+	GSTexelAddressedVote character;
+	for (int i = 0; i < 300; i++)
+		character.Add(40.0, false);
+	character.Add(12.0, true);
+	EXPECT_FALSE(character.Passes());
+}
+
+TEST(GsTexelAddressedDraw, EmptyAndNotANumberAreasAreIgnored)
+{
+	const double nan = std::nan("");
+	GSTexelAddressedVote vote;
+	vote.Add(0.0, true);
+	vote.Add(-5.0, true);
+	vote.Add(nan, true);
+	EXPECT_EQ(vote.total_area, 0.0);
+	EXPECT_FALSE(vote.Passes());
+
+	vote.Add(10.0, true);
+	EXPECT_TRUE(vote.Passes());
 }

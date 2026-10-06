@@ -257,6 +257,11 @@ private:
 	/// them walk the texture at different rates, because the shader carries one step for the whole
 	/// draw. See GSNativeTexelGridPolicy.h.
 	bool GetAgreedSpriteTexelSteps(GSNativeTexelStep& step_u, GSNativeTexelStep& step_v) const;
+
+	/// Whether most of this draw, by area, shows each texel of its texture as a large block, so that
+	/// a generated upscale of the texture has to give way to the original texels.
+	/// See GSTexelAddressedDraw.h.
+	bool DrawReadsTexelsAsColours() const;
 	bool IsFastStencilShadowDraw() const;
 
 	void EmulateZbuffer(const GSTextureCache::Target* ds);
@@ -339,6 +344,11 @@ private:
 
 	bool m_process_texture = false;
 	bool m_downscale_source = false;
+
+	/// This draw samples the guest's own texels in place of a generated upscale
+	/// (GSTextureCache::GetNativeTexture). Set by EmulateTextureSampler. The source is still a
+	/// replacement, but the texture bound is not, so alpha snapping for packs does not apply.
+	bool m_source_is_native_texels = false;
 	// This draw is an alpha stencil counter going through the blend unit (GSFastStencilShadow.h).
 	// Decided in Draw() before the texture lookup, read by DrawPrims().
 	bool m_fast_stencil_shadow = false;

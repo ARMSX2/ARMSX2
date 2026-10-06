@@ -122,7 +122,7 @@ namespace
 			const GIFRegTEXA texa = {};
 			const GSTextureCache::HashCacheKey key =
 				GSTextureCache::HashCacheKey::Create(TextureTEX0(), texa, nullptr, nullptr, GSTextureCache::SourceRegion());
-			g_texture_cache->InjectHashCacheTexture(key, tex, {0, 255});
+			g_texture_cache->InjectHashCacheTexture(key, tex, {0, 255}, false);
 		}
 	};
 

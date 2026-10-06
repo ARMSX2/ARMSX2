@@ -112,7 +112,11 @@ void GSTextureCache::RemoveAll(bool sources, bool targets, bool hash_cache)
 	if (hash_cache)
 	{
 		for (auto it : m_hash_cache)
+		{
 			g_gs_device->Recycle(it.second.texture);
+			if (it.second.native)
+				g_gs_device->Recycle(it.second.native);
+		}
 
 		m_hash_cache.clear();
 		m_hash_cache_memory_usage = 0;
@@ -7444,7 +7448,7 @@ GSTextureCache::HashCacheEntry* GSTextureCache::LookupHashCache(const GIFRegTEX0
 		{
 			// Same as a found pack texture: it is not indexed, so paltex goes.
 			paltex = false;
-			const HashCacheEntry entry{upscaled_tex, 1u, 0u, upscale_alpha_minmax, true, true};
+			const HashCacheEntry entry{upscaled_tex, 1u, 0u, upscale_alpha_minmax, true, true, true};
 			m_hash_cache_replacement_memory_usage += entry.texture->GetMemUsage();
 			return &m_hash_cache.emplace(key, entry).first->second;
 		}
@@ -7520,6 +7524,32 @@ GSTextureCache::HashCacheEntry* GSTextureCache::LookupHashCache(const GIFRegTEX0
 	return &m_hash_cache.emplace(key, entry).first->second;
 }
 
+GSTexture* GSTextureCache::GetNativeTexture(const Source* s)
+{
+	HashCacheEntry* const e = s->m_from_hash_cache;
+	if (!e || !e->generated)
+		return nullptr;
+
+	if (!e->native)
+	{
+		const SourceRegion& region = s->m_region;
+		const int tw = region.HasX() ? region.GetWidth() : (1 << s->m_TEX0.TW);
+		const int th = region.HasY() ? region.GetHeight() : (1 << s->m_TEX0.TH);
+
+		GSTexture* tex = g_gs_device->CreateTexture(tw, th, 1, GSTexture::Format::Color);
+		if (!tex)
+			return nullptr;
+
+		// The CPU palette expansion LookupHashCache's own upload does. A texture that gets a
+		// generated upscale never uses paltex, so its source has no palette texture to match.
+		PreloadTexture(s->m_TEX0, s->m_TEXA, region, g_gs_renderer->m_mem, false, tex, 0, nullptr);
+		e->native = tex;
+		m_hash_cache_memory_usage += tex->GetMemUsage();
+	}
+
+	return e->native;
+}
+
 GSTextureCache::HashCacheMap::iterator GSTextureCache::RemoveFromHashCache(HashCacheMap::iterator it)
 {
 	HashCacheEntry& e = it->second;
@@ -7529,6 +7559,11 @@ GSTextureCache::HashCacheMap::iterator GSTextureCache::RemoveFromHashCache(HashC
 	else
 		m_hash_cache_memory_usage -= mem_usage;
 	g_gs_device->Recycle(e.texture);
+	if (e.native)
+	{
+		m_hash_cache_memory_usage -= e.native->GetMemUsage();
+		g_gs_device->Recycle(e.native);
+	}
 	return m_hash_cache.erase(it);
 }
 
@@ -9133,7 +9168,7 @@ void GSTextureCache::InvalidateTemporaryZ()
 	m_temporary_z = nullptr;
 }
 
-void GSTextureCache::InjectHashCacheTexture(const HashCacheKey& key, GSTexture* tex, const std::pair<u8, u8>& alpha_minmax)
+void GSTextureCache::InjectHashCacheTexture(const HashCacheKey& key, GSTexture* tex, const std::pair<u8, u8>& alpha_minmax, bool generated)
 {
 	// When we insert we update memory usage. Old texture gets removed below.
 	m_hash_cache_replacement_memory_usage += tex->GetMemUsage();
@@ -9144,7 +9179,7 @@ void GSTextureCache::InjectHashCacheTexture(const HashCacheKey& key, GSTexture* 
 		// We must've got evicted before we finished loading. No matter, add it in there anyway;
 		// if it's not used again, it'll get tossed out later. No source holds it, so it starts
 		// unreferenced: AgeHashCache never ages an entry with a reference.
-		const HashCacheEntry entry{tex, 0u, 0u, alpha_minmax, true, true};
+		const HashCacheEntry entry{tex, 0u, 0u, alpha_minmax, true, true, generated};
 		m_hash_cache.emplace(key, entry);
 		return;
 	}
@@ -9161,6 +9196,7 @@ void GSTextureCache::InjectHashCacheTexture(const HashCacheKey& key, GSTexture* 
 		m_hash_cache_replacement_memory_usage -= it->second.texture->GetMemUsage();
 
 	it->second.is_replacement = true;
+	it->second.generated = generated;
 	m_src.SwapTexture(it->second.texture, tex);
 	g_gs_device->Recycle(it->second.texture);
 	it->second.texture = tex;

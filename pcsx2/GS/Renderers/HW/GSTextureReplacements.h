@@ -100,8 +100,12 @@ namespace GSTextureReplacements
 		u64 guest_mip_jobs; ///< Queued jobs that carry guest mip levels (more than the base level).
 		u64 cpu_mip_jobs; ///< Queued jobs that get a CPU built mip chain.
 		u64 cpu_ns; ///< Time spent upscaling, summed over the workers.
+		u64 native_draws; ///< Draws that read an upscaled texture's original texels instead (GSTexelAddressedDraw.h).
 	};
 	UpscaleStats GetUpscaleStats();
+
+	/// Counts a draw that used the original texels of a texture it would otherwise have read upscaled.
+	void NoteUpscaleNativeDraw();
 
 	/// Returns once every queued upscale job and the ones running have finished. For tests.
 	void SyncUpscaleWorkers();

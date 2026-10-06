@@ -282,6 +282,7 @@ namespace GSTextureReplacements
 	static std::atomic<u64> s_upscale_stat_guest_mip_jobs{0};
 	static std::atomic<u64> s_upscale_stat_cpu_mip_jobs{0};
 	static std::atomic<u64> s_upscale_stat_cpu_ns{0};
+	static std::atomic<u64> s_upscale_stat_native_draws{0};
 }; // namespace GSTextureReplacements
 
 size_t GSTextureReplacements::ReplacementTextureBytes(const ReplacementTexture& tex)
@@ -1219,7 +1220,7 @@ void GSTextureReplacements::ProcessAsyncLoadedTextures()
 		GSTexture* tex = CreateReplacementTexture(it->second, mipmap);
 		if (tex)
 		{
-			g_texture_cache->InjectHashCacheTexture(HashCacheKeyFromTextureName(name), tex, it->second.alpha_minmax);
+			g_texture_cache->InjectHashCacheTexture(HashCacheKeyFromTextureName(name), tex, it->second.alpha_minmax, it->second.generated);
 			if (it->second.generated)
 				s_upscale_stat_injected.fetch_add(1, std::memory_order_relaxed);
 		}
@@ -1459,7 +1460,13 @@ GSTextureReplacements::UpscaleStats GSTextureReplacements::GetUpscaleStats()
 	stats.guest_mip_jobs = s_upscale_stat_guest_mip_jobs.load(std::memory_order_relaxed);
 	stats.cpu_mip_jobs = s_upscale_stat_cpu_mip_jobs.load(std::memory_order_relaxed);
 	stats.cpu_ns = s_upscale_stat_cpu_ns.load(std::memory_order_relaxed);
+	stats.native_draws = s_upscale_stat_native_draws.load(std::memory_order_relaxed);
 	return stats;
+}
+
+void GSTextureReplacements::NoteUpscaleNativeDraw()
+{
+	s_upscale_stat_native_draws.fetch_add(1, std::memory_order_relaxed);
 }
 
 void GSTextureReplacements::LogUpscaleStats(const char* when)
@@ -1469,9 +1476,11 @@ void GSTextureReplacements::LogUpscaleStats(const char* when)
 		return;
 
 	Console.WriteLnFmt("Texture upscaling ({}): {} queued ({} at 4x, {} with guest mips, {} with a generated chain), "
-					   "{} upscaled, {} injected, {} cache hits, {} dropped, {} failed, {} skipped by size, {:.1f} ms of CPU.",
+					   "{} upscaled, {} injected, {} cache hits, {} dropped, {} failed, {} skipped by size, {:.1f} ms of CPU, "
+					   "{} draws read the original texels.",
 		when, stats.queued, stats.queued_4x, stats.guest_mip_jobs, stats.cpu_mip_jobs, stats.upscaled, stats.injected,
-		stats.cache_hits, stats.dropped, stats.failed, stats.skipped_size, static_cast<double>(stats.cpu_ns) / 1000000.0);
+		stats.cache_hits, stats.dropped, stats.failed, stats.skipped_size, static_cast<double>(stats.cpu_ns) / 1000000.0,
+		stats.native_draws);
 }
 
 void GSTextureReplacements::ResetUpscaleStats()
@@ -1487,6 +1496,7 @@ void GSTextureReplacements::ResetUpscaleStats()
 	s_upscale_stat_guest_mip_jobs.store(0, std::memory_order_relaxed);
 	s_upscale_stat_cpu_mip_jobs.store(0, std::memory_order_relaxed);
 	s_upscale_stat_cpu_ns.store(0, std::memory_order_relaxed);
+	s_upscale_stat_native_draws.store(0, std::memory_order_relaxed);
 }
 
 bool GSTextureReplacements::ReadUpscaleSourceLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA,
