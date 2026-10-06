@@ -341,6 +341,11 @@ fun TouchControlsOverlay() {
         }
         // Buttons currently held via the unified multi-touch hit-test layer.
         val multiPressed = unifiedPressed
+        // With a GunCon 2 attached, a touch on empty screen IS the shot, so the gun owns empty
+        // screen outright: the gesture layer and the Half-Screen Sticks, which want the same fingers,
+        // stand down while it is attached, and the regular stick widgets come back. An arcade game
+        // whose controls are a light gun or a touch panel takes the touchscreen the same way.
+        val gunAttached = Lightgun.active
 
         // ONE full-screen hit-test layer for every glide-eligible digital control
         // (FACE + SHOULDER + MENU, enabled && !tapToHold). Placed FIRST in
@@ -356,15 +361,11 @@ fun TouchControlsOverlay() {
                 widthPx = widthPx,
                 heightPx = heightPx,
                 glideMode = TouchControls.glideMode.value,
+                gunAttached = gunAttached,
                 onPressedChange = { unifiedPressed = it },
                 onDpadChange = { unifiedDpad = it },
             )
         }
-        // With a GunCon 2 attached, a touch on empty screen IS the shot, so the gun owns empty
-        // screen outright: the gesture layer and the Half-Screen Sticks, which want the same fingers,
-        // stand down while it is attached, and the regular stick widgets come back. An arcade game
-        // whose controls are a light gun or a touch panel takes the touchscreen the same way.
-        val gunAttached = Lightgun.active
         val halfSticks = TouchControls.fullHalfSticks.value && !gunAttached
         // Lightgun aiming. Below the widgets, so the gun buttons, pause, D-pad and sticks win a
         // finger that starts on them. The multi-touch buttons have no handler of their own, so their
@@ -401,7 +402,9 @@ fun TouchControlsOverlay() {
         // Full-half invisible analog sticks: an invisible layer owning each screen half, composed
         // z-BELOW the visual widgets so a finger starting on a button drives the button, not a stick.
         if (!edit && halfSticks) {
-            FullHalfStickLayer(layout = layout, widthPx = widthPx, heightPx = heightPx, faceMulti = faceMulti)
+            FullHalfStickLayer(
+                layout = layout, widthPx = widthPx, heightPx = heightPx, faceMulti = faceMulti, gunAttached = gunAttached,
+            )
         }
         for (cfg in layout.buttons) {
             if (!cfg.enabled && !edit) continue
@@ -411,19 +414,13 @@ fun TouchControlsOverlay() {
             // stick, and this widget is the left stick as usual.
             if (!edit && halfSticks && cfg.id.kind == TouchButtonId.Kind.STICK &&
                 !(cfg.id == TouchButtonId.L_STICK && TouchControls.fullHalfKeepLeftStick.value)) continue
-            // The gun's buttons exist only while a gun is attached, in play and in the editor alike;
-            // the layout entry only carries where each one sits and how big it is.
-            if (cfg.id.kind == TouchButtonId.Kind.GUN && !gunAttached) continue
+            // The gun's buttons exist only while a gun is attached and the extra analog button only
+            // while its Pad-settings toggle is on, in play and in the editor alike ([extraShown]).
+            if (!extraShown(cfg, gunAttached)) continue
             // Drawn above during play (outside the auto-hide / "Never" gate) so it can't be
             // hidden away; skip it here or it would render twice. Edit mode still gets it from
             // the loop, so it stays draggable/resizable like every other widget.
             if (cfg.id == TouchButtonId.PAUSE && !edit) continue
-            // The extra analog button's visibility is owned by the Pad-settings toggle, not by the
-            // layout's own enabled flag — one switch, in the place users already look for it. The
-            // layout entry only carries where it sits and how big it is. Gating here (rather than
-            // on cfg.enabled) is deliberate: when the toggle is ON it must appear in EDIT mode too,
-            // which is the whole point of the change — it is now dragged like every other widget.
-            if (cfg.id == TouchButtonId.ANALOG_EXTRA && !TouchControls.analogExtraEnabled.value) continue
             val size = cfg.sizeDp.dp
             // Grid snap (editor only): render the centre anchor on the nearest cross so it visibly
             // clicks into place while dragging. The underlying cfg.xFrac keeps the raw free-drag
@@ -725,6 +722,8 @@ private fun UnifiedTouchLayer(
     widthPx: Float,
     heightPx: Float,
     glideMode: TouchControls.GlideMode = TouchControls.GlideMode.FOLLOW,
+    /** A GunCon 2 attached (or an arcade gun or panel game): its buttons are on screen ([extraShown]). */
+    gunAttached: Boolean,
     onPressedChange: (Set<TouchButtonId>) -> Unit,
     onDpadChange: (DpadState) -> Unit = {},
 ) {
@@ -747,8 +746,11 @@ private fun UnifiedTouchLayer(
     // DOWN whose position lands inside one of these rects (defensive, in case the
     // above-layer consume ever races), so a tap on the stick / Pause can't leak
     // into a face button.
+    // Only widgets on screen: the square of a hidden extra analog button or GunCon 2 button was a
+    // dead spot for everything this layer drives, the D-pad included (#796).
     val foreignRects = layout.buttons.filter { cfg ->
-        cfg.enabled && cfg.id.kind != TouchButtonId.Kind.DPAD && (!isUnifiedKind(cfg.id.kind) || cfg.tapToHold)
+        cfg.enabled && extraShown(cfg, gunAttached) && cfg.id.kind != TouchButtonId.Kind.DPAD &&
+            (!isUnifiedKind(cfg.id.kind) || cfg.tapToHold)
     }
 
     val density = LocalDensity.current
@@ -2022,13 +2024,20 @@ private data class HalfStickParams(
  *  so every on-screen button keeps working (see [HalfStickInputNode] for how). Composed z-below
  *  the widgets and renders nothing. */
 @Composable
-private fun FullHalfStickLayer(layout: TouchLayout, widthPx: Float, heightPx: Float, faceMulti: Boolean) {
+private fun FullHalfStickLayer(
+    layout: TouchLayout,
+    widthPx: Float,
+    heightPx: Float,
+    faceMulti: Boolean,
+    gunAttached: Boolean,
+) {
     if (widthPx <= 0f || heightPx <= 0f) return
     val density = LocalDensity.current
-    // Foreign regions: every enabled non-stick widget (D-pad, face, shoulders, menu, L3/R3, Pause,
-    // FF, macro, state, pressure). A finger starting on one of these drives the button, not a stick.
+    // Foreign regions: every enabled non-stick widget on screen (D-pad, face, shoulders, menu, L3/R3,
+    // Pause, FF, macro, state, pressure; [extraShown]). A finger starting on one of these drives the
+    // button, not a stick.
     val foreignRects = layout.buttons
-        .filter { it.enabled && it.id.kind != TouchButtonId.Kind.STICK }
+        .filter { it.enabled && extraShown(it, gunAttached) && it.id.kind != TouchButtonId.Kind.STICK }
         .map { cfg ->
             val sizePx = with(density) { cfg.sizeDp.dp.toPx() }
             val cx = widthPx * cfg.xFrac
@@ -2187,6 +2196,21 @@ private fun isGlideTargetKind(kind: TouchButtonId.Kind): Boolean =
 /** Everything [UnifiedTouchLayer] owns while multi-touch is on. */
 private fun isUnifiedKind(kind: TouchButtonId.Kind): Boolean =
     isMultiTouchKind(kind) || isGlideTargetKind(kind)
+
+/**
+ * Whether one of the widgets every layout carries, enabled, is in use: the GunCon 2's buttons only
+ * while a gun is attached, the extra analog button only while its Pad-settings toggle is on (one switch,
+ * where players look for it; the layout entry only says where it sits and how big it is, so the editor
+ * shows it whenever the toggle is on). Any other widget: true, its own enabled flag decides. The widget
+ * loop and the touch layers ask the same question. A layer that kept out of the square of a widget that
+ * is not on screen left a dead spot there, under whatever the player put on it (#796: the extra button's
+ * spot, 0.10 / 0.34, sat on the D-pad once the D-pad joined the multi-touch layer).
+ */
+private fun extraShown(cfg: TouchButtonCfg, gunAttached: Boolean): Boolean = when {
+    cfg.id.kind == TouchButtonId.Kind.GUN -> gunAttached
+    cfg.id == TouchButtonId.ANALOG_EXTRA -> TouchControls.analogExtraEnabled.value
+    else -> true
+}
 
 /** Press/release pointerInput for a single digital button. Emits the
  *  keycode on down, releases on up or pointer cancel.
