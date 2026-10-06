@@ -1180,7 +1180,8 @@ static void PrintCommandLineHelp(const char* progname)
 						 "expanded in software, whether a feedback read is cheap -- so a null device with no "
 						 "features is not any real device and counts taken on it are about nothing. 'sd865' "
 						 "(default) is the Adreno 650 / Turnip render-target-copy road; 'mali-g615' is the "
-						 "Dimensity 8300 in-tile framebuffer-fetch road; 'blank' restores FeatureSupport's own "
+						 "Dimensity 8300 in-tile framebuffer-fetch road on Arm's driver; 'mali-g615-malisx2' is the "
+						 "same part on malisx2 (our driver); 'blank' restores FeatureSupport's own "
 						 "defaults, which is what the null arm reported before profiles existed. The resolved bits "
 						 "are printed at start-up. Ignored unless the renderer is nullhw.\n");
 	std::fprintf(stderr, "  -no-stencil-buffer: Vulkan only. Report no stencil buffer and create depth as plain D32F, as "
