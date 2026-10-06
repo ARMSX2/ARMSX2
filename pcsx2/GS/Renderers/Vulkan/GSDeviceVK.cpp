@@ -4167,7 +4167,9 @@ void GSDeviceVK::ResolveFeatureTable()
 
 	// Without dualSrcBlend (common on Mali), GSRendererHW blends the SRC1 draws in the shader.
 	// Ported from sashkinbro/EmuCoreX.
-	m_features.dual_source_blend = m_device_features.dualSrcBlend;
+	// gsrunner -no-dual-source reports the feature absent to the renderer while the device keeps it
+	// enabled, which is what a driver without it looks like from GSRendererHW's side.
+	m_features.dual_source_blend = m_device_features.dualSrcBlend && !g_gs_measurement_overrides.no_dual_source;
 
 	// A driver that ignores the blend constant cannot be asked for a constant-colour blend factor at
 	// all, so a fixed (AFIX) factor travels through the second fragment output instead. Read from the
@@ -4397,7 +4399,7 @@ void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool de
 	if (g_gs_measurement_overrides.Any())
 	{
 		Console.WriteLn("VK: measurement overrides: loop-spelling=%s(%s; %s) declare-arm=%u depth-loop=%s "
-						"stencil-buffer=%s alpha-bit-logic-op=%s provoking-vertex=%s",
+						"stencil-buffer=%s alpha-bit-logic-op=%s provoking-vertex=%s dual-source=%s",
 			g_gs_measurement_overrides.loop_create_flag ? "pipeline create flag" : "dynamic per draw",
 			g_gs_measurement_overrides.loop_create_flag ? "forced" : "default",
 			m_declare_loop_per_draw ? "applied" : "pipeline create flag in effect",
@@ -4405,7 +4407,8 @@ void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool de
 			g_gs_measurement_overrides.declare_depth_loop ? "DECLARED" : "off",
 			g_gs_measurement_overrides.disable_stencil_buffer ? "FORCED OFF" : "device",
 			g_gs_measurement_overrides.alpha_bit_logic_op ? (m_features.alpha_bit_logic_op ? "FORCED ON" : "FORCED but no logicOp") : "device",
-			g_gs_measurement_overrides.no_provoking_vertex ? "FORCED OFF" : "device");
+			g_gs_measurement_overrides.no_provoking_vertex ? "FORCED OFF" : "device",
+			g_gs_measurement_overrides.no_dual_source ? "FORCED OFF" : "device");
 	}
 	if (m_features.alpha_bit_logic_op)
 		Console.WriteLn("VK: alpha bit 7 marks through a logic op (no target read).");

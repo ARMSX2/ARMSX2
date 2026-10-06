@@ -1287,6 +1287,9 @@ static void PrintCommandLineHelp(const char* progname)
 						 "stock Adreno driver does. Pipelines use the first-vertex default, so the provoking-first "
 						 "paths (software flat-shading fixup, expanded-line vertex shader) run on a device that has "
 						 "the extension. Vulkan only.\n");
+	std::fprintf(stderr, "  -no-dual-source: Run as a device without dualSrcBlend, the way Arm's stock Mali driver "
+						 "does. GSRendererHW blends every SRC1 equation in the shader rather than through the second "
+						 "fragment output, so a device that has dual-source blending runs the fallback. Vulkan only.\n");
 	std::fprintf(stderr, "  -accblend <0-5>: Force accurate blending unit (0=Minimum, 1=Basic, 2=Medium, 3=High, 4=Full, 5=Maximum). "
 						 "Overrides the game/global default; use to exercise the SW-blend / fb-fetch (ROV) path headlessly.\n");
 	std::fprintf(stderr, "  --: Signals that no more arguments will follow and the remaining\n"
@@ -1927,6 +1930,15 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// provoking-first paths on a device that has the extension, for an A/B on one binary.
 				g_gs_measurement_overrides.no_provoking_vertex = true;
 				Console.WriteLn("Forcing provoking-vertex-last off (Vulkan, as a device without VK_EXT_provoking_vertex)");
+				continue;
+			}
+			else if (CHECK_ARG("-no-dual-source"))
+			{
+				// Not a setting: whether a device has dual-source blending is a driver fact (Arm's
+				// stock Mali driver reports dualSrcBlend false). This puts that driver's shader-blend
+				// fallback on a device that has the feature, for an A/B on one binary.
+				g_gs_measurement_overrides.no_dual_source = true;
+				Console.WriteLn("Forcing dual-source blending off (Vulkan, as a device without dualSrcBlend)");
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-vertex-ring-kib"))

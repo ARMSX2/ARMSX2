@@ -159,6 +159,18 @@ TEST(GSDynamicFeedbackLoop, TheProvokingVertexSwitchDefaultsOffAndCountsAsAnOver
 	EXPECT_TRUE(forced.Any());
 }
 
+// -no-dual-source follows the same rule: off unless named, and naming it makes the device print its
+// measurement-overrides line, which is where a log says the run had no dual-source blending.
+TEST(GSDynamicFeedbackLoop, TheDualSourceSwitchDefaultsOffAndCountsAsAnOverride)
+{
+	EXPECT_FALSE(g_gs_measurement_overrides.no_dual_source);
+
+	GSMeasurementOverrides forced;
+	EXPECT_FALSE(forced.Any());
+	forced.no_dual_source = true;
+	EXPECT_TRUE(forced.Any());
+}
+
 namespace
 {
 	// Enough of Mesa to see what Turnip sees. The runtime's SET_DYN_VALUE marks the feedback-loop
