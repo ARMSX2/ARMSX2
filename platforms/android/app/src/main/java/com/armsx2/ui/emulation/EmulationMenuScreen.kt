@@ -901,6 +901,22 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
         onReset = { viewModel.setUpscale(1.0f) },
         onChange = { pct -> viewModel.setUpscale(pct / 100f) },
     )
+    // Texture Upscaling, under the resolution it is paired with: RAISR's 4x only pays off at a high
+    // one, and finding that out means switching both while the game runs. Same choices and values as
+    // the Renderer tab's row (the core's GSTextureUpscaleMode: 0 Off, 1 2x, 2 4x). Hardware renderers
+    // only, so the software one does not offer it.
+    if (settings.output.renderer != "software") {
+        HorizontalOptions(
+            title = str("renderer.textureUpscale.label"),
+            options = listOf(
+                0 to str("common.off"),
+                1 to str("renderer.textureUpscale.raisr2x"),
+                2 to str("renderer.textureUpscale.raisr4x"),
+            ),
+            selected = settings.graphics.textureUpscale.coerceIn(0, 2),
+            onSelect = { v -> viewModel.updateSettings { it.copy(graphics = it.graphics.copy(textureUpscale = v)) } },
+        )
+    }
     // FSR sits with the resolution controls rather than the effects, because that is what it
     // is: the two rows above choose how big the frame is RENDERED, and this chooses how it
     // gets to the screen. In full settings it lives under Display Effects next to CAS, which
