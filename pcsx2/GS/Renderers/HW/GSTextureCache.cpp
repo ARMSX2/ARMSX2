@@ -9529,16 +9529,17 @@ GSTextureCache::SourceRegion GSTextureCache::SourceRegion::Create(GIFRegTEX0 TEX
 	return region;
 }
 
-using BlockHashState = XXH3_state_t;
+using BlockHashState = GSXXH3BlockState;
 
 __fi static void BlockHashReset(BlockHashState& st)
 {
-	XXH3_64bits_reset(&st);
+	GSXXH3_block_reset(st);
 }
 
 __fi static void BlockHashAccumulate(BlockHashState& st, const u8* bp)
 {
-	GSXXH3_64bits_update(&st, bp, GS_BLOCK_SIZE);
+	static_assert(GS_BLOCK_SIZE == 256, "GSXXH3_64bits_block hashes exactly 256 bytes");
+	GSXXH3_64bits_block(&st, bp);
 }
 
 __fi static void BlockHashAccumulate(BlockHashState& st, const u8* bp, u32 size)
