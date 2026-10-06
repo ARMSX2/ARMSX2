@@ -8,6 +8,7 @@ import android.provider.MediaStore
 import com.armsx2.runtime.MainActivityRuntime
 import kr.co.iefriends.pcsx2.NativeApp
 import java.io.File
+import java.io.RandomAccessFile
 
 /**
  * Screenshot hotkey. The core writes the PNG itself — an upscaled capture of the emulated frame with
@@ -29,26 +30,36 @@ object Screenshots {
         runCatching { NativeApp.saveScreenshot(target.absolutePath) }.onFailure { return }
 
         // The core renders and compresses off the GS thread, so the file appears a moment later.
-        // Poll briefly rather than guessing a delay; give up quietly if it never shows (the core
+        // Poll rather than guessing a delay; give up quietly if it never completes (the core
         // already puts its own failure message on the OSD, so a second complaint adds nothing).
         kotlin.concurrent.thread(isDaemon = true, name = "screenshot-publish") {
             var waited = 0
-            var lastSize = -1L
             while (waited < PUBLISH_TIMEOUT_MS) {
                 Thread.sleep(POLL_MS.toLong())
                 waited += POLL_MS
-                if (!target.isFile) continue
-                // Wait for the size to stop changing: publishing a half-written PNG would put a
-                // truncated image in the user's gallery.
-                val size = target.length()
-                if (size > 0 && size == lastSize) {
+                if (isCompletePng(target)) {
                     runCatching { publish(context, target) }
                     return@thread
                 }
-                lastSize = size
             }
         }
     }
+
+    /**
+     * True once [png] ends with its IEND chunk. The core compresses straight into the file, and IEND
+     * is the last thing it writes. Waiting for the size to stop changing was not enough: at the
+     * default quality (zlib level 9) a dark frame can go longer than a poll without writing anything,
+     * and the gallery got copies cut off a few rows down, black below.
+     */
+    internal fun isCompletePng(png: File): Boolean = runCatching {
+        RandomAccessFile(png, "r").use { file ->
+            val start = file.length() - PNG_END.size
+            start >= 0 && ByteArray(PNG_END.size).also {
+                file.seek(start)
+                file.readFully(it)
+            }.contentEquals(PNG_END)
+        }
+    }.getOrDefault(false)
 
     /** Copy [png] into Pictures/ARMSX2 so it shows up in the gallery. */
     private fun publish(context: Context, png: File) {
@@ -82,6 +93,11 @@ object Screenshots {
         }
     }
 
+    /** The IEND chunk: zero length, its type, and its fixed CRC. */
+    private val PNG_END = byteArrayOf(0, 0, 0, 0, 0x49, 0x45, 0x4E, 0x44, 0xAE.toByte(), 0x42, 0x60, 0x82.toByte())
+
     private const val POLL_MS = 100
-    private const val PUBLISH_TIMEOUT_MS = 5_000
+    // A large upscaled frame can take several seconds to compress on a slow phone, and the check is
+    // exact, so a long wait costs nothing but a sleeping thread.
+    private const val PUBLISH_TIMEOUT_MS = 60_000
 }
