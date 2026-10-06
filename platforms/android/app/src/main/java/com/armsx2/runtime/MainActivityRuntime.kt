@@ -532,34 +532,6 @@ open class MainActivityRuntime : ComponentActivity() {
             if (startAnyway) memoryCardRecoveryBypass = true
         }
 
-        /** Up while the "get malisx2" notice is on screen: a Mali GPU the driver list offers
-         *  malisx2 for is on the Vulkan renderer with some other driver. See [com.armsx2.MaliDriverNotice]. */
-        val maliDriverNotice = mutableStateOf(false)
-
-        /** Armed when a game or the BIOS is booted, spent by the first [onVmRunning] after it, so
-         *  the notice comes once per boot. Not armed by Reset Game, which re-enters [start]
-         *  directly: the driver has not changed. */
-        @Volatile
-        private var maliDriverCheckPending = false
-
-        /** The renderer and driver are only known once the VM is up and the GS device is open,
-         *  so this runs from [onVmRunning]. Native says which Vulkan driver the device is on; the
-         *  GPU model comes from the system GL probe, which the driver manager keys on too. */
-        private fun checkMaliDriver() {
-            if (!maliDriverCheckPending) return
-            maliDriverCheckPending = false
-            val driver = runCatching { NativeApp.getActiveVulkanDriver() }
-                .getOrDefault(com.armsx2.MaliDriverNotice.DRIVER_NONE)
-            val hardware = runCatching { NativeApp.isHardwareRenderer() }.getOrDefault(false)
-            val gpu = com.armsx2.GpuInfo.rendererName()
-            if (!com.armsx2.MaliDriverNotice.shouldWarn(driver, hardware, gpu)) return
-            val line = "@@ANDROID_MALI_DRIVER@@ $gpu is on the Vulkan renderer with a driver " +
-                "that is not malisx2 (active=$driver), showing the notice"
-            println(line)
-            runCatching { NativeApp.emulog(line) }
-            maliDriverNotice.value = true
-        }
-
         fun invoke(task: suspend () -> Unit) {
             eScope.launch {
                 task()
@@ -640,7 +612,6 @@ open class MainActivityRuntime : ComponentActivity() {
          *  stayed locked in the game's landscape until the process was killed. Idempotent. */
         private fun onReturnedToLibrary() {
             currentGame.value = null
-            maliDriverNotice.value = false
             emulationOwnsOrientation = false
             // Never leave the device pinned once the game is gone (#425).
             com.armsx2.ui.ScreenPinning.stop()
@@ -1177,7 +1148,6 @@ open class MainActivityRuntime : ComponentActivity() {
             // onVmRunning once the game's CRC is set). Set here — not in start() — so
             // a manual Reset Game (which re-enters start() directly) doesn't re-load.
             pendingAutoLoadOnBoot = prefs.getBoolean("autoLoadOnBoot", false)
-            maliDriverCheckPending = true
             m_szGamefile = uri
             synchronized(vmLifecycleLock) {
                 if (eState.value != EmuState.STOPPED || vmStopInProgress || vmRunLoopActive) {
@@ -1256,7 +1226,6 @@ open class MainActivityRuntime : ComponentActivity() {
         fun startBios() {
             currentGame.value = null
             m_szGamefile = ""
-            maliDriverCheckPending = true
             val shouldStart = synchronized(vmLifecycleLock) {
                 if (vmStopInProgress || vmRunLoopActive || eState.value != EmuState.STOPPED) {
                     vmRestartAfterStop = true
@@ -1718,7 +1687,6 @@ open class MainActivityRuntime : ComponentActivity() {
         @JvmStatic
         fun onVmRunning() {
             adoptExternalGameIdentity()
-            checkMaliDriver()
             val requestedSlot = pendingSlotLoadOnBoot
             val loadAutosave = pendingAutoLoadOnBoot && requestedSlot == null
             if (requestedSlot == null && !loadAutosave) return
@@ -2178,6 +2146,14 @@ open class MainActivityRuntime : ComponentActivity() {
         runCatching {
             val gl = com.armsx2.GpuInfo.glStrings()
             kr.co.iefriends.pcsx2.NativeApp.setAutoRendererGpuStrings(gl.vendor, gl.renderer, gl.version)
+        }
+        // Whether the driver list offers malisx2 for this GPU. The core pairs it with the driver the
+        // open Vulkan device is on and posts the "get malisx2" OSD notice at game start. Same GL
+        // probe as above, and re-asserted each launch like it.
+        runCatching {
+            kr.co.iefriends.pcsx2.NativeApp.setMaliSX2Offered(
+                com.armsx2.CustomDriver.offersMaliSX2(com.armsx2.GpuInfo.rendererName()),
+            )
         }
 
         // The shipped resources and the GPU cache wipe after a new install are written into the data folder
@@ -2819,17 +2795,6 @@ open class MainActivityRuntime : ComponentActivity() {
                             dismissMemoryCardRecovery(startAnyway = true)
                             start()
                         },
-                    )
-                }
-                // A Mali GPU that malisx2 is offered for is on the Vulkan renderer with another
-                // driver (checkMaliDriver). Shown over the running game; the modal host takes
-                // the pad while it is up.
-                if (maliDriverNotice.value) {
-                    com.armsx2.ui.common.NotifyOverlay(
-                        title = str("backend.gpuDriver.label"),
-                        message = str("backend.driver.maliSX2Notice"),
-                        idPrefix = "mali-driver",
-                        onDismiss = { maliDriverNotice.value = false },
                     )
                 }
                 // Per-game play-time tracking: count while RUNNING, accumulate on

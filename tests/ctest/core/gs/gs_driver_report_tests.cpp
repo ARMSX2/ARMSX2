@@ -301,7 +301,7 @@ TEST(GSDriverReport, GpuProfileListsMatchedAndExemptRulesById)
 	EXPECT_EQ(json.find("\"vk-arm-proprietary\"", exempt), std::string::npos) << json;
 }
 
-// The Android app reads this to tell a Mali user who is on the Vulkan renderer without malisx2 to
+// The Android host reads this to tell a Mali user who is on the Vulkan renderer without malisx2 to
 // get it. The state is process-wide, so each test puts it back to None.
 TEST(GSDriverReport, ActiveVulkanDriverIsNoneUntilADeviceIsNoted)
 {
@@ -346,10 +346,55 @@ TEST(GSDriverReport, ActiveVulkanDriverFollowsTheLatestDevice)
 	ClearActiveVulkanDriver();
 }
 
-// The values are the contract with NativeApp.getActiveVulkanDriver and MaliDriverNotice.kt.
-TEST(GSDriverReport, ActiveVulkanDriverValuesAreTheJniContract)
+// The Android host's "get malisx2" notice. The decision is the three facts it is made from: the
+// renderer, whether the app's driver list offers malisx2 for the GPU, and the driver the open
+// Vulkan device is on.
+TEST(GSDriverReport, MaliSX2NoticeIsOnlyForTheHardwareRendererOnAnOfferedGpuWithoutMaliSX2)
 {
-	EXPECT_EQ(static_cast<int>(ActiveVulkanDriver::None), 0);
-	EXPECT_EQ(static_cast<int>(ActiveVulkanDriver::MaliSX2), 1);
-	EXPECT_EQ(static_cast<int>(ActiveVulkanDriver::Other), 2);
+	for (const bool hardware : {false, true})
+		for (const bool offered : {false, true})
+			for (const ActiveVulkanDriver driver :
+				{ActiveVulkanDriver::None, ActiveVulkanDriver::MaliSX2, ActiveVulkanDriver::Other})
+				EXPECT_EQ(ShouldWarnMaliSX2(hardware, offered, driver),
+					hardware && offered && driver == ActiveVulkanDriver::Other)
+					<< "hardware=" << hardware << " offered=" << offered << " driver=" << static_cast<int>(driver);
+}
+
+TEST(GSDriverReport, MaliSX2NoticeFiresForArmsDriverAndForAnyOtherPack)
+{
+	// Arm's stock driver and every pack that is not malisx2 both note as Other.
+	for (const char* info : {"v1.r44p1-01eac0.030c4a3fb15fe65f485fb565f5e1b688", "Mesa 26.1.2 (git-axfl2-001)"})
+	{
+		NoteActiveVulkanDriver(info);
+		EXPECT_TRUE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver())) << info;
+	}
+	ClearActiveVulkanDriver();
+}
+
+TEST(GSDriverReport, MaliSX2NoticeStaysQuietOnMaliSX2)
+{
+	NoteActiveVulkanDriver("v1.r44p1-malisx2.0.2.s0123abcd");
+	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver()));
+	ClearActiveVulkanDriver();
+}
+
+TEST(GSDriverReport, MaliSX2NoticeStaysQuietWhenVulkanIsNotRunning)
+{
+	// OpenGL, or no device yet.
+	ClearActiveVulkanDriver();
+	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver()));
+	// A value outside the enum is not a Vulkan driver either.
+	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, static_cast<ActiveVulkanDriver>(3)));
+}
+
+TEST(GSDriverReport, MaliSX2NoticeStaysQuietUnderTheSoftwareRenderer)
+{
+	// The software renderer can sit on a Vulkan device, but only to present a frame the CPU drew.
+	EXPECT_FALSE(ShouldWarnMaliSX2(false, true, ActiveVulkanDriver::Other));
+}
+
+TEST(GSDriverReport, MaliSX2NoticeStaysQuietOnGpusTheAppDoesNotOfferItFor)
+{
+	// Telling these users to download a driver that is not listed for them would be wrong.
+	EXPECT_FALSE(ShouldWarnMaliSX2(true, false, ActiveVulkanDriver::Other));
 }

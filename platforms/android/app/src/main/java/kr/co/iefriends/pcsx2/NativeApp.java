@@ -408,13 +408,6 @@ public class NativeApp {
 	 *  (e.g. SoftwareRendererFMVHack) stay in sync with the UI. */
 	public static native boolean isHardwareRenderer();
 
-	/** The Vulkan driver the open GS device is on: 0 when no Vulkan device is open (OpenGL, or
-	 *  nothing started yet), 1 for malisx2, 2 for any other driver. Read from the device, not
-	 *  from the selected driver pack, so a pack that failed to load shows up as the system
-	 *  driver it fell back to. The software renderer may sit on a Vulkan device too, only to
-	 *  present, so pair this with {@link #isHardwareRenderer()}. See com.armsx2.MaliDriverNotice. */
-	public static native int getActiveVulkanDriver();
-
 	/** Master OSD toggle — flips every OsdShow* bit we enable at first
 	 *  init. Backs the in-game overlay's OSD pill. */
 	public static native void osdShowAll(boolean enabled);
@@ -949,6 +942,10 @@ public class NativeApp {
 	 *  instead of OpenGL. The decision needs the driver-bug database (keyed on a parsed driver
 	 *  revision), which lives natively, so the app supplies the strings rather than the verdict. */
 	public static native void setAutoRendererGpuStrings(String vendor, String renderer, String version);
+	/** Whether the driver list offers malisx2 for this device's GPU (CustomDriver.offersMaliSX2).
+	 *  Pushed once at startup. The core pairs it with the driver the open Vulkan device is on and
+	 *  posts the "get malisx2" OSD notice at game start when that driver is not malisx2. */
+	public static native void setMaliSX2Offered(boolean offered);
 	/** Affinity Control Mode: 0 off (scheduler decides), 1-6 EE/VU/GS priority orders,
 	 *  7 Performance Cores. Read when the VM boots — set it before runVMThread. */
 	public static native void setAffinityMode(int mode);

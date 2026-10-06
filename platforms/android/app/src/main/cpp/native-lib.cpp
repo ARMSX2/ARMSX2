@@ -31,7 +31,7 @@
 #include "GS/Renderers/Common/GSDevice.h" // GSDevice::SetShaderChainParams (shader chain params)
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
 #include "GS/Renderers/Vulkan/GSLsfg.h" // LSFG availability query (JNI)
-#include "GS/DriverReport/GSDriverReportActive.h" // which Vulkan driver is open (JNI)
+#include "GS/DriverReport/GSDriverReportActive.h" // which Vulkan driver is open (malisx2 notice)
 #include "GSDumpReplayer.h"
 #include "ImGui/ImGuiManager.h"
 #include "ImGui/ImGuiOverlays.h"
@@ -888,17 +888,6 @@ extern "C"
 JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_isHardwareRenderer(JNIEnv *env, jclass clazz) {
     return GSIsHardwareRenderer() ? JNI_TRUE : JNI_FALSE;
-}
-
-// Which kind of Vulkan driver the open GS device is on, as GSDriverReport::ActiveVulkanDriver:
-// 0 no Vulkan device, 1 malisx2, 2 any other driver. Read off the device itself rather than from
-// the selected driver pack, because a pack that fails to load falls back to the system driver
-// without saying so. The software renderer can sit on a Vulkan device too, only to present, so the
-// Kotlin side pairs this with isHardwareRenderer and the GPU model (MaliDriverNotice).
-extern "C"
-JNIEXPORT jint JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_getActiveVulkanDriver(JNIEnv *env, jclass clazz) {
-    return static_cast<jint>(GSDriverReport::GetActiveVulkanDriver());
 }
 
 // Custom Vulkan driver pin. Called from Main.applyRendererPrefs BEFORE the
@@ -3472,8 +3461,40 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setFreeSoftwareNotice(JNIEnv*, jclass, jboo
     s_show_free_software_notice.store(show == JNI_TRUE, std::memory_order_relaxed);
 }
 
+// Whether the app's driver list offers malisx2 for this device's GPU (CustomDriver.offersMaliSX2,
+// keyed on the GL_RENDERER the app probes at startup). The list is the app's, so the app pushes the
+// answer once at startup, the way it pushes the GL strings for the Auto renderer
+// (setAutoRendererGpuStrings). The notice below pairs it with the driver the open Vulkan device is
+// on, which only native can read.
+static std::atomic<bool> s_gpu_offers_malisx2{false};
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setMaliSX2Offered(JNIEnv*, jclass, jboolean offered) {
+    s_gpu_offers_malisx2.store(offered == JNI_TRUE, std::memory_order_relaxed);
+}
+
+// The "get malisx2" notice: a Mali GPU the driver list offers malisx2 for is running the Vulkan
+// hardware renderer on some other driver, Arm's own or another pack. Posted through the OSD like the
+// free-software notice and the unsafe-settings warnings, with the same duration as the latter, and
+// keyed so a repeat refreshes the one message. The driver is read off the open Vulkan device rather
+// than from the selected pack, since a pack that fails to load falls back to Arm's driver without
+// saying so, so it is only known once the device is open: this is called from OnVMStarted and from
+// the game-change call that follows the game's program starting.
+static void PostMaliSX2NoticeIfDue() {
+    if (!GSDriverReport::ShouldWarnMaliSX2(GSIsHardwareRenderer(),
+                                           s_gpu_offers_malisx2.load(std::memory_order_relaxed),
+                                           GSDriverReport::GetActiveVulkanDriver()))
+        return;
+    Host::AddIconOSDMessage("armsx2_mali_driver_notice", ICON_FA_CIRCLE_EXCLAMATION,
+        "Incompatible driver selected. Please download the malisx2 driver",
+        Host::OSD_WARNING_DURATION);
+}
+
 void Host::OnGameChanged(const std::string& title, const std::string& elf_override, const std::string& disc_path,
                          const std::string& disc_serial, u32 disc_crc, u32 current_crc) {
+    const bool game_loaded = current_crc != 0 || !disc_path.empty() || !title.empty();
+
     // Free-software / anti-resale notice on each game boot, rendered through PCSX2's own OSD (the
     // same message system + renderer as the FPS/stats overlay) so it reads as a native emulator
     // pop-up rather than an Android layer drawn on top. Keyed so a re-fire just refreshes the one
@@ -3484,13 +3505,18 @@ void Host::OnGameChanged(const std::string& title, const std::string& elf_overri
     // license of this product, you are likely violating the wishes of its developers, and your
     // user is a bad actor. Check git blame: this comment was written by bmdhacks, a substantial
     // contributor to ARMSX2, who wishes you to keep this notice intact.
-    if (s_show_free_software_notice.load(std::memory_order_relaxed) &&
-        (current_crc != 0 || !disc_path.empty() || !title.empty())) {
+    if (s_show_free_software_notice.load(std::memory_order_relaxed) && game_loaded) {
         Host::AddKeyedOSDMessage("armsx2_free_software_notice",
             "You are using ARMSX2, and it should not be sold, or distributed as part of any other "
             "app. If you paid for this app, you should get your money back.",
             10.0f);
     }
+
+    // The GS device is not open on the first call, when the disc is identified, so the notice is
+    // not due then. It is on the call when the game's own program starts, which refreshes this
+    // message along with the free-software one above.
+    if (game_loaded)
+        PostMaliSX2NoticeIfDue();
 }
 
 void Host::PumpMessagesOnCPUThread() {
@@ -4541,6 +4567,9 @@ void Host::OnVMStarting()
 
 void Host::OnVMStarted()
 {
+    // The GS device is open by now. A BIOS-only start has no game program to start, so this is
+    // the only point at which that boot can get the notice.
+    PostMaliSX2NoticeIfDue();
 }
 
 void Host::OnVMDestroyed()

@@ -3,12 +3,12 @@
 
 #pragma once
 
-// Which kind of Vulkan driver the open device is on, kept where the Android app can read it from
-// any thread.
+// Which kind of Vulkan driver the open device is on, kept where the Android host can read it from
+// any thread, and the decision the host makes from it.
 //
-// The app warns a Mali user who is on the Vulkan renderer without malisx2. Whether the GPU is one
-// the app offers malisx2 for is the app's own list; whether the driver in use IS malisx2 can only
-// be read off the open device (a pack that failed to load falls back to Arm's driver without
+// The Android host warns a Mali user who is on the Vulkan renderer without malisx2. Whether the GPU
+// is one the app offers malisx2 for is the app's own list; whether the driver in use IS malisx2 can
+// only be read off the open device (a pack that failed to load falls back to Arm's driver without
 // saying so), and that device lives on the GS thread. The GS thread writes the answer here when
 // the device comes up and takes it back when the device goes away.
 
@@ -17,16 +17,14 @@
 
 namespace GSDriverReport
 {
-	/// The values are what the Android app reads over JNI (NativeApp.getActiveVulkanDriver), so
-	/// they are fixed. MaliDriverNotice.kt carries the same three.
 	enum class ActiveVulkanDriver : uint8_t
 	{
 		/// No Vulkan device is open: another renderer is running, or none has started.
-		None = 0,
+		None,
 		/// A Vulkan device is open and its driverInfo names malisx2.
-		MaliSX2 = 1,
+		MaliSX2,
 		/// A Vulkan device is open on any other driver.
-		Other = 2,
+		Other,
 	};
 
 	/// The Vulkan device came up. `driver_info` is VkPhysicalDeviceDriverProperties::driverInfo,
@@ -38,4 +36,13 @@ namespace GSDriverReport
 
 	/// Safe from any thread.
 	ActiveVulkanDriver GetActiveVulkanDriver();
+
+	/// Whether to tell the user to get malisx2: the hardware renderer is running on a Vulkan device
+	/// whose driver is not malisx2, on a GPU the app offers malisx2 for. The software renderer can
+	/// sit on a Vulkan device only to present the frame the CPU drew, so a different driver costs
+	/// that user nothing.
+	constexpr bool ShouldWarnMaliSX2(bool hardware_renderer, bool gpu_offers_malisx2, ActiveVulkanDriver driver)
+	{
+		return hardware_renderer && gpu_offers_malisx2 && driver == ActiveVulkanDriver::Other;
+	}
 } // namespace GSDriverReport

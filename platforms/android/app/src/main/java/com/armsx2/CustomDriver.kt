@@ -80,8 +80,9 @@ object CustomDriver {
     )
 
     /** Whether the driver list offers malisx2 for [renderer] (GL_RENDERER). The wrong-driver
-     *  notice keys on this, so it follows the list: a GPU gets the notice exactly when it is
-     *  offered the download, and widening [MALISX2_SOURCE]'s `supports` widens both. */
+     *  notice keys on this (pushed to native by NativeApp.setMaliSX2Offered), so it follows the
+     *  list: a GPU gets the notice exactly when it is offered the download, and widening
+     *  [MALISX2_SOURCE]'s `supports` widens both. */
     fun offersMaliSX2(renderer: String?): Boolean = MALISX2_SOURCE.supports(renderer)
 
     private val DRIVER_SOURCES = listOf(
