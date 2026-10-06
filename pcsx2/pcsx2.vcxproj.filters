@@ -2732,6 +2732,12 @@
     <ClInclude Include="GS\Renderers\HW\GSAlphaKnownBits.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\HW\GSExactDirtyMapping.h">
+      <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\HW\GSTargetRebase.h">
+      <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\HW\GSDepthCoverage.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>

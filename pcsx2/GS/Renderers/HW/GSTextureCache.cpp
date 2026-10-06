@@ -9,6 +9,8 @@
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
 #include "GS/GSXXH.h"
+#include "GSExactDirtyMapping.h"
+#include "GSTargetRebase.h"
 
 #include "common/Console.h"
 #include "common/BitUtils.h"
@@ -677,9 +679,39 @@ GSVector4i GSTextureCache::TranslateAlignedRectByPage(Target* t, u32 sbp, u32 sp
 	return TranslateAlignedRectByPage(t->m_TEX0.TBP0, t->m_end_block, t->m_TEX0.TBW, t->m_TEX0.PSM, t->m_valid, sbp, spsm, sbw, src_r, is_invalidation);
 }
 
+bool GSTextureCache::TryDirtyRectByC32Blocks(u32 sbp, u32 spsm, u32 sbw,
+	Target* target, const GSVector4i& rect)
+{
+	// Preserve the legacy policy if validity extends past the allocation: growth may
+	// still need those pending uploads. Bounding block intervals are not ownership.
+	if (spsm != PSMCT32 || target->m_TEX0.PSM != PSMCT32 ||
+		!target->m_valid.rintersect(target->GetUnscaledRect()).eq(target->m_valid))
+		return false;
+
+	const GSOffset source_offset = GSOffset::fromKnownPSM(sbp, sbw, PSMCT32);
+	const GSOffset target_offset = GSOffset::fromKnownPSM(target->m_TEX0.TBP0, target->m_TEX0.TBW, PSMCT32);
+	const GSVector4i& valid = target->m_valid;
+	const auto plan = GSExactDirtyMapping::MapC32Blocks(
+		{sbp, sbw, spsm}, {rect.x, rect.y, rect.z, rect.w},
+		{target->m_TEX0.TBP0, target->m_TEX0.TBW, target->m_TEX0.PSM},
+		{valid.x, valid.y, valid.z, valid.w},
+		[&](GSExactDirtyMapping::Layout layout, int x, int y) {
+			return ((layout.bp == sbp && layout.bw == sbw) ? source_offset : target_offset).bnNoWrap(x, y);
+		});
+	if (!plan.supported)
+		return false;
+
+	RGBAMask rgba;
+	rgba._u32 = GSUtil::GetChannelMask(spsm);
+	for (const GSExactDirtyMapping::Rect& dirty : plan.rects)
+		AddDirtyRectTarget(target, GSVector4i(dirty.x, dirty.y, dirty.z, dirty.w),
+			target->m_TEX0.PSM, target->m_TEX0.TBW, rgba);
+	return true; // An empty exact mapping must not fall back to a bounding interval.
+}
+
 void GSTextureCache::DirtyRectByPage(u32 sbp, u32 spsm, u32 sbw, Target* t, GSVector4i src_r)
 {
-	if (src_r.rempty())
+	if (src_r.rempty() || TryDirtyRectByC32Blocks(sbp, spsm, sbw, t, src_r))
 		return;
 
 	const u32 start_bp = GSLocalMemory::GetStartBlockAddress(sbp, sbw, spsm, src_r);
@@ -2490,6 +2522,69 @@ void GSTextureCache::RescaleHelper::SetNewSize(const GSVector2i& new_size, float
 	m_new_scaled_size = ScaleRenderTargetSize(new_size, scale);
 }
 
+void GSTextureCache::CommitTargetRebase(Target* target, GSTexture* texture,
+	const GSTargetRebase::Plan& plan)
+{
+	GSTexture* const old_texture = target->m_texture;
+	// Sources still describe the old BP and allocation. Remove them before publishing
+	// the replacement; recycle only after no cache source can retain the old texture.
+	InvalidateSourcesFromTarget(target);
+	m_target_memory_usage = m_target_memory_usage - old_texture->GetMemUsage() + texture->GetMemUsage();
+	target->m_texture = texture;
+	target->m_TEX0.TBP0 = plan.preserved_start;
+	target->m_unscaled_size = GSVector2i(plan.rebased[2], plan.rebased[3]);
+	target->m_valid = GSVector4i(plan.rebased[0], plan.rebased[1], plan.rebased[2], plan.rebased[3]);
+	target->m_drawn_since_read = target->m_valid;
+	target->m_end_block = GSLocalMemory::GetEndBlockAddress(target->m_TEX0.TBP0,
+		target->m_TEX0.TBW, target->m_TEX0.PSM, target->m_valid);
+	// Retain existing RGB/alpha authority, alpha scale and known bits. A copy proves no new channels.
+	g_gs_device->Recycle(old_texture);
+#ifdef PCSX2_DEVBUILD
+	if (GSConfig.UseDebugDevice)
+		target->m_texture->SetDebugName(SmallString::from_format("RT 0x{:X} {} BW={} {}x{}",
+			static_cast<u32>(target->m_TEX0.TBP0), GSUtil::GetPSMName(target->m_TEX0.PSM),
+			static_cast<u32>(target->m_TEX0.TBW), target->m_unscaled_size.x, target->m_unscaled_size.y));
+#endif
+}
+
+bool GSTextureCache::TryRebaseTargetForOverwrite(Target* target, const GIFRegTEX0& incoming,
+	const GSVector4i& draw_rect, const Source* source, const Target* depth,
+	u32 width_page_offset, bool is_shuffle)
+{
+	const GSVector4i& valid = target->m_valid;
+	const GSVector4i& drawn = target->m_drawn_since_read;
+	GSTargetRebase::Safety safety;
+	safety.clean = target->m_dirty.empty();
+	safety.non_shuffle = !is_shuffle;
+	safety.zero_width_page_offset = width_page_offset == 0;
+	safety.no_current_source_reference = !source || source->m_from_target != target;
+	safety.no_bound_depth_reference = depth != target;
+	safety.existing_color_target = target->m_type == RenderTarget;
+	safety.native_scale = target->m_scale == 1.0f;
+	safety.native_extent_matches_valid = target->m_texture &&
+		target->m_unscaled_size.x == valid.z && target->m_unscaled_size.y == valid.w &&
+		target->m_texture->GetWidth() == valid.z && target->m_texture->GetHeight() == valid.w;
+	safety.valid_rgb = target->m_valid_rgb;
+	const GSTargetRebase::Plan plan = GSTargetRebase::MakeRebasePlan(
+		{target->m_TEX0.TBP0, target->m_TEX0.TBW, target->m_TEX0.PSM},
+		{valid.x, valid.y, valid.z, valid.w}, {drawn.x, drawn.y, drawn.z, drawn.w},
+		{incoming.TBP0, incoming.TBW, incoming.PSM},
+		{draw_rect.x, draw_rect.y, draw_rect.z, draw_rect.w}, safety);
+	if (plan.reason != GSTargetRebase::Reason::Preserve)
+		return false;
+
+	// Reuse CreateTarget's suffix-copy pattern at native scale, with a disjoint page
+	// proof before allocation and no cache mutation if allocation fails.
+	const GSVector2i size(plan.rebased[2], plan.rebased[3]);
+	GSTexture* const texture = g_gs_device->CreateCompatible(target->m_texture, size, false, PreferReusedLabelledTexture());
+	if (!texture)
+		return false;
+	const GSVector4i copy_source(plan.preserved[0], plan.preserved[1], plan.preserved[2], plan.preserved[3]);
+	g_gs_device->CopyRect(target->m_texture, texture, copy_source, 0, 0);
+	CommitTargetRebase(target, texture, plan);
+	return true;
+}
+
 GSTextureCache::Target* GSTextureCache::LookupDrawTarget(GIFRegTEX0 TEX0, const GSVector2i& size, float scale, int type,
 	bool used, u32 fbmask, bool preload, bool preserve_rgb, bool preserve_alpha, const GSVector4i draw_rect,
 	bool is_shuffle, bool possible_clear, bool preserve_scale, GSTextureCache::Source* src, GSTextureCache::Target* ds, int offset)
@@ -2715,6 +2810,11 @@ GSTextureCache::Target* GSTextureCache::LookupDrawTarget(GIFRegTEX0 TEX0, const 
 						{
 							if (iteration == 0)
 							{
+								if (TryRebaseTargetForOverwrite(t, TEX0, draw_rect, src, ds, widthpage_offset, is_shuffle))
+								{
+									++i;
+									continue;
+								}
 								GL_INS("TC: Deleting RT BP 0x%x BW %d PSM %s due to change in target", t->m_TEX0.TBP0, t->m_TEX0.TBW, GSUtil::GetPSMName(t->m_TEX0.PSM));
 								InvalidateSourcesFromTarget(t);
 								i = list->erase(i);
