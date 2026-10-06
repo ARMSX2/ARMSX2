@@ -1780,6 +1780,7 @@ private val BASE_EN: Map<String, String> = mapOf(
         "The game is still writing to the memory card, so the state was not saved. " +
         "Resume the game for a second or two, then try again. The card stays busy for as " +
         "long as the game is paused.",
+    "savestate.error.memcardBusyLong" to "The game kept writing to its memory card, so the state was not saved or loaded, to keep the card safe. Try again in a few seconds.",
     "savestate.error.save" to "Couldn't save to that slot. Check the log for @@ANDROID_SAVESTATE@@.",
     "savestate.error.load" to "Couldn't load that slot.",
     "savestate.title.save" to "Save State",

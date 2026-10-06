@@ -1562,6 +1562,7 @@
  "savestate.error.hardcore": "RetroAchievements 硬核模式开启时，即时存档功能会被禁用。请在 RetroAchievements 设置中关闭硬核模式以使用此功能（这将放弃本次游玩的硬核积分）。",
  "savestate.error.load": "无法载入该卡槽。",
  "savestate.error.memcardBusy": "游戏仍在写入记忆卡，因此未能保存即时存档。请先恢复游戏运行一两秒，再重试。只要游戏处于暂停状态，记忆卡就会一直处于忙碌状态。",
+ "savestate.error.memcardBusyLong": "游戏一直在写入记忆卡，为保护记忆卡，即时存档未能保存或读取。请过几秒后再试。",
  "savestate.error.save": "无法保存到该卡槽。请在日志中查找 @@ANDROID_SAVESTATE@@。",
  "savestate.hint": "选择一个卡槽。长按卡槽，或使用垃圾桶按钮，即可将其删除。",
  "savestate.import": "导入",

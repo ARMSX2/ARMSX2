@@ -1562,6 +1562,7 @@
   "savestate.error.hardcore": "Trạng thái lưu bị tắt khi Chế độ Hardcore của RetroAchievements đang bật. Tắt Hardcore trong cài đặt RetroAchievements để dùng chúng (thao tác này sẽ mất điểm hardcore của phiên chơi này).",
   "savestate.error.load": "Không thể tải slot đó.",
   "savestate.error.memcardBusy": "Game vẫn đang ghi vào memory card, nên trạng thái chưa được lưu. Hãy tiếp tục game một hai giây rồi thử lại. Card sẽ bận miễn là game còn tạm dừng.",
+  "savestate.error.memcardBusyLong": "Game vẫn tiếp tục ghi vào memory card, nên trạng thái không được lưu hay tải để giữ an toàn cho card. Hãy thử lại sau vài giây.",
   "savestate.error.save": "Không thể lưu vào slot đó. Kiểm tra log để tìm @@ANDROID_SAVESTATE@@.",
   "savestate.hint": "Chọn một slot. Giữ một slot, hoặc dùng nút thùng rác, để xóa nó.",
   "savestate.import": "Nhập",

@@ -1557,6 +1557,7 @@
  "savestate.error.hardcore": "Los estados guardados están desactivados mientras el modo Hardcore de RetroAchievements está activo. Desactiva Hardcore en los ajustes de RetroAchievements para usarlos (esto pierde los puntos hardcore de la sesión).",
  "savestate.error.load": "No se pudo cargar ese slot.",
  "savestate.error.memcardBusy": "El juego todavía está escribiendo en la memory card, así que el estado no se guardó. Reanuda el juego un segundo o dos y vuelve a intentarlo. La card permanece ocupada mientras el juego esté en pausa.",
+ "savestate.error.memcardBusyLong": "El juego siguió escribiendo en la memory card, así que el estado no se guardó ni se cargó, para proteger la card. Vuelve a intentarlo en unos segundos.",
  "savestate.error.save": "No se pudo guardar en ese slot. Revisa el registro en busca de @@ANDROID_SAVESTATE@@.",
  "savestate.hint": "Elige un slot. Mantenlo pulsado, o usa el botón de la papelera, para eliminarlo.",
  "savestate.import": "Importar",

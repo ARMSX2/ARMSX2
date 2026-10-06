@@ -1562,6 +1562,7 @@
  "savestate.error.hardcore": "RetroAchievements Hardcore Modu açıkken kayıt durumları devre dışıdır. Bunları kullanmak için RetroAchievements ayarlarından Hardcore'u kapatın (bu, oturum için hardcore puanlarından vazgeçmenize yol açar).",
  "savestate.error.load": "O yuva yüklenemedi.",
  "savestate.error.memcardBusy": "Oyun hâlâ hafıza kartına yazıyor, bu yüzden durum kaydedilmedi. Oyunu bir iki saniyeliğine devam ettirip tekrar deneyin. Kart, oyun duraklatıldığı sürece meşgul kalır.",
+ "savestate.error.memcardBusyLong": "Oyun hafıza kartına yazmayı sürdürdü, bu yüzden kartı korumak için durum ne kaydedildi ne de yüklendi. Birkaç saniye sonra tekrar deneyin.",
  "savestate.error.save": "O yuvaya kaydedilemedi. @@ANDROID_SAVESTATE@@ için günlüğü kontrol edin.",
  "savestate.hint": "Bir yuva seçin. Silmek için bir yuvayı basılı tutun veya çöp kutusu düğmesini kullanın.",
  "savestate.import": "İçe Aktar",

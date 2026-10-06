@@ -1753,6 +1753,7 @@
  "savestate.error.save": "Não foi possível salvar nesse slot. Verifique o log de @@ANDROID_SAVESTATE@@.",
  "savestate.error.load": "Não foi possível carregar esse slot.",
  "savestate.error.memcardBusy": "O jogo ainda está gravando no memory card, então o estado não foi salvo. Retome o jogo por um segundo ou dois, depois tente de novo. O card fica ocupado enquanto o jogo estiver pausado.",
+ "savestate.error.memcardBusyLong": "O jogo continuou gravando no memory card, então o estado não foi salvo nem carregado, para proteger o card. Tente de novo em alguns segundos.",
  "setup.bios.multipleFound": "Arquivos BIOS prontos. Alterne a qualquer momento nas configurações do BIOS.",
  "bios.boot.title": "BIOS de inicialização",
  "bios.perGame.menu": "BIOS por jogo",

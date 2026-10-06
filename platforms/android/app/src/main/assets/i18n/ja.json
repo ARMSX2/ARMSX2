@@ -1562,6 +1562,7 @@
   "savestate.error.hardcore": "RetroAchievementsのHardcoreモードがオンの間、セーブステートは使用できません。使用するにはRetroAchievementsの設定でHardcoreをオフにしてください（このセッションのHardcoreポイントは失われます）。",
   "savestate.error.load": "そのスロットを読み込めませんでした。",
   "savestate.error.memcardBusy": "ゲームがまだメモリーカードに書き込み中のため、ステートは保存されませんでした。ゲームを1〜2秒再開してから、もう一度試してください。ゲームが一時停止している間、カードは書き込み中のままになります。",
+  "savestate.error.memcardBusyLong": "ゲームがメモリーカードへの書き込みを続けていたため、カードを守るためにステートの保存・読み込みを行いませんでした。数秒後にもう一度試してください。",
   "savestate.error.save": "そのスロットに保存できませんでした。ログで@@ANDROID_SAVESTATE@@を確認してください。",
   "savestate.hint": "スロットを選択してください。スロットを長押しするか、ゴミ箱ボタンを使うと削除できます。",
   "savestate.import": "インポート",

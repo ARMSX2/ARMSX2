@@ -1562,6 +1562,7 @@
  "savestate.error.hardcore": "Stany zapisu są wyłączone, gdy włączony jest tryb RetroAchievements Hardcore. Wyłącz Hardcore w ustawieniach RetroAchievements, aby ich użyć (to poświęca punkty hardcore za tę sesję).",
  "savestate.error.load": "Nie udało się wczytać tego slotu.",
  "savestate.error.memcardBusy": "Gra wciąż zapisuje na kartę pamięci, więc stan nie został zapisany. Wznów grę na sekundę lub dwie, a następnie spróbuj ponownie. Karta pozostaje zajęta tak długo, jak gra jest zapauzowana.",
+ "savestate.error.memcardBusyLong": "Gra wciąż zapisywała na kartę pamięci, więc dla bezpieczeństwa karty stan nie został zapisany ani wczytany. Spróbuj ponownie za kilka sekund.",
  "savestate.error.save": "Nie udało się zapisać do tego slotu. Sprawdź log pod kątem @@ANDROID_SAVESTATE@@.",
  "savestate.hint": "Wybierz slot. Przytrzymaj slot lub użyj przycisku kosza, aby go usunąć.",
  "savestate.import": "Importuj",

@@ -1562,6 +1562,7 @@
   "savestate.error.hardcore": "Save state dinonaktifkan selama Hardcore Mode RetroAchievements aktif. Matikan Hardcore di pengaturan RetroAchievements untuk memakainya (ini menggugurkan poin hardcore untuk sesi ini).",
   "savestate.error.load": "Tidak bisa memuat slot itu.",
   "savestate.error.memcardBusy": "Game masih menulis ke memory card, jadi state tidak tersimpan. Lanjutkan game selama satu dua detik, lalu coba lagi. Kartu tetap sibuk selama game dijeda.",
+  "savestate.error.memcardBusyLong": "Game terus menulis ke memory card, jadi state tidak disimpan maupun dimuat agar kartu tetap aman. Coba lagi beberapa detik lagi.",
   "savestate.error.save": "Tidak bisa menyimpan ke slot itu. Periksa log untuk @@ANDROID_SAVESTATE@@.",
   "savestate.hint": "Pilih slot. Tahan sebuah slot, atau gunakan tombol tong sampah, untuk menghapusnya.",
   "savestate.import": "Impor",

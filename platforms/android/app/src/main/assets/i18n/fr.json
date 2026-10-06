@@ -1557,6 +1557,7 @@
   "savestate.error.hardcore": "Les états de sauvegarde sont désactivés tant que le mode Hardcore de RetroAchievements est actif. Désactivez Hardcore dans les paramètres RetroAchievements pour les utiliser (cela fait perdre les points hardcore de la session).",
   "savestate.error.load": "Impossible de charger cet emplacement.",
   "savestate.error.memcardBusy": "Le jeu est encore en train d'écrire sur la carte mémoire, donc l'état n'a pas été sauvegardé. Reprenez le jeu une seconde ou deux, puis réessayez. La carte reste occupée tant que le jeu est en pause.",
+  "savestate.error.memcardBusyLong": "Le jeu a continué d'écrire sur la carte mémoire, donc l'état n'a été ni sauvegardé ni chargé, pour protéger la carte. Réessayez dans quelques secondes.",
   "savestate.error.save": "Impossible de sauvegarder dans cet emplacement. Consultez le journal pour @@ANDROID_SAVESTATE@@.",
   "savestate.hint": "Choisissez un emplacement. Maintenez un emplacement, ou utilisez le bouton corbeille, pour le supprimer.",
   "savestate.import": "Importer",

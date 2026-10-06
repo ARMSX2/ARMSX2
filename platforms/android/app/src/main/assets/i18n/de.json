@@ -1457,6 +1457,7 @@
  "savestate.error.hardcore": "Savestates sind deaktiviert, solange der RetroAchievements-Hardcore-Modus aktiv ist. Um sie zu nutzen, Hardcore in den RetroAchievements-Einstellungen ausschalten (dadurch verfallen die Hardcore-Punkte für diese Sitzung).",
  "savestate.error.load": "Dieser Slot konnte nicht geladen werden.",
  "savestate.error.memcardBusy": "Das Spiel schreibt noch auf die Memory Card, daher wurde der Savestate nicht gespeichert. Das Spiel ein bis zwei Sekunden fortsetzen und es dann erneut versuchen. Die Karte bleibt belegt, solange das Spiel pausiert ist.",
+ "savestate.error.memcardBusyLong": "Das Spiel hat weiter auf die Memory Card geschrieben, daher wurde der Savestate zum Schutz der Karte weder gespeichert noch geladen. In ein paar Sekunden erneut versuchen.",
  "savestate.error.save": "In diesen Slot konnte nicht gespeichert werden. Im Log nach @@ANDROID_SAVESTATE@@ suchen.",
  "savestate.hint": "Einen Slot wählen. Zum Löschen einen Slot gedrückt halten oder die Papierkorb-Taste verwenden.",
  "savestate.import": "Importieren",

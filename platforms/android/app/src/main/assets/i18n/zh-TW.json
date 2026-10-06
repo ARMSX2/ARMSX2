@@ -1562,6 +1562,7 @@
  "savestate.error.hardcore": "RetroAchievements Hardcore 模式開啟時，即時存檔功能會被停用。請在 RetroAchievements 設定中關閉 Hardcore 模式以使用這個功能（這將放棄本次遊玩的 Hardcore 點數）。",
  "savestate.error.load": "無法載入該插槽。",
  "savestate.error.memcardBusy": "遊戲仍在寫入記憶卡，因此未能儲存即時存檔。請先恢復遊戲執行一兩秒，再重試。只要遊戲處於暫停狀態，記憶卡就會一直處於忙碌狀態。",
+ "savestate.error.memcardBusyLong": "遊戲一直在寫入記憶卡，為保護記憶卡，即時存檔未能儲存或讀取。請過幾秒後再試。",
  "savestate.error.save": "無法儲存到該插槽。請在記錄檔中查詢 @@ANDROID_SAVESTATE@@。",
  "savestate.hint": "選擇一個插槽。按住插槽，或使用垃圾桶按鈕，即可將其刪除。",
  "savestate.import": "匯入",

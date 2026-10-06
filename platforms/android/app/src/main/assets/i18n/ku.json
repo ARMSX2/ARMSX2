@@ -1586,6 +1586,7 @@
   "savestate.error.hardcore": "Dema Moda Hardcore ya RetroAchievements vekirî ye, rewşên tomarkirinê neçalak in. Ji bo bikaranîna wan, Hardcore-ê di mîhengên RetroAchievements de bigirin (ev ji bo vê danişînê xalên hardcore wenda dike).",
   "savestate.error.load": "Nekarî wê hêlînê bar bike.",
   "savestate.error.memcardBusy": "Lîstik hîn jî li karta bîranînê dinivîse, ji ber vê yekê rewş nehat tomarkirin. Lîstikê ji bo çirkeyek an du çirkeyan berdewam bikin, paşê dîsa biceribînin. Karta heta ku lîstik sekinandî ye mijûl dimîne.",
+  "savestate.error.memcardBusyLong": "Lîstik li karta bîranînê nivîsandina xwe domand, ji ber vê yekê ji bo parastina kartê rewş ne hat tomarkirin û ne jî hat barkirin. Piştî çend çirkeyan dîsa biceribînin.",
   "savestate.error.save": "Nekarî li wê hêlînê tomar bike. Ji bo @@ANDROID_SAVESTATE@@ têketinê kontrol bike.",
   "savestate.hint": "Hêlînekê hilbijêre. Ji bo jêbirina wê, hêlînê bigire, an bişkoka çopê bikar bîne.",
   "savestate.import": "Import",
