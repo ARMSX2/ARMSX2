@@ -74,6 +74,11 @@ constexpr const char* kMt6897AndroidHints = "ro.soc.manufacturer=Mediatek | ro.s
 constexpr const char* kMt6897LinuxHints = "anbernic,rg477v mediatek,mt6897";
 // Arm's driverInfo for an r44p1 blob: "v1.r<release>p<patch>-<build>.<hash>". Not malisx2's.
 constexpr const char* kMaliR44p1DriverInfo = "v1.r44p1-01eac0.abc";
+// malisx2's driverInfo: Arm's "v1.r44p1-" revision text, then our own name. The old packs say
+// "libmali" where this says "malisx2". Every other field it reports (vendorID, driverID, 44.1.0) is
+// Arm's, so the rows written for the r44p1 blob see it.
+constexpr const char* kMaliSX2DriverInfo = "v1.r44p1-malisx2.0.2.s0123abcd";
+constexpr const char* kMaliSX2OldPackDriverInfo = "v1.r44p1-libmali.0.1.s0123abcd";
 // A MediaTek part that is NOT the one we measured: the deny list still applies there.
 constexpr const char* kOtherMediaTekHints = "ro.soc.manufacturer=Mediatek | ro.soc.model=MT6985 | "
 										   "ro.board.platform=mt6985";
@@ -102,6 +107,18 @@ constexpr const char* kRg477vDeviceHints2026_09_03 =
 constexpr const char* kMt6895BoardHints2026_09_03 =
 	"ro.soc.manufacturer=Mediatek | ro.soc.model=MT6895 | ro.board.platform=mt6895 | "
 	"ro.hardware=mt6895 | ro.product.board=k6895v1_64";
+
+// The table row with this id, as the bit index MobileDriverProfile::matched_rules uses.
+u32 RowOf(const char* id)
+{
+	for (u32 row = 0; row < GpuProfileDetector::DriverRuleCount(); row++)
+	{
+		if (std::string_view(GpuProfileDetector::DriverRuleId(row)) == id)
+			return row;
+	}
+	ADD_FAILURE() << "no rule row named " << id;
+	return 0;
+}
 
 bool DeniesRoaaDestinationRead(const GpuProfileSelection& sel)
 {
@@ -1151,4 +1168,62 @@ TEST(GSGpuDriverProfile, IsMaliSX2DriverMatchesEitherSpellingInDriverInfo)
 	EXPECT_FALSE(GpuProfileDetector::IsMaliSX2Driver(kMaliR44p1DriverInfo));
 	EXPECT_FALSE(GpuProfileDetector::IsMaliSX2Driver("Mesa 26.1.2 (git-axfl2-001)"));
 	EXPECT_FALSE(GpuProfileDetector::IsMaliSX2Driver(""));
+}
+
+// ---------------------------------------------------------------------------------------------
+// malisx2 against the rows written for Arm's r44p1 blob.
+
+// vk-arm-r44p1-attachment-self-read puts the device on the render-target copy road because the
+// blob loses the device under an in-tile self-read. That is a defect of Arm's blob, not of our
+// driver, so malisx2 is exempt without condition. The stock blob on the same device and revision is
+// the control: it keeps the row.
+TEST(GSGpuDriverProfile, MaliSX2DoesNotTakeTheR44p1SelfReadRowsCopyRoad)
+{
+	const GpuProfileSelection stock =
+		ResolveMaliVK("Mali-G57", PackVulkanVersion(44, 1, 0), std::string_view(), kMaliR44p1DriverInfo);
+	EXPECT_TRUE(TakesTheRenderTargetCopyPath(stock));
+	EXPECT_TRUE(stock.driver.HasBug(DriverBug::BrokenSubpassFeedback));
+
+	for (const char* info : {kMaliSX2DriverInfo, kMaliSX2OldPackDriverInfo})
+	{
+		const GpuProfileSelection sel =
+			ResolveMaliVK("Mali-G57", PackVulkanVersion(44, 1, 0), std::string_view(), info);
+		EXPECT_FALSE(TakesTheRenderTargetCopyPath(sel)) << info;
+		EXPECT_FALSE(sel.driver.HasBug(DriverBug::BrokenSubpassFeedback)) << info;
+	}
+}
+
+// The exempted row is still a matched row: the log and the report show that it fired and was
+// skipped, which is not the same as the row never matching. Only the applied rows are counted.
+TEST(GSGpuDriverProfile, MaliSX2ExemptedRowIsMatchedAndExemptButNotCounted)
+{
+	const GpuProfileSelection stock =
+		ResolveMaliVK("Mali-G57", PackVulkanVersion(44, 1, 0), std::string_view(), kMaliR44p1DriverInfo);
+	EXPECT_EQ(stock.driver.exempted_rules, 0u);
+	EXPECT_EQ(stock.driver.matched_rule_count, 4u);
+
+	const GpuProfileSelection sel =
+		ResolveMaliVK("Mali-G57", PackVulkanVersion(44, 1, 0), std::string_view(), kMaliSX2DriverInfo);
+	const u64 self_read = u64{1} << RowOf("vk-arm-r44p1-attachment-self-read");
+	EXPECT_NE(sel.driver.matched_rules & self_read, 0u);
+	EXPECT_EQ(sel.driver.exempted_rules, self_read);
+	EXPECT_EQ(sel.driver.matched_rule_count, 3u);
+	EXPECT_EQ(static_cast<u32>(std::bitset<64>(sel.driver.matched_rules & ~sel.driver.exempted_rules).count()),
+		sel.driver.matched_rule_count);
+	EXPECT_EQ(GpuProfileDetector::DescribeMatchedRules(sel.driver),
+		"vk-arm-proprietary, vk-arm-dynamic-rendering-before-r52, "
+		"vk-arm-r44p1-attachment-self-read (exempt: malisx2), vk-arm-g57-roaa-destination-read");
+
+	// The rows this commit does not exempt still apply to malisx2.
+	EXPECT_TRUE(DeniesRoaaDestinationRead(sel));
+}
+
+// On the MT6897 the row's own SoC exclusion already keeps it from matching, so there is nothing for
+// the exemption to record.
+TEST(GSGpuDriverProfile, MaliSX2OnAnMt6897HasNoExemptedRowToRecord)
+{
+	const GpuProfileSelection sel = ResolveMaliVK(
+		"Mali-G57", PackVulkanVersion(44, 1, 0), kMt6897AndroidHints, kMaliSX2DriverInfo);
+	EXPECT_EQ(sel.driver.exempted_rules, 0u);
+	EXPECT_EQ(GpuProfileDetector::DescribeMatchedRules(sel.driver).find("exempt"), std::string::npos);
 }

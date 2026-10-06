@@ -215,11 +215,16 @@ struct MobileDriverProfile
 	MobileDriverVersion version;
 	u64 bugs = 0;
 	u64 workarounds = 0;
+	/// Rows whose bugs and workarounds were applied. A row that matched and was exempted is in
+	/// matched_rules and exempted_rules and not counted here.
 	u32 matched_rule_count = 0;
 	/// The table rows whose conditions matched, bit i for row i (GpuProfileDetector::DriverRuleId
-	/// names a row). Set whether or not the row's bugs and workarounds are then applied. Every
-	/// matched row is applied today, so this holds exactly the rows matched_rule_count counts.
+	/// names a row). Set whether or not the row's bugs and workarounds are then applied.
 	u64 matched_rules = 0;
+	/// The subset of matched_rules that was skipped, its bugs and workarounds left out of `bugs` and
+	/// `workarounds`. Today only malisx2 is exempted: its rows are the ones written for Arm's r44p1
+	/// blob (see Malisx2Exemption in the rule table).
+	u64 exempted_rules = 0;
 	DriverProfileConfidence confidence = DriverProfileConfidence::Unknown;
 	/// True when nothing in the table matched and the safe defaults are in force.
 	bool conservative_fallback = true;

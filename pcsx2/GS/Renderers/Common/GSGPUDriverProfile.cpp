@@ -41,6 +41,17 @@ struct VersionBound
 	u32 build = 0;
 };
 
+/// Whether a row is skipped for malisx2, our own Vulkan driver for Mali. malisx2 reports Arm's
+/// vendorID, driverID and r44p1 revision on purpose, so rows written for Arm's blob match it; a
+/// row that describes a defect of that blob and not of our driver says so here.
+enum class Malisx2Exemption : u8
+{
+	/// The row applies to malisx2 like any other driver.
+	None,
+	/// Skipped for malisx2 whatever it advertises.
+	Always,
+};
+
 struct DriverRule
 {
 	const char* id;
@@ -67,6 +78,9 @@ struct DriverRule
 	/// Lowercase substring that must be present in the hints for this rule to match. Only for a
 	/// preference about one measured part; a defect should use a version or model bound instead.
 	const char* hint_require = nullptr;
+	/// A matched row is recorded in MobileDriverProfile::matched_rules and exempted_rules, and its
+	/// bugs and workarounds are not applied.
+	Malisx2Exemption exempt_malisx2 = Malisx2Exemption::None;
 };
 
 /// The SoC hint for the Anbernic RG 477V in the spelling Android ("mt6897") and the Linux
@@ -397,6 +411,15 @@ static bool RuleMatches(const DriverRule& rule, const GpuProfileSelection& selec
 	return true;
 }
 
+// Whether a row that matched is skipped because the driver is malisx2. Runs after RuleMatches, so
+// the row is recorded as matched either way.
+static bool IsExemptForMaliSX2(const DriverRule& rule, const MobileDriverContext& context)
+{
+	if (rule.exempt_malisx2 == Malisx2Exemption::None)
+		return false;
+	return GpuProfileDetector::IsMaliSX2Driver(context.driver_info);
+}
+
 // Sources and upstream revisions are mirrored in docs/gpu-driver-database.json. A known bug is
 // not automatically an active workaround: expensive fallbacks stay off until they have a bounded,
 // tested condition.
@@ -496,13 +519,18 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 	// content, where the founding report (Motorola Edge 60 Pro, also r44p1) crashed on nearly every
 	// game. No version bound separates the two blobs, so the exemption is per SoC.
 	//
+	// malisx2 reports r44p1 on purpose but is not Arm's blob, and the device loss is the blob's.
+	// It is exempt without condition: a malisx2 build that cannot do the in-tile read (no
+	// rasterization-order access) falls to the barrier road, which the driver supports.
+	//
 	// The other half of the r44p1 workaround, the Vulkan device not using the feedback-loop layout,
 	// is VulkanDeviceRules::avoid_feedback_loop_layout below.
 	{"vk-arm-r44p1-attachment-self-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {44, 1, 0}, {44, 2, 0},
 		0, 0, false,
 		Bug(DriverBug::BrokenSubpassFeedback) | Bug(DriverBug::BrokenAttachmentFeedbackLoopLayout),
-		Workaround(DriverWorkaround::UseRenderTargetCopyForFeedback), false, MEASURED_SOC_MT6897},
+		Workaround(DriverWorkaround::UseRenderTargetCopyForFeedback), false, MEASURED_SOC_MT6897, nullptr,
+		Malisx2Exemption::Always},
 	// ROAA destination-read deny list. These parts advertise rasterization-order attachment
 	// access and return zero or stale destination colour through it (black or missing textures,
 	// not a crash), so the renderer uses the per-primitive texture-barrier path instead.
@@ -705,6 +733,11 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 			continue;
 
 		profile.matched_rules |= u64{1} << row;
+		if (IsExemptForMaliSX2(rule, context))
+		{
+			profile.exempted_rules |= u64{1} << row;
+			continue;
+		}
 		profile.bugs |= rule.bugs;
 		profile.workarounds |= rule.workarounds;
 		profile.matched_rule_count++;

@@ -265,3 +265,36 @@ TEST(GSDriverReport, GpuProfileWritesEveryVulkanDeviceRuleByName)
 		at = found;
 	}
 }
+
+// The report names the rows that matched and, apart, the ones malisx2 was exempted from, so a
+// device's driver.json says which rule it skipped.
+TEST(GSDriverReport, GpuProfileListsMatchedAndExemptRulesById)
+{
+	MobileDriverContext context;
+	context.api = MobileGpuApi::Vulkan;
+	context.vendor_id = GpuVendorID::ARM;
+	context.driver_id = DriverIdValue::ArmProprietary;
+	context.driver_version = (44u << 22) | (1u << 12);
+	context.driver_info = "v1.r44p1-malisx2.0.2.s0123abcd";
+	VulkanDeviceRules rules;
+	const GpuProfileSelection selection = ResolveVulkanProfile(context, "Mali-G57", &rules);
+
+	JsonWriter w;
+	WriteGpuProfile(w, selection, &rules);
+	const std::string& json = w.GetString();
+
+	const size_t matched = json.find("\"matched_rules\"");
+	const size_t exempt = json.find("\"exempt_rules\"");
+	ASSERT_NE(matched, std::string::npos) << json;
+	ASSERT_NE(exempt, std::string::npos) << json;
+	ASSERT_LT(matched, exempt);
+
+	const std::string self_read = "\"vk-arm-r44p1-attachment-self-read\"";
+	const size_t in_matched = json.find(self_read, matched);
+	ASSERT_NE(in_matched, std::string::npos) << json;
+	EXPECT_LT(in_matched, exempt);
+	const size_t in_exempt = json.find(self_read, exempt);
+	ASSERT_NE(in_exempt, std::string::npos) << json;
+	// The rows that applied are matched but not exempt.
+	EXPECT_EQ(json.find("\"vk-arm-proprietary\"", exempt), std::string::npos) << json;
+}

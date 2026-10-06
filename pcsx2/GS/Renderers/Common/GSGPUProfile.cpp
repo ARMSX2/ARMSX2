@@ -404,7 +404,12 @@ std::string GpuProfileDetector::DescribeMatchedRules(const MobileDriverProfile& 
 	std::string list;
 	for (u32 row = 0; row < DriverRuleCount(); row++)
 	{
-		if (profile.matched_rules & (u64{1} << row))
+		const u64 bit = u64{1} << row;
+		if (!(profile.matched_rules & bit))
+			continue;
+		if (profile.exempted_rules & bit)
+			AppendName(list, std::string(DriverRuleId(row)) + " (exempt: malisx2)");
+		else
 			AppendName(list, DriverRuleId(row));
 	}
 	return OrNone(std::move(list));
