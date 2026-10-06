@@ -774,10 +774,12 @@ data class GraphicsSettings(
     val loadTextureReplacementsAsync: Boolean = true,
     /** EmuCore/GS/PrecacheTextureReplacements. */
     val precacheTextureReplacements: Boolean = false,
-    /** EmuCore/GS/TextureUpscaleMode — GSTextureUpscaleMode: 0 Off / 1 RAISR 2x Sharp /
-     *  2 RAISR 2x Smooth / 3 RAISR 4x Smooth. The picker index is the enum value. Persisted as an
-     *  integer by the core, so new modes get appended, never renumbered. */
-    val textureUpscaleMode: Int = 0,
+    /** EmuCore/GS/TextureUpscale — GSTextureUpscaleMode: 0 Off / 1 RAISR 2x / 2 RAISR 4x. The
+     *  picker index is the enum value. Persisted as an integer by the core, so new modes get
+     *  appended, never renumbered. The core's first key for this was TextureUpscaleMode, whose
+     *  values meant something else; it is neither read nor written, and neither is the stored
+     *  JSON field of that name. */
+    val textureUpscale: Int = 0,
     /** EmuCore/GS/DumpReplaceableTextures. */
     val dumpReplaceableTextures: Boolean = false,
     /** EmuCore/GS/OsdShowTextureReplacements. */
@@ -1499,7 +1501,7 @@ data class Settings(
                 loadTextureReplacements = boolAt("EmuCore/GS/LoadTextureReplacements") ?: this.graphics.loadTextureReplacements,
                 loadTextureReplacementsAsync = boolAt("EmuCore/GS/LoadTextureReplacementsAsync") ?: this.graphics.loadTextureReplacementsAsync,
                 precacheTextureReplacements = boolAt("EmuCore/GS/PrecacheTextureReplacements") ?: this.graphics.precacheTextureReplacements,
-                textureUpscaleMode = intAt("EmuCore/GS/TextureUpscaleMode") ?: this.graphics.textureUpscaleMode,
+                textureUpscale = intAt("EmuCore/GS/TextureUpscale") ?: this.graphics.textureUpscale,
                 dumpReplaceableTextures = boolAt("EmuCore/GS/DumpReplaceableTextures") ?: this.graphics.dumpReplaceableTextures,
                 osdShowTextureReplacements = boolAt("EmuCore/GS/OsdShowTextureReplacements") ?: this.graphics.osdShowTextureReplacements,
             ),
@@ -1695,9 +1697,9 @@ data class Settings(
         put("EmuCore/GS", "LoadTextureReplacements", "bool", graphics.loadTextureReplacements.toString())
         put("EmuCore/GS", "LoadTextureReplacementsAsync", "bool", graphics.loadTextureReplacementsAsync.toString())
         put("EmuCore/GS", "PrecacheTextureReplacements", "bool", graphics.precacheTextureReplacements.toString())
-        // Upper bound is the highest GSTextureUpscaleMode value (RaisrSmooth4x); it has to move when
+        // Upper bound is the highest GSTextureUpscaleMode value (Raisr4x); it has to move when
         // the core enum grows, same as Upscaler above.
-        put("EmuCore/GS", "TextureUpscaleMode", "int", graphics.textureUpscaleMode.coerceIn(0, 3).toString())
+        put("EmuCore/GS", "TextureUpscale", "int", graphics.textureUpscale.coerceIn(0, 2).toString())
         put("EmuCore/GS", "DumpReplaceableTextures", "bool", graphics.dumpReplaceableTextures.toString())
         put("EmuCore/GS", "OsdShowTextureReplacements", "bool", graphics.osdShowTextureReplacements.toString())
         put("EmuCore/GS", "OsdShowFPS", "bool", osd.osdShowFps.toString())
@@ -1913,7 +1915,7 @@ data class Settings(
             graphics.loadTextureReplacements != other.graphics.loadTextureReplacements ||
             graphics.loadTextureReplacementsAsync != other.graphics.loadTextureReplacementsAsync ||
             graphics.precacheTextureReplacements != other.graphics.precacheTextureReplacements ||
-            graphics.textureUpscaleMode != other.graphics.textureUpscaleMode ||
+            graphics.textureUpscale != other.graphics.textureUpscale ||
             graphics.dumpReplaceableTextures != other.graphics.dumpReplaceableTextures ||
             graphics.osdShowTextureReplacements != other.graphics.osdShowTextureReplacements
 
@@ -2119,7 +2121,7 @@ data class Settings(
         put("loadTextureReplacements", graphics.loadTextureReplacements)
         put("loadTextureReplacementsAsync", graphics.loadTextureReplacementsAsync)
         put("precacheTextureReplacements", graphics.precacheTextureReplacements)
-        put("textureUpscaleMode", graphics.textureUpscaleMode)
+        put("textureUpscale", graphics.textureUpscale)
         put("dumpReplaceableTextures", graphics.dumpReplaceableTextures)
         put("osdShowTextureReplacements", graphics.osdShowTextureReplacements)
         put("osdShowFps", osd.osdShowFps)
@@ -2507,7 +2509,7 @@ data class Settings(
                     loadTextureReplacements = json.optBoolean("loadTextureReplacements", def.graphics.loadTextureReplacements),
                     loadTextureReplacementsAsync = json.optBoolean("loadTextureReplacementsAsync", def.graphics.loadTextureReplacementsAsync),
                     precacheTextureReplacements = json.optBoolean("precacheTextureReplacements", def.graphics.precacheTextureReplacements),
-                    textureUpscaleMode = json.optInt("textureUpscaleMode", def.graphics.textureUpscaleMode),
+                    textureUpscale = json.optInt("textureUpscale", def.graphics.textureUpscale),
                     dumpReplaceableTextures = json.optBoolean("dumpReplaceableTextures", def.graphics.dumpReplaceableTextures),
                     osdShowTextureReplacements = json.optBoolean("osdShowTextureReplacements", def.graphics.osdShowTextureReplacements),
                 ),
@@ -2742,7 +2744,7 @@ data class Settings(
             if (current.graphics.loadTextureReplacements != base.graphics.loadTextureReplacements) j.put("loadTextureReplacements", current.graphics.loadTextureReplacements)
             if (current.graphics.loadTextureReplacementsAsync != base.graphics.loadTextureReplacementsAsync) j.put("loadTextureReplacementsAsync", current.graphics.loadTextureReplacementsAsync)
             if (current.graphics.precacheTextureReplacements != base.graphics.precacheTextureReplacements) j.put("precacheTextureReplacements", current.graphics.precacheTextureReplacements)
-            if (current.graphics.textureUpscaleMode != base.graphics.textureUpscaleMode) j.put("textureUpscaleMode", current.graphics.textureUpscaleMode)
+            if (current.graphics.textureUpscale != base.graphics.textureUpscale) j.put("textureUpscale", current.graphics.textureUpscale)
             if (current.graphics.dumpReplaceableTextures != base.graphics.dumpReplaceableTextures) j.put("dumpReplaceableTextures", current.graphics.dumpReplaceableTextures)
             if (current.graphics.osdShowTextureReplacements != base.graphics.osdShowTextureReplacements) j.put("osdShowTextureReplacements", current.graphics.osdShowTextureReplacements)
             if (current.osd.osdShowFps != base.osd.osdShowFps) j.put("osdShowFps", current.osd.osdShowFps)
@@ -3076,7 +3078,7 @@ data class Settings(
                 loadTextureReplacements = if (overrides.has("loadTextureReplacements")) overrides.getBoolean("loadTextureReplacements") else base.graphics.loadTextureReplacements,
                 loadTextureReplacementsAsync = if (overrides.has("loadTextureReplacementsAsync")) overrides.getBoolean("loadTextureReplacementsAsync") else base.graphics.loadTextureReplacementsAsync,
                 precacheTextureReplacements = if (overrides.has("precacheTextureReplacements")) overrides.getBoolean("precacheTextureReplacements") else base.graphics.precacheTextureReplacements,
-                textureUpscaleMode = if (overrides.has("textureUpscaleMode")) overrides.getInt("textureUpscaleMode") else base.graphics.textureUpscaleMode,
+                textureUpscale = if (overrides.has("textureUpscale")) overrides.getInt("textureUpscale") else base.graphics.textureUpscale,
                 dumpReplaceableTextures = if (overrides.has("dumpReplaceableTextures")) overrides.getBoolean("dumpReplaceableTextures") else base.graphics.dumpReplaceableTextures,
                 osdShowTextureReplacements = if (overrides.has("osdShowTextureReplacements")) overrides.getBoolean("osdShowTextureReplacements") else base.graphics.osdShowTextureReplacements,
             ),
