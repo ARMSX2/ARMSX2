@@ -920,7 +920,7 @@
  "pad.analogExtra.description": "在螢幕左搖桿正上方新增一個按鍵。將拇指從搖桿滑上去而不抬起：按住期間搖桿依然可以轉向，因此向前跑動和加速衝刺可以一氣呵成。適合用於衝刺（如 GTA、Silent Hill）和跳躍（如 God of War、Kingdom Hearts）。可在「編輯螢幕觸控配置」中像其他按鍵一樣移動和調整大小。",
  "pad.analogExtra.label": "左搖桿上的額外按鍵",
  "pad.assign.auto": "自動",
- "pad.assign.help": "將手把指派給某位玩家。自動模式會在手把第一次按鍵時指派下一個空位，因此你第二個拿起的手把不一定是玩家 2。每個手把的指派都會被記住，並在重新連接時保留。",
+ "pad.assign.help": "將手把指派給某位玩家。自動模式會在手把第一次按鍵時指派下一個空位，因此你第二個拿起的手把不一定是玩家 2。指派給同一位玩家的多個手把都會作為該玩家操作，例如掌機本身的按鍵和接電視用的手把。每個手把的指派都會被記住，並在重新連接時保留。",
  "pad.assign.rumble": "震動",
  "pad.assign.rumble.controller": "手把",
  "pad.assign.rumble.device": "掌機",

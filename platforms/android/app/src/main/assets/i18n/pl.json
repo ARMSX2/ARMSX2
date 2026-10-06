@@ -918,7 +918,7 @@
  "pad.analogExtra.description": "Dodaje przycisk tuż nad lewą gałką na ekranie. Przesuń kciuk w górę na niego bez odrywania: sterowanie działa nadal, gdy jest przytrzymany, więc bieg do przodu i sprint to jeden ruch. Przydatne do sprintu (GTA, Silent Hill) i skoku (God of War, Kingdom Hearts). Przesuń i zmień jego rozmiar w edytorze układu sterowania dotykowego, jak każdy inny przycisk.",
  "pad.analogExtra.label": "Dodatkowy przycisk na lewej gałce",
  "pad.assign.auto": "Auto",
- "pad.assign.help": "Przypisz kontroler do slotu gracza. Auto daje mu następny wolny slot przy pierwszym naciśnięciu przycisku, dlatego kontroler podniesiony jako drugi nie zawsze jest graczem 2. Przypisanie jest zapamiętywane dla każdego kontrolera i zachowywane po ponownym połączeniu.",
+ "pad.assign.help": "Przypisz kontroler do slotu gracza. Auto daje mu następny wolny slot przy pierwszym naciśnięciu przycisku, dlatego kontroler podniesiony jako drugi nie zawsze jest graczem 2. Kontrolery przypisane do tego samego gracza grają wszystkie jako ten gracz, na przykład wbudowane sterowanie konsoli przenośnej i pad do telewizora. Przypisanie jest zapamiętywane dla każdego kontrolera i zachowywane po ponownym połączeniu.",
  "pad.assign.rumble": "wibracje",
  "pad.assign.rumble.controller": "Kontroler",
  "pad.assign.rumble.device": "Handheld",

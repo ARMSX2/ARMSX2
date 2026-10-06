@@ -918,7 +918,7 @@
  "pad.analogExtra.description": "Ekran üstü sol çubuğun hemen üzerine bir düğme ekler. Başparmağınızı kaldırmadan üzerine kaydırın: basılıyken yönlendirmeye devam edersiniz, böylece ileri koşmak ve sprint atmak tek bir hareket olur. Sprint (GTA, Silent Hill) ve zıplama (God of War, Kingdom Hearts) için kullanışlıdır. Diğer her düğme gibi bunu da Ekran Üstü Dokunmatik Düzeni Düzenle bölümünde taşıyın ve yeniden boyutlandırın.",
  "pad.analogExtra.label": "Sol çubukta ekstra düğme",
  "pad.assign.auto": "Otomatik",
- "pad.assign.help": "Bir kumandayı bir oyuncu yuvasına atayın. Otomatik, kumanda ilk kez bir düğmeye bastığında ona sıradaki boş yuvayı verir; bu yüzden ikinci aldığınız kumanda her zaman 2. oyuncu olmaz. Atama her kumanda için hatırlanır ve yeniden bağlandığında korunur.",
+ "pad.assign.help": "Bir kumandayı bir oyuncu yuvasına atayın. Otomatik, kumanda ilk kez bir düğmeye bastığında ona sıradaki boş yuvayı verir; bu yüzden ikinci aldığınız kumanda her zaman 2. oyuncu olmaz. Aynı oyuncuya atanan kumandaların hepsi o oyuncu olarak oynar; örneğin bir el konsolunun kendi kontrolleri ve televizyon için bir kumanda. Atama her kumanda için hatırlanır ve yeniden bağlandığında korunur.",
  "pad.assign.rumble": "titreşim",
  "pad.assign.rumble.controller": "Kumanda",
  "pad.assign.rumble.device": "Cihaz",

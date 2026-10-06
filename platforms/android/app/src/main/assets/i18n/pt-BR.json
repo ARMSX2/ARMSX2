@@ -1493,7 +1493,7 @@
  "renderer.portraitPosition.description": "No modo retrato, coloque o jogo na parte superior da tela (deixando a parte inferior livre para controles por toque) ou centralizado verticalmente. Afeta apenas a orientação retrato.",
  "pad.analogExtra.label": "Botão extra no controle esquerdo",
  "pad.assign.auto": "Automático",
- "pad.assign.help": "Atribua um controle a um slot de jogador. Automático dá o próximo slot livre quando ele pressiona um botão pela primeira vez, por isso o controle que você pega em segundo nem sempre é o jogador 2. Uma atribuição é lembrada por controle e mantida quando ele reconecta.",
+ "pad.assign.help": "Atribua um controle a um slot de jogador. Automático dá o próximo slot livre quando ele pressiona um botão pela primeira vez, por isso o controle que você pega em segundo nem sempre é o jogador 2. Controles atribuídos ao mesmo jogador jogam todos como esse jogador, como os controles do próprio portátil e um controle para a TV. Uma atribuição é lembrada por controle e mantida quando ele reconecta.",
  "pad.assign.rumble": "rumble",
  "pad.assign.rumble.controller": "Controle",
  "pad.assign.rumble.device": "Handheld",

@@ -913,7 +913,7 @@
   "pad.analogExtra.description": "Ajoute un bouton juste au-dessus du stick gauche à l'écran. Glissez le pouce dessus sans le soulever : vous continuez à diriger tant qu'il est maintenu, donc courir et sprinter ne font qu'un seul geste. Utile pour le sprint (GTA, Silent Hill) et le saut (God of War, Kingdom Hearts). Déplacez-le et redimensionnez-le dans Personnaliser la disposition tactile, comme n'importe quel autre bouton.",
   "pad.analogExtra.label": "Bouton supplémentaire sur le stick gauche",
   "pad.assign.auto": "Auto",
-  "pad.assign.help": "Attribuez une manette à un emplacement de joueur. Auto lui donne le prochain emplacement libre au premier appui sur un bouton, c'est pourquoi la manette que vous prenez en second n'est pas toujours le joueur 2. L'attribution est mémorisée pour chaque manette et conservée lors de sa reconnexion.",
+  "pad.assign.help": "Attribuez une manette à un emplacement de joueur. Auto lui donne le prochain emplacement libre au premier appui sur un bouton, c'est pourquoi la manette que vous prenez en second n'est pas toujours le joueur 2. Les manettes attribuées au même joueur jouent toutes en tant que ce joueur, par exemple les commandes d'une console portable et une manette pour la télé. L'attribution est mémorisée pour chaque manette et conservée lors de sa reconnexion.",
   "pad.assign.rumble": "vibration",
   "pad.assign.rumble.controller": "Manette",
   "pad.assign.rumble.device": "Appareil",

@@ -918,7 +918,7 @@
   "pad.analogExtra.description": "Menambahkan tombol tepat di atas stik kiri di layar. Geser jempol Anda ke atasnya tanpa mengangkatnya: Anda tetap mengarahkan selama menahannya, jadi berlari maju dan sprint jadi satu gerakan. Berguna untuk sprint (GTA, Silent Hill) dan lompat (God of War, Kingdom Hearts). Pindahkan dan ubah ukurannya di editor tata letak sentuh, seperti tombol lainnya.",
   "pad.analogExtra.label": "Tombol ekstra di stik kiri",
   "pad.assign.auto": "Auto",
-  "pad.assign.help": "Tetapkan controller ke slot pemain. Auto memberinya slot kosong berikutnya saat controller pertama kali menekan tombol, itulah sebabnya pad yang Anda ambil kedua tidak selalu menjadi pemain 2. Penetapan diingat per controller dan tetap berlaku saat terhubung kembali.",
+  "pad.assign.help": "Tetapkan controller ke slot pemain. Auto memberinya slot kosong berikutnya saat controller pertama kali menekan tombol, itulah sebabnya pad yang Anda ambil kedua tidak selalu menjadi pemain 2. Controller yang ditetapkan ke pemain yang sama semuanya bermain sebagai pemain itu, misalnya kontrol bawaan handheld dan pad untuk TV. Penetapan diingat per controller dan tetap berlaku saat terhubung kembali.",
   "pad.assign.rumble": "getar",
   "pad.assign.rumble.controller": "Controller",
   "pad.assign.rumble.device": "Perangkat",

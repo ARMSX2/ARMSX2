@@ -813,7 +813,7 @@
  "pad.analogExtra.description": "Fügt direkt über dem linken Bildschirm-Stick eine Taste hinzu. Den Daumen ohne Absetzen nach oben darauf schieben: Die Lenkung bleibt erhalten, solange sie gehalten wird, sodass Vorwärtslaufen und Sprinten eine einzige Bewegung ist. Nützlich zum Sprinten (GTA, Silent Hill) und Springen (God of War, Kingdom Hearts). Position und Größe lassen sich wie bei jeder anderen Taste unter „Touch-Layout bearbeiten“ ändern.",
  "pad.analogExtra.label": "Zusatztaste am linken Stick",
  "pad.assign.auto": "Auto",
- "pad.assign.help": "Einen Controller einem Spieler-Slot zuweisen. Auto gibt ihm beim ersten Tastendruck den nächsten freien Slot, deshalb ist das als zweites aufgenommene Pad nicht immer Spieler 2. Eine Zuweisung wird pro Controller gespeichert und bleibt beim erneuten Verbinden erhalten.",
+ "pad.assign.help": "Einen Controller einem Spieler-Slot zuweisen. Auto gibt ihm beim ersten Tastendruck den nächsten freien Slot, deshalb ist das als zweites aufgenommene Pad nicht immer Spieler 2. Controller, die demselben Spieler zugewiesen sind, spielen alle als dieser Spieler, etwa die eingebauten Tasten eines Handhelds und ein Pad für den Fernseher. Eine Zuweisung wird pro Controller gespeichert und bleibt beim erneuten Verbinden erhalten.",
  "pad.assign.rumble": "Vibration",
  "pad.assign.rumble.controller": "Controller",
  "pad.assign.rumble.device": "Handheld",

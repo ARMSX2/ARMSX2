@@ -913,7 +913,7 @@
  "pad.analogExtra.description": "Añade un botón justo encima del stick izquierdo en pantalla. Desliza el pulgar hacia él sin levantarlo: sigues dirigiendo mientras lo mantienes, así que avanzar y esprintar es un solo movimiento. Útil para esprintar (GTA, Silent Hill) y saltar (God of War, Kingdom Hearts). Muévelo y cambia su tamaño en el editor de la distribución táctil, como cualquier otro botón.",
  "pad.analogExtra.label": "Botón extra en el stick izquierdo",
  "pad.assign.auto": "Auto",
- "pad.assign.help": "Asigna un mando a un puesto de jugador. Auto le da el siguiente puesto libre cuando pulsa un botón por primera vez; por eso el mando que coges en segundo lugar no siempre es el jugador 2. La asignación se recuerda para cada mando y se mantiene cuando se vuelve a conectar.",
+ "pad.assign.help": "Asigna un mando a un puesto de jugador. Auto le da el siguiente puesto libre cuando pulsa un botón por primera vez; por eso el mando que coges en segundo lugar no siempre es el jugador 2. Los mandos asignados al mismo jugador juegan todos como ese jugador, por ejemplo los controles de una consola portátil y un mando para la tele. La asignación se recuerda para cada mando y se mantiene cuando se vuelve a conectar.",
  "pad.assign.rumble": "vibración",
  "pad.assign.rumble.controller": "Mando",
  "pad.assign.rumble.device": "Dispositivo",

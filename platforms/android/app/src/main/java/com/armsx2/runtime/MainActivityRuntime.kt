@@ -850,11 +850,10 @@ open class MainActivityRuntime : ComponentActivity() {
          *  ConfigStore (MTVU and friends) — currentGame.serial picks the
          *  right override tier; null falls back to global. Resolution
          *  order: per-game JSON overlay → global → hardcoded defaults. */
-        /** Number of distinct physical gamepads/joysticks connected right now
-         *  (excludes virtual devices). Drives the boot-time PS2-port-2 enable for
-         *  local co-op — 2+ pads → connect Player 2's controller at VM init. */
-        private fun connectedGamepadCount(): Int {
-            var n = 0
+        /** The physical gamepads/joysticks connected right now (no virtual devices), and
+         *  whether a Joy-Con pair is among them, which [connectedPlayerCount] counts once. */
+        private fun connectedGamepads(): Pair<List<InputDevice>, Boolean> {
+            val pads = ArrayList<InputDevice>()
             var sawJoyCon = false
             for (id in InputDevice.getDeviceIds()) {
                 val dev = InputDevice.getDevice(id) ?: continue
@@ -868,9 +867,18 @@ open class MainActivityRuntime : ComponentActivity() {
                 // ALL Nintendo pads as a SINGLE logical controller — a lone pair must not
                 // auto-enable PS2 port 2. Every other vendor is still counted per device.
                 if (dev.vendorId == 0x057E) { sawJoyCon = true; continue }
-                n++
+                pads.add(dev)
             }
-            return n + (if (sawJoyCon) 1 else 0)
+            return pads to sawJoyCon
+        }
+
+        /** How many players the connected controllers play as. Drives the boot-time PS2-port-2
+         *  enable for local co-op: 2+ players connect Player 2's controller at VM init. Players,
+         *  not pads: two pads pinned to the same player (a handheld's own controls and a pad for
+         *  the TV) are one player, and must not plug in an empty port 2 (PadRouter.playerCount). */
+        private fun connectedPlayerCount(): Int {
+            val (pads, sawJoyCon) = connectedGamepads()
+            return com.armsx2.input.PadRouter.playerCount(pads) + (if (sawJoyCon) 1 else 0)
         }
 
         /**
@@ -1041,7 +1049,9 @@ open class MainActivityRuntime : ComponentActivity() {
                 // for the whole session, for the same reason: this is the only point port 2
                 // can be plugged in, so a mid-game switch would aim touch at an empty port.
                 val touchIsP2 = com.armsx2.ui.touch.TouchControls.touchPlayer.intValue == 1
-                val twoPads = connectedGamepadCount() >= 2 || touchIsP2
+                // A pad pinned to Player 2 needs port 2 even on its own.
+                val twoPads = connectedPlayerCount() >= 2 || touchIsP2 ||
+                    com.armsx2.input.PadRouter.player2Pinned(connectedGamepads().first)
                 NativeApp.setSetting("Pad2", "Type", "string", if (twoPads) "DualShock2" else "None")
                 if (twoPads) {
                     NativeApp.setSetting("Pad2", "AxisScale", "float", "1.33")

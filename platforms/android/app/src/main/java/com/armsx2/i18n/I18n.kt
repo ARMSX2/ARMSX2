@@ -1076,7 +1076,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "pad.rumbleFallback.description" to "Some controllers (Xbox Series X|S over Bluetooth, and some DualSense Bluetooth modes) expose no motor to Android, so the emulator cannot rumble them at all. Turn this on to feel that rumble through this device instead. Leave it off if your phone or tablet sits in a stand or a pocket while you play.",
     "pad.rumbleFallback.label" to "Vibrate this device instead",
     "pad.assign.auto" to "Auto",
-    "pad.assign.help" to "Assign a controller to a player slot. Auto gives it the next free slot when it first presses a button, which is why the pad you pick up second is not always player 2. An assignment is remembered per controller and kept when it reconnects.",
+    "pad.assign.help" to "Assign a controller to a player slot. Auto gives it the next free slot when it first presses a button, which is why the pad you pick up second is not always player 2. Controllers assigned to the same player all play as that player, such as a handheld's own controls and a pad for the TV. An assignment is remembered per controller and kept when it reconnects.",
     "pad.assign.rumble" to "rumble",
     "pad.assign.rumble.controller" to "Controller",
     "pad.assign.rumble.device" to "Handheld",
