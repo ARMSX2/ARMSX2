@@ -31,6 +31,7 @@
 #include "GS/Renderers/Common/GSDevice.h" // GSDevice::SetShaderChainParams (shader chain params)
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
 #include "GS/Renderers/Vulkan/GSLsfg.h" // LSFG availability query (JNI)
+#include "GS/DriverReport/GSDriverReportActive.h" // which Vulkan driver is open (JNI)
 #include "GSDumpReplayer.h"
 #include "ImGui/ImGuiManager.h"
 #include "ImGui/ImGuiOverlays.h"
@@ -887,6 +888,17 @@ extern "C"
 JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_isHardwareRenderer(JNIEnv *env, jclass clazz) {
     return GSIsHardwareRenderer() ? JNI_TRUE : JNI_FALSE;
+}
+
+// Which kind of Vulkan driver the open GS device is on, as GSDriverReport::ActiveVulkanDriver:
+// 0 no Vulkan device, 1 malisx2, 2 any other driver. Read off the device itself rather than from
+// the selected driver pack, because a pack that fails to load falls back to the system driver
+// without saying so. The software renderer can sit on a Vulkan device too, only to present, so the
+// Kotlin side pairs this with isHardwareRenderer and the GPU model (MaliDriverNotice).
+extern "C"
+JNIEXPORT jint JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getActiveVulkanDriver(JNIEnv *env, jclass clazz) {
+    return static_cast<jint>(GSDriverReport::GetActiveVulkanDriver());
 }
 
 // Custom Vulkan driver pin. Called from Main.applyRendererPrefs BEFORE the

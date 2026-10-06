@@ -66,19 +66,26 @@ object CustomDriver {
             (renderer.contains("Mali", ignoreCase = true) || renderer.contains("Immortalis", ignoreCase = true)) &&
             MALI_V11.containsMatchIn(renderer)
 
+    // Our own Vulkan driver for Mali, replacing Arm's on the kbase kernel driver. One
+    // adrenotools pack per release (meta.json + libvulkan_malisx2.so), loaded the
+    // same way as the Turnip packs. Listed only on the GPUs it supports.
+    // The id prefix is still "armsx2libmali", from before the driver was renamed: it is
+    // part of the install directory name and of the saved customDriverId of every pack
+    // already installed, so it must not change.
+    private val MALISX2_SOURCE = DriverSource(
+        "ARMSX2 · MaliSX2",
+        "https://api.github.com/repos/bmdhacks/malisx2/releases",
+        "armsx2libmali",
+        supports = ::isMaliV11,
+    )
+
+    /** Whether the driver list offers malisx2 for [renderer] (GL_RENDERER). The wrong-driver
+     *  notice keys on this, so it follows the list: a GPU gets the notice exactly when it is
+     *  offered the download, and widening [MALISX2_SOURCE]'s `supports` widens both. */
+    fun offersMaliSX2(renderer: String?): Boolean = MALISX2_SOURCE.supports(renderer)
+
     private val DRIVER_SOURCES = listOf(
-        // Our own Vulkan driver for Mali, replacing Arm's on the kbase kernel driver. One
-        // adrenotools pack per release (meta.json + libvulkan_malisx2.so), loaded the
-        // same way as the Turnip packs. Listed only on the GPUs it supports.
-        // The id prefix is still "armsx2libmali", from before the driver was renamed: it is
-        // part of the install directory name and of the saved customDriverId of every pack
-        // already installed, so it must not change.
-        DriverSource(
-            "ARMSX2 · MaliSX2",
-            "https://api.github.com/repos/bmdhacks/malisx2/releases",
-            "armsx2libmali",
-            supports = ::isMaliV11,
-        ),
+        MALISX2_SOURCE,
         // Our own Turnip: Mesa with the ARMSX2 driver patches, built as adrenotools packs.
         // The emulator recognises these builds by the `(git-axfl<N>-…)` token in
         // driverInfo and takes the barrier-less in-pass read road on Adreno 650 and up

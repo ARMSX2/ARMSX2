@@ -47,6 +47,7 @@ namespace
 #include "GS/Renderers/Common/GSMeasurementOverrides.h"
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
 #include "GS/DriverReport/GSDriverReport.h"
+#include "GS/DriverReport/GSDriverReportActive.h"
 #include "GS/DriverReport/GSDriverReportClassify.h"
 #include "GS/DriverReport/GSDriverReportProfile.h"
 #include "GS/DriverReport/GSDriverReportVulkan.h"
@@ -3133,6 +3134,8 @@ void GSDeviceVK::Destroy()
 
 	std::unique_lock lock(s_instance_mutex);
 
+	GSDriverReport::ClearActiveVulkanDriver();
+
 	GSDevice::Destroy();
 
 	// Free the filter chain before the device goes away — it owns Vulkan objects created
@@ -3936,7 +3939,17 @@ void GSDeviceVK::PublishGPUProfile()
 		GpuProfileDetector::DescribeWorkarounds(mobile_profile.driver.workarounds).c_str());
 	Console.WriteLn("VK: device rules: %s", GpuProfileDetector::DescribeDeviceRules(m_device_rules).c_str());
 	if (IsDeviceMaliSX2())
+	{
 		Console.WriteLn("VK: driver is malisx2 (driverInfo \"%s\")", m_device_driver_properties.driverInfo);
+	}
+	else if (IsDeviceMali())
+	{
+		// The Android app tells a Mali user on this to get malisx2, for the GPUs it offers it for.
+		Console.WriteLn("VK: %s is a Mali GPU not running malisx2 (driverName \"%s\", driverInfo \"%s\")",
+			m_device_properties.deviceName, m_device_driver_properties.driverName,
+			m_device_driver_properties.driverInfo);
+	}
+	GSDriverReport::NoteActiveVulkanDriver(m_device_driver_properties.driverInfo);
 	DevCon.WriteLn("VK: GPU profile hints: %s", mobile_profile.hints.c_str());
 }
 

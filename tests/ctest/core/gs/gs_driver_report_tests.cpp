@@ -10,6 +10,7 @@
 // "libmali" in driverInfo, so both spellings are tested. The strings below are what the devices
 // report.
 
+#include "GS/DriverReport/GSDriverReportActive.h"
 #include "GS/DriverReport/GSDriverReportClassify.h"
 #include "GS/DriverReport/GSDriverReportJson.h"
 #include "GS/DriverReport/GSDriverReportProfile.h"
@@ -298,4 +299,57 @@ TEST(GSDriverReport, GpuProfileListsMatchedAndExemptRulesById)
 	ASSERT_NE(in_exempt, std::string::npos) << json;
 	// The rows that applied are matched but not exempt.
 	EXPECT_EQ(json.find("\"vk-arm-proprietary\"", exempt), std::string::npos) << json;
+}
+
+// The Android app reads this to tell a Mali user who is on the Vulkan renderer without malisx2 to
+// get it. The state is process-wide, so each test puts it back to None.
+TEST(GSDriverReport, ActiveVulkanDriverIsNoneUntilADeviceIsNoted)
+{
+	ClearActiveVulkanDriver();
+	EXPECT_EQ(GetActiveVulkanDriver(), ActiveVulkanDriver::None);
+
+	NoteActiveVulkanDriver("v1.r44p1-malisx2.0.2.s0123abcd");
+	EXPECT_EQ(GetActiveVulkanDriver(), ActiveVulkanDriver::MaliSX2);
+
+	// The device going away is not a driver: the next game may not be on Vulkan at all.
+	ClearActiveVulkanDriver();
+	EXPECT_EQ(GetActiveVulkanDriver(), ActiveVulkanDriver::None);
+}
+
+TEST(GSDriverReport, ActiveVulkanDriverIsOtherForAnyDriverButMaliSX2)
+{
+	// Arm's stock blob shares malisx2's vendorID, driverID and device name; only driverInfo differs.
+	for (const char* info : {"v1.r44p1-01eac0.030c4a3fb15fe65f485fb565f5e1b688", "v1.r40p0-01eac0.abcdef",
+			 "Mesa 26.1.2 (git-axfl2-001)", ""})
+	{
+		NoteActiveVulkanDriver(info);
+		EXPECT_EQ(GetActiveVulkanDriver(), ActiveVulkanDriver::Other) << info;
+	}
+	ClearActiveVulkanDriver();
+}
+
+TEST(GSDriverReport, ActiveVulkanDriverCountsBothMaliSX2Spellings)
+{
+	for (const char* info : {"v1.r44p1-malisx2.0.2.s0123abcd", "v1.r44p1-libmali.0.1.s0123abcd"})
+	{
+		NoteActiveVulkanDriver(info);
+		EXPECT_EQ(GetActiveVulkanDriver(), ActiveVulkanDriver::MaliSX2) << info;
+	}
+	ClearActiveVulkanDriver();
+}
+
+TEST(GSDriverReport, ActiveVulkanDriverFollowsTheLatestDevice)
+{
+	NoteActiveVulkanDriver("v1.r44p1-malisx2.0.2.s0123abcd");
+	NoteActiveVulkanDriver("v1.r44p1-01eac0.030c4a3fb15fe65f485fb565f5e1b688");
+	EXPECT_EQ(GetActiveVulkanDriver(), ActiveVulkanDriver::Other);
+	ClearActiveVulkanDriver();
+}
+
+// The values are the contract with NativeApp.getActiveVulkanDriver and MaliDriverNotice.kt.
+TEST(GSDriverReport, ActiveVulkanDriverValuesAreTheJniContract)
+{
+	EXPECT_EQ(static_cast<int>(ActiveVulkanDriver::None), 0);
+	EXPECT_EQ(static_cast<int>(ActiveVulkanDriver::MaliSX2), 1);
+	EXPECT_EQ(static_cast<int>(ActiveVulkanDriver::Other), 2);
 }

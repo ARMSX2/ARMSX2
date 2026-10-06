@@ -408,6 +408,13 @@ public class NativeApp {
 	 *  (e.g. SoftwareRendererFMVHack) stay in sync with the UI. */
 	public static native boolean isHardwareRenderer();
 
+	/** The Vulkan driver the open GS device is on: 0 when no Vulkan device is open (OpenGL, or
+	 *  nothing started yet), 1 for malisx2, 2 for any other driver. Read from the device, not
+	 *  from the selected driver pack, so a pack that failed to load shows up as the system
+	 *  driver it fell back to. The software renderer may sit on a Vulkan device too, only to
+	 *  present, so pair this with {@link #isHardwareRenderer()}. See com.armsx2.MaliDriverNotice. */
+	public static native int getActiveVulkanDriver();
+
 	/** Master OSD toggle — flips every OsdShow* bit we enable at first
 	 *  init. Backs the in-game overlay's OSD pill. */
 	public static native void osdShowAll(boolean enabled);
