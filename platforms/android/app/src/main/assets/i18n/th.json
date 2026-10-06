@@ -1867,7 +1867,6 @@
  "arcade.games.attract": "โหมดเดโมเท่านั้น",
  "arcade.part.dongle": "ดองเกิล",
  "arcade.part.card": "การ์ด Conquest",
- "arcade.conquest.added": "ตอนนี้ Soul Calibur II มีการ์ด Conquest อยู่ใน Slot 2 แล้ว หากเกมแจ้งว่าใช้การ์ดไม่ได้ ให้เปิดเมนูทดสอบของเกมด้วย สวิตช์ทดสอบ ในเมนูหยุดพัก แล้วเลือก DATA CLEAR จากนั้น ALL CLEAR ทำเพียงครั้งเดียวก็พอ",
  "arcade.part.boot": "ไฟล์บูต",
  "arcade.part.bios": "BIOS อาร์เคด",
  "arcade.part.biosBoard": "BIOS %s",

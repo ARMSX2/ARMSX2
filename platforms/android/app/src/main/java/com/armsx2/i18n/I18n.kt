@@ -2065,7 +2065,6 @@ private val BASE_EN: Map<String, String> = mapOf(
     "arcade.games.attract" to "Attract mode only",
     "arcade.part.dongle" to "dongle",
     "arcade.part.card" to "Conquest card",
-    "arcade.conquest.added" to "Soul Calibur II now has a Conquest card, in Slot 2. If the game says it cannot use the card, open its test menu with Test switch in the pause menu and choose DATA CLEAR, then ALL CLEAR. Once is enough.",
     "arcade.part.boot" to "boot file",
     "arcade.part.bios" to "arcade BIOS",
     "arcade.part.biosBoard" to "%s BIOS",

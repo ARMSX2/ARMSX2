@@ -51,8 +51,7 @@ object Arcade {
     /** The running arcade game's ID, or null when none is running (its Arcade controls in the pause menu). */
     val sessionGameId = mutableStateOf<String?>(null)
 
-    /** A message about the last arcade launch, shown over whatever is on screen until dismissed: why it did
-     *  not start, over the library, or as Soul Calibur II boots, that it has a new Conquest card. */
+    /** A message about the last arcade launch, shown over the library until dismissed. */
     val notice = mutableStateOf<String?>(null)
 
     /** Whether the touchscreen gun layer is the game's own control: its light gun, or its touch panel. */
@@ -75,8 +74,7 @@ object Arcade {
     )
 
     /** What a launch found, to hand to the core (NativeApp.setArcadeLaunchFiles), and the .acgame it boots
-     *  ([manifest]): the game's own, or the one [prepare] writes for a game kept as its own files. [note] is
-     *  something to tell the player as the game starts, once: that Soul Calibur II has its Conquest card. */
+     *  ([manifest]): the game's own, or the one [prepare] writes for a game kept as its own files. */
     data class Launch(
         val game: AcGame,
         val elf: String,
@@ -84,7 +82,6 @@ object Arcade {
         val sram: String,
         val mode: Int,
         val manifest: String,
-        val note: String? = null,
     )
 
     fun isAcGameName(name: String?): Boolean = name?.endsWith(".$EXTENSION", ignoreCase = true) == true
@@ -205,7 +202,7 @@ object Arcade {
 
         // Soul Calibur II's Conquest card, when its .acgame names none: the core takes it from the memory cards
         // folder by its name. Before the dongle, as a card 2.8.1 took for the dongle is moved out of its way.
-        val card = if (game.card.isEmpty() && game.gameId == ArcadeFiles.CONQUEST_GAME) conquestCard(context) else null
+        if (game.card.isEmpty() && game.gameId == ArcadeFiles.CONQUEST_GAME) conquestCard(context)
 
         // The dongle, and the second card if the game has one: in the memory cards folder, or copied
         // there from beside the .acgame.
@@ -226,7 +223,7 @@ object Arcade {
             files.find(game.sram, inSubdir = game.subdir)?.let { files.copy(it, sram) }
         }
 
-        Launch(game, elf, media, sram.absolutePath, modeOf(game), location, card?.let { conquestNote() })
+        Launch(game, elf, media, sram.absolutePath, modeOf(game), location)
     }
 
     /**
@@ -267,10 +264,7 @@ object Arcade {
             gameId = id, name = title, subdir = "", elf = elf.name, mediaSrc = name, sram = "sram.bin",
             dongle = dongle, card = card.orEmpty(), jvsMode = "",
         )
-        return Launch(
-            game, elf.absolutePath, location, sramFile(context, game).absolutePath, modeOf(game), manifest.absolutePath,
-            card?.let { conquestNote() },
-        )
+        return Launch(game, elf.absolutePath, location, sramFile(context, game).absolutePath, modeOf(game), manifest.absolutePath)
     }
 
     /** The app's own folder for the game [id]: its SRAM, and for a game kept as its own files the .acgame
@@ -372,18 +366,6 @@ object Arcade {
         println("@@ANDROID_ARCADE@@ no Conquest card could be put in place; the game starts without one")
         return null
     }
-
-    /** The preference that says the player has been told about the Conquest card. */
-    private const val CONQUEST_TOLD = "arcade.conquestCardTold"
-
-    /** What to tell the player the first time Soul Calibur II starts with the Conquest card in place: what to do
-     *  if the game will not take it. Once, then never again. Asked for only by a launch that goes ahead. */
-    private fun conquestNote(): String? = runCatching {
-        val prefs = MainActivityRuntime.prefs
-        if (prefs.getBoolean(CONQUEST_TOLD, false)) return@runCatching null
-        prefs.edit().putBoolean(CONQUEST_TOLD, true).apply()
-        I18n.get("arcade.conquest.added")
-    }.getOrNull()
 
     /** Whether [file] in the memory cards folder is Soul Calibur II's Conquest card, and not the dongle of the
      *  game [id]: only that game has one. */

@@ -1867,7 +1867,6 @@
  "arcade.games.attract": "데모 화면만",
  "arcade.part.dongle": "동글",
  "arcade.part.card": "Conquest 카드",
- "arcade.conquest.added": "이제 Soul Calibur II의 Conquest 카드가 Slot 2에 들어 있습니다. 게임에서 카드를 사용할 수 없다고 하면, 일시정지 메뉴의 테스트 스위치로 테스트 메뉴를 열고 DATA CLEAR, 이어서 ALL CLEAR를 선택하세요. 한 번이면 됩니다.",
  "arcade.part.boot": "부팅 파일",
  "arcade.part.bios": "아케이드 BIOS",
  "arcade.part.biosBoard": "%s BIOS",

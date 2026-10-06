@@ -1867,7 +1867,6 @@
   "arcade.games.attract": "Mode démo uniquement",
   "arcade.part.dongle": "dongle",
   "arcade.part.card": "carte Conquest",
-  "arcade.conquest.added": "Soul Calibur II a désormais une carte Conquest, dans l'Emplacement 2. Si le jeu indique qu'il ne peut pas utiliser la carte, ouvrez son menu de test avec Interrupteur de test dans le menu pause et choisissez DATA CLEAR, puis ALL CLEAR. Une seule fois suffit.",
   "arcade.part.boot": "fichier de démarrage",
   "arcade.part.bios": "BIOS d'arcade",
   "arcade.part.biosBoard": "BIOS %s",

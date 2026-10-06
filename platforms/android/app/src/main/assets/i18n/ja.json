@@ -1867,7 +1867,6 @@
   "arcade.games.attract": "デモ画面のみ",
   "arcade.part.dongle": "ドングル",
   "arcade.part.card": "Conquest カード",
-  "arcade.conquest.added": "Soul Calibur II の Conquest カードを Slot 2 に入れました。ゲームがカードを使えないと表示したら、ポーズメニューの「テストスイッチ」でテストメニューを開き、DATA CLEAR、続けて ALL CLEAR を選んでください。一度だけで大丈夫です。",
   "arcade.part.boot": "起動ファイル",
   "arcade.part.bios": "アーケード BIOS",
   "arcade.part.biosBoard": "%s の BIOS",

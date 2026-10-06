@@ -1867,7 +1867,6 @@
  "arcade.games.attract": "Solo modalità demo",
  "arcade.part.dongle": "dongle",
  "arcade.part.card": "memory card di Conquest",
- "arcade.conquest.added": "Soul Calibur II ora ha una memory card di Conquest nello Slot 2. Se il gioco dice che non può usare la memory card, apri il suo menu di test con Interruttore di test nel menu di pausa e scegli DATA CLEAR, poi ALL CLEAR. Basta una volta.",
  "arcade.part.boot": "file di avvio",
  "arcade.part.bios": "BIOS arcade",
  "arcade.part.biosBoard": "BIOS %s",

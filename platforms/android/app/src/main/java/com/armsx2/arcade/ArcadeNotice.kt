@@ -5,8 +5,7 @@ import androidx.compose.runtime.Composable
 import com.armsx2.i18n.str
 import com.armsx2.ui.common.NotifyOverlay
 
-/** What there is to say about the last arcade launch ([Arcade.notice]), over whatever is on screen: why it
- *  did not start, or Soul Calibur II's new Conquest card. */
+/** Why the last arcade game did not start ([Arcade.notice]), over whatever is on screen. */
 @Composable
 fun ArcadeNotice() {
     val message = Arcade.notice.value ?: return
