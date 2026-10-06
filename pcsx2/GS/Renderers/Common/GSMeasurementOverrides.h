@@ -52,6 +52,12 @@ struct GSMeasurementOverrides
 	/// against the read on a GPU that does not need it.
 	bool alpha_bit_logic_op = false;
 
+	/// -no-provoking-vertex: run Vulkan as a device without VK_EXT_provoking_vertex, as the rule
+	/// broken_provoking_vertex does for Qualcomm's stock Adreno driver. Pipelines keep the API's
+	/// first-vertex default, so the paths a provoking-first device takes (HandleFlatShadedVertices,
+	/// the expanded-line vertex shader) run on a machine whose driver has the extension.
+	bool no_provoking_vertex = false;
+
 	GSLoopDeclarationSpelling LoopSpelling() const
 	{
 		return loop_create_flag ? GSLoopDeclarationSpelling::PipelineCreateFlag : kDefaultLoopDeclarationSpelling;
@@ -60,7 +66,7 @@ struct GSMeasurementOverrides
 	bool Any() const
 	{
 		return self_read_arm != GSSelfReadArm::Off || declare_depth_loop || loop_create_flag || disable_stencil_buffer ||
-		       alpha_bit_logic_op;
+		       alpha_bit_logic_op || no_provoking_vertex;
 	}
 };
 

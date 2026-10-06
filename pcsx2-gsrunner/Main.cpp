@@ -1283,6 +1283,10 @@ static void PrintCommandLineHelp(const char* progname)
 						 "-- only when it is stated changes, and that is byte-identical. Measurement instrument only: "
 						 "on Turnip the create flag puts the driver's serialising primitive mode on every pipeline in "
 						 "a latched pass and costs up to 2.8x (wrc3@1x, SD865: 51.8 ms against 18.5). Vulkan only.\n");
+	std::fprintf(stderr, "  -no-provoking-vertex: Run as a device without VK_EXT_provoking_vertex, the way Qualcomm's "
+						 "stock Adreno driver does. Pipelines use the first-vertex default, so the provoking-first "
+						 "paths (software flat-shading fixup, expanded-line vertex shader) run on a device that has "
+						 "the extension. Vulkan only.\n");
 	std::fprintf(stderr, "  -accblend <0-5>: Force accurate blending unit (0=Minimum, 1=Basic, 2=Medium, 3=High, 4=Full, 5=Maximum). "
 						 "Overrides the game/global default; use to exercise the SW-blend / fb-fetch (ROV) path headlessly.\n");
 	std::fprintf(stderr, "  --: Signals that no more arguments will follow and the remaining\n"
@@ -1914,6 +1918,15 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// device with the logicOp feature, to check its pictures against the read.
 				g_gs_measurement_overrides.alpha_bit_logic_op = true;
 				Console.WriteLn("Forcing the alpha-bit logic op on (Vulkan, where logicOp exists)");
+				continue;
+			}
+			else if (CHECK_ARG("-no-provoking-vertex"))
+			{
+				// Not a setting: whether a device has a usable provoking-last mode is a driver fact
+				// (Qualcomm's stock Adreno driver selects the wrong vertex). This puts that driver's
+				// provoking-first paths on a device that has the extension, for an A/B on one binary.
+				g_gs_measurement_overrides.no_provoking_vertex = true;
+				Console.WriteLn("Forcing provoking-vertex-last off (Vulkan, as a device without VK_EXT_provoking_vertex)");
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-vertex-ring-kib"))

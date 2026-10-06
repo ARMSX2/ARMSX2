@@ -1165,6 +1165,10 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 	if (m_optional_extensions.vk_ext_provoking_vertex && m_device_rules.broken_provoking_vertex)
 		m_optional_extensions.vk_ext_provoking_vertex = false;
 
+	// gsrunner -no-provoking-vertex: the same outcome on a device that has the extension.
+	if (m_optional_extensions.vk_ext_provoking_vertex && g_gs_measurement_overrides.no_provoking_vertex)
+		m_optional_extensions.vk_ext_provoking_vertex = false;
+
 	if (m_optional_extensions.vk_ext_line_rasterization && !line_rasterization_feature.bresenhamLines)
 	{
 		Console.Warning("VK: bresenhamLines is not supported.");
@@ -4380,14 +4384,15 @@ void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool de
 	if (g_gs_measurement_overrides.Any())
 	{
 		Console.WriteLn("VK: measurement overrides: loop-spelling=%s(%s; %s) declare-arm=%u depth-loop=%s "
-						"stencil-buffer=%s alpha-bit-logic-op=%s",
+						"stencil-buffer=%s alpha-bit-logic-op=%s provoking-vertex=%s",
 			g_gs_measurement_overrides.loop_create_flag ? "pipeline create flag" : "dynamic per draw",
 			g_gs_measurement_overrides.loop_create_flag ? "forced" : "default",
 			m_declare_loop_per_draw ? "applied" : "pipeline create flag in effect",
 			static_cast<unsigned>(g_gs_measurement_overrides.self_read_arm),
 			g_gs_measurement_overrides.declare_depth_loop ? "DECLARED" : "off",
 			g_gs_measurement_overrides.disable_stencil_buffer ? "FORCED OFF" : "device",
-			g_gs_measurement_overrides.alpha_bit_logic_op ? (m_features.alpha_bit_logic_op ? "FORCED ON" : "FORCED but no logicOp") : "device");
+			g_gs_measurement_overrides.alpha_bit_logic_op ? (m_features.alpha_bit_logic_op ? "FORCED ON" : "FORCED but no logicOp") : "device",
+			g_gs_measurement_overrides.no_provoking_vertex ? "FORCED OFF" : "device");
 	}
 	if (m_features.alpha_bit_logic_op)
 		Console.WriteLn("VK: alpha bit 7 marks through a logic op (no target read).");
