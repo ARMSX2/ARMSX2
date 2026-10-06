@@ -567,19 +567,107 @@ TEST(GSGpuDriverProfile, AutoResolvesToVulkanOnMt6897)
 		kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion, kMt6897LinuxHints));
 }
 
-// The other polarity, which is the one that costs a whole device class if it is wrong: every other
-// Mali part keeps OpenGL, including the same driver revision on a different MediaTek SoC and the
-// same strings with no SoC hint at all. Sending an unmeasured Mali to Vulkan re-ships the 2.6.6.5
-// complaint in the opposite direction -- the GL fetch path there is the fast one.
-TEST(GSGpuDriverProfile, AutoStaysOnOpenGLForEveryOtherMaliPart)
+// The other polarity, which is the one that costs a whole device class if it is wrong: a Mali part
+// outside Valhall v9 and v11 keeps OpenGL. That is v10 (G310/G510/G610/G710), Bifrost, and the
+// 5th-gen parts, whose names read like v11 and are not (G620/G720 are arch 12, G625/G725 arch 13).
+// The GL fetch path is the fast one there, and none of these were measured on Vulkan.
+TEST(GSGpuDriverProfile, AutoStaysOnOpenGLForTheMaliPartsOutsideValhallV9AndV11)
 {
-	EXPECT_FALSE(AutoPrefersVulkan(
-		kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion, kOtherMediaTekHints));
-	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion));
-	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G715",
-		"OpenGL ES 3.2 v1.r46p0-01eac0.deadbeefdeadbeefdeadbeefdeadbeef", kOtherMediaTekHints));
-	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G57 MC2",
-		"OpenGL ES 3.2 v1.r32p1-01eac0.deadbeefdeadbeefdeadbeefdeadbeef"));
+	for (const char* renderer : {"Mali-G310 MC2", "Mali-G510 MC4", "Mali-G610 MC6", "Mali-G710 MC10",
+			 "Mali-G52 MC2", "Mali-G76 MC12", "Mali-G71 MP20", "Mali-G31 MP2", "Mali-G620 MC4",
+			 "Mali-G720 MC7", "Mali-G625 MC6", "Mali-G725 MC6", "Immortalis-G925 MC12", "Mali-T880 MP12"})
+	{
+		EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, renderer, kMaliR44p1GlVersion)) << renderer;
+		EXPECT_STREQ(GSUtil::AndroidAutoRendererReason(), "no rule steers this device to Vulkan") << renderer;
+		// A MediaTek SoC that was not measured makes no difference to a part the architecture rule
+		// does not cover.
+		EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, renderer, kMaliR44p1GlVersion, kOtherMediaTekHints))
+			<< renderer;
+	}
+}
+
+// Auto runs Vulkan on Mali Valhall v9 (G57, G68, G77, G78) and v11 (G615, G715, Immortalis
+// included), whatever the GL driver revision and with no SoC hint to go on. The answer comes from
+// the GL strings alone, so it cannot depend on which Vulkan driver is installed -- Arm's or our
+// malisx2 pack -- because no Vulkan device exists when Auto is decided.
+TEST(GSGpuDriverProfile, AutoResolvesToVulkanOnMaliValhallV9AndV11)
+{
+	struct Case
+	{
+		const char* renderer;
+		const char* expected_reason;
+	};
+	const Case cases[] = {
+		{"Mali-G57 MC2", "Mali-G57 MC2 is Valhall v9, which Auto runs on Vulkan"},
+		{"Mali-G68 MC4", "Mali-G68 MC4 is Valhall v9, which Auto runs on Vulkan"},
+		{"Mali-G77 MC9", "Mali-G77 MC9 is Valhall v9, which Auto runs on Vulkan"},
+		{"Mali-G78 MC14", "Mali-G78 MC14 is Valhall v9, which Auto runs on Vulkan"},
+		{"Mali-G615 MC2", "Mali-G615 MC2 is Valhall v11, which Auto runs on Vulkan"},
+		{"Mali-G715 MC7", "Mali-G715 MC7 is Valhall v11, which Auto runs on Vulkan"},
+		{"Mali-G715-Immortalis MC11", "Immortalis-G715 MC11 is Valhall v11, which Auto runs on Vulkan"},
+	};
+	// Four Arm GL revisions, old to new. Arm's revision is not a term of this rule.
+	for (const char* version :
+		{"OpenGL ES 3.2 v1.r32p1-01eac0.deadbeefdeadbeefdeadbeefdeadbeef", kMaliR44p1GlVersion,
+			"OpenGL ES 3.2 v1.r46p0-01eac0.deadbeefdeadbeefdeadbeefdeadbeef",
+			"OpenGL ES 3.2 v1.r52p0-01eac0.deadbeefdeadbeefdeadbeefdeadbeef"})
+	{
+		for (const Case& c : cases)
+		{
+			EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, c.renderer, version)) << c.renderer << " " << version;
+			EXPECT_STREQ(GSUtil::AndroidAutoRendererReason(), c.expected_reason) << c.renderer;
+			// An SoC the database has no opinion on does not change it either.
+			EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, c.renderer, version, kOtherMediaTekHints))
+				<< c.renderer << " " << version;
+		}
+	}
+}
+
+// Parts whose names sit one digit away from a v9 or v11 part. Each pair is decided by the whole
+// model number, so a prefix match (G71 inside G715, G31 inside G310, G72 inside G720) or a near
+// miss (G610 against G615, G710 against G715) would send one of them the wrong way.
+TEST(GSGpuDriverProfile, AutoDecidesByTheWholeMaliModelNumber)
+{
+	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G610 MC6", kMaliR44p1GlVersion));
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G615 MC6", kMaliR44p1GlVersion));
+	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G710 MC10", kMaliR44p1GlVersion));
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G715 MC10", kMaliR44p1GlVersion));
+	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G71 MP8", kMaliR44p1GlVersion));
+	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G720 MC7", kMaliR44p1GlVersion));
+	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G31 MP2", kMaliR44p1GlVersion));
+	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G310 MC2", kMaliR44p1GlVersion));
+	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G51 MP4", kMaliR44p1GlVersion));
+	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G52 MC2", kMaliR44p1GlVersion));
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G57 MC2", kMaliR44p1GlVersion));
+	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G510 MC4", kMaliR44p1GlVersion));
+	// The Immortalis name written with the brand first, as a tool that rebuilds the name would.
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Immortalis-G715 MC11", kMaliR44p1GlVersion));
+}
+
+// Nothing outside Mali moves. Adreno keeps its own reason (a model number that happens to match a
+// Mali one must not change who answered), and a GPU that is not identified at all stays on OpenGL.
+TEST(GSGpuDriverProfile, TheMaliArchitectureRuleLeavesOtherVendorsAlone)
+{
+	EXPECT_TRUE(AutoPrefersVulkan("Qualcomm", "Adreno (TM) 615", "OpenGL ES 3.2 V@0676.0"));
+	EXPECT_NE(std::string(GSUtil::AndroidAutoRendererReason()).find("Adreno"), std::string::npos);
+
+	EXPECT_FALSE(AutoPrefersVulkan("Imagination Technologies", "PowerVR Rogue GE8320", "OpenGL ES 3.2 build 1.9@4850625"));
+	EXPECT_STREQ(GSUtil::AndroidAutoRendererReason(), "no rule steers this device to Vulkan");
+	EXPECT_FALSE(AutoPrefersVulkan("Samsung Electronics", "Samsung Xclipse 920", "OpenGL ES 3.2"));
+	EXPECT_FALSE(AutoPrefersVulkan("", "", ""));
+	EXPECT_STREQ(GSUtil::AndroidAutoRendererReason(), "no rule steers this device to Vulkan");
+}
+
+// The policy on its own: v9 and v11 only. 0 is "not Valhall", which is what Bifrost and the 5th-gen
+// parts report.
+TEST(GSGpuDriverProfile, OnlyValhallV9AndV11PreferVulkan)
+{
+	EXPECT_FALSE(GSUtil::MaliValhallArchPrefersVulkan(0));
+	EXPECT_TRUE(GSUtil::MaliValhallArchPrefersVulkan(9));
+	EXPECT_FALSE(GSUtil::MaliValhallArchPrefersVulkan(10));
+	EXPECT_TRUE(GSUtil::MaliValhallArchPrefersVulkan(11));
+	EXPECT_FALSE(GSUtil::MaliValhallArchPrefersVulkan(12));
+	EXPECT_FALSE(GSUtil::MaliValhallArchPrefersVulkan(13));
 }
 
 // Adreno was steered to Vulkan long before any of this and must still be, for its own reason. The
@@ -640,10 +728,11 @@ TEST(GSGpuDriverProfile, Rg477vAdbStrings20260903ResolveAutoToVulkan)
 	EXPECT_STREQ(GSUtil::AndroidAutoRendererReason(), "the driver database prefers Vulkan on this SoC");
 }
 
-// The same strings with the SoC changed to a part nobody measured. This is the case that decides
-// how far the flip travels: the GPU, the driver revision and the vendor are identical, so if the
-// rule keyed on any of those instead of on the SoC, this device would move too.
-TEST(GSGpuDriverProfile, Rg477vAdbStrings20260903OnAnMt6895BoardStayOnOpenGL)
+// The same strings with the SoC changed to a part nobody measured. The database's SoC-keyed
+// preference does not travel with the SoC, so the database rule stays off and the match count stays
+// level. Auto still says Vulkan, because the GPU is a G615 and the architecture rule answers for it;
+// the reason says so, instead of crediting the database.
+TEST(GSGpuDriverProfile, Rg477vAdbStrings20260903OnAnMt6895BoardResolvesToVulkanByArchitecture)
 {
 	const GpuProfileSelection other_soc = ResolveGL(kMaliR44p1GlVendor, kMaliR44p1GlRenderer,
 		kMaliR44p1GlVersion, kMt6895BoardHints2026_09_03);
@@ -656,9 +745,9 @@ TEST(GSGpuDriverProfile, Rg477vAdbStrings20260903OnAnMt6895BoardStayOnOpenGL)
 	EXPECT_FALSE(DatabasePrefersVulkan(other_soc));
 	EXPECT_EQ(other_soc.driver.matched_rule_count, without_soc.driver.matched_rule_count);
 
-	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion,
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion,
 		kMt6895BoardHints2026_09_03));
-	EXPECT_STREQ(GSUtil::AndroidAutoRendererReason(), "no rule steers this device to Vulkan");
+	EXPECT_STREQ(GSUtil::AndroidAutoRendererReason(), "Mali-G615 MC6 is Valhall v11, which Auto runs on Vulkan");
 }
 
 // The forced-bug override, which is how a test harness reaches a workaround road on a machine

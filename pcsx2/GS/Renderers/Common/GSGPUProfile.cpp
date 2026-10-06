@@ -280,6 +280,21 @@ const char* GpuProfileDetector::ArchitectureToString(MobileGpuArchitecture value
 	}
 }
 
+u32 GpuProfileDetector::MaliValhallArch(MobileGpuArchitecture architecture)
+{
+	switch (architecture)
+	{
+		case MobileGpuArchitecture::MaliValhall1:
+			return 9;
+		case MobileGpuArchitecture::MaliValhall2:
+			return 10;
+		case MobileGpuArchitecture::MaliValhall3:
+			return 11;
+		default:
+			return 0;
+	}
+}
+
 static void ApplyResolvedProfile(GpuProfileSelection& selection, RuntimeGpuProfile runtime_profile,
 	GpuProfileDetail::ResolvedGpuProfile&& resolved)
 {

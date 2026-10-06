@@ -2136,10 +2136,11 @@ open class MainActivityRuntime : ComponentActivity() {
         runCatching { com.armsx2.config.ConfigStore.migrateAffinityPerfCores(applicationContext) }
         runCatching { com.armsx2.config.ConfigStore.migrateAchievementsToSettings() }
         // Steer the renderer's Auto resolution. Vulkan HW on Adreno (tile-memory framebuffer-fetch
-        // fast path) and on any device whose GL driver cannot read the render target in-tile, where
-        // OpenGL degrades to a tile flush per self-referential draw; a healthy Mali stays on
-        // OpenGL, which is its fast path. The verdict is computed natively because it consults the
-        // driver-bug database, so all we do here is hand over the probed GL strings. Sets a native
+        // fast path), on any device whose GL driver cannot read the render target in-tile, where
+        // OpenGL degrades to a tile flush per self-referential draw, and on Mali Valhall v9 and v11
+        // (G57/G68/G77/G78 and G615/G715); other Mali stays on OpenGL, which is its fast path. The
+        // verdict is computed natively because it consults the driver-bug database and the Mali
+        // model table, so all we do here is hand over the probed GL strings. Sets a native
         // flag GSUtil::GetPreferredRenderer reads before the GS starts, so an explicit GL/SW pick
         // still wins. Re-asserted each launch.
         runCatching {

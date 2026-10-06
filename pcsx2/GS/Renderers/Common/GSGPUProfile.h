@@ -399,6 +399,12 @@ public:
 	static const char* OverrideToString(GpuProfileOverride value);
 	static const char* RuntimeProfileToString(RuntimeGpuProfile value);
 	static const char* ArchitectureToString(MobileGpuArchitecture value);
+
+	/// Arm's architecture number for a Valhall part, counted as Mesa's panfrost model table
+	/// counts it: 9 for G57/G68/G77/G78, 10 for G310/G510/G610/G710, 11 for G615/G715. 0 for
+	/// everything else. The 5th-gen parts are NOT v11: G620/G720 are 12 and G625/G725 are 13.
+	static u32 MaliValhallArch(MobileGpuArchitecture architecture);
+
 	static const char* ApiToString(MobileGpuApi value);
 	static const char* DriverToString(MobileGpuDriver value);
 	static const char* BugToString(DriverBug value);

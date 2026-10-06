@@ -8,6 +8,7 @@
 #include "common/StringUtil.h"
 
 #include <array>
+#include <string>
 
 #include "GS/Renderers/Common/GSGPUProfile.h"
 #include "common/Console.h"
@@ -298,10 +299,19 @@ bool g_gs_android_prefer_vk = false;
 static std::string s_android_gl_renderer;
 static std::string s_android_gl_version;
 static const char* s_android_auto_reason = "no rule steers this device to Vulkan";
+// Backs s_android_auto_reason when the reason names the device, which a string literal cannot.
+static std::string s_android_auto_reason_text;
 
 const char* GSUtil::AndroidAutoRendererReason()
 {
 	return s_android_auto_reason;
+}
+
+bool GSUtil::MaliValhallArchPrefersVulkan(u32 valhall_arch)
+{
+	// Owner's call, not a defect list: v9 and v11 run Vulkan by default. v10 (G310/G510/G610/G710)
+	// is deliberately left on OpenGL, as is Bifrost.
+	return valhall_arch == 9 || valhall_arch == 11;
 }
 
 bool GSUtil::AndroidAutoPrefersVulkan(std::string_view gl_vendor, std::string_view gl_renderer,
@@ -360,6 +370,22 @@ bool GSUtil::AndroidAutoPrefersVulkan(std::string_view gl_vendor, std::string_vi
 		return true;
 	}
 
+	// Mali Valhall v9 and v11 by architecture, whichever Vulkan driver is installed. Nothing here
+	// looks at the Vulkan driver: Auto is decided from the system GL strings before a Vulkan device
+	// exists, and those are Arm's whether the user loads our malisx2 pack or not. Placed after the
+	// rules above so a device they already decide keeps the reason they report.
+	if (selection.runtime_profile == RuntimeGpuProfile::Mali)
+	{
+		const u32 valhall_arch = GpuProfileDetector::MaliValhallArch(selection.gpu.architecture);
+		if (MaliValhallArchPrefersVulkan(valhall_arch))
+		{
+			s_android_auto_reason_text = StringUtil::StdStringFromFormat(
+				"%s is Valhall v%u, which Auto runs on Vulkan", selection.gpu.name.c_str(), valhall_arch);
+			s_android_auto_reason = s_android_auto_reason_text.c_str();
+			return true;
+		}
+	}
+
 	return false;
 }
 
@@ -380,11 +406,11 @@ GSRendererType GSUtil::GetPreferredRenderer()
 		preferred_renderer = D3D::GetPreferredRenderer();
 #elif defined(__ANDROID__)
 		// Android: Auto resolves to Vulkan HW on Adreno (the tile-memory framebuffer-fetch fast
-		// path) and on any device whose GL driver cannot read the render target in-tile, OpenGL HW
-		// elsewhere (a healthy Mali runs GL_ARM_shader_framebuffer_fetch, which is the fast path
-		// there; Xclipse has no working VK fbfetch). The app sets g_gs_android_prefer_vk from
-		// AndroidAutoPrefersVulkan before the GS starts. This only steers Auto — an explicit
-		// Vulkan/OpenGL/SW pick still wins.
+		// path), on any device whose GL driver cannot read the render target in-tile, and on Mali
+		// Valhall v9 and v11. OpenGL HW elsewhere (the other Mali parts run
+		// GL_ARM_shader_framebuffer_fetch, which is the fast path there; Xclipse has no working VK
+		// fbfetch). The app sets g_gs_android_prefer_vk from AndroidAutoPrefersVulkan before the
+		// GS starts. This only steers Auto — an explicit Vulkan/OpenGL/SW pick still wins.
 #if defined(ENABLE_VULKAN) && defined(ENABLE_OPENGL)
 		preferred_renderer = g_gs_android_prefer_vk ? GSRendererType::VK : GSRendererType::OGL;
 		// Logged here rather than where it was decided: the decision happens at app startup, before
