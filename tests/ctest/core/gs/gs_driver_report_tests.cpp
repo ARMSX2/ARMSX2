@@ -4,9 +4,11 @@
 // The driver report's pure parts: which driver answered, what was expected of the selected pack,
 // the axfl build tag, driverVersion decoding, and the JSON writer and reader.
 //
-// The served-driver verdict is the report's most important line, and its trap is libmali: it
+// The served-driver verdict is the report's most important line, and its trap is malisx2: it
 // reports Arm's driverID and a stock device name on purpose, so only its driverInfo tells it apart
-// from Arm's own driver. The strings below are what the devices report.
+// from Arm's own driver. Packs released before the rename (when it was called libmali) say
+// "libmali" in driverInfo, so both spellings are tested. The strings below are what the devices
+// report.
 
 #include "GS/DriverReport/GSDriverReportClassify.h"
 #include "GS/DriverReport/GSDriverReportJson.h"
@@ -54,16 +56,46 @@ TEST(GSDriverReport, QualcommBlobIsTheVendorDriver)
 	EXPECT_EQ(c.answered, "vendor-qualcomm");
 }
 
-TEST(GSDriverReport, LibmaliIsToldApartByDriverInfoNotDriverId)
+TEST(GSDriverReport, MaliSX2IsToldApartByDriverInfoNotDriverId)
 {
-	// libmali presents Arm's driverID and a stock Mali name; only driverInfo differs.
-	const ServedDriverClassification lib = ClassifyServedDriver(Facts(0x13B5, DriverIdValue::ArmProprietary,
-		"Mali-G615", "v1.r44p1-libmali.0.1.s0123abcd", "Mali-G615"));
-	EXPECT_EQ(lib.answered, "libmali");
+	// malisx2 presents Arm's driverID and a stock Mali name; only driverInfo differs.
+	const ServedDriverClassification sx2 = ClassifyServedDriver(Facts(0x13B5, DriverIdValue::ArmProprietary,
+		"Mali-G615", "v1.r44p1-malisx2.0.2.s0123abcd", "Mali-G615"));
+	EXPECT_EQ(sx2.answered, "malisx2");
 
 	const ServedDriverClassification arm = ClassifyServedDriver(Facts(0x13B5, DriverIdValue::ArmProprietary,
 		"Mali-G615", "v1.r44p1-01eac0.030c4a3fb15fe65f485fb565f5e1b688", "Mali-G615 MC6"));
 	EXPECT_EQ(arm.answered, "vendor-arm");
+}
+
+TEST(GSDriverReport, PreRenameLibmaliPackStillClassifiesAsMaliSX2)
+{
+	// Packs released before the rename say "libmali" in driverInfo.
+	const ServedDriverClassification lib = ClassifyServedDriver(Facts(0x13B5, DriverIdValue::ArmProprietary,
+		"Mali-G615", "v1.r44p1-libmali.0.1.s0123abcd", "Mali-G615"));
+	EXPECT_EQ(lib.answered, "malisx2");
+}
+
+TEST(GSDriverReport, ArmStockBlobIsNotMaliSX2)
+{
+	// A stock Arm blob on the same vendorID, driverID and device name as ours.
+	const ServedDriverClassification arm = ClassifyServedDriver(Facts(0x13B5, DriverIdValue::ArmProprietary,
+		"Mali-G615", "v1.r40p0-01eac0.abcdef", "Mali-G615"));
+	EXPECT_EQ(arm.answered, "vendor-arm");
+}
+
+TEST(GSDriverReport, IsMaliSX2DriverMatchesEitherSpellingInDriverInfo)
+{
+	EXPECT_TRUE(IsMaliSX2Driver("v1.r44p1-malisx2.0.2.s0123abcd"));
+	EXPECT_TRUE(IsMaliSX2Driver("v1.r44p1-libmali.0.1.s0123abcd"));
+	EXPECT_TRUE(IsMaliSX2Driver("malisx2"));
+	EXPECT_TRUE(IsMaliSX2Driver("libmali"));
+
+	EXPECT_FALSE(IsMaliSX2Driver("v1.r40p0-01eac0.abcdef"));
+	EXPECT_FALSE(IsMaliSX2Driver("v1.r44p1-01eac0.030c4a3fb15fe65f485fb565f5e1b688"));
+	EXPECT_FALSE(IsMaliSX2Driver("Mesa 26.1.2 (git-axfl2-001)"));
+	EXPECT_FALSE(IsMaliSX2Driver("mali"));
+	EXPECT_FALSE(IsMaliSX2Driver(""));
 }
 
 TEST(GSDriverReport, PanVKAndUnknownDrivers)
@@ -80,7 +112,10 @@ TEST(GSDriverReport, ExpectedDriverFromThePack)
 	EXPECT_EQ(ExpectedDriverForPack(false, "", "", ""), "system");
 	EXPECT_EQ(ExpectedDriverForPack(true, "ARMSX2 Turnip axfl2-001", "libvulkan_freedreno.so", ""), "turnip");
 	EXPECT_EQ(ExpectedDriverForPack(true, "some-pack", "libvulkan_freedreno.so", ""), "turnip");
-	EXPECT_EQ(ExpectedDriverForPack(true, "libmali r44p1", "libvulkan_mali.so", ""), "libmali");
+	EXPECT_EQ(ExpectedDriverForPack(true, "malisx2 r44p1", "libvulkan_malisx2.so", ""), "malisx2");
+	// Packs released before the rename.
+	EXPECT_EQ(ExpectedDriverForPack(true, "libmali r44p1", "libvulkan_mali.so", ""), "malisx2");
+	EXPECT_EQ(ExpectedDriverForPack(true, "some-pack", "libvulkan_armsx2_mali.so", ""), "malisx2");
 	EXPECT_EQ(ExpectedDriverForPack(true, "mystery", "libvulkan_x.so", ""), "custom");
 }
 
@@ -89,8 +124,13 @@ TEST(GSDriverReport, MatchFlagsASilentFallback)
 	EXPECT_TRUE(ServedDriverMatches("turnip", "turnip"));
 	// A Turnip pack that fell back to the system loader answers as the Qualcomm blob.
 	EXPECT_FALSE(ServedDriverMatches("turnip", "vendor-qualcomm"));
-	EXPECT_FALSE(ServedDriverMatches("libmali", "vendor-arm"));
-	EXPECT_TRUE(ServedDriverMatches("libmali", "libmali"));
+	EXPECT_FALSE(ServedDriverMatches("malisx2", "vendor-arm"));
+	EXPECT_TRUE(ServedDriverMatches("malisx2", "malisx2"));
+	// A pack of either name is expected to answer with the same label, whichever driverInfo it has.
+	EXPECT_TRUE(ServedDriverMatches(ExpectedDriverForPack(true, "libmali r44p1", "libvulkan_mali.so", ""),
+		ClassifyServedDriver(Facts(0x13B5, DriverIdValue::ArmProprietary, "Mali-G615", "v1.r44p1-malisx2.0.2.s0123abcd", "Mali-G615")).answered));
+	EXPECT_TRUE(ServedDriverMatches(ExpectedDriverForPack(true, "malisx2 v0.0.2", "libvulkan_malisx2.so", ""),
+		ClassifyServedDriver(Facts(0x13B5, DriverIdValue::ArmProprietary, "Mali-G615", "v1.r44p1-libmali.0.1.s0123abcd", "Mali-G615")).answered));
 	// With the system driver selected, whatever answered is the system driver.
 	EXPECT_TRUE(ServedDriverMatches("system", "vendor-qualcomm"));
 	EXPECT_TRUE(ServedDriverMatches("system", "turnip"));

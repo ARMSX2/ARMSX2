@@ -58,7 +58,7 @@ object CustomDriver {
     )
 
     /** Mali architecture v11: the G615 and G715 (Immortalis-G715 included), the only GPUs
-     *  our libmali packs drive so far. GL_RENDERER reads like "Mali-G615 MC6" or
+     *  our MaliSX2 packs drive so far. GL_RENDERER reads like "Mali-G615 MC6" or
      *  "Mali-G715-Immortalis MC11". */
     private val MALI_V11 = Regex("""\bG[67]15\b""", RegexOption.IGNORE_CASE)
     internal fun isMaliV11(renderer: String?): Boolean =
@@ -68,11 +68,14 @@ object CustomDriver {
 
     private val DRIVER_SOURCES = listOf(
         // Our own Vulkan driver for Mali, replacing Arm's on the kbase kernel driver. One
-        // adrenotools pack per release (meta.json + libvulkan_armsx2_mali.so), loaded the
+        // adrenotools pack per release (meta.json + libvulkan_malisx2.so), loaded the
         // same way as the Turnip packs. Listed only on the GPUs it supports.
+        // The id prefix is still "armsx2libmali", from before the driver was renamed: it is
+        // part of the install directory name and of the saved customDriverId of every pack
+        // already installed, so it must not change.
         DriverSource(
-            "ARMSX2 · libmali",
-            "https://api.github.com/repos/bmdhacks/armsx2-libmali/releases",
+            "ARMSX2 · MaliSX2",
+            "https://api.github.com/repos/bmdhacks/malisx2/releases",
             "armsx2libmali",
             supports = ::isMaliV11,
         ),

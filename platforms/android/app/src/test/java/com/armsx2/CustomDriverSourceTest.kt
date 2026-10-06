@@ -6,7 +6,7 @@ import org.junit.Test
 
 class CustomDriverSourceTest {
     @Test
-    fun libmaliListsOnMaliV11Only() {
+    fun maliSX2ListsOnMaliV11Only() {
         for (r in listOf("Mali-G615 MC6", "Mali-G615 MC2", "Mali-G715 MC7", "Mali-G715-Immortalis MC11", "Immortalis-G715 MC11"))
             assertTrue(r, CustomDriver.isMaliV11(r))
         for (r in listOf(

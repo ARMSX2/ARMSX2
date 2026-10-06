@@ -29,6 +29,11 @@ namespace GSDriverReport
 		return GpuProfileDetector::ParseDeclaredLoopFixGeneration(driver_info);
 	}
 
+	bool IsMaliSX2Driver(std::string_view driver_info)
+	{
+		return Contains(driver_info, "malisx2") || Contains(driver_info, "libmali");
+	}
+
 	ServedDriverClassification ClassifyServedDriver(const ServedDriverFacts& facts)
 	{
 		ServedDriverClassification out;
@@ -42,9 +47,9 @@ namespace GSDriverReport
 		out.evidence = std::string("driverInfo=\"") + std::string(facts.driver_info) + "\" driverName=\"" +
 		               std::string(facts.driver_name) + "\" deviceName=\"" + std::string(facts.device_name) + "\" " + ids;
 
-		// libmali first: it presents itself as Arm's driver on purpose.
-		if (Contains(info, "libmali"))
-			out.answered = "libmali";
+		// malisx2 first: it presents itself as Arm's driver on purpose.
+		if (IsMaliSX2Driver(facts.driver_info))
+			out.answered = "malisx2";
 		else if (facts.driver_id == DriverIdValue::MesaTurnip || Contains(name, "turnip") ||
 				 (facts.vendor_id == GpuVendorID::Qualcomm && Contains(info, "mesa")))
 			out.answered = "turnip";
@@ -78,8 +83,9 @@ namespace GSDriverReport
 
 		const std::string text = Lower(std::string(pack_name) + " " + std::string(library_name) + " " +
 									   std::string(description));
-		if (Contains(text, "libmali") || Contains(text, "mali"))
-			return "libmali";
+		// "mali" also covers "malisx2" and the old "libmali" name, and a bare Mali pack name.
+		if (Contains(text, "mali"))
+			return "malisx2";
 		if (Contains(text, "turnip") || Contains(text, "freedreno") || Contains(text, "mesa") ||
 			Contains(text, "axfl"))
 			return "turnip";

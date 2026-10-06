@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "GS/DriverReport/GSDriverReportClassify.h"
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSStreamRingMemoryPolicy.h"
 #include "GS/GSVector.h"
@@ -164,6 +165,10 @@ public:
 	__fi bool IsDevicePowerVR() const { return (m_device_properties.vendorID == GpuVendorID::Imagination); }
 	/// Samsung Xclipse (Exynos, AMD RDNA2).
 	__fi bool IsDeviceXclipse() const { return (m_device_properties.vendorID == GpuVendorID::Samsung); }
+
+	/// Returns true if the driver is malisx2, our Vulkan driver for Mali. It reports Arm's vendorID
+	/// and driverID, so neither can be used here; driverInfo is what tells it apart.
+	__fi bool IsDeviceMaliSX2() const { return GSDriverReport::IsMaliSX2Driver(m_device_driver_properties.driverInfo); }
 
 	/// Returns true if running on an Apple GPU, under either MoltenVK or Asahi's Honeykrisp.
 	/// Unlike the checks above this gates on driverID, because Apple silicon does not report

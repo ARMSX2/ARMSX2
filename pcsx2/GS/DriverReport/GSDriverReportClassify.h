@@ -38,7 +38,7 @@ namespace GSDriverReport
 
 	struct ServedDriverClassification
 	{
-		/// "turnip", "libmali", "vendor-qualcomm", "vendor-arm", "panvk", "mesa-<driverName>" for
+		/// "turnip", "malisx2", "vendor-qualcomm", "vendor-arm", "panvk", "mesa-<driverName>" for
 		/// another Mesa driver, "other", or "unknown".
 		std::string answered;
 		/// The property values the verdict rests on, for a human to check.
@@ -47,13 +47,20 @@ namespace GSDriverReport
 		uint32_t axfl_generation = 0;
 	};
 
-	/// Classifies the driver from its own properties. libmali deliberately reports Arm's driverID
-	/// and a stock-looking device name, so it is told apart by the "libmali" in its driverInfo and
-	/// never by driverID.
+	/// Whether driverInfo names malisx2, our Vulkan driver for Mali. It reports Arm's vendorID,
+	/// driverID and a stock-looking device name on purpose, so driverInfo is the only field that
+	/// tells it apart from Arm's own driver. Packs released before the driver was renamed say
+	/// "libmali" there instead of "malisx2", so both count. Arm's stock driverInfo
+	/// ("v1.r40p0-01eac0.<hash>") has neither.
+	bool IsMaliSX2Driver(std::string_view driver_info);
+
+	/// Classifies the driver from its own properties. malisx2 deliberately reports Arm's driverID
+	/// and a stock-looking device name, so it is told apart by IsMaliSX2Driver on its driverInfo
+	/// and never by driverID.
 	ServedDriverClassification ClassifyServedDriver(const ServedDriverFacts& facts);
 
 	/// What a selected custom pack should be, from its name, library file name and meta.json text:
-	/// "turnip", "libmali", or "custom" when neither can be told. Returns "system" for no pack.
+	/// "turnip", "malisx2", or "custom" when neither can be told. Returns "system" for no pack.
 	std::string ExpectedDriverForPack(bool custom_selected, std::string_view pack_name,
 		std::string_view library_name, std::string_view description);
 
