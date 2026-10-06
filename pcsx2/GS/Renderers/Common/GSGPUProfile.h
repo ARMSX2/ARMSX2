@@ -392,6 +392,14 @@ public:
 	static std::string DescribeWorkarounds(u64 mask);
 	static std::string DescribeDeviceRules(const VulkanDeviceRules& rules);
 
+	/// Whether driverInfo names malisx2, our Vulkan driver for Mali. It reports Arm's vendorID,
+	/// driverID and a stock-looking device name on purpose, so driverInfo is the only field that
+	/// tells it apart from Arm's own driver. Packs released before the driver was renamed say
+	/// "libmali" there instead of "malisx2", so both count. Arm's stock driverInfo
+	/// ("v1.r40p0-01eac0.<hash>") has neither. Lives here, not in the driver report, because the
+	/// rule resolvers below key on it and the report sits above them.
+	static bool IsMaliSX2Driver(std::string_view driver_info);
+
 	static GpuProfileSelection Resolve(std::string_view override_value, std::string_view gpu_vendor,
 		std::string_view gpu_renderer_or_name);
 	/// Also resolves the driver profile. The three-argument form leaves

@@ -31,7 +31,7 @@ namespace GSDriverReport
 
 	bool IsMaliSX2Driver(std::string_view driver_info)
 	{
-		return Contains(driver_info, "malisx2") || Contains(driver_info, "libmali");
+		return GpuProfileDetector::IsMaliSX2Driver(driver_info);
 	}
 
 	ServedDriverClassification ClassifyServedDriver(const ServedDriverFacts& facts)

@@ -47,11 +47,8 @@ namespace GSDriverReport
 		uint32_t axfl_generation = 0;
 	};
 
-	/// Whether driverInfo names malisx2, our Vulkan driver for Mali. It reports Arm's vendorID,
-	/// driverID and a stock-looking device name on purpose, so driverInfo is the only field that
-	/// tells it apart from Arm's own driver. Packs released before the driver was renamed say
-	/// "libmali" there instead of "malisx2", so both count. Arm's stock driverInfo
-	/// ("v1.r40p0-01eac0.<hash>") has neither.
+	/// Whether driverInfo names malisx2, our Vulkan driver for Mali. Forwards to
+	/// GpuProfileDetector::IsMaliSX2Driver, which owns the rule.
 	bool IsMaliSX2Driver(std::string_view driver_info);
 
 	/// Classifies the driver from its own properties. malisx2 deliberately reports Arm's driverID

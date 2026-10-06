@@ -1139,3 +1139,16 @@ TEST(GSGpuDriverProfile, BugAndWorkaroundNamesComeFromTheSameTablesAsTheDriverRe
 	const std::string workarounds = GpuProfileDetector::DescribeWorkarounds(sel.driver.workarounds);
 	EXPECT_NE(workarounds.find("UseRenderTargetCopyForFeedback"), std::string::npos);
 }
+
+// The identity predicate lives in the profile layer, because the rule resolvers key on it and the
+// driver report that also uses it sits above them. The report's own wrapper has its own test.
+TEST(GSGpuDriverProfile, IsMaliSX2DriverMatchesEitherSpellingInDriverInfo)
+{
+	EXPECT_TRUE(GpuProfileDetector::IsMaliSX2Driver("v1.r44p1-malisx2.0.2.s0123abcd"));
+	EXPECT_TRUE(GpuProfileDetector::IsMaliSX2Driver("v1.r44p1-libmali.0.1.s0123abcd"));
+
+	// Arm's own r44p1 shares the revision text but not the name.
+	EXPECT_FALSE(GpuProfileDetector::IsMaliSX2Driver(kMaliR44p1DriverInfo));
+	EXPECT_FALSE(GpuProfileDetector::IsMaliSX2Driver("Mesa 26.1.2 (git-axfl2-001)"));
+	EXPECT_FALSE(GpuProfileDetector::IsMaliSX2Driver(""));
+}

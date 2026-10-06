@@ -381,6 +381,12 @@ const char* GpuProfileDetector::WorkaroundToString(DriverWorkaround value)
 	}
 }
 
+bool GpuProfileDetector::IsMaliSX2Driver(std::string_view driver_info)
+{
+	return driver_info.find("malisx2") != std::string_view::npos ||
+	       driver_info.find("libmali") != std::string_view::npos;
+}
+
 static void AppendName(std::string& list, std::string_view name)
 {
 	if (!list.empty())
