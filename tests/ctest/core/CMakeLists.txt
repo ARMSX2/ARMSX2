@@ -7,6 +7,7 @@ add_pcsx2_test(core_test
 	savestate_legacy_tests.cpp
 	settings_precedence_tests.cpp
 	gsrunner_affinity_tests.cpp
+	texture_upscale_setting_tests.cpp
 	MockMemoryInterface.h
 	StubHost.cpp
 )

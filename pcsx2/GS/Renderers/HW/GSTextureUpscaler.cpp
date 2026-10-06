@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// RAISR 2x upscaler. The algorithm and the trained filters are from Intel's Library for Video
+// RAISR 2x upscaler. The algorithm and the filter file format are from Intel's Library for Video
 // Super Resolution (BSD-3-Clause, https://github.com/OpenVisualCloud/Video-Super-Resolution-Library,
 // commit ea37e77): Library/Raisr_OpenCL_kernel.h is the clearest statement of it, Raisr.cpp and
-// Raisr_AVX256.cpp the CPU version it was trained against. cppraisr (MIT) is the model for the
-// plain-C++ structure. This is a port of the algorithm; none of Intel's AVX or IPP code is used.
+// Raisr_AVX256.cpp the CPU version Intel's filters were trained against. cppraisr (MIT) is the
+// model for the plain-C++ structure. This is a port of the algorithm; none of Intel's AVX or IPP
+// code is used. The filters we ship are not Intel's: see bin/resources/upscale/raisr/ps2/README.md.
 //
 // Differences from Intel's CPU path, all deliberate:
 //  - Every pixel is filtered. Intel leaves a 6 pixel border as plain bilinear; here the luma is

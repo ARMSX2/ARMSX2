@@ -133,7 +133,7 @@ void GSRendererHW::VSync(u32 field, bool registers_written, bool idle_frame)
 	// mode is switched off there can still be a tail of queued downloads to drain.
 	g_texture_cache->ProcessPendingDownloads();
 
-	if (GSConfig.LoadTextureReplacements || GSConfig.TextureUpscaleMode != GSTextureUpscaleMode::Off)
+	if (GSConfig.LoadTextureReplacements || GSConfig.TextureUpscale != GSTextureUpscaleMode::Off)
 		GSTextureReplacements::ProcessAsyncLoadedTextures();
 
 	if (!idle_frame)

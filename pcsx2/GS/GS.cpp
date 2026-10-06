@@ -1244,7 +1244,7 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
 	// and when upscaling changes, so textures revert to native or are upscaled with the new mode
 	if (GSConfig.LoadTextureReplacements != old_config.LoadTextureReplacements ||
 		GSConfig.DumpReplaceableTextures != old_config.DumpReplaceableTextures ||
-		GSConfig.TextureUpscaleMode != old_config.TextureUpscaleMode)
+		GSConfig.TextureUpscale != old_config.TextureUpscale)
 	{
 		g_gs_renderer->PurgeTextureCache(true, false, true);
 	}

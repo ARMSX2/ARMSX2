@@ -3,8 +3,8 @@
 
 // Tests for the RAISR 2x texture upscaler engine (GS/Renderers/HW/GSTextureUpscaler.h).
 //
-// The filters under test are the real ones in bin/resources/upscale/raisr. All images are
-// generated here; none come from a third party.
+// The filters under test are the real shipped set, bin/resources/upscale/raisr/ps2. All images
+// are generated here; none come from a third party.
 
 #include "GS/Renderers/HW/GSTextureUpscaleSupport.h"
 #include "GS/Renderers/HW/GSTextureUpscaler.h"
@@ -33,16 +33,18 @@ namespace
 {
 	constexpr double kPi = 3.14159265358979323846;
 
+	// The set the emulator ships; the 4x mode runs it twice.
+	constexpr const char* kShippedSet = "ps2";
+
 	// Quality thresholds, in dB of luma PSNR over bilinear. Set from the measurements printed by
 	// BeatsBilinearOnSyntheticImages.
-	// Measured on the four scenes (shapes, lines, checker, glyphs): sharp +5.9 +2.2 +3.3 +0.9, mean
-	// +3.1; smooth +4.2 +3.1 +3.9 +1.4, mean +3.1. The images and the engine are deterministic, so
-	// the headroom is for float differences between compilers, not noise. Deliberately breaking
-	// the angle convention drops the mean to +0.6 (sharp) / +1.1 (smooth) with b negated and to
-	// +2.1 / +2.2 with the gradient axes swapped, so the mean thresholds sit above the latter.
+	// Measured on the four scenes (shapes, lines, checker, glyphs): +5.7 +3.8 +3.4 +1.6, mean +3.6.
+	// The images and the engine are deterministic, so the headroom is for float differences
+	// between compilers, not noise. Deliberately breaking the angle convention drops the mean to
+	// +0.4 with b negated and to +1.8 with the gradient axes swapped, so the mean threshold sits
+	// above both.
 	constexpr double kMinImageGainDb = 0.4;
-	constexpr double kMinMeanGainSharpDb = 2.6;
-	constexpr double kMinMeanGainSmoothDb = 2.6;
+	constexpr double kMinMeanGainDb = 2.6;
 
 	// -----------------------------------------------------------------------------------------
 	//  Helpers
@@ -344,59 +346,122 @@ namespace
 
 TEST(GSTextureUpscalerFilters, RealFilesLoad)
 {
-	for (const char* set : {"sharp", "smooth"})
+	const auto fs = LoadSet(kShippedSet);
+	ASSERT_TRUE(fs);
+
+	const auto file = ReadFileBytes(SetDir(kShippedSet) + "/filterbin_2_8");
+	ASSERT_EQ(file.size(), 16u + kHashCount * kPixelPhases * kFilterTaps * 4u);
+
+	// Taps land where the file puts them, rows padded to 12 with a zero.
+	for (u32 hash : {0u, 1u, 100u, 215u})
 	{
-		SCOPED_TRACE(set);
-		const auto fs = LoadSet(set);
-		ASSERT_TRUE(fs);
-
-		const auto file = ReadFileBytes(SetDir(set) + "/filterbin_2_8");
-		ASSERT_EQ(file.size(), 16u + kHashCount * kPixelPhases * kFilterTaps * 4u);
-
-		// Taps land where the file puts them, rows padded to 12 with a zero.
-		for (u32 hash : {0u, 1u, 100u, 215u})
+		for (u32 phase = 0; phase < kPixelPhases; phase++)
 		{
-			for (u32 phase = 0; phase < kPixelPhases; phase++)
+			const float* f = fs->Filter(hash, phase);
+			const u8* src = file.data() + 16 + (static_cast<size_t>(hash) * kPixelPhases + phase) * kFilterTaps * 4;
+			double dc = 0;
+			for (u32 row = 0; row < kPatchSize; row++)
 			{
-				const float* f = fs->Filter(hash, phase);
-				const u8* src = file.data() + 16 + (static_cast<size_t>(hash) * kPixelPhases + phase) * kFilterTaps * 4;
-				double dc = 0;
-				for (u32 row = 0; row < kPatchSize; row++)
+				for (u32 col = 0; col < kPatchSize; col++)
 				{
-					for (u32 col = 0; col < kPatchSize; col++)
-					{
-						float expect;
-						std::memcpy(&expect, src + (row * kPatchSize + col) * 4, 4);
-						ASSERT_EQ(f[row * kFilterRowStride + col], expect);
-						dc += expect;
-					}
-					ASSERT_EQ(f[row * kFilterRowStride + kPatchSize], 0.0f);
+					float expect;
+					std::memcpy(&expect, src + (row * kPatchSize + col) * 4, 4);
+					ASSERT_EQ(f[row * kFilterRowStride + col], expect);
+					dc += expect;
 				}
-				EXPECT_NEAR(dc, 1.0, 0.01) << "hash " << hash << " phase " << phase;
+				ASSERT_EQ(f[row * kFilterRowStride + kPatchSize], 0.0f);
 			}
+			EXPECT_NEAR(dc, 1.0, 0.02) << "hash " << hash << " phase " << phase;
 		}
 	}
 
-	// Edges as in the Qfactor files.
-	const auto sharp = LoadSet("sharp");
-	ASSERT_TRUE(sharp);
-	EXPECT_FLOAT_EQ(sharp->StrengthEdges()[0], 0.001269f);
-	EXPECT_FLOAT_EQ(sharp->StrengthEdges()[1], 0.022169f);
-	EXPECT_FLOAT_EQ(sharp->CoherenceEdges()[0], 0.192916f);
-	EXPECT_FLOAT_EQ(sharp->CoherenceEdges()[1], 0.405942f);
-	const auto smooth = LoadSet("smooth");
-	ASSERT_TRUE(smooth);
-	EXPECT_FLOAT_EQ(smooth->StrengthEdges()[0], 0.001579f);
-	EXPECT_FLOAT_EQ(smooth->StrengthEdges()[1], 0.018353f);
-	EXPECT_FLOAT_EQ(smooth->CoherenceEdges()[0], 0.220909f);
-	EXPECT_FLOAT_EQ(smooth->CoherenceEdges()[1], 0.449185f);
+	// Edges as in the Qfactor files: the tertiles of the strength and coherence the training
+	// pixels had.
+	EXPECT_FLOAT_EQ(fs->StrengthEdges()[0], 0.000045414796f);
+	EXPECT_FLOAT_EQ(fs->StrengthEdges()[1], 0.000415970193f);
+	EXPECT_FLOAT_EQ(fs->CoherenceEdges()[0], 0.207463458180f);
+	EXPECT_FLOAT_EQ(fs->CoherenceEdges()[1], 0.434347659349f);
+}
+
+// The shipped files are read by the real loader on every machine, so check them as files: the
+// header, the size, every tap and the bucket edges. The loader's own tests use good files made up
+// here and say nothing about these.
+TEST(GSTextureUpscalerFilters, ShippedSetHasASaneHeaderAndBucketEdges)
+{
+	const std::string dir = SetDir(kShippedSet);
+	const auto file = ReadFileBytes(dir + "/filterbin_2_8");
+	ASSERT_EQ(file.size(), 16u + kHashCount * kPixelPhases * kFilterTaps * 4u);
+	EXPECT_EQ(0, std::memcmp(file.data(), "fp32", 4));
+	auto le32 = [&](size_t off) {
+		u32 v;
+		std::memcpy(&v, file.data() + off, 4);
+		return v;
+	};
+	EXPECT_EQ(le32(4), kHashCount);
+	EXPECT_EQ(le32(8), kPixelPhases);
+	EXPECT_EQ(le32(12), kFilterTaps);
+
+	// Every filter: finite taps of a plausible size that add up to about 1, so a flat patch keeps
+	// its brightness. A filter of zeros or NaNs is not what we trained.
+	double worst_dc = 0, max_tap = 0;
+	for (u32 f = 0; f < kHashCount * kPixelPhases; f++)
+	{
+		double dc = 0;
+		for (u32 t = 0; t < kFilterTaps; t++)
+		{
+			float v;
+			std::memcpy(&v, file.data() + 16 + (static_cast<size_t>(f) * kFilterTaps + t) * 4, 4);
+			ASSERT_TRUE(std::isfinite(v)) << "filter " << f << " tap " << t;
+			dc += v;
+			max_tap = std::max(max_tap, std::fabs(static_cast<double>(v)));
+		}
+		worst_dc = std::max(worst_dc, std::fabs(dc - 1.0));
+		ASSERT_NEAR(dc, 1.0, 0.02) << "filter " << f << " (hash " << f / kPixelPhases << " phase " << f % kPixelPhases << ")";
+	}
+	EXPECT_LT(max_tap, 1.0);
+	std::printf("shipped set: worst DC error %.4f, largest tap %.3f\n", worst_dc, max_tap);
+
+	// Bucket edges: two per file, positive and strictly ascending, coherence a ratio below 1. The
+	// loader rejects malformed ones; what it cannot know is whether the strength and coherence
+	// files were swapped. The two have different scales: strength is gradient energy, whose
+	// tertiles on real textures are far below 1, and coherence is spread over 0..1.
+	std::string error;
+	const auto fs = FilterSet::Load(dir, &error);
+	ASSERT_TRUE(fs) << error;
+	const float* se = fs->StrengthEdges();
+	const float* ce = fs->CoherenceEdges();
+	EXPECT_GT(se[0], 0.0f);
+	EXPECT_LT(se[0], se[1]);
+	EXPECT_LT(se[1], 0.05f);
+	EXPECT_GT(ce[0], 0.05f);
+	EXPECT_LT(ce[0], ce[1]);
+	EXPECT_LT(ce[1], 1.0f);
+
+	// The edges have to split real content into all three strength and all three coherence
+	// buckets, or two thirds of the filters would never run.
+	bool strength_used[3] = {}, coherence_used[3] = {};
+	for (const SceneCase& sc : kScenes)
+	{
+		LumaPlanes planes;
+		Upscale(*fs, MakeLowRes(sc, 128), Impl::Auto, &planes);
+		for (const s32 hash : planes.hash)
+		{
+			strength_used[(hash % 9) / 3] = true;
+			coherence_used[hash % 3] = true;
+		}
+	}
+	for (int i = 0; i < 3; i++)
+	{
+		EXPECT_TRUE(strength_used[i]) << "strength bucket " << i << " is never reached";
+		EXPECT_TRUE(coherence_used[i]) << "coherence bucket " << i << " is never reached";
+	}
 }
 
 TEST(GSTextureUpscalerFilters, RejectsBadFilterBin)
 {
-	const auto good = ReadFileBytes(SetDir("sharp") + "/filterbin_2_8");
-	const std::string str = ReadFileText(SetDir("sharp") + "/Qfactor_strbin_2_8");
-	const std::string coh = ReadFileText(SetDir("sharp") + "/Qfactor_cohbin_2_8");
+	const auto good = ReadFileBytes(SetDir(kShippedSet) + "/filterbin_2_8");
+	const std::string str = ReadFileText(SetDir(kShippedSet) + "/Qfactor_strbin_2_8");
+	const std::string coh = ReadFileText(SetDir(kShippedSet) + "/Qfactor_cohbin_2_8");
 	std::string error;
 	ASSERT_TRUE(FilterSet::LoadFromMemory(good, str, coh, &error)) << error;
 
@@ -455,7 +520,7 @@ TEST(GSTextureUpscalerFilters, RejectsBadFilterBin)
 
 TEST(GSTextureUpscalerFilters, RejectsBadBinEdges)
 {
-	const auto bin = ReadFileBytes(SetDir("sharp") + "/filterbin_2_8");
+	const auto bin = ReadFileBytes(SetDir(kShippedSet) + "/filterbin_2_8");
 	const std::string good_str = "0.001269\n0.022169\n";
 	const std::string good_coh = "0.192916\n0.405942\n";
 	std::string error;
@@ -591,7 +656,7 @@ namespace
 
 TEST(GSTextureUpscalerHash, MatchesAtan2Definition)
 {
-	for (const char* set : {"sharp", "smooth"})
+	for (const char* set : {kShippedSet})
 	{
 		SCOPED_TRACE(set);
 		const auto fs = LoadSet(set);
@@ -630,7 +695,7 @@ TEST(GSTextureUpscalerHash, MatchesAtan2Definition)
 
 TEST(GSTextureUpscalerHash, EveryAngleBinIsReachableInOrder)
 {
-	const auto fs = LoadSet("sharp");
+	const auto fs = LoadSet(kShippedSet);
 	ASSERT_TRUE(fs);
 	// A gradient pointing theta from the vertical axis towards the horizontal one has
 	// a = cos^2, b = sin cos, d = sin^2 (a is the vertical-gradient energy). Its angle is theta.
@@ -664,7 +729,7 @@ TEST(GSTextureUpscalerHash, EveryAngleBinIsReachableInOrder)
 // angle theta from the vertical axis, for the engine's own gradient and window code.
 TEST(GSTextureUpscalerHash, RampGradientsLandInTheirAngleBin)
 {
-	const auto fs = LoadSet("sharp");
+	const auto fs = LoadSet(kShippedSet);
 	ASSERT_TRUE(fs);
 	constexpr u32 n = 48;
 	constexpr double m = 3.0;
@@ -703,7 +768,7 @@ TEST(GSTextureUpscalerHash, AxisAlignedStepEdgesAreAngleBinZero)
 {
 	// An exactly horizontal or vertical edge has b == 0 exactly, and Intel hashes b == 0 to angle 0
 	// (Raisr.cpp:833-848). So both land in bin 0, with the strongest strength and coherence.
-	const auto fs = LoadSet("sharp");
+	const auto fs = LoadSet(kShippedSet);
 	ASSERT_TRUE(fs);
 	constexpr u32 n = 32;
 	Image horizontal(n, n), vertical(n, n);
@@ -792,7 +857,7 @@ TEST(GSTextureUpscaler, ConstantImagesStayConstant)
 		{255, 0, 0, 255},
 		{0, 0, 255, 128},
 	};
-	for (const char* set : {"sharp", "smooth"})
+	for (const char* set : {kShippedSet})
 	{
 		const auto fs = LoadSet(set);
 		ASSERT_TRUE(fs);
@@ -808,12 +873,27 @@ TEST(GSTextureUpscaler, ConstantImagesStayConstant)
 					const Image out = Upscale(*fs, src, impl, &planes);
 					for (u32 i = 0; i < out.w * out.h; i++)
 					{
-						ASSERT_EQ(out.px[i * 4 + 0], c.r) << i;
-						ASSERT_EQ(out.px[i * 4 + 1], c.g) << i;
-						ASSERT_EQ(out.px[i * 4 + 2], c.b) << i;
+						// The flat bucket's filter adds up to 0.9976, not 1 (the packs it was fitted
+						// to are a hair darker than the native textures), so the engine alone can
+						// land one level low: 255 comes out 254. Alpha is not filtered.
+						ASSERT_NEAR(out.px[i * 4 + 0], c.r, 1) << i;
+						ASSERT_NEAR(out.px[i * 4 + 1], c.g, 1) << i;
+						ASSERT_NEAR(out.px[i * 4 + 2], c.b, 1) << i;
 						ASSERT_EQ(out.px[i * 4 + 3], c.a) << i;
 						ASSERT_EQ(planes.hash[i], 0) << i; // no gradient anywhere: the flat bucket
 					}
+				}
+
+				// The pass the emulator runs clamps to the source texels' range, which puts a flat
+				// patch back exactly.
+				Image pass(size * 2, size * 2);
+				GSTextureUpscaleSupport::UpscalePass2x(*fs, src.px.data(), size, size, size * 4, pass.px.data(), pass.w * 4);
+				for (u32 i = 0; i < pass.w * pass.h; i++)
+				{
+					ASSERT_EQ(pass.px[i * 4 + 0], c.r) << i;
+					ASSERT_EQ(pass.px[i * 4 + 1], c.g) << i;
+					ASSERT_EQ(pass.px[i * 4 + 2], c.b) << i;
+					ASSERT_EQ(pass.px[i * 4 + 3], c.a) << i;
 				}
 			}
 		}
@@ -822,7 +902,7 @@ TEST(GSTextureUpscaler, ConstantImagesStayConstant)
 
 TEST(GSTextureUpscaler, AlphaStaysInsideTheSourceRange)
 {
-	const auto fs = LoadSet("sharp");
+	const auto fs = LoadSet(kShippedSet);
 	ASSERT_TRUE(fs);
 	for (const auto& range : {std::pair<u8, u8>{0, 255}, {100, 140}, {200, 201}, {0, 1}, {254, 255}})
 	{
@@ -871,7 +951,7 @@ TEST(GSTextureUpscaler, HardEdgeOvershootIsRemovedByTheRangeClamp)
 		}
 	}
 
-	for (const char* set : {"sharp", "smooth"})
+	for (const char* set : {kShippedSet})
 	{
 		SCOPED_TRACE(set);
 		const auto fs = LoadSet(set);
@@ -884,10 +964,9 @@ TEST(GSTextureUpscaler, HardEdgeOvershootIsRemovedByTheRangeClamp)
 			lo = std::min(lo, out.px[i * 4]);
 			hi = std::max(hi, out.px[i * 4]);
 		}
-		// The sharp set overshoots here. If it ever stopped, the checks below would pass without
-		// the clamp doing anything, so say so rather than pass.
-		if (std::string(set) == "sharp")
-			ASSERT_TRUE(lo < kDark || hi > kLight) << "the engine no longer overshoots this edge: " << int(lo) << ".." << int(hi);
+		// The set overshoots here. If it ever stopped, the checks below would pass without the
+		// clamp doing anything, so say so rather than pass.
+		ASSERT_TRUE(lo < kDark || hi > kLight) << "the engine no longer overshoots this edge: " << int(lo) << ".." << int(hi);
 
 		GSTextureUpscaleSupport::ClampUpscaledToSourceRange(src.px.data(), src.w, src.h, src.w * 4, out.px.data(), out.w * 4);
 
@@ -924,7 +1003,7 @@ TEST(GSTextureUpscaler, NeonMatchesScalar)
 	// More than one band tall, and a width that is not a multiple of 4 after doubling.
 	images.push_back(RandomImage(45, 150, 5));
 
-	for (const char* set : {"sharp", "smooth"})
+	for (const char* set : {kShippedSet})
 	{
 		const auto fs = LoadSet(set);
 		ASSERT_TRUE(fs);
@@ -952,7 +1031,7 @@ TEST(GSTextureUpscaler, NeonMatchesScalar)
 
 TEST(GSTextureUpscaler, PitchesAreHonoured)
 {
-	const auto fs = LoadSet("sharp");
+	const auto fs = LoadSet(kShippedSet);
 	ASSERT_TRUE(fs);
 	const Image src = RandomImage(21, 13, 4);
 	for (Impl impl : {Impl::Scalar, Impl::Auto})
@@ -991,7 +1070,7 @@ TEST(GSTextureUpscaler, PitchesAreHonoured)
 
 TEST(GSTextureUpscaler, EmptyImageIsANoOp)
 {
-	const auto fs = LoadSet("sharp");
+	const auto fs = LoadSet(kShippedSet);
 	ASSERT_TRUE(fs);
 	u8 byte = 0x5A;
 	UpscaleRGBA8x2(*fs, &byte, 0, 4, 0, &byte, 0);
@@ -1038,7 +1117,7 @@ TEST(GSTextureUpscaler, BilinearIsCentreAlignedAndClamped)
 
 TEST(GSTextureUpscaler, ThreadsAgree)
 {
-	const auto fs = LoadSet("sharp");
+	const auto fs = LoadSet(kShippedSet);
 	ASSERT_TRUE(fs);
 	std::vector<Image> srcs;
 	std::vector<Image> expected;
@@ -1073,52 +1152,46 @@ TEST(GSTextureUpscaler, ThreadsAgree)
 //  Quality
 // ---------------------------------------------------------------------------------------------
 
-// RAISR has to beat plain bilinear on luma PSNR against the original high-resolution image, for
-// both filter sets. The margins are the measured ones, with headroom, because the point is to
-// catch a wrong angle convention, phase, tap order or window, not to track decimals.
+// RAISR has to beat plain bilinear on luma PSNR against the original high-resolution image. The
+// margins are the measured ones, with headroom, because the point is to catch a wrong angle
+// convention, phase, tap order or window, not to track decimals.
 TEST(GSTextureUpscalerQuality, BeatsBilinearOnSyntheticImages)
 {
 	struct Result
 	{
-		double bilinear, sharp, smooth;
+		double bilinear, raisr;
 	};
 	std::vector<Result> results;
-	const auto sharp = LoadSet("sharp");
-	const auto smooth = LoadSet("smooth");
-	ASSERT_TRUE(sharp);
-	ASSERT_TRUE(smooth);
+	const auto fs = LoadSet(kShippedSet);
+	ASSERT_TRUE(fs);
 
 	std::printf("luma PSNR vs the high-resolution original (dB)\n");
-	std::printf("  %-8s %9s %9s %9s %9s %9s\n", "image", "bilinear", "sharp", "gain", "smooth", "gain");
+	std::printf("  %-8s %9s %9s %9s\n", "image", "bilinear", "raisr", "gain");
 	for (const SceneCase& sc : kScenes)
 	{
 		const Image hr = RenderHR(256, sc.make(256));
 		const Image lr = AreaDownsample2(hr);
 		Result r;
 		r.bilinear = LumaPsnr(hr, Bilinear(lr));
-		r.sharp = LumaPsnr(hr, Upscale(*sharp, lr));
-		r.smooth = LumaPsnr(hr, Upscale(*smooth, lr));
-		std::printf("  %-8s %9.3f %9.3f %+9.3f %9.3f %+9.3f\n", sc.name, r.bilinear, r.sharp, r.sharp - r.bilinear, r.smooth, r.smooth - r.bilinear);
+		r.raisr = LumaPsnr(hr, Upscale(*fs, lr));
+		std::printf("  %-8s %9.3f %9.3f %+9.3f\n", sc.name, r.bilinear, r.raisr, r.raisr - r.bilinear);
 		results.push_back(r);
 	}
 
-	double mean_sharp = 0, mean_smooth = 0;
+	double mean_gain = 0;
 	for (size_t i = 0; i < results.size(); i++)
 	{
-		mean_sharp += (results[i].sharp - results[i].bilinear) / results.size();
-		mean_smooth += (results[i].smooth - results[i].bilinear) / results.size();
+		mean_gain += (results[i].raisr - results[i].bilinear) / results.size();
 		// No image may come out worse than bilinear by more than a hair.
-		EXPECT_GT(results[i].sharp - results[i].bilinear, kMinImageGainDb) << kScenes[i].name << " sharp";
-		EXPECT_GT(results[i].smooth - results[i].bilinear, kMinImageGainDb) << kScenes[i].name << " smooth";
+		EXPECT_GT(results[i].raisr - results[i].bilinear, kMinImageGainDb) << kScenes[i].name;
 	}
-	std::printf("  mean gain: sharp %+.3f dB, smooth %+.3f dB\n", mean_sharp, mean_smooth);
-	EXPECT_GT(mean_sharp, kMinMeanGainSharpDb);
-	EXPECT_GT(mean_smooth, kMinMeanGainSmoothDb);
+	std::printf("  mean gain: %+.3f dB\n", mean_gain);
+	EXPECT_GT(mean_gain, kMinMeanGainDb);
 }
 
 TEST(GSTextureUpscalerTiming, QuarterMegapixelUpscale)
 {
-	const auto fs = LoadSet("sharp");
+	const auto fs = LoadSet(kShippedSet);
 	ASSERT_TRUE(fs);
 	const Image src = MakeLowRes(kScenes[0], 512); // 256x256
 	ASSERT_EQ(src.w, 256u);

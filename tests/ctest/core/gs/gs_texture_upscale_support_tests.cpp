@@ -8,7 +8,7 @@
 // source, the pass that keeps hard alpha edges, the CPU box filtered mip chain, and the rule for which draws read texels as colours
 // (GS/Renderers/HW/GSTexelAddressedDraw.h, header only like the rest).
 //
-// The upscale tests run the real engine with the real Smooth filters in bin/resources/upscale/raisr.
+// The upscale tests run the real engine with the shipped filters in bin/resources/upscale/raisr/ps2.
 
 #include "GS/Renderers/HW/GSTexelAddressedDraw.h"
 #include "GS/Renderers/HW/GSTextureUpscaleSupport.h"
@@ -344,17 +344,12 @@ TEST(GsTextureUpscaleScale, TwoTimesWhenTheFourTimesModeIsOff)
 
 namespace
 {
-	std::shared_ptr<const GSTextureUpscaler::FilterSet> LoadFilters(const char* set)
+	std::shared_ptr<const GSTextureUpscaler::FilterSet> LoadShipped()
 	{
 		std::string error;
-		auto filters = GSTextureUpscaler::FilterSet::Load(std::string(GS_UPSCALER_RESOURCE_DIR) + "/" + set, &error);
+		auto filters = GSTextureUpscaler::FilterSet::Load(std::string(GS_UPSCALER_RESOURCE_DIR) + "/ps2", &error);
 		EXPECT_TRUE(filters) << error;
 		return filters;
-	}
-
-	std::shared_ptr<const GSTextureUpscaler::FilterSet> LoadSmooth()
-	{
-		return LoadFilters("smooth");
 	}
 
 	// A busy image, so the filter has something to do and a chaining mistake shows in the bytes.
@@ -442,7 +437,7 @@ namespace
 
 TEST(GsTextureUpscaleChain, ScaleTwoIsOneClampedEnginePassWithItsHardAlphaEdgesKept)
 {
-	const auto f = LoadSmooth();
+	const auto f = LoadShipped();
 	ASSERT_TRUE(f);
 	const u32 w = 24, h = 16;
 	const std::vector<u8> src = BusyImage(w, h, w * 4);
@@ -459,7 +454,7 @@ TEST(GsTextureUpscaleChain, ScaleTwoIsOneClampedEnginePassWithItsHardAlphaEdgesK
 
 TEST(GsTextureUpscaleChain, ScaleFourIsTwoEnginePassesOnTheFirstResult)
 {
-	const auto f = LoadSmooth();
+	const auto f = LoadShipped();
 	ASSERT_TRUE(f);
 	const std::pair<u32, u32> sizes[] = {{16, 16}, {24, 10}, {9, 33}, {64, 8}};
 	for (const auto& [w, h] : sizes)
@@ -475,7 +470,7 @@ TEST(GsTextureUpscaleChain, ScaleFourIsTwoEnginePassesOnTheFirstResult)
 
 TEST(GsTextureUpscaleChain, SmallLevelsUseBilinearAndTheIntermediateCanStillUseTheFilter)
 {
-	const auto f = LoadSmooth();
+	const auto f = LoadShipped();
 	ASSERT_TRUE(f);
 
 	// 4x4 is under 8, so its first pass is bilinear; the 8x8 result is not, so the second pass is the
@@ -504,7 +499,7 @@ TEST(GsTextureUpscaleChain, SmallLevelsUseBilinearAndTheIntermediateCanStillUseT
 
 TEST(GsTextureUpscaleChain, ConstantImageStaysConstantAtFourTimes)
 {
-	const auto f = LoadSmooth();
+	const auto f = LoadShipped();
 	ASSERT_TRUE(f);
 
 	const u32 w = 20, h = 12, scale = 4;
@@ -535,7 +530,7 @@ TEST(GsTextureUpscaleChain, ConstantImageStaysConstantAtFourTimes)
 
 TEST(GsTextureUpscaleChain, ReadsASourceWithRowPadding)
 {
-	const auto f = LoadSmooth();
+	const auto f = LoadShipped();
 	ASSERT_TRUE(f);
 
 	const u32 w = 17, h = 11;
@@ -550,7 +545,7 @@ TEST(GsTextureUpscaleChain, ReadsASourceWithRowPadding)
 
 TEST(GsTextureUpscaleChain, AlphaStaysInTheSourceRangeAtFourTimes)
 {
-	const auto f = LoadSmooth();
+	const auto f = LoadShipped();
 	ASSERT_TRUE(f);
 
 	// Alpha anywhere in 40..200 (BusyImage). Each pass interpolates it or takes a source texel's, so
@@ -621,7 +616,7 @@ TEST(GsTextureUpscaleAlpha, KeepHardAlphaEdges2xChangesOnlyTheHardEdgePixels)
 
 TEST(GsTextureUpscaleAlpha, ABinaryMaskKeepsItsExactEdges)
 {
-	const auto f = LoadSmooth();
+	const auto f = LoadShipped();
 	ASSERT_TRUE(f);
 
 	// Katamari's King of All Cosmos draws his eyes as a 64x32 texture of two rectangles: alpha 0x80
@@ -688,13 +683,12 @@ TEST(GsTextureUpscaleAlpha, DarkTransparentTexelsDoNotDarkenTheOpaqueSide)
 		}
 	}
 
-	for (const char* set : {"smooth", "sharp"})
 	{
-		const auto f = LoadFilters(set);
+		const auto f = LoadShipped();
 		ASSERT_TRUE(f);
 		for (const u32 scale : {2u, 4u})
 		{
-			SCOPED_TRACE(std::string(set) + " at " + std::to_string(scale) + "x");
+			SCOPED_TRACE(std::to_string(scale) + "x");
 			const u32 dst_pitch = w * scale * 4;
 			std::vector<u8> dst(static_cast<size_t>(dst_pitch) * h * scale, 0xEE);
 			UpscaleRGBA8(*f, src.data(), w, h, w * 4, scale, dst.data(), dst_pitch);
@@ -720,7 +714,7 @@ TEST(GsTextureUpscaleAlpha, DarkTransparentTexelsDoNotDarkenTheOpaqueSide)
 
 TEST(GsTextureUpscaleAlpha, AGradientKeepsItsInterpolatedAlpha)
 {
-	const auto f = LoadSmooth();
+	const auto f = LoadShipped();
 	ASSERT_TRUE(f);
 
 	// Black bakes its lighting into the alpha of 256x256 lightmaps and reads them with a bilinear
@@ -748,7 +742,7 @@ TEST(GsTextureUpscaleAlpha, AGradientKeepsItsInterpolatedAlpha)
 
 TEST(GsTextureUpscaleChain, ASixHundredSquareTextureIsUpscaledByTwoNotFour)
 {
-	const auto f = LoadSmooth();
+	const auto f = LoadShipped();
 	ASSERT_TRUE(f);
 
 	// What the job does with a texture over 512 when the 4x mode is on: the scale comes back as 2,
@@ -1036,8 +1030,8 @@ TEST(GsTextureUpscaleClamp, OutputInsideTheRangeIsNotTouched)
 TEST(GsTextureUpscaleClamp, ARingingEdgeComesOutFlatOnBothSides)
 {
 	// A vertical step from 113 to 223 between source columns 7 and 8, with the values from the
-	// Katamari swatch that showed this. The "upscaler output" overshoots the way the sharp RAISR
-	// filters do: 82 and 87 below the dark side, 252 and 248 above the bright side.
+	// Katamari swatch that showed this. The "upscaler output" overshoots the way Intel's sharp
+	// RAISR filters did: 82 and 87 below the dark side, 252 and 248 above the bright side.
 	const u32 w = 16, h = 4;
 	const std::vector<u8> src = MakeImage(w, h, w * 4, [](u32 x, u32, u32 c) -> u8 {
 		return c == 3 ? 128 : (x < 8 ? 113 : 223);

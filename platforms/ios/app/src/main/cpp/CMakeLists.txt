@@ -462,7 +462,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	file(GLOB_RECURSE IOS_SHADER_RESOURCES "${ARMSX2_SHARED_RESOURCES}/shaders/*")
 	list(FILTER IOS_SHADER_RESOURCES EXCLUDE REGEX "/dx11/")
 	file(GLOB_RECURSE IOS_SOUND_RESOURCES "${ARMSX2_SHARED_RESOURCES}/sounds/*")
-	# The texture upscaler's filter sets, read from <Resources>/upscale/raisr/<sharp|smooth> at run time.
+	# The texture upscaler's filter set, read from <Resources>/upscale/raisr/ps2 at run time.
 	file(GLOB_RECURSE IOS_UPSCALE_RESOURCES "${ARMSX2_SHARED_RESOURCES}/upscale/*")
 	set(IOS_TOP_LEVEL_RESOURCES
 		"${ARMSX2_SHARED_RESOURCES}/GameIndex.yaml"

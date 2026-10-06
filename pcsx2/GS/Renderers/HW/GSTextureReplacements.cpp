@@ -611,7 +611,7 @@ void GSTextureReplacements::Initialize()
 
 	// Loads the filters and starts the workers when upscaling is on. With it off there is nothing
 	// to set up.
-	if (GSConfig.TextureUpscaleMode != GSTextureUpscaleMode::Off)
+	if (GSConfig.TextureUpscale != GSTextureUpscaleMode::Off)
 		SetUpscaleMode();
 }
 
@@ -796,7 +796,7 @@ void GSTextureReplacements::UpdateConfig(Pcsx2Config::GSOptions& old_config)
 	if (GSConfig.LoadTextureReplacements && GSConfig.PrecacheTextureReplacements && !old_config.PrecacheTextureReplacements)
 		PrecacheReplacementTextures();
 
-	if (GSConfig.TextureUpscaleMode != old_config.TextureUpscaleMode)
+	if (GSConfig.TextureUpscale != old_config.TextureUpscale)
 	{
 		SetUpscaleMode();
 	}
@@ -1874,17 +1874,21 @@ void GSTextureReplacements::SetUpscaleMode()
 	ResetUpscaleStats();
 
 	std::shared_ptr<const GSTextureUpscaler::FilterSet> filters;
-	const GSTextureUpscaleMode mode = GSConfig.TextureUpscaleMode;
-	if (mode == GSTextureUpscaleMode::RaisrSharp || mode == GSTextureUpscaleMode::RaisrSmooth ||
-		mode == GSTextureUpscaleMode::RaisrSmooth4x)
+	const GSTextureUpscaleMode mode = GSConfig.TextureUpscale;
+	if (mode == GSTextureUpscaleMode::Raisr2x || mode == GSTextureUpscaleMode::Raisr4x)
 	{
+		// One filter set serves both modes; 4x runs it twice.
 		const std::string dir = Path::Combine(
-			Path::Combine(Path::Combine(EmuFolders::Resources, "upscale"), "raisr"),
-			(mode == GSTextureUpscaleMode::RaisrSharp) ? "sharp" : "smooth");
+			Path::Combine(Path::Combine(EmuFolders::Resources, "upscale"), "raisr"), "ps2");
 
 		std::string error;
 		filters = GSTextureUpscaler::FilterSet::Load(dir, &error);
-		if (!filters)
+		if (filters)
+		{
+			Console.WriteLnFmt("Texture upscaling: RAISR {}x with the filters in {}.",
+				(mode == GSTextureUpscaleMode::Raisr4x) ? 4 : 2, dir);
+		}
+		else
 		{
 			// Logged and shown once per attempt. Nothing retries it, so a missing or damaged
 			// resource does not repeat this on every texture.
@@ -1900,7 +1904,7 @@ void GSTextureReplacements::SetUpscaleMode()
 		std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
 		DropGeneratedReplacementsLocked();
 		s_upscale_filters = filters;
-		s_upscale_four_x.store(mode == GSTextureUpscaleMode::RaisrSmooth4x, std::memory_order_relaxed);
+		s_upscale_four_x.store(mode == GSTextureUpscaleMode::Raisr4x, std::memory_order_relaxed);
 		s_upscale_ready.store(filters != nullptr, std::memory_order_relaxed);
 	}
 

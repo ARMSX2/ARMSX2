@@ -14,10 +14,11 @@
 
 /// RAISR (Rapid and Accurate Image Super Resolution) 2x upscaler for RGBA8 images.
 ///
-/// The algorithm and the trained filters are Intel's Library for Video Super Resolution
+/// The algorithm and the filter file format are Intel's Library for Video Super Resolution
 /// (BSD-3-Clause, https://github.com/OpenVisualCloud/Video-Super-Resolution-Library); the code is
-/// a plain C++ port with a NEON path, structured after cppraisr (MIT). No GS, GPU or settings
-/// dependencies, so it can be unit-tested and built standalone.
+/// a plain C++ port with a NEON path, structured after cppraisr (MIT). The filters ARMSX2 ships
+/// are our own, trained on PS2 texture pairs (bin/resources/upscale/raisr/ps2). No GS, GPU or
+/// settings dependencies, so it can be unit-tested and built standalone.
 ///
 /// Per pixel: a bilinear 2x upscale of luma, a 11x11 structure tensor of its gradients picks one
 /// of 24 angles x 3 strengths x 3 coherences hash buckets, and that bucket's filter (one per output
@@ -38,7 +39,7 @@ namespace GSTextureUpscaler
 	inline constexpr u32 kFilterRowStride = 12;
 	inline constexpr u32 kFilterStride = kPatchSize * kFilterRowStride; // floats per padded filter
 
-	/// One trained Intel filter set: 216 hash buckets x 4 pixel phases of 11x11 taps, plus the
+	/// One trained filter set in Intel's file format: 216 hash buckets x 4 pixel phases of 11x11 taps, plus the
 	/// two strength and two coherence bin edges that map a pixel onto a bucket.
 	class FilterSet
 	{

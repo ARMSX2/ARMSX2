@@ -496,13 +496,14 @@ enum class GSUpscaler : u8
 };
 
 /// Generates larger copies of game textures on the CPU, in the background, and feeds them to the
-/// renderer the way a texture pack would. Persisted as an integer: append, never renumber.
+/// renderer the way a texture pack would. Persisted as an integer under the INI key
+/// TextureUpscale (the first key was TextureUpscaleMode, whose values meant something else, so
+/// it is not read); append, never renumber.
 enum class GSTextureUpscaleMode : u8
 {
 	Off,
-	RaisrSharp, ///< RAISR 2x, filters trained on mixed degradations.
-	RaisrSmooth, ///< RAISR 2x, filters trained on bicubic degradation only.
-	RaisrSmooth4x, ///< The Smooth filters run twice (4x) on textures up to 512 pixels; larger ones get one pass (2x).
+	Raisr2x, ///< One RAISR pass with the PS2-trained filters.
+	Raisr4x, ///< The same filters twice on textures up to 512 pixels per side; larger ones get one pass (2x).
 };
 
 enum class GSHWAutoFlushLevel : u8
@@ -1027,7 +1028,7 @@ struct Pcsx2Config
 		s8 CopyRoadMaximumBlendingLevel = -1;
 		BiFiltering TextureFiltering = DEFAULT_TEXTURE_FILTERING_MODE;
 		TexturePreloadingLevel TexturePreloading = TexturePreloadingLevel::Full;
-		GSTextureUpscaleMode TextureUpscaleMode = GSTextureUpscaleMode::Off;
+		GSTextureUpscaleMode TextureUpscale = GSTextureUpscaleMode::Off;
 		GSDumpCompressionMethod GSDumpCompression = GSDumpCompressionMethod::Zstandard;
 		GSHardwareDownloadMode HWDownloadMode = GSHardwareDownloadMode::Enabled;
 		GSCASMode CASMode = DEFAULT_CAS_MODE;
