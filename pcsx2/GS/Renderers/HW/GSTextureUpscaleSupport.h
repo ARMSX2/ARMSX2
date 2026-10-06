@@ -18,7 +18,8 @@
 /// Pieces of the texture upscaler that need no GS, GPU or settings state, so they can be unit
 /// tested on their own: the bounded newest-first job queue, the scale a texture is upscaled by,
 /// the one or two 2x passes that make up a level's upscale, the pass that keeps an upscaled image
-/// inside the range of its source, and the CPU mip chain builder.
+/// inside the range of its source, the pass that keeps hard alpha edges, and the CPU mip chain
+/// builder.
 namespace GSTextureUpscaleSupport
 {
 	/// The largest side, in pixels, of a texture that a 4x job upscales by 4. A bigger one gets 2x:
@@ -90,9 +91,75 @@ namespace GSTextureUpscaleSupport
 		}
 	}
 
+	/// A difference in alpha, between source texels an output pixel is interpolated from, that
+	/// makes the edge between them a mask edge. Three quarters of 0x80, which is what the PS2 stores
+	/// for opaque. A mask is 0 against opaque, a step of 0x80 or more; a gradient has smaller steps.
+	/// Black's lightmaps are the nearest gradient found: their steps reach just under 0x40, and the
+	/// bands appear once the threshold is 0x38 or lower.
+	inline constexpr u32 HARD_ALPHA_STEP = 0x60;
+
+	/// Where a 2x upscale has interpolated across a hard alpha edge, takes alpha from the source
+	/// texel the output pixel lies inside instead. Everywhere else the alpha in dst is left as the
+	/// upscaler wrote it, which is the bilinear upscale of the source. Only alpha bytes change.
+	/// Same layout as ClampUpscaledToSourceRange.
+	///
+	/// An output pixel counts as being on a hard edge when the four source texels it is interpolated
+	/// from differ in alpha by HARD_ALPHA_STEP or more.
+	///
+	/// Alpha is data that games test against exact values and let decide depth writes, so a mask that
+	/// is interpolated is a different mask. Katamari Damacy draws the King of All Cosmos's eyes as two
+	/// rectangles of alpha 0x80 on alpha 0, tested NOTEQUAL 0 with depth writes, and draws his face
+	/// afterwards with a depth test that the eyes' pixels make it fail. Interpolating gave each
+	/// rectangle a ring of pixels with small non-zero alpha. They passed the test and kept the face
+	/// out, but blended little of the eye over the dark cloud behind it: a dark frame, like glasses.
+	/// With the texel's own alpha at the edge, a nearest sampled draw gets the original's mask and
+	/// blend alpha under any alpha test. A bilinear sampled draw gets a mask edge half a texel wide
+	/// instead of a texel, as it would from any 2x copy of the texture.
+	///
+	/// Alpha is not kept as the source texel's everywhere because gradients are also stored in
+	/// alpha. Black bakes its lighting into 256x256 lightmaps and reads them with a bilinear sampler
+	/// and a blend that scales the framebuffer by that alpha. Replacing the interpolated alpha with
+	/// each texel's own made a staircase that the blend turned into broad dark bands.
+	inline void KeepHardAlphaEdges2x(const u8* src, u32 width, u32 height, u32 src_pitch, u8* dst, u32 dst_pitch)
+	{
+		if (width == 0 || height == 0)
+			return;
+
+		// Per source column, the smallest and largest alpha of the two source rows an output row
+		// is interpolated from.
+		std::vector<u8> lo(width);
+		std::vector<u8> hi(width);
+
+		for (u32 y = 0; y < height * 2; y++)
+		{
+			const u32 below = (y + 1) / 2;
+			const u8* row0 = src + static_cast<size_t>(below > 0 ? below - 1 : 0) * src_pitch + 3;
+			const u8* row1 = src + static_cast<size_t>(std::min(below, height - 1)) * src_pitch + 3;
+			for (u32 x = 0; x < width; x++)
+			{
+				lo[x] = std::min(row0[static_cast<size_t>(x) * 4], row1[static_cast<size_t>(x) * 4]);
+				hi[x] = std::max(row0[static_cast<size_t>(x) * 4], row1[static_cast<size_t>(x) * 4]);
+			}
+
+			const u8* own = src + static_cast<size_t>(y / 2) * src_pitch + 3;
+			u8* out = dst + static_cast<size_t>(y) * dst_pitch + 3;
+			for (u32 x = 0; x < width * 2; x++)
+			{
+				const u32 right = (x + 1) / 2;
+				const u32 c0 = right > 0 ? right - 1 : 0;
+				const u32 c1 = std::min(right, width - 1);
+				const u32 low = std::min(lo[c0], lo[c1]);
+				const u32 high = std::max(hi[c0], hi[c1]);
+				if (high - low >= HARD_ALPHA_STEP)
+					out[static_cast<size_t>(x) * 4] = own[static_cast<size_t>(x / 2) * 4];
+			}
+		}
+	}
+
 	/// One 2x pass: RAISR clamped to the range of its source (the filters overshoot at hard edges,
 	/// and a game that reads a flat swatch with a nearest sampler shows every overshooting texel), or
-	/// bilinear when the image is too small for RAISR. Bilinear cannot leave that range.
+	/// bilinear when the image is too small for RAISR. Bilinear cannot leave that range. Hard alpha
+	/// edges are kept on either road (KeepHardAlphaEdges2x).
 	inline void UpscalePass2x(const GSTextureUpscaler::FilterSet& filters, const u8* src, u32 w, u32 h, u32 src_pitch,
 		u8* dst, u32 dst_pitch)
 	{
@@ -105,6 +172,8 @@ namespace GSTextureUpscaleSupport
 		{
 			GSTextureUpscaler::BilinearRGBA8x2(src, w, h, src_pitch, dst, dst_pitch);
 		}
+
+		KeepHardAlphaEdges2x(src, w, h, src_pitch, dst, dst_pitch);
 	}
 
 	/// Upscales an RGBA8 image by scale, which is 2 or 4. dst is (w * scale) x (h * scale). A 4x

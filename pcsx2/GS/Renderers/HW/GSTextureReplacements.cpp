@@ -1673,10 +1673,10 @@ void GSTextureReplacements::BuildUpscaledTexture(const UpscaleJob& job, Replacem
 			job.cpu_mip_levels, &rtex->mips);
 	}
 
-	// The renderer trusts this range. Alpha is upscaled bilinearly, which cannot leave the source's
-	// range, so take the source's, over the same levels the native texture would upload. That is
-	// the range the native texture has, so it also holds if a draw ends up reading the native
-	// texture in place of this one.
+	// The renderer trusts this range. Alpha is interpolated between source texels or taken from
+	// one (KeepHardAlphaEdges2x), so it cannot leave the source's range; take the source's, over the
+	// same levels the native texture would upload. That is the range the native texture has, so it
+	// also holds if a draw ends up reading the native texture in place of this one.
 	rtex->alpha_minmax = GSGetRGBA8AlphaMinMax(base.pixels, base.width, base.height, base.pitch);
 	for (size_t i = 1; i < job.levels.size(); i++)
 	{

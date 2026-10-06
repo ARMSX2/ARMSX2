@@ -5,7 +5,7 @@
 // (GS/Renderers/HW/GSTextureUpscaleSupport.h): the bounded newest-first job queue, the scale a
 // texture is upscaled by, the count of guest mip levels an upscaled texture can take, the one or
 // two 2x passes of a level's upscale, the pass that clamps an upscaled image to the range of its
-// source, the CPU box filtered mip chain, and the rule for which draws read texels as colours
+// source, the pass that keeps hard alpha edges, the CPU box filtered mip chain, and the rule for which draws read texels as colours
 // (GS/Renderers/HW/GSTexelAddressedDraw.h, header only like the rest).
 //
 // The upscale tests run the real engine with the real Smooth filters in bin/resources/upscale/raisr.
@@ -56,6 +56,20 @@ namespace
 	u8 At(const Mip& m, u32 x, u32 y, u32 c)
 	{
 		return m.data[static_cast<size_t>(y) * m.pitch + x * 4 + c];
+	}
+
+	std::vector<u8> RandomBytes(size_t n, u32 seed)
+	{
+		std::vector<u8> v(n);
+		u32 s = seed ? seed : 1;
+		for (u8& b : v)
+		{
+			s ^= s << 13;
+			s ^= s >> 17;
+			s ^= s << 5;
+			b = static_cast<u8>(s >> 11);
+		}
+		return v;
 	}
 } // namespace
 
@@ -365,8 +379,40 @@ namespace
 		return img;
 	}
 
+	// What the alpha of a 2x image should be after KeepHardAlphaEdges2x, worked out from the sample
+	// position: where the four source texels an output pixel is interpolated from (x / 2 - 0.25, clamped
+	// to the image) differ by HARD_ALPHA_STEP or more, the pixel takes the alpha of the texel it lies
+	// inside; everywhere else out keeps the alpha it has.
+	void ApplyHardAlphaEdgesReference(const u8* in, u32 iw, u32 ih, u32 ipitch, u8* out, u32 opitch)
+	{
+		for (u32 y = 0; y < ih * 2; y++)
+		{
+			for (u32 x = 0; x < iw * 2; x++)
+			{
+				const int x0 = static_cast<int>(std::floor((x + 0.5) / 2.0 - 0.5));
+				const int y0 = static_cast<int>(std::floor((y + 0.5) / 2.0 - 0.5));
+				int lo = 255, hi = 0;
+				for (int dy = 0; dy <= 1; dy++)
+				{
+					for (int dx = 0; dx <= 1; dx++)
+					{
+						const u32 tx = static_cast<u32>(std::clamp(x0 + dx, 0, static_cast<int>(iw) - 1));
+						const u32 ty = static_cast<u32>(std::clamp(y0 + dy, 0, static_cast<int>(ih) - 1));
+						const int a = in[static_cast<size_t>(ty) * ipitch + tx * 4 + 3];
+						lo = std::min(lo, a);
+						hi = std::max(hi, a);
+					}
+				}
+
+				if (hi - lo >= static_cast<int>(HARD_ALPHA_STEP))
+					out[static_cast<size_t>(y) * opitch + x * 4 + 3] = in[static_cast<size_t>(y / 2) * ipitch + (x / 2) * 4 + 3];
+			}
+		}
+	}
+
 	// The reference for a 4x level: the engine's own 2x entry points, each RAISR pass clamped to the
-	// range of its source, chained by hand with the same size rule, into a tightly packed result.
+	// range of its source and with its hard alpha edges kept, chained by hand with the same size
+	// rule, into a tightly packed result.
 	std::vector<u8> ChainByHand(const GSTextureUpscaler::FilterSet& f, const std::vector<u8>& src, u32 w, u32 h, u32 pitch)
 	{
 		const auto pass = [&f](const u8* in, u32 iw, u32 ih, u32 ipitch, std::vector<u8>* out) {
@@ -378,6 +424,7 @@ namespace
 			}
 			else
 				GSTextureUpscaler::BilinearRGBA8x2(in, iw, ih, ipitch, out->data(), iw * 2 * 4);
+			ApplyHardAlphaEdgesReference(in, iw, ih, ipitch, out->data(), iw * 2 * 4);
 		};
 
 		std::vector<u8> mid, out;
@@ -387,7 +434,7 @@ namespace
 	}
 } // namespace
 
-TEST(GsTextureUpscaleChain, ScaleTwoIsOneClampedEnginePass)
+TEST(GsTextureUpscaleChain, ScaleTwoIsOneClampedEnginePassWithItsHardAlphaEdgesKept)
 {
 	const auto f = LoadSmooth();
 	ASSERT_TRUE(f);
@@ -397,6 +444,7 @@ TEST(GsTextureUpscaleChain, ScaleTwoIsOneClampedEnginePass)
 	std::vector<u8> expect(static_cast<size_t>(w) * 2 * h * 2 * 4);
 	GSTextureUpscaler::UpscaleRGBA8x2(*f, src.data(), w, h, w * 4, expect.data(), w * 2 * 4);
 	ClampUpscaledToSourceRange(src.data(), w, h, w * 4, expect.data(), w * 2 * 4);
+	ApplyHardAlphaEdgesReference(src.data(), w, h, w * 4, expect.data(), w * 2 * 4);
 
 	std::vector<u8> got(expect.size(), 0xEE);
 	UpscaleRGBA8(*f, src.data(), w, h, w * 4, 2, got.data(), w * 2 * 4);
@@ -499,8 +547,9 @@ TEST(GsTextureUpscaleChain, AlphaStaysInTheSourceRangeAtFourTimes)
 	const auto f = LoadSmooth();
 	ASSERT_TRUE(f);
 
-	// Alpha anywhere in 40..200 (BusyImage). Both passes upscale it bilinearly, so the result cannot
-	// leave that range, and the range taken from the result is valid for the renderer.
+	// Alpha anywhere in 40..200 (BusyImage). Each pass interpolates it or takes a source texel's, so
+	// the result cannot leave that range, and the range taken from the source is valid for the
+	// renderer.
 	const u32 w = 32, h = 32;
 	const std::vector<u8> src = BusyImage(w, h, w * 4);
 	std::vector<u8> dst(static_cast<size_t>(w) * 16 * h * 4);
@@ -509,6 +558,129 @@ TEST(GsTextureUpscaleChain, AlphaStaysInTheSourceRangeAtFourTimes)
 	{
 		ASSERT_GE(dst[i], 40);
 		ASSERT_LE(dst[i], 200);
+	}
+}
+
+namespace
+{
+	// Every output pixel's alpha must be the alpha of the source texel that pixel lies inside:
+	// source (x / scale, y / scale). Worked out from the position, not from the code under test.
+	void ExpectAlphaIsTheContainingTexelsAlpha(const std::vector<u8>& src, u32 w, u32 h, u32 src_pitch,
+		const std::vector<u8>& dst, u32 dst_pitch, u32 scale)
+	{
+		for (u32 y = 0; y < h * scale; y++)
+		{
+			for (u32 x = 0; x < w * scale; x++)
+			{
+				const u8 want = src[static_cast<size_t>(y / scale) * src_pitch + (x / scale) * 4 + 3];
+				ASSERT_EQ(dst[static_cast<size_t>(y) * dst_pitch + x * 4 + 3], want) << x << "," << y;
+			}
+		}
+	}
+} // namespace
+
+TEST(GsTextureUpscaleAlpha, KeepHardAlphaEdges2xChangesOnlyAlphaAtHardEdges)
+{
+	// Random alpha over its whole range gives mostly hard edges; alpha confined to a narrow band gives
+	// none, and a mix of the two gives both. Padding and colour bytes must come out as they went in.
+	const std::pair<u32, u32> sizes[] = {{1, 1}, {1, 6}, {7, 1}, {3, 5}, {16, 9}};
+	for (const u32 band : {256u, 40u, 100u})
+	{
+		for (const auto& [w, h] : sizes)
+		{
+			SCOPED_TRACE("band " + std::to_string(band) + " " + std::to_string(w) + "x" + std::to_string(h));
+			const u32 src_pitch = w * 4 + 8;
+			const u32 dst_pitch = w * 8 + 12;
+			std::vector<u8> src = RandomBytes(static_cast<size_t>(src_pitch) * h, w * 131 + h + band);
+			for (u32 y = 0; y < h; y++)
+			{
+				for (u32 x = 0; x < w; x++)
+				{
+					u8& a = src[static_cast<size_t>(y) * src_pitch + x * 4 + 3];
+					a = static_cast<u8>(100 + a % band);
+				}
+			}
+
+			const std::vector<u8> before = RandomBytes(static_cast<size_t>(dst_pitch) * h * 2, w * 17 + h * 3 + 1);
+			std::vector<u8> expect = before;
+			ApplyHardAlphaEdgesReference(src.data(), w, h, src_pitch, expect.data(), dst_pitch);
+
+			std::vector<u8> dst = before;
+			KeepHardAlphaEdges2x(src.data(), w, h, src_pitch, dst.data(), dst_pitch);
+			ASSERT_EQ(dst, expect);
+		}
+	}
+}
+
+TEST(GsTextureUpscaleAlpha, ABinaryMaskKeepsItsExactEdges)
+{
+	const auto f = LoadSmooth();
+	ASSERT_TRUE(f);
+
+	// Katamari's King of All Cosmos draws his eyes as a 64x32 texture of two rectangles: alpha 0x80
+	// inside each and 0 around them. Draws against it alpha test NOTEQUAL 0 with depth writes, and
+	// the face is drawn after, behind them. Interpolated alpha gave each rectangle a ring of small
+	// non-zero alpha: it passed the test and kept the face out, but blended almost none of the eye
+	// over the dark cloud behind, a dark frame like glasses. A mask has to come out with the
+	// original's edges, whatever the scale and whichever pass made the colours (the filter, or
+	// bilinear for a level too small for it).
+	const std::pair<u32, u32> sizes[] = {{64, 32}, {24, 16}, {8, 8}, {7, 9}, {4, 4}, {3, 5}, {1, 8}};
+	const std::pair<u8, u8> levels[] = {{0, 0x80}, {0x10, 0xFF}};
+	for (const auto& [lo, hi] : levels)
+	{
+		for (const auto& [w, h] : sizes)
+		{
+			std::vector<u8> src(static_cast<size_t>(w) * 4 + 8, 0xEE);
+			src.resize((static_cast<size_t>(w) * 4 + 8) * h, 0xEE); // padding is poisoned
+			for (u32 y = 0; y < h; y++)
+			{
+				for (u32 x = 0; x < w; x++)
+				{
+					u8* px = &src[static_cast<size_t>(y) * (w * 4 + 8) + x * 4];
+					for (u32 c = 0; c < 3; c++) // colour varies, including under the transparent texels, as in the game
+						px[c] = static_cast<u8>(30 + ((x * 29 + y * 17 + c * 53) & 0x7F));
+					px[3] = ((x >= 2 && x < 9 && y >= 2 && y < 6) || (x >= 12 && y >= 1 && y < 3)) ? hi : lo;
+				}
+			}
+
+			for (const u32 scale : {2u, 4u})
+			{
+				SCOPED_TRACE(std::to_string(w) + "x" + std::to_string(h) + " at " + std::to_string(scale) + "x, alpha " +
+							 std::to_string(lo) + "/" + std::to_string(hi));
+				const u32 dst_pitch = w * scale * 4;
+				std::vector<u8> dst(static_cast<size_t>(dst_pitch) * h * scale, 0xEE);
+				UpscaleRGBA8(*f, src.data(), w, h, w * 4 + 8, scale, dst.data(), dst_pitch);
+				ExpectAlphaIsTheContainingTexelsAlpha(src, w, h, w * 4 + 8, dst, dst_pitch, scale);
+			}
+		}
+	}
+}
+
+TEST(GsTextureUpscaleAlpha, AGradientKeepsItsInterpolatedAlpha)
+{
+	const auto f = LoadSmooth();
+	ASSERT_TRUE(f);
+
+	// Black bakes its lighting into the alpha of 256x256 lightmaps and reads them with a bilinear
+	// sampler and a blend that scales the framebuffer by that alpha. Replacing a gradient's
+	// interpolated alpha with each texel's own made it a staircase, which the blend turned into
+	// broad dark bands. Where neighbouring texels differ by less than a hard edge, alpha has to come
+	// out as the plain bilinear upscale of the source.
+	const std::pair<u32, u32> sizes[] = {{32, 16}, {6, 5}};
+	for (const auto& [w, h] : sizes)
+	{
+		SCOPED_TRACE(std::to_string(w) + "x" + std::to_string(h));
+		const std::vector<u8> src = MakeImage(w, h, w * 4, [](u32 x, u32 y, u32 c) -> u8 {
+			return c == 3 ? static_cast<u8>(10 + x * 5 + y * 3) : static_cast<u8>(40 + ((x + y) & 0x3F));
+		});
+
+		std::vector<u8> bilinear(static_cast<size_t>(w) * 2 * h * 2 * 4);
+		GSTextureUpscaler::BilinearRGBA8x2(src.data(), w, h, w * 4, bilinear.data(), w * 2 * 4);
+
+		std::vector<u8> dst(bilinear.size(), 0xEE);
+		UpscaleRGBA8(*f, src.data(), w, h, w * 4, 2, dst.data(), w * 2 * 4);
+		for (size_t i = 3; i < dst.size(); i += 4)
+			ASSERT_EQ(dst[i], bilinear[i]) << "byte " << i;
 	}
 }
 
@@ -738,20 +910,6 @@ namespace
 				*hi = std::max(*hi, v);
 			}
 		}
-	}
-
-	std::vector<u8> RandomBytes(size_t n, u32 seed)
-	{
-		std::vector<u8> v(n);
-		u32 s = seed ? seed : 1;
-		for (u8& b : v)
-		{
-			s ^= s << 13;
-			s ^= s >> 17;
-			s ^= s << 5;
-			b = static_cast<u8>(s >> 11);
-		}
-		return v;
 	}
 } // namespace
 
