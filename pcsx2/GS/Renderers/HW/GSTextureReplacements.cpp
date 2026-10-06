@@ -1663,11 +1663,15 @@ void GSTextureReplacements::BuildUpscaledTexture(const UpscaleJob& job, Replacem
 			job.cpu_mip_levels, &rtex->mips);
 	}
 
-	// The renderer trusts this range, so take it from what was produced, over every level.
-	rtex->alpha_minmax = GSGetRGBA8AlphaMinMax(rtex->data.data(), rtex->width, rtex->height, rtex->pitch);
-	for (const ReplacementTexture::MipData& mip : rtex->mips)
+	// The renderer trusts this range. Alpha is upscaled bilinearly, which cannot leave the source's
+	// range, so take the source's, over the same levels the native texture would upload. That is
+	// the range the native texture has, so it also holds if a draw ends up reading the native
+	// texture in place of this one.
+	rtex->alpha_minmax = GSGetRGBA8AlphaMinMax(base.pixels, base.width, base.height, base.pitch);
+	for (size_t i = 1; i < job.levels.size(); i++)
 	{
-		const std::pair<u8, u8> mm = GSGetRGBA8AlphaMinMax(mip.data.data(), mip.width, mip.height, mip.pitch);
+		const UpscaleSourceLevel& src = job.levels[i];
+		const std::pair<u8, u8> mm = GSGetRGBA8AlphaMinMax(src.pixels, src.width, src.height, src.pitch);
 		rtex->alpha_minmax.first = std::min(rtex->alpha_minmax.first, mm.first);
 		rtex->alpha_minmax.second = std::max(rtex->alpha_minmax.second, mm.second);
 	}
