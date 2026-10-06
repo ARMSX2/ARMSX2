@@ -853,6 +853,7 @@
     <ClInclude Include="GS\Renderers\DX11\D3D.h" />
     <ClInclude Include="GS\Renderers\DX12\GSDevice12.h" />
     <ClInclude Include="GS\Renderers\DX12\GSTexture12.h" />
+    <ClInclude Include="GS\Renderers\HW\GSTexelAddressedDraw.h" />
     <ClInclude Include="GS\Renderers\HW\GSTextureReplacements.h" />
     <ClInclude Include="GS\Renderers\HW\GSTextureUpscaleSupport.h" />
     <ClInclude Include="GS\Renderers\HW\GSTextureUpscaler.h" />

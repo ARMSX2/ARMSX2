@@ -2211,6 +2211,9 @@
     <ClInclude Include="VMManager.h">
       <Filter>System</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\HW\GSTexelAddressedDraw.h">
+      <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\HW\GSTextureReplacements.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
