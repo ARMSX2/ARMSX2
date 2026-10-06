@@ -129,6 +129,9 @@ void GSRendererHW::UpdateSettings(const Pcsx2Config::GSOptions& old_config)
 
 void GSRendererHW::VSync(u32 field, bool registers_written, bool idle_frame)
 {
+	if (GSTextureCache::IsHashMemoVerify()) [[unlikely]]
+		g_texture_cache->VerifyWriteStamps(m_mem);
+
 	// Retire whatever the GPU finished since the last frame. Runs unconditionally: after the
 	// mode is switched off there can still be a tail of queued downloads to drain.
 	g_texture_cache->ProcessPendingDownloads();

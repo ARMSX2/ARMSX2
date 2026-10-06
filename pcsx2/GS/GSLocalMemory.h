@@ -537,9 +537,15 @@ public:
 	// Not atomic: stores and readers run on the thread that executes draws (the GS thread, or the back thread
 	// when the split is on, with the other thread drained at the seams).
 
-	/// Mark the pages that the rectangle `r` of the surface `off` covers. A rectangle that is empty or
-	/// inverted, or that reaches x or y 2048, marks every page: writers disagree on how such a rectangle
-	/// wraps (Move wraps x at 2048 and nothing else does), so no page set describes all of them.
+	/// Whether a rectangle has a page set that a mark of it names. An empty or inverted rectangle, or one that
+	/// reaches x or y 2048, has none: writers disagree on how such a rectangle wraps (Move wraps x at 2048 and
+	/// nothing else does), so no page set describes all of them.
+	static bool HasPageSet(const GSVector4i& r)
+	{
+		return r.left >= 0 && r.top >= 0 && r.right > r.left && r.bottom > r.top && r.right <= 2048 && r.bottom <= 2048;
+	}
+
+	/// Mark the pages that the rectangle `r` of the surface `off` covers, or every page if it has no page set.
 	void MarkPagesWritten(const GSOffset& off, const GSVector4i& r);
 	/// Mark `count` consecutive pages from `first_page`, wrapping at the end of local memory.
 	void MarkPageRangeWritten(u32 first_page, u32 count);

@@ -70,6 +70,8 @@ namespace
 			for (int y = 0; y < 512; y++)
 				for (int x = 0; x < 512; x++)
 					m_gs->m_mem.WritePixel32(x, y, ((x & 1) ? 0x80u : 0u) << 24 | 0x404040u, kMemoryTBP, kTBW);
+			// The per-pixel writer does not mark the pages it writes; the texture hash reads them next.
+			m_gs->m_mem.MarkAllPagesWritten();
 		}
 
 		static GIFRegTEX0 TextureTEX0()

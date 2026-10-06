@@ -63,6 +63,7 @@
 #include "pcsx2/GS/GSXXH.h"
 #include "pcsx2/GS/Renderers/Common/GSRenderer.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
+#include "pcsx2/GS/Renderers/HW/GSTextureCache.h"
 #include "pcsx2/GS/Renderers/Null/GSDeviceNone.h"
 #ifdef ENABLE_OPENGL
 #include "pcsx2/GS/Renderers/OpenGL/GLContext.h"
@@ -138,6 +139,7 @@ namespace GSRunner
 	static void SettingsOverride();
 	static bool ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& params);
 	static void DumpStats();
+	static bool ReportHashMemoVerify();
 
 	static bool CreatePlatformWindow();
 	static void DestroyPlatformWindow();
@@ -472,6 +474,7 @@ static u64 s_total_sprite_edge_clamp_draws = 0;
 static double s_last_sw_palette_block_copies = 0;
 static u64 s_total_sw_palette_block_copies = 0;
 static bool s_vm_hash = false;
+static bool s_verify_hash_memo = false;
 
 static u64 s_total_prims = 0;
 static u64 s_total_tc_source_hit = 0;
@@ -1252,6 +1255,10 @@ static void PrintCommandLineHelp(const char* progname)
 						 "packets, so the two arms compare word for word.\n");
 	std::fprintf(stderr, "  -ladder-out <path>: Where to write the ladder rungs. Only used if -ladder is used.\n");
 	std::fprintf(stderr, "  -vmhash: Log a hash of GS local memory at every presented frame.\n");
+	std::fprintf(stderr, "  -verify-hash-memo: Check the hardware renderer's memo of texture hashes and the write stamps "
+						 "it relies on. Every memo hit also hashes the texture afresh and compares, and at every frame "
+						 "boundary each page of local memory is hashed to find stores that were not marked. Prints one "
+						 "HASH-MEMO-VERIFY line at exit and exits non-zero on a mismatch or a missed writer.\n");
 	std::fprintf(stderr, "  -stats-json <path>: Write per-frame and run-summary statistics as JSON. Combine with -perf "
 						 "for frame/GPU timing.\n");
 	std::fprintf(stderr, "  -set <Section/Key>=<value>: Override any setting, e.g. -set EmuCore/GS/AccurateBlendingUnit=3. "
@@ -1752,6 +1759,12 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			else if (CHECK_ARG("-vmhash"))
 			{
 				s_vm_hash = true;
+				continue;
+			}
+			else if (CHECK_ARG("-verify-hash-memo"))
+			{
+				s_verify_hash_memo = true;
+				GSTextureCache::SetHashMemoVerify(true);
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-drawlog"))
@@ -2532,6 +2545,21 @@ static void WriteStatsJson(const std::string& path)
 	Console.WriteLn(fmt::format("Wrote {} frame samples to {}", s_frame_samples.size(), path));
 }
 
+// Prints what -verify-hash-memo found. False if the memo returned a hash that a fresh one disagrees with,
+// or a store into local memory went unmarked.
+bool GSRunner::ReportHashMemoVerify()
+{
+	if (!s_verify_hash_memo)
+		return true;
+
+	const GSTextureCache::HashMemoVerifyReport report = GSTextureCache::GetHashMemoVerifyReport();
+	const std::string line = fmt::format("HASH-MEMO-VERIFY hits={} mismatches={} sweeps={} missed_writers={}",
+		report.hits, report.mismatches, report.sweeps, report.missed_writers);
+	Console.WriteLn(line);
+	std::fprintf(stderr, "%s\n", line.c_str());
+	return report.mismatches == 0 && report.missed_writers == 0;
+}
+
 void GSRunner::DumpStats()
 {
 	std::atomic_thread_fence(std::memory_order_acquire);
@@ -2871,7 +2899,8 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 				s_extended_stats_snapshot = g_gs_device->GetExtendedStats();
 			VMManager::Shutdown(false);
 			GSRunner::DumpStats();
-			ret->store(ladder_ok ? EXIT_SUCCESS : EXIT_FAILURE);
+			const bool verify_ok = GSRunner::ReportHashMemoVerify();
+			ret->store((ladder_ok && verify_ok) ? EXIT_SUCCESS : EXIT_FAILURE);
 		}
 	}
 

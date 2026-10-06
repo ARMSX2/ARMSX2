@@ -661,7 +661,7 @@ void GSLocalMemory::Move(const GIFRegBITBLTBUF& BITBLTBUF, const GIFRegTRXPOS& T
 
 void GSLocalMemory::MarkPagesWritten(const GSOffset& off, const GSVector4i& r)
 {
-	if (r.left < 0 || r.top < 0 || r.right <= r.left || r.bottom <= r.top || r.right > 2048 || r.bottom > 2048) [[unlikely]]
+	if (!HasPageSet(r)) [[unlikely]]
 	{
 		MarkAllPagesWritten();
 		return;
