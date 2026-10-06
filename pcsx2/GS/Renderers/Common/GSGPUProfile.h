@@ -196,6 +196,10 @@ struct MobileDriverContext
 	u32 api_version = 0;
 	u32 android_sdk = 0;
 	u32 max_draw_indirect_count = 0;
+	/// The device advertises rasterization-order colour attachment access: the extension (EXT or
+	/// ARM name) is supported and its rasterizationOrderColorAttachmentAccess feature reads true,
+	/// as the device settled it after vkCreateDevice. Vulkan only; false for GL and when unknown.
+	bool roaa_color_access = false;
 	std::string_view driver_name;
 	std::string_view driver_info;
 	std::string_view api_version_string;

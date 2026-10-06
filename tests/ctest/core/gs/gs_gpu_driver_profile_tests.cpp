@@ -51,7 +51,8 @@ GpuProfileSelection ResolveGL(const char* vendor, const char* renderer, const ch
 }
 
 GpuProfileSelection ResolveMaliVK(const char* device_name, u32 packed_version,
-	std::string_view platform_hints = std::string_view(), std::string_view driver_info = std::string_view())
+	std::string_view platform_hints = std::string_view(), std::string_view driver_info = std::string_view(),
+	bool roaa_color_access = false)
 {
 	MobileDriverContext context;
 	context.api = MobileGpuApi::Vulkan;
@@ -61,6 +62,7 @@ GpuProfileSelection ResolveMaliVK(const char* device_name, u32 packed_version,
 	context.driver_name = "ARM proprietary";
 	context.driver_info = driver_info;
 	context.platform_hints = platform_hints;
+	context.roaa_color_access = roaa_color_access;
 	return GpuProfileDetector::Resolve("auto", std::string_view(), device_name, context);
 }
 
@@ -1226,4 +1228,72 @@ TEST(GSGpuDriverProfile, MaliSX2OnAnMt6897HasNoExemptedRowToRecord)
 		"Mali-G57", PackVulkanVersion(44, 1, 0), kMt6897AndroidHints, kMaliSX2DriverInfo);
 	EXPECT_EQ(sel.driver.exempted_rules, 0u);
 	EXPECT_EQ(GpuProfileDetector::DescribeMatchedRules(sel.driver).find("exempt"), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The destination-read rows and malisx2. Both deny the in-tile read on parts where Arm's blob
+// returns stale colour through it. malisx2 is exempt from them only when it advertises the access
+// itself; a pack without it behaves exactly as before.
+
+TEST(GSGpuDriverProfile, MaliSX2G57KeepsTheDestinationReadRowUnlessItAdvertisesRoaa)
+{
+	const GpuProfileSelection without_roaa = ResolveMaliVK(
+		"Mali-G57", PackVulkanVersion(44, 1, 0), std::string_view(), kMaliSX2DriverInfo, false);
+	EXPECT_TRUE(DeniesRoaaDestinationRead(without_roaa));
+	EXPECT_EQ(without_roaa.driver.exempted_rules, u64{1} << RowOf("vk-arm-r44p1-attachment-self-read"));
+	EXPECT_EQ(GpuProfileDetector::DescribeMatchedRules(without_roaa.driver),
+		"vk-arm-proprietary, vk-arm-dynamic-rendering-before-r52, "
+		"vk-arm-r44p1-attachment-self-read (exempt: malisx2), vk-arm-g57-roaa-destination-read");
+
+	const GpuProfileSelection with_roaa = ResolveMaliVK(
+		"Mali-G57", PackVulkanVersion(44, 1, 0), std::string_view(), kMaliSX2DriverInfo, true);
+	EXPECT_FALSE(DeniesRoaaDestinationRead(with_roaa));
+	EXPECT_EQ(with_roaa.driver.exempted_rules,
+		(u64{1} << RowOf("vk-arm-r44p1-attachment-self-read")) |
+			(u64{1} << RowOf("vk-arm-g57-roaa-destination-read")));
+	EXPECT_EQ(with_roaa.driver.matched_rule_count, 2u);
+	EXPECT_EQ(GpuProfileDetector::DescribeMatchedRules(with_roaa.driver),
+		"vk-arm-proprietary, vk-arm-dynamic-rendering-before-r52, "
+		"vk-arm-r44p1-attachment-self-read (exempt: malisx2), "
+		"vk-arm-g57-roaa-destination-read (exempt: malisx2)");
+}
+
+// The same device and revision on Arm's blob is not exempt whatever the flag says: the flag only
+// completes a condition that malisx2 has to meet first.
+TEST(GSGpuDriverProfile, TheStockBlobKeepsTheDestinationReadRowsWhateverRoaaSays)
+{
+	const GpuProfileSelection g57 = ResolveMaliVK(
+		"Mali-G57", PackVulkanVersion(44, 1, 0), std::string_view(), kMaliR44p1DriverInfo, true);
+	EXPECT_TRUE(DeniesRoaaDestinationRead(g57));
+	EXPECT_EQ(g57.driver.exempted_rules, 0u);
+
+	const GpuProfileSelection mediatek = ResolveMaliVK(
+		"Mali-G615 MC6", PackVulkanVersion(44, 1, 0), kOtherMediaTekHints, kMaliR44p1DriverInfo, true);
+	EXPECT_TRUE(DeniesRoaaDestinationRead(mediatek));
+	EXPECT_EQ(mediatek.driver.exempted_rules, 0u);
+}
+
+TEST(GSGpuDriverProfile, MaliSX2OnAnUnmeasuredMediaTekIsExemptFromTheMediaTekRowWithRoaa)
+{
+	const GpuProfileSelection without_roaa = ResolveMaliVK(
+		"Mali-G615 MC6", PackVulkanVersion(44, 1, 0), kOtherMediaTekHints, kMaliSX2DriverInfo, false);
+	EXPECT_TRUE(DeniesRoaaDestinationRead(without_roaa));
+	EXPECT_EQ(GpuProfileDetector::DescribeMatchedRules(without_roaa.driver),
+		"vk-arm-proprietary, vk-arm-dynamic-rendering-before-r52, "
+		"vk-arm-r44p1-attachment-self-read (exempt: malisx2), vk-mediatek-mali-roaa-destination-read");
+
+	const GpuProfileSelection with_roaa = ResolveMaliVK(
+		"Mali-G615 MC6", PackVulkanVersion(44, 1, 0), kOtherMediaTekHints, kMaliSX2DriverInfo, true);
+	EXPECT_FALSE(DeniesRoaaDestinationRead(with_roaa));
+	EXPECT_EQ(GpuProfileDetector::DescribeMatchedRules(with_roaa.driver),
+		"vk-arm-proprietary, vk-arm-dynamic-rendering-before-r52, "
+		"vk-arm-r44p1-attachment-self-read (exempt: malisx2), "
+		"vk-mediatek-mali-roaa-destination-read (exempt: malisx2)");
+	EXPECT_EQ(with_roaa.driver.matched_rule_count, 2u);
+
+	// A G57 on the same SoC meets both rows, and both are exempt.
+	const GpuProfileSelection g57 = ResolveMaliVK(
+		"Mali-G57", PackVulkanVersion(44, 1, 0), kOtherMediaTekHints, kMaliSX2DriverInfo, true);
+	EXPECT_FALSE(DeniesRoaaDestinationRead(g57));
+	EXPECT_EQ(g57.driver.matched_rule_count, 2u);
 }

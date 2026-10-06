@@ -1230,7 +1230,8 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 void GSDeviceVK::ResolveDeviceIdentity()
 {
 	// The driver context feeds the driver-bug database, ported from sashkinbro/EmuCoreX with his
-	// approval. Needs m_device_driver_properties, so it runs as soon as ProcessDeviceExtensions has them.
+	// approval. Needs m_device_driver_properties, so it runs as soon as ProcessDeviceExtensions has them,
+	// which is after that function has reconciled the ROAA feature bits the context reads below.
 	// Resolved on every platform: the driver-bug database is keyed on the driver, and Turnip on an
 	// ARM Linux handheld is the same driver as Turnip on a phone. Resolution is pure data;
 	// PublishGPUProfile hands it to the device, and the rules act only where they are queried.
@@ -1241,6 +1242,10 @@ void GSDeviceVK::ResolveDeviceIdentity()
 	driver_context.driver_version = m_device_properties.driverVersion;
 	driver_context.api_version = m_device_properties.apiVersion;
 	driver_context.max_draw_indirect_count = m_device_properties.limits.maxDrawIndirectCount;
+	// The extension, and its colour feature read back true before vkCreateDevice and again after it
+	// (CreateDevice's probe, ProcessDeviceExtensions' reconcile). Rows written for Arm's blob read
+	// this to decide whether to leave a malisx2 build alone.
+	driver_context.roaa_color_access = m_optional_extensions.vk_ext_rasterization_order_attachment_access;
 	if (m_optional_extensions.vk_khr_driver_properties)
 	{
 		driver_context.driver_id = static_cast<u32>(m_device_driver_properties.driverID);

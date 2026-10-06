@@ -50,6 +50,9 @@ enum class Malisx2Exemption : u8
 	None,
 	/// Skipped for malisx2 whatever it advertises.
 	Always,
+	/// Skipped for malisx2 only when it advertises rasterization-order colour attachment access
+	/// (MobileDriverContext::roaa_color_access). Without it the row keeps applying.
+	WithRoaaColorAccess,
 };
 
 struct DriverRule
@@ -415,9 +418,12 @@ static bool RuleMatches(const DriverRule& rule, const GpuProfileSelection& selec
 // the row is recorded as matched either way.
 static bool IsExemptForMaliSX2(const DriverRule& rule, const MobileDriverContext& context)
 {
-	if (rule.exempt_malisx2 == Malisx2Exemption::None)
+	if (rule.exempt_malisx2 == Malisx2Exemption::None ||
+		!GpuProfileDetector::IsMaliSX2Driver(context.driver_info))
+	{
 		return false;
-	return GpuProfileDetector::IsMaliSX2Driver(context.driver_info);
+	}
+	return rule.exempt_malisx2 != Malisx2Exemption::WithRoaaColorAccess || context.roaa_color_access;
 }
 
 // Sources and upstream revisions are mirrored in docs/gpu-driver-database.json. A known bug is
@@ -539,13 +545,18 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 	// and it is costly where wrong: Mali reports dualSrcBlend=false, so every SRC1 draw is
 	// software-blended and needs a barrier per primitive. EmuCore/GS/ForceMaliFramebufferFetch lets
 	// a user on another MediaTek part lift it. MT6897 is exempt: measured, and the read is correct.
+	//
+	// Both ROAA rows describe Arm's blob. malisx2 is exempt from them once it advertises the access
+	// itself; a malisx2 pack that does not keeps the rows, so it gets the barrier road as before.
 	{"vk-mediatek-mali-roaa-destination-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::Unknown, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
-		Bug(DriverBug::BrokenRoaaDestinationRead), 0, true, MEASURED_SOC_MT6897},
+		Bug(DriverBug::BrokenRoaaDestinationRead), 0, true, MEASURED_SOC_MT6897, nullptr,
+		Malisx2Exemption::WithRoaaColorAccess},
 	// Mali-G57 across SoC vendors, so keyed on the model rather than the SoC.
 	{"vk-arm-g57-roaa-destination-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::Unknown, MobileGpuArchitecture::Unknown, 57, 57, 0, {}, {}, 0, 0, false,
-		Bug(DriverBug::BrokenRoaaDestinationRead), 0},
+		Bug(DriverBug::BrokenRoaaDestinationRead), 0, false, nullptr, nullptr,
+		Malisx2Exemption::WithRoaaColorAccess},
 	{"vk-qualcomm-proprietary", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::QualcommProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenPrimitiveRestart) | Bug(DriverBug::BrokenProvokingVertex) |
