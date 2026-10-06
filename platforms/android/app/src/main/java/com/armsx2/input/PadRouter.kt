@@ -249,21 +249,6 @@ object PadRouter {
         }
     }
 
-    /**
-     * How many players the connected controllers [devices] play as: every pad pinned to the same
-     * player counts once, every other pad (which claims a slot of its own) once each. The caller
-     * picks the controllers out and counts a Joy-Con pair itself.
-     */
-    fun playerCount(devices: List<InputDevice>): Int {
-        val pinnedPlayers = HashSet<Int>()
-        var unpinned = 0
-        for (dev in devices) {
-            val pin = dev.descriptor?.let { pinned[it] }
-            if (pin != null) pinnedPlayers.add(pin) else unpinned++
-        }
-        return pinnedPlayers.size + unpinned
-    }
-
     /** Whether a connected controller is pinned to player 2, whose port must then be plugged in
      *  even when it is the only controller there. */
     fun player2Pinned(devices: List<InputDevice>): Boolean =

@@ -851,7 +851,7 @@ open class MainActivityRuntime : ComponentActivity() {
          *  right override tier; null falls back to global. Resolution
          *  order: per-game JSON overlay → global → hardcoded defaults. */
         /** The physical gamepads/joysticks connected right now (no virtual devices), and
-         *  whether a Joy-Con pair is among them, which [connectedPlayerCount] counts once. */
+         *  whether a Joy-Con pair is among them, which [connectedPadCount] counts once. */
         private fun connectedGamepads(): Pair<List<InputDevice>, Boolean> {
             val pads = ArrayList<InputDevice>()
             var sawJoyCon = false
@@ -872,13 +872,14 @@ open class MainActivityRuntime : ComponentActivity() {
             return pads to sawJoyCon
         }
 
-        /** How many players the connected controllers play as. Drives the boot-time PS2-port-2
-         *  enable for local co-op: 2+ players connect Player 2's controller at VM init. Players,
-         *  not pads: two pads pinned to the same player (a handheld's own controls and a pad for
-         *  the TV) are one player, and must not plug in an empty port 2 (PadRouter.playerCount). */
-        private fun connectedPlayerCount(): Int {
+        /** How many controllers are connected, a Joy-Con pair once. Drives the boot-time PS2-port-2
+         *  enable for local co-op: 2+ connect Player 2's controller at VM init. Pads, not players:
+         *  port 2 cannot be plugged in mid-game (see onCreate), so two pads both pinned to Player 1
+         *  (a handheld's controls and a pad for the TV) still get it, or moving one of them to
+         *  Player 2 during the game would leave it nowhere to go. */
+        private fun connectedPadCount(): Int {
             val (pads, sawJoyCon) = connectedGamepads()
-            return com.armsx2.input.PadRouter.playerCount(pads) + (if (sawJoyCon) 1 else 0)
+            return pads.size + (if (sawJoyCon) 1 else 0)
         }
 
         /**
@@ -1050,7 +1051,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 // can be plugged in, so a mid-game switch would aim touch at an empty port.
                 val touchIsP2 = com.armsx2.ui.touch.TouchControls.touchPlayer.intValue == 1
                 // A pad pinned to Player 2 needs port 2 even on its own.
-                val twoPads = connectedPlayerCount() >= 2 || touchIsP2 ||
+                val twoPads = connectedPadCount() >= 2 || touchIsP2 ||
                     com.armsx2.input.PadRouter.player2Pinned(connectedGamepads().first)
                 NativeApp.setSetting("Pad2", "Type", "string", if (twoPads) "DualShock2" else "None")
                 if (twoPads) {
