@@ -206,6 +206,20 @@ fun RendererTab(state: MutableState<Settings>) {
                 apply(s.copy(graphics = s.graphics.copy(precacheTextureReplacements = it)))
             }
             SettingsDivider()
+            // The option index is the core's GSTextureUpscaleMode value (0 Off, 1 2x, 2 4x), so it
+            // is stored as-is, unlike the display upscaler above.
+            SegmentedRow(
+                label = str("renderer.textureUpscale.label"),
+                options = listOf(
+                    str("common.off"),
+                    str("renderer.textureUpscale.raisr2x"),
+                    str("renderer.textureUpscale.raisr4x"),
+                ),
+                selectedIndex = s.graphics.textureUpscale.coerceIn(0, 2),
+                description = str("renderer.textureUpscale.description"),
+                onChange = { apply(s.copy(graphics = s.graphics.copy(textureUpscale = it))) },
+            )
+            SettingsDivider()
             TexturePackImportRow()
             SettingsDivider()
             ToggleRow(

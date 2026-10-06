@@ -845,7 +845,13 @@ vec4 sample_color(vec2 st)
 	// The 0.05f helps to fix the overbloom of sotc
 	// I think the issue is related to the rounding of texture coodinate. The linear (from fixed unit)
 	// interpolation could be slightly below the correct one.
-	return trunc(t * 255.0f + 0.05f);
+	t = trunc(t * 255.0f + 0.05f);
+#if PS_REPLACEMENT_ALPHA_SNAP
+	// A pack texture's opaque alpha, which ASTC moves off 0x80 (GSReplacementAlphaSnap.h).
+	if (abs(t.a - 128.0f) <= 8.0f)
+		t.a = 128.0f;
+#endif
+	return t;
 }
 
 #endif // NEEDS_TEX

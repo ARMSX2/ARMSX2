@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -37,6 +38,7 @@ import androidx.compose.ui.unit.sp
 import com.armsx2.R
 import com.armsx2.ShaderParam
 import com.armsx2.ShaderParams
+import com.armsx2.ShaderIndex
 import com.armsx2.ShaderRepo
 import com.armsx2.i18n.str
 import com.armsx2.ui.settings.HelpText
@@ -54,7 +56,7 @@ import java.io.File
 /** One `.slangp` on disk. [label] is the bare filename shown inside its directory;
  *  [path] is the absolute filesystem path stored in
  *  EmuCore/GS/ShaderChainPreset; [passes] is the resolved pass count — null when the file
- *  never yields one (see [resolvePasses]).
+ *  never yields one (see [ShaderIndex]).
  *
  *  [passes] is reported as a FACT on the row, never used to rank or classify. Pass count is
  *  not a cost proxy and we're not going to pretend it is: xBRZ does enormous per-pixel
@@ -80,32 +82,16 @@ private data class ShaderDirectory(
 /** Result of one scan, including the filesystem path used by the empty-state message. */
 private data class ShaderScan(val dir: String, val root: ShaderDirectory)
 
-/** A preset plus the path segments of its folder, relative to the shaders root. */
-private class FoundPreset(val preset: ShaderPreset, val segments: List<String>)
-
 /** Mutable construction node used only on the scan's IO thread, then frozen for Compose. */
 private class ShaderDirectoryBuilder(val key: String, val name: String) {
     val folders = linkedMapOf<String, ShaderDirectoryBuilder>()
     val presets = mutableListOf<ShaderPreset>()
 }
 
-/** Depth cap for #reference chains. The deepest real chain in the stock pack is 7 hops
- *  (bezel/koko-aio/Presets-4.1/FXAA-bloom-immersive.slangp), so this is pure headroom for a
- *  future pack; the actual loop guard is the visited set in [resolvePasses]. */
-private const val MAX_REFERENCE_DEPTH = 16
-
 /** Download directory used by ShaderRepo's standard RetroArch pack. It is an installation
  *  wrapper, not a useful category, so [promoteDefaultPackContents] hides this one level
  *  while preserving the real paths stored in every preset. */
 private const val DEFAULT_SHADER_PACK_DIR = "shaders_slang"
-
-/** `shaders = 12` or `shaders = "12"` — 423 presets in the stock pack quote the value, so
- *  the quotes are not optional to handle. */
-private val SHADERS_RE = Regex("""^\s*shaders\s*=\s*"?(\d+)"?""", RegexOption.IGNORE_CASE)
-
-/** `#reference "../../Root_Presets/MBZ__3__STD__GDV.slangp"` — a preset that inherits its
- *  whole chain from another file and only overrides parameters. */
-private val REFERENCE_RE = Regex("""^\s*#reference\s+(.+?)\s*$""", RegexOption.IGNORE_CASE)
 
 /** Folder-name tokens that are initialisms, so [folderLabel] renders "CRT" not "Crt". */
 private val FOLDER_ACRONYMS = setOf(
@@ -424,10 +410,30 @@ private fun ShaderPresetPicker(preset: String, onPresetChange: (String) -> Unit)
                 )
             }
             currentFolder?.presets.orEmpty().forEach { p -> PresetRow(p, preset, onPresetChange) }
+            // Without this the list is just the None row until the scan returns, which reads
+            // as "the list is broken". A first scan (no index yet) walks the whole tree.
+            if (scanning.value && scan.value == null) ScanningRow()
             if (root?.count == 0 && !scanning.value) {
                 HelpText(str("renderer.shaderChain.empty") + "\n\n" + scan.value?.dir.orEmpty())
             }
         }
+    }
+}
+
+/** Not controller-focusable: there is nothing to do with it but wait. */
+@Composable
+private fun ScanningRow() {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+        Spacer(Modifier.width(10.dp))
+        Text(
+            str("renderer.shaderChain.scanning"),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -570,53 +576,33 @@ private fun ShaderPresetRow(
     }
 }
 
-/** Scan `<DataRoot>/shaders/` recursively for `*.slangp`. The folder is
+/** The presets under `<DataRoot>/shaders/`, as a folder tree. The folder is
  *  [ShaderRepo.shadersRoot] — the same one the Shader Packs downloader extracts into (and
  *  it creates the dir on demand, so the empty state can name a folder the user will
  *  actually find in a file manager). That helper resolves through assetCopyRoot, like the
  *  texture / cache / memcard folders, so this follows a moved data folder.
  *
- *  Blocking I/O — call it off the UI thread. It READS every preset (and follows the
- *  #reference chains between them) rather than just listing names, so the one memo cache is
- *  load-bearing: 691 of the stock pack's 2542 presets are thin wrappers pointing at a
- *  handful of shared roots, and without memoising those roots would be re-parsed hundreds
- *  of times each. */
+ *  Blocking I/O — call it off the UI thread. Usually one small file read: the list and the
+ *  pass counts come from [ShaderIndex], which only walks and reads the whole tree when its
+ *  index is missing or out of date. */
 private fun scanShaderPresets(context: Context): ShaderScan {
     val root = ShaderRepo.shadersRoot(context)
     if (!root.isDirectory) return ShaderScan(root.absolutePath, emptyShaderDirectory())
-    val cache = HashMap<String, Int?>()
-    val found = try {
-        root.walkTopDown()
-            .filter { it.isFile && it.extension.equals("slangp", ignoreCase = true) }
-            .map { file ->
-                val dir = file.parentFile?.relativeToOrNull(root)?.invariantSeparatorsPath.orEmpty()
-                    .let { if (it == ".") "" else it }
-                FoundPreset(
-                    preset = ShaderPreset(
-                        label = file.nameWithoutExtension,
-                        path = file.absolutePath,
-                        passes = resolvePasses(file, cache, HashSet(), 0),
-                    ),
-                    segments = if (dir.isEmpty()) emptyList() else dir.split('/'),
-                )
-            }
-            .toList()
-    } catch (_: Exception) {
-        // A pack can be replaced from a file manager while this background walk is active.
-        // Treat that one scan as empty; reopening immediately rescans the completed tree.
-        emptyList()
-    }
-
     val builder = ShaderDirectoryBuilder("", "")
-    found.forEach { foundPreset ->
+    ShaderIndex.load(root).forEach { entry ->
+        val segments = entry.relPath.split('/')
         var directory = builder
-        foundPreset.segments.forEach { segment ->
+        segments.dropLast(1).forEach { segment ->
             val childKey = if (directory.key.isEmpty()) segment else "${directory.key}/$segment"
             directory = directory.folders.getOrPut(segment) {
                 ShaderDirectoryBuilder(childKey, segment)
             }
         }
-        directory.presets += foundPreset.preset
+        directory.presets += ShaderPreset(
+            label = segments.last().substringBeforeLast('.'),
+            path = File(root, entry.relPath).absolutePath,
+            passes = entry.passes,
+        )
     }
     return ShaderScan(root.absolutePath, builder.freeze().promoteDefaultPackContents())
 }
@@ -695,70 +681,4 @@ private fun folderLabel(leaf: String): String {
             else token.replaceFirstChar { it.uppercase() }
         }
         .ifEmpty { leaf }
-}
-
-/** What one `.slangp` says about its own cost: its pass count, or the presets it inherits
- *  one from. Never both in the stock pack — a `#reference` preset overrides parameters
- *  only — but [resolvePasses] prefers a local count anyway, which is the RetroArch rule. */
-private class PresetFacts(val shaders: Int?, val references: List<String>)
-
-private fun readPreset(file: File): PresetFacts {
-    var shaders: Int? = null
-    val references = ArrayList<String>(2)
-    try {
-        file.bufferedReader().useLines { lines ->
-            for (line in lines) {
-                val hit = SHADERS_RE.find(line)
-                if (hit != null) {
-                    shaders = hit.groupValues[1].toIntOrNull()
-                    // A local count wins outright, so the references can't change the
-                    // answer — stop reading. Bails on line 1 for most of the pack.
-                    if (shaders != null) return@useLines
-                }
-                REFERENCE_RE.find(line)?.let {
-                    references.add(it.groupValues[1].trim().trim('"', '\''))
-                }
-            }
-        }
-    } catch (_: Exception) {
-        // Unreadable / vanished mid-scan: the row says "cost unknown" rather than
-        // inventing a number.
-    }
-    return PresetFacts(shaders, references)
-}
-
-/**
- * The preset's pass count, following `#reference` chains. null = undeterminable, which the
- * row reports honestly as "cost unknown".
- *
- * The reference hop is the whole reason this function exists rather than a one-line regex.
- * 691 of the stock pack's 2542 presets — essentially all of Mega Bezel and koko-aio — carry
- * no `shaders` key at all; they are thin files whose entire body is `#reference
- * "../some/root.slangp"` plus parameter overrides. Reading `shaders` naively finds nothing
- * for exactly those files, so without this the headline number would be blank on precisely
- * the biggest chains in the pack.
- *
- * Targets resolve against the REFERENCING file's directory (they are written `../../…`).
- * [seen] is the loop guard (canonical paths, so a symlinked pack can't dodge it); [cache]
- * memoises across the whole scan.
- */
-private fun resolvePasses(
-    file: File,
-    cache: MutableMap<String, Int?>,
-    seen: MutableSet<String>,
-    depth: Int,
-): Int? {
-    val canonical = runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
-    if (depth > MAX_REFERENCE_DEPTH || !seen.add(canonical)) return null
-    if (cache.containsKey(canonical)) return cache[canonical]
-    val facts = readPreset(file)
-    val result = facts.shaders ?: facts.references.firstNotNullOfOrNull { ref ->
-        val target = File(file.parentFile, ref)
-        // Multi-reference presets (324 of them) list the .slangp first and .params after;
-        // taking the first target that actually yields a count skips the parameter files
-        // without having to sniff extensions.
-        if (target.isFile) resolvePasses(target, cache, seen, depth + 1) else null
-    }
-    cache[canonical] = result
-    return result
 }

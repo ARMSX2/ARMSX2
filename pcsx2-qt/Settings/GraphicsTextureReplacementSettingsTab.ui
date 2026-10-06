@@ -66,6 +66,44 @@
     </widget>
    </item>
    <item>
+    <widget class="QGroupBox" name="textureUpscalingBox">
+     <property name="title">
+      <string>Texture Upscaling</string>
+     </property>
+     <layout class="QFormLayout" name="textureUpscalingLayout">
+      <item row="0" column="0">
+       <widget class="QLabel" name="textureUpscaleLabel">
+        <property name="text">
+         <string extracomment="RAISR is the name of the upscaling algorithm (Rapid and Accurate Image Super-Resolution); leave it as-is.">Upscale Textures:</string>
+        </property>
+        <property name="buddy">
+         <cstring>textureUpscale</cstring>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="textureUpscale">
+        <item>
+         <property name="text">
+          <string>Off (Default)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>RAISR 2x</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>RAISR 4x</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
     <widget class="QGroupBox" name="texturesDirectoryBox">
      <property name="title">
       <string>Search Directory</string>
@@ -133,6 +171,7 @@
   <tabstop>dumpReplaceableMipmaps</tabstop>
   <tabstop>precacheTextureReplacements</tabstop>
   <tabstop>dumpTexturesWithFMVActive</tabstop>
+  <tabstop>textureUpscale</tabstop>
   <tabstop>texturesDirectory</tabstop>
   <tabstop>texturesBrowse</tabstop>
   <tabstop>texturesOpen</tabstop>

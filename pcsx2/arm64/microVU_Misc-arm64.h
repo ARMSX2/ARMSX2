@@ -143,6 +143,22 @@ static_assert(offsetof(mVU_Globals, maxvals) == offsetof(mVU_Globals, minvals) +
 static_assert(offsetof(mVU_Globals, signBounds) % 32 == 0,
 	"mVUglob.signBounds rows must be 32-byte aligned for Ldp q [x25, #imm]");
 
+// mVUclamp2's all-lane row is not loaded at all: it reads the registers
+// mVUemitClampConsts fills from maxvals and minvals, so the two tables have to
+// hold the same words.
+static constexpr bool mVUsignBoundsAllLaneRowIsClampPair()
+{
+	for (int lane = 0; lane < 4; lane++)
+	{
+		if (mVUglob.signBounds[1][0][lane] != mVUglob.maxvals[lane] ||
+			mVUglob.signBounds[1][1][lane] != mVUglob.minvals[lane])
+			return false;
+	}
+	return true;
+}
+static_assert(mVUsignBoundsAllLaneRowIsClampPair(),
+	"mVUglob.signBounds[1] must equal maxvals then minvals, the pair q25/q26 hold");
+
 // Weight vector for one mVUupdateFlags pack. `shift` is non-zero only on the
 // single-scalar path, which always keeps lane 0 alone in forward bit order.
 __fi static const void* mVUmacWeightVec(u32 keepMask, bool reverse, int shift, int variant)

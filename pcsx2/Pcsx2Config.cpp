@@ -865,6 +865,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(CopyRoadMaximumBlendingLevel) &&
 		OpEqu(TextureFiltering) &&
 		OpEqu(TexturePreloading) &&
+		OpEqu(TextureUpscale) &&
 		OpEqu(GSDumpCompression) &&
 		OpEqu(HWDownloadMode) &&
 		OpEqu(CASMode) &&
@@ -1136,6 +1137,16 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapIntEnumEx(AccurateBlendingUnit, "accurate_blending_unit");
 	SettingsWrapIntEnumEx(TextureFiltering, "filter");
 	SettingsWrapIntEnumEx(TexturePreloading, "texture_preloading");
+	{
+		// Persisted as an integer, so a hand-edited or newer value must not become an invalid
+		// enumerator. Read as an int: the enum is a u8, and a stored 257 would wrap onto 1.
+		int texture_upscale = static_cast<int>(TextureUpscale);
+		SettingsWrapEntryEx(texture_upscale, "TextureUpscale");
+		if (texture_upscale < static_cast<int>(GSTextureUpscaleMode::Off) ||
+			texture_upscale > static_cast<int>(GSTextureUpscaleMode::Raisr4x))
+			texture_upscale = static_cast<int>(GSTextureUpscaleMode::Off);
+		TextureUpscale = static_cast<GSTextureUpscaleMode>(texture_upscale);
+	}
 	SettingsWrapIntEnumEx(GSDumpCompression, "GSDumpCompression");
 	SettingsWrapIntEnumEx(HWDownloadMode, "HWDownloadMode");
 	SettingsWrapIntEnumEx(CASMode, "CASMode");

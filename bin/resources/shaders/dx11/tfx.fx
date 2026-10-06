@@ -97,6 +97,7 @@
 #define PS_COLCLIP_HW 0
 #define PS_RTA_CORRECTION 0
 #define PS_RTA_SRC_CORRECTION 0
+#define PS_REPLACEMENT_ALPHA_SNAP 0
 #define PS_BLEND_FACTOR_IN_ALPHA 0
 #define PS_COLCLIP 0
 #define PS_BLEND_A 0
@@ -971,7 +972,13 @@ float4 sample_color(float2 st, float uv_w, int2 xy)
 	if (PS_AEM_FMT == FMT_32 && PS_PAL_FMT == 0 && PS_RTA_SRC_CORRECTION)
 		t.a = t.a * (128.5f / 255.0f);
 			
-	return trunc(t * 255.0f + 0.05f);
+	t = trunc(t * 255.0f + 0.05f);
+
+	// A pack texture's opaque alpha, which ASTC moves off 0x80 (GSReplacementAlphaSnap.h).
+	if (PS_REPLACEMENT_ALPHA_SNAP && abs(t.a - 128.0f) <= 8.0f)
+		t.a = 128.0f;
+
+	return t;
 }
 
 float4 tfx(float4 T, float4 C)

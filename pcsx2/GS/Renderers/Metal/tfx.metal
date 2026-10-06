@@ -56,6 +56,7 @@ constant bool PS_A_MASKED           [[function_constant(GSMTLConstantIndex_PS_A_
 constant bool PS_COLCLIP_HW         [[function_constant(GSMTLConstantIndex_PS_COLCLIP_HW)]];
 constant bool PS_RTA_CORRECTION     [[function_constant(GSMTLConstantIndex_PS_RTA_CORRECTION)]];
 constant bool PS_RTA_SRC_CORRECTION [[function_constant(GSMTLConstantIndex_PS_RTA_SRC_CORRECTION)]];
+constant bool PS_REPLACEMENT_ALPHA_SNAP [[function_constant(GSMTLConstantIndex_PS_REPLACEMENT_ALPHA_SNAP)]];
 constant bool PS_COLCLIP            [[function_constant(GSMTLConstantIndex_PS_COLCLIP)]];
 constant uint PS_BLEND_MIX          [[function_constant(GSMTLConstantIndex_PS_BLEND_MIX)]];
 constant bool PS_ROUND_INV          [[function_constant(GSMTLConstantIndex_PS_ROUND_INV)]];
@@ -1181,7 +1182,13 @@ struct PSMain
 		// I think the issue is related to the rounding of texture coodinate. The linear (from fixed unit)
 		// interpolation could be slightly below the correct one.
 		
-		return trunc(t * 255.f + 0.05f);
+		t = trunc(t * 255.f + 0.05f);
+
+		// A pack texture's opaque alpha, which ASTC moves off 0x80 (GSReplacementAlphaSnap.h).
+		if (PS_REPLACEMENT_ALPHA_SNAP && abs(t.a - 128.f) <= 8.f)
+			t.a = 128.f;
+
+		return t;
 	}
 
 	float4 tfx(float4 T, float4 C)

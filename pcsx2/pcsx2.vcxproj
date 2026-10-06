@@ -244,6 +244,16 @@
     <ClCompile Include="DebugTools\MipsStackWalk.cpp" />
     <ClCompile Include="DebugTools\SymbolGuardian.cpp" />
     <ClCompile Include="DebugTools\SymbolImporter.cpp" />
+    <ClCompile Include="DEV9\ACATA.cpp" />
+    <ClCompile Include="DEV9\ACATAPI.cpp" />
+    <ClCompile Include="DEV9\ACATA_IO.cpp" />
+    <ClCompile Include="DEV9\ACATA_IO_CHD.cpp" />
+    <ClCompile Include="DEV9\ACCORE.cpp" />
+    <ClCompile Include="DEV9\ACJV.cpp" />
+    <ClCompile Include="DEV9\ACRAM.cpp" />
+    <ClCompile Include="DEV9\ACSRAM.cpp" />
+    <ClCompile Include="DEV9\ACUART.cpp" />
+    <ClCompile Include="DEV9\ACUART_GLUE.cpp" />
     <ClCompile Include="DEV9\AdapterUtils.cpp" />
     <ClCompile Include="DEV9\ATA\Commands\ATA_Command.cpp" />
     <ClCompile Include="DEV9\ATA\Commands\ATA_CmdDMA.cpp" />
@@ -356,6 +366,7 @@
     <ClCompile Include="GS\Renderers\DX12\GSTexture12.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSTextureReplacementLoaders.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSTextureReplacements.cpp" />
+    <ClCompile Include="GS\Renderers\HW\GSTextureUpscaler.cpp" />
     <ClCompile Include="GS\Renderers\Vulkan\GSDeviceVK.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
@@ -722,6 +733,20 @@
     <ClInclude Include="DebugTools\MipsStackWalk.h" />
     <ClInclude Include="DebugTools\SymbolGuardian.h" />
     <ClInclude Include="DebugTools\SymbolImporter.h" />
+    <ClInclude Include="DEV9\ACATA.h" />
+    <ClInclude Include="DEV9\ACATAPI.h" />
+    <ClInclude Include="DEV9\ACATA_IO_CHD.h" />
+    <ClInclude Include="DEV9\ACATA_IO_WRITES.h" />
+    <ClInclude Include="DEV9\ACATA_internal.h" />
+    <ClInclude Include="DEV9\ACCORE.h" />
+    <ClInclude Include="DEV9\ACDEV.h" />
+    <ClInclude Include="DEV9\ACJV.h" />
+    <ClInclude Include="DEV9\ACJV_Inputs.h" />
+    <ClInclude Include="DEV9\ACMACROS.h" />
+    <ClInclude Include="DEV9\ACRAM.h" />
+    <ClInclude Include="DEV9\ACSRAM.h" />
+    <ClInclude Include="DEV9\ACUART.h" />
+    <ClInclude Include="DEV9\ACUART_GLUE.h" />
     <ClInclude Include="DEV9\AdapterUtils.h" />
     <ClInclude Include="DEV9\ATA\ATA.h" />
     <ClInclude Include="DEV9\ATA\HddCreate.h" />
@@ -828,7 +853,10 @@
     <ClInclude Include="GS\Renderers\DX11\D3D.h" />
     <ClInclude Include="GS\Renderers\DX12\GSDevice12.h" />
     <ClInclude Include="GS\Renderers\DX12\GSTexture12.h" />
+    <ClInclude Include="GS\Renderers\HW\GSTexelAddressedDraw.h" />
     <ClInclude Include="GS\Renderers\HW\GSTextureReplacements.h" />
+    <ClInclude Include="GS\Renderers\HW\GSTextureUpscaleSupport.h" />
+    <ClInclude Include="GS\Renderers\HW\GSTextureUpscaler.h" />
     <ClInclude Include="GS\Renderers\Vulkan\GSDeviceVK.h">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClInclude>
@@ -974,6 +1002,7 @@
     <ClInclude Include="GS\Renderers\Common\GSCopyRoadBlendingPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSDynamicFeedbackLoopPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSAlphaBitLogicOp.h" />
+    <ClInclude Include="GS\Renderers\Common\GSReplacementAlphaSnap.h" />
     <ClInclude Include="GS\Renderers\Common\GSFastStencilShadow.h" />
     <ClInclude Include="GS\Renderers\Common\GSFramebufferFetchPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSMeasurementOverrides.h" />

@@ -10,6 +10,7 @@
 #include "common/StringUtil.h"
 #include "common/ScopedGuard.h"
 #include "common/TextureDecompress.h"
+#include "common/Threading.h"
 
 #include "Config.h"
 #include "GS/GS.h"
@@ -18,8 +19,11 @@
 #include "GS/GSExtra.h"
 #include "GS/GSLocalMemory.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
+#include "GS/Renderers/HW/GSTextureUpscaleSupport.h"
+#include "GS/Renderers/HW/GSTextureUpscaler.h"
 #include "VMManager.h"
 
+#include <atomic>
 #include <cinttypes>
 #include <condition_variable>
 #include <cstring>
@@ -27,11 +31,14 @@
 #include <functional>
 #include <list>
 #include <limits>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <tuple>
 #include <thread>
+#include <vector>
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -109,6 +116,38 @@ namespace std
 	};
 } // namespace std
 
+namespace
+{
+	struct AlignedBufferDeleter
+	{
+		void operator()(u8* ptr) const { _aligned_free(ptr); }
+	};
+	using AlignedBuffer = std::unique_ptr<u8, AlignedBufferDeleter>;
+
+	/// One guest level of a texture, read out of GS memory as RGBA8 for the upscaler.
+	struct UpscaleSourceLevel
+	{
+		AlignedBuffer buffer;
+		const u8* pixels; // the level's top left texel, inside buffer
+		u32 width;
+		u32 height;
+		u32 pitch;
+	};
+
+	/// Everything a worker needs for one texture. It owns its pixels and shares the filters, so it
+	/// never touches GS memory or the settings.
+	struct UpscaleJob
+	{
+		TextureName name;
+		u32 generation;
+		std::shared_ptr<const GSTextureUpscaler::FilterSet> filters;
+		std::vector<UpscaleSourceLevel> levels;
+		u32 scale; // 2, or 4 for a texture upscaled by two passes of the 2x filter
+		u32 cpu_mip_levels; // total levels of a CPU built chain, or 0 for none
+		bool mipmap;
+	};
+} // namespace
+
 namespace GSTextureReplacements
 {
 	static TextureName CreateTextureName(const GSTextureCache::HashCacheKey& hash, u32 miplevel);
@@ -130,11 +169,20 @@ namespace GSTextureReplacements
 	static const ReplacementTexture* InsertReplacementCacheLocked(const TextureName& name, ReplacementTexture& tex);
 	static void ResetReplacementCacheLocked();
 
-	static void StartWorkerThread();
-	static void StopWorkerThread();
-	static void QueueWorkerThreadItem(std::function<void()> fn, bool high_priority);
+	static void ResetUpscaleJobsLocked();
+	static void DropGeneratedReplacementsLocked();
+	static void SetUpscaleMode();
+	static void StartUpscaleWorkers();
+	static void StopUpscaleWorkers();
+	static void UpscaleWorkerEntryPoint();
+	static void RunUpscaleJob(UpscaleJob& job);
+	static bool ReadUpscaleSourceLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA,
+		const GSTextureCache::SourceRegion& region, GSLocalMemory& mem, UpscaleSourceLevel* level);
+	static void BuildUpscaledTexture(const UpscaleJob& job, ReplacementTexture* rtex);
+	static void LogUpscaleStats(const char* when);
+	static void ResetUpscaleStats();
+
 	static void WorkerThreadEntryPoint();
-	static void SyncWorkerThread();
 	static void CancelPendingLoadsAndDumps();
 	static void NotifyStartupCompleteForCurrentGame();
 
@@ -182,6 +230,59 @@ namespace GSTextureReplacements
 	static std::condition_variable s_worker_thread_cv;
 	static std::deque<std::pair<std::function<void()>, bool>> s_worker_thread_queue;
 	static bool s_worker_thread_running = false;
+
+	/// Set while the worker runs a job it has taken off the queue.
+	static bool s_worker_thread_busy = false;
+
+	// ---- Texture upscaling ----
+	//
+	// Lock order: s_replacement_texture_cache_mutex, then s_worker_thread_mutex or
+	// s_upscale_mutex (those two are never held together). Workers hold s_upscale_mutex only to
+	// take a job and never while taking the cache mutex.
+
+	/// Bumped, with the cache mutex held, whenever generated results or queued jobs stop being
+	/// valid. A job remembers the value it was queued under and keeps its result only if it still
+	/// matches when the cache mutex is taken to store it.
+	static std::atomic<u32> s_upscale_generation{0};
+
+	/// The loaded filters and whether they are usable. Written with the cache mutex held; the
+	/// atomic is the cheap check made on every texture lookup.
+	static std::shared_ptr<const GSTextureUpscaler::FilterSet> s_upscale_filters;
+	static std::atomic<bool> s_upscale_ready{false};
+
+	/// The 4x mode is on, so textures up to GSTextureUpscaleSupport::MAX_4X_SOURCE_SIZE are
+	/// upscaled by 4 instead of 2. Set with the filters.
+	static std::atomic<bool> s_upscale_four_x{false};
+
+	/// Names of textures with an upscale job queued or running (cache mutex). Kept apart from
+	/// s_pending_async_load_textures so a mode change can drop these without touching pack loads.
+	static std::unordered_set<TextureName> s_pending_upscale_textures;
+
+	// A few hundred queued jobs of ordinary textures is a few tens of MB, but a queue full of
+	// 1024x1024 ones would not be, so the queue is capped on bytes as well as on count.
+	static constexpr size_t UPSCALE_QUEUE_MAX_JOBS = 256;
+	static constexpr size_t UPSCALE_QUEUE_MAX_BYTES = static_cast<size_t>(128) * 1024 * 1024;
+
+	static std::mutex s_upscale_mutex;
+	static std::condition_variable s_upscale_cv;
+	static std::condition_variable s_upscale_idle_cv;
+	static GSTextureUpscaleSupport::BoundedLifoQueue<UpscaleJob> s_upscale_queue(UPSCALE_QUEUE_MAX_JOBS, UPSCALE_QUEUE_MAX_BYTES);
+	static std::vector<std::thread> s_upscale_threads;
+	static bool s_upscale_stop = false;
+	static u32 s_upscale_busy = 0;
+
+	static std::atomic<u64> s_upscale_stat_queued{0};
+	static std::atomic<u64> s_upscale_stat_queued_4x{0};
+	static std::atomic<u64> s_upscale_stat_upscaled{0};
+	static std::atomic<u64> s_upscale_stat_injected{0};
+	static std::atomic<u64> s_upscale_stat_cache_hits{0};
+	static std::atomic<u64> s_upscale_stat_dropped{0};
+	static std::atomic<u64> s_upscale_stat_failed{0};
+	static std::atomic<u64> s_upscale_stat_skipped_size{0};
+	static std::atomic<u64> s_upscale_stat_guest_mip_jobs{0};
+	static std::atomic<u64> s_upscale_stat_cpu_mip_jobs{0};
+	static std::atomic<u64> s_upscale_stat_cpu_ns{0};
+	static std::atomic<u64> s_upscale_stat_native_draws{0};
 }; // namespace GSTextureReplacements
 
 size_t GSTextureReplacements::ReplacementTextureBytes(const ReplacementTexture& tex)
@@ -282,16 +383,26 @@ const GSTextureReplacements::ReplacementTexture* GSTextureReplacements::InsertRe
 		if (!s_replacement_cache_budget_hit)
 		{
 			s_replacement_cache_budget_hit = true;
-			Console.WarningFmt("Texture replacements: cache budget of {} MB reached; evicting. This pack does "
-							   "not fit in memory and will only be partly applied. A block-compressed "
-							   "(BC/DXT) pack would be several times smaller.",
-				budget / 1048576);
-			Host::AddIconOSDMessage("ReplacementCacheBudget", ICON_FA_CIRCLE_EXCLAMATION,
-				fmt::format(TRANSLATE_FS("TextureReplacement",
-								"Texture pack is larger than the {} MB this device can hold, so only part of it "
-								"will be applied. Use a block-compressed (BC/DXT) pack for full coverage."),
-					budget / 1048576),
-				Host::OSD_WARNING_DURATION);
+			if (tex.generated)
+			{
+				// No pack is involved, so the pack message below would be wrong. The oldest
+				// results go and are generated again if they are drawn again.
+				Console.WarningFmt("Texture upscaling: cache budget of {} MB reached; evicting the least recently used results.",
+					budget / 1048576);
+			}
+			else
+			{
+				Console.WarningFmt("Texture replacements: cache budget of {} MB reached; evicting. This pack does "
+								   "not fit in memory and will only be partly applied. A block-compressed "
+								   "(BC/DXT) pack would be several times smaller.",
+					budget / 1048576);
+				Host::AddIconOSDMessage("ReplacementCacheBudget", ICON_FA_CIRCLE_EXCLAMATION,
+					fmt::format(TRANSLATE_FS("TextureReplacement",
+									"Texture pack is larger than the {} MB this device can hold, so only part of it "
+									"will be applied. Use a block-compressed (BC/DXT) pack for full coverage."),
+						budget / 1048576),
+					Host::OSD_WARNING_DURATION);
+			}
 		}
 	}
 
@@ -497,6 +608,11 @@ void GSTextureReplacements::Initialize()
 		StartWorkerThread();
 
 	ReloadReplacementMap();
+
+	// Loads the filters and starts the workers when upscaling is on. With it off there is nothing
+	// to set up.
+	if (GSConfig.TextureUpscale != GSTextureUpscaleMode::Off)
+		SetUpscaleMode();
 }
 
 void GSTextureReplacements::GameChanged()
@@ -547,6 +663,7 @@ void GSTextureReplacements::ReloadReplacementMap()
 
 		std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
 		ResetReplacementCacheLocked();
+		ResetUpscaleJobsLocked();
 		s_pending_async_load_textures.clear();
 		s_async_loaded_textures.clear();
 	}
@@ -678,11 +795,37 @@ void GSTextureReplacements::UpdateConfig(Pcsx2Config::GSOptions& old_config)
 
 	if (GSConfig.LoadTextureReplacements && GSConfig.PrecacheTextureReplacements && !old_config.PrecacheTextureReplacements)
 		PrecacheReplacementTextures();
+
+	if (GSConfig.TextureUpscale != old_config.TextureUpscale)
+	{
+		SetUpscaleMode();
+	}
+	else if (s_upscale_ready.load(std::memory_order_relaxed) &&
+			 (GSConfig.HWMipmap != old_config.HWMipmap || GSConfig.TriFilter != old_config.TriFilter))
+	{
+		// Whether a texture carries guest mips, or gets a generated chain, follows these two, so
+		// results built under the old values no longer match what the renderer asks for.
+		std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
+		ResetUpscaleJobsLocked();
+		DropGeneratedReplacementsLocked();
+	}
 }
 
 void GSTextureReplacements::Shutdown()
 {
 	StopWorkerThread();
+
+	// The workers use the cache, the pending set and the filters, so they have to be gone before
+	// ClearReplacementTextures drops those. A result in the cache goes with it.
+	StopUpscaleWorkers();
+	LogUpscaleStats("shutdown");
+	ResetUpscaleStats();
+	{
+		std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
+		s_upscale_ready.store(false, std::memory_order_relaxed);
+		s_upscale_four_x.store(false, std::memory_order_relaxed);
+		s_upscale_filters.reset();
+	}
 
 	std::string().swap(s_current_serial);
 	ClearReplacementTextures();
@@ -942,6 +1085,7 @@ void GSTextureReplacements::ClearReplacementTextures()
 
 	std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
 	ResetReplacementCacheLocked();
+	ResetUpscaleJobsLocked();
 	s_pending_async_load_textures.clear();
 	s_async_loaded_textures.clear();
 }
@@ -1017,6 +1161,11 @@ GSTexture* GSTextureReplacements::CreateReplacementTexture(const ReplacementText
 		}
 	}
 
+	// The upscaler builds every level it wants, so there is nothing for the GPU to generate. The
+	// native path clears the flag the same way after it uploads guest mips.
+	if (rtex.generated)
+		tex->ClearMipmapGenerationFlag();
+
 	return tex;
 }
 
@@ -1070,7 +1219,11 @@ void GSTextureReplacements::ProcessAsyncLoadedTextures()
 		// upload and inject into TC
 		GSTexture* tex = CreateReplacementTexture(it->second, mipmap);
 		if (tex)
-			g_texture_cache->InjectHashCacheTexture(HashCacheKeyFromTextureName(name), tex, it->second.alpha_minmax);
+		{
+			g_texture_cache->InjectHashCacheTexture(HashCacheKeyFromTextureName(name), tex, it->second.alpha_minmax, it->second.generated);
+			if (it->second.generated)
+				s_upscale_stat_injected.fetch_add(1, std::memory_order_relaxed);
+		}
 
 		uploaded_bytes += ReplacementTextureBytes(it->second);
 	}
@@ -1229,9 +1382,11 @@ void GSTextureReplacements::WorkerThreadEntryPoint()
 
 		std::function<void()> fn = std::move(s_worker_thread_queue.front().first);
 		s_worker_thread_queue.pop_front();
+		s_worker_thread_busy = true;
 		lock.unlock();
 		fn();
 		lock.lock();
+		s_worker_thread_busy = false;
 	}
 }
 
@@ -1244,7 +1399,7 @@ void GSTextureReplacements::SyncWorkerThread()
 	// not the most efficient by far, but it only gets called on config changes, so whatever
 	for (;;)
 	{
-		if (s_worker_thread_queue.empty())
+		if (s_worker_thread_queue.empty() && !s_worker_thread_busy)
 			break;
 
 		lock.unlock();
@@ -1255,9 +1410,504 @@ void GSTextureReplacements::SyncWorkerThread()
 
 void GSTextureReplacements::CancelPendingLoadsAndDumps()
 {
+	// The pending and loaded lists belong to the cache mutex, and the worker can be inside a load
+	// that changes them. Lock in the order the loader does: cache mutex, then worker mutex.
+	std::unique_lock<std::mutex> cache_lock(s_replacement_texture_cache_mutex);
+	ResetUpscaleJobsLocked();
 	std::unique_lock<std::mutex> lock(s_worker_thread_mutex);
 	while (!s_worker_thread_queue.empty())
 		s_worker_thread_queue.pop_back();
 	s_async_loaded_textures.clear();
 	s_pending_async_load_textures.clear();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Texture upscaling
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool GSTextureReplacements::IsUpscaleActive()
+{
+	return s_upscale_ready.load(std::memory_order_relaxed);
+}
+
+bool GSTextureReplacements::CanUpscaleTexture(int width, int height)
+{
+	if (!IsUpscaleActive())
+		return false;
+
+	// Palettes and gradient lookups are smaller than the filter has anything to work on, and
+	// anything over 1024 is rare, costs the most, and is already high resolution.
+	if (width < 8 || height < 8 || width > 1024 || height > 1024)
+	{
+		s_upscale_stat_skipped_size.fetch_add(1, std::memory_order_relaxed);
+		return false;
+	}
+
+	return true;
+}
+
+GSTextureReplacements::UpscaleStats GSTextureReplacements::GetUpscaleStats()
+{
+	UpscaleStats stats;
+	stats.queued = s_upscale_stat_queued.load(std::memory_order_relaxed);
+	stats.queued_4x = s_upscale_stat_queued_4x.load(std::memory_order_relaxed);
+	stats.upscaled = s_upscale_stat_upscaled.load(std::memory_order_relaxed);
+	stats.injected = s_upscale_stat_injected.load(std::memory_order_relaxed);
+	stats.cache_hits = s_upscale_stat_cache_hits.load(std::memory_order_relaxed);
+	stats.dropped = s_upscale_stat_dropped.load(std::memory_order_relaxed);
+	stats.failed = s_upscale_stat_failed.load(std::memory_order_relaxed);
+	stats.skipped_size = s_upscale_stat_skipped_size.load(std::memory_order_relaxed);
+	stats.guest_mip_jobs = s_upscale_stat_guest_mip_jobs.load(std::memory_order_relaxed);
+	stats.cpu_mip_jobs = s_upscale_stat_cpu_mip_jobs.load(std::memory_order_relaxed);
+	stats.cpu_ns = s_upscale_stat_cpu_ns.load(std::memory_order_relaxed);
+	stats.native_draws = s_upscale_stat_native_draws.load(std::memory_order_relaxed);
+	return stats;
+}
+
+void GSTextureReplacements::NoteUpscaleNativeDraw()
+{
+	s_upscale_stat_native_draws.fetch_add(1, std::memory_order_relaxed);
+}
+
+void GSTextureReplacements::LogUpscaleStats(const char* when)
+{
+	const UpscaleStats stats = GetUpscaleStats();
+	if (stats.queued == 0 && stats.cache_hits == 0 && stats.skipped_size == 0)
+		return;
+
+	Console.WriteLnFmt("Texture upscaling ({}): {} queued ({} at 4x, {} with guest mips, {} with a generated chain), "
+					   "{} upscaled, {} injected, {} cache hits, {} dropped, {} failed, {} skipped by size, {:.1f} ms of CPU, "
+					   "{} draws read the original texels.",
+		when, stats.queued, stats.queued_4x, stats.guest_mip_jobs, stats.cpu_mip_jobs, stats.upscaled, stats.injected,
+		stats.cache_hits, stats.dropped, stats.failed, stats.skipped_size, static_cast<double>(stats.cpu_ns) / 1000000.0,
+		stats.native_draws);
+}
+
+void GSTextureReplacements::ResetUpscaleStats()
+{
+	s_upscale_stat_queued.store(0, std::memory_order_relaxed);
+	s_upscale_stat_queued_4x.store(0, std::memory_order_relaxed);
+	s_upscale_stat_upscaled.store(0, std::memory_order_relaxed);
+	s_upscale_stat_injected.store(0, std::memory_order_relaxed);
+	s_upscale_stat_cache_hits.store(0, std::memory_order_relaxed);
+	s_upscale_stat_dropped.store(0, std::memory_order_relaxed);
+	s_upscale_stat_failed.store(0, std::memory_order_relaxed);
+	s_upscale_stat_skipped_size.store(0, std::memory_order_relaxed);
+	s_upscale_stat_guest_mip_jobs.store(0, std::memory_order_relaxed);
+	s_upscale_stat_cpu_mip_jobs.store(0, std::memory_order_relaxed);
+	s_upscale_stat_cpu_ns.store(0, std::memory_order_relaxed);
+	s_upscale_stat_native_draws.store(0, std::memory_order_relaxed);
+}
+
+bool GSTextureReplacements::ReadUpscaleSourceLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA,
+	const GSTextureCache::SourceRegion& region, GSLocalMemory& mem, UpscaleSourceLevel* level)
+{
+	// Same read as DumpTexture and PreloadTexture: the block aligned rect, then the offset of the
+	// region inside it.
+	const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[TEX0.PSM];
+	const GSVector2i& bs = psm.bs;
+	const int tw = region.HasX() ? region.GetWidth() : (1 << TEX0.TW);
+	const int th = region.HasY() ? region.GetHeight() : (1 << TEX0.TH);
+	if (tw <= 0 || th <= 0)
+		return false;
+
+	const GSVector4i rect(region.GetRect(tw, th));
+	const GSVector4i block_rect(rect.ralign<Align_Outside>(bs));
+	const u32 pitch = static_cast<u32>(block_rect.width()) * sizeof(u32);
+
+	// ReadTexture() wants 32 byte alignment.
+	u8* buffer = static_cast<u8*>(_aligned_malloc(static_cast<size_t>(pitch) * static_cast<u32>(block_rect.height()), 32));
+	if (!buffer)
+		return false;
+
+	level->buffer.reset(buffer);
+	psm.rtx(mem, mem.GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM), block_rect, buffer, pitch, TEXA);
+
+	level->pixels = buffer + (static_cast<u32>(rect.top - block_rect.top) * pitch) +
+	                (static_cast<u32>(rect.left - block_rect.left) * sizeof(u32));
+	level->width = static_cast<u32>(tw);
+	level->height = static_cast<u32>(th);
+	level->pitch = pitch;
+	return true;
+}
+
+GSTexture* GSTextureReplacements::LookupUpscaledTexture(const UpscaleRequest& request, GSLocalMemory& mem,
+	bool* pending, std::pair<u8, u8>* alpha_minmax)
+{
+	*pending = false;
+	if (!IsUpscaleActive())
+		return nullptr;
+
+	const TextureName name(CreateTextureName(request.key, 0));
+
+	{
+		std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
+
+		// An earlier result, still in the cache after the hash cache dropped the texture: upload it
+		// now, as for a cached pack texture.
+		const auto it = s_replacement_texture_cache.find(name);
+		if (it != s_replacement_texture_cache.end())
+		{
+			TouchReplacementCacheLocked(name);
+			*alpha_minmax = it->second.alpha_minmax;
+			s_upscale_stat_cache_hits.fetch_add(1, std::memory_order_relaxed);
+			return CreateReplacementTexture(it->second, request.mipmap);
+		}
+
+		// A job is already on its way; the caller keeps the native texture until it lands.
+		if (s_pending_upscale_textures.find(name) != s_pending_upscale_textures.end())
+		{
+			*pending = true;
+			return nullptr;
+		}
+	}
+
+	// Read the guest levels here, on the thread that owns GS memory. Only the base level and, when
+	// the native texture would carry them, the guest mips; and only as many of those as fit the
+	// upscaled texture's own mip sizes.
+	const int base_w = request.region.HasX() ? request.region.GetWidth() : (1 << request.level_tex0[0].TW);
+	const int base_h = request.region.HasY() ? request.region.GetHeight() : (1 << request.level_tex0[0].TH);
+	if (base_w <= 0 || base_h <= 0)
+		return nullptr;
+
+	// The scale is a property of the texture: with the 4x mode on, textures up to 512 pixels get 4x
+	// and bigger ones 2x. Every level of the job, and the CPU built chain, use it.
+	const u32 scale = GSTextureUpscaleSupport::UpscaleScaleForSize(
+		s_upscale_four_x.load(std::memory_order_relaxed), static_cast<u32>(base_w), static_cast<u32>(base_h));
+
+	const u32 guest_levels = GSTextureUpscaleSupport::UpscaledMipLevelCount(static_cast<u32>(base_w),
+		static_cast<u32>(base_h), std::min<u32>(request.guest_levels, std::size(request.level_tex0)), scale);
+
+	UpscaleJob job;
+	job.name = name;
+	job.scale = scale;
+	job.mipmap = request.mipmap;
+	job.cpu_mip_levels = 0;
+	job.generation = 0;
+	size_t cost = 0;
+	job.levels.reserve(guest_levels);
+	for (u32 i = 0; i < guest_levels; i++)
+	{
+		UpscaleSourceLevel level;
+		if (!ReadUpscaleSourceLevel(request.level_tex0[i], request.TEXA,
+				(i == 0) ? request.region : request.region.AdjustForMipmap(i), mem, &level))
+		{
+			return nullptr;
+		}
+
+		cost += static_cast<size_t>(level.pitch) * level.height;
+		job.levels.push_back(std::move(level));
+	}
+
+	// The native texture would get a driver generated chain here, sized for its own base. Ours is
+	// built from the upscaled base on the worker, with the count a texture of that size gets.
+	if (request.cpu_mips)
+		job.cpu_mip_levels = static_cast<u32>(GSDevice::GetMipmapLevelsForSize(base_w * scale, base_h * scale));
+
+	std::vector<UpscaleJob> dropped;
+	{
+		std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
+		if (!s_upscale_ready.load(std::memory_order_relaxed) || !s_pending_upscale_textures.insert(name).second)
+			return nullptr;
+
+		job.generation = s_upscale_generation.load(std::memory_order_relaxed);
+		job.filters = s_upscale_filters;
+		s_upscale_stat_queued.fetch_add(1, std::memory_order_relaxed);
+		if (job.scale == 4)
+			s_upscale_stat_queued_4x.fetch_add(1, std::memory_order_relaxed);
+		if (job.levels.size() > 1)
+			s_upscale_stat_guest_mip_jobs.fetch_add(1, std::memory_order_relaxed);
+		if (job.cpu_mip_levels > 1)
+			s_upscale_stat_cpu_mip_jobs.fetch_add(1, std::memory_order_relaxed);
+
+		std::unique_lock<std::mutex> queue_lock(s_upscale_mutex);
+		s_upscale_queue.Push(std::move(job), cost, &dropped);
+		s_upscale_cv.notify_one();
+
+		// A job pushed out by newer ones will never run. Take its mark off so the texture can be
+		// queued again when it is next drawn.
+		for (const UpscaleJob& d : dropped)
+			s_pending_upscale_textures.erase(d.name);
+	}
+
+	if (!dropped.empty())
+		s_upscale_stat_dropped.fetch_add(dropped.size(), std::memory_order_relaxed);
+
+	*pending = true;
+	return nullptr;
+}
+
+void GSTextureReplacements::BuildUpscaledTexture(const UpscaleJob& job, ReplacementTexture* rtex)
+{
+	// Each level goes up by the job's scale, as one 2x pass or two. A level (and, at 4x, the
+	// intermediate image) under 8 pixels on a side has too little to filter and gets a plain
+	// bilinear 2x instead.
+	const auto upscale_level = [&job](const UpscaleSourceLevel& src, u8* dst, u32 dst_pitch) {
+		GSTextureUpscaleSupport::UpscaleRGBA8(
+			*job.filters, src.pixels, src.width, src.height, src.pitch, job.scale, dst, dst_pitch);
+	};
+
+	const UpscaleSourceLevel& base = job.levels.front();
+	rtex->width = base.width * job.scale;
+	rtex->height = base.height * job.scale;
+	rtex->format = GSTexture::Format::Color;
+	rtex->pitch = rtex->width * sizeof(u32);
+	rtex->data.resize(static_cast<size_t>(rtex->pitch) * rtex->height);
+	upscale_level(base, rtex->data.data(), rtex->pitch);
+
+	for (size_t i = 1; i < job.levels.size(); i++)
+	{
+		const UpscaleSourceLevel& src = job.levels[i];
+		ReplacementTexture::MipData mip;
+		mip.width = src.width * job.scale;
+		mip.height = src.height * job.scale;
+		mip.pitch = mip.width * sizeof(u32);
+		mip.data.resize(static_cast<size_t>(mip.pitch) * mip.height);
+		upscale_level(src, mip.data.data(), mip.pitch);
+		rtex->mips.push_back(std::move(mip));
+	}
+
+	if (job.cpu_mip_levels > 1)
+	{
+		GSTextureUpscaleSupport::BuildBoxMipChain(rtex->data.data(), rtex->width, rtex->height, rtex->pitch,
+			job.cpu_mip_levels, &rtex->mips);
+	}
+
+	// The renderer trusts this range. Alpha is interpolated between source texels or taken from
+	// one (KeepHardAlphaEdges2x), so it cannot leave the source's range; take the source's, over the
+	// same levels the native texture would upload. That is the range the native texture has, so it
+	// also holds if a draw ends up reading the native texture in place of this one.
+	rtex->alpha_minmax = GSGetRGBA8AlphaMinMax(base.pixels, base.width, base.height, base.pitch);
+	for (size_t i = 1; i < job.levels.size(); i++)
+	{
+		const UpscaleSourceLevel& src = job.levels[i];
+		const std::pair<u8, u8> mm = GSGetRGBA8AlphaMinMax(src.pixels, src.width, src.height, src.pitch);
+		rtex->alpha_minmax.first = std::min(rtex->alpha_minmax.first, mm.first);
+		rtex->alpha_minmax.second = std::max(rtex->alpha_minmax.second, mm.second);
+	}
+
+	rtex->generated = true;
+}
+
+static u64 GetThreadCpuNanoseconds()
+{
+	const u64 ticks_per_second = Threading::GetThreadTicksPerSecond();
+	if (ticks_per_second == 0)
+		return 0;
+
+	return static_cast<u64>(static_cast<double>(Threading::GetThreadCpuTime()) * 1.0e9 / static_cast<double>(ticks_per_second));
+}
+
+void GSTextureReplacements::RunUpscaleJob(UpscaleJob& job)
+{
+	ReplacementTexture rtex;
+
+	const u64 cpu_start = GetThreadCpuNanoseconds();
+	BuildUpscaledTexture(job, &rtex);
+	s_upscale_stat_cpu_ns.fetch_add(GetThreadCpuNanoseconds() - cpu_start, std::memory_order_relaxed);
+
+	// The source pixels are not needed past this point, and the cache lock is the busy one.
+	job.levels.clear();
+
+	std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
+
+	// Whoever bumped the generation also cleared the pending set, so there is no mark of ours to
+	// remove, and removing one would take a newer job's mark for the same texture.
+	if (job.generation != s_upscale_generation.load(std::memory_order_relaxed))
+	{
+		s_upscale_stat_dropped.fetch_add(1, std::memory_order_relaxed);
+		return;
+	}
+
+	if (s_pending_upscale_textures.erase(job.name) == 0)
+	{
+		s_upscale_stat_dropped.fetch_add(1, std::memory_order_relaxed);
+		return;
+	}
+
+	// From here the texture can be queued again, whatever happens to this result. It is refused
+	// only when it alone is larger than the whole cache budget.
+	if (s_replacement_texture_cache.find(job.name) != s_replacement_texture_cache.end() ||
+		!InsertReplacementCacheLocked(job.name, rtex))
+	{
+		s_upscale_stat_failed.fetch_add(1, std::memory_order_relaxed);
+		return;
+	}
+
+	s_async_loaded_textures.emplace_back(job.name, job.mipmap);
+	s_upscale_stat_upscaled.fetch_add(1, std::memory_order_relaxed);
+}
+
+void GSTextureReplacements::UpscaleWorkerEntryPoint()
+{
+	Threading::SetNameOfCurrentThread("GS upscale");
+
+	// A thread inherits its creator's affinity, which may be a single core. This work should be
+	// able to go wherever the scheduler has room, and yield to the game threads when it is short.
+	const Threading::ThreadHandle self = Threading::ThreadHandle::GetForCallingThread();
+	self.SetAffinity(0);
+	self.SetNicePriority(5);
+
+	std::unique_lock<std::mutex> lock(s_upscale_mutex);
+	for (;;)
+	{
+		s_upscale_cv.wait(lock, []() { return s_upscale_stop || !s_upscale_queue.Empty(); });
+		if (s_upscale_stop)
+			break;
+
+		// Newest first: the texture queued last is the one being drawn now.
+		std::optional<UpscaleJob> job = s_upscale_queue.PopNewest();
+		s_upscale_busy++;
+		lock.unlock();
+
+		RunUpscaleJob(*job);
+		job.reset();
+
+		lock.lock();
+		s_upscale_busy--;
+		s_upscale_idle_cv.notify_all();
+	}
+}
+
+void GSTextureReplacements::StartUpscaleWorkers()
+{
+	std::unique_lock<std::mutex> lock(s_upscale_mutex);
+	if (!s_upscale_threads.empty())
+		return;
+
+	// One thread on a four core (or smaller, or unknown) machine, so the game keeps its cores.
+	const u32 cores = std::thread::hardware_concurrency();
+	const u32 count = (cores <= 4) ? 1 : 2;
+
+	s_upscale_stop = false;
+	for (u32 i = 0; i < count; i++)
+		s_upscale_threads.emplace_back(UpscaleWorkerEntryPoint);
+}
+
+void GSTextureReplacements::StopUpscaleWorkers()
+{
+	{
+		std::unique_lock<std::mutex> cache_lock(s_replacement_texture_cache_mutex);
+		ResetUpscaleJobsLocked();
+
+		std::unique_lock<std::mutex> lock(s_upscale_mutex);
+		s_upscale_stop = true;
+		s_upscale_cv.notify_all();
+	}
+
+	// Joined without any lock held: a job that is mid-run needs the cache mutex to finish.
+	std::vector<std::thread> threads;
+	{
+		std::unique_lock<std::mutex> lock(s_upscale_mutex);
+		threads.swap(s_upscale_threads);
+	}
+	for (std::thread& thread : threads)
+		thread.join();
+
+	std::unique_lock<std::mutex> lock(s_upscale_mutex);
+	s_upscale_stop = false;
+}
+
+void GSTextureReplacements::SyncUpscaleWorkers()
+{
+	std::unique_lock<std::mutex> lock(s_upscale_mutex);
+	if (s_upscale_threads.empty())
+		return;
+
+	s_upscale_idle_cv.wait(lock, []() { return s_upscale_queue.Empty() && s_upscale_busy == 0; });
+}
+
+void GSTextureReplacements::ResetUpscaleJobsLocked()
+{
+	// Anything still running finds a different generation when it comes to store its result.
+	s_upscale_generation.fetch_add(1, std::memory_order_relaxed);
+	s_pending_upscale_textures.clear();
+
+	std::vector<UpscaleJob> removed;
+	{
+		std::unique_lock<std::mutex> lock(s_upscale_mutex);
+		s_upscale_queue.Clear(&removed);
+	}
+	if (!removed.empty())
+		s_upscale_stat_dropped.fetch_add(removed.size(), std::memory_order_relaxed);
+}
+
+void GSTextureReplacements::DropGeneratedReplacementsLocked()
+{
+	std::unordered_set<TextureName> dropped;
+	for (auto it = s_replacement_texture_cache.begin(); it != s_replacement_texture_cache.end();)
+	{
+		if (!it->second.generated)
+		{
+			++it;
+			continue;
+		}
+
+		s_replacement_texture_cache_bytes -= ReplacementTextureBytes(it->second);
+		const auto lru_it = s_replacement_texture_lru_map.find(it->first);
+		if (lru_it != s_replacement_texture_lru_map.end())
+		{
+			s_replacement_texture_lru.erase(lru_it->second);
+			s_replacement_texture_lru_map.erase(lru_it);
+		}
+		dropped.insert(it->first);
+		it = s_replacement_texture_cache.erase(it);
+	}
+
+	// A result that was waiting to be injected would find nothing in the cache and be skipped, but
+	// take it off the list rather than leave it to an unrelated texture of the same name.
+	if (!dropped.empty())
+	{
+		s_async_loaded_textures.erase(
+			std::remove_if(s_async_loaded_textures.begin(), s_async_loaded_textures.end(),
+				[&dropped](const std::pair<TextureName, bool>& entry) { return dropped.find(entry.first) != dropped.end(); }),
+			s_async_loaded_textures.end());
+	}
+}
+
+void GSTextureReplacements::SetUpscaleMode()
+{
+	// Stops the workers and discards their queue, which bumps the generation, so nothing built
+	// under the old mode is stored after this point.
+	StopUpscaleWorkers();
+	LogUpscaleStats("mode change");
+	ResetUpscaleStats();
+
+	std::shared_ptr<const GSTextureUpscaler::FilterSet> filters;
+	const GSTextureUpscaleMode mode = GSConfig.TextureUpscale;
+	if (mode == GSTextureUpscaleMode::Raisr2x || mode == GSTextureUpscaleMode::Raisr4x)
+	{
+		// One filter set serves both modes; 4x runs it twice.
+		const std::string dir = Path::Combine(
+			Path::Combine(Path::Combine(EmuFolders::Resources, "upscale"), "raisr"), "ps2");
+
+		std::string error;
+		filters = GSTextureUpscaler::FilterSet::Load(dir, &error);
+		if (filters)
+		{
+			Console.WriteLnFmt("Texture upscaling: RAISR {}x with the filters in {}.",
+				(mode == GSTextureUpscaleMode::Raisr4x) ? 4 : 2, dir);
+		}
+		else
+		{
+			// Logged and shown once per attempt. Nothing retries it, so a missing or damaged
+			// resource does not repeat this on every texture.
+			Console.Error(fmt::format("Texture upscaling: could not load the filters: {}", error));
+			Host::AddIconOSDMessage("TextureUpscaleFilters", ICON_FA_TRIANGLE_EXCLAMATION,
+				fmt::format(TRANSLATE_FS("TextureReplacement",
+					"Texture upscaling is off because its filters could not be loaded from {}."), dir),
+				Host::OSD_WARNING_DURATION);
+		}
+	}
+
+	{
+		std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
+		DropGeneratedReplacementsLocked();
+		s_upscale_filters = filters;
+		s_upscale_four_x.store(mode == GSTextureUpscaleMode::Raisr4x, std::memory_order_relaxed);
+		s_upscale_ready.store(filters != nullptr, std::memory_order_relaxed);
+	}
+
+	if (filters)
+		StartUpscaleWorkers();
 }

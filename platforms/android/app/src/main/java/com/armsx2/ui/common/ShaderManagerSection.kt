@@ -70,6 +70,7 @@ fun ShaderManagerSection() {
     var busyId by remember { mutableStateOf<String?>(null) }
     var downloaded by remember { mutableStateOf<Pair<Long, Long>?>(null) }
     var extracted by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    var indexing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     // Distinguishes "nothing installed" from "haven't looked yet" — the first scan walks
     // thousands of files, so without this the empty state flashes on every open.
@@ -133,18 +134,21 @@ fun ShaderManagerSection() {
             message = null
             downloaded = null
             extracted = null
+            indexing = false
             val pack = withContext(Dispatchers.IO) {
                 ShaderRepo.download(
                     context = context,
                     source = source,
                     onDownload = { done, total -> downloaded = done to total },
                     onExtract = { done, total -> extracted = done to total },
+                    onIndex = { indexing = true },
                     isCancelled = { cancelFlag.get() },
                 )
             }
             busyId = null
             downloaded = null
             extracted = null
+            indexing = false
             message = when {
                 pack != null -> "$installedOkMsg ${pack.name}"
                 cancelFlag.get() -> cancelledMsg
@@ -266,6 +270,7 @@ fun ShaderManagerSection() {
                         when {
                             // Extract wins the label once it starts: the phases are
                             // sequential, so a stale byte count would just confuse.
+                            indexing -> str("renderer.shaderPack.indexing")
                             ex != null -> "${str("renderer.shaderPack.extracting")} ${ex.first} / ${ex.second}"
                             dl != null -> "${str("renderer.shaderPack.downloading")} ${formatMb(dl.first)} / ${formatMb(dl.second)}"
                             else -> str("renderer.shaderPack.starting")
@@ -283,6 +288,7 @@ fun ShaderManagerSection() {
                     ) { Text(str("action.cancel")) }
                 }
                 val fraction = when {
+                    indexing -> null
                     ex != null && ex.second > 0 -> ex.first.toFloat() / ex.second
                     dl != null && dl.second > 0 -> dl.first.toFloat() / dl.second
                     else -> null
