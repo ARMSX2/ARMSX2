@@ -886,6 +886,8 @@ open class MainActivityRuntime : ComponentActivity() {
                 return
             }
             println("@@ANDROID_ARCADE@@ ${launch.game.gameId} mode=${launch.mode} elf=${launch.elf.take(200)} media=${launch.media.take(200)}")
+            // Told once, over the game as it boots: Soul Calibur II's new Conquest card.
+            launch.note?.let { com.armsx2.arcade.Arcade.notice.value = it }
             NativeApp.setArcadeLaunchFiles(launch.elf, launch.media, launch.sram)
             com.armsx2.arcade.Arcade.sessionMode.intValue = launch.mode
             com.armsx2.arcade.Arcade.sessionGameId.value = launch.game.gameId
@@ -2689,7 +2691,7 @@ open class MainActivityRuntime : ComponentActivity() {
             if (com.armsx2.BuildConfig.IN_APP_UPDATER) {
                 com.armsx2.update.AutoUpdateGate()
             }
-            // Why an arcade game did not start, when it did not.
+            // Why an arcade game did not start, when it did not (or Soul Calibur II's new Conquest card).
             com.armsx2.arcade.ArcadeNotice()
             // First-time setup deferral: when the wizard finishes and
             // setupComplete flips to true, kick off the heavy emucore

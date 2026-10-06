@@ -1863,6 +1863,7 @@
  "arcade.games.attract": "Yalnızca tanıtım modu",
  "arcade.part.dongle": "dongle",
  "arcade.part.card": "Conquest kartı",
+ "arcade.conquest.added": "Soul Calibur II'nin artık Yuva 2'de bir Conquest kartı var. Oyun kartı kullanamadığını söylerse duraklatma menüsündeki Test anahtarı ile oyunun test menüsünü açın ve DATA CLEAR, ardından ALL CLEAR seçin. Bir kez yeterli.",
  "arcade.part.boot": "önyükleme dosyası",
  "arcade.part.bios": "arcade BIOS'u",
  "arcade.part.biosBoard": "%s BIOS'u",

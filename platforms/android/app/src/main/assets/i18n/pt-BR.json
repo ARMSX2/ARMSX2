@@ -1865,6 +1865,7 @@
  "arcade.games.attract": "Só modo demonstração",
  "arcade.part.dongle": "dongle",
  "arcade.part.card": "cartão do Conquest",
+ "arcade.conquest.added": "Soul Calibur II agora tem um cartão do Conquest no Slot 2. Se o jogo disser que não consegue usar o cartão, abra o menu de teste dele com Chave de teste no menu de pausa e escolha DATA CLEAR e depois ALL CLEAR. Basta uma vez.",
  "arcade.part.boot": "arquivo de inicialização",
  "arcade.part.bios": "BIOS de arcade",
  "arcade.part.biosBoard": "BIOS do %s",

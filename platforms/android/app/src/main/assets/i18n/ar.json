@@ -1863,6 +1863,7 @@
  "arcade.games.attract": "وضع العرض التوضيحي فقط",
  "arcade.part.dongle": "الدونغل",
  "arcade.part.card": "بطاقة Conquest",
+ "arcade.conquest.added": "أصبحت لدى Soul Calibur II بطاقة Conquest في Slot 2. إذا قالت اللعبة إنها لا تستطيع استخدام البطاقة، فافتح قائمة الاختبار الخاصة بها عبر مفتاح الاختبار في قائمة الإيقاف المؤقت، واختر DATA CLEAR ثم ALL CLEAR. يكفي ذلك مرة واحدة.",
  "arcade.part.boot": "ملف الإقلاع",
  "arcade.part.bios": "BIOS الأركيد",
  "arcade.part.biosBoard": "BIOS %s",

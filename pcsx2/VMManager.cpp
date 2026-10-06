@@ -1736,7 +1736,17 @@ bool VMManager::OpenArcadeGame(const VMBootParameters& boot_params, Error* error
 	std::string dongle = ini.GetStringValue("data", "dongle", "");
 	if (dongle.empty())
 		dongle = gameid + ".ps2";
-	const std::string card = ini.GetStringValue("data", "card", "");
+	std::string card = ini.GetStringValue("data", "card", "");
+	// Soul Calibur II is the one game that reads a card of its own in slot 2, its Conquest card; PCSX2x6's testers
+	// saw its opponents' AI go wrong without one (issue #793). An .acgame that names no card gets the one named
+	// after the game in the memory cards folder, when there is one (ARMSX2 for Android puts SC2MAKER's blank card
+	// there). It is a raw card, its spare bytes the game's own checksums, so never a .bin (converted as a card
+	// without ECC). Every other game keeps slot 2 empty unless its .acgame names a card.
+	if (card.empty() && gameid == "NM00007" &&
+		FileSystem::FileExists(Path::Combine(EmuFolders::MemoryCards, "NM00007.conquestcard").c_str()))
+	{
+		card = "NM00007.conquestcard";
+	}
 	if (!FileSystem::FileExists(Path::Combine(EmuFolders::MemoryCards, dongle).c_str()))
 	{
 		Error::SetStringFmt(error,
@@ -1773,7 +1783,7 @@ bool VMManager::OpenArcadeGame(const VMBootParameters& boot_params, Error* error
 	s_arcade_gameid = gameid;
 	s_arcade_title = ini.GetStringValue("game", "name", "");
 	s_arcade_dongle = std::move(dongle);
-	s_arcade_card = card;
+	s_arcade_card = std::move(card);
 	s_arcade_bios = std::move(bios);
 	ArcadeiLinkID = region;
 	PS2CLK = clock;

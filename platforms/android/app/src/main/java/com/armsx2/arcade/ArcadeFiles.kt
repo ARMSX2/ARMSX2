@@ -32,7 +32,8 @@ object ArcadeFiles {
         /** An image still packed (.iso.gz): the drive cannot read it as it is. */
         PACKED_IMAGE,
 
-        /** A memory card file, the dongle: .ps2, a .bin of a card's size, or one packed as .gz. */
+        /** A memory card file, the dongle: .ps2, a .bin of a card's size, or one packed as .gz. Soul Calibur
+         *  II's Conquest card is one too, told from its dongle by what it holds ([isConquestCard]). */
         CARD,
 
         /** Something else of the set (a small board ROM, a boot program): never a game. */
@@ -46,7 +47,7 @@ object ArcadeFiles {
         val packed = lower.endsWith(".gz")
         return when (lower.removeSuffix(".gz").substringAfterLast('.', "")) {
             "chd", "iso" -> if (packed) Kind.PACKED_IMAGE else Kind.IMAGE
-            "ps2" -> Kind.CARD
+            "ps2", "conquestcard" -> Kind.CARD
             "bin", "img" -> {
                 val bytes = size()
                 when {
@@ -91,4 +92,26 @@ object ArcadeFiles {
     /** The name the dongle of the game [id] has in the memory cards folder, by what it holds: a card with
      *  its ECC is a .ps2, one without (a whole number of megabytes) a .bin. */
     fun dongleName(id: String, bytes: Long): String = if (bytes % (1L shl 20) == 0L) "$id.bin" else "$id.ps2"
+
+    /** Soul Calibur II, the one arcade game that reads a card of its own besides its dongle: its Conquest card,
+     *  in slot 2. Every other game's card files are its dongle's. */
+    const val CONQUEST_GAME = "NM00007"
+
+    /** The Conquest card's name in the memory cards folder, where the core mounts it from when the game's
+     *  .acgame names no card (VMManager::OpenArcadeGame). Never a .bin: the core converts a .bin as a card
+     *  without ECC, and Soul Calibur II keeps its own checksums where the ECC would be. */
+    const val CONQUEST_CARD = "$CONQUEST_GAME.conquestcard"
+
+    /** A Conquest card with its spare bytes, the only kind the game reads: 16384 pages of 512 + 16 bytes. */
+    const val CONQUEST_CARD_BYTES = 8_650_752L
+
+    /** How a Conquest card starts (its first page, written by the game); a dongle never does. */
+    private val CONQUEST_HEADER = "Memory Card for SoulCaliburII".toByteArray(Charsets.US_ASCII)
+
+    /** How many of a card's first bytes [isConquestCard] reads. */
+    val CONQUEST_HEADER_BYTES: Int get() = CONQUEST_HEADER.size
+
+    /** Whether a card file is a Conquest card and not a dongle, by its first bytes (unpacked). */
+    fun isConquestCard(head: ByteArray): Boolean =
+        head.size >= CONQUEST_HEADER.size && CONQUEST_HEADER.indices.all { head[it] == CONQUEST_HEADER[it] }
 }

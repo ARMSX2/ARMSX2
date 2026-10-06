@@ -1862,6 +1862,7 @@
   "arcade.games.attract": "Лише демо-режим",
   "arcade.part.dongle": "донгл",
   "arcade.part.card": "карта Conquest",
+  "arcade.conquest.added": "Тепер у Soul Calibur II є карта Conquest у слоті 2. Якщо гра повідомить, що не може використати карту, відкрийте її тестове меню пунктом «Тестовий перемикач» у меню паузи й виберіть DATA CLEAR, потім ALL CLEAR. Достатньо одного разу.",
   "arcade.part.boot": "файл запуску",
   "arcade.part.bios": "аркадний BIOS",
   "arcade.part.biosBoard": "BIOS %s",

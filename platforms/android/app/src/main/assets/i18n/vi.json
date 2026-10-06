@@ -1863,6 +1863,7 @@
   "arcade.games.attract": "Chỉ chế độ trình diễn",
   "arcade.part.dongle": "dongle",
   "arcade.part.card": "thẻ Conquest",
+  "arcade.conquest.added": "Soul Calibur II giờ đã có thẻ Conquest ở Slot 2. Nếu trò chơi báo không dùng được thẻ, hãy mở menu kiểm tra của nó bằng Công tắc kiểm tra trong menu tạm dừng rồi chọn DATA CLEAR, sau đó ALL CLEAR. Chỉ cần làm một lần.",
   "arcade.part.boot": "tệp khởi động",
   "arcade.part.bios": "BIOS arcade",
   "arcade.part.biosBoard": "BIOS %s",

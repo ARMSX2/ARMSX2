@@ -1863,6 +1863,7 @@
  "arcade.games.attract": "僅展示模式",
  "arcade.part.dongle": "加密鎖",
  "arcade.part.card": "Conquest 記憶卡",
+ "arcade.conquest.added": "Soul Calibur II 現在在插槽 2 中有一張 Conquest 記憶卡。如果遊戲提示無法使用這張卡，請用暫停選單中的「測試開關」開啟遊戲的測試選單，選擇 DATA CLEAR，再選擇 ALL CLEAR。只需操作一次。",
  "arcade.part.boot": "啟動檔案",
  "arcade.part.bios": "街機 BIOS",
  "arcade.part.biosBoard": "%s BIOS",

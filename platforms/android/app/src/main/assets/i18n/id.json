@@ -1863,6 +1863,7 @@
   "arcade.games.attract": "Hanya mode demo",
   "arcade.part.dongle": "dongle",
   "arcade.part.card": "kartu Conquest",
+  "arcade.conquest.added": "Soul Calibur II kini punya kartu Conquest di Slot 2. Jika game mengatakan tidak bisa memakai kartu itu, buka menu tesnya dengan Sakelar tes di menu jeda, lalu pilih DATA CLEAR, kemudian ALL CLEAR. Cukup sekali.",
   "arcade.part.boot": "file boot",
   "arcade.part.bios": "BIOS arcade",
   "arcade.part.biosBoard": "BIOS %s",

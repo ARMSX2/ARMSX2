@@ -1863,6 +1863,7 @@
  "arcade.games.attract": "فقط حالت نمایشی",
  "arcade.part.dongle": "دانگل",
  "arcade.part.card": "کارت Conquest",
+ "arcade.conquest.added": "Soul Calibur II اکنون یک کارت Conquest در شکاف 2 دارد. اگر بازی گفت نمی‌تواند از کارت استفاده کند، منوی تست آن را با کلید تست در منوی توقف باز کنید و DATA CLEAR و سپس ALL CLEAR را انتخاب کنید. یک بار کافی است.",
  "arcade.part.boot": "فایل راه‌اندازی",
  "arcade.part.bios": "BIOS آرکید",
  "arcade.part.biosBoard": "BIOS %s",
