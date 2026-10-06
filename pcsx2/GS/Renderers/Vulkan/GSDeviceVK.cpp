@@ -7423,7 +7423,6 @@ VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
 	AddMacro(ss, "VS_POINT_SIZE", sel.point_size);
 	AddMacro(ss, "VS_EXPAND", static_cast<int>(sel.expand));
 	AddMacro(ss, "VS_SPRITE_EDGE_CLAMP", sel.sprite_edge_clamp);
-	AddMacro(ss, "VS_PROVOKING_VERTEX_LAST", static_cast<int>(m_features.provoking_vertex_last));
 	ss << m_tfx_source;
 	std::string source = ss.str();
 	source_timer.reset();
