@@ -216,6 +216,10 @@ struct MobileDriverProfile
 	u64 bugs = 0;
 	u64 workarounds = 0;
 	u32 matched_rule_count = 0;
+	/// The table rows whose conditions matched, bit i for row i (GpuProfileDetector::DriverRuleId
+	/// names a row). Set whether or not the row's bugs and workarounds are then applied. Every
+	/// matched row is applied today, so this holds exactly the rows matched_rule_count counts.
+	u64 matched_rules = 0;
 	DriverProfileConfidence confidence = DriverProfileConfidence::Unknown;
 	/// True when nothing in the table matched and the safe defaults are in force.
 	bool conservative_fallback = true;
@@ -330,6 +334,29 @@ struct VulkanDeviceRules
 	bool barrier_road_measured = false;
 };
 
+/// A VulkanDeviceRules flag and the name the log and the driver report print it under.
+struct VulkanDeviceRuleName
+{
+	const char* name;
+	bool VulkanDeviceRules::* flag;
+};
+
+/// Every VulkanDeviceRules flag, in declaration order. A flag added above needs an entry here, or
+/// the size check below fails.
+inline constexpr VulkanDeviceRuleName VULKAN_DEVICE_RULE_NAMES[] = {
+	{"broken_timestamp_queries", &VulkanDeviceRules::broken_timestamp_queries},
+	{"avoid_feedback_loop_layout", &VulkanDeviceRules::avoid_feedback_loop_layout},
+	{"avoid_push_descriptors", &VulkanDeviceRules::avoid_push_descriptors},
+	{"broken_provoking_vertex", &VulkanDeviceRules::broken_provoking_vertex},
+	{"broken_colormask_with_depth", &VulkanDeviceRules::broken_colormask_with_depth},
+	{"broken_mad_deinterlace", &VulkanDeviceRules::broken_mad_deinterlace},
+	{"adreno8xx_proprietary", &VulkanDeviceRules::adreno8xx_proprietary},
+	{"self_read_costs_measured", &VulkanDeviceRules::self_read_costs_measured},
+	{"barrier_road_measured", &VulkanDeviceRules::barrier_road_measured},
+};
+static_assert(sizeof(VulkanDeviceRules) == sizeof(VULKAN_DEVICE_RULE_NAMES) / sizeof(VULKAN_DEVICE_RULE_NAMES[0]),
+	"VulkanDeviceRules is all bool flags; every one needs a VULKAN_DEVICE_RULE_NAMES entry");
+
 struct GpuProfileSelection
 {
 	GpuProfileOverride override_mode = GpuProfileOverride::Auto;
@@ -353,6 +380,17 @@ public:
 	static const char* DriverToString(MobileGpuDriver value);
 	static const char* BugToString(DriverBug value);
 	static const char* WorkaroundToString(DriverWorkaround value);
+
+	/// The driver-bug table's rows, in table order. DriverRuleId is null past the last row.
+	static u32 DriverRuleCount();
+	static const char* DriverRuleId(u32 row);
+
+	/// For the device-creation log: comma-separated names, or "none" for an empty set. Bugs and
+	/// workarounds are named from the masks, the matched rows by id, the device rules by field name.
+	static std::string DescribeMatchedRules(const MobileDriverProfile& profile);
+	static std::string DescribeBugs(u64 mask);
+	static std::string DescribeWorkarounds(u64 mask);
+	static std::string DescribeDeviceRules(const VulkanDeviceRules& rules);
 
 	static GpuProfileSelection Resolve(std::string_view override_value, std::string_view gpu_vendor,
 		std::string_view gpu_renderer_or_name);

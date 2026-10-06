@@ -618,6 +618,8 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {46, 0, 0}, {51, 0, 0},
 		0, 0, false, Bug(DriverBug::BrokenExtendedDynamicState), 0},
 }};
+// MobileDriverProfile::matched_rules is one bit per row.
+static_assert(s_driver_rules.size() <= 64);
 } // namespace
 
 MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
@@ -672,8 +674,9 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 		                                          (selection.gpu.architecture == MobileGpuArchitecture::Adreno7xx) &&
 		                                          (selection.gpu.model_number >= 730);
 
-	for (const DriverRule& rule : s_driver_rules)
+	for (size_t row = 0; row < s_driver_rules.size(); row++)
 	{
+		const DriverRule& rule = s_driver_rules[row];
 		if (std::string_view(rule.id) == "vk-powervr-old-swapchain-width" &&
 			(profile.version.raw == 0 || profile.version.raw >= 0x00582558u))
 		{
@@ -701,6 +704,7 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 		if (!RuleMatches(rule, selection, context, profile, lowered_hints))
 			continue;
 
+		profile.matched_rules |= u64{1} << row;
 		profile.bugs |= rule.bugs;
 		profile.workarounds |= rule.workarounds;
 		profile.matched_rule_count++;
@@ -729,6 +733,16 @@ void GpuProfileDetector::SetForcedBugs(u64 mask)
 u64 GpuProfileDetector::GetForcedBugs()
 {
 	return s_forced_driver_bugs;
+}
+
+u32 GpuProfileDetector::DriverRuleCount()
+{
+	return static_cast<u32>(GpuProfileDetail::s_driver_rules.size());
+}
+
+const char* GpuProfileDetector::DriverRuleId(u32 row)
+{
+	return (row < GpuProfileDetail::s_driver_rules.size()) ? GpuProfileDetail::s_driver_rules[row].id : nullptr;
 }
 
 u32 GpuProfileDetector::ParseDeclaredLoopFixGeneration(std::string_view driver_info)

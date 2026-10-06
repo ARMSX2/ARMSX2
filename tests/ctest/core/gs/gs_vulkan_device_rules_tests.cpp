@@ -192,3 +192,27 @@ TEST(GSVulkanDeviceRules, SelfReadCostsWereMeasuredOnTurnipAndHoneykrispOnly)
 	EXPECT_FALSE(Rules(kAdreno650Turnip).barrier_road_measured);
 	EXPECT_FALSE(Rules(kRadv).barrier_road_measured);
 }
+
+// The rules that are true, by name, as the device-creation log prints them. Declaration order, not
+// the order they were set in.
+TEST(GSVulkanDeviceRules, DescribeNamesTheRulesThatAreTrue)
+{
+	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(VulkanDeviceRules{}), "none");
+	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(Rules(kRg477v)),
+		"broken_timestamp_queries, avoid_feedback_loop_layout, avoid_push_descriptors");
+	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(Rules(kAppleM2)),
+		"self_read_costs_measured, barrier_road_measured");
+	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(Rules(kRadv)), "none");
+}
+
+// Each flag has its own entry in the name table. A flag added to VulkanDeviceRules without one is
+// caught by the static_assert beside the table; this catches two entries naming the same flag.
+TEST(GSVulkanDeviceRules, EveryRuleHasItsOwnNameInTheTable)
+{
+	for (const VulkanDeviceRuleName& entry : VULKAN_DEVICE_RULE_NAMES)
+	{
+		VulkanDeviceRules rules;
+		rules.*entry.flag = true;
+		EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(rules), entry.name);
+	}
+}

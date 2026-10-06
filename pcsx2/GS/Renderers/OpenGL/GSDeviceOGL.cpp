@@ -1013,6 +1013,11 @@ bool GSDeviceOGL::CheckFeatures()
 		static_cast<unsigned>(profile_selection.driver.matched_rule_count),
 		static_cast<unsigned long long>(profile_selection.driver.bugs),
 		static_cast<unsigned long long>(profile_selection.driver.workarounds));
+	Console.WriteLn("GL: GPU profile rules matched: %s",
+		GpuProfileDetector::DescribeMatchedRules(profile_selection.driver).c_str());
+	Console.WriteLn("GL: GPU profile bugs: %s", GpuProfileDetector::DescribeBugs(profile_selection.driver.bugs).c_str());
+	Console.WriteLn("GL: GPU profile workarounds: %s",
+		GpuProfileDetector::DescribeWorkarounds(profile_selection.driver.workarounds).c_str());
 	DevCon.WriteLn("GL: GPU profile hints: %s", profile_selection.hints.c_str());
 	bool use_mali_profile = IsMaliGPUProfile();
 	bool use_adreno_profile = IsAdrenoGPUProfile();

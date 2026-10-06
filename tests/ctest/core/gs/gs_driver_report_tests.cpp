@@ -12,6 +12,7 @@
 
 #include "GS/DriverReport/GSDriverReportClassify.h"
 #include "GS/DriverReport/GSDriverReportJson.h"
+#include "GS/DriverReport/GSDriverReportProfile.h"
 
 #include <gtest/gtest.h>
 
@@ -228,4 +229,39 @@ TEST(GSDriverReport, StepLogRecordsAFailureAndKeepsGoing)
 	JsonWriter w;
 	steps.Write(w);
 	EXPECT_NE(w.GetString().find("\"error\": null"), std::string::npos);
+}
+
+// The report writes every device rule under its field name, true or false, in declaration order.
+// The log prints the true ones from the same name table, so the two cannot drift apart.
+TEST(GSDriverReport, GpuProfileWritesEveryVulkanDeviceRuleByName)
+{
+	VulkanDeviceRules rules;
+	rules.broken_timestamp_queries = true;
+	rules.avoid_push_descriptors = true;
+	rules.barrier_road_measured = true;
+
+	JsonWriter w;
+	WriteGpuProfile(w, GpuProfileSelection{}, &rules);
+	const std::string& json = w.GetString();
+
+	const size_t block = json.find("\"vulkan_device_rules\"");
+	ASSERT_NE(block, std::string::npos) << json;
+	size_t at = block;
+	const char* const expected[] = {
+		"\"broken_timestamp_queries\": true",
+		"\"avoid_feedback_loop_layout\": false",
+		"\"avoid_push_descriptors\": true",
+		"\"broken_provoking_vertex\": false",
+		"\"broken_colormask_with_depth\": false",
+		"\"broken_mad_deinterlace\": false",
+		"\"adreno8xx_proprietary\": false",
+		"\"self_read_costs_measured\": false",
+		"\"barrier_road_measured\": true",
+	};
+	for (const char* line : expected)
+	{
+		const size_t found = json.find(line, at);
+		ASSERT_NE(found, std::string::npos) << line << " missing or out of order";
+		at = found;
+	}
 }

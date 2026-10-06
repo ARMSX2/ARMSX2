@@ -101,15 +101,8 @@ namespace GSDriverReport
 		{
 			w.Key("vulkan_device_rules");
 			w.BeginObject();
-			w.KeyBool("broken_timestamp_queries", rules->broken_timestamp_queries);
-			w.KeyBool("avoid_feedback_loop_layout", rules->avoid_feedback_loop_layout);
-			w.KeyBool("avoid_push_descriptors", rules->avoid_push_descriptors);
-			w.KeyBool("broken_provoking_vertex", rules->broken_provoking_vertex);
-			w.KeyBool("broken_colormask_with_depth", rules->broken_colormask_with_depth);
-			w.KeyBool("broken_mad_deinterlace", rules->broken_mad_deinterlace);
-			w.KeyBool("adreno8xx_proprietary", rules->adreno8xx_proprietary);
-			w.KeyBool("self_read_costs_measured", rules->self_read_costs_measured);
-			w.KeyBool("barrier_road_measured", rules->barrier_road_measured);
+			for (const VulkanDeviceRuleName& entry : VULKAN_DEVICE_RULE_NAMES)
+				w.KeyBool(entry.name, rules->*entry.flag);
 			w.EndObject();
 		}
 

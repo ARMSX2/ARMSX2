@@ -3912,6 +3912,14 @@ void GSDeviceVK::PublishGPUProfile()
 		static_cast<unsigned>(mobile_profile.driver.matched_rule_count),
 		static_cast<unsigned long long>(mobile_profile.driver.bugs),
 		static_cast<unsigned long long>(mobile_profile.driver.workarounds));
+	Console.WriteLn("VK: GPU profile rules matched: %s",
+		GpuProfileDetector::DescribeMatchedRules(mobile_profile.driver).c_str());
+	Console.WriteLn("VK: GPU profile bugs: %s", GpuProfileDetector::DescribeBugs(mobile_profile.driver.bugs).c_str());
+	Console.WriteLn("VK: GPU profile workarounds: %s",
+		GpuProfileDetector::DescribeWorkarounds(mobile_profile.driver.workarounds).c_str());
+	Console.WriteLn("VK: device rules: %s", GpuProfileDetector::DescribeDeviceRules(m_device_rules).c_str());
+	if (IsDeviceMaliSX2())
+		Console.WriteLn("VK: driver is malisx2 (driverInfo \"%s\")", m_device_driver_properties.driverInfo);
 	DevCon.WriteLn("VK: GPU profile hints: %s", mobile_profile.hints.c_str());
 }
 

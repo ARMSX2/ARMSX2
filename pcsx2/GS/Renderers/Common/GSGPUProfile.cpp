@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cctype>
+#include <utility>
 
 #if defined(__ANDROID__)
 #include <sys/system_properties.h>
@@ -378,6 +379,62 @@ const char* GpuProfileDetector::WorkaroundToString(DriverWorkaround value)
 		case DriverWorkaround::Count:
 		default: return "Unknown";
 	}
+}
+
+static void AppendName(std::string& list, std::string_view name)
+{
+	if (!list.empty())
+		list += ", ";
+	list += name;
+}
+
+static std::string OrNone(std::string list)
+{
+	return list.empty() ? std::string("none") : list;
+}
+
+std::string GpuProfileDetector::DescribeMatchedRules(const MobileDriverProfile& profile)
+{
+	std::string list;
+	for (u32 row = 0; row < DriverRuleCount(); row++)
+	{
+		if (profile.matched_rules & (u64{1} << row))
+			AppendName(list, DriverRuleId(row));
+	}
+	return OrNone(std::move(list));
+}
+
+std::string GpuProfileDetector::DescribeBugs(u64 mask)
+{
+	std::string list;
+	for (u8 i = 0; i < static_cast<u8>(DriverBug::Count); i++)
+	{
+		if (mask & BugMask(static_cast<DriverBug>(i)))
+			AppendName(list, BugToString(static_cast<DriverBug>(i)));
+	}
+	return OrNone(std::move(list));
+}
+
+std::string GpuProfileDetector::DescribeWorkarounds(u64 mask)
+{
+	std::string list;
+	for (u8 i = 0; i < static_cast<u8>(DriverWorkaround::Count); i++)
+	{
+		if (mask & (u64{1} << i))
+			AppendName(list, WorkaroundToString(static_cast<DriverWorkaround>(i)));
+	}
+	return OrNone(std::move(list));
+}
+
+std::string GpuProfileDetector::DescribeDeviceRules(const VulkanDeviceRules& rules)
+{
+	std::string list;
+	for (const VulkanDeviceRuleName& entry : VULKAN_DEVICE_RULE_NAMES)
+	{
+		if (rules.*entry.flag)
+			AppendName(list, entry.name);
+	}
+	return OrNone(std::move(list));
 }
 
 

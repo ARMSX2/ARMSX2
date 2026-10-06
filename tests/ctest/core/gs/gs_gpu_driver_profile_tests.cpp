@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include <bitset>
 #include <string>
 
 namespace
@@ -50,7 +51,7 @@ GpuProfileSelection ResolveGL(const char* vendor, const char* renderer, const ch
 }
 
 GpuProfileSelection ResolveMaliVK(const char* device_name, u32 packed_version,
-	std::string_view platform_hints = std::string_view())
+	std::string_view platform_hints = std::string_view(), std::string_view driver_info = std::string_view())
 {
 	MobileDriverContext context;
 	context.api = MobileGpuApi::Vulkan;
@@ -58,6 +59,7 @@ GpuProfileSelection ResolveMaliVK(const char* device_name, u32 packed_version,
 	context.driver_id = kArmDriverId;
 	context.driver_version = packed_version;
 	context.driver_name = "ARM proprietary";
+	context.driver_info = driver_info;
 	context.platform_hints = platform_hints;
 	return GpuProfileDetector::Resolve("auto", std::string_view(), device_name, context);
 }
@@ -70,6 +72,8 @@ GpuProfileSelection ResolveMaliVK(const char* device_name, u32 packed_version,
 constexpr const char* kMt6897AndroidHints = "ro.soc.manufacturer=Mediatek | ro.soc.model=MT6897 | "
 										   "ro.board.platform=mt6897";
 constexpr const char* kMt6897LinuxHints = "anbernic,rg477v mediatek,mt6897";
+// Arm's driverInfo for an r44p1 blob: "v1.r<release>p<patch>-<build>.<hash>". Not malisx2's.
+constexpr const char* kMaliR44p1DriverInfo = "v1.r44p1-01eac0.abc";
 // A MediaTek part that is NOT the one we measured: the deny list still applies there.
 constexpr const char* kOtherMediaTekHints = "ro.soc.manufacturer=Mediatek | ro.soc.model=MT6985 | "
 										   "ro.board.platform=mt6985";
@@ -1014,4 +1018,124 @@ TEST(GSGpuDriverProfile, TheA7xxPreferenceDoesNotClearTheRtCopyWorkaround)
 {
 	EXPECT_TRUE(ResolveTurnipVK("Adreno (TM) 740", kStockTurnipDriverInfo)
 			.driver.UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Which rows matched, by id. The log used to carry only a count and two bit masks, so nobody could
+// tell from an emulog which rule had fired. The ids below are the table's own strings.
+
+// A Mali-G57 on Arm's r44p1 blob, no SoC hint. Every Arm Vulkan row that keys on the driver, the
+// r44p1 window, the pre-r52 dynamic-rendering bound or the G57 model matches; the rows that key on
+// another revision, a MediaTek SoC or an Android SDK do not. The r44p1 revision sits on the edge of
+// three version bounds ("before r44p1", "after r44p1", the r44p1 window), so this also pins which
+// side of each the packed 44.1.0 falls on.
+TEST(GSGpuDriverProfile, MatchedRulesNameEveryRowThatFiredOnAMaliG57R44p1)
+{
+	const GpuProfileSelection sel =
+		ResolveMaliVK("Mali-G57", PackVulkanVersion(44, 1, 0), std::string_view(), kMaliR44p1DriverInfo);
+
+	EXPECT_EQ(GpuProfileDetector::DescribeMatchedRules(sel.driver),
+		"vk-arm-proprietary, vk-arm-dynamic-rendering-before-r52, vk-arm-r44p1-attachment-self-read, "
+		"vk-arm-g57-roaa-destination-read");
+	EXPECT_EQ(sel.driver.matched_rule_count, 4u);
+	EXPECT_EQ(static_cast<u32>(std::bitset<64>(sel.driver.matched_rules).count()), sel.driver.matched_rule_count);
+}
+
+// The MT6897 exemptions: both the r44p1 self-read row and the MediaTek ROAA row reject this SoC in
+// their own conditions, so neither is in the record.
+TEST(GSGpuDriverProfile, MatchedRulesLeaveOutTheR44p1RowOnAnMt6897)
+{
+	const GpuProfileSelection sel = ResolveMaliVK(
+		"Mali-G57", PackVulkanVersion(44, 1, 0), kMt6897AndroidHints, kMaliR44p1DriverInfo);
+
+	EXPECT_EQ(GpuProfileDetector::DescribeMatchedRules(sel.driver),
+		"vk-arm-proprietary, vk-arm-dynamic-rendering-before-r52, vk-arm-g57-roaa-destination-read");
+	EXPECT_EQ(sel.driver.matched_rule_count, 3u);
+}
+
+// A MediaTek part that is not the measured one: the same device as the first test, plus the
+// vendor-wide ROAA row the MT6897 exemption exists to dodge.
+TEST(GSGpuDriverProfile, MatchedRulesIncludeTheMediaTekRoaaRowOnAnUnmeasuredSoc)
+{
+	const GpuProfileSelection sel = ResolveMaliVK(
+		"Mali-G57", PackVulkanVersion(44, 1, 0), kOtherMediaTekHints, kMaliR44p1DriverInfo);
+
+	EXPECT_EQ(GpuProfileDetector::DescribeMatchedRules(sel.driver),
+		"vk-arm-proprietary, vk-arm-dynamic-rendering-before-r52, vk-arm-r44p1-attachment-self-read, "
+		"vk-mediatek-mali-roaa-destination-read, vk-arm-g57-roaa-destination-read");
+}
+
+// Nothing matched is a sentence, not an empty line, so a log reader can tell "no rows" from "the
+// log line was cut off". The default profile has matched nothing; so does a driver nothing names.
+TEST(GSGpuDriverProfile, MatchedRulesSaysNoneWhenNothingMatched)
+{
+	EXPECT_EQ(GpuProfileDetector::DescribeMatchedRules(MobileDriverProfile{}), "none");
+
+	MobileDriverContext context;
+	context.api = MobileGpuApi::Vulkan;
+	context.vendor_id = 0x10005u;
+	context.driver_id = 26;
+	context.driver_version = PackVulkanVersion(25, 3, 0);
+	const GpuProfileSelection sel =
+		GpuProfileDetector::Resolve("auto", std::string_view(), "Apple M2 Max (G14C B1)", context);
+	EXPECT_EQ(sel.driver.matched_rule_count, 0u);
+	EXPECT_EQ(sel.driver.matched_rules, 0u);
+	EXPECT_EQ(GpuProfileDetector::DescribeMatchedRules(sel.driver), "none");
+}
+
+// A bit set outside the table has no id to print. It is skipped rather than read past the end of
+// the table.
+TEST(GSGpuDriverProfile, MatchedRulesIgnoresABitPastTheEndOfTheTable)
+{
+	MobileDriverProfile profile;
+	profile.matched_rules = u64{1} << 63;
+	ASSERT_GT(64u, GpuProfileDetector::DriverRuleCount());
+	EXPECT_EQ(GpuProfileDetector::DescribeMatchedRules(profile), "none");
+}
+
+// The id is the key a log reader greps for, so two rows sharing one would make the line ambiguous.
+TEST(GSGpuDriverProfile, EveryRuleHasADistinctNonEmptyId)
+{
+	const u32 count = GpuProfileDetector::DriverRuleCount();
+	ASSERT_GT(count, 0u);
+	ASSERT_LE(count, 64u);
+	for (u32 i = 0; i < count; i++)
+	{
+		const char* id = GpuProfileDetector::DriverRuleId(i);
+		ASSERT_NE(id, nullptr);
+		EXPECT_NE(std::string_view(id), std::string_view()) << "row " << i;
+		for (u32 j = i + 1; j < count; j++)
+			EXPECT_STRNE(id, GpuProfileDetector::DriverRuleId(j)) << "rows " << i << " and " << j;
+	}
+	EXPECT_EQ(GpuProfileDetector::DriverRuleId(count), nullptr);
+}
+
+TEST(GSGpuDriverProfile, BugAndWorkaroundNamesComeFromTheSameTablesAsTheDriverReport)
+{
+	EXPECT_EQ(GpuProfileDetector::DescribeBugs(0), "none");
+	EXPECT_EQ(GpuProfileDetector::DescribeWorkarounds(0), "none");
+
+	// In enum order, whatever order the bits were set in.
+	const u64 two_bugs = GpuProfileDetector::BugMask(DriverBug::BrokenRoaaDestinationRead) |
+	                     GpuProfileDetector::BugMask(DriverBug::BrokenBufferStreaming);
+	EXPECT_EQ(GpuProfileDetector::DescribeBugs(two_bugs),
+		std::string(GpuProfileDetector::BugToString(DriverBug::BrokenBufferStreaming)) + ", " +
+			GpuProfileDetector::BugToString(DriverBug::BrokenRoaaDestinationRead));
+	const u64 two_workarounds = (u64{1} << static_cast<u8>(DriverWorkaround::PreferCachedStreamRingMemory)) |
+	                            (u64{1} << static_cast<u8>(DriverWorkaround::UseDescriptorSets));
+	EXPECT_EQ(GpuProfileDetector::DescribeWorkarounds(two_workarounds),
+		std::string(GpuProfileDetector::WorkaroundToString(DriverWorkaround::UseDescriptorSets)) + ", " +
+			GpuProfileDetector::WorkaroundToString(DriverWorkaround::PreferCachedStreamRingMemory));
+
+	// A bit past the last enumerator names nothing.
+	EXPECT_EQ(GpuProfileDetector::DescribeBugs(u64{1} << 63), "none");
+
+	// What the resolver recorded for the G57 device, named: the same set the masks carry.
+	const GpuProfileSelection sel =
+		ResolveMaliVK("Mali-G57", PackVulkanVersion(44, 1, 0), std::string_view(), kMaliR44p1DriverInfo);
+	const std::string bugs = GpuProfileDetector::DescribeBugs(sel.driver.bugs);
+	EXPECT_NE(bugs.find("BrokenSubpassFeedback"), std::string::npos);
+	EXPECT_NE(bugs.find("BrokenRoaaDestinationRead"), std::string::npos);
+	const std::string workarounds = GpuProfileDetector::DescribeWorkarounds(sel.driver.workarounds);
+	EXPECT_NE(workarounds.find("UseRenderTargetCopyForFeedback"), std::string::npos);
 }
