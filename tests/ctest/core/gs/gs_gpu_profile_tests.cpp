@@ -253,14 +253,18 @@ u32 ValhallArchOf(std::string_view renderer)
 	return GpuProfileDetector::MaliValhallArch(Mali(renderer).gpu.architecture);
 }
 
+// Every spelling a v9 part is known by: the stock GL_RENDERER with MC<n> or MP<n> (Arm's blobs use
+// both for the same part), and the bare names our malisx2 driver reports as the Vulkan deviceName
+// for product ids 0x9001..0x9005. The G77 and G57 core-count spellings are malisx2's naming for
+// product 0x9000 and unknown arch-9 ids.
 TEST(GSGpuProfileMali, ValhallV9IsG57G68G77G78)
 {
-	EXPECT_EQ(ValhallArchOf("Mali-G57 MC2"), 9u);
-	EXPECT_EQ(ValhallArchOf("Mali-G57"), 9u);
-	EXPECT_EQ(ValhallArchOf("Mali-G68 MC4"), 9u);
-	EXPECT_EQ(ValhallArchOf("Mali-G77 MC9"), 9u);
-	EXPECT_EQ(ValhallArchOf("Mali-G78 MC14"), 9u);
-	EXPECT_EQ(ValhallArchOf("Mali-G78AE MC10"), 9u);
+	for (const char* renderer : {"Mali-G57", "Mali-G57 MC2", "Mali-G57 MC4", "Mali-G57 MC6", "Mali-G68",
+			 "Mali-G68 MC4", "Mali-G77 MC7", "Mali-G77 MC9", "Mali-G78", "Mali-G78 MC14", "Mali-G78 MP14",
+			 "Mali-G78AE", "Mali-G78AE MC10"})
+	{
+		EXPECT_EQ(ValhallArchOf(renderer), 9u) << renderer;
+	}
 }
 
 TEST(GSGpuProfileMali, ValhallV10IsG310G510G610G710)
@@ -273,9 +277,9 @@ TEST(GSGpuProfileMali, ValhallV10IsG310G510G610G710)
 
 TEST(GSGpuProfileMali, ValhallV11IsG615G715AndImmortalisG715)
 {
-	EXPECT_EQ(ValhallArchOf("Mali-G615 MC6"), 11u);
-	EXPECT_EQ(ValhallArchOf("Mali-G615 MC2"), 11u);
-	EXPECT_EQ(ValhallArchOf("Mali-G715 MC7"), 11u);
+	// The bare names are what malisx2 reports for v11; the MC<n> forms are Arm's stock strings.
+	for (const char* renderer : {"Mali-G615", "Mali-G615 MC6", "Mali-G615 MC2", "Mali-G715", "Mali-G715 MC7"})
+		EXPECT_EQ(ValhallArchOf(renderer), 11u) << renderer;
 	// The two spellings the Arm driver and a name rebuilt from the model number produce.
 	EXPECT_EQ(ValhallArchOf("Mali-G715-Immortalis MC11"), 11u);
 	EXPECT_EQ(ValhallArchOf("Immortalis-G715 MC11"), 11u);

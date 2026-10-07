@@ -623,6 +623,23 @@ TEST(GSGpuDriverProfile, AutoResolvesToVulkanOnMaliValhallV9AndV11)
 	}
 }
 
+// Every Valhall v9 and v11 name a user can meet, in the two places it comes from: Arm's stock
+// GL_RENDERER (MC<n>, or MP<n> on some phones) and the bare and MC<n> names our malisx2 Vulkan
+// driver reports. Auto keys on the GL string alone, but a name that parsed as the wrong
+// architecture here would send a whole device class to the wrong renderer, so each one is pinned.
+TEST(GSGpuDriverProfile, AutoResolvesToVulkanForEveryKnownValhallV9AndV11Name)
+{
+	for (const char* renderer : {"Mali-G57", "Mali-G57 MC2", "Mali-G57 MC4", "Mali-G57 MC6", "Mali-G68",
+			 "Mali-G68 MC4", "Mali-G77 MC7", "Mali-G77 MC9", "Mali-G78", "Mali-G78 MC14", "Mali-G78 MP14",
+			 "Mali-G78AE", "Mali-G78AE MC10", "Mali-G615", "Mali-G615 MC6", "Mali-G715", "Mali-G715 MC7",
+			 "Mali-G715-Immortalis MC11"})
+	{
+		EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, renderer, kMaliR44p1GlVersion)) << renderer;
+		EXPECT_NE(std::string(GSUtil::AndroidAutoRendererReason()).find("Valhall v"), std::string::npos)
+			<< renderer << ": " << GSUtil::AndroidAutoRendererReason();
+	}
+}
+
 // Parts whose names sit one digit away from a v9 or v11 part. Each pair is decided by the whole
 // model number, so a prefix match (G71 inside G715, G31 inside G310, G72 inside G720) or a near
 // miss (G610 against G615, G710 against G715) would send one of them the wrong way.

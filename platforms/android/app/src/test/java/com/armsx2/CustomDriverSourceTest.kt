@@ -6,12 +6,19 @@ import org.junit.Test
 
 class CustomDriverSourceTest {
     // v9: G57, G68, G77, G78 (G78AE included). v11: G615, G715 (Immortalis-G715 included).
+    // Each part is listed bare, with MC<n>, and with MP<n> where Arm's blobs use it. The app reads
+    // the GL_RENDERER string (GpuInfo), so these are GL strings; the bare and MC<n> forms are also
+    // what malisx2 reports as its Vulkan deviceName.
     private val valhallV9 = listOf(
-        "Mali-G57", "Mali-G57 MC2", "Mali-G57 MC3", "Mali-G68 MC4", "Mali-G77 MC9",
-        "Mali-G78 MP14", "Mali-G78 MP20", "Mali-G78AE MC20", "Mali-G78AE",
+        "Mali-G57", "Mali-G57 MC2", "Mali-G57 MC3", "Mali-G57 MC4", "Mali-G57 MC6",
+        "Mali-G68", "Mali-G68 MC4",
+        "Mali-G77 MC7", "Mali-G77 MC9",
+        "Mali-G78", "Mali-G78 MC14", "Mali-G78 MP14", "Mali-G78 MP20",
+        "Mali-G78AE", "Mali-G78AE MC10", "Mali-G78AE MC20",
     )
     private val valhallV11 = listOf(
-        "Mali-G615 MC6", "Mali-G615 MC2", "Mali-G715 MC7", "Mali-G715-Immortalis MC11",
+        "Mali-G615", "Mali-G615 MC6", "Mali-G615 MC2",
+        "Mali-G715", "Mali-G715 MC7", "Mali-G715-Immortalis MC11",
         "Immortalis-G715 MC11",
     )
 
