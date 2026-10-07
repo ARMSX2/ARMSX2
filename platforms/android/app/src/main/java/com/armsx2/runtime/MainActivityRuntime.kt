@@ -988,8 +988,8 @@ open class MainActivityRuntime : ComponentActivity() {
             // re-open the GS device and run Vulkan::LoadVulkanLibrary. The
             // VK loader reads the pinned path lazily so the order matters.
             val ctx = instance?.applicationContext
-            // Per-game GPU driver: pin THIS title's resolved driver (blank = system). Keep the
-            // session mirror in sync so the picker UI + delete/reselect logic stay correct.
+            // Per-game GPU driver: pin THIS title's resolved driver. Uses the system driver if the
+            // id is blank or references a custom driver that is no longer installed.
             val pickedId = resolved.output.customDriverId.takeIf { it.isNotBlank() }
             customDriverId.value = pickedId
             val picked: com.armsx2.CustomDriver.InstalledDriver? =

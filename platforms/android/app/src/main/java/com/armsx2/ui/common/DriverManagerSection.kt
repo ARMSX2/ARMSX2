@@ -20,7 +20,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -56,7 +55,7 @@ import kotlinx.coroutines.withContext
 fun DriverManagerSection() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val installed = remember { mutableStateListOf<CustomDriver.InstalledDriver>() }
+    val installed = remember { mutableStateListOf<CustomDriver.InstalledDriver>().apply { addAll(CustomDriver.listInstalled(context)) } }
     var remote by remember { mutableStateOf<List<CustomDriver.RemoteDriver>?>(null) }
     var loadingRemote by remember { mutableStateOf(false) }
     var showRemote by remember { mutableStateOf(false) }
@@ -76,7 +75,6 @@ fun DriverManagerSection() {
         installed.clear()
         installed.addAll(CustomDriver.listInstalled(context))
     }
-    LaunchedEffect(Unit) { refreshInstalled() }
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
@@ -118,7 +116,9 @@ fun DriverManagerSection() {
             controllerId = "driver.system",
             title = str("backend.driver.systemVulkan"),
             subtitle = str("renderer.orientation.device"),
-            selected = InGameOverlay.settingsState.value.output.customDriverId.isBlank(),
+            selected = InGameOverlay.settingsState.value.output.customDriverId.let { id ->
+                id.isBlank() || installed.none { it.id == id }
+            },
             onClick = { selectDriver(null) },
         )
         installed.forEach { driver ->
@@ -130,9 +130,7 @@ fun DriverManagerSection() {
                 selected = InGameOverlay.settingsState.value.output.customDriverId == driver.id,
                 onClick = { selectDriver(driver.id) },
                 onDelete = {
-                    val wasSelected = InGameOverlay.settingsState.value.output.customDriverId == driver.id
                     CustomDriver.delete(driver)
-                    if (wasSelected) selectDriver(null)
                     refreshInstalled()
                 },
             )
