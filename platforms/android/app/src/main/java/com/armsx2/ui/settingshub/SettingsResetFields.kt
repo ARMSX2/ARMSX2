@@ -38,16 +38,16 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
     // RendererTab.kt
     SettingsCategory.Graphics to listOf(
         "accurateBlendingUnit", "aspectRatio", "casMode", "casSharpness",
-        "customAspectRatio", "deinterlaceMode", "displayBilinear", "dumpReplaceableTextures", "fmvAspectRatio",
+        "customAspectRatio", "customDriverId", "deinterlaceMode", "displayBilinear", "dumpReplaceableTextures", "fmvAspectRatio",
         "forceMaliFbFetch", "fsrSharpness", "fxaa", "gpuProfile", "gsBackThreadMode", "hardwareDownloadMode",
         "hwAa1", "hwAccurateAlphaTest", "hwMipmap", "hwRov", "loadTextureReplacements",
         "loadTextureReplacementsAsync", "maxAnisotropy", "orientation",
         "osdShowTextureReplacements", "portraitRenderTop", "landscapeRenderTop", "autoProgressiveScan",
-        "affinityMode", "precacheTextureReplacements",
+        "affinityMode", "precacheTextureReplacements", "renderer",
         "shadeBoost", "shadeBoostBrightness", "shadeBoostContrast", "shadeBoostGamma",
         "shadeBoostSaturation", "shaderChainEnabled", "shaderChainParams", "shaderChainPreset",
         "textureFiltering", "texturePreloading", "textureUpscale", "triFilter", "tvShader", "upscaleFloat",
-        "upscaler", "vsyncEnable",
+        "upscaler", "useAngleOpenGL", "vsyncEnable",
     ),
     // AudioTab.kt
     SettingsCategory.Audio to listOf(
