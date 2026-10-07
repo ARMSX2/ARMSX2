@@ -37,7 +37,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import coil.compose.SubcomposeAsyncImage
 import com.armsx2.TextureCatalog
-import com.armsx2.TexturePackLinks
 import com.armsx2.i18n.str
 import com.armsx2.ui.common.GameCoverPlaceholder
 import com.armsx2.ui.common.GlassPanel
@@ -45,7 +44,6 @@ import com.armsx2.ui.common.SectionTitle
 import com.armsx2.ui.settings.SettingsControllerNav
 import com.armsx2.ui.settings.controllerFocusable
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 
 /**
@@ -79,17 +77,11 @@ fun TextureOnlineSection(
     var failed by remember { mutableStateOf(false) }
     var fromCache by remember { mutableStateOf(false) }
     var packs by remember { mutableStateOf<List<TextureCatalog.Pack>>(emptyList()) }
-    var links by remember { mutableStateOf<Map<String, TexturePackLinks.Links>>(emptyMap()) }
     var browserOpen by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         loading = true
-        // Two files on the same server, asked for side by side.
-        val (result, packLinks) = withContext(Dispatchers.IO) {
-            val packLinks = async { TexturePackLinks.fetch(context) }
-            TextureCatalog.fetch(context) to packLinks.await()
-        }
-        links = packLinks
+        val result = withContext(Dispatchers.IO) { TextureCatalog.fetch(context) }
         packs = result?.packs.orEmpty()
         fromCache = result?.fromCache == true
         failed = result == null
@@ -134,7 +126,7 @@ fun TextureOnlineSection(
                 else -> {
                     CoverStrip(packs, serial, librarySerials, ownedSerials, onClick = openByTouch)
                     Spacer(Modifier.height(8.dp))
-                    val creators = remember(packs, links) { creatorGroups(packs, links).count { it.key.isNotEmpty() } }
+                    val creators = remember(packs) { creatorGroups(packs).count { it.key.isNotEmpty() } }
                     Text(
                         str("textures.browser.counts")
                             .replace("%1\$s", "%,d".format(packs.size))
@@ -176,7 +168,6 @@ fun TextureOnlineSection(
     if (browserOpen && packs.isNotEmpty()) {
         TexturePackBrowser(
             packs = packs,
-            links = links,
             contextSerial = serial,
             librarySerials = librarySerials,
             ownedSerials = ownedSerials,

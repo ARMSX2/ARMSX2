@@ -63,7 +63,6 @@ import coil.request.ImageRequest
 import com.armsx2.R
 import com.armsx2.TextureCatalog
 import com.armsx2.TexturePackInstallState.InstallAction
-import com.armsx2.TexturePackLinks
 import com.armsx2.i18n.str
 import com.armsx2.ui.common.PadModal
 import com.armsx2.ui.settings.controllerFocusable
@@ -82,7 +81,6 @@ import com.armsx2.ui.settings.controllerFocusable
 @Composable
 internal fun PackWindow(
     pack: TextureCatalog.Pack,
-    links: TexturePackLinks.Links?,
     creator: String,
     sizeText: String,
     action: InstallAction,
@@ -95,7 +93,7 @@ internal fun PackWindow(
     val bodyScroll = rememberScrollState()
     // One install at a time, as before; and an installed pack that is up to date has nothing to get.
     val canDownload = !anyBusy && action != InstallAction.INSTALLED
-    var picked by remember(links?.avatar) { mutableStateOf<Color?>(null) }
+    var picked by remember(pack.lead?.avatar) { mutableStateOf<Color?>(null) }
     val accent by animateColorAsState(
         picked ?: nameColor(creator.ifEmpty { pack.name }),
         label = "packAccent",
@@ -119,12 +117,11 @@ internal fun PackWindow(
                 // Banner, tiles and description scroll together, so a short landscape screen keeps
                 // Download in view and the pad's Up/Down reach the rest.
                 Column(Modifier.weight(1f, fill = false).verticalScroll(bodyScroll)) {
-                    Banner(pack, links, creator, accent, sizeText)
+                    Banner(pack, creator, accent, sizeText)
                     Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp)) {
                         Tiles(
                             layer = layer,
                             pack = pack,
-                            links = links,
                             creator = creator,
                             accent = accent,
                             openUrl = openUrl,
@@ -174,7 +171,6 @@ internal fun PackWindow(
 @Composable
 private fun Banner(
     pack: TextureCatalog.Pack,
-    links: TexturePackLinks.Links?,
     creator: String,
     accent: Color,
     sizeText: String,
@@ -194,7 +190,7 @@ private fun Banner(
             ),
     ) {
         Box(Modifier.matchParentSize()) {
-            val avatar = links?.avatar
+            val avatar = pack.lead?.avatar
             if (avatar != null) {
                 // Square, at the banner's own height: the whole picture, never stretched across it.
                 Box(
@@ -264,8 +260,8 @@ private fun Banner(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                links?.type?.let { Fact(str("textures.pack.type"), typeLabel(it)) }
-                links?.status?.let { Fact(str("textures.pack.status"), statusLabel(it), statusColor(it)) }
+                pack.type?.let { Fact(str("textures.pack.type"), typeLabel(it)) }
+                pack.completeness?.let { Fact(str("textures.pack.status"), statusLabel(it), statusColor(it)) }
                 Fact(str("textures.pack.size"), sizeText)
             }
         }
@@ -300,15 +296,14 @@ private fun Fact(label: String, value: String, dot: Color? = null) {
 private fun Tiles(
     layer: String,
     pack: TextureCatalog.Pack,
-    links: TexturePackLinks.Links?,
     creator: String,
     accent: Color,
     openUrl: (String) -> Unit,
     onPicked: (Color) -> Unit,
 ) {
-    val source = links?.source ?: pack.sourceUrl.ifEmpty { null }
-    val tip = links?.tip
-    val socials = links?.socials
+    val source = pack.sourceUrl.ifEmpty { null }
+    val tip = pack.lead?.tip
+    val socials = pack.lead?.socials
     val count = 1 + listOfNotNull(source, tip, socials).size
     // Larger than a save state tile where there is room; smaller on a short landscape screen, so the
     // banner, the tiles and Download still fit without scrolling.
@@ -326,10 +321,10 @@ private fun Tiles(
                 id = "$layer.creator",
                 size = size,
                 name = creator,
-                avatar = links?.avatar,
+                avatar = pack.lead?.avatar,
                 accent = accent,
                 onPicked = onPicked,
-                onClick = links?.creatorPage?.let { page -> { openUrl(page) } },
+                onClick = pack.lead?.page?.let { page -> { openUrl(page) } },
             )
             source?.let {
                 LinkTile("$layer.source", size, R.drawable.ic_link_out, str("textures.online.source"), it,
@@ -519,30 +514,30 @@ private fun PillButton(
     }
 }
 
-/** The archive's texture types, in the app's language; one it adds later shows as it words it. */
+/** The catalog's texture types, in the app's language; one it adds later shows as the catalog gives it. */
 @Composable
-private fun typeLabel(raw: String): String = when (raw.lowercase()) {
-    "ai upscale" -> str("textures.pack.type.aiUpscale")
+private fun typeLabel(raw: String): String = when (raw) {
+    "ai_upscale" -> str("textures.pack.type.aiUpscale")
     "handcrafted" -> str("textures.pack.type.handcrafted")
     "mixed" -> str("textures.pack.type.mixed")
     "port" -> str("textures.pack.type.port")
-    "button replacement" -> str("textures.pack.type.buttons")
+    "button_replacement" -> str("textures.pack.type.buttons")
     else -> raw
 }
 
-/** The archive's pack statuses, in the app's language; one it adds later shows as it words it. */
+/** The catalog's completeness values, in the app's language; one it adds later shows as the catalog gives it. */
 @Composable
-private fun statusLabel(raw: String): String = when (raw.lowercase()) {
+private fun statusLabel(raw: String): String = when (raw) {
     "complete" -> str("textures.pack.status.complete")
-    "in-progress" -> str("textures.pack.status.inProgress")
+    "in_progress" -> str("textures.pack.status.inProgress")
     "incomplete" -> str("textures.pack.status.incomplete")
     "partial" -> str("textures.pack.status.partial")
     else -> raw
 }
 
-private fun statusColor(raw: String): Color = when (raw.lowercase()) {
+private fun statusColor(raw: String): Color = when (raw) {
     "complete" -> Color(0xFF5BE49B)
-    "in-progress" -> Color(0xFFFFC857)
+    "in_progress" -> Color(0xFFFFC857)
     "incomplete" -> Color(0xFFFF8A5B)
     "partial" -> Color(0xFF7FB3FF)
     else -> Color.White.copy(alpha = 0.6f)

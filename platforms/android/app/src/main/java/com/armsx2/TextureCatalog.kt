@@ -17,6 +17,10 @@ import java.net.URL
  * is deliberately written against `org.json` rather than kotlinx-serialization as upstream does —
  * `org.json` is already used everywhere in this app and needs no new Gradle dependency or plugin.
  *
+ * This is the one file the app reads about the packs. Beside what installing needs, each entry says
+ * who made the pack (their page, picture, tip and socials links), its type and how complete it is;
+ * a link to the pack's page is its sourceUrl. There is no second file for those.
+ *
  * Packs are keyed by PS2 **serial** only; the catalog carries no CRC. A pack whose serial list
  * contains the running game's serial is a match, and everything else is offered as a possible
  * other-region build of the same title.
@@ -76,6 +80,17 @@ object TextureCatalog {
         val sha256: String,
     )
 
+    /** A creator credited on a pack, with the links the catalog has for them. */
+    data class Creator(
+        val name: String,
+        /** Their own page: a forum profile, say. */
+        val page: String? = null,
+        /** Their profile picture. */
+        val avatar: String? = null,
+        val tip: String? = null,
+        val socials: String? = null,
+    )
+
     data class Pack(
         val id: String,
         val name: String,
@@ -98,7 +113,21 @@ object TextureCatalog {
         val archiveRevision: Long = 0L,
         /** Exact decompressed tar-stream length for tar+zstd; 0 for ZIP, which needs no cap. */
         val decompressedSizeBytes: Long = 0L,
+        /** Who made the pack, lead first. Empty when no one has named them; [authors] then holds a
+         *  placeholder sentence for older apps, which is not a name and is not shown as one. A
+         *  catalog from before this field gives only [authors], so those become the creators. */
+        val creators: List<Creator> = emptyList(),
+        /** ai_upscale, handcrafted, mixed, port or button_replacement; null when not known. */
+        val type: String? = null,
+        /** complete, in_progress, incomplete or partial; null when not known. */
+        val completeness: String? = null,
     ) {
+        /** The creator whose page and picture stand for the pack. */
+        val lead: Creator? get() = creators.firstOrNull()
+
+        /** The creators' names on one line, "A, B"; empty when no one has named them. */
+        val creatorText: String get() = creators.joinToString(", ") { it.name }
+
         fun matchesSerial(serial: String?): Boolean =
             !serial.isNullOrBlank() && serials.any { it.equals(serial, ignoreCase = true) }
 
@@ -272,8 +301,28 @@ object TextureCatalog {
             format = format,
             archiveRevision = archiveRevision,
             decompressedSizeBytes = decompressedSizeBytes,
+            creators = parseCreators(o, authors),
+            type = o.optString("type").trim().ifEmpty { null },
+            completeness = o.optString("completeness").trim().ifEmpty { null },
         )
     }
+
+    /**
+     * The entry's creators, lead first. An entry without the field comes from a catalog that said
+     * only [authors], so those are the creators. One with the field empty says no one has named the
+     * creator. A creator without a name is dropped, and a link that is not https is left off: these
+     * go straight to the browser.
+     */
+    private fun parseCreators(o: JSONObject, authors: List<String>): List<Creator> {
+        val arr = o.optJSONArray("creators") ?: return authors.map { Creator(it) }
+        return (0 until arr.length()).mapNotNull { i ->
+            val c = arr.optJSONObject(i) ?: return@mapNotNull null
+            val name = c.optString("name").trim().ifEmpty { return@mapNotNull null }
+            Creator(name, c.link("page"), c.link("avatar"), c.link("tip"), c.link("socials"))
+        }
+    }
+
+    private fun JSONObject.link(key: String): String? = optString(key).trim().takeIf(::isHttps)
 
     /**
      * Returns the pieces of a split archive, an empty list when the entry has none, or null when a

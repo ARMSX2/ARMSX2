@@ -52,7 +52,6 @@ import coil.compose.SubcomposeAsyncImage
 import com.armsx2.TextureCatalog
 import com.armsx2.TexturePackInstallState
 import com.armsx2.TexturePackInstallState.InstallAction
-import com.armsx2.TexturePackLinks
 import com.armsx2.i18n.I18n
 import com.armsx2.i18n.str
 import com.armsx2.ui.common.GameCoverPlaceholder
@@ -73,7 +72,6 @@ import com.armsx2.ui.settings.controllerFocusable
 @Composable
 internal fun TexturePackBrowser(
     packs: List<TextureCatalog.Pack>,
-    links: Map<String, TexturePackLinks.Links>,
     /** The game in context, if any: the browser opens on My games rather than Popular Today, and its
      *  packs install there. */
     contextSerial: String?,
@@ -104,11 +102,11 @@ internal fun TexturePackBrowser(
     val popular = TexturePackStats.popular.value
     val popularAsked = TexturePackStats.asked.value
 
-    val shownPacks = remember(packs, links, installed, filter, query, sortMode, popular) {
+    val shownPacks = remember(packs, installed, filter, query, sortMode, popular) {
         val q = query.trim().lowercase()
         val matches = { p: TextureCatalog.Pack ->
             q.isEmpty() || p.name.lowercase().contains(q) || p.gameTitle.lowercase().contains(q) ||
-                p.serials.any { it.lowercase().contains(q) } || creatorOf(p, links[p.id]).lowercase().contains(q)
+                p.serials.any { it.lowercase().contains(q) } || p.creatorText.lowercase().contains(q)
         }
         if (filter == FILTER_POPULAR) {
             // In the counter's order, most downloaded first.
@@ -125,8 +123,8 @@ internal fun TexturePackBrowser(
             }.sortedWith(if (sortMode == SORT_SERIAL) BY_SERIAL else BY_GAME)
         }
     }
-    val groups = remember(shownPacks, links) { creatorGroups(shownPacks, links) }
-    val creatorTotal = remember(packs, links) { creatorGroups(packs, links).count { it.key.isNotEmpty() } }
+    val groups = remember(shownPacks) { creatorGroups(shownPacks) }
+    val creatorTotal = remember(packs) { creatorGroups(packs).count { it.key.isNotEmpty() } }
     val viewingCreator = sortMode == SORT_CREATOR && creatorKey != null
     val creator = if (viewingCreator) groups.firstOrNull { it.key == creatorKey } else null
     // What the pages hold: packs, or in creator mode the creators until one is picked.
@@ -307,7 +305,6 @@ internal fun TexturePackBrowser(
                                             val pack = packItems[index]
                                             PackCube(
                                                 pack = pack,
-                                                links = links[pack.id],
                                                 unknownName = unknownName,
                                                 action = TexturePackInstallState.actionFor(installed[pack.id], pack),
                                                 downloading = busyId == pack.id,
@@ -338,7 +335,7 @@ internal fun TexturePackBrowser(
                                 ?.let { onPage.getOrNull(it) }?.let { i ->
                                     if (packItems != null) {
                                         val p = packItems[i]
-                                        listOf(p.name, creatorOf(p, links[p.id]).ifEmpty { unknownName }, packMb(p.sizeBytes))
+                                        listOf(p.name, p.creatorText.ifEmpty { unknownName }, packMb(p.sizeBytes))
                                             .joinToString("  ·  ")
                                     } else {
                                         val g = groups[i]
@@ -369,11 +366,9 @@ internal fun TexturePackBrowser(
 
     val openPack = openPackId?.let { id -> packs.firstOrNull { it.id == id } }
     if (openPack != null) {
-        val packLinks = links[openPack.id]
         PackWindow(
             pack = openPack,
-            links = packLinks,
-            creator = creatorOf(openPack, packLinks),
+            creator = openPack.creatorText,
             sizeText = "${packMb(openPack.sizeBytes)} · " +
                 str("textures.pack.files").replace("%d", openPack.fileCount.toString()),
             action = TexturePackInstallState.actionFor(installed[openPack.id], openPack),
@@ -547,7 +542,6 @@ private fun Footer(modifier: Modifier, selected: String, current: Int, pages: In
 @Composable
 private fun PackCube(
     pack: TextureCatalog.Pack,
-    links: TexturePackLinks.Links?,
     unknownName: String,
     action: InstallAction,
     downloading: Boolean,
@@ -606,9 +600,9 @@ private fun PackCube(
                 maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.height(5.dp))
-            val creator = creatorOf(pack, links)
+            val creator = pack.creatorText
             Row(verticalAlignment = Alignment.CenterVertically) {
-                CreatorAvatar(creator, links?.avatar, 18.dp)
+                CreatorAvatar(creator, pack.lead?.avatar, 18.dp)
                 Spacer(Modifier.width(6.dp))
                 Text(
                     creator.ifEmpty { unknownName }, color = Color(0xFFCFE0FF), fontSize = 11.sp,
@@ -744,19 +738,12 @@ internal class CreatorGroup(
     val packs: List<TextureCatalog.Pack>,
 )
 
-internal fun creatorGroups(packs: List<TextureCatalog.Pack>, links: Map<String, TexturePackLinks.Links>): List<CreatorGroup> {
+internal fun creatorGroups(packs: List<TextureCatalog.Pack>): List<CreatorGroup> {
     val byKey = LinkedHashMap<String, MutableList<TextureCatalog.Pack>>()
-    for (p in packs) byKey.getOrPut(creatorOf(p, links[p.id]).substringBefore(", ").trim()) { ArrayList() }.add(p)
+    for (p in packs) byKey.getOrPut(p.lead?.name.orEmpty()) { ArrayList() }.add(p)
     return byKey.map { (key, list) ->
-        CreatorGroup(key, key, list.firstNotNullOfOrNull { links[it.id]?.avatar }, list.sortedWith(BY_GAME))
+        CreatorGroup(key, key, list.firstNotNullOfOrNull { it.lead?.avatar }, list.sortedWith(BY_GAME))
     }.sortedWith(compareBy({ it.key.isEmpty() }, { it.key.lowercase() }))
-}
-
-/** Who made the pack: the archive's name for them, else the catalog's; empty when no one knows. */
-internal fun creatorOf(pack: TextureCatalog.Pack, links: TexturePackLinks.Links?): String = when {
-    links?.creator != null -> links.creator
-    links?.unknownCreator == true -> ""
-    else -> pack.authors.joinToString(", ")
 }
 
 /** The game's flat cover, from the same cover set as the library's covers. */

@@ -133,6 +133,103 @@ class TextureCatalogTest {
         assertNull(parse(entryJson(format = "zip"), schema = 2))
     }
 
+    // ---- who made the pack, and what kind of pack it is ---------------------------------------
+
+    private fun creator(name: String, extra: (JSONObject) -> Unit = {}): JSONObject =
+        JSONObject().put("name", name).also(extra)
+
+    private fun onePack(extra: (JSONObject) -> Unit): TextureCatalog.Pack =
+        parse(schema2Entry(extra), schema = 2)!!.single()
+
+    /** An entry as `ps2ktxpak compile catalog` writes it, from the real data. The catalog is the only
+     *  file the app reads about a pack, so a key renamed on either side has to break a test here. */
+    private val generated = """
+        {"id": "bl4ckh4nd-we-love-katamari-slus-21230-20260722", "name": "We Love Katamari HD Texture Pack",
+         "gameTitle": "We Love Katamari", "serials": ["SLUS-21230"], "version": "2026-07-22 mirror",
+         "authors": ["ironhulk33", "Bl4ckH4nd"], "credits": "Created by ironhulk33, Bl4ckH4nd.",
+         "description": "A short description.", "license": "Redistribution permission not recorded",
+         "downloadUrl": "https://dl.ps2ktxpak.net/packs/bl4ckh4nd-we-love-katamari-slus-21230-20260722.tar.zst",
+         "format": "tar+zstd", "archiveRevision": 1, "decompressedSizeBytes": 1092782080,
+         "sourceUrl": "https://www.mediafire.com/folder/k8yncbpnlckw3/ironhulk33#2ie0qajlodjxz",
+         "sizeBytes": 506486922, "sha256": "e7b8eb04d4223eaed547be5aeefd9682e2ee05ef6ab5fdf57d18e0ba5d6992d1",
+         "fileCount": 21316, "previewUrls": [],
+         "creators": [
+           {"name": "ironhulk33", "page": "https://gbatemp.net/members/ironhulk33.721797/",
+            "avatar": "https://gbatemp.net/data/avatars/h/721/721797.jpg", "tip": "https://ko-fi.com/ironhulk33",
+            "socials": "https://www.youtube.com/channel/UC_00zPyx8PXENf7OSqZRw_g"},
+           {"name": "Bl4ckH4nd", "page": "https://gbatemp.net/members/bl4ckh4nd.609354/",
+            "avatar": "https://gbatemp.net/data/avatars/h/609/609354.jpg", "tip": "https://www.patreon.com/Bl4ckH4nd"}],
+         "type": "ai_upscale", "completeness": "complete"}
+    """
+
+    @Test
+    fun anEntryAsTheGeneratorWritesItIsReadWhole() {
+        val pack = parse(generated, schema = 2)!!.single()
+        assertEquals("ironhulk33, Bl4ckH4nd", pack.creatorText)
+        assertEquals(listOf("ironhulk33", "Bl4ckH4nd"), pack.creators.map { it.name })
+        // The first creator named is the one whose page and picture stand for the pack.
+        assertEquals("ironhulk33", pack.lead?.name)
+        assertEquals("https://gbatemp.net/members/ironhulk33.721797/", pack.lead?.page)
+        assertEquals("https://gbatemp.net/data/avatars/h/721/721797.jpg", pack.lead?.avatar)
+        assertEquals("https://ko-fi.com/ironhulk33", pack.lead?.tip)
+        assertEquals("https://www.youtube.com/channel/UC_00zPyx8PXENf7OSqZRw_g", pack.lead?.socials)
+        // A creator without a socials link has none, rather than borrowing the lead's.
+        assertNull(pack.creators[1].socials)
+        assertEquals("ai_upscale", pack.type)
+        assertEquals("complete", pack.completeness)
+        assertEquals("https://www.mediafire.com/folder/k8yncbpnlckw3/ironhulk33#2ie0qajlodjxz", pack.sourceUrl)
+    }
+
+    @Test
+    fun anEntryWithoutTheFieldsHasNoTypeOrCompleteness() {
+        val pack = onePack {}
+        assertNull(pack.type)
+        assertNull(pack.completeness)
+    }
+
+    @Test
+    fun anEntryFromBeforeCreatorsTakesItsAuthorsAsTheCreators() {
+        // A catalog that predates the field said only the authors, so that is who made the pack.
+        val pack = onePack {}
+        assertEquals(listOf("someone"), pack.creators.map { it.name })
+        assertNull(pack.lead?.page)
+        assertEquals("someone", pack.creatorText)
+    }
+
+    @Test
+    fun anEmptyCreatorsListMeansNoOneHasNamedTheCreator() {
+        // The generator still puts a placeholder in authors for older apps; it is not a name.
+        val pack = onePack { o ->
+            o.put("authors", org.json.JSONArray().put("Unknown creator"))
+            o.put("creators", org.json.JSONArray())
+        }
+        assertTrue(pack.creators.isEmpty())
+        assertNull(pack.lead)
+        assertEquals("", pack.creatorText)
+    }
+
+    @Test
+    fun onlyHttpsLinksAreKept() {
+        val pack = onePack { o ->
+            o.put("creators", org.json.JSONArray().put(creator("Someone") { c ->
+                c.put("page", "http://example.com/someone")
+                c.put("avatar", "javascript:alert(1)")
+                c.put("tip", "https://ko-fi.com/someone")
+            }))
+        }
+        assertNull(pack.lead?.page)
+        assertNull(pack.lead?.avatar)
+        assertEquals("https://ko-fi.com/someone", pack.lead?.tip)
+    }
+
+    @Test
+    fun aCreatorWithoutANameIsDropped() {
+        val pack = onePack { o ->
+            o.put("creators", org.json.JSONArray().put(creator("  ")).put(creator("Someone")))
+        }
+        assertEquals(listOf("Someone"), pack.creators.map { it.name })
+    }
+
     // ---- whole-catalog behavior ---------------------------------------------------------------
 
     @Test
