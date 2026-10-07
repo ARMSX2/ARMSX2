@@ -138,8 +138,11 @@ elseif("${_PCSX2_TARGET_PROCESSOR}" STREQUAL "arm64" OR "${_PCSX2_TARGET_PROCESS
 		add_compile_options("-march=armv8.4-a" "-mcpu=apple-m1")
 	elseif(ANDROID)
 		message(STATUS "Building for Android (ARM64).")
-		# ARMv8.0-a is the baseline for Android arm64-v8a
-		add_compile_options("-march=armv8-a")
+		# ARMv8.0-a is the baseline for Android arm64-v8a. Only when the build hasn't chosen an
+		# -march: add_compile_options lands after CMAKE_CXX_FLAGS and would override it.
+		if(NOT CMAKE_CXX_FLAGS MATCHES "-march=")
+			add_compile_options("-march=armv8-a")
+		endif()
 	else()
 		message(STATUS "Building for ARM64.")
 		# Require atomic rmw instructions
