@@ -8,6 +8,9 @@ plugins {
 }
 
 val armsx2NativeLibName = providers.gradleProperty("armsx2.nativeLibName").orElse("emucore_4k")
+// Optional local UI-only builds using a verified, matching native core.
+// Normal builds continue compiling native code from this checkout.
+val armsx2PrebuiltNativeDir = providers.gradleProperty("armsx2.prebuiltNativeDir").orNull
 val armsx2Pgo = providers.gradleProperty("armsx2.pgo").orElse("none") // none | generate | optimize
 val armsx2PgoProfile = providers.gradleProperty("armsx2.pgoProfile").orElse("") // abs path to merged .profdata (optimize)
 val armsx2HostPageSize = providers.gradleProperty("armsx2.hostPageSize").orElse("0x1000")
@@ -137,6 +140,7 @@ android {
     sourceSets {
         getByName("main") {
             if (armsx2DiscordSdkDir != null) jniLibs.srcDir(armsx2DiscordSdkDir)
+            armsx2PrebuiltNativeDir?.let { jniLibs.srcDir(rootProject.file(it)) }
         }
     }
 
@@ -174,7 +178,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            if (true) externalNativeBuild {
+            if (armsx2PrebuiltNativeDir == null) externalNativeBuild {
                 cmake {
                     arguments += "-DANDROID=true"
                     arguments += "-DANDROID_STL=c++_static"
@@ -219,7 +223,7 @@ android {
             // GS software renderer, SPU2 audio mixing, IPU, VIF unpack —
             // significant FP-heavy paths. JIT'd VU FMAC semantics are
             // unaffected because the recompiler emits explicit Fmul+Fadd.
-            externalNativeBuild {
+            if (armsx2PrebuiltNativeDir == null) externalNativeBuild {
                 cmake {
                     arguments += "-DANDROID=true"
                     arguments += "-DANDROID_STL=c++_static"
@@ -286,11 +290,8 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
-    // NATIVE BUILD DISABLED for the recovered tree: the prebuilt native .so files
-    // (extracted from vc1063 into src/main/jniLibs/arm64-v8a) are packaged directly,
-    // so UI/Kotlin iteration doesn't require recompiling the C++ core. Re-enable this
-    // block (and the per-buildType cmake blocks above) to rebuild native from source.
-    externalNativeBuild {
+    // A prebuilt directory is opt-in for UI-only iteration; otherwise rebuild the core.
+    if (armsx2PrebuiltNativeDir == null) externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
             version = "3.31.6"

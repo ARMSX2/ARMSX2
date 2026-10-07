@@ -104,6 +104,17 @@ object WindowImpl {
                 // which is the other surface this Box hosts.
                 val gameOnScreen = MainActivityRuntime.eState.value == EmuState.RUNNING ||
                     MainActivityRuntime.eState.value == EmuState.PAUSED
+                // Register after the underlying content, but before menu/settings
+                // handlers. System Back belongs to gameplay here, never the library.
+                // Consume it even if Back-to-menu is disabled; that preference must
+                // not turn a swipe into an activity exit.
+                androidx.activity.compose.BackHandler(
+                    enabled = handlesGameplayBack(MainActivityRuntime.eState.value, frontendCovers),
+                ) {
+                    if (MainActivityRuntime.prefs.getBoolean("input.backOpensMenu", true)) {
+                        InGameOverlay.open()
+                    }
+                }
                 if (gameOnScreen && !showLibrary.value) {
                     com.armsx2.OverlayRepo.activeBitmap()?.let { art ->
                         androidx.compose.foundation.Image(

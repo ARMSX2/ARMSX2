@@ -2486,10 +2486,7 @@ open class MainActivityRuntime : ComponentActivity() {
             // button first — so this fires only for the actual system back. Toggle in Hotkeys
             // (input.backOpensMenu, default on). When off / on the library / with the overlay already
             // up, it stays a pure stay-alive no-op so the system never falls through to finish().
-            val inGame = eState.value == EmuState.RUNNING || eState.value == EmuState.PAUSED
-            if (inGame &&
-                !WindowImpl.overlayVisible.value &&
-                !WindowImpl.showLibrary.value &&
+            if (com.armsx2.ui.handlesGameplayBack(eState.value, WindowImpl.frontendCovers) &&
                 prefs.getBoolean("input.backOpensMenu", true)
             ) {
                 com.armsx2.ui.InGameOverlay.open()
