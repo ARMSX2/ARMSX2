@@ -48,14 +48,16 @@ fun AudioTab(state: MutableState<Settings>) {
             description = str("audio.volume.description"),
             valueFormatter = { "$it%" },
             onChange = { apply(s.copy(audio = s.audio.copy(audioVolume = it))) },
+            field = "audioVolume",
         )
         SettingsDivider()
-        ToggleRow(str("audio.mute.label"), s.audio.audioMuted) { apply(s.copy(audio = s.audio.copy(audioMuted = it))) }
+        ToggleRow(str("audio.mute.label"), s.audio.audioMuted, field = "audioMuted") { apply(s.copy(audio = s.audio.copy(audioMuted = it))) }
         SettingsDivider()
         ToggleRow(
             str("audio.synchronization.label"),
             s.audio.audioTimeStretch,
             description = str("audio.synchronization.description"),
+            field = "audioTimeStretch",
         ) { apply(s.copy(audio = s.audio.copy(audioTimeStretch = it))) }
         SettingsDivider()
         IntSliderRow(
@@ -66,6 +68,7 @@ fun AudioTab(state: MutableState<Settings>) {
             description = str("audio.buffer.description"),
             valueFormatter = { "$it ms" },
             onChange = { apply(s.copy(audio = s.audio.copy(audioBufferMs = it))) },
+            field = "audioBufferMs",
         )
         SettingsDivider()
         IntSliderRow(
@@ -76,6 +79,7 @@ fun AudioTab(state: MutableState<Settings>) {
             description = str("audio.outputLatency.description"),
             valueFormatter = { "$it ms" },
             onChange = { apply(s.copy(audio = s.audio.copy(audioOutputLatencyMs = it))) },
+            field = "audioOutputLatencyMs",
         )
         SettingsDivider()
         IntSliderRow(
@@ -86,30 +90,35 @@ fun AudioTab(state: MutableState<Settings>) {
             description = str("audio.fastForwardVolume.description"),
             valueFormatter = { "$it%" },
             onChange = { apply(s.copy(audio = s.audio.copy(audioFastForwardVolume = it))) },
+            field = "audioFastForwardVolume",
         )
         SettingsDivider()
         ToggleRow(
             str("audio.swapChannels.label"),
             s.audio.audioSwapChannels,
             description = str("audio.swapChannels.description"),
+            field = "audioSwapChannels",
         ) { apply(s.copy(audio = s.audio.copy(audioSwapChannels = it))) }
         SettingsDivider()
         ToggleRow(
             str("audio.spu2Simd.label"),
             s.audio.spu2NeonReverb,
             description = str("audio.spu2Simd.description"),
+            field = "spu2NeonReverb",
         ) { apply(s.copy(audio = s.audio.copy(spu2NeonReverb = it))) }
         SettingsDivider()
         ToggleRow(
             str("audio.openSles.label"),
             s.audio.audioOpenSLES,
             description = str("audio.openSles.description"),
+            field = "audioOpenSLES",
         ) { apply(s.copy(audio = s.audio.copy(audioOpenSLES = it))) }
         SettingsDivider()
         ToggleRow(
             str("audio.lightweight.label"),
             s.audio.spu2LightweightMix,
             description = str("audio.lightweight.description"),
+            field = "spu2LightweightMix",
         ) { apply(s.copy(audio = s.audio.copy(spu2LightweightMix = it))) }
     }
 }

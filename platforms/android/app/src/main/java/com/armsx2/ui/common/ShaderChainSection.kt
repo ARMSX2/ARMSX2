@@ -148,6 +148,7 @@ fun ShaderChainSection(
         str("renderer.shaderChain.label"),
         enabled,
         description = str("renderer.shaderChain.description"),
+        field = "shaderChainEnabled",
     ) {
         onEnabledChange(it)
     }

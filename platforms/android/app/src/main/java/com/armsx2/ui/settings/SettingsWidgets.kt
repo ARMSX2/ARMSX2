@@ -89,6 +89,11 @@ import androidx.core.content.edit
  * white text, transparent borders. Each row is 24dp tall to keep the
  * tab content fitting in the same 75% screen height the Playing-Now
  * tab uses.
+ *
+ * A row that edits a [com.armsx2.config.Settings] field names it with `field`, the key
+ * Settings.toJson uses. That is what tints the row (see [OverrideMarks]): green where the game
+ * database sets it for the game, soft red where the player has it off its default. A row with no
+ * `field` (an app preference, a preset, a picker over several fields) is never tinted.
  */
 
 private val focusBlue = Color(0xFF3DA5FF)
@@ -748,8 +753,10 @@ fun ToggleRow(
     label: String,
     value: Boolean,
     description: String? = null,
+    field: String? = null,
     onChange: (Boolean) -> Unit,
 ) {
+    val tint = rowTint(field)
     // Menu SFX: a distinct on/off blip on every flip. Touch, the switch, and the controller's A
     // all route through this, so one wrapper covers every input path.
     val emit: (Boolean) -> Unit = {
@@ -768,11 +775,8 @@ fun ToggleRow(
                 onConfirm = { emit(!value) },
             ),
         shape = RoundedCornerShape(22.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outline.copy(alpha = 0.46f),
-        ),
+        color = tint.container,
+        border = androidx.compose.foundation.BorderStroke(1.dp, tint.border),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -825,8 +829,10 @@ fun IntSliderRow(
     description: String? = null,
     valueFormatter: (Int) -> String = { it.toString() },
     onReset: (() -> Unit)? = null,
+    field: String? = null,
     onChange: (Int) -> Unit,
 ) {
+    val tint = rowTint(field)
     // Include the call-site composite-key hash so two sliders that happen to share a
     // label (e.g. the OSD-scale and border-scale rows both labelled "UI Size") get
     // DISTINCT registry ids — otherwise one overwrites the other and the controller
@@ -848,11 +854,8 @@ fun IntSliderRow(
                 onRight = { onChangeSfx((value + 1).coerceAtMost(max)) },
             ),
         shape = RoundedCornerShape(22.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outline.copy(alpha = 0.46f),
-        ),
+        color = tint.container,
+        border = androidx.compose.foundation.BorderStroke(1.dp, tint.border),
     ) {
         Column(
             modifier = Modifier
@@ -1125,8 +1128,10 @@ fun SegmentedRow(
     options: List<String>,
     selectedIndex: Int,
     description: String? = null,
+    field: String? = null,
     onChange: (Int) -> Unit,
 ) {
+    val tint = rowTint(field)
     // Menu SFX: a select blip when the chosen option changes — covers the chip tap and the
     // controller's confirm/left/right, which all route through onChange.
     val emit: (Int) -> Unit = { com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.SELECT); onChange(it) }
@@ -1135,8 +1140,8 @@ fun SegmentedRow(
             .fillMaxWidth()
             .padding(vertical = 5.dp)
             .clip(RoundedCornerShape(22.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f))
-            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.46f), RoundedCornerShape(22.dp))
+            .background(tint.container)
+            .border(1.dp, tint.border, RoundedCornerShape(22.dp))
             .controllerFocusable(
                 controllerId = "segmented:$label",
                 onConfirm = {
@@ -1218,15 +1223,17 @@ fun SegmentedGridRow(
     selectedIndex: Int,
     columns: Int = 3,
     description: String? = null,
+    field: String? = null,
     onChange: (Int) -> Unit,
 ) {
+    val tint = rowTint(field)
     Box(
         Modifier
             .fillMaxWidth()
             .padding(vertical = 5.dp)
             .clip(RoundedCornerShape(22.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f))
-            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.46f), RoundedCornerShape(22.dp))
+            .background(tint.container)
+            .border(1.dp, tint.border, RoundedCornerShape(22.dp))
             .controllerFocusable(
                 controllerId = "segmented-grid:$label",
                 onConfirm = {
