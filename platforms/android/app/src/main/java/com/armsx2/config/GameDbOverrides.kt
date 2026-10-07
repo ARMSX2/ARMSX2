@@ -79,6 +79,37 @@ object GameDbOverrides {
         return raw.lineSequence().filter { it.isNotEmpty() }.toSet().also { claimingKeyCache = it }
     }
 
+    /** Why a database entry is, or is not, in force for a game. Only [InForce] reaches the running game. */
+    enum class EntryState { InForce, SwitchedOff, YourSetting, AutoFixesOff, ManualFixes }
+
+    /**
+     * [entry]'s state for a game whose effective settings are [resolved]. [off] is
+     * [switchedOff], [claimedBySetting] is [keysClaimedBySettings], and [manualHardwareFixes] is
+     * `resolved.anyUserHackEnabled()`; they are arguments so a caller listing many entries
+     * computes each once. One rule for the Fixes tab's list and for the tint on the settings rows.
+     */
+    fun stateOf(
+        entry: Entry,
+        off: Set<String>,
+        claimedBySetting: Set<String>,
+        resolved: Settings,
+        manualHardwareFixes: Boolean,
+    ): EntryState = when {
+        entry.name in off -> EntryState.SwitchedOff
+        entry.keys.any { it in claimedBySetting } -> EntryState.YourSetting
+        entry.core && !resolved.emuCore.enableGameFixes -> EntryState.AutoFixesOff
+        entry.userHack && manualHardwareFixes -> EntryState.ManualFixes
+        else -> EntryState.InForce
+    }
+
+    /** The database-contended keys driven by settings [serial] has its own value for. */
+    fun keysClaimedBySettings(serial: String, resolved: Settings, global: Settings): Set<String> {
+        val overrides = ConfigStore.loadOverrides(serial) ?: return emptySet()
+        return runCatching {
+            fieldsDriving(overrides, resolved, global).values.flatMapTo(HashSet()) { it }
+        }.getOrDefault(emptySet())
+    }
+
     /** Names of the database entries switched off for [serial]. */
     fun switchedOff(serial: String?): Set<String> {
         val key = serial?.takeIf { it.isNotBlank() } ?: return emptySet()
@@ -170,7 +201,12 @@ object GameDbOverrides {
         return out
     }
 
-    private fun contendedKeysMovedBy(
+    /**
+     * The keys in [contended] that changing [field] moves. [json] is the game's effective settings
+     * ([Settings.toJson]), [globalValue] the global value of the same field, [effective] the keys
+     * those settings emit.
+     */
+    internal fun contendedKeysMovedBy(
         field: String,
         json: JSONObject,
         globalValue: Any?,

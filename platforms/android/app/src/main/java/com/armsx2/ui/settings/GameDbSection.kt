@@ -43,11 +43,7 @@ internal fun GameDbSection(state: MutableState<Settings>) {
     val global = remember(serial, s, version) { ConfigStore.loadGlobal() }
     val off = remember(serial, s, version) { GameDbOverrides.switchedOff(serial) }
     val claimedBySetting = remember(serial, s, version) {
-        val overrides = ConfigStore.loadOverrides(serial)
-        if (overrides == null) emptySet()
-        else runCatching {
-            GameDbOverrides.fieldsDriving(overrides, s, global).values.flatMapTo(HashSet()) { it }
-        }.getOrDefault(emptySet())
+        GameDbOverrides.keysClaimedBySettings(serial, s, global)
     }
     val manualHardwareFixes = remember(s) { s.anyUserHackEnabled() }
 
@@ -55,14 +51,15 @@ internal fun GameDbSection(state: MutableState<Settings>) {
     CollapsibleSection("${str("gamedb.title")} (${entries.size})") {
         HelpText(str("gamedb.help"))
         for (entry in entries) {
-            val switchedOff = entry.name in off
-            val bySetting = !switchedOff && entry.keys.any { it in claimedBySetting }
-            val description = when {
-                switchedOff -> str("gamedb.state.off")
-                bySetting -> str("gamedb.state.yourSetting")
-                entry.core && !s.emuCore.enableGameFixes -> str("gamedb.state.autoFixesOff")
-                entry.userHack && manualHardwareFixes -> str("gamedb.state.manualFixes")
-                else -> null
+            val entryState = GameDbOverrides.stateOf(entry, off, claimedBySetting, s, manualHardwareFixes)
+            val switchedOff = entryState == GameDbOverrides.EntryState.SwitchedOff
+            val bySetting = entryState == GameDbOverrides.EntryState.YourSetting
+            val description = when (entryState) {
+                GameDbOverrides.EntryState.SwitchedOff -> str("gamedb.state.off")
+                GameDbOverrides.EntryState.YourSetting -> str("gamedb.state.yourSetting")
+                GameDbOverrides.EntryState.AutoFixesOff -> str("gamedb.state.autoFixesOff")
+                GameDbOverrides.EntryState.ManualFixes -> str("gamedb.state.manualFixes")
+                GameDbOverrides.EntryState.InForce -> null
             }
             ToggleRow(
                 label = "${entryName(entry)}: ${entryValue(entry)}",
