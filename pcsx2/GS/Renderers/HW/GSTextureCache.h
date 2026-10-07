@@ -147,6 +147,23 @@ public:
 
 	using HashCacheMap = std::unordered_map<HashCacheKey, HashCacheEntry, HashCacheKeyHash>;
 
+	/// What HashCacheKey::Create did with the memo of texture hashes of this cache.
+	struct HashMemoStats
+	{
+		u64 lookups = 0; ///< Texture hashes asked for of a texture large enough to be memoised.
+		u64 hits = 0; ///< Answered by the memo, without reading local memory.
+		u64 stale = 0; ///< Had a memo entry whose pages were written since.
+	};
+
+	/// What verify mode found. Totals over every cache of the process.
+	struct HashMemoVerifyReport
+	{
+		u64 hits = 0; ///< Memo hits whose hash was computed afresh and compared.
+		u64 mismatches = 0; ///< Of those, how many differed.
+		u64 sweeps = 0; ///< Frame boundaries at which the pages of local memory were hashed.
+		u64 missed_writers = 0; ///< Pages whose bytes changed between two sweeps with no mark in between.
+	};
+
 	class Surface : public GSAlignedClass<32>
 	{
 	protected:
@@ -469,6 +486,34 @@ protected:
 	u64 m_hash_cache_memory_usage = 0;
 	u64 m_hash_cache_replacement_memory_usage = 0;
 
+	/// The last hash of each texture and the write sequence of local memory it was taken at, so that
+	/// HashCacheKey::Create can reuse it while no page the texture reads has been written since. Direct
+	/// mapped, a fixed array: a lookup is a few compares and no allocation. Lives and dies with the cache,
+	/// as the local memory its sequence belongs to does with the renderer.
+	static constexpr u32 HASH_MEMO_ENTRIES = 32;
+	static constexpr u32 HASH_MEMO_MAX_LEVELS = 8; // the base level and the six mipmaps below it
+	/// Smallest base level that is memoised, in blocks of 256 bytes: 128 KiB of local memory read per hash.
+	static constexpr int HASH_MEMO_MIN_BLOCKS = 512;
+	struct HashMemoEntry
+	{
+		u64 seq; ///< GSLocalMemory::WriteSeq() before the hash was computed.
+		HashType hash;
+		u64 texa; ///< The TEXA bits the hash reads.
+		u64 region; ///< SourceRegion::bits of the base level.
+		u64 tex0[HASH_MEMO_MAX_LEVELS]; ///< Per level, the TEX0 bits the hash reads.
+		u32 levels; ///< Number of levels hashed. 0 in an empty entry.
+	};
+	struct HashMemo
+	{
+		HashMemoEntry entries[HASH_MEMO_ENTRIES] = {};
+		HashMemoStats stats;
+	};
+	HashMemo m_hash_memo;
+
+	static inline bool s_hash_memo_verify = false;
+	struct HashMemoSweep;
+	std::unique_ptr<HashMemoSweep> m_hash_memo_sweep;
+
 	FastList<Target*> m_dst[2];
 	FastList<TargetHeightElem> m_target_heights;
 	u64 m_target_memory_usage = 0;
@@ -601,6 +646,18 @@ public:
 	__fi u64 GetTotalHashCacheMemoryUsage() const { return (m_hash_cache_memory_usage + m_hash_cache_replacement_memory_usage); }
 	__fi u64 GetSourceMemoryUsage() const { return m_source_memory_usage; }
 	__fi u64 GetTargetMemoryUsage() const { return m_target_memory_usage; }
+	__fi const HashMemoStats& GetHashMemoStats() const { return m_hash_memo.stats; }
+
+	/// Verify mode for the hash memo and the write stamps (pcsx2-gsrunner -verify-hash-memo), off by default.
+	/// While it is on, every memo hit also hashes the texture afresh and compares, and VerifyWriteStamps()
+	/// finds stores into local memory that nothing marked. Neither changes what the renderer does.
+	static void SetHashMemoVerify(bool enable);
+	static bool IsHashMemoVerify() { return s_hash_memo_verify; }
+	static HashMemoVerifyReport GetHashMemoVerifyReport();
+	/// Hashes every page of `mem` and reports each page whose bytes changed since the previous call while
+	/// its stamp did not, which is a store that was not marked. Call at a frame boundary, on the thread that
+	/// writes `mem`, with no writer in flight.
+	void VerifyWriteStamps(const GSLocalMemory& mem);
 
 	void Read(Target* t, const GSVector4i& r, bool force_synchronous = false);
 	void Read(Source* t, const GSVector4i& r);

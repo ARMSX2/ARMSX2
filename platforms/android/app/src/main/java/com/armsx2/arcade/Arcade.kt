@@ -200,6 +200,10 @@ object Arcade {
         }
         val media = files.find(game.mediaSrc, inSubdir = game.subdir) ?: fail("arcade.error.media", game.mediaSrc)
 
+        // Soul Calibur II's Conquest card, when its .acgame names none: the core takes it from the memory cards
+        // folder by its name. Before the dongle, as a card 2.8.1 took for the dongle is moved out of its way.
+        if (game.card.isEmpty() && game.gameId == ArcadeFiles.CONQUEST_GAME) conquestCard(context)
+
         // The dongle, and the second card if the game has one: in the memory cards folder, or copied
         // there from beside the .acgame.
         val cards = memcardsDir(context).apply { mkdirs() }
@@ -246,15 +250,19 @@ object Arcade {
         val boot = ArcadeLibrary.bootProgram(context, id) ?: fail("arcade.error.bootFiles")
         val elf = File(dir, "boot.elf")
         if (!copyInto(elf) { boot.inputStream() }) fail("arcade.error.elf", elf.name)
+        // Soul Calibur II's Conquest card before its dongle: it is a card file beside the game too, and 2.8.1
+        // could take it for the dongle.
+        val card = if (id == ArcadeFiles.CONQUEST_GAME) conquestCard(context, files, siblings, folderId) else null
         val dongle = looseDongle(context, files, siblings, id, folderId) ?: fail("arcade.error.looseDongle", id)
 
         val title = ArcadeLibrary.titles().firstOrNull { it.id == id }?.name?.takeIf { it.isNotBlank() } ?: id
         val manifest = File(dir, "$id.$EXTENSION")
-        val text = "[game]\nname=$title\ngameid=$id\n\n[data]\nsubdir=\ndongle=$dongle\n"
+        val text = "[game]\nname=$title\ngameid=$id\n\n[data]\nsubdir=\ndongle=$dongle\n" +
+            card?.let { "card=$it\n" }.orEmpty()
         if (!copyInto(manifest) { text.byteInputStream() }) fail("arcade.error.unreadable")
         val game = AcGame(
             gameId = id, name = title, subdir = "", elf = elf.name, mediaSrc = name, sram = "sram.bin",
-            dongle = dongle, card = "", jvsMode = "",
+            dongle = dongle, card = card.orEmpty(), jvsMode = "",
         )
         return Launch(game, elf.absolutePath, location, sramFile(context, game).absolutePath, modeOf(game), manifest.absolutePath)
     }
@@ -267,7 +275,8 @@ object Arcade {
     /**
      * The dongle of the game [id], in the memory cards folder: already there (from an earlier launch, or
      * put there by hand), else copied there from beside its image (unpacked, if it is a .gz). It is named
-     * after the game and what it holds ([ArcadeFiles.dongleName]). Null when there is none.
+     * after the game and what it holds ([ArcadeFiles.dongleName]). Never Soul Calibur II's Conquest card, a
+     * card file as well. Null when there is none.
      */
     private fun looseDongle(
         context: Context,
@@ -277,11 +286,12 @@ object Arcade {
         folderId: String?,
     ): String? {
         val cards = memcardsDir(context).apply { mkdirs() }
-        listOf("$id.ps2", "$id.bin").firstOrNull { File(cards, it).let { f -> f.isFile && f.length() > 0 } }
+        listOf("$id.ps2", "$id.bin").firstOrNull { File(cards, it).let { f -> f.isFile && f.length() > 0 && !isConquestCardIn(id, f) } }
             ?.let { return it }
         // A .ps2 first, then a .bin, then a packed one: the likelier a file is the dongle, the earlier.
         val candidates = siblings
             .filter { (n, bytes) -> (ArcadeFiles.idIn(n) ?: folderId) == id && ArcadeFiles.kindOf(n) { bytes } == ArcadeFiles.Kind.CARD }
+            .filterNot { (n, _) -> isConquestCardBeside(files, id, n) }
             .sortedBy { (n, _) -> if (n.endsWith(".ps2", ignoreCase = true)) 0 else if (n.endsWith(".gz", ignoreCase = true)) 2 else 1 }
         for ((n, _) in candidates) {
             val source = files.find(n, inSubdir = "") ?: continue
@@ -296,6 +306,80 @@ object Arcade {
             temp.delete()
         }
         return null
+    }
+
+    // ---- Soul Calibur II's Conquest card ----------------------------------------------------------
+
+    /** The blank Conquest card that comes with the app: bin/cardmaterial.bin of SC2MAKER
+     *  (https://github.com/israpps/SC2MAKER, by Matías Israelson (El_isra), GPL-3.0), made from Conquest cards
+     *  its users gave and dumped. Packed with gzip; unpacked, 8,650,752 bytes, SHA-256
+     *  fe7eac4c5566fa4f16680e2ce9ea682215207f87688dabc4b9065a30050c71f8. Named .gzip, not .gz: the build
+     *  unpacks a .gz asset into the APK under the name without it. */
+    private const val CONQUEST_ASSET = "arcade/NM00007.conquestcard.gzip"
+
+    /**
+     * Soul Calibur II's Conquest card, which the game reads in slot 2: [ArcadeFiles.CONQUEST_CARD] in the
+     * memory cards folder. It is put there once and kept from then on, as the game writes its Conquest mode
+     * to it. It is the first of: the card already there; a Conquest card that 2.8.1 took for the dongle and
+     * copied in as one (moved, since it never was the dongle); the player's own beside the game's image
+     * ([files], [siblings]); else the blank card that comes with the app ([CONQUEST_ASSET]). Its name there,
+     * or null when none could be put there: the game then starts without one, as before.
+     */
+    private fun conquestCard(
+        context: Context,
+        files: Files? = null,
+        siblings: List<Pair<String, Long>> = emptyList(),
+        folderId: String? = null,
+    ): String? {
+        val id = ArcadeFiles.CONQUEST_GAME
+        val cards = memcardsDir(context).apply { mkdirs() }
+        val target = File(cards, ArcadeFiles.CONQUEST_CARD)
+        if (target.isFile && target.length() > 0) return target.name
+
+        val stale = File(cards, "$id.ps2")
+        if (stale.length() == ArcadeFiles.CONQUEST_CARD_BYTES && isConquestCardIn(id, stale) && stale.renameTo(target)) {
+            println("@@ANDROID_ARCADE@@ ${stale.name} was the Conquest card, not the dongle: now ${target.name}")
+            return target.name
+        }
+        if (files != null) {
+            for ((n, bytes) in siblings) {
+                if ((ArcadeFiles.idIn(n) ?: folderId) != id || ArcadeFiles.kindOf(n) { bytes } != ArcadeFiles.Kind.CARD) continue
+                val source = files.find(n, inSubdir = "") ?: continue
+                val packed = n.endsWith(".gz", ignoreCase = true)
+                if (!ArcadeFiles.isConquestCard(files.head(source, ArcadeFiles.CONQUEST_HEADER_BYTES, packed))) continue
+                if (files.copy(source, target, unpack = packed) && target.length() == ArcadeFiles.CONQUEST_CARD_BYTES) {
+                    println("@@ANDROID_ARCADE@@ copied $n into the memory cards folder as ${target.name}")
+                    return target.name
+                }
+                // Unreadable, or dumped without its spare bytes, which hold the game's checksums: not one it reads.
+                println("@@ANDROID_ARCADE@@ $n could not be used as the Conquest card")
+                target.delete()
+            }
+        }
+        if (copyInto(target) { java.util.zip.GZIPInputStream(context.assets.open(CONQUEST_ASSET)) } &&
+            target.length() == ArcadeFiles.CONQUEST_CARD_BYTES
+        ) {
+            println("@@ANDROID_ARCADE@@ put the blank Conquest card in the memory cards folder as ${target.name}")
+            return target.name
+        }
+        target.delete()
+        println("@@ANDROID_ARCADE@@ no Conquest card could be put in place; the game starts without one")
+        return null
+    }
+
+    /** Whether [file] in the memory cards folder is Soul Calibur II's Conquest card, and not the dongle of the
+     *  game [id]: only that game has one. */
+    private fun isConquestCardIn(id: String, file: File): Boolean =
+        id == ArcadeFiles.CONQUEST_GAME && file.isFile &&
+            ArcadeFiles.isConquestCard(headOf(ArcadeFiles.CONQUEST_HEADER_BYTES, unpack = false) { file.inputStream() })
+
+    /** The same for the card file [name] beside the game's image. */
+    private fun isConquestCardBeside(files: Files, id: String, name: String): Boolean {
+        if (id != ArcadeFiles.CONQUEST_GAME) return false
+        val source = files.find(name, inSubdir = "") ?: return false
+        return ArcadeFiles.isConquestCard(
+            files.head(source, ArcadeFiles.CONQUEST_HEADER_BYTES, unpack = name.endsWith(".gz", ignoreCase = true)),
+        )
     }
 
     /** A location as the rest of this works with it: a path, or a content:// URI. The library lists a
@@ -347,8 +431,11 @@ object Arcade {
         if (id !in ArcadeLibrary.bootGames(context)) parts.add(I18n.get("arcade.part.boot"))
         val size = siblings.firstOrNull { it.first == name }?.second ?: 0L
         if (ArcadeFiles.kindOf(name) { size } == ArcadeFiles.Kind.PACKED_IMAGE) parts.add(I18n.get("arcade.part.unpacked"))
-        val dongle = inCards("$id.ps2") || inCards("$id.bin") || siblings.any { (n, bytes) ->
-            (ArcadeFiles.idIn(n) ?: folderId) == id && ArcadeFiles.kindOf(n) { bytes } == ArcadeFiles.Kind.CARD
+        // Soul Calibur II's Conquest card is a card file too, and never its dongle.
+        fun dongleIn(n: String) = inCards(n) && !isConquestCardIn(id, File(cards, n))
+        val dongle = dongleIn("$id.ps2") || dongleIn("$id.bin") || siblings.any { (n, bytes) ->
+            (ArcadeFiles.idIn(n) ?: folderId) == id && ArcadeFiles.kindOf(n) { bytes } == ArcadeFiles.Kind.CARD &&
+                !isConquestCardBeside(files, id, n)
         }
         if (!dongle) parts.add(I18n.get("arcade.part.dongle"))
         parts
@@ -387,6 +474,9 @@ object Arcade {
 
         /** Copies [source] to [target], unpacking it on the way when [unpack] (a .gz). */
         fun copy(source: String, target: File, unpack: Boolean = false): Boolean
+
+        /** The first [n] bytes of [source], unpacked when [unpack] (a .gz); fewer when there are fewer. */
+        fun head(source: String, n: Int, unpack: Boolean): ByteArray
 
         /** The files in the game's own folder (the .acgame's or the image's), with their sizes (0 when the
          *  provider does not say). */
@@ -433,6 +523,9 @@ object Arcade {
 
         override fun copy(source: String, target: File, unpack: Boolean): Boolean =
             copyInto(target) { File(source).inputStream().let { if (unpack) java.util.zip.GZIPInputStream(it) else it } }
+
+        override fun head(source: String, n: Int, unpack: Boolean): ByteArray =
+            headOf(n, unpack) { File(source).inputStream() }
 
         override fun list(): List<Pair<String, Long>> =
             dir.listFiles()?.filter { it.isFile }?.map { it.name to it.length() }.orEmpty()
@@ -501,6 +594,10 @@ object Arcade {
         override fun copy(source: String, target: File, unpack: Boolean): Boolean = copyInto(target) {
             val input = context.contentResolver.openInputStream(Uri.parse(source)) ?: error("unreadable")
             if (unpack) java.util.zip.GZIPInputStream(input) else input
+        }
+
+        override fun head(source: String, n: Int, unpack: Boolean): ByteArray = headOf(n, unpack) {
+            context.contentResolver.openInputStream(Uri.parse(source)) ?: error("unreadable")
         }
 
         override fun list(): List<Pair<String, Long>> = runCatching {
@@ -574,6 +671,24 @@ object Arcade {
 
     /** Several JVS polls (one a frame). */
     private const val SERVICE_PRESS_MS = 200L
+
+    /** The first [n] bytes of what [open] opens, unpacked first when [unpack] (a .gz): fewer when there are
+     *  fewer, none when it cannot be read. */
+    private fun headOf(n: Int, unpack: Boolean, open: () -> java.io.InputStream): ByteArray = runCatching {
+        open().use { raw ->
+            val input = if (unpack) java.util.zip.GZIPInputStream(raw) else raw
+            input.use {
+                val bytes = ByteArray(n)
+                var got = 0
+                while (got < n) {
+                    val read = it.read(bytes, got, n - got)
+                    if (read < 0) break
+                    got += read
+                }
+                bytes.copyOf(got)
+            }
+        }
+    }.getOrDefault(ByteArray(0))
 
     /** Writes a temporary file and renames it over [target], so a failed copy leaves nothing behind. */
     private fun copyInto(target: File, open: () -> java.io.InputStream): Boolean = runCatching {

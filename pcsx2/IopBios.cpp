@@ -577,6 +577,20 @@ namespace R3000A
 			if (!path.empty() && path == VMManager::Internal::GetELFOverride())
 				return std::string(path);
 
+#if defined(__ANDROID__)
+			// Fast boot asks for the override by its file name alone, host:<name>, since the host:
+			// root is meant to be its folder (eeloadHook, upstream ca03806a4c). A content:// URI has
+			// no folder: Hle_SetHostRoot points host: at the hostfs folder instead, the name found
+			// nothing there, and the BIOS fell back to its browser. An ELF picked through Android's
+			// file picker never started (#759, OPL: "Failed to read ELF being loaded:
+			// host:primary%3APs2%2FOPNPS2LD.ELF"). That name is the override, so it opens the override.
+			{
+				const std::string& elf_override = VMManager::Internal::GetELFOverride();
+				if (!path.empty() && elf_override.starts_with("content://") && path == Path::GetFileName(elf_override))
+					return elf_override;
+			}
+#endif
+
 			// We are NOT allowing to use the root of the host unit.
 			// For now it just supports relative folders from the location of the elf
 			std::string native_path(Path::Canonicalize(path));

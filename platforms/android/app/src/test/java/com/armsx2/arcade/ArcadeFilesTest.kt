@@ -94,4 +94,30 @@ class ArcadeFilesTest {
         ArcadeFiles.find(listOf("NM00010.chd", "NM00010.ps2", "readme.txt"), null, emptySet()) { asked++; 0L }
         assertEquals(0, asked)
     }
+
+    @Test
+    fun aConquestCardIsToldFromADongleByWhatItHolds() {
+        // Both are card files of Soul Calibur II's set, kept out of the library's list.
+        assertEquals(ArcadeFiles.Kind.CARD, ArcadeFiles.kindOf("NM00007.conquestcard") { 0 })
+        assertEquals(ArcadeFiles.Kind.CARD, ArcadeFiles.kindOf("cardmaterial.bin") { 8650752L })
+        assertTrue(ArcadeFiles.isConquestCard("Memory Card for SoulCaliburII (C)1995 1998 2002 NAMCO LTD.".toByteArray()))
+        assertFalse(ArcadeFiles.isConquestCard("Sony PS2 Memory Card Format 1.2.0.0".toByteArray()))
+        assertFalse(ArcadeFiles.isConquestCard("Memory Card for Soul".toByteArray()))
+        assertFalse(ArcadeFiles.isConquestCard(ByteArray(0)))
+        // Never a .bin, which the core would convert as a card without ECC.
+        assertEquals("NM00007.conquestcard", ArcadeFiles.CONQUEST_CARD)
+    }
+
+    @Test
+    fun theBlankConquestCardThatComesWithTheApp() {
+        val packed = listOf("src/main/assets", "app/src/main/assets", "platforms/android/app/src/main/assets")
+            .map { java.io.File(it, "arcade/NM00007.conquestcard.gzip") }
+            .first { it.isFile }
+        val card = java.util.zip.GZIPInputStream(packed.inputStream()).use { it.readBytes() }
+        // SC2MAKER's bin/cardmaterial.bin as it was taken, with its spare bytes: 16384 pages of 512 + 16.
+        assertEquals(ArcadeFiles.CONQUEST_CARD_BYTES, card.size.toLong())
+        assertTrue(ArcadeFiles.isConquestCard(card.copyOf(ArcadeFiles.CONQUEST_HEADER_BYTES)))
+        val sha256 = java.security.MessageDigest.getInstance("SHA-256").digest(card).joinToString("") { "%02x".format(it) }
+        assertEquals("fe7eac4c5566fa4f16680e2ce9ea682215207f87688dabc4b9065a30050c71f8", sha256)
+    }
 }

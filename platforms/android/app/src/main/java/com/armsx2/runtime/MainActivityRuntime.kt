@@ -850,11 +850,10 @@ open class MainActivityRuntime : ComponentActivity() {
          *  ConfigStore (MTVU and friends) — currentGame.serial picks the
          *  right override tier; null falls back to global. Resolution
          *  order: per-game JSON overlay → global → hardcoded defaults. */
-        /** Number of distinct physical gamepads/joysticks connected right now
-         *  (excludes virtual devices). Drives the boot-time PS2-port-2 enable for
-         *  local co-op — 2+ pads → connect Player 2's controller at VM init. */
-        private fun connectedGamepadCount(): Int {
-            var n = 0
+        /** The physical gamepads/joysticks connected right now (no virtual devices), and
+         *  whether a Joy-Con pair is among them, which [connectedPadCount] counts once. */
+        private fun connectedGamepads(): Pair<List<InputDevice>, Boolean> {
+            val pads = ArrayList<InputDevice>()
             var sawJoyCon = false
             for (id in InputDevice.getDeviceIds()) {
                 val dev = InputDevice.getDevice(id) ?: continue
@@ -868,9 +867,19 @@ open class MainActivityRuntime : ComponentActivity() {
                 // ALL Nintendo pads as a SINGLE logical controller — a lone pair must not
                 // auto-enable PS2 port 2. Every other vendor is still counted per device.
                 if (dev.vendorId == 0x057E) { sawJoyCon = true; continue }
-                n++
+                pads.add(dev)
             }
-            return n + (if (sawJoyCon) 1 else 0)
+            return pads to sawJoyCon
+        }
+
+        /** How many controllers are connected, a Joy-Con pair once. Drives the boot-time PS2-port-2
+         *  enable for local co-op: 2+ connect Player 2's controller at VM init. Pads, not players:
+         *  port 2 cannot be plugged in mid-game (see onCreate), so two pads both pinned to Player 1
+         *  (a handheld's controls and a pad for the TV) still get it, or moving one of them to
+         *  Player 2 during the game would leave it nowhere to go. */
+        private fun connectedPadCount(): Int {
+            val (pads, sawJoyCon) = connectedGamepads()
+            return pads.size + (if (sawJoyCon) 1 else 0)
         }
 
         /**
@@ -1039,7 +1048,9 @@ open class MainActivityRuntime : ComponentActivity() {
                 // for the whole session, for the same reason: this is the only point port 2
                 // can be plugged in, so a mid-game switch would aim touch at an empty port.
                 val touchIsP2 = com.armsx2.ui.touch.TouchControls.touchPlayer.intValue == 1
-                val twoPads = connectedGamepadCount() >= 2 || touchIsP2
+                // A pad pinned to Player 2 needs port 2 even on its own.
+                val twoPads = connectedPadCount() >= 2 || touchIsP2 ||
+                    com.armsx2.input.PadRouter.player2Pinned(connectedGamepads().first)
                 NativeApp.setSetting("Pad2", "Type", "string", if (twoPads) "DualShock2" else "None")
                 if (twoPads) {
                     NativeApp.setSetting("Pad2", "AxisScale", "float", "1.33")
@@ -1407,7 +1418,7 @@ open class MainActivityRuntime : ComponentActivity() {
             vmStopControl.execute {
                 println("@@ANDROID_STOP_JAVA@@ begin saveAutosave=$doAutosave forced=$saveAutosave restart=$restartAfterStop")
                 if (doAutosave)
-                    NativeApp.saveAutosaveState()
+                    NativeApp.saveAutosaveState(autosaveKeep())
                 NativeApp.shutdown()
                 println("@@ANDROID_STOP_JAVA@@ shutdown_return active=${NativeApp.hasActiveVM()} runLoop=$vmRunLoopActive state=${eState.value}")
                 if (!vmRunLoopActive && (eState.value == EmuState.STOPPED || !NativeApp.hasActiveVM())) {
@@ -1596,6 +1607,21 @@ open class MainActivityRuntime : ComponentActivity() {
          *  savestate costs a visible hitch, so it is never turned on for you. */
         const val KEY_AUTOSAVE_INTERVAL_MIN = "autoSaveIntervalMin"
 
+        /** How many autosaves a game keeps, the newest and the ones before it (save state
+         *  picker, "Autosaves to keep"): each autosave moves the earlier ones a place older, so
+         *  one written just before a death is not the only one left. */
+        const val KEY_AUTOSAVE_KEEP = "autosaveKeep"
+        const val AUTOSAVE_KEEP_DEFAULT = 3
+        const val AUTOSAVE_KEEP_MAX = 5
+
+        fun autosaveKeep(): Int =
+            runCatching { prefs.getInt(KEY_AUTOSAVE_KEEP, AUTOSAVE_KEEP_DEFAULT) }
+                .getOrDefault(AUTOSAVE_KEEP_DEFAULT).coerceIn(1, AUTOSAVE_KEEP_MAX)
+
+        /** How long a quick save or load waits for the game to finish writing its memory card: the
+         *  card counts as busy for 300 frames, five seconds, after the last write (quickState). */
+        private const val QUICK_STATE_WAIT_MS = 10_000L
+
         /** How often the job below wakes to check. Well under the shortest interval (1
          *  minute), so a freshly-lowered setting takes effect promptly without the job
          *  spinning. */
@@ -1637,7 +1663,7 @@ open class MainActivityRuntime : ComponentActivity() {
                         continue
                     }
                     if (now - lastSaveAt < minutes * 60_000L) continue
-                    runCatching { NativeApp.saveAutosaveState() }
+                    runCatching { NativeApp.saveAutosaveState(autosaveKeep()) }
                     // Stamped AFTER the write: a savestate takes real time, and starting
                     // the next interval from before it would make saves creep earlier.
                     lastSaveAt = android.os.SystemClock.elapsedRealtime()
@@ -3219,6 +3245,18 @@ open class MainActivityRuntime : ComponentActivity() {
             event.isFromSource(InputDevice.SOURCE_JOYSTICK)) {
             NativeApp.sRumbleDeviceId = event.deviceId
         }
+        // The release of a key whose press reached the pad reaches it too, even with the game paused or
+        // a menu holding the controller, where the gameplay path below stands down. A save or load
+        // state pauses the game for a moment, and a release in that moment was dropped: the button
+        // stayed held in the game until pressed again (#784, X still braking after a load from a
+        // paddle + X hotkey). The pause menu did the same to a button let go while it was open. Only
+        // the pad hears it; the event goes on below exactly as before.
+        if (event.action == KeyEvent.ACTION_UP &&
+            (eState.value != EmuState.RUNNING || controllerDrivesFrontend()) &&
+            padHeldKey(event) in padHeldKeys
+        ) {
+            dispatchGameplayKey(event, releaseOnly = true)
+        }
         // Controller-input diagnostic (ARMSX2_JOYCON): dump the device once + this key.
         logControllerDeviceOnce(event.deviceId)
         logControllerKey(event)
@@ -3688,18 +3726,13 @@ open class MainActivityRuntime : ComponentActivity() {
                     if (down) com.armsx2.Screenshots.capture(applicationContext)
                     return true
                 }
+                // Once per press: on every key repeat of a held combo, they started another save or load.
                 ControllerMappings.SysHotkey.SAVE_STATE -> {
-                    if (down) {
-                        val slot = currentSaveSlot.value
-                        kotlin.concurrent.thread { runCatching { NativeApp.saveStateToSlot(slot) } }
-                    }
+                    if (down && event.repeatCount == 0) quickState(currentSaveSlot.value, saving = true)
                     return true
                 }
                 ControllerMappings.SysHotkey.LOAD_STATE -> {
-                    if (down) {
-                        val slot = currentSaveSlot.value
-                        kotlin.concurrent.thread { runCatching { NativeApp.loadStateFromSlot(slot) } }
-                    }
+                    if (down && event.repeatCount == 0) quickState(currentSaveSlot.value, saving = false)
                     return true
                 }
                 ControllerMappings.SysHotkey.CYCLE_SLOT -> {
@@ -3714,7 +3747,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 // direction both come out of the enum name, so adding slots later needs nothing
                 // here.
                 in slotHotkeys -> {
-                    if (down) matched?.let { fireSlotHotkey(it) }
+                    if (down && event.repeatCount == 0) matched?.let { fireSlotHotkey(it) }
                     return true
                 }
                 ControllerMappings.SysHotkey.TEXTURE_DUMP -> {
@@ -3831,9 +3864,18 @@ open class MainActivityRuntime : ComponentActivity() {
         return super.dispatchKeyEvent(event)
     }
 
-    /** Route one gameplay key edge directly from Activity dispatch to the native pad. */
-    private fun dispatchGameplayKey(event: KeyEvent): Boolean {
-        if (eState.value != EmuState.RUNNING || controllerDrivesFrontend()) return false
+    /** The physical keys (by device and keycode) whose press reached the emulated pad and whose release
+     *  has not yet: that release must reach the pad too, whatever is on screen by then. */
+    private val padHeldKeys: MutableSet<Long> = java.util.Collections.synchronizedSet(HashSet())
+
+    private fun padHeldKey(event: KeyEvent): Long =
+        (event.deviceId.toLong() shl 32) or (event.keyCode.toLong() and 0xffffffffL)
+
+    /** Route one gameplay key edge directly from Activity dispatch to the native pad. [releaseOnly]: a
+     *  release of a key whose press reached the pad, sent while the game is paused or a menu has the
+     *  controller (see dispatchKeyEvent). */
+    private fun dispatchGameplayKey(event: KeyEvent, releaseOnly: Boolean = false): Boolean {
+        if (!releaseOnly && (eState.value != EmuState.RUNNING || controllerDrivesFrontend())) return false
         val type = when (event.action) {
             KeyEvent.ACTION_DOWN -> KeyEventType.KeyDown
             KeyEvent.ACTION_UP -> KeyEventType.KeyUp
@@ -3841,6 +3883,7 @@ open class MainActivityRuntime : ComponentActivity() {
         }
         val physicalCode = event.keyCode
         if (physicalCode == KeyEvent.KEYCODE_UNKNOWN) return false
+        if (type == KeyEventType.KeyDown) padHeldKeys.add(padHeldKey(event)) else padHeldKeys.remove(padHeldKey(event))
 
         // Local co-op routing and macro precedence exactly match the old Compose
         // onKeyEvent path; only the dispatch layer has changed.
@@ -4038,21 +4081,59 @@ open class MainActivityRuntime : ComponentActivity() {
         return hardcore
     }
 
-    fun saveState() {
-        if (blockedByHardcore()) return
-        val slot = currentSaveSlot.value
-        kotlin.concurrent.thread { runCatching { NativeApp.saveStateToSlot(slot) } }
-    }
+    fun saveState() = quickState(currentSaveSlot.value, saving = true)
 
-    fun loadState(onLoaded: (() -> Unit)? = null) {
+    fun loadState(onLoaded: (() -> Unit)? = null) = quickState(currentSaveSlot.value, saving = false, onLoaded)
+
+    /** A quick save or load in progress: one at a time. */
+    private val quickStateRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Saves to or loads from [slot] on a thread of its own, for the hotkeys, the on-screen and
+     * second-screen buttons and the menu, one at a time: a held hotkey used to start a save or a load
+     * on every key repeat, overlapping.
+     *
+     * The core refuses both while the game is writing to its memory card, and for 300 frames after
+     * (MemcardBusy), so that a state never holds a card half written. A refused press used to vanish
+     * without a word, and holding the buttons longer seemed to fix it only because the key repeats
+     * kept trying (#784). The countdown runs while the game runs, so then this waits for the card and
+     * goes ahead, up to [QUICK_STATE_WAIT_MS]. Paused (the menu), it cannot clear, so it says so. Any
+     * other failure says so too. [onLoaded] runs on the main thread once a load is over, as before.
+     * Whether the game runs is taken at the press: a refused load parks it for a moment itself.
+     */
+    private fun quickState(slot: Int, saving: Boolean, onLoaded: (() -> Unit)? = null) {
         if (blockedByHardcore()) return
-        val slot = currentSaveSlot.value
-        kotlin.concurrent.thread {
-            runCatching { NativeApp.loadStateFromSlot(slot) }
+        if (!quickStateRunning.compareAndSet(false, true)) return
+        val running = eState.value == EmuState.RUNNING
+        kotlin.concurrent.thread(name = "armsx2-quick-state") {
+            try {
+                fun attempt() = runCatching {
+                    if (saving) NativeApp.saveStateToSlot(slot) else NativeApp.loadStateFromSlot(slot)
+                }.getOrDefault(false)
+                fun cardBusy() = runCatching { NativeApp.isMemcardBusy() }.getOrDefault(false)
+                var ok = attempt()
+                val deadline = SystemClock.uptimeMillis() + QUICK_STATE_WAIT_MS
+                while (!ok && running && cardBusy() && SystemClock.uptimeMillis() < deadline) {
+                    Thread.sleep(100)
+                    if (!cardBusy()) ok = attempt()
+                }
+                if (!ok) {
+                    val key = when {
+                        !cardBusy() -> if (saving) "savestate.error.save" else "savestate.error.load"
+                        // Paused, a save is told to resume the game first. A load from the menu
+                        // resumes it anyway once it is over, so "in a few seconds" is right for it.
+                        running || !saving -> "savestate.error.memcardBusyLong"
+                        else -> "savestate.error.memcardBusy"
+                    }
+                    runOnUiThread { com.armsx2.ui.WelcomeBanner.show(com.armsx2.i18n.I18n.get(key)) }
+                }
+            } finally {
+                quickStateRunning.set(false)
+            }
             // Resume/dismiss only AFTER the load lands. The caller used to resume
             // immediately, which raced the async load (the menu resumed the VM before
             // the state was restored) — that's why "Load" appeared to do nothing.
-            onLoaded?.let { cb -> android.os.Handler(android.os.Looper.getMainLooper()).post(cb) }
+            if (!saving) onLoaded?.let { cb -> android.os.Handler(android.os.Looper.getMainLooper()).post(cb) }
         }
     }
 
@@ -4069,12 +4150,7 @@ open class MainActivityRuntime : ComponentActivity() {
         val slot = ControllerMappings.slotForHotkey(h)
         if (slot < 0) return
         currentSaveSlot.value = slot
-        val saving = ControllerMappings.isSaveSlotHotkey(h)
-        kotlin.concurrent.thread {
-            runCatching {
-                if (saving) NativeApp.saveStateToSlot(slot) else NativeApp.loadStateFromSlot(slot)
-            }
-        }
+        quickState(slot, saving = ControllerMappings.isSaveSlotHotkey(h))
     }
 
     private fun cycleSaveSlot(step: Int = 1) {
@@ -5458,14 +5534,8 @@ open class MainActivityRuntime : ComponentActivity() {
         when (h) {
             ControllerMappings.SysHotkey.MENU -> InGameOverlay.toggle()
             ControllerMappings.SysHotkey.SCREENSHOT -> com.armsx2.Screenshots.capture(applicationContext)
-            ControllerMappings.SysHotkey.SAVE_STATE -> {
-                val slot = currentSaveSlot.value
-                kotlin.concurrent.thread { runCatching { NativeApp.saveStateToSlot(slot) } }
-            }
-            ControllerMappings.SysHotkey.LOAD_STATE -> {
-                val slot = currentSaveSlot.value
-                kotlin.concurrent.thread { runCatching { NativeApp.loadStateFromSlot(slot) } }
-            }
+            ControllerMappings.SysHotkey.SAVE_STATE -> quickState(currentSaveSlot.value, saving = true)
+            ControllerMappings.SysHotkey.LOAD_STATE -> quickState(currentSaveSlot.value, saving = false)
             ControllerMappings.SysHotkey.CYCLE_SLOT -> cycleSaveSlot()
             ControllerMappings.SysHotkey.TEXTURE_DUMP -> {
                 val on = runCatching { NativeApp.toggleTextureDumping() }.getOrDefault(false)

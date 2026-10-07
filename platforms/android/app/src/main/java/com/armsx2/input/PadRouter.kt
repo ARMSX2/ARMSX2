@@ -50,6 +50,10 @@ object PadRouter {
      * Auto-assignment is first-to-press, which is fine until two people care WHICH player they
      * are -- an external pad and a handheld's built-in controller cannot be told apart by press
      * order alone. A pin overrides that for the pads it names and leaves the rest automatic.
+     *
+     * Several pads can be pinned to one player, and all of them play as it: a handheld's own
+     * controls and a pad for the TV it is docked to, both player 1, with nothing to change when
+     * it docks. The live slot holds whichever of them pressed something last (its rumble).
      */
     private val pinned = LinkedHashMap<String, Int>()
     private const val KEY_PINNED = "pad_router_pinned"
@@ -128,19 +132,20 @@ object PadRouter {
     /**
      * Pin a controller to a player slot, or pass null to clear it.
      *
-     * A slot holds one controller, so pinning displaces whatever else claimed it -- both the
-     * pin and the live slot, otherwise the settings screen would disagree with where input
-     * actually goes until the next reset.
+     * The controllers already pinned to that player stay: they all play as it (see [pinned]).
+     * Anything that merely claimed the slot by pressing first is displaced, the live claim with
+     * it, otherwise the settings screen would disagree with where input actually goes until the
+     * next reset.
      */
     fun setPin(descriptor: String, port: Int?) {
         if (port == null) {
             pinned.remove(descriptor)
         } else {
             if (port !in 0 until MAX_PADS) return
-            pinned.entries.removeAll { it.value == port && it.key != descriptor }
             pinned[descriptor] = port
             val claimed = slots[port]
-            if (claimed >= 0 && descriptorOf(claimed) != descriptor) slots[port] = -1
+            val claimedBy = if (claimed >= 0) descriptorOf(claimed) else null
+            if (claimed >= 0 && claimedBy != descriptor && claimedBy?.let { pinned[it] } != port) slots[port] = -1
             for (i in slots.indices) {
                 if (i != port && slots[i] >= 0 && descriptorOf(slots[i]) == descriptor) slots[i] = -1
             }
@@ -244,6 +249,11 @@ object PadRouter {
         }
     }
 
+    /** Whether a connected controller is pinned to player 2, whose port must then be plugged in
+     *  even when it is the only controller there. */
+    fun player2Pinned(devices: List<InputDevice>): Boolean =
+        devices.any { dev -> dev.descriptor?.let { pinned[it] } == 1 }
+
     /** True once a second controller has joined this session (P2 main is live). */
     fun coopActive(): Boolean = slots[1] != -1
 
@@ -260,7 +270,15 @@ object PadRouter {
         //
         // Checked against connected pads, so a pin for a controller that is not plugged in
         // does not black-hole the port.
+        //
+        // Several pads can be pinned to one player: the one that pressed something last holds
+        // the live slot and answers, so the rumble follows the controller in the player's hands.
         if (pinned.isNotEmpty()) {
+            val live = slots[port]
+            if (live >= 0) {
+                val dev = runCatching { InputDevice.getDevice(live) }.getOrNull()
+                if (dev != null && pinned[dev.descriptor] == port) return live
+            }
             for (pad in connectedPads()) {
                 if (pinned[pad.descriptor] == port) return pad.deviceId
             }

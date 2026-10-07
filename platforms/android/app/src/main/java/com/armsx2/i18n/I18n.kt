@@ -1076,7 +1076,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "pad.rumbleFallback.description" to "Some controllers (Xbox Series X|S over Bluetooth, and some DualSense Bluetooth modes) expose no motor to Android, so the emulator cannot rumble them at all. Turn this on to feel that rumble through this device instead. Leave it off if your phone or tablet sits in a stand or a pocket while you play.",
     "pad.rumbleFallback.label" to "Vibrate this device instead",
     "pad.assign.auto" to "Auto",
-    "pad.assign.help" to "Assign a controller to a player slot. Auto gives it the next free slot when it first presses a button, which is why the pad you pick up second is not always player 2. An assignment is remembered per controller and kept when it reconnects.",
+    "pad.assign.help" to "Assign a controller to a player slot. Auto gives it the next free slot when it first presses a button, which is why the pad you pick up second is not always player 2. Controllers assigned to the same player all play as that player, such as a handheld's own controls and a pad for the TV. An assignment is remembered per controller and kept when it reconnects.",
     "pad.assign.rumble" to "rumble",
     "pad.assign.rumble.controller" to "Controller",
     "pad.assign.rumble.device" to "Handheld",
@@ -1738,6 +1738,9 @@ private val BASE_EN: Map<String, String> = mapOf(
     "savestate.autosave.savedOnExit" to "(saved on exit)",
     "savestate.autosave.screenshotDesc" to "Autosave screenshot",
     "savestate.autosave.title" to "Autosave",
+    "savestate.autosave.older" to "Autosave %d",
+    "savestate.autosaveKeep.label" to "Autosaves to keep",
+    "savestate.autosaveKeep.description" to "Each autosave moves the earlier ones a place back, so if the newest was saved just before a death you can load the one before it from the tiles after Autosave. Each one takes as much space as a save state.",
     "savestate.backup" to "Backup",
     "savestate.import" to "Import",
     "savestate.hint" to "Choose a slot. Hold a slot, or use the trash button, to delete it.",
@@ -1786,6 +1789,7 @@ private val BASE_EN: Map<String, String> = mapOf(
         "The game is still writing to the memory card, so the state was not saved. " +
         "Resume the game for a second or two, then try again. The card stays busy for as " +
         "long as the game is paused.",
+    "savestate.error.memcardBusyLong" to "The game kept writing to its memory card, so the state was not saved or loaded, to keep the card safe. Try again in a few seconds.",
     "savestate.error.save" to "Couldn't save to that slot. Check the log for @@ANDROID_SAVESTATE@@.",
     "savestate.error.load" to "Couldn't load that slot.",
     "savestate.title.save" to "Save State",

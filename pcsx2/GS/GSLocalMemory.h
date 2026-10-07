@@ -479,6 +479,10 @@ public:
 
 	GSClut m_clut;
 
+	// Write stamps: which writes have touched which pages, in order. See MarkPagesWritten().
+	u64 m_write_seq = 1;
+	u64 m_page_stamp[GS_MAX_PAGES] = {};
+
 public:
 	static constexpr GSSwizzleInfo swizzle32   {swizzleTables32,  0x00};
 	static constexpr GSSwizzleInfo swizzle32Z  {swizzleTables32,  0x18};
@@ -520,6 +524,37 @@ public:
 	__forceinline u8* vm8() const { return m_vm8; }
 	__forceinline u16* vm16() const { return reinterpret_cast<u16*>(m_vm8); }
 	__forceinline u32* vm32() const { return reinterpret_cast<u32*>(m_vm8); }
+
+	// Write stamps. Every store into local memory marks the pages it stores to. A mark is one step of a sequence
+	// and each page keeps the step of the last mark that covered it, so a reader that notes WriteSeq() before it
+	// reads local memory knows its result still holds while no page it read has a stamp past the note (the
+	// texture hash memo does this).
+	//
+	// Marks are unconditional, whether or not the store changed a byte: an extra mark costs a recomputation, a
+	// missing one a stale result. Stores through a raw pointer (the CPU fallbacks in the hardware renderer, the
+	// software rasterizer) mark at their call site.
+	//
+	// Not atomic: stores and readers run on the thread that executes draws (the GS thread, or the back thread
+	// when the split is on, with the other thread drained at the seams).
+
+	/// Whether a rectangle has a page set that a mark of it names. An empty or inverted rectangle, or one that
+	/// reaches x or y 2048, has none: writers disagree on how such a rectangle wraps (Move wraps x at 2048 and
+	/// nothing else does), so no page set describes all of them.
+	static bool HasPageSet(const GSVector4i& r)
+	{
+		return r.left >= 0 && r.top >= 0 && r.right > r.left && r.bottom > r.top && r.right <= 2048 && r.bottom <= 2048;
+	}
+
+	/// Mark the pages that the rectangle `r` of the surface `off` covers, or every page if it has no page set.
+	void MarkPagesWritten(const GSOffset& off, const GSVector4i& r);
+	/// Mark `count` consecutive pages from `first_page`, wrapping at the end of local memory.
+	void MarkPageRangeWritten(u32 first_page, u32 count);
+	void MarkAllPagesWritten();
+
+	/// The step of the latest mark. Starts at 1 over stamps of 0.
+	__forceinline u64 WriteSeq() const { return m_write_seq; }
+	/// The step that last wrote `page` (0 if none has).
+	__forceinline u64 PageStamp(u32 page) const { return m_page_stamp[page]; }
 
 	GSOffset GetOffset(u32 bp, u32 bw, u32 psm) const
 	{
@@ -979,11 +1014,13 @@ public:
 	void WritePixel32(u8* RESTRICT src, u32 pitch, const GSOffset& off, const GSVector4i& r)
 	{
 		off.loopPixels(r, vm32(), (u32*)src, pitch, [&](u32* dst, u32* src) { *dst = *src; });
+		MarkPagesWritten(off, r);
 	}
 
 	void WritePixel32(u8* RESTRICT src, u32 pitch, const GSOffset& off, const GSVector4i& r, u32 write_mask)
 	{
 		off.loopPixels(r, vm32(), (u32*)src, pitch, [&](u32* dst, u32* src) { *dst = (*dst & ~write_mask) | (*src & write_mask); });
+		MarkPagesWritten(off, r);
 	}
 
 	void WritePixel24(u8* RESTRICT src, u32 pitch, const GSOffset& off, const GSVector4i& r)
@@ -993,11 +1030,13 @@ public:
 		{
 			*dst = (*dst & 0xff000000) | (*src & 0x00ffffff);
 		});
+		MarkPagesWritten(off, r);
 	}
 
 	void WritePixel16(u8* RESTRICT src, u32 pitch, const GSOffset& off, const GSVector4i& r)
 	{
 		off.loopPixels(r, vm16(), (u16*)src, pitch, [&](u16* dst, u16* src) { *dst = *src; });
+		MarkPagesWritten(off, r);
 	}
 
 	void WriteFrame16(u8* RESTRICT src, u32 pitch, const GSOffset& off, const GSVector4i& r)
@@ -1010,6 +1049,7 @@ public:
 
 			*dst = (u16)((ga >> 16) | (rb >> 9) | (ga >> 6) | (rb >> 3));
 		});
+		MarkPagesWritten(off, r);
 	}
 
 	__forceinline u32 ReadTexel32(u32 addr, const GIFRegTEXA& TEXA) const
