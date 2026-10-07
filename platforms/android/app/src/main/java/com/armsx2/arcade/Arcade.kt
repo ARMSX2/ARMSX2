@@ -277,6 +277,11 @@ object Arcade {
      * put there by hand), else copied there from beside its image (unpacked, if it is a .gz). It is named
      * after the game and what it holds ([ArcadeFiles.dongleName]). Never Soul Calibur II's Conquest card, a
      * card file as well. Null when there is none.
+     *
+     * The copy there is kept, as the game writes to it, until the file it was copied from ([DONGLE_FROM]) is
+     * gone from beside the image and a different dongle is there: a key swapped for another (Soul Calibur
+     * II's Japanese one for its export one) then replaces it. Before, the old copy went on booting and the
+     * new key beside the image was never read. The same key renamed keeps the copy.
      */
     private fun looseDongle(
         context: Context,
@@ -286,27 +291,54 @@ object Arcade {
         folderId: String?,
     ): String? {
         val cards = memcardsDir(context).apply { mkdirs() }
-        listOf("$id.ps2", "$id.bin").firstOrNull { File(cards, it).let { f -> f.isFile && f.length() > 0 && !isConquestCardIn(id, f) } }
-            ?.let { return it }
         // A .ps2 first, then a .bin, then a packed one: the likelier a file is the dongle, the earlier.
         val candidates = siblings
             .filter { (n, bytes) -> (ArcadeFiles.idIn(n) ?: folderId) == id && ArcadeFiles.kindOf(n) { bytes } == ArcadeFiles.Kind.CARD }
             .filterNot { (n, _) -> isConquestCardBeside(files, id, n) }
             .sortedBy { (n, _) -> if (n.endsWith(".ps2", ignoreCase = true)) 0 else if (n.endsWith(".gz", ignoreCase = true)) 2 else 1 }
-        for ((n, _) in candidates) {
+        fun contentOf(n: String): String? =
+            files.find(n, inSubdir = "")?.let { source -> sha256Of(n.endsWith(".gz", ignoreCase = true)) { files.open(source) } }
+
+        val from = File(gameDir(context, id), DONGLE_FROM)
+        val have = listOf("$id.ps2", "$id.bin")
+            .firstOrNull { File(cards, it).let { f -> f.isFile && f.length() > 0 && !isConquestCardIn(id, f) } }
+        if (have != null) {
+            val (first, firstBytes) = candidates.firstOrNull() ?: return have
+            val made = runCatching { from.readLines() }.getOrNull()?.takeIf { it.size >= 3 }
+            // Copied before the app kept track, or put there by hand: taken to come from the first one there.
+            if (made == null) {
+                runCatching { from.writeText("$first\n$firstBytes\n${contentOf(first).orEmpty()}\n") }
+                return have
+            }
+            if (candidates.any { (n, bytes) -> n == made[0] && bytes.toString() == made[1] }) return have
+            val content = contentOf(first)
+            if (content != null && content == made[2]) {
+                runCatching { from.writeText("$first\n$firstBytes\n$content\n") }
+                return have
+            }
+            println("@@ANDROID_ARCADE@@ ${made[0]} is no longer beside the image: its dongle is now $first")
+        }
+        for ((n, listed) in candidates) {
             val source = files.find(n, inSubdir = "") ?: continue
             val temp = File(cards, ".$id.dongle")
             if (!files.copy(source, temp, unpack = n.endsWith(".gz", ignoreCase = true))) continue
             val bytes = temp.length()
+            val content = sha256Of(unpack = false) { temp.inputStream() }
             val target = File(cards, ArcadeFiles.dongleName(id, bytes))
             if (bytes in ArcadeFiles.MIN_CARD_BYTES..ArcadeFiles.MAX_CARD_BYTES && temp.renameTo(target)) {
+                if (have != null && have != target.name) File(cards, have).delete()
+                runCatching { from.writeText("$n\n$listed\n${content.orEmpty()}\n") }
                 println("@@ANDROID_ARCADE@@ copied $n into the memory cards folder as ${target.name}")
                 return target.name
             }
             temp.delete()
         }
-        return null
+        return have
     }
+
+    /** Beside a loose game's SRAM: the file beside its image that its dongle in the memory cards folder was
+     *  copied from, as its name, its size there and the SHA-256 of what it holds (unpacked), a line each. */
+    private const val DONGLE_FROM = "dongle.from"
 
     // ---- Soul Calibur II's Conquest card ----------------------------------------------------------
 
@@ -505,6 +537,9 @@ object Arcade {
         /** The first [n] bytes of [source], unpacked when [unpack] (a .gz); fewer when there are fewer. */
         fun head(source: String, n: Int, unpack: Boolean): ByteArray
 
+        /** [source], to read all of it. */
+        fun open(source: String): java.io.InputStream
+
         /** The files in the game's own folder (the .acgame's or the image's), with their sizes (0 when the
          *  provider does not say). */
         fun list(): List<Pair<String, Long>>
@@ -553,6 +588,8 @@ object Arcade {
 
         override fun head(source: String, n: Int, unpack: Boolean): ByteArray =
             headOf(n, unpack) { File(source).inputStream() }
+
+        override fun open(source: String): java.io.InputStream = File(source).inputStream()
 
         override fun list(): List<Pair<String, Long>> =
             dir.listFiles()?.filter { it.isFile }?.map { it.name to it.length() }.orEmpty()
@@ -626,6 +663,9 @@ object Arcade {
         override fun head(source: String, n: Int, unpack: Boolean): ByteArray = headOf(n, unpack) {
             context.contentResolver.openInputStream(Uri.parse(source)) ?: error("unreadable")
         }
+
+        override fun open(source: String): java.io.InputStream =
+            context.contentResolver.openInputStream(Uri.parse(source)) ?: error("unreadable")
 
         override fun list(): List<Pair<String, Long>> = runCatching {
             val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentId)
