@@ -21,8 +21,9 @@ val armsx2HostPageSize = providers.gradleProperty("armsx2.hostPageSize").orElse(
 // exactly the seam this needs, and add_compile_options would land after these flags and win.
 val armsx2MinSdk = providers.gradleProperty("armsx2.minSdk").orElse("26")
 // Pinned, not left to AGP's default: the two targets must differ ONLY where we say they do, and
-// an NDK that drifts under one of them makes an A/B meaningless. 28.2 is what shipped 2.6.6.6.
-val armsx2NdkVersion = providers.gradleProperty("armsx2.ndkVersion").orElse("28.2.13676358")
+// an NDK that drifts under one of them makes an A/B meaningless. 29 is what the release targets
+// and pgo/armsx2.profdata use.
+val armsx2NdkVersion = providers.gradleProperty("armsx2.ndkVersion").orElse("29.0.14206865")
 // Empty = let BuildParameters.cmake choose (armv8.1-a). The v8.2 targets pass an explicit
 // -march; FEAT_FP16 and FEAT_DotProd are OPTIONAL at v8.2, so they must be named, not implied.
 val armsx2March = providers.gradleProperty("armsx2.march").orElse("")
