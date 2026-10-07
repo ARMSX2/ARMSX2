@@ -346,18 +346,20 @@ TEST(GSDriverReport, ActiveVulkanDriverFollowsTheLatestDevice)
 	ClearActiveVulkanDriver();
 }
 
-// The Android host's "get malisx2" notice. The decision is the three facts it is made from: the
-// renderer, whether the app's driver list offers malisx2 for the GPU, and the driver the open
-// Vulkan device is on.
+// The Android host's "get malisx2" notice. The decision is the four facts it is made from: the
+// renderer, whether the app's driver list offers malisx2 for the GPU, the driver the open Vulkan
+// device is on, and whether the user selected a malisx2 pack for this boot.
 TEST(GSDriverReport, MaliSX2NoticeIsOnlyForTheHardwareRendererOnAnOfferedGpuWithoutMaliSX2)
 {
 	for (const bool hardware : {false, true})
 		for (const bool offered : {false, true})
 			for (const ActiveVulkanDriver driver :
 				{ActiveVulkanDriver::None, ActiveVulkanDriver::MaliSX2, ActiveVulkanDriver::Other})
-				EXPECT_EQ(ShouldWarnMaliSX2(hardware, offered, driver),
-					hardware && offered && driver == ActiveVulkanDriver::Other)
-					<< "hardware=" << hardware << " offered=" << offered << " driver=" << static_cast<int>(driver);
+				for (const bool pack : {false, true})
+					EXPECT_EQ(ShouldWarnMaliSX2(hardware, offered, driver, pack),
+						hardware && offered && driver == ActiveVulkanDriver::Other && !pack)
+						<< "hardware=" << hardware << " offered=" << offered << " driver=" << static_cast<int>(driver)
+						<< " pack=" << pack;
 }
 
 TEST(GSDriverReport, MaliSX2NoticeFiresForArmsDriverAndForAnyOtherPack)
@@ -366,7 +368,7 @@ TEST(GSDriverReport, MaliSX2NoticeFiresForArmsDriverAndForAnyOtherPack)
 	for (const char* info : {"v1.r44p1-01eac0.030c4a3fb15fe65f485fb565f5e1b688", "Mesa 26.1.2 (git-axfl2-001)"})
 	{
 		NoteActiveVulkanDriver(info);
-		EXPECT_TRUE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver())) << info;
+		EXPECT_TRUE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver(), false)) << info;
 	}
 	ClearActiveVulkanDriver();
 }
@@ -374,7 +376,7 @@ TEST(GSDriverReport, MaliSX2NoticeFiresForArmsDriverAndForAnyOtherPack)
 TEST(GSDriverReport, MaliSX2NoticeStaysQuietOnMaliSX2)
 {
 	NoteActiveVulkanDriver("v1.r44p1-malisx2.0.2.s0123abcd");
-	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver()));
+	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver(), false));
 	ClearActiveVulkanDriver();
 }
 
@@ -382,19 +384,58 @@ TEST(GSDriverReport, MaliSX2NoticeStaysQuietWhenVulkanIsNotRunning)
 {
 	// OpenGL, or no device yet.
 	ClearActiveVulkanDriver();
-	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver()));
+	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver(), false));
 	// A value outside the enum is not a Vulkan driver either.
-	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, static_cast<ActiveVulkanDriver>(3)));
+	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, static_cast<ActiveVulkanDriver>(3), false));
 }
 
 TEST(GSDriverReport, MaliSX2NoticeStaysQuietUnderTheSoftwareRenderer)
 {
 	// The software renderer can sit on a Vulkan device, but only to present a frame the CPU drew.
-	EXPECT_FALSE(ShouldWarnMaliSX2(false, true, ActiveVulkanDriver::Other));
+	EXPECT_FALSE(ShouldWarnMaliSX2(false, true, ActiveVulkanDriver::Other, false));
 }
 
 TEST(GSDriverReport, MaliSX2NoticeStaysQuietOnGpusTheAppDoesNotOfferItFor)
 {
 	// Telling these users to download a driver that is not listed for them would be wrong.
-	EXPECT_FALSE(ShouldWarnMaliSX2(true, false, ActiveVulkanDriver::Other));
+	EXPECT_FALSE(ShouldWarnMaliSX2(true, false, ActiveVulkanDriver::Other, false));
+}
+
+TEST(GSDriverReport, MaliSX2NoticeStaysQuietWhenAMaliSX2PackIsSelectedButDidNotLoad)
+{
+	// malisx2 fails to open on an older Mali kernel driver and Arm's driver answers instead. The
+	// device is on Other, but the user already has the pack, so the notice would be wrong.
+	NoteActiveVulkanDriver("v1.r40p0-01eac0.030c4a3fb15fe65f485fb565f5e1b688");
+	EXPECT_EQ(GetActiveVulkanDriver(), ActiveVulkanDriver::Other);
+	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver(), true));
+	// The same device with no malisx2 pack selected (the system driver, or another pack) is warned.
+	EXPECT_TRUE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver(), false));
+	ClearActiveVulkanDriver();
+}
+
+TEST(GSDriverReport, IsMaliSX2PackReadsThePackDirectoryAndLibraryName)
+{
+	const char* const root = "/data/user/0/com.armsx2/files/drivers/";
+
+	// The directory is the pack's id: "armsx2libmali" for the ones the app downloads.
+	EXPECT_TRUE(IsMaliSX2Pack(std::string(root) + "armsx2libmali-0.1.1-malisx2-0.1.1/", "libvulkan_malisx2.so"));
+	EXPECT_TRUE(IsMaliSX2Pack(std::string(root) + "armsx2libmali-v0.1.0", "libvulkan_malisx2.so"));
+	// A pack the user imported from a zip: the id says nothing, the library file does.
+	EXPECT_TRUE(IsMaliSX2Pack(std::string(root) + "local-driver/", "libvulkan_malisx2.so"));
+	// ... or the id does and the library has another name.
+	EXPECT_TRUE(IsMaliSX2Pack(std::string(root) + "local-malisx2-0.1.1/", "libvulkan_other.so"));
+	// The pre-rename spelling, and case.
+	EXPECT_TRUE(IsMaliSX2Pack(std::string(root) + "local-driver/", "libvulkan_libmali.so"));
+	EXPECT_TRUE(IsMaliSX2Pack(std::string(root) + "ARMSX2LibMali-X/", "LIBVULKAN_MALISX2.SO"));
+
+	// Packs that are not malisx2.
+	EXPECT_FALSE(IsMaliSX2Pack(std::string(root) + "armsx2turnip-v26.1.2/", "libvulkan_freedreno.so"));
+	EXPECT_FALSE(IsMaliSX2Pack(std::string(root) + "local-purple-turnip/", "libvulkan_freedreno.so"));
+	// A bare "mali" is not malisx2: it would also match "normalized".
+	EXPECT_FALSE(IsMaliSX2Pack(std::string(root) + "local-normalized-turnip/", "libvulkan_freedreno.so"));
+	EXPECT_FALSE(IsMaliSX2Pack(std::string(root) + "arm-mali/", "libvulkan_mali.so"));
+	// Only the last component of the directory is read: a match higher up the path is not the pack.
+	EXPECT_FALSE(IsMaliSX2Pack("/data/user/0/com.example.libmali/files/drivers/turnip/", "libvulkan_freedreno.so"));
+	EXPECT_FALSE(IsMaliSX2Pack("", ""));
+	EXPECT_FALSE(IsMaliSX2Pack("/", ""));
 }

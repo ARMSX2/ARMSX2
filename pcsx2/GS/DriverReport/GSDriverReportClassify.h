@@ -51,6 +51,13 @@ namespace GSDriverReport
 	/// GpuProfileDetector::IsMaliSX2Driver, which owns the rule.
 	bool IsMaliSX2Driver(std::string_view driver_info);
 
+	/// Whether an installed custom driver pack is a malisx2 pack, from the directory it was
+	/// installed in and the library file it loads. The app names a pack's directory by its id
+	/// ("armsx2libmali-..." for the ones it downloads, kept from before the rename) and the pack's
+	/// library is libvulkan_malisx2.so. Only the last component of `pack_dir` is read, so the
+	/// app's own data path cannot match. Same two spellings as IsMaliSX2Driver, case-insensitive.
+	bool IsMaliSX2Pack(std::string_view pack_dir, std::string_view library_name);
+
 	/// Classifies the driver from its own properties. malisx2 deliberately reports Arm's driverID
 	/// and a stock-looking device name, so it is told apart by IsMaliSX2Driver on its driverInfo
 	/// and never by driverID.

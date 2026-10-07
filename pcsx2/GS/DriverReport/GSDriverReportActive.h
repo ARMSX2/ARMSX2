@@ -41,8 +41,15 @@ namespace GSDriverReport
 	/// whose driver is not malisx2, on a GPU the app offers malisx2 for. The software renderer can
 	/// sit on a Vulkan device only to present the frame the CPU drew, so a different driver costs
 	/// that user nothing.
-	constexpr bool ShouldWarnMaliSX2(bool hardware_renderer, bool gpu_offers_malisx2, ActiveVulkanDriver driver)
+	///
+	/// Not when the user has already selected a malisx2 pack for this boot. Then the device is on
+	/// another driver because the pack did not load (malisx2 needs a recent Mali kernel driver, and
+	/// on an older one it fails to open and the system loader answers), and telling them to download
+	/// what they selected is wrong. The pack is read off the driver request the device was created
+	/// from (Vulkan::GetCustomDriverStatus), which is the per-game choice for the booting game.
+	constexpr bool ShouldWarnMaliSX2(
+		bool hardware_renderer, bool gpu_offers_malisx2, ActiveVulkanDriver driver, bool malisx2_pack_selected)
 	{
-		return hardware_renderer && gpu_offers_malisx2 && driver == ActiveVulkanDriver::Other;
+		return hardware_renderer && gpu_offers_malisx2 && driver == ActiveVulkanDriver::Other && !malisx2_pack_selected;
 	}
 } // namespace GSDriverReport

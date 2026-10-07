@@ -32,6 +32,7 @@
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
 #include "GS/Renderers/Vulkan/GSLsfg.h" // LSFG availability query (JNI)
 #include "GS/DriverReport/GSDriverReportActive.h" // which Vulkan driver is open (malisx2 notice)
+#include "GS/DriverReport/GSDriverReportClassify.h" // IsMaliSX2Pack (malisx2 notice)
 #include "GSDumpReplayer.h"
 #include "ImGui/ImGuiManager.h"
 #include "ImGui/ImGuiOverlays.h"
@@ -3481,11 +3482,25 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setMaliSX2Offered(JNIEnv*, jclass, jboolean
 // than from the selected pack, since a pack that fails to load falls back to Arm's driver without
 // saying so, so it is only known once the device is open: this is called from OnVMStarted and from
 // the game-change call that follows the game's program starting.
+//
+// Not shown to a user who selected a malisx2 pack: malisx2 needs a recent Mali kernel driver, and
+// on an older one it fails to open and the device ends up on Arm's driver, so the notice would tell
+// them to download what they already have. The selected pack is the driver request the Vulkan
+// library was loaded with (Vulkan::GetCustomDriverStatus), which the app sets per game in
+// applyRendererPrefs before each boot, so it is the per-game override when there is one.
 static void PostMaliSX2NoticeIfDue() {
-    if (!GSDriverReport::ShouldWarnMaliSX2(GSIsHardwareRenderer(),
-                                           s_gpu_offers_malisx2.load(std::memory_order_relaxed),
-                                           GSDriverReport::GetActiveVulkanDriver()))
+    const bool hardware = GSIsHardwareRenderer();
+    const bool offered = s_gpu_offers_malisx2.load(std::memory_order_relaxed);
+    const GSDriverReport::ActiveVulkanDriver driver = GSDriverReport::GetActiveVulkanDriver();
+    const Vulkan::CustomDriverStatus pack = Vulkan::GetCustomDriverStatus();
+    const bool malisx2_pack_selected = pack.requested && GSDriverReport::IsMaliSX2Pack(pack.dir, pack.name);
+
+    if (!GSDriverReport::ShouldWarnMaliSX2(hardware, offered, driver, malisx2_pack_selected)) {
+        if (GSDriverReport::ShouldWarnMaliSX2(hardware, offered, driver, false))
+            Console.WriteLn("Android: malisx2 pack selected but the Vulkan device is on another driver "
+                            "(pack failed to load?), not posting the get-malisx2 notice.");
         return;
+    }
     Host::AddIconOSDMessage("armsx2_mali_driver_notice", ICON_FA_CIRCLE_EXCLAMATION,
         "Incompatible driver selected. Please download the malisx2 driver",
         Host::OSD_WARNING_DURATION);

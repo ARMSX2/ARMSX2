@@ -34,6 +34,17 @@ namespace GSDriverReport
 		return GpuProfileDetector::IsMaliSX2Driver(driver_info);
 	}
 
+	bool IsMaliSX2Pack(std::string_view pack_dir, std::string_view library_name)
+	{
+		while (!pack_dir.empty() && pack_dir.back() == '/')
+			pack_dir.remove_suffix(1);
+		const size_t slash = pack_dir.find_last_of('/');
+		if (slash != std::string_view::npos)
+			pack_dir.remove_prefix(slash + 1);
+
+		return IsMaliSX2Driver(Lower(pack_dir)) || IsMaliSX2Driver(Lower(library_name));
+	}
+
 	ServedDriverClassification ClassifyServedDriver(const ServedDriverFacts& facts)
 	{
 		ServedDriverClassification out;
