@@ -14,7 +14,8 @@
 # secret is hardcoded.
 #
 # Usage:  VC=<versionCode> VN=<versionName> tools/build-play-aab.sh [output.aab]
-# Env:    PROF (default ~/Downloads/armsx2.profdata), PKG (default come.nanodata.armsx2)
+# Env:    PROF (default ~/Downloads/armsx2.profdata), PKG (default come.nanodata.armsx2),
+#         NDK (default 29.0.14206865, the sideload targets' NDK)
 #         PGO_MODE (default optimize; none|generate|optimize) — matches the sibling
 #         build-release-apk.sh. This was hardcoded to "optimize", so a caller asking
 #         for a profile-free build got one silently built against the profile anyway,
@@ -28,6 +29,10 @@ VC="${VC:?set VC=<versionCode>}"
 VN="${VN:?set VN=<versionName>}"
 PKG="${PKG:-come.nanodata.armsx2}"
 PROF="${PROF:-$HOME/Downloads/armsx2.profdata}"
+# The NDK the four sideload targets build with (build-release-targets.sh) and the PGO profile is
+# recorded from. Left to the gradle default, 28.2, the AAB compiled with an older clang and about
+# 6,400 functions did not match the profile, so the Play build ran with far less of it.
+NDK="${NDK:-29.0.14206865}"
 OUTPUT_AAB="${1:-$HOME/Downloads/ARMSX2-${VN}-play-vc${VC}-dualcore.aab}"
 
 if [[ -z "${JAVA_HOME:-}" && -d "/Applications/Android Studio.app/Contents/jbr/Contents/Home" ]]; then
@@ -48,7 +53,7 @@ JNI="$ROOT_DIR/app/src/main/jniLibs/arm64-v8a"
 echo "=== assemblePlayRelease 16k core ==="
 rm -f "$APK16"
 "$GRADLE" -p "$ROOT_DIR" :app:assemblePlayRelease \
-	-Parmsx2.applicationId="$PKG" \
+	-Parmsx2.applicationId="$PKG" -Parmsx2.ndkVersion="$NDK" \
 	-Parmsx2.hostPageSize=0x4000 -Parmsx2.nativeLibName=emucore_16k \
 	-Parmsx2.pgo="${PGO_MODE:-optimize}" -Parmsx2.pgoProfile="$PROF" \
 	-Parmsx2.versionCode="$VC" -Parmsx2.versionName="$VN"
@@ -62,7 +67,7 @@ sz=$(stat -f%z "$JNI/libemucore_16k.so"); echo "  staged libemucore_16k.so = $((
 echo "=== bundlePlayRelease 4k core (+ staged 16k) ==="
 rm -f "$AAB"
 "$GRADLE" -p "$ROOT_DIR" :app:bundlePlayRelease \
-	-Parmsx2.applicationId="$PKG" \
+	-Parmsx2.applicationId="$PKG" -Parmsx2.ndkVersion="$NDK" \
 	-Parmsx2.hostPageSize=0x1000 -Parmsx2.nativeLibName=emucore_4k \
 	-Parmsx2.pgo="${PGO_MODE:-optimize}" -Parmsx2.pgoProfile="$PROF" \
 	-Parmsx2.versionCode="$VC" -Parmsx2.versionName="$VN"
