@@ -2,14 +2,20 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/GSDump.h"
+#include "GS/GSDumpBundle.h"
 #include "GS/GSExtra.h"
 #include "GS/GSLzma.h"
 #include "GS/GSState.h"
 
+#include "Host.h"
+
 #include "common/Console.h"
 #include "common/FileSystem.h"
 #include "common/HeapArray.h"
+#include "common/Path.h"
 #include "common/ScopedGuard.h"
+
+#include "fmt/format.h"
 
 #include <7zCrc.h>
 #include <XzCrc64.h>
@@ -28,8 +34,35 @@ GSDumpBase::GSDumpBase(std::string fn)
 
 GSDumpBase::~GSDumpBase()
 {
+	// The derived destructor has already ended the compressed stream, so closing the file makes
+	// the dump whole. This runs on every way a dump ends: its last frame, and a renderer torn
+	// down mid-recording.
+	const bool wrote_dump = (m_gs != nullptr);
 	if (m_gs)
 		std::fclose(m_gs);
+
+	if (!wrote_dump || m_bundle_path.empty())
+		return;
+
+	// The screenshot is written by a worker thread that may still be at it.
+	GSJoinSnapshotThreads();
+
+	std::vector<std::string> parts;
+	parts.push_back(m_filename);
+	parts.insert(parts.end(), m_bundle_companions.begin(), m_bundle_companions.end());
+	if (!GSDumpBundle::Pack(m_bundle_path, parts))
+	{
+		Host::AddKeyedOSDMessage("GSDump",
+			fmt::format(TRANSLATE_FS("GS", "Could not pack the GS dump into '{}'. Its files are in the snapshots folder."),
+				Path::GetFileName(m_bundle_path)),
+			Host::OSD_WARNING_DURATION);
+	}
+}
+
+void GSDumpBase::SetBundle(std::string zip_path, std::vector<std::string> companions)
+{
+	m_bundle_path = std::move(zip_path);
+	m_bundle_companions = std::move(companions);
 }
 
 void GSDumpBase::AddHeader(const std::string& serial, u32 crc,

@@ -1529,9 +1529,14 @@ static void applyPadButton(u32 port, jint p_key, jint p_range, jboolean p_keyPre
         }
     }
 
-    // An arcade board's controls (see ArcadePadEvent).
+    // An arcade board's controls (see ArcadePadEvent). A cabinet's players are on its JVS board and
+    // nothing is plugged into the PS2 controller ports, so the press goes to the board only: also
+    // sending it to the emulated DualShock 2 gave the game a second input the real board never has.
     if (Arcade::IsActive())
+    {
         ArcadePadEvent(port, p_key, state);
+        return;
+    }
 
     Pad::SetControllerState(port, static_cast<u32>(_key), state);
 }

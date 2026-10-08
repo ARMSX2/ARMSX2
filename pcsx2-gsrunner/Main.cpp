@@ -156,8 +156,8 @@ static MemorySettingsInterface s_settings_interface;
 static s32 s_clear_shader_cache_frame = -1;
 
 static std::string s_output_prefix;
-// -take-gsdump: a one-frame GS dump (and its driver report) written at this base path on the first
-// loop's second presented frame. Empty = off.
+// -take-gsdump: a one-frame GS dump (a zip of the dump, its driver report and its screenshot) written
+// at this base path on the first loop's second presented frame. Empty = off.
 static std::string s_take_gsdump_base;
 static bool s_take_gsdump_queued = false;
 static s32 s_loop_count = 1;
@@ -1159,9 +1159,9 @@ static void PrintCommandLineHelp(const char* progname)
 						 "run cannot even create an instance under it.\n");
 	std::fprintf(stderr, "  -renderdoc-frame N[,C]: Capture dump frame N (base 0, minimum 1) and the C-1 frames after it, "
 						 "one .rdc each. Defaults to 1,1. Only used if -renderdoc is used.\n");
-	std::fprintf(stderr, "  -take-gsdump <path>: write a one-frame GS dump of the replay, with its driver report, to "
-						 "<path>.gs.zst and <path>.driver.json (plus the dump's screenshot <path>.png), on the first "
-						 "loop's second frame.\n");
+	std::fprintf(stderr, "  -take-gsdump <path>: write a one-frame GS dump of the replay to <path>.gs.zip, on the first "
+						 "loop's second frame. The zip holds the dump (.gs.zst), its driver report (.driver.json) and "
+						 "its screenshot.\n");
 	std::fprintf(stderr, "  -custom-driver <dir> <libname> <hooklibdir>: Android only. Load the Vulkan driver <libname> "
 						 "out of <dir> through libadrenotools instead of the system loader, e.g. a Mesa Turnip pack in "
 						 "/data/local/tmp. <hooklibdir> holds libhook_impl.so, libmain_hook.so and "

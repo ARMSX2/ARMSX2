@@ -146,6 +146,23 @@ if(UNIX)
 	)
 endif()
 
+# The dump packer needs only the file system helpers and libzip, so its tests compile it directly
+# rather than linking the emulator.
+add_pcsx2_test(gs_dump_bundle_tests
+	gs_dump_bundle_tests.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/../../../../pcsx2/GS/GSDumpBundle.cpp
+)
+
+target_include_directories(gs_dump_bundle_tests PRIVATE
+	${CMAKE_CURRENT_SOURCE_DIR}/../../../../pcsx2
+)
+
+target_link_libraries(gs_dump_bundle_tests PUBLIC
+	PCSX2_FLAGS
+	common
+	libzip::zip
+)
+
 # The RAISR texture upscaler engine has no GS, GPU or settings dependencies, so its tests compile
 # it directly rather than linking the emulator: this builds in seconds and shows the engine
 # stands alone. It reads the real filters from bin/resources/upscale/raisr.

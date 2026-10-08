@@ -277,6 +277,11 @@ object Arcade {
      * put there by hand), else copied there from beside its image (unpacked, if it is a .gz). It is named
      * after the game and what it holds ([ArcadeFiles.dongleName]). Never Soul Calibur II's Conquest card, a
      * card file as well. Null when there is none.
+     *
+     * The copy there is kept, as the game writes to it, until the file it was copied from ([DONGLE_FROM]) is
+     * gone from beside the image and a different dongle is there: a key swapped for another (Soul Calibur
+     * II's Japanese one for its export one) then replaces it. Before, the old copy went on booting and the
+     * new key beside the image was never read. The same key renamed keeps the copy.
      */
     private fun looseDongle(
         context: Context,
@@ -286,44 +291,80 @@ object Arcade {
         folderId: String?,
     ): String? {
         val cards = memcardsDir(context).apply { mkdirs() }
-        listOf("$id.ps2", "$id.bin").firstOrNull { File(cards, it).let { f -> f.isFile && f.length() > 0 && !isConquestCardIn(id, f) } }
-            ?.let { return it }
         // A .ps2 first, then a .bin, then a packed one: the likelier a file is the dongle, the earlier.
         val candidates = siblings
             .filter { (n, bytes) -> (ArcadeFiles.idIn(n) ?: folderId) == id && ArcadeFiles.kindOf(n) { bytes } == ArcadeFiles.Kind.CARD }
             .filterNot { (n, _) -> isConquestCardBeside(files, id, n) }
             .sortedBy { (n, _) -> if (n.endsWith(".ps2", ignoreCase = true)) 0 else if (n.endsWith(".gz", ignoreCase = true)) 2 else 1 }
-        for ((n, _) in candidates) {
+        fun contentOf(n: String): String? =
+            files.find(n, inSubdir = "")?.let { source -> sha256Of(n.endsWith(".gz", ignoreCase = true)) { files.open(source) } }
+
+        val from = File(gameDir(context, id), DONGLE_FROM)
+        val have = listOf("$id.ps2", "$id.bin")
+            .firstOrNull { File(cards, it).let { f -> f.isFile && f.length() > 0 && !isConquestCardIn(id, f) } }
+        if (have != null) {
+            val (first, firstBytes) = candidates.firstOrNull() ?: return have
+            val made = runCatching { from.readLines() }.getOrNull()?.takeIf { it.size >= 3 }
+            // Copied before the app kept track, or put there by hand: taken to come from the first one there.
+            if (made == null) {
+                runCatching { from.writeText("$first\n$firstBytes\n${contentOf(first).orEmpty()}\n") }
+                return have
+            }
+            if (candidates.any { (n, bytes) -> n == made[0] && bytes.toString() == made[1] }) return have
+            val content = contentOf(first)
+            if (content != null && content == made[2]) {
+                runCatching { from.writeText("$first\n$firstBytes\n$content\n") }
+                return have
+            }
+            println("@@ANDROID_ARCADE@@ ${made[0]} is no longer beside the image: its dongle is now $first")
+        }
+        for ((n, listed) in candidates) {
             val source = files.find(n, inSubdir = "") ?: continue
             val temp = File(cards, ".$id.dongle")
             if (!files.copy(source, temp, unpack = n.endsWith(".gz", ignoreCase = true))) continue
             val bytes = temp.length()
+            val content = sha256Of(unpack = false) { temp.inputStream() }
             val target = File(cards, ArcadeFiles.dongleName(id, bytes))
             if (bytes in ArcadeFiles.MIN_CARD_BYTES..ArcadeFiles.MAX_CARD_BYTES && temp.renameTo(target)) {
+                if (have != null && have != target.name) File(cards, have).delete()
+                runCatching { from.writeText("$n\n$listed\n${content.orEmpty()}\n") }
                 println("@@ANDROID_ARCADE@@ copied $n into the memory cards folder as ${target.name}")
                 return target.name
             }
             temp.delete()
         }
-        return null
+        return have
     }
+
+    /** Beside a loose game's SRAM: the file beside its image that its dongle in the memory cards folder was
+     *  copied from, as its name, its size there and the SHA-256 of what it holds (unpacked), a line each. */
+    private const val DONGLE_FROM = "dongle.from"
 
     // ---- Soul Calibur II's Conquest card ----------------------------------------------------------
 
-    /** The blank Conquest card that comes with the app: bin/cardmaterial.bin of SC2MAKER
+    /** The Conquest card that comes with the app: bin/cardmaterial.bin of SC2MAKER
      *  (https://github.com/israpps/SC2MAKER, by Matías Israelson (El_isra), GPL-3.0), made from Conquest cards
-     *  its users gave and dumped. Packed with gzip; unpacked, 8,650,752 bytes, SHA-256
-     *  fe7eac4c5566fa4f16680e2ce9ea682215207f87688dabc4b9065a30050c71f8. Named .gzip, not .gz: the build
-     *  unpacks a .gz asset into the APK under the name without it. */
+     *  its users gave and dumped, then cleared the way El_isra said to: DATA CLEAR, ALL CLEAR in the game's
+     *  test menu, run in this emulator (SC23 key), and the game left to rebuild it on the next boot. As
+     *  SC2MAKER has it, a player had to do that before Conquest mode would play. Packed with gzip; unpacked,
+     *  8,650,752 bytes, SHA-256 1bca7cff2432e578380f2aa0cf93cc407c0c3624ad65944a29006a1253596241. Named
+     *  .gzip, not .gz: the build unpacks a .gz asset into the APK under the name without it. */
     private const val CONQUEST_ASSET = "arcade/NM00007.conquestcard.gzip"
+
+    /** The card 2.8.2 came with: SC2MAKER's, not yet cleared. Its SHA-256, and the first bytes of page 112
+     *  (where its second player data slot starts, which the clear rewrites) to look at before hashing. */
+    private const val UNCLEARED_CONQUEST_SHA256 = "fe7eac4c5566fa4f16680e2ce9ea682215207f87688dabc4b9065a30050c71f8"
+    private const val UNCLEARED_CONQUEST_PAGE_112 = "4d4901007f6be5234c5ccbd5c7ddeda0"
 
     /**
      * Soul Calibur II's Conquest card, which the game reads in slot 2: [ArcadeFiles.CONQUEST_CARD] in the
      * memory cards folder. It is put there once and kept from then on, as the game writes its Conquest mode
      * to it. It is the first of: the card already there; a Conquest card that 2.8.1 took for the dongle and
      * copied in as one (moved, since it never was the dongle); the player's own beside the game's image
-     * ([files], [siblings]); else the blank card that comes with the app ([CONQUEST_ASSET]). Its name there,
-     * or null when none could be put there: the game then starts without one, as before.
+     * ([files], [siblings]); else the card that comes with the app ([CONQUEST_ASSET]). The one exception to
+     * keeping it: a card still exactly the uncleared one 2.8.2 put there, which the game never wrote, is
+     * swapped for the cleared one. Its name there, or null when none could be put there: the game then
+     * starts without one, as before.
      */
     private fun conquestCard(
         context: Context,
@@ -334,7 +375,12 @@ object Arcade {
         val id = ArcadeFiles.CONQUEST_GAME
         val cards = memcardsDir(context).apply { mkdirs() }
         val target = File(cards, ArcadeFiles.CONQUEST_CARD)
-        if (target.isFile && target.length() > 0) return target.name
+        if (target.isFile && target.length() > 0) {
+            if (isUnclearedConquestCard(target) &&
+                copyInto(target) { java.util.zip.GZIPInputStream(context.assets.open(CONQUEST_ASSET)) }
+            ) println("@@ANDROID_ARCADE@@ ${target.name} was the uncleared card 2.8.2 came with: now the cleared one")
+            return target.name
+        }
 
         val stale = File(cards, "$id.ps2")
         if (stale.length() == ArcadeFiles.CONQUEST_CARD_BYTES && isConquestCardIn(id, stale) && stale.renameTo(target)) {
@@ -359,13 +405,26 @@ object Arcade {
         if (copyInto(target) { java.util.zip.GZIPInputStream(context.assets.open(CONQUEST_ASSET)) } &&
             target.length() == ArcadeFiles.CONQUEST_CARD_BYTES
         ) {
-            println("@@ANDROID_ARCADE@@ put the blank Conquest card in the memory cards folder as ${target.name}")
+            println("@@ANDROID_ARCADE@@ put the cleared Conquest card in the memory cards folder as ${target.name}")
             return target.name
         }
         target.delete()
         println("@@ANDROID_ARCADE@@ no Conquest card could be put in place; the game starts without one")
         return null
     }
+
+    /** Whether [file] is still exactly the uncleared Conquest card 2.8.2 came with ([UNCLEARED_CONQUEST_SHA256]).
+     *  Page 112 tells almost every other card apart without reading all 8 MB. */
+    private fun isUnclearedConquestCard(file: File): Boolean = runCatching {
+        if (file.length() != ArcadeFiles.CONQUEST_CARD_BYTES) return@runCatching false
+        val page = ByteArray(UNCLEARED_CONQUEST_PAGE_112.length / 2)
+        java.io.RandomAccessFile(file, "r").use { card ->
+            card.seek(112L * 528)
+            card.readFully(page)
+        }
+        page.joinToString("") { "%02x".format(it) } == UNCLEARED_CONQUEST_PAGE_112 &&
+            sha256Of(unpack = false) { file.inputStream() } == UNCLEARED_CONQUEST_SHA256
+    }.getOrDefault(false)
 
     /** Whether [file] in the memory cards folder is Soul Calibur II's Conquest card, and not the dongle of the
      *  game [id]: only that game has one. */
@@ -478,6 +537,9 @@ object Arcade {
         /** The first [n] bytes of [source], unpacked when [unpack] (a .gz); fewer when there are fewer. */
         fun head(source: String, n: Int, unpack: Boolean): ByteArray
 
+        /** [source], to read all of it. */
+        fun open(source: String): java.io.InputStream
+
         /** The files in the game's own folder (the .acgame's or the image's), with their sizes (0 when the
          *  provider does not say). */
         fun list(): List<Pair<String, Long>>
@@ -526,6 +588,8 @@ object Arcade {
 
         override fun head(source: String, n: Int, unpack: Boolean): ByteArray =
             headOf(n, unpack) { File(source).inputStream() }
+
+        override fun open(source: String): java.io.InputStream = File(source).inputStream()
 
         override fun list(): List<Pair<String, Long>> =
             dir.listFiles()?.filter { it.isFile }?.map { it.name to it.length() }.orEmpty()
@@ -599,6 +663,9 @@ object Arcade {
         override fun head(source: String, n: Int, unpack: Boolean): ByteArray = headOf(n, unpack) {
             context.contentResolver.openInputStream(Uri.parse(source)) ?: error("unreadable")
         }
+
+        override fun open(source: String): java.io.InputStream =
+            context.contentResolver.openInputStream(Uri.parse(source)) ?: error("unreadable")
 
         override fun list(): List<Pair<String, Long>> = runCatching {
             val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentId)
@@ -689,6 +756,23 @@ object Arcade {
             }
         }
     }.getOrDefault(ByteArray(0))
+
+    /** The SHA-256 of what [open] opens, unpacked first when [unpack] (a .gz), in hex; null when it cannot be
+     *  read. */
+    private fun sha256Of(unpack: Boolean, open: () -> java.io.InputStream): String? = runCatching {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        open().use { raw ->
+            (if (unpack) java.util.zip.GZIPInputStream(raw) else raw).use { input ->
+                val buffer = ByteArray(1 shl 16)
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    digest.update(buffer, 0, n)
+                }
+            }
+        }
+        digest.digest().joinToString("") { "%02x".format(it) }
+    }.getOrNull()
 
     /** Writes a temporary file and renames it over [target], so a failed copy leaves nothing behind. */
     private fun copyInto(target: File, open: () -> java.io.InputStream): Boolean = runCatching {

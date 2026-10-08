@@ -184,18 +184,21 @@ object GlobalConfirm {
         val confirmLabel: String?,
         val destructive: Boolean,
         val onConfirm: () -> Unit,
+        val onDismiss: (() -> Unit)? = null,
     )
 
     val pending = mutableStateOf<Request?>(null)
 
+    /** [onDismiss] runs when the prompt is answered no: Cancel, B or BACK. */
     fun ask(
         title: String,
         message: String,
         confirmLabel: String? = null,
         destructive: Boolean = false,
+        onDismiss: (() -> Unit)? = null,
         onConfirm: () -> Unit,
     ) {
-        pending.value = Request(title, message, confirmLabel, destructive, onConfirm)
+        pending.value = Request(title, message, confirmLabel, destructive, onConfirm, onDismiss)
     }
 
     fun dismiss() {
@@ -217,7 +220,10 @@ object GlobalConfirm {
                 pending.value = null
                 request.onConfirm()
             },
-            onDismiss = { pending.value = null },
+            onDismiss = {
+                pending.value = null
+                request.onDismiss?.invoke()
+            },
         )
     }
 }

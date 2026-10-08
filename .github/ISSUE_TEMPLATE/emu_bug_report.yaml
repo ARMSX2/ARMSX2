@@ -125,6 +125,6 @@ body:
         Slow or graphics wrong? Please add a GS dump.
         Android: in-game menu > Capture GS Dump (bug report).
         PC / Mac: Tools > Save Single Frame GS Dump.
-        Two files are in the snaps folder: .gs.zst and .driver.json. Put both in one .zip to upload.
+        The dump is one .gs.zip file in the snaps folder. Upload it as it is.
     validations:
       required: false

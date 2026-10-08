@@ -109,15 +109,16 @@ class ArcadeFilesTest {
     }
 
     @Test
-    fun theBlankConquestCardThatComesWithTheApp() {
+    fun theClearedConquestCardThatComesWithTheApp() {
         val packed = listOf("src/main/assets", "app/src/main/assets", "platforms/android/app/src/main/assets")
             .map { java.io.File(it, "arcade/NM00007.conquestcard.gzip") }
             .first { it.isFile }
         val card = java.util.zip.GZIPInputStream(packed.inputStream()).use { it.readBytes() }
-        // SC2MAKER's bin/cardmaterial.bin as it was taken, with its spare bytes: 16384 pages of 512 + 16.
+        // SC2MAKER's bin/cardmaterial.bin after the game's own ALL CLEAR, with its spare bytes: 16384 pages
+        // of 512 + 16.
         assertEquals(ArcadeFiles.CONQUEST_CARD_BYTES, card.size.toLong())
         assertTrue(ArcadeFiles.isConquestCard(card.copyOf(ArcadeFiles.CONQUEST_HEADER_BYTES)))
         val sha256 = java.security.MessageDigest.getInstance("SHA-256").digest(card).joinToString("") { "%02x".format(it) }
-        assertEquals("fe7eac4c5566fa4f16680e2ce9ea682215207f87688dabc4b9065a30050c71f8", sha256)
+        assertEquals("1bca7cff2432e578380f2aa0cf93cc407c0c3624ad65944a29006a1253596241", sha256)
     }
 }

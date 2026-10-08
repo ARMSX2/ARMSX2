@@ -576,6 +576,34 @@ open class MainActivityRuntime : ComponentActivity() {
             stop(saveAutosave = saveAutosave)
         }
 
+        /** The Close Game and Close Game & Quit hotkeys ask first (#814, asked for by anubys-droid): a
+         *  hotkey is easy to press by mistake (a child's BACK, mapped to Close Game & Quit to keep
+         *  them out of the menu), and closing loses whatever the game has not saved. The game holds
+         *  paused while the question is up; Cancel, B or BACK goes back to it. Cancel is selected
+         *  first, and the open prompt swallows the hotkey itself, so pressing it twice cannot close
+         *  the game. */
+        fun confirmCloseGame(quit: Boolean) {
+            if (com.armsx2.ui.common.GlobalConfirm.pending.value != null) return
+            val wasRunning = eState.value == EmuState.RUNNING
+            if (wasRunning) pauseForOverlay()
+            com.armsx2.ui.common.GlobalConfirm.ask(
+                title = com.armsx2.i18n.I18n.get(if (quit) "hotkeys.confirmQuit.title" else "hotkeys.confirmClose.title"),
+                message = com.armsx2.i18n.I18n.get("hotkeys.confirmClose.message"),
+                confirmLabel = com.armsx2.i18n.I18n.get(if (quit) "games.toolbar.exit" else "action.close"),
+                destructive = true,
+                onDismiss = { if (wasRunning) resume() },
+            ) {
+                // Stop the VM (flushes memcards/savestate), then finish the app once the VM has
+                // fully unwound: never finish inline (stop() is async).
+                if (quit) {
+                    quitAfterStop = true
+                    stop()
+                } else {
+                    closeGame()
+                }
+            }
+        }
+
         /** Fully exit the app (the library Exit button and hold-back gesture route
          *  here). VM-safe: if a game is running, flush it first (quitAfterStop +
          *  async stop(), which finishes once the VM unwinds via the STOPPED branch);
@@ -3830,14 +3858,11 @@ open class MainActivityRuntime : ComponentActivity() {
                     return true
                 }
                 ControllerMappings.SysHotkey.CLOSE_GAME -> {
-                    if (down) closeGame()
+                    if (down && event.repeatCount == 0) confirmCloseGame(quit = false)
                     return true
                 }
                 ControllerMappings.SysHotkey.QUIT_APP -> {
-                    // Stop the VM (flushes memcards/savestate), then finish the app once
-                    // the VM has fully unwound — never finish inline (stop() is async).
-                    if (down) { quitAfterStop = true; stop()
-                    }
+                    if (down && event.repeatCount == 0) confirmCloseGame(quit = true)
                     return true
                 }
                 ControllerMappings.SysHotkey.SAVE_AND_EXIT -> {
@@ -5559,9 +5584,8 @@ open class MainActivityRuntime : ComponentActivity() {
             ControllerMappings.SysHotkey.RES_UP -> stepResolution(1)
             ControllerMappings.SysHotkey.RES_DOWN -> stepResolution(-1)
             ControllerMappings.SysHotkey.ACHIEVEMENTS -> com.armsx2.ui.emulation.EmulationMenuInputController.open(com.armsx2.ui.emulation.EmulationMenuTab.Options)
-            ControllerMappings.SysHotkey.CLOSE_GAME -> closeGame()
-            ControllerMappings.SysHotkey.QUIT_APP -> { quitAfterStop = true; stop()
-            }
+            ControllerMappings.SysHotkey.CLOSE_GAME -> confirmCloseGame(quit = false)
+            ControllerMappings.SysHotkey.QUIT_APP -> confirmCloseGame(quit = true)
             ControllerMappings.SysHotkey.SAVE_AND_EXIT -> closeGame(saveAutosave = true)
             ControllerMappings.SysHotkey.RESET_GAME -> restart()
             ControllerMappings.SysHotkey.SLOW_DOWN -> toggleSlowDown()
