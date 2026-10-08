@@ -574,6 +574,7 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               off with EERUNNER_MTVU=0 when interpreting VU1.\n");
 	std::fprintf(stderr, "  --gsdump <path>[:<frames>]: with --liverun, record a .gs dump of the GIF stream (default 1\n");
 	std::fprintf(stderr, "               frame) starting after --gsdump-at frames (default 30, so the scene has settled).\n");
+	std::fprintf(stderr, "               The dump is written as <path>.gs.zip: the .gs.zst, its driver report and a screenshot.\n");
 	std::fprintf(stderr, "               Replaying that dump in pcsx2-gsrunner is the only honest way to A/B the GS across\n");
 	std::fprintf(stderr, "               builds: it drives the GS with no emulator in front of it, so the MTGS ring and the\n");
 	std::fprintf(stderr, "               SW job queue can't spin-wait a faster EE into a bogus GS instruction-count delta.\n");
