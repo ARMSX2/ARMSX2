@@ -1289,6 +1289,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "gamedb.name.copyRoadMaxBlending" to "Blending Accuracy (at most, if frame reads are slow)",
     "gamedb.name.fieldShift" to "Interlaced Field Shift",
     "gamedb.value.paletteWithFullPreload" to "On with full texture preloading",
+    "legend.gameDb" to "Set by the game database",
+    "legend.changed" to "Changed from default",
     "perf.hack.deferVuWrites" to "Defer VU Writes",
     "perf.hack.fastCdvd" to "Fast CDVD",
     "perf.hack.instantVu1" to "Instant VU1",

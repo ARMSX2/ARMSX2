@@ -289,7 +289,7 @@ class AchievementsViewModel(application: Application) : AndroidViewModel(applica
             resolved.applyTo()
         }
         // Keep the in-game menu's copy in step, or its next save would write the old value back.
-        if (InGameOverlay.currentSerial.value == serial) InGameOverlay.settingsState.value = resolved
+        if (InGameOverlay.currentSerial.value == serial) InGameOverlay.settingsState.value = ConfigStore.resolveForDisplay(serial)
     }
 
     private fun parse(json: String): AchievementsUiState {

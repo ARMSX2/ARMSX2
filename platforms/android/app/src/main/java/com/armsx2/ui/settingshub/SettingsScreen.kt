@@ -350,6 +350,11 @@ private fun SettingsPanel(
         Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
             SectionTitle(categoryTitle(category))
             Spacer(Modifier.height(12.dp))
+            // Only the tabs that own game settings have rows that take a mark.
+            if (categoryHasResettableSettings(category)) {
+                com.armsx2.ui.settings.OverrideLegend()
+                Spacer(Modifier.height(8.dp))
+            }
             Box(Modifier.fillMaxWidth()) {
                 CategoryContent(category, viewModel)
             }

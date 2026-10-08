@@ -599,6 +599,8 @@
   "gamedb.state.yourSetting": "Girtî: li şûna wê mîhengek ku te ji bo vê lîstikê guherand tê bikaranîn. Vekin da ku databas dîsa biryar bide.",
   "gamedb.title": "Mîhengên databasa lîstikê ji bo vê lîstikê",
   "gamedb.value.paletteWithFullPreload": "Vekirî digel pêşbarkirina tevahî ya tevnê",
+  "legend.gameDb": "Ji aliyê databasa lîstikan ve hatiye danîn",
+  "legend.changed": "Ji xwerû cuda",
   "games.addToHome": "Li Ekrana Destpêkê Zêde Bike",
   "games.addToHome.unsupported": "Ev destpêker piştgiriya lêzêdekirina kurterêyan li ekrana destpêkê nade.",
   "games.card.bootWithoutDisc": "Boot bêyî dîskê",

@@ -552,6 +552,8 @@
  "gamedb.state.yourSetting": "Wył.: zamiast tego używane jest ustawienie, które zmieniłeś dla tej gry. Włącz, aby baza danych znów o tym decydowała.",
  "gamedb.title": "Ustawienia bazy danych gier dla tej gry",
  "gamedb.value.paletteWithFullPreload": "Włączone, z pełnym wstępnym ładowaniem tekstur",
+ "legend.gameDb": "Ustawione przez bazę danych gier",
+ "legend.changed": "Inne niż domyślne",
  "games.addToHome": "Dodaj do ekranu głównego",
  "games.addToHome.unsupported": "Ten launcher nie obsługuje dodawania skrótów do ekranu głównego.",
  "games.background.choose": "Wybierz obraz tła…",

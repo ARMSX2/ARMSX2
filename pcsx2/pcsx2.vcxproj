@@ -450,6 +450,7 @@
       <ExcludedFromBuild Condition="'$(Platform)'!='x64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="GS\GSDump.cpp" />
+    <ClCompile Include="GS\GSDumpBundle.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSFunctionMap.cpp" />
     <ClCompile Include="GS\DriverReport\GSDriverReport.cpp" />
     <ClCompile Include="GS\DriverReport\GSDriverReportActive.cpp" />
@@ -936,6 +937,7 @@
       <ExcludedFromBuild Condition="'$(Platform)'!='x64'">true</ExcludedFromBuild>
     </ClInclude>
     <ClInclude Include="GS\GSDump.h" />
+    <ClInclude Include="GS\GSDumpBundle.h" />
     <ClInclude Include="GS\Renderers\Common\GSFastList.h" />
     <ClInclude Include="GS\Renderers\Common\GSFunctionMap.h" />
     <ClInclude Include="GS\Renderers\Common\GSGPUProfile.h" />

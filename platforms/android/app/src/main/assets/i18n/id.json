@@ -552,6 +552,8 @@
   "gamedb.state.yourSetting": "Off: pengaturan yang Anda ubah untuk game ini yang dipakai. Aktifkan agar database kembali menentukannya.",
   "gamedb.title": "Pengaturan database game untuk game ini",
   "gamedb.value.paletteWithFullPreload": "On dengan preload tekstur penuh",
+  "legend.gameDb": "Diatur oleh database game",
+  "legend.changed": "Berbeda dari default",
   "games.addToHome": "Tambahkan ke layar utama",
   "games.addToHome.unsupported": "Launcher ini tidak mendukung penambahan pintasan ke layar utama.",
   "games.background.choose": "Pilih gambar latar…",

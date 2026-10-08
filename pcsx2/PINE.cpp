@@ -6,6 +6,7 @@
 #include "Host.h"
 #include "Elfheader.h"
 #include "GS.h"
+#include "GS/GSDumpBundle.h"
 #include "GS/GSPerfMon.h"
 #include "GS/Renderers/Common/GSDevice.h"
 #include "MTGS.h"
@@ -535,8 +536,9 @@ namespace PINEServer
 	 * The reply describes the request, not a finished file. The dump is opened on the next
 	 * VSync and a multi-frame dump is closed some frames after that, so a client that waits
 	 * for the file has to keep the VM running or step it with MsgFrameAdvance -- a paused VM
-	 * never reaches the VSync that writes anything. A screenshot lands next to the dump too;
-	 * that is inherent to the snapshot path, not something this command adds.
+	 * never reaches the VSync that writes anything. `path` is the dump's zip, which holds the
+	 * dump, its driver report and its screenshot. It is written when the dump closes and
+	 * appears whole, so the file existing means the dump is finished.
 	 *
 	 * `queued` false carries a `reason`, because both ways a request can be turned away are
 	 * served commands that quietly did nothing rather than socket-level failures. The reasons
@@ -564,7 +566,7 @@ namespace PINEServer
 		// extension, and let what is left be the base name.
 		if (!path.empty())
 		{
-			for (const std::string_view suffix : {".gs.zst", ".gs.xz", ".gs", ".png"})
+			for (const std::string_view suffix : {".gs.zip", ".gs.zst", ".gs.xz", ".gs", ".png"})
 			{
 				if (StringUtil::EndsWithNoCase(path, suffix))
 				{
@@ -576,7 +578,6 @@ namespace PINEServer
 
 		bool queued = false, stopped = false;
 		std::string base;
-		const char* dump_ext = "";
 		const char* reason = "";
 
 		Host::RunOnCPUThread(
@@ -604,21 +605,6 @@ namespace PINEServer
 						reason = "snapshot pending";
 						return;
 					}
-
-					// GSConfig is the GS thread's copy of the config, so read the compression
-					// method here -- it decides the extension the dump writer will append.
-					switch (GSConfig.GSDumpCompression)
-					{
-						case GSDumpCompressionMethod::Uncompressed:
-							dump_ext = ".gs";
-							break;
-						case GSDumpCompressionMethod::LZMA:
-							dump_ext = ".gs.xz";
-							break;
-						default:
-							dump_ext = ".gs.zst";
-							break;
-					}
 				});
 				MTGS::WaitGS(false);
 			},
@@ -627,7 +613,7 @@ namespace PINEServer
 		*reply = fmt::format(
 			"{{\"queued\":{},\"stopped\":{},\"frames\":{},\"path\":\"{}\",\"reason\":\"{}\"}}",
 			queued ? "true" : "false", stopped ? "true" : "false", frames,
-			queued ? JsonEscape(base + dump_ext) : std::string(), reason);
+			queued ? JsonEscape(GSDumpBundle::ZipPath(base)) : std::string(), reason);
 		return true;
 	}
 } // namespace PINEServer

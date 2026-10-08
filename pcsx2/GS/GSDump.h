@@ -7,6 +7,9 @@
 #include "GS/GSRegs.h"
 #include "GS/Renderers/SW/GSVertexSW.h"
 
+#include <string>
+#include <vector>
+
 /*
 
 Dump file format:
@@ -76,6 +79,8 @@ class GSDumpBase
 	std::string m_filename;
 	int m_frames;
 	int m_extra_frames;
+	std::string m_bundle_path;
+	std::vector<std::string> m_bundle_companions;
 
 protected:
 	void AddHeader(const std::string& serial, u32 crc,
@@ -91,6 +96,14 @@ public:
 	virtual ~GSDumpBase();
 
 	__fi const std::string& GetPath() const { return m_filename; }
+
+	/// Files other code writes for this same dump, on its own schedule: the driver report and the
+	/// screenshot. When the dump is closed they are packed with it into one zip at `zip_path` and
+	/// the loose files removed (GSDumpBundle::Pack), so a dump leaves one file behind.
+	void SetBundle(std::string zip_path, std::vector<std::string> companions);
+
+	/// The file the user ends up with: the zip once a bundle is set, otherwise the dump itself.
+	__fi const std::string& GetFinalPath() const { return m_bundle_path.empty() ? m_filename : m_bundle_path; }
 
 	void ReadFIFO(u32 size);
 	void Transfer(int index, const u8* mem, size_t size);

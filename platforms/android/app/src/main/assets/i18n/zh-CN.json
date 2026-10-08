@@ -554,6 +554,8 @@
  "gamedb.state.yourSetting": "关闭：改为使用你为此游戏更改过的设置。开启后将重新交由数据库决定。",
  "gamedb.title": "此游戏的游戏数据库设置",
  "gamedb.value.paletteWithFullPreload": "开启，并使用完整纹理预加载",
+ "legend.gameDb": "由游戏数据库设置",
+ "legend.changed": "与默认值不同",
  "games.addToHome": "添加到主屏幕",
  "games.addToHome.unsupported": "当前桌面启动器不支持在主屏幕上添加快捷方式。",
  "games.background.choose": "选择背景图片…",

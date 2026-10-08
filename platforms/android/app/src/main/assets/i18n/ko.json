@@ -552,6 +552,8 @@
  "gamedb.state.yourSetting": "끔: 이 게임에 대해 변경한 설정이 대신 사용됩니다. 켜면 다시 데이터베이스가 결정합니다.",
  "gamedb.title": "이 게임의 게임 데이터베이스 설정",
  "gamedb.value.paletteWithFullPreload": "전체 텍스처 사전 로드 시 켬",
+ "legend.gameDb": "게임 데이터베이스가 설정함",
+ "legend.changed": "기본값에서 변경됨",
  "games.addToHome": "홈 화면에 추가",
  "games.addToHome.unsupported": "이 런처는 홈 화면에 바로가기 추가를 지원하지 않습니다.",
  "games.background.choose": "배경 이미지 선택…",

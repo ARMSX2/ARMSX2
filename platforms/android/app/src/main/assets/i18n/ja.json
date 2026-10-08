@@ -552,6 +552,8 @@
   "gamedb.state.yourSetting": "オフ：このゲーム用に変更した設定が代わりに使われます。オンにすると、再びデータベースが決定します。",
   "gamedb.title": "このゲームのゲームデータベース設定",
   "gamedb.value.paletteWithFullPreload": "テクスチャの完全プリロード時にオン",
+  "legend.gameDb": "ゲームデータベースによる設定",
+  "legend.changed": "デフォルトから変更",
   "games.addToHome": "ホーム画面に追加",
   "games.addToHome.unsupported": "このランチャーはホーム画面へのショートカット追加に対応していません。",
   "games.background.choose": "背景画像を選択…",

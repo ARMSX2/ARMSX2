@@ -600,6 +600,8 @@
  "gamedb.state.yourSetting": "خاموش: در عوض تنظیمی که برای این بازی تغییر داده‌اید استفاده می‌شود. روشن کنید تا پایگاه‌داده دوباره آن را تصمیم بگیرد.",
  "gamedb.title": "تنظیمات پایگاه‌داده GameDB برای این بازی",
  "gamedb.value.paletteWithFullPreload": "روشن، با پیش‌بارگذاری کامل بافت",
+ "legend.gameDb": "تنظیم‌شده توسط پایگاه‌داده GameDB",
+ "legend.changed": "متفاوت از پیش‌فرض",
  "games.addToHome": "افزودن به صفحه اصلی",
  "games.addToHome.unsupported": "این لانچر از افزودن میان‌بر به صفحه اصلی پشتیبانی نمی‌کند.",
  "games.card.bootWithoutDisc": "بوت بدون دیسک",

@@ -41,28 +41,29 @@ internal fun GameDbSection(state: MutableState<Settings>) {
     // `s`, so a change here that leaves `s` alone still has to recompute them.
     var version by remember(serial) { mutableIntStateOf(0) }
     val global = remember(serial, s, version) { ConfigStore.loadGlobal() }
+    // Whether an entry applies is decided on what is stored. `s` is what the screens show, which
+    // has the database's values in it, and several of those are what makes hardware fixes look
+    // set by hand.
+    val stored = remember(serial, s, version) { ConfigStore.resolveForGame(serial) }
     val off = remember(serial, s, version) { GameDbOverrides.switchedOff(serial) }
     val claimedBySetting = remember(serial, s, version) {
-        val overrides = ConfigStore.loadOverrides(serial)
-        if (overrides == null) emptySet()
-        else runCatching {
-            GameDbOverrides.fieldsDriving(overrides, s, global).values.flatMapTo(HashSet()) { it }
-        }.getOrDefault(emptySet())
+        GameDbOverrides.keysClaimedBySettings(serial, stored, global)
     }
-    val manualHardwareFixes = remember(s) { s.anyUserHackEnabled() }
+    val manualHardwareFixes = remember(stored) { stored.anyUserHackEnabled() }
 
     // The count is in the title so a collapsed section still says how much the database is doing.
     CollapsibleSection("${str("gamedb.title")} (${entries.size})") {
         HelpText(str("gamedb.help"))
         for (entry in entries) {
-            val switchedOff = entry.name in off
-            val bySetting = !switchedOff && entry.keys.any { it in claimedBySetting }
-            val description = when {
-                switchedOff -> str("gamedb.state.off")
-                bySetting -> str("gamedb.state.yourSetting")
-                entry.core && !s.emuCore.enableGameFixes -> str("gamedb.state.autoFixesOff")
-                entry.userHack && manualHardwareFixes -> str("gamedb.state.manualFixes")
-                else -> null
+            val entryState = GameDbOverrides.stateOf(entry, off, claimedBySetting, stored, manualHardwareFixes)
+            val switchedOff = entryState == GameDbOverrides.EntryState.SwitchedOff
+            val bySetting = entryState == GameDbOverrides.EntryState.YourSetting
+            val description = when (entryState) {
+                GameDbOverrides.EntryState.SwitchedOff -> str("gamedb.state.off")
+                GameDbOverrides.EntryState.YourSetting -> str("gamedb.state.yourSetting")
+                GameDbOverrides.EntryState.AutoFixesOff -> str("gamedb.state.autoFixesOff")
+                GameDbOverrides.EntryState.ManualFixes -> str("gamedb.state.manualFixes")
+                GameDbOverrides.EntryState.InForce -> null
             }
             ToggleRow(
                 label = "${entryName(entry)}: ${entryValue(entry)}",
@@ -91,8 +92,10 @@ internal fun GameDbSection(state: MutableState<Settings>) {
  */
 private fun commit(serial: String, state: MutableState<Settings>) {
     val resolved = ConfigStore.resolveForGame(serial)
-    state.value = resolved
-    InGameOverlay.settingsState.value = resolved
+    // The screens show what the game runs; the game's file and the core get what is stored.
+    val shown = ConfigStore.resolveForDisplay(serial)
+    state.value = shown
+    InGameOverlay.settingsState.value = shown
     val running = MainActivityRuntime.nativeReady.value &&
         MainActivityRuntime.eState.value != EmuState.STOPPED &&
         MainActivityRuntime.currentGame.value?.settingsKey == serial
