@@ -947,6 +947,7 @@
   "pad.assign.auto": "Auto",
   "pad.assign.help": "Kontrolkerek ji bo hêlîna lîstikvanek destnîşan bike. Auto dema ku ew yekem car bişkokekê ditikîne, hêlîna vala ya pêş dide wê, ji ber vê yekê pêça hûn duyemîn digirin ne her dem lîstikvan 2 e. Kontrolkerên ku ji bo heman lîstikvanî hatine destnîşankirin hemû wekî wî lîstikvanî dilîzin, wekî kontrolên cîhaza destan û pêçek ji bo televizyonê. Destnîşankirinek ji bo her kontrolkerê tê bîranîn û dema ew dîsa girê dibe tê parastin.",
   "pad.assign.rumble": "lerizîn",
+  "pad.assign.rumbleHelp": "Her kontrolkerê ku ji lîstikvanekî re hatiye destnîşankirin lerizîna wî lîstikvanî distîne. Ji bo ku kontrolkerek derxî, lerizîna wê bike Girtî.",
   "pad.assign.rumble.controller": "Kontrolker",
   "pad.assign.rumble.device": "Destî",
   "pad.assign.rumble.off": "Girtî",

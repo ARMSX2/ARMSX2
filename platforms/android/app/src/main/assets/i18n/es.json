@@ -918,6 +918,7 @@
  "pad.assign.auto": "Auto",
  "pad.assign.help": "Asigna un mando a un puesto de jugador. Auto le da el siguiente puesto libre cuando pulsa un botón por primera vez; por eso el mando que coges en segundo lugar no siempre es el jugador 2. Los mandos asignados al mismo jugador juegan todos como ese jugador, por ejemplo los controles de una consola portátil y un mando para la tele. La asignación se recuerda para cada mando y se mantiene cuando se vuelve a conectar.",
  "pad.assign.rumble": "vibración",
+ "pad.assign.rumbleHelp": "Todos los mandos asignados a un jugador reciben su vibración. Pon la vibración de un mando en Off para dejarlo fuera.",
  "pad.assign.rumble.controller": "Mando",
  "pad.assign.rumble.device": "Dispositivo",
  "pad.assign.rumble.off": "Off",

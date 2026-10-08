@@ -925,6 +925,7 @@
  "pad.assign.auto": "自動",
  "pad.assign.help": "將手把指派給某位玩家。自動模式會在手把第一次按鍵時指派下一個空位，因此你第二個拿起的手把不一定是玩家 2。指派給同一位玩家的多個手把都會作為該玩家操作，例如掌機本身的按鍵和接電視用的手把。每個手把的指派都會被記住，並在重新連接時保留。",
  "pad.assign.rumble": "震動",
+ "pad.assign.rumbleHelp": "指派給同一位玩家的每個手把都會收到該玩家的震動。把某個手把的震動設為「關閉」即可將它排除。",
  "pad.assign.rumble.controller": "手把",
  "pad.assign.rumble.device": "掌機",
  "pad.assign.rumble.off": "關閉",

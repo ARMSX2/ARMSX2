@@ -925,6 +925,7 @@
  "pad.assign.auto": "自动",
  "pad.assign.help": "将手柄分配给某位玩家。自动模式会在手柄首次按键时分配下一个空位，因此你第二个拿起的手柄不一定是玩家 2。分配给同一位玩家的多个手柄都会作为该玩家操作，例如掌机自带的按键和接电视用的手柄。每个手柄的分配都会被记住，并在重新连接时保留。",
  "pad.assign.rumble": "震动",
+ "pad.assign.rumbleHelp": "分配给同一位玩家的每个手柄都会收到该玩家的震动。把某个手柄的震动设为“关”即可将它排除。",
  "pad.assign.rumble.controller": "手柄",
  "pad.assign.rumble.device": "掌机",
  "pad.assign.rumble.off": "关",

@@ -923,6 +923,7 @@
   "pad.assign.auto": "Auto",
   "pad.assign.help": "Tetapkan controller ke slot pemain. Auto memberinya slot kosong berikutnya saat controller pertama kali menekan tombol, itulah sebabnya pad yang Anda ambil kedua tidak selalu menjadi pemain 2. Controller yang ditetapkan ke pemain yang sama semuanya bermain sebagai pemain itu, misalnya kontrol bawaan handheld dan pad untuk TV. Penetapan diingat per controller dan tetap berlaku saat terhubung kembali.",
   "pad.assign.rumble": "getar",
+  "pad.assign.rumbleHelp": "Setiap controller yang ditetapkan ke seorang pemain ikut menerima getar pemain itu. Atur getar sebuah controller ke Off untuk mengecualikannya.",
   "pad.assign.rumble.controller": "Controller",
   "pad.assign.rumble.device": "Perangkat",
   "pad.assign.rumble.off": "Off",

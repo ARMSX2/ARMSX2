@@ -1081,6 +1081,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "pad.assign.auto" to "Auto",
     "pad.assign.help" to "Assign a controller to a player slot. Auto gives it the next free slot when it first presses a button, which is why the pad you pick up second is not always player 2. Controllers assigned to the same player all play as that player, such as a handheld's own controls and a pad for the TV. An assignment is remembered per controller and kept when it reconnects.",
     "pad.assign.rumble" to "rumble",
+    "pad.assign.rumbleHelp" to "Every controller assigned to a player gets that player's rumble. Set a controller's rumble to Off to leave it out.",
     "pad.assign.rumble.controller" to "Controller",
     "pad.assign.rumble.device" to "Handheld",
     "pad.assign.rumble.off" to "Off",

@@ -923,6 +923,7 @@
  "pad.assign.auto": "Otomatik",
  "pad.assign.help": "Bir kumandayı bir oyuncu yuvasına atayın. Otomatik, kumanda ilk kez bir düğmeye bastığında ona sıradaki boş yuvayı verir; bu yüzden ikinci aldığınız kumanda her zaman 2. oyuncu olmaz. Aynı oyuncuya atanan kumandaların hepsi o oyuncu olarak oynar; örneğin bir el konsolunun kendi kontrolleri ve televizyon için bir kumanda. Atama her kumanda için hatırlanır ve yeniden bağlandığında korunur.",
  "pad.assign.rumble": "titreşim",
+ "pad.assign.rumbleHelp": "Bir oyuncuya atanan her kumanda o oyuncunun titreşimini alır. Bir kumandayı dışarıda bırakmak için titreşimini Kapalı yapın.",
  "pad.assign.rumble.controller": "Kumanda",
  "pad.assign.rumble.device": "Cihaz",
  "pad.assign.rumble.off": "Kapalı",

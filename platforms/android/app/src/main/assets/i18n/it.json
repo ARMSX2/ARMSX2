@@ -918,6 +918,7 @@
  "pad.assign.auto": "Auto",
  "pad.assign.help": "Assegna un controller a uno slot giocatore. Auto gli assegna il primo slot libero quando preme un pulsante per la prima volta, ed è per questo che il controller che prendi per secondo non è sempre il giocatore 2. I controller assegnati allo stesso giocatore giocano tutti come quel giocatore, per esempio i comandi di una console portatile e un controller per la TV. L'assegnazione viene ricordata per ogni controller e mantenuta quando si riconnette.",
  "pad.assign.rumble": "rumble",
+ "pad.assign.rumbleHelp": "Ogni controller assegnato a un giocatore riceve il suo rumble. Imposta il rumble di un controller su Off per escluderlo.",
  "pad.assign.rumble.controller": "Controller",
  "pad.assign.rumble.device": "Dispositivo",
  "pad.assign.rumble.off": "Off",

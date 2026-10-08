@@ -923,6 +923,7 @@
   "pad.assign.auto": "Tự động",
   "pad.assign.help": "Gán tay cầm cho một vị trí người chơi. Tự động sẽ cho nó vị trí trống kế tiếp khi nó nhấn nút lần đầu, đó là lý do tay cầm bạn cầm lên thứ hai không phải lúc nào cũng là Người chơi 2. Các tay cầm được gán cho cùng một người chơi đều chơi với tư cách người chơi đó, chẳng hạn nút điều khiển của máy cầm tay và một tay cầm để chơi trên TV. Việc gán được ghi nhớ theo từng tay cầm và giữ nguyên khi kết nối lại.",
   "pad.assign.rumble": "rung",
+  "pad.assign.rumbleHelp": "Mọi tay cầm được gán cho một người chơi đều nhận rung của người chơi đó. Đặt rung của một tay cầm thành Tắt để bỏ nó ra.",
   "pad.assign.rumble.controller": "Tay cầm",
   "pad.assign.rumble.device": "Máy cầm tay",
   "pad.assign.rumble.off": "Tắt",

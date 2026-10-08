@@ -304,6 +304,7 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             val pads = remember(refreshToken.intValue) { com.armsx2.input.PadRouter.connectedPads() }
             if (pads.isNotEmpty()) {
                 HelpText(str("pad.assign.help"))
+                HelpText(str("pad.assign.rumbleHelp"))
                 // Only the slots Multitap actually arms. Offering player 3-8 with Multitap off
                 // would let the user pin a pad at an un-armed PS2 port, where its input goes
                 // nowhere at all -- the router ignores such a pin, so the picker must not show it.

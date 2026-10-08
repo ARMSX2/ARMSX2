@@ -1507,6 +1507,7 @@
  "pad.assign.auto": "Automático",
  "pad.assign.help": "Atribua um controle a um slot de jogador. Automático dá o próximo slot livre quando ele pressiona um botão pela primeira vez, por isso o controle que você pega em segundo nem sempre é o jogador 2. Controles atribuídos ao mesmo jogador jogam todos como esse jogador, como os controles do próprio portátil e um controle para a TV. Uma atribuição é lembrada por controle e mantida quando ele reconecta.",
  "pad.assign.rumble": "rumble",
+ "pad.assign.rumbleHelp": "Todo controle atribuído a um jogador recebe o rumble desse jogador. Coloque o rumble de um controle em Desligado para deixá-lo de fora.",
  "pad.assign.rumble.controller": "Controle",
  "pad.assign.rumble.device": "Handheld",
  "pad.assign.rumble.off": "Desligado",

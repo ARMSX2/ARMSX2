@@ -923,6 +923,7 @@
  "pad.assign.auto": "Auto",
  "pad.assign.help": "Przypisz kontroler do slotu gracza. Auto daje mu następny wolny slot przy pierwszym naciśnięciu przycisku, dlatego kontroler podniesiony jako drugi nie zawsze jest graczem 2. Kontrolery przypisane do tego samego gracza grają wszystkie jako ten gracz, na przykład wbudowane sterowanie konsoli przenośnej i pad do telewizora. Przypisanie jest zapamiętywane dla każdego kontrolera i zachowywane po ponownym połączeniu.",
  "pad.assign.rumble": "wibracje",
+ "pad.assign.rumbleHelp": "Każdy kontroler przypisany do gracza dostaje jego wibracje. Ustaw wibracje kontrolera na Wył., aby go pominąć.",
  "pad.assign.rumble.controller": "Kontroler",
  "pad.assign.rumble.device": "Handheld",
  "pad.assign.rumble.off": "Wył.",

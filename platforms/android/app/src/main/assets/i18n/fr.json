@@ -918,6 +918,7 @@
   "pad.assign.auto": "Auto",
   "pad.assign.help": "Attribuez une manette à un emplacement de joueur. Auto lui donne le prochain emplacement libre au premier appui sur un bouton, c'est pourquoi la manette que vous prenez en second n'est pas toujours le joueur 2. Les manettes attribuées au même joueur jouent toutes en tant que ce joueur, par exemple les commandes d'une console portable et une manette pour la télé. L'attribution est mémorisée pour chaque manette et conservée lors de sa reconnexion.",
   "pad.assign.rumble": "vibration",
+  "pad.assign.rumbleHelp": "Chaque manette attribuée à un joueur reçoit sa vibration. Réglez la vibration d'une manette sur Désactivé pour l'exclure.",
   "pad.assign.rumble.controller": "Manette",
   "pad.assign.rumble.device": "Appareil",
   "pad.assign.rumble.off": "Désactivé",
