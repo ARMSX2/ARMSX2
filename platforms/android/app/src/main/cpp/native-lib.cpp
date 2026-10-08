@@ -663,6 +663,18 @@ Java_kr_co_iefriends_pcsx2_NativeApp_logoutAchievements(JNIEnv *env, jclass claz
     }
 }
 
+// Persist the base layer if anything changed. Under the settings lock because the base layer is
+// shared with the CPU thread: Host::SetBase*/Get* lock per call, and INISettingsInterface::Save only
+// serialises against another Load/Save, so without the lock it reads m_ini mid-write, and a write
+// landing between SaveFile and its `m_dirty = false` is marked saved without reaching the disk.
+// The lock is not recursive: never call Host::*Setting* or RunOnCPUThread while holding it.
+static void SaveBaseSettingsIfDirty()
+{
+    auto lock = Host::GetSettingsLock();
+    if (s_settings_interface && s_settings_interface->IsDirty())
+        s_settings_interface->Save();
+}
+
 // Enable / disable RetroAchievements hardcore mode. Persists the hardcore
 // flag and applies it via VMManager::ApplySettings — the settings-diff path
 // in Achievements::UpdateSettings() applies a turn-OFF live (DisableHardcoreMode),
@@ -685,8 +697,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setHardcoreMode(JNIEnv *env, jclass clazz, 
     // hardcore under the user's own control while an override is active — the
     // override only supplies the default.
     Host::RemoveBaseSettingValue("Achievements", "HostOverrideSavedHardcore");
-    if (s_settings_interface && s_settings_interface->IsDirty())
-        s_settings_interface->Save();
+    SaveBaseSettingsIfDirty();
     // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
     // see the assert at the top of VMManager::ApplySettings().
     Host::RunOnCPUThread([]() {
@@ -741,8 +752,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsOption(JNIEnv *env, jclass c
         return;
 
     Host::SetBaseBoolSettingValue("Achievements", ini_key, enabled == JNI_TRUE);
-    if (s_settings_interface && s_settings_interface->IsDirty())
-        s_settings_interface->Save();
+    SaveBaseSettingsIfDirty();
     // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
     // see the assert at the top of VMManager::ApplySettings().
     Host::RunOnCPUThread([]() {
@@ -769,8 +779,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsOptionInt(JNIEnv *env, jclas
         return;
 
     Host::SetBaseIntSettingValue("Achievements", ini_key, static_cast<int>(value));
-    if (s_settings_interface && s_settings_interface->IsDirty())
-        s_settings_interface->Save();
+    SaveBaseSettingsIfDirty();
     // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
     // see the assert at the top of VMManager::ApplySettings().
     Host::RunOnCPUThread([]() {
@@ -790,8 +799,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsUnlockSound(JNIEnv *env, jcl
     const std::string path = GetJavaString(env, p_path);
     Host::SetBaseStringSettingValue("Achievements", "UnlockSoundName", path.c_str());
     Host::SetBaseBoolSettingValue("Achievements", "UnlockSound", true);
-    if (s_settings_interface && s_settings_interface->IsDirty())
-        s_settings_interface->Save();
+    SaveBaseSettingsIfDirty();
     // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
     // see the assert at the top of VMManager::ApplySettings().
     Host::RunOnCPUThread([]() {
@@ -813,8 +821,7 @@ static void RestartAchievementsForHostChange() {
 }
 
 static void PersistAndApplyAchievementsSettings() {
-    if (s_settings_interface && s_settings_interface->IsDirty())
-        s_settings_interface->Save();
+    SaveBaseSettingsIfDirty();
     // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
     // see the assert at the top of VMManager::ApplySettings().
     Host::RunOnCPUThread([]() {
@@ -2051,10 +2058,11 @@ static bool ApplyLiveGSSettings(const char* reason, std::function<bool()> mutate
 }
 
 // Generic setting writer — mirror of pcsx2-qt's settings save path.
-// Writes flow into s_settings_interface (the MemorySettingsInterface
-// installed in initialize); commitSettings flushes them through to the
-// VM. Type comes as a string from Java to keep the JNI surface flat —
-// only four primitives are supported (bool/int/float/string), enough
+// Writes flow into s_settings_interface (the INISettingsInterface installed
+// as the base layer in initialize; each Host::SetBase* takes the settings
+// lock, so this is safe from any thread); commitSettings flushes them
+// through to the VM and saves. Type comes as a string from Java to keep
+// the JNI surface flat — only four primitives are supported (bool/int/float/string), enough
 // for every EmuCore key the UI needs to push.
 extern "C"
 JNIEXPORT void JNICALL
@@ -2122,8 +2130,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_commitSettings(JNIEnv *env, jclass clazz) {
         if (MTGS::IsOpen())
             MTGS::ApplySettings();
     }, /*block=*/true);
-    if (s_settings_interface && s_settings_interface->IsDirty())
-        s_settings_interface->Save();
+    SaveBaseSettingsIfDirty();
     LogAndroidGSSettings("commit");
 
     // Plumbing roundtrip verifier — once the UI starts pushing real
@@ -5399,8 +5406,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_osdShowAll(JNIEnv*, jclass, jboolean enable
     Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowVersion", e);
     Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowSettings", e);
     Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowInputs", e);
-    if (s_settings_interface && s_settings_interface->IsDirty())
-        s_settings_interface->Save();
+    SaveBaseSettingsIfDirty();
 
     // The EmuConfig half rides applyOsdSetting's CPU-thread hop; the base-layer writes above stay
     // here because they go through the settings interface, not EmuConfig.
