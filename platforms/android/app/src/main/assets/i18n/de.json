@@ -424,6 +424,8 @@
  "gamedb.state.yourSetting": "Aus: Stattdessen gilt eine Einstellung, die für dieses Spiel geändert wurde. Einschalten, um wieder die Datenbank entscheiden zu lassen.",
  "gamedb.title": "Spieldatenbank-Einstellungen für dieses Spiel",
  "gamedb.value.paletteWithFullPreload": "An, mit vollem Textur-Preloading",
+ "legend.gameDb": "Von der Spieldatenbank gesetzt",
+ "legend.changed": "Vom Standard abweichend",
  "games.addToHome": "Zum Startbildschirm hinzufügen",
  "games.addToHome.unsupported": "Dieser Launcher unterstützt keine Verknüpfungen auf dem Startbildschirm.",
  "games.background.choose": "Hintergrundbild wählen…",

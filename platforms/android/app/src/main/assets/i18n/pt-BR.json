@@ -1034,6 +1034,8 @@
  "gamedb.state.yourSetting": "Desligado: uma configuração que você alterou para este jogo é usada no lugar. Ligue para deixar o banco de dados decidir de novo.",
  "gamedb.title": "Configurações do banco de dados de jogos para este jogo",
  "gamedb.value.paletteWithFullPreload": "Ligado, com pré-carregamento completo de texturas",
+ "legend.gameDb": "Definido pelo banco de dados de jogos",
+ "legend.changed": "Diferente do padrão",
  "news.title": "O que há de novo",
  "news.refresh": "Atualizar",
  "news.loading": "Carregando notas de versão…",

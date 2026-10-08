@@ -547,6 +547,8 @@
   "gamedb.state.yourSetting": "Désactivé : un réglage que vous avez modifié pour ce jeu est utilisé à la place. Activez pour laisser la base de données en décider à nouveau.",
   "gamedb.title": "Paramètres de la base de données des jeux pour ce jeu",
   "gamedb.value.paletteWithFullPreload": "Activé avec préchargement complet des textures",
+  "legend.gameDb": "Défini par la base de données des jeux",
+  "legend.changed": "Différent de la valeur par défaut",
   "games.addToHome": "Ajouter à l'écran d'accueil",
   "games.addToHome.unsupported": "Ce lanceur ne permet pas d'ajouter des raccourcis à l'écran d'accueil.",
   "games.background.choose": "Choisir une image d'arrière-plan…",

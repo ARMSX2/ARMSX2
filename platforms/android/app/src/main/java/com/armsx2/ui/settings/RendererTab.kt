@@ -123,6 +123,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 str("renderer.gsBackThread.label"),
                 s.display.gsBackThreadMode != 0,
                 description = str("renderer.gsBackThread.description"),
+                field = "gsBackThreadMode",
             ) {
                 apply(s.copy(display = s.display.copy(gsBackThreadMode = if (it) 1 else 0)))
             }
@@ -159,6 +160,7 @@ fun RendererTab(state: MutableState<Settings>) {
                         if (abs(s.output.upscaleFloat - mult) >= 0.01f) apply(s.copy(output = s.output.copy(upscaleFloat = mult)))
                     }
                 },
+                field = "upscaleFloat",
             )
             // Custom resolution scale, as a PERCENTAGE of native — the Dolphin-style numeric
             // control people ask for when a preset step is too coarse. The GS multiplier is a
@@ -174,6 +176,7 @@ fun RendererTab(state: MutableState<Settings>) {
                     valueFormatter = { "$it%" },
                     onReset = { apply(s.copy(output = s.output.copy(upscaleFloat = 1.0f))) },
                     onChange = { pct -> apply(s.copy(output = s.output.copy(upscaleFloat = pct / 100f))) },
+                    field = "upscaleFloat",
                 )
             }
             // Texture packs, right under the resolution they are usually paired with. They were a
@@ -186,6 +189,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 str("renderer.loadTexturePacks.label"),
                 s.graphics.loadTextureReplacements,
                 description = str("renderer.loadTexturePacks.description"),
+                field = "loadTextureReplacements",
             ) {
                 apply(s.copy(graphics = s.graphics.copy(loadTextureReplacements = it)))
             }
@@ -194,6 +198,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 str("renderer.asyncTextureLoading.label"),
                 s.graphics.loadTextureReplacementsAsync,
                 description = str("renderer.asyncTextureLoading.description"),
+                field = "loadTextureReplacementsAsync",
             ) {
                 apply(s.copy(graphics = s.graphics.copy(loadTextureReplacementsAsync = it)))
             }
@@ -202,6 +207,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 str("renderer.precacheTexturePacks.label"),
                 s.graphics.precacheTextureReplacements,
                 description = str("renderer.precacheTexturePacks.description"),
+                field = "precacheTextureReplacements",
             ) {
                 apply(s.copy(graphics = s.graphics.copy(precacheTextureReplacements = it)))
             }
@@ -218,6 +224,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 selectedIndex = s.graphics.textureUpscale.coerceIn(0, 2),
                 description = str("renderer.textureUpscale.description"),
                 onChange = { apply(s.copy(graphics = s.graphics.copy(textureUpscale = it))) },
+                field = "textureUpscale",
             )
             SettingsDivider()
             TexturePackImportRow()
@@ -226,6 +233,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 str("renderer.dumpReplaceableTextures.label"),
                 s.graphics.dumpReplaceableTextures,
                 description = str("renderer.dumpReplaceableTextures.description"),
+                field = "dumpReplaceableTextures",
             ) {
                 apply(s.copy(graphics = s.graphics.copy(dumpReplaceableTextures = it)))
             }
@@ -234,6 +242,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 str("renderer.texturePackOsd.label"),
                 s.graphics.osdShowTextureReplacements,
                 description = str("renderer.texturePackOsd.description"),
+                field = "osdShowTextureReplacements",
             ) {
                 apply(s.copy(graphics = s.graphics.copy(osdShowTextureReplacements = it)))
             }
@@ -247,6 +256,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 selectedIndex = s.output.aspectRatio.coerceIn(0, 8),
                 description = str("renderer.displayMode.description"),
                 onChange = { apply(s.copy(output = s.output.copy(aspectRatio = it))) },
+                field = "aspectRatio",
             )
             // Only meaningful for Custom (8), so it stays hidden otherwise rather than sitting there
             // inert. Shown when EITHER the main aspect or the FMV override is Custom, since the FMV
@@ -266,6 +276,7 @@ fun RendererTab(state: MutableState<Settings>) {
                         "%.2f  (%.1f:9)".format(r, r * 9f)
                     },
                     onChange = { apply(s.copy(output = s.output.copy(customAspectRatio = it / 100f))) },
+                    field = "customAspectRatio",
                 )
             }
             SettingsDivider()
@@ -277,6 +288,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 selectedIndex = s.output.fmvAspectRatio.coerceIn(0, 8),
                 description = str("renderer.fmvAspect.description"),
                 onChange = { apply(s.copy(output = s.output.copy(fmvAspectRatio = it))) },
+                field = "fmvAspectRatio",
             )
             SettingsDivider()
             // Emulation Screen Orientation — Android activity orientation, now scope-aware
@@ -296,6 +308,7 @@ fun RendererTab(state: MutableState<Settings>) {
                     apply(s.copy(output = s.output.copy(orientation = it)))
                     MainActivityRuntime.instance?.applyEmulationOrientation()
                 },
+                field = "orientation",
             )
             SettingsDivider()
             // GitHub #375: where the render sits in a PORTRAIT window. Top (default) frees the
@@ -307,6 +320,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 selectedIndex = if (s.output.portraitRenderTop) 0 else 1,
                 description = str("renderer.portraitPosition.description"),
                 onChange = { apply(s.copy(output = s.output.copy(portraitRenderTop = it == 0))) },
+                field = "portraitRenderTop",
             )
             SettingsDivider()
             // Where the render sits in a LANDSCAPE window. Center is the default; Top suits
@@ -318,6 +332,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 selectedIndex = if (s.output.landscapeRenderTop) 1 else 0,
                 description = str("renderer.landscapePosition.description"),
                 onChange = { apply(s.copy(output = s.output.copy(landscapeRenderTop = it == 1))) },
+                field = "landscapeRenderTop",
             )
             SettingsDivider()
             // Auto Progressive Scan — holds Triangle+Cross through boot, the combo some titles
@@ -327,6 +342,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 str("renderer.autoProgressive.label"),
                 s.output.autoProgressiveScan,
                 description = str("renderer.autoProgressive.description"),
+                field = "autoProgressiveScan",
             ) {
                 apply(s.copy(output = s.output.copy(autoProgressiveScan = it)))
             }
@@ -341,6 +357,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 columns = 5,
                 description = str("renderer.deinterlacing.description"),
                 onChange = { apply(s.copy(output = s.output.copy(deinterlaceMode = it))) },
+                field = "deinterlaceMode",
             )
         }
         SettingsDivider()
@@ -351,6 +368,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 selectedIndex = s.graphics.textureFiltering.coerceIn(0, 3),
                 description = str("renderer.textureFiltering.description"),
                 onChange = { apply(s.copy(graphics = s.graphics.copy(textureFiltering = it))) },
+                field = "textureFiltering",
             )
             SettingsDivider()
             SegmentedRow(
@@ -359,6 +377,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 selectedIndex = s.graphics.texturePreloading.coerceIn(0, 2),
                 description = str("renderer.texturePreloading.description"),
                 onChange = { apply(s.copy(graphics = s.graphics.copy(texturePreloading = it))) },
+                field = "texturePreloading",
             )
             SettingsDivider()
             SegmentedGridRow(
@@ -371,6 +390,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 columns = 3,
                 description = str("renderer.hardwareDownloadMode.description"),
                 onChange = { apply(s.copy(graphics = s.graphics.copy(hardwareDownloadMode = it))) },
+                field = "hardwareDownloadMode",
             )
         }
         SettingsDivider()
@@ -381,6 +401,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 selectedIndex = s.graphics.displayBilinear.coerceIn(0, 2),
                 description = str("renderer.displayFilter.description"),
                 onChange = { apply(s.copy(graphics = s.graphics.copy(displayBilinear = it))) },
+                field = "displayBilinear",
             )
             SettingsDivider()
             SegmentedGridRow(
@@ -390,12 +411,14 @@ fun RendererTab(state: MutableState<Settings>) {
                 columns = 4,
                 description = str("renderer.tvShader.description"),
                 onChange = { apply(s.copy(graphics = s.graphics.copy(tvShader = it))) },
+                field = "tvShader",
             )
             SettingsDivider()
             ToggleRow(
                 "VSync",
                 s.display.vsyncEnable,
                 description = str("renderer.vsync.description"),
+                field = "vsyncEnable",
             ) {
                 apply(s.copy(display = s.display.copy(vsyncEnable = it)))
             }
@@ -404,6 +427,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 str("renderer.shadeboost.label"),
                 s.graphics.shadeBoost,
                 description = str("renderer.shadeboost.description"),
+                field = "shadeBoost",
             ) {
                 apply(s.copy(graphics = s.graphics.copy(shadeBoost = it)))
             }
@@ -417,6 +441,7 @@ fun RendererTab(state: MutableState<Settings>) {
                     description = str("renderer.shadeboost.fiftyIsNormal"),
                     valueFormatter = { "$it%" },
                     onChange = { apply(s.copy(graphics = s.graphics.copy(shadeBoostBrightness = it))) },
+                    field = "shadeBoostBrightness",
                 )
                 SettingsDivider()
                 IntSliderRow(
@@ -427,6 +452,7 @@ fun RendererTab(state: MutableState<Settings>) {
                     description = str("renderer.shadeboost.fiftyIsNormal"),
                     valueFormatter = { "$it%" },
                     onChange = { apply(s.copy(graphics = s.graphics.copy(shadeBoostContrast = it))) },
+                    field = "shadeBoostContrast",
                 )
                 SettingsDivider()
                 IntSliderRow(
@@ -437,6 +463,7 @@ fun RendererTab(state: MutableState<Settings>) {
                     description = str("renderer.shadeboost.fiftyIsNormal"),
                     valueFormatter = { "$it%" },
                     onChange = { apply(s.copy(graphics = s.graphics.copy(shadeBoostSaturation = it))) },
+                    field = "shadeBoostSaturation",
                 )
                 SettingsDivider()
                 IntSliderRow(
@@ -447,6 +474,7 @@ fun RendererTab(state: MutableState<Settings>) {
                     description = str("renderer.shadeboost.fiftyIsNormal"),
                     valueFormatter = { "$it%" },
                     onChange = { apply(s.copy(graphics = s.graphics.copy(shadeBoostGamma = it))) },
+                    field = "shadeBoostGamma",
                 )
             }
             SettingsDivider()
@@ -454,6 +482,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 str("renderer.fxaa.label"),
                 s.graphics.fxaa,
                 description = str("renderer.fxaa.description"),
+                field = "fxaa",
             ) {
                 apply(s.copy(graphics = s.graphics.copy(fxaa = it)))
             }
@@ -473,6 +502,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 options = listOf(str("common.off"), "FSR 1", "SGSR", "SGSR Edge"),
                 selectedIndex = upscalerValues.indexOf(s.graphics.upscaler).coerceAtLeast(0),
                 onChange = { apply(s.copy(graphics = s.graphics.copy(upscaler = upscalerValues[it]))) },
+                field = "upscaler",
             )
             // One slider per upscaler, not one shared. They are never both on screen, and the
             // ranges genuinely differ: FSR1's RCAS is natively 0..100, SGSR's edge sharpness is
@@ -488,6 +518,7 @@ fun RendererTab(state: MutableState<Settings>) {
                         max = 200,
                         valueFormatter = { "$it%" },
                         onChange = { apply(s.copy(graphics = s.graphics.copy(sgsrSharpness = it))) },
+                        field = "sgsrSharpness",
                     )
                 } else {
                     IntSliderRow(
@@ -497,6 +528,7 @@ fun RendererTab(state: MutableState<Settings>) {
                         max = 100,
                         valueFormatter = { "$it%" },
                         onChange = { apply(s.copy(graphics = s.graphics.copy(fsrSharpness = it))) },
+                        field = "fsrSharpness",
                     )
                 }
             }
@@ -512,6 +544,7 @@ fun RendererTab(state: MutableState<Settings>) {
                     selectedIndex = s.graphics.casMode.coerceIn(0, 2),
                     description = str("renderer.cas.description"),
                     onChange = { apply(s.copy(graphics = s.graphics.copy(casMode = it))) },
+                    field = "casMode",
                 )
                 if (s.graphics.casMode != 0) {
                     SettingsDivider()
@@ -522,6 +555,7 @@ fun RendererTab(state: MutableState<Settings>) {
                         max = 100,
                         valueFormatter = { "$it%" },
                         onChange = { apply(s.copy(graphics = s.graphics.copy(casSharpness = it))) },
+                        field = "casSharpness",
                     )
                 }
             }
@@ -561,6 +595,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 selectedIndex = s.graphics.accurateBlendingUnit.coerceIn(0, 5),
                 description = str("renderer.blendingAccuracy.description"),
                 onChange = { apply(s.copy(graphics = s.graphics.copy(accurateBlendingUnit = it))) },
+                field = "accurateBlendingUnit",
             )
             // Blending-accuracy companion features (match upstream's grouping under
             // Blending Accuracy). ROV + Accurate Alpha Test apply live; AA1 needs a
@@ -570,6 +605,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 str("renderer.rov.label"),
                 s.display.hwRov,
                 description = str("renderer.rov.description"),
+                field = "hwRov",
             ) {
                 apply(s.copy(display = s.display.copy(hwRov = it)))
             }
@@ -580,6 +616,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 str("renderer.coalesceRenderPasses.label"),
                 s.display.coalesceRenderPasses,
                 description = str("renderer.coalesceRenderPasses.description"),
+                field = "coalesceRenderPasses",
             ) {
                 apply(s.copy(display = s.display.copy(coalesceRenderPasses = it)))
             }
@@ -591,6 +628,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 str("renderer.forceMaliFbFetch.label"),
                 s.display.forceMaliFbFetch,
                 description = str("renderer.forceMaliFbFetch.description"),
+                field = "forceMaliFbFetch",
             ) {
                 apply(s.copy(display = s.display.copy(forceMaliFbFetch = it)))
             }
@@ -601,6 +639,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 str("renderer.accurateAlphaTest.label"),
                 s.display.hwAccurateAlphaTest,
                 description = str("renderer.accurateAlphaTest.description"),
+                field = "hwAccurateAlphaTest",
             ) {
                 apply(s.copy(display = s.display.copy(hwAccurateAlphaTest = it)))
             }
@@ -609,6 +648,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 str("renderer.hwAa1.label"),
                 s.display.hwAa1,
                 description = str("renderer.hwAa1.description"),
+                field = "hwAa1",
             ) {
                 apply(s.copy(display = s.display.copy(hwAa1 = it)))
             }
@@ -619,6 +659,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 str("renderer.hwMipmapping.label"),
                 s.graphics.hwMipmap,
                 description = str("renderer.hwMipmapping.description"),
+                field = "hwMipmap",
             ) {
                 apply(s.copy(graphics = s.graphics.copy(hwMipmap = it)))
             }
@@ -632,6 +673,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 selectedIndex = triIdx,
                 description = str("renderer.trilinear.description"),
                 onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(triFilter = it - 1))) },
+                field = "triFilter",
             )
             SettingsDivider()
             val anisoLabels = listOf("Off", "2x", "4x", "8x", "16x")
@@ -643,6 +685,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 selectedIndex = anisoIdx,
                 description = str("renderer.anisotropic.description"),
                 onChange = { apply(s.copy(hwFixes = s.hwFixes.copy(maxAnisotropy = anisoVals[it]))) },
+                field = "maxAnisotropy",
             )
             SettingsDivider()
             // GPU profile override. Auto resolves at device init via
@@ -664,6 +707,7 @@ fun RendererTab(state: MutableState<Settings>) {
                 onChange = {
                     apply(s.copy(hwFixes = s.hwFixes.copy(gpuProfile = it)))
                 },
+                field = "gpuProfile",
             )
             // Here rather than among the texture pack rows, where it used to sit: a GS dump is a
             // renderer bug report. The in-game menu's Session page has the one-tap version.

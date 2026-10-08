@@ -552,6 +552,8 @@
  "gamedb.state.yourSetting": "ปิด: ใช้การตั้งค่าที่คุณเปลี่ยนไว้สำหรับเกมนี้แทน เปิดเพื่อให้ฐานข้อมูลเป็นผู้กำหนดอีกครั้ง",
  "gamedb.title": "การตั้งค่าจากฐานข้อมูลเกมสำหรับเกมนี้",
  "gamedb.value.paletteWithFullPreload": "เปิด พร้อม preload texture แบบเต็ม",
+ "legend.gameDb": "ตั้งค่าโดยฐานข้อมูลเกม",
+ "legend.changed": "ต่างจากค่าเริ่มต้น",
  "games.addToHome": "เพิ่มไปยังหน้าจอหลัก",
  "games.addToHome.unsupported": "launcher นี้ไม่รองรับการเพิ่มทางลัดไปยังหน้าจอหลัก",
  "games.background.choose": "เลือกภาพพื้นหลัง…",
