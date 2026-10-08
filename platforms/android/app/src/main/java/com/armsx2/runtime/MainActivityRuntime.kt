@@ -1016,8 +1016,8 @@ open class MainActivityRuntime : ComponentActivity() {
             // re-open the GS device and run Vulkan::LoadVulkanLibrary. The
             // VK loader reads the pinned path lazily so the order matters.
             val ctx = instance?.applicationContext
-            // Per-game GPU driver: pin THIS title's resolved driver (blank = system). Keep the
-            // session mirror in sync so the picker UI + delete/reselect logic stay correct.
+            // Per-game GPU driver: pin THIS title's resolved driver. Uses the system driver if the
+            // id is blank or references a custom driver that is no longer installed.
             val pickedId = resolved.output.customDriverId.takeIf { it.isNotBlank() }
             customDriverId.value = pickedId
             val picked: com.armsx2.CustomDriver.InstalledDriver? =
@@ -1026,7 +1026,10 @@ open class MainActivityRuntime : ComponentActivity() {
                 } else null
             // Turnip options (#719) go into the environment before the device is created.
             com.armsx2.CustomDriver.applyDriverEnv()
-            if (ctx != null) com.armsx2.CustomDriver.applyToNative(ctx, picked)
+            if (ctx != null) {
+                com.armsx2.CustomDriver.applyToNative(ctx, picked)
+                applyAngleEnv(ctx, resolved)
+            }
             when (renderer.value) {
                 "vulkan" -> NativeApp.renderVulkan()
                 "opengl" -> NativeApp.renderOpenGL()
@@ -1168,9 +1171,6 @@ open class MainActivityRuntime : ComponentActivity() {
                     "uri=${uri.take(240)} state=${eState.value} runLoop=$vmRunLoopActive " +
                     "stopping=$vmStopInProgress nativeReady=${nativeReady.value}"
             )
-            // Refresh the ANGLE EGL env before the GS thread opens the GL context, so a
-            // just-changed AndroidUseAngleOpenGL / renderer choice takes effect on this boot.
-            instance?.applicationContext?.let { applyAngleEnv(it) }
             // Native GS/settings calls in start()→applyRendererPrefs null-deref if the
             // base settings layer isn't installed yet (initialize() not finished). On a
             // cold first launch — reliably on Samsung DeX — a fast game tap races init
@@ -1531,19 +1531,17 @@ open class MainActivityRuntime : ComponentActivity() {
          *  system GLES driver — useful where the native GLES stack is broken (e.g. some MediaTek
          *  Mali). Cleared otherwise. Env vars are read by native getenv in this same process, so
          *  this Kotlin call is the whole hook. MUST run before the GS thread opens the GL context,
-         *  so it's invoked at emucore init and before each game launch. Renderer restart applies a
-         *  live toggle (like the GPU-profile override). Uses the GLOBAL settings; per-game renderer
-         *  overrides are out of scope for v1. */
-        fun applyAngleEnv(context: Context) {
-            val settings = runCatching { com.armsx2.config.ConfigStore.loadGlobal() }.getOrNull()
-            val eligible = settings?.display?.useAngleOpenGL == true && settings.output.renderer == "opengl"
+         *  so that applyRendererPrefs calls it before every boot with [settings]. Renderer restart
+         *  applies a live toggle (like the GPU-profile override). */
+        fun applyAngleEnv(context: Context, settings: com.armsx2.config.Settings) {
+            val eligible = settings.display.useAngleOpenGL && settings.output.renderer == "opengl"
             val libDir = context.applicationInfo.nativeLibraryDir
             val egl = File(libDir, "libEGL_angle.so")
             val gles = File(libDir, "libGLESv2_angle.so")
             // gsBackThread rides on every line: GV7's back thread is the OTHER ANGLE suspect
             // (ANGLE binds an EGL context to a single thread far more strictly than the native
             // GLES drivers do), so the log has to say whether it was engaged.
-            val ctx = "renderer=${settings?.output?.renderer} useAngle=${settings?.display?.useAngleOpenGL} gsBackThread=${settings?.display?.gsBackThreadMode}"
+            val ctx = "renderer=${settings.output.renderer} useAngle=${settings.display.useAngleOpenGL} gsBackThread=${settings.display.gsBackThreadMode}"
             try {
                 if (eligible && egl.exists() && gles.exists()) {
                     android.system.Os.setenv("ARMSX2_ANGLE_EGL_LIBRARY", egl.absolutePath, true)
@@ -2214,10 +2212,6 @@ open class MainActivityRuntime : ComponentActivity() {
         // at the start of the background block below (prepareDataFolder), before the core starts: here, on
         // the main thread, they held up the first screen long enough on an SD card for Android to report
         // the app as not responding.
-
-        // Point the ANGLE EGL env vars at the bundled libs (or clear them) before the
-        // GS thread ever opens a GL context. Re-applied per launch below too.
-        applyAngleEnv(applicationContext)
 
         // Keep the configured BIOS in app-private internal storage (NOT under a
         // custom/SD data root). The native core can't reliably open a BIOS off a

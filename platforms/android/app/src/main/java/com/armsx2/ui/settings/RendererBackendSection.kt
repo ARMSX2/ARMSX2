@@ -38,7 +38,6 @@ fun RendererBackendSection(state: MutableState<Settings>) {
             val renderer = rendererIds[index]
             InGameOverlay.saveSettings(settings.copy(output = settings.output.copy(renderer = renderer)))
             MainActivityRuntime.renderer.value = renderer
-            if (renderer != "vulkan") selectDriver(null)
         },
         field = "renderer",
     )
@@ -63,11 +62,4 @@ fun RendererBackendSection(state: MutableState<Settings>) {
             Text(str("backend.applyRestart"))
         }
     }
-}
-
-private fun selectDriver(id: String?) {
-    // UI mirror; persist scope-aware (per-game when the settings scope is Game). The driver
-    // load itself happens at the next renderer (re)start via applyRendererPrefs.
-    MainActivityRuntime.customDriverId.value = id
-    InGameOverlay.saveSettings(InGameOverlay.settingsState.value.copy(output = InGameOverlay.settingsState.value.output.copy(customDriverId = id ?: "")))
 }
