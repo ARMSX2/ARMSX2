@@ -75,6 +75,7 @@ import com.armsx2.ui.InGameOverlay
 import com.armsx2.ui.achievements.AchievementItem
 import com.armsx2.ui.common.GameCoverArt
 import com.armsx2.ui.settings.controllerFocusable
+import com.armsx2.ui.settings.overrideMarker
 import com.armsx2.ui.touch.TouchControls
 import com.armsx2.ui.theme.Danger
 import com.armsx2.ui.common.StatusChip
@@ -376,6 +377,10 @@ private fun MenuPage(
                 Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                // Only the panes with rows that take a mark; the others would show a key to nothing.
+                if (state.tab != EmulationMenuTab.Controls && state.tab != EmulationMenuTab.Achievements) {
+                    com.armsx2.ui.settings.OverrideLegend(inset = 4.dp)
+                }
                 when (state.tab) {
                     EmulationMenuTab.Session -> SessionPane(state, viewModel)
                     EmulationMenuTab.Graphics -> GraphicsPane(state, viewModel)
@@ -1722,7 +1727,12 @@ internal fun SectionCard(title: String, field: String? = null, content: @Composa
         border = BorderStroke(1.dp, tint.border),
     ) {
         Column(Modifier.padding(13.dp)) {
-            Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Text(
+                title,
+                modifier = Modifier.overrideMarker(tint, MaterialTheme.typography.titleSmall.lineHeight),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+            )
             Spacer(Modifier.height(8.dp))
             content()
         }
@@ -1851,6 +1861,7 @@ private fun MenuSwitchRow(
             Column(Modifier.weight(1f)) {
                 Text(
                     title,
+                    modifier = Modifier.overrideMarker(tint, MaterialTheme.typography.titleSmall.lineHeight),
                     style = MaterialTheme.typography.titleSmall,
                     color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
@@ -1901,7 +1912,7 @@ private fun MenuCycleRow(
         ) {
             Text(
                 title,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).overrideMarker(tint, MaterialTheme.typography.titleSmall.lineHeight),
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 2,

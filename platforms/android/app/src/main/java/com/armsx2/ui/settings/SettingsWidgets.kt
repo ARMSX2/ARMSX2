@@ -92,7 +92,8 @@ import androidx.core.content.edit
  *
  * A row that edits a [com.armsx2.config.Settings] field names it with `field`, the key
  * Settings.toJson uses. That is what tints the row (see [OverrideMarks]): green where the game
- * database sets it for the game, soft red where the player has it off its default. A row with no
+ * database sets it for the game, soft red where it is not at a default. Each also gets a small marker,
+ * a diamond for the database and a circle for the player, so it does not rest on colour alone. A row with no
  * `field` (an app preference, a preset, a picker over several fields) is never tinted.
  */
 
@@ -787,7 +788,7 @@ fun ToggleRow(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).overrideMarker(tint, 23.sp))
                     if (description != null) InfoHint(label, description)
                 }
                 if (description != null) {
@@ -866,7 +867,7 @@ fun IntSliderRow(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                        Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).overrideMarker(tint, 23.sp))
                         if (description != null) InfoHint(label, description)
                     }
                     if (description != null) {
@@ -1165,7 +1166,7 @@ fun SegmentedRow(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).overrideMarker(tint, 23.sp))
                 if (description != null) InfoHint(label, description)
             }
             if (description != null) {
@@ -1254,7 +1255,7 @@ fun SegmentedGridRow(
     ) {
         Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).overrideMarker(tint, 23.sp))
                 if (description != null) InfoHint(label, description)
             }
             if (description != null) {

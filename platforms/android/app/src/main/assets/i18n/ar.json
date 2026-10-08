@@ -552,6 +552,8 @@
  "gamedb.state.yourSetting": "إيقاف: يُستخدم بدلاً منه إعداد غيّرته لهذه اللعبة. فعّله كي تقرر قاعدة البيانات مجدداً.",
  "gamedb.title": "إعدادات قاعدة بيانات الألعاب لهذه اللعبة",
  "gamedb.value.paletteWithFullPreload": "تشغيل مع تحميل مسبق كامل للنقوش",
+ "legend.gameDb": "تم الضبط بواسطة قاعدة بيانات الألعاب",
+ "legend.changed": "يختلف عن الافتراضي",
  "games.addToHome": "إضافة إلى الشاشة الرئيسية",
  "games.addToHome.unsupported": "لا يدعم هذا المُشغّل إضافة اختصارات إلى الشاشة الرئيسية.",
  "games.background.choose": "اختيار صورة خلفية…",

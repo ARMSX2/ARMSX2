@@ -552,6 +552,8 @@
   "gamedb.state.yourSetting": "Tắt: dùng cài đặt bạn đã đổi cho game này thay vào đó. Bật lại để cơ sở dữ liệu tự quyết định.",
   "gamedb.title": "Cài đặt cơ sở dữ liệu game cho game này",
   "gamedb.value.paletteWithFullPreload": "Bật kèm tải trước texture đầy đủ",
+  "legend.gameDb": "Do cơ sở dữ liệu game đặt",
+  "legend.changed": "Khác với mặc định",
   "games.addToHome": "Thêm vào màn hình chính",
   "games.addToHome.unsupported": "Launcher này không hỗ trợ thêm lối tắt vào màn hình chính.",
   "games.background.choose": "Chọn ảnh nền…",

@@ -547,6 +547,8 @@
  "gamedb.state.yourSetting": "Off: en su lugar se usa un ajuste que cambiaste para este juego. Actívalo para que la base de datos vuelva a decidirlo.",
  "gamedb.title": "Ajustes de la base de datos de juegos para este juego",
  "gamedb.value.paletteWithFullPreload": "On con precarga de texturas completa",
+ "legend.gameDb": "Establecido por la base de datos de juegos",
+ "legend.changed": "Distinto del valor por defecto",
  "games.addToHome": "Añadir a la pantalla de inicio",
  "games.addToHome.unsupported": "Este launcher no permite añadir accesos directos a la pantalla de inicio.",
  "games.background.choose": "Elegir imagen de fondo…",

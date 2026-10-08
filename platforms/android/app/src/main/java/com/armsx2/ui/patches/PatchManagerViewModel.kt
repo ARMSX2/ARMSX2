@@ -149,8 +149,10 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
      */
     private fun scopedSettings(): Settings {
         val serial = InGameOverlay.currentSerial.value?.takeIf { it.isNotEmpty() }
+        // What the screens show, like InGameOverlay.settingsState: saveSettings diffs against that,
+        // and stored values here would read as the player changing every database-set field.
         return if (InGameOverlay.settingsScope.value == SettingsScope.Game && serial != null)
-            ConfigStore.resolveForGame(serial)
+            ConfigStore.resolveForDisplay(serial)
         else
             ConfigStore.loadGlobal()
     }

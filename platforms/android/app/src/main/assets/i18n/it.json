@@ -547,6 +547,8 @@
  "gamedb.state.yourSetting": "Off: viene usata invece un'impostazione che hai modificato per questo gioco. Attivalo per far decidere di nuovo al database.",
  "gamedb.title": "Impostazioni del database dei giochi per questo gioco",
  "gamedb.value.paletteWithFullPreload": "On con precaricamento texture completo",
+ "legend.gameDb": "Impostato dal database dei giochi",
+ "legend.changed": "Diverso dal predefinito",
  "games.addToHome": "Aggiungi alla schermata Home",
  "games.addToHome.unsupported": "Questo launcher non supporta l'aggiunta di collegamenti alla schermata Home.",
  "games.background.choose": "Scegli immagine di sfondo…",

@@ -554,6 +554,8 @@
  "gamedb.state.yourSetting": "關閉：改為使用你為此遊戲變更過的設定。開啟後將重新交由資料庫決定。",
  "gamedb.title": "此遊戲的遊戲資料庫設定",
  "gamedb.value.paletteWithFullPreload": "開啟，並使用完整紋理預載",
+ "legend.gameDb": "由遊戲資料庫設定",
+ "legend.changed": "與預設值不同",
  "games.addToHome": "新增至主畫面",
  "games.addToHome.unsupported": "目前的桌面啟動器不支援在主畫面新增捷徑。",
  "games.background.choose": "選擇背景圖片…",

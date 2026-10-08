@@ -41,17 +41,21 @@ internal fun GameDbSection(state: MutableState<Settings>) {
     // `s`, so a change here that leaves `s` alone still has to recompute them.
     var version by remember(serial) { mutableIntStateOf(0) }
     val global = remember(serial, s, version) { ConfigStore.loadGlobal() }
+    // Whether an entry applies is decided on what is stored. `s` is what the screens show, which
+    // has the database's values in it, and several of those are what makes hardware fixes look
+    // set by hand.
+    val stored = remember(serial, s, version) { ConfigStore.resolveForGame(serial) }
     val off = remember(serial, s, version) { GameDbOverrides.switchedOff(serial) }
     val claimedBySetting = remember(serial, s, version) {
-        GameDbOverrides.keysClaimedBySettings(serial, s, global)
+        GameDbOverrides.keysClaimedBySettings(serial, stored, global)
     }
-    val manualHardwareFixes = remember(s) { s.anyUserHackEnabled() }
+    val manualHardwareFixes = remember(stored) { stored.anyUserHackEnabled() }
 
     // The count is in the title so a collapsed section still says how much the database is doing.
     CollapsibleSection("${str("gamedb.title")} (${entries.size})") {
         HelpText(str("gamedb.help"))
         for (entry in entries) {
-            val entryState = GameDbOverrides.stateOf(entry, off, claimedBySetting, s, manualHardwareFixes)
+            val entryState = GameDbOverrides.stateOf(entry, off, claimedBySetting, stored, manualHardwareFixes)
             val switchedOff = entryState == GameDbOverrides.EntryState.SwitchedOff
             val bySetting = entryState == GameDbOverrides.EntryState.YourSetting
             val description = when (entryState) {
@@ -88,8 +92,10 @@ internal fun GameDbSection(state: MutableState<Settings>) {
  */
 private fun commit(serial: String, state: MutableState<Settings>) {
     val resolved = ConfigStore.resolveForGame(serial)
-    state.value = resolved
-    InGameOverlay.settingsState.value = resolved
+    // The screens show what the game runs; the game's file and the core get what is stored.
+    val shown = ConfigStore.resolveForDisplay(serial)
+    state.value = shown
+    InGameOverlay.settingsState.value = shown
     val running = MainActivityRuntime.nativeReady.value &&
         MainActivityRuntime.eState.value != EmuState.STOPPED &&
         MainActivityRuntime.currentGame.value?.settingsKey == serial

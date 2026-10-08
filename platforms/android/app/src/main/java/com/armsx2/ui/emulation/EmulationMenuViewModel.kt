@@ -304,7 +304,8 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
         // moments after being set: a later save from a stale snapshot re-pushed the old value.
         val updated = transform(InGameOverlay.settingsState.value)
         InGameOverlay.saveSettings(updated)
-        state.value = state.value.copy(settings = updated)
+        // Not `updated`: for a game with database entries the save shows what is stored now.
+        state.value = state.value.copy(settings = InGameOverlay.settingsState.value)
     }
 
     private fun Int.floorMod(modulus: Int): Int = ((this % modulus) + modulus) % modulus

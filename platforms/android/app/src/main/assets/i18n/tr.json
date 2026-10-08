@@ -552,6 +552,8 @@
  "gamedb.state.yourSetting": "Kapalı: bunun yerine bu oyun için değiştirdiğiniz bir ayar kullanılır. Veritabanının tekrar karar vermesi için açın.",
  "gamedb.title": "Bu oyun için oyun veritabanı ayarları",
  "gamedb.value.paletteWithFullPreload": "Açık, tam doku ön yüklemesiyle",
+ "legend.gameDb": "Oyun veritabanı tarafından ayarlandı",
+ "legend.changed": "Varsayılandan farklı",
  "games.addToHome": "Ana ekrana ekle",
  "games.addToHome.unsupported": "Bu başlatıcı ana ekrana kısayol eklemeyi desteklemiyor.",
  "games.background.choose": "Arka plan görseli seç…",
