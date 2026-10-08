@@ -41,4 +41,7 @@
 // 127: a sprite whose far edge the pixel-grid snap pushed out samples no further than its last
 // native pixel, so tfx.glsl (Vulkan) gains VS_SPRITE_EDGE_CLAMP and PS_SPRITE_EDGE_CLAMP.
 // 128: every backend's tfx shader gains PS_REPLACEMENT_ALPHA_SNAP (pack texture alpha near 0x80).
-static constexpr u32 SHADER_CACHE_VERSION = 128; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117, their 118 = our 126
+// 129: the Vulkan expanded-line vertex shader pairs a line's two ends by index (top reads +1, bottom
+// reads -1) on every device and no longer gets a VS_PROVOKING_VERTEX_LAST define, so its source text
+// changed.
+static constexpr u32 SHADER_CACHE_VERSION = 129; // 108 was upstream PR 14688; their 109 = our 111, their 110 = our 115, their 112 = our 116, their 113 = our 117, their 118 = our 126

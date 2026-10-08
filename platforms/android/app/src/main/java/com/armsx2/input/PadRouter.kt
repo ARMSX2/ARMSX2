@@ -53,7 +53,8 @@ object PadRouter {
      *
      * Several pads can be pinned to one player, and all of them play as it: a handheld's own
      * controls and a pad for the TV it is docked to, both player 1, with nothing to change when
-     * it docks. The live slot holds whichever of them pressed something last (its rumble).
+     * it docks. The live slot holds whichever of them pressed something last; the player's rumble
+     * goes to all of them ([otherDevicesForPort]).
      */
     private val pinned = LinkedHashMap<String, Int>()
     private const val KEY_PINNED = "pad_router_pinned"
@@ -220,6 +221,22 @@ object PadRouter {
         return free.getOrNull(rank)?.deviceId ?: -1
     }
 
+    /**
+     * The other controllers playing as [port] besides [primary], so that player's rumble reaches
+     * all of them: every connected pad pinned to it. Before, only the one that pressed something
+     * last felt it, and the other pad of a docked handheld stayed still. Each still goes where its
+     * own rumble setting says ([rumbleMode]), Off included. One device per physical controller,
+     * never [primary]'s, and none for a pin Multitap does not arm.
+     */
+    fun otherDevicesForPort(port: Int, primary: Int): IntArray {
+        if (pinned.isEmpty() || port !in 0 until activeSlotCount()) return IntArray(0)
+        val primaryDescriptor = if (primary >= 0) descriptorOf(primary) else null
+        return connectedPads()
+            .filter { pinned[it.descriptor] == port && it.descriptor != primaryDescriptor }
+            .map { it.deviceId }
+            .toIntArray()
+    }
+
     /** Fired exactly once, the first time the 2nd controller (slot 1 = P2 main) joins,
      *  so the app can hot-plug the native Pad2 slot before any P2 input is sent. Tap
      *  slots (2-7) don't use this — they're armed at boot / by the Multitap toggle. */
@@ -272,7 +289,7 @@ object PadRouter {
         // does not black-hole the port.
         //
         // Several pads can be pinned to one player: the one that pressed something last holds
-        // the live slot and answers, so the rumble follows the controller in the player's hands.
+        // the live slot and answers. The others get the player's rumble too (otherDevicesForPort).
         if (pinned.isNotEmpty()) {
             val live = slots[port]
             if (live >= 0) {

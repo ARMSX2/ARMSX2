@@ -310,6 +310,22 @@ object ConfigStore {
     }
 
     /**
+     * What a game's settings screens should show: [resolveForGame] with the value the game
+     * database sets put in wherever one of its entries is in force, so a row shows what the game
+     * really runs. For showing only. Whatever decides which database entries apply, and whatever
+     * is written to the game's file, must use [resolveForGame].
+     */
+    fun resolveForDisplay(serial: String?): Settings {
+        val stored = resolveForGame(serial)
+        if (serial == null) return stored
+        return runCatching {
+            val values = GameDbOverrides.displayValues(serial, stored, loadGlobal(), loadOverrides(serial))
+            if (values.isEmpty()) stored
+            else Settings.fromJson(stored.toJson().also { json -> values.forEach { (field, value) -> json.put(field, value) } })
+        }.getOrDefault(stored)
+    }
+
+    /**
      * Single entry point for overlay tabs to persist a settings change.
      * Scope picks the storage tier; serial may be null (Global is the
      * only valid scope in that case).
@@ -326,6 +342,11 @@ object ConfigStore {
      * reported "global overwrites per-game and vice versa". Now a field is pinned to the
      * game once it's overridden — by differing from global, by the user changing it here
      * ([previous]), or by already being pinned — and only [clearOverrides] unpins it.
+     *
+     * One exception, for a setting the game database sets: a game's settings screens show the
+     * value the game really runs ([resolveForDisplay]), so what the screen only showed for the
+     * database is not stored, and a setting put at the database's own value is released to the
+     * database instead of being kept (see [GameDbOverrides.settleDatabaseValues]).
      */
     fun save(scope: SettingsScope, serial: String?, updated: Settings, previous: Settings? = null) {
         if (scope == SettingsScope.Game && serial != null) {
@@ -375,6 +396,8 @@ object ConfigStore {
                     full.has(key) -> overrides.put(key, full.get(key))
                 }
             }
+            if (previous != null)
+                GameDbOverrides.settleDatabaseValues(serial, changedNow, updated, global, existing, overrides)
             saveOverrides(serial, overrides)
         } else {
             saveGlobal(updated)

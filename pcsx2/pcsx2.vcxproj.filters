@@ -1028,6 +1028,9 @@
     <ClCompile Include="GS\GSDump.cpp">
       <Filter>System\Ps2\GS</Filter>
     </ClCompile>
+    <ClCompile Include="GS\GSDumpBundle.cpp">
+      <Filter>System\Ps2\GS</Filter>
+    </ClCompile>
     <ClCompile Include="GS\GSLocalMemory.cpp">
       <Filter>System\Ps2\GS</Filter>
     </ClCompile>
@@ -1146,6 +1149,9 @@
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClCompile>
     <ClCompile Include="GS\DriverReport\GSDriverReport.cpp">
+      <Filter>System\Ps2\GS</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\DriverReport\GSDriverReportActive.cpp">
       <Filter>System\Ps2\GS</Filter>
     </ClCompile>
     <ClCompile Include="GS\DriverReport\GSDriverReportClassify.cpp">
@@ -2015,6 +2021,9 @@
     <ClInclude Include="GS\GSDump.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\GSDumpBundle.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\GSLocalMemory.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
@@ -2709,6 +2718,9 @@
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\DriverReport\GSDriverReport.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\DriverReport\GSDriverReportActive.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\DriverReport\GSDriverReportClassify.h">

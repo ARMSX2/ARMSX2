@@ -576,6 +576,34 @@ open class MainActivityRuntime : ComponentActivity() {
             stop(saveAutosave = saveAutosave)
         }
 
+        /** The Close Game and Close Game & Quit hotkeys ask first (#814, asked for by anubys-droid): a
+         *  hotkey is easy to press by mistake (a child's BACK, mapped to Close Game & Quit to keep
+         *  them out of the menu), and closing loses whatever the game has not saved. The game holds
+         *  paused while the question is up; Cancel, B or BACK goes back to it. Cancel is selected
+         *  first, and the open prompt swallows the hotkey itself, so pressing it twice cannot close
+         *  the game. */
+        fun confirmCloseGame(quit: Boolean) {
+            if (com.armsx2.ui.common.GlobalConfirm.pending.value != null) return
+            val wasRunning = eState.value == EmuState.RUNNING
+            if (wasRunning) pauseForOverlay()
+            com.armsx2.ui.common.GlobalConfirm.ask(
+                title = com.armsx2.i18n.I18n.get(if (quit) "hotkeys.confirmQuit.title" else "hotkeys.confirmClose.title"),
+                message = com.armsx2.i18n.I18n.get("hotkeys.confirmClose.message"),
+                confirmLabel = com.armsx2.i18n.I18n.get(if (quit) "games.toolbar.exit" else "action.close"),
+                destructive = true,
+                onDismiss = { if (wasRunning) resume() },
+            ) {
+                // Stop the VM (flushes memcards/savestate), then finish the app once the VM has
+                // fully unwound: never finish inline (stop() is async).
+                if (quit) {
+                    quitAfterStop = true
+                    stop()
+                } else {
+                    closeGame()
+                }
+            }
+        }
+
         /** Fully exit the app (the library Exit button and hold-back gesture route
          *  here). VM-safe: if a game is running, flush it first (quitAfterStop +
          *  async stop(), which finishes once the VM unwinds via the STOPPED branch);
@@ -2160,15 +2188,24 @@ open class MainActivityRuntime : ComponentActivity() {
         runCatching { com.armsx2.config.ConfigStore.migrateAffinityPerfCores(applicationContext) }
         runCatching { com.armsx2.config.ConfigStore.migrateAchievementsToSettings() }
         // Steer the renderer's Auto resolution. Vulkan HW on Adreno (tile-memory framebuffer-fetch
-        // fast path) and on any device whose GL driver cannot read the render target in-tile, where
-        // OpenGL degrades to a tile flush per self-referential draw; a healthy Mali stays on
-        // OpenGL, which is its fast path. The verdict is computed natively because it consults the
-        // driver-bug database, so all we do here is hand over the probed GL strings. Sets a native
+        // fast path), on any device whose GL driver cannot read the render target in-tile, where
+        // OpenGL degrades to a tile flush per self-referential draw, and on Mali Valhall v9 and v11
+        // (G57/G68/G77/G78 and G615/G715); other Mali stays on OpenGL, which is its fast path. The
+        // verdict is computed natively because it consults the driver-bug database and the Mali
+        // model table, so all we do here is hand over the probed GL strings. Sets a native
         // flag GSUtil::GetPreferredRenderer reads before the GS starts, so an explicit GL/SW pick
         // still wins. Re-asserted each launch.
         runCatching {
             val gl = com.armsx2.GpuInfo.glStrings()
             kr.co.iefriends.pcsx2.NativeApp.setAutoRendererGpuStrings(gl.vendor, gl.renderer, gl.version)
+        }
+        // Whether the driver list offers malisx2 for this GPU. The core pairs it with the driver the
+        // open Vulkan device is on and posts the "get malisx2" OSD notice at game start. Same GL
+        // probe as above, and re-asserted each launch like it.
+        runCatching {
+            kr.co.iefriends.pcsx2.NativeApp.setMaliSX2Offered(
+                com.armsx2.CustomDriver.offersMaliSX2(com.armsx2.GpuInfo.rendererName()),
+            )
         }
 
         // The shipped resources and the GPU cache wipe after a new install are written into the data folder
@@ -3815,14 +3852,11 @@ open class MainActivityRuntime : ComponentActivity() {
                     return true
                 }
                 ControllerMappings.SysHotkey.CLOSE_GAME -> {
-                    if (down) closeGame()
+                    if (down && event.repeatCount == 0) confirmCloseGame(quit = false)
                     return true
                 }
                 ControllerMappings.SysHotkey.QUIT_APP -> {
-                    // Stop the VM (flushes memcards/savestate), then finish the app once
-                    // the VM has fully unwound — never finish inline (stop() is async).
-                    if (down) { quitAfterStop = true; stop()
-                    }
+                    if (down && event.repeatCount == 0) confirmCloseGame(quit = true)
                     return true
                 }
                 ControllerMappings.SysHotkey.SAVE_AND_EXIT -> {
@@ -5544,9 +5578,8 @@ open class MainActivityRuntime : ComponentActivity() {
             ControllerMappings.SysHotkey.RES_UP -> stepResolution(1)
             ControllerMappings.SysHotkey.RES_DOWN -> stepResolution(-1)
             ControllerMappings.SysHotkey.ACHIEVEMENTS -> com.armsx2.ui.emulation.EmulationMenuInputController.open(com.armsx2.ui.emulation.EmulationMenuTab.Options)
-            ControllerMappings.SysHotkey.CLOSE_GAME -> closeGame()
-            ControllerMappings.SysHotkey.QUIT_APP -> { quitAfterStop = true; stop()
-            }
+            ControllerMappings.SysHotkey.CLOSE_GAME -> confirmCloseGame(quit = false)
+            ControllerMappings.SysHotkey.QUIT_APP -> confirmCloseGame(quit = true)
             ControllerMappings.SysHotkey.SAVE_AND_EXIT -> closeGame(saveAutosave = true)
             ControllerMappings.SysHotkey.RESET_GAME -> restart()
             ControllerMappings.SysHotkey.SLOW_DOWN -> toggleSlowDown()

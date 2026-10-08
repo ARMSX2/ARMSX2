@@ -21,6 +21,11 @@ import org.json.JSONObject
  *  - every database-contended key the player set for this game, even to the global value;
  *  - the keys of every database entry switched off in the Fixes tab ([OFF_KEY]).
  */
+/** Whether two values out of [Settings.toJson] differ. Both sides come out of toJson, so equal
+ *  values have equal types and equal text. A side with no such field is no difference. */
+internal fun valueDiffers(a: Any?, b: Any?): Boolean =
+    a != null && b != null && a.toString() != b.toString()
+
 object GameDbOverrides {
     /**
      * Where switched-off entries live: in the game's own override blob. They reset with that
@@ -79,10 +84,52 @@ object GameDbOverrides {
         return raw.lineSequence().filter { it.isNotEmpty() }.toSet().also { claimingKeyCache = it }
     }
 
+    /** Why a database entry is, or is not, in force for a game. Only [InForce] reaches the running game. */
+    enum class EntryState { InForce, SwitchedOff, YourSetting, AutoFixesOff, ManualFixes }
+
+    /**
+     * [entry]'s state for a game whose effective settings are [resolved]. [off] is
+     * [switchedOff], [claimedBySetting] is [keysClaimedBySettings], and [manualHardwareFixes] is
+     * `resolved.anyUserHackEnabled()`; they are arguments so a caller listing many entries
+     * computes each once. One rule for the Fixes tab's list and for the tint on the settings rows.
+     */
+    fun stateOf(
+        entry: Entry,
+        off: Set<String>,
+        claimedBySetting: Set<String>,
+        resolved: Settings,
+        manualHardwareFixes: Boolean,
+    ): EntryState = when {
+        entry.name in off -> EntryState.SwitchedOff
+        entry.keys.any { it in claimedBySetting } -> EntryState.YourSetting
+        entry.core && !resolved.emuCore.enableGameFixes -> EntryState.AutoFixesOff
+        entry.userHack && manualHardwareFixes -> EntryState.ManualFixes
+        else -> EntryState.InForce
+    }
+
+    /** The database-contended keys driven by settings [serial] has its own value for. [overrides] is
+     *  the game's stored blob, for a caller that has already read it. */
+    fun keysClaimedBySettings(
+        serial: String,
+        resolved: Settings,
+        global: Settings,
+        overrides: JSONObject? = ConfigStore.loadOverrides(serial),
+    ): Set<String> {
+        if (overrides == null) return emptySet()
+        return runCatching {
+            fieldsDriving(overrides, resolved, global).values.flatMapTo(HashSet()) { it }
+        }.getOrDefault(emptySet())
+    }
+
     /** Names of the database entries switched off for [serial]. */
     fun switchedOff(serial: String?): Set<String> {
         val key = serial?.takeIf { it.isNotBlank() } ?: return emptySet()
-        val arr = ConfigStore.loadOverrides(key)?.optJSONArray(OFF_KEY) ?: return emptySet()
+        return switchedOff(ConfigStore.loadOverrides(key))
+    }
+
+    /** [switchedOff] from a game's stored blob, for a caller that has already read it. */
+    fun switchedOff(overrides: JSONObject?): Set<String> {
+        val arr = overrides?.optJSONArray(OFF_KEY) ?: return emptySet()
         return buildSet { for (i in 0 until arr.length()) arr.optString(i).takeIf { it.isNotEmpty() }?.let(::add) }
     }
 
@@ -170,13 +217,150 @@ object GameDbOverrides {
         return out
     }
 
-    private fun contendedKeysMovedBy(
+    /**
+     * The keys in [contended] that changing [field] moves. [json] is the game's effective settings
+     * ([Settings.toJson]), [globalValue] the global value of the same field, [effective] the keys
+     * those settings emit. Stops at the first value that moves any of them.
+     */
+    internal fun contendedKeysMovedBy(
         field: String,
         json: JSONObject,
         globalValue: Any?,
         effective: Map<String, String>,
         contended: Set<String>,
     ): Set<String> {
+        for (candidate in candidatesFor(field, json, globalValue)) {
+            val moved = movedBy(field, candidate, json, effective, contended)
+            if (moved.isNotEmpty()) return moved
+        }
+        return emptySet()
+    }
+
+    /**
+     * Every key in [contended] that any change of [field] moves, not just the first value's. A
+     * field that fans out to several keys can move different ones in each direction: stepping a
+     * clamp mode up sets the "extra" bit, and stepping it down clears the plain one.
+     */
+    internal fun keysMovedByAny(
+        field: String,
+        json: JSONObject,
+        globalValue: Any?,
+        effective: Map<String, String>,
+        contended: Set<String>,
+    ): Set<String> {
+        val out = HashSet<String>()
+        for (candidate in candidatesFor(field, json, globalValue)) {
+            out.addAll(movedBy(field, candidate, json, effective, contended))
+        }
+        return out
+    }
+
+    /**
+     * Which database-contended keys each field moves. Which field drives which key is a property of
+     * the code, not of a game or of a value, so this is kept for the process: a lookup builds and
+     * emits a whole [Settings] per value tried, and repeating it for every row each time a setting
+     * changed would cost a visible stall.
+     */
+    private val fieldKeys = HashMap<String, Set<String>>()
+
+    /**
+     * The database-contended keys [field] moves, or null if that could not be worked out. [json] is
+     * the game's effective settings, [globalValue] the global value of the same field, [effective]
+     * the keys those settings emit (only built if the field has not been looked up yet).
+     */
+    internal fun keysDrivenBy(
+        field: String,
+        json: JSONObject,
+        globalValue: Any?,
+        effective: () -> Map<String, String>,
+        contended: Set<String>,
+    ): Set<String>? {
+        synchronized(fieldKeys) { fieldKeys[field] }?.let { return it }
+        // Nothing to look up against (the native side did not answer): do not remember that.
+        if (contended.isEmpty() || !json.has(field)) return null
+        val keys = runCatching { keysMovedByAny(field, json, globalValue, effective(), contended) }.getOrNull() ?: return null
+        synchronized(fieldKeys) { fieldKeys[field] = keys }
+        return keys
+    }
+
+    /**
+     * What a settings screen should show for [serial], as setting to value: what the game really
+     * runs where a database entry is in force. Only the fields [GameDbFields] knows; the player's
+     * stored value stands for every other one. [stored] is the game's settings as stored,
+     * [overrides] its stored blob. Decisions about which entries apply are made on the stored
+     * settings and never on what the screen shows, since several of the fields shown here (auto
+     * flush among them) are what the core reads to tell whether hardware fixes are set by hand.
+     */
+    fun displayValues(serial: String, stored: Settings, global: Settings, overrides: JSONObject?): Map<String, Any> {
+        val entries = entriesFor(serial)
+        if (entries.isEmpty()) return emptyMap()
+        return displayValues(entries, switchedOff(overrides), keysClaimedBySettings(serial, stored, global, overrides), stored)
+    }
+
+    internal fun displayValues(
+        entries: List<Entry>,
+        off: Set<String>,
+        claimed: Set<String>,
+        stored: Settings,
+    ): Map<String, Any> {
+        val manualHardwareFixes = stored.anyUserHackEnabled()
+        val json = stored.toJson()
+        val out = LinkedHashMap<String, Any>()
+        for (entry in entries) {
+            if (stateOf(entry, off, claimed, stored, manualHardwareFixes) != EntryState.InForce) continue
+            val how = GameDbFields.sets[entry.name] ?: continue
+            // A floor and a cap on one field apply one after the other.
+            val player = out[how.field] ?: json.opt(how.field) ?: continue
+            out[how.field] = GameDbFields.effective(how, player, entry.value) ?: continue
+        }
+        return out
+    }
+
+    /**
+     * Square what is about to be stored for [serial] with the fact that its settings screens show
+     * database values. [overrides] is the blob being written, [existing] the one it replaces,
+     * [changed] the fields the player just changed, [updated] what the screen now holds.
+     *
+     * A value the screen showed only because the database sets it is not the player's, and would
+     * otherwise be stored as the game's own the first time anything else is saved, so it is dropped
+     * unless the player changed it. And a setting the player puts at the database's own value goes
+     * back to the database: nothing is stored, and the row is the database's again. That is only
+     * done where the entry would then really apply; otherwise the value would quietly turn into
+     * the global one. Never throws: a failure leaves the blob as it was.
+     */
+    fun settleDatabaseValues(
+        serial: String,
+        changed: Set<String>,
+        updated: Settings,
+        global: Settings,
+        existing: JSONObject?,
+        overrides: JSONObject,
+    ) {
+        runCatching {
+            val entries = entriesFor(serial)
+            if (entries.isEmpty()) return
+            val before = Settings.merge(global, existing ?: JSONObject())
+            displayValues(serial, before, global, existing).keys.filter { it !in changed }.forEach(overrides::remove)
+
+            val json = updated.toJson()
+            for (field in changed.filter(overrides::has)) {
+                val atDatabase = entries.filter { entry ->
+                    val how = GameDbFields.sets[entry.name]
+                    how != null && how.field == field && GameDbFields.isDatabaseValue(how, json.opt(field), entry.value)
+                }
+                if (atDatabase.isEmpty()) continue
+                val kept = overrides.get(field)
+                overrides.remove(field)
+                val after = Settings.merge(global, overrides)
+                val off = switchedOff(overrides)
+                val claimed = keysClaimedBySettings(serial, after, global, overrides)
+                val manual = after.anyUserHackEnabled()
+                if (atDatabase.none { stateOf(it, off, claimed, after, manual) == EntryState.InForce }) overrides.put(field, kept)
+            }
+        }
+    }
+
+    private fun candidatesFor(field: String, json: JSONObject, globalValue: Any?): List<Any> {
         val current = json.get(field)
         // The global value first: for a field that differs it is the one change guaranteed to move
         // every key the field drives. A field already at the global value needs a made-up one.
@@ -190,13 +374,28 @@ object GameDbOverrides {
             is Double -> { candidates.add(current + 1.0); candidates.add(current - 1.0) }
             is String -> { candidates.add("$current~"); candidates.add("") }
         }
-        for (candidate in candidates) {
-            val probe = runCatching {
-                Settings.fromJson(JSONObject(json.toString()).put(field, candidate))
-            }.getOrNull() ?: continue
-            val moved = probe.emittedKeys().filterTo(HashMap()) { (id, value) -> id in contended && effective[id] != value }.keys
-            if (moved.isNotEmpty()) return moved
+        return candidates
+    }
+
+    private fun movedBy(
+        field: String,
+        candidate: Any,
+        json: JSONObject,
+        effective: Map<String, String>,
+        contended: Set<String>,
+    ): Set<String> {
+        val probe = trial(json, field, candidate) ?: return emptySet()
+        return probe.emittedKeys().filterTo(HashMap()) { (id, value) -> id in contended && effective[id] != value }.keys
+    }
+
+    /** [json] with [field] set to [candidate], as a [Settings]. [json] is put back as it was, so one
+     *  object serves every trial instead of being copied through a string and parsed again. */
+    private fun trial(json: JSONObject, field: String, candidate: Any): Settings? {
+        val original = json.opt(field)
+        try {
+            return runCatching { Settings.fromJson(json.put(field, candidate)) }.getOrNull()
+        } finally {
+            if (original != null) json.put(field, original) else json.remove(field)
         }
-        return emptySet()
     }
 }

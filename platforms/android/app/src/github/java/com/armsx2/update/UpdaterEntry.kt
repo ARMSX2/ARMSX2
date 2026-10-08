@@ -297,7 +297,7 @@ private suspend fun checkForUpdate(checkFailedPrefix: String): UpdateState = wit
 
 // Release tier markers. A release carries four APKs and their names are the only thing
 // distinguishing them, so these are a contract with build-release-targets.sh:
-//   -sdk26   legacy — armv8.1-a.               The build every device can run.
+//   -sdk26   legacy — armv8-a + outline atomics. The build every device can run.
 //   -sdk30   a11    — armv8.2-a+fp16+dotprod.
 //   -sdk33   a13    — same codegen.
 //   -sdk35   a15    — same codegen, newest NDK.

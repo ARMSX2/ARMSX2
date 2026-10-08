@@ -553,6 +553,7 @@ set(pcsx2GSSources
 	GS/GSDrawingContext.cpp
 	GS/GSDrawingEnvironment.cpp
 	GS/GSDump.cpp
+	GS/GSDumpBundle.cpp
 	GS/GSLocalMemory.cpp
 	GS/GSLzma.cpp
 	GS/GSPerfMon.cpp
@@ -564,6 +565,7 @@ set(pcsx2GSSources
 	GS/GSVector.cpp
 	GS/MultiISA.cpp
 	GS/DriverReport/GSDriverReport.cpp
+	GS/DriverReport/GSDriverReportActive.cpp
 	GS/DriverReport/GSDriverReportClassify.cpp
 	GS/DriverReport/GSDriverReportJson.cpp
 	GS/DriverReport/GSDriverReportProfile.cpp
@@ -608,6 +610,7 @@ endif()
 # GS headers
 set(pcsx2GSHeaders
 	GS/DriverReport/GSDriverReport.h
+	GS/DriverReport/GSDriverReportActive.h
 	GS/DriverReport/GSDriverReportClassify.h
 	GS/DriverReport/GSDriverReportJson.h
 	GS/DriverReport/GSDriverReportProfile.h
@@ -621,6 +624,7 @@ set(pcsx2GSHeaders
 	GS/GSDrawingContext.h
 	GS/GSDrawingEnvironment.h
 	GS/GSDump.h
+	GS/GSDumpBundle.h
 	GS/GSExtra.h
 	GS/GSGL.h
 	GS/GSRegs.h

@@ -156,8 +156,8 @@ static MemorySettingsInterface s_settings_interface;
 static s32 s_clear_shader_cache_frame = -1;
 
 static std::string s_output_prefix;
-// -take-gsdump: a one-frame GS dump (and its driver report) written at this base path on the first
-// loop's second presented frame. Empty = off.
+// -take-gsdump: a one-frame GS dump (a zip of the dump, its driver report and its screenshot) written
+// at this base path on the first loop's second presented frame. Empty = off.
 static std::string s_take_gsdump_base;
 static bool s_take_gsdump_queued = false;
 static s32 s_loop_count = 1;
@@ -1159,9 +1159,9 @@ static void PrintCommandLineHelp(const char* progname)
 						 "run cannot even create an instance under it.\n");
 	std::fprintf(stderr, "  -renderdoc-frame N[,C]: Capture dump frame N (base 0, minimum 1) and the C-1 frames after it, "
 						 "one .rdc each. Defaults to 1,1. Only used if -renderdoc is used.\n");
-	std::fprintf(stderr, "  -take-gsdump <path>: write a one-frame GS dump of the replay, with its driver report, to "
-						 "<path>.gs.zst and <path>.driver.json (plus the dump's screenshot <path>.png), on the first "
-						 "loop's second frame.\n");
+	std::fprintf(stderr, "  -take-gsdump <path>: write a one-frame GS dump of the replay to <path>.gs.zip, on the first "
+						 "loop's second frame. The zip holds the dump (.gs.zst), its driver report (.driver.json) and "
+						 "its screenshot.\n");
 	std::fprintf(stderr, "  -custom-driver <dir> <libname> <hooklibdir>: Android only. Load the Vulkan driver <libname> "
 						 "out of <dir> through libadrenotools instead of the system loader, e.g. a Mesa Turnip pack in "
 						 "/data/local/tmp. <hooklibdir> holds libhook_impl.so, libmain_hook.so and "
@@ -1183,7 +1183,8 @@ static void PrintCommandLineHelp(const char* progname)
 						 "expanded in software, whether a feedback read is cheap -- so a null device with no "
 						 "features is not any real device and counts taken on it are about nothing. 'sd865' "
 						 "(default) is the Adreno 650 / Turnip render-target-copy road; 'mali-g615' is the "
-						 "Dimensity 8300 in-tile framebuffer-fetch road; 'blank' restores FeatureSupport's own "
+						 "Dimensity 8300 in-tile framebuffer-fetch road on Arm's driver; 'mali-g615-malisx2' is the "
+						 "same part on malisx2 (our driver); 'blank' restores FeatureSupport's own "
 						 "defaults, which is what the null arm reported before profiles existed. The resolved bits "
 						 "are printed at start-up. Ignored unless the renderer is nullhw.\n");
 	std::fprintf(stderr, "  -no-stencil-buffer: Vulkan only. Report no stencil buffer and create depth as plain D32F, as "
@@ -1290,6 +1291,13 @@ static void PrintCommandLineHelp(const char* progname)
 						 "-- only when it is stated changes, and that is byte-identical. Measurement instrument only: "
 						 "on Turnip the create flag puts the driver's serialising primitive mode on every pipeline in "
 						 "a latched pass and costs up to 2.8x (wrc3@1x, SD865: 51.8 ms against 18.5). Vulkan only.\n");
+	std::fprintf(stderr, "  -no-provoking-vertex: Run as a device without VK_EXT_provoking_vertex, the way Qualcomm's "
+						 "stock Adreno driver does. Pipelines use the first-vertex default, so the provoking-first "
+						 "paths (software flat-shading fixup, expanded-line vertex shader) run on a device that has "
+						 "the extension. Vulkan only.\n");
+	std::fprintf(stderr, "  -no-dual-source: Run as a device without dualSrcBlend, the way Arm's stock Mali driver "
+						 "does. GSRendererHW blends every SRC1 equation in the shader rather than through the second "
+						 "fragment output, so a device that has dual-source blending runs the fallback. Vulkan only.\n");
 	std::fprintf(stderr, "  -accblend <0-5>: Force accurate blending unit (0=Minimum, 1=Basic, 2=Medium, 3=High, 4=Full, 5=Maximum). "
 						 "Overrides the game/global default; use to exercise the SW-blend / fb-fetch (ROV) path headlessly.\n");
 	std::fprintf(stderr, "  --: Signals that no more arguments will follow and the remaining\n"
@@ -1927,6 +1935,24 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// device with the logicOp feature, to check its pictures against the read.
 				g_gs_measurement_overrides.alpha_bit_logic_op = true;
 				Console.WriteLn("Forcing the alpha-bit logic op on (Vulkan, where logicOp exists)");
+				continue;
+			}
+			else if (CHECK_ARG("-no-provoking-vertex"))
+			{
+				// Not a setting: whether a device has a usable provoking-last mode is a driver fact
+				// (Qualcomm's stock Adreno driver selects the wrong vertex). This puts that driver's
+				// provoking-first paths on a device that has the extension, for an A/B on one binary.
+				g_gs_measurement_overrides.no_provoking_vertex = true;
+				Console.WriteLn("Forcing provoking-vertex-last off (Vulkan, as a device without VK_EXT_provoking_vertex)");
+				continue;
+			}
+			else if (CHECK_ARG("-no-dual-source"))
+			{
+				// Not a setting: whether a device has dual-source blending is a driver fact (Arm's
+				// stock Mali driver reports dualSrcBlend false). This puts that driver's shader-blend
+				// fallback on a device that has the feature, for an A/B on one binary.
+				g_gs_measurement_overrides.no_dual_source = true;
+				Console.WriteLn("Forcing dual-source blending off (Vulkan, as a device without dualSrcBlend)");
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-vertex-ring-kib"))

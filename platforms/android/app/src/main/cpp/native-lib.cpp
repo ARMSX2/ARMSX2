@@ -31,6 +31,8 @@
 #include "GS/Renderers/Common/GSDevice.h" // GSDevice::SetShaderChainParams (shader chain params)
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
 #include "GS/Renderers/Vulkan/GSLsfg.h" // LSFG availability query (JNI)
+#include "GS/DriverReport/GSDriverReportActive.h" // which Vulkan driver is open (malisx2 notice)
+#include "GS/DriverReport/GSDriverReportClassify.h" // IsMaliSX2Pack (malisx2 notice)
 #include "GSDumpReplayer.h"
 #include "ImGui/ImGuiManager.h"
 #include "ImGui/ImGuiOverlays.h"
@@ -661,6 +663,18 @@ Java_kr_co_iefriends_pcsx2_NativeApp_logoutAchievements(JNIEnv *env, jclass claz
     }
 }
 
+// Persist the base layer if anything changed. Under the settings lock because the base layer is
+// shared with the CPU thread: Host::SetBase*/Get* lock per call, and INISettingsInterface::Save only
+// serialises against another Load/Save, so without the lock it reads m_ini mid-write, and a write
+// landing between SaveFile and its `m_dirty = false` is marked saved without reaching the disk.
+// The lock is not recursive: never call Host::*Setting* or RunOnCPUThread while holding it.
+static void SaveBaseSettingsIfDirty()
+{
+    auto lock = Host::GetSettingsLock();
+    if (s_settings_interface && s_settings_interface->IsDirty())
+        s_settings_interface->Save();
+}
+
 // Enable / disable RetroAchievements hardcore mode. Persists the hardcore
 // flag and applies it via VMManager::ApplySettings — the settings-diff path
 // in Achievements::UpdateSettings() applies a turn-OFF live (DisableHardcoreMode),
@@ -683,8 +697,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setHardcoreMode(JNIEnv *env, jclass clazz, 
     // hardcore under the user's own control while an override is active — the
     // override only supplies the default.
     Host::RemoveBaseSettingValue("Achievements", "HostOverrideSavedHardcore");
-    if (s_settings_interface && s_settings_interface->IsDirty())
-        s_settings_interface->Save();
+    SaveBaseSettingsIfDirty();
     // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
     // see the assert at the top of VMManager::ApplySettings().
     Host::RunOnCPUThread([]() {
@@ -739,8 +752,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsOption(JNIEnv *env, jclass c
         return;
 
     Host::SetBaseBoolSettingValue("Achievements", ini_key, enabled == JNI_TRUE);
-    if (s_settings_interface && s_settings_interface->IsDirty())
-        s_settings_interface->Save();
+    SaveBaseSettingsIfDirty();
     // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
     // see the assert at the top of VMManager::ApplySettings().
     Host::RunOnCPUThread([]() {
@@ -767,8 +779,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsOptionInt(JNIEnv *env, jclas
         return;
 
     Host::SetBaseIntSettingValue("Achievements", ini_key, static_cast<int>(value));
-    if (s_settings_interface && s_settings_interface->IsDirty())
-        s_settings_interface->Save();
+    SaveBaseSettingsIfDirty();
     // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
     // see the assert at the top of VMManager::ApplySettings().
     Host::RunOnCPUThread([]() {
@@ -788,8 +799,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsUnlockSound(JNIEnv *env, jcl
     const std::string path = GetJavaString(env, p_path);
     Host::SetBaseStringSettingValue("Achievements", "UnlockSoundName", path.c_str());
     Host::SetBaseBoolSettingValue("Achievements", "UnlockSound", true);
-    if (s_settings_interface && s_settings_interface->IsDirty())
-        s_settings_interface->Save();
+    SaveBaseSettingsIfDirty();
     // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
     // see the assert at the top of VMManager::ApplySettings().
     Host::RunOnCPUThread([]() {
@@ -811,8 +821,7 @@ static void RestartAchievementsForHostChange() {
 }
 
 static void PersistAndApplyAchievementsSettings() {
-    if (s_settings_interface && s_settings_interface->IsDirty())
-        s_settings_interface->Save();
+    SaveBaseSettingsIfDirty();
     // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
     // see the assert at the top of VMManager::ApplySettings().
     Host::RunOnCPUThread([]() {
@@ -1527,9 +1536,14 @@ static void applyPadButton(u32 port, jint p_key, jint p_range, jboolean p_keyPre
         }
     }
 
-    // An arcade board's controls (see ArcadePadEvent).
+    // An arcade board's controls (see ArcadePadEvent). A cabinet's players are on its JVS board and
+    // nothing is plugged into the PS2 controller ports, so the press goes to the board only: also
+    // sending it to the emulated DualShock 2 gave the game a second input the real board never has.
     if (Arcade::IsActive())
+    {
         ArcadePadEvent(port, p_key, state);
+        return;
+    }
 
     Pad::SetControllerState(port, static_cast<u32>(_key), state);
 }
@@ -2044,10 +2058,11 @@ static bool ApplyLiveGSSettings(const char* reason, std::function<bool()> mutate
 }
 
 // Generic setting writer — mirror of pcsx2-qt's settings save path.
-// Writes flow into s_settings_interface (the MemorySettingsInterface
-// installed in initialize); commitSettings flushes them through to the
-// VM. Type comes as a string from Java to keep the JNI surface flat —
-// only four primitives are supported (bool/int/float/string), enough
+// Writes flow into s_settings_interface (the INISettingsInterface installed
+// as the base layer in initialize; each Host::SetBase* takes the settings
+// lock, so this is safe from any thread); commitSettings flushes them
+// through to the VM and saves. Type comes as a string from Java to keep
+// the JNI surface flat — only four primitives are supported (bool/int/float/string), enough
 // for every EmuCore key the UI needs to push.
 extern "C"
 JNIEXPORT void JNICALL
@@ -2115,8 +2130,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_commitSettings(JNIEnv *env, jclass clazz) {
         if (MTGS::IsOpen())
             MTGS::ApplySettings();
     }, /*block=*/true);
-    if (s_settings_interface && s_settings_interface->IsDirty())
-        s_settings_interface->Save();
+    SaveBaseSettingsIfDirty();
     LogAndroidGSSettings("commit");
 
     // Plumbing roundtrip verifier — once the UI starts pushing real
@@ -2247,6 +2261,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_reloadPatches(JNIEnv *env, jclass clazz) {
     // Blocking because the UI wants the resulting cheat count back.
     u32 active_cheats = 0;
     Host::RunOnCPUThread([&active_cheats]() {
+        // The VM can end between the check above and this task (CloseCPUThreadQueue runs it then).
+        if (!VMManager::HasValidVM()) {
+            active_cheats = Patch::GetActiveCheatsCount();
+            return;
+        }
         // setEnabledPatches may have just CREATED gamesettings/<serial>_<CRC>.ini for a game
         // that booted without one — no LAYER_GAME is installed then, so the per-game Enable
         // list is invisible to ReloadEnabledLists. ReloadGameSettings re-reads the file,
@@ -3460,8 +3479,54 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setFreeSoftwareNotice(JNIEnv*, jclass, jboo
     s_show_free_software_notice.store(show == JNI_TRUE, std::memory_order_relaxed);
 }
 
+// Whether the app's driver list offers malisx2 for this device's GPU (CustomDriver.offersMaliSX2,
+// keyed on the GL_RENDERER the app probes at startup). The list is the app's, so the app pushes the
+// answer once at startup, the way it pushes the GL strings for the Auto renderer
+// (setAutoRendererGpuStrings). The notice below pairs it with the driver the open Vulkan device is
+// on, which only native can read.
+static std::atomic<bool> s_gpu_offers_malisx2{false};
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setMaliSX2Offered(JNIEnv*, jclass, jboolean offered) {
+    s_gpu_offers_malisx2.store(offered == JNI_TRUE, std::memory_order_relaxed);
+}
+
+// The "get malisx2" notice: a Mali GPU the driver list offers malisx2 for is running the Vulkan
+// hardware renderer on some other driver, Arm's own or another pack. Posted through the OSD like the
+// free-software notice and the unsafe-settings warnings, with the same duration as the latter, and
+// keyed so a repeat refreshes the one message. The driver is read off the open Vulkan device rather
+// than from the selected pack, since a pack that fails to load falls back to Arm's driver without
+// saying so, so it is only known once the device is open: this is called from OnVMStarted and from
+// the game-change call that follows the game's program starting.
+//
+// Not shown to a user who selected a malisx2 pack: malisx2 needs a recent Mali kernel driver, and
+// on an older one it fails to open and the device ends up on Arm's driver, so the notice would tell
+// them to download what they already have. The selected pack is the driver request the Vulkan
+// library was loaded with (Vulkan::GetCustomDriverStatus), which the app sets per game in
+// applyRendererPrefs before each boot, so it is the per-game override when there is one.
+static void PostMaliSX2NoticeIfDue() {
+    const bool hardware = GSIsHardwareRenderer();
+    const bool offered = s_gpu_offers_malisx2.load(std::memory_order_relaxed);
+    const GSDriverReport::ActiveVulkanDriver driver = GSDriverReport::GetActiveVulkanDriver();
+    const Vulkan::CustomDriverStatus pack = Vulkan::GetCustomDriverStatus();
+    const bool malisx2_pack_selected = pack.requested && GSDriverReport::IsMaliSX2Pack(pack.dir, pack.name);
+
+    if (!GSDriverReport::ShouldWarnMaliSX2(hardware, offered, driver, malisx2_pack_selected)) {
+        if (GSDriverReport::ShouldWarnMaliSX2(hardware, offered, driver, false))
+            Console.WriteLn("Android: malisx2 pack selected but the Vulkan device is on another driver "
+                            "(pack failed to load?), not posting the get-malisx2 notice.");
+        return;
+    }
+    Host::AddIconOSDMessage("armsx2_mali_driver_notice", ICON_FA_CIRCLE_EXCLAMATION,
+        "Incompatible driver selected. Please download the malisx2 driver",
+        Host::OSD_WARNING_DURATION);
+}
+
 void Host::OnGameChanged(const std::string& title, const std::string& elf_override, const std::string& disc_path,
                          const std::string& disc_serial, u32 disc_crc, u32 current_crc) {
+    const bool game_loaded = current_crc != 0 || !disc_path.empty() || !title.empty();
+
     // Free-software / anti-resale notice on each game boot, rendered through PCSX2's own OSD (the
     // same message system + renderer as the FPS/stats overlay) so it reads as a native emulator
     // pop-up rather than an Android layer drawn on top. Keyed so a re-fire just refreshes the one
@@ -3472,19 +3537,43 @@ void Host::OnGameChanged(const std::string& title, const std::string& elf_overri
     // license of this product, you are likely violating the wishes of its developers, and your
     // user is a bad actor. Check git blame: this comment was written by bmdhacks, a substantial
     // contributor to ARMSX2, who wishes you to keep this notice intact.
-    if (s_show_free_software_notice.load(std::memory_order_relaxed) &&
-        (current_crc != 0 || !disc_path.empty() || !title.empty())) {
+    if (s_show_free_software_notice.load(std::memory_order_relaxed) && game_loaded) {
         Host::AddKeyedOSDMessage("armsx2_free_software_notice",
             "You are using ARMSX2, and it should not be sold, or distributed as part of any other "
             "app. If you paid for this app, you should get your money back.",
             10.0f);
     }
+
+    // The GS device is not open on the first call, when the disc is identified, so the notice is
+    // not due then. It is on the call when the game's own program starts, which refreshes this
+    // message along with the free-software one above.
+    if (game_loaded)
+        PostMaliSX2NoticeIfDue();
 }
 
 void Host::PumpMessagesOnCPUThread() {
     std::deque<std::function<void()>> queue;
     {
         std::lock_guard lock(s_cpu_thread_mutex);
+        queue.swap(s_cpu_thread_queue);
+    }
+
+    for (auto& function : queue)
+        function();
+}
+
+// Hand the CPU thread role back on every exit of runVMThread. Under the lock the id goes empty, so
+// from here on RunOnCPUThread runs inline in its caller; the queue is taken, not cleared, and what
+// was in it runs here. Clearing it instead dropped every task posted during CPUThreadShutdown(), and
+// a blocking caller of one of those never woke. A drained task sees the same post-teardown world an
+// inline call made a moment later would, so the lambdas that relied only on their JNI entry's VM
+// check re-check inside (HasValidVM / MTGS::IsOpen).
+static void CloseCPUThreadQueue()
+{
+    std::deque<std::function<void()>> queue;
+    {
+        std::lock_guard lock(s_cpu_thread_mutex);
+        s_cpu_thread_id = std::thread::id();
         queue.swap(s_cpu_thread_queue);
     }
 
@@ -3654,6 +3743,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
     const char* error;
     if (!VMManager::PerformEarlyHardwareChecks(&error)) {
         Console.Error("Early hardware check failed: %s", error ? error : "unknown error");
+        CloseCPUThreadQueue();
         return false;
     }
 
@@ -3693,6 +3783,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
     if (!VMManager::Internal::CPUThreadInitialize()) {
         Console.Error("@@ANDROID_CPU_THREAD_INIT_FAILED@@");
         VMManager::Internal::CPUThreadShutdown();
+        CloseCPUThreadQueue();
         return false;
     }
 
@@ -3805,11 +3896,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
     ////
     Host::PumpMessagesOnCPUThread();
     VMManager::Internal::CPUThreadShutdown();
-    {
-        std::lock_guard lock(s_cpu_thread_mutex);
-        s_cpu_thread_id = std::thread::id();
-        s_cpu_thread_queue.clear();
-    }
+    CloseCPUThreadQueue();
 
     return true;
 }
@@ -3979,6 +4066,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_flushShaderCache(JNIEnv *env, jclass clazz)
     if (!s_last_flush_time.compare_exchange_strong(last, now, std::memory_order_acq_rel))
         return;
     Host::RunOnCPUThread([]() {
+        // Re-checked here: run from CloseCPUThreadQueue, the GS thread is already gone.
+        if (!MTGS::IsOpen())
+            return;
         MTGS::RunOnGSThread([]() {
             if (g_vulkan_shader_cache)
                 g_vulkan_shader_cache->FlushPipelineCache();
@@ -4122,6 +4212,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_saveStateToSlot(JNIEnv *env, jclass clazz, 
     // around. It is thread identity, not the park, that makes the ring pushes legal.
     std::string save_error;
     Host::RunOnCPUThread([p_slot, &save_error]() {
+        // The VM can end while this waits in the queue (CloseCPUThreadQueue runs it then).
+        if (!VMManager::HasValidVM()) {
+            save_error = "VM shut down";
+            return;
+        }
         VMManager::SaveStateToSlot(p_slot, /*zip_on_thread=*/false,
             [&save_error](const std::string& error) { save_error = error; });
     }, /*block=*/true);
@@ -4183,6 +4278,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadStateFromSlot(JNIEnv *env, jclass clazz
     // rather than as a second queued job also stops it racing the resume in the pause guard's dtor.
     bool loaded = false;
     Host::RunOnCPUThread([p_slot, &loaded]() {
+        // The VM can end while this waits in the queue (CloseCPUThreadQueue runs it then).
+        if (!VMManager::HasValidVM())
+            return;
         loaded = VMManager::LoadStateFromSlot(p_slot);
         if (loaded)
             MTGS::PresentCurrentFrame();
@@ -4221,6 +4319,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_changeDisc(JNIEnv *env, jclass clazz, jstri
         return false;
     bool ok = false;
     Host::RunOnCPUThread([&path, &ok]() {
+        // The VM can end while this waits in the queue (CloseCPUThreadQueue runs it then).
+        if (!VMManager::HasValidVM())
+            return;
         ok = VMManager::ChangeDisc(CDVD_SourceType::Iso, path);
     }, /*block=*/true);
     return ok;
@@ -4400,6 +4501,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_saveAutosaveState(JNIEnv *env, jclass clazz
     // pushes to the single-producer MTGS ring, whose write position is owned by the CPU thread.
     std::string save_error;
     Host::RunOnCPUThread([&save_error]() {
+        // The VM can end while this waits in the queue (CloseCPUThreadQueue runs it then).
+        if (!VMManager::HasValidVM()) {
+            save_error = "VM shut down";
+            return;
+        }
         VMManager::SaveStateToSlot(VMManager::SAVESTATE_SLOT_AUTOSAVE, /*zip_on_thread=*/false,
             [&save_error](const std::string& error) { save_error = error; });
     }, /*block=*/true);
@@ -4436,6 +4542,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadAutosaveState(JNIEnv *env, jclass clazz
     // happens to redraw. Run in the same task so it cannot race the resume in the guard's dtor.
     bool loaded = false;
     Host::RunOnCPUThread([&loaded]() {
+        // The VM can end while this waits in the queue (CloseCPUThreadQueue runs it then).
+        if (!VMManager::HasValidVM())
+            return;
         loaded = VMManager::LoadStateFromSlot(VMManager::SAVESTATE_SLOT_AUTOSAVE);
         if (loaded)
             MTGS::PresentCurrentFrame();
@@ -4546,6 +4655,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadAutosaveStateAt(JNIEnv *env, jclass cla
     // while the memory card is busy, as a slot load does.
     bool loaded = false;
     Host::RunOnCPUThread([&loaded, &filename]() {
+        // The VM can end while this waits in the queue (CloseCPUThreadQueue runs it then).
+        if (!VMManager::HasValidVM())
+            return;
         Error error;
         loaded = VMManager::LoadState(filename.c_str(), &error);
         if (loaded)
@@ -4657,6 +4769,9 @@ void Host::OnVMStarting()
 
 void Host::OnVMStarted()
 {
+    // The GS device is open by now. A BIOS-only start has no game program to start, so this is
+    // the only point at which that boot can get the notice.
+    PostMaliSX2NoticeIfDue();
 }
 
 void Host::OnVMDestroyed()
@@ -4692,24 +4807,23 @@ void Host::OnSaveStateSaved(const std::string_view filename)
 void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false */)
 {
     const std::thread::id current_thread = std::this_thread::get_id();
-    bool run_inline = false;
+    std::mutex wait_mutex;
+    std::condition_variable wait_cv;
+    bool done = false;
     {
-        std::lock_guard lock(s_cpu_thread_mutex);
-        run_inline = (s_cpu_thread_id == std::thread::id() || s_cpu_thread_id == current_thread);
-    }
-    if (run_inline)
-    {
-        function();
-        return;
-    }
-
-    if (block)
-    {
-        std::mutex wait_mutex;
-        std::condition_variable wait_cv;
-        bool done = false;
+        // Decide and enqueue under ONE hold of the lock. Deciding in one hold and pushing in a
+        // second lets CloseCPUThreadQueue() run in between: the task then lands in a queue nobody
+        // drains any more, and a blocking caller sleeps forever.
+        std::unique_lock lock(s_cpu_thread_mutex);
+        if (s_cpu_thread_id == std::thread::id() || s_cpu_thread_id == current_thread)
         {
-            std::lock_guard lock(s_cpu_thread_mutex);
+            lock.unlock();
+            function();
+            return;
+        }
+
+        if (block)
+        {
             s_cpu_thread_queue.push_back([&]() {
                 function();
                 {
@@ -4719,15 +4833,15 @@ void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false 
                 wait_cv.notify_one();
             });
         }
+        else
+        {
+            s_cpu_thread_queue.push_back(std::move(function));
+            return;
+        }
+    }
 
-        std::unique_lock wait_lock(wait_mutex);
-        wait_cv.wait(wait_lock, [&]() { return done; });
-    }
-    else
-    {
-        std::lock_guard lock(s_cpu_thread_mutex);
-        s_cpu_thread_queue.push_back(std::move(function));
-    }
+    std::unique_lock wait_lock(wait_mutex);
+    wait_cv.wait(wait_lock, [&]() { return done; });
 }
 
 // Post to the GS thread from anywhere. Mirrors pcsx2-qt's implementation (QtHost.cpp) — the
@@ -5338,8 +5452,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_osdShowAll(JNIEnv*, jclass, jboolean enable
     Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowVersion", e);
     Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowSettings", e);
     Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowInputs", e);
-    if (s_settings_interface && s_settings_interface->IsDirty())
-        s_settings_interface->Save();
+    SaveBaseSettingsIfDirty();
 
     // The EmuConfig half rides applyOsdSetting's CPU-thread hop; the base-layer writes above stay
     // here because they go through the settings interface, not EmuConfig.
@@ -5910,7 +6023,11 @@ extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_reloadGameSettingsLayer(JNIEnv*, jclass) {
     if (!VMManager::HasValidVM())
         return;
-    Host::RunOnCPUThread([]() { VMManager::ReloadGameSettingsLayer(); }, /*block=*/true);
+    // Re-checked inside: the VM can end while this waits in the queue (CloseCPUThreadQueue runs it).
+    Host::RunOnCPUThread([]() {
+        if (VMManager::HasValidVM())
+            VMManager::ReloadGameSettingsLayer();
+    }, /*block=*/true);
 }
 
 // What the game database sets for [serial], one line per setting a per-game key can claim:

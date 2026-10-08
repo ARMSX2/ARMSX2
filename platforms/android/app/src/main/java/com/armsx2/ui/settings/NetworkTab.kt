@@ -95,7 +95,7 @@ fun NetworkTab(state: MutableState<Settings>) {
         // regression somewhere in 069f8a44..94d2e3f6 — DEV9 itself is unchanged across that window,
         // so it is a trigger rather than the cause. Warn about the effect, do not assert a cause.
         ToggleRow(str("network.enableDev9Ethernet"), s.network.dev9EthEnable,
-            description = str("network.enableDev9Ethernet.desc")) {
+            description = str("network.enableDev9Ethernet.desc"), field = "dev9EthEnable") {
             val currentDevice = s.network.dev9EthDevice.ifEmpty { "Auto" }
             apply(
                 s.copy(
@@ -146,6 +146,7 @@ fun NetworkTab(state: MutableState<Settings>) {
                 options = apiLabels,
                 selectedIndex = apiIndex,
                 onChange = { apply(s.copy(network = s.network.copy(dev9EthApi = apiValues[it]))) },
+                field = "dev9EthApi",
             )
             SettingsDivider()
             DeviceChooser(
@@ -236,15 +237,15 @@ fun NetworkTab(state: MutableState<Settings>) {
         // Local Link assigns those itself from the peer id, so showing them in LAN mode would be
         // presenting settings that silently do nothing.
         if (netMode == 0) {
-        ToggleRow(str("network.interceptDhcp"), s.network.dev9InterceptDhcp) {
+        ToggleRow(str("network.interceptDhcp"), s.network.dev9InterceptDhcp, field = "dev9InterceptDhcp") {
             apply(s.copy(network = s.network.copy(dev9InterceptDhcp = it)))
         }
         SettingsDivider()
-        ToggleRow(str("network.autoSubnetMask"), s.network.dev9AutoMask) {
+        ToggleRow(str("network.autoSubnetMask"), s.network.dev9AutoMask, field = "dev9AutoMask") {
             apply(s.copy(network = s.network.copy(dev9AutoMask = it)))
         }
         SettingsDivider()
-        ToggleRow(str("network.autoGateway"), s.network.dev9AutoGateway) {
+        ToggleRow(str("network.autoGateway"), s.network.dev9AutoGateway, field = "dev9AutoGateway") {
             apply(s.copy(network = s.network.copy(dev9AutoGateway = it)))
         }
         SettingsDivider()
@@ -253,6 +254,7 @@ fun NetworkTab(state: MutableState<Settings>) {
             options = dnsModes,
             selectedIndex = dns1Index,
             onChange = { apply(s.copy(network = s.network.copy(dev9ModeDns1 = dnsModes[it]))) },
+            field = "dev9ModeDns1",
         )
         SettingsDivider()
         SegmentedRow(
@@ -260,6 +262,7 @@ fun NetworkTab(state: MutableState<Settings>) {
             options = dnsModes,
             selectedIndex = dns2Index,
             onChange = { apply(s.copy(network = s.network.copy(dev9ModeDns2 = dnsModes[it]))) },
+            field = "dev9ModeDns2",
         )
         SettingsDivider()
         EditableTextRow(str("network.ps2Ip"), s.network.dev9Ps2Ip) {
@@ -317,15 +320,15 @@ fun NetworkTab(state: MutableState<Settings>) {
             }
         }
         } // end Online-only block
-        ToggleRow(str("network.logDhcp"), s.network.dev9EthLogDhcp) {
+        ToggleRow(str("network.logDhcp"), s.network.dev9EthLogDhcp, field = "dev9EthLogDhcp") {
             apply(s.copy(network = s.network.copy(dev9EthLogDhcp = it)))
         }
         SettingsDivider()
-        ToggleRow(str("network.logDns"), s.network.dev9EthLogDns) {
+        ToggleRow(str("network.logDns"), s.network.dev9EthLogDns, field = "dev9EthLogDns") {
             apply(s.copy(network = s.network.copy(dev9EthLogDns = it)))
         }
         SettingsDivider()
-        ToggleRow(str("network.enableDev9VirtualHdd"), s.network.dev9HddEnable) {
+        ToggleRow(str("network.enableDev9VirtualHdd"), s.network.dev9HddEnable, field = "dev9HddEnable") {
             apply(s.copy(network = s.network.copy(dev9HddEnable = it, dev9HddFile = s.network.dev9HddFile.ifEmpty { "DEV9hdd.raw" })))
         }
         SettingsDivider()
@@ -344,7 +347,7 @@ fun NetworkTab(state: MutableState<Settings>) {
             fontSize = 14.sp,
             modifier = Modifier.padding(bottom = 4.dp),
         )
-        ToggleRow(str("network.emulateUsbKeyboard"), s.system.usbKeyboard) {
+        ToggleRow(str("network.emulateUsbKeyboard"), s.system.usbKeyboard, field = "usbKeyboard") {
             apply(s.copy(system = s.system.copy(usbKeyboard = it)))
         }
         HelpText(str("network.usbKeyboard.help"))

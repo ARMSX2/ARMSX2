@@ -38,7 +38,7 @@ namespace GSDriverReport
 
 	struct ServedDriverClassification
 	{
-		/// "turnip", "libmali", "vendor-qualcomm", "vendor-arm", "panvk", "mesa-<driverName>" for
+		/// "turnip", "malisx2", "vendor-qualcomm", "vendor-arm", "panvk", "mesa-<driverName>" for
 		/// another Mesa driver, "other", or "unknown".
 		std::string answered;
 		/// The property values the verdict rests on, for a human to check.
@@ -47,13 +47,24 @@ namespace GSDriverReport
 		uint32_t axfl_generation = 0;
 	};
 
-	/// Classifies the driver from its own properties. libmali deliberately reports Arm's driverID
-	/// and a stock-looking device name, so it is told apart by the "libmali" in its driverInfo and
-	/// never by driverID.
+	/// Whether driverInfo names malisx2, our Vulkan driver for Mali. Forwards to
+	/// GpuProfileDetector::IsMaliSX2Driver, which owns the rule.
+	bool IsMaliSX2Driver(std::string_view driver_info);
+
+	/// Whether an installed custom driver pack is a malisx2 pack, from the directory it was
+	/// installed in and the library file it loads. The app names a pack's directory by its id
+	/// ("armsx2libmali-..." for the ones it downloads, kept from before the rename) and the pack's
+	/// library is libvulkan_malisx2.so. Only the last component of `pack_dir` is read, so the
+	/// app's own data path cannot match. Same two spellings as IsMaliSX2Driver, case-insensitive.
+	bool IsMaliSX2Pack(std::string_view pack_dir, std::string_view library_name);
+
+	/// Classifies the driver from its own properties. malisx2 deliberately reports Arm's driverID
+	/// and a stock-looking device name, so it is told apart by IsMaliSX2Driver on its driverInfo
+	/// and never by driverID.
 	ServedDriverClassification ClassifyServedDriver(const ServedDriverFacts& facts);
 
 	/// What a selected custom pack should be, from its name, library file name and meta.json text:
-	/// "turnip", "libmali", or "custom" when neither can be told. Returns "system" for no pack.
+	/// "turnip", "malisx2", or "custom" when neither can be told. Returns "system" for no pack.
 	std::string ExpectedDriverForPack(bool custom_selected, std::string_view pack_name,
 		std::string_view library_name, std::string_view description);
 

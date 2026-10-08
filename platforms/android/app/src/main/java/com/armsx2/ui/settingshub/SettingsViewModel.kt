@@ -27,7 +27,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         val serial = game?.settingsKey
         InGameOverlay.currentSerial.value = serial
         InGameOverlay.settingsScope.value = if (serial == null) SettingsScope.Global else SettingsScope.Game
-        settings.value = if (serial == null) ConfigStore.loadGlobal() else ConfigStore.resolveForGame(serial)
+        settings.value = if (serial == null) ConfigStore.loadGlobal() else ConfigStore.resolveForDisplay(serial)
         // General is the generic "open settings" entry every menu uses, so reopen on the category
         // last shown instead (#729): changing a setting, trying it in the game and coming back
         // used to land on General every time. A caller that asks for a specific category (the
@@ -77,7 +77,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 if (pruned == null) ConfigStore.clearOverrides(serial)
                 else ConfigStore.saveOverrides(serial, pruned)
             }
-            settings.value = ConfigStore.resolveForGame(serial)
+            settings.value = ConfigStore.resolveForDisplay(serial)
         } else {
             settings.value = settings.value.resetCategory(category)
             ConfigStore.saveGlobal(settings.value)
@@ -100,7 +100,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 gameSerial != null && running -> {
                     ConfigStore.resolveForGame(gameSerial).writeGameSettingsIni(ConfigStore.loadGlobal(), claimsFor = gameSerial)
                     NativeApp.reloadGameSettingsLayer()
-                    settings.value.applyTo()
+                    // Stored, not settings.value: that has the database's values in it.
+                    ConfigStore.resolveForGame(gameSerial).applyTo()
                 }
                 // From the library (no VM): the INI can't be reached through a running game, so
                 // rewrite it by serial. A no-op when the game never wrote one — then the pruned

@@ -53,6 +53,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
             label = str("perf.lowLatencyMode.label"),
             value = s.hwFixes.vsyncQueueSize == 0,
             description = str("perf.lowLatencyMode.description"),
+            field = "vsyncQueueSize",
         ) { enabled ->
             apply(s.copy(hwFixes = s.hwFixes.copy(vsyncQueueSize = if (enabled) 0 else 2)))
             // Apply the scoped Surface frame-rate vote immediately while the
@@ -153,6 +154,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                     apply(s.copy(output = s.output.copy(hwScaler = when (it) { 1 -> 3; 2 -> 2; 3 -> 1; else -> 0 })))
                     com.armsx2.runtime.MainActivityRuntime.surface.value?.applyOutputScale()
                 },
+                field = "hwScaler",
             )
         }
         SettingsDivider()
@@ -173,6 +175,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                     apply(s.copy(output = s.output.copy(screenResOverride = presets[idx])))
                     com.armsx2.runtime.MainActivityRuntime.surface.value?.applyOutputScale()
                 },
+                field = "screenResOverride",
             )
         }
         // ---- Sustained Performance (#128) ---------------------------------------
@@ -247,6 +250,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
             columns = 2,
             description = str("perf.affinity.description"),
             onChange = { apply(s.copy(output = s.output.copy(affinityMode = it))) },
+            field = "affinityMode",
         )
         SettingsDivider()
         CollapsibleSection(str("perf.speedhacks.title"), initiallyExpanded = true) {
@@ -269,6 +273,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                     }
                 },
                 onChange = { apply(s.copy(cpu = s.cpu.copy(eeCycleRate = it))) },
+                field = "eeCycleRate",
             )
             SettingsDivider()
             IntSliderRow(
@@ -278,6 +283,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 max = 3,
                 description = str("perf.eeCycleSkip.description"),
                 onChange = { apply(s.copy(cpu = s.cpu.copy(eeCycleSkip = it))) },
+                field = "eeCycleSkip",
             )
             SettingsDivider()
             // Recompiler float-clamping accuracy (PCSX2 parity). Higher = more
@@ -289,6 +295,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 selectedIndex = s.cpu.eeClampMode.coerceIn(0, 4),
                 description = str("perf.eeFpuClamping.description"),
                 onChange = { apply(s.copy(cpu = s.cpu.copy(eeClampMode = it))) },
+                field = "eeClampMode",
             )
             SettingsDivider()
             SegmentedRow(
@@ -297,6 +304,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 selectedIndex = s.cpu.vuClampMode.coerceIn(0, 4),
                 description = str("perf.vuClamping.description"),
                 onChange = { apply(s.copy(cpu = s.cpu.copy(vuClampMode = it))) },
+                field = "vuClampMode",
             )
             SettingsDivider()
             SegmentedRow(
@@ -305,6 +313,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 selectedIndex = if (s.cpu.vu1ClampMode < 0) 0 else s.cpu.vu1ClampMode.coerceIn(0, 4) + 1,
                 description = str("perf.vu1Clamping.description"),
                 onChange = { apply(s.copy(cpu = s.cpu.copy(vu1ClampMode = it - 1))) },
+                field = "vu1ClampMode",
             )
             SettingsDivider()
             SegmentedRow(
@@ -313,6 +322,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 selectedIndex = s.emuCore.eeFpuRoundMode.coerceIn(0, 3),
                 description = str("perf.eeFpuRoundMode.description"),
                 onChange = { apply(s.copy(emuCore = s.emuCore.copy(eeFpuRoundMode = it))) },
+                field = "eeFpuRoundMode",
             )
             SettingsDivider()
             SegmentedRow(
@@ -321,6 +331,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 selectedIndex = s.emuCore.vu0RoundMode.coerceIn(0, 3),
                 description = str("perf.vu0RoundMode.description"),
                 onChange = { apply(s.copy(emuCore = s.emuCore.copy(vu0RoundMode = it))) },
+                field = "vu0RoundMode",
             )
             SettingsDivider()
             SegmentedRow(
@@ -329,6 +340,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 selectedIndex = s.emuCore.vu1RoundMode.coerceIn(0, 3),
                 description = str("perf.vu1RoundMode.description"),
                 onChange = { apply(s.copy(emuCore = s.emuCore.copy(vu1RoundMode = it))) },
+                field = "vu1RoundMode",
             )
             SettingsDivider()
             // Speed Limit % — caps emulation speed as a % of native (100 = full speed).
@@ -341,6 +353,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 description = str("perf.speedLimit.description"),
                 valueFormatter = { "$it%" },
                 onChange = { apply(s.copy(frameLimit = s.frameLimit.copy(nominalSpeedPercent = it))) },
+                field = "nominalSpeedPercent",
             )
             SettingsDivider()
             // Display FPS Cap — caps the PRESENTED frame rate independently of Speed %.
@@ -354,6 +367,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 description = str("perf.displayFpsCap.description"),
                 valueFormatter = { if (it == 0) com.armsx2.i18n.I18n.get("common.off") else "$it fps" },
                 onChange = { apply(s.copy(frameLimit = s.frameLimit.copy(fpsLimit = it))) },
+                field = "fpsLimit",
             )
             SettingsDivider()
             // Per-region emulated vsync rate (PCSX2 EmuCore/GS FramerateNTSC / FrameratePAL)
@@ -370,6 +384,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 // canonical rate stays recoverable (an integer slider can't dial 59.94).
                 valueFormatter = { if (it == 60) "59.94 Hz" else "$it Hz" },
                 onChange = { apply(s.copy(output = s.output.copy(framerateNtsc = if (it == 60) 59.94f else it.toFloat()))) },
+                field = "framerateNtsc",
             )
             SettingsDivider()
             IntSliderRow(
@@ -380,6 +395,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 description = str("perf.palFramerate.description"),
                 valueFormatter = { "$it Hz" },
                 onChange = { apply(s.copy(output = s.output.copy(frameratePal = it.toFloat()))) },
+                field = "frameratePal",
             )
             SettingsDivider()
             IntSliderRow(
@@ -390,6 +406,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 description = str("perf.frameSkip.description"),
                 valueFormatter = { if (it == 0) com.armsx2.i18n.I18n.get("common.off") else "Skip $it" },
                 onChange = { apply(s.copy(frameLimit = s.frameLimit.copy(frameSkip = it))) },
+                field = "frameSkip",
             )
         }
         // Frame generation. Its own group above the speedhacks because it is not one: it
@@ -422,16 +439,16 @@ fun PerformanceTab(state: MutableState<Settings>) {
         SettingsDivider()
         CollapsibleSection(str("perf.advancedSpeedhacks.title")) {
             Spacer(Modifier.height(8.dp))
-            ToggleRow(str("perf.hack.mtvu"), s.cpu.mtvu, description = str("perf.hack.mtvu.desc")) { apply(s.copy(cpu = s.cpu.copy(mtvu = it))) }
-            ToggleRow(str("perf.hack.instantVu1"), s.cpu.vu1Instant, description = str("perf.hack.instantVu1.desc")) { apply(s.copy(cpu = s.cpu.copy(vu1Instant = it))) }
-            ToggleRow(str("perf.hack.vuFlagHack"), s.cpu.vuFlagHack, description = str("perf.hack.vuFlagHack.desc")) { apply(s.copy(cpu = s.cpu.copy(vuFlagHack = it))) }
-            ToggleRow(str("perf.hack.fastCdvd"), s.cpu.fastCDVD, description = str("perf.hack.fastCdvd.desc")) { apply(s.copy(cpu = s.cpu.copy(fastCDVD = it))) }
-            ToggleRow(str("perf.hack.intcStat"), s.cpu.intcStat, description = str("perf.hack.intcStat.desc")) { apply(s.copy(cpu = s.cpu.copy(intcStat = it))) }
-            ToggleRow(str("perf.hack.waitLoop"), s.cpu.waitLoop, description = str("perf.hack.waitLoop.desc")) { apply(s.copy(cpu = s.cpu.copy(waitLoop = it))) }
-            ToggleRow(str("perf.hack.vuNeonFusions"), s.cpu.vuNeonFusions, description = str("perf.hack.vuNeonFusions.desc")) { apply(s.copy(cpu = s.cpu.copy(vuNeonFusions = it))) }
-            ToggleRow(str("perf.hack.skipVuStallSim"), s.cpu.vuSkipStallSim, description = str("perf.hack.skipVuStallSim.desc")) { apply(s.copy(cpu = s.cpu.copy(vuSkipStallSim = it))) }
-            ToggleRow(str("perf.hack.deferVuWrites"), s.cpu.vuDeferredWrites, description = str("perf.hack.deferVuWrites.desc")) { apply(s.copy(cpu = s.cpu.copy(vuDeferredWrites = it))) }
-            ToggleRow(str("perf.hack.skipDupeFrames"), s.emuCore.skipDuplicateFrames, description = str("perf.hack.skipDupeFrames.desc")) { apply(s.copy(emuCore = s.emuCore.copy(skipDuplicateFrames = it))) }
+            ToggleRow(str("perf.hack.mtvu"), s.cpu.mtvu, description = str("perf.hack.mtvu.desc"), field = "mtvu") { apply(s.copy(cpu = s.cpu.copy(mtvu = it))) }
+            ToggleRow(str("perf.hack.instantVu1"), s.cpu.vu1Instant, description = str("perf.hack.instantVu1.desc"), field = "vu1Instant") { apply(s.copy(cpu = s.cpu.copy(vu1Instant = it))) }
+            ToggleRow(str("perf.hack.vuFlagHack"), s.cpu.vuFlagHack, description = str("perf.hack.vuFlagHack.desc"), field = "vuFlagHack") { apply(s.copy(cpu = s.cpu.copy(vuFlagHack = it))) }
+            ToggleRow(str("perf.hack.fastCdvd"), s.cpu.fastCDVD, description = str("perf.hack.fastCdvd.desc"), field = "fastCDVD") { apply(s.copy(cpu = s.cpu.copy(fastCDVD = it))) }
+            ToggleRow(str("perf.hack.intcStat"), s.cpu.intcStat, description = str("perf.hack.intcStat.desc"), field = "intcStat") { apply(s.copy(cpu = s.cpu.copy(intcStat = it))) }
+            ToggleRow(str("perf.hack.waitLoop"), s.cpu.waitLoop, description = str("perf.hack.waitLoop.desc"), field = "waitLoop") { apply(s.copy(cpu = s.cpu.copy(waitLoop = it))) }
+            ToggleRow(str("perf.hack.vuNeonFusions"), s.cpu.vuNeonFusions, description = str("perf.hack.vuNeonFusions.desc"), field = "vuNeonFusions") { apply(s.copy(cpu = s.cpu.copy(vuNeonFusions = it))) }
+            ToggleRow(str("perf.hack.skipVuStallSim"), s.cpu.vuSkipStallSim, description = str("perf.hack.skipVuStallSim.desc"), field = "vuSkipStallSim") { apply(s.copy(cpu = s.cpu.copy(vuSkipStallSim = it))) }
+            ToggleRow(str("perf.hack.deferVuWrites"), s.cpu.vuDeferredWrites, description = str("perf.hack.deferVuWrites.desc"), field = "vuDeferredWrites") { apply(s.copy(cpu = s.cpu.copy(vuDeferredWrites = it))) }
+            ToggleRow(str("perf.hack.skipDupeFrames"), s.emuCore.skipDuplicateFrames, description = str("perf.hack.skipDupeFrames.desc"), field = "skipDuplicateFrames") { apply(s.copy(emuCore = s.emuCore.copy(skipDuplicateFrames = it))) }
         }
     }
 }

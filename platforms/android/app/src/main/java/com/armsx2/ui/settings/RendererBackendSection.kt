@@ -39,6 +39,7 @@ fun RendererBackendSection(state: MutableState<Settings>) {
             InGameOverlay.saveSettings(settings.copy(output = settings.output.copy(renderer = renderer)))
             MainActivityRuntime.renderer.value = renderer
         },
+        field = "renderer",
     )
 
     if (settings.output.renderer == "vulkan") {

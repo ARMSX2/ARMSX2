@@ -801,6 +801,13 @@ namespace GSDriverReport
 				ctx.driver_version = props.driverVersion;
 				ctx.api_version = props.apiVersion;
 				ctx.max_draw_indirect_count = props.limits.maxDrawIndirectCount;
+				// f_roaa is only chained, and so only filled, where the device has the extension.
+				const bool has_roaa = has(VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME) ||
+				                      has(VK_ARM_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME);
+				ctx.roaa_color_access = features2_ok && has_roaa && f_roaa.rasterizationOrderColorAttachmentAccess == VK_TRUE;
+				// ppush is only chained, and so only filled, where the device has the extension.
+				if (props2_ok && has(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME))
+					ctx.max_push_descriptors = ppush.maxPushDescriptors;
 				if (has_driver_props)
 				{
 					ctx.driver_id = driver_id;

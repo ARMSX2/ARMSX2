@@ -34,8 +34,16 @@ namespace GSNullDeviceProfile
 		// Dimensity 8300 / Mali-G615 MC6 (RG 477V) on ARM r44p1. In-tile road: texture barriers
 		// and framebuffer fetch on, no dual-source blending, so SRC1 blends are emulated in-shader.
 		// Depends on MT6897's exemption from both MediaTek/Mali rules that would remove the fetch
-		// (GSGPUDriverProfile.cpp, MEASURED_SOC_MT6897).
+		// (GSGPUDriverProfile.cpp, MEASURED_SOC_MT6897). Arm's own driver. Unchanged since older
+		// records were taken against this name.
 		MaliG615,
+		// The same part on malisx2, our Vulkan driver. It reports Arm's identity (vendor 0x13b5, driverID
+		// ARM_PROPRIETARY, 44.1.0, "Mali-G615") with its own name in driverInfo, and reaches the in-tile
+		// road by rule -- exempt from the r44p1 row and, with ROAA, from the destination-read rows --
+		// rather than by MT6897's SoC exemption. What else it changes (push descriptors, line
+		// rasterization, memory budget, device fault) is not a FeatureSupport bit, so every bit equals
+		// MaliG615's.
+		MaliG615Malisx2,
 		// FeatureSupport's own default: every bit false except dual_source_blend. Not a device;
 		// kept so numbers taken before profiles existed stay reproducible.
 		Blank,
@@ -49,6 +57,8 @@ namespace GSNullDeviceProfile
 			return Id::Sd865;
 		if (name == "mali-g615")
 			return Id::MaliG615;
+		if (name == "mali-g615-malisx2")
+			return Id::MaliG615Malisx2;
 		if (name == "blank")
 			return Id::Blank;
 		return std::nullopt;
@@ -62,6 +72,8 @@ namespace GSNullDeviceProfile
 				return "sd865";
 			case Id::MaliG615:
 				return "mali-g615";
+			case Id::MaliG615Malisx2:
+				return "mali-g615-malisx2";
 			case Id::Blank:
 				return "blank";
 		}
@@ -76,6 +88,8 @@ namespace GSNullDeviceProfile
 				return "Snapdragon 865 / Adreno 650, Turnip (RT-copy feedback road)";
 			case Id::MaliG615:
 				return "Dimensity 8300 / Mali-G615 MC6, ARM r44p1 (in-tile fetch road)";
+			case Id::MaliG615Malisx2:
+				return "Dimensity 8300 / Mali-G615 MC6, malisx2 on the r44p1 identity (in-tile fetch road)";
 			case Id::Blank:
 				return "no device -- FeatureSupport defaults, the pre-profile null arm";
 		}
@@ -83,7 +97,10 @@ namespace GSNullDeviceProfile
 	}
 
 	/// Every profile name, for usage text and for the error on an unknown one.
-	inline const char* NameList() { return "sd865, mali-g615, blank"; }
+	inline const char* NameList() { return "sd865, mali-g615, mali-g615-malisx2, blank"; }
+
+	/// The Mali-G615 profiles: both reach the in-tile road and share every bit below.
+	inline constexpr bool IsMali(Id id) { return id == Id::MaliG615 || id == Id::MaliG615Malisx2; }
 
 	/// The resolved FeatureSupport of the named device.
 	inline GSDevice::FeatureSupport Features(Id id)
@@ -92,12 +109,12 @@ namespace GSNullDeviceProfile
 		if (id == Id::Blank)
 			return f;
 
-		const bool mali = (id == Id::MaliG615);
+		const bool mali = IsMali(id);
 
 		// --- the same on both, and on every mobile Vulkan part we ship to ---
 		f.vs_expand = true; // GSConfig.DisableVertexShaderExpand is off by default
 		f.primitive_id = true; // geometryShader is present on both
-		f.provoking_vertex_last = true; // VK_EXT_provoking_vertex on both
+		f.provoking_vertex_last = true; // VK_EXT_provoking_vertex on every device profile; malisx2 advertises it
 		f.point_expand = true; // largePoints, range covers every upscale we run
 		f.line_expand = true; // wideLines, likewise
 		f.prefer_new_textures = true; // neither part resolves to the constrained mobile tuning

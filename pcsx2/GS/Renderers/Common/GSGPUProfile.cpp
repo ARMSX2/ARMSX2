@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cctype>
+#include <utility>
 
 #if defined(__ANDROID__)
 #include <sys/system_properties.h>
@@ -279,6 +280,21 @@ const char* GpuProfileDetector::ArchitectureToString(MobileGpuArchitecture value
 	}
 }
 
+u32 GpuProfileDetector::MaliValhallArch(MobileGpuArchitecture architecture)
+{
+	switch (architecture)
+	{
+		case MobileGpuArchitecture::MaliValhall1:
+			return 9;
+		case MobileGpuArchitecture::MaliValhall2:
+			return 10;
+		case MobileGpuArchitecture::MaliValhall3:
+			return 11;
+		default:
+			return 0;
+	}
+}
+
 static void ApplyResolvedProfile(GpuProfileSelection& selection, RuntimeGpuProfile runtime_profile,
 	GpuProfileDetail::ResolvedGpuProfile&& resolved)
 {
@@ -378,6 +394,73 @@ const char* GpuProfileDetector::WorkaroundToString(DriverWorkaround value)
 		case DriverWorkaround::Count:
 		default: return "Unknown";
 	}
+}
+
+bool GpuProfileDetector::IsMaliSX2Driver(std::string_view driver_info)
+{
+	return driver_info.find("malisx2") != std::string_view::npos ||
+	       driver_info.find("libmali") != std::string_view::npos;
+}
+
+static void AppendName(std::string& list, std::string_view name)
+{
+	if (!list.empty())
+		list += ", ";
+	list += name;
+}
+
+static std::string OrNone(std::string list)
+{
+	return list.empty() ? std::string("none") : list;
+}
+
+std::string GpuProfileDetector::DescribeMatchedRules(const MobileDriverProfile& profile)
+{
+	std::string list;
+	for (u32 row = 0; row < DriverRuleCount(); row++)
+	{
+		const u64 bit = u64{1} << row;
+		if (!(profile.matched_rules & bit))
+			continue;
+		if (profile.exempted_rules & bit)
+			AppendName(list, std::string(DriverRuleId(row)) + " (exempt: malisx2)");
+		else
+			AppendName(list, DriverRuleId(row));
+	}
+	return OrNone(std::move(list));
+}
+
+std::string GpuProfileDetector::DescribeBugs(u64 mask)
+{
+	std::string list;
+	for (u8 i = 0; i < static_cast<u8>(DriverBug::Count); i++)
+	{
+		if (mask & BugMask(static_cast<DriverBug>(i)))
+			AppendName(list, BugToString(static_cast<DriverBug>(i)));
+	}
+	return OrNone(std::move(list));
+}
+
+std::string GpuProfileDetector::DescribeWorkarounds(u64 mask)
+{
+	std::string list;
+	for (u8 i = 0; i < static_cast<u8>(DriverWorkaround::Count); i++)
+	{
+		if (mask & (u64{1} << i))
+			AppendName(list, WorkaroundToString(static_cast<DriverWorkaround>(i)));
+	}
+	return OrNone(std::move(list));
+}
+
+std::string GpuProfileDetector::DescribeDeviceRules(const VulkanDeviceRules& rules)
+{
+	std::string list;
+	for (const VulkanDeviceRuleName& entry : VULKAN_DEVICE_RULE_NAMES)
+	{
+		if (rules.*entry.flag)
+			AppendName(list, entry.name);
+	}
+	return OrNone(std::move(list));
 }
 
 
