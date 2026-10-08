@@ -605,6 +605,125 @@ SLUS-20686:
     autoFlush: 1
     copyRoadMaximumBlendingLevel: 0
 
+# Gran Turismo 4 -- asynchronous GS download mode (5).
+# Source: PR #797 by Richpol99 (2026-10-04), which asked for Unsynchronized (3); changed to 5 and
+# the serial list corrected by bmdhacks, 2026-10-08.
+# The cost it saves: once a frame the game sums a 64x64 image into one row of a 64x8 target at
+# block 0x35e0 with additive sprites, then reads that row back to the CPU. Probably a brightness
+# measurement for auto-exposure. At the default mode every such read makes the EE wait for the GPU
+# to finish the frame so far. The PR reports frame drops on Mali and Adreno at night and in
+# bumper/cockpit view.
+# Why 5 and not 3: Unsynchronized never downloads, so the game would read stale memory every frame
+# and whatever the value drives would stop changing. Asynchronous downloads the real data and serves
+# it a frame or two late, without waiting; an exposure loop that eases over many frames should not
+# notice. To check in play: entering and leaving a tunnel, brightness should still adapt as it does
+# at the default mode.
+# Verified: the PR's dump (SCUS-97328, Mali-G615, a race in a tunnel) replayed with pcsx2-gsrunner
+# on master e717185597, Vulkan on an Apple M2 at 1x: GPU blocking waits 6 -> 2 over the dump and all
+# frames byte-identical to the default mode. A replay cannot show the game's reaction to the value,
+# and the speed on a Mali or Adreno device is not measured.
+# Retail GT4 serials only. Prologue, the demos, Tourist Trophy and the Nike editions are left out:
+# nobody has checked they make the same readback.
+# gsHWFixes replaces upstream's block, so upstream's GT4 fixes are restated beside it.
+SCUS-97328:            # Gran Turismo 4 (NTSC-U)
+  gsHWFixes:
+    autoFlush: 1
+    getSkipCount: "GSC_PolyphonyDigitalGames"
+    halfPixelOffset: 4
+    hwDownloadMode: 5
+    recommendedBlendingLevel: 3
+SCUS-97563:            # Gran Turismo 4 (NTSC-U, later release)
+  gsHWFixes:
+    autoFlush: 1
+    getSkipCount: "GSC_PolyphonyDigitalGames"
+    halfPixelOffset: 4
+    hwDownloadMode: 5
+    recommendedBlendingLevel: 3
+SCUS-90682:            # Gran Turismo 4 (NTSC-U)
+  gsHWFixes:
+    autoFlush: 1
+    getSkipCount: "GSC_PolyphonyDigitalGames"
+    halfPixelOffset: 4
+    hwDownloadMode: 5
+    recommendedBlendingLevel: 3
+SCUS-97436:            # Gran Turismo 4 (NTSC-U, Online Public Beta)
+  gsHWFixes:
+    autoFlush: 1
+    getSkipCount: "GSC_PolyphonyDigitalGames"
+    halfPixelOffset: 4
+    hwDownloadMode: 5
+    recommendedBlendingLevel: 3
+SCES-51719:            # Gran Turismo 4 (PAL)
+  gsHWFixes:
+    autoFlush: 1
+    getSkipCount: "GSC_PolyphonyDigitalGames"
+    halfPixelOffset: 4
+    hwDownloadMode: 5
+    recommendedBlendingLevel: 3
+SCPS-17001:            # Gran Turismo 4 (NTSC-J)
+  gsHWFixes:
+    autoFlush: 1
+    getSkipCount: "GSC_PolyphonyDigitalGames"
+    halfPixelOffset: 4
+    hwDownloadMode: 5
+    recommendedBlendingLevel: 3
+SCPS-19252:            # Gran Turismo 4 (NTSC-J, PlayStation2 the Best)
+  gsHWFixes:
+    autoFlush: 1
+    getSkipCount: "GSC_PolyphonyDigitalGames"
+    halfPixelOffset: 4
+    hwDownloadMode: 5
+    recommendedBlendingLevel: 3
+SCAJ-30006:            # Gran Turismo 4 (NTSC-C)
+  gsHWFixes:
+    autoFlush: 1
+    getSkipCount: "GSC_PolyphonyDigitalGames"
+    halfPixelOffset: 4
+    hwDownloadMode: 5
+    recommendedBlendingLevel: 3
+SCAJ-30007:            # Gran Turismo 4 (NTSC-C)
+  gsHWFixes:
+    autoFlush: 1
+    getSkipCount: "GSC_PolyphonyDigitalGames"
+    halfPixelOffset: 4
+    hwDownloadMode: 5
+    recommendedBlendingLevel: 3
+SCAJ-30008:            # Gran Turismo 4 (NTSC-C, PlayStation2 the Best)
+  gsHWFixes:
+    autoFlush: 1
+    getSkipCount: "GSC_PolyphonyDigitalGames"
+    halfPixelOffset: 4
+    hwDownloadMode: 5
+    recommendedBlendingLevel: 3
+SCCS-60002:            # Gran Turismo 4 (NTSC-C, Chinese)
+  gsHWFixes:
+    autoFlush: 1
+    getSkipCount: "GSC_PolyphonyDigitalGames"
+    halfPixelOffset: 4
+    hwDownloadMode: 5
+    recommendedBlendingLevel: 3
+SCKA-30001:            # Gran Turismo 4 (NTSC-K)
+  gsHWFixes:
+    autoFlush: 1
+    getSkipCount: "GSC_PolyphonyDigitalGames"
+    halfPixelOffset: 4
+    hwDownloadMode: 5
+    recommendedBlendingLevel: 3
+SCKA-30004:            # Gran Turismo 4 (NTSC-K, BigHit Series)
+  gsHWFixes:
+    autoFlush: 1
+    getSkipCount: "GSC_PolyphonyDigitalGames"
+    halfPixelOffset: 4
+    hwDownloadMode: 5
+    recommendedBlendingLevel: 3
+PBPX-95601:            # Gran Turismo 4 (NTSC-J, console bundle)
+  gsHWFixes:
+    autoFlush: 1
+    getSkipCount: "GSC_PolyphonyDigitalGames"
+    halfPixelOffset: 4
+    hwDownloadMode: 5
+    recommendedBlendingLevel: 3
+
 # ---------------------------------------------------------------------------------------------
 # Namco System 246/256 arcade games. Added 2026-10-01 by jpolo1224 with the arcade port (branch
 # namco-arcade), copied verbatim from PCSX2x6's GameIndex.yaml at 583f0e9090 (2026-09-09,
