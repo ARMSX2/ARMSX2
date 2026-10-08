@@ -237,6 +237,111 @@ TEST(GSGpuProfileMali, ImmortalisIsNamedAsSuch)
 	EXPECT_EQ(p.gpu.name, "Immortalis-G715 MC11");
 }
 
+// ---------------------------------------------------------------------------------------------
+// Valhall architecture number, as Mesa's panfrost model table counts it (pan_model.c keys each
+// Mali on PAN_PROD_ID(arch, ...); the arch is the first field). Resolved here from GL_RENDERER
+// strings, the way Auto's decision sees them.
+//
+//   v9   G57 (pan_model.c 9,0,1 and 9,0,3), G68 (9,2,4); G77 and G78 are not in that table but are
+//        arch 9 in Mesa's bifrost compiler table and in Arm's kbase (GPU_ID2_MODEL_MAKE(9, n))
+//   v10  G610 (10,8,7), G310 (10,12,4); G710 and G510 are kbase arch 10
+//   v11  G715 (11,8,2), G615 (11,8,3)
+//   12+  G720 is 12, G725 is 13, G1 is 14; G620 is kbase arch 12. None of them is v11.
+
+u32 ValhallArchOf(std::string_view renderer)
+{
+	return GpuProfileDetector::MaliValhallArch(Mali(renderer).gpu.architecture);
+}
+
+// Every spelling a v9 part is known by: the stock GL_RENDERER with MC<n> or MP<n> (Arm's blobs use
+// both for the same part), and the bare names our malisx2 driver reports as the Vulkan deviceName
+// for product ids 0x9001..0x9005. The G77 and G57 core-count spellings are malisx2's naming for
+// product 0x9000 and unknown arch-9 ids.
+TEST(GSGpuProfileMali, ValhallV9IsG57G68G77G78)
+{
+	for (const char* renderer : {"Mali-G57", "Mali-G57 MC2", "Mali-G57 MC4", "Mali-G57 MC6", "Mali-G68",
+			 "Mali-G68 MC4", "Mali-G77 MC7", "Mali-G77 MC9", "Mali-G78", "Mali-G78 MC14", "Mali-G78 MP14",
+			 "Mali-G78AE", "Mali-G78AE MC10"})
+	{
+		EXPECT_EQ(ValhallArchOf(renderer), 9u) << renderer;
+	}
+}
+
+TEST(GSGpuProfileMali, ValhallV10IsG310G510G610G710)
+{
+	EXPECT_EQ(ValhallArchOf("Mali-G310 MC2"), 10u);
+	EXPECT_EQ(ValhallArchOf("Mali-G510 MC4"), 10u);
+	EXPECT_EQ(ValhallArchOf("Mali-G610 MC6"), 10u);
+	EXPECT_EQ(ValhallArchOf("Mali-G710 MC10"), 10u);
+}
+
+TEST(GSGpuProfileMali, ValhallV11IsG615G715AndImmortalisG715)
+{
+	// The bare names are what malisx2 reports for v11; the MC<n> forms are Arm's stock strings.
+	for (const char* renderer : {"Mali-G615", "Mali-G615 MC6", "Mali-G615 MC2", "Mali-G715", "Mali-G715 MC7"})
+		EXPECT_EQ(ValhallArchOf(renderer), 11u) << renderer;
+	// The two spellings the Arm driver and a name rebuilt from the model number produce.
+	EXPECT_EQ(ValhallArchOf("Mali-G715-Immortalis MC11"), 11u);
+	EXPECT_EQ(ValhallArchOf("Immortalis-G715 MC11"), 11u);
+}
+
+// Names that read like v11 and are not: G720 is arch 12 and G725 arch 13 in Mesa's table, G620 is
+// arch 12 in kbase, and G625 and G925 sit with G725.
+TEST(GSGpuProfileMali, TheFifthGenPartsAreNotValhall)
+{
+	for (const char* renderer : {"Mali-G620 MC4", "Mali-G720 MC7", "Mali-G720-Immortalis MC10",
+			 "Mali-G625 MC6", "Mali-G725 MC6", "Mali-G925-Immortalis MC12", "Immortalis-G925 MC12",
+			 "Mali-G1-Ultra MC12"})
+	{
+		EXPECT_EQ(ValhallArchOf(renderer), 0u) << renderer;
+	}
+}
+
+TEST(GSGpuProfileMali, BifrostAndOlderAreNotValhall)
+{
+	for (const char* renderer : {"Mali-G31 MP2", "Mali-G51 MP4", "Mali-G52 MC2", "Mali-G71 MP20",
+			 "Mali-G72 MP12", "Mali-G76 MC12", "Mali-T880 MP12", "Mali-450 MP"})
+	{
+		EXPECT_EQ(ValhallArchOf(renderer), 0u) << renderer;
+	}
+}
+
+// The model number is read whole. A reader that stopped at two digits would put G71 and G715 (or
+// G31 and G310, G72 and G720, G51 and G510) in the same place; one that matched G61x loosely would
+// treat G610 and G615 alike.
+TEST(GSGpuProfileMali, TheWholeModelNumberDecidesTheArchitecture)
+{
+	EXPECT_EQ(ValhallArchOf("Mali-G71 MP8"), 0u);
+	EXPECT_EQ(ValhallArchOf("Mali-G715 MC7"), 11u);
+	EXPECT_EQ(ValhallArchOf("Mali-G710 MC10"), 10u);
+	EXPECT_EQ(ValhallArchOf("Mali-G31 MP2"), 0u);
+	EXPECT_EQ(ValhallArchOf("Mali-G310 MC2"), 10u);
+	EXPECT_EQ(ValhallArchOf("Mali-G51 MP4"), 0u);
+	EXPECT_EQ(ValhallArchOf("Mali-G510 MC4"), 10u);
+	EXPECT_EQ(ValhallArchOf("Mali-G72 MP12"), 0u);
+	EXPECT_EQ(ValhallArchOf("Mali-G720 MC7"), 0u);
+	EXPECT_EQ(ValhallArchOf("Mali-G610 MC6"), 10u);
+	EXPECT_EQ(ValhallArchOf("Mali-G615 MC6"), 11u);
+	EXPECT_EQ(ValhallArchOf("Mali-G57 MC2"), 9u);
+	EXPECT_EQ(ValhallArchOf("Mali-G77 MC9"), 9u);
+}
+
+// Only the Valhall architectures carry a number; every other value, including a part nothing
+// resolved, reads as not Valhall.
+TEST(GSGpuProfileMali, OnlyTheValhallArchitecturesHaveAValhallNumber)
+{
+	EXPECT_EQ(GpuProfileDetector::MaliValhallArch(MobileGpuArchitecture::Unknown), 0u);
+	EXPECT_EQ(GpuProfileDetector::MaliValhallArch(MobileGpuArchitecture::MaliMidgard), 0u);
+	EXPECT_EQ(GpuProfileDetector::MaliValhallArch(MobileGpuArchitecture::MaliBifrost), 0u);
+	EXPECT_EQ(GpuProfileDetector::MaliValhallArch(MobileGpuArchitecture::MaliValhall1), 9u);
+	EXPECT_EQ(GpuProfileDetector::MaliValhallArch(MobileGpuArchitecture::MaliValhall2), 10u);
+	EXPECT_EQ(GpuProfileDetector::MaliValhallArch(MobileGpuArchitecture::MaliValhall3), 11u);
+	EXPECT_EQ(GpuProfileDetector::MaliValhallArch(MobileGpuArchitecture::MaliFifthGen), 0u);
+	EXPECT_EQ(GpuProfileDetector::MaliValhallArch(MobileGpuArchitecture::MaliG1), 0u);
+	EXPECT_EQ(GpuProfileDetector::MaliValhallArch(MobileGpuArchitecture::Adreno6xx), 0u);
+	EXPECT_EQ(GpuProfileDetector::MaliValhallArch(MobileGpuArchitecture::PowerVR), 0u);
+}
+
 TEST(GSGpuProfileMali, MidgardAndUtgardParse)
 {
 	const ResolvedGpuProfile t880 = Mali("Mali-T880 MP12");

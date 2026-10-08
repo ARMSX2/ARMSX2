@@ -52,7 +52,7 @@ int mali_kbase_probe(char *json, size_t cap);
  * number with EPERM. */
 #define KB_UK_CSF_MAJOR 1
 #define KB_UK_JM_MAJOR 11
-/* The CSF interface version the libmali driver is written against. */
+/* The CSF interface version the malisx2 driver is written against. */
 #define KB_UK_DRIVER_MINOR 20
 
 struct kb_version_check {
@@ -785,7 +785,7 @@ csf_checks(struct probe *p, int fd, struct csf_info *ci)
    int jit_err = kioctl(fd, KB_IOCTL_MEM_JIT_INIT, &ji);
    step_end(p, "mem_jit_init", jit_err, NULL);
 
-   /* The memory groups the libmali driver uses: 0, 6 for most memory and
+   /* The memory groups the malisx2 driver uses: 0, 6 for most memory and
     * 9 for thread-local storage. A kernel whose memory group manager does
     * not know a group refuses the allocation. */
    const uint64_t same_va = KB_MEM_PROT_ALL | KB_MEM_SAME_VA | KB_MEM_COHERENT_LOCAL;
@@ -1025,7 +1025,7 @@ mali_kbase_probe(char *json, size_t cap)
       step_skip(&p, "get_gpuprops", "open");
    }
 
-   /* Second context, CSF only: the handshake the libmali driver makes
+   /* Second context, CSF only: the handshake the malisx2 driver makes
     * (UK 1.20) and the kernel calls it depends on. */
    if (frontend && strcmp(frontend, "csf") == 0) {
       step_begin(&p);

@@ -41,6 +41,20 @@ struct VersionBound
 	u32 build = 0;
 };
 
+/// Whether a row is skipped for malisx2, our own Vulkan driver for Mali. malisx2 reports Arm's
+/// vendorID, driverID and r44p1 revision on purpose, so rows written for Arm's blob match it; a
+/// row that describes a defect of that blob and not of our driver says so here.
+enum class Malisx2Exemption : u8
+{
+	/// The row applies to malisx2 like any other driver.
+	None,
+	/// Skipped for malisx2 whatever it advertises.
+	Always,
+	/// Skipped for malisx2 only when it advertises rasterization-order colour attachment access
+	/// (MobileDriverContext::roaa_color_access). Without it the row keeps applying.
+	WithRoaaColorAccess,
+};
+
 struct DriverRule
 {
 	const char* id;
@@ -67,6 +81,9 @@ struct DriverRule
 	/// Lowercase substring that must be present in the hints for this rule to match. Only for a
 	/// preference about one measured part; a defect should use a version or model bound instead.
 	const char* hint_require = nullptr;
+	/// A matched row is recorded in MobileDriverProfile::matched_rules and exempted_rules, and its
+	/// bugs and workarounds are not applied.
+	Malisx2Exemption exempt_malisx2 = Malisx2Exemption::None;
 };
 
 /// The SoC hint for the Anbernic RG 477V in the spelling Android ("mt6897") and the Linux
@@ -397,6 +414,18 @@ static bool RuleMatches(const DriverRule& rule, const GpuProfileSelection& selec
 	return true;
 }
 
+// Whether a row that matched is skipped because the driver is malisx2. Runs after RuleMatches, so
+// the row is recorded as matched either way.
+static bool IsExemptForMaliSX2(const DriverRule& rule, const MobileDriverContext& context)
+{
+	if (rule.exempt_malisx2 == Malisx2Exemption::None ||
+		!GpuProfileDetector::IsMaliSX2Driver(context.driver_info))
+	{
+		return false;
+	}
+	return rule.exempt_malisx2 != Malisx2Exemption::WithRoaaColorAccess || context.roaa_color_access;
+}
+
 // Sources and upstream revisions are mirrored in docs/gpu-driver-database.json. A known bug is
 // not automatically an active workaround: expensive fallbacks stay off until they have a bounded,
 // tested condition.
@@ -496,13 +525,18 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 	// content, where the founding report (Motorola Edge 60 Pro, also r44p1) crashed on nearly every
 	// game. No version bound separates the two blobs, so the exemption is per SoC.
 	//
+	// malisx2 reports r44p1 on purpose but is not Arm's blob, and the device loss is the blob's.
+	// It is exempt without condition: a malisx2 build that cannot do the in-tile read (no
+	// rasterization-order access) falls to the barrier road, which the driver supports.
+	//
 	// The other half of the r44p1 workaround, the Vulkan device not using the feedback-loop layout,
 	// is VulkanDeviceRules::avoid_feedback_loop_layout below.
 	{"vk-arm-r44p1-attachment-self-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {44, 1, 0}, {44, 2, 0},
 		0, 0, false,
 		Bug(DriverBug::BrokenSubpassFeedback) | Bug(DriverBug::BrokenAttachmentFeedbackLoopLayout),
-		Workaround(DriverWorkaround::UseRenderTargetCopyForFeedback), false, MEASURED_SOC_MT6897},
+		Workaround(DriverWorkaround::UseRenderTargetCopyForFeedback), false, MEASURED_SOC_MT6897, nullptr,
+		Malisx2Exemption::Always},
 	// ROAA destination-read deny list. These parts advertise rasterization-order attachment
 	// access and return zero or stale destination colour through it (black or missing textures,
 	// not a crash), so the renderer uses the per-primitive texture-barrier path instead.
@@ -511,13 +545,18 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 	// and it is costly where wrong: Mali reports dualSrcBlend=false, so every SRC1 draw is
 	// software-blended and needs a barrier per primitive. EmuCore/GS/ForceMaliFramebufferFetch lets
 	// a user on another MediaTek part lift it. MT6897 is exempt: measured, and the read is correct.
+	//
+	// Both ROAA rows describe Arm's blob. malisx2 is exempt from them once it advertises the access
+	// itself; a malisx2 pack that does not keeps the rows, so it gets the barrier road as before.
 	{"vk-mediatek-mali-roaa-destination-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::Unknown, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
-		Bug(DriverBug::BrokenRoaaDestinationRead), 0, true, MEASURED_SOC_MT6897},
+		Bug(DriverBug::BrokenRoaaDestinationRead), 0, true, MEASURED_SOC_MT6897, nullptr,
+		Malisx2Exemption::WithRoaaColorAccess},
 	// Mali-G57 across SoC vendors, so keyed on the model rather than the SoC.
 	{"vk-arm-g57-roaa-destination-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::Unknown, MobileGpuArchitecture::Unknown, 57, 57, 0, {}, {}, 0, 0, false,
-		Bug(DriverBug::BrokenRoaaDestinationRead), 0},
+		Bug(DriverBug::BrokenRoaaDestinationRead), 0, false, nullptr, nullptr,
+		Malisx2Exemption::WithRoaaColorAccess},
 	{"vk-qualcomm-proprietary", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::QualcommProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenPrimitiveRestart) | Bug(DriverBug::BrokenProvokingVertex) |
@@ -618,6 +657,8 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {46, 0, 0}, {51, 0, 0},
 		0, 0, false, Bug(DriverBug::BrokenExtendedDynamicState), 0},
 }};
+// MobileDriverProfile::matched_rules is one bit per row.
+static_assert(s_driver_rules.size() <= 64);
 } // namespace
 
 MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
@@ -672,8 +713,9 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 		                                          (selection.gpu.architecture == MobileGpuArchitecture::Adreno7xx) &&
 		                                          (selection.gpu.model_number >= 730);
 
-	for (const DriverRule& rule : s_driver_rules)
+	for (size_t row = 0; row < s_driver_rules.size(); row++)
 	{
+		const DriverRule& rule = s_driver_rules[row];
 		if (std::string_view(rule.id) == "vk-powervr-old-swapchain-width" &&
 			(profile.version.raw == 0 || profile.version.raw >= 0x00582558u))
 		{
@@ -701,6 +743,12 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 		if (!RuleMatches(rule, selection, context, profile, lowered_hints))
 			continue;
 
+		profile.matched_rules |= u64{1} << row;
+		if (IsExemptForMaliSX2(rule, context))
+		{
+			profile.exempted_rules |= u64{1} << row;
+			continue;
+		}
 		profile.bugs |= rule.bugs;
 		profile.workarounds |= rule.workarounds;
 		profile.matched_rule_count++;
@@ -731,6 +779,16 @@ u64 GpuProfileDetector::GetForcedBugs()
 	return s_forced_driver_bugs;
 }
 
+u32 GpuProfileDetector::DriverRuleCount()
+{
+	return static_cast<u32>(GpuProfileDetail::s_driver_rules.size());
+}
+
+const char* GpuProfileDetector::DriverRuleId(u32 row)
+{
+	return (row < GpuProfileDetail::s_driver_rules.size()) ? GpuProfileDetail::s_driver_rules[row].id : nullptr;
+}
+
 u32 GpuProfileDetector::ParseDeclaredLoopFixGeneration(std::string_view driver_info)
 {
 	return GpuProfileDetail::ParseFixGeneration(driver_info);
@@ -757,7 +815,13 @@ VulkanDeviceRules GpuProfileDetector::ResolveVulkanDeviceRules(const GpuProfileS
 	// agree on every r44p1 device seen.
 	rules.avoid_feedback_loop_layout =
 		mali && context.driver_info.find("r44p1") != std::string_view::npos;
-	rules.avoid_push_descriptors = mali || (adreno && !qualcomm_driver && !turnip);
+	// The Mali crash is in Arm's blob. malisx2 reports Arm's identity but is our own driver, and is
+	// trusted with push descriptors once it advertises as many as the backend binds; a build without
+	// the extension, or with fewer, keeps the avoid.
+	rules.exempt_malisx2_push_descriptors = mali && GpuProfileDetector::IsMaliSX2Driver(context.driver_info) &&
+	                                        context.max_push_descriptors >= VULKAN_PUSH_DESCRIPTORS_REQUIRED;
+	rules.avoid_push_descriptors =
+		(mali && !rules.exempt_malisx2_push_descriptors) || (adreno && !qualcomm_driver && !turnip);
 	rules.broken_provoking_vertex = adreno && qualcomm_driver;
 	rules.broken_colormask_with_depth =
 		adreno && !turnip && (context.device_id < 0x06000000u || context.driver_version < 0x801EA000u);

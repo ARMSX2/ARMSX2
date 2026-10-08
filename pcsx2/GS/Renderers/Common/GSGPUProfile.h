@@ -196,6 +196,13 @@ struct MobileDriverContext
 	u32 api_version = 0;
 	u32 android_sdk = 0;
 	u32 max_draw_indirect_count = 0;
+	/// The device advertises rasterization-order colour attachment access: the extension (EXT or
+	/// ARM name) is supported and its rasterizationOrderColorAttachmentAccess feature reads true,
+	/// as the device settled it after vkCreateDevice. Vulkan only; false for GL and when unknown.
+	bool roaa_color_access = false;
+	/// VkPhysicalDevicePushDescriptorPropertiesKHR::maxPushDescriptors, or 0 when
+	/// VK_KHR_push_descriptor is not enabled on the device. Vulkan only.
+	u32 max_push_descriptors = 0;
 	std::string_view driver_name;
 	std::string_view driver_info;
 	std::string_view api_version_string;
@@ -215,7 +222,16 @@ struct MobileDriverProfile
 	MobileDriverVersion version;
 	u64 bugs = 0;
 	u64 workarounds = 0;
+	/// Rows whose bugs and workarounds were applied. A row that matched and was exempted is in
+	/// matched_rules and exempted_rules and not counted here.
 	u32 matched_rule_count = 0;
+	/// The table rows whose conditions matched, bit i for row i (GpuProfileDetector::DriverRuleId
+	/// names a row). Set whether or not the row's bugs and workarounds are then applied.
+	u64 matched_rules = 0;
+	/// The subset of matched_rules that was skipped, its bugs and workarounds left out of `bugs` and
+	/// `workarounds`. Today only malisx2 is exempted: its rows are the ones written for Arm's r44p1
+	/// blob (see Malisx2Exemption in the rule table).
+	u64 exempted_rules = 0;
 	DriverProfileConfidence confidence = DriverProfileConfidence::Unknown;
 	/// True when nothing in the table matched and the safe defaults are in force.
 	bool conservative_fallback = true;
@@ -299,10 +315,14 @@ constexpr u32 Broadcom = 0x14E4;
 constexpr u32 Samsung = 0x144D;
 } // namespace GpuVendorID
 
+/// The push descriptors the Vulkan backend needs: one per texture slot of its TFX descriptor set
+/// (GSDeviceVK::NUM_TFX_TEXTURES, which a static_assert in GSDeviceVK.cpp holds equal to this).
+constexpr u32 VULKAN_PUSH_DESCRIPTORS_REQUIRED = 7;
+
 /// Vulkan device rules keyed on the device's own identity (vendor ID, device name, driver ID,
 /// driverInfo) rather than matched in the driver-bug database. Each keeps the exact condition the
 /// backend has always applied, which is not always the database's: the push-descriptor rule covers
-/// Mali on every driver, where the database names Arm's.
+/// Mali on every driver but malisx2, where the database names Arm's.
 struct VulkanDeviceRules
 {
 	/// Mali-G615: timestamp queries never resolve, and the present spin that waits on them stalls.
@@ -311,7 +331,8 @@ struct VulkanDeviceRules
 	/// used. The rest of the r44p1 workaround is rule vk-arm-r44p1-attachment-self-read.
 	bool avoid_feedback_loop_layout = false;
 	/// Mali crashes inside vkCmdPushDescriptorSetKHR. Adreno is trusted with push descriptors on the
-	/// Qualcomm driver and Turnip only.
+	/// Qualcomm driver and Turnip only. malisx2 is exempt when it advertises the extension with
+	/// enough descriptors (exempt_malisx2_push_descriptors).
 	bool avoid_push_descriptors = false;
 	/// Adreno on the Qualcomm driver selects the wrong provoking vertex.
 	bool broken_provoking_vertex = false;
@@ -328,7 +349,36 @@ struct VulkanDeviceRules
 	bool self_read_costs_measured = false;
 	/// Honeykrisp: the barrier-ordered road's fast stencil shadow and carry were measured there.
 	bool barrier_road_measured = false;
+	/// malisx2 would have taken avoid_push_descriptors as Mali, and is exempt: the crash is Arm's
+	/// blob's, and this driver advertises VK_KHR_push_descriptor with at least
+	/// VULKAN_PUSH_DESCRIPTORS_REQUIRED descriptors. Recorded so a log shows the exemption, not just
+	/// the absence of the avoid.
+	bool exempt_malisx2_push_descriptors = false;
 };
+
+/// A VulkanDeviceRules flag and the name the log and the driver report print it under.
+struct VulkanDeviceRuleName
+{
+	const char* name;
+	bool VulkanDeviceRules::* flag;
+};
+
+/// Every VulkanDeviceRules flag, in declaration order. A flag added above needs an entry here, or
+/// the size check below fails.
+inline constexpr VulkanDeviceRuleName VULKAN_DEVICE_RULE_NAMES[] = {
+	{"broken_timestamp_queries", &VulkanDeviceRules::broken_timestamp_queries},
+	{"avoid_feedback_loop_layout", &VulkanDeviceRules::avoid_feedback_loop_layout},
+	{"avoid_push_descriptors", &VulkanDeviceRules::avoid_push_descriptors},
+	{"broken_provoking_vertex", &VulkanDeviceRules::broken_provoking_vertex},
+	{"broken_colormask_with_depth", &VulkanDeviceRules::broken_colormask_with_depth},
+	{"broken_mad_deinterlace", &VulkanDeviceRules::broken_mad_deinterlace},
+	{"adreno8xx_proprietary", &VulkanDeviceRules::adreno8xx_proprietary},
+	{"self_read_costs_measured", &VulkanDeviceRules::self_read_costs_measured},
+	{"barrier_road_measured", &VulkanDeviceRules::barrier_road_measured},
+	{"exempt_malisx2_push_descriptors", &VulkanDeviceRules::exempt_malisx2_push_descriptors},
+};
+static_assert(sizeof(VulkanDeviceRules) == sizeof(VULKAN_DEVICE_RULE_NAMES) / sizeof(VULKAN_DEVICE_RULE_NAMES[0]),
+	"VulkanDeviceRules is all bool flags; every one needs a VULKAN_DEVICE_RULE_NAMES entry");
 
 struct GpuProfileSelection
 {
@@ -349,10 +399,35 @@ public:
 	static const char* OverrideToString(GpuProfileOverride value);
 	static const char* RuntimeProfileToString(RuntimeGpuProfile value);
 	static const char* ArchitectureToString(MobileGpuArchitecture value);
+
+	/// Arm's architecture number for a Valhall part, counted as Mesa's panfrost model table
+	/// counts it: 9 for G57/G68/G77/G78, 10 for G310/G510/G610/G710, 11 for G615/G715. 0 for
+	/// everything else. The 5th-gen parts are NOT v11: G620/G720 are 12 and G625/G725 are 13.
+	static u32 MaliValhallArch(MobileGpuArchitecture architecture);
+
 	static const char* ApiToString(MobileGpuApi value);
 	static const char* DriverToString(MobileGpuDriver value);
 	static const char* BugToString(DriverBug value);
 	static const char* WorkaroundToString(DriverWorkaround value);
+
+	/// The driver-bug table's rows, in table order. DriverRuleId is null past the last row.
+	static u32 DriverRuleCount();
+	static const char* DriverRuleId(u32 row);
+
+	/// For the device-creation log: comma-separated names, or "none" for an empty set. Bugs and
+	/// workarounds are named from the masks, the matched rows by id, the device rules by field name.
+	static std::string DescribeMatchedRules(const MobileDriverProfile& profile);
+	static std::string DescribeBugs(u64 mask);
+	static std::string DescribeWorkarounds(u64 mask);
+	static std::string DescribeDeviceRules(const VulkanDeviceRules& rules);
+
+	/// Whether driverInfo names malisx2, our Vulkan driver for Mali. It reports Arm's vendorID,
+	/// driverID and a stock-looking device name on purpose, so driverInfo is the only field that
+	/// tells it apart from Arm's own driver. Packs released before the driver was renamed say
+	/// "libmali" there instead of "malisx2", so both count. Arm's stock driverInfo
+	/// ("v1.r40p0-01eac0.<hash>") has neither. Lives here, not in the driver report, because the
+	/// rule resolvers below key on it and the report sits above them.
+	static bool IsMaliSX2Driver(std::string_view driver_info);
 
 	static GpuProfileSelection Resolve(std::string_view override_value, std::string_view gpu_vendor,
 		std::string_view gpu_renderer_or_name);

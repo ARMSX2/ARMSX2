@@ -47,6 +47,7 @@ namespace
 #include "GS/Renderers/Common/GSMeasurementOverrides.h"
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
 #include "GS/DriverReport/GSDriverReport.h"
+#include "GS/DriverReport/GSDriverReportActive.h"
 #include "GS/DriverReport/GSDriverReportClassify.h"
 #include "GS/DriverReport/GSDriverReportProfile.h"
 #include "GS/DriverReport/GSDriverReportVulkan.h"
@@ -1121,7 +1122,10 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 
 	// query
 	vkGetPhysicalDeviceProperties2(m_physical_device, &properties2);
-	ResolveDeviceIdentity();
+	// The properties struct is chained only when the extension is enabled; without it the device has
+	// no push descriptors to count.
+	ResolveDeviceIdentity(
+		m_optional_extensions.vk_khr_push_descriptor ? push_descriptor_properties.maxPushDescriptors : 0);
 
 	// Mali r44p1 loses the device under an in-pass self-read. This alone does not avoid it: the
 	// driver-bug database also puts r44p1 on the render-target copy road.
@@ -1136,6 +1140,9 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 		(attachment_feedback_loop_dynamic_feature.attachmentFeedbackLoopDynamicState == VK_TRUE) &&
 		m_optional_extensions.vk_ext_attachment_feedback_loop_layout;
 
+	// The rule resolver exempts malisx2 from the Mali avoid at the descriptor count checked below.
+	static_assert(NUM_TFX_TEXTURES == VULKAN_PUSH_DESCRIPTORS_REQUIRED);
+
 	// Decide whether to bind textures via VK_KHR_push_descriptor. It's optional
 	// now — when it's absent (some Mali, e.g. Mali-G52), unusable, or known-buggy
 	// we fall back to per-frame allocated descriptor sets so Vulkan still runs.
@@ -1146,8 +1153,9 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 			push_descriptor_properties.maxPushDescriptors, NUM_TFX_TEXTURES);
 		m_use_push_descriptors = false;
 	}
-	// Mali crashes in vkCmdPushDescriptorSetKHR even where it advertises the extension, and an
-	// Adreno driver other than Qualcomm's or Turnip is untested with it.
+	// Arm's Mali blob crashes in vkCmdPushDescriptorSetKHR even where it advertises the extension, and
+	// an Adreno driver other than Qualcomm's or Turnip is untested with it. malisx2 is exempt from the
+	// Mali half in the rule (exempt_malisx2_push_descriptors).
 	if (m_use_push_descriptors && m_device_rules.avoid_push_descriptors)
 		m_use_push_descriptors = false;
 	if (!m_use_push_descriptors)
@@ -1156,6 +1164,10 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 	// Qualcomm's Adreno driver selects the wrong provoking vertex, so GSRendererHW's software
 	// provoking-vertex-first path runs instead. Turnip keeps the extension.
 	if (m_optional_extensions.vk_ext_provoking_vertex && m_device_rules.broken_provoking_vertex)
+		m_optional_extensions.vk_ext_provoking_vertex = false;
+
+	// gsrunner -no-provoking-vertex: the same outcome on a device that has the extension.
+	if (m_optional_extensions.vk_ext_provoking_vertex && g_gs_measurement_overrides.no_provoking_vertex)
 		m_optional_extensions.vk_ext_provoking_vertex = false;
 
 	if (m_optional_extensions.vk_ext_line_rasterization && !line_rasterization_feature.bresenhamLines)
@@ -1227,10 +1239,11 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 	return true;
 }
 
-void GSDeviceVK::ResolveDeviceIdentity()
+void GSDeviceVK::ResolveDeviceIdentity(u32 max_push_descriptors)
 {
 	// The driver context feeds the driver-bug database, ported from sashkinbro/EmuCoreX with his
-	// approval. Needs m_device_driver_properties, so it runs as soon as ProcessDeviceExtensions has them.
+	// approval. Needs m_device_driver_properties, so it runs as soon as ProcessDeviceExtensions has them,
+	// which is after that function has reconciled the ROAA feature bits the context reads below.
 	// Resolved on every platform: the driver-bug database is keyed on the driver, and Turnip on an
 	// ARM Linux handheld is the same driver as Turnip on a phone. Resolution is pure data;
 	// PublishGPUProfile hands it to the device, and the rules act only where they are queried.
@@ -1241,6 +1254,11 @@ void GSDeviceVK::ResolveDeviceIdentity()
 	driver_context.driver_version = m_device_properties.driverVersion;
 	driver_context.api_version = m_device_properties.apiVersion;
 	driver_context.max_draw_indirect_count = m_device_properties.limits.maxDrawIndirectCount;
+	// The extension, and its colour feature read back true before vkCreateDevice and again after it
+	// (CreateDevice's probe, ProcessDeviceExtensions' reconcile). Rows written for Arm's blob read
+	// this to decide whether to leave a malisx2 build alone.
+	driver_context.roaa_color_access = m_optional_extensions.vk_ext_rasterization_order_attachment_access;
+	driver_context.max_push_descriptors = max_push_descriptors;
 	if (m_optional_extensions.vk_khr_driver_properties)
 	{
 		driver_context.driver_id = static_cast<u32>(m_device_driver_properties.driverID);
@@ -3116,6 +3134,8 @@ void GSDeviceVK::Destroy()
 
 	std::unique_lock lock(s_instance_mutex);
 
+	GSDriverReport::ClearActiveVulkanDriver();
+
 	GSDevice::Destroy();
 
 	// Free the filter chain before the device goes away — it owns Vulkan objects created
@@ -3912,6 +3932,24 @@ void GSDeviceVK::PublishGPUProfile()
 		static_cast<unsigned>(mobile_profile.driver.matched_rule_count),
 		static_cast<unsigned long long>(mobile_profile.driver.bugs),
 		static_cast<unsigned long long>(mobile_profile.driver.workarounds));
+	Console.WriteLn("VK: GPU profile rules matched: %s",
+		GpuProfileDetector::DescribeMatchedRules(mobile_profile.driver).c_str());
+	Console.WriteLn("VK: GPU profile bugs: %s", GpuProfileDetector::DescribeBugs(mobile_profile.driver.bugs).c_str());
+	Console.WriteLn("VK: GPU profile workarounds: %s",
+		GpuProfileDetector::DescribeWorkarounds(mobile_profile.driver.workarounds).c_str());
+	Console.WriteLn("VK: device rules: %s", GpuProfileDetector::DescribeDeviceRules(m_device_rules).c_str());
+	if (IsDeviceMaliSX2())
+	{
+		Console.WriteLn("VK: driver is malisx2 (driverInfo \"%s\")", m_device_driver_properties.driverInfo);
+	}
+	else if (IsDeviceMali())
+	{
+		// The Android app tells a Mali user on this to get malisx2, for the GPUs it offers it for.
+		Console.WriteLn("VK: %s is a Mali GPU not running malisx2 (driverName \"%s\", driverInfo \"%s\")",
+			m_device_properties.deviceName, m_device_driver_properties.driverName,
+			m_device_driver_properties.driverInfo);
+	}
+	GSDriverReport::NoteActiveVulkanDriver(m_device_driver_properties.driverInfo);
 	DevCon.WriteLn("VK: GPU profile hints: %s", mobile_profile.hints.c_str());
 }
 
@@ -4129,7 +4167,9 @@ void GSDeviceVK::ResolveFeatureTable()
 
 	// Without dualSrcBlend (common on Mali), GSRendererHW blends the SRC1 draws in the shader.
 	// Ported from sashkinbro/EmuCoreX.
-	m_features.dual_source_blend = m_device_features.dualSrcBlend;
+	// gsrunner -no-dual-source reports the feature absent to the renderer while the device keeps it
+	// enabled, which is what a driver without it looks like from GSRendererHW's side.
+	m_features.dual_source_blend = m_device_features.dualSrcBlend && !g_gs_measurement_overrides.no_dual_source;
 
 	// A driver that ignores the blend constant cannot be asked for a constant-colour blend factor at
 	// all, so a fixed (AFIX) factor travels through the second fragment output instead. Read from the
@@ -4359,14 +4399,16 @@ void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool de
 	if (g_gs_measurement_overrides.Any())
 	{
 		Console.WriteLn("VK: measurement overrides: loop-spelling=%s(%s; %s) declare-arm=%u depth-loop=%s "
-						"stencil-buffer=%s alpha-bit-logic-op=%s",
+						"stencil-buffer=%s alpha-bit-logic-op=%s provoking-vertex=%s dual-source=%s",
 			g_gs_measurement_overrides.loop_create_flag ? "pipeline create flag" : "dynamic per draw",
 			g_gs_measurement_overrides.loop_create_flag ? "forced" : "default",
 			m_declare_loop_per_draw ? "applied" : "pipeline create flag in effect",
 			static_cast<unsigned>(g_gs_measurement_overrides.self_read_arm),
 			g_gs_measurement_overrides.declare_depth_loop ? "DECLARED" : "off",
 			g_gs_measurement_overrides.disable_stencil_buffer ? "FORCED OFF" : "device",
-			g_gs_measurement_overrides.alpha_bit_logic_op ? (m_features.alpha_bit_logic_op ? "FORCED ON" : "FORCED but no logicOp") : "device");
+			g_gs_measurement_overrides.alpha_bit_logic_op ? (m_features.alpha_bit_logic_op ? "FORCED ON" : "FORCED but no logicOp") : "device",
+			g_gs_measurement_overrides.no_provoking_vertex ? "FORCED OFF" : "device",
+			g_gs_measurement_overrides.no_dual_source ? "FORCED OFF" : "device");
 	}
 	if (m_features.alpha_bit_logic_op)
 		Console.WriteLn("VK: alpha bit 7 marks through a logic op (no target read).");
@@ -7397,7 +7439,6 @@ VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
 	AddMacro(ss, "VS_POINT_SIZE", sel.point_size);
 	AddMacro(ss, "VS_EXPAND", static_cast<int>(sel.expand));
 	AddMacro(ss, "VS_SPRITE_EDGE_CLAMP", sel.sprite_edge_clamp);
-	AddMacro(ss, "VS_PROVOKING_VERTEX_LAST", static_cast<int>(m_features.provoking_vertex_last));
 	ss << m_tfx_source;
 	std::string source = ss.str();
 	source_timer.reset();

@@ -57,25 +57,39 @@ object CustomDriver {
         val supports: (renderer: String?) -> Boolean = { true },
     )
 
-    /** Mali architecture v11: the G615 and G715 (Immortalis-G715 included), the only GPUs
-     *  our libmali packs drive so far. GL_RENDERER reads like "Mali-G615 MC6" or
-     *  "Mali-G715-Immortalis MC11". */
-    private val MALI_V11 = Regex("""\bG[67]15\b""", RegexOption.IGNORE_CASE)
-    internal fun isMaliV11(renderer: String?): Boolean =
+    /** Mali Valhall architectures v9 and v11, the GPUs our MaliSX2 packs drive and the set Auto
+     *  sends to Vulkan: G57, G68, G77, G78 (G78AE included) and G615, G715 (Immortalis-G715
+     *  included). Not v10 (G310/G510/G610/G710), Bifrost or the 5th-gen parts. Same list as
+     *  GpuProfileDetector::MaliValhallArch returning 9 or 11. GL_RENDERER reads like "Mali-G57 MC2"
+     *  or "Mali-G715-Immortalis MC11". No \b after the number so "G78AE" matches; (?!\d) keeps a
+     *  longer model number from matching on its prefix. */
+    private val MALI_VALHALL_V9_V11 = Regex("""\bG(?:57|68|77|78|615|715)(?!\d)""", RegexOption.IGNORE_CASE)
+    internal fun isMaliValhallV9OrV11(renderer: String?): Boolean =
         renderer != null &&
             (renderer.contains("Mali", ignoreCase = true) || renderer.contains("Immortalis", ignoreCase = true)) &&
-            MALI_V11.containsMatchIn(renderer)
+            MALI_VALHALL_V9_V11.containsMatchIn(renderer)
+
+    // Our own Vulkan driver for Mali, replacing Arm's on the kbase kernel driver. One
+    // adrenotools pack per release (meta.json + libvulkan_malisx2.so), loaded the
+    // same way as the Turnip packs. Listed only on the GPUs it supports.
+    // The id prefix is still "armsx2libmali", from before the driver was renamed: it is
+    // part of the install directory name and of the saved customDriverId of every pack
+    // already installed, so it must not change.
+    private val MALISX2_SOURCE = DriverSource(
+        "ARMSX2 · MaliSX2",
+        "https://api.github.com/repos/bmdhacks/malisx2/releases",
+        "armsx2libmali",
+        supports = ::isMaliValhallV9OrV11,
+    )
+
+    /** Whether the driver list offers malisx2 for [renderer] (GL_RENDERER). The wrong-driver
+     *  notice keys on this (pushed to native by NativeApp.setMaliSX2Offered), so it follows the
+     *  list: a GPU gets the notice exactly when it is offered the download, and widening
+     *  [MALISX2_SOURCE]'s `supports` widens both. */
+    fun offersMaliSX2(renderer: String?): Boolean = MALISX2_SOURCE.supports(renderer)
 
     private val DRIVER_SOURCES = listOf(
-        // Our own Vulkan driver for Mali, replacing Arm's on the kbase kernel driver. One
-        // adrenotools pack per release (meta.json + libvulkan_armsx2_mali.so), loaded the
-        // same way as the Turnip packs. Listed only on the GPUs it supports.
-        DriverSource(
-            "ARMSX2 · libmali",
-            "https://api.github.com/repos/bmdhacks/armsx2-libmali/releases",
-            "armsx2libmali",
-            supports = ::isMaliV11,
-        ),
+        MALISX2_SOURCE,
         // Our own Turnip: Mesa with the ARMSX2 driver patches, built as adrenotools packs.
         // The emulator recognises these builds by the `(git-axfl<N>-…)` token in
         // driverInfo and takes the barrier-less in-pass read road on Adreno 650 and up

@@ -23,6 +23,18 @@ namespace GSDriverReport
 		}
 	}
 
+	// The ids of the table rows set in `mask`, in table order.
+	static void WriteRuleIds(JsonWriter& w, u64 mask)
+	{
+		w.BeginArray();
+		for (u32 row = 0; row < GpuProfileDetector::DriverRuleCount(); row++)
+		{
+			if (mask & (u64{1} << row))
+				w.String(GpuProfileDetector::DriverRuleId(row));
+		}
+		w.EndArray();
+	}
+
 	void WriteGpuProfile(JsonWriter& w, const GpuProfileSelection& selection, const VulkanDeviceRules* rules,
 		std::string_view identified_driver)
 	{
@@ -69,7 +81,12 @@ namespace GSDriverReport
 		w.KeyBool("legacy_hash", d.version.legacy_hash);
 		w.EndObject();
 		w.KeyUInt("database_version", MobileDriverProfile::DATABASE_VERSION);
+		// The count is rows applied. exempt_rules is the part of matched_rules that was skipped.
 		w.KeyUInt("matched_rule_count", d.matched_rule_count);
+		w.Key("matched_rules");
+		WriteRuleIds(w, d.matched_rules);
+		w.Key("exempt_rules");
+		WriteRuleIds(w, d.exempted_rules);
 		w.KeyString("confidence", ConfidenceName(d.confidence));
 		w.KeyBool("conservative_fallback", d.conservative_fallback);
 		w.KeyHex("bugs_mask", d.bugs);
@@ -101,15 +118,8 @@ namespace GSDriverReport
 		{
 			w.Key("vulkan_device_rules");
 			w.BeginObject();
-			w.KeyBool("broken_timestamp_queries", rules->broken_timestamp_queries);
-			w.KeyBool("avoid_feedback_loop_layout", rules->avoid_feedback_loop_layout);
-			w.KeyBool("avoid_push_descriptors", rules->avoid_push_descriptors);
-			w.KeyBool("broken_provoking_vertex", rules->broken_provoking_vertex);
-			w.KeyBool("broken_colormask_with_depth", rules->broken_colormask_with_depth);
-			w.KeyBool("broken_mad_deinterlace", rules->broken_mad_deinterlace);
-			w.KeyBool("adreno8xx_proprietary", rules->adreno8xx_proprietary);
-			w.KeyBool("self_read_costs_measured", rules->self_read_costs_measured);
-			w.KeyBool("barrier_road_measured", rules->barrier_road_measured);
+			for (const VulkanDeviceRuleName& entry : VULKAN_DEVICE_RULE_NAMES)
+				w.KeyBool(entry.name, rules->*entry.flag);
 			w.EndObject();
 		}
 

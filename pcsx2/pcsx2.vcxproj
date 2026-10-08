@@ -452,6 +452,7 @@
     <ClCompile Include="GS\GSDump.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSFunctionMap.cpp" />
     <ClCompile Include="GS\DriverReport\GSDriverReport.cpp" />
+    <ClCompile Include="GS\DriverReport\GSDriverReportActive.cpp" />
     <ClCompile Include="GS\DriverReport\GSDriverReportClassify.cpp" />
     <ClCompile Include="GS\DriverReport\GSDriverReportJson.cpp" />
     <ClCompile Include="GS\DriverReport\GSDriverReportProfile.cpp" />
@@ -1016,6 +1017,7 @@
     <ClInclude Include="GS\Renderers\Common\GSStreamRingFlushRange.h" />
     <ClInclude Include="GS\Renderers\Common\GSStreamRingGrowth.h" />
     <ClInclude Include="GS\DriverReport\GSDriverReport.h" />
+    <ClInclude Include="GS\DriverReport\GSDriverReportActive.h" />
     <ClInclude Include="GS\DriverReport\GSDriverReportClassify.h" />
     <ClInclude Include="GS\DriverReport\GSDriverReportJson.h" />
     <ClInclude Include="GS\DriverReport\GSDriverReportProfile.h" />

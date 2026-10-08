@@ -39,6 +39,8 @@ struct Device
 	const char* driver_info = "";
 	u32 device_id = 0;
 	u32 driver_version = 0;
+	// VkPhysicalDevicePushDescriptorPropertiesKHR::maxPushDescriptors; 0 is "extension not enabled".
+	u32 max_push_descriptors = 0;
 };
 
 VulkanDeviceRules Rules(const Device& d)
@@ -50,6 +52,7 @@ VulkanDeviceRules Rules(const Device& d)
 	context.device_id = d.device_id;
 	context.driver_version = d.driver_version;
 	context.driver_info = d.driver_info;
+	context.max_push_descriptors = d.max_push_descriptors;
 	const GpuProfileSelection selection = GpuProfileDetector::Resolve("auto", std::string_view(), d.name, context);
 	return GpuProfileDetector::ResolveVulkanDeviceRules(selection, context, d.name);
 }
@@ -62,6 +65,13 @@ const Device kMaliG57 = {GpuVendorID::ARM, kArmDriver, "Mali-G57 MC2", "v1.r32p1
 	PackVulkanVersion(32, 1, 0)};
 const Device kMaliG52 = {GpuVendorID::ARM, kArmDriver, "Mali-G52 MC2", "v1.r26p0-01eac0", 0,
 	PackVulkanVersion(26, 0, 0)};
+// malisx2 reports Arm's vendorID, driverID, device name and 44.1.0 on purpose; only driverInfo says
+// otherwise. The G615 build and the G57 build, as they report themselves.
+constexpr const char* kMaliSX2DriverInfo = "v1.r44p1-malisx2.0.2.s0123abcd";
+const Device kMaliSX2G615 = {GpuVendorID::ARM, kArmDriver, "Mali-G615 MC6", kMaliSX2DriverInfo, 0,
+	PackVulkanVersion(44, 1, 0)};
+const Device kMaliSX2G57 = {GpuVendorID::ARM, kArmDriver, "Mali-G57 MC2", kMaliSX2DriverInfo, 0,
+	PackVulkanVersion(44, 1, 0)};
 const Device kMaliG610PanVK = {GpuVendorID::ARM, kPanVKDriver, "Mali-G610 (Panfrost)", "Mesa 25.2.0", 0,
 	PackVulkanVersion(25, 2, 0)};
 const Device kAdreno650Turnip = {GpuVendorID::Qualcomm, kTurnipDriver, "Turnip Adreno (TM) 650", "Mesa 26.1.2",
@@ -130,6 +140,72 @@ TEST(GSVulkanDeviceRules, PushDescriptorsAreAvoidedOnMaliAndOnUnknownAdrenoDrive
 	EXPECT_FALSE(Rules(kRadv).avoid_push_descriptors);
 }
 
+// maxPushDescriptors the backend needs to bind its texture set by push (GSDeviceVK::NUM_TFX_TEXTURES).
+constexpr u32 kEnoughPushDescriptors = VULKAN_PUSH_DESCRIPTORS_REQUIRED;
+
+// malisx2 is not the blob whose vkCmdPushDescriptorSetKHR crashes, so it is exempt from the Mali
+// avoid, but only where it advertises the extension with as many descriptors as the backend binds.
+// Without that the backend's own maxPushDescriptors check would turn them off anyway; the rule just
+// has to agree with it.
+TEST(GSVulkanDeviceRules, MaliSX2IsExemptFromThePushDescriptorAvoidWithEnoughDescriptors)
+{
+	for (Device d : {kMaliSX2G615, kMaliSX2G57})
+	{
+		d.max_push_descriptors = kEnoughPushDescriptors;
+		const VulkanDeviceRules rules = Rules(d);
+		EXPECT_FALSE(rules.avoid_push_descriptors) << d.name;
+		EXPECT_TRUE(rules.exempt_malisx2_push_descriptors) << d.name;
+
+		d.max_push_descriptors = 32;
+		EXPECT_FALSE(Rules(d).avoid_push_descriptors) << d.name;
+	}
+}
+
+TEST(GSVulkanDeviceRules, MaliSX2KeepsThePushDescriptorAvoidWithoutTheExtensionOrWithTooFewDescriptors)
+{
+	for (Device d : {kMaliSX2G615, kMaliSX2G57})
+	{
+		// VK_KHR_push_descriptor not enabled: a pack without it behaves as it always did.
+		d.max_push_descriptors = 0;
+		VulkanDeviceRules rules = Rules(d);
+		EXPECT_TRUE(rules.avoid_push_descriptors) << d.name;
+		EXPECT_FALSE(rules.exempt_malisx2_push_descriptors) << d.name;
+
+		// One short of the texture set.
+		d.max_push_descriptors = kEnoughPushDescriptors - 1;
+		rules = Rules(d);
+		EXPECT_TRUE(rules.avoid_push_descriptors) << d.name;
+		EXPECT_FALSE(rules.exempt_malisx2_push_descriptors) << d.name;
+	}
+}
+
+// Everything else on Mali stays avoided however many descriptors it reports: Arm's own blob, with
+// the same device name and revision, and PanVK.
+TEST(GSVulkanDeviceRules, OtherMaliDriversKeepThePushDescriptorAvoid)
+{
+	for (Device d : {kRg477v, kMaliG52, kMaliG610PanVK})
+	{
+		d.max_push_descriptors = 32;
+		const VulkanDeviceRules rules = Rules(d);
+		EXPECT_TRUE(rules.avoid_push_descriptors) << d.name;
+		EXPECT_FALSE(rules.exempt_malisx2_push_descriptors) << d.name;
+	}
+}
+
+// The exemption is about Mali. A device that is not Arm's cannot pick it up from its driverInfo.
+TEST(GSVulkanDeviceRules, TheMaliSX2PushDescriptorExemptionNeedsAnArmDevice)
+{
+	Device renamed = kAdreno650Turnip;
+	renamed.driver_info = kMaliSX2DriverInfo;
+	renamed.max_push_descriptors = 32;
+	EXPECT_FALSE(Rules(renamed).exempt_malisx2_push_descriptors);
+
+	Device unknown_adreno = kAdrenoUnknownDriver;
+	unknown_adreno.driver_info = kMaliSX2DriverInfo;
+	unknown_adreno.max_push_descriptors = 32;
+	EXPECT_TRUE(Rules(unknown_adreno).avoid_push_descriptors);
+}
+
 TEST(GSVulkanDeviceRules, OnlyTheQualcommDriverBreaksTheProvokingVertex)
 {
 	EXPECT_TRUE(Rules(kAdreno740Qualcomm).broken_provoking_vertex);
@@ -191,4 +267,36 @@ TEST(GSVulkanDeviceRules, SelfReadCostsWereMeasuredOnTurnipAndHoneykrispOnly)
 	EXPECT_TRUE(Rules(kAppleM2).barrier_road_measured);
 	EXPECT_FALSE(Rules(kAdreno650Turnip).barrier_road_measured);
 	EXPECT_FALSE(Rules(kRadv).barrier_road_measured);
+}
+
+// The rules that are true, by name, as the device-creation log prints them. Declaration order, not
+// the order they were set in.
+TEST(GSVulkanDeviceRules, DescribeNamesTheRulesThatAreTrue)
+{
+	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(VulkanDeviceRules{}), "none");
+	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(Rules(kRg477v)),
+		"broken_timestamp_queries, avoid_feedback_loop_layout, avoid_push_descriptors");
+	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(Rules(kAppleM2)),
+		"self_read_costs_measured, barrier_road_measured");
+	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(Rules(kRadv)), "none");
+
+	// The exemption is named, so a log shows it where the avoid is missing.
+	Device malisx2 = kMaliSX2G615;
+	malisx2.max_push_descriptors = kEnoughPushDescriptors;
+	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(Rules(malisx2)),
+		"broken_timestamp_queries, avoid_feedback_loop_layout, exempt_malisx2_push_descriptors");
+	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(Rules(kMaliSX2G615)),
+		"broken_timestamp_queries, avoid_feedback_loop_layout, avoid_push_descriptors");
+}
+
+// Each flag has its own entry in the name table. A flag added to VulkanDeviceRules without one is
+// caught by the static_assert beside the table; this catches two entries naming the same flag.
+TEST(GSVulkanDeviceRules, EveryRuleHasItsOwnNameInTheTable)
+{
+	for (const VulkanDeviceRuleName& entry : VULKAN_DEVICE_RULE_NAMES)
+	{
+		VulkanDeviceRules rules;
+		rules.*entry.flag = true;
+		EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(rules), entry.name);
+	}
 }

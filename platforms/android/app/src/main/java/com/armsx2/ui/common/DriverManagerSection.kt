@@ -46,7 +46,7 @@ import kotlinx.coroutines.withContext
 /**
  * Vulkan custom-driver manager: pick the system driver or an installed one, download
  * fresh builds from the bundled sources (ARMSX2 / K11MCH1 / MrPurple / StevenMXZ / crueter;
- * the ARMSX2 libmali packs only on Mali-G615/G715),
+ * the ARMSX2 MaliSX2 packs only on Mali Valhall v9 and v11: G57/G68/G77/G78, G615/G715),
  * import a local .zip, or delete an installed driver. Self-contained (plain Material3)
  * so it drops into both the full Settings renderer tab and the in-game renderer pane.
  * Selecting a driver only takes effect on the next renderer init — the caller shows an

@@ -326,11 +326,9 @@ void main()
 
 	bool is_bottom = (vid & 2u) != 0u;
 	bool is_right = (vid & 1u) != 0u;
-#if VS_PROVOKING_VERTEX_LAST
+	// Lines reach here as index pairs (a, a + 1) whatever the provoking vertex is; a provoking-first
+	// device gets its flat colours fixed on the CPU, not its indices reordered.
 	uint vid_other = is_bottom ? vid_base - 1 : vid_base + 1;
-#else
-	uint vid_other = is_bottom ? vid_base + 1 : vid_base - 1;
-#endif
 
 	vtx = load_vertex(vid_base);
 	ProcessedVertex other = load_vertex(vid_other);
