@@ -112,13 +112,17 @@ fun DriverManagerSection() {
             }
         }
 
+        // The driver this scope actually runs with. A per-game pick that has since been deleted
+        // follows the global driver at boot (CustomDriver.effectiveId), so show that one.
+        // Re-read whenever the settings change: in global scope a save here changes the global id.
+        val globalDriverId = remember(InGameOverlay.settingsState.value) { com.armsx2.config.ConfigStore.loadGlobal().output.customDriverId }
+        val effectiveId = CustomDriver.effectiveId(
+            InGameOverlay.settingsState.value.output.customDriverId, globalDriverId, installed.map { it.id })
         DriverRow(
             controllerId = "driver.system",
             title = str("backend.driver.systemVulkan"),
             subtitle = str("renderer.orientation.device"),
-            selected = InGameOverlay.settingsState.value.output.customDriverId.let { id ->
-                id.isBlank() || installed.none { it.id == id }
-            },
+            selected = effectiveId == null,
             onClick = { selectDriver(null) },
         )
         installed.forEach { driver ->
@@ -127,7 +131,7 @@ fun DriverManagerSection() {
                 title = driver.name,
                 subtitle = listOf(driver.vendor, driver.version).filter(String::isNotBlank).joinToString(" · ")
                     .ifBlank { str("backend.driver.installed") },
-                selected = InGameOverlay.settingsState.value.output.customDriverId == driver.id,
+                selected = effectiveId == driver.id,
                 onClick = { selectDriver(driver.id) },
                 onDelete = {
                     CustomDriver.delete(driver)

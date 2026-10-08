@@ -1016,14 +1016,16 @@ open class MainActivityRuntime : ComponentActivity() {
             // re-open the GS device and run Vulkan::LoadVulkanLibrary. The
             // VK loader reads the pinned path lazily so the order matters.
             val ctx = instance?.applicationContext
-            // Per-game GPU driver: pin THIS title's resolved driver. Uses the system driver if the
-            // id is blank or references a custom driver that is no longer installed.
-            val pickedId = resolved.output.customDriverId.takeIf { it.isNotBlank() }
+            // Per-game GPU driver: pin THIS title's resolved driver. If that driver has been
+            // deleted, fall back to the global one, and to the system driver if that is gone too.
+            val installedDrivers = if (ctx != null) com.armsx2.CustomDriver.listInstalled(ctx) else emptyList()
+            val pickedId = com.armsx2.CustomDriver.effectiveId(
+                resolved.output.customDriverId,
+                com.armsx2.config.ConfigStore.loadGlobal().output.customDriverId,
+                installedDrivers.map { it.id },
+            )
             customDriverId.value = pickedId
-            val picked: com.armsx2.CustomDriver.InstalledDriver? =
-                if (ctx != null) pickedId?.let { id ->
-                    com.armsx2.CustomDriver.listInstalled(ctx).firstOrNull { it.id == id }
-                } else null
+            val picked = installedDrivers.firstOrNull { it.id == pickedId }
             // Turnip options (#719) go into the environment before the device is created.
             com.armsx2.CustomDriver.applyDriverEnv()
             if (ctx != null) {

@@ -218,6 +218,14 @@ object CustomDriver {
         }.sortedBy { it.name.lowercase() }
     }
 
+    /** The driver a game actually runs with: its own pick if that is still installed, else the
+     *  global pick if that is, else null (the system driver). Deleting a driver leaves its id in
+     *  any per-game settings that chose it; those games follow the global driver until the user
+     *  picks again, rather than silently dropping to the system driver. Blank means system. */
+    fun effectiveId(gameId: String, globalId: String, installedIds: Collection<String>): String? =
+        gameId.takeIf { it.isNotBlank() && it in installedIds }
+            ?: globalId.takeIf { gameId.isNotBlank() && it.isNotBlank() && it in installedIds }
+
     /** Recursively remove an installed driver. */
     fun delete(installed: InstalledDriver) {
         installed.driverDir.deleteRecursively()
