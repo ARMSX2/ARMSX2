@@ -908,6 +908,36 @@ TEST_F(ArcadeSetupTest, AnAcgameIsReadyWhenItsDongleIsCopiedAndItsSramSeeded)
 	EXPECT_EQ(ReadFile(result.sram), "test menu settings");
 }
 
+TEST_F(ArcadeSetupTest, AnAcgameWhoseDongleLeavesTheMemoryCardsFolderIsUnreadableAndCopiesNothing)
+{
+	// Everything else the game needs is there, and the file the dongle names exists beside the .acgame, so the
+	// only thing standing in the way is the name.
+	WriteFile(Games("NM00004/boot.elf"), "own-elf");
+	WriteFile(Games("NM00004/NM00004.chd"), "image");
+	WriteFile(Games("NM00004/x.desktop"), "[Desktop Entry]");
+	WriteFile(Games("x.desktop"), "[Desktop Entry]");
+	PutBios("system256.bin", System256Bios());
+
+	for (const char* key : {"dongle", "card"})
+	{
+		const std::string acgame = PutAcgame("NM00004", fmt::format("{}=../../x.desktop\n", key));
+		Service service = MakeService();
+
+		const MissingReport report = service.Missing(acgame);
+		EXPECT_EQ(Kinds(report), (std::vector<PartKind>{PartKind::Unreadable})) << key;
+		ASSERT_FALSE(report.parts.empty());
+		EXPECT_NE(report.parts[0].Explain().find("x.desktop"), std::string::npos) << report.parts[0].Explain();
+
+		const PrepareResult prepared = service.Prepare(acgame);
+		EXPECT_FALSE(prepared.ok) << key;
+		EXPECT_NE(prepared.error.find("x.desktop"), std::string::npos) << prepared.error;
+
+		// m_folders.memory_cards is <dir>/data/memcards, so "../../x.desktop" would land in <dir>.
+		EXPECT_FALSE(Exists(m_dir.File("x.desktop"))) << key;
+		EXPECT_TRUE(NamesIn(m_dir.File("data/memcards")).empty()) << key;
+	}
+}
+
 TEST_F(ArcadeSetupTest, WhatPrepareFoundGoesIntoTheBootParameters)
 {
 	const std::string acgame = PutAcgame("NM00004");

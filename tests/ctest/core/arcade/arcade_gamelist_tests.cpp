@@ -166,6 +166,57 @@ TEST(ArcadeGameList, AnAbsoluteMediaPathIsUsedAsItIsAndABigFileIsNotAnAcgame)
 	std::filesystem::remove_all(dir, ec);
 }
 
+// An .acgame comes from wherever the player got it. Its dongle and card are joined to the memory cards folder and
+// copied or mounted there, and its SRAM is written by the core, so a name that climbs out of its folder would
+// write anywhere the player can.
+namespace
+{
+	std::string AcgameWith(const std::string& key, const std::string& value)
+	{
+		return "[game]\ngameid=NM00005\n[data]\n" + key + "=" + value + "\n";
+	}
+
+	bool ReadableWith(const std::string& key, const std::string& value)
+	{
+		const std::string dir = Path::Combine(testing::TempDir(), "arcade_acgame_names");
+		FileSystem::CreateDirectoryPath(dir.c_str(), true);
+		const std::string path = Path::Combine(dir, "names.acgame");
+		WriteFile(path, AcgameWith(key, value));
+		return Arcade::ReadAcGameInfo(path).has_value();
+	}
+} // namespace
+
+TEST(ArcadeGameList, ADongleOrCardThatIsNotAPlainFileNameIsNotAnAcgame)
+{
+	for (const char* key : {"dongle", "card"})
+	{
+		for (const char* name : {"../../../.config/autostart/x.desktop", "..", ".", "../NM00005.ps2", "sub/NM00005.ps2",
+				 "sub\\NM00005.ps2", "..\\NM00005.ps2", "/etc/cron.d/x", "\\\\server\\share\\x", "C:\\x.ps2", "C:x.ps2"})
+		{
+			EXPECT_FALSE(ReadableWith(key, name)) << key << "=" << name;
+		}
+		for (const char* name : {"NM00005.ps2", "my card.bin", "NM00007.conquestcard", "..hidden.ps2", "a.b.c"})
+			EXPECT_TRUE(ReadableWith(key, name)) << key << "=" << name;
+	}
+}
+
+TEST(ArcadeGameList, AnSramOrSubdirThatLeavesTheGameFolderIsNotAnAcgame)
+{
+	for (const char* name : {"/home/user/.bashrc", "../sram.bin", "a/../../sram.bin", "a\\..\\..\\sram.bin", "..", "C:\\sram.bin", "\\\\server\\share\\sram.bin"})
+	{
+		EXPECT_FALSE(ReadableWith("sram", name)) << "sram=" << name;
+		EXPECT_FALSE(ReadableWith("subdir", name)) << "subdir=" << name;
+	}
+	for (const char* name : {"sram.bin", "saves/sram.bin", "./sram.bin", "NM00005"})
+		EXPECT_TRUE(ReadableWith("sram", name)) << "sram=" << name;
+	for (const char* name : {"NM00005", "games/NM00005", ""})
+		EXPECT_TRUE(ReadableWith("subdir", name)) << "subdir=" << name;
+
+	// What the core only reads may still be anywhere.
+	EXPECT_TRUE(ReadableWith("elf", "/mnt/games/NM00005/boot.elf"));
+	EXPECT_TRUE(ReadableWith("mediasrc", "../images/NM00005.chd"));
+}
+
 TEST(ArcadeGameList, BootingAnArcadeEntryLeavesTheSourceTypeUnset)
 {
 	GameList::Entry entry;

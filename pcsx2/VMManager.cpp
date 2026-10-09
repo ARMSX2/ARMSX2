@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "Achievements.h"
+#include "Arcade/AcGameFile.h"
 #include "Autosave.h"
 #include "BuildVersion.h"
 #include "CDVD/CDVD.h"
@@ -1636,6 +1637,14 @@ bool VMManager::OpenArcadeGame(const VMBootParameters& boot_params, Error* error
 		Error::SetStringFmt(error,
 			TRANSLATE_FS("VMManager", "'{}' is not an arcade game ID. It is NM followed by five digits, as in NM00004."),
 			gameid);
+		return false;
+	}
+
+	// Names the core writes under (dongle, card, SRAM) must stay in their folders; Arcade::ReadAcGameInfo() makes
+	// the same check for the game list.
+	if (const std::string unsafe = Arcade::CheckWrittenNames(ini, boot_params.arcade_sram.empty()); !unsafe.empty())
+	{
+		Error::SetString(error, unsafe);
 		return false;
 	}
 

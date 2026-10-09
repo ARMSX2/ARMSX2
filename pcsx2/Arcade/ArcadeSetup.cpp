@@ -820,10 +820,11 @@ namespace
 
 		if (in.acgame)
 		{
-			in.info = Arcade::ReadAcGameInfo(path);
+			std::string why;
+			in.info = Arcade::ReadAcGameInfo(path, &why);
 			if (!in.info.has_value())
 			{
-				report.parts.push_back({PartKind::Unreadable, {}});
+				report.parts.push_back({PartKind::Unreadable, std::move(why)});
 				return in;
 			}
 			const Arcade::AcGameInfo& game = *in.info;
@@ -976,6 +977,8 @@ std::string ArcadeSetup::MissingPart::Explain() const
 			return fmt::format(TRANSLATE_FS("Arcade", "The memory card {} was not found. Put it in the memory cards folder, or next to the .acgame."), detail);
 		case PartKind::Unreadable:
 		default:
+			if (!detail.empty())
+				return fmt::format(TRANSLATE_FS("Arcade", "This arcade game file cannot be used. {}"), detail);
 			return TRANSLATE_STR("Arcade", "This arcade game file could not be read, or it has no game ID. An .acgame needs a gameid line in its [game] section: NM followed by five digits; an image needs the ID in its name.");
 	}
 }

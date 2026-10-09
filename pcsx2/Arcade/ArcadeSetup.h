@@ -170,7 +170,7 @@ namespace ArcadeSetup
 		PackedImage, ///< The image is packed (.iso.gz); the drive cannot read it as it is.
 		Dongle, ///< [detail] is its file name (the game's ID for a loose image).
 		Card, ///< The second memory card the .acgame names. [detail] is its file name.
-		Unreadable, ///< The file is no .acgame the core can use (no game ID), or no arcade image.
+		Unreadable, ///< The file is no .acgame the core can use (no game ID, a name that leaves its folder), or no arcade image. [detail] is why, when known.
 	};
 
 	struct MissingPart
