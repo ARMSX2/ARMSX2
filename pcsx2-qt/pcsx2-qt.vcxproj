@@ -92,6 +92,7 @@
   <ItemGroup>
     <ClCompile Include="AsyncDialogs.cpp" />
     <ClCompile Include="AutoCoversController.cpp" />
+    <ClCompile Include="TexturePackService.cpp" />
     <ClCompile Include="ColorPickerButton.cpp" />
     <ClCompile Include="Debugger\SymbolTree\NewSymbolDialogs.cpp" />
     <ClCompile Include="Debugger\SymbolTree\SymbolTreeDelegates.cpp" />
@@ -167,6 +168,7 @@
     <ClCompile Include="Settings\DEV9DnsHostDialog.cpp" />
     <ClCompile Include="Settings\DEV9SettingsWidget.cpp" />
     <ClCompile Include="Settings\DEV9LocalLinkWidget.cpp" />
+    <ClCompile Include="Settings\TexturePacksSettingsWidget.cpp" />
     <ClCompile Include="Settings\DEV9UiCommon.cpp" />
     <ClCompile Include="Settings\HddCreateQt.cpp" />
     <ClCompile Include="Settings\GameSummaryWidget.cpp" />
@@ -217,9 +219,11 @@
     <QtMoc Include="Settings\DEV9DnsHostDialog.h" />
     <QtMoc Include="Settings\DEV9SettingsWidget.h" />
     <QtMoc Include="Settings\DEV9LocalLinkWidget.h" />
+    <QtMoc Include="Settings\TexturePacksSettingsWidget.h" />
     <QtMoc Include="Settings\DEV9UiCommon.h" />
     <QtMoc Include="QtProgressCallback.h" />
     <QtMoc Include="AutoCoversController.h" />
+    <QtMoc Include="TexturePackService.h" />
     <QtMoc Include="ColorPickerButton.h" />
     <QtMoc Include="LogWindow.h" />
     <QtMoc Include="Debugger\SymbolTree\NewSymbolDialogs.h" />
@@ -354,6 +358,7 @@
     <QtUi Include="Settings\DEV9DnsHostDialog.ui" />
     <QtUi Include="Settings\DEV9SettingsWidget.ui" />
     <QtUi Include="Settings\DEV9LocalLinkWidget.ui" />
+    <QtUi Include="Settings\TexturePacksSettingsWidget.ui" />
     <QtUi Include="Settings\EmulationSettingsWidget.ui" />
     <QtUi Include="Settings\FolderSettingsWidget.ui" />
     <QtUi Include="Settings\GameCheatSettingsWidget.ui" />

@@ -37,6 +37,8 @@ target_sources(pcsx2-qt PRIVATE
 	SetupWizardDialog.h
 	SetupWizardDialog.ui
 	Themes.cpp
+	TexturePackService.cpp
+	TexturePackService.h
 	ToolbarCustomizationDialog.cpp
 	ToolbarCustomizationDialog.h
 	ToolbarCustomizationDialog.ui
@@ -186,6 +188,9 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/SettingsWindow.cpp
 	Settings/SettingsWindow.h
 	Settings/SettingsWindow.ui
+	Settings/TexturePacksSettingsWidget.cpp
+	Settings/TexturePacksSettingsWidget.h
+	Settings/TexturePacksSettingsWidget.ui
 	Settings/USBBindingWidget_DenshaCon.ui
 	Settings/USBBindingWidget_DrivingForce.ui
 	Settings/USBBindingWidget_GTForce.ui

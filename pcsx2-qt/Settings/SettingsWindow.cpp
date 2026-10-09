@@ -18,6 +18,7 @@
 #include "Settings/GameSummaryWidget.h"
 #include "Settings/GraphicsSettingsWidget.h"
 #include "Settings/OSDSettingsWidget.h"
+#include "Settings/TexturePacksSettingsWidget.h"
 #include "Settings/HotkeySettingsWidget.h"
 #include "Settings/InterfaceSettingsWidget.h"
 #include "Settings/MemoryCardSettingsWidget.h"
@@ -158,6 +159,9 @@ void SettingsWindow::setupUi(const GameList::Entry* game)
 	addWidget(m_graphics_settings = new GraphicsSettingsWidget(this, m_ui.settingsContainer), tr("Graphics"), QStringLiteral("image-fill"),
 		tr("<strong>Graphics Settings</strong><hr>These options determine the configuration of the graphical output.<br><br>Mouse over an "
 		   "option for additional information, and Shift+Wheel to scroll this panel."));
+	addWidget(new TexturePacksSettingsWidget(this, m_ui.settingsContainer), tr("Texture Packs"), QStringLiteral("brush-line"),
+		tr("<strong>Texture Packs</strong><hr>Download texture packs that replace a game's textures with higher resolution ones, and manage the ones you have."
+		   "<br><br>Mouse over an option for additional information, and Shift+Wheel to scroll this panel."));
 	addWidget(m_osd_settings = new OSDSettingsWidget(this, m_ui.settingsContainer), tr("On-Screen Display"),
 		QStringLiteral("heart-circle-line"),
 		tr("<strong>On-Screen Display Settings</strong><hr>These options control the on-screen display (OSD) overlays shown during gameplay.<br><br>Mouse over an option for additional information, and Shift+Wheel to scroll this panel."));

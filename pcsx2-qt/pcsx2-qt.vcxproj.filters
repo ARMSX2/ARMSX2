@@ -42,6 +42,7 @@
     <ClCompile Include="PrecompiledHeader.cpp" />
     <ClCompile Include="AsyncDialogs.cpp" />
     <ClCompile Include="AutoCoversController.cpp" />
+    <ClCompile Include="TexturePackService.cpp" />
     <ClCompile Include="QtHost.cpp" />
     <ClCompile Include="MainWindow.cpp" />
     <ClCompile Include="$(IntDir)qrc_resources.cpp">
@@ -135,6 +136,9 @@
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="Settings\DEV9LocalLinkWidget.cpp">
+      <Filter>Settings</Filter>
+    </ClCompile>
+    <ClCompile Include="Settings\TexturePacksSettingsWidget.cpp">
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="Settings\DEV9UiCommon.cpp">
@@ -405,6 +409,9 @@
     <QtMoc Include="Settings\DEV9LocalLinkWidget.h">
       <Filter>Settings</Filter>
     </QtMoc>
+    <QtMoc Include="Settings\TexturePacksSettingsWidget.h">
+      <Filter>Settings</Filter>
+    </QtMoc>
     <QtMoc Include="Settings\DEV9UiCommon.h">
       <Filter>Settings</Filter>
     </QtMoc>
@@ -419,6 +426,7 @@
     <QtMoc Include="CoverDownloadDialog.h" />
     <QtMoc Include="QtProgressCallback.h" />
     <QtMoc Include="AutoCoversController.h" />
+    <QtMoc Include="TexturePackService.h" />
     <QtMoc Include="ShortcutCreationDialog.h" />
     <QtMoc Include="Settings\AchievementLoginDialog.h">
       <Filter>Settings</Filter>
@@ -679,6 +687,9 @@
       <Filter>Settings</Filter>
     </QtUi>
     <QtUi Include="Settings\DEV9LocalLinkWidget.ui">
+      <Filter>Settings</Filter>
+    </QtUi>
+    <QtUi Include="Settings\TexturePacksSettingsWidget.ui">
       <Filter>Settings</Filter>
     </QtUi>
     <QtUi Include="Settings\EmulationSettingsWidget.ui">
