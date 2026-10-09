@@ -26,7 +26,9 @@
 // Page names are case-insensitive: landing, setup, startgame, exit, gamelist, gamelistsettings,
 // about, settings, and settings:<page> with <page> one of the global SettingsPage names (interface,
 // bios, emulation, graphics, osd, audio, memorycard, networkhdd, folders, achievements,
-// controller, hotkey, advanced). tools/bp-shot.py in the umbrella wraps all of this.
+// controller, hotkey, advanced). Two more set up a state instead of naming a page: rescan starts a
+// game list scan and shows the list, and gamesettings opens the settings of the first game in the
+// list (open rescan first and wait a few frames). tools/bp-shot.py in the umbrella wraps all of this.
 //
 // Adding a Big Picture page: add a row to kPages in FullscreenUIShot.cpp, so an agent can reach it.
 // A new SettingsPage enum value trips a static_assert there until it has a name.

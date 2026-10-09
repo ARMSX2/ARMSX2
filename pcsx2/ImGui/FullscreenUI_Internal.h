@@ -535,4 +535,17 @@ namespace FullscreenUI
 	inline Common::Timer s_input_binding_timer;
 	inline bool s_prefer_english_titles;
 
+	//////////////////////////////////////////////////////////////////////////
+	// Features ported from the Android app (FullscreenUI_Packs.cpp)
+	//////////////////////////////////////////////////////////////////////////
+	void DrawTextureUpscaleSetting(SettingsInterface* bsi);
+	/// Draws the Local Link rows when `api` (the EthApi setting) selects it; returns true if it did.
+	bool DrawLocalLinkSettings(SettingsInterface* bsi, const std::string& api, bool network_enabled);
+	void LocalLinkApiSelected(SettingsInterface* bsi, const std::string& api);
+	void DrawAutoCoverSettings(SettingsInterface* bsi);
+	void DrawCoverRegionPinSetting(const GameList::Entry& entry);
+	/// Once per frame: starts the automatic cover download after the game list has settled.
+	void PollAutoCovers();
+	void ShutdownAutoCovers();
+
 } // namespace FullscreenUI

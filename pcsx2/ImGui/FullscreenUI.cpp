@@ -556,6 +556,7 @@ void FullscreenUI::Shutdown(bool clear_state)
 		CancelAllHddOperations();
 		CloseSaveStateSelector();
 		CloseCoverDownloaderWindow();
+		ShutdownAutoCovers();
 		s_cover_image_map.clear();
 		s_game_list_sorted_entries = {};
 		s_last_unsorted_entries = {};
@@ -610,6 +611,7 @@ void FullscreenUI::Render()
 		g_gs_device->Recycle(tex.release());
 	s_cleanup_textures.clear();
 	ImGuiFullscreen::UploadAsyncTextures();
+	PollAutoCovers();
 
 	ImGuiFullscreen::BeginLayout();
 
@@ -3463,6 +3465,8 @@ void FullscreenUI::DrawGameListSettingsWindow()
 			FSUI_CSTR("Shows Titles for Games when in Game Grid View Mode"), "UI",
 			"FullscreenUIShowGameGridTitles", true);
 	}
+
+	DrawAutoCoverSettings(bsi);
 
 	MenuHeading(FSUI_CSTR("Operations"));
 	{

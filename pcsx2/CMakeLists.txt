@@ -1117,6 +1117,7 @@ set(pcsx2HostHeaders
 
 set(pcsx2ImGuiSources
 	ImGui/FullscreenUI.cpp
+	ImGui/FullscreenUI_Packs.cpp
 	ImGui/FullscreenUI_Settings.cpp
 	ImGui/FullscreenUIShot.cpp
 	ImGui/ImGuiFullscreen.cpp
@@ -1157,6 +1158,7 @@ set(pcsx2CatalogSources
 	Catalog/FileUtil.cpp
 	Catalog/HttpFetcher.cpp
 	Catalog/Json.cpp
+	Catalog/LocalLinkSettings.cpp
 	Catalog/PatchRepo.cpp
 	Catalog/PnachText.cpp
 	Catalog/ResponseCache.cpp
@@ -1180,6 +1182,7 @@ set(pcsx2CatalogHeaders
 	Catalog/FileUtil.h
 	Catalog/HttpFetcher.h
 	Catalog/Json.h
+	Catalog/LocalLinkSettings.h
 	Catalog/PatchRepo.h
 	Catalog/PnachText.h
 	Catalog/ResponseCache.h

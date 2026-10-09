@@ -95,6 +95,31 @@ namespace FullscreenUI
 			QueueResetFocus(FocusResetType::WindowChanged);
 		}
 
+		// Starts a game list scan and shows the list, for pages that need games in it. The scan runs
+		// on the host's own thread, so give it a few frames (bp-shot.py --wait-frames) before the next page.
+		void OpenRescan()
+		{
+			Host::RefreshGameListAsync(false);
+			OpenGameList();
+		}
+
+		// The first game in the list: its own settings, starting on the Summary page. The settings
+		// pages of one game only exist for a game, which a page name alone cannot supply.
+		bool OpenFirstGameSettings(std::string* error)
+		{
+			auto lock = GameList::GetLock();
+			const GameList::Entry* entry = GameList::GetEntryCount() ? GameList::GetEntryByIndex(0) : nullptr;
+			if (!entry)
+			{
+				*error = "the game list is empty (open 'rescan' first and wait a few frames)";
+				return false;
+			}
+
+			s_about_window_open = false;
+			SwitchToGameSettings(entry);
+			return true;
+		}
+
 		struct PageEntry
 		{
 			const char* name;
@@ -110,6 +135,7 @@ namespace FullscreenUI
 			{"gamelistsettings", &OpenGameListSettings},
 			{"about", &OpenAbout},
 			{"settings", &OpenSettings},
+			{"rescan", &OpenRescan},
 		};
 
 		// `global` pages are the ones the settings window lists when it is not editing one game's
@@ -166,6 +192,7 @@ namespace FullscreenUI
 				out += ", ";
 			out += page.name;
 		}
+		out += ", gamesettings";
 		for (const SettingsPageEntry& page : kSettingsPages)
 		{
 			if (page.global)
@@ -217,6 +244,9 @@ namespace FullscreenUI
 			*error = fmt::format("unknown settings page '{}'", settings_page);
 			return false;
 		}
+
+		if (StringUtil::compareNoCase(top, "gamesettings"))
+			return OpenFirstGameSettings(error);
 
 		for (const PageEntry& page : kPages)
 		{
