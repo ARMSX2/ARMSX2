@@ -18,6 +18,7 @@
 #include "pcsx2/CDVD/CDVDcommon.h"
 #include "pcsx2/Achievements.h"
 #include "pcsx2/BuildVersion.h"
+#include "pcsx2/Catalog/DriverPacks.h"
 #include "pcsx2/CDVD/CDVD.h"
 #include "pcsx2/Counters.h"
 #include "pcsx2/DebugTools/Debug.h"
@@ -2463,6 +2464,9 @@ int main(int argc, char* argv[])
 	// Bail out if we can't find any config.
 	if (!QtHost::InitializeConfig())
 		return EXIT_FAILURE;
+
+	// Selected GPU driver pack (Linux): must be in the environment before anything loads libvulkan.
+	DriverPacks::ApplyEnvironment();
 
 	// Are we just setting up the configuration?
 	if (s_test_config_and_exit)

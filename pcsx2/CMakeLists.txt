@@ -1149,12 +1149,14 @@ set(pcsx2CatalogSources
 	Catalog/CoverAutoDownload.cpp
 	Catalog/CoverDownloadJob.cpp
 	Catalog/CoverSources.cpp
+	Catalog/DriverPacks.cpp
 	Catalog/FileUtil.cpp
 	Catalog/HttpFetcher.cpp
 	Catalog/Json.cpp
 	Catalog/PatchRepo.cpp
 	Catalog/PnachText.cpp
 	Catalog/ResponseCache.cpp
+	Catalog/TarGz.cpp
 	Catalog/TarZstdExtractor.cpp
 	Catalog/TextureArchivePath.cpp
 	Catalog/TexturePackCatalog.cpp
@@ -1168,6 +1170,7 @@ set(pcsx2CatalogHeaders
 	Catalog/CoverAutoDownload.h
 	Catalog/CoverDownloadJob.h
 	Catalog/CoverSources.h
+	Catalog/DriverPacks.h
 	Catalog/Fetch.h
 	Catalog/FileUtil.h
 	Catalog/HttpFetcher.h
@@ -1175,6 +1178,7 @@ set(pcsx2CatalogHeaders
 	Catalog/PatchRepo.h
 	Catalog/PnachText.h
 	Catalog/ResponseCache.h
+	Catalog/TarGz.h
 	Catalog/TarZstdExtractor.h
 	Catalog/TextureArchivePath.h
 	Catalog/TexturePackCatalog.h

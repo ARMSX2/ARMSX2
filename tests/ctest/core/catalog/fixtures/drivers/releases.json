@@ -1,0 +1,72 @@
+[
+ {
+  "tag_name": "axfl2-002",
+  "name": "Custom Turnip driver for ARMSX2 (Adreno 6xx/7xx) axfl2-002",
+  "draft": false,
+  "prerelease": false,
+  "published_at": "2026-10-04T23:54:03Z",
+  "html_url": "https://github.com/bmdhacks/armsx2-turnip/releases/tag/axfl2-002",
+  "target_commitish": "armsx2/26.1.2",
+  "assets": [
+   {
+    "name": "turnip-axfl2-002-aarch64.tar.gz",
+    "size": 4107024,
+    "digest": "sha256:687e72824c653efc5dbd5b650ae6223ddb0aa0c52d687f6f7fade9c7d95dc5bf",
+    "content_type": "application/x-gtar",
+    "state": "uploaded",
+    "browser_download_url": "https://github.com/bmdhacks/armsx2-turnip/releases/download/axfl2-002/turnip-axfl2-002-aarch64.tar.gz"
+   },
+   {
+    "name": "turnip-axfl2-002-aarch64.tar.gz.sha256",
+    "size": 98,
+    "digest": "sha256:ebb52f23576775a841b178b21a4d5d6f39b6589b480c697fb1b7f94ecca0ee87",
+    "content_type": "application/octet-stream",
+    "state": "uploaded",
+    "browser_download_url": "https://github.com/bmdhacks/armsx2-turnip/releases/download/axfl2-002/turnip-axfl2-002-aarch64.tar.gz.sha256"
+   },
+   {
+    "name": "turnip-axfl2-002-android.zip",
+    "size": 3558471,
+    "digest": "sha256:7f02914986f2e63349940a49d53f0d63668d4ab5cda76fc03f85de9a977e2542",
+    "content_type": "application/zip",
+    "state": "uploaded",
+    "browser_download_url": "https://github.com/bmdhacks/armsx2-turnip/releases/download/axfl2-002/turnip-axfl2-002-android.zip"
+   },
+   {
+    "name": "turnip-axfl2-002-android.zip.sha256",
+    "size": 95,
+    "digest": "sha256:77736f4337c9703db630b0a09d4b3658f5464c1fd10ce48b9c6cd5c1b5cbc665",
+    "content_type": "application/octet-stream",
+    "state": "uploaded",
+    "browser_download_url": "https://github.com/bmdhacks/armsx2-turnip/releases/download/axfl2-002/turnip-axfl2-002-android.zip.sha256"
+   }
+  ]
+ },
+ {
+  "tag_name": "axfl1-011",
+  "name": "Superseded: ROCKNIX image build only (axfl1-011)",
+  "draft": false,
+  "prerelease": false,
+  "published_at": "2026-09-25T00:32:04Z",
+  "html_url": "https://github.com/bmdhacks/armsx2-turnip/releases/tag/axfl1-011",
+  "target_commitish": "11166800179884c72e338b512f0b654f467de5d6",
+  "assets": [
+   {
+    "name": "turnip-axfl1-011-aarch64.tar.gz",
+    "size": 4106858,
+    "digest": "sha256:b3c888b40587f0d30513709f6c5ae6f0171da4279bbf77d17511a0fb317560fa",
+    "content_type": "application/x-gtar",
+    "state": "uploaded",
+    "browser_download_url": "https://github.com/bmdhacks/armsx2-turnip/releases/download/axfl1-011/turnip-axfl1-011-aarch64.tar.gz"
+   },
+   {
+    "name": "turnip-axfl1-011-aarch64.tar.gz.sha256",
+    "size": 98,
+    "digest": "sha256:184f530494176feceed8d0d2ef9a4833fdb087696e6d11e0ce84c3b6dfa7a8d8",
+    "content_type": "application/octet-stream",
+    "state": "uploaded",
+    "browser_download_url": "https://github.com/bmdhacks/armsx2-turnip/releases/download/axfl1-011/turnip-axfl1-011-aarch64.tar.gz.sha256"
+   }
+  ]
+ }
+]
