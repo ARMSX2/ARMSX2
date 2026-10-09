@@ -421,6 +421,13 @@ namespace VMManager
 		void EntryPointCompilingOnCPUThread();
 		void VSyncOnCPUThread();
 		void PollInputOnCPUThread();
+
+#ifdef PCSX2_RECOMPILER_TESTS
+		/// Tests only: set what GetState() reports, without any of SetState()'s side effects.
+		/// The recompiler tests run with no VM, so GetState() reads Shutdown and the EE event
+		/// test returns at its first check; a test of the event test itself sets Running.
+		void SetStateForTests(VMState state);
+#endif
 	} // namespace Internal
 } // namespace VMManager
 
