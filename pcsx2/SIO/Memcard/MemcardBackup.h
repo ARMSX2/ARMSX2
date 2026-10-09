@@ -229,9 +229,19 @@ namespace MemcardBackup
 	/// GS thread must check that the Big Picture UI is running. It must always return.
 	using RestorePromptHandler = std::function<RestoreAnswer(const RestorePrompt&)>;
 
-	/// Registers the handler (or clears it with an empty function). With none registered the boot
-	/// goes ahead and the unreadable card is logged. Set it before the VM starts.
+	/// Registers the host's handler (or clears it with an empty function). With none registered the
+	/// boot goes ahead and the unreadable card is logged. Set it before the VM starts.
 	void SetRestorePromptHandler(RestorePromptHandler handler);
+
+	/// A second place for a handler, for a UI that is not the host's main one: Big Picture sets it
+	/// while it is running (and clears it when it shuts down). It is used only while no handler is
+	/// set with SetRestorePromptHandler(), whichever of the two was registered first, so the Qt
+	/// host's own dialog wins whenever the Qt main window exists and Big Picture asks only when it
+	/// is the one UI there is (armsx2-sdl, or Qt before its window exists).
+	void SetFallbackRestorePromptHandler(RestorePromptHandler handler);
+
+	/// The handler a boot would call now: the host's, else the fallback, else empty.
+	RestorePromptHandler GetRestorePromptHandler();
 
 	/// What happened to one card in PrepareCardsForBoot().
 	struct CardReport
