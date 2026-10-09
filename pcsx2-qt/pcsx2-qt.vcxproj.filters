@@ -48,6 +48,8 @@
     </ClCompile>
     <ClCompile Include="DisplayWidget.cpp" />
     <ClCompile Include="QtUtils.cpp" />
+    <ClCompile Include="QtShot.cpp" />
+    <ClCompile Include="QtShotEntries.cpp" />
     <ClCompile Include="QtKeyCodes.cpp" />
     <ClCompile Include="Settings\BIOSSettingsWidget.cpp">
       <Filter>Settings</Filter>
@@ -293,6 +295,7 @@
     <ClInclude Include="PrecompiledHeader.h" />
     <ClInclude Include="AsyncDialogs.h" />
     <ClInclude Include="QtUtils.h" />
+    <ClInclude Include="QtShot.h" />
     <ClInclude Include="SettingWidgetBinder.h" />
     <ClInclude Include="Settings\HddCreateQt.h">
       <Filter>Settings</Filter>
