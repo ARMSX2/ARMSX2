@@ -806,7 +806,21 @@ void TexturePacksSettingsWidget::onInstallClicked()
 	if (!row || !row->pack)
 		return;
 
-	if (!m_service->startInstall(*row->pack, installSerialFor(*row->pack)))
+	const std::string serial = installSerialFor(*row->pack);
+
+	// An install over a replacements folder the installer did not make (textures the player made or copied)
+	// keeps that folder under another name; ask first.
+	Tex::TexturePackState state = Tex::TexturePackState::InDataRoot();
+	const Tex::TexturePackInstaller installer(Tex::GetDefaultFetcher(), state, Tex::TexturePackInstaller::DefaultConfig());
+	if (installer.HasUnrecordedReplacements(serial))
+	{
+		const QString message = tr("%1 already has texture replacements that were not installed from the catalog.\n\nThe existing folder is kept as %2<date and time> and no longer used. Install the pack?")
+		                            .arg(QString::fromStdString(serial), Tex::TexturePackInstaller::KEPT_FOLDER_PREFIX);
+		if (QMessageBox::question(this, tr("Install Texture Pack"), message) != QMessageBox::Yes)
+			return;
+	}
+
+	if (!m_service->startInstall(*row->pack, serial))
 		QMessageBox::information(this, tr("Texture Packs"), tr("Another texture pack is being installed. Wait for it to finish, or cancel it."));
 }
 

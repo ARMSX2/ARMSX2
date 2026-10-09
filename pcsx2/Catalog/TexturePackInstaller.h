@@ -21,7 +21,11 @@
 //   4. Extract (TarZstdExtractor / ZipTextureExtractor) into staging/out, delete the archive.
 //   5. Commit: move the existing replacements folder aside as replacements.old, rename staging/out
 //      to replacements, put the old one back if that fails, else delete it. The whole folder is
-//      replaced, not merged: a game has one pack.
+//      replaced, not merged: a game has one pack. A folder this installer did not make (no install
+//      record for the serial: textures the player made or copied by hand) is never deleted: it is
+//      kept as replacements.user-<date and time> beside the new one (InstallResult::kept_previous),
+//      and a UI asks first (HasUnrecordedReplacements()). A symbolic link is never followed when
+//      deleting; the link itself goes.
 //   6. Record the install (TexturePackState); a record of another pack for the serial is dropped.
 //
 // One install runs at a time in the whole process; a second Install() returns Status::Busy.
@@ -123,6 +127,9 @@ namespace Catalog
 			std::string error;
 			TexturePackRecord record; ///< Valid when status is Ok.
 			u64 textures = 0; ///< Texture files installed.
+			/// The name (inside the game's folder) the player's own replacements folder was kept
+			/// under, "replacements.user-<date and time>"; empty when there was none to keep.
+			std::string kept_previous;
 
 			bool IsOk() const { return status == Status::Ok; }
 		};
@@ -135,6 +142,16 @@ namespace Catalog
 
 		/// True while any installer in the process is inside Install().
 		static bool IsInstalling();
+
+		/// Start of the name an unrecorded replacements folder is kept under.
+		static constexpr const char* KEPT_FOLDER_PREFIX = "replacements.user-";
+
+		/// True when <Textures>/<serial>/replacements exists and no install record names `serial`: a
+		/// folder of textures the player made or copied. Install() sets it aside as
+		/// KEPT_FOLDER_PREFIX + date and time instead of replacing it, and a UI should say so and ask
+		/// before it starts. `serial` is spelled as for Install(); false for one that is not valid.
+		/// Cheap enough for the UI thread.
+		bool HasUnrecordedReplacements(std::string_view serial) const;
 
 		/// Free space an install needs on the textures filesystem. tar+zstd is streamed, so it is
 		/// the archive plus its exact decompressed size; zip roughly doubles the archive. Both
@@ -168,8 +185,8 @@ namespace Catalog
 
 		/// Removes the pack in <Textures>/<folder_name>: takes it out of use in one rename (so a
 		/// delete that fails half way can never leave a half pack where the engine reads it),
-		/// then deletes the files, and finally the folder itself if nothing else (texture dumps)
-		/// is in it. The install record is dropped whatever happened on disk. Returns true when
+		/// then deletes the files (a symbolic link is removed, never followed), and finally the
+		/// folder itself if nothing else (texture dumps) is in it. The install record is dropped whatever happened on disk. Returns true when
 		/// no pack is left there. `folder_name` is a single folder name as ListInstalled()
 		/// reports it, not a path.
 		bool Remove(std::string_view folder_name);

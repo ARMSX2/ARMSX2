@@ -23,6 +23,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <ctime>
 #include <filesystem>
 #include <set>
 
@@ -97,10 +98,44 @@ namespace Catalog
 			return static_cast<u64>(info.available);
 		}
 
+		// A folder, or a link to one (even a dangling one): what a player may have at a replacements path.
+		bool PathIsTaken(const std::string& path)
+		{
+			return FileSystem::DirectoryExists(path.c_str()) || FileSystem::IsSymbolicLink(path.c_str());
+		}
+
+		// A symbolic link is removed, never followed: RecursiveDeleteDirectory() lists what the link points at
+		// and would empty it, and a player's replacements folder may be a link to a texture library elsewhere.
 		void DeleteDirectoryTree(const std::string& path)
 		{
+			if (FileSystem::IsSymbolicLink(path.c_str()))
+			{
+				if (!FileSystem::DeleteSymbolicLink(path.c_str()))
+					Console.Warning("Texture packs: could not remove the link %s", path.c_str());
+				return;
+			}
 			if (FileSystem::DirectoryExists(path.c_str()) && !FileSystem::RecursiveDeleteDirectory(path.c_str()))
 				Console.Warning("Texture packs: could not delete %s completely", path.c_str());
+		}
+
+		// "<target>.user-20261008-153012", with -2, -3 ... if that name is taken (two installs in one second).
+		std::string KeptFolderPath(const std::string& target)
+		{
+			const std::time_t now = std::time(nullptr);
+			std::tm local = {};
+#ifdef _WIN32
+			localtime_s(&local, &now);
+#else
+			localtime_r(&now, &local);
+#endif
+			char stamp[32] = {};
+			std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local);
+
+			const std::string base = target + ".user-" + stamp;
+			std::string candidate = base;
+			for (int n = 2; PathIsTaken(candidate); n++)
+				candidate = fmt::format("{}-{}", base, n);
+			return candidate;
 		}
 	} // namespace
 
@@ -167,7 +202,7 @@ namespace Catalog
 		if (!parent.empty() && !FileSystem::EnsureDirectoryExists(parent.c_str(), true))
 			return false;
 
-		const bool had_previous = FileSystem::DirectoryExists(target.c_str());
+		const bool had_previous = PathIsTaken(target);
 		if (had_previous && !FileSystem::RenamePath(target.c_str(), backup.c_str()))
 		{
 			Console.Warning("Texture packs: could not move the existing replacements aside");
@@ -185,6 +220,15 @@ namespace Catalog
 
 		DeleteDirectoryTree(backup);
 		return true;
+	}
+
+	bool TexturePackInstaller::HasUnrecordedReplacements(std::string_view serial) const
+	{
+		const std::optional<std::string> folder = IsPlainSerialSpelling(serial) ? NormalizeSerial(serial) : std::nullopt;
+		if (!folder.has_value() || m_config.textures_dir.empty())
+			return false;
+		return PathIsTaken(Path::Combine(Path::Combine(m_config.textures_dir, *folder), REPLACEMENTS_NAME)) &&
+		       !m_state.FindForSerial(*folder).has_value();
 	}
 
 	TexturePackInstaller::InstallResult TexturePackInstaller::Install(const TexturePack& pack, std::string_view serial,
@@ -340,8 +384,23 @@ namespace Catalog
 		// From here on cancelling no longer works; the UI hides its Cancel button on this phase.
 		report(Phase::Installing);
 		const std::string target = Path::Combine(Path::Combine(m_config.textures_dir, *folder), REPLACEMENTS_NAME);
+
+		// A folder with no install record is the player's own. It is set aside under another name, never deleted.
+		std::string kept;
+		if (PathIsTaken(target) && !m_state.FindForSerial(*folder).has_value())
+		{
+			kept = KeptFolderPath(target);
+			if (!FileSystem::RenamePath(target.c_str(), kept.c_str()))
+				return fail("Could not set aside the existing replacements folder");
+		}
 		if (!CommitDirectory(extracted, target))
+		{
+			if (!kept.empty())
+				FileSystem::RenamePath(kept.c_str(), target.c_str());
 			return fail("Could not write to the textures folder");
+		}
+		if (!kept.empty())
+			result.kept_previous = std::string(Path::GetFileName(kept));
 		ForgetSize(*folder);
 
 		result.record = TexturePackState::RecordFor(pack, *folder);
@@ -505,7 +564,7 @@ namespace Catalog
 		for (const char* part : {REPLACEMENTS_NAME, "replacements.old"})
 		{
 			const std::string dir = Path::Combine(serial_dir, part);
-			if (!FileSystem::DirectoryExists(dir.c_str()))
+			if (!PathIsTaken(dir))
 				continue;
 
 			// One rename takes the pack out of use however many files it holds; deleting the

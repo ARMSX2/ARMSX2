@@ -76,6 +76,29 @@ namespace
 		}
 		return order;
 	}
+
+	// Folders under `dir` whose name starts with `prefix`.
+	std::vector<std::string> FoldersStartingWith(const std::string& dir, const std::string& prefix)
+	{
+		std::vector<std::string> found;
+		std::error_code ec;
+		for (const auto& item : std::filesystem::directory_iterator(dir, ec))
+		{
+			const std::string name = item.path().filename().string();
+			if (name.rfind(prefix, 0) == 0)
+				found.push_back(name);
+		}
+		std::sort(found.begin(), found.end());
+		return found;
+	}
+
+	// A symbolic link at `link` to the folder `to`; false when the platform will not make one.
+	bool MakeFolderLink(const std::string& to, const std::string& link)
+	{
+		std::error_code ec;
+		std::filesystem::create_directory_symlink(to, link, ec);
+		return !ec;
+	}
 } // namespace
 
 class TexturePackInstallerTest : public ::testing::Test
@@ -821,6 +844,173 @@ TEST_F(InstalledPacksTest, ListingAMissingTexturesFolderIsEmpty)
 {
 	EXPECT_TRUE(installer.ListInstalled().empty());
 	EXPECT_TRUE(installer.Remove("SLUS-21410")); // no pack is left there, which is what was asked for
+}
+
+// ------------------------------------------------------------------------------------------
+// A replacements folder the installer did not make
+// ------------------------------------------------------------------------------------------
+
+class UserFolderTest : public InstalledPacksTest
+{
+protected:
+	// A folder of textures the player made or copied, with no install record.
+	void MakeUserFolder(const std::string& serial = "SLUS-21410")
+	{
+		ASSERT_TRUE(FileSystem::EnsureDirectoryExists(TexturePath(serial + "/replacements").c_str(), true));
+		ASSERT_TRUE(FileSystem::WriteStringToFile(TexturePath(serial + "/replacements/mine.png").c_str(), "hand made"));
+	}
+
+	std::vector<std::string> KeptFolders(const std::string& serial = "SLUS-21410")
+	{
+		return FoldersStartingWith(TexturePath(serial), "replacements.user-");
+	}
+};
+
+TEST_F(UserFolderTest, AnInstallKeepsAFolderTheInstallerDidNotMake)
+{
+	MakeUserFolder();
+	Archive a = BuildTarPack("pack-a", "SLUS-21410", NumberedTextures(2, "pack"));
+	Serve(a);
+
+	const auto result = Install(a.pack, "SLUS-21410");
+	ASSERT_TRUE(result.IsOk()) << result.error;
+
+	// The pack is where the engine reads it, and the player's textures are beside it under another name.
+	EXPECT_EQ(ListFiles(TexturePath("SLUS-21410/replacements")).size(), 2u);
+	EXPECT_FALSE(FileSystem::FileExists(TexturePath("SLUS-21410/replacements/mine.png").c_str()));
+	const auto kept = KeptFolders();
+	ASSERT_EQ(kept.size(), 1u);
+	EXPECT_EQ(ReadAll(TexturePath("SLUS-21410/" + kept[0] + "/mine.png")), "hand made");
+	EXPECT_FALSE(FileSystem::DirectoryExists(TexturePath("SLUS-21410/replacements.old").c_str()));
+}
+
+TEST_F(UserFolderTest, AUiCanAskBeforeAnInstallWouldSetAFolderAside)
+{
+	EXPECT_FALSE(installer.HasUnrecordedReplacements("SLUS-21410")); // nothing there
+
+	MakeUserFolder();
+	EXPECT_TRUE(installer.HasUnrecordedReplacements("SLUS-21410"));
+	EXPECT_TRUE(installer.HasUnrecordedReplacements("slus 21410")); // spelled as Install() accepts it
+	EXPECT_FALSE(installer.HasUnrecordedReplacements("SLES-52187")); // another game's folder
+	EXPECT_FALSE(installer.HasUnrecordedReplacements("../SLUS-21410")); // not a serial
+	EXPECT_FALSE(installer.HasUnrecordedReplacements(""));
+
+	// Once the install has kept it, what is at replacements is a pack with a record: nothing to ask.
+	Archive a = BuildTarPack("pack-a", "SLUS-21410", NumberedTextures(2));
+	Serve(a);
+	const auto result = Install(a.pack, "SLUS-21410");
+	ASSERT_TRUE(result.IsOk()) << result.error;
+	EXPECT_FALSE(installer.HasUnrecordedReplacements("SLUS-21410"));
+
+	// The result names the folder the player's textures are in now.
+	ASSERT_EQ(KeptFolders().size(), 1u);
+	EXPECT_EQ(result.kept_previous, KeptFolders()[0]);
+	EXPECT_EQ(result.kept_previous.rfind(TexturePackInstaller::KEPT_FOLDER_PREFIX, 0), 0u);
+}
+
+TEST_F(UserFolderTest, AFirstInstallHasNothingToKeep)
+{
+	Archive a = BuildTarPack("pack-a", "SLUS-21410", NumberedTextures(2));
+	Serve(a);
+	const auto result = Install(a.pack, "SLUS-21410");
+	ASSERT_TRUE(result.IsOk()) << result.error;
+	EXPECT_TRUE(result.kept_previous.empty());
+	EXPECT_TRUE(KeptFolders().empty());
+}
+
+TEST_F(UserFolderTest, AnInstallOverAPackItMadeKeepsNothing)
+{
+	Archive first = BuildTarPack("first", "SLUS-21410", NumberedTextures(3, "first"));
+	Archive second = BuildTarPack("second", "SLUS-21410", NumberedTextures(2, "second"));
+	Serve(first);
+	Serve(second);
+	ASSERT_TRUE(Install(first.pack, "SLUS-21410").IsOk());
+	ASSERT_TRUE(Install(second.pack, "SLUS-21410").IsOk());
+	EXPECT_TRUE(KeptFolders().empty());
+}
+
+TEST_F(UserFolderTest, TwoKeptFoldersInTheSameSecondDoNotCollide)
+{
+	// The first install keeps the player's folder. Forgetting the record then makes the installed pack look like
+	// one the player made, so the second install keeps that too, under a name the first did not take.
+	MakeUserFolder();
+	Archive a = BuildTarPack("pack-a", "SLUS-21410", NumberedTextures(2));
+	Serve(a);
+	ASSERT_TRUE(Install(a.pack, "SLUS-21410").IsOk());
+	ASSERT_TRUE(state.ForgetSerial("SLUS-21410"));
+
+	ASSERT_TRUE(Install(a.pack, "SLUS-21410").IsOk());
+	EXPECT_EQ(KeptFolders().size(), 2u);
+}
+
+TEST_F(UserFolderTest, ASymlinkedReplacementsFolderIsNeverEmptied)
+{
+	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(temp.File("elsewhere").c_str(), true));
+	ASSERT_TRUE(FileSystem::WriteStringToFile(temp.File("elsewhere/precious.png").c_str(), "precious"));
+	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(TexturePath("SLUS-21410").c_str(), true));
+	if (!MakeFolderLink(temp.File("elsewhere"), TexturePath("SLUS-21410/replacements")))
+		GTEST_SKIP() << "cannot make a symbolic link here";
+
+	Archive a = BuildTarPack("pack-a", "SLUS-21410", NumberedTextures(2));
+	Serve(a);
+	ASSERT_TRUE(Install(a.pack, "SLUS-21410").IsOk());
+
+	EXPECT_EQ(ReadAll(temp.File("elsewhere/precious.png")), "precious");
+	EXPECT_EQ(ListFiles(TexturePath("SLUS-21410/replacements")).size(), 2u);
+	// The link itself is what was kept.
+	const auto kept = KeptFolders();
+	ASSERT_EQ(kept.size(), 1u);
+	EXPECT_EQ(ReadAll(TexturePath("SLUS-21410/" + kept[0] + "/precious.png")), "precious");
+}
+
+TEST_F(UserFolderTest, ReplacingARecordedPackThatIsALinkRemovesTheLinkNotItsTarget)
+{
+	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(temp.File("elsewhere").c_str(), true));
+	ASSERT_TRUE(FileSystem::WriteStringToFile(temp.File("elsewhere/precious.png").c_str(), "precious"));
+	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(TexturePath("SLUS-21410").c_str(), true));
+	if (!MakeFolderLink(temp.File("elsewhere"), TexturePath("SLUS-21410/replacements")))
+		GTEST_SKIP() << "cannot make a symbolic link here";
+	ASSERT_TRUE(state.Record(TexturePackState::RecordFor(DescribeArchive("old", "SLUS-21410", "x", TexturePackFormat::TarZstd, 1), "SLUS-21410")));
+
+	Archive a = BuildTarPack("pack-a", "SLUS-21410", NumberedTextures(2));
+	Serve(a);
+	ASSERT_TRUE(Install(a.pack, "SLUS-21410").IsOk());
+
+	EXPECT_EQ(ReadAll(temp.File("elsewhere/precious.png")), "precious");
+	EXPECT_FALSE(std::filesystem::is_symlink(TexturePath("SLUS-21410/replacements")));
+	EXPECT_EQ(ListFiles(TexturePath("SLUS-21410/replacements")).size(), 2u);
+}
+
+TEST_F(UserFolderTest, RemovingASymlinkedFolderRemovesTheLinkNotItsTarget)
+{
+	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(temp.File("elsewhere").c_str(), true));
+	ASSERT_TRUE(FileSystem::WriteStringToFile(temp.File("elsewhere/precious.png").c_str(), "precious"));
+	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(TexturePath("SLUS-21410").c_str(), true));
+	if (!MakeFolderLink(temp.File("elsewhere"), TexturePath("SLUS-21410/replacements")))
+		GTEST_SKIP() << "cannot make a symbolic link here";
+	// replacements.old can be a link too.
+	if (!MakeFolderLink(temp.File("elsewhere"), TexturePath("SLUS-21410/replacements.old")))
+		GTEST_SKIP() << "cannot make a symbolic link here";
+
+	EXPECT_TRUE(installer.Remove("SLUS-21410"));
+	EXPECT_EQ(ReadAll(temp.File("elsewhere/precious.png")), "precious");
+	EXPECT_FALSE(std::filesystem::exists(TexturePath("SLUS-21410/replacements")));
+}
+
+TEST(TexturePackInstallerCommit, ALinkAtTheTargetIsReplacedWithoutEmptyingWhatItPointsAt)
+{
+	ScopedTempDir temp;
+	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(temp.File("staged").c_str(), true));
+	ASSERT_TRUE(FileSystem::WriteStringToFile(temp.File("staged/new.png").c_str(), "new"));
+	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(temp.File("elsewhere").c_str(), true));
+	ASSERT_TRUE(FileSystem::WriteStringToFile(temp.File("elsewhere/precious.png").c_str(), "precious"));
+	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(temp.File("game").c_str(), true));
+	if (!MakeFolderLink(temp.File("elsewhere"), temp.File("game/replacements")))
+		GTEST_SKIP() << "cannot make a symbolic link here";
+
+	ASSERT_TRUE(TexturePackInstaller::CommitDirectory(temp.File("staged"), temp.File("game/replacements")));
+	EXPECT_EQ(ReadAll(temp.File("elsewhere/precious.png")), "precious");
+	EXPECT_EQ(ReadAll(temp.File("game/replacements/new.png")), "new");
 }
 
 // ------------------------------------------------------------------------------------------

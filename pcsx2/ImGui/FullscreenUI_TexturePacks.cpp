@@ -1331,6 +1331,30 @@ namespace
 			false, FSUI_ICONSTR(ICON_FA_TRASH, "Delete"), FSUI_ICONSTR(ICON_FA_XMARK, "Cancel"));
 	}
 
+	// An install over a replacements folder the installer did not make (textures the player made or copied)
+	// keeps that folder under another name; the player is told before it starts.
+	void RequestInstall(const Cat::TexturePack& pack)
+	{
+		const std::string serial = pack.InstallSerialFor(ContextSerial(), s_library_serials);
+		Cat::TexturePackState state = Cat::TexturePackState::InDataRoot();
+		const Cat::TexturePackInstaller installer(Cat::GetDefaultFetcher(), state, Cat::TexturePackInstaller::DefaultConfig());
+		if (!installer.HasUnrecordedReplacements(serial))
+		{
+			StartInstall(pack);
+			return;
+		}
+
+		std::string message = fmt::format(
+			FSUI_FSTR("{} already has texture replacements that were not installed from the catalog. The existing folder is kept as {}<date and time> and no longer used. Install the pack?"),
+			serial, Cat::TexturePackInstaller::KEPT_FOLDER_PREFIX);
+		OpenConfirmMessageDialog(FSUI_ICONSTR(ICON_FA_DOWNLOAD, "Install Texture Pack"), std::move(message),
+			[pack](bool yes) {
+				if (yes)
+					StartInstall(pack);
+			},
+			false, FSUI_ICONSTR(ICON_FA_DOWNLOAD, "Install"), FSUI_ICONSTR(ICON_FA_XMARK, "Cancel"));
+	}
+
 	void DrawDetailBody(const PackEntry* entry, const Cat::TexturePackInstaller::InstalledPack* installed, bool* close)
 	{
 		const Cat::TexturePack* pack = entry ? &entry->pack : nullptr;
@@ -1384,7 +1408,7 @@ namespace
 			const std::string title = fmt::format("{} {}", ICON_FA_DOWNLOAD, installing_this ? FSUI_STR("Installing...") : std::string(label));
 			if (MenuButton(title.c_str(), summary.c_str(), can_install))
 			{
-				StartInstall(*pack);
+				RequestInstall(*pack);
 				*close = true;
 			}
 			if (can_install)
@@ -2288,6 +2312,9 @@ TRANSLATE_NOOP("FullscreenUI", "Files");
 TRANSLATE_NOOP("FullscreenUI", "Size on Disk");
 TRANSLATE_NOOP("FullscreenUI", "Folder");
 TRANSLATE_NOOP("FullscreenUI", "Delete Texture Pack");
+TRANSLATE_NOOP("FullscreenUI", "{} already has texture replacements that were not installed from the catalog. The existing folder is kept as {}<date and time> and no longer used. Install the pack?");
+TRANSLATE_NOOP("FullscreenUI", "Install Texture Pack");
+TRANSLATE_NOOP("FullscreenUI", "Install");
 TRANSLATE_NOOP("FullscreenUI", "Delete");
 TRANSLATE_NOOP("FullscreenUI", "Cancel");
 TRANSLATE_NOOP("FullscreenUI", "Close");
