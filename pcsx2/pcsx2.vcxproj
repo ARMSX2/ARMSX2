@@ -205,6 +205,7 @@
     <ClCompile Include="Arcade\AcGameFile.cpp" />
     <ClCompile Include="Arcade\ArcadeFiles.cpp" />
     <ClCompile Include="Arcade\ArcadeInput.cpp" />
+    <ClCompile Include="Arcade\ArcadeSetup.cpp" />
     <ClCompile Include="arm64\AsmHelpers.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'!='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
@@ -714,6 +715,7 @@
     <ClInclude Include="Arcade\AcGameFile.h" />
     <ClInclude Include="Arcade\ArcadeFiles.h" />
     <ClInclude Include="Arcade\ArcadeInput.h" />
+    <ClInclude Include="Arcade\ArcadeSetup.h" />
     <ClInclude Include="arm64\AsmHelpers.h">
       <ExcludedFromBuild Condition="'$(Platform)'!='ARM64'">true</ExcludedFromBuild>
     </ClInclude>

@@ -66,6 +66,7 @@ set(pcsx2Sources
 	Arcade/AcGameFile.cpp
 	Arcade/ArcadeFiles.cpp
 	Arcade/ArcadeInput.cpp
+	Arcade/ArcadeSetup.cpp
 	BuildVersion.cpp
 	Cache.cpp
 	COP0.cpp
@@ -163,6 +164,7 @@ set(pcsx2Headers
 	Arcade/AcGameFile.h
 	Arcade/ArcadeFiles.h
 	Arcade/ArcadeInput.h
+	Arcade/ArcadeSetup.h
 	BuildVersion.h
 	Cache.h
 	Common.h
