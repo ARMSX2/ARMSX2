@@ -226,7 +226,9 @@ namespace MemcardBackup
 	/// thread: it must not wait for the CPU thread to run a queued task (Host::RunOnCPUThread with
 	/// block = true, a BlockingQueuedConnection into a UI thread that is itself waiting on the CPU
 	/// thread) or boot deadlocks. At this point the GS may not be open yet; a handler that needs the
-	/// GS thread must check that the Big Picture UI is running. It must always return.
+	/// GS thread must check that the Big Picture UI is running. A handler that draws in Big Picture
+	/// must also service input on the waiting thread, since input reaches the UI through the CPU
+	/// thread (Big Picture's does: see FullscreenUI_Saves.cpp). It must always return.
 	using RestorePromptHandler = std::function<RestoreAnswer(const RestorePrompt&)>;
 
 	/// Registers the host's handler (or clears it with an empty function). With none registered the

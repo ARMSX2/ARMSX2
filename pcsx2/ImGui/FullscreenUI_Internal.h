@@ -153,6 +153,7 @@ namespace FullscreenUI
 		PauseMenu,
 		Achievements,
 		Leaderboards,
+		MemcardBackups,
 	};
 
 	enum class PauseSubMenu
@@ -547,5 +548,27 @@ namespace FullscreenUI
 	/// Once per frame: starts the automatic cover download after the game list has settled.
 	void PollAutoCovers();
 	void ShutdownAutoCovers();
+
+	//////////////////////////////////////////////////////////////////////////
+	// Memory card backups and autosaves (FullscreenUI_Saves.cpp)
+	//////////////////////////////////////////////////////////////////////////
+	/// Memory card page: the Automatic Backups toggle and the row that opens the backups window.
+	void DrawMemcardBackupSettings(SettingsInterface* bsi);
+	void OpenMemcardBackupsWindow();
+	/// MainWindowType::MemcardBackups.
+	void DrawMemcardBackupsWindow();
+	/// While Big Picture is initialised it answers the boot-time "restore this card?" question
+	/// (as the fallback; the host's own handler wins). ShutdownSavesUI() withdraws it and stops the
+	/// backup window's worker.
+	void RegisterMemcardRestorePrompt();
+	void ShutdownSavesUI();
+	/// Opens the restore question with a sample card and no effect, for the screenshot harness.
+	void OpenMemcardPromptPreview();
+	/// Interface page, after "Create Save State Backups": autosave interval, count to keep, on shutdown.
+	void DrawAutosaveSettings(SettingsInterface* bsi);
+	/// Load State selector: adds the game's autosaves after its numbered slots. Load only.
+	void AppendAutosaveListEntries(const std::string& serial, u32 crc);
+	/// True for the slot numbers AppendAutosaveListEntries gives its tiles.
+	bool IsAutosaveSlot(s32 slot);
 
 } // namespace FullscreenUI
