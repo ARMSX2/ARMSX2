@@ -2140,6 +2140,8 @@ void FullscreenUI::DrawSummarySettingsPage()
 					CloseChoiceDialog();
 				});
 		}
+
+		DrawCoverRegionPinSetting(*s_game_settings_entry);
 	}
 	else
 	{
