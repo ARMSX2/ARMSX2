@@ -841,6 +841,7 @@ namespace R5900
 		void JR();
 		void JALR();
 		void SYSCALL();
+		bool SyscallReadsOnlyCallNumber(u8 call);
 		void BREAK();
 		void SYNC();
 		void MFHI();

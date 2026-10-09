@@ -394,6 +394,21 @@ static __fi void armFlushEEClobberedPins()
 	}
 }
 
+// Before a plain-AAPCS C call whose callee reads at most the guest GPRs in
+// `gpr_reads` (bit n = GPR n) from memory and writes none: store the pins it
+// reads, and every caller-saved pin, because the call destroys those
+// registers and the armReloadEEClobberedPins that must follow the call reads
+// them back from memory. Callee-saved pins the callee does not read stay
+// dirty in their registers, as they do across the dispatcher.
+static __fi void armFlushEEPinsForCall(u32 gpr_reads)
+{
+	for (const EEPinnedGPR& pin : kEEPinTable)
+	{
+		if (!armIsCalleeSavedRegister(static_cast<int>(pin.host.GetCode())) || (gpr_reads & (1u << pin.gpr)))
+			armAsm->Str(pin.host, armCpuRegMem(&cpuRegs.GPR.r[pin.gpr].UD[0]));
+	}
+}
+
 // Lazy-dirty twin of armReloadEEPinsAfterPreserveMostCall: pins the callee
 // spares ride through the call in their registers (still newest), so they
 // need neither flush nor reload — the same treatment callee-saved pins
@@ -741,6 +756,7 @@ void SetBranchImmCall(u32 imm, u32 return_pc);
 
 void iFlushCall(int flushtype);
 void recBranchCall(void (*func)());
+void recBranchCallNoGprWrite(void (*func)(), u32 gpr_reads);
 void recCall(void (*func)());
 u32 scaleblockcycles_clear();
 

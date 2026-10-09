@@ -1238,6 +1238,36 @@ void SYSCALL()
 	cpuException(0x20, cpuRegs.branch);
 }
 
+// True when SYSCALL() above, given this call number, reads no guest GPR but
+// $v1 (the call number), writes none, and raises the exception: the number has
+// no case in SYSCALL's switch. The arm64 recompiler relies on this to keep the
+// lazy-dirty pins in registers across a SYSCALL whose $v1 is a compile-time
+// constant (recSYSCALL), so every case label in SYSCALL's switch must be
+// listed here as well.
+bool SyscallReadsOnlyCallNumber(u8 call)
+{
+	switch (static_cast<Syscall>(call))
+	{
+		case Syscall::SetGsCrt:
+		case Syscall::ExecPS2:
+		case Syscall::RFU060:
+		case Syscall::SetOsdConfigParam:
+		case Syscall::GetOsdConfigParam:
+		case Syscall::SetOsdConfigParam2:
+		case Syscall::GetOsdConfigParam2:
+		case Syscall::SetVTLBRefillHandler:
+		case Syscall::StartThread:
+		case Syscall::ChangeThreadPriority:
+		case Syscall::sceSifSetDma:
+		case Syscall::Deci2Call:
+		case Syscall::sysPrintOut:
+		case Syscall::GetMemorySize:
+			return false;
+		default:
+			return true;
+	}
+}
+
 void BREAK() {
 	cpuRegs.pc -= 4;
 	cpuException(0x24, cpuRegs.branch);

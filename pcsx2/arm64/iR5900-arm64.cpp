@@ -634,8 +634,10 @@ void iFlushCall(int flushtype)
 
 	// Lazy-dirty pin seam (EE-SRA 2 WS-B; no-op in write-through mode).
 	// Flush ALL pins only before GPR-READING callees — the exact
-	// FLUSH_INTERPRETER mode (recCall/recBranchCall interpreter fallbacks,
-	// Interp::MTC0). FLUSH_EVERYTHING at block tails is NOT a C seam: dirty
+	// FLUSH_INTERPRETER mode (recCall/recBranchCall interpreter fallbacks).
+	// FLUSH_KEEP_PINS opts out for callees with a known read set and no GPR
+	// writes (recBranchCallNoGprWrite, Interp::MTC0), whose call sites store
+	// only the pins they need. FLUSH_EVERYTHING at block tails is NOT a C seam: dirty
 	// pins deliberately ride across the dispatcher in their registers (the
 	// entire prize), and the JIT-exit paths (JITCompile/DispatcherEvent
 	// stubs) flush explicitly. Lighter modes flush nothing here — their
@@ -644,7 +646,7 @@ void iFlushCall(int flushtype)
 	// materializes through the pin first. First lazy census with the naive
 	// FLUSH_ALL_X86 gate: +224k emitted Strs (+20%) — placement is the
 	// whole game here.
-	if ((flushtype & FLUSH_INTERPRETER) == FLUSH_INTERPRETER)
+	if ((flushtype & FLUSH_INTERPRETER) == FLUSH_INTERPRETER && !(flushtype & FLUSH_KEEP_PINS))
 		armFlushEEGPRPins();
 
 #if 0
@@ -740,6 +742,40 @@ void recBranchCall(void (*func)())
 
 	armReloadCycleDelta();
 	armReloadEEGPRPins();
+}
+
+// recBranchCall for a callee that reads at most the guest GPRs in `gpr_reads`
+// (bit n = GPR n) from memory and writes none: ERET, EI, and SYSCALL when the
+// call number is a constant the interpreter has no case for. The full seam
+// stores all nine pins and reloads all nine; this one stores the pins the
+// callee reads plus the caller-saved pins, and reloads only the caller-saved
+// ones. Callee-saved pins stay dirty in their registers across the call and
+// across the dispatcher, under the same rule as any block tail: every later
+// C reader of GPR memory (the event-test and compile stubs, interpreter
+// fallbacks) stores the pins itself first.
+//
+// The callee must not write a guest GPR. A write would land in memory behind
+// a callee-saved pin that is not reloaded, and the pin would overwrite it at
+// the next flush.
+void recBranchCallNoGprWrite(void (*func)(), u32 gpr_reads)
+{
+	const u32 saved_pc = pc;
+	pc += interpCallFlushPcBias(); // see recCall (AX-05)
+	iFlushCall(FLUSH_INTERPRETER | FLUSH_KEEP_PINS);
+	pc = saved_pc;
+
+	u32 cycles = scaleblockcycles_clear();
+	if (cycles > 0)
+		armAsm->Add(RECCYCLE, RECCYCLE, cycles);
+
+	armFlushCycleDelta();
+	armFlushEEPinsForCall(gpr_reads);
+
+	armEmitCall((void*)func);
+	g_branch = 2;
+
+	armReloadCycleDelta();
+	armReloadEEClobberedPins();
 }
 
 // s_nBlockCycles is 3-bit fixed point. Divide by 8 when done!

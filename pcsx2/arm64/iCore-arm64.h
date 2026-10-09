@@ -377,6 +377,12 @@ int _allocIfUsedFPUtoNEON(int fpureg, int mode);
 // interpreter writes cpuRegs.GPR, so marks go stale.
 #define FLUSH_CONST_KEEP       0x1000
 
+// Modifier for FLUSH_INTERPRETER: do everything it does EXCEPT store all the
+// lazy-dirty pins. For interpreter seams whose callee reads a known set of
+// guest GPRs and writes none; the call site stores just the pins it needs
+// (armFlushEEPinsForCall) and reloads only the clobbered ones.
+#define FLUSH_KEEP_PINS        0x2000
+
 #define FLUSH_EVERYTHING   0x1ff
 #define FLUSH_INTERPRETER  0xfff
 #define FLUSH_FULLVTLB 0x000
