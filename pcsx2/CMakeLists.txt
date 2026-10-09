@@ -1138,6 +1138,7 @@ set(pcsx2InputHeaders
 # backups, arcade setup) written once for the Qt and Big Picture UIs. New Catalog files go in
 # these two lists; the HTTP transport at the end picks the one backend for this platform.
 set(pcsx2CatalogSources
+	Catalog/CoverSources.cpp
 	Catalog/FileUtil.cpp
 	Catalog/HttpFetcher.cpp
 	Catalog/Json.cpp
@@ -1145,6 +1146,7 @@ set(pcsx2CatalogSources
 )
 set(pcsx2CatalogHeaders
 	Catalog/CancelToken.h
+	Catalog/CoverSources.h
 	Catalog/Fetch.h
 	Catalog/FileUtil.h
 	Catalog/HttpFetcher.h
