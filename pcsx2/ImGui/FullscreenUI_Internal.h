@@ -589,8 +589,9 @@ namespace FullscreenUI
 	/// An "Arcade" section on the Summary page of one game's settings: what it lacks, its own button layout.
 	void DrawArcadeGameSettings(const GameList::Entry& entry);
 	/// Starts an arcade game (an .acgame, or a loose image) through ArcadeSetup::Service::Prepare(), or shows what it
-	/// lacks. False when `path` is not an arcade game, which the caller starts as it always did.
-	bool StartArcadePath(const std::string& path, std::optional<s32> state_index, std::optional<bool> fast_boot);
+	/// lacks. False when `path` is not an arcade game, which the caller starts as it always did. `save_state` is the
+	/// path of a state to load once the game has booted.
+	bool StartArcadePath(const std::string& path, std::optional<s32> state_index, std::optional<bool> fast_boot, std::string save_state = {});
 	/// An arcade game is running.
 	bool IsArcadeSessionActive();
 	/// The pause menu's own entry for the Arcade submenu (nothing while no arcade game runs), how many rows it adds

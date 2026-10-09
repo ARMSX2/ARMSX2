@@ -383,7 +383,7 @@ namespace
 		ImGuiFullscreen::AddNotification(LAUNCH_NOTICE_KEY, 0.0f, std::string(), std::string(), std::string());
 	}
 
-	void StartPrepare(std::string path, std::optional<s32> state_index, std::optional<bool> fast_boot)
+	void StartPrepare(std::string path, std::optional<s32> state_index, std::optional<bool> fast_boot, std::string save_state)
 	{
 		if (s_work.IsBusy())
 		{
@@ -396,7 +396,7 @@ namespace
 			FSUI_STR("Getting the game ready..."), std::string());
 
 		// Copying a dongle or unpacking a card takes a moment: not on the GS thread.
-		s_work.Start([path = std::move(path), state_index, fast_boot]() {
+		s_work.Start([path = std::move(path), state_index, fast_boot, save_state = std::move(save_state)]() {
 			Setup::PrepareResult result = Setup::Service().Prepare(path);
 			if (!result.ok)
 			{
@@ -412,6 +412,7 @@ namespace
 			result.ApplyTo(&params);
 			params.state_index = state_index;
 			params.fast_boot = fast_boot;
+			params.save_state = save_state;
 			PostToGSThread([]() { DismissLaunchNotice(); });
 			Host::RunOnCPUThread([params = std::move(params)]() { DoVMInitialize(params, false); });
 		});
@@ -908,12 +909,12 @@ void FullscreenUI::DrawArcadeGameSettings(const GameList::Entry& entry)
 	}
 }
 
-bool FullscreenUI::StartArcadePath(const std::string& path, std::optional<s32> state_index, std::optional<bool> fast_boot)
+bool FullscreenUI::StartArcadePath(const std::string& path, std::optional<s32> state_index, std::optional<bool> fast_boot, std::string save_state)
 {
 	if (!IsArcadeStartPath(path))
 		return false;
 
-	StartPrepare(path, state_index, fast_boot);
+	StartPrepare(path, state_index, fast_boot, std::move(save_state));
 	return true;
 }
 
