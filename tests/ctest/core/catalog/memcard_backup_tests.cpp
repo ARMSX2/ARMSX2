@@ -1241,6 +1241,93 @@ TEST(MemcardBoot, TheHandlerCanBeRegisteredAndCleared)
 	EXPECT_EQ(calls, 0);
 }
 
+// ---- the reopen hook --------------------------------------------------------------------
+
+namespace
+{
+	// EmuFolders and EmuConfig as OnCardsReopening() reads them: the fixture's cards folder as the data root's
+	// memcards, slot 1 holding "a.ps2" and automatic backups on. Put back afterwards.
+	class ReopenHookScope
+	{
+	public:
+		explicit ReopenHookScope(const Fixture& f)
+			: m_data_root(EmuFolders::DataRoot)
+			, m_memory_cards(EmuFolders::MemoryCards)
+			, m_auto_backup(EmuConfig.McdAutoBackup)
+			, m_slot_enabled(EmuConfig.Mcd[0].Enabled)
+			, m_slot_type(EmuConfig.Mcd[0].Type)
+			, m_slot_name(EmuConfig.Mcd[0].Filename)
+			, m_slot2_enabled(EmuConfig.Mcd[1].Enabled)
+		{
+			EmuFolders::DataRoot = f.root().Dir();
+			EmuFolders::MemoryCards = f.root().File("memcards");
+			EmuConfig.McdAutoBackup = true;
+			EmuConfig.Mcd[0].Enabled = true;
+			EmuConfig.Mcd[0].Type = MemoryCardType::File;
+			EmuConfig.Mcd[0].Filename = "a.ps2";
+			EmuConfig.Mcd[1].Enabled = false;
+		}
+
+		~ReopenHookScope()
+		{
+			EmuFolders::DataRoot = m_data_root;
+			EmuFolders::MemoryCards = m_memory_cards;
+			EmuConfig.McdAutoBackup = m_auto_backup;
+			EmuConfig.Mcd[0].Enabled = m_slot_enabled;
+			EmuConfig.Mcd[0].Type = m_slot_type;
+			EmuConfig.Mcd[0].Filename = m_slot_name;
+			EmuConfig.Mcd[1].Enabled = m_slot2_enabled;
+		}
+
+	private:
+		std::string m_data_root, m_memory_cards;
+		bool m_auto_backup, m_slot_enabled;
+		MemoryCardType m_slot_type;
+		std::string m_slot_name;
+		bool m_slot2_enabled;
+	};
+} // namespace
+
+TEST(MemcardReopenHook, AReopenWhileNoVmIsBootingTakesNoSnapshot)
+{
+	// FileMcd_Reopen also runs when the memory card folder or a card is changed in the settings of a running
+	// game, from VMManager::UpdateEmuFolders with the settings lock held. Hashing and zipping both cards there
+	// stalls the CPU thread under that lock, so only the reopen of a boot backs the cards up. (This process has
+	// no VM, which is not a boot either.)
+	Fixture f;
+	f.PutCard("a.ps2", CardImage('a'));
+	ReopenHookScope scope(f);
+
+	OnCardsReopening();
+	EXPECT_EQ(Count(f, "a.ps2"), 0u);
+	EXPECT_FALSE(fs::exists(f.BackupDir("a.ps2")));
+}
+
+TEST(MemcardReopenHook, TheBootsReopenTakesTheSnapshot)
+{
+	Fixture f;
+	f.PutCard("a.ps2", CardImage('a'));
+	ReopenHookScope scope(f);
+
+	OnCardsReopening(true);
+	EXPECT_EQ(Count(f, "a.ps2"), 1u);
+
+	// Unchanged cards cost nothing the second time.
+	OnCardsReopening(true);
+	EXPECT_EQ(Count(f, "a.ps2"), 1u);
+}
+
+TEST(MemcardReopenHook, ASwitchedOffBackupTakesNoSnapshotEvenAtBoot)
+{
+	Fixture f;
+	f.PutCard("a.ps2", CardImage('a'));
+	ReopenHookScope scope(f);
+	EmuConfig.McdAutoBackup = false;
+
+	OnCardsReopening(true);
+	EXPECT_EQ(Count(f, "a.ps2"), 0u);
+}
+
 // ---- the setting ------------------------------------------------------------------------
 
 namespace
@@ -1257,11 +1344,7 @@ namespace
 TEST(MemcardSettings, AutoBackupIsOnByDefaultAndFollowsTheMemoryCardsSection)
 {
 	MemorySettingsInterface empty;
-#ifdef __ANDROID__
-	EXPECT_FALSE(LoadAutoBackup(empty)); // the app's own snapshots run there
-#else
-	EXPECT_TRUE(LoadAutoBackup(empty));
-#endif
+	EXPECT_EQ(LoadAutoBackup(empty), AutoBackupDefault());
 
 	MemorySettingsInterface off;
 	off.SetBoolValue("MemoryCards", "AutoBackup", false);
@@ -1270,6 +1353,23 @@ TEST(MemcardSettings, AutoBackupIsOnByDefaultAndFollowsTheMemoryCardsSection)
 	MemorySettingsInterface on;
 	on.SetBoolValue("MemoryCards", "AutoBackup", true);
 	EXPECT_TRUE(LoadAutoBackup(on));
+}
+
+TEST(MemcardSettings, AutoBackupIsOffWhereTheFrontEndHasNoBackupScreen)
+{
+	//                                   android libretro iOS
+	EXPECT_TRUE(AutoBackupDefaultFor(false, false, false));
+	EXPECT_FALSE(AutoBackupDefaultFor(true, false, false)); // the app's own snapshots run there
+	EXPECT_FALSE(AutoBackupDefaultFor(false, true, false));
+	EXPECT_FALSE(AutoBackupDefaultFor(false, false, true));
+	EXPECT_FALSE(AutoBackupDefaultFor(true, true, true));
+
+	// And a fresh configuration starts with this build's value.
+	Pcsx2Config fresh;
+	EXPECT_EQ(static_cast<bool>(fresh.McdAutoBackup), AutoBackupDefault());
+#if !defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
+	EXPECT_TRUE(AutoBackupDefault()); // desktop
+#endif
 }
 
 TEST(MemcardSettings, TheBootHookReadsTheLoadedConfigNotTheSettingsLock)

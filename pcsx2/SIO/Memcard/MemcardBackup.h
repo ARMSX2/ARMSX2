@@ -28,12 +28,13 @@ class Error;
 // Android app's (MemoryCardBackup.kt), so either can read the other's snapshots.
 //
 // When snapshots are taken:
-//   Automatically, when the VM boots (and when the card setup changes mid-game): FileMcd_Reopen
-//   calls OnCardsReopening() after the cards are closed and before they are opened again, so the
-//   copy cannot catch a half-finished write. Only slot 1 and 2 cards are covered. A card is
-//   snapshotted only if it verifies (Verify() == Good) and its SHA-256 differs from the newest
-//   snapshot's, so a boot that changed nothing costs nothing. The setting [MemoryCards] AutoBackup
-//   (default on) turns this off.
+//   Automatically, when the VM boots: FileMcd_Reopen calls OnCardsReopening() after the cards are
+//   closed and before they are opened again, so the copy cannot catch a half-finished write. Only
+//   slot 1 and 2 cards are covered. A card is snapshotted only if it verifies (Verify() == Good) and
+//   its SHA-256 differs from the newest snapshot's, so a boot that changed nothing costs nothing.
+//   The setting [MemoryCards] AutoBackup (AutoBackupDefault()) turns this off. A reopen of a running
+//   game (the memory card folder or a card changed in the settings, which runs under the settings
+//   lock) takes no snapshot: hashing and compressing both cards there would stall the CPU thread.
 //   By hand, with Store::BackUp() or BackUpNow(), and before every restore.
 //
 // Which snapshots are kept (Store::Prune, run after every automatic or manual snapshot): the
@@ -270,14 +271,30 @@ namespace MemcardBackup
 
 	// ---- entry points ---------------------------------------------------------------------
 
-	/// [MemoryCards] AutoBackup, default true (false on Android, where the app's own backup code
-	/// still runs). Read from EmuConfig.McdAutoBackup, so it follows the per-game and base settings
-	/// like any other core setting and is safe to call with the settings lock held.
+	/// The default of [MemoryCards] AutoBackup for a build, from the platforms that have a front end
+	/// of their own for it: Android's app takes its own snapshots (MemoryCardBackup.kt), and the
+	/// libretro core and the iOS app have no screen that lists backups or asks whether to restore
+	/// one. Everywhere else the default is on.
+	constexpr bool AutoBackupDefaultFor(bool android, bool libretro, bool ios)
+	{
+		return !(android || libretro || ios);
+	}
+
+	/// AutoBackupDefaultFor() for this build. Pcsx2Config sets EmuConfig.McdAutoBackup from it.
+	bool AutoBackupDefault();
+
+	/// [MemoryCards] AutoBackup, default AutoBackupDefault(). Read from EmuConfig.McdAutoBackup, so
+	/// it follows the per-game and base settings like any other core setting and is safe to call
+	/// with the settings lock held.
 	bool IsAutoBackupEnabled();
 
-	/// Called by FileMcd_Reopen with the cards closed. Snapshots the slot 1 and 2 cards (see above)
-	/// and, while the VM is starting, offers to restore an unreadable one.
+	/// Called by FileMcd_Reopen with the cards closed. While the VM is starting, snapshots the slot 1
+	/// and 2 cards (see above) and offers to restore an unreadable one; at any other time it does
+	/// nothing (see "When snapshots are taken").
 	void OnCardsReopening();
+
+	/// OnCardsReopening() for a caller that already knows whether this is the boot's reopen.
+	void OnCardsReopening(bool booting);
 
 	/// For the UIs. Both refuse while a VM exists, with an explanation in the outcome.
 	Outcome BackUpCardNow(const std::string& card);

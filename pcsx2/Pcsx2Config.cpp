@@ -15,6 +15,7 @@
 #include "GameDatabase.h"
 #include "Host.h"
 #include "Host/AudioStream.h"
+#include "SIO/Memcard/MemcardBackup.h"
 #include "SIO/Memcard/MemoryCardFile.h"
 #include "SIO/Pad/Pad.h"
 #include "USB/USB.h"
@@ -2169,11 +2170,7 @@ Pcsx2Config::Pcsx2Config()
 	InhibitScreensaver = true;
 	UseSavestateSelector = true;
 	BackupSavestate = true;
-#ifndef __ANDROID__
-	// The Android app takes its own card snapshots (MemoryCardBackup.kt) under its own switch, so the
-	// shared ones stay off there until it moves onto MemcardBackup.
-	McdAutoBackup = true;
-#endif
+	McdAutoBackup = MemcardBackup::AutoBackupDefault(); // off where the front end has no backup screen of the shared kind
 	WarnAboutUnsafeSettings = true;
 	EnableDiscordPresence = false;
 	ManuallySetRealTimeClock = false;

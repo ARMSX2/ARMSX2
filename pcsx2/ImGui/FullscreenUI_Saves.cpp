@@ -54,13 +54,6 @@ namespace
 
 	constexpr const char* MEMCARD_NOTIFICATION_KEY = "memcard_backup";
 
-	// Same default as Pcsx2Config::McdAutoBackup: off on Android, where the app takes its own snapshots.
-#ifdef __ANDROID__
-	constexpr bool AUTO_BACKUP_DEFAULT = false;
-#else
-	constexpr bool AUTO_BACKUP_DEFAULT = true;
-#endif
-
 	// A worker thread's only way to reach the GS thread: only the CPU thread may push to the GS ring
 	// (MTGS::RunOnGSThread asserts otherwise), so hop through it. Neither step waits for anything.
 	void PostToGSThread(std::function<void()> function)
@@ -411,7 +404,7 @@ void FullscreenUI::DrawMemcardBackupSettings(SettingsInterface* bsi)
 {
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_CLOCK_ROTATE_LEFT, "Automatic Backups"),
 		FSUI_CSTR("Keeps copies of your memory cards, taken when a game starts, so a damaged card can be put back."), "MemoryCards",
-		"AutoBackup", AUTO_BACKUP_DEFAULT);
+		"AutoBackup", MemcardBackup::AutoBackupDefault());
 
 	if (MenuButton(FSUI_ICONSTR(ICON_FA_BOX_ARCHIVE, "Memory Card Backups"),
 			FSUI_CSTR("Restore a memory card from one of its backups, or back one up now.")))

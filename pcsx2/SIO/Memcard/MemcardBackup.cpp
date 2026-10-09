@@ -28,6 +28,10 @@
 #include <mutex>
 #include <set>
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+
 namespace MemcardBackup
 {
 	namespace
@@ -919,6 +923,26 @@ namespace MemcardBackup
 		return s_fallback_prompt_handler;
 	}
 
+	bool AutoBackupDefault()
+	{
+#ifdef __ANDROID__
+		constexpr bool android = true;
+#else
+		constexpr bool android = false;
+#endif
+#ifdef ENABLE_LIBRETRO
+		constexpr bool libretro = true;
+#else
+		constexpr bool libretro = false;
+#endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		constexpr bool ios = true;
+#else
+		constexpr bool ios = false;
+#endif
+		return AutoBackupDefaultFor(android, libretro, ios);
+	}
+
 	bool IsAutoBackupEnabled()
 	{
 		// From EmuConfig, not Host::GetBoolSettingValue(): FileMcd_Reopen can be called with the
@@ -998,7 +1022,12 @@ namespace MemcardBackup
 
 	void OnCardsReopening()
 	{
-		if (!IsAutoBackupEnabled())
+		OnCardsReopening(VMManager::GetState() == VMState::Initializing);
+	}
+
+	void OnCardsReopening(bool booting)
+	{
+		if (!booting || !IsAutoBackupEnabled())
 			return;
 
 		// Slots 1 and 2 only: the multitap cards are not covered.
@@ -1014,12 +1043,8 @@ namespace MemcardBackup
 
 		const RestorePromptHandler handler = GetRestorePromptHandler();
 
-		// Restoring under a running game does not work (the console keeps its own picture of the card
-		// in guest memory), so a prompt is only offered while the VM is starting.
-		const bool booting = (VMManager::GetState() == VMState::Initializing);
-
 		Store store = Store::ForDataRoot();
-		PrepareCardsForBoot(store, cards, VMManager::GetDiscSerial(), booting, handler);
+		PrepareCardsForBoot(store, cards, VMManager::GetDiscSerial(), true, handler);
 	}
 
 	Outcome BackUpCardNow(const std::string& card)
