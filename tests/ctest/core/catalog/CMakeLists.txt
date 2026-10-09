@@ -30,3 +30,28 @@ target_link_libraries(catalog_tests PUBLIC
 	PCSX2
 	common
 )
+
+# Shared libraries for driver_packs_tests.cpp. DriverPacks::TestLoadLibrary dlopens a pack's
+# driver in a child process; these are the ways that can go: loads fine, a dependency missing,
+# an undefined symbol, a constructor that crashes or never returns, a destructor that crashes.
+# They are plain C so loading them needs nothing from the C++ runtime. The project compiles with
+# -fvisibility=hidden, so the functions another library looks up by name say so themselves.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+	set(catalog_test_lib_dir ${CMAKE_CURRENT_BINARY_DIR}/test_libs)
+	set(catalog_test_libs)
+	foreach(name ok dep needs_dep undefined_symbol ctor_abort ctor_segv ctor_hang dtor_abort)
+		string(REPLACE "_" "" lib_file ${name})
+		add_library(catalog_test_lib_${name} SHARED ${CMAKE_CURRENT_SOURCE_DIR}/test_libs/${name}.c)
+		set_target_properties(catalog_test_lib_${name} PROPERTIES
+			OUTPUT_NAME catalogtest${lib_file}
+			LIBRARY_OUTPUT_DIRECTORY ${catalog_test_lib_dir}
+		)
+		list(APPEND catalog_test_libs catalog_test_lib_${name})
+	endforeach()
+	# needs_dep finds dep next to itself, so the test can copy the pair anywhere.
+	target_link_libraries(catalog_test_lib_needs_dep PRIVATE catalog_test_lib_dep)
+	set_target_properties(catalog_test_lib_needs_dep PROPERTIES BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "$ORIGIN")
+
+	add_dependencies(catalog_tests ${catalog_test_libs})
+	target_compile_definitions(catalog_tests PRIVATE CATALOG_TEST_LIB_DIR="${catalog_test_lib_dir}")
+endif()
