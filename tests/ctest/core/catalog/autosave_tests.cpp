@@ -240,18 +240,81 @@ TEST(AutosaveRotation, KeepIsClampedToOneThroughFive)
 
 TEST(AutosaveRotation, AStaleSetAsideFileFromAnInterruptedRunIsRemoved)
 {
+	// Their slots are filled again (the run got as far as moving the next autosave up), so what they hold
+	// was already due to be dropped.
 	Fixture f;
-	f.Populate(2);
+	f.Populate(3);
+	Write(f.At(5), "gen5");
 	Write(f.Drop(3), "stale");
 	Write(f.Drop(5), "stale");
 
 	Autosave::Rotation rotation(f.newest, 3);
 	ASSERT_TRUE(rotation.Begin());
 	EXPECT_FALSE(f.Has(f.Drop(5)));
-	EXPECT_FALSE(f.Has(f.Drop(3)));
+	EXPECT_EQ(Read(f.At(5)), "gen5"); // past keep, but only a Commit removes it
 	Write(f.newest, "new");
 	rotation.Commit();
+	EXPECT_FALSE(f.Has(f.Drop(3)));
 	EXPECT_EQ(Snapshot(f.dir.Dir()).size(), 3u);
+}
+
+TEST(AutosaveRotation, TheOnlyAutosaveSetAsideByACrashedRunComesBack)
+{
+	// keep 1: the run set the autosave aside as .drop and died before the new one was written. Nothing is at
+	// the newest name, so the .drop is the only autosave there is.
+	Fixture f;
+	Write(f.Drop(1), "the only autosave");
+
+	Autosave::Rotation rotation(f.newest, 1);
+	ASSERT_TRUE(rotation.Begin());
+	rotation.Rollback(); // this run's save failed too
+	EXPECT_EQ(Read(f.newest), "the only autosave");
+	EXPECT_FALSE(f.Has(f.Drop(1)));
+}
+
+TEST(AutosaveRotation, ASetAsideFileWhoseSlotIsEmptyIsPutBackWhateverTheKeepCount)
+{
+	// keep 3: the oldest was set aside and the run died before anything moved up into its place.
+	Fixture f;
+	f.Populate(2);
+	Write(f.Drop(3), "gen3");
+
+	Autosave::Rotation rotation(f.newest, 3);
+	ASSERT_TRUE(rotation.Begin());
+	Write(f.newest, "new");
+	rotation.Commit();
+
+	// Nothing was lost: the three newest are the new one, gen1 and gen2, and gen3 was due to go.
+	EXPECT_EQ(Read(f.At(1)), "new");
+	EXPECT_EQ(Read(f.At(2)), "gen1");
+	EXPECT_EQ(Read(f.At(3)), "gen2");
+	EXPECT_EQ(Snapshot(f.dir.Dir()).size(), 3u);
+
+	Fixture g;
+	g.Populate(2);
+	Write(g.Drop(3), "gen3");
+	Autosave::Rotation rolled_back(g.newest, 3);
+	ASSERT_TRUE(rolled_back.Begin());
+	rolled_back.Rollback();
+	EXPECT_EQ(Read(g.At(3)), "gen3");
+	EXPECT_EQ(Snapshot(g.dir.Dir()).size(), 3u);
+}
+
+TEST(AutosaveRotation, ACrashedKeepOneSaveThatFailsAgainLosesNothing)
+{
+	Fixture f;
+	Write(f.Drop(1), "the only autosave");
+
+	std::string error;
+	const auto result = Autosave::RotatedSave(
+		f.newest, 1, [](const std::string&, std::string* why) {
+			*why = "disk full";
+			return false;
+		},
+		&error);
+	EXPECT_EQ(result, Autosave::SaveResult::SaveFailed);
+	EXPECT_EQ(Read(f.newest), "the only autosave");
+	EXPECT_EQ(Snapshot(f.dir.Dir()).size(), 1u);
 }
 
 // ---- the rotation, rollback -------------------------------------------------------------
@@ -649,6 +712,40 @@ TEST(AutosaveList, ListsWhatExistsNewestFirstWithTimes)
 	EXPECT_NEAR(static_cast<double>(entries[0].modified), static_cast<double>(base), 2.0);
 	EXPECT_NEAR(static_cast<double>(entries[1].modified), static_cast<double>(base - 600), 2.0);
 	EXPECT_NEAR(static_cast<double>(entries[2].modified), static_cast<double>(base - 1800), 2.0);
+}
+
+TEST(AutosaveList, ASetAsideAutosaveWhoseSlotIsEmptyIsPutBackAndListed)
+{
+	Fixture f;
+	Write(f.Drop(1), "the only autosave");
+	Write(f.Drop(2), "older");
+	Write(f.At(2), "slot two is filled, so its .drop is not an autosave");
+
+	const auto entries = Autosave::List(f.newest);
+	ASSERT_EQ(entries.size(), 2u);
+	EXPECT_EQ(entries[0].index, 1);
+	EXPECT_EQ(Read(entries[0].path), "the only autosave");
+	EXPECT_EQ(entries[1].index, 2);
+	EXPECT_EQ(Read(entries[1].path), "slot two is filled, so its .drop is not an autosave");
+	EXPECT_FALSE(f.Has(f.Drop(1)));
+	EXPECT_TRUE(f.Has(f.Drop(2))); // a read-only listing never deletes
+}
+
+TEST(AutosaveList, LeavesTheFilesOfASaveThatIsRunningAlone)
+{
+	// During a save the oldest autosave sits at .drop with its slot empty, which is not a crash.
+	Fixture f;
+	Write(f.newest, "previous");
+	Autosave::Rotation rotation(f.newest, 1);
+	ASSERT_TRUE(rotation.Begin());
+
+	EXPECT_TRUE(Autosave::List(f.newest).empty());
+	EXPECT_TRUE(f.Has(f.Drop(1)));
+	EXPECT_FALSE(f.Has(f.newest));
+
+	rotation.Rollback();
+	EXPECT_EQ(Read(f.newest), "previous");
+	ASSERT_EQ(Autosave::List(f.newest).size(), 1u);
 }
 
 TEST(AutosaveList, IsEmptyWithoutFilesOrAName)

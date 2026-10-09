@@ -19,7 +19,9 @@
 //   {serial} ({CRC}).autosave.p2s      the newest. This is VMManager::SAVESTATE_SLOT_AUTOSAVE (-2).
 //   {serial} ({CRC}).autosave.2.p2s    the one before it, then .3 .4 .5 (KEEP_MAX in all).
 //   {serial} ({CRC}).autosave.N.p2s.drop   transient: the oldest, set aside while a new one is
-//                                       being written, so a failed save loses nothing.
+//                                       being written, so a failed save loses nothing. One a crash
+//                                       left behind is put back at its slot if that is empty (the
+//                                       only autosave, with keep 1), else deleted by the next save.
 //
 // Every new autosave moves the existing ones one place older and drops the oldest past the
 // "keep" count. These files are separate from the numbered slots 1-10 and from the resume state
@@ -189,7 +191,9 @@ namespace Autosave
 	};
 
 	/// The autosaves that exist beside `newest` (see FileNameAt), newest first. This is rotation
-	/// order, not sorted by time stamp: the file at index 1 is the newest autosave.
+	/// order, not sorted by time stamp: the file at index 1 is the newest autosave. A ".drop" file
+	/// whose slot is empty (left by a crash) is first renamed back to the slot, unless a save is
+	/// running in this process; it deletes nothing.
 	std::vector<Entry> List(const std::string& newest);
 
 	/// The autosaves of any game, for the game list.

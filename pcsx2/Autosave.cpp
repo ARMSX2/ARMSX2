@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <mutex>
 #include <string_view>
 #include <utility>
 
@@ -29,6 +30,42 @@ namespace Autosave
 			return newest;
 		return fmt::format("{}.{}.p2s", std::string_view(newest).substr(0, newest.size() - 4), n);
 	}
+
+	namespace
+	{
+		// While a rotation is open its files are mid-move, and a .drop with an empty slot is how a save in
+		// progress looks, not a crash. Begin() holds the mutex while it moves files, and List() recovers
+		// only when no rotation is open, so neither sees the other half way.
+		std::mutex s_rotation_mutex;
+		int s_open_rotations = 0; // guarded by s_rotation_mutex
+
+		// A run cut short leaves "<slot>.drop": the autosave set aside to make room for one that was not
+		// written. If nothing has taken its slot since, it is an autosave again (with keep == 1 it can be the
+		// only one there is). If its slot is filled, a later step of that run got further and what the .drop
+		// holds was due to go: [remove_stale] deletes it.
+		void RecoverSetAside(const std::string& newest, Catalog::FileOps& ops, bool remove_stale)
+		{
+			for (int n = KEEP_MIN; n <= KEEP_MAX; n++)
+			{
+				const std::string slot = FileNameAt(newest, n);
+				if (n > 1 && slot == newest)
+					break; // not a .p2s name, so there are no numbered neighbours
+				const std::string drop = slot + ".drop";
+				if (!ops.Exists(drop))
+					continue;
+
+				if (!ops.Exists(slot))
+				{
+					if (!ops.Rename(drop, slot))
+						Console.Error("Autosave: could not put '%s' back as '%s'", drop.c_str(), slot.c_str());
+				}
+				else if (remove_stale)
+				{
+					ops.Remove(drop);
+				}
+			}
+		}
+	} // namespace
 
 	// ---- Rotation -------------------------------------------------------------------------
 
@@ -65,17 +102,15 @@ namespace Autosave
 		if (m_newest.empty() || FileNameAt(m_newest, 2) == m_newest)
 			return false;
 
-		// A file set aside by a run that was cut short. What it holds was already due to be
-		// dropped, and it would be in the way of this run's own.
-		for (int n = KEEP_MIN; n <= KEEP_MAX; n++)
-		{
-			const std::string stale = FileNameAt(m_newest, n) + ".drop";
-			if (m_ops.Exists(stale))
-				m_ops.Remove(stale);
-		}
+		std::lock_guard lock(s_rotation_mutex);
+
+		// Files set aside by a run that was cut short: put back where nothing took their place, else
+		// deleted, since they would be in the way of this run's own.
+		RecoverSetAside(m_newest, m_ops, true);
 
 		m_moves.clear();
 		m_open = true;
+		s_open_rotations++;
 
 		// Nothing to move when there is no autosave yet; the new one simply becomes the newest.
 		if (!m_ops.Exists(m_newest))
@@ -108,6 +143,7 @@ namespace Autosave
 			// Whatever sits at the newest name is still the original unless it was moved.
 			Undo(false);
 			m_open = false;
+			s_open_rotations--;
 			return false;
 		}
 		return true;
@@ -118,6 +154,7 @@ namespace Autosave
 		if (!m_open)
 			return;
 
+		std::lock_guard lock(s_rotation_mutex);
 		const std::string drop = FileNameAt(m_newest, m_keep) + ".drop";
 		if (m_ops.Exists(drop))
 			m_ops.Remove(drop);
@@ -132,14 +169,17 @@ namespace Autosave
 
 		m_moves.clear();
 		m_open = false;
+		s_open_rotations--;
 	}
 
 	void Rotation::Rollback()
 	{
 		if (!m_open)
 			return;
+		std::lock_guard lock(s_rotation_mutex);
 		Undo(true);
 		m_open = false;
+		s_open_rotations--;
 	}
 
 	void Rotation::Undo(bool remove_new_newest)
@@ -348,6 +388,12 @@ namespace Autosave
 		std::vector<Entry> entries;
 		if (newest.empty())
 			return entries;
+
+		{
+			std::lock_guard lock(s_rotation_mutex);
+			if (s_open_rotations == 0)
+				RecoverSetAside(newest, Catalog::GetRealFileOps(), false);
+		}
 
 		for (int n = 1; n <= KEEP_MAX; n++)
 		{
