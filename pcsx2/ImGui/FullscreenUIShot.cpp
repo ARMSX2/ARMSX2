@@ -218,6 +218,22 @@ namespace FullscreenUI
 		{
 			top = name.substr(0, colon);
 			settings_page = name.substr(colon + 1);
+			if (StringUtil::compareNoCase(top, "gamesettings"))
+			{
+				// gamesettings:<page> is the first game's settings on that page.
+				if (!OpenFirstGameSettings(error))
+					return false;
+				for (const SettingsPageEntry& entry : kSettingsPages)
+				{
+					if (StringUtil::compareNoCase(settings_page, entry.name))
+					{
+						s_settings_page = entry.page;
+						return true;
+					}
+				}
+				*error = fmt::format("unknown settings page '{}'", settings_page);
+				return false;
+			}
 			if (!StringUtil::compareNoCase(top, "settings"))
 			{
 				*error = fmt::format("'{}' has no sub-pages (only settings:<page> does)", top);
