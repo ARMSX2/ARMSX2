@@ -34,6 +34,8 @@ target_sources(pcsx2-qt PRIVATE
 	MainWindow.cpp
 	MainWindow.h
 	MainWindow.ui
+	MemcardRestorePrompt.cpp
+	MemcardRestorePrompt.h
 	PrecompiledHeader.cpp
 	PrecompiledHeader.h
 	SettingWidgetBinder.h
@@ -45,6 +47,7 @@ target_sources(pcsx2-qt PRIVATE
 	ToolbarCustomizationDialog.h
 	ToolbarCustomizationDialog.ui
 	Translations.cpp
+	QtAsyncCall.h
 	QtHost.cpp
 	QtHost.h
 	QtMetaTypes.h
@@ -153,6 +156,8 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/InterfaceSettingsWidget.cpp
 	Settings/InterfaceSettingsWidget.h
 	Settings/InterfaceSettingsWidget.ui
+	Settings/MemoryCardBackupsDialog.cpp
+	Settings/MemoryCardBackupsDialog.h
 	Settings/MemoryCardConvertDialog.cpp
 	Settings/MemoryCardConvertDialog.h
 	Settings/MemoryCardConvertDialog.ui
@@ -164,6 +169,8 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/MemoryCardSettingsWidget.cpp
 	Settings/MemoryCardSettingsWidget.h
 	Settings/MemoryCardSettingsWidget.ui
+	Settings/OnlinePatchesDialog.cpp
+	Settings/OnlinePatchesDialog.h
 	Settings/OSDSettingsWidget.cpp
 	Settings/OSDSettingsWidget.h
 	Settings/OSDSettingsWidget.ui

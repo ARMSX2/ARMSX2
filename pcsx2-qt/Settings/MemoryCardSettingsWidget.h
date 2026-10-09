@@ -119,6 +119,7 @@ private:
 	void deleteCard();
 	void renameCard();
 	void convertCard();
+	void showBackups();
 
 	Ui::MemoryCardSettingsWidget m_ui;
 

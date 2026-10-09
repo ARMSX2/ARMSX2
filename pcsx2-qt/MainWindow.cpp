@@ -11,6 +11,7 @@
 #include "GameList/GameListWidget.h"
 #include "LogWindow.h"
 #include "MainWindow.h"
+#include "MemcardRestorePrompt.h"
 #include "QtHost.h"
 #include "QtUtils.h"
 #include "SettingWidgetBinder.h"
@@ -31,6 +32,7 @@
 #endif
 
 #include "pcsx2/Achievements.h"
+#include "pcsx2/Autosave.h"
 #include "pcsx2/CDVD/CDVDcommon.h"
 #include "pcsx2/CDVD/CDVDdiscReader.h"
 #include "pcsx2/GS.h"
@@ -132,6 +134,7 @@ MainWindow::MainWindow()
 {
 	pxAssert(!g_main_window);
 	g_main_window = this;
+	MemcardRestorePrompt::Register(this);
 }
 
 MainWindow::~MainWindow()
@@ -141,6 +144,7 @@ MainWindow::~MainWindow()
 	destroySubWindows();
 
 	Common::DetachMousePositionCb();
+	MemcardRestorePrompt::Unregister(this);
 
 	// we compare here, since recreate destroys the window later
 	if (g_main_window == this)
@@ -3648,6 +3652,13 @@ void MainWindow::populateLoadStateMenu(QMenu* menu, const QString& filename, con
 			QtUtils::MarkActionAsDefault(action);
 			has_any_states = true;
 		}
+	}
+
+	// Autosaves are load-only: they are not slots, and nothing here saves into one.
+	for (const Autosave::Entry& autosave : Autosave::List(game_serial_utf8.constData(), crc))
+	{
+		action = menu->addAction(tr("Load Autosave %1 (%2)").arg(autosave.index).arg(formatTimestampForSaveStateMenu(autosave.modified)));
+		connect(action, &QAction::triggered, [this, filename, path = QString::fromStdString(autosave.path)]() { loadSaveStateFile(filename, path); });
 	}
 
 	for (s32 i = 1; i <= VMManager::NUM_SAVE_STATE_SLOTS; i++)

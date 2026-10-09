@@ -6,6 +6,7 @@
 #include "QtUtils.h"
 #include "SettingWidgetBinder.h"
 #include "Settings/GameCheatSettingsWidget.h"
+#include "Settings/OnlinePatchesDialog.h"
 #include "Settings/SettingsWindow.h"
 
 #include "pcsx2/Patch.h"
@@ -52,6 +53,10 @@ GameCheatSettingsWidget::GameCheatSettingsWidget(SettingsWindow* settings_dialog
 	connect(m_ui.cheatList, &QTreeView::doubleClicked, this, &GameCheatSettingsWidget::onCheatListItemDoubleClicked);
 	connect(m_model, &QStandardItemModel::itemChanged, this, &GameCheatSettingsWidget::onCheatListItemChanged);
 	connect(m_ui.reloadCheats, &QPushButton::clicked, this, &GameCheatSettingsWidget::onReloadClicked);
+	connect(m_ui.browseOnlineCheats, &QPushButton::clicked, this, [this]() {
+		if (OnlinePatchesDialog::browse(this, dialog(), Catalog::PatchKind::Cheat, m_ui.enableCheats))
+			onReloadClicked();
+	});
 	connect(m_ui.enableAll, &QPushButton::clicked, this, [this]() { setStateForAll(true); });
 	connect(m_ui.disableAll, &QPushButton::clicked, this, [this]() { setStateForAll(false); });
 	connect(m_ui.allCRCsCheckbox, &QCheckBox::checkStateChanged, this, &GameCheatSettingsWidget::onReloadClicked);
