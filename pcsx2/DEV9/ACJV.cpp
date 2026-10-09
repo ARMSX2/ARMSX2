@@ -599,6 +599,16 @@ void ACJV::SetDrumHit(u32 channel, bool pressed)
 		m_jvsDrumChannels[channel] = pressed ? 0xFFFF : 0; // max -> above IN/DAI; big notes (大) emerge from hitting both sides
 }
 
+u16 ACJV::GetButtonState(u32 player)
+{
+	return (player < JVS_PLAYER_COUNT) ? m_jvsButtonState[player].load(std::memory_order_relaxed) : 0;
+}
+
+bool ACJV::GetDrumHit(u32 channel)
+{
+	return channel < JVS_DRUM_CHANNEL_MAX && m_jvsDrumChannels[channel] != 0;
+}
+
 JVS_MODE ACJV::GetMode()
 {
 	return m_jvsMode;
@@ -732,6 +742,7 @@ static u16 s_gunRawX[JVS_PLAYER_COUNT] = {0xFFFF, 0xFFFF};
 static u16 s_gunRawY[JVS_PLAYER_COUNT] = {0xFFFF, 0xFFFF};
 static bool s_gunForceOff = false;
 void ACJV::SetGunForceOffscreen(bool held) { s_gunForceOff = held; }
+bool ACJV::GetGunForceOffscreen() { return s_gunForceOff; }
 static float s_gunContour = 0.01f;
 void ACJV::SetGunOffscreenContour(float fraction) { s_gunContour = std::clamp(fraction, 0.0f, 0.05f); }
 
@@ -833,6 +844,7 @@ static float m_touchRel[4] = {}; // Left/Right/Up/Down stick deflection
 static std::string m_touchCursorPath;
 
 void ACJV::SetTouchPressed(bool pressed) { m_touchPressed = pressed; }
+bool ACJV::GetTouchPressed() { return m_touchPressed; }
 void ACJV::SetTouchPressBound(bool bound) { m_touchPressBound = bound; }
 void ACJV::SetTouchRelativeAxis(u32 axis, float value) { if (axis < std::size(m_touchRel)) m_touchRel[axis] = value; }
 void ACJV::SetTouchRelativeActive(bool active) { m_touchRelActive = active; }

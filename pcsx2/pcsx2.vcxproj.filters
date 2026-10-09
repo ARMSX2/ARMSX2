@@ -1430,6 +1430,9 @@
     <ClCompile Include="Achievements.cpp">
       <Filter>Tools</Filter>
     </ClCompile>
+    <ClCompile Include="Arcade\ArcadeInput.cpp">
+      <Filter>Misc</Filter>
+    </ClCompile>
     <ClCompile Include="Hotkeys.cpp">
       <Filter>Misc</Filter>
     </ClCompile>
@@ -2437,6 +2440,9 @@
       <Filter>System\Ps2\EmotionEngine\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="Achievements.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="Arcade\ArcadeInput.h">
       <Filter>Misc</Filter>
     </ClInclude>
     <ClInclude Include="Input\AndroidNativeRumble.h">

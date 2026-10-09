@@ -63,6 +63,7 @@ endif()
 # Main pcsx2 source
 set(pcsx2Sources
 	Achievements.cpp
+	Arcade/ArcadeInput.cpp
 	BuildVersion.cpp
 	Cache.cpp
 	COP0.cpp
@@ -157,6 +158,7 @@ set(pcsx2Sources
 # Main pcsx2 header
 set(pcsx2Headers
 	Achievements.h
+	Arcade/ArcadeInput.h
 	BuildVersion.h
 	Cache.h
 	Common.h

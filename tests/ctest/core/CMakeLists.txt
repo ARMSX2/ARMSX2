@@ -43,6 +43,9 @@ add_subdirectory(gs)
 # IPU colour-conversion oracle (arch-neutral: each host tests its own path).
 add_subdirectory(ipu)
 
+# Namco arcade cabinet controls and library entries.
+add_subdirectory(arcade)
+
 
 set(multi_isa_sources
 	GS/swizzle_test_main.cpp
