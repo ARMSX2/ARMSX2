@@ -58,6 +58,7 @@
 
 #include "pcsx2/Achievements.h"
 #include "pcsx2/CDVD/CDVDcommon.h"
+#include "pcsx2/Catalog/DriverPacks.h"
 #include "pcsx2/GS.h"
 #include "pcsx2/GameList.h"
 #include "pcsx2/Host.h"
@@ -1005,6 +1006,9 @@ int main(int argc, char* argv[])
 		Console.Error("Failed to initialize config.");
 		return EXIT_FAILURE;
 	}
+
+	// Selected GPU driver pack (Linux): must be in the environment before anything loads libvulkan.
+	DriverPacks::ApplyEnvironment();
 
 	VMBootParameters params;
 	if (!Pcsx2SDL::ParseCommandLineArgs(argc, argv, params))
