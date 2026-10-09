@@ -557,6 +557,7 @@ void FullscreenUI::Shutdown(bool clear_state)
 		CloseSaveStateSelector();
 		CloseCoverDownloaderWindow();
 		ShutdownAutoCovers();
+		ShutdownOnlinePatches();
 		s_cover_image_map.clear();
 		s_game_list_sorted_entries = {};
 		s_last_unsorted_entries = {};
@@ -684,6 +685,8 @@ void FullscreenUI::Render()
 
 	if (s_cover_downloader_open)
 		DrawCoverDownloaderWindow();
+
+	DrawOnlinePatchesResults();
 
 	if (s_achievements_login_open || ImGui::IsPopupOpen("RetroAchievements"))
 		DrawAchievementsLoginWindow();

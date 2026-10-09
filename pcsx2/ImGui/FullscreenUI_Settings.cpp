@@ -5846,6 +5846,8 @@ void FullscreenUI::DrawPatchesOrCheatsSettingsPage(bool cheats)
 			s_game_settings_entry->crc);
 	}
 
+	DrawOnlinePatchesRow(cheats);
+
 	if (cheats)
 	{
 		if (patch_list.empty())
