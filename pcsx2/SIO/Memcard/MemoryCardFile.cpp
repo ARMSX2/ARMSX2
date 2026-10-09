@@ -3,6 +3,7 @@
 
 #include "SIO/Memcard/MemoryCardFile.h"
 
+#include "SIO/Memcard/MemcardBackup.h"
 #include "SIO/Memcard/MemoryCardFolder.h"
 #include "SIO/Sio.h"
 #include <SIO/SioTypes.h>
@@ -703,6 +704,7 @@ void FileMcd_Reopen(std::string new_serial)
 	FileMcd_EmuClose();
 	FileMcd_SetType();
 	sioSetGameSerial(new_serial);
+	MemcardBackup::OnCardsReopening(); // snapshot while no card is open
 	FileMcd_EmuOpen();
 }
 
