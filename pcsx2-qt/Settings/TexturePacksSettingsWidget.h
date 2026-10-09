@@ -89,6 +89,7 @@ private:
 	Filter m_filter = Filter::Popular;
 	bool m_first_show = true;
 	bool m_install_was_active = false;
+	bool m_install_started_here = false; ///< the install now running or just finished was started by this page
 
 	/// The game the page is about: a game's own window, else the game that is running.
 	std::string m_context_serial;

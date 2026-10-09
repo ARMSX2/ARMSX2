@@ -8,6 +8,9 @@
 // nothing about the GS.
 
 #include <functional>
+#include <string>
+
+class SettingsInterface;
 
 namespace Catalog::TexturePackEngine
 {
@@ -44,6 +47,20 @@ namespace Catalog::TexturePackEngine
 	/// Safe from any thread, and returns at once (the reload happens later). It takes the settings
 	/// lock for a moment, so do not call it while holding Host::GetSettingsLock().
 	void ActivateAfterInstall();
+
+	/// For an install made from one game's own settings. A per-game LoadTextureReplacements = false beats the
+	/// global setting ActivateAfterInstall() turns on, so the pack would do nothing for that game. If
+	/// `game_settings` (the game's own settings layer) sets it to false, this sets it to true there and returns
+	/// true; the caller saves the layer and reloads the game's settings. A layer that does not mention the
+	/// setting follows the global one and is left alone (false is returned).
+	bool EnableInGameLayer(SettingsInterface& game_settings);
+
+	/// The same for a game whose settings file no frontend holds open: edits the file at `game_settings_path`
+	/// and, if the edit changed the setting, reloads the settings of the running game so it takes effect
+	/// there. Returns whether it changed the file. A frontend that has the file open in memory (Qt's per-game
+	/// window) must use EnableInGameLayer() on its own copy instead, or its next save writes over this edit.
+	/// Same threading as ActivateAfterInstall().
+	bool EnableForGame(const std::string& game_settings_path);
 
 	/// Re-indexes the replacement files of the running game (the "Reload Texture Replacements"
 	/// hotkey's work), e.g. after a delete. Does nothing if no game is running or replacement is

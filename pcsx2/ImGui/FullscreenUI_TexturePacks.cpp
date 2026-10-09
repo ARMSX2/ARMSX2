@@ -132,6 +132,7 @@ namespace
 	ListFilter s_filter = ListFilter::Popular;
 	std::string s_search;
 	std::string s_filter_serial; ///< when set, only packs for this game are listed
+	std::string s_filter_game_settings_path; ///< that game's own settings file, when the page was opened from its settings
 	std::string s_filter_serial_title;
 	bool s_filter_serial_requested = false; ///< the page was opened for a game, not through the page bar
 	bool s_opened_before = false;
@@ -197,6 +198,7 @@ namespace
 		std::string error;
 		std::string pack_name;
 		u64 textures = 0;
+		std::string game_settings_path; ///< the game's own settings file, when the install was made from its settings
 	};
 
 	struct Handoff
@@ -928,6 +930,13 @@ namespace
 					s_install.last_message.clear();
 					ShowInstallNotice(FSUI_STR("Texture Pack Installed"),
 						fmt::format(FSUI_FSTR("{}. The textures are used the next time the game starts."), finished->pack_name), 8.0f);
+					// The install may have switched on this game's own setting in its file: the copy the game's
+					// settings page holds open must not save the old value back.
+					if (!finished->game_settings_path.empty() && s_game_settings_interface &&
+						s_game_settings_interface->GetFileName() == finished->game_settings_path)
+					{
+						s_game_settings_interface->Load();
+					}
 					break;
 
 				case Cat::TexturePackInstaller::Status::Cancelled:
@@ -993,6 +1002,8 @@ namespace
 		}
 
 		const std::string serial = pack.InstallSerialFor(ContextSerial(), s_library_serials);
+		// An install made from a game's settings must not be switched off by that game's own settings.
+		const std::string game_settings_path = s_filter_serial.empty() ? std::string() : s_filter_game_settings_path;
 
 		s_install = InstallUi();
 		s_install.active = true;
@@ -1003,7 +1014,7 @@ namespace
 
 		const Cat::TexturePackInstaller::Config config = Cat::TexturePackInstaller::DefaultConfig();
 		const Cat::CancelToken cancel = s_install.cancel;
-		s_install_worker.Start(cancel, [pack, serial, config, cancel, fetcher]() {
+		s_install_worker.Start(cancel, [pack, serial, game_settings_path, config, cancel, fetcher]() {
 			Cat::Fetcher& net = fetcher ? *fetcher : Cat::GetDefaultFetcher();
 			Cat::TexturePackState state = Cat::TexturePackState::InDataRoot();
 			Cat::TexturePackInstaller installer(net, state, config);
@@ -1020,13 +1031,18 @@ namespace
 				cancel);
 
 			if (result.IsOk())
+			{
 				TPEngine::ActivateAfterInstall();
+				if (!game_settings_path.empty())
+					TPEngine::EnableForGame(game_settings_path);
+			}
 
 			InstallOutcome outcome;
 			outcome.status = result.status;
 			outcome.error = result.error;
 			outcome.pack_name = pack.name;
 			outcome.textures = result.textures;
+			outcome.game_settings_path = game_settings_path;
 			{
 				std::lock_guard<std::mutex> lock(s_handoff.mutex);
 				s_handoff.install_progress.reset();
@@ -1894,7 +1910,7 @@ namespace
 	}
 
 	// Opens the page for one game's packs: what the Browse Texture Packs row of a game's own settings does.
-	void OpenPageForGame(std::string serial, std::string title)
+	void OpenPageForGame(std::string serial, std::string title, std::string game_settings_path = std::string())
 	{
 		if (!IsInitialized())
 			return;
@@ -1903,6 +1919,7 @@ namespace
 		{
 			s_filter_serial = *normalized;
 			s_filter_serial_title = std::move(title);
+			s_filter_game_settings_path = std::move(game_settings_path);
 			s_filter_serial_requested = true;
 			s_filter = ListFilter::All;
 			s_view_dirty = true;
@@ -1970,7 +1987,10 @@ void FullscreenUI::DrawTexturePacksBrowseSetting(SettingsInterface* bsi)
 	// drawn from them: leave when the GS thread is between frames.
 	std::string serial = s_game_settings_serial;
 	std::string title = s_game_settings_entry ? s_game_settings_entry->GetTitle(s_prefer_english_titles) : std::string();
-	PostToGSThread([serial = std::move(serial), title = std::move(title)]() mutable { OpenPageForGame(std::move(serial), std::move(title)); });
+	std::string settings_path = s_game_settings_interface ? s_game_settings_interface->GetFileName() : std::string();
+	PostToGSThread([serial = std::move(serial), title = std::move(title), settings_path = std::move(settings_path)]() mutable {
+		OpenPageForGame(std::move(serial), std::move(title), std::move(settings_path));
+	});
 }
 
 void FullscreenUI::ShutdownTexturePacks()
@@ -2017,6 +2037,7 @@ void FullscreenUI::ShutdownTexturePacks()
 	s_search.clear();
 	s_filter_serial.clear();
 	s_filter_serial_title.clear();
+	s_filter_game_settings_path.clear();
 	s_filter_serial_requested = false;
 	s_opened_before = false;
 	s_fetch_deferred = false;
