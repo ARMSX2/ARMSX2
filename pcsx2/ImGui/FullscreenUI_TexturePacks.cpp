@@ -35,6 +35,7 @@
 #include "Host.h"
 #include "INISettingsInterface.h"
 #include "ImGui/FullscreenUI_Internal.h"
+#include "ImGui/FullscreenUI_PageDwell.h"
 #include "ImGui/ImGuiFullscreen.h"
 #include "MTGS.h"
 #include "VMManager.h"
@@ -135,6 +136,8 @@ namespace
 	bool s_filter_serial_requested = false; ///< the page was opened for a game, not through the page bar
 	bool s_opened_before = false;
 	int s_last_draw_frame = -100;
+	PageDwell s_dwell; ///< the network waits until the page has stayed open (see OnPageSettled)
+	bool s_fetch_deferred = false; ///< the page wants the network and is waiting for s_dwell
 	bool s_install_notice_up = false; ///< a progress notification may be on screen
 
 	std::vector<u32> s_view; ///< indices into s_packs, or into s_installed for the Installed filter
@@ -1162,7 +1165,7 @@ namespace
 
 	void DrawCatalogList()
 	{
-		const bool loading = s_catalog_worker.running.load();
+		const bool loading = s_catalog_worker.running.load() || s_fetch_deferred;
 
 		std::string heading = FilterName(s_filter);
 		if (s_catalog_loaded)
@@ -1180,7 +1183,7 @@ namespace
 			}
 			else if (s_filter == ListFilter::Popular && !s_popular_known)
 			{
-				if (s_catalog_worker.running.load())
+				if (s_catalog_worker.running.load() || s_fetch_deferred)
 					NoticeRow(ICON_FA_SPINNER, FSUI_STR("Loading..."), FSUI_STR("Asking which packs were downloaded today."));
 				else
 					NoticeRow(ICON_FA_WIFI, FSUI_STR("Can't Reach the Download Counter"), FSUI_STR("Can't reach the download counter right now. Choose All to see every pack."));
@@ -1575,6 +1578,16 @@ namespace
 	// Drawing: the page
 	//////////////////////////////////////////////////////////////////////////
 
+	bool CatalogStale()
+	{
+		return !s_catalog_loaded || (std::time(nullptr) - s_catalog_fetched_at) > std::chrono::duration_cast<std::chrono::seconds>(Cat::TexturePackCatalog::CACHE_MAX_AGE).count();
+	}
+
+	bool PopularStale()
+	{
+		return !s_popular_known || (std::chrono::steady_clock::now() - s_popular_asked_at) > POPULAR_MAX_AGE;
+	}
+
 	// Runs when the page is drawn after not being drawn the frame before: it has just been opened.
 	void OnPageOpened()
 	{
@@ -1601,11 +1614,17 @@ namespace
 		RefreshRecordsIfChanged(true);
 		StartLocalRefresh();
 
-		const bool popular_stale = !s_popular_known || (std::chrono::steady_clock::now() - s_popular_asked_at) > POPULAR_MAX_AGE;
-		const bool catalog_stale = !s_catalog_loaded || (std::time(nullptr) - s_catalog_fetched_at) > std::chrono::duration_cast<std::chrono::seconds>(Cat::TexturePackCatalog::CACHE_MAX_AGE).count();
-		if (catalog_stale)
+		// The network waits for OnPageSettled: D-pad left/right across the page list opens every page it passes.
+		s_fetch_deferred = CatalogStale() || PopularStale();
+	}
+
+	// The page has stayed open for PageDwell::SECONDS: ask the network for what is out of date.
+	void OnPageSettled()
+	{
+		s_fetch_deferred = false;
+		if (CatalogStale())
 			StartCatalogLoad(false, true);
-		else if (popular_stale)
+		else if (PopularStale())
 			StartCatalogLoad(false, false);
 	}
 
@@ -1692,7 +1711,7 @@ namespace
 		}
 
 		// The catalog: how current it is, and the way to ask again.
-		const bool loading = s_catalog_worker.running.load();
+		const bool loading = s_catalog_worker.running.load() || s_fetch_deferred;
 		// The ### keeps the row's identity when its icon changes, so a controller keeps its place on it.
 		const std::string catalog_title = fmt::format("{} {}###texture_pack_catalog", loading ? ICON_FA_SPINNER : ICON_FA_CLOUD, FSUI_STR("Catalog"));
 		if (loading)
@@ -1902,6 +1921,8 @@ void FullscreenUI::DrawTexturePacksSettingsPage()
 	s_last_draw_frame = frame;
 	if (opened)
 		OnPageOpened();
+	if (s_dwell.Settled() && s_fetch_deferred)
+		OnPageSettled();
 
 	PollHandoff();
 	RefreshRecordsIfChanged(false);
@@ -1998,7 +2019,9 @@ void FullscreenUI::ShutdownTexturePacks()
 	s_filter_serial_title.clear();
 	s_filter_serial_requested = false;
 	s_opened_before = false;
+	s_fetch_deferred = false;
 	s_last_draw_frame = -100;
+	s_dwell.Reset();
 	s_install_notice_up = false;
 	s_shot_action = ShotAction::None;
 }

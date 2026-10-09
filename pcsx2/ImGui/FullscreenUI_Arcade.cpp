@@ -29,6 +29,7 @@
 #include "Host.h"
 #include "INISettingsInterface.h"
 #include "ImGui/FullscreenUI_Internal.h"
+#include "ImGui/FullscreenUI_PageDwell.h"
 #include "ImGui/ImGuiFullscreen.h"
 #include "MTGS.h"
 #include "VMManager.h"
@@ -128,6 +129,7 @@ namespace
 	Setup::BootFilesStatus s_boot;
 	Setup::BiosStatus s_bios;
 	int s_setup_page_frame = -100;
+	PageDwell s_setup_dwell; ///< the update check waits until the page has stayed open
 
 	// The GitHub answer about the boot files, for the version the page shows. A change of the stored boot files
 	// makes an earlier answer (still on its way) stale: it carries the generation it was asked in.
@@ -827,7 +829,9 @@ void FullscreenUI::DrawArcadeSettingsPage()
 		if (s_check.has_value() && s_check_age.GetTimeSeconds() > UPDATE_CHECK_MAX_AGE_SECONDS)
 			DropUpdateCheck();
 	}
-	StartUpdateCheck();
+	// GitHub is asked once the page has stayed open, not while the D-pad is only passing it.
+	if (s_setup_dwell.Settled())
+		StartUpdateCheck();
 
 	BeginMenuButtons();
 
@@ -1019,6 +1023,7 @@ void FullscreenUI::ShutdownArcade()
 	s_layout.reset();
 	s_layout_game_id.clear();
 	s_setup_page_frame = -100;
+	s_setup_dwell.Reset();
 	s_game_page_frame = -100;
 }
 

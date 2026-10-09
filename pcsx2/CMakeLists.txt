@@ -1133,6 +1133,7 @@ set(pcsx2ImGuiSources
 set(pcsx2ImGuiHeaders
 	ImGui/FullscreenUI.h
 	ImGui/FullscreenUI_Internal.h
+	ImGui/FullscreenUI_PageDwell.h
 	ImGui/FullscreenUIShot.h
 	ImGui/ImGuiAnimated.h
 	ImGui/ImGuiFullscreen.h

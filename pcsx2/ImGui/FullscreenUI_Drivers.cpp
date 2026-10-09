@@ -31,6 +31,7 @@
 #include "Host.h"
 #include "INISettingsInterface.h"
 #include "ImGui/FullscreenUI_Internal.h"
+#include "ImGui/FullscreenUI_PageDwell.h"
 #include "ImGui/ImGuiFullscreen.h"
 #include "MTGS.h"
 #include "VMManager.h"
@@ -98,6 +99,7 @@ namespace
 
 		std::unique_ptr<DP::Manager> manager;
 		int last_frame = -100; ///< ImGui frame the page was last drawn in, to notice it being opened
+		PageDwell dwell; ///< the feed is asked for once the page has stayed open
 		DP::Availability availability;
 		std::vector<DP::InstalledDriver> installed;
 
@@ -515,8 +517,6 @@ namespace
 			return;
 
 		RefreshInstalled();
-		if (s_state.feed == FeedState::NotLoaded)
-			StartFeedFetch(false);
 	}
 
 	void DoRestartNow()
@@ -875,6 +875,9 @@ void FullscreenUI::DrawDriversSettingsPage(SettingsInterface* bsi)
 	if (frame - s_state.last_frame > 1)
 		OnPageEntered();
 	s_state.last_frame = frame;
+	// The list comes from GitHub: not while the D-pad is only passing the page (its API allows 60 requests an hour).
+	if (s_state.dwell.Settled() && s_state.availability.IsAvailable() && s_state.feed == FeedState::NotLoaded)
+		StartFeedFetch(false);
 	DrainHandoff();
 
 	BeginMenuButtons();
@@ -918,6 +921,7 @@ void FullscreenUI::ShutdownDriversPage()
 
 	s_state.manager.reset();
 	s_state.last_frame = -100;
+	s_state.dwell.Reset();
 	s_state.availability = DP::Availability();
 	s_state.installed.clear();
 	s_state.feed = FeedState::NotLoaded;
