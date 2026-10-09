@@ -184,6 +184,8 @@
     </ClCompile>
     <ClCompile Include="QtKeyCodes.cpp" />
     <ClCompile Include="QtUtils.cpp" />
+    <ClCompile Include="QtShot.cpp" />
+    <ClCompile Include="QtShotEntries.cpp" />
     <ClCompile Include="Translations.cpp" />
     <ClCompile Include="VCRuntimeChecker.cpp" />
   </ItemGroup>
@@ -238,6 +240,7 @@
     <QtMoc Include="Tools\InputRecording\NewInputRecordingDlg.h" />
     <QtMoc Include="Tools\InputRecording\InputRecordingViewer.h" />
     <ClInclude Include="QtUtils.h" />
+    <ClInclude Include="QtShot.h" />
     <QtMoc Include="Debugger\AnalysisOptionsDialog.h" />
     <QtMoc Include="Debugger\DebuggerEvents.h" />
     <QtMoc Include="Debugger\DebuggerView.h" />

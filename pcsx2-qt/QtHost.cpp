@@ -12,6 +12,7 @@
 #include "MainWindow.h"
 #include "QtHost.h"
 #include "QtProgressCallback.h"
+#include "QtShot.h"
 #include "QtUtils.h"
 #include "SetupWizardDialog.h"
 
@@ -2290,6 +2291,10 @@ bool QtHost::ParseCommandLineOptions(const QStringList& args, std::shared_ptr<VM
 				AutoBoot(autoboot)->start_unlimited = true;
 				continue;
 			}
+			else if (QtShot::ParseArgument(it, args.end()))
+			{
+				continue;
+			}
 #ifdef ENABLE_RAINTEGRATION
 			else if (CHECK_ARG(QStringLiteral("-raintegration")))
 			{
@@ -2539,6 +2544,9 @@ int main(int argc, char* argv[])
 		g_emu_thread->startVM(std::move(autoboot));
 	else if (!s_nogui_mode)
 		g_main_window->startupUpdateCheck();
+
+	// Screenshot harness (hidden -uishot flags); does nothing without them.
+	QtShot::Start();
 
 	// This doesn't return until we exit.
 	result = app.exec();

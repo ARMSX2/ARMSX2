@@ -45,6 +45,9 @@ target_sources(pcsx2-qt PRIVATE
 	QtKeyCodes.cpp
 	QtProgressCallback.cpp
 	QtProgressCallback.h
+	QtShot.cpp
+	QtShot.h
+	QtShotEntries.cpp
 	QtUtils.cpp
 	QtUtils.h
 	GameList/EmptyGameListWidget.ui
