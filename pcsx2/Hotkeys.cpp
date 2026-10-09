@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "Achievements.h"
+#include "Arcade/ArcadeInput.h"
 #include "GS.h"
 #include "Host.h"
 #include "IconsFontAwesome.h"
@@ -256,6 +257,25 @@ DEFINE_HOTKEY("SwapMemCards", TRANSLATE_NOOP("Hotkeys", "System"),
 			Host::RunOnCPUThread([]() {
 				FileMcd_Swap();
 			});
+	})
+DEFINE_HOTKEY("ArcadeCoinP1", TRANSLATE_NOOP("Hotkeys", "System"), TRANSLATE_NOOP("Hotkeys", "Arcade: Insert Coin (Player 1)"),
+	[](s32 pressed) {
+		if (pressed > 0)
+			ArcadeInput::InsertCoin(0);
+	})
+DEFINE_HOTKEY("ArcadeCoinP2", TRANSLATE_NOOP("Hotkeys", "System"), TRANSLATE_NOOP("Hotkeys", "Arcade: Insert Coin (Player 2)"),
+	[](s32 pressed) {
+		if (pressed > 0)
+			ArcadeInput::InsertCoin(1);
+	})
+DEFINE_HOTKEY("ArcadeService", TRANSLATE_NOOP("Hotkeys", "System"), TRANSLATE_NOOP("Hotkeys", "Arcade: Service Button (Hold)"),
+	[](s32 pressed) {
+		ArcadeInput::SetService(pressed > 0);
+	})
+DEFINE_HOTKEY("ArcadeTest", TRANSLATE_NOOP("Hotkeys", "System"), TRANSLATE_NOOP("Hotkeys", "Arcade: Toggle Test Switch"),
+	[](s32 pressed) {
+		if (pressed > 0)
+			ArcadeInput::ToggleTest();
 	})
 DEFINE_HOTKEY("InputRecToggleMode", TRANSLATE_NOOP("Hotkeys", "System"),
 	TRANSLATE_NOOP("Hotkeys", "Toggle Input Recording Mode"), [](s32 pressed) {

@@ -3131,7 +3131,8 @@ bool VMManager::IsDiscFileName(const std::string_view path)
 
 bool VMManager::IsLoadableFileName(const std::string_view path)
 {
-	return IsDiscFileName(path) || IsElfFileName(path) || IsGSDumpFileName(path) || IsBlockDumpFileName(path);
+	return IsDiscFileName(path) || IsElfFileName(path) || IsArcadeGameFileName(path) || IsGSDumpFileName(path) ||
+	       IsBlockDumpFileName(path);
 }
 
 #ifdef _WIN32

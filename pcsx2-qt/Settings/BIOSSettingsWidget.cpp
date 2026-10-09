@@ -72,7 +72,7 @@ void BIOSSettingsWidget::populateList(QTreeWidget* list, const std::string& dire
 
 	for (const FILESYSTEM_FIND_DATA& fd : files)
 	{
-		if (!IsBIOS(fd.FileName.c_str(), bios_version, bios_description, bios_region, bios_zone))
+		if (!IsConsoleBIOS(fd.FileName.c_str(), bios_version, bios_description, bios_region, bios_zone))
 			continue;
 
 		const std::string_view bios_name = Path::GetFileName(fd.FileName);

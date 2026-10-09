@@ -202,6 +202,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Achievements.cpp" />
+    <ClCompile Include="Arcade\AcGameFile.cpp" />
+    <ClCompile Include="Arcade\ArcadeInput.cpp" />
     <ClCompile Include="arm64\AsmHelpers.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'!='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
@@ -708,6 +710,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Achievements.h" />
+    <ClInclude Include="Arcade\AcGameFile.h" />
+    <ClInclude Include="Arcade\ArcadeInput.h" />
     <ClInclude Include="arm64\AsmHelpers.h">
       <ExcludedFromBuild Condition="'$(Platform)'!='ARM64'">true</ExcludedFromBuild>
     </ClInclude>

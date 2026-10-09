@@ -1,0 +1,12 @@
+[game]
+name=Tekken 4
+gameid=NM00004
+platform=246
+
+[data]
+subdir=NM00004
+elf=boot.elf
+mediasrc=NM00004.chd
+media=DVD
+sram=sram.bin
+dongle=NM00004.ps2

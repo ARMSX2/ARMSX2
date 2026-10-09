@@ -29,6 +29,7 @@ namespace GameList
 		PS1Disc,
 		ELF,
 		Invalid,
+		Arcade, // A Namco System 246/256 game: an .acgame file (serial = its game ID, CRC 0).
 		Count
 	};
 
@@ -102,6 +103,7 @@ namespace GameList
 		CompatibilityRating compatibility_rating = CompatibilityRating::Unknown;
 
 		__fi bool IsDisc() const { return (type == EntryType::PS1Disc || type == EntryType::PS2Disc); }
+		__fi bool IsArcade() const { return type == EntryType::Arcade; }
 	};
 
 	const char* EntryTypeToString(EntryType type, bool translate);

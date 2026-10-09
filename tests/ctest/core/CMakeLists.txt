@@ -46,6 +46,9 @@ add_subdirectory(ipu)
 # Shared online-service layer (pcsx2/Catalog) and common/SHA256.
 add_subdirectory(catalog)
 
+# Namco arcade cabinet controls and library entries.
+add_subdirectory(arcade)
+
 
 set(multi_isa_sources
 	GS/swizzle_test_main.cpp

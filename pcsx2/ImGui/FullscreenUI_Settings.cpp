@@ -2474,7 +2474,7 @@ void FullscreenUI::DrawBIOSSettingsPage()
 		{
 			u32 version, region;
 			std::string description, zone;
-			if (!IsBIOS(fd.FileName.c_str(), version, description, region, zone))
+			if (!IsConsoleBIOS(fd.FileName.c_str(), version, description, region, zone))
 				continue;
 
 			const std::string_view filename(Path::GetFileName(fd.FileName));
