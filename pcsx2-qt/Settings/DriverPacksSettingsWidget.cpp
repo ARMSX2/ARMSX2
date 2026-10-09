@@ -353,9 +353,15 @@ void DriverPacksSettingsWidget::onApplyClicked()
 	QString message = tr("ARMSX2 will close and start again to use %1.").arg(name);
 	if (QtHost::IsVMValid())
 		message += tr("\n\nThe running game will be stopped first.");
+	if (m_installing)
+		message += tr("\n\nA driver is still being installed. Restarting cancels it.");
 	message += tr("\n\nContinue?");
 	if (QMessageBox::question(this, tr("Apply and Restart"), message) != QMessageBox::Yes)
 		return;
+
+	// Stop the download now, instead of leaving it running while ARMSX2 shuts down.
+	if (m_installing)
+		m_install_cancel.Cancel();
 
 	DriverPacks::SetSelectedPack(id);
 
