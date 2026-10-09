@@ -26,11 +26,14 @@
 // Page names are case-insensitive: landing, setup, startgame, exit, gamelist, gamelistsettings,
 // about, settings, and settings:<page> with <page> one of the global SettingsPage names (interface,
 // bios, emulation, graphics, osd, audio, memorycard, networkhdd, folders, achievements,
-// controller, hotkey, advanced). memcardbackups is the memory card backups window and memcardprompt
-// the question a boot asks about an unreadable card, with a sample card. Three more set up a state
-// instead of naming a page: rescan starts a game list scan and shows the list, gamesettings opens
+// controller, hotkey, arcade, advanced, drivers). memcardbackups is the memory card backups window and
+// memcardprompt the question a boot asks about an unreadable card, with a sample card. Three more set up a
+// state instead of naming a page: rescan starts a game list scan and shows the list, gamesettings opens
 // the settings of the first game in the list, and loadstate opens that game's Load State selector
-// (open rescan first and wait a few frames for both). tools/bp-shot.py in the umbrella wraps all of this.
+// (open rescan first and wait a few frames for both). The arcade screens have their own names: arcadelaunch
+// starts the first arcade game in the list (as selecting it would: with nothing missing it boots, else it
+// shows what is), arcadedownload opens settings:arcade and downloads the boot files, and arcadepause draws
+// the pause menu's Arcade submenu with no game running. tools/bp-shot.py in the umbrella wraps all of this.
 //
 // Adding a Big Picture page: add a row to kPages in FullscreenUIShot.cpp, so an agent can reach it.
 // A new SettingsPage enum value trips a static_assert there until it has a name.

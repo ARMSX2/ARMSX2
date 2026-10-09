@@ -559,6 +559,7 @@ void FullscreenUI::Shutdown(bool clear_state)
 		CloseCoverDownloaderWindow();
 		ShutdownAutoCovers();
 		ShutdownDriversPage();
+		ShutdownArcade();
 		s_cover_image_map.clear();
 		s_game_list_sorted_entries = {};
 		s_last_unsorted_entries = {};
@@ -615,6 +616,7 @@ void FullscreenUI::Render()
 	s_cleanup_textures.clear();
 	ImGuiFullscreen::UploadAsyncTextures();
 	PollAutoCovers();
+	PollArcade();
 
 	ImGuiFullscreen::BeginLayout();
 
@@ -817,7 +819,7 @@ void FullscreenUI::DestroyResources()
 
 ImGuiFullscreen::FileSelectorFilters FullscreenUI::GetOpenFileFilters()
 {
-	return {"*.bin", "*.iso", "*.cue", "*.mdf", "*.chd", "*.cso", "*.zso", "*.gz", "*.elf", "*.irx", "*.gs", "*.gs.xz", "*.gs.zst", "*.dump"};
+	return {"*.bin", "*.iso", "*.cue", "*.mdf", "*.chd", "*.cso", "*.zso", "*.gz", "*.elf", "*.irx", "*.gs", "*.gs.xz", "*.gs.zst", "*.dump", "*.acgame"};
 }
 
 ImGuiFullscreen::FileSelectorFilters FullscreenUI::GetDiscImageFilters()
@@ -879,6 +881,9 @@ void FullscreenUI::DoVMInitialize(const VMBootParameters& boot_params, bool swit
 
 void FullscreenUI::DoStartPath(const std::string& path, std::optional<s32> state_index, std::optional<bool> fast_boot)
 {
+	if (StartArcadePath(path, state_index, fast_boot))
+		return;
+
 	VMBootParameters params;
 	params.filename = path;
 	params.state_index = state_index;
@@ -1708,10 +1713,11 @@ void FullscreenUI::DrawPauseMenu(MainWindowType type)
 			11, // None
 			4, // Exit
 			3, // Achievements
+			5, // Arcade
 		};
 
 		const bool just_focused = ResetFocusHere();
-		BeginMenuButtons(submenu_item_count[static_cast<u32>(s_current_pause_submenu)], 1.0f, ImGuiFullscreen::LAYOUT_MENU_BUTTON_X_PADDING,
+		BeginMenuButtons(submenu_item_count[static_cast<u32>(s_current_pause_submenu)] + GetArcadePauseMenuItemCount(s_current_pause_submenu), 1.0f, ImGuiFullscreen::LAYOUT_MENU_BUTTON_X_PADDING,
 			ImGuiFullscreen::LAYOUT_MENU_BUTTON_Y_PADDING, ImGuiFullscreen::LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY);
 
 		if (!ImGui::IsPopupOpen(0u, ImGuiPopupFlags_AnyPopup))
@@ -1741,6 +1747,9 @@ void FullscreenUI::DrawPauseMenu(MainWindowType type)
 					case PauseSubMenu::Achievements:
 						first_id = ImGui::GetID(FSUI_ICONSTR(ICON_PF_BACKWARD, "Back To Pause Menu"));
 						last_id = ImGui::GetID(FSUI_ICONSTR(ICON_FA_STOPWATCH, "Leaderboards"));
+						break;
+					case PauseSubMenu::Arcade:
+						GetArcadePauseWrapIds(&first_id, &last_id);
 						break;
 				}
 
@@ -1786,10 +1795,12 @@ void FullscreenUI::DrawPauseMenu(MainWindowType type)
 						s_current_main_window = MainWindowType::None;
 				}
 
-				if (ActiveButton(FSUI_ICONSTR(ICON_FA_WRENCH, "Game Properties"), false, can_save_state))
+				if (ActiveButton(FSUI_ICONSTR(ICON_FA_WRENCH, "Game Properties"), false, can_save_state || IsArcadeSessionActive()))
 				{
 					SwitchToGameSettings();
 				}
+
+				DrawArcadePauseMenuEntry();
 
 				if (ActiveButton(FSUI_ICONSTR(ICON_FA_TROPHY, "Achievements"), false, Achievements::HasAchievementsOrLeaderboards()))
 				{
@@ -1872,6 +1883,10 @@ void FullscreenUI::DrawPauseMenu(MainWindowType type)
 					OpenLeaderboardsWindow();
 			}
 			break;
+
+			case PauseSubMenu::Arcade:
+				DrawArcadePauseSubMenu(just_focused);
+				break;
 		}
 
 		EndMenuButtons();

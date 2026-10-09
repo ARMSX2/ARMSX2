@@ -1675,7 +1675,7 @@ void FullscreenUI::SwitchToGameSettings(const std::string_view serial, u32 crc)
 
 void FullscreenUI::SwitchToGameSettings()
 {
-	if (s_current_disc_serial.empty() || s_current_disc_crc == 0)
+	if (s_current_disc_serial.empty() || (s_current_disc_crc == 0 && !IsArcadeSessionActive()))
 		return;
 
 	auto lock = GameList::GetLock();
@@ -1794,6 +1794,7 @@ void FullscreenUI::DrawSettingsWindow()
 			ICON_FA_TROPHY,
 			ICON_PF_GAMEPAD_ALT,
 			ICON_PF_KEYBOARD_ALT,
+			ICON_FA_COINS,
 			ICON_FA_TRIANGLE_EXCLAMATION,
 			ICON_FA_MEMORY, // Drivers: last, because it is left out of the list where packs do not exist
 		};
@@ -1821,6 +1822,7 @@ void FullscreenUI::DrawSettingsWindow()
 			SettingsPage::Achievements,
 			SettingsPage::Controller,
 			SettingsPage::Hotkey,
+			SettingsPage::Arcade,
 			SettingsPage::Advanced,
 			SettingsPage::Drivers, // must stay last, see count below
 		};
@@ -1854,6 +1856,7 @@ void FullscreenUI::DrawSettingsWindow()
 			FSUI_NSTR("Cheats"),
 			FSUI_NSTR("Game Fixes"),
 			FSUI_NSTR("GPU Drivers"),
+			FSUI_NSTR("Arcade Setup"),
 		};
 
 		const u32 count = game_settings ? (show_advanced_settings ? std::size(per_game_pages) : (std::size(per_game_pages) - 1)) : (std::size(global_pages) - (ShowDriversSettingsPage() ? 0 : 1));
@@ -2021,6 +2024,10 @@ void FullscreenUI::DrawSettingsWindow()
 				DrawDriversSettingsPage(bsi);
 				break;
 
+			case SettingsPage::Arcade:
+				DrawArcadeSettingsPage();
+				break;
+
 			default:
 				break;
 		}
@@ -2149,6 +2156,7 @@ void FullscreenUI::DrawSummarySettingsPage()
 		}
 
 		DrawCoverRegionPinSetting(*s_game_settings_entry);
+		DrawArcadeGameSettings(*s_game_settings_entry);
 	}
 	else
 	{

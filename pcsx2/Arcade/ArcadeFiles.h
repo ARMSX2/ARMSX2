@@ -47,6 +47,13 @@ namespace Arcade
 	/// image or a dongle). [size] of a packed file is its packed size.
 	FileKind ClassifyFile(std::string_view name, u64 size);
 
+	/// The game ID of a loose image: an image (FileKind::Image) of an arcade game kept as a file of its own, with no
+	/// .acgame. Its name carries the ID ("Battle Gear 3 (NM00010).chd"), else the name of the folder it is in does
+	/// (NM00010/game.chd). Empty for anything else: a dongle, a boot program, a packed image, a PS2 game. The second
+	/// form reads the file's size when its name cannot tell (a .bin is an image or a dongle).
+	std::string LooseImageGameId(std::string_view path, u64 size);
+	std::string LooseImageGameId(const std::string& path);
+
 	/// The name the dongle of the game [id] has in the memory cards folder, by what it holds: a card with its ECC
 	/// is a .ps2, one without (a whole number of megabytes) a .bin.
 	std::string DongleName(std::string_view id, u64 bytes);
@@ -85,8 +92,16 @@ namespace Arcade
 		bool Owns(const std::string& path) const;
 		bool Empty() const { return m_files.empty() && m_folders.empty(); }
 
+		/// [path] is a loose image (LooseImageGameId) of a game that no .acgame in the scan describes. It is owned like
+		/// the rest of a set, so a scan that does not know better leaves it out, but it is a game: the one file of the
+		/// set that a game list shows. An image of a game that has an .acgame is that .acgame's, wherever it lies.
+		bool IsLooseImage(const std::string& path) const;
+
 	private:
+		bool Contains(const std::string& key) const;
+
 		std::unordered_set<std::string> m_files; // lower-case full paths
+		std::unordered_set<std::string> m_loose; // the loose images among them
 		std::vector<std::string> m_folders; // lower-case full paths with a trailing separator
 	};
 } // namespace Arcade

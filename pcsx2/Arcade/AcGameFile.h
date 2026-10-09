@@ -32,4 +32,8 @@ namespace Arcade
 	/// Reads the .acgame at [path]. Nothing when the file cannot be read, is far bigger than an .acgame is, or has
 	/// no valid game ID.
 	std::optional<AcGameInfo> ReadAcGameInfo(const std::string& path);
+
+	/// What a loose image (see LooseImageGameId) says of its game, in the same shape: the game ID from its name,
+	/// the image as the media. Nothing when [path] is not a loose image.
+	std::optional<AcGameInfo> ReadLooseImageInfo(const std::string& path);
 } // namespace Arcade

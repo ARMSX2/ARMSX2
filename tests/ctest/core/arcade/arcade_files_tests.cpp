@@ -221,6 +221,51 @@ TEST_F(SetClaimsTest, AnImageNamedAfterItsGameAndTheSetBesideItAreNotGames)
 	EXPECT_FALSE(claims.Owns(P("loose/notes.txt")));
 }
 
+TEST(ArcadeFiles, ALooseImageIsAnImageNamedAfterItsGameOrInAFolderThatIs)
+{
+	EXPECT_EQ(LooseImageGameId("/games/Battle Gear 3 (NM00010).chd", 100), "NM00010");
+	EXPECT_EQ(LooseImageGameId("/games/nm00010.iso", 100), "NM00010");
+	EXPECT_EQ(LooseImageGameId("/games/NM00004/game.chd", 100), "NM00004");
+	// The game ID in the file's own name wins over the folder's.
+	EXPECT_EQ(LooseImageGameId("/games/NM00004/NM00010.chd", 100), "NM00010");
+	// A big .bin is an image, a dongle-sized one is not.
+	EXPECT_EQ(LooseImageGameId("/games/NM00010.bin", MAX_CARD_BYTES + 1), "NM00010");
+	EXPECT_EQ(LooseImageGameId("/games/NM00010.bin", MIN_CARD_BYTES), "");
+
+	// Not an image of an arcade game: a PS2 game, a dongle, a boot program, a packed image, a file with no ID.
+	EXPECT_EQ(LooseImageGameId("/games/Some Other Game.chd", 100), "");
+	EXPECT_EQ(LooseImageGameId("/games/NM00010.ps2", 100), "");
+	EXPECT_EQ(LooseImageGameId("/games/NM00010.elf", 100), "");
+	EXPECT_EQ(LooseImageGameId("/games/NM00010.iso.gz", 100), "");
+	EXPECT_EQ(LooseImageGameId("/games/NM00010.txt", 100), "");
+}
+
+TEST_F(SetClaimsTest, AnImageNamedAfterItsGameIsLooseUnlessAnAcgameHasThatGame)
+{
+	Put("loose/Battle Gear 3 (NM00010).chd");
+	Put("loose/Battle Gear 3 (NM00010).bin", std::string(MIN_CARD_BYTES, 'd')); // Its dongle: claimed, not a game.
+	Put("loose/NM00010 boot.elf");
+	Put("loose/Some Other Game.chd");
+	Put("folder/NM00005/game.iso");
+
+	// Tekken 4 has an .acgame, so its image is the .acgame's, wherever it lies.
+	Put("tekken/NM00004.acgame", "[game]\ngameid=NM00004\n");
+	Put("tekken/NM00004 copy.chd");
+	Put("tekken/NM00004/NM00004.chd");
+
+	const SetClaims claims(Scan(m_root));
+	EXPECT_TRUE(claims.IsLooseImage(P("loose/Battle Gear 3 (NM00010).chd")));
+	EXPECT_TRUE(claims.IsLooseImage(P("folder/NM00005/game.iso")));
+	EXPECT_FALSE(claims.IsLooseImage(P("loose/Battle Gear 3 (NM00010).bin")));
+	EXPECT_FALSE(claims.IsLooseImage(P("loose/NM00010 boot.elf")));
+	EXPECT_FALSE(claims.IsLooseImage(P("loose/Some Other Game.chd")));
+	EXPECT_FALSE(claims.IsLooseImage(P("tekken/NM00004 copy.chd")));
+	EXPECT_FALSE(claims.IsLooseImage(P("tekken/NM00004/NM00004.chd")));
+
+	// A loose image is still claimed: nothing but the arcade code lists it.
+	EXPECT_TRUE(claims.Owns(P("loose/Battle Gear 3 (NM00010).chd")));
+}
+
 TEST_F(SetClaimsTest, AFolderNamedAfterAGameOwnsTheSetInIt)
 {
 	Put("NM00010/boot.elf");

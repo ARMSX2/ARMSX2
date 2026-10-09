@@ -5,6 +5,8 @@
 
 #include "INISettingsInterface.h"
 
+#include "Arcade/ArcadeFiles.h"
+
 #include "common/ARCADE.h"
 #include "common/Console.h"
 #include "common/FileSystem.h"
@@ -54,5 +56,19 @@ std::optional<Arcade::AcGameInfo> Arcade::ReadAcGameInfo(const std::string& path
 	if (info.dongle.empty())
 		info.dongle = info.gameid + ".ps2";
 	info.card = ini.GetStringValue("data", "card", "");
+	return info;
+}
+
+std::optional<Arcade::AcGameInfo> Arcade::ReadLooseImageInfo(const std::string& path)
+{
+	AcGameInfo info;
+	info.gameid = LooseImageGameId(path);
+	if (info.gameid.empty())
+		return std::nullopt;
+
+	info.dir = std::string(Path::GetDirectory(path));
+	info.base_dir = info.dir;
+	info.media_path = path;
+	info.dongle = info.gameid + ".ps2";
 	return info;
 }
