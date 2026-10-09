@@ -1631,10 +1631,12 @@ struct Pcsx2Config
 		EnableRecordingTools : 1,
 		EnableGameFixes : 1, // enables automatic game fixes
 		SaveStateOnShutdown : 1, // default value for saving state on shutdown
+		AutosaveOnShutdown : 1, // also write a rotating autosave when the game is closed
 		EnableDiscordPresence : 1, // enables discord rich presence integration
 		UseSavestateSelector : 1,
 		InhibitScreensaver : 1,
 		BackupSavestate : 1,
+		McdAutoBackup : 1, // [MemoryCards] AutoBackup: snapshot the memory cards at boot
 		ManuallySetRealTimeClock : 1, // passes user-set real-time clock information to cdvd at startup
 		UseSystemLocaleFormat : 1, // presents OS time format instead of yyyy-MM-dd HH:mm:ss for manual RTC
 
@@ -1670,6 +1672,9 @@ struct Pcsx2Config
 	std::string GzipIsoIndexTemplate; // for quick-access index with gzipped ISO
 
 	int PINESlot;
+
+	int AutosaveIntervalMinutes; // 0 = off
+	int AutosaveKeep; // 1-5
 
 	int RtcYear;
 	int RtcMonth;
