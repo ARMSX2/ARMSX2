@@ -1,0 +1,318 @@
+{
+ "sha": "9f82a4d2b8a2aaf83807421f18d5d30263ea826c",
+ "url": "https://api.github.com/repos/PCSX2/pcsx2_patches/git/trees/9f82a4d2b8a2aaf83807421f18d5d30263ea826c",
+ "tree": [
+  {
+   "path": ".github",
+   "mode": "040000",
+   "type": "tree",
+   "sha": "6a1cede08342c71065dc32a273504d0be0e36ecf"
+  },
+  {
+   "path": ".github/scripts",
+   "mode": "040000",
+   "type": "tree",
+   "sha": "861b8c67fb327f3cfe7b959b8b3ccc61cee1e2a3"
+  },
+  {
+   "path": ".github/scripts/validate_patches.py",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "1dd6335f8144a81dff4965694fc311f9c00c3ff4",
+   "size": 4641
+  },
+  {
+   "path": ".github/workflows",
+   "mode": "040000",
+   "type": "tree",
+   "sha": "fba039528624f015251b5b98bdad75e6594973ba"
+  },
+  {
+   "path": ".github/workflows/pack_patches.yml",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "2bf12af6254da15e017fdb79ba1492af8259ef6d",
+   "size": 445
+  },
+  {
+   "path": ".github/workflows/update_release.yml",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "b025ce0bfeca36b7480de14f81b3eb00c763e6aa",
+   "size": 1561
+  },
+  {
+   "path": ".github/workflows/validate_patches.yml",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "7eab3f6011f93c22380c1737224de5d88a4af367",
+   "size": 329
+  },
+  {
+   "path": "README.md",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "6a1cd569b6a1f617dc891026bf63047e0872eb55",
+   "size": 403
+  },
+  {
+   "path": "patches",
+   "mode": "040000",
+   "type": "tree",
+   "sha": "78247d43be2465e4d1816d687ff08f68333a5b1a"
+  },
+  {
+   "path": "patches/6D980D22.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "444de0ef4425461fbfb0bece179447f4d508477b",
+   "size": 322
+  },
+  {
+   "path": "patches/PAPX-90203_55CE5111.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "aec36358cb1e167555e3c2d5ff82795bd7b2e29e",
+   "size": 48789
+  },
+  {
+   "path": "patches/PBPX-95201_2AF8719D.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0e2f82bbd99a8b329bb8e6b54f4f262d8ed60ca3",
+   "size": 416
+  },
+  {
+   "path": "patches/PBPX-95201_31603A01.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "6b3aef707d8fa3c44edc8258e4fc0a7da50f8122",
+   "size": 448
+  },
+  {
+   "path": "patches/PBPX-95201_35610B70.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0e1b8d3933ee4b9cff89a4a882889b4f1db7b470",
+   "size": 218
+  },
+  {
+   "path": "patches/SCES-52004_6624A78C.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "77bc016ca592f91093523816405516e032a969fd",
+   "size": 774
+  },
+  {
+   "path": "patches/SCUS-97399_D6385328.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0461d15708b7c688f501077ac1404aa94d2e0bd4",
+   "size": 5444
+  },
+  {
+   "path": "patches/SLES-50396_B6F7BA5.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "4a1c862a6a72252c56c8b1313a49caba831e5347",
+   "size": 369
+  },
+  {
+   "path": "patches/SLES-51666_1BD0A97E.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "f0cb89c4abdd877ff25f42f4cdb57068b030211d",
+   "size": 497
+  },
+  {
+   "path": "patches/SLES-51671_4731C13A.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "3a3afe764f101636d3dc557febb98699d3cc3962",
+   "size": 865
+  },
+  {
+   "path": "patches/SLES-52338_D03BE12A.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "c5dbdaae0de0a7222c6bd32f8d4f054be61a49b0",
+   "size": 1109
+  },
+  {
+   "path": "patches/SLES-52709_B9FDB9EE.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "66d8c8876c988470c9fbf0d07b798de0ffc69342",
+   "size": 273
+  },
+  {
+   "path": "patches/SLES-53237_90C5D585.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "13beb9a018fd2289237c33df1589f44bb8a49863",
+   "size": 491
+  },
+  {
+   "path": "patches/SLES-55384_DB5AEC24.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "3e334c116af266d13047906449fb4de398728705",
+   "size": 1093
+  },
+  {
+   "path": "patches/SLKA-25034_006C35A7.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "b4f2589c0b1202a619af5059f60a67e7d5429036",
+   "size": 295
+  },
+  {
+   "path": "patches/SLKA-25208_0326AE0E.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "7997fba020462b14c6ea9200d498fd6eed2ecee3",
+   "size": 781
+  },
+  {
+   "path": "patches/SLPM-65047_D79F697A.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "da73e0e5c87acb3c85ddecd89b133dbc12b6df40",
+   "size": 496
+  },
+  {
+   "path": "patches/SLPM-66940_D8AA81A8.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "f13f3b37b52d1744c9d31107629aa6aec8424fcf",
+   "size": 230
+  },
+  {
+   "path": "patches/SLPS-20426_3EEB8615.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "78625925ef0d008ba5c1fcea5696e498f91067e9",
+   "size": 534
+  },
+  {
+   "path": "patches/SLPS-25456_51233169.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "cc770b00a8213f2adcaa4b68f3f6d82b4a1b0c73",
+   "size": 194
+  },
+  {
+   "path": "patches/SLPS-25505_75C01A04.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "b4a62a42886cd132c3d83ce29703ff50f9402a8f",
+   "size": 1064
+  },
+  {
+   "path": "patches/SLPS-25734_C80DF46D.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "fd8db5db99c8450044665c3ff59fcf1acbdd7f29",
+   "size": 255
+  },
+  {
+   "path": "patches/SLPS-67014_6DEAEFEA.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "88ec7816fda2536dfcd82d9af4cac9448c613e41",
+   "size": 532
+  },
+  {
+   "path": "patches/SLUS-20455_8FF059A1.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "9716a9201032d2c8b5d013b90d0d6fd42489a8ee",
+   "size": 159
+  },
+  {
+   "path": "patches/SLUS-20687_EBD245D0.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "a3eac250efbaea45a74d0d29ee078ff7c51f38c8",
+   "size": 253
+  },
+  {
+   "path": "patches/SLUS-20812_96C20D6F.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "5a0d0cdb73ef19d98b3328c17bc9888c3ae42661",
+   "size": 1053
+  },
+  {
+   "path": "patches/SLUS-20946_399A49CA.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "39a015601246614390d2ab0c1cb2190692050445",
+   "size": 14494
+  },
+  {
+   "path": "patches/SLUS-20964_0BED0AF9.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "ab205fc4ad1643812ef029c715212f18d5a30561",
+   "size": 154
+  },
+  {
+   "path": "patches/SLUS-20984_1E65A50E.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0abb7584e6708da7674b39ee26b7d313423c7200",
+   "size": 616
+  },
+  {
+   "path": "patches/SLUS-20984_1E65A59B.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0abb7584e6708da7674b39ee26b7d313423c7200",
+   "size": 616
+  },
+  {
+   "path": "patches/SLUS-21157_EADDB48E.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "39e521b9fa1a5cbfd7bb8ebbcfbc347f2017f6f3",
+   "size": 202
+  },
+  {
+   "path": "patches/SLUS-21224_B815F724.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0260b63d948d1da001d82153184e4f565f842931",
+   "size": 331
+  },
+  {
+   "path": "patches/SLUS-21261_A5D29941.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "c63901bcbdf0382deae232c966b99c3309973ee6",
+   "size": 237
+  },
+  {
+   "path": "patches/SLUS-21442_FABD7602.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "8b600d7c90a819d057708194c18e200b0c25b19c",
+   "size": 142
+  },
+  {
+   "path": "patches/SLUS-21583_C6E85EF0.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "3315fbf7781a44be541ac4264d1303ed85a0aac7",
+   "size": 487
+  },
+  {
+   "path": "patches/SLUS-21658_DD3CE71B.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "d00c1743e8e4d17fd7c2f7bcd07dde4c6a1a4e39",
+   "size": 610
+  }
+ ],
+ "truncated": false
+}

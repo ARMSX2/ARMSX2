@@ -1,0 +1,893 @@
+{
+ "sha": "fb4044ef28374296e1279f22d521ec02755f8388",
+ "url": "https://api.github.com/repos/XiGuanChi/PCSX2-CheatsDB/git/trees/fb4044ef28374296e1279f22d521ec02755f8388",
+ "tree": [
+  {
+   "path": ".github",
+   "mode": "040000",
+   "type": "tree",
+   "sha": "4af58b4a01a32ad80c4aee23bf17f6b9ddcb2adb"
+  },
+  {
+   "path": ".github/scripts",
+   "mode": "040000",
+   "type": "tree",
+   "sha": "73e5c6e4c85627d407fa1c41f7384f2b051b2478"
+  },
+  {
+   "path": ".github/scripts/rename_pnach.py",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "c104792261f8bb1f8b3fad7cd70d96edeada3d94",
+   "size": 1949
+  },
+  {
+   "path": ".github/scripts/rename_pnach_part2.py",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "a28de4a6fa4400a83c59fc702dff8ba6654e9e71",
+   "size": 2884
+  },
+  {
+   "path": ".github/scripts/rename_pnach_patch.py",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "14f1a91b9e57cfdb4b12ecbef4f6a94063237e31",
+   "size": 2311
+  },
+  {
+   "path": ".github/workflows",
+   "mode": "040000",
+   "type": "tree",
+   "sha": "a80036b0c97306173c2f49b6624e9cde118802d2"
+  },
+  {
+   "path": ".github/workflows/build-android.yml",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "141b842e77ce425d126d868372342cfc7060e855",
+   "size": 3585
+  },
+  {
+   "path": ".github/workflows/extract-zip-plus.yml",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "6b44d2f1b647aedc55f70b7978cc143d32f06970",
+   "size": 2379
+  },
+  {
+   "path": ".github/workflows/mirror-cheats-part1.yml",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "08e427637ebb79198a905d6fc06649583ae2e2ab",
+   "size": 2121
+  },
+  {
+   "path": ".github/workflows/mirror-cheats-part2.yml",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "f38d5f1673d670a95d42a5f05ab90ead1ae603ce",
+   "size": 2129
+  },
+  {
+   "path": ".github/workflows/mirror-cheats-part3.yml",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "8d96229737bdcc015dc6c88e0ec28fd90671da48",
+   "size": 1831
+  },
+  {
+   "path": ".github/workflows/mirror-patches-bulk.yml",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "60c3a36d254d82092895d82b0375757fe39080e3",
+   "size": 9231
+  },
+  {
+   "path": "PCSX2 Patches/SCES-52004_6624A78C.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "5e2222757c2a29b9ea06c92325d164c031579d61",
+   "size": 344
+  },
+  {
+   "path": "PCSX2 Patches/SCUS-97399_D6385328.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "e7101e5a73cb62ee3559217b2f18a7257f1d838f",
+   "size": 177
+  },
+  {
+   "path": "PCSX2 Patches/SLES-53832_436E4801.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "5c1436ac3974b069cca3e4fec6e9146dfaa4bfb0",
+   "size": 156
+  },
+  {
+   "path": "PCSX2 Patches/SLES-55024_AE28C9C7.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "db07352923ebfe7e95893ed85540b3d19234877b",
+   "size": 501
+  },
+  {
+   "path": "PCSX2 Patches/SLES-55442_8E214549.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "d28b7599599fcb028cddc5ced0d8869786f6ada5",
+   "size": 343
+  },
+  {
+   "path": "PCSX2 Patches/SLUS-20331_FBAB0C3B.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0b7f34e115f7e12906ef1de2e256e9215c276a87",
+   "size": 177
+  },
+  {
+   "path": "PCSX2 Patches/SLUS-20391_DFA59850.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "8d736f99bc8bbc500c56ed7b63c9b71f6ce4ed16",
+   "size": 246
+  },
+  {
+   "path": "PCSX2 Patches/SLUS-20993_29C7DA54.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "6ddd68c4a80fea54f0207cbd3300a6c5df093516",
+   "size": 230
+  },
+  {
+   "path": "PCSX2 Patches/SLUS-21095_D4690FFA.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "736387b98d2b6da04b9542f44d80aeaa3e9a2d9e",
+   "size": 159
+  },
+  {
+   "path": "PCSX2 Patches/SLUS-21656_E9FFA1F2.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "5795faa0d9afb392f46a9b14646bff41eb89d1c0",
+   "size": 260
+  },
+  {
+   "path": "cheats-v1/0F81D0B0 - Terminator 3 - Le Soulèvement des Machines SLES-51957.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "2078a18cd53ac78424560c3788f7d0a5cb6d9c25",
+   "size": 2098
+  },
+  {
+   "path": "cheats-v1/1E65A50E - Resident Evil Outbreak File #2 SLUS-20984.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "d7d09ea1b1beddee639ea2d76b21b2934640b7df",
+   "size": 793
+  },
+  {
+   "path": "cheats-v1/39546794 - Kappa no Kai-kata - How to Breed Kappas SLPM 65629 SLPM 65970.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "ec9f0c972b274666dc56346fa05dd5e422c3b9f5",
+   "size": 196
+  },
+  {
+   "path": "cheats-v1/43341C03 - Mortal Kombat - Deception SLES-52705.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "ad55c41cc4f2a630fe0e80e4d118a7ad0876c7af",
+   "size": 474
+  },
+  {
+   "path": "cheats-v1/5838E074 - WRC - World Rally Championship SLUS-20419.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "ecb941140912da8bc3418718936edd06cd6358a6",
+   "size": 314
+  },
+  {
+   "path": "cheats-v1/625AF967 - Tim Burton's The Nightmare Before Christmas - Boogy no Gyakushuu SLPM-65739.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "d836a08c692aeed9d1bb196b8f1954eb08c83b12",
+   "size": 603
+  },
+  {
+   "path": "cheats-v1/6624A78C - Killzone SCES-52004.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "b89d139b80fc449e7e6755b61b12f604ad4deaa6",
+   "size": 199
+  },
+  {
+   "path": "cheats-v1/9F391882 - Steambot Chronicles SLUS-21344.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "63aacd8b11a18135919806825fc493abbe24602c",
+   "size": 965
+  },
+  {
+   "path": "cheats-v1/B1EBD841- Yakuza 2 SLUS-21769.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "67837823d3493fa543f2282bf718ea6e50ae7c9f",
+   "size": 3412
+  },
+  {
+   "path": "cheats-v1/B74A2938 - Disney's Stitch - Experiment 626 SCES-50959.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "dbbfa742d77850584636ccfb42cd0c5f5705da84",
+   "size": 72
+  },
+  {
+   "path": "cheats-v1/C80DF46D - The Battle of YuYu Hakushou - Shitou! Ankoku bBujutsukai 120% SLPS-25734.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "4ed3645b6fd741d8c14494b949c1a12f112abfd2",
+   "size": 1225
+  },
+  {
+   "path": "cheats-v1/D6385328 - God of War SCUS-97399.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "25dddd658be1ebda1f790857d04ae9f705a2b0a2",
+   "size": 926
+  },
+  {
+   "path": "cheats-v1/DBF5B26C - Bistro Cupid 2 SLPM-65347-8.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "23097c64a0f2664207b32034d73e2d80de0043ca",
+   "size": 1220
+  },
+  {
+   "path": "cheats-v2/1E65A50E - Resident Evil Outbreak File #2 SLUS-20984.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "e610e9b641f31ecebadfb9fafdb5fb530c88d165",
+   "size": 518
+  },
+  {
+   "path": "cheats-v2/49AF964B - Conflict - Desert Storm SLUS-20549.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "a48075d6bf2e98c3f88dd8f42520c3ba2083126e",
+   "size": 679
+  },
+  {
+   "path": "cheats-v2/6624A78C - Killzone SCES-52004.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "7dd9cfcbea9959778d743cb285b6071cd5d2060a",
+   "size": 207
+  },
+  {
+   "path": "cheats-v2/9A74EC41 - The Italian Job SLES-51761.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "876c4e9a7b9fc7ffd021c3397a442d9a7aa77ee9",
+   "size": 783
+  },
+  {
+   "path": "cheats-v2/AA294EDC - Colin McRae Rally 3 SLUS-20502.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "ff2cce4d298aa663de53407ca99180a656419ea5",
+   "size": 310
+  },
+  {
+   "path": "cheats-v2/C4ECF541 - Legion - The Legend of Excalibur SLUS-20048.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "46bb0b08a03c52919ac22fd54381aa88ef13529e",
+   "size": 309
+  },
+  {
+   "path": "cheats-v2/C80DF46D - The Battle of YuYu Hakushou - Shitou! Ankoku bBujutsukai 120% SLPS-25734.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "39c0976a407994b6f69cd61c07247a21e53776c0",
+   "size": 1248
+  },
+  {
+   "path": "cheats-v2/C9E72987 - Sunny Garcia Surfing SLES-50533.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "ad4cf868db964a885e8e516322fe5cfc90174243",
+   "size": 557
+  },
+  {
+   "path": "cheats-v2/D6385328 - God of War SCUS-97399.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "277e38df5a68b6bccccbde209d12c10186d29f3e",
+   "size": 893
+  },
+  {
+   "path": "cheats-v2/Der Pate SLES-53969.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "19538fa9e578d6a309bd921fecc1e7b997131789",
+   "size": 266
+  },
+  {
+   "path": "cheats-v2/Love Hina Gojasu - Chiratto Happening! SLPM-65292.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "6baf312c25379b2c82b393a82429bed6fc4688c8",
+   "size": 867
+  },
+  {
+   "path": "cheats-v2/Sentou Kokka Kai - Legend SLPM-66741.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "2648929930c5eacee8b690b4274f48e270ad24d6",
+   "size": 338
+  },
+  {
+   "path": "cheats-v4/SCUS-97177_5AE01D98.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "f835952e396a5235a1bc427320f66e493f1eb1d3",
+   "size": 8105
+  },
+  {
+   "path": "cheats-v4/SCUS-97399_D6385328.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "280ffecb9bb8f1341b9e6336498ef60071b42b9d",
+   "size": 11747
+  },
+  {
+   "path": "cheats-v4/SLPM-66848_CA857E71.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "85e44b0dae883f93d75560e3835f3d51b1d78ecd",
+   "size": 1996
+  },
+  {
+   "path": "cheats-v4/SLPS-25650_7D8D8BFA.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "5fbfa29f44394ca88aab2f8f8dacc8637875667a",
+   "size": 5651
+  },
+  {
+   "path": "cheats-v4/SLUS-20174_2F5354BE.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "ebe721bdfcaea2d047d18ff5ad827804717fa021",
+   "size": 15421
+  },
+  {
+   "path": "cheats-v4/SLUS-21059_652050D2.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "df0dd9e2f378c9b5172ff35cdedc7fae76e324ae",
+   "size": 132297
+  },
+  {
+   "path": "cheats-v4/SLUS-21106_42A9C4EC.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "d4f8e0267b94a59914f226ef3ac55b3c736f9af2",
+   "size": 39548
+  },
+  {
+   "path": "cheats-v4/SLUS-21355_60A42FF5.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "943e5c2e70046ee1e3e9e6b54b97ff504d26e59d",
+   "size": 32783
+  },
+  {
+   "path": "cheats-v4/SLUS-21361_25FC361B.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0658f3c5c9c9ce5801b1fd3cbefe5caf182954bb",
+   "size": 28668
+  },
+  {
+   "path": "cheats-v5/cheats/02E1970F.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "7cd65866744306ff760c8be145245b811210a4b6",
+   "size": 216
+  },
+  {
+   "path": "cheats-v5/cheats/6624A78C.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "bc999fd6e390140acf887a2db32e1c98e5d28ed6",
+   "size": 1059
+  },
+  {
+   "path": "cheats-v5/cheats/D6385328.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "6057f9c10a6a374dc4018e6bd1d1d3c395a61d8f",
+   "size": 1867
+  },
+  {
+   "path": "cheats-v5/cheats/F5625D83.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "a051f15c7648cc23333c1d860efaedf812014281",
+   "size": 3348
+  },
+  {
+   "path": "cheats-v5/cheats/SCES-52004_6624A78C.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "f20365bd3ab567941bbcbdbce76ae4f02bc3bdae",
+   "size": 7224
+  },
+  {
+   "path": "cheats-v5/cheats/SCUS-97399_D6385328.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "a5180f7109bfa997cec80c3b83068c4a8a6377d5",
+   "size": 10413
+  },
+  {
+   "path": "cheats-v5/cheats/SLES-50498_BEBC87B1.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "a18501343c846f4239d6040d40b2ee8cd144d948",
+   "size": 72505
+  },
+  {
+   "path": "cheats-v5/cheats/SLES-50505_F9E3CF90.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "660ae0d9178b3f21d6939331f4db9b2b56ba8c8d",
+   "size": 3534
+  },
+  {
+   "path": "cheats-v5/cheats/SLES-52568_1510E1D1.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "9f2ae82d173c970f31f5fb70c1ce3f7d7f8ba1fc",
+   "size": 1694
+  },
+  {
+   "path": "cheats-v5/cheats/SLUS-20326_8E7CFF62.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "f90dd079fbbe7196b09f6e399bbcec2c1bbc9a1c",
+   "size": 15004
+  },
+  {
+   "path": "cheats-v5/cheats/SLUS-21099_C98BEF46.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "78e0d199e8b713921dd41159831001d1d94848a5",
+   "size": 6953
+  },
+  {
+   "path": "cheats-v5/cheats/SLUS-21153_6677B437.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "08a2f1f67f2fc3586e0a19a5587fb54b83625b31",
+   "size": 237342
+  },
+  {
+   "path": "cheats-v5/cheats/SLUS-21156_15948AA5.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "a94296196789eb34616ebe7ad7a69e88327b1aaa",
+   "size": 2520
+  },
+  {
+   "path": "cheats-v6/SCES-52004_6624A78C.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "51fee2d759d724d07527c15f327ab7ad246ac224",
+   "size": 6281
+  },
+  {
+   "path": "cheats-v6/SCUS-97330_644CFD03.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "47aa324df36f2e1e1a129187d81b7602da5f1b37",
+   "size": 7551
+  },
+  {
+   "path": "cheats-v6/SCUS-97399_D6385328.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "b6ba30ec96b7a87bf9be3f8fe65c94d7ea78ada9",
+   "size": 9102
+  },
+  {
+   "path": "cheats-v6/SLES-50972_5CCA0737.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "52859d56ca6988be500747d700fe98a5be8da70a",
+   "size": 1334
+  },
+  {
+   "path": "cheats-v6/SLES-52734_38C8967A.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "9f5d883743b56f3685aee7dcca6ea3b382ae83b5",
+   "size": 165
+  },
+  {
+   "path": "cheats-v6/SLES-53908_05177ECE.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0c6619ab8dc4e04f94a60d9509207cd5cfaff456",
+   "size": 375
+  },
+  {
+   "path": "cheats-v6/SLES-54159_3E9B19C2.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "ab12e38b0e15db34ba776adb8b7b08591f745dcb",
+   "size": 358
+  },
+  {
+   "path": "cheats-v6/SLUS-20826_C71A6146.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "106cdc0e8c887b63158ecf283c6b1cb1aa5ca3fe",
+   "size": 185
+  },
+  {
+   "path": "cheats-v6/SLUS-21120_2373FD16.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "04f66891cf755bcd13c04ff87bcb2a27efb00051",
+   "size": 5043
+  },
+  {
+   "path": "cheats-v6/SLUS-21331_B44896B7.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "a13ae30be667bbd7eb8eb63c3830134ad6adaf62",
+   "size": 8605
+  },
+  {
+   "path": "patches-team/ApeEscape2/SLUS-20685_BDD9F5E1.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "558234f48e41c0db43707482229381434835fd91",
+   "size": 2215
+  },
+  {
+   "path": "patches-team/DW3/SLUS-20277_4A35E19F.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "a8d116317b5ee307882854ae81782de80e0c5af1",
+   "size": 358
+  },
+  {
+   "path": "patches-team/GOW_II/SCUS-97481_2F123FD8.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "18bdb9a116022f4590587e94e05b50f4bfb91188",
+   "size": 1258
+  },
+  {
+   "path": "patches-team/MK-ShaolinMonk/SLUS_21087_455DD546.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "c85fcdcbece85ca0c5673cc8dfc54ae1a8059870",
+   "size": 600
+  },
+  {
+   "path": "patches-team/RE-4/SLES-53702_6BA2F6B9.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "7c000662cfed02c9ddf065299d5692eaace97e26",
+   "size": 1167
+  },
+  {
+   "path": "patches-team/RE-4/SLUS-21134_013E349D.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "024af78cb90cd74934d8e2dbd23ab9e2dfabf9be",
+   "size": 1196
+  },
+  {
+   "path": "patches-team/RECodeVeronicaX/SLUS-20184_24036809.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "92b920abc65e61a93edc0ce83ffaef69680ba66c",
+   "size": 622
+  },
+  {
+   "path": "patches-team/Rogue-Galaxy/SCES-54552_CBB4B383.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "37f4d8c6391cda83aa86b28169f5885705267bce",
+   "size": 1956
+  },
+  {
+   "path": "patches-v2/patches/6D980D22.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "444de0ef4425461fbfb0bece179447f4d508477b",
+   "size": 322
+  },
+  {
+   "path": "patches-v2/patches/PAPX-90203_55CE5111.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "aec36358cb1e167555e3c2d5ff82795bd7b2e29e",
+   "size": 48789
+  },
+  {
+   "path": "patches-v2/patches/PBPX-95201_2AF8719D.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0e2f82bbd99a8b329bb8e6b54f4f262d8ed60ca3",
+   "size": 416
+  },
+  {
+   "path": "patches-v2/patches/PBPX-95201_31603A01.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "6b3aef707d8fa3c44edc8258e4fc0a7da50f8122",
+   "size": 448
+  },
+  {
+   "path": "patches-v2/patches/PBPX-95201_35610B70.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0e1b8d3933ee4b9cff89a4a882889b4f1db7b470",
+   "size": 218
+  },
+  {
+   "path": "patches-v2/patches/SCES-52004_6624A78C.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "77bc016ca592f91093523816405516e032a969fd",
+   "size": 774
+  },
+  {
+   "path": "patches-v2/patches/SCUS-97399_D6385328.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0461d15708b7c688f501077ac1404aa94d2e0bd4",
+   "size": 5444
+  },
+  {
+   "path": "patches-v2/patches/SLES-50396_B6F7BA5.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "4a1c862a6a72252c56c8b1313a49caba831e5347",
+   "size": 369
+  },
+  {
+   "path": "patches-v2/patches/SLES-51633_C7AA13F6.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "ffbeda33e4b3592608639bb0cdbeb2d949f5267a",
+   "size": 198
+  },
+  {
+   "path": "patches-v2/patches/SLES-53099_53BB63A0.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "237fff1b78cfcda459b7906ff789446faef795df",
+   "size": 431
+  },
+  {
+   "path": "patches-v2/patches/SLES-53848_40893E32.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "c635158e6a582cd1e26ea2679ca4d2c2bb63465e",
+   "size": 376
+  },
+  {
+   "path": "patches-v2/patches/SLES-55659_E7434B93.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "174b17b90e8c5e301546fe808fc256429eab8d1b",
+   "size": 255
+  },
+  {
+   "path": "patches-v2/patches/SLPM-65880_7F3DDEAB.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "c93d995d2bbec160cdd5ccfa0c6eb5b875e79064",
+   "size": 196
+  },
+  {
+   "path": "patches-v2/patches/SLPS-20291_2EA99E16.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "9089e55f89693f1324c8aa7addd766104b5a0140",
+   "size": 294
+  },
+  {
+   "path": "patches-v2/patches/SLPS-25734_C80DF46D.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "fd8db5db99c8450044665c3ff59fcf1acbdd7f29",
+   "size": 255
+  },
+  {
+   "path": "patches-v2/patches/SLUS-20758_03F9C6D1.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "29d73017d18343d52e9641a729588b6bbd56cffb",
+   "size": 132
+  },
+  {
+   "path": "patches-v2/patches/SLUS-20984_1E65A50E.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0abb7584e6708da7674b39ee26b7d313423c7200",
+   "size": 616
+  },
+  {
+   "path": "patches-v2/patches/SLUS-20984_1E65A59B.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0abb7584e6708da7674b39ee26b7d313423c7200",
+   "size": 616
+  },
+  {
+   "path": "patches-v2/patches/SLUS-21634_DB53D06D.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "72497a9d4081ee0d3a7f7b840bd7ab5ba64ab819",
+   "size": 377
+  },
+  {
+   "path": "patches-v3/patches/6D980D22.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "444de0ef4425461fbfb0bece179447f4d508477b",
+   "size": 322
+  },
+  {
+   "path": "patches-v3/patches/PAPX-90203_55CE5111.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "aec36358cb1e167555e3c2d5ff82795bd7b2e29e",
+   "size": 48789
+  },
+  {
+   "path": "patches-v3/patches/PBPX-95201_2AF8719D.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0e2f82bbd99a8b329bb8e6b54f4f262d8ed60ca3",
+   "size": 416
+  },
+  {
+   "path": "patches-v3/patches/PBPX-95201_31603A01.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "6b3aef707d8fa3c44edc8258e4fc0a7da50f8122",
+   "size": 448
+  },
+  {
+   "path": "patches-v3/patches/PBPX-95201_35610B70.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0e1b8d3933ee4b9cff89a4a882889b4f1db7b470",
+   "size": 218
+  },
+  {
+   "path": "patches-v3/patches/SCES-52004_6624A78C.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "77bc016ca592f91093523816405516e032a969fd",
+   "size": 774
+  },
+  {
+   "path": "patches-v3/patches/SCUS-97399_D6385328.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0461d15708b7c688f501077ac1404aa94d2e0bd4",
+   "size": 5444
+  },
+  {
+   "path": "patches-v3/patches/SLES-50396_B6F7BA5.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "4a1c862a6a72252c56c8b1313a49caba831e5347",
+   "size": 369
+  },
+  {
+   "path": "patches-v3/patches/SLPS-25734_C80DF46D.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "fd8db5db99c8450044665c3ff59fcf1acbdd7f29",
+   "size": 255
+  },
+  {
+   "path": "patches-v3/patches/SLUS-20984_1E65A50E.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0abb7584e6708da7674b39ee26b7d313423c7200",
+   "size": 616
+  },
+  {
+   "path": "patches-v3/patches/SLUS-20984_1E65A59B.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0abb7584e6708da7674b39ee26b7d313423c7200",
+   "size": 616
+  },
+  {
+   "path": "patches-v6/descripcion traducida/SCES-51164_A2837592.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "a10ff442569837ad2c9c2c6f0283d0082a3ff92b",
+   "size": 3204
+  },
+  {
+   "path": "patches-v6/descripcion traducida/SCES-52004_6624A78C.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "c9105673f20e5dea1ff6248c6faa87104ac3ca46",
+   "size": 787
+  },
+  {
+   "path": "patches-v6/descripcion traducida/SLES-51870_BE44D7D5.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "029838aa7864f94c8f406caef16679823e36a304",
+   "size": 450
+  },
+  {
+   "path": "patches-v6/descripcion traducida/SLES-52603_7ADEE689.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "1cbb7284b6ff2f585142df820a61e51590f6a4ff",
+   "size": 339
+  },
+  {
+   "path": "patches-v6/descripcion traducida/SLES-53414_BBF8C3D6.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "ed38f629ddac13c33e715fec72ac012a97c25840",
+   "size": 937
+  },
+  {
+   "path": "patches-v6/descripcion traducida/SLES-53729_0BC3B265.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "d557b3385db0b5ebb48c1d439db056f4aaf69ab3",
+   "size": 656
+  },
+  {
+   "path": "patches-v6/patches/SCES-52004_6624A78C.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "c0d7b2c394c1cb4ff590fb8fc7a3326d3800eefd",
+   "size": 744
+  },
+  {
+   "path": "patches-v6/patches/SLES-50314_C0A963DB.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "cb1ade08ad4151fb08a1f51cbee8c8ebeeef1d98",
+   "size": 366
+  },
+  {
+   "path": "patches-v6/patches/SLES-55502_09BF522A.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "bfa09ca202b533174e05a1150baf3bb5dff23e8e",
+   "size": 462
+  },
+  {
+   "path": "patches-v6/patches/SLUS-20655_2D29C32F.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "5bb1f221c6551a677bcb6642ab1fc1bfe863a115",
+   "size": 571
+  }
+ ],
+ "truncated": false
+}

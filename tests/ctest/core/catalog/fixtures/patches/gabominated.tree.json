@@ -1,0 +1,235 @@
+{
+ "sha": "ed93dec086211b107345cc90e5bee4397e83dc50",
+ "url": "https://api.github.com/repos/Gabominated/PCSX2/git/trees/ed93dec086211b107345cc90e5bee4397e83dc50",
+ "tree": [
+  {
+   "path": ".github",
+   "mode": "040000",
+   "type": "tree",
+   "sha": "7d3309847eeff3c38bc1fe82868ea41eb3a26fcf"
+  },
+  {
+   "path": ".github/workflows",
+   "mode": "040000",
+   "type": "tree",
+   "sha": "f6111ce7b0a7799e18a240a50acdde0d750a99f7"
+  },
+  {
+   "path": ".github/workflows/release.yml",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "47a3e613cf6304778c5324149c4741e8914186b5",
+   "size": 2250
+  },
+  {
+   "path": "PCSX2 Patches",
+   "mode": "040000",
+   "type": "tree",
+   "sha": "edc501c3f8655286940b17ef990134c243453118"
+  },
+  {
+   "path": "PCSX2 Patches/SCES-51190_059E5FAA.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "0f6014d97f76049269b8b7bcf9857c843405395f",
+   "size": 578
+  },
+  {
+   "path": "PCSX2 Patches/SCES-52004_6624A78C.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "5e2222757c2a29b9ea06c92325d164c031579d61",
+   "size": 344
+  },
+  {
+   "path": "PCSX2 Patches/SCUS-97399_D6385328.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "e7101e5a73cb62ee3559217b2f18a7257f1d838f",
+   "size": 177
+  },
+  {
+   "path": "PCSX2 Patches/SLES-50109_97AE372A.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "2992652d5f95196ca3cc5d81e9415fc4705aecb3",
+   "size": 511
+  },
+  {
+   "path": "PCSX2 Patches/SLES-51013_66CC8148.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "18a927e5a57050c8f7a6079f5d44e184d97e0eff",
+   "size": 254
+  },
+  {
+   "path": "PCSX2 Patches/SLES-51508_804F5858.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "eb5483aae526005f11960697941dcabbd1684825",
+   "size": 306
+  },
+  {
+   "path": "PCSX2 Patches/SLES-51989_BF45EFF4.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "b03e9c7c8dd0ed15bbc93de3513884b095985942",
+   "size": 175
+  },
+  {
+   "path": "PCSX2 Patches/SLES-53098_D11B52FD.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "e64541bfcf521916cd978e1a4cec54b440d66147",
+   "size": 175
+  },
+  {
+   "path": "PCSX2 Patches/SLES-53280_52DEB87B.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "4dd4f20fb38824a806a60e7371c7df33bc1f5388",
+   "size": 327
+  },
+  {
+   "path": "PCSX2 Patches/SLES-53430_6B3D50A5.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "197f1cf61176ee2c7eefe1934b748b98a70bd3d6",
+   "size": 462
+  },
+  {
+   "path": "PCSX2 Patches/SLES-53963_8A1332C1.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "d64e1ca7354deb97e7564ddc3b038b28d10b383c",
+   "size": 162
+  },
+  {
+   "path": "PCSX2 Patches/SLES-54674_A629A376.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "ad0b06f1b62dd767e0c38dd9a311304d050a7dc8",
+   "size": 381
+  },
+  {
+   "path": "PCSX2 Patches/SLES-55431_990F1314.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "5f2e1f4159652f136489d02bad0e1d93b9a716e3",
+   "size": 169
+  },
+  {
+   "path": "PCSX2 Patches/SLPM-65995_08E89523.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "2c6c3386cccf15c102b306b79f0792cee93a742b",
+   "size": 297
+  },
+  {
+   "path": "PCSX2 Patches/SLUS-20671_B67F4F9E.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "bce46100e2522e8e031fdd3cbe39425bfb63d9a3",
+   "size": 160
+  },
+  {
+   "path": "PCSX2 Patches/SLUS-20826_C71A6146.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "6bc8fd648d7b4fa9e4aa4be0058979d3eb55bcde",
+   "size": 182
+  },
+  {
+   "path": "PCSX2 Patches/SLUS-21018_35CB5180.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "1f051329b7f5c6baa9fbc19ed40b606a1a72cc69",
+   "size": 288
+  },
+  {
+   "path": "PCSX2 Patches/SLUS-21097_383176C2.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "6933c1febde1a905646453dbd17586e572f57868",
+   "size": 255
+  },
+  {
+   "path": "PCSX2 Patches/SLUS-21240_249540F3.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "4beeecd329f78f3878853ed412aca6e62c0b546a",
+   "size": 400
+  },
+  {
+   "path": "PCSX2 Patches/SLUS-21436_34C62B5C.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "ed506c044a36344b328a1d7ef3ec9bae3b27e9a7",
+   "size": 166
+  },
+  {
+   "path": "PCSX2 Patches/SLUS-21614_879CDA5E.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "592167d5953b5295c7bef082ad4dc0753da28985",
+   "size": 358
+  },
+  {
+   "path": "PCSX2 Patches/SLUS-21915_40619A71.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "df5068f76ff2504b315b68fdc58a7db479475175",
+   "size": 204
+  },
+  {
+   "path": "PCSX2.txt",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "8c3b54bcea1e81f39ca705a78fe420cee152c940",
+   "size": 20369
+  },
+  {
+   "path": "Patches",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "8b137891791fe96927ad78e64b0aad7bded08bdc",
+   "size": 1
+  },
+  {
+   "path": "README.md",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "d903708be7d6ae7af29ee49bd0d0f468267393f7",
+   "size": 56702
+  },
+  {
+   "path": "Tutorials.md",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "a758fed7f55948ae7e2b7460065a3dd9db4a5e65",
+   "size": 8516
+  },
+  {
+   "path": "VE_patches_README.md",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "a75316553962f03763384711a3ee2636f189c3ef",
+   "size": 7467
+  },
+  {
+   "path": "github_workflows_update_readme.yml",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "a289d9ff82a7029b7fcac5ebcff46ad36a55e861",
+   "size": 695
+  },
+  {
+   "path": "patches_update_readme.py",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "e26b484e2ea62e6d7bcacdf157b5ee7738ec4703",
+   "size": 1341
+  }
+ ],
+ "truncated": false
+}
