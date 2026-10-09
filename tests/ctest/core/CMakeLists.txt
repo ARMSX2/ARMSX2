@@ -43,6 +43,9 @@ add_subdirectory(gs)
 # IPU colour-conversion oracle (arch-neutral: each host tests its own path).
 add_subdirectory(ipu)
 
+# Shared online-service layer (pcsx2/Catalog) and common/SHA256.
+add_subdirectory(catalog)
+
 
 set(multi_isa_sources
 	GS/swizzle_test_main.cpp
