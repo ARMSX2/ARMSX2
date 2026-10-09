@@ -208,6 +208,7 @@ namespace FullscreenUI
 			{"patches", SettingsPage::Patches, false},
 			{"cheats", SettingsPage::Cheats, false},
 			{"gamefixes", SettingsPage::GameFixes, false},
+			{"drivers", SettingsPage::Drivers, true},
 		};
 
 		constexpr bool SettingsPageTableIsInEnumOrder()

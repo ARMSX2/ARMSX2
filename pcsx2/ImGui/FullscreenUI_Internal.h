@@ -182,6 +182,7 @@ namespace FullscreenUI
 		Patches,
 		Cheats,
 		GameFixes,
+		Drivers,
 		Count
 	};
 
@@ -570,5 +571,12 @@ namespace FullscreenUI
 	void AppendAutosaveListEntries(const std::string& serial, u32 crc);
 	/// True for the slot numbers AppendAutosaveListEntries gives its tiles.
 	bool IsAutosaveSlot(s32 slot);
+
+	// GPU driver packs (FullscreenUI_Drivers.cpp)
+	/// False where driver packs do not exist (everything but desktop Linux): the page is not listed.
+	bool ShowDriversSettingsPage();
+	void DrawDriversSettingsPage(SettingsInterface* bsi);
+	/// Cancels the page's downloads and joins its threads.
+	void ShutdownDriversPage();
 
 } // namespace FullscreenUI

@@ -10,6 +10,7 @@ src_files = [
     os.path.join(os.path.dirname(__file__), "..", "pcsx2", "ImGui", "FullscreenUI_Settings.cpp"),
     os.path.join(os.path.dirname(__file__), "..", "pcsx2", "ImGui", "FullscreenUI_Packs.cpp"),
     os.path.join(os.path.dirname(__file__), "..", "pcsx2", "ImGui", "FullscreenUI_Saves.cpp"),
+    os.path.join(os.path.dirname(__file__), "..", "pcsx2", "ImGui", "FullscreenUI_Drivers.cpp"),
 ]
 
 def extract_strings_from_source(source_content):
