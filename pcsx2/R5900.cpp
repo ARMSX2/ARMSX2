@@ -405,9 +405,18 @@ __fi void _cpuEventTest_Shared()
 	// cycles (fixes Grandia II [PAL], which does a spin loop on a vsync and expects to
 	// be able to read the value before the exception handler clears it).
 
-	uint mask = intcInterrupt() | dmacInterrupt();
-	if (cpuIntsEnabled(mask))
-		cpuException(mask, cpuRegs.branch);
+	// intcInterrupt() and dmacInterrupt() return 0 and change nothing unless
+	// an unmasked INTC cause, an unmasked DMAC channel cause or a DMAC bus
+	// error is pending, which on most event tests none is. Look first.
+	// Do not gate on Status: intcInterrupt() latches the counter HOLD
+	// registers whether or not the interrupt is then taken.
+	if ((psHu32(INTC_STAT) & psHu32(INTC_MASK)) |
+		(psHu16(DMAC_STAT + 2) & psHu16(DMAC_STAT)) | (psHu16(DMAC_STAT) & 0x8000))
+	{
+		const uint mask = intcInterrupt() | dmacInterrupt();
+		if (cpuIntsEnabled(mask))
+			cpuException(mask, cpuRegs.branch);
+	}
 
 	// ---- IOP -------------
 	// * It's important to run a iopEventTest before calling ExecuteBlock. This
