@@ -9,6 +9,7 @@
 #include "GameList/GameListWidget.h"
 #include "LogWindow.h"
 #include "MainWindow.h"
+#include "MemcardRestorePrompt.h"
 #include "QtHost.h"
 #include "QtUtils.h"
 #include "SettingWidgetBinder.h"
@@ -129,6 +130,7 @@ MainWindow::MainWindow()
 {
 	pxAssert(!g_main_window);
 	g_main_window = this;
+	MemcardRestorePrompt::Register(this);
 }
 
 MainWindow::~MainWindow()
@@ -138,6 +140,7 @@ MainWindow::~MainWindow()
 	destroySubWindows();
 
 	Common::DetachMousePositionCb();
+	MemcardRestorePrompt::Unregister(this);
 
 	// we compare here, since recreate destroys the window later
 	if (g_main_window == this)

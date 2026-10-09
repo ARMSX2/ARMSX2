@@ -28,6 +28,8 @@ target_sources(pcsx2-qt PRIVATE
 	MainWindow.cpp
 	MainWindow.h
 	MainWindow.ui
+	MemcardRestorePrompt.cpp
+	MemcardRestorePrompt.h
 	PrecompiledHeader.cpp
 	PrecompiledHeader.h
 	SettingWidgetBinder.h
@@ -146,6 +148,8 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/InterfaceSettingsWidget.cpp
 	Settings/InterfaceSettingsWidget.h
 	Settings/InterfaceSettingsWidget.ui
+	Settings/MemoryCardBackupsDialog.cpp
+	Settings/MemoryCardBackupsDialog.h
 	Settings/MemoryCardConvertDialog.cpp
 	Settings/MemoryCardConvertDialog.h
 	Settings/MemoryCardConvertDialog.ui
