@@ -461,7 +461,8 @@ void FullscreenUI::OnVMResumed()
 		if (s_current_main_window == MainWindowType::PauseMenu ||
 			s_current_main_window == MainWindowType::Settings ||
 			s_current_main_window == MainWindowType::Achievements ||
-			s_current_main_window == MainWindowType::Leaderboards)
+			s_current_main_window == MainWindowType::Leaderboards ||
+			s_current_main_window == MainWindowType::MemcardBackups)
 		{
 			s_current_main_window = MainWindowType::None;
 			s_current_pause_submenu = PauseSubMenu::None;
