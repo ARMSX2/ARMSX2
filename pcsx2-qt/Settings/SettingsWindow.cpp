@@ -23,6 +23,7 @@
 #include "Settings/InterfaceSettingsWidget.h"
 #include "Settings/MemoryCardSettingsWidget.h"
 #include "Settings/DebugSettingsWidget.h"
+#include "Settings/DriverPacksSettingsWidget.h"
 #include "SettingsWindow.h"
 
 #include "pcsx2/Achievements.h"
@@ -184,6 +185,15 @@ void SettingsWindow::setupUi(const GameList::Entry* game)
 			QStringLiteral("folder-settings-line"),
 			tr("<strong>Folder Settings</strong><hr>These options control where ARMSX2 will save runtime data files."));
 	}
+
+#ifdef __linux__
+	if (!isPerGameSettings())
+	{
+		addWidget(new DriverPacksSettingsWidget(this, m_ui.settingsContainer), tr("GPU Drivers"), QStringLiteral("dashboard-line"),
+			tr("<strong>GPU Drivers</strong><hr>Download and choose the Vulkan driver ARMSX2 uses on supported devices. A choice takes effect when ARMSX2 restarts."
+			   "<br><br>Mouse over an option for additional information, and Shift+Wheel to scroll this panel."));
+	}
+#endif
 
 	{
 		QString title = tr("Achievements");

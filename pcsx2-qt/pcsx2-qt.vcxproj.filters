@@ -138,6 +138,9 @@
     <ClCompile Include="Settings\DEV9LocalLinkWidget.cpp">
       <Filter>Settings</Filter>
     </ClCompile>
+    <ClCompile Include="Settings\DriverPacksSettingsWidget.cpp">
+      <Filter>Settings</Filter>
+    </ClCompile>
     <ClCompile Include="Settings\TexturePacksSettingsWidget.cpp">
       <Filter>Settings</Filter>
     </ClCompile>
@@ -407,6 +410,9 @@
       <Filter>Settings</Filter>
     </QtMoc>
     <QtMoc Include="Settings\DEV9LocalLinkWidget.h">
+      <Filter>Settings</Filter>
+    </QtMoc>
+    <QtMoc Include="Settings\DriverPacksSettingsWidget.h">
       <Filter>Settings</Filter>
     </QtMoc>
     <QtMoc Include="Settings\TexturePacksSettingsWidget.h">
@@ -687,6 +693,9 @@
       <Filter>Settings</Filter>
     </QtUi>
     <QtUi Include="Settings\DEV9LocalLinkWidget.ui">
+      <Filter>Settings</Filter>
+    </QtUi>
+    <QtUi Include="Settings\DriverPacksSettingsWidget.ui">
       <Filter>Settings</Filter>
     </QtUi>
     <QtUi Include="Settings\TexturePacksSettingsWidget.ui">

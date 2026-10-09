@@ -108,6 +108,9 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/DebugUserInterfaceSettingsTab.ui
 	Settings/DebugSettingsWidget.cpp
 	Settings/DebugSettingsWidget.h
+	Settings/DriverPacksSettingsWidget.cpp
+	Settings/DriverPacksSettingsWidget.h
+	Settings/DriverPacksSettingsWidget.ui
 	Settings/EmulationSettingsWidget.cpp
 	Settings/EmulationSettingsWidget.h
 	Settings/EmulationSettingsWidget.ui
