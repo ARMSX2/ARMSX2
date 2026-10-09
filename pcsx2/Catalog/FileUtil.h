@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include "common/Pcsx2Types.h"
+
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -21,4 +24,8 @@ namespace Catalog
 	{
 		return WriteFileAtomic(path, data.data(), data.size(), error);
 	}
+
+	/// Bytes available to this user on the filesystem that holds `path`, or nullopt when the system
+	/// cannot say (the path does not exist, a filesystem that reports nothing).
+	std::optional<u64> FreeSpaceOn(const std::string& path);
 } // namespace Catalog

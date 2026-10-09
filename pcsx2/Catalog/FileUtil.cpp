@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <filesystem>
 
 #ifdef _WIN32
 #include "common/RedtapeWindows.h"
@@ -70,5 +71,14 @@ namespace Catalog
 		}
 
 		return true;
+	}
+
+	std::optional<u64> FreeSpaceOn(const std::string& path)
+	{
+		std::error_code ec;
+		const std::filesystem::space_info info = std::filesystem::space(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(path.data()), path.size())), ec);
+		if (ec)
+			return std::nullopt;
+		return static_cast<u64>(info.available);
 	}
 } // namespace Catalog

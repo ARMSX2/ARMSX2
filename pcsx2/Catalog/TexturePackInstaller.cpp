@@ -3,6 +3,7 @@
 
 #include "Catalog/TexturePackInstaller.h"
 
+#include "Catalog/FileUtil.h"
 #include "Catalog/Json.h"
 #include "Catalog/TarZstdExtractor.h"
 #include "Catalog/ZipTextureExtractor.h"
@@ -87,15 +88,6 @@ namespace Catalog
 					return false;
 			}
 			return true;
-		}
-
-		std::optional<u64> DefaultFreeSpace(const std::string& path)
-		{
-			std::error_code ec;
-			const std::filesystem::space_info info = std::filesystem::space(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(path.data()), path.size())), ec);
-			if (ec)
-				return std::nullopt;
-			return static_cast<u64>(info.available);
 		}
 
 		// A folder, or a link to one (even a dangling one): what a player may have at a replacements path.
@@ -282,7 +274,7 @@ namespace Catalog
 
 		const u64 required = RequiredFreeSpace(pack);
 		const std::optional<u64> available = m_config.query_free_space ? m_config.query_free_space(m_config.textures_dir) :
-		                                                                 DefaultFreeSpace(m_config.textures_dir);
+		                                                                 FreeSpaceOn(m_config.textures_dir);
 		// An unknown or zero answer skips the check: a filesystem that cannot say is better
 		// tried than refused.
 		if (available.has_value() && *available > 0 && *available < required)
@@ -367,7 +359,7 @@ namespace Catalog
 		}
 		else
 		{
-			extraction = ZipTextureExtractor::ExtractFile(archive, extracted, extract_progress, cancel);
+			extraction = ZipTextureExtractor::ExtractFile(archive, extracted, extract_progress, cancel, m_config.query_free_space);
 		}
 		if (extraction.status == ExtractStatus::Cancelled)
 			return cancelled();

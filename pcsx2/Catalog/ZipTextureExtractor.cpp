@@ -3,6 +3,8 @@
 
 #include "Catalog/ZipTextureExtractor.h"
 
+#include "Catalog/FileUtil.h"
+
 #include "common/Error.h"
 #include "common/FileSystem.h"
 #include "common/Path.h"
@@ -27,7 +29,7 @@ namespace Catalog
 	} // namespace
 
 	ExtractResult ZipTextureExtractor::ExtractFile(const std::string& archive_path, const std::string& dest_dir,
-		const ExtractProgress& progress, const CancelToken& cancel)
+		const ExtractProgress& progress, const CancelToken& cancel, const FreeSpaceQuery& free_space)
 	{
 		ExtractResult result;
 		const auto fail = [&result](std::string why) {
@@ -49,6 +51,7 @@ namespace Catalog
 		// ambiguous before a byte of it reaches the disk.
 		std::vector<Candidate> candidates;
 		std::unordered_set<std::string> keys;
+		u64 total_bytes = 0; // what the zip declares for the files it will write
 		for (zip_int64_t i = 0; i < entry_count; i++)
 		{
 			zip_stat_t st;
@@ -83,12 +86,27 @@ namespace Catalog
 			if (!keys.insert(TextureArchivePath::CollisionKey(*rel)).second)
 				return fail(fmt::format("Archive contains duplicate textures ({})", *rel));
 
+			// Each entry is at most MAX_FILE_BYTES and there are at most MAX_ENTRIES, so this cannot overflow.
+			total_bytes += st.size;
+			if (total_bytes > MAX_TOTAL_BYTES)
+				return fail(fmt::format("zip: unpacked size exceeds {} GB", MAX_TOTAL_BYTES / (1024ull * 1024 * 1024)));
+
 			candidates.push_back({static_cast<zip_uint64_t>(i), st.size, *rel});
 		}
 
 		Error error;
 		if (!FileSystem::EnsureDirectoryExists(dest_dir.c_str(), true, &error))
 			return fail(fmt::format("Could not create {}: {}", dest_dir, error.GetDescription()));
+
+		// Each file is held to its declared size as it is written, so the sum is the most this can take. An
+		// unknown or zero answer skips the check, as the installer's does: a filesystem that cannot say is
+		// better tried than refused.
+		const std::optional<u64> available = free_space ? free_space(dest_dir) : FreeSpaceOn(dest_dir);
+		if (available.has_value() && *available > 0 && *available < total_bytes + FREE_SPACE_MARGIN)
+		{
+			return fail(fmt::format("Needs ~{} MB free to unpack, {} MB available", (total_bytes + FREE_SPACE_MARGIN) / 1024 / 1024,
+				*available / 1024 / 1024));
+		}
 
 		std::unordered_set<std::string> made_directories;
 		std::vector<u8> buffer(256 * 1024);

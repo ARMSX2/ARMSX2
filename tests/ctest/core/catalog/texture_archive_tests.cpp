@@ -12,6 +12,10 @@
 #include "Catalog/TextureArchivePath.h"
 #include "Catalog/ZipTextureExtractor.h"
 
+#include "fmt/format.h"
+
+#include <optional>
+
 using namespace Catalog;
 using namespace CatalogTest;
 namespace Path_ = Catalog::TextureArchivePath;
@@ -830,6 +834,88 @@ TEST(ZipTextureExtractor, ReportsAnUnreadableArchiveAndAnEmptyOne)
 	const ExtractResult r = ZipTextureExtractor::ExtractFile(temp.File("empty.zip"), temp.File("out2"));
 	EXPECT_TRUE(r.IsOk());
 	EXPECT_EQ(r.textures, 0u);
+}
+
+namespace
+{
+	// A zip of [count] small PNGs whose central directory says each is [declared] bytes: what a hostile zip does to
+	// pass the per-file limit and still ask for more than the disk has. (The data itself is a few bytes, so a
+	// reader that believes the declaration fails when it gets to the first file; the extractor must not get that
+	// far.)
+	void WriteZipDeclaring(const std::string& path, int count, u32 declared)
+	{
+		std::vector<std::pair<std::string, std::string>> files;
+		for (int i = 0; i < count; i++)
+			files.emplace_back(fmt::format("{:016x}-00000001.png", i + 1), std::string(1000, 'x'));
+		ASSERT_TRUE(WriteZip(path, files));
+
+		std::string bytes = ReadFileOrEmpty(path);
+		int patched = 0;
+		for (size_t at = bytes.find("PK\x01\x02"); at != std::string::npos; at = bytes.find("PK\x01\x02", at + 4))
+		{
+			ASSERT_LE(at + 28, bytes.size());
+			for (int b = 0; b < 4; b++)
+				bytes[at + 24 + static_cast<size_t>(b)] = static_cast<char>((declared >> (8 * b)) & 0xFF); // uncompressed size
+			patched++;
+		}
+		ASSERT_EQ(patched, count);
+		ASSERT_TRUE(FileSystem::WriteStringToFile(path.c_str(), bytes));
+	}
+} // namespace
+
+TEST(ZipTextureExtractor, RefusesAZipWhoseDeclaredSizesAddUpToMoreThanTheCap)
+{
+	// 33 entries of 511 MiB: each under the per-file limit, 16.4 GiB together.
+	ScopedTempDir temp;
+	WriteZipDeclaring(temp.File("pack.zip"), 33, 511u * 1024 * 1024);
+
+	const ExtractResult r = ZipTextureExtractor::ExtractFile(temp.File("pack.zip"), temp.File("out"));
+	EXPECT_EQ(r.status, ExtractStatus::Failed);
+	EXPECT_TRUE(Mentions(r, "exceeds")) << r.error;
+	// Refused before anything was written, the destination folder included.
+	EXPECT_FALSE(FileSystem::DirectoryExists(temp.File("out").c_str()));
+	EXPECT_EQ(r.textures, 0u);
+}
+
+TEST(ZipTextureExtractor, AcceptsADeclaredTotalJustUnderTheCapUpToTheFirstFile)
+{
+	// 32 entries of 511 MiB is 15.97 GiB: allowed by the sum. The declared sizes are false here, so extraction
+	// stops at the first file, but it got as far as writing it.
+	ScopedTempDir temp;
+	WriteZipDeclaring(temp.File("pack.zip"), 32, 511u * 1024 * 1024);
+
+	const ExtractResult r = ZipTextureExtractor::ExtractFile(temp.File("pack.zip"), temp.File("out"), {}, {},
+		[](const std::string&) { return std::optional<u64>(u64(1) << 50); });
+	EXPECT_EQ(r.status, ExtractStatus::Failed);
+	EXPECT_TRUE(Mentions(r, "shorter")) << r.error;
+}
+
+TEST(ZipTextureExtractor, NeedsRoomForTheDeclaredSizesBeforeWritingAnything)
+{
+	ScopedTempDir temp;
+	ASSERT_TRUE(WriteZip(temp.File("pack.zip"), {{"a.png", std::string(100000, 'a')}, {"b.png", std::string(100000, 'b')}}));
+	const u64 needed = 200000 + ZipTextureExtractor::FREE_SPACE_MARGIN;
+
+	// One byte short: refused, nothing written.
+	std::vector<std::string> asked;
+	ExtractResult r = ZipTextureExtractor::ExtractFile(temp.File("pack.zip"), temp.File("out"), {}, {}, [&](const std::string& path) {
+		asked.push_back(path);
+		return std::optional<u64>(needed - 1);
+	});
+	EXPECT_EQ(r.status, ExtractStatus::Failed);
+	EXPECT_TRUE(Mentions(r, "free")) << r.error;
+	EXPECT_TRUE(ListFiles(temp.File("out")).empty());
+	ASSERT_EQ(asked.size(), 1u);
+	EXPECT_EQ(asked[0], temp.File("out")); // the filesystem the files would be written to
+
+	// Exactly enough: extracted.
+	r = ZipTextureExtractor::ExtractFile(temp.File("pack.zip"), temp.File("out"), {}, {}, [&](const std::string&) { return std::optional<u64>(needed); });
+	EXPECT_TRUE(r.IsOk()) << r.error;
+	EXPECT_EQ(r.textures, 2u);
+
+	// A filesystem that cannot say is tried.
+	r = ZipTextureExtractor::ExtractFile(temp.File("pack.zip"), temp.File("out2"), {}, {}, [&](const std::string&) { return std::optional<u64>(); });
+	EXPECT_TRUE(r.IsOk()) << r.error;
 }
 
 TEST(ZipTextureExtractor, StopsWhenCancelled)
