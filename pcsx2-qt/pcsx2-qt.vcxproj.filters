@@ -41,6 +41,7 @@
   <ItemGroup>
     <ClCompile Include="PrecompiledHeader.cpp" />
     <ClCompile Include="AsyncDialogs.cpp" />
+    <ClCompile Include="AutoCoversController.cpp" />
     <ClCompile Include="QtHost.cpp" />
     <ClCompile Include="MainWindow.cpp" />
     <ClCompile Include="$(IntDir)qrc_resources.cpp">
@@ -58,6 +59,9 @@
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="Settings\GameListSettingsWidget.cpp">
+      <Filter>Settings</Filter>
+    </ClCompile>
+    <ClCompile Include="Settings\CoverArtSettingsGroup.cpp">
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="Settings\GraphicsSettingsWidget.cpp">
@@ -130,13 +134,13 @@
     <ClCompile Include="Settings\DEV9SettingsWidget.cpp">
       <Filter>Settings</Filter>
     </ClCompile>
+    <ClCompile Include="Settings\DEV9LocalLinkWidget.cpp">
+      <Filter>Settings</Filter>
+    </ClCompile>
     <ClCompile Include="Settings\DEV9UiCommon.cpp">
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="Settings\HddCreateQt.cpp">
-    <ClCompile Include="Settings\DEV9LocalLinkWidget.cpp">
-      <Filter>Settings</Filter>
-    </ClCompile>
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="AutoUpdaterDialog.cpp" />
@@ -328,6 +332,9 @@
     <QtMoc Include="Settings\GameListSettingsWidget.h">
       <Filter>Settings</Filter>
     </QtMoc>
+    <QtMoc Include="Settings\CoverArtSettingsGroup.h">
+      <Filter>Settings</Filter>
+    </QtMoc>
     <QtMoc Include="Settings\GraphicsSettingsWidget.h">
       <Filter>Settings</Filter>
     </QtMoc>
@@ -395,6 +402,9 @@
     <QtMoc Include="Settings\DEV9SettingsWidget.h">
       <Filter>Settings</Filter>
     </QtMoc>
+    <QtMoc Include="Settings\DEV9LocalLinkWidget.h">
+      <Filter>Settings</Filter>
+    </QtMoc>
     <QtMoc Include="Settings\DEV9UiCommon.h">
       <Filter>Settings</Filter>
     </QtMoc>
@@ -402,15 +412,13 @@
     <QtMoc Include="Tools\InputRecording\NewInputRecordingDlg.h">
       <Filter>Tools\Input Recording</Filter>
     </QtMoc>
-    <QtMoc Include="Settings\DEV9LocalLinkWidget.h">
-      <Filter>Settings</Filter>
-    </QtMoc>
     <QtMoc Include="Settings\FolderSettingsWidget.h">
       <Filter>Settings</Filter>
     </QtMoc>
     <QtMoc Include="QtHost.h" />
     <QtMoc Include="CoverDownloadDialog.h" />
     <QtMoc Include="QtProgressCallback.h" />
+    <QtMoc Include="AutoCoversController.h" />
     <QtMoc Include="ShortcutCreationDialog.h" />
     <QtMoc Include="Settings\AchievementLoginDialog.h">
       <Filter>Settings</Filter>
@@ -670,6 +678,9 @@
     <QtUi Include="Settings\DEV9SettingsWidget.ui">
       <Filter>Settings</Filter>
     </QtUi>
+    <QtUi Include="Settings\DEV9LocalLinkWidget.ui">
+      <Filter>Settings</Filter>
+    </QtUi>
     <QtUi Include="Settings\EmulationSettingsWidget.ui">
       <Filter>Settings</Filter>
     </QtUi>
@@ -678,14 +689,14 @@
     </QtUi>
     <QtUi Include="Settings\GameCheatSettingsWidget.ui">
       <Filter>Settings</Filter>
-    <QtUi Include="Settings\DEV9LocalLinkWidget.ui">
-      <Filter>Settings</Filter>
-    </QtUi>
     </QtUi>
     <QtUi Include="Settings\GameFixSettingsWidget.ui">
       <Filter>Settings</Filter>
     </QtUi>
     <QtUi Include="Settings\GameListSettingsWidget.ui">
+      <Filter>Settings</Filter>
+    </QtUi>
+    <QtUi Include="Settings\CoverArtSettingsGroup.ui">
       <Filter>Settings</Filter>
     </QtUi>
     <QtUi Include="Settings\GamePatchDetailsWidget.ui">

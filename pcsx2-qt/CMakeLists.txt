@@ -12,6 +12,8 @@ target_sources(pcsx2-qt PRIVATE
 	AboutDialog.ui
 	AsyncDialogs.cpp
 	AsyncDialogs.h
+	AutoCoversController.cpp
+	AutoCoversController.h
 	AutoUpdaterDialog.cpp
 	AutoUpdaterDialog.h
 	AutoUpdaterDialog.ui
@@ -92,6 +94,9 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/ControllerSettingsWindow.h
 	Settings/ControllerSettingsWindow.ui
 	Settings/ControllerSettingWidgetBinder.h
+	Settings/CoverArtSettingsGroup.cpp
+	Settings/CoverArtSettingsGroup.h
+	Settings/CoverArtSettingsGroup.ui
 	Settings/DebugAnalysisSettingsTab.ui
 	Settings/DebugAnalysisSettingsWidget.cpp
 	Settings/DebugAnalysisSettingsWidget.h
@@ -165,14 +170,14 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/DEV9DnsHostDialog.cpp
 	Settings/DEV9DnsHostDialog.h
 	Settings/DEV9DnsHostDialog.ui
+	Settings/DEV9LocalLinkWidget.cpp
+	Settings/DEV9LocalLinkWidget.h
+	Settings/DEV9LocalLinkWidget.ui
 	Settings/DEV9SettingsWidget.cpp
 	Settings/DEV9SettingsWidget.h
 	Settings/DEV9SettingsWidget.ui
 	Settings/DEV9UiCommon.cpp
 	Settings/DEV9UiCommon.h
-	Settings/DEV9LocalLinkWidget.cpp
-	Settings/DEV9LocalLinkWidget.h
-	Settings/DEV9LocalLinkWidget.ui
 	Settings/HddCreateQt.cpp
 	Settings/HddCreateQt.h
 	Settings/PatchDetailsWidget.ui

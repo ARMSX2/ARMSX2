@@ -11,6 +11,7 @@
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QMessageBox>
 
+#include "CoverArtSettingsGroup.h"
 #include "GameListSettingsWidget.h"
 #include "MainWindow.h"
 #include "QtHost.h"
@@ -20,6 +21,7 @@ GameListSettingsWidget::GameListSettingsWidget(SettingsWindow* settings_dialog, 
 	: SettingsWidget(settings_dialog, parent)
 {
 	setupTab(m_ui);
+	m_ui.verticalLayout->addWidget(new CoverArtSettingsGroup(dialog(), this));
 
 	m_ui.searchDirectoryList->setSelectionMode(QAbstractItemView::SingleSelection);
 	m_ui.searchDirectoryList->setSelectionBehavior(QAbstractItemView::SelectRows);

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "pcsx2/SIO/Pad/Pad.h"
+#include "CoverArtSettingsGroup.h"
 #include "GameSummaryWidget.h"
 #include "SettingsWindow.h"
 #include "MainWindow.h"
@@ -39,6 +40,7 @@ GameSummaryWidget::GameSummaryWidget(const GameList::Entry* entry, SettingsWindo
 	m_entry_path = entry->path;
 	populateInputProfiles();
 	populateDetails(entry);
+	addCoverRegionPinRow(m_ui.detailsFormLayout, m_ui.label_region, entry, dialog());
 	populateDiscPath(entry);
 	populateTrackList(entry);
 
