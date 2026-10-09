@@ -102,6 +102,7 @@ namespace
 		PageDwell dwell; ///< the feed is asked for once the page has stayed open
 		DP::Availability availability;
 		std::vector<DP::InstalledDriver> installed;
+		bool installed_known = false; ///< `installed` has been read at least once (ShowDriversSettingsPage needs it before the page opens)
 
 		FeedState feed = FeedState::NotLoaded;
 		DP::RemoteListing listing;
@@ -225,6 +226,7 @@ namespace
 	void RefreshInstalled()
 	{
 		s_state.installed = GetManager().ListInstalled();
+		s_state.installed_known = true;
 	}
 
 	// ---- what this run uses versus what is selected -------------------------------------------------
@@ -513,9 +515,6 @@ namespace
 	void OnPageEntered()
 	{
 		s_state.availability = DP::GetAvailability();
-		if (!s_state.availability.IsAvailable())
-			return;
-
 		RefreshInstalled();
 	}
 
@@ -865,7 +864,18 @@ bool FullscreenUI::ShowDriversSettingsPage()
 {
 	// Driver packs exist only on desktop Linux, which is where CurrentPlatform() is not empty.
 	static const bool s_supported = !DP::CurrentPlatform().empty();
-	return s_supported;
+	if (!s_supported)
+		return false;
+
+	// The page is for a machine with an Adreno GPU. Elsewhere it stays out of the list unless a pack is
+	// installed or selected, which the user may want to undo. The GPU does not change while we run.
+	static const bool s_available = DP::GetAvailability().IsAvailable();
+	if (s_available)
+		return true;
+
+	if (!s_state.installed_known)
+		RefreshInstalled();
+	return !s_state.installed.empty() || !DP::GetSelectedPack().empty();
 }
 
 void FullscreenUI::DrawDriversSettingsPage(SettingsInterface* bsi)
@@ -882,20 +892,26 @@ void FullscreenUI::DrawDriversSettingsPage(SettingsInterface* bsi)
 
 	BeginMenuButtons();
 
-	if (!s_state.availability.IsAvailable())
+	const bool available = s_state.availability.IsAvailable();
+	const std::string selected = SelectedPack(*bsi);
+	if (!available)
 	{
 		DrawNotAvailable(s_state.availability);
-		EndMenuButtons();
-		return;
+		// Listed only because a pack is installed or selected: keep it possible to undo the choice and delete it.
+		if (selected.empty() && s_state.installed.empty())
+		{
+			EndMenuButtons();
+			return;
+		}
 	}
 
-	const std::string selected = SelectedPack(*bsi);
 	const DP::ApplyResult apply = DP::GetLastApplyResult();
 	const Status status = ComputeStatus(apply, selected);
 
 	DrawStatusSection(status, apply, selected);
 	DrawChoiceSection(bsi, selected);
-	DrawAvailableSection();
+	if (available)
+		DrawAvailableSection();
 	DrawInstalledSection(bsi);
 
 	EndMenuButtons();
@@ -924,6 +940,7 @@ void FullscreenUI::ShutdownDriversPage()
 	s_state.dwell.Reset();
 	s_state.availability = DP::Availability();
 	s_state.installed.clear();
+	s_state.installed_known = false;
 	s_state.feed = FeedState::NotLoaded;
 	s_state.listing = DP::RemoteListing();
 	s_state.installing = false;

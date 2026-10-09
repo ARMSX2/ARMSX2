@@ -576,7 +576,8 @@ namespace FullscreenUI
 	bool IsAutosaveSlot(s32 slot);
 
 	// GPU driver packs (FullscreenUI_Drivers.cpp)
-	/// False where driver packs do not exist (everything but desktop Linux): the page is not listed.
+	/// Whether the page is listed: driver packs exist here (desktop Linux with an Adreno GPU), or one is installed or
+	/// selected, so the choice can still be undone. Reads the selection, so the settings lock must not be held.
 	bool ShowDriversSettingsPage();
 	void DrawDriversSettingsPage(SettingsInterface* bsi);
 	/// Cancels the page's downloads and joins its threads.
