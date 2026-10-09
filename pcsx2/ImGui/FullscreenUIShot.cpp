@@ -165,6 +165,7 @@ namespace FullscreenUI
 			{"patches", SettingsPage::Patches, false},
 			{"cheats", SettingsPage::Cheats, false},
 			{"gamefixes", SettingsPage::GameFixes, false},
+			{"texturepacks", SettingsPage::TexturePacks, true},
 		};
 
 		constexpr bool SettingsPageTableIsInEnumOrder()
@@ -193,6 +194,7 @@ namespace FullscreenUI
 			out += page.name;
 		}
 		out += ", gamesettings";
+		out += ", texturepacks:<" + TexturePacksShotVariants() + ">";
 		for (const SettingsPageEntry& page : kSettingsPages)
 		{
 			if (page.global)
@@ -218,6 +220,8 @@ namespace FullscreenUI
 		{
 			top = name.substr(0, colon);
 			settings_page = name.substr(colon + 1);
+			if (StringUtil::compareNoCase(top, "texturepacks"))
+				return OpenTexturePacksForShot(settings_page, error);
 			if (StringUtil::compareNoCase(top, "gamesettings"))
 			{
 				// gamesettings:<page> is the first game's settings on that page.

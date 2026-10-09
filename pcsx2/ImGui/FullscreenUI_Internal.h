@@ -181,6 +181,7 @@ namespace FullscreenUI
 		Patches,
 		Cheats,
 		GameFixes,
+		TexturePacks,
 		Count
 	};
 
@@ -547,5 +548,18 @@ namespace FullscreenUI
 	/// Once per frame: starts the automatic cover download after the game list has settled.
 	void PollAutoCovers();
 	void ShutdownAutoCovers();
+
+	//////////////////////////////////////////////////////////////////////////
+	// Texture packs (FullscreenUI_TexturePacks.cpp)
+	//////////////////////////////////////////////////////////////////////////
+	/// The Texture Packs settings page: the online catalog, pack details, installing and installed packs.
+	void DrawTexturePacksSettingsPage();
+	/// "Browse Texture Packs" row for the Texture Replacement section of the Graphics page; opens the page
+	/// for every game, or for the game whose settings are being edited.
+	void DrawTexturePacksBrowseSetting(SettingsInterface* bsi);
+	void ShutdownTexturePacks();
+	/// Screenshot harness: opens the page in a named state; false, with `error`, if the state is unknown.
+	bool OpenTexturePacksForShot(std::string_view variant, std::string* error);
+	std::string TexturePacksShotVariants();
 
 } // namespace FullscreenUI

@@ -1786,6 +1786,7 @@ void FullscreenUI::DrawSettingsWindow()
 			ICON_PF_MICROCHIP,
 			ICON_PF_GEARS_OPTIONS_SETTINGS,
 			ICON_PF_PICTURE,
+			ICON_FA_IMAGES,
 			ICON_FA_GAUGE,
 			ICON_PF_SOUND,
 			ICON_PF_MEMORY_CARD,
@@ -1812,6 +1813,7 @@ void FullscreenUI::DrawSettingsWindow()
 			SettingsPage::BIOS,
 			SettingsPage::Emulation,
 			SettingsPage::Graphics,
+			SettingsPage::TexturePacks,
 			SettingsPage::OSD,
 			SettingsPage::Audio,
 			SettingsPage::MemoryCard,
@@ -1851,6 +1853,7 @@ void FullscreenUI::DrawSettingsWindow()
 			FSUI_NSTR("Patches"),
 			FSUI_NSTR("Cheats"),
 			FSUI_NSTR("Game Fixes"),
+			FSUI_NSTR("Texture Packs"),
 		};
 
 		const u32 count = game_settings ? (show_advanced_settings ? std::size(per_game_pages) : (std::size(per_game_pages) - 1)) : std::size(global_pages);
@@ -2012,6 +2015,10 @@ void FullscreenUI::DrawSettingsWindow()
 
 			case SettingsPage::GameFixes:
 				DrawGameFixesSettingsPage();
+				break;
+
+			case SettingsPage::TexturePacks:
+				DrawTexturePacksSettingsPage();
 				break;
 
 			default:
@@ -3330,6 +3337,7 @@ void FullscreenUI::DrawGraphicsSettingsPage(SettingsInterface* bsi, bool show_ad
 			FSUI_CSTR("Preloads all replacement textures to memory. Not necessary with asynchronous loading."), "EmuCore/GS",
 			"PrecacheTextureReplacements", false, replacement_active);
 		DrawTextureUpscaleSetting(bsi);
+		DrawTexturePacksBrowseSetting(bsi);
 
 		if (!IsEditingGameSettings(bsi))
 		{
@@ -6396,6 +6404,7 @@ TRANSLATE_NOOP("FullscreenUI", "Activating cheats can cause unpredictable behavi
 TRANSLATE_NOOP("FullscreenUI", "Activating game patches can cause unpredictable behavior, crashing, soft-locks, or broken saved games.");
 TRANSLATE_NOOP("FullscreenUI", "Use patches at your own risk, the ARMSX2 team will provide no support for users who have enabled game patches.");
 TRANSLATE_NOOP("FullscreenUI", "Game Fixes");
+TRANSLATE_NOOP("FullscreenUI", "Texture Packs");
 TRANSLATE_NOOP("FullscreenUI", "Game fixes should not be modified unless you are aware of what each option does and the implications of doing so.");
 TRANSLATE_NOOP("FullscreenUI", "Needed for some games with complex FMV rendering.");
 TRANSLATE_NOOP("FullscreenUI", "Skips videos/FMVs in games to avoid game hanging/freezes.");
