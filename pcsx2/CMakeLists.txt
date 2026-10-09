@@ -1110,6 +1110,7 @@ set(pcsx2HostHeaders
 set(pcsx2ImGuiSources
 	ImGui/FullscreenUI.cpp
 	ImGui/FullscreenUI_Settings.cpp
+	ImGui/FullscreenUIShot.cpp
 	ImGui/ImGuiFullscreen.cpp
 	ImGui/ImGuiManager.cpp
 	ImGui/ImGuiOverlays.cpp
@@ -1118,6 +1119,7 @@ set(pcsx2ImGuiSources
 set(pcsx2ImGuiHeaders
 	ImGui/FullscreenUI.h
 	ImGui/FullscreenUI_Internal.h
+	ImGui/FullscreenUIShot.h
 	ImGui/ImGuiAnimated.h
 	ImGui/ImGuiFullscreen.h
 	ImGui/ImGuiManager.h
