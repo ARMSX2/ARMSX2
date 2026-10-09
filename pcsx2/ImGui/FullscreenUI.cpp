@@ -561,6 +561,7 @@ void FullscreenUI::Shutdown(bool clear_state)
 		ShutdownDriversPage();
 		ShutdownArcade();
 		ShutdownOnlinePatches();
+		ShutdownTexturePacks();
 		s_cover_image_map.clear();
 		s_game_list_sorted_entries = {};
 		s_last_unsorted_entries = {};

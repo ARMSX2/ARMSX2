@@ -210,6 +210,7 @@ namespace FullscreenUI
 			{"gamefixes", SettingsPage::GameFixes, false},
 			{"drivers", SettingsPage::Drivers, true},
 			{"arcade", SettingsPage::Arcade, true},
+			{"texturepacks", SettingsPage::TexturePacks, true},
 		};
 
 		constexpr bool SettingsPageTableIsInEnumOrder()
@@ -277,6 +278,7 @@ namespace FullscreenUI
 			out += page.name;
 		}
 		out += ", gamesettings, gamesettings:<page>, gamesettings:patches:browse, gamesettings:cheats:browse, loadstate, " + ShotArcadeNames();
+		out += ", texturepacks:<" + TexturePacksShotVariants() + ">";
 		for (const SettingsPageEntry& page : kSettingsPages)
 		{
 			if (page.global)
@@ -302,6 +304,8 @@ namespace FullscreenUI
 		{
 			top = name.substr(0, colon);
 			settings_page = name.substr(colon + 1);
+			if (StringUtil::compareNoCase(top, "texturepacks"))
+				return OpenTexturePacksForShot(settings_page, error);
 			if (StringUtil::compareNoCase(top, "gamesettings"))
 				return OpenFirstGameSettingsPage(settings_page, error);
 			if (!StringUtil::compareNoCase(top, "settings"))

@@ -185,6 +185,7 @@ namespace FullscreenUI
 		GameFixes,
 		Drivers,
 		Arcade,
+		TexturePacks,
 		Count
 	};
 
@@ -614,5 +615,17 @@ namespace FullscreenUI
 	/// Once per frame: the results popup, while one is open.
 	void DrawOnlinePatchesResults();
 	void ShutdownOnlinePatches();
+
+	// Texture packs (FullscreenUI_TexturePacks.cpp)
+	//////////////////////////////////////////////////////////////////////////
+	/// The Texture Packs settings page: the online catalog, pack details, installing and installed packs.
+	void DrawTexturePacksSettingsPage();
+	/// "Browse Texture Packs" row for the Texture Replacement section of the Graphics page; opens the page
+	/// for every game, or for the game whose settings are being edited.
+	void DrawTexturePacksBrowseSetting(SettingsInterface* bsi);
+	void ShutdownTexturePacks();
+	/// Screenshot harness: opens the page in a named state; false, with `error`, if the state is unknown.
+	bool OpenTexturePacksForShot(std::string_view variant, std::string* error);
+	std::string TexturePacksShotVariants();
 
 } // namespace FullscreenUI

@@ -1123,6 +1123,7 @@ set(pcsx2ImGuiSources
 	ImGui/FullscreenUI_Saves.cpp
 	ImGui/FullscreenUI_Arcade.cpp
 	ImGui/FullscreenUI_Settings.cpp
+	ImGui/FullscreenUI_TexturePacks.cpp
 	ImGui/FullscreenUIShot.cpp
 	ImGui/ImGuiFullscreen.cpp
 	ImGui/ImGuiManager.cpp
