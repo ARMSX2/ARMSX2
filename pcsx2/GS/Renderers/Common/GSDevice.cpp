@@ -5,6 +5,7 @@
 #ifdef ARMSX2_EMBEDDED_RESOURCES
 #include "EmbeddedResources.h"
 #endif
+#include "GS/Renderers/Common/GSHeadlessPresent.h"
 #include "GS/Renderers/Common/GSPassScheduler.h"
 #include "GS/GSGL.h"
 #include "GS/GS.h"
@@ -580,6 +581,7 @@ void GSDevice::Destroy()
 	for (GSTexture* tex : pending)
 		Recycle(tex);
 
+	GSHeadless::ForgetPresented();
 	ClearCurrent();
 	PurgePool();
 }
