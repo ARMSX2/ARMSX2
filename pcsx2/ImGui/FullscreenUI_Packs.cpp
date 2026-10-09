@@ -562,9 +562,11 @@ void FullscreenUI::DrawAutoCoverSettings(SettingsInterface* bsi)
 					AutoCovers::SetStyle(*bsi, style);
 					SetSettingsChanged(bsi);
 				}
+				// CloseChoiceDialog() destroys this lambda and its captures: read them first.
+				const bool changed = (style != current);
 				CloseChoiceDialog();
 
-				if (style != current)
+				if (changed)
 				{
 					OfferCoverRedownload({}, FSUI_STR("Covers you already have keep their old style until they are downloaded again. Download them again now?"));
 				}
@@ -590,9 +592,11 @@ void FullscreenUI::DrawAutoCoverSettings(SettingsInterface* bsi)
 					AutoCovers::SetLibraryRegion(*bsi, region);
 					SetSettingsChanged(bsi);
 				}
+				// CloseChoiceDialog() destroys this lambda and its captures: read them first.
+				const bool changed = (region != current);
 				CloseChoiceDialog();
 
-				if (region != current)
+				if (changed)
 				{
 					OfferCoverRedownload({}, FSUI_STR("Covers you already have keep their old region until they are downloaded again. Download them again now?"));
 				}
@@ -634,10 +638,13 @@ void FullscreenUI::DrawCoverRegionPinSetting(const GameList::Entry& entry)
 					AutoCovers::SetGameRegionPin(*base, serial, chosen);
 					SetSettingsChanged(base);
 				}
+				// CloseChoiceDialog() destroys this lambda and its captures: read them first.
+				const bool changed = (chosen != current);
+				std::string game_path = path;
 				CloseChoiceDialog();
 
-				if (chosen != current)
-					OfferCoverRedownload({path}, FSUI_STR("The cover you have keeps its old region until it is downloaded again. Download it again now?"));
+				if (changed)
+					OfferCoverRedownload({std::move(game_path)}, FSUI_STR("The cover you have keeps its old region until it is downloaded again. Download it again now?"));
 			});
 	}
 }
