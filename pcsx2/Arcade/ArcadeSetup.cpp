@@ -1128,10 +1128,15 @@ ArcadeSetup::InstallResult ArcadeSetup::Service::DownloadBootFiles(Catalog::Fetc
 	}
 
 	const std::string hash = sha.FinalHex();
-	// The release information describes the file GitHub had a moment ago; if the digest says this is another, the
-	// name and date are not this file's.
-	const bool matches = have_release && (release.sha256.empty() || release.sha256 == hash);
-	return CommitBootFiles(m_folders, part, hash, matches ? release.name : std::string(), matches ? release.time : 0, true);
+	// When GitHub published a digest for the zip, the file that arrived must be that one: it was damaged or
+	// swapped on the way, or the release was republished between the two requests (try again then).
+	if (have_release && !release.sha256.empty() && release.sha256 != hash)
+	{
+		FileSystem::DeleteFilePath(part.c_str());
+		result.error = TRANSLATE_STR("Arcade", "The boot files that arrived do not match the checksum GitHub published for them, so they were not installed. Try again.");
+		return result;
+	}
+	return CommitBootFiles(m_folders, part, hash, have_release ? release.name : std::string(), have_release ? release.time : 0, true);
 }
 
 ArcadeSetup::InstallResult ArcadeSetup::Service::InstallBootFilesFromFile(const std::string& zip_path)

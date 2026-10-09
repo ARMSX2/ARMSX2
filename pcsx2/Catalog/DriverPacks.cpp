@@ -430,6 +430,58 @@ namespace DriverPacks
 			}
 		}
 
+		/// Closes every descriptor above stderr except `keep`. The forked child inherits all the
+		/// emulator has open (the game image, save states, memory cards, sockets, a log), and the
+		/// driver it loads is code from a download that runs constructors; none of that is its business.
+		void CloseDescriptorsExcept(int keep)
+		{
+#ifdef SYS_close_range
+			// close_range(2), Linux 5.9: [3, keep) and (keep, everything).
+			const unsigned int all = ~0u;
+			bool closed = true;
+			if (keep > 3)
+				closed = syscall(SYS_close_range, 3u, static_cast<unsigned int>(keep - 1), 0u) == 0;
+			if (closed)
+				closed = syscall(SYS_close_range, static_cast<unsigned int>(keep < 3 ? 3 : keep + 1), all, 0u) == 0;
+			if (closed)
+				return;
+#endif
+			// An older kernel: what /proc says is open. Closing while walking can skip entries, so walk
+			// until a pass closes nothing; the directory's own descriptor is not ours to close.
+			if (DIR* dir = opendir("/proc/self/fd"))
+			{
+				for (int pass = 0; pass < 8; pass++)
+				{
+					bool any = false;
+					rewinddir(dir);
+					while (const dirent* entry = readdir(dir))
+					{
+						char* end = nullptr;
+						const long fd = strtol(entry->d_name, &end, 10);
+						if (end == entry->d_name || *end != '\0' || fd < 3 || fd == keep || fd == dirfd(dir))
+							continue;
+						close(static_cast<int>(fd));
+						any = true;
+					}
+					if (!any)
+						break;
+				}
+				closedir(dir);
+				return;
+			}
+
+			// No /proc either: try every number the process may have.
+			struct rlimit limit;
+			long last = 65535;
+			if (getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_cur != RLIM_INFINITY && static_cast<long>(limit.rlim_cur) - 1 < last)
+				last = static_cast<long>(limit.rlim_cur) - 1;
+			for (long fd = 3; fd <= last; fd++)
+			{
+				if (fd != keep)
+					close(static_cast<int>(fd));
+			}
+		}
+
 		/// Runs in the forked child. Touches nothing of the parent's state: no allocation of our
 		/// own, no locks of ours, and `_exit` so no atexit handler or stdio flush runs twice.
 		[[noreturn]] void TestLoadChild(const char* path, int result_fd)
@@ -454,6 +506,8 @@ namespace DriverPacks
 			const struct rlimit no_core = {0, 0};
 			setrlimit(RLIMIT_CORE, &no_core);
 			prctl(PR_SET_DUMPABLE, 0);
+
+			CloseDescriptorsExcept(result_fd);
 
 			dlerror();
 			void* handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);

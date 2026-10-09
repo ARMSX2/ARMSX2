@@ -623,6 +623,30 @@ TEST(DriverPacksTestLoad, ALibraryThatLoadsPasses)
 	EXPECT_TRUE(TestLoadLibrary(TestLib("ok"), &error)) << error;
 }
 
+TEST(DriverPacksTestLoad, TheLoadingProcessKeepsNoDescriptorsButItsOwnPipe)
+{
+	// The emulator has files, sockets and state open when the check forks. The child must not carry them into
+	// the vendor library's constructors; ctorfds aborts if it finds any descriptor above stderr besides the
+	// one the child answers on.
+	const int first = open("/dev/null", O_RDONLY); // no O_CLOEXEC: it would survive an exec too
+	const int second = dup(first);
+	const int third = fcntl(first, F_DUPFD, 200);
+	ASSERT_GE(first, 3);
+	ASSERT_GE(second, 3);
+	ASSERT_GE(third, 200);
+
+	std::string error;
+	EXPECT_TRUE(TestLoadLibrary(TestLib("ctorfds"), &error)) << error;
+
+	// Closing them in the child leaves the parent's alone.
+	EXPECT_NE(fcntl(first, F_GETFD), -1);
+	EXPECT_NE(fcntl(second, F_GETFD), -1);
+	EXPECT_NE(fcntl(third, F_GETFD), -1);
+	close(first);
+	close(second);
+	close(third);
+}
+
 TEST(DriverPacksTestLoad, ALibraryWithAMissingDependencyIsRefusedWithTheLibraryName)
 {
 	ScopedTempDir dir;

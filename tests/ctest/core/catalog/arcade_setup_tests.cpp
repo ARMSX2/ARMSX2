@@ -354,18 +354,39 @@ TEST_F(ArcadeSetupTest, ADownloadWorksWhenGitHubWillNotSayWhatTheReleaseIs)
 	EXPECT_EQ(result.status.release_time, 0);
 }
 
-TEST_F(ArcadeSetupTest, AReleaseThatIsNotTheFileDownloadedIsNotNotedAsIt)
+TEST_F(ArcadeSetupTest, ADownloadThatIsNotTheFileGitHubPublishedADigestForIsRefused)
 {
-	// GitHub's digest is another file's: the release was republished between the two requests.
+	// GitHub's digest is another file's: the download was damaged or swapped on its way, or the release was
+	// republished between the two requests. Either way nothing is installed.
 	const std::string zip = MakeProverbZip({"NM00004"});
 	FakeFetcher http;
 	ScriptDownload(http, zip, ReleaseJson("Nightly build of v9", zip.size(), std::string(64, 'a')));
 
 	Service service = MakeService();
 	const InstallResult result = service.DownloadBootFiles(http);
-	ASSERT_TRUE(result.ok) << result.error;
-	EXPECT_EQ(result.status.release_name, "");
-	EXPECT_EQ(result.status.sha256, Sha(zip));
+	EXPECT_FALSE(result.ok);
+	EXPECT_FALSE(result.cancelled);
+	EXPECT_NE(result.error.find("checksum"), std::string::npos) << result.error;
+	EXPECT_FALSE(result.status.installed);
+	EXPECT_FALSE(Exists(Data("proverb.zip")));
+	EXPECT_FALSE(Exists(Data("proverb.zip.part")));
+	EXPECT_FALSE(service.HasBootProgram("NM00004"));
+}
+
+TEST_F(ArcadeSetupTest, ARefusedDownloadLeavesTheBootFilesThatWereThere)
+{
+	InstallBootFiles({"NM00004"});
+	const std::string before = Service(m_folders).GetBootFilesStatus().sha256;
+
+	const std::string replacement = MakeProverbZip({"NM00004", "NM00007"});
+	FakeFetcher http;
+	ScriptDownload(http, replacement, ReleaseJson("Nightly build of v9", replacement.size(), Sha("something else")));
+	EXPECT_FALSE(MakeService().DownloadBootFiles(http).ok);
+
+	const BootFilesStatus after = MakeService().GetBootFilesStatus();
+	EXPECT_EQ(after.sha256, before);
+	EXPECT_EQ(after.game_ids, (std::vector<std::string>{"NM00004"}));
+	EXPECT_FALSE(Exists(Data("proverb.zip.part")));
 }
 
 TEST_F(ArcadeSetupTest, ABadDownloadChangesNothing)

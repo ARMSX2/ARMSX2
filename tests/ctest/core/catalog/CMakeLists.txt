@@ -33,13 +33,14 @@ target_link_libraries(catalog_tests PUBLIC
 
 # Shared libraries for driver_packs_tests.cpp. DriverPacks::TestLoadLibrary dlopens a pack's
 # driver in a child process; these are the ways that can go: loads fine, a dependency missing,
-# an undefined symbol, a constructor that crashes or never returns, a destructor that crashes.
+# an undefined symbol, a constructor that crashes or never returns or finds descriptors it should not
+# have, a destructor that crashes.
 # They are plain C so loading them needs nothing from the C++ runtime. The project compiles with
 # -fvisibility=hidden, so the functions another library looks up by name say so themselves.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 	set(catalog_test_lib_dir ${CMAKE_CURRENT_BINARY_DIR}/test_libs)
 	set(catalog_test_libs)
-	foreach(name ok dep needs_dep undefined_symbol ctor_abort ctor_segv ctor_hang dtor_abort)
+	foreach(name ok dep needs_dep undefined_symbol ctor_abort ctor_segv ctor_hang ctor_fds dtor_abort)
 		string(REPLACE "_" "" lib_file ${name})
 		add_library(catalog_test_lib_${name} SHARED ${CMAKE_CURRENT_SOURCE_DIR}/test_libs/${name}.c)
 		set_target_properties(catalog_test_lib_${name} PROPERTIES
