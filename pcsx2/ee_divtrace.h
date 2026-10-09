@@ -115,6 +115,16 @@ namespace ee_divtrace
 	// EERUNNER_VU0FULL.
 	extern bool                    g_vu0_full;
 
+	// When set, FingerprintCpu() and HashMemory() cover the whole emulated
+	// machine rather than what a JIT-vs-interp diff can tolerate: every EE
+	// register (k0/k1 and the CP0 timing registers included), the EE and IOP
+	// event schedulers (cycle, nextEventCycle, the pending-interrupt masks and
+	// their deadlines, EEsCycle/EEoCycle), both counter sets, the IOP register
+	// file, VU1, and the bytes of IOP RAM, both hardware-register pages and
+	// VU1 memory. For --twindump/--twincompare between two JIT builds that
+	// claim identical emulated timing. eerunner sets it from EERUNNER_SYSFULL.
+	extern bool                    g_sys_full;
+
 	// When set, the interpreter's SYSCALL handler skips FlushCache (0x64) /
 	// iFlushCache (0x68) — returning without raising the syscall exception —
 	// exactly as the JIT's recSYSCALL does when $v1 is a known const. This keeps
@@ -128,6 +138,7 @@ namespace ee_divtrace
 
 	// Hash live cpuRegs+fpuRegs over exactly DiffEe's compared field set.
 	u64  FingerprintCpu();
+	u64  FingerprintSystem();
 
 	// Append one Sample (cycle, pc, fp) from live cpuRegs, plus a FullSnap when
 	// the new index is in the detail window. `pc` is passed explicitly because

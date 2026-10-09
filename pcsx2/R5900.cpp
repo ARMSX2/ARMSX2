@@ -368,10 +368,21 @@ static bool cpuIntsEnabled(int Interrupt)
 		!cpuRegs.CP0.n.Status.b.EXL && (cpuRegs.CP0.n.Status.b.ERL == 0);
 }
 
+#ifdef PCSX2_RECOMPILER_TESTS
+// Twin-run tooling (ee_divtrace FingerprintSystem): how many EE event tests
+// ran and how many IOP time slices they handed out. Two builds that claim
+// identical emulated timing must agree on both at every frame.
+u64 g_twinEeEventTests = 0;
+u64 g_twinIopSlices = 0;
+#endif
+
 // Shared portion of the branch test, called from both the Interpreter
 // and the recompiler.  (moved here to help alleviate redundant code)
 __fi void _cpuEventTest_Shared()
 {
+#ifdef PCSX2_RECOMPILER_TESTS
+	g_twinEeEventTests++;
+#endif
 	eeEventTestIsActive = true;
 	cpuRegs.nextEventCycle = cpuRegs.cycle + eeWaitCycles;
 	cpuRegs.lastEventCycle = cpuRegs.cycle;
@@ -419,6 +430,9 @@ __fi void _cpuEventTest_Shared()
 		//if( EEsCycle < -450 )
 		//	Console.WriteLn( " IOP ahead by: %d cycles", -EEsCycle );
 
+#ifdef PCSX2_RECOMPILER_TESTS
+		g_twinIopSlices++;
+#endif
 		EEsCycle = psxCpu->ExecuteBlock(EEsCycle);
 		iopEventAction = false;
 	}
