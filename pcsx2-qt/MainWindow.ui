@@ -52,6 +52,18 @@
      <addaction name="actionRemoveDisc"/>
      <addaction name="separator"/>
     </widget>
+    <widget class="QMenu" name="menuArcade">
+     <property name="title">
+      <string>&amp;Arcade</string>
+     </property>
+     <property name="icon">
+      <iconset theme="controller-line"/>
+     </property>
+     <addaction name="actionArcadeInsertCoinP1"/>
+     <addaction name="actionArcadeInsertCoinP2"/>
+     <addaction name="actionArcadeService"/>
+     <addaction name="actionArcadeTest"/>
+    </widget>
     <widget class="QMenu" name="menuLoadState">
      <property name="title">
       <string>&amp;Load State</string>
@@ -78,6 +90,7 @@
     <addaction name="actionReset"/>
     <addaction name="actionPause"/>
     <addaction name="menuChangeDisc"/>
+    <addaction name="menuArcade"/>
     <addaction name="separator"/>
     <addaction name="actionScreenshot"/>
     <addaction name="separator"/>
@@ -197,6 +210,7 @@
     <addaction name="actionOpenDataDirectory"/>
     <addaction name="actionCoverDownloader"/>
     <addaction name="actionControllerTester"/>
+    <addaction name="actionArcadeSetup"/>
     <addaction name="actionToggleSoftwareRendering"/>
     <addaction name="separator"/>
     <addaction name="actionEditCheats"/>
@@ -1014,6 +1028,37 @@
    </property>
    <property name="text">
     <string>Controller &amp;Tester</string>
+   </property>
+  </action>
+  <action name="actionArcadeSetup">
+   <property name="icon">
+    <iconset theme="tools-line"/>
+   </property>
+   <property name="text">
+    <string>&amp;Arcade Setup...</string>
+   </property>
+  </action>
+  <action name="actionArcadeInsertCoinP1">
+   <property name="text">
+    <string>Insert Coin (Player &amp;1)</string>
+   </property>
+  </action>
+  <action name="actionArcadeInsertCoinP2">
+   <property name="text">
+    <string>Insert Coin (Player &amp;2)</string>
+   </property>
+  </action>
+  <action name="actionArcadeService">
+   <property name="text">
+    <string>&amp;Service Button</string>
+   </property>
+  </action>
+  <action name="actionArcadeTest">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>&amp;Test Switch</string>
    </property>
   </action>
   <action name="actionShowAdvancedSettings">

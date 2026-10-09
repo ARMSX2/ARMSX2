@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "AboutDialog.h"
+#include "ArcadeLaunch.h"
+#include "ArcadeMenu.h"
 #include "AutoUpdaterDialog.h"
 #include "CoverDownloadDialog.h"
 #include "DisplayWidget.h"
@@ -72,7 +74,7 @@
 #endif
 
 const char* MainWindow::OPEN_FILE_FILTER =
-	QT_TRANSLATE_NOOP("MainWindow", "All File Types (*.bin *.iso *.cue *.mdf *.chd *.cso *.zso *.gz *.elf *.irx *.gs *.gs.xz *.gs.zst *.dump);;"
+	QT_TRANSLATE_NOOP("MainWindow", "All File Types (*.bin *.iso *.cue *.mdf *.chd *.cso *.zso *.gz *.elf *.irx *.gs *.gs.xz *.gs.zst *.dump *.acgame);;"
 									"Single-Track Raw Images (*.bin *.iso);;"
 									"Cue Sheets (*.cue);;"
 									"Media Descriptor File (*.mdf);;"
@@ -83,7 +85,8 @@ const char* MainWindow::OPEN_FILE_FILTER =
 									"ELF Executables (*.elf);;"
 									"IRX Executables (*.irx);;"
 									"GS Dumps (*.gs *.gs.xz *.gs.zst);;"
-									"Block Dumps (*.dump)");
+									"Block Dumps (*.dump);;"
+									"Arcade Games (*.acgame)");
 
 const char* MainWindow::DISC_IMAGE_FILTER = QT_TRANSLATE_NOOP("MainWindow", "All File Types (*.bin *.iso *.cue *.mdf *.chd *.cso *.zso *.gz *.dump);;"
 																			"Single-Track Raw Images (*.bin *.iso);;"
@@ -555,6 +558,7 @@ void MainWindow::connectSignals()
 	connect(m_ui.actionOpenDataDirectory, &QAction::triggered, this, &MainWindow::onToolsOpenDataDirectoryTriggered);
 	connect(m_ui.actionCoverDownloader, &QAction::triggered, this, &MainWindow::onToolsCoverDownloaderTriggered);
 	connect(m_ui.actionControllerTester, &QAction::triggered, this, &MainWindow::onToolsControllerTesterTriggered);
+	connect(m_ui.actionArcadeSetup, &QAction::triggered, this, &MainWindow::onToolsArcadeSetupTriggered);
 	connect(m_ui.actionGridViewShowTitles, &QAction::triggered, m_game_list_widget, &GameListWidget::setShowCoverTitles);
 	connect(m_ui.actionGridViewShowFullTitles, &QAction::triggered, m_game_list_widget, &GameListWidget::setShowFullCoverTitles);
 	connect(m_ui.actionGridViewZoomIn, &QAction::triggered, m_game_list_widget, [this]() {
@@ -662,6 +666,7 @@ void MainWindow::connectVMThreadSignals(EmuThread* thread)
 	m_ui.actionDebugger->setVisible(false);
 #endif
 	connect(m_ui.actionReloadPatches, &QAction::triggered, thread, &EmuThread::reloadPatches);
+	new ArcadeMenu(this, thread, m_ui.menuArcade, m_ui.actionArcadeInsertCoinP1, m_ui.actionArcadeInsertCoinP2, m_ui.actionArcadeService, m_ui.actionArcadeTest);
 }
 
 void MainWindow::createRendererSwitchMenu()
@@ -2162,6 +2167,12 @@ void MainWindow::onToolsCoverDownloaderTriggered()
 	dlg.exec();
 }
 
+void MainWindow::onToolsArcadeSetupTriggered()
+{
+	VMLock lock(pauseAndLockVM());
+	ArcadeLaunch::ShowSetup(lock.getDialogParent());
+}
+
 void MainWindow::onToolsControllerTesterTriggered()
 {
 	const std::string path = Path::Combine(EmuFolders::Cache, "padtest_ps2.elf");
@@ -2656,6 +2667,11 @@ bool MainWindow::startFile(const QString& filename)
 
 		g_emu_thread->setELFOverride(filename);
 		switchToEmulationView();
+	}
+	else if (VMManager::IsArcadeGameFileName(filename_str))
+	{
+		// An arcade game is a different board, not a different disc: it starts from nothing.
+		QMessageBox::critical(this, tr("Error"), tr("Cannot start an arcade game without shutting down the current game first."));
 	}
 	else if (VMManager::IsGSDumpFileName(filename_str))
 	{

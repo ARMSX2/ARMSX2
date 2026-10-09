@@ -145,6 +145,12 @@
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="CoverDownloadDialog.cpp" />
+    <ClCompile Include="Settings\ArcadeControlsSettingsWidget.cpp">
+      <Filter>Settings</Filter>
+    </ClCompile>
+    <ClCompile Include="ArcadeLaunch.cpp" />
+    <ClCompile Include="ArcadeMenu.cpp" />
+    <ClCompile Include="ArcadeSetupDialog.cpp" />
     <ClCompile Include="ShortcutCreationDialog.cpp" />
     <ClCompile Include="QtProgressCallback.cpp" />
     <ClCompile Include="Settings\AchievementSettingsWidget.cpp">
@@ -296,6 +302,7 @@
     <ClInclude Include="AsyncDialogs.h" />
     <ClInclude Include="QtUtils.h" />
     <ClInclude Include="QtShot.h" />
+    <ClInclude Include="ArcadeLaunch.h" />
     <ClInclude Include="SettingWidgetBinder.h" />
     <ClInclude Include="Settings\HddCreateQt.h">
       <Filter>Settings</Filter>
@@ -404,6 +411,11 @@
     </QtMoc>
     <QtMoc Include="QtHost.h" />
     <QtMoc Include="CoverDownloadDialog.h" />
+    <QtMoc Include="Settings\ArcadeControlsSettingsWidget.h">
+      <Filter>Settings</Filter>
+    </QtMoc>
+    <QtMoc Include="ArcadeMenu.h" />
+    <QtMoc Include="ArcadeSetupDialog.h" />
     <QtMoc Include="QtProgressCallback.h" />
     <QtMoc Include="ShortcutCreationDialog.h" />
     <QtMoc Include="Settings\AchievementLoginDialog.h">
