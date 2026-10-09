@@ -75,7 +75,21 @@ public:
 	// Waits till MTVU is done processing
 	void WaitVU();
 
-	void Get_MTVUChanges();
+	// Applies what the VU thread has flagged (GS signal/finish/label, VU1
+	// E-bit and T-bit stops) on the EE thread. Called on every EE event test
+	// and almost always finds nothing, so the flag test is inline and only
+	// the handling is a call.
+	__fi void Get_MTVUChanges()
+	{
+		// Note: Atomic communication is with Gif_Unit.cpp Gif_HandlerAD_MTVU
+		const u32 interrupts = mtvuInterrupts.load(std::memory_order_relaxed);
+		if (interrupts)
+			Apply_MTVUChanges(interrupts);
+	}
+
+	// The out-of-line half of Get_MTVUChanges: `interrupts` is the flag word
+	// it just loaded.
+	void Apply_MTVUChanges(u32 interrupts);
 
 	void ExecuteVU(u32 vu_addr, u32 vif_top, u32 vif_itop, u32 fbrst);
 

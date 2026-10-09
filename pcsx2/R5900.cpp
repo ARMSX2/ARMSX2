@@ -480,8 +480,17 @@ __fi void _cpuEventTest_Shared()
 	// ---- VU Sync -------------
 	// We're in a EventTest.  All dynarec registers are flushed
 	// so there is no need to freeze registers here.
-	CpuVU0->ExecuteBlock();
-	CpuVU1->ExecuteBlock();
+	//
+	// BaseVUmicroCPU::ExecuteBlock does nothing for a VU that is not running,
+	// and under MTVU VU1's sync is only Get_MTVUChanges, whatever VPU_STAT
+	// says. Make those tests here, so that the usual case, both VUs idle,
+	// costs no calls.
+	if (VU0.VI[REG_VPU_STAT].UL & 0x1)
+		CpuVU0->ExecuteBlock();
+	if (THREAD_VU1)
+		vu1Thread.Get_MTVUChanges();
+	else if (VU0.VI[REG_VPU_STAT].UL & 0x100)
+		CpuVU1->ExecuteBlock();
 
 	// ---- Schedule Next Event Test --------------
 	const float mutiplier = static_cast<float>(PS2CLK) / static_cast<float>(PSXCLK);
