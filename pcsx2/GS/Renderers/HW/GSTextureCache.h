@@ -7,6 +7,7 @@
 #include "GS/Renderers/Common/GSFastList.h"
 #include "GS/Renderers/Common/GSDirtyRect.h"
 #include "GS/Renderers/HW/GSAlphaKnownBits.h"
+#include "GS/Renderers/HW/GSExactDirtyMapping.h"
 
 #include <array>
 #include <deque>
@@ -642,6 +643,9 @@ public:
 	void CombineAlignedInsideTargets(Target* target, GSTextureCache::Source* src = nullptr);
 
 private:
+	// This set depends only on its source layout and rect, never GS memory contents, so it cannot go stale.
+	GSExactDirtyMapping::WrittenPages m_written_c32_blocks;
+
 	bool TryDirtyRectByC32Blocks(u32 sbp, u32 spsm, u32 sbw, Target* target, const GSVector4i& rect);
 	bool TryRebaseTargetForOverwrite(Target* target, const GIFRegTEX0& incoming, const GSVector4i& draw_rect,
 		const Source* source, const Target* depth, u32 width_page_offset, bool is_shuffle);

@@ -12,11 +12,6 @@ namespace
 	using namespace GSExactDirtyMapping;
 	using Pixels = std::set<std::pair<int, int>>;
 
-	u32 BlockAddress(Layout layout, int x, int y)
-	{
-		return GSOffset::fromKnownPSM(layout.bp, layout.bw, PSMCT32).bnNoWrap(x, y);
-	}
-
 	std::set<u32> WrittenWords(Layout layout, Rect rect)
 	{
 		const GSOffset offset = GSOffset::fromKnownPSM(layout.bp, layout.bw, PSMCT32);
@@ -39,9 +34,8 @@ namespace
 		return expected;
 	}
 
-	void ExpectExactProjection(Layout source, Rect write, Layout receiver, Rect valid, size_t count)
+	void ExpectExactPlan(const Plan& plan, const Pixels& expected, Rect valid)
 	{
-		const Plan plan = MapC32Blocks(source, write, receiver, valid, BlockAddress);
 		ASSERT_TRUE(plan.supported);
 		Pixels actual;
 		for (const Rect rect : plan.rects)
@@ -56,17 +50,56 @@ namespace
 				for (int x = rect.x; x < rect.z; x++)
 					ASSERT_TRUE(actual.emplace(x, y).second) << "duplicate pixel " << x << "," << y;
 		}
+		EXPECT_EQ(actual, expected);
+	}
+
+	void ExpectExactProjection(Layout source, Rect write, Layout receiver, Rect valid, size_t count)
+	{
 		const Pixels expected = ExpectedPixels(source, write, receiver, valid);
 		EXPECT_EQ(expected.size(), count);
-		EXPECT_EQ(actual, expected);
+		ExpectExactPlan(MapC32Blocks(source, write, receiver, valid), expected, valid);
 	}
 
 	TEST(GSExactDirtyMapping, NonPageAlignedBaseAndDifferentWidthUsePhysicalAddresses)
 	{
-		ExpectExactProjection({0x2eb8, 2, PSMCT32}, {0, 0, 128, 128},
-			{0x2fa0, 4, PSMCT32}, {0, 0, 256, 256}, 1536);
 		ExpectExactProjection({0x2fb8, 1, PSMCT32}, {0, 0, 16, 16},
 			{0x2fa0, 4, PSMCT32}, {0, 0, 256, 256}, 256);
+	}
+
+	TEST(GSExactDirtyMapping, Captured776WitnessAvoidsLegacyOverDirty)
+	{
+		const Layout source{0x2eb8, 2, PSMCT32};
+		const Rect write{0, 0, 128, 128};
+		const Layout receiver{0x2fa0, 4, PSMCT32};
+		const Rect valid{0, 0, 256, 256};
+		const Pixels expected = ExpectedPixels(source, write, receiver, valid);
+		EXPECT_EQ(expected.size(), 1536u);
+		EXPECT_LT(expected.size(), 3840u / 2);
+		ExpectExactPlan(MapC32Blocks(source, write, receiver, valid), expected, valid);
+	}
+
+	TEST(GSExactDirtyMapping, WrittenSetReusedAcrossFourReceiversMatchesWordAddressOracle)
+	{
+		const Layout source{0x2eb8, 2, PSMCT32};
+		const Rect write{0, 0, 128, 128};
+		const WrittenPages written = BuildWrittenC32Blocks(source, write);
+		ASSERT_TRUE(written.supported);
+		const auto masks = written.masks;
+		const Layout receivers[] = {
+			{0x2eb0, 1, PSMCT32},
+			{0x2ef1, 2, PSMCT32},
+			{0x2f18, 3, PSMCT32},
+			{0x2fa0, 4, PSMCT32},
+		};
+		const Rect valid{0, 0, 256, 256};
+		for (const Layout receiver : receivers)
+		{
+			SCOPED_TRACE(receiver.bp);
+			const Pixels expected = ExpectedPixels(source, write, receiver, valid);
+			ASSERT_FALSE(expected.empty());
+			ExpectExactPlan(MapWrittenC32Blocks(written, receiver, valid), expected, valid);
+			EXPECT_EQ(written.masks, masks);
+		}
 	}
 
 	TEST(GSExactDirtyMapping, LegacyRectangleIncludesUnwrittenWords)
@@ -126,7 +159,7 @@ namespace
 
 	void ExpectUnsupported(Layout source, Rect write, Layout receiver, Rect valid)
 	{
-		const Plan plan = MapC32Blocks(source, write, receiver, valid, BlockAddress);
+		const Plan plan = MapC32Blocks(source, write, receiver, valid);
 		EXPECT_FALSE(plan.supported);
 		EXPECT_TRUE(plan.rects.empty());
 	}
@@ -150,16 +183,29 @@ namespace
 		ExpectUnsupported(color, write, color, {-1, 0, 64, 32});
 	}
 
-	TEST(GSExactDirtyMapping, PhysicalWrapAndInvalidCallbackEmitNoPartialPlan)
+	TEST(GSExactDirtyMapping, PhysicalWrapEmitsNoPartialPlan)
 	{
 		const Layout color{0x1000, 4, PSMCT32};
 		const Rect write{0, 0, 64, 32};
 		const Rect valid{0, 0, 256, 128};
 		ExpectUnsupported({16383, 1, PSMCT32}, write, color, valid);
 		ExpectUnsupported(color, write, {16383, 1, PSMCT32}, write);
-		const Plan plan = MapC32Blocks(color, write, {0x1001, 4, PSMCT32}, valid,
-			[](Layout, int, int) { return 16384u; });
-		EXPECT_FALSE(plan.supported);
-		EXPECT_TRUE(plan.rects.empty());
+	}
+
+	TEST(GSExactDirtyMapping, ArithmeticBlockNumbersMatchGSOffsetBeyondBufferWidth)
+	{
+		for (u32 bw = 1; bw <= 16; bw++)
+		{
+			SCOPED_TRACE(bw);
+			for (const u32 bp : {0u, 1u, 31u, 0x2eb8u, 16383u})
+			{
+				SCOPED_TRACE(bp);
+				const Layout layout{bp, bw, PSMCT32};
+				const GSOffset offset = GSOffset::fromKnownPSM(bp, bw, PSMCT32);
+				for (int y = 0; y < 128; y += 8)
+					for (int x = 0; x < static_cast<int>((bw + 2) * PageWidth); x += 8)
+						EXPECT_EQ(C32BlockNumber(layout, x, y), offset.bnNoWrap(x, y)) << x << "," << y;
+			}
+		}
 	}
 } // namespace

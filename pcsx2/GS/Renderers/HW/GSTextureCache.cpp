@@ -688,16 +688,19 @@ bool GSTextureCache::TryDirtyRectByC32Blocks(u32 sbp, u32 spsm, u32 sbw,
 		!target->m_valid.rintersect(target->GetUnscaledRect()).eq(target->m_valid))
 		return false;
 
-	const GSOffset source_offset = GSOffset::fromKnownPSM(sbp, sbw, PSMCT32);
-	const GSOffset target_offset = GSOffset::fromKnownPSM(target->m_TEX0.TBP0, target->m_TEX0.TBW, PSMCT32);
+	const GSExactDirtyMapping::Layout& source = m_written_c32_blocks.source;
+	const GSExactDirtyMapping::Rect& write = m_written_c32_blocks.write;
+	if (source.bp != sbp || source.bw != sbw ||
+		write.x != rect.x || write.y != rect.y || write.z != rect.z || write.w != rect.w)
+	{
+		m_written_c32_blocks = GSExactDirtyMapping::BuildWrittenC32Blocks(
+			{sbp, sbw, spsm}, {rect.x, rect.y, rect.z, rect.w});
+	}
+
 	const GSVector4i& valid = target->m_valid;
-	const auto plan = GSExactDirtyMapping::MapC32Blocks(
-		{sbp, sbw, spsm}, {rect.x, rect.y, rect.z, rect.w},
+	const auto plan = GSExactDirtyMapping::MapWrittenC32Blocks(m_written_c32_blocks,
 		{target->m_TEX0.TBP0, target->m_TEX0.TBW, target->m_TEX0.PSM},
-		{valid.x, valid.y, valid.z, valid.w},
-		[&](GSExactDirtyMapping::Layout layout, int x, int y) {
-			return ((layout.bp == sbp && layout.bw == sbw) ? source_offset : target_offset).bnNoWrap(x, y);
-		});
+		{valid.x, valid.y, valid.z, valid.w});
 	if (!plan.supported)
 		return false;
 
