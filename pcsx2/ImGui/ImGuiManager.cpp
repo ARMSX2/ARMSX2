@@ -5,6 +5,7 @@
 #include "Config.h"
 #include "Counters.h"
 #include "GS/GS.h"
+#include "GS/Renderers/Common/GSHeadlessPresent.h"
 #include "Host.h"
 #include "IconsFontAwesome.h"
 #include "ImGui/FullscreenUI.h"
@@ -357,6 +358,8 @@ void ImGuiManager::NewFrame()
 {
 	ImGuiIO& io = ImGui::GetIO();
 	io.DeltaTime = s_last_render_time.GetTimeSecondsAndReset();
+	if (GSHeadless::IsEnabled())
+		io.DeltaTime = GSHeadless::kFrameTime;
 
 	if (s_scale_changed)
 	{

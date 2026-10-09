@@ -578,6 +578,7 @@ set(pcsx2GSSources
 	GS/Renderers/Common/GSDirtyRect.cpp
 	GS/Renderers/Common/GSFieldShiftDetector.cpp
 	GS/Renderers/Common/GSFunctionMap.cpp
+	GS/Renderers/Common/GSHeadlessPresent.cpp
 	# The GPU driver-bug database is keyed on the DRIVER, not the platform: Turnip, PanVK and the
 	# Qualcomm blob all ship outside Android too (ARM Linux handhelds — Rocknix, Batocera). Building
 	# these only under ANDROID made every rule dead on exactly the hardware we test on, which is how
@@ -656,6 +657,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSDirtyRect.h
 	GS/Renderers/Common/GSDrawRoad.h
 	GS/Renderers/Common/GSFastList.h
+	GS/Renderers/Common/GSHeadlessPresent.h
 	GS/Renderers/Common/GSAlphaBitLogicOp.h
 	GS/Renderers/Common/GSReplacementAlphaSnap.h
 	GS/Renderers/Common/GSFastStencilShadow.h
@@ -1108,6 +1110,7 @@ set(pcsx2HostHeaders
 set(pcsx2ImGuiSources
 	ImGui/FullscreenUI.cpp
 	ImGui/FullscreenUI_Settings.cpp
+	ImGui/FullscreenUIShot.cpp
 	ImGui/ImGuiFullscreen.cpp
 	ImGui/ImGuiManager.cpp
 	ImGui/ImGuiOverlays.cpp
@@ -1116,6 +1119,7 @@ set(pcsx2ImGuiSources
 set(pcsx2ImGuiHeaders
 	ImGui/FullscreenUI.h
 	ImGui/FullscreenUI_Internal.h
+	ImGui/FullscreenUIShot.h
 	ImGui/ImGuiAnimated.h
 	ImGui/ImGuiFullscreen.h
 	ImGui/ImGuiManager.h

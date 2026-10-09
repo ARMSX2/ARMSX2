@@ -9,6 +9,7 @@
 #include "GS/GSDumpBundle.h"
 #include "GS/GSPerfMon.h"
 #include "GS/Renderers/Common/GSDevice.h"
+#include "ImGui/FullscreenUIShot.h"
 #include "MTGS.h"
 #include "PerformanceMetrics.h"
 #include "SaveState.h"
@@ -220,8 +221,19 @@ namespace PINEServer
 		MsgGSDump = 0x14, /**< Records a GS dump of the next N frames. */
 		MsgGetEffectiveSetting = 0x15, /**< Reads what a setting is actually running as. */
 
+		// Big Picture from outside, for an agent with no monitor (see ImGui/FullscreenUIShot.h).
+		// All work with no VM running. Each replies [u32 size][JSON, NUL-terminated]:
+		// {"ok":true,...} or {"ok":false,"error":"..."}; a malformed request fails the command.
+		MsgUIScreenshot = 0x16, /**< [u32 path_len][path .png][u32 settle_frames] Draws that many frames, writes the next; needs --headless. */
+		MsgUIOpenPage = 0x17, /**< [u32 name_len][name] Opens a Big Picture page, e.g. "settings:graphics". */
+		MsgUIWaitFrames = 0x18, /**< [u32 frames][u32 timeout_ms] Waits for that many presents (0 ms = 30 s). */
+
 		MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
 	};
+
+	static_assert(MsgUIScreenshot == FullscreenUIShot::OpScreenshot && MsgUIOpenPage == FullscreenUIShot::OpOpenPage &&
+					  MsgUIWaitFrames == FullscreenUIShot::OpWaitFrames,
+		"PINE opcodes and FullscreenUIShot.h disagree");
 
 	/**
 	 * Emulator status enum.
@@ -1217,6 +1229,25 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 0, buf_size)) [[unlikely]]
 					goto error;
 				Host::RunOnCPUThread([]() { VMManager::FrameAdvance(1); });
+				break;
+			}
+			case MsgUIScreenshot:
+			case MsgUIOpenPage:
+			case MsgUIWaitFrames:
+			{
+				std::string reply;
+				u32 consumed = 0;
+				if (!FullscreenUIShot::HandlePineCommand(buf[buf_cnt - 1], buf.data() + buf_cnt, buf_size - buf_cnt, &consumed, &reply)) [[unlikely]]
+					goto error;
+				buf_cnt += consumed;
+
+				const u32 size = reply.size() + 1;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, size + 4, buf_size)) [[unlikely]]
+					goto error;
+				ToResultVector(ret_buffer, size, ret_cnt);
+				ret_cnt += 4;
+				memcpy(&ret_buffer[ret_cnt], reply.c_str(), size);
+				ret_cnt += size;
 				break;
 			}
 			case MsgGSDump:
