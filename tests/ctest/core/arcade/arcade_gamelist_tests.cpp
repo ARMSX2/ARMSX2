@@ -399,16 +399,70 @@ TEST_F(ArcadeSetScanTest, TheFilesAnAcgameKeepForItselfAreNotListedAsDiscsOrELFs
 	EXPECT_EQ(ListedPaths(), expected);
 }
 
-TEST_F(ArcadeSetScanTest, ALooseImageAndItsDongleAreNotListedAsPS2Discs)
+TEST_F(ArcadeSetScanTest, ALooseImageIsAnArcadeGameAndItsDongleAndBootProgramAreNot)
 {
 	// No .acgame: the image named after its game, the dongle beside it, and the boot program of a folder named
-	// after the game.
+	// after the game. The image is the game, listed as an arcade game and not as a PS2 disc.
 	PutFixture("loose/Battle Gear 3 (NM00010).chd", "NM00010.chd");
 	PutDongle("loose/Battle Gear 3 (NM00010).bin");
 	PutFixture("NM00004/boot.elf", "boot.elf");
 	PutFixture("NM00004/NM00004.chd", "NM00004.chd");
 	PutFixture("homebrew/hello.elf", "boot.elf");
 
+	std::vector<std::string> expected{
+		Path_("homebrew/hello.elf"), Path_("loose/Battle Gear 3 (NM00010).chd"), Path_("NM00004/NM00004.chd")};
+	std::sort(expected.begin(), expected.end());
+
 	GameList::Refresh(true);
-	EXPECT_EQ(ListedPaths(), (std::vector<std::string>{Path_("homebrew/hello.elf")}));
+	EXPECT_EQ(ListedPaths(), expected);
+
+	{
+		auto lock = GameList::GetLock();
+		const GameList::Entry* bg3 = GameList::GetEntryForPath(Path_("loose/Battle Gear 3 (NM00010).chd").c_str());
+		ASSERT_NE(bg3, nullptr);
+		EXPECT_EQ(bg3->type, GameList::EntryType::Arcade);
+		EXPECT_EQ(bg3->serial, "NM00010");
+		EXPECT_EQ(bg3->crc, 0u);
+		EXPECT_GT(bg3->total_size, 0u);
+		EXPECT_FALSE(bg3->title.empty());
+
+		// The folder's name is the game's ID when the file's is not.
+		const GameList::Entry* tekken = GameList::GetEntryForPath(Path_("NM00004/NM00004.chd").c_str());
+		ASSERT_NE(tekken, nullptr);
+		EXPECT_EQ(tekken->type, GameList::EntryType::Arcade);
+		EXPECT_EQ(tekken->serial, "NM00004");
+
+		// Booting it leaves the disc source unset: the host prepares the game, and the board's files are not a disc.
+		VMBootParameters params;
+		params.source_type = CDVD_SourceType::Iso;
+		GameList::FillBootParametersForEntry(&params, bg3);
+		EXPECT_EQ(params.filename, bg3->path);
+		EXPECT_FALSE(params.source_type.has_value());
+	}
+
+	// And the same from the cache.
+	GameList::Refresh(false, true);
+	EXPECT_EQ(ListedPaths(), expected);
+}
+
+TEST_F(ArcadeSetScanTest, AnImageOfAGameThatHasAnAcgameIsTheAcgamesNotAGameOfItsOwn)
+{
+	// The .acgame looks for its image in NM00004/; this one lies beside it. It is still Tekken 4's.
+	PutFixture("NM00004.acgame", "tekken4.acgame");
+	PutFixture("NM00004.chd", "NM00004.chd");
+	PutFixture("NM00004/boot.elf", "boot.elf");
+
+	GameList::Refresh(true);
+	EXPECT_EQ(ListedPaths(), (std::vector<std::string>{Path_("NM00004.acgame")}));
+}
+
+TEST_F(ArcadeSetScanTest, APackedImageAndABigDongleAreNotGames)
+{
+	PutFixture("packed/NM00010.chd", "NM00010.chd");
+	std::filesystem::rename(Path_("packed/NM00010.chd"), Path_("packed/NM00010.chd.gz"));
+	PutDongle("packed/NM00010.bin");
+	PutDongle("other/NM00007.ps2");
+
+	GameList::Refresh(true);
+	EXPECT_EQ(ListedPaths(), std::vector<std::string>());
 }

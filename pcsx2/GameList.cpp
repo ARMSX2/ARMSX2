@@ -327,7 +327,9 @@ bool GameList::GetArcadeListEntry(const std::string& path, GameList::Entry* entr
 	if (!FileSystem::StatFile(path.c_str(), &sd))
 		return false;
 
-	const std::optional<Arcade::AcGameInfo> game = Arcade::ReadAcGameInfo(path);
+	// An .acgame, or an image kept as a file of its own with the game's ID in its name.
+	const std::optional<Arcade::AcGameInfo> game =
+		VMManager::IsArcadeGameFileName(path) ? Arcade::ReadAcGameInfo(path) : Arcade::ReadLooseImageInfo(path);
 	if (!game.has_value())
 	{
 		// A file that is no arcade game is cached as invalid, so it is not read again on every scan.
@@ -508,7 +510,7 @@ bool GameList::PopulateEntryFromPath(const std::string& path, GameList::Entry* e
 {
 	if (VMManager::IsElfFileName(path.c_str()))
 		return GetElfListEntry(path, entry);
-	else if (VMManager::IsArcadeGameFileName(path))
+	else if (VMManager::IsArcadeGameFileName(path) || !Arcade::LooseImageGameId(path).empty())
 		return GetArcadeListEntry(path, entry);
 	else
 		return GetIsoListEntry(path, entry);
@@ -775,7 +777,8 @@ void GameList::ScanDirectory(const char* path, bool recursive, bool only_cache, 
 	progress->SetProgressRange(static_cast<u32>(files.size()));
 	progress->SetProgressValue(0);
 
-	// An arcade game's boot program, image and dongle are parts of a game, not discs or ELFs of their own.
+	// An arcade game's boot program, image and dongle are parts of a game, not discs or ELFs of their own. The one
+	// exception is the image of a game with no .acgame, which is the game.
 	const Arcade::SetClaims arcade_claims(files);
 
 	for (FILESYSTEM_FIND_DATA& ffd : files)
@@ -783,7 +786,7 @@ void GameList::ScanDirectory(const char* path, bool recursive, bool only_cache, 
 		files_scanned++;
 
 		if (progress->IsCancelled() || !GameList::IsScannableFilename(ffd.FileName) || IsPathExcluded(excluded_paths, ffd.FileName) ||
-			arcade_claims.Owns(ffd.FileName))
+			(arcade_claims.Owns(ffd.FileName) && !arcade_claims.IsLooseImage(ffd.FileName)))
 		{
 			continue;
 		}

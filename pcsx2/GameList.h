@@ -29,7 +29,7 @@ namespace GameList
 		PS1Disc,
 		ELF,
 		Invalid,
-		Arcade, // A Namco System 246/256 game: an .acgame file (serial = its game ID, CRC 0).
+		Arcade, // A Namco System 246/256 game (serial = its game ID, CRC 0): an .acgame, or a loose image with the ID in its name. Start it with ArcadeSetup::Service::Prepare().
 		Count
 	};
 
