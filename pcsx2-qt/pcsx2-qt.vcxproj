@@ -177,6 +177,7 @@
     <ClCompile Include="AutoUpdaterDialog.cpp" />
     <ClCompile Include="CoverDownloadDialog.cpp" />
     <ClCompile Include="ArcadeLaunch.cpp" />
+    <ClCompile Include="ArcadeMenu.cpp" />
     <ClCompile Include="ArcadeSetupDialog.cpp" />
     <ClCompile Include="DisplayWidget.cpp" />
     <ClCompile Include="ShortcutCreationDialog.cpp" />
@@ -286,6 +287,7 @@
     <QtMoc Include="AboutDialog.h" />
     <QtMoc Include="AutoUpdaterDialog.h" />
     <QtMoc Include="CoverDownloadDialog.h" />
+    <QtMoc Include="ArcadeMenu.h" />
     <QtMoc Include="ArcadeSetupDialog.h" />
     <QtMoc Include="ShortcutCreationDialog.h" />
     <QtMoc Include="MainWindow.h" />

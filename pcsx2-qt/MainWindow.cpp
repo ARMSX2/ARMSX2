@@ -3,6 +3,7 @@
 
 #include "AboutDialog.h"
 #include "ArcadeLaunch.h"
+#include "ArcadeMenu.h"
 #include "AutoUpdaterDialog.h"
 #include "CoverDownloadDialog.h"
 #include "DisplayWidget.h"
@@ -665,6 +666,7 @@ void MainWindow::connectVMThreadSignals(EmuThread* thread)
 	m_ui.actionDebugger->setVisible(false);
 #endif
 	connect(m_ui.actionReloadPatches, &QAction::triggered, thread, &EmuThread::reloadPatches);
+	new ArcadeMenu(this, thread, m_ui.menuArcade, m_ui.actionArcadeInsertCoinP1, m_ui.actionArcadeInsertCoinP2, m_ui.actionArcadeService, m_ui.actionArcadeTest);
 }
 
 void MainWindow::createRendererSwitchMenu()

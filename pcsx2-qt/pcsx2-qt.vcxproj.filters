@@ -149,6 +149,7 @@
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="ArcadeLaunch.cpp" />
+    <ClCompile Include="ArcadeMenu.cpp" />
     <ClCompile Include="ArcadeSetupDialog.cpp" />
     <ClCompile Include="ShortcutCreationDialog.cpp" />
     <ClCompile Include="QtProgressCallback.cpp" />
@@ -413,6 +414,7 @@
     <QtMoc Include="Settings\ArcadeControlsSettingsWidget.h">
       <Filter>Settings</Filter>
     </QtMoc>
+    <QtMoc Include="ArcadeMenu.h" />
     <QtMoc Include="ArcadeSetupDialog.h" />
     <QtMoc Include="QtProgressCallback.h" />
     <QtMoc Include="ShortcutCreationDialog.h" />
