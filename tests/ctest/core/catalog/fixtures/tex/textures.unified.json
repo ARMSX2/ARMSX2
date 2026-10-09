@@ -1,0 +1,136 @@
+{
+ "schemaVersion": 2,
+ "entries": [
+  {
+   "id": "bl4ckh4nd-we-love-katamari-slus-21230-20260722",
+   "name": "We Love Katamari HD Texture Pack",
+   "gameTitle": "We Love Katamari",
+   "serials": [
+    "SLUS-21230"
+   ],
+   "version": "2026-07-22 mirror",
+   "authors": [
+    "ironhulk33",
+    "Bl4ckH4nd"
+   ],
+   "credits": "Created by ironhulk33, Bl4ckH4nd.",
+   "description": "Extensive AI-upscaled object, environment, character and interface texture replacement pack for the North American PS2 release.",
+   "license": "Redistribution permission not recorded",
+   "downloadUrl": "https://dl.ps2ktxpak.net/packs/bl4ckh4nd-we-love-katamari-slus-21230-20260722.tar.zst",
+   "format": "tar+zstd",
+   "archiveRevision": 1,
+   "decompressedSizeBytes": 1092782080,
+   "sourceUrl": "https://www.mediafire.com/folder/k8yncbpnlckw3/ironhulk33#2ie0qajlodjxz",
+   "sizeBytes": 506486922,
+   "sha256": "e7b8eb04d4223eaed547be5aeefd9682e2ee05ef6ab5fdf57d18e0ba5d6992d1",
+   "fileCount": 21316,
+   "previewUrls": [],
+   "creators": [
+    {
+     "name": "ironhulk33",
+     "page": "https://gbatemp.net/members/ironhulk33.721797/",
+     "avatar": "https://gbatemp.net/data/avatars/h/721/721797.jpg",
+     "tip": "https://ko-fi.com/ironhulk33",
+     "socials": "https://www.youtube.com/channel/UC_00zPyx8PXENf7OSqZRw_g"
+    },
+    {
+     "name": "Bl4ckH4nd",
+     "page": "https://gbatemp.net/members/bl4ckh4nd.609354/",
+     "avatar": "https://gbatemp.net/data/avatars/h/609/609354.jpg",
+     "tip": "https://www.patreon.com/Bl4ckH4nd"
+    }
+   ],
+   "type": "ai_upscale",
+   "completeness": "complete"
+  },
+  {
+   "id": "original-texture-creator-is-not-identified-in-the-public-mirror-preserved-by-the-pcsx2-hd-texture-packs-community-archive-altered-beast-hd-remaster-community-archive-sles-53024-20260728",
+   "name": "Altered Beast HD Remaster - Community Archive Texture Pack",
+   "gameTitle": "Altered Beast",
+   "serials": [
+    "SLES-53024"
+   ],
+   "version": "Complete public source snapshot",
+   "authors": [
+    "Unknown creator"
+   ],
+   "credits": "Creator not identified.",
+   "description": "A European high-resolution replacement pack prepared for current PCSX2 builds.",
+   "license": "Redistribution permission not recorded",
+   "downloadUrl": "https://dl.ps2ktxpak.net/packs/original-texture-creator-is-not-identified-in-the-public-mirror-preserved-by-the-pcsx2-hd-texture-packs-community-archive-altered-beast-hd-remaster-community-archive-sles-53024-20260728.tar.zst",
+   "format": "tar+zstd",
+   "archiveRevision": 1,
+   "decompressedSizeBytes": 1020866560,
+   "sourceUrl": "https://archive.org/details/pcsx2-hd-texture-packs",
+   "sizeBytes": 780940704,
+   "sha256": "3feaa3fc21b0057bed1bf4eb3e243853c3db41d8857ff2eb27955b41e160c114",
+   "fileCount": 4402,
+   "previewUrls": [],
+   "creators": []
+  },
+  {
+   "id": "asi-factory-gta-vcs-pc-textures-latest",
+   "name": "GTA Vice City Stories PC Texture Pack",
+   "gameTitle": "Grand Theft Auto: Vice City Stories",
+   "serials": [
+    "SLUS-21590"
+   ],
+   "version": "latest",
+   "authors": [
+    "ASI Factory"
+   ],
+   "credits": "Created by ASI Factory.",
+   "description": "PC-derived texture replacement pack for the North American PS2 release.",
+   "license": "Redistribution permission not recorded",
+   "downloadUrl": "https://dl.ps2ktxpak.net/packs/asi-factory-gta-vcs-pc-textures-latest.tar.zst",
+   "format": "tar+zstd",
+   "archiveRevision": 1,
+   "decompressedSizeBytes": 28692480,
+   "sourceUrl": "https://github.com/ASI-Factory/GTA-VCS-Texture-Pack-PS2",
+   "sizeBytes": 23130684,
+   "sha256": "a18b631c1f668d6d26b14702f154b90a2abd4e5b7617d87ce8d31379e0c1c57b",
+   "fileCount": 1781,
+   "previewUrls": [],
+   "creators": [
+    {
+     "name": "ASI Factory"
+    }
+   ]
+  },
+  {
+   "id": "texture-pack-credited-to-xxtherockoxx-by-the-curated-pcsx2-hd-texture-project-list-original-archive-filename-resident-evil-4-hd-remaster-community-archive-slus-21134-20260728",
+   "name": "Resident Evil 4 HD Remaster - Community Archive Texture Pack",
+   "gameTitle": "Resident Evil 4",
+   "serials": [
+    "SLUS-21134"
+   ],
+   "version": "Complete public source snapshot",
+   "authors": [
+    "xXtherockoXx"
+   ],
+   "credits": "Created by xXtherockoXx.",
+   "description": "A North American high-resolution replacement pack prepared for current PCSX2 builds.",
+   "license": "Redistribution permission not recorded",
+   "downloadUrl": "https://dl.ps2ktxpak.net/packs/texture-pack-credited-to-xxtherockoxx-by-the-curated-pcsx2-hd-texture-project-list-original-archive-filename-resident-evil-4-hd-remaster-community-archive-slus-21134-20260728.tar.zst",
+   "format": "tar+zstd",
+   "archiveRevision": 1,
+   "decompressedSizeBytes": 4888197120,
+   "sourceUrl": "https://gbatemp.net/threads/resident-evil-4-hd-textures-update-2-2.615869/",
+   "sizeBytes": 4021814083,
+   "sha256": "548719af479eb5b9966eaf3af0db2c6b5872d06e80670994606145dfebea3e19",
+   "fileCount": 7247,
+   "previewUrls": [],
+   "creators": [
+    {
+     "name": "xXtherockoXx",
+     "page": "https://gbatemp.net/members/xxtherockoxx.602827/",
+     "avatar": "https://gbatemp.net/data/avatars/h/602/602827.jpg",
+     "tip": "https://ko-fi.com/xxtherockoxx",
+     "socials": "https://www.youtube.com/channel/UCvpn5tBt7ymHwNK1n5jUjRg/videos"
+    }
+   ],
+   "type": "port",
+   "completeness": "in_progress"
+  }
+ ]
+}

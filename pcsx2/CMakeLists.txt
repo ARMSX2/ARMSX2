@@ -1155,6 +1155,13 @@ set(pcsx2CatalogSources
 	Catalog/PatchRepo.cpp
 	Catalog/PnachText.cpp
 	Catalog/ResponseCache.cpp
+	Catalog/TarZstdExtractor.cpp
+	Catalog/TextureArchivePath.cpp
+	Catalog/TexturePackCatalog.cpp
+	Catalog/TexturePackEngine.cpp
+	Catalog/TexturePackInstaller.cpp
+	Catalog/TexturePackState.cpp
+	Catalog/ZipTextureExtractor.cpp
 )
 set(pcsx2CatalogHeaders
 	Catalog/CancelToken.h
@@ -1168,6 +1175,13 @@ set(pcsx2CatalogHeaders
 	Catalog/PatchRepo.h
 	Catalog/PnachText.h
 	Catalog/ResponseCache.h
+	Catalog/TarZstdExtractor.h
+	Catalog/TextureArchivePath.h
+	Catalog/TexturePackCatalog.h
+	Catalog/TexturePackEngine.h
+	Catalog/TexturePackInstaller.h
+	Catalog/TexturePackState.h
+	Catalog/ZipTextureExtractor.h
 )
 # Json.h exposes rapidjson types, so everything that includes it needs the include path.
 target_link_libraries(PCSX2_FLAGS INTERFACE rapidjson)
