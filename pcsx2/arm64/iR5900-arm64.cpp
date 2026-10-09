@@ -242,6 +242,14 @@ static constexpr bool s_condVeneerForced = false;
 const void* g_fpuGuardMaskStub = nullptr;
 #endif
 
+#ifdef PCSX2_RECOMPILER_TESTS
+// Runs inside recEventTest, after the shared event test, as host code
+// reached from there would: interrupt delivery, or a savestate save from the
+// message pump at vsync. The harness runs with no VM, where the shared event
+// test returns early, so this is how a test puts work there.
+void (*g_eeHarnessEventTestHook)() = nullptr;
+#endif
+
 static void recEventTest()
 {
 	eeEventTestIsActive = true;
@@ -255,8 +263,13 @@ static void recEventTest()
 	}
 
 #ifdef PCSX2_RECOMPILER_TESTS
-	if (harnessShouldExit())
-		recExitExecution();
+	if (g_eeHarnessActive)
+	{
+		if (g_eeHarnessEventTestHook)
+			g_eeHarnessEventTestHook();
+		if (harnessShouldExit())
+			recExitExecution();
+	}
 #endif
 
 	if (eeRecNeedsReset)
@@ -340,12 +353,21 @@ static const void* _DynGen_DispatcherEvent()
 	// modifies cpuRegs.cycle (e.g. fast-forwarding to nextEventCycle) and
 	// reschedules nextEventCycle itself.
 	armFlushCycleDelta();
-	armFlushEEGPRPins(); // lazy-dirty seam: savestate save / VM exit read GPR memory
+	// Store every pin: a savestate save from the host message pump at vsync
+	// reads GPR memory, and recExitExecution leaves with only memory.
+	armFlushEEGPRPins();
 	armEmitCall((void*)recEventTest);
 	armReloadCycleDelta();
-	// Event processing can rewrite every guest GPR (savestate load on the EE
-	// thread, debugger pokes at a pause point) — refresh the pin mirrors.
-	armReloadEEGPRPins();
+	// A normal return means nothing wrote guest GPR memory: interrupt and
+	// exception delivery write only CP0 and pc, and whatever does rewrite GPRs
+	// (savestate load, VM reset, a recompiler reset from a settings change)
+	// also requests an exit, so recEventTest leaves through recExitExecution
+	// and EnterRecompiledCode reloads every pin on the way back in. The
+	// callee-saved pins are still in their registers; reload only the ones
+	// the call destroyed. The stub's bytes stay a compile-time constant,
+	// which an in-place reset from recEventTest relies on: it returns into
+	// the regenerated copy at the same offset.
+	armReloadEEClobberedPins();
 	return retval; // falls through to DispatcherReg
 }
 
