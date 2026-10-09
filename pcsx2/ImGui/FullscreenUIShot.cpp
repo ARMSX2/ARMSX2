@@ -181,6 +181,45 @@ namespace FullscreenUI
 		static_assert(std::size(kSettingsPages) == static_cast<size_t>(SettingsPage::Count),
 			"add the new SettingsPage to kSettingsPages in FullscreenUIShot.cpp");
 		static_assert(SettingsPageTableIsInEnumOrder(), "kSettingsPages must list SettingsPage in enum order");
+
+		// gamesettings:<page>[:browse]. The first game's settings opened on one of the pages, for the
+		// pages that only exist for a game; with :browse on patches or cheats, the same search a press
+		// of that page's Browse Online row starts (it needs the network, so wait for it to finish).
+		bool OpenFirstGameSettingsPage(std::string_view spec, std::string* error)
+		{
+			std::string_view page_name = spec, action;
+			if (const size_t colon = spec.find(':'); colon != std::string_view::npos)
+			{
+				page_name = spec.substr(0, colon);
+				action = spec.substr(colon + 1);
+			}
+
+			const SettingsPageEntry* page = nullptr;
+			for (const SettingsPageEntry& entry : kSettingsPages)
+			{
+				if (StringUtil::compareNoCase(page_name, entry.name))
+					page = &entry;
+			}
+			if (!page)
+			{
+				*error = fmt::format("unknown settings page '{}'", page_name);
+				return false;
+			}
+
+			const bool browsable = (page->page == SettingsPage::Patches || page->page == SettingsPage::Cheats);
+			if (!action.empty() && !(browsable && StringUtil::compareNoCase(action, "browse")))
+			{
+				*error = fmt::format("'{}' has no action '{}' (only patches and cheats have :browse)", page_name, action);
+				return false;
+			}
+
+			if (!OpenFirstGameSettings(error))
+				return false;
+			s_settings_page = page->page;
+			if (!action.empty())
+				BrowseOnlinePatches(page->page == SettingsPage::Cheats);
+			return true;
+		}
 	} // namespace
 
 	std::string PageNames()
@@ -192,7 +231,7 @@ namespace FullscreenUI
 				out += ", ";
 			out += page.name;
 		}
-		out += ", gamesettings";
+		out += ", gamesettings, gamesettings:<page>, gamesettings:patches:browse, gamesettings:cheats:browse";
 		for (const SettingsPageEntry& page : kSettingsPages)
 		{
 			if (page.global)
@@ -218,6 +257,8 @@ namespace FullscreenUI
 		{
 			top = name.substr(0, colon);
 			settings_page = name.substr(colon + 1);
+			if (StringUtil::compareNoCase(top, "gamesettings"))
+				return OpenFirstGameSettingsPage(settings_page, error);
 			if (!StringUtil::compareNoCase(top, "settings"))
 			{
 				*error = fmt::format("'{}' has no sub-pages (only settings:<page> does)", top);

@@ -28,7 +28,10 @@
 // bios, emulation, graphics, osd, audio, memorycard, networkhdd, folders, achievements,
 // controller, hotkey, advanced). Two more set up a state instead of naming a page: rescan starts a
 // game list scan and shows the list, and gamesettings opens the settings of the first game in the
-// list (open rescan first and wait a few frames). tools/bp-shot.py in the umbrella wraps all of this.
+// list (open rescan first and wait a few frames). gamesettings:<page> opens that game's settings on
+// a page (summary, emulation, patches, cheats, graphics, osd, audio, memorycard, gamefixes), and
+// gamesettings:patches:browse / gamesettings:cheats:browse also does what a press of that page's
+// Browse Online row does. tools/bp-shot.py in the umbrella wraps all of this.
 //
 // Adding a Big Picture page: add a row to kPages in FullscreenUIShot.cpp, so an agent can reach it.
 // A new SettingsPage enum value trips a static_assert there until it has a name.
