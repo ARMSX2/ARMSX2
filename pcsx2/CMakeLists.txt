@@ -1146,6 +1146,7 @@ set(pcsx2CatalogSources
 set(pcsx2CatalogHeaders
 	Catalog/CancelToken.h
 	Catalog/Fetch.h
+	Catalog/FileOps.h
 	Catalog/FileUtil.h
 	Catalog/HttpFetcher.h
 	Catalog/Json.h
