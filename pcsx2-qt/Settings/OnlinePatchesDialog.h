@@ -53,8 +53,9 @@ public:
 
 	/// Makes the settings window's copy of the per-game settings file match the file on disk. Needed
 	/// after PatchRepo::Install, which writes the file itself: a window that kept its old copy would
-	/// drop the new names from [Patches]/[Cheats] Enable the next time anything on it saves.
-	static void reloadSettingsFromDisk(SettingsWindow* settings);
+	/// drop the new names from [Patches]/[Cheats] Enable the next time anything on it saves. Returns false
+	/// when the file could not be read; the window then keeps the settings it had.
+	static bool reloadSettingsFromDisk(SettingsWindow* settings);
 
 public Q_SLOTS:
 	void reject() override;

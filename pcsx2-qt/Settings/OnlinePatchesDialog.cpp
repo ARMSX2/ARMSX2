@@ -10,6 +10,8 @@
 
 #include "pcsx2/INISettingsInterface.h"
 
+#include "common/FileSystem.h"
+
 #include <QtCore/QSet>
 #include <QtGui/QColor>
 #include <QtWidgets/QApplication>
@@ -104,14 +106,25 @@ bool OnlinePatchesDialog::browse(QWidget* parent, SettingsWindow* settings, Cata
 	return true;
 }
 
-void OnlinePatchesDialog::reloadSettingsFromDisk(SettingsWindow* settings)
+bool OnlinePatchesDialog::reloadSettingsFromDisk(SettingsWindow* settings)
 {
 	if (!settings->isPerGameSettings())
-		return;
+		return true;
 
 	INISettingsInterface* ini = static_cast<INISettingsInterface*>(settings->getSettingsInterface());
+	const std::string path = ini->GetFileName();
+	if (!FileSystem::FileExists(path.c_str()))
+		return true; // nothing was written, so there is nothing to catch up with
+
+	// Read the file into a scratch copy first. A file that cannot be read must leave the window's settings as
+	// they are: clearing them and then failing to load would leave the window empty, and its next save would
+	// write that empty copy over the game's settings.
+	INISettingsInterface scratch(path);
+	if (!scratch.Load())
+		return false;
+
 	ini->Clear();
-	ini->Load();
+	return ini->Load();
 }
 
 OnlinePatchesDialog::OnlinePatchesDialog(QWidget* parent, SettingsWindow* settings, Catalog::PatchKind kind)
@@ -595,7 +608,12 @@ void OnlinePatchesDialog::onInstallDone(InstallOutcome outcome)
 			m_entries = std::move(outcome.entries);
 
 			// The install wrote the game's settings file behind the settings window's back.
-			reloadSettingsFromDisk(m_settings);
+			if (!reloadSettingsFromDisk(m_settings))
+			{
+				QMessageBox::warning(this, tr("Install"),
+					tr("The game's settings file could not be read back, so its settings window may not know about the new items. "
+					   "Close the game's properties and open them again before changing anything else there."));
+			}
 
 			const u32 added = result.patches_added + result.cheats_added;
 			QStringList sentences;
