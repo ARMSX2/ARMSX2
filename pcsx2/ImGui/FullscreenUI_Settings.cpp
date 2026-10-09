@@ -3921,6 +3921,10 @@ void FullscreenUI::DrawNetworkHDDSettingsPage()
 			api_display_names.emplace_back("Sockets");
 		}
 
+		adapter_lists.emplace_back();
+		api_types.emplace_back(Pcsx2Config::DEV9Options::NetApi::LocalLink);
+		api_display_names.emplace_back("Local Link");
+
 		adapters_loaded = true;
 	}
 
@@ -3987,6 +3991,7 @@ void FullscreenUI::DrawNetworkHDDSettingsPage()
 				}
 
 				bsi->SetStringValue("DEV9/Eth", "EthDevice", new_device.c_str());
+				LocalLinkApiSelected(bsi, selected_api);
 				SetSettingsChanged(bsi);
 
 				CloseChoiceDialog();
@@ -4020,7 +4025,9 @@ void FullscreenUI::DrawNetworkHDDSettingsPage()
 		device_display = "Not Selected";
 	}
 
-	if (MenuButtonWithValue(FSUI_ICONSTR(ICON_FA_ETHERNET, "Ethernet Device"),
+	const bool local_link = DrawLocalLinkSettings(bsi, current_api, network_enabled);
+
+	if (!local_link && MenuButtonWithValue(FSUI_ICONSTR(ICON_FA_ETHERNET, "Ethernet Device"),
 			FSUI_CSTR("Network adapter to use for PS2 network emulation."),
 			device_display.c_str(),
 			network_enabled && show_device_setting))
@@ -4069,6 +4076,10 @@ void FullscreenUI::DrawNetworkHDDSettingsPage()
 			});
 	}
 
+	// Local Link assigns the console's address itself, so the DHCP, IP and DNS rows below do not apply.
+	// The block is left at its old indentation on purpose, so this stays a three-line change.
+	if (!local_link)
+	{
 	AdapterOptions adapter_options = AdapterOptions::None;
 	const std::string final_api = bsi->GetStringValue("DEV9/Eth", "EthApi", "Unset");
 	if (final_api == "PCAP Bridged" || final_api == "PCAP Switched")
@@ -4136,6 +4147,7 @@ void FullscreenUI::DrawNetworkHDDSettingsPage()
 	DrawIPAddressSetting(bsi, FSUI_ICONSTR(ICON_FA_SERVER, "DNS2 Address"),
 		FSUI_CSTR("Secondary DNS server address for the PS2 virtual network adapter."), "DEV9/Eth", "DNS2", "0.0.0.0",
 		dns2_editable, LAYOUT_MENU_BUTTON_HEIGHT, g_large_font, g_medium_font, IPAddressType::DNS2);
+	}
 
 	MenuHeading(FSUI_CSTR("Internal HDD"));
 

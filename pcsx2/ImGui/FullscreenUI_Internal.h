@@ -539,5 +539,8 @@ namespace FullscreenUI
 	// Features ported from the Android app (FullscreenUI_Packs.cpp)
 	//////////////////////////////////////////////////////////////////////////
 	void DrawTextureUpscaleSetting(SettingsInterface* bsi);
+	/// Draws the Local Link rows when `api` (the EthApi setting) selects it; returns true if it did.
+	bool DrawLocalLinkSettings(SettingsInterface* bsi, const std::string& api, bool network_enabled);
+	void LocalLinkApiSelected(SettingsInterface* bsi, const std::string& api);
 
 } // namespace FullscreenUI
