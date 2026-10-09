@@ -7,6 +7,8 @@
 
 #include "Catalog/HttpFetcher.h"
 
+#include "common/StringUtil.h"
+
 #include "fmt/format.h"
 
 #include <algorithm>
@@ -192,6 +194,15 @@ namespace Catalog
 				curl_easy_setopt(handle, CURLOPT_NOPROGRESS, 0L);
 				curl_easy_setopt(handle, CURLOPT_XFERINFOFUNCTION, &XferInfoCallback);
 				curl_easy_setopt(handle, CURLOPT_XFERINFODATA, &ctx);
+
+				// Ask for compression unless the caller chose an encoding (a texture-pack part asks for
+				// identity so its bytes match the published hash). curl decodes what comes back, so the
+				// sink always sees the original bytes; GitHub's tree lists shrink about tenfold.
+				bool caller_chose_encoding = false;
+				for (const Header& header : exchange.headers)
+					caller_chose_encoding |= StringUtil::compareNoCase(header.first, "Accept-Encoding");
+				if (!caller_chose_encoding)
+					curl_easy_setopt(handle, CURLOPT_ACCEPT_ENCODING, "");
 
 				if (headers)
 					curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
