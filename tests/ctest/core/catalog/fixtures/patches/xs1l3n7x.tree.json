@@ -1,0 +1,237 @@
+{
+ "sha": "6cb57b55939f47dd91a157bfb6cdc7fd157a780c",
+ "url": "https://api.github.com/repos/xs1l3n7x/pcsx2_cheats_collection/git/trees/6cb57b55939f47dd91a157bfb6cdc7fd157a780c",
+ "tree": [
+  {
+   "path": ".gitignore",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "82f927558a3dff0ea8c20858856e70779fd02c93",
+   "size": 3139
+  },
+  {
+   "path": "README.md",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "39d0bbf0ad3ffadad0b39b8001f4d81014f08391",
+   "size": 25334
+  },
+  {
+   "path": "cheats",
+   "mode": "040000",
+   "type": "tree",
+   "sha": "76b0343c31a71ccf919373cca8e752d17911b2ac"
+  },
+  {
+   "path": "cheats/02E1970F.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "c060cc17c6e695a009c9f3524f01761ad852e716",
+   "size": 217
+  },
+  {
+   "path": "cheats/6624A78C.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "a23978b7313c35b30262294265a3d72832ccace8",
+   "size": 1066
+  },
+  {
+   "path": "cheats/7E83CC5B.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "afab7d737b7e73cf7cd5d42757239e982c4fb472",
+   "size": 3551
+  },
+  {
+   "path": "cheats/81D233DC.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "e3cbc8c87f9be8581262939286cbcfa77335a645",
+   "size": 3185
+  },
+  {
+   "path": "cheats/D6385328.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "31136b432188bd24fba973c09f0b904085ff8e5f",
+   "size": 1878
+  },
+  {
+   "path": "cheats/E09E454C.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "ad255d9a01765e2152632019dede4387114a4e04",
+   "size": 1916
+  },
+  {
+   "path": "cheats/EF97EC8F.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "e26b2d481eb4827d88148ee30b0923ec5adc77ea",
+   "size": 895
+  },
+  {
+   "path": "cheats/SCES-50956_A0DB0FE6.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "1b9534a353e5263d8022a7a530a22d5b934d88c6",
+   "size": 6563
+  },
+  {
+   "path": "cheats/SCES-51706_F7DC0006.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "c95eae97f0c2e6d575420ecbb75eae020693c799",
+   "size": 2993
+  },
+  {
+   "path": "cheats/SCES-52004_6624A78C.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "d1637b1a2d804e88c67e9101cf47301af0c0fa7a",
+   "size": 7265
+  },
+  {
+   "path": "cheats/SCUS-97265_9184AAF1.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "73f01a88a9824eb71908b7339be58de11dd232ae",
+   "size": 7836
+  },
+  {
+   "path": "cheats/SCUS-97399_D6385328.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "9cccbc46c78ba58e09ca7e02b071dc3a37e3a2ff",
+   "size": 10470
+  },
+  {
+   "path": "cheats/SCUS-97501_7571AAEE.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "717d4753508e38e9028865624ca786e98104b9c4",
+   "size": 50648
+  },
+  {
+   "path": "cheats/SLES-50113_9C4BA2CE.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "e142464237121d22e12ad14a3b1ee94087ef9fe9",
+   "size": 1739
+  },
+  {
+   "path": "cheats/SLES-50505_F9E3CF90.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "96b4debf3182a13c32744f3c00fdaa620b5bfdaa",
+   "size": 3559
+  },
+  {
+   "path": "cheats/SLES-52670_65087F31.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "ccc3777d8cd36cfd0f33ebf4329c64d2bcb78a45",
+   "size": 172771
+  },
+  {
+   "path": "cheats/SLPS-25376_1D5AEF04.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "e55d31e9a704be4edb3c44aa7c74723b4ce1f0cc",
+   "size": 10800
+  },
+  {
+   "path": "cheats/SLUS-20326_8E7CFF62.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "2f3f25dbc4a725c8e81a1a66a8393affb49f9401",
+   "size": 15107
+  },
+  {
+   "path": "cheats/SLUS-20485_3FBF0EA6.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "e2d93e76d706a2ecdbe173a2141f0f3d44a7d1e0",
+   "size": 1760
+  },
+  {
+   "path": "cheats/SLUS-20559_2DBC5095.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "49e49ef4c4dc529cab3426986fc0e8a8b6434c19",
+   "size": 10690
+  },
+  {
+   "path": "cheats/SLUS-20685_BDD9F5E1.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "e272f83510a824a2f8f1eecc9bbfaa6eb86a7e45",
+   "size": 7443
+  },
+  {
+   "path": "cheats/SLUS-20705_C5FF7EFF.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "73098f66c55b29b10ba33109f4bf03e869124a63",
+   "size": 7358
+  },
+  {
+   "path": "cheats/SLUS-20784_A74B4C3D.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "4a20bde85e06ba2f9b14fd3edb177df57a8cbd68",
+   "size": 5681
+  },
+  {
+   "path": "cheats/SLUS-20870_FDD12792.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "38ff2cb8cc320d47c2ff29ab0ff6d6a1b6d38673",
+   "size": 27917
+  },
+  {
+   "path": "cheats/SLUS-20965_4F0010A7.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "4b9a1a8e182501b4129e2ea93a6925477c2c334d",
+   "size": 26971
+  },
+  {
+   "path": "cheats/SLUS-21002_88A808FA.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "1fbdf6f12e43a4293baef095b561977b6dea9c85",
+   "size": 91028
+  },
+  {
+   "path": "cheats/SLUS-21156_15948AA5.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "61c2e73c635526f9435b59007ff7682b48e8c2e4",
+   "size": 2536
+  },
+  {
+   "path": "cheats/SLUS-21177_FD8A9A89.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "e55a193040a3e34e00f0aaf0ad9ac7d11d05760d",
+   "size": 4951
+  },
+  {
+   "path": "cheats/SLUS-21224_B815F724.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "04c583c20808cf436d7b4ff348a3a99b4558d915",
+   "size": 13123
+  },
+  {
+   "path": "cheats/SLUS-21448_F3FD313E.pnach",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "5f79d37dcbafd9037db6318fddd04adb3e672f86",
+   "size": 1818
+  }
+ ],
+ "truncated": false
+}
