@@ -1130,6 +1130,26 @@ set(pcsx2InputHeaders
 	Input/SDLInputSource.h
 )
 
+# Catalog: the online services (texture packs, covers, driver packs, patches, memory-card
+# backups, arcade setup) written once for the Qt and Big Picture UIs. New Catalog files go in
+# these two lists; the HTTP transport at the end picks the one backend for this platform.
+set(pcsx2CatalogSources
+	Catalog/HttpFetcher.cpp
+)
+set(pcsx2CatalogHeaders
+	Catalog/CancelToken.h
+	Catalog/Fetch.h
+	Catalog/HttpFetcher.h
+)
+if(WIN32)
+	list(APPEND pcsx2CatalogSources Catalog/HttpTransportWinHTTP.cpp)
+elseif(ANDROID OR IOS)
+	list(APPEND pcsx2CatalogSources Catalog/HttpTransportNone.cpp)
+else()
+	list(APPEND pcsx2CatalogSources Catalog/HttpTransportCurl.cpp)
+	target_link_libraries(PCSX2 PRIVATE CURL::libcurl)
+endif()
+
 if(APPLE)
 	list(APPEND pcsx2GSSources
 		GS/Renderers/Metal/GSDeviceMTL.mm
@@ -1659,6 +1679,8 @@ target_sources(PCSX2 PRIVATE
 	${pcsx2ImGuiHeaders}
 	${pcsx2InputSources}
 	${pcsx2InputHeaders}
+	${pcsx2CatalogSources}
+	${pcsx2CatalogHeaders}
 	${pcsx2ps2Sources}
 	${pcsx2ps2Headers}
 )
