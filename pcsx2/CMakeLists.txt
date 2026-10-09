@@ -1134,13 +1134,21 @@ set(pcsx2InputHeaders
 # backups, arcade setup) written once for the Qt and Big Picture UIs. New Catalog files go in
 # these two lists; the HTTP transport at the end picks the one backend for this platform.
 set(pcsx2CatalogSources
+	Catalog/FileUtil.cpp
 	Catalog/HttpFetcher.cpp
+	Catalog/Json.cpp
+	Catalog/ResponseCache.cpp
 )
 set(pcsx2CatalogHeaders
 	Catalog/CancelToken.h
 	Catalog/Fetch.h
+	Catalog/FileUtil.h
 	Catalog/HttpFetcher.h
+	Catalog/Json.h
+	Catalog/ResponseCache.h
 )
+# Json.h exposes rapidjson types, so everything that includes it needs the include path.
+target_link_libraries(PCSX2_FLAGS INTERFACE rapidjson)
 if(WIN32)
 	list(APPEND pcsx2CatalogSources Catalog/HttpTransportWinHTTP.cpp)
 elseif(ANDROID OR IOS)

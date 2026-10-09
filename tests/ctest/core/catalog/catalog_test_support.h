@@ -51,7 +51,7 @@ namespace CatalogTest
 			const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
 			m_path = (std::filesystem::temp_directory_path() /
 					  ("armsx2-catalog-test-" + std::to_string(stamp) + "-" + std::to_string(counter++)))
-						 .string();
+			             .string();
 			std::filesystem::create_directories(m_path);
 		}
 
