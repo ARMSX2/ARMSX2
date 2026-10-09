@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
+#include "ArcadeLaunch.h"
 #include "AutoUpdaterDialog.h"
 #ifdef ENABLE_QT_DEBUGGER
 #include "Debugger/DebuggerWindow.h"
@@ -213,6 +214,11 @@ void EmuThread::startVM(std::shared_ptr<VMBootParameters> boot_params)
 {
 	if (!isOnEmuThread())
 	{
+		// Every start in the Qt window comes through here first, on the UI thread. An arcade game gets its files ready
+		// (boot program, dongle) now, and the player is told what is missing when it cannot start.
+		if (!ArcadeLaunch::PrepareForBoot(g_main_window, boot_params.get()))
+			return;
+
 		QMetaObject::invokeMethod(this, "startVM", Qt::QueuedConnection, Q_ARG(std::shared_ptr<VMBootParameters>, boot_params));
 		return;
 	}

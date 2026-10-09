@@ -73,7 +73,7 @@
 #endif
 
 const char* MainWindow::OPEN_FILE_FILTER =
-	QT_TRANSLATE_NOOP("MainWindow", "All File Types (*.bin *.iso *.cue *.mdf *.chd *.cso *.zso *.gz *.elf *.irx *.gs *.gs.xz *.gs.zst *.dump);;"
+	QT_TRANSLATE_NOOP("MainWindow", "All File Types (*.bin *.iso *.cue *.mdf *.chd *.cso *.zso *.gz *.elf *.irx *.gs *.gs.xz *.gs.zst *.dump *.acgame);;"
 									"Single-Track Raw Images (*.bin *.iso);;"
 									"Cue Sheets (*.cue);;"
 									"Media Descriptor File (*.mdf);;"
@@ -84,7 +84,8 @@ const char* MainWindow::OPEN_FILE_FILTER =
 									"ELF Executables (*.elf);;"
 									"IRX Executables (*.irx);;"
 									"GS Dumps (*.gs *.gs.xz *.gs.zst);;"
-									"Block Dumps (*.dump)");
+									"Block Dumps (*.dump);;"
+									"Arcade Games (*.acgame)");
 
 const char* MainWindow::DISC_IMAGE_FILTER = QT_TRANSLATE_NOOP("MainWindow", "All File Types (*.bin *.iso *.cue *.mdf *.chd *.cso *.zso *.gz *.dump);;"
 																			"Single-Track Raw Images (*.bin *.iso);;"
@@ -2664,6 +2665,11 @@ bool MainWindow::startFile(const QString& filename)
 
 		g_emu_thread->setELFOverride(filename);
 		switchToEmulationView();
+	}
+	else if (VMManager::IsArcadeGameFileName(filename_str))
+	{
+		// An arcade game is a different board, not a different disc: it starts from nothing.
+		QMessageBox::critical(this, tr("Error"), tr("Cannot start an arcade game without shutting down the current game first."));
 	}
 	else if (VMManager::IsGSDumpFileName(filename_str))
 	{
