@@ -170,6 +170,9 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/DEV9SettingsWidget.ui
 	Settings/DEV9UiCommon.cpp
 	Settings/DEV9UiCommon.h
+	Settings/DEV9LocalLinkWidget.cpp
+	Settings/DEV9LocalLinkWidget.h
+	Settings/DEV9LocalLinkWidget.ui
 	Settings/HddCreateQt.cpp
 	Settings/HddCreateQt.h
 	Settings/PatchDetailsWidget.ui

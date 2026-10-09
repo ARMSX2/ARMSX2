@@ -134,6 +134,9 @@
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="Settings\HddCreateQt.cpp">
+    <ClCompile Include="Settings\DEV9LocalLinkWidget.cpp">
+      <Filter>Settings</Filter>
+    </ClCompile>
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="AutoUpdaterDialog.cpp" />
@@ -398,6 +401,9 @@
     <QtMoc Include="AutoUpdaterDialog.h" />
     <QtMoc Include="Tools\InputRecording\NewInputRecordingDlg.h">
       <Filter>Tools\Input Recording</Filter>
+    </QtMoc>
+    <QtMoc Include="Settings\DEV9LocalLinkWidget.h">
+      <Filter>Settings</Filter>
     </QtMoc>
     <QtMoc Include="Settings\FolderSettingsWidget.h">
       <Filter>Settings</Filter>
@@ -672,6 +678,9 @@
     </QtUi>
     <QtUi Include="Settings\GameCheatSettingsWidget.ui">
       <Filter>Settings</Filter>
+    <QtUi Include="Settings\DEV9LocalLinkWidget.ui">
+      <Filter>Settings</Filter>
+    </QtUi>
     </QtUi>
     <QtUi Include="Settings\GameFixSettingsWidget.ui">
       <Filter>Settings</Filter>
