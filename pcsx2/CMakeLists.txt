@@ -1117,6 +1117,7 @@ set(pcsx2HostHeaders
 
 set(pcsx2ImGuiSources
 	ImGui/FullscreenUI.cpp
+	ImGui/FullscreenUI_Drivers.cpp
 	ImGui/FullscreenUI_Packs.cpp
 	ImGui/FullscreenUI_Settings.cpp
 	ImGui/FullscreenUIShot.cpp

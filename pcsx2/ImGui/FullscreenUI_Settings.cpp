@@ -1795,6 +1795,7 @@ void FullscreenUI::DrawSettingsWindow()
 			ICON_PF_GAMEPAD_ALT,
 			ICON_PF_KEYBOARD_ALT,
 			ICON_FA_TRIANGLE_EXCLAMATION,
+			ICON_FA_MEMORY, // Drivers: last, because it is left out of the list where packs do not exist
 		};
 		static constexpr const char* per_game_icons[] = {
 			ICON_FA_INFO,
@@ -1821,6 +1822,7 @@ void FullscreenUI::DrawSettingsWindow()
 			SettingsPage::Controller,
 			SettingsPage::Hotkey,
 			SettingsPage::Advanced,
+			SettingsPage::Drivers, // must stay last, see count below
 		};
 		static constexpr SettingsPage per_game_pages[] = {
 			SettingsPage::Summary,
@@ -1851,9 +1853,10 @@ void FullscreenUI::DrawSettingsWindow()
 			FSUI_NSTR("Patches"),
 			FSUI_NSTR("Cheats"),
 			FSUI_NSTR("Game Fixes"),
+			FSUI_NSTR("GPU Drivers"),
 		};
 
-		const u32 count = game_settings ? (show_advanced_settings ? std::size(per_game_pages) : (std::size(per_game_pages) - 1)) : std::size(global_pages);
+		const u32 count = game_settings ? (show_advanced_settings ? std::size(per_game_pages) : (std::size(per_game_pages) - 1)) : (std::size(global_pages) - (ShowDriversSettingsPage() ? 0 : 1));
 		const char* const* icons = game_settings ? per_game_icons : global_icons;
 		const SettingsPage* pages = game_settings ? per_game_pages : global_pages;
 		u32 index = 0;
@@ -2012,6 +2015,10 @@ void FullscreenUI::DrawSettingsWindow()
 
 			case SettingsPage::GameFixes:
 				DrawGameFixesSettingsPage();
+				break;
+
+			case SettingsPage::Drivers:
+				DrawDriversSettingsPage(bsi);
 				break;
 
 			default:
@@ -6396,6 +6403,7 @@ TRANSLATE_NOOP("FullscreenUI", "Activating cheats can cause unpredictable behavi
 TRANSLATE_NOOP("FullscreenUI", "Activating game patches can cause unpredictable behavior, crashing, soft-locks, or broken saved games.");
 TRANSLATE_NOOP("FullscreenUI", "Use patches at your own risk, the ARMSX2 team will provide no support for users who have enabled game patches.");
 TRANSLATE_NOOP("FullscreenUI", "Game Fixes");
+TRANSLATE_NOOP("FullscreenUI", "GPU Drivers");
 TRANSLATE_NOOP("FullscreenUI", "Game fixes should not be modified unless you are aware of what each option does and the implications of doing so.");
 TRANSLATE_NOOP("FullscreenUI", "Needed for some games with complex FMV rendering.");
 TRANSLATE_NOOP("FullscreenUI", "Skips videos/FMVs in games to avoid game hanging/freezes.");
