@@ -588,6 +588,8 @@ namespace mVUPersist
 		if (enabled == s_recordingEnabled)
 			return;
 		s_recordingEnabled = enabled;
+		// Recording sends every dispatch down the full path, bounce included.
+		mVU0ParkedSpin = 0;
 
 		// Recording state is part of program identity (canonical movs /
 		// forced-long cond branches change the bytes a program compiles to),

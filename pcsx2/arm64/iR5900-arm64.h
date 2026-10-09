@@ -758,6 +758,16 @@ void cop2EmitConditionalSync(bool interlock, void (*finishFunc)());
 // before any block compiles — called from _DynGen_Dispatchers.
 void cop2DynGenSyncStubs();
 
+// VU0 parked in a recognized wait loop, as the run-ahead sync stub tests it
+// (defined in microVU-arm64.cpp, which owns arming and disarming). Zero when
+// disarmed. Otherwise:
+//   bits  0-15: byte offset of VI[viA] in VURegs; bit 0 holds the loop's exit
+//               sense (1 = the loop exits when the operands are equal)
+//   bits 16-31: byte offset of VI[viB] in VURegs, or 0 when viB is vi0
+// Armed only while recMicroVU0::Execute's spin bounce would answer the next
+// sync on its own, so the stub may do the bounce's arithmetic in its place.
+extern u32 mVU0ParkedSpin;
+
 // (Re)writes _cpuRegistersPack.cop2Rec — the COP2 macro-mode clamp/mask
 // constants the emitters reach via [RSTATE, #imm] (defined in
 // iCOP2-arm64.cpp). Called from recResetRaw before any block compiles.
