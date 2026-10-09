@@ -62,6 +62,14 @@ namespace
 	// CPU thread.
 	MemcardBackup::RestoreAnswer answer(const MemcardBackup::RestorePrompt& prompt)
 	{
+		// In Big Picture mode the main window is hidden and a message box would go unseen: Big Picture
+		// asks instead, through the handler it registers while it runs.
+		if (g_emu_thread && g_emu_thread->isRunningFullscreenUI())
+		{
+			if (const MemcardBackup::RestorePromptHandler big_picture = MemcardBackup::GetFallbackRestorePromptHandler())
+				return big_picture(prompt);
+		}
+
 		if (Host::InNoGUIMode() || (g_emu_thread && g_emu_thread->isRunningFullscreenUI()))
 		{
 			Console.Warning("MemcardRestorePrompt: not asking (no window to ask in); starting with the unreadable card %s. "

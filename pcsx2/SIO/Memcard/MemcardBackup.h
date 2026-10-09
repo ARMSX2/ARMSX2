@@ -245,6 +245,10 @@ namespace MemcardBackup
 	/// The handler a boot would call now: the host's, else the fallback, else empty.
 	RestorePromptHandler GetRestorePromptHandler();
 
+	/// The fallback handler alone (empty when none). A host whose own window is hidden behind Big
+	/// Picture hands the question to it, since Big Picture is what the player is looking at.
+	RestorePromptHandler GetFallbackRestorePromptHandler();
+
 	/// What happened to one card in PrepareCardsForBoot().
 	struct CardReport
 	{

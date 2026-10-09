@@ -913,6 +913,12 @@ namespace MemcardBackup
 		return s_prompt_handler ? s_prompt_handler : s_fallback_prompt_handler;
 	}
 
+	RestorePromptHandler GetFallbackRestorePromptHandler()
+	{
+		std::lock_guard lock(s_handler_mutex);
+		return s_fallback_prompt_handler;
+	}
+
 	bool IsAutoBackupEnabled()
 	{
 		// From EmuConfig, not Host::GetBoolSettingValue(): FileMcd_Reopen can be called with the
