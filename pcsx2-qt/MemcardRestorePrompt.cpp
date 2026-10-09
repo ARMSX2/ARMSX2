@@ -9,8 +9,6 @@
 #include "pcsx2/Host.h"
 #include "pcsx2/SIO/Memcard/MemcardBackup.h"
 
-#include "common/Console.h"
-
 #include <QtCore/QDateTime>
 #include <QtCore/QLocale>
 #include <QtCore/QMetaObject>
@@ -72,12 +70,7 @@ namespace
 
 		if (Host::InNoGUIMode() || (g_emu_thread && g_emu_thread->isRunningFullscreenUI()))
 		{
-			Console.Warning("MemcardRestorePrompt: not asking (no window to ask in); starting with the unreadable card %s. "
-							"Its backup can be restored from Settings > Memory Cards > Backups.",
-				prompt.card.c_str());
-			Host::AddKeyedOSDMessage("MemcardRestorePrompt",
-				"Memory card " + prompt.card + " cannot be read. A backup exists: restore it from Settings > Memory Cards > Backups.",
-				Host::OSD_WARNING_DURATION);
+			MemcardBackup::ReportUnansweredRestore(prompt.card); // no window to ask in
 			return MemcardBackup::RestoreAnswer::StartAnyway;
 		}
 

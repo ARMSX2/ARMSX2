@@ -18,6 +18,7 @@
 #include "Config.h"
 #include "GS/GS.h"
 #include "GS/Renderers/Common/GSDevice.h"
+#include "GS/Renderers/Common/GSHeadlessPresent.h"
 #include "GS/Renderers/Common/GSTexture.h"
 #include "GameList.h"
 #include "Host.h"
@@ -53,6 +54,9 @@ namespace
 	using namespace FullscreenUI;
 
 	constexpr const char* MEMCARD_NOTIFICATION_KEY = "memcard_backup";
+
+	/// How long the boot-time restore question waits for an answer before it starts the game anyway.
+	constexpr std::chrono::seconds RESTORE_PROMPT_TIMEOUT{60};
 
 	// A worker thread's only way to reach the GS thread: only the CPU thread may push to the GS ring
 	// (MTGS::RunOnGSThread asserts otherwise), so hop through it. Neither step waits for anything.
@@ -271,6 +275,14 @@ namespace
 		if (!MTGS::IsOpen() || !IsInitialized())
 			return Answer::StartAnyway;
 
+		// A headless run (armsx2-sdl --headless, the screenshot tools) has no one to press a button, and a
+		// boot waiting for one would never finish.
+		if (GSHeadless::IsEnabled())
+		{
+			Backup::ReportUnansweredRestore(prompt.card);
+			return Answer::StartAnyway;
+		}
+
 		const auto question = std::make_shared<Question>();
 		MTGS::RunOnGSThread([responder = Question::Responder(question, Answer::StartAnyway), prompt]() {
 			// Big Picture went away before this ran: the responder dies with this lambda and answers.
@@ -284,11 +296,24 @@ namespace
 		// run-idle), but input reaches Big Picture through the CPU thread, which is the thread waiting.
 		// Do here what its loop would between frames: run what other threads queued for it (the Qt host
 		// delivers keyboard and mouse presses that way) and poll the controllers.
-		const Answer answer = question->Wait(Answer::StartAnyway, std::chrono::milliseconds(16), []() {
+		// A boot started by a script or a launcher may have nobody at the controller: it waits a minute, then
+		// starts with the card as it is, as it does for any host that cannot ask.
+		bool timed_out = false;
+		const Answer answer = question->WaitFor(RESTORE_PROMPT_TIMEOUT, Answer::StartAnyway, std::chrono::milliseconds(16), []() {
 			Host::PumpMessagesOnCPUThread();
 			InputManager::PollSources();
 			return MTGS::IsOpen() && IsInitialized();
-		});
+		}, &timed_out);
+
+		if (timed_out)
+		{
+			Backup::ReportUnansweredRestore(prompt.card);
+			// The dialog is still up; it must not wait on for a question that has been answered.
+			MTGS::RunOnGSThread([]() {
+				if (IsInitialized())
+					ImGuiFullscreen::CloseMessageDialog();
+			});
+		}
 
 		if (answer == Answer::Restore)
 		{

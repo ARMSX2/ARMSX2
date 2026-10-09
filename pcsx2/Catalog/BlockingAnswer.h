@@ -107,6 +107,28 @@ namespace Catalog
 			}
 		}
 
+		/// Wait() that also gives up, with `fallback`, once `timeout` has passed (checked every
+		/// `interval`, so it can be late by that much). `keep_waiting` still runs until then. If
+		/// `timed_out` is given it is set to whether the deadline ended the wait; an answer that
+		/// arrives in the same instant still wins.
+		T WaitFor(std::chrono::milliseconds timeout, T fallback, std::chrono::milliseconds interval,
+			const std::function<bool()>& keep_waiting, bool* timed_out = nullptr)
+		{
+			const auto deadline = std::chrono::steady_clock::now() + timeout;
+			bool expired = false;
+			T value = Wait(std::move(fallback), interval, [&]() {
+				if (std::chrono::steady_clock::now() >= deadline)
+				{
+					expired = true;
+					return false;
+				}
+				return !keep_waiting || keep_waiting();
+			});
+			if (timed_out)
+				*timed_out = expired;
+			return value;
+		}
+
 	private:
 		mutable std::mutex m_mutex;
 		std::condition_variable m_cv;

@@ -156,3 +156,47 @@ TEST(BlockingAnswer, AnAnswerThatLosesTheRaceWithGivingUpStillGivesOneConsistent
 		EXPECT_EQ(answer->Wait(99, 1ms, nullptr), result);
 	}
 }
+
+// ---- the bounded wait -------------------------------------------------------------------
+
+TEST(BlockingAnswerWaitFor, GivesUpAtTheDeadlineWithTheFallback)
+{
+	auto answer = MakeAnswer();
+	const auto start = std::chrono::steady_clock::now();
+	EXPECT_EQ(answer->WaitFor(80ms, FALLBACK, 5ms, [] { return true; }), FALLBACK);
+	const auto waited = std::chrono::steady_clock::now() - start;
+	EXPECT_GE(waited, 80ms);
+	EXPECT_LT(waited, 5s);
+
+	// It is recorded: an answer after giving up changes nothing.
+	EXPECT_FALSE(answer->Set(3));
+	EXPECT_EQ(answer->WaitFor(1s, 0, 1ms, nullptr), FALLBACK);
+}
+
+TEST(BlockingAnswerWaitFor, AnAnswerInTimeIsReturned)
+{
+	auto answer = MakeAnswer();
+	Answer::Responder responder(answer, FALLBACK);
+	std::thread other([responder] {
+		std::this_thread::sleep_for(30ms);
+		responder(9);
+	});
+	EXPECT_EQ(answer->WaitFor(10s, FALLBACK, 5ms, [] { return true; }), 9);
+	other.join();
+}
+
+TEST(BlockingAnswerWaitFor, TheKeepWaitingFunctionRunsUntilTheDeadlineAndCanEndItEarly)
+{
+	{
+		auto answer = MakeAnswer();
+		int polls = 0;
+		EXPECT_EQ(answer->WaitFor(60ms, FALLBACK, 5ms, [&polls] { polls++; return true; }), FALLBACK);
+		EXPECT_GE(polls, 2);
+	}
+	{
+		auto answer = MakeAnswer();
+		const auto start = std::chrono::steady_clock::now();
+		EXPECT_EQ(answer->WaitFor(10s, FALLBACK, 5ms, [] { return false; }), FALLBACK);
+		EXPECT_LT(std::chrono::steady_clock::now() - start, 5s);
+	}
+}

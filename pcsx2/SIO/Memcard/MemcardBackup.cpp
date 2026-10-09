@@ -950,6 +950,16 @@ namespace MemcardBackup
 		return EmuConfig.McdAutoBackup;
 	}
 
+	void ReportUnansweredRestore(const std::string& card)
+	{
+		Console.Warning("MemcardBackup: %s cannot be read and has a backup, but nobody could be asked; starting with the card as it is. "
+						"Its backup can be restored from Settings > Memory Cards > Backups.",
+			card.c_str());
+		Host::AddKeyedOSDMessage("MemcardRestorePrompt",
+			fmt::format(TRANSLATE_FS("MemoryCard", "Memory card {} cannot be read. A backup exists: restore it from Settings > Memory Cards > Backups."), card),
+			Host::OSD_WARNING_DURATION);
+	}
+
 	std::vector<CardReport> PrepareCardsForBoot(Store& store, const std::vector<std::string>& cards,
 		const std::string& game, bool allow_prompt, const RestorePromptHandler& handler)
 	{
@@ -992,6 +1002,11 @@ namespace MemcardBackup
 								Host::ReportErrorAsync(TRANSLATE_SV("MemoryCard", "Memory Card Restore Failed"), outcome.detail);
 							}
 						}
+					}
+					else
+					{
+						report.unanswered = true;
+						ReportUnansweredRestore(card);
 					}
 				}
 			}

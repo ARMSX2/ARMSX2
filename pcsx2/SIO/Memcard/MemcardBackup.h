@@ -233,7 +233,8 @@ namespace MemcardBackup
 	using RestorePromptHandler = std::function<RestoreAnswer(const RestorePrompt&)>;
 
 	/// Registers the host's handler (or clears it with an empty function). With none registered the
-	/// boot goes ahead and the unreadable card is logged. Set it before the VM starts.
+	/// boot goes ahead with the unreadable card and the player is told on screen where to restore its
+	/// backup from (ReportUnansweredRestore()). Set it before the VM starts.
 	void SetRestorePromptHandler(RestorePromptHandler handler);
 
 	/// A second place for a handler, for a UI that is not the host's main one: Big Picture sets it
@@ -261,7 +262,16 @@ namespace MemcardBackup
 		/// What SnapshotIfChanged() did; Absent if the card was restored (it equals a snapshot that
 		/// already exists, so it is not snapshotted again).
 		CardStatus status = CardStatus::Absent;
+		/// The card is unreadable and has a healthy backup, the VM is starting, and no handler was
+		/// registered to ask: the boot went ahead with the card as it is. PrepareCardsForBoot() has
+		/// told the player on screen (ReportUnansweredRestore()).
+		bool unanswered = false;
 	};
+
+	/// Tells the player, on screen and in the log, that `card` cannot be read and has a backup that was
+	/// not offered because nobody could be asked (no handler registered, no window to ask in, a
+	/// headless run), and where to restore it from. For a host that answers "Start Anyway" itself.
+	void ReportUnansweredRestore(const std::string& card);
 
 	/// The work of OnCardsReopening() on a given list of card names: for each, offers to restore an
 	/// unreadable one that has a healthy backup (only if `allow_prompt` and `handler` is set), then

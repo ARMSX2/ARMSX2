@@ -1156,6 +1156,47 @@ TEST(MemcardBoot, WithNoHandlerTheBootGoesAheadWithTheCardAsItIs)
 	EXPECT_EQ(ReadFile(f.CardPath("a.ps2")), std::string(CARD_SIZE, '\xff'));
 }
 
+TEST(MemcardBoot, WithNoHandlerTheReportSaysNobodyWasAskedSoTheServiceTellsThePlayer)
+{
+	// armsx2-sdl started per game by a launcher, Big Picture closed: nobody registered a handler. The service
+	// itself puts the message on screen (ReportUnansweredRestore), so every host gets it.
+	Fixture f;
+	MakeBrokenCardWithBackup(f, "a.ps2");
+	const auto reports = PrepareCardsForBoot(f.store(), {"a.ps2"}, "", true, RestorePromptHandler());
+	ASSERT_EQ(reports.size(), 1u);
+	EXPECT_TRUE(reports[0].unanswered);
+}
+
+TEST(MemcardBoot, ACardNobodyHadToAnswerForIsNotReportedUnanswered)
+{
+	// A handler was asked.
+	{
+		Fixture f;
+		MakeBrokenCardWithBackup(f, "a.ps2");
+		Prompts prompts;
+		const auto reports = PrepareCardsForBoot(f.store(), {"a.ps2"}, "", true, prompts.Handler());
+		EXPECT_TRUE(reports[0].prompted);
+		EXPECT_FALSE(reports[0].unanswered);
+	}
+	// Not booting: a running game is never asked, with or without a handler.
+	{
+		Fixture f;
+		MakeBrokenCardWithBackup(f, "a.ps2");
+		const auto reports = PrepareCardsForBoot(f.store(), {"a.ps2"}, "", /*allow_prompt=*/false, RestorePromptHandler());
+		EXPECT_FALSE(reports[0].unanswered);
+	}
+	// A good card, or an unreadable one with no healthy backup, has nothing to ask.
+	{
+		Fixture f;
+		f.PutCard("good.ps2", CardImage('a'));
+		f.PutCard("new.ps2", std::string(CARD_SIZE, '\xff'));
+		const auto reports = PrepareCardsForBoot(f.store(), {"good.ps2", "new.ps2"}, "", true, RestorePromptHandler());
+		ASSERT_EQ(reports.size(), 2u);
+		EXPECT_FALSE(reports[0].unanswered);
+		EXPECT_FALSE(reports[1].unanswered);
+	}
+}
+
 TEST(MemcardBoot, NoPromptWhileAGameIsAlreadyRunning)
 {
 	Fixture f;
