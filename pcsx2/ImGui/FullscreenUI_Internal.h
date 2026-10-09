@@ -160,6 +160,7 @@ namespace FullscreenUI
 		None,
 		Exit,
 		Achievements,
+		Arcade,
 	};
 
 	enum class SettingsPage
@@ -181,6 +182,7 @@ namespace FullscreenUI
 		Patches,
 		Cheats,
 		GameFixes,
+		Arcade,
 		Count
 	};
 
@@ -547,5 +549,30 @@ namespace FullscreenUI
 	/// Once per frame: starts the automatic cover download after the game list has settled.
 	void PollAutoCovers();
 	void ShutdownAutoCovers();
+
+	//////////////////////////////////////////////////////////////////////////
+	// Arcade, Namco System 246/256 (FullscreenUI_Arcade.cpp)
+	//////////////////////////////////////////////////////////////////////////
+	/// The global "Arcade Setup" settings page: boot files, arcade BIOS, the button layout for every arcade game.
+	void DrawArcadeSettingsPage();
+	/// An "Arcade" section on the Summary page of one game's settings: what it lacks, its own button layout.
+	void DrawArcadeGameSettings(const GameList::Entry& entry);
+	/// Starts an arcade game (an .acgame, or a loose image) through ArcadeSetup::Service::Prepare(), or shows what it
+	/// lacks. False when `path` is not an arcade game, which the caller starts as it always did.
+	bool StartArcadePath(const std::string& path, std::optional<s32> state_index, std::optional<bool> fast_boot);
+	/// An arcade game is running.
+	bool IsArcadeSessionActive();
+	/// The pause menu's own entry for the Arcade submenu (nothing while no arcade game runs), how many rows it adds
+	/// to `submenu`, and the submenu itself with the ids of its first and last row for the wrap-around.
+	void DrawArcadePauseMenuEntry();
+	u32 GetArcadePauseMenuItemCount(PauseSubMenu submenu);
+	void GetArcadePauseWrapIds(ImGuiID* first, ImGuiID* last);
+	void DrawArcadePauseSubMenu(bool just_focused);
+	/// Once per frame: lets go of the Service button a moment after the pause menu pressed it.
+	void PollArcade();
+	void ShutdownArcade();
+	/// Screenshot harness (FullscreenUIShot.cpp): "arcade<what>" pages, for the states a page name cannot reach.
+	bool ShotArcade(std::string_view what, std::string* error);
+	std::string ShotArcadeNames();
 
 } // namespace FullscreenUI

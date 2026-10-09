@@ -165,6 +165,7 @@ namespace FullscreenUI
 			{"patches", SettingsPage::Patches, false},
 			{"cheats", SettingsPage::Cheats, false},
 			{"gamefixes", SettingsPage::GameFixes, false},
+			{"arcade", SettingsPage::Arcade, true},
 		};
 
 		constexpr bool SettingsPageTableIsInEnumOrder()
@@ -192,7 +193,7 @@ namespace FullscreenUI
 				out += ", ";
 			out += page.name;
 		}
-		out += ", gamesettings";
+		out += ", gamesettings, " + ShotArcadeNames();
 		for (const SettingsPageEntry& page : kSettingsPages)
 		{
 			if (page.global)
@@ -247,6 +248,10 @@ namespace FullscreenUI
 
 		if (StringUtil::compareNoCase(top, "gamesettings"))
 			return OpenFirstGameSettings(error);
+
+		// arcadelaunch, arcadepick, ...: the arcade screens' states (FullscreenUI_Arcade.cpp).
+		if (StringUtil::StartsWithNoCase(top, "arcade"))
+			return ShotArcade(StringUtil::toLower(top.substr(6)), error);
 
 		for (const PageEntry& page : kPages)
 		{
