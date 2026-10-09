@@ -20,7 +20,9 @@ namespace Catalog
 	{
 		rapidjson::MemoryStream memory(text.data(), text.size());
 		rapidjson::EncodedInputStream<rapidjson::UTF8<>, rapidjson::MemoryStream> stream(memory);
-		document->ParseStream<rapidjson::kParseDefaultFlags, rapidjson::UTF8<>>(stream);
+		// Iterative: the default parser recurses once per nesting level, so a few megabytes of '[' from a remote
+		// host would overflow the stack.
+		document->ParseStream<rapidjson::kParseDefaultFlags | rapidjson::kParseIterativeFlag, rapidjson::UTF8<>>(stream);
 
 		if (document->HasParseError())
 		{
