@@ -605,4 +605,14 @@ namespace FullscreenUI
 	bool ShotArcade(std::string_view what, std::string* error);
 	std::string ShotArcadeNames();
 
+	// Online patches and cheats (FullscreenUI_OnlinePatches.cpp)
+	//////////////////////////////////////////////////////////////////////////
+	/// The "Browse Online" row of the per-game Patches (`cheats` false) and Cheats pages.
+	void DrawOnlinePatchesRow(bool cheats);
+	/// What pressing that row does: searches, or reopens the results already found for this game.
+	void BrowseOnlinePatches(bool cheats);
+	/// Once per frame: the results popup, while one is open.
+	void DrawOnlinePatchesResults();
+	void ShutdownOnlinePatches();
+
 } // namespace FullscreenUI
