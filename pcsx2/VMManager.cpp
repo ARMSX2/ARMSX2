@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "Achievements.h"
+#include "Autosave.h"
 #include "BuildVersion.h"
 #include "CDVD/CDVD.h"
 #include "CDVD/IsoReader.h"
@@ -2311,6 +2312,8 @@ void VMManager::Shutdown(bool save_resume_state)
 		}
 	}
 
+	Autosave::OnShutdown();
+
 	// end input recording before clearing state
 	if (g_InputRecording.isActive())
 		g_InputRecording.stop();
@@ -3657,6 +3660,7 @@ void VMManager::Internal::PollInputOnCPUThread()
 {
 	Host::PumpMessagesOnCPUThread();
 	InputManager::PollSources();
+	Autosave::OnPollInput();
 
 	if (EmuConfig.EnableRecordingTools)
 	{

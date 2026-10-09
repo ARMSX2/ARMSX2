@@ -2169,6 +2169,11 @@ Pcsx2Config::Pcsx2Config()
 	InhibitScreensaver = true;
 	UseSavestateSelector = true;
 	BackupSavestate = true;
+#ifndef __ANDROID__
+	// The Android app takes its own card snapshots (MemoryCardBackup.kt) under its own switch, so the
+	// shared ones stay off there until it moves onto MemcardBackup.
+	McdAutoBackup = true;
+#endif
 	WarnAboutUnsafeSettings = true;
 	EnableDiscordPresence = false;
 	ManuallySetRealTimeClock = false;
@@ -2185,6 +2190,8 @@ Pcsx2Config::Pcsx2Config()
 
 	GzipIsoIndexTemplate = "$(f).pindex.tmp";
 	PINESlot = 28011;
+	AutosaveIntervalMinutes = 0;
+	AutosaveKeep = 3;
 	RtcYear = 0;
 	RtcMonth = 1;
 	RtcDay = 1;
@@ -2211,6 +2218,7 @@ void Pcsx2Config::LoadSaveCore(SettingsWrapper& wrap)
 	SettingsWrapBitBool(EnableRecordingTools);
 	SettingsWrapBitBool(EnableGameFixes);
 	SettingsWrapBitBool(SaveStateOnShutdown);
+	SettingsWrapBitBool(AutosaveOnShutdown);
 	SettingsWrapBitBool(UseSavestateSelector);
 	SettingsWrapBitBool(EnableDiscordPresence);
 	SettingsWrapBitBool(InhibitScreensaver);
@@ -2242,6 +2250,8 @@ void Pcsx2Config::LoadSaveCore(SettingsWrapper& wrap)
 
 	SettingsWrapEntry(GzipIsoIndexTemplate);
 	SettingsWrapEntry(PINESlot);
+	SettingsWrapEntry(AutosaveIntervalMinutes);
+	SettingsWrapEntry(AutosaveKeep);
 	SettingsWrapEntry(RtcYear);
 	SettingsWrapEntry(RtcMonth);
 	SettingsWrapEntry(RtcDay);
@@ -2276,6 +2286,8 @@ void Pcsx2Config::LoadSave(SettingsWrapper& wrap)
 
 void Pcsx2Config::LoadSaveMemcards(SettingsWrapper& wrap)
 {
+	McdAutoBackup = wrap.EntryBitBool("MemoryCards", "AutoBackup", !!McdAutoBackup, McdAutoBackup);
+
 	for (uint slot = 0; slot < 2; ++slot)
 	{
 		wrap.Entry("MemoryCards", StringUtil::StdStringFromFormat("Slot%u_Enable", slot + 1).c_str(),
