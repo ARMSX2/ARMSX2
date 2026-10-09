@@ -6,6 +6,7 @@
 #include "QtUtils.h"
 #include "Settings/AchievementSettingsWidget.h"
 #include "Settings/AdvancedSettingsWidget.h"
+#include "Settings/ArcadeControlsSettingsWidget.h"
 #include "Settings/AudioSettingsWidget.h"
 #include "Settings/BIOSSettingsWidget.h"
 #include "Settings/DEV9SettingsWidget.h"
@@ -29,6 +30,7 @@
 #include "pcsx2/Host.h"
 #include "pcsx2/INISettingsInterface.h"
 
+#include "common/ARCADE.h"
 #include "common/FileSystem.h"
 #include "common/Path.h"
 #include "common/StringUtil.h"
@@ -144,6 +146,14 @@ void SettingsWindow::setupUi(const GameList::Entry* game)
 			tr("<strong>Cheats</strong><hr>This section allows you to select which cheats you wish to enable. You "
 			   "cannot enable/disable cheats without labels for old-format pnach files, those will automatically "
 			   "activate if the main cheat enable option is checked."));
+	}
+
+	// How the controller's buttons work the cabinet of an arcade game (this game's own) or of every arcade game (global).
+	if (!isPerGameSettings() || Arcade::IsGameId(m_serial))
+	{
+		addWidget(new ArcadeControlsSettingsWidget(this, m_ui.settingsContainer), tr("Arcade Controls"), QStringLiteral("controller-line"),
+			tr("<strong>Arcade Controls</strong><hr>Choose what each button of your controller does on the arcade cabinet.<br><br>"
+			   "Changes apply at once, also while a game runs."));
 	}
 
 	// Only show the game fixes for per-game settings, there's really no reason to be setting them globally.

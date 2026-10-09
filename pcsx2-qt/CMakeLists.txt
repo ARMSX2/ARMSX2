@@ -70,6 +70,8 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/AdvancedSettingsWidget.cpp
 	Settings/AdvancedSettingsWidget.h
 	Settings/AdvancedSettingsWidget.ui
+	Settings/ArcadeControlsSettingsWidget.cpp
+	Settings/ArcadeControlsSettingsWidget.h
 	Settings/AudioExpansionSettingsDialog.ui
 	Settings/AudioSettingsWidget.cpp
 	Settings/AudioSettingsWidget.h

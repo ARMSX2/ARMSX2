@@ -169,6 +169,7 @@
     <ClCompile Include="Settings\GameSummaryWidget.cpp" />
     <ClCompile Include="Settings\AchievementLoginDialog.cpp" />
     <ClCompile Include="Settings\AchievementSettingsWidget.cpp" />
+    <ClCompile Include="Settings\ArcadeControlsSettingsWidget.cpp" />
     <ClCompile Include="GameList\GameListModel.cpp" />
     <ClCompile Include="GameList\GameListRefreshThread.cpp" />
     <ClCompile Include="GameList\GameListWidget.cpp" />
@@ -236,6 +237,7 @@
     <QtMoc Include="Settings\MemoryCardCreateDialog.h" />
     <QtMoc Include="Settings\AchievementLoginDialog.h" />
     <QtMoc Include="Settings\AchievementSettingsWidget.h" />
+    <QtMoc Include="Settings\ArcadeControlsSettingsWidget.h" />
     <QtMoc Include="GameList\GameListModel.h" />
     <QtMoc Include="GameList\GameListWidget.h" />
     <QtMoc Include="GameList\GameListRefreshThread.h" />

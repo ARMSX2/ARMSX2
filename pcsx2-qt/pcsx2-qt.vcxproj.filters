@@ -145,6 +145,9 @@
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="CoverDownloadDialog.cpp" />
+    <ClCompile Include="Settings\ArcadeControlsSettingsWidget.cpp">
+      <Filter>Settings</Filter>
+    </ClCompile>
     <ClCompile Include="ArcadeLaunch.cpp" />
     <ClCompile Include="ArcadeSetupDialog.cpp" />
     <ClCompile Include="ShortcutCreationDialog.cpp" />
@@ -407,6 +410,9 @@
     </QtMoc>
     <QtMoc Include="QtHost.h" />
     <QtMoc Include="CoverDownloadDialog.h" />
+    <QtMoc Include="Settings\ArcadeControlsSettingsWidget.h">
+      <Filter>Settings</Filter>
+    </QtMoc>
     <QtMoc Include="ArcadeSetupDialog.h" />
     <QtMoc Include="QtProgressCallback.h" />
     <QtMoc Include="ShortcutCreationDialog.h" />
