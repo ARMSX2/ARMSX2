@@ -145,6 +145,7 @@
     <ClCompile Include="Settings\ControllerBindingWidget.cpp" />
     <ClCompile Include="Settings\ControllerGlobalSettingsWidget.cpp" />
     <ClCompile Include="Settings\MemoryCardCreateDialog.cpp" />
+    <ClCompile Include="Settings\OnlinePatchesDialog.cpp" />
     <ClCompile Include="Settings\EmulationSettingsWidget.cpp" />
     <ClCompile Include="Settings\GameListSettingsWidget.cpp" />
     <ClCompile Include="Settings\GraphicsSettingsWidget.cpp" />
@@ -209,6 +210,7 @@
     <QtMoc Include="Settings\ControllerSettingsWindow.h" />
     <QtMoc Include="Settings\AudioSettingsWidget.h" />
     <QtMoc Include="Settings\MemoryCardConvertDialog.h" />
+    <QtMoc Include="Settings\OnlinePatchesDialog.h" />
     <QtMoc Include="Settings\MemoryCardSettingsWidget.h" />
     <QtMoc Include="Settings\DEV9DnsHostDialog.h" />
     <QtMoc Include="Settings\DEV9SettingsWidget.h" />
@@ -241,6 +243,7 @@
     <QtMoc Include="Tools\InputRecording\InputRecordingViewer.h" />
     <ClInclude Include="QtUtils.h" />
     <ClInclude Include="QtShot.h" />
+    <ClInclude Include="QtAsyncCall.h" />
     <QtMoc Include="Debugger\AnalysisOptionsDialog.h" />
     <QtMoc Include="Debugger\DebuggerEvents.h" />
     <QtMoc Include="Debugger\DebuggerView.h" />

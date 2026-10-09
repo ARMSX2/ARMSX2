@@ -5,6 +5,7 @@
 #include "QtHost.h"
 #include "QtUtils.h"
 #include "Settings/GamePatchSettingsWidget.h"
+#include "Settings/OnlinePatchesDialog.h"
 #include "SettingWidgetBinder.h"
 #include "Settings/SettingsWindow.h"
 
@@ -84,6 +85,10 @@ GamePatchSettingsWidget::GamePatchSettingsWidget(SettingsWindow* settings_dialog
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.allCRCsCheckbox, "EmuCore", "ShowPatchesForAllCRCs", false);
 
 	connect(m_ui.reload, &QPushButton::clicked, this, &GamePatchSettingsWidget::onReloadClicked);
+	connect(m_ui.browseOnlinePatches, &QPushButton::clicked, this, [this]() {
+		if (OnlinePatchesDialog::browse(this, dialog(), Catalog::PatchKind::Patch))
+			onReloadClicked();
+	});
 	connect(m_ui.allCRCsCheckbox, &QCheckBox::checkStateChanged, this, &GamePatchSettingsWidget::reloadList);
 	connect(dialog(), &SettingsWindow::discSerialChanged, this, &GamePatchSettingsWidget::reloadList);
 

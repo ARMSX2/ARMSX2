@@ -39,6 +39,7 @@ target_sources(pcsx2-qt PRIVATE
 	ToolbarCustomizationDialog.h
 	ToolbarCustomizationDialog.ui
 	Translations.cpp
+	QtAsyncCall.h
 	QtHost.cpp
 	QtHost.h
 	QtMetaTypes.h
@@ -156,6 +157,8 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/MemoryCardSettingsWidget.cpp
 	Settings/MemoryCardSettingsWidget.h
 	Settings/MemoryCardSettingsWidget.ui
+	Settings/OnlinePatchesDialog.cpp
+	Settings/OnlinePatchesDialog.h
 	Settings/OSDSettingsWidget.cpp
 	Settings/OSDSettingsWidget.h
 	Settings/OSDSettingsWidget.ui

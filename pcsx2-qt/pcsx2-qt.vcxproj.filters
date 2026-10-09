@@ -124,6 +124,9 @@
     <ClCompile Include="Settings\MemoryCardCreateDialog.cpp">
       <Filter>Settings</Filter>
     </ClCompile>
+    <ClCompile Include="Settings\OnlinePatchesDialog.cpp">
+      <Filter>Settings</Filter>
+    </ClCompile>
     <ClCompile Include="Settings\DEV9DnsHostDialog.cpp">
       <Filter>Settings</Filter>
     </ClCompile>
@@ -296,6 +299,7 @@
     <ClInclude Include="AsyncDialogs.h" />
     <ClInclude Include="QtUtils.h" />
     <ClInclude Include="QtShot.h" />
+    <ClInclude Include="QtAsyncCall.h" />
     <ClInclude Include="SettingWidgetBinder.h" />
     <ClInclude Include="Settings\HddCreateQt.h">
       <Filter>Settings</Filter>
@@ -375,6 +379,9 @@
       <Filter>Settings</Filter>
     </QtMoc>
     <QtMoc Include="Settings\MemoryCardConvertDialog.h">
+      <Filter>Settings</Filter>
+    </QtMoc>
+    <QtMoc Include="Settings\OnlinePatchesDialog.h">
       <Filter>Settings</Filter>
     </QtMoc>
     <QtMoc Include="Settings\MemoryCardSettingsWidget.h">
