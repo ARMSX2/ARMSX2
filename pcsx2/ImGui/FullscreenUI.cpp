@@ -339,6 +339,7 @@ bool FullscreenUI::Initialize()
 	s_initialized = true;
 	s_hotkey_list_cache = InputManager::GetHotkeyList();
 	MTGS::SetRunIdle(true);
+	RegisterMemcardRestorePrompt();
 
 	LoadCustomBackground();
 
@@ -585,6 +586,7 @@ void FullscreenUI::Shutdown(bool clear_state)
 	s_custom_background_path.clear();
 	s_custom_background_enabled = false;
 
+	ShutdownSavesUI();
 	DestroyResources();
 	ImGuiFullscreen::Shutdown(clear_state);
 	s_initialized = false;
@@ -666,6 +668,9 @@ void FullscreenUI::Render()
 			break;
 		case MainWindowType::Leaderboards:
 			Achievements::DrawLeaderboardsWindow();
+			break;
+		case MainWindowType::MemcardBackups:
+			DrawMemcardBackupsWindow();
 			break;
 		default:
 			break;
@@ -1974,6 +1979,7 @@ u32 FullscreenUI::PopulateSaveStateListEntries(const std::string& title, const s
 		}
 	}
 
+	AppendAutosaveListEntries(serial, crc);
 	return static_cast<u32>(s_save_state_selector_slots.size());
 }
 
@@ -2160,7 +2166,7 @@ void FullscreenUI::DrawSaveStateSelector(bool is_loading)
 						closed = true;
 					}
 
-					if (ActiveButton(FSUI_ICONSTR(ICON_FA_TRASH, "Delete Save"), false, true, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
+					if (ActiveButton(FSUI_ICONSTR(ICON_FA_TRASH, "Delete Save"), false, !IsAutosaveSlot(entry.slot), LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
 					{
 						if (!FileSystem::FileExists(entry.path.c_str()))
 						{
@@ -4175,7 +4181,7 @@ void FullscreenUI::ReportStateLoadError(const std::string& message, std::optiona
 		}
 
 		std::string title;
-		if (slot.has_value())
+		if (slot.has_value() && *slot > 0)
 		{
 			if (backup)
 				title = fmt::format(FSUI_FSTR("Failed to Load State From Backup Slot {}"), *slot);

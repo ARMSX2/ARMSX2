@@ -2295,6 +2295,7 @@ void FullscreenUI::DrawInterfaceSettingsPage()
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_BOX_ARCHIVE, "Create Save State Backups"),
 		FSUI_CSTR("Creates a backup copy of a save state if it already exists when the save is created. The backup copy has a .backup suffix"),
 		"EmuCore", "BackupSavestate", true);
+	DrawAutosaveSettings(bsi);
 	const SmallString glyph_mode = bsi->GetSmallStringValue("UI", "FullscreenUIGlyphStyle", "auto");
 	static constexpr const char* glyph_names[] = {
 		FSUI_NSTR("Automatic"),
@@ -3717,6 +3718,8 @@ void FullscreenUI::DrawMemoryCardSettingsPage()
 			ShowToast(ICON_FA_ARROWS_ROTATE, FSUI_STR("Swapped Slot 1 and Slot 2 memory cards."));
 		}
 	}
+
+	DrawMemcardBackupSettings(bsi);
 
 	for (u32 port = 0; port < NUM_MEMORY_CARD_PORTS; port++)
 	{

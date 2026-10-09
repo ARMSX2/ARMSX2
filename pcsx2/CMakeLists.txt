@@ -1118,6 +1118,7 @@ set(pcsx2HostHeaders
 set(pcsx2ImGuiSources
 	ImGui/FullscreenUI.cpp
 	ImGui/FullscreenUI_Packs.cpp
+	ImGui/FullscreenUI_Saves.cpp
 	ImGui/FullscreenUI_Settings.cpp
 	ImGui/FullscreenUIShot.cpp
 	ImGui/ImGuiFullscreen.cpp
@@ -1172,6 +1173,7 @@ set(pcsx2CatalogSources
 	Catalog/ZipTextureExtractor.cpp
 )
 set(pcsx2CatalogHeaders
+	Catalog/BlockingAnswer.h
 	Catalog/CancelToken.h
 	Catalog/CoverAutoDownload.h
 	Catalog/CoverDownloadJob.h

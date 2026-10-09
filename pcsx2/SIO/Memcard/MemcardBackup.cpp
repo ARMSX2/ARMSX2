@@ -52,6 +52,7 @@ namespace MemcardBackup
 
 		std::mutex s_handler_mutex;
 		RestorePromptHandler s_prompt_handler;
+		RestorePromptHandler s_fallback_prompt_handler;
 
 		Outcome Fail(std::string detail)
 		{
@@ -900,6 +901,18 @@ namespace MemcardBackup
 		s_prompt_handler = std::move(handler);
 	}
 
+	void SetFallbackRestorePromptHandler(RestorePromptHandler handler)
+	{
+		std::lock_guard lock(s_handler_mutex);
+		s_fallback_prompt_handler = std::move(handler);
+	}
+
+	RestorePromptHandler GetRestorePromptHandler()
+	{
+		std::lock_guard lock(s_handler_mutex);
+		return s_prompt_handler ? s_prompt_handler : s_fallback_prompt_handler;
+	}
+
 	bool IsAutoBackupEnabled()
 	{
 		// From EmuConfig, not Host::GetBoolSettingValue(): FileMcd_Reopen can be called with the
@@ -993,11 +1006,7 @@ namespace MemcardBackup
 			cards.push_back((mcd.Enabled && mcd.Type != MemoryCardType::Empty) ? mcd.Filename : std::string());
 		}
 
-		RestorePromptHandler handler;
-		{
-			std::lock_guard lock(s_handler_mutex);
-			handler = s_prompt_handler;
-		}
+		const RestorePromptHandler handler = GetRestorePromptHandler();
 
 		// Restoring under a running game does not work (the console keeps its own picture of the card
 		// in guest memory), so a prompt is only offered while the VM is starting.

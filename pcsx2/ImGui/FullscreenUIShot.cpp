@@ -95,6 +95,21 @@ namespace FullscreenUI
 			QueueResetFocus(FocusResetType::WindowChanged);
 		}
 
+		// The memory card backups window, reached from the Memory Card page in normal use. It lists
+		// what is in <data root>/memcard-backups, so seed that folder (or boot once) before opening it.
+		void OpenMemcardBackups()
+		{
+			s_about_window_open = false;
+			OpenMemcardBackupsWindow();
+		}
+
+		// The question a boot asks when a memory card cannot be read, with a sample card and no effect,
+		// over whatever is showing.
+		void OpenMemcardPrompt()
+		{
+			OpenMemcardPromptPreview();
+		}
+
 		// Starts a game list scan and shows the list, for pages that need games in it. The scan runs
 		// on the host's own thread, so give it a few frames (bp-shot.py --wait-frames) before the next page.
 		void OpenRescan()
@@ -120,6 +135,32 @@ namespace FullscreenUI
 			return true;
 		}
 
+		// The Load State selector of the first game in the list: its numbered slots and autosaves.
+		bool OpenFirstGameLoadState(std::string* error)
+		{
+			std::string path;
+			{
+				auto lock = GameList::GetLock();
+				const GameList::Entry* entry = GameList::GetEntryCount() ? GameList::GetEntryByIndex(0) : nullptr;
+				if (entry)
+					path = entry->path;
+			}
+			if (path.empty())
+			{
+				*error = "the game list is empty (open 'rescan' first and wait a few frames)";
+				return false;
+			}
+
+			s_about_window_open = false;
+			s_current_main_window = MainWindowType::GameList;
+			if (!OpenLoadStateSelectorForGame(path))
+			{
+				*error = "the first game has no save states or autosaves";
+				return false;
+			}
+			return true;
+		}
+
 		struct PageEntry
 		{
 			const char* name;
@@ -136,6 +177,8 @@ namespace FullscreenUI
 			{"about", &OpenAbout},
 			{"settings", &OpenSettings},
 			{"rescan", &OpenRescan},
+			{"memcardbackups", &OpenMemcardBackups},
+			{"memcardprompt", &OpenMemcardPrompt},
 		};
 
 		// `global` pages are the ones the settings window lists when it is not editing one game's
@@ -192,7 +235,7 @@ namespace FullscreenUI
 				out += ", ";
 			out += page.name;
 		}
-		out += ", gamesettings";
+		out += ", gamesettings, loadstate";
 		for (const SettingsPageEntry& page : kSettingsPages)
 		{
 			if (page.global)
@@ -247,6 +290,9 @@ namespace FullscreenUI
 
 		if (StringUtil::compareNoCase(top, "gamesettings"))
 			return OpenFirstGameSettings(error);
+
+		if (StringUtil::compareNoCase(top, "loadstate"))
+			return OpenFirstGameLoadState(error);
 
 		for (const PageEntry& page : kPages)
 		{
