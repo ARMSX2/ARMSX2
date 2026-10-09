@@ -106,6 +106,15 @@ namespace ee_divtrace
 	// EERUNNER_VU0FP.
 	extern bool                    g_vu0_include;
 
+	// When set, FingerprintCpu() ALSO mixes in the VU0 state a JIT-vs-JIT
+	// comparison across builds needs and a JIT-vs-interp one cannot use: all
+	// 32 VI registers (VPU_STAT, TPC, FBRST included), VU0's clock and flags
+	// word, VF00-31 + ACC, and hashes of VU0 data and micro memory. The VU0
+	// clock differs between JIT and interp by design, so this is for
+	// --twindump/--twincompare between two JIT builds. eerunner sets it from
+	// EERUNNER_VU0FULL.
+	extern bool                    g_vu0_full;
+
 	// When set, the interpreter's SYSCALL handler skips FlushCache (0x64) /
 	// iFlushCache (0x68) — returning without raising the syscall exception —
 	// exactly as the JIT's recSYSCALL does when $v1 is a known const. This keeps

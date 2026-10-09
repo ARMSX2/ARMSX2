@@ -22,6 +22,7 @@ namespace ee_divtrace
 	bool                    g_emit_block_hook = false;
 	bool                    g_fp_exclude = false;
 	bool                    g_vu0_include = false;
+	bool                    g_vu0_full = false;
 	bool                    g_skip_flushcache_syscall = false;
 	std::vector<Sample>     g_stream;
 	std::vector<FullSnap>   g_snaps;
@@ -99,6 +100,25 @@ namespace ee_divtrace
 			h = hash_mix(h, VU0.VI[REG_STATUS_FLAG].UL);
 			h = hash_mix(h, VU0.VI[REG_MAC_FLAG].UL);
 			h = hash_mix(h, VU0.VI[REG_CLIP_FLAG].UL);
+		}
+		if (g_vu0_full)
+		{
+			for (int i = 0; i < 32; ++i)
+				h = hash_mix(h, VU0.VI[i].UL);
+			h = hash_mix64(h, VU0.cycle);
+			h = hash_mix(h, VU0.flags);
+			if (!g_vu0_include)
+			{
+				for (int i = 0; i < 32; ++i)
+				{
+					h = hash_mix64(h, VU0.VF[i].UD[0]);
+					h = hash_mix64(h, VU0.VF[i].UD[1]);
+				}
+				h = hash_mix64(h, VU0.ACC.UD[0]);
+				h = hash_mix64(h, VU0.ACC.UD[1]);
+			}
+			h = hash_mix64(h, XXH3_64bits(VU0.Mem, VU0_MEMSIZE));
+			h = hash_mix64(h, XXH3_64bits(VU0.Micro, VU0_PROGSIZE));
 		}
 		h = hash_mix(h, cpuRegs.pc);
 		h = hash_mix(h, cpuRegs.sa);
