@@ -3,6 +3,7 @@
 # core_test does, because ACJV, GameList and the BIOS tools do not stand alone.
 add_pcsx2_test(arcade_tests
 	${CMAKE_CURRENT_SOURCE_DIR}/../StubHost.cpp
+	arcade_bios_tests.cpp
 	arcade_gamelist_tests.cpp
 	arcade_hook_tests.cpp
 	arcade_input_tests.cpp

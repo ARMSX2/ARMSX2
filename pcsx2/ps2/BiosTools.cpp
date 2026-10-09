@@ -279,7 +279,7 @@ static constexpr u32 MIN_ARCADE_BIOS_SIZE = 2 * _1mb;
 
 // Whether the file is a Namco arcade board's BIOS (a COH-H dump), and its EXTINFO serial, which names the
 // board it is from.
-static bool IsArcadeBIOS(const char* filename, std::string* board_serial = nullptr)
+bool IsArcadeBIOS(const char* filename, std::string* board_serial)
 {
 	const auto fp = FileSystem::OpenManagedCFile(filename, "rb");
 	if (!fp)
@@ -438,7 +438,7 @@ static std::string FindBiosImage()
 
 		// An arcade board's BIOS (COH-H) cannot run a console game: one dumped at 4 MB or more would
 		// otherwise pass for a console BIOS here.
-		if (IsBIOS(fd.FileName.c_str(), version, description, region, zone) && zone != "COH-H")
+		if (IsConsoleBIOS(fd.FileName.c_str(), version, description, region, zone))
 		{
 			Console.WriteLn("Using BIOS '%s' (%s %s)", fd.FileName.c_str(), description.c_str(), zone.c_str());
 			return std::move(fd.FileName);
@@ -459,6 +459,11 @@ bool IsBIOS(const char* filename, u32& version, std::string& description, u32& r
 	// FPS2BIOS is smaller and of variable size
 	//if (inway.Length() < 512*1024) return false;
 	return LoadBiosVersion(fp.get(), version, description, region, zone, serial);
+}
+
+bool IsConsoleBIOS(const char* filename, u32& version, std::string& description, u32& region, std::string& zone)
+{
+	return IsBIOS(filename, version, description, region, zone) && zone != "COH-H";
 }
 
 bool IsBIOSFromFd(int fd, u32& version, std::string& description, u32& region, std::string& zone)
