@@ -1145,6 +1145,8 @@ set(pcsx2CatalogSources
 	Catalog/TarZstdExtractor.cpp
 	Catalog/TextureArchivePath.cpp
 	Catalog/TexturePackCatalog.cpp
+	Catalog/TexturePackEngine.cpp
+	Catalog/TexturePackInstaller.cpp
 	Catalog/TexturePackState.cpp
 	Catalog/ZipTextureExtractor.cpp
 )
@@ -1158,6 +1160,8 @@ set(pcsx2CatalogHeaders
 	Catalog/TarZstdExtractor.h
 	Catalog/TextureArchivePath.h
 	Catalog/TexturePackCatalog.h
+	Catalog/TexturePackEngine.h
+	Catalog/TexturePackInstaller.h
 	Catalog/TexturePackState.h
 	Catalog/ZipTextureExtractor.h
 )
