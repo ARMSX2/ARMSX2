@@ -3327,6 +3327,7 @@ void FullscreenUI::DrawGraphicsSettingsPage(SettingsInterface* bsi, bool show_ad
 		DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_DATABASE, "Precache Textures"),
 			FSUI_CSTR("Preloads all replacement textures to memory. Not necessary with asynchronous loading."), "EmuCore/GS",
 			"PrecacheTextureReplacements", false, replacement_active);
+		DrawTextureUpscaleSetting(bsi);
 
 		if (!IsEditingGameSettings(bsi))
 		{

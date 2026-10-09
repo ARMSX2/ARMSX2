@@ -535,4 +535,9 @@ namespace FullscreenUI
 	inline Common::Timer s_input_binding_timer;
 	inline bool s_prefer_english_titles;
 
+	//////////////////////////////////////////////////////////////////////////
+	// Features ported from the Android app (FullscreenUI_Packs.cpp)
+	//////////////////////////////////////////////////////////////////////////
+	void DrawTextureUpscaleSetting(SettingsInterface* bsi);
+
 } // namespace FullscreenUI
