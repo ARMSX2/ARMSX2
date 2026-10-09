@@ -1172,6 +1172,7 @@ set(pcsx2CatalogSources
 	Catalog/ZipTextureExtractor.cpp
 )
 set(pcsx2CatalogHeaders
+	Catalog/BlockingAnswer.h
 	Catalog/CancelToken.h
 	Catalog/CoverAutoDownload.h
 	Catalog/CoverDownloadJob.h
