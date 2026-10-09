@@ -175,6 +175,8 @@
     <ClCompile Include="AboutDialog.cpp" />
     <ClCompile Include="AutoUpdaterDialog.cpp" />
     <ClCompile Include="CoverDownloadDialog.cpp" />
+    <ClCompile Include="ArcadeLaunch.cpp" />
+    <ClCompile Include="ArcadeSetupDialog.cpp" />
     <ClCompile Include="DisplayWidget.cpp" />
     <ClCompile Include="ShortcutCreationDialog.cpp" />
     <ClCompile Include="QtHost.cpp" />
@@ -241,6 +243,7 @@
     <QtMoc Include="Tools\InputRecording\InputRecordingViewer.h" />
     <ClInclude Include="QtUtils.h" />
     <ClInclude Include="QtShot.h" />
+    <ClInclude Include="ArcadeLaunch.h" />
     <QtMoc Include="Debugger\AnalysisOptionsDialog.h" />
     <QtMoc Include="Debugger\DebuggerEvents.h" />
     <QtMoc Include="Debugger\DebuggerView.h" />
@@ -281,6 +284,7 @@
     <QtMoc Include="AboutDialog.h" />
     <QtMoc Include="AutoUpdaterDialog.h" />
     <QtMoc Include="CoverDownloadDialog.h" />
+    <QtMoc Include="ArcadeSetupDialog.h" />
     <QtMoc Include="ShortcutCreationDialog.h" />
     <QtMoc Include="MainWindow.h" />
     <QtMoc Include="DisplayWidget.h" />

@@ -10,6 +10,10 @@ target_sources(pcsx2-qt PRIVATE
 	AboutDialog.cpp
 	AboutDialog.h
 	AboutDialog.ui
+	ArcadeLaunch.cpp
+	ArcadeLaunch.h
+	ArcadeSetupDialog.cpp
+	ArcadeSetupDialog.h
 	AsyncDialogs.cpp
 	AsyncDialogs.h
 	AutoUpdaterDialog.cpp

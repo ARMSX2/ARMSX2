@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "AboutDialog.h"
+#include "ArcadeLaunch.h"
 #include "AutoUpdaterDialog.h"
 #include "CoverDownloadDialog.h"
 #include "DisplayWidget.h"
@@ -555,6 +556,7 @@ void MainWindow::connectSignals()
 	connect(m_ui.actionOpenDataDirectory, &QAction::triggered, this, &MainWindow::onToolsOpenDataDirectoryTriggered);
 	connect(m_ui.actionCoverDownloader, &QAction::triggered, this, &MainWindow::onToolsCoverDownloaderTriggered);
 	connect(m_ui.actionControllerTester, &QAction::triggered, this, &MainWindow::onToolsControllerTesterTriggered);
+	connect(m_ui.actionArcadeSetup, &QAction::triggered, this, &MainWindow::onToolsArcadeSetupTriggered);
 	connect(m_ui.actionGridViewShowTitles, &QAction::triggered, m_game_list_widget, &GameListWidget::setShowCoverTitles);
 	connect(m_ui.actionGridViewShowFullTitles, &QAction::triggered, m_game_list_widget, &GameListWidget::setShowFullCoverTitles);
 	connect(m_ui.actionGridViewZoomIn, &QAction::triggered, m_game_list_widget, [this]() {
@@ -2160,6 +2162,12 @@ void MainWindow::onToolsCoverDownloaderTriggered()
 	CoverDownloadDialog dlg(this);
 	connect(&dlg, &CoverDownloadDialog::coverRefreshRequested, m_game_list_widget, &GameListWidget::refreshGridCovers);
 	dlg.exec();
+}
+
+void MainWindow::onToolsArcadeSetupTriggered()
+{
+	VMLock lock(pauseAndLockVM());
+	ArcadeLaunch::ShowSetup(lock.getDialogParent());
 }
 
 void MainWindow::onToolsControllerTesterTriggered()

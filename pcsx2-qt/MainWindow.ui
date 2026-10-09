@@ -197,6 +197,7 @@
     <addaction name="actionOpenDataDirectory"/>
     <addaction name="actionCoverDownloader"/>
     <addaction name="actionControllerTester"/>
+    <addaction name="actionArcadeSetup"/>
     <addaction name="actionToggleSoftwareRendering"/>
     <addaction name="separator"/>
     <addaction name="actionEditCheats"/>
@@ -1014,6 +1015,14 @@
    </property>
    <property name="text">
     <string>Controller &amp;Tester</string>
+   </property>
+  </action>
+  <action name="actionArcadeSetup">
+   <property name="icon">
+    <iconset theme="tools-line"/>
+   </property>
+   <property name="text">
+    <string>&amp;Arcade Setup...</string>
    </property>
   </action>
   <action name="actionShowAdvancedSettings">
