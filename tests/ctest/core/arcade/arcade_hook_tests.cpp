@@ -8,6 +8,8 @@
 
 #include <gtest/gtest.h>
 
+#include <string_view>
+
 #include "Arcade/ArcadeInput.h"
 #include "Config.h"
 #include "DEV9/ACJV.h"
@@ -159,4 +161,89 @@ TEST_F(ArcadeHookTest, TheMouseMovingGivesTheGunBackToTheMouse)
 	InputManager::UpdatePointerRelativeDelta(0, InputPointerAxis::X, 3.0f);
 	EXPECT_FALSE(ACJV::GetGunStickAim(0, &x, &y));
 	Click(RSTICK_RIGHT_BUTTON, false);
+}
+
+// ----------------------------------------------------------------------------------------------------
+// Hotkeys
+// ----------------------------------------------------------------------------------------------------
+
+namespace
+{
+	void FireHotkey(const char* name, s32 pressed)
+	{
+		for (const HotkeyInfo* hotkey : InputManager::GetHotkeyList())
+		{
+			if (std::string_view(hotkey->name) == name)
+			{
+				hotkey->handler(pressed);
+				return;
+			}
+		}
+		ADD_FAILURE() << "no hotkey " << name;
+	}
+} // namespace
+
+TEST_F(ArcadeHookTest, TheArcadeHotkeysAreInTheSystemCategory)
+{
+	for (const char* name : {"ArcadeCoinP1", "ArcadeCoinP2", "ArcadeService", "ArcadeTest"})
+	{
+		bool found = false;
+		for (const HotkeyInfo* hotkey : InputManager::GetHotkeyList())
+		{
+			if (std::string_view(hotkey->name) == name)
+			{
+				found = true;
+				EXPECT_STREQ(hotkey->category, "System");
+				EXPECT_NE(std::string_view(hotkey->display_name).find("Arcade"), std::string_view::npos);
+			}
+		}
+		EXPECT_TRUE(found) << name;
+	}
+}
+
+TEST_F(ArcadeHookTest, CoinHotkeysInsertACoinOnThePress)
+{
+	StartArcadeGame("NM00099");
+	FireHotkey("ArcadeCoinP1", 1);
+	EXPECT_EQ(ACJV::coin[0], 1);
+	FireHotkey("ArcadeCoinP1", 0); // The release is not a second coin.
+	EXPECT_EQ(ACJV::coin[0], 1);
+	FireHotkey("ArcadeCoinP2", 1);
+	FireHotkey("ArcadeCoinP2", 0);
+	EXPECT_EQ(ACJV::coin[1], 1);
+	FireHotkey("ArcadeCoinP2", -1); // Cancelled by a chord.
+	EXPECT_EQ(ACJV::coin[1], 1);
+}
+
+TEST_F(ArcadeHookTest, ServiceHotkeyIsHeldWhilePressed)
+{
+	StartArcadeGame("NM00099");
+	FireHotkey("ArcadeService", 1);
+	EXPECT_EQ(ACJV::GetButtonState(0), JVS_BTN_SERVICE);
+	FireHotkey("ArcadeService", 0);
+	EXPECT_EQ(ACJV::GetButtonState(0), 0);
+	FireHotkey("ArcadeService", 1);
+	FireHotkey("ArcadeService", -1);
+	EXPECT_EQ(ACJV::GetButtonState(0), 0);
+}
+
+TEST_F(ArcadeHookTest, TestHotkeyFlipsTheTestSwitch)
+{
+	StartArcadeGame("NM00099");
+	EXPECT_FALSE(ArcadeInput::IsTestOn());
+	FireHotkey("ArcadeTest", 1);
+	FireHotkey("ArcadeTest", 0);
+	EXPECT_TRUE(ArcadeInput::IsTestOn());
+	FireHotkey("ArcadeTest", 1);
+	EXPECT_FALSE(ArcadeInput::IsTestOn());
+}
+
+TEST_F(ArcadeHookTest, TheArcadeHotkeysDoNothingWithoutAnArcadeGame)
+{
+	FireHotkey("ArcadeCoinP1", 1);
+	FireHotkey("ArcadeCoinP2", 1);
+	FireHotkey("ArcadeService", 1);
+	FireHotkey("ArcadeTest", 1);
+	EXPECT_FALSE(ACJV::GetDIPSwitchState(0));
+	EXPECT_EQ(ACJV::GetButtonState(0), 0);
 }
