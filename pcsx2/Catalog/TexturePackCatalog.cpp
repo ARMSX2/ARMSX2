@@ -592,12 +592,13 @@ namespace Catalog
 		return ParsePopularList(response.body);
 	}
 
-	bool PostInstallHit(Fetcher& fetcher, std::string_view pack_id, bool allowed)
+	bool PostInstallHit(Fetcher& fetcher, std::string_view pack_id, bool allowed, const CancelToken& cancel)
 	{
 		if (!allowed || !IsValidPackId(pack_id))
 			return false;
 
 		FetchOptions options;
+		options.cancel = cancel;
 		options.idle_timeout_seconds = 30;
 		const FetchResponse response = fetcher.Post(std::string(TEXTURE_STATS_BASE_URL) + "hit", pack_id, "text/plain; charset=utf-8", options);
 		return response.IsSuccess();

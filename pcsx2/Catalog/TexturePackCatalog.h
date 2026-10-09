@@ -253,6 +253,7 @@ namespace Catalog
 	/// after a successful user-started install, from a worker thread. `allowed` is the caller's
 	/// answer to "may the app phone home?" (the UI ties it to its online-features toggle); when it
 	/// is false, or the id is not valid, nothing is sent. Not retried. Returns true if the counter
-	/// acknowledged it.
-	bool PostInstallHit(Fetcher& fetcher, std::string_view pack_id, bool allowed);
+	/// acknowledged it. `cancel` abandons the request (it otherwise waits up to 30 s for a silent server),
+	/// which a UI that is shutting down uses to get its worker back.
+	bool PostInstallHit(Fetcher& fetcher, std::string_view pack_id, bool allowed, const CancelToken& cancel = {});
 } // namespace Catalog

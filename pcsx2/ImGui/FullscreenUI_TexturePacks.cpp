@@ -830,7 +830,7 @@ namespace
 		const Cat::TexturePackInstaller::Config config = Cat::TexturePackInstaller::DefaultConfig();
 		const bool prefer_english = s_prefer_english_titles;
 		Cat::CancelToken cancel;
-		s_local_worker.Start(cancel, [config, prefer_english, delete_folder, delete_name]() {
+		s_local_worker.Start(cancel, [config, prefer_english, delete_folder, delete_name, cancel]() {
 			Cat::TexturePackState state = Cat::TexturePackState::InDataRoot();
 			Cat::TexturePackInstaller installer(Cat::GetDefaultFetcher(), state, config);
 
@@ -842,7 +842,10 @@ namespace
 				out.delete_ok = installer.Remove(delete_folder);
 				TPEngine::ReloadRunningGame();
 			}
-			out.installed = installer.ListInstalled();
+			// Shutting Big Picture down cancels the walk; nothing is handed over then.
+			out.installed = installer.ListInstalled(cancel);
+			if (cancel.IsCancelled())
+				return;
 			out.free_bytes = FreeSpaceAt(config.textures_dir);
 
 			{
@@ -1054,7 +1057,7 @@ namespace
 			// online features at all (the automatic cover download switch stands for that), and a slow
 			// answer must not hold up the install's end.
 			if (result.IsOk())
-				Cat::PostInstallHit(net, pack.id, AutoCovers::IsEnabled());
+				Cat::PostInstallHit(net, pack.id, AutoCovers::IsEnabled(), cancel);
 		});
 	}
 

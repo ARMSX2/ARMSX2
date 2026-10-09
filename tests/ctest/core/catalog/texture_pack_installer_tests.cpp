@@ -718,6 +718,24 @@ TEST_F(InstalledPacksTest, ListingDropsRecordsOfPacksDeletedBehindOurBack)
 	EXPECT_FALSE(state.Find("gone").has_value());
 }
 
+TEST_F(InstalledPacksTest, ACancelledListingReturnsNothingAndKeepsEveryRecord)
+{
+	MakeFolder("SLUS-21410", 2);
+	MakeFolder("SLES-52187", 1);
+	ASSERT_TRUE(state.Record(TexturePackState::RecordFor(DescribeArchive("pack-a", "SLUS-21410", "x", TexturePackFormat::TarZstd, 1), "SLUS-21410")));
+	ASSERT_TRUE(state.Record(TexturePackState::RecordFor(DescribeArchive("pack-b", "SLES-52187", "x", TexturePackFormat::TarZstd, 1), "SLES-52187")));
+
+	CancelToken cancel;
+	cancel.Cancel();
+	EXPECT_TRUE(installer.ListInstalled(cancel).empty());
+
+	// A partial list handed to Reconcile() would have dropped the record of every pack it did not reach.
+	EXPECT_TRUE(state.Find("pack-a").has_value());
+	EXPECT_TRUE(state.Find("pack-b").has_value());
+
+	EXPECT_EQ(installer.ListInstalled().size(), 2u); // the same installer lists normally afterwards
+}
+
 TEST_F(InstalledPacksTest, SizesComeFromTheCacheWhileTheFolderIsUnchanged)
 {
 	MakeFolder("SLUS-21410", 3);

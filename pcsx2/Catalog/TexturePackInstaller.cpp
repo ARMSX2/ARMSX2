@@ -429,8 +429,10 @@ namespace Catalog
 		}
 	}
 
-	std::vector<TexturePackInstaller::InstalledPack> TexturePackInstaller::ListInstalled()
+	std::vector<TexturePackInstaller::InstalledPack> TexturePackInstaller::ListInstalled(const CancelToken& cancel)
 	{
+		if (cancel.IsCancelled())
+			return {};
 		SweepRemoved();
 
 		std::vector<InstalledPack> packs;
@@ -443,6 +445,9 @@ namespace Catalog
 
 			for (const FILESYSTEM_FIND_DATA& fd : folders)
 			{
+				if (cancel.IsCancelled())
+					break;
+
 				const std::string name(Path::GetFileName(fd.FileName));
 				if (!IsPlainFolderName(name))
 					continue;
@@ -481,6 +486,10 @@ namespace Catalog
 			if (cache_changed)
 				SaveSizeCacheLocked();
 		}
+
+		// A partial list must not reach Reconcile(), which drops the records of packs it does not see.
+		if (cancel.IsCancelled())
+			return {};
 
 		std::sort(packs.begin(), packs.end(), [](const InstalledPack& a, const InstalledPack& b) { return a.serial < b.serial; });
 

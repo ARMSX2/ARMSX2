@@ -757,6 +757,17 @@ TEST(TexturePackPopularity, TheHitIsSentOnlyWhenAllowed)
 	EXPECT_EQ(requests[0].post_content_type, "text/plain; charset=utf-8");
 }
 
+TEST(TexturePackPopularity, ACancelledHitIsNotSent)
+{
+	FakeFetcher http;
+	http.Status(std::string(TEXTURE_STATS_BASE_URL) + "hit", 200);
+
+	CancelToken cancel;
+	cancel.Cancel();
+	EXPECT_FALSE(PostInstallHit(http, "some-pack-20260101", true, cancel));
+	EXPECT_TRUE(http.Requests().empty());
+}
+
 TEST(TexturePackPopularity, AnInvalidIdIsNeverSent)
 {
 	FakeFetcher http;
