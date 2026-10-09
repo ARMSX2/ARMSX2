@@ -1141,6 +1141,7 @@ set(pcsx2CatalogSources
 	Catalog/FileUtil.cpp
 	Catalog/HttpFetcher.cpp
 	Catalog/Json.cpp
+	Catalog/PnachText.cpp
 	Catalog/ResponseCache.cpp
 )
 set(pcsx2CatalogHeaders
@@ -1149,6 +1150,7 @@ set(pcsx2CatalogHeaders
 	Catalog/FileUtil.h
 	Catalog/HttpFetcher.h
 	Catalog/Json.h
+	Catalog/PnachText.h
 	Catalog/ResponseCache.h
 )
 # Json.h exposes rapidjson types, so everything that includes it needs the include path.
