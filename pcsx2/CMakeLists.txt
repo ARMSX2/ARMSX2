@@ -65,6 +65,7 @@ set(pcsx2Sources
 	Achievements.cpp
 	Arcade/AcGameFile.cpp
 	Arcade/ArcadeInput.cpp
+	Autosave.cpp
 	BuildVersion.cpp
 	Cache.cpp
 	COP0.cpp
@@ -161,6 +162,7 @@ set(pcsx2Headers
 	Achievements.h
 	Arcade/AcGameFile.h
 	Arcade/ArcadeInput.h
+	Autosave.h
 	BuildVersion.h
 	Cache.h
 	Common.h
