@@ -9,6 +9,7 @@
 #include "ACMACROS.h"
 #include "ACJV.h"
 #include "ACUART.h"
+#include "Arcade/ArcadeInput.h"
 #include "Config.h"
 #include "Host.h"
 #include "Input/InputManager.h"
@@ -673,6 +674,7 @@ void ACJV::SetGameId(const std::string& gameid)
 		for (u32 i = 0; i < NUM_JVS_MACROS; i++)
 			s_jvs_macros[p][i].active = false;
 	}
+	ArcadeInput::Reset(); // ARMSX2: the controller side of the same clean slate
 
 	// Select per-game gun mapping, or fall back to default
 	auto it = s_gun_mappings.find(gameid);

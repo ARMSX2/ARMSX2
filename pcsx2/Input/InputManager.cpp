@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
+#include "Arcade/ArcadeInput.h"
 #include "Host.h"
 #include "ImGui/ImGuiManager.h"
 #include "Input/InputManager.h"
@@ -914,8 +915,11 @@ void InputManager::AddPadBindings(SettingsInterface& si, u32 pad_index, bool is_
 					const float sensitivity = si.GetFloatValue(section.c_str(), fmt::format("{}Scale", bi.name).c_str(), 1.0f);
 					const float deadzone = si.GetFloatValue(section.c_str(), fmt::format("{}Deadzone", bi.name).c_str(), 0.0f);
 					AddBindings(
-						bindings, InputAxisEventHandler{[pad_index, bind_index = bi.bind_index, sensitivity, deadzone](InputBindingKey key, float value) {
-							Pad::SetControllerState(pad_index, bind_index, ApplySingleBindingScale(sensitivity, deadzone, value));
+						bindings, InputAxisEventHandler{[pad_index, bind_index = bi.bind_index, generic = bi.generic_mapping, sensitivity, deadzone](InputBindingKey key, float value) {
+							// An arcade cabinet has no DualShock: its controls go to the JVS board instead.
+							const float scaled = ApplySingleBindingScale(sensitivity, deadzone, value);
+							if (!ArcadeInput::HandleBinding(pad_index, generic, scaled))
+								Pad::SetControllerState(pad_index, bind_index, scaled);
 						}},
 						bi.bind_type, si, section.c_str(), bi.name, is_profile);
 				}
@@ -1431,7 +1435,11 @@ void InputManager::UpdatePointerAbsolutePosition(u32 index, float x, float y)
 			static_cast<s32>(dy * 65536.0f), std::memory_order_release);
 
 	if (index == 0)
+	{
 		ImGuiManager::UpdateMousePosition(x, y);
+		if (dx != 0.0f || dy != 0.0f)
+			ArcadeInput::OnPointerMoved();
+	}
 }
 
 void InputManager::UpdatePointerRelativeDelta(u32 index, InputPointerAxis axis, float d, bool raw_input)
@@ -1440,7 +1448,10 @@ void InputManager::UpdatePointerRelativeDelta(u32 index, InputPointerAxis axis, 
 	s_pointer_state[index][static_cast<u8>(axis)].delta.fetch_add(static_cast<s32>(d * 65536.0f), std::memory_order_release);
 
 	if (index == 0 && axis <= InputPointerAxis::Y)
+	{
 		ImGuiManager::UpdateMousePosition(s_host_pointer_positions[0][0], s_host_pointer_positions[0][1]);
+		ArcadeInput::OnPointerMoved();
+	}
 }
 
 void InputManager::OnInputDeviceConnected(const std::string_view identifier, const std::string_view device_name)
@@ -1708,6 +1719,7 @@ void InputManager::ReloadBindings(SettingsInterface& si, SettingsInterface& bind
 	SettingsInterface* base_si = lsi.GetLayer(LayeredSettingsInterface::LAYER_BASE);
 	for (u32 pad = 0; pad < Pad::NUM_CONTROLLER_PORTS; pad++)
 		AddPadBindings(binding_si, pad, is_binding_profile, base_si);
+	ArcadeInput::ReloadSettings(base_si, lsi.GetLayer(LayeredSettingsInterface::LAYER_GAME));
 
 	constexpr float ui_ctrl_range = 100.0f;
 	constexpr float pointer_sensitivity = 0.05f;
