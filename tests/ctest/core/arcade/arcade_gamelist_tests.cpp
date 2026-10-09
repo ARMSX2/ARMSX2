@@ -19,10 +19,12 @@
 #include "common/MemorySettingsInterface.h"
 #include "common/Path.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -298,4 +300,115 @@ TEST_F(ArcadeGameListScanTest, TheCacheKeepsArcadeEntriesWithoutRescanningTheFil
 	EXPECT_EQ(tekken->crc, 0u);
 	EXPECT_EQ(tekken->total_size, 1234u);
 	EXPECT_EQ(Find("NM00010")->type, GameList::EntryType::Arcade);
+}
+
+// ----------------------------------------------------------------------------------------------------
+// The files of an arcade game are not games
+// ----------------------------------------------------------------------------------------------------
+
+namespace
+{
+	// A scan of a games folder as an arcade collection keeps it. The images are real (tiny) CHD files: the scan
+	// opens every .chd as a disc, and a made-up one that fails to open would hide what a real one does.
+	class ArcadeSetScanTest : public ::testing::Test
+	{
+	protected:
+		void SetUp() override
+		{
+			m_root = Path::Combine(testing::TempDir(), "arcade_gamelist_sets");
+			std::error_code ec;
+			std::filesystem::remove_all(m_root, ec);
+			m_games = Path::Combine(m_root, "games");
+			ASSERT_TRUE(FileSystem::CreateDirectoryPath(m_games.c_str(), true));
+			m_old_cache = EmuFolders::Cache;
+			m_old_settings = EmuFolders::Settings;
+			EmuFolders::Cache = Path::Combine(m_root, "cache");
+			EmuFolders::Settings = Path::Combine(m_root, "settings");
+			ASSERT_TRUE(FileSystem::CreateDirectoryPath(EmuFolders::Cache.c_str(), true));
+			ASSERT_TRUE(FileSystem::CreateDirectoryPath(EmuFolders::Settings.c_str(), true));
+
+			MemorySettingsInterface& base = HostBaseSettings();
+			base.SetStringList("GameList", "Paths", {});
+			base.SetStringList("GameList", "RecursivePaths", {m_games});
+			base.SetStringList("GameList", "ExcludedPaths", {});
+		}
+
+		void TearDown() override
+		{
+			EmuFolders::Cache = m_old_cache;
+			EmuFolders::Settings = m_old_settings;
+			std::error_code ec;
+			std::filesystem::remove_all(m_root, ec);
+		}
+
+		std::string Path_(const char* relative) const { return Path::Combine(m_games, relative); }
+
+		void Put(const char* relative, const std::string& content)
+		{
+			const std::string path = Path_(relative);
+			ASSERT_TRUE(FileSystem::CreateDirectoryPath(std::string(Path::GetDirectory(path)).c_str(), true));
+			WriteFile(path, content);
+		}
+
+		void PutFixture(const char* relative, const char* fixture) { Put(relative, ReadFile(Fixture(fixture))); }
+
+		// A memory card file's size: a dongle in the .bin form, which looks like a disc by its name.
+		void PutDongle(const char* relative) { Put(relative, std::string(8u << 20, '\0')); }
+
+		std::vector<std::string> ListedPaths()
+		{
+			auto lock = GameList::GetLock();
+			std::vector<std::string> paths;
+			for (u32 i = 0; i < GameList::GetEntryCount(); i++)
+				paths.push_back(GameList::GetEntryByIndex(i)->path);
+			std::sort(paths.begin(), paths.end());
+			return paths;
+		}
+
+		std::string m_root, m_games, m_old_cache, m_old_settings;
+	};
+} // namespace
+
+TEST_F(ArcadeSetScanTest, TheFilesAnAcgameKeepForItselfAreNotListedAsDiscsOrELFs)
+{
+	// PCSX2x6's layout: the .acgame beside a folder named after the game, holding the boot program, the image
+	// and the board's settings memory.
+	PutFixture("NM00004.acgame", "tekken4.acgame");
+	PutFixture("NM00004/boot.elf", "boot.elf");
+	PutFixture("NM00004/NM00004.chd", "NM00004.chd");
+	Put("NM00004/sram.bin", std::string(1024, 's'));
+	Put("NM00004/hdd-writes.bin", std::string(4096, 'w'));
+
+	// An .acgame with no game folder: the files it names are beside it, the dongle a .bin (a disc by its name).
+	Put("beside/NM00010.acgame", "[game]\ngameid=NM00010\n[data]\nsubdir=\nelf=boot.elf\nmediasrc=bg3.chd\ndongle=NM00010.bin\n");
+	PutFixture("beside/boot.elf", "boot.elf");
+	PutFixture("beside/bg3.chd", "NM00010.chd");
+	PutDongle("beside/NM00010.bin");
+
+	// A homebrew ELF is a game all the same.
+	PutFixture("homebrew/hello.elf", "boot.elf");
+
+	std::vector<std::string> expected{Path_("beside/NM00010.acgame"), Path_("homebrew/hello.elf"), Path_("NM00004.acgame")};
+	std::sort(expected.begin(), expected.end());
+
+	GameList::Refresh(true);
+	EXPECT_EQ(ListedPaths(), expected);
+
+	// And the same from the cache.
+	GameList::Refresh(false, true);
+	EXPECT_EQ(ListedPaths(), expected);
+}
+
+TEST_F(ArcadeSetScanTest, ALooseImageAndItsDongleAreNotListedAsPS2Discs)
+{
+	// No .acgame: the image named after its game, the dongle beside it, and the boot program of a folder named
+	// after the game.
+	PutFixture("loose/Battle Gear 3 (NM00010).chd", "NM00010.chd");
+	PutDongle("loose/Battle Gear 3 (NM00010).bin");
+	PutFixture("NM00004/boot.elf", "boot.elf");
+	PutFixture("NM00004/NM00004.chd", "NM00004.chd");
+	PutFixture("homebrew/hello.elf", "boot.elf");
+
+	GameList::Refresh(true);
+	EXPECT_EQ(ListedPaths(), (std::vector<std::string>{Path_("homebrew/hello.elf")}));
 }
