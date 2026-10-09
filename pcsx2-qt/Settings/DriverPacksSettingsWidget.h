@@ -35,6 +35,10 @@ public:
 
 	~DriverPacksSettingsWidget() override;
 
+	/// Whether the settings window lists this page: driver packs exist on this device (an Adreno GPU), or a pack
+	/// is installed or selected, so the choice can still be undone.
+	static bool shouldOffer();
+
 protected:
 	void showEvent(QShowEvent* event) override;
 
@@ -73,6 +77,7 @@ private:
 	std::shared_ptr<DriverPacks::Manager> m_manager;
 	QString m_platform_name;
 	bool m_available = false;
+	bool m_manageable = false; ///< available, or a pack is installed or selected (the page then lists it without the downloads)
 
 	std::vector<DriverPacks::InstalledDriver> m_installed;
 	DriverPacks::RemoteListing m_listing;

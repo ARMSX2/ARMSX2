@@ -6425,6 +6425,7 @@ TRANSLATE_NOOP("FullscreenUI", "Activating game patches can cause unpredictable 
 TRANSLATE_NOOP("FullscreenUI", "Use patches at your own risk, the ARMSX2 team will provide no support for users who have enabled game patches.");
 TRANSLATE_NOOP("FullscreenUI", "Game Fixes");
 TRANSLATE_NOOP("FullscreenUI", "GPU Drivers");
+TRANSLATE_NOOP("FullscreenUI", "Arcade Setup");
 TRANSLATE_NOOP("FullscreenUI", "Texture Packs");
 TRANSLATE_NOOP("FullscreenUI", "Game fixes should not be modified unless you are aware of what each option does and the implications of doing so.");
 TRANSLATE_NOOP("FullscreenUI", "Needed for some games with complex FMV rendering.");

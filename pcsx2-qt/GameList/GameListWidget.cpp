@@ -255,7 +255,7 @@ void GameListWidget::initialize()
 		if (type != static_cast<u32>(GameList::EntryType::Invalid))
 		{
 			m_ui.filterType->addItem(GameListModel::getIconForType(static_cast<GameList::EntryType>(type)),
-				GameList::EntryTypeToString(static_cast<GameList::EntryType>(type), true));
+				GameList::EntryTypeToString(static_cast<GameList::EntryType>(type), true), type);
 		}
 	}
 
@@ -271,7 +271,9 @@ void GameListWidget::initialize()
 	connect(m_ui.viewGridTitles, &QPushButton::toggled, this, &GameListWidget::setShowCoverTitles);
 	connect(m_ui.viewFullGridTitles, &QPushButton::toggled, this, &GameListWidget::setShowFullCoverTitles);
 	connect(m_ui.filterType, &QComboBox::currentIndexChanged, this, [this](int index) {
-		m_sort_model->setFilterType((index == 0) ? GameList::EntryType::Count : static_cast<GameList::EntryType>(index - 1));
+		// Invalid is left out of the list, so the position is not the enum value; item 0 ("All Types") has no data.
+		const QVariant type = m_ui.filterType->itemData(index);
+		m_sort_model->setFilterType(type.isValid() ? static_cast<GameList::EntryType>(type.toUInt()) : GameList::EntryType::Count);
 	});
 	connect(m_ui.filterRegion, &QComboBox::currentIndexChanged, this, [this](int index) {
 		m_sort_model->setFilterRegion((index == 0) ? GameList::Region::Count : static_cast<GameList::Region>(index - 1));

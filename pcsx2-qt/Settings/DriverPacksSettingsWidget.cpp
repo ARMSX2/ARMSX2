@@ -71,6 +71,13 @@ DriverPacksSettingsWidget::DriverPacksSettingsWidget(SettingsWindow* dialog, QWi
 	init();
 }
 
+bool DriverPacksSettingsWidget::shouldOffer()
+{
+	if (DriverPacks::GetAvailability().IsAvailable() || !DriverPacks::GetSelectedPack().empty())
+		return true;
+	return !DriverPacks::Manager(Catalog::GetDefaultFetcher(), DriverPacks::ManagerConfig::ForUser()).ListInstalled().empty();
+}
+
 DriverPacksSettingsWidget::~DriverPacksSettingsWidget()
 {
 	// A download or a listing still running finds its way back through a QPointer, which is null by
@@ -99,15 +106,19 @@ void DriverPacksSettingsWidget::init()
 
 	const DriverPacks::Availability availability = m_manager->GetAvailability();
 	m_available = availability.IsAvailable();
+	// Without an Adreno the page is listed only for a pack that is installed or selected, to undo the choice or delete the pack.
+	m_manageable = m_available || !DriverPacks::GetSelectedPack().empty() || !m_manager->ListInstalled().empty();
 	if (!m_available)
 	{
-		m_ui.contentWidget->setVisible(false);
+		m_ui.contentWidget->setVisible(m_manageable);
 		m_ui.availabilityLabel->setVisible(true);
 		m_ui.availabilityLabel->setText(
 			availability.reason == DriverPacks::Availability::Reason::UnsupportedPlatform ?
 				tr("Driver packs are not available on this platform.") :
 				tr("No driver packs for this GPU. Driver packs are Turnip builds of the Vulkan driver for Qualcomm Adreno GPUs, and this device has none."));
-		return;
+		m_ui.availableGroup->setVisible(false);
+		if (!m_manageable)
+			return;
 	}
 
 	connect(m_ui.driverCombo, &QComboBox::currentIndexChanged, this, &DriverPacksSettingsWidget::onChoiceChanged);
@@ -134,14 +145,15 @@ void DriverPacksSettingsWidget::init()
 void DriverPacksSettingsWidget::showEvent(QShowEvent* event)
 {
 	QWidget::showEvent(event);
-	if (!m_available)
+	if (!m_manageable)
 		return;
 
 	reloadInstalled();
 	if (m_first_show)
 	{
 		m_first_show = false;
-		loadAvailable(false);
+		if (m_available)
+			loadAvailable(false);
 	}
 }
 
@@ -278,7 +290,9 @@ void DriverPacksSettingsWidget::refreshChoice()
 void DriverPacksSettingsWidget::onChoiceChanged()
 {
 	const std::string id = chosenId();
-	m_ui.applyButton->setEnabled(!environmentOverrides() && id != appliedId());
+	// Also when the stored choice differs from what is shown (a pack that is selected but not installed shows as
+	// the system driver), so that choice can be cleared.
+	m_ui.applyButton->setEnabled(!environmentOverrides() && (id != appliedId() || id != DriverPacks::GetSelectedPack()));
 
 	// A pack built for Wayland only cannot show a picture on an X11 session.
 	const DriverPacks::InstalledDriver* driver = id.empty() ? nullptr : findInstalled(id);
@@ -339,9 +353,15 @@ void DriverPacksSettingsWidget::onApplyClicked()
 	QString message = tr("ARMSX2 will close and start again to use %1.").arg(name);
 	if (QtHost::IsVMValid())
 		message += tr("\n\nThe running game will be stopped first.");
+	if (m_installing)
+		message += tr("\n\nA driver is still being installed. Restarting cancels it.");
 	message += tr("\n\nContinue?");
 	if (QMessageBox::question(this, tr("Apply and Restart"), message) != QMessageBox::Yes)
 		return;
+
+	// Stop the download now, instead of leaving it running while ARMSX2 shuts down.
+	if (m_installing)
+		m_install_cancel.Cancel();
 
 	DriverPacks::SetSelectedPack(id);
 

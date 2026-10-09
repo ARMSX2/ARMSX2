@@ -576,7 +576,8 @@ namespace FullscreenUI
 	bool IsAutosaveSlot(s32 slot);
 
 	// GPU driver packs (FullscreenUI_Drivers.cpp)
-	/// False where driver packs do not exist (everything but desktop Linux): the page is not listed.
+	/// Whether the page is listed: driver packs exist here (desktop Linux with an Adreno GPU), or one is installed or
+	/// selected, so the choice can still be undone. Reads the selection, so the settings lock must not be held.
 	bool ShowDriversSettingsPage();
 	void DrawDriversSettingsPage(SettingsInterface* bsi);
 	/// Cancels the page's downloads and joins its threads.
@@ -589,8 +590,9 @@ namespace FullscreenUI
 	/// An "Arcade" section on the Summary page of one game's settings: what it lacks, its own button layout.
 	void DrawArcadeGameSettings(const GameList::Entry& entry);
 	/// Starts an arcade game (an .acgame, or a loose image) through ArcadeSetup::Service::Prepare(), or shows what it
-	/// lacks. False when `path` is not an arcade game, which the caller starts as it always did.
-	bool StartArcadePath(const std::string& path, std::optional<s32> state_index, std::optional<bool> fast_boot);
+	/// lacks. False when `path` is not an arcade game, which the caller starts as it always did. `save_state` is the
+	/// path of a state to load once the game has booted.
+	bool StartArcadePath(const std::string& path, std::optional<s32> state_index, std::optional<bool> fast_boot, std::string save_state = {});
 	/// An arcade game is running.
 	bool IsArcadeSessionActive();
 	/// The pause menu's own entry for the Arcade submenu (nothing while no arcade game runs), how many rows it adds

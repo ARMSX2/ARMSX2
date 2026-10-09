@@ -197,7 +197,7 @@ void SettingsWindow::setupUi(const GameList::Entry* game)
 	}
 
 #ifdef __linux__
-	if (!isPerGameSettings())
+	if (!isPerGameSettings() && DriverPacksSettingsWidget::shouldOffer())
 	{
 		addWidget(new DriverPacksSettingsWidget(this, m_ui.settingsContainer), tr("GPU Drivers"), QStringLiteral("dashboard-line"),
 			tr("<strong>GPU Drivers</strong><hr>Download and choose the Vulkan driver ARMSX2 uses on supported devices. A choice takes effect when ARMSX2 restarts."

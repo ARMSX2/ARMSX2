@@ -13,6 +13,7 @@
 
 #include <QtCore/QDateTime>
 #include <QtCore/QPointer>
+#include <QtCore/QSignalBlocker>
 #include <QtCore/QUrl>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QLabel>
@@ -22,6 +23,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <utility>
 
 namespace Tex = Catalog;
 using Engine = Catalog::TexturePackEngine::AstcSupport;
@@ -347,6 +349,19 @@ void TexturePacksSettingsWidget::onInstallFinished()
 	{
 		if (QCheckBox* box = dialog()->findChild<QCheckBox*>(QStringLiteral("loadTextureReplacements")); box && !box->isChecked())
 			box->setChecked(true);
+	}
+
+	// An install made from a game's own settings: if that game turns replacement off, the pack would do
+	// nothing for it. The window holds the game's settings open, so it changes them itself.
+	const bool started_here = std::exchange(m_install_started_here, false);
+	if (outcome.ok && started_here && m_per_game && Catalog::TexturePackEngine::EnableInGameLayer(*dialog()->getSettingsInterface()))
+	{
+		dialog()->saveAndReloadGameSettings();
+		if (QCheckBox* box = dialog()->findChild<QCheckBox*>(QStringLiteral("loadTextureReplacements")))
+		{
+			const QSignalBlocker blocker(box);
+			box->setCheckState(Qt::Checked);
+		}
 	}
 }
 
@@ -822,6 +837,8 @@ void TexturePacksSettingsWidget::onInstallClicked()
 
 	if (!m_service->startInstall(*row->pack, serial))
 		QMessageBox::information(this, tr("Texture Packs"), tr("Another texture pack is being installed. Wait for it to finish, or cancel it."));
+	else
+		m_install_started_here = true;
 }
 
 void TexturePacksSettingsWidget::onDeleteClicked()

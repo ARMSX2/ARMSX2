@@ -35,6 +35,7 @@
 #include "Host.h"
 #include "INISettingsInterface.h"
 #include "ImGui/FullscreenUI_Internal.h"
+#include "ImGui/FullscreenUI_PageDwell.h"
 #include "ImGui/ImGuiFullscreen.h"
 #include "MTGS.h"
 #include "VMManager.h"
@@ -131,10 +132,13 @@ namespace
 	ListFilter s_filter = ListFilter::Popular;
 	std::string s_search;
 	std::string s_filter_serial; ///< when set, only packs for this game are listed
+	std::string s_filter_game_settings_path; ///< that game's own settings file, when the page was opened from its settings
 	std::string s_filter_serial_title;
 	bool s_filter_serial_requested = false; ///< the page was opened for a game, not through the page bar
 	bool s_opened_before = false;
 	int s_last_draw_frame = -100;
+	PageDwell s_dwell; ///< the network waits until the page has stayed open (see OnPageSettled)
+	bool s_fetch_deferred = false; ///< the page wants the network and is waiting for s_dwell
 	bool s_install_notice_up = false; ///< a progress notification may be on screen
 
 	std::vector<u32> s_view; ///< indices into s_packs, or into s_installed for the Installed filter
@@ -194,6 +198,7 @@ namespace
 		std::string error;
 		std::string pack_name;
 		u64 textures = 0;
+		std::string game_settings_path; ///< the game's own settings file, when the install was made from its settings
 	};
 
 	struct Handoff
@@ -825,7 +830,7 @@ namespace
 		const Cat::TexturePackInstaller::Config config = Cat::TexturePackInstaller::DefaultConfig();
 		const bool prefer_english = s_prefer_english_titles;
 		Cat::CancelToken cancel;
-		s_local_worker.Start(cancel, [config, prefer_english, delete_folder, delete_name]() {
+		s_local_worker.Start(cancel, [config, prefer_english, delete_folder, delete_name, cancel]() {
 			Cat::TexturePackState state = Cat::TexturePackState::InDataRoot();
 			Cat::TexturePackInstaller installer(Cat::GetDefaultFetcher(), state, config);
 
@@ -837,7 +842,10 @@ namespace
 				out.delete_ok = installer.Remove(delete_folder);
 				TPEngine::ReloadRunningGame();
 			}
-			out.installed = installer.ListInstalled();
+			// Shutting Big Picture down cancels the walk; nothing is handed over then.
+			out.installed = installer.ListInstalled(cancel);
+			if (cancel.IsCancelled())
+				return;
 			out.free_bytes = FreeSpaceAt(config.textures_dir);
 
 			{
@@ -925,6 +933,13 @@ namespace
 					s_install.last_message.clear();
 					ShowInstallNotice(FSUI_STR("Texture Pack Installed"),
 						fmt::format(FSUI_FSTR("{}. The textures are used the next time the game starts."), finished->pack_name), 8.0f);
+					// The install may have switched on this game's own setting in its file: the copy the game's
+					// settings page holds open must not save the old value back.
+					if (!finished->game_settings_path.empty() && s_game_settings_interface &&
+						s_game_settings_interface->GetFileName() == finished->game_settings_path)
+					{
+						s_game_settings_interface->Load();
+					}
 					break;
 
 				case Cat::TexturePackInstaller::Status::Cancelled:
@@ -990,6 +1005,8 @@ namespace
 		}
 
 		const std::string serial = pack.InstallSerialFor(ContextSerial(), s_library_serials);
+		// An install made from a game's settings must not be switched off by that game's own settings.
+		const std::string game_settings_path = s_filter_serial.empty() ? std::string() : s_filter_game_settings_path;
 
 		s_install = InstallUi();
 		s_install.active = true;
@@ -1000,7 +1017,7 @@ namespace
 
 		const Cat::TexturePackInstaller::Config config = Cat::TexturePackInstaller::DefaultConfig();
 		const Cat::CancelToken cancel = s_install.cancel;
-		s_install_worker.Start(cancel, [pack, serial, config, cancel, fetcher]() {
+		s_install_worker.Start(cancel, [pack, serial, game_settings_path, config, cancel, fetcher]() {
 			Cat::Fetcher& net = fetcher ? *fetcher : Cat::GetDefaultFetcher();
 			Cat::TexturePackState state = Cat::TexturePackState::InDataRoot();
 			Cat::TexturePackInstaller installer(net, state, config);
@@ -1017,13 +1034,18 @@ namespace
 				cancel);
 
 			if (result.IsOk())
+			{
 				TPEngine::ActivateAfterInstall();
+				if (!game_settings_path.empty())
+					TPEngine::EnableForGame(game_settings_path);
+			}
 
 			InstallOutcome outcome;
 			outcome.status = result.status;
 			outcome.error = result.error;
 			outcome.pack_name = pack.name;
 			outcome.textures = result.textures;
+			outcome.game_settings_path = game_settings_path;
 			{
 				std::lock_guard<std::mutex> lock(s_handoff.mutex);
 				s_handoff.install_progress.reset();
@@ -1035,7 +1057,7 @@ namespace
 			// online features at all (the automatic cover download switch stands for that), and a slow
 			// answer must not hold up the install's end.
 			if (result.IsOk())
-				Cat::PostInstallHit(net, pack.id, AutoCovers::IsEnabled());
+				Cat::PostInstallHit(net, pack.id, AutoCovers::IsEnabled(), cancel);
 		});
 	}
 
@@ -1162,7 +1184,7 @@ namespace
 
 	void DrawCatalogList()
 	{
-		const bool loading = s_catalog_worker.running.load();
+		const bool loading = s_catalog_worker.running.load() || s_fetch_deferred;
 
 		std::string heading = FilterName(s_filter);
 		if (s_catalog_loaded)
@@ -1180,7 +1202,7 @@ namespace
 			}
 			else if (s_filter == ListFilter::Popular && !s_popular_known)
 			{
-				if (s_catalog_worker.running.load())
+				if (s_catalog_worker.running.load() || s_fetch_deferred)
 					NoticeRow(ICON_FA_SPINNER, FSUI_STR("Loading..."), FSUI_STR("Asking which packs were downloaded today."));
 				else
 					NoticeRow(ICON_FA_WIFI, FSUI_STR("Can't Reach the Download Counter"), FSUI_STR("Can't reach the download counter right now. Choose All to see every pack."));
@@ -1599,6 +1621,16 @@ namespace
 	// Drawing: the page
 	//////////////////////////////////////////////////////////////////////////
 
+	bool CatalogStale()
+	{
+		return !s_catalog_loaded || (std::time(nullptr) - s_catalog_fetched_at) > std::chrono::duration_cast<std::chrono::seconds>(Cat::TexturePackCatalog::CACHE_MAX_AGE).count();
+	}
+
+	bool PopularStale()
+	{
+		return !s_popular_known || (std::chrono::steady_clock::now() - s_popular_asked_at) > POPULAR_MAX_AGE;
+	}
+
 	// Runs when the page is drawn after not being drawn the frame before: it has just been opened.
 	void OnPageOpened()
 	{
@@ -1625,11 +1657,17 @@ namespace
 		RefreshRecordsIfChanged(true);
 		StartLocalRefresh();
 
-		const bool popular_stale = !s_popular_known || (std::chrono::steady_clock::now() - s_popular_asked_at) > POPULAR_MAX_AGE;
-		const bool catalog_stale = !s_catalog_loaded || (std::time(nullptr) - s_catalog_fetched_at) > std::chrono::duration_cast<std::chrono::seconds>(Cat::TexturePackCatalog::CACHE_MAX_AGE).count();
-		if (catalog_stale)
+		// The network waits for OnPageSettled: D-pad left/right across the page list opens every page it passes.
+		s_fetch_deferred = CatalogStale() || PopularStale();
+	}
+
+	// The page has stayed open for PageDwell::SECONDS: ask the network for what is out of date.
+	void OnPageSettled()
+	{
+		s_fetch_deferred = false;
+		if (CatalogStale())
 			StartCatalogLoad(false, true);
-		else if (popular_stale)
+		else if (PopularStale())
 			StartCatalogLoad(false, false);
 	}
 
@@ -1716,7 +1754,7 @@ namespace
 		}
 
 		// The catalog: how current it is, and the way to ask again.
-		const bool loading = s_catalog_worker.running.load();
+		const bool loading = s_catalog_worker.running.load() || s_fetch_deferred;
 		// The ### keeps the row's identity when its icon changes, so a controller keeps its place on it.
 		const std::string catalog_title = fmt::format("{} {}###texture_pack_catalog", loading ? ICON_FA_SPINNER : ICON_FA_CLOUD, FSUI_STR("Catalog"));
 		if (loading)
@@ -1899,7 +1937,7 @@ namespace
 	}
 
 	// Opens the page for one game's packs: what the Browse Texture Packs row of a game's own settings does.
-	void OpenPageForGame(std::string serial, std::string title)
+	void OpenPageForGame(std::string serial, std::string title, std::string game_settings_path = std::string())
 	{
 		if (!IsInitialized())
 			return;
@@ -1908,6 +1946,7 @@ namespace
 		{
 			s_filter_serial = *normalized;
 			s_filter_serial_title = std::move(title);
+			s_filter_game_settings_path = std::move(game_settings_path);
 			s_filter_serial_requested = true;
 			s_filter = ListFilter::All;
 			s_view_dirty = true;
@@ -1926,6 +1965,8 @@ void FullscreenUI::DrawTexturePacksSettingsPage()
 	s_last_draw_frame = frame;
 	if (opened)
 		OnPageOpened();
+	if (s_dwell.Settled() && s_fetch_deferred)
+		OnPageSettled();
 
 	PollHandoff();
 	RefreshRecordsIfChanged(false);
@@ -1973,7 +2014,10 @@ void FullscreenUI::DrawTexturePacksBrowseSetting(SettingsInterface* bsi)
 	// drawn from them: leave when the GS thread is between frames.
 	std::string serial = s_game_settings_serial;
 	std::string title = s_game_settings_entry ? s_game_settings_entry->GetTitle(s_prefer_english_titles) : std::string();
-	PostToGSThread([serial = std::move(serial), title = std::move(title)]() mutable { OpenPageForGame(std::move(serial), std::move(title)); });
+	std::string settings_path = s_game_settings_interface ? s_game_settings_interface->GetFileName() : std::string();
+	PostToGSThread([serial = std::move(serial), title = std::move(title), settings_path = std::move(settings_path)]() mutable {
+		OpenPageForGame(std::move(serial), std::move(title), std::move(settings_path));
+	});
 }
 
 void FullscreenUI::ShutdownTexturePacks()
@@ -2020,9 +2064,12 @@ void FullscreenUI::ShutdownTexturePacks()
 	s_search.clear();
 	s_filter_serial.clear();
 	s_filter_serial_title.clear();
+	s_filter_game_settings_path.clear();
 	s_filter_serial_requested = false;
 	s_opened_before = false;
+	s_fetch_deferred = false;
 	s_last_draw_frame = -100;
+	s_dwell.Reset();
 	s_install_notice_up = false;
 	s_shot_action = ShotAction::None;
 }

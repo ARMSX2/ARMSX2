@@ -306,6 +306,10 @@ namespace
 	// downloaded something.
 	std::atomic_bool s_cover_run_is_requested{false};
 
+	// AutoCovers is process-wide: under Qt the Qt controller may have started the run that is going, and
+	// leaving Big Picture must not cancel that. This is set while a run Big Picture started is going.
+	std::atomic_bool s_cover_run_started_here{false};
+
 	// When the game list last changed, as the poll sees it (GS thread).
 	u32 s_poll_count = 0;
 	const GameList::Entry* s_poll_first = nullptr;
@@ -347,6 +351,9 @@ namespace
 			progress.swap(s_cover_handoff.progress);
 			finished.swap(s_cover_handoff.finished);
 		}
+
+		if (finished.has_value())
+			s_cover_run_started_here.store(false);
 
 		if (!IsInitialized())
 			return;
@@ -482,6 +489,8 @@ namespace
 			s_cover_run_is_requested.store(!missing_only);
 			const bool started = missing_only ? AutoCovers::StartAfterRefresh(MakeCoverCallbacks()) :
 												AutoCovers::StartRedownload(paths, MakeCoverCallbacks());
+			if (started)
+				s_cover_run_started_here.store(true);
 			if (!started && !missing_only)
 			{
 				PostToGSThread([]() {
@@ -562,9 +571,11 @@ void FullscreenUI::DrawAutoCoverSettings(SettingsInterface* bsi)
 					AutoCovers::SetStyle(*bsi, style);
 					SetSettingsChanged(bsi);
 				}
+				// CloseChoiceDialog() destroys this lambda and its captures: read them first.
+				const bool changed = (style != current);
 				CloseChoiceDialog();
 
-				if (style != current)
+				if (changed)
 				{
 					OfferCoverRedownload({}, FSUI_STR("Covers you already have keep their old style until they are downloaded again. Download them again now?"));
 				}
@@ -590,9 +601,11 @@ void FullscreenUI::DrawAutoCoverSettings(SettingsInterface* bsi)
 					AutoCovers::SetLibraryRegion(*bsi, region);
 					SetSettingsChanged(bsi);
 				}
+				// CloseChoiceDialog() destroys this lambda and its captures: read them first.
+				const bool changed = (region != current);
 				CloseChoiceDialog();
 
-				if (region != current)
+				if (changed)
 				{
 					OfferCoverRedownload({}, FSUI_STR("Covers you already have keep their old region until they are downloaded again. Download them again now?"));
 				}
@@ -634,10 +647,13 @@ void FullscreenUI::DrawCoverRegionPinSetting(const GameList::Entry& entry)
 					AutoCovers::SetGameRegionPin(*base, serial, chosen);
 					SetSettingsChanged(base);
 				}
+				// CloseChoiceDialog() destroys this lambda and its captures: read them first.
+				const bool changed = (chosen != current);
+				std::string game_path = path;
 				CloseChoiceDialog();
 
-				if (chosen != current)
-					OfferCoverRedownload({path}, FSUI_STR("The cover you have keeps its old region until it is downloaded again. Download it again now?"));
+				if (changed)
+					OfferCoverRedownload({std::move(game_path)}, FSUI_STR("The cover you have keeps its old region until it is downloaded again. Download it again now?"));
 			});
 	}
 }
@@ -678,8 +694,10 @@ void FullscreenUI::PollAutoCovers()
 
 void FullscreenUI::ShutdownAutoCovers()
 {
-	// Stops the worker first, so nothing is added to the hand-off after it is cleared.
-	AutoCovers::Shutdown();
+	// Stops the worker first, so nothing is added to the hand-off after it is cleared. Only a run this file
+	// started: another UI's run (Qt's) has its own callbacks and carries on.
+	if (s_cover_run_started_here.exchange(false))
+		AutoCovers::Shutdown();
 
 	{
 		std::lock_guard<std::mutex> lock(s_cover_handoff.mutex);

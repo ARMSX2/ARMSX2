@@ -461,7 +461,8 @@ void FullscreenUI::OnVMResumed()
 		if (s_current_main_window == MainWindowType::PauseMenu ||
 			s_current_main_window == MainWindowType::Settings ||
 			s_current_main_window == MainWindowType::Achievements ||
-			s_current_main_window == MainWindowType::Leaderboards)
+			s_current_main_window == MainWindowType::Leaderboards ||
+			s_current_main_window == MainWindowType::MemcardBackups)
 		{
 			s_current_main_window = MainWindowType::None;
 			s_current_pause_submenu = PauseSubMenu::None;
@@ -2476,6 +2477,11 @@ void FullscreenUI::DrawResumeStateSelector()
 void FullscreenUI::DoLoadState(std::string path, std::optional<s32> slot, bool backup)
 {
 	std::string boot_path = s_save_state_selector_game_path;
+
+	// An arcade game has to be prepared before it boots; the state loads once it has.
+	if (!boot_path.empty() && !VMManager::HasValidVM() && StartArcadePath(boot_path, std::nullopt, std::nullopt, path))
+		return;
+
 	Host::RunOnCPUThread([boot_path = std::move(boot_path), path = std::move(path), slot, backup]() {
 		if (VMManager::HasValidVM())
 		{

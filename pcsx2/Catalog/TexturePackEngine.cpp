@@ -9,8 +9,14 @@
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "Host.h"
+#include "INISettingsInterface.h"
 #include "MTGS.h"
 #include "VMManager.h"
+
+#include "common/Console.h"
+#include "common/Error.h"
+#include "common/FileSystem.h"
+#include "common/SettingsInterface.h"
 
 namespace Catalog::TexturePackEngine
 {
@@ -84,6 +90,50 @@ namespace Catalog::TexturePackEngine
 			}
 			MTGS::RunOnGSThread(&ReloadOnGSThread);
 		});
+	}
+
+	bool EnableInGameLayer(SettingsInterface& game_settings)
+	{
+		bool value = true;
+		if (!game_settings.GetBoolValue(SETTINGS_SECTION, LOAD_KEY, &value) || value)
+			return false;
+
+		game_settings.SetBoolValue(SETTINGS_SECTION, LOAD_KEY, true);
+		return true;
+	}
+
+	bool EnableForGame(const std::string& game_settings_path)
+	{
+		if (game_settings_path.empty() || !FileSystem::FileExists(game_settings_path.c_str()))
+			return false;
+
+		INISettingsInterface game_settings(game_settings_path);
+		if (!game_settings.Load() || !EnableInGameLayer(game_settings))
+			return false;
+
+		Error error;
+		if (!game_settings.Save(&error))
+		{
+			Console.Error("Texture packs: could not write %s: %s", game_settings_path.c_str(), error.GetDescription().c_str());
+			return false;
+		}
+
+		if (VMManager::HasValidVM())
+		{
+			Host::RunOnCPUThread([]() {
+				if (!MTGS::IsOpen())
+					return;
+
+				// The game layer is read again; when that flips the effective option from off to on, the GS
+				// thread reloads the replacement map and drops the texture cache by itself.
+				const bool before = EmuConfig.GS.LoadTextureReplacements;
+				VMManager::ReloadGameSettings();
+				if (!before && EmuConfig.GS.LoadTextureReplacements)
+					return;
+				MTGS::RunOnGSThread(&ReloadOnGSThread);
+			});
+		}
+		return true;
 	}
 
 	void ReloadRunningGame()

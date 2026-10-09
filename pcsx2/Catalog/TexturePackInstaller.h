@@ -180,8 +180,9 @@ namespace Catalog
 		/// earlier Remove() could not delete completely, and reconciles the install record with
 		/// what is on disk. Counts and sizes come from a cache keyed on the folder's modification
 		/// time, so opening a page that lists sixty packs does not walk a quarter of a million
-		/// files. Blocking; use a worker thread.
-		std::vector<InstalledPack> ListInstalled();
+		/// files. Blocking; use a worker thread. `cancel` is looked at before each pack's folder is
+		/// walked; a cancelled listing returns nothing and leaves the install record as it was.
+		std::vector<InstalledPack> ListInstalled(const CancelToken& cancel = {});
 
 		/// Removes the pack in <Textures>/<folder_name>: takes it out of use in one rename (so a
 		/// delete that fails half way can never leave a half pack where the engine reads it),
