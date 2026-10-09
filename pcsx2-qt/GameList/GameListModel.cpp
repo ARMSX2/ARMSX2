@@ -112,6 +112,12 @@ void GameListModel::refreshCovers()
 	refresh();
 }
 
+void GameListModel::refreshCoverForPath(const std::string& path)
+{
+	m_cover_pixmap_cache.Remove(path);
+	invalidateCoverForPath(path);
+}
+
 void GameListModel::updateCacheSize(int width, int height)
 {
 	// This is a bit conversative, since it doesn't consider padding, but better to be over than under.

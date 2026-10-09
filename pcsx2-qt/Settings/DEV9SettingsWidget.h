@@ -13,6 +13,8 @@
 
 #include <QtGui/QStandardItemModel>
 
+class DEV9LocalLinkWidget;
+
 class DEV9SettingsWidget : public SettingsWidget
 {
 	Q_OBJECT
@@ -63,6 +65,7 @@ private:
 	void UpdateHddSizeUIValues();
 
 	Ui::DEV9SettingsWidget m_ui;
+	DEV9LocalLinkWidget* m_local_link = nullptr;
 
 	bool m_firstShow{true};
 

@@ -191,6 +191,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 		"Folders", "Textures", Path::Combine(EmuFolders::DataRoot, "textures"));
 	connect(m_texture.dumpReplaceableTextures, &QCheckBox::checkStateChanged, this, &GraphicsSettingsWidget::onTextureDumpChanged);
 	connect(m_texture.loadTextureReplacements, &QCheckBox::checkStateChanged, this, &GraphicsSettingsWidget::onTextureReplacementChanged);
+	connect(m_texture.browseTexturePacksButton, &QPushButton::clicked, this, [this]() { dialog()->setCategory("Texture Packs"); });
 	onTextureDumpChanged();
 	onTextureReplacementChanged();
 

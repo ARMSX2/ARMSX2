@@ -25,6 +25,7 @@
 #include <QtWidgets/QListWidget>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QStackedWidget>
+#include <QtWidgets/QTabBar>
 #include <QtWidgets/QTabWidget>
 
 #include <cstdio>
@@ -307,6 +308,21 @@ namespace
 				if (Key(tabs->tabText(i)) == key)
 				{
 					tabs->setCurrentIndex(i);
+					return true;
+				}
+			}
+		}
+		// A tab bar used on its own (a filter strip over a list), not the bar of a tab widget.
+		for (QTabBar* bar : window->findChildren<QTabBar*>())
+		{
+			if (!bar->isVisible() || qobject_cast<QTabWidget*>(bar->parentWidget()))
+				continue;
+			for (int i = 0; i < bar->count(); i++)
+			{
+				seen << bar->tabText(i).remove('&');
+				if (bar->isTabVisible(i) && Key(bar->tabText(i)) == key)
+				{
+					bar->setCurrentIndex(i);
 					return true;
 				}
 			}
