@@ -1433,6 +1433,9 @@
     <ClCompile Include="Arcade\AcGameFile.cpp">
       <Filter>Misc</Filter>
     </ClCompile>
+    <ClCompile Include="Arcade\ArcadeFiles.cpp">
+      <Filter>Misc</Filter>
+    </ClCompile>
     <ClCompile Include="Arcade\ArcadeInput.cpp">
       <Filter>Misc</Filter>
     </ClCompile>
@@ -2446,6 +2449,9 @@
       <Filter>Misc</Filter>
     </ClInclude>
     <ClInclude Include="Arcade\AcGameFile.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="Arcade\ArcadeFiles.h">
       <Filter>Misc</Filter>
     </ClInclude>
     <ClInclude Include="Arcade\ArcadeInput.h">

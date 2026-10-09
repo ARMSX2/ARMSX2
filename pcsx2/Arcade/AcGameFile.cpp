@@ -32,19 +32,27 @@ std::optional<Arcade::AcGameInfo> Arcade::ReadAcGameInfo(const std::string& path
 	}
 	info.name = ini.GetStringValue("game", "name", "");
 
-	// The media image is found as VMManager::OpenArcadeGame() finds it: at the absolute path [data] mediasrc gives,
-	// else in the folder [data] subdir names beside the .acgame (the game ID by default, none for the .acgame's own).
-	std::string media = ini.GetStringValue("data", "mediasrc", "");
-	if (media.empty())
-		media = info.gameid + ".chd";
-	if (!Path::IsAbsolute(media))
-	{
-		std::string basedir(Path::GetDirectory(path));
-		const std::string subdir = ini.GetStringValue("data", "subdir", info.gameid.c_str());
-		if (!subdir.empty())
-			basedir = Path::Combine(basedir, subdir);
-		media = Path::Combine(basedir, media);
-	}
-	info.media_path = std::move(media);
+	// The files are found as VMManager::OpenArcadeGame() finds them: at the absolute path a key gives, else in the
+	// folder [data] subdir names beside the .acgame (the game ID by default, none for the .acgame's own).
+	info.dir = std::string(Path::GetDirectory(path));
+	info.base_dir = info.dir;
+	const std::string subdir = ini.GetStringValue("data", "subdir", info.gameid.c_str());
+	if (!subdir.empty())
+		info.base_dir = Path::Combine(info.base_dir, subdir);
+
+	const auto locate = [&ini, &info](const char* key, const std::string& default_name) {
+		std::string name = ini.GetStringValue("data", key, default_name.c_str());
+		if (name.empty())
+			name = default_name;
+		return Path::IsAbsolute(name) ? name : Path::Combine(info.base_dir, name);
+	};
+	info.elf_path = locate("elf", "boot.elf");
+	info.media_path = locate("mediasrc", info.gameid + ".chd");
+	info.sram_path = locate("sram", "sram.bin");
+
+	info.dongle = ini.GetStringValue("data", "dongle", "");
+	if (info.dongle.empty())
+		info.dongle = info.gameid + ".ps2";
+	info.card = ini.GetStringValue("data", "card", "");
 	return info;
 }

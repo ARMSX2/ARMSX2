@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "Arcade/AcGameFile.h"
+#include "Arcade/ArcadeFiles.h"
 #include "CDVD/CDVD.h"
 #include "Elfheader.h"
 #include "GameList.h"
@@ -774,11 +775,15 @@ void GameList::ScanDirectory(const char* path, bool recursive, bool only_cache, 
 	progress->SetProgressRange(static_cast<u32>(files.size()));
 	progress->SetProgressValue(0);
 
+	// An arcade game's boot program, image and dongle are parts of a game, not discs or ELFs of their own.
+	const Arcade::SetClaims arcade_claims(files);
+
 	for (FILESYSTEM_FIND_DATA& ffd : files)
 	{
 		files_scanned++;
 
-		if (progress->IsCancelled() || !GameList::IsScannableFilename(ffd.FileName) || IsPathExcluded(excluded_paths, ffd.FileName))
+		if (progress->IsCancelled() || !GameList::IsScannableFilename(ffd.FileName) || IsPathExcluded(excluded_paths, ffd.FileName) ||
+			arcade_claims.Owns(ffd.FileName))
 		{
 			continue;
 		}
