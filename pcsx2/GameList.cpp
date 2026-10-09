@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
+#include "Arcade/AcGameFile.h"
 #include "CDVD/CDVD.h"
 #include "Elfheader.h"
 #include "GameList.h"
@@ -60,6 +61,7 @@ namespace GameList
 	static bool GetIsoSerialAndCRC(const std::string& path, s32* disc_type, std::string* serial, u32* crc);
 	static Region ParseDatabaseRegion(const std::string_view db_region);
 	static bool GetElfListEntry(const std::string& path, GameList::Entry* entry);
+	static bool GetArcadeListEntry(const std::string& path, GameList::Entry* entry);
 	static bool GetIsoListEntry(const std::string& path, GameList::Entry* entry);
 
 	static bool GetGameListEntryFromCache(const std::string& path, GameList::Entry* entry);
@@ -101,6 +103,7 @@ const char* GameList::EntryTypeToString(EntryType type, bool translate)
 		TRANSLATE_NOOP("GameList", "PS1 Disc"),
 		TRANSLATE_NOOP("GameList", "ELF"),
 		TRANSLATE_NOOP("GameList", "Invalid"),
+		TRANSLATE_NOOP("GameList", "Arcade"),
 	};
 
 	const char* name = names.at(static_cast<int>(type));
@@ -228,7 +231,7 @@ const char* GameList::EntryCompatibilityRatingToString(CompatibilityRating ratin
 
 bool GameList::IsScannableFilename(const std::string_view path)
 {
-	return VMManager::IsDiscFileName(path) || VMManager::IsElfFileName(path);
+	return VMManager::IsDiscFileName(path) || VMManager::IsElfFileName(path) || VMManager::IsArcadeGameFileName(path);
 }
 
 void GameList::FillBootParametersForEntry(VMBootParameters* params, const Entry* entry)
@@ -244,6 +247,14 @@ void GameList::FillBootParametersForEntry(VMBootParameters* params, const Entry*
 		params->filename = VMManager::GetDiscOverrideFromGameSettings(entry->path);
 		params->source_type = params->filename.empty() ? CDVD_SourceType::NoDisc : CDVD_SourceType::Iso;
 		params->elf_override = entry->path;
+	}
+	else if (entry->type == GameList::EntryType::Arcade)
+	{
+		// The .acgame names the board's files itself. A source type would take the boot away from the arcade
+		// branch of VMManager::Initialize, which only looks at the file name when none is given.
+		params->filename = entry->path;
+		params->source_type.reset();
+		params->elf_override.clear();
 	}
 	else
 	{
@@ -306,6 +317,61 @@ bool GameList::GetElfListEntry(const std::string& path, GameList::Entry* entry)
 		}
 	}
 
+	return true;
+}
+
+bool GameList::GetArcadeListEntry(const std::string& path, GameList::Entry* entry)
+{
+	FILESYSTEM_STAT_DATA sd;
+	if (!FileSystem::StatFile(path.c_str(), &sd))
+		return false;
+
+	const std::optional<Arcade::AcGameInfo> game = Arcade::ReadAcGameInfo(path);
+	if (!game.has_value())
+	{
+		// A file that is no arcade game is cached as invalid, so it is not read again on every scan.
+		entry->type = EntryType::Invalid;
+		entry->path = path;
+		entry->total_size = 0;
+		entry->compatibility_rating = CompatibilityRating::Unknown;
+		entry->title.clear();
+		entry->region = Region::Other;
+		return true;
+	}
+
+	entry->type = EntryType::Arcade;
+	entry->path = path;
+	entry->serial = game->gameid;
+	entry->crc = 0;
+	entry->compatibility_rating = CompatibilityRating::Unknown;
+	entry->region = Region::Other;
+
+	// The .acgame's own name for the game comes first, then the game database's.
+	const GameDatabaseSchema::GameEntry* db_entry = GameDatabase::findGame(game->gameid);
+	if (db_entry)
+	{
+		entry->compatibility_rating = db_entry->compat;
+		entry->region = ParseDatabaseRegion(db_entry->region);
+	}
+	if (!game->name.empty())
+	{
+		entry->title = game->name;
+	}
+	else if (db_entry && !db_entry->name.empty())
+	{
+		entry->title = db_entry->name;
+		entry->title_sort = db_entry->name_sort;
+		entry->title_en = db_entry->name_en;
+	}
+	else
+	{
+		entry->title = Path::GetFileTitle(path);
+	}
+
+	// A game is as big as its media image; 0 when that is not there (yet). It is listed all the same, and booting it
+	// says what is missing.
+	FILESYSTEM_STAT_DATA media_stat;
+	entry->total_size = FileSystem::StatFile(game->media_path.c_str(), &media_stat) ? static_cast<u64>(media_stat.Size) : 0;
 	return true;
 }
 
@@ -441,6 +507,8 @@ bool GameList::PopulateEntryFromPath(const std::string& path, GameList::Entry* e
 {
 	if (VMManager::IsElfFileName(path.c_str()))
 		return GetElfListEntry(path, entry);
+	else if (VMManager::IsArcadeGameFileName(path))
+		return GetArcadeListEntry(path, entry);
 	else
 		return GetIsoListEntry(path, entry);
 }

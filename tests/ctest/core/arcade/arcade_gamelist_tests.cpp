@@ -1,0 +1,301 @@
+// SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
+// SPDX-License-Identifier: GPL-3.0+
+
+// Arcade games in the game list: an .acgame is a game of its own (serial = its game ID, CRC 0), it is found by
+// a scan and survives the game list cache, and booting one must not set a disc source, which would take the
+// boot away from the arcade branch of VMManager::Initialize.
+
+#include <gtest/gtest.h>
+
+#include "Arcade/AcGameFile.h"
+#include "CDVD/CDVDcommon.h"
+#include "Config.h"
+#include "GameDatabase.h"
+#include "GameList.h"
+#include "Host.h"
+#include "VMManager.h"
+
+#include "common/FileSystem.h"
+#include "common/MemorySettingsInterface.h"
+#include "common/Path.h"
+
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <string>
+
+namespace
+{
+	std::string Fixture(const char* name)
+	{
+		return Path::Combine(ARCADE_TEST_FIXTURES, name);
+	}
+
+	std::string ReadFile(const std::string& path)
+	{
+		std::ifstream in(path, std::ios::binary);
+		std::stringstream text;
+		text << in.rdbuf();
+		return text.str();
+	}
+
+	void WriteFile(const std::string& path, const std::string& content)
+	{
+		std::ofstream out(path, std::ios::binary | std::ios::trunc);
+		out << content;
+	}
+} // namespace
+
+TEST(ArcadeGameList, FileNames)
+{
+	EXPECT_TRUE(VMManager::IsArcadeGameFileName("/games/Tekken 4.acgame"));
+	EXPECT_TRUE(VMManager::IsArcadeGameFileName("/games/TEKKEN.ACGAME"));
+	EXPECT_FALSE(VMManager::IsArcadeGameFileName("/games/Tekken.iso"));
+
+	// The open dialog and a dropped file take it like a disc image or an ELF.
+	EXPECT_TRUE(VMManager::IsLoadableFileName("/games/Tekken 4.acgame"));
+	EXPECT_TRUE(VMManager::IsLoadableFileName("/games/TEKKEN.ACGAME"));
+	EXPECT_TRUE(VMManager::IsLoadableFileName("/games/game.iso"));
+	EXPECT_TRUE(VMManager::IsLoadableFileName("/games/game.elf"));
+	EXPECT_FALSE(VMManager::IsLoadableFileName("/games/game.txt"));
+	// It is not a disc: the disc paths must not see it.
+	EXPECT_FALSE(VMManager::IsDiscFileName("/games/Tekken 4.acgame"));
+}
+
+TEST(ArcadeGameList, AnEntryTypeHasAName)
+{
+	for (int type = 0; type < static_cast<int>(GameList::EntryType::Count); type++)
+		EXPECT_NE(std::string(GameList::EntryTypeToString(static_cast<GameList::EntryType>(type), false)), "") << type;
+	EXPECT_STREQ(GameList::EntryTypeToString(GameList::EntryType::Arcade, false), "Arcade");
+	// The values already in game list caches keep their meaning.
+	EXPECT_EQ(static_cast<int>(GameList::EntryType::PS2Disc), 0);
+	EXPECT_EQ(static_cast<int>(GameList::EntryType::PS1Disc), 1);
+	EXPECT_EQ(static_cast<int>(GameList::EntryType::ELF), 2);
+	EXPECT_EQ(static_cast<int>(GameList::EntryType::Invalid), 3);
+}
+
+TEST(ArcadeGameList, AnAcgameIsAnArcadeEntryWithTheGameIDForSerialAndNoCRC)
+{
+	GameList::Entry entry;
+	ASSERT_TRUE(GameList::PopulateEntryFromPath(Fixture("tekken4.acgame"), &entry));
+	EXPECT_EQ(entry.type, GameList::EntryType::Arcade);
+	EXPECT_TRUE(entry.IsArcade());
+	EXPECT_FALSE(entry.IsDisc());
+	EXPECT_EQ(entry.serial, "NM00004");
+	EXPECT_EQ(entry.crc, 0u);
+	EXPECT_EQ(entry.path, Fixture("tekken4.acgame"));
+	// The .acgame's own name for the game.
+	EXPECT_EQ(entry.title, "Tekken 4");
+	EXPECT_EQ(entry.compatibility_rating, GameList::CompatibilityRating::Unknown);
+}
+
+TEST(ArcadeGameList, WithoutANameTheGameDatabaseNamesIt)
+{
+	GameList::Entry entry;
+	ASSERT_TRUE(GameList::PopulateEntryFromPath(Fixture("minimal.acgame"), &entry));
+	EXPECT_EQ(entry.type, GameList::EntryType::Arcade);
+	EXPECT_EQ(entry.serial, "NM00023");
+	EXPECT_EQ(entry.crc, 0u);
+	if (const GameDatabaseSchema::GameEntry* db = GameDatabase::findGame("NM00023"))
+		EXPECT_EQ(entry.title, db->name);
+	else
+		EXPECT_EQ(entry.title, "minimal"); // No database here: the file's name.
+}
+
+TEST(ArcadeGameList, AFileWithoutAGameIDIsInvalidAndNotAFailure)
+{
+	// Invalid entries are cached, so the file is not read again at every scan.
+	for (const char* name : {"bad-gameid.acgame", "no-gameid.acgame"})
+	{
+		GameList::Entry entry;
+		ASSERT_TRUE(GameList::PopulateEntryFromPath(Fixture(name), &entry)) << name;
+		EXPECT_EQ(entry.type, GameList::EntryType::Invalid) << name;
+	}
+
+	GameList::Entry missing;
+	EXPECT_FALSE(GameList::PopulateEntryFromPath(Fixture("does-not-exist.acgame"), &missing));
+}
+
+TEST(ArcadeGameList, AnAcgameSaysWhereItsMediaImageIs)
+{
+	const std::string dir(Path::GetDirectory(Fixture("tekken4.acgame")));
+
+	// In the folder [data] subdir names...
+	auto game = Arcade::ReadAcGameInfo(Fixture("tekken4.acgame"));
+	ASSERT_TRUE(game.has_value());
+	EXPECT_EQ(game->gameid, "NM00004");
+	EXPECT_EQ(game->name, "Tekken 4");
+	EXPECT_EQ(game->media_path, Path::Combine(Path::Combine(dir, "NM00004"), "NM00004.chd"));
+
+	// ...in a folder named after the game when it names none, with the game ID's .chd...
+	game = Arcade::ReadAcGameInfo(Fixture("minimal.acgame"));
+	ASSERT_TRUE(game.has_value());
+	EXPECT_EQ(game->name, "");
+	EXPECT_EQ(game->media_path, Path::Combine(Path::Combine(dir, "NM00023"), "NM00023.chd"));
+
+	// ...beside the .acgame when subdir is empty.
+	game = Arcade::ReadAcGameInfo(Fixture("beside.acgame"));
+	ASSERT_TRUE(game.has_value());
+	EXPECT_EQ(game->media_path, Path::Combine(dir, "bg3.chd"));
+
+	EXPECT_FALSE(Arcade::ReadAcGameInfo(Fixture("bad-gameid.acgame")).has_value());
+	EXPECT_FALSE(Arcade::ReadAcGameInfo(Fixture("no-gameid.acgame")).has_value());
+	EXPECT_FALSE(Arcade::ReadAcGameInfo(Fixture("does-not-exist.acgame")).has_value());
+}
+
+TEST(ArcadeGameList, AnAbsoluteMediaPathIsUsedAsItIsAndABigFileIsNotAnAcgame)
+{
+	const std::string dir = Path::Combine(testing::TempDir(), "arcade_acgame_files");
+	ASSERT_TRUE(FileSystem::CreateDirectoryPath(dir.c_str(), true));
+
+	const std::string absolute = Path::Combine(dir, "absolute.acgame");
+	const std::string image = Path::Combine(dir, "images/NM00005.chd");
+	WriteFile(absolute, "[game]\ngameid=NM00005\n[data]\nmediasrc=" + image + "\n");
+	auto game = Arcade::ReadAcGameInfo(absolute);
+	ASSERT_TRUE(game.has_value());
+	EXPECT_EQ(game->media_path, image);
+
+	// A valid game ID in a file that is not an .acgame's size.
+	const std::string big = Path::Combine(dir, "big.acgame");
+	WriteFile(big, "[game]\ngameid=NM00005\n" + std::string(70 * 1024, '#') + "\n");
+	EXPECT_FALSE(Arcade::ReadAcGameInfo(big).has_value());
+
+	std::error_code ec;
+	std::filesystem::remove_all(dir, ec);
+}
+
+TEST(ArcadeGameList, BootingAnArcadeEntryLeavesTheSourceTypeUnset)
+{
+	GameList::Entry entry;
+	ASSERT_TRUE(GameList::PopulateEntryFromPath(Fixture("tekken4.acgame"), &entry));
+
+	// Even when the caller had a disc source in hand.
+	VMBootParameters params;
+	params.source_type = CDVD_SourceType::Iso;
+	params.elf_override = "/some/game.elf";
+	GameList::FillBootParametersForEntry(&params, &entry);
+	EXPECT_EQ(params.filename, Fixture("tekken4.acgame"));
+	EXPECT_FALSE(params.source_type.has_value());
+	EXPECT_TRUE(params.elf_override.empty());
+	EXPECT_TRUE(VMManager::IsArcadeGameFileName(params.filename)); // So Initialize() takes the arcade branch.
+
+	// A disc still sets its source.
+	GameList::Entry disc;
+	disc.type = GameList::EntryType::PS2Disc;
+	disc.path = "/games/game.iso";
+	VMBootParameters disc_params;
+	GameList::FillBootParametersForEntry(&disc_params, &disc);
+	ASSERT_TRUE(disc_params.source_type.has_value());
+	EXPECT_EQ(disc_params.source_type.value(), CDVD_SourceType::Iso);
+}
+
+// ----------------------------------------------------------------------------------------------------
+// A scan, and the cache
+// ----------------------------------------------------------------------------------------------------
+
+namespace
+{
+	// The process-wide base settings the game list reads its folders from. Set once: the layer can be set only once.
+	MemorySettingsInterface& HostBaseSettings()
+	{
+		static MemorySettingsInterface s_base;
+		static const bool s_set = [] {
+			Host::Internal::SetBaseSettingsLayer(&s_base);
+			return true;
+		}();
+		(void)s_set;
+		return s_base;
+	}
+
+	class ArcadeGameListScanTest : public ::testing::Test
+	{
+	protected:
+		void SetUp() override
+		{
+			m_root = Path::Combine(testing::TempDir(), "arcade_gamelist_scan");
+			std::error_code ec;
+			std::filesystem::remove_all(m_root, ec);
+			m_games = Path::Combine(m_root, "games");
+			ASSERT_TRUE(FileSystem::CreateDirectoryPath(m_games.c_str(), true));
+			m_old_cache = EmuFolders::Cache;
+			m_old_settings = EmuFolders::Settings;
+			EmuFolders::Cache = Path::Combine(m_root, "cache");
+			EmuFolders::Settings = Path::Combine(m_root, "settings");
+			ASSERT_TRUE(FileSystem::CreateDirectoryPath(EmuFolders::Cache.c_str(), true));
+			ASSERT_TRUE(FileSystem::CreateDirectoryPath(EmuFolders::Settings.c_str(), true));
+
+			MemorySettingsInterface& base = HostBaseSettings();
+			base.SetStringList("GameList", "Paths", {m_games});
+			base.SetStringList("GameList", "RecursivePaths", {});
+			base.SetStringList("GameList", "ExcludedPaths", {});
+
+			for (const char* name : {"tekken4.acgame", "minimal.acgame", "bad-gameid.acgame", "no-gameid.acgame", "beside.acgame"})
+				WriteFile(Path::Combine(m_games, name), ReadFile(Fixture(name)));
+			// Arcade media images are discs by their file name; this one is not a readable one.
+			WriteFile(Path::Combine(m_games, "bg3.chd"), "not a chd");
+			// The media image the Tekken 4 .acgame names, in the folder it names.
+			ASSERT_TRUE(FileSystem::CreateDirectoryPath(Path::Combine(m_games, "NM00004").c_str(), true));
+			WriteFile(Path::Combine(Path::Combine(m_games, "NM00004"), "NM00004.chd"), std::string(1234, 'x'));
+		}
+
+		void TearDown() override
+		{
+			EmuFolders::Cache = m_old_cache;
+			EmuFolders::Settings = m_old_settings;
+			std::error_code ec;
+			std::filesystem::remove_all(m_root, ec);
+		}
+
+		static const GameList::Entry* Find(const std::string& serial)
+		{
+			return GameList::GetEntryBySerialAndCRC(serial, 0);
+		}
+
+		std::string m_root, m_games, m_old_cache, m_old_settings;
+	};
+} // namespace
+
+TEST_F(ArcadeGameListScanTest, AScanListsTheValidAcgamesAndNothingElseInTheFolder)
+{
+	GameList::Refresh(true);
+	auto lock = GameList::GetLock();
+
+	// tekken4, minimal and beside; the files that name no game and the media image that is no disc are not listed.
+	EXPECT_EQ(GameList::GetEntryCount(), 3u);
+	const GameList::Entry* tekken = Find("NM00004");
+	ASSERT_NE(tekken, nullptr);
+	EXPECT_EQ(tekken->type, GameList::EntryType::Arcade);
+	EXPECT_EQ(tekken->title, "Tekken 4");
+	EXPECT_EQ(tekken->path, Path::Combine(m_games, "tekken4.acgame"));
+	EXPECT_EQ(tekken->total_size, 1234u); // Its media image's size.
+
+	const GameList::Entry* bg3 = Find("NM00010");
+	ASSERT_NE(bg3, nullptr);
+	EXPECT_EQ(bg3->title, "Battle Gear 3");
+	EXPECT_EQ(bg3->total_size, 9u); // [data] subdir= is empty: beside the .acgame.
+
+	const GameList::Entry* minimal = Find("NM00023");
+	ASSERT_NE(minimal, nullptr);
+	EXPECT_EQ(minimal->total_size, 0u); // No media image there: listed all the same.
+}
+
+TEST_F(ArcadeGameListScanTest, TheCacheKeepsArcadeEntriesWithoutRescanningTheFiles)
+{
+	GameList::Refresh(true);
+	{
+		auto lock = GameList::GetLock();
+		ASSERT_EQ(GameList::GetEntryCount(), 3u);
+	}
+
+	// The cache alone, no scan: the files could be gone.
+	GameList::Refresh(false, true);
+	auto lock = GameList::GetLock();
+	EXPECT_EQ(GameList::GetEntryCount(), 3u);
+	const GameList::Entry* tekken = Find("NM00004");
+	ASSERT_NE(tekken, nullptr);
+	EXPECT_EQ(tekken->type, GameList::EntryType::Arcade);
+	EXPECT_EQ(tekken->title, "Tekken 4");
+	EXPECT_EQ(tekken->crc, 0u);
+	EXPECT_EQ(tekken->total_size, 1234u);
+	EXPECT_EQ(Find("NM00010")->type, GameList::EntryType::Arcade);
+}
