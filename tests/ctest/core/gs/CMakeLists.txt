@@ -84,6 +84,9 @@ add_pcsx2_test(gs_vertex_tests
 	gs_texture_cache_grid_tests.cpp
 	gs_texture_cache_move_tests.cpp
 	gs_target_update_tests.cpp
+	gs_exact_dirty_mapping_tests.cpp
+	gs_target_rebase_tests.cpp
+	gs_target_rebase_integration_tests.cpp
 	gs_dither_scale_tests.cpp
 	gs_cull_grid_refresh_tests.cpp
 	gs_split_seam_tests.cpp

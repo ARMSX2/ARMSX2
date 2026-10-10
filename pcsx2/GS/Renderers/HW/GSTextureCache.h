@@ -7,12 +7,18 @@
 #include "GS/Renderers/Common/GSFastList.h"
 #include "GS/Renderers/Common/GSDirtyRect.h"
 #include "GS/Renderers/HW/GSAlphaKnownBits.h"
+#include "GS/Renderers/HW/GSExactDirtyMapping.h"
 
 #include <array>
 #include <deque>
 #include <unordered_set>
 #include <utility>
 #include <limits>
+
+namespace GSTargetRebase
+{
+struct Plan;
+}
 
 class GSHwHack;
 
@@ -694,6 +700,14 @@ public:
 	void CombineAlignedInsideTargets(Target* target, GSTextureCache::Source* src = nullptr);
 
 private:
+	// This set depends only on its source layout and rect, never GS memory contents, so it cannot go stale.
+	GSExactDirtyMapping::WrittenPages m_written_c32_blocks;
+
+	bool TryDirtyRectByC32Blocks(u32 sbp, u32 spsm, u32 sbw, Target* target, const GSVector4i& rect);
+	bool TryRebaseTargetForOverwrite(Target* target, const GIFRegTEX0& incoming, const GSVector4i& draw_rect,
+		const Source* source, const Target* depth, u32 width_page_offset, bool is_shuffle);
+	void CommitTargetRebase(Target* target, GSTexture* texture, const GSTargetRebase::Plan& plan);
+
 	Target* ProcessTargetAfterLookup(RescaleHelper& rescaler, Target* dst, GIFRegTEX0 TEX0, const GSVector2i& size, int type,
 		bool used, u32 fbmask, bool is_frame, bool preload, bool preserve_rgb = true, bool preserve_alpha = true,
 		const GSVector4i draw_rc = GSVector4i::zero(), bool is_shuffle = false, bool possible_clear = false,
