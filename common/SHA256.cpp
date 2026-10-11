@@ -5,7 +5,11 @@
 #include "common/Error.h"
 #include "common/FileSystem.h"
 
-#include "Sha256.h"
+// 7-Zip's Sha256.h, found through the LZMA::LZMA include directory. Angle brackets are required:
+// a quoted include looks beside this file first, and on a case-insensitive filesystem (Windows,
+// macOS, iOS) "Sha256.h" is our own SHA256.h, already included above, so none of the 7-Zip
+// declarations would exist.
+#include <Sha256.h>
 
 #include <memory>
 #include <mutex>
