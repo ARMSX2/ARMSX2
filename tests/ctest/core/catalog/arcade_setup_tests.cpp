@@ -19,6 +19,7 @@
 #include "common/FileSystem.h"
 #include "common/Path.h"
 #include "common/SHA256.h"
+#include "common/StringUtil.h"
 
 #include "fmt/format.h"
 #include "zip.h"
@@ -1018,8 +1019,19 @@ TEST_F(ArcadeSetupTest, APathTheAcgameGotWrongInCaseStillBoots)
 
 	const PrepareResult result = MakeService().Prepare(acgame);
 	ASSERT_TRUE(result.ok) << result.error;
-	EXPECT_EQ(result.elf, Games("NM00004/boot.elf"));
-	EXPECT_EQ(result.media, Games("NM00004/nm00004.chd"));
+
+	// Where the filesystem ignores case (macOS, Windows) the name as typed already opens the file,
+	// so it is kept as typed. Where case matters, only the name on disk will do.
+	if (Exists(Games("NM00004/BOOT.ELF")))
+	{
+		EXPECT_EQ(StringUtil::Strcasecmp(result.elf.c_str(), Games("NM00004/boot.elf").c_str()), 0) << result.elf;
+		EXPECT_EQ(StringUtil::Strcasecmp(result.media.c_str(), Games("NM00004/nm00004.chd").c_str()), 0) << result.media;
+	}
+	else
+	{
+		EXPECT_EQ(result.elf, Games("NM00004/boot.elf"));
+		EXPECT_EQ(result.media, Games("NM00004/nm00004.chd"));
+	}
 }
 
 TEST_F(ArcadeSetupTest, AnAcgameThatLacksSomethingIsLeftAlone)
