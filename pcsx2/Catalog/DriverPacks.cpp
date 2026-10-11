@@ -250,22 +250,31 @@ namespace DriverPacks
 		return false;
 	}
 
+	namespace
+	{
+		// `platform` is what the caller is running on; empty means packs are not supported there.
+		Availability AvailabilityFor(const std::string& platform, const std::string& sysfs_root)
+		{
+			Availability result;
+			if (platform.empty())
+			{
+				result.reason = Availability::Reason::UnsupportedPlatform;
+				result.message = "Driver packs are not available on this platform.";
+			}
+			else if (!IsAdrenoGpu(sysfs_root))
+			{
+				result.reason = Availability::Reason::NoMatchingGpu;
+				result.message = "No driver packs for this GPU.";
+			}
+			else
+				result.reason = Availability::Reason::Available;
+			return result;
+		}
+	}
+
 	Availability GetAvailability(const std::string& sysfs_root)
 	{
-		Availability result;
-		if (CurrentPlatform().empty())
-		{
-			result.reason = Availability::Reason::UnsupportedPlatform;
-			result.message = "Driver packs are not available on this platform.";
-		}
-		else if (!IsAdrenoGpu(sysfs_root))
-		{
-			result.reason = Availability::Reason::NoMatchingGpu;
-			result.message = "No driver packs for this GPU.";
-		}
-		else
-			result.reason = Availability::Reason::Available;
-		return result;
+		return AvailabilityFor(CurrentPlatform(), sysfs_root);
 	}
 
 	// =============================================================================================
@@ -732,14 +741,7 @@ namespace DriverPacks
 
 	Availability Manager::GetAvailability() const
 	{
-		if (m_config.platform.empty())
-		{
-			Availability result;
-			result.reason = Availability::Reason::UnsupportedPlatform;
-			result.message = "Driver packs are not available on this platform.";
-			return result;
-		}
-		return DriverPacks::GetAvailability(m_config.sysfs_root);
+		return AvailabilityFor(m_config.platform, m_config.sysfs_root);
 	}
 
 	std::vector<InstalledDriver> Manager::ListInstalled() const
