@@ -1627,6 +1627,7 @@
   "setup.bios.unknownZone": "Неизвестно",
   "setup.bios.useSelected": "Использовать выбранный BIOS",
   "setup.button.addAnotherFolder": "Добавить еще одну папку",
+  "setup.folder.subfolders": "Включать вложенные папки",
   "setup.button.addFolder": "Добавить папку",
   "setup.button.applyFinish": "Применить и завершить",
   "setup.button.choose": "Выберите",

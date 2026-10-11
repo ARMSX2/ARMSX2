@@ -13,6 +13,7 @@ import android.view.TextureView
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.util.concurrent.locks.LockSupport
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.floor
@@ -52,7 +53,20 @@ class XmbGlView(context: Context) : TextureView(context), TextureView.SurfaceTex
     }
 
     override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-        thread = RenderThread(st, w, h) { ok -> post { onGlStatus?.invoke(ok) } }.also { it.start() }
+        thread = RenderThread(st, w, h) { ok -> post { onGlStatus?.invoke(ok) } }.also {
+            it.paused = windowVisibility != VISIBLE
+            it.start()
+        }
+    }
+
+    /**
+     * Hold the wave still while the app is out of sight. A TextureView keeps its surface when the
+     * activity stops, so nothing else ends the loop: home, recents and a locked screen all left it
+     * drawing thirty frames a second that no one could see.
+     */
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        thread?.paused = visibility != VISIBLE
     }
 
     override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
@@ -94,8 +108,12 @@ class XmbGlView(context: Context) : TextureView(context), TextureView.SurfaceTex
         private val cp = FloatArray(28)
         private var startNanos = 0L
 
+        /** Parks the loop while set. Parked, not polled: a hidden wave costs no wakeups at all. */
+        @Volatile var paused = false
+            set(value) { field = value; LockSupport.unpark(this) }
+
         fun resize(w: Int, h: Int) { width = w; height = h; sizeDirty = true }
-        fun finish() { running = false; runCatching { join(500) } }
+        fun finish() { running = false; LockSupport.unpark(this); runCatching { join(500) } }
 
         override fun run() {
             if (!initEgl()) { onStatus(false); return }
@@ -103,6 +121,15 @@ class XmbGlView(context: Context) : TextureView(context), TextureView.SurfaceTex
             startNanos = System.nanoTime()
             var announced = false
             while (running) {
+                if (paused) {
+                    // Woken by the setter or by finish(). park() may also return early, which
+                    // only means another pass over this check. The clock moves with the pause, so
+                    // the wave comes back where it stopped.
+                    val parkedAt = System.nanoTime()
+                    LockSupport.park(this)
+                    startNanos += System.nanoTime() - parkedAt
+                    continue
+                }
                 val frameStart = System.nanoTime()
                 if (sizeDirty) { GLES30.glViewport(0, 0, width, height); sizeDirty = false }
                 val t = (frameStart - startNanos) / 1_000_000_000f

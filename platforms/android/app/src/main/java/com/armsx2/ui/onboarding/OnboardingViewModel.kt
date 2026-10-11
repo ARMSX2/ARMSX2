@@ -264,6 +264,13 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
         state.value = state.value.copy(gameFolders = updated)
     }
 
+    /** Whether the library scans [uri]'s subfolders too. The library scans again for it the next time
+     *  it is on screen. */
+    fun setFolderSubfolders(uri: String, include: Boolean) {
+        MainActivityRuntime.setRomsDirSubfolders(uri, include)
+        com.armsx2.data.library.LibraryRefresh.request()
+    }
+
     fun canContinue(): Boolean = when (state.value.page) {
         0, 1 -> true
         2 -> state.value.biosInfo != null

@@ -80,6 +80,8 @@ class AndroidGyroscopeInput(
     private val windowManager = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var activeSensor: Sensor? = null
     private var activeKind = KIND_NONE
+    // The app is out of sight: the session stays, the sensor is unregistered. See setInSight.
+    private var hidden = false
     private var mode = 0
     // Per axis (#592): the same value unless the player split them, and 0 turns that axis off.
     private var sensitivityX = 1f
@@ -139,7 +141,32 @@ class AndroidGyroscopeInput(
         val resolved = sensorChainFor(sensorManager, mode) ?: return false
         activeSensor = resolved.first
         activeKind = resolved.second
-        return sensorManager.registerListener(this, resolved.first, SensorManager.SENSOR_DELAY_GAME)
+        // Out of sight, setInSight(true) registers it on the way back.
+        return hidden || sensorManager.registerListener(this, resolved.first, SensorManager.SENSOR_DELAY_GAME)
+    }
+
+    /**
+     * The app left the screen (false) or came back (true). Out of sight the sensor is off but the
+     * session stays, so coming back carries on where it was. The caller's start/stop only runs on
+     * recomposition, which Compose holds back while the activity is stopped, so a pause that
+     * landed as the app left kept the sensor streaming into a locked device.
+     */
+    fun setInSight(inSight: Boolean) {
+        if (hidden == !inSight) return
+        hidden = !inSight
+        val sensor = activeSensor ?: return
+        if (hidden) {
+            sensorManager.unregisterListener(this, sensor)
+            // Let go of the stick as stop() does, so nothing holds the last aim meanwhile.
+            filteredX = 0f
+            filteredY = 0f
+            lastSentX = 0f
+            lastSentY = 0f
+            wasActive = false
+            onAnalog(mode, 0f, 0f)
+        } else {
+            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME)
+        }
     }
 
     fun recenter() {

@@ -210,10 +210,25 @@ open class MainActivityRuntime : ComponentActivity() {
             romsDirs.value = dirs
             val arr = org.json.JSONArray()
             for (d in dirs) arr.put(d)
+            // A folder taken out of the library takes its subfolder choice with it.
+            val withoutSubfolders = romsDirsWithoutSubfolders.value.filterTo(LinkedHashSet()) { it in dirs }
+            romsDirsWithoutSubfolders.value = withoutSubfolders
             prefs.edit {
                 putString("romsDirs", arr.toString())
+                    .putStringSet(KEY_ROMS_DIRS_WITHOUT_SUBFOLDERS, withoutSubfolders)
                     .remove("roms")
             }
+        }
+
+        /** The game folders in [romsDirs] whose subfolders the library leaves out: only the files
+         *  directly in them are scanned. Every other folder is scanned with all its subfolders. */
+        val romsDirsWithoutSubfolders = mutableStateOf<Set<String>>(emptySet())
+        private const val KEY_ROMS_DIRS_WITHOUT_SUBFOLDERS = "romsDirsWithoutSubfolders"
+
+        fun setRomsDirSubfolders(dir: String, include: Boolean) {
+            val updated = LinkedHashSet(romsDirsWithoutSubfolders.value).apply { if (include) remove(dir) else add(dir) }
+            romsDirsWithoutSubfolders.value = updated
+            prefs.edit { putStringSet(KEY_ROMS_DIRS_WITHOUT_SUBFOLDERS, updated) }
         }
 
         // Default backend is "auto" — emucore's GSUtil::GetPreferredRenderer
@@ -2618,6 +2633,8 @@ open class MainActivityRuntime : ComponentActivity() {
                 if (legacy != null) listOf(legacy) else emptyList()
             }
         }
+        romsDirsWithoutSubfolders.value =
+            runCatching { prefs.getStringSet(KEY_ROMS_DIRS_WITHOUT_SUBFOLDERS, null)?.toSet() }.getOrNull().orEmpty()
         // Setup recovery. Auto Backup can restore our prefs (incl. setupComplete + the
         // ROMs URIs) on reinstall, but SAF/all-files PERMISSIONS are never backed up — so
         // a restored setup can point at a folder we can no longer read, which would strand
@@ -5925,6 +5942,22 @@ open class MainActivityRuntime : ComponentActivity() {
         com.armsx2.LibraryMusic.pause()
         // Pause-menu track was already paused by setForeground(false) at the top of onPause.
         super.onPause()
+    }
+
+    // Stopped, not paused: a split-screen or picture-in-picture app is paused but still in sight.
+    // The overlay pause opened in onPause keeps the game's audio device running for a quick
+    // resume; out of sight that only kept Android's audio mixer holding a wakelock all night with
+    // the device locked (#825, #817). Native pauses it for real until onStart. Discord idles too.
+    override fun onStart() {
+        super.onStart()
+        runCatching { NativeApp.setAppBackgrounded(false) }
+        com.armsx2.DiscordPresence.setForeground(true)
+    }
+
+    override fun onStop() {
+        runCatching { NativeApp.setAppBackgrounded(true) }
+        com.armsx2.DiscordPresence.setForeground(false)
+        super.onStop()
     }
 
     override fun onResume() {

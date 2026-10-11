@@ -131,6 +131,9 @@ std::atomic<bool> s_execute_exit{false};
 // forever (the exit-game hang: EE breaks out, loop re-enters, repeat). Reset
 // at the top of runVMThread so a fresh launch starts clean.
 std::atomic<bool> s_stop_requested{false};
+// The activity is stopped: home, recents, another app, or the screen locked. Set by
+// setAppBackgrounded() from onStop/onStart.
+static std::atomic<bool> s_app_backgrounded{false};
 // Set when setEnabledPatches had to CREATE gamesettings/<serial>_<CRC>.ini for a game
 // that booted without one: no LAYER_GAME is installed in that case, so reloadPatches
 // must reinstall it before the per-game Enable list can take effect.
@@ -138,6 +141,9 @@ static std::atomic<bool> s_game_layer_needs_install{false};
 static std::mutex s_cpu_thread_mutex;
 static std::deque<std::function<void()>> s_cpu_thread_queue;
 static std::thread::id s_cpu_thread_id;
+// Signalled when a task is queued, so a paused CPU thread waiting in the background picks it up at
+// once rather than at its next timeout.
+static std::condition_variable s_cpu_thread_cv;
 int s_window_width = 0;
 int s_window_height = 0;
 // Display refresh rate (Hz) reported by the Kotlin surface layer via
@@ -3878,7 +3884,19 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
             } else if (_vmState == VMState::Paused) {
                 VMManager::IdlePollUpdate();
                 Host::PumpMessagesOnCPUThread();
-                usleep(16000);
+                if (s_app_backgrounded.load(std::memory_order_acquire)) {
+                    // No menu to poll for in the background, and sixty wakeups a second with the
+                    // screen off add up overnight (#817). Sleep until a task arrives (a resume, a
+                    // stop, the return to the foreground) or a second has passed.
+                    std::unique_lock lock(s_cpu_thread_mutex);
+                    s_cpu_thread_cv.wait_for(lock, std::chrono::seconds(1), []() {
+                        return !s_cpu_thread_queue.empty() ||
+                               s_stop_requested.load(std::memory_order_acquire) ||
+                               !s_app_backgrounded.load(std::memory_order_acquire);
+                    });
+                } else {
+                    usleep(16000);
+                }
             } else {
                 usleep(250000);
             }
@@ -3989,8 +4007,22 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setOutputPauseSuppressed(JNIEnv *env, jclas
     // Close/Open rebuild on resume — the ~1s fast-forward-from-menu hitch, and the
     // "audio dies a few seconds into a paused menu" bug (#333). Keeping it alive across
     // the brief menu pause means resume is a cheap no-op with no rebuild. Only the
-    // overlay pause sets this; background/quit pause normally, and resume() clears it.
+    // overlay pause sets this, and resume() clears it. Leaving the app opens the overlay
+    // too, so setAppBackgrounded() below is what lets go of the device then.
     SPU2::SetOutputPauseSuppressed(suppressed == JNI_TRUE);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setAppBackgrounded(JNIEnv *env, jclass clazz, jboolean backgrounded) {
+    // From the activity's onStop (true) and onStart (false). The overlay pause that leaving the app
+    // opens keeps the audio device running; out of sight it now pauses for real, which lets Android
+    // stop holding its audio wakelock (#825). Coming back starts it again while the pause menu is
+    // still up, so Resume stays instant (#333).
+    const bool bg = (backgrounded == JNI_TRUE);
+    s_app_backgrounded.store(bg, std::memory_order_release);
+    SPU2::SetOutputBackgrounded(bg);
+    Host::RunOnCPUThread([]() { SPU2::UpdateOutputPaused(); });
 }
 
 extern "C"
@@ -4832,10 +4864,12 @@ void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false 
                 }
                 wait_cv.notify_one();
             });
+            s_cpu_thread_cv.notify_one();
         }
         else
         {
             s_cpu_thread_queue.push_back(std::move(function));
+            s_cpu_thread_cv.notify_one();
             return;
         }
     }

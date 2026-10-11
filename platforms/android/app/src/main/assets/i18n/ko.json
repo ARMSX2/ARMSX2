@@ -1603,6 +1603,7 @@
  "setup.bios.unknownZone": "알 수 없음",
  "setup.bios.useSelected": "선택한 BIOS 사용",
  "setup.button.addAnotherFolder": "폴더 추가",
+ "setup.folder.subfolders": "하위 폴더 포함",
  "setup.button.addFolder": "폴더 추가",
  "setup.button.applyFinish": "적용 후 완료",
  "setup.button.choose": "선택",

@@ -995,6 +995,9 @@ public class NativeApp {
 	// resume rebuild). Set true right before pauseForOverlay's pause(); resume()
 	// clears it. See native setOutputPauseSuppressed / SPU2::SetOutputPauseSuppressed.
 	public static native void setOutputPauseSuppressed(boolean suppressed);
+	// From the activity's onStop (true) and onStart (false). Out of sight, a paused game lets go of
+	// the audio device even across an overlay pause, and the paused CPU thread stops polling.
+	public static native void setAppBackgrounded(boolean backgrounded);
 	public static native void shutdown();
 	public static native boolean hasActiveVM();
 

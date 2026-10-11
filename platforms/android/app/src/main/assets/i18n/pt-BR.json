@@ -853,6 +853,7 @@
  "setup.bios.unknownZone": "Desconhecida",
  "setup.bios.useSelected": "Usar BIOS Selecionada",
  "setup.button.addAnotherFolder": "Adicionar Outra Pasta",
+ "setup.folder.subfolders": "Incluir subpastas",
  "setup.button.addFolder": "Adicionar Pasta",
  "setup.button.applyFinish": "Aplicar e Concluir",
  "setup.button.choose": "Escolher",

@@ -187,6 +187,10 @@ fun TouchControlsOverlay() {
             gyro.stop()
         }
     }
+    // Sensor off while the app is out of sight and back on when it returns, told by the lifecycle
+    // itself: the keys above only change on recomposition, which stops with the activity.
+    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_STOP) { gyro.setInSight(false) }
+    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_START) { gyro.setInSight(true) }
     val edit = TouchControls.editMode.value
     val running = MainActivityRuntime.eState.value == EmuState.RUNNING ||
                   MainActivityRuntime.eState.value == EmuState.PAUSED

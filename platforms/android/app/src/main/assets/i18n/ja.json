@@ -1603,6 +1603,7 @@
   "setup.bios.unknownZone": "不明",
   "setup.bios.useSelected": "選択したBIOSを使用",
   "setup.button.addAnotherFolder": "別のフォルダを追加",
+  "setup.folder.subfolders": "サブフォルダも含める",
   "setup.button.addFolder": "フォルダを追加",
   "setup.button.applyFinish": "適用して完了",
   "setup.button.choose": "選択",
