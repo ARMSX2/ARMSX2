@@ -3,7 +3,7 @@
 
 // The PINE commands that screenshot Big Picture (ImGui/FullscreenUIShot.h): what they do with a
 // malformed request, and what they say when the host did not start with --headless. The commands
-// that reach the GS need a running device and are exercised by tools/bp-shot.py in the umbrella.
+// that reach the GS need a running device and are exercised by running armsx2-sdl --headless and driving it over PINE.
 
 #include <gtest/gtest.h>
 

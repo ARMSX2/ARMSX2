@@ -20,8 +20,8 @@ class GSTexture;
 // calls NotePresented() with that texture, and the readback functions below turn it into pixels.
 // It is the libretro backbuffer path (VKLibretro / GLLibretro) minus the frontend handoff.
 //
-// This is how an agent with no monitor sees a Big Picture page: see FullscreenUIShot.h for the
-// commands that drive it and tools/bp-shot.py in the umbrella for the script that uses them.
+// This is how a test with no monitor sees a Big Picture page: FullscreenUIShot.h has the PINE
+// commands that open a page and save it as a PNG.
 //
 // Threading: SetEnabled is called once by the host before the GS thread starts. Everything else
 // is GS-thread only, except PresentCount(), which any thread may read.

@@ -4,9 +4,8 @@
 #pragma once
 
 // Screenshot harness for the Qt UI: renders a settings page, a dialog or the main window to a PNG with
-// QWidget::grab() and exits, so a UI change can be looked at with no display. Driven from outside by
-// devs/bmdhacks/linux-ui/tools/qt-shot.py (usage and the list of names: tools/qt-shot.md), which starts
-// armsx2-qt with QT_QPA_PLATFORM=offscreen. Nothing here runs unless a -uishot flag is on the command line,
+// QWidget::grab() and exits, so a UI change can be looked at with no display. Run armsx2-qt with
+// QT_QPA_PLATFORM=offscreen and a throwaway -datapath; -uishot list prints every page and dialog name. Nothing here runs unless a -uishot flag is on the command line,
 // and nothing reads the environment.
 //
 // Command line (all hidden from -help):

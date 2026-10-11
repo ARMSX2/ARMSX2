@@ -746,10 +746,10 @@ bool QtShot::ParseArgument(QStringList::const_iterator& it, QStringList::const_i
 		s_guarded = true;
 		const QStringList all = QCoreApplication::arguments();
 		if (!all.contains(QLatin1String("-datapath")) || all.contains(QLatin1String("-portable")))
-			Refuse(QStringLiteral("-uishot needs -datapath <dir> (and not -portable), or the shots use your real settings; use qt-shot.py"));
+			Refuse(QStringLiteral("-uishot needs -datapath <dir> (and not -portable), or the shots use your real settings"));
 		if (QGuiApplication::platformName() != QLatin1String("offscreen") && !all.contains(QLatin1String("-uishot-any-platform")))
 			Refuse(QStringLiteral("-uishot opens windows and the platform is '%1', not offscreen; run with QT_QPA_PLATFORM=offscreen "
-								  "(qt-shot.py does) or pass -uishot-any-platform")
+								  "or pass -uishot-any-platform")
 					.arg(QGuiApplication::platformName()));
 	}
 

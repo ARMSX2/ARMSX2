@@ -111,7 +111,7 @@ namespace FullscreenUI
 		}
 
 		// Starts a game list scan and shows the list, for pages that need games in it. The scan runs
-		// on the host's own thread, so give it a few frames (bp-shot.py --wait-frames) before the next page.
+		// on the host's own thread, so give it a few frames (UIWaitFrames) before the next page.
 		void OpenRescan()
 		{
 			Host::RefreshGameListAsync(false);

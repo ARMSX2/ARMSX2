@@ -35,8 +35,7 @@
 // that game's Load State selector (open rescan first and wait a few frames). The arcade screens have their own
 // names: arcadelaunch starts the first arcade game in the list (as selecting it would: with nothing missing it
 // boots, else it shows what is), arcadedownload opens settings:arcade and downloads the boot files, and
-// arcadepause draws the pause menu's Arcade submenu with no game running. tools/bp-shot.py in the umbrella
-// wraps all of this.
+// arcadepause draws the pause menu's Arcade submenu with no game running.
 //
 // Adding a Big Picture page: add a row to kPages in FullscreenUIShot.cpp, so an agent can reach it.
 // A new SettingsPage enum value trips a static_assert there until it has a name.
