@@ -173,6 +173,11 @@ namespace ACJV {
     void SetMacroMask(u32 player, u32 index, u16 mask);     // set a macro's combined switch mask (pushed by InputManager)
     void SetWheelAxis(u32 axis, float value);
     void SetDrumHit(u32 channel, bool pressed); // Taiko drum sensor -> JVS analog channel (0=off, else above DAI threshold)
+    // ARMSX2: what the setters above left on the board, for ArcadeInput's tests.
+    u16 GetButtonState(u32 player);
+    bool GetDrumHit(u32 channel);
+    bool GetTouchPressed();
+    bool GetGunForceOffscreen();
     float GetSteer(); // host steering, -1 (full left)...+1 (full right); used by the BG3 drive-board responder (acuart)
     float GetGas();   // host accelerator, 0...1
     float GetBrake(); // host brake, 0...1

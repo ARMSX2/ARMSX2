@@ -1809,6 +1809,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "setup.bios.unknownZone" to "Unknown",
     "setup.bios.useSelected" to "Use Selected BIOS",
     "setup.button.addAnotherFolder" to "Add Another Folder",
+    "setup.folder.subfolders" to "Include subfolders",
     "setup.button.addFolder" to "Add Folder",
     "setup.button.applyFinish" to "Apply & Finish",
     "setup.button.choose" to "Choose",

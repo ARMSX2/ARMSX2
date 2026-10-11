@@ -7,6 +7,7 @@ add_pcsx2_test(core_test
 	savestate_legacy_tests.cpp
 	settings_precedence_tests.cpp
 	gsrunner_affinity_tests.cpp
+	headless_shot_tests.cpp
 	texture_upscale_setting_tests.cpp
 	MockMemoryInterface.h
 	StubHost.cpp
@@ -42,6 +43,12 @@ add_subdirectory(gs)
 
 # IPU colour-conversion oracle (arch-neutral: each host tests its own path).
 add_subdirectory(ipu)
+
+# Shared online-service layer (pcsx2/Catalog) and common/SHA256.
+add_subdirectory(catalog)
+
+# Namco arcade cabinet controls and library entries.
+add_subdirectory(arcade)
 
 
 set(multi_isa_sources

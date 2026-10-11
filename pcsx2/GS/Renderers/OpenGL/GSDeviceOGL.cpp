@@ -7,6 +7,7 @@
 #include "GS/Renderers/OpenGL/GLState.h"
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 #include "GS/Renderers/Common/GSGPUProfile.h"
+#include "GS/Renderers/Common/GSHeadlessPresent.h"
 #include "GS/DriverReport/GSDriverReport.h"
 #include "GS/GSState.h"
 #include "GS/Renderers/Common/GSRenderer.h"
@@ -1790,7 +1791,9 @@ GSDevice::PresentResult GSDeviceOGL::DoBeginPresent(bool frame_skip)
 	// own FBO is not an option: FBOs are not shared between contexts, and this
 	// thread's context is a share of the frontend's rather than the same one.
 	// EndPresent publishes the finished texture, and retro_run blits it.
-	const bool libretro = GLLibretro::Active;
+	// Headless (GSHeadless) is the same present with no frontend to publish to; the host reads it back.
+	const bool libretro = GLLibretro::Active ||
+		(GSHeadless::IsEnabled() && m_window_info.type == WindowInfo::Type::Surfaceless);
 	if (!libretro && m_window_info.type == WindowInfo::Type::Surfaceless)
 		return PresentResult::FrameSkipped;
 
@@ -1872,6 +1875,10 @@ void GSDeviceOGL::EndPresent()
 
 		m_libretro_bb_idx = (m_libretro_bb_idx + 1) % kLibretroBackbuffers;
 		GLLibretro::PublishFrame(frame);
+	}
+	else if (GSHeadless::IsEnabled() && m_window_info.type == WindowInfo::Type::Surfaceless)
+	{
+		GSHeadless::NotePresented(m_libretro_bb[m_libretro_bb_idx].get());
 	}
 	else
 	{

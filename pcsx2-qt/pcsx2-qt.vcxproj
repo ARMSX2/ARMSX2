@@ -91,6 +91,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="AsyncDialogs.cpp" />
+    <ClCompile Include="AutoCoversController.cpp" />
+    <ClCompile Include="TexturePackService.cpp" />
     <ClCompile Include="ColorPickerButton.cpp" />
     <ClCompile Include="Debugger\SymbolTree\NewSymbolDialogs.cpp" />
     <ClCompile Include="Debugger\SymbolTree\SymbolTreeDelegates.cpp" />
@@ -145,8 +147,12 @@
     <ClCompile Include="Settings\ControllerBindingWidget.cpp" />
     <ClCompile Include="Settings\ControllerGlobalSettingsWidget.cpp" />
     <ClCompile Include="Settings\MemoryCardCreateDialog.cpp" />
+    <ClCompile Include="Settings\MemoryCardBackupsDialog.cpp" />
+    <ClCompile Include="Settings\OnlinePatchesDialog.cpp" />
+    <ClCompile Include="MemcardRestorePrompt.cpp" />
     <ClCompile Include="Settings\EmulationSettingsWidget.cpp" />
     <ClCompile Include="Settings\GameListSettingsWidget.cpp" />
+    <ClCompile Include="Settings\CoverArtSettingsGroup.cpp" />
     <ClCompile Include="Settings\GraphicsSettingsWidget.cpp" />
     <ClCompile Include="Settings\OSDSettingsWidget.cpp" />
     <ClCompile Include="Settings\OsdFontPickerDialog.cpp" />
@@ -164,17 +170,24 @@
     <ClCompile Include="Settings\MemoryCardSettingsWidget.cpp" />
     <ClCompile Include="Settings\DEV9DnsHostDialog.cpp" />
     <ClCompile Include="Settings\DEV9SettingsWidget.cpp" />
+    <ClCompile Include="Settings\DEV9LocalLinkWidget.cpp" />
+    <ClCompile Include="Settings\DriverPacksSettingsWidget.cpp" />
+    <ClCompile Include="Settings\TexturePacksSettingsWidget.cpp" />
     <ClCompile Include="Settings\DEV9UiCommon.cpp" />
     <ClCompile Include="Settings\HddCreateQt.cpp" />
     <ClCompile Include="Settings\GameSummaryWidget.cpp" />
     <ClCompile Include="Settings\AchievementLoginDialog.cpp" />
     <ClCompile Include="Settings\AchievementSettingsWidget.cpp" />
+    <ClCompile Include="Settings\ArcadeControlsSettingsWidget.cpp" />
     <ClCompile Include="GameList\GameListModel.cpp" />
     <ClCompile Include="GameList\GameListRefreshThread.cpp" />
     <ClCompile Include="GameList\GameListWidget.cpp" />
     <ClCompile Include="AboutDialog.cpp" />
     <ClCompile Include="AutoUpdaterDialog.cpp" />
     <ClCompile Include="CoverDownloadDialog.cpp" />
+    <ClCompile Include="ArcadeLaunch.cpp" />
+    <ClCompile Include="ArcadeMenu.cpp" />
+    <ClCompile Include="ArcadeSetupDialog.cpp" />
     <ClCompile Include="DisplayWidget.cpp" />
     <ClCompile Include="ShortcutCreationDialog.cpp" />
     <ClCompile Include="QtHost.cpp" />
@@ -184,6 +197,8 @@
     </ClCompile>
     <ClCompile Include="QtKeyCodes.cpp" />
     <ClCompile Include="QtUtils.cpp" />
+    <ClCompile Include="QtShot.cpp" />
+    <ClCompile Include="QtShotEntries.cpp" />
     <ClCompile Include="Translations.cpp" />
     <ClCompile Include="VCRuntimeChecker.cpp" />
   </ItemGroup>
@@ -193,6 +208,7 @@
     <QtMoc Include="ToolbarCustomizationDialog.h" />
     <QtMoc Include="Settings\InterfaceSettingsWidget.h" />
     <QtMoc Include="Settings\GameListSettingsWidget.h" />
+    <QtMoc Include="Settings\CoverArtSettingsGroup.h" />
     <QtMoc Include="Settings\BIOSSettingsWidget.h" />
     <QtMoc Include="Settings\EmulationSettingsWidget.h" />
     <QtMoc Include="Settings\GraphicsSettingsWidget.h" />
@@ -207,11 +223,18 @@
     <QtMoc Include="Settings\ControllerSettingsWindow.h" />
     <QtMoc Include="Settings\AudioSettingsWidget.h" />
     <QtMoc Include="Settings\MemoryCardConvertDialog.h" />
+    <QtMoc Include="Settings\MemoryCardBackupsDialog.h" />
+    <QtMoc Include="Settings\OnlinePatchesDialog.h" />
     <QtMoc Include="Settings\MemoryCardSettingsWidget.h" />
     <QtMoc Include="Settings\DEV9DnsHostDialog.h" />
     <QtMoc Include="Settings\DEV9SettingsWidget.h" />
+    <QtMoc Include="Settings\DEV9LocalLinkWidget.h" />
+    <QtMoc Include="Settings\DriverPacksSettingsWidget.h" />
+    <QtMoc Include="Settings\TexturePacksSettingsWidget.h" />
     <QtMoc Include="Settings\DEV9UiCommon.h" />
     <QtMoc Include="QtProgressCallback.h" />
+    <QtMoc Include="AutoCoversController.h" />
+    <QtMoc Include="TexturePackService.h" />
     <QtMoc Include="ColorPickerButton.h" />
     <QtMoc Include="LogWindow.h" />
     <QtMoc Include="Debugger\SymbolTree\NewSymbolDialogs.h" />
@@ -232,12 +255,17 @@
     <QtMoc Include="Settings\MemoryCardCreateDialog.h" />
     <QtMoc Include="Settings\AchievementLoginDialog.h" />
     <QtMoc Include="Settings\AchievementSettingsWidget.h" />
+    <QtMoc Include="Settings\ArcadeControlsSettingsWidget.h" />
     <QtMoc Include="GameList\GameListModel.h" />
     <QtMoc Include="GameList\GameListWidget.h" />
     <QtMoc Include="GameList\GameListRefreshThread.h" />
     <QtMoc Include="Tools\InputRecording\NewInputRecordingDlg.h" />
     <QtMoc Include="Tools\InputRecording\InputRecordingViewer.h" />
     <ClInclude Include="QtUtils.h" />
+    <ClInclude Include="QtShot.h" />
+    <ClInclude Include="ArcadeLaunch.h" />
+    <ClInclude Include="QtAsyncCall.h" />
+    <ClInclude Include="MemcardRestorePrompt.h" />
     <QtMoc Include="Debugger\AnalysisOptionsDialog.h" />
     <QtMoc Include="Debugger\DebuggerEvents.h" />
     <QtMoc Include="Debugger\DebuggerView.h" />
@@ -278,6 +306,8 @@
     <QtMoc Include="AboutDialog.h" />
     <QtMoc Include="AutoUpdaterDialog.h" />
     <QtMoc Include="CoverDownloadDialog.h" />
+    <QtMoc Include="ArcadeMenu.h" />
+    <QtMoc Include="ArcadeSetupDialog.h" />
     <QtMoc Include="ShortcutCreationDialog.h" />
     <QtMoc Include="MainWindow.h" />
     <QtMoc Include="DisplayWidget.h" />
@@ -344,11 +374,15 @@
     <QtUi Include="Settings\DebugUserInterfaceSettingsTab.ui" />
     <QtUi Include="Settings\DEV9DnsHostDialog.ui" />
     <QtUi Include="Settings\DEV9SettingsWidget.ui" />
+    <QtUi Include="Settings\DEV9LocalLinkWidget.ui" />
+    <QtUi Include="Settings\DriverPacksSettingsWidget.ui" />
+    <QtUi Include="Settings\TexturePacksSettingsWidget.ui" />
     <QtUi Include="Settings\EmulationSettingsWidget.ui" />
     <QtUi Include="Settings\FolderSettingsWidget.ui" />
     <QtUi Include="Settings\GameCheatSettingsWidget.ui" />
     <QtUi Include="Settings\GameFixSettingsWidget.ui" />
     <QtUi Include="Settings\GameListSettingsWidget.ui" />
+    <QtUi Include="Settings\CoverArtSettingsGroup.ui" />
     <QtUi Include="Settings\GamePatchDetailsWidget.ui" />
     <QtUi Include="Settings\GamePatchSettingsWidget.ui" />
     <QtUi Include="Settings\GameSummaryWidget.ui" />

@@ -19,6 +19,7 @@
 #include "pcsx2/GS.h"
 #include "GS/Renderers/Common/GSBackThreadPolicy.h"
 #include "GS/Renderers/Common/GSCopyRoadBlendingPolicy.h"
+#include "GS/Renderers/Common/GSHeadlessPresent.h"
 #include "GS/Renderers/Null/GSDeviceNone.h"
 #include "GS/Renderers/Null/GSRendererNull.h"
 #include "GS/Renderers/HW/GSRendererHW.h"
@@ -820,7 +821,7 @@ void GSPresentCurrentFrame()
 
 void GSThrottlePresentation()
 {
-	if (g_gs_device->GetVSyncMode() == GSVSyncMode::FIFO)
+	if (g_gs_device->GetVSyncMode() == GSVSyncMode::FIFO && !GSHeadless::IsEnabled())
 	{
 		// Let vsync take care of throttling.
 		return;
@@ -848,7 +849,8 @@ void GSGameChanged(const std::string& serial, u32 crc)
 bool GSHasDisplayWindow()
 {
 	pxAssert(g_gs_device);
-	return (g_gs_device->GetWindowInfo().type != WindowInfo::Type::Surfaceless);
+	// A headless host's offscreen present target stands in for the window.
+	return (g_gs_device->GetWindowInfo().type != WindowInfo::Type::Surfaceless) || GSHeadless::IsEnabled();
 }
 
 void GSResizeDisplayWindow(u32 width, u32 height, float scale)

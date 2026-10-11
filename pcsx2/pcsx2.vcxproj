@@ -42,6 +42,7 @@
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\cubeb\include</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\imgui\include</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\simpleini\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\rapidjson\include</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\libzip\msvc;$(SolutionDir)3rdparty\libzip\lib</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\cpuinfo\include</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\fast_float\include</AdditionalIncludeDirectories>
@@ -202,6 +203,10 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Achievements.cpp" />
+    <ClCompile Include="Arcade\AcGameFile.cpp" />
+    <ClCompile Include="Arcade\ArcadeFiles.cpp" />
+    <ClCompile Include="Arcade\ArcadeInput.cpp" />
+    <ClCompile Include="Arcade\ArcadeSetup.cpp" />
     <ClCompile Include="arm64\AsmHelpers.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'!='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
@@ -214,6 +219,27 @@
     <ClCompile Include="arm64\RecStubs.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'!='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="Autosave.cpp" />
+    <ClCompile Include="Catalog\CoverAutoDownload.cpp" />
+    <ClCompile Include="Catalog\CoverDownloadJob.cpp" />
+    <ClCompile Include="Catalog\CoverSources.cpp" />
+    <ClCompile Include="Catalog\DriverPacks.cpp" />
+    <ClCompile Include="Catalog\FileUtil.cpp" />
+    <ClCompile Include="Catalog\HttpFetcher.cpp" />
+    <ClCompile Include="Catalog\HttpTransportWinHTTP.cpp" />
+    <ClCompile Include="Catalog\Json.cpp" />
+    <ClCompile Include="Catalog\LocalLinkSettings.cpp" />
+    <ClCompile Include="Catalog\PatchRepo.cpp" />
+    <ClCompile Include="Catalog\PnachText.cpp" />
+    <ClCompile Include="Catalog\ResponseCache.cpp" />
+    <ClCompile Include="Catalog\TarGz.cpp" />
+    <ClCompile Include="Catalog\TarZstdExtractor.cpp" />
+    <ClCompile Include="Catalog\TextureArchivePath.cpp" />
+    <ClCompile Include="Catalog\TexturePackCatalog.cpp" />
+    <ClCompile Include="Catalog\TexturePackEngine.cpp" />
+    <ClCompile Include="Catalog\TexturePackInstaller.cpp" />
+    <ClCompile Include="Catalog\TexturePackState.cpp" />
+    <ClCompile Include="Catalog\ZipTextureExtractor.cpp" />
     <ClCompile Include="CDVD\BlockdumpFileReader.cpp" />
     <ClCompile Include="CDVD\CDVDdiscReader.cpp" />
     <ClCompile Include="CDVD\CDVDdiscThread.cpp" />
@@ -352,7 +378,14 @@
     <ClCompile Include="Host\SDLAudioStream.cpp" />
     <ClCompile Include="Hotkeys.cpp" />
     <ClCompile Include="ImGui\FullscreenUI.cpp" />
+    <ClCompile Include="ImGui\FullscreenUI_Arcade.cpp" />
+    <ClCompile Include="ImGui\FullscreenUI_Drivers.cpp" />
+    <ClCompile Include="ImGui\FullscreenUI_OnlinePatches.cpp" />
+    <ClCompile Include="ImGui\FullscreenUI_Packs.cpp" />
+    <ClCompile Include="ImGui\FullscreenUI_Saves.cpp" />
     <ClCompile Include="ImGui\FullscreenUI_Settings.cpp" />
+    <ClCompile Include="ImGui\FullscreenUI_TexturePacks.cpp" />
+    <ClCompile Include="ImGui\FullscreenUIShot.cpp" />
     <ClCompile Include="ImGui\ImGuiFullscreen.cpp" />
     <ClCompile Include="ImGui\ImGuiManager.cpp" />
     <ClCompile Include="ImGui\ImGuiOverlays.cpp" />
@@ -389,6 +422,7 @@
     <ClCompile Include="Recording\InputRecordingFile.cpp" />
     <ClCompile Include="Recording\PadData.cpp" />
     <ClCompile Include="Recording\Utilities\InputRecordingLogger.cpp" />
+    <ClCompile Include="SIO\Memcard\MemcardBackup.cpp" />
     <ClCompile Include="SIO\Memcard\MemoryCardFile.cpp" />
     <ClCompile Include="SIO\Memcard\MemoryCardFolder.cpp" />
     <ClCompile Include="SIO\Memcard\MemoryCardProtocol.cpp" />
@@ -438,6 +472,7 @@
     <ClCompile Include="GS\GSCacheFile.cpp" />
     <ClCompile Include="GS\GSClut.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSDevice.cpp" />
+    <ClCompile Include="GS\Renderers\Common\GSHeadlessPresent.cpp" />
     <ClCompile Include="GS\Renderers\DX11\GSDevice11.cpp" />
     <ClCompile Include="GS\Renderers\OpenGL\GSDeviceOGL.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
@@ -708,12 +743,40 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Achievements.h" />
+    <ClInclude Include="Arcade\AcGameFile.h" />
+    <ClInclude Include="Arcade\ArcadeFiles.h" />
+    <ClInclude Include="Arcade\ArcadeInput.h" />
+    <ClInclude Include="Arcade\ArcadeSetup.h" />
     <ClInclude Include="arm64\AsmHelpers.h">
       <ExcludedFromBuild Condition="'$(Platform)'!='ARM64'">true</ExcludedFromBuild>
     </ClInclude>
     <ClInclude Include="arm64\Vif_UnpackNEON.h">
       <ExcludedFromBuild Condition="'$(Platform)'!='ARM64'">true</ExcludedFromBuild>
     </ClInclude>
+    <ClInclude Include="Autosave.h" />
+    <ClInclude Include="Catalog\BlockingAnswer.h" />
+    <ClInclude Include="Catalog\CancelToken.h" />
+    <ClInclude Include="Catalog\CoverAutoDownload.h" />
+    <ClInclude Include="Catalog\CoverDownloadJob.h" />
+    <ClInclude Include="Catalog\CoverSources.h" />
+    <ClInclude Include="Catalog\DriverPacks.h" />
+    <ClInclude Include="Catalog\Fetch.h" />
+    <ClInclude Include="Catalog\FileOps.h" />
+    <ClInclude Include="Catalog\FileUtil.h" />
+    <ClInclude Include="Catalog\HttpFetcher.h" />
+    <ClInclude Include="Catalog\Json.h" />
+    <ClInclude Include="Catalog\LocalLinkSettings.h" />
+    <ClInclude Include="Catalog\PatchRepo.h" />
+    <ClInclude Include="Catalog\PnachText.h" />
+    <ClInclude Include="Catalog\ResponseCache.h" />
+    <ClInclude Include="Catalog\TarGz.h" />
+    <ClInclude Include="Catalog\TarZstdExtractor.h" />
+    <ClInclude Include="Catalog\TextureArchivePath.h" />
+    <ClInclude Include="Catalog\TexturePackCatalog.h" />
+    <ClInclude Include="Catalog\TexturePackEngine.h" />
+    <ClInclude Include="Catalog\TexturePackInstaller.h" />
+    <ClInclude Include="Catalog\TexturePackState.h" />
+    <ClInclude Include="Catalog\ZipTextureExtractor.h" />
     <ClInclude Include="CDVD\BlockdumpFileReader.h" />
     <ClInclude Include="CDVD\CDVDdiscReader.h" />
     <ClInclude Include="CDVD\CsoFileReader.h" />
@@ -844,6 +907,7 @@
     <ClInclude Include="Host\AudioStreamTypes.h" />
     <ClInclude Include="ImGui\FullscreenUI.h" />
     <ClInclude Include="ImGui\FullscreenUI_Internal.h" />
+    <ClInclude Include="ImGui\FullscreenUIShot.h" />
     <ClInclude Include="ImGui\ImGuiAnimated.h" />
     <ClInclude Include="ImGui\ImGuiFullscreen.h" />
     <ClInclude Include="ImGui\ImGuiManager.h" />
@@ -884,6 +948,7 @@
     <ClInclude Include="Recording\PadData.h" />
     <ClInclude Include="Recording\Utilities\InputRecordingLogger.h" />
     <ClInclude Include="ShaderCacheVersion.h" />
+    <ClInclude Include="SIO\Memcard\MemcardBackup.h" />
     <ClInclude Include="SIO\Memcard\MemoryCardFile.h" />
     <ClInclude Include="SIO\Memcard\MemoryCardFolder.h" />
     <ClInclude Include="SIO\Memcard\MemoryCardProtocol.h" />
@@ -922,6 +987,7 @@
     <ClInclude Include="GS\GSClut.h" />
     <ClInclude Include="GS\Renderers\Common\GSShaderEnums.h" />
     <ClInclude Include="GS\Renderers\Common\GSDevice.h" />
+    <ClInclude Include="GS\Renderers\Common\GSHeadlessPresent.h" />
     <ClInclude Include="GS\Renderers\DX11\GSDevice11.h" />
     <ClInclude Include="GS\Renderers\OpenGL\GSDeviceOGL.h">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>

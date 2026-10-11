@@ -102,6 +102,13 @@
       </spacer>
      </item>
      <item>
+      <widget class="QPushButton" name="browseOnlinePatches">
+       <property name="text">
+        <string>Browse Online...</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QPushButton" name="reload">
        <property name="text">
         <string>Reload Patches</string>
@@ -115,6 +122,7 @@
  <tabstops>
   <tabstop>scrollArea</tabstop>
   <tabstop>allCRCsCheckbox</tabstop>
+  <tabstop>browseOnlinePatches</tabstop>
   <tabstop>reload</tabstop>
  </tabstops>
  <resources/>

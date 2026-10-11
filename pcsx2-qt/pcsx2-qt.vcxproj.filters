@@ -41,6 +41,8 @@
   <ItemGroup>
     <ClCompile Include="PrecompiledHeader.cpp" />
     <ClCompile Include="AsyncDialogs.cpp" />
+    <ClCompile Include="AutoCoversController.cpp" />
+    <ClCompile Include="TexturePackService.cpp" />
     <ClCompile Include="QtHost.cpp" />
     <ClCompile Include="MainWindow.cpp" />
     <ClCompile Include="$(IntDir)qrc_resources.cpp">
@@ -48,6 +50,8 @@
     </ClCompile>
     <ClCompile Include="DisplayWidget.cpp" />
     <ClCompile Include="QtUtils.cpp" />
+    <ClCompile Include="QtShot.cpp" />
+    <ClCompile Include="QtShotEntries.cpp" />
     <ClCompile Include="QtKeyCodes.cpp" />
     <ClCompile Include="Settings\BIOSSettingsWidget.cpp">
       <Filter>Settings</Filter>
@@ -56,6 +60,9 @@
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="Settings\GameListSettingsWidget.cpp">
+      <Filter>Settings</Filter>
+    </ClCompile>
+    <ClCompile Include="Settings\CoverArtSettingsGroup.cpp">
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="Settings\GraphicsSettingsWidget.cpp">
@@ -122,10 +129,26 @@
     <ClCompile Include="Settings\MemoryCardCreateDialog.cpp">
       <Filter>Settings</Filter>
     </ClCompile>
+    <ClCompile Include="Settings\MemoryCardBackupsDialog.cpp">
+      <Filter>Settings</Filter>
+    </ClCompile>
+    <ClCompile Include="Settings\OnlinePatchesDialog.cpp">
+      <Filter>Settings</Filter>
+    </ClCompile>
+    <ClCompile Include="MemcardRestorePrompt.cpp" />
     <ClCompile Include="Settings\DEV9DnsHostDialog.cpp">
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="Settings\DEV9SettingsWidget.cpp">
+      <Filter>Settings</Filter>
+    </ClCompile>
+    <ClCompile Include="Settings\DEV9LocalLinkWidget.cpp">
+      <Filter>Settings</Filter>
+    </ClCompile>
+    <ClCompile Include="Settings\DriverPacksSettingsWidget.cpp">
+      <Filter>Settings</Filter>
+    </ClCompile>
+    <ClCompile Include="Settings\TexturePacksSettingsWidget.cpp">
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="Settings\DEV9UiCommon.cpp">
@@ -143,6 +166,12 @@
       <Filter>Settings</Filter>
     </ClCompile>
     <ClCompile Include="CoverDownloadDialog.cpp" />
+    <ClCompile Include="Settings\ArcadeControlsSettingsWidget.cpp">
+      <Filter>Settings</Filter>
+    </ClCompile>
+    <ClCompile Include="ArcadeLaunch.cpp" />
+    <ClCompile Include="ArcadeMenu.cpp" />
+    <ClCompile Include="ArcadeSetupDialog.cpp" />
     <ClCompile Include="ShortcutCreationDialog.cpp" />
     <ClCompile Include="QtProgressCallback.cpp" />
     <ClCompile Include="Settings\AchievementSettingsWidget.cpp">
@@ -293,6 +322,10 @@
     <ClInclude Include="PrecompiledHeader.h" />
     <ClInclude Include="AsyncDialogs.h" />
     <ClInclude Include="QtUtils.h" />
+    <ClInclude Include="QtShot.h" />
+    <ClInclude Include="ArcadeLaunch.h" />
+    <ClInclude Include="QtAsyncCall.h" />
+    <ClInclude Include="MemcardRestorePrompt.h" />
     <ClInclude Include="SettingWidgetBinder.h" />
     <ClInclude Include="Settings\HddCreateQt.h">
       <Filter>Settings</Filter>
@@ -320,6 +353,9 @@
       <Filter>Settings</Filter>
     </QtMoc>
     <QtMoc Include="Settings\GameListSettingsWidget.h">
+      <Filter>Settings</Filter>
+    </QtMoc>
+    <QtMoc Include="Settings\CoverArtSettingsGroup.h">
       <Filter>Settings</Filter>
     </QtMoc>
     <QtMoc Include="Settings\GraphicsSettingsWidget.h">
@@ -374,6 +410,12 @@
     <QtMoc Include="Settings\MemoryCardConvertDialog.h">
       <Filter>Settings</Filter>
     </QtMoc>
+    <QtMoc Include="Settings\MemoryCardBackupsDialog.h">
+      <Filter>Settings</Filter>
+    </QtMoc>
+    <QtMoc Include="Settings\OnlinePatchesDialog.h">
+      <Filter>Settings</Filter>
+    </QtMoc>
     <QtMoc Include="Settings\MemoryCardSettingsWidget.h">
       <Filter>Settings</Filter>
     </QtMoc>
@@ -389,6 +431,15 @@
     <QtMoc Include="Settings\DEV9SettingsWidget.h">
       <Filter>Settings</Filter>
     </QtMoc>
+    <QtMoc Include="Settings\DEV9LocalLinkWidget.h">
+      <Filter>Settings</Filter>
+    </QtMoc>
+    <QtMoc Include="Settings\DriverPacksSettingsWidget.h">
+      <Filter>Settings</Filter>
+    </QtMoc>
+    <QtMoc Include="Settings\TexturePacksSettingsWidget.h">
+      <Filter>Settings</Filter>
+    </QtMoc>
     <QtMoc Include="Settings\DEV9UiCommon.h">
       <Filter>Settings</Filter>
     </QtMoc>
@@ -401,7 +452,14 @@
     </QtMoc>
     <QtMoc Include="QtHost.h" />
     <QtMoc Include="CoverDownloadDialog.h" />
+    <QtMoc Include="Settings\ArcadeControlsSettingsWidget.h">
+      <Filter>Settings</Filter>
+    </QtMoc>
+    <QtMoc Include="ArcadeMenu.h" />
+    <QtMoc Include="ArcadeSetupDialog.h" />
     <QtMoc Include="QtProgressCallback.h" />
+    <QtMoc Include="AutoCoversController.h" />
+    <QtMoc Include="TexturePackService.h" />
     <QtMoc Include="ShortcutCreationDialog.h" />
     <QtMoc Include="Settings\AchievementLoginDialog.h">
       <Filter>Settings</Filter>
@@ -661,6 +719,15 @@
     <QtUi Include="Settings\DEV9SettingsWidget.ui">
       <Filter>Settings</Filter>
     </QtUi>
+    <QtUi Include="Settings\DEV9LocalLinkWidget.ui">
+      <Filter>Settings</Filter>
+    </QtUi>
+    <QtUi Include="Settings\DriverPacksSettingsWidget.ui">
+      <Filter>Settings</Filter>
+    </QtUi>
+    <QtUi Include="Settings\TexturePacksSettingsWidget.ui">
+      <Filter>Settings</Filter>
+    </QtUi>
     <QtUi Include="Settings\EmulationSettingsWidget.ui">
       <Filter>Settings</Filter>
     </QtUi>
@@ -674,6 +741,9 @@
       <Filter>Settings</Filter>
     </QtUi>
     <QtUi Include="Settings\GameListSettingsWidget.ui">
+      <Filter>Settings</Filter>
+    </QtUi>
+    <QtUi Include="Settings\CoverArtSettingsGroup.ui">
       <Filter>Settings</Filter>
     </QtUi>
     <QtUi Include="Settings\GamePatchDetailsWidget.ui">

@@ -13,6 +13,7 @@
 #include "pcsx2/INISettingsInterface.h"
 
 #include "DEV9SettingsWidget.h"
+#include "DEV9LocalLinkWidget.h"
 #include "QtHost.h"
 #include "QtUtils.h"
 #include "SettingWidgetBinder.h"
@@ -32,6 +33,7 @@ static const char* s_api_name[] = {
 	QT_TRANSLATE_NOOP("DEV9SettingsWidget", "PCAP Switched"),
 	QT_TRANSLATE_NOOP("DEV9SettingsWidget", "TAP"),
 	QT_TRANSLATE_NOOP("DEV9SettingsWidget", "Sockets"),
+	QT_TRANSLATE_NOOP("DEV9SettingsWidget", "Local Link"),
 	nullptr,
 };
 
@@ -50,6 +52,11 @@ DEV9SettingsWidget::DEV9SettingsWidget(SettingsWindow* settings_dialog, QWidget*
 	SettingsInterface* sif = dialog()->getSettingsInterface();
 
 	setupTab(m_ui);
+
+	// Local Link has rows of its own instead of an adapter list and the DHCP/DNS tabs.
+	m_local_link = new DEV9LocalLinkWidget(dialog(), this);
+	m_ui.gridLayout->addWidget(m_local_link, 4, 0, 1, 3);
+	m_local_link->hide();
 
 	//////////////////////////////////////////////////////////////////////////
 	// Eth Enabled
@@ -242,6 +249,7 @@ void DEV9SettingsWidget::onEthEnabledChanged(Qt::CheckState state)
 	m_ui.ethDevLabel->setEnabled(enabled);
 	m_ui.ethDev->setEnabled(enabled);
 	m_ui.ethTabWidget->setEnabled(enabled);
+	m_local_link->setEnabled(enabled);
 }
 
 void DEV9SettingsWidget::onEthDeviceTypeChanged(int index)
@@ -300,6 +308,19 @@ void DEV9SettingsWidget::onEthDeviceTypeChanged(int index)
 		default:
 			m_adapter_options = AdapterOptions::None;
 			break;
+	}
+
+	// Local Link has no adapter to pick and no DHCP or DNS: it shows its own rows instead.
+	const bool local_link = selectedApi == Pcsx2Config::DEV9Options::NetApi::LocalLink;
+	m_ui.ethDevLabel->setVisible(!local_link);
+	m_ui.ethDev->setVisible(!local_link);
+	m_ui.ethTabWidget->setVisible(!local_link);
+	m_local_link->setVisible(local_link);
+	if (local_link && index > 0)
+	{
+		// Its single entry in ethDev stands for the device type, and choosing it stores the type.
+		m_ui.ethDev->setCurrentIndex(1);
+		m_local_link->onSelected();
 	}
 
 	m_ui.ethInterceptDHCPLabel->setEnabled((m_adapter_options & AdapterOptions::DHCP_ForcedOn) == AdapterOptions::None);
@@ -885,6 +906,13 @@ void DEV9SettingsWidget::LoadAdapters()
 #endif
 	for (const AdapterEntry& adapter : SocketAdapter::GetAdapters())
 		AddAdapter(adapter);
+
+	// Local Link has no adapters; one entry stands for the device type so the usual selection stores it.
+	AdapterEntry localLink;
+	localLink.type = Pcsx2Config::DEV9Options::NetApi::LocalLink;
+	localLink.name = "Local Link";
+	localLink.guid = "LocalLink";
+	AddAdapter(localLink);
 
 	std::sort(m_api_list.begin(), m_api_list.end());
 	for (auto& list : m_adapter_list)

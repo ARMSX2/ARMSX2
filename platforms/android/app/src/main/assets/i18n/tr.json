@@ -1603,6 +1603,7 @@
  "setup.bios.unknownZone": "Bilinmeyen",
  "setup.bios.useSelected": "Seçili BIOS'u Kullan",
  "setup.button.addAnotherFolder": "Başka Klasör Ekle",
+ "setup.folder.subfolders": "Alt klasörleri dahil et",
  "setup.button.addFolder": "Klasör Ekle",
  "setup.button.applyFinish": "Uygula ve Bitir",
  "setup.button.choose": "Seç",

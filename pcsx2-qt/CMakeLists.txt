@@ -10,8 +10,16 @@ target_sources(pcsx2-qt PRIVATE
 	AboutDialog.cpp
 	AboutDialog.h
 	AboutDialog.ui
+	ArcadeLaunch.cpp
+	ArcadeLaunch.h
+	ArcadeMenu.cpp
+	ArcadeMenu.h
+	ArcadeSetupDialog.cpp
+	ArcadeSetupDialog.h
 	AsyncDialogs.cpp
 	AsyncDialogs.h
+	AutoCoversController.cpp
+	AutoCoversController.h
 	AutoUpdaterDialog.cpp
 	AutoUpdaterDialog.h
 	AutoUpdaterDialog.ui
@@ -28,6 +36,8 @@ target_sources(pcsx2-qt PRIVATE
 	MainWindow.cpp
 	MainWindow.h
 	MainWindow.ui
+	MemcardRestorePrompt.cpp
+	MemcardRestorePrompt.h
 	PrecompiledHeader.cpp
 	PrecompiledHeader.h
 	SettingWidgetBinder.h
@@ -35,16 +45,22 @@ target_sources(pcsx2-qt PRIVATE
 	SetupWizardDialog.h
 	SetupWizardDialog.ui
 	Themes.cpp
+	TexturePackService.cpp
+	TexturePackService.h
 	ToolbarCustomizationDialog.cpp
 	ToolbarCustomizationDialog.h
 	ToolbarCustomizationDialog.ui
 	Translations.cpp
+	QtAsyncCall.h
 	QtHost.cpp
 	QtHost.h
 	QtMetaTypes.h
 	QtKeyCodes.cpp
 	QtProgressCallback.cpp
 	QtProgressCallback.h
+	QtShot.cpp
+	QtShot.h
+	QtShotEntries.cpp
 	QtUtils.cpp
 	QtUtils.h
 	GameList/EmptyGameListWidget.ui
@@ -63,6 +79,8 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/AdvancedSettingsWidget.cpp
 	Settings/AdvancedSettingsWidget.h
 	Settings/AdvancedSettingsWidget.ui
+	Settings/ArcadeControlsSettingsWidget.cpp
+	Settings/ArcadeControlsSettingsWidget.h
 	Settings/AudioExpansionSettingsDialog.ui
 	Settings/AudioSettingsWidget.cpp
 	Settings/AudioSettingsWidget.h
@@ -89,6 +107,9 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/ControllerSettingsWindow.h
 	Settings/ControllerSettingsWindow.ui
 	Settings/ControllerSettingWidgetBinder.h
+	Settings/CoverArtSettingsGroup.cpp
+	Settings/CoverArtSettingsGroup.h
+	Settings/CoverArtSettingsGroup.ui
 	Settings/DebugAnalysisSettingsTab.ui
 	Settings/DebugAnalysisSettingsWidget.cpp
 	Settings/DebugAnalysisSettingsWidget.h
@@ -98,6 +119,9 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/DebugUserInterfaceSettingsTab.ui
 	Settings/DebugSettingsWidget.cpp
 	Settings/DebugSettingsWidget.h
+	Settings/DriverPacksSettingsWidget.cpp
+	Settings/DriverPacksSettingsWidget.h
+	Settings/DriverPacksSettingsWidget.ui
 	Settings/EmulationSettingsWidget.cpp
 	Settings/EmulationSettingsWidget.h
 	Settings/EmulationSettingsWidget.ui
@@ -142,6 +166,8 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/InterfaceSettingsWidget.cpp
 	Settings/InterfaceSettingsWidget.h
 	Settings/InterfaceSettingsWidget.ui
+	Settings/MemoryCardBackupsDialog.cpp
+	Settings/MemoryCardBackupsDialog.h
 	Settings/MemoryCardConvertDialog.cpp
 	Settings/MemoryCardConvertDialog.h
 	Settings/MemoryCardConvertDialog.ui
@@ -153,6 +179,8 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/MemoryCardSettingsWidget.cpp
 	Settings/MemoryCardSettingsWidget.h
 	Settings/MemoryCardSettingsWidget.ui
+	Settings/OnlinePatchesDialog.cpp
+	Settings/OnlinePatchesDialog.h
 	Settings/OSDSettingsWidget.cpp
 	Settings/OSDSettingsWidget.h
 	Settings/OSDSettingsWidget.ui
@@ -162,6 +190,9 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/DEV9DnsHostDialog.cpp
 	Settings/DEV9DnsHostDialog.h
 	Settings/DEV9DnsHostDialog.ui
+	Settings/DEV9LocalLinkWidget.cpp
+	Settings/DEV9LocalLinkWidget.h
+	Settings/DEV9LocalLinkWidget.ui
 	Settings/DEV9SettingsWidget.cpp
 	Settings/DEV9SettingsWidget.h
 	Settings/DEV9SettingsWidget.ui
@@ -175,6 +206,9 @@ target_sources(pcsx2-qt PRIVATE
 	Settings/SettingsWindow.cpp
 	Settings/SettingsWindow.h
 	Settings/SettingsWindow.ui
+	Settings/TexturePacksSettingsWidget.cpp
+	Settings/TexturePacksSettingsWidget.h
+	Settings/TexturePacksSettingsWidget.ui
 	Settings/USBBindingWidget_DenshaCon.ui
 	Settings/USBBindingWidget_DrivingForce.ui
 	Settings/USBBindingWidget_GTForce.ui

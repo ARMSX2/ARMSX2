@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>CoverArtSettingsGroup</class>
+ <widget class="QGroupBox" name="CoverArtSettingsGroup">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>640</width>
+    <height>110</height>
+   </rect>
+  </property>
+  <property name="title">
+   <string>Cover Art</string>
+  </property>
+  <layout class="QGridLayout" name="coverArtLayout">
+   <item row="0" column="0" colspan="4">
+    <widget class="QCheckBox" name="autoDownloadCovers">
+     <property name="text">
+      <string>Download covers automatically</string>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="0">
+    <widget class="QLabel" name="coverStyleLabel">
+     <property name="text">
+      <string>Cover style:</string>
+     </property>
+     <property name="buddy">
+      <cstring>coverStyle</cstring>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="1">
+    <widget class="QComboBox" name="coverStyle"/>
+   </item>
+   <item row="1" column="2">
+    <widget class="QLabel" name="coverRegionLabel">
+     <property name="text">
+      <string>Cover region:</string>
+     </property>
+     <property name="buddy">
+      <cstring>coverRegion</cstring>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="3">
+    <widget class="QComboBox" name="coverRegion"/>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

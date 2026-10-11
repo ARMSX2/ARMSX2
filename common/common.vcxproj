@@ -65,6 +65,7 @@
     <ClCompile Include="MemorySettingsInterface.cpp" />
     <ClCompile Include="ProgressCallback.cpp" />
     <ClCompile Include="ReadbackSpinManager.cpp" />
+    <ClCompile Include="SHA256.cpp" />
     <ClCompile Include="SmallString.cpp" />
     <ClCompile Include="StackWalker.cpp" />
     <ClCompile Include="StringUtil.cpp" />
@@ -145,6 +146,7 @@
     <ClInclude Include="MemorySettingsInterface.h" />
     <ClInclude Include="ProgressCallback.h" />
     <ClInclude Include="ScopedGuard.h" />
+    <ClInclude Include="SHA256.h" />
     <ClInclude Include="SmallString.h" />
     <ClInclude Include="StackWalker.h" />
     <ClInclude Include="StringUtil.h" />

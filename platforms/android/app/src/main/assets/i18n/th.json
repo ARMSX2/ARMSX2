@@ -1603,6 +1603,7 @@
  "setup.bios.unknownZone": "ไม่ทราบ",
  "setup.bios.useSelected": "ใช้ BIOS ที่เลือก",
  "setup.button.addAnotherFolder": "เพิ่มโฟลเดอร์อีก",
+ "setup.folder.subfolders": "รวมโฟลเดอร์ย่อย",
  "setup.button.addFolder": "เพิ่มโฟลเดอร์",
  "setup.button.applyFinish": "ใช้งานและเสร็จ",
  "setup.button.choose": "เลือก",

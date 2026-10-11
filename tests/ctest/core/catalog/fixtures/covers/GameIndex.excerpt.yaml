@@ -1,0 +1,64 @@
+# Excerpt of bin/resources/GameIndex.yaml for the cover region index tests. Entries are verbatim
+# except that fields the index does not read (fixes, hacks) are dropped.
+
+PAPX-90222:
+  name: "ジャック×ダクスター 旧世界の遺産 [体験版]"
+  name-sort: "じゃっくんだくすたー きゅうせかいのいさん [たいけんばん]"
+  name-en: "Jak x Daxter - Kyuu Sekai no Isan [Demo]" # NOT Jak X Combat Racing
+  region: "NTSC-J"
+SCAJ-20033:
+  name: "Guilty Gear XX #Reload"
+  region: "NTSC-Unk"
+SCAJ-20078:
+  name: "Kuon"
+  region: "NTSC-Unk"
+SCAJ-20139:
+  name: "Zero - Shisei no Koe" # Fatal Frame - Rei - Irezumi no Sei
+  region: "NTSC-Unk"
+SLES-50021:
+  name: "Madden NFL 2001"
+  region: "PAL-E"
+SLES-53411:
+  name: "Kuon"
+  region: "PAL-M3"
+SLES-53702:
+  name: "Resident Evil 4"
+  region: "PAL-M5"
+SLKA-25070:
+  name: "길티기어 이그젝스 - 샤프 리로드"
+  name-en: "Guilty Gear XX #Reload - The Midnight Carnival"
+  region: "NTSC-K"
+SLPM-66129:
+  name: "GUILTY GEAR XX #RELOAD"
+  name-sort: "ぎるてぃぎあ いぐぜくす しゃーぷりろーど"
+  name-en: "Guilty Gear XX #Reload"
+  region: "NTSC-J"
+SLPM-66222:
+  name: "METAL GEAR SOLID 3 SUBSISTENCE [初回生産版] [ディスク3/3]"
+  name-sort: "めたるぎあ そりっど3 さぶしすたんす [しょかいせいさんばん] [でぃすく3/3]"
+  name-en: "Metal Gear Solid 3 - Subsistence [First Print Limited Edition] [Disc 3 of 3]"
+  region: "NTSC-J"
+SLPS-20065:
+  name: "MADDEN NFL スーパーボウル 2001"
+  name-sort: "まっでん NFL すーぱーぼうる 2001"
+  name-en: "Madden NFL 2001"
+  region: "NTSC-J"
+SLPS-25261:
+  name: "GUILTY GEAR XX #RELOAD ～THE MIDNIGHT CARNIVAL～"
+  name-sort: "ぎるてぃぎあ いぐぜくす しゃーぷりろーど THE MIDNIGHT CARNIVAL"
+  name-en: "Guilty Gear XX #Reload - The Midnight Carnival"
+  region: "NTSC-J"
+SLPS-25329:
+  name: "九怨 -kuon-"
+  name-sort: "くおん"
+  name-en: "Kuon"
+  region: "NTSC-J"
+SLUS-20093:
+  name: "Madden NFL 2001"
+  region: "NTSC-U"
+SLUS-21007:
+  name: "Kuon"
+  region: "NTSC-U"
+SLUS-21134:
+  name: "Resident Evil 4"
+  region: "NTSC-U"

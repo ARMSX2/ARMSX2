@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "AboutDialog.h"
+#include "ArcadeLaunch.h"
+#include "ArcadeMenu.h"
+#include "AutoCoversController.h"
 #include "AutoUpdaterDialog.h"
 #include "CoverDownloadDialog.h"
 #include "DisplayWidget.h"
@@ -9,6 +12,7 @@
 #include "GameList/GameListWidget.h"
 #include "LogWindow.h"
 #include "MainWindow.h"
+#include "MemcardRestorePrompt.h"
 #include "QtHost.h"
 #include "QtUtils.h"
 #include "SettingWidgetBinder.h"
@@ -29,6 +33,7 @@
 #endif
 
 #include "pcsx2/Achievements.h"
+#include "pcsx2/Autosave.h"
 #include "pcsx2/CDVD/CDVDcommon.h"
 #include "pcsx2/CDVD/CDVDdiscReader.h"
 #include "pcsx2/GS.h"
@@ -72,7 +77,7 @@
 #endif
 
 const char* MainWindow::OPEN_FILE_FILTER =
-	QT_TRANSLATE_NOOP("MainWindow", "All File Types (*.bin *.iso *.cue *.mdf *.chd *.cso *.zso *.gz *.elf *.irx *.gs *.gs.xz *.gs.zst *.dump);;"
+	QT_TRANSLATE_NOOP("MainWindow", "All File Types (*.bin *.iso *.cue *.mdf *.chd *.cso *.zso *.gz *.elf *.irx *.gs *.gs.xz *.gs.zst *.dump *.acgame);;"
 									"Single-Track Raw Images (*.bin *.iso);;"
 									"Cue Sheets (*.cue);;"
 									"Media Descriptor File (*.mdf);;"
@@ -83,7 +88,8 @@ const char* MainWindow::OPEN_FILE_FILTER =
 									"ELF Executables (*.elf);;"
 									"IRX Executables (*.irx);;"
 									"GS Dumps (*.gs *.gs.xz *.gs.zst);;"
-									"Block Dumps (*.dump)");
+									"Block Dumps (*.dump);;"
+									"Arcade Games (*.acgame)");
 
 const char* MainWindow::DISC_IMAGE_FILTER = QT_TRANSLATE_NOOP("MainWindow", "All File Types (*.bin *.iso *.cue *.mdf *.chd *.cso *.zso *.gz *.dump);;"
 																			"Single-Track Raw Images (*.bin *.iso);;"
@@ -129,6 +135,7 @@ MainWindow::MainWindow()
 {
 	pxAssert(!g_main_window);
 	g_main_window = this;
+	MemcardRestorePrompt::Register(this);
 }
 
 MainWindow::~MainWindow()
@@ -138,6 +145,7 @@ MainWindow::~MainWindow()
 	destroySubWindows();
 
 	Common::DetachMousePositionCb();
+	MemcardRestorePrompt::Unregister(this);
 
 	// we compare here, since recreate destroys the window later
 	if (g_main_window == this)
@@ -555,6 +563,7 @@ void MainWindow::connectSignals()
 	connect(m_ui.actionOpenDataDirectory, &QAction::triggered, this, &MainWindow::onToolsOpenDataDirectoryTriggered);
 	connect(m_ui.actionCoverDownloader, &QAction::triggered, this, &MainWindow::onToolsCoverDownloaderTriggered);
 	connect(m_ui.actionControllerTester, &QAction::triggered, this, &MainWindow::onToolsControllerTesterTriggered);
+	connect(m_ui.actionArcadeSetup, &QAction::triggered, this, &MainWindow::onToolsArcadeSetupTriggered);
 	connect(m_ui.actionGridViewShowTitles, &QAction::triggered, m_game_list_widget, &GameListWidget::setShowCoverTitles);
 	connect(m_ui.actionGridViewShowFullTitles, &QAction::triggered, m_game_list_widget, &GameListWidget::setShowFullCoverTitles);
 	connect(m_ui.actionGridViewZoomIn, &QAction::triggered, m_game_list_widget, [this]() {
@@ -621,6 +630,7 @@ void MainWindow::connectSignals()
 	// These need to be queued connections to stop crashing due to menus opening/closing and switching focus.
 	connect(m_game_list_widget, &GameListWidget::refreshProgress, this, &MainWindow::onGameListRefreshProgress);
 	connect(m_game_list_widget, &GameListWidget::refreshComplete, this, &MainWindow::onGameListRefreshComplete);
+	new AutoCoversController(m_game_list_widget, this);
 	connect(m_game_list_widget, &GameListWidget::selectionChanged, this, &MainWindow::onGameListSelectionChanged, Qt::QueuedConnection);
 	connect(m_game_list_widget, &GameListWidget::entryActivated, this, &MainWindow::onGameListEntryActivated, Qt::QueuedConnection);
 	connect(m_game_list_widget, &GameListWidget::entryContextMenuRequested, this, &MainWindow::onGameListEntryContextMenuRequested,
@@ -662,6 +672,7 @@ void MainWindow::connectVMThreadSignals(EmuThread* thread)
 	m_ui.actionDebugger->setVisible(false);
 #endif
 	connect(m_ui.actionReloadPatches, &QAction::triggered, thread, &EmuThread::reloadPatches);
+	new ArcadeMenu(this, thread, m_ui.menuArcade, m_ui.actionArcadeInsertCoinP1, m_ui.actionArcadeInsertCoinP2, m_ui.actionArcadeService, m_ui.actionArcadeTest);
 }
 
 void MainWindow::createRendererSwitchMenu()
@@ -2162,6 +2173,12 @@ void MainWindow::onToolsCoverDownloaderTriggered()
 	dlg.exec();
 }
 
+void MainWindow::onToolsArcadeSetupTriggered()
+{
+	VMLock lock(pauseAndLockVM());
+	ArcadeLaunch::ShowSetup(lock.getDialogParent());
+}
+
 void MainWindow::onToolsControllerTesterTriggered()
 {
 	const std::string path = Path::Combine(EmuFolders::Cache, "padtest_ps2.elf");
@@ -2656,6 +2673,11 @@ bool MainWindow::startFile(const QString& filename)
 
 		g_emu_thread->setELFOverride(filename);
 		switchToEmulationView();
+	}
+	else if (VMManager::IsArcadeGameFileName(filename_str))
+	{
+		// An arcade game is a different board, not a different disc: it starts from nothing.
+		QMessageBox::critical(this, tr("Error"), tr("Cannot start an arcade game without shutting down the current game first."));
 	}
 	else if (VMManager::IsGSDumpFileName(filename_str))
 	{
@@ -3632,6 +3654,13 @@ void MainWindow::populateLoadStateMenu(QMenu* menu, const QString& filename, con
 			QtUtils::MarkActionAsDefault(action);
 			has_any_states = true;
 		}
+	}
+
+	// Autosaves are load-only: they are not slots, and nothing here saves into one.
+	for (const Autosave::Entry& autosave : Autosave::List(game_serial_utf8.constData(), crc))
+	{
+		action = menu->addAction(tr("Load Autosave %1 (%2)").arg(autosave.index).arg(formatTimestampForSaveStateMenu(autosave.modified)));
+		connect(action, &QAction::triggered, [this, filename, path = QString::fromStdString(autosave.path)]() { loadSaveStateFile(filename, path); });
 	}
 
 	for (s32 i = 1; i <= VMManager::NUM_SAVE_STATE_SLOTS; i++)

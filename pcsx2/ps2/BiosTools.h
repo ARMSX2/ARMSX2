@@ -115,6 +115,14 @@ extern std::vector<u8> BiosRom;
 extern void ReadOSDConfigParames();
 
 extern bool IsBIOS(const char* filename, u32& version, std::string& description, u32& region, std::string& zone);
+
+// A BIOS a console game can run on: IsBIOS, but not the BIOS of a Namco arcade board (a COH-H dump), which
+// only arcade games start from (FindArcadeBiosFor). The lists a player picks a console BIOS from use this one.
+extern bool IsConsoleBIOS(const char* filename, u32& version, std::string& description, u32& region, std::string& zone);
+
+// Whether the file is a Namco arcade board's BIOS (a COH-H dump). [board_serial], when given, gets its EXTINFO
+// serial, which names the board it is from.
+extern bool IsArcadeBIOS(const char* filename, std::string* board_serial = nullptr);
 // Android: validate/describe a BIOS opened via a SAF content:// fd (the Java layer
 // hands us an fd, not a path). Takes ownership of fd (closed on return).
 extern bool IsBIOSFromFd(int fd, u32& version, std::string& description, u32& region, std::string& zone);

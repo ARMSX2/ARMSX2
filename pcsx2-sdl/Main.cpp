@@ -58,7 +58,9 @@
 
 #include "pcsx2/Achievements.h"
 #include "pcsx2/CDVD/CDVDcommon.h"
+#include "pcsx2/Catalog/DriverPacks.h"
 #include "pcsx2/GS.h"
+#include "pcsx2/GS/Renderers/Common/GSHeadlessPresent.h"
 #include "pcsx2/GameList.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/INISettingsInterface.h"
@@ -70,6 +72,9 @@
 #include "pcsx2/PerformanceMetrics.h"
 #include "pcsx2/SIO/Pad/Pad.h"
 #include "pcsx2/VMManager.h"
+#ifdef ENABLE_OPENGL
+#include "pcsx2/GS/Renderers/OpenGL/GLContext.h"
+#endif
 
 #include "svnrev.h"
 
@@ -95,6 +100,15 @@ static std::atomic<bool> s_shutdown_requested{false};
 // display's preferred mode).
 static u32 s_requested_width = 0;
 static u32 s_requested_height = 0;
+
+// --headless WxH: no display and no SDL video. The GS gets a Surfaceless window of this size and
+// presents into an offscreen texture (GSHeadlessPresent.h); PINE's UIScreenshot reads it back.
+static bool s_headless = false;
+static u32 s_headless_width = 0;
+static u32 s_headless_height = 0;
+
+// -bigpicture: with no ISO, start in Big Picture even if UI/StartBigPictureMode was turned off.
+static bool s_force_bigpicture = false;
 
 // Wayland fallback window. Created lazily by BuildWindowInfo() the first time a
 // render window is requested, but only when running under a Wayland compositor
@@ -229,6 +243,8 @@ bool Pcsx2SDL::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			std::fprintf(stderr, "Usage: %s [options] <iso-path>\n\n", argv[0]);
 			std::fprintf(stderr, "  --fullscreen-mode WxH    Request a specific display mode\n");
 			std::fprintf(stderr, "                           (default: monitor's preferred mode)\n");
+			std::fprintf(stderr, "  --headless WxH           No display: render to an offscreen WxH image (for PINE UIScreenshot)\n");
+			std::fprintf(stderr, "  -bigpicture              Start in Big Picture when no disc is given\n");
 			std::fprintf(stderr, "  --bios-only              Boot the BIOS without loading a disc\n");
 			std::fprintf(stderr, "  --state-from-file PATH   Resume from a save state file\n");
 			std::fprintf(stderr, "  --no-fast-boot           Skip fast boot (run full BIOS animation)\n");
@@ -259,6 +275,25 @@ bool Pcsx2SDL::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			continue;
 		}
+		if (ARG_PARAM("--headless"))
+		{
+			const char* mode = argv[++i];
+			const char* x_pos = std::strchr(mode, 'x');
+			s_headless_width = x_pos ? StringUtil::FromChars<u32>(std::string_view(mode, x_pos - mode)).value_or(0) : 0;
+			s_headless_height = x_pos ? StringUtil::FromChars<u32>(x_pos + 1).value_or(0) : 0;
+			if (s_headless_width < 64 || s_headless_height < 64 || s_headless_width > 8192 || s_headless_height > 8192)
+			{
+				std::fprintf(stderr, "Invalid --headless '%s', expected WxH between 64x64 and 8192x8192 (e.g. 1280x720).\n", mode);
+				return false;
+			}
+			s_headless = true;
+			continue;
+		}
+		if (ARG("-bigpicture"))
+		{
+			s_force_bigpicture = true;
+			continue;
+		}
 		if (ARG("--bios-only"))
 		{
 			params.source_type = CDVD_SourceType::NoDisc;
@@ -276,9 +311,9 @@ bool Pcsx2SDL::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 		}
 		if (argv[i][0] == '-')
 		{
-			// Note for anyone arriving from the Qt frontend: this one takes none of its
-			// flags - no -fullscreen, -bigpicture, -nogui, -batch or -fastboot. Fullscreen
-			// is always on, and with no ISO it starts in the Big Picture game-picker.
+			// Note for anyone arriving from the Qt frontend: this one takes only -bigpicture
+			// of its flags - no -fullscreen, -nogui, -batch or -fastboot. Fullscreen is always
+			// on, and with no ISO it starts in the Big Picture game-picker.
 			std::fprintf(stderr, "Unknown argument: '%s'\nRun with --help for the accepted options.\n", argv[i]);
 			return false;
 		}
@@ -408,6 +443,20 @@ static bool BuildWaylandWindowInfo(WindowInfo& wi)
 
 std::optional<WindowInfo> Pcsx2SDL::BuildWindowInfo()
 {
+	if (s_headless)
+	{
+		// Surfaceless: the GS draws every present into an offscreen texture of this size
+		// instead of a swapchain image. No SDL video, no compositor, no DRM master. The rate
+		// is the pace of the no-game idle present; nobody is watching it.
+		WindowInfo wi;
+		wi.type = WindowInfo::Type::Surfaceless;
+		wi.surface_width = s_headless_width;
+		wi.surface_height = s_headless_height;
+		wi.surface_scale = 1.0f;
+		wi.surface_refresh_rate = GSHeadless::kFrameRate;
+		return wi;
+	}
+
 #if defined(WAYLAND_API)
 	if (WaylandSessionPresent())
 	{
@@ -983,6 +1032,8 @@ int main(int argc, char* argv[])
 			std::fprintf(stderr, "Usage: %s [options] <iso-path>\n\n", argv[0]);
 			std::fprintf(stderr, "  --fullscreen-mode WxH    Request a specific display mode\n");
 			std::fprintf(stderr, "                           (default: monitor's preferred mode)\n");
+			std::fprintf(stderr, "  --headless WxH           No display: render to an offscreen WxH image (for PINE UIScreenshot)\n");
+			std::fprintf(stderr, "  -bigpicture              Start in Big Picture when no disc is given\n");
 			std::fprintf(stderr, "  --bios-only              Boot the BIOS without loading a disc\n");
 			std::fprintf(stderr, "  --state-from-file PATH   Resume from a save state file\n");
 			std::fprintf(stderr, "  --no-fast-boot           Skip fast boot (run full BIOS animation)\n");
@@ -1006,6 +1057,9 @@ int main(int argc, char* argv[])
 		return EXIT_FAILURE;
 	}
 
+	// Selected GPU driver pack (Linux): must be in the environment before anything loads libvulkan.
+	DriverPacks::ApplyEnvironment();
+
 	VMBootParameters params;
 	if (!Pcsx2SDL::ParseCommandLineArgs(argc, argv, params))
 		return EXIT_FAILURE;
@@ -1017,7 +1071,7 @@ int main(int argc, char* argv[])
 		// No ISO supplied and no --bios-only — only valid if the
 		// StartBigPictureMode flag is set, in which case the frontend starts
 		// in the FullscreenUI game-picker.
-		if (Host::GetBaseBoolSettingValue("UI", "StartBigPictureMode", true))
+		if (s_force_bigpicture || Host::GetBaseBoolSettingValue("UI", "StartBigPictureMode", true))
 		{
 			start_in_fsui = true;
 		}
@@ -1027,6 +1081,15 @@ int main(int argc, char* argv[])
 								 "or set UI/StartBigPictureMode=true in PCSX2.ini for the game-picker.\n");
 			return EXIT_FAILURE;
 		}
+	}
+
+	if (s_headless)
+	{
+		GSHeadless::SetEnabled(true);
+#ifdef ENABLE_OPENGL
+		// An EGL context with no window, for the OpenGL renderer. Only hosts that ask for it.
+		GLContext::AllowHeadless = true;
+#endif
 	}
 
 	Pcsx2SDL::InstallSignalHandler();

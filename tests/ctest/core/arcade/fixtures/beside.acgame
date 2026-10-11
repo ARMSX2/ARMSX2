@@ -1,0 +1,9 @@
+[game]
+name=Battle Gear 3
+gameid=NM00010
+platform=246
+jvsmode=racing
+
+[data]
+subdir=
+mediasrc=bg3.chd

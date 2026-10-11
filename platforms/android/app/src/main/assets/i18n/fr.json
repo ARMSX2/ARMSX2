@@ -1598,6 +1598,7 @@
   "setup.bios.unknownZone": "Inconnue",
   "setup.bios.useSelected": "Utiliser le BIOS sélectionné",
   "setup.button.addAnotherFolder": "Ajouter un autre dossier",
+  "setup.folder.subfolders": "Inclure les sous-dossiers",
   "setup.button.addFolder": "Ajouter un dossier",
   "setup.button.applyFinish": "Appliquer et terminer",
   "setup.button.choose": "Choisir",

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
+#include "ArcadeLaunch.h"
 #include "AutoUpdaterDialog.h"
 #ifdef ENABLE_QT_DEBUGGER
 #include "Debugger/DebuggerWindow.h"
@@ -12,12 +13,14 @@
 #include "MainWindow.h"
 #include "QtHost.h"
 #include "QtProgressCallback.h"
+#include "QtShot.h"
 #include "QtUtils.h"
 #include "SetupWizardDialog.h"
 
 #include "pcsx2/CDVD/CDVDcommon.h"
 #include "pcsx2/Achievements.h"
 #include "pcsx2/BuildVersion.h"
+#include "pcsx2/Catalog/DriverPacks.h"
 #include "pcsx2/CDVD/CDVD.h"
 #include "pcsx2/Counters.h"
 #include "pcsx2/DebugTools/Debug.h"
@@ -211,6 +214,11 @@ void EmuThread::startVM(std::shared_ptr<VMBootParameters> boot_params)
 {
 	if (!isOnEmuThread())
 	{
+		// Every start in the Qt window comes through here first, on the UI thread. An arcade game gets its files ready
+		// (boot program, dongle) now, and the player is told what is missing when it cannot start.
+		if (!ArcadeLaunch::PrepareForBoot(g_main_window, boot_params.get()))
+			return;
+
 		QMetaObject::invokeMethod(this, "startVM", Qt::QueuedConnection, Q_ARG(std::shared_ptr<VMBootParameters>, boot_params));
 		return;
 	}
@@ -2289,6 +2297,10 @@ bool QtHost::ParseCommandLineOptions(const QStringList& args, std::shared_ptr<VM
 				AutoBoot(autoboot)->start_unlimited = true;
 				continue;
 			}
+			else if (QtShot::ParseArgument(it, args.end()))
+			{
+				continue;
+			}
 #ifdef ENABLE_RAINTEGRATION
 			else if (CHECK_ARG(QStringLiteral("-raintegration")))
 			{
@@ -2464,6 +2476,9 @@ int main(int argc, char* argv[])
 	if (!QtHost::InitializeConfig())
 		return EXIT_FAILURE;
 
+	// Selected GPU driver pack (Linux): must be in the environment before anything loads libvulkan.
+	DriverPacks::ApplyEnvironment();
+
 	// Are we just setting up the configuration?
 	if (s_test_config_and_exit)
 		return EXIT_SUCCESS;
@@ -2535,6 +2550,9 @@ int main(int argc, char* argv[])
 		g_emu_thread->startVM(std::move(autoboot));
 	else if (!s_nogui_mode)
 		g_main_window->startupUpdateCheck();
+
+	// Screenshot harness (hidden -uishot flags); does nothing without them.
+	QtShot::Start();
 
 	// This doesn't return until we exit.
 	result = app.exec();

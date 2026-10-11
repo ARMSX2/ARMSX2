@@ -14,6 +14,7 @@
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
 #include "GS/Renderers/Vulkan/VKSwapChain.h"
 #include "GS/Renderers/Vulkan/VKLibretro.h"
+#include "GS/Renderers/Common/GSHeadlessPresent.h"
 
 // Libretro presentation backbuffers: the frontend samples the published
 // VkImageView asynchronously (including cached-frame replays long after the
@@ -3122,7 +3123,7 @@ void GSDeviceVK::Destroy()
 {
 	// Free the libretro backbuffers while the device is still alive; the
 	// frontend stopped sampling at context_destroy.
-	if (VKLibretro::Active)
+	if (VKLibretro::Active || GSHeadless::IsEnabled())
 	{
 		WaitForGPUIdle();
 		for (std::unique_ptr<GSTextureVK>& bb : s_libretro_bb)
@@ -3353,7 +3354,8 @@ GSDevice::PresentResult GSDeviceVK::DoBeginPresent(bool frame_skip)
 		// then hands the finished image to the frontend. The backbuffers are
 		// owned outside the texture pool because the frontend keeps sampling
 		// the published view for cached-frame replays.
-		if (VKLibretro::Active)
+		// Headless (GSHeadless) takes the same path with no frontend: the backbuffer is read back.
+		if (VKLibretro::Active || GSHeadless::IsEnabled())
 		{
 			// Reclaim backbuffers retired long enough ago that the frontend's
 			// replay window has moved past them (see kLibretroRetireFrames).
@@ -3519,7 +3521,7 @@ void GSDeviceVK::EndPresent()
 	vkCmdEndRenderPass(cmdbuffer);
 	m_is_presenting = false;
 
-	if (VKLibretro::Active && !m_swap_chain)
+	if ((VKLibretro::Active || GSHeadless::IsEnabled()) && !m_swap_chain)
 	{
 		// Libretro: finish the backbuffer, submit without any swapchain
 		// semantics, and hand the image to the frontend.
@@ -3530,6 +3532,12 @@ void GSDeviceVK::EndPresent()
 		SubmitCommandBuffer(static_cast<VKSwapChain*>(nullptr));
 		MoveToNextCommandBuffer();
 		InvalidateCachedState();
+
+		if (!VKLibretro::Active)
+		{
+			GSHeadless::NotePresented(bb);
+			return;
+		}
 
 		VKLibretro::Frame frame;
 		frame.image = bb->GetImage();
@@ -8390,7 +8398,8 @@ void GSDeviceVK::ExecuteCommandBufferAndRestartPresent(bool wait_for_completion,
 	vkCmdEndRenderPass(GetCurrentCommandBuffer());
 	ExecuteCommandBuffer(wait_for_completion);
 
-	GSTextureVK* swap_chain_texture = m_swap_chain->GetCurrentTexture();
+	GSTextureVK* swap_chain_texture =
+		m_swap_chain ? m_swap_chain->GetCurrentTexture() : s_libretro_bb[s_libretro_bb_idx].get();
 
 	const VkFramebuffer fb = swap_chain_texture->GetFramebuffer(false);
 	pxAssert(fb);

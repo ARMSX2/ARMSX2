@@ -10,6 +10,7 @@
 
 #include "common/StringUtil.h"
 
+#include "MemoryCardBackupsDialog.h"
 #include "MemoryCardConvertDialog.h"
 #include "MemoryCardCreateDialog.h"
 #include "MemoryCardSettingsWidget.h"
@@ -52,6 +53,10 @@ MemoryCardSettingsWidget::MemoryCardSettingsWidget(SettingsWindow* settings_dial
 
 	SettingWidgetBinder::BindWidgetToFolderSetting(sif, m_ui.directory, m_ui.browse, m_ui.open, m_ui.reset, "Folders",
 		"MemoryCards", Path::Combine(EmuFolders::DataRoot, "memcards"));
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.autoBackup, CONFIG_SECTION, "AutoBackup", true);
+	dialog()->registerWidgetHelp(m_ui.autoBackup, tr("Automatic Backups"), tr("Checked"),
+		tr("Takes a snapshot of the memory cards in slots 1 and 2 when a game starts, if they have changed since the last snapshot. "
+		   "A few recent snapshots are kept. If a card can no longer be read at startup you are offered the newest good snapshot."));
 
 	setupAdditionalUi();
 
@@ -66,6 +71,7 @@ MemoryCardSettingsWidget::MemoryCardSettingsWidget(SettingsWindow* settings_dial
 	connect(m_ui.createCard, &QPushButton::clicked, this, &MemoryCardSettingsWidget::createCard);
 	connect(m_ui.renameCard, &QPushButton::clicked, this, &MemoryCardSettingsWidget::renameCard);
 	connect(m_ui.convertCard, &QPushButton::clicked, this, &MemoryCardSettingsWidget::convertCard);
+	connect(m_ui.backupsCard, &QPushButton::clicked, this, &MemoryCardSettingsWidget::showBackups);
 	connect(m_ui.deleteCard, &QPushButton::clicked, this, &MemoryCardSettingsWidget::deleteCard);
 
 	loadCardListSortState();
@@ -293,6 +299,21 @@ void MemoryCardSettingsWidget::convertCard()
 		refresh();
 }
 
+void MemoryCardSettingsWidget::showBackups()
+{
+	// The cards in the console's slots are greyed out in the list and cannot be selected, and they are
+	// the ones with backups, so with nothing selected the window opens on the card in slot 1.
+	QString card = getSelectedCard();
+	if (card.isEmpty())
+	{
+		card = QString::fromStdString(dialog()->getEffectiveStringValue(
+			CONFIG_SECTION, getSlotFilenameKey(0).c_str(), FileMcd_GetDefaultName(0).c_str()));
+	}
+
+	MemoryCardBackupsDialog::showForCard(this, card);
+	refresh();
+}
+
 void MemoryCardSettingsWidget::listContextMenuRequested(const QPoint& pos)
 {
 	QMenu menu(this);
@@ -309,6 +330,7 @@ void MemoryCardSettingsWidget::listContextMenuRequested(const QPoint& pos)
 
 		connect(menu.addAction(tr("Rename")), &QAction::triggered, this, &MemoryCardSettingsWidget::renameCard);
 		connect(menu.addAction(tr("Convert")), &QAction::triggered, this, &MemoryCardSettingsWidget::convertCard);
+		connect(menu.addAction(tr("Backups...")), &QAction::triggered, this, &MemoryCardSettingsWidget::showBackups);
 		connect(menu.addAction(tr("Delete")), &QAction::triggered, this, &MemoryCardSettingsWidget::deleteCard);
 		menu.addSeparator();
 	}

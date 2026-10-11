@@ -1,0 +1,105 @@
+{
+ "schemaVersion": 2,
+ "entries": [
+  {
+   "id": "ai-upscaled-hd-texture-pack-created-mortal-kombat-armageddon-hd-v1-5-texture-pack-slus-21410-20260728",
+   "name": "Mortal Kombat Armageddon HD V1.5 Texture Pack",
+   "gameTitle": "Mortal Kombat: Armageddon",
+   "serials": [
+    "SLUS-21410"
+   ],
+   "version": "Complete public source snapshot",
+   "authors": [
+    "AI-upscaled HD texture pack created",
+    "maintained by ckiscxrsed."
+   ],
+   "credits": "HD texture pack credited by the source to AI-upscaled HD texture pack created and maintained by ckiscxrsed.; normalized and mirrored by EmuCoreX.",
+   "description": "A North American high-resolution replacement pack prepared for current PCSX2 builds.",
+   "license": "See source page terms",
+   "downloadUrl": "https://dl.ps2ktxpak.net/packs/ai-upscaled-hd-texture-pack-created-mortal-kombat-armageddon-hd-v1-5-texture-pack-slus-21410-20260728.tar.zst",
+   "format": "tar+zstd",
+   "archiveRevision": 1,
+   "decompressedSizeBytes": 843048960,
+   "sourceUrl": "https://github.com/ckiscxrsed/Mortal-Kombat-Armageddon-HD-Textures/releases/tag/v1.5",
+   "sizeBytes": 591427517,
+   "sha256": "f87de4b99e6373bc2223f4570fb3e9a2436ac10b5e0467e5aca70bda042e46b7",
+   "fileCount": 3800,
+   "previewUrls": []
+  },
+  {
+   "id": "callofcthuloo-gundam-lost-war-chronicles-android-slps-25123-20260726",
+   "name": "Mobile Suit Gundam: Lost War Chronicles HD Upscale \u2014 Android Edition",
+   "gameTitle": "Mobile Suit Gundam: Lost War Chronicles",
+   "serials": [
+    "SLPS-25123",
+    "SLPS-24122"
+   ],
+   "version": "Android edition (mirrored 2026-07-26)",
+   "authors": [
+    "callofcthuloo"
+   ],
+   "credits": "Android-compatible AI upscale created by callofcthuloo with Upscayl's Standard x4 profile; normalized and mirrored by EmuCoreX. All rights remain with the original creator.",
+   "description": "Approximately 99%-complete mobile edition covering suits, maps, stages, menus, UI and portraits for the standard and Limited Box Japanese releases; FMVs are omitted.",
+   "license": "See source page terms",
+   "downloadUrl": "https://dl.ps2ktxpak.net/packs/callofcthuloo-gundam-lost-war-chronicles-android-slps-25123-20260726.tar.zst",
+   "format": "tar+zstd",
+   "archiveRevision": 1,
+   "decompressedSizeBytes": 714158080,
+   "sourceUrl": "https://gbatemp.net/threads/mobile-suit-gundam-ji-dong-zhan-shigandamu-zhan-ji-lost-war-chronicles-slps-25123-hd-texture-pack-upscale.667871/",
+   "sizeBytes": 277792537,
+   "sha256": "ee71bc8e9cbd66d3f5fcd9ad04ebef63883899deacadac6099bafdf2ac7d9fe7",
+   "fileCount": 8438,
+   "previewUrls": []
+  },
+  {
+   "id": "pcsx2-font-texture-replacements-created-by-saya-ya-for-the-strawberry-panic-translation-project-strawberry-panic-spanish-font-texture-support-pack-slps-25611-20260728",
+   "name": "Strawberry Panic Spanish Font Texture Support Pack",
+   "gameTitle": "Strawberry Panic!",
+   "serials": [
+    "SLPS-25611"
+   ],
+   "version": "Complete public source snapshot",
+   "authors": [
+    "PCSX2 font texture replacements created by Saya-ya for the Strawberry Panic translation project."
+   ],
+   "credits": "HD texture pack credited by the source to PCSX2 font texture replacements created by Saya-ya for the Strawberry Panic translation project.; normalized and mirrored by EmuCoreX.",
+   "description": "A Japanese/Asian high-resolution replacement pack prepared for current PCSX2 builds.",
+   "license": "See source page terms",
+   "downloadUrl": "https://dl.ps2ktxpak.net/packs/pcsx2-font-texture-replacements-created-by-saya-ya-for-the-strawberry-panic-translation-project-strawberry-panic-spanish-font-texture-support-pack-slps-25611-20260728.tar.zst",
+   "format": "tar+zstd",
+   "archiveRevision": 1,
+   "decompressedSizeBytes": 51200,
+   "sourceUrl": "https://github.com/Saya-ya/StrawTraduccion/tree/cf73e932e81fa435a6dbc6788000271a3e44397a",
+   "sizeBytes": 14672,
+   "sha256": "caeb75f26bd40d2db1bcfd27a9a4e3cdc69bd777e06cf8739f2377aebbc46702",
+   "fileCount": 1,
+   "previewUrls": []
+  },
+  {
+   "id": "asi-factory-gta-vcs-pc-textures-latest",
+   "name": "GTA Vice City Stories PC Texture Pack",
+   "gameTitle": "Grand Theft Auto: Vice City Stories",
+   "serials": [
+    "SLUS-21590"
+   ],
+   "version": "latest",
+   "authors": [
+    "ASI Factory"
+   ],
+   "credits": "Pack published by ASI Factory; textures adapted from the PC version.",
+   "description": "PC-derived texture replacement pack for the North American PS2 release.",
+   "license": "See source repository terms",
+   "downloadUrl": "https://dl.ps2ktxpak.net/packs/asi-factory-gta-vcs-pc-textures-latest.tar.zst",
+   "format": "tar+zstd",
+   "archiveRevision": 1,
+   "decompressedSizeBytes": 28692480,
+   "sourceUrl": "https://github.com/ASI-Factory/GTA-VCS-Texture-Pack-PS2",
+   "sizeBytes": 23130684,
+   "sha256": "a18b631c1f668d6d26b14702f154b90a2abd4e5b7617d87ce8d31379e0c1c57b",
+   "fileCount": 1781,
+   "previewUrls": [
+    "https://i.imgur.com/RRDySLw.png"
+   ]
+  }
+ ]
+}

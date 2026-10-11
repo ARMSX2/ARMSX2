@@ -61,6 +61,9 @@ class DiscordService : Service() {
         const val TAG = "ARMSX2DiscordSvc"
         // The SDK's callback queue wants draining often; the pump is cheap when idle.
         const val PUMP_INTERVAL_MS = 50L
+        // While the app is out of sight (MSG_IDLE). Nothing waits on a callback then, and twenty
+        // wakeups a second otherwise ran on for as long as a locked device stayed locked.
+        const val IDLE_PUMP_INTERVAL_MS = 1000L
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -68,6 +71,7 @@ class DiscordService : Service() {
 
     private var started = false
     private var loaded = false
+    private var idle = false
 
     private val pump = object : Runnable {
         override fun run() {
@@ -75,7 +79,7 @@ class DiscordService : Service() {
                 runCatching { DiscordNative.pump() }
                     .onFailure { Log.w(TAG, "pump failed: ${it.message}") }
             }
-            handler.postDelayed(this, PUMP_INTERVAL_MS)
+            handler.postDelayed(this, if (idle) IDLE_PUMP_INTERVAL_MS else PUMP_INTERVAL_MS)
         }
     }
 
@@ -138,6 +142,16 @@ class DiscordService : Service() {
             }
 
             DiscordIpc.MSG_QUERY -> reply(msg.replyTo)
+
+            DiscordIpc.MSG_IDLE -> {
+                val wasIdle = idle
+                idle = msg.data?.getBoolean(DiscordIpc.DATA_IDLE, false) ?: false
+                // Back in sight: drain what queued meanwhile now, not at the end of a slow wait.
+                if (wasIdle && !idle) {
+                    handler.removeCallbacks(pump)
+                    handler.post(pump)
+                }
+            }
         }
     }
 

@@ -1675,7 +1675,7 @@ void FullscreenUI::SwitchToGameSettings(const std::string_view serial, u32 crc)
 
 void FullscreenUI::SwitchToGameSettings()
 {
-	if (s_current_disc_serial.empty() || s_current_disc_crc == 0)
+	if (s_current_disc_serial.empty() || (s_current_disc_crc == 0 && !IsArcadeSessionActive()))
 		return;
 
 	auto lock = GameList::GetLock();
@@ -1786,6 +1786,7 @@ void FullscreenUI::DrawSettingsWindow()
 			ICON_PF_MICROCHIP,
 			ICON_PF_GEARS_OPTIONS_SETTINGS,
 			ICON_PF_PICTURE,
+			ICON_FA_IMAGES,
 			ICON_FA_GAUGE,
 			ICON_PF_SOUND,
 			ICON_PF_MEMORY_CARD,
@@ -1794,7 +1795,9 @@ void FullscreenUI::DrawSettingsWindow()
 			ICON_FA_TROPHY,
 			ICON_PF_GAMEPAD_ALT,
 			ICON_PF_KEYBOARD_ALT,
+			ICON_FA_COINS,
 			ICON_FA_TRIANGLE_EXCLAMATION,
+			ICON_FA_MEMORY, // Drivers: last, because it is left out of the list where packs do not exist
 		};
 		static constexpr const char* per_game_icons[] = {
 			ICON_FA_INFO,
@@ -1812,6 +1815,7 @@ void FullscreenUI::DrawSettingsWindow()
 			SettingsPage::BIOS,
 			SettingsPage::Emulation,
 			SettingsPage::Graphics,
+			SettingsPage::TexturePacks,
 			SettingsPage::OSD,
 			SettingsPage::Audio,
 			SettingsPage::MemoryCard,
@@ -1820,7 +1824,9 @@ void FullscreenUI::DrawSettingsWindow()
 			SettingsPage::Achievements,
 			SettingsPage::Controller,
 			SettingsPage::Hotkey,
+			SettingsPage::Arcade,
 			SettingsPage::Advanced,
+			SettingsPage::Drivers, // must stay last, see count below
 		};
 		static constexpr SettingsPage per_game_pages[] = {
 			SettingsPage::Summary,
@@ -1851,9 +1857,12 @@ void FullscreenUI::DrawSettingsWindow()
 			FSUI_NSTR("Patches"),
 			FSUI_NSTR("Cheats"),
 			FSUI_NSTR("Game Fixes"),
+			FSUI_NSTR("GPU Drivers"),
+			FSUI_NSTR("Arcade Setup"),
+			FSUI_NSTR("Texture Packs"),
 		};
 
-		const u32 count = game_settings ? (show_advanced_settings ? std::size(per_game_pages) : (std::size(per_game_pages) - 1)) : std::size(global_pages);
+		const u32 count = game_settings ? (show_advanced_settings ? std::size(per_game_pages) : (std::size(per_game_pages) - 1)) : (std::size(global_pages) - (ShowDriversSettingsPage() ? 0 : 1));
 		const char* const* icons = game_settings ? per_game_icons : global_icons;
 		const SettingsPage* pages = game_settings ? per_game_pages : global_pages;
 		u32 index = 0;
@@ -2014,6 +2023,18 @@ void FullscreenUI::DrawSettingsWindow()
 				DrawGameFixesSettingsPage();
 				break;
 
+			case SettingsPage::Drivers:
+				DrawDriversSettingsPage(bsi);
+				break;
+
+			case SettingsPage::Arcade:
+				DrawArcadeSettingsPage();
+				break;
+
+			case SettingsPage::TexturePacks:
+				DrawTexturePacksSettingsPage();
+				break;
+
 			default:
 				break;
 		}
@@ -2140,6 +2161,9 @@ void FullscreenUI::DrawSummarySettingsPage()
 					CloseChoiceDialog();
 				});
 		}
+
+		DrawCoverRegionPinSetting(*s_game_settings_entry);
+		DrawArcadeGameSettings(*s_game_settings_entry);
 	}
 	else
 	{
@@ -2293,6 +2317,7 @@ void FullscreenUI::DrawInterfaceSettingsPage()
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_BOX_ARCHIVE, "Create Save State Backups"),
 		FSUI_CSTR("Creates a backup copy of a save state if it already exists when the save is created. The backup copy has a .backup suffix"),
 		"EmuCore", "BackupSavestate", true);
+	DrawAutosaveSettings(bsi);
 	const SmallString glyph_mode = bsi->GetSmallStringValue("UI", "FullscreenUIGlyphStyle", "auto");
 	static constexpr const char* glyph_names[] = {
 		FSUI_NSTR("Automatic"),
@@ -2474,7 +2499,7 @@ void FullscreenUI::DrawBIOSSettingsPage()
 		{
 			u32 version, region;
 			std::string description, zone;
-			if (!IsBIOS(fd.FileName.c_str(), version, description, region, zone))
+			if (!IsConsoleBIOS(fd.FileName.c_str(), version, description, region, zone))
 				continue;
 
 			const std::string_view filename(Path::GetFileName(fd.FileName));
@@ -3327,6 +3352,8 @@ void FullscreenUI::DrawGraphicsSettingsPage(SettingsInterface* bsi, bool show_ad
 		DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_DATABASE, "Precache Textures"),
 			FSUI_CSTR("Preloads all replacement textures to memory. Not necessary with asynchronous loading."), "EmuCore/GS",
 			"PrecacheTextureReplacements", false, replacement_active);
+		DrawTextureUpscaleSetting(bsi);
+		DrawTexturePacksBrowseSetting(bsi);
 
 		if (!IsEditingGameSettings(bsi))
 		{
@@ -3715,6 +3742,8 @@ void FullscreenUI::DrawMemoryCardSettingsPage()
 		}
 	}
 
+	DrawMemcardBackupSettings(bsi);
+
 	for (u32 port = 0; port < NUM_MEMORY_CARD_PORTS; port++)
 	{
 		SmallString str;
@@ -3920,6 +3949,10 @@ void FullscreenUI::DrawNetworkHDDSettingsPage()
 			api_display_names.emplace_back("Sockets");
 		}
 
+		adapter_lists.emplace_back();
+		api_types.emplace_back(Pcsx2Config::DEV9Options::NetApi::LocalLink);
+		api_display_names.emplace_back("Local Link");
+
 		adapters_loaded = true;
 	}
 
@@ -3986,6 +4019,7 @@ void FullscreenUI::DrawNetworkHDDSettingsPage()
 				}
 
 				bsi->SetStringValue("DEV9/Eth", "EthDevice", new_device.c_str());
+				LocalLinkApiSelected(bsi, selected_api);
 				SetSettingsChanged(bsi);
 
 				CloseChoiceDialog();
@@ -4019,7 +4053,9 @@ void FullscreenUI::DrawNetworkHDDSettingsPage()
 		device_display = "Not Selected";
 	}
 
-	if (MenuButtonWithValue(FSUI_ICONSTR(ICON_FA_ETHERNET, "Ethernet Device"),
+	const bool local_link = DrawLocalLinkSettings(bsi, current_api, network_enabled);
+
+	if (!local_link && MenuButtonWithValue(FSUI_ICONSTR(ICON_FA_ETHERNET, "Ethernet Device"),
 			FSUI_CSTR("Network adapter to use for PS2 network emulation."),
 			device_display.c_str(),
 			network_enabled && show_device_setting))
@@ -4068,6 +4104,10 @@ void FullscreenUI::DrawNetworkHDDSettingsPage()
 			});
 	}
 
+	// Local Link assigns the console's address itself, so the DHCP, IP and DNS rows below do not apply.
+	// The block is left at its old indentation on purpose, so this stays a three-line change.
+	if (!local_link)
+	{
 	AdapterOptions adapter_options = AdapterOptions::None;
 	const std::string final_api = bsi->GetStringValue("DEV9/Eth", "EthApi", "Unset");
 	if (final_api == "PCAP Bridged" || final_api == "PCAP Switched")
@@ -4135,6 +4175,7 @@ void FullscreenUI::DrawNetworkHDDSettingsPage()
 	DrawIPAddressSetting(bsi, FSUI_ICONSTR(ICON_FA_SERVER, "DNS2 Address"),
 		FSUI_CSTR("Secondary DNS server address for the PS2 virtual network adapter."), "DEV9/Eth", "DNS2", "0.0.0.0",
 		dns2_editable, LAYOUT_MENU_BUTTON_HEIGHT, g_large_font, g_medium_font, IPAddressType::DNS2);
+	}
 
 	MenuHeading(FSUI_CSTR("Internal HDD"));
 
@@ -5831,6 +5872,8 @@ void FullscreenUI::DrawPatchesOrCheatsSettingsPage(bool cheats)
 			s_game_settings_entry->crc);
 	}
 
+	DrawOnlinePatchesRow(cheats);
+
 	if (cheats)
 	{
 		if (patch_list.empty())
@@ -6381,6 +6424,9 @@ TRANSLATE_NOOP("FullscreenUI", "Activating cheats can cause unpredictable behavi
 TRANSLATE_NOOP("FullscreenUI", "Activating game patches can cause unpredictable behavior, crashing, soft-locks, or broken saved games.");
 TRANSLATE_NOOP("FullscreenUI", "Use patches at your own risk, the ARMSX2 team will provide no support for users who have enabled game patches.");
 TRANSLATE_NOOP("FullscreenUI", "Game Fixes");
+TRANSLATE_NOOP("FullscreenUI", "GPU Drivers");
+TRANSLATE_NOOP("FullscreenUI", "Arcade Setup");
+TRANSLATE_NOOP("FullscreenUI", "Texture Packs");
 TRANSLATE_NOOP("FullscreenUI", "Game fixes should not be modified unless you are aware of what each option does and the implications of doing so.");
 TRANSLATE_NOOP("FullscreenUI", "Needed for some games with complex FMV rendering.");
 TRANSLATE_NOOP("FullscreenUI", "Skips videos/FMVs in games to avoid game hanging/freezes.");

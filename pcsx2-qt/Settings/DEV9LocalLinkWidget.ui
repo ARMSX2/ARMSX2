@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>DEV9LocalLinkWidget</class>
+ <widget class="QWidget" name="DEV9LocalLinkWidget">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>640</width>
+    <height>360</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>6</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
+   <item>
+    <widget class="QLabel" name="localLinkHelp">
+     <property name="text">
+      <string>Local Link connects consoles over a network, so it only works with games that have their own LAN or System Link mode, for example Gran Turismo 4, TimeSplitters 2 and Midnight Club 3. One device hosts and starts the game; every other device enters the host's address with the same port and room code. Each player needs their own copy of the game. A shared Wi-Fi network or a phone hotspot is easiest; over the internet, a VPN such as Tailscale on every device is the simplest way.</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="localLinkGamesLink">
+     <property name="text">
+      <string>&lt;a href=&quot;https://en.wikipedia.org/wiki/List_of_PlayStation_2_online_games#LAN_Games&quot;&gt;Which games support this?&lt;/a&gt;</string>
+     </property>
+     <property name="openExternalLinks">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QFormLayout" name="localLinkForm">
+     <item row="0" column="0">
+      <widget class="QLabel" name="localLinkHostLabel">
+       <property name="text">
+        <string>Host:</string>
+       </property>
+       <property name="buddy">
+        <cstring>localLinkHost</cstring>
+       </property>
+      </widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QCheckBox" name="localLinkHost">
+       <property name="text">
+        <string>This device hosts the session</string>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="0">
+      <widget class="QLabel" name="localLinkLocalAddressLabel">
+       <property name="text">
+        <string>This device's address:</string>
+       </property>
+       <property name="buddy">
+        <cstring>localLinkLocalAddress</cstring>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="1">
+      <widget class="QLineEdit" name="localLinkLocalAddress">
+       <property name="readOnly">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item row="2" column="0">
+      <widget class="QLabel" name="localLinkAddressLabel">
+       <property name="text">
+        <string>Host address:</string>
+       </property>
+       <property name="buddy">
+        <cstring>localLinkAddress</cstring>
+       </property>
+      </widget>
+     </item>
+     <item row="2" column="1">
+      <widget class="QLineEdit" name="localLinkAddress">
+       <property name="placeholderText">
+        <string>192.168.1.42</string>
+       </property>
+      </widget>
+     </item>
+     <item row="3" column="0">
+      <widget class="QLabel" name="localLinkPortLabel">
+       <property name="text">
+        <string>Port:</string>
+       </property>
+       <property name="buddy">
+        <cstring>localLinkPort</cstring>
+       </property>
+      </widget>
+     </item>
+     <item row="3" column="1">
+      <widget class="QSpinBox" name="localLinkPort">
+       <property name="keyboardTracking">
+        <bool>false</bool>
+       </property>
+      </widget>
+     </item>
+     <item row="4" column="0">
+      <widget class="QLabel" name="localLinkRoomCodeLabel">
+       <property name="text">
+        <string>Room code:</string>
+       </property>
+       <property name="buddy">
+        <cstring>localLinkRoomCode</cstring>
+       </property>
+      </widget>
+     </item>
+     <item row="4" column="1">
+      <layout class="QHBoxLayout" name="localLinkRoomCodeLayout">
+       <item>
+        <widget class="QLineEdit" name="localLinkRoomCode"/>
+       </item>
+       <item>
+        <widget class="QPushButton" name="localLinkGenerate">
+         <property name="text">
+          <string>Generate</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </item>
+     <item row="5" column="0">
+      <widget class="QLabel" name="localLinkPeerIdLabel">
+       <property name="text">
+        <string>Peer ID:</string>
+       </property>
+       <property name="buddy">
+        <cstring>localLinkPeerId</cstring>
+       </property>
+      </widget>
+     </item>
+     <item row="5" column="1">
+      <widget class="QSpinBox" name="localLinkPeerId">
+       <property name="keyboardTracking">
+        <bool>false</bool>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QLabel" name="localLinkProblem">
+     <property name="visible">
+      <bool>false</bool>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

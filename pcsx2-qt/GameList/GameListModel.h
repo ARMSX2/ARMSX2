@@ -72,6 +72,7 @@ public:
 	int getCoverArtHeight() const;
 	int getCoverArtSpacing() const;
 	void refreshCovers();
+	void refreshCoverForPath(const std::string& path);
 	void updateCacheSize(int width, int height);
 
 	void setDevicePixelRatio(qreal dpr);

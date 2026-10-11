@@ -563,4 +563,16 @@ internal class IconView(context: Context) : TextureView(context), TextureView.Su
             onFirstFrame?.invoke()
         }
     }
+
+    // Straight from the window, as well as through GpuPs2Icon's lifecycle effect: that one needs a
+    // recomposition to run, and Compose holds recompositions back while the activity is stopped,
+    // which is exactly when the icons have to stop.
+    //
+    // The window's own visibility, not [visibility]: a view also gets GONE here when it detaches,
+    // as an icon scrolling out of a list does, while the window and every other icon stay on
+    // screen. IconGl's switch is shared, so that GONE stopped all of them.
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        IconGl.setVisible(windowVisibility == VISIBLE)
+    }
 }

@@ -130,6 +130,13 @@
          </widget>
         </item>
         <item>
+         <widget class="QCheckBox" name="autoBackup">
+          <property name="text">
+           <string>Automatic backups</string>
+          </property>
+         </widget>
+        </item>
+        <item>
          <spacer name="horizontalSpacer">
           <property name="orientation">
            <enum>Qt::Orientation::Horizontal</enum>
@@ -164,6 +171,13 @@
          </widget>
         </item>
         <item>
+         <widget class="QPushButton" name="backupsCard">
+          <property name="text">
+           <string>Backups...</string>
+          </property>
+         </widget>
+        </item>
+        <item>
          <widget class="QPushButton" name="deleteCard">
           <property name="text">
            <string>Delete</string>
@@ -191,9 +205,11 @@
   <tabstop>reset</tabstop>
   <tabstop>cardList</tabstop>
   <tabstop>refreshCard</tabstop>
+  <tabstop>autoBackup</tabstop>
   <tabstop>createCard</tabstop>
   <tabstop>renameCard</tabstop>
   <tabstop>convertCard</tabstop>
+  <tabstop>backupsCard</tabstop>
   <tabstop>deleteCard</tabstop>
  </tabstops>
  <resources/>

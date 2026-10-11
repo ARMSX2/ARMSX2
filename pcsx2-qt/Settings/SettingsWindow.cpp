@@ -6,6 +6,7 @@
 #include "QtUtils.h"
 #include "Settings/AchievementSettingsWidget.h"
 #include "Settings/AdvancedSettingsWidget.h"
+#include "Settings/ArcadeControlsSettingsWidget.h"
 #include "Settings/AudioSettingsWidget.h"
 #include "Settings/BIOSSettingsWidget.h"
 #include "Settings/DEV9SettingsWidget.h"
@@ -18,10 +19,12 @@
 #include "Settings/GameSummaryWidget.h"
 #include "Settings/GraphicsSettingsWidget.h"
 #include "Settings/OSDSettingsWidget.h"
+#include "Settings/TexturePacksSettingsWidget.h"
 #include "Settings/HotkeySettingsWidget.h"
 #include "Settings/InterfaceSettingsWidget.h"
 #include "Settings/MemoryCardSettingsWidget.h"
 #include "Settings/DebugSettingsWidget.h"
+#include "Settings/DriverPacksSettingsWidget.h"
 #include "SettingsWindow.h"
 
 #include "pcsx2/Achievements.h"
@@ -29,6 +32,7 @@
 #include "pcsx2/Host.h"
 #include "pcsx2/INISettingsInterface.h"
 
+#include "common/ARCADE.h"
 #include "common/FileSystem.h"
 #include "common/Path.h"
 #include "common/StringUtil.h"
@@ -146,6 +150,14 @@ void SettingsWindow::setupUi(const GameList::Entry* game)
 			   "activate if the main cheat enable option is checked."));
 	}
 
+	// How the controller's buttons work the cabinet of an arcade game (this game's own) or of every arcade game (global).
+	if (!isPerGameSettings() || Arcade::IsGameId(m_serial))
+	{
+		addWidget(new ArcadeControlsSettingsWidget(this, m_ui.settingsContainer), tr("Arcade Controls"), QStringLiteral("controller-line"),
+			tr("<strong>Arcade Controls</strong><hr>Choose what each button of your controller does on the arcade cabinet.<br><br>"
+			   "Changes apply at once, also while a game runs."));
+	}
+
 	// Only show the game fixes for per-game settings, there's really no reason to be setting them globally.
 	if (show_advanced_settings && isPerGameSettings())
 	{
@@ -158,6 +170,9 @@ void SettingsWindow::setupUi(const GameList::Entry* game)
 	addWidget(m_graphics_settings = new GraphicsSettingsWidget(this, m_ui.settingsContainer), tr("Graphics"), QStringLiteral("image-fill"),
 		tr("<strong>Graphics Settings</strong><hr>These options determine the configuration of the graphical output.<br><br>Mouse over an "
 		   "option for additional information, and Shift+Wheel to scroll this panel."));
+	addWidget(new TexturePacksSettingsWidget(this, m_ui.settingsContainer), tr("Texture Packs"), QStringLiteral("brush-line"),
+		tr("<strong>Texture Packs</strong><hr>Download texture packs that replace a game's textures with higher resolution ones, and manage the ones you have."
+		   "<br><br>Mouse over an option for additional information, and Shift+Wheel to scroll this panel."));
 	addWidget(m_osd_settings = new OSDSettingsWidget(this, m_ui.settingsContainer), tr("On-Screen Display"),
 		QStringLiteral("heart-circle-line"),
 		tr("<strong>On-Screen Display Settings</strong><hr>These options control the on-screen display (OSD) overlays shown during gameplay.<br><br>Mouse over an option for additional information, and Shift+Wheel to scroll this panel."));
@@ -180,6 +195,15 @@ void SettingsWindow::setupUi(const GameList::Entry* game)
 			QStringLiteral("folder-settings-line"),
 			tr("<strong>Folder Settings</strong><hr>These options control where ARMSX2 will save runtime data files."));
 	}
+
+#ifdef __linux__
+	if (!isPerGameSettings() && DriverPacksSettingsWidget::shouldOffer())
+	{
+		addWidget(new DriverPacksSettingsWidget(this, m_ui.settingsContainer), tr("GPU Drivers"), QStringLiteral("dashboard-line"),
+			tr("<strong>GPU Drivers</strong><hr>Download and choose the Vulkan driver ARMSX2 uses on supported devices. A choice takes effect when ARMSX2 restarts."
+			   "<br><br>Mouse over an option for additional information, and Shift+Wheel to scroll this panel."));
+	}
+#endif
 
 	{
 		QString title = tr("Achievements");

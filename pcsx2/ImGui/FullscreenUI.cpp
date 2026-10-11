@@ -339,6 +339,7 @@ bool FullscreenUI::Initialize()
 	s_initialized = true;
 	s_hotkey_list_cache = InputManager::GetHotkeyList();
 	MTGS::SetRunIdle(true);
+	RegisterMemcardRestorePrompt();
 
 	LoadCustomBackground();
 
@@ -460,7 +461,8 @@ void FullscreenUI::OnVMResumed()
 		if (s_current_main_window == MainWindowType::PauseMenu ||
 			s_current_main_window == MainWindowType::Settings ||
 			s_current_main_window == MainWindowType::Achievements ||
-			s_current_main_window == MainWindowType::Leaderboards)
+			s_current_main_window == MainWindowType::Leaderboards ||
+			s_current_main_window == MainWindowType::MemcardBackups)
 		{
 			s_current_main_window = MainWindowType::None;
 			s_current_pause_submenu = PauseSubMenu::None;
@@ -556,6 +558,11 @@ void FullscreenUI::Shutdown(bool clear_state)
 		CancelAllHddOperations();
 		CloseSaveStateSelector();
 		CloseCoverDownloaderWindow();
+		ShutdownAutoCovers();
+		ShutdownDriversPage();
+		ShutdownArcade();
+		ShutdownOnlinePatches();
+		ShutdownTexturePacks();
 		s_cover_image_map.clear();
 		s_game_list_sorted_entries = {};
 		s_last_unsorted_entries = {};
@@ -584,6 +591,7 @@ void FullscreenUI::Shutdown(bool clear_state)
 	s_custom_background_path.clear();
 	s_custom_background_enabled = false;
 
+	ShutdownSavesUI();
 	DestroyResources();
 	ImGuiFullscreen::Shutdown(clear_state);
 	s_initialized = false;
@@ -610,6 +618,8 @@ void FullscreenUI::Render()
 		g_gs_device->Recycle(tex.release());
 	s_cleanup_textures.clear();
 	ImGuiFullscreen::UploadAsyncTextures();
+	PollAutoCovers();
+	PollArcade();
 
 	ImGuiFullscreen::BeginLayout();
 
@@ -665,6 +675,9 @@ void FullscreenUI::Render()
 		case MainWindowType::Leaderboards:
 			Achievements::DrawLeaderboardsWindow();
 			break;
+		case MainWindowType::MemcardBackups:
+			DrawMemcardBackupsWindow();
+			break;
 		default:
 			break;
 	}
@@ -682,6 +695,8 @@ void FullscreenUI::Render()
 
 	if (s_cover_downloader_open)
 		DrawCoverDownloaderWindow();
+
+	DrawOnlinePatchesResults();
 
 	if (s_achievements_login_open || ImGui::IsPopupOpen("RetroAchievements"))
 		DrawAchievementsLoginWindow();
@@ -809,7 +824,7 @@ void FullscreenUI::DestroyResources()
 
 ImGuiFullscreen::FileSelectorFilters FullscreenUI::GetOpenFileFilters()
 {
-	return {"*.bin", "*.iso", "*.cue", "*.mdf", "*.chd", "*.cso", "*.zso", "*.gz", "*.elf", "*.irx", "*.gs", "*.gs.xz", "*.gs.zst", "*.dump"};
+	return {"*.bin", "*.iso", "*.cue", "*.mdf", "*.chd", "*.cso", "*.zso", "*.gz", "*.elf", "*.irx", "*.gs", "*.gs.xz", "*.gs.zst", "*.dump", "*.acgame"};
 }
 
 ImGuiFullscreen::FileSelectorFilters FullscreenUI::GetDiscImageFilters()
@@ -871,6 +886,9 @@ void FullscreenUI::DoVMInitialize(const VMBootParameters& boot_params, bool swit
 
 void FullscreenUI::DoStartPath(const std::string& path, std::optional<s32> state_index, std::optional<bool> fast_boot)
 {
+	if (StartArcadePath(path, state_index, fast_boot))
+		return;
+
 	VMBootParameters params;
 	params.filename = path;
 	params.state_index = state_index;
@@ -1700,10 +1718,11 @@ void FullscreenUI::DrawPauseMenu(MainWindowType type)
 			11, // None
 			4, // Exit
 			3, // Achievements
+			5, // Arcade
 		};
 
 		const bool just_focused = ResetFocusHere();
-		BeginMenuButtons(submenu_item_count[static_cast<u32>(s_current_pause_submenu)], 1.0f, ImGuiFullscreen::LAYOUT_MENU_BUTTON_X_PADDING,
+		BeginMenuButtons(submenu_item_count[static_cast<u32>(s_current_pause_submenu)] + GetArcadePauseMenuItemCount(s_current_pause_submenu), 1.0f, ImGuiFullscreen::LAYOUT_MENU_BUTTON_X_PADDING,
 			ImGuiFullscreen::LAYOUT_MENU_BUTTON_Y_PADDING, ImGuiFullscreen::LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY);
 
 		if (!ImGui::IsPopupOpen(0u, ImGuiPopupFlags_AnyPopup))
@@ -1733,6 +1752,9 @@ void FullscreenUI::DrawPauseMenu(MainWindowType type)
 					case PauseSubMenu::Achievements:
 						first_id = ImGui::GetID(FSUI_ICONSTR(ICON_PF_BACKWARD, "Back To Pause Menu"));
 						last_id = ImGui::GetID(FSUI_ICONSTR(ICON_FA_STOPWATCH, "Leaderboards"));
+						break;
+					case PauseSubMenu::Arcade:
+						GetArcadePauseWrapIds(&first_id, &last_id);
 						break;
 				}
 
@@ -1778,10 +1800,12 @@ void FullscreenUI::DrawPauseMenu(MainWindowType type)
 						s_current_main_window = MainWindowType::None;
 				}
 
-				if (ActiveButton(FSUI_ICONSTR(ICON_FA_WRENCH, "Game Properties"), false, can_save_state))
+				if (ActiveButton(FSUI_ICONSTR(ICON_FA_WRENCH, "Game Properties"), false, can_save_state || IsArcadeSessionActive()))
 				{
 					SwitchToGameSettings();
 				}
+
+				DrawArcadePauseMenuEntry();
 
 				if (ActiveButton(FSUI_ICONSTR(ICON_FA_TROPHY, "Achievements"), false, Achievements::HasAchievementsOrLeaderboards()))
 				{
@@ -1864,6 +1888,10 @@ void FullscreenUI::DrawPauseMenu(MainWindowType type)
 					OpenLeaderboardsWindow();
 			}
 			break;
+
+			case PauseSubMenu::Arcade:
+				DrawArcadePauseSubMenu(just_focused);
+				break;
 		}
 
 		EndMenuButtons();
@@ -1972,6 +2000,7 @@ u32 FullscreenUI::PopulateSaveStateListEntries(const std::string& title, const s
 		}
 	}
 
+	AppendAutosaveListEntries(serial, crc);
 	return static_cast<u32>(s_save_state_selector_slots.size());
 }
 
@@ -2158,7 +2187,7 @@ void FullscreenUI::DrawSaveStateSelector(bool is_loading)
 						closed = true;
 					}
 
-					if (ActiveButton(FSUI_ICONSTR(ICON_FA_TRASH, "Delete Save"), false, true, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
+					if (ActiveButton(FSUI_ICONSTR(ICON_FA_TRASH, "Delete Save"), false, !IsAutosaveSlot(entry.slot), LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
 					{
 						if (!FileSystem::FileExists(entry.path.c_str()))
 						{
@@ -2448,6 +2477,11 @@ void FullscreenUI::DrawResumeStateSelector()
 void FullscreenUI::DoLoadState(std::string path, std::optional<s32> slot, bool backup)
 {
 	std::string boot_path = s_save_state_selector_game_path;
+
+	// An arcade game has to be prepared before it boots; the state loads once it has.
+	if (!boot_path.empty() && !VMManager::HasValidVM() && StartArcadePath(boot_path, std::nullopt, std::nullopt, path))
+		return;
+
 	Host::RunOnCPUThread([boot_path = std::move(boot_path), path = std::move(path), slot, backup]() {
 		if (VMManager::HasValidVM())
 		{
@@ -3464,6 +3498,8 @@ void FullscreenUI::DrawGameListSettingsWindow()
 			"FullscreenUIShowGameGridTitles", true);
 	}
 
+	DrawAutoCoverSettings(bsi);
+
 	MenuHeading(FSUI_CSTR("Operations"));
 	{
 		if (MenuButton(
@@ -4171,7 +4207,7 @@ void FullscreenUI::ReportStateLoadError(const std::string& message, std::optiona
 		}
 
 		std::string title;
-		if (slot.has_value())
+		if (slot.has_value() && *slot > 0)
 		{
 			if (backup)
 				title = fmt::format(FSUI_FSTR("Failed to Load State From Backup Slot {}"), *slot);

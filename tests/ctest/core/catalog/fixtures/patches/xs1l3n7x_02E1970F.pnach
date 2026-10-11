@@ -1,0 +1,7 @@
+gametitle=Sega Ages 2500 Series Vol.26 - Dynamite Deka [UNKNOWN] [02E1970F]
+
+[Infinite Credits]
+author=xs1l3n7x(pnach)/UPC(codes)
+description=Infinite Credits
+// Infinite Credits
+patch=1,EE,01FA9BF0,extended,00000009

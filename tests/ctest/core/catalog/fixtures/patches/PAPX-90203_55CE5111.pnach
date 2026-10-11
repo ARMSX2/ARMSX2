@@ -1,0 +1,244 @@
+gametitle=Gran Turismo 2000 [PAPX-90203]
+
+[Widescreen 16:9]
+gsaspectratio=16:9
+description=16:9 widescreen patch
+author=Silent
+
+// Change Vert- to Hor+
+patch=0,EE,2024589C,extended,3C033F40 // lui v1,0x3F40
+patch=0,EE,202458AC,extended,44836000 // mtc1 v1,f12
+
+// Fix the race HUD
+patch=0,EE,10219780,extended,0078 // Tachometer width
+patch=0,EE,10219788,extended,01E0 // Tachometer posX
+
+// Slightly enlarge the gear background to account for stretched fonts
+
+// As we can't unstretch fonts easily, leave the pause menu background stretched
+
+// Fix menus
+//patch=0,EE,202A28C0,extended,42D64925 // Background movie width (fit)
+
+// Fix opening images
+
+
+// Set the opening movies to fill the screen (they're 16:9 letterboxed anyway)
+
+
+
+[No-Interlacing]
+description=Attempts to disable interlaced offset rendering.
+gsinterlacemode=1
+patch=0,EE,2023FF70,extended,00000000
+
+[Car select]
+description=Use dpad left/right to select the car in the menus.
+author=Silent, original research by Xenn765
+
+// NOTES:
+
+// Code caves:
+// 0200C8C - 0200D1C
+// 0200CF8 - 0200D1C - EXHAUSTED
+// 0201488 - 02014C4 - EXHAUSTED
+// 0204E08 - 0204E98 - free from 00204E88
+// 020AA04 - 020AA9C - free from 0020AA10
+// 020BBBC - 020BD00 - EXHAUSTED
+// 021617C - 02161C4 - EXHAUSTED
+// 02161DC - 0216204 - EXHAUSTED
+// 02181CC - 0218270
+// 022D5B0 - 022D77C - free from 0022D768
+// 022EC50 - 022EC74 - free from 0022EC5C
+
+// Unused functions that are used here (not suitable for code caves):
+// 020BB88 - gt2k_menu::SelectColorUnit::SetSampleGradient
+// 020BBBC - gt2k_menu::SelectColorUnit::StopAnimations (moved from 020BC00)
+// 020BD08 - gt2k_menu::SelectColorUnit::ApplyColorSampleAnimation
+// 020BD60 - gt2k_menu::SelectColorUnit::SelectColorUnit
+
+// 020BD04 - gt2k_menu::Transitive<1>::ApplyAnimation (recreated)
+
+// Expand gt2k_menu::TaikenSequence by 16 bytes to fit an extra menu entry
+patch=0,EE,10201334,extended,00E8
+
+// Shrink userSelections::colorIndex to 2 bytes
+patch=0,EE,1020928A,extended,84E2 // lh v0,(a3).colorIndex (0x0)
+patch=0,EE,1020A09E,extended,A483 // sh v1,(a0).colorIndex (0x0)
+
+// Shrink FrontendCarInfo::m_carColor to 2 bytes
+patch=0,EE,1020A246,extended,A602 // sh v0,(s0).m_carColor (0x4A0)
+
+// Replace the hardcoded 0 model with FrontendCarInfo::m_carIndex
+// and populate it from the menu
+
+// Replace the hardcoded 0 model with FrontendCarInfo::m_carIndex
+// in FrontendCarInfo::Initialize
+
+// CodeCave_SetCarIndex:
+
+// Repurpose RaceEntryBase::field_4 (unused, set to 6 once, number of cars in the race?) as a current player car index
+
+// Split PrepareRaceHolding into two functions - one initializing the race organization, the other initializing
+// the array of cars in RaceEntryBase
+
+// Prepare PrepareRaceHolding_split2
+
+// PrepareRaceHolding_split2_Call
+
+
+// raceOrganization->m_raceEntry->m_entries will be 0 at this point so NOP the access
+
+// Call PrepareRaceHolding_split2 before dereferencing s1
+// and swap v0/s1 around so we don't need to save the return value of this 'function'
+// PrepareRaceHolding_split2 needs to return the current car in v0
+
+// Prepare a new gt2k_menu::TaikenSequence::UpdateColorSelect(this) method
+
+
+// UpdateColorSelect_SetTile:
+
+// UpdateColorSelect_HideTile:
+
+// UpdateColorSelect_End
+
+
+// Prepare a new gt2k_menu::TaikenSequence::UpdateBadgeVisibility(this) method
+
+// UpdateBadgeVisibility_ToggleCarBadge
+
+// UpdateBadgeVisibility_ToggleCarBadge_Child:
+
+// UpdateBadgeVisibility_ToggleCarSpecs
+
+// UpdateBadgeVisibility_ToggleCarSpecs_Child:
+
+// UpdateBadgeVisibility_ToggleCarSpecs_ToggleCarPower
+
+// UpdateBadgeVisibility_ToggleCarSpecs_End
+
+
+// Prepare a new gt2k_menu::TaikenSequence::FadeCarOnSelect() method
+
+
+
+
+// Initialize the new menu option in gt2k_menu::TaikenSequence::PreMenu
+// Reuse the unwind code paths for this
+
+
+// Call gt2k_menu::TaikenSequence::UpdateBadgeVisibility when initializing badges
+
+
+
+// Update the race paramaters using the newly added menu option
+
+// Change the color select sound to the "secondary selection" high pitched one,
+// as we'll use the "main selection" lower pitched one for the car selection
+
+// Update the camera manager pan out animation not to destroy the object, but to loop it
+
+// Store the pointer to the camera manager for later
+
+// Instead, mark it for destruction when fading out the UI elements when backing out
+
+
+// Add dpad left/dpad right menu navigation
+
+// CodeCave1:
+
+// CodeCave2:
+
+
+// Perform car switching in the menu
+
+// SwitchCarInMenu:
+// Falls through to gt2k_menu::TaikenSequence::UpdateColorSelect by design!
+
+
+
+
+
+// Switch cars in race
+
+
+
+
+
+// Expand the color picker to have 12 entries max
+
+// Rebuild gt2k_menu::SelectColorUnit::StopAnimations in a different place so our code cave isn't split
+
+// Build gt2k_menu::Transitive<1>::ApplyAnimation by offsetting a this pointer
+// into gt2k_menu::SelectColorUnit::ApplyColorSampleAnimation
+
+// Build a helper function
+// gt2k_menu::SelectColorUnit::CreateNoColorName(gt2k_menu::Object* parent, int position)
+// and modify gt2k_menu::SelectColorUnit::SelectColorUnit for our needs
+
+
+// Expand InitializeSelectColorUnits
+
+
+// Expand ResetSelectColorUnits
+
+
+// Move the remaining options down on the ruler so new colors don't overlap them
+
+// Create the color tables
+
+
+[Auto-activate analogs]
+description=Automatically put gamepads in an analog mode, like in later Gran Turismo games.
+author=Silent
+
+// Build ControlManagerClass::PSPort::TryPutInAnalogMode
+patch=0,EE,20231EF4,extended,1480003B // bne a0,zero,0x231FE4
+patch=0,EE,20231EF8,extended,27BDFFD0 // addiu sp,sp,-0x30
+patch=0,EE,20231EFC,extended,FFBF0000 // sd ra,0x0(sp)
+patch=0,EE,20231F00,extended,FFA60010 // sd a2,0x10(sp)
+
+
+// s1 is unused by the calling function at this point yet but it preserves it
+// so we don't need to
+
+[Trigger control mappings]
+description=Maps throttle and brake to triggers, like in modern GT games.
+author=Silent
+
+// Create a function to scale the input by 256/255
+// ScaleTriggerInputs
+patch=0,EE,20215FD0,extended,00042A00 // sll a1,a0,0x08
+patch=0,EE,20215FD4,extended,000433C0 // sll a2,a0,0x0F
+patch=0,EE,20215FD8,extended,00C52821 // addu a1,a2,a1
+patch=0,EE,20215FDC,extended,000435C0 // sll a2,a0,0x17
+
+
+
+[Throttle/brake on right stick]
+description=Maps the right stick up/down as an additional throttle/brake control, like in most other GT games.
+author=Silent
+
+patch=0,EE,20215F5C,extended,27BDFFF0 // addiu sp,sp,-0x10
+patch=0,EE,20215F60,extended,FFBF0000 // sd ra,0x0(sp)
+patch=0,EE,20215F64,extended,0C0857E8 // jal TryGetAnalogInput
+patch=0,EE,20215F68,extended,92230021 // lbu v1,0x21(s1)
+
+
+// TryGetAnalogInput
+
+
+
+[No time limit]
+description=Disables the demo time limit.
+author=Silent, krat0s
+
+// Set the UI timer to 0 seconds, which disables it.
+patch=0,EE,20216130,extended,00000000 // nop
+
+// Disable "Time limit xxx" drawing.
+patch=0,EE,20219844,extended,00000000 // nop
+
+// Disable a 121s replay check that's active during the race
+patch=0,EE,20216518,extended,03E00008 // jr ra
+patch=0,EE,2021651C,extended,0000102D // daddu v0,zero,zero

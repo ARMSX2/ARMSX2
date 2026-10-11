@@ -111,6 +111,13 @@
       </spacer>
      </item>
      <item>
+      <widget class="QPushButton" name="browseOnlineCheats">
+       <property name="text">
+        <string>Browse Online...</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QPushButton" name="reloadCheats">
        <property name="text">
         <string>Reload Cheats</string>
@@ -128,6 +135,7 @@
   <tabstop>enableAll</tabstop>
   <tabstop>disableAll</tabstop>
   <tabstop>allCRCsCheckbox</tabstop>
+  <tabstop>browseOnlineCheats</tabstop>
   <tabstop>reloadCheats</tabstop>
  </tabstops>
  <resources/>
