@@ -9,6 +9,7 @@ import android.opengl.EGLDisplay
 import android.opengl.EGLSurface
 import android.util.Log
 import android.view.TextureView
+import java.util.concurrent.locks.LockSupport
 
 /**
  * Calum Robinson's Flurry (2002) as a library background.
@@ -106,7 +107,10 @@ class SaverGlView(context: Context, private val spec: SaverSpec) :
         // 2D backdrop instead, the same way an EGL failure does.
         thread = runCatching {
             RenderThread(st, w, h, spec) { ok -> post { onGlStatus?.invoke(ok) } }
-                .also { it.start() }
+                .also {
+                    it.paused = windowVisibility != VISIBLE
+                    it.start()
+                }
         }.getOrElse {
             Log.w(TAG, "saver thread failed to start", it)
             LibraryBackground.disarmSaver()
@@ -126,6 +130,12 @@ class SaverGlView(context: Context, private val spec: SaverSpec) :
     }
 
     override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+
+    /** Hold the saver still while the app is out of sight (see [XmbGlView.onWindowVisibilityChanged]). */
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        thread?.paused = visibility != VISIBLE
+    }
 
     /**
      * Stop rendering without waiting for the surface callback.
@@ -165,9 +175,14 @@ class SaverGlView(context: Context, private val spec: SaverSpec) :
 
         private var saver: Saver? = null
 
+        /** Parks the loop while set, as [XmbGlView]'s does. */
+        @Volatile var paused = false
+            set(value) { field = value; LockSupport.unpark(this) }
+
         fun resize(w: Int, h: Int) { width = w; height = h; sizeDirty = true }
         fun finish() {
             running = false
+            LockSupport.unpark(this)
             runCatching { join(500) }
             // join() is bounded, so the thread's own finally may not have run yet. We asked it to
             // stop and the process is still here, which is all the breaker needs to know.
@@ -197,6 +212,10 @@ class SaverGlView(context: Context, private val spec: SaverSpec) :
 
             var announced = false
             while (running) {
+                if (paused) {
+                    LockSupport.park(this)
+                    continue
+                }
                 val frameStart = System.nanoTime()
 
                 if (sizeDirty) {

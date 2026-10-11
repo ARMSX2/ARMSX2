@@ -563,4 +563,12 @@ internal class IconView(context: Context) : TextureView(context), TextureView.Su
             onFirstFrame?.invoke()
         }
     }
+
+    // Straight from the window, as well as through GpuPs2Icon's lifecycle effect: that one needs a
+    // recomposition to run, and Compose holds recompositions back while the activity is stopped,
+    // which is exactly when the icons have to stop.
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        IconGl.setVisible(visibility == VISIBLE)
+    }
 }
