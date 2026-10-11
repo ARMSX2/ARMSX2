@@ -141,6 +141,9 @@ static std::atomic<bool> s_game_layer_needs_install{false};
 static std::mutex s_cpu_thread_mutex;
 static std::deque<std::function<void()>> s_cpu_thread_queue;
 static std::thread::id s_cpu_thread_id;
+// Signalled when a task is queued, so a paused CPU thread waiting in the background picks it up at
+// once rather than at its next timeout.
+static std::condition_variable s_cpu_thread_cv;
 int s_window_width = 0;
 int s_window_height = 0;
 // Display refresh rate (Hz) reported by the Kotlin surface layer via
@@ -3881,7 +3884,19 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
             } else if (_vmState == VMState::Paused) {
                 VMManager::IdlePollUpdate();
                 Host::PumpMessagesOnCPUThread();
-                usleep(16000);
+                if (s_app_backgrounded.load(std::memory_order_acquire)) {
+                    // No menu to poll for in the background, and sixty wakeups a second with the
+                    // screen off add up overnight (#817). Sleep until a task arrives (a resume, a
+                    // stop, the return to the foreground) or a second has passed.
+                    std::unique_lock lock(s_cpu_thread_mutex);
+                    s_cpu_thread_cv.wait_for(lock, std::chrono::seconds(1), []() {
+                        return !s_cpu_thread_queue.empty() ||
+                               s_stop_requested.load(std::memory_order_acquire) ||
+                               !s_app_backgrounded.load(std::memory_order_acquire);
+                    });
+                } else {
+                    usleep(16000);
+                }
             } else {
                 usleep(250000);
             }
@@ -4849,10 +4864,12 @@ void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false 
                 }
                 wait_cv.notify_one();
             });
+            s_cpu_thread_cv.notify_one();
         }
         else
         {
             s_cpu_thread_queue.push_back(std::move(function));
+            s_cpu_thread_cv.notify_one();
             return;
         }
     }
