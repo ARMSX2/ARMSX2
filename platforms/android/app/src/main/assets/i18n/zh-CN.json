@@ -1603,6 +1603,7 @@
  "setup.bios.unknownZone": "未知",
  "setup.bios.useSelected": "使用所选 BIOS",
  "setup.button.addAnotherFolder": "添加另一个文件夹",
+ "setup.folder.subfolders": "包含子文件夹",
  "setup.button.addFolder": "添加文件夹",
  "setup.button.applyFinish": "应用并完成",
  "setup.button.choose": "选择",

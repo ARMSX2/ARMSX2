@@ -37,6 +37,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -262,7 +263,7 @@ private fun WizardPage(
         0 -> WelcomePage(compact = true)
         1 -> StoragePage(state, compact = true, viewModel::selectStorage, onCustomStorage)
         2 -> BiosPage(state, compact = true, onPick = biosPicker, onSelectBios = viewModel::selectBiosCandidate)
-        3 -> GamesPage(state, folderPicker, viewModel::removeGameFolder)
+        3 -> GamesPage(state, folderPicker, viewModel::removeGameFolder, viewModel::setFolderSubfolders)
         else -> ReadyPage(state, compact = true)
     }
 }
@@ -582,9 +583,15 @@ private fun BiosDetails(state: OnboardingUiState, modifier: Modifier = Modifier)
 }
 
 @Composable
-private fun GamesPage(state: OnboardingUiState, onAdd: () -> Unit, onRemove: (String) -> Unit) {
+private fun GamesPage(
+    state: OnboardingUiState,
+    onAdd: () -> Unit,
+    onRemove: (String) -> Unit,
+    onSubfolders: (String, Boolean) -> Unit,
+) {
     SetupPage(str("setup.page.roms.title"), str("setup.step.rom.description")) {
         Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            val withoutSubfolders = com.armsx2.runtime.MainActivityRuntime.romsDirsWithoutSubfolders.value
             state.gameFolders.forEach { raw ->
                 val label = Uri.parse(raw).lastPathSegment?.substringAfterLast(':')?.ifBlank { null } ?: raw
                 Surface(
@@ -596,7 +603,25 @@ private fun GamesPage(state: OnboardingUiState, onAdd: () -> Unit, onRemove: (St
                     Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("▦", color = MaterialTheme.colorScheme.primary, fontSize = 20.sp)
                         Spacer(Modifier.width(12.dp))
-                        Text(label, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Column(Modifier.weight(1f)) {
+                            Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            // Off: only the files directly in this folder are games, so a folder of
+                            // other things inside it (another console's, say) stays out of the library.
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    str("setup.folder.subfolders"),
+                                    modifier = Modifier.weight(1f, fill = false),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Switch(
+                                    checked = raw !in withoutSubfolders,
+                                    onCheckedChange = { onSubfolders(raw, it) },
+                                    modifier = Modifier.padFocusRing(RoundedCornerShape(16.dp)),
+                                )
+                            }
+                        }
                         TextButton(onClick = { onRemove(raw) }) { Text(str("setup.button.remove"), color = MaterialTheme.colorScheme.error) }
                     }
                 }

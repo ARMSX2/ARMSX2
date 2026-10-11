@@ -1628,6 +1628,7 @@
  "setup.bios.unknownZone": "ناشناس",
  "setup.bios.useSelected": "از BIOS انتخاب شده استفاده کنید",
  "setup.button.addAnotherFolder": "یک پوشه دیگر اضافه کنید",
+ "setup.folder.subfolders": "شامل زیرپوشه‌ها",
  "setup.button.addFolder": "افزودن پوشه",
  "setup.button.applyFinish": "اعمال و پایان",
  "setup.button.choose": "انتخاب کنید",

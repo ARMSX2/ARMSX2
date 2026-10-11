@@ -1603,6 +1603,7 @@
   "setup.bios.unknownZone": "Không rõ",
   "setup.bios.useSelected": "Dùng BIOS đã chọn",
   "setup.button.addAnotherFolder": "Thêm thư mục khác",
+  "setup.folder.subfolders": "Bao gồm thư mục con",
   "setup.button.addFolder": "Thêm thư mục",
   "setup.button.applyFinish": "Áp dụng & Hoàn tất",
   "setup.button.choose": "Chọn",

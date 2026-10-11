@@ -34,9 +34,13 @@ class GameLibraryRepository(private val context: Context) {
     private val exportScope = CoroutineScope(Dispatchers.IO)
     private val exportLock = Any()
 
-    /** What a cached library was scanned from: its folders, and the rules it was scanned by
-     *  ([SCAN_RULES]), so a library cached under older rules is scanned again, once. */
-    fun cacheKey(directories: List<String>): String = "rules$SCAN_RULES|" + directories.sorted().joinToString("|")
+    /** What a cached library was scanned from: its folders, which of them left out their subfolders,
+     *  and the rules it was scanned by ([SCAN_RULES]), so a library cached under older rules or other
+     *  subfolder choices is scanned again, once. */
+    fun cacheKey(
+        directories: List<String>,
+        withoutSubfolders: Set<String> = MainActivityRuntime.romsDirsWithoutSubfolders.value,
+    ): String = "rules$SCAN_RULES|" + directories.sorted().joinToString("|") { if (it in withoutSubfolders) "$it#top" else it }
 
     fun loadCached(): CachedLibrary {
         val cachedKey = MainActivityRuntime.prefs.getString("gamesCacheKey", null)
@@ -85,16 +89,19 @@ class GameLibraryRepository(private val context: Context) {
         // default filter turned every one of those data files into a library entry. The ELF is
         // the only thing here anyone launches.
         hostfsRoot()?.let { scanRawDirectory(it, collected, 0, accept = setOf("elf")) }
+        val withoutSubfolders = MainActivityRuntime.romsDirsWithoutSubfolders.value
         directories.forEach { rawUri ->
             val uri = runCatching { rawUri.toUri() }.getOrNull() ?: return@forEach
+            // A folder set to leave its subfolders out is scanned at its own level only.
+            val maxDepth = if (rawUri in withoutSubfolders) 0 else MaxScanDepth
             val rawRoot = if (canUseRawStorage()) MainActivityRuntime.resolveTreeUriToPosix(rawUri)?.let(::File) else null
             if (rawRoot?.isDirectory == true) {
-                scanRawDirectory(rawRoot, collected, 0)
+                scanRawDirectory(rawRoot, collected, 0, maxDepth = maxDepth)
             } else {
-                DocumentFile.fromTreeUri(context, uri)?.let { scanDocumentTree(it, collected, 0) }
+                DocumentFile.fromTreeUri(context, uri)?.let { scanDocumentTree(it, collected, 0, maxDepth) }
             }
         }
-        collected.values.sortedBy { it.title.lowercase() }.also { saveCache(directories, it) }
+        collected.values.sortedBy { it.title.lowercase() }.also { saveCache(directories, withoutSubfolders, it) }
     }
 
     fun recentGames(allGames: List<GameInfo>): List<GameInfo> {
@@ -195,8 +202,9 @@ class GameLibraryRepository(private val context: Context) {
         directory: DocumentFile,
         output: MutableMap<String, GameInfo>,
         depth: Int,
+        maxDepth: Int = MaxScanDepth,
     ) {
-        if (depth > MaxScanDepth) return
+        if (depth > maxDepth) return
         val children = runCatching { directory.listFiles() }.getOrNull() ?: return
         // Every name is a provider query, so each child's is asked for once.
         val names = children.associateWith { it.name }
@@ -212,7 +220,7 @@ class GameLibraryRepository(private val context: Context) {
         )
         children.forEach { file ->
             if (file.isDirectory) {
-                if (!arcade.ownsFolder(names[file])) scanDocumentTree(file, output, depth + 1)
+                if (!arcade.ownsFolder(names[file])) scanDocumentTree(file, output, depth + 1, maxDepth)
                 return@forEach
             }
             val name = names[file] ?: return@forEach
@@ -240,8 +248,9 @@ class GameLibraryRepository(private val context: Context) {
         output: MutableMap<String, GameInfo>,
         depth: Int,
         accept: Set<String> = gameExtensions,
+        maxDepth: Int = MaxScanDepth,
     ) {
-        if (depth > MaxScanDepth) return
+        if (depth > maxDepth) return
         val children = runCatching { directory.listFiles() }.getOrNull() ?: return
         val arcadeScan = Arcade.EXTENSION in accept
         val arcade = ArcadeClaims(if (!arcadeScan) emptyMap() else children
@@ -255,7 +264,7 @@ class GameLibraryRepository(private val context: Context) {
         )
         children.forEach { file ->
             if (file.isDirectory) {
-                if (!arcade.ownsFolder(file.name)) scanRawDirectory(file, output, depth + 1, accept)
+                if (!arcade.ownsFolder(file.name)) scanRawDirectory(file, output, depth + 1, accept, maxDepth)
                 return@forEach
             }
             if (arcade.ownsFile(file.name)) return@forEach
@@ -423,7 +432,7 @@ class GameLibraryRepository(private val context: Context) {
         NativeApp.getGameSerialFromFd(descriptor.detachFd())
     }.getOrNull()
 
-    private fun saveCache(directories: List<String>, games: List<GameInfo>) {
+    private fun saveCache(directories: List<String>, withoutSubfolders: Set<String>, games: List<GameInfo>) {
         val array = JSONArray()
         games.forEach { game ->
             array.put(JSONObject().apply {
@@ -438,7 +447,7 @@ class GameLibraryRepository(private val context: Context) {
             })
         }
         MainActivityRuntime.prefs.edit {
-            putString("gamesCacheKey", cacheKey(directories))
+            putString("gamesCacheKey", cacheKey(directories, withoutSubfolders))
                 .putString("gamesCache", array.toString())
             }
     }

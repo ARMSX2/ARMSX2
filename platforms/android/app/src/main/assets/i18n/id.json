@@ -1603,6 +1603,7 @@
   "setup.bios.unknownZone": "Tidak diketahui",
   "setup.bios.useSelected": "Gunakan BIOS Terpilih",
   "setup.button.addAnotherFolder": "Tambah Folder Lain",
+  "setup.folder.subfolders": "Sertakan subfolder",
   "setup.button.addFolder": "Tambah Folder",
   "setup.button.applyFinish": "Terapkan & Selesai",
   "setup.button.choose": "Pilih",

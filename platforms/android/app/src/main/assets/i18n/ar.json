@@ -1603,6 +1603,7 @@
  "setup.bios.unknownZone": "غير معروف",
  "setup.bios.useSelected": "استخدام BIOS المحدَّد",
  "setup.button.addAnotherFolder": "إضافة مجلد آخر",
+ "setup.folder.subfolders": "تضمين المجلدات الفرعية",
  "setup.button.addFolder": "إضافة مجلد",
  "setup.button.applyFinish": "تطبيق وإنهاء",
  "setup.button.choose": "اختيار",
