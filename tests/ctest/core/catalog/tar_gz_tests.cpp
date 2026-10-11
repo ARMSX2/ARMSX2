@@ -20,7 +20,7 @@ using CatalogTest::BuildTar;
 using CatalogTest::BuildTarGz;
 using CatalogTest::Gzip;
 using CatalogTest::ScopedTempDir;
-using CatalogTest::TarEntry;
+using CatalogTest::TarGzEntry;
 using CatalogTest::WriteBytes;
 
 namespace
@@ -52,18 +52,18 @@ namespace
 		return std::filesystem::exists(dir.File("out/" + relative), ec) || std::filesystem::is_symlink(dir.File("out/" + relative), ec);
 	}
 
-	TarEntry File(std::string name, std::string data, unsigned mode = 0644)
+	TarGzEntry File(std::string name, std::string data, unsigned mode = 0644)
 	{
-		TarEntry e;
+		TarGzEntry e;
 		e.name = std::move(name);
 		e.data = std::move(data);
 		e.mode = mode;
 		return e;
 	}
 
-	TarEntry Dir(std::string name)
+	TarGzEntry Dir(std::string name)
 	{
-		TarEntry e;
+		TarGzEntry e;
 		e.name = std::move(name);
 		e.type = '5';
 		e.mode = 0755;
@@ -155,11 +155,11 @@ TEST(TarGzExtract, FileDataSpanningManyBlocksAndChunksSurvives)
 TEST(TarGzExtract, SkipsLinksAndNeverCreatesThem)
 {
 	ScopedTempDir dir;
-	TarEntry symlink;
+	TarGzEntry symlink;
 	symlink.name = "sneaky";
 	symlink.type = '2';
 	symlink.link_target = "/etc";
-	TarEntry hardlink;
+	TarGzEntry hardlink;
 	hardlink.name = "hard";
 	hardlink.type = '1';
 	hardlink.link_target = "real.txt";
@@ -193,10 +193,10 @@ TEST(TarGzExtract, UnderstandsLongNameConventions)
 	const std::string long_path = long_dir + "/" + long_dir + "/" + std::string(40, 'f') + ".so";
 	ASSERT_GT(long_path.size(), 100u);
 
-	for (const auto naming : {TarEntry::Naming::Plain, TarEntry::Naming::GnuLongName, TarEntry::Naming::Pax})
+	for (const auto naming : {TarGzEntry::Naming::Plain, TarGzEntry::Naming::GnuLongName, TarGzEntry::Naming::Pax})
 	{
 		ScopedTempDir dir;
-		TarEntry entry = File(long_path, "payload");
+		TarGzEntry entry = File(long_path, "payload");
 		entry.naming = naming;
 		const Extraction e = Extract(dir, BuildTarGz({entry, File("short.txt", "s")}));
 		ASSERT_EQ(e.result, TarResult::Ok) << e.error << " naming=" << static_cast<int>(naming);
@@ -260,7 +260,7 @@ TEST(TarGzExtract, CorruptedGzipTrailerIsCaught)
 TEST(TarGzExtract, BadTarChecksumIsRefused)
 {
 	ScopedTempDir dir;
-	TarEntry bad = File("a.txt", "a");
+	TarGzEntry bad = File("a.txt", "a");
 	bad.corrupt_checksum = true;
 	const Extraction e = Extract(dir, BuildTarGz({bad}));
 	EXPECT_EQ(e.result, TarResult::Failed);

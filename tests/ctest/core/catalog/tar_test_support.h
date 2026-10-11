@@ -18,7 +18,11 @@
 
 namespace CatalogTest
 {
-	struct TarEntry
+	// Not called TarEntry: texture_pack_test_support.h has a different CatalogTest::TarEntry, and
+	// both headers end up in catalog_tests. Two structs with one name break the one-definition
+	// rule, and the linker keeps a single copy of the implicit constructors and destructor, so one
+	// struct gets the other's layout.
+	struct TarGzEntry
 	{
 		enum class Naming
 		{
@@ -41,7 +45,7 @@ namespace CatalogTest
 		std::snprintf(field, width, "%0*llo", static_cast<int>(width - 1), value);
 	}
 
-	inline std::string TarHeader(const std::string& name_field, const std::string& prefix_field, const TarEntry& entry,
+	inline std::string TarHeader(const std::string& name_field, const std::string& prefix_field, const TarGzEntry& entry,
 		char type, unsigned long long size, bool corrupt)
 	{
 		std::string block(512, '\0');
@@ -74,24 +78,24 @@ namespace CatalogTest
 		out.resize((out.size() + 511) / 512 * 512, '\0');
 	}
 
-	inline std::string BuildTar(const std::vector<TarEntry>& entries)
+	inline std::string BuildTar(const std::vector<TarGzEntry>& entries)
 	{
 		std::string tar;
-		for (const TarEntry& entry : entries)
+		for (const TarGzEntry& entry : entries)
 		{
 			std::string name_field = entry.name;
 			std::string prefix_field;
 
-			if (entry.naming == TarEntry::Naming::GnuLongName)
+			if (entry.naming == TarGzEntry::Naming::GnuLongName)
 			{
-				TarEntry meta;
+				TarGzEntry meta;
 				const std::string payload = entry.name + '\0';
 				tar += TarHeader("././@LongLink", "", meta, 'L', payload.size(), false);
 				tar += payload;
 				PadTo512(tar);
 				name_field = entry.name.substr(0, 90);
 			}
-			else if (entry.naming == TarEntry::Naming::Pax)
+			else if (entry.naming == TarGzEntry::Naming::Pax)
 			{
 				const std::string record_body = " path=" + entry.name + "\n";
 				// The length counts its own digits.
@@ -99,7 +103,7 @@ namespace CatalogTest
 				while (std::to_string(length).size() + record_body.size() != length)
 					length = std::to_string(length).size() + record_body.size();
 				const std::string payload = std::to_string(length) + record_body;
-				TarEntry meta;
+				TarGzEntry meta;
 				tar += TarHeader("PaxHeader", "", meta, 'x', payload.size(), false);
 				tar += payload;
 				PadTo512(tar);
@@ -145,7 +149,7 @@ namespace CatalogTest
 		return out;
 	}
 
-	inline std::string BuildTarGz(const std::vector<TarEntry>& entries)
+	inline std::string BuildTarGz(const std::vector<TarGzEntry>& entries)
 	{
 		return Gzip(BuildTar(entries));
 	}

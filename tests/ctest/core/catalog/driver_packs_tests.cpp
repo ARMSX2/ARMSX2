@@ -46,7 +46,7 @@ using CatalogTest::BuildTarGz;
 using CatalogTest::FakeFetcher;
 using CatalogTest::FakeReply;
 using CatalogTest::ScopedTempDir;
-using CatalogTest::TarEntry;
+using CatalogTest::TarGzEntry;
 
 namespace fs = std::filesystem;
 
@@ -93,9 +93,9 @@ namespace
 		return R"json({"build_tag":"axfl2-002","driver_info_token":"(git-axfl2-002)","mesa_version":"26.3.0-devel","platforms":"wayland"})json";
 	}
 
-	TarEntry Entry(std::string name, std::string data, unsigned mode = 0644)
+	TarGzEntry Entry(std::string name, std::string data, unsigned mode = 0644)
 	{
-		TarEntry e;
+		TarGzEntry e;
 		e.name = std::move(name);
 		e.data = std::move(data);
 		e.mode = mode;
