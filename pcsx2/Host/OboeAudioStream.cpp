@@ -144,7 +144,11 @@ bool OboeAudioStream::onError(oboe::AudioStream* oboeStream, oboe::Result error)
 		Console.Error("(Oboe) Stream disconnected, reopening...");
 		Stop();
 		Close();
-		if (!Open() || !Start())
+		// Reopen, but a paused stream stays paused: the resume starts it. Starting it here played a
+		// paused game's silence for as long as it stayed paused, and nothing paused it again since
+		// SetPaused(true) saw it already paused. In the background that kept Android's audio mixer
+		// holding a wakelock all night (#825).
+		if (!Open() || (!m_paused && !Start()))
 			Console.Error("(Oboe) Failed to reopen stream after disconnection.");
 		return true;
 	}
@@ -265,6 +269,9 @@ bool OboeAudioStream::Start()
 	const std::lock_guard<std::recursive_mutex> guard(m_lock);
 	if (m_playing)
 		return true;
+	// No stream after a reopen whose Open() failed. The resume path below rebuilds it.
+	if (!m_stream)
+		return false;
 
 	Console.WriteLn("(Oboe) Starting stream...");
 	m_stop_requested.store(false, std::memory_order_release);
@@ -322,7 +329,14 @@ void OboeAudioStream::SetPaused(bool paused)
 		{
 			oboe::Result result = m_stream->requestPause();
 			if (result != oboe::Result::OK)
-				Console.Error("(Oboe) requestPause() failed: %d", result);
+			{
+				// Stop it instead: left running it plays silence and keeps the device awake. Start()
+				// restarts a stopped stream the same as a paused one.
+				Console.Error("(Oboe) requestPause() failed: %d, stopping instead", result);
+				result = m_stream->requestStop();
+				if (result != oboe::Result::OK)
+					Console.Error("(Oboe) requestStop() failed: %d", result);
+			}
 		}
 		// Mark not-playing even if requestPause() failed, so the paused/
 		// playing bookkeeping can't desync and strand a later resume.
