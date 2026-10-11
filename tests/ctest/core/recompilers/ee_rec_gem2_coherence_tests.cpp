@@ -7,12 +7,13 @@
 // residency flip (Phases 3/4) keeps guest GPRs host-resident across ops.
 //
 // The killer reproduces the SotC block 0x800046d4 shape that broke GE-M1: an
-// ADDU writes s1 (which becomes a DIRTY allocator-resident value under the
-// flip), then MOVZ s1,v0,s1 reads s1 as BOTH its rt condition and its old rd
-// value, then MULT reads s1 again. GE-M1 miscompiled this because the MOVZ leaf
-// read s1 through the raw pin-only accessor (armLoadEERegPtr), which is blind to
-// allocator residency, so it saw the STALE pre-ADDU value. The harness runs both
-// the JIT and the interpreter from the same pre-state and diffs all
+// ADDU writes a register (which becomes a DIRTY allocator-resident value under
+// the flip), then MOVZ rd,v0,rd reads it as BOTH its rt condition and its old
+// rd value, then MULT reads it again. GE-M1 miscompiled this because the MOVZ
+// leaf read it through the raw pin-only accessor (armLoadEERegPtr), which is
+// blind to allocator residency, so it saw the STALE pre-ADDU value. The game
+// used s1; s1 is a pin now, so these tests use s2, which is not. The harness
+// runs both the JIT and the interpreter from the same pre-state and diffs all
 // architectural state, so a stale-read regression turns the diff red here (or,
 // under a Devel build, trips the GE-M2 I3 tripwire first).
 //
@@ -21,6 +22,8 @@
 // pool register holding a bystander's resident value surfaces in the final diff.
 
 #include "harness/EeRecTestHarness.h"
+
+#include "arm64/iR5900-arm64.h"
 
 #include <gtest/gtest.h>
 
@@ -37,13 +40,14 @@ using namespace mips;
 using namespace mips::ee;
 
 namespace {
-// s1 (guest 17) is deliberately UNPINNED — the pins are $sp/$ra/$v0/$v1/$a0/$a1/
-// $k0/$s0/$at, so s1 exercises the dynamic-allocator residency path, not a pin.
+// s2 (guest 18) is deliberately UNPINNED — the pins are $sp/$ra/$v0/$v1/$a0/$a1/
+// $a2/$s0/$s1, so s2 exercises the dynamic-allocator residency path, not a pin.
+// (TableLeavesTheResidentRegistersUnpinned below fails if that stops being true.)
 constexpr u32 kSentinelV0 = 0xABCD1234u;
 } // namespace
 
-// Move TAKEN: ADDU makes s1 == 0, so MOVZ copies v0 into s1. The MOVZ must read
-// the freshly-written (resident) s1 for its condition and old value.
+// Move TAKEN: ADDU makes s2 == 0, so MOVZ copies v0 into s2. The MOVZ must read
+// the freshly-written (resident) s2 for its condition and old value.
 TEST(EeRecGeM2Coherence, MovzAfterDirtyWriteMoveTaken)
 {
 	EeRecTestHarness h;
@@ -52,37 +56,37 @@ TEST(EeRecGeM2Coherence, MovzAfterDirtyWriteMoveTaken)
 	h.SetGpr64(reg::v0, kSentinelV0);
 	h.SetGpr64(reg::v1, 0x0000000000000002ull);
 	h.LoadProgram({
-		ADDU(reg::s1, reg::a0, reg::a1),  // s1 = sext32(5 + -5) = 0  (dirty resident)
-		MOVZ(reg::s1, reg::v0, reg::s1),  // s1 == 0 -> s1 = v0
-		OR(reg::t0, reg::s1, reg::zero),  // read s1 back
-		MULT(reg::s1, reg::v1),           // read s1 again (HI/LO = s1 * v1)
-		MFLO(reg::a2),                    // a2 = LO
+		ADDU(reg::s2, reg::a0, reg::a1),  // s2 = sext32(5 + -5) = 0  (dirty resident)
+		MOVZ(reg::s2, reg::v0, reg::s2),  // s2 == 0 -> s2 = v0
+		OR(reg::t0, reg::s2, reg::zero),  // read s2 back
+		MULT(reg::s2, reg::v1),           // read s2 again (HI/LO = s2 * v1)
+		MFLO(reg::t1),                    // t1 = LO
 	});
 	h.Run();
-	EXPECT_EQ(h.GetGpr64Interp(reg::s1), static_cast<u64>(kSentinelV0));
+	EXPECT_EQ(h.GetGpr64Interp(reg::s2), static_cast<u64>(kSentinelV0));
 	EXPECT_EQ(h.GetGpr64Interp(reg::t0), static_cast<u64>(kSentinelV0));
 }
 
-// Move NOT taken: ADDU makes s1 == 7, so MOVZ leaves s1 unchanged. A stale read
-// would compute the condition against the pre-ADDU s1 and could wrongly move.
+// Move NOT taken: ADDU makes s2 == 7, so MOVZ leaves s2 unchanged. A stale read
+// would compute the condition against the pre-ADDU s2 and could wrongly move.
 TEST(EeRecGeM2Coherence, MovzAfterDirtyWriteMoveNotTaken)
 {
 	EeRecTestHarness h;
-	h.SetGpr64(reg::s1, 0x1111111111111111ull); // pre-ADDU garbage (must not leak)
+	h.SetGpr64(reg::s2, 0x1111111111111111ull); // pre-ADDU garbage (must not leak)
 	h.SetGpr64(reg::a0, 0x0000000000000003ull);
 	h.SetGpr64(reg::a1, 0x0000000000000004ull);
 	h.SetGpr64(reg::v0, kSentinelV0);
 	h.LoadProgram({
-		ADDU(reg::s1, reg::a0, reg::a1),  // s1 = 7 (nonzero, dirty resident)
-		MOVZ(reg::s1, reg::v0, reg::s1),  // s1 != 0 -> unchanged
-		OR(reg::t0, reg::s1, reg::zero),  // read s1 back
+		ADDU(reg::s2, reg::a0, reg::a1),  // s2 = 7 (nonzero, dirty resident)
+		MOVZ(reg::s2, reg::v0, reg::s2),  // s2 != 0 -> unchanged
+		OR(reg::t0, reg::s2, reg::zero),  // read s2 back
 	});
 	h.Run();
-	EXPECT_EQ(h.GetGpr64Interp(reg::s1), 7ull);
+	EXPECT_EQ(h.GetGpr64Interp(reg::s2), 7ull);
 	EXPECT_EQ(h.GetGpr64Interp(reg::t0), 7ull);
 }
 
-// MOVN counterpart: ADDU makes s1 != 0, so MOVN copies v0 into s1.
+// MOVN counterpart: ADDU makes s2 != 0, so MOVN copies v0 into s2.
 TEST(EeRecGeM2Coherence, MovnAfterDirtyWriteMoveTaken)
 {
 	EeRecTestHarness h;
@@ -90,12 +94,12 @@ TEST(EeRecGeM2Coherence, MovnAfterDirtyWriteMoveTaken)
 	h.SetGpr64(reg::a1, 0x0000000000000004ull);
 	h.SetGpr64(reg::v0, kSentinelV0);
 	h.LoadProgram({
-		ADDU(reg::s1, reg::a0, reg::a1),  // s1 = 7 (nonzero, dirty resident)
-		MOVN(reg::s1, reg::v0, reg::s1),  // s1 != 0 -> s1 = v0
-		OR(reg::t0, reg::s1, reg::zero),
+		ADDU(reg::s2, reg::a0, reg::a1),  // s2 = 7 (nonzero, dirty resident)
+		MOVN(reg::s2, reg::v0, reg::s2),  // s2 != 0 -> s2 = v0
+		OR(reg::t0, reg::s2, reg::zero),
 	});
 	h.Run();
-	EXPECT_EQ(h.GetGpr64Interp(reg::s1), static_cast<u64>(kSentinelV0));
+	EXPECT_EQ(h.GetGpr64Interp(reg::s2), static_cast<u64>(kSentinelV0));
 	EXPECT_EQ(h.GetGpr64Interp(reg::t0), static_cast<u64>(kSentinelV0));
 }
 
@@ -203,14 +207,14 @@ TEST(EeRecGeM2Coherence, Vu0RoutedMacroOpPreservesLiveScalarBand)
 	h.SeedVu0VfBits(2, 0x11111111u, 0x22222222u, 0x33333333u, 0x44445555u);
 	h.SeedVu0Vi(5, 3); // VILWR address source (reads VUmem[VI[5]*16].x; value auto-diffed)
 	// Distinct 64-bit sentinels across a broad band of unpinned guest regs (the
-	// pins are $sp/$ra/$v0/$v1/$a0/$a1/$k0/$s0/$at — all avoided here).
+	// pins are $sp/$ra/$v0/$v1/$a0/$a1/$a2/$s0/$s1 — all avoided here).
 	h.SetGpr64(reg::t0, 0x1010101010101010ull);
 	h.SetGpr64(reg::t1, 0x2020202020202020ull);
 	h.SetGpr64(reg::t2, 0x3030303030303030ull);
 	h.SetGpr64(reg::t3, 0x4040404040404040ull);
 	h.SetGpr64(reg::t5, 0x0000000000000005ull);
 	h.SetGpr64(reg::t6, 0x00000000FFFFFFFBull);
-	h.SetGpr64(reg::s1, 0x6161616161616161ull);
+	h.SetGpr64(reg::at, 0x6161616161616161ull);
 	h.SetGpr64(reg::s2, 0x7272727272727272ull);
 	h.SetGpr64(reg::s4, 0x8484848484848484ull);
 	h.SetGpr64(reg::s5, 0x9595959595959595ull);
@@ -220,8 +224,8 @@ TEST(EeRecGeM2Coherence, Vu0RoutedMacroOpPreservesLiveScalarBand)
 		ADDU (reg::t4, reg::t5, reg::t6),          // t4 = 0, dirty resident
 		ADDU (reg::t7, reg::t0, reg::t1),          // dirty resident
 		ADDU (reg::t8, reg::t2, reg::t3),          // dirty resident
-		ADDU (reg::t9, reg::s1, reg::s2),          // dirty resident
-		ADDU (reg::a2, reg::s4, reg::s5),          // dirty resident (a2/a3 unpinned)
+		ADDU (reg::t9, reg::at, reg::s2),          // dirty resident
+		ADDU (reg::s8, reg::s4, reg::s5),          // dirty resident (s8/a3 unpinned)
 		ADDU (reg::a3, reg::t0, reg::t3),          // dirty resident
 		// Routed macro ops that reallocate VI hosts x14 (VMTIR) and x14+x15 (VILWR).
 		VMTIR_C2(/*fsf=x*/0, /*it*/1, /*fs*/2),    // VI[1] = VF[2].x low16 = 0x1111
@@ -230,7 +234,7 @@ TEST(EeRecGeM2Coherence, Vu0RoutedMacroOpPreservesLiveScalarBand)
 		// Read the dirtied band back AFTER the macro ops.
 		DADDU(reg::s3, reg::t4, reg::t7),
 		DADDU(reg::s6, reg::t8, reg::t9),
-		DADDU(reg::s7, reg::a2, reg::a3),
+		DADDU(reg::s7, reg::s8, reg::a3),
 	});
 	h.Run();
 	// VMTIR results are deterministic; the VILWR value is memory-defined but the
@@ -352,4 +356,15 @@ TEST(EeRecGeM2Coherence, HandEmittedCop2FlagUpdatePreservesResidentBand)
 	EXPECT_EQ(h.GetGpr64Jit(reg::s6), h.GetGpr64Interp(reg::s6));
 	EXPECT_EQ(h.GetGpr64Interp(reg::t4),
 	          0x0000000012340000ull + 0x5678ull); // sext32(t5 + t6)
+}
+
+// The tests above pick guest registers that must be allocator-resident, not
+// pins (s2 for the MOVZ/MOVN/MULT chain, the rest for the poison bands).
+// A pinned register would send the same instructions down the pin path and
+// leave the residency path untested without failing anything.
+TEST(EeRecGeM2Coherence, TableLeavesTheResidentRegistersUnpinned)
+{
+	for (u32 gpr : {reg::at, reg::t0, reg::t1, reg::t2, reg::t3, reg::t4, reg::t5, reg::t6, reg::t7, reg::t8,
+			reg::t9, reg::a3, reg::s2, reg::s3, reg::s4, reg::s5, reg::s6, reg::s7, reg::s8})
+		EXPECT_EQ(armEEPinForGPR(static_cast<int>(gpr)), nullptr) << "guest r" << gpr << " is pinned";
 }

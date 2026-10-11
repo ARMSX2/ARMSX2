@@ -52,9 +52,18 @@
 //   x26 = cpuRegs.GPR.r[3].UD[0]   ($v1, 12.6% of dynamic refs)
 //   x27 = cpuRegs.GPR.r[4].UD[0]   ($a0, 7.9%)
 //   x21 = cpuRegs.GPR.r[5].UD[0]   ($a1)
-//   x12 = cpuRegs.GPR.r[26].UD[0]  ($k0, 6.3% — tier 2)
+//   x12 = cpuRegs.GPR.r[6].UD[0]   ($a2 — tier 2)
 //   x13 = cpuRegs.GPR.r[16].UD[0]  ($s0)
-//   x11 = cpuRegs.GPR.r[1].UD[0]   ($at)
+//   x11 = cpuRegs.GPR.r[17].UD[0]  ($s1)
+// The percentages are shares of dynamic UD[0] references in the one Shadow of
+// the Colossus capture the original table was picked on. The two tier-2 homes
+// x12 and x11 held $k0 and $at until 2026-10: $k0 was hot in one title (Shadow
+// of the Colossus, through the BIOS system-call path) and $at in two (Ratchet &
+// Clank UYA and Shadow of the Colossus), while $a2 and $s1 carry real traffic
+// in most titles. Our 46-title register-heat sweep measured the swap at a
+// median -1.24% host instructions per guest instruction inside EE blocks; on
+// the Cortex-A73 handheld the EE thread's cycles moved by -1.2% at best and
+// +0.10% at worst.
 // THE PIN IS AUTHORITATIVE for the lower 64 bits. Under the shipping
 // lazy-dirty policy (EE-SRA 3 Arm E) guest writes
 // update the pin only (armStoreEERegPtr / armStoreEEGPRQuad lane 0) and the
@@ -146,10 +155,10 @@
 #define REEPIN_V0 vixl::aarch64::x29
 #define REEPIN_V1 vixl::aarch64::x26
 #define REEPIN_A0 vixl::aarch64::x27
-#define REEPIN_K0 vixl::aarch64::x12
+#define REEPIN_A2 vixl::aarch64::x12
 #define REEPIN_A1 vixl::aarch64::x21
 #define REEPIN_S0 vixl::aarch64::x13
-#define REEPIN_AT vixl::aarch64::x11
+#define REEPIN_S1 vixl::aarch64::x11
 
 // The static guest→host pin map. Everything pin-related (lookup, reload,
 // flush, write policy) iterates this table; adding a rung = adding a row here,
@@ -168,10 +177,10 @@ static const EEPinnedGPR kEEPinTable[] = {
 	{2, REEPIN_V0},
 	{3, REEPIN_V1},
 	{4, REEPIN_A0},
-	{26, REEPIN_K0},
+	{6, REEPIN_A2},
 	{5, REEPIN_A1},
 	{16, REEPIN_S0},
-	{1, REEPIN_AT},
+	{17, REEPIN_S1},
 };
 
 // Build a MemOperand addressing a cpuRegs field via RSTATE.

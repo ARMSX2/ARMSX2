@@ -87,15 +87,15 @@ constexpr u64 kSeed = 0x2222333344445550ull;
 void SeedSources(EeRecTestHarness& h)
 {
 	// Run-time sources, one distinct wide value per pinned register.
-	h.SetGpr64(reg::s1, kSeed + 1); // -> $sp
-	h.SetGpr64(reg::s2, kSeed + 2); // -> $ra
-	h.SetGpr64(reg::s3, kSeed + 3); // -> $v0
-	h.SetGpr64(reg::s4, kSeed + 4); // -> $v1
-	h.SetGpr64(reg::s5, kSeed + 5); // -> $a0
-	h.SetGpr64(reg::s6, kSeed + 6); // -> $a1
-	h.SetGpr64(reg::s7, kSeed + 7); // -> $k0
-	h.SetGpr64(reg::t8, kSeed + 8); // -> $s0
-	h.SetGpr64(reg::t7, kSeed + 9); // -> $at
+	h.SetGpr64(reg::s2, kSeed + 1); // -> $sp
+	h.SetGpr64(reg::s3, kSeed + 2); // -> $ra
+	h.SetGpr64(reg::s4, kSeed + 3); // -> $v0
+	h.SetGpr64(reg::s5, kSeed + 4); // -> $v1
+	h.SetGpr64(reg::s6, kSeed + 5); // -> $a0
+	h.SetGpr64(reg::s7, kSeed + 6); // -> $a1
+	h.SetGpr64(reg::t8, kSeed + 7); // -> $a2
+	h.SetGpr64(reg::t7, kSeed + 8); // -> $s0
+	h.SetGpr64(reg::t6, kSeed + 9); // -> $s1
 }
 
 // Block 1: dirty all nine pins from run-time values (saving the parking $ra
@@ -106,15 +106,15 @@ std::vector<u32> DirtyEveryPinThenEndBlock()
 {
 	return {
 		OR(reg::t9, reg::ra, reg::zero),
-		DADDU(reg::sp, reg::s1, reg::zero),
-		DADDU(reg::ra, reg::s2, reg::zero),
-		DADDU(reg::v0, reg::s3, reg::zero),
-		DADDU(reg::v1, reg::s4, reg::zero),
-		DADDU(reg::a0, reg::s5, reg::zero),
-		DADDU(reg::a1, reg::s6, reg::zero),
-		DADDU(reg::k0, reg::s7, reg::zero),
-		DADDU(reg::s0, reg::t8, reg::zero),
-		DADDU(reg::at, reg::t7, reg::zero),
+		DADDU(reg::sp, reg::s2, reg::zero),
+		DADDU(reg::ra, reg::s3, reg::zero),
+		DADDU(reg::v0, reg::s4, reg::zero),
+		DADDU(reg::v1, reg::s5, reg::zero),
+		DADDU(reg::a0, reg::s6, reg::zero),
+		DADDU(reg::a1, reg::s7, reg::zero),
+		DADDU(reg::a2, reg::t8, reg::zero),
+		DADDU(reg::s0, reg::t7, reg::zero),
+		DADDU(reg::s1, reg::t6, reg::zero),
 		BEQ(reg::zero, reg::zero, 1),
 		NOP,
 	};
@@ -132,9 +132,9 @@ std::vector<u32> CopyEveryPinHandler()
 		DADDU(reg::t3, reg::v1, reg::zero),
 		DADDU(reg::t4, reg::a0, reg::zero),
 		DADDU(reg::t5, reg::a1, reg::zero),
-		DADDU(reg::t6, reg::k0, reg::zero),
-		DADDU(reg::a2, reg::s0, reg::zero),
-		DADDU(reg::a3, reg::at, reg::zero),
+		DADDU(reg::a3, reg::a2, reg::zero),
+		DADDU(reg::gp, reg::s0, reg::zero),
+		DADDU(reg::s8, reg::s1, reg::zero),
 		ERET,
 	};
 }
@@ -143,15 +143,15 @@ std::vector<u32> CopyEveryPinHandler()
 std::vector<u32> ReadEveryPinThenPark()
 {
 	return {
-		DADDU(reg::s1, reg::sp, reg::zero),
-		DADDU(reg::s2, reg::ra, reg::zero),
-		DADDU(reg::s3, reg::v0, reg::zero),
-		DADDU(reg::s4, reg::v1, reg::zero),
-		DADDU(reg::s5, reg::a0, reg::zero),
-		DADDU(reg::s6, reg::a1, reg::zero),
-		DADDU(reg::s7, reg::k0, reg::zero),
-		DADDU(reg::t8, reg::s0, reg::zero),
-		DADDU(reg::t7, reg::at, reg::zero),
+		DADDU(reg::s2, reg::sp, reg::zero),
+		DADDU(reg::s3, reg::ra, reg::zero),
+		DADDU(reg::s4, reg::v0, reg::zero),
+		DADDU(reg::s5, reg::v1, reg::zero),
+		DADDU(reg::s6, reg::a0, reg::zero),
+		DADDU(reg::s7, reg::a1, reg::zero),
+		DADDU(reg::t8, reg::a2, reg::zero),
+		DADDU(reg::t7, reg::s0, reg::zero),
+		DADDU(reg::t6, reg::s1, reg::zero),
 		OR(reg::ra, reg::t9, reg::zero),
 	};
 }
@@ -222,7 +222,7 @@ u32 CallerSavedPins()
 u64 s_seen[9];
 bool s_seenSet;
 
-constexpr u8 kPinnedOrder[9] = {29, 31, 2, 3, 4, 5, 26, 16, 1}; // sp ra v0 v1 a0 a1 k0 s0 at
+constexpr u8 kPinnedOrder[9] = {29, 31, 2, 3, 4, 5, 6, 16, 17}; // sp ra v0 v1 a0 a1 a2 s0 s1
 
 // Real host code in the event test uses the caller-saved registers; the
 // harness's early-returning event test may not. Put junk in every AAPCS64
@@ -302,20 +302,20 @@ TEST(EeRecEventStub, InterruptWithEveryPinDirtyReachesHandlerAndReturns)
 	EXPECT_EQ(h.GetGpr64Jit(reg::t3), kSeed + 4);
 	EXPECT_EQ(h.GetGpr64Jit(reg::t4), kSeed + 5);
 	EXPECT_EQ(h.GetGpr64Jit(reg::t5), kSeed + 6);
-	EXPECT_EQ(h.GetGpr64Jit(reg::t6), kSeed + 7);
-	EXPECT_EQ(h.GetGpr64Jit(reg::a2), kSeed + 8);
-	EXPECT_EQ(h.GetGpr64Jit(reg::a3), kSeed + 9);
+	EXPECT_EQ(h.GetGpr64Jit(reg::a3), kSeed + 7);
+	EXPECT_EQ(h.GetGpr64Jit(reg::gp), kSeed + 8);
+	EXPECT_EQ(h.GetGpr64Jit(reg::s8), kSeed + 9);
 
 	// So did the interrupted code after the return.
-	EXPECT_EQ(h.GetGpr64Jit(reg::s1), kSeed + 1);
-	EXPECT_EQ(h.GetGpr64Jit(reg::s2), kSeed + 2);
-	EXPECT_EQ(h.GetGpr64Jit(reg::s3), kSeed + 3);
-	EXPECT_EQ(h.GetGpr64Jit(reg::s4), kSeed + 4);
-	EXPECT_EQ(h.GetGpr64Jit(reg::s5), kSeed + 5);
-	EXPECT_EQ(h.GetGpr64Jit(reg::s6), kSeed + 6);
-	EXPECT_EQ(h.GetGpr64Jit(reg::s7), kSeed + 7);
-	EXPECT_EQ(h.GetGpr64Jit(reg::t8), kSeed + 8);
-	EXPECT_EQ(h.GetGpr64Jit(reg::t7), kSeed + 9);
+	EXPECT_EQ(h.GetGpr64Jit(reg::s2), kSeed + 1);
+	EXPECT_EQ(h.GetGpr64Jit(reg::s3), kSeed + 2);
+	EXPECT_EQ(h.GetGpr64Jit(reg::s4), kSeed + 3);
+	EXPECT_EQ(h.GetGpr64Jit(reg::s5), kSeed + 4);
+	EXPECT_EQ(h.GetGpr64Jit(reg::s6), kSeed + 5);
+	EXPECT_EQ(h.GetGpr64Jit(reg::s7), kSeed + 6);
+	EXPECT_EQ(h.GetGpr64Jit(reg::t8), kSeed + 7);
+	EXPECT_EQ(h.GetGpr64Jit(reg::t7), kSeed + 8);
+	EXPECT_EQ(h.GetGpr64Jit(reg::t6), kSeed + 9);
 }
 
 // The same program with nothing for the event test to do: the stub still
@@ -327,15 +327,15 @@ TEST(EeRecEventStub, QuietEventTestWithEveryPinDirty)
 	EventTestHook hook(ClobberCallerSavedRegisters);
 	h.LoadProgram(Concat({DirtyEveryPinThenEndBlock(), ReadEveryPinThenPark()}));
 	h.Run();
-	h.ExpectGpr64(reg::s1, kSeed + 1);
-	h.ExpectGpr64(reg::s2, kSeed + 2);
-	h.ExpectGpr64(reg::s3, kSeed + 3);
-	h.ExpectGpr64(reg::s4, kSeed + 4);
-	h.ExpectGpr64(reg::s5, kSeed + 5);
-	h.ExpectGpr64(reg::s6, kSeed + 6);
-	h.ExpectGpr64(reg::s7, kSeed + 7);
-	h.ExpectGpr64(reg::t8, kSeed + 8);
-	h.ExpectGpr64(reg::t7, kSeed + 9);
+	h.ExpectGpr64(reg::s2, kSeed + 1);
+	h.ExpectGpr64(reg::s3, kSeed + 2);
+	h.ExpectGpr64(reg::s4, kSeed + 3);
+	h.ExpectGpr64(reg::s5, kSeed + 4);
+	h.ExpectGpr64(reg::s6, kSeed + 5);
+	h.ExpectGpr64(reg::s7, kSeed + 6);
+	h.ExpectGpr64(reg::t8, kSeed + 7);
+	h.ExpectGpr64(reg::t7, kSeed + 8);
+	h.ExpectGpr64(reg::t6, kSeed + 9);
 }
 
 // ---- Shape ----
@@ -379,4 +379,18 @@ TEST(EeRecEventStub, ResetRegeneratesTheStubByteForByte)
 	EXPECT_EQ(begin2, begin);
 	ASSERT_EQ(end2, end);
 	EXPECT_EQ(std::memcmp(begin2, before.data(), before.size()), 0);
+}
+
+// The tests above name the nine pinned guest registers by number
+// (kPinnedOrder, the Dirty/Copy/Read programs) and use other registers as
+// run-time sources and sinks, which must not be pins. Fails first when
+// kEEPinTable moves.
+TEST(EeRecEventStub, TableMatchesTheRegistersThisFileHardCodes)
+{
+	EXPECT_EQ(std::size(kEEPinTable), std::size(kPinnedOrder));
+	for (u8 gpr : kPinnedOrder)
+		EXPECT_NE(armEEPinForGPR(gpr), nullptr) << "guest r" << int(gpr) << " is not pinned";
+	for (u32 gpr : {reg::s2, reg::s3, reg::s4, reg::s5, reg::s6, reg::s7, reg::t8, reg::t7, reg::t6, reg::t9,
+			reg::t0, reg::t1, reg::t2, reg::t3, reg::t4, reg::t5, reg::a3, reg::gp, reg::s8})
+		EXPECT_EQ(armEEPinForGPR(static_cast<int>(gpr)), nullptr) << "guest r" << gpr << " is pinned";
 }

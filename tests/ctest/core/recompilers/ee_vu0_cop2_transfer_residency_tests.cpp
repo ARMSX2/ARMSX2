@@ -32,6 +32,8 @@
 
 #include "VU.h"
 
+#include "arm64/iR5900-arm64.h"
+
 #include <gtest/gtest.h>
 
 namespace recompiler_tests {
@@ -46,10 +48,10 @@ constexpr u32 r_t0 = 8; // unpinned
 constexpr u32 r_t1 = 9;
 constexpr u32 r_t2 = 10;
 constexpr u32 r_t3 = 11;
-constexpr u32 r_s1 = 17; // unpinned
 constexpr u32 r_s2 = 18; // unpinned
-constexpr u32 r_at = 1;  // tier-2 pin (caller-saved host reg, lazy-dirty)
-constexpr u32 r_k0 = 26; // tier-2 pin (caller-saved host reg, lazy-dirty)
+constexpr u32 r_s3 = 19; // unpinned
+constexpr u32 r_a2 = 6;  // tier-2 pin (caller-saved host reg, lazy-dirty)
+constexpr u32 r_s1 = 17; // tier-2 pin (caller-saved host reg, lazy-dirty)
 
 // Micro at PC 0: 32 NOP pairs (outlasts the 16-cycle kickstart window), then
 // vf_dst = vf_src + vf_src, then E-bit. Same recipe as the PendingMicroSync
@@ -512,15 +514,15 @@ TEST(EeVu0Cop2TransferResidency, TakenSyncPreservesDirtyCallerSavedScalars)
 	h.LoadProgram({
 		VCALLMS(0),
 		DADDU(r_t3, r_t0, r_t1), // dirty scalar #1 across the taken seam
-		DADDU(r_s1, r_t0, r_t3), // dirty scalar #2
+		DADDU(r_s3, r_t0, r_t3), // dirty scalar #2
 		DADDU(r_s2, r_t1, r_t3), // dirty scalar #3 — spread across pool regs
 		QMTC2(r_t2, 5),          // sync fires here (VPU_STAT set at runtime)
-		DADDU(r_t0, r_t3, r_s1), // consumers: post-seam residency must be the
+		DADDU(r_t0, r_t3, r_s3), // consumers: post-seam residency must be the
 		DADDU(r_t1, r_s2, r_t3), // pre-seam values, not garbage or stale memory
 	});
 	h.Run();
 	h.ExpectGpr64(r_t3, kT3);
-	h.ExpectGpr64(r_s1, kS1);
+	h.ExpectGpr64(r_s3, kS1);
 	h.ExpectGpr64(r_s2, kS2);
 	h.ExpectGpr64(r_t0, kT3 + kS1);
 	h.ExpectGpr64(r_t1, kS2 + kT3);
@@ -551,14 +553,14 @@ TEST(EeVu0Cop2TransferResidency, TakenSyncFlushesAndReloadsDirtyLazyPins)
 	h.SetGpr64(r_t2, kB);
 	h.LoadProgram({
 		VCALLMS(0),
-		DADDU(r_at, r_t1, r_t2), // dirty lazy pin #1 (memory stale at the seam)
-		DADDU(r_k0, r_at, r_t2), // dirty lazy pin #2, reads pin #1
+		DADDU(r_a2, r_t1, r_t2), // dirty lazy pin #1 (memory stale at the seam)
+		DADDU(r_s1, r_a2, r_t2), // dirty lazy pin #2, reads pin #1
 		QMFC2(r_t0, 2),          // sync fires here (VPU_STAT set at runtime)
-		DADDU(r_t3, r_at, r_k0), // consume both pins post-seam
+		DADDU(r_t3, r_a2, r_s1), // consume both pins post-seam
 	});
 	h.Run();
-	h.ExpectGpr64(r_at, kA + kB);
-	h.ExpectGpr64(r_k0, kA + 2 * kB);
+	h.ExpectGpr64(r_a2, kA + kB);
+	h.ExpectGpr64(r_s1, kA + 2 * kB);
 	h.ExpectGpr64(r_t3, 2 * kA + 3 * kB);
 	// Whatever VF2 value the partially drained micro exposes, both engines
 	// must agree on what QMFC2 read.
@@ -588,19 +590,19 @@ TEST(EeVu0Cop2TransferResidency, TakenInterlockedSyncPreservesResidency)
 	constexpr u64 kB = 0x00000000FEDCBA98ull;
 	h.SetGpr64(r_t1, kA);
 	h.SetGpr64(r_t2, kB);
-	h.SetGpr128(r_s1, 0x1111222233334444ull, 0x5555666677778888ull);
+	h.SetGpr128(r_s3, 0x1111222233334444ull, 0x5555666677778888ull);
 	h.LoadProgram({
 		VCALLMS(0),
 		DADDU(r_t3, r_t1, r_t2), // dirty scalar across the interlocked seam
-		DADDU(r_at, r_t2, r_t1), // dirty lazy pin across the interlocked seam
-		QMTC2_I(r_s1, 5),        // interlocked: exact sync + wait
+		DADDU(r_a2, r_t2, r_t1), // dirty lazy pin across the interlocked seam
+		QMTC2_I(r_s3, 5),        // interlocked: exact sync + wait
 		QMFC2_I(r_t0, 2),        // interlocked: exact sync + finish
-		DADDU(r_k0, r_t3, r_at), // consume both post-seam
+		DADDU(r_s1, r_t3, r_a2), // consume both post-seam
 	});
 	h.Run();
 	h.ExpectGpr64(r_t3, kA + kB);
-	h.ExpectGpr64(r_at, kA + kB);
-	h.ExpectGpr64(r_k0, 2 * (kA + kB));
+	h.ExpectGpr64(r_a2, kA + kB);
+	h.ExpectGpr64(r_s1, 2 * (kA + kB));
 	EXPECT_EQ(h.GetVu0VfBitsJit(5, 'x'), 0x33334444u);
 	EXPECT_EQ(h.GetVu0VfBitsJit(5, 'w'), 0x55556666u);
 	for (char l : {'x', 'y', 'z', 'w'})
@@ -611,6 +613,20 @@ TEST(EeVu0Cop2TransferResidency, TakenInterlockedSyncPreservesResidency)
 
 	// Park the (by now likely finished, but don't assume) micro.
 	vuRegs[0].VI[REG_VPU_STAT].UL = 0;
+}
+
+// The constants at the top of this file say which registers are tier-2 pins and
+// which are allocator-resident scalars. Fails first when kEEPinTable moves, so
+// the seam tests above cannot quietly stop covering a lazy pin.
+TEST(EeVu0Cop2TransferResidency, TableMatchesTheRegistersThisFileHardCodes)
+{
+	for (u32 gpr : {r_v0, r_a2, r_s1})
+		EXPECT_NE(armEEPinForGPR(static_cast<int>(gpr)), nullptr) << "guest r" << gpr << " is not pinned";
+	for (u32 gpr : {r_t0, r_t1, r_t2, r_t3, r_s2, r_s3})
+		EXPECT_EQ(armEEPinForGPR(static_cast<int>(gpr)), nullptr) << "guest r" << gpr << " is pinned";
+	// Tier 2: caller-saved host registers.
+	for (u32 gpr : {r_a2, r_s1})
+		EXPECT_FALSE(armIsCalleeSavedRegister(static_cast<int>(armEEPinForGPR(static_cast<int>(gpr))->GetCode())));
 }
 
 } // namespace recompiler_tests

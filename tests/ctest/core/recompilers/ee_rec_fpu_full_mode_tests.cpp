@@ -27,6 +27,8 @@
 
 #include "Config.h"
 
+#include "arm64/iR5900-arm64.h"
+
 #include <cstdio>
 #include <cstring>
 #include <iterator>
@@ -758,14 +760,14 @@ TEST(EeRecFpuFull, DoubleModeScratchPreservesLiveGuestScalars)
 	h.SetGpr64(reg::t3, 0x3030303030303030ull);
 	h.SetGpr64(reg::t5, 0x0000000000000005ull);
 	h.SetGpr64(reg::t6, 0x00000000FFFFFFFBull);
-	h.SetGpr64(reg::s1, 0x0000000000000009ull);
+	h.SetGpr64(reg::s3, 0x0000000000000009ull);
 	h.SetGpr64(reg::s2, 0x0000000000000002ull);
 	h.LoadProgram({
 		// Dirty a broad band right before the FPU ops so several land in the pool
 		// slots (x2-x7/x14/x15) as MODE_WRITE residents under the flip.
 		ADDU (reg::t4, reg::t5, reg::t6),  // t4 = sext32(5 + -5) = 0
 		ADDU (reg::t7, reg::t1, reg::t2),  // t7 = 0x12345678
-		DADDU(reg::t8, reg::s1, reg::s2),  // t8 = 0xB (64-bit)
+		DADDU(reg::t8, reg::s3, reg::s2),  // t8 = 0xB (64-bit)
 		ADDU (reg::t9, reg::t0, reg::t3),  // t9 = sext32(0x10101010 + 0x30303030)
 		ADD_S(2, 0, 1),                    // FPR2 = 3.75; FPU_ADD_SUB guard path (x9/x10)
 		MAX_S(3, 0, 1),                    // recMINMAX (x9)
@@ -1615,14 +1617,20 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 // allocator has a reason to hold it across. FPRs and GPRs both, saved by
 // different loops.
 //
-// $at, $s0 and $k0 are the caller-saved EE pin mirrors rather than allocator
+// $a2, $s0 and $s1 are the caller-saved EE pin mirrors rather than allocator
 // state: the island flushes them before the call and reloads them after, and a
 // reload without the flush loses the block's writes to them.
 TEST(EeRecFpuFull, MulArrayIslandPreservesTheAllocatorsLiveRegisters)
 {
 	// tail 0x2: below the array's borrow, so this is a row that calls out.
 	constexpr u32 kFs = 0x3F800001u, kFt = 0x3F800002u;
-	static const u32 kPinned[] = {1, 16, 26}; // $at, $s0, $k0
+	static const u32 kPinned[] = {6, 16, 17}; // $a2, $s0, $s1
+	for (u32 r : kPinned)
+	{
+		const vixl::aarch64::Register* pin = armEEPinForGPR(static_cast<int>(r));
+		ASSERT_NE(pin, nullptr) << "r" << r << " is not pinned";
+		ASSERT_FALSE(armIsCalleeSavedRegister(static_cast<int>(pin->GetCode()))) << "r" << r << " is not a caller-saved pin";
+	}
 
 	std::vector<u32> prog;
 	auto body = [&prog]() {

@@ -18,6 +18,8 @@
 
 #include "Config.h"
 
+#include "arm64/iR5900-arm64.h"
+
 #include <gtest/gtest.h>
 
 using namespace recompiler_tests;
@@ -26,6 +28,35 @@ using namespace mips::ee;
 
 namespace {
 constexpr u32 kScratch = RecompilerTestEnvironment::kScratchAddr;
+}
+
+// The tests below name guest registers as pinned by hand ($sp $ra $v0 $v1 $a0
+// $a1 $a2 $s0 $s1), and other test files rely on $k0/$at being allocator-
+// resident. When kEEPinTable changes this fails first and says what moved,
+// instead of the other tests quietly exercising a register that is no longer
+// a pin.
+TEST(EeRecPinnedGpr, TableHoldsTheRegistersTheseTestsExercise)
+{
+	struct Expect
+	{
+		u32 gpr;
+		unsigned host;
+		const char* name;
+	};
+	static const Expect kPinned[] = {
+		{reg::sp, 22, "$sp"}, {reg::ra, 23, "$ra"}, {reg::v0, 29, "$v0"},
+		{reg::v1, 26, "$v1"}, {reg::a0, 27, "$a0"}, {reg::a2, 12, "$a2"},
+		{reg::a1, 21, "$a1"}, {reg::s0, 13, "$s0"}, {reg::s1, 11, "$s1"},
+	};
+	EXPECT_EQ(std::size(kEEPinTable), std::size(kPinned));
+	for (const Expect& e : kPinned)
+	{
+		const vixl::aarch64::Register* pin = armEEPinForGPR(static_cast<int>(e.gpr));
+		ASSERT_NE(pin, nullptr) << e.name << " is no longer pinned";
+		EXPECT_EQ(pin->GetCode(), e.host) << e.name << " moved to another host register";
+	}
+	for (u32 gpr : {static_cast<u32>(reg::k0), static_cast<u32>(reg::at)})
+		EXPECT_EQ(armEEPinForGPR(static_cast<int>(gpr)), nullptr) << "guest r" << gpr << " is pinned again";
 }
 
 // Pinned $sp/$ra as scalar sources: imm-ALU, 3-op ALU, shift, set-on-lt.
@@ -412,7 +443,7 @@ TEST(EeRecPinnedGpr, V1A0Mfc0PerfCounterAcrossInterpFallback)
 }
 
 // ---------------------------------------------------------------------------
-// Tier 2 ($k0 → x12, $s0 → x13, $at → x11): the remaining CALLER-SAVED pins,
+// Tier 2 ($a2 → x12, $s0 → x13, $s1 → x11): the remaining CALLER-SAVED pins,
 // homed inside preserve_most's spared x9-x15 range since EE-SRA 3 Arm D —
 // the vtlb softmem/thunk slow paths emit NO pin traffic there
 // (armReloadEEPinsAfterPreserveMostCall is emit-nothing for this table),
@@ -426,18 +457,18 @@ TEST(EeRecPinnedGpr, V1A0Mfc0PerfCounterAcrossInterpFallback)
 TEST(EeRecPinnedGpr, RungThreeScalarReadsAndWriteThrough)
 {
 	EeRecTestHarness h;
-	h.SetGpr64(reg::k0, 0x0000000001F00010ull);
+	h.SetGpr64(reg::a2, 0x0000000001F00010ull);
 	h.SetGpr64(reg::a1, 0x0000000000010000ull);
 	h.SetGpr64(reg::s0, 0x0000000000000123ull);
 	h.LoadProgram({
-		ADDIU(reg::t1, reg::k0, -16),       // pinned $k0 read
-		DADDU(reg::at, reg::a1, reg::s0),   // pinned $at dest <- $a1 + $s0
-		DADDU(reg::t2, reg::at, reg::zero), // read $at back via the pin
+		ADDIU(reg::t1, reg::a2, -16),       // pinned $a2 read
+		DADDU(reg::s1, reg::a1, reg::s0),   // pinned $s1 dest <- $a1 + $s0
+		DADDU(reg::t2, reg::s1, reg::zero), // read $s1 back via the pin
 		ADDIU(reg::s0, reg::s0, 0x100),     // pinned $s0 RMW
 		DADDU(reg::t3, reg::s0, reg::zero),
 		DSLL(reg::t4, reg::a1, 4),          // pinned $a1 read (shift)
-		DADDU(reg::k0, reg::at, reg::a1),   // pin <- pin + pin
-		DADDU(reg::t5, reg::k0, reg::zero),
+		DADDU(reg::a2, reg::s1, reg::a1),   // pin <- pin + pin
+		DADDU(reg::t5, reg::a2, reg::zero),
 	});
 	h.Run();
 	EXPECT_EQ(h.GetGpr64Interp(reg::t1), 0x0000000001F00000ull);
@@ -480,21 +511,21 @@ TEST(EeRecPinnedGpr, CallerSavedPinsSurviveVtlbSlowPath)
 	h.SetGpr64(reg::a0, 0x7EDCBA9876543210ull);
 	// Tier-2 pins: preserve_most spares x11/x12/x13, so these ride the call
 	// IN their registers — no reload is emitted at this seam since Arm D.
-	h.SetGpr64(reg::k0, 0x1111222233334444ull);
+	h.SetGpr64(reg::a2, 0x1111222233334444ull);
 	h.SetGpr64(reg::a1, 0x5555666677778888ull);
 	h.SetGpr64(reg::s0, 0x0102030405060708ull);
-	h.SetGpr64(reg::at, 0x69ABCDEF01234567ull);
+	h.SetGpr64(reg::s1, 0x69ABCDEF01234567ull);
 	h.LoadProgram({
 		LW(reg::t0, 0, reg::t1),            // handler page → slow-path C read
 		DADDU(reg::t2, reg::v1, reg::zero), // pins survived the read call?
 		DADDU(reg::t3, reg::a0, reg::zero),
-		DADDU(reg::t6, reg::k0, reg::zero),
+		DADDU(reg::t6, reg::a2, reg::zero),
 		DADDU(reg::t7, reg::a1, reg::zero),
 		SW(reg::zero, 0, reg::t1),          // slow-path C write (0 clears no bits)
 		DADDU(reg::t4, reg::v1, reg::zero), // pins survived the write call?
 		DADDU(reg::t5, reg::a0, reg::zero),
 		DADDU(reg::t8, reg::s0, reg::zero),
-		DADDU(reg::t9, reg::at, reg::zero),
+		DADDU(reg::t9, reg::s1, reg::zero),
 	});
 	h.Run();
 	EmuConfig.Cpu.Recompiler.EnableFastmem = old_fastmem;
@@ -535,7 +566,7 @@ TEST(EeRecPinnedGpr, CallerSavedPinsSurviveConstPaddrMMIOShortcut)
 	EXPECT_EQ(h.GetGpr64Interp(reg::t5), 0x7EDCBA9876543210ull);
 }
 
-// 128-bit write-through on the tier-2 pins: PADDW/PSUBW allocate $k0/$at/$s0
+// 128-bit write-through on the tier-2 pins: PADDW/PSUBW allocate $a2/$s1/$s0
 // as NEON dests, and the scalar read-back forces the NEON→memory writeback
 // whose lane-0 UMOV must refresh the mirror — the fe786b987 PMADDW bug class
 // (a raw Str that bypasses the pin mirror leaves the pinned value stale),
@@ -546,10 +577,10 @@ TEST(EeRecPinnedGpr, TierTwoQuadWriteThroughThenReadBack)
 	h.SetGpr64(reg::t0, 0x0000000100000002ull);
 	h.SetGpr64(reg::t1, 0x0000000300000004ull);
 	h.LoadProgram({
-		PADDW(reg::k0, reg::t0, reg::t1),   // 128-bit write of pinned $k0
-		DADDU(reg::t2, reg::k0, reg::zero), // scalar read-back via the pin
-		PSUBW(reg::at, reg::t0, reg::t1),   // 128-bit write of pinned $at
-		DADDU(reg::t3, reg::at, reg::zero),
+		PADDW(reg::a2, reg::t0, reg::t1),   // 128-bit write of pinned $a2
+		DADDU(reg::t2, reg::a2, reg::zero), // scalar read-back via the pin
+		PSUBW(reg::s1, reg::t0, reg::t1),   // 128-bit write of pinned $s1
+		DADDU(reg::t3, reg::s1, reg::zero),
 		PADDW(reg::s0, reg::t1, reg::t0),   // 128-bit write of pinned $s0
 		DADDU(reg::t4, reg::s0, reg::zero),
 	});
@@ -573,23 +604,23 @@ TEST(EeRecPinnedGpr, TierTwoQuadWriteThroughThenReadBack)
 // (armReloadEEGPRPins) — a missing lazy flush would overwrite in-register
 // writes with stale memory and the values would simply vanish. Covers both
 // pin classes: callee-saved ($v0/x29, $a1/x21) and preserve_most-spared
-// ($at/x11, $k0/x12).
+// ($s1/x11, $a2/x12).
 TEST(EeRecPinnedGpr, DirtyPinsSurviveSyscallFunnel)
 {
 	EeRecTestHarness h;
 	h.LoadProgram({
 		ADDIU(reg::v0, reg::zero, 0x123),
 		ADDIU(reg::a1, reg::zero, 0x456),
-		ADDIU(reg::k0, reg::zero, 0x789),
-		ADDIU(reg::at, reg::zero, 0x2AB),
+		ADDIU(reg::a2, reg::zero, 0x789),
+		ADDIU(reg::s1, reg::zero, 0x2AB),
 		SYSCALL_(),
 		ADDIU(reg::t0, reg::zero, 99), // must NOT execute (SYSCALL vectors)
 	});
 	h.Run();
 	h.ExpectGpr64(reg::v0, 0x123ull);
 	h.ExpectGpr64(reg::a1, 0x456ull);
-	h.ExpectGpr64(reg::k0, 0x789ull);
-	h.ExpectGpr64(reg::at, 0x2ABull);
+	h.ExpectGpr64(reg::a2, 0x789ull);
+	h.ExpectGpr64(reg::s1, 0x2ABull);
 	h.ExpectGpr64(reg::t0, 0ull);
 	// SYSCALL ExcCode=8, Cause.ExcCode<<2 = 0x20.
 	EXPECT_EQ(h.GetCp0Interp(13) & 0xFFu, 0x20u);
@@ -609,7 +640,7 @@ TEST(EeRecPinnedGpr, RidingDirtyPinsAcrossBlockChain)
 	h.LoadProgramNoTerm({
 		ADDIU(reg::v0, reg::zero, 0x11), // dirty callee-saved pin
 		ADDIU(reg::a1, reg::zero, 0x22), // dirty callee-saved pin
-		ADDIU(reg::k0, reg::zero, 0x33), // dirty spared-range pin
+		ADDIU(reg::a2, reg::zero, 0x33), // dirty spared-range pin
 		J(kBlockBPc),
 		NOP,
 	});
@@ -621,7 +652,7 @@ TEST(EeRecPinnedGpr, RidingDirtyPinsAcrossBlockChain)
 	// Block C: consume the pins dirtied two blocks ago.
 	h.WriteU32(kBlockCPc + 0x0, DADDU(reg::t2, reg::v0, reg::zero));
 	h.WriteU32(kBlockCPc + 0x4, DADDU(reg::t3, reg::a1, reg::zero));
-	h.WriteU32(kBlockCPc + 0x8, DADDU(reg::t4, reg::k0, reg::zero));
+	h.WriteU32(kBlockCPc + 0x8, DADDU(reg::t4, reg::a2, reg::zero));
 	h.WriteU32(kBlockCPc + 0xC, J(kPark));
 	h.WriteU32(kBlockCPc + 0x10, NOP);
 	h.Run();
@@ -630,7 +661,7 @@ TEST(EeRecPinnedGpr, RidingDirtyPinsAcrossBlockChain)
 	h.ExpectGpr64(reg::t4, 0x33ull);
 	h.ExpectGpr64(reg::v0, 0x11ull);
 	h.ExpectGpr64(reg::a1, 0x22ull);
-	h.ExpectGpr64(reg::k0, 0x33ull);
+	h.ExpectGpr64(reg::a2, 0x33ull);
 }
 
 // Savestate-load model: while the JIT is parked, C world rewrites canonical
@@ -641,16 +672,16 @@ TEST(EeRecPinnedGpr, PinsReestablishedOnJitReentryAfterExternalWrite)
 {
 	EeRecTestHarness h;
 	h.SetGpr64(reg::v0, 0x1111);
-	h.SetGpr64(reg::k0, 0x2222);
+	h.SetGpr64(reg::a2, 0x2222);
 	h.LoadProgram({
 		DADDU(reg::t2, reg::v0, reg::zero),
-		DADDU(reg::t3, reg::k0, reg::zero),
+		DADDU(reg::t3, reg::a2, reg::zero),
 	});
 	h.Run();
 	EXPECT_EQ(h.GetGpr64Interp(reg::t2), 0x1111ull);
 	EXPECT_EQ(h.GetGpr64Interp(reg::t3), 0x2222ull);
 	h.SetGpr64(reg::v0, 0x3333);
-	h.SetGpr64(reg::k0, 0x4444);
+	h.SetGpr64(reg::a2, 0x4444);
 	h.Run(EeRecTestHarness::RunMode::PreserveCache);
 	EXPECT_EQ(h.GetGpr64Interp(reg::t2), 0x3333ull);
 	EXPECT_EQ(h.GetGpr64Interp(reg::t3), 0x4444ull);
@@ -661,12 +692,12 @@ TEST(EeRecPinnedGpr, PinsReestablishedOnJitReentryAfterExternalWrite)
 // the same GPR (NEON fill for PADDW) must merge the pin into lane 0
 // (armMergeEEPinIntoQuad) — a missing merge feeds the FMAC stale lower
 // lanes under lazy-dirty. Exercised on a callee-saved pin ($v1) and a
-// spared-range pin ($k0).
+// spared-range pin ($a2).
 TEST(EeRecPinnedGpr, ScalarPinWriteThenQuadReadMergesMirror)
 {
 	EeRecTestHarness h;
 	h.SetGpr128(reg::v1, 0, 0x0000000A0000000Bull);
-	h.SetGpr128(reg::k0, 0, 0x0000000C0000000Dull);
+	h.SetGpr128(reg::a2, 0, 0x0000000C0000000Dull);
 	h.SetGpr64(reg::t1, 0x0000000100000002ull);
 	// Runtime sources (pre-state, unknown at compile time) — an immediate
 	// write would be const-tracked and flushed through the Arm A const path,
@@ -676,10 +707,10 @@ TEST(EeRecPinnedGpr, ScalarPinWriteThenQuadReadMergesMirror)
 	h.LoadProgram({
 		DADDU(reg::v1, reg::t6, reg::zero), // scalar write: pin dirty, upper 64 untouched
 		PADDW(reg::t2, reg::v1, reg::t1), // 128-bit read of $v1
-		DADDU(reg::k0, reg::t7, reg::zero),
-		PADDW(reg::t4, reg::k0, reg::t1), // 128-bit read of $k0
+		DADDU(reg::a2, reg::t7, reg::zero),
+		PADDW(reg::t4, reg::a2, reg::t1), // 128-bit read of $a2
 		DADDU(reg::t3, reg::v1, reg::zero),
-		DADDU(reg::t5, reg::k0, reg::zero),
+		DADDU(reg::t5, reg::a2, reg::zero),
 	});
 	h.Run();
 	h.ExpectGpr128(reg::t2, 0x0000000100000032ull, 0x0000000A0000000Bull);

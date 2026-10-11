@@ -3820,7 +3820,8 @@ static bool recSkipTimeoutLoop(s32 reg, bool is_timeout_loop)
 	// w9 = reg value (the decrementing counter). Scratches are w9/x10/w8
 	// (reserved — w4-w7 are allocatable and may hold live values in the
 	// surrounding EE block). MUST go through the pin helper: the counter can
-	// be a pinned GPR (UYA idles on $at), and under lazy-dirty the loop's
+	// be a pinned GPR (UYA idles on $at, which was a pin when this broke; any
+	// pinned register can be the counter), and under lazy-dirty the loop's
 	// decrements live in the pin while canonical memory is stale — a raw Ldr
 	// here read a stale counter and the pin-aware store below then clobbered
 	// the real one, collapsing UYA's frame pacing (600 frames in 1s).
