@@ -5930,14 +5930,16 @@ open class MainActivityRuntime : ComponentActivity() {
     // Stopped, not paused: a split-screen or picture-in-picture app is paused but still in sight.
     // The overlay pause opened in onPause keeps the game's audio device running for a quick
     // resume; out of sight that only kept Android's audio mixer holding a wakelock all night with
-    // the device locked (#825, #817). Native pauses it for real until onStart.
+    // the device locked (#825, #817). Native pauses it for real until onStart. Discord idles too.
     override fun onStart() {
         super.onStart()
         runCatching { NativeApp.setAppBackgrounded(false) }
+        com.armsx2.DiscordPresence.setForeground(true)
     }
 
     override fun onStop() {
         runCatching { NativeApp.setAppBackgrounded(true) }
+        com.armsx2.DiscordPresence.setForeground(false)
         super.onStop()
     }
 

@@ -20,6 +20,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import com.armsx2.discord.DiscordIpc
 
@@ -100,6 +102,21 @@ object DiscordPresence {
     private var presenceJob: Job? = null
     private var started = false
 
+    // Whether the app is on screen. Out of sight nothing shows the status or the friends list, and
+    // the device may be locked for hours: the helper drains the SDK once a second instead of twenty
+    // times, and the poll below waits for the app to come back.
+    private val foreground = MutableStateFlow(true)
+
+    /** From the activity's onStart (true) and onStop (false). */
+    fun setForeground(fg: Boolean) {
+        if (foreground.value == fg) return
+        foreground.value = fg
+        sendIdle()
+    }
+
+    private fun sendIdle() =
+        send(DiscordIpc.MSG_IDLE, Bundle().apply { putBoolean(DiscordIpc.DATA_IDLE, !foreground.value) })
+
     // ---- helper-process link -------------------------------------------------------------
     //
     // The Discord SDK runs in :discord, not here. That is a licensing boundary: ARMSX2 is GPL-3.0+
@@ -126,6 +143,7 @@ object DiscordPresence {
             // remembers nothing, so anything set before the bind has to be replayed.
             send(DiscordIpc.MSG_START, savedSignIn())
             pushPresence()
+            sendIdle()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -421,6 +439,8 @@ object DiscordPresence {
             // and some games update their RA line every few seconds.
             var sinceRaCheck = 0
             while (true) {
+                // Nothing to show while out of sight, so wait here instead of asking every second.
+                foreground.first { it }
                 // No pump here any more: the SDK's callback queue is drained inside the helper, on
                 // the thread that created the client. This loop only asks for a snapshot.
                 bindHelper()
