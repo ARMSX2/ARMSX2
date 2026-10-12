@@ -528,7 +528,8 @@ TEST(OnScreenKeyboardText, IPv4FilterKeepsDigitsAndDots)
 TEST(OnScreenKeyboardText, AnyFilterTakesPrintableCharactersOnly)
 {
 	Model m = Start();
-	EXPECT_TRUE(m.Insert("a\tb\nc\x7f\x1b" "d"));
+	EXPECT_TRUE(m.Insert("a\tb\nc\x7f\x1b"
+						 "d"));
 	EXPECT_EQ(m.Text(), "abcd");
 	EXPECT_TRUE(m.Insert("\xC3\xA9")); // typed on a physical keyboard
 	EXPECT_EQ(m.Text(), "abcd\xC3\xA9");

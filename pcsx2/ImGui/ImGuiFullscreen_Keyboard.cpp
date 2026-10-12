@@ -653,8 +653,8 @@ namespace ImGuiFullscreen
 			return edited;
 
 		ImGui::ClearActiveID();
-		OpenInputStringDialog(hint, message, std::string(), FSUI_ICONSTR(ICON_FA_CHECK, "OK"),
-			[buf, buf_size](std::string text) { ImStrncpy(buf, text.c_str(), buf_size); }, std::string(buf),
+		const auto store_answer = [buf, buf_size](std::string text) { ImStrncpy(buf, text.c_str(), buf_size); };
+		OpenInputStringDialog(hint, message, std::string(), FSUI_ICONSTR(ICON_FA_CHECK, "OK"), store_answer, std::string(buf),
 			password ? InputFilterType::Password : InputFilterType::None);
 		return false;
 	}

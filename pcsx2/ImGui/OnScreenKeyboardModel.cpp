@@ -145,7 +145,12 @@ namespace OnScreenKeyboard
 		m_cursor = m_text.size();
 		m_max_chars = max_chars;
 		m_set = set;
-		m_page = (set == CharSet::Digits) ? Page::Numpad : (set == CharSet::IPv4) ? Page::NumpadDot : Page::Letters;
+		if (set == CharSet::Digits)
+			m_page = Page::Numpad;
+		else if (set == CharSet::IPv4)
+			m_page = Page::NumpadDot;
+		else
+			m_page = Page::Letters;
 		m_shift = ShiftState::Off;
 		m_highlight = KeyPos{};
 		m_goal_center = CenterOf(GetLayout(m_page).rows[0], 0);
