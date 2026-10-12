@@ -26,10 +26,13 @@ namespace
 {
 	using GIB = GenericInputBinding;
 
-	// Pointer-0/Button0 is the pad's Cross, Button1 its Select, Button2 the right stick pushed right.
+	// Pointer-0/Button0 is the pad's Cross, Button1 its Select, Button2 its Start, Button3 the right stick pushed
+	// right. Buttons 0 to 2 are the mouse's left, right and middle, which work a light gun while one runs; 3 is
+	// not the gun's, so it stands in for a controller input there.
 	constexpr u32 CROSS_BUTTON = 0;
 	constexpr u32 SELECT_BUTTON = 1;
-	constexpr u32 RSTICK_RIGHT_BUTTON = 2;
+	constexpr u32 START_BUTTON = 2;
+	constexpr u32 RSTICK_RIGHT_BUTTON = 3;
 
 	class ArcadeHookTest : public ::testing::Test
 	{
@@ -43,7 +46,8 @@ namespace
 			// bindings that drive the menus, which needs the input sources a test does not start.
 			m_pad.SetStringList("Pad1", "Cross", {"Pointer-0/Button0"});
 			m_pad.SetStringList("Pad1", "Select", {"Pointer-0/Button1"});
-			m_pad.SetStringList("Pad1", "RRight", {"Pointer-0/Button2"});
+			m_pad.SetStringList("Pad1", "Start", {"Pointer-0/Button2"});
+			m_pad.SetStringList("Pad1", "RRight", {"Pointer-0/Button3"});
 			m_settings.SetLayer(LayeredSettingsInterface::LAYER_CMDLINE, &m_pad);
 			m_settings.SetLayer(LayeredSettingsInterface::LAYER_BASE, &m_base);
 			Pad::LoadConfig(m_settings);
@@ -161,6 +165,86 @@ TEST_F(ArcadeHookTest, TheMouseMovingGivesTheGunBackToTheMouse)
 	InputManager::UpdatePointerRelativeDelta(0, InputPointerAxis::X, 3.0f);
 	EXPECT_FALSE(ACJV::GetGunStickAim(0, &x, &y));
 	Click(RSTICK_RIGHT_BUTTON, false);
+}
+
+// ----------------------------------------------------------------------------------------------------
+// The mouse as the gun
+// ----------------------------------------------------------------------------------------------------
+
+// The fixture binds pointer buttons 0, 1 and 2 (left, right, middle) to the pad's Cross, Select and Start: a
+// click that the gun takes must not also reach them.
+
+TEST_F(ArcadeHookTest, AClickFiresTheLightGunAndDoesNotAlsoReachTheBindings)
+{
+	StartArcadeGame("NM00003");
+	const GunMapping& gm = ACJV::GetGunMapping();
+
+	Click(CROSS_BUTTON, true);
+	EXPECT_EQ(ACJV::GetButtonState(0), gm.p1_trigger);
+	Click(CROSS_BUTTON, false);
+	EXPECT_EQ(ACJV::GetButtonState(0), 0);
+
+	// The right button reloads. It is bound to Select, the coin, which it must not insert.
+	Click(SELECT_BUTTON, true);
+	EXPECT_EQ(ACJV::GetButtonState(0), gm.p1_trigger);
+	EXPECT_TRUE(ACJV::GetGunForceOffscreen());
+	EXPECT_EQ(ACJV::coin[0], 0);
+	Click(SELECT_BUTTON, false);
+	EXPECT_EQ(ACJV::GetButtonState(0), 0);
+	EXPECT_FALSE(ACJV::GetGunForceOffscreen());
+	EXPECT_EQ(ACJV::coin[0], 0);
+
+	// The middle button is the pedal, which on this cabinet reloads. It is bound to Start, which it must not press.
+	Click(START_BUTTON, true);
+	EXPECT_TRUE(ACJV::GetGunForceOffscreen());
+	EXPECT_EQ(ACJV::GetButtonState(0), 0);
+	Click(START_BUTTON, false);
+	EXPECT_FALSE(ACJV::GetGunForceOffscreen());
+
+	// A button that is not the gun's still reaches its binding.
+	float x, y;
+	Click(RSTICK_RIGHT_BUTTON, true);
+	EXPECT_TRUE(ACJV::GetGunStickAim(0, &x, &y));
+	Click(RSTICK_RIGHT_BUTTON, false);
+}
+
+TEST_F(ArcadeHookTest, AClickOnATouchPanelTouchesIt)
+{
+	StartArcadeGame("NM00014");
+	Click(CROSS_BUTTON, true);
+	EXPECT_TRUE(ACJV::GetTouchPressed());
+	EXPECT_EQ(ACJV::GetButtonState(0), 0); // Not the Cross binding's button 4 as well.
+	Click(CROSS_BUTTON, false);
+	EXPECT_FALSE(ACJV::GetTouchPressed());
+}
+
+TEST_F(ArcadeHookTest, AClickKeepsItsBindingsOnOtherCabinetsAndInConsoleGames)
+{
+	StartArcadeGame("NM00099");
+	Click(SELECT_BUTTON, true);
+	EXPECT_EQ(ACJV::coin[0], 1); // The binding, as before.
+	Click(SELECT_BUTTON, false);
+	EXPECT_FALSE(ACJV::GetGunForceOffscreen());
+
+	Arcade::s_session = false;
+	Click(CROSS_BUTTON, true);
+	EXPECT_TRUE(DualShockHolds(PadDualshock2::PAD_CROSS));
+	Click(CROSS_BUTTON, false);
+}
+
+TEST_F(ArcadeHookTest, AReleaseStillLetsGoOfTheGunWhenTheBindingsAreGone)
+{
+	StartArcadeGame("NM00003");
+	Click(CROSS_BUTTON, true);
+	EXPECT_NE(ACJV::GetButtonState(0), 0);
+
+	// The player's bindings reloaded between the press and the release.
+	MemorySettingsInterface empty;
+	LayeredSettingsInterface none;
+	none.SetLayer(LayeredSettingsInterface::LAYER_BASE, &empty);
+	InputManager::ReloadBindings(none, none, none, false, false);
+	Click(CROSS_BUTTON, false);
+	EXPECT_EQ(ACJV::GetButtonState(0), 0);
 }
 
 // ----------------------------------------------------------------------------------------------------

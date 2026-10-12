@@ -794,6 +794,213 @@ TEST_F(ArcadeInputTest, GunLayerButtonsDoNothingOnOtherCabinets)
 }
 
 // ----------------------------------------------------------------------------------------------------
+// The mouse as the gun
+// ----------------------------------------------------------------------------------------------------
+
+namespace
+{
+	constexpr u32 MOUSE_LEFT = 0;
+	constexpr u32 MOUSE_RIGHT = 1;
+	constexpr u32 MOUSE_MIDDLE = 2;
+
+	bool Click(u32 button, bool down, bool ui_has_pointer = false)
+	{
+		return ArcadeInput::HandlePointerButton(button, down, ui_has_pointer);
+	}
+} // namespace
+
+TEST_F(ArcadeInputTest, MouseLightGunLeftFiresTheTrigger)
+{
+	Boot("NM00003");
+	const GunMapping& gm = ACJV::GetGunMapping();
+	ASSERT_NE(gm.p1_trigger, 0);
+	EXPECT_TRUE(ArcadeInput::UsesPointerButtons());
+
+	EXPECT_TRUE(Click(MOUSE_LEFT, true));
+	EXPECT_EQ(Switches(), gm.p1_trigger);
+	EXPECT_FALSE(ACJV::GetGunForceOffscreen());
+	EXPECT_TRUE(Click(MOUSE_LEFT, false));
+	EXPECT_EQ(Switches(), 0);
+}
+
+TEST_F(ArcadeInputTest, MouseLightGunRightShootsBesideTheScreenToReload)
+{
+	Boot("NM00003");
+	const GunMapping& gm = ACJV::GetGunMapping();
+	EXPECT_TRUE(Click(MOUSE_RIGHT, true));
+	EXPECT_EQ(Switches(), gm.p1_trigger);
+	EXPECT_TRUE(ACJV::GetGunForceOffscreen());
+	EXPECT_TRUE(Click(MOUSE_RIGHT, false));
+	EXPECT_EQ(Switches(), 0);
+	EXPECT_FALSE(ACJV::GetGunForceOffscreen());
+}
+
+TEST_F(ArcadeInputTest, MouseLightGunMiddleIsThePedal)
+{
+	// Vampire Night has no pedal switch: the pedal reloads by reporting the camera lost.
+	Boot("NM00003");
+	ASSERT_EQ(ACJV::GetGunMapping().pedal, 0);
+	EXPECT_TRUE(Click(MOUSE_MIDDLE, true));
+	EXPECT_TRUE(ACJV::GetGunForceOffscreen());
+	EXPECT_EQ(Switches(), 0);
+	EXPECT_TRUE(Click(MOUSE_MIDDLE, false));
+	EXPECT_FALSE(ACJV::GetGunForceOffscreen());
+
+	// Time Crisis 3 has one.
+	Boot("NM00012");
+	const GunMapping& gm = ACJV::GetGunMapping();
+	ASSERT_NE(gm.pedal, 0);
+	EXPECT_TRUE(Click(MOUSE_MIDDLE, true));
+	EXPECT_EQ(Switches(), gm.pedal);
+	EXPECT_FALSE(ACJV::GetGunForceOffscreen());
+	EXPECT_TRUE(Click(MOUSE_MIDDLE, false));
+	EXPECT_EQ(Switches(), 0);
+}
+
+TEST_F(ArcadeInputTest, MouseIsPlayer1sGunAndTheOtherButtonsAreNotTheGuns)
+{
+	Boot("NM00003");
+	EXPECT_TRUE(Click(MOUSE_LEFT, true));
+	EXPECT_NE(Switches(0), 0);
+	EXPECT_EQ(Switches(1), 0);
+	EXPECT_TRUE(Click(MOUSE_LEFT, false));
+
+	// The side buttons and the like stay with the player's own bindings.
+	for (const u32 button : {3u, 4u, 5u, 31u})
+	{
+		EXPECT_FALSE(Click(button, true)) << button;
+		EXPECT_FALSE(Click(button, false)) << button;
+	}
+	EXPECT_EQ(Switches(0), 0);
+}
+
+TEST_F(ArcadeInputTest, MouseTouchPanelLeftAndRightTouchAndMiddleIsButton1)
+{
+	Boot("NM00014");
+	ASSERT_EQ(ArcadeInput::GetMode(), JVS_MODE::TOUCH);
+	EXPECT_TRUE(ArcadeInput::UsesPointerButtons());
+
+	for (const u32 button : {MOUSE_LEFT, MOUSE_RIGHT})
+	{
+		EXPECT_TRUE(Click(button, true)) << button;
+		EXPECT_TRUE(ACJV::GetTouchPressed()) << button;
+		EXPECT_EQ(Switches(), 0) << button;
+		EXPECT_TRUE(Click(button, false)) << button;
+		EXPECT_FALSE(ACJV::GetTouchPressed()) << button;
+	}
+
+	EXPECT_TRUE(Click(MOUSE_MIDDLE, true));
+	EXPECT_EQ(Switches(), JVS_BTN_1);
+	EXPECT_FALSE(ACJV::GetTouchPressed());
+	EXPECT_TRUE(Click(MOUSE_MIDDLE, false));
+	EXPECT_EQ(Switches(), 0);
+}
+
+TEST_F(ArcadeInputTest, MouseIsNotTheCabinetsWhenItHasNoGunOrTouchPanel)
+{
+	EXPECT_FALSE(ArcadeInput::UsesPointerButtons());
+	for (const char* game : {GENERIC_GAME, "NM00004", "NM00023"})
+	{
+		Boot(game);
+		ASSERT_NE(ArcadeInput::GetMode(), JVS_MODE::LIGHTGUN) << game;
+		ASSERT_NE(ArcadeInput::GetMode(), JVS_MODE::TOUCH) << game;
+		EXPECT_FALSE(ArcadeInput::UsesPointerButtons()) << game;
+		for (const u32 button : {MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE})
+		{
+			EXPECT_FALSE(Click(button, true)) << game << " " << button;
+			EXPECT_FALSE(Click(button, false)) << game << " " << button;
+		}
+		EXPECT_EQ(Switches(), 0) << game;
+	}
+}
+
+TEST_F(ArcadeInputTest, MouseIsNotTheCabinetsWithoutAnArcadeGame)
+{
+	Boot("NM00003");
+	Arcade::s_session = false;
+	EXPECT_FALSE(ArcadeInput::UsesPointerButtons());
+	EXPECT_FALSE(Click(MOUSE_LEFT, true));
+	EXPECT_FALSE(Click(MOUSE_LEFT, false));
+	EXPECT_EQ(Switches(), 0);
+}
+
+TEST_F(ArcadeInputTest, MouseClickOnAMenuIsNotAShotButItsReleaseLetsGoOfOne)
+{
+	Boot("NM00003");
+	const GunMapping& gm = ACJV::GetGunMapping();
+
+	// A menu under the pointer keeps the press, and the click is the UI's alone.
+	EXPECT_FALSE(Click(MOUSE_LEFT, true, true));
+	EXPECT_EQ(Switches(), 0);
+	EXPECT_FALSE(Click(MOUSE_LEFT, false, true));
+	EXPECT_FALSE(Click(MOUSE_LEFT, false));
+
+	// A shot that was fired, then a menu opened under the held button: the release still lets go.
+	EXPECT_TRUE(Click(MOUSE_LEFT, true));
+	EXPECT_EQ(Switches(), gm.p1_trigger);
+	EXPECT_TRUE(Click(MOUSE_LEFT, false, true));
+	EXPECT_EQ(Switches(), 0);
+}
+
+TEST_F(ArcadeInputTest, MouseReleaseOfATakenPressIsTakenWhateverBecameOfTheGame)
+{
+	// The session ends with the button down.
+	Boot("NM00003");
+	EXPECT_TRUE(Click(MOUSE_LEFT, true));
+	Arcade::s_session = false;
+	EXPECT_TRUE(Click(MOUSE_LEFT, false));
+	EXPECT_FALSE(Click(MOUSE_LEFT, false)); // Only the one.
+	Arcade::s_session = true;
+	EXPECT_EQ(Switches(), 0);
+
+	// The mode changes under the held button, with the cabinet's own Reset not called.
+	EXPECT_TRUE(Click(MOUSE_LEFT, true));
+	EXPECT_TRUE(Click(MOUSE_RIGHT, true));
+	ACJV::SetMode(JVS_MODE::STANDARD);
+	EXPECT_TRUE(Click(MOUSE_LEFT, false));
+	EXPECT_TRUE(Click(MOUSE_RIGHT, false));
+	ACJV::SetMode(JVS_MODE::LIGHTGUN);
+	EXPECT_EQ(Switches(), 0);
+	EXPECT_FALSE(ACJV::GetGunForceOffscreen());
+
+	// A new game starts with the buttons down; the old releases come after it and are still the gun's.
+	EXPECT_TRUE(Click(MOUSE_LEFT, true));
+	EXPECT_TRUE(Click(MOUSE_RIGHT, true));
+	Boot("NM00014");
+	EXPECT_TRUE(Click(MOUSE_LEFT, false));
+	EXPECT_TRUE(Click(MOUSE_RIGHT, false));
+	EXPECT_EQ(Switches(), 0);
+	EXPECT_FALSE(ACJV::GetTouchPressed());
+	EXPECT_FALSE(ACJV::GetGunForceOffscreen());
+}
+
+TEST_F(ArcadeInputTest, MouseAPressWithNoReleaseBeforeItIsAFreshPress)
+{
+	// A release can be lost (the window lost focus mid-click): the next press starts over.
+	Boot("NM00003");
+	EXPECT_TRUE(Click(MOUSE_RIGHT, true));
+	Boot("NM00012");
+	EXPECT_EQ(Switches(), 0);
+	EXPECT_TRUE(Click(MOUSE_RIGHT, true));
+	EXPECT_EQ(Switches(), ACJV::GetGunMapping().p1_trigger);
+	EXPECT_TRUE(Click(MOUSE_RIGHT, false));
+	EXPECT_EQ(Switches(), 0);
+	EXPECT_FALSE(ACJV::GetGunForceOffscreen());
+}
+
+TEST_F(ArcadeInputTest, MouseAndControllerShareTheGunWithoutLettingGoOfEachOther)
+{
+	Boot("NM00003");
+	const GunMapping& gm = ACJV::GetGunMapping();
+	Press(GIB::R2);
+	EXPECT_TRUE(Click(MOUSE_LEFT, true));
+	EXPECT_TRUE(Click(MOUSE_LEFT, false));
+	EXPECT_EQ(Switches(), gm.p1_trigger); // The pad's trigger is still held.
+	Release(GIB::R2);
+	EXPECT_EQ(Switches(), 0);
+}
+
+// ----------------------------------------------------------------------------------------------------
 // The player's own layout
 // ----------------------------------------------------------------------------------------------------
 

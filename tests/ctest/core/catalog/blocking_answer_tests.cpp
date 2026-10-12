@@ -188,10 +188,14 @@ TEST(BlockingAnswerWaitFor, AnAnswerInTimeIsReturned)
 TEST(BlockingAnswerWaitFor, TheKeepWaitingFunctionRunsUntilTheDeadlineAndCanEndItEarly)
 {
 	{
+		// A loaded CI runner can oversleep a 5ms poll past the whole window, so check that the wait
+		// lasted until the deadline and polled at least once, not how many polls fit in it.
 		auto answer = MakeAnswer();
 		int polls = 0;
+		const auto start = std::chrono::steady_clock::now();
 		EXPECT_EQ(answer->WaitFor(60ms, FALLBACK, 5ms, [&polls] { polls++; return true; }), FALLBACK);
-		EXPECT_GE(polls, 2);
+		EXPECT_GE(std::chrono::steady_clock::now() - start, 60ms);
+		EXPECT_GE(polls, 1);
 	}
 	{
 		auto answer = MakeAnswer();

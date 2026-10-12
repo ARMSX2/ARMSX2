@@ -6,6 +6,7 @@
 #include "QtHost.h"
 #include "QtUtils.h"
 
+#include "pcsx2/Arcade/ArcadeInput.h"
 #include "pcsx2/ImGui/FullscreenUI.h"
 #include "pcsx2/ImGui/ImGuiManager.h"
 
@@ -361,7 +362,7 @@ bool DisplaySurface::event(QEvent* event)
 			if (event->type() == QEvent::MouseButtonDblClick &&
 				static_cast<const QMouseEvent*>(event)->button() == Qt::LeftButton &&
 				QtHost::IsVMValid() && !FullscreenUI::HasActiveWindow() &&
-				((!QtHost::IsVMPaused() && !InputManager::HasAnyBindingsForKey(InputManager::MakePointerButtonKey(0, 0))) ||
+				((!QtHost::IsVMPaused() && !InputManager::HasAnyBindingsForKey(InputManager::MakePointerButtonKey(0, 0)) && !ArcadeInput::UsesPointerButtons()) ||
 					(QtHost::IsVMPaused() && !ImGuiManager::WantsMouseInput())) &&
 				Host::GetBoolSettingValue("UI", "DoubleClickTogglesFullscreen", true))
 			{

@@ -37,6 +37,16 @@
 // boots, else it shows what is), arcadedownload opens settings:arcade and downloads the boot files, and
 // arcadepause draws the pause menu's Arcade submenu with no game running.
 //
+// Two more play input into Big Picture, which needs --headless for the frames to spread presses over. textdialog
+// opens the text entry dialog with its on-screen keyboard over whatever is showing (open settings:networkhdd first
+// for a settings page behind it), as Local Link's Host Address row does, and plays what follows: textdialog:numeric
+// and :ip give the number pads, :long the longest message a caller gives, :text=<start text>, :keys=<pad buttons> (up down left right south east west north
+// l1 r1 l2 select start confirm cancel, each optionally *N, e.g. down*2,confirm), :type=<characters typed on a
+// keyboard>, :pkeys=<keyboard keys> (backspace delete left right home end enter escape) and :click=<x,y+x,y> in
+// that order. The text the dialog's OK key submits appears as a toast. padkeys:<pad buttons> plays pad buttons on
+// the page that is showing, so a shot can start from a real row (settings:memorycard, then padkeys:down,up,confirm
+// opens Create Memory Card).
+//
 // Adding a Big Picture page: add a row to kPages in FullscreenUIShot.cpp, so an agent can reach it.
 // A new SettingsPage enum value trips a static_assert there until it has a name.
 namespace FullscreenUIShot

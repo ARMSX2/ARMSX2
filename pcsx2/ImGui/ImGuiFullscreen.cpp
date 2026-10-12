@@ -9,6 +9,7 @@
 #include "ImGui/FullscreenUI.h"
 #include "ImGui/ImGuiAnimated.h"
 #include "ImGui/ImGuiFullscreen.h"
+#include "ImGui/ImGuiFullscreen_Keyboard.h"
 #include "ImGui/ImGuiManager.h"
 #include "Input/InputManager.h"
 
@@ -119,10 +120,9 @@ namespace ImGuiFullscreen
 	static std::string s_input_dialog_title;
 	static std::string s_input_dialog_message;
 	static std::string s_input_dialog_caption;
-	static std::string s_input_dialog_text;
 	static std::string s_input_dialog_ok_text;
 	static InputStringDialogCallback s_input_dialog_callback;
-	static InputFilterType s_input_dialog_filter_type = InputFilterType::None;
+	static KeyboardEntry s_input_dialog_entry;
 
 	static bool s_message_dialog_open = false;
 	static std::string s_message_dialog_title;
@@ -2672,9 +2672,8 @@ void ImGuiFullscreen::OpenInputStringDialog(
 	s_input_dialog_message = std::move(message);
 	s_input_dialog_caption = std::move(caption);
 	s_input_dialog_ok_text = std::move(ok_button_text);
-	s_input_dialog_text = std::move(default_value);
 	s_input_dialog_callback = std::move(callback);
-	s_input_dialog_filter_type = filter_type;
+	s_input_dialog_entry.Begin(std::move(default_value), filter_type);
 	QueueResetFocus(FocusResetType::PopupOpened);
 }
 
@@ -2683,7 +2682,7 @@ void ImGuiFullscreen::DrawInputDialog()
 	if (!s_input_dialog_open)
 		return;
 
-	ImGui::SetNextWindowSize(LayoutScale(700.0f, 0.0f));
+	ImGui::SetNextWindowSize(ImVec2(GetKeyboardEntryWidth(s_input_dialog_entry), 0.0f));
 	ImGui::SetNextWindowPos((ImGui::GetIO().DisplaySize - LayoutScale(0.0f, LAYOUT_FOOTER_HEIGHT)) * 0.5f,
 		ImGuiCond_Always, ImVec2(0.5f, 0.5f));
 	ImGui::OpenPopup(s_input_dialog_title.c_str());
@@ -2700,94 +2699,32 @@ void ImGuiFullscreen::DrawInputDialog()
 
 	bool is_open = true;
 	if (ImGui::BeginPopupModal(s_input_dialog_title.c_str(), &is_open,
-			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar))
+			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+				ImGuiWindowFlags_NoNavInputs))
 	{
 		ResetFocusHere();
-		ImGui::TextWrapped("%s", s_input_dialog_message.c_str());
 
-		BeginMenuButtons();
-
-		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + LayoutScale(10.0f));
-
-		if (!s_input_dialog_caption.empty())
+		// The on-screen keyboard owns the D-pad and the face buttons, so ImGui's navigation is off in this window.
+		switch (DrawKeyboardEntry(s_input_dialog_entry, s_input_dialog_message.c_str(), s_input_dialog_caption.c_str(),
+			s_input_dialog_ok_text.c_str()))
 		{
-			const float prev = ImGui::GetCursorPosX();
-			ImGui::TextUnformatted(s_input_dialog_caption.c_str());
-			ImGui::SetNextItemWidth(ImGui::GetCursorPosX() - prev);
-		}
-		else
-		{
-			ImGui::SetNextItemWidth(ImGui::GetCurrentWindow()->WorkRect.GetWidth());
-		}
-
-		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + LayoutScale(10.0f));
-
-		static const ImGuiInputTextCallback input_callback = [](ImGuiInputTextCallbackData* data) -> int {
-			InputFilterType* filter_type = static_cast<InputFilterType*>(data->UserData);
-
-			if (data->EventFlag == ImGuiInputTextFlags_CallbackCharFilter) {
-				char c = static_cast<char>(data->EventChar);
-
-				if (*filter_type == InputFilterType::Numeric) {
-					if (!std::isdigit(c)) {
-						return 1;
-					}
-				}
-				else if (*filter_type == InputFilterType::IPAddress) {
-					if (!std::isdigit(c) && c != '.') {
-						return 1;
-					}
-				}
+			case KeyboardAction::Submit:
+			{
+				// have to move out in case they open another dialog in the callback
+				InputStringDialogCallback cb(std::move(s_input_dialog_callback));
+				std::string text(s_input_dialog_entry.GetText());
+				CloseInputDialog();
+				ImGui::CloseCurrentPopup();
+				cb(std::move(text));
+				break;
 			}
-
-			return 0;
-		};
-
-		ImGuiInputTextFlags flags = ImGuiInputTextFlags_None;
-		if (s_input_dialog_filter_type != InputFilterType::None)
-			flags |= ImGuiInputTextFlags_CallbackCharFilter;
-
-		if (s_focus_reset_queued != FocusResetType::None)
-			ImGui::SetKeyboardFocusHere();
-
-		ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, LayoutScale(LAYOUT_FRAME_ROUNDING));
-		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, LayoutScale(12.0f, 10.0f));
-		ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, LayoutScale(1.0f));
-		ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
-		ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
-		ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));
-		ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.4f, 0.4f, 0.4f, 1.0f));
-		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-
-		ImGui::InputText("##input", &s_input_dialog_text, flags,
-			(s_input_dialog_filter_type != InputFilterType::None) ? input_callback : nullptr,
-			(s_input_dialog_filter_type != InputFilterType::None) ? static_cast<void*>(&s_input_dialog_filter_type) : nullptr);
-
-		ImGui::PopStyleColor(5);
-		ImGui::PopStyleVar(3);
-
-		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + LayoutScale(10.0f));
-
-		const bool ok_enabled = !s_input_dialog_text.empty();
-
-		if (ActiveButton(s_input_dialog_ok_text.c_str(), false, ok_enabled) && ok_enabled)
-		{
-			// have to move out in case they open another dialog in the callback
-			InputStringDialogCallback cb(std::move(s_input_dialog_callback));
-			std::string text(std::move(s_input_dialog_text));
-			CloseInputDialog();
-			ImGui::CloseCurrentPopup();
-			cb(std::move(text));
+			case KeyboardAction::Cancel:
+				CloseInputDialog();
+				ImGui::CloseCurrentPopup();
+				break;
+			case KeyboardAction::None:
+				break;
 		}
-
-		if (ActiveButton(ICON_FA_XMARK " Cancel", false))
-		{
-			CloseInputDialog();
-
-			ImGui::CloseCurrentPopup();
-		}
-
-		EndMenuButtons();
 
 		ImGui::EndPopup();
 	}
@@ -2811,9 +2748,8 @@ void ImGuiFullscreen::CloseInputDialog()
 	s_input_dialog_message = {};
 	s_input_dialog_caption = {};
 	s_input_dialog_ok_text = {};
-	s_input_dialog_text = {};
 	s_input_dialog_callback = {};
-	s_input_dialog_filter_type = InputFilterType::None;
+	s_input_dialog_entry = {};
 }
 
 bool ImGuiFullscreen::IsMessageBoxDialogOpen()

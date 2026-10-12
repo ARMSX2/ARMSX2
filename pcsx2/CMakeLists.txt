@@ -1126,8 +1126,10 @@ set(pcsx2ImGuiSources
 	ImGui/FullscreenUI_TexturePacks.cpp
 	ImGui/FullscreenUIShot.cpp
 	ImGui/ImGuiFullscreen.cpp
+	ImGui/ImGuiFullscreen_Keyboard.cpp
 	ImGui/ImGuiManager.cpp
 	ImGui/ImGuiOverlays.cpp
+	ImGui/OnScreenKeyboardModel.cpp
 )
 
 set(pcsx2ImGuiHeaders
@@ -1137,8 +1139,10 @@ set(pcsx2ImGuiHeaders
 	ImGui/FullscreenUIShot.h
 	ImGui/ImGuiAnimated.h
 	ImGui/ImGuiFullscreen.h
+	ImGui/ImGuiFullscreen_Keyboard.h
 	ImGui/ImGuiManager.h
 	ImGui/ImGuiOverlays.h
+	ImGui/OnScreenKeyboardModel.h
 )
 
 set(pcsx2InputSources

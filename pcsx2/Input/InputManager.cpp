@@ -1316,7 +1316,9 @@ bool InputManager::PreprocessEvent(InputBindingKey key, float value, GenericInpu
 	}
 	else if (key.source_type == InputSourceType::Pointer && key.source_subtype == InputSubclass::PointerButton)
 	{
-		if (ImGuiManager::ProcessPointerButtonEvent(key, value))
+		const bool imgui_took = ImGuiManager::ProcessPointerButtonEvent(key, value);
+		// An arcade light gun or touch panel game: the mouse is its gun. Taken after ImGui, so a menu keeps its click.
+		if (ArcadeInput::HandlePointerButton(key.data, value != 0.0f, imgui_took) || imgui_took)
 			return true;
 	}
 	else if (key.source_subtype == InputSubclass::ControllerButton)
