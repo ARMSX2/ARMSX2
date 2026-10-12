@@ -47,6 +47,7 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_callret_tests.cpp
 	ee_rec_cond_veneer_tests.cpp
 	ee_rec_cop0_tests.cpp
+	ee_event_test_quiet_path_tests.cpp
 	ee_rec_fpu_tests.cpp
 	ee_rec_fpu_divunit_rounding_tests.cpp
 	ee_rec_fpu_full_mode_tests.cpp
@@ -62,6 +63,8 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_mmi_tests.cpp
 	ee_rec_move_tests.cpp
 	ee_rec_pinned_gpr_tests.cpp
+	ee_rec_syscall_seam_tests.cpp
+	ee_rec_event_stub_tests.cpp
 	ee_rec_regalloc_coupling_tests.cpp
 	ee_rec_muldiv_tests.cpp
 	ee_rec_multiblock_tests.cpp
@@ -110,6 +113,7 @@ add_pcsx2_test(recompiler_tests
 	ee_vu0_cfc2_ctc2_tests.cpp
 	ee_vu0_qmfc2_qmtc2_tests.cpp
 	ee_vu0_runahead_floor_tests.cpp
+	ee_vu0_parked_sync_tests.cpp
 	ee_vu0_cop2_transfer_residency_tests.cpp
 	ee_vu0_cop2_clamp_residency_tests.cpp
 	ee_vu0_cop2_macro_tests.cpp

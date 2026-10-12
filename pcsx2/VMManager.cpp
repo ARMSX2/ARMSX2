@@ -318,6 +318,13 @@ VMState VMManager::GetState()
 	return s_state.load(std::memory_order_acquire);
 }
 
+#ifdef PCSX2_RECOMPILER_TESTS
+void VMManager::Internal::SetStateForTests(VMState state)
+{
+	s_state.store(state, std::memory_order_release);
+}
+#endif
+
 void VMManager::AccumulateSessionPlaytime()
 {
 	s_session_accumulated_playtime += static_cast<u64>(Common::Timer::GetCurrentValue()) - s_session_resume_timestamp;

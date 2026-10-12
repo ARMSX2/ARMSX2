@@ -41,6 +41,10 @@
 alignas(16) microVU microVU0;
 alignas(16) microVU microVU1;
 
+// See iR5900-arm64.h. Written on the EE thread only: every VU0 path that arms
+// or disarms it runs there.
+u32 mVU0ParkedSpin = 0;
+
 //------------------------------------------------------------------
 // Micro VU - Observed-entry-PC tracking on microProgram. Single-
 // threaded per VU; the dispatcher records each `startPC` it hands
@@ -1213,6 +1217,8 @@ void mVUreset(microVU& mVU, bool resetReserve)
 	// tail) AFTER the exiting block armed it — this null must win (VE-07).
 	mVU.resumeEntry = nullptr;
 	mVU.resumeBlock = nullptr;
+	if (!mVU.index)
+		mVU0ParkedSpin = 0;
 	mVU.branchCondCarryGpr = -1;
 	mVU.profiler.Reset(mVU.index);
 
@@ -1331,8 +1337,11 @@ __fi void mVUclear(mV, u32 addr, u32 size)
 	// contract as the lpState zero below. A mid-run write to the running
 	// program's code must force the next dispatch through the full
 	// search-resolve (program identity may have changed); the resume
-	// shortcut would re-enter stale code (VE-07).
+	// shortcut would re-enter stale code (VE-07). The parked spin rides the
+	// same resume, so it goes with it.
 	mVU.resumeEntry = nullptr;
+	if (!mVU.index)
+		mVU0ParkedSpin = 0;
 
 #ifdef mVUcacheTrace
 	mVUCacheTraceObserveClear(mVU, addr, size, /*wasRealClear=*/!mVU.prog.cleared);
@@ -2067,6 +2076,7 @@ void recMicroVU0::SetStartPC(u32 startPC)
 	// the quick slot by start_pc and enters at the kicked PC, neither of
 	// which the resume path consults (VE-07).
 	microVU0.resumeEntry = nullptr;
+	mVU0ParkedSpin = 0;
 	VU0.start_pc = startPC;
 }
 
@@ -2074,10 +2084,28 @@ void recMicroVU0::SetStartPC(u32 startPC)
 namespace mvu_test_hooks
 {
 	bool g_spinBounceEnabled = true;
+	bool g_parkedSyncEnabled = true;
 	u64 g_spinBounces[2] = {};
+	u64 g_vu0Executes = 0;
 
-	void SetSpinBounceEnabled(bool enabled) { g_spinBounceEnabled = enabled; }
+	void SetSpinBounceEnabled(bool enabled)
+	{
+		g_spinBounceEnabled = enabled;
+		if (!enabled)
+			mVU0ParkedSpin = 0;
+	}
 	u64 GetSpinBounceCount(int vu_index) { return g_spinBounces[vu_index & 1]; }
+
+	// The run-ahead sync stub's copy of the bounce (mVU0ParkedSpin). Off, the
+	// stub always calls into C++, which is the path master took.
+	void SetParkedSyncEnabled(bool enabled)
+	{
+		g_parkedSyncEnabled = enabled;
+		if (!enabled)
+			mVU0ParkedSpin = 0;
+	}
+	u32 GetParkedSpinWord() { return mVU0ParkedSpin; }
+	u64 GetVu0ExecuteCount() { return g_vu0Executes; }
 
 	// Writes a memo into the IR block the next compile is copied from — a
 	// memo that would bounce every dispatch — so a test can see whether a
@@ -2160,8 +2188,55 @@ static bool mVUspinBounce(microVU& mVU, u32 cycles)
 	return true;
 }
 
+// Publishes the parked spin for the EE's run-ahead sync stub, which then
+// answers the next syncs itself while the loop holds: the same test of the
+// two VI registers mVUspinBounce makes, and the same VU0.cycle advance.
+//
+// Armed only when mVUspinBounce would bounce the next dispatch for any VI
+// values: VU0 runs on this recompiler, a resume is parked on a block known
+// to be a spin, recording and the VU sync gamefixes are off, and the EE cycle
+// skip is zero (the stub does not scale the EE clock). Everything here but
+// the VI values is fixed until one of the disarms: the next Execute, a kick,
+// a micro-memory write, a recompiler reset (which every settings change,
+// savestate load and recording toggle goes through).
+//
+// The memo is consulted, never computed, here: the first bounce on a block
+// stays in mVUspinBounce, which runs the detector at the TPC the dispatch
+// sees, as it did before the stub learned to bounce.
+static void mVU0ArmParkedSpin()
+{
+	// The encoding needs every VI offset nonzero (zero means disarmed, and vi0
+	// as the second operand), even (bit 0 is the exit sense) and 16 bits wide.
+	static_assert(offsetof(VURegs, VI) != 0 && offsetof(VURegs, VI) % 2 == 0 && sizeof(REG_VI) % 2 == 0 &&
+					  offsetof(VURegs, VI) + 32 * sizeof(REG_VI) <= 0x10000,
+		"mVU0ParkedSpin packs VI byte offsets into 16-bit fields");
+
+	mVU0ParkedSpin = 0;
+#ifdef PCSX2_RECOMPILER_TESTS
+	if (!mvu_test_hooks::g_spinBounceEnabled || !mvu_test_hooks::g_parkedSyncEnabled)
+		return;
+#endif
+	const microBlock* const blk = microVU0.resumeBlock;
+	if (CpuVU0 != &CpuMicroVU0 || !microVU0.resumeEntry || !blk || blk->spinState != mVUspinYes)
+		return;
+	if (mVUPersist::IsRecordingEnabled() || EmuConfig.Speedhacks.EECycleSkip)
+		return;
+	if (EmuConfig.Gamefixes.VUSyncHack || EmuConfig.Gamefixes.FullVU0SyncHack)
+		return;
+
+	const u32 offA = static_cast<u32>(offsetof(VURegs, VI) + blk->spinViA * sizeof(REG_VI));
+	const u32 offB = blk->spinViB ? static_cast<u32>(offsetof(VURegs, VI) + blk->spinViB * sizeof(REG_VI)) : 0u;
+	mVU0ParkedSpin = offA | (blk->spinExitOnEq ? 1u : 0u) | (offB << 16);
+}
+
 void recMicroVU0::Execute(u32 cycles)
 {
+	// Whatever runs below can move the parked block; re-armed on the way out.
+	mVU0ParkedSpin = 0;
+#ifdef PCSX2_RECOMPILER_TESTS
+	mvu_test_hooks::g_vu0Executes++;
+#endif
+
 	VU0.flags &= ~VUFLAG_MFLAGSET;
 
 	if (!(VU0.VI[REG_VPU_STAT].UL & 1))
@@ -2189,6 +2264,8 @@ void recMicroVU0::Execute(u32 cycles)
 		microVU0.regs().flags &= ~0x4;
 		hwIntcIrq(6);
 	}
+
+	mVU0ArmParkedSpin();
 }
 
 void recMicroVU1::SetStartPC(u32 startPC)

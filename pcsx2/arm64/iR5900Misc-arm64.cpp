@@ -112,6 +112,19 @@ void recSYSCALL()
 			s_nBlockCycles += 5650;
 			return;
 		}
+
+		// A constant call number the interpreter has no case for: it reads only
+		// $v1, writes no GPR, and raises the exception (cpuException writes
+		// CP0 and pc only). So store $v1 plus the caller-saved pins instead of
+		// all nine, and reload only the caller-saved ones. The interpreter
+		// derives the number as -$v1 when $v1 is negative; match it.
+		const s32 v1 = g_cpuConstRegs[3].SL[0];
+		const u8 call = v1 < 0 ? static_cast<u8>(0u - static_cast<u32>(v1)) : g_cpuConstRegs[3].UC[0];
+		if (Interp::SyscallReadsOnlyCallNumber(call))
+		{
+			recBranchCallNoGprWrite(Interp::SYSCALL, 1u << 3);
+			return;
+		}
 	}
 	recBranchCall(Interp::SYSCALL);
 }

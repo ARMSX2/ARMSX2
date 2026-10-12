@@ -1100,6 +1100,19 @@ void EERunner::SettingsOverride()
 	// by-design NaN/clamp corners the benign filters were not tuned for.
 	if (const char* e = std::getenv("EERUNNER_VU0FP"))
 		ee_divtrace::g_vu0_include = (e[0] != '0');
+	// EERUNNER_VU0FULL=1 adds the rest of VU0 (every VI incl. VPU_STAT/TPC, its
+	// clock and flags, data + micro memory) to the fingerprint. For --twindump /
+	// --twincompare between two JIT builds whose VU0 timing must be identical;
+	// JIT-vs-interp pairs differ on the VU0 clock by design.
+	if (const char* e = std::getenv("EERUNNER_VU0FULL"))
+		ee_divtrace::g_vu0_full = (e[0] != '0');
+	// EERUNNER_SYSFULL=1 widens the per-frame fingerprint to the whole machine:
+	// IOP RAM, registers and scheduler, both hardware-register pages, both
+	// counter sets, VU1, and the EE timing registers the default hash skips.
+	// For twin runs between two JIT builds that must keep emulated timing
+	// identical.
+	if (const char* e = std::getenv("EERUNNER_SYSFULL"))
+		ee_divtrace::g_sys_full = (e[0] != '0');
 
 	if (const char* e = std::getenv("EERUNNER_FPUFULL"))
 		s_settings_interface.SetBoolValue("EmuCore/CPU/Recompiler", "fpuFullMode", e[0] != '0');
@@ -2781,6 +2794,8 @@ namespace
 		uint32_t frames = 0;
 		int vu0fp = 0;
 		int nofp = 0;
+		int vu0full = 0;
+		int sysfull = 0;
 		std::vector<TwinRec> i1, i2, j;
 	};
 } // namespace
@@ -2799,6 +2814,16 @@ static void SetAllCpuMode(bool jit)
 	VMManager::ApplySettings();
 }
 
+#ifdef PCSX2_RECOMPILER_TESTS
+extern u64 g_twinEeEventTests;
+extern u64 g_twinIopSlices;
+namespace mvu_test_hooks
+{
+	u64 GetVu0ExecuteCount();
+	u64 GetSpinBounceCount(int vu_index);
+} // namespace mvu_test_hooks
+#endif
+
 // One free-running pass from the start savestate. Optionally dumps raw EE
 // RAM+scratch at --twin-ram-at to <prefix>.f<N>.{interp,jit}.bin (skipped for
 // the i2 control twin).
@@ -2813,6 +2838,13 @@ static bool TwinRunPass(bool jit, const char* cell, std::vector<TwinRec>& out)
 	}
 	SetAllCpuMode(jit);
 	out.reserve(s_frames);
+#ifdef PCSX2_RECOMPILER_TESTS
+	const u64 executes0 = mvu_test_hooks::GetVu0ExecuteCount();
+	const u64 bounces0 = mvu_test_hooks::GetSpinBounceCount(0);
+	// The whole-system fingerprint mixes these in; count from this pass's start.
+	g_twinEeEventTests = 0;
+	g_twinIopSlices = 0;
+#endif
 	for (uint32_t f = 0; f < s_frames && VMManager::GetState() != VMState::Shutdown; ++f)
 	{
 		VMManager::FrameAdvance(1);
@@ -2839,6 +2871,13 @@ static bool TwinRunPass(bool jit, const char* cell, std::vector<TwinRec>& out)
 		}
 	}
 	Console.WriteLn(fmt::format("twin: pass {} done ({} frames).", cell, out.size()));
+#ifdef PCSX2_RECOMPILER_TESTS
+	// VU0 dispatches that reached recMicroVU0::Execute, and how many of those
+	// Execute answered with its spin bounce. Zero on an interp pass.
+	Console.WriteLn(fmt::format("twin: pass {} vu0 Execute calls {}, C++ spin bounces {}.", cell,
+		mvu_test_hooks::GetVu0ExecuteCount() - executes0, mvu_test_hooks::GetSpinBounceCount(0) - bounces0));
+	Console.WriteLn(fmt::format("twin: pass {} EE event tests {}, IOP slices {}.", cell, g_twinEeEventTests, g_twinIopSlices));
+#endif
 	return true;
 }
 
@@ -2849,6 +2888,8 @@ static bool TwinRunAll(TwinTrace& t)
 	t.frames = s_frames;
 	t.vu0fp = ee_divtrace::g_vu0_include ? 1 : 0;
 	t.nofp = ee_divtrace::g_fp_exclude ? 1 : 0;
+	t.vu0full = ee_divtrace::g_vu0_full ? 1 : 0;
+	t.sysfull = ee_divtrace::g_sys_full ? 1 : 0;
 	return TwinRunPass(false, "i1", t.i1) &&
 		   TwinRunPass(false, "i2", t.i2) &&
 		   TwinRunPass(true, "j", t.j);
@@ -2863,8 +2904,8 @@ static bool WriteTwinTrace(const TwinTrace& t, const std::string& path)
 		return false;
 	}
 	f << "# twindiff trace v1\n";
-	f << fmt::format("meta label={} serial={} frames={} vu0fp={} nofp={} savestate={}\n",
-		t.label, t.serial.empty() ? "?" : t.serial, t.frames, t.vu0fp, t.nofp,
+	f << fmt::format("meta label={} serial={} frames={} vu0fp={} nofp={} vu0full={} sysfull={} savestate={}\n",
+		t.label, t.serial.empty() ? "?" : t.serial, t.frames, t.vu0fp, t.nofp, t.vu0full, t.sysfull,
 		Path::GetFileName(s_savestate_path));
 	const auto cell = [&f](const char* name, const std::vector<TwinRec>& v) {
 		for (size_t i = 0; i < v.size(); ++i)
@@ -2912,6 +2953,10 @@ static bool LoadTwinTrace(TwinTrace& t, const std::string& path)
 					t.vu0fp = (v == "1");
 				else if (k == "nofp")
 					t.nofp = (v == "1");
+				else if (k == "vu0full")
+					t.vu0full = (v == "1");
+				else if (k == "sysfull")
+					t.sysfull = (v == "1");
 			}
 		}
 		else if (tok == "rec")
@@ -3013,11 +3058,11 @@ static int RunTwinCompare()
 		return EXIT_FAILURE;
 	WriteTwinTrace(local, s_twin_prefix + ".twin");
 
-	if (other.vu0fp != local.vu0fp || other.nofp != local.nofp)
+	if (other.vu0fp != local.vu0fp || other.nofp != local.nofp || other.vu0full != local.vu0full || other.sysfull != local.sysfull)
 	{
 		Console.ErrorFmt(
-			"twin: fingerprint config mismatch (other vu0fp={} nofp={}, local vu0fp={} nofp={}) — set matching EERUNNER_VU0FP / EERUNNER_NOFP on both sides.",
-			other.vu0fp, other.nofp, local.vu0fp, local.nofp);
+			"twin: fingerprint config mismatch (other vu0fp={} nofp={} vu0full={} sysfull={}, local vu0fp={} nofp={} vu0full={} sysfull={}) — set matching EERUNNER_VU0FP / EERUNNER_NOFP / EERUNNER_VU0FULL / EERUNNER_SYSFULL on both sides.",
+			other.vu0fp, other.nofp, other.vu0full, other.sysfull, local.vu0fp, local.nofp, local.vu0full, local.sysfull);
 		return EXIT_FAILURE;
 	}
 	if (!other.serial.empty() && other.serial != "?" && !local.serial.empty() && other.serial != local.serial)

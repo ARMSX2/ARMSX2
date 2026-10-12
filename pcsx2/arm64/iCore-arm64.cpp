@@ -74,11 +74,11 @@ _arm64neonregs arm64neon[NUM_ARM_NEON_REGS], s_saveArm64NEONregs[NUM_ARM_NEON_RE
 //          tier-2 re-home — S3's 0f16948ae removed every hardcoded w4-w7
 //          scratch use, so nothing conflicts with allocator residency)
 // x8-x10:  scratch (RXSCRATCH + load/store addr/value) — NOT allocatable
-// x11:     REEPIN_AT — NOT allocatable for EE (tier-2 pinned mirror of
-//          GPR.r[1].UD[0]; caller-saved but preserve_most-spared — see the
+// x11:     REEPIN_S1 — NOT allocatable for EE (tier-2 pinned mirror of
+//          GPR.r[17].UD[0]; caller-saved but preserve_most-spared — see the
 //          preservation contract in iR5900-arm64.h). IOP-allocatable.
-// x12/x13: REEPIN_K0/REEPIN_S0 — NOT allocatable for EE (tier-2 pinned
-//          mirrors of GPR.r[26]/[16].UD[0]; caller-saved but
+// x12/x13: REEPIN_A2/REEPIN_S0 — NOT allocatable for EE (tier-2 pinned
+//          mirrors of GPR.r[6]/[16].UD[0]; caller-saved but
 //          preserve_most-spared). IOP-allocatable.
 // x14/x15: caller-saved temporaries (allocatable; shared with the mVU
 //          macro-mode VI pool, which is compatible because macro ops emit
@@ -112,7 +112,7 @@ _arm64neonregs arm64neon[NUM_ARM_NEON_REGS], s_saveArm64NEONregs[NUM_ARM_NEON_RE
 //   bits 0-3    — x0-x3 : RWARG1-4 reserved as pure EE scratch/arg regs (GE-M2)
 //   bit 8       — x8  : RXSCRATCH/RWSCRATCH (value scratch)
 //   bits 9-10   — x9/x10 : load/store address + value scratch
-//   bits 11-13  — x11/x12/x13 : REEPIN_AT/REEPIN_K0/REEPIN_S0 (tier-2
+//   bits 11-13  — x11/x12/x13 : REEPIN_S1/REEPIN_A2/REEPIN_S0 (tier-2
 //                 pinned mirrors)
 //   bits 16-18  — x16 (vixl), x17 (RSCRATCHADDR), x18 (platform reserved)
 //   bit 19      — x19 : RFASTMEMBASE

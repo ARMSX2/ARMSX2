@@ -23,8 +23,15 @@
 // The JIT ran the loop a different length than the interpreter (a2/a3
 // diverged; a1 was correct), corrupting memory the later SBUS handshake
 // depends on -> the EE never rings F240 -> the IOP stays idle -> deadlock.
+//
+// When this was found only a1 of the three registers was a pin. $a2, the loop
+// count, has been a pin since the pin table gained $a2 and $s1, so the tests
+// that use the game's registers now run the count through its pin; the last
+// test keeps the original shape, with the count in an unpinned register.
 
 #include "harness/EeRecTestHarness.h"
+
+#include "arm64/iR5900-arm64.h"
 
 #include <gtest/gtest.h>
 
@@ -212,4 +219,35 @@ TEST(EeRecCarbonSelfLoop, PinnedValueLoopCarriedBaseManyIterations)
 	EXPECT_EQ(h.ReadU8(kDataAddr + 100), kGuard) << "one past end must be untouched";
 	h.ExpectGpr64(reg::a2, 0ull);
 	h.ExpectGpr64(reg::a3, static_cast<u64>(kDataAddr + 100));
+}
+
+// The original residency shape: pinned store value (a1) and loop-carried store
+// base (a3), with the loop count in an UNPINNED register (t0), so the count is
+// loop-resident in the preheader as it was when the bug was found.
+TEST(EeRecCarbonSelfLoop, PinnedValueUnpinnedCountLoopCarriedBaseByteFill)
+{
+	ASSERT_NE(armEEPinForGPR(reg::a1), nullptr) << "$a1 is no longer pinned";
+	ASSERT_EQ(armEEPinForGPR(reg::t0), nullptr) << "$t0 is pinned, so the count is not the unpinned one this test wants";
+	EeRecTestHarness h;
+	h.SetGpr64(reg::a1, kFill);
+	h.SetGpr64(reg::t0, 8);           // loop count, not a pin
+	h.SetGpr64(reg::a3, kDataAddr);
+	h.TrackMemWindow(kDataAddr, 16);
+	SeedGuard(h, kDataAddr, 16);
+	h.LoadProgramNoTerm({
+		SB(reg::a1, 0, reg::a3),
+		ADDIU(reg::t0, reg::t0, -1),
+		ADDIU(reg::a3, reg::a3, 1),
+		NOP,
+		NOP,
+		BNE(reg::t0, reg::zero, -6),
+		NOP,
+		J(kPark), NOP,
+	});
+	h.Run();
+	for (u32 i = 0; i < 8; i++)
+		EXPECT_EQ(h.ReadU8(kDataAddr + i), kFill) << "byte " << i;
+	EXPECT_EQ(h.ReadU8(kDataAddr + 8), kGuard) << "one past end must be untouched";
+	h.ExpectGpr64(reg::t0, 0ull);
+	h.ExpectGpr64(reg::a3, static_cast<u64>(kDataAddr + 8));
 }

@@ -33,6 +33,8 @@
 
 #include "harness/EeRecTestHarness.h"
 
+#include "arm64/iR5900-arm64.h"
+
 #include <gtest/gtest.h>
 
 #include <vector>
@@ -50,20 +52,42 @@ constexpr u32 kWindowBytes = 256;
 
 // Focus-set candidates: everything but $zero, the memory bases $k0/$k1, and
 // $ra (the harness terminator is `jr ra`). Includes the tier-1 pins
-// ($sp/$v0/$v1/$a0/$a1) and tier-2 pins ($at/$s0) alongside unpinned regs.
+// ($sp/$v0/$v1/$a0/$a1) and tier-2 pins ($a2/$s0/$s1) alongside unpinned regs
+// ($at among them).
 constexpr u32 kDestPool[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
                              16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 28, 29, 30};
 constexpr u32 kDestPoolN = sizeof(kDestPool) / sizeof(kDestPool[0]);
 constexpr u32 kFocusN = 8;
 
-// Roaming-base candidates, drawn from kDestPool: the pinned list is the guest
-// half of kEEPinTable minus $ra and $k0, the plain list is every pool member
-// with no pin mirror.
-constexpr u32 kPinnedBasePool[] = {1, 2, 3, 4, 5, 16, 29};
-constexpr u32 kPlainBasePool[] = {6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18,
-                                  19, 20, 21, 22, 23, 24, 25, 28, 30};
-constexpr u32 kPinnedBaseN = sizeof(kPinnedBasePool) / sizeof(kPinnedBasePool[0]);
-constexpr u32 kPlainBaseN = sizeof(kPlainBasePool) / sizeof(kPlainBasePool[0]);
+// Roaming-base candidates, drawn from kDestPool: the pinned list is every pool
+// member kEEPinTable pins ($ra is not in the pool), the plain list is every
+// other pool member. They are built from the table so they follow it. For the
+// shipped table they come out as {2,3,4,5,6,16,17,29} and
+// {1,7..15,18..25,28,30}; the pinned list used to hold $at (1) in place of
+// $a2 (6) and $s1 (17).
+struct BasePools
+{
+	u32 pinned[kDestPoolN];
+	u32 pinnedN = 0;
+	u32 plain[kDestPoolN];
+	u32 plainN = 0;
+};
+
+const BasePools& basePools()
+{
+	static const BasePools pools = [] {
+		BasePools p;
+		for (u32 g : kDestPool)
+		{
+			if (armEEPinForGPR(static_cast<int>(g)))
+				p.pinned[p.pinnedN++] = g;
+			else
+				p.plain[p.plainN++] = g;
+		}
+		return p;
+	}();
+	return pools;
+}
 
 struct Lcg
 {
@@ -93,7 +117,8 @@ struct Bases
 
 Bases makeBases(Lcg& r)
 {
-	return Bases{kPinnedBasePool[r.range(kPinnedBaseN)], kPlainBasePool[r.range(kPlainBaseN)]};
+	const BasePools& p = basePools();
+	return Bases{p.pinned[r.range(p.pinnedN)], p.plain[r.range(p.plainN)]};
 }
 
 Focus makeFocus(Lcg& r, const Bases& bs)

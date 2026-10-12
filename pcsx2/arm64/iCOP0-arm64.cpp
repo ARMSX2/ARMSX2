@@ -143,8 +143,18 @@ REC_FUNC(TLBP);
 REC_FUNC(TLBWI);
 REC_FUNC(TLBWR);
 
-REC_SYS(ERET);
-REC_SYS(EI);
+// ERET and EI read and write only COP0 state, pc and the event schedule
+// (COP0.cpp), never a guest GPR, so the seam keeps the callee-saved pins in
+// their registers.
+void recERET()
+{
+	recBranchCallNoGprWrite(Interp::ERET, 0);
+}
+
+void recEI()
+{
+	recBranchCallNoGprWrite(Interp::EI, 0);
+}
 
 // DI — inline, non-branching. Unlike EI (which must branch so newly-enabled
 // interrupts fire), disabling interrupts needs no block exit, so DI is emitted
@@ -323,13 +333,14 @@ void recMTC0()
 		case 12: // Status — has side effects (interrupt check)
 		case 16: // Config — has side effects
 		case 25: // Performance counters
-			iFlushCall(FLUSH_INTERPRETER);
+			// Interp::MTC0 reads GPR[rt] and writes no guest GPR (COP0.cpp), so
+			// store rt's pin and the caller-saved pins rather than all nine,
+			// and restore the caller-saved pins the C call clobbered.
+			iFlushCall(FLUSH_INTERPRETER | FLUSH_KEEP_PINS);
 			emitFlushBlockCycles();
-			armFlushEEClobberedPins(); // lazy-dirty seam: pairs with the reload below
+			armFlushEEPinsForCall(1u << _Rt_);
 			armEmitCall((void*)Interp::MTC0);
 			emitReloadCycle();
-			// MTC0 writes no guest GPRs; restore the caller-saved pins the
-			// C call clobbered.
 			armReloadEEClobberedPins();
 			return;
 

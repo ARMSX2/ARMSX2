@@ -1236,9 +1236,9 @@ TEST(EeRecMmiCoherence, SqFaultPathStoresResidentQuad)
 //
 // recQFSRV is where that used to bite: a second path for adjacent sources
 // (Rs == Rt+1) took &GPR.r[Rt] and Ldr'd 128 unaligned bits across the two
-// registers. Twelve of the adjacent pairs have a pinned source — four
-// both-pinned, ($at,$v0) ($v0,$v1) ($v1,$a0) ($a0,$a1), eight with one — and
-// that is the register range a funnel-shift memcpy loop uses. QFSRV loads each
+// registers. Twelve of the adjacent pairs have a pinned source — five
+// both-pinned, ($v0,$v1) ($v1,$a0) ($a0,$a1) ($a1,$a2) ($s0,$s1), seven with
+// one — and that is the register range a funnel-shift memcpy loop uses. QFSRV loads each
 // operand through mmiLoadReg now, so the merge covers all three cases below.
 
 // Unpinned, the write reaches memory and there is nothing stale to catch.
@@ -1289,18 +1289,39 @@ TEST(EeRecMmiCoherence, QfsrvAdjacentDirtyPinnedRsIsMerged)
 	// A stale read yields the pre-write Rs bytes: UD[1] == 0x1122334499AABBCC.
 }
 
-// The same through a non-adjacent pair.
+// The same through a non-adjacent pair. Rs is $a3, which is not a pin.
 TEST(EeRecMmiCoherence, QfsrvNonAdjacentPathMergesDirtyPin)
 {
+	ASSERT_NO_FATAL_FAILURE(RequirePinned(reg::a0, "$a0"));
+	ASSERT_EQ(armEEPinForGPR(reg::a3), nullptr) << "$a3 is pinned, so Rs is not the unpinned source this test wants";
 	EeRecTestHarness h;
 	h.SetMmiPair(reg::a0, 0x1122'3344'5566'7788ull, 0x99AA'BBCC'DDEE'FF00ull); // Rt
-	h.SetMmiPair(reg::a2, 0xAABB'CCDD'1122'3344ull, 0x5566'7788'99AA'BBCCull); // Rs != Rt+1
+	h.SetMmiPair(reg::a3, 0xAABB'CCDD'1122'3344ull, 0x5566'7788'99AA'BBCCull); // Rs != Rt+1
 	h.SetGpr64(reg::t0, 0xF0E0'D0C0'B0A0'9080ull);
 	h.LoadProgram({
 		ee::MTSAB(reg::zero, 4),
 		OR       (reg::a0, reg::t0, reg::zero),
-		ee::QFSRV(reg::v0, reg::a2, reg::a0),
+		ee::QFSRV(reg::v0, reg::a3, reg::a0),
 	});
 	h.Run();
 	h.ExpectMmiPair(reg::v0, 0xDDEE'FF00'F0E0'D0C0ull, 0x1122'3344'99AA'BBCCull);
+}
+
+// Non-adjacent again, with the dirty pin on the Rs side ($a2 -> x12, a
+// caller-saved pin) and Rt unpinned ($t1).
+TEST(EeRecMmiCoherence, QfsrvNonAdjacentPathMergesDirtyPinnedRs)
+{
+	ASSERT_NO_FATAL_FAILURE(RequirePinned(reg::a2, "$a2"));
+	ASSERT_EQ(armEEPinForGPR(reg::t1), nullptr) << "$t1 is pinned, so Rt is not the unpinned source this test wants";
+	EeRecTestHarness h;
+	h.SetMmiPair(reg::t1, 0x1122'3344'5566'7788ull, 0x99AA'BBCC'DDEE'FF00ull); // Rt
+	h.SetMmiPair(reg::a2, 0xAABB'CCDD'1122'3344ull, 0x5566'7788'99AA'BBCCull); // Rs != Rt+1
+	h.SetGpr64(reg::t0, 0xF0E0'D0C0'B0A0'9080ull);
+	h.LoadProgram({
+		ee::MTSAB(reg::zero, 4),
+		OR       (reg::a2, reg::t0, reg::zero), // pinned write to Rs: pin dirty, memory stale
+		ee::QFSRV(reg::v0, reg::a2, reg::t1),
+	});
+	h.Run();
+	h.ExpectMmiPair(reg::v0, 0xDDEE'FF00'1122'3344ull, 0xB0A0'9080'99AA'BBCCull);
 }

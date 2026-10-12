@@ -242,6 +242,14 @@ static constexpr bool s_condVeneerForced = false;
 const void* g_fpuGuardMaskStub = nullptr;
 #endif
 
+#ifdef PCSX2_RECOMPILER_TESTS
+// Runs inside recEventTest, after the shared event test, as host code
+// reached from there would: interrupt delivery, or a savestate save from the
+// message pump at vsync. The harness runs with no VM, where the shared event
+// test returns early, so this is how a test puts work there.
+void (*g_eeHarnessEventTestHook)() = nullptr;
+#endif
+
 static void recEventTest()
 {
 	eeEventTestIsActive = true;
@@ -255,8 +263,13 @@ static void recEventTest()
 	}
 
 #ifdef PCSX2_RECOMPILER_TESTS
-	if (harnessShouldExit())
-		recExitExecution();
+	if (g_eeHarnessActive)
+	{
+		if (g_eeHarnessEventTestHook)
+			g_eeHarnessEventTestHook();
+		if (harnessShouldExit())
+			recExitExecution();
+	}
 #endif
 
 	if (eeRecNeedsReset)
@@ -340,12 +353,21 @@ static const void* _DynGen_DispatcherEvent()
 	// modifies cpuRegs.cycle (e.g. fast-forwarding to nextEventCycle) and
 	// reschedules nextEventCycle itself.
 	armFlushCycleDelta();
-	armFlushEEGPRPins(); // lazy-dirty seam: savestate save / VM exit read GPR memory
+	// Store every pin: a savestate save from the host message pump at vsync
+	// reads GPR memory, and recExitExecution leaves with only memory.
+	armFlushEEGPRPins();
 	armEmitCall((void*)recEventTest);
 	armReloadCycleDelta();
-	// Event processing can rewrite every guest GPR (savestate load on the EE
-	// thread, debugger pokes at a pause point) — refresh the pin mirrors.
-	armReloadEEGPRPins();
+	// A normal return means nothing wrote guest GPR memory: interrupt and
+	// exception delivery write only CP0 and pc, and whatever does rewrite GPRs
+	// (savestate load, VM reset, a recompiler reset from a settings change)
+	// also requests an exit, so recEventTest leaves through recExitExecution
+	// and EnterRecompiledCode reloads every pin on the way back in. The
+	// callee-saved pins are still in their registers; reload only the ones
+	// the call destroyed. The stub's bytes stay a compile-time constant,
+	// which an in-place reset from recEventTest relies on: it returns into
+	// the regenerated copy at the same offset.
+	armReloadEEClobberedPins();
 	return retval; // falls through to DispatcherReg
 }
 
@@ -634,8 +656,10 @@ void iFlushCall(int flushtype)
 
 	// Lazy-dirty pin seam (EE-SRA 2 WS-B; no-op in write-through mode).
 	// Flush ALL pins only before GPR-READING callees — the exact
-	// FLUSH_INTERPRETER mode (recCall/recBranchCall interpreter fallbacks,
-	// Interp::MTC0). FLUSH_EVERYTHING at block tails is NOT a C seam: dirty
+	// FLUSH_INTERPRETER mode (recCall/recBranchCall interpreter fallbacks).
+	// FLUSH_KEEP_PINS opts out for callees with a known read set and no GPR
+	// writes (recBranchCallNoGprWrite, Interp::MTC0), whose call sites store
+	// only the pins they need. FLUSH_EVERYTHING at block tails is NOT a C seam: dirty
 	// pins deliberately ride across the dispatcher in their registers (the
 	// entire prize), and the JIT-exit paths (JITCompile/DispatcherEvent
 	// stubs) flush explicitly. Lighter modes flush nothing here — their
@@ -644,7 +668,7 @@ void iFlushCall(int flushtype)
 	// materializes through the pin first. First lazy census with the naive
 	// FLUSH_ALL_X86 gate: +224k emitted Strs (+20%) — placement is the
 	// whole game here.
-	if ((flushtype & FLUSH_INTERPRETER) == FLUSH_INTERPRETER)
+	if ((flushtype & FLUSH_INTERPRETER) == FLUSH_INTERPRETER && !(flushtype & FLUSH_KEEP_PINS))
 		armFlushEEGPRPins();
 
 #if 0
@@ -740,6 +764,40 @@ void recBranchCall(void (*func)())
 
 	armReloadCycleDelta();
 	armReloadEEGPRPins();
+}
+
+// recBranchCall for a callee that reads at most the guest GPRs in `gpr_reads`
+// (bit n = GPR n) from memory and writes none: ERET, EI, and SYSCALL when the
+// call number is a constant the interpreter has no case for. The full seam
+// stores all nine pins and reloads all nine; this one stores the pins the
+// callee reads plus the caller-saved pins, and reloads only the caller-saved
+// ones. Callee-saved pins stay dirty in their registers across the call and
+// across the dispatcher, under the same rule as any block tail: every later
+// C reader of GPR memory (the event-test and compile stubs, interpreter
+// fallbacks) stores the pins itself first.
+//
+// The callee must not write a guest GPR. A write would land in memory behind
+// a callee-saved pin that is not reloaded, and the pin would overwrite it at
+// the next flush.
+void recBranchCallNoGprWrite(void (*func)(), u32 gpr_reads)
+{
+	const u32 saved_pc = pc;
+	pc += interpCallFlushPcBias(); // see recCall (AX-05)
+	iFlushCall(FLUSH_INTERPRETER | FLUSH_KEEP_PINS);
+	pc = saved_pc;
+
+	u32 cycles = scaleblockcycles_clear();
+	if (cycles > 0)
+		armAsm->Add(RECCYCLE, RECCYCLE, cycles);
+
+	armFlushCycleDelta();
+	armFlushEEPinsForCall(gpr_reads);
+
+	armEmitCall((void*)func);
+	g_branch = 2;
+
+	armReloadCycleDelta();
+	armReloadEEClobberedPins();
 }
 
 // s_nBlockCycles is 3-bit fixed point. Divide by 8 when done!
@@ -3762,7 +3820,8 @@ static bool recSkipTimeoutLoop(s32 reg, bool is_timeout_loop)
 	// w9 = reg value (the decrementing counter). Scratches are w9/x10/w8
 	// (reserved — w4-w7 are allocatable and may hold live values in the
 	// surrounding EE block). MUST go through the pin helper: the counter can
-	// be a pinned GPR (UYA idles on $at), and under lazy-dirty the loop's
+	// be a pinned GPR (UYA idles on $at, which was a pin when this broke; any
+	// pinned register can be the counter), and under lazy-dirty the loop's
 	// decrements live in the pin while canonical memory is stale — a raw Ldr
 	// here read a stale counter and the pin-aware store below then clobbered
 	// the real one, collapsing UYA's frame pacing (600 frames in 1s).

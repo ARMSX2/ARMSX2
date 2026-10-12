@@ -350,13 +350,8 @@ u32 VU_Thread::Get_vuCycles()
 		   2;
 }
 
-void VU_Thread::Get_MTVUChanges()
+void VU_Thread::Apply_MTVUChanges(u32 interrupts)
 {
-	// Note: Atomic communication is with Gif_Unit.cpp Gif_HandlerAD_MTVU
-	u32 interrupts = mtvuInterrupts.load(std::memory_order_relaxed);
-	if (!interrupts)
-		return;
-
 	if (interrupts & InterruptFlagSignal)
 	{
 		std::atomic_thread_fence(std::memory_order_acquire);

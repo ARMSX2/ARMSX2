@@ -247,9 +247,9 @@ TEST(EeRecTlbDivert, DISABLED_RegisterPressureWritesSurviveTheDivert)
 	h.SetGpr64(reg::a2, kUnmapped); // base, and the source of every value below
 
 	std::vector<u32> program;
-	// r7 (a3), r8-r15 (t0-t7), r17-r23 (s1-s7): 16 unpinned registers, all
+	// r7 (a3), r8-r15 (t0-t7), r18-r24 (s2-s7, t8): 16 unpinned registers, all
 	// computed rather than folded, all still live across the load.
-	const u32 dirty[] = {7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23};
+	const u32 dirty[] = {7, 8, 9, 10, 11, 12, 13, 14, 15, 18, 19, 20, 21, 22, 23, 24};
 	for (u32 i = 0; i < std::size(dirty); i++)
 		program.push_back(ADDIU(dirty[i], reg::a2, static_cast<s16>(i + 1)));
 	const u32 miss_off = static_cast<u32>(program.size()) * 4;

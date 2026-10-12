@@ -1478,16 +1478,93 @@ enum : int
 };
 static const u8* s_cop2SyncStubs[kCop2SyncStubCount];
 
-static const u8* cop2DynGenOneSyncStub(void (*syncFn)(), void (*finishFn)())
+// Parked-spin bounce, run-ahead stub only (the "parked" tail below).
+//
+// UYA's VU0 runs one program that never ends: between jobs it sits in a
+// NOP-only wait loop on a VI register the EE writes. About two thirds of the
+// run-ahead syncs it sees find it still there, and all recMicroVU0::Execute
+// does with them is mVUspinBounce: VU0.cycle += max(delta, 16). Reaching
+// that answer cost the pin flush and reload, the register saves and two C
+// calls. While mVU0ParkedSpin is armed, the stub answers it here instead,
+// before touching the stack or the pins.
+//
+// It has to leave behind exactly what the C++ path does, step for step:
+//   vu0SyncRunAheadThin: publishes cpuRegs.cycle (the slow path's
+//     armFlushCycleDelta) and does nothing more when the s32 delta is
+//     negative.
+//   recMicroVU0::Execute: clears VUFLAG_MFLAGSET, bounces (VU0.cycle +=
+//     the floored delta), raises the VU0 interrupt if flags bit 2 is set.
+// Arming guarantees the bounce's other preconditions (see mVU0ArmParkedSpin),
+// so what is left to test per sync is the loop condition, which reads the
+// two VI registers the EE writes, and the interrupt bit, which sends the
+// sync to C++. Neither cpuRegs.cycle nor nextEventCycle changes, so RECCYCLE
+// stays valid and the pins were never touched.
+//
+// In:  x8 = VPU_STAT (bit 0 set). Clobbers x8, x16, x17 and NZCV, as any BL
+// may. Branches to `slow` with nothing but cpuRegs.cycle written (the slow
+// path writes the same value again), and to `parked` with the verdict made.
+static void cop2EmitParkedSpinTest(a64::Label* slow, a64::Label* parked)
+{
+	a64::Label viBIsZero;
+	armMoveAddressToReg(a64::x17, &mVU0ParkedSpin);
+	armAsm->Ldr(a64::w16, a64::MemOperand(a64::x17));
+	armAsm->Cbz(a64::w16, slow);
+
+	// The loop condition, 16 bits per operand like the guest's IBEQ/IBNE (and
+	// mVUspinBounce's US[0] reads): CTC2 can leave an upper half dirty.
+	armAsm->And(a64::w17, a64::w16, 0xfffe);
+	armAsm->Ldrh(a64::w17, a64::MemOperand(RVU0, a64::x17));
+	armAsm->Lsr(a64::w8, a64::w16, 16);
+	armAsm->Cbz(a64::w8, &viBIsZero); // vi0 operand: w8 is already the 0 it reads
+	armAsm->Ldrh(a64::w8, a64::MemOperand(RVU0, a64::x8));
+	armAsm->Bind(&viBIsZero);
+	armAsm->Cmp(a64::w17, a64::w8);
+	armAsm->Cset(a64::w17, a64::eq);
+	// bit 0 = (equal) XOR (exits on equal): clear exactly when the exit
+	// condition holds, and the loop leaves — VU0 has real work to run.
+	armAsm->Eor(a64::w17, a64::w17, a64::w16);
+	armAsm->Tbz(a64::w17, 0, slow);
+
+	// A pending VU0 interrupt is raised by Execute; leave it to C++.
+	armAsm->Ldr(a64::w17, armVU0Mem(&VU0.flags));
+	static_assert(VUFLAG_INTCINTERRUPT == (1u << 2));
+	armAsm->Tbz(a64::w17, 2, parked);
+}
+
+// The verdict half: w17 = VU0.flags. Ends in Ret.
+static void cop2EmitParkedSpinBounce()
+{
+	a64::Label negative, floored;
+	armFlushCycleDelta(a64::x16); // x16 = cpuRegs.cycle, published
+	armAsm->Ldr(a64::x8, armVU0Mem(&VU0.cycle));
+	armAsm->Sub(a64::w16, a64::w16, a64::w8); // (s32)(cpuRegs.cycle - VU0.cycle)
+	armAsm->Tbnz(a64::w16, 31, &negative);
+	armAsm->Cmp(a64::w16, 16);
+	armAsm->B(&floored, a64::ge);
+	armAsm->Mov(a64::w16, 16);
+	armAsm->Bind(&floored);
+	armAsm->Add(a64::x8, a64::x8, a64::Operand(a64::w16, a64::UXTW));
+	armAsm->Str(a64::x8, armVU0Mem(&VU0.cycle));
+	armAsm->And(a64::w17, a64::w17, ~static_cast<u32>(VUFLAG_MFLAGSET));
+	armAsm->Str(a64::w17, armVU0Mem(&VU0.flags));
+	armAsm->Bind(&negative);
+	armAsm->Ret();
+}
+
+static const u8* cop2DynGenOneSyncStub(void (*syncFn)(), void (*finishFn)(), bool parkedSpin = false)
 {
 	const u8* start = armGetCurrentCodePointer();
 
-	a64::Label doSync;
+	a64::Label doSync, parked;
 	armAsm->Ldr(RWSCRATCH, armVU0Mem(&VU0.VI[REG_VPU_STAT]));
 	armAsm->Tbnz(RWSCRATCH, 0, &doSync);
 	armAsm->Ret();
 
 	armAsm->Bind(&doSync);
+	a64::Label slow;
+	if (parkedSpin)
+		cop2EmitParkedSpinTest(&slow, &parked);
+	armAsm->Bind(&slow);
 	armAsm->Stp(a64::x4, a64::x5, a64::MemOperand(a64::sp, -64, a64::PreIndex));
 	armAsm->Stp(a64::x6, a64::x7, a64::MemOperand(a64::sp, 16));
 	armAsm->Stp(a64::x14, a64::x15, a64::MemOperand(a64::sp, 32));
@@ -1527,6 +1604,14 @@ static const u8* cop2DynGenOneSyncStub(void (*syncFn)(), void (*finishFn)())
 	armAsm->Ldp(a64::x4, a64::x5, a64::MemOperand(a64::sp, 64, a64::PostIndex));
 	armAsm->Ret();
 
+	// Out of line, after the slow path's Ret, so the stub still reads as
+	// "idle Ret, then the sync path up to its Ret" (SyncStubsReDupClampConsts).
+	if (parkedSpin)
+	{
+		armAsm->Bind(&parked);
+		cop2EmitParkedSpinBounce();
+	}
+
 	return start;
 }
 
@@ -1535,7 +1620,7 @@ void cop2DynGenSyncStubs()
 	s_cop2SyncStubs[kCop2SyncStubSyncFinish] = cop2DynGenOneSyncStub(vu0SyncThin, _vu0FinishMicro);
 	s_cop2SyncStubs[kCop2SyncStubSyncWait] = cop2DynGenOneSyncStub(vu0SyncThin, _vu0WaitMicro);
 	s_cop2SyncStubs[kCop2SyncStubSyncExact] = cop2DynGenOneSyncStub(vu0SyncThin, nullptr);
-	s_cop2SyncStubs[kCop2SyncStubSyncRunAhead] = cop2DynGenOneSyncStub(vu0SyncRunAheadThin, nullptr);
+	s_cop2SyncStubs[kCop2SyncStubSyncRunAhead] = cop2DynGenOneSyncStub(vu0SyncRunAheadThin, nullptr, /*parkedSpin=*/true);
 	s_cop2SyncStubs[kCop2SyncStubFinish] = cop2DynGenOneSyncStub(nullptr, _vu0FinishMicro);
 }
 

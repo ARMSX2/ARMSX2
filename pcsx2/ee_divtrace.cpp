@@ -6,6 +6,10 @@
 #include "Memory.h"
 #include "MemoryTypes.h"
 #include "VUmicro.h"
+#include "Counters.h"
+#include "IopCounters.h"
+#include "IopMem.h"
+#include "R3000A.h"
 
 #include <cstring>
 
@@ -16,12 +20,19 @@
 	#include <xxhash.h>
 #endif
 
+#ifdef PCSX2_RECOMPILER_TESTS
+extern u64 g_twinEeEventTests;
+extern u64 g_twinIopSlices;
+#endif
+
 namespace ee_divtrace
 {
 	std::atomic<bool>       g_enabled{false};
 	bool                    g_emit_block_hook = false;
 	bool                    g_fp_exclude = false;
 	bool                    g_vu0_include = false;
+	bool                    g_vu0_full = false;
+	bool                    g_sys_full = false;
 	bool                    g_skip_flushcache_syscall = false;
 	std::vector<Sample>     g_stream;
 	std::vector<FullSnap>   g_snaps;
@@ -100,8 +111,109 @@ namespace ee_divtrace
 			h = hash_mix(h, VU0.VI[REG_MAC_FLAG].UL);
 			h = hash_mix(h, VU0.VI[REG_CLIP_FLAG].UL);
 		}
+		if (g_vu0_full)
+		{
+			for (int i = 0; i < 32; ++i)
+				h = hash_mix(h, VU0.VI[i].UL);
+			h = hash_mix64(h, VU0.cycle);
+			h = hash_mix(h, VU0.flags);
+			if (!g_vu0_include)
+			{
+				for (int i = 0; i < 32; ++i)
+				{
+					h = hash_mix64(h, VU0.VF[i].UD[0]);
+					h = hash_mix64(h, VU0.VF[i].UD[1]);
+				}
+				h = hash_mix64(h, VU0.ACC.UD[0]);
+				h = hash_mix64(h, VU0.ACC.UD[1]);
+			}
+			h = hash_mix64(h, XXH3_64bits(VU0.Mem, VU0_MEMSIZE));
+			h = hash_mix64(h, XXH3_64bits(VU0.Micro, VU0_PROGSIZE));
+		}
 		h = hash_mix(h, cpuRegs.pc);
 		h = hash_mix(h, cpuRegs.sa);
+		if (g_sys_full)
+			h = hash_mix64(h, FingerprintSystem());
+		return h;
+	}
+
+	template <typename T>
+	static inline u64 hash_words(u64 h, const T& v)
+	{
+		static_assert(sizeof(T) % 4 == 0);
+		const u32* w = reinterpret_cast<const u32*>(&v);
+		for (size_t i = 0; i < sizeof(T) / 4; ++i)
+			h = hash_mix(h, w[i]);
+		return h;
+	}
+
+	u64 FingerprintSystem()
+	{
+		u64 h = 1469598103934665603ull;
+		// EE: the whole register struct. Every field is a u32/u64 laid out
+		// without padding, and it holds no host pointers.
+		h = hash_words(h, cpuRegs);
+		h = hash_words(h, fpuRegs);
+		h = hash_mix(h, static_cast<u32>(EEsCycle));
+		h = hash_mix64(h, EEoCycle);
+		h = hash_mix64(h, nextStartCounter);
+		h = hash_mix(h, static_cast<u32>(nextDeltaCounter));
+		for (const Counter& c : counters)
+		{
+			h = hash_mix(h, c.count);
+			h = hash_mix(h, c.modeval);
+			h = hash_mix(h, c.target);
+			h = hash_mix(h, c.hold);
+			h = hash_mix(h, c.rate);
+			h = hash_mix(h, c.interrupt);
+			h = hash_mix64(h, c.startCycle);
+		}
+		// IOP: field by field, since psxRegisters has padding.
+		h = hash_words(h, psxRegs.GPR);
+		h = hash_words(h, psxRegs.CP0);
+		h = hash_words(h, psxRegs.CP2D);
+		h = hash_words(h, psxRegs.CP2C);
+		h = hash_mix(h, psxRegs.pc);
+		h = hash_mix(h, psxRegs.code);
+		h = hash_mix64(h, psxRegs.cycle);
+		h = hash_mix(h, psxRegs.interrupt);
+		h = hash_mix(h, psxRegs.pcWriteback);
+		h = hash_mix64(h, psxRegs.iopNextEventCycle);
+		h = hash_mix(h, static_cast<u32>(psxRegs.iopBreak));
+		h = hash_mix(h, static_cast<u32>(psxRegs.iopCycleEE));
+		h = hash_mix(h, psxRegs.iopCycleEECarry);
+		for (int i = 0; i < 32; ++i)
+		{
+			h = hash_mix64(h, psxRegs.sCycle[i]);
+			h = hash_mix(h, static_cast<u32>(psxRegs.eCycle[i]));
+		}
+		h = hash_mix64(h, psxNextStartCounter);
+		h = hash_mix(h, static_cast<u32>(psxNextDeltaCounter));
+		for (const psxCounter& c : psxCounters)
+		{
+			h = hash_mix64(h, c.count);
+			h = hash_mix64(h, c.target);
+			h = hash_mix(h, c.rate);
+			h = hash_mix(h, c.interrupt);
+			h = hash_mix64(h, c.startCycle);
+			h = hash_mix(h, static_cast<u32>(c.deltaCycles));
+			h = hash_mix(h, c.mode.modeval);
+		}
+		// VU1 registers and clock.
+		for (int i = 0; i < 32; ++i)
+		{
+			h = hash_mix64(h, VU1.VF[i].UD[0]);
+			h = hash_mix64(h, VU1.VF[i].UD[1]);
+			h = hash_mix(h, VU1.VI[i].UL);
+		}
+		h = hash_mix64(h, VU1.ACC.UD[0]);
+		h = hash_mix64(h, VU1.ACC.UD[1]);
+		h = hash_mix64(h, VU1.cycle);
+		h = hash_mix(h, VU1.flags);
+#ifdef PCSX2_RECOMPILER_TESTS
+		h = hash_mix64(h, g_twinEeEventTests);
+		h = hash_mix64(h, g_twinIopSlices);
+#endif
 		return h;
 	}
 
@@ -140,6 +252,18 @@ namespace ee_divtrace
 		// only the first MainRam bytes are physical). Scratchpad is 16 KB.
 		u64 h = XXH3_64bits(eeMem->Main, Ps2MemSize::MainRam);
 		h = XXH3_64bits_withSeed(eeMem->Scratch, Ps2MemSize::Scratch, h);
+		if (g_sys_full)
+		{
+			h = XXH3_64bits_withSeed(eeHw, Ps2MemSize::Hardware, h);
+			if (iopMem)
+			{
+				h = XXH3_64bits_withSeed(iopMem->Main, Ps2MemSize::ExposedIopRam, h);
+				h = XXH3_64bits_withSeed(iopMem->Sif, sizeof(iopMem->Sif), h);
+			}
+			h = XXH3_64bits_withSeed(iopHw, Ps2MemSize::IopHardware, h);
+			h = XXH3_64bits_withSeed(VU1.Mem, VU1_MEMSIZE, h);
+			h = XXH3_64bits_withSeed(VU1.Micro, VU1_PROGSIZE, h);
+		}
 		return h;
 	}
 

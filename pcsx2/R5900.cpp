@@ -368,10 +368,21 @@ static bool cpuIntsEnabled(int Interrupt)
 		!cpuRegs.CP0.n.Status.b.EXL && (cpuRegs.CP0.n.Status.b.ERL == 0);
 }
 
+#ifdef PCSX2_RECOMPILER_TESTS
+// Twin-run tooling (ee_divtrace FingerprintSystem): how many EE event tests
+// ran and how many IOP time slices they handed out. Two builds that claim
+// identical emulated timing must agree on both at every frame.
+u64 g_twinEeEventTests = 0;
+u64 g_twinIopSlices = 0;
+#endif
+
 // Shared portion of the branch test, called from both the Interpreter
 // and the recompiler.  (moved here to help alleviate redundant code)
 __fi void _cpuEventTest_Shared()
 {
+#ifdef PCSX2_RECOMPILER_TESTS
+	g_twinEeEventTests++;
+#endif
 	eeEventTestIsActive = true;
 	cpuRegs.nextEventCycle = cpuRegs.cycle + eeWaitCycles;
 	cpuRegs.lastEventCycle = cpuRegs.cycle;
@@ -394,9 +405,18 @@ __fi void _cpuEventTest_Shared()
 	// cycles (fixes Grandia II [PAL], which does a spin loop on a vsync and expects to
 	// be able to read the value before the exception handler clears it).
 
-	uint mask = intcInterrupt() | dmacInterrupt();
-	if (cpuIntsEnabled(mask))
-		cpuException(mask, cpuRegs.branch);
+	// intcInterrupt() and dmacInterrupt() return 0 and change nothing unless
+	// an unmasked INTC cause, an unmasked DMAC channel cause or a DMAC bus
+	// error is pending, which on most event tests none is. Look first.
+	// Do not gate on Status: intcInterrupt() latches the counter HOLD
+	// registers whether or not the interrupt is then taken.
+	if ((psHu32(INTC_STAT) & psHu32(INTC_MASK)) |
+		(psHu16(DMAC_STAT + 2) & psHu16(DMAC_STAT)) | (psHu16(DMAC_STAT) & 0x8000))
+	{
+		const uint mask = intcInterrupt() | dmacInterrupt();
+		if (cpuIntsEnabled(mask))
+			cpuException(mask, cpuRegs.branch);
+	}
 
 	// ---- IOP -------------
 	// * It's important to run a iopEventTest before calling ExecuteBlock. This
@@ -419,6 +439,9 @@ __fi void _cpuEventTest_Shared()
 		//if( EEsCycle < -450 )
 		//	Console.WriteLn( " IOP ahead by: %d cycles", -EEsCycle );
 
+#ifdef PCSX2_RECOMPILER_TESTS
+		g_twinIopSlices++;
+#endif
 		EEsCycle = psxCpu->ExecuteBlock(EEsCycle);
 		iopEventAction = false;
 	}
@@ -466,8 +489,17 @@ __fi void _cpuEventTest_Shared()
 	// ---- VU Sync -------------
 	// We're in a EventTest.  All dynarec registers are flushed
 	// so there is no need to freeze registers here.
-	CpuVU0->ExecuteBlock();
-	CpuVU1->ExecuteBlock();
+	//
+	// BaseVUmicroCPU::ExecuteBlock does nothing for a VU that is not running,
+	// and under MTVU VU1's sync is only Get_MTVUChanges, whatever VPU_STAT
+	// says. Make those tests here, so that the usual case, both VUs idle,
+	// costs no calls.
+	if (VU0.VI[REG_VPU_STAT].UL & 0x1)
+		CpuVU0->ExecuteBlock();
+	if (THREAD_VU1)
+		vu1Thread.Get_MTVUChanges();
+	else if (VU0.VI[REG_VPU_STAT].UL & 0x100)
+		CpuVU1->ExecuteBlock();
 
 	// ---- Schedule Next Event Test --------------
 	const float mutiplier = static_cast<float>(PS2CLK) / static_cast<float>(PSXCLK);
