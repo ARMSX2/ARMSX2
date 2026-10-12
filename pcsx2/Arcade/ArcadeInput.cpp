@@ -53,9 +53,26 @@ namespace
 		bool touch_ext = false; // A mouse button or the gun layer does.
 	};
 
+	// The host mouse buttons that work the gun (ArcadeInput::HandlePointerButton), by InputManager's pointer
+	// button index: left, right, middle. What a press did is kept for its release, which must undo exactly that.
+	constexpr u32 NUM_POINTER_BUTTONS = 3;
+	constexpr ArcadeInput::GunButton s_pointer_buttons[NUM_POINTER_BUTTONS] = {
+		ArcadeInput::GunButton::Trigger,
+		ArcadeInput::GunButton::ShootOffscreen,
+		ArcadeInput::GunButton::A,
+	};
+
+	struct PointerHold
+	{
+		bool taken = false; // The press was the gun's, and its release is owed.
+		ArcadeInput::GunButton button = ArcadeInput::GunButton::Trigger;
+		JVS_MODE mode = JVS_MODE::DEFAULT; // The mode it was pressed in.
+	};
+
 	std::mutex s_mutex; // Guards the three below.
 	Player s_players[NUM_PLAYERS];
 	Remap s_remap;
+	PointerHold s_pointer_holds[NUM_POINTER_BUTTONS];
 
 	std::mutex s_runner_mutex;
 	std::function<void(std::function<void()>)> s_board_runner;
@@ -68,7 +85,7 @@ namespace
 		{JVS_MODE::DEFAULT, "default", TRANSLATE_NOOP("Arcade", "Generic"),
 			TRANSLATE_NOOP("Arcade", "The left stick works the lever too.")},
 		{JVS_MODE::LIGHTGUN, "lightgun", TRANSLATE_NOOP("Arcade", "Light gun"),
-			TRANSLATE_NOOP("Arcade", "The right stick or the mouse aims. R2 or Cross fires, L1 or L2 is the pedal.")},
+			TRANSLATE_NOOP("Arcade", "The right stick or the mouse aims. R2, Cross or the left mouse button fires; L1, L2 or the middle button is the pedal; the right button shoots off screen, which reloads.")},
 		{JVS_MODE::FIGHTING, "fighting", TRANSLATE_NOOP("Arcade", "Fighting"),
 			TRANSLATE_NOOP("Arcade", "The left stick works the lever too.")},
 		{JVS_MODE::DRIVE, "racing", TRANSLATE_NOOP("Arcade", "Driving"),
@@ -76,7 +93,7 @@ namespace
 		{JVS_MODE::DRUM, "drum", TRANSLATE_NOOP("Arcade", "Drums"),
 			TRANSLATE_NOOP("Arcade", "The D-pad hits the left of the drum, the face buttons the right; L1 and L2 hit the left rim, R1 and R2 the right rim.")},
 		{JVS_MODE::TOUCH, "touch", TRANSLATE_NOOP("Arcade", "Touch panel"),
-			TRANSLATE_NOOP("Arcade", "The right stick or the mouse points, R2 touches. The left stick works the lever too.")},
+			TRANSLATE_NOOP("Arcade", "The right stick or the mouse points, R2 or the left mouse button touches. The left stick works the lever too.")},
 		{JVS_MODE::STANDARD, "standard", TRANSLATE_NOOP("Arcade", "Standard"),
 			TRANSLATE_NOOP("Arcade", "The left stick works the lever too.")},
 		{JVS_MODE::TWINSTICK, "twinstick", TRANSLATE_NOOP("Arcade", "Twin sticks"),
@@ -184,9 +201,9 @@ namespace
 
 	// The switches this player's controls own in the current game: everything, except on a light gun
 	// game, where the gun's sensor bit belongs to ACJV's aim code and the rest of the word is unwired.
-	u16 OwnedBits(u32 player)
+	u16 OwnedBits(u32 player, JVS_MODE mode)
 	{
-		if (ACJV::GetMode() != JVS_MODE::LIGHTGUN)
+		if (mode != JVS_MODE::LIGHTGUN)
 			return 0xFFFF;
 		const GunMapping& gm = ACJV::GetGunMapping();
 		const u16 start = (player == 0) ? gm.p1_start : gm.p2_start;
@@ -195,11 +212,11 @@ namespace
 								(start ? start : static_cast<u16>(JVS_BTN_START)) | JVS_BTN_SERVICE);
 	}
 
-	void Commit(u32 player)
+	// [mode] is the game's, or the one a mouse press was made in when its release comes after the mode changed.
+	void Commit(u32 player, JVS_MODE mode)
 	{
 		const Player& p = s_players[player];
-		const JVS_MODE mode = ACJV::GetMode();
-		const u16 owned = OwnedBits(player);
+		const u16 owned = OwnedBits(player, mode);
 		const u16 want = p.pad_bits | p.ext_bits;
 		ACJV::SetButtonState(player, owned & want, true);
 		ACJV::SetButtonState(player, owned & static_cast<u16>(~want), false);
@@ -209,6 +226,88 @@ namespace
 		{
 			ACJV::SetTouchPressed(s_players[0].touch_pad || s_players[0].touch_ext || s_players[1].touch_ext);
 		}
+	}
+
+	void Commit(u32 player)
+	{
+		Commit(player, ACJV::GetMode());
+	}
+
+	// A gun or touch panel runs: the modes whose cabinet the mouse works.
+	bool IsPointerMode(JVS_MODE mode)
+	{
+		return mode == JVS_MODE::LIGHTGUN || mode == JVS_MODE::TOUCH;
+	}
+
+	// Sets or clears the switches a gun layer button works in [mode], in the player's state (the caller commits
+	// it, with s_mutex held). False when the mode has no gun layer.
+	bool ApplyGunButton(u32 player, ArcadeInput::GunButton button, bool pressed, JVS_MODE mode)
+	{
+		using GunButton = ArcadeInput::GunButton;
+		Player& p = s_players[player];
+		const auto ext = [&p](u16 bit, bool on) {
+			p.ext_bits = on ? static_cast<u16>(p.ext_bits | bit) : static_cast<u16>(p.ext_bits & ~bit);
+		};
+
+		if (mode == JVS_MODE::TOUCH)
+		{
+			switch (button)
+			{
+				case GunButton::Trigger:
+				case GunButton::ShootOffscreen:
+					p.touch_ext = pressed;
+					break;
+				case GunButton::A:
+					ext(JVS_BTN_1, pressed);
+					break;
+				case GunButton::B:
+					ext(JVS_BTN_2, pressed);
+					break;
+				case GunButton::C:
+					ext(JVS_BTN_3, pressed);
+					break;
+				case GunButton::Start:
+					ext(JVS_BTN_START, pressed);
+					break;
+				default:
+					break;
+			}
+		}
+		else if (mode == JVS_MODE::LIGHTGUN)
+		{
+			const GunMapping& gm = ACJV::GetGunMapping();
+			const u16 trigger = (player == 0) ? gm.p1_trigger : gm.p2_trigger;
+			const u16 start = (player == 0) ? gm.p1_start : gm.p2_start;
+			switch (button)
+			{
+				case GunButton::Trigger:
+					ext(trigger, pressed);
+					break;
+				case GunButton::ShootOffscreen:
+					// Fired beside the screen: what Vampire Night reloads with. The other boards read the aim,
+					// which a shot at the edge still has on the picture, so it is an ordinary shot there.
+					ext(trigger, pressed);
+					p.touch_offscreen = pressed;
+					break;
+				case GunButton::A:
+				case GunButton::B:
+					if (player == 0 && gm.pedal)
+						ext(gm.pedal, pressed);
+					else if (player == 0)
+						p.touch_offscreen = pressed;
+					break;
+				case GunButton::Start:
+					ext(start ? start : static_cast<u16>(JVS_BTN_START), pressed);
+					break;
+				default:
+					break;
+			}
+		}
+		else
+		{
+			return false;
+		}
+		return true;
 	}
 
 	// Recomputes the cabinet controls one player's controller holds.
@@ -598,71 +697,53 @@ void ArcadeInput::SetGunButton(u32 player, GunButton button, bool pressed)
 	}
 
 	std::lock_guard lock(s_mutex);
-	Player& p = s_players[player];
-	const auto ext = [&p](u16 bit, bool on) {
-		p.ext_bits = on ? static_cast<u16>(p.ext_bits | bit) : static_cast<u16>(p.ext_bits & ~bit);
+	if (ApplyGunButton(player, button, pressed, ACJV::GetMode()))
+		Commit(player);
+}
+
+bool ArcadeInput::HandlePointerButton(u32 button_index, bool pressed, bool ui_has_pointer)
+{
+	if (button_index >= NUM_POINTER_BUTTONS)
+		return false;
+
+	std::lock_guard lock(s_mutex);
+	PointerHold& hold = s_pointer_holds[button_index];
+
+	// A release is the gun's whenever its press was, so nothing stays held. It lets go in the mode the press
+	// was made in, and in the current one too, which a game that changed the mode left holding it.
+	const auto release = [&hold]() {
+		hold.taken = false;
+		ApplyGunButton(0, hold.button, false, hold.mode);
+		Commit(0);
+		if (hold.mode != ACJV::GetMode())
+			Commit(0, hold.mode);
 	};
 
+	if (!pressed)
+	{
+		if (!hold.taken)
+			return false;
+		release();
+		return true;
+	}
+
+	// A press with no release before it (the window lost focus mid-click) starts over.
+	if (hold.taken)
+		release();
+
 	const JVS_MODE mode = ACJV::GetMode();
-	if (mode == JVS_MODE::TOUCH)
-	{
-		switch (button)
-		{
-			case GunButton::Trigger:
-			case GunButton::ShootOffscreen:
-				p.touch_ext = pressed;
-				break;
-			case GunButton::A:
-				ext(JVS_BTN_1, pressed);
-				break;
-			case GunButton::B:
-				ext(JVS_BTN_2, pressed);
-				break;
-			case GunButton::C:
-				ext(JVS_BTN_3, pressed);
-				break;
-			case GunButton::Start:
-				ext(JVS_BTN_START, pressed);
-				break;
-			default:
-				break;
-		}
-	}
-	else if (mode == JVS_MODE::LIGHTGUN)
-	{
-		const GunMapping& gm = ACJV::GetGunMapping();
-		const u16 trigger = (player == 0) ? gm.p1_trigger : gm.p2_trigger;
-		const u16 start = (player == 0) ? gm.p1_start : gm.p2_start;
-		switch (button)
-		{
-			case GunButton::Trigger:
-				ext(trigger, pressed);
-				break;
-			case GunButton::ShootOffscreen:
-				// Fired beside the screen: what Vampire Night reloads with. The other boards read the aim,
-				// which a shot at the edge still has on the picture, so it is an ordinary shot there.
-				ext(trigger, pressed);
-				p.touch_offscreen = pressed;
-				break;
-			case GunButton::A:
-			case GunButton::B:
-				if (player == 0 && gm.pedal)
-					ext(gm.pedal, pressed);
-				else if (player == 0)
-					p.touch_offscreen = pressed;
-				break;
-			case GunButton::Start:
-				ext(start ? start : static_cast<u16>(JVS_BTN_START), pressed);
-				break;
-			default:
-				break;
-		}
-	}
-	else
-	{
-		return;
-	}
-	Commit(player);
+	if (ui_has_pointer || !Arcade::IsActive() || !IsPointerMode(mode))
+		return false;
+
+	hold = {true, s_pointer_buttons[button_index], mode};
+	ApplyGunButton(0, hold.button, true, mode);
+	Commit(0);
+	return true;
+}
+
+bool ArcadeInput::UsesPointerButtons()
+{
+	return Arcade::IsActive() && IsPointerMode(ACJV::GetMode());
 }
 
 void ArcadeInput::Reset()

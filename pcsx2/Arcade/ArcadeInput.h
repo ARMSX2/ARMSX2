@@ -120,6 +120,22 @@ namespace ArcadeInput
 	};
 	void SetGunButton(u32 player, GunButton button, bool pressed);
 
+	/// A host mouse button went down or up ([button_index] is InputManager's pointer button: 0 left, 1 right,
+	/// 2 middle). While an arcade game runs as a light gun or a touch panel the mouse is player 1's gun layer,
+	/// and these are its buttons: left is Trigger, right ShootOffscreen (the reload, in the games that reload by
+	/// pointing away from the screen), middle A (the pedal; button 1 on a touch panel). Player 2 aims with the
+	/// right stick, so the mouse is never hers. Any other button is not the gun's.
+	///
+	/// Returns true when the cabinet took the click, which the pad bindings must then not see as well. A press is
+	/// not taken when no gun or touch panel game runs, or when [ui_has_pointer] (a menu is under the pointer:
+	/// clicking Resume must not fire a shot). A release is taken, and let go, whenever its press was, whatever
+	/// the game or mode has become since, so nothing stays held.
+	bool HandlePointerButton(u32 button_index, bool pressed, bool ui_has_pointer = false);
+
+	/// The mouse buttons work the cabinet now: a light gun or touch panel game runs. A frontend that gives
+	/// a mouse click another meaning (a double click that toggles full screen) leaves it alone while this holds.
+	bool UsesPointerButtons();
+
 	/// A new arcade game is up: nothing is held, player 1 aims with the pointer and player 2 with the right
 	/// stick. Called when the board starts (ACJV::SetGameId); the player's layout stays.
 	void Reset();
