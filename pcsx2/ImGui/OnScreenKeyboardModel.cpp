@@ -156,6 +156,19 @@ namespace OnScreenKeyboard
 		return static_cast<size_t>(std::count_if(m_text.begin(), m_text.end(), [](char c) { return !IsContinuationByte(c); }));
 	}
 
+	size_t Model::CursorChars() const
+	{
+		return static_cast<size_t>(std::count_if(m_text.begin(), m_text.begin() + m_cursor, [](char c) { return !IsContinuationByte(c); }));
+	}
+
+	void Model::SetCursorChars(size_t chars)
+	{
+		size_t pos = 0;
+		for (; chars > 0 && pos < m_text.size(); chars--)
+			pos = NextBoundary(pos);
+		m_cursor = pos;
+	}
+
 	size_t Model::PrevBoundary(size_t pos) const
 	{
 		if (pos == 0)

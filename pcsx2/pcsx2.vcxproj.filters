@@ -1556,6 +1556,12 @@
     <ClCompile Include="ImGui\ImGuiFullscreen.cpp">
       <Filter>Misc\ImGui</Filter>
     </ClCompile>
+    <ClCompile Include="ImGui\ImGuiFullscreen_Keyboard.cpp">
+      <Filter>Misc\ImGui</Filter>
+    </ClCompile>
+    <ClCompile Include="ImGui\OnScreenKeyboardModel.cpp">
+      <Filter>Misc\ImGui</Filter>
+    </ClCompile>
     <ClCompile Include="CDVD\IsoHasher.cpp">
       <Filter>System\ISO</Filter>
     </ClCompile>
@@ -2680,6 +2686,12 @@
       <Filter>Misc\ImGui</Filter>
     </ClInclude>
     <ClInclude Include="ImGui\ImGuiFullscreen.h">
+      <Filter>Misc\ImGui</Filter>
+    </ClInclude>
+    <ClInclude Include="ImGui\ImGuiFullscreen_Keyboard.h">
+      <Filter>Misc\ImGui</Filter>
+    </ClInclude>
+    <ClInclude Include="ImGui\OnScreenKeyboardModel.h">
       <Filter>Misc\ImGui</Filter>
     </ClInclude>
     <ClInclude Include="CDVD\IsoHasher.h">

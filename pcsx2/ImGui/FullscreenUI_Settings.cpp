@@ -4377,8 +4377,8 @@ void FullscreenUI::DrawNetworkHDDSettingsPage()
 
 void FullscreenUI::OpenMemoryCardCreateDialog()
 {
-	// Pre-fill the first unused "Mcd00N" so a card can be created with a controller alone:
-	// Big Picture's input popup has no on-screen keyboard, so a blank field is a dead end.
+	// Pre-fill the first unused "Mcd00N" so a card can be created with a single press of OK;
+	// the on-screen keyboard in the popup is there to give it another name.
 	std::string default_name;
 	for (int i = 1; i <= 999; i++)
 	{

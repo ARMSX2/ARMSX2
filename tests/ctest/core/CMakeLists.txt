@@ -9,6 +9,7 @@ add_pcsx2_test(core_test
 	gsrunner_affinity_tests.cpp
 	headless_shot_tests.cpp
 	onscreen_keyboard_tests.cpp
+	onscreen_keyboard_ui_tests.cpp
 	texture_upscale_setting_tests.cpp
 	MockMemoryInterface.h
 	StubHost.cpp

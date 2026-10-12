@@ -387,8 +387,10 @@
     <ClCompile Include="ImGui\FullscreenUI_TexturePacks.cpp" />
     <ClCompile Include="ImGui\FullscreenUIShot.cpp" />
     <ClCompile Include="ImGui\ImGuiFullscreen.cpp" />
+    <ClCompile Include="ImGui\ImGuiFullscreen_Keyboard.cpp" />
     <ClCompile Include="ImGui\ImGuiManager.cpp" />
     <ClCompile Include="ImGui\ImGuiOverlays.cpp" />
+    <ClCompile Include="ImGui\OnScreenKeyboardModel.cpp" />
     <ClCompile Include="INISettingsInterface.cpp" />
     <ClCompile Include="GameDatabase.cpp" />
     <ClCompile Include="Gif_Logger.cpp" />
@@ -910,8 +912,10 @@
     <ClInclude Include="ImGui\FullscreenUIShot.h" />
     <ClInclude Include="ImGui\ImGuiAnimated.h" />
     <ClInclude Include="ImGui\ImGuiFullscreen.h" />
+    <ClInclude Include="ImGui\ImGuiFullscreen_Keyboard.h" />
     <ClInclude Include="ImGui\ImGuiManager.h" />
     <ClInclude Include="ImGui\ImGuiOverlays.h" />
+    <ClInclude Include="ImGui\OnScreenKeyboardModel.h" />
     <ClInclude Include="INISettingsInterface.h" />
     <ClInclude Include="GameDatabase.h" />
     <ClInclude Include="Gif_Unit.h" />

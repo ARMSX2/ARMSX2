@@ -536,6 +536,24 @@ TEST(OnScreenKeyboardText, AnyFilterTakesPrintableCharactersOnly)
 	EXPECT_FALSE(m.Insert("\xFF")); // not UTF-8 at all
 }
 
+TEST(OnScreenKeyboardText, CursorCanBeReadAndSetInCharacters)
+{
+	// Four characters in seven bytes: a, é (two bytes), € (three) and z.
+	Model m = Start("a\xC3\xA9\xE2\x82\xACz");
+	EXPECT_EQ(m.CharCount(), 4u);
+	EXPECT_EQ(m.CursorChars(), 4u);
+	m.MoveCursor(-1);
+	EXPECT_EQ(m.CursorChars(), 3u);
+	m.SetCursorChars(1);
+	EXPECT_EQ(m.Cursor(), 1u);
+	m.SetCursorChars(2);
+	EXPECT_EQ(m.Cursor(), 3u);
+	m.SetCursorChars(99);
+	EXPECT_EQ(m.Cursor(), m.Text().size());
+	m.SetCursorChars(0);
+	EXPECT_EQ(m.Cursor(), 0u);
+}
+
 TEST(OnScreenKeyboardText, BeginStartsOverCompletely)
 {
 	Model m = Start("old");

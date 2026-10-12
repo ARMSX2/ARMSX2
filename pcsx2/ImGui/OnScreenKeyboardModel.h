@@ -133,6 +133,11 @@ namespace OnScreenKeyboard
 		/// Puts the cursor at `byte_offset`, moved back to the start of its character if that
 		/// is inside one, and to the end of the text if it is past it.
 		void SetCursor(size_t byte_offset);
+		/// The cursor as a count of characters from the start, and a way to set it that way. A text
+		/// shown as one star per character (a password) is placed by these.
+		size_t CursorChars() const;
+		void SetCursorChars(size_t chars);
+		size_t CharCount() const;
 
 		/// Whether OK is allowed to submit. An empty text cannot be.
 		bool CanSubmit() const { return !m_text.empty(); }
@@ -177,7 +182,6 @@ namespace OnScreenKeyboard
 		u32 ColumnAtCenter(const Row& row, u32 center) const;
 		void SelectColumnNear(u32 row, u32 center);
 		void SwitchPage(Page page);
-		size_t CharCount() const;
 		size_t PrevBoundary(size_t pos) const;
 		size_t NextBoundary(size_t pos) const;
 

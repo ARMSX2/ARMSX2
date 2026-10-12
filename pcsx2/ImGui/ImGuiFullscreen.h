@@ -288,7 +288,8 @@ namespace ImGuiFullscreen
 	{
 		None,
 		Numeric,
-		IPAddress
+		IPAddress,
+		Password ///< Anything, shown as one star per character.
 	};
 
 	void OpenInputStringDialog(
