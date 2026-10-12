@@ -26,12 +26,15 @@
 #include "common/StringUtil.h"
 #include "common/Timer.h"
 
+#include "IconsFontAwesome.h"
+
 #include "fmt/format.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <functional>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -266,6 +269,220 @@ namespace FullscreenUI
 				BrowseOnlinePatches(page->page == SettingsPage::Cheats);
 			return true;
 		}
+
+		//////////////////////////////////////////////////////////////////////////
+		// textdialog: Big Picture's text entry dialog (the on-screen keyboard), open on a sample question
+		//////////////////////////////////////////////////////////////////////////
+
+		struct ShotPadKey
+		{
+			const char* name;
+			ImGuiKey key;
+		};
+
+		// The controller's buttons as ImGui sees them. "confirm" and "cancel" follow the user's OK-button
+		// setting; the compass names are the buttons themselves.
+		constexpr ShotPadKey kShotPadKeys[] = {
+			{"up", ImGuiKey_GamepadDpadUp},
+			{"down", ImGuiKey_GamepadDpadDown},
+			{"left", ImGuiKey_GamepadDpadLeft},
+			{"right", ImGuiKey_GamepadDpadRight},
+			{"south", ImGuiKey_GamepadFaceDown},
+			{"east", ImGuiKey_GamepadFaceRight},
+			{"west", ImGuiKey_GamepadFaceLeft},
+			{"north", ImGuiKey_GamepadFaceUp},
+			{"l1", ImGuiKey_GamepadL1},
+			{"r1", ImGuiKey_GamepadR1},
+			{"l2", ImGuiKey_GamepadL2},
+			{"select", ImGuiKey_GamepadBack},
+			{"start", ImGuiKey_GamepadStart},
+		};
+
+		// A physical keyboard's editing keys.
+		constexpr ShotPadKey kShotKeyboardKeys[] = {
+			{"backspace", ImGuiKey_Backspace},
+			{"delete", ImGuiKey_Delete},
+			{"left", ImGuiKey_LeftArrow},
+			{"right", ImGuiKey_RightArrow},
+			{"home", ImGuiKey_Home},
+			{"end", ImGuiKey_End},
+			{"enter", ImGuiKey_Enter},
+			{"escape", ImGuiKey_Escape},
+		};
+
+		void ShotRunFrames(u32 count)
+		{
+			for (u32 i = 0; i < count; i++)
+				GSPresentCurrentFrame();
+		}
+
+		// One press and release of `key`, with frames in between so the dialog sees both.
+		void ShotPress(ImGuiKey key)
+		{
+			ImGuiIO& io = ImGui::GetIO();
+			io.AddKeyAnalogEvent(key, true, 1.0f);
+			ShotRunFrames(2);
+			io.AddKeyAnalogEvent(key, false, 0.0f);
+			ShotRunFrames(2);
+		}
+
+		// A comma separated list of key names, each optionally followed by *N to press it N times.
+		bool ShotPressList(std::string_view list, const ShotPadKey* table, size_t table_size, bool gamepad, std::string* error)
+		{
+			for (const std::string_view item : StringUtil::SplitString(list, ',', true))
+			{
+				std::string_view name = item;
+				u32 times = 1;
+				if (const size_t star = item.find('*'); star != std::string_view::npos)
+				{
+					name = item.substr(0, star);
+					times = StringUtil::FromChars<u32>(item.substr(star + 1)).value_or(1);
+				}
+
+				std::optional<ImGuiKey> key;
+				if (gamepad && StringUtil::compareNoCase(name, "confirm"))
+					key = ImGui::GetIO().ConfigNavSwapGamepadButtons ? ImGuiKey_GamepadFaceRight : ImGuiKey_GamepadFaceDown;
+				else if (gamepad && StringUtil::compareNoCase(name, "cancel"))
+					key = ImGui::GetIO().ConfigNavSwapGamepadButtons ? ImGuiKey_GamepadFaceDown : ImGuiKey_GamepadFaceRight;
+				for (size_t i = 0; i < table_size && !key; i++)
+				{
+					if (StringUtil::compareNoCase(name, table[i].name))
+						key = table[i].key;
+				}
+				if (!key)
+				{
+					*error = fmt::format("unknown key '{}' in textdialog", name);
+					return false;
+				}
+
+				for (u32 i = 0; i < times; i++)
+					ShotPress(*key);
+			}
+			return true;
+		}
+
+		// A left click at each "x,y" (screen pixels) of a "+" separated list, with the mouse moved there first.
+		bool ShotClickList(std::string_view list, std::string* error)
+		{
+			ImGuiIO& io = ImGui::GetIO();
+			for (const std::string_view item : StringUtil::SplitString(list, '+', true))
+			{
+				const size_t comma = item.find(',');
+				const std::optional<float> x = (comma == std::string_view::npos) ? std::nullopt : StringUtil::FromChars<float>(item.substr(0, comma));
+				const std::optional<float> y = (comma == std::string_view::npos) ? std::nullopt : StringUtil::FromChars<float>(item.substr(comma + 1));
+				if (!x || !y)
+				{
+					*error = fmt::format("click wants x,y pixels, got '{}'", item);
+					return false;
+				}
+
+				io.AddMousePosEvent(*x, *y);
+				ShotRunFrames(2);
+				io.AddMouseButtonEvent(0, true);
+				ShotRunFrames(2);
+				io.AddMouseButtonEvent(0, false);
+				ShotRunFrames(2);
+			}
+			return true;
+		}
+
+		// padkeys:<keys>: plays pad buttons (as in textdialog's keys=) on whatever Big Picture is showing, so a
+		// shot can start from a real row (settings:memorycard, then padkeys:down,confirm opens Create Memory Card).
+		bool PlayPadKeys(std::string_view keys, std::string* error)
+		{
+			if (!GSHeadless::IsEnabled())
+			{
+				*error = "padkeys needs --headless (it supplies the frames the presses are spread over)";
+				return false;
+			}
+			ShotRunFrames(2);
+			if (!ShotPressList(keys, kShotPadKeys, std::size(kShotPadKeys), true, error))
+				return false;
+			ShotRunFrames(2);
+			return true;
+		}
+
+		// textdialog[:numeric|:ip][:text=<initial text>][:keys=<pad keys>][:type=<characters>][:pkeys=<keyboard keys>][:click=<x,y+x,y..>]
+		// Opens the text entry dialog over whatever is showing, as Local Link's Host Address row would (a number
+		// pad with :numeric or :ip), then plays what follows as a user would: pad buttons (up down left right
+		// south east west north l1 r1 l2 select start confirm cancel, e.g. keys=down*2,confirm), characters typed on
+		// a physical keyboard, keyboard keys (backspace delete left right home end enter escape), and mouse clicks.
+		// Needs --headless, which supplies the frames the presses are spread over. Values cannot contain ':'.
+		bool OpenTextDialog(std::string_view spec, std::string* error)
+		{
+			InputFilterType filter = InputFilterType::None;
+			std::string initial, pad_keys, typed, keyboard_keys, clicks;
+			bool long_message = false;
+			for (const std::string_view token : StringUtil::SplitString(spec, ':', true))
+			{
+				const size_t equals = token.find('=');
+				const std::string_view key = token.substr(0, equals);
+				const std::string_view value = (equals == std::string_view::npos) ? std::string_view() : token.substr(equals + 1);
+				if (StringUtil::compareNoCase(key, "long"))
+					long_message = true;
+				else if (StringUtil::compareNoCase(key, "numeric"))
+					filter = InputFilterType::Numeric;
+				else if (StringUtil::compareNoCase(key, "ip"))
+					filter = InputFilterType::IPAddress;
+				else if (StringUtil::compareNoCase(key, "text"))
+					initial = value;
+				else if (StringUtil::compareNoCase(key, "keys"))
+					pad_keys = value;
+				else if (StringUtil::compareNoCase(key, "type"))
+					typed = value;
+				else if (StringUtil::compareNoCase(key, "pkeys"))
+					keyboard_keys = value;
+				else if (StringUtil::compareNoCase(key, "click"))
+					clicks = value;
+				else
+				{
+					*error = fmt::format("unknown textdialog option '{}' (long, numeric, ip, text=, keys=, type=, pkeys=, click=)", token);
+					return false;
+				}
+			}
+
+			const bool scripted = !pad_keys.empty() || !typed.empty() || !keyboard_keys.empty() || !clicks.empty();
+			if (scripted && !GSHeadless::IsEnabled())
+			{
+				*error = "textdialog keys need --headless (it supplies the frames the presses are spread over)";
+				return false;
+			}
+
+			s_about_window_open = false;
+			ImGuiFullscreen::CloseInputDialog();
+			const char* const title = (filter == InputFilterType::None) ? "Host Address" : (filter == InputFilterType::Numeric) ? "Local Link Port" : "PS2 IP Address";
+			const char* const message = (filter == InputFilterType::None) ?
+			                                "Enter the address of the host: an IPv4 address such as 192.168.1.42, or a host name." :
+			                                (filter == InputFilterType::Numeric) ? "Enter the port, 1024 to 65535. It must be the same on every device." :
+			                                                                       "Enter the PS2 IP address";
+			// The longest message any caller gives the dialog, from Save Profile on the Controller page.
+			const std::string long_text = "Custom input profiles are used to override the Shared input profile for specific games.\n\n"
+			                              "To apply a custom input profile to a game, go to its Game Properties, then change the 'Input Profile' on "
+			                              "the Summary tab.\n\nEnter the name for the new input profile:";
+			// What OK submits shows as a toast, for the shot to read.
+			OpenInputStringDialog(
+				title, long_message ? long_text : std::string(message), std::string(), ICON_FA_CHECK " OK",
+				[](std::string text) { ShowToast(ICON_FA_CHECK, fmt::format("OK with '{}'", text), 60.0f); }, std::move(initial), filter);
+
+			if (scripted)
+			{
+				// The dialog ignores input on the frame it opens, and its window needs a frame to get its size.
+				ShotRunFrames(4);
+				if (!ShotPressList(pad_keys, kShotPadKeys, std::size(kShotPadKeys), true, error))
+					return false;
+				if (!typed.empty())
+				{
+					ImGui::GetIO().AddInputCharactersUTF8(typed.c_str());
+					ShotRunFrames(3);
+				}
+				if (!ShotPressList(keyboard_keys, kShotKeyboardKeys, std::size(kShotKeyboardKeys), false, error))
+					return false;
+				if (!ShotClickList(clicks, error))
+					return false;
+				ShotRunFrames(2);
+			}
+			return true;
+		}
 	} // namespace
 
 	std::string PageNames()
@@ -279,6 +496,7 @@ namespace FullscreenUI
 		}
 		out += ", gamesettings, gamesettings:<page>, gamesettings:patches:browse, gamesettings:cheats:browse, loadstate, " + ShotArcadeNames();
 		out += ", texturepacks:<" + TexturePacksShotVariants() + ">";
+		out += ", textdialog[:long][:numeric|:ip][:text=..][:keys=..][:type=..][:pkeys=..][:click=..], padkeys:<keys>";
 		for (const SettingsPageEntry& page : kSettingsPages)
 		{
 			if (page.global)
@@ -308,6 +526,10 @@ namespace FullscreenUI
 				return OpenTexturePacksForShot(settings_page, error);
 			if (StringUtil::compareNoCase(top, "gamesettings"))
 				return OpenFirstGameSettingsPage(settings_page, error);
+			if (StringUtil::compareNoCase(top, "textdialog"))
+				return OpenTextDialog(settings_page, error);
+			if (StringUtil::compareNoCase(top, "padkeys"))
+				return PlayPadKeys(settings_page, error);
 			if (!StringUtil::compareNoCase(top, "settings"))
 			{
 				*error = fmt::format("'{}' has no sub-pages (only settings:<page> does)", top);
@@ -340,6 +562,8 @@ namespace FullscreenUI
 
 		if (StringUtil::compareNoCase(top, "loadstate"))
 			return OpenFirstGameLoadState(error);
+		if (StringUtil::compareNoCase(top, "textdialog"))
+			return OpenTextDialog({}, error);
 		// arcadelaunch, arcadepick, ...: the arcade screens' states (FullscreenUI_Arcade.cpp).
 		if (StringUtil::StartsWithNoCase(top, "arcade"))
 			return ShotArcade(StringUtil::toLower(top.substr(6)), error);
