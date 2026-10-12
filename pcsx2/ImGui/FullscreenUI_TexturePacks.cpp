@@ -1585,7 +1585,8 @@ namespace
 		ImGui::PushStyleColor(ImGuiCol_TitleBgActive, UIPrimaryColor);
 		ImGui::PushStyleColor(ImGuiCol_PopupBg, UIPopupBackgroundColor);
 
-		bool is_open = !ImGuiFullscreen::WantsToCloseMenu();
+		// The search box opens above this window and takes Back for itself.
+		bool is_open = ImGuiFullscreen::IsInputDialogOpen() || !ImGuiFullscreen::WantsToCloseMenu();
 		bool close = false;
 		if (ImGui::BeginPopupModal(window_id.c_str(), &is_open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
 		{
