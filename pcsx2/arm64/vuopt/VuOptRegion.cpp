@@ -677,6 +677,21 @@ namespace vuopt
 		{
 			Node& n = *nodes_[i];
 			armAsm->Bind(&n.head);
+			size_t pi = 0;
+			std::vector<std::pair<const u8*, ir::ValueId>> marks;
+			if (t_.profile)
+			{
+				// analysis only: an execution counter (not part of the profile)
+				pi = t_.prof_.size();
+				t_.prof_.emplace_back();
+				t_.prof_[pi].pc = n.pc;
+				t_.prof_[pi].count = std::make_unique<u64>(0);
+				armMoveAddressToReg(a64::x16, t_.prof_[pi].count.get());
+				armAsm->Ldr(a64::x17, a64::MemOperand(a64::x16));
+				armAsm->Add(a64::x17, a64::x17, 1);
+				armAsm->Str(a64::x17, a64::MemOperand(a64::x16));
+			}
+			const u8* headStart = armGetCurrentCodePointer();
 			// The budget test at a checkpoint (PlanChecks), then the block's
 			// cycles off the counter register.
 			const a64::Register wc = W(kCyclesReg);
@@ -687,8 +702,30 @@ namespace vuopt
 			}
 			if (n.br.cycles)
 				armAsm->Sub(wc, wc, n.br.cycles);
+			const u8* bodyStart = armGetCurrentCodePointer();
+			if (t_.profile)
+			{
+				t_.prof_[pi].segs.push_back({headStart, bodyStart, "head"});
+				g_lowerMarks = &marks;
+			}
 			const LowerResult r = n.low->Emit(homes_);
+			g_lowerMarks = nullptr;
 			pxAssertRel(r.ok, "vuopt region: node no longer lowers with region homes");
+			const u8* tailStart = armGetCurrentCodePointer();
+			if (t_.profile)
+			{
+				const u8* at = bodyStart;
+				std::string tag = "entry";
+				for (const auto& m : marks)
+				{
+					if (m.first > at)
+						t_.prof_[pi].segs.push_back({at, m.first, tag});
+					at = m.first;
+					tag = ir::OpName(n.fn.insts[m.second].op);
+				}
+				if (tailStart > at)
+					t_.prof_[pi].segs.push_back({at, tailStart, tag});
+			}
 			const int next = static_cast<int>(i + 1);
 			if (n.br.endKind == BlockEnd::CondBranch)
 			{
@@ -702,6 +739,8 @@ namespace vuopt
 				EmitJump(n);
 			else
 				Jump(n.taken, next);
+			if (t_.profile && armGetCurrentCodePointer() > tailStart)
+				t_.prof_[pi].segs.push_back({tailStart, armGetCurrentCodePointer(), "tail"});
 		}
 		// Bails: homes back to microVU's locations (from a checkpoint), then
 		// microVU's own code for the block, compiled the first time it is
@@ -933,6 +972,23 @@ namespace vuopt
 			armEmitJmp(target);
 		}
 		return true;
+	}
+
+	void RegionTier::PrintProfile(FILE* out) const
+	{
+		vixl::aarch64::Disassembler dis;
+		vixl::aarch64::Decoder decoder;
+		decoder.AppendVisitor(&dis);
+		for (const ProfNode& p : prof_)
+		{
+			std::fprintf(out, "N %04x %llu\n", p.pc, static_cast<unsigned long long>(*p.count));
+			for (const ProfSeg& s : p.segs)
+				for (const u8* a = s.start; a < s.end; a += 4)
+				{
+					decoder.Decode(reinterpret_cast<const vixl::aarch64::Instruction*>(a));
+					std::fprintf(out, "I %s %s\n", s.tag.c_str(), dis.GetOutput());
+				}
+		}
 	}
 
 	bool RegionTier::Decline(const std::string& why, std::string* out)

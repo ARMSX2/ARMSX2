@@ -343,6 +343,7 @@ namespace
 				region->maxVHomes = o.vHomes;
 				region->maxGHomes = o.gHomes;
 				region->schedule = o.schedule;
+				region->profile = o.profile;
 				region->dump = o.dumpIr;
 			}
 		}
@@ -585,6 +586,8 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			ctx.region->jumpTargets = jumpTargets;
 		ctx.Install();
 		const auto run = recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
+		if (ctx.region && opts.profile)
+			ctx.region->PrintProfile(stdout);
 		const u64 runBytes = CompiledBytes(vu);
 		Uninstall();
 

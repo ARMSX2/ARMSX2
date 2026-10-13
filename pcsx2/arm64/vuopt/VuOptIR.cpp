@@ -1487,6 +1487,12 @@ namespace vuopt::ir
 		return out;
 	}
 
+	static const char* const kOpNames[] = {"none", "livein", "phi", "const", "fmac", "opmula", "opmsub", "fmac2", "clipbits",
+		"macflags", "status.upd", "status.div", "status.set", "clip.upd", "clip.set", "flagread", "ialu", "incvi", "mtir",
+		"xtop", "loadq", "loadi", "storeq", "storei", "move", "mr32", "mfir", "mfp", "div", "divflags", "efu", "r.upd",
+		"r.get", "accclamp", "iconst", "kick", "cond", "yield-check", "exit-if", "exit", "leave"};
+	const char* OpName(Op op) { return kOpNames[static_cast<int>(op)]; }
+
 	std::string Dump(const Function& f, const ProgramGraph& g)
 	{
 		static const char* const kOp[] = {"none", "livein", "phi", "const", "fmac", "opmula", "opmsub", "fmac2", "clipbits",

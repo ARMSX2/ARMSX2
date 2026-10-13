@@ -39,6 +39,7 @@
 #include "VuOptLower.h"
 #include "VuOptMvuTrace.h"
 
+#include <cstdio>
 #include <map>
 #include <memory>
 #include <string>
@@ -79,7 +80,25 @@ namespace vuopt
 		// target goes through microVU's jump cache.
 		std::map<u32, std::vector<u32>> jumpTargets;
 
+		// Analysis only: count each node's executions and keep its code split
+		// by the IR operation that emitted it; PrintProfile() writes both.
+		bool profile = false;
+		void PrintProfile(FILE* out) const;
+
 	private:
+		struct ProfSeg
+		{
+			const u8* start;
+			const u8* end;
+			std::string tag; // IR op name, "head", "tail"
+		};
+		struct ProfNode
+		{
+			u32 pc = 0;
+			std::unique_ptr<u64> count;
+			std::vector<ProfSeg> segs;
+		};
+		std::vector<ProfNode> prof_;
 		u32 vu_;
 		const u8* micro_;
 		std::unique_ptr<PipeAnalyzer> an_;

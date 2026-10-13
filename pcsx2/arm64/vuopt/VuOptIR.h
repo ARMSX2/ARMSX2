@@ -337,4 +337,5 @@ namespace vuopt::ir
 	std::vector<std::string> Verify(const Function& f);
 
 	std::string Dump(const Function& f, const ProgramGraph& g);
+	const char* OpName(Op op);
 } // namespace vuopt::ir

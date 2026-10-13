@@ -262,6 +262,8 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 			opts.vuopt.vHomes = std::atoi(argv[++i]);
 		else if (a == "--vuopt-no-sched")
 			opts.vuopt.schedule = false;
+		else if (a == "--vuopt-profile")
+			opts.vuopt.profile = true;
 		else if (a == "--vuopt-ghomes" && i + 1 < argc)
 			opts.vuopt.gHomes = std::atoi(argv[++i]);
 		else if (a == "--vuopt-trace-dump" && i + 1 < argc)
