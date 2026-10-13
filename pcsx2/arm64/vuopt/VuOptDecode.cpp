@@ -252,7 +252,40 @@ namespace vuopt
 		return op == LOp::JR || op == LOp::JALR;
 	}
 
-	UpperInst DecodeUpper(u32 code)
+	namespace
+	{
+		// Decoding is a pure function of the word and the compile passes ask
+		// for the same words many times: a small direct-mapped memo per thread.
+		// Entries are raw storage (zero-initialised thread storage, no
+		// constructor), so the lookup needs no per-access TLS init guard.
+		template <typename T, T (*Decode)(u32)>
+		const T& Memo(u32 code)
+		{
+			struct Entry
+			{
+				u32 key; // code + 1 (0: empty)
+				alignas(T) unsigned char value[sizeof(T)];
+			};
+			static thread_local Entry table[4096];
+			Entry& e = table[(code ^ (code >> 12) ^ (code >> 24)) & 4095];
+			T* v = reinterpret_cast<T*>(e.value);
+			if (e.key != code + 1)
+			{
+				*v = Decode(code);
+				e.key = code + 1;
+			}
+			return *v;
+		}
+	} // namespace
+
+	static UpperInst DecodeUpperRawImpl(u32 code);
+	static LowerInst DecodeLowerRawImpl(u32 code);
+	UpperInst DecodeUpper(u32 code) { return Memo<UpperInst, DecodeUpperRawImpl>(code); }
+	LowerInst DecodeLower(u32 code) { return Memo<LowerInst, DecodeLowerRawImpl>(code); }
+	const UpperInst& DecodeUpperRef(u32 code) { return Memo<UpperInst, DecodeUpperRawImpl>(code); }
+	const LowerInst& DecodeLowerRef(u32 code) { return Memo<LowerInst, DecodeLowerRawImpl>(code); }
+
+	static UpperInst DecodeUpperRawImpl(u32 code)
 	{
 		UpperInst u;
 		u.word = code;
@@ -294,7 +327,7 @@ namespace vuopt
 		return u;
 	}
 
-	LowerInst DecodeLower(u32 code)
+	static LowerInst DecodeLowerRawImpl(u32 code)
 	{
 		LowerInst l;
 		l.word = code;

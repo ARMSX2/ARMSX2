@@ -203,6 +203,7 @@ namespace vuopt
 	private:
 		// microVU state, same names
 		const u8* micro_;
+		std::vector<u32> passed_; // flagPass's visited start PCs (kept to reuse its buffer)
 		PipeConfig cfg_;
 		std::vector<MvuOp> info_;
 		PipeState regs_;      // mVUregs

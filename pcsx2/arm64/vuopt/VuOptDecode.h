@@ -126,6 +126,10 @@ namespace vuopt
 
 	UpperInst DecodeUpper(u32 word);
 	LowerInst DecodeLower(u32 word);
+	// The same from a per-thread memo, by reference: valid only until the
+	// next decode on this thread.
+	const UpperInst& DecodeUpperRef(u32 word);
+	const LowerInst& DecodeLowerRef(u32 word);
 	InstPair DecodePair(const u8* micro, u32 memSize, u32 pc);
 
 	const char* UOpName(UOp op);

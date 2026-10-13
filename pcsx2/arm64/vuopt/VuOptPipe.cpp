@@ -729,13 +729,13 @@ namespace vuopt
 
 	void PipeAnalyzer::opU(int pass)
 	{
-		const UpperInst u = DecodeUpper(code_);
 		if (pass == 3)
 		{
-			if (u.foundPass4)
+			if (DecodeUpperRef(code_).foundPass4)
 				regs_.needExactMatch |= 8;
 			return;
 		}
+		const UpperInst u = DecodeUpper(code_);
 		// pass 0
 		const int opCase = static_cast<int>(u.form);
 		auto setupPass1 = [&](bool isACC, bool noFlagUpdate) {
@@ -786,12 +786,9 @@ namespace vuopt
 
 	void PipeAnalyzer::opL(int pass)
 	{
-		const LowerInst l = DecodeLower(code_);
-		const bool vu0 = !isVU1();
-
 		if (pass == 3)
 		{
-			switch (l.op)
+			switch (DecodeLowerRef(code_).op)
 			{
 				case LOp::FCAND: case LOp::FCEQ: case LOp::FCGET: case LOp::FCOR: regs_.needExactMatch |= 4; break;
 				case LOp::FMAND: case LOp::FMEQ: case LOp::FMOR: regs_.needExactMatch |= 2; break;
@@ -811,6 +808,8 @@ namespace vuopt
 			return;
 		}
 
+		const LowerInst l = DecodeLower(code_);
+		const bool vu0 = !isVU1();
 		MvuLower& lo = info().lOp;
 		switch (l.op)
 		{
@@ -1010,25 +1009,21 @@ namespace vuopt
 		if (branch_ <= 2) // B/BAL
 		{
 			incPC(-1);
-			std::vector<u32> v;
-			flagPass(branchAddr(), 0, 0, v);
+			passed_.clear();
+			flagPass(branchAddr(), 0, 0, passed_);
 			incPC(1);
 			regs_.needExactMatch &= 0x7;
 		}
 		else if (branch_ <= 8) // Conditional Branch
 		{
 			incPC(-1);
-			{
-				std::vector<u32> v;
-				flagPass(branchAddr(), 0, 0, v);
-			}
+			passed_.clear();
+			flagPass(branchAddr(), 0, 0, passed_);
 			const int backupFlagInfo = regs_.needExactMatch;
 			regs_.needExactMatch = 0;
 			incPC(4);
-			{
-				std::vector<u32> v;
-				flagPass(xPC(), 0, 0, v);
-			}
+			passed_.clear();
+			flagPass(xPC(), 0, 0, passed_);
 			incPC(-3);
 			regs_.needExactMatch |= backupFlagInfo;
 			regs_.needExactMatch &= 0x7;
@@ -1412,6 +1407,8 @@ namespace vuopt
 		res.flagHack = sFlagHack_;
 		res.end = regs_;
 		res.ops.reserve(count_);
+		res.pcs.reserve(count_);
+		res.insts.reserve(count_);
 		{
 			u32 w = startPC_;
 			for (u32 i = 0; i < count_; i++)
