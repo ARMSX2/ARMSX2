@@ -508,6 +508,8 @@ namespace vuopt
 			std::map<ValueId, std::vector<ValueId>> statusChain_; // non-sticky StatusUpd -> the updates folded into it, oldest first
 			ValueId StatusBase(ValueId v) const; // the status value a (possibly folded) chain starts from
 			void FoldStatusChains();
+			void Schedule();
+			static u32 Latency(const Inst& in);
 			ValueId SingleSource(const ArgVec& args, size_t off) const;
 			void ClampedOperands(ValueId id, std::vector<ValueId>& out) const;
 			template <typename F>
@@ -1515,6 +1517,181 @@ namespace vuopt
 				emit_[prev] = 0;
 				statusChain_[v] = std::move(chain);
 			}
+		}
+
+		// Milestone 9: issue-to-result latency of an operation's lowering on
+		// an in-order Cortex-A55 (approximate: NEON FP 4, loads 3-4, the flag
+		// packs' compare/reduce chains about 6, divides and EFU sequences long).
+		u32 Lowerer::Latency(const Inst& in)
+		{
+			switch (in.op)
+			{
+				case Op::Fmac: case Op::Opmula: case Op::Opmsub: case Op::AccClamp:
+					return 4;
+				case Op::Fmac2:
+					return 4;
+				case Op::MacFlags: case Op::StatusUpd: case Op::ClipBits:
+					return 6;
+				case Op::ClipUpd: case Op::StatusDiv: case Op::StatusSet: case Op::FlagRead:
+					return 2;
+				case Op::LoadQ:
+					return 4;
+				case Op::LoadI:
+					return 3;
+				case Op::Move: case Op::Mr32: case Op::Mfir: case Op::Mfp: case Op::RGet:
+					return 2;
+				case Op::Mtir:
+					return 3;
+				case Op::Div: case Op::DivFlags:
+					return 12;
+				case Op::Efu:
+					return 20;
+				case Op::RUpd:
+					return 3;
+				case Op::Kick:
+					return 30;
+				default:
+					return 1;
+			}
+		}
+
+		// List scheduling of the node's operations (in order_), keeping every
+		// operand before its use, the memory order (a store or kick after every
+		// load of the memory state it replaces) and the Leave last. Priority:
+		// the longest latency path to the end; ties keep the original order.
+		// Runs after dead code is marked, before uses are counted.
+		void Lowerer::Schedule()
+		{
+			const u32 n = static_cast<u32>(order_.size());
+			if (n < 3)
+				return;
+			static thread_local std::vector<s32> idx;
+			static thread_local std::vector<u32> npred, height, ready, edgeStart, edges, out, readersOf;
+			static thread_local std::vector<std::pair<u32, u32>> edgeList;
+			const size_t N = f_.insts.size();
+			if (idx.size() < N)
+				idx.resize(N);
+			for (u32 i = 0; i < n; i++)
+				idx[order_[i]] = static_cast<s32>(i);
+			edgeList.clear();
+			const auto inBlock = [&](ValueId a) {
+				return a && a < N && idx[a] >= 0 && static_cast<u32>(idx[a]) < n && order_[idx[a]] == a;
+			};
+			for (u32 i = 0; i < n; i++)
+			{
+				const ValueId v = order_[i];
+				if (v == leave_)
+					continue;
+				const Inst& in = I(v);
+				for (ValueId a : in.args)
+				{
+					if (inBlock(a))
+						edgeList.push_back({static_cast<u32>(idx[a]), i});
+					// an operand aliased to an earlier value reads that value
+					const ValueId c = C(a);
+					if (c != a && inBlock(c))
+						edgeList.push_back({static_cast<u32>(idx[c]), i});
+				}
+				// a memory writer after every reader of the state it replaces
+				if (in.type == Type::Mem)
+					for (ValueId a : in.args)
+						if (a && I(a).type == Type::Mem)
+							for (u32 j = 0; j < n; j++)
+							{
+								if (j == i || order_[j] == leave_)
+									continue;
+								const Inst& r = I(order_[j]);
+								for (ValueId b : r.args)
+									if (b == a)
+									{
+										edgeList.push_back({j, i});
+										break;
+									}
+							}
+			}
+			// adjacency (CSR) and predecessor counts
+			npred.assign(n, 0);
+			edgeStart.assign(n + 1, 0);
+			for (const auto& e : edgeList)
+			{
+				edgeStart[e.first + 1]++;
+				npred[e.second]++;
+			}
+			for (u32 i = 0; i < n; i++)
+				edgeStart[i + 1] += edgeStart[i];
+			edges.resize(edgeList.size());
+			{
+				static thread_local std::vector<u32> fill;
+				fill.assign(edgeStart.begin(), edgeStart.end() - 1);
+				for (const auto& e : edgeList)
+					edges[fill[e.first]++] = e.second;
+			}
+			// heights, in reverse order (operands come first in order_)
+			height.assign(n, 0);
+			for (u32 i = n; i-- > 0;)
+			{
+				const ValueId v = order_[i];
+				u32 h = 0;
+				for (u32 k = edgeStart[i]; k < edgeStart[i + 1]; k++)
+					h = std::max(h, height[edges[k]]);
+				height[i] = h + (emit_[v] ? Latency(I(v)) : 0);
+			}
+			// cycle-by-cycle, one issue per cycle
+			ready.assign(n, 0); // earliest cycle each operation's operands are ready
+			out.clear();
+			static thread_local std::vector<u32> avail;
+			avail.clear();
+			u32 leaveIdx = n;
+			for (u32 i = 0; i < n; i++)
+			{
+				if (order_[i] == leave_)
+					leaveIdx = i;
+				else if (npred[i] == 0)
+					avail.push_back(i);
+			}
+			u32 cycle = 0;
+			while (!avail.empty())
+			{
+				size_t best = 0;
+				for (size_t k = 1; k < avail.size(); k++)
+				{
+					const u32 a = avail[k], b = avail[best];
+					const bool ra = ready[a] <= cycle, rb = ready[b] <= cycle;
+					if (ra != rb ? ra
+								 : ra ? (height[a] != height[b] ? height[a] > height[b] : a < b)
+									  : (ready[a] != ready[b] ? ready[a] < ready[b] : (height[a] != height[b] ? height[a] > height[b] : a < b)))
+						best = k;
+				}
+				const u32 i = avail[best];
+				avail[best] = avail.back();
+				avail.pop_back();
+				const ValueId v = order_[i];
+				const bool live = emit_[v] != 0;
+				if (live)
+				{
+					cycle = std::max(cycle, ready[i]);
+					cycle++;
+				}
+				out.push_back(i);
+				const u32 doneAt = live ? cycle - 1 + Latency(I(v)) : 0;
+				for (u32 k = edgeStart[i]; k < edgeStart[i + 1]; k++)
+				{
+					const u32 s = edges[k];
+					ready[s] = std::max(ready[s], doneAt);
+					if (--npred[s] == 0 && s != leaveIdx)
+						avail.push_back(s);
+				}
+			}
+			pxAssertRel(out.size() + (leaveIdx < n ? 1 : 0) == n, "vuopt: scheduling lost an operation");
+			static thread_local std::vector<ValueId> newOrder;
+			newOrder.clear();
+			for (u32 i : out)
+				newOrder.push_back(order_[i]);
+			if (leaveIdx < n)
+				newOrder.push_back(leave_);
+			order_.assign(newOrder.begin(), newOrder.end());
+			for (u32 i = 0; i < n; i++)
+				idx[order_[i]] = -1;
 		}
 
 		ValueId Lowerer::NewPseudo(Cls k, Remat r, const std::vector<u32>& uses)
@@ -3536,6 +3713,9 @@ namespace vuopt
 					}
 				});
 			}
+
+			if (env_.schedule)
+				Schedule();
 
 			FoldStatusChains();
 

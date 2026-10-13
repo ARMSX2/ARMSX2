@@ -72,6 +72,8 @@ namespace vuopt
 		// only); otherwise at most this many NEON homes.
 		s32 maxVHomes = 14;
 		s32 maxGHomes = 6;
+		// Milestone 9: list-schedule node bodies for in-order cores.
+		bool schedule = true;
 		// Recorded JR/JALR targets: block start PC of the jump -> target PCs
 		// seen at run time. A region dispatches these directly; any other
 		// target goes through microVU's jump cache.

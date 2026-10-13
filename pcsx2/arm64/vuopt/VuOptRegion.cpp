@@ -989,6 +989,7 @@ namespace vuopt
 		le.clampExtra = env.clampExtra;
 		le.clampSign = env.clampSign;
 		le.softwareFlush = env.softwareFlush;
+		le.schedule = schedule;
 		RegionBuilder rb(*this, env, le);
 		return rb.Run(br, why);
 	}

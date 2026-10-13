@@ -59,6 +59,9 @@ namespace vuopt
 		bool clampExtra = false;        // CHECK_VU_EXTRA_OVERFLOW (modes 2-3): every FMAC step clamps its operands
 		bool clampSign = false;         // CHECK_VU_SIGN_OVERFLOW (mode 3): those clamps preserve the sign; no result clamp
 		bool softwareFlush = false;     // !FPCR.DAZ: the divide unit's denormal flush in software
+		// Milestone 9: list-schedule each node's operations for an in-order
+		// core (Cortex-A55/A53) before lowering.
+		bool schedule = false;
 		// Testing: allocate from at most this many NEON / general registers
 		// (0 = all), to reach spills and early write-backs in small programs.
 		u32 poolLimitV = 0, poolLimitG = 0;

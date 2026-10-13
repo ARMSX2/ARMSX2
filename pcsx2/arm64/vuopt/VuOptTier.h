@@ -42,6 +42,8 @@ namespace vuopt
 		std::set<s32> skip;
 		// Testing: shrink the allocatable register pools (LowerEnv).
 		u32 poolLimitV = 0, poolLimitG = 0;
+		// Milestone 9: list-schedule the bodies (regions do by default).
+		bool schedule = false;
 		// Print each lowered block's IR to stdout.
 		bool dump = false;
 
