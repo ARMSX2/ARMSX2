@@ -108,7 +108,7 @@ namespace vuopt
 			u32 pc = 0;
 			PipeState key;
 			void* known = nullptr;
-			a64::Label stub, jump;
+			a64::Label stub, jump, far;
 		};
 
 		RegionTier& t_;
@@ -282,16 +282,14 @@ namespace vuopt
 	void RegionBuilder::Emit(const u8*& regionEnd)
 	{
 		const s32 cyclesOff = env_.offCycles;
-		const auto clampConsts = [&]() {
-			armAsm->Ldp(Q(kCMin), Q(kCMax), a64::MemOperand(a64::x25, G(&mVUglob.minvals[0])));
-		};
-		// Entries from microVU (the root's is the block microVU is compiling).
+		a64::Label loadAll, breakAll, exitAll;
+		// Entries from microVU (the root's is where microVU is compiling):
+		// the node's head address in x8, then the shared home loader.
 		for (size_t i = 0; i < nodes_.size(); i++)
 		{
 			nodes_[i]->entry = armGetCurrentCodePointer();
-			EmitLoadHomes(homes_, le_, cyclesOff);
-			clampConsts();
-			armAsm->B(&nodes_[i]->head);
+			armAsm->Adr(a64::x8, &nodes_[i]->head);
+			armAsm->B(&loadAll);
 		}
 		// Bodies.
 		for (size_t i = 0; i < nodes_.size(); i++)
@@ -316,36 +314,85 @@ namespace vuopt
 			else
 				Jump(n.taken, next);
 		}
-		// Cycle-budget breaks: microVU's own exit, from microVU's state.
+		// Cycle-budget breaks: the block, its PC and its three flag
+		// instances (mVUtestCycles' operands) in x0 / w1 / w2, then the shared
+		// tail.
 		for (size_t i = 0; i < nodes_.size(); i++)
 		{
 			Node& n = *nodes_[i];
 			armAsm->Bind(&n.brk);
-			armAsm->Add(W(kCyclesReg), W(kCyclesReg), 1);
-			EmitStoreHomes(homes_, le_, cyclesOff);
 			const int fS = GetLastFlagInst(n.br.entry, n.br.mFC.xStatus, 0, 0);
 			const int fM = GetLastFlagInst(n.br.entry, n.br.mFC.xMac, 1, 0);
 			const int fC = GetLastFlagInst(n.br.entry, n.br.mFC.xClip, 2, 0);
-			pxAssertRel(fS >= 0 && fS < 4, "vuopt region: status instance out of range");
+			pxAssertRel(fS >= 0 && fS < 4 && fM >= 0 && fM < 8 && fC >= 0 && fC < 8, "vuopt region: flag instance out of range");
 			armMoveAddressToReg(a64::x0, n.blk);
-			armAsm->Ldrh(a64::w9, a64::MemOperand(a64::x24, fM * 4));
-			if (fC < 4)
-				armAsm->Ldr(a64::w10, a64::MemOperand(a64::x24, 16 + fC * 4));
-			else
-				armAsm->Ldr(a64::w10, a64::MemOperand(a64::x19, static_cast<s32>(offsetof(VURegs, VI) + REG_CLIP_FLAG * sizeof(REG_VI))));
-			armAsm->Mov(a64::w11, W(20 + fS));
 			armAsm->Mov(a64::w1, n.pc);
-			armEmitJmp(env_.cycleBreak);
+			armAsm->Mov(a64::w2, static_cast<u32>(fS | (fM << 8) | (fC << 16)));
+			armAsm->B(&breakAll);
 		}
-		// Links out of the region.
+		// Links out of the region: the target (or its trampoline) in x8.
 		for (auto& e : exits_)
 		{
 			armAsm->Bind(&e->stub);
-			EmitStoreHomes(homes_, le_, cyclesOff);
 			if (e->known)
-				armEmitJmp(e->known);
+			{
+				armMoveAddressToReg(a64::x8, e->known);
+				armAsm->B(&exitAll);
+			}
 			else
-				armAsm->B(&e->jump);
+			{
+				armAsm->Adr(a64::x8, &e->jump);
+				armAsm->B(&exitAll);
+			}
+		}
+		// Shared: load every register home from microVU's locations.
+		armAsm->Bind(&loadAll);
+		EmitLoadHomes(homes_, le_, cyclesOff);
+		armAsm->Ldp(Q(kCMin), Q(kCMax), a64::MemOperand(a64::x25, G(&mVUglob.minvals[0])));
+		armAsm->Br(a64::x8);
+		// Shared: microVU's budget-break exit from microVU's state.
+		armAsm->Bind(&breakAll);
+		armAsm->Add(W(kCyclesReg), W(kCyclesReg), 1);
+		EmitStoreHomes(homes_, le_, cyclesOff);
+		// w9 = MAC instance fM (Ldrh, as mVUallocMFLAGa), w10 = clip instance fC
+		// (mVUallocCFLAGa: past the ring it is VI[REG_CLIP_FLAG]), w11 = status
+		// register fS.
+		armAsm->Ubfx(a64::w3, a64::w2, 8, 8);
+		armAsm->Add(a64::x4, a64::x24, a64::Operand(a64::x3, a64::LSL, 2));
+		armAsm->Ldrh(a64::w9, a64::MemOperand(a64::x4));
+		{
+			a64::Label ring, clipDone;
+			armAsm->Ubfx(a64::w3, a64::w2, 16, 8);
+			armAsm->Cmp(a64::w3, 4);
+			armAsm->B(&ring, a64::lo);
+			armAsm->Ldr(a64::w10, a64::MemOperand(a64::x19, static_cast<s32>(offsetof(VURegs, VI) + REG_CLIP_FLAG * sizeof(REG_VI))));
+			armAsm->B(&clipDone);
+			armAsm->Bind(&ring);
+			armAsm->Add(a64::x4, a64::x24, 16);
+			armAsm->Ldr(a64::w10, a64::MemOperand(a64::x4, a64::x3, a64::LSL, 2));
+			armAsm->Bind(&clipDone);
+		}
+		armAsm->And(a64::w3, a64::w2, 3);
+		armAsm->Mov(a64::w11, a64::w20);
+		armAsm->Cmp(a64::w3, 1);
+		armAsm->Csel(a64::w11, a64::w21, a64::w11, a64::eq);
+		armAsm->Cmp(a64::w3, 2);
+		armAsm->Csel(a64::w11, a64::w22, a64::w11, a64::eq);
+		armAsm->Cmp(a64::w3, 3);
+		armAsm->Csel(a64::w11, a64::w23, a64::w11, a64::eq);
+		armEmitJmp(env_.cycleBreak);
+		// Shared: store every register home, then leave through x8.
+		armAsm->Bind(&exitAll);
+		EmitStoreHomes(homes_, le_, cyclesOff);
+		armAsm->Br(a64::x8);
+		// Near trampolines for exits microVU has yet to compile; the final
+		// jump is bound after microVU compiles them, wherever that lands.
+		for (auto& e : exits_)
+		{
+			if (e->known)
+				continue;
+			armAsm->Bind(&e->jump);
+			armAsm->B(&e->far);
 		}
 		regionEnd = armGetCurrentCodePointer();
 	}
@@ -407,7 +454,7 @@ namespace vuopt
 			if (e->known)
 				continue;
 			void* target = env_.fetchBlock(env_.vuIndex, e->pc, e->key.bytes);
-			armAsm->Bind(&e->jump);
+			armAsm->Bind(&e->far);
 			armEmitJmp(target);
 		}
 		return true;
