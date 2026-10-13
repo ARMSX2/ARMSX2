@@ -204,8 +204,8 @@ INSTANTIATE_TEST_SUITE_P(
 //  through the scalar ones, and for y/z/w it first rotates that lane into
 //  lane 0 (EXT) and rotates back on writeback. Combining a broadcast source
 //  with a rotated destination crosses the two lane-selection mechanisms,
-//  which is exactly where an off-by-one shows up. It also suppresses the
-//  by-element FMUL fold, so MUL lands on the scalar helper instead.
+//  which is exactly where an off-by-one shows up. MUL takes the by-element
+//  fold in its scalar form here (FMUL Sd, Sn, Vm.S[bc]).
 // =========================================================================
 
 namespace {
@@ -246,8 +246,8 @@ TEST(VuBroadcastSingleLane, AddWIntoYOnly)
 	RunSingleLane(VADDw_U(mask::y, kFd, kFs, kFt), 'y', 9.5f);
 }
 
-// Fs.z = 4.0, Ft.x = 2.0 → 8.0 into Fd.z only. MUL at a single-lane mask
-// bypasses the by-element fold and uses the scalar multiply helper.
+// Fs.z = 4.0, Ft.x = 2.0 → 8.0 into Fd.z only, through the scalar
+// by-element multiply.
 TEST(VuBroadcastSingleLane, MulXIntoZOnly)
 {
 	RunSingleLane(VMULx_U(mask::z, kFd, kFs, kFt), 'z', 8.0f);

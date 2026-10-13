@@ -196,7 +196,10 @@
 //  47 — FCOR tests the clip bits its immediate leaves clear with MOV, BICS and
 //       CSET instead of materialising the immediate, ORing, adding one and
 //       shifting out bit 24.
-static constexpr u32 kMvuCompilerAbiVersion = 47;
+//  48 — the AX-14 by-element multiply also serves single-lane destinations, as a
+//       scalar FMUL by element, and Q, reading its instance's lane of qmmPQ, so
+//       neither broadcasts its operand into a temp first.
+static constexpr u32 kMvuCompilerAbiVersion = 48;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
