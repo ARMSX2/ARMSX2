@@ -1315,7 +1315,10 @@ static void RegionStickyFuzzBody()
 				case 0: lo = VFSAND_L(vi::vi3 + R(2), R(0x1000)); break;
 				case 1: lo = VFMAND_L(vi::vi3 + R(2), vi::vi7); break;
 				case 2: lo = VDIV_L(1 + R(6), R(4), 1 + R(6), R(4)); break;
-				case 3: lo = VFSSET_L(R(0x1000)); break;
+				case 3:
+					if (iter % 3 == 0) // (FSSET kills leave a stale ring slot as the previous instance: those regions keep the old lowering)
+						lo = VFSSET_L(R(0x1000));
+					break;
 				case 4: lo = VIAND_L(vi::vi6, vi::vi1, vi::vi7); break;
 				case 5: lo = VSQ_L((R(15) + 1) << 21, 9 + R(6), vi::vi2, static_cast<s16>(R(8))); break;
 				case 6:
