@@ -1162,16 +1162,52 @@ static void RegionLoopMapsBody()
 // microVU's four STATUS instances, MAC and clip, bit for bit.
 namespace
 {
+// Positive, non-zero registers (vf20 is the event vector the loop loads), and
+// event vectors in memory from qword 0x40: 1.0 in every lane except, in about
+// one vector in four, one lane that is 0.0 or -2.0. vi9 walks them.
+void SeedSparse(VuTestHarness& h, u32 seed)
+{
+	std::mt19937 rng(seed);
+	for (u32 r = 1; r < 32; r++)
+		h.SetVf(r, 1.0f + 0.25f * (rng() % 7), 0.5f + 0.125f * (rng() % 9), 2.0f + (rng() % 5), 1.5f + 0.5f * (rng() % 3));
+	const auto bits = [](float f) {
+		u32 b;
+		std::memcpy(&b, &f, 4);
+		return b;
+	};
+	for (u32 t = 0; t < 128; t++)
+	{
+		float v[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+		if (rng() % 4 == 0)
+			v[rng() % 4] = (rng() & 1) ? 0.0f : -2.0f;
+		h.WriteMemU128(0x400 + t * 16, bits(v[0]), bits(v[1]), bits(v[2]), bits(v[3]));
+	}
+	h.SetVi(9, 0x40);
+}
+
 // One FMAC of the dense loops: k picks the op, the destination field and the
 // operands. Fields cover every shape: full, xyz, pairs, single lanes, three
 // lanes; results land in vf9..vf14 and feed later operands.
-u32 StickyFmac(u32 k)
+//
+// `sparse`: the sources are vf1..vf8, all positive and non-zero, and vf20, the
+// event vector the loop loads from memory each trip (SeedSparse): its lanes are
+// 1.0 except for a zero or a -2.0 now and then. The results then have a zero or
+// a sign bit only when an event passes through, so the sticky bits fill up
+// slowly instead of at once and every FMAC's contribution can be told apart
+// (random special values saturate all eight within a few FMACs, which hides a
+// dropped one).
+u32 StickyFmac(u32 k, bool sparse = false)
 {
 	static const u32 kMask[] = {mask::xyzw, mask::xyz, mask::x | mask::y, mask::z | mask::w, mask::w, mask::xyzw, mask::x | mask::z,
 		mask::y | mask::z | mask::w, mask::y, mask::xyzw, mask::x | mask::y | mask::w, mask::z};
 	const u32 m = kMask[k % std::size(kMask)];
 	const u32 fd = 9 + (k % 6);
-	const u32 fs = 1 + (k * 3) % 14, ft = 1 + (k * 5 + 2) % 14;
+	u32 fs = 1 + (k * 3) % 14, ft = 1 + (k * 5 + 2) % 14;
+	if (sparse)
+	{
+		fs = (k % 5 == 2) ? 20 : 1 + (k * 3) % 8;
+		ft = (k % 3 == 0) ? 20 : 1 + (k * 5 + 2) % 8;
+	}
 	switch (k % 9)
 	{
 		case 0: return VADD_U(m, fd, fs, ft);
@@ -1194,6 +1230,9 @@ u32 StickyFmac(u32 k)
 //   3 a branch over three pairs: the number of status writes per trip varies
 //   4 sparse FMACs between integer-only pairs
 //   5 an XGKICK (a C call: the accumulators and the chain word ride through it)
+//   6 dense FMACs on sparse events (SeedSparse): the sticky bits arrive one at a time
+//   7 sparse events, readers, and a branch over three pairs
+//   8 sparse events, two blocks: ten FMACs, a branch, then exactly four FMACs ending the loop
 std::vector<VuOp> StickyProgram(int variant, u32 trip, u32 body)
 {
 	std::vector<VuOp> p;
@@ -1201,10 +1240,45 @@ std::vector<VuOp> StickyProgram(int variant, u32 trip, u32 body)
 	p.push_back(L(VIADDIU_L(vi::vi7, vi::vi0, 1)));
 	if (variant == 5)
 		p.push_back(L(VIADDIU_L(vi::vi15, vi::vi0, 0x10)));
+	if (variant == 8)
+	{
+		// the loop gets a block of its own: the region's walk enters it at its
+		// head (a branch that is always taken, over a pair), so only the head
+		// tests the budget
+		p.push_back(P(VIBEQ_L(vi::vi0, vi::vi0, 2), VNOP_U()));
+		p.push_back(U(VNOP_U())); // delay slot
+		p.push_back(U(VNOP_U())); // skipped
+	}
 	const s32 head = static_cast<s32>(p.size());
+	if (variant == 8)
+	{
+		// A, ten FMACs ending in a conditional branch over one pair (K), then B,
+		// exactly four FMACs ending the loop. The last four instances are B's, so
+		// A's and K's FMACs only accumulate and B's first instance has to fold
+		// them in: the accumulators are owed across the link.
+		p.push_back(VuOp{VLQI_L(mask::xyzw, vf::vf20, vi::vi9), StickyFmac(0, true)});
+		for (u32 k = 1; k < 9; k++)
+			p.push_back(U(StickyFmac(k, true)));
+		p.push_back(P(VIAND_L(vi::vi6, vi::vi1, vi::vi7), StickyFmac(9, true)));
+		p.push_back(P(VIBEQ_L(vi::vi6, vi::vi0, 2), StickyFmac(10, true)));
+		p.push_back(U(StickyFmac(11, true))); // delay slot
+		p.push_back(U(StickyFmac(28, true))); // K
+		// (ADD, MUL, SUB and ADD: MAX and MINI do not write STATUS)
+		p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), StickyFmac(18, true)));
+		p.push_back(U(StickyFmac(19, true)));
+		const s32 at = static_cast<s32>(p.size());
+		p.push_back(P(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(head - at - 1)), StickyFmac(20, true)));
+		p.push_back(U(StickyFmac(27, true))); // delay slot
+		p.push_back(U(StickyFmac(16, true)));
+		p.push_back(EBit(P(VFSAND_L(vi::vi4, 0xfff), VNOP_U())));
+		return p;
+	}
 	for (u32 k = 0; k < body; k++)
 	{
-		u32 up = StickyFmac(k + static_cast<u32>(variant) * 5), lo = kNopL;
+		const bool sparse = variant >= 6;
+		u32 up = StickyFmac(k + static_cast<u32>(variant) * 5, sparse), lo = kNopL;
+		if (sparse && k == 0)
+			lo = VLQI_L(mask::xyzw, vf::vf20, vi::vi9);
 		switch (variant)
 		{
 			case 1:
@@ -1231,16 +1305,23 @@ std::vector<VuOp> StickyProgram(int variant, u32 trip, u32 body)
 				if (k == 7) lo = VXGKICK_L(vi::vi15);
 				if (k == 13) lo = VFSAND_L(vi::vi3, 0x0c3);
 				break;
+			case 7:
+				if (k == 3) lo = VIAND_L(vi::vi6, vi::vi1, vi::vi7);
+				if (k == 4) lo = VIBEQ_L(vi::vi6, vi::vi0, 4);
+				if (k == 9) lo = VFSAND_L(vi::vi3, 0xfc3);
+				if (k == 12) lo = VFMAND_L(vi::vi5, vi::vi7);
+				break;
 			default:
 				break;
 		}
 		p.push_back(VuOp{lo, up});
 	}
-	p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), StickyFmac(body + 1)));
+	const bool sp = variant >= 6;
+	p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), StickyFmac(body + 1, sp)));
 	const s32 at = static_cast<s32>(p.size());
-	p.push_back(P(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(head - at - 1)), StickyFmac(body + 2)));
-	p.push_back(U(StickyFmac(body + 3))); // delay slot
-	p.push_back(U(StickyFmac(body + 4)));
+	p.push_back(P(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(head - at - 1)), StickyFmac(body + 2, sp)));
+	p.push_back(U(StickyFmac(body + 3, sp))); // delay slot
+	p.push_back(U(StickyFmac(body + 4, sp)));
 	p.push_back(EBit(P(VFSAND_L(vi::vi4, 0xfff), VNOP_U())));
 	return p;
 }
@@ -1252,7 +1333,7 @@ static void RegionStickyAccumulationBody()
 {
 	int failures = 0;
 	u32 runs = 0, accRegions = 0, accumulated = 0;
-	for (int variant = 0; variant <= 5; variant++)
+	for (int variant = 0; variant <= 8; variant++)
 	{
 		// (variant 5 runs to the end: an XGKICK stopped by a budget bail shows a
 		// VPU_STAT difference that exists without the accumulators too)
@@ -1261,7 +1342,10 @@ static void RegionStickyAccumulationBody()
 			for (u32 budget = (variant == 5 ? 0 : 1); budget <= (variant == 5 ? 0u : 150u); budget++)
 			{
 				const RegionOutcome o = RunRegion(p, fh, [variant](VuTestHarness& h) {
-					SeedSpecials(h, 31 + variant);
+					if (variant >= 6)
+						SeedSparse(h, 31 + variant);
+					else
+						SeedSpecials(h, 31 + variant);
 					h.SetVi(8, 0);
 					// a one-quadword GIF packet at qword 0x10: NLOOP 1, EOP, PACKED, NREG 1 (A+D)
 					h.WriteMemU128(0x100, 0x00008001, 0x10000000, 0x0000000e, 0);
@@ -1285,6 +1369,47 @@ static void RegionStickyAccumulationBody()
 	std::printf("[vuopt sticky] runs=%u acc regions=%u accumulated updates=%u\n", runs, accRegions, accumulated);
 }
 
+// Accumulations made in one block are owed to the first instance built in the
+// next: loops (found by the large fuzz, shrunk by VuoptRegion.Repro) where the
+// instance a link later hands over needs the sticky bits the block before
+// only accumulated. A region that forgot the debt at a link (the dirty state
+// of the dataflow) fails these and nothing smaller.
+TEST(VuoptRegion, StickyFoldAcrossLinks)
+{
+	struct Case
+	{
+		const char* hex;
+		int iter;
+		u32 budget;
+	};
+	static const Case kCases[] = {
+		{"10010007:000002ff,10070001:000002ff,81f44b7c:000002ff,50060003:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:01282398,50060002:000002ff,8000033c:0182a398,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:00872aec,8000033c:000002ff,12010801:000002ff,520107f1:000002ff,8000033c:000002ff,8000033c:000002ff,2c2407ff:400002ff,", 2261, 82},
+		{"10010008:000002ff,10070001:000002ff,8000033c:000002ff,50060002:000002ff,8000033c:000002ff,34043800:01e44398,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,50060003:000002ff,8000033c:0087a2ec,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,50060001:000002ff,8000033c:000002ff,8000033c:004823ac,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,12010801:000002ff,520107e8:000002ff,8000033c:000002ff,8000033c:000002ff,2c2407ff:400002ff,", 4423, 0},
+		{"1001000d:000002ff,10070001:000002ff,81f44b7c:000002ff,50060002:000002ff,8000033c:000002ff,2a0004ab:000002ff,8000033c:000002ff,800709b4:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,50060002:000002ff,8000033c:0185a2be,8000033c:000002ff,8000033c:00682289,8000033c:000002ff,8000033c:000002ff,12010801:000002ff,520107e7:000002ff,8000033c:000002ff,8000033c:000002ff,2c2407ff:400002ff,", 6933, 0},
+		{"10010002:000002ff,10070001:000002ff,81f44b7c:000002ff,8000033c:000002ff,8000033c:01f42a6b,50060003:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:01f42328,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:0042a3ac,8000033c:000002ff,8000033c:000002ff,50060003:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:000002ff,8000033c:01e8a2be,8000033c:000002ff,12010801:000002ff,520107e8:000002ff,8000033c:000002ff,8000033c:000002ff,2c2407ff:400002ff,", 15571, 31},
+	};
+	for (const Case& c : kCases)
+	{
+		std::vector<VuOp> p;
+		for (const char* q = c.hex; *q;)
+		{
+			VuOp op;
+			op.lower = static_cast<u32>(std::strtoul(q, const_cast<char**>(&q), 16));
+			q++;
+			op.upper = static_cast<u32>(std::strtoul(q, const_cast<char**>(&q), 16));
+			if (*q == ',')
+				q++;
+			p.push_back(op);
+		}
+		const RegionOutcome o = RunRegion(p, false, [&c](VuTestHarness& h) {
+			SeedSparse(h, 4000 + c.iter);
+			h.SetVi(2, 8);
+		}, c.budget == 0, 14, false, nullptr, c.budget);
+		EXPECT_TRUE(o.diffs.empty()) << "iter " << c.iter << " budget " << c.budget << "\n" << Join(o.diffs, 8);
+		EXPECT_GT(o.accRegions, 0u);
+	}
+}
+
 // Random FMAC-dense loops: every field shape, readers and a divide or an FSSET
 // now and then, forward branches that change how many status writes a trip
 // makes, run under random budgets so bails land anywhere.
@@ -1305,9 +1430,10 @@ static void RegionStickyFuzzBody()
 		const s32 head = static_cast<s32>(p.size());
 		const int len = 6 + static_cast<int>(R(18));
 		int lastBranch = -10;
+		const bool sparse = iter % 2 == 1;
 		for (int i = 0; i < len; i++)
 		{
-			u32 up = R(10) ? StickyFmac(R(1000)) : VNOP_U(), lo = kNopL;
+			u32 up = R(10) ? StickyFmac(R(1000), sparse) : VNOP_U(), lo = kNopL;
 			if (R(3) == 0)
 				up = (up & ~0x1E00000u) | ((R(15) + 1) << 21); // a random field
 			switch (R(22))
@@ -1330,19 +1456,24 @@ static void RegionStickyFuzzBody()
 					break;
 				default: break;
 			}
+			if (sparse && i == 0)
+				lo = VLQI_L(mask::xyzw, vf::vf20, vi::vi9); // the event vector
 			p.push_back(VuOp{lo, up});
 		}
-		p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), StickyFmac(R(1000))));
+		p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), StickyFmac(R(1000), sparse)));
 		const s32 at = static_cast<s32>(p.size());
-		p.push_back(P(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(head - at - 1)), StickyFmac(R(1000))));
-		p.push_back(U(StickyFmac(R(1000))));
-		p.push_back(U(StickyFmac(R(1000))));
+		p.push_back(P(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(head - at - 1)), StickyFmac(R(1000), sparse)));
+		p.push_back(U(StickyFmac(R(1000), sparse)));
+		p.push_back(U(StickyFmac(R(1000), sparse)));
 		p.push_back(EBit(P(VFSAND_L(vi::vi4, 0xfff), VNOP_U())));
 		const u32 budget = R(4) == 0 ? 0 : 1 + R(160);
 		for (bool fh : {false, true})
 		{
-			const RegionOutcome o = RunRegion(p, fh, [iter](VuTestHarness& h) {
-				SeedSpecials(h, 4000 + iter);
+			const RegionOutcome o = RunRegion(p, fh, [iter, sparse](VuTestHarness& h) {
+				if (sparse)
+					SeedSparse(h, 4000 + iter);
+				else
+					SeedSpecials(h, 4000 + iter);
 				h.SetVi(2, 8);
 			}, budget == 0, 14, false, nullptr, budget);
 			accRegions += o.accRegions;
@@ -1369,7 +1500,8 @@ static void RegionStickyFuzzBody()
 
 // Debugging aid for the sticky fuzz: VUOPT_REGION_HEX="lower:upper,..."
 // VUOPT_REGION_SEED=n (the iteration number) VUOPT_REGION_FH=0|1
-// VUOPT_REGION_BUDGET=n runs one program as the fuzz does, region code dumped.
+// VUOPT_REGION_BUDGET=n [VUOPT_REGION_SPARSE=1 for the odd iterations] runs one
+// program as the fuzz does, region code dumped.
 TEST(VuoptRegion, Repro)
 {
 	const char* hex = getenv("VUOPT_REGION_HEX");
@@ -1389,8 +1521,12 @@ TEST(VuoptRegion, Repro)
 	const int iter = getenv("VUOPT_REGION_SEED") ? std::atoi(getenv("VUOPT_REGION_SEED")) : 0;
 	const bool fh = getenv("VUOPT_REGION_FH") && std::atoi(getenv("VUOPT_REGION_FH"));
 	const u32 budget = getenv("VUOPT_REGION_BUDGET") ? static_cast<u32>(std::atoi(getenv("VUOPT_REGION_BUDGET"))) : 0;
-	const auto setup = [iter](VuTestHarness& h) {
-		SeedSpecials(h, 4000 + iter);
+	const bool sparse = getenv("VUOPT_REGION_SPARSE") != nullptr;
+	const auto setup = [iter, sparse](VuTestHarness& h) {
+		if (sparse)
+			SeedSparse(h, 4000 + iter);
+		else
+			SeedSpecials(h, 4000 + iter);
 		h.SetVi(2, 8);
 	};
 	if (getenv("VUOPT_REGION_SHRINK"))
