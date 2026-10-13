@@ -35,6 +35,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 #include <string>
 
 namespace recompiler_tests {
@@ -446,6 +448,108 @@ TEST(VuMinMaxOrder, MaxLeavesMacFlagsFromThePrecedingOp)
 	static const char kLane[4] = {'x', 'y', 'z', 'w'};
 	for (int i = 0; i < 4; i++)
 		EXPECT_EQ(h.GetVfBitsJit(vf::vf6, kLane[i]), expect[i]) << "lane " << kLane[i];
+}
+
+// =========================================================================
+//  MAX / MINI against VF0.
+//
+//  VF0 is +0, +0, +0, +1.0, and microVU compiles a MAX or MINI with VF0 on
+//  either side as one integer SMAX/SMIN on the raw words: with one operand
+//  non-negative the raw-word order and the sign-magnitude order agree. The
+//  other operand runs through every pattern in the table, so a negative
+//  lane, both zeros, a denormal and the exponent-0xFF words all meet a VF0
+//  word, in the packed, broadcast, VF0-as-Fs and single-lane forms, on both
+//  VUs. Run() diffs the interpreter; the literal answer comes from the
+//  interpreter's own rule (both negative: the smaller raw word is the larger
+//  value).
+// =========================================================================
+
+namespace {
+
+u32 RefMax(u32 a, u32 b)
+{
+	const s32 x = static_cast<s32>(a), y = static_cast<s32>(b);
+	return static_cast<u32>((x < 0 && y < 0) ? std::min(x, y) : std::max(x, y));
+}
+
+u32 RefMin(u32 a, u32 b)
+{
+	const s32 x = static_cast<s32>(a), y = static_cast<s32>(b);
+	return static_cast<u32>((x < 0 && y < 0) ? std::max(x, y) : std::min(x, y));
+}
+
+constexpr u32 kVf0[4] = {kPosZero, kPosZero, kPosZero, kOne};
+
+const u32 kSweep[][4] = {
+	{kNegHuge, kNegExpFF, kNegOne, kNegDenorm},
+	{kNegZero, kPosZero, kPosDenorm, kOne},
+	{kPosExpFF, kPosNaNish, kPosHuge, kNegZero},
+	{kNegOne, kPosDenorm, kNegExpFF, kPosNaNish},
+};
+
+enum class Vf0Form
+{
+	FtPacked,  // MAX vf3, vf1, vf0
+	FsPacked,  // MAX vf3, vf0, vf1
+	FtBcX,     // MAXx vf3, vf1, vf0
+	FtBcW,     // MAXw vf3, vf1, vf0
+	FsBcY,     // MAXy vf3, vf0, vf1
+};
+
+void RunVf0MinMax(int vu, bool is_max, Vf0Form form, u32 mask, const u32 other[4])
+{
+	VuTestHarness h(vu);
+	h.SetVfBits(kFs, other[0], other[1], other[2], other[3]);
+	h.SetVfBits(kFd, 0xDEAD0000u, 0xDEAD0001u, 0xDEAD0002u, 0xDEAD0003u);
+
+	u32 op = 0;
+	u32 a[4], b[4]; // the two operands as the op sees them, lane by lane
+	for (int i = 0; i < 4; i++)
+	{
+		switch (form)
+		{
+			case Vf0Form::FtPacked: a[i] = other[i]; b[i] = kVf0[i]; break;
+			case Vf0Form::FsPacked: a[i] = kVf0[i]; b[i] = other[i]; break;
+			case Vf0Form::FtBcX:    a[i] = other[i]; b[i] = kVf0[0]; break;
+			case Vf0Form::FtBcW:    a[i] = other[i]; b[i] = kVf0[3]; break;
+			case Vf0Form::FsBcY:    a[i] = kVf0[i]; b[i] = other[1]; break;
+		}
+	}
+	switch (form)
+	{
+		case Vf0Form::FtPacked: op = is_max ? VMAX_U(mask, kFd, kFs, vf::vf0) : VMINI_U(mask, kFd, kFs, vf::vf0); break;
+		case Vf0Form::FsPacked: op = is_max ? VMAX_U(mask, kFd, vf::vf0, kFs) : VMINI_U(mask, kFd, vf::vf0, kFs); break;
+		case Vf0Form::FtBcX:    op = is_max ? VMAXx_U(mask, kFd, kFs, vf::vf0) : VMINIx_U(mask, kFd, kFs, vf::vf0); break;
+		case Vf0Form::FtBcW:    op = is_max ? VMAXw_U(mask, kFd, kFs, vf::vf0) : VMINIw_U(mask, kFd, kFs, vf::vf0); break;
+		case Vf0Form::FsBcY:    op = is_max ? VMAXy_U(mask, kFd, vf::vf0, kFs) : VMINIy_U(mask, kFd, vf::vf0, kFs); break;
+	}
+	h.LoadProgram({UpperOnly(op), EBitNopPair()});
+	h.Run();
+
+	static const char kLane[4] = {'x', 'y', 'z', 'w'};
+	static const u32 kSentinel[4] = {0xDEAD0000u, 0xDEAD0001u, 0xDEAD0002u, 0xDEAD0003u};
+	for (int i = 0; i < 4; i++)
+	{
+		const bool written = (mask >> (24 - i)) & 1;
+		const u32 want = written ? (is_max ? RefMax(a[i], b[i]) : RefMin(a[i], b[i])) : kSentinel[i];
+		EXPECT_EQ(h.GetVfBitsJit(kFd, kLane[i]), want)
+			<< "vu" << vu << (is_max ? " MAX" : " MINI") << " form " << static_cast<int>(form)
+			<< " mask " << mask << " lane " << kLane[i];
+	}
+}
+
+} // namespace
+
+TEST(VuMinMaxVf0, AgreesWithSignMagnitudeOrderInEveryForm)
+{
+	const Vf0Form forms[] = {Vf0Form::FtPacked, Vf0Form::FsPacked, Vf0Form::FtBcX, Vf0Form::FtBcW, Vf0Form::FsBcY};
+	const u32 masks[] = {mask::xyzw, mask::x | mask::y | mask::z, mask::x, mask::y, mask::w};
+	for (int vu = 0; vu < 2; vu++)
+		for (bool is_max : {true, false})
+			for (Vf0Form form : forms)
+				for (u32 m : masks)
+					for (const auto& other : kSweep)
+						RunVf0MinMax(vu, is_max, form, m, other);
 }
 
 } // namespace recompiler_tests
