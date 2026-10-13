@@ -344,6 +344,7 @@ namespace
 				region->maxGHomes = o.gHomes;
 				region->schedule = o.schedule;
 				region->profile = o.profile;
+				region->splitHomes = o.splitHomes;
 				region->dump = o.dumpIr;
 			}
 		}
