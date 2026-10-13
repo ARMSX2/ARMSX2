@@ -377,6 +377,65 @@ u64 g_twinEeEventTests = 0;
 u64 g_twinIopSlices = 0;
 #endif
 
+// The EE hands the IOP a time slice. This is the one place the EE runs IOP code.
+// (crossing C1 of the IOP thread design, section 7.1)
+static __fi void iopRunSliceForEE()
+{
+	// * It's important to run a iopEventTest before calling ExecuteBlock. This
+	//   is because the IOP does not always perform branch tests before returning
+	//   (during the prev branch) and also so it can act on the state the EE has
+	//   given it before executing any code.
+	//
+	// * The IOP cannot always be run.  If we run IOP code every time through the
+	//   cpuEventTest, the IOP generally starts to run way ahead of the EE.
+
+	// It's also important to sync up the IOP before updating the timers, since gates will depend on starting/stopping in the right place!
+	EEsCycle += cpuRegs.cycle - EEoCycle;
+	EEoCycle = cpuRegs.cycle;
+
+	if (EEsCycle > 0)
+		iopEventAction = true;
+
+	if (iopEventAction)
+	{
+		//if( EEsCycle < -450 )
+		//	Console.WriteLn( " IOP ahead by: %d cycles", -EEsCycle );
+
+#ifdef PCSX2_RECOMPILER_TESTS
+		g_twinIopSlices++;
+#endif
+		EEsCycle = psxCpu->ExecuteBlock(EEsCycle);
+		iopEventAction = false;
+	}
+
+	iopEventTest();
+}
+
+// The EE decides how soon it comes back, from how far behind the IOP is and when the IOP's next
+// event is due. (crossing C2 of the IOP thread design, section 7.1)
+static __fi void eeScheduleForIop()
+{
+	const float mutiplier = static_cast<float>(PS2CLK) / static_cast<float>(PSXCLK);
+	// See R3000A.cpp:PSX_INT for the host-divergence rationale: cast the u32
+	// cycle delta to s32 *before* the float multiply.
+	const s32 iopCyclesUntilEvent = static_cast<s32>(psxRegs.iopNextEventCycle - psxRegs.cycle);
+	const int nextIopEventDeta = static_cast<s32>(iopCyclesUntilEvent * mutiplier);
+	// 8 or more cycles behind and there's an event scheduled
+	if (EEsCycle >= nextIopEventDeta)
+	{
+		// EE's running way ahead of the IOP still, so we should branch quickly to give the
+		// IOP extra timeslices in short order.
+
+		cpuSetNextEventDelta(48);
+		//Console.Warning( "EE ahead of the IOP -- Rapid Event!  %d", EEsCycle );
+	}
+	else
+	{
+		// Otherwise IOP is caught up/not doing anything so we can wait for the next event.
+		cpuSetNextEventDelta(nextIopEventDeta - EEsCycle);
+	}
+}
+
 // Shared portion of the branch test, called from both the Interpreter
 // and the recompiler.  (moved here to help alleviate redundant code)
 __fi void _cpuEventTest_Shared()
@@ -420,34 +479,7 @@ __fi void _cpuEventTest_Shared()
 	}
 
 	// ---- IOP -------------
-	// * It's important to run a iopEventTest before calling ExecuteBlock. This
-	//   is because the IOP does not always perform branch tests before returning
-	//   (during the prev branch) and also so it can act on the state the EE has
-	//   given it before executing any code.
-	//
-	// * The IOP cannot always be run.  If we run IOP code every time through the
-	//   cpuEventTest, the IOP generally starts to run way ahead of the EE.
-
-	// It's also important to sync up the IOP before updating the timers, since gates will depend on starting/stopping in the right place!
-	EEsCycle += cpuRegs.cycle - EEoCycle;
-	EEoCycle = cpuRegs.cycle;
-
-	if (EEsCycle > 0)
-		iopEventAction = true;
-
-	if (iopEventAction)
-	{
-		//if( EEsCycle < -450 )
-		//	Console.WriteLn( " IOP ahead by: %d cycles", -EEsCycle );
-
-#ifdef PCSX2_RECOMPILER_TESTS
-		g_twinIopSlices++;
-#endif
-		EEsCycle = psxCpu->ExecuteBlock(EEsCycle);
-		iopEventAction = false;
-	}
-
-	iopEventTest();
+	iopRunSliceForEE();
 
 	if (cpuTestCycle(nextStartCounter, nextDeltaCounter))
 	{
@@ -503,25 +535,7 @@ __fi void _cpuEventTest_Shared()
 		CpuVU1->ExecuteBlock();
 
 	// ---- Schedule Next Event Test --------------
-	const float mutiplier = static_cast<float>(PS2CLK) / static_cast<float>(PSXCLK);
-	// See R3000A.cpp:PSX_INT for the host-divergence rationale: cast the u32
-	// cycle delta to s32 *before* the float multiply.
-	const s32 iopCyclesUntilEvent = static_cast<s32>(psxRegs.iopNextEventCycle - psxRegs.cycle);
-	const int nextIopEventDeta = static_cast<s32>(iopCyclesUntilEvent * mutiplier);
-	// 8 or more cycles behind and there's an event scheduled
-	if (EEsCycle >= nextIopEventDeta)
-	{
-		// EE's running way ahead of the IOP still, so we should branch quickly to give the
-		// IOP extra timeslices in short order.
-
-		cpuSetNextEventDelta(48);
-		//Console.Warning( "EE ahead of the IOP -- Rapid Event!  %d", EEsCycle );
-	}
-	else
-	{
-		// Otherwise IOP is caught up/not doing anything so we can wait for the next event.
-		cpuSetNextEventDelta(nextIopEventDeta - EEsCycle);
-	}
+	eeScheduleForIop();
 
 	// Apply vsync and other counter nextCycles
 	cpuSetNextEvent(nextStartCounter, nextDeltaCounter);
