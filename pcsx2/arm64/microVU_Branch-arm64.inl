@@ -893,7 +893,10 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 		// by construction — see mVUcondBranchDest/Finish). The mVUsetupBranch
 		// flushAll only unmapped the temp; any emission that could have
 		// clobbered it would have cleared the carry.
-		armAsm->Cmp(armWRegister(mVU.branchCondCarryGpr), 0);
+		if (mVU.branchCondCarryLow16)
+			armAsm->Tst(armWRegister(mVU.branchCondCarryGpr), 0xffff);
+		else
+			armAsm->Cmp(armWRegister(mVU.branchCondCarryGpr), 0);
 		mVUclearBranchCondCarry(mVU);
 	}
 	else

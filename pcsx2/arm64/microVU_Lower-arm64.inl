@@ -2412,12 +2412,54 @@ static __fi const a64::Register mVUcondBranchDest(mV)
 
 // Store the finished condition value to mVU.branch (authoritative — evil/bad
 // continuations read it cross-block) and record the carry when it lives in a
-// pool temp.
-static __fi void mVUcondBranchFinish(mV, const a64::Register& condReg)
+// pool temp. `low16`: see microVU::branchCondCarryLow16.
+static __fi void mVUcondBranchFinish(mV, const a64::Register& condReg, bool low16 = false)
 {
 	mVUstrField(mVU, condReg, &mVU.branch);
 	if (doBranchCondCarry && condReg.GetCode() != gprT1.GetCode())
+	{
 		mVU.branchCondCarryGpr = condReg.GetCode();
+		mVU.branchCondCarryLow16 = low16;
+	}
+}
+
+// condReg = Is ^ It for IBEQ/IBNE, each operand from VIbackup when the
+// analysis says so. vi00 is zero (moveVIToGPR, allocGPR and the constant
+// address fold all hold it so), so an operand that is vi00 contributes
+// nothing: against it the XOR is the other operand, moved rather than
+// loaded and combined.
+static __fi void mVUcondBranchXor(mV, const a64::Register& condReg)
+{
+	const bool isZero = !mVUlow.memReadIs && _Is_ == 0;
+	const bool itZero = !mVUlow.memReadIt && _It_ == 0;
+
+	if (isZero)
+	{
+		if (mVUlow.memReadIt)
+			mVUldrField(mVU, condReg, &mVU.VIbackup);
+		else
+			mVU.regAlloc->moveVIToGPR(condReg, _It_);
+		return;
+	}
+
+	if (mVUlow.memReadIs)
+		mVUldrField(mVU, condReg, &mVU.VIbackup);
+	else
+		mVU.regAlloc->moveVIToGPR(condReg, _Is_);
+
+	if (itZero)
+		return;
+	if (mVUlow.memReadIt)
+	{
+		mVUldrField(mVU, gprT2, &mVU.VIbackup);
+		armAsm->Eor(condReg.W(), condReg.W(), gprT2.W());
+	}
+	else
+	{
+		const a64::Register& regT = mVU.regAlloc->allocGPR(_It_);
+		armAsm->Eor(condReg.W(), condReg.W(), regT.W());
+		mVU.regAlloc->clearNeeded(regT);
+	}
 }
 
 mVUop(mVU_IBEQ)
@@ -2427,33 +2469,16 @@ mVUop(mVU_IBEQ)
 	pass2
 	{
 		const a64::Register condReg = mVUcondBranchDest(mVU);
-		if (mVUlow.memReadIs)
-			mVUldrField(mVU, condReg, &mVU.VIbackup);
-		else
-			mVU.regAlloc->moveVIToGPR(condReg, _Is_);
-
-		if (mVUlow.memReadIt)
-		{
-			mVUldrField(mVU, gprT2, &mVU.VIbackup);
-			armAsm->Eor(condReg.W(), condReg.W(), gprT2.W());
-		}
-		else
-		{
-			const a64::Register& regT = mVU.regAlloc->allocGPR(_It_);
-			armAsm->Eor(condReg.W(), condReg.W(), regT.W());
-			mVU.regAlloc->clearNeeded(regT);
-		}
+		mVUcondBranchXor(mVU, condReg);
 
 		if (!(isBadOrEvil))
 		{
-			mVUcondBranchFinish(mVU, condReg);
 			// The Eor sources can carry dirty upper halves (pool slots written
 			// by unmasked VI arithmetic aren't zero-extended; VIbackup stores
-			// the full W). The old tail's Ldrsh compared only the low 16 bits
-			// — narrow the carried value to match. The store above keeps the
-			// raw bytes mVU.branch always held.
-			if (condReg.GetCode() != gprT1.GetCode())
-				armAsm->Uxth(condReg.W(), condReg.W());
+			// the full W). The old tail's Ldrsh compared only the low 16 bits,
+			// so the tail tests just those. mVU.branch keeps the raw bytes it
+			// always held.
+			mVUcondBranchFinish(mVU, condReg, true);
 		}
 		else
 			condEvilBranch(mVU, a64::eq);
@@ -2577,29 +2602,12 @@ mVUop(mVU_IBNE)
 	pass2
 	{
 		const a64::Register condReg = mVUcondBranchDest(mVU);
-		if (mVUlow.memReadIs)
-			mVUldrField(mVU, condReg, &mVU.VIbackup);
-		else
-			mVU.regAlloc->moveVIToGPR(condReg, _Is_);
-
-		if (mVUlow.memReadIt)
-		{
-			mVUldrField(mVU, gprT2, &mVU.VIbackup);
-			armAsm->Eor(condReg.W(), condReg.W(), gprT2.W());
-		}
-		else
-		{
-			const a64::Register& regT = mVU.regAlloc->allocGPR(_It_);
-			armAsm->Eor(condReg.W(), condReg.W(), regT.W());
-			mVU.regAlloc->clearNeeded(regT);
-		}
+		mVUcondBranchXor(mVU, condReg);
 
 		if (!(isBadOrEvil))
 		{
-			mVUcondBranchFinish(mVU, condReg);
-			// See IBEQ — narrow to the low 16 bits the old Ldrsh compared.
-			if (condReg.GetCode() != gprT1.GetCode())
-				armAsm->Uxth(condReg.W(), condReg.W());
+			// See IBEQ — the tail tests the low 16 bits the old Ldrsh compared.
+			mVUcondBranchFinish(mVU, condReg, true);
 		}
 		else
 			condEvilBranch(mVU, a64::ne);

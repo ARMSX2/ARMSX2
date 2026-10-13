@@ -190,7 +190,10 @@
 //  45 — a VU1 load or store forms its address from the base VI where it is
 //       cached, so the copy into gprT1 and the sign or zero extension in front
 //       of the UBFIZ go. VU0 is unchanged.
-static constexpr u32 kMvuCompilerAbiVersion = 45;
+//  46 — IBEQ/IBNE against vi00 move the other operand instead of loading vi00
+//       and XORing it in, and their carried condition is tested on its low
+//       halfword (TST #0xffff) instead of being narrowed with UXTH and compared.
+static constexpr u32 kMvuCompilerAbiVersion = 46;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
@@ -712,6 +715,11 @@ struct microVU
 	// slot at compile time (XGKICK's C call, end-program emission, the
 	// divtrace per-op hook).
 	int branchCondCarryGpr;
+	// With the carry: the value is IBEQ/IBNE's raw XOR of two VIs, whose upper
+	// halves can be dirty, so the tail tests its low 16 bits (Tst #0xffff)
+	// rather than comparing the whole register with zero. Their conditions
+	// read only Z, which the two set alike for the low halfword.
+	bool branchCondCarryLow16;
 
 	// Compile-time only (never read by emitted code, so it stays out of the
 	// mVUfieldMem pin window above): set during pass 1 when this block, or a block
@@ -794,6 +802,7 @@ __fi static void mVUstrField(mV, const a64::CPURegister& reg, const void* addr)
 __fi static void mVUclearBranchCondCarry(mV)
 {
 	mVU.branchCondCarryGpr = -1;
+	mVU.branchCondCarryLow16 = false;
 }
 
 //------------------------------------------------------------------
