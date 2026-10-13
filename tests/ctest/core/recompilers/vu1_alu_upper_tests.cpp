@@ -15,6 +15,7 @@
 
 #include "harness/VuTestHarness.h"
 
+#include "Config.h"
 #include "VU.h"
 
 #include <gtest/gtest.h>
@@ -518,6 +519,63 @@ TEST(Vu1AluUpper, OpmulaHonoursEveryDestField)
 		EXPECT_FLOAT_EQ(h.GetVfJit(5, 'y'), (m & mask::y) ?  55.0f : 200.0f);
 		EXPECT_FLOAT_EQ(h.GetVfJit(5, 'z'), (m & mask::z) ?  26.0f : 300.0f);
 		EXPECT_FLOAT_EQ(h.GetVfJit(5, 'w'), (m & mask::w) ?  -1.0f : 399.0f);
+	}
+}
+
+// The lanes outside the dest field are not just unwritten: they must not
+// reach the MAC or STATUS flags either. Here the true lane-w product is a -0
+// (MAC Z and S when w is in the field), while fs.x * ft.z is far past the
+// exponent range -- the lane a w-less OP op is free to compute something else
+// in must not leak that into the flags, at the default clamp mode or at mode
+// 4, where O is modelled. FMAND and FSAND read the flags back after the
+// pipeline has retired, and Run() diffs them against the interpreter. FSAND
+// reads the non-sticky half: the interpreter also takes OPMSUB's sticky S
+// from the multiply stage's -0, which neither emitter does (see
+// mvu_abi_digest_tests' broadcastChain), so the final STATUS is left out of
+// the diff for the same reason.
+TEST(Vu1AluUpper, OpOpsKeepUnwrittenLanesOutOfTheFlags)
+{
+	const u32 masks[] = {mask::xyzw, mask::xyz, mask::x | mask::y, mask::x, mask::y, mask::z, mask::w};
+	for (bool exact : {false, true})
+	{
+		const bool prevO = EmuConfig.Cpu.Recompiler.vu1Overflow;
+		const bool prevE = EmuConfig.Cpu.Recompiler.vu1ExtraOverflow;
+		const bool prevS = EmuConfig.Cpu.Recompiler.vu1SignOverflow;
+		const bool prevX = EmuConfig.Cpu.Recompiler.vu1ExactMode;
+		EmuConfig.Cpu.Recompiler.vu1Overflow = true;
+		EmuConfig.Cpu.Recompiler.vu1ExtraOverflow = exact;
+		EmuConfig.Cpu.Recompiler.vu1SignOverflow = exact;
+		EmuConfig.Cpu.Recompiler.vu1ExactMode = exact;
+		for (bool opmula : {true, false})
+		{
+			for (u32 m : masks)
+			{
+				SCOPED_TRACE(::testing::Message() << (opmula ? "OPMULA" : "OPMSUB") << " dest field "
+				                                  << (m >> 21) << (exact ? " mode 4" : " mode 1"));
+				VuTestHarness h(1);
+				h.SetVf(1, 1e30f, 1e-30f, 3.0f, -7.0f); // fs
+				h.SetVf(2, 5.0f, 1e-30f, 1e30f, 19.0f); // ft
+				h.SetVf(3, 100.0f, 200.0f, 300.0f, 400.0f);
+				h.SetVf(4, 1.0f, 1.0f, 1.0f, 1.0f);
+				h.SetVi(vi::vi3, 0xFFFF);
+				h.IgnoreViInDiff(REG_STATUS_FLAG);
+				h.LoadProgram({
+					UpperOnly(VMULA_U(mask::xyzw, vf::vf3, vf::vf4)),
+					UpperOnly(opmula ? VOPMULA_U(m, vf::vf1, vf::vf2) : VOPMSUB_U(m, vf::vf5, vf::vf1, vf::vf2)),
+					NopPair(),
+					NopPair(),
+					NopPair(),
+					VuOp{VFMAND_L(vi::vi1, vi::vi3), VNOP_U()},
+					VuOp{VFSAND_L(vi::vi2, 0x03F), VNOP_U()},
+					EBitNopPair(),
+				});
+				h.Run();
+			}
+		}
+		EmuConfig.Cpu.Recompiler.vu1Overflow = prevO;
+		EmuConfig.Cpu.Recompiler.vu1ExtraOverflow = prevE;
+		EmuConfig.Cpu.Recompiler.vu1SignOverflow = prevS;
+		EmuConfig.Cpu.Recompiler.vu1ExactMode = prevX;
 	}
 }
 
