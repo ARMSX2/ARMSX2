@@ -449,6 +449,9 @@ constexpr AbiPin kPins[] = {
 	// abi 49: the OP ops permute from the cached multiplicands. No probe issues
 	// one, so the row repeats abi 48's.
 	{49, {0xcc5d8ed2aff67456, 0x3740d9d84d609b95, 0x49140181ed6daa6d, 0x321e1e6abe00ab51, 0x30d527dd8fe4d10c, 0x1a887bba90ef1a41, 0x51df58673dbf1b10, 0x6dcbc8ee9c41c950, 0x01e61f64bdbc1a38, 0x01c604cf32776547, 0x024ff6cd7fabd2c8, 0xb7ef7494b89aa3d8, 0x021b1d8ea47dc8e8, 0x47545cdb987b6602, 0x3a7def77c71d10af, 0x9fbf8b955489dc19, 0x8775d22d00a22275, 0xd304c548206d672b, 0x9d323643d87a1b0a, 0x43b9ebeda584952a, 0xb1e0cfecf4302713, 0x029663d8580ead20, 0x72a4cdceb608619f, 0xc3952268061ca731, 0x1e28c18d2d06b66a, 0xb492272d123efd35}},
+	// abi 50: a single-lane op clamps its scalar destination full width. The
+	// single-lane probes at clamp modes 2-4 and the EFU at mode 3 move.
+	{50, {0xcc5d8ed2aff67456, 0x3740d9d84d609b95, 0x49140181ed6daa6d, 0x321e1e6abe00ab51, 0x30d527dd8fe4d10c, 0x1a887bba90ef1a41, 0x51df58673dbf1b10, 0x6dcbc8ee9c41c950, 0x01e61f64bdbc1a38, 0x01c604cf32776547, 0x024ff6cd7fabd2c8, 0xace1f4023f0e8bf8, 0x021b1d8ea47dc8e8, 0xc8c50b58f3f9badd, 0x3a7def77c71d10af, 0x9fbf8b955489dc19, 0xd91488a73ad2068a, 0xd304c548206d672b, 0x9d323643d87a1b0a, 0x43b9ebeda584952a, 0xb1e0cfecf4302713, 0x029663d8580ead20, 0x72a4cdceb608619f, 0xe34a4dda6a35b3df, 0xf9c3d13580d762e9, 0x2c012558a97e0052}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,

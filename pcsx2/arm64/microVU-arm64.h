@@ -202,7 +202,10 @@
 //  49 — OPMULA and OPMSUB permute their multiplicands into temps straight from
 //       the cached registers with EXT and one INS, and build lane w only when
 //       the dest field writes it.
-static constexpr u32 kMvuCompilerAbiVersion = 49;
+//  50 — the operand clamp of a single-lane op's scalar destination runs full
+//       width, since the scalar arithmetic that follows zeroes lanes 1-3: no
+//       scratch round trip, and its clone-write copy folds.
+static constexpr u32 kMvuCompilerAbiVersion = 50;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
