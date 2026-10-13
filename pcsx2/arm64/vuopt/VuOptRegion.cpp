@@ -124,6 +124,8 @@ namespace vuopt
 			ir::BuildOptions bo;
 			bo.vuIndex = env_.vuIndex;
 			bo.clampIImmediate = env_.clampOverflow && !env_.clampSign;
+			bo.clampExtra = env_.clampExtra;
+			bo.clampSign = env_.clampSign;
 			bo.remapAtLeave = true;
 			return bo;
 		}
@@ -491,8 +493,8 @@ namespace vuopt
 			return Decline("timing port disagrees", why);
 		if (env.vuIndex != 1)
 			return Decline("VU0", why);
-		if (!env.clampOverflow || env.clampExtra || env.clampSign || env.clampExact)
-			return Decline("clamp mode other than 1", why);
+		if (env.clampExact)
+			return Decline("clamp mode 4", why);
 		if (env.xgkickHack || env.ibitHack || env.overflowHack || env.addSubHack || env.vuSyncHack)
 			return Decline("gamefix", why);
 		if (!env.searchBlock || !env.cycleBreak)
@@ -511,6 +513,8 @@ namespace vuopt
 		le.vifTop = env.vifTop;
 		le.vifItop = env.vifItop;
 		le.clampOverflow = env.clampOverflow;
+		le.clampExtra = env.clampExtra;
+		le.clampSign = env.clampSign;
 		le.softwareFlush = env.softwareFlush;
 		RegionBuilder rb(*this, env, le);
 		return rb.Run(br, why);

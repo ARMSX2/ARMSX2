@@ -28,7 +28,7 @@
 // choice and the moves around them are free. pcsx2-vurunner --vuopt-run
 // checks it on the whole corpus.
 //
-// Supported: VU1, clamp mode 1 (overflow only), no clamp-affecting gamefixes.
+// Supported: VU1, clamp modes 0-3, no clamp-affecting gamefixes.
 
 #include "VuOptIR.h"
 
@@ -50,7 +50,9 @@ namespace vuopt
 		const void* xgkickFn = nullptr; // void mVU_XGKICK_(u32 addr)
 		const void* vifTop = nullptr;   // &VIFregisters.top
 		const void* vifItop = nullptr;  // &VIFregisters.itop
-		bool clampOverflow = true;      // CHECK_VU_OVERFLOW
+		bool clampOverflow = true;      // CHECK_VU_OVERFLOW (clamp modes 1-3)
+		bool clampExtra = false;        // CHECK_VU_EXTRA_OVERFLOW (modes 2-3): every FMAC step clamps its operands
+		bool clampSign = false;         // CHECK_VU_SIGN_OVERFLOW (mode 3): those clamps preserve the sign; no result clamp
 		bool softwareFlush = false;     // !FPCR.DAZ: the divide unit's denormal flush in software
 		// Testing: allocate from at most this many NEON / general registers
 		// (0 = all), to reach spills and early write-backs in small programs.

@@ -101,6 +101,7 @@ namespace vuopt::ir
 		Efu,         // EFU op result (P): sub = LOp; args fs[4]
 		RUpd,        // RINIT/RXOR/RNEXT: sub = LOp; args r[, fs lane]
 		RGet,        // RGET/RNEXT vector result: args r
+		AccClamp,    // clamp modes 2/3: MADD clamps microVU's cached ACC in place; mask = lanes clamped; args acc[4]
 		IConst,      // link address of BAL/JALR: imm
 		Kick,        // XGKICK transfer: args mem, addr -> Mem
 		// control
@@ -184,6 +185,9 @@ namespace vuopt::ir
 		// variable after microVU's link-time ring reorder and Q/P lane swap
 		// (mVUsetupBranch), i.e. in the successor's numbering.
 		bool remapAtLeave = false;
+		// Clamp modes 2/3 (CHECK_VU_EXTRA_OVERFLOW / CHECK_VU_SIGN_OVERFLOW).
+		bool clampExtra = false;
+		bool clampSign = false;
 	};
 
 	// One microVU block alone, for milestone 2's per-block lowering: incoming

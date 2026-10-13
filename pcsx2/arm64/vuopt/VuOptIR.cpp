@@ -98,6 +98,14 @@ namespace vuopt::ir
 			// deferred VF lane writes of the current pair
 			std::vector<std::pair<u32, ValueId>> pendingVF_;
 
+			// Clamp modes 2/3: MADD clamps microVU's cached ACC in place. The
+			// clamped copy is what the rest of the block reads, and it reaches
+			// ACC's home only if the block writes ACC (before or after): a
+			// clean cached copy is dropped. Per node.
+			bool accWritten_ = false;
+			bool accClamped_ = false;
+			ValueId accEntry_[4] = {};
+
 			ValueId New(Op op, Type t, int block, bool isPhi = false)
 			{
 				Inst in;
@@ -355,6 +363,26 @@ namespace vuopt::ir
 						default: a.insert(a.end(), 4, 0); break;
 					}
 					const bool acc = u.kind == FmacKind::Madd || u.kind == FmacKind::Msub;
+					if (u.cls == UClass::FmacC && o_.clampExtra)
+					{
+						// mVU_FMACc reads ACC through a read-only mapping and its
+						// clamp step clamps that register in place: every lane, or
+						// the one lane of a single-lane op.
+						const bool single = u.mask == 8 || u.mask == 4 || u.mask == 2 || u.mask == 1;
+						const u8 cl = single ? u.mask : 0xf;
+						if (!accWritten_ && !accClamped_)
+							for (int l = 0; l < 4; l++)
+								accEntry_[l] = Rd(var::ACC(l));
+						std::vector<ValueId> av(4, 0);
+						for (int l = 0; l < 4; l++)
+							if (MaskLane(cl, l))
+								av[l] = Rd(var::ACC(l));
+						const ValueId c = Emit(Op::AccClamp, Type::Vec, std::move(av), 0, cl);
+						for (int l = 0; l < 4; l++)
+							if (MaskLane(cl, l))
+								Wr(var::ACC(l), c);
+						accClamped_ = true;
+					}
 					for (int l = 0; l < 4; l++)
 						a.push_back(acc && MaskLane(u.mask, l) ? Rd(var::ACC(l)) : 0);
 					// microVU's doSafeSub: SUB/SUBA with Ft == Fs writes +0.
@@ -364,6 +392,7 @@ namespace vuopt::ir
 					f_.insts[result].lane = u.bc;
 					if (u.isAcc)
 					{
+						accWritten_ = true;
 						for (int l = 0; l < 4; l++)
 							if (MaskLane(u.mask, l))
 								Wr(var::ACC(l), result);
@@ -395,6 +424,7 @@ namespace vuopt::ir
 					result = Emit(u.cls == UClass::Opmula ? Op::Opmula : Op::Opmsub, Type::Vec, std::move(a), sub, u.mask);
 					if (u.cls == UClass::Opmula)
 					{
+						accWritten_ = true;
 						for (int l = 0; l < 4; l++)
 							if (MaskLane(u.mask, l))
 								Wr(var::ACC(l), result);
@@ -704,6 +734,7 @@ namespace vuopt::ir
 			const BlockResult& b = n.block;
 			Block& blk = f_.blocks[bid];
 			blk.cycles = b.cycles;
+			accWritten_ = accClamped_ = false;
 
 			pc_ = n.pc;
 			// mVUtestCycles: a budget yield leaves with the block-entry state.
@@ -767,6 +798,9 @@ namespace vuopt::ir
 				if (o_.remapAtLeave && (b.endKind == BlockEnd::Branch || b.endKind == BlockEnd::CondBranch))
 					LinkRemap(b);
 				std::vector<ValueId> a = AllVars();
+				if (accClamped_ && !accWritten_)
+					for (int l = 0; l < 4; l++)
+						a[var::ACC(l)] = accEntry_[l];
 				a.push_back(cond);
 				a.push_back(jumpVal);
 				pc_ = b.pcs.back();
@@ -1317,7 +1351,7 @@ namespace vuopt::ir
 		static const char* const kOp[] = {"none", "livein", "phi", "const", "fmac", "opmula", "opmsub", "fmac2", "clipbits",
 			"macflags", "status.upd", "status.div", "status.set", "clip.upd", "clip.set", "flagread", "ialu", "incvi", "mtir",
 			"xtop", "loadq", "loadi", "storeq", "storei", "move", "mr32", "mfir", "mfp", "div", "divflags", "efu", "r.upd",
-			"r.get", "iconst", "kick", "cond", "yield-check", "exit-if", "exit", "leave"};
+			"r.get", "accclamp", "iconst", "kick", "cond", "yield-check", "exit-if", "exit", "leave"};
 		static_assert(sizeof(kOp) / sizeof(kOp[0]) == static_cast<size_t>(Op::Leave) + 1, "kOp out of step with Op");
 		static const char* const kMask[16] = {"", "w", "z", "zw", "y", "yw", "yz", "yzw", "x", "xw", "xz", "xzw", "xy", "xyw", "xyz", "xyzw"};
 		std::string s;

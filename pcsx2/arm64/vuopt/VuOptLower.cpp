@@ -191,6 +191,7 @@ namespace vuopt
 				case Op::Div:
 				case Op::Efu:
 				case Op::RGet:
+				case Op::AccClamp:
 					return Cls::V;
 				default:
 					return Cls::None;
@@ -324,6 +325,9 @@ namespace vuopt
 			int LaneWord(ValueId v, int lane);   // lane `lane` of a vector value in a W register
 			int Broadcast(ValueId v);            // scalar broadcast to 4 lanes (temp)
 			int ClampInto(int src);              // mVUclamp1 into a temp
+			int SignClampInto(int src);          // mVUclamp2's sign-preserving integer clamp into a temp
+			int ClampE(int src) { return env_.clampSign ? SignClampInto(src) : ClampInto(src); } // clampE operand clamp
+			bool ResultClamp() const { return env_.clampExtra && !env_.clampSign; }              // mVUclamp4
 			void KeepOnly(u32 before, int t);
 			void MemAddr(ValueId addrV, s32 imm, int& base, int& idx);
 
@@ -877,6 +881,17 @@ namespace vuopt
 			return t;
 		}
 
+		// mVUclamp2 at the sign-preserving modes: a signed integer min against
+		// maxvals then an unsigned integer min against minvals, which maps an
+		// exponent-255 word to the largest finite of its sign.
+		int Lowerer::SignClampInto(int src)
+		{
+			const int t = TempV();
+			armAsm->Smin(V(t).V4S(), V(src).V4S(), V(kCMax).V4S());
+			armAsm->Umin(V(t).V4S(), V(t).V4S(), V(kCMin).V4S());
+			return t;
+		}
+
 		// After an operand was copied into a temp, the registers it was built
 		// from need not stay locked: back to `before` plus the temp.
 		void Lowerer::KeepOnly(u32 before, int t) { vLock_ = before | (1u << t); }
@@ -977,59 +992,65 @@ namespace vuopt
 		// Operations
 		//------------------------------------------------------------------
 
+		// Clamp placement by mode, as microVU's FMAC bodies emit it:
+		//   mode 1: the per-op clampType clamps (mVUclamp1 on Fs / Ft) only;
+		//   modes 2-3 (clampE): clampType is silent; instead every ADD/SUB/MUL
+		//     step clamps both its operands (mVUclampStepOperands: mVUclamp2,
+		//     sign-preserving at mode 3), and at mode 2 clamps its result
+		//     (mVUclamp4). A multiply-accumulate is two steps: the product's
+		//     result clamp stands in for its operand clamp in the second step
+		//     at mode 2 (preClamped); at mode 3 the product is clamped there.
+		//   MAX/MINI never clamp; mode 0 never clamps.
 		void Lowerer::Fmac(ValueId id)
 		{
 			const Inst& in = I(id);
 			const UpperInst u = DecodeUpper(in.word);
 			if (in.imm & 1)
 			{
-				// doSafeSub: Ft == Fs SUB/SUBA writes +0.
+				// doSafeSub: Ft == Fs SUB/SUBA writes +0, ahead of every clamp.
 				const int d = DefV(id);
 				armAsm->Movi(V(d).V4S(), 0);
 				return;
 			}
-			const int ct = env_.clampOverflow ? ClampType(u) : 0;
+			const bool E = env_.clampExtra;
+			const bool arith = u.kind != FmacKind::Max && u.kind != FmacKind::Mini;
+			const bool step = E && arith; // the step clamps
+			const int ct = (env_.clampOverflow && !E) ? ClampType(u) : 0;
+			const auto opClamp = [&](int r, bool typeBit) {
+				if (step)
+					return ClampE(r);
+				if (typeBit)
+					return ClampInto(r);
+				return r;
+			};
 			const u32 l0 = vLock_;
 			int fs = VecOperand(in.args, 0);
-			if (ct & 2)
+			if (step || (ct & 2))
 			{
-				fs = ClampInto(fs);
+				fs = opClamp(fs, true);
 				KeepOnly(l0, fs);
 			}
 			const u32 l1 = vLock_;
 			// Ft: a whole register, or a scalar (one register lane) that the
-			// multiply reads by element and the other kinds broadcast.
+			// multiply reads by element and the other kinds broadcast. A clamp
+			// of the whole source register clamps that lane the same way.
 			// setupFtReg loads I into a writable temp mapped as VF0 rather than
 			// as the I register, so checkVFClamp does not exempt it and I is
 			// clamped like any Ft.
 			int ft = -1, ftLane = -1;
+			const bool ftClamp = step || (ct & 1);
 			switch (u.form)
 			{
 				case FtForm::Reg:
 					ft = VecOperand(in.args, 4);
-					if (ct & 1)
-					{
-						ft = ClampInto(ft);
-						KeepOnly(l1, ft);
-					}
 					break;
 				case FtForm::Bc:
 					ft = UseReg(in.args[4]);
 					ftLane = in.lane;
-					if (ct & 1)
-					{
-						ft = ClampInto(ft);
-						KeepOnly(l1, ft);
-					}
 					break;
 				case FtForm::I:
 				case FtForm::Q:
 					ft = ScalarV(in.args[4], &ftLane);
-					if (ct & 1)
-					{
-						ft = ClampInto(ft);
-						KeepOnly(l1, ft);
-					}
 					break;
 				default:
 				{
@@ -1037,6 +1058,11 @@ namespace vuopt
 					armAsm->Movi(V(ft).V4S(), 0);
 					break;
 				}
+			}
+			if (ftClamp)
+			{
+				ft = opClamp(ft, true);
+				KeepOnly(l1, ft);
 			}
 			const bool mulKind = u.kind == FmacKind::Mul || u.kind == FmacKind::Madd || u.kind == FmacKind::Msub;
 			if (ftLane >= 0 && !mulKind)
@@ -1052,45 +1078,107 @@ namespace vuopt
 				else
 					armAsm->Fmul(V(d).V4S(), V(fs).V4S(), V(ft).V4S());
 			};
-			int acc = -1;
+			// The result in d, with mode 2's result clamp when it applies.
+			const auto finish = [&](auto emit) {
+				if (step && ResultClamp())
+				{
+					const int t = TempV();
+					emit(t);
+					const int d = DefV(id);
+					armAsm->Fminnm(V(d).V4S(), V(t).V4S(), V(kCMax).V4S());
+					armAsm->Fmaxnm(V(d).V4S(), V(d).V4S(), V(kCMin).V4S());
+				}
+				else
+					emit(DefV(id));
+			};
 			if (u.kind == FmacKind::Madd || u.kind == FmacKind::Msub)
-				acc = VecOperand(in.args, 8);
-			int prod = -1;
-			if (acc >= 0)
 			{
-				prod = TempV();
+				const u32 l2 = vLock_;
+				int acc = VecOperand(in.args, 8);
+				if (E)
+				{
+					acc = ClampE(acc);
+					KeepOnly(l2, acc);
+				}
+				const u32 l3 = vLock_;
+				int prod = TempV();
 				mul(prod);
-			}
-			const int d = DefV(id);
-			switch (u.kind)
-			{
-				case FmacKind::Add: armAsm->Fadd(V(d).V4S(), V(fs).V4S(), V(ft).V4S()); break;
-				case FmacKind::Sub: armAsm->Fsub(V(d).V4S(), V(fs).V4S(), V(ft).V4S()); break;
-				case FmacKind::Mul: mul(d); break;
-				case FmacKind::Max: MaxMin(fs, ft, true, d); break;
-				case FmacKind::Mini: MaxMin(fs, ft, false, d); break;
-				case FmacKind::Madd:
-					if (u.cls == UClass::FmacB)
+				if (E && ResultClamp())
+					prod = ClampInto(prod);    // mVUclamp4 of the multiply step
+				else if (E)
+					prod = SignClampInto(prod); // mode 3: the accumulate step clamps it
+				KeepOnly(l3, prod);
+				finish([&](int d) {
+					if (u.kind == FmacKind::Msub)
+						armAsm->Fsub(V(d).V4S(), V(acc).V4S(), V(prod).V4S()); // ACC - product
+					else if (u.cls == UClass::FmacB)
 						armAsm->Fadd(V(d).V4S(), V(acc).V4S(), V(prod).V4S()); // ACC + product
 					else
 						armAsm->Fadd(V(d).V4S(), V(prod).V4S(), V(acc).V4S()); // product + ACC
+				});
+				return;
+			}
+			switch (u.kind)
+			{
+				case FmacKind::Add: finish([&](int d) { armAsm->Fadd(V(d).V4S(), V(fs).V4S(), V(ft).V4S()); }); break;
+				case FmacKind::Sub: finish([&](int d) { armAsm->Fsub(V(d).V4S(), V(fs).V4S(), V(ft).V4S()); }); break;
+				case FmacKind::Mul: finish([&](int d) { mul(d); }); break;
+				case FmacKind::Max:
+				{
+					const int d = DefV(id);
+					MaxMin(fs, ft, true, d);
 					break;
-				case FmacKind::Msub:
-					armAsm->Fsub(V(d).V4S(), V(acc).V4S(), V(prod).V4S()); // ACC - product
+				}
+				case FmacKind::Mini:
+				{
+					const int d = DefV(id);
+					MaxMin(fs, ft, false, d);
 					break;
+				}
 				default:
+				{
+					const int d = DefV(id);
 					armAsm->Movi(V(d).V4S(), 0);
 					break;
+				}
 			}
 		}
 
 		void Lowerer::Opmul(ValueId id)
 		{
-			// mVU_OPMULA / mVU_OPMSUB: {Fs.y, Fs.z, Fs.x, Fs.w} * {Ft.z, Ft.x, Ft.y, +0}
+			// mVU_OPMULA / mVU_OPMSUB: {Fs.y, Fs.z, Fs.x, Fs.w} * {Ft.z, Ft.x, Ft.y, +0},
+			// through NEON_MULPS (and NEON_SUBPS): the clampE steps take the
+			// rotated multiplicands.
 			const Inst& in = I(id);
+			const bool E = env_.clampExtra;
+			// NEON_MULPS clamps with the op's field mask, and microVU's clamps
+			// read a single-lane mask as "lane 0 only" (the single-lane forms
+			// rotate the live lane there first; this one does not), so with a
+			// single-lane field the multiply step clamps lane 0. OPMSUB's SUB
+			// step runs after the rotation to the destination lane, so it
+			// clamps that lane.
+			const bool lane0Only = Single(in.mask);
+			const auto clampMul = [&](int r) {
+				const int c = ClampE(r);
+				if (!lane0Only)
+					return c;
+				const int t = TempV();
+				armAsm->Mov(V(t).V16B(), V(r).V16B());
+				armAsm->Ins(V(t).V4S(), 0, V(c).V4S(), 0);
+				return t;
+			};
+			const auto clampFMul = [&](int r) {
+				const int c = ClampInto(r);
+				if (!lane0Only)
+					return c;
+				const int t = TempV();
+				armAsm->Mov(V(t).V16B(), V(r).V16B());
+				armAsm->Ins(V(t).V4S(), 0, V(c).V4S(), 0);
+				return t;
+			};
 			const int fs = VecOperand(in.args, 0);
 			const int ft = VecOperand(in.args, 4);
-			const int a = TempV(), b = TempV();
+			int a = TempV(), b = TempV();
 			// a = Fs.yzxw: rotate the low three lanes
 			armAsm->Ext(V(a).V16B(), V(fs).V16B(), V(fs).V16B(), 4);    // y z w x
 			armAsm->Ins(V(a).V4S(), 2, V(fs).V4S(), 0);                 // y z x x
@@ -1099,16 +1187,49 @@ namespace vuopt
 			armAsm->Ext(V(b).V16B(), V(ft).V16B(), V(ft).V16B(), 12);   // w x y z
 			armAsm->Ins(V(b).V4S(), 0, V(ft).V4S(), 2);                 // z x y z
 			armAsm->Ins(V(b).V4S(), 3, a64::wzr);                       // z x y 0
+			if (E)
+			{
+				a = clampMul(a);
+				b = clampMul(b);
+			}
+			const auto clampF = [&](int d, int t) {
+				armAsm->Fminnm(V(d).V4S(), V(t).V4S(), V(kCMax).V4S());
+				armAsm->Fmaxnm(V(d).V4S(), V(d).V4S(), V(kCMin).V4S());
+			};
 			if (in.op == Op::Opmula)
 			{
-				const int d = DefV(id);
-				armAsm->Fmul(V(d).V4S(), V(a).V4S(), V(b).V4S());
+				if (E && ResultClamp())
+				{
+					const int t = TempV();
+					armAsm->Fmul(V(t).V4S(), V(a).V4S(), V(b).V4S());
+					const int c = clampFMul(t);
+					const int d = DefV(id);
+					armAsm->Mov(V(d).V16B(), V(c).V16B());
+				}
+				else
+				{
+					const int d = DefV(id);
+					armAsm->Fmul(V(d).V4S(), V(a).V4S(), V(b).V4S());
+				}
+				return;
+			}
+			int p = TempV();
+			armAsm->Fmul(V(p).V4S(), V(a).V4S(), V(b).V4S());
+			if (E && ResultClamp())
+				p = clampFMul(p);     // NEON_MULPS's mVUclamp4
+			if (E)
+				p = ClampE(p);        // the SUB step's operand clamp (NEON_SUBPS takes no preClamped)
+			int acc = VecOperand(in.args, 8);
+			if (E)
+				acc = ClampE(acc);
+			if (E && ResultClamp())
+			{
+				const int t = TempV();
+				armAsm->Fsub(V(t).V4S(), V(acc).V4S(), V(p).V4S());
+				clampF(DefV(id), t);
 			}
 			else
 			{
-				const int p = TempV();
-				armAsm->Fmul(V(p).V4S(), V(a).V4S(), V(b).V4S());
-				const int acc = VecOperand(in.args, 8);
 				const int d = DefV(id);
 				armAsm->Fsub(V(d).V4S(), V(acc).V4S(), V(p).V4S());
 			}
@@ -1341,7 +1462,7 @@ namespace vuopt
 				if (env_.softwareFlush)
 					armAsm->Umov(W(g10), V(fsR).V4S(), 0);
 				armAsm->Fdiv(S(q), S(fsR), S(divisor));
-				if (!skipClamp && env_.clampOverflow)
+				if (!skipClamp && (env_.clampOverflow || env_.clampExtra))
 				{
 					armAsm->Fminnm(S(q), S(q), S(kCMax));
 					armAsm->Fmaxnm(S(q), S(q), S(kCMin));
@@ -1358,15 +1479,21 @@ namespace vuopt
 				}
 			};
 			const auto zeroDivisorQ = [&](bool fromBoth) {
-				// sign(Fs) [xor sign(Ft)] | maxvals
+				// sign(Fs) [xor sign(Ft)] | the ceiling: maxvals, or at the
+				// sign-preserving mode 0x7FFFFFFF (consoleQ)
 				armAsm->Umov(W(g9), V(fsR).V4S(), 0);
 				if (fromBoth)
 				{
 					armAsm->Umov(W(g10), V(ftR).V4S(), 0);
 					armAsm->Eor(W(g9), W(g9), W(g10));
 				}
-				armAsm->And(W(g9), W(g9), 0x80000000);
-				armAsm->Orr(W(g9), W(g9), 0x7f7fffff);
+				if (env_.clampSign)
+					armAsm->Orr(W(g9), W(g9), 0x7fffffff);
+				else
+				{
+					armAsm->And(W(g9), W(g9), 0x80000000);
+					armAsm->Orr(W(g9), W(g9), 0x7f7fffff);
+				}
 				armAsm->Fmov(S(q), W(g9));
 			};
 
@@ -1481,10 +1608,38 @@ namespace vuopt
 				armAsm->Ldr(S(c), a64::MemOperand(xGlob, G(k)));
 				armAsm->Fsub(S(x), S(x), S(c));
 			};
-			const auto mul = [&](int to, int from) { armAsm->Fmul(S(to), S(to), S(from)); };
-			const auto add = [&](int to, int from) { armAsm->Fadd(S(to), S(to), S(from)); };
-			const auto sub = [&](int to, int from) { armAsm->Fsub(S(to), S(to), S(from)); };
-			const auto div = [&](int to, int from) { armAsm->Fdiv(S(to), S(to), S(from)); };
+			// NEON_MULSS_Series / NEON_ADDSS / NEON_SUBSS / NEON_DIVSS: at clampE
+			// each step clamps both operands in place (the EFU's temporaries,
+			// as microVU's are) and at mode 2 its result.
+			const auto clampIn = [&](int r) {
+				if (env_.clampSign)
+				{
+					armAsm->Smin(V(r).V4S(), V(r).V4S(), V(kCMax).V4S());
+					armAsm->Umin(V(r).V4S(), V(r).V4S(), V(kCMin).V4S());
+				}
+				else
+				{
+					armAsm->Fminnm(V(r).V4S(), V(r).V4S(), V(kCMax).V4S());
+					armAsm->Fmaxnm(V(r).V4S(), V(r).V4S(), V(kCMin).V4S());
+				}
+			};
+			const auto stepClamps = [&](int to, int from) {
+				if (!env_.clampExtra)
+					return;
+				clampIn(from);
+				if (to != from)
+					clampIn(to);
+			};
+			const auto resultClamp = [&](int to) {
+				if (!ResultClamp())
+					return;
+				armAsm->Fminnm(V(to).V4S(), V(to).V4S(), V(kCMax).V4S());
+				armAsm->Fmaxnm(V(to).V4S(), V(to).V4S(), V(kCMin).V4S());
+			};
+			const auto mul = [&](int to, int from) { stepClamps(to, from); armAsm->Fmul(S(to), S(to), S(from)); resultClamp(to); };
+			const auto add = [&](int to, int from) { stepClamps(to, from); armAsm->Fadd(S(to), S(to), S(from)); resultClamp(to); };
+			const auto sub = [&](int to, int from) { stepClamps(to, from); armAsm->Fsub(S(to), S(to), S(from)); resultClamp(to); };
+			const auto div = [&](int to, int from) { stepClamps(to, from); armAsm->Fdiv(S(to), S(to), S(from)); resultClamp(to); };
 			const auto mov = [&](int dst, int src) { armAsm->Mov(V(dst).V16B(), V(src).V16B()); };
 			const auto one = [&](int x) { armAsm->Ldr(S(x), a64::MemOperand(xGlob, G(&mVUglob.one[0]))); };
 			// mVU_sumXYZ_arm: (x*x + y*y) + (z*z + 0) into lane 0
@@ -1648,7 +1803,36 @@ namespace vuopt
 				case LOp::ESUM:
 					armAsm->Rev64(V(r[1]).V4S(), V(r[0]).V4S());
 					armAsm->Ext(V(r[1]).V16B(), V(r[1]).V16B(), V(r[1]).V16B(), 8);
-					armAsm->Fadd(V(r[0]).V4S(), V(r[0]).V4S(), V(r[1]).V4S());
+					// NEON_ADDPS clamps with the op's field mask: a single-lane
+					// field clamps lane 0 only (microVU's single-lane reading).
+					if (Single(in.mask) && env_.clampExtra)
+					{
+						const auto lane0 = [&](int x, bool result) {
+							armAsm->Mov(V(c).V16B(), V(x).V16B());
+							if (result || !env_.clampSign)
+							{
+								armAsm->Fminnm(S(c), S(c), S(kCMax));
+								armAsm->Fmaxnm(S(c), S(c), S(kCMin));
+							}
+							else
+							{
+								armAsm->Smin(V(c).V4S(), V(c).V4S(), V(kCMax).V4S());
+								armAsm->Umin(V(c).V4S(), V(c).V4S(), V(kCMin).V4S());
+							}
+							armAsm->Ins(V(x).V4S(), 0, V(c).V4S(), 0);
+						};
+						lane0(r[1], false);
+						lane0(r[0], false);
+						armAsm->Fadd(V(r[0]).V4S(), V(r[0]).V4S(), V(r[1]).V4S());
+						if (ResultClamp())
+							lane0(r[0], true);
+					}
+					else
+					{
+						stepClamps(r[0], r[1]); // NEON_ADDPS
+						armAsm->Fadd(V(r[0]).V4S(), V(r[0]).V4S(), V(r[1]).V4S());
+						resultClamp(r[0]);
+					}
 					armAsm->Ins(V(r[1]).V4S(), 0, V(r[0]).V4S(), 1);
 					add(r[0], r[1]);
 					res = 0;
@@ -2467,6 +2651,15 @@ namespace vuopt
 					armAsm->Dup(V(d).V4S(), W(r));
 					break;
 				}
+				case Op::AccClamp:
+				{
+					// mVU_FMACc's clamp step on its read-only ACC mapping.
+					const int src = VecOperand(in.args, 0);
+					const int c = ClampE(src);
+					const int d = DefV(id);
+					armAsm->Mov(V(d).V16B(), V(c).V16B());
+					break;
+				}
 				case Op::Kick: Kick(id); break;
 				case Op::Cond:
 				{
@@ -2504,11 +2697,6 @@ namespace vuopt
 			if (env_.vuIndex != 1)
 			{
 				why = "VU0";
-				return false;
-			}
-			if (!env_.clampOverflow)
-			{
-				why = "clamp mode 0";
 				return false;
 			}
 			for (size_t b = 0; b < f_.blocks.size(); b++)

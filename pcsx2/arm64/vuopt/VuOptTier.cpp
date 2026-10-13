@@ -44,8 +44,8 @@ namespace vuopt
 			return Decline("timing port disagrees", why);
 		if (env.vuIndex != 1)
 			return Decline("VU0", why);
-		if (!env.clampOverflow || env.clampExtra || env.clampSign || env.clampExact)
-			return Decline("clamp mode other than 1", why);
+		if (env.clampExact)
+			return Decline("clamp mode 4", why);
 		if (env.xgkickHack)
 			return Decline("XGKickHack", why);
 		if (env.ibitHack)
@@ -61,6 +61,8 @@ namespace vuopt
 		ir::BuildOptions bo;
 		bo.vuIndex = vu_;
 		bo.clampIImmediate = env.clampOverflow && !env.clampSign;
+		bo.clampExtra = env.clampExtra;
+		bo.clampSign = env.clampSign;
 		const ir::Function fn = ir::BuildNodeLocal(br, bo);
 		LowerEnv le;
 		le.vuIndex = env.vuIndex;
@@ -75,6 +77,8 @@ namespace vuopt
 		le.vifTop = env.vifTop;
 		le.vifItop = env.vifItop;
 		le.clampOverflow = env.clampOverflow;
+		le.clampExtra = env.clampExtra;
+		le.clampSign = env.clampSign;
 		le.softwareFlush = env.softwareFlush;
 		const u8* codeStart = armGetCurrentCodePointer();
 		std::vector<std::pair<const u8*, ir::ValueId>> marks;
