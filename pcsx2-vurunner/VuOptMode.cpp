@@ -342,6 +342,7 @@ namespace
 				region->maxRegions = o.regionLimit;
 				region->maxVHomes = o.vHomes;
 				region->maxGHomes = o.gHomes;
+				region->schedule = o.schedule;
 				region->dump = o.dumpIr;
 			}
 		}

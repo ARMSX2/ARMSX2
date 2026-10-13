@@ -24,6 +24,7 @@ struct VuoptModeOptions
 	bool region = false;   // --vuopt-region: vuopt regions (milestone 4), framed bodies for the rest
 	s32 regionLimit = -1;  // --vuopt-region-limit N: build only the first N regions
 	s32 vHomes = 14;       // --vuopt-vhomes N: at most N NEON homes per region
+	bool schedule = true;  // --vuopt-no-sched: regions keep each node's operations in program order (milestone 9 A/B)
 	s32 gHomes = 6;        // --vuopt-ghomes N // --vuopt-skip a,b,...: leave these compiled blocks to microVU (bisecting)
 	s32 lowerOnly = -1;    // --vuopt-only N: lower only compiled block N (bisecting); -1 = all
 	s32 lowerLimit = -1;
