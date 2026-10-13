@@ -41,6 +41,9 @@ namespace IopThread
 	/// caller resets them right after (VMManager::Initialize, and a settings change in
 	/// CheckForCPUConfigChanges). Threaded is not built yet, so it resolves to Off here.
 	void ChooseMode();
+	/// The same with the host and the VM conditions given, for the tests: ResolveMode would give Threaded
+	/// on a host with enough cores, and that is where the demotion to Off applies.
+	void ChooseModeFor(const HostCpuInfo& host, const VmConditions& vm);
 
 	/// Makes the thread match the mode in effect: starts it when the mode is Lockstep and it is not
 	/// running, stops it when the mode is Off and it is. The IOP's clocks are taken from the EE's, so

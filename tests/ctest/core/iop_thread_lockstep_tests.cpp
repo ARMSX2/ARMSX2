@@ -189,6 +189,24 @@ TEST(IopThreadEventTest, ThreadedResolvesToOffUntilItIsBuilt)
 	EXPECT_EQ(g_intEventTestShared, cpuEventTestFor(IopThreadMode::Off));
 }
 
+TEST(IopThreadEventTest, ThreadedOnAHostThatWouldAllowItStillComesOutOff)
+{
+	// ResolveMode gives Threaded here (an ARM64 host with cores to spare). The mode in effect is Off, because
+	// Threaded is not built yet (design step 11); the demotion is in ChooseMode.
+	SettingsGuard guard;
+	EmuConfig.Speedhacks.iopThread = true;
+	EmuConfig.Speedhacks.iopThreadLockstep = false;
+	ASSERT_EQ(ResolveMode(EmuConfig, Arm64Host(), IopThread::VmConditions()), IopThreadMode::Threaded);
+	IopThread::ChooseModeFor(Arm64Host(), IopThread::VmConditions());
+	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Off);
+	EXPECT_EQ(g_intEventTestShared, cpuEventTestFor(IopThreadMode::Off));
+
+	// Lockstep on the same host is not demoted.
+	EmuConfig.Speedhacks.iopThreadLockstep = true;
+	IopThread::ChooseModeFor(Arm64Host(), IopThread::VmConditions());
+	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Lockstep);
+}
+
 TEST(IopThreadEventTest, AHostThatIsNotArm64ResolvesTheSettingsToOff)
 {
 	if (IopThread::CurrentHostInfo().is_arm64)
@@ -587,6 +605,38 @@ TEST_F(LockstepMachine, LockstepLeavesTheMachineWhereOffDoes)
 	EXPECT_EQ(off.slices, lockstep.slices);
 	EXPECT_EQ(off.event_tests, lockstep.event_tests);
 	EXPECT_GT(off.slices, 0u);
+}
+
+TEST_F(LockstepMachine, TheIopIsHandedWhatTheEeOwesItAsItsBudgetInBothModes)
+{
+	// Concrete values, so that a fault in the books the two instances share cannot hide by being the
+	// same fault in both: the IOP is 500 cycles ahead (EEsCycle -500), the EE runs 3072 cycles, so
+	// the IOP is owed 2572; the fake runs them and overshoots by 2572 % 23 = 19.
+	for (const IopThreadMode mode : {IopThreadMode::Off, IopThreadMode::Lockstep})
+	{
+		SettingsGuard guard;
+		if (mode == IopThreadMode::Lockstep)
+		{
+			REQUIRE_ARM64_HOST();
+			AskForLockstep();
+			IopThread::ChooseMode();
+			IopThread::SyncThread();
+			ASSERT_TRUE(IopThread::LockstepActive());
+		}
+
+		Reset();
+		std::vector<IopCall> calls;
+		s_calls = &calls;
+		cpuRegs.cycle += 3072;
+		cpuEventTestFor(mode)();
+		s_calls = nullptr;
+
+		ASSERT_EQ(calls.size(), 1u) << "mode " << static_cast<int>(mode);
+		EXPECT_EQ(calls[0].budget, 2572) << "mode " << static_cast<int>(mode);
+		EXPECT_EQ(EEsCycle, -19) << "mode " << static_cast<int>(mode);
+		EXPECT_EQ(EEoCycle, cpuRegs.cycle) << "mode " << static_cast<int>(mode);
+		EXPECT_FALSE(iopEventAction) << "mode " << static_cast<int>(mode);
+	}
 }
 
 TEST_F(LockstepMachine, TheLockstepInstanceWithNoThreadRunsTheSliceItself)

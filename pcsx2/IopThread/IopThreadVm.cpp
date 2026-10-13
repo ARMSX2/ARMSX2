@@ -105,7 +105,12 @@ namespace IopThread
 
 	void ChooseMode()
 	{
-		IopThreadMode mode = ResolveMode(EmuConfig, CurrentHostInfo(), CurrentVmConditions());
+		ChooseModeFor(CurrentHostInfo(), CurrentVmConditions());
+	}
+
+	void ChooseModeFor(const HostCpuInfo& host, const VmConditions& vm)
+	{
+		IopThreadMode mode = ResolveMode(EmuConfig, host, vm);
 		// Threaded is not built yet (design step 11): the setting resolves to Off until it is.
 		if (mode == IopThreadMode::Threaded)
 			mode = IopThreadMode::Off;
