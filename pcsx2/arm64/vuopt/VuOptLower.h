@@ -100,7 +100,8 @@ namespace vuopt
 		// to mVU.branch for microVU's tail.
 		Framed,
 		// Inside a vuopt region: the branch condition is left sign-extended in
-		// w8 (the region's tail compares it); nothing is stored to mVU.branch.
+		// w8, or a JR/JALR's target byte address (the region's tail compares
+		// it); nothing is stored to mVU.branch.
 		Region,
 	};
 

@@ -106,6 +106,16 @@ namespace vuopt
 		void* (*fetchBlock)(u32 vu, u32 pc, const u8* key) = nullptr;
 		// mVUsetupRange for a block from startPC through its last pair.
 		void (*addRange)(u32 vu, u32 startPC, u32 lastPC) = nullptr;
+		// A program end inside a region (mVUendProgram's tail).
+		const void* clearLpState = nullptr; // mVU1clearlpStateJIT
+		const void* endFlagsB = nullptr;    // mVU.endProgramFlagsB
+		const void* exitEBit = nullptr;     // mVUexitEBit
+		const void* vpuStat = nullptr;      // &VU0.VI[REG_VPU_STAT].UL
+		bool threadVU1 = false;             // THREAD_VU1
+		// A JR/JALR inside a region, for targets the region does not hold:
+		// emits microVU's own dispatch (normJumpCompile after its setupBranch)
+		// for `block`, whose end state is `endKey`; the target is in mVU.branch.
+		void (*emitJumpTail)(u32 vu, void* block, const u8* endKey) = nullptr;
 	};
 
 #ifdef PCSX2_RECOMPILER_TESTS

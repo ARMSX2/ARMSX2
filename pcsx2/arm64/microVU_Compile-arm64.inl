@@ -1116,6 +1116,57 @@ static void vuoptAddRange(u32 vu, u32 startPC, u32 lastPC)
 	mVUsetupRange(mVU, (lastPC + 8) & (mVU.microMemSize - 8), false);
 }
 
+// normJumpCompile from after its mVUsetupBranch, for a vuopt region's block:
+// the region has already left microVU's boundary state in place and the
+// target in mVU.branch. Mirrors normJumpCompile's non-evil, non-E-bit path.
+static void vuoptEmitJumpTail(u32 vu, void* block, const u8* endKey)
+{
+	microVU& mVU = mVUbyIndex(vu);
+	microBlock* blk = static_cast<microBlock*>(block);
+	std::memcpy(&blk->pStateEnd, endKey, sizeof(microRegInfo));
+	if (!blk->jumpCache)
+		blk->jumpCache = new microJumpCache[mProgSize / 2];
+
+	mVUldrField(mVU, RWARG1, &mVU.branch);
+	if (doJumpCaching)
+		armMoveAddressToReg(RXARG2, blk);
+	else
+		armMoveAddressToReg(RXARG2, &blk->pStateEnd);
+
+	if (doJumpCaching && !doJumpAsSameProgram)
+	{
+		a64::Label slowPath;
+		armAsm->Str(RWARG1, mVUstateMem(offsetof(VURegs, start_pc)));
+		armAsm->Ldr(a64::x8, a64::MemOperand(RXARG2, offsetof(microBlock, jumpCache)));
+		armAsm->Add(a64::x9, a64::x0, a64::Operand(a64::x0, a64::LSL, 1));
+		armAsm->Add(a64::x8, a64::x8, a64::x9);
+		armAsm->Ldr(a64::x10, a64::MemOperand(a64::x8, offsetof(microJumpCache, prog)));
+		armMoveAddressToReg(a64::x11, &mVU.prog.quick[0].prog);
+		armAsm->Lsl(a64::x12, a64::x0, 1);
+		armAsm->Ldr(a64::x11, a64::MemOperand(a64::x11, a64::x12));
+		armAsm->Cmp(a64::x10, a64::x11);
+		armAsm->B(&slowPath, a64::ne);
+		armAsm->Ldr(a64::x10, a64::MemOperand(a64::x8, offsetof(microJumpCache, hostEntry)));
+		armAsm->Cbz(a64::x10, &slowPath);
+		armAsm->Br(a64::x10);
+		armAsm->Bind(&slowPath);
+	}
+
+	mVUbackupRegs(mVU);
+	if (!mVU.index)
+		armEmitCall((void*)(void (*)())mVUcompileJIT<0>);
+	else
+		armEmitCall((void*)(void (*)())mVUcompileJIT<1>);
+	mVUrestoreRegs(mVU);
+
+	a64::Label validBlock;
+	armAsm->Cbnz(a64::x0, &validBlock);
+	mVUcompileFailedFlagBackup(mVU);
+	armEmitJmp(mVU.exitFunct);
+	armAsm->Bind(&validBlock);
+	armAsm->Br(a64::x0);
+}
+
 static vuopt::MvuEmitEnv mVUbuildEmitEnv(microVU& mVU)
 {
 	vuopt::MvuEmitEnv e;
@@ -1149,6 +1200,12 @@ static vuopt::MvuEmitEnv mVUbuildEmitEnv(microVU& mVU)
 	e.blockEntry = &vuoptBlockEntry;
 	e.fetchBlock = &vuoptFetchBlock;
 	e.addRange = &vuoptAddRange;
+	e.clearLpState = mVU.index ? reinterpret_cast<const void*>(&mVU1clearlpStateJIT) : reinterpret_cast<const void*>(&mVU0clearlpStateJIT);
+	e.endFlagsB = mVU.endProgramFlagsB;
+	e.exitEBit = mVUexitEBit(mVU);
+	e.vpuStat = &VU0.VI[REG_VPU_STAT].UL;
+	e.threadVU1 = THREAD_VU1;
+	e.emitJumpTail = &vuoptEmitJumpTail;
 	return e;
 }
 #endif

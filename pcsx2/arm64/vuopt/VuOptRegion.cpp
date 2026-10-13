@@ -48,20 +48,45 @@ namespace vuopt
 			return v;
 		}
 
-		// A block a region can hold: it ends in a plain link, and nothing in
-		// it needs microVU's run-time checks (T/D/M bits, branches in delay
-		// slots, a program end).
+		// A block a region can hold: it ends in a branch, a conditional branch,
+		// a JR/JALR, or a program end (a plain E bit, or one on B/BAL), and
+		// nothing in it needs microVU's run-time checks (T/D/M bits, branches
+		// in delay slots).
 		bool Internal(const BlockResult& b)
 		{
-			if (b.endKind != BlockEnd::Branch && b.endKind != BlockEnd::CondBranch)
-				return false;
-			if (b.eBitOnBranch || b.tBitOnBranch || !b.tBitExits.empty() || b.entry.blockType != 0)
+			switch (b.endKind)
+			{
+				case BlockEnd::Branch:
+				case BlockEnd::CondBranch:
+				case BlockEnd::Jump:
+					if (b.eBitOnBranch)
+						return false;
+					break;
+				case BlockEnd::EBit:
+					if (b.eBitOnBranch && !(b.branchKind == 1 || b.branchKind == 2))
+						return false;
+					break;
+				default:
+					return false;
+			}
+			if (b.tBitOnBranch || !b.tBitExits.empty() || b.entry.blockType != 0)
 				return false;
 			for (const MvuOp& o : b.ops)
 			{
-				if (o.lOp.badBranch || o.lOp.evilBranch || o.uOp.eBit || o.uOp.tBit || o.uOp.dBit || o.uOp.mBit)
+				if (o.lOp.badBranch || o.lOp.evilBranch || o.uOp.tBit || o.uOp.dBit || o.uOp.mBit)
+					return false;
+				if (o.uOp.eBit && b.endKind != BlockEnd::EBit)
 					return false;
 			}
+			return true;
+		}
+
+		bool ConstJump(const BlockResult& b, u32& target)
+		{
+			const MvuOp& o = b.ops[b.branchIndex];
+			if (!o.lOp.constJump.isValid)
+				return false;
+			target = (o.lOp.constJump.regValue * 8) & (0x4000 - 8);
 			return true;
 		}
 
@@ -100,6 +125,7 @@ namespace vuopt
 			ir::Function fn;
 			void* blk = nullptr;
 			int taken = 0x7fffffff, fall = 0x7fffffff; // >= 0: node; < 0: exit -(k+1)
+			std::vector<std::pair<u32, int>> jumps;    // JR/JALR: recorded target PC -> node / exit
 			a64::Label head, brk;
 			void* entry = nullptr;
 		};
@@ -127,6 +153,7 @@ namespace vuopt
 			bo.clampExtra = env_.clampExtra;
 			bo.clampSign = env_.clampSign;
 			bo.remapAtLeave = true;
+			bo.regionEnds = true;
 			return bo;
 		}
 
@@ -156,6 +183,9 @@ namespace vuopt
 		void Expand(int id);
 		void AssignHomes();
 		void Emit(const u8*& regionEnd);
+		void EmitEnd(const Node& n);
+		void EmitJump(Node& n);
+		std::vector<int> pendingJumps_; // JR nodes whose recorded targets are resolved after the static walk
 		void Jump(int target, int next);
 		a64::Label* Target(int target);
 	};
@@ -192,6 +222,23 @@ namespace vuopt
 		const BlockResult& b = nodes_[id]->br;
 		const PipeState end = b.end;
 		const u32 takenPC = b.takenPC, fallPC = b.fallPC;
+		if (b.endKind == BlockEnd::EBit)
+			return;
+		if (b.endKind == BlockEnd::Jump)
+		{
+			// A constant target is a plain link to microVU too (normJump ->
+			// normBranchCompile). Otherwise microVU links at run time, after the
+			// static closure: so do the recorded targets.
+			u32 target;
+			if (ConstJump(b, target))
+			{
+				const int t = Visit(target, end);
+				nodes_[id]->taken = t;
+			}
+			else
+				pendingJumps_.push_back(id);
+			return;
+		}
 		if (b.endKind == BlockEnd::CondBranch)
 		{
 			const int f = Visit(fallPC, end);
@@ -313,6 +360,10 @@ namespace vuopt
 				armAsm->B(Target(n.taken), BranchCond(n.br.branchKind));
 				Jump(n.fall, next);
 			}
+			else if (n.br.endKind == BlockEnd::EBit)
+				EmitEnd(n);
+			else if (n.br.endKind == BlockEnd::Jump && n.taken == 0x7fffffff)
+				EmitJump(n);
 			else
 				Jump(n.taken, next);
 		}
@@ -399,6 +450,74 @@ namespace vuopt
 		regionEnd = armGetCurrentCodePointer();
 	}
 
+	// mVUendProgram(isEbit 1) after the node's Leave: every home to microVU's
+	// locations, then microVU's own end sequence.
+	void RegionBuilder::EmitEnd(const Node& n)
+	{
+		const ir::EndInfo& e = n.fn.end;
+		pxAssertRel(e.valid, "vuopt region: program end without its end info");
+		EmitStoreHomes(homes_, le_, env_.offCycles);
+		armEmitCall(env_.clearLpState);
+		// P/Q to VI[REG_Q] / pending_q and VI[REG_P] / pending_p, choosing lanes
+		// by qInst / pInst exactly as mVUendProgram rotates qmmPQ.
+		const s32 offQ = static_cast<s32>(offsetof(VURegs, VI) + REG_Q * sizeof(REG_VI));
+		const s32 offP = static_cast<s32>(offsetof(VURegs, VI) + REG_P * sizeof(REG_VI));
+		const a64::VRegister pq = Q(28);
+		if (e.qInst)
+			armAsm->Ext(pq.V16B(), pq.V16B(), pq.V16B(), 4);
+		armAsm->Str(a64::SRegister(28), a64::MemOperand(a64::x19, offQ));
+		if (e.qInst)
+			armAsm->Ext(pq.V16B(), pq.V16B(), pq.V16B(), 12);
+		else
+			armAsm->Ext(pq.V16B(), pq.V16B(), pq.V16B(), 4);
+		armAsm->Str(a64::SRegister(28), a64::MemOperand(a64::x19, static_cast<s32>(offsetof(VURegs, pending_q))));
+		if (!e.qInst)
+			armAsm->Ext(pq.V16B(), pq.V16B(), pq.V16B(), 12);
+		armAsm->Add(a64::x8, a64::x19, offP);
+		armAsm->St1(pq.V4S(), e.pInst ? 3 : 2, a64::MemOperand(a64::x8));
+		armAsm->Add(a64::x8, a64::x19, static_cast<s32>(offsetof(VURegs, pending_p)));
+		armAsm->St1(pq.V4S(), e.pInst ? 2 : 3, a64::MemOperand(a64::x8));
+		// MAC / clip to VI (mVUallocMFLAGa / mVUallocCFLAGa)
+		armAsm->Ldrh(a64::w9, a64::MemOperand(a64::x24, e.fM * 4));
+		if (e.fC < 4)
+			armAsm->Ldr(a64::w10, a64::MemOperand(a64::x24, 16 + e.fC * 4));
+		else
+			armAsm->Ldr(a64::w10, a64::MemOperand(a64::x19, static_cast<s32>(offsetof(VURegs, VI) + REG_CLIP_FLAG * sizeof(REG_VI))));
+		armAsm->Str(a64::w9, a64::MemOperand(a64::x19, static_cast<s32>(offsetof(VURegs, VI) + REG_MAC_FLAG * sizeof(REG_VI))));
+		armAsm->Str(a64::w10, a64::MemOperand(a64::x19, static_cast<s32>(offsetof(VURegs, VI) + REG_CLIP_FLAG * sizeof(REG_VI))));
+		pxAssertRel(e.fS >= 0 && e.fS < 4, "vuopt region: status instance out of range");
+		armAsm->Mov(a64::w11, W(20 + e.fS));
+		armEmitCall(env_.endFlagsB);
+		armAsm->Add(a64::x8, a64::x19, static_cast<s32>(offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI)));
+		armAsm->Mov(a64::w9, e.tpc);
+		armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
+		if (!env_.threadVU1)
+		{
+			armMoveAddressToReg(a64::x8, env_.vpuStat);
+			armAsm->Ldr(a64::w9, a64::MemOperand(a64::x8));
+			armAsm->And(a64::w9, a64::w9, env_.vuIndex ? ~0x100u : ~0x001u);
+			armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
+		}
+		armEmitJmp(env_.exitEBit);
+	}
+
+	// A JR/JALR with run-time targets: the recorded ones compared directly,
+	// the rest through microVU's jump cache, entered with microVU's state.
+	void RegionBuilder::EmitJump(Node& n)
+	{
+		// normJumpCompile's probe records every jump's target in start_pc.
+		if (!n.jumps.empty())
+			armAsm->Str(W(8), a64::MemOperand(a64::x19, static_cast<s32>(offsetof(VURegs, start_pc))));
+		for (const auto& j : n.jumps)
+		{
+			armAsm->Cmp(W(8), j.first);
+			armAsm->B(Target(j.second), a64::eq);
+		}
+		armAsm->Str(W(8), a64::MemOperand(a64::x24, env_.offBranch));
+		EmitStoreHomes(homes_, le_, env_.offCycles);
+		env_.emitJumpTail(env_.vuIndex, n.blk, n.br.end.bytes);
+	}
+
 	bool RegionBuilder::Run(const BlockResult& root, std::string* why)
 	{
 		// The root: microVU registered it before calling the hook.
@@ -417,7 +536,24 @@ namespace vuopt
 		// Single-node regions without a self link gain nothing over the
 		// framed body; decide before registering anything else.
 		Expand(0);
-		if (nodes_.size() == 1 && nodes_[0]->taken != 0 && nodes_[0]->fall != 0)
+		// Recorded JR targets, in the order the walk found the jumps.
+		for (size_t k = 0; k < pendingJumps_.size(); k++)
+		{
+			const int id = pendingJumps_[k];
+			const auto it = t_.jumpTargets.find(nodes_[id]->pc);
+			if (it == t_.jumpTargets.end())
+				continue;
+			const PipeState end = nodes_[id]->br.end;
+			for (u32 pc : it->second)
+			{
+				const int t = Visit(pc, end);
+				nodes_[id]->jumps.push_back({pc & (0x4000 - 8), t});
+			}
+		}
+		bool selfLink = nodes_[0]->taken == 0 || nodes_[0]->fall == 0;
+		for (const auto& j : nodes_[0]->jumps)
+			selfLink = selfLink || j.second == 0;
+		if (nodes_.size() == 1 && !selfLink)
 			return t_.Decline("single block, no loop", why);
 
 		AssignHomes();
@@ -497,7 +633,7 @@ namespace vuopt
 			return Decline("clamp mode 4", why);
 		if (env.xgkickHack || env.ibitHack || env.overflowHack || env.addSubHack || env.vuSyncHack)
 			return Decline("gamefix", why);
-		if (!env.searchBlock || !env.cycleBreak)
+		if (!env.searchBlock || !env.cycleBreak || !env.emitJumpTail)
 			return Decline("no region support in microVU", why);
 		if (maxRegions >= 0 && static_cast<s32>(regions_) >= maxRegions)
 			return Decline("bisect", why);

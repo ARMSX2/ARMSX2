@@ -795,8 +795,34 @@ namespace vuopt::ir
 						Unsupported("branch in a branch delay slot");
 				if (b.endKind == BlockEnd::MBit)
 					Unsupported("VU0 M-bit");
-				if (o_.remapAtLeave && (b.endKind == BlockEnd::Branch || b.endKind == BlockEnd::CondBranch))
+				if (o_.remapAtLeave && (b.endKind == BlockEnd::Branch || b.endKind == BlockEnd::CondBranch || b.endKind == BlockEnd::Jump))
 					LinkRemap(b);
+				if (o_.regionEnds && b.endKind == BlockEnd::EBit)
+				{
+					// mVUendProgram(isEbit 1): no link-time reorder before it.
+					// An E bit on a conditional branch or a jump finishes
+					// differently (condBranch reorders first; the TPC comes from
+					// the branch); those stay with microVU.
+					if (b.eBitOnBranch && !(b.branchKind == 1 || b.branchKind == 2))
+						Unsupported("E-bit on a conditional branch or jump");
+					const int fS = GetLastFlagInst(b.entry, b.mFC.xStatus, 0, 1);
+					const int fM = GetLastFlagInst(b.entry, b.mFC.xMac, 1, 1);
+					const int fC = GetLastFlagInst(b.entry, b.mFC.xClip, 2, 1);
+					// The 100-cycle run-out: a divide whose flags were still in
+					// flight lands in the final status instance; a pending kick
+					// transfers.
+					if (b.end.q > 4)
+						Wr(var::S(fS), Emit(Op::StatusDiv, Type::Int, {Rd(var::S(fS)), Rd(var::DIVFLAG)}));
+					if (b.end.xgkick && !o_.xgkickHack)
+						Wr(var::MEM, Emit(Op::Kick, Type::Mem, {Rd(var::MEM), Rd(var::XGKADDR)}));
+					f_.end.valid = true;
+					f_.end.fS = fS;
+					f_.end.fM = fM;
+					f_.end.fC = fC;
+					f_.end.qInst = b.qLane ^ (b.end.q ? 1 : 0);
+					f_.end.pInst = b.pLane ^ (b.end.p ? 1 : 0);
+					f_.end.tpc = b.eBitOnBranch ? b.takenPC : b.endTPC;
+				}
 				std::vector<ValueId> a = AllVars();
 				if (accClamped_ && !accWritten_)
 					for (int l = 0; l < 4; l++)

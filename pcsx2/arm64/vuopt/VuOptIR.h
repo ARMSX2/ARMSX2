@@ -154,6 +154,16 @@ namespace vuopt::ir
 		u32 cycles = 0;             // microVU's static cycle count of the block
 	};
 
+	// A node that ends the program inside a vuopt region (mVUendProgram):
+	// what its tail needs once the Leave has handed every value back.
+	struct EndInfo
+	{
+		bool valid = false;
+		int fS = 0, fM = 0, fC = 0; // flag instances the end finalises
+		int qInst = 0, pInst = 0;   // which qmmPQ lanes hold Q / P after the run-out
+		u32 tpc = 0;                // TPC stored
+	};
+
 	struct Function
 	{
 		std::vector<Inst> insts;    // index = ValueId; insts[0] unused
@@ -161,6 +171,7 @@ namespace vuopt::ir
 		std::vector<int> entryBlocks;
 		bool unsupported = false;
 		std::string unsupportedWhy;
+		EndInfo end;                // node-local region builds of a program end
 
 		// construction statistics
 		u32 phisCreated = 0;
@@ -185,6 +196,10 @@ namespace vuopt::ir
 		// variable after microVU's link-time ring reorder and Q/P lane swap
 		// (mVUsetupBranch), i.e. in the successor's numbering.
 		bool remapAtLeave = false;
+		// With remapAtLeave: a plain E-bit end (or one on B/BAL) is modelled
+		// in the node: the run-out's divide-flag update and kick happen before
+		// the Leave, and Function::end says how to finish.
+		bool regionEnds = false;
 		// Clamp modes 2/3 (CHECK_VU_EXTRA_OVERFLOW / CHECK_VU_SIGN_OVERFLOW).
 		bool clampExtra = false;
 		bool clampSign = false;

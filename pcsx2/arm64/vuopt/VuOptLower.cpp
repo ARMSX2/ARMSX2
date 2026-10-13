@@ -1957,6 +1957,12 @@ namespace vuopt
 			{
 				if (cond)
 					armAsm->Sxth(W(kCondReg), W(IntOperand(cond)));
+				else if (jump)
+				{
+					// JR/JALR: the target byte address, as microVU stores it in mVU.branch
+					armAsm->Lsl(W(kCondReg), W(IntOperand(jump)), 3);
+					armAsm->And(W(kCondReg), W(kCondReg), 0x4000 - 8);
+				}
 			}
 			else
 			{

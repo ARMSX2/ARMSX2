@@ -72,6 +72,10 @@ namespace vuopt
 		// only); otherwise at most this many NEON homes.
 		s32 maxVHomes = 14;
 		s32 maxGHomes = 6;
+		// Recorded JR/JALR targets: block start PC of the jump -> target PCs
+		// seen at run time. A region dispatches these directly; any other
+		// target goes through microVU's jump cache.
+		std::map<u32, std::vector<u32>> jumpTargets;
 
 	private:
 		u32 vu_;
