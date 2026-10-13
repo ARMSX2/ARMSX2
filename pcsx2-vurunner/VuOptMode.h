@@ -20,7 +20,11 @@ struct VuoptModeOptions
 	bool noYield = false;
 	u32 benchIters = 0;
 	long traceDump = -1;   // --vuopt-trace-dump N: with --vuopt-trace, print the state at block entry N in both runs
-	std::string lowerSkip; // --vuopt-skip a,b,...: leave these compiled blocks to microVU (bisecting)
+	std::string lowerSkip;
+	bool region = false;   // --vuopt-region: vuopt regions (milestone 4), framed bodies for the rest
+	s32 regionLimit = -1;  // --vuopt-region-limit N: build only the first N regions
+	s32 vHomes = 14;       // --vuopt-vhomes N: at most N NEON homes per region
+	s32 gHomes = 6;        // --vuopt-ghomes N // --vuopt-skip a,b,...: leave these compiled blocks to microVU (bisecting)
 	s32 lowerOnly = -1;    // --vuopt-only N: lower only compiled block N (bisecting); -1 = all
 	s32 lowerLimit = -1;
 	bool trace = false;    // --vuopt-trace: log block entries in both runs (debugging)   // --vuopt-limit N: lower only the first N compiled blocks    // --vuopt-run: steady-state PMU iterations per engine (0 = no bench)  // build the SSA without per-block yield checks (cost measurement)

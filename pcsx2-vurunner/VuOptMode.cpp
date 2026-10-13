@@ -300,6 +300,7 @@ int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,
 //------------------------------------------------------------------
 
 #include "arm64/vuopt/VuOptTier.h"
+#include "arm64/vuopt/VuOptRegion.h"
 #include "arm64/AsmHelpers.h"
 #include "harness/VuSnapshot.h"
 
@@ -315,6 +316,7 @@ namespace
 	struct BodyCtx
 	{
 		std::unique_ptr<vuopt::BodyTier> tier;
+		std::unique_ptr<vuopt::RegionTier> region; // --vuopt-region
 		bool trace = false;
 		bool traceOnly = false; // reference arm: trace, never lower
 		u32 blocks = 0;
@@ -334,8 +336,33 @@ namespace
 			}
 			tier->dump = o.dumpIr;
 			trace = o.trace;
+			if (o.region)
+			{
+				region = std::make_unique<vuopt::RegionTier>(vu, micro);
+				region->maxRegions = o.regionLimit;
+				region->maxVHomes = o.vHomes;
+				region->maxGHomes = o.gHomes;
+				region->dump = o.dumpIr;
+			}
 		}
+
+		// Installs the hooks of the arm being measured.
+		void Install();
 	};
+
+	bool OnRegion(const vuopt::MvuBlockTrace& b, const vuopt::MvuEmitEnv& env, void* user)
+	{
+		BodyCtx& c = *static_cast<BodyCtx*>(user);
+		return c.region->OnCompile(b, env, nullptr);
+	}
+
+	void Uninstall()
+	{
+		vuopt::g_vuoptBodyHook = nullptr;
+		vuopt::g_vuoptBodyHookUser = nullptr;
+		vuopt::g_vuoptRegionHook = nullptr;
+		vuopt::g_vuoptRegionHookUser = nullptr;
+	}
 
 	// --vuopt-trace: every compiled block logs its start PC and entry key on
 	// entry, in both runs, to find where two executions part.
@@ -414,6 +441,17 @@ namespace
 		if (c.traceOnly)
 			return false;
 		return c.tier->TryLower(b, env, nullptr);
+	}
+
+	void BodyCtx::Install()
+	{
+		vuopt::g_vuoptBodyHook = &OnBody;
+		vuopt::g_vuoptBodyHookUser = this;
+		if (region)
+		{
+			vuopt::g_vuoptRegionHook = &OnRegion;
+			vuopt::g_vuoptRegionHookUser = this;
+		}
 	}
 
 	u64 CompiledBytes(int vu)
@@ -514,12 +552,10 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 
 		// vuopt bodies.
 		BodyCtx ctx(vu, vuRegs[vu].Micro, opts);
-		vuopt::g_vuoptBodyHook = &OnBody;
-		vuopt::g_vuoptBodyHookUser = &ctx;
+		ctx.Install();
 		const auto run = recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
 		const u64 runBytes = CompiledBytes(vu);
-		vuopt::g_vuoptBodyHook = nullptr;
-		vuopt::g_vuoptBodyHookUser = nullptr;
+		Uninstall();
 
 		if (!ref.ok || !run.ok)
 		{
@@ -578,11 +614,9 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			bo.trace = false;
 			bo.dumpIr = false;
 			BodyCtx bctx(vu, vuRegs[vu].Micro, bo);
-			vuopt::g_vuoptBodyHook = &OnBody;
-			vuopt::g_vuoptBodyHookUser = &bctx;
+			bctx.Install();
 			insRun = MedianInsns(recompiler_tests::BenchJitSteady(rec, opts.benchIters));
-			vuopt::g_vuoptBodyHook = nullptr;
-			vuopt::g_vuoptBodyHookUser = nullptr;
+			Uninstall();
 			// Blocks compiled after the first iteration (the identity run is one
 			// such first iteration): their compile cost is inside the counts.
 			steadyCompiles = bctx.blocks > ctx.blocks ? bctx.blocks - ctx.blocks : 0;
@@ -595,6 +629,19 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			static_cast<unsigned long long>(refBytes), static_cast<unsigned long long>(runBytes),
 			static_cast<unsigned long long>(ctx.tier->BodyBytes()), static_cast<unsigned long long>(insRef),
 			static_cast<unsigned long long>(insRun), steadyCompiles);
+		if (ctx.region)
+		{
+			std::printf(" regions=%u rnodes=%u rexits=%u rbytes=%llu", ctx.region->Regions(), ctx.region->Nodes(), ctx.region->Exits(),
+				static_cast<unsigned long long>(ctx.region->Bytes()));
+			for (const auto& d : ctx.region->Declined())
+			{
+				std::string k = d.first;
+				for (char& ch : k)
+					if (ch == ' ')
+						ch = '_';
+				std::printf(" rdecl:%s=%u", k.c_str(), d.second);
+			}
+		}
 		for (const auto& d : ctx.tier->Declined())
 		{
 			std::string k = d.first;
