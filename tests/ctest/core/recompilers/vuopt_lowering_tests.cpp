@@ -17,6 +17,7 @@
 #include "arm64/vuopt/VuOptMvuTrace.h"
 #include "arm64/vuopt/VuOptDecode.h"
 #include "arm64/vuopt/VuOptTier.h"
+#include "arm64/vuopt/VuOptRegion.h"
 
 #include <gtest/gtest.h>
 
@@ -703,6 +704,222 @@ TEST(VuoptLowering, PressureFuzz)
 	EXPECT_EQ(failures, 0) << programs << " programs";
 	EXPECT_GT(lowered, blocks * 9 / 10) << lowered << " of " << blocks << " blocks lowered";
 	std::printf("[vuopt pressure fuzz] programs=%d blocks=%u lowered=%u declined: %s\n", programs, blocks, lowered, lastDeclined.c_str());
+}
+
+//------------------------------------------------------------------
+// Regions (milestone 4): microVU's framing replaced between vuopt's own
+// blocks, state in register homes across links.
+//------------------------------------------------------------------
+
+namespace
+{
+struct RegionScope
+{
+	vuopt::RegionTier region;
+	vuopt::BodyTier body;
+	explicit RegionScope(int vu)
+		: region(vu, vuRegs[vu].Micro)
+		, body(vu, vuRegs[vu].Micro)
+	{
+		vuopt::g_vuoptRegionHook = [](const vuopt::MvuBlockTrace& b, const vuopt::MvuEmitEnv& env, void* user) {
+			return static_cast<RegionScope*>(user)->region.OnCompile(b, env, nullptr);
+		};
+		vuopt::g_vuoptRegionHookUser = this;
+		vuopt::g_vuoptBodyHook = [](const vuopt::MvuBlockTrace& b, const vuopt::MvuEmitEnv& env, void* user) {
+			return static_cast<RegionScope*>(user)->body.TryLower(b, env, nullptr);
+		};
+		vuopt::g_vuoptBodyHookUser = this;
+	}
+	~RegionScope()
+	{
+		vuopt::g_vuoptRegionHook = nullptr;
+		vuopt::g_vuoptRegionHookUser = nullptr;
+		vuopt::g_vuoptBodyHook = nullptr;
+		vuopt::g_vuoptBodyHookUser = nullptr;
+	}
+};
+
+struct RegionOutcome
+{
+	std::vector<std::string> diffs;
+	u32 regions = 0, nodes = 0;
+};
+
+// microVU alone against vuopt regions (and framed bodies elsewhere), running
+// past the cycle budget so budget breaks and resumes happen.
+RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std::function<void(VuTestHarness&)>& setup,
+	bool resume = true, s32 vHomes = 14, bool dump = false)
+{
+	FlagHackScope fh(flagHack);
+	VuSnapshot ref;
+	std::vector<u8> refPath;
+	{
+		VuTestHarness h(1);
+		if (setup)
+			setup(h);
+		h.TrackMemWindow(0, 0x4000);
+		h.LoadProgram(prog);
+		if (resume)
+			h.ResumeUntilTerminated();
+		h.RunNoDiff();
+		ref = h.JitSnapshot();
+		refPath = h.Path1PacketBytesJit();
+	}
+	RegionOutcome o;
+	VuTestHarness h(1);
+	if (setup)
+		setup(h);
+	h.TrackMemWindow(0, 0x4000);
+	h.LoadProgram(prog);
+	if (resume)
+		h.ResumeUntilTerminated();
+	{
+		RegionScope rs(1);
+		rs.region.maxVHomes = vHomes;
+		rs.region.dump = dump;
+		h.RunNoDiff();
+		o.regions = rs.region.Regions();
+		o.nodes = rs.region.Nodes();
+	}
+	o.diffs = Compare(ref, h.JitSnapshot(), refPath, h.Path1PacketBytesJit());
+	return o;
+}
+} // namespace
+
+// A counted loop: FMACs, a flag reader, a divide whose Q crosses the link,
+// a store; runs long enough to break on the cycle budget several times.
+TEST(VuoptRegion, CountedLoop)
+{
+	for (u32 n : {1u, 2u, 7u, 300u, 900u})
+	{
+		std::vector<VuOp> p;
+		p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, static_cast<u16>(n))));
+		p.push_back(L(VIADDIU_L(vi::vi2, vi::vi0, 0x10)));
+		// loop head (pair 2)
+		p.push_back(P(VDIV_L(vf::vf1, 0, vf::vf2, 1), VMUL_U(mask::xyzw, vf::vf3, vf::vf3, vf::vf4)));
+		p.push_back(P(VFMAND_L(vi::vi3, vi::vi2), VADDq_U(mask::xyz, vf::vf5, vf::vf3)));
+		p.push_back(P(VSQ_L(mask::xyzw, vf::vf5, vi::vi2, 0), VMADDy_U(mask::x | mask::w, vf::vf6, vf::vf5, vf::vf4)));
+		p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), VSUB_U(mask::xyzw, vf::vf7, vf::vf6, vf::vf3)));
+		p.push_back(P(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(2 - 6 - 1)), VMULAx_U(mask::xyzw, vf::vf7, vf::vf4)));
+		p.push_back(P(VIADDIU_L(vi::vi2, vi::vi2, 1), VMADDAw_U(mask::xyzw, vf::vf3, vf::vf4))); // delay slot
+		p.push_back(EBit(P(VFSAND_L(vi::vi4, 0xfff), VNOP_U())));
+		for (bool fh : {true, false})
+		{
+			const RegionOutcome o = RunRegion(p, fh, [](VuTestHarness& h) {
+				h.SetVf(1, 2.0f, 3.0f, 4.0f, 5.0f);
+				h.SetVf(2, 0.5f, 1.5f, 2.5f, 3.5f);
+				h.SetVf(3, 1.0f, 1.0f, 1.0f, 1.0f);
+				h.SetVf(4, 1.0001f, 0.9999f, 1.00001f, 0.5f);
+			});
+			EXPECT_TRUE(o.diffs.empty()) << "n=" << n << " flagHack=" << fh << "\n" << Join(o.diffs, 10);
+			EXPECT_GE(o.regions, 1u) << "n=" << n;
+		}
+	}
+}
+
+// Random loop programs: an outer counted loop (vi1) around random FMAC,
+// flag, divide, memory and VI work with forward branches inside, and an
+// inner counted loop (vi5) on some.
+TEST(VuoptRegion, LoopFuzz)
+{
+	std::mt19937 rng(20261015);
+	auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
+	auto vf = [&]() { return 1 + R(14); };
+	auto vi = [&]() { return 2 + R(3); }; // vi2..vi4; vi1 / vi5 are loop counters
+	auto msk = [&]() { return (R(15) + 1) << 21; };
+	const int iters = getenv("VUOPT_REGION_ITERS") ? std::atoi(getenv("VUOPT_REGION_ITERS")) : 120;
+	int failures = 0;
+	u32 regions = 0, nodes = 0;
+	for (int iter = 0; iter < iters; iter++)
+	{
+		std::vector<VuOp> p;
+		p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, static_cast<u16>(1 + R(60)))));
+		const size_t head = p.size();
+		const bool inner = R(2);
+		const int len = 4 + R(14);
+		int lastBranch = -10;
+		for (int i = 0; i < len; i++)
+		{
+			u32 up = VNOP_U(), lo = kNopL;
+			switch (R(10))
+			{
+				case 0: up = VADD_U(msk(), vf(), vf(), vf()); break;
+				case 1: up = VMUL_U(msk(), vf(), vf(), vf()); break;
+				case 2: up = VMADDx_U(msk(), vf(), vf(), vf()) + R(4); break;
+				case 3: up = VMULAx_U(msk(), vf(), vf()) + R(4); break;
+				case 4: up = VMULq_U(msk(), vf(), vf()); break;
+				case 5: up = VMAX_U(msk(), vf(), vf(), vf()); break;
+				case 6: up = VCLIP_U(vf(), vf()); break;
+				case 7: up = VSUBx_U(msk(), vf(), vf(), vf()) + R(4); break;
+				default: break;
+			}
+			switch (R(14))
+			{
+				case 0: lo = VFMAND_L(vi(), vi()); break;
+				case 1: lo = VFSAND_L(vi(), R(0x1000)); break;
+				case 2: lo = VFCAND_L(R(0x1000000)); break;
+				case 3: lo = VDIV_L(vf(), R(4), vf(), R(4)); break;
+				case 4: lo = VSQ_L(msk(), vf(), vi(), static_cast<s16>(R(8))); break;
+				case 5: lo = VLQ_L(msk(), vf(), vi(), static_cast<s16>(R(8))); break;
+				case 6: lo = VIADDIU_L(vi(), vi(), static_cast<u16>(R(8))); break;
+				case 7: lo = VMTIR_L(vi(), vf(), R(4)); break;
+				case 8: lo = VMOVE_L(msk(), vf(), vf()); break;
+				case 9:
+					// forward, inside the body, never in another branch's delay
+					// slot or with a branch target in one
+					if (i + 4 < len && i >= lastBranch + 3)
+					{
+						lo = VIBNE_L(vi(), vi(), static_cast<s16>(1 + R(2)));
+						lastBranch = i;
+					}
+					break;
+				case 10: lo = VSQRT_L(vf(), R(4)); break;
+				default: break;
+			}
+			p.push_back(VuOp{lo, up});
+		}
+		if (inner)
+		{
+			p.push_back(L(VIADDIU_L(vi::vi5, vi::vi0, static_cast<u16>(1 + R(5)))));
+			const size_t ih = p.size();
+			p.push_back(U(VMADDAx_U(mask::xyzw, vf(), vf()) + R(4)));
+			p.push_back(L(VISUBIU_L(vi::vi5, vi::vi5, 1)));
+			p.push_back(L(VIBNE_L(vi::vi5, vi::vi0, static_cast<s16>(static_cast<int>(ih) - static_cast<int>(p.size()) - 1))));
+			p.push_back(U(VMADD_U(mask::xyzw, vf(), vf(), vf())));
+		}
+		p.push_back(L(VISUBIU_L(vi::vi1, vi::vi1, 1)));
+		p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(static_cast<int>(head) - static_cast<int>(p.size()) - 1))));
+		p.push_back(U(VMUL_U(mask::xyzw, vf(), vf(), vf())));
+		p.push_back(EBit(L(VFSAND_L(vi::vi4, 0xfff))));
+		for (bool fh : {true, false})
+		{
+			const auto setup = [iter](VuTestHarness& h) {
+				SeedSpecials(h, 9000 + iter);
+				for (int r = 4; r < 16; r++)
+					h.SetVf(r, 1.0f + 0.01f * r, 0.99f, -1.0f + 0.001f * r, 0.5f);
+				for (int r = 2; r <= 4; r++)
+					h.SetVi(r, static_cast<u16>(r * 8));
+			};
+			const RegionOutcome o = RunRegion(p, fh, setup, false);
+			regions += o.regions;
+			nodes += o.nodes;
+			if (!o.diffs.empty())
+			{
+				failures++;
+				std::string hex;
+				for (const VuOp& op : p)
+				{
+					char buf[24];
+					std::snprintf(buf, sizeof(buf), "%08x:%08x,", op.lower, op.upper);
+					hex += buf;
+				}
+				ADD_FAILURE() << "iter " << iter << " flagHack=" << fh << " hex=" << hex << "\n" << Join(o.diffs, 8);
+			}
+		}
+	}
+	EXPECT_EQ(failures, 0);
+	EXPECT_GT(regions, static_cast<u32>(iters)); // most programs form a region per flag-hack setting
+	std::printf("[vuopt region fuzz] programs=%d regions=%u nodes=%u\n", iters * 2, regions, nodes);
 }
 
 // Debugging aid: VUOPT_REPRO_HEX="lower:upper,..." VUOPT_REPRO_SEED=n
