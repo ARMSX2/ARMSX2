@@ -75,6 +75,7 @@ namespace vuopt
 		s32 offVIbackup = 0;
 		s32 offVIxgkick = 0;
 		s32 offBranch = 0;
+		s32 offNeonBackup = 0;
 		const void* xgkickFn = nullptr;
 		const void* vifTop = nullptr;
 		const void* vifItop = nullptr;
