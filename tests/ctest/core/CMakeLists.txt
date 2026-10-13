@@ -4,6 +4,7 @@ add_pcsx2_test(core_test
 	vu_clamp_mode_tests.cpp
 	ee_fpu_reloc_tests.cpp
 	patch_tests.cpp
+	iop_fingerprint_tests.cpp
 	savestate_legacy_tests.cpp
 	settings_precedence_tests.cpp
 	gsrunner_affinity_tests.cpp
