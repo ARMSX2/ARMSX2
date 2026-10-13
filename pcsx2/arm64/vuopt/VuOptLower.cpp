@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <map>
 
 namespace vuopt
 {
@@ -150,6 +151,7 @@ namespace vuopt
 			Const,    // Const / IConst immediate
 			VF0,      // the VF0 constant (0,0,0,1), from VURegs.VF[0]
 			MemBase,  // x19 + the VU1 memory offset
+			Global,   // a vector constant in mVUglob (loaded off x25)
 		};
 
 		// The register file a value lives in, by what produces it.
@@ -351,6 +353,20 @@ namespace vuopt
 			std::vector<u32> constVal_;
 			bool ConstOf(ValueId v, u32& out) const;
 			void FoldAndAlias();
+			// Milestone 7: an FMAC's MAC and status packs share one sign/zero
+			// comparison of the result, and mVUglob constants are loaded once
+			// per block. A status update whose only reader is the next
+			// non-sticky update is folded into it: the later update ORs every
+			// pack of the chain into the sticky bits at once.
+			std::map<std::pair<ValueId, int>, ValueId> zsOf_; // (result, lane or -1) -> its sign/zero vector
+			std::map<const void*, ValueId> globOf_;           // mVUglob address -> its constant value
+			std::vector<const void*> globAddr_;               // per pseudo value: the constant's address
+			static const void* PackWeights(u8 mask, bool mflag);
+			int SignZero(ValueId c, u8 mask, int& scratch, bool& owned);
+			ValueId NewPseudo(Cls k, Remat r, std::vector<u32> uses);
+			std::map<ValueId, std::vector<ValueId>> statusChain_; // non-sticky StatusUpd -> the updates folded into it, oldest first
+			ValueId StatusBase(ValueId v) const; // the status value a (possibly folded) chain starts from
+			void FoldStatusChains();
 			ValueId SingleSource(const std::vector<ValueId>& args, size_t off) const;
 			void ClampedOperands(ValueId id, std::vector<ValueId>& out) const;
 			template <typename F>
@@ -380,7 +396,7 @@ namespace vuopt
 				return idx < 0 ? a64::MemOperand(X(base), memOff_) : a64::MemOperand(X(base), X(idx));
 			}
 
-			void PackFlags(int src, u8 mask, bool mflag, int dst);
+			void PackFlags(ValueId c, u8 mask, bool mflag, int dst, ValueId def = 0);
 			void MaxMin(int to, int from, bool isMax, int out);
 			static int ClampType(const UpperInst& u);
 
@@ -627,6 +643,11 @@ namespace vuopt
 			if (remat_[c] == Remat::MemBase)
 			{
 				armAsm->Add(X(r), xState, kVU1MemFromState);
+				return;
+			}
+			if (remat_[c] == Remat::Global)
+			{
+				armAsm->Ldr(Q(r), a64::MemOperand(xGlob, G(globAddr_[c])));
 				return;
 			}
 			const Inst& in = I(c);
@@ -1240,35 +1261,142 @@ namespace vuopt
 			armAsm->Bsl(V(out).V16B(), V(to).V16B(), V(from).V16B());
 		}
 
-		// mVUupdateFlags' sign/zero pack of the vector in V(src) into W(dst).
-		void Lowerer::PackFlags(int src, u8 mask, bool mflag, int dst)
+		const void* Lowerer::PackWeights(u8 mask, bool mflag)
 		{
-			const void* weights;
 			if (Single(mask))
 			{
-				const int lane = SingleLane(mask);
-				if (lane)
-				{
-					const int t = TempV();
-					armAsm->Ext(V(t).V16B(), V(src).V16B(), V(src).V16B(), lane * 4);
-					src = t;
-				}
-				const int shift = mflag ? (3 - lane) : 0;
-				weights = shift ? static_cast<const void*>(&mVUglob.macWeights.bySSShift[0][shift][0])
-								: static_cast<const void*>(&mVUglob.macWeights.byMask[0][0][1][0]);
+				const int shift = mflag ? (3 - SingleLane(mask)) : 0;
+				return shift ? static_cast<const void*>(&mVUglob.macWeights.bySSShift[0][shift][0])
+							 : static_cast<const void*>(&mVUglob.macWeights.byMask[0][0][1][0]);
 			}
+			return &mVUglob.macWeights.byMask[0][mflag ? 1 : 0][mflag ? mask : FlipMask(mask)][0];
+		}
+
+		// mVUupdateFlags' per-lane sign/zero vector of result c (rotated so a
+		// single-lane op's lane is lane 0), shared by the MAC and status packs
+		// of the same result. `scratch`: a temporary free after the return, or
+		// -1; `owned`: whether the returned register is a temporary.
+		int Lowerer::SignZero(ValueId c, u8 mask, int& scratch, bool& owned)
+		{
+			const int lane = Single(mask) ? SingleLane(mask) : -1;
+			const auto it = zsOf_.find({c, lane});
+			const ValueId pid = it != zsOf_.end() ? it->second : 0;
+			scratch = -1;
+			owned = false;
+			if (pid && (reg_[pid] >= 0 || slot_[pid] >= 0))
+				return UseReg(pid);
+			int src = UseReg(c);
+			if (lane > 0)
+			{
+				const int t = TempV();
+				armAsm->Ext(V(t).V16B(), V(src).V16B(), V(src).V16B(), lane * 4);
+				src = t;
+			}
+			const int sgn = TempV();
+			const int z = pid ? AllocReg(Cls::V, pid) : TempV();
+			armAsm->Cmlt(V(sgn).V4S(), V(src).V4S(), 0);
+			armAsm->Fcmeq(V(z).V4S(), V(src).V4S(), 0.0);
+			armAsm->Sli(V(z).V4S(), V(sgn).V4S(), 4);
+			scratch = sgn;
+			owned = !pid;
+			return z;
+		}
+
+		// mVUupdateFlags' sign/zero pack of result c into W(dst), or into the
+		// register of value `def` when given (allocated after the operands).
+		void Lowerer::PackFlags(ValueId c, u8 mask, bool mflag, int dst, ValueId def)
+		{
+			int scratch;
+			bool zOwned;
+			const int z = SignZero(c, mask, scratch, zOwned);
+			const void* addr = PackWeights(mask, mflag);
+			const auto it = globOf_.find(addr);
+			int w;
+			bool wOwned = false;
+			if (it != globOf_.end())
+				w = UseReg(it->second);
 			else
 			{
-				weights = &mVUglob.macWeights.byMask[0][mflag ? 1 : 0][mflag ? mask : FlipMask(mask)][0];
+				w = scratch >= 0 ? scratch : TempV();
+				scratch = -1;
+				wOwned = true;
+				armAsm->Ldr(Q(w), a64::MemOperand(xGlob, G(addr)));
 			}
-			const int s = TempV(), z = TempV();
-			armAsm->Cmlt(V(s).V4S(), V(src).V4S(), 0);
-			armAsm->Fcmeq(V(z).V4S(), V(src).V4S(), 0.0);
-			armAsm->Sli(V(z).V4S(), V(s).V4S(), 4);
-			armAsm->Ldr(V(s), a64::MemOperand(xGlob, G(weights)));
-			armAsm->And(V(z).V16B(), V(z).V16B(), V(s).V16B());
-			armAsm->Addv(S(z), V(z).V4S());
-			armAsm->Fmov(W(dst), S(z));
+			const int t = zOwned ? z : wOwned ? w : scratch >= 0 ? scratch : TempV();
+			armAsm->And(V(t).V16B(), V(z).V16B(), V(w).V16B());
+			armAsm->Addv(S(t), V(t).V4S());
+			if (def)
+				dst = DefG(def);
+			armAsm->Fmov(W(dst), S(t));
+		}
+
+		ValueId Lowerer::StatusBase(ValueId v) const
+		{
+			const auto ch = statusChain_.find(v);
+			return C(I(ch != statusChain_.end() ? ch->second.front() : v).args[0]);
+		}
+
+		// A StatusUpd read only by the next non-sticky StatusUpd folds into it:
+		// non-sticky, (s & 0xfffc00ff) | p | p << 8 overwrites the earlier
+		// update's non-sticky bits, and every pack sits in the low byte, so
+		// the chain is (base & 0xfffc00ff) | p1 | ... | pn | pn << 8. Runs
+		// after dead code is marked, before uses are counted.
+		void Lowerer::FoldStatusChains()
+		{
+			std::vector<u32> readers(canon_.size(), 0);
+			for (ValueId v : order_)
+			{
+				if (!emit_[v])
+					continue;
+				const Inst& in = I(v);
+				for (size_t k = 0; k < in.args.size(); k++)
+				{
+					const ValueId a = in.args[k];
+					if (!a || I(a).type == Type::Mem)
+						continue;
+					if (v == leave_ && k < var::Count && I(a).op == Op::LiveIn && I(a).var == k)
+						continue;
+					readers[C(a)]++;
+				}
+			}
+			for (ValueId v : order_)
+			{
+				const Inst& in = I(v);
+				if (!emit_[v] || in.op != Op::StatusUpd || !(in.imm & 1))
+					continue;
+				const ValueId prev = C(in.args[0]);
+				if (prev >= f_.insts.size() || !emit_[prev] || I(prev).op != Op::StatusUpd || readers[prev] != 1)
+					continue;
+				std::vector<ValueId> chain;
+				const auto it = statusChain_.find(prev);
+				if (it != statusChain_.end())
+				{
+					chain = std::move(it->second);
+					statusChain_.erase(it);
+				}
+				chain.push_back(prev);
+				emit_[prev] = 0;
+				statusChain_[v] = std::move(chain);
+			}
+		}
+
+		ValueId Lowerer::NewPseudo(Cls k, Remat r, std::vector<u32> uses)
+		{
+			const ValueId pid = static_cast<ValueId>(canon_.size());
+			canon_.push_back(pid);
+			cls_.push_back(k);
+			remat_.push_back(r);
+			uses_.push_back(std::move(uses));
+			useCur_.push_back(0);
+			emit_.push_back(0);
+			reg_.push_back(-1);
+			slot_.push_back(-1);
+			homeReg_.push_back(0);
+			noDrop_.push_back(0);
+			finalOf_.push_back(0);
+			finalVars_.emplace_back();
+			globAddr_.push_back(nullptr);
+			return pid;
 		}
 
 		//------------------------------------------------------------------
@@ -1668,6 +1796,59 @@ namespace vuopt
 						armAsm->Eor(W(d), W(vi), W(src));
 						armAsm->Sub(W(d), W(d), 1);
 						armAsm->Lsr(W(d), W(d), 31);
+					}
+					break;
+				}
+				case LOp::FSAND:
+				{
+					// Only the bits the immediate keeps: the four flag summaries
+					// (Z/S from the non-sticky nibbles, ZS/SS from the sticky ones)
+					// and the D/I/... bits that the conversion shifts down by 14.
+					// Built in temporaries: the result may take src's register.
+					static const struct { u32 bit, test; } kSum[] = {{0x01, 0x0f00}, {0x02, 0xf000}, {0x40, 0x000f}, {0x80, 0x00f0}};
+					const u32 shifted = imm & 0xf3c;
+					int acc = -1, t = -1;
+					for (const auto& b : kSum)
+					{
+						if (!(imm & b.bit))
+							continue;
+						armAsm->Tst(W(src), b.test);
+						if (acc < 0)
+						{
+							acc = TempG();
+							armAsm->Cset(W(acc), a64::ne);
+							if (b.bit != 1)
+								armAsm->Lsl(W(acc), W(acc), __builtin_ctz(b.bit));
+						}
+						else
+						{
+							if (t < 0)
+								t = TempG();
+							armAsm->Cset(W(t), a64::ne);
+							armAsm->Orr(W(acc), W(acc), a64::Operand(W(t), a64::LSL, __builtin_ctz(b.bit)));
+						}
+					}
+					if (shifted)
+					{
+						if (t < 0)
+							t = TempG();
+						armAsm->Lsr(W(t), W(src), 14);
+						const int d = DefG(id);
+						if (acc < 0)
+							armAsm->And(W(d), W(t), shifted);
+						else
+						{
+							armAsm->And(W(t), W(t), shifted);
+							armAsm->Orr(W(d), W(acc), W(t));
+						}
+					}
+					else
+					{
+						const int d = DefG(id);
+						if (acc < 0)
+							armAsm->Mov(W(d), 0);
+						else
+							armAsm->Mov(W(d), W(acc));
 					}
 					break;
 				}
@@ -2651,22 +2832,44 @@ namespace vuopt
 				case Op::ClipBits: ClipBits(id); break;
 				case Op::MacFlags:
 				{
-					const int src = UseReg(in.args[0]);
-					const int d = DefG(id);
-					PackFlags(src, in.mask, true, d);
+					PackFlags(C(in.args[0]), in.mask, true, -1, id);
 					break;
 				}
 				case Op::StatusUpd:
 				{
 					const bool nonSticky = in.imm & 1;
-					const int src = UseReg(in.args[1]);
-					const int p = TempG();
-					PackFlags(src, in.mask, (in.imm & 2) != 0, p);
-					const int prev = IntOperand(in.args[0]);
+					// The packs of the updates folded into this one (each lands in
+					// the sticky byte; their non-sticky copies are overwritten).
+					// A pack's vector registers are free again once it is done.
+					const auto ch = statusChain_.find(id);
+					int acc = -1, t = -1;
+					const u32 vLocked = vLock_;
+					if (ch != statusChain_.end())
+						for (ValueId m : ch->second)
+						{
+							const Inst& mi = I(m);
+							if (acc < 0)
+							{
+								acc = TempG();
+								PackFlags(C(mi.args[1]), mi.mask, (mi.imm & 2) != 0, acc);
+								vLock_ = vLocked;
+								continue;
+							}
+							if (t < 0)
+								t = TempG();
+							PackFlags(C(mi.args[1]), mi.mask, (mi.imm & 2) != 0, t);
+							vLock_ = vLocked;
+							armAsm->Orr(W(acc), W(acc), W(t));
+						}
+					const int p = t >= 0 ? t : TempG();
+					PackFlags(C(in.args[1]), in.mask, (in.imm & 2) != 0, p);
+					const int prev = IntOperand(ch != statusChain_.end() ? StatusBase(id) : in.args[0]);
 					const int d = DefG(id);
 					if (nonSticky)
 					{
 						armAsm->And(W(d), W(prev), 0xfffc00ffu);
+						if (acc >= 0)
+							armAsm->Orr(W(d), W(d), W(acc));
 						armAsm->Orr(W(d), W(d), W(p));
 						armAsm->Orr(W(d), W(d), a64::Operand(W(p), a64::LSL, 8));
 					}
@@ -3154,6 +3357,8 @@ namespace vuopt
 				}
 			}
 
+			FoldStatusChains();
+
 			// Uses, by position. A Leave operand that is its own variable's
 			// incoming value is not a use.
 			for (u32 p = 0; p < order_.size(); p++)
@@ -3162,6 +3367,19 @@ namespace vuopt
 				if (!emit_[v])
 					continue;
 				const Inst& in = I(v);
+				const auto addUse = [&](ValueId c) {
+					auto& u = uses_[c];
+					if (u.empty() || u.back() != p)
+						u.push_back(p);
+				};
+				const auto ch = statusChain_.find(v);
+				if (ch != statusChain_.end())
+				{
+					// a folded chain reads its base and every folded update's result
+					addUse(StatusBase(v));
+					for (ValueId m : ch->second)
+						addUse(C(I(m).args[1]));
+				}
 				for (size_t k = 0; k < in.args.size(); k++)
 				{
 					const ValueId a = in.args[k];
@@ -3169,9 +3387,9 @@ namespace vuopt
 						continue;
 					if (v == leave_ && k < var::Count && I(a).op == Op::LiveIn && I(a).var == k)
 						continue;
-					auto& u = uses_[C(a)];
-					if (u.empty() || u.back() != p)
-						u.push_back(p);
+					if (k == 0 && ch != statusChain_.end())
+						continue;
+					addUse(C(a));
 				}
 				if (in.op == Op::LoadQ || in.op == Op::LoadI || in.op == Op::StoreQ || in.op == Op::StoreI)
 				{
@@ -3388,6 +3606,47 @@ namespace vuopt
 					finalVars_.emplace_back();
 				}
 				clampLane_.assign(canon_.size(), 0);
+			}
+
+			// Shared sign/zero vectors and mVUglob constants used more than once.
+			{
+				globAddr_.assign(canon_.size(), nullptr);
+				std::map<std::pair<ValueId, int>, std::vector<u32>> zs;
+				std::map<const void*, std::vector<u32>> gl;
+				const auto note = [](std::vector<u32>& u, u32 p) {
+					if (u.empty() || u.back() != p)
+						u.push_back(p);
+				};
+				for (u32 p = 0; p < order_.size(); p++)
+				{
+					const ValueId v = order_[p];
+					if (!emit_[v] || folded_[v] || canon_[v] != v)
+						continue;
+					const Inst& in = I(v);
+					const auto pack = [&](const Inst& x) {
+						const ValueId c = C(x.args[x.op == Op::MacFlags ? 0 : 1]);
+						const bool mflag = x.op == Op::MacFlags || (x.imm & 2);
+						note(zs[{c, Single(x.mask) ? SingleLane(x.mask) : -1}], p);
+						note(gl[PackWeights(x.mask, mflag)], p);
+					};
+					if (in.op == Op::MacFlags || in.op == Op::StatusUpd)
+						pack(in);
+					const auto ch = statusChain_.find(v);
+					if (ch != statusChain_.end())
+						for (ValueId m : ch->second)
+							pack(I(m));
+				}
+				for (auto& e : zs)
+					if (e.second.size() >= 2)
+						zsOf_[e.first] = NewPseudo(Cls::V, Remat::None, e.second);
+				for (auto& e : gl)
+					if (e.second.size() >= 2)
+					{
+						const ValueId pid = NewPseudo(Cls::V, Remat::Global, e.second);
+						globAddr_[pid] = e.first;
+						globOf_[e.first] = pid;
+					}
+				clampLane_.resize(canon_.size(), 0);
 			}
 			return true;
 		}
