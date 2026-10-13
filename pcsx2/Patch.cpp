@@ -1278,17 +1278,46 @@ void Patch::ApplyBootPatches()
 
 void Patch::ApplyVsyncPatches()
 {
+	ApplyVsyncPatchesEE();
+	ApplyVsyncPatchesIOP();
+}
+
+void Patch::ApplyVsyncPatchesEE()
+{
 	EEMemoryInterface ee;
 	IOPMemoryInterface iop;
-	ApplyPatches(s_active_patches, PPT_CONTINUOUSLY, ee, iop);
-	ApplyPatches(s_active_patches, PPT_COMBINED_0_1, ee, iop);
+	ApplyPatches(s_active_patches, PPT_CONTINUOUSLY, ee, iop, patch_cpu_filter::EEOnly);
+	ApplyPatches(s_active_patches, PPT_COMBINED_0_1, ee, iop, patch_cpu_filter::EEOnly);
+}
+
+void Patch::ApplyVsyncPatchesIOP()
+{
+	EEMemoryInterface ee;
+	IOPMemoryInterface iop;
+	ApplyPatches(s_active_patches, PPT_CONTINUOUSLY, ee, iop, patch_cpu_filter::IOPOnly);
+	ApplyPatches(s_active_patches, PPT_COMBINED_0_1, ee, iop, patch_cpu_filter::IOPOnly);
+}
+
+static bool PatchIsInFilter(const Patch::PatchCommand* patch, Patch::patch_cpu_filter filter)
+{
+	switch (filter)
+	{
+		case Patch::patch_cpu_filter::EEOnly:
+			return patch->cpu == Patch::CPU_EE;
+		case Patch::patch_cpu_filter::IOPOnly:
+			return patch->cpu == Patch::CPU_IOP;
+		case Patch::patch_cpu_filter::Both:
+		default:
+			return true;
+	}
 }
 
 void Patch::ApplyPatches(
 	const std::vector<const PatchCommand*>& patches,
 	patch_place_type place,
 	EEMemoryInterface& ee,
-	IOPMemoryInterface& iop)
+	IOPMemoryInterface& iop,
+	patch_cpu_filter filter)
 {
 	ExtendedState state;
 
@@ -1301,6 +1330,9 @@ void Patch::ApplyPatches(
 		}
 
 		if (patch->placetopatch != place)
+			continue;
+
+		if (!PatchIsInFilter(patch, filter))
 			continue;
 
 		ApplyPatch(patch, ee, iop, state);
@@ -1311,7 +1343,8 @@ void Patch::ApplyPatches(
 	const std::vector<const PatchCommand*>& patches,
 	patch_place_type place,
 	MemoryInterface& ee,
-	MemoryInterface& iop)
+	MemoryInterface& iop,
+	patch_cpu_filter filter)
 {
 	ExtendedState state;
 
@@ -1324,6 +1357,9 @@ void Patch::ApplyPatches(
 		}
 
 		if (patch->placetopatch != place)
+			continue;
+
+		if (!PatchIsInFilter(patch, filter))
 			continue;
 
 		ApplyPatch(patch, ee, iop, state);
