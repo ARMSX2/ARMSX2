@@ -98,6 +98,10 @@ VuReplayResult LoadAndReplay(const std::string& path,
 // Returns one Values entry per iter. Empty on setup failure (caller should
 // check RecompilerTestEnvironment::IsReady() and PmuCounters::Group::Open()
 // availability — the vector is empty if either fails).
+//
+// With reprime_per_iter every iter re-primes AND drops the block cache, so
+// every iter pays the compile; BenchJitSteady below measures execution
+// alone. Both bench drivers run under the VU FPCR, as ReplayCapture does.
 std::vector<PmuCounters::Values> BenchJit(const vu_capture::CaptureRecord& rec,
 	u32 iters,
 	u32 cycle_budget_override = 0,

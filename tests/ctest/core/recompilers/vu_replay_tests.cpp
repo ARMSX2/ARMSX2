@@ -11,9 +11,12 @@
 #include "harness/VuEncode.h"
 
 #include "vu_capture.h"
+#include "Config.h"
 #include "Vif.h"
 #include "VU.h"
 #include "VUmicro.h"
+
+#include "common/FPControl.h"
 
 #include <cstring>
 #include <filesystem>
@@ -400,6 +403,60 @@ TEST(VuReplay, RecordedVifStateClearsTheUnrecordedFlag)
 	EXPECT_TRUE(vu_capture::NeedsUnrecordedVifState(rec));
 	rec.external.flags = vu_capture::kExternalValid;
 	EXPECT_FALSE(vu_capture::NeedsUnrecordedVifState(rec));
+}
+
+// The bench drivers run the JIT only, and microVU writes the host FPCR at
+// dispatch only when the EE and VU FPCRs differ, so a bench inherits its
+// caller's FPCR. They must set the VU FPCR themselves, as ReplayCapture
+// does, or they time arithmetic rounded differently from the game's (one
+// Armored Core 3 program looped to the cycle budget that way).
+// (1 + 2^-23) * (1.5 + 2^-23) = 1.5 + 2.5 ulp + 2^-46: chop gives 1.5 + 2 ulp,
+// round-to-nearest gives 1.5 + 3 ulp.
+TEST(VuReplay, BenchDriversRunUnderTheVuFpcr)
+{
+	vu_capture::CaptureRecord rec;
+	rec.vu_index = 1;
+	rec.start_pc = 0;
+	rec.cycle_budget = 4096;
+	rec.microcode = BuildProgramBytes(1, {
+		IBit(VuOp{VLitZero(), VMUL_U(mask::x, vf::vf3, vf::vf1, vf::vf2)}),
+		EBitNopPair(),
+		NopPair(),
+	});
+	rec.vumem.assign(VU1_MEMSIZE, 0);
+	rec.state.VF[1][0] = 0x3F800001u;
+	rec.state.VF[2][0] = 0x3FC00001u;
+	constexpr u32 kChop = 0x3FC00002u;
+	constexpr u32 kNearest = 0x3FC00003u;
+
+	ASSERT_EQ(EmuConfig.Cpu.VU1FPCR.GetRoundMode(), FPRoundMode::ChopZero);
+	const auto replay = ReplayCapture(rec);
+	ASSERT_TRUE(replay.ok);
+	ASSERT_EQ(replay.jit_snapshot.regs.VF[3].UL[0], kChop);
+
+	const FPControlRegister saved = FPControlRegister::GetCurrent();
+	FPControlRegister nearest = saved;
+	nearest.SetRoundMode(FPRoundMode::Nearest);
+
+	FPControlRegister::SetCurrent(nearest);
+	const auto steady = BenchJitSteady(rec, 2);
+	const FPControlRegister after_steady = FPControlRegister::GetCurrent();
+	const u32 steady_result = vuRegs[1].VF[3].UL[0];
+
+	FPControlRegister::SetCurrent(nearest);
+	const auto reprime = BenchJit(rec, 2);
+	const FPControlRegister after_reprime = FPControlRegister::GetCurrent();
+	const u32 reprime_result = vuRegs[1].VF[3].UL[0];
+	FPControlRegister::SetCurrent(saved);
+
+	if (steady.empty() || reprime.empty())
+		GTEST_SKIP() << "PMU counters unavailable; the bench drivers did not run";
+	EXPECT_EQ(steady_result, kChop) << "BenchJitSteady ran under the caller's FPCR"
+									<< (steady_result == kNearest ? " (round-to-nearest)" : "");
+	EXPECT_EQ(reprime_result, kChop) << "BenchJit ran under the caller's FPCR"
+									 << (reprime_result == kNearest ? " (round-to-nearest)" : "");
+	EXPECT_EQ(after_steady.bitmask, nearest.bitmask) << "BenchJitSteady did not restore the FPCR";
+	EXPECT_EQ(after_reprime.bitmask, nearest.bitmask) << "BenchJit did not restore the FPCR";
 }
 
 TEST(VuReplay, LoadAndReplayReturnsNotOkOnMissingFile)

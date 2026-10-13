@@ -10,6 +10,7 @@
 //   --diff (default) — run JIT and interp, gtest-equivalent divergence diff
 //   --bench          — run JIT only, measure cycles/insns/branch-misses per
 //                      iter via PMU counters; report median + median-abs-dev
+//   --bench-steady   — as --bench, but compile once and time execution only
 //   --dump-asm       — template-JIT host-code disasm to <file>.codegen.s
 //
 // Modes can be combined; the binary runs each capture through each
@@ -68,6 +69,7 @@ struct Options
 	bool vuopt_run = false;      // --vuopt-run: vuopt block bodies vs microVU, byte for byte
 	VuoptModeOptions vuopt;
 	bool bench_no_reprime = false;
+	bool bench_steady = false;
 	bool print_bases = false;
 	bool no_progcache = false;  // determinism gate: force program cache + recording off
 	bool perf_jitdump = false;  // emit Linux perf jitdump for `perf inject --jit` (profiling)
@@ -90,7 +92,14 @@ void PrintUsage(const char* argv0)
 		"\n"
 		"Modes (combinable; default is --diff):\n"
 		"  --diff        Run JIT + interp, report architectural divergences.\n"
-		"  --bench       Run JIT only, measure PMU cycles/insns per iter.\n"
+		"  --bench       Run JIT only, measure PMU cycles/insns per iter. Every\n"
+		"                iter re-primes the capture and drops the block cache,\n"
+		"                so every iter includes the compile.\n"
+		"  --bench-steady  Like --bench, but compiles once (iter 0, dropped as\n"
+		"                warmup) and re-seeds the captured state without\n"
+		"                dropping the cache, so each later iter measures the\n"
+		"                whole program running already-compiled code, including\n"
+		"                microVU's dispatch. Use this to time generated code.\n"
 		"  --dump-asm    Dump the TEMPLATE JIT's emitted host ARM64 to\n"
 		"                <file>.codegen.s. (ARM64 JIT only).\n"
 		"  --dump-microcode  Disassemble VU microcode starting at start_pc to stdout.\n"
@@ -137,8 +146,11 @@ void PrintUsage(const char* argv0)
 		"                a double-buffered program parses the wrong packet and its\n"
 		"                trip count is meaningless. Without this flag they still\n"
 		"                run, tagged vif=UNRECORDED in --diff/--bench output.\n"
+		"  --bench-no-reprime  With --bench: prime once and keep the block cache;\n"
+		"                later iters resume from where the previous one stopped\n"
+		"                (a program that reached its E-bit then runs nothing).\n"
 		"  --iters N     Number of replay iterations per capture (default 1).\n"
-		"                Bench: throw out the first iter (JIT compile cost).\n"
+		"                Bench: at least 2; the first iter is dropped as warmup.\n"
 		"  --dump-count N    Number of microinstructions to dump (default 64).\n"
 		"  --cycles N    Override captured cycle budget (0 = keep original, default).\n"
 		"  --game S      Replay under GameDB entry S (e.g. SLES-52568): applies the\n"
@@ -286,6 +298,11 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 		{
 			opts.bench_no_reprime = true;
 		}
+		else if (a == "--bench-steady")
+		{
+			opts.bench = true;
+			opts.bench_steady = true;
+		}
 		else if (a == "--print-bases")
 		{
 			opts.print_bases = true;
@@ -407,6 +424,11 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 			std::fprintf(stderr, "vurunner: unknown option '%s'\n", a.c_str());
 			return false;
 		}
+	}
+	if (opts.bench_steady && opts.bench_no_reprime)
+	{
+		std::fprintf(stderr, "vurunner: --bench-steady and --bench-no-reprime are mutually exclusive\n");
+		return false;
 	}
 	if (opts.files.empty() && !opts.print_bases)
 	{
@@ -1102,17 +1124,23 @@ int RunDiff(const std::vector<vu_capture::CaptureRecord>& records,
 int RunBench(const std::vector<vu_capture::CaptureRecord>& records,
 	const std::vector<std::string>& names,
 	u32 iters,
-	bool no_reprime)
+	bool no_reprime,
+	bool steady)
 {
 	const u32 effective_iters = std::max(2u, iters);  // need at least 1 warmup + 1 sample
-	std::printf("# bench: iters=%u (iter 0 dropped as warmup), counters: cycles instructions branch-misses, reprime=%s\n",
-		effective_iters, no_reprime ? "off" : "on");
+	const char* mode = steady ? "steady (compile once, re-seed per iter)" :
+	                   no_reprime ? "no-reprime (prime once, resume per iter)" :
+	                                "reprime (re-prime + recompile per iter)";
+	std::printf("# bench: iters=%u (iter 0 dropped as warmup), counters: cycles instructions branch-misses, mode=%s\n",
+		effective_iters, mode);
 	std::printf("%-50s %12s %12s %12s\n", "capture", "cycles_med", "insns_med", "br_miss_med");
 	for (size_t fi = 0; fi < records.size(); ++fi)
 	{
 		const auto& rec = records[fi];
 		ApplyReplayConfig(rec);
-		const auto samples = recompiler_tests::BenchJit(rec, effective_iters, 0, !no_reprime);
+		const auto samples = steady ?
+			recompiler_tests::BenchJitSteady(rec, effective_iters) :
+			recompiler_tests::BenchJit(rec, effective_iters, 0, !no_reprime);
 		if (samples.size() < 2)
 		{
 			std::printf("%-50s  bench unavailable (PMU open failed?)\n", names[fi].c_str());
@@ -1877,7 +1905,7 @@ int main(int argc, char** argv)
 	if (opts.diff)
 		exit_code |= RunDiff(records, names, opts.iters, opts.cycle_override);
 	if (opts.bench)
-		exit_code |= RunBench(records, names, opts.iters, opts.bench_no_reprime);
+		exit_code |= RunBench(records, names, opts.iters, opts.bench_no_reprime, opts.bench_steady);
 	if (opts.dump_asm)
 		exit_code |= RunDumpAsm(records, names);
 	if (opts.divtrace)

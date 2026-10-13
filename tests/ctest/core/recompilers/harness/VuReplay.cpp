@@ -143,6 +143,31 @@ void RunJitFromSeeded(int idx, u32 cycles)
 	JitCpu(idx)->Execute(cycles);
 }
 
+// Holds the host FPCR at the replayed VU's FPCR (FZ + ChopZero by default)
+// for its lifetime. Every driver that executes VU code needs it, for two
+// reasons. The interpreter computes with host scalar FP (`fs / ft` in
+// `_vuDIV`, host `sqrt` in `_vuSQRT`, ...), which uses the thread's FPCR.
+// And microVU writes FPCR at dispatch only when the EE and VU FPCRs differ,
+// so with the default config the JIT also inherits the caller's FPCR. Run
+// either under round-to-nearest and it computes different values than the
+// game did: 1-ULP false divergences in a diff, and in a bench, a program
+// whose loop condition depends on the rounding can run to the cycle budget.
+class ScopedVuFpcr
+{
+public:
+	explicit ScopedVuFpcr(int idx)
+		: m_saved(FPControlRegister::GetCurrent())
+	{
+		FPControlRegister::SetCurrent(idx == 0 ? EmuConfig.Cpu.VU0FPCR : EmuConfig.Cpu.VU1FPCR);
+	}
+	~ScopedVuFpcr() { FPControlRegister::SetCurrent(m_saved); }
+	ScopedVuFpcr(const ScopedVuFpcr&) = delete;
+	ScopedVuFpcr& operator=(const ScopedVuFpcr&) = delete;
+
+private:
+	FPControlRegister m_saved;
+};
+
 // The PATH1 sink covers Gif_Unit::TransferGSPacketData, but microVU's XGKICK
 // wrap path sends the pre-wrap head through Gif_Path::CopyGSPacketData
 // directly (the harness blind spot pstef found landing the console XGKICK
@@ -189,6 +214,7 @@ std::vector<PmuCounters::Values> BenchJitSteady(const vu_capture::CaptureRecord&
 	std::vector<u8> path1_buf;
 	gif_test_hooks::g_path1_sink = &path1_buf;
 	ResetGifPath1();
+	const ScopedVuFpcr fpcr(idx);
 
 	// Prime once WITH a cache reset so iter 0 compiles the block; subsequent
 	// iters re-seed without a reset (block stays compiled) so the measured
@@ -226,20 +252,9 @@ VuReplayResult ReplayCapture(const vu_capture::CaptureRecord& rec,
 
 	const auto windows = WholeMemWindow(idx);
 
-	// Set host FPCR to the VU's FPCR (FZ + ChopZero) for BOTH passes.
-	// The interpreter computes via host scalar FP (`fs / ft` in `_vuDIV`,
-	// host `sqrt`/`sqrtf` in `_vuSQRT`, etc.), which uses the host thread
-	// FPCR. The JIT switches FPCR to VU FPCR at dispatcher entry. If the
-	// harness sets vu_fpcr only around the JIT pass and lets interp run
-	// with default round-to-nearest, the two engines compute different
-	// FP results for the same operands — a 1-ULP false-positive divergence
-	// on any DIV/SQRT/MUL with non-trivial operands. Both passes use
-	// vu_fpcr so any divergence is a real codegen difference.
-	const FPControlRegister saved_fpcr = FPControlRegister::GetCurrent();
-	const FPControlRegister vu_fpcr = (idx == 0)
-		? EmuConfig.Cpu.VU0FPCR
-		: EmuConfig.Cpu.VU1FPCR;
-	FPControlRegister::SetCurrent(vu_fpcr);
+	// Both passes run under the VU FPCR, so any divergence is a real
+	// codegen difference rather than a rounding-mode one.
+	const ScopedVuFpcr fpcr(idx);
 
 	std::vector<u8> path1_buf;
 	gif_test_hooks::g_path1_sink = &path1_buf;
@@ -278,7 +293,6 @@ VuReplayResult ReplayCapture(const vu_capture::CaptureRecord& rec,
 	out.interp_ebit = (vuRegs[0].VI[REG_VPU_STAT].UL & RunningBit(idx)) == 0;
 
 	gif_test_hooks::g_path1_sink = nullptr;
-	FPControlRegister::SetCurrent(saved_fpcr);
 
 	out.diff_lines = DiffVu(out.jit_snapshot, out.interp_snapshot, diff_mode);
 	out.diverged = !out.diff_lines.empty();
@@ -344,8 +358,11 @@ bool DumpJitAsm(const vu_capture::CaptureRecord& rec, const std::string& out_pat
 	// Compile once via the standard prime+execute path.
 	std::vector<u8> path1_buf;
 	gif_test_hooks::g_path1_sink = &path1_buf;
-	PrimeFromCapture(rec);
-	RunJitFromSeeded(idx, cycles);
+	{
+		const ScopedVuFpcr fpcr(idx);
+		PrimeFromCapture(rec);
+		RunJitFromSeeded(idx, cycles);
+	}
 	gif_test_hooks::g_path1_sink = nullptr;
 
 	const u8* code_start = nullptr;
@@ -415,6 +432,7 @@ std::vector<PmuCounters::Values> BenchJit(const vu_capture::CaptureRecord& rec,
 	// path-1 packets and asserting when no sink is present must be avoided.
 	std::vector<u8> path1_buf;
 	gif_test_hooks::g_path1_sink = &path1_buf;
+	const ScopedVuFpcr fpcr(idx);
 
 	samples.reserve(iters);
 	if (!reprime_per_iter)
