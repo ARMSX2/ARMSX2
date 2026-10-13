@@ -524,7 +524,7 @@ namespace vuopt
 		bool any = false;
 		for (const auto& n : nodes_)
 			for (const Inst& x : n->fn.insts)
-				if (x.op == Op::StatusUpd && !(x.imm & 3) && x.mask != 8 && x.mask != 4 && x.mask != 2 && x.mask != 1 && x.mask != 0)
+				if (x.op == Op::StatusUpd && !(x.imm & 3) && x.mask != 0)
 					any = true;
 		if (!any)
 			return false;

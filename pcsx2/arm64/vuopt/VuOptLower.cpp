@@ -458,10 +458,11 @@ namespace vuopt
 			void ChainEnds(bool out[2], u32& accumulated) const;
 			private:
 			static bool IsChainOp(Op op) { return op == Op::StatusUpd || op == Op::StatusDiv || op == Op::StatusSet; }
-			// A status update whose pack the accumulators can take: sticky-only,
-			// status layout, more than one lane. (Single-lane and MAC-layout packs
-			// put their bits where the lane-wise accumulators do not.)
-			static bool AccCand(const Inst& in) { return in.op == Op::StatusUpd && !(in.imm & 3) && !Single(in.mask); }
+			// A status update whose pack the accumulators can take: sticky-only and in
+			// the status layout (lane l's bits at l and l + 4; a single-lane field
+			// puts its lane's bits at 0 and 4, which AccumulateFlags does by moving
+			// the lane to lane 0). A MAC-layout pack reverses the lanes.
+			static bool AccCand(const Inst& in) { return in.op == Op::StatusUpd && !(in.imm & 3); }
 			static bool DefinesBase(bool real, const Inst& in) { return !(AccCand(in) && !real); }
 			bool ChainStep(ValueId v, bool dirty) const;
 			// Status operations that define a new chain word: every one but an
@@ -1743,6 +1744,18 @@ namespace vuopt
 			if (!mask)
 				return;
 			const int r = UseReg(c);
+			if (Single(mask))
+			{
+				// microVU rotates a single lane to lane 0 before packing it. Moving it
+				// there as a scalar zeroes the other lanes of the copy, and the scalar
+				// compare zeroes the other lanes of the mask: they add nothing.
+				const int t = TempV(), z = TempV();
+				armAsm->Dup(S(t), V(r).V4S(), SingleLane(mask));
+				armAsm->Fcmeq(S(z), S(t), 0.0);
+				armAsm->Orr(V(hm_->saZ).V16B(), V(hm_->saZ).V16B(), V(z).V16B());
+				armAsm->Orr(V(hm_->saS).V16B(), V(hm_->saS).V16B(), V(t).V16B());
+				return;
+			}
 			// The lanes outside the field hold whatever the full-width operation made of
 			// the operands' lanes there; nobody reads them (the IR's lane variables name
 			// only the field's lanes). Overwrite them with a positive normal number,
