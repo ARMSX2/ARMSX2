@@ -527,6 +527,7 @@ namespace vuopt
 			// pack of the chain into the sticky bits at once.
 			std::vector<std::pair<std::pair<ValueId, int>, ValueId>> zsOf_; // (result, lane or -1) -> its sign/zero vector
 			std::vector<std::pair<const void*, ValueId>> globOf_;            // mVUglob address -> its constant value
+			std::vector<std::pair<u32, ValueId>> fcorConst_;                 // FCOR mask (shifted down) -> its constant value
 			template <typename T, typename K>
 			static ValueId Find(const T& tab, const K& key)
 			{
@@ -825,6 +826,11 @@ namespace vuopt
 			if (remat_[c] == Remat::Global)
 			{
 				armAsm->Ldr(Q(r), a64::MemOperand(xGlob, G(globAddr_[c])));
+				return;
+			}
+			if (c >= f_.insts.size() && remat_[c] == Remat::Const)
+			{
+				armAsm->Mov(W(r), constVal_[c]); // a constant pseudo value (general class)
 				return;
 			}
 			const Inst& in = I(c);
@@ -1869,6 +1875,8 @@ namespace vuopt
 			finalOf_.push_back(0);
 			ListAt(finalVars_, pid);
 			globAddr_.push_back(nullptr);
+			folded_.push_back(0);
+			constVal_.push_back(0);
 			return pid;
 		}
 
@@ -2261,8 +2269,16 @@ namespace vuopt
 						break;
 					}
 					const int shift = __builtin_ctz(need);
-					const int t = TempG();
-					armAsm->Mov(W(t), need >> shift);
+					// the strided masks programs use repeat: one register per node
+					const ValueId kp = Find(fcorConst_, need >> shift);
+					int t;
+					if (kp)
+						t = UseReg(kp);
+					else
+					{
+						t = TempG();
+						armAsm->Mov(W(t), need >> shift);
+					}
 					armAsm->Bics(a64::wzr, W(t), a64::Operand(W(src), a64::LSR, shift));
 					const int d = DefG(id);
 					armAsm->Cset(W(d), a64::eq);
@@ -4078,6 +4094,43 @@ namespace vuopt
 						const ValueId pid = NewPseudo(Cls::V, Remat::Global, glT[i].second);
 						globAddr_[pid] = glT[i].first;
 						globOf_.push_back({glT[i].first, pid});
+					}
+				clampLane_.resize(canon_.size(), 0);
+			}
+			// FCOR masks used more than once
+			{
+				static thread_local std::vector<std::pair<u32, std::vector<u32>>> fc;
+				size_t nfc = 0;
+				for (u32 p = 0; p < order_.size(); p++)
+				{
+					const ValueId v = order_[p];
+					const Inst& in = I(v);
+					if (!emit_[v] || in.op != Op::FlagRead || static_cast<LOp>(in.sub) != LOp::FCOR)
+						continue;
+					const u32 need = ~static_cast<u32>(in.imm) & 0xFFFFFFu;
+					if (!need)
+						continue;
+					const u32 k = need >> __builtin_ctz(need);
+					size_t i = 0;
+					while (i < nfc && fc[i].first != k)
+						i++;
+					if (i == nfc)
+					{
+						if (fc.size() <= nfc)
+							fc.emplace_back();
+						fc[nfc].first = k;
+						fc[nfc].second.clear();
+						nfc++;
+					}
+					fc[i].second.push_back(p);
+				}
+				for (size_t i = 0; i < nfc; i++)
+					if (fc[i].second.size() >= 2)
+					{
+						const ValueId pid = NewPseudo(Cls::G, Remat::Const, fc[i].second);
+						folded_[pid] = 1;
+						constVal_[pid] = fc[i].first;
+						fcorConst_.push_back({fc[i].first, pid});
 					}
 				clampLane_.resize(canon_.size(), 0);
 			}
