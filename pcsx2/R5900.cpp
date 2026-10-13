@@ -24,6 +24,7 @@
 #include "GameDatabase.h"
 #include "GSDumpReplayer.h"
 #include "IopThread/IopThreadMode.h"
+#include "IopThread/EeBridge.h"
 
 #include "DebugTools/Breakpoints.h"
 #include "DebugTools/MIPSAnalyst.h"
@@ -555,10 +556,7 @@ __ri void cpuTestINTCInts()
 
 	cpuSetNextEventDelta(4);
 	if (eeEventTestIsActive && (psxRegs.iopCycleEE > 0))
-	{
-		psxRegs.iopBreak += psxRegs.iopCycleEE; // record the number of cycles the IOP didn't run.
-		psxRegs.iopCycleEE = 0;
-	}
+		EeBridge::BreakIopSlice();
 }
 
 __fi void cpuTestDMACInts()
@@ -574,10 +572,7 @@ __fi void cpuTestDMACInts()
 
 	cpuSetNextEventDelta(4);
 	if (eeEventTestIsActive && (psxRegs.iopCycleEE > 0))
-	{
-		psxRegs.iopBreak += psxRegs.iopCycleEE; // record the number of cycles the IOP didn't run.
-		psxRegs.iopCycleEE = 0;
-	}
+		EeBridge::BreakIopSlice();
 }
 
 __fi void cpuTestTIMRInts()
@@ -634,8 +629,7 @@ __fi void CPU_INT( EE_EventType n, s32 ecycle)
 		// If running in the IOP, force it to break immediately into the EE.
 		// the EE's branch test is due to run.
 
-		psxRegs.iopBreak += psxRegs.iopCycleEE; // record the number of cycles the IOP didn't run.
-		psxRegs.iopCycleEE = 0;
+		EeBridge::BreakIopSlice();
 	}
 
 	cpuSetNextEventDelta(cpuRegs.eCycle[n]);

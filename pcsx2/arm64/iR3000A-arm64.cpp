@@ -10,6 +10,7 @@
 #include "R5900OpcodeTables.h"
 #include "IopBios.h"
 #include "IopHw.h"
+#include "IopThread/EeBridge.h"
 #include "DebugTools/SymbolGuardian.h"
 #include "Common.h"
 #include "VMManager.h"
@@ -341,8 +342,7 @@ static void iopRecError(int err)
 			break;
 	}
 
-	VMManager::SetPaused(true);
-	Cpu->ExitExecution();
+	EeBridge::RequestPause();
 }
 
 // =====================================================================================================

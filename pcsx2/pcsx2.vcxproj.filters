@@ -1796,6 +1796,9 @@
     <ClInclude Include="IopMem.h">
       <Filter>System\Ps2\Iop</Filter>
     </ClInclude>
+    <ClInclude Include="IopThread\EeBridge.h">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClInclude>
     <ClInclude Include="IopThread\IopBridge.h">
       <Filter>System\Ps2\Iop</Filter>
     </ClInclude>

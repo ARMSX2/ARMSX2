@@ -10,6 +10,7 @@
 #include "SIO/Sio2.h"
 
 #include "Sif.h"
+#include "IopThread/EeBridge.h"
 #include "DEV9/DEV9.h"
 #include "common/ARCADE.h"
 
@@ -189,7 +190,7 @@ void psxDma9(u32 madr, u32 bcr, u32 chcr)
 	sif0.iop.busy = true;
 	sif0.iop.end = false;
 
-	SIF0Dma();
+	EeBridge::Sif0Pump();
 
 	// On an arcade board, clear DMA9's busy bit once SIF0 is idle, so each queued sceSifSetDma kicks
 	// again and reads its reused bounce buffer fresh; otherwise movies corrupt (PCSX2x6).
@@ -204,7 +205,7 @@ void psxDma10(u32 madr, u32 bcr, u32 chcr)
 	sif1.iop.busy = true;
 	sif1.iop.end = false;
 
-	SIF1Dma();
+	EeBridge::Sif1Pump();
 }
 
 void psxDma11(u32 madr, u32 bcr, u32 chcr)
