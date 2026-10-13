@@ -12,5 +12,6 @@ namespace vuopt
 	void* g_vuoptBodyHookUser = nullptr;
 	VuoptRegionHook g_vuoptRegionHook = nullptr;
 	void* g_vuoptRegionHookUser = nullptr;
+	thread_local bool g_vuoptShadowCompile = false;
 } // namespace vuopt
 #endif

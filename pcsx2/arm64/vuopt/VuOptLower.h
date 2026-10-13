@@ -145,7 +145,14 @@ namespace vuopt
 		// of each vector register's incoming value it has (index 1..31 VF,
 		// 32 ACC), as the lowering would clamp them. `f` must outlive the
 		// result.
-		static std::unique_ptr<NodeLowering> Check(const ir::Function& f, const LowerEnv& env, u32 counts[33]);
+		// `liveOut` (var::Count flags, or null for all): the variables live at
+		// the node's end; the others' final values are neither computed nor
+		// stored (milestone 8).
+		static std::unique_ptr<NodeLowering> Check(const ir::Function& f, const LowerEnv& env, u32 counts[33], const u8* liveOut = nullptr);
+		// Whether Check would succeed, without its analysis (a region decides
+		// node or exit with this, then analyses the nodes once it knows their
+		// liveness).
+		static bool Lowerable(const ir::Function& f, const LowerEnv& env);
 		// Emits the node against the region's homes (at most once).
 		LowerResult Emit(const HomeMap& homes);
 		~NodeLowering();

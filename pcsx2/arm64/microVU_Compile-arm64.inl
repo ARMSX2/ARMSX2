@@ -1167,6 +1167,31 @@ static void vuoptEmitJumpTail(u32 vu, void* block, const u8* endKey)
 	armAsm->Br(a64::x0);
 }
 
+// vuopt milestone 8: microVU's own code for a block a region holds (the
+// block manager keeps the region's entry; mVUcompile finds that block and
+// compiles into it without replacing the entry). The record's slot keeps the
+// code for the next bail.
+static void* vuoptBailTarget(u32 vu, u8* rec)
+{
+	microVU& mVU = mVUbyIndex(vu);
+	void** slot = reinterpret_cast<void**>(rec + 16);
+	if (*slot)
+		return *slot;
+	u32 pc;
+	std::memcpy(&pc, rec, sizeof(pc));
+	microBlock* blk;
+	std::memcpy(&blk, rec + 8, sizeof(blk));
+	alignas(16) microRegInfo k;
+	std::memcpy(&k, &blk->pState, sizeof(k));
+	mVUopenCodeCache(mVU);
+	vuopt::g_vuoptShadowCompile = true;
+	void* v = mVUcompile(mVU, pc & (mVU.microMemSize - 8), reinterpret_cast<uptr>(&k));
+	vuopt::g_vuoptShadowCompile = false;
+	*reinterpret_cast<void**>(armGetWritableCodePtr(reinterpret_cast<u8*>(slot))) = v;
+	mVUcloseCodeCache(mVU);
+	return v;
+}
+
 static vuopt::MvuEmitEnv mVUbuildEmitEnv(microVU& mVU)
 {
 	vuopt::MvuEmitEnv e;
@@ -1206,6 +1231,7 @@ static vuopt::MvuEmitEnv mVUbuildEmitEnv(microVU& mVU)
 	e.vpuStat = &VU0.VI[REG_VPU_STAT].UL;
 	e.threadVU1 = THREAD_VU1;
 	e.emitJumpTail = &vuoptEmitJumpTail;
+	e.bailTarget = &vuoptBailTarget;
 	return e;
 }
 #endif
@@ -1382,11 +1408,14 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 	vuopt::MvuBlockTrace vuoptTrace;
 	if (vuopt::g_mvuBlockHook || vuopt::g_vuoptBodyHook || vuopt::g_vuoptRegionHook)
 		mVUbuildBlockTrace(mVU, startPC, vuoptTrace);
+	// A region's bail target is microVU's own code for the block.
+	const bool vuoptShadow = vuopt::g_vuoptShadowCompile;
+	vuopt::g_vuoptShadowCompile = false;
 	if (vuopt::g_mvuBlockHook)
 		vuopt::g_mvuBlockHook(vuoptTrace, vuopt::g_mvuBlockHookUser);
 	// vuopt milestone 4: a test hook may compile a whole region rooted at
 	// this block in its place; microVU then emits nothing for it.
-	if (vuopt::g_vuoptRegionHook &&
+	if (vuopt::g_vuoptRegionHook && !vuoptShadow &&
 		vuopt::g_vuoptRegionHook(vuoptTrace, mVUbuildEmitEnv(mVU), vuopt::g_vuoptRegionHookUser))
 		return thisPtr;
 #endif
@@ -1407,7 +1436,7 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 #ifdef PCSX2_RECOMPILER_TESTS
 	// vuopt milestone 2: a test hook may emit this block's whole body from
 	// vuopt's IR; microVU then emits only its framing below.
-	const bool vuoptBody = vuopt::g_vuoptBodyHook &&
+	const bool vuoptBody = vuopt::g_vuoptBodyHook && !vuoptShadow &&
 		vuopt::g_vuoptBodyHook(vuoptTrace, mVUbuildEmitEnv(mVU), vuopt::g_vuoptBodyHookUser);
 #else
 	constexpr bool vuoptBody = false;

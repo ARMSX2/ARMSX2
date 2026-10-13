@@ -286,17 +286,27 @@ namespace vuopt
 			Lists cu_, endAt_, startAt_;
 			std::vector<u32> lastUse_, posOf_;
 			std::vector<u32> leaveKs_; // the Leave's non-zero operands (most variables are untouched)
+			const u8* liveOut_ = nullptr; // per variable: live at the node's end (null: all)
+			Inst leave2_;                 // the Leave with dead variables zeroed
+			bool hasLeave2_ = false;
+		public:
+			void SetLiveOut(const u8* live) { liveOut_ = live; }
+			// Whether the node can be lowered at all, without the analysis.
+			bool CheckShape(std::string& why) const;
+		private:
+			const Inst& LeaveInst() const { return hasLeave2_ ? leave2_ : f_.insts[leave_]; }
 			// f(k, arg) for each non-zero operand of v
 			template <typename F>
 			void ForArgs(ValueId v, const Inst& in, F f) const
 			{
-				const ValueId* args = in.args.data();
 				if (v == leave_)
 				{
+					const ValueId* largs = LeaveInst().args.data();
 					for (u32 k : leaveKs_)
-						f(k, args[k]);
+						f(k, largs[k]);
 					return;
 				}
+				const ValueId* args = in.args.data();
 				const size_t n = in.args.size();
 				for (size_t k = 0; k < n; k++)
 					if (args[k])
@@ -2538,7 +2548,8 @@ namespace vuopt
 		// The end of the node: every variable's final value to its home.
 		void Lowerer::Leave(ValueId id)
 		{
-			const Inst& in = I(id);
+			(void)id;
+			const Inst& in = LeaveInst();
 			// A final value that is the variable's own incoming value (directly,
 			// or through a copy aliased to it) needs no write.
 			const auto ownLiveIn = [&](u32 v, ValueId val) {
@@ -3449,13 +3460,31 @@ namespace vuopt
 				why = "no leave";
 				return false;
 			}
-			if (!f_.leaveArgs.empty() || f_.insts[leave_].args.empty())
+			// Milestone 8: variables dead at the node's end (region liveness)
+			// are left out of the end: their final values are neither
+			// computed nor written.
+			hasLeave2_ = false;
+			if (liveOut_)
+			{
+				const Inst& orig = f_.insts[leave_];
+				for (u32 k = 0; k < var::Count && k < orig.args.size(); k++)
+					if (orig.args[k] && !liveOut_[k])
+					{
+						if (!hasLeave2_)
+						{
+							leave2_ = orig;
+							hasLeave2_ = true;
+						}
+						leave2_.args[k] = 0;
+					}
+			}
+			if (!hasLeave2_ && (!f_.leaveArgs.empty() || f_.insts[leave_].args.empty()))
 				leaveKs_.assign(f_.leaveArgs.begin(), f_.leaveArgs.end());
 			else
 			{
 				leaveKs_.clear();
-				const ValueId* la = I(leave_).args.data();
-				const size_t ln = I(leave_).args.size();
+				const ValueId* la = LeaveInst().args.data();
+				const size_t ln = LeaveInst().args.size();
 				for (size_t k = 0; k < ln; k++)
 					if (la[k])
 						leaveKs_.push_back(static_cast<u32>(k));
@@ -3476,7 +3505,7 @@ namespace vuopt
 					work.push_back(v);
 				}
 			}
-			const Inst& lv = I(leave_);
+			const Inst& lv = LeaveInst();
 			while (!work.empty())
 			{
 				const ValueId v = work.back();
@@ -3692,10 +3721,68 @@ namespace vuopt
 		// The half of Check that depends on the homes: how incoming values are
 		// produced again, which results go straight to a register home, the
 		// register pools and the pressure bound.
+		bool Lowerer::CheckShape(std::string& why) const
+		{
+			if (f_.unsupported)
+			{
+				why = f_.unsupportedWhy;
+				return false;
+			}
+			if (env_.vuIndex != 1)
+			{
+				why = "VU0";
+				return false;
+			}
+			int node = -1;
+			for (size_t b = 0; b < f_.blocks.size(); b++)
+				if (f_.blocks[b].node >= 0)
+					node = static_cast<int>(b);
+			if (node < 0)
+			{
+				why = "no node block";
+				return false;
+			}
+			bool leave = false;
+			for (ValueId v : f_.blocks[node].insts)
+			{
+				switch (f_.insts[v].op)
+				{
+					case Op::YieldCheck: case Op::ExitIf: case Op::Exit: case Op::Phi:
+						why = "whole-program op in a per-node body";
+						return false;
+					case Op::Kick:
+						if (!env_.xgkickFn)
+						{
+							why = "no XGKICK helper";
+							return false;
+						}
+						break;
+					case Op::Xtop:
+						if (!env_.vifTop)
+						{
+							why = "no VIF registers";
+							return false;
+						}
+						break;
+					case Op::Leave:
+						leave = true;
+						break;
+					default:
+						break;
+				}
+			}
+			if (!leave)
+			{
+				why = "no leave";
+				return false;
+			}
+			return true;
+		}
+
 		bool Lowerer::BindHomes(std::string& why)
 		{
 			const size_t N = analysisN_;
-			const Inst& lv = I(leave_);
+			const Inst& lv = LeaveInst();
 			const u32 leavePos = leavePos_;
 			for (size_t v = 1; v < f_.insts.size(); v++)
 			{
@@ -4014,15 +4101,31 @@ namespace vuopt
 
 	NodeLowering::~NodeLowering() = default;
 
-	std::unique_ptr<NodeLowering> NodeLowering::Check(const ir::Function& f, const LowerEnv& env, u32 counts[33])
+	std::unique_ptr<NodeLowering> NodeLowering::Check(const ir::Function& f, const LowerEnv& env, u32 counts[33], const u8* liveOut)
 	{
 		static const HomeMap boundary;
 		auto impl = std::make_unique<Impl>(f, env, boundary);
+		impl->lw.SetLiveOut(liveOut);
 		std::string why;
 		if (!impl->lw.Check(why))
 			return nullptr;
 		impl->lw.CountClampedLiveIns(counts);
 		return std::unique_ptr<NodeLowering>(new NodeLowering(std::move(impl)));
+	}
+
+	bool NodeLowering::Lowerable(const ir::Function& f, const LowerEnv& env)
+	{
+		static const HomeMap boundary;
+		Lowerer lw(f, env, boundary, LowerMode::Region);
+		std::string why;
+		if (!lw.CheckShape(why))
+			return false;
+		// Beyond the shape, only the register pressure bound can fail, and only
+		// for a node of more values than the spill area holds or with the
+		// pools cut down for testing: then run the whole check.
+		if (f.insts.size() + 12 > static_cast<size_t>(kSlots + kOverflowSlots - 16) || env.poolLimitV || env.poolLimitG)
+			return lw.Check(why);
+		return true;
 	}
 
 	LowerResult NodeLowering::Emit(const HomeMap& homes)

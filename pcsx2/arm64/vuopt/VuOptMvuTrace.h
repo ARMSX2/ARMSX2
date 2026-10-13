@@ -116,6 +116,11 @@ namespace vuopt
 		// emits microVU's own dispatch (normJumpCompile after its setupBranch)
 		// for `block`, whose end state is `endKey`; the target is in mVU.branch.
 		void (*emitJumpTail)(u32 vu, void* block, const u8* endKey) = nullptr;
+		// Milestone 8: microVU's own code for a block a region holds, for a
+		// run that is short of the region's budget test. `rec` is a region's
+		// bail record (PC at 0, the block's microBlock at 8, the code address
+		// at 16, written once compiled). Called from generated code.
+		void* (*bailTarget)(u32 vu, u8* rec) = nullptr;
 	};
 
 #ifdef PCSX2_RECOMPILER_TESTS
@@ -142,5 +147,8 @@ namespace vuopt
 	using VuoptRegionHook = bool (*)(const MvuBlockTrace& block, const MvuEmitEnv& env, void* user);
 	extern VuoptRegionHook g_vuoptRegionHook;
 	extern void* g_vuoptRegionHookUser;
+	// Set around a compile that must be microVU's own (a region's bail
+	// target): the hooks above are skipped for that block.
+	extern thread_local bool g_vuoptShadowCompile;
 #endif
 } // namespace vuopt

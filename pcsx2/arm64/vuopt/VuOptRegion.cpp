@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <bitset>
 #include <cstring>
 
 namespace vuopt
@@ -23,6 +24,11 @@ namespace vuopt
 	{
 		constexpr int kCMax = 25, kCMin = 26;
 		constexpr int kCyclesReg = 28;
+		// A bail record: PC (u32), pad, the block's microBlock (its pipeline
+		// state), then the address of microVU's own code for the block once
+		// compiled.
+		constexpr s32 kBailSlot = 16;
+		constexpr u32 kBailRecordSize = 24;
 		constexpr int kMemBaseReg = 27;
 		constexpr int kVHomeRegs[] = {31, 30, 29, 27, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15};
 		constexpr int kGHomeRegs[] = {26, 15, 14, 13, 12, 11};
@@ -126,10 +132,18 @@ namespace vuopt
 			void* blk = nullptr;
 			u32 clamped[33] = {}; // clamped uses of each incoming vector register (NodeLowering::Check)
 			std::unique_ptr<NodeLowering> low; // analysed lowering of fn (refers to fn: Nodes do not move)
+			std::vector<u8> liveOut;           // per variable: live at the node's end (milestone 8)
 			int taken = 0x7fffffff, fall = 0x7fffffff; // >= 0: node; < 0: exit -(k+1)
 			std::vector<std::pair<u32, int>> jumps;    // JR/JALR: recorded target PC -> node / exit
-			a64::Label head, brk;
+			a64::Label head;
 			void* entry = nullptr;
+			// Milestone 8: the cycle budget is tested only at checkpoints (loop
+			// heads) and at entries from microVU, against what the run can
+			// spend before the next test; short of it, the run goes on in
+			// microVU's own code for this block (bail).
+			bool checkpoint = false;
+			u32 need = 1;                  // budget that guarantees no microVU test fails before the next test
+			a64::Label bail, rec;
 		};
 		struct Exit
 		{
@@ -166,8 +180,7 @@ namespace vuopt
 			if (!Internal(br))
 				return false;
 			n.fn = ir::BuildNodeLocal(br, BuildOpts());
-			n.low = NodeLowering::Check(n.fn, le_, n.clamped);
-			return n.low != nullptr;
+			return NodeLowering::Lowerable(n.fn, le_);
 		}
 
 		int AddExit(u32 pc, const PipeState& st, void* known)
@@ -186,6 +199,8 @@ namespace vuopt
 		int Visit(u32 pc, const PipeState& st);
 		void Expand(int id);
 		void AssignHomes();
+		void PlanChecks();
+		void ComputeLiveness();
 		void Emit(const u8*& regionEnd);
 		void EmitEnd(const Node& n);
 		void EmitJump(Node& n);
@@ -248,6 +263,201 @@ namespace vuopt
 		}
 		const int t = Visit(takenPC, end);
 		nodes_[id]->taken = t;
+	}
+
+	// Milestone 8: where the cycle budget is tested. microVU tests it at every
+	// block's entry (mVUtestCycles: break when it is below 1, then spend the
+	// block's cycles). A run that starts a stretch of blocks with at least
+	// the most any path through the stretch spends before its last block,
+	// plus one, passes every one of those tests, so only the stretch's head
+	// needs one. Stretches end at checkpoints, the targets of the region's
+	// back edges (every cycle passes through one), and at exits, where
+	// microVU's own blocks test again. Every entry from microVU is tested the
+	// same way.
+	void RegionBuilder::PlanChecks()
+	{
+		const size_t NN = nodes_.size();
+		std::vector<std::vector<int>> succ(NN);
+		for (size_t i = 0; i < NN; i++)
+		{
+			const Node& n = *nodes_[i];
+			if (n.taken >= 0 && n.taken != 0x7fffffff)
+				succ[i].push_back(n.taken);
+			if (n.fall >= 0 && n.fall != 0x7fffffff)
+				succ[i].push_back(n.fall);
+			for (const auto& j : n.jumps)
+				if (j.second >= 0)
+					succ[i].push_back(j.second);
+		}
+		// back edges of a depth-first walk from the root
+		std::vector<u8> state(NN, 0); // 0 new, 1 on stack, 2 done
+		std::vector<std::pair<int, size_t>> st;
+		for (size_t root = 0; root < NN; root++)
+		{
+			if (state[root])
+				continue;
+			st.push_back({static_cast<int>(root), 0});
+			state[root] = 1;
+			while (!st.empty())
+			{
+				const int v = st.back().first;
+				const size_t k = st.back().second;
+				if (k < succ[v].size())
+				{
+					st.back().second++;
+					const int w = succ[v][k];
+					if (state[w] == 1)
+						nodes_[w]->checkpoint = true;
+					else if (state[w] == 0)
+					{
+						state[w] = 1;
+						st.push_back({w, 0});
+					}
+					continue;
+				}
+				state[v] = 2;
+				st.pop_back();
+			}
+		}
+		// need(n) = max(1, cycles(n) + need(s)) over successors s that are
+		// not checkpoints; the stretch below a node is acyclic.
+		std::vector<s64> need(NN, -1);
+		std::vector<std::pair<int, size_t>> walk;
+		for (size_t root = 0; root < NN; root++)
+		{
+			if (need[root] >= 0)
+				continue;
+			walk.push_back({static_cast<int>(root), 0});
+			while (!walk.empty())
+			{
+				const int v = walk.back().first;
+				size_t& k = walk.back().second;
+				bool descended = false;
+				while (k < succ[v].size())
+				{
+					const int w = succ[v][k];
+					if (!nodes_[w]->checkpoint && need[w] < 0)
+					{
+						walk.push_back({w, 0});
+						descended = true;
+						break;
+					}
+					k++;
+				}
+				if (descended)
+					continue;
+				s64 m = 1;
+				for (int w : succ[v])
+					if (!nodes_[w]->checkpoint)
+						m = std::max<s64>(m, static_cast<s64>(nodes_[v]->br.cycles) + need[w]);
+				need[v] = m;
+				walk.pop_back();
+				if (!walk.empty())
+					walk.back().second++;
+			}
+		}
+		for (size_t i = 0; i < NN; i++)
+			nodes_[i]->need = static_cast<u32>(std::min<s64>(need[i], 0x7fffffff));
+	}
+
+	// Milestone 8: which variables each node's end must hand on. Between the
+	// budget tests nothing outside the region sees the state, so a final value
+	// that every path overwrites before the next observation is dead: the
+	// observations are exits to microVU (links, JR fallbacks, program ends)
+	// and the heads of checkpoints (a bail there hands everything to
+	// microVU). A node's incoming uses are the incoming values it reads
+	// (other than passing its own variable through).
+	void RegionBuilder::ComputeLiveness()
+	{
+		using namespace ir;
+		using Bits = std::bitset<var::Count>;
+		const size_t NN = nodes_.size();
+		std::vector<Bits> use(NN), def(NN), in(NN), out(NN);
+		std::vector<u8> observe(NN, 0);
+		std::vector<std::vector<int>> succ(NN);
+		for (size_t i = 0; i < NN; i++)
+		{
+			Node& n = *nodes_[i];
+			const Function& f = n.fn;
+			for (const Block& bl : f.blocks)
+			{
+				if (bl.node < 0)
+					continue;
+				for (ValueId id : bl.insts)
+				{
+					const Inst& x = f.insts[id];
+					if (x.op == Op::Leave)
+					{
+						for (size_t k = 0; k < x.args.size(); k++)
+						{
+							const ValueId a = x.args[k];
+							if (!a)
+								continue;
+							const Inst& ai = f.insts[a];
+							const bool passThrough = k < var::Count && ai.op == Op::LiveIn && ai.var == k;
+							if (k < var::Count && !passThrough)
+								def[i].set(k);
+							if (!passThrough && ai.op == Op::LiveIn && ai.var < var::Count)
+								use[i].set(ai.var);
+						}
+						continue;
+					}
+					for (ValueId a : x.args)
+						if (a && f.insts[a].op == Op::LiveIn && f.insts[a].var < var::Count)
+							use[i].set(f.insts[a].var);
+				}
+			}
+			const auto edge = [&](int t) {
+				if (t == 0x7fffffff)
+					return;
+				if (t < 0 || nodes_[t]->checkpoint)
+					observe[i] = 1;
+				else
+					succ[i].push_back(t);
+			};
+			if (n.br.endKind == BlockEnd::EBit)
+				observe[i] = 1;
+			else if (n.br.endKind == BlockEnd::Jump && n.taken == 0x7fffffff)
+			{
+				observe[i] = 1; // the fallback to microVU's dispatch
+				for (const auto& j : n.jumps)
+					edge(j.second);
+			}
+			else
+			{
+				edge(n.taken);
+				if (n.br.endKind == BlockEnd::CondBranch)
+					edge(n.fall);
+			}
+		}
+		Bits all;
+		all.set();
+		for (bool changed = true; changed;)
+		{
+			changed = false;
+			for (size_t ii = NN; ii-- > 0;)
+			{
+				Bits o;
+				if (observe[ii])
+					o = all;
+				for (int t : succ[ii])
+					o |= in[t];
+				o.set(var::MEM);
+				const Bits ni = use[ii] | (o & ~def[ii]);
+				if (o != out[ii] || ni != in[ii])
+				{
+					out[ii] = o;
+					in[ii] = ni;
+					changed = true;
+				}
+			}
+		}
+		for (size_t i = 0; i < NN; i++)
+		{
+			nodes_[i]->liveOut.assign(var::Count, 0);
+			for (u32 v = 0; v < var::Count; v++)
+				nodes_[i]->liveOut[v] = out[i].test(v) ? 1 : 0;
+		}
 	}
 
 	void RegionBuilder::AssignHomes()
@@ -370,9 +580,10 @@ namespace vuopt
 							const ValueId a = la[v];
 							if (!a || (f.insts[a].op == Op::LiveIn && f.insts[a].var == v))
 								continue;
-							mark(VecKey(v), 2);
 							if (v < 132)
-								written[v < 128 ? v / 4 : 32] = true;
+								written[v < 128 ? v / 4 : 32] = true; // any write ends a clamped home's validity
+							if (n->liveOut[v])
+								mark(VecKey(v), 2);
 						}
 						continue;
 					}
@@ -450,13 +661,19 @@ namespace vuopt
 	void RegionBuilder::Emit(const u8*& regionEnd)
 	{
 		const s32 cyclesOff = env_.offCycles;
-		a64::Label loadAll, breakAll, exitAll;
-		// Entries from microVU (the root's is where microVU is compiling):
-		// the node's head address in x8, then the shared home loader.
+		a64::Label loadAll, exitAll, bailEntry, bailCompile;
+		// Entries from microVU (the root's is where microVU is compiling): the
+		// budget test, then the node's head address in x8 and the shared home
+		// loader.
 		for (size_t i = 0; i < nodes_.size(); i++)
 		{
-			nodes_[i]->entry = armGetCurrentCodePointer();
-			armAsm->Adr(a64::x8, &nodes_[i]->head);
+			Node& n = *nodes_[i];
+			n.entry = armGetCurrentCodePointer();
+			armAsm->Adr(a64::x1, &n.rec);
+			armAsm->Ldr(W(8), a64::MemOperand(a64::x24, cyclesOff));
+			armAsm->Cmp(W(8), n.need);
+			armAsm->B(&bailEntry, a64::lt);
+			armAsm->Adr(a64::x8, &n.head);
 			armAsm->B(&loadAll);
 		}
 		// Bodies.
@@ -464,12 +681,16 @@ namespace vuopt
 		{
 			Node& n = *nodes_[i];
 			armAsm->Bind(&n.head);
-			// mVUtestCycles against the counter register.
+			// The budget test at a checkpoint (PlanChecks), then the block's
+			// cycles off the counter register.
 			const a64::Register wc = W(kCyclesReg);
-			armAsm->Subs(wc, wc, 1);
-			armAsm->B(&n.brk, a64::mi);
-			if (n.br.cycles > 1)
-				armAsm->Sub(wc, wc, n.br.cycles - 1);
+			if (n.checkpoint)
+			{
+				armAsm->Cmp(wc, n.need);
+				armAsm->B(&n.bail, a64::lt);
+			}
+			if (n.br.cycles)
+				armAsm->Sub(wc, wc, n.br.cycles);
 			const LowerResult r = n.low->Emit(homes_);
 			pxAssertRel(r.ok, "vuopt region: node no longer lowers with region homes");
 			const int next = static_cast<int>(i + 1);
@@ -486,22 +707,25 @@ namespace vuopt
 			else
 				Jump(n.taken, next);
 		}
-		// Cycle-budget breaks: the block, its PC and its three flag
-		// instances (mVUtestCycles' operands) in x0 / w1 / w2, then the shared
-		// tail.
+		// Bails: homes back to microVU's locations (from a checkpoint), then
+		// microVU's own code for the block, compiled the first time it is
+		// needed; its record holds the PC, the pipeline state and that code's
+		// address once there is one.
 		for (size_t i = 0; i < nodes_.size(); i++)
 		{
 			Node& n = *nodes_[i];
-			armAsm->Bind(&n.brk);
-			const int fS = GetLastFlagInst(n.br.entry, n.br.mFC.xStatus, 0, 0);
-			const int fM = GetLastFlagInst(n.br.entry, n.br.mFC.xMac, 1, 0);
-			const int fC = GetLastFlagInst(n.br.entry, n.br.mFC.xClip, 2, 0);
-			pxAssertRel(fS >= 0 && fS < 4 && fM >= 0 && fM < 8 && fC >= 0 && fC < 8, "vuopt region: flag instance out of range");
-			armMoveAddressToReg(a64::x0, n.blk);
-			armAsm->Mov(a64::w1, n.pc);
-			armAsm->Mov(a64::w2, static_cast<u32>(fS | (fM << 8) | (fC << 16)));
-			armAsm->B(&breakAll);
+			if (!n.checkpoint)
+				continue;
+			armAsm->Bind(&n.bail);
+			armAsm->Adr(a64::x1, &n.rec);
+			armAsm->Adr(a64::x8, &bailEntry);
+			armAsm->B(&exitAll);
 		}
+		// Shared: the record in x1, state in microVU's locations.
+		armAsm->Bind(&bailEntry);
+		armAsm->Ldr(a64::x0, a64::MemOperand(a64::x1, kBailSlot));
+		armAsm->Cbz(a64::x0, &bailCompile);
+		armAsm->Br(a64::x0);
 		// Links out of the region: the target (or its trampoline) in x8.
 		for (auto& e : exits_)
 		{
@@ -523,37 +747,15 @@ namespace vuopt
 		armAsm->Ldp(Q(kCMin), Q(kCMax), a64::MemOperand(a64::x25, G(&mVUglob.minvals[0])));
 		EmitClampHomes(homes_, le_);
 		armAsm->Br(a64::x8);
-		// Shared: microVU's budget-break exit from microVU's state.
-		armAsm->Bind(&breakAll);
-		armAsm->Add(W(kCyclesReg), W(kCyclesReg), 1);
-		EmitStoreHomes(homes_, le_, cyclesOff);
-		// w9 = MAC instance fM (Ldrh, as mVUallocMFLAGa), w10 = clip instance fC
-		// (mVUallocCFLAGa: past the ring it is VI[REG_CLIP_FLAG]), w11 = status
-		// register fS.
-		armAsm->Ubfx(a64::w3, a64::w2, 8, 8);
-		armAsm->Add(a64::x4, a64::x24, a64::Operand(a64::x3, a64::LSL, 2));
-		armAsm->Ldrh(a64::w9, a64::MemOperand(a64::x4));
-		{
-			a64::Label ring, clipDone;
-			armAsm->Ubfx(a64::w3, a64::w2, 16, 8);
-			armAsm->Cmp(a64::w3, 4);
-			armAsm->B(&ring, a64::lo);
-			armAsm->Ldr(a64::w10, a64::MemOperand(a64::x19, static_cast<s32>(offsetof(VURegs, VI) + REG_CLIP_FLAG * sizeof(REG_VI))));
-			armAsm->B(&clipDone);
-			armAsm->Bind(&ring);
-			armAsm->Add(a64::x4, a64::x24, 16);
-			armAsm->Ldr(a64::w10, a64::MemOperand(a64::x4, a64::x3, a64::LSL, 2));
-			armAsm->Bind(&clipDone);
-		}
-		armAsm->And(a64::w3, a64::w2, 3);
-		armAsm->Mov(a64::w11, a64::w20);
-		armAsm->Cmp(a64::w3, 1);
-		armAsm->Csel(a64::w11, a64::w21, a64::w11, a64::eq);
-		armAsm->Cmp(a64::w3, 2);
-		armAsm->Csel(a64::w11, a64::w22, a64::w11, a64::eq);
-		armAsm->Cmp(a64::w3, 3);
-		armAsm->Csel(a64::w11, a64::w23, a64::w11, a64::eq);
-		armEmitJmp(env_.cycleBreak);
+		// Shared: compile microVU's code for a bailed block (record in x1)
+		// and enter it, qmmPQ and the clamp bounds kept across the call.
+		armAsm->Bind(&bailCompile);
+		armAsm->Str(a64::q28, a64::MemOperand(a64::x24, env_.offNeonBackup + 28 * 16));
+		armAsm->Mov(a64::w0, env_.vuIndex);
+		armEmitCall(reinterpret_cast<const void*>(env_.bailTarget));
+		armAsm->Ldr(a64::q28, a64::MemOperand(a64::x24, env_.offNeonBackup + 28 * 16));
+		armAsm->Ldp(Q(kCMin), Q(kCMax), a64::MemOperand(a64::x25, G(&mVUglob.minvals[0])));
+		armAsm->Br(a64::x0);
 		// Shared: store every register home, then leave through x8.
 		armAsm->Bind(&exitAll);
 		EmitStoreHomes(homes_, le_, cyclesOff);
@@ -566,6 +768,17 @@ namespace vuopt
 				continue;
 			armAsm->Bind(&e->jump);
 			armAsm->B(&e->far);
+		}
+		// Bail records (data).
+		for (auto& np : nodes_)
+		{
+			Node& n = *np;
+			armAsm->Bind(&n.rec);
+			vixl::ExactAssemblyScope scope(armAsm, kBailRecordSize);
+			armAsm->dc32(n.pc);
+			armAsm->dc32(0);
+			armAsm->dc64(reinterpret_cast<u64>(n.blk));
+			armAsm->dc64(0);
 		}
 		regionEnd = armGetCurrentCodePointer();
 	}
@@ -674,6 +887,13 @@ namespace vuopt
 		if (nodes_.size() == 1 && !selfLink)
 			return t_.Decline("single block, no loop", why);
 
+		PlanChecks();
+		ComputeLiveness();
+		for (auto& n : nodes_)
+		{
+			n->low = NodeLowering::Check(n->fn, le_, n->clamped, n->liveOut.data());
+			pxAssertRel(n->low != nullptr, "vuopt region: a lowerable node failed its analysis");
+		}
 		AssignHomes();
 		const u8* start = armGetCurrentCodePointer();
 		const u8* end = nullptr;
@@ -754,7 +974,7 @@ namespace vuopt
 			return Decline("clamp mode 4", why);
 		if (env.xgkickHack || env.ibitHack || env.overflowHack || env.addSubHack || env.vuSyncHack)
 			return Decline("gamefix", why);
-		if (!env.searchBlock || !env.cycleBreak || !env.emitJumpTail)
+		if (!env.searchBlock || !env.bailTarget || !env.emitJumpTail)
 			return Decline("no region support in microVU", why);
 		if (maxRegions >= 0 && static_cast<s32>(regions_) >= maxRegions)
 			return Decline("bisect", why);
