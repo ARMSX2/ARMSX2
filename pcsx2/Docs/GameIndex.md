@@ -275,6 +275,9 @@ These values are in a key-value format, where the value is assumed to be an inte
 * Games such as PaRappa the Rapper 2 need VU1 to sync, so you can force sync with this parameter.
 * `eeCycleRate`
 * Accepted Values - `-3` / `3`
+* `iopThread`
+* Accepted Values - `0` / `1`
+* Runs the IOP on its own thread. This is off unless the player turns it on. `0` keeps a title on the single-threaded IOP even when the player has it on, for a title that needs the IOP in step with the EE.
 
 ## Memory Card Filter Override
 

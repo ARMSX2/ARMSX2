@@ -100,6 +100,7 @@ set(pcsx2Sources
 	IopHw.cpp
 	IopIrq.cpp
 	IopMem.cpp
+	IopThread/IopThreadMode.cpp
 	PINE.cpp
 	Mdec.cpp
 	Memory.cpp
@@ -195,6 +196,7 @@ set(pcsx2Headers
 	IopGte.h
 	IopHw.h
 	IopMem.h
+	IopThread/IopThreadMode.h
 	LayeredSettingsInterface.h
 	PINE.h
 	Mdec.h

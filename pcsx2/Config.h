@@ -187,6 +187,7 @@ enum class SpeedHack
 	InstantVU1,
 	MTVU,
 	EECycleRate,
+	IOPThread,
 	MaxCount,
 };
 
@@ -1387,11 +1388,19 @@ struct Pcsx2Config
 			WaitLoop : 1, // enables constant loop detection and fast-forwarding
 			vuFlagHack : 1, // microVU specific flag hack
 			vuThread : 1, // Enable Threaded VU1
-			vu1Instant : 1; // Enable Instant VU1 (Without MTVU only)
+			vu1Instant : 1, // Enable Instant VU1 (Without MTVU only)
+			// JIT code tests vuThread by its bit position in this word (microVU-arm64.cpp), so the
+			// flags below stay after every older one.
+			iopThread : 1, // Run the IOP on its own thread (IopThread::ResolveMode decides whether it can)
+			iopThreadLockstep : 1; // With iopThread: strict turns with the EE instead of concurrent. Testing only, no UI.
 		BITFIELD_END
 
 		s8 EECycleRate; // EE cycle rate selector (1.0, 1.5, 2.0)
 		u8 EECycleSkip; // EE Cycle skip factor (0, 1, 2, or 3)
+
+		// The IOP thread's lag bound L, in EE cycles. Clamped by IopThread::ClampLag when it is read
+		// from the settings file. An advanced setting: INI only, never in a simple settings view.
+		int iopThreadLag;
 
 		SpeedhackOptions();
 		void LoadSave(SettingsWrapper& conf);
