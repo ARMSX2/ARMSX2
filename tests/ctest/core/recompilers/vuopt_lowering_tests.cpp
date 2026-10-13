@@ -57,6 +57,9 @@ struct FlagHackScope
 	~FlagHackScope() { EmuConfig.Speedhacks.vuFlagHack = saved; }
 };
 
+// Clamp mode every harness below runs under (-1: the harness default, mode 1).
+int g_clampMode = -1;
+
 struct TierScope
 {
 	vuopt::BodyTier tier;
@@ -139,6 +142,8 @@ Outcome RunBoth(const std::vector<VuOp>& prog, bool flagHack,
 		VuTestHarness h(1);
 		if (setup)
 			setup(h);
+		if (g_clampMode >= 0)
+			h.SetVuClampMode(g_clampMode);
 		h.TrackMemWindow(0, 0x4000);
 		h.LoadProgram(prog);
 		h.RunNoDiff();
@@ -149,6 +154,8 @@ Outcome RunBoth(const std::vector<VuOp>& prog, bool flagHack,
 	VuTestHarness h(1);
 	if (setup)
 		setup(h);
+	if (g_clampMode >= 0)
+		h.SetVuClampMode(g_clampMode);
 	h.TrackMemWindow(0, 0x4000);
 	h.LoadProgram(prog);
 	{
@@ -230,7 +237,9 @@ TEST(VuoptLowering, ViBackupSurvivesHomeWriteback)
 
 // Every FMAC form and dest-field shape over special values, with MAC and
 // status readers so microVU writes the flag instances too.
-TEST(VuoptLowering, FmacFormsOverSpecials)
+static void FmacFormsOverSpecialsBody();
+TEST(VuoptLowering, FmacFormsOverSpecials) { FmacFormsOverSpecialsBody(); }
+static void FmacFormsOverSpecialsBody()
 {
 	const u32 masks[] = {mask::xyzw, mask::x, mask::y, mask::z, mask::w, mask::xyz, mask::x | mask::w, mask::y | mask::z};
 	for (u32 seed = 1; seed <= 4; seed++)
@@ -273,7 +282,9 @@ TEST(VuoptLowering, FmacFormsOverSpecials)
 	}
 }
 
-TEST(VuoptLowering, ConversionsClipAndClipReaders)
+static void ConversionsClipAndClipReadersBody();
+TEST(VuoptLowering, ConversionsClipAndClipReaders) { ConversionsClipAndClipReadersBody(); }
+static void ConversionsClipAndClipReadersBody()
 {
 	for (u32 seed = 1; seed <= 6; seed++)
 	{
@@ -306,7 +317,9 @@ TEST(VuoptLowering, ConversionsClipAndClipReaders)
 	}
 }
 
-TEST(VuoptLowering, DivideUnitAndEfu)
+static void DivideUnitAndEfuBody();
+TEST(VuoptLowering, DivideUnitAndEfu) { DivideUnitAndEfuBody(); }
+static void DivideUnitAndEfuBody()
 {
 	for (u32 seed = 1; seed <= 6; seed++)
 	{
@@ -342,7 +355,9 @@ TEST(VuoptLowering, DivideUnitAndEfu)
 	}
 }
 
-TEST(VuoptLowering, MovesMemoryRandomAndKick)
+static void MovesMemoryRandomAndKickBody();
+TEST(VuoptLowering, MovesMemoryRandomAndKick) { MovesMemoryRandomAndKickBody(); }
+static void MovesMemoryRandomAndKickBody()
 {
 	for (u32 seed = 1; seed <= 4; seed++)
 	{
@@ -386,7 +401,9 @@ TEST(VuoptLowering, MovesMemoryRandomAndKick)
 // pairs, flag readers and writers, the divide unit and the EFU. Blocks vuopt
 // declines (a branch in a delay slot) run in microVU; everything else is
 // vuopt's, and the result has to be byte for byte microVU's.
-TEST(VuoptLowering, Fuzz)
+static void FuzzBody();
+TEST(VuoptLowering, Fuzz) { FuzzBody(); }
+static void FuzzBody()
 {
 	std::mt19937 rng(20261013);
 	auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
@@ -559,7 +576,9 @@ TEST(VuoptLowering, JumpTargetSurvivesEarlyWriteback)
 // Long straight blocks over every VF register: enough live values that the
 // allocator spills and reloads, with every broadcast form, partial writes,
 // moves and flag readers in between.
-TEST(VuoptLowering, PressureFuzz)
+static void PressureFuzzBody();
+TEST(VuoptLowering, PressureFuzz) { PressureFuzzBody(); }
+static void PressureFuzzBody()
 {
 	std::mt19937 rng(20261014);
 	auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
@@ -757,6 +776,8 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		VuTestHarness h(1);
 		if (setup)
 			setup(h);
+		if (g_clampMode >= 0)
+			h.SetVuClampMode(g_clampMode);
 		h.TrackMemWindow(0, 0x4000);
 		h.LoadProgram(prog);
 		if (resume)
@@ -769,6 +790,8 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 	VuTestHarness h(1);
 	if (setup)
 		setup(h);
+	if (g_clampMode >= 0)
+		h.SetVuClampMode(g_clampMode);
 	h.TrackMemWindow(0, 0x4000);
 	h.LoadProgram(prog);
 	if (resume)
@@ -788,7 +811,9 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 
 // A counted loop: FMACs, a flag reader, a divide whose Q crosses the link,
 // a store; runs long enough to break on the cycle budget several times.
-TEST(VuoptRegion, CountedLoop)
+static void RegionCountedLoopBody();
+TEST(VuoptRegion, CountedLoop) { RegionCountedLoopBody(); }
+static void RegionCountedLoopBody()
 {
 	for (u32 n : {1u, 2u, 7u, 300u, 900u})
 	{
@@ -820,7 +845,9 @@ TEST(VuoptRegion, CountedLoop)
 // Random loop programs: an outer counted loop (vi1) around random FMAC,
 // flag, divide, memory and VI work with forward branches inside, and an
 // inner counted loop (vi5) on some.
-TEST(VuoptRegion, LoopFuzz)
+static void RegionLoopFuzzBody();
+TEST(VuoptRegion, LoopFuzz) { RegionLoopFuzzBody(); }
+static void RegionLoopFuzzBody()
 {
 	std::mt19937 rng(20261015);
 	auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
@@ -920,6 +947,72 @@ TEST(VuoptRegion, LoopFuzz)
 	EXPECT_EQ(failures, 0);
 	EXPECT_GT(regions, static_cast<u32>(iters)); // most programs form a region per flag-hack setting
 	std::printf("[vuopt region fuzz] programs=%d regions=%u nodes=%u\n", iters * 2, regions, nodes);
+}
+
+// Clamp modes 2/3: MADD (to Fd) reads ACC through microVU's read-only
+// mapping and clamps that cached register in place. The clamped copy is what
+// the rest of the block reads, and it reaches ACC's home when the block writes
+// ACC before or after; a clean cached copy is dropped.
+TEST(VuoptLowering, MaddClampsCachedAcc)
+{
+	const auto seed = [](VuTestHarness& h) {
+		h.SetVfBits(1, 0x7f800000, 0xff800000, 0x7fffffff, 0x3f800000);
+		h.SetVfBits(2, 0x3f800000, 0x40000000, 0x7f7fffff, 0xff7fffff);
+		h.SetVfBits(3, 0x7fc00000, 0x40400000, 0xbf800000, 0x7f800001);
+		h.SetVfBits(4, 0x7f900000, 0x3f000000, 0xffffffff, 0x41200000);
+	};
+	std::vector<std::vector<VuOp>> progs;
+	// ACC written first (dirty), then MADD: the clamp reaches ACC.
+	progs.push_back({U(VMULA_U(mask::xyzw, vf::vf1, vf::vf2)), U(VMADD_U(mask::xyz, vf::vf5, vf::vf3, vf::vf2)),
+		EBit(U(VNOP_U()))});
+	// ACC never written: the clamp is dropped.
+	progs.push_back({U(VMADD_U(mask::xyzw, vf::vf5, vf::vf3, vf::vf2)), EBit(U(VMADDx_U(mask::y, vf::vf6, vf::vf1, vf::vf2)))});
+	// A partial ACC write after the MADD merges into the clamped copy.
+	progs.push_back({U(VMADD_U(mask::xyzw, vf::vf5, vf::vf3, vf::vf2)), U(VMULA_U(mask::x | mask::z, vf::vf2, vf::vf2)),
+		EBit(U(VNOP_U()))});
+	// Single-lane MADD clamps its lane only; a later full read sees it.
+	progs.push_back({U(VMADDy_U(mask::z, vf::vf5, vf::vf3, vf::vf4)), U(VMADDA_U(mask::xyzw, vf::vf2, vf::vf2)),
+		EBit(U(VNOP_U()))});
+	// OPMULA partial after the MADD, and an MSUB reading the clamped copy.
+	progs.push_back({U(VMULA_U(mask::w, vf::vf4, vf::vf2)), U(VMADD_U(mask::x, vf::vf5, vf::vf3, vf::vf1)),
+		U(VOPMULA_U(mask::x | mask::y, vf::vf3, vf::vf4)), EBit(U(VMSUB_U(mask::xyzw, vf::vf6, vf::vf2, vf::vf3)))});
+	for (int mode : {2, 3})
+	{
+		g_clampMode = mode;
+		for (size_t k = 0; k < progs.size(); k++)
+			for (bool fh : {true, false})
+			{
+				const Outcome o = RunBoth(progs[k], fh, [&](VuTestHarness& h) {
+					seed(h);
+					h.SetAccBits(0x7f800000, 0xff800000, 0x7fffffff, 0xffc00001);
+				});
+				EXPECT_TRUE(o.diffs.empty()) << "mode " << mode << " program " << k << " flagHack=" << fh << "\n" << Join(o.diffs);
+				EXPECT_EQ(o.lowered, o.blocks) << o.declined;
+			}
+		g_clampMode = -1;
+	}
+}
+
+// Every lowering and region test again under clamp modes 0, 2 and 3: mode 0
+// clamps nothing, modes 2 and 3 clamp every FMAC step's operands (mode 3
+// sign-preservingly) and mode 2 its results, and at both MADD clamps
+// microVU's cached ACC in place.
+TEST(VuoptLowering, ClampModes)
+{
+	for (int mode : {0, 2, 3})
+	{
+		SCOPED_TRACE("clamp mode " + std::to_string(mode));
+		g_clampMode = mode;
+		FmacFormsOverSpecialsBody();
+		ConversionsClipAndClipReadersBody();
+		DivideUnitAndEfuBody();
+		MovesMemoryRandomAndKickBody();
+		FuzzBody();
+		PressureFuzzBody();
+		RegionCountedLoopBody();
+		RegionLoopFuzzBody();
+		g_clampMode = -1;
+	}
 }
 
 // Debugging aid: VUOPT_REPRO_HEX="lower:upper,..." VUOPT_REPRO_SEED=n

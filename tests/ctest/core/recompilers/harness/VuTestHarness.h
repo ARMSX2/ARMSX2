@@ -40,6 +40,7 @@ public:
 	// ---- Pre-state setters ----
 	void SetVf(u32 reg_idx, float x, float y, float z, float w);
 	void SetVfBits(u32 reg_idx, u32 x, u32 y, u32 z, u32 w);
+	void SetAccBits(u32 x, u32 y, u32 z, u32 w);
 	// Masks to the register's architectural width: 32-bit for the special VIs
 	// (REG_R/I/Q/P/flags/TPC/FBRST/VPU_STAT), low 16 for the rest. For REG_Q/P
 	// prefer SetQ/SetP, which also write the q.UL/p.UL float slot.

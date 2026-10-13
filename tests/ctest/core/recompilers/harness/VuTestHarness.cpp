@@ -142,6 +142,12 @@ void VuTestHarness::SetVfBits(u32 reg_idx, u32 x, u32 y, u32 z, u32 w)
 	vf.i.x = x; vf.i.y = y; vf.i.z = z; vf.i.w = w;
 }
 
+void VuTestHarness::SetAccBits(u32 x, u32 y, u32 z, u32 w)
+{
+	auto& acc = Regs(vu_index_).ACC;
+	acc.i.x = x; acc.i.y = y; acc.i.z = z; acc.i.w = w;
+}
+
 void VuTestHarness::SetVi(u32 reg_idx, u32 value)
 {
 	if (reg_idx == 0) // VI[0] is hardwired zero
