@@ -324,6 +324,14 @@ namespace
 		{
 			tier->only = o.lowerOnly;
 			tier->limit = o.lowerLimit;
+			for (const char* p = o.lowerSkip.c_str(); *p;)
+			{
+				tier->skip.insert(std::atoi(p));
+				while (*p && *p != ',')
+					p++;
+				if (*p)
+					p++;
+			}
 			tier->dump = o.dumpIr;
 			trace = o.trace;
 		}
@@ -333,15 +341,48 @@ namespace
 	// entry, in both runs, to find where two executions part.
 	std::vector<u64> g_trace;
 	std::vector<u64> g_traceVals;
-	void TraceBlock(u64 v, u64 vals)
+	long dumpAt = -1; // --vuopt-trace-dump N: print the state at block entry N
+	// The entry state of a block: VF, VI (low halves), ACC from VURegs, the
+	// MAC and clip instances, the status instances and the Q/P lanes.
+	void TraceBlock(u64 v, const u8* flags, u64 s01, u64 s23, u64 pq0, u64 pq1)
 	{
+		const VURegs& r = vuRegs[1];
+		u64 h = 1469598103934665603ull;
+		const auto mix = [&](const void* p, size_t n) {
+			const u8* b = static_cast<const u8*>(p);
+			for (size_t i = 0; i < n; i++)
+				h = (h ^ b[i]) * 1099511628211ull;
+		};
+		mix(&r.VF[1], sizeof(r.VF) - 16);
+		for (int i = 1; i < 16; i++)
+			mix(&r.VI[i].US[0], 2);
+		mix(&r.ACC, 16);
+		mix(flags, 32);
+		mix(&s01, 8);
+		mix(&s23, 8);
+		mix(&pq0, 8);
+		mix(&pq1, 8);
+		if (dumpAt >= 0 && static_cast<long>(g_trace.size()) == dumpAt)
+		{
+			std::printf("[trace-dump %ld] pc=%04x\n", dumpAt, static_cast<u32>(v >> 32));
+			for (int i = 1; i < 32; i++)
+				std::printf("  vf%02d %08x %08x %08x %08x\n", i, r.VF[i].UL[0], r.VF[i].UL[1], r.VF[i].UL[2], r.VF[i].UL[3]);
+			std::printf("  acc  %08x %08x %08x %08x\n", r.ACC.UL[0], r.ACC.UL[1], r.ACC.UL[2], r.ACC.UL[3]);
+			for (int i = 1; i < 16; i++)
+				std::printf("  vi%02d %04x\n", i, r.VI[i].US[0]);
+			const u32* fl = reinterpret_cast<const u32*>(flags);
+			std::printf("  mac %08x %08x %08x %08x clip %08x %08x %08x %08x\n", fl[0], fl[1], fl[2], fl[3], fl[4], fl[5], fl[6], fl[7]);
+			std::printf("  status %08x %08x %08x %08x\n", static_cast<u32>(s01), static_cast<u32>(s01 >> 32), static_cast<u32>(s23), static_cast<u32>(s23 >> 32));
+			std::printf("  pq %08x %08x %08x %08x\n", static_cast<u32>(pq0), static_cast<u32>(pq0 >> 32), static_cast<u32>(pq1), static_cast<u32>(pq1 >> 32));
+		}
 		g_trace.push_back(v);
-		g_traceVals.push_back(vals);
+		g_traceVals.push_back(h);
 	}
 
 	void EmitTraceCall(u32 pc, const u8* key, s32 offVIbackup)
 	{
 		namespace a64 = vixl::aarch64;
+		(void)offVIbackup;
 		u64 h = 1469598103934665603ull;
 		for (int i = 0; i < 96; i++)
 			h = (h ^ key[i]) * 1099511628211ull;
@@ -350,9 +391,13 @@ namespace
 		armAsm->Stp(a64::q25, a64::q26, a64::MemOperand(a64::sp));
 		armAsm->Str(a64::q28, a64::MemOperand(a64::sp, 32));
 		armAsm->Mov(a64::x0, v);
-		armAsm->Ldr(a64::w1, a64::MemOperand(a64::x24, offVIbackup));
-		armAsm->Ldrh(a64::w2, a64::MemOperand(a64::x19, offsetof(VURegs, VI) + 7 * sizeof(REG_VI)));
-		armAsm->Orr(a64::x1, a64::x1, a64::Operand(a64::x2, a64::LSL, 32));
+		armAsm->Mov(a64::x1, a64::x24);
+		armAsm->Mov(a64::w2, a64::w20);
+		armAsm->Orr(a64::x2, a64::x2, a64::Operand(a64::x21, a64::LSL, 32));
+		armAsm->Mov(a64::w3, a64::w22);
+		armAsm->Orr(a64::x3, a64::x3, a64::Operand(a64::x23, a64::LSL, 32));
+		armAsm->Mov(a64::x4, a64::v28.V2D(), 0);
+		armAsm->Mov(a64::x5, a64::v28.V2D(), 1);
 		armEmitCall(reinterpret_cast<const void*>(&TraceBlock));
 		armAsm->Ldp(a64::q25, a64::q26, a64::MemOperand(a64::sp));
 		armAsm->Ldr(a64::q28, a64::MemOperand(a64::sp, 32));
@@ -440,6 +485,7 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 	void (*applyConfig)(const vu_capture::CaptureRecord&))
 {
 	int failures = 0;
+	dumpAt = opts.traceDump;
 	u64 totIdentical = 0, totBlocks = 0, totLowered = 0;
 	for (size_t fi = 0; fi < records.size(); ++fi)
 	{
@@ -507,14 +553,14 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 		if (opts.trace)
 		{
 			size_t k = 0;
-			while (k < refTrace.size() && k < g_trace.size() && refTrace[k] == g_trace[k])
+			while (k < refTrace.size() && k < g_trace.size() && refTrace[k] == g_trace[k] && refVals[k] == g_traceVals[k])
 				k++;
 			char buf[160];
 			std::snprintf(buf, sizeof(buf), "trace: %zu vs %zu block entries, first difference at %zu", refTrace.size(), g_trace.size(), k);
 			diffs.emplace_back(buf);
 			for (size_t j = (k > 3 ? k - 3 : 0); j < k + 3; j++)
 			{
-				std::snprintf(buf, sizeof(buf), "  [%zu] mvu=%04x/%08x vib=%08x vi7=%04x vuopt=%04x/%08x vib=%08x vi7=%04x", j,
+				std::snprintf(buf, sizeof(buf), "  [%zu] mvu=%04x/%08x state=%08x/%04x vuopt=%04x/%08x state=%08x/%04x", j,
 					j < refTrace.size() ? static_cast<u32>(refTrace[j] >> 32) : 0xffff, j < refTrace.size() ? static_cast<u32>(refTrace[j]) : 0,
 					j < refVals.size() ? static_cast<u32>(refVals[j]) : 0, j < refVals.size() ? static_cast<u32>(refVals[j] >> 32) : 0,
 					j < g_trace.size() ? static_cast<u32>(g_trace[j] >> 32) : 0xffff, j < g_trace.size() ? static_cast<u32>(g_trace[j]) : 0,

@@ -19,6 +19,8 @@ struct VuoptModeOptions
 	u32 cycleOverride = 0;
 	bool noYield = false;
 	u32 benchIters = 0;
+	long traceDump = -1;   // --vuopt-trace-dump N: with --vuopt-trace, print the state at block entry N in both runs
+	std::string lowerSkip; // --vuopt-skip a,b,...: leave these compiled blocks to microVU (bisecting)
 	s32 lowerOnly = -1;    // --vuopt-only N: lower only compiled block N (bisecting); -1 = all
 	s32 lowerLimit = -1;
 	bool trace = false;    // --vuopt-trace: log block entries in both runs (debugging)   // --vuopt-limit N: lower only the first N compiled blocks    // --vuopt-run: steady-state PMU iterations per engine (0 = no bench)  // build the SSA without per-block yield checks (cost measurement)

@@ -3,6 +3,9 @@
 
 #include "VuOptTier.h"
 
+#include "arm64/AsmHelpers.h"
+#include "vixl/aarch64/disasm-aarch64.h"
+
 #include <cstdio>
 #include <cstring>
 
@@ -52,7 +55,7 @@ namespace vuopt
 		if (env.addSubHack)
 			return Decline("VuAddSubHack", why);
 		const s32 index = static_cast<s32>(blocks_) - 1;
-		if ((only >= 0 && index != only) || (limit >= 0 && index >= limit))
+		if ((only >= 0 && index != only) || (limit >= 0 && index >= limit) || skip.count(index))
 			return Decline("bisect", why);
 
 		ir::BuildOptions bo;
@@ -65,12 +68,18 @@ namespace vuopt
 		le.offVIbackup = env.offVIbackup;
 		le.offVIxgkick = env.offVIxgkick;
 		le.offBranch = env.offBranch;
+		le.offNeonBackup = env.offNeonBackup;
 		le.xgkickFn = env.xgkickFn;
 		le.vifTop = env.vifTop;
 		le.vifItop = env.vifItop;
 		le.clampOverflow = env.clampOverflow;
 		le.softwareFlush = env.softwareFlush;
+		const u8* codeStart = armGetCurrentCodePointer();
+		std::vector<std::pair<const u8*, ir::ValueId>> marks;
+		if (dump)
+			g_lowerMarks = &marks;
 		const LowerResult r = LowerNodeBody(fn, le);
+		g_lowerMarks = nullptr;
 		if (!r.ok)
 			return Decline(r.why, why);
 		if (dump)
@@ -81,6 +90,24 @@ namespace vuopt
 			g.nodes.back().entry = br.entry;
 			g.nodes.back().block = br;
 			std::fputs(ir::Dump(fn, g).c_str(), stdout);
+			std::fflush(stdout);
+			vixl::aarch64::PrintDisassembler dis(stdout);
+			marks.push_back({codeStart + r.bytes, 0});
+			const u8* at = codeStart;
+			for (size_t k = 0; k < marks.size(); k++)
+			{
+				if (marks[k].first > at)
+					dis.DisassembleBuffer(reinterpret_cast<const vixl::aarch64::Instruction*>(at),
+						reinterpret_cast<const vixl::aarch64::Instruction*>(marks[k].first));
+				at = marks[k].first;
+				if (marks[k].second)
+				{
+					std::fflush(stdout);
+					std::printf("  ; ---- %%%u\n", marks[k].second);
+				}
+				std::fflush(stdout);
+			}
+			std::fflush(stdout);
 		}
 		lowered_++;
 		bytes_ += r.bytes;

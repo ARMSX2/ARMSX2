@@ -223,6 +223,10 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 		{
 			opts.vuopt_run = true;
 		}
+		else if (a == "--vuopt-trace-dump" && i + 1 < argc)
+			opts.vuopt.traceDump = std::atol(argv[++i]);
+		else if (a == "--vuopt-skip" && i + 1 < argc)
+			opts.vuopt.lowerSkip = argv[++i];
 		else if (a == "--vuopt-only" || a == "--vuopt-limit")
 		{
 			if (i + 1 >= argc)

@@ -13,6 +13,7 @@
 #include "VuOptMvuTrace.h"
 
 #include <map>
+#include <set>
 #include <memory>
 #include <string>
 
@@ -38,6 +39,7 @@ namespace vuopt
 		// Lower only block `only` (compile order) or the first `limit` blocks:
 		// bisecting a divergence. -1 = no restriction.
 		s32 only = -1, limit = -1;
+		std::set<s32> skip;
 		// Print each lowered block's IR to stdout.
 		bool dump = false;
 
