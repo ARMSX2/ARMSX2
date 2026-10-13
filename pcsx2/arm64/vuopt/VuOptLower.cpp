@@ -325,6 +325,48 @@ namespace vuopt
 				}
 				return c;
 			}
+			// When every live lane of vector home VF(v0) is rewritten but by more
+			// than one value: the value supplying most of them (two or more), which
+			// the node end moves in whole before inserting the rest; 0 if none.
+			ValueId MajorFinal(u32 v0) const
+			{
+				const Inst& lv = LeaveInst();
+				ValueId srcs[4] = {};
+				for (u32 l = 0; l < 4; l++)
+				{
+					const u32 v = v0 + l;
+					if (liveOut_ && !liveOut_->test(v))
+						continue;
+					const ValueId a = lv.args[v];
+					if (!a)
+						return 0;
+					const Inst& x = I(C(a));
+					if (x.op == Op::LiveIn && VecHomeOf(x.var) == VecHomeOf(v0))
+						return 0;
+					srcs[l] = C(a);
+				}
+				ValueId major = 0;
+				int best = 0;
+				for (u32 k = 0; k < 4; k++)
+				{
+					if (!srcs[k])
+						continue;
+					int n = 0;
+					for (u32 j = 0; j < 4; j++)
+						n += srcs[j] == srcs[k];
+					if (n > best)
+					{
+						best = n;
+						major = srcs[k];
+					}
+				}
+				if (best < 2 || best == 4)
+					return 0;
+				const Op op = I(major).op;
+				if (op == Op::LiveIn || op == Op::Const || op == Op::IConst)
+					return 0;
+				return major;
+			}
 			// f(k, arg) for each non-zero operand of v
 			template <typename F>
 			void ForArgs(ValueId v, const Inst& in, F f) const
@@ -3347,7 +3389,8 @@ namespace vuopt
 				while (l < 4)
 				{
 					const ValueId a = in.args[v0 + l];
-					if (!a || ownLiveIn(v0 + l, a) || (major && C(a) == major))
+					if (!a || ownLiveIn(v0 + l, a) || (major && C(a) == major) ||
+						(reg_[C(a)] == h.reg && cls_[C(a)] == Cls::V))
 					{
 						l++;
 						continue;
@@ -4293,7 +4336,9 @@ namespace vuopt
 				const u32 v0 = VecVar(r);
 				if (hm_->home[v0].kind != HomeKind::VReg)
 					continue;
-				const ValueId c = WholeFinal(v0);
+				ValueId c = WholeFinal(v0);
+				if (!c)
+					c = MajorFinal(v0);
 				if (c && c < f_.insts.size())
 					finalOf_[c] = finalOf_[c] ? ~0u : v0 + 1;
 			}
