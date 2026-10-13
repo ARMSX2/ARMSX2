@@ -311,19 +311,19 @@ void VuTestHarness::ResumeUntilTerminated()
 
 void VuTestHarness::ExecuteEngine(BaseVUmicroCPU* cpu)
 {
-	cpu->Execute(kCycleBudget);
+	cpu->Execute(cycle_budget_);
 	if (!resume_until_terminated_)
 		return;
 
 	int resumes = 0;
 	while (!HasTerminated() && resumes < kMaxResumes)
 	{
-		cpu->Execute(kCycleBudget);
+		cpu->Execute(cycle_budget_);
 		++resumes;
 	}
 	EXPECT_TRUE(HasTerminated())
 		<< "VU" << vu_index_ << " was still running after " << kMaxResumes
-		<< " re-entries of " << kCycleBudget << " cycles";
+		<< " re-entries of " << cycle_budget_ << " cycles";
 }
 
 void VuTestHarness::RunInterpFromSeeded()

@@ -41,6 +41,9 @@ public:
 	void SetVf(u32 reg_idx, float x, float y, float z, float w);
 	void SetVfBits(u32 reg_idx, u32 x, u32 y, u32 z, u32 w);
 	void SetAccBits(u32 x, u32 y, u32 z, u32 w);
+	// Cycles each Execute() may run before the engine takes its budget break
+	// (default kCycleBudget).
+	void SetCycleBudget(u32 cycles) { cycle_budget_ = cycles; }
 	// Masks to the register's architectural width: 32-bit for the special VIs
 	// (REG_R/I/Q/P/flags/TPC/FBRST/VPU_STAT), low 16 for the rest. For REG_Q/P
 	// prefer SetQ/SetP, which also write the q.UL/p.UL float slot.
@@ -217,6 +220,7 @@ private:
 	// Real microprograms can run thousands of cycles but the harness's
 	// E-bit terminator caps every test deterministically.
 	static constexpr u32 kCycleBudget = 4096;
+	u32 cycle_budget_ = kCycleBudget;
 
 	// Bound on ResumeUntilTerminated's re-entries. A program that has not
 	// terminated by then is reported rather than quietly truncated.

@@ -767,7 +767,7 @@ struct RegionOutcome
 // microVU alone against vuopt regions (and framed bodies elsewhere), running
 // past the cycle budget so budget breaks and resumes happen.
 RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std::function<void(VuTestHarness&)>& setup,
-	bool resume = true, s32 vHomes = 14, bool dump = false, const std::map<u32, std::vector<u32>>* jumps = nullptr)
+	bool resume = true, s32 vHomes = 14, bool dump = false, const std::map<u32, std::vector<u32>>* jumps = nullptr, u32 budget = 0)
 {
 	FlagHackScope fh(flagHack);
 	VuSnapshot ref;
@@ -782,6 +782,8 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		h.LoadProgram(prog);
 		if (resume)
 			h.ResumeUntilTerminated();
+		if (budget)
+			h.SetCycleBudget(budget);
 		h.RunNoDiff();
 		ref = h.JitSnapshot();
 		refPath = h.Path1PacketBytesJit();
@@ -796,6 +798,8 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 	h.LoadProgram(prog);
 	if (resume)
 		h.ResumeUntilTerminated();
+	if (budget)
+		h.SetCycleBudget(budget);
 	{
 		RegionScope rs(1);
 		rs.region.maxVHomes = vHomes;
@@ -1036,6 +1040,65 @@ static void RegionLoopFuzzBody()
 	std::printf("[vuopt region fuzz] programs=%d regions=%u nodes=%u\n", iters * 2, regions, nodes);
 }
 
+// Milestone 8: a region tests the cycle budget only at loop heads and at
+// entries from microVU, against what the run can spend before the next
+// test, and continues a run that is short of it in microVU's own code. A
+// single run under every budget from 1 up must stop exactly where microVU
+// stops, with microVU's state.
+static void RegionBudgetSweepBody();
+TEST(VuoptRegion, BudgetSweep) { RegionBudgetSweepBody(); }
+static void RegionBudgetSweepBody()
+{
+	std::vector<std::vector<VuOp>> progs;
+	{
+		// counted loop with a divide and a flag reader
+		std::vector<VuOp> p;
+		p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, 9)));
+		p.push_back(L(VIADDIU_L(vi::vi2, vi::vi0, 0x10)));
+		p.push_back(P(VDIV_L(vf::vf1, 0, vf::vf2, 1), VMUL_U(mask::xyzw, vf::vf3, vf::vf3, vf::vf4)));
+		p.push_back(P(VFMAND_L(vi::vi3, vi::vi2), VADDq_U(mask::xyz, vf::vf5, vf::vf3)));
+		p.push_back(P(VSQ_L(mask::xyzw, vf::vf5, vi::vi2, 0), VMADDy_U(mask::x | mask::w, vf::vf6, vf::vf5, vf::vf4)));
+		p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), VSUB_U(mask::xyzw, vf::vf7, vf::vf6, vf::vf3)));
+		p.push_back(P(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(2 - 6 - 1)), VMULAx_U(mask::xyzw, vf::vf7, vf::vf4)));
+		p.push_back(P(VIADDIU_L(vi::vi2, vi::vi2, 1), VMADDAw_U(mask::xyzw, vf::vf3, vf::vf4)));
+		p.push_back(EBit(P(VFSAND_L(vi::vi4, 0xfff), VNOP_U())));
+		progs.push_back(p);
+	}
+	{
+		// a loop whose body branches both ways (a stretch of several blocks),
+		// then a straight tail
+		std::vector<VuOp> p;
+		p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, 6)));                          // 0
+		p.push_back(U(VADD_U(mask::xyzw, vf::vf2, vf::vf2, vf::vf3)));           // 1 loop head
+		p.push_back(L(VIAND_L(vi::vi5, vi::vi1, vi::vi6)));                      // 2
+		p.push_back(L(VIBEQ_L(vi::vi5, vi::vi0, 3)));                            // 3 -> 7
+		p.push_back(U(VMUL_U(mask::xyz, vf::vf4, vf::vf2, vf::vf3)));            // 4 delay
+		p.push_back(P(VIADDIU_L(vi::vi7, vi::vi7, 3), VSUB_U(mask::xyzw, vf::vf5, vf::vf4, vf::vf2))); // 5
+		p.push_back(U(VMADD_U(mask::xyzw, vf::vf6, vf::vf5, vf::vf3)));          // 6
+		p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), VMAX_U(mask::xyzw, vf::vf7, vf::vf6, vf::vf2))); // 7
+		p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(1 - 8 - 1))));  // 8 -> 1
+		p.push_back(U(VMULi_U(mask::xyzw, vf::vf8, vf::vf7)));                   // 9 delay
+		p.push_back(P(VSQ_L(mask::xyzw, vf::vf8, vi::vi0, 3), VADD_U(mask::xyzw, vf::vf9, vf::vf8, vf::vf8))); // 10
+		p.push_back(U(VMUL_U(mask::xyzw, vf::vf10, vf::vf9, vf::vf9)));          // 11
+		p.push_back(EBit(U(VNOP_U())));                                          // 12
+		progs.push_back(p);
+	}
+	int failures = 0;
+	for (size_t k = 0; k < progs.size(); k++)
+		for (bool fh : {true, false})
+			for (u32 budget = 1; budget <= 140; budget++)
+			{
+				const RegionOutcome o = RunRegion(progs[k], fh, [](VuTestHarness& h) {
+					SeedSpecials(h, 11);
+					h.SetVi(6, 2);
+				}, false, 14, false, nullptr, budget);
+				EXPECT_GT(o.regions, 0u);
+				if (!o.diffs.empty() && ++failures <= 4)
+					ADD_FAILURE() << "program " << k << " flagHack=" << fh << " budget " << budget << "\n" << Join(o.diffs);
+			}
+	EXPECT_EQ(failures, 0);
+}
+
 // Milestone 6: VI values known at compile time fold, memory ops at constant
 // addresses address VU memory directly (wrapping like microVU), a VI copy
 // reads its source, a second LQ of the same address reuses the first, and an
@@ -1188,6 +1251,7 @@ TEST(VuoptLowering, ClampModes)
 		RegionInvariantMatrixBody();
 		ViConstantsAndAddressesBody();
 		FlagPacksAndFsandBody();
+		RegionBudgetSweepBody();
 		g_clampMode = -1;
 	}
 }
