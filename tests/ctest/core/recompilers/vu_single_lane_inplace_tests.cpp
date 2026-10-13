@@ -164,4 +164,47 @@ TEST(VuSingleLaneInPlace, MatchesTheRotatedFormWordForWord)
 	}
 }
 
+// MOVE and MR32 with a one-lane field, into a destination that is cached
+// (read by the op before), not cached, and the source itself. Every lane,
+// both VUs, against the interpreter and the literal answer: the written lane
+// takes Fs's same lane (MOVE) or the next one up (MR32), the other three keep
+// the destination's words.
+TEST(VuSingleLaneInPlace, MoveAndMr32IntoEveryLane)
+{
+	static const u32 kSrc[4] = {0x3f800000u, 0x40000000u, 0x40400000u, 0x40800000u};
+	static const u32 kDst[4] = {0xc1200000u, 0xc1a00000u, 0xc1f00000u, 0xc2200000u};
+	for (int vu = 0; vu < 2; vu++)
+	{
+		for (int lane = 0; lane < 4; lane++)
+		{
+			const u32 m = mask::x >> lane;
+			for (int shape = 0; shape < 3; shape++)
+			{
+				for (bool mr32 : {false, true})
+				{
+					SCOPED_TRACE(::testing::Message() << "vu" << vu << " lane " << lane << " shape " << shape
+					                                  << (mr32 ? " MR32" : " MOVE"));
+					VuTestHarness h(vu);
+					h.SetVfBits(1, kSrc[0], kSrc[1], kSrc[2], kSrc[3]);
+					h.SetVfBits(2, kDst[0], kDst[1], kDst[2], kDst[3]);
+					const u32 fs = 1, ft = (shape == 2) ? 1 : 2;
+					std::vector<VuOp> prog;
+					if (shape == 0) // cache the destination first
+						prog.push_back(UpperOnly(VADD_U(mask::xyzw, 3, 2, 0)));
+					prog.push_back(VuOp{mr32 ? VMR32_L(m, ft, fs) : VMOVE_L(m, ft, fs), VNOP_U()});
+					prog.push_back(EBitNopPair());
+					h.LoadProgram(prog);
+					h.Run();
+					const u32* before = (ft == 1) ? kSrc : kDst;
+					for (int l = 0; l < 4; l++)
+					{
+						const u32 want = (l == lane) ? (mr32 ? kSrc[(l + 1) & 3] : kSrc[l]) : before[l];
+						EXPECT_EQ(h.JitSnapshot().regs.VF[ft].UL[l], want) << "lane " << l;
+					}
+				}
+			}
+		}
+	}
+}
+
 } // namespace recompiler_tests
