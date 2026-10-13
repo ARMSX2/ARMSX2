@@ -62,7 +62,7 @@ namespace IopThread
 	/// emulator fills it from the CPU topology (a later step wires that up).
 	struct HostCpuInfo
 	{
-		bool is_arm64 = false; // the IOP-thread work is ARM64-only for now
+		bool is_arm64 = false; // Threaded is ARM64-only for now; Lockstep ignores this
 		u32 total_cores = 0;
 		/// Cores of at least 0.75 of the fastest core's speed (GetPerformanceCoresMask() in
 		/// VMManager.cpp). 0 when the cores cannot be told apart or cannot be read.
@@ -82,15 +82,18 @@ namespace IopThread
 	/// Decides how the IOP runs, from what was asked for and what this host and VM allow.
 	/// Pure: it reads only its arguments.
 	///
-	/// Returns Off unless the player enabled the IOP thread and none of these holds:
+	/// Returns Off unless the player enabled the IOP thread and none of the VM conditions holds:
+	/// the VM is in PS1 mode, runs an arcade title, replays a GS dump, has an IOP breakpoint, or
+	/// is under the recompiler test harness.
+	///
+	/// With the lockstep flag set it then returns Lockstep, on any host. Lockstep is the
+	/// correctness reference used by tests, eerunner and debugging, so the host rules below do not
+	/// apply to it.
+	///
+	/// Without the lockstep flag it returns Threaded, unless a host rule rules it out:
 	///  - the host is not ARM64;
-	///  - the VM is in PS1 mode, runs an arcade title, replays a GS dump, has an IOP breakpoint, or
-	///    is under the recompiler test harness;
 	///  - the host has no spare big core. The threads are the EE, the GS, the IOP and, with MTVU
 	///    on, the VU1 thread. It needs at least that many performance cores, and at least two
 	///    more cores in total for the OS, the GS back thread and the audio callback.
-	///
-	/// Otherwise returns Lockstep when the lockstep flag is set and Threaded when it is not. The
-	/// core rule applies to both, as design section 10.2 lists it.
 	IopThreadMode ResolveMode(const Pcsx2Config& config, const HostCpuInfo& host, const VmConditions& vm);
 } // namespace IopThread

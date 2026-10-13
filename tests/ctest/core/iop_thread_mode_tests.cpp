@@ -164,12 +164,22 @@ TEST(IopThreadMode, TheRecompilerTestHarnessForcesOff)
 	EXPECT_EQ(Resolve(true, true, true, kSd865, vm), IopThreadMode::Off);
 }
 
-TEST(IopThreadMode, ANonArm64HostForcesOff)
+TEST(IopThreadMode, ANonArm64HostForcesThreadedOff)
 {
 	// A host with plenty of cores, so that only the architecture can be the reason.
 	const HostCpuInfo x86_desktop = Host(false, 16, 8);
 	EXPECT_EQ(Resolve(true, false, true, x86_desktop), IopThreadMode::Off);
-	EXPECT_EQ(Resolve(true, true, true, x86_desktop), IopThreadMode::Off);
+}
+
+TEST(IopThreadMode, ANonArm64HostStillRunsLockstep)
+{
+	// Lockstep is the correctness oracle (tests, eerunner, debugging). It has to be usable as a
+	// reference on every host, so the architecture rule does not apply to it.
+	const HostCpuInfo x86_desktop = Host(false, 16, 8);
+	EXPECT_EQ(Resolve(true, true, true, x86_desktop), IopThreadMode::Lockstep);
+	EXPECT_EQ(Resolve(true, true, false, x86_desktop), IopThreadMode::Lockstep);
+	// Not even a host that can say nothing about itself rules it out.
+	EXPECT_EQ(Resolve(true, true, true, Host(false, 0, 0)), IopThreadMode::Lockstep);
 }
 
 TEST(IopThreadMode, EachForcingConditionIsSufficientAloneAndNoneStaysOnItsOwn)
@@ -210,14 +220,21 @@ TEST(IopThreadModeDevices, TheM2IsOn)
 	EXPECT_EQ(Resolve(true, false, true, kM2Max), IopThreadMode::Threaded);
 }
 
-TEST(IopThreadModeDevices, TheRk3562ResolvesOff)
+TEST(IopThreadModeDevices, TheRk3562ResolvesThreadedOff)
 {
 	// Four cores, all alike: 4 performance cores are enough for four threads, but there are no
 	// two spare cores for the OS, the GS back thread and the audio callback.
 	EXPECT_EQ(Resolve(true, false, true, kRk3562), IopThreadMode::Off);
-	EXPECT_EQ(Resolve(true, true, true, kRk3562), IopThreadMode::Off);
 	// Without MTVU it needs 3 performance cores and 5 in total, and still has 4.
 	EXPECT_EQ(Resolve(true, false, false, kRk3562), IopThreadMode::Off);
+}
+
+TEST(IopThreadModeDevices, TheRk3562StillRunsLockstep)
+{
+	// The core rule protects a game from a thread it has no core for. Lockstep is not played on;
+	// it runs the two threads in strict turns, so it needs no spare core.
+	EXPECT_EQ(Resolve(true, true, true, kRk3562), IopThreadMode::Lockstep);
+	EXPECT_EQ(Resolve(true, true, false, kRk3562), IopThreadMode::Lockstep);
 }
 
 TEST(IopThreadModeDevices, TheSd662ClassIsOnButUntested)
@@ -249,14 +266,71 @@ TEST(IopThreadModeDevices, AHostThatCannotTellItsCoresApartIsOff)
 	EXPECT_EQ(Resolve(true, false, true, Host(true, 0, 0)), IopThreadMode::Off);
 }
 
-TEST(IopThreadModeDevices, LockstepFollowsTheSameCoreRuleAsThreaded)
+TEST(IopThreadModeDevices, LockstepIgnoresTheCoreRuleOnEveryHost)
 {
-	// Design 10.2 lists the core rule among the reasons for Off without exempting Lockstep, and
-	// the conservative reading is to apply it to both. The hosts that run Lockstep for the gates
-	// (the M2) pass it.
+	// Manager decision, 2026-10-13: Lockstep is a reference, so neither the core count nor the
+	// core type can switch it off. The first three rows are the ones that resolve either way.
 	EXPECT_EQ(Resolve(true, true, true, kSd865), IopThreadMode::Lockstep);
 	EXPECT_EQ(Resolve(true, true, true, kM2Max), IopThreadMode::Lockstep);
-	EXPECT_EQ(Resolve(true, true, true, kRk3562), IopThreadMode::Off);
+	EXPECT_EQ(Resolve(true, true, true, kM2), IopThreadMode::Lockstep);
+	// The rows below are Off for Threaded and must not be for Lockstep.
+	EXPECT_EQ(Resolve(true, true, true, Host(true, 4, 4)), IopThreadMode::Lockstep); // RK3562 shape
+	EXPECT_EQ(Resolve(true, true, true, Host(true, 5, 4)), IopThreadMode::Lockstep); // one core short of 6
+	EXPECT_EQ(Resolve(true, true, true, Host(true, 8, 3)), IopThreadMode::Lockstep); // 3 big cores, MTVU on
+	EXPECT_EQ(Resolve(true, true, true, Host(true, 8, 0)), IopThreadMode::Lockstep); // cores not told apart
+	EXPECT_EQ(Resolve(true, true, true, Host(true, 1, 1)), IopThreadMode::Lockstep); // a single core
+	EXPECT_EQ(Resolve(true, true, true, Host(true, 0, 0)), IopThreadMode::Lockstep); // topology unreadable
+}
+
+TEST(IopThreadModeDevices, TheSameHostsAreOffForThreaded)
+{
+	// The counterpart of the test above: the hosts Lockstep accepts anyway really do fail the rule
+	// for Threaded, so the difference between the two modes is the mode and nothing else.
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 4, 4)), IopThreadMode::Off);
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 5, 4)), IopThreadMode::Off);
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 8, 3)), IopThreadMode::Off);
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 8, 0)), IopThreadMode::Off);
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 1, 1)), IopThreadMode::Off);
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 0, 0)), IopThreadMode::Off);
+}
+
+TEST(IopThreadModeDevices, EveryForcingConditionStillTurnsLockstepOffOnAnyHost)
+{
+	// Lockstep escapes the host rules only. A condition about the VM is a reason the IOP cannot
+	// run on its own thread at all, and it holds on the hosts Lockstep is otherwise free on.
+	const HostCpuInfo hosts[] = {kSd865, kRk3562, Host(false, 16, 8), Host(true, 0, 0)};
+	for (const HostCpuInfo& host : hosts)
+	{
+		VmConditions vm;
+		vm.ps1_mode = true;
+		EXPECT_EQ(Resolve(true, true, true, host, vm), IopThreadMode::Off);
+
+		vm = {};
+		vm.arcade = true;
+		EXPECT_EQ(Resolve(true, true, true, host, vm), IopThreadMode::Off);
+
+		vm = {};
+		vm.gs_dump_replay = true;
+		EXPECT_EQ(Resolve(true, true, true, host, vm), IopThreadMode::Off);
+
+		vm = {};
+		vm.iop_breakpoints = true;
+		EXPECT_EQ(Resolve(true, true, true, host, vm), IopThreadMode::Off);
+
+		vm = {};
+		vm.recompiler_test_harness = true;
+		EXPECT_EQ(Resolve(true, true, true, host, vm), IopThreadMode::Off);
+
+		// And with none of them it resolves, so the Off results above are the conditions' doing.
+		EXPECT_EQ(Resolve(true, true, true, host, VmConditions()), IopThreadMode::Lockstep);
+	}
+}
+
+TEST(IopThreadModeDevices, LockstepStillNeedsTheEnableFlag)
+{
+	// Escaping the host rules does not make Lockstep a setting of its own.
+	EXPECT_EQ(Resolve(false, true, true, kRk3562), IopThreadMode::Off);
+	EXPECT_EQ(Resolve(false, true, true, Host(false, 1, 1)), IopThreadMode::Off);
 }
 
 // ---------------------------------------------------------------- the lag bound
