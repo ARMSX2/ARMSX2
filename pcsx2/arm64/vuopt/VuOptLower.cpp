@@ -462,7 +462,15 @@ namespace vuopt
 			// status layout, more than one lane. (Single-lane and MAC-layout packs
 			// put their bits where the lane-wise accumulators do not.)
 			static bool AccCand(const Inst& in) { return in.op == Op::StatusUpd && !(in.imm & 3) && !Single(in.mask); }
+			static bool DefinesBase(bool real, const Inst& in) { return !(AccCand(in) && !real); }
 			bool ChainStep(ValueId v, bool dirty) const;
+			// Status operations that define a new chain word: every one but an
+			// accumulation. baseIn_: the word each starts from (the previous one's
+			// value in this node; absent: stkReg). finalBase_: the last word the
+			// node defines, which its end moves into stkReg.
+			std::vector<std::pair<ValueId, ValueId>> baseIn_;
+			ValueId finalBase_ = 0;
+			int BaseReg(ValueId id);
 			void AccumulateFlags(ValueId c, u8 mask);
 			void ReduceAcc(int dstG);
 			void ChainStatusUpd(ValueId id);
@@ -1766,72 +1774,74 @@ namespace vuopt
 			armAsm->Orr(V(hm_->saS).V16B(), V(hm_->saS).V16B(), V(r).V16B());
 		}
 
+		// The chain word a status operation starts from: the previous base-defining
+		// operation's value in this node, else the incoming word in stkReg.
+		int Lowerer::BaseReg(ValueId id)
+		{
+			for (const auto& e : baseIn_)
+				if (e.first == id)
+					return UseReg(e.second);
+			return hm_->stkReg;
+		}
+
 		void Lowerer::ChainStatusUpd(ValueId id)
 		{
 			const Inst& in = I(id);
 			const bool nonSticky = in.imm & 1;
 			const bool real = chainReal_[id];
 			const ValueId res = C(in.args[1]);
-			const int stk = hm_->stkReg;
-			pxAssertRel(stk >= 0 && hm_->saZ >= 0 && hm_->saS >= 0, "vuopt: sticky accumulation without its registers");
-			bool dirty = dirty_;
+			pxAssertRel(hm_->stkReg >= 0 && hm_->saZ >= 0 && hm_->saS >= 0, "vuopt: sticky accumulation without its registers");
+			const bool dirty = dirty_;
 			if (AccCand(in))
 			{
 				if (!real)
 					AccumulateFlags(res, in.mask);
 				else if (dirty)
 				{
+					const int bs = BaseReg(id);
 					AccumulateFlags(res, in.mask);
 					const int d = DefG(id);
 					ReduceAcc(d);
-					armAsm->Orr(W(d), W(d), W(stk));
-					armAsm->Mov(W(stk), W(d));
+					armAsm->Orr(W(d), W(d), W(bs));
 				}
 				else
 				{
+					const int bs = BaseReg(id);
 					const int p = TempG();
 					PackFlags(res, in.mask, false, p);
 					const int d = DefG(id);
-					armAsm->Orr(W(d), W(stk), W(p));
-					armAsm->Mov(W(stk), W(d));
+					armAsm->Orr(W(d), W(bs), W(p));
 				}
 			}
 			else
 			{
+				const int bs = BaseReg(id);
 				const int p = StatusPackReg(id, -1);
+				const int d = DefG(id);
 				if (!nonSticky)
 				{
-					if (!real)
-						armAsm->Orr(W(stk), W(stk), W(p));
-					else
+					if (real && dirty)
 					{
-						const int d = DefG(id);
-						if (dirty)
-						{
-							ReduceAcc(d);
-							armAsm->Orr(W(d), W(d), W(stk));
-							armAsm->Orr(W(d), W(d), W(p));
-						}
-						else
-							armAsm->Orr(W(d), W(stk), W(p));
-						armAsm->Mov(W(stk), W(d));
+						ReduceAcc(d);
+						armAsm->Orr(W(d), W(d), W(bs));
+						armAsm->Orr(W(d), W(d), W(p));
 					}
+					else
+						armAsm->Orr(W(d), W(bs), W(p));
 				}
 				else
 				{
-					// (stk | accumulators) & ~nonsticky, then this pack twice
+					// (chain word | accumulators) & ~non-sticky, then this pack twice
+					int src = bs;
 					if (dirty)
 					{
-						const int t = TempG();
-						ReduceAcc(t);
-						armAsm->Orr(W(stk), W(stk), W(t));
+						src = TempG();
+						ReduceAcc(src);
+						armAsm->Orr(W(src), W(src), W(bs));
 					}
-					const int d = real ? DefG(id) : stk;
-					armAsm->And(W(d), W(stk), 0xfffc00ffu);
+					armAsm->And(W(d), W(src), 0xfffc00ffu);
 					armAsm->Orr(W(d), W(d), W(p));
 					armAsm->Orr(W(d), W(d), a64::Operand(W(p), a64::LSL, 8));
-					if (real)
-						armAsm->Mov(W(stk), W(d));
 				}
 			}
 			dirty_ = ChainStep(id, dirty);
@@ -1844,27 +1854,20 @@ namespace vuopt
 		{
 			const Inst& in = I(id);
 			const bool real = chainReal_[id];
-			const int stk = hm_->stkReg;
-			pxAssertRel(stk >= 0 && hm_->saZ >= 0 && hm_->saS >= 0, "vuopt: sticky accumulation without its registers");
+			pxAssertRel(hm_->stkReg >= 0 && hm_->saZ >= 0 && hm_->saS >= 0, "vuopt: sticky accumulation without its registers");
+			const int bs = BaseReg(id);
 			const int df = IntOperand(in.args[1]);
-			if (!real)
-			{
-				armAsm->Bic(W(stk), W(stk), 0x000C0000u);
-				armAsm->Orr(W(stk), W(stk), W(df));
-				return;
-			}
 			const int d = DefG(id);
-			if (dirty_)
+			if (real && dirty_)
 			{
 				ReduceAcc(d);
-				armAsm->Orr(W(d), W(d), W(stk));
+				armAsm->Orr(W(d), W(d), W(bs));
 				armAsm->Bic(W(d), W(d), 0x000C0000u);
 			}
 			else
-				armAsm->Bic(W(d), W(stk), 0x000C0000u);
+				armAsm->Bic(W(d), W(bs), 0x000C0000u);
 			armAsm->Orr(W(d), W(d), W(df));
-			armAsm->Mov(W(stk), W(d));
-			dirty_ = false;
+			dirty_ = ChainStep(id, dirty_);
 		}
 
 		// FSSET: keeps the non-sticky half, replaces the sticky byte (and the sticky
@@ -1872,9 +1875,7 @@ namespace vuopt
 		void Lowerer::ChainStatusSet(ValueId id)
 		{
 			const Inst& in = I(id);
-			const bool real = chainReal_[id];
-			const int stk = hm_->stkReg;
-			pxAssertRel(stk >= 0 && hm_->saZ >= 0 && hm_->saS >= 0, "vuopt: sticky accumulation without its registers");
+			pxAssertRel(hm_->stkReg >= 0 && hm_->saZ >= 0 && hm_->saS >= 0, "vuopt: sticky accumulation without its registers");
 			u32 imm = 0;
 			const u32 i12 = static_cast<u32>(in.imm);
 			if (i12 & 0x0040) imm |= 0x000000f;
@@ -1883,12 +1884,11 @@ namespace vuopt
 			if (i12 & 0x0200) imm |= 0x0800000;
 			if (i12 & 0x0400) imm |= 0x1000000;
 			if (i12 & 0x0800) imm |= 0x2000000;
-			const int d = real ? DefG(id) : stk;
-			armAsm->And(W(d), W(stk), 0xfff00u);
+			const int bs = BaseReg(id);
+			const int d = DefG(id);
+			armAsm->And(W(d), W(bs), 0xfff00u);
 			if (imm)
 				armAsm->Orr(W(d), W(d), imm);
-			if (real)
-				armAsm->Mov(W(stk), W(d));
 			armAsm->Movi(V(hm_->saZ).V2D(), 0);
 			armAsm->Movi(V(hm_->saS).V2D(), 0);
 			dirty_ = false;
@@ -3340,6 +3340,13 @@ namespace vuopt
 			}
 			ReleaseLocks();
 
+			// The status chain's last word becomes the next node's incoming word.
+			if (acc_ && finalBase_)
+			{
+				armAsm->Mov(W(hm_->stkReg), W(UseReg(finalBase_)));
+				ReleaseLocks();
+			}
+
 			// Which memory homes get written.
 			u8 memWritten[var::Count] = {};
 			for (u32 v : leaveKs_)
@@ -4372,6 +4379,17 @@ namespace vuopt
 							chainReal_[c] = 1;
 					});
 				}
+				baseIn_.clear();
+				finalBase_ = 0;
+				for (ValueId w : order_)
+				{
+					if (!emit_[w] || !IsChainOp(I(w).op))
+						continue;
+					if (finalBase_)
+						baseIn_.push_back({w, finalBase_});
+					if (DefinesBase(chainReal_[w], I(w)))
+						finalBase_ = w;
+				}
 			}
 			else
 				FoldStatusChains();
@@ -4430,6 +4448,15 @@ namespace vuopt
 				if (in.op == Op::StatusUpd)
 					if (const ValueId m = MacOf(v))
 						addUse(m);
+				if (acc_)
+				{
+					// the chain word a status operation starts from, and the last one at the end
+					for (const auto& e : baseIn_)
+						if (e.first == v)
+							addUse(e.second);
+					if (v == leave_ && finalBase_)
+						addUse(finalBase_);
+				}
 				if (in.op == Op::LoadQ || in.op == Op::LoadI || in.op == Op::StoreQ || in.op == Op::StoreI)
 				{
 					auto& u = uses_[memBase_];
