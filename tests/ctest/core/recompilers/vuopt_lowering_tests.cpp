@@ -767,7 +767,7 @@ struct RegionOutcome
 // microVU alone against vuopt regions (and framed bodies elsewhere), running
 // past the cycle budget so budget breaks and resumes happen.
 RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std::function<void(VuTestHarness&)>& setup,
-	bool resume = true, s32 vHomes = 14, bool dump = false)
+	bool resume = true, s32 vHomes = 14, bool dump = false, const std::map<u32, std::vector<u32>>* jumps = nullptr)
 {
 	FlagHackScope fh(flagHack);
 	VuSnapshot ref;
@@ -800,6 +800,8 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		RegionScope rs(1);
 		rs.region.maxVHomes = vHomes;
 		rs.region.dump = dump;
+		if (jumps)
+			rs.region.jumpTargets = *jumps;
 		h.RunNoDiff();
 		o.regions = rs.region.Regions();
 		o.nodes = rs.region.Nodes();
@@ -840,6 +842,58 @@ static void RegionCountedLoopBody()
 			EXPECT_GE(o.regions, 1u) << "n=" << n;
 		}
 	}
+}
+
+// JR/JALR inside a region: a loop calls one of two subroutines through a
+// table-loaded JALR, and each returns with JR. The region dispatches the
+// targets it was given and sends every other one through microVU's jump
+// cache; both must leave microVU's state.
+TEST(VuoptRegion, RecordedJumpTargets)
+{
+	constexpr u32 kT1 = 12, kT2 = 16, kRet = 6, kHead = 2;
+	std::vector<VuOp> p;
+	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, 37)));                         // 0
+	p.push_back(L(VIADDIU_L(vi::vi5, vi::vi0, 1)));                          // 1
+	p.push_back(P(VIAND_L(vi::vi4, vi::vi1, vi::vi5), VMUL_U(mask::xyzw, vf::vf4, vf::vf4, vf::vf2)));   // 2: head
+	p.push_back(L(VILW_L(mask::x, vi::vi3, vi::vi4, 0)));                    // 3
+	p.push_back(L(VJALR_L(vi::vi15, vi::vi3)));                              // 4
+	p.push_back(U(VADD_U(mask::xyzw, vf::vf5, vf::vf5, vf::vf1)));            // 5: delay slot
+	p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), VMADD_U(mask::xyz, vf::vf6, vf::vf4, vf::vf5)));        // 6: return here
+	p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(static_cast<int>(kHead) - 7 - 1))));      // 7
+	p.push_back(U(VSUB_U(mask::xyzw, vf::vf7, vf::vf6, vf::vf3)));            // 8: delay slot
+	p.push_back(EBit(L(VFSAND_L(vi::vi6, 0xfff))));                           // 9
+	p.push_back(U(VNOP_U()));                                                 // 10
+	p.push_back(U(VNOP_U()));                                                 // 11
+	p.push_back(U(VADD_U(mask::xyzw, vf::vf1, vf::vf1, vf::vf2)));            // 12: T1
+	p.push_back(L(VJR_L(vi::vi15)));                                          // 13
+	p.push_back(U(VMUL_U(mask::x | mask::y, vf::vf3, vf::vf1, vf::vf1)));              // 14: delay slot
+	p.push_back(U(VNOP_U()));                                                 // 15
+	p.push_back(P(VFMAND_L(vi::vi7, vi::vi5), VSUB_U(mask::xyzw, vf::vf2, vf::vf2, vf::vf1)));           // 16: T2
+	p.push_back(L(VJR_L(vi::vi15)));                                          // 17
+	p.push_back(EBit(U(VMULq_U(mask::z | mask::w, vf::vf3, vf::vf2))));               // 18: delay slot (never reached as E)
+	// the final pair carries an E bit only to satisfy the harness; T2's JR
+	// delay slot is not an E bit in effect because the jump leaves first.
+	p.back().upper &= ~bits::E;
+	p.push_back(EBit(U(VNOP_U())));                                           // 19
+	const auto setup = [](VuTestHarness& h) {
+		h.SetVf(1, 1.0f, 2.0f, 3.0f, 4.0f);
+		h.SetVf(2, 0.5f, 0.25f, 0.125f, 1.0f);
+		h.SetVf(3, -1.0f, 1.5f, 2.5f, -3.5f);
+		h.SetVf(4, 1.001f, 0.999f, 1.0f, 0.5f);
+		// the jump table: VI word x of quadwords 0 and 1
+		h.WriteMemU32(0x00, kT2);
+		h.WriteMemU32(0x10, kT1);
+	};
+	const std::map<u32, std::vector<u32>> all = {{kHead * 8, {kT1 * 8, kT2 * 8}}, {kT1 * 8, {kRet * 8}}, {kT2 * 8, {kRet * 8}}};
+	const std::map<u32, std::vector<u32>> some = {{kHead * 8, {kT1 * 8}}, {kT2 * 8, {kRet * 8}}};
+	const std::map<u32, std::vector<u32>> none;
+	for (const auto* jt : {&none, &all, &some})
+		for (bool fh : {true, false})
+		{
+			const RegionOutcome o = RunRegion(p, fh, setup, true, 14, false, jt);
+			EXPECT_TRUE(o.diffs.empty()) << "targets " << jt->size() << " flagHack=" << fh << "\n" << Join(o.diffs, 10);
+			EXPECT_GE(o.regions, 1u);
+		}
 }
 
 // Random loop programs: an outer counted loop (vi1) around random FMAC,
