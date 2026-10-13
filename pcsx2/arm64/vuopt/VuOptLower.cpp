@@ -301,6 +301,30 @@ namespace vuopt
 			static bool CheckShape(const Function& f_, const LowerEnv& env_, std::string& why);
 		private:
 			const Inst& LeaveInst() const { return hasLeave2_ ? leave2_ : f_.insts[leave_]; }
+			// The value that is the whole final value of vector home VF(v0):
+			// every lane is it, or dead at the node's end (no merge needed for
+			// a dead lane); 0 if none.
+			ValueId WholeFinal(u32 v0) const
+			{
+				const Inst& lv = LeaveInst();
+				ValueId c = 0;
+				for (u32 l = 0; l < 4; l++)
+				{
+					const u32 v = v0 + l;
+					const ValueId a = lv.args[v];
+					if (liveOut_ && !liveOut_->test(v))
+						continue; // dead: any value will do
+					if (!a)
+						return 0;
+					const Inst& x = I(C(a));
+					if (x.op == Op::LiveIn && VecHomeOf(x.var) == VecHomeOf(v0))
+						return 0; // its own incoming value
+					if (c && C(a) != c)
+						return 0;
+					c = C(a);
+				}
+				return c;
+			}
 			// f(k, arg) for each non-zero operand of v
 			template <typename F>
 			void ForArgs(ValueId v, const Inst& in, F f) const
@@ -3051,13 +3075,9 @@ namespace vuopt
 				const Home& h = hm_->home[v0];
 				if (h.kind != HomeKind::VReg)
 					continue;
-				const ValueId a0 = in.args[v0];
-				bool whole = a0 && !ownLiveIn(v0, a0);
-				for (int l = 1; l < 4 && whole; l++)
-					whole = in.args[v0 + l] && C(in.args[v0 + l]) == C(a0);
-				if (!whole)
+				const ValueId c = WholeFinal(v0);
+				if (!c)
 					continue;
-				const ValueId c = C(a0);
 				if (reg_[c] == h.reg && cls_[c] == Cls::V)
 					continue;
 				if (reg_[c] >= 0 && cls_[c] == Cls::V)
@@ -3173,11 +3193,7 @@ namespace vuopt
 				const Home& h = hm_->home[v0];
 				if (h.kind != HomeKind::VReg)
 					continue;
-				const ValueId a0 = in.args[v0];
-				bool whole = a0 && !ownLiveIn(v0, a0);
-				for (int l = 1; l < 4 && whole; l++)
-					whole = in.args[v0 + l] && C(in.args[v0 + l]) == C(a0);
-				if (whole)
+				if (WholeFinal(v0))
 					continue;
 				int l = 0;
 				while (l < 4)
@@ -4086,15 +4102,15 @@ namespace vuopt
 					else
 						finalOf_[c] = ~0u; // final for two variables: no preference
 				}
-				const u32 vr = VecHomeOf(v);
-				if (vr && (v & 3) == 0 && hm_->home[v].kind == HomeKind::VReg)
-				{
-					bool whole = true;
-					for (int l = 1; l < 4; l++)
-						whole = whole && lv.args[v + l] && C(lv.args[v + l]) == c;
-					if (whole)
-						finalOf_[c] = finalOf_[c] ? ~0u : v + 1;
-				}
+			}
+			for (u32 r = 1; r <= 32; r++)
+			{
+				const u32 v0 = VecVar(r);
+				if (hm_->home[v0].kind != HomeKind::VReg)
+					continue;
+				const ValueId c = WholeFinal(v0);
+				if (c && c < f_.insts.size())
+					finalOf_[c] = finalOf_[c] ? ~0u : v0 + 1;
 			}
 			for (auto& x : finalOf_)
 				if (x == ~0u)
