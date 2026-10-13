@@ -639,6 +639,35 @@ TEST_F(LockstepMachine, TheIopIsHandedWhatTheEeOwesItAsItsBudgetInBothModes)
 	}
 }
 
+TEST_F(LockstepMachine, ThePlainNameTheX86RecompilersCallIsTheOffInstance)
+{
+	// _cpuEventTest_Shared() with no template argument is what the x86 recompilers (left untouched, to stay
+	// close to upstream) call. It must do exactly what the Off instance does, on the calling thread.
+	const Run off = RunScript(IopThreadMode::Off);
+
+	Reset();
+	Run plain;
+	s_calls = &plain.calls;
+	const CpuEventTestFn test = static_cast<void (*)()>(&_cpuEventTest_Shared);
+	static constexpr u32 kSteps[] = {1, 40, 3072, 17, 5000, 300, 3072, 3072, 8, 90, 2500, 1};
+	for (u32 i = 0; i < 240; i++)
+	{
+		cpuRegs.cycle += kSteps[i % std::size(kSteps)];
+		if (i % 7 == 3)
+			iopEventAction = true;
+		test();
+		plain.after.push_back({EEsCycle, EEoCycle, iopEventAction, cpuRegs.nextEventCycle, psxRegs.iopNextEventCycle});
+	}
+	s_calls = nullptr;
+
+	ASSERT_EQ(off.after.size(), plain.after.size());
+	for (size_t i = 0; i < off.after.size(); i++)
+		EXPECT_TRUE(off.after[i] == plain.after[i]) << "after event test " << i;
+	ASSERT_EQ(off.calls.size(), plain.calls.size());
+	for (const IopCall& call : plain.calls)
+		EXPECT_EQ(call.thread, std::this_thread::get_id());
+}
+
 TEST_F(LockstepMachine, TheLockstepInstanceWithNoThreadRunsTheSliceItself)
 {
 	// A Lockstep dispatcher can outlive the thread for a moment (a mode switch, a shutdown). The
