@@ -1727,14 +1727,16 @@ namespace vuopt
 		// update's pack (lane l's zero at bit l, its sign at bit l + 4).
 		void Lowerer::ReduceAcc(int dst)
 		{
-			const int s = TempV(), t = TempV();
+			// s = sign mask lanes (all ones where negative) with the top nibble of the
+			// zero mask lanes (all ones where zero) shifted down into bits 3:0: the
+			// pack's [31:4] = sign, [3:0] = zero.
+			const int s = TempV(), w = TempV();
 			armAsm->Cmlt(V(s).V4S(), V(hm_->saS).V4S(), 0);
-			armAsm->Mov(V(t).V16B(), V(hm_->saZ).V16B());
-			armAsm->Sli(V(t).V4S(), V(s).V4S(), 4);
-			armAsm->Ldr(V(s), a64::MemOperand(xGlob, G(&mVUglob.macWeights.byMask[0][0][0xf][0])));
-			armAsm->And(V(t).V16B(), V(t).V16B(), V(s).V16B());
-			armAsm->Addv(S(t), V(t).V4S());
-			armAsm->Fmov(W(dst), S(t));
+			armAsm->Sri(V(s).V4S(), V(hm_->saZ).V4S(), 28);
+			armAsm->Ldr(V(w), a64::MemOperand(xGlob, G(&mVUglob.macWeights.byMask[0][0][0xf][0])));
+			armAsm->And(V(s).V16B(), V(s).V16B(), V(w).V16B());
+			armAsm->Addv(S(s), V(s).V4S());
+			armAsm->Fmov(W(dst), S(s));
 		}
 
 		// Adds the field's lanes of result c to the accumulators: a lane's zero
