@@ -59,6 +59,8 @@ struct FlagHackScope
 
 // Clamp mode every harness below runs under (-1: the harness default, mode 1).
 int g_clampMode = -1;
+// Whether framed bodies are list-scheduled (milestone 9; regions always are).
+bool g_schedule = false;
 
 struct TierScope
 {
@@ -166,6 +168,7 @@ Outcome RunBoth(const std::vector<VuOp>& prog, bool flagHack,
 		t.tier.dump = dumpLast;
 		t.tier.poolLimitV = poolV;
 		t.tier.poolLimitG = poolG;
+		t.tier.schedule = g_schedule;
 		h.RunNoDiff();
 		o.blocks = t.tier.Blocks();
 		o.lowered = t.tier.Lowered();
@@ -1254,6 +1257,23 @@ TEST(VuoptLowering, ClampModes)
 		RegionBudgetSweepBody();
 		g_clampMode = -1;
 	}
+}
+
+// Milestone 9: the lowering suites again with every body list-scheduled
+// (operations reordered by latency before the allocator sees them), small
+// register pools included.
+TEST(VuoptLowering, Scheduled)
+{
+	g_schedule = true;
+	FmacFormsOverSpecialsBody();
+	ConversionsClipAndClipReadersBody();
+	DivideUnitAndEfuBody();
+	MovesMemoryRandomAndKickBody();
+	FuzzBody();
+	PressureFuzzBody();
+	ViConstantsAndAddressesBody();
+	FlagPacksAndFsandBody();
+	g_schedule = false;
 }
 
 // Debugging aid: VUOPT_REPRO_HEX="lower:upper,..." VUOPT_REPRO_SEED=n
