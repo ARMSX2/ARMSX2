@@ -7,6 +7,7 @@ add_pcsx2_test(core_test
 	iop_fingerprint_tests.cpp
 	iop_thread_mode_tests.cpp
 	iop_thread_channels_tests.cpp
+	iop_thread_tests.cpp
 	savestate_legacy_tests.cpp
 	settings_precedence_tests.cpp
 	gsrunner_affinity_tests.cpp

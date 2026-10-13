@@ -635,6 +635,9 @@
     <ClCompile Include="IopThread\IopChannels.cpp">
       <Filter>System\Ps2\Iop</Filter>
     </ClCompile>
+    <ClCompile Include="IopThread\IopThread.cpp">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClCompile>
     <ClCompile Include="IopThread\IopThreadMode.cpp">
       <Filter>System\Ps2\Iop</Filter>
     </ClCompile>
@@ -1794,6 +1797,9 @@
       <Filter>System\Ps2\Iop</Filter>
     </ClInclude>
     <ClInclude Include="IopThread\IopChannels.h">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClInclude>
+    <ClInclude Include="IopThread\IopThread.h">
       <Filter>System\Ps2\Iop</Filter>
     </ClInclude>
     <ClInclude Include="IopThread\IopThreadMode.h">
