@@ -1082,6 +1082,47 @@ static void ViConstantsAndAddressesBody()
 			}
 }
 
+// Milestone 7: a result's MAC and status packs share one sign/zero vector,
+// the pack weights load once per block, and FSAND computes only the status
+// bits its immediate keeps. Every FSAND immediate shape over status words
+// with sticky, divide and single-lane bits set.
+static void FlagPacksAndFsandBody();
+TEST(VuoptLowering, FlagPacksAndFsand) { FlagPacksAndFsandBody(); }
+static void FlagPacksAndFsandBody()
+{
+	static const u32 kImm[] = {0x000, 0xfff, 0x001, 0x002, 0x004, 0x008, 0x010, 0x020, 0x040, 0x080, 0x100, 0x200,
+		0x400, 0x800, 0x0c3, 0xf3c, 0x041, 0x082, 0x030, 0x830, 0x3c3, 0x0ff, 0xf00, 0x5a5};
+	int k = 0;
+	for (u32 imm : kImm)
+	{
+		std::vector<VuOp> p;
+		p.push_back(U(VSUB_U(mask::xyzw, vf::vf5, vf::vf1, vf::vf1)));  // zeros
+		p.push_back(U(VMULy_U(mask::y, vf::vf6, vf::vf2, vf::vf3)));    // single lane
+		p.push_back(P(VDIV_L(vf::vf4, 0, vf::vf0, 0), VADDx_U(mask::x | mask::w, vf::vf7, vf::vf3, vf::vf2)));
+		p.push_back(L(VFSAND_L(vi::vi1, imm)));
+		p.push_back(P(VFMAND_L(vi::vi2, vi::vi15), VADD_U(mask::xyzw, vf::vf8, vf::vf8, vf::vf3)));
+		p.push_back(U(VNOP_U()));
+		p.push_back(L(VFSAND_L(vi::vi3, imm)));
+		p.push_back(L(VFSAND_L(vi::vi4, imm ^ 0xfff)));
+		p.push_back(U(VNOP_U()));
+		p.push_back(L(VFSAND_L(vi::vi5, imm)));
+		p.push_back(L(VFMOR_L(vi::vi6, vi::vi0)));
+		p.push_back(EBit(L(VFSAND_L(vi::vi7, imm))));
+		for (u32 seed : {5u, 6u})
+			for (bool fh : {true, false})
+			{
+				const Outcome o = RunBoth(p, fh, [seed](VuTestHarness& h) {
+					SeedSpecials(h, seed + 90);
+					h.SetVi(15, 0xffff);
+				});
+				EXPECT_TRUE(o.diffs.empty()) << "imm " << imm << " seed " << seed << " flagHack=" << fh << "\n" << Join(o.diffs);
+				EXPECT_EQ(o.lowered, o.blocks) << o.declined;
+			}
+		k++;
+	}
+	EXPECT_EQ(k, static_cast<int>(std::size(kImm)));
+}
+
 // Clamp modes 2/3: MADD (to Fd) reads ACC through microVU's read-only
 // mapping and clamps that cached register in place. The clamped copy is what
 // the rest of the block reads, and it reaches ACC's home when the block writes
@@ -1146,6 +1187,7 @@ TEST(VuoptLowering, ClampModes)
 		RegionLoopFuzzBody();
 		RegionInvariantMatrixBody();
 		ViConstantsAndAddressesBody();
+		FlagPacksAndFsandBody();
 		g_clampMode = -1;
 	}
 }
