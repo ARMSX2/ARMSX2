@@ -63,6 +63,12 @@ namespace vuopt
 		u32 Nodes() const { return nodes_; }
 		u32 Exits() const { return exits_; }
 		u64 Bytes() const { return bytes_; }
+		// Sticky STATUS accumulation: regions that use it, regions that could have but
+		// whose status chains the lowering cannot carry (FSSET kills), and the status
+		// updates accumulated instead of packed.
+		u32 AccRegions() const { return accRegions_; }
+		u32 AccNonLinear() const { return accNonLinear_; }
+		u32 AccAccumulated() const { return accAccumulated_; }
 		const std::map<std::string, u32>& Declined() const { return declined_; }
 
 		// Build only the first `maxRegions` regions (bisecting); -1 = all.
@@ -78,6 +84,9 @@ namespace vuopt
 		// Milestone 10: each loop keeps its own homes (live ranges split at
 		// loop boundaries).
 		bool splitHomes = true;
+		// Sticky STATUS accumulation (LowerEnv::stickyAcc) in regions that have
+		// status updates it can take. Costs two vector homes and one general home.
+		bool stickyAcc = true;
 		// Recorded JR/JALR targets: block start PC of the jump -> target PCs
 		// seen at run time. A region dispatches these directly; any other
 		// target goes through microVU's jump cache.
@@ -106,6 +115,7 @@ namespace vuopt
 		const u8* micro_;
 		std::unique_ptr<PipeAnalyzer> an_;
 		u32 compiles_ = 0, regions_ = 0, nodes_ = 0, exits_ = 0;
+		u32 accRegions_ = 0, accNonLinear_ = 0, accAccumulated_ = 0;
 		u64 bytes_ = 0;
 		std::map<std::string, u32> declined_;
 

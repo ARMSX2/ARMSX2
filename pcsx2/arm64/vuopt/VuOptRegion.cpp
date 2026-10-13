@@ -32,6 +32,18 @@ namespace vuopt
 		constexpr int kMemBaseReg = 27;
 		constexpr int kVHomeRegs[] = {31, 30, 29, 27, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15};
 		constexpr int kGHomeRegs[] = {26, 15, 14, 13, 12, 11};
+		// With the sticky accumulators (LowerEnv::stickyAcc) the last two vector homes
+		// and the last general home are theirs.
+		constexpr int kSaZReg = 16, kSaSReg = 15, kStkReg = 11;
+		static_assert(kVHomeRegs[12] == kSaZReg && kVHomeRegs[13] == kSaSReg && kGHomeRegs[5] == kStkReg, "accumulator registers are the last homes");
+
+		// The ring slot holding a block's newest STATUS instance when it is entered
+		// with this key: the slot before the one the next status write takes.
+		int StatusHead(const PipeState& k)
+		{
+			const int next = (k.needExactMatch & 1) ? 0 : ((k.flagInfo >> 2) & 3);
+			return (next - 1) & 3;
+		}
 
 		a64::Register W(int n) { return a64::Register(n, 32); }
 		a64::VRegister Q(int n) { return a64::VRegister(n, 128); }
@@ -164,7 +176,8 @@ namespace vuopt
 
 		RegionTier& t_;
 		const MvuEmitEnv& env_;
-		const LowerEnv& le_;
+		LowerEnv le_;
+		bool acc_ = false; // sticky STATUS accumulation in this region
 		std::vector<std::unique_ptr<Node>> nodes_;
 		std::vector<std::unique_ptr<Exit>> exits_;
 		std::vector<HomeMap> maps_; // per map: the homes its nodes keep variables in (milestone 10)
@@ -211,6 +224,8 @@ namespace vuopt
 		void ChooseHomes(int map, const std::vector<u32>& weight);
 		void PlanChecks();
 		void ComputeLiveness();
+		bool WantsAcc() const;
+		void ComputeDirty();
 		void Emit(const u8*& regionEnd);
 		void EmitEnd(const Node& n);
 		void EmitJump(int idx);
@@ -415,9 +430,15 @@ namespace vuopt
 						}
 						continue;
 					}
-					for (ValueId a : x.args)
+					// (with the sticky accumulators a status update reads the chain
+					// word, not the previous instance: only readers use an instance)
+					const bool chain = acc_ && (x.op == Op::StatusUpd || x.op == Op::StatusDiv || x.op == Op::StatusSet);
+					for (size_t k = chain ? 1 : 0; k < x.args.size(); k++)
+					{
+						const ValueId a = x.args[k];
 						if (a && f.insts[a].op == Op::LiveIn && f.insts[a].var < var::Count)
 							use[i].set(f.insts[a].var);
+					}
 				}
 			}
 			const auto edge = [&](int t) {
@@ -493,6 +514,68 @@ namespace vuopt
 			nodes_[i]->liveOut = out[i];
 			nodes_[i]->liveIn = in[i];
 		}
+	}
+
+	// Whether a node has a status update the accumulators can take (a sticky-only
+	// update in the status layout with more than one lane).
+	bool RegionBuilder::WantsAcc() const
+	{
+		using namespace ir;
+		bool any = false;
+		for (const auto& n : nodes_)
+			for (const Inst& x : n->fn.insts)
+				if (x.op == Op::StatusUpd && !(x.imm & 3) && x.mask != 8 && x.mask != 4 && x.mask != 2 && x.mask != 1 && x.mask != 0)
+					any = true;
+		if (!any)
+			return false;
+		// every status chain must be what the lowering carries in registers
+		for (const auto& n : nodes_)
+			if (!StatusChainLinear(n->fn))
+			{
+				t_.accNonLinear_++;
+				return false;
+			}
+		return true;
+	}
+
+	// Where the accumulators may owe the chain word something (LowerEnv::stickyAcc):
+	// forward over the links, clean at every entry from microVU, dirty after a node
+	// that accumulates, clean after one that builds an instance.
+	void RegionBuilder::ComputeDirty()
+	{
+		const size_t NN = nodes_.size();
+		std::vector<NodeLowering::ChainEffect> eff(NN);
+		for (size_t i = 0; i < NN; i++)
+		{
+			eff[i] = nodes_[i]->low->Chain();
+			t_.accAccumulated_ += eff[i].accumulated;
+		}
+		t_.accRegions_++;
+		std::vector<u8> in(NN, 0);
+		for (bool changed = true; changed;)
+		{
+			changed = false;
+			for (size_t i = 0; i < NN; i++)
+			{
+				const Node& n = *nodes_[i];
+				if (!eff[i].dirtyOut[in[i]])
+					continue;
+				const auto mark = [&](int t) {
+					if (t >= 0 && t != 0x7fffffff && !in[t])
+					{
+						in[t] = 1;
+						changed = true;
+					}
+				};
+				mark(n.taken);
+				if (n.br.endKind == BlockEnd::CondBranch)
+					mark(n.fall);
+				for (const auto& j : n.jumps)
+					mark(j.second);
+			}
+		}
+		for (size_t i = 0; i < NN; i++)
+			nodes_[i]->low->SetDirtyIn(in[i] != 0);
 	}
 
 	void RegionBuilder::AssignHomes()
@@ -687,8 +770,8 @@ namespace vuopt
 			for (const auto& c : vc)
 				std::printf("  map %d home candidate %s%u: %u\n", map, (c.second & 0x1000) ? "clamped vf" : "var ", c.second & 0xfff, c.first);
 		std::sort(gc.begin(), gc.end(), [](auto a, auto b) { return a.first != b.first ? a.first > b.first : a.second < b.second; });
-		const size_t nvMax = std::min<size_t>(static_cast<size_t>(std::max(0, t_.maxVHomes)), std::size(kVHomeRegs));
-		const size_t ngMax = std::min<size_t>(static_cast<size_t>(std::max(0, t_.maxGHomes)), std::size(kGHomeRegs));
+		const size_t nvMax = std::min<size_t>(static_cast<size_t>(std::max(0, t_.maxVHomes)), std::size(kVHomeRegs) - (acc_ ? 2 : 0));
+		const size_t ngMax = std::min<size_t>(static_cast<size_t>(std::max(0, t_.maxGHomes)), std::size(kGHomeRegs) - (acc_ ? 1 : 0));
 		// Register -> key: a vector variable's lane 0, 0x1000|r for VF r's
 		// clamped copy, 0x2000 for VF0; a general variable.
 		std::vector<u32> vKey(nvMax, 0), gKey(ngMax, 0);
@@ -792,6 +875,12 @@ namespace vuopt
 		homes.cycles = kCyclesReg;
 		if (hasMem_)
 			homes.memBase = le_.vuMemPinned ? -1 : kMemBaseReg;
+		if (acc_)
+		{
+			homes.stkReg = kStkReg;
+			homes.saZ = kSaZReg;
+			homes.saS = kSaSReg;
+		}
 		homes.Seal();
 	}
 
@@ -841,6 +930,14 @@ namespace vuopt
 			armAsm->Ldr(W(8), a64::MemOperand(a64::x24, cyclesOff));
 			armAsm->Cmp(W(8), n.need);
 			armAsm->B(&bailEntry, a64::lt);
+			if (acc_)
+			{
+				// microVU hands over every STATUS instance whole: the chain starts
+				// from the newest, with nothing owed by the accumulators.
+				armAsm->Mov(W(kStkReg), W(20 + StatusHead(n.key)));
+				armAsm->Movi(Q(kSaZReg).V2D(), 0);
+				armAsm->Movi(Q(kSaSReg).V2D(), 0);
+			}
 			armAsm->Adr(a64::x8, &n.head);
 			armAsm->B(&loadAll[n.map]);
 		}
@@ -1108,12 +1205,16 @@ namespace vuopt
 			return t_.Decline("single block, no loop", why);
 
 		PlanChecks();
+		acc_ = t_.stickyAcc && WantsAcc();
+		le_.stickyAcc = acc_;
 		ComputeLiveness();
 		for (auto& n : nodes_)
 		{
 			n->low = NodeLowering::Check(n->fn, le_, n->clamped, &n->liveOut);
 			pxAssertRel(n->low != nullptr, "vuopt region: a lowerable node failed its analysis");
 		}
+		if (acc_)
+			ComputeDirty();
 		AssignHomes();
 		const u8* start = armGetCurrentCodePointer();
 		const u8* end = nullptr;

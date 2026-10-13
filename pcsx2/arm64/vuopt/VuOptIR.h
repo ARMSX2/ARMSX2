@@ -288,6 +288,12 @@ namespace vuopt::ir
 		std::string unsupportedWhy;
 		EndInfo end;                // node-local region builds of a program end
 		std::vector<u32> leaveArgs; // node-local builds: the Leave's non-zero operand indices, ascending
+		// Node-local builds: the ring slot of the newest STATUS instance when the
+		// block is entered (the next status write takes the slot after it), and the
+		// one the successor will take as its newest, in the successor's numbering
+		// (-1: the block ends the program).
+		int statusHead = -1;
+		int statusHeadOut = -1;
 
 		// construction statistics
 		u32 phisCreated = 0;
@@ -331,6 +337,14 @@ namespace vuopt::ir
 	Function BuildNodeLocal(BlockResult& block, const BuildOptions& opts);
 
 	Function BuildSSA(const ProgramGraph& g, const BuildOptions& opts);
+
+	// Node-local builds: whether the node's status updates form one chain, each
+	// reading the previous update's instance (the first one reading the newest
+	// instance on entry), and the instance the successor takes as its newest is
+	// the chain's last. microVU's FSSET kill can leave a ring slot that no
+	// instruction wrote as the "previous" one: the stale value then flows on, and
+	// a lowering that carries the chain in registers cannot follow it.
+	bool StatusChainLinear(const Function& f);
 
 	// Checks SSA invariants: every operand defined, phis have one operand per
 	// predecessor, a definition dominates each use. Returns problems found.

@@ -264,6 +264,8 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 			opts.vuopt.schedule = false;
 		else if (a == "--vuopt-no-split")
 			opts.vuopt.splitHomes = false;
+		else if (a == "--vuopt-no-acc")
+			opts.vuopt.stickyAcc = false;
 		else if (a == "--vuopt-profile")
 			opts.vuopt.profile = true;
 		else if (a == "--vuopt-ghomes" && i + 1 < argc)

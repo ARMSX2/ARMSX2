@@ -765,6 +765,7 @@ struct RegionOutcome
 {
 	std::vector<std::string> diffs;
 	u32 regions = 0, nodes = 0;
+	u32 accRegions = 0, accNonLinear = 0, accAccumulated = 0; // sticky STATUS accumulation
 };
 
 // microVU alone against vuopt regions (and framed bodies elsewhere), running
@@ -812,6 +813,9 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		h.RunNoDiff();
 		o.regions = rs.region.Regions();
 		o.nodes = rs.region.Nodes();
+		o.accRegions = rs.region.AccRegions();
+		o.accNonLinear = rs.region.AccNonLinear();
+		o.accAccumulated = rs.region.AccAccumulated();
 	}
 	o.diffs = Compare(ref, h.JitSnapshot(), refPath, h.Path1PacketBytesJit());
 	return o;
@@ -1237,7 +1241,7 @@ TEST(VuoptRegion, StickyAccumulation) { RegionStickyAccumulationBody(); }
 static void RegionStickyAccumulationBody()
 {
 	int failures = 0;
-	u32 runs = 0;
+	u32 runs = 0, accRegions = 0, accumulated = 0;
 	for (int variant = 0; variant <= 4; variant++)
 	{
 		const std::vector<VuOp> p = StickyProgram(variant, variant == 4 ? 12 : 7, 16);
@@ -1249,13 +1253,21 @@ static void RegionStickyAccumulationBody()
 					h.SetVi(8, 0);
 				}, false, 14, false, nullptr, budget);
 				runs++;
+				if (!fh)
+				{
+					accRegions += o.accRegions;
+					accumulated += o.accAccumulated;
+				}
 				EXPECT_GT(o.regions, 0u);
 				if (!o.diffs.empty() && ++failures <= 4)
 					ADD_FAILURE() << "variant " << variant << " flagHack=" << fh << " budget " << budget << "\n" << Join(o.diffs);
 			}
 	}
 	EXPECT_EQ(failures, 0);
-	std::printf("[vuopt sticky] runs=%u\n", runs);
+	// the point of the test: with the flag hack off the regions accumulate
+	EXPECT_GT(accRegions, 0u);
+	EXPECT_GT(accumulated, runs);
+	std::printf("[vuopt sticky] runs=%u acc regions=%u accumulated updates=%u\n", runs, accRegions, accumulated);
 }
 
 // Random FMAC-dense loops: every field shape, readers and a divide or an FSSET
@@ -1269,6 +1281,7 @@ static void RegionStickyFuzzBody()
 	auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
 	const int iters = getenv("VUOPT_STICKY_ITERS") ? std::atoi(getenv("VUOPT_STICKY_ITERS")) : 150;
 	int failures = 0;
+	u32 accRegions = 0, nonLinear = 0, accumulated = 0;
 	for (int iter = 0; iter < iters; iter++)
 	{
 		std::vector<VuOp> p;
@@ -1314,6 +1327,9 @@ static void RegionStickyFuzzBody()
 				SeedSpecials(h, 4000 + iter);
 				h.SetVi(2, 8);
 			}, budget == 0, 14, false, nullptr, budget);
+			accRegions += o.accRegions;
+			nonLinear += o.accNonLinear;
+			accumulated += o.accAccumulated;
 			if (!o.diffs.empty())
 			{
 				failures++;
@@ -1329,6 +1345,72 @@ static void RegionStickyFuzzBody()
 		}
 	}
 	EXPECT_EQ(failures, 0);
+	EXPECT_GT(accRegions, static_cast<u32>(iters) / 2);
+	std::printf("[vuopt sticky fuzz] programs=%d acc regions=%u declined (FSSET kills)=%u accumulated updates=%u\n", iters * 2, accRegions, nonLinear, accumulated);
+}
+
+// Debugging aid for the sticky fuzz: VUOPT_REGION_HEX="lower:upper,..."
+// VUOPT_REGION_SEED=n (the iteration number) VUOPT_REGION_FH=0|1
+// VUOPT_REGION_BUDGET=n runs one program as the fuzz does, region code dumped.
+TEST(VuoptRegion, Repro)
+{
+	const char* hex = getenv("VUOPT_REGION_HEX");
+	if (!hex)
+		GTEST_SKIP();
+	std::vector<VuOp> p;
+	for (const char* c = hex; *c;)
+	{
+		VuOp op;
+		op.lower = static_cast<u32>(std::strtoul(c, const_cast<char**>(&c), 16));
+		c++;
+		op.upper = static_cast<u32>(std::strtoul(c, const_cast<char**>(&c), 16));
+		if (*c == ',')
+			c++;
+		p.push_back(op);
+	}
+	const int iter = getenv("VUOPT_REGION_SEED") ? std::atoi(getenv("VUOPT_REGION_SEED")) : 0;
+	const bool fh = getenv("VUOPT_REGION_FH") && std::atoi(getenv("VUOPT_REGION_FH"));
+	const u32 budget = getenv("VUOPT_REGION_BUDGET") ? static_cast<u32>(std::atoi(getenv("VUOPT_REGION_BUDGET"))) : 0;
+	const auto setup = [iter](VuTestHarness& h) {
+		SeedSpecials(h, 4000 + iter);
+		h.SetVi(2, 8);
+	};
+	if (getenv("VUOPT_REGION_SHRINK"))
+	{
+		// Drop every operation the failure survives losing (loop control stays).
+		const auto control = [](u32 lo) {
+			const u32 op = lo >> 25;
+			return Classify(lo) == LowerKind::Branch || op == 0x08 || op == 0x09 || lo == (0x8000033c);
+		};
+		const auto fails = [&](const std::vector<VuOp>& q) { return !RunRegion(q, fh, setup, budget == 0, 14, false, nullptr, budget).diffs.empty(); };
+		for (size_t i = 2; i + 1 < p.size(); i++)
+		{
+			if (p[i].upper != VNOP_U())
+			{
+				std::vector<VuOp> q = p;
+				q[i].upper = VNOP_U();
+				if (fails(q))
+					p = q;
+			}
+			if (!control(p[i].lower))
+			{
+				std::vector<VuOp> q = p;
+				q[i].lower = kNopL;
+				if (fails(q))
+					p = q;
+			}
+		}
+		std::string hex2;
+		for (const VuOp& op : p)
+		{
+			char buf[24];
+			std::snprintf(buf, sizeof(buf), "%08x:%08x,", op.lower, op.upper);
+			hex2 += buf;
+		}
+		std::printf("shrunk: %s\n", hex2.c_str());
+	}
+	const RegionOutcome o = RunRegion(p, fh, setup, budget == 0, 14, true, nullptr, budget);
+	EXPECT_TRUE(o.diffs.empty()) << Join(o.diffs, 20);
 }
 
 // Milestone 6: VI values known at compile time fold, memory ops at constant

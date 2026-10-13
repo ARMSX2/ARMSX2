@@ -847,6 +847,10 @@ namespace vuopt::ir
 
 			if (nodeLocal_)
 			{
+				f_.statusHead = ((((b.entry.needExactMatch & 1) ? 0 : ((b.entry.flagInfo >> 2) & 3)) - 1) & 3);
+				f_.statusHeadOut = (b.endKind == BlockEnd::Branch || b.endKind == BlockEnd::CondBranch || b.endKind == BlockEnd::Jump)
+					? ((((b.end.needExactMatch & 1) ? 0 : ((b.end.flagInfo >> 2) & 3)) - 1) & 3)
+					: -1;
 				// microVU's framing does the rest: links, ring reorders, Q/P lane
 				// swaps, program ends, cycle tests. Hand back every final value.
 				if (!b.tBitExits.empty() || b.tBitOnBranch)
@@ -1408,6 +1412,43 @@ namespace vuopt::ir
 		g.roots.push_back(0);
 		Builder b(g, opts, true);
 		return b.Build();
+	}
+
+	bool StatusChainLinear(const Function& f)
+	{
+		const Block* node = nullptr;
+		for (const Block& bl : f.blocks)
+			if (bl.node >= 0)
+				node = &bl;
+		if (!node || f.statusHead < 0)
+			return false;
+		ValueId head = 0; // the last status operation
+		const Inst* leave = nullptr;
+		for (ValueId v : node->insts)
+		{
+			const Inst& in = f.insts[v];
+			if (in.op == Op::Leave)
+				leave = &in;
+			if (in.op != Op::StatusUpd && in.op != Op::StatusDiv && in.op != Op::StatusSet)
+				continue;
+			const ValueId p = in.args[0];
+			const bool ok = head ? p == head : (p && f.insts[p].op == Op::LiveIn && f.insts[p].var == var::S(static_cast<u32>(f.statusHead)));
+			if (!ok)
+				return false;
+			head = v;
+		}
+		if (f.statusHeadOut < 0)
+			return true;
+		if (!leave)
+			return false;
+		const ValueId out = leave->args[var::S(static_cast<u32>(f.statusHeadOut))];
+		if (head)
+			return out == head;
+		// no status operation: the successor's newest is the slot that was newest
+		// here (possibly renamed by a ring reorder)
+		if (!out)
+			return f.statusHeadOut == f.statusHead;
+		return f.insts[out].op == Op::LiveIn && f.insts[out].var == var::S(static_cast<u32>(f.statusHead));
 	}
 
 	std::vector<std::string> Verify(const Function& f)

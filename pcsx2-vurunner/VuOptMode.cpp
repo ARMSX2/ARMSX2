@@ -345,6 +345,7 @@ namespace
 				region->schedule = o.schedule;
 				region->profile = o.profile;
 				region->splitHomes = o.splitHomes;
+				region->stickyAcc = o.stickyAcc;
 				region->dump = o.dumpIr;
 			}
 		}
@@ -678,8 +679,9 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			steadyCompiles, static_cast<unsigned long long>(compRef), static_cast<unsigned long long>(compRun));
 		if (ctx.region)
 		{
-			std::printf(" regions=%u rnodes=%u rexits=%u rbytes=%llu mvublocks=%u", ctx.region->Regions(), ctx.region->Nodes(), ctx.region->Exits(),
-				static_cast<unsigned long long>(ctx.region->Bytes()), mvuBlocks);
+			std::printf(" regions=%u rnodes=%u rexits=%u rbytes=%llu mvublocks=%u racc=%u raccnl=%u raccn=%u", ctx.region->Regions(), ctx.region->Nodes(),
+				ctx.region->Exits(), static_cast<unsigned long long>(ctx.region->Bytes()), mvuBlocks, ctx.region->AccRegions(), ctx.region->AccNonLinear(),
+				ctx.region->AccAccumulated());
 			for (const auto& d : ctx.region->Declined())
 			{
 				std::string k = d.first;

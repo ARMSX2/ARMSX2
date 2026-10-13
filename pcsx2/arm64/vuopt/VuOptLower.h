@@ -65,6 +65,16 @@ namespace vuopt
 		// microVU's micro mode keeps VURegs::Mem in x29 (gprVUMem) for the
 		// whole dispatch: memory operations address off it.
 		bool vuMemPinned = false;
+		// Region mode: the sticky half of STATUS is the OR of every FMAC's zero
+		// and sign lanes since the last reset, but only the instances somebody
+		// reads (a reader, a bail or exit to microVU, a program end) are ever
+		// seen. An FMAC whose instance is not read adds its lanes to vector
+		// accumulators (HomeMap::saZ / saS) instead of packing a status word, and
+		// the chain's word lives in HomeMap::stkReg, short of the bits the
+		// accumulators still owe it. An instance somebody reads gets the exact
+		// word microVU would have built (the node lowering folds the accumulators
+		// in); the nodes' STATUS ring variables then carry only those instances.
+		bool stickyAcc = false;
 		// Testing: allocate from at most this many NEON / general registers
 		// (0 = all), to reach spills and early write-backs in small programs.
 		u32 poolLimitV = 0, poolLimitG = 0;
@@ -105,6 +115,12 @@ namespace vuopt
 
 		// A register holding VF0 (+0, +0, +0, +1.0) for the whole map, or -1.
 		s8 vf0Reg = -1;
+
+		// LowerEnv::stickyAcc: the general register holding the status chain's
+		// word (without the sticky bits the accumulators still owe it), and the
+		// zero / sign accumulators. Fixed for every map of a region; filled by the
+		// region's node entries from microVU, never stored back. -1: none.
+		s8 stkReg = -1, saZ = -1, saS = -1;
 
 		u32 VRegMask() const;   // NEON registers taken by homes
 		u32 GRegMask() const;   // general registers taken by homes
@@ -172,6 +188,21 @@ namespace vuopt
 		static bool Lowerable(const ir::Function& f, const LowerEnv& env);
 		// Emits the node against the region's homes (at most once).
 		LowerResult Emit(const HomeMap& homes);
+
+		// LowerEnv::stickyAcc. Whether the node can leave the accumulators
+		// holding bits the chain word lacks, for a node entered with none
+		// ([0]) or possibly some ([1]); the region's dataflow over the node
+		// links. Valid after Check.
+		struct ChainEffect
+		{
+			bool dirtyOut[2] = {false, false};
+			// Status updates the node accumulates instead of packing.
+			u32 accumulated = 0;
+		};
+		ChainEffect Chain() const;
+		// Whether the accumulators may hold such bits when the node is entered
+		// (default yes). Set before Emit.
+		void SetDirtyIn(bool dirty);
 		~NodeLowering();
 		struct Impl;
 

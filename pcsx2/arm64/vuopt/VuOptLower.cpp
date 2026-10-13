@@ -280,7 +280,7 @@ namespace vuopt
 				std::vector<Remat> remat;
 				Lists uses, finalVars, cu, endAt, startAt;
 				std::vector<u32> useCur, finalOf, constVal, lastUse, posOf, leaveKs;
-				std::vector<u8> emit, homeReg, noDrop, slotBusy, clampFixed, folded;
+				std::vector<u8> emit, homeReg, noDrop, slotBusy, clampFixed, folded, chainReal;
 				std::vector<s8> reg, clampLane;
 				std::vector<s16> slot;
 				std::vector<const void*> globAddr;
@@ -411,6 +411,7 @@ namespace vuopt
 				slotBusy_.swap(x.slotBusy);
 				clampFixed_.swap(x.clampFixed);
 				folded_.swap(x.folded);
+				chainReal_.swap(x.chainReal);
 				reg_.swap(x.reg);
 				clampLane_.swap(x.clampLane);
 				slot_.swap(x.slot);
@@ -441,6 +442,32 @@ namespace vuopt
 			std::vector<u8> homeReg_;   // sits in its own register home (pinned there until its last use)
 			std::vector<u8> noDrop_;    // remat no longer valid (its memory home is being overwritten)
 			ValueId memBase_ = 0;
+
+			// LowerEnv::stickyAcc (region mode). The status chain's operations
+			// (StatusUpd / StatusDiv / StatusSet) take the chain word from
+			// HomeMap::stkReg rather than from the previous instance, so an
+			// instance nobody reads is never built: its FMAC adds its zero and sign
+			// lanes to the accumulators and nothing more.
+			bool acc_ = false;
+			bool dirtyIn_ = true;       // the accumulators may owe the chain word bits at the node's entry
+			bool dirty_ = false;        // same, as emission goes
+			std::vector<u8> chainReal_; // per chain operation: its instance word is read (by a reader, the node's end, ...)
+			public:
+			void SetDirtyIn(bool d) { dirtyIn_ = d; }
+			// How the chain operations leave `dirty_`, from either entry state; valid after Check.
+			void ChainEnds(bool out[2], u32& accumulated) const;
+			private:
+			static bool IsChainOp(Op op) { return op == Op::StatusUpd || op == Op::StatusDiv || op == Op::StatusSet; }
+			// A status update whose pack the accumulators can take: sticky-only,
+			// status layout, more than one lane. (Single-lane and MAC-layout packs
+			// put their bits where the lane-wise accumulators do not.)
+			static bool AccCand(const Inst& in) { return in.op == Op::StatusUpd && !(in.imm & 3) && !Single(in.mask); }
+			bool ChainStep(ValueId v, bool dirty) const;
+			void AccumulateFlags(ValueId c, u8 mask);
+			void ReduceAcc(int dstG);
+			void ChainStatusUpd(ValueId id);
+			void ChainStatusDiv(ValueId id);
+			void ChainStatusSet(ValueId id);
 
 			ValueId vOwner_[32] = {};
 			ValueId gOwner_[32] = {};
@@ -1603,6 +1630,245 @@ namespace vuopt
 				emit_[prev] = 0;
 				statusChain_[v] = std::move(chain);
 			}
+		}
+
+		//------------------------------------------------------------------
+		// Sticky status accumulation (LowerEnv::stickyAcc)
+		//------------------------------------------------------------------
+		//
+		// The status chain's head is always  stk | reduce(accumulators)  (stk =
+		// HomeMap::stkReg, the accumulators HomeMap::saZ / saS). A status update
+		// moves it on:
+		//  - sticky-only, status layout, several lanes, instance unread: adds
+		//    the result's zero and sign lanes to the accumulators;
+		//  - any other update: builds its pack and ORs it into stk (a non-sticky
+		//    one first folds the accumulators in, because its word keeps the
+		//    sticky byte);
+		//  - an instance somebody reads: built whole (stk | accumulators), and
+		//    becomes stk, so the accumulators owe it nothing;
+		//  - FSSET: replaces the sticky byte, so the accumulators are cleared.
+		// The accumulators only ever add bits the chain is also owed (the sticky
+		// byte is a plain OR of the packs since the last reset), so a bit left in
+		// them after an instance was built is already in that instance.
+		// `dirty_` tracks at compile time whether they may owe stk anything.
+
+		bool Lowerer::ChainStep(ValueId v, bool dirty) const
+		{
+			const Inst& in = I(v);
+			switch (in.op)
+			{
+				case Op::StatusUpd:
+					if (AccCand(in))
+						return !chainReal_[v];
+					if (in.imm & 1)
+						return false; // non-sticky: the low byte folds in
+					return chainReal_[v] ? false : dirty;
+				case Op::StatusDiv:
+					return chainReal_[v] ? false : dirty;
+				case Op::StatusSet:
+					return false;
+				default:
+					return dirty;
+			}
+		}
+
+		void Lowerer::ChainEnds(bool out[2], u32& accumulated) const
+		{
+			accumulated = 0;
+			for (int init = 0; init < 2; init++)
+			{
+				bool d = init != 0;
+				for (ValueId v : order_)
+				{
+					if (!emit_[v] || !IsChainOp(I(v).op))
+						continue;
+					if (init == 0 && AccCand(I(v)) && !chainReal_[v])
+						accumulated++;
+					d = ChainStep(v, d);
+				}
+				out[init] = d;
+			}
+		}
+
+		// dst = the sign and zero lanes the accumulators hold, packed like a status
+		// update's pack (lane l's zero at bit l, its sign at bit l + 4).
+		void Lowerer::ReduceAcc(int dst)
+		{
+			const int s = TempV(), t = TempV();
+			armAsm->Cmlt(V(s).V4S(), V(hm_->saS).V4S(), 0);
+			armAsm->Mov(V(t).V16B(), V(hm_->saZ).V16B());
+			armAsm->Sli(V(t).V4S(), V(s).V4S(), 4);
+			armAsm->Ldr(V(s), a64::MemOperand(xGlob, G(&mVUglob.macWeights.byMask[0][0][0xf][0])));
+			armAsm->And(V(t).V16B(), V(t).V16B(), V(s).V16B());
+			armAsm->Addv(S(t), V(t).V4S());
+			armAsm->Fmov(W(dst), S(t));
+		}
+
+		// Adds the field's lanes of result c to the accumulators: a lane's zero
+		// flag (all ones where the lane is zero) and its sign bit.
+		void Lowerer::AccumulateFlags(ValueId c, u8 mask)
+		{
+			if (!mask)
+				return;
+			const int r = UseReg(c);
+			// The lanes outside the field hold whatever the full-width operation made of
+			// the operands' lanes there; nobody reads them (the IR's lane variables name
+			// only the field's lanes). Overwrite them with a positive normal number,
+			// which adds neither a zero nor a sign.
+			u8 outside = 0;
+			for (int l = 0; l < 4; l++)
+				if (!MaskLane(mask, l))
+					outside |= static_cast<u8>(1u << l);
+			if (outside)
+			{
+				int k = kCMax;
+				if (!env_.clampOverflow)
+				{
+					k = TempV();
+					armAsm->Movi(V(k).V4S(), 0x3f, a64::LSL, 24);
+				}
+				for (int h = 0; h < 2; h++)
+				{
+					const u8 pair = (outside >> (2 * h)) & 3;
+					if (pair == 3)
+						armAsm->Ins(V(r).V2D(), h, V(k).V2D(), h);
+					else if (pair)
+						armAsm->Ins(V(r).V4S(), 2 * h + (pair == 2 ? 1 : 0), V(k).V4S(), 2 * h + (pair == 2 ? 1 : 0));
+				}
+			}
+			const int t = TempV();
+			armAsm->Fcmeq(V(t).V4S(), V(r).V4S(), 0.0);
+			armAsm->Orr(V(hm_->saZ).V16B(), V(hm_->saZ).V16B(), V(t).V16B());
+			armAsm->Orr(V(hm_->saS).V16B(), V(hm_->saS).V16B(), V(r).V16B());
+		}
+
+		void Lowerer::ChainStatusUpd(ValueId id)
+		{
+			const Inst& in = I(id);
+			const bool nonSticky = in.imm & 1, mflag = in.imm & 2;
+			const bool real = chainReal_[id];
+			const ValueId res = C(in.args[1]);
+			const int stk = hm_->stkReg;
+			pxAssertRel(stk >= 0 && hm_->saZ >= 0 && hm_->saS >= 0, "vuopt: sticky accumulation without its registers");
+			bool dirty = dirty_;
+			if (AccCand(in))
+			{
+				if (!real)
+					AccumulateFlags(res, in.mask);
+				else if (dirty)
+				{
+					AccumulateFlags(res, in.mask);
+					const int d = DefG(id);
+					ReduceAcc(d);
+					armAsm->Orr(W(d), W(d), W(stk));
+					armAsm->Mov(W(stk), W(d));
+				}
+				else
+				{
+					const int p = TempG();
+					PackFlags(res, in.mask, false, p);
+					const int d = DefG(id);
+					armAsm->Orr(W(d), W(stk), W(p));
+					armAsm->Mov(W(stk), W(d));
+				}
+			}
+			else
+			{
+				const int p = TempG();
+				PackFlags(res, in.mask, mflag, p);
+				if (!nonSticky)
+				{
+					if (!real)
+						armAsm->Orr(W(stk), W(stk), W(p));
+					else
+					{
+						const int d = DefG(id);
+						if (dirty)
+						{
+							ReduceAcc(d);
+							armAsm->Orr(W(d), W(d), W(stk));
+							armAsm->Orr(W(d), W(d), W(p));
+						}
+						else
+							armAsm->Orr(W(d), W(stk), W(p));
+						armAsm->Mov(W(stk), W(d));
+					}
+				}
+				else
+				{
+					// (stk | accumulators) & ~nonsticky, then this pack twice
+					if (dirty)
+					{
+						const int t = TempG();
+						ReduceAcc(t);
+						armAsm->Orr(W(stk), W(stk), W(t));
+					}
+					const int d = real ? DefG(id) : stk;
+					armAsm->And(W(d), W(stk), 0xfffc00ffu);
+					armAsm->Orr(W(d), W(d), W(p));
+					armAsm->Orr(W(d), W(d), a64::Operand(W(p), a64::LSL, 8));
+					if (real)
+						armAsm->Mov(W(stk), W(d));
+				}
+			}
+			dirty_ = ChainStep(id, dirty);
+		}
+
+		// mVUdivSet: the divide flags replace the instance's I / D bits (and set
+		// their sticky bits). They sit above the sticky byte, so a pending
+		// accumulator does not matter unless the instance is built.
+		void Lowerer::ChainStatusDiv(ValueId id)
+		{
+			const Inst& in = I(id);
+			const bool real = chainReal_[id];
+			const int stk = hm_->stkReg;
+			pxAssertRel(stk >= 0 && hm_->saZ >= 0 && hm_->saS >= 0, "vuopt: sticky accumulation without its registers");
+			const int df = IntOperand(in.args[1]);
+			if (!real)
+			{
+				armAsm->Bic(W(stk), W(stk), 0x000C0000u);
+				armAsm->Orr(W(stk), W(stk), W(df));
+				return;
+			}
+			const int d = DefG(id);
+			if (dirty_)
+			{
+				ReduceAcc(d);
+				armAsm->Orr(W(d), W(d), W(stk));
+				armAsm->Bic(W(d), W(d), 0x000C0000u);
+			}
+			else
+				armAsm->Bic(W(d), W(stk), 0x000C0000u);
+			armAsm->Orr(W(d), W(d), W(df));
+			armAsm->Mov(W(stk), W(d));
+			dirty_ = false;
+		}
+
+		// FSSET: keeps the non-sticky half, replaces the sticky byte (and the sticky
+		// I / D / U / O bits): whatever the accumulators held is gone.
+		void Lowerer::ChainStatusSet(ValueId id)
+		{
+			const Inst& in = I(id);
+			const bool real = chainReal_[id];
+			const int stk = hm_->stkReg;
+			pxAssertRel(stk >= 0 && hm_->saZ >= 0 && hm_->saS >= 0, "vuopt: sticky accumulation without its registers");
+			u32 imm = 0;
+			const u32 i12 = static_cast<u32>(in.imm);
+			if (i12 & 0x0040) imm |= 0x000000f;
+			if (i12 & 0x0080) imm |= 0x00000f0;
+			if (i12 & 0x0100) imm |= 0x0400000;
+			if (i12 & 0x0200) imm |= 0x0800000;
+			if (i12 & 0x0400) imm |= 0x1000000;
+			if (i12 & 0x0800) imm |= 0x2000000;
+			const int d = real ? DefG(id) : stk;
+			armAsm->And(W(d), W(stk), 0xfff00u);
+			if (imm)
+				armAsm->Orr(W(d), W(d), imm);
+			if (real)
+				armAsm->Mov(W(stk), W(d));
+			armAsm->Movi(V(hm_->saZ).V2D(), 0);
+			armAsm->Movi(V(hm_->saS).V2D(), 0);
+			dirty_ = false;
 		}
 
 		// Milestone 9: issue-to-result latency of an operation's lowering on
@@ -2900,6 +3166,13 @@ namespace vuopt
 					savedV |= 1u << hm_->clampHome[r];
 			if (hm_->vf0Reg >= 0)
 				savedV |= 1u << hm_->vf0Reg;
+			// the sticky chain's register and accumulators ride through the call too
+			if (hm_->saZ >= 0)
+				savedV |= 1u << hm_->saZ;
+			if (hm_->saS >= 0)
+				savedV |= 1u << hm_->saS;
+			if (hm_->stkReg >= 0)
+				savedG |= 1u << hm_->stkReg;
 			for (u32 v = 0; v < var::Count; v++)
 			{
 				const Home& h = hm_->home[v];
@@ -3464,6 +3737,11 @@ namespace vuopt
 				}
 				case Op::StatusUpd:
 				{
+					if (acc_)
+					{
+						ChainStatusUpd(id);
+						break;
+					}
 					const bool nonSticky = in.imm & 1;
 					// The packs of the updates folded into this one (each lands in
 					// the sticky byte; their non-sticky copies are overwritten).
@@ -3506,6 +3784,11 @@ namespace vuopt
 				}
 				case Op::StatusDiv:
 				{
+					if (acc_)
+					{
+						ChainStatusDiv(id);
+						break;
+					}
 					const int prev = IntOperand(in.args[0]);
 					const int df = IntOperand(in.args[1]);
 					const int d = DefG(id);
@@ -3515,6 +3798,11 @@ namespace vuopt
 				}
 				case Op::StatusSet:
 				{
+					if (acc_)
+					{
+						ChainStatusSet(id);
+						break;
+					}
 					u32 imm = 0;
 					const u32 i12 = static_cast<u32>(in.imm);
 					if (i12 & 0x0040) imm |= 0x000000f;
@@ -3978,14 +4266,19 @@ namespace vuopt
 
 			FoldAndAlias();
 
+			acc_ = env_.stickyAcc && mode_ == LowerMode::Region;
+
 			// Dead code: work nothing reaches. Side effects are roots. An
-			// aliased value needs the value it stands for.
+			// aliased value needs the value it stands for. With the sticky
+			// accumulators the status chain's operations are effects too: each one
+			// moves the chain word or the accumulators on, whether or not anybody
+			// reads its instance.
 			std::vector<ValueId>& work = work_;
 			work.clear();
 			for (ValueId v : order_)
 			{
 				const Op op = I(v).op;
-				if (op == Op::StoreQ || op == Op::StoreI || op == Op::Kick || op == Op::Leave)
+				if (op == Op::StoreQ || op == Op::StoreI || op == Op::Kick || op == Op::Leave || (acc_ && IsChainOp(op)))
 				{
 					emit_[v] = 1;
 					work.push_back(v);
@@ -3996,7 +4289,10 @@ namespace vuopt
 			{
 				const ValueId v = work.back();
 				work.pop_back();
+				const bool chain = acc_ && IsChainOp(I(v).op);
 				ForArgs(v, I(v), [&](size_t k, ValueId a) {
+					if (chain && k == 0)
+						return; // the chain word is STK, not the previous instance
 					if (emit_[a])
 						return;
 					if (I(a).type == Type::Mem)
@@ -4019,7 +4315,27 @@ namespace vuopt
 			if (env_.schedule)
 				Schedule();
 
-			FoldStatusChains();
+			if (acc_)
+			{
+				// Which chain operations' instance words somebody reads: any use but
+				// the next chain operation's previous-instance operand.
+				chainReal_.assign(canon_.size(), 0);
+				for (ValueId w : order_)
+				{
+					if (!emit_[w])
+						continue;
+					const bool chain = IsChainOp(I(w).op);
+					ForArgs(w, I(w), [&](size_t k, ValueId a) {
+						if (chain && k == 0)
+							return;
+						const ValueId c = C(a);
+						if (c < chainReal_.size() && IsChainOp(I(c).op))
+							chainReal_[c] = 1;
+					});
+				}
+			}
+			else
+				FoldStatusChains();
 
 			// Uses, by position. A Leave operand that is its own variable's
 			// incoming value is not a use.
@@ -4048,6 +4364,8 @@ namespace vuopt
 					if (v == leave_ && k < var::Count && I(a).op == Op::LiveIn && I(a).var == k)
 						return;
 					if (k == 0 && ch != statusChain_.end())
+						return;
+					if (k == 0 && acc_ && IsChainOp(in.op))
 						return;
 					addUse(C(a));
 				});
@@ -4182,7 +4500,7 @@ namespace vuopt
 						note(slotOf(zsT, nzs, std::make_pair(c, Single(x.mask) ? SingleLane(x.mask) : -1)), p);
 						note(slotOf(glT, ngl, PackWeights(x.mask, mflag)), p);
 					};
-					if (in.op == Op::MacFlags || in.op == Op::StatusUpd)
+					if (in.op == Op::MacFlags || (in.op == Op::StatusUpd && !(acc_ && AccCand(in) && !chainReal_[v])))
 						pack(in);
 					const auto ch = statusChain_.find(v);
 					if (ch != statusChain_.end())
@@ -4457,6 +4775,7 @@ namespace vuopt
 
 		void Lowerer::Emit()
 		{
+			dirty_ = dirtyIn_;
 			// Incoming values already in registers: register homes and the
 			// status instances.
 			for (size_t v = 1; v < f_.insts.size(); v++)
@@ -4530,6 +4849,10 @@ namespace vuopt
 	u32 HomeMap::VRegMask() const
 	{
 		u32 m = vf0Reg >= 0 ? (1u << vf0Reg) : 0;
+		if (saZ >= 0)
+			m |= 1u << saZ;
+		if (saS >= 0)
+			m |= 1u << saS;
 		for (u32 r = 1; r <= 32; r++)
 			if (clampHome[r] >= 0)
 				m |= 1u << clampHome[r];
@@ -4544,7 +4867,7 @@ namespace vuopt
 
 	u32 HomeMap::GRegMask() const
 	{
-		u32 m = 0;
+		u32 m = stkReg >= 0 ? (1u << stkReg) : 0;
 		for (u32 v = 0; v < var::Count; v++)
 			if (GHomeable(v) && home[v].kind == HomeKind::GReg)
 				m |= 1u << home[v].reg;
@@ -4844,6 +5167,21 @@ namespace vuopt
 			return lw.Check(why);
 		}
 		return true;
+	}
+
+	NodeLowering::ChainEffect NodeLowering::Chain() const
+	{
+		ChainEffect e;
+		bool out[2];
+		impl_->lw.ChainEnds(out, e.accumulated);
+		e.dirtyOut[0] = out[0];
+		e.dirtyOut[1] = out[1];
+		return e;
+	}
+
+	void NodeLowering::SetDirtyIn(bool dirty)
+	{
+		impl_->lw.SetDirtyIn(dirty);
 	}
 
 	LowerResult NodeLowering::Emit(const HomeMap& homes)
