@@ -17,6 +17,7 @@ struct VuoptModeOptions
 	bool dumpIr = false;   // print the SSA IR of each program
 	bool verbose = false;  // print every mismatch line, not only the first few
 	u32 cycleOverride = 0;
+	bool noYield = false;  // build the SSA without per-block yield checks (cost measurement)
 };
 
 int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,

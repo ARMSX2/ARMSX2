@@ -214,6 +214,10 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 		{
 			opts.vuopt.dumpIr = true;
 		}
+		else if (a == "--vuopt-no-yield")
+		{
+			opts.vuopt.noYield = true;
+		}
 		else if (a == "--vuopt-verbose")
 		{
 			opts.vuopt.verbose = true;
