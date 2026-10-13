@@ -70,9 +70,10 @@ namespace vuopt::ir
 		class Builder
 		{
 		public:
-			Builder(const ProgramGraph& g, const BuildOptions& o)
+			Builder(const ProgramGraph& g, const BuildOptions& o, bool nodeLocal = false)
 				: g_(g)
 				, o_(o)
+				, nodeLocal_(nodeLocal)
 			{
 			}
 
@@ -81,6 +82,7 @@ namespace vuopt::ir
 		private:
 			const ProgramGraph& g_;
 			const BuildOptions& o_;
+			const bool nodeLocal_;
 			Function f_;
 
 			std::vector<std::array<ValueId, var::Count>> cur_;
@@ -91,6 +93,7 @@ namespace vuopt::ir
 			std::vector<ValueId> vf0_, vi0_; // per-block constants
 			int b_ = -1;                     // block being filled
 			u32 pc_ = 0;
+			u32 word_ = 0;                   // instruction word of the slot being lowered
 
 			// deferred VF lane writes of the current pair
 			std::vector<std::pair<u32, ValueId>> pendingVF_;
@@ -120,6 +123,7 @@ namespace vuopt::ir
 				in.sub = sub;
 				in.mask = mask;
 				in.imm = imm;
+				in.word = word_;
 				in.args = std::move(args);
 				// Only phi users are tracked: trivial-phi removal is the one
 				// consumer, and it only revisits phis.
@@ -295,6 +299,15 @@ namespace vuopt::ir
 				return a;
 			}
 
+			void Unsupported(const char* why)
+			{
+				if (!f_.unsupported)
+				{
+					f_.unsupported = true;
+					f_.unsupportedWhy = why;
+				}
+			}
+
 			void Upper(const MvuOp& o, const InstPair& p);
 			void Lower(const MvuOp& o, const InstPair& p, ValueId& cond, ValueId& jumpVal);
 			void DivSet(const MvuOp& o);
@@ -323,6 +336,7 @@ namespace vuopt::ir
 			const UpperInst& u = p.upper;
 			const u16 sub = static_cast<u16>(u.op);
 			ValueId result = 0;
+			word_ = u.word;
 			switch (u.cls)
 			{
 				case UClass::FmacA:
@@ -343,7 +357,11 @@ namespace vuopt::ir
 					const bool acc = u.kind == FmacKind::Madd || u.kind == FmacKind::Msub;
 					for (int l = 0; l < 4; l++)
 						a.push_back(acc && MaskLane(u.mask, l) ? Rd(var::ACC(l)) : 0);
-					result = Emit(Op::Fmac, Type::Vec, std::move(a), sub, u.mask);
+					// microVU's doSafeSub: SUB/SUBA with Ft == Fs writes +0.
+					const bool safeSub = u.form == FtForm::Reg && u.kind == FmacKind::Sub && u.ft == u.fs &&
+										 (u.op == UOp::SUB || u.op == UOp::SUBA);
+					result = Emit(Op::Fmac, Type::Vec, std::move(a), sub, u.mask, safeSub ? 1 : 0);
+					f_.insts[result].lane = u.bc;
 					if (u.isAcc)
 					{
 						for (int l = 0; l < 4; l++)
@@ -363,10 +381,11 @@ namespace vuopt::ir
 					{
 						if (!MaskLane(u.mask, l))
 							continue;
+						// lane w multiplies Fs.w by a hard +0: no Ft read
 						const int sl = (l == 3) ? 3 : (l + 1) % 3;
-						const int tl = (l == 3) ? 3 : (l + 2) % 3;
 						fs[sl] = ReadVF(u.fs, sl);
-						ft[tl] = ReadVF(u.ft, tl);
+						if (l != 3)
+							ft[(l + 2) % 3] = ReadVF(u.ft, (l + 2) % 3);
 					}
 					std::vector<ValueId> a = fs;
 					a.insert(a.end(), ft.begin(), ft.end());
@@ -415,7 +434,7 @@ namespace vuopt::ir
 					Wr(var::M(o.mFlag.write), Emit(Op::MacFlags, Type::Int, {result}, 0, u.mask));
 				if (o.sFlag.doFlag)
 					Wr(var::S(o.sFlag.write), Emit(Op::StatusUpd, Type::Int, {Rd(var::S(o.sFlag.lastWrite)), result},
-												  0, u.mask, o.sFlag.doNonSticky ? 1 : 0));
+												  0, u.mask, (o.sFlag.doNonSticky ? 1 : 0) | (o.mFlag.doFlag ? 2 : 0)));
 			}
 		}
 
@@ -423,6 +442,7 @@ namespace vuopt::ir
 		{
 			const LowerInst& l = p.lower;
 			const u16 sub = static_cast<u16>(l.op);
+			word_ = l.word;
 			const u32 memMask = (o_.vuIndex ? 0x4000u : 0x1000u) - 8;
 			const u32 link = ((p.pc + 16) & memMask) / 8;
 			switch (l.op)
@@ -573,7 +593,10 @@ namespace vuopt::ir
 				{
 					const ValueId fs = (l.op == LOp::SQRT) ? 0 : ReadVF(l.fs, l.fsf);
 					const ValueId ft = ReadVF(l.ft, l.ftf);
-					Wr(o.writeQ ? var::QL1 : var::QL0, Emit(Op::Div, Type::Float, {fs, ft}, sub));
+					// imm 1: the dividend register was loaded from VF0, which makes
+					// microVU skip the quotient clamp (checkVFClamp sees isZero).
+					const bool fromVf0 = (l.op != LOp::SQRT) && l.fs == 0;
+					Wr(o.writeQ ? var::QL1 : var::QL0, Emit(Op::Div, Type::Float, {fs, ft}, sub, 0, fromVf0 ? 1 : 0));
 					Wr(var::DIVFLAG, Emit(Op::DivFlags, Type::Int, {fs, ft}, sub));
 					break;
 				}
@@ -582,8 +605,22 @@ namespace vuopt::ir
 					break;
 				case LOp::EATANxy: case LOp::EATANxz: case LOp::ELENG: case LOp::ERLENG: case LOp::ERSADD: case LOp::ESADD: case LOp::ESUM:
 				{
+					// microVU loads the whole register for any field but a single
+					// lane, and the series read fixed lanes whatever the field says.
+					// A single-lane field rotates the operand in a way that depends
+					// on microVU's register cache: declined.
+					const u8 m = l.mask;
+					if (m == 8 || m == 4 || m == 2 || m == 1)
+						Unsupported("EFU op with a single-lane field");
+					u8 lanes = 0xE; // x y z
+					if (l.op == LOp::ESUM)
+						lanes = 0xF;
+					else if (l.op == LOp::EATANxy)
+						lanes = 0xC;
+					else if (l.op == LOp::EATANxz)
+						lanes = 0xA;
 					std::vector<ValueId> a;
-					Lanes(a, l.fs, l.mask);
+					Lanes(a, l.fs, lanes);
 					Wr(o.writeP ? var::PL1 : var::PL0, Emit(Op::Efu, Type::Float, std::move(a), sub, l.mask));
 					break;
 				}
@@ -670,7 +707,7 @@ namespace vuopt::ir
 
 			pc_ = n.pc;
 			// mVUtestCycles: a budget yield leaves with the block-entry state.
-			if (o_.yieldChecks)
+			if (o_.yieldChecks && !nodeLocal_)
 				Emit(Op::YieldCheck, Type::None, AllVars());
 
 			ValueId cond = 0, jumpVal = 0;
@@ -710,6 +747,30 @@ namespace vuopt::ir
 					Wr(var::MEM, Emit(Op::Kick, Type::Mem, {Rd(var::MEM), Rd(var::XGKADDR)}));
 				if (std::find(b.tBitExits.begin(), b.tBitExits.end(), i) != b.tBitExits.end())
 					Emit(Op::ExitIf, Type::None, AllVars(), 1);
+			}
+
+			if (nodeLocal_)
+			{
+				// microVU's framing does the rest: links, ring reorders, Q/P lane
+				// swaps, program ends, cycle tests. Hand back every final value.
+				if (!b.tBitExits.empty() || b.tBitOnBranch)
+					Unsupported("T-bit");
+				if (b.endKind == BlockEnd::EvilJump)
+					Unsupported("branch in a branch delay slot");
+				// The block holding the first branch of such a pair: microVU's
+				// emitters store the targets the evil block will pick between.
+				for (const MvuOp& o : b.ops)
+					if (o.lOp.badBranch || o.lOp.evilBranch)
+						Unsupported("branch in a branch delay slot");
+				if (b.endKind == BlockEnd::MBit)
+					Unsupported("VU0 M-bit");
+				std::vector<ValueId> a = AllVars();
+				a.push_back(cond);
+				a.push_back(jumpVal);
+				pc_ = b.pcs.back();
+				Emit(Op::Leave, Type::None, std::move(a));
+				blk.term = Term::Exit;
+				return;
 			}
 
 			const auto ebitExit = [&](bool afterRemap) {
@@ -933,7 +994,7 @@ namespace vuopt::ir
 				Block& bl = f_.blocks[i];
 				bl.node = i;
 				const BlockEnd k = n.block.endKind;
-				if (k == BlockEnd::Branch || k == BlockEnd::CondBranch)
+				if (!nodeLocal_ && (k == BlockEnd::Branch || k == BlockEnd::CondBranch))
 				{
 					if (n.taken < 0 || (k == BlockEnd::CondBranch && n.fall < 0))
 					{
@@ -946,7 +1007,7 @@ namespace vuopt::ir
 					if (k == BlockEnd::CondBranch)
 						bl.succs.push_back(n.fall);
 				}
-				if (k == BlockEnd::Jump)
+				if (!nodeLocal_ && k == BlockEnd::Jump)
 				{
 					// A jump whose targets were only observed at run time is a
 					// dispatch boundary, as it is in microVU: state goes to memory
@@ -1157,6 +1218,21 @@ namespace vuopt::ir
 		return b.Build();
 	}
 
+	Function BuildNodeLocal(const BlockResult& block, const BuildOptions& opts)
+	{
+		ProgramGraph g;
+		g.nodes.emplace_back();
+		GraphNode& n = g.nodes.back();
+		n.id = 0;
+		n.pc = block.startPC;
+		n.entry = block.entry;
+		n.block = block;
+		n.isRoot = true;
+		g.roots.push_back(0);
+		Builder b(g, opts, true);
+		return b.Build();
+	}
+
 	std::vector<std::string> Verify(const Function& f)
 	{
 		std::vector<std::string> out;
@@ -1239,8 +1315,8 @@ namespace vuopt::ir
 		static const char* const kOp[] = {"none", "livein", "phi", "const", "fmac", "opmula", "opmsub", "fmac2", "clipbits",
 			"macflags", "status.upd", "status.div", "status.set", "clip.upd", "clip.set", "flagread", "ialu", "incvi", "mtir",
 			"xtop", "loadq", "loadi", "storeq", "storei", "move", "mr32", "mfir", "mfp", "div", "divflags", "efu", "r.upd",
-			"r.get", "iconst", "kick", "cond", "yield-check", "exit-if", "exit"};
-		static_assert(sizeof(kOp) / sizeof(kOp[0]) == static_cast<size_t>(Op::Exit) + 1, "kOp out of step with Op");
+			"r.get", "iconst", "kick", "cond", "yield-check", "exit-if", "exit", "leave"};
+		static_assert(sizeof(kOp) / sizeof(kOp[0]) == static_cast<size_t>(Op::Leave) + 1, "kOp out of step with Op");
 		static const char* const kMask[16] = {"", "w", "z", "zw", "y", "yw", "yz", "yzw", "x", "xw", "xz", "xzw", "xy", "xyw", "xyz", "xyzw"};
 		std::string s;
 		char buf[512];
@@ -1309,7 +1385,9 @@ namespace vuopt::ir
 						char dis[160];
 						FormatPair(n.block.insts[opIdx], dis, sizeof(dis));
 						const MvuOp& o = n.block.ops[opIdx];
-						std::snprintf(buf, sizeof(buf), "  ; %s  [stall=%u%s%s]\n", dis, o.stall, o.swapOps ? " swap" : "", o.backupVF ? " backupVF" : "");
+						std::snprintf(buf, sizeof(buf), "  ; %s  [stall=%u%s%s%s%s%s%s]\n", dis, o.stall, o.swapOps ? " swap" : "",
+							o.backupVF ? " backupVF" : "", o.lOp.backupVI ? " backupVI" : "", o.lOp.memReadIs ? " memReadIs" : "",
+							o.lOp.memReadIt ? " memReadIt" : "", o.lOp.isNOP ? " lowerNOP" : "");
 						s += buf;
 					}
 				}
@@ -1319,6 +1397,7 @@ namespace vuopt::ir
 					case Op::YieldCheck:
 					case Op::ExitIf:
 					case Op::Exit:
+					case Op::Leave:
 					{
 						u32 live = 0;
 						for (ValueId a : in.args)

@@ -108,6 +108,8 @@ namespace vuopt::ir
 		YieldCheck,  // block-entry cycle-budget test: may exit with the args as state
 		ExitIf,      // run-time T-bit exit
 		Exit,        // program end / bail: args = every variable; sub = ExitKind
+		Leave,       // per-node mode: end of the node body; args = every variable,
+		             // then the branch condition and the jump target (0 if none)
 	};
 
 	enum class ExitKind : u8
@@ -127,6 +129,7 @@ namespace vuopt::ir
 		u32 var = ~0u;    // Phi / LiveIn: the variable
 		s32 imm = 0;
 		u32 pc = 0;
+		u32 word = 0;     // the VU instruction word (upper or lower) the op came from
 		int block = -1;
 		std::vector<ValueId> args;
 		bool dead = false; // removed trivial phi
@@ -178,6 +181,12 @@ namespace vuopt::ir
 		// live) in every block. Off only for measuring what it costs.
 		bool yieldChecks = true;
 	};
+
+	// One microVU block alone, for milestone 2's per-block lowering: incoming
+	// state comes from microVU's block-boundary homes (LiveIn in the entry
+	// block), the body ends in a Leave that hands every variable's final value
+	// back, and microVU's own framing does the cycle test, links and ends.
+	Function BuildNodeLocal(const BlockResult& block, const BuildOptions& opts);
 
 	Function BuildSSA(const ProgramGraph& g, const BuildOptions& opts);
 
