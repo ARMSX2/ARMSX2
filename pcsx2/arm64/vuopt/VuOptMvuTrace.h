@@ -66,11 +66,44 @@ namespace vuopt
 		std::vector<MvuOpTrace> ops;
 	};
 
+	// What a block body emitted in place of microVU's needs to know about
+	// microVU and the active configuration (milestone 2's per-block lowering).
+	struct MvuEmitEnv
+	{
+		u32 vuIndex = 0;
+		s32 offDivFlag = 0;    // microVU fields, as offsets from &mVU.macFlag[0] (x24)
+		s32 offVIbackup = 0;
+		s32 offVIxgkick = 0;
+		s32 offBranch = 0;
+		const void* xgkickFn = nullptr;
+		const void* vifTop = nullptr;
+		const void* vifItop = nullptr;
+		bool clampOverflow = false;   // CHECK_VU_OVERFLOW
+		bool clampExtra = false;      // CHECK_VU_EXTRA_OVERFLOW
+		bool clampSign = false;       // CHECK_VU_SIGN_OVERFLOW
+		bool clampExact = false;      // CHECK_VU_EXACT
+		bool softwareFlush = false;   // mVUneedsSoftwareFlush
+		bool xgkickHack = false;
+		bool ibitHack = false;
+		bool overflowHack = false;    // CHECK_VUOVERFLOWHACK
+		bool addSubHack = false;      // CHECK_VUADDSUBHACK
+		bool flagHack = false;
+	};
+
 #ifdef PCSX2_RECOMPILER_TESTS
 	// Called by microVU at the end of every block's first pass when set.
 	// Testing-only: absent from builds without the recompiler test hooks.
 	using MvuBlockHook = void (*)(const MvuBlockTrace& block, void* user);
 	extern MvuBlockHook g_mvuBlockHook;
 	extern void* g_mvuBlockHookUser;
+
+	// Called by microVU at the start of every block's second pass when set.
+	// Returning true means the hook emitted the whole block body at armAsm's
+	// cursor, honouring microVU's block-boundary state contract, and microVU
+	// emits only its framing (cycle test already done, links, ends).
+	// Testing-only, like the block hook.
+	using VuoptBodyHook = bool (*)(const MvuBlockTrace& block, const MvuEmitEnv& env, void* user);
+	extern VuoptBodyHook g_vuoptBodyHook;
+	extern void* g_vuoptBodyHookUser;
 #endif
 } // namespace vuopt

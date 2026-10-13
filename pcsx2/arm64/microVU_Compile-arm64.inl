@@ -1009,9 +1009,8 @@ void mVUdebugPrintBlocks(mV, bool isEndPC) {}
 // --vuopt-ir, vuopt unit tests). Called once per compile, after mVUsetFlags and
 // mVUoptimizePipeState, before the second pass can overwrite IRinfo by
 // compiling a successor. Testing-only; emits nothing.
-static void mVUreportBlockTrace(microVU& mVU, u32 startPC)
+static void mVUbuildBlockTrace(microVU& mVU, u32 startPC, vuopt::MvuBlockTrace& t)
 {
-	vuopt::MvuBlockTrace t;
 	t.vuIndex = mVU.index;
 	t.startPC = startPC;
 	std::memcpy(t.entryState, &mVUpBlock->pState, sizeof(t.entryState));
@@ -1054,7 +1053,31 @@ static void mVUreportBlockTrace(microVU& mVU, u32 startPC)
 		t.ops.push_back(x);
 		w = (w + 2) & mVU.progMemMask;
 	}
-	vuopt::g_mvuBlockHook(t, vuopt::g_mvuBlockHookUser);
+}
+
+static vuopt::MvuEmitEnv mVUbuildEmitEnv(microVU& mVU)
+{
+	vuopt::MvuEmitEnv e;
+	const u8* base = reinterpret_cast<const u8*>(&mVU.macFlag[0]);
+	e.vuIndex = mVU.index;
+	e.offDivFlag = static_cast<s32>(reinterpret_cast<const u8*>(&mVU.divFlag) - base);
+	e.offVIbackup = static_cast<s32>(reinterpret_cast<const u8*>(&mVU.VIbackup) - base);
+	e.offVIxgkick = static_cast<s32>(reinterpret_cast<const u8*>(&mVU.VIxgkick) - base);
+	e.offBranch = static_cast<s32>(reinterpret_cast<const u8*>(&mVU.branch) - base);
+	e.xgkickFn = reinterpret_cast<const void*>(&mVU_XGKICK_);
+	e.vifTop = &mVU.getVifRegs().top;
+	e.vifItop = &mVU.getVifRegs().itop;
+	e.clampOverflow = CHECK_VU_OVERFLOW(mVU.index);
+	e.clampExtra = CHECK_VU_EXTRA_OVERFLOW(mVU.index);
+	e.clampSign = CHECK_VU_SIGN_OVERFLOW(mVU.index);
+	e.clampExact = CHECK_VU_EXACT(mVU.index);
+	e.softwareFlush = mVUneedsSoftwareFlush(mVU);
+	e.xgkickHack = CHECK_XGKICKHACK;
+	e.ibitHack = EmuConfig.Gamefixes.IbitHack;
+	e.overflowHack = CHECK_VUOVERFLOWHACK;
+	e.addSubHack = CHECK_VUADDSUBHACK;
+	e.flagHack = mVUsFlagHack;
+	return e;
 }
 #endif
 
@@ -1227,8 +1250,11 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 	mVUsetFlags(mVU, mFC);
 	mVUoptimizePipeState(mVU);
 #ifdef PCSX2_RECOMPILER_TESTS
+	vuopt::MvuBlockTrace vuoptTrace;
+	if (vuopt::g_mvuBlockHook || vuopt::g_vuoptBodyHook)
+		mVUbuildBlockTrace(mVU, startPC, vuoptTrace);
 	if (vuopt::g_mvuBlockHook)
-		mVUreportBlockTrace(mVU, startPC);
+		vuopt::g_mvuBlockHook(vuoptTrace, vuopt::g_mvuBlockHookUser);
 #endif
 	{
 		const mVUSpinLoop spin = mVUdetectSpinLoop(mVU, startPC);
@@ -1244,11 +1270,28 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 	u32 x = 0;
 
 	mVUemitClampConsts(mVU);
-	mvuPreloadRegisters(mVU, endCount);
+#ifdef PCSX2_RECOMPILER_TESTS
+	// vuopt milestone 2: a test hook may emit this block's whole body from
+	// vuopt's IR; microVU then emits only its framing below.
+	const bool vuoptBody = vuopt::g_vuoptBodyHook &&
+		vuopt::g_vuoptBodyHook(vuoptTrace, mVUbuildEmitEnv(mVU), vuopt::g_vuoptBodyHookUser);
+#else
+	constexpr bool vuoptBody = false;
+#endif
+	if (!vuoptBody)
+		mvuPreloadRegisters(mVU, endCount);
 
 	for (; x < endCount; x++)
 	{
 		if (mVUinfo.isEOB) { x = 0xffff; }
+
+		if (vuoptBody)
+		{
+			// The body is already emitted; keep the walk's PC in step with
+			// mVUexecuteInstruction, which leaves iPC on the upper word.
+			incPC(1);
+			goto vuoptAfterBody;
+		}
 
 		// M-bit: signal the EE-visible M-flag so VU0 micro-mode can break/sync
 		// to the EE (VU0.cpp gates the M-bit Break on VURegs.flags & MFLAGSET).
@@ -1314,6 +1357,7 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 		}
 #endif
 
+	vuoptAfterBody:
 		// T/D/M-bit per-instruction handling (excluding branch delay slots;
 		// those are handled after the branch itself emits). Mirrors x86
 		// microVU_Compile.inl:901-923.
@@ -1364,7 +1408,7 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 			}
 		}
 
-		if (mVUinfo.doXGKICK)
+		if (mVUinfo.doXGKICK && !vuoptBody)
 			mVU_XGKICK_DELAY(mVU);
 
 		if (isEvilBlock)

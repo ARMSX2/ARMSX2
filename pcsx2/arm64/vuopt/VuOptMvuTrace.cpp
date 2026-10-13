@@ -8,5 +8,7 @@ namespace vuopt
 {
 	MvuBlockHook g_mvuBlockHook = nullptr;
 	void* g_mvuBlockHookUser = nullptr;
+	VuoptBodyHook g_vuoptBodyHook = nullptr;
+	void* g_vuoptBodyHookUser = nullptr;
 } // namespace vuopt
 #endif
