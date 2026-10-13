@@ -668,6 +668,42 @@ TEST_F(LockstepMachine, ThePlainNameTheX86RecompilersCallIsTheOffInstance)
 		EXPECT_EQ(call.thread, std::this_thread::get_id());
 }
 
+TEST_F(LockstepMachine, TheThreadsViewOfTheIopPositionFollowsTheBooksPastTwoToThe32)
+{
+	REQUIRE_ARM64_HOST();
+	// The EE's cycle counter is 64 bits. The IOP position the thread object publishes is the EE's cycle less the
+	// IOP time still owed (EEsCycle), and must keep following it where the low 32 bits wrap.
+	SettingsGuard guard;
+	AskForLockstep();
+	IopThread::ChooseMode();
+	Reset();
+	cpuRegs.cycle = 0xFFFFF000ull;
+	EEoCycle = cpuRegs.cycle;
+	IopThread::SyncThread();
+	ASSERT_TRUE(IopThread::LockstepActive());
+	EXPECT_EQ(IopThread::g_thread.PublishedPos(), cpuRegs.cycle - static_cast<s64>(EEsCycle));
+
+	const CpuEventTestFn test = cpuEventTestFor(IopThreadMode::Lockstep);
+	for (u32 i = 0; i < 40; i++)
+	{
+		cpuRegs.cycle += 3072;
+		test();
+		const u64 expected = cpuRegs.cycle - static_cast<s64>(EEsCycle);
+		ASSERT_EQ(IopThread::g_thread.PublishedPos(), expected) << "after event test " << i << ", EE cycle " << cpuRegs.cycle;
+	}
+	EXPECT_GT(cpuRegs.cycle, 0x100000000ull); // the run did cross 2^32
+
+	// A reset or a state load moves the books by itself and tells the thread: the position goes back with them.
+	cpuRegs.cycle = 0x1000;
+	EEsCycle = -40;
+	EEoCycle = cpuRegs.cycle;
+	{
+		IopThread::VmHold hold;
+		IopThread::ResyncClocks();
+	}
+	EXPECT_EQ(IopThread::g_thread.PublishedPos(), 0x1000u + 40u);
+}
+
 TEST_F(LockstepMachine, TheLockstepInstanceWithNoThreadRunsTheSliceItself)
 {
 	// A Lockstep dispatcher can outlive the thread for a moment (a mode switch, a shutdown). The

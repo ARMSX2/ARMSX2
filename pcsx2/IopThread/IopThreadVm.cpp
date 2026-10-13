@@ -18,6 +18,7 @@
 #include "common/Assertions.h"
 #include "common/Console.h"
 
+#include <algorithm>
 #include <atomic>
 #include <thread>
 
@@ -34,19 +35,19 @@ namespace IopThread
 		std::atomic<bool> s_pause_requested{false};
 
 		// The IOP's position in EE cycles: where the EE is, less the IOP time still owed (design 3.3).
-		// cpuRegs.cycle is 32 bits and wraps, and so does this.
-		u32 IopPosition32()
+		// EEsCycle is negative when the IOP has run past the EE.
+		u64 IopPosition()
 		{
-			return cpuRegs.cycle - EEsCycle;
+			return cpuRegs.cycle - static_cast<s64>(EEsCycle);
 		}
 
 		// What the thread runs for each Lockstep request. The slice is the same code Off runs on the EE
-		// thread, iopRunSliceOnIopThread(); this only keeps the thread object's 64-bit view of the IOP's
-		// position moving with the 32-bit one the books give.
+		// thread, iopRunSliceOnIopThread(); this only keeps the thread object's view of the IOP's position
+		// moving with the books. A reset or a state load moves the books by itself and calls ResyncClocks().
 		u64 RunIopSlice(u64 from, u64 /*target*/)
 		{
 			iopRunSliceOnIopThread();
-			return from + static_cast<u32>(IopPosition32() - static_cast<u32>(from));
+			return std::max(from, IopPosition());
 		}
 
 		Params MakeParams()
@@ -56,7 +57,7 @@ namespace IopThread
 			params.lag = ClampLag(EmuConfig.Speedhacks.iopThreadLag);
 			params.min_slice = 0;
 			params.start_ee_cycle = cpuRegs.cycle;
-			params.start_iop_pos = IopPosition32();
+			params.start_iop_pos = IopPosition();
 			params.fpcr = EmuConfig.Cpu.FPUFPCR;
 			params.stack_size = VMManager::EMU_THREAD_STACK_SIZE;
 			params.run_slice = RunIopSlice;
@@ -156,7 +157,7 @@ namespace IopThread
 	void ResyncClocks()
 	{
 		if (g_thread.IsRunning())
-			g_thread.Resync(cpuRegs.cycle, IopPosition32());
+			g_thread.Resync(cpuRegs.cycle, IopPosition());
 	}
 
 	void OnVmPaused(bool paused)
