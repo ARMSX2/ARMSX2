@@ -431,6 +431,9 @@ constexpr AbiPin kPins[] = {
 	// abi 43: VI arithmetic reads the cached source and folds its immediate. No
 	// probe adds to a cached VI, so the row repeats abi 42's.
 	{43, {0x30a4b851f584d87b, 0x4fb21f7df2e0eba1, 0x7be4a67c17a34d58, 0x42cdb6c017ffbcb7, 0xdc148443ac907bfd, 0xd53e1c6f0ab93994, 0x474ca3bc38053234, 0x08508bd89801b6f3, 0x97abca8e1e797c8e, 0x3a85dc8fbf46e675, 0xa1e2f7d5c83033f5, 0xe2b98245075f607d, 0x191cc45df004b45c, 0xe5bcbd769f0cc83d, 0xb7e746b32d5eb2ab, 0xf22bf72b61864a31, 0x415b885932416527, 0xcdc6cfb5fea6f42e, 0xd9b404bd2887a881, 0xfd15d794fe441fbf, 0x285938277c630ba8, 0xc0f07710fba14955, 0xca2ddace4f03527c, 0xff2b4b6d7bf2a662, 0xf05dcc1e61ded6ec, 0xc20855db43aa02ee}},
+	// abi 44: the status non-sticky clear reads the previous instance in place.
+	// Every probe ends in a flag-writing FMAC whose status the end forces.
+	{44, {0xcc5d8ed2aff67456, 0xf22354557ba8d4ba, 0x49140181ed6daa6d, 0x321e1e6abe00ab51, 0xb261732330cbb6c5, 0x59776b355a957571, 0x6bc6dc459520c9da, 0x6dcbc8ee9c41c950, 0x01e61f64bdbc1a38, 0x01c604cf32776547, 0x024ff6cd7fabd2c8, 0xb7ef7494b89aa3d8, 0x021b1d8ea47dc8e8, 0x47545cdb987b6602, 0x3a7def77c71d10af, 0x9fbf8b955489dc19, 0x8775d22d00a22275, 0xd304c548206d672b, 0xba027c76c09e3d5f, 0xf6775d1893001ca3, 0xb1e0cfecf4302713, 0x029663d8580ead20, 0x72a4cdceb608619f, 0xc3952268061ca731, 0x1e28c18d2d06b66a, 0xb492272d123efd35}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,

@@ -78,9 +78,12 @@ static void mVUupdateFlags(mV, const a64::VRegister& reg,
 
 	if (sFLAG.doFlag)
 	{
-		mVUallocSFLAGa(sReg, sFLAG.lastWrite);
+		// The non-sticky clear reads the previous instance straight out of its
+		// register, rather than copying it over and clearing the copy.
 		if (sFLAG.doNonSticky)
-			armAsm->And(sReg.W(), sReg.W(), 0xfffc00ffu);
+			armAsm->And(sReg.W(), getFlagReg(sFLAG.lastWrite).W(), 0xfffc00ffu);
+		else
+			mVUallocSFLAGa(sReg, sFLAG.lastWrite);
 	}
 
 	//--------- Sign bits → [7:4], zero bits → [3:0], in one horizontal add ------
