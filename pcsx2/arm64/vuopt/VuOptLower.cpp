@@ -1731,13 +1731,74 @@ namespace vuopt
 				else if (npred[i] == 0)
 					avail.push_back(i);
 			}
+			// Register pressure: vector results still to be read. Above the
+			// limit, an operation that frees more registers than it takes goes
+			// first (latency only breaks ties), so scheduling does not push the
+			// allocator into spills.
+			static thread_local std::vector<u32> remUses;
+			static thread_local std::vector<u8> liveOutV;
+			remUses.assign(n, 0);
+			liveOutV.assign(n, 0);
+			{
+				const Inst& lv = LeaveInst();
+				for (u32 k : leaveKs_)
+				{
+					const ValueId c = C(lv.args[k]);
+					if (inBlock(c))
+						liveOutV[idx[c]] = 1;
+				}
+				for (u32 j = 0; j < n; j++)
+				{
+					const ValueId u = order_[j];
+					if (u == leave_ || !emit_[u])
+						continue;
+					const Inst& x = I(u);
+					for (size_t a = 0; a < x.args.size(); a++)
+					{
+						const ValueId c = C(x.args[a]);
+						bool dup = false;
+						for (size_t b = 0; b < a && !dup; b++)
+							dup = C(x.args[b]) == c;
+						if (!dup && inBlock(c))
+							remUses[idx[c]]++;
+					}
+				}
+			}
+			const auto isVec = [&](u32 j) { return emit_[order_[j]] && cls_[order_[j]] == Cls::V; };
+			const auto delta = [&](u32 j) {
+				int d = (isVec(j) && (remUses[j] || liveOutV[j])) ? 1 : 0;
+				const Inst& x = I(order_[j]);
+				for (size_t a = 0; a < x.args.size(); a++)
+				{
+					const ValueId c = C(x.args[a]);
+					bool dup = false;
+					for (size_t b = 0; b < a && !dup; b++)
+						dup = C(x.args[b]) == c;
+					if (!dup && inBlock(c) && isVec(idx[c]) && remUses[idx[c]] == 1 && !liveOutV[idx[c]])
+						d--;
+				}
+				return d;
+			};
+			const u32 kPressure = 8;
+			u32 liveV = 0;
 			u32 cycle = 0;
 			while (!avail.empty())
 			{
 				size_t best = 0;
+				const bool tight = liveV >= kPressure;
 				for (size_t k = 1; k < avail.size(); k++)
 				{
 					const u32 a = avail[k], b = avail[best];
+					if (tight)
+					{
+						const int da = delta(a), db = delta(b);
+						if (da != db)
+						{
+							if (da < db)
+								best = k;
+							continue;
+						}
+					}
 					const bool ra = ready[a] <= cycle, rb = ready[b] <= cycle;
 					if (ra != rb ? ra
 								 : ra ? (height[a] != height[b] ? height[a] > height[b] : a < b)
@@ -1745,6 +1806,22 @@ namespace vuopt
 						best = k;
 				}
 				const u32 i = avail[best];
+				// pressure bookkeeping
+				{
+					const Inst& x = I(order_[i]);
+					if (emit_[order_[i]])
+						for (size_t a = 0; a < x.args.size(); a++)
+						{
+							const ValueId c = C(x.args[a]);
+							bool dup = false;
+							for (size_t b = 0; b < a && !dup; b++)
+								dup = C(x.args[b]) == c;
+							if (!dup && inBlock(c) && remUses[idx[c]] && --remUses[idx[c]] == 0 && isVec(idx[c]) && !liveOutV[idx[c]] && liveV)
+								liveV--;
+						}
+					if (isVec(i) && (remUses[i] || liveOutV[i]))
+						liveV++;
+				}
 				avail[best] = avail.back();
 				avail.pop_back();
 				const ValueId v = order_[i];
