@@ -384,6 +384,9 @@ namespace vuopt
 		const size_t NN = nodes_.size();
 		std::vector<Bits> use(NN), def(NN), in(NN), out(NN);
 		std::vector<u8> observe(NN, 0);
+		Bits all;
+		all.set();
+		std::vector<Bits> obsMask(NN, all); // what an observation at the node's end sees
 		std::vector<std::vector<int>> succ(NN);
 		for (size_t i = 0; i < NN; i++)
 		{
@@ -426,7 +429,32 @@ namespace vuopt
 					succ[i].push_back(t);
 			};
 			if (n.br.endKind == BlockEnd::EBit)
+			{
+				// A program end hands microVU one instance of each flag (fS /
+				// fM / fC, broadcast to the whole ring by mVUendProgram); the
+				// other instances are dead. A MAC index past the ring reads the
+				// clip instance there (microVU's layout).
 				observe[i] = 1;
+				const ir::EndInfo& e = n.fn.end;
+				if (e.valid)
+				{
+					Bits m = all;
+					for (u32 k = 0; k < 4; k++)
+					{
+						m.reset(var::S(k));
+						m.reset(var::M(k));
+						m.reset(var::C(k));
+					}
+					m.set(var::S(e.fS & 3));
+					if (e.fM < 4)
+						m.set(var::M(e.fM));
+					else
+						m.set(var::C((e.fM - 4) & 3));
+					if (e.fC < 4)
+						m.set(var::C(e.fC));
+					obsMask[i] = m;
+				}
+			}
 			else if (n.br.endKind == BlockEnd::Jump && n.taken == 0x7fffffff)
 			{
 				observe[i] = 1; // the fallback to microVU's dispatch
@@ -440,8 +468,6 @@ namespace vuopt
 					edge(n.fall);
 			}
 		}
-		Bits all;
-		all.set();
 		for (bool changed = true; changed;)
 		{
 			changed = false;
@@ -449,7 +475,7 @@ namespace vuopt
 			{
 				Bits o;
 				if (observe[ii])
-					o = all;
+					o = obsMask[ii];
 				for (int t : succ[ii])
 					o |= in[t];
 				o.set(var::MEM);
