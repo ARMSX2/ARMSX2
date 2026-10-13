@@ -427,15 +427,61 @@ namespace vuopt
 
 		char lb[64];
 		const LowerInst& l = p.lower;
+		static const char kF[4] = {'x', 'y', 'z', 'w'};
+		const char* n = LOpName(l.op);
+		const char* m = kMask[l.mask];
+		const u32 target = (p.pc + 8 + l.imm11 * 8) & 0x3ff8;
 		if (u.iBit)
 			std::snprintf(lb, sizeof(lb), "[I=0x%08x]", l.word);
 		else if (l.word == 0x8000033c)
 			std::snprintf(lb, sizeof(lb), "NOP");
-		else if (l.isBranch() && !l.isJump())
-			std::snprintf(lb, sizeof(lb), "%s vi%02u, vi%02u, 0x%04x", LOpName(l.op), l.it, l.is,
-				(p.pc + 8 + l.imm11 * 8) & 0x3fff);
 		else
-			std::snprintf(lb, sizeof(lb), "%s.%s ft%02u fs%02u imm11=%d", LOpName(l.op), kMask[l.mask], l.ft, l.fs, l.imm11);
+		{
+			switch (l.op)
+			{
+				case LOp::LQ: std::snprintf(lb, sizeof(lb), "LQ.%s vf%02u, %d(vi%02u)", m, l.ft, l.imm11, l.is); break;
+				case LOp::LQI: std::snprintf(lb, sizeof(lb), "LQI.%s vf%02u, (vi%02u++)", m, l.ft, l.is); break;
+				case LOp::LQD: std::snprintf(lb, sizeof(lb), "LQD.%s vf%02u, (--vi%02u)", m, l.ft, l.is); break;
+				case LOp::SQ: std::snprintf(lb, sizeof(lb), "SQ.%s vf%02u, %d(vi%02u)", m, l.fs, l.imm11, l.it); break;
+				case LOp::SQI: std::snprintf(lb, sizeof(lb), "SQI.%s vf%02u, (vi%02u++)", m, l.fs, l.it); break;
+				case LOp::SQD: std::snprintf(lb, sizeof(lb), "SQD.%s vf%02u, (--vi%02u)", m, l.fs, l.it); break;
+				case LOp::ILW: std::snprintf(lb, sizeof(lb), "ILW.%s vi%02u, %d(vi%02u)", m, l.it, l.imm11, l.is); break;
+				case LOp::ISW: std::snprintf(lb, sizeof(lb), "ISW.%s vi%02u, %d(vi%02u)", m, l.it, l.imm11, l.is); break;
+				case LOp::ILWR: std::snprintf(lb, sizeof(lb), "ILWR.%s vi%02u, (vi%02u)", m, l.it, l.is); break;
+				case LOp::ISWR: std::snprintf(lb, sizeof(lb), "ISWR.%s vi%02u, (vi%02u)", m, l.it, l.is); break;
+				case LOp::IADD: case LOp::ISUB: case LOp::IAND: case LOp::IOR:
+					std::snprintf(lb, sizeof(lb), "%s vi%02u, vi%02u, vi%02u", n, l.id, l.is, l.it); break;
+				case LOp::IADDI: std::snprintf(lb, sizeof(lb), "IADDI vi%02u, vi%02u, %d", l.it, l.is, l.imm5); break;
+				case LOp::IADDIU: case LOp::ISUBIU: std::snprintf(lb, sizeof(lb), "%s vi%02u, vi%02u, 0x%x", n, l.it, l.is, l.imm15); break;
+				case LOp::B: std::snprintf(lb, sizeof(lb), "B 0x%04x", target); break;
+				case LOp::BAL: std::snprintf(lb, sizeof(lb), "BAL vi%02u, 0x%04x", l.it, target); break;
+				case LOp::JR: std::snprintf(lb, sizeof(lb), "JR vi%02u", l.is); break;
+				case LOp::JALR: std::snprintf(lb, sizeof(lb), "JALR vi%02u, vi%02u", l.it, l.is); break;
+				case LOp::IBEQ: case LOp::IBNE: std::snprintf(lb, sizeof(lb), "%s vi%02u, vi%02u, 0x%04x", n, l.it, l.is, target); break;
+				case LOp::IBLTZ: case LOp::IBGTZ: case LOp::IBLEZ: case LOp::IBGEZ: std::snprintf(lb, sizeof(lb), "%s vi%02u, 0x%04x", n, l.is, target); break;
+				case LOp::FCAND: case LOp::FCEQ: case LOp::FCOR: case LOp::FCSET: std::snprintf(lb, sizeof(lb), "%s 0x%06x", n, l.imm24); break;
+				case LOp::FCGET: std::snprintf(lb, sizeof(lb), "FCGET vi%02u", l.it); break;
+				case LOp::FMAND: case LOp::FMEQ: case LOp::FMOR: std::snprintf(lb, sizeof(lb), "%s vi%02u, vi%02u", n, l.it, l.is); break;
+				case LOp::FSAND: case LOp::FSEQ: case LOp::FSOR: std::snprintf(lb, sizeof(lb), "%s vi%02u, 0x%03x", n, l.it, l.imm12); break;
+				case LOp::FSSET: std::snprintf(lb, sizeof(lb), "FSSET 0x%03x", l.imm12); break;
+				case LOp::MOVE: case LOp::MR32: std::snprintf(lb, sizeof(lb), "%s.%s vf%02u, vf%02u", n, m, l.ft, l.fs); break;
+				case LOp::MFIR: std::snprintf(lb, sizeof(lb), "MFIR.%s vf%02u, vi%02u", m, l.ft, l.is); break;
+				case LOp::MTIR: std::snprintf(lb, sizeof(lb), "MTIR vi%02u, vf%02u.%c", l.it, l.fs, kF[l.fsf]); break;
+				case LOp::MFP: std::snprintf(lb, sizeof(lb), "MFP.%s vf%02u, P", m, l.ft); break;
+				case LOp::DIV: case LOp::RSQRT: std::snprintf(lb, sizeof(lb), "%s Q, vf%02u.%c, vf%02u.%c", n, l.fs, kF[l.fsf], l.ft, kF[l.ftf]); break;
+				case LOp::SQRT: std::snprintf(lb, sizeof(lb), "SQRT Q, vf%02u.%c", l.ft, kF[l.ftf]); break;
+				case LOp::EATAN: case LOp::EEXP: case LOp::ERCPR: case LOp::ERSQRT: case LOp::ESIN: case LOp::ESQRT:
+					std::snprintf(lb, sizeof(lb), "%s P, vf%02u.%c", n, l.fs, kF[l.fsf]); break;
+				case LOp::EATANxy: case LOp::EATANxz: case LOp::ELENG: case LOp::ERLENG: case LOp::ERSADD: case LOp::ESADD: case LOp::ESUM:
+					std::snprintf(lb, sizeof(lb), "%s P, vf%02u", n, l.fs); break;
+				case LOp::RINIT: case LOp::RXOR: std::snprintf(lb, sizeof(lb), "%s R, vf%02u.%c", n, l.fs, kF[l.fsf]); break;
+				case LOp::RGET: case LOp::RNEXT: std::snprintf(lb, sizeof(lb), "%s.%s vf%02u, R", n, m, l.ft); break;
+				case LOp::XTOP: case LOp::XITOP: std::snprintf(lb, sizeof(lb), "%s vi%02u", n, l.it); break;
+				case LOp::XGKICK: std::snprintf(lb, sizeof(lb), "XGKICK vi%02u", l.is); break;
+				case LOp::WAITQ: case LOp::WAITP: std::snprintf(lb, sizeof(lb), "%s", n); break;
+				default: std::snprintf(lb, sizeof(lb), "??? %08x", l.word); break;
+			}
+		}
 		std::snprintf(buf, bufSize, "%04x: %-34s | %s%s%s", p.pc, ub, lb, nb ? " " : "", bits);
 	}
 } // namespace vuopt

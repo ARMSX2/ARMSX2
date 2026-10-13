@@ -171,6 +171,7 @@ namespace vuopt
 		std::vector<InstPair> insts;
 		MvuFlagCycles mFC = {};
 		int xS = 0, xM = 0, xC = 0; // ring cursors after the block
+		int qLane = 0, pLane = 0;   // mVU.q / mVU.p after the block: which qmmPQ lane holds Q / P
 
 		BlockEnd endKind = BlockEnd::EBit;
 		u32 branchKind = 0;         // microVU lOp.branch of the branch op (1..10)

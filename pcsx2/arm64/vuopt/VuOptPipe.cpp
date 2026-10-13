@@ -1402,6 +1402,8 @@ namespace vuopt
 		regs_.vi15v = 0;
 		setFlags(res.mFC, res.xS, res.xM, res.xC);
 		optimizePipeState();
+		res.qLane = q_;
+		res.pLane = p_;
 
 		// Collect the block in program order.
 		res.count = count_;
@@ -1495,6 +1497,7 @@ namespace vuopt
 		{
 			const MvuOp& o = ops[i];
 			MvuOpTrace t;
+			std::memset(&t, 0, sizeof(t)); // padding too: callers hash the bytes
 			t.pc = pcs[i];
 			t.stall = o.stall;
 			t.isBadOp = o.isBadOp;
