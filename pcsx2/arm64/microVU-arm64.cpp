@@ -598,6 +598,12 @@ static void mVUdispatcherAB(mV)
 	// materializing the global's absolute address.
 	armAsm->Ldr(gprMVUglob, reinterpret_cast<u64>(&mVUglob));
 
+	// Pin gprVUMem (x29) = VU.Mem, the data memory every LQ/SQ/ILW/ISW
+	// addresses, so a load or store with its byte index in hand is one
+	// [x29, index] access. The prolog saved the caller's x29; C calls out of
+	// a block preserve it (callee-saved).
+	armAsm->Ldr(gprVUMem, mVUstateMem(offsetof(VURegs, Mem)));
+
 	// Load VU-specific FPCR (round-toward-zero + FZ/DaZ) — only when needed.
 	// PS2 VU float ops require this rounding mode; the gating skips the
 	// reload when EE and VU FPCR configs already match (the default).

@@ -70,7 +70,7 @@ __fi void mVUloadReg(const a64::VRegister& reg, const a64::Register& base, int64
 // values in their natural lane while the writeback reads lane 0, silently
 // clobbering VU memory with whatever happened to be in the recycled
 // Q register's lane 0.
-__fi void mVUloadMem(const a64::VRegister& reg, const a64::Register& base, int64_t off, int xyzw)
+__fi void mVUloadMem(const a64::VRegister& reg, const mVUmemRef& addr, int xyzw)
 {
 	int lane;
 	switch (xyzw)
@@ -80,10 +80,17 @@ __fi void mVUloadMem(const a64::VRegister& reg, const a64::Register& base, int64
 		case 0x2: lane = 8;  break; // Z — into lane 0
 		case 0x1: lane = 12; break; // W — into lane 0
 		default:
-			armAsm->Ldr(reg, a64::MemOperand(base, off));
+			armAsm->Ldr(reg, addr.at());
 			return;
 	}
-	armAsm->Ldr(a64::VRegister(reg.GetCode(), 32), a64::MemOperand(base, off + lane));
+	armAsm->Ldr(a64::VRegister(reg.GetCode(), 32), addr.at(lane));
+}
+
+// Whether every access mVUloadMem makes for `xyzw` is at the address itself:
+// all but the single-lane y, z and w loads, which add their lane's offset.
+static __fi bool mVUloadMemAtZero(int xyzw)
+{
+	return xyzw != 0x4 && xyzw != 0x2 && xyzw != 0x1;
 }
 
 // Store VF register components to memory with xyzw mask.
@@ -393,8 +400,15 @@ __fi void mVUaddrFixFrom(mV, const a64::Register& dst, const a64::Register& src)
 // Turn a byte index into VU data memory, already in gprIdxq, into something a
 // load or store can address: on VU1 one Add off the pin, the distance riding
 // in the access's own offset field; on VU0 the pointer is still loaded.
-__fi mVUmemRef mVUmemAtIndex(mV, const a64::Register& gprIdxq)
+//
+// `atZeroOnly`: every access the caller makes is at the address itself, with
+// no lane offset on top. Then micro mode needs nothing emitted at all: the
+// access takes [gprVUMem, index].
+__fi mVUmemRef mVUmemAtIndex(mV, const a64::Register& gprIdxq, bool atZeroOnly = false)
 {
+	if (atZeroOnly && !mVU.cop2)
+		return {gprVUMem, 0, gprIdxq};
+
 	if (isVU1)
 	{
 		armAsm->Add(gprIdxq, gprVUState, gprIdxq);
@@ -445,6 +459,13 @@ __fi bool mVUoptimizeConstantAddr(mV, u32 srcreg, s32 offset, s32 offsetSS_,
 		if (offset & 0x400)
 			return false; // cross-VU-register access — runtime path handles it
 		byteAddr = ((offset & 0xff) << 4) + offsetSS_;
+
+		// Micro mode holds VU0's memory pointer in gprVUMem.
+		if (!mVU.cop2 && byteAddr <= dispLimit)
+		{
+			out = {gprVUMem, byteAddr};
+			return true;
+		}
 	}
 
 	armAsm->Ldr(gprOutQ, mVUstateMem(offsetof(VURegs, Mem)));

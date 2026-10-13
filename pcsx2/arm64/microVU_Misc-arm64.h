@@ -303,12 +303,31 @@ __fi static a64::MemOperand mVUstateMem(int64_t off)
 // puts the two in one object for exactly this. VU0's is not in it.
 static constexpr int64_t kVU1MemFromState = offsetof(VuStateStore, vu1Mem) - sizeof(VURegs);
 
+// Micro mode only: &VU.Mem[0], the VU's data memory, pinned by the dispatcher
+// (mVUdispatcherAB) so a load or store whose index is already a byte offset
+// addresses [gprVUMem, index] with no add in front of it. In COP2 macro mode
+// x29 is the EE recompiler's $v0 pin and is never touched.
+#define gprVUMem a64::x29
+
 // Where a VU load or store's address ended up: a base register and the
-// displacement the access itself has to carry.
+// displacement the access itself has to carry -- or, with `index`, a base and
+// an index register whose sum is the address, which takes no displacement.
 struct mVUmemRef
 {
 	a64::Register base;
 	int64_t disp;
+	a64::Register index = a64::NoReg;
+
+	// The operand for the access `off` bytes in.
+	a64::MemOperand at(int64_t off = 0) const
+	{
+		if (index.IsValid())
+		{
+			pxAssert(disp == 0 && off == 0);
+			return a64::MemOperand(base, index);
+		}
+		return a64::MemOperand(base, disp + off);
+	}
 };
 
 // How far the unsigned-offset load/store forms reach, by operand width: imm12

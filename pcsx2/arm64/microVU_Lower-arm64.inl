@@ -1695,13 +1695,13 @@ mVUop(mVU_ILW)
 		{
 			mVUaddrFromVI(mVU, _Is_);
 
-			addr = mVUmemAtIndex(mVU, gprT1q);
+			addr = mVUmemAtIndex(mVU, gprT1q, offsetSS == 0);
 			addr.disp += offsetSS;
 		}
 
 		// Load 16-bit value from memory
 		const a64::Register& regT = mVU.regAlloc->allocGPR(-1, _It_, mVUlow.backupVI);
-		armAsm->Ldrh(regT.W(), a64::MemOperand(addr.base, addr.disp));
+		armAsm->Ldrh(regT.W(), addr.at());
 		mVU.regAlloc->clearNeeded(regT);
 		mVU.profiler.EmitOp(opILW);
 	}
@@ -1735,10 +1735,10 @@ mVUop(mVU_ILWR)
 			armAsm->Mov(gprT1.W(), 0);
 		}
 
-		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q);
+		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q, offsetSS == 0);
 
 		const a64::Register& regT = mVU.regAlloc->allocGPR(-1, _It_, mVUlow.backupVI);
-		armAsm->Ldrh(regT.W(), a64::MemOperand(addr.base, addr.disp + offsetSS));
+		armAsm->Ldrh(regT.W(), addr.at(offsetSS));
 		mVU.regAlloc->clearNeeded(regT);
 		mVU.profiler.EmitOp(opILWR);
 	}
@@ -1765,15 +1765,15 @@ mVUop(mVU_ISW)
 		{
 			mVUaddrFromVI(mVU, _Is_);
 
-			addr = mVUmemAtIndex(mVU, gprT1q);
+			addr = mVUmemAtIndex(mVU, gprT1q, _X_Y_Z_W == 0x8);
 		}
 
 		// Load VI[It] value (zero-extended to 32-bit) and store to selected lanes
 		const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, -1, false, true);
-		if (_X) armAsm->Str(regT.W(), a64::MemOperand(addr.base, addr.disp));
-		if (_Y) armAsm->Str(regT.W(), a64::MemOperand(addr.base, addr.disp + 4));
-		if (_Z) armAsm->Str(regT.W(), a64::MemOperand(addr.base, addr.disp + 8));
-		if (_W) armAsm->Str(regT.W(), a64::MemOperand(addr.base, addr.disp + 12));
+		if (_X) armAsm->Str(regT.W(), addr.at());
+		if (_Y) armAsm->Str(regT.W(), addr.at(4));
+		if (_Z) armAsm->Str(regT.W(), addr.at(8));
+		if (_W) armAsm->Str(regT.W(), addr.at(12));
 		mVU.regAlloc->clearNeeded(regT);
 		mVU.profiler.EmitOp(opISW);
 	}
@@ -1805,13 +1805,13 @@ mVUop(mVU_ISWR)
 			armAsm->Mov(gprT1.W(), 0);
 		}
 
-		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q);
+		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q, _X_Y_Z_W == 0x8);
 
 		const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, -1, false, true);
-		if (_X) armAsm->Str(regT.W(), a64::MemOperand(addr.base, addr.disp));
-		if (_Y) armAsm->Str(regT.W(), a64::MemOperand(addr.base, addr.disp + 4));
-		if (_Z) armAsm->Str(regT.W(), a64::MemOperand(addr.base, addr.disp + 8));
-		if (_W) armAsm->Str(regT.W(), a64::MemOperand(addr.base, addr.disp + 12));
+		if (_X) armAsm->Str(regT.W(), addr.at());
+		if (_Y) armAsm->Str(regT.W(), addr.at(4));
+		if (_Z) armAsm->Str(regT.W(), addr.at(8));
+		if (_W) armAsm->Str(regT.W(), addr.at(12));
 		mVU.regAlloc->clearNeeded(regT);
 		mVU.profiler.EmitOp(opISWR);
 	}
@@ -1832,11 +1832,11 @@ mVUop(mVU_LQ)
 		if (!mVUoptimizeConstantAddr(mVU, _Is_, _Imm11_, 0, gprT1q, kDispReachW - 12, addr))
 		{
 			mVUaddrFromVI(mVU, _Is_);
-			addr = mVUmemAtIndex(mVU, gprT1q);
+			addr = mVUmemAtIndex(mVU, gprT1q, mVUloadMemAtZero(_X_Y_Z_W));
 		}
 
 		const a64::VRegister& Ft = mVU.regAlloc->allocReg(-1, _Ft_, _X_Y_Z_W);
-		mVUloadMem(Ft, addr.base, addr.disp, _X_Y_Z_W);
+		mVUloadMem(Ft, addr, _X_Y_Z_W);
 		mVU.regAlloc->clearNeeded(Ft);
 		mVU.profiler.EmitOp(opLQ);
 	}
@@ -1863,12 +1863,12 @@ mVUop(mVU_LQD)
 		}
 		mVU.regAlloc->clearNeeded(regS);
 
-		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q);
+		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q, mVUloadMemAtZero(_X_Y_Z_W));
 
 		if (!mVUlow.noWriteVF)
 		{
 			const a64::VRegister& Ft = mVU.regAlloc->allocReg(-1, _Ft_, _X_Y_Z_W);
-			mVUloadMem(Ft, addr.base, addr.disp, _X_Y_Z_W);
+			mVUloadMem(Ft, addr, _X_Y_Z_W);
 			mVU.regAlloc->clearNeeded(Ft);
 		}
 		mVU.profiler.EmitOp(opLQD);
@@ -1903,12 +1903,12 @@ mVUop(mVU_LQI)
 			armAsm->Mov(gprT1.W(), 0);
 		}
 
-		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q);
+		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q, mVUloadMemAtZero(_X_Y_Z_W));
 
 		if (!mVUlow.noWriteVF)
 		{
 			const a64::VRegister& Ft = mVU.regAlloc->allocReg(-1, _Ft_, _X_Y_Z_W);
-			mVUloadMem(Ft, addr.base, addr.disp, _X_Y_Z_W);
+			mVUloadMem(Ft, addr, _X_Y_Z_W);
 			mVU.regAlloc->clearNeeded(Ft);
 		}
 		mVU.profiler.EmitOp(opLQI);
@@ -1930,20 +1930,20 @@ mVUop(mVU_SQ)
 		if (!mVUoptimizeConstantAddr(mVU, _It_, _Imm11_, 0, gprT1q, kDispReachQ, addr))
 		{
 			mVUaddrFromVI(mVU, _It_);
-			addr = mVUmemAtIndex(mVU, gprT1q);
+			addr = mVUmemAtIndex(mVU, gprT1q, true);
 		}
 
 		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_, -1, _X_Y_Z_W);
 		if (_X_Y_Z_W == 0xf)
 		{
-			armAsm->Str(Fs, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Str(Fs, addr.at());
 		}
 		else
 		{
 			// Partial store: load existing, merge, store
-			armAsm->Ldr(RQSCRATCH, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Ldr(RQSCRATCH, addr.at());
 			mVUmergeRegs(RQSCRATCH, Fs, _X_Y_Z_W, false);
-			armAsm->Str(RQSCRATCH, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Str(RQSCRATCH, addr.at());
 		}
 		mVU.regAlloc->clearNeeded(Fs);
 		mVU.profiler.EmitOp(opSQ);
@@ -1967,18 +1967,18 @@ mVUop(mVU_SQD)
 		}
 		mVU.regAlloc->clearNeeded(regT);
 
-		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q);
+		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q, true);
 
 		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_, -1, _X_Y_Z_W);
 		if (_X_Y_Z_W == 0xf)
 		{
-			armAsm->Str(Fs, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Str(Fs, addr.at());
 		}
 		else
 		{
-			armAsm->Ldr(RQSCRATCH, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Ldr(RQSCRATCH, addr.at());
 			mVUmergeRegs(RQSCRATCH, Fs, _X_Y_Z_W, false);
-			armAsm->Str(RQSCRATCH, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Str(RQSCRATCH, addr.at());
 		}
 		mVU.regAlloc->clearNeeded(Fs);
 		mVU.profiler.EmitOp(opSQD);
@@ -2013,18 +2013,18 @@ mVUop(mVU_SQI)
 			armAsm->Mov(gprT1.W(), 0);
 		}
 
-		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q);
+		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q, true);
 
 		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_, -1, _X_Y_Z_W);
 		if (_X_Y_Z_W == 0xf)
 		{
-			armAsm->Str(Fs, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Str(Fs, addr.at());
 		}
 		else
 		{
-			armAsm->Ldr(RQSCRATCH, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Ldr(RQSCRATCH, addr.at());
 			mVUmergeRegs(RQSCRATCH, Fs, _X_Y_Z_W, false);
-			armAsm->Str(RQSCRATCH, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Str(RQSCRATCH, addr.at());
 		}
 		mVU.regAlloc->clearNeeded(Fs);
 		mVU.profiler.EmitOp(opSQI);
