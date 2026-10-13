@@ -20,6 +20,7 @@
 
 #include "Common.h"
 #include "IopHw.h"
+#include "IopThread/IopThreadMode.h"
 #include "R3000A.h"
 #include "Sif.h"
 #include "VMManager.h"
@@ -85,11 +86,12 @@ namespace EeBridge
 
 	// ---- The IOP stops the VM ----------------------------------------------------------------
 	// The IOP JIT's error path and the IOP interpreter's breakpoint pause the VM and leave the
-	// EE's execution loop. Both are calls the CPU thread owns.
+	// EE's execution loop. Both are calls the CPU thread owns: when the IOP is on its own thread
+	// (Lockstep) the request is kept and the EE makes it when its handoff returns. Error paths only,
+	// so the call is not inline.
 
 	__forceinline_odr void RequestPause()
 	{
-		VMManager::SetPaused(true);
-		Cpu->ExitExecution();
+		IopThread::RequestPause();
 	}
 } // namespace EeBridge

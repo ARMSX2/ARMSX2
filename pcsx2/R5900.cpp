@@ -378,8 +378,27 @@ u64 g_twinEeEventTests = 0;
 u64 g_twinIopSlices = 0;
 #endif
 
+// What the IOP does with a slice, after the EE has settled its books: run its CPU for the budget
+// if it has work, then its event test. This is the second half of iopRunSliceForEE() below; in
+// Lockstep the IOP thread runs it while the EE waits in the handoff.
+void iopRunSliceOnIopThread()
+{
+	if (iopEventAction)
+	{
+		EEsCycle = psxCpu->ExecuteBlock(EEsCycle);
+		iopEventAction = false;
+	}
+
+	iopEventTest();
+}
+
 // The EE hands the IOP a time slice. This is the one place the EE runs IOP code.
 // (crossing C1 of the IOP thread design, section 7.1)
+//
+// Off runs the slice here, on the EE's thread, exactly as before. Lockstep hands it to the IOP
+// thread and waits (design section 6.2); the EE's side of the books is settled first, and the twin
+// counter is counted here, so both match Off.
+template <IopThreadMode M>
 static __fi void iopRunSliceForEE()
 {
 	// * It's important to run a iopEventTest before calling ExecuteBlock. This
@@ -396,6 +415,21 @@ static __fi void iopRunSliceForEE()
 
 	if (EEsCycle > 0)
 		iopEventAction = true;
+
+	if constexpr (M == IopThreadMode::Lockstep)
+	{
+		// A Lockstep dispatcher can outlive the thread for a moment (a mode switch or a shutdown);
+		// with no thread the slice is run here, as Off does.
+		if (IopThread::LockstepActive())
+		{
+#ifdef PCSX2_RECOMPILER_TESTS
+			if (iopEventAction)
+				g_twinIopSlices++;
+#endif
+			IopThread::RunLockstepSlice();
+			return;
+		}
+	}
 
 	if (iopEventAction)
 	{
@@ -439,6 +473,7 @@ static __fi void eeScheduleForIop()
 
 // Shared portion of the branch test, called from both the Interpreter
 // and the recompiler.  (moved here to help alleviate redundant code)
+template <IopThreadMode M>
 __fi void _cpuEventTest_Shared()
 {
 #ifdef PCSX2_RECOMPILER_TESTS
@@ -480,7 +515,7 @@ __fi void _cpuEventTest_Shared()
 	}
 
 	// ---- IOP -------------
-	iopRunSliceForEE();
+	iopRunSliceForEE<M>();
 
 	if (cpuTestCycle(nextStartCounter, nextDeltaCounter))
 	{
@@ -542,6 +577,22 @@ __fi void _cpuEventTest_Shared()
 	cpuSetNextEvent(nextStartCounter, nextDeltaCounter);
 
 	eeEventTestIsActive = false;
+}
+
+template void _cpuEventTest_Shared<IopThreadMode::Off>();
+template void _cpuEventTest_Shared<IopThreadMode::Lockstep>();
+
+CpuEventTestFn cpuEventTestFor(IopThreadMode mode)
+{
+	switch (mode)
+	{
+		case IopThreadMode::Lockstep:
+			return &_cpuEventTest_Shared<IopThreadMode::Lockstep>;
+		case IopThreadMode::Off:
+		case IopThreadMode::Threaded: // not built yet: Threaded resolves to Off
+		default:
+			return &_cpuEventTest_Shared<IopThreadMode::Off>;
+	}
 }
 
 __ri void cpuTestINTCInts()

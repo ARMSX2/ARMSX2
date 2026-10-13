@@ -641,6 +641,9 @@
     <ClCompile Include="IopThread\IopThreadMode.cpp">
       <Filter>System\Ps2\Iop</Filter>
     </ClCompile>
+    <ClCompile Include="IopThread\IopThreadVm.cpp">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClCompile>
     <ClCompile Include="R3000A.cpp">
       <Filter>System\Ps2\Iop</Filter>
     </ClCompile>
@@ -1809,6 +1812,9 @@
       <Filter>System\Ps2\Iop</Filter>
     </ClInclude>
     <ClInclude Include="IopThread\IopThreadMode.h">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClInclude>
+    <ClInclude Include="IopThread\IopThreadVm.h">
       <Filter>System\Ps2\Iop</Filter>
     </ClInclude>
     <ClInclude Include="IopThread\SharedWord.h">

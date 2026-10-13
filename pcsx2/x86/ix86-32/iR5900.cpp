@@ -397,7 +397,8 @@ static const void* UnmappedRecLUTPage = nullptr;
 
 static void recEventTest()
 {
-	_cpuEventTest_Shared();
+	// x86 resolves every IOP thread mode to Off (IopThread::ResolveMode), so only the Off instance exists to call.
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	if (eeRecExitRequested)
 	{

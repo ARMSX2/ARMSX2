@@ -183,7 +183,7 @@ protected:
 TEST_F(EeEventTestQuietPath, QuietEntryDeliversNothingAndRunsNoVu)
 {
 	cpuRegs.CP0.n.Status.val = kStatusAllEnabled;
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	EXPECT_FALSE(ExceptionTaken());
 	EXPECT_EQ(cpuRegs.pc, 0x00100000u);
@@ -205,7 +205,7 @@ TEST_F(EeEventTestQuietPath, IntcPendingAndEnabledRaisesInterruptAndLatchesHold)
 	cpuRegs.CP0.n.Status.val = kStatusAllEnabled;
 	psHu32(INTC_STAT) = 0x2;
 	psHu32(INTC_MASK) = 0x2;
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	EXPECT_TRUE(ExceptionTaken());
 	EXPECT_EQ(cpuRegs.CP0.n.Cause & 0xFFFF, 0x400u);
@@ -222,7 +222,7 @@ TEST_F(EeEventTestQuietPath, IntcHoldIsLatchedEvenWhenStatusBlocksTheInterrupt)
 	cpuRegs.CP0.n.Status.val = 0;
 	psHu32(INTC_STAT) = 0x2;
 	psHu32(INTC_MASK) = 0x2;
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	EXPECT_FALSE(ExceptionTaken());
 	EXPECT_EQ(cpuRegs.pc, 0x00100000u);
@@ -235,7 +235,7 @@ TEST_F(EeEventTestQuietPath, IntcCauseWithoutMaskDoesNothing)
 	cpuRegs.CP0.n.Status.val = kStatusAllEnabled;
 	psHu32(INTC_STAT) = 0x2 | 0x4;
 	psHu32(INTC_MASK) = 0x1;
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	EXPECT_FALSE(ExceptionTaken());
 	EXPECT_EQ(counters[0].hold, kHoldSentinel);
@@ -247,7 +247,7 @@ TEST_F(EeEventTestQuietPath, IntcOtherCauseRaisesWithoutLatchingHold)
 	cpuRegs.CP0.n.Status.val = kStatusAllEnabled;
 	psHu32(INTC_STAT) = 0x4;
 	psHu32(INTC_MASK) = 0x4;
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	EXPECT_TRUE(ExceptionTaken());
 	EXPECT_EQ(cpuRegs.CP0.n.Cause & 0xFFFF, 0x400u);
@@ -262,7 +262,7 @@ TEST_F(EeEventTestQuietPath, DmacChannelCauseWithMaskRaisesInterrupt)
 {
 	cpuRegs.CP0.n.Status.val = kStatusAllEnabled;
 	psHu32(DMAC_STAT) = (1u << 2) | (1u << (16 + 2)); // CIS2 + CIM2
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	EXPECT_TRUE(ExceptionTaken());
 	EXPECT_EQ(cpuRegs.CP0.n.Cause & 0xFFFF, 0x800u);
@@ -272,7 +272,7 @@ TEST_F(EeEventTestQuietPath, DmacBusErrorRaisesInterruptUnmasked)
 {
 	cpuRegs.CP0.n.Status.val = kStatusAllEnabled;
 	psHu32(DMAC_STAT) = 0x8000; // BEIS
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	EXPECT_TRUE(ExceptionTaken());
 	EXPECT_EQ(cpuRegs.CP0.n.Cause & 0xFFFF, 0x800u);
@@ -282,7 +282,7 @@ TEST_F(EeEventTestQuietPath, DmacCauseWithoutMaskDoesNothing)
 {
 	cpuRegs.CP0.n.Status.val = kStatusAllEnabled;
 	psHu32(DMAC_STAT) = (1u << 2) | (1u << (16 + 3));
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	EXPECT_FALSE(ExceptionTaken());
 }
@@ -292,7 +292,7 @@ TEST_F(EeEventTestQuietPath, DmacCauseIgnoredWhileDmacDisabled)
 	cpuRegs.CP0.n.Status.val = kStatusAllEnabled;
 	psHu32(DMAC_STAT) = (1u << 2) | (1u << (16 + 2));
 	psHu32(DMAC_CTRL) = 0;
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	EXPECT_FALSE(ExceptionTaken());
 }
@@ -303,7 +303,7 @@ TEST_F(EeEventTestQuietPath, IntcAndDmacTogetherRaiseBothCauses)
 	psHu32(INTC_STAT) = 0x4;
 	psHu32(INTC_MASK) = 0x4;
 	psHu32(DMAC_STAT) = 0x8000;
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	EXPECT_TRUE(ExceptionTaken());
 	EXPECT_EQ(cpuRegs.CP0.n.Cause & 0xFFFF, 0xC00u);
@@ -316,7 +316,7 @@ TEST_F(EeEventTestQuietPath, IntcAndDmacTogetherRaiseBothCauses)
 TEST_F(EeEventTestQuietPath, RunningVu0BehindTheEeIsRun)
 {
 	VU0.VI[REG_VPU_STAT].UL = 0x1;
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	EXPECT_NE(VU0.cycle, cpuRegs.cycle - 500);
 	EXPECT_EQ(VU0.VI[REG_VPU_STAT].UL & 0x1, 0u) << "the NOP[E] program should have ended";
@@ -326,7 +326,7 @@ TEST_F(EeEventTestQuietPath, RunningVu0BehindTheEeIsRun)
 TEST_F(EeEventTestQuietPath, RunningVu1BehindTheEeIsRunWithoutMtvu)
 {
 	VU0.VI[REG_VPU_STAT].UL = 0x100;
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	EXPECT_NE(VU1.cycle, cpuRegs.cycle - 500);
 	EXPECT_EQ(VU0.VI[REG_VPU_STAT].UL & 0x100, 0u) << "the NOP[E] program should have ended";
@@ -339,7 +339,7 @@ TEST_F(EeEventTestQuietPath, MtvuNeverRunsVu1OnTheEeThread)
 	EmuConfig.Speedhacks.vuThread = true;
 	ASSERT_TRUE(THREAD_VU1);
 	VU0.VI[REG_VPU_STAT].UL = 0x100;
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	EXPECT_EQ(VU1.cycle, cpuRegs.cycle - 500);
 	EXPECT_EQ(VU0.VI[REG_VPU_STAT].UL, 0x100u);
@@ -354,7 +354,7 @@ TEST_F(EeEventTestQuietPath, MtvuFlagsRaisedByTheVuThreadAreConsumed)
 	ASSERT_TRUE(THREAD_VU1);
 	VU0.VI[REG_VPU_STAT].UL = 0x100;
 	vu1Thread.mtvuInterrupts.store(VU_Thread::InterruptFlagVUTBit);
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	EXPECT_EQ(vu1Thread.mtvuInterrupts.load(), 0u);
 	EXPECT_EQ(VU0.VI[REG_VPU_STAT].UL, 0x400u);
@@ -367,7 +367,7 @@ TEST_F(EeEventTestQuietPath, MtvuWithNoFlagsLeavesEverythingAlone)
 	EmuConfig.Cpu.Recompiler.EnableVU1 = true;
 	EmuConfig.Speedhacks.vuThread = true;
 	ASSERT_TRUE(THREAD_VU1);
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	EXPECT_EQ(vu1Thread.mtvuInterrupts.load(), 0u);
 	EXPECT_EQ(VU0.VI[REG_VPU_STAT].UL, 0u);
@@ -384,7 +384,7 @@ TEST_F(EeEventTestQuietPath, MtvuFlagsAreConsumedWhileVu1ReadsIdle)
 	ASSERT_TRUE(THREAD_VU1);
 	VU0.VI[REG_VPU_STAT].UL = 0;
 	vu1Thread.mtvuInterrupts.store(VU_Thread::InterruptFlagVUTBit);
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<IopThreadMode::Off>();
 
 	EXPECT_EQ(vu1Thread.mtvuInterrupts.load(), 0u);
 	EXPECT_EQ(VU0.VI[REG_VPU_STAT].UL, 0x400u);

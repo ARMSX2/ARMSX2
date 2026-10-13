@@ -3,15 +3,15 @@
 
 // The IOP thread object (IOP-thread design sections 3.3 to 3.10, 4, 5 and 11): the thread, its
 // pacing loop, the EE's watermark (`ee_wm`) and the IOP's published position (`iop_pos`), holds,
-// CallOnEE, the parked flag and wake-ups, and the Lockstep handoff. Nothing in the emulator uses
-// it yet; the next steps wire it in.
+// CallOnEE, the parked flag and wake-ups, and the Lockstep handoff. The VM uses Lockstep through
+// IopThreadVm.h; Threaded is not wired in yet.
 //
 // The object knows nothing about the IOP. It is given two functions, and a few optional ones:
 //   run_slice(from, target)  runs the IOP from EE cycle `from` towards `target` and returns the
 //                            cycle it reached. It may end up to one block past `target`, as the
 //                            JIT does when it checks its budget at block ends.
 //   apply_item(item)         applies one EE-to-IOP item (blanking, an IRQ, a job).
-// A test hands it a fake IOP; the emulator will hand it iopRunSliceForEE() and the psx* functions.
+// A test hands it a fake IOP; the emulator hands it iopRunSliceOnIopThread() (IopThreadVm.cpp).
 //
 // ---------------------------------------------------------------------------------------------
 // Who calls what

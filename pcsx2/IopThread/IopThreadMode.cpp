@@ -7,6 +7,8 @@
 
 #include <algorithm>
 
+IopThreadMode IopThread::s_mode = IopThreadMode::Off;
+
 namespace
 {
 	// Set once by the gtest environment before any test runs and cleared after the last, so a plain

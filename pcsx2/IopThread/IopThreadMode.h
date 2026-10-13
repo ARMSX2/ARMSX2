@@ -5,7 +5,9 @@
 // turns with the EE (Lockstep), or on its own thread concurrently with the EE (Threaded).
 //
 // This header holds the three-way choice, the pure function that makes it (ResolveMode), and the
-// run-time flag that says the recompiler test harness is running. Nothing here starts a thread.
+// few run-time pieces the EE core needs without pulling in the thread object: the mode in effect,
+// the test-harness flag, and the calls the Lockstep event test makes. IopThreadVm.h has the rest of
+// what the VM does with the thread.
 
 #pragma once
 
@@ -100,11 +102,30 @@ namespace IopThread
 
 	// ---- At run time -------------------------------------------------------------------------
 
+	/// The mode in effect. A plain variable, like the design's s_mode: it is written on the CPU
+	/// thread only, by ChooseMode(), and the EE core reads it only where it builds something for the
+	/// mode (the JIT dispatcher at a recompiler reset, the interpreter's event test pointer). No
+	/// event-frequency path reads it.
+	extern IopThreadMode s_mode;
+	inline IopThreadMode GetMode() { return s_mode; }
+
 	/// Says that the gtest recompiler environment (DiffJitVsInterp) is running, which makes
 	/// VmConditions::recompiler_test_harness true. That harness runs the EE and the IOP in a
-	/// single-thread interleave and boots no VM; the flag is how it keeps the IOP thread out of its
-	/// way. Only that environment sets it. It is deliberately not derived from PCSX2_RECOMPILER_TESTS:
+	/// single-thread interleave and boots no VM; the flag is how it keeps Lockstep out of its way.
+	/// Only that environment sets it. It is deliberately not derived from PCSX2_RECOMPILER_TESTS:
 	/// eerunner is built with that define and has to be able to run Lockstep.
 	void SetRecompilerTestHarness(bool active);
 	bool IsRecompilerTestHarness();
+
+	/// Lockstep, called from the Lockstep instance of the EE event test (R5900.cpp), on the EE thread.
+	/// LockstepActive() is false when the thread does not exist (a mode switch or shutdown in
+	/// progress), and the event test then runs the IOP slice itself, as Off does.
+	bool LockstepActive();
+	/// Hands the IOP thread this event test's slice and waits for it.
+	void RunLockstepSlice();
+
+	/// The IOP asks the VM to pause: its recompiler met an opcode it cannot run, or its interpreter
+	/// hit a breakpoint. SetPaused and ExitExecution belong to the CPU thread, so from the IOP thread
+	/// the request is kept and made by the EE as soon as its handoff returns.
+	void RequestPause();
 } // namespace IopThread
