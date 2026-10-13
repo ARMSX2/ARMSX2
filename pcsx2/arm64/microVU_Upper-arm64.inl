@@ -366,6 +366,26 @@ static void NEON_MINSS(mV, const a64::VRegister& to, const a64::VRegister& from,
 	mVU.regAlloc->clearNeeded(t1);
 }
 
+// MAX/MINI against VF0, whose four words are +0, +0, +0 and +1.0: every one of
+// them has its sign bit clear. With at least one operand non-negative the two
+// operands are never both negative, which is the one case where the integer
+// order of the raw words differs from the order the transform above builds
+// (negative raw words compare backwards among themselves). Otherwise both
+// orders agree: a negative word is below every non-negative one either way,
+// and two non-negative words compare as plain integers in both. Equal keys
+// are equal words. So the select is one SMAX or SMIN on the raw words.
+//
+// Single-lane forms run on the whole register too: lane 0 is the one the
+// allocator writes back, and the clone's other lanes are dead.
+static void mVUemitMaxMinSignClear(mV, const a64::VRegister& to, const a64::VRegister& from, bool isMax)
+{
+	const a64::VRegister a = mVUstepSource(mVU, to);
+	if (isMax)
+		armAsm->Smax(to.V4S(), a.V4S(), from.V4S());
+	else
+		armAsm->Smin(to.V4S(), a.V4S(), from.V4S());
+}
+
 //------------------------------------------------------------------
 // Function Pointer Tables
 //------------------------------------------------------------------
@@ -699,7 +719,14 @@ static void mVU_FMACa(microVU& mVU, int recPass, int opCase, int opType, bool is
 		// the scalar .S() view: vixl's by-element emitter keys element size off
 		// vm's scalar format, and a V4S vm silently selects the half-precision
 		// opcode once Devel strips the VIXL_ASSERT.
+		// MAX/MINI with VF0 on either side: see mVUemitMaxMinSignClear. Ft
+		// holds VF0 itself, its broadcast lane, or (single lane) its rotated
+		// lane; Fs, a clone of it.
+		const bool vf0MaxMin = (opType == 3 || opType == 4) && (opCase == 1 || opCase == 2)
+		                       && (_Ft_ == 0 || _Fs_ == 0);
+
 		if (bcLane >= 0)   armAsm->Fmul(Fs.V4S(), mVUstepSource(mVU, Fs).V4S(), Ft.S(), bcLane);
+		else if (vf0MaxMin) mVUemitMaxMinSignClear(mVU, Fs, Ft, opType == 3);
 		else if (_XYZW_SS) NEON_SS[opType](mVU, Fs, Ft, 0);
 		else               NEON_PS[opType](mVU, Fs, Ft, 0);
 

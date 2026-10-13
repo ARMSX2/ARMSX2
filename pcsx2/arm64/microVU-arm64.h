@@ -179,7 +179,10 @@
 //  41 — an FMAC's arithmetic reads the register a clone-write copy was made
 //       from when that copy is the last word emitted, and the copy goes: the
 //       step writes every lane of the destination, so the copy was dead weight.
-static constexpr u32 kMvuCompilerAbiVersion = 41;
+//  42 — MAX and MINI with VF0 on either side are one SMAX or SMIN on the raw
+//       words instead of the eight-instruction sign-magnitude transform and
+//       select.
+static constexpr u32 kMvuCompilerAbiVersion = 42;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
