@@ -226,7 +226,10 @@ namespace vuopt
 		void PlanChecks();
 		void ComputeLiveness();
 		bool WantsAcc() const;
+		void FindLoops(std::vector<int>& comp, std::vector<u8>& cyclic, int& ncomp) const;
 		void ComputeDirty();
+		bool AccPays();
+		void DirtyIn(const std::vector<NodeLowering::ChainEffect>& eff, std::vector<u8>& in) const;
 		void Emit(const u8*& regionEnd);
 		void EmitEnd(const Node& n);
 		void EmitJump(int idx);
@@ -542,17 +545,10 @@ namespace vuopt
 	// Where the accumulators may owe the chain word something (LowerEnv::stickyAcc):
 	// forward over the links, clean at every entry from microVU, dirty after a node
 	// that accumulates, clean after one that builds an instance.
-	void RegionBuilder::ComputeDirty()
+	void RegionBuilder::DirtyIn(const std::vector<NodeLowering::ChainEffect>& eff, std::vector<u8>& in) const
 	{
 		const size_t NN = nodes_.size();
-		std::vector<NodeLowering::ChainEffect> eff(NN);
-		for (size_t i = 0; i < NN; i++)
-		{
-			eff[i] = nodes_[i]->low->Chain();
-			t_.accAccumulated_ += eff[i].accumulated;
-		}
-		t_.accRegions_++;
-		std::vector<u8> in(NN, 0);
+		in.assign(NN, 0);
 		for (bool changed = true; changed;)
 		{
 			changed = false;
@@ -575,8 +571,128 @@ namespace vuopt
 					mark(j.second);
 			}
 		}
+	}
+
+	void RegionBuilder::ComputeDirty()
+	{
+		const size_t NN = nodes_.size();
+		std::vector<NodeLowering::ChainEffect> eff(NN);
+		for (size_t i = 0; i < NN; i++)
+		{
+			eff[i] = nodes_[i]->low->Chain();
+			t_.accAccumulated_ += eff[i].accumulated;
+		}
+		t_.accRegions_++;
+		std::vector<u8> in;
+		DirtyIn(eff, in);
 		for (size_t i = 0; i < NN; i++)
 			nodes_[i]->low->SetDirtyIn(in[i] != 0);
+	}
+
+	// Whether the accumulators save instructions in this region. An accumulated
+	// update replaces a pack and an OR (about eight instructions) by three or four;
+	// an instance built while the accumulators owe the chain something costs a
+	// reduce (about seven). A divide-heavy region builds many instances right after
+	// a few accumulations and can lose; blocks in a loop count eight times.
+	bool RegionBuilder::AccPays()
+	{
+		const size_t NN = nodes_.size();
+		std::vector<NodeLowering::ChainEffect> eff(NN);
+		for (size_t i = 0; i < NN; i++)
+			eff[i] = nodes_[i]->low->Chain();
+		std::vector<u8> in;
+		DirtyIn(eff, in);
+		std::vector<int> comp;
+		std::vector<u8> cyclic;
+		int ncomp = 0;
+		FindLoops(comp, cyclic, ncomp);
+		s64 net = 0;
+		for (size_t i = 0; i < NN; i++)
+			net += static_cast<s64>(cyclic[i] ? 8 : 1) * (5 * static_cast<s64>(eff[i].accumulated) - 7 * static_cast<s64>(eff[i].reduces[in[i]]));
+		if (t_.dump)
+			std::printf("[vuopt acc] root %04x: %zu nodes, net %lld\n", nodes_[0]->pc, NN, static_cast<long long>(net));
+		return net > 0;
+	}
+
+	// The region's loops: each node's strongly connected component and whether it
+	// is in a loop (its component has more than one node, or it links to itself).
+	void RegionBuilder::FindLoops(std::vector<int>& comp, std::vector<u8>& cyclic, int& ncomp) const
+	{
+		const size_t NN = nodes_.size();
+		std::vector<std::vector<int>> succ(NN);
+		for (size_t i = 0; i < NN; i++)
+		{
+			const Node& n = *nodes_[i];
+			if (n.taken >= 0 && n.taken != 0x7fffffff)
+				succ[i].push_back(n.taken);
+			if (n.fall >= 0 && n.fall != 0x7fffffff)
+				succ[i].push_back(n.fall);
+			for (const auto& j : n.jumps)
+				if (j.second >= 0)
+					succ[i].push_back(j.second);
+		}
+		// Tarjan, iterative.
+		std::vector<int> index(NN, -1), low(NN, 0), stk;
+		comp.assign(NN, -1);
+		std::vector<u8> onStack(NN, 0);
+		std::vector<std::pair<int, size_t>> call;
+		int counter = 0;
+		ncomp = 0;
+		for (size_t root = 0; root < NN; root++)
+		{
+			if (index[root] >= 0)
+				continue;
+			call.push_back({static_cast<int>(root), 0});
+			while (!call.empty())
+			{
+				const int v = call.back().first;
+				size_t& k = call.back().second;
+				if (k == 0)
+				{
+					index[v] = low[v] = counter++;
+					stk.push_back(v);
+					onStack[v] = 1;
+				}
+				if (k < succ[v].size())
+				{
+					const int w = succ[v][k++];
+					if (index[w] < 0)
+						call.push_back({w, 0});
+					else if (onStack[w])
+						low[v] = std::min(low[v], index[w]);
+					continue;
+				}
+				if (low[v] == index[v])
+				{
+					int w;
+					do
+					{
+						w = stk.back();
+						stk.pop_back();
+						onStack[w] = 0;
+						comp[w] = ncomp;
+					} while (w != v);
+					ncomp++;
+				}
+				call.pop_back();
+				if (!call.empty())
+				{
+					const int u = call.back().first;
+					low[u] = std::min(low[u], low[v]);
+				}
+			}
+		}
+		std::vector<u32> compSize(ncomp, 0);
+		for (size_t i = 0; i < NN; i++)
+			compSize[comp[i]]++;
+		cyclic.assign(NN, 0);
+		for (size_t i = 0; i < NN; i++)
+		{
+			bool cyc = compSize[comp[i]] > 1;
+			for (int y : succ[i])
+				cyc = cyc || y == static_cast<int>(i);
+			cyclic[i] = cyc;
+		}
 	}
 
 	void RegionBuilder::AssignHomes()
@@ -590,71 +706,10 @@ namespace vuopt
 		const size_t NN = nodes_.size();
 		std::vector<u32> weight(NN, 1);
 		{
-			std::vector<std::vector<int>> succ(NN);
-			for (size_t i = 0; i < NN; i++)
-			{
-				const Node& n = *nodes_[i];
-				if (n.taken >= 0 && n.taken != 0x7fffffff)
-					succ[i].push_back(n.taken);
-				if (n.fall >= 0 && n.fall != 0x7fffffff)
-					succ[i].push_back(n.fall);
-				for (const auto& j : n.jumps)
-					if (j.second >= 0)
-						succ[i].push_back(j.second);
-			}
-			// A node is in a loop when its strongly connected component has
-			// more than one node or it links to itself (Tarjan, iterative).
-			std::vector<int> index(NN, -1), low(NN, 0), comp(NN, -1), stk;
-			std::vector<u8> onStack(NN, 0);
-			std::vector<std::pair<int, size_t>> call;
-			int counter = 0, ncomp = 0;
-			for (size_t root = 0; root < NN; root++)
-			{
-				if (index[root] >= 0)
-					continue;
-				call.push_back({static_cast<int>(root), 0});
-				while (!call.empty())
-				{
-					const int v = call.back().first;
-					size_t& k = call.back().second;
-					if (k == 0)
-					{
-						index[v] = low[v] = counter++;
-						stk.push_back(v);
-						onStack[v] = 1;
-					}
-					if (k < succ[v].size())
-					{
-						const int w = succ[v][k++];
-						if (index[w] < 0)
-							call.push_back({w, 0});
-						else if (onStack[w])
-							low[v] = std::min(low[v], index[w]);
-						continue;
-					}
-					if (low[v] == index[v])
-					{
-						int w;
-						do
-						{
-							w = stk.back();
-							stk.pop_back();
-							onStack[w] = 0;
-							comp[w] = ncomp;
-						} while (w != v);
-						ncomp++;
-					}
-					call.pop_back();
-					if (!call.empty())
-					{
-						const int u = call.back().first;
-						low[u] = std::min(low[u], low[v]);
-					}
-				}
-			}
-			std::vector<u32> compSize(ncomp, 0);
-			for (size_t i = 0; i < NN; i++)
-				compSize[comp[i]]++;
+			std::vector<int> comp;
+			std::vector<u8> cyclic;
+			int ncomp = 0;
+			FindLoops(comp, cyclic, ncomp);
 			// Milestone 10: each loop (a cyclic strongly connected component)
 			// gets its own homes, chosen for its own nodes; the rest share one
 			// map. Links between maps transfer the live variables.
@@ -662,9 +717,7 @@ namespace vuopt
 			int nmaps = 1;
 			for (size_t i = 0; i < NN; i++)
 			{
-				bool cyc = compSize[comp[i]] > 1;
-				for (int y : succ[i])
-					cyc = cyc || y == static_cast<int>(i);
+				const bool cyc = cyclic[i] != 0;
 				if (cyc)
 					weight[i] = 8;
 				int m = 0;
@@ -1207,12 +1260,24 @@ namespace vuopt
 
 		PlanChecks();
 		acc_ = t_.stickyAcc && WantsAcc();
-		le_.stickyAcc = acc_;
-		ComputeLiveness();
-		for (auto& n : nodes_)
+		for (int pass = 0; pass < 2; pass++)
 		{
-			n->low = NodeLowering::Check(n->fn, le_, n->clamped, &n->liveOut);
-			pxAssertRel(n->low != nullptr, "vuopt region: a lowerable node failed its analysis");
+			le_.stickyAcc = acc_;
+			ComputeLiveness();
+			for (auto& n : nodes_)
+			{
+				n->low = NodeLowering::Check(n->fn, le_, n->clamped, &n->liveOut);
+				pxAssertRel(n->low != nullptr, "vuopt region: a lowerable node failed its analysis");
+			}
+			// (the analysis ran with the accumulators on; a region they do not pay in
+			// is analysed again without)
+			if (pass == 0 && acc_ && !t_.accAlways && !AccPays())
+			{
+				t_.accUnprofitable_++;
+				acc_ = false;
+				continue;
+			}
+			break;
 		}
 		if (acc_)
 			ComputeDirty();

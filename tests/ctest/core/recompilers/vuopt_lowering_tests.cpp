@@ -810,6 +810,7 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		RegionScope rs(1);
 		rs.region.maxVHomes = vHomes;
 		rs.region.stickyAcc = !g_noStickyAcc;
+		rs.region.accAlways = true; // (the estimate would decline many of these small programs)
 		rs.region.dump = dump;
 		if (jumps)
 			rs.region.jumpTargets = *jumps;

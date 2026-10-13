@@ -199,6 +199,8 @@ namespace vuopt
 			bool dirtyOut[2] = {false, false};
 			// Status updates the node accumulates instead of packing.
 			u32 accumulated = 0;
+			// Times the node folds the accumulators in (a reduce), entered clean / dirty.
+			u32 reduces[2] = {0, 0};
 		};
 		ChainEffect Chain() const;
 		// Whether the accumulators may hold such bits when the node is entered

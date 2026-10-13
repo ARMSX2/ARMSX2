@@ -69,6 +69,8 @@ namespace vuopt
 		u32 AccRegions() const { return accRegions_; }
 		u32 AccNonLinear() const { return accNonLinear_; }
 		u32 AccAccumulated() const { return accAccumulated_; }
+		// Regions with candidates where the accumulators would cost more than they save.
+		u32 AccUnprofitable() const { return accUnprofitable_; }
 		const std::map<std::string, u32>& Declined() const { return declined_; }
 
 		// Build only the first `maxRegions` regions (bisecting); -1 = all.
@@ -87,6 +89,8 @@ namespace vuopt
 		// Sticky STATUS accumulation (LowerEnv::stickyAcc) in regions that have
 		// status updates it can take. Costs two vector homes and one general home.
 		bool stickyAcc = true;
+		// ... even where the static estimate says they would not pay (tests, A/B).
+		bool accAlways = false;
 		// Recorded JR/JALR targets: block start PC of the jump -> target PCs
 		// seen at run time. A region dispatches these directly; any other
 		// target goes through microVU's jump cache.
@@ -115,7 +119,7 @@ namespace vuopt
 		const u8* micro_;
 		std::unique_ptr<PipeAnalyzer> an_;
 		u32 compiles_ = 0, regions_ = 0, nodes_ = 0, exits_ = 0;
-		u32 accRegions_ = 0, accNonLinear_ = 0, accAccumulated_ = 0;
+		u32 accRegions_ = 0, accNonLinear_ = 0, accAccumulated_ = 0, accUnprofitable_ = 0;
 		u64 bytes_ = 0;
 		std::map<std::string, u32> declined_;
 

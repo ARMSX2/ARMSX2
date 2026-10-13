@@ -455,7 +455,7 @@ namespace vuopt
 			public:
 			void SetDirtyIn(bool d) { dirtyIn_ = d; }
 			// How the chain operations leave `dirty_`, from either entry state; valid after Check.
-			void ChainEnds(bool out[2], u32& accumulated) const;
+			void ChainEnds(bool out[2], u32& accumulated, u32 reduces[2]) const;
 			private:
 			static bool IsChainOp(Op op) { return op == Op::StatusUpd || op == Op::StatusDiv || op == Op::StatusSet; }
 			// A status update whose pack the accumulators can take: sticky-only and in
@@ -1695,18 +1695,24 @@ namespace vuopt
 			}
 		}
 
-		void Lowerer::ChainEnds(bool out[2], u32& accumulated) const
+		void Lowerer::ChainEnds(bool out[2], u32& accumulated, u32 reduces[2]) const
 		{
 			accumulated = 0;
 			for (int init = 0; init < 2; init++)
 			{
 				bool d = init != 0;
+				reduces[init] = 0;
 				for (ValueId v : order_)
 				{
 					if (!emit_[v] || !IsChainOp(I(v).op))
 						continue;
-					if (init == 0 && AccCand(I(v)) && !chainReal_[v])
+					const Inst& in = I(v);
+					if (init == 0 && AccCand(in) && !chainReal_[v])
 						accumulated++;
+					// a reduce: an instance that has to be built while the accumulators owe the chain
+					if (d && ((AccCand(in) && chainReal_[v]) || (in.op == Op::StatusUpd && !AccCand(in) && ((in.imm & 1) || chainReal_[v])) ||
+							  (in.op == Op::StatusDiv && chainReal_[v])))
+						reduces[init]++;
 					d = ChainStep(v, d);
 				}
 				out[init] = d;
@@ -5276,7 +5282,7 @@ namespace vuopt
 	{
 		ChainEffect e;
 		bool out[2];
-		impl_->lw.ChainEnds(out, e.accumulated);
+		impl_->lw.ChainEnds(out, e.accumulated, e.reduces);
 		e.dirtyOut[0] = out[0];
 		e.dirtyOut[1] = out[1];
 		return e;
