@@ -61,6 +61,8 @@ struct FlagHackScope
 int g_clampMode = -1;
 // Whether framed bodies are list-scheduled (milestone 9; regions always are).
 bool g_schedule = false;
+// Regions without the sticky STATUS accumulation (debugging a failure).
+bool g_noStickyAcc = getenv("VUOPT_NO_ACC") != nullptr;
 
 struct TierScope
 {
@@ -807,6 +809,7 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 	{
 		RegionScope rs(1);
 		rs.region.maxVHomes = vHomes;
+		rs.region.stickyAcc = !g_noStickyAcc;
 		rs.region.dump = dump;
 		if (jumps)
 			rs.region.jumpTargets = *jumps;
@@ -1190,11 +1193,14 @@ u32 StickyFmac(u32 k)
 //   2 a divide merging its flags and an FSSET that clears the sticky bits
 //   3 a branch over three pairs: the number of status writes per trip varies
 //   4 sparse FMACs between integer-only pairs
+//   5 an XGKICK (a C call: the accumulators and the chain word ride through it)
 std::vector<VuOp> StickyProgram(int variant, u32 trip, u32 body)
 {
 	std::vector<VuOp> p;
 	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, static_cast<u16>(trip))));
 	p.push_back(L(VIADDIU_L(vi::vi7, vi::vi0, 1)));
+	if (variant == 5)
+		p.push_back(L(VIADDIU_L(vi::vi15, vi::vi0, 0x10)));
 	const s32 head = static_cast<s32>(p.size());
 	for (u32 k = 0; k < body; k++)
 	{
@@ -1221,6 +1227,10 @@ std::vector<VuOp> StickyProgram(int variant, u32 trip, u32 body)
 				if (k % 3 == 1) lo = VIADDIU_L(vi::vi8, vi::vi8, 1);
 				if (k == 9) lo = VFSAND_L(vi::vi3, 0xfff);
 				break;
+			case 5:
+				if (k == 7) lo = VXGKICK_L(vi::vi15);
+				if (k == 13) lo = VFSAND_L(vi::vi3, 0x0c3);
+				break;
 			default:
 				break;
 		}
@@ -1242,16 +1252,21 @@ static void RegionStickyAccumulationBody()
 {
 	int failures = 0;
 	u32 runs = 0, accRegions = 0, accumulated = 0;
-	for (int variant = 0; variant <= 4; variant++)
+	for (int variant = 0; variant <= 5; variant++)
 	{
+		// (variant 5 runs to the end: an XGKICK stopped by a budget bail shows a
+		// VPU_STAT difference that exists without the accumulators too)
 		const std::vector<VuOp> p = StickyProgram(variant, variant == 4 ? 12 : 7, 16);
 		for (bool fh : {false, true})
-			for (u32 budget = 1; budget <= 150; budget++)
+			for (u32 budget = (variant == 5 ? 0 : 1); budget <= (variant == 5 ? 0u : 150u); budget++)
 			{
 				const RegionOutcome o = RunRegion(p, fh, [variant](VuTestHarness& h) {
 					SeedSpecials(h, 31 + variant);
 					h.SetVi(8, 0);
-				}, false, 14, false, nullptr, budget);
+					// a one-quadword GIF packet at qword 0x10: NLOOP 1, EOP, PACKED, NREG 1 (A+D)
+					h.WriteMemU128(0x100, 0x00008001, 0x10000000, 0x0000000e, 0);
+					h.WriteMemU128(0x110, 0, 0, 0, 0);
+				}, budget == 0, 14, false, nullptr, budget);
 				runs++;
 				if (!fh)
 				{
