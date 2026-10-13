@@ -274,7 +274,12 @@ void VuTestHarness::SeedEntryState(bool reset_block_cache)
 	// running-bit lives in VU0.VI[REG_VPU_STAT] for *both* VUs (bit 0x1
 	// for VU0, bit 0x100 for VU1) — always poke VU0's copy here, then
 	// also stamp the local instance for snapshot consistency on VU1.
-	vuRegs[0].VI[REG_VPU_STAT].UL = (vuRegs[0].VI[REG_VPU_STAT].UL & ~0xFFFu) | RunningBit(vu_index_);
+	// Bit 12 is the interpreter's XGKICK-in-flight bit (set by _vuXGKICK,
+	// cleared when the transfer ends; microVU never writes it). It goes with
+	// the low bits: a run stopped by a cycle budget mid-kick leaves it set in
+	// VU0's copy, and the next run would start from it and keep it.
+	constexpr u32 kXgkickInFlight = 1u << 12;
+	vuRegs[0].VI[REG_VPU_STAT].UL = (vuRegs[0].VI[REG_VPU_STAT].UL & ~(0xFFFu | kXgkickInFlight)) | RunningBit(vu_index_);
 	vu.VI[REG_VPU_STAT].UL = vuRegs[0].VI[REG_VPU_STAT].UL;
 
 	// Cycle counter / pipeline state — start fresh so the first test in
