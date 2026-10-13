@@ -345,6 +345,12 @@ namespace vuopt
 			std::vector<ValueId> clampOf_;  // per canonical value: its clamped copy (a pseudo value), or 0
 			std::vector<s8> clampLane_;     // per clamped copy: the lane a scalar copy holds its value in
 			std::vector<u8> clampFixed_;    // per canonical value: already the output of this mode's clamp (clamping it changes nothing)
+			// Milestone 6: VI arithmetic on constants folded at compile time,
+			// copies and repeated loads aliased to the value they repeat.
+			std::vector<u8> folded_;        // per value: a constant computed here (constVal_)
+			std::vector<u32> constVal_;
+			bool ConstOf(ValueId v, u32& out) const;
+			void FoldAndAlias();
 			ValueId SingleSource(const std::vector<ValueId>& args, size_t off) const;
 			void ClampedOperands(ValueId id, std::vector<ValueId>& out) const;
 			template <typename F>
@@ -354,7 +360,25 @@ namespace vuopt
 			int ClampE(int src) { return env_.clampSign ? SignClampInto(src) : ClampInto(src); } // clampE operand clamp
 			bool ResultClamp() const { return env_.clampExtra && !env_.clampSign; }              // mVUclamp4
 			void KeepOnly(u32 before, int t);
-			void MemAddr(ValueId addrV, s32 imm, int& base, int& idx);
+			void MemAddr(ValueId addrV, s32 imm, int& base, int& idx); // idx < 0: constant address, offset memOff_
+			s32 memOff_ = 0;
+			// base + index as one pointer register and an offset
+			void MemPtr(int base, int idx, int& ptr, s32& off)
+			{
+				if (idx < 0)
+				{
+					ptr = base;
+					off = memOff_;
+					return;
+				}
+				armAsm->Add(X(idx), X(base), X(idx));
+				ptr = idx;
+				off = 0;
+			}
+			a64::MemOperand MemAt(int base, int idx) const
+			{
+				return idx < 0 ? a64::MemOperand(X(base), memOff_) : a64::MemOperand(X(base), X(idx));
+			}
 
 			void PackFlags(int src, u8 mask, bool mflag, int dst);
 			void MaxMin(int to, int from, bool isMax, int out);
@@ -628,14 +652,17 @@ namespace vuopt
 						armAsm->Umov(W(r), V(kPQ).V4S(), static_cast<int>(in.var - var::QL0));
 					break;
 				case Remat::Const:
+				{
+					const u32 k = folded_[c] ? constVal_[c] : static_cast<u32>(in.imm);
 					if (cls_[c] == Cls::V)
 					{
-						armAsm->Mov(a64::w16, static_cast<u32>(in.imm));
+						armAsm->Mov(a64::w16, k);
 						armAsm->Fmov(S(r), a64::w16);
 					}
 					else
-						armAsm->Mov(W(r), static_cast<u32>(in.imm));
+						armAsm->Mov(W(r), k);
 					break;
+				}
 				case Remat::VF0:
 					armAsm->Ldr(Q(r), a64::MemOperand(xState, kOffVF));
 					break;
@@ -906,6 +933,126 @@ namespace vuopt
 			return t;
 		}
 
+		bool Lowerer::ConstOf(ValueId v, u32& out) const
+		{
+			if (!v || v >= folded_.size())
+				return false;
+			if (folded_[v])
+			{
+				out = constVal_[v];
+				return true;
+			}
+			const Inst& in = I(v);
+			if ((in.op == Op::Const || in.op == Op::IConst) && in.type != Type::Vec && in.type != Type::Float)
+			{
+				out = static_cast<u32>(in.imm);
+				return true;
+			}
+			return false;
+		}
+
+		// VI arithmetic on constants becomes a constant; IADD/IOR with zero,
+		// IADDI(U)/ISUBIU by zero become the value itself (32-bit arithmetic,
+		// as microVU keeps VI values inside a block); a LoadQ from an address a
+		// LoadQ or a full-width StoreQ already accessed, with no store in
+		// between, becomes that value. Runs before uses are counted.
+		void Lowerer::FoldAndAlias()
+		{
+			std::vector<std::pair<std::pair<ValueId, u32>, ValueId>> mem; // (address value or 0, imm/constant address) -> value
+			const auto key = [&](ValueId addr, s32 imm) {
+				u32 cv;
+				if (ConstOf(C(addr), cv))
+					return std::make_pair(static_cast<ValueId>(0), ((cv + static_cast<u32>(imm)) & 0x3ff));
+				return std::make_pair(C(addr), static_cast<u32>(imm));
+			};
+			for (ValueId v : order_)
+			{
+				const Inst& in = I(v);
+				switch (in.op)
+				{
+					case Op::IAlu:
+					{
+						const LOp op = static_cast<LOp>(in.sub);
+						const bool two = op == LOp::IADD || op == LOp::ISUB || op == LOp::IAND || op == LOp::IOR;
+						u32 a, b = 0;
+						const bool ca = ConstOf(C(in.args[0]), a);
+						const bool cb = two && in.args.size() > 1 && ConstOf(C(in.args[1]), b);
+						if (ca && (!two || cb))
+						{
+							u32 r;
+							switch (op)
+							{
+								case LOp::IADD: r = a + b; break;
+								case LOp::ISUB: r = a - b; break;
+								case LOp::IAND: r = a & b; break;
+								case LOp::IOR: r = a | b; break;
+								case LOp::ISUBIU: r = a - static_cast<u32>(in.imm); break;
+								default: r = a + static_cast<u32>(in.imm); break;
+							}
+							folded_[v] = 1;
+							constVal_[v] = r;
+							remat_[v] = Remat::Const;
+							break;
+						}
+						// x + 0, x | 0, x - 0 (an operand that is the constant 0)
+						if (!two && in.imm == 0 && op != LOp::IAND)
+							canon_[v] = C(in.args[0]);
+						else if (two && cb && b == 0 && (op == LOp::IADD || op == LOp::ISUB || op == LOp::IOR))
+							canon_[v] = C(in.args[0]);
+						else if (two && ca && a == 0 && (op == LOp::IADD || op == LOp::IOR))
+							canon_[v] = C(in.args[1]);
+						break;
+					}
+					case Op::IncVI:
+					{
+						u32 a;
+						if (ConstOf(C(in.args[0]), a))
+						{
+							folded_[v] = 1;
+							constVal_[v] = in.imm > 0 ? a + 1 : a - 1;
+							remat_[v] = Remat::Const;
+						}
+						break;
+					}
+					case Op::LoadQ:
+					{
+						const auto k = key(in.args[1], in.imm);
+						bool hit = false;
+						for (const auto& e : mem)
+							if (e.first == k)
+							{
+								canon_[v] = C(e.second);
+								hit = true;
+								break;
+							}
+						if (!hit)
+							mem.push_back({k, v});
+						break;
+					}
+					case Op::StoreQ:
+					{
+						const auto k = key(in.args[1], in.imm);
+						mem.clear(); // any address may alias
+						if (in.mask == 0xf)
+						{
+							const ValueId src = SingleSource(in.args, 2);
+							bool all = src != 0;
+							for (int l = 0; l < 4 && all; l++)
+								all = in.args[2 + l] != 0;
+							if (all && cls_[src] == Cls::V)
+								mem.push_back({k, src});
+						}
+						break;
+					}
+					case Op::StoreI:
+						mem.clear();
+						break;
+					default:
+						break;
+				}
+			}
+		}
+
 		// The single canonical value args[off..off+3] read, or 0 when they come
 		// from several values (the operand is assembled) or none.
 		ValueId Lowerer::SingleSource(const std::vector<ValueId>& args, size_t off) const
@@ -1027,6 +1174,15 @@ namespace vuopt
 		// VU1 memory base.
 		void Lowerer::MemAddr(ValueId addrV, s32 imm, int& base, int& idx)
 		{
+			u32 cv;
+			if (ConstOf(C(addrV), cv))
+			{
+				// a constant address: an offset from the memory base
+				idx = -1;
+				memOff_ = static_cast<s32>(((cv + static_cast<u32>(imm)) & 0x3ff) * 16);
+				base = UseReg(memBase_);
+				return;
+			}
 			const int a = IntOperand(addrV);
 			idx = TempG();
 			if (imm > 0)
@@ -2055,6 +2211,8 @@ namespace vuopt
 
 		bool Lowerer::Known16(ValueId v) const
 		{
+			if (v < folded_.size() && folded_[v])
+				return constVal_[v] < 0x10000;
 			const Inst& in = I(v);
 			switch (in.op)
 			{
@@ -2075,9 +2233,13 @@ namespace vuopt
 		void Lowerer::Leave(ValueId id)
 		{
 			const Inst& in = I(id);
+			// A final value that is the variable's own incoming value (directly,
+			// or through a copy aliased to it) needs no write.
 			const auto ownLiveIn = [&](u32 v, ValueId val) {
-				const Inst& x = I(val);
-				return x.op == Op::LiveIn && x.var == v;
+				const Inst& x = I(C(val));
+				if (x.op != Op::LiveIn)
+					return false;
+				return VecHomeOf(v) ? (x.var == v || (C(val) != val && VecHomeOf(x.var) == VecHomeOf(v))) : x.var == v;
 			};
 			const auto homeKind = [&](u32 v) -> HomeKind {
 				if (IsStatus(v) || IsPQ(v))
@@ -2474,6 +2636,8 @@ namespace vuopt
 		void Lowerer::One(ValueId id)
 		{
 			const Inst& in = I(id);
+			if (folded_[id] || canon_[id] != id)
+				return; // a constant, or the same value as an earlier one
 			switch (in.op)
 			{
 				case Op::Const:
@@ -2621,16 +2785,17 @@ namespace vuopt
 					int base, idx;
 					MemAddr(in.args[1], in.imm, base, idx);
 					const int d = DefV(id);
-					armAsm->Ldr(Q(d), a64::MemOperand(X(base), X(idx)));
+					armAsm->Ldr(Q(d), MemAt(base, idx));
 					break;
 				}
 				case Op::LoadI:
 				{
-					int base, idx;
+					int base, idx, ptr;
+					s32 off;
 					MemAddr(in.args[1], in.imm, base, idx);
-					armAsm->Add(X(idx), X(base), X(idx));
+					MemPtr(base, idx, ptr, off);
 					const int d = DefG(id);
-					armAsm->Ldrh(W(d), a64::MemOperand(X(idx), static_cast<s32>(VuIlwLaneOffset(in.word))));
+					armAsm->Ldrh(W(d), a64::MemOperand(X(ptr), off + static_cast<s32>(VuIlwLaneOffset(in.word))));
 					break;
 				}
 				case Op::StoreQ:
@@ -2639,10 +2804,12 @@ namespace vuopt
 					int base, idx;
 					MemAddr(in.args[1], in.imm, base, idx);
 					if (in.mask == 0xf)
-						armAsm->Str(Q(src), a64::MemOperand(X(base), X(idx)));
+						armAsm->Str(Q(src), MemAt(base, idx));
 					else
 					{
-						armAsm->Add(X(idx), X(base), X(idx));
+						int pr;
+						s32 po;
+						MemPtr(base, idx, pr, po);
 						// contiguous lane groups: D / S stores
 						int l = 0;
 						while (l < 4)
@@ -2655,24 +2822,24 @@ namespace vuopt
 							if ((l == 0 || l == 2) && MaskLane(in.mask, l + 1))
 							{
 								if (l == 0)
-									armAsm->Str(D(src), a64::MemOperand(X(idx), 0));
+									armAsm->Str(D(src), a64::MemOperand(X(pr), po));
 								else
 								{
 									const int t = TempV();
 									armAsm->Dup(D(t), V(src).V2D(), 1);
-									armAsm->Str(D(t), a64::MemOperand(X(idx), 8));
+									armAsm->Str(D(t), a64::MemOperand(X(pr), po + 8));
 								}
 								l += 2;
 							}
 							else
 							{
 								if (l == 0)
-									armAsm->Str(S(src), a64::MemOperand(X(idx), 0));
+									armAsm->Str(S(src), a64::MemOperand(X(pr), po));
 								else
 								{
 									const int t = TempV();
 									armAsm->Dup(S(t), V(src).V4S(), l);
-									armAsm->Str(S(t), a64::MemOperand(X(idx), l * 4));
+									armAsm->Str(S(t), a64::MemOperand(X(pr), po + l * 4));
 								}
 								l++;
 							}
@@ -2683,14 +2850,15 @@ namespace vuopt
 				case Op::StoreI:
 				{
 					const int val = IntOperand(in.args[2]);
-					int base, idx;
+					int base, idx, pr;
+					s32 po;
 					MemAddr(in.args[1], in.imm, base, idx);
-					armAsm->Add(X(idx), X(base), X(idx));
+					MemPtr(base, idx, pr, po);
 					const int t = TempG();
 					armAsm->Uxth(W(t), W(val));
 					for (int l = 0; l < 4; l++)
 						if (MaskLane(in.mask, l))
-							armAsm->Str(W(t), a64::MemOperand(X(idx), l * 4));
+							armAsm->Str(W(t), a64::MemOperand(X(pr), po + l * 4));
 					break;
 				}
 				case Op::Move:
@@ -2906,6 +3074,8 @@ namespace vuopt
 			canon_[memBase_] = memBase_;
 			cls_[memBase_] = Cls::G;
 			remat_[memBase_] = Remat::MemBase;
+			folded_.assign(N, 0);
+			constVal_.assign(N, 0);
 
 			for (ValueId v : order_)
 			{
@@ -2942,7 +3112,10 @@ namespace vuopt
 				return false;
 			}
 
-			// Dead code: work nothing reaches. Side effects are roots.
+			FoldAndAlias();
+
+			// Dead code: work nothing reaches. Side effects are roots. An
+			// aliased value needs the value it stands for.
 			std::vector<ValueId> work;
 			for (ValueId v : order_)
 			{
@@ -2972,6 +3145,12 @@ namespace vuopt
 						continue;
 					emit_[a] = 1;
 					work.push_back(a);
+					const ValueId c = C(a);
+					if (c != a && c < f_.insts.size() && !emit_[c])
+					{
+						emit_[c] = 1;
+						work.push_back(c);
+					}
 				}
 			}
 
