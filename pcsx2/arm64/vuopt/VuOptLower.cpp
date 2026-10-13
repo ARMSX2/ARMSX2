@@ -279,6 +279,7 @@ namespace vuopt
 				std::vector<s8> reg, clampLane;
 				std::vector<s16> slot;
 				std::vector<const void*> globAddr;
+				Inst leave2;
 			};
 			static thread_local std::vector<std::unique_ptr<Scratch>> s_pool;
 			std::unique_ptr<Scratch> scratch_;
@@ -286,13 +287,13 @@ namespace vuopt
 			Lists cu_, endAt_, startAt_;
 			std::vector<u32> lastUse_, posOf_;
 			std::vector<u32> leaveKs_; // the Leave's non-zero operands (most variables are untouched)
-			const u8* liveOut_ = nullptr; // per variable: live at the node's end (null: all)
-			Inst leave2_;                 // the Leave with dead variables zeroed
+			const LiveSet* liveOut_ = nullptr; // variables live at the node's end (null: all)
+			Inst leave2_;                      // the Leave with dead variables zeroed (buffer from the pool)
 			bool hasLeave2_ = false;
 		public:
-			void SetLiveOut(const u8* live) { liveOut_ = live; }
+			void SetLiveOut(const LiveSet* live) { liveOut_ = live; }
 			// Whether the node can be lowered at all, without the analysis.
-			bool CheckShape(std::string& why) const;
+			static bool CheckShape(const Function& f_, const LowerEnv& env_, std::string& why);
 		private:
 			const Inst& LeaveInst() const { return hasLeave2_ ? leave2_ : f_.insts[leave_]; }
 			// f(k, arg) for each non-zero operand of v
@@ -343,6 +344,7 @@ namespace vuopt
 				clampLane_.swap(x.clampLane);
 				slot_.swap(x.slot);
 				globAddr_.swap(x.globAddr);
+				std::swap(leave2_, x.leave2);
 			}
 			// n empty lists, keeping the buffers of the lists that stay.
 			const Function& f_;
@@ -3464,11 +3466,13 @@ namespace vuopt
 			// are left out of the end: their final values are neither
 			// computed nor written.
 			hasLeave2_ = false;
-			if (liveOut_)
+			if (liveOut_ && (!f_.leaveArgs.empty() || f_.insts[leave_].args.empty()))
 			{
 				const Inst& orig = f_.insts[leave_];
-				for (u32 k = 0; k < var::Count && k < orig.args.size(); k++)
-					if (orig.args[k] && !liveOut_[k])
+				leaveKs_.clear();
+				for (u32 k : f_.leaveArgs)
+				{
+					if (k < var::Count && !liveOut_->test(k))
 					{
 						if (!hasLeave2_)
 						{
@@ -3476,9 +3480,12 @@ namespace vuopt
 							hasLeave2_ = true;
 						}
 						leave2_.args[k] = 0;
+						continue;
 					}
+					leaveKs_.push_back(k);
+				}
 			}
-			if (!hasLeave2_ && (!f_.leaveArgs.empty() || f_.insts[leave_].args.empty()))
+			else if (!f_.leaveArgs.empty() || f_.insts[leave_].args.empty())
 				leaveKs_.assign(f_.leaveArgs.begin(), f_.leaveArgs.end());
 			else
 			{
@@ -3721,7 +3728,7 @@ namespace vuopt
 		// The half of Check that depends on the homes: how incoming values are
 		// produced again, which results go straight to a register home, the
 		// register pools and the pressure bound.
-		bool Lowerer::CheckShape(std::string& why) const
+		bool Lowerer::CheckShape(const Function& f_, const LowerEnv& env_, std::string& why)
 		{
 			if (f_.unsupported)
 			{
@@ -4101,7 +4108,7 @@ namespace vuopt
 
 	NodeLowering::~NodeLowering() = default;
 
-	std::unique_ptr<NodeLowering> NodeLowering::Check(const ir::Function& f, const LowerEnv& env, u32 counts[33], const u8* liveOut)
+	std::unique_ptr<NodeLowering> NodeLowering::Check(const ir::Function& f, const LowerEnv& env, u32 counts[33], const LiveSet* liveOut)
 	{
 		static const HomeMap boundary;
 		auto impl = std::make_unique<Impl>(f, env, boundary);
@@ -4115,16 +4122,18 @@ namespace vuopt
 
 	bool NodeLowering::Lowerable(const ir::Function& f, const LowerEnv& env)
 	{
-		static const HomeMap boundary;
-		Lowerer lw(f, env, boundary, LowerMode::Region);
 		std::string why;
-		if (!lw.CheckShape(why))
+		if (!Lowerer::CheckShape(f, env, why))
 			return false;
 		// Beyond the shape, only the register pressure bound can fail, and only
 		// for a node of more values than the spill area holds or with the
 		// pools cut down for testing: then run the whole check.
 		if (f.insts.size() + 12 > static_cast<size_t>(kSlots + kOverflowSlots - 16) || env.poolLimitV || env.poolLimitG)
+		{
+			static const HomeMap boundary;
+			Lowerer lw(f, env, boundary, LowerMode::Region);
 			return lw.Check(why);
+		}
 		return true;
 	}
 

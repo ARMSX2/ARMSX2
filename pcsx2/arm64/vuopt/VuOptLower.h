@@ -32,6 +32,7 @@
 
 #include "VuOptIR.h"
 
+#include <bitset>
 #include <memory>
 #include <string>
 #include <utility>
@@ -39,6 +40,9 @@
 
 namespace vuopt
 {
+	// One flag per IR variable (milestone 8's region liveness).
+	using LiveSet = std::bitset<ir::var::Count>;
+
 	struct LowerEnv
 	{
 		u32 vuIndex = 1;
@@ -148,7 +152,7 @@ namespace vuopt
 		// `liveOut` (var::Count flags, or null for all): the variables live at
 		// the node's end; the others' final values are neither computed nor
 		// stored (milestone 8).
-		static std::unique_ptr<NodeLowering> Check(const ir::Function& f, const LowerEnv& env, u32 counts[33], const u8* liveOut = nullptr);
+		static std::unique_ptr<NodeLowering> Check(const ir::Function& f, const LowerEnv& env, u32 counts[33], const LiveSet* liveOut = nullptr);
 		// Whether Check would succeed, without its analysis (a region decides
 		// node or exit with this, then analyses the nodes once it knows their
 		// liveness).

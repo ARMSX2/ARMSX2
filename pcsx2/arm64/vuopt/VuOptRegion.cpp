@@ -132,7 +132,7 @@ namespace vuopt
 			void* blk = nullptr;
 			u32 clamped[33] = {}; // clamped uses of each incoming vector register (NodeLowering::Check)
 			std::unique_ptr<NodeLowering> low; // analysed lowering of fn (refers to fn: Nodes do not move)
-			std::vector<u8> liveOut;           // per variable: live at the node's end (milestone 8)
+			LiveSet liveOut;                   // variables live at the node's end (milestone 8)
 			int taken = 0x7fffffff, fall = 0x7fffffff; // >= 0: node; < 0: exit -(k+1)
 			std::vector<std::pair<u32, int>> jumps;    // JR/JALR: recorded target PC -> node / exit
 			a64::Label head;
@@ -370,7 +370,7 @@ namespace vuopt
 	void RegionBuilder::ComputeLiveness()
 	{
 		using namespace ir;
-		using Bits = std::bitset<var::Count>;
+		using Bits = LiveSet;
 		const size_t NN = nodes_.size();
 		std::vector<Bits> use(NN), def(NN), in(NN), out(NN);
 		std::vector<u8> observe(NN, 0);
@@ -388,7 +388,7 @@ namespace vuopt
 					const Inst& x = f.insts[id];
 					if (x.op == Op::Leave)
 					{
-						for (size_t k = 0; k < x.args.size(); k++)
+						for (u32 k : f.leaveArgs)
 						{
 							const ValueId a = x.args[k];
 							if (!a)
@@ -453,11 +453,7 @@ namespace vuopt
 			}
 		}
 		for (size_t i = 0; i < NN; i++)
-		{
-			nodes_[i]->liveOut.assign(var::Count, 0);
-			for (u32 v = 0; v < var::Count; v++)
-				nodes_[i]->liveOut[v] = out[i].test(v) ? 1 : 0;
-		}
+			nodes_[i]->liveOut = out[i];
 	}
 
 	void RegionBuilder::AssignHomes()
@@ -582,7 +578,7 @@ namespace vuopt
 								continue;
 							if (v < 132)
 								written[v < 128 ? v / 4 : 32] = true; // any write ends a clamped home's validity
-							if (n->liveOut[v])
+							if (n->liveOut.test(v))
 								mark(VecKey(v), 2);
 						}
 						continue;
@@ -891,7 +887,7 @@ namespace vuopt
 		ComputeLiveness();
 		for (auto& n : nodes_)
 		{
-			n->low = NodeLowering::Check(n->fn, le_, n->clamped, n->liveOut.data());
+			n->low = NodeLowering::Check(n->fn, le_, n->clamped, &n->liveOut);
 			pxAssertRel(n->low != nullptr, "vuopt region: a lowerable node failed its analysis");
 		}
 		AssignHomes();
