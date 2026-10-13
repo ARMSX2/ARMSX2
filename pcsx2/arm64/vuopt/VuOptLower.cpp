@@ -1621,6 +1621,42 @@ namespace vuopt
 									}
 							}
 			}
+			// A variable's final value after every read of its incoming value:
+			// the final value can then go straight into the variable's home
+			// (register homes hold the incoming value until its last read).
+			{
+				static thread_local ValueId liOf[var::Count];
+				std::fill(std::begin(liOf), std::end(liOf), 0);
+				for (size_t v = 1; v < f_.insts.size(); v++)
+					if (f_.insts[v].op == Op::LiveIn && f_.insts[v].var < var::Count)
+						liOf[f_.insts[v].var] = canon_[v];
+				const Inst& lv = LeaveInst();
+				for (u32 k : leaveKs_)
+				{
+					if (k >= var::Count)
+						break;
+					const ValueId fin = C(lv.args[k]);
+					if (!inBlock(fin))
+						continue;
+					const ValueId li = liOf[k];
+					if (!li)
+						continue;
+					// (only reads before it in program order: those edges keep the
+					// graph acyclic)
+					for (u32 j = 0; j < static_cast<u32>(idx[fin]); j++)
+					{
+						const ValueId u = order_[j];
+						if (u == leave_ || u == fin)
+							continue;
+						for (ValueId x : I(u).args)
+							if (x && C(x) == li)
+							{
+								edgeList.push_back({j, static_cast<u32>(idx[fin])});
+								break;
+							}
+					}
+				}
+			}
 			// adjacency (CSR) and predecessor counts
 			npred.assign(n, 0);
 			edgeStart.assign(n + 1, 0);
