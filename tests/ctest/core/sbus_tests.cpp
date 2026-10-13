@@ -15,8 +15,10 @@
 //                 write with bit 5 or 7, resets 12-15 and sets bit 13; the SIF pumps clear their own bits
 //   F260          the EE writes it, an IOP write sets it to 0
 //
-// This file records what those accesses do today, value by value, so that making them atomic can be
-// checked not to move any of it.
+// The first half of this file records what those accesses do today, value by value, so that making
+// them atomic can be checked not to move any of it. The second half runs the EE side and the IOP side
+// of one register on two threads at once. A plain read-modify-write loses an update when the other
+// side's lands between its load and its store; an atomic one cannot, so the counts come out exact.
 //
 // Memory. The IOP window reads and writes through psxMemRLUT/psxMemWLUT and iopMem->Sif, and the
 // handlers read psxRegs; this file points them at a heap block and a small table instead of bringing up
@@ -33,8 +35,10 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 
 namespace
 {
@@ -286,4 +290,157 @@ TEST_F(Sbus, TheRegistersDoNotTouchEachOther)
 	EeWrite(SBUS_F220, 0x00000F00);
 	for (int i = 0; i < 7; i++)
 		EXPECT_EQ(regs[i] == SBUS_F220 ? 0x33333F33u : start[i], Word(regs[i])) << std::hex << regs[i];
+}
+
+// ---- Both sides at once ------------------------------------------------------------------------
+//
+// The EE side sets bits of a register one after another; the IOP side finds each set bit and clears it,
+// and counts what it cleared. If no update is lost the IOP clears exactly as many bits as the EE set,
+// because the EE only reuses a bit after the IOP cleared it. An update lost on either side shows as a
+// count that is not the rounds: a set that a clear overwrote is never seen (fewer), a clear that a set
+// overwrote is seen again (more).
+
+namespace
+{
+	struct Handshake
+	{
+		u32 set_reg;
+		u32 clear_reg;
+		u32 rounds;
+		std::atomic<bool> setter_done{false};
+		std::atomic<bool> clearer_done{false};
+		u64 cleared = 0;
+	};
+
+	// F220: the EE sets, the IOP clears.
+	void RunEeSetsIopClears(Handshake& h)
+	{
+		std::thread ee([&h] {
+			for (u32 r = 0; r < h.rounds; r++)
+			{
+				const u32 bit = 1u << (r & 15);
+				while ((EeRead(h.set_reg) & bit) && !h.clearer_done.load(std::memory_order_relaxed))
+				{
+				}
+				EeWrite(h.set_reg, bit);
+			}
+			h.setter_done.store(true, std::memory_order_release);
+		});
+		std::thread iop([&h] {
+			u64 cleared = 0;
+			for (;;)
+			{
+				const bool last_pass = h.setter_done.load(std::memory_order_acquire);
+				const u32 seen = IopRead32(h.clear_reg) & 0xFFFF;
+				for (u32 b = 0; b < 16; b++)
+				{
+					if (seen & (1u << b))
+					{
+						IopWrite32(h.clear_reg, 1u << b);
+						cleared++;
+					}
+				}
+				if (last_pass)
+					break;
+			}
+			h.cleared = cleared;
+			h.clearer_done.store(true, std::memory_order_release);
+		});
+		ee.join();
+		iop.join();
+	}
+
+	// F230: the IOP sets, the EE clears.
+	void RunIopSetsEeClears(Handshake& h)
+	{
+		std::thread iop([&h] {
+			for (u32 r = 0; r < h.rounds; r++)
+			{
+				const u32 bit = 1u << (r & 15);
+				while ((IopRead32(h.set_reg) & bit) && !h.clearer_done.load(std::memory_order_relaxed))
+				{
+				}
+				IopWrite32(h.set_reg, bit);
+			}
+			h.setter_done.store(true, std::memory_order_release);
+		});
+		std::thread ee([&h] {
+			u64 cleared = 0;
+			for (;;)
+			{
+				const bool last_pass = h.setter_done.load(std::memory_order_acquire);
+				const u32 seen = EeRead(h.clear_reg) & 0xFFFF;
+				for (u32 b = 0; b < 16; b++)
+				{
+					if (seen & (1u << b))
+					{
+						EeWrite(h.clear_reg, 1u << b);
+						cleared++;
+					}
+				}
+				if (last_pass)
+					break;
+			}
+			h.cleared = cleared;
+			h.clearer_done.store(true, std::memory_order_release);
+		});
+		iop.join();
+		ee.join();
+	}
+} // namespace
+
+TEST_F(Sbus, F220NoSetIsLostWhenTheEeSetsWhileTheIopClears)
+{
+	Handshake h;
+	h.set_reg = SBUS_F220;
+	h.clear_reg = SBUS_F220;
+	h.rounds = 1000000;
+	RunEeSetsIopClears(h);
+	EXPECT_EQ(static_cast<u64>(h.rounds), h.cleared) << "an update to F220 was lost";
+	EXPECT_EQ(0u, Word(SBUS_F220) & 0xFFFF);
+}
+
+TEST_F(Sbus, F230NoSetIsLostWhenTheIopSetsWhileTheEeClears)
+{
+	Handshake h;
+	h.set_reg = SBUS_F230;
+	h.clear_reg = SBUS_F230;
+	h.rounds = 1000000;
+	RunIopSetsEeClears(h);
+	EXPECT_EQ(static_cast<u64>(h.rounds), h.cleared) << "an update to F230 was lost";
+	EXPECT_EQ(0u, Word(SBUS_F230) & 0xFFFF);
+}
+
+// The control register has the EE changing bit 8 while the IOP toggles bit 4. Each side's bit ends where
+// its own operations leave it, whatever the other did meanwhile: the IOP toggled an even number of times,
+// and the EE's last write set bit 8.
+TEST_F(Sbus, F240EachSidesBitEndsWhereItsOwnWritesLeaveIt)
+{
+	constexpr u32 kToggles = 200000; // even
+	for (int trial = 0; trial < 16; trial++)
+	{
+		Word(SBUS_F240) = 0;
+		std::atomic<bool> go{false};
+		std::thread ee([&] {
+			while (!go.load(std::memory_order_acquire))
+			{
+			}
+			for (u32 i = 0; i < kToggles; i++)
+				EeWrite(SBUS_F240, (i & 1) ? 0 : 0x100); // set, clear, set, clear ... ends cleared
+			EeWrite(SBUS_F240, 0x100); // and one more: set
+		});
+		std::thread iop([&] {
+			while (!go.load(std::memory_order_acquire))
+			{
+			}
+			for (u32 i = 0; i < kToggles; i++)
+				IopWrite32(SBUS_F240, 0x10); // toggle bit 4
+		});
+		go.store(true, std::memory_order_release);
+		ee.join();
+		iop.join();
+		EXPECT_EQ(0x100u, Word(SBUS_F240)) << "trial " << trial << ": an update to F240 was lost";
+		if (Word(SBUS_F240) != 0x100u)
+			break;
+	}
 }

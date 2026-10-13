@@ -8,6 +8,7 @@
 #include "USB/USB.h"
 
 #include "common/WrappedMemCopy.h"
+#include "IopThread/SharedWord.h"
 
 #include "fmt/format.h"
 
@@ -32,7 +33,7 @@ void hwReset()
 		std::swap(ee_sio_tx_fifo, empty_tx);
 	}
 
-	psHu32(SBUS_F260) = 0x1D000060;
+	SharedWord::StoreRelease(psHu32(SBUS_F260), 0x1D000060);
 
 	// i guess this is kinda a version, it's used by some bioses
 	psHu32(DMAC_ENABLEW) = 0x1201;

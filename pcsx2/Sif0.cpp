@@ -8,6 +8,7 @@
 #include "Sif.h"
 #include "IopHw.h"
 #include "IopThread/IopBridge.h"
+#include "IopThread/SharedWord.h"
 
 _sif sif0;
 
@@ -284,8 +285,8 @@ static __fi void HandleIOPTransfer()
 
 static __fi void Sif0End()
 {
-	psHu32(SBUS_F240) &= ~0x20;
-	psHu32(SBUS_F240) &= ~0x2000;
+	// Both bits in one step: the other side changes this register too.
+	SharedWord::FetchAnd(psHu32(SBUS_F240), ~(0x20u | 0x2000u));
 
 	DMA_LOG("SIF0 DMA End");
 }
@@ -369,7 +370,7 @@ __fi void dmaSIF0()
 	}
 
 	//if(sif0ch.chcr.MOD == CHAIN_MODE && sif0ch.qwc > 0) DevCon.Warning(L"SIF0 QWC on Chain CHCR " + sif0ch.chcr.desc());
-	psHu32(SBUS_F240) |= 0x2000;
+	SharedWord::FetchOr(psHu32(SBUS_F240), 0x2000u);
 	sif0.ee.busy = true;
 
 	// Okay, this here is needed currently (r3644).
