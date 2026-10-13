@@ -106,7 +106,15 @@ namespace IopThread
 	/// thread only, by ChooseMode(), and the EE core reads it only where it builds something for the
 	/// mode (the JIT dispatcher at a recompiler reset, the interpreter's event test pointer). No
 	/// event-frequency path reads it.
+	//
+	// Hidden visibility: every reader is in the one executable, and a default-visibility variable is read
+	// through the GOT in position-independent code (two loads for one byte). The ownership asserts read it at
+	// event frequency in Off, so they are an adrp, a byte load and a branch.
+#if defined(__GNUC__) || defined(__clang__)
+	extern IopThreadMode s_mode __attribute__((visibility("hidden")));
+#else
 	extern IopThreadMode s_mode;
+#endif
 	inline IopThreadMode GetMode() { return s_mode; }
 
 	/// Says that the gtest recompiler environment (DiffJitVsInterp) is running, which makes

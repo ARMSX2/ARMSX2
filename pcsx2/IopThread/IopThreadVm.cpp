@@ -11,6 +11,7 @@
 #include "IopDma.h"
 #include "IopHw.h"
 #include "IopMem.h"
+#include "IopThread/OwnerAsserts.h"
 #include "IopThread/SharedWord.h"
 #include "Patch.h"
 #include "R3000A.h"
@@ -24,6 +25,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <mutex>
+#include <set>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -230,6 +234,83 @@ namespace IopThread
 	Stats GetStats()
 	{
 		return g_thread.GetStats();
+	}
+
+	// ================================================================ ownership asserts
+
+	namespace
+	{
+		ViolationHandler s_violation_handler = &FailOnViolation;
+		std::atomic<u64> s_violations{0};
+	} // namespace
+
+	ViolationHandler SetViolationHandler(ViolationHandler handler)
+	{
+		return std::exchange(s_violation_handler, handler ? handler : &FailOnViolation);
+	}
+
+	u64 ViolationCount()
+	{
+		return s_violations.load(std::memory_order_relaxed);
+	}
+
+	void ResetViolationCount()
+	{
+		s_violations.store(0, std::memory_order_relaxed);
+	}
+
+	void FailOnViolation(Side side, const char* where)
+	{
+		Console.Error("IOP thread ownership: %s", where);
+		pxFailRel(side == Side::Iop ?
+					  "an IOP-side entry point was called from the EE thread with no hold and no queued item" :
+					  "an EE-side entry point was called from the IOP thread in Threaded mode");
+	}
+
+	void LogViolation(Side side, const char* where)
+	{
+		// One line per site: a run that trips a site thousands of times says so once.
+		static std::mutex mutex;
+		static std::set<std::string> seen;
+		const std::string key = std::string(side == Side::Iop ? "iop:" : "ee:") + where;
+		{
+			std::lock_guard lock(mutex);
+			if (!seen.insert(key).second)
+				return;
+		}
+		Console.Error("IOP thread ownership: %s (%s side), called from %s", where, side == Side::Iop ? "IOP" : "EE",
+			g_thread.OnIopThread() ? "the IOP thread" : "a thread that is not the IOP thread");
+	}
+
+	bool IopSideAllowed()
+	{
+		if (s_mode == IopThreadMode::Off || g_thread.OnIopThread())
+			return true;
+		// With no thread running nothing runs beside the caller, whatever the mode says.
+		return !g_thread.IsRunning() || g_thread.HoldDepth() > 0;
+	}
+
+	bool EeSideAllowed()
+	{
+		// Lockstep lets the IOP thread call into the EE directly: the EE is blocked in the handoff.
+		return s_mode != IopThreadMode::Threaded || !g_thread.OnIopThread();
+	}
+
+	void CheckIopSide(const char* where)
+	{
+		if (IopSideAllowed())
+			return;
+		// Counted here, so that every handler is counted, including one that returns to the caller.
+		s_violations.fetch_add(1, std::memory_order_relaxed);
+		s_violation_handler(Side::Iop, where);
+	}
+
+	void CheckEeSide(const char* where)
+	{
+		if (EeSideAllowed())
+			return;
+		s_violations.fetch_add(1, std::memory_order_relaxed);
+		s_violation_handler(Side::Ee, where);
 	}
 
 	// ================================================================ EE-to-IOP items

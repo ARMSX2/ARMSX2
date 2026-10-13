@@ -8,6 +8,7 @@
 #include "Sif.h"
 #include "IopHw.h"
 #include "IopThread/IopBridge.h"
+#include "IopThread/OwnerAsserts.h"
 #include "IopThread/SharedWord.h"
 
 _sif sif0;
@@ -297,6 +298,8 @@ static __fi void Sif0End()
 // transfer step ran; the junk write does not count.
 static __fi bool Sif0IopStep()
 {
+	IOP_SIDE_ASSERT();
+
 	if (sif0.iop.counter == 0 && sif0.iop.writeJunk && sif0.fifo.sif_free() >= sif0.iop.writeJunk)
 	{
 		SIF_LOG("Writing Junk %d", sif0.iop.writeJunk);
@@ -319,6 +322,8 @@ static __fi bool Sif0IopStep()
 // Returns whether the step ran.
 static __fi bool Sif0EeStep()
 {
+	EE_SIDE_ASSERT();
+
 	if (sif0.ee.busy)
 	{
 		if(sif0.fifo.size >= 4 || (sif0.ee.end && sif0ch.qwc == 0))

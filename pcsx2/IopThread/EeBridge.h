@@ -21,6 +21,7 @@
 #include "Common.h"
 #include "IopHw.h"
 #include "IopThread/IopThreadMode.h"
+#include "IopThread/OwnerAsserts.h"
 #include "R3000A.h"
 #include "Sif.h"
 #include "VMManager.h"
@@ -33,6 +34,7 @@ namespace EeBridge
 	// The EE runs its event test `delta` EE cycles from now instead.
 	__forceinline_odr void ScheduleEeEvent(s32 delta)
 	{
+		EE_SIDE_ASSERT();
 		cpuSetNextEventDelta(delta);
 	}
 
@@ -42,6 +44,7 @@ namespace EeBridge
 	// event test, the IOP's own next branch will do.
 	__forceinline_odr void IopInterruptPending()
 	{
+		EE_SIDE_ASSERT();
 		if (!eeEventTestIsActive)
 		{
 			// An iop exception has occurred while the EE is running code.
@@ -74,6 +77,7 @@ namespace EeBridge
 
 	__forceinline_odr void RaiseSbusIrq()
 	{
+		EE_SIDE_ASSERT();
 		hwIntcIrq(INTC_SBUS);
 	}
 
@@ -81,8 +85,8 @@ namespace EeBridge
 	// psxDma9/psxDma10 start a transfer and then run the pump, which moves data on both sides and
 	// schedules both sides' completion interrupts. The pump is the call that touches the EE.
 
-	__forceinline_odr void Sif0Pump() { SIF0Dma(); }
-	__forceinline_odr void Sif1Pump() { SIF1Dma(); }
+	__forceinline_odr void Sif0Pump() { EE_SIDE_ASSERT(); SIF0Dma(); }
+	__forceinline_odr void Sif1Pump() { EE_SIDE_ASSERT(); SIF1Dma(); }
 
 	// ---- The IOP stops the VM ----------------------------------------------------------------
 	// The IOP JIT's error path and the IOP interpreter's breakpoint pause the VM and leave the

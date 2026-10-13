@@ -26,6 +26,7 @@
 #include "IopThread/IopThreadMode.h"
 #include "IopThread/EeBridge.h"
 #include "IopThread/IopBridge.h"
+#include "IopThread/OwnerAsserts.h"
 
 #include "DebugTools/Breakpoints.h"
 #include "DebugTools/MIPSAnalyst.h"
@@ -389,6 +390,10 @@ u64 g_twinIopSlices = 0;
 // Lockstep the IOP thread runs it while the EE waits in the handoff.
 void iopRunSliceOnIopThread()
 {
+	// ExecuteBlock and iopEventTest are IOP-side entries. Neither carries the assert itself: they run
+	// up to 18,000 times a frame in Off, where this function is not used.
+	IOP_SIDE_ASSERT();
+
 	if (iopEventAction)
 	{
 		EEsCycle = psxCpu->ExecuteBlock(EEsCycle);

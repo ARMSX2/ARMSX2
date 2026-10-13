@@ -8,6 +8,7 @@
 #include "Sif.h"
 #include "IopHw.h"
 #include "IopThread/IopBridge.h"
+#include "IopThread/OwnerAsserts.h"
 #include "IopThread/SharedWord.h"
 
 _sif sif2;
@@ -198,6 +199,8 @@ static __fi void EndIOP()
 // Handle the EE transfer.
 static __fi void HandleEETransfer()
 {
+	EE_SIDE_ASSERT();
+
 	if (!sif2dma.chcr.STR)
 	{
 		//DevCon.Warning("Replacement for irq prevention hack EE SIF2");
@@ -272,6 +275,8 @@ static __fi void HandleEETransfer()
 
 static __fi void HandleIOPTransfer()
 {
+	IOP_SIDE_ASSERT();
+
 	if (sif2.iop.counter <= 0) // If there's no more to transfer
 	{
 		if (sif2.iop.end)

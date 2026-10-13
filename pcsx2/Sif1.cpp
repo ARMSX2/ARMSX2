@@ -8,6 +8,7 @@
 #include "Sif.h"
 #include "IopHw.h"
 #include "IopThread/IopBridge.h"
+#include "IopThread/OwnerAsserts.h"
 #include "IopThread/SharedWord.h"
 
 _sif sif1;
@@ -266,6 +267,8 @@ static __fi void Sif1End()
 // stall flag, which holds the EE side for the rest of this call and the calls after it.
 static __fi bool Sif1EeStep()
 {
+	EE_SIDE_ASSERT();
+
 	if (sif1.ee.busy && !sif1_dma_stall)
 	{
 		if(sif1.fifo.sif_free() > 0 || (sif1.ee.end && sif1ch.qwc == 0))
@@ -281,6 +284,8 @@ static __fi bool Sif1EeStep()
 // transfer. Returns whether the step ran.
 static __fi bool Sif1IopStep()
 {
+	IOP_SIDE_ASSERT();
+
 	if (sif1.iop.busy)
 	{
 		if(sif1.fifo.size >= 4 || (sif1.iop.end && sif1.iop.counter == 0))

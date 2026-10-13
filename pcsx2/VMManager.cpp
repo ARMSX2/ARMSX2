@@ -3662,6 +3662,11 @@ void VMManager::Internal::EntryPointCompilingOnCPUThread()
 	if (s_elf_executed)
 		return;
 
+	// Runs inside the EE JIT's compile of the entry point block, with the IOP thread alive. It applies the
+	// game's settings, writes the boot patches (IOP patch lines write IOP RAM) and resets the recompilers,
+	// the IOP's included, so the IOP is held for all of it (IOP thread design section 7, row C19).
+	IopThread::VmHold iop_hold;
+
 	const bool reset_speed_limiter = (EmuConfig.EnableFastBootFastForward && IsFastBootInProgress());
 
 	Console.WriteLn(

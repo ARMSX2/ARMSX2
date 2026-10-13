@@ -72,6 +72,7 @@
 #include "pcsx2/Hw.h"
 #include "pcsx2/Input/InputManager.h"
 #include "pcsx2/IopThread/IopThreadVm.h"
+#include "pcsx2/IopThread/OwnerAsserts.h"
 #include "pcsx2/Memory.h"
 #include "pcsx2/R5900.h"
 #include "pcsx2/SIO/Pad/Pad.h"
@@ -496,6 +497,9 @@ END_HOTKEY_LIST()
 
 static void ApplySettingsChurn();
 static bool s_churn_pending = false; // a settings change waits for the next vsync (the CPU thread pumps messages there)
+static u32 s_change_disc_at = 0; // --change-disc N <image>: swap the disc at frame N of a liverun
+static std::string s_change_disc_path;
+static bool s_change_disc_pending = false; // the swap waits for the next vsync, where a player's menu would deliver it
 
 void Host::PumpMessagesOnCPUThread()
 {
@@ -505,6 +509,14 @@ void Host::PumpMessagesOnCPUThread()
 	{
 		s_churn_pending = false;
 		ApplySettingsChurn();
+	}
+
+	// --change-disc: what the frontend's "change disc" menu does, from the CPU thread, mid-run.
+	if (s_change_disc_pending)
+	{
+		s_change_disc_pending = false;
+		const bool ok = VMManager::ChangeDisc(CDVD_SourceType::Iso, s_change_disc_path);
+		Console.WriteLn(fmt::format("eerunner: changed the disc to '{}': {}", s_change_disc_path, ok ? "ok" : "failed"));
 	}
 }
 
@@ -628,6 +640,11 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               starts or stops and the EE recompiler is reset); 'lag' flips only the IOP thread lag\n");
 	std::fprintf(stderr, "               (the same recompiler resets, no mode change), the control for it. Each pass starts from\n");
 	std::fprintf(stderr, "               the settings it began the run with. Both must leave the fingerprint unchanged.\n");
+	std::fprintf(stderr, "  --change-disc N <image>: in a --liverun, swap the disc for <image> at frame N, from the CPU thread, as the\n");
+	std::fprintf(stderr, "               frontend's change-disc menu does.\n");
+	std::fprintf(stderr, "  --iop-assert-log: an IOP thread ownership assert (a Devel build's IOP_SIDE_ASSERT/EE_SIDE_ASSERT) logs\n");
+	std::fprintf(stderr, "               the first violation at each site and the run goes on, instead of stopping at the first. The\n");
+	std::fprintf(stderr, "               IOPTHREAD: line at the end of the run says how many there were.\n");
 	std::fprintf(stderr, "  --set Section/Key=Value: base-layer settings override, applied after the harness pinning\n");
 	std::fprintf(stderr, "               (repeatable). E.g. --set EmuCore/CPU/Recompiler/fpuFullMode=true. GameDB\n");
 	std::fprintf(stderr, "               per-game keys still win; the twin passes own the EnableEE/VU0/VU1/IOP toggles.\n");
@@ -873,6 +890,23 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					return false;
 				}
 				s_churn_every = every.value();
+				continue;
+			}
+			else if (CHECK_ARG("--change-disc") && (i + 2) < argc)
+			{
+				const std::optional<u32> at = StringUtil::FromChars<u32>(StringUtil::StripWhitespace(argv[++i]), 10);
+				if (!at.has_value() || at.value() == 0)
+				{
+					Console.Error("--change-disc expects a frame number and an image path.");
+					return false;
+				}
+				s_change_disc_at = at.value();
+				s_change_disc_path = StringUtil::StripWhitespace(argv[++i]);
+				continue;
+			}
+			else if (CHECK_ARG("--iop-assert-log"))
+			{
+				IopThread::SetViolationHandler(&IopThread::LogViolation);
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--rec-fallback"))
@@ -4419,6 +4453,8 @@ static int RunLiveRun()
 		VMManager::FrameAdvance(1);
 		VMManager::Execute(); // blocks for one frame; if the EE wedges, never returns
 		s_liverun_frame.store(f + 1, std::memory_order_relaxed);
+		if (s_change_disc_at && (f + 1) == s_change_disc_at)
+			s_change_disc_pending = true;
 
 		// Arm the GS dump once the scene has settled. Recording stops on its own
 		// after s_gsdump_frames vsyncs (GSRenderer counts m_dump_frames down), so
@@ -4659,8 +4695,9 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			{
 				const IopThread::Stats st = IopThread::GetStats();
 				const char* const mode_names[] = {"Off", "Lockstep", "Threaded"};
-				Console.WriteLn(fmt::format("IOPTHREAD: mode={} handoffs={} parks={} wakes_sent={} slices={}",
-					mode_names[static_cast<int>(IopThread::GetMode())], st.handoffs, st.parks, st.wakes_sent, st.slices));
+				Console.WriteLn(fmt::format("IOPTHREAD: mode={} handoffs={} parks={} wakes_sent={} slices={} items={} violations={}",
+					mode_names[static_cast<int>(IopThread::GetMode())], st.handoffs, st.parks, st.wakes_sent, st.slices,
+					st.items_applied, IopThread::ViolationCount()));
 			}
 
 			VMManager::Shutdown(false);
