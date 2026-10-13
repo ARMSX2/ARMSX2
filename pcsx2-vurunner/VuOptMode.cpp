@@ -634,12 +634,15 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 		}
 
 		u64 insRef = 0, insRun = 0, cycRef = 0, cycRun = 0;
+		u64 compRef = 0, compRun = 0; // first iteration (compile + run) minus a steady one
 		u32 steadyCompiles = 0;
 		if (opts.benchIters >= 2)
 		{
 			const auto refSamples = recompiler_tests::BenchJitSteady(rec, opts.benchIters);
 			insRef = MinCounter(refSamples, PmuCounters::InstructionsRetired);
 			cycRef = MinCounter(refSamples, PmuCounters::CpuCycles);
+			if (insRef)
+				compRef = refSamples[0][PmuCounters::InstructionsRetired] - std::min<u64>(insRef, refSamples[0][PmuCounters::InstructionsRetired]);
 			VuoptModeOptions bo = opts;
 			bo.trace = false;
 			bo.dumpIr = false;
@@ -650,6 +653,8 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			const auto runSamples = recompiler_tests::BenchJitSteady(rec, opts.benchIters);
 			insRun = MinCounter(runSamples, PmuCounters::InstructionsRetired);
 			cycRun = MinCounter(runSamples, PmuCounters::CpuCycles);
+			if (insRun)
+				compRun = runSamples[0][PmuCounters::InstructionsRetired] - std::min<u64>(insRun, runSamples[0][PmuCounters::InstructionsRetired]);
 			Uninstall();
 			// Blocks compiled after the first iteration (the identity run is one
 			// such first iteration): their compile cost is inside the counts.
@@ -658,12 +663,12 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 
 		const bool identical = diffs.empty();
 		std::printf("[vuopt-run] %s vu%d pc=%04x blocks=%u lowered=%u identical=%d ebit=%d refcode=%llu runcode=%llu body=%llu "
-					"ins_mvu=%llu ins_vuopt=%llu cyc_mvu=%llu cyc_vuopt=%llu steadycompiles=%u",
+					"ins_mvu=%llu ins_vuopt=%llu cyc_mvu=%llu cyc_vuopt=%llu steadycompiles=%u cins_mvu=%llu cins_vuopt=%llu",
 			names[fi].c_str(), vu, rec.start_pc, ctx.blocks, ctx.tier->Lowered(), identical ? 1 : 0, ref.jit_ebit ? 1 : 0,
 			static_cast<unsigned long long>(refBytes), static_cast<unsigned long long>(runBytes),
 			static_cast<unsigned long long>(ctx.tier->BodyBytes()), static_cast<unsigned long long>(insRef),
 			static_cast<unsigned long long>(insRun), static_cast<unsigned long long>(cycRef), static_cast<unsigned long long>(cycRun),
-			steadyCompiles);
+			steadyCompiles, static_cast<unsigned long long>(compRef), static_cast<unsigned long long>(compRun));
 		if (ctx.region)
 		{
 			std::printf(" regions=%u rnodes=%u rexits=%u rbytes=%llu", ctx.region->Regions(), ctx.region->Nodes(), ctx.region->Exits(),
