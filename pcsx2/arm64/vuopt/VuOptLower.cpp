@@ -1565,6 +1565,15 @@ namespace vuopt
 			const u32 n = static_cast<u32>(order_.size());
 			if (n < 3)
 				return;
+			// Nothing to overlap without two long-latency operations.
+			{
+				u32 longOps = 0;
+				for (ValueId v : order_)
+					if (emit_[v] && Latency(I(v)) >= 3)
+						longOps++;
+				if (longOps < 2)
+					return;
+			}
 			static thread_local std::vector<s32> idx;
 			static thread_local std::vector<u32> npred, height, ready, edgeStart, edges, out, readersOf;
 			static thread_local std::vector<std::pair<u32, u32>> edgeList;
@@ -1593,6 +1602,7 @@ namespace vuopt
 						edgeList.push_back({static_cast<u32>(idx[c]), i});
 				}
 				// a memory writer after every reader of the state it replaces
+				// (the memory operations, in program order)
 				if (in.type == Type::Mem)
 					for (ValueId a : in.args)
 						if (a && I(a).type == Type::Mem)
@@ -1601,6 +1611,8 @@ namespace vuopt
 								if (j == i || order_[j] == leave_)
 									continue;
 								const Inst& r = I(order_[j]);
+								if (r.op != Op::LoadQ && r.op != Op::LoadI && r.type != Type::Mem)
+									continue;
 								for (ValueId b : r.args)
 									if (b == a)
 									{
