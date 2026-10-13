@@ -896,6 +896,39 @@ TEST(VuoptRegion, RecordedJumpTargets)
 		}
 }
 
+// A vertex-transform loop over a matrix the loop never writes: the clamped
+// copies of the matrix rows live in registers for the whole region
+// (milestone 5), filled once by the region's entry loader.
+static void RegionInvariantMatrixBody()
+{
+	std::vector<VuOp> p;
+	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, 40)));   // 0: count
+	p.push_back(L(VIADDIU_L(vi::vi2, vi::vi0, 0x40))); // 1: pointer
+	// 2: loop head
+	p.push_back(P(VLQI_L(mask::xyzw, vf::vf10, vi::vi2), VMULAx_U(mask::xyzw, vf::vf1, vf::vf10)));
+	p.push_back(U(VMADDAy_U(mask::xyzw, vf::vf2, vf::vf10)));
+	p.push_back(U(VMADDAz_U(mask::xyzw, vf::vf3, vf::vf10)));
+	p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), VMADDw_U(mask::xyzw, vf::vf11, vf::vf4, vf::vf10)));
+	p.push_back(P(VSQ_L(mask::xyzw, vf::vf11, vi::vi2, 7), VMUL_U(mask::xyz, vf::vf12, vf::vf1, vf::vf11)));
+	p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(2 - 7 - 1))));
+	p.push_back(U(VSUB_U(mask::xyzw, vf::vf13, vf::vf2, vf::vf12)));
+	p.push_back(EBit(L(VFSAND_L(vi::vi4, 0xfff))));
+	for (bool fh : {true, false})
+	{
+		const RegionOutcome o = RunRegion(p, fh, [](VuTestHarness& h) {
+			h.SetVfBits(1, 0x3f800000, 0x7f800000, 0x00000001, 0xbf800000);
+			h.SetVfBits(2, 0x7fffffff, 0x3f000000, 0xff800000, 0x40000000);
+			h.SetVfBits(3, 0x40400000, 0x80000000, 0x7f7fffff, 0xffc00000);
+			h.SetVfBits(4, 0x3f800000, 0x3f800000, 0x7f900000, 0x3f800000);
+			for (u32 a = 0x400; a < 0x1000; a += 4)
+				h.WriteMemU32(a, (a & 0x30) == 0x30 ? 0x7f800000 : 0x3f800000 + a * 37);
+		});
+		EXPECT_TRUE(o.diffs.empty()) << "flagHack=" << fh << "\n" << Join(o.diffs, 10);
+		EXPECT_GE(o.regions, 1u);
+	}
+}
+TEST(VuoptRegion, InvariantMatrix) { RegionInvariantMatrixBody(); }
+
 // Random loop programs: an outer counted loop (vi1) around random FMAC,
 // flag, divide, memory and VI work with forward branches inside, and an
 // inner counted loop (vi5) on some.
@@ -1065,6 +1098,7 @@ TEST(VuoptLowering, ClampModes)
 		PressureFuzzBody();
 		RegionCountedLoopBody();
 		RegionLoopFuzzBody();
+		RegionInvariantMatrixBody();
 		g_clampMode = -1;
 	}
 }
