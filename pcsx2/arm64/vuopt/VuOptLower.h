@@ -62,6 +62,9 @@ namespace vuopt
 		// Milestone 9: list-schedule each node's operations for an in-order
 		// core (Cortex-A55/A53) before lowering.
 		bool schedule = false;
+		// microVU's micro mode keeps VURegs::Mem in x29 (gprVUMem) for the
+		// whole dispatch: memory operations address off it.
+		bool vuMemPinned = false;
 		// Testing: allocate from at most this many NEON / general registers
 		// (0 = all), to reach spills and early write-backs in small programs.
 		u32 poolLimitV = 0, poolLimitG = 0;

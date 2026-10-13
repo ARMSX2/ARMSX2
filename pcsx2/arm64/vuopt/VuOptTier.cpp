@@ -81,6 +81,7 @@ namespace vuopt
 		le.clampSign = env.clampSign;
 		le.softwareFlush = env.softwareFlush;
 		le.schedule = schedule;
+		le.vuMemPinned = env.vuMemPinned;
 		const u8* codeStart = armGetCurrentCodePointer();
 		std::vector<std::pair<const u8*, ir::ValueId>> marks;
 		if (dump)

@@ -1905,15 +1905,24 @@ namespace vuopt
 				case FmacKind::Sub: finish([&](int d) { armAsm->Fsub(V(d).V4S(), V(fs).V4S(), V(ft).V4S()); }); break;
 				case FmacKind::Mul: finish([&](int d) { mul(d); }); break;
 				case FmacKind::Max:
-				{
-					const int d = DefV(id);
-					MaxMin(fs, ft, true, d);
-					break;
-				}
 				case FmacKind::Mini:
 				{
+					// Against VF0 (every word non-negative) the sign-magnitude
+					// order is the raw signed order: one SMAX / SMIN, as microVU.
+					const bool isMax = u.kind == FmacKind::Max;
+					const auto isVf0 = [&](ValueId v) { return v && I(v).op == Op::Const && I(v).type == Type::Vec; };
+					const bool vf0 = isVf0(SingleSource(in.args, 0)) ||
+									 (u.form == FtForm::Reg ? isVf0(SingleSource(in.args, 4)) : (u.form == FtForm::Bc && isVf0(C(in.args[4]))));
 					const int d = DefV(id);
-					MaxMin(fs, ft, false, d);
+					if (vf0)
+					{
+						if (isMax)
+							armAsm->Smax(V(d).V4S(), V(fs).V4S(), V(ft).V4S());
+						else
+							armAsm->Smin(V(d).V4S(), V(fs).V4S(), V(ft).V4S());
+					}
+					else
+						MaxMin(fs, ft, isMax, d);
 					break;
 				}
 				default:
@@ -2131,10 +2140,21 @@ namespace vuopt
 				}
 				case LOp::FCOR:
 				{
+					// (CLIP | imm24) == 0xFFFFFF: every bit the immediate leaves
+					// clear is set in CLIP (one BICS, as microVU's mVU_FCOR).
+					const u32 need = ~imm & 0xFFFFFFu;
+					if (!need)
+					{
+						const int d = DefG(id);
+						armAsm->Mov(W(d), 1);
+						break;
+					}
+					const int shift = __builtin_ctz(need);
+					const int t = TempG();
+					armAsm->Mov(W(t), need >> shift);
+					armAsm->Bics(a64::wzr, W(t), a64::Operand(W(src), a64::LSR, shift));
 					const int d = DefG(id);
-					armAsm->Orr(W(d), W(src), imm);
-					armAsm->Add(W(d), W(d), 1);
-					armAsm->Lsr(W(d), W(d), 24);
+					armAsm->Cset(W(d), a64::eq);
 					break;
 				}
 				case LOp::FCGET:
@@ -2333,8 +2353,15 @@ namespace vuopt
 			switch (op)
 			{
 				case LOp::DIV:
-					armAsm->Umov(W(g9), V(ftR).V4S(), 0);
-					armAsm->Tst(W(g9), kExpMask);
+					// a zero divisor: a zero exponent field (with FZ, one FCMP sees
+					// exactly that, as microVU's DIV does)
+					if (!env_.softwareFlush)
+						armAsm->Fcmp(S(ftR), 0.0);
+					else
+					{
+						armAsm->Umov(W(g9), V(ftR).V4S(), 0);
+						armAsm->Tst(W(g9), kExpMask);
+					}
 					armAsm->B(&normal, a64::ne);
 					zeroDivisorQ(true);
 					armAsm->B(&done);
@@ -4187,9 +4214,10 @@ namespace vuopt
 			}
 			// Status instances / register homes whose incoming value is never
 			// read are free for their final value from the start.
-			if (hm_->memBase >= 0)
+			if (hm_->memBase >= 0 || env_.vuMemPinned)
 			{
-				Bind(memBase_, hm_->memBase);
+				// micro mode pins VU memory in x29 (microVU's gprVUMem)
+				Bind(memBase_, env_.vuMemPinned ? 29 : hm_->memBase);
 				homeReg_[memBase_] = 1;
 			}
 			// Clamped copies of invariant vector registers, kept by the region.

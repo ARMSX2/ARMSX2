@@ -121,6 +121,8 @@ namespace vuopt
 		// bail record (PC at 0, the block's microBlock at 8, the code address
 		// at 16, written once compiled). Called from generated code.
 		void* (*bailTarget)(u32 vu, u8* rec) = nullptr;
+		// x29 holds VURegs::Mem in micro mode (gprVUMem).
+		bool vuMemPinned = false;
 	};
 
 #ifdef PCSX2_RECOMPILER_TESTS

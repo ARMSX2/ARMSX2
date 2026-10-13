@@ -636,7 +636,7 @@ namespace vuopt
 		}
 		homes_.cycles = kCyclesReg;
 		if (hasMem_)
-			homes_.memBase = kMemBaseReg;
+			homes_.memBase = le_.vuMemPinned ? -1 : kMemBaseReg;
 		homes_.Seal();
 	}
 
@@ -990,6 +990,7 @@ namespace vuopt
 		le.clampSign = env.clampSign;
 		le.softwareFlush = env.softwareFlush;
 		le.schedule = schedule;
+		le.vuMemPinned = env.vuMemPinned;
 		RegionBuilder rb(*this, env, le);
 		return rb.Run(br, why);
 	}

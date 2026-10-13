@@ -1232,6 +1232,7 @@ static vuopt::MvuEmitEnv mVUbuildEmitEnv(microVU& mVU)
 	e.threadVU1 = THREAD_VU1;
 	e.emitJumpTail = &vuoptEmitJumpTail;
 	e.bailTarget = &vuoptBailTarget;
+	e.vuMemPinned = !mVU.cop2;
 	return e;
 }
 #endif
