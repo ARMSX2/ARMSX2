@@ -2785,6 +2785,12 @@ namespace
 		u64 mem;
 		u64 reg;
 		u64 cyc;
+		// IOP-side hashes (ee_divtrace::FingerprintIop); recorded only with
+		// EERUNNER_SYSFULL=1, zero otherwise and in files from before they existed.
+		u64 spu2 = 0;
+		u64 sif = 0;
+		u64 sio = 0;
+		u64 cdvd = 0;
 	};
 
 	struct TwinTrace
@@ -2796,6 +2802,7 @@ namespace
 		int nofp = 0;
 		int vu0full = 0;
 		int sysfull = 0;
+		int iopfp = 0; // the records carry the IOP-side hashes
 		std::vector<TwinRec> i1, i2, j;
 	};
 } // namespace
@@ -2853,6 +2860,16 @@ static bool TwinRunPass(bool jit, const char* cell, std::vector<TwinRec>& out)
 		r.mem = ee_divtrace::HashMemory();
 		r.reg = ee_divtrace::FingerprintCpu();
 		r.cyc = cpuRegs.cycle;
+#ifdef PCSX2_RECOMPILER_TESTS
+		if (ee_divtrace::g_sys_full)
+		{
+			const ee_divtrace::IopFingerprint io = ee_divtrace::FingerprintIop();
+			r.spu2 = io.spu2;
+			r.sif = io.sif;
+			r.sio = io.sio;
+			r.cdvd = io.cdvd;
+		}
+#endif
 		out.push_back(r);
 		if (s_twin_ram_at >= 0 && f == static_cast<uint32_t>(s_twin_ram_at) &&
 			std::strcmp(cell, "i2") != 0 && !s_twin_prefix.empty())
@@ -2890,6 +2907,9 @@ static bool TwinRunAll(TwinTrace& t)
 	t.nofp = ee_divtrace::g_fp_exclude ? 1 : 0;
 	t.vu0full = ee_divtrace::g_vu0_full ? 1 : 0;
 	t.sysfull = ee_divtrace::g_sys_full ? 1 : 0;
+#ifdef PCSX2_RECOMPILER_TESTS
+	t.iopfp = ee_divtrace::g_sys_full ? 1 : 0;
+#endif
 	return TwinRunPass(false, "i1", t.i1) &&
 		   TwinRunPass(false, "i2", t.i2) &&
 		   TwinRunPass(true, "j", t.j);
@@ -2904,12 +2924,18 @@ static bool WriteTwinTrace(const TwinTrace& t, const std::string& path)
 		return false;
 	}
 	f << "# twindiff trace v1\n";
-	f << fmt::format("meta label={} serial={} frames={} vu0fp={} nofp={} vu0full={} sysfull={} savestate={}\n",
-		t.label, t.serial.empty() ? "?" : t.serial, t.frames, t.vu0fp, t.nofp, t.vu0full, t.sysfull,
+	f << fmt::format("meta label={} serial={} frames={} vu0fp={} nofp={} vu0full={} sysfull={} iopfp={} savestate={}\n",
+		t.label, t.serial.empty() ? "?" : t.serial, t.frames, t.vu0fp, t.nofp, t.vu0full, t.sysfull, t.iopfp,
 		Path::GetFileName(s_savestate_path));
-	const auto cell = [&f](const char* name, const std::vector<TwinRec>& v) {
+	// With iopfp the line carries four more hashes after the cycle: spu2 sif sio cdvd.
+	const auto cell = [&f, &t](const char* name, const std::vector<TwinRec>& v) {
 		for (size_t i = 0; i < v.size(); ++i)
-			f << fmt::format("rec {} {} {:016x} {:016x} {}\n", i, name, v[i].mem, v[i].reg, v[i].cyc);
+		{
+			f << fmt::format("rec {} {} {:016x} {:016x} {}", i, name, v[i].mem, v[i].reg, v[i].cyc);
+			if (t.iopfp)
+				f << fmt::format(" {:016x} {:016x} {:016x} {:016x}", v[i].spu2, v[i].sif, v[i].sio, v[i].cdvd);
+			f << '\n';
+		}
 	};
 	cell("i1", t.i1);
 	cell("i2", t.i2);
@@ -2957,6 +2983,8 @@ static bool LoadTwinTrace(TwinTrace& t, const std::string& path)
 					t.vu0full = (v == "1");
 				else if (k == "sysfull")
 					t.sysfull = (v == "1");
+				else if (k == "iopfp")
+					t.iopfp = (v == "1");
 			}
 		}
 		else if (tok == "rec")
@@ -2974,6 +3002,20 @@ static bool LoadTwinTrace(TwinTrace& t, const std::string& path)
 			r.mem = std::strtoull(memh.c_str(), nullptr, 16);
 			r.reg = std::strtoull(regh.c_str(), nullptr, 16);
 			r.cyc = cyc;
+			if (t.iopfp)
+			{
+				std::string spu2h, sifh, sioh, cdvdh;
+				ss >> spu2h >> sifh >> sioh >> cdvdh;
+				if (ss.fail())
+				{
+					Console.ErrorFmt("twin: malformed iop fields in {}: '{}'", path, line);
+					return false;
+				}
+				r.spu2 = std::strtoull(spu2h.c_str(), nullptr, 16);
+				r.sif = std::strtoull(sifh.c_str(), nullptr, 16);
+				r.sio = std::strtoull(sioh.c_str(), nullptr, 16);
+				r.cdvd = std::strtoull(cdvdh.c_str(), nullptr, 16);
+			}
 			auto& v = (cell == "i1") ? t.i1 : (cell == "i2") ? t.i2 : t.j;
 			if (idx != v.size())
 			{
@@ -2995,6 +3037,18 @@ static int TwinFirstDiff(const std::vector<TwinRec>& a, const std::vector<TwinRe
 	for (size_t f = 0; f < n; ++f)
 	{
 		if (reg ? (a[f].reg != b[f].reg) : (a[f].mem != b[f].mem))
+			return static_cast<int>(f);
+	}
+	return -1;
+}
+
+// First frame where any IOP-side hash (spu2 sif sio cdvd) differs; -1 = none.
+static int TwinFirstIopDiff(const std::vector<TwinRec>& a, const std::vector<TwinRec>& b)
+{
+	const size_t n = std::min(a.size(), b.size());
+	for (size_t f = 0; f < n; ++f)
+	{
+		if (a[f].spu2 != b[f].spu2 || a[f].sif != b[f].sif || a[f].sio != b[f].sio || a[f].cdvd != b[f].cdvd)
 			return static_cast<int>(f);
 	}
 	return -1;
@@ -3107,6 +3161,10 @@ static int RunTwinCompare()
 		drift[p] = TwinMaxCycDrift(*pairs[p].a, *pairs[p].b, &drift_at[p]);
 		Console.WriteLn(fmt::format("  {}  {}: first mem-div frame {}, first regfp-div frame {} (advisory), max |cycle drift| {:+d} @ frame {}.",
 			pairs[p].tag, pairs[p].desc, first_mem[p], first_reg[p], drift[p], drift_at[p]));
+		// The IOP-side hashes (spu2 sif sio cdvd) are advisory too; they only exist in files taken with EERUNNER_SYSFULL=1.
+		if (other.iopfp && local.iopfp)
+			Console.WriteLn(fmt::format("      first iop-state-div frame {} (spu2/sif/sio/cdvd, advisory).",
+				TwinFirstIopDiff(*pairs[p].a, *pairs[p].b)));
 	}
 
 	// XI is real only while BOTH trees' own determinism floors are still clean.

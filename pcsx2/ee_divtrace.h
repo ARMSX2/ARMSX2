@@ -140,6 +140,28 @@ namespace ee_divtrace
 	u64  FingerprintCpu();
 	u64  FingerprintSystem();
 
+#ifdef PCSX2_RECOMPILER_TESTS
+	// The IOP-side state FingerprintSystem and HashMemory do not reach, one hash
+	// per subsystem so a mismatch says which one moved:
+	//   spu2  the SPU2 savestate block (registers, both cores' voices, the
+	//         SPDIF block, mixing clocks) and the 2 MB of sample memory
+	//   sif   sif0, sif1 and sif2 (the SIF FIFOs, DMA tags and busy/cycle fields)
+	//   sio   Sio0, Sio2 and both multitap states, as a savestate writes them
+	//   cdvd  the cdvd struct, as a savestate writes it
+	// The spu2 and cdvd hashes cost about 2 MB of copying and hashing, so this is
+	// called once per frame by --twindump/--twincompare when g_sys_full is set,
+	// and is NOT folded into FingerprintSystem, which the per-op sampler calls.
+	// Reads the live state only; nothing it calls changes emulation.
+	struct IopFingerprint
+	{
+		u64 spu2;
+		u64 sif;
+		u64 sio;
+		u64 cdvd;
+	};
+	IopFingerprint FingerprintIop();
+#endif
+
 	// Append one Sample (cycle, pc, fp) from live cpuRegs, plus a FullSnap when
 	// the new index is in the detail window. `pc` is passed explicitly because
 	// the JIT block hook knows its startpc at compile time but cpuRegs.pc is
