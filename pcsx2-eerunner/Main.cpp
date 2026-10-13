@@ -26,6 +26,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -70,6 +71,7 @@
 #include "pcsx2/ImGui/ImGuiManager.h"
 #include "pcsx2/Hw.h"
 #include "pcsx2/Input/InputManager.h"
+#include "pcsx2/IopThread/IopThreadVm.h"
 #include "pcsx2/Memory.h"
 #include "pcsx2/R5900.h"
 #include "pcsx2/SIO/Pad/Pad.h"
@@ -163,6 +165,8 @@ struct SetOverride
 	std::string section, key, value;
 };
 static std::vector<SetOverride> s_set_overrides; // --set Section/Key=Value (repeatable)
+static u32 s_churn_every = 0;          // --settings-churn N <kind>: apply a settings change every N frames of a twin pass
+static std::string s_churn_kind;       // "lockstep": flip the IOP thread between Off and Lockstep; "lag": flip the IOP thread lag
 static u32 s_rec_fallback_groups = 0; // --rec-fallback <groups>: EE opcode groups forced to interp
 #if defined(ARCH_ARM64)
 static u32 s_rec_fallback_reg_masks[EERecFallback::kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u}; // per-COP2-move-op register filters
@@ -490,9 +494,18 @@ const char* InputManager::ConvertHostKeyboardCodeToIcon(u32 code)
 BEGIN_HOTKEY_LIST(g_host_hotkeys)
 END_HOTKEY_LIST()
 
+static void ApplySettingsChurn();
+static bool s_churn_pending = false; // a settings change waits for the next vsync (the CPU thread pumps messages there)
+
 void Host::PumpMessagesOnCPUThread()
 {
-	// Headless — no platform message pump.
+	// Headless — no platform message pump, apart from the --settings-churn change a player's settings
+	// dialog would deliver at this point: from inside the EE's event test, while the VM runs.
+	if (s_churn_pending)
+	{
+		s_churn_pending = false;
+		ApplySettingsChurn();
+	}
 }
 
 s32 Host::Internal::GetTranslatedStringImpl(
@@ -609,6 +622,12 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --mkstate <out.p2s>: run --frames under the production JIT (from --savestate if given, else a\n");
 	std::fprintf(stderr, "               cold disc boot) and write a savestate. Bootstrap twindiff states on the WORKING\n");
 	std::fprintf(stderr, "               binary, positioned BEFORE the corrupting computation (e.g. before a level load).\n");
+	std::fprintf(stderr, "  --settings-churn N <lockstep|lag>: in the twin passes, apply a settings change through\n");
+	std::fprintf(stderr, "               VMManager::ApplySettings every N frames, as a player changing a setting mid-game would.\n");
+	std::fprintf(stderr, "               'lockstep' flips the IOP thread between Off and Lockstep (a mode change: the thread\n");
+	std::fprintf(stderr, "               starts or stops and the EE recompiler is reset); 'lag' flips only the IOP thread lag\n");
+	std::fprintf(stderr, "               (the same recompiler resets, no mode change), the control for it. Each pass starts from\n");
+	std::fprintf(stderr, "               the settings it began the run with. Both must leave the fingerprint unchanged.\n");
 	std::fprintf(stderr, "  --set Section/Key=Value: base-layer settings override, applied after the harness pinning\n");
 	std::fprintf(stderr, "               (repeatable). E.g. --set EmuCore/CPU/Recompiler/fpuFullMode=true. GameDB\n");
 	std::fprintf(stderr, "               per-game keys still win; the twin passes own the EnableEE/VU0/VU1/IOP toggles.\n");
@@ -841,6 +860,19 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					return false;
 				}
 				s_set_overrides.push_back({kv.substr(0, slash), kv.substr(slash + 1, eq - slash - 1), kv.substr(eq + 1)});
+				continue;
+			}
+			else if (CHECK_ARG("--settings-churn") && (i + 2) < argc)
+			{
+				const std::string_view n = StringUtil::StripWhitespace(argv[++i]);
+				s_churn_kind = StringUtil::StripWhitespace(argv[++i]);
+				const std::optional<u32> every = StringUtil::FromChars<u32>(n, 10);
+				if (!every.has_value() || every.value() == 0 || (s_churn_kind != "lockstep" && s_churn_kind != "lag"))
+				{
+					Console.Error("--settings-churn expects N (frames) and a kind: lockstep or lag.");
+					return false;
+				}
+				s_churn_every = every.value();
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--rec-fallback"))
@@ -2831,6 +2863,46 @@ namespace mvu_test_hooks
 } // namespace mvu_test_hooks
 #endif
 
+// --settings-churn: the settings change a pass applies every N frames. The settings the run began with
+// are remembered and put back at the start of each pass, so every pass sees the same sequence.
+static void ApplyChurnBaseline(bool restore)
+{
+	struct Base
+	{
+		bool lockstep, iop_thread;
+		int lag;
+	};
+	static std::optional<Base> base;
+	if (!base)
+	{
+		base = Base{s_settings_interface.GetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", false),
+			s_settings_interface.GetBoolValue("EmuCore/Speedhacks", "iopThread", false),
+			s_settings_interface.GetIntValue("EmuCore/Speedhacks", "iopThreadLag", 6144)};
+	}
+	if (!restore)
+		return;
+	s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", base->lockstep);
+	s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThread", base->iop_thread);
+	s_settings_interface.SetIntValue("EmuCore/Speedhacks", "iopThreadLag", base->lag);
+	VMManager::ApplySettings();
+}
+
+static void ApplySettingsChurn()
+{
+	if (s_churn_kind == "lockstep")
+	{
+		const bool on = s_settings_interface.GetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", false);
+		s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThread", !on);
+		s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", !on);
+	}
+	else
+	{
+		const int lag = s_settings_interface.GetIntValue("EmuCore/Speedhacks", "iopThreadLag", 6144);
+		s_settings_interface.SetIntValue("EmuCore/Speedhacks", "iopThreadLag", lag == 6144 ? 8192 : 6144);
+	}
+	VMManager::ApplySettings();
+}
+
 // One free-running pass from the start savestate. Optionally dumps raw EE
 // RAM+scratch at --twin-ram-at to <prefix>.f<N>.{interp,jit}.bin (skipped for
 // the i2 control twin).
@@ -2842,6 +2914,11 @@ static bool TwinRunPass(bool jit, const char* cell, std::vector<TwinRec>& out)
 	{
 		Console.ErrorFmt("twin: load failed: {}", error.GetDescription());
 		return false;
+	}
+	if (s_churn_every)
+	{
+		s_churn_pending = false;
+		ApplyChurnBaseline(true);
 	}
 	SetAllCpuMode(jit);
 	out.reserve(s_frames);
@@ -2856,6 +2933,10 @@ static bool TwinRunPass(bool jit, const char* cell, std::vector<TwinRec>& out)
 	{
 		VMManager::FrameAdvance(1);
 		VMManager::Execute();
+		// A settings change applied during the frame resets the recompilers and leaves the execution
+		// loop early, as it does for a player; carry on until the frame ends.
+		while (s_churn_every && VMManager::GetState() == VMState::Running)
+			VMManager::Execute();
 		TwinRec r;
 		r.mem = ee_divtrace::HashMemory();
 		r.reg = ee_divtrace::FingerprintCpu();
@@ -2871,6 +2952,8 @@ static bool TwinRunPass(bool jit, const char* cell, std::vector<TwinRec>& out)
 		}
 #endif
 		out.push_back(r);
+		if (s_churn_every && ((f + 1) % s_churn_every) == 0)
+			s_churn_pending = true; // applied at the next frame's vsync, inside the event test
 		if (s_twin_ram_at >= 0 && f == static_cast<uint32_t>(s_twin_ram_at) &&
 			std::strcmp(cell, "i2") != 0 && !s_twin_prefix.empty())
 		{
@@ -4570,6 +4653,14 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 
 				default:
 					break;
+			}
+
+			// What the IOP thread did over the run, for the Lockstep cost record (all zero in Off).
+			{
+				const IopThread::Stats st = IopThread::GetStats();
+				const char* const mode_names[] = {"Off", "Lockstep", "Threaded"};
+				Console.WriteLn(fmt::format("IOPTHREAD: mode={} handoffs={} parks={} wakes_sent={} slices={}",
+					mode_names[static_cast<int>(IopThread::GetMode())], st.handoffs, st.parks, st.wakes_sent, st.slices));
 			}
 
 			VMManager::Shutdown(false);
