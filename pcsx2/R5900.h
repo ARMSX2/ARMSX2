@@ -508,8 +508,12 @@ extern void _cpuEventTest_Shared();
 
 // The unchanged name, for internal use by the Dynarecs and Ints inside R5900. It is the Off instance:
 // the x86 recompilers call it exactly as they always did (x86 resolves every IOP thread mode to Off),
-// and the ARM64 JIT and interpreter call the instance of the mode in effect.
-extern void _cpuEventTest_Shared();
+// and the ARM64 JIT and interpreter call the instance of the mode in effect. Inline, so no second
+// copy of the event test is built where nothing calls it.
+inline void _cpuEventTest_Shared()
+{
+	_cpuEventTest_Shared<IopThreadMode::Off>();
+}
 
 using CpuEventTestFn = void (*)();
 /// The event test instance for `mode`. Threaded has none yet and gets Off's.

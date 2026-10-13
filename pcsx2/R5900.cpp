@@ -582,11 +582,6 @@ __fi void _cpuEventTest_Shared()
 template void _cpuEventTest_Shared<IopThreadMode::Off>();
 template void _cpuEventTest_Shared<IopThreadMode::Lockstep>();
 
-void _cpuEventTest_Shared()
-{
-	_cpuEventTest_Shared<IopThreadMode::Off>();
-}
-
 CpuEventTestFn cpuEventTestFor(IopThreadMode mode)
 {
 	switch (mode)
