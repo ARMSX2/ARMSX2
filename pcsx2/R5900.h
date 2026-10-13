@@ -504,7 +504,12 @@ extern int cpuGetCycles(int interrupt);
 // is generated for it, the interpreter's pointer is set with it), so the Off instance has no test of
 // the mode in it. Instances exist for Off and Lockstep.
 template <IopThreadMode M>
-extern void _cpuEventTest_Shared();		// for internal use by the Dynarecs and Ints inside R5900:
+extern void _cpuEventTest_Shared();
+
+// The unchanged name, for internal use by the Dynarecs and Ints inside R5900. It is the Off instance:
+// the x86 recompilers call it exactly as they always did (x86 resolves every IOP thread mode to Off),
+// and the ARM64 JIT and interpreter call the instance of the mode in effect.
+extern void _cpuEventTest_Shared();
 
 using CpuEventTestFn = void (*)();
 /// The event test instance for `mode`. Threaded has none yet and gets Off's.

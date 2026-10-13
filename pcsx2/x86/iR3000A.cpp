@@ -198,7 +198,7 @@ static const void* iopUnmappedRecLUTPage = nullptr;
 
 static void recEventTest()
 {
-	_cpuEventTest_Shared<IopThreadMode::Off>();
+	_cpuEventTest_Shared();
 }
 
 // The address for all cleared blocks.  It recompiles the current pc and then
