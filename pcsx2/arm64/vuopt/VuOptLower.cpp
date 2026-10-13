@@ -1470,7 +1470,10 @@ namespace vuopt
 		// MAX/MINI: integer-order transform, then select (NEON_MAXPS/MINPS).
 		void Lowerer::MaxMin(int to, int from, bool isMax, int out)
 		{
-			const int a = TempV(), b = TempV();
+			// The mask is built in the result register when that is not an operand,
+			// so the select needs no copy.
+			const bool inOut = out != to && out != from;
+			const int a = inOut ? out : TempV(), b = TempV();
 			armAsm->Sshr(V(a).V4S(), V(to).V4S(), 31);
 			armAsm->Ushr(V(a).V4S(), V(a).V4S(), 1);
 			armAsm->Eor(V(a).V16B(), V(a).V16B(), V(to).V16B());
@@ -1482,7 +1485,8 @@ namespace vuopt
 			else
 				armAsm->Cmgt(V(a).V4S(), V(b).V4S(), V(a).V4S());
 			// out = a ? to : from
-			armAsm->Mov(V(out).V16B(), V(a).V16B());
+			if (!inOut)
+				armAsm->Mov(V(out).V16B(), V(a).V16B());
 			armAsm->Bsl(V(out).V16B(), V(to).V16B(), V(from).V16B());
 		}
 
