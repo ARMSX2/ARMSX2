@@ -353,4 +353,103 @@ TEST(VuBroadcastLaneFold, MulSelectsTheEncodedLaneWithoutTheOperandClamp)
 	}
 }
 
+// =========================================================================
+//  The fold's scalar form, every destination lane against every broadcast
+//  lane, for each multiply that takes it: MUL, MADD, MSUB and their
+//  accumulator forms. ACC is (10, 20, 30, 40), so the accumulate's other
+//  three lanes are a check on their own: a single-lane accumulate must leave
+//  them standing. Both VUs, with the overflow clamp at its default and off.
+// =========================================================================
+
+namespace {
+
+enum class BcOp
+{
+	Mul,
+	Madd,
+	Msub,
+	Mula,
+	Madda,
+	Msuba,
+};
+
+u32 BcUpper(BcOp op, u32 m, int bc)
+{
+	switch (op)
+	{
+		case BcOp::Mul:  return Upper(m, kFt, kFs, kFd, 0x18 + bc);
+		case BcOp::Madd: return Upper(m, kFt, kFs, kFd, 0x08 + bc);
+		case BcOp::Msub: return Upper(m, kFt, kFs, kFd, 0x0C + bc);
+		case BcOp::Mula: return UpperFD(m, kFt, kFs, 0x06, bc);
+		case BcOp::Madda: return UpperFD(m, kFt, kFs, 0x02, bc);
+		case BcOp::Msuba: return UpperFD(m, kFt, kFs, 0x03, bc);
+	}
+	return 0;
+}
+
+void RunBcSingleLane(int vu, BcOp op, int lane, int bc)
+{
+	static const float kFsV[4] = {1.0f, 2.5f, 4.0f, 6.0f};
+	static const float kFtV[4] = {2.0f, 3.0f, 5.0f, 7.0f};
+	static const float kAccV[4] = {10.0f, 20.0f, 30.0f, 40.0f};
+	static const float kSentinel[4] = {-101.0f, -102.0f, -103.0f, -104.0f};
+	static const char kLane[4] = {'x', 'y', 'z', 'w'};
+
+	VuTestHarness h(vu);
+	h.SetVf(kFs, kFsV[0], kFsV[1], kFsV[2], kFsV[3]);
+	h.SetVf(kFt, kFtV[0], kFtV[1], kFtV[2], kFtV[3]);
+	h.SetVf(kFd, kSentinel[0], kSentinel[1], kSentinel[2], kSentinel[3]);
+	h.SetVf(kAccSrc, kAccV[0], kAccV[1], kAccV[2], kAccV[3]);
+	h.SetVf(kOnes, 1.0f, 1.0f, 1.0f, 1.0f);
+	const u32 m = mask::x >> lane;
+	h.LoadProgram({
+		UpperOnly(VMULA_U(mask::xyzw, kAccSrc, kOnes)),
+		NopPair(),
+		NopPair(),
+		NopPair(),
+		UpperOnly(BcUpper(op, m, bc)),
+		EBitNopPair(),
+	});
+	h.Run();
+
+	const float prod = kFsV[lane] * kFtV[bc];
+	const bool toAcc = (op == BcOp::Mula || op == BcOp::Madda || op == BcOp::Msuba);
+	float want;
+	switch (op)
+	{
+		case BcOp::Mul: case BcOp::Mula: want = prod; break;
+		case BcOp::Madd: case BcOp::Madda: want = kAccV[lane] + prod; break;
+		default: want = kAccV[lane] - prod; break;
+	}
+	const VURegs& j = h.JitSnapshot().regs;
+	for (int i = 0; i < 4; i++)
+	{
+		const float got = toAcc ? j.ACC.F[i] : h.GetVfJit(kFd, kLane[i]);
+		const float other = toAcc ? kAccV[i] : kSentinel[i];
+		EXPECT_FLOAT_EQ(got, (i == lane) ? want : other)
+			<< "vu" << vu << " op " << static_cast<int>(op) << " dest " << kLane[lane]
+			<< " bc " << kLane[bc] << " lane " << kLane[i];
+	}
+}
+
+} // namespace
+
+TEST(VuBroadcastLaneFold, SingleLaneDestinationEveryBroadcastLane)
+{
+	for (bool clamp : {true, false})
+	{
+		const bool prev0 = EmuConfig.Cpu.Recompiler.vu0Overflow;
+		const bool prev1 = EmuConfig.Cpu.Recompiler.vu1Overflow;
+		EmuConfig.Cpu.Recompiler.vu0Overflow = clamp;
+		EmuConfig.Cpu.Recompiler.vu1Overflow = clamp;
+		for (int vu = 0; vu < 2; vu++)
+			for (BcOp op : {BcOp::Mul, BcOp::Madd, BcOp::Msub, BcOp::Mula, BcOp::Madda, BcOp::Msuba})
+				for (int lane = 0; lane < 4; lane++)
+					for (int bc = 0; bc < 4; bc++)
+						RunBcSingleLane(vu, op, lane, bc);
+		EmuConfig.Cpu.Recompiler.vu0Overflow = prev0;
+		EmuConfig.Cpu.Recompiler.vu1Overflow = prev1;
+	}
+}
+
 } // namespace recompiler_tests
