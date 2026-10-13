@@ -7,6 +7,7 @@
 #include "Common.h"
 #include "Sif.h"
 #include "IopHw.h"
+#include "IopThread/IopBridge.h"
 
 _sif sif1;
 
@@ -349,6 +350,6 @@ __fi void dmaSIF1()
 		}
 	}
 
-	SIF1Dma();
+	IopBridge::Sif1Pump();
 
 }

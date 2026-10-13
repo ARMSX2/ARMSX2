@@ -24,6 +24,7 @@ BIOS
 
 #include "DEV9/DEV9.h"
 #include "IopHw.h"
+#include "IopThread/IopBridge.h"
 #include "GS/Renderers/Common/GSFunctionMap.h"
 #include "GS.h"
 #include "Host.h"
@@ -731,17 +732,17 @@ static mem8_t _ext_memRead8 (u32 mem)
 	switch (p)
 	{
 		case 3: // psh4
-			return psxHw4Read8(mem);
+			return IopBridge::Hw4Read8(mem);
 		case 6: // gsm
 			return gsRead8(mem);
 		case 7: // dev9
 		{
-			mem8_t retval = DEV9read8(mem & ~0xa4000000);
+			mem8_t retval = IopBridge::Dev9Read8(mem & ~0xa4000000);
 			Console.WriteLn("DEV9 read8 %8.8lx: %2.2lx", mem & ~0xa4000000, retval);
 			return retval;
 		}
 		case 9:
-			return iopMemRead8(mem & ~0x1c000000);
+			return IopBridge::MemRead8(mem & ~0x1c000000);
 		default: break;
 	}
 
@@ -766,15 +767,15 @@ static mem16_t _ext_memRead16(u32 mem)
 
 		case 7: // dev9
 		{
-			mem16_t retval = DEV9read16(mem & ~0xa4000000);
+			mem16_t retval = IopBridge::Dev9Read16(mem & ~0xa4000000);
 			Console.WriteLn("DEV9 read16 %8.8lx: %4.4lx", mem & ~0xa4000000, retval);
 			return retval;
 		}
 
 		case 8: // spu2
-			return SPU2read(mem);
+			return IopBridge::Spu2Read(mem);
 		case 9:
-			return iopMemRead16(mem & ~0x1c000000);
+			return IopBridge::MemRead16(mem & ~0x1c000000);
 
 		default: break;
 	}
@@ -792,12 +793,12 @@ static mem32_t _ext_memRead32(u32 mem)
 			return gsRead32(mem);
 		case 7: // dev9
 		{
-			mem32_t retval = DEV9read32(mem & ~0xa4000000);
+			mem32_t retval = IopBridge::Dev9Read32(mem & ~0xa4000000);
 			Console.WriteLn("DEV9 read32 %8.8lx: %8.8lx", mem & ~0xa4000000, retval);
 			return retval;
 		}
 		case 9:
-			return iopMemRead32(mem & ~0x1c000000);
+			return IopBridge::MemRead32(mem & ~0x1c000000);
 		default: break;
 	}
 
@@ -816,8 +817,8 @@ static u64 _ext_memRead64(u32 mem)
 		case 9:
 		{
 			u64 ret = 0;
-			ret |= ((u64)(iopMemRead32((mem + 0) & ~0x1c000000)) << 0);
-			ret |= ((u64)(iopMemRead32((mem + 4) & ~0x1c000000)) << 32);
+			ret |= ((u64)(IopBridge::MemRead32((mem + 0) & ~0x1c000000)) << 0);
+			ret |= ((u64)(IopBridge::MemRead32((mem + 4) & ~0x1c000000)) << 32);
 			return ret;
 		}
 		default: break;
@@ -840,10 +841,10 @@ static RETURNS_R128 _ext_memRead128(u32 mem)
 		case 9:
 		{
 			u128 ret = {};
-			ret._u32[0] = iopMemRead32((mem + 0) & ~0x1c000000);
-			ret._u32[1] = iopMemRead32((mem + 4) & ~0x1c000000);
-			ret._u32[2] = iopMemRead32((mem + 8) & ~0x1c000000);
-			ret._u32[3] = iopMemRead32((mem + 12) & ~0x1c000000);
+			ret._u32[0] = IopBridge::MemRead32((mem + 0) & ~0x1c000000);
+			ret._u32[1] = IopBridge::MemRead32((mem + 4) & ~0x1c000000);
+			ret._u32[2] = IopBridge::MemRead32((mem + 8) & ~0x1c000000);
+			ret._u32[3] = IopBridge::MemRead32((mem + 12) & ~0x1c000000);
 			return r128_from_u128(ret);
 		}
 		default: break;
@@ -859,15 +860,15 @@ static void _ext_memWrite8 (u32 mem, mem8_t  value)
 {
 	switch (p) {
 		case 3: // psh4
-			psxHw4Write8(mem, value); return;
+			IopBridge::Hw4Write8(mem, value); return;
 		case 6: // gsm
 			gsWrite8(mem, value); return;
 		case 7: // dev9
-			DEV9write8(mem & ~0xa4000000, value);
+			IopBridge::Dev9Write8(mem & ~0xa4000000, value);
 			Console.WriteLn("DEV9 write8 %8.8lx: %2.2lx", mem & ~0xa4000000, value);
 			return;
 		case 9:
-			iopMemWrite8(mem & ~0x1c000000, value);
+			IopBridge::MemWrite8(mem & ~0x1c000000, value);
 			return;
 		default: break;
 	}
@@ -887,13 +888,13 @@ static void _ext_memWrite16(u32 mem, mem16_t value)
 		case 6: // gsm
 			gsWrite16(mem, value); return;
 		case 7: // dev9
-			DEV9write16(mem & ~0xa4000000, value);
+			IopBridge::Dev9Write16(mem & ~0xa4000000, value);
 			Console.WriteLn("DEV9 write16 %8.8lx: %4.4lx", mem & ~0xa4000000, value);
 			return;
 		case 8: // spu2
-			SPU2write(mem, value); return;
+			IopBridge::Spu2Write(mem, value); return;
 		case 9:
-			iopMemWrite16(mem & ~0x1c000000, value);
+			IopBridge::MemWrite16(mem & ~0x1c000000, value);
 			return;
 		default: break;
 	}
@@ -908,11 +909,11 @@ static void _ext_memWrite32(u32 mem, mem32_t value)
 		case 6: // gsm
 			gsWrite32(mem, value); return;
 		case 7: // dev9
-			DEV9write32(mem & ~0xa4000000, value);
+			IopBridge::Dev9Write32(mem & ~0xa4000000, value);
 			Console.WriteLn("DEV9 write32 %8.8lx: %8.8lx", mem & ~0xa4000000, value);
 			return;
 		case 9:
-			iopMemWrite32(mem & ~0x1c000000, value);
+			IopBridge::MemWrite32(mem & ~0x1c000000, value);
 			return;
 		default: break;
 	}
@@ -926,8 +927,8 @@ static void _ext_memWrite64(u32 mem, mem64_t value)
 	switch (p)
 	{
 		case 9:
-			iopMemWrite32((mem + 0) & ~0x1c000000, (value >>  0) & 0xffffffff);
-			iopMemWrite32((mem + 4) & ~0x1c000000, (value >> 32) & 0xffffffff);
+			IopBridge::MemWrite32((mem + 0) & ~0x1c000000, (value >>  0) & 0xffffffff);
+			IopBridge::MemWrite32((mem + 4) & ~0x1c000000, (value >> 32) & 0xffffffff);
 			return;
 		default:
 			break;
@@ -952,10 +953,10 @@ static void TAKES_R128 _ext_memWrite128(u32 mem, r128 value)
 		case 9:
 		{
 			u128 val = r128_to_u128(value);
-			iopMemWrite32((mem + 0) & ~0x1c000000, val._u32[0] & 0xffffffff);
-			iopMemWrite32((mem + 4) & ~0x1c000000, val._u32[1] & 0xffffffff);
-			iopMemWrite32((mem + 8) & ~0x1c000000, val._u32[2] & 0xffffffff);
-			iopMemWrite32((mem + 12) & ~0x1c000000, val._u32[3] & 0xffffffff);
+			IopBridge::MemWrite32((mem + 0) & ~0x1c000000, val._u32[0] & 0xffffffff);
+			IopBridge::MemWrite32((mem + 4) & ~0x1c000000, val._u32[1] & 0xffffffff);
+			IopBridge::MemWrite32((mem + 8) & ~0x1c000000, val._u32[2] & 0xffffffff);
+			IopBridge::MemWrite32((mem + 12) & ~0x1c000000, val._u32[3] & 0xffffffff);
 
 			return;
 		}
@@ -1280,23 +1281,23 @@ void memReset()
 	using namespace IopMemory;
 
 	tlb_fallback_2 = vtlb_RegisterHandler(
-		iopHwRead8_generic, iopHwRead16_generic, iopHwRead32_generic, _ext_memRead64<2>, _ext_memRead128<2>,
-		iopHwWrite8_generic, iopHwWrite16_generic, iopHwWrite32_generic, _ext_memWrite64<2>, _ext_memWrite128<2>
+		IopBridge::HwHandler(iopHwRead8_generic), IopBridge::HwHandler(iopHwRead16_generic), IopBridge::HwHandler(iopHwRead32_generic), _ext_memRead64<2>, _ext_memRead128<2>,
+		IopBridge::HwHandler(iopHwWrite8_generic), IopBridge::HwHandler(iopHwWrite16_generic), IopBridge::HwHandler(iopHwWrite32_generic), _ext_memWrite64<2>, _ext_memWrite128<2>
 	);
 
 	iopHw_by_page_01 = vtlb_RegisterHandler(
-		iopHwRead8_Page1, iopHwRead16_Page1, iopHwRead32_Page1, _ext_memRead64<2>, _ext_memRead128<2>,
-		iopHwWrite8_Page1, iopHwWrite16_Page1, iopHwWrite32_Page1, _ext_memWrite64<2>, _ext_memWrite128<2>
+		IopBridge::HwHandler(iopHwRead8_Page1), IopBridge::HwHandler(iopHwRead16_Page1), IopBridge::HwHandler(iopHwRead32_Page1), _ext_memRead64<2>, _ext_memRead128<2>,
+		IopBridge::HwHandler(iopHwWrite8_Page1), IopBridge::HwHandler(iopHwWrite16_Page1), IopBridge::HwHandler(iopHwWrite32_Page1), _ext_memWrite64<2>, _ext_memWrite128<2>
 	);
 
 	iopHw_by_page_03 = vtlb_RegisterHandler(
-		iopHwRead8_Page3, iopHwRead16_Page3, iopHwRead32_Page3, _ext_memRead64<2>, _ext_memRead128<2>,
-		iopHwWrite8_Page3, iopHwWrite16_Page3, iopHwWrite32_Page3, _ext_memWrite64<2>, _ext_memWrite128<2>
+		IopBridge::HwHandler(iopHwRead8_Page3), IopBridge::HwHandler(iopHwRead16_Page3), IopBridge::HwHandler(iopHwRead32_Page3), _ext_memRead64<2>, _ext_memRead128<2>,
+		IopBridge::HwHandler(iopHwWrite8_Page3), IopBridge::HwHandler(iopHwWrite16_Page3), IopBridge::HwHandler(iopHwWrite32_Page3), _ext_memWrite64<2>, _ext_memWrite128<2>
 	);
 
 	iopHw_by_page_08 = vtlb_RegisterHandler(
-		iopHwRead8_Page8, iopHwRead16_Page8, iopHwRead32_Page8, _ext_memRead64<2>, _ext_memRead128<2>,
-		iopHwWrite8_Page8, iopHwWrite16_Page8, iopHwWrite32_Page8, _ext_memWrite64<2>, _ext_memWrite128<2>
+		IopBridge::HwHandler(iopHwRead8_Page8), IopBridge::HwHandler(iopHwRead16_Page8), IopBridge::HwHandler(iopHwRead32_Page8), _ext_memRead64<2>, _ext_memRead128<2>,
+		IopBridge::HwHandler(iopHwWrite8_Page8), IopBridge::HwHandler(iopHwWrite16_Page8), IopBridge::HwHandler(iopHwWrite32_Page8), _ext_memWrite64<2>, _ext_memWrite128<2>
 	);
 
 	// psHw Optimized Mappings

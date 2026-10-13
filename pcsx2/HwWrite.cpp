@@ -19,6 +19,7 @@
 #include "CDVD/CDVD.h"
 
 #include "IopDma.h" // for iopIntcIrq
+#include "IopThread/IopBridge.h"
 
 using namespace R5900;
 
@@ -172,7 +173,7 @@ void _hwWrite32( u32 mem, u32 value )
 				mcase(SBUS_F240):
 					if (value & (1 << 18))
 					{
-						iopIntcIrq(1);
+						IopBridge::RaiseIopIrq(1);
 					}
 					if (value & (1 << 19))
 					{

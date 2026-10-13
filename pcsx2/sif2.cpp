@@ -7,6 +7,7 @@
 #include "Common.h"
 #include "Sif.h"
 #include "IopHw.h"
+#include "IopThread/IopBridge.h"
 
 _sif sif2;
 
@@ -381,6 +382,6 @@ __fi void dmaSIF2()
 	// Legend of Legaia doesn't throw a warning either :)
 	//sif2.ee.end = false;
 
-	SIF2Dma();
+	IopBridge::Sif2Pump();
 
 }

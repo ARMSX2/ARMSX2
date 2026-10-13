@@ -8,6 +8,7 @@
 #include "R3000A.h"
 #include "Counters.h"
 #include "IopCounters.h"
+#include "IopThread/IopBridge.h"
 
 #include "GS.h"
 #include "GS/GS.h"
@@ -521,15 +522,15 @@ static __fi void VSyncStart(u64 sCycle)
 	EECNT_LOG("    ================  EE COUNTER VSYNC START (frame: %d)  ================", g_FrameCount);
 
 	// Memcard auto ejection - Uses a tick system timed off of real time, decrementing one tick per frame.
-	AutoEject::CountDownTicks();
+	IopBridge::AutoEjectTick();
 	// Memcard IO detection - Uses a tick system to determine when memcards are no longer being written.
-	MemcardBusy::Decrement();
+	IopBridge::MemcardBusyTick();
 
 	if (!GSSMODE1reg.SINT)
 	{
 		hwIntcIrq(INTC_VBLANK_S);
 		rcntStartGate(true, sCycle); // Counters Start Gate code
-		psxVBlankStart();
+		IopBridge::VBlankStart();
 	}
 
 	// INTC - VB Blank Start Hack --
@@ -597,7 +598,7 @@ static __fi void VSyncEnd(u64 sCycle)
 	if (!GSSMODE1reg.SINT)
 	{
 		hwIntcIrq(INTC_VBLANK_E); // HW Irq
-		psxVBlankEnd(); // psxCounters vBlank End
+		IopBridge::VBlankEnd(); // psxCounters vBlank End
 		rcntEndGate(true, sCycle); // Counters End Gate Code
 	}
 
@@ -674,7 +675,7 @@ __fi void rcntUpdate_hScanline()
 		if (!GSSMODE1reg.SINT)
 		{
 			rcntEndGate(false, hsyncCounter.startCycle);
-			psxHBlankEnd();
+			IopBridge::HBlankEnd();
 		}
 
 		hsyncCounter.Mode = MODE_HRENDER;
@@ -695,7 +696,7 @@ __fi void rcntUpdate_hScanline()
 			}
 
 			rcntStartGate(false, hsyncCounter.startCycle);
-			psxHBlankStart();
+			IopBridge::HBlankStart();
 		}
 
 		hsyncCounter.Mode = MODE_HBLANK;

@@ -1194,6 +1194,7 @@
     <ClInclude Include="IopCounters.h" />
     <ClInclude Include="IopDma.h" />
     <ClInclude Include="IopMem.h" />
+    <ClInclude Include="IopThread\IopBridge.h" />
     <ClInclude Include="IopThread\IopChannels.h" />
     <ClInclude Include="IopThread\IopThread.h" />
     <ClInclude Include="IopThread\IopThreadMode.h" />
