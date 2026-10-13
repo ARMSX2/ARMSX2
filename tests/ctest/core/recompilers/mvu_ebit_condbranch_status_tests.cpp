@@ -13,7 +13,8 @@
 //
 // This runs the same program twice, with and without a status reader in the
 // unexecuted target, and expects the same final STATUS from both, matching
-// the interpreter. It is red on microVU today; microVU is not fixed here.
+// the interpreter. A MAC reader in the target and an E-bit JR are checked the
+// same way.
 //
 // No title in the VU capture corpus reaches this: every E-bit conditional
 // branch in it is followed by code that does not read STATUS.
@@ -40,10 +41,19 @@ struct Status
 {
 	u32 jit;
 	u32 interp;
+	u32 jitMac = 0;
+	u32 interpMac = 0;
+};
+
+enum class Reader
+{
+	None,
+	Status,
+	Mac,
 };
 
 // gap = FMACs between the second status producer and the branch pair.
-Status RunEbitBranch(bool targetReadsStatus, int gap)
+Status RunEbitBranch(Reader reader, int gap, bool viaJr = false)
 {
 	VuTestHarness h(1);
 	h.SetVf(1, 1.0f, 2.0f, 3.0f, 4.0f);
@@ -53,16 +63,26 @@ Status RunEbitBranch(bool targetReadsStatus, int gap)
 	p.push_back(U(VADD_U(mask::xyzw, vf::vf4, vf::vf1, vf::vf1)));
 	for (int g = 0; g < gap; g++)
 		p.push_back(U(VMUL_U(mask::xyzw, vf::vf5, vf::vf1, vf::vf2)));
-	// E bit on a taken conditional branch: the program ends after the delay slot.
-	p.push_back(EBit(P(VIBEQ_L(vi::vi0, vi::vi0, 2), VSUB_U(mask::xyzw, vf::vf6, vf::vf2, vf::vf1))));
+	// E bit on a taken branch or jump: the program ends after the delay slot.
+	// The target is the second pair after the delay slot.
+	const u32 target = static_cast<u32>(p.size()) + 3;
+	h.SetVi(vi::vi8, target);
+	h.SetVi(vi::vi9, 0xFFFF);
+	const u32 branch = viaJr ? VJR_L(vi::vi8) : VIBEQ_L(vi::vi0, vi::vi0, 2);
+	p.push_back(EBit(P(branch, VSUB_U(mask::xyzw, vf::vf6, vf::vf2, vf::vf1))));
 	p.push_back(U(VADD_U(mask::x, vf::vf7, vf::vf1, vf::vf1))); // delay slot
 	// Branch target: never executed.
-	p.push_back(targetReadsStatus ? L(VFSAND_L(vi::vi5, 0x3)) : U(VNOP_U()));
+	auto read = [&](u32 vi) {
+		return reader == Reader::Status ? L(VFSAND_L(vi, 0x3)) :
+		       reader == Reader::Mac    ? L(VFMAND_L(vi, vi::vi9)) : U(VNOP_U());
+	};
+	p.push_back(read(vi::vi5));
 	p.push_back(U(VNOP_U()));
-	p.push_back(EBit(targetReadsStatus ? L(VFSAND_L(vi::vi6, 0x3)) : U(VNOP_U())));
+	p.push_back(EBit(read(vi::vi6)));
 	h.LoadProgram(p);
 	h.RunNoDiff();
-	return {h.GetViJit(REG_STATUS_FLAG), h.GetViInterp(REG_STATUS_FLAG)};
+	return {h.GetViJit(REG_STATUS_FLAG), h.GetViInterp(REG_STATUS_FLAG),
+		h.GetViJit(REG_MAC_FLAG), h.GetViInterp(REG_MAC_FLAG)};
 }
 
 } // namespace
@@ -71,12 +91,39 @@ TEST(MvuEbitCondBranchStatus, FinalStatusIgnoresUnexecutedTarget)
 {
 	for (int gap = 0; gap < 4; gap++)
 	{
-		const Status plain = RunEbitBranch(false, gap);
-		const Status read = RunEbitBranch(true, gap);
+		const Status plain = RunEbitBranch(Reader::None, gap);
+		const Status read = RunEbitBranch(Reader::Status, gap);
 		// The control: with no reader in the target, microVU agrees with the interpreter.
 		EXPECT_EQ(plain.jit, plain.interp) << "gap=" << gap;
 		EXPECT_EQ(read.interp, plain.interp) << "gap=" << gap;
 		EXPECT_EQ(read.jit, plain.jit) << "gap=" << gap << ": a status reader in the unexecuted branch target changed the final STATUS";
+	}
+}
+
+// A MAC reader in the unexecuted target moves the MAC queue the same way.
+TEST(MvuEbitCondBranchStatus, FinalMacIgnoresUnexecutedTarget)
+{
+	for (int gap = 0; gap < 4; gap++)
+	{
+		const Status plain = RunEbitBranch(Reader::None, gap);
+		const Status read = RunEbitBranch(Reader::Mac, gap);
+		EXPECT_EQ(plain.jitMac, plain.interpMac) << "gap=" << gap;
+		EXPECT_EQ(read.jitMac, plain.jitMac) << "gap=" << gap << ": a MAC reader in the unexecuted branch target changed the final MAC";
+		EXPECT_EQ(read.jit, plain.jit) << "gap=" << gap;
+	}
+}
+
+// An E-bit JR never reorders for a successor (its lookahead asks for every
+// flag, whatever the target holds), so it was never affected; pinned here.
+TEST(MvuEbitCondBranchStatus, EbitJumpIgnoresUnexecutedTarget)
+{
+	for (int gap = 0; gap < 4; gap++)
+	{
+		const Status plain = RunEbitBranch(Reader::None, gap, true);
+		const Status read = RunEbitBranch(Reader::Status, gap, true);
+		EXPECT_EQ(plain.jit, plain.interp) << "gap=" << gap;
+		EXPECT_EQ(read.jit, plain.jit) << "gap=" << gap;
+		EXPECT_EQ(read.jitMac, plain.jitMac) << "gap=" << gap;
 	}
 }
 

@@ -226,7 +226,9 @@
 //       single-scalar flag weights.
 //  58 — single-lane MOVE and MR32 into a destination cached whole insert the
 //       lane into that copy with one INS instead of a lane-0 slot and a merge.
-static constexpr u32 kMvuCompilerAbiVersion = 58;
+//  59 — a conditional branch carrying the E bit (and no M bit) no longer reorders
+//       the flag instances for a successor that never runs.
+static constexpr u32 kMvuCompilerAbiVersion = 59;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
