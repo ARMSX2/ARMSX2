@@ -2469,24 +2469,33 @@ static __fi void mVUcondBranchXor(mV, const a64::Register& condReg)
 		return;
 	}
 
+	if (itZero)
+	{
+		if (mVUlow.memReadIs)
+			mVUldrField(mVU, condReg, &mVU.VIbackup);
+		else
+			mVU.regAlloc->moveVIToGPR(condReg, _Is_);
+		return;
+	}
+
+	// The XOR reads Is where it is cached rather than from a copy in condReg.
+	// It is allocated first, so its allocation cannot recycle Is's slot
+	// between the read and the XOR.
+	a64::Register regT = gprT2;
+	if (mVUlow.memReadIt)
+		mVUldrField(mVU, gprT2, &mVU.VIbackup);
+	else
+		regT = mVU.regAlloc->allocGPR(_It_);
+
+	a64::Register isSrc = condReg;
 	if (mVUlow.memReadIs)
 		mVUldrField(mVU, condReg, &mVU.VIbackup);
 	else
-		mVU.regAlloc->moveVIToGPR(condReg, _Is_);
+		isSrc = mVU.regAlloc->viReadGPR(condReg, _Is_);
 
-	if (itZero)
-		return;
-	if (mVUlow.memReadIt)
-	{
-		mVUldrField(mVU, gprT2, &mVU.VIbackup);
-		armAsm->Eor(condReg.W(), condReg.W(), gprT2.W());
-	}
-	else
-	{
-		const a64::Register& regT = mVU.regAlloc->allocGPR(_It_);
-		armAsm->Eor(condReg.W(), condReg.W(), regT.W());
+	armAsm->Eor(condReg.W(), isSrc.W(), regT.W());
+	if (!mVUlow.memReadIt)
 		mVU.regAlloc->clearNeeded(regT);
-	}
 }
 
 mVUop(mVU_IBEQ)
