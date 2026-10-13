@@ -719,7 +719,7 @@ namespace vuopt
 							victim = k;
 						}
 					}
-					if (victim < keys.size() && c.first > vs + (keys[victim] ? 16u : 0u))
+					if (victim < keys.size() && c.first > vs + (keys[victim] ? 8u : 0u))
 						keys[victim] = c.second;
 				}
 			};
