@@ -192,6 +192,41 @@ class TextureManagerViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
+    /** Installs a .zip or .tar.zst pack file. The serial comes from the running game, else from the
+     *  file's name, as for [importFolder]. */
+    fun importArchive(uri: Uri) {
+        val context = getApplication<Application>()
+        val name = DocumentFile.fromSingleUri(context, uri)?.name
+        val serial = state.value.activeSerial
+            ?.takeIf(String::isNotBlank)
+            ?: name?.let(::normalizeSerial)
+        if (serial.isNullOrBlank()) {
+            state.value = state.value.copy(error = "Name the pack file with the game's serial, for example SLES-52187.tar.zst.")
+            return
+        }
+        state.value = state.value.copy(busy = true, progress = 0, message = null, error = null)
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                TexturePackInstaller.installLocal(
+                    context, uri, serial,
+                    onProgress = { p ->
+                        if (p is TexturePackInstaller.Progress.Extracting) {
+                            state.value = state.value.copy(progress = p.done)
+                        }
+                    },
+                    isCancelled = { false },
+                )
+            }
+            state.value = if (outcome.ok) {
+                state.value.copy(busy = false, progress = 0, message = "Imported ${outcome.textures} texture files for $serial.")
+            } else {
+                state.value.copy(busy = false, progress = 0, error = outcome.error ?: "No texture files were imported.")
+            }
+            if (outcome.ok) reloadCore()
+            refresh()
+        }
+    }
+
     fun delete(pack: TexturePackItem) {
         val serialDirectory = pack.directory.parentFile ?: return
         // Also off the main thread: deleting a 1.8 GB / 4000-file pack is just as capable of

@@ -51,6 +51,7 @@ import com.armsx2.ui.settings.controllerFocusable
 fun TextureManagerScreen(onBack: () -> Unit, viewModel: TextureManagerViewModel = viewModel()) {
     val state = viewModel.state.value
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> uri?.let(viewModel::importFolder) }
+    val archivePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(viewModel::importArchive) }
     LaunchedEffect(Unit) { viewModel.refresh() }
     // Options on the left, packs on the right: the controller keeps to a column and crosses with
     // Left/Right.
@@ -71,7 +72,10 @@ fun TextureManagerScreen(onBack: () -> Unit, viewModel: TextureManagerViewModel 
                 // the screen, which no control above it used to let it scroll to.
                 leading = { RoundAction("←", str("action.back"), onBack, controllerId = "textureMgr.top.back") },
                 actions = {
-                    RoundAction("＋", str("action.import"), { folderPicker.launch(null) }, controllerId = "textureMgr.top.import")
+                    // Providers label .tar.zst inconsistently (application/zstd, octet-stream, or
+                    // nothing), so offer every file and let the installer read the format.
+                    RoundAction("＋", str("action.import"), { archivePicker.launch(arrayOf("*/*")) }, controllerId = "textureMgr.top.import")
+                    RoundAction("🗀", str("action.importFolder"), { folderPicker.launch(null) }, controllerId = "textureMgr.top.folder")
                     RoundAction("↻", str("games.card.refresh"), viewModel::refresh, controllerId = "textureMgr.top.refresh")
                 },
             )

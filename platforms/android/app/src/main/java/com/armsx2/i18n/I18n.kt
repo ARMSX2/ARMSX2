@@ -1487,7 +1487,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "renderer.import.failed" to "Texture pack import failed.",
     "renderer.importTexturePack.bootFirst" to "Boot a game first so ARMSX2 knows the serial.",
     "renderer.importTexturePack.label" to "Import Texture Pack (folder)",
-    "renderer.importTexturePackZip.label" to "Import Texture Pack (.zip)",
+    "renderer.importTexturePackZip.label" to "Import Texture Pack (.zip / .tar.zst)",
     "renderer.loadTexturePacks.description" to "Loads replacement textures from the active game's texture folder.",
     "renderer.loadTexturePacks.label" to "Load Texture Packs",
     "renderer.orientation.autoRotate" to "Auto-Rotate",

@@ -46,9 +46,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kr.co.iefriends.pcsx2.NativeApp
-import java.io.BufferedInputStream
 import java.io.File
-import java.util.zip.ZipInputStream
 import androidx.compose.runtime.saveable.rememberSaveable
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -821,7 +819,7 @@ private fun TexturePackImportRow() {
                 )
             }
         }
-        // .zip import — extracts the archive into the same per-game replacements folder.
+        // .zip / .tar.zst import — extracts the archive into the same per-game replacements folder.
         Box(
             Modifier
                 .fillMaxWidth()
@@ -1174,39 +1172,11 @@ private fun importTexturePack(context: Context, uri: Uri, serial: String): Int {
     return copyDocumentTree(context, source, dest)
 }
 
-/** Extract a picked .zip of replacement textures into textures/<serial>/replacements,
- *  preserving the archive's internal folder structure. The native loader scans that
- *  directory RECURSIVELY and matches by hash filename, so a pack that nests its files
- *  (e.g. under its own "replacements/" or a pack-name folder) still resolves. Guards
- *  against Zip-Slip path traversal by rejecting any entry that escapes the dest dir. */
-private fun importTexturePackZip(context: Context, zipUri: Uri, serial: String): Int {
-    val dest = File(MainActivityRuntime.assetCopyRoot(context), "textures/$serial/replacements")
-    if (!dest.exists() && !dest.mkdirs())
-        return -1
-    val destCanon = dest.canonicalPath
-    var copied = 0
-    context.contentResolver.openInputStream(zipUri)?.use { raw ->
-        ZipInputStream(BufferedInputStream(raw)).use { zin ->
-            while (true) {
-                val e = zin.nextEntry ?: break
-                if (!e.isDirectory) {
-                    val rel = e.name.replace('\\', '/').trimStart('/')
-                    val out = File(dest, rel)
-                    // Zip-Slip guard: the resolved path must stay inside dest.
-                    val outCanon = out.canonicalPath
-                    if (outCanon == destCanon || outCanon.startsWith(destCanon + File.separator)) {
-                        out.parentFile?.mkdirs()
-                        // Per-entry guard: a mid-copy failure deletes that partial file
-                        // and lets the remaining entries still import.
-                        val ok = runCatching { out.outputStream().use { zin.copyTo(it) } }.isSuccess
-                        if (ok) copied++ else out.delete()
-                    }
-                }
-                zin.closeEntry()
-            }
-        }
-    } ?: return -1
-    return copied
+/** Installs a picked .zip or .tar.zst pack into textures/<serial>/replacements through
+ *  [com.armsx2.TexturePackInstaller.installLocal]. Returns the texture count, or -1. */
+private fun importTexturePackZip(context: Context, uri: Uri, serial: String): Int {
+    val outcome = com.armsx2.TexturePackInstaller.installLocal(context, uri, serial, onProgress = {}, isCancelled = { false })
+    return if (outcome.ok) outcome.textures else -1
 }
 
 private fun copyDocumentTree(context: Context, source: DocumentFile, dest: File): Int {
