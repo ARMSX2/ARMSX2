@@ -1055,6 +1055,20 @@ public:
 		        (gprMap[regId].VIreg >= 0 || gprMap[regId].isNeeded));
 	}
 
+	// Whether allocReg would find `vfreg` cached whole (clean, or dirty in
+	// every lane) -- the copy a single-lane write can be inserted into in
+	// place. VF0 never qualifies.
+	bool isCachedWhole(int vfreg) const
+	{
+		for (int i = 0; i < neonAllocTotal; i++)
+		{
+			const microMapNEON& m = neonMap[i];
+			if (m.VFreg == vfreg && vfreg != 0 && (m.xyzw == 0 || m.xyzw == 0xF))
+				return true;
+		}
+		return false;
+	}
+
 	bool hasRegVF(int vfreg) const
 	{
 		for (int i = 0; i < neonAllocTotal; i++)

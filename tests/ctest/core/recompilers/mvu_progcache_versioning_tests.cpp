@@ -59,7 +59,7 @@
 // round-trip tests.
 namespace pcsx2_test
 {
-	static constexpr u32 kMvuCompilerAbiVersionMirror = 57;
+	static constexpr u32 kMvuCompilerAbiVersionMirror = 58;
 }
 
 namespace

@@ -1529,6 +1529,24 @@ mVUop(mVU_ISUBIU)
 // MFIR/MFP/MOVE/MR32/MTIR
 //------------------------------------------------------------------
 
+// A single-lane VF write whose destination (Ft) is cached whole: the lane
+// goes straight into that copy with one INS, Ft[lane] <- Fs[srcLane], and the
+// copy becomes a whole-register write. The old route -- a single-lane slot
+// for the lane, then clearNeeded's merge into the same cached copy -- leaves
+// that copy holding the same words and marked the same way. False, with
+// nothing emitted, when the op is not single-lane or Ft is not cached whole.
+static bool mVUinsertLane(mV, int fsReg, int srcLane)
+{
+	if (!_XYZW_SS || _Ft_ == 0 || !mVU.regAlloc->isCachedWhole(_Ft_))
+		return false;
+	const a64::VRegister& Fs = mVU.regAlloc->allocReg(fsReg);
+	const a64::VRegister& Ft = mVU.regAlloc->allocReg(_Ft_, _Ft_, 0xf, false);
+	armAsm->Ins(Ft.V4S(), mVUssLane(mVU), Fs.V4S(), srcLane);
+	mVU.regAlloc->clearNeeded(Ft);
+	mVU.regAlloc->clearNeeded(Fs);
+	return true;
+}
+
 mVUop(mVU_MFIR)
 {
 	pass1
@@ -1585,8 +1603,13 @@ mVUop(mVU_MOVE)
 	pass1 { mVUanalyzeMOVE(mVU, _Fs_, _Ft_); }
 	pass2
 	{
-		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_, _Ft_, _X_Y_Z_W);
-		mVU.regAlloc->clearNeeded(Fs);
+		// One lane into a destination cached whole is one INS into that copy
+		// (mVUinsertLane); otherwise a clone of Fs that the allocator merges.
+		if (!mVUinsertLane(mVU, _Fs_, mVUssLane(mVU)))
+		{
+			const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_, _Ft_, _X_Y_Z_W);
+			mVU.regAlloc->clearNeeded(Fs);
+		}
 		mVU.profiler.EmitOp(opMOVE);
 	}
 	pass3 { mVUlog("MOVE.%s vf%02d, vf%02d", _XYZW_String, _Ft_, _Fs_); }
@@ -1597,6 +1620,12 @@ mVUop(mVU_MR32)
 	pass1 { mVUanalyzeMR32(mVU, _Fs_, _Ft_); }
 	pass2
 	{
+		// MR32 rotates XYZW -> YZWX, so the lane written takes the next one up.
+		if (mVUinsertLane(mVU, _Fs_, (mVUssLane(mVU) + 1) & 3))
+		{
+			mVU.profiler.EmitOp(opMR32);
+			return;
+		}
 		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_);
 		const a64::VRegister& Ft = mVU.regAlloc->allocReg(-1, _Ft_, _X_Y_Z_W);
 		if (_XYZW_SS)

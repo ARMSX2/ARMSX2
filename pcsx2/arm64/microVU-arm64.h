@@ -224,7 +224,9 @@
 //       width, in an allocReg natural slot, instead of rotating Fs, Ft and ACC to
 //       lane 0 for scalar arithmetic and ACC back; mVUglob gains the lane-indexed
 //       single-scalar flag weights.
-static constexpr u32 kMvuCompilerAbiVersion = 57;
+//  58 — single-lane MOVE and MR32 into a destination cached whole insert the
+//       lane into that copy with one INS instead of a lane-0 slot and a merge.
+static constexpr u32 kMvuCompilerAbiVersion = 58;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

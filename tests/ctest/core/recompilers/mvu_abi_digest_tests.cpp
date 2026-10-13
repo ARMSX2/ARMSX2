@@ -482,6 +482,9 @@ constexpr AbiPin kPins[] = {
 	// single-lane probe runs at clampE or above, so the row repeats abi 56's.
 	// It also pins vu1DefaultShapes and vu0LoadStore, added at this version.
 	{57, {0xcc5d8ed2aff67456, 0x3740d9d84d609b95, 0x49140181ed6daa6d, 0x8cd5553cb2a8daba, 0x30d527dd8fe4d10c, 0x1a887bba90ef1a41, 0x51df58673dbf1b10, 0x929029ca42ca98c1, 0x01e61f64bdbc1a38, 0x01c604cf32776547, 0x024ff6cd7fabd2c8, 0xace1f4023f0e8bf8, 0x021b1d8ea47dc8e8, 0xc8c50b58f3f9badd, 0x530cf428707c7f11, 0x0be3b676bc50b217, 0xd91488a73ad2068a, 0xd304c548206d672b, 0x0cc9eeeb40bf56e4, 0x43b9ebeda584952a, 0xed424f10e0661fdf, 0x029663d8580ead20, 0x72a4cdceb608619f, 0xe34a4dda6a35b3df, 0xf9c3d13580d762e9, 0x2c012558a97e0052, 0xdb4ba733afd41dec, 0x0e5205525af143af}},
+	// abi 58: single-lane MOVE/MR32 insert into a cached destination. No probe
+	// issues one, so the row repeats abi 57's.
+	{58, {0xcc5d8ed2aff67456, 0x3740d9d84d609b95, 0x49140181ed6daa6d, 0x8cd5553cb2a8daba, 0x30d527dd8fe4d10c, 0x1a887bba90ef1a41, 0x51df58673dbf1b10, 0x929029ca42ca98c1, 0x01e61f64bdbc1a38, 0x01c604cf32776547, 0x024ff6cd7fabd2c8, 0xace1f4023f0e8bf8, 0x021b1d8ea47dc8e8, 0xc8c50b58f3f9badd, 0x530cf428707c7f11, 0x0be3b676bc50b217, 0xd91488a73ad2068a, 0xd304c548206d672b, 0x0cc9eeeb40bf56e4, 0x43b9ebeda584952a, 0xed424f10e0661fdf, 0x029663d8580ead20, 0x72a4cdceb608619f, 0xe34a4dda6a35b3df, 0xf9c3d13580d762e9, 0x2c012558a97e0052, 0xdb4ba733afd41dec, 0x0e5205525af143af}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
