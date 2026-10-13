@@ -554,6 +554,7 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 		// replay with every block entry traced (the block that jumped, then the
 		// block it reached). In a game these come from earlier runs.
 		std::map<u32, std::vector<u32>> jumpTargets;
+		u32 mvuBlocks = 0; // blocks the plain microVU replay compiled
 		if (opts.region)
 		{
 			BodyCtx recCtx(vu, vuRegs[vu].Micro, opts);
@@ -565,6 +566,7 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			vuopt::g_vuoptBodyHookUser = &recCtx;
 			recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
 			Uninstall();
+			mvuBlocks = recCtx.blocks;
 			for (size_t k = 1; k < g_trace.size(); k++)
 			{
 				const u32 from = static_cast<u32>(g_trace[k - 1] >> 32), to = static_cast<u32>(g_trace[k] >> 32);
@@ -671,8 +673,8 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			steadyCompiles, static_cast<unsigned long long>(compRef), static_cast<unsigned long long>(compRun));
 		if (ctx.region)
 		{
-			std::printf(" regions=%u rnodes=%u rexits=%u rbytes=%llu", ctx.region->Regions(), ctx.region->Nodes(), ctx.region->Exits(),
-				static_cast<unsigned long long>(ctx.region->Bytes()));
+			std::printf(" regions=%u rnodes=%u rexits=%u rbytes=%llu mvublocks=%u", ctx.region->Regions(), ctx.region->Nodes(), ctx.region->Exits(),
+				static_cast<unsigned long long>(ctx.region->Bytes()), mvuBlocks);
 			for (const auto& d : ctx.region->Declined())
 			{
 				std::string k = d.first;
