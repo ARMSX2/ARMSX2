@@ -171,15 +171,16 @@ TEST(IopThreadMode, ANonArm64HostForcesThreadedOff)
 	EXPECT_EQ(Resolve(true, false, true, x86_desktop), IopThreadMode::Off);
 }
 
-TEST(IopThreadMode, ANonArm64HostStillRunsLockstep)
+TEST(IopThreadMode, ANonArm64HostForcesLockstepOffToo)
 {
-	// Lockstep is the correctness oracle (tests, eerunner, debugging). It has to be usable as a
-	// reference on every host, so the architecture rule does not apply to it.
+	// Manager decision, 2026-10-13 (step 8), superseding the step 3 rule that Lockstep resolves on
+	// any host: the x86 IOP JIT has not been audited for running on another thread, and x86 is
+	// not a target for this feature. Neither mode resolves there, whatever the core count.
 	const HostCpuInfo x86_desktop = Host(false, 16, 8);
-	EXPECT_EQ(Resolve(true, true, true, x86_desktop), IopThreadMode::Lockstep);
-	EXPECT_EQ(Resolve(true, true, false, x86_desktop), IopThreadMode::Lockstep);
-	// Not even a host that can say nothing about itself rules it out.
-	EXPECT_EQ(Resolve(true, true, true, Host(false, 0, 0)), IopThreadMode::Lockstep);
+	EXPECT_EQ(Resolve(true, true, true, x86_desktop), IopThreadMode::Off);
+	EXPECT_EQ(Resolve(true, true, false, x86_desktop), IopThreadMode::Off);
+	// A host that can say nothing about itself is no different.
+	EXPECT_EQ(Resolve(true, true, true, Host(false, 0, 0)), IopThreadMode::Off);
 }
 
 TEST(IopThreadMode, EachForcingConditionIsSufficientAloneAndNoneStaysOnItsOwn)
@@ -296,7 +297,7 @@ TEST(IopThreadModeDevices, TheSameHostsAreOffForThreaded)
 
 TEST(IopThreadModeDevices, EveryForcingConditionStillTurnsLockstepOffOnAnyHost)
 {
-	// Lockstep escapes the host rules only. A condition about the VM is a reason the IOP cannot
+	// Lockstep escapes the core rules only. A condition about the VM is a reason the IOP cannot
 	// run on its own thread at all, and it holds on the hosts Lockstep is otherwise free on.
 	const HostCpuInfo hosts[] = {kSd865, kRk3562, Host(false, 16, 8), Host(true, 0, 0)};
 	for (const HostCpuInfo& host : hosts)
@@ -321,8 +322,10 @@ TEST(IopThreadModeDevices, EveryForcingConditionStillTurnsLockstepOffOnAnyHost)
 		vm.recompiler_test_harness = true;
 		EXPECT_EQ(Resolve(true, true, true, host, vm), IopThreadMode::Off);
 
-		// And with none of them it resolves, so the Off results above are the conditions' doing.
-		EXPECT_EQ(Resolve(true, true, true, host, VmConditions()), IopThreadMode::Lockstep);
+		// And with none of them it resolves on an ARM64 host, so the Off results above are the
+		// conditions' doing. A non-ARM64 host is Off either way (the architecture rule).
+		EXPECT_EQ(Resolve(true, true, true, host, VmConditions()),
+			host.is_arm64 ? IopThreadMode::Lockstep : IopThreadMode::Off);
 	}
 }
 

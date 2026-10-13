@@ -62,7 +62,7 @@ namespace IopThread
 	/// emulator fills it from the CPU topology (a later step wires that up).
 	struct HostCpuInfo
 	{
-		bool is_arm64 = false; // Threaded is ARM64-only for now; Lockstep ignores this
+		bool is_arm64 = false; // both modes are ARM64-only: the x86 IOP JIT is not audited for a second thread
 		u32 total_cores = 0;
 		/// Cores of at least 0.75 of the fastest core's speed (GetPerformanceCoresMask() in
 		/// VMManager.cpp). 0 when the cores cannot be told apart or cannot be read.
@@ -86,14 +86,15 @@ namespace IopThread
 	/// the VM is in PS1 mode, runs an arcade title, replays a GS dump, has an IOP breakpoint, or
 	/// is under the recompiler test harness.
 	///
-	/// With the lockstep flag set it then returns Lockstep, on any host. Lockstep is the
-	/// correctness reference used by tests, eerunner and debugging, so the host rules below do not
-	/// apply to it.
+	/// On a host that is not ARM64 it returns Off for both modes: the x86 IOP JIT is not audited
+	/// for running on another thread.
 	///
-	/// Without the lockstep flag it returns Threaded, unless a host rule rules it out:
-	///  - the host is not ARM64;
-	///  - the host has no spare big core. The threads are the EE, the GS, the IOP and, with MTVU
-	///    on, the VU1 thread. It needs at least that many performance cores, and at least two
-	///    more cores in total for the OS, the GS back thread and the audio callback.
+	/// With the lockstep flag set it then returns Lockstep. Lockstep is the correctness reference
+	/// used by tests, eerunner and debugging, so the core rule below does not apply to it.
+	///
+	/// Without the lockstep flag it returns Threaded, unless the host has no spare big core. The
+	/// threads are the EE, the GS, the IOP and, with MTVU on, the VU1 thread. It needs at least
+	/// that many performance cores, and at least two more cores in total for the OS, the GS back
+	/// thread and the audio callback.
 	IopThreadMode ResolveMode(const Pcsx2Config& config, const HostCpuInfo& host, const VmConditions& vm);
 } // namespace IopThread
