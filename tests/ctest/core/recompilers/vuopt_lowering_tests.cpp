@@ -1102,6 +1102,50 @@ static void RegionBudgetSweepBody()
 	EXPECT_EQ(failures, 0);
 }
 
+// Milestone 10: two loops working on different vector registers get
+// different home maps, so entering and leaving each loop moves variables
+// between registers and memory (and fills clamped copies). Every budget
+// from 1 up, so bails land inside each loop too.
+static void RegionLoopMapsBody();
+TEST(VuoptRegion, LoopMaps) { RegionLoopMapsBody(); }
+static void RegionLoopMapsBody()
+{
+	std::vector<VuOp> p;
+	const auto loop = [&](u32 counter, u32 first, u32 iters) {
+		p.push_back(L(VIADDIU_L(counter, vi::vi0, iters)));
+		const s32 head = static_cast<s32>(p.size());
+		// a body of two blocks (a branch over one pair), heavy on vf first..first+11
+		for (u32 k = 0; k < 6; k++)
+			p.push_back(U(VMADD_U(mask::xyzw, first + k, first + k + 6, first + ((k + 1) % 6))));
+		p.push_back(L(VIBEQ_L(vi::vi7, vi::vi0, 1)));
+		p.push_back(U(VMUL_U(mask::xyz, first + 2, first + 8, first + 9)));
+		p.push_back(U(VADD_U(mask::xyzw, first + 3, first + 3, first + 10)));
+		p.push_back(P(VISUBIU_L(counter, counter, 1), VADDw_U(mask::xyzw, first + 4, first + 4, first + 11)));
+		const s32 at = static_cast<s32>(p.size());
+		p.push_back(L(VIBNE_L(counter, vi::vi0, static_cast<s16>(head - at - 1))));
+		p.push_back(U(VMUL_U(mask::xyzw, first + 5, first + 5, first + 7)));
+	};
+	p.push_back(U(VADD_U(mask::xyzw, vf::vf1, vf::vf2, vf::vf3)));
+	loop(vi::vi1, 1, 5);
+	p.push_back(U(VMUL_U(mask::xyzw, vf::vf25, vf::vf1, vf::vf13)));
+	loop(vi::vi2, 13, 5);
+	p.push_back(U(VADD_U(mask::xyzw, vf::vf3, vf::vf3, vf::vf25)));
+	p.push_back(EBit(U(VMUL_U(mask::xyzw, vf::vf26, vf::vf2, vf::vf14))));
+	int failures = 0;
+	for (bool fh : {true, false})
+		for (u32 budget : {0u, 1u, 2u, 5u, 9u, 13u, 20u, 31u, 47u, 60u, 75u, 90u, 120u, 160u})
+		{
+			const RegionOutcome o = RunRegion(p, fh, [](VuTestHarness& h) {
+				SeedSpecials(h, 23);
+				h.SetVi(7, 1);
+			}, budget == 0, 14, false, nullptr, budget);
+			EXPECT_GT(o.regions, 0u);
+			if (!o.diffs.empty() && ++failures <= 4)
+				ADD_FAILURE() << "flagHack=" << fh << " budget " << budget << "\n" << Join(o.diffs);
+		}
+	EXPECT_EQ(failures, 0);
+}
+
 // Milestone 6: VI values known at compile time fold, memory ops at constant
 // addresses address VU memory directly (wrapping like microVU), a VI copy
 // reads its source, a second LQ of the same address reuses the first, and an
@@ -1255,6 +1299,7 @@ TEST(VuoptLowering, ClampModes)
 		ViConstantsAndAddressesBody();
 		FlagPacksAndFsandBody();
 		RegionBudgetSweepBody();
+		RegionLoopMapsBody();
 		g_clampMode = -1;
 	}
 }
