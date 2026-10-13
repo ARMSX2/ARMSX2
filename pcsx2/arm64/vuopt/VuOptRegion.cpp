@@ -32,10 +32,11 @@ namespace vuopt
 		constexpr int kMemBaseReg = 27;
 		constexpr int kVHomeRegs[] = {31, 30, 29, 27, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15};
 		constexpr int kGHomeRegs[] = {26, 15, 14, 13, 12, 11};
-		// With the sticky accumulators (LowerEnv::stickyAcc) the last two vector homes
-		// and the last general home are theirs.
-		constexpr int kSaZReg = 16, kSaSReg = 15, kStkReg = 11;
-		static_assert(kVHomeRegs[12] == kSaZReg && kVHomeRegs[13] == kSaSReg && kGHomeRegs[5] == kStkReg, "accumulator registers are the last homes");
+		// With the sticky accumulators (LowerEnv::stickyAcc) these registers, the
+		// top of the allocation pools, are theirs for the whole region. (Taken from
+		// the home lists instead they cost the loops more than the accumulators
+		// saved: the homes they displaced were read in every block.)
+		constexpr int kSaZReg = 14, kSaSReg = 13, kStkReg = 10;
 
 		// The ring slot holding a block's newest STATUS instance when it is entered
 		// with this key: the slot before the one the next status write takes.
@@ -770,8 +771,8 @@ namespace vuopt
 			for (const auto& c : vc)
 				std::printf("  map %d home candidate %s%u: %u\n", map, (c.second & 0x1000) ? "clamped vf" : "var ", c.second & 0xfff, c.first);
 		std::sort(gc.begin(), gc.end(), [](auto a, auto b) { return a.first != b.first ? a.first > b.first : a.second < b.second; });
-		const size_t nvMax = std::min<size_t>(static_cast<size_t>(std::max(0, t_.maxVHomes)), std::size(kVHomeRegs) - (acc_ ? 2 : 0));
-		const size_t ngMax = std::min<size_t>(static_cast<size_t>(std::max(0, t_.maxGHomes)), std::size(kGHomeRegs) - (acc_ ? 1 : 0));
+		const size_t nvMax = std::min<size_t>(static_cast<size_t>(std::max(0, t_.maxVHomes)), std::size(kVHomeRegs));
+		const size_t ngMax = std::min<size_t>(static_cast<size_t>(std::max(0, t_.maxGHomes)), std::size(kGHomeRegs));
 		// Register -> key: a vector variable's lane 0, 0x1000|r for VF r's
 		// clamped copy, 0x2000 for VF0; a general variable.
 		std::vector<u32> vKey(nvMax, 0), gKey(ngMax, 0);

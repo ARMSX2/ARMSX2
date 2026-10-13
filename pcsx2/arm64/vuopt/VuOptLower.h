@@ -118,8 +118,9 @@ namespace vuopt
 
 		// LowerEnv::stickyAcc: the general register holding the status chain's
 		// word (without the sticky bits the accumulators still owe it), and the
-		// zero / sign accumulators. Fixed for every map of a region; filled by the
-		// region's node entries from microVU, never stored back. -1: none.
+		// zero / sign accumulators. Fixed for every map of a region and taken from
+		// the allocation pools, not the home lists; filled by the region's node
+		// entries from microVU, never stored back. -1: none.
 		s8 stkReg = -1, saZ = -1, saS = -1;
 
 		u32 VRegMask() const;   // NEON registers taken by homes
