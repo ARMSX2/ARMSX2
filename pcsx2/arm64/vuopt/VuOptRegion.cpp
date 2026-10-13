@@ -124,6 +124,8 @@ namespace vuopt
 			BlockResult br;
 			ir::Function fn;
 			void* blk = nullptr;
+			u32 clamped[33] = {}; // clamped uses of each incoming vector register (NodeLowering::Check)
+			std::unique_ptr<NodeLowering> low; // analysed lowering of fn (refers to fn: Nodes do not move)
 			int taken = 0x7fffffff, fall = 0x7fffffff; // >= 0: node; < 0: exit -(k+1)
 			std::vector<std::pair<u32, int>> jumps;    // JR/JALR: recorded target PC -> node / exit
 			a64::Label head, brk;
@@ -157,13 +159,15 @@ namespace vuopt
 			return bo;
 		}
 
-		bool Lowerable(const BlockResult& br, ir::Function& fn) const
+		// Builds the node's IR and checks it lowers; `clamped`: its clamped uses
+		// of incoming vector registers, for the home choice.
+		bool Lowerable(BlockResult& br, Node& n) const
 		{
 			if (!Internal(br))
 				return false;
-			fn = ir::BuildNodeLocal(br, BuildOpts());
-			static const HomeMap boundary;
-			return LowerNode(fn, le_, boundary, LowerMode::Region, true).ok;
+			n.fn = ir::BuildNodeLocal(br, BuildOpts());
+			n.low = NodeLowering::Check(n.fn, le_, n.clamped);
+			return n.low != nullptr;
 		}
 
 		int AddExit(u32 pc, const PipeState& st, void* known)
@@ -202,15 +206,13 @@ namespace vuopt
 			return AddExit(pc, st, env_.blockEntry(blk));
 		}
 		BlockResult br = t_.an_->Analyze(pc, st);
-		ir::Function fn;
-		if (!Lowerable(br, fn))
+		auto n = std::make_unique<Node>();
+		if (!Lowerable(br, *n))
 			return AddExit(pc, st, nullptr);
 		const int id = static_cast<int>(nodes_.size());
-		auto n = std::make_unique<Node>();
 		n->pc = pc;
 		n->key = st;
 		n->br = std::move(br);
-		n->fn = std::move(fn);
 		n->blk = env_.addBlock(env_.vuIndex, pc, st.bytes);
 		nodes_.push_back(std::move(n));
 		Expand(id);
@@ -271,24 +273,64 @@ namespace vuopt
 					if (j.second >= 0)
 						succ[i].push_back(j.second);
 			}
-			// reachability closure per node is fine at region sizes
+			// A node is in a loop when its strongly connected component has
+			// more than one node or it links to itself (Tarjan, iterative).
+			std::vector<int> index(NN, -1), low(NN, 0), comp(NN, -1), stk;
+			std::vector<u8> onStack(NN, 0);
+			std::vector<std::pair<int, size_t>> call;
+			int counter = 0, ncomp = 0;
+			for (size_t root = 0; root < NN; root++)
+			{
+				if (index[root] >= 0)
+					continue;
+				call.push_back({static_cast<int>(root), 0});
+				while (!call.empty())
+				{
+					const int v = call.back().first;
+					size_t& k = call.back().second;
+					if (k == 0)
+					{
+						index[v] = low[v] = counter++;
+						stk.push_back(v);
+						onStack[v] = 1;
+					}
+					if (k < succ[v].size())
+					{
+						const int w = succ[v][k++];
+						if (index[w] < 0)
+							call.push_back({w, 0});
+						else if (onStack[w])
+							low[v] = std::min(low[v], index[w]);
+						continue;
+					}
+					if (low[v] == index[v])
+					{
+						int w;
+						do
+						{
+							w = stk.back();
+							stk.pop_back();
+							onStack[w] = 0;
+							comp[w] = ncomp;
+						} while (w != v);
+						ncomp++;
+					}
+					call.pop_back();
+					if (!call.empty())
+					{
+						const int u = call.back().first;
+						low[u] = std::min(low[u], low[v]);
+					}
+				}
+			}
+			std::vector<u32> compSize(ncomp, 0);
+			for (size_t i = 0; i < NN; i++)
+				compSize[comp[i]]++;
 			for (size_t i = 0; i < NN; i++)
 			{
-				std::vector<u8> seenN(NN, 0);
-				std::vector<int> work(succ[i].begin(), succ[i].end());
-				bool cyc = false;
-				while (!work.empty() && !cyc)
-				{
-					const int x = work.back();
-					work.pop_back();
-					if (x == static_cast<int>(i))
-						cyc = true;
-					if (seenN[x])
-						continue;
-					seenN[x] = 1;
-					for (int y : succ[x])
-						work.push_back(y);
-				}
+				bool cyc = compSize[comp[i]] > 1;
+				for (int y : succ[i])
+					cyc = cyc || y == static_cast<int>(i);
 				if (cyc)
 					weight[i] = 8;
 			}
@@ -296,12 +338,19 @@ namespace vuopt
 		std::vector<u32> count(var::Count, 0);
 		u32 clamped[33] = {};
 		bool written[33] = {};
+		u8 seen[var::Count] = {};
+		std::vector<u32> touched;
 		for (size_t ni = 0; ni < NN; ni++)
 		{
 			const auto& n = nodes_[ni];
 			const u32 w = weight[ni];
 			const Function& f = n->fn;
-			std::vector<u8> seen(var::Count, 0);
+			touched.clear();
+			const auto mark = [&](u32 key, u8 bit) {
+				if (!seen[key])
+					touched.push_back(key);
+				seen[key] |= bit;
+			};
 			for (const Block& bl : f.blocks)
 			{
 				if (bl.node < 0)
@@ -313,12 +362,15 @@ namespace vuopt
 						hasMem_ = true;
 					if (in.op == Op::Leave)
 					{
-						for (u32 v = 0; v < var::Count; v++)
+						const ValueId* la = in.args.data();
+						for (u32 v : f.leaveArgs)
 						{
-							const ValueId a = in.args[v];
+							if (v >= var::Count)
+								break;
+							const ValueId a = la[v];
 							if (!a || (f.insts[a].op == Op::LiveIn && f.insts[a].var == v))
 								continue;
-							seen[VecKey(v)] |= 2;
+							mark(VecKey(v), 2);
 							if (v < 132)
 								written[v < 128 ? v / 4 : 32] = true;
 						}
@@ -326,15 +378,16 @@ namespace vuopt
 					}
 					for (ValueId a : in.args)
 						if (a && f.insts[a].op == Op::LiveIn && f.insts[a].var < var::Count)
-							seen[VecKey(f.insts[a].var)] |= 1;
+							mark(VecKey(f.insts[a].var), 1);
 				}
 			}
-			for (u32 v = 0; v < var::Count; v++)
+			for (u32 v : touched)
+			{
 				count[v] += w * ((seen[v] & 1) + ((seen[v] >> 1) & 1));
-			u32 c[33] = {};
-			ClampedLiveInUses(f, le_, c);
+				seen[v] = 0;
+			}
 			for (u32 r = 1; r <= 32; r++)
-				clamped[r] += c[r] ? 2 * w : 0;
+				clamped[r] += n->clamped[r] ? 2 * w : 0;
 		}
 		std::vector<std::pair<u32, u32>> vc, gc;
 		for (u32 r = 1; r <= 32; r++)
@@ -377,6 +430,7 @@ namespace vuopt
 		homes_.cycles = kCyclesReg;
 		if (hasMem_)
 			homes_.memBase = kMemBaseReg;
+		homes_.Seal();
 	}
 
 	a64::Label* RegionBuilder::Target(int target)
@@ -416,7 +470,7 @@ namespace vuopt
 			armAsm->B(&n.brk, a64::mi);
 			if (n.br.cycles > 1)
 				armAsm->Sub(wc, wc, n.br.cycles - 1);
-			const LowerResult r = LowerNode(n.fn, le_, homes_, LowerMode::Region);
+			const LowerResult r = n.low->Emit(homes_);
 			pxAssertRel(r.ok, "vuopt region: node no longer lowers with region homes");
 			const int next = static_cast<int>(i + 1);
 			if (n.br.endKind == BlockEnd::CondBranch)
@@ -588,14 +642,12 @@ namespace vuopt
 	{
 		// The root: microVU registered it before calling the hook.
 		{
-			ir::Function fn;
-			if (!Lowerable(root, fn))
-				return t_.Decline("root not internal or not lowerable", why);
 			auto n = std::make_unique<Node>();
+			n->br = root;
+			if (!Lowerable(n->br, *n))
+				return t_.Decline("root not internal or not lowerable", why);
 			n->pc = root.startPC;
 			n->key = root.entry;
-			n->br = root;
-			n->fn = std::move(fn);
 			n->blk = env_.rootBlock;
 			nodes_.push_back(std::move(n));
 		}

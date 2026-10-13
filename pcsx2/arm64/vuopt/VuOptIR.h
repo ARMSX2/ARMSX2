@@ -28,12 +28,127 @@
 
 #include "VuOptGraph.h"
 
+#include <algorithm>
+#include <initializer_list>
+#include <type_traits>
+
 #include <string>
 #include <vector>
 
 namespace vuopt::ir
 {
 	using ValueId = u32; // 0 = none
+
+	// An instruction's operands: up to 12 inline (an FMAC's fs, ft and acc
+	// lanes), more on the heap (the node end's every-variable list). A region
+	// compile builds tens of thousands of instructions; most never allocate.
+	class ArgVec
+	{
+	public:
+		static constexpr u32 kInline = 12;
+		ArgVec() = default;
+		ArgVec(size_t n, ValueId v)
+		{
+			reserve(n);
+			std::fill(data(), data() + n, v);
+			size_ = static_cast<u32>(n);
+		}
+		ArgVec(std::initializer_list<ValueId> l) { Assign(l.begin(), l.size()); }
+		ArgVec(const std::vector<ValueId>& v) { Assign(v.data(), v.size()); }
+		ArgVec(const ArgVec& o) { Assign(o.data(), o.size_); }
+		ArgVec(ArgVec&& o) noexcept { Take(o); }
+		ArgVec& operator=(const ArgVec& o)
+		{
+			if (this != &o)
+				Assign(o.data(), o.size_);
+			return *this;
+		}
+		ArgVec& operator=(ArgVec&& o) noexcept
+		{
+			if (this != &o)
+			{
+				delete[] heap_;
+				heap_ = nullptr;
+				Take(o);
+			}
+			return *this;
+		}
+		ArgVec& operator=(const std::vector<ValueId>& v)
+		{
+			Assign(v.data(), v.size());
+			return *this;
+		}
+		~ArgVec() { delete[] heap_; }
+
+		size_t size() const { return size_; }
+		bool empty() const { return size_ == 0; }
+		ValueId* data() { return heap_ ? heap_ : inl_; }
+		const ValueId* data() const { return heap_ ? heap_ : inl_; }
+		ValueId& operator[](size_t i) { return data()[i]; }
+		const ValueId& operator[](size_t i) const { return data()[i]; }
+		ValueId* begin() { return data(); }
+		ValueId* end() { return data() + size_; }
+		const ValueId* begin() const { return data(); }
+		const ValueId* end() const { return data() + size_; }
+		ValueId& back() { return data()[size_ - 1]; }
+		const ValueId& back() const { return data()[size_ - 1]; }
+		void reserve(size_t n)
+		{
+			if (n > cap_)
+				Grow(static_cast<u32>(n));
+		}
+		void push_back(ValueId v)
+		{
+			if (size_ == cap_)
+				Grow(cap_ * 2);
+			data()[size_++] = v;
+		}
+		// Appending only (pos must be end()).
+		void insert(const ValueId* pos, size_t n, ValueId v)
+		{
+			(void)pos;
+			for (size_t i = 0; i < n; i++)
+				push_back(v);
+		}
+		template <typename It, typename = std::enable_if_t<!std::is_integral_v<It>>>
+		void insert(const ValueId* pos, It first, It last)
+		{
+			(void)pos;
+			for (; first != last; ++first)
+				push_back(*first);
+		}
+
+	private:
+		void Grow(u32 n)
+		{
+			ValueId* p = new ValueId[n];
+			std::copy(data(), data() + size_, p);
+			delete[] heap_;
+			heap_ = p;
+			cap_ = n;
+		}
+		void Assign(const ValueId* p, size_t n)
+		{
+			size_ = 0;
+			reserve(n);
+			std::copy(p, p + n, data());
+			size_ = static_cast<u32>(n);
+		}
+		void Take(ArgVec& o)
+		{
+			size_ = o.size_;
+			cap_ = o.cap_;
+			heap_ = o.heap_;
+			if (!heap_)
+				std::copy(o.inl_, o.inl_ + size_, inl_);
+			o.heap_ = nullptr;
+			o.size_ = 0;
+			o.cap_ = kInline;
+		}
+		ValueId inl_[kInline] = {};
+		ValueId* heap_ = nullptr;
+		u32 size_ = 0, cap_ = kInline;
+	};
 
 	// SSA variables (the VU state).
 	namespace var
@@ -132,7 +247,7 @@ namespace vuopt::ir
 		u32 pc = 0;
 		u32 word = 0;     // the VU instruction word (upper or lower) the op came from
 		int block = -1;
-		std::vector<ValueId> args;
+		ArgVec args;
 		bool dead = false; // removed trivial phi
 	};
 
@@ -172,6 +287,7 @@ namespace vuopt::ir
 		bool unsupported = false;
 		std::string unsupportedWhy;
 		EndInfo end;                // node-local region builds of a program end
+		std::vector<u32> leaveArgs; // node-local builds: the Leave's non-zero operand indices, ascending
 
 		// construction statistics
 		u32 phisCreated = 0;
@@ -210,6 +326,9 @@ namespace vuopt::ir
 	// block), the body ends in a Leave that hands every variable's final value
 	// back, and microVU's own framing does the cycle test, links and ends.
 	Function BuildNodeLocal(const BlockResult& block, const BuildOptions& opts);
+	// The same, borrowing `block` for the build instead of copying it (it is
+	// handed back unchanged).
+	Function BuildNodeLocal(BlockResult& block, const BuildOptions& opts);
 
 	Function BuildSSA(const ProgramGraph& g, const BuildOptions& opts);
 

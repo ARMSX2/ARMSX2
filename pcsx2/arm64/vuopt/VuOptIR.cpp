@@ -4,6 +4,7 @@
 #include "VuOptIR.h"
 
 #include <algorithm>
+#include <memory>
 #include <array>
 #include <cstdio>
 #include <functional>
@@ -75,11 +76,63 @@ namespace vuopt::ir
 				, o_(o)
 				, nodeLocal_(nodeLocal)
 			{
+				// A region builds one node at a time, hundreds per compile:
+				// node builds reuse the thread's buffers.
+				if (nodeLocal_)
+				{
+					auto& pool = s_pool;
+					if (!pool.empty())
+					{
+						scratch_ = std::move(pool.back());
+						pool.pop_back();
+					}
+					else
+						scratch_ = std::make_unique<Scratch>();
+					Swap();
+					repl_.clear();
+					users_.clear();
+					pendingVF_.clear();
+				}
 			}
+			~Builder()
+			{
+				if (nodeLocal_)
+				{
+					Swap();
+					if (s_pool.size() < 16)
+						s_pool.push_back(std::move(scratch_));
+				}
+			}
+			Builder(const Builder&) = delete;
+			Builder& operator=(const Builder&) = delete;
 
 			Function Build();
 
 		private:
+			struct Scratch
+			{
+				std::vector<std::array<ValueId, var::Count>> cur;
+				std::vector<bool> sealed, filled;
+				std::vector<std::vector<std::pair<u32, ValueId>>> incomplete;
+				std::vector<ValueId> repl, vf0, vi0;
+				std::vector<std::vector<ValueId>> users;
+				std::vector<std::pair<u32, ValueId>> pendingVF;
+			};
+			static thread_local std::vector<std::unique_ptr<Scratch>> s_pool;
+			std::unique_ptr<Scratch> scratch_;
+			void Swap()
+			{
+				cur_.swap(scratch_->cur);
+				sealed_.swap(scratch_->sealed);
+				filled_.swap(scratch_->filled);
+				incomplete_.swap(scratch_->incomplete);
+				repl_.swap(scratch_->repl);
+				vf0_.swap(scratch_->vf0);
+				vi0_.swap(scratch_->vi0);
+				users_.swap(scratch_->users);
+				pendingVF_.swap(scratch_->pendingVF);
+			}
+
 			const ProgramGraph& g_;
 			const BuildOptions& o_;
 			const bool nodeLocal_;
@@ -124,7 +177,7 @@ namespace vuopt::ir
 				return id;
 			}
 
-			ValueId Emit(Op op, Type t, std::vector<ValueId> args, u16 sub = 0, u8 mask = 0, s32 imm = 0)
+			ValueId Emit(Op op, Type t, ArgVec args, u16 sub = 0, u8 mask = 0, s32 imm = 0)
 			{
 				const ValueId id = New(op, t, b_);
 				Inst& in = f_.insts[id];
@@ -283,7 +336,7 @@ namespace vuopt::ir
 					if (MaskLane(mask, l))
 						pendingVF_.push_back({var::VF(reg, l), v});
 			}
-			void Lanes(std::vector<ValueId>& args, u32 reg, u8 mask)
+			void Lanes(ArgVec& args, u32 reg, u8 mask)
 			{
 				for (int l = 0; l < 4; l++)
 					args.push_back(MaskLane(mask, l) ? ReadVF(reg, l) : 0);
@@ -296,6 +349,18 @@ namespace vuopt::ir
 				if (o.lOp.backupVI && reg == o.lOp.VI_write.reg)
 					Wr(var::VIBACKUP, Rd(var::VI(reg)));
 				Wr(var::VI(reg), val);
+			}
+
+			// The variables this block has read or written, each at its current
+			// value; 0 for the rest (still their incoming values, which a node's
+			// end leaves alone). Keeps a node's IR to what it touches.
+			std::vector<ValueId> TouchedVars()
+			{
+				std::vector<ValueId> a(var::Count, 0);
+				for (u32 v = 0; v < var::Count; v++)
+					if (ValidVar(v))
+						a[v] = Resolve(cur_[b_][v]);
+				return a;
 			}
 
 			std::vector<ValueId> AllVars()
@@ -352,7 +417,7 @@ namespace vuopt::ir
 				case UClass::FmacC:
 				case UClass::FmacD:
 				{
-					std::vector<ValueId> a;
+					ArgVec a;
 					Lanes(a, u.fs, u.mask);
 					switch (u.form)
 					{
@@ -373,7 +438,7 @@ namespace vuopt::ir
 						if (!accWritten_ && !accClamped_)
 							for (int l = 0; l < 4; l++)
 								accEntry_[l] = Rd(var::ACC(l));
-						std::vector<ValueId> av(4, 0);
+						ArgVec av(4, 0);
 						for (int l = 0; l < 4; l++)
 							if (MaskLane(cl, l))
 								av[l] = Rd(var::ACC(l));
@@ -405,7 +470,7 @@ namespace vuopt::ir
 				case UClass::Opmsub:
 				{
 					// lane l of the result reads Fs lane (l+1)%3 and Ft lane (l+2)%3 (xyz only)
-					std::vector<ValueId> fs(4, 0), ft(4, 0);
+					ArgVec fs(4, 0), ft(4, 0);
 					for (int l = 0; l < 4; l++)
 					{
 						if (!MaskLane(u.mask, l))
@@ -416,7 +481,7 @@ namespace vuopt::ir
 						if (l != 3)
 							ft[(l + 2) % 3] = ReadVF(u.ft, (l + 2) % 3);
 					}
-					std::vector<ValueId> a = fs;
+					ArgVec a = fs;
 					a.insert(a.end(), ft.begin(), ft.end());
 					if (u.cls == UClass::Opmsub)
 						for (int l = 0; l < 4; l++)
@@ -435,7 +500,7 @@ namespace vuopt::ir
 				}
 				case UClass::Fmac2:
 				{
-					std::vector<ValueId> a;
+					ArgVec a;
 					Lanes(a, u.fs, u.mask);
 					const ValueId v = Emit(Op::Fmac2, Type::Vec, std::move(a), sub, u.mask);
 					DeferVF(u.ft, u.mask, v);
@@ -515,7 +580,7 @@ namespace vuopt::ir
 						if (l.it)
 							WriteVI(o, l.it, addr);
 					}
-					std::vector<ValueId> a = {Rd(var::MEM), addr};
+					ArgVec a = {Rd(var::MEM), addr};
 					Lanes(a, l.fs, l.mask);
 					Wr(var::MEM, Emit(Op::StoreQ, Type::Mem, std::move(a), sub, l.mask, l.op == LOp::SQ ? l.imm11 : 0));
 					if (l.op == LOp::SQI && l.it)
@@ -594,7 +659,7 @@ namespace vuopt::ir
 					break;
 				case LOp::MOVE:
 				{
-					std::vector<ValueId> a;
+					ArgVec a;
 					Lanes(a, l.fs, l.mask);
 					DeferVF(l.ft, l.mask, Emit(Op::Move, Type::Vec, std::move(a), sub, l.mask));
 					break;
@@ -649,7 +714,7 @@ namespace vuopt::ir
 						lanes = 0xC;
 					else if (l.op == LOp::EATANxz)
 						lanes = 0xA;
-					std::vector<ValueId> a;
+					ArgVec a;
 					Lanes(a, l.fs, lanes);
 					Wr(o.writeP ? var::PL1 : var::PL0, Emit(Op::Efu, Type::Float, std::move(a), sub, l.mask));
 					break;
@@ -823,12 +888,16 @@ namespace vuopt::ir
 					f_.end.pInst = b.pLane ^ (b.end.p ? 1 : 0);
 					f_.end.tpc = b.eBitOnBranch ? b.takenPC : b.endTPC;
 				}
-				std::vector<ValueId> a = AllVars();
+				std::vector<ValueId> a = TouchedVars();
 				if (accClamped_ && !accWritten_)
 					for (int l = 0; l < 4; l++)
 						a[var::ACC(l)] = accEntry_[l];
 				a.push_back(cond);
 				a.push_back(jumpVal);
+				f_.leaveArgs.clear();
+				for (size_t k = 0; k < a.size(); k++)
+					if (a[k])
+						f_.leaveArgs.push_back(static_cast<u32>(k));
 				pc_ = b.pcs.back();
 				Emit(Op::Leave, Type::None, std::move(a));
 				blk.term = Term::Exit;
@@ -957,7 +1026,7 @@ namespace vuopt::ir
 					while (!call.empty())
 					{
 						Frame& fr = call.back();
-						const std::vector<ValueId>& args = f_.insts[fr.v].args;
+						const ArgVec& args = f_.insts[fr.v].args;
 						if (fr.k < args.size())
 						{
 							const ValueId w = Resolve(args[fr.k++]);
@@ -1042,9 +1111,19 @@ namespace vuopt::ir
 			removeRedundant(phis);
 		}
 
+		thread_local std::vector<std::unique_ptr<Builder::Scratch>> Builder::s_pool;
+
 		Function Builder::Build()
 		{
 			const int N = static_cast<int>(g_.nodes.size());
+			if (nodeLocal_)
+			{
+				// a node is a few tens of values; grow once
+				f_.insts.reserve(64);
+				repl_.reserve(64);
+				users_.reserve(64);
+				f_.blocks.reserve(2);
+			}
 			f_.insts.emplace_back(); // id 0 = none
 			repl_.push_back(0);
 			users_.emplace_back();
@@ -1098,6 +1177,9 @@ namespace vuopt::ir
 			for (size_t b = 0; b < f_.blocks.size(); b++)
 				for (int s : f_.blocks[b].succs)
 					f_.blocks[s].preds.push_back(static_cast<int>(b));
+			if (nodeLocal_)
+				for (Block& bl : f_.blocks)
+					bl.insts.reserve(bl.node >= 0 ? 48 : 24);
 
 			const size_t B = f_.blocks.size();
 			cur_.assign(B, {});
@@ -1109,8 +1191,16 @@ namespace vuopt::ir
 			vf0_.assign(B, 0);
 			vi0_.assign(B, 0);
 
-			// Reverse postorder from the entry blocks.
+			// Reverse postorder from the entry blocks (a node-local build is
+			// its entry block, then the node).
 			std::vector<int> rpo;
+			if (nodeLocal_ && B == 2 && f_.entryBlocks.size() == 1 && f_.entryBlocks[0] == 1)
+			{
+				rpo.reserve(2);
+				rpo.push_back(1);
+				rpo.push_back(0);
+			}
+			else
 			{
 				std::vector<int> state(B, 0), post;
 				std::vector<std::pair<int, size_t>> st;
@@ -1165,6 +1255,11 @@ namespace vuopt::ir
 			for (size_t b = 0; b < B; b++)
 				if (!sealed_[b] && filled_[b])
 					Seal(static_cast<int>(b));
+
+			// Without phis there is nothing to remove or route (repl_ is only
+			// written when a phi goes).
+			if (f_.phisCreated == 0)
+				return std::move(f_);
 
 			RemoveRedundantSccs();
 
@@ -1280,6 +1375,26 @@ namespace vuopt::ir
 		return b.Build();
 	}
 
+	Function BuildNodeLocal(BlockResult& block, const BuildOptions& opts)
+	{
+		ProgramGraph g;
+		g.nodes.emplace_back();
+		GraphNode& n = g.nodes.back();
+		n.id = 0;
+		n.pc = block.startPC;
+		n.entry = block.entry;
+		std::swap(n.block, block);
+		n.isRoot = true;
+		g.roots.push_back(0);
+		Function f;
+		{
+			Builder b(g, opts, true);
+			f = b.Build();
+		}
+		std::swap(n.block, block);
+		return f;
+	}
+
 	Function BuildNodeLocal(const BlockResult& block, const BuildOptions& opts)
 	{
 		ProgramGraph g;
@@ -1387,7 +1502,7 @@ namespace vuopt::ir
 			f.unsupported ? ", UNSUPPORTED: " : "", f.unsupported ? f.unsupportedWhy.c_str() : "");
 		s += buf;
 
-		auto lanes = [&](const std::vector<ValueId>& a, size_t off) {
+		auto lanes = [&](const ArgVec& a, size_t off) {
 			std::string r = "{";
 			for (size_t k = 0; k < 4; k++)
 			{

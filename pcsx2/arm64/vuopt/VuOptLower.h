@@ -32,6 +32,7 @@
 
 #include "VuOptIR.h"
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -90,6 +91,14 @@ namespace vuopt
 
 		u32 VRegMask() const;   // NEON registers taken by homes
 		u32 GRegMask() const;   // general registers taken by homes
+		// VRegMask() / GRegMask(), cached by Seal() once the homes are chosen
+		// (the lowering reads them for every node).
+		u32 vRegs = 0, gRegs = 0;
+		void Seal()
+		{
+			vRegs = VRegMask();
+			gRegs = GRegMask();
+		}
 	};
 
 	struct LowerResult
@@ -126,8 +135,25 @@ namespace vuopt
 	void EmitLoadHomes(const HomeMap& homes, const LowerEnv& env, s32 cyclesOff);
 	// After EmitLoadHomes and the clamp bounds: the clamped homes.
 	void EmitClampHomes(const HomeMap& homes, const LowerEnv& env);
-	// How many clamped uses of each vector register's incoming value a node
-	// has (index 1..31 VF, 32 ACC), as the lowering would clamp them.
-	void ClampedLiveInUses(const ir::Function& f, const LowerEnv& env, u32 counts[33]);
+	// A region node's lowering, analysed once when the region is built and
+	// emitted once its homes are known.
+	class NodeLowering
+	{
+	public:
+		// Whether the node lowers inside a region (checked against microVU's
+		// boundary homes; null if not). Adds to `counts` how many clamped uses
+		// of each vector register's incoming value it has (index 1..31 VF,
+		// 32 ACC), as the lowering would clamp them. `f` must outlive the
+		// result.
+		static std::unique_ptr<NodeLowering> Check(const ir::Function& f, const LowerEnv& env, u32 counts[33]);
+		// Emits the node against the region's homes (at most once).
+		LowerResult Emit(const HomeMap& homes);
+		~NodeLowering();
+		struct Impl;
+
+	private:
+		explicit NodeLowering(std::unique_ptr<Impl> impl);
+		std::unique_ptr<Impl> impl_;
+	};
 	void EmitStoreHomes(const HomeMap& homes, const LowerEnv& env, s32 cyclesOff);
 } // namespace vuopt

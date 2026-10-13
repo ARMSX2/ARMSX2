@@ -206,19 +206,141 @@ namespace vuopt
 			Lowerer(const Function& f, const LowerEnv& env, const HomeMap& hm, LowerMode mode)
 				: f_(f)
 				, env_(env)
-				, hm_(hm)
+				, hm_(&hm)
 				, mode_(mode)
 			{
+				// The per-value tables reuse buffers earlier Lowerers on this
+				// thread grew (a region keeps one Lowerer per node alive).
+				auto& pool = s_pool;
+				if (!pool.empty())
+				{
+					scratch_ = std::move(pool.back());
+					pool.pop_back();
+				}
+				else
+					scratch_ = std::make_unique<Scratch>();
+				Swap();
+				noEarly_.clear();
+				slotBusy_.assign(kSlots + kOverflowSlots, 0);
 			}
+			~Lowerer()
+			{
+				Swap();
+				if (s_pool.size() < 4096)
+					s_pool.push_back(std::move(scratch_));
+			}
+			// The home-dependent half of Check again, for other homes (nothing
+			// emitted yet).
+			bool Rebind(const HomeMap& hm, std::string& why)
+			{
+				hm_ = &hm;
+				return BindHomes(why);
+			}
+			Lowerer(const Lowerer&) = delete;
+			Lowerer& operator=(const Lowerer&) = delete;
 
 			bool Check(std::string& why);
 			void Emit();
 
 		private:
+			// (never shrinks, so the lists past n keep their buffers for the
+			// pseudo values and the next node; only lists in use are cleared)
+			struct Lists : std::vector<std::vector<u32>>
+			{
+				size_t live = 0;
+			};
+			static void ResetLists(Lists& v, size_t n)
+			{
+				const size_t m = std::min(v.size(), std::max(v.live, n));
+				for (size_t i = 0; i < m; i++)
+					v[i].clear();
+				if (v.size() < n)
+					v.resize(n);
+				v.live = n;
+			}
+			static std::vector<u32>& ListAt(Lists& v, size_t i)
+			{
+				if (v.size() <= i)
+					v.resize(i + 1);
+				v[i].clear();
+				v.live = std::max(v.live, i + 1);
+				return v[i];
+			}
+			// Buffers kept between Lowerers on one thread (compiles allocate
+			// little after the first node).
+			struct Scratch
+			{
+				std::vector<ValueId> order, canon, noEarly, clampOf, work;
+				std::vector<Cls> cls;
+				std::vector<Remat> remat;
+				Lists uses, finalVars, cu, endAt, startAt;
+				std::vector<u32> useCur, finalOf, constVal, lastUse, posOf, leaveKs;
+				std::vector<u8> emit, homeReg, noDrop, slotBusy, clampFixed, folded;
+				std::vector<s8> reg, clampLane;
+				std::vector<s16> slot;
+				std::vector<const void*> globAddr;
+			};
+			static thread_local std::vector<std::unique_ptr<Scratch>> s_pool;
+			std::unique_ptr<Scratch> scratch_;
+			std::vector<ValueId> work_;
+			Lists cu_, endAt_, startAt_;
+			std::vector<u32> lastUse_, posOf_;
+			std::vector<u32> leaveKs_; // the Leave's non-zero operands (most variables are untouched)
+			// f(k, arg) for each non-zero operand of v
+			template <typename F>
+			void ForArgs(ValueId v, const Inst& in, F f) const
+			{
+				const ValueId* args = in.args.data();
+				if (v == leave_)
+				{
+					for (u32 k : leaveKs_)
+						f(k, args[k]);
+					return;
+				}
+				const size_t n = in.args.size();
+				for (size_t k = 0; k < n; k++)
+					if (args[k])
+						f(k, args[k]);
+			}
+			void Swap()
+			{
+				Scratch& x = *scratch_;
+				order_.swap(x.order);
+				canon_.swap(x.canon);
+				noEarly_.swap(x.noEarly);
+				clampOf_.swap(x.clampOf);
+				work_.swap(x.work);
+				cls_.swap(x.cls);
+				remat_.swap(x.remat);
+				uses_.swap(x.uses);
+				finalVars_.swap(x.finalVars);
+				cu_.swap(x.cu);
+				endAt_.swap(x.endAt);
+				startAt_.swap(x.startAt);
+				useCur_.swap(x.useCur);
+				finalOf_.swap(x.finalOf);
+				constVal_.swap(x.constVal);
+				lastUse_.swap(x.lastUse);
+				posOf_.swap(x.posOf);
+				leaveKs_.swap(x.leaveKs);
+				emit_.swap(x.emit);
+				homeReg_.swap(x.homeReg);
+				noDrop_.swap(x.noDrop);
+				slotBusy_.swap(x.slotBusy);
+				clampFixed_.swap(x.clampFixed);
+				folded_.swap(x.folded);
+				reg_.swap(x.reg);
+				clampLane_.swap(x.clampLane);
+				slot_.swap(x.slot);
+				globAddr_.swap(x.globAddr);
+			}
+			// n empty lists, keeping the buffers of the lists that stay.
 			const Function& f_;
 			const LowerEnv& env_;
-			const HomeMap& hm_;
+			const HomeMap* hm_;
 			const LowerMode mode_;
+			u32 analysisN_ = 0; // f_.insts.size() + 1 (values before the pseudo values)
+			bool BindHomes(std::string& why);
 			int node_ = -1;
 			std::vector<ValueId> order_; // the node's instructions
 			ValueId leave_ = 0;
@@ -228,14 +350,13 @@ namespace vuopt
 			std::vector<ValueId> canon_;
 			std::vector<Cls> cls_;
 			std::vector<Remat> remat_;
-			std::vector<std::vector<u32>> uses_;
+			Lists uses_;
 			std::vector<u32> useCur_;
 			std::vector<u8> emit_;      // DCE: instruction is needed
 			std::vector<s8> reg_;       // register (in cls_'s file) or -1
 			std::vector<s16> slot_;     // spill slot or -1
 			std::vector<u8> homeReg_;   // sits in its own register home (pinned there until its last use)
 			std::vector<u8> noDrop_;    // remat no longer valid (its memory home is being overwritten)
-			std::vector<u8> known16_;   // fits in 16 bits (VI semantics across a register home)
 			ValueId memBase_ = 0;
 
 			ValueId vOwner_[32] = {};
@@ -243,7 +364,7 @@ namespace vuopt
 			u32 vLock_ = 0, gLock_ = 0;   // registers in use by the current instruction
 			u32 vTemp_ = 0, gTemp_ = 0;   // temporaries of the current instruction
 			u32 vPool_ = 0, gPool_ = 0;   // allocatable (homes excluded)
-			std::vector<u8> slotBusy_ = std::vector<u8>(kSlots + kOverflowSlots, 0);
+			std::vector<u8> slotBusy_;
 			int AllocSlot();
 			void FreeSlot(int s) { slotBusy_[s] = 0; }
 			void SlotStore(bool vec, int r, int s);
@@ -256,7 +377,7 @@ namespace vuopt
 			// the node goes to its memory home when evicted, once nothing still
 			// needs the incoming value there.
 			u32 leavePos_ = 0;
-			std::vector<std::vector<u32>> finalVars_; // per value: the variables (lanes) it is the final value of
+			Lists finalVars_; // per value: the variables (lanes) it is the final value of
 			ValueId varLiveIn_[var::Count] = {};      // canonical incoming value of each variable
 			u8 early_[var::Count] = {};               // variable already written to its memory home
 			std::vector<ValueId> noEarly_;            // read by the end of the node for something else
@@ -333,7 +454,7 @@ namespace vuopt
 			void SpillForCall();
 
 			// operand helpers
-			int VecOperand(const std::vector<ValueId>& args, size_t off);
+			int VecOperand(const ArgVec& args, size_t off);
 			int ScalarV(ValueId v, int* lane);   // a register and lane holding the scalar (by-element form)
 			int ScalarLane0(ValueId v);          // a register whose lane 0 is the scalar
 			int IntOperand(ValueId v);           // a W register
@@ -358,16 +479,24 @@ namespace vuopt
 			// per block. A status update whose only reader is the next
 			// non-sticky update is folded into it: the later update ORs every
 			// pack of the chain into the sticky bits at once.
-			std::map<std::pair<ValueId, int>, ValueId> zsOf_; // (result, lane or -1) -> its sign/zero vector
-			std::map<const void*, ValueId> globOf_;           // mVUglob address -> its constant value
+			std::vector<std::pair<std::pair<ValueId, int>, ValueId>> zsOf_; // (result, lane or -1) -> its sign/zero vector
+			std::vector<std::pair<const void*, ValueId>> globOf_;            // mVUglob address -> its constant value
+			template <typename T, typename K>
+			static ValueId Find(const T& tab, const K& key)
+			{
+				for (const auto& e : tab)
+					if (e.first == key)
+						return e.second;
+				return 0;
+			}
 			std::vector<const void*> globAddr_;               // per pseudo value: the constant's address
 			static const void* PackWeights(u8 mask, bool mflag);
 			int SignZero(ValueId c, u8 mask, int& scratch, bool& owned);
-			ValueId NewPseudo(Cls k, Remat r, std::vector<u32> uses);
+			ValueId NewPseudo(Cls k, Remat r, const std::vector<u32>& uses);
 			std::map<ValueId, std::vector<ValueId>> statusChain_; // non-sticky StatusUpd -> the updates folded into it, oldest first
 			ValueId StatusBase(ValueId v) const; // the status value a (possibly folded) chain starts from
 			void FoldStatusChains();
-			ValueId SingleSource(const std::vector<ValueId>& args, size_t off) const;
+			ValueId SingleSource(const ArgVec& args, size_t off) const;
 			void ClampedOperands(ValueId id, std::vector<ValueId>& out) const;
 			template <typename F>
 			int ClampOperand(ValueId c, F fetch, int* lane = nullptr);
@@ -470,7 +599,7 @@ namespace vuopt
 			if (IsStatus(v) || IsPQ(v) || v == var::MEM || v < 4)
 				return false;
 			const u32 vr = VecHomeOf(v);
-			return hm_.home[vr ? VecVar(vr) : v].kind == HomeKind::Mem;
+			return hm_->home[vr ? VecVar(vr) : v].kind == HomeKind::Mem;
 		}
 
 		bool Lowerer::EarlyOk(ValueId c) const
@@ -730,7 +859,7 @@ namespace vuopt
 			if (finalOf_[c])
 			{
 				const u32 var = finalOf_[c] - 1;
-				const Home& h = hm_.home[var];
+				const Home& h = hm_->home[var];
 				if (h.kind == HomeKind::VReg && !vOwner_[h.reg] && !(vLock_ & (1u << h.reg)))
 				{
 					Bind(c, h.reg);
@@ -751,8 +880,8 @@ namespace vuopt
 				int hr = -1;
 				if (IsStatus(var))
 					hr = 20 + static_cast<int>(var - var::S(0));
-				else if (hm_.home[var].kind == HomeKind::GReg)
-					hr = hm_.home[var].reg;
+				else if (hm_->home[var].kind == HomeKind::GReg)
+					hr = hm_->home[var].reg;
 				if (hr >= 0 && !gOwner_[hr] && !(gLock_ & (1u << hr)))
 				{
 					Bind(c, hr);
@@ -815,7 +944,7 @@ namespace vuopt
 		// Four lane sources args[off..off+3] (0 = not read) as one vector: the
 		// register of a single source covering them, else a temp built with
 		// inserts.
-		int Lowerer::VecOperand(const std::vector<ValueId>& args, size_t off)
+		int Lowerer::VecOperand(const ArgVec& args, size_t off)
 		{
 			const u32 lockedBefore = vLock_;
 			ValueId first = 0;
@@ -1076,7 +1205,7 @@ namespace vuopt
 
 		// The single canonical value args[off..off+3] read, or 0 when they come
 		// from several values (the operand is assembled) or none.
-		ValueId Lowerer::SingleSource(const std::vector<ValueId>& args, size_t off) const
+		ValueId Lowerer::SingleSource(const ArgVec& args, size_t off) const
 		{
 			ValueId c = 0;
 			for (int l = 0; l < 4; l++)
@@ -1279,8 +1408,7 @@ namespace vuopt
 		int Lowerer::SignZero(ValueId c, u8 mask, int& scratch, bool& owned)
 		{
 			const int lane = Single(mask) ? SingleLane(mask) : -1;
-			const auto it = zsOf_.find({c, lane});
-			const ValueId pid = it != zsOf_.end() ? it->second : 0;
+			const ValueId pid = Find(zsOf_, std::make_pair(c, lane));
 			scratch = -1;
 			owned = false;
 			if (pid && (reg_[pid] >= 0 || slot_[pid] >= 0))
@@ -1310,11 +1438,11 @@ namespace vuopt
 			bool zOwned;
 			const int z = SignZero(c, mask, scratch, zOwned);
 			const void* addr = PackWeights(mask, mflag);
-			const auto it = globOf_.find(addr);
+			const ValueId gpid = Find(globOf_, addr);
 			int w;
 			bool wOwned = false;
-			if (it != globOf_.end())
-				w = UseReg(it->second);
+			if (gpid)
+				w = UseReg(gpid);
 			else
 			{
 				w = scratch >= 0 ? scratch : TempV();
@@ -1348,16 +1476,13 @@ namespace vuopt
 			{
 				if (!emit_[v])
 					continue;
-				const Inst& in = I(v);
-				for (size_t k = 0; k < in.args.size(); k++)
-				{
-					const ValueId a = in.args[k];
-					if (!a || I(a).type == Type::Mem)
-						continue;
+				ForArgs(v, I(v), [&](size_t k, ValueId a) {
+					if (I(a).type == Type::Mem)
+						return;
 					if (v == leave_ && k < var::Count && I(a).op == Op::LiveIn && I(a).var == k)
-						continue;
+						return;
 					readers[C(a)]++;
-				}
+				});
 			}
 			for (ValueId v : order_)
 			{
@@ -1380,13 +1505,13 @@ namespace vuopt
 			}
 		}
 
-		ValueId Lowerer::NewPseudo(Cls k, Remat r, std::vector<u32> uses)
+		ValueId Lowerer::NewPseudo(Cls k, Remat r, const std::vector<u32>& uses)
 		{
 			const ValueId pid = static_cast<ValueId>(canon_.size());
 			canon_.push_back(pid);
 			cls_.push_back(k);
 			remat_.push_back(r);
-			uses_.push_back(std::move(uses));
+			ListAt(uses_, pid).assign(uses.begin(), uses.end());
 			useCur_.push_back(0);
 			emit_.push_back(0);
 			reg_.push_back(-1);
@@ -1394,7 +1519,7 @@ namespace vuopt
 			homeReg_.push_back(0);
 			noDrop_.push_back(0);
 			finalOf_.push_back(0);
-			finalVars_.emplace_back();
+			ListAt(finalVars_, pid);
 			globAddr_.push_back(nullptr);
 			return pid;
 		}
@@ -1715,7 +1840,7 @@ namespace vuopt
 		{
 			// mVU_CLIP
 			const Inst& in = I(id);
-			std::vector<ValueId> fsArgs = {in.args[0], in.args[1], in.args[2], 0};
+			const ArgVec fsArgs = {in.args[0], in.args[1], in.args[2], 0};
 			const int fs = VecOperand(fsArgs, 0);
 			int lane;
 			const int ftw = ScalarV(in.args[3], &lane);
@@ -2330,11 +2455,11 @@ namespace vuopt
 			// their memory homes.
 			u32 savedG = 0, savedV = 0;
 			for (u32 r = 1; r <= 32; r++)
-				if (hm_.clampHome[r] >= 0)
-					savedV |= 1u << hm_.clampHome[r];
+				if (hm_->clampHome[r] >= 0)
+					savedV |= 1u << hm_->clampHome[r];
 			for (u32 v = 0; v < var::Count; v++)
 			{
-				const Home& h = hm_.home[v];
+				const Home& h = hm_->home[v];
 				if (h.kind == HomeKind::VReg && VecHomeOf(v) && (v & 3) == 0)
 					savedV |= 1u << h.reg;
 				else if (h.kind == HomeKind::GReg && (kGCallerSaved & (1u << h.reg)))
@@ -2343,7 +2468,7 @@ namespace vuopt
 			const auto homeOfReg = [&](bool vec, int r) -> s32 {
 				for (u32 v = 0; v < var::Count; v++)
 				{
-					const Home& h = hm_.home[v];
+					const Home& h = hm_->home[v];
 					if (vec ? (h.kind == HomeKind::VReg && VecHomeOf(v) && (v & 3) == 0 && h.reg == r)
 							: (h.kind == HomeKind::GReg && h.reg == r))
 						return static_cast<s32>(v);
@@ -2426,7 +2551,7 @@ namespace vuopt
 				if (IsStatus(v) || IsPQ(v))
 					return HomeKind::GReg; // fixed registers (handled apart)
 				const u32 vr = VecHomeOf(v);
-				return hm_.home[vr ? VecVar(vr) : v].kind;
+				return hm_->home[vr ? VecVar(vr) : v].kind;
 			};
 
 			// The branch condition / jump target, first, while its register is
@@ -2459,9 +2584,11 @@ namespace vuopt
 			ReleaseLocks();
 
 			// Which memory homes get written.
-			std::vector<u8> memWritten(var::Count, 0);
-			for (u32 v = 0; v < var::Count; v++)
+			u8 memWritten[var::Count] = {};
+			for (u32 v : leaveKs_)
 			{
+				if (v >= var::Count)
+					break;
 				const ValueId a = in.args[v];
 				if (!a || ownLiveIn(v, a) || v == var::MEM || IsStatus(v) || IsPQ(v))
 					continue;
@@ -2475,8 +2602,10 @@ namespace vuopt
 			// while its memory home still holds it (the VI backup slot carries
 			// the old value of the VI the delay slot overwrites), and so is a
 			// Q/P lane read through another lane.
-			for (u32 v = 0; v < var::Count; v++)
+			for (u32 v : leaveKs_)
 			{
+				if (v >= var::Count)
+					break;
 				const ValueId a = in.args[v];
 				if (!a || ownLiveIn(v, a) || v == var::MEM)
 					continue;
@@ -2502,7 +2631,7 @@ namespace vuopt
 			for (u32 r = 1; r <= 32; r++)
 			{
 				const u32 v0 = VecVar(r);
-				if (hm_.home[v0].kind != HomeKind::Mem)
+				if (hm_->home[v0].kind != HomeKind::Mem)
 					continue;
 				const MemLoc m = BoundaryLoc(v0, env_);
 				ValueId lanes[4];
@@ -2564,11 +2693,13 @@ namespace vuopt
 					l = e;
 				}
 			}
-			for (u32 v = 0; v < var::Count; v++)
+			for (u32 v : leaveKs_)
 			{
+				if (v >= var::Count)
+					break;
 				if (VecHomeOf(v) || IsStatus(v) || IsPQ(v) || v == var::MEM || v < 4)
 					continue;
-				if (hm_.home[v].kind != HomeKind::Mem)
+				if (hm_->home[v].kind != HomeKind::Mem)
 					continue;
 				const ValueId a = in.args[v];
 				if (!a || ownLiveIn(v, a) || early_[v])
@@ -2595,8 +2726,11 @@ namespace vuopt
 				ValueId val; // when src < 0
 				bool trunc16;
 			};
-			std::vector<Move> moves;
-			std::vector<std::pair<int, ValueId>> statusLike;
+			// (buffers kept per thread: a region lowers hundreds of node ends)
+			static thread_local std::vector<Move> moves;
+			static thread_local std::vector<std::pair<int, ValueId>> statusLike;
+			moves.clear();
+			statusLike.clear();
 			const auto addG = [&](u32 v, int dst) {
 				const ValueId a = in.args[v];
 				if (!a)
@@ -2631,13 +2765,13 @@ namespace vuopt
 			};
 			for (u32 k = 0; k < 4; k++)
 				addG(var::S(k), 20 + static_cast<int>(k));
-			for (u32 v = 0; v < var::Count; v++)
-				if (GHomeable(v) && hm_.home[v].kind == HomeKind::GReg)
-					addG(v, hm_.home[v].reg);
+			for (u32 v : leaveKs_)
+				if (v < var::Count && GHomeable(v) && hm_->home[v].kind == HomeKind::GReg)
+					addG(v, hm_->home[v].reg);
 			for (u32 r = 1; r <= 32; r++)
 			{
 				const u32 v0 = VecVar(r);
-				const Home& h = hm_.home[v0];
+				const Home& h = hm_->home[v0];
 				if (h.kind != HomeKind::VReg)
 					continue;
 				const ValueId a0 = in.args[v0];
@@ -2710,7 +2844,8 @@ namespace vuopt
 			// registers are never destinations), except through TempV/G and
 			// UseReg, which only take free pool registers... so produce-
 			// moves (src < 0) go last.
-			std::vector<Move> late;
+			static thread_local std::vector<Move> late;
+			late.clear();
 			for (auto it = moves.begin(); it != moves.end();)
 			{
 				if (it->src < 0)
@@ -2758,7 +2893,7 @@ namespace vuopt
 			for (u32 r = 1; r <= 32; r++)
 			{
 				const u32 v0 = VecVar(r);
-				const Home& h = hm_.home[v0];
+				const Home& h = hm_->home[v0];
 				if (h.kind != HomeKind::VReg)
 					continue;
 				const ValueId a0 = in.args[v0];
@@ -3226,7 +3361,7 @@ namespace vuopt
 			canon_.assign(N, 0);
 			cls_.assign(N, Cls::None);
 			remat_.assign(N, Remat::None);
-			uses_.assign(N, {});
+			ResetLists(uses_, N);
 			useCur_.assign(N, 0);
 			emit_.assign(N, 0);
 			reg_.assign(N, -1);
@@ -3266,7 +3401,7 @@ namespace vuopt
 					else
 					{
 						const u32 hv = VecHomeOf(in.var) ? VecVar(VecHomeOf(in.var)) : in.var;
-						remat_[v] = hm_.home[hv].kind == HomeKind::Mem ? Remat::Home : Remat::None;
+						remat_[v] = hm_->home[hv].kind == HomeKind::Mem ? Remat::Home : Remat::None;
 					}
 				}
 				else if (in.op == Op::Const && in.type == Type::Vec)
@@ -3314,12 +3449,24 @@ namespace vuopt
 				why = "no leave";
 				return false;
 			}
+			if (!f_.leaveArgs.empty() || f_.insts[leave_].args.empty())
+				leaveKs_.assign(f_.leaveArgs.begin(), f_.leaveArgs.end());
+			else
+			{
+				leaveKs_.clear();
+				const ValueId* la = I(leave_).args.data();
+				const size_t ln = I(leave_).args.size();
+				for (size_t k = 0; k < ln; k++)
+					if (la[k])
+						leaveKs_.push_back(static_cast<u32>(k));
+			}
 
 			FoldAndAlias();
 
 			// Dead code: work nothing reaches. Side effects are roots. An
 			// aliased value needs the value it stands for.
-			std::vector<ValueId> work;
+			std::vector<ValueId>& work = work_;
+			work.clear();
 			for (ValueId v : order_)
 			{
 				const Op op = I(v).op;
@@ -3334,18 +3481,15 @@ namespace vuopt
 			{
 				const ValueId v = work.back();
 				work.pop_back();
-				const Inst& in = I(v);
-				for (size_t k = 0; k < in.args.size(); k++)
-				{
-					const ValueId a = in.args[k];
-					if (!a || emit_[a])
-						continue;
+				ForArgs(v, I(v), [&](size_t k, ValueId a) {
+					if (emit_[a])
+						return;
 					if (I(a).type == Type::Mem)
-						continue; // memory order only
+						return; // memory order only
 					// A Leave argument that is its own variable's incoming value
 					// needs nothing.
 					if (v == leave_ && k < var::Count && I(a).op == Op::LiveIn && I(a).var == k)
-						continue;
+						return;
 					emit_[a] = 1;
 					work.push_back(a);
 					const ValueId c = C(a);
@@ -3354,7 +3498,7 @@ namespace vuopt
 						emit_[c] = 1;
 						work.push_back(c);
 					}
-				}
+				});
 			}
 
 			FoldStatusChains();
@@ -3380,17 +3524,15 @@ namespace vuopt
 					for (ValueId m : ch->second)
 						addUse(C(I(m).args[1]));
 				}
-				for (size_t k = 0; k < in.args.size(); k++)
-				{
-					const ValueId a = in.args[k];
-					if (!a || I(a).type == Type::Mem)
-						continue;
+				ForArgs(v, in, [&](size_t k, ValueId a) {
+					if (I(a).type == Type::Mem)
+						return;
 					if (v == leave_ && k < var::Count && I(a).op == Op::LiveIn && I(a).var == k)
-						continue;
+						return;
 					if (k == 0 && ch != statusChain_.end())
-						continue;
+						return;
 					addUse(C(a));
-				}
+				});
 				if (in.op == Op::LoadQ || in.op == Op::LoadI || in.op == Op::StoreQ || in.op == Op::StoreI)
 				{
 					auto& u = uses_[memBase_];
@@ -3399,41 +3541,13 @@ namespace vuopt
 				}
 			}
 
-			// Whole final values of register-homed variables (computed straight
-			// into the home).
 			const u32 leavePos = static_cast<u32>(std::find(order_.begin(), order_.end(), leave_) - order_.begin());
-			for (u32 v = 0; v < var::Count; v++)
-			{
-				const ValueId a = lv.args[v];
-				if (!a || I(a).op == Op::LiveIn || I(a).op == Op::Const || I(a).op == Op::IConst)
-					continue;
-				const ValueId c = C(a);
-				if (IsStatus(v) || (GHomeable(v) && hm_.home[v].kind == HomeKind::GReg))
-				{
-					// only if used nowhere else after its definition as another
-					// variable's value
-					if (!finalOf_[c])
-						finalOf_[c] = v + 1;
-					else
-						finalOf_[c] = ~0u; // final for two variables: no preference
-				}
-				const u32 vr = VecHomeOf(v);
-				if (vr && (v & 3) == 0 && hm_.home[v].kind == HomeKind::VReg)
-				{
-					bool whole = true;
-					for (int l = 1; l < 4; l++)
-						whole = whole && lv.args[v + l] && C(lv.args[v + l]) == c;
-					if (whole)
-						finalOf_[c] = finalOf_[c] ? ~0u : v + 1;
-				}
-			}
-			for (auto& x : finalOf_)
-				if (x == ~0u)
-					x = 0;
 			leavePos_ = leavePos;
-			finalVars_.assign(N, {});
-			for (u32 v = 0; v < var::Count; v++)
+			ResetLists(finalVars_, N);
+			for (u32 v : leaveKs_)
 			{
+				if (v >= var::Count)
+					break;
 				const ValueId a = lv.args[v];
 				if (!a || v == var::MEM || (I(a).op == Op::LiveIn && I(a).var == v))
 					continue;
@@ -3446,86 +3560,6 @@ namespace vuopt
 			for (size_t v = 1; v < f_.insts.size(); v++)
 				if (f_.insts[v].op == Op::LiveIn && f_.insts[v].var < var::Count)
 					varLiveIn_[f_.insts[v].var] = canon_[v];
-
-			// Pools.
-			vPool_ = kVAll & ~hm_.VRegMask();
-			gPool_ = kGAll & ~hm_.GRegMask();
-			if (hm_.memBase >= 0)
-				gPool_ &= ~(1u << hm_.memBase);
-			if (hm_.cycles >= 0)
-				gPool_ &= ~(1u << hm_.cycles);
-			const auto limit = [](u32 pool, u32 n) {
-				if (!n)
-					return pool;
-				u32 out = 0;
-				for (u32 m = pool; m && n; m &= m - 1, n--)
-					out |= m & (0u - m);
-				return out;
-			};
-			vPool_ = limit(vPool_, env_.poolLimitV);
-			gPool_ = limit(gPool_, env_.poolLimitG);
-
-			// Register pressure bound: live values at once must fit the pool
-			// plus the spill area with room for temporaries.
-			{
-				u32 liveV = 0, liveG = 0, maxV = 0, maxG = 0;
-				std::vector<u32> lastUse(N, 0), firstDef(N, ~0u);
-				for (size_t c = 1; c < N; c++)
-					if (!uses_[c].empty())
-						lastUse[c] = uses_[c].back();
-				std::vector<std::vector<ValueId>> endAt(order_.size() + 1), startAt(order_.size() + 1);
-				for (size_t c = 1; c < N; c++)
-				{
-					if (uses_[c].empty() || canon_[c] != c || (remat_[c] != Remat::None && !homeReg_[c]))
-						continue;
-					u32 s = 0;
-					const auto it = std::find(order_.begin(), order_.end(), static_cast<ValueId>(c));
-					if (it != order_.end())
-						s = static_cast<u32>(it - order_.begin());
-					u32 e = lastUse[c];
-					// A value whose only use is the end of the node can go to its
-					// memory home once the incoming values there are dead.
-					if (uses_[c].back() == leavePos && !finalVars_[c].empty())
-					{
-						bool mem = true;
-						u32 until = uses_[c].size() > 1 ? uses_[c][uses_[c].size() - 2] : s;
-						for (u32 v : finalVars_[c])
-						{
-							mem = mem && HomeIsMem(v);
-							const ValueId li = varLiveIn_[v];
-							if (li && !uses_[li].empty())
-								until = std::max(until, uses_[li].back());
-						}
-						if (mem)
-						{
-							if (until >= leavePos)
-								until = leavePos;
-							e = until;
-						}
-					}
-					startAt[s].push_back(static_cast<ValueId>(c));
-					endAt[e].push_back(static_cast<ValueId>(c));
-				}
-				for (u32 p = 0; p <= order_.size(); p++)
-				{
-					for (ValueId c : startAt[p])
-						(cls_[c] == Cls::V ? liveV : liveG)++;
-					maxV = std::max(maxV, liveV);
-					maxG = std::max(maxG, liveG);
-					for (ValueId c : endAt[p])
-						(cls_[c] == Cls::V ? liveV : liveG)--;
-				}
-				const u32 nv = static_cast<u32>(__builtin_popcount(vPool_));
-				const u32 ng = static_cast<u32>(__builtin_popcount(gPool_));
-				// Spill slots are shared; every instruction needs a few temps.
-				const u32 overV = maxV + 6 > nv ? maxV + 6 - nv : 0;
-				const u32 overG = maxG + 5 > ng ? maxG + 5 - ng : 0;
-				if (overV + overG > kSlots + kOverflowSlots - 16 || nv < 12 || ng < 8)
-				{
-					why = "register pressure";
-					return false;
-				}
-			}
 
 			// Values already the output of this mode's operand clamp: mode 2's
 			// result-clamped FMAC steps (the float clamp is its own fixed point),
@@ -3573,7 +3607,8 @@ namespace vuopt
 			// Clamped copies: one pseudo value per value clamped whole, live
 			// across its clamped uses.
 			{
-				std::vector<std::vector<u32>> cu(N);
+				Lists& cu = cu_;
+				ResetLists(cu, N);
 				std::vector<ValueId> ops;
 				for (u32 p = 0; p < order_.size(); p++)
 				{
@@ -3590,20 +3625,7 @@ namespace vuopt
 				{
 					if (cu[c].empty())
 						continue;
-					const ValueId pid = static_cast<ValueId>(canon_.size());
-					clampOf_[c] = pid;
-					canon_.push_back(pid);
-					cls_.push_back(Cls::V);
-					remat_.push_back(Remat::None);
-					uses_.push_back(cu[c]);
-					useCur_.push_back(0);
-					emit_.push_back(0);
-					reg_.push_back(-1);
-					slot_.push_back(-1);
-					homeReg_.push_back(0);
-					noDrop_.push_back(0);
-					finalOf_.push_back(0);
-					finalVars_.emplace_back();
+					clampOf_[c] = NewPseudo(Cls::V, Remat::None, cu[c]);
 				}
 				clampLane_.assign(canon_.size(), 0);
 			}
@@ -3611,8 +3633,21 @@ namespace vuopt
 			// Shared sign/zero vectors and mVUglob constants used more than once.
 			{
 				globAddr_.assign(canon_.size(), nullptr);
-				std::map<std::pair<ValueId, int>, std::vector<u32>> zs;
-				std::map<const void*, std::vector<u32>> gl;
+				// (key, list) pairs, few per node: flat, searched linearly, then
+				// taken in key order as a map would give them.
+				static thread_local std::vector<std::pair<std::pair<ValueId, int>, std::vector<u32>>> zsT;
+				static thread_local std::vector<std::pair<const void*, std::vector<u32>>> glT;
+				size_t nzs = 0, ngl = 0;
+				const auto slotOf = [](auto& tab, size_t& n, const auto& key) -> std::vector<u32>& {
+					for (size_t i = 0; i < n; i++)
+						if (tab[i].first == key)
+							return tab[i].second;
+					if (tab.size() <= n)
+						tab.emplace_back();
+					tab[n].first = key;
+					tab[n].second.clear();
+					return tab[n++].second;
+				};
 				const auto note = [](std::vector<u32>& u, u32 p) {
 					if (u.empty() || u.back() != p)
 						u.push_back(p);
@@ -3626,8 +3661,8 @@ namespace vuopt
 					const auto pack = [&](const Inst& x) {
 						const ValueId c = C(x.args[x.op == Op::MacFlags ? 0 : 1]);
 						const bool mflag = x.op == Op::MacFlags || (x.imm & 2);
-						note(zs[{c, Single(x.mask) ? SingleLane(x.mask) : -1}], p);
-						note(gl[PackWeights(x.mask, mflag)], p);
+						note(slotOf(zsT, nzs, std::make_pair(c, Single(x.mask) ? SingleLane(x.mask) : -1)), p);
+						note(slotOf(glT, ngl, PackWeights(x.mask, mflag)), p);
 					};
 					if (in.op == Op::MacFlags || in.op == Op::StatusUpd)
 						pack(in);
@@ -3636,18 +3671,172 @@ namespace vuopt
 						for (ValueId m : ch->second)
 							pack(I(m));
 				}
-				for (auto& e : zs)
-					if (e.second.size() >= 2)
-						zsOf_[e.first] = NewPseudo(Cls::V, Remat::None, e.second);
-				for (auto& e : gl)
-					if (e.second.size() >= 2)
+				std::sort(zsT.begin(), zsT.begin() + nzs, [](const auto& a, const auto& b) { return a.first < b.first; });
+				std::sort(glT.begin(), glT.begin() + ngl, [](const auto& a, const auto& b) { return std::less<const void*>()(a.first, b.first); });
+				for (size_t i = 0; i < nzs; i++)
+					if (zsT[i].second.size() >= 2)
+						zsOf_.push_back({zsT[i].first, NewPseudo(Cls::V, Remat::None, zsT[i].second)});
+				for (size_t i = 0; i < ngl; i++)
+					if (glT[i].second.size() >= 2)
 					{
-						const ValueId pid = NewPseudo(Cls::V, Remat::Global, e.second);
-						globAddr_[pid] = e.first;
-						globOf_[e.first] = pid;
+						const ValueId pid = NewPseudo(Cls::V, Remat::Global, glT[i].second);
+						globAddr_[pid] = glT[i].first;
+						globOf_.push_back({glT[i].first, pid});
 					}
 				clampLane_.resize(canon_.size(), 0);
 			}
+			analysisN_ = static_cast<u32>(N);
+			return BindHomes(why);
+		}
+
+		// The half of Check that depends on the homes: how incoming values are
+		// produced again, which results go straight to a register home, the
+		// register pools and the pressure bound.
+		bool Lowerer::BindHomes(std::string& why)
+		{
+			const size_t N = analysisN_;
+			const Inst& lv = I(leave_);
+			const u32 leavePos = leavePos_;
+			for (size_t v = 1; v < f_.insts.size(); v++)
+			{
+				const Inst& in = f_.insts[v];
+				if (in.op != Op::LiveIn || IsPQ(in.var) || IsStatus(in.var))
+					continue;
+				const u32 hv = VecHomeOf(in.var) ? VecVar(VecHomeOf(in.var)) : in.var;
+				remat_[v] = hm_->home[hv].kind == HomeKind::Mem ? Remat::Home : Remat::None;
+			}
+			finalOf_.assign(canon_.size(), 0);
+			// Whole final values of register-homed variables (computed straight
+			// into the home).
+			for (u32 v : leaveKs_)
+			{
+				if (v >= var::Count)
+					break;
+				const ValueId a = lv.args[v];
+				if (!a || I(a).op == Op::LiveIn || I(a).op == Op::Const || I(a).op == Op::IConst)
+					continue;
+				const ValueId c = C(a);
+				if (IsStatus(v) || (GHomeable(v) && hm_->home[v].kind == HomeKind::GReg))
+				{
+					// only if used nowhere else after its definition as another
+					// variable's value
+					if (!finalOf_[c])
+						finalOf_[c] = v + 1;
+					else
+						finalOf_[c] = ~0u; // final for two variables: no preference
+				}
+				const u32 vr = VecHomeOf(v);
+				if (vr && (v & 3) == 0 && hm_->home[v].kind == HomeKind::VReg)
+				{
+					bool whole = true;
+					for (int l = 1; l < 4; l++)
+						whole = whole && lv.args[v + l] && C(lv.args[v + l]) == c;
+					if (whole)
+						finalOf_[c] = finalOf_[c] ? ~0u : v + 1;
+				}
+			}
+			for (auto& x : finalOf_)
+				if (x == ~0u)
+					x = 0;
+			// Pools.
+			vPool_ = kVAll & ~hm_->vRegs;
+			gPool_ = kGAll & ~hm_->gRegs;
+			if (hm_->memBase >= 0)
+				gPool_ &= ~(1u << hm_->memBase);
+			if (hm_->cycles >= 0)
+				gPool_ &= ~(1u << hm_->cycles);
+			const auto limit = [](u32 pool, u32 n) {
+				if (!n)
+					return pool;
+				u32 out = 0;
+				for (u32 m = pool; m && n; m &= m - 1, n--)
+					out |= m & (0u - m);
+				return out;
+			};
+			vPool_ = limit(vPool_, env_.poolLimitV);
+			gPool_ = limit(gPool_, env_.poolLimitG);
+
+			// Register pressure bound: live values at once must fit the pool
+			// plus the spill area with room for temporaries. At most N values
+			// are live at once, so a node of fewer values than the spill area
+			// holds always fits: only the pool sizes can fail it.
+			if (N + 11 <= static_cast<size_t>(kSlots + kOverflowSlots - 16))
+			{
+				const u32 nv = static_cast<u32>(__builtin_popcount(vPool_));
+				const u32 ng = static_cast<u32>(__builtin_popcount(gPool_));
+				if (nv < 12 || ng < 8)
+				{
+					why = "register pressure";
+					return false;
+				}
+			}
+			else
+			{
+				u32 liveV = 0, liveG = 0, maxV = 0, maxG = 0;
+				std::vector<u32>& lastUse = lastUse_;
+				lastUse.assign(N, 0);
+				for (size_t c = 1; c < N; c++)
+					if (!uses_[c].empty())
+						lastUse[c] = uses_[c].back();
+				Lists& endAt = endAt_;
+				Lists& startAt = startAt_;
+				ResetLists(endAt, order_.size() + 1);
+				ResetLists(startAt, order_.size() + 1);
+				std::vector<u32>& posOf = posOf_;
+				posOf.assign(N, 0);
+				for (u32 p = 0; p < order_.size(); p++)
+					if (!posOf[order_[p]])
+						posOf[order_[p]] = p;
+				for (size_t c = 1; c < N; c++)
+				{
+					if (uses_[c].empty() || canon_[c] != c || (remat_[c] != Remat::None && !homeReg_[c]))
+						continue;
+					const u32 s = posOf[c];
+					u32 e = lastUse[c];
+					// A value whose only use is the end of the node can go to its
+					// memory home once the incoming values there are dead.
+					if (uses_[c].back() == leavePos && !finalVars_[c].empty())
+					{
+						bool mem = true;
+						u32 until = uses_[c].size() > 1 ? uses_[c][uses_[c].size() - 2] : s;
+						for (u32 v : finalVars_[c])
+						{
+							mem = mem && HomeIsMem(v);
+							const ValueId li = varLiveIn_[v];
+							if (li && !uses_[li].empty())
+								until = std::max(until, uses_[li].back());
+						}
+						if (mem)
+						{
+							if (until >= leavePos)
+								until = leavePos;
+							e = until;
+						}
+					}
+					startAt[s].push_back(static_cast<ValueId>(c));
+					endAt[e].push_back(static_cast<ValueId>(c));
+				}
+				for (u32 p = 0; p <= order_.size(); p++)
+				{
+					for (ValueId c : startAt[p])
+						(cls_[c] == Cls::V ? liveV : liveG)++;
+					maxV = std::max(maxV, liveV);
+					maxG = std::max(maxG, liveG);
+					for (ValueId c : endAt[p])
+						(cls_[c] == Cls::V ? liveV : liveG)--;
+				}
+				const u32 nv = static_cast<u32>(__builtin_popcount(vPool_));
+				const u32 ng = static_cast<u32>(__builtin_popcount(gPool_));
+				// Spill slots are shared; every instruction needs a few temps.
+				const u32 overV = maxV + 6 > nv ? maxV + 6 - nv : 0;
+				const u32 overG = maxG + 5 > ng ? maxG + 5 - ng : 0;
+				if (overV + overG > kSlots + kOverflowSlots - 16 || nv < 12 || ng < 8)
+				{
+					why = "register pressure";
+					return false;
+				}
+			}
+
 			return true;
 		}
 
@@ -3667,7 +3856,7 @@ namespace vuopt
 					continue;
 				}
 				const u32 hv = VecHomeOf(in.var) ? VecVar(VecHomeOf(in.var)) : in.var;
-				const Home& h = hm_.home[hv];
+				const Home& h = hm_->home[hv];
 				if (h.kind != HomeKind::Mem)
 				{
 					Bind(static_cast<ValueId>(v), h.reg);
@@ -3676,9 +3865,9 @@ namespace vuopt
 			}
 			// Status instances / register homes whose incoming value is never
 			// read are free for their final value from the start.
-			if (hm_.memBase >= 0)
+			if (hm_->memBase >= 0)
 			{
-				Bind(memBase_, hm_.memBase);
+				Bind(memBase_, hm_->memBase);
 				homeReg_[memBase_] = 1;
 			}
 			// Clamped copies of invariant vector registers, kept by the region.
@@ -3689,7 +3878,7 @@ namespace vuopt
 				const Inst& in = f_.insts[c];
 				if (in.op != Op::LiveIn || !VecHomeOf(in.var))
 					continue;
-				const s8 r = hm_.clampHome[VecHomeOf(in.var)];
+				const s8 r = hm_->clampHome[VecHomeOf(in.var)];
 				if (r < 0)
 					continue;
 				Bind(clampOf_[c], r);
@@ -3731,6 +3920,8 @@ namespace vuopt
 				m |= 1u << home[v].reg;
 		return m;
 	}
+
+	thread_local std::vector<std::unique_ptr<Lowerer::Scratch>> Lowerer::s_pool;
 
 	LowerResult LowerNode(const ir::Function& f, const LowerEnv& env, const HomeMap& homes, LowerMode mode, bool checkOnly)
 	{
@@ -3806,13 +3997,46 @@ namespace vuopt
 		}
 	}
 
-	void ClampedLiveInUses(const ir::Function& f, const LowerEnv& env, u32 counts[33])
+	struct NodeLowering::Impl
+	{
+		Lowerer lw;
+		bool emitted = false;
+		Impl(const ir::Function& f, const LowerEnv& env, const HomeMap& hm)
+			: lw(f, env, hm, LowerMode::Region)
+		{
+		}
+	};
+
+	NodeLowering::NodeLowering(std::unique_ptr<Impl> impl)
+		: impl_(std::move(impl))
+	{
+	}
+
+	NodeLowering::~NodeLowering() = default;
+
+	std::unique_ptr<NodeLowering> NodeLowering::Check(const ir::Function& f, const LowerEnv& env, u32 counts[33])
 	{
 		static const HomeMap boundary;
-		Lowerer lw(f, env, boundary, LowerMode::Region);
+		auto impl = std::make_unique<Impl>(f, env, boundary);
 		std::string why;
-		if (lw.Check(why))
-			lw.CountClampedLiveIns(counts);
+		if (!impl->lw.Check(why))
+			return nullptr;
+		impl->lw.CountClampedLiveIns(counts);
+		return std::unique_ptr<NodeLowering>(new NodeLowering(std::move(impl)));
+	}
+
+	LowerResult NodeLowering::Emit(const HomeMap& homes)
+	{
+		LowerResult r;
+		pxAssertRel(!impl_->emitted, "vuopt: a node lowering emitted twice");
+		impl_->emitted = true;
+		if (!impl_->lw.Rebind(homes, r.why))
+			return r;
+		const u8* start = armGetCurrentCodePointer();
+		impl_->lw.Emit();
+		r.bytes = static_cast<u32>(armGetCurrentCodePointer() - start);
+		r.ok = true;
+		return r;
 	}
 
 	void EmitStoreHomes(const HomeMap& homes, const LowerEnv& env, s32 cyclesOff)
