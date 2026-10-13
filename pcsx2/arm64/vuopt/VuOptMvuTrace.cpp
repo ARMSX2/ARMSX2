@@ -10,5 +10,7 @@ namespace vuopt
 	void* g_mvuBlockHookUser = nullptr;
 	VuoptBodyHook g_vuoptBodyHook = nullptr;
 	void* g_vuoptBodyHookUser = nullptr;
+	VuoptRegionHook g_vuoptRegionHook = nullptr;
+	void* g_vuoptRegionHookUser = nullptr;
 } // namespace vuopt
 #endif

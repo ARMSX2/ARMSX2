@@ -1055,6 +1055,67 @@ static void mVUbuildBlockTrace(microVU& mVU, u32 startPC, vuopt::MvuBlockTrace& 
 	}
 }
 
+// vuopt region callbacks (test builds only): microVU's block manager and
+// compile entry, for a region that registers its nodes as microVU blocks and
+// leaves through microVU blocks.
+static microVU& mVUbyIndex(u32 vu) { return vu ? microVU1 : microVU0; }
+
+static void* vuoptSearchBlock(u32 vu, u32 pc, const u8* key)
+{
+	microVU& mVU = mVUbyIndex(vu);
+	pc &= mVU.microMemSize - 8;
+	if (!mVUblocks[pc / 8])
+		return nullptr;
+	alignas(16) microRegInfo k;
+	std::memcpy(&k, key, sizeof(k));
+	return mVUblocks[pc / 8]->search(mVU, &k);
+}
+
+static void* vuoptAddBlock(u32 vu, u32 pc, const u8* key)
+{
+	microVU& mVU = mVUbyIndex(vu);
+	pc &= mVU.microMemSize - 8;
+	alignas(16) microBlock b;
+	std::memset(&b, 0, sizeof(b));
+	std::memcpy(&b.pState, key, sizeof(b.pState));
+	blockCreate(pc / 8);
+	return mVUblocks[pc / 8]->add(mVU, &b);
+}
+
+static void vuoptSetBlockEntry(void* block, void* entry)
+{
+	microBlock* b = static_cast<microBlock*>(block);
+	b->x86ptrStart = static_cast<u8*>(entry);
+	b->hostEntry = entry;
+}
+
+static void* vuoptBlockEntry(void* block) { return static_cast<microBlock*>(block)->hostEntry; }
+
+static void* vuoptFetchBlock(u32 vu, u32 pc, const u8* key)
+{
+	microVU& mVU = mVUbyIndex(vu);
+	alignas(16) microRegInfo k;
+	std::memcpy(&k, key, sizeof(k));
+	return mVUblockFetch(mVU, pc & (mVU.microMemSize - 8), reinterpret_cast<uptr>(&k));
+}
+
+static void vuoptAddRange(u32 vu, u32 startPC, u32 lastPC)
+{
+	microVU& mVU = mVUbyIndex(vu);
+	// mVUcompile's own calls for a block: the start, a wrap past the end of
+	// micro memory, the end after the last pair.
+	mVUsetupRange(mVU, startPC, true);
+	for (u32 pc = startPC; pc != lastPC; pc = (pc + 8) & (mVU.microMemSize - 8))
+	{
+		if (pc + 8 == mVU.microMemSize)
+		{
+			mVUsetupRange(mVU, mVU.microMemSize, false);
+			mVUsetupRange(mVU, 0, true);
+		}
+	}
+	mVUsetupRange(mVU, (lastPC + 8) & (mVU.microMemSize - 8), false);
+}
+
 static vuopt::MvuEmitEnv mVUbuildEmitEnv(microVU& mVU)
 {
 	vuopt::MvuEmitEnv e;
@@ -1078,6 +1139,16 @@ static vuopt::MvuEmitEnv mVUbuildEmitEnv(microVU& mVU)
 	e.overflowHack = CHECK_VUOVERFLOWHACK;
 	e.addSubHack = CHECK_VUADDSUBHACK;
 	e.flagHack = mVUsFlagHack;
+	e.vuSyncHack = EmuConfig.Gamefixes.VUSyncHack || EmuConfig.Gamefixes.FullVU0SyncHack;
+	e.offCycles = static_cast<s32>(reinterpret_cast<const u8*>(&mVU.cycles) - base);
+	e.cycleBreak = mVU.cycleBreak;
+	e.rootBlock = mVUpBlock;
+	e.searchBlock = &vuoptSearchBlock;
+	e.addBlock = &vuoptAddBlock;
+	e.setBlockEntry = &vuoptSetBlockEntry;
+	e.blockEntry = &vuoptBlockEntry;
+	e.fetchBlock = &vuoptFetchBlock;
+	e.addRange = &vuoptAddRange;
 	return e;
 }
 #endif
@@ -1252,10 +1323,15 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 	mVUoptimizePipeState(mVU);
 #ifdef PCSX2_RECOMPILER_TESTS
 	vuopt::MvuBlockTrace vuoptTrace;
-	if (vuopt::g_mvuBlockHook || vuopt::g_vuoptBodyHook)
+	if (vuopt::g_mvuBlockHook || vuopt::g_vuoptBodyHook || vuopt::g_vuoptRegionHook)
 		mVUbuildBlockTrace(mVU, startPC, vuoptTrace);
 	if (vuopt::g_mvuBlockHook)
 		vuopt::g_mvuBlockHook(vuoptTrace, vuopt::g_mvuBlockHookUser);
+	// vuopt milestone 4: a test hook may compile a whole region rooted at
+	// this block in its place; microVU then emits nothing for it.
+	if (vuopt::g_vuoptRegionHook &&
+		vuopt::g_vuoptRegionHook(vuoptTrace, mVUbuildEmitEnv(mVU), vuopt::g_vuoptRegionHookUser))
+		return thisPtr;
 #endif
 	{
 		const mVUSpinLoop spin = mVUdetectSpinLoop(mVU, startPC);

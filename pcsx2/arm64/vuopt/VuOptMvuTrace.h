@@ -89,6 +89,23 @@ namespace vuopt
 		bool overflowHack = false;    // CHECK_VUOVERFLOWHACK
 		bool addSubHack = false;      // CHECK_VUADDSUBHACK
 		bool flagHack = false;
+		bool vuSyncHack = false;      // VUSyncHack / FullVU0SyncHack (cycle accounting differs)
+
+		// Milestone 4 (vuopt regions): what replacing microVU's block framing
+		// needs from microVU.
+		s32 offCycles = 0;                // mVU.cycles, from x24
+		const void* cycleBreak = nullptr; // mVU.cycleBreak stub
+		void* rootBlock = nullptr;        // the microBlock being compiled (pState at offset 0)
+		// microBlockManager::search for (pc, key); returns the microBlock or null.
+		void* (*searchBlock)(u32 vu, u32 pc, const u8* key) = nullptr;
+		// Registers a block for (pc, key) with no code yet; returns the microBlock.
+		void* (*addBlock)(u32 vu, u32 pc, const u8* key) = nullptr;
+		void (*setBlockEntry)(void* block, void* entry) = nullptr;
+		void* (*blockEntry)(void* block) = nullptr;
+		// mVUblockFetch: the host entry for (pc, key), compiling at the cursor if needed.
+		void* (*fetchBlock)(u32 vu, u32 pc, const u8* key) = nullptr;
+		// mVUsetupRange for a block from startPC through its last pair.
+		void (*addRange)(u32 vu, u32 startPC, u32 lastPC) = nullptr;
 	};
 
 #ifdef PCSX2_RECOMPILER_TESTS
@@ -106,5 +123,14 @@ namespace vuopt
 	using VuoptBodyHook = bool (*)(const MvuBlockTrace& block, const MvuEmitEnv& env, void* user);
 	extern VuoptBodyHook g_vuoptBodyHook;
 	extern void* g_vuoptBodyHookUser;
+
+	// Called by microVU after every block's first pass, before it emits
+	// anything, when set. Returning true means the hook emitted the block in
+	// full at armAsm's cursor (a vuopt region rooted at it: its own cycle
+	// tests, links and exits back into microVU) and microVU emits nothing.
+	// Testing-only, like the hooks above.
+	using VuoptRegionHook = bool (*)(const MvuBlockTrace& block, const MvuEmitEnv& env, void* user);
+	extern VuoptRegionHook g_vuoptRegionHook;
+	extern void* g_vuoptRegionHookUser;
 #endif
 } // namespace vuopt

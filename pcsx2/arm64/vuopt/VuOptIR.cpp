@@ -764,6 +764,8 @@ namespace vuopt::ir
 						Unsupported("branch in a branch delay slot");
 				if (b.endKind == BlockEnd::MBit)
 					Unsupported("VU0 M-bit");
+				if (o_.remapAtLeave && (b.endKind == BlockEnd::Branch || b.endKind == BlockEnd::CondBranch))
+					LinkRemap(b);
 				std::vector<ValueId> a = AllVars();
 				a.push_back(cond);
 				a.push_back(jumpVal);

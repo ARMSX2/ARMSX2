@@ -180,6 +180,10 @@ namespace vuopt::ir
 		// Emit microVU's block-entry cycle-budget test (with the whole state
 		// live) in every block. Off only for measuring what it costs.
 		bool yieldChecks = true;
+		// Node-local build for a vuopt region: the Leave hands back each
+		// variable after microVU's link-time ring reorder and Q/P lane swap
+		// (mVUsetupBranch), i.e. in the successor's numbering.
+		bool remapAtLeave = false;
 	};
 
 	// One microVU block alone, for milestone 2's per-block lowering: incoming

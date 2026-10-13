@@ -1426,6 +1426,7 @@ set(pcsx2arm64Sources
 	arm64/vuopt/VuOptMvuTrace.cpp
 	arm64/vuopt/VuOptPipe.cpp
 	arm64/vuopt/VuOptTier.cpp
+	arm64/vuopt/VuOptRegion.cpp
 	x86/iR5900Analysis.cpp  # arch-neutral EE instruction-liveness analysis, shared with the x86 build
 	)
 
@@ -1450,6 +1451,7 @@ set(pcsx2arm64Headers
 	arm64/vuopt/VuOptMvuTrace.h
 	arm64/vuopt/VuOptPipe.h
 	arm64/vuopt/VuOptTier.h
+	arm64/vuopt/VuOptRegion.h
 )
 
 # Mobile (arm64) platform sources, relocated from the former android/iOS core
