@@ -1013,14 +1013,28 @@ static void mVUopRotateToDestLane(mV, const a64::VRegister& reg)
 	armAsm->Ext(reg.V16B(), reg.V16B(), reg.V16B(), (_Y ? 1 : (_Z ? 2 : 3)) * 4);
 }
 
-// Ft, in place: {Z, X, Y, +0} — indices 2,0,1 and a zero.
-static void mVUopRotateFt(const a64::VRegister& Ft)
+// The two permuted multiplicands, built into `dst` from the unchanged
+// source. Lane w is only built when the dest field writes w: otherwise it
+// feeds nothing but a product lane the field masks off, which no register
+// write, MAC weight or STATUS reduction reads (the weights take the dest
+// field, and every O/U predicate reaches STATUS through them).
+//
+// Fs: {Y, Z, X, W}. EXT gives {Y, Z, W, X}; one INS puts X in lane 2.
+static void mVUopPermuteFs(mV, const a64::VRegister& dst, const a64::VRegister& Fs)
 {
-	armAsm->Mov(RQSCRATCH.V16B(), Ft.V16B());
-	armAsm->Ins(Ft.V4S(), 0, RQSCRATCH.V4S(), 2);
-	armAsm->Ins(Ft.V4S(), 1, RQSCRATCH.V4S(), 0);
-	armAsm->Ins(Ft.V4S(), 2, RQSCRATCH.V4S(), 1);
-	armAsm->Ins(Ft.V4S(), 3, a64::wzr);
+	armAsm->Ext(dst.V16B(), Fs.V16B(), Fs.V16B(), 4); // {Y, Z, W, X}
+	armAsm->Ins(dst.V4S(), 2, Fs.V4S(), 0);           // {Y, Z, X, X}
+	if (_W)
+		armAsm->Ins(dst.V4S(), 3, Fs.V4S(), 3);       // {Y, Z, X, W}
+}
+
+// Ft: {Z, X, Y, +0}. EXT gives {W, X, Y, Z}; one INS puts Z in lane 0.
+static void mVUopPermuteFt(mV, const a64::VRegister& dst, const a64::VRegister& Ft)
+{
+	armAsm->Ext(dst.V16B(), Ft.V16B(), Ft.V16B(), 12); // {W, X, Y, Z}
+	armAsm->Ins(dst.V4S(), 0, Ft.V4S(), 2);            // {Z, X, Y, Z}
+	if (_W)
+		armAsm->Ins(dst.V4S(), 3, a64::wzr);           // {Z, X, Y, +0}
 }
 
 mVUop(mVU_OPMULA)
@@ -1032,13 +1046,14 @@ mVUop(mVU_OPMULA)
 		// the destination is a plain temp rather than a clean copy of ACC.
 		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_);
 		const a64::VRegister& ACC = mVU.regAlloc->allocReg(-1, _X_Y_Z_W ? 32 : -1, _X_Y_Z_W);
-		armAsm->Ext(ACC.V16B(), Fs.V16B(), Fs.V16B(), 4); // {Y, Z, W, X}
-		armAsm->Ins(ACC.V4S(), 2, Fs.V4S(), 0);           // {Y, Z, X, X}
-		armAsm->Ins(ACC.V4S(), 3, Fs.V4S(), 3);           // {Y, Z, X, W}
+		mVUopPermuteFs(mVU, ACC, Fs);
 		mVU.regAlloc->clearNeeded(Fs);
 
-		const a64::VRegister& Ft = mVU.regAlloc->allocReg(_Ft_, 0, 0xf);
-		mVUopRotateFt(Ft);
+		// Ft is read where it is cached; the permuted copy is a temp.
+		const a64::VRegister& FtSrc = mVU.regAlloc->allocReg(_Ft_);
+		const a64::VRegister& Ft = mVU.regAlloc->allocReg();
+		mVUopPermuteFt(mVU, Ft, FtSrc);
+		mVU.regAlloc->clearNeeded(FtSrc);
 
 		// An ordinary multiply, so it carries the multiply's U and O, taken from
 		// the rotated multiplicands. The rotation to the dest lane comes after,
@@ -1076,23 +1091,27 @@ mVUop(mVU_OPMSUB)
 	pass1 { mVUanalyzeFMAC1(mVU, _Fd_, _Fs_, _Ft_); }
 	pass2
 	{
-		const a64::VRegister& Ft  = mVU.regAlloc->allocReg(_Ft_, 0, 0xf);
-		const a64::VRegister& Fs  = mVU.regAlloc->allocReg(_Fs_, 0, 0xf);
-		// The ACC side of an empty dest field, for the reason in mVU_OPMULA:
-		// a full-width clone bound to VF0, which the allocator discards.
-		const a64::VRegister& ACC = _X_Y_Z_W
-			? mVU.regAlloc->allocReg(32, _Fd_, _X_Y_Z_W)
-			: mVU.regAlloc->allocReg(32, 0, 0xf);
-
-		// Fs, in place: {Y, Z, X, W}
-		armAsm->Mov(RQSCRATCH.V16B(), Fs.V16B());
-		armAsm->Ins(Fs.V4S(), 0, RQSCRATCH.V4S(), 1);
-		armAsm->Ins(Fs.V4S(), 1, RQSCRATCH.V4S(), 2);
-		armAsm->Ins(Fs.V4S(), 2, RQSCRATCH.V4S(), 0);
-		mVUopRotateFt(Ft);
+		// Both multiplicands are read where they are cached and permuted into
+		// temps, so neither needs a clone of its own.
+		const a64::VRegister& FtSrc = mVU.regAlloc->allocReg(_Ft_);
+		const a64::VRegister& FsSrc = mVU.regAlloc->allocReg(_Fs_);
+		const a64::VRegister& Ft = mVU.regAlloc->allocReg();
+		const a64::VRegister& Fs = mVU.regAlloc->allocReg();
+		mVUopPermuteFs(mVU, Fs, FsSrc);
+		mVUopPermuteFt(mVU, Ft, FtSrc);
+		mVU.regAlloc->clearNeeded(FsSrc);
+		mVU.regAlloc->clearNeeded(FtSrc);
 
 		NEON_MULPS(mVU, Fs,  Ft);
 		mVUopRotateToDestLane(mVU, Fs);
+
+		// The ACC side of an empty dest field, for the reason in mVU_OPMULA:
+		// a full-width clone bound to VF0, which the allocator discards.
+		// Allocated last, so its clone is the word in front of the subtract,
+		// which reads ACC's register in its place (mVUstepSource).
+		const a64::VRegister& ACC = _X_Y_Z_W
+			? mVU.regAlloc->allocReg(32, _Fd_, _X_Y_Z_W)
+			: mVU.regAlloc->allocReg(32, 0, 0xf);
 		NEON_SUBPS(mVU, ACC, Fs);
 		mVU.regAlloc->clearNeeded(Fs);
 		mVU.regAlloc->clearNeeded(Ft);

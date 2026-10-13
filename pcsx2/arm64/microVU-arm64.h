@@ -199,7 +199,10 @@
 //  48 — the AX-14 by-element multiply also serves single-lane destinations, as a
 //       scalar FMUL by element, and Q, reading its instance's lane of qmmPQ, so
 //       neither broadcasts its operand into a temp first.
-static constexpr u32 kMvuCompilerAbiVersion = 48;
+//  49 — OPMULA and OPMSUB permute their multiplicands into temps straight from
+//       the cached registers with EXT and one INS, and build lane w only when
+//       the dest field writes it.
+static constexpr u32 kMvuCompilerAbiVersion = 49;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
