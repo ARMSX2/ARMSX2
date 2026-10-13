@@ -187,7 +187,10 @@
 //       immediate in the add or subtract rather than through gprT1.
 //  44 — the status update clears the non-sticky field with one AND that reads
 //       the previous instance's register, rather than a Mov and an AND of the copy.
-static constexpr u32 kMvuCompilerAbiVersion = 44;
+//  45 — a VU1 load or store forms its address from the base VI where it is
+//       cached, so the copy into gprT1 and the sign or zero extension in front
+//       of the UBFIZ go. VU0 is unchanged.
+static constexpr u32 kMvuCompilerAbiVersion = 45;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

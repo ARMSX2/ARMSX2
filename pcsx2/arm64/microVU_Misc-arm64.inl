@@ -373,6 +373,23 @@ __fi void mVUaddrFix(mV, const a64::Register& gprReg)
 	}
 }
 
+// mVUaddrFix with the VI index in another register. VU1's UBFIZ takes the
+// quadword index from bits 0-9 of `src` wherever it sits, so the copy into
+// `dst` (and any sign or zero extension, which touches only bits 16 and up)
+// that would stand in front of it is not needed. VU0 copies and runs the
+// full path.
+__fi void mVUaddrFixFrom(mV, const a64::Register& dst, const a64::Register& src)
+{
+	if (isVU1)
+	{
+		armAsm->Ubfiz(dst.W(), src.W(), 4, 10);
+		return;
+	}
+	if (dst.GetCode() != src.GetCode())
+		armAsm->Mov(dst.W(), src.W());
+	mVUaddrFix(mVU, dst);
+}
+
 // Turn a byte index into VU data memory, already in gprIdxq, into something a
 // load or store can address: on VU1 one Add off the pin, the distance riding
 // in the access's own offset field; on VU0 the pointer is still loaded.

@@ -434,6 +434,9 @@ constexpr AbiPin kPins[] = {
 	// abi 44: the status non-sticky clear reads the previous instance in place.
 	// Every probe ends in a flag-writing FMAC whose status the end forces.
 	{44, {0xcc5d8ed2aff67456, 0xf22354557ba8d4ba, 0x49140181ed6daa6d, 0x321e1e6abe00ab51, 0xb261732330cbb6c5, 0x59776b355a957571, 0x6bc6dc459520c9da, 0x6dcbc8ee9c41c950, 0x01e61f64bdbc1a38, 0x01c604cf32776547, 0x024ff6cd7fabd2c8, 0xb7ef7494b89aa3d8, 0x021b1d8ea47dc8e8, 0x47545cdb987b6602, 0x3a7def77c71d10af, 0x9fbf8b955489dc19, 0x8775d22d00a22275, 0xd304c548206d672b, 0xba027c76c09e3d5f, 0xf6775d1893001ca3, 0xb1e0cfecf4302713, 0x029663d8580ead20, 0x72a4cdceb608619f, 0xc3952268061ca731, 0x1e28c18d2d06b66a, 0xb492272d123efd35}},
+	// abi 45: VU1 address formation reads the base VI in place. Only the VU1
+	// load/store probe moves.
+	{45, {0xcc5d8ed2aff67456, 0xf22354557ba8d4ba, 0x49140181ed6daa6d, 0x321e1e6abe00ab51, 0xb261732330cbb6c5, 0x59776b355a957571, 0x6bc6dc459520c9da, 0x6dcbc8ee9c41c950, 0x01e61f64bdbc1a38, 0x01c604cf32776547, 0x024ff6cd7fabd2c8, 0xb7ef7494b89aa3d8, 0x021b1d8ea47dc8e8, 0x47545cdb987b6602, 0x3a7def77c71d10af, 0x9fbf8b955489dc19, 0x8775d22d00a22275, 0xd304c548206d672b, 0x9d323643d87a1b0a, 0xf6775d1893001ca3, 0xb1e0cfecf4302713, 0x029663d8580ead20, 0x72a4cdceb608619f, 0xc3952268061ca731, 0x1e28c18d2d06b66a, 0xb492272d123efd35}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,

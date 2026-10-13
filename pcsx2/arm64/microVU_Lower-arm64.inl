@@ -1617,6 +1617,39 @@ mVUop(mVU_MTIR)
 // ILW/ILWR
 //------------------------------------------------------------------
 
+// gprT1 = the byte index into VU data memory of VI[vi] + Imm11, wrapped
+// (mVUaddrFix). On VU1 the base VI is read where it is cached, so the
+// copy into gprT1 goes; on VU0 the sequence is unchanged.
+static void mVUaddrFromVI(mV, int vi)
+{
+	a64::Register base = isVU1 ? mVU.regAlloc->viReadGPR(gprT1, vi) : gprT1;
+	if (!isVU1)
+		mVU.regAlloc->moveVIToGPR(gprT1, vi);
+	if (!EmuConfig.Gamefixes.IbitHack)
+	{
+		if (_Imm11_ != 0)
+		{
+			s32 imm = _Imm11_;
+			if (imm >= 0)
+				armAsm->Add(gprT1.W(), base.W(), (u32)imm);
+			else
+				armAsm->Sub(gprT1.W(), base.W(), (u32)(-imm));
+			base = gprT1;
+		}
+	}
+	else
+	{
+		// IbitHack: reconstruct signed Imm11 from the live opcode word at
+		// runtime via sbfx+bfxil.
+		armLoadPtr(RWSCRATCH, &curI);
+		armAsm->Sbfx(gprT2.W(), RWSCRATCH, 10, 1);
+		armAsm->Bfxil(gprT2.W(), RWSCRATCH, 0, 10);
+		armAsm->Add(gprT1.W(), base.W(), gprT2.W());
+		base = gprT1;
+	}
+	mVUaddrFixFrom(mVU, gprT1, base);
+}
+
 mVUop(mVU_ILW)
 {
 	pass1
@@ -1633,28 +1666,7 @@ mVUop(mVU_ILW)
 		mVUmemRef addr;
 		if (!mVUoptimizeConstantAddr(mVU, _Is_, _Imm11_, offsetSS, gprT1q, kDispReachH, addr))
 		{
-			mVU.regAlloc->moveVIToGPR(gprT1, _Is_);
-			if (!EmuConfig.Gamefixes.IbitHack)
-			{
-				if (_Imm11_ != 0)
-				{
-					s32 imm = _Imm11_;
-					if (imm >= 0)
-						armAsm->Add(gprT1.W(), gprT1.W(), (u32)imm);
-					else
-						armAsm->Sub(gprT1.W(), gprT1.W(), (u32)(-imm));
-				}
-			}
-			else
-			{
-				// IbitHack: reconstruct signed Imm11 from the live opcode word at
-				// runtime via sbfx+bfxil.
-				armLoadPtr(RWSCRATCH, &curI);
-				armAsm->Sbfx(gprT2.W(), RWSCRATCH, 10, 1);
-				armAsm->Bfxil(gprT2.W(), RWSCRATCH, 0, 10);
-				armAsm->Add(gprT1.W(), gprT1.W(), gprT2.W());
-			}
-			mVUaddrFix(mVU, gprT1);
+			mVUaddrFromVI(mVU, _Is_);
 
 			addr = mVUmemAtIndex(mVU, gprT1q);
 			addr.disp += offsetSS;
@@ -1683,8 +1695,13 @@ mVUop(mVU_ILWR)
 	{
 		if (_Is_)
 		{
-			mVU.regAlloc->moveVIToGPR(gprT1, _Is_);
-			mVUaddrFix(mVU, gprT1);
+			if (isVU1)
+				mVUaddrFixFrom(mVU, gprT1, mVU.regAlloc->viReadGPR(gprT1, _Is_));
+			else
+			{
+				mVU.regAlloc->moveVIToGPR(gprT1, _Is_);
+				mVUaddrFix(mVU, gprT1);
+			}
 		}
 		else
 		{
@@ -1719,27 +1736,7 @@ mVUop(mVU_ISW)
 		mVUmemRef addr;
 		if (!mVUoptimizeConstantAddr(mVU, _Is_, _Imm11_, 0, gprT1q, kDispReachW - 12, addr))
 		{
-			mVU.regAlloc->moveVIToGPR(gprT1, _Is_);
-			if (!EmuConfig.Gamefixes.IbitHack)
-			{
-				if (_Imm11_ != 0)
-				{
-					s32 imm = _Imm11_;
-					if (imm >= 0)
-						armAsm->Add(gprT1.W(), gprT1.W(), (u32)imm);
-					else
-						armAsm->Sub(gprT1.W(), gprT1.W(), (u32)(-imm));
-				}
-			}
-			else
-			{
-				// IbitHack: reconstruct signed Imm11 from the live opcode word at runtime.
-				armLoadPtr(RWSCRATCH, &curI);
-				armAsm->Sbfx(gprT2.W(), RWSCRATCH, 10, 1);
-				armAsm->Bfxil(gprT2.W(), RWSCRATCH, 0, 10);
-				armAsm->Add(gprT1.W(), gprT1.W(), gprT2.W());
-			}
-			mVUaddrFix(mVU, gprT1);
+			mVUaddrFromVI(mVU, _Is_);
 
 			addr = mVUmemAtIndex(mVU, gprT1q);
 		}
@@ -1768,8 +1765,13 @@ mVUop(mVU_ISWR)
 	{
 		if (_Is_)
 		{
-			mVU.regAlloc->moveVIToGPR(gprT1, _Is_);
-			mVUaddrFix(mVU, gprT1);
+			if (isVU1)
+				mVUaddrFixFrom(mVU, gprT1, mVU.regAlloc->viReadGPR(gprT1, _Is_));
+			else
+			{
+				mVU.regAlloc->moveVIToGPR(gprT1, _Is_);
+				mVUaddrFix(mVU, gprT1);
+			}
 		}
 		else
 		{
@@ -1802,27 +1804,7 @@ mVUop(mVU_LQ)
 		mVUmemRef addr;
 		if (!mVUoptimizeConstantAddr(mVU, _Is_, _Imm11_, 0, gprT1q, kDispReachW - 12, addr))
 		{
-			mVU.regAlloc->moveVIToGPR(gprT1, _Is_);
-			if (!EmuConfig.Gamefixes.IbitHack)
-			{
-				if (_Imm11_ != 0)
-				{
-					s32 imm = _Imm11_;
-					if (imm >= 0)
-						armAsm->Add(gprT1.W(), gprT1.W(), (u32)imm);
-					else
-						armAsm->Sub(gprT1.W(), gprT1.W(), (u32)(-imm));
-				}
-			}
-			else
-			{
-				// IbitHack: reconstruct signed Imm11 from the live opcode word at runtime.
-				armLoadPtr(RWSCRATCH, &curI);
-				armAsm->Sbfx(gprT2.W(), RWSCRATCH, 10, 1);
-				armAsm->Bfxil(gprT2.W(), RWSCRATCH, 0, 10);
-				armAsm->Add(gprT1.W(), gprT1.W(), gprT2.W());
-			}
-			mVUaddrFix(mVU, gprT1);
+			mVUaddrFromVI(mVU, _Is_);
 			addr = mVUmemAtIndex(mVU, gprT1q);
 		}
 
@@ -1845,9 +1827,14 @@ mVUop(mVU_LQD)
 		// to and VI0 stays hardwired.
 		const a64::Register& regS = mVU.regAlloc->allocGPR(_Is_, _Is_, mVUlow.backupVI);
 		armAsm->Sub(regS.W(), regS.W(), 1);
-		armAsm->Sxth(gprT1.W(), regS.W());
+		if (isVU1)
+			mVUaddrFixFrom(mVU, gprT1, regS);
+		else
+		{
+			armAsm->Sxth(gprT1.W(), regS.W());
+			mVUaddrFix(mVU, gprT1);
+		}
 		mVU.regAlloc->clearNeeded(regS);
-		mVUaddrFix(mVU, gprT1);
 
 		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q);
 
@@ -1871,10 +1858,18 @@ mVUop(mVU_LQI)
 		{
 			// Post-increment: read current value, then increment
 			const a64::Register& regS = mVU.regAlloc->allocGPR(_Is_, _Is_, mVUlow.backupVI);
-			armAsm->Sxth(gprT1.W(), regS.W());
-			armAsm->Add(regS.W(), regS.W(), 1);
+			if (isVU1)
+			{
+				mVUaddrFixFrom(mVU, gprT1, regS);
+				armAsm->Add(regS.W(), regS.W(), 1);
+			}
+			else
+			{
+				armAsm->Sxth(gprT1.W(), regS.W());
+				armAsm->Add(regS.W(), regS.W(), 1);
+				mVUaddrFix(mVU, gprT1);
+			}
 			mVU.regAlloc->clearNeeded(regS);
-			mVUaddrFix(mVU, gprT1);
 		}
 		else
 		{
@@ -1907,27 +1902,7 @@ mVUop(mVU_SQ)
 		mVUmemRef addr;
 		if (!mVUoptimizeConstantAddr(mVU, _It_, _Imm11_, 0, gprT1q, kDispReachQ, addr))
 		{
-			mVU.regAlloc->moveVIToGPR(gprT1, _It_);
-			if (!EmuConfig.Gamefixes.IbitHack)
-			{
-				if (_Imm11_ != 0)
-				{
-					s32 imm = _Imm11_;
-					if (imm >= 0)
-						armAsm->Add(gprT1.W(), gprT1.W(), (u32)imm);
-					else
-						armAsm->Sub(gprT1.W(), gprT1.W(), (u32)(-imm));
-				}
-			}
-			else
-			{
-				// IbitHack: reconstruct signed Imm11 from the live opcode word at runtime.
-				armLoadPtr(RWSCRATCH, &curI);
-				armAsm->Sbfx(gprT2.W(), RWSCRATCH, 10, 1);
-				armAsm->Bfxil(gprT2.W(), RWSCRATCH, 0, 10);
-				armAsm->Add(gprT1.W(), gprT1.W(), gprT2.W());
-			}
-			mVUaddrFix(mVU, gprT1);
+			mVUaddrFromVI(mVU, _It_);
 			addr = mVUmemAtIndex(mVU, gprT1q);
 		}
 
@@ -1956,9 +1931,14 @@ mVUop(mVU_SQD)
 	{
 		const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, _It_, mVUlow.backupVI);
 		armAsm->Sub(regT.W(), regT.W(), 1);
-		armAsm->Uxth(gprT1.W(), regT.W());
+		if (isVU1)
+			mVUaddrFixFrom(mVU, gprT1, regT);
+		else
+		{
+			armAsm->Uxth(gprT1.W(), regT.W());
+			mVUaddrFix(mVU, gprT1);
+		}
 		mVU.regAlloc->clearNeeded(regT);
-		mVUaddrFix(mVU, gprT1);
 
 		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q);
 
@@ -1988,10 +1968,18 @@ mVUop(mVU_SQI)
 		{
 			// Post-increment: read current, then increment
 			const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, _It_, mVUlow.backupVI);
-			armAsm->Uxth(gprT1.W(), regT.W());
-			armAsm->Add(regT.W(), regT.W(), 1);
+			if (isVU1)
+			{
+				mVUaddrFixFrom(mVU, gprT1, regT);
+				armAsm->Add(regT.W(), regT.W(), 1);
+			}
+			else
+			{
+				armAsm->Uxth(gprT1.W(), regT.W());
+				armAsm->Add(regT.W(), regT.W(), 1);
+				mVUaddrFix(mVU, gprT1);
+			}
 			mVU.regAlloc->clearNeeded(regT);
-			mVUaddrFix(mVU, gprT1);
 		}
 		else
 		{

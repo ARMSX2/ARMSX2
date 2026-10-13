@@ -1092,6 +1092,20 @@ public:
 		return i >= 0 && i < neonAllocTotal && neonUsable(i);
 	}
 
+	// The register holding VI `vi` for a read: its cached slot, or `dst` after
+	// the same 16-bit load moveVIToGPR makes. For a reader that takes only
+	// some low bits of the value, so needs no copy of its own.
+	a64::Register viReadGPR(const a64::Register& dst, int vi)
+	{
+		for (int i = 0; i < gprAllocCount; i++)
+		{
+			if (gprMap[i].usable && gprMap[i].VIreg == vi)
+				return armWRegister(i);
+		}
+		armAsm->Ldrh(dst.W(), mVUstateMem(offsetof(VURegs, VI) + vi * sizeof(REG_VI)));
+		return dst.W();
+	}
+
 	// Move VI value into a specific GPR (for address computation etc.)
 	void moveVIToGPR(const a64::Register& dstReg, int vi, bool signext = false)
 	{
