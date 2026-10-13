@@ -251,10 +251,57 @@ namespace vuopt
 	void RegionBuilder::AssignHomes()
 	{
 		using namespace ir;
-		std::vector<u32> count(var::Count, 0);
-		for (const auto& n : nodes_)
+		// What a home saves: one load per node that reads the variable's
+		// incoming value and one store per node that writes it. What a clamped
+		// home saves: the clamp (two instructions) in each node that clamps the
+		// incoming value (a node clamps a value once, milestone 5).
+		// Blocks inside a loop (a cycle of region links) count eight times.
+		const size_t NN = nodes_.size();
+		std::vector<u32> weight(NN, 1);
 		{
+			std::vector<std::vector<int>> succ(NN);
+			for (size_t i = 0; i < NN; i++)
+			{
+				const Node& n = *nodes_[i];
+				if (n.taken >= 0 && n.taken != 0x7fffffff)
+					succ[i].push_back(n.taken);
+				if (n.fall >= 0 && n.fall != 0x7fffffff)
+					succ[i].push_back(n.fall);
+				for (const auto& j : n.jumps)
+					if (j.second >= 0)
+						succ[i].push_back(j.second);
+			}
+			// reachability closure per node is fine at region sizes
+			for (size_t i = 0; i < NN; i++)
+			{
+				std::vector<u8> seenN(NN, 0);
+				std::vector<int> work(succ[i].begin(), succ[i].end());
+				bool cyc = false;
+				while (!work.empty() && !cyc)
+				{
+					const int x = work.back();
+					work.pop_back();
+					if (x == static_cast<int>(i))
+						cyc = true;
+					if (seenN[x])
+						continue;
+					seenN[x] = 1;
+					for (int y : succ[x])
+						work.push_back(y);
+				}
+				if (cyc)
+					weight[i] = 8;
+			}
+		}
+		std::vector<u32> count(var::Count, 0);
+		u32 clamped[33] = {};
+		bool written[33] = {};
+		for (size_t ni = 0; ni < NN; ni++)
+		{
+			const auto& n = nodes_[ni];
+			const u32 w = weight[ni];
 			const Function& f = n->fn;
+			std::vector<u8> seen(var::Count, 0);
 			for (const Block& bl : f.blocks)
 			{
 				if (bl.node < 0)
@@ -271,15 +318,23 @@ namespace vuopt
 							const ValueId a = in.args[v];
 							if (!a || (f.insts[a].op == Op::LiveIn && f.insts[a].var == v))
 								continue;
-							count[VecKey(v)]++;
+							seen[VecKey(v)] |= 2;
+							if (v < 132)
+								written[v < 128 ? v / 4 : 32] = true;
 						}
 						continue;
 					}
 					for (ValueId a : in.args)
 						if (a && f.insts[a].op == Op::LiveIn && f.insts[a].var < var::Count)
-							count[VecKey(f.insts[a].var)]++;
+							seen[VecKey(f.insts[a].var)] |= 1;
 				}
 			}
+			for (u32 v = 0; v < var::Count; v++)
+				count[v] += w * ((seen[v] & 1) + ((seen[v] >> 1) & 1));
+			u32 c[33] = {};
+			ClampedLiveInUses(f, le_, c);
+			for (u32 r = 1; r <= 32; r++)
+				clamped[r] += c[r] ? 2 * w : 0;
 		}
 		std::vector<std::pair<u32, u32>> vc, gc;
 		for (u32 r = 1; r <= 32; r++)
@@ -287,15 +342,25 @@ namespace vuopt
 			const u32 v = r == 32 ? var::ACC(0) : var::VF(r, 0);
 			if (count[v] >= 2)
 				vc.push_back({count[v], v});
+			if (!written[r] && clamped[r] >= 2)
+				vc.push_back({clamped[r], 0x1000 | r}); // a clamped home
 		}
 		for (u32 v = 0; v < var::Count; v++)
 			if (GHomeable(v) && count[v] >= 2)
 				gc.push_back({count[v], v});
 		std::sort(vc.begin(), vc.end(), [](auto a, auto b) { return a.first != b.first ? a.first > b.first : a.second < b.second; });
+		if (t_.dump)
+			for (const auto& c : vc)
+				std::printf("  home candidate %s%u: %u\n", (c.second & 0x1000) ? "clamped vf" : "var ", c.second & 0xfff, c.first);
 		std::sort(gc.begin(), gc.end(), [](auto a, auto b) { return a.first != b.first ? a.first > b.first : a.second < b.second; });
 		const size_t nv = std::min<size_t>({vc.size(), static_cast<size_t>(std::max(0, t_.maxVHomes)), std::size(kVHomeRegs)});
 		for (size_t k = 0; k < nv; k++)
 		{
+			if (vc[k].second & 0x1000)
+			{
+				homes_.clampHome[vc[k].second & 0xff] = static_cast<s8>(kVHomeRegs[k]);
+				continue;
+			}
 			const u32 v0 = vc[k].second;
 			for (u32 l = 0; l < 4; l++)
 			{
@@ -402,6 +467,7 @@ namespace vuopt
 		armAsm->Bind(&loadAll);
 		EmitLoadHomes(homes_, le_, cyclesOff);
 		armAsm->Ldp(Q(kCMin), Q(kCMax), a64::MemOperand(a64::x25, G(&mVUglob.minvals[0])));
+		EmitClampHomes(homes_, le_);
 		armAsm->Br(a64::x8);
 		// Shared: microVU's budget-break exit from microVU's state.
 		armAsm->Bind(&breakAll);
@@ -576,6 +642,9 @@ namespace vuopt
 				if (homes_.home[v].kind != HomeKind::Mem && (v >= 132 || (v & 3) == 0))
 					std::printf("  home %s -> %c%u\n", ir::var::Name(v).c_str(), homes_.home[v].kind == HomeKind::VReg ? 'v' : 'w',
 						homes_.home[v].reg);
+			for (u32 r = 1; r <= 32; r++)
+				if (homes_.clampHome[r] >= 0)
+					std::printf("  clamped home %s -> v%d\n", r == 32 ? "acc" : ("vf" + std::to_string(r)).c_str(), homes_.clampHome[r]);
 			std::fflush(stdout);
 			vixl::aarch64::PrintDisassembler dis(stdout);
 			dis.DisassembleBuffer(reinterpret_cast<const vixl::aarch64::Instruction*>(start),

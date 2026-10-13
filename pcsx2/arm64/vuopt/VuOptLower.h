@@ -82,6 +82,11 @@ namespace vuopt
 		s8 memBase = -1;
 		// Register holding mVU.cycles (region mode), or -1.
 		s8 cycles = -1;
+		// Milestone 5: a register holding the clamped copy of a vector
+		// register the region never writes (1..31 VF, 32 ACC), or -1. Filled by
+		// the region's entry loader; never stored back.
+		s8 clampHome[33] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+			-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 
 		u32 VRegMask() const;   // NEON registers taken by homes
 		u32 GRegMask() const;   // general registers taken by homes
@@ -119,5 +124,10 @@ namespace vuopt
 	// register and microVU's boundary location (and the cycle counter between
 	// its register and mVU.cycles when `cyclesOff` is given).
 	void EmitLoadHomes(const HomeMap& homes, const LowerEnv& env, s32 cyclesOff);
+	// After EmitLoadHomes and the clamp bounds: the clamped homes.
+	void EmitClampHomes(const HomeMap& homes, const LowerEnv& env);
+	// How many clamped uses of each vector register's incoming value a node
+	// has (index 1..31 VF, 32 ACC), as the lowering would clamp them.
+	void ClampedLiveInUses(const ir::Function& f, const LowerEnv& env, u32 counts[33]);
 	void EmitStoreHomes(const HomeMap& homes, const LowerEnv& env, s32 cyclesOff);
 } // namespace vuopt

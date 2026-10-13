@@ -314,6 +314,19 @@ namespace vuopt
 			int DefV(ValueId id);
 			int DefG(ValueId id);
 			void EndInst();
+		public:
+			void CountClampedLiveIns(u32 counts[33]) const
+			{
+				for (size_t c = 1; c < clampOf_.size(); c++)
+				{
+					if (!clampOf_[c] || c >= f_.insts.size())
+						continue;
+					const Inst& in = I(static_cast<ValueId>(c));
+					if (in.op == Op::LiveIn && VecHomeOf(in.var))
+						counts[VecHomeOf(in.var)] += static_cast<u32>(uses_[clampOf_[c]].size());
+				}
+			}
+		private:
 			void ReleaseLocks() { vLock_ = gLock_ = 0; vTemp_ = gTemp_ = 0; }
 			void SpillForCall();
 
@@ -325,6 +338,18 @@ namespace vuopt
 			int LaneWord(ValueId v, int lane);   // lane `lane` of a vector value in a W register
 			int Broadcast(ValueId v);            // scalar broadcast to 4 lanes (temp)
 			int ClampInto(int src);              // mVUclamp1 into a temp
+			// Milestone 5: every clamped copy of a value is made once. A clamp is
+			// idempotent and microVU's clamps never write the value itself, so
+			// the copy can serve every clamped use (the region's invariant
+			// copies live in registers for the whole region: HomeMap::clampHome).
+			std::vector<ValueId> clampOf_;  // per canonical value: its clamped copy (a pseudo value), or 0
+			std::vector<s8> clampLane_;     // per clamped copy: the lane a scalar copy holds its value in
+			std::vector<u8> clampFixed_;    // per canonical value: already the output of this mode's clamp (clamping it changes nothing)
+			ValueId SingleSource(const std::vector<ValueId>& args, size_t off) const;
+			void ClampedOperands(ValueId id, std::vector<ValueId>& out) const;
+			template <typename F>
+			int ClampOperand(ValueId c, F fetch, int* lane = nullptr);
+			void ClampKind(int dst, int src);
 			int SignClampInto(int src);          // mVUclamp2's sign-preserving integer clamp into a temp
 			int ClampE(int src) { return env_.clampSign ? SignClampInto(src) : ClampInto(src); } // clampE operand clamp
 			bool ResultClamp() const { return env_.clampExtra && !env_.clampSign; }              // mVUclamp4
@@ -881,6 +906,108 @@ namespace vuopt
 			return t;
 		}
 
+		// The single canonical value args[off..off+3] read, or 0 when they come
+		// from several values (the operand is assembled) or none.
+		ValueId Lowerer::SingleSource(const std::vector<ValueId>& args, size_t off) const
+		{
+			ValueId c = 0;
+			for (int l = 0; l < 4; l++)
+			{
+				const ValueId v = off + l < args.size() ? args[off + l] : 0;
+				if (!v)
+					continue;
+				if (c && C(v) != c)
+					return 0;
+				c = C(v);
+			}
+			return c;
+		}
+
+		// The operands an instruction clamps whole, as Fmac / Opmul / AccClamp
+		// emit them: one entry per clamped operand that is a single value.
+		void Lowerer::ClampedOperands(ValueId id, std::vector<ValueId>& out) const
+		{
+			const Inst& in = I(id);
+			const bool E = env_.clampExtra;
+			if (in.op == Op::AccClamp)
+			{
+				if (const ValueId c = SingleSource(in.args, 0))
+					out.push_back(c);
+				return;
+			}
+			if (in.op == Op::Opmsub)
+			{
+				if (E)
+					if (const ValueId c = SingleSource(in.args, 8))
+						out.push_back(c);
+				return;
+			}
+			if (in.op != Op::Fmac || (in.imm & 1))
+				return;
+			const UpperInst u = DecodeUpper(in.word);
+			const bool arith = u.kind != FmacKind::Max && u.kind != FmacKind::Mini;
+			const bool step = E && arith;
+			const int ct = (env_.clampOverflow && !E) ? ClampType(u) : 0;
+			if (step || (ct & 2))
+				if (const ValueId c = SingleSource(in.args, 0))
+					out.push_back(c);
+			if (step || (ct & 1))
+			{
+				ValueId c = 0;
+				if (u.form == FtForm::Reg)
+					c = SingleSource(in.args, 4);
+				else if (u.form == FtForm::Bc || u.form == FtForm::I || u.form == FtForm::Q)
+					c = C(in.args[4]);
+				if (c)
+					out.push_back(c);
+			}
+			if (E && (u.kind == FmacKind::Madd || u.kind == FmacKind::Msub))
+				if (const ValueId c = SingleSource(in.args, 8))
+					out.push_back(c);
+		}
+
+		void Lowerer::ClampKind(int dst, int src)
+		{
+			if (env_.clampSign)
+			{
+				armAsm->Smin(V(dst).V4S(), V(src).V4S(), V(kCMax).V4S());
+				armAsm->Umin(V(dst).V4S(), V(dst).V4S(), V(kCMin).V4S());
+			}
+			else
+			{
+				armAsm->Fminnm(V(dst).V4S(), V(src).V4S(), V(kCMax).V4S());
+				armAsm->Fmaxnm(V(dst).V4S(), V(dst).V4S(), V(kCMin).V4S());
+			}
+		}
+
+		// The clamped copy of value c: kept, reloaded, or made now from the
+		// operand `fetch` produces (and kept for later clamped uses). `lane`:
+		// for a scalar operand, the lane its value sits in.
+		template <typename F>
+		int Lowerer::ClampOperand(ValueId c, F fetch, int* lane)
+		{
+			if (c && c < clampFixed_.size() && clampFixed_[c])
+				return fetch(); // clamped at its definition
+			const ValueId pid = (c && c < clampOf_.size()) ? clampOf_[c] : 0;
+			if (pid && (reg_[pid] >= 0 || slot_[pid] >= 0))
+			{
+				if (lane)
+					*lane = clampLane_[pid];
+				return UseReg(pid);
+			}
+			const int src = fetch();
+			if (!pid)
+			{
+				const int t = TempV();
+				ClampKind(t, src);
+				return t;
+			}
+			const int r = AllocReg(Cls::V, pid);
+			ClampKind(r, src);
+			clampLane_[pid] = static_cast<s8>(lane ? *lane : 0);
+			return r;
+		}
+
 		// mVUclamp2 at the sign-preserving modes: a signed integer min against
 		// maxvals then an unsigned integer min against minvals, which maps an
 		// exponent-255 word to the largest finite of its sign.
@@ -1023,13 +1150,16 @@ namespace vuopt
 					return ClampInto(r);
 				return r;
 			};
+			(void)opClamp;
 			const u32 l0 = vLock_;
-			int fs = VecOperand(in.args, 0);
+			int fs;
 			if (step || (ct & 2))
 			{
-				fs = opClamp(fs, true);
+				fs = ClampOperand(SingleSource(in.args, 0), [&] { return VecOperand(in.args, 0); });
 				KeepOnly(l0, fs);
 			}
+			else
+				fs = VecOperand(in.args, 0);
 			const u32 l1 = vLock_;
 			// Ft: a whole register, or a scalar (one register lane) that the
 			// multiply reads by element and the other kinds broadcast. A clamp
@@ -1042,28 +1172,31 @@ namespace vuopt
 			switch (u.form)
 			{
 				case FtForm::Reg:
-					ft = VecOperand(in.args, 4);
+					ft = ftClamp ? ClampOperand(SingleSource(in.args, 4), [&] { return VecOperand(in.args, 4); })
+								 : VecOperand(in.args, 4);
 					break;
 				case FtForm::Bc:
-					ft = UseReg(in.args[4]);
+					ft = ftClamp ? ClampOperand(C(in.args[4]), [&] { return UseReg(in.args[4]); }) : UseReg(in.args[4]);
 					ftLane = in.lane;
 					break;
 				case FtForm::I:
 				case FtForm::Q:
-					ft = ScalarV(in.args[4], &ftLane);
+					if (ftClamp)
+						ft = ClampOperand(C(in.args[4]), [&] { return ScalarV(in.args[4], &ftLane); }, &ftLane);
+					else
+						ft = ScalarV(in.args[4], &ftLane);
 					break;
 				default:
 				{
 					ft = TempV();
 					armAsm->Movi(V(ft).V4S(), 0);
+					if (ftClamp)
+						ft = ClampOperand(0, [&] { return ft; });
 					break;
 				}
 			}
 			if (ftClamp)
-			{
-				ft = opClamp(ft, true);
 				KeepOnly(l1, ft);
-			}
 			const bool mulKind = u.kind == FmacKind::Mul || u.kind == FmacKind::Madd || u.kind == FmacKind::Msub;
 			if (ftLane >= 0 && !mulKind)
 			{
@@ -1094,12 +1227,14 @@ namespace vuopt
 			if (u.kind == FmacKind::Madd || u.kind == FmacKind::Msub)
 			{
 				const u32 l2 = vLock_;
-				int acc = VecOperand(in.args, 8);
+				int acc;
 				if (E)
 				{
-					acc = ClampE(acc);
+					acc = ClampOperand(SingleSource(in.args, 8), [&] { return VecOperand(in.args, 8); });
 					KeepOnly(l2, acc);
 				}
+				else
+					acc = VecOperand(in.args, 8);
 				const u32 l3 = vLock_;
 				int prod = TempV();
 				mul(prod);
@@ -1219,9 +1354,8 @@ namespace vuopt
 				p = clampFMul(p);     // NEON_MULPS's mVUclamp4
 			if (E)
 				p = ClampE(p);        // the SUB step's operand clamp (NEON_SUBPS takes no preClamped)
-			int acc = VecOperand(in.args, 8);
-			if (E)
-				acc = ClampE(acc);
+			const int acc = E ? ClampOperand(SingleSource(in.args, 8), [&] { return VecOperand(in.args, 8); })
+							  : VecOperand(in.args, 8);
 			if (E && ResultClamp())
 			{
 				const int t = TempV();
@@ -1858,6 +1992,9 @@ namespace vuopt
 			// Register homes in caller-saved registers ride through the call in
 			// their memory homes.
 			u32 savedG = 0, savedV = 0;
+			for (u32 r = 1; r <= 32; r++)
+				if (hm_.clampHome[r] >= 0)
+					savedV |= 1u << hm_.clampHome[r];
 			for (u32 v = 0; v < var::Count; v++)
 			{
 				const Home& h = hm_.home[v];
@@ -2660,8 +2797,7 @@ namespace vuopt
 				case Op::AccClamp:
 				{
 					// mVU_FMACc's clamp step on its read-only ACC mapping.
-					const int src = VecOperand(in.args, 0);
-					const int c = ClampE(src);
+					const int c = ClampOperand(SingleSource(in.args, 0), [&] { return VecOperand(in.args, 0); });
 					const int d = DefV(id);
 					armAsm->Mov(V(d).V16B(), V(c).V16B());
 					break;
@@ -2993,6 +3129,87 @@ namespace vuopt
 					return false;
 				}
 			}
+
+			// Values already the output of this mode's operand clamp: mode 2's
+			// result-clamped FMAC steps (the float clamp is its own fixed point),
+			// MADD's ACC clamp, VF0, and copies / rotations of those.
+			clampFixed_.assign(N, 0);
+			if (env_.clampOverflow || env_.clampExtra)
+			{
+				for (size_t v = 1; v < f_.insts.size(); v++)
+				{
+					const Inst& in = f_.insts[v];
+					bool fixed = false;
+					switch (in.op)
+					{
+						case Op::Const:
+							fixed = in.type == Type::Vec;
+							break;
+						case Op::AccClamp:
+							fixed = true;
+							break;
+						case Op::Fmac:
+						{
+							const UpperInst u = DecodeUpper(in.word);
+							fixed = env_.clampExtra && ResultClamp() && !(in.imm & 1) && u.kind != FmacKind::Max && u.kind != FmacKind::Mini;
+							break;
+						}
+						case Op::Opmula:
+						case Op::Opmsub:
+							fixed = env_.clampExtra && ResultClamp() && !Single(in.mask);
+							break;
+						case Op::Move:
+						case Op::Mr32:
+						{
+							const ValueId src = SingleSource(in.args, 0);
+							fixed = src && clampFixed_[src];
+							break;
+						}
+						default:
+							break;
+					}
+					if (fixed)
+						clampFixed_[canon_[v]] = 1;
+				}
+			}
+
+			// Clamped copies: one pseudo value per value clamped whole, live
+			// across its clamped uses.
+			{
+				std::vector<std::vector<u32>> cu(N);
+				std::vector<ValueId> ops;
+				for (u32 p = 0; p < order_.size(); p++)
+				{
+					if (!emit_[order_[p]])
+						continue;
+					ops.clear();
+					ClampedOperands(order_[p], ops);
+					for (ValueId c : ops)
+						if (!clampFixed_[c] && (cu[c].empty() || cu[c].back() != p))
+							cu[c].push_back(p);
+				}
+				clampOf_.assign(N, 0);
+				for (size_t c = 1; c < N; c++)
+				{
+					if (cu[c].empty())
+						continue;
+					const ValueId pid = static_cast<ValueId>(canon_.size());
+					clampOf_[c] = pid;
+					canon_.push_back(pid);
+					cls_.push_back(Cls::V);
+					remat_.push_back(Remat::None);
+					uses_.push_back(cu[c]);
+					useCur_.push_back(0);
+					emit_.push_back(0);
+					reg_.push_back(-1);
+					slot_.push_back(-1);
+					homeReg_.push_back(0);
+					noDrop_.push_back(0);
+					finalOf_.push_back(0);
+					finalVars_.emplace_back();
+				}
+				clampLane_.assign(canon_.size(), 0);
+			}
 			return true;
 		}
 
@@ -3026,6 +3243,20 @@ namespace vuopt
 				Bind(memBase_, hm_.memBase);
 				homeReg_[memBase_] = 1;
 			}
+			// Clamped copies of invariant vector registers, kept by the region.
+			for (size_t c = 1; c < clampOf_.size() && c < f_.insts.size(); c++)
+			{
+				if (!clampOf_[c])
+					continue;
+				const Inst& in = f_.insts[c];
+				if (in.op != Op::LiveIn || !VecHomeOf(in.var))
+					continue;
+				const s8 r = hm_.clampHome[VecHomeOf(in.var)];
+				if (r < 0)
+					continue;
+				Bind(clampOf_[c], r);
+				homeReg_[clampOf_[c]] = 1;
+			}
 			for (pos_ = 0; pos_ < order_.size(); pos_++)
 			{
 				const ValueId id = order_[pos_];
@@ -3042,6 +3273,9 @@ namespace vuopt
 	u32 HomeMap::VRegMask() const
 	{
 		u32 m = 0;
+		for (u32 r = 1; r <= 32; r++)
+			if (clampHome[r] >= 0)
+				m |= 1u << clampHome[r];
 		for (u32 r = 1; r <= 32; r++)
 		{
 			const Home& h = home[VecVar(r)];
@@ -3106,6 +3340,41 @@ namespace vuopt
 			armAsm->Add(X(homes.memBase), xState, kVU1MemFromState);
 		if (homes.cycles >= 0 && cyclesOff)
 			armAsm->Ldr(W(homes.cycles), a64::MemOperand(xFlag, cyclesOff));
+	}
+
+	void EmitClampHomes(const HomeMap& homes, const LowerEnv& env)
+	{
+		for (u32 r = 1; r <= 32; r++)
+		{
+			const int ch = homes.clampHome[r];
+			if (ch < 0)
+				continue;
+			const u32 v0 = VecVar(r);
+			int src = ch;
+			if (homes.home[v0].kind == HomeKind::VReg)
+				src = homes.home[v0].reg;
+			else
+				armAsm->Ldr(Q(ch), a64::MemOperand(xState, BoundaryLoc(v0, env).off));
+			if (env.clampSign)
+			{
+				armAsm->Smin(V(ch).V4S(), V(src).V4S(), V(kCMax).V4S());
+				armAsm->Umin(V(ch).V4S(), V(ch).V4S(), V(kCMin).V4S());
+			}
+			else
+			{
+				armAsm->Fminnm(V(ch).V4S(), V(src).V4S(), V(kCMax).V4S());
+				armAsm->Fmaxnm(V(ch).V4S(), V(ch).V4S(), V(kCMin).V4S());
+			}
+		}
+	}
+
+	void ClampedLiveInUses(const ir::Function& f, const LowerEnv& env, u32 counts[33])
+	{
+		static const HomeMap boundary;
+		Lowerer lw(f, env, boundary, LowerMode::Region);
+		std::string why;
+		if (lw.Check(why))
+			lw.CountClampedLiveIns(counts);
 	}
 
 	void EmitStoreHomes(const HomeMap& homes, const LowerEnv& env, s32 cyclesOff)
