@@ -33,6 +33,7 @@
 #include "harness/VuTestHarness.h"
 
 #include "Config.h"
+#include "common/FPControl.h"
 #include "VU.h"
 
 #include <gtest/gtest.h>
@@ -450,6 +451,73 @@ TEST(VuBroadcastLaneFold, SingleLaneDestinationEveryBroadcastLane)
 		EmuConfig.Cpu.Recompiler.vu0Overflow = prev0;
 		EmuConfig.Cpu.Recompiler.vu1Overflow = prev1;
 	}
+}
+
+// =========================================================================
+//  A multiply by VF0.w is a multiply by +1.0. Behind the operand clamp of
+//  clamp mode 1 under an FZ FPCR that multiply is the identity, and microVU
+//  does not emit it; the result has to be what an emitted multiply by 1.0
+//  gives. Each op runs twice in one program -- broadcasting VF0.w, and
+//  broadcasting the x lane of a register that holds 1.0 -- over operands that
+//  exercise the clamp (exponent 255, both kinds of NaN pattern, denormals of
+//  both signs, -0) plus a plain normal, and the two results must agree
+//  word for word. Every clamp mode, FZ on and off, both VUs, a multi-lane and
+//  a single-lane field.
+// =========================================================================
+
+namespace {
+
+void RunVf0wIdentity(int vu, int mode, bool ftz, u32 m, int which)
+{
+	FPControlRegister& fpcr = vu ? EmuConfig.Cpu.VU1FPCR : EmuConfig.Cpu.VU0FPCR;
+	const FPControlRegister saved = fpcr;
+	fpcr.SetFlushToZero(ftz);
+
+	VuTestHarness h(vu);
+	h.SetVuClampMode(mode);
+	h.SetVfBits(kFs, 0x7F900000u, 0x80000001u, 0x7FC00000u, 0x3FC00000u);
+	h.SetVfBits(vf::vf6, 0x00000001u, 0x80000000u, 0xFFA00000u, 0xBF400000u);
+	h.SetVfBits(kOnes, 0x3F800000u, 0x3F800000u, 0x3F800000u, 0x3F800000u);
+	h.SetVf(kAccSrc, 10.0f, 20.0f, 30.0f, 40.0f);
+	// One program per operand register, so each word meets the clamp alone.
+	const u32 fs = (which & 1) ? vf::vf6 : kFs;
+	u32 viaVf0 = 0, viaOne = 0;
+	switch (which >> 1)
+	{
+		case 0: viaVf0 = VMULw_U(m, vf::vf7, fs, vf::vf0);  viaOne = VMULx_U(m, vf::vf8, fs, kOnes);  break;
+		case 1: viaVf0 = VMADDw_U(m, vf::vf7, fs, vf::vf0); viaOne = VMADDx_U(m, vf::vf8, fs, kOnes); break;
+		default: break;
+	}
+	h.SetVfBits(vf::vf7, 0xDEAD0000u, 0xDEAD0001u, 0xDEAD0002u, 0xDEAD0003u);
+	h.SetVfBits(vf::vf8, 0xDEAD0000u, 0xDEAD0001u, 0xDEAD0002u, 0xDEAD0003u);
+	h.LoadProgram({
+		UpperOnly(VMULA_U(mask::xyzw, kAccSrc, kOnes)),
+		NopPair(),
+		NopPair(),
+		NopPair(),
+		UpperOnly(viaVf0),
+		UpperOnly(viaOne),
+		EBitNopPair(),
+	});
+	h.RunNoDiff();
+	const VURegs& j = h.JitSnapshot().regs;
+	for (int l = 0; l < 4; l++)
+		EXPECT_EQ(j.VF[vf::vf7].UL[l], j.VF[vf::vf8].UL[l])
+			<< "vu" << vu << " mode " << mode << " ftz " << ftz << " op " << which << " field " << (m >> 21)
+			<< " lane " << l;
+	fpcr = saved;
+}
+
+} // namespace
+
+TEST(VuBroadcastLaneFold, MultiplyByVf0wMatchesMultiplyByOne)
+{
+	for (int vu = 0; vu < 2; vu++)
+		for (int mode = 0; mode <= 4; mode++)
+			for (bool ftz : {true, false})
+				for (u32 m : {mask::xyz, mask::y})
+					for (int which = 0; which < 4; which++)
+						RunVf0wIdentity(vu, mode, ftz, m, which);
 }
 
 } // namespace recompiler_tests
