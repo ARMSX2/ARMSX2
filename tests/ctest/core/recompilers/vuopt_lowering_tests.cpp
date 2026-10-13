@@ -513,6 +513,182 @@ TEST(VuoptLowering, Fuzz)
 	std::printf("[vuopt lowering fuzz] programs=%d blocks=%u lowered=%u\n", programs, blocks, lowered);
 }
 
+// Long straight blocks over every VF register: enough live values that the
+// allocator spills and reloads, with every broadcast form, partial writes,
+// moves and flag readers in between.
+TEST(VuoptLowering, PressureFuzz)
+{
+	std::mt19937 rng(20261014);
+	auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
+	auto vf = [&]() { return 1 + R(31); };
+	auto vi = [&]() { return 1 + R(6); };
+	auto msk = [&]() { return (R(15) + 1) << 21; };
+	const int iters = getenv("VUOPT_PRESSURE_ITERS") ? std::atoi(getenv("VUOPT_PRESSURE_ITERS")) : 60;
+	int programs = 0, failures = 0;
+	u32 lowered = 0, blocks = 0;
+	std::string lastDeclined;
+	for (int iter = 0; iter < iters; iter++)
+	{
+		const int len = 60 + R(140);
+		std::vector<VuOp> p;
+		p.push_back(L(VIADDIU_L(1, 0, R(4))));
+		p.push_back(L(VIADDIU_L(2, 0, R(4))));
+		for (int i = 0; i < len; i++)
+		{
+			u32 up = VNOP_U(), lo = kNopL;
+			switch (R(14))
+			{
+				case 0: up = VADD_U(msk(), vf(), vf(), vf()); break;
+				case 1: up = VMUL_U(msk(), vf(), vf(), vf()); break;
+				case 2: up = VMULx_U(msk(), vf(), vf(), vf()) + R(4); break;
+				case 3: up = VMADDx_U(msk(), vf(), vf(), vf()) + R(4); break;
+				case 4: up = VMSUBx_U(msk(), vf(), vf(), vf()) + R(4); break;
+				case 5: up = VMULAx_U(msk(), vf(), vf()) + R(4); break;
+				case 6: up = VMADDAx_U(msk(), vf(), vf()) + R(4); break;
+				case 7: up = VADDx_U(msk(), vf(), vf(), vf()) + R(4); break;
+				case 8: up = VMULq_U(msk(), vf(), vf()); break;
+				case 9: up = VMAX_U(msk(), vf(), vf(), vf()); break;
+				case 10: up = VSUBx_U(msk(), vf(), vf(), vf()) + R(4); break;
+				case 11: up = VMADD_U(msk(), vf(), vf(), vf()); break;
+				default: break;
+			}
+			switch (R(12))
+			{
+				case 0: lo = VMOVE_L(msk(), vf(), vf()); break;
+				case 1: lo = VMR32_L(msk(), vf(), vf()); break;
+				case 2: lo = VSQRT_L(vf(), R(4)); break;
+				case 3: lo = VDIV_L(vf(), R(4), vf(), R(4)); break;
+				case 4: lo = VLQ_L(msk(), vf(), vi(), static_cast<s16>(R(8))); break;
+				case 5: lo = VSQ_L(msk(), vf(), vi(), static_cast<s16>(R(8))); break;
+				case 6: lo = VFMAND_L(vi(), vi()); break;
+				case 7: lo = VMTIR_L(vi(), vf(), R(4)); break;
+				case 8: lo = VMFIR_L(msk(), vf(), vi()); break;
+				default: break;
+			}
+			p.push_back(VuOp{lo, up});
+		}
+		p.back().upper |= bits::E;
+		for (bool fh : {true, false})
+		{
+			programs++;
+			const Outcome o = RunBoth(p, fh, [iter](VuTestHarness& h) {
+				SeedSpecials(h, 5000 + iter);
+				for (int r = 12; r < 32; r++)
+					h.SetVf(r, 1.0f + r, -0.5f * r, 0.25f + r, 3.0f - r);
+			});
+			blocks += o.blocks;
+			lowered += o.lowered;
+			if (!o.declined.empty())
+				lastDeclined = o.declined;
+			if (!o.diffs.empty())
+			{
+				failures++;
+				ADD_FAILURE() << "iter " << iter << " flagHack=" << fh << " declined: " << o.declined << "\n" << Join(o.diffs, 6);
+				if (getenv("VUOPT_SHRINK"))
+				{
+					// Replace pairs with NOPs while the program still fails.
+					const auto seed = [iter](VuTestHarness& h) {
+						SeedSpecials(h, 5000 + iter);
+						for (int r = 12; r < 32; r++)
+							h.SetVf(r, 1.0f + r, -0.5f * r, 0.25f + r, 3.0f - r);
+					};
+					std::vector<VuOp> q = p;
+					for (bool changed = true; changed;)
+					{
+						changed = false;
+						for (size_t k = 2; k + 1 < q.size(); k++)
+						{
+							{
+								std::vector<VuOp> r = q;
+								r.erase(r.begin() + static_cast<long>(k));
+								if (!RunBoth(r, fh, seed).diffs.empty())
+								{
+									q = r;
+									changed = true;
+									k--;
+									continue;
+								}
+							}
+							for (int part = 0; part < 2; part++)
+							{
+								VuOp t = q[k];
+								if (part == 0 && t.upper != VNOP_U())
+									t.upper = VNOP_U();
+								else if (part == 1 && t.lower != kNopL)
+									t.lower = kNopL;
+								else
+									continue;
+								std::vector<VuOp> r = q;
+								r[k] = t;
+								if (!RunBoth(r, fh, seed).diffs.empty())
+								{
+									q = r;
+									changed = true;
+								}
+							}
+						}
+					}
+					std::string listing;
+					for (size_t k = 0; k < q.size(); k++)
+					{
+						if (q[k].upper == VNOP_U() && q[k].lower == kNopL)
+							continue;
+						char buf[160];
+						vuopt::InstPair ip;
+						ip.pc = static_cast<u32>(k * 8);
+						ip.upper = vuopt::DecodeUpper(q[k].upper);
+						ip.lower = vuopt::DecodeLower(q[k].lower);
+						vuopt::FormatPair(ip, buf, sizeof(buf));
+						listing += std::string(buf) + "\n";
+					}
+					std::string hex;
+					for (const VuOp& op : q)
+					{
+						char buf[24];
+						std::snprintf(buf, sizeof(buf), "%08x:%08x,", op.lower, op.upper);
+						hex += buf;
+					}
+					std::printf("shrunk iter %d fh=%d seed=%d hex=%s\n%s%s\n", iter, fh, 5000 + iter, hex.c_str(), listing.c_str(),
+						Join(RunBoth(q, fh, seed).diffs, 6).c_str());
+				}
+			}
+		}
+	}
+	EXPECT_EQ(failures, 0) << programs << " programs";
+	EXPECT_GT(lowered, blocks * 9 / 10) << lowered << " of " << blocks << " blocks lowered";
+	std::printf("[vuopt pressure fuzz] programs=%d blocks=%u lowered=%u declined: %s\n", programs, blocks, lowered, lastDeclined.c_str());
+}
+
+// Debugging aid: VUOPT_REPRO_HEX="lower:upper,..." VUOPT_REPRO_SEED=n
+// VUOPT_REPRO_FH=0|1 runs one program (as the pressure fuzz seeds it) with
+// the lowered code dumped.
+TEST(VuoptLowering, Repro)
+{
+	const char* hex = getenv("VUOPT_REPRO_HEX");
+	if (!hex)
+		GTEST_SKIP();
+	std::vector<VuOp> p;
+	for (const char* c = hex; *c;)
+	{
+		VuOp op;
+		op.lower = static_cast<u32>(std::strtoul(c, const_cast<char**>(&c), 16));
+		c++;
+		op.upper = static_cast<u32>(std::strtoul(c, const_cast<char**>(&c), 16));
+		if (*c == ',')
+			c++;
+		p.push_back(op);
+	}
+	const int seed = getenv("VUOPT_REPRO_SEED") ? std::atoi(getenv("VUOPT_REPRO_SEED")) : 5000;
+	const bool fh = !getenv("VUOPT_REPRO_FH") || std::atoi(getenv("VUOPT_REPRO_FH"));
+	const auto setup = [seed](VuTestHarness& h) {
+		SeedSpecials(h, seed);
+		for (int r = 12; r < 32; r++)
+			h.SetVf(r, 1.0f + r, -0.5f * r, 0.25f + r, 3.0f - r);
+	};
+	const Outcome o = RunBoth(p, fh, setup, 1, true);
+	EXPECT_TRUE(o.diffs.empty()) << Join(o.diffs, 20);
+}
+
 } // namespace recompiler_tests
 
 #endif
