@@ -428,6 +428,9 @@ constexpr AbiPin kPins[] = {
 	// abi 42: MAX/MINI against VF0 compile to one integer max or min. No probe
 	// issues one, so the row repeats abi 41's.
 	{42, {0x30a4b851f584d87b, 0x4fb21f7df2e0eba1, 0x7be4a67c17a34d58, 0x42cdb6c017ffbcb7, 0xdc148443ac907bfd, 0xd53e1c6f0ab93994, 0x474ca3bc38053234, 0x08508bd89801b6f3, 0x97abca8e1e797c8e, 0x3a85dc8fbf46e675, 0xa1e2f7d5c83033f5, 0xe2b98245075f607d, 0x191cc45df004b45c, 0xe5bcbd769f0cc83d, 0xb7e746b32d5eb2ab, 0xf22bf72b61864a31, 0x415b885932416527, 0xcdc6cfb5fea6f42e, 0xd9b404bd2887a881, 0xfd15d794fe441fbf, 0x285938277c630ba8, 0xc0f07710fba14955, 0xca2ddace4f03527c, 0xff2b4b6d7bf2a662, 0xf05dcc1e61ded6ec, 0xc20855db43aa02ee}},
+	// abi 43: VI arithmetic reads the cached source and folds its immediate. No
+	// probe adds to a cached VI, so the row repeats abi 42's.
+	{43, {0x30a4b851f584d87b, 0x4fb21f7df2e0eba1, 0x7be4a67c17a34d58, 0x42cdb6c017ffbcb7, 0xdc148443ac907bfd, 0xd53e1c6f0ab93994, 0x474ca3bc38053234, 0x08508bd89801b6f3, 0x97abca8e1e797c8e, 0x3a85dc8fbf46e675, 0xa1e2f7d5c83033f5, 0xe2b98245075f607d, 0x191cc45df004b45c, 0xe5bcbd769f0cc83d, 0xb7e746b32d5eb2ab, 0xf22bf72b61864a31, 0x415b885932416527, 0xcdc6cfb5fea6f42e, 0xd9b404bd2887a881, 0xfd15d794fe441fbf, 0x285938277c630ba8, 0xc0f07710fba14955, 0xca2ddace4f03527c, 0xff2b4b6d7bf2a662, 0xf05dcc1e61ded6ec, 0xc20855db43aa02ee}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,

@@ -182,7 +182,10 @@
 //  42 — MAX and MINI with VF0 on either side are one SMAX or SMIN on the raw
 //       words instead of the eight-instruction sign-magnitude transform and
 //       select.
-static constexpr u32 kMvuCompilerAbiVersion = 42;
+//  43 — VI arithmetic writing a different VI reads the source's register
+//       rather than the copy allocGPR made of it, and IADDIU/ISUBIU take their
+//       immediate in the add or subtract rather than through gprT1.
+static constexpr u32 kMvuCompilerAbiVersion = 43;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

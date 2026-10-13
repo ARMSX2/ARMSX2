@@ -93,6 +93,12 @@ protected:
 	CloneNote clones[kCloneRunMax];
 	int cloneCount = 0;
 
+	// The VI twin: allocGPR's clone-write copy of a cached VI into the slot
+	// its destination gets, while that copy is still the last word emitted.
+	// takeGPRCloneSource() is the consumer; see the VI arithmetic in
+	// microVU_Lower-arm64.inl. One deep, because no VI op makes two.
+	CloneNote gprClone = {-1, -1, -1};
+
 	VURegs& regs() const { return ::vuRegs[index]; }
 
 	// Load I register (immediate) into NEON reg
@@ -328,6 +334,7 @@ public:
 		counter = 0;
 		neonWatermark = 0;
 		cloneCount = 0;
+		gprClone = {-1, -1, -1};
 	}
 
 	// Highest NEON slot index + 1 handed out since the last reset(). The COP2
@@ -378,6 +385,30 @@ public:
 		armAsm->GetBuffer()->Rewind(top.end - 4);
 		cloneCount--;
 		return top.src;
+	}
+
+	// The register the VI in `dst` was copied from, or -1. On a hit the copy
+	// is dropped from the buffer and the caller owes dst a write that reads
+	// the returned register in its place -- the same contract as
+	// takeCloneSource, for allocGPR's clone-write Mov.
+	int takeGPRCloneSource(const a64::Register& dst)
+	{
+		const CloneNote note = gprClone;
+		gprClone = {-1, -1, -1};
+		if (note.dst != static_cast<int>(dst.GetCode()) || note.end != armAsm->GetCursorOffset() || note.end < 4)
+			return -1;
+
+		// MOV Wd, Wn is ORR Wd, WZR, Wn.
+		const u32 expect = 0x2A0003E0u | (note.src << 16) | note.dst;
+		const u32* word = armAsm->GetBuffer()->GetOffsetAddress<const u32*>(note.end - 4);
+		if (*word != expect)
+		{
+			pxFailRel("mVU VI clone fold: unexpected word");
+			return -1;
+		}
+
+		armAsm->GetBuffer()->Rewind(note.end - 4);
+		return note.src;
 	}
 
 	// Emit the NEON equivalent of x86's PSHUF.D(dst, src, imm) used in the
@@ -623,6 +654,9 @@ public:
 	const a64::Register allocGPR(int viLoadReg = -1, int viWriteReg = -1, bool backup = false, bool zext_if_dirty = false)
 	{
 		counter++;
+		// A note left by an earlier allocation is never this one's to fold: the
+		// register it names may be the very slot this call hands out again.
+		gprClone = {-1, -1, -1};
 
 		// Writing zero? Return a zeroed register
 		if (viWriteReg == 0)
@@ -670,6 +704,7 @@ public:
 							}
 
 							armAsm->Mov(armWRegister(x).W(), armWRegister(i).W());
+							gprClone = {x, i, armAsm->GetCursorOffset()};
 
 							gprMap[x].isZeroExtended = zext_if_dirty;
 							// Swap so `i` names the new slot — matches x86's
