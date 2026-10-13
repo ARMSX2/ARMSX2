@@ -290,41 +290,59 @@ static __fi void Sif0End()
 	DMA_LOG("SIF0 DMA End");
 }
 
+// One pass of the IOP side of the pump: first the junk words that fill out the quadword the last
+// packet ended in (written whenever the IOP has nothing left of that packet and the FIFO has room, busy
+// or not), then, if the IOP side is busy and can move, one step of its transfer. Returns whether the
+// transfer step ran; the junk write does not count.
+static __fi bool Sif0IopStep()
+{
+	if (sif0.iop.counter == 0 && sif0.iop.writeJunk && sif0.fifo.sif_free() >= sif0.iop.writeJunk)
+	{
+		SIF_LOG("Writing Junk %d", sif0.iop.writeJunk);
+		sif0.fifo.writeJunk(sif0.iop.writeJunk);
+		sif0.iop.writeJunk = 0;
+	}
+
+	if (sif0.iop.busy)
+	{
+		if(sif0.fifo.sif_free() > 0 || (sif0.iop.end && sif0.iop.counter == 0))
+		{
+			HandleIOPTransfer();
+			return true;
+		}
+	}
+	return false;
+}
+
+// One pass of the EE side of the pump: if the EE side is busy and can move, one step of its transfer.
+// Returns whether the step ran.
+static __fi bool Sif0EeStep()
+{
+	if (sif0.ee.busy)
+	{
+		if(sif0.fifo.size >= 4 || (sif0.ee.end && sif0ch.qwc == 0))
+		{
+			HandleEETransfer();
+			return true;
+		}
+	}
+	return false;
+}
+
 // Transfer IOP to EE, putting data in the fifo as an intermediate step.
 __fi void SIF0Dma()
 {
-	int BusyCheck = 0;
+	bool moved;
 	Sif0Init();
 
 	do
 	{
-		//I realise this is very hacky in a way but its an easy way of checking if both are doing something
-		BusyCheck = 0;
-
-		if (sif0.iop.counter == 0 && sif0.iop.writeJunk && sif0.fifo.sif_free() >= sif0.iop.writeJunk)
-		{
-			SIF_LOG("Writing Junk %d", sif0.iop.writeJunk);
-			sif0.fifo.writeJunk(sif0.iop.writeJunk);
-			sif0.iop.writeJunk = 0;
-		}
-
-		if (sif0.iop.busy)
-		{
-			if(sif0.fifo.sif_free() > 0 || (sif0.iop.end && sif0.iop.counter == 0))
-			{
-				BusyCheck++;
-				HandleIOPTransfer();
-			}
-		}
-		if (sif0.ee.busy)
-		{
-			if(sif0.fifo.size >= 4 || (sif0.ee.end && sif0ch.qwc == 0))
-			{
-				BusyCheck++;
-				HandleEETransfer();
-			}
-		}
-	} while (/*!done && */BusyCheck > 0); // Substituting (sif0.ee.busy || sif0.iop.busy) breaks things.
+		// The IOP side first, then the EE side, and both every time: one pass is two statements and not
+		// `Sif0IopStep() + Sif0EeStep()`, whose operands C++ does not put in an order.
+		const bool iop_moved = Sif0IopStep();
+		const bool ee_moved = Sif0EeStep();
+		moved = iop_moved || ee_moved;
+	} while (/*!done && */moved); // Substituting (sif0.ee.busy || sif0.iop.busy) breaks things.
 
 	Sif0End();
 }
