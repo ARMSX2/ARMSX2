@@ -419,6 +419,9 @@ constexpr AbiPin kPins[] = {
 	// instead of loading them. The probes that compile at vuClampMode 3 and 4
 	// move; the single-lane forms keep their Ldp, and modes 0 to 2 never emit it.
 	{39, {0x1b6417d39088c445, 0x4fb21f7df2e0eba1, 0x5b22843577880a34, 0x367caabd4ce98b70, 0x931e4ce41aaddfee, 0x528f4bc3805ce760, 0x474ca3bc38053234, 0xf3c90aa7361cb856, 0x97abca8e1e797c8e, 0x3a85dc8fbf46e675, 0xa1e2f7d5c83033f5, 0x28d99b6d7e13c0c8, 0x191cc45df004b45c, 0x008451d3443b1898, 0xb4d7293333bb33b9, 0x22851a1d6e1da4f7, 0x218d866b851d4396, 0xf59d5b3e255ec796, 0x205545fc7b500ddb, 0xfd15d794fe441fbf, 0x51aad4123c80fc0f, 0xc4b3d7d6d8249b94, 0x742e2538da750e4d, 0xebe95cc4b6a325c2, 0x025ba9f9ef343b1c, 0x7b59f4d79964c4b3}},
+	// abi 40: the single-lane clone-write rotation reads the cached register. Every
+	// probe with a y, z or w single-lane FMAC or div-unit operand moves.
+	{40, {0x1b6417d39088c445, 0x4fb21f7df2e0eba1, 0x5b22843577880a34, 0x367caabd4ce98b70, 0x931e4ce41aaddfee, 0x528f4bc3805ce760, 0x474ca3bc38053234, 0xc97e9916ce78f2c0, 0x97abca8e1e797c8e, 0x3a85dc8fbf46e675, 0xa1e2f7d5c83033f5, 0xe2b98245075f607d, 0x191cc45df004b45c, 0xe5bcbd769f0cc83d, 0xb7e746b32d5eb2ab, 0xf22bf72b61864a31, 0x415b885932416527, 0xcdc6cfb5fea6f42e, 0x205545fc7b500ddb, 0xfd15d794fe441fbf, 0x8ca5c650154688b7, 0xc4b3d7d6d8249b94, 0x742e2538da750e4d, 0xff2b4b6d7bf2a662, 0xf05dcc1e61ded6ec, 0xc20855db43aa02ee}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,

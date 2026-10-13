@@ -396,9 +396,9 @@ public:
 				armAsm->Mov(dst.V16B(), src.V16B());
 			return;
 		}
-		if (dst.GetCode() != src.GetCode())
-			armAsm->Mov(dst.V16B(), src.V16B());
-		armAsm->Ext(dst.V16B(), dst.V16B(), dst.V16B(), srcLane * 4);
+		// EXT reads both halves from src, so the rotation needs no copy in
+		// front of it: the result is the copy rotated, word for word.
+		armAsm->Ext(dst.V16B(), src.V16B(), src.V16B(), srcLane * 4);
 	}
 
 	// Allocate a NEON register for VF access. Ported from x86 allocReg —
