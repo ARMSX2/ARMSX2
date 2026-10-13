@@ -550,8 +550,36 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 		g_traceVals.clear();
 		const u64 refBytes = CompiledBytes(vu);
 
+		// Regions: record the JR/JALR targets first, from a plain microVU
+		// replay with every block entry traced (the block that jumped, then the
+		// block it reached). In a game these come from earlier runs.
+		std::map<u32, std::vector<u32>> jumpTargets;
+		if (opts.region)
+		{
+			BodyCtx recCtx(vu, vuRegs[vu].Micro, opts);
+			recCtx.traceOnly = true;
+			recCtx.trace = true;
+			g_trace.clear();
+			g_traceVals.clear();
+			vuopt::g_vuoptBodyHook = &OnBody;
+			vuopt::g_vuoptBodyHookUser = &recCtx;
+			recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
+			Uninstall();
+			for (size_t k = 1; k < g_trace.size(); k++)
+			{
+				const u32 from = static_cast<u32>(g_trace[k - 1] >> 32), to = static_cast<u32>(g_trace[k] >> 32);
+				auto& v = jumpTargets[from];
+				if (std::find(v.begin(), v.end(), to) == v.end())
+					v.push_back(to);
+			}
+			g_trace.clear();
+			g_traceVals.clear();
+		}
+
 		// vuopt bodies.
 		BodyCtx ctx(vu, vuRegs[vu].Micro, opts);
+		if (ctx.region)
+			ctx.region->jumpTargets = jumpTargets;
 		ctx.Install();
 		const auto run = recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
 		const u64 runBytes = CompiledBytes(vu);
@@ -616,6 +644,8 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			bo.trace = false;
 			bo.dumpIr = false;
 			BodyCtx bctx(vu, vuRegs[vu].Micro, bo);
+			if (bctx.region)
+				bctx.region->jumpTargets = jumpTargets;
 			bctx.Install();
 			const auto runSamples = recompiler_tests::BenchJitSteady(rec, opts.benchIters);
 			insRun = MinCounter(runSamples, PmuCounters::InstructionsRetired);
