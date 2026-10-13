@@ -328,6 +328,24 @@ TEST(VuReplay, Vu0ReplayRestoresRecordedVu1RegisterWindow)
 	EXPECT_EQ(result.interp_snapshot.regs.VI[2].US[0], 0x42u);
 }
 
+// VPU_STAT bit 12 says VU1's XGKICK is still transferring. The replay of a
+// program that left a kick running used to leave the bit set for the next
+// replay, whose VU1 VI[REG_VPU_STAT] copy then differed between two
+// replays of the same capture. The bit comes from the capture's own XGKICK
+// state.
+TEST(VuReplay, ReplayDoesNotInheritXgkickBusyBitFromPreviousReplay)
+{
+	const auto rec = MakeVaddProgram(1);
+	ASSERT_EQ(rec.state.xgkickenable, 0u);
+	vuRegs[0].VI[REG_VPU_STAT].UL |= 1u << 12;
+
+	const auto result = ReplayCapture(rec);
+	ASSERT_TRUE(result.ok);
+	EXPECT_EQ(result.jit_snapshot.regs.VI[REG_VPU_STAT].UL & (1u << 12), 0u);
+	EXPECT_EQ(result.interp_snapshot.regs.VI[REG_VPU_STAT].UL & (1u << 12), 0u);
+	EXPECT_EQ(vuRegs[0].VI[REG_VPU_STAT].UL & (1u << 12), 0u);
+}
+
 TEST(VuReplay, ScanFindsXtopAndXitopOnlyOnReachablePaths)
 {
 	// XTOP behind a conditional branch is reachable; the XITOP after the

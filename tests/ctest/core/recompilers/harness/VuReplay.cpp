@@ -58,6 +58,22 @@ std::vector<VuMemWindow> WholeMemWindow(int vu_index)
 	return {VuMemWindow{0u, std::vector<u8>(MemSize(vu_index))}};
 }
 
+// VPU_STAT lives in VU0's VI for both VUs. Set the running bit for the
+// replayed VU, and bit 12 (VU1 XGKICK still transferring) from the
+// capture's own XGKICK state, so neither leaks in from an earlier replay.
+// Bits 0-11 are cleared as before; the VU's own VI copy mirrors the result.
+void SeedVpuStat(const vu_capture::CaptureRecord& rec)
+{
+	const int idx = static_cast<int>(rec.vu_index);
+	constexpr u32 kXgkickBusy = 1u << 12;
+	u32 stat = vuRegs[0].VI[REG_VPU_STAT].UL & ~(0xFFFu | kXgkickBusy);
+	stat |= RunningBit(idx);
+	if (idx == 1 && rec.state.xgkickenable)
+		stat |= kXgkickBusy;
+	vuRegs[0].VI[REG_VPU_STAT].UL = stat;
+	Regs(idx).VI[REG_VPU_STAT].UL = stat;
+}
+
 // Restore microcode + data memory + registers from a CaptureRecord. Sets up
 // the VPU_STAT running bit + start_pc the same way VuTestHarness does, and
 // drops the JIT block cache so the capture's start_pc compiles fresh.
@@ -75,10 +91,7 @@ void PrimeFromCapture(const vu_capture::CaptureRecord& rec,
 
 	vu.start_pc = rec.start_pc;
 	vu.VI[REG_TPC].UL = rec.start_pc / 8u;
-
-	vuRegs[0].VI[REG_VPU_STAT].UL =
-		(vuRegs[0].VI[REG_VPU_STAT].UL & ~0xFFFu) | RunningBit(idx);
-	vu.VI[REG_VPU_STAT].UL = vuRegs[0].VI[REG_VPU_STAT].UL;
+	SeedVpuStat(rec);
 
 	vu.cycle = 0;
 	vu.ebit = 0;
@@ -252,9 +265,7 @@ VuReplayResult ReplayCapture(const vu_capture::CaptureRecord& rec,
 	std::memcpy(Regs(idx).Mem, rec.vumem.data(), rec.vumem.size());
 	Regs(idx).start_pc = rec.start_pc;
 	Regs(idx).VI[REG_TPC].UL = rec.start_pc / 8u;
-	vuRegs[0].VI[REG_VPU_STAT].UL =
-		(vuRegs[0].VI[REG_VPU_STAT].UL & ~0xFFFu) | RunningBit(idx);
-	Regs(idx).VI[REG_VPU_STAT].UL = vuRegs[0].VI[REG_VPU_STAT].UL;
+	SeedVpuStat(rec);
 	InterpCpu(idx)->SetStartPC(rec.start_pc);
 	JitCpu(idx)->SetStartPC(rec.start_pc);
 
