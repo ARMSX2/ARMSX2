@@ -203,6 +203,7 @@ set(pcsx2Headers
 	IopThread/IopBridge.h
 	IopThread/IopThread.h
 	IopThread/IopThreadMode.h
+	IopThread/SharedWord.h
 	LayeredSettingsInterface.h
 	PINE.h
 	Mdec.h

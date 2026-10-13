@@ -1199,6 +1199,7 @@
     <ClInclude Include="IopThread\IopChannels.h" />
     <ClInclude Include="IopThread\IopThread.h" />
     <ClInclude Include="IopThread\IopThreadMode.h" />
+    <ClInclude Include="IopThread\SharedWord.h" />
     <ClInclude Include="R3000A.h" />
     <ClInclude Include="x86\iR3000A.h" />
     <ClInclude Include="IopHw.h" />

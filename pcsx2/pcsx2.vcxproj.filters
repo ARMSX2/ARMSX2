@@ -1811,6 +1811,9 @@
     <ClInclude Include="IopThread\IopThreadMode.h">
       <Filter>System\Ps2\Iop</Filter>
     </ClInclude>
+    <ClInclude Include="IopThread\SharedWord.h">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClInclude>
     <ClInclude Include="R3000A.h">
       <Filter>System\Ps2\Iop</Filter>
     </ClInclude>
