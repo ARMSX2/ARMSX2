@@ -133,6 +133,8 @@ namespace vuopt
 			u32 clamped[33] = {}; // clamped uses of each incoming vector register (NodeLowering::Check)
 			std::unique_ptr<NodeLowering> low; // analysed lowering of fn (refers to fn: Nodes do not move)
 			LiveSet liveOut;                   // variables live at the node's end (milestone 8)
+			LiveSet liveIn;                    // variables live at the node's head
+			int map = 0;                       // its home map (maps_)
 			int taken = 0x7fffffff, fall = 0x7fffffff; // >= 0: node; < 0: exit -(k+1)
 			std::vector<std::pair<u32, int>> jumps;    // JR/JALR: recorded target PC -> node / exit
 			a64::Label head;
@@ -150,15 +152,22 @@ namespace vuopt
 			u32 pc = 0;
 			PipeState key;
 			void* known = nullptr;
-			a64::Label stub, jump, far;
+			a64::Label jump, far;
+			std::vector<std::unique_ptr<a64::Label>> stubs; // per home map: store that map's homes, then leave
 		};
+		struct Edge // a link between nodes of different home maps
+		{
+			int map, to;
+			std::unique_ptr<a64::Label> label;
+		};
+		std::vector<Edge> edges_;
 
 		RegionTier& t_;
 		const MvuEmitEnv& env_;
 		const LowerEnv& le_;
 		std::vector<std::unique_ptr<Node>> nodes_;
 		std::vector<std::unique_ptr<Exit>> exits_;
-		HomeMap homes_;
+		std::vector<HomeMap> maps_; // per map: the homes its nodes keep variables in (milestone 10)
 		bool hasMem_ = false;
 
 		ir::BuildOptions BuildOpts() const
@@ -199,14 +208,15 @@ namespace vuopt
 		int Visit(u32 pc, const PipeState& st);
 		void Expand(int id);
 		void AssignHomes();
+		void ChooseHomes(int map, const std::vector<u32>& weight);
 		void PlanChecks();
 		void ComputeLiveness();
 		void Emit(const u8*& regionEnd);
 		void EmitEnd(const Node& n);
-		void EmitJump(Node& n);
+		void EmitJump(int idx);
 		std::vector<int> pendingJumps_; // JR nodes whose recorded targets are resolved after the static walk
-		void Jump(int target, int next);
-		a64::Label* Target(int target);
+		void Jump(int from, int target, int next);
+		a64::Label* Target(int from, int target);
 	};
 
 	// microVU's normBranchCompile / condBranch: search, else compile now.
@@ -453,7 +463,10 @@ namespace vuopt
 			}
 		}
 		for (size_t i = 0; i < NN; i++)
+		{
 			nodes_[i]->liveOut = out[i];
+			nodes_[i]->liveIn = in[i];
+		}
 	}
 
 	void RegionBuilder::AssignHomes()
@@ -532,6 +545,11 @@ namespace vuopt
 			std::vector<u32> compSize(ncomp, 0);
 			for (size_t i = 0; i < NN; i++)
 				compSize[comp[i]]++;
+			// Milestone 10: each loop (a cyclic strongly connected component)
+			// gets its own homes, chosen for its own nodes; the rest share one
+			// map. Links between maps transfer the live variables.
+			std::vector<int> compMap(ncomp, -1);
+			int nmaps = 1;
 			for (size_t i = 0; i < NN; i++)
 			{
 				bool cyc = compSize[comp[i]] > 1;
@@ -539,9 +557,28 @@ namespace vuopt
 					cyc = cyc || y == static_cast<int>(i);
 				if (cyc)
 					weight[i] = 8;
+				int m = 0;
+				if (cyc && t_.splitHomes)
+				{
+					if (compMap[comp[i]] < 0)
+						compMap[comp[i]] = nmaps++;
+					m = compMap[comp[i]];
+				}
+				nodes_[i]->map = m;
 			}
+			maps_.assign(nmaps, HomeMap());
 		}
+		for (size_t m = 0; m < maps_.size(); m++)
+			ChooseHomes(static_cast<int>(m), weight);
+	}
+
+	void RegionBuilder::ChooseHomes(int map, const std::vector<u32>& weight)
+	{
+		using namespace ir;
+		const size_t NN = nodes_.size();
+		HomeMap& homes = maps_[map];
 		std::vector<u32> count(var::Count, 0);
+		u32 vf0Uses = 0;
 		u32 clamped[33] = {};
 		bool written[33] = {};
 		u8 seen[var::Count] = {};
@@ -549,6 +586,8 @@ namespace vuopt
 		for (size_t ni = 0; ni < NN; ni++)
 		{
 			const auto& n = nodes_[ni];
+			if (map != 0 && n->map != map)
+				continue; // a loop's map counts its own nodes; the region's map counts all
 			const u32 w = weight[ni];
 			const Function& f = n->fn;
 			touched.clear();
@@ -595,8 +634,17 @@ namespace vuopt
 			}
 			for (u32 r = 1; r <= 32; r++)
 				clamped[r] += n->clamped[r] ? 2 * w : 0;
+			// VF0 read in the node: one load saved by a VF0 register
+			for (const Inst& x : f.insts)
+				if (x.op == Op::Const && x.type == Type::Vec)
+				{
+					vf0Uses += w;
+					break;
+				}
 		}
 		std::vector<std::pair<u32, u32>> vc, gc;
+		if (vf0Uses >= 2)
+			vc.push_back({vf0Uses, 0x2000}); // a VF0 register
 		for (u32 r = 1; r <= 32; r++)
 		{
 			const u32 v = r == 32 ? var::ACC(0) : var::VF(r, 0);
@@ -611,53 +659,151 @@ namespace vuopt
 		std::sort(vc.begin(), vc.end(), [](auto a, auto b) { return a.first != b.first ? a.first > b.first : a.second < b.second; });
 		if (t_.dump)
 			for (const auto& c : vc)
-				std::printf("  home candidate %s%u: %u\n", (c.second & 0x1000) ? "clamped vf" : "var ", c.second & 0xfff, c.first);
+				std::printf("  map %d home candidate %s%u: %u\n", map, (c.second & 0x1000) ? "clamped vf" : "var ", c.second & 0xfff, c.first);
 		std::sort(gc.begin(), gc.end(), [](auto a, auto b) { return a.first != b.first ? a.first > b.first : a.second < b.second; });
-		const size_t nv = std::min<size_t>({vc.size(), static_cast<size_t>(std::max(0, t_.maxVHomes)), std::size(kVHomeRegs)});
-		for (size_t k = 0; k < nv; k++)
+		const size_t nvMax = std::min<size_t>(static_cast<size_t>(std::max(0, t_.maxVHomes)), std::size(kVHomeRegs));
+		const size_t ngMax = std::min<size_t>(static_cast<size_t>(std::max(0, t_.maxGHomes)), std::size(kGHomeRegs));
+		// Register -> key: a vector variable's lane 0, 0x1000|r for VF r's
+		// clamped copy, 0x2000 for VF0; a general variable.
+		std::vector<u32> vKey(nvMax, 0), gKey(ngMax, 0);
+		if (map == 0)
 		{
-			if (vc[k].second & 0x1000)
+			for (size_t k = 0; k < nvMax && k < vc.size(); k++)
+				vKey[k] = vc[k].second;
+			for (size_t k = 0; k < ngMax && k < gc.size(); k++)
+				gKey[k] = gc[k].second;
+		}
+		else
+		{
+			// A loop starts from the region's map and swaps a home only for a
+			// candidate that saves clearly more inside the loop: every
+			// difference costs a move at each entry to and exit from the loop.
+			const HomeMap& base = maps_[0];
+			for (size_t k = 0; k < nvMax; k++)
 			{
-				homes_.clampHome[vc[k].second & 0xff] = static_cast<s8>(kVHomeRegs[k]);
+				const int reg = kVHomeRegs[k];
+				if (base.vf0Reg == reg)
+					vKey[k] = 0x2000;
+				for (u32 r = 1; r <= 32; r++)
+				{
+					if (base.clampHome[r] == reg && !written[r])
+						vKey[k] = 0x1000 | r;
+					const u32 v0 = r == 32 ? var::ACC(0) : var::VF(r, 0);
+					if (base.home[v0].kind == HomeKind::VReg && base.home[v0].reg == reg)
+						vKey[k] = v0;
+				}
+			}
+			for (size_t k = 0; k < ngMax; k++)
+				for (u32 v = 0; v < var::Count; v++)
+					if (GHomeable(v) && base.home[v].kind == HomeKind::GReg && base.home[v].reg == kGHomeRegs[k])
+						gKey[k] = v;
+			const auto improve = [&](std::vector<u32>& keys, const std::vector<std::pair<u32, u32>>& cands) {
+				const auto scoreOf = [&](u32 key) -> u32 {
+					for (const auto& c : cands)
+						if (c.second == key)
+							return c.first;
+					return 0;
+				};
+				for (const auto& c : cands)
+				{
+					if (std::find(keys.begin(), keys.end(), c.second) != keys.end())
+						continue;
+					size_t victim = keys.size();
+					u32 vs = ~0u;
+					for (size_t k = 0; k < keys.size(); k++)
+					{
+						const u32 sc = keys[k] ? scoreOf(keys[k]) : 0;
+						if (sc < vs)
+						{
+							vs = sc;
+							victim = k;
+						}
+					}
+					if (victim < keys.size() && c.first > vs + (keys[victim] ? 16u : 0u))
+						keys[victim] = c.second;
+				}
+			};
+			improve(vKey, vc);
+			improve(gKey, gc);
+		}
+		std::vector<u8> homed(0x2001 + 1, 0);
+		for (size_t k = 0; k < nvMax; k++)
+		{
+			const u32 key = vKey[k];
+			if (!key)
+				continue;
+			homed[std::min<u32>(key, 0x2000)] = 1;
+			if (key == 0x2000)
+			{
+				homes.vf0Reg = static_cast<s8>(kVHomeRegs[k]);
 				continue;
 			}
-			const u32 v0 = vc[k].second;
+			if (key & 0x1000)
+			{
+				homes.clampHome[key & 0xff] = static_cast<s8>(kVHomeRegs[k]);
+				continue;
+			}
 			for (u32 l = 0; l < 4; l++)
 			{
-				homes_.home[v0 + l].kind = HomeKind::VReg;
-				homes_.home[v0 + l].reg = static_cast<u8>(kVHomeRegs[k]);
+				homes.home[key + l].kind = HomeKind::VReg;
+				homes.home[key + l].reg = static_cast<u8>(kVHomeRegs[k]);
 			}
 		}
-		const size_t ng = std::min<size_t>({gc.size(), static_cast<size_t>(std::max(0, t_.maxGHomes)), std::size(kGHomeRegs)});
-		for (size_t k = 0; k < ng; k++)
+		// clamped copies that got no register: up to twelve in memory
 		{
-			homes_.home[gc[k].second].kind = HomeKind::GReg;
-			homes_.home[gc[k].second].reg = static_cast<u8>(kGHomeRegs[k]);
+			int slot = 0;
+			for (size_t k = 0; k < vc.size() && slot < 12; k++)
+				if ((vc[k].second & 0x1000) && !(vc[k].second & 0x2000) && !homed[vc[k].second])
+					homes.clampSlot[vc[k].second & 0xff] = static_cast<s8>(slot++);
 		}
-		homes_.cycles = kCyclesReg;
+		for (size_t k = 0; k < ngMax; k++)
+		{
+			if (!gKey[k])
+				continue;
+			homes.home[gKey[k]].kind = HomeKind::GReg;
+			homes.home[gKey[k]].reg = static_cast<u8>(kGHomeRegs[k]);
+		}
+		homes.cycles = kCyclesReg;
 		if (hasMem_)
-			homes_.memBase = le_.vuMemPinned ? -1 : kMemBaseReg;
-		homes_.Seal();
+			homes.memBase = le_.vuMemPinned ? -1 : kMemBaseReg;
+		homes.Seal();
 	}
 
-	a64::Label* RegionBuilder::Target(int target)
+	// Where a link from node `from` goes: the target's head when both use
+	// the same home map, else a transfer stub; an exit's stub for from's map.
+	a64::Label* RegionBuilder::Target(int from, int target)
 	{
-		if (target >= 0)
+		const int m = nodes_[from]->map;
+		if (target < 0)
+		{
+			Exit& e = *exits_[-target - 1];
+			if (e.stubs.size() < maps_.size())
+				e.stubs.resize(maps_.size());
+			if (!e.stubs[m])
+				e.stubs[m] = std::make_unique<a64::Label>();
+			return e.stubs[m].get();
+		}
+		if (nodes_[target]->map == m)
 			return &nodes_[target]->head;
-		return &exits_[-target - 1]->stub;
+		for (Edge& e : edges_)
+			if (e.map == m && e.to == target)
+				return e.label.get();
+		edges_.push_back({m, target, std::make_unique<a64::Label>()});
+		return edges_.back().label.get();
 	}
 
-	void RegionBuilder::Jump(int target, int next)
+	void RegionBuilder::Jump(int from, int target, int next)
 	{
-		if (target >= 0 && target == next)
+		if (target >= 0 && target == next && nodes_[target]->map == nodes_[from]->map)
 			return;
-		armAsm->B(Target(target));
+		armAsm->B(Target(from, target));
 	}
 
 	void RegionBuilder::Emit(const u8*& regionEnd)
 	{
 		const s32 cyclesOff = env_.offCycles;
-		a64::Label loadAll, exitAll, bailEntry, bailCompile;
+		a64::Label bailEntry, bailCompile;
+		std::vector<a64::Label> loadAll(maps_.size()), exitAll(maps_.size());
 		// Entries from microVU (the root's is where microVU is compiling): the
 		// budget test, then the node's head address in x8 and the shared home
 		// loader.
@@ -670,7 +816,7 @@ namespace vuopt
 			armAsm->Cmp(W(8), n.need);
 			armAsm->B(&bailEntry, a64::lt);
 			armAsm->Adr(a64::x8, &n.head);
-			armAsm->B(&loadAll);
+			armAsm->B(&loadAll[n.map]);
 		}
 		// Bodies.
 		for (size_t i = 0; i < nodes_.size(); i++)
@@ -708,7 +854,7 @@ namespace vuopt
 				t_.prof_[pi].segs.push_back({headStart, bodyStart, "head"});
 				g_lowerMarks = &marks;
 			}
-			const LowerResult r = n.low->Emit(homes_);
+			const LowerResult r = n.low->Emit(maps_[n.map]);
 			g_lowerMarks = nullptr;
 			pxAssertRel(r.ok, "vuopt region: node no longer lowers with region homes");
 			const u8* tailStart = armGetCurrentCodePointer();
@@ -730,15 +876,15 @@ namespace vuopt
 			if (n.br.endKind == BlockEnd::CondBranch)
 			{
 				armAsm->Cmp(W(8), 0);
-				armAsm->B(Target(n.taken), BranchCond(n.br.branchKind));
-				Jump(n.fall, next);
+				armAsm->B(Target(static_cast<int>(i), n.taken), BranchCond(n.br.branchKind));
+				Jump(static_cast<int>(i), n.fall, next);
 			}
 			else if (n.br.endKind == BlockEnd::EBit)
 				EmitEnd(n);
 			else if (n.br.endKind == BlockEnd::Jump && n.taken == 0x7fffffff)
-				EmitJump(n);
+				EmitJump(static_cast<int>(i));
 			else
-				Jump(n.taken, next);
+				Jump(static_cast<int>(i), n.taken, next);
 			if (t_.profile && armGetCurrentCodePointer() > tailStart)
 				t_.prof_[pi].segs.push_back({tailStart, armGetCurrentCodePointer(), "tail"});
 		}
@@ -754,7 +900,7 @@ namespace vuopt
 			armAsm->Bind(&n.bail);
 			armAsm->Adr(a64::x1, &n.rec);
 			armAsm->Adr(a64::x8, &bailEntry);
-			armAsm->B(&exitAll);
+			armAsm->B(&exitAll[n.map]);
 		}
 		// Shared: the record in x1, state in microVU's locations.
 		armAsm->Bind(&bailEntry);
@@ -763,25 +909,34 @@ namespace vuopt
 		armAsm->Br(a64::x0);
 		// Links out of the region: the target (or its trampoline) in x8.
 		for (auto& e : exits_)
+			for (size_t m = 0; m < e->stubs.size(); m++)
+			{
+				if (!e->stubs[m])
+					continue;
+				armAsm->Bind(e->stubs[m].get());
+				if (e->known)
+					armMoveAddressToReg(a64::x8, e->known);
+				else
+					armAsm->Adr(a64::x8, &e->jump);
+				armAsm->B(&exitAll[m]);
+			}
+		// Links between home maps: the live variables to the target's map.
+		for (Edge& e : edges_)
 		{
-			armAsm->Bind(&e->stub);
-			if (e->known)
-			{
-				armMoveAddressToReg(a64::x8, e->known);
-				armAsm->B(&exitAll);
-			}
-			else
-			{
-				armAsm->Adr(a64::x8, &e->jump);
-				armAsm->B(&exitAll);
-			}
+			armAsm->Bind(e.label.get());
+			const Node& t = *nodes_[e.to];
+			EmitHomeTransfer(maps_[e.map], maps_[t.map], t.checkpoint ? nullptr : &t.liveIn, le_);
+			armAsm->B(&nodes_[e.to]->head);
 		}
-		// Shared: load every register home from microVU's locations.
-		armAsm->Bind(&loadAll);
-		EmitLoadHomes(homes_, le_, cyclesOff);
-		armAsm->Ldp(Q(kCMin), Q(kCMax), a64::MemOperand(a64::x25, G(&mVUglob.minvals[0])));
-		EmitClampHomes(homes_, le_);
-		armAsm->Br(a64::x8);
+		// Per map: load every register home from microVU's locations.
+		for (size_t m = 0; m < maps_.size(); m++)
+		{
+			armAsm->Bind(&loadAll[m]);
+			EmitLoadHomes(maps_[m], le_, cyclesOff);
+			armAsm->Ldp(Q(kCMin), Q(kCMax), a64::MemOperand(a64::x25, G(&mVUglob.minvals[0])));
+			EmitClampHomes(maps_[m], le_);
+			armAsm->Br(a64::x8);
+		}
 		// Shared: compile microVU's code for a bailed block (record in x1)
 		// and enter it, qmmPQ and the clamp bounds kept across the call.
 		armAsm->Bind(&bailCompile);
@@ -791,10 +946,13 @@ namespace vuopt
 		armAsm->Ldr(a64::q28, a64::MemOperand(a64::x24, env_.offNeonBackup + 28 * 16));
 		armAsm->Ldp(Q(kCMin), Q(kCMax), a64::MemOperand(a64::x25, G(&mVUglob.minvals[0])));
 		armAsm->Br(a64::x0);
-		// Shared: store every register home, then leave through x8.
-		armAsm->Bind(&exitAll);
-		EmitStoreHomes(homes_, le_, cyclesOff);
-		armAsm->Br(a64::x8);
+		// Per map: store every register home, then leave through x8.
+		for (size_t m = 0; m < maps_.size(); m++)
+		{
+			armAsm->Bind(&exitAll[m]);
+			EmitStoreHomes(maps_[m], le_, cyclesOff);
+			armAsm->Br(a64::x8);
+		}
 		// Near trampolines for exits microVU has yet to compile; the final
 		// jump is bound after microVU compiles them, wherever that lands.
 		for (auto& e : exits_)
@@ -824,7 +982,7 @@ namespace vuopt
 	{
 		const ir::EndInfo& e = n.fn.end;
 		pxAssertRel(e.valid, "vuopt region: program end without its end info");
-		EmitStoreHomes(homes_, le_, env_.offCycles);
+		EmitStoreHomes(maps_[n.map], le_, env_.offCycles);
 		armEmitCall(env_.clearLpState);
 		// P/Q to VI[REG_Q] / pending_q and VI[REG_P] / pending_p, choosing lanes
 		// by qInst / pInst exactly as mVUendProgram rotates qmmPQ.
@@ -871,18 +1029,19 @@ namespace vuopt
 
 	// A JR/JALR with run-time targets: the recorded ones compared directly,
 	// the rest through microVU's jump cache, entered with microVU's state.
-	void RegionBuilder::EmitJump(Node& n)
+	void RegionBuilder::EmitJump(int idx)
 	{
+		Node& n = *nodes_[idx];
 		// normJumpCompile's probe records every jump's target in start_pc.
 		if (!n.jumps.empty())
 			armAsm->Str(W(8), a64::MemOperand(a64::x19, static_cast<s32>(offsetof(VURegs, start_pc))));
 		for (const auto& j : n.jumps)
 		{
 			armAsm->Cmp(W(8), j.first);
-			armAsm->B(Target(j.second), a64::eq);
+			armAsm->B(Target(idx, j.second), a64::eq);
 		}
 		armAsm->Str(W(8), a64::MemOperand(a64::x24, env_.offBranch));
-		EmitStoreHomes(homes_, le_, env_.offCycles);
+		EmitStoreHomes(maps_[n.map], le_, env_.offCycles);
 		env_.emitJumpTail(env_.vuIndex, n.blk, n.br.end.bytes);
 	}
 
@@ -945,13 +1104,17 @@ namespace vuopt
 			for (size_t i = 0; i < nodes_.size(); i++)
 				std::printf("  n%zu pc=%04x cycles=%u taken=%d fall=%d entry=%p\n", i, nodes_[i]->pc, nodes_[i]->br.cycles,
 					nodes_[i]->taken, nodes_[i]->br.endKind == BlockEnd::CondBranch ? nodes_[i]->fall : 0, nodes_[i]->entry);
-			for (u32 v = 0; v < ir::var::Count; v++)
-				if (homes_.home[v].kind != HomeKind::Mem && (v >= 132 || (v & 3) == 0))
-					std::printf("  home %s -> %c%u\n", ir::var::Name(v).c_str(), homes_.home[v].kind == HomeKind::VReg ? 'v' : 'w',
-						homes_.home[v].reg);
-			for (u32 r = 1; r <= 32; r++)
-				if (homes_.clampHome[r] >= 0)
-					std::printf("  clamped home %s -> v%d\n", r == 32 ? "acc" : ("vf" + std::to_string(r)).c_str(), homes_.clampHome[r]);
+			for (size_t m = 0; m < maps_.size(); m++)
+			{
+				const HomeMap& hm = maps_[m];
+				for (u32 v = 0; v < ir::var::Count; v++)
+					if (hm.home[v].kind != HomeKind::Mem && (v >= 132 || (v & 3) == 0))
+						std::printf("  map %zu home %s -> %c%u\n", m, ir::var::Name(v).c_str(), hm.home[v].kind == HomeKind::VReg ? 'v' : 'w',
+							hm.home[v].reg);
+				for (u32 r = 1; r <= 32; r++)
+					if (hm.clampHome[r] >= 0)
+						std::printf("  map %zu clamped home %s -> v%d\n", m, r == 32 ? "acc" : ("vf" + std::to_string(r)).c_str(), hm.clampHome[r]);
+			}
 			std::fflush(stdout);
 			vixl::aarch64::PrintDisassembler dis(stdout);
 			dis.DisassembleBuffer(reinterpret_cast<const vixl::aarch64::Instruction*>(start),

@@ -75,6 +75,9 @@ namespace vuopt
 		s32 maxGHomes = 6;
 		// Milestone 9: list-schedule node bodies for in-order cores.
 		bool schedule = true;
+		// Milestone 10: each loop keeps its own homes (live ranges split at
+		// loop boundaries).
+		bool splitHomes = true;
 		// Recorded JR/JALR targets: block start PC of the jump -> target PCs
 		// seen at run time. A region dispatches these directly; any other
 		// target goes through microVU's jump cache.

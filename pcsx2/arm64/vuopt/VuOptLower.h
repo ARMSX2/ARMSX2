@@ -98,6 +98,13 @@ namespace vuopt
 		// the region's entry loader; never stored back.
 		s8 clampHome[33] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
 			-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+		// Milestone 10: or a slot (0-7) of the top of microVU's backup area
+		// holding that clamped copy, filled where the map is entered.
+		s8 clampSlot[33] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+			-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+
+		// A register holding VF0 (+0, +0, +0, +1.0) for the whole map, or -1.
+		s8 vf0Reg = -1;
 
 		u32 VRegMask() const;   // NEON registers taken by homes
 		u32 GRegMask() const;   // general registers taken by homes
@@ -173,4 +180,9 @@ namespace vuopt
 		std::unique_ptr<Impl> impl_;
 	};
 	void EmitStoreHomes(const HomeMap& homes, const LowerEnv& env, s32 cyclesOff);
+	// Milestone 10: moves the variables in `live` (null: all) from where
+	// `from` keeps them to where `to` does (registers, microVU's locations),
+	// and fills `to`'s clamped homes. The cycle counter and memory base are
+	// the same in every map. Uses v0 and w16 as scratch.
+	void EmitHomeTransfer(const HomeMap& from, const HomeMap& to, const LiveSet* live, const LowerEnv& env);
 } // namespace vuopt

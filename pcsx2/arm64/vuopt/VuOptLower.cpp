@@ -33,6 +33,11 @@ namespace vuopt
 		constexpr u32 kDivI = 0x1040000;
 		constexpr u32 kDivD = 0x2080000;
 		constexpr int kSlots = 32; // mVU.neonBackup[32]
+		// The top of the backup area holds a region's clamped copies of
+		// invariant registers kept in memory (HomeMap::clampSlot); node spills
+		// never take them.
+		constexpr int kClampSlots = 12;
+		constexpr int kClampSlot0 = kSlots - kClampSlots;
 		// Spills past those go to an overflow area, addressed through x16.
 		constexpr int kOverflowSlots = 480;
 		alignas(16) u8 s_overflow[kOverflowSlots * 16];
@@ -378,7 +383,12 @@ namespace vuopt
 			u32 vPool_ = 0, gPool_ = 0;   // allocatable (homes excluded)
 			std::vector<u8> slotBusy_;
 			int AllocSlot();
-			void FreeSlot(int s) { slotBusy_[s] = 0; }
+			void FreeSlot(int s)
+			{
+				if (s >= kClampSlot0 && s < kSlots)
+					return; // a region's clamped copy: it outlives the node
+				slotBusy_[s] = 0;
+			}
 			void SlotStore(bool vec, int r, int s);
 			void SlotLoad(bool vec, int r, int s);
 			u32 pos_ = 0;
@@ -565,7 +575,7 @@ namespace vuopt
 		int Lowerer::AllocSlot()
 		{
 			for (int k = 0; k < kSlots + kOverflowSlots; k++)
-				if (!slotBusy_[k])
+				if (!slotBusy_[k] && !(k >= kClampSlot0 && k < kSlots))
 				{
 					slotBusy_[k] = 1;
 					return k;
@@ -2721,6 +2731,8 @@ namespace vuopt
 			for (u32 r = 1; r <= 32; r++)
 				if (hm_->clampHome[r] >= 0)
 					savedV |= 1u << hm_->clampHome[r];
+			if (hm_->vf0Reg >= 0)
+				savedV |= 1u << hm_->vf0Reg;
 			for (u32 v = 0; v < var::Count; v++)
 			{
 				const Home& h = hm_->home[v];
@@ -4220,6 +4232,14 @@ namespace vuopt
 				Bind(memBase_, env_.vuMemPinned ? 29 : hm_->memBase);
 				homeReg_[memBase_] = 1;
 			}
+			// VF0 in its register, for the region's map.
+			if (hm_->vf0Reg >= 0)
+				for (size_t v = 1; v < f_.insts.size(); v++)
+					if (f_.insts[v].op == Op::Const && f_.insts[v].type == Type::Vec && canon_[v] == v && !uses_[v].empty())
+					{
+						Bind(static_cast<ValueId>(v), hm_->vf0Reg);
+						homeReg_[v] = 1;
+					}
 			// Clamped copies of invariant vector registers, kept by the region.
 			for (size_t c = 1; c < clampOf_.size() && c < f_.insts.size(); c++)
 			{
@@ -4230,7 +4250,13 @@ namespace vuopt
 					continue;
 				const s8 r = hm_->clampHome[VecHomeOf(in.var)];
 				if (r < 0)
+				{
+					// or in memory: reloaded where used, never stored again
+					const s8 k = hm_->clampSlot[VecHomeOf(in.var)];
+					if (k >= 0)
+						slot_[clampOf_[c]] = static_cast<s16>(kClampSlot0 + k);
 					continue;
+				}
 				Bind(clampOf_[c], r);
 				homeReg_[clampOf_[c]] = 1;
 			}
@@ -4249,7 +4275,7 @@ namespace vuopt
 
 	u32 HomeMap::VRegMask() const
 	{
-		u32 m = 0;
+		u32 m = vf0Reg >= 0 ? (1u << vf0Reg) : 0;
 		for (u32 r = 1; r <= 32; r++)
 			if (clampHome[r] >= 0)
 				m |= 1u << clampHome[r];
@@ -4319,10 +4345,42 @@ namespace vuopt
 			armAsm->Add(X(homes.memBase), xState, kVU1MemFromState);
 		if (homes.cycles >= 0 && cyclesOff)
 			armAsm->Ldr(W(homes.cycles), a64::MemOperand(xFlag, cyclesOff));
+		if (homes.vf0Reg >= 0)
+			armAsm->Ldr(Q(homes.vf0Reg), a64::MemOperand(xState, kOffVF));
+	}
+
+	// The clamped copy of VF r (from its home in `homes`) into register dst.
+	static void ClampHomeInto(const HomeMap& homes, const LowerEnv& env, u32 r, int dst)
+	{
+		const u32 v0 = VecVar(r);
+		int src = dst;
+		if (homes.home[v0].kind == HomeKind::VReg)
+			src = homes.home[v0].reg;
+		else
+			armAsm->Ldr(Q(dst), a64::MemOperand(xState, BoundaryLoc(v0, env).off));
+		if (env.clampSign)
+		{
+			armAsm->Smin(V(dst).V4S(), V(src).V4S(), V(kCMax).V4S());
+			armAsm->Umin(V(dst).V4S(), V(dst).V4S(), V(kCMin).V4S());
+		}
+		else
+		{
+			armAsm->Fminnm(V(dst).V4S(), V(src).V4S(), V(kCMax).V4S());
+			armAsm->Fmaxnm(V(dst).V4S(), V(dst).V4S(), V(kCMin).V4S());
+		}
+	}
+
+	static void ClampSlotFill(const HomeMap& homes, const LowerEnv& env, u32 r)
+	{
+		ClampHomeInto(homes, env, r, 0);
+		armAsm->Str(a64::q0, a64::MemOperand(xFlag, env.offNeonBackup + (kClampSlot0 + homes.clampSlot[r]) * 16));
 	}
 
 	void EmitClampHomes(const HomeMap& homes, const LowerEnv& env)
 	{
+		for (u32 r = 1; r <= 32; r++)
+			if (homes.clampSlot[r] >= 0)
+				ClampSlotFill(homes, env, r);
 		for (u32 r = 1; r <= 32; r++)
 		{
 			const int ch = homes.clampHome[r];
@@ -4332,6 +4390,147 @@ namespace vuopt
 			int src = ch;
 			if (homes.home[v0].kind == HomeKind::VReg)
 				src = homes.home[v0].reg;
+			else
+				armAsm->Ldr(Q(ch), a64::MemOperand(xState, BoundaryLoc(v0, env).off));
+			if (env.clampSign)
+			{
+				armAsm->Smin(V(ch).V4S(), V(src).V4S(), V(kCMax).V4S());
+				armAsm->Umin(V(ch).V4S(), V(ch).V4S(), V(kCMin).V4S());
+			}
+			else
+			{
+				armAsm->Fminnm(V(ch).V4S(), V(src).V4S(), V(kCMax).V4S());
+				armAsm->Fmaxnm(V(ch).V4S(), V(ch).V4S(), V(kCMin).V4S());
+			}
+		}
+	}
+
+	void EmitHomeTransfer(const HomeMap& from, const HomeMap& to, const LiveSet* live, const LowerEnv& env)
+	{
+		struct Mv
+		{
+			bool vec;
+			int src, dst;
+		};
+		std::vector<Mv> moves;
+		const auto isLive = [&](u32 v, bool vec) {
+			if (!live)
+				return true;
+			if (!vec)
+				return live->test(v);
+			for (u32 l = 0; l < 4; l++)
+				if (live->test(v + l))
+					return true;
+			return false;
+		};
+		const auto regOf = [](const HomeMap& m, u32 v, HomeKind k) { return m.home[v].kind == k ? static_cast<int>(m.home[v].reg) : -1; };
+		// stores first (their sources are still intact), then the register
+		// moves, then the loads
+		std::vector<std::pair<u32, int>> loads; // (variable, destination register)
+		for (u32 v = 0; v < var::Count; v++)
+		{
+			const u32 vr = VecHomeOf(v);
+			const bool vec = vr != 0;
+			if (vec && (v & 3) != 0)
+				continue;
+			if (!vec && !GHomeable(v))
+				continue;
+			const HomeKind k = vec ? HomeKind::VReg : HomeKind::GReg;
+			const int fr = regOf(from, v, k), tr = regOf(to, v, k);
+			if (fr == tr || !isLive(v, vec))
+				continue;
+			const MemLoc m = BoundaryLoc(v, env);
+			if (fr >= 0 && tr < 0)
+			{
+				if (vec)
+					armAsm->Str(Q(fr), a64::MemOperand(*m.base, m.off));
+				else if (m.size == 2)
+					armAsm->Strh(W(fr), a64::MemOperand(*m.base, m.off));
+				else
+					armAsm->Str(W(fr), a64::MemOperand(*m.base, m.off));
+			}
+			else if (fr >= 0)
+				moves.push_back({vec, fr, tr});
+			else
+				loads.push_back({v, tr});
+		}
+		// clamped homes: kept, moved, or made below
+		std::vector<u32> make;
+		for (u32 r = 1; r <= 32; r++)
+		{
+			const int ch = to.clampHome[r];
+			if (ch < 0 || !isLive(VecVar(r), true))
+				continue;
+			if (from.clampHome[r] == ch)
+				continue;
+			if (from.clampHome[r] >= 0)
+				moves.push_back({true, from.clampHome[r], ch});
+			else
+				make.push_back(r);
+		}
+		bool loadVf0 = false;
+		if (to.vf0Reg >= 0 && from.vf0Reg != to.vf0Reg)
+		{
+			if (from.vf0Reg >= 0)
+				moves.push_back({true, from.vf0Reg, to.vf0Reg});
+			else
+				loadVf0 = true;
+		}
+		// parallel register moves, cycles broken through v0 / w16
+		while (!moves.empty())
+		{
+			bool progress = false;
+			for (size_t i = 0; i < moves.size(); i++)
+			{
+				bool blocked = false;
+				for (size_t j = 0; j < moves.size(); j++)
+					if (j != i && moves[j].vec == moves[i].vec && moves[j].src == moves[i].dst)
+						blocked = true;
+				if (blocked)
+					continue;
+				if (moves[i].vec)
+					armAsm->Mov(V(moves[i].dst).V16B(), V(moves[i].src).V16B());
+				else
+					armAsm->Mov(W(moves[i].dst), W(moves[i].src));
+				moves.erase(moves.begin() + i);
+				progress = true;
+				break;
+			}
+			if (progress)
+				continue;
+			// a cycle: park one source in the scratch register
+			Mv& m = moves[0];
+			if (m.vec)
+				armAsm->Mov(a64::v0.V16B(), V(m.src).V16B());
+			else
+				armAsm->Mov(a64::w16, W(m.src));
+			const int parked = m.src;
+			for (Mv& x : moves)
+				if (x.vec == m.vec && x.src == parked)
+					x.src = m.vec ? 0 : 16;
+		}
+		for (const auto& l : loads)
+		{
+			const MemLoc m = BoundaryLoc(l.first, env);
+			if (VecHomeOf(l.first))
+				armAsm->Ldr(Q(l.second), a64::MemOperand(*m.base, m.off));
+			else if (m.size == 2)
+				armAsm->Ldrh(W(l.second), a64::MemOperand(*m.base, m.off));
+			else
+				armAsm->Ldr(W(l.second), a64::MemOperand(*m.base, m.off));
+		}
+		if (loadVf0)
+			armAsm->Ldr(Q(to.vf0Reg), a64::MemOperand(xState, kOffVF));
+		for (u32 r = 1; r <= 32; r++)
+			if (to.clampSlot[r] >= 0 && from.clampSlot[r] != to.clampSlot[r] && isLive(VecVar(r), true))
+				ClampSlotFill(to, env, r);
+		for (u32 r : make)
+		{
+			const int ch = to.clampHome[r];
+			const u32 v0 = VecVar(r);
+			int src = ch;
+			if (to.home[v0].kind == HomeKind::VReg)
+				src = to.home[v0].reg;
 			else
 				armAsm->Ldr(Q(ch), a64::MemOperand(xState, BoundaryLoc(v0, env).off));
 			if (env.clampSign)
