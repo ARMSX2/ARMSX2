@@ -2130,14 +2130,19 @@ namespace vuopt
 			const int fs = VecOperand(in.args, 0);
 			const int ft = VecOperand(in.args, 4);
 			int a = TempV(), b = TempV();
+			// The w lane of the product is only needed when the field writes it
+			// (its flags and its value are masked off otherwise).
+			const bool wLive = MaskLane(in.mask, 3);
 			// a = Fs.yzxw: rotate the low three lanes
 			armAsm->Ext(V(a).V16B(), V(fs).V16B(), V(fs).V16B(), 4);    // y z w x
 			armAsm->Ins(V(a).V4S(), 2, V(fs).V4S(), 0);                 // y z x x
-			armAsm->Ins(V(a).V4S(), 3, V(fs).V4S(), 3);                 // y z x w
+			if (wLive)
+				armAsm->Ins(V(a).V4S(), 3, V(fs).V4S(), 3);             // y z x w
 			// b = Ft.zxy0
 			armAsm->Ext(V(b).V16B(), V(ft).V16B(), V(ft).V16B(), 12);   // w x y z
 			armAsm->Ins(V(b).V4S(), 0, V(ft).V4S(), 2);                 // z x y z
-			armAsm->Ins(V(b).V4S(), 3, a64::wzr);                       // z x y 0
+			if (wLive)
+				armAsm->Ins(V(b).V4S(), 3, a64::wzr);                   // z x y 0
 			if (E)
 			{
 				a = clampMul(a);
