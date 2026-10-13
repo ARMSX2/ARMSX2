@@ -1088,10 +1088,23 @@ mVUop(mVU_FCOR)
 	{
 		const a64::Register& dst = mVU.regAlloc->allocGPR(-1, 1, mVUlow.backupVI);
 		mVUallocCFLAGa(mVU, dst, cFLAG.read);
-		armAsm->Mov(gprT1.W(), _Imm24_);
-		armAsm->Orr(dst.W(), dst.W(), gprT1.W());
-		armAsm->Add(dst.W(), dst.W(), 1);
-		armAsm->Lsr(dst.W(), dst.W(), 24);
+		// vi01 = ((CLIP | imm24) == 0xFFFFFF): every bit the immediate leaves
+		// clear has to be set in CLIP. BICS tests those bits for a zero, with
+		// the mask shifted down to its lowest bit so the strided masks programs
+		// use fit one MOVZ, and CLIP shifted to match in BICS's own operand.
+		// Bits of CLIP above 23 take no part, as in the interpreter.
+		const u32 need = ~_Imm24_ & 0xFFFFFFu;
+		if (need == 0)
+		{
+			armAsm->Mov(dst.W(), 1);
+		}
+		else
+		{
+			const int shift = __builtin_ctz(need);
+			armAsm->Mov(gprT1.W(), need >> shift);
+			armAsm->Bics(a64::wzr, gprT1.W(), a64::Operand(dst.W(), a64::LSR, shift));
+			armAsm->Cset(dst.W(), a64::eq);
+		}
 		mVU.regAlloc->clearNeeded(dst);
 		mVU.profiler.EmitOp(opFCOR);
 	}

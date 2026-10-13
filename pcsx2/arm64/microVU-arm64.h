@@ -193,7 +193,10 @@
 //  46 — IBEQ/IBNE against vi00 move the other operand instead of loading vi00
 //       and XORing it in, and their carried condition is tested on its low
 //       halfword (TST #0xffff) instead of being narrowed with UXTH and compared.
-static constexpr u32 kMvuCompilerAbiVersion = 46;
+//  47 — FCOR tests the clip bits its immediate leaves clear with MOV, BICS and
+//       CSET instead of materialising the immediate, ORing, adding one and
+//       shifting out bit 24.
+static constexpr u32 kMvuCompilerAbiVersion = 47;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
