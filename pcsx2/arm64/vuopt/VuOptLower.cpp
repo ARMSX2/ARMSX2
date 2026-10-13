@@ -3288,11 +3288,66 @@ namespace vuopt
 					continue;
 				if (WholeFinal(v0))
 					continue;
+				// Every lane rewritten (or dead): the source of most lanes goes in
+				// whole, the others are inserted over it.
+				ValueId major = 0;
+				{
+					ValueId srcs[4] = {};
+					bool all = true;
+					for (u32 k = 0; k < 4 && all; k++)
+					{
+						const ValueId a = in.args[v0 + k];
+						if (liveOut_ && !liveOut_->test(v0 + k))
+							continue;
+						if (!a || ownLiveIn(v0 + k, a))
+							all = false;
+						else
+							srcs[k] = C(a);
+					}
+					if (all)
+					{
+						int best = 0;
+						for (u32 k = 0; k < 4; k++)
+						{
+							if (!srcs[k])
+								continue;
+							int n = 0;
+							for (u32 j = 0; j < 4; j++)
+								n += srcs[j] == srcs[k];
+							if (n > best)
+							{
+								best = n;
+								major = srcs[k];
+							}
+						}
+						if (best < 2 || reg_[major] == h.reg)
+							major = 0;
+						// nothing still to be read may live in the home register
+						for (u32 v = 0; major && v < var::Count; v++)
+						{
+							const ValueId a = in.args[v];
+							if (a && reg_[C(a)] == h.reg && cls_[C(a)] == Cls::V && VecHomeOf(v) != r)
+								major = 0;
+						}
+						for (u32 k = 0; major && k < 4; k++)
+						{
+							const ValueId a = in.args[var::QL0 + k];
+							if (a && reg_[C(a)] == h.reg && cls_[C(a)] == Cls::V)
+								major = 0;
+						}
+					}
+					if (major)
+					{
+						const int sr = UseReg(major);
+						armAsm->Mov(V(h.reg).V16B(), V(sr).V16B());
+						ReleaseLocks();
+					}
+				}
 				int l = 0;
 				while (l < 4)
 				{
 					const ValueId a = in.args[v0 + l];
-					if (!a || ownLiveIn(v0 + l, a))
+					if (!a || ownLiveIn(v0 + l, a) || (major && C(a) == major))
 					{
 						l++;
 						continue;
