@@ -168,6 +168,15 @@ struct DigestSet
 	// 0 in a pin row = probe absent.
 	u64 clampEPartialAcc;
 	u64 signClampPartialAcc;
+	// The default-mode shapes the probes above do not reach, on VU1: MAX
+	// against VF0, a broadcast multiply by VF0.w behind the operand clamp, the
+	// OP ops at a w-less field, FCOR, Q into a single-lane MADD and a single-lane
+	// ADD (both computed in place at this mode), IBEQ between two live VIs, and
+	// LQ/SQ off a live VI. And VU0's load/store path, which reaches its memory
+	// through a pointer VU1's does not need. Added at abi 57.
+	// 0 in a pin row = probe absent.
+	u64 vu1DefaultShapes;
+	u64 vu0LoadStore;
 };
 
 struct AbiPin
@@ -471,7 +480,8 @@ constexpr AbiPin kPins[] = {
 	{56, {0xcc5d8ed2aff67456, 0x3740d9d84d609b95, 0x49140181ed6daa6d, 0x8cd5553cb2a8daba, 0x30d527dd8fe4d10c, 0x1a887bba90ef1a41, 0x51df58673dbf1b10, 0x929029ca42ca98c1, 0x01e61f64bdbc1a38, 0x01c604cf32776547, 0x024ff6cd7fabd2c8, 0xace1f4023f0e8bf8, 0x021b1d8ea47dc8e8, 0xc8c50b58f3f9badd, 0x530cf428707c7f11, 0x0be3b676bc50b217, 0xd91488a73ad2068a, 0xd304c548206d672b, 0x0cc9eeeb40bf56e4, 0x43b9ebeda584952a, 0xed424f10e0661fdf, 0x029663d8580ead20, 0x72a4cdceb608619f, 0xe34a4dda6a35b3df, 0xf9c3d13580d762e9, 0x2c012558a97e0052}},
 	// abi 57: single-lane y/z/w FMACs compute in place below clampE. Every
 	// single-lane probe runs at clampE or above, so the row repeats abi 56's.
-	{57, {0xcc5d8ed2aff67456, 0x3740d9d84d609b95, 0x49140181ed6daa6d, 0x8cd5553cb2a8daba, 0x30d527dd8fe4d10c, 0x1a887bba90ef1a41, 0x51df58673dbf1b10, 0x929029ca42ca98c1, 0x01e61f64bdbc1a38, 0x01c604cf32776547, 0x024ff6cd7fabd2c8, 0xace1f4023f0e8bf8, 0x021b1d8ea47dc8e8, 0xc8c50b58f3f9badd, 0x530cf428707c7f11, 0x0be3b676bc50b217, 0xd91488a73ad2068a, 0xd304c548206d672b, 0x0cc9eeeb40bf56e4, 0x43b9ebeda584952a, 0xed424f10e0661fdf, 0x029663d8580ead20, 0x72a4cdceb608619f, 0xe34a4dda6a35b3df, 0xf9c3d13580d762e9, 0x2c012558a97e0052}},
+	// It also pins vu1DefaultShapes and vu0LoadStore, added at this version.
+	{57, {0xcc5d8ed2aff67456, 0x3740d9d84d609b95, 0x49140181ed6daa6d, 0x8cd5553cb2a8daba, 0x30d527dd8fe4d10c, 0x1a887bba90ef1a41, 0x51df58673dbf1b10, 0x929029ca42ca98c1, 0x01e61f64bdbc1a38, 0x01c604cf32776547, 0x024ff6cd7fabd2c8, 0xace1f4023f0e8bf8, 0x021b1d8ea47dc8e8, 0xc8c50b58f3f9badd, 0x530cf428707c7f11, 0x0be3b676bc50b217, 0xd91488a73ad2068a, 0xd304c548206d672b, 0x0cc9eeeb40bf56e4, 0x43b9ebeda584952a, 0xed424f10e0661fdf, 0x029663d8580ead20, 0x72a4cdceb608619f, 0xe34a4dda6a35b3df, 0xf9c3d13580d762e9, 0x2c012558a97e0052, 0xdb4ba733afd41dec, 0x0e5205525af143af}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -741,6 +751,38 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	actual.clampEPartialAcc = CompileAndDigestClampE(partialAccProgram);
 	actual.signClampPartialAcc = CompileAndDigestSignClamp(partialAccProgram);
 
+	actual.vu1DefaultShapes = CompileAndDigestVu1({
+		LowerOnly(VIADDIU_L(vi::vi2, vi::vi0, 5)),
+		LowerOnly(VIADDIU_L(vi::vi3, vi::vi0, 5)),
+		LowerOnly(VDIV_L(vf::vf1, /*fsf=*/0, vf::vf2, /*ftf=*/1)),
+		UpperOnly(VMAX_U(mask::xyzw, vf::vf3, vf::vf1, vf::vf0)),
+		UpperOnly(VMULw_U(mask::y, vf::vf4, vf::vf1, vf::vf0)),
+		UpperOnly(VOPMULA_U(mask::xyz, vf::vf1, vf::vf2)),
+		UpperOnly(VOPMSUB_U(mask::xyz, vf::vf5, vf::vf1, vf::vf2)),
+		LowerOnly(VFCOR_L(0xFBEFBEu)),
+		LowerOnly(VLQ_L(mask::xyzw, vf::vf6, vi::vi2, 1)),
+		LowerOnly(VSQ_L(mask::xyzw, vf::vf1, vi::vi3, 2)),
+		VuOp{VWAITQ_L(), VNOP_U()},
+		UpperOnly(VMADDq_U(mask::w, vf::vf7, vf::vf1)),
+		UpperOnly(VADDw_U(mask::y, vf::vf8, vf::vf1, vf::vf2)),
+		LowerOnly(VIBEQ_L(vi::vi3, vi::vi2, 3)),
+		UpperOnly(VADD_U(mask::xyzw, vf::vf9, vf::vf1, vf::vf2)),
+		UpperOnly(bits::E | VSUB_U(mask::xyzw, vf::vf10, vf::vf1, vf::vf2)),
+		NopPair(),
+		UpperOnly(bits::E | VMUL_U(mask::xyzw, vf::vf11, vf::vf1, vf::vf2)),
+	},
+		// More than four flag writers ahead of the end: the forced flag hack
+		// leaves a zero's sticky bit out of the recompiler's status that the
+		// interpreter keeps.
+		"the flag hack drops a sticky zero the interpreter keeps");
+	actual.vu0LoadStore = CompileAndDigest({
+		LowerOnly(VLQ_L(mask::xyzw, vf::vf4, vi::vi0, 3)),
+		LowerOnly(VSQ_L(mask::xyzw, vf::vf4, vi::vi1, 2)),
+		LowerOnly(VILW_L(mask::x, vi::vi2, vi::vi1, 4)),
+		LowerOnly(VISWR_L(mask::x, vi::vi2, vi::vi1)),
+		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf6, vf::vf4, vf::vf1)),
+	});
+
 	// The divUnit program under the same mode. Its three ops keep the host
 	// divide everywhere below it, so the arm that calls the model is emitted
 	// only here.
@@ -871,6 +913,8 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	ASSERT_NE(actual.clampESS, 0u);
 	ASSERT_NE(actual.clampEPartialAcc, 0u);
 	ASSERT_NE(actual.signClampPartialAcc, 0u);
+	ASSERT_NE(actual.vu1DefaultShapes, 0u);
+	ASSERT_NE(actual.vu0LoadStore, 0u);
 	// MTVU is the only thing between the two, and it has to reach the emitter:
 	// equal digests mean the same exit was emitted either way and the probe
 	// above pins nothing.
@@ -925,7 +969,9 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		<< ", 0x" << actual.mergeFold
 		<< ", 0x" << actual.clampESS
 		<< ", 0x" << actual.clampEPartialAcc
-		<< ", 0x" << actual.signClampPartialAcc << "}";
+		<< ", 0x" << actual.signClampPartialAcc
+		<< ", 0x" << actual.vu1DefaultShapes
+		<< ", 0x" << actual.vu0LoadStore << "}";
 
 	const auto explain = [&](const char* which, u64 got, u64 want) {
 		char buf[256];
@@ -1047,6 +1093,13 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 			<< explain("clampEPartialAcc", actual.clampEPartialAcc, pin->digests.clampEPartialAcc);
 		EXPECT_EQ(actual.signClampPartialAcc, pin->digests.signClampPartialAcc)
 			<< explain("signClampPartialAcc", actual.signClampPartialAcc, pin->digests.signClampPartialAcc);
+	}
+	if (pin->digests.vu1DefaultShapes != 0) // probes added at abi 57; older rows unpinned
+	{
+		EXPECT_EQ(actual.vu1DefaultShapes, pin->digests.vu1DefaultShapes)
+			<< explain("vu1DefaultShapes", actual.vu1DefaultShapes, pin->digests.vu1DefaultShapes);
+		EXPECT_EQ(actual.vu0LoadStore, pin->digests.vu0LoadStore)
+			<< explain("vu0LoadStore", actual.vu0LoadStore, pin->digests.vu0LoadStore);
 	}
 	if (pin->digests.vu1LoadStore != 0) // probe added at abi 24; older rows unpinned
 	{
