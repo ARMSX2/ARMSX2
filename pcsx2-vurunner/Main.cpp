@@ -18,6 +18,7 @@
 #include "harness/RecompilerTestEnvironment.h"
 #include "harness/VuReplay.h"
 #include "harness/VuSnapshot.h"
+#include "VuOptMode.h"
 
 #include "vu_capture.h"
 #include "Config.h"
@@ -63,6 +64,8 @@ struct Options
 	bool dump_jit_state_raw = false;  // + full per-field raw dump
 	bool hash_pipeline = true;        // hash carried microVU flag/Q-P pipeline (see below)
 	bool divtrace = false;
+	bool vuopt_ir = false;       // --vuopt-ir: validate vuopt's front end against microVU
+	VuoptModeOptions vuopt;
 	bool bench_no_reprime = false;
 	bool print_bases = false;
 	bool no_progcache = false;  // determinism gate: force program cache + recording off
@@ -89,6 +92,11 @@ void PrintUsage(const char* argv0)
 		"  --dump-microcode  Disassemble VU microcode starting at start_pc to stdout.\n"
 		"  --divtrace    Per-microvu-op state-snapshot diff between JIT and interp;\n"
 		"                report the FIRST divergent op with full context. ARM64 only.\n"
+		"  --vuopt-ir    Validate the vuopt front end (whole-program VU1 compiler)\n"
+		"                against microVU: per-block timing decisions, CFG stats,\n"
+		"                SSA build. Runs the JIT only.\n"
+		"                --vuopt-flaghack 0|1 (default 1, the shipped config)\n"
+		"                --vuopt-dump (print the IR), --vuopt-verbose.\n"
 		"  --print-bases Print the process-layout anchors (image base, data/code\n"
 		"                arenas, VU rec slabs) and exit. Two consecutive runs of a\n"
 		"                non-PIE build must print identical addresses — the\n"
@@ -197,6 +205,27 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 		else if (a == "--divtrace")
 		{
 			opts.divtrace = true;
+		}
+		else if (a == "--vuopt-ir")
+		{
+			opts.vuopt_ir = true;
+		}
+		else if (a == "--vuopt-dump")
+		{
+			opts.vuopt.dumpIr = true;
+		}
+		else if (a == "--vuopt-verbose")
+		{
+			opts.vuopt.verbose = true;
+		}
+		else if (a == "--vuopt-flaghack")
+		{
+			if (i + 1 >= argc)
+			{
+				std::fprintf(stderr, "vurunner: --vuopt-flaghack requires 0 or 1\n");
+				return false;
+			}
+			opts.vuopt.flagHack = std::atoi(argv[++i]) != 0;
 		}
 		else if (a == "--bench-no-reprime")
 		{
@@ -319,7 +348,7 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 	}
 	if (!opts.diff && !opts.bench && !opts.dump_asm
 		&& !opts.dump_microcode && !opts.divtrace && !opts.print_bases
-		&& !opts.dump_jit_state)
+		&& !opts.dump_jit_state && !opts.vuopt_ir)
 		opts.diff = true;
 	return true;
 }
@@ -1639,6 +1668,11 @@ int main(int argc, char** argv)
 		exit_code |= RunDumpAsm(records, names);
 	if (opts.divtrace)
 		exit_code |= RunDivTrace(records, names, opts.cycle_override);
+	if (opts.vuopt_ir)
+	{
+		opts.vuopt.cycleOverride = opts.cycle_override;
+		exit_code |= RunVuoptIr(records, names, opts.vuopt, &ApplyReplayConfig);
+	}
 
 #if defined(_M_ARM64) || defined(__aarch64__)
 	if (!opts.cache_dir.empty())

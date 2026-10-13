@@ -271,6 +271,40 @@ VuReplayResult ReplayCapture(const vu_capture::CaptureRecord& rec,
 	return out;
 }
 
+VuReplayResult ReplayJitOnly(const vu_capture::CaptureRecord& rec, u32 cycle_budget_override)
+{
+	VuReplayResult out;
+	if (rec.vu_index > 1)
+		return out;
+	if (!RecompilerTestEnvironment::IsReady())
+		return out;
+
+	const int idx = static_cast<int>(rec.vu_index);
+	const u32 cycles = cycle_budget_override ? cycle_budget_override : rec.cycle_budget;
+	const auto windows = WholeMemWindow(idx);
+
+	// Same FPCR handling as ReplayCapture's JIT pass.
+	const FPControlRegister saved_fpcr = FPControlRegister::GetCurrent();
+	FPControlRegister::SetCurrent((idx == 0) ? EmuConfig.Cpu.VU0FPCR : EmuConfig.Cpu.VU1FPCR);
+
+	std::vector<u8> path1_buf;
+	gif_test_hooks::g_path1_sink = &path1_buf;
+	ResetGifPath1();
+	PrimeFromCapture(rec);
+	path1_buf.clear();
+	const u64 jit_cycle_before = Regs(idx).cycle;
+	RunJitFromSeeded(idx, cycles);
+	out.jit_cycles = Regs(idx).cycle - jit_cycle_before;
+	out.jit_snapshot = VuSnapshot::Capture(idx, windows);
+	out.path1_packets_jit = path1_buf;
+	out.jit_ebit = (vuRegs[0].VI[REG_VPU_STAT].UL & RunningBit(idx)) == 0;
+
+	gif_test_hooks::g_path1_sink = nullptr;
+	FPControlRegister::SetCurrent(saved_fpcr);
+	out.ok = true;
+	return out;
+}
+
 VuReplayResult LoadAndReplay(const std::string& path,
 	VuDiffMode diff_mode,
 	u32 cycle_budget_override)

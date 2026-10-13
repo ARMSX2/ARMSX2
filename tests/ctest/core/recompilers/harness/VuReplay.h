@@ -79,6 +79,11 @@ VuReplayResult ReplayCapture(const vu_capture::CaptureRecord& rec,
 	VuDiffMode diff_mode = VuDiffMode::PipelinePermissive,
 	u32 cycle_budget_override = 0);
 
+// JIT pass only, from the captured entry state: no interpreter run, no diff.
+// Fills ok / jit_snapshot / path1_packets_jit / jit_ebit / jit_cycles.
+VuReplayResult ReplayJitOnly(const vu_capture::CaptureRecord& rec,
+	u32 cycle_budget_override = 0);
+
 // Convenience: load + replay in one call. Returns a result with ok=false
 // if the file can't be read or has bad magic/version/sizes.
 VuReplayResult LoadAndReplay(const std::string& path,
