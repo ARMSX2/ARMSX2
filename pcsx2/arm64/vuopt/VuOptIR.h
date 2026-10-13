@@ -1,0 +1,189 @@
+// SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
+// SPDX-License-Identifier: GPL-3.0+
+
+#pragma once
+
+// vuopt's intermediate form: SSA over the program graph (VuOptGraph), with
+// VU-semantic operations.
+//
+// - One IR block per graph node (a microVU block variant), plus one entry
+//   block per program entry that defines the incoming architectural state.
+// - Every piece of VU state is an SSA variable: each VF lane separately (so a
+//   .xyz write leaves .w's definition untouched and lane liveness falls out of
+//   ordinary use-def chains), ACC lanes, VI1-15, the two qmmPQ Q lanes and
+//   two P lanes, I, R, the four status / MAC / clip ring instances, the
+//   pending divide flags, the VI backup slot, the latched XGKICK address, and
+//   VU data memory as a token.
+// - Flags are values. An FMAC whose MAC instance microVU writes defines that
+//   ring variable with a MacFlags op; a status update reads the previous
+//   instance and defines the next. A ring reorder at a block link is a
+//   renaming of variables, not an instruction. Dead flag work is then plain
+//   dead code.
+// - Arithmetic ops are opaque and name the VU instruction they come from; the
+//   backend lowers each to microVU's exact NEON sequence.
+//
+// Construction is Braun et al., "Simple and Efficient Construction of Static
+// Single Assignment Form" (CC 2013), including its SCC pass that removes the
+// redundant phi cycles irreducible control flow leaves behind.
+
+#include "VuOptGraph.h"
+
+#include <string>
+#include <vector>
+
+namespace vuopt::ir
+{
+	using ValueId = u32; // 0 = none
+
+	// SSA variables (the VU state).
+	namespace var
+	{
+		constexpr u32 VF(u32 reg, u32 lane) { return reg * 4 + lane; } // reg 1..31, lane 0..3 = x..w
+		constexpr u32 ACC(u32 lane) { return 128 + lane; }
+		constexpr u32 VI(u32 reg) { return 132 + reg; } // reg 1..15
+		constexpr u32 QL0 = 148, QL1 = 149, PL0 = 150, PL1 = 151;
+		constexpr u32 I = 152, R = 153;
+		constexpr u32 S(u32 i) { return 154 + i; }
+		constexpr u32 M(u32 i) { return 158 + i; }
+		constexpr u32 C(u32 i) { return 162 + i; }
+		constexpr u32 DIVFLAG = 166, VIBACKUP = 167, XGKADDR = 168, MEM = 169;
+		constexpr u32 Count = 170;
+		std::string Name(u32 v);
+	} // namespace var
+
+	enum class Type : u8
+	{
+		None,
+		Vec,    // 128-bit, 4 float lanes (a lane variable reads one lane of it)
+		Int,    // 32-bit integer (VI, flag words, addresses)
+		Float,  // scalar float (Q, P, I, R)
+		Mem,    // VU data memory state
+		Bool,
+	};
+
+	enum class Op : u8
+	{
+		None,
+		// structure
+		LiveIn,      // incoming architectural state of `var` (imm) at a program entry
+		Phi,
+		Const,       // Int/Float: imm; Vec: VF0 (0,0,0,1)
+		// upper
+		Fmac,        // sub = UOp; args: fs[4], ft[4] (or ft[0] = I/Q/bc lane), acc[4]
+		Opmula,      // ACC = Fs.yzx * Ft.zxy (fs[4], ft[4])
+		Opmsub,      // Fd = ACC - Fs.yzx * Ft.zxy (fs[4], ft[4], acc[4])
+		Fmac2,       // ABS/FTOI/ITOF: sub = UOp; args fs[4]
+		ClipBits,    // the 6 judgement bits of CLIP: fs[4], ft.w
+		// flags
+		MacFlags,    // MAC word of an FMAC result: args result; mask
+		StatusUpd,   // status update from an FMAC: args prev, result; mask, imm = doNonSticky
+		StatusDiv,   // mVUdivSet: args prev, divflag
+		StatusSet,   // FSSET: args prev; imm = Imm12
+		ClipUpd,     // clip shift chain: args prev, bits
+		ClipSet,     // FCSET: imm
+		FlagRead,    // FMAND/FMEQ/FMOR/FSAND/FSEQ/FSOR/FCAND/FCEQ/FCOR/FCGET: sub = LOp; args flag[, vi]; imm
+		// lower, integer
+		IAlu,        // IADD/ISUB/IAND/IOR/IADDI/IADDIU/ISUBIU: sub = LOp; args a[, b]; imm
+		IncVI,       // LQI/SQI post-increment and LQD/SQD pre-decrement: args vi; imm = +1/-1
+		Mtir,        // args fs lane
+		Xtop,        // XTOP / XITOP: sub = LOp (reads VIF registers)
+		// lower, float / vector
+		LoadQ,       // LQ/LQI/LQD: args mem, addr; imm = offset; mask
+		LoadI,       // ILW/ILWR: args mem, addr; imm; mask
+		StoreQ,      // SQ/SQI/SQD: args mem, addr, fs[4]; imm; mask -> Mem
+		StoreI,      // ISW/ISWR: args mem, addr, it; imm; mask -> Mem
+		Move,        // MOVE: args fs[4]
+		Mr32,        // MR32: args fs[4]
+		Mfir,        // MFIR: args vi
+		Mfp,         // MFP: args p
+		Div,         // DIV/SQRT/RSQRT result: sub = LOp; args fs lane, ft lane
+		DivFlags,    // D/I flags of the same divide: sub = LOp; args fs lane, ft lane
+		Efu,         // EFU op result (P): sub = LOp; args fs[4]
+		RUpd,        // RINIT/RXOR/RNEXT: sub = LOp; args r[, fs lane]
+		RGet,        // RGET/RNEXT vector result: args r
+		IConst,      // link address of BAL/JALR: imm
+		Kick,        // XGKICK transfer: args mem, addr -> Mem
+		// control
+		Cond,        // IBxx condition: sub = LOp; args a[, b]
+		YieldCheck,  // block-entry cycle-budget test: may exit with the args as state
+		ExitIf,      // run-time T-bit exit
+		Exit,        // program end / bail: args = every variable; sub = ExitKind
+	};
+
+	enum class ExitKind : u8
+	{
+		EBit,       // E-bit end
+		JumpBail,   // indirect jump to a target outside the compiled set
+		Unsupported // a construct vuopt does not compile (evil branch, VU0 M-bit)
+	};
+
+	struct Inst
+	{
+		Op op = Op::None;
+		Type type = Type::None;
+		u8 mask = 0;      // dest / store mask, bit 3 = x
+		u8 lane = 0;      // Phi / LiveIn on a lane variable: the lane
+		u16 sub = 0;      // UOp / LOp / ExitKind
+		u32 var = ~0u;    // Phi / LiveIn: the variable
+		s32 imm = 0;
+		u32 pc = 0;
+		int block = -1;
+		std::vector<ValueId> args;
+		bool dead = false; // removed trivial phi
+	};
+
+	enum class Term : u8
+	{
+		None, Jump, Branch, IndirectJump, Exit
+	};
+
+	struct Block
+	{
+		int node = -1;              // graph node, -1 for entry blocks
+		std::vector<ValueId> phis;
+		std::vector<ValueId> insts;
+		std::vector<int> preds;
+		std::vector<int> succs;     // Jump: [target]; Branch: [taken, fall]; IndirectJump: static targets
+		std::vector<int> dispatchTargets; // IndirectJump: observed targets, entered through memory state
+		Term term = Term::None;
+		ValueId cond = 0;           // Branch condition, IndirectJump target VI
+		u32 cycles = 0;             // microVU's static cycle count of the block
+	};
+
+	struct Function
+	{
+		std::vector<Inst> insts;    // index = ValueId; insts[0] unused
+		std::vector<Block> blocks;
+		std::vector<int> entryBlocks;
+		bool unsupported = false;
+		std::string unsupportedWhy;
+
+		// construction statistics
+		u32 phisCreated = 0;
+		u32 phisRemovedTrivial = 0;
+		u32 phisRemovedScc = 0;
+		u32 badOps = 0;             // illegal upper opcodes reached (program ends there, as in microVU)
+
+		u32 LivePhis() const;
+		u32 LiveInsts() const;
+	};
+
+	struct BuildOptions
+	{
+		u32 vuIndex = 1;
+		bool clampIImmediate = true; // CHECK_VU_OVERFLOW && !CHECK_VU_SIGN_OVERFLOW (doIbit)
+		bool xgkickHack = false;
+		bool ibitHack = false;
+		// Emit microVU's block-entry cycle-budget test (with the whole state
+		// live) in every block. Off only for measuring what it costs.
+		bool yieldChecks = true;
+	};
+
+	Function BuildSSA(const ProgramGraph& g, const BuildOptions& opts);
+
+	// Checks SSA invariants: every operand defined, phis have one operand per
+	// predecessor, a definition dominates each use. Returns problems found.
+	std::vector<std::string> Verify(const Function& f);
+
+	std::string Dump(const Function& f, const ProgramGraph& g);
+} // namespace vuopt::ir
