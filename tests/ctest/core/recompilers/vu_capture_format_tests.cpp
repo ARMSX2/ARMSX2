@@ -79,6 +79,16 @@ vu_capture::CaptureRecord MakeRandomRecord(u8 vu_index, u32 seed)
 	rec.config.vu_clamp = rng();
 	rec.config.vu0_fpcr = rng();
 	rec.config.vu1_fpcr = rng();
+	rec.external.flags = vu_capture::kExternalValid;
+	rec.external.vif_top = rng();
+	rec.external.vif_itop = rng();
+	rec.external.vif_tops = rng();
+	rec.external.vif_itops = rng();
+	rec.external.vif_base = rng();
+	rec.external.vif_ofst = rng();
+	rec.external.vif_stat = rng();
+	for (auto& b : rec.external.vu1_regs)
+		b = static_cast<u8>(rng());
 	return rec;
 }
 
@@ -93,6 +103,7 @@ void ExpectEqual(const vu_capture::CaptureRecord& a, const vu_capture::CaptureRe
 	EXPECT_EQ(0, std::memcmp(a.vumem.data(), b.vumem.data(), a.vumem.size()));
 	EXPECT_EQ(0, std::memcmp(&a.state, &b.state, sizeof(a.state)));
 	EXPECT_EQ(0, std::memcmp(&a.config, &b.config, sizeof(a.config)));
+	EXPECT_EQ(0, std::memcmp(&a.external, &b.external, sizeof(a.external)));
 }
 
 } // namespace
@@ -182,14 +193,15 @@ TEST(VuCaptureFormat, WriteRejectsWrongSizedBuffers)
 
 TEST(VuCaptureFormat, OnDiskByteSize)
 {
-	// Fixed expected size: 32 (header) + 44 (config, v2+) + 2 * PROGSIZE
-	// (microcode + vumem) + sizeof(CapturedState). Pinning this catches
-	// accidental padding.
+	// Fixed expected size: 32 (header) + 44 (config, v2+) + 1056 (external,
+	// v3+) + 2 * PROGSIZE (microcode + vumem) + sizeof(CapturedState).
+	// Pinning this catches accidental padding.
 	const auto path = MakeTempPath("size");
 	const auto rec = MakeRandomRecord(1, 7);
 	ASSERT_TRUE(vu_capture::WriteToFile(path, rec));
 	const auto sz = std::filesystem::file_size(path);
-	EXPECT_EQ(sz, 32u + sizeof(vu_capture::CapturedConfig) + 2u * VU1_PROGSIZE +
+	EXPECT_EQ(sz, 32u + sizeof(vu_capture::CapturedConfig) +
+					  sizeof(vu_capture::CapturedExternal) + 2u * VU1_PROGSIZE +
 					  sizeof(vu_capture::CapturedState));
 	std::filesystem::remove(path);
 }
@@ -197,6 +209,49 @@ TEST(VuCaptureFormat, OnDiskByteSize)
 TEST(VuCaptureFormat, CapturedConfigIsExactly44Bytes)
 {
 	EXPECT_EQ(44u, sizeof(vu_capture::CapturedConfig));
+}
+
+TEST(VuCaptureFormat, CapturedExternalIsExactly1056Bytes)
+{
+	EXPECT_EQ(1056u, sizeof(vu_capture::CapturedExternal));
+}
+
+TEST(VuCaptureFormat, ReadAcceptsVersion2Legacy)
+{
+	// v2 layout: [FileHeader][CapturedConfig][microcode][vumem][CapturedState]
+	// — no CapturedExternal block. Every capture taken before v3 lacks the
+	// VIF TOP/ITOP values; the reader keeps accepting them and reports the
+	// block as not valid so replayers can flag programs that read it.
+	const auto path = MakeTempPath("v2legacy");
+	const auto rec = MakeRandomRecord(1, 0x2E6ACC);
+
+	vu_capture::FileHeader hdr{};
+	std::memcpy(hdr.magic, vu_capture::kMagic, sizeof(hdr.magic));
+	hdr.version = 2;
+	hdr.vu_index = rec.vu_index;
+	hdr.start_pc = rec.start_pc;
+	hdr.cycle_budget = rec.cycle_budget;
+	hdr.microcode_size = static_cast<u32>(rec.microcode.size());
+	hdr.vumem_size = static_cast<u32>(rec.vumem.size());
+
+	std::FILE* f = std::fopen(path.c_str(), "wb");
+	ASSERT_TRUE(f != nullptr);
+	ASSERT_EQ(1u, std::fwrite(&hdr, sizeof(hdr), 1, f));
+	ASSERT_EQ(1u, std::fwrite(&rec.config, sizeof(rec.config), 1, f));
+	ASSERT_EQ(rec.microcode.size(), std::fwrite(rec.microcode.data(), 1, rec.microcode.size(), f));
+	ASSERT_EQ(rec.vumem.size(), std::fwrite(rec.vumem.data(), 1, rec.vumem.size(), f));
+	ASSERT_EQ(1u, std::fwrite(&rec.state, sizeof(rec.state), 1, f));
+	std::fclose(f);
+
+	vu_capture::CaptureRecord read_back;
+	ASSERT_TRUE(vu_capture::ReadFromFile(path, read_back));
+	EXPECT_EQ(0, std::memcmp(&rec.config, &read_back.config, sizeof(rec.config)));
+	EXPECT_EQ(0, std::memcmp(rec.vumem.data(), read_back.vumem.data(), rec.vumem.size()));
+	EXPECT_EQ(0, std::memcmp(&rec.state, &read_back.state, sizeof(rec.state)));
+	const vu_capture::CapturedExternal zero{};
+	EXPECT_EQ(0, std::memcmp(&zero, &read_back.external, sizeof(zero)));
+
+	std::filesystem::remove(path);
 }
 
 TEST(VuCaptureFormat, ReadAcceptsVersion1Legacy)
@@ -234,6 +289,8 @@ TEST(VuCaptureFormat, ReadAcceptsVersion1Legacy)
 	EXPECT_EQ(0u, read_back.config.flags & vu_capture::kConfigValid);
 	const vu_capture::CapturedConfig zero{};
 	EXPECT_EQ(0, std::memcmp(&zero, &read_back.config, sizeof(zero)));
+	const vu_capture::CapturedExternal zero_ext{};
+	EXPECT_EQ(0, std::memcmp(&zero_ext, &read_back.external, sizeof(zero_ext)));
 
 	std::filesystem::remove(path);
 }

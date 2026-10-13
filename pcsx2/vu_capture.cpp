@@ -7,6 +7,8 @@
 
 #include "Config.h"   // EmuConfig — SnapshotConfig reads the live effective config
 #include "VMManager.h" // disc serial/CRC for capture provenance
+#include "MTVU.h"      // vu1Thread.vifRegs — VU1's copy of the VIF registers under MTVU
+#include "Vif.h"
 #include "VU.h"
 #include "VUmicro.h"  // VU0_PROGSIZE / VU1_PROGSIZE / VU0_MEMSIZE / VU1_MEMSIZE
 #include "R5900.h"    // cpuRegs.cycle — the EE clock, logged in trajectory mode
@@ -15,6 +17,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -101,6 +104,7 @@ namespace vu_capture
 		bool ok = true;
 		ok &= (std::fwrite(&hdr, sizeof(hdr), 1, f) == 1);
 		ok &= (std::fwrite(&rec.config, sizeof(rec.config), 1, f) == 1);
+		ok &= (std::fwrite(&rec.external, sizeof(rec.external), 1, f) == 1);
 		ok &= (std::fwrite(rec.microcode.data(), 1, rec.microcode.size(), f) == rec.microcode.size());
 		ok &= (std::fwrite(rec.vumem.data(), 1, rec.vumem.size(), f) == rec.vumem.size());
 		ok &= (std::fwrite(&rec.state, sizeof(rec.state), 1, f) == 1);
@@ -145,10 +149,13 @@ namespace vu_capture
 		rec_out.microcode.assign(hdr.microcode_size, 0);
 		rec_out.vumem.assign(hdr.vumem_size, 0);
 		rec_out.config = CapturedConfig{}; // v1 files carry no snapshot
+		rec_out.external = CapturedExternal{}; // nor do v1/v2 files carry VIF state
 
 		bool ok = true;
 		if (hdr.version >= 2)
 			ok &= (std::fread(&rec_out.config, sizeof(rec_out.config), 1, f) == 1);
+		if (hdr.version >= 3)
+			ok &= (std::fread(&rec_out.external, sizeof(rec_out.external), 1, f) == 1);
 		ok &= (std::fread(rec_out.microcode.data(), 1, hdr.microcode_size, f) == hdr.microcode_size);
 		ok &= (std::fread(rec_out.vumem.data(), 1, hdr.vumem_size, f) == hdr.vumem_size);
 		ok &= (std::fread(&rec_out.state, sizeof(rec_out.state), 1, f) == 1);
@@ -296,6 +303,169 @@ namespace vu_capture
 		regs.xgkickcyclecount = state.xgkickcyclecount;
 		regs.xgkickenable = state.xgkickenable;
 		regs.xgkickendpacket = state.xgkickendpacket;
+	}
+
+	// VU0's view of VU1's registers at 0x4000 is VF[32] followed by VI[32],
+	// each 16 bytes, from the start of VURegs (see _vuGetAddr in VUops.cpp).
+	static_assert(offsetof(VURegs, VF) == 0 && sizeof(VECTOR) == 16 &&
+		offsetof(VURegs, VI) == 0x200 && sizeof(REG_VI) == 16,
+		"CapturedExternal::vu1_regs assumes VF[32] then VI[32] at the start of VURegs");
+
+	void SnapshotExternal(int vu_index, CapturedExternal& out)
+	{
+		std::memset(&out, 0, sizeof(out));
+		out.flags = kExternalValid;
+
+		// The registers XTOP/XITOP read: getVifRegs() in microVU and
+		// _vuXTOP/_vuXITOP in the interpreter make the same choice.
+		const VIFregisters& vif = vu_index ? (THREAD_VU1 ? vu1Thread.vifRegs : vif1Regs) : vif0Regs;
+		out.vif_top = vif.top;
+		out.vif_itop = vif.itop;
+		out.vif_tops = vif.tops;
+		out.vif_itops = vif.itops;
+		out.vif_base = vif.base;
+		out.vif_ofst = vif.ofst;
+		out.vif_stat = vif.stat._u32;
+
+		if (vu_index == 0)
+			std::memcpy(out.vu1_regs, &vuRegs[1].VF[0], sizeof(out.vu1_regs));
+	}
+
+	void RestoreExternal(int vu_index, const CapturedExternal& ext)
+	{
+		// Only TOP and ITOP are written back: they are the only VIF registers
+		// a microprogram reads, and leaving the rest alone keeps a replay from
+		// disturbing VIF state other tests in the same process rely on.
+		const bool valid = (ext.flags & kExternalValid) != 0;
+		const u32 top = valid ? ext.vif_top : 0;
+		const u32 itop = valid ? ext.vif_itop : 0;
+		VIFregisters& vif = vu_index ? vif1Regs : vif0Regs;
+		vif.top = top;
+		vif.itop = itop;
+		if (vu_index && THREAD_VU1)
+		{
+			vu1Thread.vifRegs.top = top;
+			vu1Thread.vifRegs.itop = itop;
+		}
+
+		if (valid && vu_index == 0)
+			std::memcpy(&vuRegs[1].VF[0], ext.vu1_regs, sizeof(ext.vu1_regs));
+	}
+
+	u32 ScanExternalReads(const CaptureRecord& rec)
+	{
+		const u32 size = static_cast<u32>(rec.microcode.size());
+		if (size < 8 || (size & (size - 1)) != 0)
+			return 0;
+		const u32 limit = size - 1;
+		const auto read_pair = [&](u32 pc, u32& lo, u32& up) {
+			std::memcpy(&lo, rec.microcode.data() + pc, 4);
+			std::memcpy(&up, rec.microcode.data() + pc + 4, 4);
+		};
+
+		u32 found = 0;
+		// Lower-word reads of outside state, skipped when the I bit makes the
+		// lower word an immediate. XTOP is a NOP on VU0.
+		const auto reads_vif = [&](u32 lo, u32 up) -> u32 {
+			if (up & 0x80000000u)
+				return 0;
+			const u32 t3 = lo & 0xFE0007FFu;
+			if (t3 == 0x800006BCu && rec.vu_index == 1)
+				return kScanReadsXtop;
+			if (t3 == 0x800006BDu)
+				return kScanReadsXitop;
+			return 0;
+		};
+		const auto scan_lower = [&](u32 lo, u32 up) { found |= reads_vif(lo, up); };
+
+		std::vector<bool> visited(size / 8, false);
+		std::vector<u32> work{rec.start_pc & limit & ~7u};
+		while (!work.empty())
+		{
+			u32 pc = work.back();
+			work.pop_back();
+			for (;;)
+			{
+				if (visited[pc / 8])
+					break;
+				visited[pc / 8] = true;
+				u32 lo, up;
+				read_pair(pc, lo, up);
+				scan_lower(lo, up);
+
+				const u32 op7 = (up & 0x80000000u) ? 0 : (lo >> 25);
+				const bool is_branch = op7 == 0x20 || op7 == 0x21 || op7 == 0x24 || op7 == 0x25 ||
+					op7 == 0x28 || op7 == 0x29 || (op7 >= 0x2C && op7 <= 0x2F);
+				const bool ebit = (up & 0x40000000u) != 0;
+				if (!is_branch && !ebit)
+				{
+					pc = (pc + 8) & limit;
+					continue;
+				}
+
+				// The pair after a branch or an E-bit is its delay slot and
+				// always executes.
+				const u32 slot = (pc + 8) & limit;
+				u32 slot_lo, slot_up;
+				read_pair(slot, slot_lo, slot_up);
+				scan_lower(slot_lo, slot_up);
+				if (ebit)
+					break;
+
+				const u32 after = (pc + 16) & limit;
+				s32 imm = static_cast<s32>(lo & 0x7FFu);
+				if (imm & 0x400)
+					imm -= 0x800;
+				const u32 target = static_cast<u32>(static_cast<s32>(pc) + 8 + imm * 8) & limit;
+				switch (op7)
+				{
+					case 0x20: // B
+						work.push_back(target);
+						break;
+					case 0x21: // BAL: the callee usually returns past the delay slot
+						work.push_back(target);
+						work.push_back(after);
+						break;
+					case 0x24: // JR
+						found |= kScanIndirectJump;
+						break;
+					case 0x25: // JALR
+						found |= kScanIndirectJump;
+						work.push_back(after);
+						break;
+					default: // IBEQ/IBNE/IBLTZ/IBGTZ/IBLEZ/IBGEZ
+						work.push_back(target);
+						work.push_back(after);
+						break;
+				}
+				break;
+			}
+		}
+
+		if (found & kScanIndirectJump)
+		{
+			for (u32 pc = 0; pc < size; pc += 8)
+			{
+				if (visited[pc / 8])
+					continue;
+				u32 lo, up;
+				read_pair(pc, lo, up);
+				if (reads_vif(lo, up))
+				{
+					found |= kScanUnreachedRead;
+					break;
+				}
+			}
+		}
+		return found;
+	}
+
+	bool NeedsUnrecordedVifState(const CaptureRecord& rec)
+	{
+		if (rec.external.flags & kExternalValid)
+			return false;
+		const u32 scan = ScanExternalReads(rec);
+		return (scan & (kScanReadsXtop | kScanReadsXitop | kScanUnreachedRead)) != 0;
 	}
 
 	// ---- Capture probe ---------------------------------------------------
@@ -517,6 +687,7 @@ namespace vu_capture
 		rec.vumem.assign(vumem_ptr, vumem_ptr + vumem_size);
 		SnapshotState(regs, rec.state);
 		SnapshotConfig(rec.config);
+		SnapshotExternal(vu_index, rec.external);
 
 		const std::string path = MakeSlotPath(vu_index, start_pc, slot);
 		if (!WriteToFile(path, rec))

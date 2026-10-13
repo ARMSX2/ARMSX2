@@ -297,6 +297,11 @@ constexpr u32 VSQI_L(u32 mask_xyzw, u32 fs, u32 it) { return BuildLowerT3(0x3D, 
 constexpr u32 VLQD_L(u32 mask_xyzw, u32 ft, u32 is) { return BuildLowerT3(0x3E, 0x0D, ft, is, mask_xyzw); }
 constexpr u32 VSQD_L(u32 mask_xyzw, u32 fs, u32 it) { return BuildLowerT3(0x3F, 0x0D, it, fs, mask_xyzw); }
 
+// XTOP / XITOP: VI[it] = the paired VIF's TOP / ITOP register. T3_00 and
+// T3_01, sub 0x1A.
+constexpr u32 VXTOP_L(u32 it) { return BuildLowerT3(0x3C, 0x1A, it, 0, 0); }
+constexpr u32 VXITOP_L(u32 it) { return BuildLowerT3(0x3D, 0x1A, it, 0, 0); }
+
 // ILWR / ISWR — the register-indirect forms of ILW / ISW, with no immediate.
 // T3_10 / T3_11 sub 0x0F; `is` addresses, `it` is loaded or stored.
 constexpr u32 VILWR_L(u32 mask_xyzw, u32 it, u32 is) { return BuildLowerT3(0x3E, 0x0F, it, is, mask_xyzw); }

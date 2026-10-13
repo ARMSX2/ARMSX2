@@ -71,6 +71,7 @@ void PrimeFromCapture(const vu_capture::CaptureRecord& rec,
 	std::memcpy(vu.Mem, rec.vumem.data(), rec.vumem.size());
 
 	vu_capture::RestoreState(rec.state, vu);
+	vu_capture::RestoreExternal(idx, rec.external);
 
 	vu.start_pc = rec.start_pc;
 	vu.VI[REG_TPC].UL = rec.start_pc / 8u;
@@ -244,6 +245,9 @@ VuReplayResult ReplayCapture(const vu_capture::CaptureRecord& rec,
 	// Interp pass — restore the JIT-pass pre-state so the engines see
 	// identical inputs.
 	pre.Restore();
+	// The VIF registers and (for VU0) VU1's registers are outside the
+	// snapshot; a VU0 program can store into the latter during the JIT pass.
+	vu_capture::RestoreExternal(idx, rec.external);
 	std::memcpy(Regs(idx).Micro, rec.microcode.data(), rec.microcode.size());
 	std::memcpy(Regs(idx).Mem, rec.vumem.data(), rec.vumem.size());
 	Regs(idx).start_pc = rec.start_pc;

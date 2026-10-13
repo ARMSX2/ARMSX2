@@ -27,12 +27,13 @@ namespace vu_capture
 	inline constexpr char kMagic[8] = {'P', 'C', 'S', 'X', '2', 'V', 'U', 'C'};
 
 	// Bump on any on-disk layout change. Writers always emit kVersion;
-	// readers accept [kMinReadVersion, kVersion] (v1 files simply lack the
-	// CapturedConfig block, which reads back zeroed / not-valid).
+	// readers accept [kMinReadVersion, kVersion]. Blocks a version lacks
+	// read back zeroed, with their valid flag clear.
 	//
 	// v1: [FileHeader][microcode][vumem][CapturedState]
 	// v2: [FileHeader][CapturedConfig][microcode][vumem][CapturedState]
-	inline constexpr u32 kVersion = 2;
+	// v3: [FileHeader][CapturedConfig][CapturedExternal][microcode][vumem][CapturedState]
+	inline constexpr u32 kVersion = 3;
 	inline constexpr u32 kMinReadVersion = 1;
 
 	// Architecturally-significant subset of VURegs serialized to disk.
@@ -115,6 +116,46 @@ namespace vu_capture
 
 	inline constexpr u32 kConfigValid = 1u << 0;
 
+	// State a microprogram reads that lives outside its own VU (v3+).
+	//
+	// XTOP and XITOP read the TOP and ITOP registers of the VIF that feeds
+	// the VU (VIF1 for VU1, VIF0 for VU0). Double-buffered VU1 programs use
+	// TOP to find the packet the VIF just unpacked; without it a replay reads
+	// its header from address 0, and a loop count taken from that header can
+	// wrap at 16 bits and run tens of thousands of iterations. ITOP usually
+	// carries a vertex count the same way.
+	//
+	// VU0 can also address VU1's VF and VI registers as data memory at
+	// 0x4000-0x43FF (LQ/SQ/ILW/ISW with bit 14 of the address set). That
+	// window is recorded for VU0 captures and is zero for VU1 captures.
+	// Under MTVU a VU0 capture's copy of VU1's registers is taken without
+	// waiting for VU1, so it can be torn if VU1 was running at the time.
+	#pragma pack(push, 1)
+	struct CapturedExternal
+	{
+		u32 flags;     // kExternalValid when recorded from a live VIF; 0 in
+		               // pre-v3 files, which replayers must treat as unknown.
+		// The paired VIF's registers. top and itop are what XTOP and XITOP
+		// read; the rest are recorded so the double-buffer position can be
+		// checked against them (top is base or base+ofst, and the DBF bit of
+		// stat says which half the next MSCAL will use).
+		u32 vif_top;
+		u32 vif_itop;
+		u32 vif_tops;
+		u32 vif_itops;
+		u32 vif_base;
+		u32 vif_ofst;
+		u32 vif_stat;
+		// VU0 captures only: VU1 VF[32] then VI[32] (16 bytes each), the
+		// bytes VU0 sees at addresses 0x4000-0x43FF.
+		u8 vu1_regs[0x400];
+	};
+	#pragma pack(pop)
+	static_assert(sizeof(CapturedExternal) == 8 * 4 + 0x400,
+		"CapturedExternal layout drifted — bump kVersion if intentional");
+
+	inline constexpr u32 kExternalValid = 1u << 0;
+
 	inline constexpr u32 kSpeedhackVuFlagHack = 1u << 0;
 	inline constexpr u32 kSpeedhackVuThread = 1u << 1;
 	inline constexpr u32 kSpeedhackVu1Instant = 1u << 2;
@@ -149,6 +190,9 @@ namespace vu_capture
 		// Zeroed (flags == 0, not valid) for v1 files and default-constructed
 		// records; populated by the live probe via SnapshotConfig.
 		CapturedConfig config{};
+		// Zeroed (flags == 0, not valid) for v1/v2 files; populated by the
+		// live probe via SnapshotExternal.
+		CapturedExternal external{};
 	};
 
 	// On-disk header (packed; matches the bytes WriteToFile emits).
@@ -167,14 +211,15 @@ namespace vu_capture
 	#pragma pack(pop)
 	static_assert(sizeof(FileHeader) == 32, "FileHeader must be exactly 32 bytes");
 
-	// Layout (v2): [FileHeader][CapturedConfig][microcode][vumem][CapturedState].
+	// Layout (v3): [FileHeader][CapturedConfig][CapturedExternal][microcode][vumem][CapturedState].
 	// Returns false on I/O failure; the file is left in whatever state fwrite
 	// produced (callers are expected to write to a temp path then rename if
 	// atomicity matters).
 	bool WriteToFile(const std::string& path, const CaptureRecord& rec);
 
 	// Reads a record (accepts versions kMinReadVersion..kVersion; v1 files
-	// yield a zeroed, not-valid config). Returns false on I/O failure, magic
+	// yield a zeroed, not-valid config, and v1/v2 files a zeroed, not-valid
+	// external block). Returns false on I/O failure, magic
 	// mismatch, unsupported version, sane-size violation, or short read. On
 	// success, rec_out is fully populated; on failure, contents are
 	// unspecified.
@@ -193,6 +238,42 @@ namespace vu_capture
 	// Mem / Micro pointers and any pipeline-modeling fields not in the
 	// captured set. Called by VuTestHarness::LoadFromFile.
 	void RestoreState(const CapturedState& state, VURegs& regs);
+
+	// Records the outside state the VU `vu_index` can read (see
+	// CapturedExternal) with kExternalValid set. Under MTVU the VU1 copy of
+	// the VIF registers is the one the VU thread was handed with the program,
+	// which is what XTOP/XITOP read there. Called by the dispatcher probe;
+	// exposed for tests.
+	void SnapshotExternal(int vu_index, CapturedExternal& out);
+
+	// Writes the outside state back for a replay of a `vu_index` program:
+	// the paired VIF's registers and, for VU0, VU1's VF/VI. A record without
+	// kExternalValid (a pre-v3 file) sets VIF TOP and ITOP to 0 so the replay
+	// is at least deterministic; the true values are unknown, and a program
+	// that reads them is reported by ScanExternalReads. VU1's registers are
+	// left alone in that case. Replayers call this before every engine pass.
+	void RestoreExternal(int vu_index, const CapturedExternal& ext);
+
+	// Static scan of a capture's microprogram for instructions that read
+	// outside state: walks the code reachable from start_pc (both arms of
+	// conditional branches, BAL/JALR return points, up to each E-bit and its
+	// delay slot) and reports what it found. A JR/JALR target cannot be
+	// followed statically, so kScanIndirectJump means the walk may be
+	// incomplete, and kScanUnreachedRead says an XTOP/XITOP exists in
+	// program memory outside the walked code (where a JR may land; program
+	// memory often holds several programs, so this over-reports).
+	inline constexpr u32 kScanReadsXtop = 1u << 0;
+	inline constexpr u32 kScanReadsXitop = 1u << 1;
+	inline constexpr u32 kScanIndirectJump = 1u << 2;
+	inline constexpr u32 kScanUnreachedRead = 1u << 3;
+	u32 ScanExternalReads(const CaptureRecord& rec);
+
+	// True when replaying `rec` can give a wrong answer because it may read
+	// VIF TOP or ITOP and the capture did not record them (a pre-v3 file):
+	// the walked code reads them, or it has a JR/JALR and they appear
+	// somewhere it was not able to walk. Conservative on purpose, so corpus
+	// numbers that exclude flagged captures exclude every affected one.
+	bool NeedsUnrecordedVifState(const CaptureRecord& rec);
 
 	// Dispatcher capture probe. Called once per mVUexecute entry. First call
 	// reads PCSX2_VU_CAPTURE_DIR / PCSX2_VU_CAPTURE_MAX / PCSX2_VU_RANK_OUT

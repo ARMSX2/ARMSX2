@@ -11,6 +11,7 @@
 #include "harness/VuEncode.h"
 
 #include "vu_capture.h"
+#include "Vif.h"
 #include "VU.h"
 #include "VUmicro.h"
 
@@ -81,6 +82,31 @@ std::string MakeTempPath(const char* tag)
 	std::filesystem::path p = std::filesystem::temp_directory_path() /
 		(std::string("pcsx2-vureplay-test-") + tag + "-" + std::to_string(::getpid()) + ".vucap");
 	return p.string();
+}
+
+std::string DiffText(const VuReplayResult& r)
+{
+	std::string s;
+	for (const auto& l : r.diff_lines) { s += "  "; s += l; s += "\n"; }
+	return s;
+}
+
+// VU1: XTOP vi1, XITOP vi2, then E-bit. The program's whole result is the
+// two VIF registers it read.
+vu_capture::CaptureRecord MakeVifReadProgram()
+{
+	vu_capture::CaptureRecord rec;
+	rec.vu_index = 1;
+	rec.start_pc = 0;
+	rec.cycle_budget = 4096;
+	rec.microcode = BuildProgramBytes(1, {
+		VuOp{VXTOP_L(vi::vi1), VNOP_U()},
+		VuOp{VXITOP_L(vi::vi2), VNOP_U()},
+		EBitNopPair(),
+		NopPair(),
+	});
+	rec.vumem.assign(VU1_MEMSIZE, 0);
+	return rec;
 }
 
 } // namespace
@@ -191,6 +217,171 @@ TEST(VuReplay, LoadAndReplayRoundTripsThroughDisk)
 	EXPECT_FALSE(result.diverged);
 	const auto& vf3 = result.jit_snapshot.regs.VF[3];
 	EXPECT_FLOAT_EQ(AsFloat(vf3.i.x), 11.0f);
+}
+
+// XTOP/XITOP read VIF1's TOP/ITOP, which live outside the VU. A replay has
+// to restore the values the game had when the capture was taken, not
+// whatever the VIF registers hold in the replay process. Without that, a
+// double-buffered program reads its packet header from the wrong half of
+// VU memory (from address 0 when TOP is 0), and a loop count taken from it
+// can wrap at 16 bits.
+TEST(VuReplay, ReplayRestoresRecordedVifTopAndItop)
+{
+	auto rec = MakeVifReadProgram();
+	rec.external.flags = vu_capture::kExternalValid;
+	rec.external.vif_top = 0x1A0;
+	rec.external.vif_itop = 0x55;
+
+	// What an earlier replay or test might have left in the VIF.
+	vif1Regs.top = 0x3FF;
+	vif1Regs.itop = 0;
+
+	const auto result = ReplayCapture(rec);
+	ASSERT_TRUE(result.ok);
+	EXPECT_FALSE(result.diverged) << DiffText(result);
+	EXPECT_EQ(result.jit_snapshot.regs.VI[1].US[0], 0x1A0u) << "[jit] XTOP";
+	EXPECT_EQ(result.jit_snapshot.regs.VI[2].US[0], 0x55u) << "[jit] XITOP";
+	EXPECT_EQ(result.interp_snapshot.regs.VI[1].US[0], 0x1A0u) << "[interp] XTOP";
+	EXPECT_EQ(result.interp_snapshot.regs.VI[2].US[0], 0x55u) << "[interp] XITOP";
+}
+
+// The capture probe's side of the same contract: what the live VIF holds
+// when the program is dispatched survives a write to disk and comes back on
+// replay.
+TEST(VuReplay, LiveVifTopRoundTripsThroughCaptureFile)
+{
+	auto rec = MakeVifReadProgram();
+	vif1Regs.top = 0x123;
+	vif1Regs.itop = 0x2A;
+	vu_capture::SnapshotExternal(1, rec.external);
+
+	const std::string path = MakeTempPath("viftop");
+	ASSERT_TRUE(vu_capture::WriteToFile(path, rec));
+	vif1Regs.top = 0;
+	vif1Regs.itop = 0;
+	const auto result = LoadAndReplay(path);
+	std::remove(path.c_str());
+
+	ASSERT_TRUE(result.ok);
+	EXPECT_FALSE(result.diverged) << DiffText(result);
+	EXPECT_EQ(result.jit_snapshot.regs.VI[1].US[0], 0x123u);
+	EXPECT_EQ(result.jit_snapshot.regs.VI[2].US[0], 0x2Au);
+	EXPECT_EQ(result.interp_snapshot.regs.VI[1].US[0], 0x123u);
+	EXPECT_EQ(result.interp_snapshot.regs.VI[2].US[0], 0x2Au);
+}
+
+// A pre-v3 capture has no VIF state. Its replay must not depend on what the
+// replay process happens to hold: TOP and ITOP read as 0.
+TEST(VuReplay, LegacyCaptureReplaysVifTopAsZero)
+{
+	const auto rec = MakeVifReadProgram();
+	ASSERT_EQ(rec.external.flags & vu_capture::kExternalValid, 0u);
+	vif1Regs.top = 0x77;
+	vif1Regs.itop = 0x66;
+
+	const auto result = ReplayCapture(rec);
+	ASSERT_TRUE(result.ok);
+	EXPECT_FALSE(result.diverged) << DiffText(result);
+	EXPECT_EQ(result.jit_snapshot.regs.VI[1].US[0], 0u);
+	EXPECT_EQ(result.interp_snapshot.regs.VI[1].US[0], 0u);
+	EXPECT_TRUE(vu_capture::NeedsUnrecordedVifState(rec));
+}
+
+// VU0 sees VU1's VF/VI registers as data memory at 0x4000-0x43FF. A VU0
+// capture records them; the replay restores them, so a VU0 program that
+// reads VU1's registers is not fed whatever an earlier VU1 replay left.
+TEST(VuReplay, Vu0ReplayRestoresRecordedVu1RegisterWindow)
+{
+	vu_capture::CaptureRecord rec;
+	rec.vu_index = 0;
+	rec.start_pc = 0;
+	rec.cycle_budget = 4096;
+	// vi1 = 0x401 (qword address of VU1 VF1), then LQ vf3, 0(vi1).
+	rec.microcode = BuildProgramBytes(0, {
+		VuOp{VIADDIU_L(vi::vi1, vi::vi0, 0x401), VNOP_U()},
+		NopPair(),
+		VuOp{VLQ_L(mask::xyzw, vf::vf3, vi::vi1, 0), VNOP_U()},
+		VuOp{VXITOP_L(vi::vi2), VNOP_U()},
+		EBitNopPair(),
+		NopPair(),
+	});
+	rec.vumem.assign(VU0_MEMSIZE, 0);
+	rec.external.flags = vu_capture::kExternalValid;
+	rec.external.vif_itop = 0x42;
+	const u32 vu1_vf1[4] = {0x3F800000u, 0x40000000u, 0x40400000u, 0x40800000u};
+	std::memcpy(rec.external.vu1_regs + 16, vu1_vf1, sizeof(vu1_vf1));
+
+	// What a preceding VU1 replay might have left behind.
+	for (int i = 0; i < 4; ++i)
+		vuRegs[1].VF[1].UL[i] = 0xDEAD0000u + i;
+	vif0Regs.itop = 0x11;
+
+	const auto result = ReplayCapture(rec);
+	ASSERT_TRUE(result.ok);
+	EXPECT_FALSE(result.diverged) << DiffText(result);
+	for (int i = 0; i < 4; ++i)
+	{
+		EXPECT_EQ(result.jit_snapshot.regs.VF[3].UL[i], vu1_vf1[i]) << "[jit] lane " << i;
+		EXPECT_EQ(result.interp_snapshot.regs.VF[3].UL[i], vu1_vf1[i]) << "[interp] lane " << i;
+	}
+	EXPECT_EQ(result.jit_snapshot.regs.VI[2].US[0], 0x42u);
+	EXPECT_EQ(result.interp_snapshot.regs.VI[2].US[0], 0x42u);
+}
+
+TEST(VuReplay, ScanFindsXtopAndXitopOnlyOnReachablePaths)
+{
+	// XTOP behind a conditional branch is reachable; the XITOP after the
+	// E-bit's delay slot is not; an I-bit pair whose immediate happens to
+	// encode XITOP is data, not an instruction.
+	vu_capture::CaptureRecord rec;
+	rec.vu_index = 1;
+	rec.start_pc = 0;
+	rec.microcode = BuildProgramBytes(1, {
+		VuOp{VIBNE_L(vi::vi1, vi::vi0, 2), VNOP_U()}, // 0x00 -> 0x18
+		NopPair(),                                    // 0x08 delay slot
+		IBit(VuOp{VXITOP_L(vi::vi3), VNOP_U()}),      // 0x10 immediate
+		VuOp{VXTOP_L(vi::vi2), VNOP_U()},             // 0x18
+		EBitNopPair(),                                // 0x20
+		NopPair(),                                    // 0x28 delay slot
+		VuOp{VXITOP_L(vi::vi4), VNOP_U()},            // 0x30 unreachable
+	});
+	rec.vumem.assign(VU1_MEMSIZE, 0);
+	EXPECT_EQ(vu_capture::ScanExternalReads(rec), vu_capture::kScanReadsXtop);
+
+	// The same program entered past the branch reaches nothing that reads
+	// the VIF.
+	rec.start_pc = 0x20;
+	EXPECT_EQ(vu_capture::ScanExternalReads(rec), 0u);
+
+	// A JR target can't be followed, so the scan says it may be incomplete.
+	rec.start_pc = 0;
+	rec.microcode = BuildProgramBytes(1, {
+		VuOp{VJR_L(vi::vi5), VNOP_U()},
+		NopPair(),
+	});
+	EXPECT_EQ(vu_capture::ScanExternalReads(rec), vu_capture::kScanIndirectJump);
+	EXPECT_FALSE(vu_capture::NeedsUnrecordedVifState(rec));
+
+	// An XTOP the walk never reached, in a program with a JR, may be where
+	// the JR lands: flagged, so excluding flagged captures is conservative.
+	rec.microcode = BuildProgramBytes(1, {
+		VuOp{VJR_L(vi::vi5), VNOP_U()},
+		NopPair(),
+		VuOp{VXTOP_L(vi::vi2), VNOP_U()},
+	});
+	EXPECT_EQ(vu_capture::ScanExternalReads(rec),
+		vu_capture::kScanIndirectJump | vu_capture::kScanUnreachedRead);
+	EXPECT_TRUE(vu_capture::NeedsUnrecordedVifState(rec));
+}
+
+TEST(VuReplay, RecordedVifStateClearsTheUnrecordedFlag)
+{
+	auto rec = MakeVifReadProgram();
+	EXPECT_EQ(vu_capture::ScanExternalReads(rec),
+		vu_capture::kScanReadsXtop | vu_capture::kScanReadsXitop);
+	EXPECT_TRUE(vu_capture::NeedsUnrecordedVifState(rec));
+	rec.external.flags = vu_capture::kExternalValid;
+	EXPECT_FALSE(vu_capture::NeedsUnrecordedVifState(rec));
 }
 
 TEST(VuReplay, LoadAndReplayReturnsNotOkOnMissingFile)

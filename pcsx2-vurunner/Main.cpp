@@ -71,6 +71,9 @@ struct Options
 	bool print_bases = false;
 	bool no_progcache = false;  // determinism gate: force program cache + recording off
 	bool perf_jitdump = false;  // emit Linux perf jitdump for `perf inject --jit` (profiling)
+	bool scan_external = false;       // static report of outside-state reads, no replay
+	bool skip_unrecorded_vif = false; // drop pre-v3 captures that read VIF TOP/ITOP
+	bool vif_probe = false;           // replay under two VIF TOP/ITOP values, report if the result moves
 	u32 dump_count = 64;
 	u32 cycle_override = 0;  // 0 = use captured budget
 	int vu_clamp_mode = -1;  // -1 = leave EmuConfig default (mode 1); 0..4 = force VU clamp mode
@@ -102,6 +105,15 @@ void PrintUsage(const char* argv0)
 		"                body vuopt can lower emitted from vuopt's IR; compare the\n"
 		"                final state byte for byte. --vuopt-bench N adds steady-state\n"
 		"                retired-instruction counts for both engines.\n"
+		"  --scan-external  Without replaying, report per capture whether the code\n"
+		"                reachable from start_pc reads VIF TOP/ITOP (XTOP/XITOP),\n"
+		"                whether it has a JR/JALR the scan can't follow (and an\n"
+		"                XTOP/XITOP elsewhere it may reach), whether the capture\n"
+		"                recorded the VIF state (v3+), and the vif=UNRECORDED flag.\n"
+		"  --vif-probe   Replay each capture (JIT) with VIF TOP/ITOP = 0, then\n"
+		"                with other values, then 0 again, and report whether the\n"
+		"                result moves (sensitive) or a repeat disagrees (unstable).\n"
+		"                Measures what the static vif=UNRECORDED flag estimates.\n"
 		"  --print-bases Print the process-layout anchors (image base, data/code\n"
 		"                arenas, VU rec slabs) and exit. Two consecutive runs of a\n"
 		"                non-PIE build must print identical addresses — the\n"
@@ -120,6 +132,11 @@ void PrintUsage(const char* argv0)
 		"                recording off for the whole process (overrides\n"
 		"                --cache-dir) so a JIT-vs-interp diff run is\n"
 		"                byte-reproducible.\n"
+		"  --skip-unrecorded-vif  Drop captures that read VIF TOP/ITOP but predate\n"
+		"                v3, which recorded them. Their replay reads 0 for both, so\n"
+		"                a double-buffered program parses the wrong packet and its\n"
+		"                trip count is meaningless. Without this flag they still\n"
+		"                run, tagged vif=UNRECORDED in --diff/--bench output.\n"
 		"  --iters N     Number of replay iterations per capture (default 1).\n"
 		"                Bench: throw out the first iter (JIT compile cost).\n"
 		"  --dump-count N    Number of microinstructions to dump (default 64).\n"
@@ -150,7 +167,9 @@ void PrintUsage(const char* argv0)
 		"v2 captures record the live shape-affecting config (gamefixes, VU clamp,\n"
 		"VU round modes) and replay under it BY DEFAULT, so the JIT compiles the\n"
 		"same code the game ran. PCSX2_VU_XGKICKHACK={0,1} still wins over\n"
-		"everything for explicit A/B.\n",
+		"everything for explicit A/B. v3 captures also record the VIF TOP/ITOP\n"
+		"registers XTOP/XITOP read (and, for VU0, VU1's VF/VI registers), and\n"
+		"every mode restores them before running either engine.\n",
 		argv0);
 }
 
@@ -279,6 +298,18 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 		{
 			opts.perf_jitdump = true;
 		}
+		else if (a == "--scan-external")
+		{
+			opts.scan_external = true;
+		}
+		else if (a == "--skip-unrecorded-vif")
+		{
+			opts.skip_unrecorded_vif = true;
+		}
+		else if (a == "--vif-probe")
+		{
+			opts.vif_probe = true;
+		}
 		else if (a == "--game")
 		{
 			if (i + 1 >= argc)
@@ -384,7 +415,7 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 	}
 	if (!opts.diff && !opts.bench && !opts.dump_asm
 		&& !opts.dump_microcode && !opts.divtrace && !opts.print_bases
-		&& !opts.dump_jit_state && !opts.vuopt_ir && !opts.vuopt_run)
+		&& !opts.dump_jit_state && !opts.vuopt_ir && !opts.vuopt_run && !opts.scan_external && !opts.vif_probe)
 		opts.diff = true;
 	return true;
 }
@@ -566,6 +597,47 @@ void ApplyReplayConfig(const vu_capture::CaptureRecord& rec)
 			rc.vu1SignOverflow ? 'S' : '-', rc.vu1ExactMode ? 'X' : '-',
 			fpcr0, fpcr1);
 	}
+}
+
+// Tag for captures whose replay reads VIF state the capture did not record
+// (see vu_capture::NeedsUnrecordedVifState). Empty for everything else.
+const char* UnrecordedVifTag(const vu_capture::CaptureRecord& rec)
+{
+	return vu_capture::NeedsUnrecordedVifState(rec) ? " vif=UNRECORDED" : "";
+}
+
+int RunScanExternal(const std::vector<vu_capture::CaptureRecord>& records,
+	const std::vector<std::string>& names)
+{
+	u32 reading = 0, unrecorded = 0, indirect = 0, flagged = 0;
+	for (size_t fi = 0; fi < records.size(); ++fi)
+	{
+		const auto& rec = records[fi];
+		const u32 scan = vu_capture::ScanExternalReads(rec);
+		const bool reads = (scan & (vu_capture::kScanReadsXtop | vu_capture::kScanReadsXitop)) != 0;
+		const bool recorded = (rec.external.flags & vu_capture::kExternalValid) != 0;
+		std::printf("[scan] %s vu%u pc=0x%08X xtop=%d xitop=%d indirect=%d unreached=%d vif=%s flag=%d",
+			names[fi].c_str(), rec.vu_index, rec.start_pc,
+			(scan & vu_capture::kScanReadsXtop) ? 1 : 0,
+			(scan & vu_capture::kScanReadsXitop) ? 1 : 0,
+			(scan & vu_capture::kScanIndirectJump) ? 1 : 0,
+			(scan & vu_capture::kScanUnreachedRead) ? 1 : 0,
+			recorded ? "recorded" : "unrecorded",
+			vu_capture::NeedsUnrecordedVifState(rec) ? 1 : 0);
+		if (recorded)
+			std::printf(" top=0x%X itop=0x%X tops=0x%X base=0x%X ofst=0x%X",
+				rec.external.vif_top, rec.external.vif_itop, rec.external.vif_tops,
+				rec.external.vif_base, rec.external.vif_ofst);
+		std::printf("\n");
+		reading += reads ? 1 : 0;
+		unrecorded += (reads && !recorded) ? 1 : 0;
+		indirect += (scan & vu_capture::kScanIndirectJump) ? 1 : 0;
+		flagged += vu_capture::NeedsUnrecordedVifState(rec) ? 1 : 0;
+	}
+	std::printf("[scan] %zu captures: %u read VIF TOP/ITOP on a followed path, %u of those "
+		"unrecorded; %u have a JR/JALR the scan did not follow; %u flagged vif=UNRECORDED\n",
+		records.size(), reading, unrecorded, indirect, flagged);
+	return 0;
 }
 
 int RunDumpMicrocode(const std::vector<vu_capture::CaptureRecord>& records,
@@ -835,16 +907,99 @@ int RunDumpJitState(const std::vector<vu_capture::CaptureRecord>& records,
 		}
 		u64 rh = 0, mh = 0;
 		HashArchSurface(r.jit_snapshot, hash_pipeline, rh, mh);
-		std::printf("%s vu%u pc=%08x ebit=%d jitcyc=%llu reghash=%016llx memhash=%016llx\n",
+		std::printf("%s vu%u pc=%08x ebit=%d jitcyc=%llu reghash=%016llx memhash=%016llx%s\n",
 			base.c_str(), rec.vu_index, rec.start_pc, r.jit_ebit ? 1 : 0,
 			(unsigned long long)r.jit_cycles,
-			(unsigned long long)rh, (unsigned long long)mh);
+			(unsigned long long)rh, (unsigned long long)mh, UnrecordedVifTag(rec));
 		if (raw)
 		{
 			std::printf("--- %s raw ---\n", base.c_str());
 			DumpArchRaw(r.jit_snapshot, hash_pipeline);
 		}
 	}
+	return 0;
+}
+
+// Replays each capture through the JIT with VIF TOP = ITOP = 0 (what a
+// pre-v3 capture replays with), then with values a double-buffered program
+// would plausibly see, then with 0 again. A result that moves between the
+// first two runs depends on the VIF registers, whatever the static scan
+// said. The third run guards against state one replay leaks into the next
+// (batch replays of XGKICK-bearing programs do this): if it disagrees with
+// the first, the capture is reported unstable instead of sensitive.
+int RunVifProbe(const std::vector<vu_capture::CaptureRecord>& records,
+	const std::vector<std::string>& names)
+{
+	struct Outcome
+	{
+		u64 reg_hash = 0, mem_hash = 0, cycles = 0;
+		bool ebit = false;
+		std::vector<u8> path1;
+	};
+	const auto differences = [](const Outcome& a, const Outcome& b) {
+		std::string what;
+		const auto note = [&what](bool differs, const char* name) {
+			if (differs)
+				what += what.empty() ? name : std::string(",") + name;
+		};
+		note(a.reg_hash != b.reg_hash, "regs");
+		note(a.mem_hash != b.mem_hash, "mem");
+		note(a.cycles != b.cycles, "cycles");
+		note(a.ebit != b.ebit, "ebit");
+		note(a.path1 != b.path1, "path1");
+		return what;
+	};
+
+	u32 sensitive = 0, unstable = 0, flag_miss = 0;
+	for (size_t fi = 0; fi < records.size(); ++fi)
+	{
+		ApplyReplayConfig(records[fi]);
+		vu_capture::CaptureRecord rec = records[fi];
+		const u32 tops[3] = {0, rec.vu_index ? 0x200u : 0u, 0};
+		const u32 itops[3] = {0, 0x30u, 0};
+		Outcome out[3];
+		bool ok = true;
+		for (int k = 0; k < 3 && ok; ++k)
+		{
+			rec.external.flags = vu_capture::kExternalValid;
+			rec.external.vif_top = tops[k];
+			rec.external.vif_itop = itops[k];
+			const auto r = recompiler_tests::ReplayCapture(rec,
+				recompiler_tests::VuDiffMode::PipelinePermissive);
+			ok = r.ok;
+			HashArchSurface(r.jit_snapshot, false, out[k].reg_hash, out[k].mem_hash);
+			out[k].cycles = r.jit_cycles;
+			out[k].ebit = r.jit_ebit;
+			out[k].path1 = r.path1_packets_jit;
+		}
+		if (!ok)
+		{
+			std::printf("[vif-probe] %s replay-failed\n", names[fi].c_str());
+			continue;
+		}
+		const std::string moved = differences(out[0], out[1]);
+		const std::string drift = differences(out[0], out[2]);
+		const char* verdict = !drift.empty() ? "unstable" : !moved.empty() ? "sensitive" : "insensitive";
+		const u32 scan = vu_capture::ScanExternalReads(records[fi]);
+		const bool flagged = vu_capture::NeedsUnrecordedVifState(records[fi]);
+		std::printf("[vif-probe] %s vu%u pc=0x%08X %s moved=%s drift=%s xtop=%d xitop=%d "
+			"indirect=%d unreached=%d jitcyc=%llu/%llu ebit=%d/%d\n",
+			names[fi].c_str(), records[fi].vu_index, records[fi].start_pc, verdict,
+			moved.empty() ? "-" : moved.c_str(), drift.empty() ? "-" : drift.c_str(),
+			(scan & vu_capture::kScanReadsXtop) ? 1 : 0,
+			(scan & vu_capture::kScanReadsXitop) ? 1 : 0,
+			(scan & vu_capture::kScanIndirectJump) ? 1 : 0,
+			(scan & vu_capture::kScanUnreachedRead) ? 1 : 0,
+			(unsigned long long)out[0].cycles, (unsigned long long)out[1].cycles,
+			out[0].ebit ? 1 : 0, out[1].ebit ? 1 : 0);
+		const bool is_sensitive = drift.empty() && !moved.empty();
+		sensitive += is_sensitive ? 1 : 0;
+		unstable += drift.empty() ? 0 : 1;
+		flag_miss += (is_sensitive && !flagged && !(records[fi].external.flags & vu_capture::kExternalValid)) ? 1 : 0;
+	}
+	std::printf("[vif-probe] %zu captures: %u change with VIF TOP/ITOP, %u unstable across "
+		"repeat replays; %u sensitive pre-v3 captures not flagged vif=UNRECORDED\n",
+		records.size(), sensitive, unstable, flag_miss);
 	return 0;
 }
 
@@ -856,12 +1011,16 @@ int RunDiff(const std::vector<vu_capture::CaptureRecord>& records,
 	int diverged_files = 0;
 	int path_diverged_files = 0;
 	int cycle_diverged_files = 0;
+	int unrecorded_vif_files = 0;
 	for (size_t fi = 0; fi < records.size(); ++fi)
 	{
 		const auto& rec = records[fi];
 		ApplyReplayConfig(rec);
-		std::printf("[diff] %s  (vu%u start_pc=0x%08X cycles=%u)\n",
-			names[fi].c_str(), rec.vu_index, rec.start_pc, rec.cycle_budget);
+		std::printf("[diff] %s  (vu%u start_pc=0x%08X cycles=%u)%s\n",
+			names[fi].c_str(), rec.vu_index, rec.start_pc, rec.cycle_budget,
+			UnrecordedVifTag(rec));
+		if (vu_capture::NeedsUnrecordedVifState(rec))
+			++unrecorded_vif_files;
 		bool any_diverged = false;
 		bool path_diverged = false;
 		const char* term = "unknown";
@@ -932,6 +1091,11 @@ int RunDiff(const std::vector<vu_capture::CaptureRecord>& records,
 	if (cycle_diverged_files)
 		std::printf("[diff] %d of %zu captures had a CYCLE divergence with both engines at E-bit\n",
 			cycle_diverged_files, records.size());
+	if (unrecorded_vif_files)
+		std::printf("[diff] %d of %zu captures read VIF TOP/ITOP the capture did not record "
+			"(pre-v3): replayed with both 0, so their trip counts and cycle totals are not "
+			"the game's\n",
+			unrecorded_vif_files, records.size());
 	return (diverged_files == 0 && cycle_diverged_files == 0) ? 0 : 2;
 }
 
@@ -964,14 +1128,15 @@ int RunBench(const std::vector<vu_capture::CaptureRecord>& records,
 		const Stat sc = Summarize(cycles);
 		const Stat si = Summarize(insns);
 		const Stat sb = Summarize(brmiss);
-		std::printf("%-50s %12llu %12llu %12llu  (mad %llu/%llu/%llu)\n",
+		std::printf("%-50s %12llu %12llu %12llu  (mad %llu/%llu/%llu)%s\n",
 			names[fi].c_str(),
 			(unsigned long long)sc.median,
 			(unsigned long long)si.median,
 			(unsigned long long)sb.median,
 			(unsigned long long)sc.mad,
 			(unsigned long long)si.mad,
-			(unsigned long long)sb.mad);
+			(unsigned long long)sb.mad,
+			UnrecordedVifTag(rec));
 	}
 	return 0;
 }
@@ -1674,6 +1839,7 @@ int main(int argc, char** argv)
 
 	std::vector<vu_capture::CaptureRecord> records;
 	std::vector<std::string> names;
+	u32 skipped_unrecorded_vif = 0;
 	records.reserve(opts.files.size());
 	names.reserve(opts.files.size());
 	for (const auto& path : opts.files)
@@ -1686,11 +1852,23 @@ int main(int argc, char** argv)
 			recompiler_tests::RecompilerTestEnvironment::Shutdown();
 			return 1;
 		}
+		if (opts.skip_unrecorded_vif && vu_capture::NeedsUnrecordedVifState(rec))
+		{
+			++skipped_unrecorded_vif;
+			continue;
+		}
 		records.push_back(std::move(rec));
 		names.push_back(path);
 	}
+	if (skipped_unrecorded_vif)
+		std::fprintf(stderr, "vurunner: skipped %u capture(s) that read VIF TOP/ITOP the "
+			"capture did not record (--skip-unrecorded-vif)\n", skipped_unrecorded_vif);
 
 	int exit_code = 0;
+	if (opts.scan_external)
+		exit_code |= RunScanExternal(records, names);
+	if (opts.vif_probe)
+		exit_code |= RunVifProbe(records, names);
 	if (opts.dump_microcode)
 		exit_code |= RunDumpMicrocode(records, names, opts.dump_count);
 	if (opts.dump_jit_state)
