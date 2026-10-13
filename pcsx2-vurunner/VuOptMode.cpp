@@ -506,13 +506,13 @@ namespace
 	// the first. A later iteration can still compile a block it had not
 	// reached before (and, in the vuopt arm, run the hook's analysis), which
 	// only ever adds instructions.
-	u64 MedianInsns(const std::vector<PmuCounters::Values>& v)
+	u64 MinCounter(const std::vector<PmuCounters::Values>& v, int counter)
 	{
 		if (v.size() < 2)
 			return 0;
 		u64 m = ~0ull;
 		for (size_t i = 1; i < v.size(); i++)
-			m = std::min<u64>(m, v[i][PmuCounters::InstructionsRetired]);
+			m = std::min<u64>(m, v[i][counter]);
 		return m;
 	}
 } // namespace
@@ -605,17 +605,21 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			}
 		}
 
-		u64 insRef = 0, insRun = 0;
+		u64 insRef = 0, insRun = 0, cycRef = 0, cycRun = 0;
 		u32 steadyCompiles = 0;
 		if (opts.benchIters >= 2)
 		{
-			insRef = MedianInsns(recompiler_tests::BenchJitSteady(rec, opts.benchIters));
+			const auto refSamples = recompiler_tests::BenchJitSteady(rec, opts.benchIters);
+			insRef = MinCounter(refSamples, PmuCounters::InstructionsRetired);
+			cycRef = MinCounter(refSamples, PmuCounters::CpuCycles);
 			VuoptModeOptions bo = opts;
 			bo.trace = false;
 			bo.dumpIr = false;
 			BodyCtx bctx(vu, vuRegs[vu].Micro, bo);
 			bctx.Install();
-			insRun = MedianInsns(recompiler_tests::BenchJitSteady(rec, opts.benchIters));
+			const auto runSamples = recompiler_tests::BenchJitSteady(rec, opts.benchIters);
+			insRun = MinCounter(runSamples, PmuCounters::InstructionsRetired);
+			cycRun = MinCounter(runSamples, PmuCounters::CpuCycles);
 			Uninstall();
 			// Blocks compiled after the first iteration (the identity run is one
 			// such first iteration): their compile cost is inside the counts.
@@ -624,11 +628,12 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 
 		const bool identical = diffs.empty();
 		std::printf("[vuopt-run] %s vu%d pc=%04x blocks=%u lowered=%u identical=%d ebit=%d refcode=%llu runcode=%llu body=%llu "
-					"ins_mvu=%llu ins_vuopt=%llu steadycompiles=%u",
+					"ins_mvu=%llu ins_vuopt=%llu cyc_mvu=%llu cyc_vuopt=%llu steadycompiles=%u",
 			names[fi].c_str(), vu, rec.start_pc, ctx.blocks, ctx.tier->Lowered(), identical ? 1 : 0, ref.jit_ebit ? 1 : 0,
 			static_cast<unsigned long long>(refBytes), static_cast<unsigned long long>(runBytes),
 			static_cast<unsigned long long>(ctx.tier->BodyBytes()), static_cast<unsigned long long>(insRef),
-			static_cast<unsigned long long>(insRun), steadyCompiles);
+			static_cast<unsigned long long>(insRun), static_cast<unsigned long long>(cycRef), static_cast<unsigned long long>(cycRun),
+			steadyCompiles);
 		if (ctx.region)
 		{
 			std::printf(" regions=%u rnodes=%u rexits=%u rbytes=%llu", ctx.region->Regions(), ctx.region->Nodes(), ctx.region->Exits(),
