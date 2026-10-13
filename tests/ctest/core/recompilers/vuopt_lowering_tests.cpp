@@ -1336,11 +1336,9 @@ static void RegionStickyAccumulationBody()
 	u32 runs = 0, accRegions = 0, accumulated = 0;
 	for (int variant = 0; variant <= 8; variant++)
 	{
-		// (variant 5 runs to the end: an XGKICK stopped by a budget bail shows a
-		// VPU_STAT difference that exists without the accumulators too)
 		const std::vector<VuOp> p = StickyProgram(variant, variant == 4 ? 12 : 7, 16);
 		for (bool fh : {false, true})
-			for (u32 budget = (variant == 5 ? 0 : 1); budget <= (variant == 5 ? 0u : 150u); budget++)
+			for (u32 budget = 1; budget <= 150; budget++)
 			{
 				const RegionOutcome o = RunRegion(p, fh, [variant](VuTestHarness& h) {
 					if (variant >= 6)
@@ -1351,7 +1349,7 @@ static void RegionStickyAccumulationBody()
 					// a one-quadword GIF packet at qword 0x10: NLOOP 1, EOP, PACKED, NREG 1 (A+D)
 					h.WriteMemU128(0x100, 0x00008001, 0x10000000, 0x0000000e, 0);
 					h.WriteMemU128(0x110, 0, 0, 0, 0);
-				}, budget == 0, 14, false, nullptr, budget);
+				}, false, 14, false, nullptr, budget);
 				runs++;
 				if (!fh)
 				{
