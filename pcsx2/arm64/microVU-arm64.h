@@ -176,7 +176,10 @@
 //       each full-width operand clamp loses its Ldp.
 //  40 — a single-lane clone of a lane other than x rotates straight out of the
 //       cached register with one EXT, rather than copying it and rotating the copy.
-static constexpr u32 kMvuCompilerAbiVersion = 40;
+//  41 — an FMAC's arithmetic reads the register a clone-write copy was made
+//       from when that copy is the last word emitted, and the copy goes: the
+//       step writes every lane of the destination, so the copy was dead weight.
+static constexpr u32 kMvuCompilerAbiVersion = 41;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

@@ -422,6 +422,9 @@ constexpr AbiPin kPins[] = {
 	// abi 40: the single-lane clone-write rotation reads the cached register. Every
 	// probe with a y, z or w single-lane FMAC or div-unit operand moves.
 	{40, {0x1b6417d39088c445, 0x4fb21f7df2e0eba1, 0x5b22843577880a34, 0x367caabd4ce98b70, 0x931e4ce41aaddfee, 0x528f4bc3805ce760, 0x474ca3bc38053234, 0xc97e9916ce78f2c0, 0x97abca8e1e797c8e, 0x3a85dc8fbf46e675, 0xa1e2f7d5c83033f5, 0xe2b98245075f607d, 0x191cc45df004b45c, 0xe5bcbd769f0cc83d, 0xb7e746b32d5eb2ab, 0xf22bf72b61864a31, 0x415b885932416527, 0xcdc6cfb5fea6f42e, 0x205545fc7b500ddb, 0xfd15d794fe441fbf, 0x8ca5c650154688b7, 0xc4b3d7d6d8249b94, 0x742e2538da750e4d, 0xff2b4b6d7bf2a662, 0xf05dcc1e61ded6ec, 0xc20855db43aa02ee}},
+	// abi 41: the arithmetic step folds the clone-write copy in front of it, as the
+	// operand clamp already did. Every probe whose FMAC reads a cached VF moves.
+	{41, {0x30a4b851f584d87b, 0x4fb21f7df2e0eba1, 0x7be4a67c17a34d58, 0x42cdb6c017ffbcb7, 0xdc148443ac907bfd, 0xd53e1c6f0ab93994, 0x474ca3bc38053234, 0x08508bd89801b6f3, 0x97abca8e1e797c8e, 0x3a85dc8fbf46e675, 0xa1e2f7d5c83033f5, 0xe2b98245075f607d, 0x191cc45df004b45c, 0xe5bcbd769f0cc83d, 0xb7e746b32d5eb2ab, 0xf22bf72b61864a31, 0x415b885932416527, 0xcdc6cfb5fea6f42e, 0xd9b404bd2887a881, 0xfd15d794fe441fbf, 0x285938277c630ba8, 0xc0f07710fba14955, 0xca2ddace4f03527c, 0xff2b4b6d7bf2a662, 0xf05dcc1e61ded6ec, 0xc20855db43aa02ee}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
