@@ -1246,12 +1246,17 @@ mVUop(mVU_CLIP)
 	pass1 { mVUanalyzeFMAC4(mVU, _Fs_, _Ft_); }
 	pass2
 	{
-		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_, 0, 0xf);
-		const a64::VRegister& Ft = mVU.regAlloc->allocReg(_Ft_, 0, 0x1);
+		// Fs and Ft are read where they are cached; every register written
+		// below is a temp. Fn is the -x vector.
+		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_);
+		const a64::VRegister& FtSrc = mVU.regAlloc->allocReg(_Ft_);
+		const a64::VRegister& Ft = mVU.regAlloc->allocReg();
 		const a64::VRegister& t1 = mVU.regAlloc->allocReg();
+		const a64::VRegister& Fn = mVU.regAlloc->allocReg();
 
 		// Broadcast Ft.w to all lanes
-		mVUunpack_xyzw(Ft, Ft, 0);
+		mVUunpack_xyzw(Ft, FtSrc, 3);
+		mVU.regAlloc->clearNeeded(FtSrc);
 
 		// Get previous clip flag and shift left by 6
 		mVUallocCFLAGa(mVU, gprT1, cFLAG.lastWrite);
@@ -1270,16 +1275,16 @@ mVUop(mVU_CLIP)
 
 		// Negate Fs (for -w comparison)
 		armAsm->Ldr(RQSCRATCH3, mVUglobMem(&mVUglob.signbit[0]));
-		armAsm->Eor(Fs.V16B(), t1.V16B(), RQSCRATCH3.V16B());
+		armAsm->Eor(Fn.V16B(), t1.V16B(), RQSCRATCH3.V16B());
 
 		// t1 > Ft means +component > +w: bit set
 		armAsm->Cmgt(t1.V4S(), t1.V4S(), Ft.V4S());   // +x>+w, +y>+w, +z>+w, (ignored)
-		// Fs > Ft means -component > +w (i.e., component < -w): bit set
-		armAsm->Cmgt(Fs.V4S(), Fs.V4S(), Ft.V4S());    // -x>+w, -y>+w, -z>+w, (ignored)
+		// Fn > Ft means -component > +w (i.e., component < -w): bit set
+		armAsm->Cmgt(Fn.V4S(), Fn.V4S(), Ft.V4S());    // -x>+w, -y>+w, -z>+w, (ignored)
 
 		// Extract bits from the comparison results
 		// t1 lanes: [0]=+x>w, [1]=+y>w, [2]=+z>w
-		// Fs lanes: [0]=-x>w, [1]=-y>w, [2]=-z>w
+		// Fn lanes: [0]=-x>w, [1]=-y>w, [2]=-z>w
 		// Required layout: bit0=+x>w, bit1=-x>w, bit2=+y>w, bit3=-y>w, bit4=+z>w, bit5=-z>w
 		//
 		// A comparison leaves its lane all ones or all zero, so its low
@@ -1288,7 +1293,7 @@ mVUop(mVU_CLIP)
 		// bit. The weights are distinct powers of two, so the lane sum ADDV
 		// forms is the OR the layout wants.
 		armAsm->Ldr(RQSCRATCH3, mVUglobMem(&mVUglob.clipWeights[0]));
-		armAsm->Uzp1(t1.V8H(), t1.V8H(), Fs.V8H());
+		armAsm->Uzp1(t1.V8H(), t1.V8H(), Fn.V8H());
 		armAsm->And(t1.V16B(), t1.V16B(), RQSCRATCH3.V16B());
 		armAsm->Addv(t1.H(), t1.V8H());
 		armAsm->Umov(gprT2.W(), t1.V8H(), 0);
@@ -1302,6 +1307,7 @@ mVUop(mVU_CLIP)
 		mVU.regAlloc->clearNeeded(Fs);
 		mVU.regAlloc->clearNeeded(Ft);
 		mVU.regAlloc->clearNeeded(t1);
+		mVU.regAlloc->clearNeeded(Fn);
 		mVU.profiler.EmitOp(opCLIP);
 	}
 	pass3
