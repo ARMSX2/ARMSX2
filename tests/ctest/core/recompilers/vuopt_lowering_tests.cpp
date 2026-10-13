@@ -1036,6 +1036,52 @@ static void RegionLoopFuzzBody()
 	std::printf("[vuopt region fuzz] programs=%d regions=%u nodes=%u\n", iters * 2, regions, nodes);
 }
 
+// Milestone 6: VI values known at compile time fold, memory ops at constant
+// addresses address VU memory directly (wrapping like microVU), a VI copy
+// reads its source, a second LQ of the same address reuses the first, and an
+// LQ after a full-mask SQ to the same address reads the stored register.
+static void ViConstantsAndAddressesBody();
+TEST(VuoptLowering, ViConstantsAndAddresses) { ViConstantsAndAddressesBody(); }
+static void ViConstantsAndAddressesBody()
+{
+	std::vector<std::vector<VuOp>> progs;
+	// Folded arithmetic feeding constant addresses, including ones that wrap.
+	progs.push_back({L(VIADDIU_L(vi::vi1, vi::vi0, 0x3fe)), L(VIADDI_L(vi::vi2, vi::vi1, 5)),
+		L(VISUBIU_L(vi::vi3, vi::vi0, 3)), L(VIADD_L(vi::vi4, vi::vi1, vi::vi2)),
+		L(VLQ_L(mask::xyzw, vf::vf1, vi::vi1, 4)), L(VLQ_L(mask::y | mask::w, vf::vf2, vi::vi3, 0)),
+		L(VSQ_L(mask::xyzw, vf::vf5, vi::vi2, 0)), L(VSQ_L(mask::x, vf::vf6, vi::vi0, -1)),
+		L(VILW_L(mask::z, vi::vi5, vi::vi4, 2)), L(VISW_L(mask::y, vi::vi4, vi::vi3, 1)),
+		L(VIAND_L(vi::vi6, vi::vi1, vi::vi3)), L(VIOR_L(vi::vi7, vi::vi6, vi::vi2)),
+		L(VISUB_L(vi::vi8, vi::vi7, vi::vi1)), L(VMFIR_L(mask::xyzw, vf::vf7, vi::vi8)),
+		EBit(U(VNOP_U()))});
+	// Copies: IADDIU 0 and IADD with vi0, then the source and the copy written.
+	progs.push_back({L(VIADDIU_L(vi::vi1, vi::vi5, 0)), L(VIADD_L(vi::vi2, vi::vi0, vi::vi6)),
+		L(VIADDI_L(vi::vi5, vi::vi5, 1)), L(VLQ_L(mask::xyzw, vf::vf1, vi::vi1, 0)),
+		L(VIADD_L(vi::vi3, vi::vi2, vi::vi1)), L(VIADDI_L(vi::vi2, vi::vi2, -1)),
+		L(VSQ_L(mask::xyzw, vf::vf1, vi::vi2, 0)), L(VMFIR_L(mask::x, vf::vf2, vi::vi3)),
+		EBit(U(VNOP_U()))});
+	// LQ reuse and SQ forwarding, with partial masks and an intervening store.
+	progs.push_back({L(VLQ_L(mask::xyzw, vf::vf1, vi::vi5, 2)), L(VLQ_L(mask::xyzw, vf::vf2, vi::vi5, 2)),
+		L(VLQ_L(mask::x | mask::z, vf::vf3, vi::vi5, 2)), U(VADD_U(mask::xyzw, vf::vf4, vf::vf1, vf::vf2)),
+		L(VSQ_L(mask::xyzw, vf::vf4, vi::vi6, 0)), L(VLQ_L(mask::xyzw, vf::vf8, vi::vi6, 0)),
+		L(VSQ_L(mask::y, vf::vf9, vi::vi6, 0)), L(VLQ_L(mask::xyzw, vf::vf10, vi::vi6, 0)),
+		L(VSQ_L(mask::xyzw, vf::vf11, vi::vi7, 0)), L(VLQ_L(mask::xyzw, vf::vf12, vi::vi5, 2)),
+		L(VLQ_L(mask::xyzw, vf::vf13, vi::vi7, 0)), EBit(U(VNOP_U()))});
+	// Constant addresses across blocks and a branch on folded values.
+	progs.push_back({L(VIADDIU_L(vi::vi1, vi::vi0, 7)), L(VIADDIU_L(vi::vi2, vi::vi0, 7)),
+		L(VIBEQ_L(vi::vi1, vi::vi2, 2)), U(VNOP_U()), L(VSQ_L(mask::xyzw, vf::vf3, vi::vi0, 9)),
+		L(VLQ_L(mask::xyzw, vf::vf4, vi::vi1, 0)), L(VSQ_L(mask::xyzw, vf::vf4, vi::vi2, 3)),
+		EBit(U(VNOP_U()))});
+	for (size_t k = 0; k < progs.size(); k++)
+		for (u32 seed : {3u, 4u})
+			for (bool fh : {true, false})
+			{
+				const Outcome o = RunBoth(progs[k], fh, [seed](VuTestHarness& h) { SeedSpecials(h, seed + 70); });
+				EXPECT_TRUE(o.diffs.empty()) << "program " << k << " seed " << seed << " flagHack=" << fh << "\n" << Join(o.diffs);
+				EXPECT_EQ(o.lowered, o.blocks) << o.declined;
+			}
+}
+
 // Clamp modes 2/3: MADD (to Fd) reads ACC through microVU's read-only
 // mapping and clamps that cached register in place. The clamped copy is what
 // the rest of the block reads, and it reaches ACC's home when the block writes
@@ -1099,6 +1145,7 @@ TEST(VuoptLowering, ClampModes)
 		RegionCountedLoopBody();
 		RegionLoopFuzzBody();
 		RegionInvariantMatrixBody();
+		ViConstantsAndAddressesBody();
 		g_clampMode = -1;
 	}
 }
