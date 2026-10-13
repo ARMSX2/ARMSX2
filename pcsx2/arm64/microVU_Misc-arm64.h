@@ -62,6 +62,25 @@ static constexpr mVU_MacWeights mVUmakeMacWeights()
 	return t;
 }
 
+// bySSShift for a single-scalar result held in lane 1, 2 or 3 instead of lane
+// 0 (allocReg's natural slots): the same weight, taken from that lane.
+// Indexed [variant][lane][shift]; the lane-0 row is bySSShift's and unused.
+struct mVU_SSLaneWeights
+{
+	u32 w[4][4][4][4];
+};
+
+static constexpr mVU_SSLaneWeights mVUmakeSSLaneWeights()
+{
+	mVU_SSLaneWeights t{};
+	for (int v = 0; v < 4; v++)
+		for (int at = 0; at < 4; at++)
+			for (int shift = 0; shift < 4; shift++)
+				t.w[v][at][shift][at] = armPackLaneWeight(0, 1, false, shift,
+					(v & mVUmacW_ZSU) != 0, (v & mVUmacW_ZSO) != 0);
+	return t;
+}
+
 struct mVU_Globals
 {
 #define __four(val) { val, val, val, val }
@@ -123,6 +142,8 @@ struct mVU_Globals
 	// mVU_CLIP's UZP1 leaves them: the four +component lanes then the four
 	// -component ones, w weightless in both. Appended for the reason above.
 	u16 clipWeights[8] = {1, 4, 16, 0, 2, 8, 32, 0};
+	// Appended for the reason above — see mVU_SSLaneWeights.
+	mVU_SSLaneWeights ssLaneWeights = mVUmakeSSLaneWeights();
 #undef __four
 };
 
@@ -134,6 +155,8 @@ static_assert(offsetof(mVU_Globals, macWeights) % 16 == 0,
 	"mVUglob.macWeights must stay 16-byte aligned for Ldr q [x25, #imm]");
 static_assert(offsetof(mVU_Globals, clipWeights) % 16 == 0,
 	"mVUglob.clipWeights must stay 16-byte aligned for Ldr q [x25, #imm]");
+static_assert(offsetof(mVU_Globals, ssLaneWeights) % 16 == 0,
+	"mVUglob.ssLaneWeights must stay 16-byte aligned for Ldr q [x25, #imm]");
 
 // mVUemitClampConsts takes both clamp bounds in one Ldp.
 static_assert(offsetof(mVU_Globals, maxvals) == offsetof(mVU_Globals, minvals) + 16,
@@ -161,6 +184,10 @@ static_assert(mVUsignBoundsAllLaneRowIsClampPair(),
 
 // Weight vector for one mVUupdateFlags pack. `shift` is non-zero only on the
 // single-scalar path, which always keeps lane 0 alone in forward bit order.
+// The single-scalar weight (keepMask 1, not reversed) for a result in lane
+// `ssLane`; lane 0 is mVUmacWeightVec's own.
+__fi static const void* mVUmacWeightVec(u32 keepMask, bool reverse, int shift, int variant, int ssLane);
+
 __fi static const void* mVUmacWeightVec(u32 keepMask, bool reverse, int shift, int variant)
 {
 	pxAssert(variant >= 0 && variant < 4);
@@ -170,6 +197,14 @@ __fi static const void* mVUmacWeightVec(u32 keepMask, bool reverse, int shift, i
 		return &mVUglob.macWeights.bySSShift[variant][shift][0];
 	}
 	return &mVUglob.macWeights.byMask[variant][reverse ? 1 : 0][keepMask & 0xF][0];
+}
+
+__fi static const void* mVUmacWeightVec(u32 keepMask, bool reverse, int shift, int variant, int ssLane)
+{
+	if (ssLane == 0)
+		return mVUmacWeightVec(keepMask, reverse, shift, variant);
+	pxAssert(keepMask == 1 && !reverse && shift >= 0 && shift < 4 && ssLane < 4);
+	return &mVUglob.ssLaneWeights.w[variant][ssLane][shift][0];
 }
 
 static const uint _Ibit_ = 1 << 31;
@@ -303,12 +338,31 @@ __fi static a64::MemOperand mVUstateMem(int64_t off)
 // puts the two in one object for exactly this. VU0's is not in it.
 static constexpr int64_t kVU1MemFromState = offsetof(VuStateStore, vu1Mem) - sizeof(VURegs);
 
+// Micro mode only: &VU.Mem[0], the VU's data memory, pinned by the dispatcher
+// (mVUdispatcherAB) so a load or store whose index is already a byte offset
+// addresses [gprVUMem, index] with no add in front of it. In COP2 macro mode
+// x29 is the EE recompiler's $v0 pin and is never touched.
+#define gprVUMem a64::x29
+
 // Where a VU load or store's address ended up: a base register and the
-// displacement the access itself has to carry.
+// displacement the access itself has to carry -- or, with `index`, a base and
+// an index register whose sum is the address, which takes no displacement.
 struct mVUmemRef
 {
 	a64::Register base;
 	int64_t disp;
+	a64::Register index = a64::NoReg;
+
+	// The operand for the access `off` bytes in.
+	a64::MemOperand at(int64_t off = 0) const
+	{
+		if (index.IsValid())
+		{
+			pxAssert(disp == 0 && off == 0);
+			return a64::MemOperand(base, index);
+		}
+		return a64::MemOperand(base, disp + off);
+	}
 };
 
 // How far the unsigned-offset load/store forms reach, by operand width: imm12

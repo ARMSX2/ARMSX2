@@ -95,6 +95,7 @@ add_pcsx2_test(recompiler_tests
 	vu0_clamp_modes_tests.cpp
 	vu_ftoi_saturation_tests.cpp
 	vu_madda_acc_lane_tests.cpp
+	vu_single_lane_inplace_tests.cpp
 	vu_ss_clamp_lane_tests.cpp
 	vu_clip_flag_tests.cpp
 	vu_clamp_consts_residency_tests.cpp
@@ -107,6 +108,7 @@ add_pcsx2_test(recompiler_tests
 	vu_minmax_order_tests.cpp
 	vu_pq_boundary_tests.cpp
 	vu_saturated_q_consumer_tests.cpp
+	vu_branch_condition_tests.cpp
 	vu_branch_terminator_tests.cpp
 	vu_overflow_hack_tests.cpp
 	vu_mac_flag_pack_tests.cpp
@@ -140,6 +142,7 @@ add_pcsx2_test(recompiler_tests
 	mvu_ebit_exit_tests.cpp
 	vuopt_frontend_tests.cpp
 	vuopt_lowering_tests.cpp
+	mvu_ebit_condbranch_status_tests.cpp
 	mvu_options_sentinel_tests.cpp
 	mvu_model_stub_tests.cpp
 	model_call_contract_tests.cpp

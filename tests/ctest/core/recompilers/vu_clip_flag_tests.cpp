@@ -295,4 +295,59 @@ TEST(VuClipFlag, HistoryKeepsTheLastFourResultsAndDropsTheRest)
 	EXPECT_EQ(h.GetViInterp(REG_CLIP_FLAG), want) << "interp";
 }
 
+// =========================================================================
+//  FCOR: vi01 = 1 when every bit of the 24-bit clip flag the immediate
+//  leaves clear is set, else 0 -- (CLIP | imm24) == 0xFFFFFF.
+//
+//  The immediates cover the shapes that reach different encodings of that
+//  test: all ones (nothing left to check), zero (every bit checked), a lone
+//  bit at either end, two bits 23 apart (the checked span does not fit a
+//  16-bit move), and the strided one-bit-per-CLIP-result masks programs use
+//  to ask "did this test fail in each of the last four results". Each meets
+//  a clip flag that satisfies it and one that misses by a single bit, on
+//  both VUs.
+// =========================================================================
+
+namespace {
+
+inline VuOp LowerOnly(u32 lower) { return VuOp{lower, VNOP_U()}; }
+
+void RunFcor(int vu, u32 clip, u32 imm, u32 expect)
+{
+	VuTestHarness h(vu);
+	h.LoadProgram({
+		LowerOnly(VFCSET_L(clip)),
+		NopPair(), NopPair(), NopPair(), NopPair(),
+		LowerOnly(VFCOR_L(imm)),
+		EBitNopPair(),
+	});
+	h.Run();
+	EXPECT_EQ(h.GetViJit(vi::vi1), expect)
+		<< "vu" << vu << " clip " << std::hex << clip << " imm " << imm;
+}
+
+} // namespace
+
+TEST(VuClipFlag, FcorChecksEveryBitTheImmediateLeavesClear)
+{
+	const u32 imms[] = {0xFFFFFFu, 0x000000u, 0xFFFFFEu, 0x7FFFFFu, 0x7FFFFEu,
+	                    0xFBEFBEu, 0xF7DF7Du, 0xEFBEFBu, 0xDF7DF7u, 0xBEFBEFu, 0x7DF7DFu};
+	for (int vu = 0; vu < 2; vu++)
+	{
+		for (u32 imm : imms)
+		{
+			const u32 need = ~imm & 0xFFFFFFu;
+			RunFcor(vu, need, imm, 1);
+			RunFcor(vu, 0xFFFFFFu, imm, 1);
+			if (need)
+			{
+				const u32 lowest = need & (0u - need);
+				const u32 highest = 1u << (31 - __builtin_clz(need));
+				RunFcor(vu, need & ~lowest, imm, 0);
+				RunFcor(vu, 0xFFFFFFu & ~highest, imm, 0);
+			}
+		}
+	}
+}
+
 } // namespace recompiler_tests

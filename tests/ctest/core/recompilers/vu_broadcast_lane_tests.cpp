@@ -33,6 +33,7 @@
 #include "harness/VuTestHarness.h"
 
 #include "Config.h"
+#include "common/FPControl.h"
 #include "VU.h"
 
 #include <gtest/gtest.h>
@@ -204,8 +205,8 @@ INSTANTIATE_TEST_SUITE_P(
 //  through the scalar ones, and for y/z/w it first rotates that lane into
 //  lane 0 (EXT) and rotates back on writeback. Combining a broadcast source
 //  with a rotated destination crosses the two lane-selection mechanisms,
-//  which is exactly where an off-by-one shows up. It also suppresses the
-//  by-element FMUL fold, so MUL lands on the scalar helper instead.
+//  which is exactly where an off-by-one shows up. MUL takes the by-element
+//  fold in its scalar form here (FMUL Sd, Sn, Vm.S[bc]).
 // =========================================================================
 
 namespace {
@@ -246,8 +247,8 @@ TEST(VuBroadcastSingleLane, AddWIntoYOnly)
 	RunSingleLane(VADDw_U(mask::y, kFd, kFs, kFt), 'y', 9.5f);
 }
 
-// Fs.z = 4.0, Ft.x = 2.0 → 8.0 into Fd.z only. MUL at a single-lane mask
-// bypasses the by-element fold and uses the scalar multiply helper.
+// Fs.z = 4.0, Ft.x = 2.0 → 8.0 into Fd.z only, through the scalar
+// by-element multiply.
 TEST(VuBroadcastSingleLane, MulXIntoZOnly)
 {
 	RunSingleLane(VMULx_U(mask::z, kFd, kFs, kFt), 'z', 8.0f);
@@ -351,6 +352,172 @@ TEST(VuBroadcastLaneFold, MulSelectsTheEncodedLaneWithoutTheOperandClamp)
 		for (int i = 0; i < 4; i++)
 			EXPECT_FLOAT_EQ(h.GetVfJit(kFd, kLane[i]), cases[c].expect[i]) << "lane " << kLane[i];
 	}
+}
+
+// =========================================================================
+//  The fold's scalar form, every destination lane against every broadcast
+//  lane, for each multiply that takes it: MUL, MADD, MSUB and their
+//  accumulator forms. ACC is (10, 20, 30, 40), so the accumulate's other
+//  three lanes are a check on their own: a single-lane accumulate must leave
+//  them standing. Both VUs, with the overflow clamp at its default and off.
+// =========================================================================
+
+namespace {
+
+enum class BcOp
+{
+	Mul,
+	Madd,
+	Msub,
+	Mula,
+	Madda,
+	Msuba,
+};
+
+u32 BcUpper(BcOp op, u32 m, int bc)
+{
+	switch (op)
+	{
+		case BcOp::Mul:  return Upper(m, kFt, kFs, kFd, 0x18 + bc);
+		case BcOp::Madd: return Upper(m, kFt, kFs, kFd, 0x08 + bc);
+		case BcOp::Msub: return Upper(m, kFt, kFs, kFd, 0x0C + bc);
+		case BcOp::Mula: return UpperFD(m, kFt, kFs, 0x06, bc);
+		case BcOp::Madda: return UpperFD(m, kFt, kFs, 0x02, bc);
+		case BcOp::Msuba: return UpperFD(m, kFt, kFs, 0x03, bc);
+	}
+	return 0;
+}
+
+void RunBcSingleLane(int vu, BcOp op, int lane, int bc)
+{
+	static const float kFsV[4] = {1.0f, 2.5f, 4.0f, 6.0f};
+	static const float kFtV[4] = {2.0f, 3.0f, 5.0f, 7.0f};
+	static const float kAccV[4] = {10.0f, 20.0f, 30.0f, 40.0f};
+	static const float kSentinel[4] = {-101.0f, -102.0f, -103.0f, -104.0f};
+	static const char kLane[4] = {'x', 'y', 'z', 'w'};
+
+	VuTestHarness h(vu);
+	h.SetVf(kFs, kFsV[0], kFsV[1], kFsV[2], kFsV[3]);
+	h.SetVf(kFt, kFtV[0], kFtV[1], kFtV[2], kFtV[3]);
+	h.SetVf(kFd, kSentinel[0], kSentinel[1], kSentinel[2], kSentinel[3]);
+	h.SetVf(kAccSrc, kAccV[0], kAccV[1], kAccV[2], kAccV[3]);
+	h.SetVf(kOnes, 1.0f, 1.0f, 1.0f, 1.0f);
+	const u32 m = mask::x >> lane;
+	h.LoadProgram({
+		UpperOnly(VMULA_U(mask::xyzw, kAccSrc, kOnes)),
+		NopPair(),
+		NopPair(),
+		NopPair(),
+		UpperOnly(BcUpper(op, m, bc)),
+		EBitNopPair(),
+	});
+	h.Run();
+
+	const float prod = kFsV[lane] * kFtV[bc];
+	const bool toAcc = (op == BcOp::Mula || op == BcOp::Madda || op == BcOp::Msuba);
+	float want;
+	switch (op)
+	{
+		case BcOp::Mul: case BcOp::Mula: want = prod; break;
+		case BcOp::Madd: case BcOp::Madda: want = kAccV[lane] + prod; break;
+		default: want = kAccV[lane] - prod; break;
+	}
+	const VURegs& j = h.JitSnapshot().regs;
+	for (int i = 0; i < 4; i++)
+	{
+		const float got = toAcc ? j.ACC.F[i] : h.GetVfJit(kFd, kLane[i]);
+		const float other = toAcc ? kAccV[i] : kSentinel[i];
+		EXPECT_FLOAT_EQ(got, (i == lane) ? want : other)
+			<< "vu" << vu << " op " << static_cast<int>(op) << " dest " << kLane[lane]
+			<< " bc " << kLane[bc] << " lane " << kLane[i];
+	}
+}
+
+} // namespace
+
+TEST(VuBroadcastLaneFold, SingleLaneDestinationEveryBroadcastLane)
+{
+	for (bool clamp : {true, false})
+	{
+		const bool prev0 = EmuConfig.Cpu.Recompiler.vu0Overflow;
+		const bool prev1 = EmuConfig.Cpu.Recompiler.vu1Overflow;
+		EmuConfig.Cpu.Recompiler.vu0Overflow = clamp;
+		EmuConfig.Cpu.Recompiler.vu1Overflow = clamp;
+		for (int vu = 0; vu < 2; vu++)
+			for (BcOp op : {BcOp::Mul, BcOp::Madd, BcOp::Msub, BcOp::Mula, BcOp::Madda, BcOp::Msuba})
+				for (int lane = 0; lane < 4; lane++)
+					for (int bc = 0; bc < 4; bc++)
+						RunBcSingleLane(vu, op, lane, bc);
+		EmuConfig.Cpu.Recompiler.vu0Overflow = prev0;
+		EmuConfig.Cpu.Recompiler.vu1Overflow = prev1;
+	}
+}
+
+// =========================================================================
+//  A multiply by VF0.w is a multiply by +1.0. Behind the operand clamp of
+//  clamp mode 1 under an FZ FPCR that multiply is the identity, and microVU
+//  does not emit it; the result has to be what an emitted multiply by 1.0
+//  gives. Each op runs twice in one program -- broadcasting VF0.w, and
+//  broadcasting the x lane of a register that holds 1.0 -- over operands that
+//  exercise the clamp (exponent 255, both kinds of NaN pattern, denormals of
+//  both signs, -0) plus a plain normal, and the two results must agree
+//  word for word. Every clamp mode, FZ on and off, both VUs, a multi-lane and
+//  a single-lane field.
+// =========================================================================
+
+namespace {
+
+void RunVf0wIdentity(int vu, int mode, bool ftz, u32 m, int which)
+{
+	FPControlRegister& fpcr = vu ? EmuConfig.Cpu.VU1FPCR : EmuConfig.Cpu.VU0FPCR;
+	const FPControlRegister saved = fpcr;
+	fpcr.SetFlushToZero(ftz);
+
+	VuTestHarness h(vu);
+	h.SetVuClampMode(mode);
+	h.SetVfBits(kFs, 0x7F900000u, 0x80000001u, 0x7FC00000u, 0x3FC00000u);
+	h.SetVfBits(vf::vf6, 0x00000001u, 0x80000000u, 0xFFA00000u, 0xBF400000u);
+	h.SetVfBits(kOnes, 0x3F800000u, 0x3F800000u, 0x3F800000u, 0x3F800000u);
+	h.SetVf(kAccSrc, 10.0f, 20.0f, 30.0f, 40.0f);
+	// One program per operand register, so each word meets the clamp alone.
+	const u32 fs = (which & 1) ? vf::vf6 : kFs;
+	u32 viaVf0 = 0, viaOne = 0;
+	switch (which >> 1)
+	{
+		case 0: viaVf0 = VMULw_U(m, vf::vf7, fs, vf::vf0);  viaOne = VMULx_U(m, vf::vf8, fs, kOnes);  break;
+		case 1: viaVf0 = VMADDw_U(m, vf::vf7, fs, vf::vf0); viaOne = VMADDx_U(m, vf::vf8, fs, kOnes); break;
+		default: break;
+	}
+	h.SetVfBits(vf::vf7, 0xDEAD0000u, 0xDEAD0001u, 0xDEAD0002u, 0xDEAD0003u);
+	h.SetVfBits(vf::vf8, 0xDEAD0000u, 0xDEAD0001u, 0xDEAD0002u, 0xDEAD0003u);
+	h.LoadProgram({
+		UpperOnly(VMULA_U(mask::xyzw, kAccSrc, kOnes)),
+		NopPair(),
+		NopPair(),
+		NopPair(),
+		UpperOnly(viaVf0),
+		UpperOnly(viaOne),
+		EBitNopPair(),
+	});
+	h.RunNoDiff();
+	const VURegs& j = h.JitSnapshot().regs;
+	for (int l = 0; l < 4; l++)
+		EXPECT_EQ(j.VF[vf::vf7].UL[l], j.VF[vf::vf8].UL[l])
+			<< "vu" << vu << " mode " << mode << " ftz " << ftz << " op " << which << " field " << (m >> 21)
+			<< " lane " << l;
+	fpcr = saved;
+}
+
+} // namespace
+
+TEST(VuBroadcastLaneFold, MultiplyByVf0wMatchesMultiplyByOne)
+{
+	for (int vu = 0; vu < 2; vu++)
+		for (int mode = 0; mode <= 4; mode++)
+			for (bool ftz : {true, false})
+				for (u32 m : {mask::xyz, mask::y})
+					for (int which = 0; which < 4; which++)
+						RunVf0wIdentity(vu, mode, ftz, m, which);
 }
 
 } // namespace recompiler_tests

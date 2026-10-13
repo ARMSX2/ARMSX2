@@ -311,10 +311,15 @@ void mVUendProgram(mV, microFlagCycles* mFC, int isEbit)
 // Branch Setup
 //------------------------------------------------------------------
 
-void mVUsetupBranch(mV, microFlagCycles& mFC)
+// reorderFlags: put the flag instances in the order the successor block
+// expects. A block that ends the program on every path has no successor, and
+// mVUendProgram reads the instance it leaves by its pre-reorder slot, so such
+// a block must not reorder (see condBranch).
+void mVUsetupBranch(mV, microFlagCycles& mFC, bool reorderFlags = true)
 {
 	mVU.regAlloc->flushAll();
-	mVUsetupFlags(mVU, mFC);
+	if (reorderFlags)
+		mVUsetupFlags(mVU, mFC);
 
 	// Shuffle P/Q regs since every block starts at instance #0.
 	// qmmPQ layout: [0]=Q, [1]=pending_q, [2]=P, [3]=pending_p.
@@ -708,7 +713,16 @@ void normBranch(mV, microFlagCycles& mFC)
 
 void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 {
-	mVUsetupBranch(mVU, mFC);
+	// With the E bit the program ends after the delay slot on both sides, so
+	// no successor block runs and nothing needs the flag instances reordered
+	// for one. Reordering anyway moved them under mVUendProgram, which picks
+	// the final instance by its slot from before the reorder: when the branch
+	// target's lookahead asked for exact status (a status reader early in
+	// code that never runs), the final STATUS, MAC and CLIP came from the
+	// wrong register, or from one the reorder had overwritten. The M bit is
+	// the exception: its exit leaves the program resumable at a successor, and
+	// its non-E-bit mVUendProgram reads slot 3 of the reordered ring.
+	mVUsetupBranch(mVU, mFC, !(mVUup.eBit && !mVUup.mBit));
 
 	// T-bit, D-bit, M-bit conditional branches — match x86 condBranch(). Each
 	// branch bit tests the relevant FBRST flag (T/D), then if set raises INTC,
@@ -893,7 +907,10 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 		// by construction — see mVUcondBranchDest/Finish). The mVUsetupBranch
 		// flushAll only unmapped the temp; any emission that could have
 		// clobbered it would have cleared the carry.
-		armAsm->Cmp(armWRegister(mVU.branchCondCarryGpr), 0);
+		if (mVU.branchCondCarryLow16)
+			armAsm->Tst(armWRegister(mVU.branchCondCarryGpr), 0xffff);
+		else
+			armAsm->Cmp(armWRegister(mVU.branchCondCarryGpr), 0);
 		mVUclearBranchCondCarry(mVU);
 	}
 	else

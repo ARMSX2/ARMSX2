@@ -183,32 +183,40 @@ static __fi bool mVUclampFoldable(microVU& mVU, const a64::VRegister& reg, int x
 // then emit oldest first, which is the order that leaves each folded source
 // standing -- allocReg remaps a clone-write destination as it writes it, so no
 // later operand can be holding one as its own cached copy.
+//
+// `scalarDst` is the operand a single-lane body's scalar arithmetic writes
+// next. A scalar op zeroes lanes 1-3 of its destination, so nothing in those
+// lanes outlives it, and that operand's clamp runs full width instead of the
+// single-lane form that preserves them: the same word in lane 0, without the
+// scratch round trip, and its clone-write copy folds.
 static void mVUclampOperands(microVU& mVU, std::initializer_list<a64::VRegister> regs, int xyzw,
-	bool bClampE = false)
+	bool bClampE = false, const a64::VRegister& scalarDst = a64::NoVReg)
 {
 	const a64::VRegister* r = regs.begin();
 	const int n = static_cast<int>(regs.size());
 	pxAssert(n <= microRegAlloc::kCloneRunMax);
 
 	bool live[microRegAlloc::kCloneRunMax];
+	int lanes[microRegAlloc::kCloneRunMax];
 	for (int i = 0; i < n; i++)
 	{
 		live[i] = r[i].IsValid();
 		for (int j = i + 1; live[i] && j < n; j++)
 			live[i] = !(r[j].IsValid() && r[j].Is(r[i]));
+		lanes[i] = (live[i] && scalarDst.IsValid() && r[i].Is(scalarDst)) ? 0xF : xyzw;
 	}
 
 	int cloned[microRegAlloc::kCloneRunMax];
 	for (int i = n - 1; i >= 0; i--)
 	{
-		cloned[i] = (live[i] && mVUclampFoldable(mVU, r[i], xyzw, bClampE))
+		cloned[i] = (live[i] && mVUclampFoldable(mVU, r[i], lanes[i], bClampE))
 			? mVU.regAlloc->takeCloneSource(r[i].GetCode())
 			: -1;
 	}
 	for (int i = 0; i < n; i++)
 	{
 		if (live[i])
-			mVUclamp2(mVU, r[i], a64::NoVReg, xyzw, bClampE, cloned[i]);
+			mVUclamp2(mVU, r[i], a64::NoVReg, lanes[i], bClampE, cloned[i]);
 	}
 }
 

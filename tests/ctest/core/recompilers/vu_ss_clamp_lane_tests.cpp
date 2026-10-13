@@ -116,4 +116,78 @@ TEST(VuSsClampLane, MaddXLeavesTheOtherAccLanes)
 	ExpectAccSurvived(h, k3, k4, k5, k6);
 }
 
+// =========================================================================
+//  The single-lane op's own destination is the other side of that rule.
+//  Its clamp is followed by the scalar arithmetic that writes the register,
+//  which zeroes lanes 1-3 itself, so whatever the clamp leaves there cannot
+//  matter -- but the cached VF it was cloned from must come through intact,
+//  and the written lane must come out exactly as the full-width form of the
+//  same op computes it, whose clamp runs on every lane anyway.
+//
+//  Each program caches vf1 with a MOVE, runs a single-lane op whose Fs is vf1
+//  (exponent-0xFF words, so the clamp has work to do) into vf5, the same op
+//  full width into vf8, and copies vf1 back out of the cache with a MOVE.
+//  The interpreter's console-exact clamp parts from microVU's on exactly these
+//  words (a documented, shared-with-x86 difference), so the checks are
+//  microVU against itself. Clamp modes 1 to 3, both VUs, an unrotated and two
+//  rotated lanes, and each single-lane body that clamps Fs and writes a VF.
+// =========================================================================
+
+namespace {
+
+constexpr u32 kHugeP = 0x7F900000u; // exponent 0xFF, positive
+constexpr u32 kHugeN = 0xFFA00000u; // exponent 0xFF, negative
+
+void RunScalarDstProgram(int vu, int mode, u32 m, u32 (*op)(u32 mask, u32 fd))
+{
+	static const u32 kVf1[4] = {kHugeP, kHugeN, kHugeP, kHugeN};
+	static const u32 kSentinel[4] = {0xDEAD0000u, 0xDEAD0001u, 0xDEAD0002u, 0xDEAD0003u};
+	VuTestHarness h(vu);
+	h.SetVuClampMode(mode);
+	h.SetVfBits(vf::vf1, kVf1[0], kVf1[1], kVf1[2], kVf1[3]);
+	h.SetVfBits(vf::vf2, k2, k3, k4, k5);
+	h.SetVfBits(vf::vf3, k1, k1, k1, k1);
+	h.SetVfBits(vf::vf5, kSentinel[0], kSentinel[1], kSentinel[2], kSentinel[3]);
+	h.LoadProgram({
+		VuOp{VMOVE_L(mask::xyzw, vf::vf7, vf::vf1), VNOP_U()}, // caches vf1
+		UpperOnly(VMULA_U(mask::xyzw, vf::vf2, vf::vf3)),       // ACC = vf2
+		UpperOnly(op(m, vf::vf5)),
+		UpperOnly(op(mask::xyzw, vf::vf8)),
+		VuOp{VMOVE_L(mask::xyzw, vf::vf6, vf::vf1), VNOP_U()}, // vf1 from the cache
+		EBitNopPair(),
+	});
+	h.RunNoDiff();
+	const VURegs& j = h.JitSnapshot().regs;
+	for (int l = 0; l < 4; l++)
+	{
+		const bool written = (m >> (24 - l)) & 1;
+		EXPECT_EQ(j.VF[vf::vf5].UL[l], written ? j.VF[vf::vf8].UL[l] : kSentinel[l]) << "vf5 lane " << l;
+		EXPECT_EQ(j.VF[vf::vf6].UL[l], kVf1[l]) << "vf1 read back, lane " << l;
+	}
+}
+
+u32 OpMul(u32 m, u32 fd) { return VMUL_U(m, fd, vf::vf1, vf::vf2); }
+u32 OpMulX(u32 m, u32 fd) { return VMULx_U(m, fd, vf::vf1, vf::vf2); }
+u32 OpAdd(u32 m, u32 fd) { return VADD_U(m, fd, vf::vf1, vf::vf2); }
+u32 OpMaddY(u32 m, u32 fd) { return VMADDy_U(m, fd, vf::vf1, vf::vf2); }
+u32 OpMsub(u32 m, u32 fd) { return VMSUB_U(m, fd, vf::vf1, vf::vf2); }
+
+} // namespace
+
+TEST(VuSsClampLane, ScalarDestinationClampLeavesItsSourceAlone)
+{
+	for (int vu = 0; vu < 2; vu++)
+	{
+		for (int mode = 1; mode <= 3; mode++)
+		{
+			for (u32 m : {mask::x, mask::y, mask::w})
+			{
+				SCOPED_TRACE(::testing::Message() << "vu" << vu << " mode " << mode << " dest " << (m >> 21));
+				for (auto op : {OpMul, OpMulX, OpAdd, OpMaddY, OpMsub})
+					RunScalarDstProgram(vu, mode, m, op);
+			}
+		}
+	}
+}
+
 } // namespace recompiler_tests
