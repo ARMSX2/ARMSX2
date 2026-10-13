@@ -519,7 +519,7 @@ __fi void _cpuEventTest_Shared()
 
 	if (cpuTestCycle(nextStartCounter, nextDeltaCounter))
 	{
-		rcntUpdate();
+		rcntUpdate<M>();
 		_cpuTestPERF();
 	}
 

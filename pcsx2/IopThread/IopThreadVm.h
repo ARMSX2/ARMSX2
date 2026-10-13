@@ -58,6 +58,55 @@ namespace IopThread
 	/// reset.
 	void OnCpuConfigChanged();
 
+	// ---- EE-to-IOP items ---------------------------------------------------------------------
+	// The EE tells the IOP things at a cycle: blanking, an interrupt, a few once-a-frame jobs (design
+	// 3.4.2). The EE posts an item to the E2I queue stamped with its cycle. Lockstep then hands the
+	// IOP thread "apply everything up to this stamp" and waits, so the item takes effect at exactly
+	// the point of the EE's execution where Off made the direct call. Threaded will post and go on.
+
+	namespace E2IKind
+	{
+		inline constexpr u16 HBlankStart = 0; // psxHBlankStart()
+		inline constexpr u16 HBlankEnd = 1; // psxHBlankEnd()
+		inline constexpr u16 VBlankStart = 2; // psxVBlankStart()
+		inline constexpr u16 VBlankEnd = 3; // psxVBlankEnd()
+		inline constexpr u16 IopIrq = 4; // iopIntcIrq(arg)
+		inline constexpr u16 Call = 5; // the job whose number is arg (E2IJob)
+	} // namespace E2IKind
+
+	/// The once-a-frame jobs the EE runs for IOP devices (design 3.4.2 CALL, 8.4, 8.11).
+	namespace E2IJob
+	{
+		inline constexpr u32 AutoEjectTick = 0; // AutoEject::CountDownTicks()
+		inline constexpr u32 MemcardBusyTick = 1; // MemcardBusy::Decrement()
+		inline constexpr u32 VsyncPatchesIop = 2; // Patch::ApplyVsyncPatchesIOP()
+	} // namespace E2IJob
+
+	/// What each kind of item does on the IOP. The real table calls the IOP's functions; a test swaps
+	/// in a table that records which thread ran what.
+	struct E2IActions
+	{
+		void (*hblank_start)();
+		void (*hblank_end)();
+		void (*vblank_start)();
+		void (*vblank_end)();
+		void (*iop_irq)(u32 line);
+		void (*job)(u32 job);
+	};
+	extern const E2IActions kRealE2IActions;
+
+	/// Applies one item with `actions`. An unknown kind or job is a bug in the caller.
+	void ApplyE2IItem(const E2IItem& item, const E2IActions& actions = kRealE2IActions);
+
+	/// Replaces the table the IOP thread applies items with (nullptr: the real one). For tests; returns
+	/// the previous table. Needs the thread stopped or the EE in a state where it is not applying.
+	const E2IActions* SetE2IActionsForTests(const E2IActions* actions);
+
+	/// Lockstep: the EE posts the item, stamped with its cycle, and waits until the IOP thread has
+	/// applied it. With no IOP thread (a mode switch or shutdown in progress, or Off) the item is applied
+	/// here, directly. EE thread only.
+	void ApplyOnIop(u16 kind, u32 arg = 0);
+
 	// ---- Clocks and pausing ------------------------------------------------------------------
 
 	/// The EE's cycle counter and the IOP's slice books were reset or loaded (cpuReset, a savestate

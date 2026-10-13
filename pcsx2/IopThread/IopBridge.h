@@ -9,11 +9,18 @@
 // here, one function per crossing, puts that change in one place per crossing instead of in the
 // middle of Counters.cpp, Memory.cpp and the SIF code.
 //
-// Each function is inline and calls exactly the function its call site called before, with the same
-// arguments in the same order. There is no mode test and no atomic in here. The generated code at
-// every call site is the code it was before.
+// What each crossing does in each mode (the crossing numbers C8, C14, ... are the rows of section 7.1
+// of the IOP thread design):
 //
-// The crossing numbers (C8, C14, ...) are the rows of section 7.1 of the IOP thread design.
+//   Off        the call the call site always made. A function chosen by template (the blanking
+//              calls, which run inside the event test and are templated on its mode) or one load
+//              of the mode (the crossings that run at most a few thousand times a frame, none of them
+//              inside the event test). The blanking calls compile to what they were.
+//   Lockstep   a queued item or a hold. An EE-to-IOP effect (blanking, the IRQ, the once-a-frame
+//              jobs) becomes an item in the E2I queue, stamped with the EE's cycle, that the IOP thread
+//              applies before the EE goes on. The EE's access to IOP state takes a hold, which in
+//              Lockstep is a marker: the IOP thread is parked whenever the EE runs.
+//
 // EeBridge.h has the other direction, IOP-side code reaching into the EE.
 
 #pragma once
@@ -24,6 +31,8 @@
 #include "IopDma.h"
 #include "IopHw.h"
 #include "IopMem.h"
+#include "IopThread/IopThreadMode.h"
+#include "IopThread/IopThreadVm.h"
 #include "Patch.h"
 #include "SIO/Sio.h"
 #include "SPU2/spu2.h"
@@ -34,25 +43,90 @@ namespace IopBridge
 	// ---- Blanking (C14) ----------------------------------------------------------------------
 	// The EE's counters tell the IOP's counters that a blank started or ended. The calls are made
 	// where the EE's own blank handling reaches that point, in the same order as before.
+	//
+	// These run about 527 times a frame, inside the event test, so the mode is a template parameter
+	// (the mode of the event test instance that calls them) and Off is the direct call. Lockstep
+	// queues the item and waits until the IOP thread has applied it. Threaded will queue it and go on.
 
-	__forceinline_odr void HBlankStart() { psxHBlankStart(); }
-	__forceinline_odr void HBlankEnd() { psxHBlankEnd(); }
-	__forceinline_odr void VBlankStart() { psxVBlankStart(); }
-	__forceinline_odr void VBlankEnd() { psxVBlankEnd(); }
+	template <IopThreadMode M>
+	__forceinline_odr void HBlankStart()
+	{
+		if constexpr (M == IopThreadMode::Off)
+			psxHBlankStart();
+		else
+			IopThread::ApplyOnIop(IopThread::E2IKind::HBlankStart);
+	}
+
+	template <IopThreadMode M>
+	__forceinline_odr void HBlankEnd()
+	{
+		if constexpr (M == IopThreadMode::Off)
+			psxHBlankEnd();
+		else
+			IopThread::ApplyOnIop(IopThread::E2IKind::HBlankEnd);
+	}
+
+	template <IopThreadMode M>
+	__forceinline_odr void VBlankStart()
+	{
+		if constexpr (M == IopThreadMode::Off)
+			psxVBlankStart();
+		else
+			IopThread::ApplyOnIop(IopThread::E2IKind::VBlankStart);
+	}
+
+	template <IopThreadMode M>
+	__forceinline_odr void VBlankEnd()
+	{
+		if constexpr (M == IopThreadMode::Off)
+			psxVBlankEnd();
+		else
+			IopThread::ApplyOnIop(IopThread::E2IKind::VBlankEnd);
+	}
 
 	// ---- Once-a-frame jobs the EE runs for IOP devices ---------------------------------------
-	// Run from the EE's vsync. They touch the memory card state the IOP's SIO2 code reads.
+	// Run from the EE's vsync. They touch the memory card state the IOP's SIO2 code reads. Queued as
+	// CALL items in Lockstep, like the blanking calls around them.
 
-	__forceinline_odr void AutoEjectTick() { AutoEject::CountDownTicks(); }
-	__forceinline_odr void MemcardBusyTick() { MemcardBusy::Decrement(); }
+	template <IopThreadMode M>
+	__forceinline_odr void AutoEjectTick()
+	{
+		if constexpr (M == IopThreadMode::Off)
+			AutoEject::CountDownTicks();
+		else
+			IopThread::ApplyOnIop(IopThread::E2IKind::Call, IopThread::E2IJob::AutoEjectTick);
+	}
 
-	// The vsync patches that write IOP memory. Patch::ApplyVsyncPatches runs the EE ones itself.
-	__forceinline_odr void ApplyVsyncPatches() { Patch::ApplyVsyncPatchesIOP(); }
+	template <IopThreadMode M>
+	__forceinline_odr void MemcardBusyTick()
+	{
+		if constexpr (M == IopThreadMode::Off)
+			MemcardBusy::Decrement();
+		else
+			IopThread::ApplyOnIop(IopThread::E2IKind::Call, IopThread::E2IJob::MemcardBusyTick);
+	}
+
+	// The vsync patches that write IOP memory. Patch::ApplyVsyncPatches runs the EE ones itself, and is
+	// called from VMManager (not from the event test), so the mode is read here: once a frame.
+	__forceinline_odr void ApplyVsyncPatches()
+	{
+		if (IopThread::GetMode() == IopThreadMode::Off) [[likely]]
+			Patch::ApplyVsyncPatchesIOP();
+		else
+			IopThread::ApplyOnIop(IopThread::E2IKind::Call, IopThread::E2IJob::VsyncPatchesIop);
+	}
 
 	// ---- The EE raises an IOP interrupt (C8) -------------------------------------------------
-	// A write to SBUS F240 with bit 18 set raises IOP interrupt line 1.
+	// A write to SBUS F240 with bit 18 set raises IOP interrupt line 1. Counted at step 5: never in
+	// gameplay, so the mode is read here.
 
-	__forceinline_odr void RaiseIopIrq(uint line) { iopIntcIrq(line); }
+	__forceinline_odr void RaiseIopIrq(uint line)
+	{
+		if (IopThread::GetMode() == IopThreadMode::Off) [[likely]]
+			iopIntcIrq(line);
+		else
+			IopThread::ApplyOnIop(IopThread::E2IKind::IopIrq, line);
+	}
 
 	// ---- SIF DMA, started from the EE (C10, C11, C12) ----------------------------------------
 	// dmaSIF0/1/2 start a transfer and then run the pump, which moves data on both sides and

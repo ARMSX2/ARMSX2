@@ -7,11 +7,15 @@
 #include "Config.h"
 #include "DebugTools/Breakpoints.h"
 #include "GSDumpReplayer.h"
+#include "IopCounters.h"
+#include "IopDma.h"
 #include "IopHw.h"
 #include "IopMem.h"
 #include "IopThread/SharedWord.h"
+#include "Patch.h"
 #include "R3000A.h"
 #include "R5900.h"
+#include "SIO/Sio.h"
 #include "VMManager.h"
 
 #include "common/ARCADE.h"
@@ -21,6 +25,7 @@
 #include <algorithm>
 #include <atomic>
 #include <thread>
+#include <utility>
 
 namespace IopThread
 {
@@ -33,6 +38,9 @@ namespace IopThread
 
 		// A pause the IOP thread asked for, waiting for the EE to make it.
 		std::atomic<bool> s_pause_requested{false};
+
+		// The table the IOP thread applies E2I items with. Null is the real one (tests swap it).
+		const E2IActions* s_e2i_actions = nullptr;
 
 		// The IOP's position in EE cycles: where the EE is, less the IOP time still owed (design 3.3).
 		// EEsCycle is negative when the IOP has run past the EE.
@@ -61,6 +69,7 @@ namespace IopThread
 			params.fpcr = EmuConfig.Cpu.FPUFPCR;
 			params.stack_size = VMManager::EMU_THREAD_STACK_SIZE;
 			params.run_slice = RunIopSlice;
+			params.apply_item = [](const E2IItem& item) { ApplyE2IItem(item, s_e2i_actions ? *s_e2i_actions : kRealE2IActions); };
 			params.ee_cycle = [] { return static_cast<u64>(cpuRegs.cycle); };
 			params.should_stop = [] {
 				const VMState state = VMManager::GetState();
@@ -192,6 +201,82 @@ namespace IopThread
 	Stats GetStats()
 	{
 		return g_thread.GetStats();
+	}
+
+	// ================================================================ EE-to-IOP items
+
+	const E2IActions kRealE2IActions = {
+		[] { psxHBlankStart(); },
+		[] { psxHBlankEnd(); },
+		[] { psxVBlankStart(); },
+		[] { psxVBlankEnd(); },
+		[](u32 line) { iopIntcIrq(line); },
+		[](u32 job) {
+			switch (job)
+			{
+				case E2IJob::AutoEjectTick:
+					AutoEject::CountDownTicks();
+					break;
+				case E2IJob::MemcardBusyTick:
+					MemcardBusy::Decrement();
+					break;
+				case E2IJob::VsyncPatchesIop:
+					Patch::ApplyVsyncPatchesIOP();
+					break;
+				default:
+					pxFailRel("unknown E2I job");
+					break;
+			}
+		},
+	};
+
+	void ApplyE2IItem(const E2IItem& item, const E2IActions& actions)
+	{
+		switch (item.kind)
+		{
+			case E2IKind::HBlankStart:
+				actions.hblank_start();
+				break;
+			case E2IKind::HBlankEnd:
+				actions.hblank_end();
+				break;
+			case E2IKind::VBlankStart:
+				actions.vblank_start();
+				break;
+			case E2IKind::VBlankEnd:
+				actions.vblank_end();
+				break;
+			case E2IKind::IopIrq:
+				actions.iop_irq(item.arg);
+				break;
+			case E2IKind::Call:
+				actions.job(item.arg);
+				break;
+			default:
+				pxFailRel("unknown E2I item kind");
+				break;
+		}
+	}
+
+	const E2IActions* SetE2IActionsForTests(const E2IActions* actions)
+	{
+		return std::exchange(s_e2i_actions, actions);
+	}
+
+	void ApplyOnIop(u16 kind, u32 arg)
+	{
+		// The stamp is the EE's cycle at the moment Off would have made the direct call.
+		const u64 stamp = cpuRegs.cycle;
+		if (LockstepActive() && g_thread.PostE2I(stamp, kind, arg))
+		{
+			// The EE waits here until the IOP thread has applied the item, so it takes effect at this
+			// point of the EE's execution and not later.
+			g_thread.LockstepApplyUpTo(stamp);
+			return;
+		}
+
+		// No IOP thread (Off, or a mode switch or a shutdown in progress): the call Off makes.
+		ApplyE2IItem(E2IItem{stamp, kind, 0, arg}, s_e2i_actions ? *s_e2i_actions : kRealE2IActions);
 	}
 
 	// ================================================================ the EE core's calls
