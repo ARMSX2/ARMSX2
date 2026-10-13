@@ -465,6 +465,30 @@ enum clampModes
 	cACC = 0x04, // Clamp ACC
 };
 
+// Whether the lane-fold multiply is a multiply by VF0.w, which is +1.0, of an
+// Fs the body has just clamped with FMINNM/FMAXNM under a VU FPCR with FZ. FZ
+// flushes a denormal input of that clamp to zero and the clamp brings exponent
+// 255 down to the finite bound, so Fs holds a normal number or a zero, and x *
+// 1.0 is x, bit for bit, for every such word in every rounding mode. Then the
+// multiply is the identity and is not emitted. (The sign-preserving clamp
+// passes denormals through, which the multiply would flush, so it does not
+// qualify.)
+static __fi bool mVUlaneMulIsIdentity(mV, const a64::VRegister& Fs, int opCase, int lane, int clampType)
+{
+	const bool ftz = (isVU0 ? EmuConfig.Cpu.VU0FPCR : EmuConfig.Cpu.VU1FPCR).GetFlushToZero();
+	return opCase == 2 && _Ft_ == 0 && lane == 3 && (clampType & cFs) && ftz
+	       && mVUclamp1Emits(mVU, false) && !mVUclamp2Signs(mVU, false)
+	       && mVU.regAlloc->checkVFClamp(Fs.GetCode());
+}
+
+// The AX-14 lane-fold multiply of an FMAC body, unless it is the identity.
+static __fi void mVUemitBodyLaneMul(mV, const a64::VRegister& Fs, const a64::VRegister& Ft, int lane,
+	int opCase, int clampType)
+{
+	if (!mVUlaneMulIsIdentity(mVU, Fs, opCase, lane, clampType))
+		mVUemitLaneMul(mVU, Fs, Ft, lane, _XYZW_SS);
+}
+
 //------------------------------------------------------------------
 // Logging Helper
 //------------------------------------------------------------------
@@ -761,7 +785,7 @@ static void mVU_FMACa(microVU& mVU, int recPass, int opCase, int opType, bool is
 		const bool vf0MaxMin = (opType == 3 || opType == 4) && (opCase == 1 || opCase == 2)
 		                       && (_Ft_ == 0 || _Fs_ == 0);
 
-		if (bcLane >= 0)   mVUemitLaneMul(mVU, Fs, Ft, bcLane, _XYZW_SS);
+		if (bcLane >= 0)   mVUemitBodyLaneMul(mVU, Fs, Ft, bcLane, opCase, clampType);
 		else if (vf0MaxMin) mVUemitMaxMinSignClear(mVU, Fs, Ft, opType == 3);
 		else if (_XYZW_SS) NEON_SS[opType](mVU, Fs, Ft, 0);
 		else               NEON_PS[opType](mVU, Fs, Ft, 0);
@@ -835,7 +859,7 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 		const bool prodClamped = (bcLane < 0) && !CHECK_VU_SIGN_OVERFLOW(mVU.index);
 
 		// Step 1: Multiply Fs * Ft
-		if (bcLane >= 0)   mVUemitLaneMul(mVU, Fs, Ft, bcLane, _XYZW_SS); // AX-14 fold
+		if (bcLane >= 0)   mVUemitBodyLaneMul(mVU, Fs, Ft, bcLane, opCase, clampType); // AX-14 fold
 		else if (_XYZW_SS) NEON_SS[2](mVU, Fs, Ft, 0);
 		else               NEON_PS[2](mVU, Fs, Ft, 0);
 
@@ -919,7 +943,7 @@ static void mVU_FMACc(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 
 		// Step 1: Fs = Fs * Ft
 		// Step 2: Fs = Fs + ACC
-		if (bcLane >= 0) mVUemitLaneMul(mVU, Fs, Ft, bcLane, _XYZW_SS); // AX-14 fold
+		if (bcLane >= 0) mVUemitBodyLaneMul(mVU, Fs, Ft, bcLane, opCase, clampType); // AX-14 fold
 		else if (_XYZW_SS) NEON_SS[2](mVU, Fs, Ft, 0);
 		else               NEON_PS[2](mVU, Fs, Ft, 0);
 		if (_XYZW_SS) NEON_SS[0](mVU, Fs, ACC, prodClamped ? preClampTo : 0);
@@ -969,7 +993,7 @@ static void mVU_FMACd(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 
 		// Step 1: Fs = Fs * Ft
 		// Step 2: Fd = Fd - Fs  (Fd starts as ACC)
-		if (bcLane >= 0) mVUemitLaneMul(mVU, Fs, Ft, bcLane, _XYZW_SS); // AX-14 fold
+		if (bcLane >= 0) mVUemitBodyLaneMul(mVU, Fs, Ft, bcLane, opCase, clampType); // AX-14 fold
 		else if (_XYZW_SS) NEON_SS[2](mVU, Fs, Ft, 0);
 		else               NEON_PS[2](mVU, Fs, Ft, 0);
 		if (_XYZW_SS) NEON_SS[1](mVU, Fd, Fs, prodClamped ? preClampFrom : 0);

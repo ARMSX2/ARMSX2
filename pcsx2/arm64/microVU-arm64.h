@@ -216,7 +216,9 @@
 //  54 — a full-width ACC write (ADDA, SUBA, MULA and their bc/i/q forms at
 //       xyzw) leaves its result in Fs's clone and binds that register as ACC,
 //       instead of copying it into an ACC register of its own.
-static constexpr u32 kMvuCompilerAbiVersion = 54;
+//  55 — a broadcast multiply by VF0.w of an Fs just clamped with FMINNM/FMAXNM
+//       under an FZ FPCR is the identity and is not emitted.
+static constexpr u32 kMvuCompilerAbiVersion = 55;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
