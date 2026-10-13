@@ -725,10 +725,15 @@ static void mVU_FMACa(microVU& mVU, int recPass, int opCase, int opType, bool is
 
 		setupFtReg(mVU, Ft, tempFt, opCase, clampType, bcLane, opType == 2);
 
+		// A full-width ACC write needs no ACC register of its own: the result is
+		// computed in Fs's clone and that register becomes ACC's written slot
+		// afterwards (rebindFullWrite), instead of being copied into one.
+		const bool accInFs = isACC && (_X_Y_Z_W == 0xf);
 		if (isACC)
 		{
 			Fs  = mVU.regAlloc->allocReg(_Fs_, 0, _X_Y_Z_W);
-			ACC = mVU.regAlloc->allocReg((_X_Y_Z_W == 0xf) ? -1 : 32, 32, 0xf, false);
+			if (!accInFs)
+				ACC = mVU.regAlloc->allocReg(32, 32, 0xf, false);
 			if (_XYZW_SS2)
 				shuffleSSto0(ACC, offsetReg); // Rotate target lane to lane 0
 		}
@@ -763,7 +768,12 @@ static void mVU_FMACa(microVU& mVU, int recPass, int opCase, int opType, bool is
 
 		mVUemitSaturateAtMax(mVU, Fs, uo);
 
-		if (isACC)
+		if (accInFs)
+		{
+			mVU.regAlloc->rebindFullWrite(Fs, 32);
+			mVUupdateFlags(mVU, Fs, tempFt, a64::NoVReg, true, uo.underflow, uo.overflow);
+		}
+		else if (isACC)
 		{
 			if (_XYZW_SS)
 				armAsm->Ins(ACC.V4S(), 0, Fs.V4S(), 0); // MOVSS equivalent

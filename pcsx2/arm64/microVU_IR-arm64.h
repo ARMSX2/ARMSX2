@@ -432,6 +432,20 @@ public:
 		armAsm->Ext(dst.V16B(), src.V16B(), src.V16B(), srcLane * 4);
 	}
 
+	// `reg`, a full-width clone-write temp (allocReg(vf, 0, 0xf)) the caller
+	// has just filled with the whole new value of `vfreg`, becomes that VF's
+	// written slot in place, as if it had been allocated allocReg(-1, vfreg,
+	// 0xf) and the value copied over. clearNeeded then treats it as the full
+	// write it is and drops every other cached copy of `vfreg`.
+	void rebindFullWrite(const a64::VRegister& reg, int vfreg)
+	{
+		microMapNEON& m = neonMap[reg.GetCode()];
+		pxAssert(m.isNeeded && m.VFreg == 0 && m.xyzw == 0xF);
+		m.VFreg  = vfreg;
+		m.isZero = false;
+		m.count  = counter;
+	}
+
 	// Allocate a NEON register for VF access. Ported from x86 allocReg —
 	// preserves cache-validity and clone-write SS-shuffle semantics.
 	//
