@@ -183,6 +183,19 @@ TEST(IopThreadMode, ANonArm64HostForcesLockstepOffToo)
 	EXPECT_EQ(Resolve(true, true, true, Host(false, 0, 0)), IopThreadMode::Off);
 }
 
+TEST(IopThreadMode, TheTestHarnessFlagIsOffUnlessSomeoneSetsIt)
+{
+	// This binary may be built with PCSX2_RECOMPILER_TESTS, as eerunner is. The define must not be what
+	// says the harness is running, or eerunner could not run Lockstep: only the gtest recompiler
+	// environment calls SetRecompilerTestHarness().
+	EXPECT_FALSE(IopThread::IsRecompilerTestHarness());
+
+	IopThread::SetRecompilerTestHarness(true);
+	EXPECT_TRUE(IopThread::IsRecompilerTestHarness());
+	IopThread::SetRecompilerTestHarness(false);
+	EXPECT_FALSE(IopThread::IsRecompilerTestHarness());
+}
+
 TEST(IopThreadMode, EachForcingConditionIsSufficientAloneAndNoneStaysOnItsOwn)
 {
 	// With every condition clear the same inputs resolve On, so the Off results above are

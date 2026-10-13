@@ -4,8 +4,8 @@
 // Which way the IOP runs: on the EE's thread as it always has (Off), on its own thread in strict
 // turns with the EE (Lockstep), or on its own thread concurrently with the EE (Threaded).
 //
-// This header holds the three-way choice and the pure function that makes it. Nothing here starts
-// a thread, and nothing in the emulator calls ResolveMode yet.
+// This header holds the three-way choice, the pure function that makes it (ResolveMode), and the
+// run-time flag that says the recompiler test harness is running. Nothing here starts a thread.
 
 #pragma once
 
@@ -97,4 +97,14 @@ namespace IopThread
 	/// that many performance cores, and at least two more cores in total for the OS, the GS back
 	/// thread and the audio callback.
 	IopThreadMode ResolveMode(const Pcsx2Config& config, const HostCpuInfo& host, const VmConditions& vm);
+
+	// ---- At run time -------------------------------------------------------------------------
+
+	/// Says that the gtest recompiler environment (DiffJitVsInterp) is running, which makes
+	/// VmConditions::recompiler_test_harness true. That harness runs the EE and the IOP in a
+	/// single-thread interleave and boots no VM; the flag is how it keeps the IOP thread out of its
+	/// way. Only that environment sets it. It is deliberately not derived from PCSX2_RECOMPILER_TESTS:
+	/// eerunner is built with that define and has to be able to run Lockstep.
+	void SetRecompilerTestHarness(bool active);
+	bool IsRecompilerTestHarness();
 } // namespace IopThread

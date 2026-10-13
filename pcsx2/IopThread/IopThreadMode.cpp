@@ -7,6 +7,23 @@
 
 #include <algorithm>
 
+namespace
+{
+	// Set once by the gtest environment before any test runs and cleared after the last, so a plain
+	// variable does.
+	bool s_recompiler_test_harness = false;
+} // namespace
+
+void IopThread::SetRecompilerTestHarness(bool active)
+{
+	s_recompiler_test_harness = active;
+}
+
+bool IopThread::IsRecompilerTestHarness()
+{
+	return s_recompiler_test_harness;
+}
+
 s32 IopThread::ClampLag(s32 requested)
 {
 	return std::clamp(requested, kMinLag, kMaxLag);
