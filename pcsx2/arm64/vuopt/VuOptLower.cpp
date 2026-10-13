@@ -610,6 +610,20 @@ namespace vuopt
 			int SignZero(ValueId c, u8 mask, int& scratch, bool& owned);
 			ValueId NewPseudo(Cls k, Remat r, const std::vector<u32>& uses);
 			std::map<ValueId, std::vector<ValueId>> statusChain_; // non-sticky StatusUpd -> the updates folded into it, oldest first
+			// A status update in the MAC layout packs the same word as the MacFlags of
+			// the same result: (status update, that MacFlags) when both are built here,
+			// so the pack is made once.
+			std::vector<std::pair<ValueId, ValueId>> macOf_;
+			ValueId MacOf(ValueId st) const
+			{
+				for (const auto& e : macOf_)
+					if (e.first == st)
+						return e.second;
+				return 0;
+			}
+			// The update's pack in a register: the shared MAC word, else packed into `tmp`
+			// (a general temporary).
+			int StatusPackReg(ValueId id, int tmp);
 			ValueId StatusBase(ValueId v) const; // the status value a (possibly folded) chain starts from
 			void FoldStatusChains();
 			void Schedule();
@@ -1690,6 +1704,16 @@ namespace vuopt
 			}
 		}
 
+		int Lowerer::StatusPackReg(ValueId id, int tmp)
+		{
+			if (const ValueId m = MacOf(id))
+				return UseReg(m);
+			const Inst& in = I(id);
+			const int p = tmp >= 0 ? tmp : TempG();
+			PackFlags(C(in.args[1]), in.mask, (in.imm & 2) != 0, p);
+			return p;
+		}
+
 		// dst = the sign and zero lanes the accumulators hold, packed like a status
 		// update's pack (lane l's zero at bit l, its sign at bit l + 4).
 		void Lowerer::ReduceAcc(int dst)
@@ -1745,7 +1769,7 @@ namespace vuopt
 		void Lowerer::ChainStatusUpd(ValueId id)
 		{
 			const Inst& in = I(id);
-			const bool nonSticky = in.imm & 1, mflag = in.imm & 2;
+			const bool nonSticky = in.imm & 1;
 			const bool real = chainReal_[id];
 			const ValueId res = C(in.args[1]);
 			const int stk = hm_->stkReg;
@@ -1774,8 +1798,7 @@ namespace vuopt
 			}
 			else
 			{
-				const int p = TempG();
-				PackFlags(res, in.mask, mflag, p);
+				const int p = StatusPackReg(id, -1);
 				if (!nonSticky)
 				{
 					if (!real)
@@ -1972,6 +1995,23 @@ namespace vuopt
 										break;
 									}
 							}
+			}
+			// A status update that shares its result's MAC word comes after the
+			// MacFlags that builds it.
+			for (u32 i = 0; i < n; i++)
+			{
+				const ValueId v = order_[i];
+				if (v == leave_ || !emit_[v] || I(v).op != Op::StatusUpd || !(I(v).imm & 2))
+					continue;
+				for (u32 j = 0; j < n; j++)
+				{
+					const ValueId m = order_[j];
+					if (j != i && emit_[m] && I(m).op == Op::MacFlags && I(m).args[0] == I(v).args[1] && I(m).mask == I(v).mask)
+					{
+						edgeList.push_back({j, i});
+						break;
+					}
+				}
 			}
 			// A variable's final value after every read of its incoming value:
 			// the final value can then go straight into the variable's home
@@ -3766,8 +3806,7 @@ namespace vuopt
 							vLock_ = vLocked;
 							armAsm->Orr(W(acc), W(acc), W(t));
 						}
-					const int p = t >= 0 ? t : TempG();
-					PackFlags(C(in.args[1]), in.mask, (in.imm & 2) != 0, p);
+					const int p = StatusPackReg(id, t >= 0 ? t : -1);
 					const int prev = IntOperand(ch != statusChain_.end() ? StatusBase(id) : in.args[0]);
 					const int d = DefG(id);
 					if (nonSticky)
@@ -4337,6 +4376,25 @@ namespace vuopt
 			else
 				FoldStatusChains();
 
+			// Status updates in the MAC layout reuse the MAC word built from the same
+			// result and field, when it comes first.
+			macOf_.clear();
+			for (u32 p = 0; p < order_.size(); p++)
+			{
+				const ValueId v = order_[p];
+				if (!emit_[v] || I(v).op != Op::StatusUpd || !(I(v).imm & 2))
+					continue;
+				for (u32 q = 0; q < p; q++)
+				{
+					const ValueId m = order_[q];
+					if (emit_[m] && I(m).op == Op::MacFlags && C(I(m).args[0]) == C(I(v).args[1]) && I(m).mask == I(v).mask)
+					{
+						macOf_.push_back({v, m});
+						break;
+					}
+				}
+			}
+
 			// Uses, by position. A Leave operand that is its own variable's
 			// incoming value is not a use.
 			for (u32 p = 0; p < order_.size(); p++)
@@ -4369,6 +4427,9 @@ namespace vuopt
 						return;
 					addUse(C(a));
 				});
+				if (in.op == Op::StatusUpd)
+					if (const ValueId m = MacOf(v))
+						addUse(m);
 				if (in.op == Op::LoadQ || in.op == Op::LoadI || in.op == Op::StoreQ || in.op == Op::StoreI)
 				{
 					auto& u = uses_[memBase_];
@@ -4500,7 +4561,7 @@ namespace vuopt
 						note(slotOf(zsT, nzs, std::make_pair(c, Single(x.mask) ? SingleLane(x.mask) : -1)), p);
 						note(slotOf(glT, ngl, PackWeights(x.mask, mflag)), p);
 					};
-					if (in.op == Op::MacFlags || (in.op == Op::StatusUpd && !(acc_ && AccCand(in) && !chainReal_[v])))
+					if (in.op == Op::MacFlags || (in.op == Op::StatusUpd && !MacOf(v) && !(acc_ && AccCand(in) && !chainReal_[v])))
 						pack(in);
 					const auto ch = statusChain_.find(v);
 					if (ch != statusChain_.end())
