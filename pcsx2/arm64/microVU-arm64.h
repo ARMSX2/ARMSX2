@@ -208,7 +208,9 @@
 //  51 — CLIP reads Fs and Ft where they are cached, broadcasting Ft.w into a
 //       temp with one DUP and building -x in a temp of its own, so neither
 //       operand is cloned.
-static constexpr u32 kMvuCompilerAbiVersion = 51;
+//  52 — DIV's zero tests are one FCMP against 0.0 when the VU FPCR has FZ,
+//       instead of moving the word out and testing its exponent field.
+static constexpr u32 kMvuCompilerAbiVersion = 52;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

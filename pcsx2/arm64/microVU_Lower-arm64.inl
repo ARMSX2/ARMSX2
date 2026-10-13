@@ -31,6 +31,22 @@ static bool mVUneedsSoftwareFlush(mV)
 	return !(isVU0 ? EmuConfig.Cpu.VU0FPCR : EmuConfig.Cpu.VU1FPCR).GetDenormalsAreZero();
 }
 
+// Z set when the word in lane 0 of `reg` is a div-unit zero: exponent field
+// zero. Under a VU FPCR with FZ that is FCMP against 0.0, which flushes a
+// denormal operand to zero before comparing and leaves an exponent-255 word
+// unordered (Z clear), one instruction for the move and the test. Without
+// FZ a denormal compares nonzero, so the field itself is tested.
+static __fi void mVUemitDivZeroTest(mV, const a64::VRegister& reg, const a64::Register& scratch)
+{
+	if (!mVUneedsSoftwareFlush(mVU))
+	{
+		armAsm->Fcmp(a64::SRegister(reg.GetCode()), 0.0);
+		return;
+	}
+	armAsm->Umov(scratch.W(), reg.V4S(), 0);
+	armAsm->Tst(scratch.W(), kEeExpMask);
+}
+
 mVUop(mVU_DIV)
 {
 	pass1 { mVUanalyzeFDIV(mVU, _Fs_, _Fsf_, _Ft_, _Ftf_, 7); }
@@ -54,15 +70,13 @@ mVUop(mVU_DIV)
 		const bool consoleQ = CHECK_VU_SIGN_OVERFLOW(mVU.index);
 
 		// Test if Ft is zero (a NaN's exponent is 255, so it takes the not-zero
-		// branch as the Fcmp this replaces did).
-		armAsm->Umov(gprT1.W(), Ft.V4S(), 0);
-		armAsm->Tst(gprT1.W(), kEeExpMask);
+		// branch).
+		mVUemitDivZeroTest(mVU, Ft, gprT1);
 		a64::Label ftNotZero, divDone;
 		armAsm->B(&ftNotZero, a64::ne); // Skip if Ft != 0
 
 		// Ft is zero -- check Fs
-		armAsm->Umov(gprT2.W(), Fs.V4S(), 0);
-		armAsm->Tst(gprT2.W(), kEeExpMask);
+		mVUemitDivZeroTest(mVU, Fs, gprT2);
 		a64::Label fsNotZero;
 		armAsm->B(&fsNotZero, a64::ne); // Skip if Fs != 0
 
