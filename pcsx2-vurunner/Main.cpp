@@ -65,6 +65,7 @@ struct Options
 	bool hash_pipeline = true;        // hash carried microVU flag/Q-P pipeline (see below)
 	bool divtrace = false;
 	bool vuopt_ir = false;       // --vuopt-ir: validate vuopt's front end against microVU
+	bool vuopt_run = false;      // --vuopt-run: vuopt block bodies vs microVU, byte for byte
 	VuoptModeOptions vuopt;
 	bool bench_no_reprime = false;
 	bool print_bases = false;
@@ -97,6 +98,10 @@ void PrintUsage(const char* argv0)
 		"                SSA build. Runs the JIT only.\n"
 		"                --vuopt-flaghack 0|1 (default 1, the shipped config)\n"
 		"                --vuopt-dump (print the IR), --vuopt-verbose.\n"
+		"  --vuopt-run   Run each capture through microVU, then with every block\n"
+		"                body vuopt can lower emitted from vuopt's IR; compare the\n"
+		"                final state byte for byte. --vuopt-bench N adds steady-state\n"
+		"                retired-instruction counts for both engines.\n"
 		"  --print-bases Print the process-layout anchors (image base, data/code\n"
 		"                arenas, VU rec slabs) and exit. Two consecutive runs of a\n"
 		"                non-PIE build must print identical addresses — the\n"
@@ -209,6 +214,29 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 		else if (a == "--vuopt-ir")
 		{
 			opts.vuopt_ir = true;
+		}
+		else if (a == "--vuopt-trace")
+		{
+			opts.vuopt.trace = true;
+		}
+		else if (a == "--vuopt-run")
+		{
+			opts.vuopt_run = true;
+		}
+		else if (a == "--vuopt-only" || a == "--vuopt-limit")
+		{
+			if (i + 1 >= argc)
+				return false;
+			(a == "--vuopt-only" ? opts.vuopt.lowerOnly : opts.vuopt.lowerLimit) = std::atoi(argv[++i]);
+		}
+		else if (a == "--vuopt-bench")
+		{
+			if (i + 1 >= argc)
+			{
+				std::fprintf(stderr, "vurunner: --vuopt-bench requires an iteration count\n");
+				return false;
+			}
+			opts.vuopt.benchIters = static_cast<u32>(std::atoi(argv[++i]));
 		}
 		else if (a == "--vuopt-dump")
 		{
@@ -352,7 +380,7 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 	}
 	if (!opts.diff && !opts.bench && !opts.dump_asm
 		&& !opts.dump_microcode && !opts.divtrace && !opts.print_bases
-		&& !opts.dump_jit_state && !opts.vuopt_ir)
+		&& !opts.dump_jit_state && !opts.vuopt_ir && !opts.vuopt_run)
 		opts.diff = true;
 	return true;
 }
@@ -1676,6 +1704,11 @@ int main(int argc, char** argv)
 	{
 		opts.vuopt.cycleOverride = opts.cycle_override;
 		exit_code |= RunVuoptIr(records, names, opts.vuopt, &ApplyReplayConfig);
+	}
+	if (opts.vuopt_run)
+	{
+		opts.vuopt.cycleOverride = opts.cycle_override;
+		exit_code |= RunVuoptRun(records, names, opts.vuopt, &ApplyReplayConfig);
 	}
 
 #if defined(_M_ARM64) || defined(__aarch64__)

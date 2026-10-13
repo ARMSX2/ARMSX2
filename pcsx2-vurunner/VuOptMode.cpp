@@ -294,3 +294,280 @@ int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,
 	std::printf("\n");
 	return failures ? 4 : 0;
 }
+
+//------------------------------------------------------------------
+// --vuopt-run
+//------------------------------------------------------------------
+
+#include "arm64/vuopt/VuOptTier.h"
+#include "arm64/AsmHelpers.h"
+#include "harness/VuSnapshot.h"
+
+#include <memory>
+
+namespace vu_capture_internal
+{
+	void GetCompiledRange(int vu_index, const u8** out_start, const u8** out_end);
+}
+
+namespace
+{
+	struct BodyCtx
+	{
+		std::unique_ptr<vuopt::BodyTier> tier;
+		bool trace = false;
+		bool traceOnly = false; // reference arm: trace, never lower
+		u32 blocks = 0;
+
+		BodyCtx(u32 vu, const u8* micro, const VuoptModeOptions& o)
+			: tier(std::make_unique<vuopt::BodyTier>(vu, micro))
+		{
+			tier->only = o.lowerOnly;
+			tier->limit = o.lowerLimit;
+			tier->dump = o.dumpIr;
+			trace = o.trace;
+		}
+	};
+
+	// --vuopt-trace: every compiled block logs its start PC and entry key on
+	// entry, in both runs, to find where two executions part.
+	std::vector<u64> g_trace;
+	std::vector<u64> g_traceVals;
+	void TraceBlock(u64 v, u64 vals)
+	{
+		g_trace.push_back(v);
+		g_traceVals.push_back(vals);
+	}
+
+	void EmitTraceCall(u32 pc, const u8* key, s32 offVIbackup)
+	{
+		namespace a64 = vixl::aarch64;
+		u64 h = 1469598103934665603ull;
+		for (int i = 0; i < 96; i++)
+			h = (h ^ key[i]) * 1099511628211ull;
+		const u64 v = (static_cast<u64>(pc) << 32) | (h & 0xffffffffu);
+		armAsm->Sub(a64::sp, a64::sp, 64);
+		armAsm->Stp(a64::q25, a64::q26, a64::MemOperand(a64::sp));
+		armAsm->Str(a64::q28, a64::MemOperand(a64::sp, 32));
+		armAsm->Mov(a64::x0, v);
+		armAsm->Ldr(a64::w1, a64::MemOperand(a64::x24, offVIbackup));
+		armAsm->Ldrh(a64::w2, a64::MemOperand(a64::x19, offsetof(VURegs, VI) + 7 * sizeof(REG_VI)));
+		armAsm->Orr(a64::x1, a64::x1, a64::Operand(a64::x2, a64::LSL, 32));
+		armEmitCall(reinterpret_cast<const void*>(&TraceBlock));
+		armAsm->Ldp(a64::q25, a64::q26, a64::MemOperand(a64::sp));
+		armAsm->Ldr(a64::q28, a64::MemOperand(a64::sp, 32));
+		armAsm->Add(a64::sp, a64::sp, 64);
+	}
+
+	bool OnBody(const vuopt::MvuBlockTrace& b, const vuopt::MvuEmitEnv& env, void* user)
+	{
+		BodyCtx& c = *static_cast<BodyCtx*>(user);
+		if (b.vuIndex == env.vuIndex)
+			c.blocks++;
+		if (c.trace)
+			EmitTraceCall(b.startPC, b.entryState, env.offVIbackup);
+		if (c.traceOnly)
+			return false;
+		return c.tier->TryLower(b, env, nullptr);
+	}
+
+	u64 CompiledBytes(int vu)
+	{
+		const u8* s = nullptr;
+		const u8* e = nullptr;
+		vu_capture_internal::GetCompiledRange(vu, &s, &e);
+		return (s && e && e > s) ? static_cast<u64>(e - s) : 0;
+	}
+
+	struct FieldRange
+	{
+		const char* name;
+		size_t off, size;
+	};
+
+	std::vector<std::string> DiffRegs(const VURegs& a, const VURegs& b)
+	{
+#define FR(f) {#f, offsetof(VURegs, f), sizeof(VURegs::f)}
+		static const FieldRange kFields[] = {
+			FR(VF), FR(VI), FR(ACC), FR(q), FR(p), FR(idx), FR(cycle), FR(flags), FR(code), FR(start_pc),
+			FR(branch), FR(branchpc), FR(delaybranchpc), FR(takedelaybranch), FR(ebit), FR(pending_q), FR(pending_p),
+			FR(micro_macflags), FR(micro_clipflags), FR(micro_statusflags), FR(macflag), FR(statusflag), FR(clipflag),
+			FR(nextBlockCycles), FR(xgkickaddr), FR(xgkickdiff), FR(xgkicksizeremaining), FR(xgkicklastcycle),
+			FR(xgkickcyclecount), FR(xgkickenable), FR(xgkickendpacket), FR(VIBackupCycles), FR(VIOldValue),
+			FR(VIRegNumber), FR(fmac), FR(fmacreadpos), FR(fmacwritepos), FR(fmaccount), FR(fdiv), FR(efu), FR(ialu),
+			FR(ialureadpos), FR(ialuwritepos), FR(ialucount),
+		};
+#undef FR
+		std::vector<std::string> out;
+		const u8* pa = reinterpret_cast<const u8*>(&a);
+		const u8* pb = reinterpret_cast<const u8*>(&b);
+		for (const FieldRange& f : kFields)
+		{
+			for (size_t i = 0; i < f.size; i += 4)
+			{
+				const size_t n = std::min<size_t>(4, f.size - i);
+				if (std::memcmp(pa + f.off + i, pb + f.off + i, n) == 0)
+					continue;
+				u32 va = 0, vb = 0;
+				std::memcpy(&va, pa + f.off + i, n);
+				std::memcpy(&vb, pb + f.off + i, n);
+				char buf[128];
+				std::snprintf(buf, sizeof(buf), "%s+%zu: mvu=%08x vuopt=%08x", f.name, i, va, vb);
+				out.emplace_back(buf);
+			}
+		}
+		return out;
+	}
+
+	// Steady-state retired instructions: the least over the iterations after
+	// the first. A later iteration can still compile a block it had not
+	// reached before (and, in the vuopt arm, run the hook's analysis), which
+	// only ever adds instructions.
+	u64 MedianInsns(const std::vector<PmuCounters::Values>& v)
+	{
+		if (v.size() < 2)
+			return 0;
+		u64 m = ~0ull;
+		for (size_t i = 1; i < v.size(); i++)
+			m = std::min<u64>(m, v[i][PmuCounters::InstructionsRetired]);
+		return m;
+	}
+} // namespace
+
+int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
+	const std::vector<std::string>& names,
+	const VuoptModeOptions& opts,
+	void (*applyConfig)(const vu_capture::CaptureRecord&))
+{
+	int failures = 0;
+	u64 totIdentical = 0, totBlocks = 0, totLowered = 0;
+	for (size_t fi = 0; fi < records.size(); ++fi)
+	{
+		const auto& rec = records[fi];
+		applyConfig(rec);
+		EmuConfig.Speedhacks.vuFlagHack = opts.flagHack != 0;
+		const int vu = rec.vu_index;
+
+		// Reference: microVU alone (with --vuopt-trace, the hook only traces).
+		BodyCtx refCtx(vu, vuRegs[vu].Micro, opts);
+		refCtx.traceOnly = true;
+		g_trace.clear();
+		g_traceVals.clear();
+		if (opts.trace)
+		{
+			vuopt::g_vuoptBodyHook = &OnBody;
+			vuopt::g_vuoptBodyHookUser = &refCtx;
+		}
+		const auto ref = recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
+		vuopt::g_vuoptBodyHook = nullptr;
+		const std::vector<u64> refTrace = g_trace;
+		const std::vector<u64> refVals = g_traceVals;
+		g_trace.clear();
+		g_traceVals.clear();
+		const u64 refBytes = CompiledBytes(vu);
+
+		// vuopt bodies.
+		BodyCtx ctx(vu, vuRegs[vu].Micro, opts);
+		vuopt::g_vuoptBodyHook = &OnBody;
+		vuopt::g_vuoptBodyHookUser = &ctx;
+		const auto run = recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
+		const u64 runBytes = CompiledBytes(vu);
+		vuopt::g_vuoptBodyHook = nullptr;
+		vuopt::g_vuoptBodyHookUser = nullptr;
+
+		if (!ref.ok || !run.ok)
+		{
+			std::printf("[vuopt-run] %s replay-failed\n", names[fi].c_str());
+			failures++;
+			continue;
+		}
+
+		std::vector<std::string> diffs = DiffRegs(ref.jit_snapshot.regs, run.jit_snapshot.regs);
+		const auto& ma = ref.jit_snapshot.mem_windows;
+		const auto& mb = run.jit_snapshot.mem_windows;
+		for (size_t w = 0; w < ma.size() && w < mb.size(); w++)
+		{
+			for (size_t i = 0; i < ma[w].bytes.size(); i += 16)
+			{
+				if (std::memcmp(&ma[w].bytes[i], &mb[w].bytes[i], std::min<size_t>(16, ma[w].bytes.size() - i)) != 0)
+				{
+					char buf[64];
+					std::snprintf(buf, sizeof(buf), "mem[0x%04zx]", i);
+					diffs.emplace_back(buf);
+				}
+			}
+		}
+		if (ref.path1_packets_jit != run.path1_packets_jit)
+			diffs.emplace_back("GIF path 1 bytes differ (" + std::to_string(ref.path1_packets_jit.size()) + " vs " +
+							   std::to_string(run.path1_packets_jit.size()) + ")");
+		if (ref.jit_ebit != run.jit_ebit)
+			diffs.emplace_back("ebit differs");
+		if (ref.jit_cycles != run.jit_cycles)
+			diffs.emplace_back("cycles differ");
+		if (opts.trace)
+		{
+			size_t k = 0;
+			while (k < refTrace.size() && k < g_trace.size() && refTrace[k] == g_trace[k])
+				k++;
+			char buf[160];
+			std::snprintf(buf, sizeof(buf), "trace: %zu vs %zu block entries, first difference at %zu", refTrace.size(), g_trace.size(), k);
+			diffs.emplace_back(buf);
+			for (size_t j = (k > 3 ? k - 3 : 0); j < k + 3; j++)
+			{
+				std::snprintf(buf, sizeof(buf), "  [%zu] mvu=%04x/%08x vib=%08x vi7=%04x vuopt=%04x/%08x vib=%08x vi7=%04x", j,
+					j < refTrace.size() ? static_cast<u32>(refTrace[j] >> 32) : 0xffff, j < refTrace.size() ? static_cast<u32>(refTrace[j]) : 0,
+					j < refVals.size() ? static_cast<u32>(refVals[j]) : 0, j < refVals.size() ? static_cast<u32>(refVals[j] >> 32) : 0,
+					j < g_trace.size() ? static_cast<u32>(g_trace[j] >> 32) : 0xffff, j < g_trace.size() ? static_cast<u32>(g_trace[j]) : 0,
+					j < g_traceVals.size() ? static_cast<u32>(g_traceVals[j]) : 0, j < g_traceVals.size() ? static_cast<u32>(g_traceVals[j] >> 32) : 0);
+				diffs.emplace_back(buf);
+			}
+		}
+
+		u64 insRef = 0, insRun = 0;
+		u32 steadyCompiles = 0;
+		if (opts.benchIters >= 2)
+		{
+			insRef = MedianInsns(recompiler_tests::BenchJitSteady(rec, opts.benchIters));
+			VuoptModeOptions bo = opts;
+			bo.trace = false;
+			bo.dumpIr = false;
+			BodyCtx bctx(vu, vuRegs[vu].Micro, bo);
+			vuopt::g_vuoptBodyHook = &OnBody;
+			vuopt::g_vuoptBodyHookUser = &bctx;
+			insRun = MedianInsns(recompiler_tests::BenchJitSteady(rec, opts.benchIters));
+			vuopt::g_vuoptBodyHook = nullptr;
+			vuopt::g_vuoptBodyHookUser = nullptr;
+			// Blocks compiled after the first iteration (the identity run is one
+			// such first iteration): their compile cost is inside the counts.
+			steadyCompiles = bctx.blocks > ctx.blocks ? bctx.blocks - ctx.blocks : 0;
+		}
+
+		const bool identical = diffs.empty();
+		std::printf("[vuopt-run] %s vu%d pc=%04x blocks=%u lowered=%u identical=%d ebit=%d refcode=%llu runcode=%llu body=%llu "
+					"ins_mvu=%llu ins_vuopt=%llu steadycompiles=%u",
+			names[fi].c_str(), vu, rec.start_pc, ctx.blocks, ctx.tier->Lowered(), identical ? 1 : 0, ref.jit_ebit ? 1 : 0,
+			static_cast<unsigned long long>(refBytes), static_cast<unsigned long long>(runBytes),
+			static_cast<unsigned long long>(ctx.tier->BodyBytes()), static_cast<unsigned long long>(insRef),
+			static_cast<unsigned long long>(insRun), steadyCompiles);
+		for (const auto& d : ctx.tier->Declined())
+		{
+			std::string k = d.first;
+			for (char& ch : k)
+				if (ch == ' ')
+					ch = '_';
+			std::printf(" decl:%s=%u", k.c_str(), d.second);
+		}
+		std::printf("\n");
+		for (size_t k = 0; k < diffs.size() && (opts.verbose || k < 8); k++)
+			std::printf("  diff: %s\n", diffs[k].c_str());
+		totIdentical += identical;
+		totBlocks += ctx.blocks;
+		totLowered += ctx.tier->Lowered();
+		if (!identical)
+			failures++;
+	}
+	std::printf("[vuopt-run-total] captures=%zu identical=%llu blocks=%llu lowered=%llu\n", records.size(),
+		static_cast<unsigned long long>(totIdentical), static_cast<unsigned long long>(totBlocks),
+		static_cast<unsigned long long>(totLowered));
+	return failures ? 4 : 0;
+}
