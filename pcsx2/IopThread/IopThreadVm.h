@@ -58,6 +58,19 @@ namespace IopThread
 	/// reset.
 	void OnCpuConfigChanged();
 
+	/// A VM reset is about to reset the recompilers (VMManager::Reset). The reset puts the IOP back in
+	/// PS2 mode, so the mode is chosen as if the PS1 flag in the IOP's registers were already clear: a
+	/// VM that was demoted to Off by a PS1 game gets its IOP thread back (design 9.5, 9.6). The caller
+	/// starts the thread with SyncThread() once the CPU state has been reset.
+	void ChooseModeForReset();
+
+	/// The EE wrote F240 bit 19: the IOP is about to be reset into PS1 mode. PS1 mode forces Off (the
+	/// IOP runs at a different clock ratio), so the IOP thread is stopped here and the mode stays Off
+	/// until the next reset or boot (design 9.6). The caller holds the IOP (IopBridge::Ps1Switch), and
+	/// the EE core is asked to regenerate its dispatcher, which still calls the event test instance of
+	/// the old mode. Needs the CPU thread.
+	void DemoteForPs1Switch();
+
 	// ---- EE-to-IOP items ---------------------------------------------------------------------
 	// The EE tells the IOP things at a cycle: blanking, an interrupt, a few once-a-frame jobs (design
 	// 3.4.2). The EE posts an item to the E2I queue stamped with its cycle. Lockstep then hands the

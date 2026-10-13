@@ -234,6 +234,7 @@ namespace IopThread
 		u64 lag_spins; // CheckLag calls that had to wait (W1)
 		u64 lag_spin_iterations;
 		u64 hold_requests; // holds that went through the handshake (W2/W4)
+		u64 hold_markers; // holds that were only a counter: Lockstep, nested, inside a CallOnEE function, no thread
 		u64 hold_spin_iterations;
 		u64 hold_sleeps; // polling sleeps of a Lifecycle hold
 		u64 e2i_full_spins; // PostE2I calls that found the ring full (W3)
@@ -529,7 +530,7 @@ namespace IopThread
 		u64 m_iop_pos = 0;
 
 		// Statistics.
-		detail::Counter m_lag_spins, m_lag_spin_iterations, m_hold_requests, m_hold_spin_iterations, m_hold_sleeps;
+		detail::Counter m_lag_spins, m_lag_spin_iterations, m_hold_requests, m_hold_markers, m_hold_spin_iterations, m_hold_sleeps;
 		detail::Counter m_e2i_full_spins, m_e2i_full_iterations, m_e2i_full_failfast, m_i2e_drained, m_calls_served;
 		detail::Counter m_wakes_sent, m_wakes_dropped, m_stop_checks, m_handoffs;
 		detail::Counter m_slices, m_items_applied, m_parks, m_holds_entered, m_calls_posted, m_calls_cancelled;

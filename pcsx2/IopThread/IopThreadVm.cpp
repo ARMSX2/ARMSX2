@@ -127,6 +127,35 @@ namespace IopThread
 		SetMode(mode);
 	}
 
+	void ChooseModeForReset()
+	{
+		// The reset puts the IOP back in PS2 mode. The PS1 flag it is going to clear is still set at
+		// this point, and would hold the mode at Off for as long as the VM lives.
+		VmConditions vm = CurrentVmConditions();
+		vm.ps1_mode = false;
+		ChooseModeFor(CurrentHostInfo(), vm);
+	}
+
+	void DemoteForPs1Switch()
+	{
+		if (s_mode == IopThreadMode::Off)
+			return;
+
+		SetMode(IopThreadMode::Off);
+		if (g_thread.IsRunning())
+		{
+			// The caller's hold stays valid across Stop(): it ends as a plain counter.
+			g_thread.Stop();
+			Console.WriteLn(Color_StrongGreen, "IOP thread: stopped for the PS1 mode switch.");
+		}
+
+		// The EE JIT's dispatcher calls the event test instance of the mode it was generated for. Asking
+		// for a reset regenerates it for Off. The EE is inside a memory handler here, so the JIT only
+		// notes the request and leaves its loop at the next event test (recResetEE).
+		if (Cpu)
+			Cpu->Reset();
+	}
+
 	void SyncThread()
 	{
 		if (g_thread.IsRunning())

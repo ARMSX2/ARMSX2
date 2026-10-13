@@ -181,6 +181,9 @@ void _hwWrite32( u32 mem, u32 value )
 					}
 					if (value & (1 << 19))
 					{
+						// PS1 mode forces the IOP thread off. This holds the IOP, stops its thread and
+						// has the EE core regenerate its dispatcher for Off (IOP thread design 9.6).
+						IopBridge::Ps1Switch ps1_switch;
 						u64 cycle = psxRegs.cycle;
 						//pgifInit();
 						psxReset();

@@ -38,8 +38,29 @@
 #include "SPU2/spu2.h"
 #include "Sif.h"
 
+#include <optional>
+
 namespace IopBridge
 {
+	// ---- Holding the IOP still ---------------------------------------------------------------
+
+	/// The IOP held still for the length of a scope, so the EE thread may touch IOP-owned state inside
+	/// it (design 3.8.1). Off has no IOP thread and nothing to hold: the cost is one load of the mode.
+	/// In Lockstep the hold is a marker, because the IOP thread is parked whenever the EE runs; it is
+	/// what IOP_SIDE_ASSERT looks for.
+	class EmuHold
+	{
+	public:
+		explicit EmuHold(IopThread::HoldKind kind = IopThread::HoldKind::Emulation)
+		{
+			if (IopThread::GetMode() != IopThreadMode::Off) [[unlikely]]
+				m_hold.emplace(IopThread::g_thread, kind);
+		}
+
+	private:
+		std::optional<IopThread::ScopedHold> m_hold;
+	};
+
 	// ---- Blanking (C14) ----------------------------------------------------------------------
 	// The EE's counters tell the IOP's counters that a blank started or ended. The calls are made
 	// where the EE's own blank handling reaches that point, in the same order as before.
@@ -128,48 +149,82 @@ namespace IopBridge
 			IopThread::ApplyOnIop(IopThread::E2IKind::IopIrq, line);
 	}
 
+	// ---- The PS1 mode switch (C9) ------------------------------------------------------------
+	// An EE write of F240 bit 19 resets the IOP into PS1 mode. PS1 mode forces Off, so the switch
+	// holds the IOP, stops the IOP thread if there is one and asks the EE core to regenerate its
+	// dispatcher for Off. The hold stays valid across the stop (design 9.6). Once per PS1 boot.
+
+	class Ps1Switch
+	{
+	public:
+		Ps1Switch()
+			: m_hold(IopThread::g_thread, IopThread::HoldKind::Emulation)
+		{
+			IopThread::DemoteForPs1Switch();
+		}
+
+	private:
+		IopThread::ScopedHold m_hold;
+	};
+
 	// ---- SIF DMA, started from the EE (C10, C11, C12) ----------------------------------------
 	// dmaSIF0/1/2 start a transfer and then run the pump, which moves data on both sides and
 	// schedules both sides' completion interrupts. The pump is the call that touches the IOP.
 
-	__forceinline_odr void Sif0Pump() { SIF0Dma(); }
-	__forceinline_odr void Sif1Pump() { SIF1Dma(); }
-	__forceinline_odr void Sif2Pump() { SIF2Dma(); }
+	// The pump runs on the EE thread and moves data on both sides, so the IOP is held while it does.
+
+	__forceinline_odr void Sif0Pump() { EmuHold hold; SIF0Dma(); }
+	__forceinline_odr void Sif1Pump() { EmuHold hold; SIF1Dma(); }
+	__forceinline_odr void Sif2Pump() { EmuHold hold; SIF2Dma(); }
 
 	// ---- The EE reads and writes IOP address space (C16) -------------------------------------
 	// The EE's memory map sends these ranges to IOP-owned state: IOP RAM (0x1c000000), DEV9
 	// (0x14000000), the CDVD register page (0x1f400000) and SPU2 (0x1f900000). One function per
-	// access size.
+	// access size. Each holds the IOP for the access (Lockstep: a marker; Off: one load of the mode).
+	// Counted at step 5: no access in any of the eleven titles after the first 150 frames.
 
-	__forceinline_odr u8 MemRead8(u32 mem) { return iopMemRead8(mem); }
-	__forceinline_odr u16 MemRead16(u32 mem) { return iopMemRead16(mem); }
-	__forceinline_odr u32 MemRead32(u32 mem) { return iopMemRead32(mem); }
-	__forceinline_odr void MemWrite8(u32 mem, u8 value) { iopMemWrite8(mem, value); }
-	__forceinline_odr void MemWrite16(u32 mem, u16 value) { iopMemWrite16(mem, value); }
-	__forceinline_odr void MemWrite32(u32 mem, u32 value) { iopMemWrite32(mem, value); }
+	__forceinline_odr u8 MemRead8(u32 mem) { EmuHold hold; return iopMemRead8(mem); }
+	__forceinline_odr u16 MemRead16(u32 mem) { EmuHold hold; return iopMemRead16(mem); }
+	__forceinline_odr u32 MemRead32(u32 mem) { EmuHold hold; return iopMemRead32(mem); }
+	__forceinline_odr void MemWrite8(u32 mem, u8 value) { EmuHold hold; iopMemWrite8(mem, value); }
+	__forceinline_odr void MemWrite16(u32 mem, u16 value) { EmuHold hold; iopMemWrite16(mem, value); }
+	__forceinline_odr void MemWrite32(u32 mem, u32 value) { EmuHold hold; iopMemWrite32(mem, value); }
 
-	__forceinline_odr u8 Hw4Read8(u32 mem) { return psxHw4Read8(mem); }
-	__forceinline_odr void Hw4Write8(u32 mem, u8 value) { psxHw4Write8(mem, value); }
+	__forceinline_odr u8 Hw4Read8(u32 mem) { EmuHold hold; return psxHw4Read8(mem); }
+	__forceinline_odr void Hw4Write8(u32 mem, u8 value) { EmuHold hold; psxHw4Write8(mem, value); }
 
-	__forceinline_odr u8 Dev9Read8(u32 addr) { return DEV9read8(addr); }
-	__forceinline_odr u16 Dev9Read16(u32 addr) { return DEV9read16(addr); }
-	__forceinline_odr u32 Dev9Read32(u32 addr) { return DEV9read32(addr); }
-	__forceinline_odr void Dev9Write8(u32 addr, u8 value) { DEV9write8(addr, value); }
-	__forceinline_odr void Dev9Write16(u32 addr, u16 value) { DEV9write16(addr, value); }
-	__forceinline_odr void Dev9Write32(u32 addr, u32 value) { DEV9write32(addr, value); }
+	__forceinline_odr u8 Dev9Read8(u32 addr) { EmuHold hold; return DEV9read8(addr); }
+	__forceinline_odr u16 Dev9Read16(u32 addr) { EmuHold hold; return DEV9read16(addr); }
+	__forceinline_odr u32 Dev9Read32(u32 addr) { EmuHold hold; return DEV9read32(addr); }
+	__forceinline_odr void Dev9Write8(u32 addr, u8 value) { EmuHold hold; DEV9write8(addr, value); }
+	__forceinline_odr void Dev9Write16(u32 addr, u16 value) { EmuHold hold; DEV9write16(addr, value); }
+	__forceinline_odr void Dev9Write32(u32 addr, u32 value) { EmuHold hold; DEV9write32(addr, value); }
 
-	__forceinline_odr u16 Spu2Read(u32 mem) { return SPU2read(mem); }
-	__forceinline_odr void Spu2Write(u32 mem, u16 value) { SPU2write(mem, value); }
+	__forceinline_odr u16 Spu2Read(u32 mem) { EmuHold hold; return SPU2read(mem); }
+	__forceinline_odr void Spu2Write(u32 mem, u16 value) { EmuHold hold; SPU2write(mem, value); }
 
 	// The IOP hardware registers the EE sees at 0x1f801000, 0x1f803000, 0x1f808000 and the rest of
 	// 0x1f800000 are reached through handler functions registered in the EE's memory map, not
-	// through a call. A handler is passed through here when it is registered, so a mode that needs
-	// a different handler for these pages can return one without touching the registration sites.
-	// The handler comes back unchanged.
+	// through a call. The handler is passed through here when it is registered; what comes back holds
+	// the IOP around the call to it, like the functions above. The handler is a template argument so the
+	// wrapper is a plain function the memory map can store.
 
-	template <typename Handler>
-	__forceinline_odr Handler HwHandler(Handler handler)
+	template <auto Handler, typename Signature = decltype(Handler)>
+	struct HeldHandler;
+
+	template <auto Handler, typename R, typename... Args>
+	struct HeldHandler<Handler, R (*)(Args...)>
 	{
-		return handler;
+		static R Call(Args... args)
+		{
+			EmuHold hold;
+			return Handler(args...);
+		}
+	};
+
+	template <auto Handler>
+	constexpr auto HwHandler()
+	{
+		return &HeldHandler<Handler>::Call;
 	}
 } // namespace IopBridge

@@ -2482,10 +2482,15 @@ void VMManager::Reset()
 
 	mmap_ResetBlockTracking();
 	memSetExtraMemMode(EmuConfig.Cpu.ExtraMemory);
+	// The reset puts the IOP back in PS2 mode, so a VM that a PS1 game demoted to Off gets its IOP
+	// thread back (design 9.5, 9.6). The mode is chosen before the recompilers are reset, which
+	// generates the EE dispatcher for it.
+	IopThread::ChooseModeForReset();
 	Internal::ClearCPUExecutionCaches();
 	memBindConditionalHandlers();
 	SysMemory::Reset();
 	cpuReset();
+	IopThread::SyncThread();
 	IopThread::ResyncClocks();
 	hwReset();
 	if (Arcade::IsActive())
@@ -3055,6 +3060,10 @@ void VMManager::FrameAdvance(u32 num_frames /*= 1*/)
 
 bool VMManager::ChangeDisc(CDVD_SourceType source, std::string path)
 {
+	// Reopens the disc backend and writes the CDVD tray state, which the IOP's CDVD code reads
+	// (IOP thread design 8.3).
+	IopThread::VmHold iop_hold;
+
 	const CDVD_SourceType old_type = CDVDsys_GetSourceType();
 	const std::string old_path(CDVDsys_GetFile(old_type));
 

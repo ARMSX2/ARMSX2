@@ -81,7 +81,7 @@ namespace IopThread
 		m_req_seq_local = 0;
 		m_iop_tid = std::thread::id();
 
-		for (detail::Counter* c : {&m_lag_spins, &m_lag_spin_iterations, &m_hold_requests, &m_hold_spin_iterations, &m_hold_sleeps,
+		for (detail::Counter* c : {&m_lag_spins, &m_lag_spin_iterations, &m_hold_requests, &m_hold_markers, &m_hold_spin_iterations, &m_hold_sleeps,
 				 &m_e2i_full_spins, &m_e2i_full_iterations, &m_e2i_full_failfast, &m_i2e_drained, &m_calls_served, &m_wakes_sent,
 				 &m_wakes_dropped, &m_stop_checks, &m_handoffs, &m_slices, &m_items_applied, &m_parks, &m_holds_entered,
 				 &m_calls_posted, &m_calls_cancelled, &m_i2e_full_waits, &m_kicks_applied})
@@ -586,6 +586,7 @@ namespace IopThread
 		if (m_hold_depth > 0 || m_in_call || !m_running || m_mode != IopThreadMode::Threaded)
 		{
 			m_hold_depth++;
+			m_hold_markers.Add();
 			return true;
 		}
 
@@ -820,6 +821,7 @@ namespace IopThread
 		s.lag_spins = m_lag_spins.Get();
 		s.lag_spin_iterations = m_lag_spin_iterations.Get();
 		s.hold_requests = m_hold_requests.Get();
+		s.hold_markers = m_hold_markers.Get();
 		s.hold_spin_iterations = m_hold_spin_iterations.Get();
 		s.hold_sleeps = m_hold_sleeps.Get();
 		s.e2i_full_spins = m_e2i_full_spins.Get();

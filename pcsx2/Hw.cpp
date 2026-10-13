@@ -8,6 +8,7 @@
 #include "USB/USB.h"
 
 #include "common/WrappedMemCopy.h"
+#include "IopThread/IopBridge.h"
 #include "IopThread/SharedWord.h"
 
 #include "fmt/format.h"
@@ -43,7 +44,11 @@ void hwReset()
 
 	// Sets SPU2 sample rate to PS2 standard (48KHz) whenever emulator is reset.
 	// For PSX mode sample rate setting, see HwWrite.cpp
-	SPU2::Reset(false);
+	// C18: SPU2 belongs to the IOP, so the IOP is held while it is reset.
+	{
+		IopBridge::EmuHold hold(IopThread::HoldKind::Lifecycle);
+		SPU2::Reset(false);
+	}
 
 	sifReset();
 	gsReset();
@@ -52,7 +57,10 @@ void hwReset()
 	vif0Reset();
 	vif1Reset();
 	gif_fifo.init();
-	USBreset();
+	{
+		IopBridge::EmuHold hold(IopThread::HoldKind::Lifecycle);
+		USBreset();
+	}
 }
 
 __fi uint intcInterrupt()

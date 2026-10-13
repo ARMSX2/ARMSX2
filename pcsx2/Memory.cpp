@@ -1281,23 +1281,23 @@ void memReset()
 	using namespace IopMemory;
 
 	tlb_fallback_2 = vtlb_RegisterHandler(
-		IopBridge::HwHandler(iopHwRead8_generic), IopBridge::HwHandler(iopHwRead16_generic), IopBridge::HwHandler(iopHwRead32_generic), _ext_memRead64<2>, _ext_memRead128<2>,
-		IopBridge::HwHandler(iopHwWrite8_generic), IopBridge::HwHandler(iopHwWrite16_generic), IopBridge::HwHandler(iopHwWrite32_generic), _ext_memWrite64<2>, _ext_memWrite128<2>
+		IopBridge::HwHandler<iopHwRead8_generic>(), IopBridge::HwHandler<iopHwRead16_generic>(), IopBridge::HwHandler<iopHwRead32_generic>(), _ext_memRead64<2>, _ext_memRead128<2>,
+		IopBridge::HwHandler<iopHwWrite8_generic>(), IopBridge::HwHandler<iopHwWrite16_generic>(), IopBridge::HwHandler<iopHwWrite32_generic>(), _ext_memWrite64<2>, _ext_memWrite128<2>
 	);
 
 	iopHw_by_page_01 = vtlb_RegisterHandler(
-		IopBridge::HwHandler(iopHwRead8_Page1), IopBridge::HwHandler(iopHwRead16_Page1), IopBridge::HwHandler(iopHwRead32_Page1), _ext_memRead64<2>, _ext_memRead128<2>,
-		IopBridge::HwHandler(iopHwWrite8_Page1), IopBridge::HwHandler(iopHwWrite16_Page1), IopBridge::HwHandler(iopHwWrite32_Page1), _ext_memWrite64<2>, _ext_memWrite128<2>
+		IopBridge::HwHandler<iopHwRead8_Page1>(), IopBridge::HwHandler<iopHwRead16_Page1>(), IopBridge::HwHandler<iopHwRead32_Page1>(), _ext_memRead64<2>, _ext_memRead128<2>,
+		IopBridge::HwHandler<iopHwWrite8_Page1>(), IopBridge::HwHandler<iopHwWrite16_Page1>(), IopBridge::HwHandler<iopHwWrite32_Page1>(), _ext_memWrite64<2>, _ext_memWrite128<2>
 	);
 
 	iopHw_by_page_03 = vtlb_RegisterHandler(
-		IopBridge::HwHandler(iopHwRead8_Page3), IopBridge::HwHandler(iopHwRead16_Page3), IopBridge::HwHandler(iopHwRead32_Page3), _ext_memRead64<2>, _ext_memRead128<2>,
-		IopBridge::HwHandler(iopHwWrite8_Page3), IopBridge::HwHandler(iopHwWrite16_Page3), IopBridge::HwHandler(iopHwWrite32_Page3), _ext_memWrite64<2>, _ext_memWrite128<2>
+		IopBridge::HwHandler<iopHwRead8_Page3>(), IopBridge::HwHandler<iopHwRead16_Page3>(), IopBridge::HwHandler<iopHwRead32_Page3>(), _ext_memRead64<2>, _ext_memRead128<2>,
+		IopBridge::HwHandler<iopHwWrite8_Page3>(), IopBridge::HwHandler<iopHwWrite16_Page3>(), IopBridge::HwHandler<iopHwWrite32_Page3>(), _ext_memWrite64<2>, _ext_memWrite128<2>
 	);
 
 	iopHw_by_page_08 = vtlb_RegisterHandler(
-		IopBridge::HwHandler(iopHwRead8_Page8), IopBridge::HwHandler(iopHwRead16_Page8), IopBridge::HwHandler(iopHwRead32_Page8), _ext_memRead64<2>, _ext_memRead128<2>,
-		IopBridge::HwHandler(iopHwWrite8_Page8), IopBridge::HwHandler(iopHwWrite16_Page8), IopBridge::HwHandler(iopHwWrite32_Page8), _ext_memWrite64<2>, _ext_memWrite128<2>
+		IopBridge::HwHandler<iopHwRead8_Page8>(), IopBridge::HwHandler<iopHwRead16_Page8>(), IopBridge::HwHandler<iopHwRead32_Page8>(), _ext_memRead64<2>, _ext_memRead128<2>,
+		IopBridge::HwHandler<iopHwWrite8_Page8>(), IopBridge::HwHandler<iopHwWrite16_Page8>(), IopBridge::HwHandler<iopHwWrite32_Page8>(), _ext_memWrite64<2>, _ext_memWrite128<2>
 	);
 
 	// psHw Optimized Mappings
