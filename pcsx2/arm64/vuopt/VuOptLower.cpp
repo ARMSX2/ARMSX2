@@ -2480,7 +2480,8 @@ namespace vuopt
 			if (op != LOp::SQRT)
 				fsR = lane0(in.args[0], l.fsf);
 			const int ftR = lane0(in.args[1], l.ftf);
-			const int q = TempV();
+			// the quotient is built in the result's register
+			const int q = DefV(id);
 			const int g9 = TempG(), g10 = TempG(), g11 = TempG(), g12 = TempG();
 			// Every register is taken before the first branch: allocating
 			// later could emit a spill on one path only.
@@ -2589,8 +2590,6 @@ namespace vuopt
 					break;
 				}
 			}
-			const int d = DefV(id);
-			armAsm->Mov(V(d).V16B(), V(q).V16B());
 		}
 
 		void Lowerer::DivFlags(ValueId id)
