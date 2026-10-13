@@ -1428,6 +1428,30 @@ TEST(VuoptRegion, Repro)
 	EXPECT_TRUE(o.diffs.empty()) << Join(o.diffs, 20);
 }
 
+// A known difference that is not the accumulators' (it shows with
+// VUOPT_NO_ACC=1 and on the tree before them): a region that stops on the
+// cycle budget with an XGKICK in its loop can leave VPU_STAT bit 12 (the
+// kick's transfer started, VUops.cpp) where microVU, stopping on the same
+// budget, has not started it. Flag hack off, StickyProgram variant 5, budgets
+// 11 and 12 (and others in 1..150); with the flag hack on the same budgets
+// agree. VUOPT_KICK_BUDGET=n VUOPT_KICK_FH=0|1 [VUOPT_KICK_DUMP=1] runs it.
+TEST(VuoptRegion, KickBailRepro)
+{
+	if (!getenv("VUOPT_KICK_BUDGET"))
+		GTEST_SKIP();
+	const int variant = 5;
+	const std::vector<VuOp> p = StickyProgram(variant, 7, 16);
+	const bool fh = getenv("VUOPT_KICK_FH") && std::atoi(getenv("VUOPT_KICK_FH"));
+	const u32 budget = static_cast<u32>(std::atoi(getenv("VUOPT_KICK_BUDGET")));
+	const RegionOutcome o = RunRegion(p, fh, [variant](VuTestHarness& h) {
+		SeedSpecials(h, 31 + variant);
+		h.SetVi(8, 0);
+		h.WriteMemU128(0x100, 0x00008001, 0x10000000, 0x0000000e, 0);
+		h.WriteMemU128(0x110, 0, 0, 0, 0);
+	}, false, 14, getenv("VUOPT_KICK_DUMP") != nullptr, nullptr, budget);
+	EXPECT_TRUE(o.diffs.empty()) << Join(o.diffs, 20);
+}
+
 // Milestone 6: VI values known at compile time fold, memory ops at constant
 // addresses address VU memory directly (wrapping like microVU), a VI copy
 // reads its source, a second LQ of the same address reuses the first, and an
