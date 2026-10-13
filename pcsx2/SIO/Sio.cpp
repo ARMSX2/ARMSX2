@@ -7,6 +7,7 @@
 #include "SIO/Memcard/MemoryCardProtocol.h"
 #include "Counters.h"
 #include "common/ARCADE.h"
+#include "IopThread/SharedWord.h"
 
 #include "Host.h"
 #include "IconsPromptFont.h"
@@ -129,6 +130,11 @@ void AutoEject::ClearAll()
 // Decremented once per frame if nonzero, indicates how many more frames must pass before
 // memcards are considered "no longer being written to". Used as a way to detect if it is
 // unsafe to shutdown the VM due to memcard access.
+//
+// Both words below are shared between the thread that runs the memory card commands (the IOP's, once it
+// has its own) and the CPU thread, which reads them at shutdown and savestate and decrements the ticks at
+// vsync. currentBusyTicks was already atomic, with orders stronger than it needs; sioLastFrameMcdBusy is a
+// plain word in the savestate, so it is accessed through relaxed atomics.
 static std::atomic_uint32_t currentBusyTicks = 0;
 
 uint32_t sioLastFrameMcdBusy = 0;
@@ -144,7 +150,7 @@ void MemcardBusy::Decrement()
 void MemcardBusy::SetBusy()
 {
 	currentBusyTicks.store(300, std::memory_order_release);
-	sioLastFrameMcdBusy = g_FrameCount;
+	SharedWord::StoreRelaxed<uint32_t>(sioLastFrameMcdBusy, g_FrameCount);
 }
 
 bool MemcardBusy::IsBusy()
@@ -155,12 +161,12 @@ bool MemcardBusy::IsBusy()
 void MemcardBusy::ClearBusy()
 {
 	currentBusyTicks.store(0, std::memory_order_release);
-	sioLastFrameMcdBusy = 0;
+	SharedWord::StoreRelaxed<uint32_t>(sioLastFrameMcdBusy, 0);
 }
 
 void MemcardBusy::CheckSaveStateDependency()
 {
-	if (g_FrameCount - sioLastFrameMcdBusy > NUM_FRAMES_BEFORE_SAVESTATE_DEPENDENCY_WARNING)
+	if (g_FrameCount - SharedWord::LoadRelaxed(sioLastFrameMcdBusy) > NUM_FRAMES_BEFORE_SAVESTATE_DEPENDENCY_WARNING)
 	{
 		Host::AddIconOSDMessage("MemcardBusy", ICON_PF_MEMORY_CARD,
 			TRANSLATE_SV("MemoryCard", "The virtual console hasn't saved to your memory card in a long time.\nSavestates should not be used in place of in-game saves."), Host::OSD_INFO_DURATION);

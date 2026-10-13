@@ -9,6 +9,7 @@
 #include "Counters.h"
 #include "IopCounters.h"
 #include "IopThread/IopBridge.h"
+#include "IopThread/SharedWord.h"
 
 #include "GS.h"
 #include "GS/GS.h"
@@ -310,7 +311,8 @@ double GetVerticalFrequency()
 
 	std::string cur_region = VMManager::Internal::GetCurrentRegion();
 
-	switch (gsVideoMode)
+	// Called from threads other than the one that sets the video mode (see gsSetVideoMode).
+	switch (SharedWord::LoadRelaxed(gsVideoMode))
 	{
 		case GS_VideoMode::Uninitialized: // SetGsCrt hasn't executed yet, give some temporary values.
 			return (cur_region == "PAL") ? Pcsx2Config::GSOptions::DEFAULT_FRAME_RATE_PAL : Pcsx2Config::GSOptions::DEFAULT_FRAME_RATE_NTSC;

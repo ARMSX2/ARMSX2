@@ -4,8 +4,10 @@
 // Atomic access to a plain word that the EE thread and the IOP thread both use.
 //
 // The SBUS registers (EE 0x1000F200-F260, IOP 0x1D000000-60) are one set of words in the EE's hardware
-// page, read and written by both machines. Nothing here changes where a word lives or how big it is: the
-// storage is the same plain integer it always was, and this header only says how it is touched.
+// page, read and written by both machines. A few other words are written by one thread and read by the
+// other: the IOP's ICFG register, the GS video mode, the memory card busy frame. Nothing here changes
+// where a word lives or how big it is: the storage is the same plain integer it always was, and this
+// header only says how it is touched.
 //
 // Generated code does not touch the SBUS words. The EE's loads and stores of a hardware address call the
 // registered handlers (the one hardware word its JIT loads inline is INTC_STAT, which is not an SBUS
