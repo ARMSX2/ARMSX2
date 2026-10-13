@@ -220,7 +220,11 @@
 //       under an FZ FPCR is the identity and is not emitted.
 //  56 — IBEQ/IBNE between two VIs XOR the cached Is straight into the condition
 //       register instead of copying it there first.
-static constexpr u32 kMvuCompilerAbiVersion = 56;
+//  57 — below clampE a single-lane y/z/w FMAC computes its lane in place, full
+//       width, in an allocReg natural slot, instead of rotating Fs, Ft and ACC to
+//       lane 0 for scalar arithmetic and ACC back; mVUglob gains the lane-indexed
+//       single-scalar flag weights.
+static constexpr u32 kMvuCompilerAbiVersion = 57;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

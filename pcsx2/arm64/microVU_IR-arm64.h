@@ -19,6 +19,7 @@ struct microMapNEON
 	int  count;    // LRU counter
 	bool isNeeded; // Locked for current instruction
 	bool isZero;   // Loaded from VF0, no clamping needed
+	bool natural;  // Single-lane write held in its own lane, not rotated to lane 0
 };
 
 struct microMapGPR
@@ -234,7 +235,7 @@ protected:
 			// Partial write — must invalidate after store regardless of
 			// clearEntry, otherwise later cached reads pick up a reg with
 			// stale / shuffled lanes and skip the re-load.
-			mVUsaveReg(qreg, gprVUState, off, entry.xyzw, true);
+			mVUsaveReg(qreg, gprVUState, off, entry.xyzw, !entry.natural);
 			clearNeon(regIdx);
 			return;
 		}
@@ -264,6 +265,7 @@ protected:
 		neonMap[regIdx].count = 0;
 		neonMap[regIdx].isNeeded = false;
 		neonMap[regIdx].isZero = false;
+		neonMap[regIdx].natural = false;
 	}
 
 	void clearGPR(int regIdx)
@@ -443,6 +445,7 @@ public:
 		pxAssert(m.isNeeded && m.VFreg == 0 && m.xyzw == 0xF);
 		m.VFreg  = vfreg;
 		m.isZero = false;
+		m.natural = false;
 		m.count  = counter;
 	}
 
@@ -455,9 +458,17 @@ public:
 	//       0xF=full-write). For SS writes a single bit is set.
 	// cloneWrite: if true, clone cached reg so caller's write doesn't
 	//             stomp the cached value.
-	const a64::VRegister allocReg(int vfLoadReg = -1, int vfWriteReg = -1, int xyzw = 0, bool cloneWrite = true)
+	// natural: a single-lane write keeps every lane where it is (a whole-
+	//          register clone or load) instead of rotating the written lane
+	//          to lane 0; the slot is marked so its writeback and merge take
+	//          that lane from its own place. For emitters that compute the
+	//          lane in place, full width.
+	const a64::VRegister allocReg(int vfLoadReg = -1, int vfWriteReg = -1, int xyzw = 0, bool cloneWrite = true,
+		bool natural = false)
 	{
 		counter++;
+		natural = natural && (xyzw == 8 || xyzw == 4 || xyzw == 2 || xyzw == 1);
+		const int ssXyzw = natural ? 0 : xyzw; // the rotation's view of the mask
 
 		// Search for cached copy.
 		if (vfLoadReg >= 0)
@@ -484,11 +495,11 @@ public:
 							const a64::VRegister qmmZ = armQRegister(z);
 							writeBackNeon(z);
 
-							if (xyzw == 4)
+							if (ssXyzw == 4)
 								emitSSShuffle(qmmZ, qmmI, 1); // Y to lane 0
-							else if (xyzw == 2)
+							else if (ssXyzw == 2)
 								emitSSShuffle(qmmZ, qmmI, 2); // Z to lane 0
-							else if (xyzw == 1)
+							else if (ssXyzw == 1)
 								emitSSShuffle(qmmZ, qmmI, 3); // W to lane 0
 							else if (z != i)
 							{
@@ -503,16 +514,17 @@ public:
 							if ((vfLoadReg != vfWriteReg) || (xyzw != 0xF))
 								writeBackNeon(i);
 
-							if (xyzw == 4)
+							if (ssXyzw == 4)
 								emitSSShuffle(qmmI, qmmI, 1);
-							else if (xyzw == 2)
+							else if (ssXyzw == 2)
 								emitSSShuffle(qmmI, qmmI, 2);
-							else if (xyzw == 1)
+							else if (ssXyzw == 1)
 								emitSSShuffle(qmmI, qmmI, 3);
 						}
 						neonMap[z].VFreg = vfWriteReg;
 						neonMap[z].xyzw  = xyzw;
 						neonMap[z].isZero = (vfLoadReg == 0);
+						neonMap[z].natural = natural;
 					}
 					neonMap[z].count = counter;
 					neonMap[z].isNeeded = true;
@@ -536,19 +548,20 @@ public:
 			}
 			else if (vfLoadReg == 33) // I register
 			{
-				loadIreg(qmmX, xyzw);
+				loadIreg(qmmX, natural ? 0xF : xyzw);
 			}
 			else if (vfLoadReg == 32)
 			{
-				mVUloadReg(qmmX, gprVUState, offsetof(VURegs, ACC), xyzw);
+				mVUloadReg(qmmX, gprVUState, offsetof(VURegs, ACC), natural ? 0xF : xyzw);
 			}
 			else if (vfLoadReg >= 0)
 			{
-				mVUloadReg(qmmX, gprVUState, offsetof(VURegs, VF) + vfLoadReg * sizeof(VECTOR), xyzw);
+				mVUloadReg(qmmX, gprVUState, offsetof(VURegs, VF) + vfLoadReg * sizeof(VECTOR), natural ? 0xF : xyzw);
 			}
 
 			neonMap[x].VFreg = vfWriteReg;
 			neonMap[x].xyzw  = xyzw;
+			neonMap[x].natural = natural;
 		}
 		else // Reg will not be modified (always load the full reg so it can be cached)
 		{
@@ -567,6 +580,7 @@ public:
 
 			neonMap[x].VFreg = vfLoadReg;
 			neonMap[x].xyzw  = 0;
+			neonMap[x].natural = false;
 		}
 		neonMap[x].isZero    = (vfLoadReg == 0);
 		neonMap[x].count     = counter;
@@ -589,6 +603,7 @@ public:
 		neonMap[x].VFreg = vfLoadA;
 		neonMap[x].xyzw = 0;
 		neonMap[x].isZero = (vfLoadA == 0);
+		neonMap[x].natural = false;
 		neonMap[x].count = counter;
 		neonMap[x].isNeeded = true; // hold the slot while the second is chosen
 
@@ -599,6 +614,7 @@ public:
 		neonMap[y].VFreg = vfLoadB;
 		neonMap[y].xyzw = 0;
 		neonMap[y].isZero = (vfLoadB == 0);
+		neonMap[y].natural = false;
 		neonMap[y].count = counter;
 
 		// Ldp's first register takes the lower address, so a descending pair
@@ -909,7 +925,7 @@ public:
 				// into it. The merged reg now holds the complete state, so
 				// mark it as fully valid (xyzw=0xF). We'll invalidate our
 				// own slot below.
-				mVUmergeRegs(armQRegister(i), reg, clear.xyzw, /*modXYZW=*/true);
+				mVUmergeRegs(armQRegister(i), reg, clear.xyzw, /*modXYZW=*/!clear.natural);
 				mapI.xyzw  = 0xF;
 				mapI.count = counter;
 				mergeState = 2;
