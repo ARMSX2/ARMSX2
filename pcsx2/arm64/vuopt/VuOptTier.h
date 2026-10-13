@@ -40,6 +40,8 @@ namespace vuopt
 		// bisecting a divergence. -1 = no restriction.
 		s32 only = -1, limit = -1;
 		std::set<s32> skip;
+		// Testing: shrink the allocatable register pools (LowerEnv).
+		u32 poolLimitV = 0, poolLimitG = 0;
 		// Print each lowered block's IR to stdout.
 		bool dump = false;
 

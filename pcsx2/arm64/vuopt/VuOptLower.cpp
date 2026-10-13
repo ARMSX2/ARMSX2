@@ -256,6 +256,7 @@ namespace vuopt
 			std::vector<std::vector<u32>> finalVars_; // per value: the variables (lanes) it is the final value of
 			ValueId varLiveIn_[var::Count] = {};      // canonical incoming value of each variable
 			u8 early_[var::Count] = {};               // variable already written to its memory home
+			std::vector<ValueId> noEarly_;            // read by the end of the node for something else
 			bool HomeIsMem(u32 v) const;
 			bool EarlyOk(ValueId c) const;
 			void StoreEarly(ValueId c);
@@ -323,6 +324,7 @@ namespace vuopt
 			int LaneWord(ValueId v, int lane);   // lane `lane` of a vector value in a W register
 			int Broadcast(ValueId v);            // scalar broadcast to 4 lanes (temp)
 			int ClampInto(int src);              // mVUclamp1 into a temp
+			void KeepOnly(u32 before, int t);
 			void MemAddr(ValueId addrV, s32 imm, int& base, int& idx);
 
 			void PackFlags(int src, u8 mask, bool mflag, int dst);
@@ -405,6 +407,8 @@ namespace vuopt
 		bool Lowerer::EarlyOk(ValueId c) const
 		{
 			if (c >= finalVars_.size() || finalVars_[c].empty() || remat_[c] != Remat::None || reg_[c] < 0)
+				return false;
+			if (std::find(noEarly_.begin(), noEarly_.end(), c) != noEarly_.end())
 				return false;
 			if (uses_[c].empty() || uses_[c].back() != leavePos_ || pos_ >= leavePos_ || NextUse(c) != leavePos_)
 				return false;
@@ -543,6 +547,10 @@ namespace vuopt
 						r = x;
 					}
 				}
+				if (r < 0)
+					std::fprintf(stderr, "vuopt: no register to spill: op %d at %u, class %d, pool %08x locked %08x\n",
+						static_cast<int>(I(order_[std::min<size_t>(pos_, order_.size() - 1)]).op), pos_, static_cast<int>(k),
+						k == Cls::V ? vPool_ : gPool_, k == Cls::V ? vLock_ : gLock_);
 				pxAssertRel(r >= 0, "vuopt: no register to spill");
 				SpillValue(own[r]);
 			}
@@ -732,6 +740,7 @@ namespace vuopt
 		// inserts.
 		int Lowerer::VecOperand(const std::vector<ValueId>& args, size_t off)
 		{
+			const u32 lockedBefore = vLock_;
 			ValueId first = 0;
 			bool multi = false;
 			for (int l = 0; l < 4; l++)
@@ -788,6 +797,8 @@ namespace vuopt
 				else
 					armAsm->Ins(V(t).V4S(), l, W(UseReg(v)));
 			}
+			// The sources stay bound; only the assembled copy is in use now.
+			vLock_ = lockedBefore | (1u << t);
 			return t;
 		}
 
@@ -865,6 +876,10 @@ namespace vuopt
 			armAsm->Fmaxnm(V(t).V4S(), V(t).V4S(), V(kCMin).V4S());
 			return t;
 		}
+
+		// After an operand was copied into a temp, the registers it was built
+		// from need not stay locked: back to `before` plus the temp.
+		void Lowerer::KeepOnly(u32 before, int t) { vLock_ = before | (1u << t); }
 
 		// mVUaddrFix + mVUmemAtIndex on VU1: ((vi + imm) & 0x3ff) * 16 from the
 		// VU1 memory base.
@@ -974,9 +989,14 @@ namespace vuopt
 				return;
 			}
 			const int ct = env_.clampOverflow ? ClampType(u) : 0;
+			const u32 l0 = vLock_;
 			int fs = VecOperand(in.args, 0);
 			if (ct & 2)
+			{
 				fs = ClampInto(fs);
+				KeepOnly(l0, fs);
+			}
+			const u32 l1 = vLock_;
 			// Ft: a whole register, or a scalar (one register lane) that the
 			// multiply reads by element and the other kinds broadcast.
 			// setupFtReg loads I into a writable temp mapped as VF0 rather than
@@ -988,19 +1008,28 @@ namespace vuopt
 				case FtForm::Reg:
 					ft = VecOperand(in.args, 4);
 					if (ct & 1)
+					{
 						ft = ClampInto(ft);
+						KeepOnly(l1, ft);
+					}
 					break;
 				case FtForm::Bc:
 					ft = UseReg(in.args[4]);
 					ftLane = in.lane;
 					if (ct & 1)
+					{
 						ft = ClampInto(ft);
+						KeepOnly(l1, ft);
+					}
 					break;
 				case FtForm::I:
 				case FtForm::Q:
 					ft = ScalarV(in.args[4], &ftLane);
 					if (ct & 1)
+					{
 						ft = ClampInto(ft);
+						KeepOnly(l1, ft);
+					}
 					break;
 				default:
 				{
@@ -1792,6 +1821,7 @@ namespace vuopt
 				{
 					noDrop_[c] = 1;
 					UseReg(c);
+					ReleaseLocks(); // bound is enough; a later eviction spills it
 				}
 				else if (fromWrittenMem || fromPQ)
 					noDrop_[c] = 1;
@@ -2682,6 +2712,10 @@ namespace vuopt
 					continue;
 				finalVars_[C(a)].push_back(v);
 			}
+			// The branch condition / jump target is read at the end itself.
+			for (size_t k = var::Count; k < lv.args.size(); k++)
+				if (lv.args[k])
+					finalVars_[C(lv.args[k])].clear(), noEarly_.push_back(C(lv.args[k]));
 			for (size_t v = 1; v < f_.insts.size(); v++)
 				if (f_.insts[v].op == Op::LiveIn && f_.insts[v].var < var::Count)
 					varLiveIn_[f_.insts[v].var] = canon_[v];
@@ -2693,6 +2727,16 @@ namespace vuopt
 				gPool_ &= ~(1u << hm_.memBase);
 			if (hm_.cycles >= 0)
 				gPool_ &= ~(1u << hm_.cycles);
+			const auto limit = [](u32 pool, u32 n) {
+				if (!n)
+					return pool;
+				u32 out = 0;
+				for (u32 m = pool; m && n; m &= m - 1, n--)
+					out |= m & (0u - m);
+				return out;
+			};
+			vPool_ = limit(vPool_, env_.poolLimitV);
+			gPool_ = limit(gPool_, env_.poolLimitG);
 
 			// Register pressure bound: live values at once must fit the pool
 			// plus the spill area with room for temporaries.
@@ -2822,12 +2866,17 @@ namespace vuopt
 		return m;
 	}
 
-	LowerResult LowerNode(const ir::Function& f, const LowerEnv& env, const HomeMap& homes, LowerMode mode)
+	LowerResult LowerNode(const ir::Function& f, const LowerEnv& env, const HomeMap& homes, LowerMode mode, bool checkOnly)
 	{
 		LowerResult r;
 		Lowerer lw(f, env, homes, mode);
 		if (!lw.Check(r.why))
 			return r;
+		if (checkOnly)
+		{
+			r.ok = true;
+			return r;
+		}
 		const u8* start = armGetCurrentCodePointer();
 		lw.Emit();
 		r.bytes = static_cast<u32>(armGetCurrentCodePointer() - start);

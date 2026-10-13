@@ -129,7 +129,7 @@ std::vector<std::string> Compare(const VuSnapshot& ra, const VuSnapshot& rb,
 // harness seeded the same way (a harness takes its pre-state from whatever
 // its previous run left).
 Outcome RunBoth(const std::vector<VuOp>& prog, bool flagHack,
-	const std::function<void(VuTestHarness&)>& setup = {}, s32 limit = -1, bool dumpLast = false)
+	const std::function<void(VuTestHarness&)>& setup = {}, s32 limit = -1, bool dumpLast = false, u32 poolV = 0, u32 poolG = 0)
 {
 	FlagHackScope fh(flagHack);
 	VuSnapshot ref;
@@ -156,6 +156,8 @@ Outcome RunBoth(const std::vector<VuOp>& prog, bool flagHack,
 		if (dumpLast && limit > 0)
 			t.tier.only = limit - 1;
 		t.tier.dump = dumpLast;
+		t.tier.poolLimitV = poolV;
+		t.tier.poolLimitG = poolG;
 		h.RunNoDiff();
 		o.blocks = t.tier.Blocks();
 		o.lowered = t.tier.Lowered();
@@ -513,6 +515,46 @@ TEST(VuoptLowering, Fuzz)
 	std::printf("[vuopt lowering fuzz] programs=%d blocks=%u lowered=%u\n", programs, blocks, lowered);
 }
 
+// A block ending in JR whose target VI is also that VI's final value, under
+// enough general-register pressure that the value is evicted before the end.
+// It must not take the early write-back to its home: the end of the block
+// still reads it as the jump target.
+TEST(VuoptLowering, JumpTargetSurvivesEarlyWriteback)
+{
+	for (int filler = 10; filler <= 22; filler += 3)
+	{
+		std::vector<VuOp> p;
+		const u32 target = 0x200 / 8;
+		p.push_back(L(VIADDIU_L(vi::vi6, vi::vi0, static_cast<u16>(target))));
+		// many live general values: flag reads into every other VI, read again
+		// at the end through their homes, plus MAC instances
+		for (int k = 0; k < filler; k++)
+		{
+			const u32 v = 1 + (k % 15);
+			if (v == 6)
+				continue;
+			p.push_back(P(VMTIR_L(v, 1 + (k % 8), k & 3), VMUL_U(mask::xyzw, 9 + (k % 6), 1 + (k % 8), 2 + (k % 7))));
+		}
+		p.push_back(L(VJR_L(vi::vi6)));
+		p.push_back(U(VNOP_U()));
+		while (p.size() < target)
+			p.push_back(U(VNOP_U()));
+		p.push_back(EBit(L(VIADDIU_L(vi::vi7, vi::vi6, 1))));
+		for (bool fh : {true, false})
+		{
+			const Outcome o = RunBoth(
+				p, fh,
+				[](VuTestHarness& h) {
+					for (int r = 1; r < 16; r++)
+						h.SetVf(r, 1.0f + r, 2.5f * r, -r, 0.5f);
+				},
+				-1, false, 0, 8);
+			EXPECT_TRUE(o.diffs.empty()) << "filler=" << filler << " flagHack=" << fh << "\n" << Join(o.diffs);
+			EXPECT_EQ(o.lowered, o.blocks) << o.declined;
+		}
+	}
+}
+
 // Long straight blocks over every VF register: enough live values that the
 // allocator spills and reloads, with every broadcast form, partial writes,
 // moves and flag readers in between.
@@ -571,11 +613,15 @@ TEST(VuoptLowering, PressureFuzz)
 		for (bool fh : {true, false})
 		{
 			programs++;
-			const Outcome o = RunBoth(p, fh, [iter](VuTestHarness& h) {
-				SeedSpecials(h, 5000 + iter);
-				for (int r = 12; r < 32; r++)
-					h.SetVf(r, 1.0f + r, -0.5f * r, 0.25f + r, 3.0f - r);
-			});
+			// odd programs also run with small register pools
+			const Outcome o = RunBoth(
+				p, fh,
+				[iter](VuTestHarness& h) {
+					SeedSpecials(h, 5000 + iter);
+					for (int r = 12; r < 32; r++)
+						h.SetVf(r, 1.0f + r, -0.5f * r, 0.25f + r, 3.0f - r);
+				},
+				-1, false, (iter & 1) ? 12 : 0, (iter & 1) ? 8 : 0);
 			blocks += o.blocks;
 			lowered += o.lowered;
 			if (!o.declined.empty())

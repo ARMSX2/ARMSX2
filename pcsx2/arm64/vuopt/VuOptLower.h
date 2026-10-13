@@ -52,6 +52,9 @@ namespace vuopt
 		const void* vifItop = nullptr;  // &VIFregisters.itop
 		bool clampOverflow = true;      // CHECK_VU_OVERFLOW
 		bool softwareFlush = false;     // !FPCR.DAZ: the divide unit's denormal flush in software
+		// Testing: allocate from at most this many NEON / general registers
+		// (0 = all), to reach spills and early write-backs in small programs.
+		u32 poolLimitV = 0, poolLimitG = 0;
 	};
 
 	// Where a variable lives at node boundaries.
@@ -106,7 +109,8 @@ namespace vuopt
 	// Checks the IR can be lowered, then emits it at armAsm's cursor. Emits
 	// nothing when it declines.
 	LowerResult LowerNodeBody(const ir::Function& f, const LowerEnv& env);
-	LowerResult LowerNode(const ir::Function& f, const LowerEnv& env, const HomeMap& homes, LowerMode mode);
+	// checkOnly: decide only, emit nothing.
+	LowerResult LowerNode(const ir::Function& f, const LowerEnv& env, const HomeMap& homes, LowerMode mode, bool checkOnly = false);
 
 	// Region boundary helpers: move every register-homed variable between its
 	// register and microVU's boundary location (and the cycle counter between

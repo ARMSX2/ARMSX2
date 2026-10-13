@@ -69,6 +69,8 @@ namespace vuopt
 		le.offVIxgkick = env.offVIxgkick;
 		le.offBranch = env.offBranch;
 		le.offNeonBackup = env.offNeonBackup;
+		le.poolLimitV = poolLimitV;
+		le.poolLimitG = poolLimitG;
 		le.xgkickFn = env.xgkickFn;
 		le.vifTop = env.vifTop;
 		le.vifItop = env.vifItop;
