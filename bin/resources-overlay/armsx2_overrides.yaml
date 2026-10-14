@@ -1198,3 +1198,31 @@ NM00057:
   input: drum
   gsHWFixes:
     alignSprite: 1 # Fixes vertical lines.
+
+# Baldur's Gate: Dark Alliance (NTSC-U) — keep textures resident in the game's own
+# VRAM texture cache. bmdhacks, 2026-10-14; found by the BGDA texture-upload study
+# (ARMSX2 umbrella, devs/bmdhacks/campaigns/g57-bgda-slowdown/PATCH-STUDY.md).
+#
+# The game sweeps out every texture whose stamp is older than its render-frame
+# counter, but the function that queues an already-resident texture (0x1350a8)
+# refreshes the stamp from the game-time counter, which resets at level start and
+# stops while paused, so it is always behind. Every texture drawn two frames running
+# is evicted and uploaded again, to a different place each frame. The patch makes
+# that refresh read the render-frame counter (the one the allocator at 0x1405a8 and
+# the sweep at 0x140840 use).
+#
+# Cost it saves: on the M2, the hash cache hits 55-74% -> 66-90% across four scenes
+# of the water area and the bytes ARMSX2 uploads fall 43-60%; on the RG 476H
+# (Mali-G57) that area was upload-bound. Pixels: up to 53 px a frame differ by at
+# most 14 levels while walking, none of it visible on the owner's flips (2026-10-14).
+#
+# Verified: savestate replays on the M2 (EE JIT, MTVU off, Vulkan and software
+# renderers) at master f7c764dd9d; not run on a console. patches only:
+# upstream's gameFixes and gsHWFixes for this serial stay in force.
+SLUS-20035:
+  patches:
+    773A8DAB:
+      content: |-
+        author=bmdhacks
+        comment=Keeps textures that are drawn every frame resident in the game's VRAM texture cache instead of evicting and re-uploading them (0x00135180: lw v0,-0x5bb8(gp) -> lw v0,-0x5bb4(gp)).
+        patch=1,EE,00135180,word,8f82a44c
