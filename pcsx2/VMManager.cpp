@@ -2290,6 +2290,11 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 
 	Console.WriteLn("VM subsystems initialized in %.2f ms", init_timer.GetTimeMilliseconds());
 	s_state.store(VMState::Paused, std::memory_order_release);
+	// A paused VM holds the IOP for as long as it stays paused (SetState does the same when it enters Paused). This
+	// store bypasses SetState, and the first resume goes through SetState: it calls SPU2::SetOutputPaused(false),
+	// which touches the audio stream the IOP thread started above writes. Found at step 10 by that assert, in the
+	// first BIOS boot of armsx2-sdl in Lockstep (IOP thread design 7.1, row C25).
+	IopThread::OnVmPaused(true);
 	Host::OnVMStarted();
 	FullscreenUI::OnVMStarted();
 	UpdateInhibitScreensaver(EmuConfig.InhibitScreensaver);
