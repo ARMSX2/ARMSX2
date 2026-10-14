@@ -452,8 +452,22 @@ namespace IopThread
 		HostCommandQueue& operator=(const HostCommandQueue&) = delete;
 
 		/// Any thread. Queues `command` (which must not be empty) and returns its ticket. Tickets
-		/// count 1, 2, 3 ... in queue order.
+		/// count 1, 2, 3 ... in queue order. Ignores the gate below: this is the form the lifecycle
+		/// code uses for a command it knows the IOP thread will take.
 		Ticket Post(Command command);
+
+		/// The gate for the threads that cannot know whether an IOP thread exists (the physical-disc
+		/// thread). A new queue is closed. The owner opens it as its thread starts and closes it before
+		/// the thread stops, then runs what is still queued: a command that TryPost() accepted is never
+		/// left behind, and one it refused is the caller's to run. Open and close need no other
+		/// synchronisation; they take the same mutex as TryPost.
+		void Open();
+		void Close();
+		bool IsOpen() const noexcept { return m_open.load(std::memory_order_acquire); }
+
+		/// Any thread. Post() while the gate is open; 0 (no ticket, `command` not queued) while it is
+		/// closed.
+		Ticket TryPost(Command command);
 
 		/// IOP thread: the per-slice check. One relaxed load. True can lag a Post() on another
 		/// thread by a moment, which the next slice makes up. Relaxed and pairing with nothing:
@@ -486,6 +500,7 @@ namespace IopThread
 		alignas(kChannelLineSize) std::mutex m_mutex;
 		std::vector<Command> m_queue; // guarded by m_mutex
 		Ticket m_posted = 0; // guarded by m_mutex
+		std::atomic<bool> m_open{false}; // written under m_mutex
 
 		// The IOP thread's own list. RunPending swaps it with m_queue, so the IOP thread reuses
 		// one buffer and does not allocate once it has grown to the working size.

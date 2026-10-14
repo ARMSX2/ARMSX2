@@ -389,6 +389,13 @@ namespace IopThread
 		ApplyE2IItem(E2IItem{stamp, kind, 0, arg}, s_e2i_actions ? *s_e2i_actions : kRealE2IActions);
 	}
 
+	// ================================================================ host threads
+
+	bool TryPostToIop(HostCommandQueue::Command command)
+	{
+		return g_thread.TryPostHostCommand(std::move(command)) != 0;
+	}
+
 	// ================================================================ the EE core's calls
 
 	bool LockstepActive()

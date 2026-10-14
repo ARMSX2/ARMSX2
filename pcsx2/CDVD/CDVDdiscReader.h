@@ -78,6 +78,10 @@ extern bool weAreInNewDiskCB;
 
 extern void (*newDiscCB)();
 
+/// The disc thread has seen the drive's disc change: runs newDiscCB (the IOP's disc change) on the IOP thread if
+/// there is one, and here otherwise. Called by the disc thread; declared for the tests.
+void cdvdCallNewDiscCB();
+
 void cdvdStartThread();
 void cdvdStopThread();
 void cdvdRequestSector(u32 sector, s32 mode);

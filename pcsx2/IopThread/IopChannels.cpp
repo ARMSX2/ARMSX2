@@ -26,6 +26,34 @@ namespace IopThread
 		return ticket;
 	}
 
+	void HostCommandQueue::Open()
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		m_open.store(true, std::memory_order_release);
+	}
+
+	void HostCommandQueue::Close()
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		m_open.store(false, std::memory_order_release);
+	}
+
+	HostCommandQueue::Ticket HostCommandQueue::TryPost(Command command)
+	{
+		pxAssertMsg(static_cast<bool>(command), "HostCommandQueue::TryPost() of an empty command");
+
+		// The gate is read and the command queued under one hold of the mutex, so a Close() either comes
+		// before this (and the command is refused) or after it (and the command is in the queue the owner
+		// runs once it has closed the gate).
+		std::lock_guard<std::mutex> lock(m_mutex);
+		if (!m_open.load(std::memory_order_relaxed))
+			return 0;
+		m_queue.push_back(std::move(command));
+		const Ticket ticket = ++m_posted;
+		m_pending.store(true, std::memory_order_release);
+		return ticket;
+	}
+
 	size_t HostCommandQueue::RunPending()
 	{
 		// A command that calls back in would run the later commands before the rest of this batch.

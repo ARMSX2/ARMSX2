@@ -101,8 +101,14 @@ namespace IopThread
 		m_started.store(false, std::memory_order_relaxed);
 		if (m_params.stack_size != 0)
 			m_thread.SetStackSize(m_params.stack_size);
+		// Open after the semaphore is reset: a host thread whose post is accepted wakes the semaphore, and
+		// that wake-up must not be reset away.
+		m_host.Open();
 		if (!m_thread.Start([this] { ThreadMain(); }))
+		{
+			m_host.Close();
 			return false;
+		}
 
 		// The thread has finished its setup (and recorded its id) when it sets this. A caller can
 		// rely on the FPCR, the name and OnIopThread() as soon as Start() returns.
@@ -118,6 +124,10 @@ namespace IopThread
 			return;
 		pxAssertMsg(!OnIopThread(), "the IOP thread cannot stop itself");
 		pxAssertMsg(!m_in_call, "Stop() from inside a CallOnEE function");
+
+		// Host threads stop being accepted first. What was accepted before this point is in the queue, and
+		// the IOP thread runs it before it exits (ThreadMain), so a command is never left behind.
+		m_host.Close();
 
 		// Every wait the IOP has checks this flag, so it never waits for the EE past here: a
 		// CallOnEE still Posted is cancelled, a full I2E queue gives up, a hold ends.
@@ -147,6 +157,10 @@ namespace IopThread
 			LockstepLoop();
 		else
 			ThreadedLoop();
+
+		// Stop() closed the queue to host threads before it asked this thread to leave; whatever they got in
+		// before that runs here, on the thread that owns the devices, with the CPU thread waiting for the join.
+		m_host.RunPending();
 	}
 
 	// Parks until `ready()` says there is work, or until woken. `ready` re-reads everything that can
@@ -807,6 +821,15 @@ namespace IopThread
 		// Not filtered: a host thread cannot know whether the IOP is about to sleep, and commands are
 		// rare (a disc change, a settings change).
 		m_sema.NotifyOfWork();
+		return ticket;
+	}
+
+	Thread::Ticket Thread::TryPostHostCommand(HostCommandQueue::Command command)
+	{
+		const Ticket ticket = m_host.TryPost(std::move(command));
+		// Only an accepted command wakes the thread; a refused one is not in the queue.
+		if (ticket != 0)
+			m_sema.NotifyOfWork();
 		return ticket;
 	}
 

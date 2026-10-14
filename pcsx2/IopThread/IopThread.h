@@ -18,7 +18,7 @@
 //   EE thread (the CPU thread): Start, Stop, PublishWatermark, CheckLag, PostE2I, KickIop,
 //     MayHaveI2E, DrainI2E, Wake, Resync, ScopedHold, LockstepRunSlice, LockstepApplyUpTo.
 //   IOP thread: CallOnEE, PostI2E, and the functions the object was given.
-//   Any thread: PostHostCommand, IsHostCommandDone, ReapplyFpcr, and the accessors.
+//   Any thread: PostHostCommand, TryPostHostCommand, IsHostCommandDone, ReapplyFpcr, and the accessors.
 //
 // The three waits the EE has (design section 4) are CheckLag (W1, the lag bound), ScopedHold (W2
 // and W4, the holds) and PostE2I (W3, a full queue). None of them sleeps in the emulation path.
@@ -396,6 +396,14 @@ namespace IopThread
 		/// during the next handoff, so it never runs while the EE does). Wakes the IOP.
 		Ticket PostHostCommand(HostCommandQueue::Command command);
 		bool IsHostCommandDone(Ticket ticket) const { return m_host.IsDone(ticket); }
+
+		/// For a host thread that does not know whether an IOP thread exists (the physical-disc thread,
+		/// design 8.3). Like PostHostCommand while the thread is running, and 0, with the command not
+		/// queued, while it is not (Off, or between Stop() and Start()): the caller then makes the call
+		/// itself, as it always did. The decision and the queueing are one step, so a Stop() that races
+		/// the post either refuses it or, having accepted it, runs it on the IOP thread before the thread
+		/// exits. Nothing is dropped and nothing runs twice.
+		Ticket TryPostHostCommand(HostCommandQueue::Command command);
 
 		/// Sets the IOP thread's FPCR after a settings change, through a host command.
 		void ReapplyFpcr(FPControlRegister value);

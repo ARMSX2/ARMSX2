@@ -13,6 +13,7 @@ add_pcsx2_test(core_test
 	iop_thread_hold_tests.cpp
 	iop_thread_owner_tests.cpp
 	iop_thread_owner_release_tests.cpp
+	iop_thread_host_commands_tests.cpp
 	pad_input_tests.cpp
 	IopThreadTestSupport.h
 	sif_pump_tests.cpp

@@ -120,6 +120,16 @@ namespace IopThread
 	/// here, directly. EE thread only.
 	void ApplyOnIop(u16 kind, u32 arg = 0);
 
+	// ---- Host threads and the IOP ------------------------------------------------------------
+
+	/// Any thread. For a host thread that today calls into IOP state directly and cannot take a hold (the
+	/// physical-disc thread's new-disc callback, design 8.3). With an IOP thread running, queues `command`
+	/// for it and returns true: it runs on the IOP thread between slices (Lockstep: in the next handoff).
+	/// Without one (Off, or a mode switch in progress) returns false and does not queue it, and the caller
+	/// makes the call itself, as before. A command accepted just as the thread stops runs on the IOP
+	/// thread before it exits.
+	bool TryPostToIop(HostCommandQueue::Command command);
+
 	// ---- Clocks and pausing ------------------------------------------------------------------
 
 	/// The EE's cycle counter and the IOP's slice books were reset or loaded (cpuReset, a savestate
