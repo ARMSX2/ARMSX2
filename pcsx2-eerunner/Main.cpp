@@ -519,6 +519,17 @@ static u32 s_change_disc_at = 0; // --change-disc N <image>: swap the disc at fr
 static std::string s_change_disc_path;
 static bool s_change_disc_pending = false; // the swap waits for the next vsync, where a player's menu would deliver it
 
+// --host-action N <hotkey>: press and release a hotkey at frame N of a liverun, from the CPU thread, as the input
+// manager does for a bound key. Several may be given. The hotkey's own handler runs, so the holds it takes are the
+// ones a player's key press takes.
+struct HostAction
+{
+	u32 frame;
+	std::string hotkey;
+};
+static std::vector<HostAction> s_host_actions;
+static std::vector<std::string> s_host_actions_pending; // delivered at the next vsync
+
 void Host::PumpMessagesOnCPUThread()
 {
 	// Headless — no platform message pump, apart from the --settings-churn change a player's settings
@@ -535,6 +546,27 @@ void Host::PumpMessagesOnCPUThread()
 		s_change_disc_pending = false;
 		const bool ok = VMManager::ChangeDisc(CDVD_SourceType::Iso, s_change_disc_path);
 		Console.WriteLn(fmt::format("eerunner: changed the disc to '{}': {}", s_change_disc_path, ok ? "ok" : "failed"));
+	}
+
+	// --host-action: a hotkey pressed and released.
+	if (!s_host_actions_pending.empty())
+	{
+		const std::vector<std::string> pending = std::exchange(s_host_actions_pending, {});
+		for (const std::string& name : pending)
+		{
+			bool found = false;
+			for (const HotkeyInfo* hotkey : InputManager::GetHotkeyList())
+			{
+				if (hotkey->name && name == hotkey->name)
+				{
+					hotkey->handler(1);
+					hotkey->handler(0);
+					found = true;
+					break;
+				}
+			}
+			Console.WriteLn(fmt::format("eerunner: hotkey '{}': {}", name, found ? "pressed" : "no such hotkey"));
+		}
 	}
 
 	// Work posted with Host::RunOnCPUThread. Tasks run outside the lock, so one that posts more cannot deadlock.
@@ -677,6 +709,9 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               the settings it began the run with. Both must leave the fingerprint unchanged.\n");
 	std::fprintf(stderr, "  --change-disc N <image>: in a --liverun, swap the disc for <image> at frame N, from the CPU thread, as the\n");
 	std::fprintf(stderr, "               frontend's change-disc menu does.\n");
+	std::fprintf(stderr, "  --host-action N <hotkey>: in a --liverun, press and release the hotkey <hotkey> (by its name in the hotkey\n");
+	std::fprintf(stderr, "               list: Mute, IncreaseVolume, DecreaseVolume, ToggleTurbo, ToggleSlowMotion, SwapMemCards ...) at\n");
+	std::fprintf(stderr, "               frame N, from the CPU thread, as the input manager does for a bound key. Repeatable.\n");
 	std::fprintf(stderr, "  --iop-assert-log: an IOP thread ownership assert (a Devel build's IOP_SIDE_ASSERT/EE_SIDE_ASSERT) logs\n");
 	std::fprintf(stderr, "               the first violation at each site and the run goes on, instead of stopping at the first. The\n");
 	std::fprintf(stderr, "               IOPTHREAD: line at the end of the run says how many there were.\n");
@@ -937,6 +972,17 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				}
 				s_change_disc_at = at.value();
 				s_change_disc_path = StringUtil::StripWhitespace(argv[++i]);
+				continue;
+			}
+			else if (CHECK_ARG("--host-action") && (i + 2) < argc)
+			{
+				const std::optional<u32> at = StringUtil::FromChars<u32>(StringUtil::StripWhitespace(argv[++i]), 10);
+				if (!at.has_value() || at.value() == 0)
+				{
+					Console.Error("--host-action expects a frame number and a hotkey name.");
+					return false;
+				}
+				s_host_actions.push_back({at.value(), std::string(StringUtil::StripWhitespace(argv[++i]))});
 				continue;
 			}
 			else if (CHECK_ARG("--iop-assert-log"))
@@ -4490,6 +4536,11 @@ static int RunLiveRun()
 		s_liverun_frame.store(f + 1, std::memory_order_relaxed);
 		if (s_change_disc_at && (f + 1) == s_change_disc_at)
 			s_change_disc_pending = true;
+		for (const HostAction& action : s_host_actions)
+		{
+			if (action.frame == f + 1)
+				s_host_actions_pending.push_back(action.hotkey);
+		}
 
 		// Arm the GS dump once the scene has settled. Recording stops on its own
 		// after s_gsdump_frames vsyncs (GSRenderer counts m_dump_frames down), so
@@ -4730,9 +4781,9 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			{
 				const IopThread::Stats st = IopThread::GetStats();
 				const char* const mode_names[] = {"Off", "Lockstep", "Threaded"};
-				Console.WriteLn(fmt::format("IOPTHREAD: mode={} handoffs={} parks={} wakes_sent={} slices={} items={} violations={}",
+				Console.WriteLn(fmt::format("IOPTHREAD: mode={} handoffs={} parks={} wakes_sent={} slices={} items={} violations={} holds={}",
 					mode_names[static_cast<int>(IopThread::GetMode())], st.handoffs, st.parks, st.wakes_sent, st.slices,
-					st.items_applied, IopThread::ViolationCount()));
+					st.items_applied, IopThread::ViolationCount(), st.hold_requests + st.hold_markers));
 			}
 
 			VMManager::Shutdown(false);

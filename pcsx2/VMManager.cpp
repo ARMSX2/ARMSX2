@@ -2959,7 +2959,13 @@ void VMManager::UpdateTargetSpeed()
 		s_target_speed = target_speed;
 
 		MTGS::UpdateVSyncMode();
-		SPU2::OnTargetSpeedChanged();
+		{
+			// Empties the audio buffer and changes its rate and volume from the producer's side, which is the
+			// IOP thread's (IOP thread design 8.10). Reached from the event test (a frame rate change), so a
+			// hold that never sleeps.
+			IopThread::VmHold iop_hold(IopThread::HoldKind::Emulation);
+			SPU2::OnTargetSpeedChanged();
+		}
 		ResetFrameLimiter();
 	}
 }

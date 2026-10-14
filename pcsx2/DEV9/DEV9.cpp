@@ -6,6 +6,7 @@
 #include "common/StringUtil.h"
 
 #include "IopDma.h"
+#include "IopThread/OwnerAsserts.h"
 
 #ifdef _WIN32
 #include "common/RedtapeWindows.h"
@@ -1334,6 +1335,9 @@ void DEV9async(u32 cycles)
 
 void DEV9CheckChanges(const Pcsx2Config& old_config)
 {
+	// Reopens the network adapter and the disk the IOP's DEV9 code is using: the CPU thread holds the IOP
+	// (IOP thread design 8.5).
+	IOP_SIDE_ASSERT();
 	if (!isRunning)
 		return;
 

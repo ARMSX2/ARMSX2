@@ -11,6 +11,8 @@
 #include "CDVD/CDVD.h"
 #include "DEV9/DEV9.h"
 #include "Host.h"
+#include "SIO/Memcard/MemoryCardFile.h"
+#include "USB/USB.h"
 #include "IopDma.h"
 #include "IopThread/EeBridge.h"
 #include "IopThread/IopBridge.h"
@@ -307,6 +309,17 @@ namespace
 		{"SPU2writeDMA7Mem", [] { SPU2writeDMA7Mem(nullptr, 0); }, false},
 		{"cdvdVsync", [] { cdvdVsync(); }, false},
 		{"cdvdNewDiskCB", [] { cdvdNewDiskCB(); }, false},
+		// The calls the CPU thread makes into devices the IOP thread owns (step 10): each is held by its caller.
+		{"SetOutputPaused", [] { SPU2::SetOutputPaused(true); }, false},
+		{"OnTargetSpeedChanged", [] { SPU2::OnTargetSpeedChanged(); }, false},
+		{"CheckForConfigChanges", [] { SPU2::CheckForConfigChanges(EmuConfig); }, false},
+		{"SetOutputVolume", [] { SPU2::SetOutputVolume(50); }, false},
+		{"SetOutputMuted", [] { (void)SPU2::SetOutputMuted(true); }, false},
+		{"DEV9CheckChanges", [] { DEV9CheckChanges(EmuConfig); }, false},
+		{"CheckForConfigChanges", [] { USB::CheckForConfigChanges(EmuConfig); }, false},
+		{"FileMcd_Reopen", [] { FileMcd_Reopen(std::string()); }, false},
+		{"FileMcd_Swap", [] { FileMcd_Swap(); }, false},
+		{"FileMcd_CancelEject", [] { FileMcd_CancelEject(); }, false},
 		{"psxDma2", [] { psxDma2(0, 0, 0); }, false},
 		{"psxDma4", [] { psxDma4(0, 0, 0); }, false},
 		{"psxDma6", [] { psxDma6(0, 0, 0); }, false},
