@@ -2196,6 +2196,39 @@ namespace mvu_test_hooks
 		mVU.prog.IRinfo.block.spinViA = 0;
 		mVU.prog.IRinfo.block.spinViB = 0;
 	}
+
+	// A standalone microBlockManager for mvu_block_list_tests.cpp. Every
+	// block needs an exact match, so it lives on the full-compare list; `key`
+	// tells blocks apart (it rides in pState, which the exact compare reads).
+	static microBlock BlockListProbeBlock(u32 key)
+	{
+		microBlock b;
+		std::memset(&b, 0, sizeof(b));
+		b.pState.needExactMatch = 1;
+		b.pState.xgkickcycles = key;
+		return b;
+	}
+	void* BlockListCreate() { return new microBlockManager(); }
+	void BlockListDestroy(void* bm) { delete static_cast<microBlockManager*>(bm); }
+	void BlockListReset(void* bm) { static_cast<microBlockManager*>(bm)->reset(); }
+	const void* BlockListAdd(void* bm, u32 key)
+	{
+		microBlock b = BlockListProbeBlock(key);
+		return static_cast<microBlockManager*>(bm)->add(microVU0, &b);
+	}
+	const void* BlockListSearch(void* bm, u32 key)
+	{
+		microBlock b = BlockListProbeBlock(key);
+		return static_cast<microBlockManager*>(bm)->search(microVU0, &b.pState);
+	}
+	u32 BlockListAddedCount(void* bm)
+	{
+		return static_cast<u32>(static_cast<microBlockManager*>(bm)->getFullListCount());
+	}
+	u32 BlockListWalkLength(void* bm, bool* end_is_last)
+	{
+		return static_cast<u32>(static_cast<microBlockManager*>(bm)->testWalkFullList(*end_is_last));
+	}
 } // namespace mvu_test_hooks
 #endif
 

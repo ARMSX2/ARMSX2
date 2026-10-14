@@ -863,6 +863,23 @@ private:
 
 public:
 	inline int getFullListCount() const { return fListI; }
+#ifdef PCSX2_RECOMPILER_TESTS
+	// Test probe (mvu_block_list_tests): the number of links a walk from the
+	// head of the full-compare list reaches, and whether fBlockEnd is the
+	// last of them.
+	int testWalkFullList(bool& endIsLast) const
+	{
+		int count = 0;
+		const microBlockLink* last = nullptr;
+		for (const microBlockLink* linkI = fBlockList; linkI != nullptr; linkI = linkI->next)
+		{
+			last = linkI;
+			count++;
+		}
+		endIsLast = (last == fBlockEnd);
+		return count;
+	}
+#endif
 	microBlockManager()
 	{
 		qListI = fListI = 0;
@@ -941,6 +958,12 @@ public:
 					if (linkI != fBlockList)
 					{
 						prevI->next = linkI->next;
+						// Moving the last link to the front leaves its
+						// predecessor last. add() appends at fBlockEnd; left
+						// pointing at the new head, it would cut off every
+						// link behind the head.
+						if (linkI == fBlockEnd)
+							fBlockEnd = prevI;
 						linkI->next = fBlockList;
 						fBlockList = linkI;
 					}

@@ -133,6 +133,7 @@ add_pcsx2_test(recompiler_tests
 	mvu_cache_exhaustion_tests.cpp
 	mvu_lpstate_invariant_tests.cpp
 	mvu_clear_occupied_tests.cpp
+	mvu_block_list_tests.cpp
 	mvu_resume_dispatch_tests.cpp
 	mvu_spin_ff_tests.cpp
 	mvu_contentmap_drift_tests.cpp
