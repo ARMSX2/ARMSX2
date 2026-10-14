@@ -359,23 +359,8 @@ namespace vuopt
 				st.pop_back();
 			}
 		}
-		for (size_t i = 0; i < NN; i++)
-			ScanUseDef(*nodes_[i]);
-		ComputeHandoffMasks();
-		// A link into a checkpoint whose bail hides ring instances (the bail runs
-		// microVU's block, which overwrites them before anything reads them) must
-		// arrive with at least one cycle in hand. With none, microVU's entry test for
-		// that block would stop the run right there, with the instances as the
-		// region left them: unwritten, and visible in the state the run stops with.
-		// With one cycle, the block runs whole and overwrites them first.
-		const auto arrivalGuard = [&](int w) {
-			if (t_.handoffMutation == RegionTier::HandoffMutation::NoArrivalGuard)
-				return false;
-			return nodes_[w]->checkpoint && nodes_[w]->bailMask.count() < nodes_[w]->bailMask.size();
-		};
 		// need(n) = max(1, cycles(n) + need(s)) over successors s that are
-		// not checkpoints, and cycles(n) + 1 for a successor that is a checkpoint
-		// with an arrival guard; the stretch below a node is acyclic.
+		// not checkpoints; the stretch below a node is acyclic.
 		std::vector<s64> need(NN, -1);
 		std::vector<std::pair<int, size_t>> walk;
 		for (size_t root = 0; root < NN; root++)
@@ -403,12 +388,8 @@ namespace vuopt
 					continue;
 				s64 m = 1;
 				for (int w : succ[v])
-				{
 					if (!nodes_[w]->checkpoint)
 						m = std::max<s64>(m, static_cast<s64>(nodes_[v]->br.cycles) + need[w]);
-					else if (arrivalGuard(w))
-						m = std::max<s64>(m, static_cast<s64>(nodes_[v]->br.cycles) + 1);
-				}
 				need[v] = m;
 				walk.pop_back();
 				if (!walk.empty())
@@ -507,29 +488,66 @@ namespace vuopt
 		}
 	}
 
-	// A bail at a checkpoint hands the run to microVU's own code for the node's
-	// block. That code can only see the ring instances it reads before writing, plus
-	// the ones it never writes (they stay in the ring, where the next stop or the next
-	// block finds them: a run that stops after this block saves the whole ring). The
-	// rest, the instances the block overwrites without reading and the ones a program
-	// end overwrites with its broadcast, are dead at the hand-off whatever the region
-	// left in them. Everything else stays live at a bail.
+	// A bail at a checkpoint hands the run to microVU's own code for the node's block, and
+	// microVU's code carries on through its blocks from there. Under the exactness contract
+	// (exactness-contract.md) the flag-ring copies it hands over only have to be the ones that
+	// code can still READ: the copies that, on some path from the head, a reader or the first
+	// status update of a chain reads before anything overwrites them, and all twelve wherever the
+	// continuation leaves the region (a link out, a JR fallback), since what follows there is not
+	// analysed. A program end overwrites the whole ring with its broadcast, so only the copies
+	// it keeps (fS, fM, fC) survive to it. Nothing else of the ring is ever read: a run that stops
+	// after the bail saves the other copies as they are, stale, and the next dispatch resumes in a
+	// block that overwrites them before it reads them.
 	//
-	// This holds only if the block's own entry test passes (see PlanChecks): a stop
-	// at the entry saves the ring as handed over.
+	// The analysis is the region's own liveness over the ring bits alone, with microVU's reads
+	// (useAll: the status chain's read of the previous instance included) and with a link into a
+	// checkpoint an ordinary edge, since microVU's continuation passes through the same blocks.
 	void RegionBuilder::ComputeHandoffMasks()
 	{
 		const LiveSet ring = RingBits();
-		for (auto& np : nodes_)
+		const size_t NN = nodes_.size();
+		std::vector<LiveSet> in(NN);
+		for (bool changed = true; changed;)
 		{
-			Node& n = *np;
+			changed = false;
+			for (size_t ii = NN; ii-- > 0;)
+			{
+				const Node& n = *nodes_[ii];
+				LiveSet o;
+				const auto edge = [&](int t) {
+					if (t == 0x7fffffff)
+						return;
+					o |= (t < 0) ? ring : in[t];
+				};
+				if (n.br.endKind == BlockEnd::EBit)
+					o = n.fn.end.valid ? EndRingBits(n.fn.end) : ring;
+				else if (n.br.endKind == BlockEnd::Jump && n.taken == 0x7fffffff)
+				{
+					o |= ring; // the fallback to microVU's dispatch
+					for (const auto& j : n.jumps)
+						edge(j.second);
+				}
+				else
+				{
+					edge(n.taken);
+					if (n.br.endKind == BlockEnd::CondBranch)
+						edge(n.fall);
+				}
+				const LiveSet ni = (n.useAll & ring) | (o & ~n.def);
+				if (ni != in[ii])
+				{
+					in[ii] = ni;
+					changed = true;
+				}
+			}
+		}
+		for (size_t i = 0; i < NN; i++)
+		{
+			Node& n = *nodes_[i];
 			n.bailMask.set();
 			if (!n.checkpoint || !t_.handoffLiveness)
 				continue;
-			LiveSet endRing = ring;
-			if (n.br.endKind == BlockEnd::EBit && n.fn.end.valid)
-				endRing = EndRingBits(n.fn.end);
-			LiveSet need = (n.useAll & ring) | (endRing & ~n.def);
+			LiveSet need = in[i];
 			switch (t_.handoffMutation)
 			{
 				case RegionTier::HandoffMutation::IgnoreReads:
@@ -1401,6 +1419,9 @@ namespace vuopt
 			return t_.Decline("single block, no loop", why);
 
 		PlanChecks();
+		for (auto& np : nodes_)
+			ScanUseDef(*np);
+		ComputeHandoffMasks();
 		t_.NoteProgram(env_.program, env_.offProgBails);
 		for (const auto& np : nodes_)
 			for (const InstPair& ip : np->br.insts)

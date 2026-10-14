@@ -141,6 +141,12 @@ public:
 	// asserting the pre-seeded block graph runs without a recompile.
 	void RunJitPreserveBlockCache();
 
+	// After a JIT-only run that a cycle budget cut short (RunJitPreserveBlockCache with a small
+	// SetCycleBudget): re-enters the JIT, as a game re-dispatches a program, with `budget` cycles
+	// each time until the program ends or `max_resumes` re-entries have been made. Updates
+	// JitSnapshot() and Path1PacketBytesJit() to the state at the end.
+	void ContinueJit(u32 budget, int max_resumes);
+
 private:
 	void RunDiffing(const char* require_why);
 

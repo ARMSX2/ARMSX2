@@ -118,9 +118,8 @@ namespace vuopt
 		enum class HandoffMutation : u8
 		{
 			None,
-			IgnoreReads,    // an instance the block reads counts as dead if the block also writes it
-			NoArrivalGuard, // the budget test does not keep one cycle in hand for the block's entry test
-			AllDead,        // every ring instance is dead at a hand-off
+			IgnoreReads, // an instance the block reads counts as dead if the block also writes it
+			AllDead,     // every ring instance is dead at a hand-off
 		};
 		HandoffMutation handoffMutation = HandoffMutation::None;
 		// Recorded JR/JALR targets: block start PC of the jump -> target PCs

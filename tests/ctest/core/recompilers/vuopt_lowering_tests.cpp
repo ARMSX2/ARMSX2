@@ -99,7 +99,7 @@ struct Outcome
 // interpreter too, and it leaves them behind for the next run), plus VU
 // memory and the GIF output.
 std::vector<std::string> Compare(const VuSnapshot& ra, const VuSnapshot& rb,
-	const std::vector<u8>& pa, const std::vector<u8>& pb)
+	const std::vector<u8>& pa, const std::vector<u8>& pb, bool rings = true)
 {
 	struct F
 	{
@@ -117,9 +117,14 @@ std::vector<std::string> Compare(const VuSnapshot& ra, const VuSnapshot& rb,
 	const u8* y = reinterpret_cast<const u8*>(&rb.regs);
 	for (const F& f : kFields)
 	{
+		if (!rings && std::strncmp(f.name, "micro_", 6) == 0)
+			continue; // the four-deep flag copies, at a budget stop (the contract: only what the continuation reads)
 		for (size_t i = 0; i < f.size; i += 4)
 		{
 			const size_t n = std::min<size_t>(4, f.size - i);
+			// ... and the STATUS, MAC and CLIP registers a stop mirrors from them (VI 16-18)
+			if (!rings && std::strcmp(f.name, "VI") == 0 && i >= REG_STATUS_FLAG * sizeof(REG_VI) && i < (REG_CLIP_FLAG + 1) * sizeof(REG_VI))
+				continue;
 			if (std::memcmp(x + f.off + i, y + f.off + i, n) == 0)
 				continue;
 			u32 va = 0, vb = 0;
@@ -782,8 +787,40 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 	bool resume = true, s32 vHomes = 14, bool dump = false, const std::map<u32, std::vector<u32>>* jumps = nullptr, u32 budget = 0)
 {
 	FlagHackScope fh(flagHack);
-	VuSnapshot ref;
-	std::vector<u8> refPath;
+	// The exactness contract: when a budget cuts a run short, the four-deep flag copies the
+	// engines leave need not be the same (only the ones the resumed code reads matter), so the
+	// state at the stop is compared without them, and the run is then re-entered, as a game
+	// re-dispatches it, to its end, where everything is compared, the copies included.
+	const bool observe = !resume; // (a run without a resume can stop at the harness's default budget too)
+	struct Arm
+	{
+		VuSnapshot stop, fin;
+		std::vector<u8> stopPath, finPath;
+		bool stopped = false;
+		bool finStopped = false; // still running after the continuation (a program that does not end)
+	};
+	const auto runArm = [&](VuTestHarness& h) {
+		Arm a;
+		h.RunNoDiff();
+		if (!observe)
+		{
+			a.stop = h.JitSnapshot();
+			a.stopPath = h.Path1PacketBytesJit();
+			a.fin = a.stop;
+			a.finPath = a.stopPath;
+			return a;
+		}
+		h.RunJitPreserveBlockCache();
+		a.stop = h.JitSnapshot();
+		a.stopPath = h.Path1PacketBytesJit();
+		a.stopped = !h.HasTerminated();
+		h.ContinueJit(100000, 400);
+		a.finStopped = !h.HasTerminated();
+		a.fin = h.JitSnapshot();
+		a.finPath = h.Path1PacketBytesJit();
+		return a;
+	};
+	Arm ref;
 	{
 		VuTestHarness h(1);
 		if (setup)
@@ -796,9 +833,7 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 			h.ResumeUntilTerminated();
 		if (budget)
 			h.SetCycleBudget(budget);
-		h.RunNoDiff();
-		ref = h.JitSnapshot();
-		refPath = h.Path1PacketBytesJit();
+		ref = runArm(h);
 	}
 	RegionOutcome o;
 	VuTestHarness h(1);
@@ -812,6 +847,7 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		h.ResumeUntilTerminated();
 	if (budget)
 		h.SetCycleBudget(budget);
+	Arm got;
 	{
 		RegionScope rs(1);
 		rs.region.maxVHomes = vHomes;
@@ -821,7 +857,7 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		rs.region.dump = dump;
 		if (jumps)
 			rs.region.jumpTargets = *jumps;
-		h.RunNoDiff();
+		got = runArm(h);
 		o.regions = rs.region.Regions();
 		o.nodes = rs.region.Nodes();
 		o.accRegions = rs.region.AccRegions();
@@ -830,7 +866,19 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		o.handoffEdges = rs.region.HandoffEdges();
 		o.handoffDead = rs.region.HandoffRingsDead();
 	}
-	o.diffs = Compare(ref, h.JitSnapshot(), refPath, h.Path1PacketBytesJit());
+	if (observe)
+	{
+		if (ref.stopped != got.stopped)
+			o.diffs.emplace_back("one engine stopped at the budget and the other did not");
+		for (const std::string& d : Compare(ref.stop, got.stop, ref.stopPath, got.stopPath, !ref.stopped))
+			o.diffs.push_back("at the stop: " + d);
+		if (ref.finStopped != got.finStopped)
+			o.diffs.emplace_back("one engine ended and the other did not");
+		for (const std::string& d : Compare(ref.fin, got.fin, ref.finPath, got.finPath, !ref.finStopped))
+			o.diffs.push_back("at the end: " + d);
+	}
+	else
+		o.diffs = Compare(ref.stop, got.stop, ref.stopPath, got.stopPath);
 	return o;
 }
 } // namespace
@@ -1439,16 +1487,14 @@ TEST(VuoptRegion, StickyFoldAcrossLinks)
 	}
 }
 
-// A bail at a loop head runs microVU's own block for the head, and that block sees
-// only some of the flag ring: the instances it reads before writing, and the ones it
-// never writes (a run that stops after the block saves the whole ring). The rest are
-// overwritten before anything looks at them, so the region does not build them for
-// the back edge. Loops whose head block reads old instances (FSAND, FMAND, FCAND at
-// the top, a CLIP chain, a divide merge) and overwrites some or all of the ring,
-// stopped under every budget: the state the run stops with must be microVU's, all
-// twelve instances of it. The region keeps one cycle in hand on the way into the
-// head, so the head's own entry test cannot stop the run with the instances as the
-// region left them.
+// A bail at a loop head runs microVU's own block for the head, and microVU's code goes on from
+// there. Under the exactness contract the flag-ring copies it is handed only have to be the ones
+// that code can still read: the rest are overwritten before anything looks at them, so the
+// region does not build them for the back edge. Loops whose head block reads old copies (FSAND,
+// FMAND, FCAND at the top, a CLIP chain, a divide merge) and overwrites some or all of the ring,
+// stopped under every budget: the state the run stops with must be microVU's except for the ring
+// copies, and the run re-entered to its end (as a game re-dispatches it) must end in microVU's
+// state, ring included. A dropped copy that the continuation reads shows there.
 namespace
 {
 std::vector<VuOp> HandoffProgram(int variant, u32 trip)
@@ -1580,15 +1626,14 @@ struct HandoffRepro
 	int mutation; // the HandoffMutation this program was found with
 };
 
-// Programs the sticky fuzz found with the rule broken (shrunk by hand to the shortest of a
-// few hundred failures): each must run like microVU with the rule as it is, and differ with
-// the rule broken the way it was found. Same seeding as StickyFuzz.
+// Programs the sticky fuzz found with the rule broken (the shortest of a few hundred failures,
+// found under the byte-identical rule; whether they still discriminate is checked by the test):
+// each must run like microVU with the rule as it is, and differ with the rule broken the way it
+// was found. Same seeding as StickyFuzz.
 const HandoffRepro kHandoffRepros[] = {
 	// an instance the head block reads and also writes, counted dead (IgnoreReads)
 	{"10010009:000002ff,10070001:000002ff,81f44b7c:01f4a32f,8000033c:0027a36a,03427006:01c44289,8000033c:01c82289,81861bbc:01541a6b,8000033c:01f40a68,12010801:01f44328,520107f8:01541a68,8000033c:01f4a268,8000033c:00272b6a,2c2407ff:400002ff,", 29, false, 57, 1},
 	{"10010005:000002ff,10070001:000002ff,81f44b7c:00742a6b,800613bc:000002ff,81812bbc:01a5a369,8000033c:01853ad8,8000033c:01a1a369,8000033c:00e212aa,12010801:0042a398,520107f8:01543a6b,8000033c:01c82289,8000033c:01e8a3ac,2c2407ff:400002ff,", 299, false, 87, 1},
-	// the run stopped on arrival at the head (NoArrivalGuard)
-	{"1001000a:000002ff,10070001:000002ff,8000033c:00cd3a68,808213bc:01482289,50060002:01c452aa,03027003:000002ff,8000033c:004a42be,8000033c:00482328,8000033c:01230b69,8000033c:01a15b69,34043800:00e452aa,03426803:01e45328,12010801:004453ac,520107f4:018b1ad8,8000033c:00ec62a9,8000033c:01e672be,2c2407ff:400002ff,", 888, false, 9, 2},
 };
 } // namespace
 
@@ -1604,8 +1649,8 @@ static void RegionHandoffRingsBody()
 	std::printf("[vuopt handoff] link edges into loop heads=%u ring instances left out=%u\n", edges, dead);
 }
 
-// The same sweep with the rule broken three ways must fail: an instance the block reads
-// and also writes counted as dead; the entry guard left out; every instance dead.
+// The same sweep with the rule broken two ways must fail: an instance the continuation reads
+// counted as dead where the block also writes it; every instance dead.
 TEST(VuoptRegion, HandoffMutationsAreCaught)
 {
 	using M = vuopt::RegionTier::HandoffMutation;
@@ -1614,7 +1659,7 @@ TEST(VuoptRegion, HandoffMutationsAreCaught)
 		M saved = g_handoffMutation;
 		~Guard() { g_handoffMutation = saved; }
 	} guard;
-	for (M m : {M::IgnoreReads, M::NoArrivalGuard, M::AllDead})
+	for (M m : {M::IgnoreReads, M::AllDead})
 	{
 		g_handoffMutation = m;
 		const u32 failures = HandoffSweep(nullptr, nullptr, false, true);

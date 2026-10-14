@@ -482,6 +482,19 @@ void VuTestHarness::RunJitPreserveBlockCache()
 	FPControlRegister::SetCurrent(saved_fpcr);
 }
 
+void VuTestHarness::ContinueJit(u32 budget, int max_resumes)
+{
+	ASSERT_TRUE(has_run_) << "ContinueJit() continues a JIT run: call RunNoDiff() and RunJitPreserveBlockCache() first";
+	const FPControlRegister saved_fpcr = FPControlRegister::GetCurrent();
+	FPControlRegister::SetCurrent((vu_index_ == 0) ? EmuConfig.Cpu.VU0FPCR : EmuConfig.Cpu.VU1FPCR);
+	path1_packets_ = path1_packets_jit_; // (the sink appends)
+	for (int n = 0; n < max_resumes && !HasTerminated(); n++)
+		JitCpu(vu_index_)->Execute(budget);
+	jit_snapshot_ = VuSnapshot::Capture(vu_index_, mem_windows_);
+	path1_packets_jit_ = path1_packets_;
+	FPControlRegister::SetCurrent(saved_fpcr);
+}
+
 void VuTestHarness::RunInterpOnly()
 {
 	ASSERT_FALSE(program_pairs_.empty())
