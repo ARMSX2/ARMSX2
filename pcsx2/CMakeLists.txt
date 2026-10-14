@@ -1419,6 +1419,7 @@ set(pcsx2arm64Sources
 	arm64/Vif_UnpackNEON.cpp
 	arm64/RecStubs.cpp
 	arm64/microVU-arm64.cpp
+	arm64/vuopt/VuOptBackground.cpp
 	arm64/vuopt/VuOptDecode.cpp
 	arm64/vuopt/VuOptGraph.cpp
 	arm64/vuopt/VuOptIR.cpp
@@ -1445,6 +1446,7 @@ set(pcsx2arm64Headers
 	arm64/microVU_VuOpt-arm64.inl
 	arm64/microVU_Misc-arm64.h
 	arm64/VuFmacFlags-arm64.h
+	arm64/vuopt/VuOptBackground.h
 	arm64/vuopt/VuOptDecode.h
 	arm64/vuopt/VuOptGraph.h
 	arm64/vuopt/VuOptIR.h
