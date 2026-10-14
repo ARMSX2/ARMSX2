@@ -191,6 +191,12 @@ namespace vuopt
 	// record in two places (setBranchA's delay-slot test and the flag lookahead)
 	// without having written it in the current compile. Analysing blocks in
 	// microVU's compile order reproduces those reads.
+	// While set (the live tier's background worker sets it around a job), every
+	// analyzer on this thread marks each micro-memory word it reads (one byte
+	// per 32-bit word): the job's code is valid only while those words are
+	// unchanged, which is what its publication checks.
+	extern thread_local u8* g_pipeReadMask;
+
 	class PipeAnalyzer
 	{
 	public:
