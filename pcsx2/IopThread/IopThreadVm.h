@@ -178,10 +178,19 @@ namespace IopThread
 	using PauseAction = void (*)();
 	PauseAction SetPauseActionForTests(PauseAction action);
 
+	/// A Threaded thread that was started from inside an EE event test (a settings change delivered by the message pump at
+	/// vsync) is kept stopped until the next event test, which is the Threaded instance's. The rest of the event test it was
+	/// started in belongs to the instance of the mode before: in Off that calls IOP code directly (the blanking, the memory card
+	/// tick), which must not run beside the new thread. EE thread only.
+	extern bool g_start_hold_pending;
+	void ReleaseStartHold();
+
 	/// First thing in the Threaded event test: tell the IOP how far the EE has got (a release store, and a
 	/// wake-up if the IOP is parked and has budget) and take what the IOP queued for the EE.
 	__forceinline_odr void EeEventTestBegin(u64 cycle)
 	{
+		if (g_start_hold_pending) [[unlikely]]
+			ReleaseStartHold();
 		g_thread.PublishWatermark(cycle);
 		if (g_thread.MayHaveI2E() || g_pause_requested.load(std::memory_order_relaxed)) [[unlikely]]
 			DrainEeQueue();

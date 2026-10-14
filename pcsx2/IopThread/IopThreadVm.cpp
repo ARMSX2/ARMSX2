@@ -40,6 +40,8 @@ namespace IopThread
 {
 	Thread g_thread;
 
+	bool g_start_hold_pending = false;
+
 	// A pause the IOP thread asked for, waiting for the EE to make it.
 	std::atomic<bool> g_pause_requested{false};
 
@@ -50,6 +52,9 @@ namespace IopThread
 
 		// The pause hold (design 9.3), kept for as long as the VM stays paused.
 		std::optional<ScopedHold> s_pause_hold;
+
+		// The hold that keeps a Threaded thread started inside an event test stopped until the next one (g_start_hold_pending).
+		std::optional<ScopedHold> s_start_hold;
 
 		// The table the IOP thread applies E2I items with. Null is the real one (tests swap it).
 		const E2IActions* s_e2i_actions = nullptr;
@@ -257,14 +262,29 @@ namespace IopThread
 			const char* const names[] = {"Off", "Lockstep", "Threaded"};
 			Console.WriteLn(Color_StrongGreen, "IOP thread: started in %s mode.", names[static_cast<int>(s_mode)]);
 			if (s_mode == IopThreadMode::Threaded)
+			{
 				Console.WriteLn(Color_StrongGreen, "IOP thread: lag bound %d EE cycles, minimum slice %d.", g_thread.Lag(), static_cast<int>(s_min_slice));
+				if (eeEventTestIsActive && !s_start_hold)
+				{
+					// Started from inside an event test: stopped until the next one (see g_start_hold_pending).
+					s_start_hold.emplace(g_thread, HoldKind::Emulation);
+					g_start_hold_pending = true;
+				}
+			}
 		}
+	}
+
+	void ReleaseStartHold()
+	{
+		g_start_hold_pending = false;
+		s_start_hold.reset();
 	}
 
 	void StopThread()
 	{
 		// The pause hold goes first, while the thread it was taken on still exists.
 		s_pause_hold.reset();
+		ReleaseStartHold();
 		SetMode(IopThreadMode::Off);
 		if (g_thread.IsRunning())
 		{

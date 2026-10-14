@@ -413,6 +413,43 @@ TEST_F(ThreadedMachine, TheMinimumSliceKeepsTheIopFromRunningOnASmallBudget)
 	EXPECT_GE(calls.front().budget, 4096);
 }
 
+TEST_F(ThreadedMachine, AThreadStartedInsideAnEventTestStaysHeldUntilTheNextEventTest)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	// The settings changed from the message pump at vsync, which runs inside the EE's event test. If the IOP thread was off, that
+	// event test is the Off instance's, and what is left of it calls IOP code directly (the blanking, the memory card tick): with
+	// the new thread running beside it that is a race. The thread is started, but stays stopped until the next event test.
+	eeEventTestIsActive = true;
+	{
+		IopThread::VmHold apply_settings_holds; // ApplySettings holds around the change
+		StartThreaded();
+	}
+	eeEventTestIsActive = false;
+	EXPECT_TRUE(IopThread::g_thread.IopIsStopped()) << "the thread ran on after the settings were applied, inside the event test";
+
+	cpuRegs.cycle += 3000;
+	IopThread::g_thread.PublishWatermark(cpuRegs.cycle);
+	std::this_thread::sleep_for(60ms);
+	EXPECT_EQ(s_slices_started.load(), 0u);
+
+	EventTest(100); // the next event test is the Threaded instance's
+	EXPECT_FALSE(IopThread::g_thread.IopIsStopped());
+	ASSERT_TRUE(WaitFor([] { return s_slices_started.load() >= 1; }));
+	EXPECT_EQ(s_violations.load(), 0u);
+}
+
+TEST_F(ThreadedMachine, AThreadStartedOutsideAnEventTestIsNotHeld)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	{
+		IopThread::VmHold apply_settings_holds;
+		StartThreaded();
+	}
+	EXPECT_FALSE(IopThread::g_thread.IopIsStopped());
+}
+
 TEST_F(ThreadedMachine, AnEventOfTheIopsOwnRunsASliceEvenWithNoBudget)
 {
 	REQUIRE_ARM64_HOST();
