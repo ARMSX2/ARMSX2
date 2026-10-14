@@ -796,6 +796,13 @@ struct Pcsx2Config
 		// no-op on x86.
 		bool
 			EnableVUProgramCache : 1;
+
+		// vuopt, the whole-program VU1 compiler (pcsx2/arm64/vuopt/): programs
+		// that run often enough are recompiled above microVU, which stays the
+		// fallback at every block boundary. arm64-only; no-op on x86. Default
+		// off.
+		bool
+			EnableVUOpt : 1;
 		BITFIELD_END
 
 		RecompilerOptions();
