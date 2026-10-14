@@ -256,6 +256,11 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 		}
 		else if (a == "--vuopt-region")
 			opts.vuopt.region = true;
+		else if (a == "--vuopt-region-bg")
+		{
+			opts.vuopt.region = true;
+			opts.vuopt.regionBg = true;
+		}
 		else if (a == "--vuopt-region-limit" && i + 1 < argc)
 			opts.vuopt.regionLimit = std::atoi(argv[++i]);
 		else if (a == "--vuopt-vhomes" && i + 1 < argc)

@@ -301,6 +301,7 @@ int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,
 
 #include "arm64/vuopt/VuOptTier.h"
 #include "arm64/vuopt/VuOptRegion.h"
+#include "arm64/vuopt/VuOptLive.h"
 #include "arm64/AsmHelpers.h"
 #include "harness/VuSnapshot.h"
 
@@ -317,6 +318,7 @@ namespace
 	{
 		std::unique_ptr<vuopt::BodyTier> tier;
 		std::unique_ptr<vuopt::RegionTier> region; // --vuopt-region
+		bool regionBg = false;                     // --vuopt-region-bg: `region` is the options template of the worker's jobs
 		bool trace = false;
 		bool traceOnly = false; // reference arm: trace, never lower
 		u32 blocks = 0;
@@ -349,6 +351,7 @@ namespace
 				region->accAlways = o.accAlways;
 				region->handoffLiveness = o.handoff;
 				region->dump = o.dumpIr;
+				regionBg = o.regionBg;
 			}
 		}
 
@@ -455,8 +458,8 @@ namespace
 		vuopt::g_vuoptBodyHookUser = this;
 		if (region)
 		{
-			vuopt::g_vuoptRegionHook = &OnRegion;
-			vuopt::g_vuoptRegionHookUser = this;
+			vuopt::g_vuoptRegionHook = regionBg ? &vuopt::live::RegionHookViaWorker : &OnRegion;
+			vuopt::g_vuoptRegionHookUser = regionBg ? static_cast<void*>(region.get()) : static_cast<void*>(this);
 		}
 	}
 
@@ -588,8 +591,10 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 		BodyCtx ctx(vu, vuRegs[vu].Micro, opts);
 		if (ctx.region)
 			ctx.region->jumpTargets = jumpTargets;
+		const vuopt::live::Stats bgBefore = vuopt::live::GetStats();
 		ctx.Install();
 		const auto run = recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
+		const vuopt::live::Stats bgAfter = vuopt::live::GetStats();
 		if (ctx.region && opts.profile)
 			ctx.region->PrintProfile(stdout);
 		const u64 runBytes = CompiledBytes(vu);
@@ -679,7 +684,19 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			static_cast<unsigned long long>(ctx.tier->BodyBytes()), static_cast<unsigned long long>(insRef),
 			static_cast<unsigned long long>(insRun), static_cast<unsigned long long>(cycRef), static_cast<unsigned long long>(cycRun),
 			steadyCompiles, static_cast<unsigned long long>(compRef), static_cast<unsigned long long>(compRun));
-		if (ctx.region)
+		if (ctx.region && ctx.regionBg)
+		{
+			// (the regions were built by the worker's jobs: the live tier's counters)
+			std::printf(" regions=%llu rnodes=%llu rexits=%llu rbytes=%llu mvublocks=%u bgjobs=%llu bgdeclined=%llu veneers=%llu",
+				static_cast<unsigned long long>(bgAfter.regions - bgBefore.regions),
+				static_cast<unsigned long long>(bgAfter.regionNodes - bgBefore.regionNodes),
+				static_cast<unsigned long long>(bgAfter.regionExits - bgBefore.regionExits),
+				static_cast<unsigned long long>(bgAfter.regionBytes - bgBefore.regionBytes), mvuBlocks,
+				static_cast<unsigned long long>(bgAfter.jobsDone - bgBefore.jobsDone),
+				static_cast<unsigned long long>(bgAfter.jobsDeclined - bgBefore.jobsDeclined),
+				static_cast<unsigned long long>(bgAfter.veneers - bgBefore.veneers));
+		}
+		else if (ctx.region)
 		{
 			std::printf(" regions=%u rnodes=%u rexits=%u rbytes=%llu mvublocks=%u racc=%u raccnl=%u raccn=%u raccun=%u rhoe=%u rhod=%u", ctx.region->Regions(), ctx.region->Nodes(),
 				ctx.region->Exits(), static_cast<unsigned long long>(ctx.region->Bytes()), mvuBlocks, ctx.region->AccRegions(), ctx.region->AccNonLinear(),

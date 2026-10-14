@@ -832,6 +832,18 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 #endif
 				continue;
 			}
+			else if (CHECK_ARG("--vuopt-sync"))
+			{
+				// The vuopt tier's deterministic mode: every background compile is waited
+				// for and published where it was asked for (the synchronous tier's timing),
+				// so two runs compile the same things at the same dispatches.
+#if defined(ARCH_ARM64) && defined(PCSX2_RECOMPILER_TESTS)
+				vuopt::live::SetSynchronous(true);
+#else
+				Console.Warning("--vuopt-sync needs an arm64 build with the recompiler test hooks.");
+#endif
+				continue;
+			}
 			else if (CHECK_ARG_PARAM("--memdump"))
 			{
 				s_memdump_prefix = StringUtil::StripWhitespace(argv[++i]);
