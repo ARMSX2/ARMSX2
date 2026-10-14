@@ -63,6 +63,11 @@ int g_clampMode = -1;
 bool g_schedule = false;
 // Regions without the sticky STATUS accumulation (debugging a failure).
 bool g_noStickyAcc = getenv("VUOPT_NO_ACC") != nullptr;
+// A deliberate break of the hand-off liveness rule, to see the tests notice it
+// (VuoptRegion.HandoffMutationsAreCaught); None everywhere else.
+vuopt::RegionTier::HandoffMutation g_handoffMutation = getenv("VUOPT_HANDOFF_MUTATION")
+	? static_cast<vuopt::RegionTier::HandoffMutation>(std::atoi(getenv("VUOPT_HANDOFF_MUTATION")))
+	: vuopt::RegionTier::HandoffMutation::None;
 
 struct TierScope
 {
@@ -768,6 +773,7 @@ struct RegionOutcome
 	std::vector<std::string> diffs;
 	u32 regions = 0, nodes = 0;
 	u32 accRegions = 0, accNonLinear = 0, accAccumulated = 0; // sticky STATUS accumulation
+	u32 handoffEdges = 0, handoffDead = 0; // links into loop heads, and the ring instances their bails leave out
 };
 
 // microVU alone against vuopt regions (and framed bodies elsewhere), running
@@ -811,6 +817,7 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		rs.region.maxVHomes = vHomes;
 		rs.region.stickyAcc = !g_noStickyAcc;
 		rs.region.accAlways = true; // (the estimate would decline many of these small programs)
+		rs.region.handoffMutation = g_handoffMutation;
 		rs.region.dump = dump;
 		if (jumps)
 			rs.region.jumpTargets = *jumps;
@@ -820,6 +827,8 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		o.accRegions = rs.region.AccRegions();
 		o.accNonLinear = rs.region.AccNonLinear();
 		o.accAccumulated = rs.region.AccAccumulated();
+		o.handoffEdges = rs.region.HandoffEdges();
+		o.handoffDead = rs.region.HandoffRingsDead();
 	}
 	o.diffs = Compare(ref, h.JitSnapshot(), refPath, h.Path1PacketBytesJit());
 	return o;
@@ -1186,6 +1195,27 @@ void SeedSparse(VuTestHarness& h, u32 seed)
 	h.SetVi(9, 0x40);
 }
 
+// Values of both signs and zeros in every lane, so each FMAC's MAC word and each
+// instance's zero and sign bits differ from its neighbours' (SeedSparse keeps most
+// instances equal, which hides a stale one). The event vectors at qword 0x40 are
+// drawn the same way.
+void SeedMixed(VuTestHarness& h, u32 seed)
+{
+	static const float kPool[] = {1.0f, -1.0f, 2.5f, -0.5f, 0.0f, -0.0f, 3.0f, 0.25f, -4.0f, 7.5f};
+	std::mt19937 rng(seed);
+	const auto bits = [](float f) {
+		u32 b;
+		std::memcpy(&b, &f, 4);
+		return b;
+	};
+	const auto pick = [&]() { return kPool[rng() % std::size(kPool)]; };
+	for (u32 r = 1; r < 32; r++)
+		h.SetVf(r, pick(), pick(), pick(), pick());
+	for (u32 t = 0; t < 128; t++)
+		h.WriteMemU128(0x400 + t * 16, bits(pick()), bits(pick()), bits(pick()), bits(pick()));
+	h.SetVi(9, 0x40);
+}
+
 // One FMAC of the dense loops: k picks the op, the destination field and the
 // operands. Fields cover every shape: full, xyz, pairs, single lanes, three
 // lanes; results land in vf9..vf14 and feed later operands.
@@ -1406,6 +1436,228 @@ TEST(VuoptRegion, StickyFoldAcrossLinks)
 		}, c.budget == 0, 14, false, nullptr, c.budget);
 		EXPECT_TRUE(o.diffs.empty()) << "iter " << c.iter << " budget " << c.budget << "\n" << Join(o.diffs, 8);
 		EXPECT_GT(o.accRegions, 0u);
+	}
+}
+
+// A bail at a loop head runs microVU's own block for the head, and that block sees
+// only some of the flag ring: the instances it reads before writing, and the ones it
+// never writes (a run that stops after the block saves the whole ring). The rest are
+// overwritten before anything looks at them, so the region does not build them for
+// the back edge. Loops whose head block reads old instances (FSAND, FMAND, FCAND at
+// the top, a CLIP chain, a divide merge) and overwrites some or all of the ring,
+// stopped under every budget: the state the run stops with must be microVU's, all
+// twelve instances of it. The region keeps one cycle in hand on the way into the
+// head, so the head's own entry test cannot stop the run with the instances as the
+// region left them.
+namespace
+{
+std::vector<VuOp> HandoffProgram(int variant, u32 trip)
+{
+	struct Shape
+	{
+		u32 pre, preClip, post, postClip; // FMAC pairs and CLIP pairs before the readers and after them
+		u32 readers;                      // 1 FSAND, 2 FMAND, 4 FCAND
+		bool twoBlocks;                   // a conditional branch over three pairs after the readers
+	};
+	static const Shape kShapes[] = {
+		{0, 0, 2, 1, 7, false},
+		{0, 0, 5, 5, 7, false},
+		{3, 0, 3, 0, 7, false},
+		{6, 2, 1, 0, 7, false},
+		{1, 0, 9, 3, 7, false},
+		{2, 2, 6, 2, 1, false}, // STATUS reader only
+		{2, 2, 6, 2, 4, false}, // clip reader only
+		{2, 1, 6, 2, 2, false}, // MAC reader only
+		{3, 1, 4, 2, 7, true},
+	};
+	const Shape& s = kShapes[variant];
+	std::vector<VuOp> p;
+	p.push_back(L(VIADDIU_L(vi::vi2, vi::vi0, static_cast<u16>(trip))));
+	p.push_back(L(VIADDIU_L(vi::vi7, vi::vi0, 0x7fff)));
+	p.push_back(L(VIADDIU_L(vi::vi10, vi::vi0, 1)));
+	const s32 head = static_cast<s32>(p.size());
+	u32 k = static_cast<u32>(variant);
+	const auto F = [&k]() { return StickyFmac(k++, true); };
+	p.push_back(P(VLQI_L(mask::xyzw, vf::vf20, vi::vi9), F()));
+	for (u32 i = 0; i < s.pre; i++)
+		p.push_back(U(F()));
+	for (u32 i = 0; i < s.preClip; i++)
+		p.push_back(U(VCLIP_U(1 + i % 4, vf::vf20)));
+	// the readers; their results are summed into vi8 two pairs on
+	if (s.readers & 1)
+		p.push_back(P(VFSAND_L(vi::vi3, 0xfff), F()));
+	if (s.readers & 2)
+		p.push_back(P(VFMAND_L(vi::vi5, vi::vi7), F()));
+	if (s.readers & 4)
+		p.push_back(P(VFCAND_L(0xffffff), F())); // (writes vi1)
+	p.push_back(U(F()));
+	if (s.readers & 1)
+		p.push_back(P(VIADD_L(vi::vi8, vi::vi8, vi::vi3), F()));
+	if (s.readers & 2)
+		p.push_back(P(VIADD_L(vi::vi8, vi::vi8, vi::vi5), F()));
+	if (s.readers & 4)
+		p.push_back(P(VIADD_L(vi::vi8, vi::vi8, vi::vi1), F()));
+	if (s.twoBlocks)
+	{
+		p.push_back(L(VIAND_L(vi::vi6, vi::vi2, vi::vi10)));
+		p.push_back(P(VIBEQ_L(vi::vi6, vi::vi0, 4), F())); // taken: over three pairs (the delay slot still runs)
+		p.push_back(U(F()));
+		for (int i = 0; i < 3; i++)
+			p.push_back(U(F()));
+	}
+	for (u32 i = 0; i < s.post; i++)
+		p.push_back(U(F()));
+	for (u32 i = 0; i < s.postClip; i++)
+		p.push_back(U(VCLIP_U(5 + i % 4, vf::vf20)));
+	p.push_back(P(VISUBIU_L(vi::vi2, vi::vi2, 1), F()));
+	const s32 at = static_cast<s32>(p.size());
+	p.push_back(P(VIBNE_L(vi::vi2, vi::vi0, static_cast<s16>(head - at - 1)), F()));
+	p.push_back(U(F())); // delay slot
+	p.push_back(EBit(P(VFSAND_L(vi::vi4, 0xfff), VNOP_U())));
+	return p;
+}
+
+// Two families of loops, both flag-hack settings, every budget from 1 to 150: the
+// sticky-accumulation loops (StickyProgram, the data that tells instances apart) and the
+// reader loops above. Returns the runs that differ from microVU (the first few
+// reported) and, in *dead and *edges, the ring instances the bails left out and the
+// links into loop heads.
+u32 HandoffSweep(u32* dead, u32* edges, bool report, bool stopAtFirst)
+{
+	u32 failures = 0;
+	const auto note = [&](const RegionOutcome& o, const char* family, int variant, bool fh, u32 budget) {
+		if (dead)
+			*dead += o.handoffDead;
+		if (edges)
+			*edges += o.handoffEdges;
+		if (!o.diffs.empty() && (++failures <= 3) && report)
+			ADD_FAILURE() << family << " " << variant << " flagHack=" << fh << " budget " << budget << "\n" << Join(o.diffs);
+	};
+	for (int variant = 0; variant <= 8; variant++)
+	{
+		const std::vector<VuOp> p = StickyProgram(variant, variant == 4 ? 12 : 7, 16);
+		for (bool fh : {false, true})
+			for (u32 budget = 1; budget <= 150; budget++)
+			{
+				const RegionOutcome o = RunRegion(p, fh, [variant](VuTestHarness& h) {
+					if (variant >= 6)
+						SeedSparse(h, 31 + variant);
+					else
+						SeedSpecials(h, 31 + variant);
+					h.SetVi(8, 0);
+					h.WriteMemU128(0x100, 0x00008001, 0x10000000, 0x0000000e, 0);
+					h.WriteMemU128(0x110, 0, 0, 0, 0);
+				}, false, 14, false, nullptr, budget);
+				note(o, "sticky loop", variant, fh, budget);
+				if (stopAtFirst && failures)
+					return failures;
+			}
+	}
+	for (int variant = 0; variant < 9; variant++)
+	{
+		const std::vector<VuOp> p = HandoffProgram(variant, 6);
+		for (bool fh : {false, true})
+			for (u32 budget = 1; budget <= 150; budget++)
+			{
+				const RegionOutcome o = RunRegion(p, fh, [variant](VuTestHarness& h) {
+					SeedMixed(h, 71 + variant);
+					h.SetVi(8, 0);
+				}, false, 14, false, nullptr, budget);
+				note(o, "reader loop", variant, fh, budget);
+				if (stopAtFirst && failures)
+					return failures;
+			}
+	}
+	return failures;
+}
+
+struct HandoffRepro
+{
+	const char* hex;
+	int iter;
+	bool flagHack;
+	u32 budget;
+	int mutation; // the HandoffMutation this program was found with
+};
+
+// Programs the sticky fuzz found with the rule broken (shrunk by hand to the shortest of a
+// few hundred failures): each must run like microVU with the rule as it is, and differ with
+// the rule broken the way it was found. Same seeding as StickyFuzz.
+const HandoffRepro kHandoffRepros[] = {
+	// an instance the head block reads and also writes, counted dead (IgnoreReads)
+	{"10010009:000002ff,10070001:000002ff,81f44b7c:01f4a32f,8000033c:0027a36a,03427006:01c44289,8000033c:01c82289,81861bbc:01541a6b,8000033c:01f40a68,12010801:01f44328,520107f8:01541a68,8000033c:01f4a268,8000033c:00272b6a,2c2407ff:400002ff,", 29, false, 57, 1},
+	{"10010005:000002ff,10070001:000002ff,81f44b7c:00742a6b,800613bc:000002ff,81812bbc:01a5a369,8000033c:01853ad8,8000033c:01a1a369,8000033c:00e212aa,12010801:0042a398,520107f8:01543a6b,8000033c:01c82289,8000033c:01e8a3ac,2c2407ff:400002ff,", 299, false, 87, 1},
+	// the run stopped on arrival at the head (NoArrivalGuard)
+	{"1001000a:000002ff,10070001:000002ff,8000033c:00cd3a68,808213bc:01482289,50060002:01c452aa,03027003:000002ff,8000033c:004a42be,8000033c:00482328,8000033c:01230b69,8000033c:01a15b69,34043800:00e452aa,03426803:01e45328,12010801:004453ac,520107f4:018b1ad8,8000033c:00ec62a9,8000033c:01e672be,2c2407ff:400002ff,", 888, false, 9, 2},
+};
+} // namespace
+
+static void RegionHandoffRingsBody();
+TEST(VuoptRegion, HandoffRings) { RegionHandoffRingsBody(); }
+static void RegionHandoffRingsBody()
+{
+	u32 dead = 0, edges = 0;
+	EXPECT_EQ(HandoffSweep(&dead, &edges, true, false), 0u);
+	// the point of the test: the bails do leave instances out
+	EXPECT_GT(edges, 0u);
+	EXPECT_GT(dead, edges);
+	std::printf("[vuopt handoff] link edges into loop heads=%u ring instances left out=%u\n", edges, dead);
+}
+
+// The same sweep with the rule broken three ways must fail: an instance the block reads
+// and also writes counted as dead; the entry guard left out; every instance dead.
+TEST(VuoptRegion, HandoffMutationsAreCaught)
+{
+	using M = vuopt::RegionTier::HandoffMutation;
+	struct Guard
+	{
+		M saved = g_handoffMutation;
+		~Guard() { g_handoffMutation = saved; }
+	} guard;
+	for (M m : {M::IgnoreReads, M::NoArrivalGuard, M::AllDead})
+	{
+		g_handoffMutation = m;
+		const u32 failures = HandoffSweep(nullptr, nullptr, false, true);
+		EXPECT_GT(failures, 0u) << "mutation " << static_cast<int>(m) << " went unnoticed";
+	}
+}
+
+TEST(VuoptRegion, HandoffMutationRepros)
+{
+	using M = vuopt::RegionTier::HandoffMutation;
+	struct Guard
+	{
+		M saved = g_handoffMutation;
+		~Guard() { g_handoffMutation = saved; }
+	} guard;
+	for (const HandoffRepro& c : kHandoffRepros)
+	{
+		std::vector<VuOp> p;
+		for (const char* q = c.hex; *q;)
+		{
+			VuOp op;
+			op.lower = static_cast<u32>(std::strtoul(q, const_cast<char**>(&q), 16));
+			q++;
+			op.upper = static_cast<u32>(std::strtoul(q, const_cast<char**>(&q), 16));
+			if (*q == ',')
+				q++;
+			p.push_back(op);
+		}
+		for (int mutated = 0; mutated < 2; mutated++)
+		{
+			g_handoffMutation = mutated ? static_cast<M>(c.mutation) : guard.saved;
+			const RegionOutcome o = RunRegion(p, c.flagHack, [&c](VuTestHarness& h) {
+				if (c.iter & 1)
+					SeedSparse(h, 4000 + c.iter);
+				else
+					SeedSpecials(h, 4000 + c.iter);
+				h.SetVi(2, 8);
+			}, c.budget == 0, 14, false, nullptr, c.budget);
+			if (mutated)
+				EXPECT_FALSE(o.diffs.empty()) << "iter " << c.iter << ": mutation " << c.mutation << " went unnoticed";
+			else
+				EXPECT_TRUE(o.diffs.empty()) << "iter " << c.iter << " budget " << c.budget << "\n" << Join(o.diffs, 8);
+		}
 	}
 }
 
