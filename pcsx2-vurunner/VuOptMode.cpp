@@ -349,6 +349,8 @@ namespace
 				region->accAlways = o.accAlways;
 				region->handoffLiveness = o.handoff;
 				region->dropSticky = o.dropSticky;
+				region->handoffMutation = static_cast<vuopt::RegionTier::HandoffMutation>(o.handoffMutation);
+				region->dropStickyMutation = o.dropStickyMutation;
 				region->dump = o.dumpIr;
 			}
 		}

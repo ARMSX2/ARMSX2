@@ -114,6 +114,11 @@ void PrintUsage(const char* argv0)
 		"                body vuopt can lower emitted from vuopt's IR; compare the\n"
 		"                final state byte for byte. --vuopt-bench N adds steady-state\n"
 		"                retired-instruction counts for both engines.\n"
+		"                --vuopt-observe compares the observable state of the exactness\n"
+		"                contract instead (exactness-contract.md), continuing each run\n"
+		"                through its budget stops (--vuopt-resumes N); --vuopt-mutation\n"
+		"                handoff-ignore-reads|handoff-all-dead|sticky-hi|sticky-pack breaks\n"
+		"                one relaxation on purpose to show the gate notices.\n"
 		"  --scan-external  Without replaying, report per capture whether the code\n"
 		"                reachable from start_pc reads VIF TOP/ITOP (XTOP/XITOP),\n"
 		"                whether it has a JR/JALR the scan can't follow (and an\n"
@@ -272,6 +277,23 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 			opts.vuopt.handoff = false;
 		else if (a == "--vuopt-no-dropsticky")
 			opts.vuopt.dropSticky = false;
+		else if (a == "--vuopt-mutation" && i + 1 < argc)
+		{
+			const std::string m = argv[++i];
+			if (m == "handoff-ignore-reads")
+				opts.vuopt.handoffMutation = 1;
+			else if (m == "handoff-all-dead")
+				opts.vuopt.handoffMutation = 2;
+			else if (m == "sticky-hi")
+				opts.vuopt.dropStickyMutation = 1;
+			else if (m == "sticky-pack")
+				opts.vuopt.dropStickyMutation = 2;
+			else
+			{
+				std::fprintf(stderr, "vurunner: unknown --vuopt-mutation %s\n", m.c_str());
+				return false;
+			}
+		}
 		else if (a == "--vuopt-observe")
 			opts.vuopt.observe = true;
 		else if (a == "--vuopt-resumes" && i + 1 < argc)

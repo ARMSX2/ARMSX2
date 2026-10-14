@@ -30,6 +30,10 @@ struct VuoptModeOptions
 		bool accAlways = false; // --vuopt-acc-always: the accumulators even where the estimate says they would not pay (A/B)
 	bool handoff = true;    // --vuopt-no-handoff: every flag-ring instance exact at a bail to microVU (A/B)
 	bool dropSticky = true; // --vuopt-no-dropsticky: relaxation 3 off (the sticky byte of STATUS kept, flag hack on)
+	// --vuopt-mutation NAME: break one relaxation on purpose, to show the observable gate catches it
+	// (handoff-ignore-reads, handoff-all-dead, sticky-hi, sticky-pack).
+	int handoffMutation = 0;
+	int dropStickyMutation = 0;
 	bool observe = false;   // --vuopt-observe: compare observable state (the exactness contract), classify the byte differences,
 	                        // and continue each run through its budget stops with --vuopt-resumes re-entries
 	u32 resumes = 6;
