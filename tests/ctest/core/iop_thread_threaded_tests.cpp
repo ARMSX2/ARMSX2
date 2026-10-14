@@ -28,9 +28,13 @@
 #include "IopThreadTestSupport.h"
 #include "R3000A.h"
 #include "R5900.h"
+#include "SIO/Pad/Pad.h"
+#include "SIO/Pad/PadBase.h"
 #include "Sif.h"
 #include "VMManager.h"
 #include "VUmicro.h"
+
+#include "common/MemorySettingsInterface.h"
 
 #include <gtest/gtest.h>
 
@@ -865,6 +869,41 @@ TEST_F(ThreadedMachine, ANewLagBoundReachesTheRunningThread)
 	IopThread::ChooseModeFor(Arm64Host(), IopThread::VmConditions());
 	IopThread::SyncThread();
 	EXPECT_EQ(IopThread::g_thread.Lag(), IopThread::kMinLag);
+}
+
+// ---------------------------------------------------------------- the pad's analog button
+
+TEST_F(ThreadedMachine, TheAnalogButtonsToggleRunsOnTheIopThreadInThreaded)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	MemorySettingsInterface si;
+	Pad::LoadConfig(si);
+	PadBase* const pad = Pad::GetPad(0);
+	ASSERT_NE(pad, nullptr);
+	ASSERT_EQ(pad->GetType(), Pad::ControllerType::DualShock2);
+	const bool before = pad->IsAnalogLightEnabled();
+
+	StartThreaded();
+	// The IOP's mode-switch command writes the same two fields, so the host thread's toggle is posted to the IOP thread:
+	// with the IOP busy in a slice it has not happened yet.
+	s_hold_slice = true;
+	EventTest(1000);
+	ASSERT_TRUE(WaitFor([] { return s_slices_started.load() >= 1; }));
+	pad->Set(16 /* PAD_ANALOG */, 1.0f);
+	std::this_thread::sleep_for(50ms);
+	EXPECT_EQ(pad->IsAnalogLightEnabled(), before) << "the host thread wrote the pad's mode itself";
+
+	s_hold_slice = false;
+	ASSERT_TRUE(WaitFor([&] { return pad->IsAnalogLightEnabled() != before; }));
+
+	// Off: the toggle is the direct call it always was.
+	IopThread::StopThread();
+	pad->Set(16, 0.0f);
+	pad->Set(16, 1.0f);
+	EXPECT_EQ(pad->IsAnalogLightEnabled(), before);
+
+	Pad::Shutdown();
 }
 
 #endif // PCSX2_RECOMPILER_TESTS

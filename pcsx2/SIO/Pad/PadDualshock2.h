@@ -136,6 +136,11 @@ public:
 		return (index == Inputs::PAD_L2 || index == Inputs::PAD_R2);
 	}
 
+	/// The analog button's toggle: flips the analog light and the mode with it, and says so on the OSD. The IOP's
+	/// mode-switch command writes the same two fields (ModeSwitch), so with the IOP on its own thread the
+	/// toggle runs there: Set() posts it through the IOP thread's host command queue.
+	void ToggleAnalogLight();
+
 	Pad::ControllerType GetType() const override;
 	const Pad::ControllerInfo& GetInfo() const override;
 	void Set(u32 index, float value) override;
