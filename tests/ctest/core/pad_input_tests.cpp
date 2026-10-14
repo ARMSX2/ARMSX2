@@ -29,6 +29,7 @@
 #include <memory>
 #include <thread>
 #include <type_traits>
+#include <vector>
 
 namespace
 {
@@ -88,7 +89,7 @@ namespace
 	// The script: every input in turn set to each value, then raw analogs and raw pressure buttons, with a poll
 	// and the getters after every step. Two passes, the second with the pad's axis scale, deadzone and
 	// pressure settings changed (they are written under a hold, read here the way the host thread reads them).
-	u64 RunScript(PadBase& pad, u32 inputs, int analog_button)
+	u64 RunScript(PadBase& pad, u32 inputs, int analog_button, const std::vector<u32>& stick_keys = {})
 	{
 		Hash hash;
 		pad.FullReset();
@@ -131,11 +132,34 @@ namespace
 				Getters(pad, inputs, hash);
 			}
 		}
+
+		// The stick dead zone: with a dead zone of 0.2, each stick direction is set to a value inside it and to one
+		// outside it, with the opposite direction at rest, and the pad is polled after each. Inside, the stick is
+		// centred (both axes); outside, it moves.
+		if (!stick_keys.empty())
+		{
+			pad.SetAxisScale(0.2f, 1.0f);
+			for (const u32 key : stick_keys)
+				pad.Set(key, 0.0f);
+			for (const u32 key : stick_keys)
+			{
+				for (const float value : {0.05f, 0.9f, 0.0f})
+				{
+					pad.Set(key, value);
+					Poll(pad, hash);
+					Getters(pad, inputs, hash);
+				}
+			}
+		}
 		return hash.Value();
 	}
 
 	// Recorded on 2fbf24a5d0 (plain fields). Compare with the hash the test prints when one differs.
-	constexpr u64 kDualshock2 = 0xf8f653d8eccfe517ull;
+	const std::vector<u32> kDualshock2Sticks = {
+		PadDualshock2::Inputs::PAD_L_UP, PadDualshock2::Inputs::PAD_L_RIGHT, PadDualshock2::Inputs::PAD_L_DOWN, PadDualshock2::Inputs::PAD_L_LEFT,
+		PadDualshock2::Inputs::PAD_R_UP, PadDualshock2::Inputs::PAD_R_RIGHT, PadDualshock2::Inputs::PAD_R_DOWN, PadDualshock2::Inputs::PAD_R_LEFT};
+
+	constexpr u64 kDualshock2 = 0xaf454e6498ce44f7ull;
 	constexpr u64 kGuitar = 0xdafeb57743d1c08cull;
 	constexpr u64 kPopn = 0xcca1db8560d6f668ull;
 	constexpr u64 kNegcon = 0xfc6dce5a9da4eae0ull;
@@ -145,7 +169,7 @@ namespace
 TEST(PadInput, DualShock2AnswersAsItAlwaysDid)
 {
 	PadDualshock2 pad(0, 0);
-	EXPECT_EQ(RunScript(pad, PadDualshock2::Inputs::LENGTH, PadDualshock2::Inputs::PAD_ANALOG), kDualshock2);
+	EXPECT_EQ(RunScript(pad, PadDualshock2::Inputs::LENGTH, PadDualshock2::Inputs::PAD_ANALOG, kDualshock2Sticks), kDualshock2);
 }
 
 TEST(PadInput, GuitarAnswersAsItAlwaysDid)
