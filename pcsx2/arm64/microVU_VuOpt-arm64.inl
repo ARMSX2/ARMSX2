@@ -194,6 +194,8 @@ struct VuoptJob final : vuopt::bg::Job
 	vuopt::MvuBlockTrace trace; // microVU's first pass of the root (Root jobs)
 	vuopt::MvuEmitEnv env;      // microVU's values; the worker swaps in its own callbacks
 	bool flagHack = false;      // block search follows it (microBlockManager::search)
+	const u8* cacheLo = nullptr; // microVU's code cache, where the region lands
+	const u8* cacheHi = nullptr;
 	VuoptRegionOptions opts;
 	std::vector<std::unique_ptr<VuoptWBlock>> blocks; // the snapshot, then the job's nodes
 
@@ -604,12 +606,21 @@ void VuoptJob::Run()
 	e.fetchBlock = &vuoptWFetch;
 	e.addRange = &vuoptWRange;
 	e.emitJumpTail = &vuoptWTail;
-	e.bailTarget = reinterpret_cast<void* (*)(u32, u8*)>(const_cast<void*>(sink->Placeholder(kPhBailTarget)));
-	e.clearLpState = sink->Placeholder(kPhClearLpState);
-	e.endFlagsB = sink->Placeholder(kPhEndFlagsB);
-	e.exitEBit = sink->Placeholder(kPhExitEBit);
-	e.xgkickFn = sink->Placeholder(kPhXgkick);
-	e.cycleBreak = sink->Placeholder(kPhCycleBreak);
+	// microVU's stubs live in the code cache, where the region will land: a
+	// placeholder, patched to a direct branch. A C helper keeps its address and
+	// gets armEmitCall's usual form from here (absolute when it is out of reach,
+	// which from this buffer it nearly always is; a direct branch is recorded and
+	// re-aimed, through a veneer if need be).
+	const auto stub = [&](const void* real, u32 id) -> const void* {
+		const u8* p = static_cast<const u8*>(real);
+		return (p >= cacheLo && p < cacheHi) ? sink->Placeholder(id) : real;
+	};
+	e.bailTarget = reinterpret_cast<void* (*)(u32, u8*)>(const_cast<void*>(stub(reinterpret_cast<const void*>(env.bailTarget), kPhBailTarget)));
+	e.clearLpState = stub(env.clearLpState, kPhClearLpState);
+	e.endFlagsB = stub(env.endFlagsB, kPhEndFlagsB);
+	e.exitEBit = stub(env.exitEBit, kPhExitEBit);
+	e.xgkickFn = stub(env.xgkickFn, kPhXgkick);
+	e.cycleBreak = env.cycleBreak ? stub(env.cycleBreak, kPhCycleBreak) : nullptr;
 
 	sink->Begin();
 	root = vuoptNewNode(*this, pc, &key);
@@ -663,6 +674,8 @@ static std::shared_ptr<VuoptJob> vuoptMakeJob(microVU& mVU, microProgram& prog, 
 	j->env.program = &prog;
 	j->env.flagHack = CHECK_VU_FLAGHACK;
 	j->flagHack = CHECK_VU_FLAGHACK;
+	j->cacheLo = mVU.cache;
+	j->cacheHi = mVU.prog.x86end + (mVUcacheSafeZone * _1mb);
 	if (prog.vuopt)
 		j->jumpTargets = prog.vuopt->jumpTargets;
 	return j;
