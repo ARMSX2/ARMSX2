@@ -19,6 +19,7 @@
 #include "SIO/Pad/PadJogcon.h"
 #include "SIO/Pad/PadNegcon.h"
 #include "SIO/Pad/PadPopn.h"
+#include "StateWrapper.h"
 
 #include <gtest/gtest.h>
 
@@ -288,4 +289,27 @@ TEST(PadInput, APollOnAnotherThreadSeesAStateTheHostThreadWrote)
 	host.join();
 	EXPECT_EQ(bad, 0u);
 	EXPECT_EQ(polls, 20000u);
+}
+
+// PadGuitar::Freeze writes the whammy bar through a temporary because the field is not a plain u8 any more. A saved
+// state must carry it and a loaded one must restore it.
+TEST(PadInput, TheGuitarsWhammyBarIsInASavedState)
+{
+	PadGuitar before(0, 0);
+	before.FullReset();
+	before.Set(PadGuitar::Inputs::WHAMMY, 1.0f);
+	const u8 pressed = before.GetPressure(PadGuitar::Inputs::WHAMMY);
+	ASSERT_NE(pressed, Pad::ANALOG_NEUTRAL_POSITION) << "the test needs a whammy value that is not the resting one";
+
+	StateWrapper::VectorMemoryStream stream;
+	StateWrapper writer(&stream, StateWrapper::Mode::Write, 1);
+	ASSERT_TRUE(before.Freeze(writer));
+
+	PadGuitar after(0, 0);
+	after.FullReset();
+	ASSERT_EQ(after.GetPressure(PadGuitar::Inputs::WHAMMY), Pad::ANALOG_NEUTRAL_POSITION);
+	StateWrapper::ReadOnlyMemoryStream read_stream(stream.GetBuffer().data(), static_cast<u32>(stream.GetBuffer().size()));
+	StateWrapper reader(&read_stream, StateWrapper::Mode::Read, 1);
+	ASSERT_TRUE(after.Freeze(reader));
+	EXPECT_EQ(after.GetPressure(PadGuitar::Inputs::WHAMMY), pressed);
 }
