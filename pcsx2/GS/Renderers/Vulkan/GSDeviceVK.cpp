@@ -120,6 +120,11 @@ enum : u32
 	// whose frames fit never pays for more.
 	VERTEX_BUFFER_MAX_SIZE = 64 * 1024 * 1024,
 
+	// The texture upload ring grows the same way. A title that streams textures every frame
+	// (Baldur's Gate: Dark Alliance uploads ~19 MB a frame in one area) otherwise blocks on the GPU
+	// once a frame when the 32 MiB ring comes round, and CPU and GPU stop overlapping.
+	TEXTURE_BUFFER_MAX_SIZE = 128 * 1024 * 1024,
+
 	// The smallest start gsrunner's -vertex-ring-kib may choose.
 	VERTEX_BUFFER_MIN_START_SIZE = 64 * 1024,
 };
@@ -4335,7 +4340,8 @@ void GSDeviceVK::ResolveStreamRingMemory()
 	inputs.type_flags = type_flags;
 	inputs.type_count = memory_properties.memoryTypeCount;
 	inputs.prefer_cached_over_write_combined =
-		UsesMobileDriverWorkaround(DriverWorkaround::PreferCachedStreamRingMemory);
+		UsesMobileDriverWorkaround(DriverWorkaround::PreferCachedStreamRingMemory) ||
+		g_gs_measurement_overrides.stream_rings_cached;
 	m_stream_ring_memory = GSDecideStreamRingMemory(inputs);
 }
 
@@ -6063,7 +6069,9 @@ bool GSDeviceVK::CreateBuffers()
 		return false;
 	}
 
-	if (!m_texture_stream_buffer.Create(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, TEXTURE_BUFFER_SIZE, "texture"))
+	const u32 texture_max_size =
+		g_gs_measurement_overrides.texture_ring_no_growth ? TEXTURE_BUFFER_SIZE : TEXTURE_BUFFER_MAX_SIZE;
+	if (!m_texture_stream_buffer.Create(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, TEXTURE_BUFFER_SIZE, "texture", texture_max_size))
 	{
 		Host::ReportErrorAsync("GS", "Failed to allocate texture upload buffer");
 		return false;
@@ -8303,7 +8311,10 @@ VkDescriptorSet GSDeviceVK::CreateTFXUBODescriptorSet()
 
 void GSDeviceVK::OnStreamRingReplaced(const VKStreamBuffer& ring)
 {
-	// Only the vertex ring is created with room to grow.
+	// Each texture upload names the ring's buffer when it is recorded and nothing binds it, so a
+	// grown texture ring needs nothing redone. Only the vertex ring is bound.
+	if (&ring == &m_texture_stream_buffer)
+		return;
 	pxAssert(&ring == &m_vertex_stream_buffer);
 
 	// Draws already recorded keep the old buffer, which retires with this command buffer. Later

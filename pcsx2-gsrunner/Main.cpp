@@ -1197,6 +1197,10 @@ static void PrintCommandLineHelp(const char* progname)
 						 "boundary only once n passes are unsubmitted (default 8).\n");
 	std::fprintf(stderr, "  -vertex-ring-no-grow: Vulkan only. The vertex ring keeps its starting size and waits for "
 						 "the GPU when full.\n");
+	std::fprintf(stderr, "  -texture-ring-no-grow: Vulkan only. The texture upload ring keeps its starting size and "
+						 "waits for the GPU when full.\n");
+	std::fprintf(stderr, "  -stream-rings-cached: Vulkan only. Put the stream rings on a cached memory road as if the "
+						 "driver database preferred it on this device.\n");
 	std::fprintf(stderr, "  -swthreads <threads>: Sets the number of threads for the software renderer.\n");
 	std::fprintf(stderr, "  -upscale <multiplier>: Sets the upscale multiplier, e.g. 1 for native or 2 for 2x. Minimum 0.5.\n");
 	std::fprintf(stderr, "  -renderhacks [af|cpufb|dds|dpi|dsf|tinrt|plf]: Enable user hacks -- auto flush, CPU framebuffer "
@@ -1978,6 +1982,18 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				}
 				// Not a setting: what a submit costs is a property of the driver, priced per device.
 				g_gs_measurement_overrides.readback_kick_passes = passes.value();
+				continue;
+			}
+			else if (CHECK_ARG("-texture-ring-no-grow"))
+			{
+				// Not a setting: the texture ring as it was before it could grow, for an A/B on one binary.
+				g_gs_measurement_overrides.texture_ring_no_growth = true;
+				continue;
+			}
+			else if (CHECK_ARG("-stream-rings-cached"))
+			{
+				// Not a setting: which road wins is measured per device and recorded in the driver database.
+				g_gs_measurement_overrides.stream_rings_cached = true;
 				continue;
 			}
 			else if (CHECK_ARG("-vertex-ring-no-grow"))

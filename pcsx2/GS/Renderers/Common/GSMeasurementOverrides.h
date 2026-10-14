@@ -43,6 +43,14 @@ struct GSMeasurementOverrides
 	/// full, as it did before it could grow.
 	bool vertex_ring_no_growth = false;
 
+	/// -texture-ring-no-grow: the texture upload ring keeps its starting size and waits for the GPU
+	/// when full, as it did before it could grow.
+	bool texture_ring_no_growth = false;
+
+	/// -stream-rings-cached: put the stream rings on a cached road as if the driver database granted
+	/// DriverWorkaround::PreferCachedStreamRingMemory, to price that road on a device without the rule.
+	bool stream_rings_cached = false;
+
 	/// -readback-kick-passes N: in a readback frame, the Vulkan mid-frame kick waits for at least
 	/// N unsubmitted render passes (0 = the shipped spacing). Read once, when the device is created.
 	u32 readback_kick_passes = 0;
@@ -72,7 +80,7 @@ struct GSMeasurementOverrides
 	bool Any() const
 	{
 		return self_read_arm != GSSelfReadArm::Off || declare_depth_loop || loop_create_flag || disable_stencil_buffer ||
-		       alpha_bit_logic_op || no_provoking_vertex || no_dual_source;
+		       alpha_bit_logic_op || no_provoking_vertex || no_dual_source || stream_rings_cached;
 	}
 };
 
