@@ -1110,46 +1110,54 @@ namespace
 
 	TEST_F(IopThreadObject, AHoldDoesNotGiveUpWhenTheStopPredicateFires)
 	{
-		// The IOP is in a slice that outlasts many of the spin's stop checks. The caller of a hold is in the middle of
-		// an operation that needs the IOP stopped (a SIF pump, the savestate a shutdown writes), so the hold waits for
-		// the IOP however long the slice takes and never asks whether the VM is stopping. The lag wait and the full
-		// queue wait are the ones that give up: their callers can return to the event test.
-		Latch gate;
-		bool first = true;
-		fake.in_slice_hook = [&](u64, u64) {
-			if (first)
-			{
-				first = false;
-				gate.Wait(aborted);
-			}
-		};
-		std::atomic<u32> checks{0};
-		Params p = BaseParams();
-		p.should_stop = [&] {
-			checks.fetch_add(1);
-			return true;
-		};
+		// The IOP is in a slice that outlasts many of the spin's stop checks, and for a lifecycle hold long enough to
+		// make it fall back to sleeping. The caller of a hold is in the middle of an operation that needs the IOP
+		// stopped (a SIF pump, the savestate a shutdown writes), so the hold waits for the IOP however long the slice
+		// takes and never asks whether the VM is stopping. The lag wait and the full queue wait are the ones that give
+		// up: their callers can return to the event test.
 		StopOnExit stop_on_exit(*thread);
-		ASSERT_TRUE(thread->Start(p));
-		Publish(1000);
-		ASSERT_TRUE(WaitEe([&] { return fake.slices_started.load() == 1; }));
-		std::thread opener([&] {
-			std::this_thread::sleep_for(50ms);
-			gate.Open();
-		});
+		for (const HoldKind kind : {HoldKind::Emulation, HoldKind::Lifecycle})
 		{
-			ScopedHold hold(*thread, HoldKind::Emulation);
-			EXPECT_EQ(thread->HoldDepth(), 1u) << "the hold gave up while the IOP was still in its slice";
-			EXPECT_GE(fake.pos, ee_cycle);
-			const u64 slices = fake.slice_count;
-			Publish(ee_cycle + 2000);
-			std::this_thread::sleep_for(2ms);
-			EXPECT_EQ(fake.slice_count, slices) << "the IOP ran during the hold";
+			fake.Reset();
+			ee_cycle = 0;
+			Latch gate;
+			bool first = true;
+			fake.in_slice_hook = [&](u64, u64) {
+				if (first)
+				{
+					first = false;
+					gate.Wait(aborted);
+				}
+			};
+			std::atomic<u32> checks{0};
+			Params p = BaseParams();
+			p.should_stop = [&] {
+				checks.fetch_add(1);
+				return true;
+			};
+			ASSERT_TRUE(thread->Start(p));
+			Publish(1000);
+			ASSERT_TRUE(WaitEe([&] { return fake.slices_started.load() == 1; }));
+			std::thread opener([&] {
+				std::this_thread::sleep_for(50ms);
+				gate.Open();
+			});
+			{
+				ScopedHold hold(*thread, kind);
+				EXPECT_EQ(thread->HoldDepth(), 1u) << "the hold gave up while the IOP was still in its slice";
+				EXPECT_GE(fake.pos, ee_cycle);
+				const u64 slices = fake.slice_count;
+				Publish(ee_cycle + 2000);
+				std::this_thread::sleep_for(2ms);
+				EXPECT_EQ(fake.slice_count, slices) << "the IOP ran during the hold";
+			}
+			opener.join();
+			EXPECT_EQ(checks.load(), 0u) << "a hold must not ask the stop predicate";
+			Publish(ee_cycle + 4000);
+			ASSERT_TRUE(WaitPos(ee_cycle));
+			thread->Stop();
+			fake.in_slice_hook = nullptr;
 		}
-		opener.join();
-		EXPECT_EQ(checks.load(), 0u) << "a hold must not ask the stop predicate";
-		Publish(ee_cycle + 4000);
-		ASSERT_TRUE(WaitPos(ee_cycle));
 	}
 
 	TEST_F(IopThreadObject, AHoldWithNoThreadRunningIsAMarker)
