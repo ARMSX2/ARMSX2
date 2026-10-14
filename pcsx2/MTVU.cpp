@@ -23,8 +23,6 @@ enum MTVU_EVENT
 	MTVU_VU_EXECUTE,     // Execute VU program
 	MTVU_VU_WRITE_MICRO, // Write to VU micro-mem
 	MTVU_VU_WRITE_DATA,  // Write to VU data-mem
-	MTVU_VU_WRITE_VIREGS,// Write to VU registers
-	MTVU_VU_WRITE_VFREGS,// Write to VU registers
 	MTVU_VIF_WRITE_COL,  // Write to Vif col reg
 	MTVU_VIF_WRITE_ROW,  // Write to Vif row reg
 	MTVU_VIF_UNPACK,     // Execute Vif Unpack
@@ -52,13 +50,25 @@ bool SaveStateBase::mtvuFreeze()
 	pxAssert(vu1Thread.IsDone());
 	if (!IsSaving())
 	{
+		// The VU thread is idle here, so set its state directly instead of
+		// queueing it. Nothing VU1 owns goes through the ring on a load:
+		//
+		// VU1's micro and data memory are separate entries of the save state
+		// (vu1MicroMem.bin, vu1Memory.bin), read after this function, straight
+		// into VU1.Micro and VU1.Mem. Queueing copies of them here copied the
+		// memory as it was BEFORE the load, and the VU thread wrote those
+		// copies back whenever it got round to the ring. When that was after
+		// the entries were read, VU1 ran on the old program and data: from a
+		// fresh boot, all-zero microcode, so nothing it ran ever XGKICKed and
+		// the 3D world stayed black.
+		//
+		// The registers were already restored (vuMicroFreeze), the microVU
+		// caches were cleared before the load began (PreLoadPrep), and the
+		// VU thread sees all of it once the next ring write publishes its
+		// position with release ordering.
 		vu1Thread.Reset();
-		vu1Thread.WriteCol(vif1);
-		vu1Thread.WriteRow(vif1);
-		vu1Thread.WriteMicroMem(0, VU1.Micro, 0x4000);
-		vu1Thread.WriteDataMem(0, VU1.Mem, 0x4000);
-		vu1Thread.WriteVIRegs(&VU1.VI[0]);
-		vu1Thread.WriteVFRegs(&VU1.VF[0]);
+		vu1Thread.vif.MaskRow = vif1.MaskRow;
+		vu1Thread.vif.MaskCol = vif1.MaskCol;
 	}
 	for (size_t i = 0; i < 4; ++i)
 	{
@@ -174,12 +184,6 @@ void VU_Thread::ExecuteRingBuffer()
 					Read(&VU1.Mem[vu_data_addr], size);
 					break;
 				}
-				case MTVU_VU_WRITE_VIREGS:
-					Read(&VU1.VI, size_u32(32));
-					break;
-				case MTVU_VU_WRITE_VFREGS:
-					Read(&VU1.VF, size_u32(4*32));
-					break;
 				case MTVU_VIF_WRITE_COL:
 					Read(&vif.MaskCol, sizeof(vif.MaskCol));
 					break;
@@ -495,26 +499,6 @@ void VU_Thread::WriteDataMem(u32 vu_data_addr, const void* data, u32 size)
 	Write(vu_data_addr);
 	Write(size);
 	Write(data, size);
-	CommitWritePos();
-	KickStart();
-}
-
-void VU_Thread::WriteVIRegs(REG_VI* viRegs)
-{
-	MTVU_LOG("MTVU - WriteRegs!");
-	ReserveSpace(1 + size_u32(32));
-	Write(MTVU_VU_WRITE_VIREGS);
-	Write(viRegs, size_u32(32));
-	CommitWritePos();
-	KickStart();
-}
-
-void VU_Thread::WriteVFRegs(VECTOR* vfRegs)
-{
-	MTVU_LOG("MTVU - WriteRegs!");
-	ReserveSpace(1 + size_u32(32*4));
-	Write(MTVU_VU_WRITE_VFREGS);
-	Write(vfRegs, size_u32(32*4));
 	CommitWritePos();
 	KickStart();
 }
