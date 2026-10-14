@@ -591,6 +591,22 @@ namespace IopThread
 
 	// ================================================================ Threaded: the EE's event test and SIF
 
+	namespace
+	{
+		void PauseTheVm()
+		{
+			VMManager::SetPaused(true);
+			Cpu->ExitExecution();
+		}
+
+		PauseAction s_pause_action = &PauseTheVm;
+	} // namespace
+
+	PauseAction SetPauseActionForTests(PauseAction action)
+	{
+		return std::exchange(s_pause_action, action ? action : &PauseTheVm);
+	}
+
 	void DrainEeQueue()
 	{
 		g_thread.DrainI2E();
@@ -600,8 +616,7 @@ namespace IopThread
 		if (g_pause_requested.load(std::memory_order_acquire))
 		{
 			g_pause_requested.store(false, std::memory_order_relaxed);
-			VMManager::SetPaused(true);
-			Cpu->ExitExecution();
+			s_pause_action();
 		}
 	}
 

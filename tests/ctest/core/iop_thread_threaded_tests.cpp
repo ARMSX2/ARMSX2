@@ -120,6 +120,13 @@ namespace
 		s_violations.fetch_add(1);
 	}
 
+	// What the event test does for a pause the IOP asked for, in a test with no VM to pause.
+	std::atomic<u32> s_pause_actions{0};
+	void CountPauseAction()
+	{
+		s_pause_actions.fetch_add(1);
+	}
+
 	// Polls `ready` for up to `limit`. Like the EE's next event test it wakes the IOP, and unless `serve` is false it
 	// serves what the IOP asks of the EE; a test that wants to look at the IOP-to-EE queue before the EE has emptied it
 	// passes false.
@@ -196,6 +203,9 @@ namespace
 			s_violations = 0;
 			IopThread::g_pause_requested.store(false);
 			m_previous_handler = IopThread::SetViolationHandler(&CountViolation);
+			m_min_slice = IopThread::ThreadedMinSlice();
+			s_pause_actions = 0;
+			m_previous_pause_action = IopThread::SetPauseActionForTests(&CountPauseAction);
 		}
 
 		void TearDown() override
@@ -203,6 +213,8 @@ namespace
 			s_hold_slice = false;
 			IopThread::StopThread();
 			IopThread::SetViolationHandler(m_previous_handler);
+			IopThread::SetPauseActionForTests(m_previous_pause_action);
+			IopThread::SetThreadedMinSlice(m_min_slice);
 			IopThread::g_pause_requested.store(false);
 			VMManager::Internal::SetStateForTests(m_state);
 			cpuRegs = *m_cpu;
@@ -312,6 +324,8 @@ namespace
 		VMState m_state;
 		u32 m_vpu0, m_vpu1;
 		IopThread::ViolationHandler m_previous_handler;
+		IopThread::PauseAction m_previous_pause_action;
+		s32 m_min_slice;
 	};
 } // namespace
 
@@ -321,6 +335,9 @@ TEST_F(ThreadedMachine, TheThreadedEventTestPublishesTheWatermarkAndLeavesTheIop
 {
 	REQUIRE_ARM64_HOST();
 	Reset();
+	// An IOP event due in 100 IOP cycles (800 EE cycles): the Off instance would bring the EE's next event test forward to it.
+	psxNextStartCounter = psxRegs.cycle;
+	psxNextDeltaCounter = 100;
 	StartThreaded();
 	// The books are the EE's to keep in Off and Lockstep. With the IOP running beside the EE they are not kept, so a
 	// Threaded event test must not touch them.
@@ -371,6 +388,29 @@ TEST_F(ThreadedMachine, TheIopRunsExactlyTheBudgetTheWatermarkGivesIt)
 	}
 	EXPECT_EQ(total, static_cast<s64>(cpuRegs.cycle - start));
 	EXPECT_EQ(IopThread::g_thread.PublishedPos(), start + static_cast<u64>(total + overshoots));
+	// Each slice ends with the IOP's own event test, which schedules the IOP's next branch iopWaitCycles (384) IOP cycles on (the
+	// counters are quiet here). The fake IOP does not advance psxRegs.cycle.
+	EXPECT_EQ(psxRegs.iopNextEventCycle, psxRegs.cycle + 384);
+}
+
+TEST_F(ThreadedMachine, TheMinimumSliceKeepsTheIopFromRunningOnASmallBudget)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	IopThread::SetThreadedMinSlice(4096);
+	StartThreaded();
+	ASSERT_TRUE(WaitFor([] { return IopThread::g_thread.IsParked(); }));
+
+	// 500 behind the watermark: well under S_min, so the IOP lets the budget build up.
+	EventTest(1000);
+	std::this_thread::sleep_for(60ms);
+	EXPECT_EQ(s_slices_started.load(), 0u);
+
+	// 5500: over it.
+	EventTest(5000);
+	ASSERT_TRUE(WaitFor([] { return s_slices_started.load() >= 1; }));
+	const std::vector<SliceCall> calls = Calls();
+	EXPECT_GE(calls.front().budget, 4096);
 }
 
 TEST_F(ThreadedMachine, AnEventOfTheIopsOwnRunsASliceEvenWithNoBudget)
@@ -449,6 +489,8 @@ TEST_F(ThreadedMachine, WithNoIopThreadTheThreadedInstanceRunsTheSliceItselfAsOf
 	// on the EE thread from the books, and the EE schedules for the IOP's events: exactly what the Off instance does.
 	auto script = [this](IopThreadMode mode) {
 		Reset();
+		psxNextStartCounter = psxRegs.cycle; // an IOP event 100 IOP cycles on: the EE's next event test comes forward to it
+		psxNextDeltaCounter = 100;
 		{
 			std::lock_guard lock(s_mutex);
 			s_calls.clear();
@@ -549,12 +591,35 @@ TEST_F(ThreadedMachine, APauseTheIopAsksForIsMadeByTheEeAtItsNextEventTestAndNot
 	s_gate = true;
 	ASSERT_TRUE(WaitFor([] { return s_hook_runs.load() >= 1 && IopThread::g_thread.MayHaveI2E(); }, 10s, false));
 	EXPECT_FALSE(IopThread::g_pause_requested.load()) << "the IOP thread must only queue the request";
+	EXPECT_EQ(s_pause_actions.load(), 0u);
 
 	// A drain inside an EE spin (the thread object's) only records it: SetPaused takes a hold, which cannot happen
 	// inside a hold's own spin.
 	IopThread::g_thread.DrainI2E();
 	EXPECT_TRUE(IopThread::g_pause_requested.load());
-	IopThread::g_pause_requested.store(false);
+	EXPECT_EQ(s_pause_actions.load(), 0u) << "the pause was made inside the drain";
+
+	// The next event test makes it, though no item is waiting any more (the drain above took it).
+	ASSERT_FALSE(IopThread::g_thread.MayHaveI2E());
+	EventTest(100);
+	EXPECT_EQ(s_pause_actions.load(), 1u);
+	EXPECT_FALSE(IopThread::g_pause_requested.load());
+	EventTest(100);
+	EXPECT_EQ(s_pause_actions.load(), 1u) << "one request is one pause";
+}
+
+TEST_F(ThreadedMachine, APauseRequestTheEeFindsInTheQueueAtTheTopOfTheEventTestIsMadeThere)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	StartThreaded();
+
+	SetGatedHook([] { EeBridge::RequestPause(); });
+	EventTest(2000);
+	s_gate = true;
+	ASSERT_TRUE(WaitFor([] { return s_hook_runs.load() >= 1 && IopThread::g_thread.MayHaveI2E(); }, 10s, false));
+	EventTest(100);
+	EXPECT_EQ(s_pause_actions.load(), 1u);
 }
 
 TEST_F(ThreadedMachine, TheIopSchedulesItsOwnEventsAndWritesNothingOfTheEesScheduling)
@@ -569,6 +634,8 @@ TEST_F(ThreadedMachine, TheIopSchedulesItsOwnEventsAndWritesNothingOfTheEesSched
 		u64 ee_next_event_before, ee_next_event_after;
 		s32 iop_cycle_ee_before, iop_cycle_ee_after, iop_break_before, iop_break_after;
 		bool action_after;
+		u32 iop_next_event_after;
+		u64 iop_cycle;
 	};
 	std::atomic<bool> done{false};
 	Seen seen = {};
@@ -579,6 +646,7 @@ TEST_F(ThreadedMachine, TheIopSchedulesItsOwnEventsAndWritesNothingOfTheEesSched
 		seen.iop_cycle_ee_before = psxRegs.iopCycleEE;
 		seen.iop_break_before = psxRegs.iopBreak;
 		iopEventAction = false;
+		psxRegs.iopNextEventCycle = psxRegs.cycle + 5000;
 		EeBridge::ScheduleEeEvent(10); // C3: PSX_INT
 		EeBridge::IopInterruptPending(); // C4: iopTestIntc
 		EeBridge::BreakIopSlice(); // C5: an EE event inside a slice
@@ -586,6 +654,8 @@ TEST_F(ThreadedMachine, TheIopSchedulesItsOwnEventsAndWritesNothingOfTheEesSched
 		seen.iop_cycle_ee_after = psxRegs.iopCycleEE;
 		seen.iop_break_after = psxRegs.iopBreak;
 		seen.action_after = iopEventAction;
+		seen.iop_next_event_after = static_cast<u32>(psxRegs.iopNextEventCycle);
+		seen.iop_cycle = psxRegs.cycle;
 		psxRegs.iopCycleEE = -1;
 		psxRegs.iopBreak = 0;
 		done = true;
@@ -598,6 +668,7 @@ TEST_F(ThreadedMachine, TheIopSchedulesItsOwnEventsAndWritesNothingOfTheEesSched
 	EXPECT_EQ(seen.iop_cycle_ee_after, seen.iop_cycle_ee_before) << "an EE event cut the IOP slice short";
 	EXPECT_EQ(seen.iop_break_after, seen.iop_break_before);
 	EXPECT_TRUE(seen.action_after) << "an interrupt pending on the IOP gives it work of its own";
+	EXPECT_LE(static_cast<s32>(seen.iop_next_event_after - static_cast<u32>(seen.iop_cycle)), 2) << "and its next branch comes forward";
 	EXPECT_EQ(s_violations.load(), 0u);
 }
 
@@ -897,11 +968,23 @@ TEST_F(ThreadedMachine, TheAnalogButtonsToggleRunsOnTheIopThreadInThreaded)
 	s_hold_slice = false;
 	ASSERT_TRUE(WaitFor([&] { return pad->IsAnalogLightEnabled() != before; }));
 
-	// Off: the toggle is the direct call it always was.
+	// With no IOP thread (the mode says Threaded, the thread is not started or has just been stopped) nothing else writes the pad's
+	// mode and the toggle is made at once.
 	IopThread::StopThread();
+	IopThread::ChooseModeFor(Arm64Host(), IopThread::VmConditions());
+	ASSERT_EQ(IopThread::GetMode(), IopThreadMode::Threaded);
+	ASSERT_FALSE(IopThread::g_thread.IsRunning());
+	const bool now = pad->IsAnalogLightEnabled();
 	pad->Set(16, 0.0f);
 	pad->Set(16, 1.0f);
-	EXPECT_EQ(pad->IsAnalogLightEnabled(), before);
+	EXPECT_NE(pad->IsAnalogLightEnabled(), now) << "a toggle posted to a thread that is not there was lost";
+
+	// Off: the toggle is the direct call it always was.
+	IopThread::StopThread();
+	const bool then = pad->IsAnalogLightEnabled();
+	pad->Set(16, 0.0f);
+	pad->Set(16, 1.0f);
+	EXPECT_NE(pad->IsAnalogLightEnabled(), then);
 
 	Pad::Shutdown();
 }

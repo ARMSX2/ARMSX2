@@ -173,6 +173,11 @@ namespace IopThread
 	/// makes a pause the IOP asked for. Event test only.
 	void DrainEeQueue();
 
+	/// What the event test does with a pause the IOP asked for: pauses the VM and leaves the EE's execution loop. A test
+	/// that has no VM replaces it (nullptr puts the real one back); returns the previous one.
+	using PauseAction = void (*)();
+	PauseAction SetPauseActionForTests(PauseAction action);
+
 	/// First thing in the Threaded event test: tell the IOP how far the EE has got (a release store, and a
 	/// wake-up if the IOP is parked and has budget) and take what the IOP queued for the EE.
 	__forceinline_odr void EeEventTestBegin(u64 cycle)
