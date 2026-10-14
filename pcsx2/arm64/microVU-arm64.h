@@ -546,6 +546,10 @@ struct microProgram
 	u32 vuoptRuns;
 	u32 vuoptJumpRuns;
 	VuoptProgramState* vuopt;
+	// Times a vuopt region of this program took the budget bail: [0] at an entry from
+	// microVU, [1] at a loop head (written by the region's own bail code, which reaches
+	// the program through the bail record).
+	u64 vuoptBails[2];
 };
 
 typedef std::deque<microProgram*> microProgramList;

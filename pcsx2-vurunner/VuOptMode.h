@@ -29,6 +29,9 @@ struct VuoptModeOptions
 	bool stickyAcc = true;  // --vuopt-no-acc: every status update builds its instance (no sticky accumulators; A/B)
 		bool accAlways = false; // --vuopt-acc-always: the accumulators even where the estimate says they would not pay (A/B)
 	bool handoff = true;    // --vuopt-no-handoff: every flag-ring instance exact at a bail to microVU (A/B)
+	bool observe = false;   // --vuopt-observe: compare observable state (the exactness contract), classify the byte differences,
+	                        // and continue each run through its budget stops with --vuopt-resumes re-entries
+	u32 resumes = 6;
 	bool profile = false;  // --vuopt-profile: per region node, its execution count and its code by IR op ("N"/"I" lines)  // --vuopt-no-sched: regions keep each node's operations in program order (milestone 9 A/B)
 	s32 gHomes = 6;        // --vuopt-ghomes N // --vuopt-skip a,b,...: leave these compiled blocks to microVU (bisecting)
 	s32 lowerOnly = -1;    // --vuopt-only N: lower only compiled block N (bisecting); -1 = all

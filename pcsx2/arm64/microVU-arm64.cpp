@@ -2312,6 +2312,16 @@ void recMicroVU1::Step()
 {
 }
 
+#ifdef PCSX2_RECOMPILER_TESTS
+namespace mvu_test_hooks
+{
+	// Dispatches of VU1 that ended on a cycle-budget break (a program cut short and parked to
+	// resume), counted in every test build.
+	static std::atomic<u64> g_vu1Stops{0};
+	u64 GetVu1Stops() { return g_vu1Stops.load(std::memory_order_relaxed); }
+} // namespace mvu_test_hooks
+#endif
+
 #if defined(PCSX2_RECOMPILER_TESTS) && defined(__linux__)
 #include <linux/perf_event.h>
 #include <sys/syscall.h>
@@ -2382,6 +2392,8 @@ void recMicroVU1::Execute(u32 cycles)
 		((mVUrecCall)microVU1.startFunct)(VU1.VI[REG_TPC].UL, cycles);
 	VU1.VI[REG_TPC].UL >>= 3;
 #ifdef PCSX2_RECOMPILER_TESTS
+	if (microVU1.resumeEntry)
+		mvu_test_hooks::g_vu1Stops.fetch_add(1, std::memory_order_relaxed);
 	vu1_trace::finish(trace);
 #if defined(__linux__)
 	if (countIns)

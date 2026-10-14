@@ -139,6 +139,17 @@ namespace vuopt::live
 			s.bodyBytes = s_vuopt.body->BodyBytes();
 		}
 		s.jumpMisses = s_vuopt.jumpMisses;
+		// the bails of the programs still alive (the deleted ones were added as they went)
+		for (const auto& entry : microVU1.mvuContentMap)
+		{
+			s.bailsEntry += entry.second->vuoptBails[0];
+			s.bailsLoopHead += entry.second->vuoptBails[1];
+		}
+		for (const microProgram* prog : microVU1.mvuOrphanedProgs)
+		{
+			s.bailsEntry += prog->vuoptBails[0];
+			s.bailsLoopHead += prog->vuoptBails[1];
+		}
 		return s;
 	}
 
@@ -150,13 +161,14 @@ namespace vuopt::live
 		std::snprintf(buf, sizeof(buf),
 			"vuopt live tier: tierups=%llu retiers=%llu retierchecks=%llu blocks_set_aside=%llu targets=%llu jumpmisses=%llu "
 			"roots=%llu regions=%llu rnodes=%llu rexits=%llu rbytes=%llu bodyblocks=%llu bodies=%llu bodybytes=%llu bails=%llu "
-			"jrtierups=%llu jrcounted=%llu xprogtargets=%llu",
+			"jrtierups=%llu jrcounted=%llu xprogtargets=%llu bails_entry=%llu bails_loophead=%llu",
 			(unsigned long long)s.tierUps, (unsigned long long)s.retiers, (unsigned long long)s.retierChecks,
 			(unsigned long long)s.blocksSetAside, (unsigned long long)s.targetsRecorded, (unsigned long long)s.jumpMisses,
 			(unsigned long long)s.rootsCompiled, (unsigned long long)s.regions, (unsigned long long)s.regionNodes,
 			(unsigned long long)s.regionExits, (unsigned long long)s.regionBytes, (unsigned long long)s.bodyBlocks,
 			(unsigned long long)s.bodiesLowered, (unsigned long long)s.bodyBytes, (unsigned long long)s.bailCompiles,
-			(unsigned long long)s.jumpTierUps, (unsigned long long)s.jumpCounted, (unsigned long long)s.crossProgTargets);
+			(unsigned long long)s.jumpTierUps, (unsigned long long)s.jumpCounted, (unsigned long long)s.crossProgTargets,
+			(unsigned long long)s.bailsEntry, (unsigned long long)s.bailsLoopHead);
 		out = buf;
 		if (s.compileInsTiered || s.compileInsPlain)
 		{
@@ -446,6 +458,8 @@ void mVUvuoptOnClose(microVU& mVU)
 
 void mVUvuoptOnProgramDeleted(microProgram& prog)
 {
+	s_vuopt.stats.bailsEntry += prog.vuoptBails[0];
+	s_vuopt.stats.bailsLoopHead += prog.vuoptBails[1];
 	VuoptProgramState* st = prog.vuopt;
 	if (!st)
 		return;

@@ -130,6 +130,8 @@ namespace vuopt
 		// mVU.prog.cur is only microVU's idea of the current program (a jump
 		// cache hit enters another program's code without updating it).
 		void* program = nullptr;
+		// offsetof(microProgram, vuoptBails): the region's bail code counts into it.
+		s32 offProgBails = 0;
 	};
 
 #ifdef PCSX2_RECOMPILER_TESTS

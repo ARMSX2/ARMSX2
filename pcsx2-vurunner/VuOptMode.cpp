@@ -508,6 +508,83 @@ namespace
 		return out;
 	}
 
+	// The exactness contract (compiler-design.md 9ab): what a game can observe, field by field.
+	// `obs` fields must match always; `ring` fields (the four-deep flag copies the recompiler
+	// shadows) must match at a program end and may differ at a budget stop, where the continuation
+	// decides; `other` is everything else in VURegs the engines write (the interpreter's scratch,
+	// which neither recompiler touches): any difference there is unclassified.
+	struct SplitDiff
+	{
+		std::vector<std::string> obs, ring, other;
+	};
+
+	SplitDiff DiffRegsSplit(const VURegs& a, const VURegs& b)
+	{
+		struct FieldClass
+		{
+			const char* name;
+			size_t off, size;
+			int cls; // 0 observable, 1 ring, 2 other
+		};
+#define FO(f) {#f, offsetof(VURegs, f), sizeof(VURegs::f), 0}
+#define FR(f) {#f, offsetof(VURegs, f), sizeof(VURegs::f), 1}
+#define FX(f) {#f, offsetof(VURegs, f), sizeof(VURegs::f), 2}
+		static const FieldClass kFields[] = {
+			FO(VF), FO(VI), FO(ACC), FO(q), FO(p), FO(cycle), FO(flags), FO(start_pc), FO(ebit), FO(pending_q), FO(pending_p),
+			FO(nextBlockCycles), FO(xgkickaddr), FO(xgkickdiff), FO(xgkicksizeremaining), FO(xgkicklastcycle),
+			FO(xgkickcyclecount), FO(xgkickenable), FO(xgkickendpacket), FO(VIBackupCycles), FO(VIOldValue), FO(VIRegNumber),
+			FR(micro_macflags), FR(micro_clipflags), FR(micro_statusflags),
+			FX(idx), FX(code), FX(branch), FX(branchpc), FX(delaybranchpc), FX(takedelaybranch), FX(macflag), FX(statusflag),
+			FX(clipflag), FX(fmac), FX(fmacreadpos), FX(fmacwritepos), FX(fmaccount), FX(fdiv), FX(efu), FX(ialu),
+			FX(ialureadpos), FX(ialuwritepos), FX(ialucount),
+		};
+#undef FO
+#undef FR
+#undef FX
+		SplitDiff out;
+		const u8* pa = reinterpret_cast<const u8*>(&a);
+		const u8* pb = reinterpret_cast<const u8*>(&b);
+		for (const FieldClass& f : kFields)
+			for (size_t i = 0; i < f.size; i += 4)
+			{
+				const size_t n = std::min<size_t>(4, f.size - i);
+				if (std::memcmp(pa + f.off + i, pb + f.off + i, n) == 0)
+					continue;
+				u32 va = 0, vb = 0;
+				std::memcpy(&va, pa + f.off + i, n);
+				std::memcpy(&vb, pb + f.off + i, n);
+				char buf[128];
+				std::snprintf(buf, sizeof(buf), "%s+%zu: mvu=%08x vuopt=%08x", f.name, i, va, vb);
+				// The STATUS, MAC and CLIP registers (VI 16-18) are what a budget stop mirrors from the
+				// newest ring copies: the ring class, exact at a program end.
+				const bool flagReg = std::strcmp(f.name, "VI") == 0 && i >= REG_STATUS_FLAG * sizeof(REG_VI) &&
+									 i < (REG_CLIP_FLAG + 1) * sizeof(REG_VI);
+				(flagReg ? out.ring : f.cls == 0 ? out.obs : f.cls == 1 ? out.ring : out.other).emplace_back(buf);
+			}
+		return out;
+	}
+
+	// Memory, GIF bytes, E bit and cycle count: observable always.
+	void DiffOutputs(const recompiler_tests::VuSnapshot& sa, const recompiler_tests::VuSnapshot& sb, const std::vector<u8>& pa, const std::vector<u8>& pb, bool ea, bool eb,
+		u64 ca, u64 cb, std::vector<std::string>& out)
+	{
+		for (size_t w = 0; w < sa.mem_windows.size() && w < sb.mem_windows.size(); w++)
+			for (size_t i = 0; i < sa.mem_windows[w].bytes.size(); i += 16)
+				if (std::memcmp(&sa.mem_windows[w].bytes[i], &sb.mem_windows[w].bytes[i],
+						std::min<size_t>(16, sa.mem_windows[w].bytes.size() - i)) != 0)
+				{
+					char buf[64];
+					std::snprintf(buf, sizeof(buf), "mem[0x%04zx]", i);
+					out.emplace_back(buf);
+				}
+		if (pa != pb)
+			out.emplace_back("GIF path 1 bytes differ (" + std::to_string(pa.size()) + " vs " + std::to_string(pb.size()) + ")");
+		if (ea != eb)
+			out.emplace_back("ebit differs");
+		if (ca != cb)
+			out.emplace_back("cycles differ");
+	}
+
 	// Steady-state retired instructions: the least over the iterations after
 	// the first. A later iteration can still compile a block it had not
 	// reached before (and, in the vuopt arm, run the hook's analysis), which
@@ -548,7 +625,10 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			vuopt::g_vuoptBodyHook = &OnBody;
 			vuopt::g_vuoptBodyHookUser = &refCtx;
 		}
-		const auto ref = recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
+		recompiler_tests::VuChainResult refChain;
+		if (opts.observe)
+			refChain = recompiler_tests::ReplayJitChain(rec, opts.cycleOverride, opts.resumes);
+		const auto ref = opts.observe ? refChain.first : recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
 		vuopt::g_vuoptBodyHook = nullptr;
 		const std::vector<u64> refTrace = g_trace;
 		const std::vector<u64> refVals = g_traceVals;
@@ -589,10 +669,16 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 		if (ctx.region)
 			ctx.region->jumpTargets = jumpTargets;
 		ctx.Install();
-		const auto run = recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
+		recompiler_tests::VuChainResult runChain;
+		if (opts.observe)
+			runChain = recompiler_tests::ReplayJitChain(rec, opts.cycleOverride, opts.resumes);
+		const auto run = opts.observe ? runChain.first : recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
 		if (ctx.region && opts.profile)
 			ctx.region->PrintProfile(stdout);
 		const u64 runBytes = CompiledBytes(vu);
+		u64 bailsEntry = 0, bailsLoop = 0;
+		if (ctx.region)
+			ctx.region->BailCounts(bailsEntry, bailsLoop);
 		Uninstall();
 
 		if (!ref.ok || !run.ok)
@@ -624,6 +710,51 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			diffs.emplace_back("ebit differs");
 		if (ref.jit_cycles != run.jit_cycles)
 			diffs.emplace_back("cycles differ");
+
+		// The exactness contract: the same, field by field, with the flag-ring copies at a budget
+		// stop set apart. A stop's ring may differ only if the continuation (the run re-entered
+		// after the stop, as a game does) ends in the same observable state.
+		bool observable = true;
+		std::string obsText;
+		std::vector<std::string> obsDiffs;
+		if (opts.observe)
+		{
+			const SplitDiff first = DiffRegsSplit(ref.jit_snapshot.regs, run.jit_snapshot.regs);
+			const SplitDiff fin = DiffRegsSplit(refChain.final_snapshot.regs, runChain.final_snapshot.regs);
+			std::vector<std::string> out1, outF;
+			DiffOutputs(ref.jit_snapshot, run.jit_snapshot, ref.path1_packets_jit, run.path1_packets_jit, ref.jit_ebit, run.jit_ebit,
+				ref.jit_cycles, run.jit_cycles, out1);
+			DiffOutputs(refChain.final_snapshot, runChain.final_snapshot, refChain.final_path1, runChain.final_path1,
+				refChain.final_ebit, runChain.final_ebit, refChain.final_cycles, runChain.final_cycles, outF);
+			for (const auto& d : first.obs)
+				obsDiffs.push_back("stop1 " + d);
+			for (const auto& d : out1)
+				obsDiffs.push_back("stop1 " + d);
+			for (const auto& d : first.other)
+				obsDiffs.push_back("stop1 unclassified " + d);
+			for (const auto& d : fin.obs)
+				obsDiffs.push_back("final " + d);
+			for (const auto& d : outF)
+				obsDiffs.push_back("final " + d);
+			for (const auto& d : fin.other)
+				obsDiffs.push_back("final unclassified " + d);
+			// ring copies: exact at a program end
+			if (ref.jit_ebit)
+				for (const auto& d : first.ring)
+					obsDiffs.push_back("program end ring " + d);
+			if (refChain.final_ebit)
+				for (const auto& d : fin.ring)
+					obsDiffs.push_back("final program end ring " + d);
+			observable = obsDiffs.empty();
+			char buf[200];
+			std::snprintf(buf, sizeof(buf), " obs=%d ringdiff=%zu ringfinal=%zu stopped=%d resumes=%u term=%d", observable ? 1 : 0,
+				first.ring.size(), fin.ring.size(), ref.jit_ebit ? 0 : 1, refChain.resumes, refChain.final_ebit ? 1 : 0);
+			obsText = buf;
+			std::snprintf(buf, sizeof(buf), " bails_entry=%llu bails_loophead=%llu status_readers=%u sticky_readers=%u",
+				static_cast<unsigned long long>(bailsEntry), static_cast<unsigned long long>(bailsLoop),
+				ctx.region ? ctx.region->StatusReaders() : 0u, ctx.region ? ctx.region->StickyReaders() : 0u);
+			obsText += buf;
+		}
 		if (opts.trace)
 		{
 			size_t k = 0;
@@ -701,13 +832,15 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 					ch = '_';
 			std::printf(" decl:%s=%u", k.c_str(), d.second);
 		}
-		std::printf("\n");
+		std::printf("%s\n", obsText.c_str());
 		for (size_t k = 0; k < diffs.size() && (opts.verbose || k < 8); k++)
 			std::printf("  diff: %s\n", diffs[k].c_str());
+		for (size_t k = 0; k < obsDiffs.size() && k < 8; k++)
+			std::printf("  obsdiff: %s\n", obsDiffs[k].c_str());
 		totIdentical += identical;
 		totBlocks += ctx.blocks;
 		totLowered += ctx.tier->Lowered();
-		if (!identical)
+		if (opts.observe ? !observable : !identical)
 			failures++;
 	}
 	std::printf("[vuopt-run-total] captures=%zu identical=%llu blocks=%llu lowered=%llu\n", records.size(),

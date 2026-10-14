@@ -270,6 +270,10 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 			opts.vuopt.accAlways = true;
 		else if (a == "--vuopt-no-handoff")
 			opts.vuopt.handoff = false;
+		else if (a == "--vuopt-observe")
+			opts.vuopt.observe = true;
+		else if (a == "--vuopt-resumes" && i + 1 < argc)
+			opts.vuopt.resumes = static_cast<u32>(std::atoi(argv[++i]));
 		else if (a == "--vuopt-profile")
 			opts.vuopt.profile = true;
 		else if (a == "--vuopt-ghomes" && i + 1 < argc)

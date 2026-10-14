@@ -1230,6 +1230,7 @@ static vuopt::MvuEmitEnv mVUbuildEmitEnv(microVU& mVU)
 	e.cycleBreak = mVU.cycleBreak;
 	e.rootBlock = mVUpBlock;
 	e.program = mVU.prog.cur;
+	e.offProgBails = static_cast<s32>(offsetof(microProgram, vuoptBails));
 	e.searchBlock = &vuoptSearchBlock;
 	e.addBlock = &vuoptAddBlock;
 	e.setBlockEntry = &vuoptSetBlockEntry;

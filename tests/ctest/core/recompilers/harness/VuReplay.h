@@ -84,6 +84,23 @@ VuReplayResult ReplayCapture(const vu_capture::CaptureRecord& rec,
 VuReplayResult ReplayJitOnly(const vu_capture::CaptureRecord& rec,
 	u32 cycle_budget_override = 0);
 
+// The JIT pass, then up to `max_resumes` more Executes with the same budget while the
+// program is still running (a game's re-dispatch of a program a budget stop cut short).
+// `first` is the state after the first Execute, exactly what ReplayJitOnly returns; the
+// final_* fields are the state after the chain (the E-bit end, or the last resume).
+struct VuChainResult
+{
+	bool ok = false;
+	VuReplayResult first;
+	VuSnapshot final_snapshot;
+	std::vector<u8> final_path1;
+	bool final_ebit = false;
+	u64 final_cycles = 0; // all Executes
+	u32 resumes = 0;      // Executes after the first
+};
+VuChainResult ReplayJitChain(const vu_capture::CaptureRecord& rec,
+	u32 cycle_budget_override, u32 max_resumes);
+
 // Convenience: load + replay in one call. Returns a result with ok=false
 // if the file can't be read or has bad magic/version/sizes.
 VuReplayResult LoadAndReplay(const std::string& path,

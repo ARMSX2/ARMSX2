@@ -1091,7 +1091,7 @@ namespace vuopt
 	void RegionBuilder::Emit(const u8*& regionEnd)
 	{
 		const s32 cyclesOff = env_.offCycles;
-		a64::Label bailEntry, bailCompile;
+		a64::Label bailEntry, bailCompile, entryBail, bailGo;
 		std::vector<a64::Label> loadAll(maps_.size()), exitAll(maps_.size());
 		// Entries from microVU (the root's is where microVU is compiling): the
 		// budget test, then the node's head address in x8 and the shared home
@@ -1103,7 +1103,7 @@ namespace vuopt
 			armAsm->Adr(a64::x1, &n.rec);
 			armAsm->Ldr(W(8), a64::MemOperand(a64::x24, cyclesOff));
 			armAsm->Cmp(W(8), n.need);
-			armAsm->B(&bailEntry, a64::lt);
+			armAsm->B(&entryBail, a64::lt);
 			if (acc_)
 			{
 				// microVU hands over every STATUS instance whole: the chain starts
@@ -1199,8 +1199,23 @@ namespace vuopt
 			armAsm->Adr(a64::x8, &bailEntry);
 			armAsm->B(&exitAll[n.map]);
 		}
-		// Shared: the record in x1, state in microVU's locations.
+		// Shared: the record in x1, state in microVU's locations. A bail is counted in the
+		// program (data on the heap: the code cache is not written from generated code):
+		// [0] a budget test at an entry from microVU, [1] one at a loop head.
+		const auto countBail = [&](int which) {
+			armAsm->Ldrsw(a64::x9, a64::MemOperand(a64::x1, 4)); // distance to the program word
+			armAsm->Add(a64::x9, a64::x1, a64::x9);
+			armAsm->Ldr(a64::x9, a64::MemOperand(a64::x9));
+			armAsm->Ldr(a64::x10, a64::MemOperand(a64::x9, env_.offProgBails + 8 * which));
+			armAsm->Add(a64::x10, a64::x10, 1);
+			armAsm->Str(a64::x10, a64::MemOperand(a64::x9, env_.offProgBails + 8 * which));
+		};
+		armAsm->Bind(&entryBail);
+		countBail(0);
+		armAsm->B(&bailGo);
 		armAsm->Bind(&bailEntry);
+		countBail(1);
+		armAsm->Bind(&bailGo);
 		armAsm->Ldr(a64::x0, a64::MemOperand(a64::x1, kBailSlot));
 		armAsm->Cbz(a64::x0, &bailCompile);
 		armAsm->Br(a64::x0);
@@ -1386,6 +1401,18 @@ namespace vuopt
 			return t_.Decline("single block, no loop", why);
 
 		PlanChecks();
+		t_.NoteProgram(env_.program, env_.offProgBails);
+		for (const auto& np : nodes_)
+			for (const InstPair& ip : np->br.insts)
+			{
+				const LOp op = ip.lower.op;
+				if (!ip.upper.iBit && (op == LOp::FSAND || op == LOp::FSEQ || op == LOp::FSOR))
+				{
+					t_.statusReaders_++;
+					if (ip.lower.imm12 & 0xFC0)
+						t_.stickyReaders_++;
+				}
+			}
 		acc_ = t_.stickyAcc && WantsAcc();
 		for (int pass = 0; pass < 2; pass++)
 		{
@@ -1508,6 +1535,27 @@ namespace vuopt
 					decoder.Decode(reinterpret_cast<const vixl::aarch64::Instruction*>(a));
 					std::fprintf(out, "I %s %s\n", s.tag.c_str(), dis.GetOutput());
 				}
+		}
+	}
+
+	void RegionTier::NoteProgram(const void* program, s32 off)
+	{
+		if (!program)
+			return;
+		for (const auto& p : progs_)
+			if (p.first == program)
+				return;
+		progs_.push_back({program, off});
+	}
+
+	void RegionTier::BailCounts(u64& entry, u64& loopHead) const
+	{
+		entry = loopHead = 0;
+		for (const auto& p : progs_)
+		{
+			const u64* c = reinterpret_cast<const u64*>(static_cast<const u8*>(p.first) + p.second);
+			entry += c[0];
+			loopHead += c[1];
 		}
 	}
 

@@ -4466,6 +4466,7 @@ static int RunLiveRun()
 		mvu_test_hooks::GetVu1InstructionCount(ins, disp);
 		if (disp)
 			Console.WriteLn(fmt::format("@VU1INS@ dispatches={} instructions={}", disp, ins));
+		Console.WriteLn(fmt::format("@VU1STOPS@ budget_stops={}", mvu_test_hooks::GetVu1Stops()));
 	}
 #endif
 #endif

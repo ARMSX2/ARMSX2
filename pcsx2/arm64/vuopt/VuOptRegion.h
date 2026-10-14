@@ -43,6 +43,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace vuopt
 {
@@ -79,6 +80,14 @@ namespace vuopt
 		u32 AccUnprofitable() const { return accUnprofitable_; }
 		// Hand-off points (a link into a loop head, whose bail runs microVU's block) and the
 		// ring instances (of twelve) they leave out, summed.
+		// Static census of the regions' code: status readers (FSAND/FSEQ/FSOR), and those whose
+		// mask selects a sticky bit (bits 6-11).
+		u32 StatusReaders() const { return statusReaders_; }
+		u32 StickyReaders() const { return stickyReaders_; }
+		// Budget bails the regions' code has taken, summed over the programs it saw: at an
+		// entry from microVU, and at a loop head (read from the programs; only valid while
+		// they are alive).
+		void BailCounts(u64& entry, u64& loopHead) const;
 		u32 HandoffEdges() const { return handoffEdges_; }
 		u32 HandoffRingsDead() const { return handoffRingsDead_; }
 		const std::map<std::string, u32>& Declined() const { return declined_; }
@@ -144,6 +153,9 @@ namespace vuopt
 		u32 compiles_ = 0, regions_ = 0, nodes_ = 0, exits_ = 0;
 		u32 accRegions_ = 0, accNonLinear_ = 0, accAccumulated_ = 0, accUnprofitable_ = 0;
 		u32 handoffEdges_ = 0, handoffRingsDead_ = 0;
+		u32 statusReaders_ = 0, stickyReaders_ = 0;
+		std::vector<std::pair<const void*, s32>> progs_;
+		void NoteProgram(const void* program, s32 off);
 		u64 bytes_ = 0;
 		std::map<std::string, u32> declined_;
 

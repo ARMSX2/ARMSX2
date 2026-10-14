@@ -88,6 +88,8 @@ namespace vuopt
 			u64 bodiesLowered = 0;
 			u64 bodyBytes = 0;
 			u64 bailCompiles = 0;     // regions' blocks microVU compiled at run time (budget shortfalls)
+			u64 bailsEntry = 0;       // budget bails taken by regions at an entry from microVU (programs deleted so far)
+			u64 bailsLoopHead = 0;    // ... and at a loop head
 			// pcsx2-eerunner --count-vu1-ins only: user-mode instructions VU1's compile
 			// sessions retired, for programs the tier took over and for the rest.
 			u64 compileInsTiered = 0;
@@ -120,5 +122,7 @@ namespace mvu_test_hooks
 	// of dispatches back after the run.
 	void EnableVu1InstructionCount(bool on);
 	void GetVu1InstructionCount(u64& instructions, u64& dispatches);
+	// VU1 dispatches that ended on a cycle-budget break, all runs of a test build.
+	u64 GetVu1Stops();
 } // namespace mvu_test_hooks
 #endif
