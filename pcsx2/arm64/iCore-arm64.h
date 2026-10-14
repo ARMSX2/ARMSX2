@@ -203,7 +203,13 @@ struct _arm64neonregs
 ////////////////////////////////////////////////////////////////////////////////
 // ARM64 GPR allocator functions
 
-extern _arm64gprregs arm64gprs[NUM_ARM_GPR_REGS], s_saveArm64GPRregs[NUM_ARM_GPR_REGS];
+// The allocator's state is per thread: the EE JIT, the IOP JIT and mVU's COP2 macro mode share this
+// allocator, and with the IOP on its own thread (IOP thread design, Threaded mode) an EE block and an IOP
+// block compile at the same time. A compile clears the maps when it starts and uses them until it ends, and
+// never reads them from another thread. Everything a compile keeps here is therefore thread_local: the two
+// maps, the copies a branch saves and restores, the liveness info of the instruction being compiled, and
+// the allocation counters (and g_arm64checknext in iCore-arm64.cpp).
+extern thread_local _arm64gprregs arm64gprs[NUM_ARM_GPR_REGS], s_saveArm64GPRregs[NUM_ARM_GPR_REGS];
 
 bool _isAllocatableArm64GPR(int armreg);
 void _initArm64GPRregs();
@@ -228,7 +234,7 @@ bool mVUIsReservedCOP2(int hostreg);
 ////////////////////////////////////////////////////////////////////////////////
 // ARM64 NEON allocator functions
 
-extern _arm64neonregs arm64neon[NUM_ARM_NEON_REGS], s_saveArm64NEONregs[NUM_ARM_NEON_REGS];
+extern thread_local _arm64neonregs arm64neon[NUM_ARM_NEON_REGS], s_saveArm64NEONregs[NUM_ARM_NEON_REGS];
 
 void _initArm64NEONregs();
 int _getFreeArm64NEON(u32 maxreg = NUM_ARM_NEON_REGS);
@@ -289,7 +295,7 @@ struct EEINST
 	u8 readType[4], readReg[4];
 };
 
-extern EEINST* g_pCurInstInfo;
+extern thread_local EEINST* g_pCurInstInfo;
 extern void _recClearInst(EEINST* pinst);
 extern u32 _recIsRegReadOrWritten(EEINST* pinst, int size, u8 xmmtype, u8 reg);
 extern void _recFillRegister(EEINST& pinst, int type, int reg, int write);
@@ -344,8 +350,8 @@ static __fi bool FPUINST_RENAMETEST(u32 reg)
 	return (!EEINST_USEDTEST(reg) || !EEINST_LIVETEST(reg));
 }
 
-extern u16 g_arm64AllocCounter;
-extern u16 g_neonAllocCounter;
+extern thread_local u16 g_arm64AllocCounter;
+extern thread_local u16 g_neonAllocCounter;
 
 // Allocates only if later instructions use this register
 int _allocIfUsedGPRtoArm64(int gprreg, int mode);

@@ -37,10 +37,12 @@ extern u32 g_psxHasConstReg, g_psxFlushedConstReg;
 ////////////////////////////////////////////////////////////////////////////////
 // Shared state
 
-EEINST* g_pCurInstInfo = nullptr;
+// Per thread (see the note at the declarations in iCore-arm64.h): the EE JIT, the IOP JIT and mVU's COP2
+// macro mode compile on different threads when the IOP has its own.
+thread_local EEINST* g_pCurInstInfo = nullptr;
 
-u16 g_arm64AllocCounter = 0;
-u16 g_neonAllocCounter = 0;
+thread_local u16 g_arm64AllocCounter = 0;
+thread_local u16 g_neonAllocCounter = 0;
 
 // EE constant propagation state
 alignas(16) GPR_reg64 g_cpuConstRegs[32] = {};
@@ -49,10 +51,10 @@ u32 g_cpuHasConstReg = 0, g_cpuFlushedConstReg = 0;
 ////////////////////////////////////////////////////////////////////////////////
 // ARM64 GPR Register Allocator
 
-_arm64gprregs arm64gprs[NUM_ARM_GPR_REGS], s_saveArm64GPRregs[NUM_ARM_GPR_REGS];
-static uint g_arm64checknext = 0;
+thread_local _arm64gprregs arm64gprs[NUM_ARM_GPR_REGS], s_saveArm64GPRregs[NUM_ARM_GPR_REGS];
+static thread_local uint g_arm64checknext = 0;
 
-_arm64neonregs arm64neon[NUM_ARM_NEON_REGS], s_saveArm64NEONregs[NUM_ARM_NEON_REGS];
+thread_local _arm64neonregs arm64neon[NUM_ARM_NEON_REGS], s_saveArm64NEONregs[NUM_ARM_NEON_REGS];
 
 // ARM64 register allocation policy (EE-SRA 3 Arm D tier-2 re-home):
 // x0-x1:   RWARG1/RWARG2 — NOT allocatable for EE (reserved as pure scratch
