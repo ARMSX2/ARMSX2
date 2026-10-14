@@ -592,6 +592,11 @@ _mVUt void* mVUcompileJIT(u32 startPC, uptr ptr)
 		if (jc.prog && jc.prog == mVU.prog.quick[startPC / 8].prog)
 			return jc.hostEntry;
 
+		// A jump the cache did not know: the vuopt tier counts these to see
+		// when a tiered program has met a target its regions do not hold.
+		if constexpr (vuIndex == 1)
+			mVUvuoptOnJumpMiss(mVU);
+
 		mVUopenCodeCache(mVU);
 		void* v = mVUsearchProg<vuIndex>(startPC, (uptr)&pBlock->pStateEnd);
 		mVUcloseCodeCache(mVU);

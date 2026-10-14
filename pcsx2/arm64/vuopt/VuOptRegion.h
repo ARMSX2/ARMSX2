@@ -58,6 +58,12 @@ namespace vuopt
 		// The region hook: true when a region rooted at `block` was emitted.
 		bool OnCompile(const MvuBlockTrace& block, const MvuEmitEnv& env, std::string* why);
 
+		// Drops the first-pass port (and its per-slot history, about 300 KB).
+		// The live tier calls it when a compile session ends, so a tier that
+		// lives as long as the emulator holds no analysis state between
+		// sessions; the next compile starts a port with no history.
+		void ResetAnalyzer() { an_.reset(); }
+
 		u32 Compiles() const { return compiles_; }
 		u32 Regions() const { return regions_; }
 		u32 Nodes() const { return nodes_; }

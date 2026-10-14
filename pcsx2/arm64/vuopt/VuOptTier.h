@@ -31,6 +31,9 @@ namespace vuopt
 		// Returns true when it emitted the body. `why` names the reason when not.
 		bool TryLower(const MvuBlockTrace& block, const MvuEmitEnv& env, std::string* why);
 
+		// See RegionTier::ResetAnalyzer.
+		void ResetAnalyzer() { an_.reset(); }
+
 		u32 Blocks() const { return blocks_; }
 		u32 Lowered() const { return lowered_; }
 		u64 BodyBytes() const { return bytes_; }

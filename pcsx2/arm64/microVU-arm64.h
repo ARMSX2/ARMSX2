@@ -29,6 +29,7 @@
 #include "VuMulBand.h"
 #include "MvuObservedEntries.h"
 #include "microVU_Persist-arm64.h"
+#include "vuopt/VuOptMvuTrace.h"
 
 #ifndef XXH_versionNumber
 #define XXH_STATIC_LINKING_ONLY 1
@@ -307,6 +308,7 @@ static_assert(sizeof(microRegInfo) == 96, "microRegInfo was not 96 bytes");
 
 struct microProgram;
 struct MvuPersistLog;
+struct VuoptProgramState;
 struct microJumpCache
 {
 	microJumpCache() : prog(NULL), x86ptrStart(NULL), hostEntry(NULL) {}
@@ -535,6 +537,13 @@ struct microProgram
 	// mVUPersist::OnProgramDeleted from mVUdeleteProg. (microProgram is
 	// memset-constructed in mVUcreateProg, so a raw pointer is the right shape.)
 	MvuPersistLog* persist;
+
+	// vuopt live tier (microVU_VuOpt-arm64.inl). `vuoptRuns` counts the
+	// dispatches of this program while the tier is on; `vuopt` is the tier's
+	// state for it, null until the program is tiered up (so non-null means
+	// tiered). Both stay zero with EnableVUOpt off.
+	u32 vuoptRuns;
+	VuoptProgramState* vuopt;
 };
 
 typedef std::deque<microProgram*> microProgramList;
@@ -854,6 +863,15 @@ private:
 
 public:
 	inline int getFullListCount() const { return fListI; }
+	// Every block, quick list then full list, in registration order.
+	template <typename F>
+	void forEachBlock(F&& f)
+	{
+		for (microBlockLink* l = qBlockList; l; l = l->next)
+			f(l->block);
+		for (microBlockLink* l = fBlockList; l; l = l->next)
+			f(l->block);
+	}
 	microBlockManager()
 	{
 		qListI = fListI = 0;
@@ -1014,6 +1032,31 @@ extern void* mVUexecuteVU1(u32 startPC, u32 cycles);
 // path.
 extern void* mVUlookupProg_VU0(u32 startPC, u32 cycles);
 extern void* mVUlookupProg_VU1(u32 startPC, u32 cycles);
+
+// vuopt live tier (microVU_VuOpt-arm64.inl). Every function here is inert
+// with EnableVUOpt off: the dispatcher calls the plain lookup above, and the
+// compile hooks are never handed out.
+//   - mVUvuoptSyncConfig(): decides, from the config, whether the tier runs.
+//     Called at init and at every reset, before the dispatchers are emitted.
+//   - mVUlookupProgTier_VU1: mVUlookupProg_VU1 plus the run counter; the
+//     dispatcher calls it instead when the tier is on.
+//   - mVUvuoptAfterSearch: the slow path's chance to tier a program up.
+//   - mVUvuoptLiveHooks: the compile hooks for a tiered-up program.
+extern void  mVUvuoptSyncConfig(microVU& mVU);
+extern bool  mVUvuoptEnabled();
+extern bool  mVUvuoptPending();
+extern void* mVUlookupProgTier_VU1(u32 startPC, u32 cycles);
+extern void* mVUvuoptAfterSearch(microVU& mVU, u32 startPC, uptr pState, void* result);
+extern void  mVUvuoptLiveHooks(microVU& mVU, vuopt::VuoptRegionHook& region, void*& regionUser,
+	vuopt::VuoptBodyHook& body, void*& bodyUser);
+extern void  mVUvuoptOnProgramDeleted(microProgram& prog);
+extern void  mVUvuoptOnJumpMiss(microVU& mVU);
+extern void  mVUvuoptOnBail();
+extern void  mVUvuoptOnClose(microVU& mVU);
+// The run that opens and closes a compile of VU1 code: the tier drops its
+// per-compile analysis state when the outermost one ends.
+extern void  mVUvuoptCompileBegin(microVU& mVU);
+extern void  mVUvuoptCompileEnd(microVU& mVU);
 
 // Content-hash plumbing (xxhash3-128 program identity).
 //   - mVUbuildOptionsSentinel populates mVU.optionsSentinel from the current

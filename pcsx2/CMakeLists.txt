@@ -1442,11 +1442,13 @@ set(pcsx2arm64Headers
 	arm64/microVU_Persist-arm64.inl
 	arm64/microVU_ProgCache-arm64.h
 	arm64/microVU_ProgCache-arm64.inl
+	arm64/microVU_VuOpt-arm64.inl
 	arm64/microVU_Misc-arm64.h
 	arm64/VuFmacFlags-arm64.h
 	arm64/vuopt/VuOptDecode.h
 	arm64/vuopt/VuOptGraph.h
 	arm64/vuopt/VuOptIR.h
+	arm64/vuopt/VuOptLive.h
 	arm64/vuopt/VuOptLower.h
 	arm64/vuopt/VuOptMvuTrace.h
 	arm64/vuopt/VuOptPipe.h

@@ -119,10 +119,16 @@ namespace vuopt
 		// Milestone 8: microVU's own code for a block a region holds, for a
 		// run that is short of the region's budget test. `rec` is a region's
 		// bail record (PC at 0, the block's microBlock at 8, the code address
-		// at 16, written once compiled). Called from generated code.
+		// at 16, written once compiled, the block's microProgram at 24).
+		// Called from generated code.
 		void* (*bailTarget)(u32 vu, u8* rec) = nullptr;
 		// x29 holds VURegs::Mem in micro mode (gprVUMem).
 		bool vuMemPinned = false;
+		// The microProgram being compiled (mVU.prog.cur). A region's bail
+		// record keeps it: the bail runs when the region does, and
+		// mVU.prog.cur is only microVU's idea of the current program (a jump
+		// cache hit enters another program's code without updating it).
+		void* program = nullptr;
 	};
 
 #ifdef PCSX2_RECOMPILER_TESTS
@@ -131,12 +137,18 @@ namespace vuopt
 	using MvuBlockHook = void (*)(const MvuBlockTrace& block, void* user);
 	extern MvuBlockHook g_mvuBlockHook;
 	extern void* g_mvuBlockHookUser;
+#endif
+
+	// The compile hooks. Tests install them through the globals below;
+	// the live tier (VuOptLive.h) hands microVU its own for a program it has
+	// tiered up, so every build carries the call sites. A hook is only ever
+	// consulted for VU1 blocks it asked for: with none set, microVU compiles
+	// as it always has.
 
 	// Called by microVU at the start of every block's second pass when set.
 	// Returning true means the hook emitted the whole block body at armAsm's
 	// cursor, honouring microVU's block-boundary state contract, and microVU
 	// emits only its framing (cycle test already done, links, ends).
-	// Testing-only, like the block hook.
 	using VuoptBodyHook = bool (*)(const MvuBlockTrace& block, const MvuEmitEnv& env, void* user);
 	extern VuoptBodyHook g_vuoptBodyHook;
 	extern void* g_vuoptBodyHookUser;
@@ -145,12 +157,10 @@ namespace vuopt
 	// anything, when set. Returning true means the hook emitted the block in
 	// full at armAsm's cursor (a vuopt region rooted at it: its own cycle
 	// tests, links and exits back into microVU) and microVU emits nothing.
-	// Testing-only, like the hooks above.
 	using VuoptRegionHook = bool (*)(const MvuBlockTrace& block, const MvuEmitEnv& env, void* user);
 	extern VuoptRegionHook g_vuoptRegionHook;
 	extern void* g_vuoptRegionHookUser;
 	// Set around a compile that must be microVU's own (a region's bail
 	// target): the hooks above are skipped for that block.
 	extern thread_local bool g_vuoptShadowCompile;
-#endif
 } // namespace vuopt

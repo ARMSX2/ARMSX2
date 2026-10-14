@@ -6,9 +6,7 @@
 #include "Config.h"
 #include "common/FileSystem.h"
 #include "common/Path.h"
-#ifdef PCSX2_RECOMPILER_TESTS
 #include "vuopt/VuOptMvuTrace.h"
-#endif
 
 
 //------------------------------------------------------------------
@@ -1004,11 +1002,11 @@ __ri void eBitWarning(mV)
 
 void mVUdebugPrintBlocks(mV, bool isEndPC) {}
 
-#ifdef PCSX2_RECOMPILER_TESTS
-// Hands this block's first-pass decisions to vuopt's validator (pcsx2-vurunner
-// --vuopt-ir, vuopt unit tests). Called once per compile, after mVUsetFlags and
+// Hands this block's first-pass decisions to vuopt: its validator (pcsx2-vurunner
+// --vuopt-ir, vuopt unit tests) and the tiers that compile the block in
+// microVU's place. Called once per compile, after mVUsetFlags and
 // mVUoptimizePipeState, before the second pass can overwrite IRinfo by
-// compiling a successor. Testing-only; emits nothing.
+// compiling a successor. Emits nothing; only built when a hook wants it.
 static void mVUbuildBlockTrace(microVU& mVU, u32 startPC, vuopt::MvuBlockTrace& t)
 {
 	t.vuIndex = mVU.index;
@@ -1055,9 +1053,9 @@ static void mVUbuildBlockTrace(microVU& mVU, u32 startPC, vuopt::MvuBlockTrace& 
 	}
 }
 
-// vuopt region callbacks (test builds only): microVU's block manager and
-// compile entry, for a region that registers its nodes as microVU blocks and
-// leaves through microVU blocks.
+// vuopt region callbacks: microVU's block manager and compile entry, for a
+// region that registers its nodes as microVU blocks and leaves through
+// microVU blocks.
 static microVU& mVUbyIndex(u32 vu) { return vu ? microVU1 : microVU0; }
 
 static void* vuoptSearchBlock(u32 vu, u32 pc, const u8* key)
@@ -1181,14 +1179,24 @@ static void* vuoptBailTarget(u32 vu, u8* rec)
 	std::memcpy(&pc, rec, sizeof(pc));
 	microBlock* blk;
 	std::memcpy(&blk, rec + 8, sizeof(blk));
+	microProgram* prog;
+	std::memcpy(&prog, rec + 24, sizeof(prog));
+	mVUvuoptOnBail();
 	alignas(16) microRegInfo k;
 	std::memcpy(&k, &blk->pState, sizeof(k));
+	// The region's code can be running under a program that is not
+	// mVU.prog.cur (a jump cache hit enters another program's blocks without
+	// updating it), and mVUcompile files the block, its range and its
+	// successors under mVU.prog.cur.
+	microProgram* const savedCur = mVU.prog.cur;
+	mVU.prog.cur = prog;
 	mVUopenCodeCache(mVU);
 	vuopt::g_vuoptShadowCompile = true;
 	void* v = mVUcompile(mVU, pc & (mVU.microMemSize - 8), reinterpret_cast<uptr>(&k));
 	vuopt::g_vuoptShadowCompile = false;
 	*reinterpret_cast<void**>(armGetWritableCodePtr(reinterpret_cast<u8*>(slot))) = v;
 	mVUcloseCodeCache(mVU);
+	mVU.prog.cur = savedCur;
 	return v;
 }
 
@@ -1219,6 +1227,7 @@ static vuopt::MvuEmitEnv mVUbuildEmitEnv(microVU& mVU)
 	e.offCycles = static_cast<s32>(reinterpret_cast<const u8*>(&mVU.cycles) - base);
 	e.cycleBreak = mVU.cycleBreak;
 	e.rootBlock = mVUpBlock;
+	e.program = mVU.prog.cur;
 	e.searchBlock = &vuoptSearchBlock;
 	e.addBlock = &vuoptAddBlock;
 	e.setBlockEntry = &vuoptSetBlockEntry;
@@ -1235,17 +1244,27 @@ static vuopt::MvuEmitEnv mVUbuildEmitEnv(microVU& mVU)
 	e.vuMemPinned = !mVU.cop2;
 	return e;
 }
-#endif
 
 //------------------------------------------------------------------
 // Main Compile Function
 //------------------------------------------------------------------
+
+// Marks a compile of VU1 code for the vuopt live tier, which drops its
+// per-compile analysis state when the outermost one returns. Inert (two
+// branches at compile time, nothing emitted) with the tier off.
+struct mVUvuoptCompileScope
+{
+	microVU& mVU;
+	explicit mVUvuoptCompileScope(microVU& m) : mVU(m) { mVUvuoptCompileBegin(mVU); }
+	~mVUvuoptCompileScope() { mVUvuoptCompileEnd(mVU); }
+};
 
 void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 {
 	microFlagCycles mFC;
 	// armAsm is managed by mVUexecute/mVUcompileJIT — must be active here.
 	pxAssert(armAsm);
+	const mVUvuoptCompileScope vuoptScope(mVU);
 	u8* thisPtr = armGetCurrentCodePointer();
 
 	const u32 endCount = (((microRegInfo*)pState)->blockType) ? 1 : (mVU.microMemSize / 8);
@@ -1405,21 +1424,35 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 	mVUregs.vi15v = 0;
 	mVUsetFlags(mVU, mFC);
 	mVUoptimizePipeState(mVU);
-#ifdef PCSX2_RECOMPILER_TESTS
+	// vuopt: a test installs its hooks through the vuopt:: globals; otherwise
+	// the live tier hands out its own, for a program it has tiered up (and
+	// for VU1 only). With neither, nothing below runs and microVU compiles the
+	// block exactly as it always has.
+	vuopt::VuoptRegionHook vuoptRegionHook = vuopt::g_vuoptRegionHook;
+	void* vuoptRegionUser = vuopt::g_vuoptRegionHookUser;
+	vuopt::VuoptBodyHook vuoptBodyHook = vuopt::g_vuoptBodyHook;
+	void* vuoptBodyUser = vuopt::g_vuoptBodyHookUser;
+	if (!vuoptRegionHook && !vuoptBodyHook)
+		mVUvuoptLiveHooks(mVU, vuoptRegionHook, vuoptRegionUser, vuoptBodyHook, vuoptBodyUser);
 	vuopt::MvuBlockTrace vuoptTrace;
-	if (vuopt::g_mvuBlockHook || vuopt::g_vuoptBodyHook || vuopt::g_vuoptRegionHook)
-		mVUbuildBlockTrace(mVU, startPC, vuoptTrace);
 	// A region's bail target is microVU's own code for the block.
 	const bool vuoptShadow = vuopt::g_vuoptShadowCompile;
 	vuopt::g_vuoptShadowCompile = false;
+#ifdef PCSX2_RECOMPILER_TESTS
+	const bool vuoptTraceWanted = vuopt::g_mvuBlockHook || vuoptRegionHook || vuoptBodyHook;
+#else
+	const bool vuoptTraceWanted = vuoptRegionHook || vuoptBodyHook;
+#endif
+	if (vuoptTraceWanted)
+		mVUbuildBlockTrace(mVU, startPC, vuoptTrace);
+#ifdef PCSX2_RECOMPILER_TESTS
 	if (vuopt::g_mvuBlockHook)
 		vuopt::g_mvuBlockHook(vuoptTrace, vuopt::g_mvuBlockHookUser);
-	// vuopt milestone 4: a test hook may compile a whole region rooted at
-	// this block in its place; microVU then emits nothing for it.
-	if (vuopt::g_vuoptRegionHook && !vuoptShadow &&
-		vuopt::g_vuoptRegionHook(vuoptTrace, mVUbuildEmitEnv(mVU), vuopt::g_vuoptRegionHookUser))
-		return thisPtr;
 #endif
+	// vuopt milestone 4: a hook may compile a whole region rooted at this
+	// block in its place; microVU then emits nothing for it.
+	if (vuoptRegionHook && !vuoptShadow && vuoptRegionHook(vuoptTrace, mVUbuildEmitEnv(mVU), vuoptRegionUser))
+		return thisPtr;
 	{
 		const mVUSpinLoop spin = mVUdetectSpinLoop(mVU, startPC);
 		if (spin.found)
@@ -1434,14 +1467,10 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 	u32 x = 0;
 
 	mVUemitClampConsts(mVU);
-#ifdef PCSX2_RECOMPILER_TESTS
-	// vuopt milestone 2: a test hook may emit this block's whole body from
-	// vuopt's IR; microVU then emits only its framing below.
-	const bool vuoptBody = vuopt::g_vuoptBodyHook && !vuoptShadow &&
-		vuopt::g_vuoptBodyHook(vuoptTrace, mVUbuildEmitEnv(mVU), vuopt::g_vuoptBodyHookUser);
-#else
-	constexpr bool vuoptBody = false;
-#endif
+	// vuopt milestone 2: a hook may emit this block's whole body from vuopt's
+	// IR; microVU then emits only its framing below.
+	const bool vuoptBody = vuoptBodyHook && !vuoptShadow &&
+		vuoptBodyHook(vuoptTrace, mVUbuildEmitEnv(mVU), vuoptBodyUser);
 	if (!vuoptBody)
 		mvuPreloadRegisters(mVU, endCount);
 

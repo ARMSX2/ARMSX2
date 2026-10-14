@@ -25,10 +25,10 @@ namespace vuopt
 		constexpr int kCMax = 25, kCMin = 26;
 		constexpr int kCyclesReg = 28;
 		// A bail record: PC (u32), pad, the block's microBlock (its pipeline
-		// state), then the address of microVU's own code for the block once
-		// compiled.
+		// state), the address of microVU's own code for the block once
+		// compiled, then the microProgram the block belongs to.
 		constexpr s32 kBailSlot = 16;
-		constexpr u32 kBailRecordSize = 24;
+		constexpr u32 kBailRecordSize = 32;
 		constexpr int kMemBaseReg = 27;
 		constexpr int kVHomeRegs[] = {31, 30, 29, 27, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15};
 		constexpr int kGHomeRegs[] = {26, 15, 14, 13, 12, 11};
@@ -1149,6 +1149,7 @@ namespace vuopt
 			armAsm->dc32(0);
 			armAsm->dc64(reinterpret_cast<u64>(n.blk));
 			armAsm->dc64(0);
+			armAsm->dc64(reinterpret_cast<u64>(env_.program));
 		}
 		regionEnd = armGetCurrentCodePointer();
 	}

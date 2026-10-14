@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 yaps2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
+// The vuopt headers name things (Ft, Fs, X, Y ...) microVU's headers define as
+// macros, so they come first.
+#include "vuopt/VuOptLive.h"
+#include "vuopt/VuOptRegion.h"
+#include "vuopt/VuOptTier.h"
+
 #include "microVU-arm64.h"
 
 #include "microVU_ProgCache-arm64.h"
@@ -477,6 +483,10 @@ void mVUinit(microVU& mVU, uint vuIndex)
 	// mVUreset corrects it. No-op under the test-manual override. See mVUreset.
 	mVUPersist::SyncRecordingFromConfig(EmuConfig.Cpu.Recompiler.EnableVUProgramCache);
 
+	// vuopt live tier: whether it runs follows the config (VU1 only). Re-synced
+	// at every reset, before the dispatchers are emitted.
+	mVUvuoptSyncConfig(mVU);
+
 	// Seed options sentinel from current config snapshot. Reset will rebuild it
 	// in case the user toggled clamp / FPCR / speedhack settings since init.
 	mVUbuildOptionsSentinel(mVU);
@@ -552,7 +562,10 @@ static void mVUdispatcherAB(mV)
 	armAsm->Mov(a64::w26, a64::w0);  // stash startPC
 	armAsm->Mov(a64::w27, a64::w1);  // stash cycles
 
-	armEmitCall(isVU1 ? (void*)mVUlookupProg_VU1 : (void*)mVUlookupProg_VU0);
+	// With the vuopt live tier on, VU1 dispatches through the counting variant
+	// of the lookup; with it off the dispatcher is exactly what it was.
+	armEmitCall(isVU1 ? (mVUvuoptEnabled() ? (void*)mVUlookupProgTier_VU1 : (void*)mVUlookupProg_VU1)
+	                  : (void*)mVUlookupProg_VU0);
 
 	a64::Label gotHostEntry;
 	armAsm->Cbnz(a64::x0, &gotHostEntry);
@@ -1172,6 +1185,12 @@ void mVUreset(microVU& mVU, bool resetReserve)
 	// override (the recompiler-test harness drives recording itself).
 	mVUPersist::SyncRecordingFromConfig(EmuConfig.Cpu.Recompiler.EnableVUProgramCache);
 
+	// vuopt live tier (EnableVUOpt): re-read the config now, because the VU1
+	// dispatcher emitted below calls the counting lookup only while it is on.
+	// Settings changes, savestate loads and cache exhaustion all come through
+	// this reset, which also frees every program (and so the tier's state for it).
+	mVUvuoptSyncConfig(mVU);
+
 	// Rebuild options sentinel before any program rebuilds — config may have
 	// changed since the last init/reset (clamp flips, FPCR edits, speedhack
 	// toggles, gamefix overrides). New programs created after this reset will
@@ -1311,6 +1330,7 @@ void mVUclose(microVU& mVU)
 	// new has been added since the last reset.
 	mVUProgCache::SaveAllPrograms(mVU);
 	mVUProgCache::Close(mVU);
+	mVUvuoptOnClose(mVU);
 
 	// Same ownership rule as mVUreset: free via contentMap (plus the
 	// drift-evicted orphans), then drop the per-PC deque shells.
@@ -1431,6 +1451,7 @@ __ri void mVUdeleteProg(microVU& mVU, microProgram*& prog)
 	}
 	safe_delete(prog->ranges);
 	mVUPersist::OnProgramDeleted(*prog);
+	mVUvuoptOnProgramDeleted(*prog);
 	safe_aligned_free(prog);
 }
 
@@ -1799,11 +1820,16 @@ _mVUt void* mVUexecute(u32 startPC, u32 cycles)
 	const u32 maskedPC = startPC & vuLimit;
 	const uptr pState = (uptr)&mVU.prog.lpState;
 
-	void* result = mVUlookupProg<vuIndex>(maskedPC, pState);
+	// A VU1 dispatch the vuopt tier asked to look at (it returned null from its
+	// counting lookup) goes to the full search without a second lookup that
+	// would hit.
+	void* result = (vuIndex == 1 && mVUvuoptPending()) ? nullptr : mVUlookupProg<vuIndex>(maskedPC, pState);
 	if (!result)
 	{
 		mVUopenCodeCache(mVU);
 		result = mVUsearchProg<vuIndex>(maskedPC, pState);
+		if constexpr (vuIndex == 1)
+			result = mVUvuoptAfterSearch(mVU, maskedPC, pState, result);
 		mVUcloseCodeCache(mVU);
 	}
 
@@ -2581,6 +2607,14 @@ MVU_MACRO_EMIT_ADAPTER(RXOR,  false)
 // and the TU-local mVUopenCodeCache / mVUcloseCodeCache).
 //------------------------------------------------------------------
 #include "microVU_Persist-arm64.inl"
+
+//------------------------------------------------------------------
+// vuopt live tier — tier-up policy and the glue between microVU's
+// program/block manager and vuopt's regions. Same single-TU inclusion
+// pattern (it needs microVU's program and block types, mVUblockFetch and the
+// code-cache open/close that are TU-local).
+//------------------------------------------------------------------
+#include "microVU_VuOpt-arm64.inl"
 
 //------------------------------------------------------------------
 // Save State
