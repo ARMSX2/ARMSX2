@@ -1983,6 +1983,27 @@ namespace mvu_test_hooks
 		return mVU.prog.quick[(start_pc_bytes / 8) % (mVU.progSize / 2)].prog != nullptr;
 	}
 
+	// The per-slot rule the original full-scan mVUclear applied: the slot is
+	// dropped iff it holds a program and that program's compiled ranges
+	// overlap [addr, addr+size). mvu_clear_occupied_tests.cpp compares what
+	// mVUclear actually dropped against this, slot by slot.
+	bool QuickSlotWouldDrop(int vu_index, u32 start_pc_bytes, u32 addr, u32 size)
+	{
+		const microVU& mVU = vu_index ? microVU1 : microVU0;
+		const microProgram* p = mVU.prog.quick[(start_pc_bytes / 8) % (mVU.progSize / 2)].prog;
+		return p && mVUProgRangesOverlap(p, addr, size);
+	}
+
+	// Number of non-null quick slots, by full scan.
+	u32 QuickSlotCount(int vu_index)
+	{
+		const microVU& mVU = vu_index ? microVU1 : microVU0;
+		u32 n = 0;
+		for (u32 i = 0; i < (mVU.progSize / 2); i++)
+			n += mVU.prog.quick[i].prog != nullptr;
+		return n;
+	}
+
 	// Offline live-wedge repro knob (vurunner env PCSX2_VU_POISON_LPSTATE_BLOCKTYPE):
 	// plants a nonzero blockType into the carried block-search key right before a
 	// replay dispatch, presenting the entry block the way a live-carried
