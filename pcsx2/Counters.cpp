@@ -830,10 +830,13 @@ __fi void rcntUpdate()
 // One instance per IOP thread mode, called by the event test instance for the same mode.
 template void rcntUpdate_hScanline<IopThreadMode::Off>();
 template void rcntUpdate_hScanline<IopThreadMode::Lockstep>();
+template void rcntUpdate_hScanline<IopThreadMode::Threaded>();
 template void rcntUpdate_vSync<IopThreadMode::Off>();
 template void rcntUpdate_vSync<IopThreadMode::Lockstep>();
+template void rcntUpdate_vSync<IopThreadMode::Threaded>();
 template void rcntUpdate<IopThreadMode::Off>();
 template void rcntUpdate<IopThreadMode::Lockstep>();
+template void rcntUpdate<IopThreadMode::Threaded>();
 
 static __fi void _rcntSetGate(int index)
 {

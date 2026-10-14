@@ -5,9 +5,11 @@
 
 #include "Common.h"
 #include "Config.h"
+#include "Counters.h"
 #include "DebugTools/Breakpoints.h"
 #include "GSDumpReplayer.h"
 #include "Host.h"
+#include "Hw.h"
 #include "IopCounters.h"
 #include "IopDma.h"
 #include "IopHw.h"
@@ -24,6 +26,8 @@
 #include "common/Assertions.h"
 #include "common/Console.h"
 
+#include "fmt/format.h"
+
 #include <algorithm>
 #include <atomic>
 #include <mutex>
@@ -36,13 +40,16 @@ namespace IopThread
 {
 	Thread g_thread;
 
+	// A pause the IOP thread asked for, waiting for the EE to make it.
+	std::atomic<bool> g_pause_requested{false};
+
 	namespace
 	{
+		// The testing knob for S_min (design 5.3); 0 runs a slice whenever there is budget.
+		s32 s_min_slice = 0;
+
 		// The pause hold (design 9.3), kept for as long as the VM stays paused.
 		std::optional<ScopedHold> s_pause_hold;
-
-		// A pause the IOP thread asked for, waiting for the EE to make it.
-		std::atomic<bool> s_pause_requested{false};
 
 		// The table the IOP thread applies E2I items with. Null is the real one (tests swap it).
 		const E2IActions* s_e2i_actions = nullptr;
@@ -63,17 +70,83 @@ namespace IopThread
 			return std::max(from, IopPosition());
 		}
 
+		// What the thread runs for each Threaded slice (design 5.2): today's pair, with the budget the
+		// thread computed from the watermark in place of EEsCycle. A slice is not given more than half of
+		// the s32 range, which a hold's catch-up after a very long stop could otherwise exceed. EEsCycle and
+		// EEoCycle are the EE's books and are not touched.
+		u64 RunIopSliceThreaded(u64 from, u64 target)
+		{
+			IOP_SIDE_ASSERT();
+
+			const s64 owed = static_cast<s64>(target - from);
+			const s32 budget = static_cast<s32>(std::clamp<s64>(owed, INT32_MIN / 2, INT32_MAX / 2));
+			s32 remaining = budget;
+
+			if (budget > 0)
+				iopEventAction = true;
+			if (iopEventAction)
+			{
+				remaining = psxCpu->ExecuteBlock(budget);
+				iopEventAction = false;
+			}
+			iopEventTest();
+
+			// The IOP ran `budget - remaining` cycles: past the target by the block it overshot with when
+			// `remaining` is negative. It never moves back.
+			const s64 ran = static_cast<s64>(budget) - static_cast<s64>(remaining);
+			return from + static_cast<u64>(std::max<s64>(ran, 0));
+		}
+
+		// What the EE does with an item the IOP queued (design 3.5). A CallOnEE is run by the thread object.
+		void HandleI2EItem(const I2EItem& item)
+		{
+			switch (item.kind)
+			{
+				case I2EKind::SbusIrq:
+					// INTC_STAT is written on the EE thread only: the EE JIT loads it inline when the IntcStat
+					// speedhack is off (design 7.1 C13).
+					hwIntcIrq(INTC_SBUS);
+					break;
+				case I2EKind::PauseRequest:
+					// SetPaused takes a hold, which must not happen inside a hold's own spin, so the event test
+					// makes the pause (DrainEeQueue).
+					g_pause_requested.store(true, std::memory_order_release);
+					break;
+				default:
+					pxFailRel("unknown IOP-to-EE item kind");
+					break;
+			}
+		}
+
+		// The EE-side books from where the IOP is (design 9.1, Threaded to anything): the IOP is at `pos`, so it
+		// is owed what the EE has run beyond that. Valid only while the IOP is held or stopped.
+		void BooksFromThread()
+		{
+			EEsCycle = static_cast<s32>(cpuRegs.cycle - g_thread.PublishedPos());
+			EEoCycle = cpuRegs.cycle;
+		}
+
 		Params MakeParams()
 		{
 			Params params;
 			params.mode = s_mode;
 			params.lag = ClampLag(EmuConfig.Speedhacks.iopThreadLag);
-			params.min_slice = 0;
+			params.min_slice = s_mode == IopThreadMode::Threaded ? s_min_slice : 0;
 			params.start_ee_cycle = cpuRegs.cycle;
 			params.start_iop_pos = IopPosition();
 			params.fpcr = EmuConfig.Cpu.FPUFPCR;
 			params.stack_size = VMManager::EMU_THREAD_STACK_SIZE;
-			params.run_slice = RunIopSlice;
+			if (s_mode == IopThreadMode::Threaded)
+			{
+				params.run_slice = RunIopSliceThreaded;
+				params.has_event = [] { return iopEventAction; };
+				params.handle_i2e = HandleI2EItem;
+				params.on_hold_acquired = BooksFromThread;
+			}
+			else
+			{
+				params.run_slice = RunIopSlice;
+			}
 			params.apply_item = [](const E2IItem& item) { ApplyE2IItem(item, s_e2i_actions ? *s_e2i_actions : kRealE2IActions); };
 			params.ee_cycle = [] { return static_cast<u64>(cpuRegs.cycle); };
 			params.should_stop = [] {
@@ -88,6 +161,15 @@ namespace IopThread
 			s_mode = mode;
 			g_intEventTestShared = cpuEventTestFor(mode);
 		}
+
+		// Stops the thread. A Threaded thread leaves the IOP where it was, which the EE-side books (a savestate's
+		// and Off's) must say: the caller holds the IOP, so the position cannot move between the two lines.
+		void StopRunningThread()
+		{
+			if (g_thread.Mode() == IopThreadMode::Threaded)
+				BooksFromThread();
+			g_thread.Stop();
+		}
 	} // namespace
 
 	// ================================================================ choosing and starting
@@ -98,9 +180,8 @@ namespace IopThread
 #if defined(ARCH_ARM64)
 		host.is_arm64 = true;
 #endif
-		// The core-count rule only matters to Threaded, which does not exist yet; the real
-		// performance-core count comes with the thread placement work.
 		host.total_cores = std::thread::hardware_concurrency();
+		host.performance_cores = VMManager::Internal::GetPerformanceCoreCount();
 		return host;
 	}
 
@@ -125,11 +206,7 @@ namespace IopThread
 
 	void ChooseModeFor(const HostCpuInfo& host, const VmConditions& vm)
 	{
-		IopThreadMode mode = ResolveMode(EmuConfig, host, vm);
-		// Threaded is not built yet (design step 11): the setting resolves to Off until it is.
-		if (mode == IopThreadMode::Threaded)
-			mode = IopThreadMode::Off;
-		SetMode(mode);
+		SetMode(ResolveMode(EmuConfig, host, vm));
 	}
 
 	void ChooseModeForReset()
@@ -149,8 +226,7 @@ namespace IopThread
 		SetMode(IopThreadMode::Off);
 		if (g_thread.IsRunning())
 		{
-			// The caller's hold stays valid across Stop(): it ends as a plain counter.
-			g_thread.Stop();
+			StopRunningThread();
 			Console.WriteLn(Color_StrongGreen, "IOP thread: stopped for the PS1 mode switch.");
 		}
 
@@ -166,12 +242,23 @@ namespace IopThread
 		if (g_thread.IsRunning())
 		{
 			if (g_thread.Mode() == s_mode)
+			{
+				// The lag bound is the EE's to change; nothing else of Start()'s parameters is meant to change under a
+				// running thread.
+				if (s_mode == IopThreadMode::Threaded)
+					g_thread.SetLag(ClampLag(EmuConfig.Speedhacks.iopThreadLag));
 				return;
-			g_thread.Stop();
+			}
+			StopRunningThread();
 			Console.WriteLn(Color_StrongGreen, "IOP thread: stopped.");
 		}
 		if (s_mode != IopThreadMode::Off && g_thread.Start(MakeParams()))
-			Console.WriteLn(Color_StrongGreen, "IOP thread: started in %s mode.", s_mode == IopThreadMode::Lockstep ? "Lockstep" : "Threaded");
+		{
+			const char* const names[] = {"Off", "Lockstep", "Threaded"};
+			Console.WriteLn(Color_StrongGreen, "IOP thread: started in %s mode.", names[static_cast<int>(s_mode)]);
+			if (s_mode == IopThreadMode::Threaded)
+				Console.WriteLn(Color_StrongGreen, "IOP thread: lag bound %d EE cycles, minimum slice %d.", g_thread.Lag(), static_cast<int>(s_min_slice));
+		}
 	}
 
 	void StopThread()
@@ -181,10 +268,10 @@ namespace IopThread
 		SetMode(IopThreadMode::Off);
 		if (g_thread.IsRunning())
 		{
-			g_thread.Stop();
+			StopRunningThread();
 			Console.WriteLn(Color_StrongGreen, "IOP thread: stopped.");
 		}
-		s_pause_requested.store(false, std::memory_order_relaxed);
+		g_pause_requested.store(false, std::memory_order_relaxed);
 	}
 
 	void OnCpuConfigChanged()
@@ -218,12 +305,12 @@ namespace IopThread
 
 	bool DeferredPausePending()
 	{
-		return s_pause_requested.load(std::memory_order_acquire);
+		return g_pause_requested.load(std::memory_order_acquire);
 	}
 
 	void ClearDeferredPause()
 	{
-		s_pause_requested.store(false, std::memory_order_relaxed);
+		g_pause_requested.store(false, std::memory_order_relaxed);
 	}
 
 	void AssertHeldOrStopped()
@@ -313,8 +400,9 @@ namespace IopThread
 	{
 		if (s_mode == IopThreadMode::Off || g_thread.OnIopThread())
 			return true;
-		// With no thread running nothing runs beside the caller, whatever the mode says.
-		return !g_thread.IsRunning() || g_thread.HoldDepth() > 0;
+		// With no thread running nothing runs beside the caller, whatever the mode says. A hold stops the IOP,
+		// and so does a CallOnEE function: the IOP is blocked in it, at a known point (the SIF pump runs there).
+		return g_thread.IopIsStopped();
 	}
 
 	bool EeSideAllowed()
@@ -417,15 +505,35 @@ namespace IopThread
 	{
 		// The stamp is the EE's cycle at the moment Off would have made the direct call.
 		const u64 stamp = cpuRegs.cycle;
-		if (LockstepActive() && g_thread.PostE2I(stamp, kind, arg))
+		if (g_thread.IsRunning())
 		{
-			// The EE waits here until the IOP thread has applied the item, so it takes effect at this
-			// point of the EE's execution and not later.
-			g_thread.LockstepApplyUpTo(stamp);
-			return;
+			if (g_thread.Mode() == IopThreadMode::Lockstep)
+			{
+				if (g_thread.PostE2I(stamp, kind, arg))
+				{
+					// The EE waits here until the IOP thread has applied the item, so it takes effect at this
+					// point of the EE's execution and not later.
+					g_thread.LockstepApplyUpTo(stamp);
+					return;
+				}
+			}
+			else
+			{
+				// Threaded: the IOP applies it when its own clock reaches the stamp, and the EE goes on.
+				if (g_thread.PostE2I(stamp, kind, arg))
+					return;
+				// The ring cannot make room for it while the IOP is held or blocked in a CallOnEE function
+				// (the lag bound keeps it nearly empty, so this does not happen), and the stop predicate ends a
+				// wait for room when the VM is going away. In the first case the IOP is stopped and the item can be
+				// applied here; in the second it is not, and the item is dropped with the VM.
+				pxAssertMsg(g_thread.IopIsStopped() || VMManager::GetState() == VMState::Stopping || VMManager::GetState() == VMState::Shutdown,
+					"an EE-to-IOP item could not be queued");
+				if (!g_thread.IopIsStopped())
+					return;
+			}
 		}
 
-		// No IOP thread (Off, or a mode switch or a shutdown in progress): the call Off makes.
+		// No IOP thread (Off, or a mode switch or a shutdown in progress), or it is stopped: the call Off makes.
 		ApplyE2IItem(E2IItem{stamp, kind, 0, arg}, s_e2i_actions ? *s_e2i_actions : kRealE2IActions);
 	}
 
@@ -454,9 +562,9 @@ namespace IopThread
 
 		// A pause the IOP asked for from inside the slice: the CPU thread makes it, and leaves its
 		// execution loop, exactly where Off would have made it.
-		if (s_pause_requested.load(std::memory_order_acquire)) [[unlikely]]
+		if (g_pause_requested.load(std::memory_order_acquire)) [[unlikely]]
 		{
-			s_pause_requested.store(false, std::memory_order_relaxed);
+			g_pause_requested.store(false, std::memory_order_relaxed);
 			VMManager::SetPaused(true);
 			Cpu->ExitExecution();
 		}
@@ -466,11 +574,92 @@ namespace IopThread
 	{
 		if (g_thread.OnIopThread())
 		{
-			s_pause_requested.store(true, std::memory_order_release);
+			if (s_mode == IopThreadMode::Threaded)
+			{
+				// The EE makes the pause at its next event test. A full queue is emptied by the EE; if the
+				// object is stopping the item is not needed.
+				g_thread.PostI2E(I2EKind::PauseRequest);
+				return;
+			}
+			g_pause_requested.store(true, std::memory_order_release);
 			return;
 		}
 
 		VMManager::SetPaused(true);
 		Cpu->ExitExecution();
 	}
+
+	// ================================================================ Threaded: the EE's event test and SIF
+
+	void DrainEeQueue()
+	{
+		g_thread.DrainI2E();
+
+		// A pause the IOP asked for. It is made here, in the event test, where Off makes it, and not in the item
+		// handler, which also runs inside the EE's spins.
+		if (g_pause_requested.load(std::memory_order_acquire))
+		{
+			g_pause_requested.store(false, std::memory_order_relaxed);
+			VMManager::SetPaused(true);
+			Cpu->ExitExecution();
+		}
+	}
+
+	void RunSifPumpOnEe(void (*pump)())
+	{
+		if (!g_thread.OnIopThread())
+		{
+			pump();
+			return;
+		}
+		// The IOP blocks until the EE has run the pump; false means the object was stopped first, and the pump is
+		// not run (the VM is going away).
+		g_thread.CallOnEE([pump] { pump(); });
+	}
+
+	void SetThreadedMinSlice(s32 min_slice)
+	{
+		s_min_slice = std::max<s32>(min_slice, 0);
+	}
+
+	s32 ThreadedMinSlice()
+	{
+		return s_min_slice;
+	}
+
+	// ================================================================ counters
+
+	std::string FormatStats(const Stats& t, double frames)
+	{
+		const double f = std::max(frames, 1.0);
+		return fmt::format("W1 {:.2f}/f {:.1f} us/f (found IOP parked {:.2f}/f {:.1f} us/f) | W2 {:.2f}/f {:.1f} us/f | I2E {:.1f}/f | SIF pumps ee {:.2f}/f iop {:.2f}/f | IOP sleeps {:.1f}/f wakes {:.1f}/f | slices {:.0f}/f",
+			t.lag_spins / f, t.lag_stall_ns / 1000.0 / f, t.lag_spins_parked / f, t.lag_parked_stall_ns / 1000.0 / f,
+			t.emu_hold_requests / f, t.emu_hold_stall_ns / 1000.0 / f, t.i2e_drained / f,
+			t.sif_ee_pumps / f, t.calls_posted / f, t.parks / f, t.wakes_sent / f, t.slices / f);
+	}
+
+	std::string OsdStatsLine()
+	{
+		if (s_mode != IopThreadMode::Threaded || !g_thread.IsRunning())
+			return std::string();
+
+		// Per frame over the time since the last call. The counters have one writer each and are read here
+		// while they move, so the numbers are approximate.
+		static Stats s_last = {};
+		static u32 s_last_frame = 0;
+		const Stats now = g_thread.GetStats();
+		const u32 frame = g_FrameCount;
+		const u32 frames = frame - s_last_frame;
+		Stats delta = now;
+		const u64* a = reinterpret_cast<const u64*>(&now);
+		const u64* b = reinterpret_cast<const u64*>(&s_last);
+		u64* d = reinterpret_cast<u64*>(&delta);
+		static_assert(sizeof(Stats) % sizeof(u64) == 0);
+		for (size_t i = 0; i < sizeof(Stats) / sizeof(u64); i++)
+			d[i] = a[i] >= b[i] ? a[i] - b[i] : a[i];
+		s_last = now;
+		s_last_frame = frame;
+		return frames ? "IOP " + FormatStats(delta, frames) : std::string();
+	}
+
 } // namespace IopThread

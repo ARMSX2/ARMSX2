@@ -10,9 +10,11 @@
 // Naming them here, one function per crossing, puts that change in one place per crossing.
 //
 // Each function is inline and does exactly what the code at its call site did before, in the same
-// order. There is no mode test and no atomic in here, with one exception: the vibration calls at the
-// bottom read the mode, because they are made once per pad poll and not inside the event test or the
-// IOP's memory handlers. The generated code at every other call site is the code it was before.
+// order, in Off and Lockstep. In Threaded (IOP thread design 7.1) a crossing that wrote EE state from the
+// IOP thread is suppressed or becomes an item the EE applies at its next event test. Each bridge reads the
+// mode once, on a path that runs at most a few hundred times a frame (counted at step 5: PSX_INT 2-27,
+// IopInterruptPending 19-112, the SBUS interrupt and the pump 0-9, the slice break 0-3.7); the read is
+// not in CPU_INT, the event test or any IOP memory access.
 //
 // The crossing numbers (C3, C4, ...) are the rows of section 7.1 of the IOP thread design.
 // IopBridge.h has the other direction, the EE reaching into IOP state.
@@ -35,8 +37,13 @@ namespace EeBridge
 
 	// PSX_INT scheduled an IOP event that falls due before the EE's next event test would look at it.
 	// The EE runs its event test `delta` EE cycles from now instead.
+	//
+	// Threaded (C3): suppressed. The EE does not look at the IOP's events: the IOP runs whenever the
+	// watermark gives it budget, and schedules its own events.
 	__forceinline_odr void ScheduleEeEvent(s32 delta)
 	{
+		if (IopThread::GetMode() == IopThreadMode::Threaded) [[unlikely]]
+			return;
 		EE_SIDE_ASSERT();
 		cpuSetNextEventDelta(delta);
 	}
@@ -45,8 +52,18 @@ namespace EeBridge
 	// code, which happens in its event test. If the EE is running code, ask it to branch soon so the
 	// IOP can handle it promptly, and mark the IOP as having work. If the EE is already inside its
 	// event test, the IOP's own next branch will do.
+	//
+	// Threaded (C4): the IOP has work, and brings its own next branch forward. It no longer looks at the
+	// EE's flag, which belongs to the other thread.
 	__forceinline_odr void IopInterruptPending()
 	{
+		if (IopThread::GetMode() == IopThreadMode::Threaded) [[unlikely]]
+		{
+			iopEventAction = true;
+			if (!iopEventTestIsActive)
+				psxSetNextBranchDelta(2);
+			return;
+		}
 		EE_SIDE_ASSERT();
 		if (!eeEventTestIsActive)
 		{
@@ -69,8 +86,14 @@ namespace EeBridge
 	// event is due soon and that IOP cycles are left in the slice. The IOP stops running now and
 	// the EE gets back to its event test; the cycles the IOP did not run are recorded.
 
+	//
+	// Threaded (C5): skipped. No EE event happens inside an IOP slice any more: the IOP runs beside the EE,
+	// and the registers this would write belong to the IOP thread, which is running. (The condition the caller
+	// tested before getting here read iopCycleEE from the EE thread; whatever it saw is discarded.)
 	__forceinline_odr void BreakIopSlice()
 	{
+		if (IopThread::GetMode() == IopThreadMode::Threaded) [[unlikely]]
+			return;
 		psxRegs.iopBreak += psxRegs.iopCycleEE; // record the number of cycles the IOP didn't run.
 		psxRegs.iopCycleEE = 0;
 	}
@@ -78,8 +101,17 @@ namespace EeBridge
 	// ---- The IOP interrupts the EE (C13) -----------------------------------------------------
 	// A write to the IOP's SBUS register 0x1f801450 with bit 1 set raises the SBUS interrupt on the EE.
 
+	//
+	// Threaded (C13): INTC_STAT is written on the EE thread only, because the EE JIT loads it inline when the
+	// IntcStat speedhack is off. The IOP queues the interrupt, in order with whatever else it queued, and the EE
+	// raises it at its next event test.
 	__forceinline_odr void RaiseSbusIrq()
 	{
+		if (IopThread::GetMode() == IopThreadMode::Threaded) [[unlikely]]
+		{
+			IopThread::g_thread.PostI2E(IopThread::I2EKind::SbusIrq);
+			return;
+		}
 		EE_SIDE_ASSERT();
 		hwIntcIrq(INTC_SBUS);
 	}
@@ -88,14 +120,36 @@ namespace EeBridge
 	// psxDma9/psxDma10 start a transfer and then run the pump, which moves data on both sides and
 	// schedules both sides' completion interrupts. The pump is the call that touches the EE.
 
-	__forceinline_odr void Sif0Pump() { EE_SIDE_ASSERT(); SIF0Dma(); }
-	__forceinline_odr void Sif1Pump() { EE_SIDE_ASSERT(); SIF1Dma(); }
+	//
+	// Threaded (C10, C11), variant R: the pump runs on the EE thread with the IOP stopped. The IOP blocks in
+	// CallOnEE until the EE has run it, which it does at its next event test or sooner inside any EE wait.
+	__forceinline_odr void Sif0Pump()
+	{
+		if (IopThread::GetMode() == IopThreadMode::Threaded) [[unlikely]]
+		{
+			IopThread::RunSifPumpOnEe(&SIF0Dma);
+			return;
+		}
+		EE_SIDE_ASSERT();
+		SIF0Dma();
+	}
+
+	__forceinline_odr void Sif1Pump()
+	{
+		if (IopThread::GetMode() == IopThreadMode::Threaded) [[unlikely]]
+		{
+			IopThread::RunSifPumpOnEe(&SIF1Dma);
+			return;
+		}
+		EE_SIDE_ASSERT();
+		SIF1Dma();
+	}
 
 	// ---- The IOP stops the VM ----------------------------------------------------------------
 	// The IOP JIT's error path and the IOP interpreter's breakpoint pause the VM and leave the
 	// EE's execution loop. Both are calls the CPU thread owns: when the IOP is on its own thread
-	// (Lockstep) the request is kept and the EE makes it when its handoff returns. Error paths only,
-	// so the call is not inline.
+	// (Lockstep) the request is kept and the EE makes it when its handoff returns, in Threaded it is an
+	// item the EE takes at its next event test. Error paths only, so the call is not inline.
 
 	__forceinline_odr void RequestPause()
 	{

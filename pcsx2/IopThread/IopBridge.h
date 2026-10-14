@@ -20,6 +20,9 @@
 //              jobs) becomes an item in the E2I queue, stamped with the EE's cycle, that the IOP thread
 //              applies before the EE goes on. The EE's access to IOP state takes a hold, which in
 //              Lockstep is a marker: the IOP thread is parked whenever the EE runs.
+//   Threaded   the same items, but the EE posts them and goes on: the IOP applies each one when its own
+//              clock reaches the stamp. The holds are real: the EE spins until the IOP has run up to the
+//              EE's cycle and stopped.
 //
 // EeBridge.h has the other direction, IOP-side code reaching into the EE.
 
@@ -67,7 +70,7 @@ namespace IopBridge
 	//
 	// These run about 527 times a frame, inside the event test, so the mode is a template parameter
 	// (the mode of the event test instance that calls them) and Off is the direct call. Lockstep
-	// queues the item and waits until the IOP thread has applied it. Threaded will queue it and go on.
+	// queues the item and waits until the IOP thread has applied it. Threaded queues it and goes on.
 
 	template <IopThreadMode M>
 	__forceinline_odr void HBlankStart()
@@ -171,11 +174,19 @@ namespace IopBridge
 	// dmaSIF0/1/2 start a transfer and then run the pump, which moves data on both sides and
 	// schedules both sides' completion interrupts. The pump is the call that touches the IOP.
 
-	// The pump runs on the EE thread and moves data on both sides, so the IOP is held while it does.
+	// The pump runs on the EE thread and moves data on both sides, so the IOP is held while it does. In
+	// Threaded this is variant R's rendezvous (design 3.6.1): the EE spins until the IOP has run up to the EE's
+	// cycle and stopped, then runs the combined pump (W2). The ones the EE starts are counted.
 
-	__forceinline_odr void Sif0Pump() { EmuHold hold; SIF0Dma(); }
-	__forceinline_odr void Sif1Pump() { EmuHold hold; SIF1Dma(); }
-	__forceinline_odr void Sif2Pump() { EmuHold hold; SIF2Dma(); }
+	__forceinline_odr void CountSifPump()
+	{
+		if (IopThread::GetMode() == IopThreadMode::Threaded) [[unlikely]]
+			IopThread::g_thread.CountSifPump();
+	}
+
+	__forceinline_odr void Sif0Pump() { EmuHold hold; CountSifPump(); SIF0Dma(); }
+	__forceinline_odr void Sif1Pump() { EmuHold hold; CountSifPump(); SIF1Dma(); }
+	__forceinline_odr void Sif2Pump() { EmuHold hold; CountSifPump(); SIF2Dma(); }
 
 	// ---- The EE reads and writes IOP address space (C16) -------------------------------------
 	// The EE's memory map sends these ranges to IOP-owned state: IOP RAM (0x1c000000), DEV9

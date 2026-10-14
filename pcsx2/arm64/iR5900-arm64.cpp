@@ -283,15 +283,16 @@ static void recEventTest()
 	}
 }
 
-// The event test the dispatcher stub calls for `mode`. Threaded has no instance yet and gets Off's.
+// The event test the dispatcher stub calls for `mode`.
 static const void* RecEventTestFor(IopThreadMode mode)
 {
 	switch (mode)
 	{
 		case IopThreadMode::Lockstep:
 			return reinterpret_cast<const void*>(&recEventTest<IopThreadMode::Lockstep>);
-		case IopThreadMode::Off:
 		case IopThreadMode::Threaded:
+			return reinterpret_cast<const void*>(&recEventTest<IopThreadMode::Threaded>);
+		case IopThreadMode::Off:
 		default:
 			return reinterpret_cast<const void*>(&recEventTest<IopThreadMode::Off>);
 	}

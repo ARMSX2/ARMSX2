@@ -410,6 +410,11 @@ namespace VMManager
 		/// Returns a list of processors in the system, suitable for pinning for the software renderer.
 		const std::vector<u32>& GetSoftwareRendererProcessorList();
 
+		/// How many processors are performance cores: of at least 0.75 of the fastest one's capacity. 0 when the
+		/// cores cannot be told apart or there is no source for it on this platform (everything but Linux and
+		/// Android). The IOP thread's ResolveMode wants it (design 10.2).
+		u32 GetPerformanceCoreCount();
+
 		/// Diagnostic (OSD): where the EE/VU/GS threads are actually running (current core +
 		/// affinity mask) plus the cpuinfo cluster/frequency topology. Used to see whether the
 		/// worker threads are being scheduled onto slow cores / clamped by a cpuset.

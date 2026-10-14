@@ -156,9 +156,13 @@ TEST(IopThreadEventTest, EachModeHasItsOwnInstanceAndOffKeepsTheOriginal)
 	EXPECT_EQ(lockstep, cpuEventTestFor(IopThreadMode::Lockstep));
 }
 
-TEST(IopThreadEventTest, ThreadedHasNoInstanceYetAndFallsBackToOff)
+TEST(IopThreadEventTest, ThreadedHasItsOwnInstance)
 {
-	EXPECT_EQ(cpuEventTestFor(IopThreadMode::Threaded), cpuEventTestFor(IopThreadMode::Off));
+	const CpuEventTestFn threaded = cpuEventTestFor(IopThreadMode::Threaded);
+	ASSERT_NE(threaded, nullptr);
+	EXPECT_NE(threaded, cpuEventTestFor(IopThreadMode::Off));
+	EXPECT_NE(threaded, cpuEventTestFor(IopThreadMode::Lockstep));
+	EXPECT_EQ(threaded, &_cpuEventTest_Shared<IopThreadMode::Threaded>);
 }
 
 TEST(IopThreadEventTest, TheInterpreterCallsTheInstanceOfTheModeInEffect)
@@ -179,32 +183,49 @@ TEST(IopThreadEventTest, TheInterpreterCallsTheInstanceOfTheModeInEffect)
 	EXPECT_EQ(g_intEventTestShared, cpuEventTestFor(IopThreadMode::Off));
 }
 
-TEST(IopThreadEventTest, ThreadedResolvesToOffUntilItIsBuilt)
+TEST(IopThreadEventTest, ThreadedResolvesToThreadedOnAHostWithCoresToSpare)
 {
-	SettingsGuard guard;
-	EmuConfig.Speedhacks.iopThread = true;
-	EmuConfig.Speedhacks.iopThreadLockstep = false;
-	IopThread::ChooseMode();
-	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Off);
-	EXPECT_EQ(g_intEventTestShared, cpuEventTestFor(IopThreadMode::Off));
-}
-
-TEST(IopThreadEventTest, ThreadedOnAHostThatWouldAllowItStillComesOutOff)
-{
-	// ResolveMode gives Threaded here (an ARM64 host with cores to spare). The mode in effect is Off, because
-	// Threaded is not built yet (design step 11); the demotion is in ChooseMode.
 	SettingsGuard guard;
 	EmuConfig.Speedhacks.iopThread = true;
 	EmuConfig.Speedhacks.iopThreadLockstep = false;
 	ASSERT_EQ(ResolveMode(EmuConfig, Arm64Host(), IopThread::VmConditions()), IopThreadMode::Threaded);
 	IopThread::ChooseModeFor(Arm64Host(), IopThread::VmConditions());
-	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Off);
-	EXPECT_EQ(g_intEventTestShared, cpuEventTestFor(IopThreadMode::Off));
+	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Threaded);
+	EXPECT_EQ(g_intEventTestShared, cpuEventTestFor(IopThreadMode::Threaded));
 
-	// Lockstep on the same host is not demoted.
+	// Lockstep on the same host is still Lockstep.
 	EmuConfig.Speedhacks.iopThreadLockstep = true;
 	IopThread::ChooseModeFor(Arm64Host(), IopThread::VmConditions());
 	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Lockstep);
+}
+
+TEST(IopThreadEventTest, ThreadedFallsBackToOffOnAHostWithNoSpareBigCore)
+{
+	SettingsGuard guard;
+	EmuConfig.Speedhacks.iopThread = true;
+	EmuConfig.Speedhacks.iopThreadLockstep = false;
+	HostCpuInfo host = Arm64Host();
+	host.performance_cores = 2; // the EE, the GS and the IOP need three
+	IopThread::ChooseModeFor(host, IopThread::VmConditions());
+	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Off);
+	EXPECT_EQ(g_intEventTestShared, cpuEventTestFor(IopThreadMode::Off));
+
+	// The conditions that force Off do so for Threaded as well.
+	IopThread::VmConditions ps1;
+	ps1.ps1_mode = true;
+	IopThread::ChooseModeFor(Arm64Host(), ps1);
+	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Off);
+	IopThread::VmConditions arcade;
+	arcade.arcade = true;
+	IopThread::ChooseModeFor(Arm64Host(), arcade);
+	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Off);
+}
+
+TEST(IopThreadEventTest, TheHostInfoCountsThePerformanceCoresTheVmManagerFinds)
+{
+	const IopThread::HostCpuInfo host = IopThread::CurrentHostInfo();
+	EXPECT_EQ(host.performance_cores, VMManager::Internal::GetPerformanceCoreCount());
+	EXPECT_EQ(host.total_cores, std::thread::hardware_concurrency());
 }
 
 TEST(IopThreadEventTest, AHostThatIsNotArm64ResolvesTheSettingsToOff)

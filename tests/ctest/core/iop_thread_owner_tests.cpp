@@ -420,34 +420,40 @@ namespace
 	};
 } // namespace
 
-TEST(IopThreadOwnerAsserts, EveryEeSideEntryRefusesTheIopThreadInThreadedMode)
+TEST(IopThreadOwnerAsserts, TheEeSideEntriesAreTheIopsToCallInLockstep)
 {
 	REQUIRE_ARM64_HOST();
 	SettingsGuard guard;
 	StartLockstep();
 	ASSERT_TRUE(IopThread::LockstepActive());
 
+	// In Lockstep the IOP thread calls EE entries freely: the EE is blocked in the handoff.
 	for (const EeEntry& entry : kEeEntries)
 	{
-		// In Lockstep the IOP thread calls EE entries freely.
-		{
-			ViolationRecorder none;
-			const std::string caught = OnIopThread([&] { IopThread::CheckEeSide(entry.name); });
-			EXPECT_EQ(caught, "") << entry.name;
-			EXPECT_TRUE(none.Violations().empty()) << entry.name;
-		}
-
-		// In Threaded they are the EE's. Threaded is not built, so the mode is set by hand while the
-		// call is made on the Lockstep IOP thread. The assert is the first statement of each entry
-		// and the handler stops the call there, so no body runs.
-		ViolationRecorder violations;
-		IopThread::s_mode = IopThreadMode::Threaded;
-		const std::string caught = OnIopThread([&] { entry.call(); });
-		IopThread::s_mode = IopThreadMode::Lockstep;
-		ASSERT_EQ(violations.Violations().size(), 1u) << entry.name << " did not assert";
-		EXPECT_EQ(violations.Violations()[0].side, IopThread::Side::Ee) << entry.name;
-		EXPECT_EQ(caught, entry.name);
+		ViolationRecorder none;
+		const std::string caught = OnIopThread([&] { IopThread::CheckEeSide(entry.name); });
+		EXPECT_EQ(caught, "") << entry.name;
+		EXPECT_TRUE(none.Violations().empty()) << entry.name;
 	}
+}
+
+// In Threaded the EE-side entries are the EE's alone: the check refuses the IOP thread. The bridges the IOP code
+// calls (kEeEntries) no longer reach them from the IOP thread: each is suppressed, queued for the EE, or run by
+// the EE (iop_thread_threaded_tests.cpp), so none of them fires the assert in Threaded.
+TEST(IopThreadOwnerAsserts, TheEeSideCheckRefusesTheIopThreadInThreaded)
+{
+	REQUIRE_ARM64_HOST();
+	SettingsGuard guard;
+	StartLockstep();
+	ASSERT_TRUE(IopThread::LockstepActive());
+
+	ViolationRecorder violations;
+	IopThread::s_mode = IopThreadMode::Threaded;
+	const std::string caught = OnIopThread([&] { IopThread::CheckEeSide("AnEeEntry"); });
+	IopThread::s_mode = IopThreadMode::Lockstep;
+	ASSERT_EQ(violations.Violations().size(), 1u);
+	EXPECT_EQ(violations.Violations()[0].side, IopThread::Side::Ee);
+	EXPECT_EQ(caught, "AnEeEntry");
 }
 
 // ---------------------------------------------------------------- a blocking call to the CPU thread from the IOP thread

@@ -2,13 +2,22 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 // What the VM does with the IOP thread: the one thread object, the mode in effect, and the calls the
-// VM's lifecycle makes (design sections 9.2 to 9.5). Only Lockstep is wired up; Threaded resolves to
-// Off until it exists.
+// VM's lifecycle makes (design sections 9.2 to 9.5).
 //
 // In Lockstep the IOP thread runs the IOP's slice of every EE event test while the EE waits (design
 // section 6.2). Everything else still runs on the EE thread, which is legal because the IOP thread is
 // parked whenever the EE runs. A hold (VmHold) is therefore a marker in Lockstep, but the lifecycle
-// takes one at every site where Threaded will need a real one, so the sites are in place and checked.
+// takes one at every site where Threaded needs a real one.
+//
+// In Threaded the IOP thread paces itself from the EE's watermark (design section 5): the EE publishes
+// its cycle at every event test, empties the IOP-to-EE queue and waits only if it is more than L ahead
+// (W1). EE-to-IOP effects (blanking, an interrupt, once-a-frame jobs) are queued with a cycle stamp and
+// applied by the IOP when its clock reaches it. IOP-to-EE effects (the SBUS interrupt, a pause) are
+// queued for the EE to apply at its next event test. A SIF pump runs on the EE thread with the IOP
+// stopped (variant R, design 3.6.1): the EE holds the IOP for the pumps it starts, and the IOP blocks in
+// CallOnEE for the pumps it starts. While the thread runs the EE-side books (EEsCycle, EEoCycle) are not
+// maintained: the IOP's position is the thread's, and the books are rewritten from it whenever the IOP
+// is held or stopped, which is where the savestate and a mode change read them.
 //
 // Everything here is called on the CPU thread unless it says otherwise.
 
@@ -17,8 +26,10 @@
 #include "IopThread/IopThread.h"
 #include "IopThread/IopThreadMode.h"
 
+#include <atomic>
 #include <functional>
 #include <optional>
+#include <string>
 #include <utility>
 
 namespace IopThread
@@ -29,8 +40,8 @@ namespace IopThread
 
 	// ---- Choosing and starting ---------------------------------------------------------------
 
-	/// What this host looks like to ResolveMode. Only is_arm64 matters until Threaded exists: its
-	/// core-count rule is wired to the real topology with the placement work (design step 14).
+	/// What this host looks like to ResolveMode: whether it is ARM64, its core count and how many of the
+	/// cores are performance cores (VMManager's GetPerformanceCoresMask; 0 where the cores cannot be told apart).
 	HostCpuInfo CurrentHostInfo();
 
 	/// The conditions about the running VM that rule the IOP thread out: PS1 mode, an arcade title,
@@ -41,14 +52,13 @@ namespace IopThread
 	/// interpreter's event test instance. It does not touch the thread. The EE JIT's dispatcher is
 	/// generated for the mode in effect, so this runs before the recompilers are reset, and every
 	/// caller resets them right after (VMManager::Initialize, and a settings change in
-	/// CheckForCPUConfigChanges). Threaded is not built yet, so it resolves to Off here.
+	/// CheckForCPUConfigChanges).
 	void ChooseMode();
-	/// The same with the host and the VM conditions given, for the tests: ResolveMode would give Threaded
-	/// on a host with enough cores, and that is where the demotion to Off applies.
+	/// The same with the host and the VM conditions given, for the tests.
 	void ChooseModeFor(const HostCpuInfo& host, const VmConditions& vm);
 
-	/// Makes the thread match the mode in effect: starts it when the mode is Lockstep and it is not
-	/// running, stops it when the mode is Off and it is. The IOP's clocks are taken from the EE's, so
+	/// Makes the thread match the mode in effect: starts it when the mode is Lockstep or Threaded and it is
+	/// not running, stops it when the mode is Off and it is. The IOP's clocks are taken from the EE's, so
 	/// call it with the CPU state in place (after cpuReset). With a hold live the thread starts held.
 	void SyncThread();
 
@@ -150,6 +160,55 @@ namespace IopThread
 		else
 			fn();
 	}
+
+	// ---- Threaded: the EE's event test --------------------------------------------------------
+	// The Threaded instance of the event test calls these, on the EE thread (design section 4).
+
+	/// A pause the IOP asked for (its recompiler met an opcode it cannot run, or its interpreter hit a
+	/// breakpoint). In Lockstep the handoff returns and makes it; in Threaded the I2E item sets the flag and
+	/// the next event test makes it, because SetPaused takes a hold and must not run inside a hold's spin.
+	extern std::atomic<bool> g_pause_requested;
+
+	/// Empties the IOP-to-EE queue (the SBUS interrupt, a pause request, a SIF pump the IOP wants run) and
+	/// makes a pause the IOP asked for. Event test only.
+	void DrainEeQueue();
+
+	/// First thing in the Threaded event test: tell the IOP how far the EE has got (a release store, and a
+	/// wake-up if the IOP is parked and has budget) and take what the IOP queued for the EE.
+	__forceinline_odr void EeEventTestBegin(u64 cycle)
+	{
+		g_thread.PublishWatermark(cycle);
+		if (g_thread.MayHaveI2E() || g_pause_requested.load(std::memory_order_relaxed)) [[unlikely]]
+			DrainEeQueue();
+	}
+
+	/// W1, the lag bound: waits until the EE is at most L ahead of the IOP. False when no IOP thread runs
+	/// (a mode switch or a shutdown in progress): the event test then runs the IOP's slice itself, as Off does.
+	__forceinline_odr bool EeLagWait(u64 cycle)
+	{
+		if (!g_thread.IsRunning()) [[unlikely]]
+			return false;
+		g_thread.CheckLag(cycle);
+		return true;
+	}
+
+	// ---- Threaded: SIF pumps (variant R, design 3.6.1) --------------------------------------
+	/// A SIF pump that the IOP starts. The pump moves data on both sides and schedules both sides' completion
+	/// events, so it runs on the EE thread with the IOP stopped: the IOP posts it with CallOnEE and blocks until the
+	/// EE has run it (at its next event test, or sooner inside any EE wait). On the EE thread it just runs.
+	void RunSifPumpOnEe(void (*pump)());
+
+	// ---- Testing knobs (eerunner) ---------------------------------------------------------------
+	/// S_min for the next Start() (design 5.3: 0 by default; step 11 and 12 measure 256). Not a setting.
+	void SetThreadedMinSlice(s32 min_slice);
+	s32 ThreadedMinSlice();
+
+	// ---- Counters ------------------------------------------------------------------------------
+	/// One line of the Threaded counters, per frame over the time since the last call, for the OSD. Empty unless
+	/// the mode is Threaded.
+	std::string OsdStatsLine();
+	/// The same line for a total over `frames` frames, for the run reports.
+	std::string FormatStats(const Stats& totals, double frames);
 
 	// ---- Clocks and pausing ------------------------------------------------------------------
 

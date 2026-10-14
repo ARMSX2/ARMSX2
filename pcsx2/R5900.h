@@ -502,7 +502,7 @@ extern int cpuGetCycles(int interrupt);
 // The shared event test, compiled once per IOP thread mode. The mode only changes how the IOP's slice
 // is run, and which instance is called is chosen where the CPU provider is reset (the JIT's dispatcher
 // is generated for it, the interpreter's pointer is set with it), so the Off instance has no test of
-// the mode in it. Instances exist for Off and Lockstep.
+// the mode in it. Instances exist for Off, Lockstep and Threaded.
 template <IopThreadMode M>
 extern void _cpuEventTest_Shared();
 
@@ -516,7 +516,7 @@ inline void _cpuEventTest_Shared()
 }
 
 using CpuEventTestFn = void (*)();
-/// The event test instance for `mode`. Threaded has none yet and gets Off's.
+/// The event test instance for `mode`.
 CpuEventTestFn cpuEventTestFor(IopThreadMode mode);
 
 /// The interpreter's event test calls this. It is the instance for the mode in effect; the IOP
