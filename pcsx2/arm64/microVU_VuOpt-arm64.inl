@@ -142,6 +142,12 @@ namespace vuopt::live
 			(unsigned long long)s.regionExits, (unsigned long long)s.regionBytes, (unsigned long long)s.bodyBlocks,
 			(unsigned long long)s.bodiesLowered, (unsigned long long)s.bodyBytes, (unsigned long long)s.bailCompiles);
 		out = buf;
+		if (s.compileInsTiered || s.compileInsPlain)
+		{
+			std::snprintf(buf, sizeof(buf), "\n  compile instructions: tiered programs %llu, others %llu",
+				(unsigned long long)s.compileInsTiered, (unsigned long long)s.compileInsPlain);
+			out += buf;
+		}
 		const auto add = [&](const char* tier, const std::map<std::string, u32>& m) {
 			for (const auto& d : m)
 			{
@@ -375,10 +381,28 @@ void mVUvuoptOnProgramDeleted(microProgram& prog)
 // The compile hooks
 //------------------------------------------------------------------
 
+#if defined(PCSX2_RECOMPILER_TESTS) && defined(__linux__)
+// With pcsx2-eerunner --count-vu1-ins: the user-mode instructions the outermost
+// compile sessions of VU1 retire, split by whether the program was tiered up
+// (vuopt compiles) or not (microVU's own), for reading the tier's compile cost
+// next to its run-time gain. Totals are in vuopt::live::Stats.
+static u64 s_vuoptSessionIns0 = 0;
+static bool s_vuoptSessionTiered = false;
+#endif
+
 void mVUvuoptCompileBegin(microVU& mVU)
 {
 	if (mVU.index == 1 && s_vuopt.enabled)
+	{
+#if defined(PCSX2_RECOMPILER_TESTS) && defined(__linux__)
+		if (s_vuopt.compileDepth == 0 && mvu_test_hooks::g_vu1InsCount.load(std::memory_order_relaxed))
+		{
+			s_vuoptSessionIns0 = mvu_test_hooks::ReadThreadInstructions();
+			s_vuoptSessionTiered = mVU.prog.cur && mVU.prog.cur->vuopt;
+		}
+#endif
 		s_vuopt.compileDepth++;
+	}
 }
 
 void mVUvuoptCompileEnd(microVU& mVU)
@@ -387,6 +411,13 @@ void mVUvuoptCompileEnd(microVU& mVU)
 		return;
 	if (--s_vuopt.compileDepth == 0)
 	{
+#if defined(PCSX2_RECOMPILER_TESTS) && defined(__linux__)
+		if (mvu_test_hooks::g_vu1InsCount.load(std::memory_order_relaxed))
+		{
+			const u64 d = mvu_test_hooks::ReadThreadInstructions() - s_vuoptSessionIns0;
+			(s_vuoptSessionTiered ? s_vuopt.stats.compileInsTiered : s_vuopt.stats.compileInsPlain) += d;
+		}
+#endif
 		if (s_vuopt.region)
 			s_vuopt.region->ResetAnalyzer();
 		if (s_vuopt.body)

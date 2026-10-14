@@ -2312,6 +2312,51 @@ void recMicroVU1::Step()
 {
 }
 
+#if defined(PCSX2_RECOMPILER_TESTS) && defined(__linux__)
+#include <linux/perf_event.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+namespace mvu_test_hooks
+{
+	// In-game VU1 retired-instruction count (pcsx2-eerunner --count-vu1-ins):
+	// user-mode instructions the thread that runs VU1 retires between entering
+	// recMicroVU1::Execute and leaving it, summed. That is the dispatch, the
+	// program, any compile it triggers (a tier-up included) and the dispatcher's
+	// exit, and none of the MTVU thread's idle spinning. Each dispatch also
+	// carries the cost of the two counter reads' user-side wrappers, the same
+	// in every run. Linux, test builds; a counter that cannot be opened counts 0.
+	static std::atomic<bool> g_vu1InsCount{false};
+	static std::atomic<u64> g_vu1Ins{0}, g_vu1InsDispatches{0};
+
+	void EnableVu1InstructionCount(bool on) { g_vu1InsCount.store(on, std::memory_order_relaxed); }
+	void GetVu1InstructionCount(u64& instructions, u64& dispatches)
+	{
+		instructions = g_vu1Ins.load(std::memory_order_relaxed);
+		dispatches = g_vu1InsDispatches.load(std::memory_order_relaxed);
+	}
+
+	static u64 ReadThreadInstructions()
+	{
+		static thread_local int fd = -2;
+		if (fd == -2)
+		{
+			perf_event_attr attr = {};
+			attr.type = PERF_TYPE_HARDWARE;
+			attr.size = sizeof(attr);
+			attr.config = PERF_COUNT_HW_INSTRUCTIONS;
+			attr.exclude_kernel = 1;
+			attr.exclude_hv = 1;
+			fd = static_cast<int>(syscall(SYS_perf_event_open, &attr, 0, -1, -1, 0));
+		}
+		u64 v = 0;
+		if (fd < 0 || read(fd, &v, sizeof(v)) != static_cast<ssize_t>(sizeof(v)))
+			return 0;
+		return v;
+	}
+} // namespace mvu_test_hooks
+#endif
+
 void recMicroVU1::Execute(u32 cycles)
 {
 	if (!THREAD_VU1)
@@ -2324,6 +2369,10 @@ void recMicroVU1::Execute(u32 cycles)
 	vu1_trace::Entry* trace = vu1_trace::g_enabled.load(std::memory_order_relaxed)
 		? vu1_trace::begin('r', VU1.VI[REG_TPC].UL, cycles)
 		: nullptr;
+#if defined(__linux__)
+	const bool countIns = mvu_test_hooks::g_vu1InsCount.load(std::memory_order_relaxed);
+	const u64 ins0 = countIns ? mvu_test_hooks::ReadThreadInstructions() : 0;
+#endif
 #endif
 	// Resume fast path — see recMicroVU0::Execute (VE-07).
 	void* const resume = std::exchange(microVU1.resumeEntry, nullptr);
@@ -2334,6 +2383,13 @@ void recMicroVU1::Execute(u32 cycles)
 	VU1.VI[REG_TPC].UL >>= 3;
 #ifdef PCSX2_RECOMPILER_TESTS
 	vu1_trace::finish(trace);
+#if defined(__linux__)
+	if (countIns)
+	{
+		mvu_test_hooks::g_vu1Ins.fetch_add(mvu_test_hooks::ReadThreadInstructions() - ins0, std::memory_order_relaxed);
+		mvu_test_hooks::g_vu1InsDispatches.fetch_add(1, std::memory_order_relaxed);
+	}
+#endif
 #endif
 
 	if (microVU1.regs().flags & 0x4 && !THREAD_VU1)

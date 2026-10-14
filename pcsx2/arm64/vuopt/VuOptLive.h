@@ -67,6 +67,10 @@ namespace vuopt
 			u64 bodiesLowered = 0;
 			u64 bodyBytes = 0;
 			u64 bailCompiles = 0;     // regions' blocks microVU compiled at run time (budget shortfalls)
+			// pcsx2-eerunner --count-vu1-ins only: user-mode instructions VU1's compile
+			// sessions retired, for programs the tier took over and for the rest.
+			u64 compileInsTiered = 0;
+			u64 compileInsPlain = 0;
 		};
 
 		// Whether the tier runs this session (EnableVUOpt, VU1 recompiled, no
@@ -84,3 +88,14 @@ namespace vuopt
 #endif
 	} // namespace live
 } // namespace vuopt
+
+#ifdef PCSX2_RECOMPILER_TESTS
+namespace mvu_test_hooks
+{
+	// Test runners only (Linux): count the user-mode instructions the thread that
+	// runs VU1 retires inside recMicroVU1::Execute; read the total and the number
+	// of dispatches back after the run.
+	void EnableVu1InstructionCount(bool on);
+	void GetVu1InstructionCount(u64& instructions, u64& dispatches);
+} // namespace mvu_test_hooks
+#endif

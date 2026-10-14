@@ -783,6 +783,18 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_vu1_interp = true;
 				continue;
 			}
+			else if (CHECK_ARG("--count-vu1-ins"))
+			{
+				// Count the user-mode instructions the thread that runs VU1 retires inside
+				// its dispatch (recMicroVU1::Execute); printed as @VU1INS@ at the end of a
+				// --liverun. Pin the process to the performance cores of a hybrid CPU.
+#if defined(ARCH_ARM64) && defined(PCSX2_RECOMPILER_TESTS)
+				mvu_test_hooks::EnableVu1InstructionCount(true);
+#else
+				Console.Warning("--count-vu1-ins needs an arm64 build with the recompiler test hooks.");
+#endif
+				continue;
+			}
 			else if (CHECK_ARG_PARAM("--vuopt-threshold"))
 			{
 				// With EmuCore/CPU/Recompiler/EnableVUOpt on (--set), tier VU1
@@ -4430,6 +4442,14 @@ static int RunLiveRun()
 #if defined(ARCH_ARM64)
 	if (vuopt::live::IsEnabled())
 		Console.WriteLn(fmt::format("@VUOPT@ {}", vuopt::live::FormatStats()));
+#if defined(PCSX2_RECOMPILER_TESTS)
+	{
+		u64 ins = 0, disp = 0;
+		mvu_test_hooks::GetVu1InstructionCount(ins, disp);
+		if (disp)
+			Console.WriteLn(fmt::format("@VU1INS@ dispatches={} instructions={}", disp, ins));
+	}
+#endif
 #endif
 	Console.WriteLn(fmt::format(
 		"LIVERUN: completed {} frames with NO wedge — this config did not reproduce the hang.",
