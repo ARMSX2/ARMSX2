@@ -25,8 +25,8 @@ public:
 	};
 
 private:
-	u32 buttons = 0xffffffffu;
-	u8 whammy = Pad::ANALOG_NEUTRAL_POSITION;
+	SharedWord::Relaxed<u32> buttons{0xffffffffu};
+	SharedWord::Relaxed<u8> whammy{Pad::ANALOG_NEUTRAL_POSITION};
 	bool commandStage = false;
 	float whammyAxisScale = 1.0f; // Guitars only have 1 axis on the whammy bar.
 	float whammyDeadzone = 0.0f;

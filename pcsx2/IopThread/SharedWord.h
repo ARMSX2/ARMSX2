@@ -67,6 +67,58 @@ namespace SharedWord
 		return std::atomic_ref<u32>(word).fetch_and(mask, std::memory_order_acq_rel);
 	}
 
+	// A load of a word through a const reference. The load does not change the word, so the const is
+	// dropped for atomic_ref, which has no const form before C++26.
+	template <typename T>
+	__forceinline_odr T LoadRelaxedConst(const T& word)
+	{
+		return LoadRelaxed(const_cast<T&>(word));
+	}
+
+	// A field that the host thread writes and the IOP thread reads (the pad input fields, design 8.4).
+	// The storage is one T, so a struct or an array of these has the layout it had with plain T, and
+	// every access is a relaxed atomic load or store, which is the plain ldr or str. Relaxed is all a pad
+	// needs: the console samples its pad asynchronously too, and a pad byte read a poll late is a pad
+	// byte read a poll late. Copying is deleted so that no code copies a field the other thread is
+	// writing; take the value (`T v = field`) instead.
+	template <typename T>
+	class Relaxed
+	{
+	public:
+		constexpr Relaxed() = default;
+		constexpr Relaxed(T value)
+			: m_value(value)
+		{
+		}
+		Relaxed(const Relaxed&) = delete;
+		Relaxed& operator=(const Relaxed&) = delete;
+
+		operator T() const { return LoadRelaxedConst(m_value); }
+		T Load() const { return LoadRelaxedConst(m_value); }
+
+		Relaxed& operator=(T value)
+		{
+			StoreRelaxed(m_value, value);
+			return *this;
+		}
+
+		// Read-modify-write in two steps, as the plain `field &= x` was. There is one writing thread, so
+		// the pair needs no atomic read-modify-write instruction.
+		Relaxed& operator&=(T value)
+		{
+			StoreRelaxed(m_value, static_cast<T>(LoadRelaxed(m_value) & value));
+			return *this;
+		}
+		Relaxed& operator|=(T value)
+		{
+			StoreRelaxed(m_value, static_cast<T>(LoadRelaxed(m_value) | value));
+			return *this;
+		}
+
+	private:
+		T m_value{};
+	};
+
 	// word = fn(word) as one step, for updates that look at the old value more than once (the IOP's write
 	// to the SBUS control register is one). fn may run more than once if the other thread changes the
 	// word in between, so it must have no effect of its own. Returns the old value.

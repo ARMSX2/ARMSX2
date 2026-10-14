@@ -666,11 +666,13 @@ void PadDualshock2::Set(u32 index, float value)
 					// In deadzone. Set to 127 (center).
 					if (index <= Inputs::PAD_L_LEFT)
 					{
-						this->analogs.lx = this->analogs.ly = 127;
+						this->analogs.ly = 127;
+						this->analogs.lx = 127;
 					}
 					else
 					{
-						this->analogs.rx = this->analogs.ry = 127;
+						this->analogs.ry = 127;
+						this->analogs.rx = 127;
 					}	
 				}
 			}

@@ -327,13 +327,13 @@ void PadNegcon::Set(u32 index, float value)
 		switch (index)
 		{
 			case PAD_I:
-				this->analogs.i = this->rawInputs[index];
+				this->analogs.i = static_cast<u8>(this->rawInputs[index]);
 				break;
 			case PAD_II:
-				this->analogs.ii = this->rawInputs[index];
+				this->analogs.ii = static_cast<u8>(this->rawInputs[index]);
 				break;
 			case PAD_L:
-				this->analogs.l = this->rawInputs[index];
+				this->analogs.l = static_cast<u8>(this->rawInputs[index]);
 				break;
 		}
 	}

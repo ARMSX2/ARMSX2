@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "IopThread/SharedWord.h"
 #include "SIO/Pad/PadTypes.h"
 
 #include "StateWrapper.h"
@@ -20,7 +21,10 @@ public:
 	size_t ejectTicks = 0;
 
 protected:
-	std::array<u8, 32> rawInputs = {};
+	// The pad input fields (this array, `buttons`, `analogs`, `dial` and `whammy` in the pad types) are written by the
+	// host thread at vsync and read by the IOP's SIO2 pad commands, which run on the IOP thread when there is one
+	// (IOP thread design 8.4). They are relaxed atomics: the same ldr and str as a plain field.
+	std::array<SharedWord::Relaxed<u8>, 32> rawInputs = {};
 	u8 unifiedSlot;
 	bool isInConfig = false;
 	Pad::Mode currentMode = Pad::Mode::NOT_SET;

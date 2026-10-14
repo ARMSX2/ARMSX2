@@ -334,9 +334,8 @@ void PadJogcon::Set(u32 index, float value)
 		const float dz_value = (this->dialDeadzone > 0.0f && value < this->dialDeadzone) ? 0.0f : value;
 		this->rawInputs[index] = static_cast<u8>(std::clamp(dz_value * this->dialScale * 255.0f, 0.0f, 255.0f));
 
-		this->dial = this->rawInputs[Inputs::PAD_DIAL_RIGHT] != 0
-				   ? this->rawInputs[Inputs::PAD_DIAL_RIGHT]
-				   : -this->rawInputs[Inputs::PAD_DIAL_LEFT];
+		const int dial_right = this->rawInputs[Inputs::PAD_DIAL_RIGHT];
+		this->dial = static_cast<s16>(dial_right != 0 ? dial_right : -static_cast<int>(this->rawInputs[Inputs::PAD_DIAL_LEFT]));
 		return;
 	}
 

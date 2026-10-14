@@ -39,9 +39,9 @@ public:
 	static constexpr u8 VIBRATION_MOTORS = 2;
 
 private:
-	u32 buttons = 0xffffffffu;
-	s16 dial = 0x0000;
-	s16 lastdial = 0x0000;
+	SharedWord::Relaxed<u32> buttons{0xffffffffu};
+	SharedWord::Relaxed<s16> dial{0x0000};
+	s16 lastdial = 0x0000; // IOP thread only: Poll() reads and writes it
 
 	bool commandStage = false;
 	std::array<u8, VIBRATION_MOTORS> vibrationMotors = {};
