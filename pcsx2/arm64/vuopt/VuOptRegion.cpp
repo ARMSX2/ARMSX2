@@ -148,6 +148,14 @@ namespace vuopt
 			std::unique_ptr<NodeLowering> low; // analysed lowering of fn (refers to fn: Nodes do not move)
 			LiveSet liveOut;                   // variables live at the node's end (milestone 8)
 			LiveSet liveIn;                    // variables live at the node's head
+			// What the node's operations and its end read of the incoming state, and what its
+			// end writes (a value that is not the variable's own incoming one). `useAll` is
+			// microVU's reading of the block; `useNoChain` leaves out a status update's read of
+			// the previous instance, which the sticky accumulators carry in a register instead.
+			LiveSet useAll, useNoChain, def;
+			// Checkpoints: what a bail to microVU's block for this node needs exact (see
+			// ComputeHandoffMasks). All variables unless the ring instances the block hides are dead.
+			LiveSet bailMask;
 			int map = 0;                       // its home map (maps_)
 			int taken = 0x7fffffff, fall = 0x7fffffff; // >= 0: node; < 0: exit -(k+1)
 			std::vector<std::pair<u32, int>> jumps;    // JR/JALR: recorded target PC -> node / exit
@@ -225,6 +233,8 @@ namespace vuopt
 		void AssignHomes();
 		void ChooseHomes(int map, const std::vector<u32>& weight);
 		void PlanChecks();
+		void ScanUseDef(Node& n) const;
+		void ComputeHandoffMasks();
 		void ComputeLiveness();
 		bool WantsAcc() const;
 		void FindLoops(std::vector<int>& comp, std::vector<u8>& cyclic, int& ncomp) const;
@@ -349,8 +359,23 @@ namespace vuopt
 				st.pop_back();
 			}
 		}
+		for (size_t i = 0; i < NN; i++)
+			ScanUseDef(*nodes_[i]);
+		ComputeHandoffMasks();
+		// A link into a checkpoint whose bail hides ring instances (the bail runs
+		// microVU's block, which overwrites them before anything reads them) must
+		// arrive with at least one cycle in hand. With none, microVU's entry test for
+		// that block would stop the run right there, with the instances as the
+		// region left them: unwritten, and visible in the state the run stops with.
+		// With one cycle, the block runs whole and overwrites them first.
+		const auto arrivalGuard = [&](int w) {
+			if (t_.handoffMutation == RegionTier::HandoffMutation::NoArrivalGuard)
+				return false;
+			return nodes_[w]->checkpoint && nodes_[w]->bailMask.count() < nodes_[w]->bailMask.size();
+		};
 		// need(n) = max(1, cycles(n) + need(s)) over successors s that are
-		// not checkpoints; the stretch below a node is acyclic.
+		// not checkpoints, and cycles(n) + 1 for a successor that is a checkpoint
+		// with an arrival guard; the stretch below a node is acyclic.
 		std::vector<s64> need(NN, -1);
 		std::vector<std::pair<int, size_t>> walk;
 		for (size_t root = 0; root < NN; root++)
@@ -378,8 +403,12 @@ namespace vuopt
 					continue;
 				s64 m = 1;
 				for (int w : succ[v])
+				{
 					if (!nodes_[w]->checkpoint)
 						m = std::max<s64>(m, static_cast<s64>(nodes_[v]->br.cycles) + need[w]);
+					else if (arrivalGuard(w))
+						m = std::max<s64>(m, static_cast<s64>(nodes_[v]->br.cycles) + 1);
+				}
 				need[v] = m;
 				walk.pop_back();
 				if (!walk.empty())
@@ -390,100 +419,189 @@ namespace vuopt
 			nodes_[i]->need = static_cast<u32>(std::min<s64>(need[i], 0x7fffffff));
 	}
 
+	namespace
+	{
+		// The twelve flag-ring instances (status, MAC, clip).
+		LiveSet RingBits()
+		{
+			LiveSet r;
+			for (u32 k = 0; k < 4; k++)
+			{
+				r.set(ir::var::S(k));
+				r.set(ir::var::M(k));
+				r.set(ir::var::C(k));
+			}
+			return r;
+		}
+
+		// The ring instances a program end hands microVU: one of each flag (fS /
+		// fM / fC, broadcast to the whole ring by mVUendProgram); the other
+		// instances are overwritten there. A MAC index past the ring reads the clip
+		// instance there (microVU's layout).
+		LiveSet EndRingBits(const ir::EndInfo& e)
+		{
+			using namespace ir;
+			LiveSet m;
+			m.set(var::S(e.fS & 3));
+			if (e.fM < 4)
+				m.set(var::M(e.fM));
+			else
+				m.set(var::C((e.fM - 4) & 3));
+			if (e.fC < 4)
+				m.set(var::C(e.fC));
+			return m;
+		}
+	} // namespace
+
+	// What a node reads of the incoming state and what it writes. A node's incoming
+	// uses are the incoming values it reads (other than passing its own variable
+	// through), including those its end moves to another variable (the ring
+	// reorder at a link).
+	void RegionBuilder::ScanUseDef(Node& n) const
+	{
+		using namespace ir;
+		const Function& f = n.fn;
+		n.useAll.reset();
+		n.useNoChain.reset();
+		n.def.reset();
+		for (const Block& bl : f.blocks)
+		{
+			if (bl.node < 0)
+				continue;
+			for (ValueId id : bl.insts)
+			{
+				const Inst& x = f.insts[id];
+				if (x.op == Op::Leave)
+				{
+					for (u32 k : f.leaveArgs)
+					{
+						const ValueId a = x.args[k];
+						if (!a)
+							continue;
+						const Inst& ai = f.insts[a];
+						const bool passThrough = k < var::Count && ai.op == Op::LiveIn && ai.var == k;
+						if (k < var::Count && !passThrough)
+							n.def.set(k);
+						if (!passThrough && ai.op == Op::LiveIn && ai.var < var::Count)
+						{
+							n.useAll.set(ai.var);
+							n.useNoChain.set(ai.var);
+						}
+					}
+					continue;
+				}
+				// (with the sticky accumulators a status update reads the chain
+				// word, not the previous instance: only readers use an instance)
+				const bool chain = x.op == Op::StatusUpd || x.op == Op::StatusDiv || x.op == Op::StatusSet;
+				for (size_t k = 0; k < x.args.size(); k++)
+				{
+					const ValueId a = x.args[k];
+					if (a && f.insts[a].op == Op::LiveIn && f.insts[a].var < var::Count)
+					{
+						n.useAll.set(f.insts[a].var);
+						if (!(chain && k == 0))
+							n.useNoChain.set(f.insts[a].var);
+					}
+				}
+			}
+		}
+	}
+
+	// A bail at a checkpoint hands the run to microVU's own code for the node's
+	// block. That code can only see the ring instances it reads before writing, plus
+	// the ones it never writes (they stay in the ring, where the next stop or the next
+	// block finds them: a run that stops after this block saves the whole ring). The
+	// rest, the instances the block overwrites without reading and the ones a program
+	// end overwrites with its broadcast, are dead at the hand-off whatever the region
+	// left in them. Everything else stays live at a bail.
+	//
+	// This holds only if the block's own entry test passes (see PlanChecks): a stop
+	// at the entry saves the ring as handed over.
+	void RegionBuilder::ComputeHandoffMasks()
+	{
+		const LiveSet ring = RingBits();
+		for (auto& np : nodes_)
+		{
+			Node& n = *np;
+			n.bailMask.set();
+			if (!n.checkpoint || !t_.handoffLiveness)
+				continue;
+			LiveSet endRing = ring;
+			if (n.br.endKind == BlockEnd::EBit && n.fn.end.valid)
+				endRing = EndRingBits(n.fn.end);
+			LiveSet need = (n.useAll & ring) | (endRing & ~n.def);
+			switch (t_.handoffMutation)
+			{
+				case RegionTier::HandoffMutation::IgnoreReads:
+					need &= ~n.def;
+					break;
+				case RegionTier::HandoffMutation::AllDead:
+					need.reset();
+					break;
+				default:
+					break;
+			}
+			n.bailMask = ~ring | need;
+		}
+	}
+
 	// Milestone 8: which variables each node's end must hand on. Between the
 	// budget tests nothing outside the region sees the state, so a final value
 	// that every path overwrites before the next observation is dead: the
 	// observations are exits to microVU (links, JR fallbacks, program ends)
-	// and the heads of checkpoints (a bail there hands everything to
-	// microVU). A node's incoming uses are the incoming values it reads
-	// (other than passing its own variable through).
+	// and the heads of checkpoints (a bail there hands the run to microVU's block,
+	// which needs what ComputeHandoffMasks says).
 	void RegionBuilder::ComputeLiveness()
 	{
 		using namespace ir;
 		using Bits = LiveSet;
 		const size_t NN = nodes_.size();
-		std::vector<Bits> use(NN), def(NN), in(NN), out(NN);
+		std::vector<Bits> in(NN), out(NN);
 		std::vector<u8> observe(NN, 0);
 		Bits all;
 		all.set();
-		std::vector<Bits> obsMask(NN, all); // what an observation at the node's end sees
+		std::vector<Bits> obsMask(NN); // what an observation at the node's end sees
 		std::vector<std::vector<int>> succ(NN);
 		for (size_t i = 0; i < NN; i++)
 		{
 			Node& n = *nodes_[i];
-			const Function& f = n.fn;
-			for (const Block& bl : f.blocks)
-			{
-				if (bl.node < 0)
-					continue;
-				for (ValueId id : bl.insts)
-				{
-					const Inst& x = f.insts[id];
-					if (x.op == Op::Leave)
-					{
-						for (u32 k : f.leaveArgs)
-						{
-							const ValueId a = x.args[k];
-							if (!a)
-								continue;
-							const Inst& ai = f.insts[a];
-							const bool passThrough = k < var::Count && ai.op == Op::LiveIn && ai.var == k;
-							if (k < var::Count && !passThrough)
-								def[i].set(k);
-							if (!passThrough && ai.op == Op::LiveIn && ai.var < var::Count)
-								use[i].set(ai.var);
-						}
-						continue;
-					}
-					// (with the sticky accumulators a status update reads the chain
-					// word, not the previous instance: only readers use an instance)
-					const bool chain = acc_ && (x.op == Op::StatusUpd || x.op == Op::StatusDiv || x.op == Op::StatusSet);
-					for (size_t k = chain ? 1 : 0; k < x.args.size(); k++)
-					{
-						const ValueId a = x.args[k];
-						if (a && f.insts[a].op == Op::LiveIn && f.insts[a].var < var::Count)
-							use[i].set(f.insts[a].var);
-					}
-				}
-			}
 			const auto edge = [&](int t) {
 				if (t == 0x7fffffff)
 					return;
-				if (t < 0 || nodes_[t]->checkpoint)
+				if (t < 0)
+				{
 					observe[i] = 1;
+					obsMask[i] |= all;
+				}
+				else if (nodes_[t]->checkpoint)
+				{
+					// the bail sees what microVU's block needs; the run that does not bail
+					// goes on into the node, so its uses count too
+					observe[i] = 1;
+					obsMask[i] |= nodes_[t]->bailMask;
+					succ[i].push_back(t);
+				}
 				else
 					succ[i].push_back(t);
 			};
 			if (n.br.endKind == BlockEnd::EBit)
 			{
-				// A program end hands microVU one instance of each flag (fS /
-				// fM / fC, broadcast to the whole ring by mVUendProgram); the
-				// other instances are dead. A MAC index past the ring reads the
-				// clip instance there (microVU's layout).
+				// A program end hands microVU one instance of each flag.
 				observe[i] = 1;
-				const ir::EndInfo& e = n.fn.end;
-				if (e.valid)
+				if (n.fn.end.valid)
 				{
 					Bits m = all;
-					for (u32 k = 0; k < 4; k++)
-					{
-						m.reset(var::S(k));
-						m.reset(var::M(k));
-						m.reset(var::C(k));
-					}
-					m.set(var::S(e.fS & 3));
-					if (e.fM < 4)
-						m.set(var::M(e.fM));
-					else
-						m.set(var::C((e.fM - 4) & 3));
-					if (e.fC < 4)
-						m.set(var::C(e.fC));
-					obsMask[i] = m;
+					m &= ~RingBits();
+					m |= EndRingBits(n.fn.end);
+					obsMask[i] |= m;
 				}
+				else
+					obsMask[i] |= all;
 			}
 			else if (n.br.endKind == BlockEnd::Jump && n.taken == 0x7fffffff)
 			{
 				observe[i] = 1; // the fallback to microVU's dispatch
+				obsMask[i] |= all;
 				for (const auto& j : n.jumps)
 					edge(j.second);
 			}
@@ -505,7 +623,8 @@ namespace vuopt
 				for (int t : succ[ii])
 					o |= in[t];
 				o.set(var::MEM);
-				const Bits ni = use[ii] | (o & ~def[ii]);
+				const Node& n = *nodes_[ii];
+				const Bits ni = (acc_ ? n.useNoChain : n.useAll) | (o & ~n.def);
 				if (o != out[ii] || ni != in[ii])
 				{
 					out[ii] = o;
@@ -1289,6 +1408,26 @@ namespace vuopt
 		}
 		if (acc_)
 			ComputeDirty();
+		{
+			const LiveSet ring = RingBits();
+			for (const auto& np : nodes_)
+			{
+				const Node& u = *np;
+				const auto count = [&](int t) {
+					if (t < 0 || t == 0x7fffffff || !nodes_[t]->checkpoint)
+						return;
+					t_.handoffEdges_++;
+					t_.handoffRingsDead_ += static_cast<u32>(ring.count() - (nodes_[t]->bailMask & ring).count());
+				};
+				if (u.br.endKind == BlockEnd::EBit)
+					continue;
+				count(u.taken);
+				if (u.br.endKind == BlockEnd::CondBranch)
+					count(u.fall);
+				for (const auto& j : u.jumps)
+					count(j.second);
+			}
+		}
 		AssignHomes();
 		const u8* start = armGetCurrentCodePointer();
 		const u8* end = nullptr;
@@ -1303,8 +1442,25 @@ namespace vuopt
 			std::printf("[vuopt region] root %04x: %zu nodes, %zu exits, %zu bytes\n", nodes_[0]->pc, nodes_.size(), exits_.size(),
 				static_cast<size_t>(end - start));
 			for (size_t i = 0; i < nodes_.size(); i++)
-				std::printf("  n%zu pc=%04x cycles=%u taken=%d fall=%d entry=%p\n", i, nodes_[i]->pc, nodes_[i]->br.cycles,
-					nodes_[i]->taken, nodes_[i]->br.endKind == BlockEnd::CondBranch ? nodes_[i]->fall : 0, nodes_[i]->entry);
+			{
+				std::printf("  n%zu pc=%04x cycles=%u taken=%d fall=%d entry=%p need=%u", i, nodes_[i]->pc, nodes_[i]->br.cycles,
+					nodes_[i]->taken, nodes_[i]->br.endKind == BlockEnd::CondBranch ? nodes_[i]->fall : 0, nodes_[i]->entry, nodes_[i]->need);
+				if (nodes_[i]->checkpoint)
+				{
+					// the ring instances a bail here hands over exactly
+					std::printf(" checkpoint, bail needs");
+					for (u32 k = 0; k < 4; k++)
+						if (nodes_[i]->bailMask.test(ir::var::S(k)))
+							std::printf(" S%u", k);
+					for (u32 k = 0; k < 4; k++)
+						if (nodes_[i]->bailMask.test(ir::var::M(k)))
+							std::printf(" M%u", k);
+					for (u32 k = 0; k < 4; k++)
+						if (nodes_[i]->bailMask.test(ir::var::C(k)))
+							std::printf(" C%u", k);
+				}
+				std::printf("\n");
+			}
 			for (size_t m = 0; m < maps_.size(); m++)
 			{
 				const HomeMap& hm = maps_[m];

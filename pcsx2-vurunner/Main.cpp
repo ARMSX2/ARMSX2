@@ -268,6 +268,8 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 			opts.vuopt.stickyAcc = false;
 		else if (a == "--vuopt-acc-always")
 			opts.vuopt.accAlways = true;
+		else if (a == "--vuopt-no-handoff")
+			opts.vuopt.handoff = false;
 		else if (a == "--vuopt-profile")
 			opts.vuopt.profile = true;
 		else if (a == "--vuopt-ghomes" && i + 1 < argc)

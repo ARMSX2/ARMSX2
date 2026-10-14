@@ -77,6 +77,10 @@ namespace vuopt
 		u32 AccAccumulated() const { return accAccumulated_; }
 		// Regions with candidates where the accumulators would cost more than they save.
 		u32 AccUnprofitable() const { return accUnprofitable_; }
+		// Hand-off points (a link into a loop head, whose bail runs microVU's block) and the
+		// ring instances (of twelve) they leave out, summed.
+		u32 HandoffEdges() const { return handoffEdges_; }
+		u32 HandoffRingsDead() const { return handoffRingsDead_; }
 		const std::map<std::string, u32>& Declined() const { return declined_; }
 
 		// Build only the first `maxRegions` regions (bisecting); -1 = all.
@@ -97,6 +101,19 @@ namespace vuopt
 		bool stickyAcc = true;
 		// ... even where the static estimate says they would not pay (tests, A/B).
 		bool accAlways = false;
+		// Flag-ring instances at a hand-off to microVU (a bail at a loop head):
+		// only the instances microVU's code for the block can still see are
+		// handed over exactly. Off (A/B): all twelve, as before.
+		bool handoffLiveness = true;
+		// Test only: break the rule above on purpose, to show the tests notice.
+		enum class HandoffMutation : u8
+		{
+			None,
+			IgnoreReads,    // an instance the block reads counts as dead if the block also writes it
+			NoArrivalGuard, // the budget test does not keep one cycle in hand for the block's entry test
+			AllDead,        // every ring instance is dead at a hand-off
+		};
+		HandoffMutation handoffMutation = HandoffMutation::None;
 		// Recorded JR/JALR targets: block start PC of the jump -> target PCs
 		// seen at run time. A region dispatches these directly; any other
 		// target goes through microVU's jump cache.
@@ -126,6 +143,7 @@ namespace vuopt
 		std::unique_ptr<PipeAnalyzer> an_;
 		u32 compiles_ = 0, regions_ = 0, nodes_ = 0, exits_ = 0;
 		u32 accRegions_ = 0, accNonLinear_ = 0, accAccumulated_ = 0, accUnprofitable_ = 0;
+		u32 handoffEdges_ = 0, handoffRingsDead_ = 0;
 		u64 bytes_ = 0;
 		std::map<std::string, u32> declined_;
 

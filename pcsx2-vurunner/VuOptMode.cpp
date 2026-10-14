@@ -347,6 +347,7 @@ namespace
 				region->splitHomes = o.splitHomes;
 				region->stickyAcc = o.stickyAcc;
 				region->accAlways = o.accAlways;
+				region->handoffLiveness = o.handoff;
 				region->dump = o.dumpIr;
 			}
 		}
@@ -680,9 +681,9 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			steadyCompiles, static_cast<unsigned long long>(compRef), static_cast<unsigned long long>(compRun));
 		if (ctx.region)
 		{
-			std::printf(" regions=%u rnodes=%u rexits=%u rbytes=%llu mvublocks=%u racc=%u raccnl=%u raccn=%u raccun=%u", ctx.region->Regions(), ctx.region->Nodes(),
+			std::printf(" regions=%u rnodes=%u rexits=%u rbytes=%llu mvublocks=%u racc=%u raccnl=%u raccn=%u raccun=%u rhoe=%u rhod=%u", ctx.region->Regions(), ctx.region->Nodes(),
 				ctx.region->Exits(), static_cast<unsigned long long>(ctx.region->Bytes()), mvuBlocks, ctx.region->AccRegions(), ctx.region->AccNonLinear(),
-				ctx.region->AccAccumulated(), ctx.region->AccUnprofitable());
+				ctx.region->AccAccumulated(), ctx.region->AccUnprofitable(), ctx.region->HandoffEdges(), ctx.region->HandoffRingsDead());
 			for (const auto& d : ctx.region->Declined())
 			{
 				std::string k = d.first;
