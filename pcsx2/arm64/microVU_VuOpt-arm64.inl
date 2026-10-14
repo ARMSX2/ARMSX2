@@ -131,6 +131,10 @@ namespace vuopt::live
 			s.regionNodes = s_vuopt.region->Nodes();
 			s.regionExits = s_vuopt.region->Exits();
 			s.regionBytes = s_vuopt.region->Bytes();
+			s.statusReaders = s_vuopt.region->StatusReaders();
+			s.stickyReaders = s_vuopt.region->StickyReaders();
+			s.stickyDropped = s_vuopt.region->StickyDropped();
+			s.stickyImages = s_vuopt.region->StickyReaderImages();
 		}
 		if (s_vuopt.body)
 		{
@@ -161,14 +165,16 @@ namespace vuopt::live
 		std::snprintf(buf, sizeof(buf),
 			"vuopt live tier: tierups=%llu retiers=%llu retierchecks=%llu blocks_set_aside=%llu targets=%llu jumpmisses=%llu "
 			"roots=%llu regions=%llu rnodes=%llu rexits=%llu rbytes=%llu bodyblocks=%llu bodies=%llu bodybytes=%llu bails=%llu "
-			"jrtierups=%llu jrcounted=%llu xprogtargets=%llu bails_entry=%llu bails_loophead=%llu",
+			"jrtierups=%llu jrcounted=%llu xprogtargets=%llu bails_entry=%llu bails_loophead=%llu "
+			"status_readers=%llu sticky_readers=%llu sticky_dropped=%llu sticky_images=%llu",
 			(unsigned long long)s.tierUps, (unsigned long long)s.retiers, (unsigned long long)s.retierChecks,
 			(unsigned long long)s.blocksSetAside, (unsigned long long)s.targetsRecorded, (unsigned long long)s.jumpMisses,
 			(unsigned long long)s.rootsCompiled, (unsigned long long)s.regions, (unsigned long long)s.regionNodes,
 			(unsigned long long)s.regionExits, (unsigned long long)s.regionBytes, (unsigned long long)s.bodyBlocks,
 			(unsigned long long)s.bodiesLowered, (unsigned long long)s.bodyBytes, (unsigned long long)s.bailCompiles,
 			(unsigned long long)s.jumpTierUps, (unsigned long long)s.jumpCounted, (unsigned long long)s.crossProgTargets,
-			(unsigned long long)s.bailsEntry, (unsigned long long)s.bailsLoopHead);
+			(unsigned long long)s.bailsEntry, (unsigned long long)s.bailsLoopHead, (unsigned long long)s.statusReaders,
+			(unsigned long long)s.stickyReaders, (unsigned long long)s.stickyDropped, (unsigned long long)s.stickyImages);
 		out = buf;
 		if (s.compileInsTiered || s.compileInsPlain)
 		{

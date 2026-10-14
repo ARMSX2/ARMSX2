@@ -90,6 +90,13 @@ namespace vuopt
 			u64 bailCompiles = 0;     // regions' blocks microVU compiled at run time (budget shortfalls)
 			u64 bailsEntry = 0;       // budget bails taken by regions at an entry from microVU (programs deleted so far)
 			u64 bailsLoopHead = 0;    // ... and at a loop head
+			// Static census of the compiled regions' flag reads (exactness contract, relaxation 3):
+			// status readers (FSAND/FSEQ/FSOR), those whose mask selects a sticky bit, compiles that
+			// dropped the sticky byte, and compiles whose micro memory has a sticky reader.
+			u64 statusReaders = 0;
+			u64 stickyReaders = 0;
+			u64 stickyDropped = 0;
+			u64 stickyImages = 0;
 			// pcsx2-eerunner --count-vu1-ins only: user-mode instructions VU1's compile
 			// sessions retired, for programs the tier took over and for the rest.
 			u64 compileInsTiered = 0;
