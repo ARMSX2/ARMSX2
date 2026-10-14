@@ -574,7 +574,7 @@ namespace vu_capture
 					std::setvbuf(g_traj_file, nullptr, _IOLBF, 0);  // line-buffered
 					std::fprintf(g_traj_file,
 						"# vu_capture trajectory — pid %d\n"
-						"# seq vu pc budget cpu_cycle vu_cycle state_hash vumem_hash core_hash\n",
+						"# seq vu pc budget cpu_cycle vu_cycle state_hash vumem_hash core_hash obs_hash\n",
 						capture_pid());
 					std::atexit(&CloseTrajAtExit);
 				}
@@ -620,6 +620,17 @@ namespace vu_capture
 			CapturedState st{};
 			SnapshotState(regs, st);
 			const u64 state_hash = Fnv1a(&st, sizeof(st));
+			// obs_hash: the same state with the bits the exactness contract frees (relaxation 3, flag
+			// hack on: the sticky zero/sign bits of STATUS, in the register and in its ring copies).
+			// Everything else a game can see is in it, the settled flags of a program end included.
+			CapturedState obs = st;
+			if (EmuConfig.Speedhacks.vuFlagHack)
+			{
+				obs.VI[REG_STATUS_FLAG] &= ~0xC0u;
+				for (u32& w : obs.micro_statusflags)
+					w &= ~0xFFu;
+			}
+			const u64 obs_hash = Fnv1a(&obs, sizeof(obs));
 			const u64 vumem_hash = Fnv1a(vumem_ptr, vumem_size);
 			// core_hash covers ONLY pure arithmetic/control state: VF[32] +
 			// integer VI[0..15] + ACC. It deliberately excludes the cycle-timed
@@ -668,11 +679,11 @@ namespace vu_capture
 			const u64 seq = g_traj_seq.fetch_add(1, std::memory_order_relaxed);
 			std::lock_guard lock(g_traj_mutex);
 			if (g_traj_file)
-				std::fprintf(g_traj_file, "%llu %d 0x%08X %u %llu %llu %016llx %016llx %016llx\n",
+				std::fprintf(g_traj_file, "%llu %d 0x%08X %u %llu %llu %016llx %016llx %016llx %016llx\n",
 					(unsigned long long)seq, vu_index, start_pc, cycle_budget,
 					(unsigned long long)cpuRegs.cycle, (unsigned long long)regs.cycle,
 					(unsigned long long)state_hash, (unsigned long long)vumem_hash,
-					(unsigned long long)core);
+					(unsigned long long)core, (unsigned long long)obs_hash);
 		}
 
 		// Decide slot under the state lock; do the heavy I/O after releasing
