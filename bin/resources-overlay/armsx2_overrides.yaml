@@ -1226,3 +1226,25 @@ SLUS-20035:
         author=bmdhacks
         comment=Keeps textures that are drawn every frame resident in the game's VRAM texture cache instead of evicting and re-uploading them (0x00135180: lw v0,-0x5bb8(gp) -> lw v0,-0x5bb4(gp)).
         patch=1,EE,00135180,word,8f82a44c
+
+# Baldur's Gate: Dark Alliance II (NTSC-U) — the same VRAM texture-cache stamp fix as
+# Dark Alliance above. bmdhacks, 2026-10-14; ARMSX2 umbrella,
+# devs/bmdhacks/campaigns/g57-bgda-slowdown/PATCH-STUDY.md (BGDA II section).
+#
+# Same engine, same bug: the code that queues an already-resident texture (0x1f7638)
+# refreshes its stamp from the game-time counter (gp-0x654c, 0x3601a4), while the
+# allocator (0x2bc040) and the per-frame sweep (0x2bc2f8) use the render-frame counter
+# (gp-0x6548, 0x3601a8). The patch makes the refresh read the render-frame counter.
+#
+# Cost it saves: over a scripted 3.3-minute session (menus, first map, walking, pause),
+# hash-cache hits 48.7% -> 78.0% and texture uploads -54% (M2, EE JIT, MTVU off).
+# Verified: boot-from-disc sessions on the M2 (probe build on master f7c764dd9d), no hangs or errors,
+# screenshots matching at nine points; no per-pixel comparison and no console run.
+# patches only: upstream's gameFixes and gsHWFixes for this serial stay in force.
+SLUS-20675:
+  patches:
+    B0859096:
+      content: |-
+        author=bmdhacks
+        comment=Keeps textures that are drawn every frame resident in the game's VRAM texture cache instead of evicting and re-uploading them (0x001f7640: lw v0,-0x654c(gp) -> lw v0,-0x6548(gp)).
+        patch=1,EE,001f7640,word,8f829ab8
