@@ -81,7 +81,8 @@ namespace IopThread
 		m_req_seq_local = 0;
 		m_iop_tid = std::thread::id();
 
-		for (detail::Counter* c : {&m_lag_spins, &m_lag_spin_iterations, &m_hold_requests, &m_hold_markers, &m_hold_spin_iterations, &m_hold_sleeps,
+		for (detail::Counter* c : {&m_lag_spins, &m_lag_spin_iterations, &m_lag_stall_ns, &m_lag_spins_parked, &m_lag_parked_stall_ns,
+				 &m_emu_hold_requests, &m_emu_hold_stall_ns, &m_sif_ee_pumps, &m_hold_requests, &m_hold_markers, &m_hold_spin_iterations, &m_hold_sleeps,
 				 &m_e2i_full_spins, &m_e2i_full_iterations, &m_e2i_full_failfast, &m_i2e_drained, &m_calls_served, &m_wakes_sent,
 				 &m_wakes_dropped, &m_stop_checks, &m_handoffs, &m_slices, &m_items_applied, &m_parks, &m_holds_entered,
 				 &m_calls_posted, &m_calls_cancelled, &m_i2e_full_waits, &m_kicks_applied})
@@ -499,6 +500,10 @@ namespace IopThread
 			return true;
 
 		m_lag_spins.Add();
+		// "Found the IOP parked" is read before the wake-up below: it says whether the EE's published
+		// watermark went unseen because the IOP was asleep (design 3.9: an accepted lost wake-up).
+		const bool found_parked = m_iop.parked.load(std::memory_order_relaxed);
+		const auto begin = std::chrono::steady_clock::now();
 		m_ee.spinning.store(true, std::memory_order_relaxed);
 		WakeIfParked(WakeSite::SpinEntry);
 
@@ -526,6 +531,13 @@ namespace IopThread
 		}
 		m_ee.spinning.store(false, std::memory_order_relaxed);
 		m_lag_spin_iterations.Add(iterations);
+		const u64 stall_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count());
+		m_lag_stall_ns.Add(stall_ns);
+		if (found_parked)
+		{
+			m_lag_spins_parked.Add();
+			m_lag_parked_stall_ns.Add(stall_ns);
+		}
 		return reached;
 	}
 
@@ -668,6 +680,11 @@ namespace IopThread
 		m_ee.spinning.store(false, std::memory_order_relaxed);
 		m_hold_spin_iterations.Add(iterations);
 		m_hold_pending = false;
+		if (kind == HoldKind::Emulation)
+		{
+			m_emu_hold_requests.Add();
+			m_emu_hold_stall_ns.Add(static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count()));
+		}
 
 		if (!held)
 		{
@@ -684,6 +701,8 @@ namespace IopThread
 		// With the IOP stopped the queue cannot grow, so after this nothing it did before the hold
 		// is waiting for the EE.
 		DrainI2E();
+		if (m_params.on_hold_acquired)
+			m_params.on_hold_acquired();
 		return true;
 	}
 
@@ -843,6 +862,12 @@ namespace IopThread
 		Stats s = {};
 		s.lag_spins = m_lag_spins.Get();
 		s.lag_spin_iterations = m_lag_spin_iterations.Get();
+		s.lag_stall_ns = m_lag_stall_ns.Get();
+		s.lag_spins_parked = m_lag_spins_parked.Get();
+		s.lag_parked_stall_ns = m_lag_parked_stall_ns.Get();
+		s.emu_hold_requests = m_emu_hold_requests.Get();
+		s.emu_hold_stall_ns = m_emu_hold_stall_ns.Get();
+		s.sif_ee_pumps = m_sif_ee_pumps.Get();
 		s.hold_requests = m_hold_requests.Get();
 		s.hold_markers = m_hold_markers.Get();
 		s.hold_spin_iterations = m_hold_spin_iterations.Get();

@@ -109,6 +109,17 @@
 
 namespace IopThread
 {
+	/// Which instruction the spin loops use between looks. The design chose yield; the repo's own
+	/// Threading::SpinWait is isb, and which is better for the 1024-iteration cadence of the lag spin is
+	/// a measurement (step 11 report). It is a testing knob (eerunner --iop-spin-hint), set before the
+	/// thread starts, so a relaxed load is all a spin pays for it.
+	enum class SpinHintKind : u8
+	{
+		Yield,
+		Isb,
+	};
+	inline std::atomic<SpinHintKind> g_spin_hint{SpinHintKind::Yield};
+
 	// The CPU's spin-wait hint, for the loops that wait for the other thread. It does not sleep and
 	// does not give the core away; it only tells the core a loop is spinning.
 	__fi inline void SpinHint() noexcept
@@ -118,7 +129,10 @@ namespace IopThread
 #elif defined(_MSC_VER)
 		_mm_pause();
 #elif defined(__aarch64__)
-		asm volatile("yield" ::: "memory");
+		if (g_spin_hint.load(std::memory_order_relaxed) == SpinHintKind::Isb)
+			asm volatile("isb" ::: "memory");
+		else
+			asm volatile("yield" ::: "memory");
 #elif defined(__x86_64__) || defined(__i386__)
 		__builtin_ia32_pause();
 #else
@@ -217,6 +231,11 @@ namespace IopThread
 		/// the last published watermark is used.
 		std::function<u64()> ee_cycle;
 
+		/// Optional. Called on the EE thread when an outermost hold has been granted, with the IOP stopped
+		/// at its position and the I2E queue emptied once more. The VM uses it to rewrite the EE-side books
+		/// (EEsCycle, EEoCycle) from the IOP's position, which a savestate or a mode change reads.
+		std::function<void()> on_hold_acquired;
+
 		/// Asked every kSpinCheckInterval iterations of an EE spin. True makes the spin give up:
 		/// the emulator passes VMManager::GetState() being Stopping or Shutdown.
 		std::function<bool()> should_stop;
@@ -233,7 +252,13 @@ namespace IopThread
 		// EE thread
 		u64 lag_spins; // CheckLag calls that had to wait (W1)
 		u64 lag_spin_iterations;
+		u64 lag_stall_ns; // wall time spent in W1 spins
+		u64 lag_spins_parked; // W1 spins that found the IOP parked when they began
+		u64 lag_parked_stall_ns; // ... and the wall time those spins took
 		u64 hold_requests; // holds that went through the handshake (W2/W4)
+		u64 emu_hold_requests; // ... of which on the emulation path (W2): EE access to IOP space, SIF pumps, the PS1 switch
+		u64 emu_hold_stall_ns; // wall time the EE spent waiting for those
+		u64 sif_ee_pumps; // SIF pumps the EE started (each one took a W2 hold)
 		u64 hold_markers; // holds that were only a counter: Lockstep, nested, inside a CallOnEE function, no thread
 		u64 hold_spin_iterations;
 		u64 hold_sleeps; // polling sleeps of a Lifecycle hold
@@ -251,7 +276,7 @@ namespace IopThread
 		u64 items_applied;
 		u64 parks; // times the IOP went to sleep
 		u64 holds_entered;
-		u64 calls_posted;
+		u64 calls_posted; // CallOnEE requests: the IOP-started SIF pumps (the IOP blocks until the EE has run each)
 		u64 calls_cancelled;
 		u64 i2e_full_waits; // PostI2E calls that found the queue full
 		u64 kicks_applied;
@@ -419,6 +444,21 @@ namespace IopThread
 		bool OnIopThread() const { return m_iop_tid == std::this_thread::get_id(); }
 		/// EE thread. How many ScopedHolds are live, nested ones included.
 		u32 HoldDepth() const { return m_hold_depth; }
+		/// EE thread. True while the EE runs a CallOnEE function: the IOP is blocked at a known point, as under a hold.
+		bool InCallOnEE() const { return m_in_call; }
+		/// EE thread. True when nothing runs the IOP's state beside the caller: no thread, a hold, or a CallOnEE
+		/// function. EE code that would touch IOP state outside a hold may do it then.
+		bool IopIsStopped() const { return !m_running || m_hold_depth > 0 || m_in_call; }
+
+		/// EE thread. Changes the lag bound L. The IOP thread never reads it.
+		void SetLag(s32 lag)
+		{
+			m_lag = lag;
+		}
+		s32 Lag() const { return static_cast<s32>(m_lag); }
+
+		/// EE thread. Counts a SIF pump the EE started (it holds the IOP for the pump).
+		void CountSifPump() { m_sif_ee_pumps.Add(); }
 
 		Stats GetStats() const;
 
@@ -539,6 +579,7 @@ namespace IopThread
 
 		// Statistics.
 		detail::Counter m_lag_spins, m_lag_spin_iterations, m_hold_requests, m_hold_markers, m_hold_spin_iterations, m_hold_sleeps;
+		detail::Counter m_lag_stall_ns, m_lag_spins_parked, m_lag_parked_stall_ns, m_emu_hold_requests, m_emu_hold_stall_ns, m_sif_ee_pumps;
 		detail::Counter m_e2i_full_spins, m_e2i_full_iterations, m_e2i_full_failfast, m_i2e_drained, m_calls_served;
 		detail::Counter m_wakes_sent, m_wakes_dropped, m_stop_checks, m_handoffs;
 		detail::Counter m_slices, m_items_applied, m_parks, m_holds_entered, m_calls_posted, m_calls_cancelled;

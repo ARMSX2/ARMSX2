@@ -2292,4 +2292,243 @@ namespace
 		for (size_t i = 0; i < fake.applied.size(); i++)
 			ASSERT_EQ(fake.applied[i].item.arg, i);
 	}
+
+	// ---------------------------------------------------------------- step 11: counters, the hold hook, the spin knob
+
+	TEST_F(IopThreadObject, AWaitThatFindsTheIopParkedIsCountedWithItsStallTime)
+	{
+		// The accepted lost wake-up (design 3.9) made visible: the EE publishes, reads iop_parked as false, and the IOP sleeps
+		// with budget pending. The next wait the EE has finds it parked, and says so.
+		Params p = BaseParams();
+		p.lag = 4096;
+		p.drop_wake = [](WakeSite site) { return site != WakeSite::SpinEntry; };
+		StopOnExit stop_on_exit(*thread);
+		ASSERT_TRUE(thread->Start(p));
+		ASSERT_TRUE(WaitAsleep());
+
+		Publish(20000);
+		std::this_thread::sleep_for(20ms);
+		EXPECT_TRUE(thread->CheckLag(20000));
+		const Stats stats = thread->GetStats();
+		EXPECT_EQ(stats.lag_spins, 1u);
+		EXPECT_EQ(stats.lag_spins_parked, 1u);
+		EXPECT_GT(stats.lag_parked_stall_ns, 0u);
+		EXPECT_EQ(stats.lag_stall_ns, stats.lag_parked_stall_ns) << "the only wait there was found the IOP parked";
+	}
+
+	TEST_F(IopThreadObject, AWaitThatFindsTheIopRunningIsNotCountedAsParked)
+	{
+		Latch gate;
+		fake.in_slice_hook = [&](u64, u64) { gate.Wait(aborted); };
+		Params p = BaseParams();
+		p.lag = 4096;
+		StopOnExit stop_on_exit(*thread);
+		ASSERT_TRUE(thread->Start(p));
+		Publish(100);
+		ASSERT_TRUE(WaitEe([&] { return fake.slices_started.load() == 1; }));
+		ASSERT_FALSE(thread->IsParked());
+
+		std::thread releaser([&] {
+			std::this_thread::sleep_for(30ms);
+			gate.Open();
+		});
+		ee_cycle = 20000;
+		thread->PublishWatermark(20000);
+		EXPECT_TRUE(thread->CheckLag(20000));
+		releaser.join();
+
+		const Stats stats = thread->GetStats();
+		EXPECT_EQ(stats.lag_spins, 1u);
+		EXPECT_EQ(stats.lag_spins_parked, 0u);
+		EXPECT_EQ(stats.lag_parked_stall_ns, 0u);
+		EXPECT_GE(stats.lag_stall_ns, 20'000'000u) << "the wait lasted about 30 ms";
+	}
+
+	TEST_F(IopThreadObject, AnEmulationHoldIsCountedWithItsStallTimeAndALifecycleHoldIsNot)
+	{
+		Latch gate;
+		bool first = true;
+		fake.in_slice_hook = [&](u64, u64) {
+			if (first)
+			{
+				first = false;
+				gate.Wait(aborted);
+			}
+		};
+		StopOnExit stop_on_exit(*thread);
+		ASSERT_TRUE(thread->Start(BaseParams()));
+		Publish(100);
+		ASSERT_TRUE(WaitEe([&] { return fake.slices_started.load() == 1; }));
+
+		std::thread releaser([&] {
+			std::this_thread::sleep_for(30ms);
+			gate.Open();
+		});
+		{
+			ScopedHold hold(*thread, HoldKind::Emulation);
+			ASSERT_TRUE(hold.Acquired());
+		}
+		releaser.join();
+		Stats stats = thread->GetStats();
+		EXPECT_EQ(stats.hold_requests, 1u);
+		EXPECT_EQ(stats.emu_hold_requests, 1u);
+		EXPECT_GE(stats.emu_hold_stall_ns, 20'000'000u);
+
+		{
+			ScopedHold hold(*thread, HoldKind::Lifecycle);
+			ASSERT_TRUE(hold.Acquired());
+			ScopedHold nested(*thread, HoldKind::Emulation); // a marker: nothing to wait for
+		}
+		stats = thread->GetStats();
+		EXPECT_EQ(stats.hold_requests, 2u);
+		EXPECT_EQ(stats.emu_hold_requests, 1u) << "only a hold that went through the handshake as Emulation is counted";
+	}
+
+	TEST_F(IopThreadObject, TheHoldHookRunsOnTheEeThreadWhenTheIopIsHeldAndForTheOutermostHoldOnly)
+	{
+		struct Seen
+		{
+			std::thread::id thread;
+			u64 pos_published;
+			u64 ee_cycle_at_call;
+			u32 calls = 0;
+		} seen;
+		Params p = BaseParams();
+		p.on_hold_acquired = [&] {
+			seen.calls++;
+			seen.thread = std::this_thread::get_id();
+			seen.pos_published = thread->PublishedPos();
+			seen.ee_cycle_at_call = ee_cycle;
+		};
+		StopOnExit stop_on_exit(*thread);
+		ASSERT_TRUE(thread->Start(p));
+		Publish(1000);
+		ASSERT_TRUE(WaitPos(1000));
+
+		ee_cycle = 5000; // the EE has run on without an event test
+		{
+			ScopedHold outer(*thread);
+			ASSERT_TRUE(outer.Acquired());
+			EXPECT_EQ(seen.calls, 1u);
+			EXPECT_EQ(seen.thread, std::this_thread::get_id());
+			EXPECT_GE(seen.pos_published, 5000u) << "the IOP had run up to the EE's cycle when the hook ran";
+			{
+				ScopedHold inner(*thread);
+				EXPECT_EQ(seen.calls, 1u) << "a nested hold is a counter";
+			}
+		}
+		{
+			ScopedHold again(*thread);
+			EXPECT_EQ(seen.calls, 2u);
+		}
+	}
+
+	TEST_F(IopThreadObject, TheLagBoundTheEeWaitsAtIsTheEesToChange)
+	{
+		Params p = BaseParams();
+		p.lag = 4096;
+		StopOnExit stop_on_exit(*thread);
+		ASSERT_TRUE(thread->Start(p));
+		EXPECT_EQ(thread->Lag(), 4096);
+		ASSERT_TRUE(WaitAsleep());
+
+		// 15000 ahead of an IOP that has run nothing: beyond 4096, so a wait. With the bound at 40000, none.
+		thread->SetLag(40000);
+		EXPECT_EQ(thread->Lag(), 40000);
+		ee_cycle = 15000;
+		thread->PublishWatermark(15000);
+		EXPECT_TRUE(thread->CheckLag(15000));
+		EXPECT_EQ(thread->GetStats().lag_spins, 0u);
+
+		thread->SetLag(4096);
+		EXPECT_TRUE(thread->CheckLag(15000));
+		EXPECT_EQ(thread->GetStats().lag_spins, 1u);
+	}
+
+	TEST_F(IopThreadObject, TheIopIsStoppedWhenThereIsNoThreadAHoldOrACallOnEeFunction)
+	{
+		EXPECT_TRUE(thread->IopIsStopped()) << "no thread";
+		StopOnExit stop_on_exit(*thread);
+		Params p = BaseParams();
+		bool posted = false;
+		Latch served;
+		p.handle_i2e = [](const I2EItem&) {};
+		ASSERT_TRUE(thread->Start(p));
+		EXPECT_FALSE(thread->IopIsStopped());
+		Publish(500);
+		ASSERT_TRUE(WaitPos(500));
+		{
+			ScopedHold hold(*thread);
+			EXPECT_TRUE(thread->IopIsStopped());
+		}
+		EXPECT_FALSE(thread->IopIsStopped());
+
+		// Inside a function the IOP asked the EE to run, the IOP is blocked at a known point.
+		bool stopped_inside = false, in_call_inside = false;
+		fake.in_slice_hook = [&](u64, u64) {
+			if (!posted)
+			{
+				posted = true;
+				thread->CallOnEE([&] {
+					stopped_inside = thread->IopIsStopped();
+					in_call_inside = thread->InCallOnEE();
+				});
+				served.Open();
+			}
+		};
+		Publish(5000);
+		ASSERT_TRUE(WaitEe([&] {
+			if (thread->MayHaveI2E())
+				thread->DrainI2E();
+			return served.IsOpen();
+		}));
+		EXPECT_TRUE(stopped_inside);
+		EXPECT_TRUE(in_call_inside);
+		EXPECT_FALSE(thread->IopIsStopped());
+		EXPECT_FALSE(thread->InCallOnEE());
+	}
+
+	TEST_F(IopThreadObject, EitherSpinHintLetsTheWaitsComplete)
+	{
+		const SpinHintKind saved = g_spin_hint.load();
+		for (const SpinHintKind kind : {SpinHintKind::Yield, SpinHintKind::Isb})
+		{
+			g_spin_hint.store(kind);
+			Latch gate;
+			bool first = true;
+			fake.in_slice_hook = [&](u64, u64) {
+				if (first)
+				{
+					first = false;
+					gate.Wait(aborted);
+				}
+			};
+			Params p = BaseParams();
+			p.lag = 4096;
+			ASSERT_TRUE(thread->Start(p));
+			Publish(100);
+			ASSERT_TRUE(WaitEe([&] { return fake.slices_started.load() == 1; }));
+			std::thread releaser([&] {
+				std::this_thread::sleep_for(10ms);
+				gate.Open();
+			});
+			ee_cycle = 20000;
+			thread->PublishWatermark(20000);
+			EXPECT_TRUE(thread->CheckLag(20000)) << (kind == SpinHintKind::Isb ? "isb" : "yield");
+			releaser.join();
+			EXPECT_EQ(thread->GetStats().lag_spins, 1u);
+			thread->Stop();
+			fake.Reset();
+		}
+		g_spin_hint.store(saved);
+	}
+
+	TEST_F(IopThreadObject, ASifPumpTheEeStartedIsCounted)
+	{
+		StopOnExit stop_on_exit(*thread);
+		ASSERT_TRUE(thread->Start(BaseParams()));
+		thread->CountSifPump();
+		thread->CountSifPump();
+		EXPECT_EQ(thread->GetStats().sif_ee_pumps, 2u);
+	}
 } // namespace
