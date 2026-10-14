@@ -200,6 +200,7 @@ namespace vuopt
 			bo.clampIImmediate = env_.clampOverflow && !env_.clampSign;
 			bo.clampExtra = env_.clampExtra;
 			bo.clampSign = env_.clampSign;
+			bo.dropSticky = le_.dropSticky;
 			bo.remapAtLeave = true;
 			bo.regionEnds = true;
 			return bo;
@@ -1434,7 +1435,7 @@ namespace vuopt
 						t_.stickyReaders_++;
 				}
 			}
-		acc_ = t_.stickyAcc && WantsAcc();
+		acc_ = t_.stickyAcc && !le_.dropSticky && WantsAcc();
 		for (int pass = 0; pass < 2; pass++)
 		{
 			le_.stickyAcc = acc_;
@@ -1559,6 +1560,26 @@ namespace vuopt
 		}
 	}
 
+	// Whether any pair of the micro memory has a lower instruction that reads a sticky STATUS bit
+	// (FSAND, FSEQ or FSOR whose immediate selects one of bits 6-11). Data in the code area can
+	// look like one, which only errs towards keeping the bits.
+	bool RegionTier::ImageReadsSticky() const
+	{
+		const u32 size = (vu_ ? 0x4000u : 0x1000u);
+		for (u32 pc = 0; pc < size; pc += 8)
+		{
+			u32 lower, upper;
+			std::memcpy(&lower, micro_ + pc, 4);
+			std::memcpy(&upper, micro_ + pc + 4, 4);
+			if (upper & 0x80000000u) // I bit: the lower word is an immediate
+				continue;
+			const LowerInst& l = DecodeLowerRef(lower);
+			if ((l.op == LOp::FSAND || l.op == LOp::FSEQ || l.op == LOp::FSOR) && (l.imm12 & 0xFC0))
+				return true;
+		}
+		return false;
+	}
+
 	void RegionTier::NoteProgram(const void* program, s32 off)
 	{
 		if (!program)
@@ -1636,6 +1657,19 @@ namespace vuopt
 		le.softwareFlush = env.softwareFlush;
 		le.schedule = schedule;
 		le.vuMemPinned = env.vuMemPinned;
+		if (dropSticky)
+		{
+			// (counted whatever the flag hack: the census of the premise)
+			const bool readsSticky = ImageReadsSticky();
+			if (readsSticky)
+				stickyReaderImages_++;
+			else if (env.flagHack)
+			{
+				le.dropSticky = true;
+				le.dropStickyMutation = dropStickyMutation;
+				stickyDropped_++;
+			}
+		}
 		RegionBuilder rb(*this, env, le);
 		return rb.Run(br, why);
 	}

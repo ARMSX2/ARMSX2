@@ -3837,7 +3837,14 @@ namespace vuopt
 					const int p = StatusPackReg(id, t >= 0 ? t : -1);
 					const int prev = IntOperand(ch != statusChain_.end() ? StatusBase(id) : in.args[0]);
 					const int d = DefG(id);
-					if (nonSticky)
+					if (env_.dropSticky)
+					{
+						pxAssertRel(nonSticky && acc < 0, "vuopt: a sticky-only STATUS update in a build that drops the sticky byte");
+						armAsm->And(W(d), W(prev), env_.dropStickyMutation == 1 ? 0u : 0xfffc0000u);
+						if (env_.dropStickyMutation != 2)
+							armAsm->Orr(W(d), W(d), a64::Operand(W(p), a64::LSL, 8));
+					}
+					else if (nonSticky)
 					{
 						armAsm->And(W(d), W(prev), 0xfffc00ffu);
 						if (acc >= 0)

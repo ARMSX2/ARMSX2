@@ -528,8 +528,22 @@ namespace vuopt::ir
 				if (o.mFlag.doFlag)
 					Wr(var::M(o.mFlag.write), Emit(Op::MacFlags, Type::Int, {result}, 0, u.mask));
 				if (o.sFlag.doFlag)
-					Wr(var::S(o.sFlag.write), Emit(Op::StatusUpd, Type::Int, {Rd(var::S(o.sFlag.lastWrite)), result},
-												  0, u.mask, (o.sFlag.doNonSticky ? 1 : 0) | (o.mFlag.doFlag ? 2 : 0)));
+				{
+					const ValueId prev = Rd(var::S(o.sFlag.lastWrite));
+					if (!o_.dropSticky)
+						Wr(var::S(o.sFlag.write), Emit(Op::StatusUpd, Type::Int, {prev, result},
+													  0, u.mask, (o.sFlag.doNonSticky ? 1 : 0) | (o.mFlag.doFlag ? 2 : 0)));
+					else if (!o.sFlag.doNonSticky)
+						Wr(var::S(o.sFlag.write), prev); // (its only effect is the sticky byte)
+					else
+					{
+						// the bits above the sticky byte come from the last instance that set them,
+						// which is the one before the update's own run of updates
+						const Inst& pi = f_.insts[prev];
+						const ValueId hi = pi.op == Op::StatusUpd ? pi.args[0] : prev;
+						Wr(var::S(o.sFlag.write), Emit(Op::StatusUpd, Type::Int, {hi, result}, 0, u.mask, 1 | (o.mFlag.doFlag ? 2 : 0)));
+					}
+				}
 			}
 		}
 

@@ -325,6 +325,12 @@ namespace vuopt::ir
 		// Clamp modes 2/3 (CHECK_VU_EXTRA_OVERFLOW / CHECK_VU_SIGN_OVERFLOW).
 		bool clampExtra = false;
 		bool clampSign = false;
+		// The exactness contract's relaxation 3 (flag hack on, no program reads a sticky STATUS
+		// bit): a STATUS update does not carry the sticky byte of the instance before it, so it
+		// depends on that instance only through the bits a divide or FSSET put there (bits 18 and
+		// up), which it takes from the last instance that wrote them; the updates in between are
+		// then dead unless somebody reads them. A sticky-only update adds nothing.
+		bool dropSticky = false;
 	};
 
 	// One microVU block alone, for milestone 2's per-block lowering: incoming

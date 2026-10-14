@@ -82,6 +82,10 @@ namespace vuopt
 		// ring instances (of twelve) they leave out, summed.
 		// Static census of the regions' code: status readers (FSAND/FSEQ/FSOR), and those whose
 		// mask selects a sticky bit (bits 6-11).
+		// Compiles that dropped the sticky byte (relaxation 3), and those that could not because the micro
+		// memory has a sticky reader.
+		u32 StickyDropped() const { return stickyDropped_; }
+		u32 StickyReaderImages() const { return stickyReaderImages_; }
 		u32 StatusReaders() const { return statusReaders_; }
 		u32 StickyReaders() const { return stickyReaders_; }
 		// Budget bails the regions' code has taken, summed over the programs it saw: at an
@@ -114,6 +118,13 @@ namespace vuopt
 		// only the instances microVU's code for the block can still see are
 		// handed over exactly. Off (A/B): all twelve, as before.
 		bool handoffLiveness = true;
+		// Relaxation 3 of the exactness contract: with the flag hack on and no instruction in the
+		// micro memory reading a sticky STATUS bit (FSAND/FSEQ/FSOR with a mask that selects bits
+		// 6-11), STATUS updates drop the sticky byte (BuildOptions::dropSticky). The STATUS a
+		// program leaves can then differ from microVU's in bits 6-7 (the sticky zero and sign
+		// bits), which nothing in the corpora reads.
+		bool dropSticky = true;
+		int dropStickyMutation = 0; // test only: LowerEnv::dropStickyMutation
 		// Test only: break the rule above on purpose, to show the tests notice.
 		enum class HandoffMutation : u8
 		{
@@ -153,8 +164,10 @@ namespace vuopt
 		u32 accRegions_ = 0, accNonLinear_ = 0, accAccumulated_ = 0, accUnprofitable_ = 0;
 		u32 handoffEdges_ = 0, handoffRingsDead_ = 0;
 		u32 statusReaders_ = 0, stickyReaders_ = 0;
+		u32 stickyDropped_ = 0, stickyReaderImages_ = 0;
 		std::vector<std::pair<const void*, s32>> progs_;
 		void NoteProgram(const void* program, s32 off);
+		bool ImageReadsSticky() const;
 		u64 bytes_ = 0;
 		std::map<std::string, u32> declined_;
 

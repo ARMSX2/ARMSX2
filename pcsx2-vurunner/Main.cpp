@@ -270,6 +270,8 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 			opts.vuopt.accAlways = true;
 		else if (a == "--vuopt-no-handoff")
 			opts.vuopt.handoff = false;
+		else if (a == "--vuopt-no-dropsticky")
+			opts.vuopt.dropSticky = false;
 		else if (a == "--vuopt-observe")
 			opts.vuopt.observe = true;
 		else if (a == "--vuopt-resumes" && i + 1 < argc)

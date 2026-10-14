@@ -65,6 +65,7 @@ bool g_schedule = false;
 bool g_noStickyAcc = getenv("VUOPT_NO_ACC") != nullptr;
 // A deliberate break of the hand-off liveness rule, to see the tests notice it
 // (VuoptRegion.HandoffMutationsAreCaught); None everywhere else.
+int g_dropStickyMutation = 0; // relaxation 3 broken on purpose (RegionTier::dropStickyMutation)
 vuopt::RegionTier::HandoffMutation g_handoffMutation = getenv("VUOPT_HANDOFF_MUTATION")
 	? static_cast<vuopt::RegionTier::HandoffMutation>(std::atoi(getenv("VUOPT_HANDOFF_MUTATION")))
 	: vuopt::RegionTier::HandoffMutation::None;
@@ -99,7 +100,7 @@ struct Outcome
 // interpreter too, and it leaves them behind for the next run), plus VU
 // memory and the GIF output.
 std::vector<std::string> Compare(const VuSnapshot& ra, const VuSnapshot& rb,
-	const std::vector<u8>& pa, const std::vector<u8>& pb, bool rings = true)
+	const std::vector<u8>& pa, const std::vector<u8>& pb, bool rings = true, bool stickyRelax = false)
 {
 	struct F
 	{
@@ -130,6 +131,18 @@ std::vector<std::string> Compare(const VuSnapshot& ra, const VuSnapshot& rb,
 			u32 va = 0, vb = 0;
 			std::memcpy(&va, x + f.off + i, n);
 			std::memcpy(&vb, y + f.off + i, n);
+			// Relaxation 3: the sticky zero and sign bits of STATUS (bits 6-7 of the register, the low
+			// byte of its ring copies); the rest of those words stays pinned.
+			if (stickyRelax)
+			{
+				u32 mask = 0;
+				if (std::strcmp(f.name, "VI") == 0 && i == REG_STATUS_FLAG * sizeof(REG_VI))
+					mask = 0xC0;
+				else if (std::strcmp(f.name, "micro_statusflags") == 0)
+					mask = 0xFF;
+				if (mask && ((va ^ vb) & ~mask) == 0)
+					continue;
+			}
 			char buf[96];
 			std::snprintf(buf, sizeof(buf), "%s+%zu: mvu=%08x vuopt=%08x", f.name, i, va, vb);
 			out.emplace_back(buf);
@@ -779,6 +792,8 @@ struct RegionOutcome
 	u32 regions = 0, nodes = 0;
 	u32 accRegions = 0, accNonLinear = 0, accAccumulated = 0; // sticky STATUS accumulation
 	u32 handoffEdges = 0, handoffDead = 0; // links into loop heads, and the ring instances their bails leave out
+	u32 stickyDropped = 0;                 // regions compiled without the sticky byte of STATUS (relaxation 3)
+	bool stickyDiffers = false;            // the end states differ in exactly the sticky bits relaxation 3 frees
 };
 
 // microVU alone against vuopt regions (and framed bodies elsewhere), running
@@ -854,6 +869,7 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		rs.region.stickyAcc = !g_noStickyAcc;
 		rs.region.accAlways = true; // (the estimate would decline many of these small programs)
 		rs.region.handoffMutation = g_handoffMutation;
+		rs.region.dropStickyMutation = g_dropStickyMutation;
 		rs.region.dump = dump;
 		if (jumps)
 			rs.region.jumpTargets = *jumps;
@@ -865,20 +881,23 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		o.accAccumulated = rs.region.AccAccumulated();
 		o.handoffEdges = rs.region.HandoffEdges();
 		o.handoffDead = rs.region.HandoffRingsDead();
+		o.stickyDropped = rs.region.StickyDropped();
 	}
+	const bool relax = o.stickyDropped > 0;
 	if (observe)
 	{
 		if (ref.stopped != got.stopped)
 			o.diffs.emplace_back("one engine stopped at the budget and the other did not");
-		for (const std::string& d : Compare(ref.stop, got.stop, ref.stopPath, got.stopPath, !ref.stopped))
+		for (const std::string& d : Compare(ref.stop, got.stop, ref.stopPath, got.stopPath, !ref.stopped, relax))
 			o.diffs.push_back("at the stop: " + d);
 		if (ref.finStopped != got.finStopped)
 			o.diffs.emplace_back("one engine ended and the other did not");
-		for (const std::string& d : Compare(ref.fin, got.fin, ref.finPath, got.finPath, !ref.finStopped))
+		for (const std::string& d : Compare(ref.fin, got.fin, ref.finPath, got.finPath, !ref.finStopped, relax))
 			o.diffs.push_back("at the end: " + d);
+		o.stickyDiffers = relax && o.diffs.empty() && !Compare(ref.fin, got.fin, ref.finPath, got.finPath, !ref.finStopped, false).empty();
 	}
 	else
-		o.diffs = Compare(ref.stop, got.stop, ref.stopPath, got.stopPath);
+		o.diffs = Compare(ref.stop, got.stop, ref.stopPath, got.stopPath, true, relax);
 	return o;
 }
 } // namespace
@@ -1703,6 +1722,154 @@ TEST(VuoptRegion, HandoffMutationRepros)
 			else
 				EXPECT_TRUE(o.diffs.empty()) << "iter " << c.iter << " budget " << c.budget << "\n" << Join(o.diffs, 8);
 		}
+	}
+}
+
+// Relaxation 3 of the exactness contract: with the flag hack on and no instruction in the micro
+// memory reading a sticky STATUS bit, a STATUS update leaves the sticky byte out, so a chain of
+// updates costs one pack instead of one per FMAC. The STATUS a program leaves differs from microVU's
+// only in bits 6-7 of the register (the sticky zero and sign) and the low byte of its ring copies;
+// every other bit, every register, memory and the GIF bytes stay exact, which these tests pin with
+// the budget sweep and the run to the end. The loops are the sticky-accumulation and reader loops
+// with their status readers' masks cut to the non-sticky bits.
+namespace
+{
+std::vector<VuOp> WithoutStickyReaders(std::vector<VuOp> p)
+{
+	for (VuOp& op : p)
+	{
+		if (op.upper & bits::I)
+			continue; // the lower word is an immediate
+		const vuopt::LowerInst l = vuopt::DecodeLower(op.lower);
+		if (l.op == vuopt::LOp::FSAND)
+			op.lower = VFSAND_L(l.it, l.imm12 & 0x03f);
+		else if (l.op == vuopt::LOp::FSEQ)
+			op.lower = VFSEQ_L(l.it, l.imm12 & 0x03f);
+		else if (l.op == vuopt::LOp::FSOR)
+			op.lower = VFSOR_L(l.it, l.imm12 & 0x03f);
+	}
+	return p;
+}
+
+// A loop that divides by zero (the D flag) and reads the current STATUS bits after the divide
+// has landed and FMACs have updated the instance: the D and I bits above the sticky byte must
+// survive the updates.
+std::vector<VuOp> DivideFlagProgram(u32 trip)
+{
+	std::vector<VuOp> p;
+	p.push_back(L(VIADDIU_L(vi::vi2, vi::vi0, static_cast<u16>(trip))));
+	const s32 head = static_cast<s32>(p.size());
+	p.push_back(P(VDIV_L(vf::vf1, 0, vf::vf2, 0), StickyFmac(0, true)));
+	for (u32 k = 1; k < 9; k++)
+		p.push_back(U(StickyFmac(k, true)));
+	p.push_back(P(VFSAND_L(vi::vi3, 0x03f), StickyFmac(9, true)));
+	p.push_back(U(StickyFmac(10, true)));
+	p.push_back(P(VIADD_L(vi::vi8, vi::vi8, vi::vi3), StickyFmac(11, true)));
+	p.push_back(U(StickyFmac(12, true)));
+	p.push_back(P(VISUBIU_L(vi::vi2, vi::vi2, 1), StickyFmac(13, true)));
+	const s32 at = static_cast<s32>(p.size());
+	p.push_back(P(VIBNE_L(vi::vi2, vi::vi0, static_cast<s16>(head - at - 1)), StickyFmac(14, true)));
+	p.push_back(U(StickyFmac(15, true)));
+	p.push_back(EBit(P(VFSAND_L(vi::vi4, 0x03f), VNOP_U())));
+	return p;
+}
+
+// Hack on, every budget from 1 to 150, the loops above. Returns the runs that differ, and in the
+// out parameters the regions compiled without the sticky byte and the runs whose end states
+// differ in the sticky bits.
+u32 DropStickySweep(u32* dropped, u32* stickyRuns, bool report, bool stopAtFirst)
+{
+	u32 failures = 0;
+	for (int family = 0; family < 3; family++)
+		for (int variant = 0; variant < (family == 2 ? 2 : 9); variant++)
+		{
+			const std::vector<VuOp> p = WithoutStickyReaders(family == 0 ? StickyProgram(variant, variant == 4 ? 12 : 7, 16)
+														   : family == 1 ? HandoffProgram(variant, 6) : DivideFlagProgram(6));
+			for (u32 budget = 1; budget <= 150; budget++)
+			{
+				const RegionOutcome o = RunRegion(p, true, [family, variant](VuTestHarness& h) {
+					if (family == 0)
+					{
+						if (variant >= 6)
+							SeedSparse(h, 31 + variant);
+						else
+							SeedSpecials(h, 31 + variant);
+						h.SetVi(8, 0);
+						h.WriteMemU128(0x100, 0x00008001, 0x10000000, 0x0000000e, 0);
+						h.WriteMemU128(0x110, 0, 0, 0, 0);
+					}
+					else if (family == 1)
+					{
+						SeedMixed(h, 71 + variant);
+						h.SetVi(8, 0);
+					}
+					else
+					{
+						// vf2.x is zero: the divide sets the D flag (and 0/0 the I flag)
+						SeedSparse(h, 91 + variant);
+						h.SetVf(2, 0.0f, 1.0f, 1.0f, 1.0f);
+						h.SetVf(1, variant ? 0.0f : 1.0f, 2.0f, 3.0f, 4.0f);
+						h.SetVi(8, 0);
+					}
+				}, false, 14, false, nullptr, budget);
+				if (dropped)
+					*dropped += o.stickyDropped;
+				if (stickyRuns)
+					*stickyRuns += o.stickyDiffers ? 1 : 0;
+				if (!o.diffs.empty() && (++failures <= 3) && report)
+					ADD_FAILURE() << "family " << family << " variant " << variant << " budget " << budget << "\n" << Join(o.diffs);
+				if (stopAtFirst && failures)
+					return failures;
+			}
+		}
+	return failures;
+}
+} // namespace
+
+TEST(VuoptRegion, DropStickyPinsEverythingElse)
+{
+	u32 dropped = 0, stickyRuns = 0;
+	EXPECT_EQ(DropStickySweep(&dropped, &stickyRuns, true, false), 0u);
+	// the point of the test: the regions do compile without the sticky byte, and it does show
+	EXPECT_GT(dropped, 0u);
+	EXPECT_GT(stickyRuns, 0u);
+	std::printf("[vuopt dropsticky] regions without the sticky byte=%u runs whose sticky bits differ=%u\n", dropped, stickyRuns);
+}
+
+// The premise is checked per program image: with a sticky reader anywhere in it the sticky byte
+// stays, and the run is byte-identical to microVU's. (The loops here read STATUS with 0xfff.)
+TEST(VuoptRegion, DropStickyOffWhereAStickyBitIsRead)
+{
+	int failures = 0;
+	for (int variant = 0; variant <= 8; variant++)
+		for (u32 budget : {0u, 40u, 90u})
+		{
+			const RegionOutcome o = RunRegion(StickyProgram(variant, variant == 4 ? 12 : 7, 16), true, [variant](VuTestHarness& h) {
+				SeedSparse(h, 31 + variant);
+				h.SetVi(8, 0);
+				h.WriteMemU128(0x100, 0x00008001, 0x10000000, 0x0000000e, 0);
+				h.WriteMemU128(0x110, 0, 0, 0, 0);
+			}, budget == 0, 14, false, nullptr, budget);
+			EXPECT_EQ(o.stickyDropped, 0u) << "variant " << variant;
+			if (!o.diffs.empty() && ++failures <= 3)
+				ADD_FAILURE() << "variant " << variant << " budget " << budget << "\n" << Join(o.diffs);
+		}
+	EXPECT_EQ(failures, 0);
+}
+
+// Observable state is still pinned: dropping the bits above the sticky byte too (a divide's D and
+// I flags), or leaving the update's own pack out (the current Z and S), must be seen.
+TEST(VuoptRegion, DropStickyMutationsAreCaught)
+{
+	struct Guard
+	{
+		int saved = g_dropStickyMutation;
+		~Guard() { g_dropStickyMutation = saved; }
+	} guard;
+	for (int m : {1, 2})
+	{
+		g_dropStickyMutation = m;
+		EXPECT_GT(DropStickySweep(nullptr, nullptr, false, true), 0u) << "mutation " << m << " went unnoticed";
 	}
 }
 

@@ -348,6 +348,7 @@ namespace
 				region->stickyAcc = o.stickyAcc;
 				region->accAlways = o.accAlways;
 				region->handoffLiveness = o.handoff;
+				region->dropSticky = o.dropSticky;
 				region->dump = o.dumpIr;
 			}
 		}
@@ -516,9 +517,10 @@ namespace
 	struct SplitDiff
 	{
 		std::vector<std::string> obs, ring, other;
+		std::vector<std::string> sticky; // relaxation 3: the sticky zero/sign bits of STATUS (only with `relaxSticky`)
 	};
 
-	SplitDiff DiffRegsSplit(const VURegs& a, const VURegs& b)
+	SplitDiff DiffRegsSplit(const VURegs& a, const VURegs& b, bool relaxSticky)
 	{
 		struct FieldClass
 		{
@@ -555,6 +557,21 @@ namespace
 				std::memcpy(&vb, pb + f.off + i, n);
 				char buf[128];
 				std::snprintf(buf, sizeof(buf), "%s+%zu: mvu=%08x vuopt=%08x", f.name, i, va, vb);
+				// Relaxation 3: the sticky zero/sign bits, in the STATUS register (bits 6-7) and in the low
+				// byte of the status ring copies, may differ; anything else in those words may not.
+				if (relaxSticky)
+				{
+					u32 mask = 0;
+					if (std::strcmp(f.name, "VI") == 0 && i == REG_STATUS_FLAG * sizeof(REG_VI))
+						mask = 0xC0;
+					else if (std::strcmp(f.name, "micro_statusflags") == 0)
+						mask = 0xFF;
+					if (mask && ((va ^ vb) & ~mask) == 0)
+					{
+						out.sticky.emplace_back(buf);
+						continue;
+					}
+				}
 				// The STATUS, MAC and CLIP registers (VI 16-18) are what a budget stop mirrors from the
 				// newest ring copies: the ring class, exact at a program end.
 				const bool flagReg = std::strcmp(f.name, "VI") == 0 && i >= REG_STATUS_FLAG * sizeof(REG_VI) &&
@@ -719,8 +736,9 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 		std::vector<std::string> obsDiffs;
 		if (opts.observe)
 		{
-			const SplitDiff first = DiffRegsSplit(ref.jit_snapshot.regs, run.jit_snapshot.regs);
-			const SplitDiff fin = DiffRegsSplit(refChain.final_snapshot.regs, runChain.final_snapshot.regs);
+			const bool relaxSticky = ctx.region && ctx.region->StickyDropped() > 0;
+			const SplitDiff first = DiffRegsSplit(ref.jit_snapshot.regs, run.jit_snapshot.regs, relaxSticky);
+			const SplitDiff fin = DiffRegsSplit(refChain.final_snapshot.regs, runChain.final_snapshot.regs, relaxSticky);
 			std::vector<std::string> out1, outF;
 			DiffOutputs(ref.jit_snapshot, run.jit_snapshot, ref.path1_packets_jit, run.path1_packets_jit, ref.jit_ebit, run.jit_ebit,
 				ref.jit_cycles, run.jit_cycles, out1);
@@ -750,6 +768,9 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			std::snprintf(buf, sizeof(buf), " obs=%d ringdiff=%zu ringfinal=%zu stopped=%d resumes=%u term=%d", observable ? 1 : 0,
 				first.ring.size(), fin.ring.size(), ref.jit_ebit ? 0 : 1, refChain.resumes, refChain.final_ebit ? 1 : 0);
 			obsText = buf;
+			std::snprintf(buf, sizeof(buf), " stickydrop=%u stickyimg=%u stickydiff=%zu", ctx.region ? ctx.region->StickyDropped() : 0u,
+				ctx.region ? ctx.region->StickyReaderImages() : 0u, first.sticky.size() + fin.sticky.size());
+			obsText += buf;
 			std::snprintf(buf, sizeof(buf), " bails_entry=%llu bails_loophead=%llu status_readers=%u sticky_readers=%u",
 				static_cast<unsigned long long>(bailsEntry), static_cast<unsigned long long>(bailsLoop),
 				ctx.region ? ctx.region->StatusReaders() : 0u, ctx.region ? ctx.region->StickyReaders() : 0u);
