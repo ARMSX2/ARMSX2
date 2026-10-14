@@ -89,6 +89,7 @@
 
 #if defined(ARCH_ARM64)
 #include "pcsx2/arm64/iR5900-arm64.h"
+#include "pcsx2/arm64/vuopt/VuOptLive.h"
 #endif
 
 #include "svnrev.h"
@@ -780,6 +781,25 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			else if (CHECK_ARG("--vu1-interp"))
 			{
 				s_vu1_interp = true;
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--vuopt-threshold"))
+			{
+				// With EmuCore/CPU/Recompiler/EnableVUOpt on (--set), tier VU1
+				// programs up after N dispatches instead of the shipped constant:
+				// a low N puts almost every program through vuopt for an identity run.
+#if defined(ARCH_ARM64) && defined(PCSX2_RECOMPILER_TESTS)
+				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
+				if (!n.has_value() || n.value() == 0)
+				{
+					Console.Error("--vuopt-threshold expects a run count above zero.");
+					return false;
+				}
+				vuopt::live::SetTierUpRuns(n.value());
+#else
+				++i;
+				Console.Warning("--vuopt-threshold needs an arm64 build with the recompiler test hooks.");
+#endif
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--memdump"))
@@ -4407,6 +4427,10 @@ static int RunLiveRun()
 	}
 #endif
 
+#if defined(ARCH_ARM64)
+	if (vuopt::live::IsEnabled())
+		Console.WriteLn(fmt::format("@VUOPT@ {}", vuopt::live::FormatStats()));
+#endif
 	Console.WriteLn(fmt::format(
 		"LIVERUN: completed {} frames with NO wedge — this config did not reproduce the hang.",
 		s_frames));

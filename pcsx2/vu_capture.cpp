@@ -632,6 +632,39 @@ namespace vu_capture
 			u64 core = Fnv1a(st.VF, sizeof(st.VF));          // VF[32][4]
 			core = Fnv1a(st.VI, 16 * sizeof(st.VI[0]), core); // VI[0..15] (int regs)
 			core = Fnv1a(st.ACC, sizeof(st.ACC), core);       // ACC
+			// PCSX2_VU_TRAJ_DUMP_HASH=<hex>[,<hex>...]: write VU data memory (and the
+			// register surface) to $PCSX2_VU_TRAJ_OUT.<hex>.mem/.regs the first time a
+			// dispatch's state_hash matches, to see WHAT differs where two runs'
+			// vumem_hash parts.
+			static const std::vector<u64> dump_hashes = [] {
+				std::vector<u64> v;
+				if (const char* e = std::getenv("PCSX2_VU_TRAJ_DUMP_HASH"))
+					for (const char* p = e; *p;)
+					{
+						char* end = nullptr;
+						v.push_back(std::strtoull(p, &end, 16));
+						p = (*end == ',') ? end + 1 : end;
+						if (end == p && *p)
+							break;
+					}
+				return v;
+			}();
+			if (!dump_hashes.empty() && vu_index == 1)
+			{
+				for (const u64 h : dump_hashes)
+				{
+					if (h != state_hash)
+						continue;
+					const char* base = std::getenv("PCSX2_VU_TRAJ_OUT");
+					char path[512];
+					std::snprintf(path, sizeof(path), "%s.%016llx.mem", base ? base : "traj", (unsigned long long)h);
+					if (std::FILE* f = std::fopen(path, "wbx"))
+					{
+						std::fwrite(vumem_ptr, 1, vumem_size, f);
+						std::fclose(f);
+					}
+				}
+			}
 			const u64 seq = g_traj_seq.fetch_add(1, std::memory_order_relaxed);
 			std::lock_guard lock(g_traj_mutex);
 			if (g_traj_file)
