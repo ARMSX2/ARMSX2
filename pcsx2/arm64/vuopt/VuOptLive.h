@@ -13,14 +13,18 @@
 // program as it always has. With the tier on, the dispatcher counts the runs of
 // each program, and the JR/JALR slow path counts the entries it resolves to a
 // program (the ones the dispatcher never enters). A program that reaches
-// kTierUpRuns (or kJumpTierUpRuns of the latter) is tiered up on the VU1
-// thread at its next dispatch or slow-path jump: the JR/JALR targets microVU has recorded for it
-// (its jump caches) are collected, its microVU blocks are set aside (not freed:
-// older code and stale jump caches can still reach them), and the program is
-// compiled again with vuopt's compile hooks handed to microVU for that program,
-// so its blocks come out as vuopt regions and framed bodies. microVU remains
-// the fallback at every block boundary. A tiered program that meets new jump
-// targets is compiled again, a bounded number of times.
+// kTierUpRuns (or kJumpTierUpRuns of the latter) asks for its tier-up: the
+// JR/JALR targets microVU has recorded for it (its jump caches) are collected
+// and a job goes to the tier's worker thread, which builds the vuopt region
+// rooted at the entry the request came through while microVU runs on. When the
+// job is done, a slow path on the VU1 thread publishes it: the program's microVU
+// blocks are set aside (not freed: older code and stale jump caches can still
+// reach them) and its root compiles again, taking the region's code in. Blocks
+// microVU meets later in a tiered program become root jobs of their own, and
+// framed bodies where the region builder declines them. microVU remains the
+// fallback at every block boundary. A tiered program that meets new jump
+// targets asks for a new generation, a bounded number of times. Design:
+// compiler-design.md sections 9x and 9aa.
 
 #include "common/Pcsx2Defs.h"
 #include "VuOptMvuTrace.h"
