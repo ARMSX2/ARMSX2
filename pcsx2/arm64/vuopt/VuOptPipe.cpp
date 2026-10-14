@@ -86,10 +86,14 @@ namespace vuopt
 		std::memset(constReg_, 0, sizeof(constReg_));
 	}
 
+	thread_local u8* g_pipeReadMask = nullptr;
+
 	u32 PipeAnalyzer::curI() const
 	{
 		u32 w;
 		std::memcpy(&w, micro_ + iPC_ * 4, 4);
+		if (g_pipeReadMask)
+			g_pipeReadMask[iPC_] = 1;
 		return w;
 	}
 
@@ -1416,6 +1420,8 @@ namespace vuopt
 				res.ops.push_back(info_[w / 2]);
 				res.pcs.push_back((w / 2) * 8);
 				res.insts.push_back(DecodePair(micro_, cfg_.microMemSize(), (w / 2) * 8));
+				if (g_pipeReadMask)
+					g_pipeReadMask[w & ~1u] = g_pipeReadMask[w | 1u] = 1;
 				w = (w + 2) & cfg_.progMemMask();
 			}
 		}

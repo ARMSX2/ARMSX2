@@ -20,9 +20,13 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <functional>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace recompiler_tests
@@ -42,19 +46,26 @@ struct LiveScope
 {
 	const bool savedOpt = EmuConfig.Cpu.Recompiler.EnableVUOpt;
 	const bool savedFlagHack = EmuConfig.Speedhacks.vuFlagHack;
-	LiveScope(bool on, u32 threshold, bool flagHack, u32 jumpThreshold = vuopt::live::kJumpTierUpRuns)
+	// `sync`: the deterministic mode (every background job waited for and
+	// published where it was asked for), which keeps a test's sequence of
+	// compiles the same from run to run.
+	LiveScope(bool on, u32 threshold, bool flagHack, u32 jumpThreshold = vuopt::live::kJumpTierUpRuns, bool sync = true)
 	{
 		EmuConfig.Cpu.Recompiler.EnableVUOpt = on;
 		EmuConfig.Speedhacks.vuFlagHack = flagHack;
 		vuopt::live::SetTierUpRuns(threshold);
 		vuopt::live::SetJumpTierUpRuns(jumpThreshold);
+		vuopt::live::SetSynchronous(sync);
 	}
 	~LiveScope()
 	{
+		vuopt::live::SetWorkerGate(nullptr);
+		vuopt::live::HoldWorker(false);
 		EmuConfig.Cpu.Recompiler.EnableVUOpt = savedOpt;
 		EmuConfig.Speedhacks.vuFlagHack = savedFlagHack;
 		vuopt::live::SetTierUpRuns(vuopt::live::kTierUpRuns);
 		vuopt::live::SetJumpTierUpRuns(vuopt::live::kJumpTierUpRuns);
+		vuopt::live::SetSynchronous(false);
 		RecompilerTestEnvironment::ResetVuBlockCache(1);
 	}
 };
@@ -227,6 +238,7 @@ TEST(VuoptLive, OffByDefaultIsInert)
 	for (int i = 0; i < 20; i++)
 		h.RunJitPreserveBlockCache();
 	EXPECT_FALSE(vuopt::live::IsEnabled());
+	EXPECT_FALSE(vuopt::live::WorkerRunning()) << "the tier off starts no worker thread";
 	const vuopt::live::Stats after = vuopt::live::GetStats();
 	EXPECT_EQ(after.tierUps, before.tierUps);
 	EXPECT_EQ(after.rootsCompiled, before.rootsCompiled);
@@ -375,6 +387,365 @@ TEST(VuoptLive, JumpPathTiersUpAnOverlayTheDispatcherNeverEnters)
 		EXPECT_GE(on.regions, 1u);
 		EXPECT_GT(on.blocksSetAside, 0u);
 	}
+}
+
+//------------------------------------------------------------------
+// The background compile (compiler-design.md 9aa). microVU keeps running a
+// program while the worker builds its regions; what the worker made is
+// published at a slow path. None of it may change what a run leaves.
+//------------------------------------------------------------------
+
+namespace
+{
+// Holds the worker inside a job until released: a compile in flight.
+struct JobGate
+{
+	std::mutex mu;
+	std::condition_variable cv;
+	bool entered = false, released = false;
+
+	void Install()
+	{
+		vuopt::live::SetWorkerGate([this] {
+			std::unique_lock lk(mu);
+			entered = true;
+			cv.notify_all();
+			cv.wait(lk, [this] { return released; });
+		});
+	}
+	void WaitEntered()
+	{
+		std::unique_lock lk(mu);
+		ASSERT_TRUE(cv.wait_for(lk, std::chrono::seconds(30), [this] { return entered; })) << "no job started";
+	}
+	void Release()
+	{
+		std::lock_guard lk(mu);
+		released = true;
+		cv.notify_all();
+	}
+};
+
+vuopt::live::Stats Delta(const vuopt::live::Stats& a, const vuopt::live::Stats& b)
+{
+	vuopt::live::Stats d = b;
+	d.tierUps -= a.tierUps;
+	d.regions -= a.regions;
+	d.jobsGen -= a.jobsGen;
+	d.jobsRoot -= a.jobsRoot;
+	d.jobsDropped -= a.jobsDropped;
+	d.jobsDone -= a.jobsDone;
+	d.publishedGen -= a.publishedGen;
+	d.publishedRoot -= a.publishedRoot;
+	d.discardStale -= a.discardStale;
+	d.discardGen -= a.discardGen;
+	d.discardMemory -= a.discardMemory;
+	return d;
+}
+
+void WriteMicro(const std::vector<VuOp>& prog)
+{
+	std::memset(vuRegs[1].Micro, 0, 0x4000);
+	for (size_t i = 0; i < prog.size(); i++)
+	{
+		std::memcpy(vuRegs[1].Micro + i * 8 + 0, &prog[i].lower, 4);
+		std::memcpy(vuRegs[1].Micro + i * 8 + 4, &prog[i].upper, 4);
+	}
+	CpuMicroVU1.Clear(0, 0x4000);
+}
+} // namespace
+
+// The tier-up asked for while the worker is held: microVU runs the program on,
+// unchanged, and nothing is published. Released, the region is published at the
+// next dispatch, and the runs after it are vuopt's, still identical.
+TEST(VuoptLive, BackgroundTierUpPublishesAtADispatch)
+{
+	for (bool fh : {true, false})
+		for (u32 budget : {0u, 23u})
+		{
+			Result ref;
+			{
+				LiveScope off(false, 4, fh);
+				VuTestHarness h(1);
+				Prepare(h, CountedLoop(10), SetupLoop, budget);
+				h.RunNoDiff();
+				ref = Take(h);
+			}
+			LiveScope on(true, 4, fh, vuopt::live::kJumpTierUpRuns, /*sync=*/false);
+			VuTestHarness h(1);
+			Prepare(h, CountedLoop(10), SetupLoop, budget);
+			h.RunNoDiff();
+			EXPECT_EQ(Diff(ref, Take(h)), "");
+			const vuopt::live::Stats s0 = vuopt::live::GetStats();
+			vuopt::live::HoldWorker(true);
+			for (int i = 0; i < 8; i++)
+			{
+				h.RunJitPreserveBlockCache();
+				EXPECT_EQ(Diff(ref, Take(h)), "") << "held, run " << i << " fh=" << fh << " budget=" << budget;
+			}
+			vuopt::live::Stats d = Delta(s0, vuopt::live::GetStats());
+			EXPECT_EQ(d.jobsGen, 1u) << "one tier-up asked for, not one per dispatch";
+			EXPECT_EQ(d.publishedGen, 0u);
+			EXPECT_EQ(d.regions, 0u);
+			vuopt::live::HoldWorker(false);
+			vuopt::live::WaitWorkerIdle();
+			for (int i = 0; i < 6; i++)
+			{
+				h.RunJitPreserveBlockCache();
+				EXPECT_EQ(Diff(ref, Take(h)), "") << "released, run " << i << " fh=" << fh << " budget=" << budget;
+			}
+			d = Delta(s0, vuopt::live::GetStats());
+			EXPECT_EQ(d.publishedGen, 1u) << "fh=" << fh << " budget=" << budget;
+			EXPECT_EQ(d.tierUps, 1u);
+			EXPECT_GE(d.regions, 1u);
+		}
+}
+
+// Micro memory changes under a finished job before it is published (a write the
+// program's quick slot did not see, so microVU, here and in the reference, goes on
+// running its old code): the job compiled words that are no longer there, and is
+// thrown away, never published.
+TEST(VuoptLive, PublishAfterMicroMemoryChangedIsDiscarded)
+{
+	const auto sequence = [](bool on, vuopt::live::Stats& d) {
+		std::vector<Result> out;
+		LiveScope scope(on, 4, true, vuopt::live::kJumpTierUpRuns, /*sync=*/false);
+		VuTestHarness h(1);
+		Prepare(h, CountedLoop(10), SetupLoop, 0);
+		h.RunNoDiff();
+		out.push_back(Take(h));
+		const vuopt::live::Stats s0 = vuopt::live::GetStats();
+		vuopt::live::HoldWorker(true);
+		for (int i = 0; i < 6; i++)
+		{
+			h.RunJitPreserveBlockCache();
+			out.push_back(Take(h));
+		}
+		vuopt::live::HoldWorker(false);
+		vuopt::live::WaitWorkerIdle();
+		// The loop's subtract (pair 5) becomes a different immediate.
+		const u32 lower = VISUBIU_L(vi::vi1, vi::vi1, 2);
+		std::memcpy(vuRegs[1].Micro + 5 * 8, &lower, 4);
+		h.RunJitPreserveBlockCache();
+		out.push_back(Take(h));
+		// (the tier-up is asked for again; a job made now would compile the new word
+		// for a program whose quick slot never saw it change, which a real write,
+		// through mVUclear, cannot leave behind: keep it from running)
+		vuopt::live::HoldWorker(true);
+		for (int i = 0; i < 3; i++)
+		{
+			h.RunJitPreserveBlockCache();
+			out.push_back(Take(h));
+		}
+		d = Delta(s0, vuopt::live::GetStats());
+		return out;
+	};
+	vuopt::live::Stats off{}, on{};
+	const std::vector<Result> ref = sequence(false, off);
+	const std::vector<Result> got = sequence(true, on);
+	ASSERT_EQ(ref.size(), got.size());
+	for (size_t i = 0; i < ref.size(); i++)
+		EXPECT_EQ(Diff(ref[i], got[i]), "") << "run " << i;
+	EXPECT_EQ(on.jobsGen, 2u) << "the discarded tier-up is asked for again (and held)";
+	EXPECT_EQ(on.discardMemory, 1u) << "the job read the word that changed";
+	EXPECT_EQ(on.publishedGen, 0u);
+	EXPECT_EQ(on.regions, 0u);
+}
+
+// Relaxation 3 (9ab) on the worker: with the flag hack on and no sticky STATUS reader in the
+// job's copy of micro memory, the region drops the sticky byte. A reader uploaded before the job
+// is published (outside the program's ranges and the words its compile read, so the program and
+// those words are unchanged) means the region would run under an image that can see the byte: the
+// job is thrown away.
+TEST(VuoptLive, PublishAfterAStickyReaderAppearsIsDiscarded)
+{
+	std::vector<VuOp> prog = CountedLoop(10);
+	prog.back() = EBit(P(VFSAND_L(vi::vi4, 0x03f), VNOP_U())); // (no sticky bit read)
+	const auto sequence = [&](bool on, vuopt::live::Stats& d) {
+		std::vector<Result> out;
+		LiveScope scope(on, 4, true, vuopt::live::kJumpTierUpRuns, /*sync=*/false);
+		VuTestHarness h(1);
+		Prepare(h, prog, SetupLoop, 0);
+		h.RunNoDiff();
+		out.push_back(Take(h));
+		const vuopt::live::Stats s0 = vuopt::live::GetStats();
+		vuopt::live::HoldWorker(true);
+		for (int i = 0; i < 6; i++)
+		{
+			h.RunJitPreserveBlockCache();
+			out.push_back(Take(h));
+		}
+		vuopt::live::HoldWorker(false);
+		vuopt::live::WaitWorkerIdle();
+		// An FSAND of the sticky bits, far from the program.
+		const u32 lower = VFSAND_L(vi::vi5, 0xfc0), upper = VNOP_U();
+		std::memcpy(vuRegs[1].Micro + 0x3000, &lower, 4);
+		std::memcpy(vuRegs[1].Micro + 0x3004, &upper, 4);
+		CpuMicroVU1.Clear(0x3000, 8);
+		h.RunJitPreserveBlockCache();
+		out.push_back(Take(h));
+		vuopt::live::HoldWorker(true); // (the tier-up asked for again stays queued)
+		for (int i = 0; i < 3; i++)
+		{
+			h.RunJitPreserveBlockCache();
+			out.push_back(Take(h));
+		}
+		d = Delta(s0, vuopt::live::GetStats());
+		d.discardSticky = vuopt::live::GetStats().discardSticky - s0.discardSticky;
+		d.stickyDropped = vuopt::live::GetStats().stickyDropped - s0.stickyDropped;
+		return out;
+	};
+	vuopt::live::Stats off{}, on{};
+	const std::vector<Result> ref = sequence(false, off);
+	const std::vector<Result> got = sequence(true, on);
+	ASSERT_EQ(ref.size(), got.size());
+	for (size_t i = 0; i < ref.size(); i++)
+		EXPECT_EQ(Diff(ref[i], got[i]), "") << "run " << i;
+	EXPECT_EQ(on.stickyDropped, 1u) << "the job's image had no sticky reader";
+	EXPECT_EQ(on.discardSticky, 1u);
+	EXPECT_EQ(on.discardMemory, 0u) << "no word the compile read changed";
+	EXPECT_EQ(on.publishedGen, 0u);
+	EXPECT_EQ(on.regions, 0u);
+}
+
+// A reset while a job is compiling (cache exhaustion; a savestate load resets the
+// same way): the job finishes into its own memory, is dropped unread when it is
+// collected, and the program tiers up again afterwards.
+TEST(VuoptLive, ResetDuringCompileDropsTheJob)
+{
+	for (int how = 0; how < 2; how++)
+	{
+		Result ref;
+		{
+			LiveScope off(false, 4, true);
+			VuTestHarness h(1);
+			Prepare(h, CountedLoop(10), SetupLoop, 0);
+			h.RunNoDiff();
+			ref = Take(h);
+		}
+		LiveScope on(true, 4, true, vuopt::live::kJumpTierUpRuns, /*sync=*/false);
+		VuTestHarness h(1);
+		Prepare(h, CountedLoop(10), SetupLoop, 0);
+		h.RunNoDiff();
+		const vuopt::live::Stats s0 = vuopt::live::GetStats();
+		JobGate gate;
+		gate.Install();
+		for (int i = 0; i < 6; i++)
+		{
+			h.RunJitPreserveBlockCache();
+			EXPECT_EQ(Diff(ref, Take(h)), "") << "how=" << how << " run " << i;
+		}
+		gate.WaitEntered();
+		// how 0: the recompiler reset a cache-full or a settings change makes; how 1:
+		// the one a savestate load makes (VMManager's ClearCPUExecutionCaches resets VU1).
+		if (how == 0)
+			RecompilerTestEnvironment::ResetVuBlockCache(1);
+		else
+			CpuMicroVU1.Reset();
+		vuopt::live::SetWorkerGate(nullptr);
+		gate.Release();
+		vuopt::live::WaitWorkerIdle();
+		for (int i = 0; i < 12; i++)
+		{
+			h.RunJitPreserveBlockCache();
+			EXPECT_EQ(Diff(ref, Take(h)), "") << "how=" << how << " after reset, run " << i;
+			if (i == 6)
+				vuopt::live::WaitWorkerIdle();
+		}
+		const vuopt::live::Stats d = Delta(s0, vuopt::live::GetStats());
+		EXPECT_EQ(d.discardStale, 1u) << "how=" << how;
+		EXPECT_EQ(d.jobsGen, 2u) << "the tier-up asked for again after the reset (how=" << how << ")";
+		EXPECT_EQ(d.publishedGen, 1u) << "how=" << how;
+		EXPECT_GE(d.regions, 1u);
+	}
+}
+
+// The tier switched off while a job is compiling: the reset that applies the
+// setting stops the worker (waiting for the job), nothing it made is published,
+// no worker thread is left, and microVU alone runs on.
+TEST(VuoptLive, SettingOffDuringCompileStopsTheWorker)
+{
+	Result ref;
+	{
+		LiveScope off(false, 4, true);
+		VuTestHarness h(1);
+		Prepare(h, CountedLoop(10), SetupLoop, 0);
+		h.RunNoDiff();
+		ref = Take(h);
+		EXPECT_FALSE(vuopt::live::WorkerRunning()) << "the tier off has no worker thread";
+	}
+	LiveScope on(true, 4, true, vuopt::live::kJumpTierUpRuns, /*sync=*/false);
+	VuTestHarness h(1);
+	Prepare(h, CountedLoop(10), SetupLoop, 0);
+	h.RunNoDiff();
+	EXPECT_TRUE(vuopt::live::WorkerRunning());
+	const vuopt::live::Stats s0 = vuopt::live::GetStats();
+	JobGate gate;
+	gate.Install();
+	for (int i = 0; i < 6; i++)
+		h.RunJitPreserveBlockCache();
+	gate.WaitEntered();
+	// The reset joins the worker, which is inside the job: let it go a moment later.
+	std::thread releaser([&] {
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		gate.Release();
+	});
+	EmuConfig.Cpu.Recompiler.EnableVUOpt = false;
+	RecompilerTestEnvironment::ResetVuBlockCache(1);
+	releaser.join();
+	EXPECT_FALSE(vuopt::live::IsEnabled());
+	EXPECT_FALSE(vuopt::live::WorkerRunning());
+	for (int i = 0; i < 6; i++)
+	{
+		h.RunJitPreserveBlockCache();
+		EXPECT_EQ(Diff(ref, Take(h)), "") << "run " << i;
+	}
+	const vuopt::live::Stats d = Delta(s0, vuopt::live::GetStats());
+	EXPECT_EQ(d.publishedGen, 0u);
+	EXPECT_EQ(d.regions, 0u);
+}
+
+// Many programs reach the threshold at once, more of them than the worker gets
+// through before they are dispatched again: one job each (none asked for twice
+// while one is pending), every run of every program identical to microVU's
+// whether its region is published yet or not, and all published in the end.
+TEST(VuoptLive, ManyConcurrentRequests)
+{
+	constexpr u32 kPrograms = 24;
+	std::vector<std::vector<VuOp>> progs;
+	for (u32 k = 0; k < kPrograms; k++)
+		progs.push_back(CountedLoop(5 + k));
+	const auto sequence = [&](bool on, vuopt::live::Stats& d) {
+		std::vector<Result> out;
+		LiveScope scope(on, 2, true, vuopt::live::kJumpTierUpRuns, /*sync=*/false);
+		VuTestHarness h(1);
+		Prepare(h, progs[0], SetupLoop, 0);
+		h.RunNoDiff();
+		const vuopt::live::Stats s0 = vuopt::live::GetStats();
+		for (u32 round = 0; round < 8; round++)
+		{
+			for (u32 k = 0; k < kPrograms; k++)
+			{
+				WriteMicro(progs[k]);
+				h.RunJitPreserveBlockCache();
+				out.push_back(Take(h));
+			}
+			if (round == 5)
+				vuopt::live::WaitWorkerIdle();
+		}
+		d = Delta(s0, vuopt::live::GetStats());
+		return out;
+	};
+	vuopt::live::Stats off{}, on{};
+	const std::vector<Result> ref = sequence(false, off);
+	const std::vector<Result> got = sequence(true, on);
+	ASSERT_EQ(ref.size(), got.size());
+	for (size_t i = 0; i < ref.size(); i++)
+		EXPECT_EQ(Diff(ref[i], got[i]), "") << "run " << i << " (program " << (i % kPrograms) << ")";
+	EXPECT_EQ(on.jobsDropped, 0u);
+	EXPECT_EQ(on.jobsGen, kPrograms) << "one tier-up per program";
+	EXPECT_EQ(on.publishedGen, kPrograms);
+	EXPECT_GE(on.regions, kPrograms);
 }
 
 // A tiered program survives a settings round trip: switching the tier off and

@@ -1563,7 +1563,7 @@ namespace vuopt
 	// Whether any pair of the micro memory has a lower instruction that reads a sticky STATUS bit
 	// (FSAND, FSEQ or FSOR whose immediate selects one of bits 6-11). Data in the code area can
 	// look like one, which only errs towards keeping the bits.
-	bool RegionTier::ImageReadsSticky() const
+	bool RegionTier::MicroReadsSticky(const u8* micro_, u32 vu_)
 	{
 		const u32 size = (vu_ ? 0x4000u : 0x1000u);
 		for (u32 pc = 0; pc < size; pc += 8)

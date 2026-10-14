@@ -167,7 +167,16 @@ namespace vuopt
 		u32 stickyDropped_ = 0, stickyReaderImages_ = 0;
 		std::vector<std::pair<const void*, s32>> progs_;
 		void NoteProgram(const void* program, s32 off);
-		bool ImageReadsSticky() const;
+		bool ImageReadsSticky() const { return MicroReadsSticky(micro_, vu_); }
+
+	public:
+		// Whether a micro image (VU `vu`'s, 4 or 16 KB) has a sticky STATUS reader: the scan
+		// relaxation 3 decides by. The live tier's background compile runs it on the job's copy
+		// of micro memory, and again on live micro memory when it publishes a region that
+		// dropped the sticky byte.
+		static bool MicroReadsSticky(const u8* micro, u32 vu);
+
+	private:
 		u64 bytes_ = 0;
 		std::map<std::string, u32> declined_;
 

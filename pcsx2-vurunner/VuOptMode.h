@@ -22,6 +22,7 @@ struct VuoptModeOptions
 	long traceDump = -1;   // --vuopt-trace-dump N: with --vuopt-trace, print the state at block entry N in both runs
 	std::string lowerSkip;
 	bool region = false;   // --vuopt-region: vuopt regions (milestone 4), framed bodies for the rest
+	bool regionBg = false; // --vuopt-region-bg: the same regions, each built on the live tier's worker thread and copied in (9aa)
 	s32 regionLimit = -1;  // --vuopt-region-limit N: build only the first N regions
 	s32 vHomes = 14;       // --vuopt-vhomes N: at most N NEON homes per region
 	bool schedule = true;

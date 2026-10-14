@@ -3,6 +3,7 @@
 
 // The vuopt headers name things (Ft, Fs, X, Y ...) microVU's headers define as
 // macros, so they come first.
+#include "vuopt/VuOptBackground.h"
 #include "vuopt/VuOptLive.h"
 #include "vuopt/VuOptRegion.h"
 #include "vuopt/VuOptTier.h"

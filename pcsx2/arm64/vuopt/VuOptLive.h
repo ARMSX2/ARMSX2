@@ -13,17 +13,24 @@
 // program as it always has. With the tier on, the dispatcher counts the runs of
 // each program, and the JR/JALR slow path counts the entries it resolves to a
 // program (the ones the dispatcher never enters). A program that reaches
-// kTierUpRuns (or kJumpTierUpRuns of the latter) is tiered up on the VU1
-// thread at its next dispatch or slow-path jump: the JR/JALR targets microVU has recorded for it
-// (its jump caches) are collected, its microVU blocks are set aside (not freed:
-// older code and stale jump caches can still reach them), and the program is
-// compiled again with vuopt's compile hooks handed to microVU for that program,
-// so its blocks come out as vuopt regions and framed bodies. microVU remains
-// the fallback at every block boundary. A tiered program that meets new jump
-// targets is compiled again, a bounded number of times.
+// kTierUpRuns (or kJumpTierUpRuns of the latter) asks for its tier-up: the
+// JR/JALR targets microVU has recorded for it (its jump caches) are collected
+// and a job goes to the tier's worker thread, which builds the vuopt region
+// rooted at the entry the request came through while microVU runs on. When the
+// job is done, a slow path on the VU1 thread publishes it: the program's microVU
+// blocks are set aside (not freed: older code and stale jump caches can still
+// reach them) and its root compiles again, taking the region's code in. Blocks
+// microVU meets later in a tiered program become root jobs of their own, and
+// framed bodies where the region builder declines them. microVU remains the
+// fallback at every block boundary. A tiered program that meets new jump
+// targets asks for a new generation, a bounded number of times. Design:
+// compiler-design.md sections 9x and 9aa.
 
 #include "common/Pcsx2Defs.h"
+#include "VuOptMvuTrace.h"
 
+#include <functional>
+#include <map>
 #include <string>
 
 namespace vuopt
@@ -101,6 +108,32 @@ namespace vuopt
 			// sessions retired, for programs the tier took over and for the rest.
 			u64 compileInsTiered = 0;
 			u64 compileInsPlain = 0;
+
+			// Section 9aa, the background compile. A job builds one region on the worker
+			// thread: a generation (the tier-up or a re-tier: a new graph for the
+			// program, rooted at the entry the request came through) or a root (a block
+			// microVU met in a program already tiered up).
+			u64 jobsGen = 0, jobsRoot = 0;
+			u64 jobsDropped = 0;      // the worker's queue was full
+			u64 jobsDone = 0;
+			u64 jobsDeclined = 0;     // the region builder declined the root
+			u64 jobsCoalesced = 0;    // root jobs dropped from the queue by a new generation of their program
+			u64 publishedGen = 0, publishedRoot = 0;
+			// Finished jobs thrown away: made before a reset (stale), for a graph the
+			// program no longer has (gen), over micro memory that has changed since
+			// (memory), under a micro image that has gained a sticky STATUS reader since a region dropped the
+			// sticky byte (sticky), with no room left in the code cache (space), or whose root
+			// microVU analysed differently when it compiled it (trace).
+			u64 discardStale = 0, discardGen = 0, discardMemory = 0, discardSticky = 0, discardSpace = 0, discardTrace = 0;
+			// VU1 dispatches between a job's request and its publication.
+			u64 lagGenSum = 0, lagGenMax = 0, lagRootSum = 0, lagRootMax = 0;
+			// pcsx2-eerunner --count-vu1-ins only: user-mode instructions the worker
+			// retired in jobs, and the VU1 thread in publications (copies, exits, jump
+			// tails; the root compile of a generation included).
+			u64 workerIns = 0;
+			u64 publishIns = 0;
+			u64 veneers = 0;          // branches from placed code to targets out of B/BL range
+			std::map<std::string, u32> regionDeclined;
 		};
 
 		// Whether the tier runs this session (EnableVUOpt, VU1 recompiled, no
@@ -117,6 +150,25 @@ namespace vuopt
 		void SetTierUpRuns(u32 runs);
 		// ... and after `runs` JR/JALR slow-path entries instead of kJumpTierUpRuns.
 		void SetJumpTierUpRuns(u32 runs);
+
+		// Deterministic mode: every job is waited for and published where it was
+		// asked for (at the tier-up's dispatch, or in place of the block microVU
+		// was about to compile), which is where the synchronous tier of 9x
+		// compiled. Off: the worker builds while microVU runs.
+		void SetSynchronous(bool on);
+		bool IsSynchronous();
+		// The worker thread: whether it exists, and controls for interleaving tests.
+		// HoldWorker: no job starts while held. SetWorkerGate: called on the worker
+		// at the start of every job (block in it to keep a job in flight).
+		bool WorkerRunning();
+		void HoldWorker(bool on);
+		void SetWorkerGate(std::function<void()> gate);
+		void WaitWorkerIdle();
+		size_t WorkerQueued();
+		// pcsx2-vurunner --vuopt-region-bg: a region hook (VuOptMvuTrace.h's
+		// VuoptRegionHook, `user` a RegionTier whose options it copies) that builds
+		// every region through the worker and copies it in.
+		bool RegionHookViaWorker(const MvuBlockTrace& b, const MvuEmitEnv& env, void* user);
 #endif
 	} // namespace live
 } // namespace vuopt

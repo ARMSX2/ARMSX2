@@ -161,7 +161,7 @@ namespace vuopt
 
 	// Debugging: when set, the lowering records where each IR instruction's
 	// code starts.
-	extern std::vector<std::pair<const u8*, ir::ValueId>>* g_lowerMarks;
+	extern thread_local std::vector<std::pair<const u8*, ir::ValueId>>* g_lowerMarks;
 
 	// Checks the IR can be lowered, then emits it at armAsm's cursor. Emits
 	// nothing when it declines.

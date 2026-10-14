@@ -301,6 +301,7 @@ int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,
 
 #include "arm64/vuopt/VuOptTier.h"
 #include "arm64/vuopt/VuOptRegion.h"
+#include "arm64/vuopt/VuOptLive.h"
 #include "arm64/AsmHelpers.h"
 #include "harness/VuSnapshot.h"
 
@@ -317,6 +318,7 @@ namespace
 	{
 		std::unique_ptr<vuopt::BodyTier> tier;
 		std::unique_ptr<vuopt::RegionTier> region; // --vuopt-region
+		bool regionBg = false;                     // --vuopt-region-bg: `region` is the options template of the worker's jobs
 		bool trace = false;
 		bool traceOnly = false; // reference arm: trace, never lower
 		u32 blocks = 0;
@@ -352,6 +354,7 @@ namespace
 				region->handoffMutation = static_cast<vuopt::RegionTier::HandoffMutation>(o.handoffMutation);
 				region->dropStickyMutation = o.dropStickyMutation;
 				region->dump = o.dumpIr;
+				regionBg = o.regionBg;
 			}
 		}
 
@@ -458,8 +461,8 @@ namespace
 		vuopt::g_vuoptBodyHookUser = this;
 		if (region)
 		{
-			vuopt::g_vuoptRegionHook = &OnRegion;
-			vuopt::g_vuoptRegionHookUser = this;
+			vuopt::g_vuoptRegionHook = regionBg ? &vuopt::live::RegionHookViaWorker : &OnRegion;
+			vuopt::g_vuoptRegionHookUser = regionBg ? static_cast<void*>(region.get()) : static_cast<void*>(this);
 		}
 	}
 
@@ -687,17 +690,37 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 		BodyCtx ctx(vu, vuRegs[vu].Micro, opts);
 		if (ctx.region)
 			ctx.region->jumpTargets = jumpTargets;
+		const vuopt::live::Stats bgBefore = vuopt::live::GetStats();
 		ctx.Install();
 		recompiler_tests::VuChainResult runChain;
 		if (opts.observe)
 			runChain = recompiler_tests::ReplayJitChain(rec, opts.cycleOverride, opts.resumes);
 		const auto run = opts.observe ? runChain.first : recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
+		const vuopt::live::Stats bgAfter = vuopt::live::GetStats();
 		if (ctx.region && opts.profile)
 			ctx.region->PrintProfile(stdout);
 		const u64 runBytes = CompiledBytes(vu);
 		u64 bailsEntry = 0, bailsLoop = 0;
-		if (ctx.region)
+		// The region counters: the worker's jobs' (through the live tier's stats) with
+		// --vuopt-region-bg, the region tier's own otherwise.
+		u32 stickyDropped = 0, stickyImages = 0, statusReaders = 0, stickyReaders = 0;
+		if (ctx.region && ctx.regionBg)
+		{
+			bailsEntry = bgAfter.bailsEntry - bgBefore.bailsEntry;
+			bailsLoop = bgAfter.bailsLoopHead - bgBefore.bailsLoopHead;
+			stickyDropped = static_cast<u32>(bgAfter.stickyDropped - bgBefore.stickyDropped);
+			stickyImages = static_cast<u32>(bgAfter.stickyImages - bgBefore.stickyImages);
+			statusReaders = static_cast<u32>(bgAfter.statusReaders - bgBefore.statusReaders);
+			stickyReaders = static_cast<u32>(bgAfter.stickyReaders - bgBefore.stickyReaders);
+		}
+		else if (ctx.region)
+		{
 			ctx.region->BailCounts(bailsEntry, bailsLoop);
+			stickyDropped = ctx.region->StickyDropped();
+			stickyImages = ctx.region->StickyReaderImages();
+			statusReaders = ctx.region->StatusReaders();
+			stickyReaders = ctx.region->StickyReaders();
+		}
 		Uninstall();
 
 		if (!ref.ok || !run.ok)
@@ -738,7 +761,7 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 		std::vector<std::string> obsDiffs;
 		if (opts.observe)
 		{
-			const bool relaxSticky = ctx.region && ctx.region->StickyDropped() > 0;
+			const bool relaxSticky = stickyDropped > 0;
 			const SplitDiff first = DiffRegsSplit(ref.jit_snapshot.regs, run.jit_snapshot.regs, relaxSticky);
 			const SplitDiff fin = DiffRegsSplit(refChain.final_snapshot.regs, runChain.final_snapshot.regs, relaxSticky);
 			std::vector<std::string> out1, outF;
@@ -770,12 +793,12 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			std::snprintf(buf, sizeof(buf), " obs=%d ringdiff=%zu ringfinal=%zu stopped=%d resumes=%u term=%d", observable ? 1 : 0,
 				first.ring.size(), fin.ring.size(), ref.jit_ebit ? 0 : 1, refChain.resumes, refChain.final_ebit ? 1 : 0);
 			obsText = buf;
-			std::snprintf(buf, sizeof(buf), " stickydrop=%u stickyimg=%u stickydiff=%zu", ctx.region ? ctx.region->StickyDropped() : 0u,
-				ctx.region ? ctx.region->StickyReaderImages() : 0u, first.sticky.size() + fin.sticky.size());
+			std::snprintf(buf, sizeof(buf), " stickydrop=%u stickyimg=%u stickydiff=%zu", stickyDropped, stickyImages,
+				first.sticky.size() + fin.sticky.size());
 			obsText += buf;
 			std::snprintf(buf, sizeof(buf), " bails_entry=%llu bails_loophead=%llu status_readers=%u sticky_readers=%u",
 				static_cast<unsigned long long>(bailsEntry), static_cast<unsigned long long>(bailsLoop),
-				ctx.region ? ctx.region->StatusReaders() : 0u, ctx.region ? ctx.region->StickyReaders() : 0u);
+				statusReaders, stickyReaders);
 			obsText += buf;
 		}
 		if (opts.trace)
@@ -833,7 +856,19 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			static_cast<unsigned long long>(ctx.tier->BodyBytes()), static_cast<unsigned long long>(insRef),
 			static_cast<unsigned long long>(insRun), static_cast<unsigned long long>(cycRef), static_cast<unsigned long long>(cycRun),
 			steadyCompiles, static_cast<unsigned long long>(compRef), static_cast<unsigned long long>(compRun));
-		if (ctx.region)
+		if (ctx.region && ctx.regionBg)
+		{
+			// (the regions were built by the worker's jobs: the live tier's counters)
+			std::printf(" regions=%llu rnodes=%llu rexits=%llu rbytes=%llu mvublocks=%u bgjobs=%llu bgdeclined=%llu veneers=%llu",
+				static_cast<unsigned long long>(bgAfter.regions - bgBefore.regions),
+				static_cast<unsigned long long>(bgAfter.regionNodes - bgBefore.regionNodes),
+				static_cast<unsigned long long>(bgAfter.regionExits - bgBefore.regionExits),
+				static_cast<unsigned long long>(bgAfter.regionBytes - bgBefore.regionBytes), mvuBlocks,
+				static_cast<unsigned long long>(bgAfter.jobsDone - bgBefore.jobsDone),
+				static_cast<unsigned long long>(bgAfter.jobsDeclined - bgBefore.jobsDeclined),
+				static_cast<unsigned long long>(bgAfter.veneers - bgBefore.veneers));
+		}
+		else if (ctx.region)
 		{
 			std::printf(" regions=%u rnodes=%u rexits=%u rbytes=%llu mvublocks=%u racc=%u raccnl=%u raccn=%u raccun=%u rhoe=%u rhod=%u", ctx.region->Regions(), ctx.region->Nodes(),
 				ctx.region->Exits(), static_cast<unsigned long long>(ctx.region->Bytes()), mvuBlocks, ctx.region->AccRegions(), ctx.region->AccNonLinear(),

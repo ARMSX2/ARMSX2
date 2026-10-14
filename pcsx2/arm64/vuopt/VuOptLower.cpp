@@ -25,7 +25,7 @@ namespace vuopt
 	namespace a64 = vixl::aarch64;
 	using namespace ir;
 
-	std::vector<std::pair<const u8*, ir::ValueId>>* g_lowerMarks = nullptr;
+	thread_local std::vector<std::pair<const u8*, ir::ValueId>>* g_lowerMarks = nullptr;
 
 	namespace
 	{

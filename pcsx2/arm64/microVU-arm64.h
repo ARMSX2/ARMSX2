@@ -878,6 +878,15 @@ public:
 		for (microBlockLink* l = fBlockList; l; l = l->next)
 			f(l->block);
 	}
+	// Every block in the order a search that needs no exact match tries them:
+	// registration order, both lists together (vuopt's background jobs search
+	// a copy of the graph by the same rules).
+	template <typename F>
+	void forEachInSearchOrder(F&& f)
+	{
+		for (const microBlockLinkRef& ref : quickLookup)
+			f(*ref.pBlock);
+	}
 	microBlockManager()
 	{
 		qListI = fListI = 0;
