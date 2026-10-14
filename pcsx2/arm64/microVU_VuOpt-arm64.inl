@@ -398,14 +398,14 @@ namespace vuopt::live
 		out = buf;
 		std::snprintf(buf, sizeof(buf),
 			"\n  background: sync=%d jobs=%llu (gen %llu, root %llu) dropped=%llu done=%llu published=%llu (gen %llu, root %llu) "
-			"declined=%llu discarded: stale=%llu gen=%llu memory=%llu space=%llu trace=%llu notseen=%llu | "
+			"declined=%llu coalesced=%llu discarded: stale=%llu gen=%llu memory=%llu space=%llu trace=%llu | "
 			"lag(dispatches) gen avg=%.1f max=%llu root avg=%.1f max=%llu | worker_ins=%llu publish_ins=%llu veneers=%llu",
 			s_vuopt.synchronous ? 1 : 0, (unsigned long long)(s.jobsGen + s.jobsRoot), (unsigned long long)s.jobsGen,
 			(unsigned long long)s.jobsRoot, (unsigned long long)s.jobsDropped, (unsigned long long)s.jobsDone,
 			(unsigned long long)(s.publishedGen + s.publishedRoot), (unsigned long long)s.publishedGen,
-			(unsigned long long)s.publishedRoot, (unsigned long long)s.jobsDeclined, (unsigned long long)s.discardStale,
-			(unsigned long long)s.discardGen, (unsigned long long)s.discardMemory, (unsigned long long)s.discardSpace,
-			(unsigned long long)s.discardTrace, (unsigned long long)s.discardNotSeen,
+			(unsigned long long)s.publishedRoot, (unsigned long long)s.jobsDeclined, (unsigned long long)s.jobsCoalesced,
+			(unsigned long long)s.discardStale, (unsigned long long)s.discardGen, (unsigned long long)s.discardMemory,
+			(unsigned long long)s.discardSpace, (unsigned long long)s.discardTrace,
 			s.publishedGen ? static_cast<double>(s.lagGenSum) / s.publishedGen : 0.0, (unsigned long long)s.lagGenMax,
 			s.publishedRoot ? static_cast<double>(s.lagRootSum) / s.publishedRoot : 0.0, (unsigned long long)s.lagRootMax,
 			(unsigned long long)s.workerIns, (unsigned long long)s.publishIns, (unsigned long long)s.veneers);
@@ -1213,6 +1213,15 @@ static void* vuoptRequestGeneration(microVU& mVU, microProgram& prog, VuoptProgr
 	j->viaJump = viaJump;
 	st.requestRuns = vuoptTotalRuns(prog);
 	st.missesSeen = s_vuopt.jumpMisses;
+	// Root jobs for the program still waiting in the queue would build into the
+	// graph this generation replaces: drop them.
+	if (s_vuopt.worker)
+		s_vuopt.worker->RemoveQueued([&](const vuopt::bg::Job& b) {
+			const VuoptJob& q = static_cast<const VuoptJob&>(b);
+			const bool drop = q.prog == &prog && q.kind == VuoptJob::Root;
+			s_vuopt.stats.jobsCoalesced += drop;
+			return drop;
+		});
 	if (!vuoptSubmit(j))
 	{
 		if (st.gen == 0)

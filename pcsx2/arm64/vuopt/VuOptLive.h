@@ -104,12 +104,13 @@ namespace vuopt
 			u64 jobsDropped = 0;      // the worker's queue was full
 			u64 jobsDone = 0;
 			u64 jobsDeclined = 0;     // the region builder declined the root
+			u64 jobsCoalesced = 0;    // root jobs dropped from the queue by a new generation of their program
 			u64 publishedGen = 0, publishedRoot = 0;
 			// Finished jobs thrown away: made before a reset (stale), for a graph the
 			// program no longer has (gen), over micro memory that has changed since
 			// (memory), with no room left in the code cache (space), or whose root
 			// microVU analysed differently when it compiled it (trace).
-			u64 discardStale = 0, discardGen = 0, discardMemory = 0, discardSpace = 0, discardTrace = 0, discardNotSeen = 0;
+			u64 discardStale = 0, discardGen = 0, discardMemory = 0, discardSpace = 0, discardTrace = 0;
 			// VU1 dispatches between a job's request and its publication.
 			u64 lagGenSum = 0, lagGenMax = 0, lagRootSum = 0, lagRootMax = 0;
 			// pcsx2-eerunner --count-vu1-ins only: user-mode instructions the worker
