@@ -439,6 +439,22 @@ TEST_F(ThreadedMachine, AThreadStartedInsideAnEventTestStaysHeldUntilTheNextEven
 	EXPECT_EQ(s_violations.load(), 0u);
 }
 
+TEST_F(ThreadedMachine, StoppingAThreadStartedInsideAnEventTestDropsTheHoldItWasKeptWith)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	eeEventTestIsActive = true;
+	{
+		IopThread::VmHold apply_settings_holds;
+		StartThreaded();
+	}
+	eeEventTestIsActive = false;
+	ASSERT_TRUE(IopThread::StartHoldPendingForTests());
+	IopThread::StopThread();
+	EXPECT_FALSE(IopThread::StartHoldPendingForTests());
+	EXPECT_EQ(IopThread::g_thread.HoldDepth(), 0u) << "a hold from the stopped thread's life is still counted";
+}
+
 TEST_F(ThreadedMachine, AThreadStartedOutsideAnEventTestIsNotHeld)
 {
 	REQUIRE_ARM64_HOST();

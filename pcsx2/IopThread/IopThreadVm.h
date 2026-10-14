@@ -184,6 +184,7 @@ namespace IopThread
 	/// tick), which must not run beside the new thread. EE thread only.
 	extern bool g_start_hold_pending;
 	void ReleaseStartHold();
+	inline bool StartHoldPendingForTests() { return g_start_hold_pending; }
 
 	/// First thing in the Threaded event test: tell the IOP how far the EE has got (a release store, and a
 	/// wake-up if the IOP is parked and has budget) and take what the IOP queued for the EE.
