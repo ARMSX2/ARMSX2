@@ -2425,6 +2425,10 @@ namespace
 
 	TEST_F(IopThreadObject, TheLagBoundTheEeWaitsAtIsTheEesToChange)
 	{
+		// The first slice the IOP runs waits for the gate, which a helper opens once the EE is spinning: whichever of
+		// the IOP's wake-up and the EE's check comes first, the IOP has not moved when the EE looks.
+		Latch gate;
+		fake.in_slice_hook = [&](u64, u64) { gate.Wait(aborted); };
 		Params p = BaseParams();
 		p.lag = 4096;
 		StopOnExit stop_on_exit(*thread);
@@ -2440,9 +2444,15 @@ namespace
 		EXPECT_TRUE(thread->CheckLag(15000));
 		EXPECT_EQ(thread->GetStats().lag_spins, 0u);
 
+		std::thread opener([&] {
+			while (thread->GetStats().lag_spins < 1 && !aborted.load())
+				std::this_thread::sleep_for(100us);
+			gate.Open();
+		});
 		thread->SetLag(4096);
 		EXPECT_TRUE(thread->CheckLag(15000));
 		EXPECT_EQ(thread->GetStats().lag_spins, 1u);
+		opener.join();
 	}
 
 	TEST_F(IopThreadObject, TheIopIsStoppedWhenThereIsNoThreadAHoldOrACallOnEeFunction)
