@@ -21,6 +21,7 @@
 #include "ImGui/ImGuiManager.h"
 #include "ImGui/ImGuiOverlays.h"
 #include "Input/InputManager.h"
+#include "IopThread/IopThreadVm.h"
 #include "MTGS.h"
 #include "Patch.h"
 #include "PerformanceMetrics.h"
@@ -78,6 +79,8 @@ SmallString s_cpu_usage_ee_line;
 SmallString s_cpu_usage_gs_line;
 SmallString s_cpu_usage_gs_back_line;
 SmallString s_cpu_usage_vu_line;
+// Devel builds, Threaded mode: the IOP thread's waits and queues per frame (IOP thread design, step 11).
+SmallString s_iop_thread_line;
 std::vector<SmallString> s_software_thread_lines;
 SmallString s_gpu_usage_line;
 SmallString s_gpu_debug_info_line;
@@ -716,6 +719,15 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 					DRAW_LINE(osd_font, font_size, s_cpu_usage_vu_line.c_str(), OsdTextColor());
 				}
 
+#if defined(PCSX2_DEVBUILD) || defined(PCSX2_DEBUG)
+				{
+					const std::string iop_stats = IopThread::OsdStatsLine();
+					s_iop_thread_line.assign(iop_stats.c_str());
+					if (!iop_stats.empty())
+						DRAW_LINE(osd_font, font_size, s_iop_thread_line.c_str(), OsdTextColor());
+				}
+#endif
+
 				const u32 gs_sw_threads = PerformanceMetrics::GetGSSWThreadCount();
 				for (u32 thread = 0; thread < gs_sw_threads; thread++)
 				{
@@ -816,6 +828,10 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 					DRAW_LINE(osd_font, font_size, s_cpu_usage_gs_back_line.c_str(), OsdTextColor());
 				if (THREAD_VU1)
 					DRAW_LINE(osd_font, font_size, s_cpu_usage_vu_line.c_str(), OsdTextColor());
+#if defined(PCSX2_DEVBUILD) || defined(PCSX2_DEBUG)
+				if (!s_iop_thread_line.empty())
+					DRAW_LINE(osd_font, font_size, s_iop_thread_line.c_str(), OsdTextColor());
+#endif
 
 				const u32 thread_count = std::min(
 					PerformanceMetrics::GetGSSWThreadCount(),

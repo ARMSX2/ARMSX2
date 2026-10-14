@@ -167,8 +167,11 @@ struct SetOverride
 	std::string section, key, value;
 };
 static std::vector<SetOverride> s_set_overrides; // --set Section/Key=Value (repeatable)
+static u32 s_iop_stats_every = 0;      // --iop-stats-every N: in a --liverun, log the IOP thread's Threaded counters every N frames
+static bool s_stress = false;          // --iop-stress <seed>: a --liverun that does random lifecycle things between frames
+static u32 s_stress_seed = 1;
 static u32 s_churn_every = 0;          // --settings-churn N <kind>: apply a settings change every N frames of a twin pass
-static std::string s_churn_kind;       // "lockstep": flip the IOP thread between Off and Lockstep; "lag": flip the IOP thread lag
+static std::string s_churn_kind;       // "lockstep": flip the IOP thread between Off and Lockstep; "threaded": between Off and Threaded; "lag": flip the IOP thread lag
 static u32 s_rec_fallback_groups = 0; // --rec-fallback <groups>: EE opcode groups forced to interp
 #if defined(ARCH_ARM64)
 static u32 s_rec_fallback_reg_masks[EERecFallback::kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u}; // per-COP2-move-op register filters
@@ -717,7 +720,7 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --mkstate <out.p2s>: run --frames under the production JIT (from --savestate if given, else a\n");
 	std::fprintf(stderr, "               cold disc boot) and write a savestate. Bootstrap twindiff states on the WORKING\n");
 	std::fprintf(stderr, "               binary, positioned BEFORE the corrupting computation (e.g. before a level load).\n");
-	std::fprintf(stderr, "  --settings-churn N <lockstep|lag>: in the twin passes, apply a settings change through\n");
+	std::fprintf(stderr, "  --settings-churn N <lockstep|threaded|lag>: in the twin passes and the --liverun, apply a settings change through\n");
 	std::fprintf(stderr, "               VMManager::ApplySettings every N frames, as a player changing a setting mid-game would.\n");
 	std::fprintf(stderr, "               'lockstep' flips the IOP thread between Off and Lockstep (a mode change: the thread\n");
 	std::fprintf(stderr, "               starts or stops and the EE recompiler is reset); 'lag' flips only the IOP thread lag\n");
@@ -732,6 +735,14 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --iop-assert-log: an IOP thread ownership assert (a Devel build's IOP_SIDE_ASSERT/EE_SIDE_ASSERT) logs\n");
 	std::fprintf(stderr, "               the first violation at each site and the run goes on, instead of stopping at the first. The\n");
 	std::fprintf(stderr, "               IOPTHREAD: line at the end of the run says how many there were.\n");
+	std::fprintf(stderr, "  --iop-stress <seed>: in a --liverun, do things a player does between frames at random (seeded): switch the IOP thread\n");
+	std::fprintf(stderr, "               between Off and Threaded and change its lag bound from inside the event test, save and load a state,\n");
+	std::fprintf(stderr, "               pause for a while, reset the VM, press hotkeys. Every operation is logged as STRESS: lines.\n");
+	std::fprintf(stderr, "  --iop-min-slice N: Threaded IOP thread: S_min, the budget in EE cycles the IOP lets build up before it runs a\n");
+	std::fprintf(stderr, "               slice (design 5.3). Default 0 (run whenever there is budget). A measurement knob, not a setting.\n");
+	std::fprintf(stderr, "  --iop-spin-hint yield|isb: the instruction the Threaded spin loops use between looks (default yield).\n");
+	std::fprintf(stderr, "  --iop-stats-every N: in a --liverun, log the Threaded IOP counters per frame every N frames. The IOPSTATS: line\n");
+	std::fprintf(stderr, "               at the end of the run gives the whole-run figures.\n");
 	std::fprintf(stderr, "  --set Section/Key=Value: base-layer settings override, applied after the harness pinning\n");
 	std::fprintf(stderr, "               (repeatable). E.g. --set EmuCore/CPU/Recompiler/fpuFullMode=true. GameDB\n");
 	std::fprintf(stderr, "               per-game keys still win; the twin passes own the EnableEE/VU0/VU1/IOP toggles.\n");
@@ -971,9 +982,9 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				const std::string_view n = StringUtil::StripWhitespace(argv[++i]);
 				s_churn_kind = StringUtil::StripWhitespace(argv[++i]);
 				const std::optional<u32> every = StringUtil::FromChars<u32>(n, 10);
-				if (!every.has_value() || every.value() == 0 || (s_churn_kind != "lockstep" && s_churn_kind != "lag"))
+				if (!every.has_value() || every.value() == 0 || (s_churn_kind != "lockstep" && s_churn_kind != "threaded" && s_churn_kind != "lag"))
 				{
-					Console.Error("--settings-churn expects N (frames) and a kind: lockstep or lag.");
+					Console.Error("--settings-churn expects N (frames) and a kind: lockstep, threaded or lag.");
 					return false;
 				}
 				s_churn_every = every.value();
@@ -1005,6 +1016,54 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			else if (CHECK_ARG("--iop-assert-log"))
 			{
 				IopThread::SetViolationHandler(&IopThread::LogViolation);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--iop-stress"))
+			{
+				const auto v = StringUtil::FromChars<u32>(argv[++i]);
+				if (!v.has_value())
+				{
+					Console.Error("--iop-stress expects a seed.");
+					return false;
+				}
+				s_stress = true;
+				s_stress_seed = v.value();
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--iop-min-slice"))
+			{
+				const auto v = StringUtil::FromChars<s32>(argv[++i]);
+				if (!v.has_value() || v.value() < 0)
+				{
+					Console.Error("--iop-min-slice expects a number of EE cycles, 0 or more.");
+					return false;
+				}
+				IopThread::SetThreadedMinSlice(v.value());
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--iop-spin-hint"))
+			{
+				const std::string_view kind = argv[++i];
+				if (kind == "yield")
+					IopThread::g_spin_hint.store(IopThread::SpinHintKind::Yield, std::memory_order_relaxed);
+				else if (kind == "isb")
+					IopThread::g_spin_hint.store(IopThread::SpinHintKind::Isb, std::memory_order_relaxed);
+				else
+				{
+					Console.Error("--iop-spin-hint expects yield or isb.");
+					return false;
+				}
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--iop-stats-every"))
+			{
+				const auto v = StringUtil::FromChars<u32>(argv[++i]);
+				if (!v.has_value())
+				{
+					Console.Error("--iop-stats-every expects a number of frames.");
+					return false;
+				}
+				s_iop_stats_every = v.value();
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--rec-fallback"))
@@ -3019,6 +3078,8 @@ static void ApplyChurnBaseline(bool restore)
 	VMManager::ApplySettings();
 }
 
+static u32 s_stress_lag_pick = 0;
+
 static void ApplySettingsChurn()
 {
 	if (s_churn_kind == "lockstep")
@@ -3026,6 +3087,21 @@ static void ApplySettingsChurn()
 		const bool on = s_settings_interface.GetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", false);
 		s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThread", !on);
 		s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", !on);
+	}
+	else if (s_churn_kind == "threaded")
+	{
+		const bool on = s_settings_interface.GetBoolValue("EmuCore/Speedhacks", "iopThread", false);
+		s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThread", !on);
+		s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", false);
+		if (s_stress)
+			Console.WriteLn(fmt::format("STRESS: settings change: iopThread {} -> {}", on ? "on" : "off", on ? "off" : "on"));
+	}
+	else if (s_stress && s_churn_kind == "lag-random")
+	{
+		static constexpr int kLags[] = {4096, 6144, 8192, 12288, 24576, 196608};
+		const int lag = kLags[s_stress_lag_pick % (sizeof(kLags) / sizeof(kLags[0]))];
+		s_settings_interface.SetIntValue("EmuCore/Speedhacks", "iopThreadLag", lag);
+		Console.WriteLn(fmt::format("STRESS: settings change: iopThreadLag {}", lag));
 	}
 	else
 	{
@@ -4291,6 +4367,7 @@ static int RunStateReport()
 }
 
 static std::atomic<uint32_t> s_liverun_frame{0};
+static u32 s_liverun_first_frame = 0; // g_FrameCount when the liverun's frames began, for per-frame figures
 static std::atomic<bool>     s_liverun_done{false};
 
 // Step-0 wedge classifier: snapshot the EE event/interrupt scheduler state. The
@@ -4420,6 +4497,123 @@ static void ReportThreadPerfCounters()
 }
 #endif
 
+#ifdef __linux__
+// The voluntary and involuntary context switches of the thread named `comm` (/proc/self/task/<tid>/status). A thread that
+// goes to sleep in the kernel makes a voluntary switch, so for the IOP thread this is the count of real sleeps (its parks
+// are mostly spins, WorkSema spins for SPIN_TIME_NS before it sleeps), and for the CPU thread, which must never sleep on the
+// emulation path, it is what proves it did not.
+static bool ReadContextSwitches(const char* comm, u64* voluntary, u64* involuntary)
+{
+	for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task"))
+	{
+		std::ifstream comm_file(entry.path() / "comm");
+		std::string name;
+		std::getline(comm_file, name);
+		if (name != comm)
+			continue;
+		std::ifstream status(entry.path() / "status");
+		std::string line;
+		bool got = false;
+		while (std::getline(status, line))
+		{
+			if (line.rfind("voluntary_ctxt_switches:", 0) == 0)
+			{
+				*voluntary = std::strtoull(line.c_str() + 24, nullptr, 10);
+				got = true;
+			}
+			else if (line.rfind("nonvoluntary_ctxt_switches:", 0) == 0)
+			{
+				*involuntary = std::strtoull(line.c_str() + 27, nullptr, 10);
+			}
+		}
+		return got;
+	}
+	return false;
+}
+#endif
+
+// --iop-stress: the things a player does between frames, at random (a fixed seed repeats the sequence): turn the IOP thread
+// off and on and change its lag bound from inside the event test, save the state and load it, pause for a while (the IOP is
+// held and goes to sleep), reset the VM, press a hotkey. The IOP-thread design's section 11 lists these as the lifecycle
+// paths the deadlock analysis has to hold for.
+static struct StressCounts
+{
+	u32 switches = 0, lags = 0, saves = 0, loads = 0, load_failures = 0, pauses = 0, resets = 0, hotkeys = 0;
+} s_stress_counts;
+
+static void StressStep(u32 frame)
+{
+	static u32 rng = 0;
+	static bool saved = false;
+	if (rng == 0)
+	{
+		rng = s_stress_seed * 2654435761u + 12345u;
+		if (rng == 0)
+			rng = 1;
+	}
+	const auto next = [] {
+		rng ^= rng << 13;
+		rng ^= rng >> 17;
+		rng ^= rng << 5;
+		return rng;
+	};
+	const std::string path = EmuFolders::DataRoot + "/iop-stress.p2s";
+	const u32 r = next() % 1000;
+	if (r < 20)
+	{
+		s_churn_kind = "threaded";
+		s_churn_pending = true; // applied at the next vsync, inside the event test, as a settings dialog would
+		s_stress_counts.switches++;
+	}
+	else if (r < 35)
+	{
+		s_churn_kind = "lag-random";
+		s_stress_lag_pick = next();
+		s_churn_pending = true;
+		s_stress_counts.lags++;
+	}
+	else if (r < 39)
+	{
+		bool ok = true;
+		VMManager::SaveState(path.c_str(), /*zip_on_thread=*/false, /*backup_old_state=*/false, [&](const std::string& e) {
+			ok = false;
+			Console.ErrorFmt("STRESS: save failed: {}", e);
+		});
+		VMManager::WaitForSaveStateFlush();
+		saved = saved || ok;
+		s_stress_counts.saves++;
+		Console.WriteLn(fmt::format("STRESS: frame {} saved a state: {} (IOP thread mode {})", frame, ok ? "ok" : "FAILED", static_cast<int>(IopThread::GetMode())));
+	}
+	else if (r < 43 && saved)
+	{
+		Error error;
+		const bool ok = VMManager::LoadState(path.c_str(), &error);
+		s_stress_counts.loads++;
+		if (!ok)
+			s_stress_counts.load_failures++;
+		Console.WriteLn(fmt::format("STRESS: frame {} loaded the state: {}{}", frame, ok ? "ok" : "FAILED ", ok ? "" : error.GetDescription()));
+	}
+	else if (r < 58)
+	{
+		const u32 ms = next() % 40;
+		Console.WriteLn(fmt::format("STRESS: frame {} paused for {} ms", frame, ms));
+		std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+		s_stress_counts.pauses++;
+	}
+	else if (r < 60)
+	{
+		Console.WriteLn(fmt::format("STRESS: frame {} reset the VM", frame));
+		VMManager::Reset();
+		s_stress_counts.resets++;
+	}
+	else if (r < 75)
+	{
+		static constexpr const char* kKeys[] = {"Mute", "IncreaseVolume", "DecreaseVolume", "ToggleSlowMotion", "ToggleTurbo"};
+		s_host_actions_pending.push_back(kKeys[next() % (sizeof(kKeys) / sizeof(kKeys[0]))]);
+		s_stress_counts.hotkeys++;
+	}
+}
+
 static int RunLiveRun()
 {
 	Error error;
@@ -4432,6 +4626,7 @@ static int RunLiveRun()
 #ifdef __linux__
 	StartThreadPerfCounters();
 #endif
+	s_liverun_first_frame = g_FrameCount;
 
 	Console.WriteLn(fmt::format(
 		"LIVERUN: EE={}, VU0={}, VU1={}, MTVU={}, real GS — running up to {} frames (10s no-progress watchdog)...",
@@ -4550,7 +4745,21 @@ static int RunLiveRun()
 	{
 		VMManager::FrameAdvance(1);
 		VMManager::Execute(); // blocks for one frame; if the EE wedges, never returns
+		// A settings change delivered inside the frame (--settings-churn, --iop-stress) resets the recompilers and leaves the
+		// execution loop early, as it does for a player; carry on until the frame ends.
+		while ((s_churn_every || s_stress) && VMManager::GetState() == VMState::Running)
+			VMManager::Execute();
+		if (s_churn_every && ((f + 1) % s_churn_every) == 0)
+			s_churn_pending = true;
+		if (s_stress)
+			StressStep(f + 1);
 		s_liverun_frame.store(f + 1, std::memory_order_relaxed);
+		if (s_iop_stats_every && ((f + 1) % s_iop_stats_every) == 0)
+		{
+			const std::string line = IopThread::OsdStatsLine();
+			if (!line.empty())
+				Console.WriteLn(fmt::format("IOPSTATS@{}: {}", f + 1, line));
+		}
 		if (s_change_disc_at && (f + 1) == s_change_disc_at)
 			s_change_disc_pending = true;
 		for (const HostAction& action : s_host_actions)
@@ -4801,6 +5010,43 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 				Console.WriteLn(fmt::format("IOPTHREAD: mode={} handoffs={} parks={} wakes_sent={} slices={} items={} violations={} holds={}",
 					mode_names[static_cast<int>(IopThread::GetMode())], st.handoffs, st.parks, st.wakes_sent, st.slices,
 					st.items_applied, IopThread::ViolationCount(), st.hold_requests + st.hold_markers));
+				if (s_mode == RunMode::LiveRun && s_stress)
+				{
+					Console.WriteLn(fmt::format("STRESS-SUMMARY: seed={} iop_thread_switches={} lag_changes={} saves={} loads={} (failed {}) pauses={} resets={} hotkeys={}",
+						s_stress_seed, s_stress_counts.switches, s_stress_counts.lags, s_stress_counts.saves, s_stress_counts.loads,
+						s_stress_counts.load_failures, s_stress_counts.pauses, s_stress_counts.resets, s_stress_counts.hotkeys));
+				}
+				if (s_mode == RunMode::LiveRun)
+				{
+					// What the EE and the IOP did per frame, in every mode, for the "sane against Off" check of the Threaded runs: EE event
+					// tests, and IOP slices (Off and Lockstep count them on the EE side; Threaded is the thread's own count).
+					const double frames = static_cast<double>(g_FrameCount - s_liverun_first_frame);
+					const u64 slices = IopThread::GetMode() == IopThreadMode::Threaded ? st.slices : g_twinIopSlices;
+					Console.WriteLn(fmt::format("COUNTS: mode={} frames={} ee_event_tests={} ({:.0f}/frame) iop_slices={} ({:.0f}/frame)",
+						mode_names[static_cast<int>(IopThread::GetMode())], static_cast<u32>(frames), g_twinEeEventTests, g_twinEeEventTests / std::max(frames, 1.0),
+						slices, slices / std::max(frames, 1.0)));
+				}
+				if (IopThread::GetMode() == IopThreadMode::Threaded && s_mode == RunMode::LiveRun)
+				{
+					const double frames = static_cast<double>(g_FrameCount - s_liverun_first_frame);
+					Console.WriteLn(fmt::format("IOPSTATS: frames={} {}", static_cast<u32>(frames), IopThread::FormatStats(st, frames)));
+					Console.WriteLn(fmt::format(
+						"IOPSTATS-RAW: lag_spins={} lag_spin_iterations={} lag_stall_ns={} lag_spins_parked={} lag_parked_stall_ns={} emu_hold_requests={} emu_hold_stall_ns={} "
+						"hold_requests={} hold_markers={} sif_ee_pumps={} calls_posted={} calls_served={} i2e_drained={} slices={} items_applied={} parks={} wakes_sent={} wakes_dropped={} "
+						"holds_entered={} kicks_applied={} i2e_full_waits={} e2i_full_spins={} hold_sleeps={}",
+						st.lag_spins, st.lag_spin_iterations, st.lag_stall_ns, st.lag_spins_parked, st.lag_parked_stall_ns, st.emu_hold_requests, st.emu_hold_stall_ns,
+						st.hold_requests, st.hold_markers, st.sif_ee_pumps, st.calls_posted, st.calls_served, st.i2e_drained, st.slices, st.items_applied, st.parks, st.wakes_sent,
+						st.wakes_dropped, st.holds_entered, st.kicks_applied, st.i2e_full_waits, st.e2i_full_spins, st.hold_sleeps));
+#ifdef __linux__
+					u64 iop_vol = 0, iop_invol = 0, ee_vol = 0, ee_invol = 0;
+					const bool have_iop = ReadContextSwitches("IOP", &iop_vol, &iop_invol);
+					const bool have_ee = ReadContextSwitches("CPU Thread", &ee_vol, &ee_invol);
+					if (have_iop && have_ee)
+						Console.WriteLn(fmt::format("IOPSTATS-CTXT: iop_thread_sleeps={} iop_thread_preemptions={} ee_thread_sleeps={} ee_thread_preemptions={} "
+													"(whole process; the EE thread's sleeps include the savestate load and the frame-by-frame pause)",
+							iop_vol, iop_invol, ee_vol, ee_invol));
+#endif
+				}
 			}
 
 			VMManager::Shutdown(false);
