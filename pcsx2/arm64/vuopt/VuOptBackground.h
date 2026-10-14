@@ -42,6 +42,9 @@ namespace vuopt::bg
 			// B or BL whose target is a placeholder (`id`, see CodeSink); the
 			// publisher decides what it stands for.
 			Site26,
+			// movz+movk*3 holding a placeholder (`id`): an address only the
+			// publisher knows.
+			SiteAbs,
 			// B or BL to an absolute address outside the buffer (`value`).
 			// The job's emission never makes one (every outside target it
 			// branches to is a placeholder), but the recorder keeps them so

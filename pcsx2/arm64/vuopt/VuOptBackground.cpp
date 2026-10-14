@@ -32,12 +32,9 @@ namespace vuopt::bg
 
 		void OnCanonicalAbsMove(u8* at, const void* addr) override
 		{
-			if (s_.PlaceholderId(addr) >= 0)
-			{
-				Fail("placeholder address materialised");
-				return;
-			}
-			if (s_.InCode(addr))
+			if (const s32 id = s_.PlaceholderId(addr); id >= 0)
+				s_.fixups.push_back({Off(at), Fixup::SiteAbs, static_cast<u32>(id), 0});
+			else if (s_.InCode(addr))
 				s_.fixups.push_back({Off(at), Fixup::IntraAbs, 0, static_cast<u64>(static_cast<const u8*>(addr) - s_.base_)});
 		}
 

@@ -26,6 +26,7 @@
 
 #include <map>
 #include <memory>
+#include <unordered_set>
 #include <vector>
 
 //------------------------------------------------------------------
@@ -88,6 +89,12 @@ struct VuoptProgramState
 	u32 requestRuns = 0;
 	// Finished jobs waiting to be published, in completion order.
 	std::vector<std::shared_ptr<VuoptJob>> ready;
+	// Blocks microVU compiled as its own while a root job for them was out (the
+	// root and everything its compile reached). A job's copy of the graph leaves
+	// them out, so a region grows over them as the synchronous tier's would have
+	// (there they would not exist), and the region that holds one takes over its
+	// entry. A block stays here until a region does.
+	std::unordered_set<const microBlock*> provisional;
 };
 
 // A block as a job sees it. The pipeline state comes first, where microBlock
@@ -105,6 +112,11 @@ struct VuoptWBlock
 	// A node of the job's region: its entry, as an offset into the job's code.
 	bool hasEntry = false;
 	u32 entryOff = 0;
+	// A node an earlier job of the same program and graph built (claimed) and
+	// may have published by the time this one is: a link to it is aimed at
+	// publication, at whatever the program's graph holds for its key then.
+	bool pending = false;
+	s32 phId = -1;
 	// The microBlock it became at publication.
 	microBlock* real = nullptr;
 };
@@ -173,6 +185,7 @@ struct VuoptJob final : vuopt::bg::Job
 		PhStub,
 		PhExit,
 		PhTail,
+		PhPending,
 	};
 
 	// Identity (the worker never dereferences `prog`).
@@ -220,6 +233,7 @@ struct VuoptJob final : vuopt::bg::Job
 		alignas(16) microRegInfo endKey;
 	};
 	std::vector<Tail> tails;
+	std::vector<VuoptWBlock*> pendingRefs; // PhPending placeholders
 	std::vector<std::pair<PhKind, u32>> ph; // per placeholder id
 	std::vector<u8> readMask;               // per micro-memory word: the compile read it
 	u32 regions = 0, regionNodes = 0, regionExits = 0;
@@ -480,6 +494,28 @@ namespace
 		}
 	};
 
+	// The nodes each accepted job built, per (epoch, program, graph generation),
+	// in order; worker thread only. A root job sees the ones built before it as
+	// blocks of the graph (pending), so two jobs of one program asked for close
+	// together do not both grow over the same blocks, as the synchronous tier's
+	// regions, built one after another, would not.
+	struct VuoptClaimKey
+	{
+		u64 epoch;
+		const void* prog;
+		u32 gen;
+		bool operator<(const VuoptClaimKey& o) const
+		{
+			return epoch != o.epoch ? epoch < o.epoch : (prog != o.prog ? prog < o.prog : gen < o.gen);
+		}
+	};
+	struct VuoptClaim
+	{
+		u32 pc;
+		alignas(16) microRegInfo key;
+	};
+	thread_local std::map<VuoptClaimKey, std::vector<VuoptClaim>> t_vuoptClaims;
+
 	struct VuoptWorkerContext
 	{
 		VuoptJob* job = nullptr;
@@ -525,9 +561,20 @@ namespace
 	}
 	void* vuoptWEntry(void* block)
 	{
-		const VuoptWBlock* b = static_cast<const VuoptWBlock*>(block);
+		VuoptWBlock* b = static_cast<VuoptWBlock*>(block);
 		if (b->snapshot)
 			return b->entry;
+		if (b->pending)
+		{
+			VuoptJob& j = *t_vuoptCtx->job;
+			if (b->phId < 0)
+			{
+				j.pendingRefs.push_back(b);
+				b->phId = static_cast<s32>(j.ph.size());
+				vuoptPlaceholder(j, VuoptJob::PhPending, static_cast<u32>(j.pendingRefs.size() - 1));
+			}
+			return const_cast<void*>(t_vuoptCtx->sink->Placeholder(static_cast<u32>(b->phId)));
+		}
 		// (a node's entry is known only once the region is emitted; the only
 		// one asked for before that is the root's, which is where emission starts)
 		pxAssertRel(b->hasEntry, "vuopt worker: the entry of a node not yet emitted");
@@ -567,6 +614,26 @@ void VuoptJob::Run()
 	for (const auto& b : blocks)
 		ctx.graph.Add(b.get());
 	t_vuoptCtx = &ctx;
+	// (claims of earlier epochs belong to code a reset threw away)
+	for (auto it = t_vuoptClaims.begin(); it != t_vuoptClaims.end();)
+		it = (it->first.epoch != epoch) ? t_vuoptClaims.erase(it) : std::next(it);
+	const VuoptClaimKey claimKey{epoch, prog, kind == Root ? gen : gen + 1};
+	if (kind == Root)
+	{
+		const auto it = t_vuoptClaims.find(claimKey);
+		if (it != t_vuoptClaims.end())
+			for (const VuoptClaim& c : it->second)
+			{
+				auto w = std::make_unique<VuoptWBlock>();
+				w->pState = c.key;
+				w->pc = c.pc;
+				w->pending = true;
+				ctx.graph.Add(w.get());
+				blocks.push_back(std::move(w));
+			}
+	}
+	else
+		t_vuoptClaims.erase(claimKey);
 
 	readMask.assign(0x4000 / 4, 0);
 	vuopt::g_pipeReadMask = readMask.data();
@@ -640,6 +707,9 @@ void VuoptJob::Run()
 	}
 	if (accepted)
 	{
+		std::vector<VuoptClaim>& claims = t_vuoptClaims[claimKey];
+		for (const VuoptWBlock* n : nodes)
+			claims.push_back({n->pc, n->pState});
 		code.assign(sink->Base(), sink->Base() + size);
 		fixups = sink->fixups;
 		regions = tier.Regions();
@@ -691,7 +761,7 @@ static void vuoptSnapshotGraph(microProgram& prog, const void* exclude, VuoptJob
 		if (!m)
 			continue;
 		m->forEachInSearchOrder([&](microBlock& b) {
-			if (&b == exclude)
+			if (&b == exclude || (prog.vuopt && prog.vuopt->provisional.count(&b)))
 				return;
 			auto w = std::make_unique<VuoptWBlock>();
 			w->pState = b.pState;
@@ -797,6 +867,8 @@ static void vuoptPlace(microVU& mVU, VuoptJob& j, microBlock* rootReal)
 			}
 		}
 		pxAssertRel(n->hasEntry, "vuopt: a region node without an entry");
+		if (VuoptProgramState* st = mVU.prog.cur->vuopt)
+			st->provisional.erase(b);
 		b->x86ptrStart = base + n->entryOff;
 		b->hostEntry = base + n->entryOff;
 		n->real = b;
@@ -835,6 +907,19 @@ static void vuoptPlace(microVU& mVU, VuoptJob& j, microBlock* rootReal)
 			VuoptJob::Exit& x = j.exits[j.ph[id].second];
 			target[id] = mVUblockFetch(mVU, x.pc, reinterpret_cast<uptr>(&x.key));
 		}
+	// Links to an earlier job's nodes: what the graph holds for their keys now
+	// (that job's region if it was published, else microVU's block, compiled
+	// now if there is none).
+	for (size_t id = 0; id < j.ph.size(); id++)
+		if (j.ph[id].first == VuoptJob::PhPending)
+		{
+			VuoptWBlock& w = *j.pendingRefs[j.ph[id].second];
+			target[id] = mVUblockFetch(mVU, w.pc, reinterpret_cast<uptr>(&w.pState));
+		}
+	for (const vuopt::bg::Fixup& f : j.fixups)
+		if (f.kind == vuopt::bg::Fixup::SiteAbs)
+			pxAssertRel(vuopt::bg::PatchAbsMov(reinterpret_cast<u32*>(armGetWritableCodePtr(base + f.offset)), reinterpret_cast<u64>(target[f.id])),
+				"vuopt: an address in a region is not where its fixup says");
 
 	// The branches to placeholders and to the outside world. A target out of
 	// B/BL range (a C helper, from the code cache) goes through a veneer
@@ -843,7 +928,7 @@ static void vuoptPlace(microVU& mVU, VuoptJob& j, microBlock* rootReal)
 	std::map<const void*, const u8*> veneers;
 	for (const vuopt::bg::Fixup& f : j.fixups)
 	{
-		if (f.kind == vuopt::bg::Fixup::IntraAbs)
+		if (f.kind == vuopt::bg::Fixup::IntraAbs || f.kind == vuopt::bg::Fixup::SiteAbs)
 			continue;
 		const void* to = (f.kind == vuopt::bg::Fixup::Site26) ? target[f.id] : reinterpret_cast<const void*>(f.value);
 		pxAssertRel(to, "vuopt: a region branch with no target");
@@ -864,7 +949,7 @@ static void vuoptPlace(microVU& mVU, VuoptJob& j, microBlock* rootReal)
 	}
 
 	for (auto& b : j.blocks)
-		if (!b->snapshot)
+		if (!b->snapshot && !b->pending)
 			s_vuopt.handles.push_back(std::move(b));
 	j.blocks.clear();
 	s_vuopt.stats.regions += j.regions;
@@ -901,6 +986,7 @@ static void vuoptPublishGeneration(microVU& mVU, VuoptJob& j)
 	microProgram& prog = *j.prog;
 	VuoptProgramState& st = *prog.vuopt;
 	const u32 setAside = vuoptSetAside(mVU, prog, st);
+	st.provisional.clear();
 	st.gen++;
 	st.tiers++;
 	st.runsAtTier = vuoptTotalRuns(prog);
@@ -1427,7 +1513,6 @@ static bool vuoptLiveRegionHook(const vuopt::MvuBlockTrace& b, const vuopt::MvuE
 {
 	microVU& mVU = microVU1;
 	VuoptProgramState& st = *static_cast<VuoptProgramState*>(user);
-	(void)st;
 	// A generation being published: its root's compile places it.
 	if (VuoptJob* j = s_vuopt.prepared)
 	{
@@ -1449,7 +1534,10 @@ static bool vuoptLiveRegionHook(const vuopt::MvuBlockTrace& b, const vuopt::MvuE
 		}
 	}
 	if (vuoptUnderPlainRoot())
+	{
+		st.provisional.insert(static_cast<const microBlock*>(env.rootBlock));
 		return false;
+	}
 
 	// A block microVU meets in a program already tiered up: a region rooted at
 	// it goes to the worker, built against the program's graph as it is now.
@@ -1474,6 +1562,7 @@ static bool vuoptLiveRegionHook(const vuopt::MvuBlockTrace& b, const vuopt::MvuE
 	}
 	vuoptSubmit(j);
 	// microVU compiles the block, and what it reaches from it, as its own for now.
+	st.provisional.insert(static_cast<const microBlock*>(env.rootBlock));
 	s_vuopt.plainRootDepth = s_vuopt.compileDepth;
 	return false;
 }
