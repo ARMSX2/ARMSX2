@@ -252,8 +252,6 @@ namespace IopThread
 		{
 		}
 
-		bool Acquired() const { return m_hold.Acquired(); }
-
 	private:
 		ScopedHold m_hold;
 	};

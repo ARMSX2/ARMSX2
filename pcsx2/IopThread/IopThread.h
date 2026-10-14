@@ -23,7 +23,8 @@
 // The three waits the EE has (design section 4) are CheckLag (W1, the lag bound), ScopedHold (W2
 // and W4, the holds) and PostE2I (W3, a full queue). None of them sleeps in the emulation path.
 // Each spins with the CPU's yield hint, empties the IOP-to-EE queue and runs CallOnEE functions on
-// every iteration, and asks Params::should_stop every 1024 iterations. A ScopedHold of kind
+// every iteration, and the lag wait and the E2I-full wait ask Params::should_stop every 1024
+// iterations (a hold never gives up, see ScopedHold). A ScopedHold of kind
 // Lifecycle may fall back to short sleeps after SPIN_TIME_NS, because pause, savestate and reset
 // are not on the emulation path.
 //
@@ -236,8 +237,9 @@ namespace IopThread
 		/// (EEsCycle, EEoCycle) from the IOP's position, which a savestate or a mode change reads.
 		std::function<void()> on_hold_acquired;
 
-		/// Asked every kSpinCheckInterval iterations of an EE spin. True makes the spin give up:
-		/// the emulator passes VMManager::GetState() being Stopping or Shutdown.
+		/// Asked every kSpinCheckInterval iterations of the lag wait and of a wait for room in the E2I ring,
+		/// whose callers can return to the event test. True makes the spin give up: the emulator passes
+		/// VMManager::GetState() being Stopping or Shutdown. A hold never asks.
 		std::function<bool()> should_stop;
 
 		/// Test only. Asked before an EE-side wake-up that was filtered by iop_parked is sent;
@@ -504,7 +506,7 @@ namespace IopThread
 		// ---- EE thread: the waits
 		bool LagSpin(u64 cycle);
 		bool WaitForE2ISpace(u64 stamp, u16 kind, u32 arg);
-		bool AcquireHold(HoldKind kind);
+		void AcquireHold(HoldKind kind);
 		void ReleaseHold();
 		void ServeCall();
 		void WakeAfterPublish(u64 cycle);
@@ -591,8 +593,9 @@ namespace IopThread
 	/// The outermost hold publishes the EE's cycle, asks the IOP to run up to it, waits until it
 	/// has, and the IOP then stays still until the hold ends. Holds taken while one is live, or
 	/// inside a CallOnEE function, or in Lockstep, or with no thread running, only count: the IOP is
-	/// already stopped there. Check Acquired(): it is false if the stop predicate ended the wait, in
-	/// which case the hold was withdrawn and the IOP must not be touched.
+	/// already stopped there. A hold always ends with the IOP stopped: it does not give up when the VM is
+	/// stopping (Params::should_stop), because what its caller does next needs the IOP stopped, and the IOP
+	/// gets there within a slice.
 	///
 	/// When a hold is acquired the I2E queue has been emptied once more after the IOP stopped, so
 	/// nothing the IOP did before the hold is still waiting for the EE.
@@ -601,23 +604,16 @@ namespace IopThread
 	public:
 		explicit ScopedHold(Thread& thread, HoldKind kind = HoldKind::Lifecycle)
 			: m_thread(thread)
-			, m_acquired(thread.AcquireHold(kind))
 		{
+			thread.AcquireHold(kind);
 		}
 
-		~ScopedHold()
-		{
-			if (m_acquired)
-				m_thread.ReleaseHold();
-		}
+		~ScopedHold() { m_thread.ReleaseHold(); }
 
 		ScopedHold(const ScopedHold&) = delete;
 		ScopedHold& operator=(const ScopedHold&) = delete;
 
-		bool Acquired() const { return m_acquired; }
-
 	private:
 		Thread& m_thread;
-		bool m_acquired;
 	};
 } // namespace IopThread

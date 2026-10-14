@@ -604,7 +604,7 @@ namespace IopThread
 
 	// ---- holds
 
-	bool Thread::AcquireHold(HoldKind kind)
+	void Thread::AcquireHold(HoldKind kind)
 	{
 		// The IOP is already stopped for a hold taken inside another, inside a CallOnEE function, in
 		// Lockstep (it only runs while the EE is in a handoff) and with no thread running, so those
@@ -613,7 +613,7 @@ namespace IopThread
 		{
 			m_hold_depth++;
 			m_hold_markers.Add();
-			return true;
+			return;
 		}
 
 		m_hold_requests.Add();
@@ -635,10 +635,13 @@ namespace IopThread
 		m_ee.spinning.store(true, std::memory_order_relaxed);
 		WakeIfParked(WakeSite::SpinEntry);
 
+		// A hold never gives up, and so never asks Params::should_stop. Its caller is in the middle of an operation
+		// that needs the IOP stopped (a SIF pump, the savestate a shutdown writes), and the IOP does get there: it
+		// finishes its slice, and this loop serves its queue and its CallOnEE functions on every iteration. Only the
+		// waits whose callers can return to the event test (CheckLag, PostE2I) give up when the VM is stopping.
 		const bool may_sleep = (kind == HoldKind::Lifecycle);
 		const auto begin = std::chrono::steady_clock::now();
 		bool sleeping = false;
-		bool held = false;
 		u64 iterations = 0;
 		for (;;)
 		{
@@ -654,24 +657,16 @@ namespace IopThread
 			iterations++;
 			// Pairs with the release store in TryHold(): the IOP's state is visible from here.
 			if (m_iop.held_gen.load(std::memory_order_acquire) == gen)
-			{
-				held = true;
 				break;
-			}
 			if (m_i2e.MayHaveItems())
 				DrainI2E();
 			if (sleeping)
 			{
-				// A sleep is long enough to ask every time.
-				if (ShouldStop())
-					break;
 				if (iterations % kSleepingWakeInterval == 0)
 					WakeIfParked(WakeSite::SpinPeriodic);
 			}
 			else if ((iterations & (kSpinCheckInterval - 1)) == 0)
 			{
-				if (ShouldStop())
-					break;
 				WakeIfParked(WakeSite::SpinPeriodic);
 				if (may_sleep && std::chrono::steady_clock::now() - begin >= std::chrono::nanoseconds(SPIN_TIME_NS))
 					sleeping = true;
@@ -686,16 +681,6 @@ namespace IopThread
 			m_emu_hold_stall_ns.Add(static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count()));
 		}
 
-		if (!held)
-		{
-			// Withdraw the request. The IOP may have just reached it; the notify gets it out of the
-			// wait it may now be in.
-			m_hold_requested = false;
-			m_ee.hold_target.store(kNoHold, std::memory_order_release);
-			m_sema.NotifyOfWork();
-			return false;
-		}
-
 		m_hold_depth++;
 		// The loop looks for the hold before it drains, so the IOP's last items may still be queued.
 		// With the IOP stopped the queue cannot grow, so after this nothing it did before the hold
@@ -703,7 +688,6 @@ namespace IopThread
 		DrainI2E();
 		if (m_params.on_hold_acquired)
 			m_params.on_hold_acquired();
-		return true;
 	}
 
 	void Thread::ReleaseHold()

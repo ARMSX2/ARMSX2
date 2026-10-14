@@ -672,7 +672,6 @@ namespace
 		}
 		{
 			ScopedHold hold(*thread, HoldKind::Lifecycle);
-			ASSERT_TRUE(hold.Acquired());
 			ASSERT_EQ(fake.applied.size(), posted) << "a hold must find every item stamped before it applied";
 			u64 last_stamp = 0;
 			for (u32 i = 0; i < posted; i++)
@@ -909,7 +908,6 @@ namespace
 			const u64 target = ee_cycle;
 			{
 				ScopedHold hold(*thread, (round & 1) ? HoldKind::Emulation : HoldKind::Lifecycle);
-				ASSERT_TRUE(hold.Acquired()) << "round " << round;
 				EXPECT_EQ(thread->HoldDepth(), 1u);
 
 				// What the IOP wrote is visible and complete.
@@ -954,7 +952,6 @@ namespace
 		ASSERT_TRUE(WaitEe([&] { return fake.slices_started.load() == 1; }));
 		{
 			ScopedHold hold(*thread, HoldKind::Lifecycle);
-			ASSERT_TRUE(hold.Acquired());
 			const s64 granted_ns = Clock::now().time_since_epoch().count();
 			const s64 ended_ns = slice_end_ns.load(std::memory_order_acquire);
 			EXPECT_NE(ended_ns, 0) << "the hold was granted while the slice was still running";
@@ -972,12 +969,9 @@ namespace
 		Publish(1000);
 		{
 			ScopedHold outer(*thread);
-			ASSERT_TRUE(outer.Acquired());
 			{
 				ScopedHold middle(*thread, HoldKind::Emulation);
 				ScopedHold inner(*thread);
-				EXPECT_TRUE(middle.Acquired());
-				EXPECT_TRUE(inner.Acquired());
 				EXPECT_EQ(thread->HoldDepth(), 3u);
 			}
 			EXPECT_EQ(thread->HoldDepth(), 1u);
@@ -1016,7 +1010,6 @@ namespace
 			// The IOP is (or soon will be) blocked in CallOnEE; the hold spin must serve it, and the
 			// IOP must then finish its slice and reach the hold.
 			ScopedHold hold(*thread, HoldKind::Lifecycle);
-			ASSERT_TRUE(hold.Acquired());
 			EXPECT_TRUE(fn_ran);
 			EXPECT_EQ(fn_thread, std::this_thread::get_id());
 			EXPECT_GE(fake.pos, 1000u);
@@ -1028,7 +1021,6 @@ namespace
 	TEST_F(IopThreadObject, AHoldTakenInsideACallOnEEFunctionIsAMarker)
 	{
 		bool first = true;
-		bool acquired = false;
 		u64 depth = 0;
 		u64 requests_inside = ~u64(0);
 		fake.in_slice_hook = [&](u64, u64) {
@@ -1040,7 +1032,6 @@ namespace
 					// handshake here would wait for an IOP that is waiting for this very function.
 					const u64 before = thread->GetStats().hold_requests;
 					ScopedHold hold(*thread, HoldKind::Emulation);
-					acquired = hold.Acquired();
 					depth = thread->HoldDepth();
 					requests_inside = thread->GetStats().hold_requests - before;
 				});
@@ -1053,7 +1044,6 @@ namespace
 		EXPECT_EQ(thread->DrainI2E(), 1u);
 		ASSERT_TRUE(WaitPos(1000));
 		thread->Stop();
-		EXPECT_TRUE(acquired);
 		EXPECT_EQ(depth, 1u);
 		EXPECT_EQ(requests_inside, 0u);
 	}
@@ -1064,14 +1054,12 @@ namespace
 		// function, and the function takes a hold of its own. That inner hold is a counter; ending it
 		// must not end the outer request, which has not been granted yet.
 		bool first = true;
-		bool inner_acquired = false;
 		fake.in_slice_hook = [&](u64, u64) {
 			if (!first)
 				return;
 			first = false;
 			thread->CallOnEE([&] {
 				ScopedHold inner(*thread, HoldKind::Emulation);
-				inner_acquired = inner.Acquired();
 			});
 		};
 		StopOnExit stop_on_exit(*thread);
@@ -1080,8 +1068,6 @@ namespace
 		ASSERT_TRUE(WaitEe([&] { return thread->MayHaveI2E(); })) << "the IOP never reached CallOnEE";
 		{
 			ScopedHold outer(*thread, HoldKind::Emulation);
-			ASSERT_TRUE(outer.Acquired()) << "the inner hold withdrew the outer request";
-			EXPECT_TRUE(inner_acquired);
 			EXPECT_EQ(thread->HoldDepth(), 1u);
 			EXPECT_GE(fake.pos, 1000u);
 			const u64 slices = fake.slice_count;
@@ -1106,7 +1092,6 @@ namespace
 		ASSERT_TRUE(WaitEe([&] { return fake.slices_started.load() == 1; }));
 		{
 			ScopedHold hold(*thread, HoldKind::Lifecycle);
-			ASSERT_TRUE(hold.Acquired());
 		}
 		EXPECT_GT(thread->GetStats().hold_sleeps, 0u) << "a lifecycle hold should stop spinning and sleep while the IOP is stuck";
 
@@ -1118,14 +1103,17 @@ namespace
 		const u64 spins = thread->GetStats().hold_spin_iterations;
 		{
 			ScopedHold hold(*thread, HoldKind::Emulation);
-			ASSERT_TRUE(hold.Acquired());
 		}
 		EXPECT_EQ(thread->GetStats().hold_sleeps, sleeps) << "an emulation hold must never sleep";
 		EXPECT_GT(thread->GetStats().hold_spin_iterations, spins);
 	}
 
-	TEST_F(IopThreadObject, AHoldBailsOutWhenTheStopPredicateFiresAndTheNextHoldStillWorks)
+	TEST_F(IopThreadObject, AHoldDoesNotGiveUpWhenTheStopPredicateFires)
 	{
+		// The IOP is in a slice that outlasts many of the spin's stop checks. The caller of a hold is in the middle of
+		// an operation that needs the IOP stopped (a SIF pump, the savestate a shutdown writes), so the hold waits for
+		// the IOP however long the slice takes and never asks whether the VM is stopping. The lag wait and the full
+		// queue wait are the ones that give up: their callers can return to the event test.
 		Latch gate;
 		bool first = true;
 		fake.in_slice_hook = [&](u64, u64) {
@@ -1136,32 +1124,31 @@ namespace
 			}
 		};
 		std::atomic<u32> checks{0};
-		std::atomic<u32> fire_at{3};
 		Params p = BaseParams();
-		p.should_stop = [&] { return checks.fetch_add(1) + 1 >= fire_at.load() || aborted.load(); };
+		p.should_stop = [&] {
+			checks.fetch_add(1);
+			return true;
+		};
 		StopOnExit stop_on_exit(*thread);
 		ASSERT_TRUE(thread->Start(p));
 		Publish(1000);
 		ASSERT_TRUE(WaitEe([&] { return fake.slices_started.load() == 1; }));
+		std::thread opener([&] {
+			std::this_thread::sleep_for(50ms);
+			gate.Open();
+		});
 		{
 			ScopedHold hold(*thread, HoldKind::Emulation);
-			EXPECT_FALSE(hold.Acquired()) << "the stop predicate asked the spin to give up";
-			EXPECT_EQ(thread->HoldDepth(), 0u);
-		}
-		EXPECT_EQ(checks.load(), 3u);
-		EXPECT_EQ(thread->GetStats().hold_spin_iterations, 3u * kSpinCheckInterval) << "the stop predicate must be checked every 1024 iterations";
-
-		// The IOP, released, must not stay held for the request that was given up, and the next
-		// request must be honoured.
-		gate.Open();
-		fire_at.store(~0u);
-		ASSERT_TRUE(WaitPos(1000));
-		{
-			ScopedHold hold(*thread, HoldKind::Lifecycle);
-			ASSERT_TRUE(hold.Acquired());
+			EXPECT_EQ(thread->HoldDepth(), 1u) << "the hold gave up while the IOP was still in its slice";
 			EXPECT_GE(fake.pos, ee_cycle);
+			const u64 slices = fake.slice_count;
+			Publish(ee_cycle + 2000);
+			std::this_thread::sleep_for(2ms);
+			EXPECT_EQ(fake.slice_count, slices) << "the IOP ran during the hold";
 		}
-		Publish(ee_cycle + 2000);
+		opener.join();
+		EXPECT_EQ(checks.load(), 0u) << "a hold must not ask the stop predicate";
+		Publish(ee_cycle + 4000);
 		ASSERT_TRUE(WaitPos(ee_cycle));
 	}
 
@@ -1169,7 +1156,6 @@ namespace
 	{
 		{
 			ScopedHold hold(*thread);
-			EXPECT_TRUE(hold.Acquired());
 			EXPECT_EQ(thread->HoldDepth(), 1u);
 		}
 		StopOnExit stop_on_exit(*thread);
@@ -1177,7 +1163,6 @@ namespace
 		thread->Stop();
 		{
 			ScopedHold hold(*thread, HoldKind::Emulation);
-			EXPECT_TRUE(hold.Acquired());
 		}
 		EXPECT_EQ(thread->GetStats().hold_requests, 0u);
 	}
@@ -1190,7 +1175,6 @@ namespace
 		fake.pos_mirror.store(2000);
 		{
 			ScopedHold hold(*thread); // nothing is running, so this is a marker
-			ASSERT_TRUE(hold.Acquired());
 			Params p = BaseParams();
 			p.start_ee_cycle = 2000;
 			p.start_iop_pos = 2000;
@@ -1228,7 +1212,6 @@ namespace
 			Publish(ee_cycle + 1000);
 			ASSERT_TRUE(WaitEe([&] { return fake.slices_started.load() == round; }));
 			ScopedHold hold(*thread, HoldKind::Lifecycle);
-			ASSERT_TRUE(hold.Acquired());
 			ASSERT_EQ(posted.load(), round);
 			ASSERT_EQ(received, round) << "round " << round << ": the IOP's last item was left in the queue by the hold";
 		}
@@ -1247,7 +1230,6 @@ namespace
 			ee_cycle += 100;
 			thread->PublishWatermark(ee_cycle);
 			ScopedHold hold(*thread, HoldKind::Emulation);
-			ASSERT_TRUE(hold.Acquired()) << "round " << round;
 			if (fake.slice_count > slices_at_release)
 				ASSERT_EQ(fake.poke_at_last_slice, previous_poke) << "round " << round;
 			fake.poke = round;
@@ -1319,7 +1301,6 @@ namespace
 		ASSERT_TRUE(WaitPos(5000));
 		{
 			ScopedHold hold(*thread);
-			ASSERT_TRUE(hold.Acquired());
 			// As a savestate load does: both clocks move, here backwards, and the queues are emptied.
 			ee_cycle = 800;
 			fake.pos = 700;
@@ -1475,7 +1456,6 @@ namespace
 		ASSERT_TRUE(WaitEe([&] { return thread->MayHaveI2E(); }));
 		{
 			ScopedHold hold(*thread);
-			ASSERT_TRUE(hold.Acquired());
 			EXPECT_TRUE(fn_ran) << "the shutdown hold must serve the call before the thread is stopped";
 			thread->Stop();
 		}
@@ -1600,7 +1580,6 @@ namespace
 			ASSERT_TRUE(WaitParked()) << "round " << round;
 			{
 				ScopedHold hold(*thread, HoldKind::Lifecycle);
-				ASSERT_TRUE(hold.Acquired()) << "round " << round;
 				// Budget arrives while the IOP is held; its publish wake is dropped. Stay long enough
 				// (the semaphore spins for SPIN_TIME_NS first) that the IOP is asleep in its hold.
 				Publish(ee_cycle + 100);
@@ -1643,7 +1622,6 @@ namespace
 
 		{
 			ScopedHold hold(*thread);
-			ASSERT_TRUE(hold.Acquired());
 			ee_cycle += 100000000; // the EE runs on during the hold; the IOP does not
 			EXPECT_TRUE(thread->CheckLag(ee_cycle));
 		}
@@ -1660,7 +1638,6 @@ namespace
 		u32 refused = 0;
 		{
 			ScopedHold hold(*thread);
-			ASSERT_TRUE(hold.Acquired());
 			// The IOP is held, so nothing will ever make room; the post must say so.
 			for (u32 i = 0; i < static_cast<u32>(kE2IRingCapacity) + 10; i++)
 			{
@@ -1686,7 +1663,6 @@ namespace
 		ASSERT_TRUE(thread->Start(BaseParams()));
 		{
 			ScopedHold hold(*thread);
-			ASSERT_TRUE(hold.Acquired());
 			ASSERT_TRUE(thread->PostE2I(900, 9, 99)); // from the timeline that a state load replaces
 			ee_cycle = 800;
 			thread->Resync(800, 0);
@@ -1729,7 +1705,6 @@ namespace
 		EXPECT_GE(thread->GetStats().e2i_full_spins, 1u);
 		{
 			ScopedHold hold(*thread);
-			ASSERT_TRUE(hold.Acquired());
 			ASSERT_EQ(fake.applied.size(), kItems);
 			for (u32 i = 0; i < kItems; i++)
 				EXPECT_EQ(fake.applied[i].item.arg, i);
@@ -1761,7 +1736,6 @@ namespace
 		}
 		{
 			ScopedHold hold(*thread);
-			ASSERT_TRUE(hold.Acquired());
 			EXPECT_EQ(fake.applied.size(), kItems);
 		}
 		thread->Stop();
@@ -1834,7 +1808,6 @@ namespace
 		ee_cycle = 10 + 10 * static_cast<u64>(kE2IRingCapacity + 50); // the EE has reached the last stamp it used
 		{
 			ScopedHold hold(*thread);
-			ASSERT_TRUE(hold.Acquired());
 			EXPECT_EQ(fake.applied.size(), accepted) << "the items that were accepted are still applied";
 		}
 		thread->Stop();
@@ -1916,7 +1889,6 @@ namespace
 		ASSERT_TRUE(WaitEe([&] { return thread->GetStats().i2e_full_waits >= 1; }));
 		{
 			ScopedHold hold(*thread);
-			ASSERT_TRUE(hold.Acquired());
 			EXPECT_EQ(received, kItems) << "the hold spin must have emptied the queue the IOP was blocked on";
 		}
 	}
@@ -2129,8 +2101,6 @@ namespace
 		{
 			ScopedHold outer(*thread);
 			ScopedHold inner(*thread, HoldKind::Emulation);
-			EXPECT_TRUE(outer.Acquired());
-			EXPECT_TRUE(inner.Acquired());
 			EXPECT_EQ(thread->HoldDepth(), 2u);
 			EXPECT_TRUE(thread->IsParked() || WaitParked());
 		}
@@ -2192,8 +2162,6 @@ namespace
 				if (thread->CallOnEE([&] {
 						call_fn_runs++;
 						ScopedHold nested(*thread, HoldKind::Emulation);
-						if (!nested.Acquired())
-							errors.Add("a hold inside a CallOnEE function was not granted");
 					}))
 					calls_returned.fetch_add(1);
 			}
@@ -2241,7 +2209,6 @@ namespace
 				for (u32 d = 0; d < depth; d++)
 				{
 					holds.push_back(std::make_unique<ScopedHold>(*thread, rng.Below(2) ? HoldKind::Emulation : HoldKind::Lifecycle));
-					ASSERT_TRUE(holds.back()->Acquired()) << "step " << step;
 				}
 				ASSERT_GE(thread->PublishedPos(), ee_cycle);
 				ASSERT_EQ(fake.applied.size(), posted) << "step " << step;
@@ -2267,7 +2234,6 @@ namespace
 
 		{
 			ScopedHold hold(*thread);
-			ASSERT_TRUE(hold.Acquired());
 			ASSERT_EQ(fake.applied.size(), posted);
 		}
 		// Let the IOP finish its host commands; only the IOP thread touches host_ran until then.
@@ -2366,7 +2332,6 @@ namespace
 		});
 		{
 			ScopedHold hold(*thread, HoldKind::Emulation);
-			ASSERT_TRUE(hold.Acquired());
 		}
 		releaser.join();
 		Stats stats = thread->GetStats();
@@ -2376,7 +2341,6 @@ namespace
 
 		{
 			ScopedHold hold(*thread, HoldKind::Lifecycle);
-			ASSERT_TRUE(hold.Acquired());
 			ScopedHold nested(*thread, HoldKind::Emulation); // a marker: nothing to wait for
 		}
 		stats = thread->GetStats();
@@ -2408,7 +2372,6 @@ namespace
 		ee_cycle = 5000; // the EE has run on without an event test
 		{
 			ScopedHold outer(*thread);
-			ASSERT_TRUE(outer.Acquired());
 			EXPECT_EQ(seen.calls, 1u);
 			EXPECT_EQ(seen.thread, std::this_thread::get_id());
 			EXPECT_GE(seen.pos_published, 5000u) << "the IOP had run up to the EE's cycle when the hook ran";

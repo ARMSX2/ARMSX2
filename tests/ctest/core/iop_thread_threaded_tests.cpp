@@ -480,7 +480,6 @@ TEST_F(ThreadedMachine, AnEventOfTheIopsOwnRunsASliceEvenWithNoBudget)
 		// The IOP has work of its own now (an interrupt is pending, say): iopEventAction. Set under a hold, which is
 		// how the EE touches IOP state.
 		IopThread::VmHold hold;
-		ASSERT_TRUE(hold.Acquired());
 		iopEventAction = true;
 	}
 	ASSERT_TRUE(WaitFor([&] { return s_slices_started.load() > slices_before; }));
@@ -899,6 +898,44 @@ TEST_F(ThreadedMachine, AnEeStartedSifPumpHoldsTheIopWhileItRunsAndIsCounted)
 	EXPECT_GE(static_cast<s64>(IopThread::g_thread.PublishedPos() - cpuRegs.cycle), 0);
 }
 
+TEST_F(ThreadedMachine, AnEeStartedSifPumpStillHoldsTheIopWhenTheVmIsStoppingAndTheIopIsSlow)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	StartThreaded();
+
+	// The VM has been asked to stop and the IOP is in the middle of a slice that takes much longer than the first stop check
+	// of a spin. The EE thread is still in guest code (it leaves at its next event test), so a SIF pump can start in that
+	// window. It must wait for the IOP like any other: a pump that went on without the hold would run the IOP's half of the
+	// transfer beside the IOP thread. Found by stopping armsx2-sdl while a game was running.
+	VMManager::Internal::SetStateForTests(VMState::Stopping);
+
+	// The hold itself.
+	s_hold_slice = true;
+	std::thread release([] {
+		std::this_thread::sleep_for(50ms);
+		s_hold_slice = false;
+	});
+	cpuRegs.cycle += 5000; // the IOP is behind, so the hold needs a slice
+	{
+		IopBridge::EmuHold hold;
+		EXPECT_EQ(IopThread::g_thread.HoldDepth(), 1u) << "the hold gave up while the IOP was still in its slice";
+	}
+	release.join();
+
+	// A pump, with the IOP slow again. The ownership asserts count a violation if the IOP's half runs unheld.
+	s_hold_slice = true;
+	std::thread release_again([] {
+		std::this_thread::sleep_for(50ms);
+		s_hold_slice = false;
+	});
+	cpuRegs.cycle += 5000;
+	const u32 violations_before = s_violations.load();
+	IopBridge::Sif1Pump();
+	release_again.join();
+	EXPECT_EQ(s_violations.load(), violations_before) << "the IOP's half of the pump ran with the IOP not held";
+}
+
 // ---------------------------------------------------------------- the books
 
 TEST_F(ThreadedMachine, AStartedThreadTakesItsPositionFromTheBooks)
@@ -922,7 +959,6 @@ TEST_F(ThreadedMachine, AHoldRewritesTheBooksFromTheIopsPosition)
 	EEoCycle = 222;
 	{
 		IopThread::VmHold hold;
-		ASSERT_TRUE(hold.Acquired());
 		// What a savestate stores: the IOP is owed what the EE has run beyond it, as of this cycle.
 		EXPECT_EQ(EEsCycle, static_cast<s32>(cpuRegs.cycle - IopThread::g_thread.PublishedPos()));
 		EXPECT_EQ(EEoCycle, cpuRegs.cycle);
@@ -938,7 +974,6 @@ TEST_F(ThreadedMachine, AHoldMakesTheIopCatchUpToTheEesCycleFirst)
 	// The EE runs on without an event test, as it does between two: the IOP's watermark is stale.
 	cpuRegs.cycle += 2500;
 	IopThread::VmHold hold;
-	ASSERT_TRUE(hold.Acquired());
 	EXPECT_GE(static_cast<s64>(IopThread::g_thread.PublishedPos() - cpuRegs.cycle), 0);
 	EXPECT_EQ(IopThread::g_thread.HoldDepth(), 1u);
 }
