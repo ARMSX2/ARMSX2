@@ -15,6 +15,7 @@
 
 #include "Config.h"
 #include "VU.h"
+#include "VUmicro.h"
 #include "arm64/vuopt/VuOptLive.h"
 
 #include <gtest/gtest.h>
@@ -41,17 +42,19 @@ struct LiveScope
 {
 	const bool savedOpt = EmuConfig.Cpu.Recompiler.EnableVUOpt;
 	const bool savedFlagHack = EmuConfig.Speedhacks.vuFlagHack;
-	LiveScope(bool on, u32 threshold, bool flagHack)
+	LiveScope(bool on, u32 threshold, bool flagHack, u32 jumpThreshold = vuopt::live::kJumpTierUpRuns)
 	{
 		EmuConfig.Cpu.Recompiler.EnableVUOpt = on;
 		EmuConfig.Speedhacks.vuFlagHack = flagHack;
 		vuopt::live::SetTierUpRuns(threshold);
+		vuopt::live::SetJumpTierUpRuns(jumpThreshold);
 	}
 	~LiveScope()
 	{
 		EmuConfig.Cpu.Recompiler.EnableVUOpt = savedOpt;
 		EmuConfig.Speedhacks.vuFlagHack = savedFlagHack;
 		vuopt::live::SetTierUpRuns(vuopt::live::kTierUpRuns);
+		vuopt::live::SetJumpTierUpRuns(vuopt::live::kJumpTierUpRuns);
 		RecompilerTestEnvironment::ResetVuBlockCache(1);
 	}
 };
@@ -174,17 +177,17 @@ void SetupJump(VuTestHarness& h)
 // The program once under microVU alone (the tier off), then `runs` times under
 // the tier with each run compared to it. Returns the tier's stats delta.
 vuopt::live::Stats RunLive(const std::vector<VuOp>& prog, const Setup& setup, bool flagHack, u32 threshold, u32 runs, u32 budget,
-	std::string& problems)
+	std::string& problems, u32 jumpThreshold = vuopt::live::kJumpTierUpRuns)
 {
 	Result ref;
 	{
-		LiveScope off(false, threshold, flagHack);
+		LiveScope off(false, threshold, flagHack, jumpThreshold);
 		VuTestHarness h(1);
 		Prepare(h, prog, setup, budget);
 		h.RunNoDiff();
 		ref = Take(h);
 	}
-	LiveScope on(true, threshold, flagHack);
+	LiveScope on(true, threshold, flagHack, jumpThreshold);
 	const vuopt::live::Stats before = vuopt::live::GetStats();
 	VuTestHarness h(1);
 	Prepare(h, prog, setup, budget);
@@ -199,6 +202,8 @@ vuopt::live::Stats RunLive(const std::vector<VuOp>& prog, const Setup& setup, bo
 	}
 	vuopt::live::Stats after = vuopt::live::GetStats();
 	after.tierUps -= before.tierUps;
+	after.jumpTierUps -= before.jumpTierUps;
+	after.jumpCounted -= before.jumpCounted;
 	after.retiers -= before.retiers;
 	after.regions -= before.regions;
 	after.regionNodes -= before.regionNodes;
@@ -261,6 +266,117 @@ TEST(VuoptLive, JumpTargetsComeFromTheJumpCaches)
 			EXPECT_GE(d.regions, 1u);
 			EXPECT_GT(d.blocksSetAside, 0u);
 		}
+}
+
+// The JR/JALR slow path counts too: with the dispatch threshold out of reach, a program
+// that keeps missing the jump cache is tiered up from inside mVUcompileJIT, while its own
+// code is running (the old graph is set aside under the caller, which carries on into the
+// new entry). Every run, the one that tiers up included, must equal microVU's.
+TEST(VuoptLive, JumpPathTiersUpAProgramMidRun)
+{
+	for (bool fh : {true, false})
+		for (u32 budget : {0u, 40u})
+		{
+			std::string problems;
+			const vuopt::live::Stats d = RunLive(JumpLoop(), SetupJump, fh, 1000000, 12, budget, problems, 6);
+			EXPECT_TRUE(problems.empty()) << "flagHack=" << fh << " budget=" << budget << "\n" << problems;
+			// (the harness's first run does the JIT pass more than once, each from a reset VU1,
+			// so more than one program can be tiered up)
+			EXPECT_GE(d.tierUps, 1u) << "flagHack=" << fh << " budget=" << budget;
+			EXPECT_EQ(d.jumpTierUps, d.tierUps) << "the dispatcher's count is out of reach: every tier-up is the JR path's";
+			EXPECT_GE(d.jumpCounted, 6u);
+			EXPECT_GE(d.regions, 1u);
+		}
+	// ... and with the jump threshold out of reach too, nothing tiers up
+	std::string problems;
+	const vuopt::live::Stats d = RunLive(JumpLoop(), SetupJump, true, 1000000, 12, 0, problems, 1000000);
+	EXPECT_TRUE(problems.empty()) << problems;
+	EXPECT_EQ(d.tierUps, 0u);
+	EXPECT_GT(d.jumpCounted, 0u) << "the JR path counts every entry it resolves";
+}
+
+// A stub program the dispatcher enters, whose JR goes into code the dispatcher never enters:
+// micro memory changed after the stub's program was made (the first run stops before the JR
+// executes, then a word outside its ranges is rewritten), so the search files the jump's
+// target as a program of its own. This is God of War II's shape (a stub, and overlays that
+// only exist because a JR reached them). Each run is preceded by the micro-memory write that
+// nulls the quick slots, so every run's JR takes the slow path.
+namespace
+{
+constexpr u32 kOverlayPair = 32;
+std::vector<VuOp> StubAndOverlay()
+{
+	std::vector<VuOp> p;
+	p.push_back(U(VADD_U(mask::xyzw, vf::vf5, vf::vf5, vf::vf1)));                       // 0
+	p.push_back(L(VB_L(2)));                                                              // 1: to 4
+	p.push_back(U(VMUL_U(mask::xyz, vf::vf6, vf::vf6, vf::vf2)));                         // 2: delay slot
+	p.push_back(U(VNOP_U()));                                                             // 3
+	p.push_back(L(VIADDIU_L(vi::vi5, vi::vi0, static_cast<u16>(kOverlayPair))));          // 4
+	p.push_back(L(VJR_L(vi::vi5)));                                                       // 5
+	p.push_back(U(VSUB_U(mask::xyzw, vf::vf7, vf::vf7, vf::vf3)));                        // 6: delay slot
+	while (p.size() < kOverlayPair)
+		p.push_back(U(VNOP_U()));
+	for (const VuOp& op : CountedLoop(9))
+		p.push_back(op);
+	return p;
+}
+
+std::vector<Result> OverlaySequence(bool on, bool flagHack, u32 runs, vuopt::live::Stats& delta)
+{
+	std::vector<Result> out;
+	LiveScope scope(on, 1000000, flagHack, 5);
+	const vuopt::live::Stats before = vuopt::live::GetStats();
+	VuTestHarness h(1);
+	SetupLoop(h);
+	h.TrackMemWindow(0, 0x4000);
+	h.LoadProgram(StubAndOverlay());
+	h.RunNoDiff(); // (leaves VU1 with no programs: the harness resets the cache after its second pass)
+	out.push_back(Take(h));
+	// Run 0: the stub's first block runs and the break comes at the second, so the stub's
+	// program is made and the JR is never reached: its ranges end at the stub.
+	h.SetCycleBudget(1);
+	h.RunJitPreserveBlockCache();
+	out.push_back(Take(h));
+	h.SetCycleBudget(100000);
+	// A word nobody executes changes the image: the next search no longer finds the stub's
+	// program by content, so the JR's target becomes a program of its own.
+	const u32 marker = 0x12345678;
+	std::memcpy(vuRegs[1].Micro + 0x3000, &marker, 4);
+	for (u32 i = 0; i < runs; i++)
+	{
+		// (a write over the overlay's range: micro-memory writes null only the quick slots of
+		// programs whose compiled ranges they overlap)
+		CpuMicroVU1.Clear(kOverlayPair * 8, 0x200);
+		h.RunJitPreserveBlockCache();
+		out.push_back(Take(h));
+	}
+	vuopt::live::Stats after = vuopt::live::GetStats();
+	delta = after;
+	delta.tierUps -= before.tierUps;
+	delta.jumpTierUps -= before.jumpTierUps;
+	delta.jumpCounted -= before.jumpCounted;
+	delta.regions -= before.regions;
+	delta.blocksSetAside -= before.blocksSetAside;
+	return out;
+}
+} // namespace
+
+TEST(VuoptLive, JumpPathTiersUpAnOverlayTheDispatcherNeverEnters)
+{
+	for (bool fh : {true, false})
+	{
+		vuopt::live::Stats off{}, on{};
+		const std::vector<Result> ref = OverlaySequence(false, fh, 12, off);
+		const std::vector<Result> got = OverlaySequence(true, fh, 12, on);
+		ASSERT_EQ(ref.size(), got.size());
+		for (size_t i = 0; i < ref.size(); i++)
+			EXPECT_EQ(Diff(ref[i], got[i]), "") << "flagHack=" << fh << " run " << i;
+		EXPECT_EQ(on.tierUps, 1u) << "the overlay, not the stub (flagHack=" << fh << ")";
+		EXPECT_EQ(on.jumpTierUps, 1u);
+		EXPECT_GE(on.jumpCounted, 5u);
+		EXPECT_GE(on.regions, 1u);
+		EXPECT_GT(on.blocksSetAside, 0u);
+	}
 }
 
 // A tiered program survives a settings round trip: switching the tier off and
