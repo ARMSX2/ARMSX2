@@ -118,9 +118,10 @@ namespace vuopt
 		void (*emitJumpTail)(u32 vu, void* block, const u8* endKey) = nullptr;
 		// Milestone 8: microVU's own code for a block a region holds, for a
 		// run that is short of the region's budget test. `rec` is a region's
-		// bail record (PC at 0, the block's microBlock at 8, the code address
-		// at 16, written once compiled, the block's microProgram at 24).
-		// Called from generated code.
+		// bail record (PC at 0, at 4 the signed distance from the record to a
+		// word holding the block's microProgram, the block's microBlock at 8,
+		// the code address at 16, written once compiled). Called from
+		// generated code.
 		void* (*bailTarget)(u32 vu, u8* rec) = nullptr;
 		// x29 holds VURegs::Mem in micro mode (gprVUMem).
 		bool vuMemPinned = false;

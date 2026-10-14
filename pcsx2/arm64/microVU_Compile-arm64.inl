@@ -1179,8 +1179,10 @@ static void* vuoptBailTarget(u32 vu, u8* rec)
 	std::memcpy(&pc, rec, sizeof(pc));
 	microBlock* blk;
 	std::memcpy(&blk, rec + 8, sizeof(blk));
+	s32 progWord;
+	std::memcpy(&progWord, rec + 4, sizeof(progWord));
 	microProgram* prog;
-	std::memcpy(&prog, rec + 24, sizeof(prog));
+	std::memcpy(&prog, rec + progWord, sizeof(prog));
 	mVUvuoptOnBail();
 	alignas(16) microRegInfo k;
 	std::memcpy(&k, &blk->pState, sizeof(k));
