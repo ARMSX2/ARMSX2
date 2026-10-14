@@ -12,6 +12,7 @@
 #include "pcsx2/GS.h"
 #include "pcsx2/Counters.h"
 #include "pcsx2/Elfheader.h" // ElfObject, for the boot-ELF disc pairing
+#include "pcsx2/IopThread/OwnerAsserts.h"
 #include "pcsx2/VMManager.h"
 #include "pcsx2/CDVD/CDVDcommon.h"
 #include "pcsx2/CDVD/IsoReader.h" // ISO extraction for host: quick-loading setups
@@ -4838,6 +4839,7 @@ void Host::OnSaveStateSaved(const std::string_view filename)
 
 void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false */)
 {
+    BLOCKING_HOST_CALL_ASSERT(block);
     const std::thread::id current_thread = std::this_thread::get_id();
     std::mutex wait_mutex;
     std::condition_variable wait_cv;

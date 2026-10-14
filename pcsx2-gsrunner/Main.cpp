@@ -71,6 +71,7 @@
 #include "pcsx2/GSDumpReplayer.h"
 #include "pcsx2/GameList.h"
 #include "pcsx2/Host.h"
+#include "pcsx2/IopThread/OwnerAsserts.h"
 #include "pcsx2/INISettingsInterface.h"
 #include "pcsx2/ImGui/FullscreenUI.h"
 #include "pcsx2/ImGui/ImGuiFullscreen.h"
@@ -1013,6 +1014,7 @@ void Host::OnSaveStateSaved(const std::string_view filename)
 
 void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false */)
 {
+	BLOCKING_HOST_CALL_ASSERT(block);
 	// Queued here and drained in PumpMessagesOnCPUThread(). Previously a hard
 	// pxFailRel, which meant any PINE command that marshals to the CPU thread
 	// (settings apply, savestates, frame advance) aborted the whole run.

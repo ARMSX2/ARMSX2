@@ -14,8 +14,10 @@ add_pcsx2_test(core_test
 	iop_thread_owner_tests.cpp
 	iop_thread_owner_release_tests.cpp
 	iop_thread_host_commands_tests.cpp
+	iop_thread_host_calls_tests.cpp
 	pad_input_tests.cpp
 	IopThreadTestSupport.h
+	StubHostTasks.h
 	sif_pump_tests.cpp
 	sbus_tests.cpp
 	savestate_legacy_tests.cpp

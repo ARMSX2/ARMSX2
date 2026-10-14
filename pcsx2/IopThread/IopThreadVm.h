@@ -17,7 +17,9 @@
 #include "IopThread/IopThread.h"
 #include "IopThread/IopThreadMode.h"
 
+#include <functional>
 #include <optional>
+#include <utility>
 
 namespace IopThread
 {
@@ -129,6 +131,25 @@ namespace IopThread
 	/// makes the call itself, as before. A command accepted just as the thread stops runs on the IOP
 	/// thread before it exits.
 	bool TryPostToIop(HostCommandQueue::Command command);
+
+	/// IOP-side code asks for something that only the CPU thread may do and that nothing waits for (pad and
+	/// USB vibration, design 8.4 and 8.12). Off and Lockstep call `fn` here: in Off the caller is the CPU
+	/// thread, and in Lockstep the CPU thread is blocked in the handoff, so the call is legal and keeps
+	/// the order Off has. Threaded posts it with Host::RunOnCPUThread(fn, false), which never waits for
+	/// the CPU thread, because the CPU thread may be spinning on the IOP.
+	///
+	/// One load of the mode and a branch that is not taken in Off. Call sites run at most a few times a
+	/// frame (one per pad poll).
+	void PostToCpuThread(std::function<void()> fn);
+
+	template <class F>
+	__forceinline_odr void CallOnCpuThread(F&& fn)
+	{
+		if (GetMode() == IopThreadMode::Threaded) [[unlikely]]
+			PostToCpuThread(std::function<void()>(std::forward<F>(fn)));
+		else
+			fn();
+	}
 
 	// ---- Clocks and pausing ------------------------------------------------------------------
 

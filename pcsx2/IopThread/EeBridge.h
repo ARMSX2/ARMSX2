@@ -10,8 +10,9 @@
 // Naming them here, one function per crossing, puts that change in one place per crossing.
 //
 // Each function is inline and does exactly what the code at its call site did before, in the same
-// order. There is no mode test and no atomic in here. The generated code at every call site is the
-// code it was before.
+// order. There is no mode test and no atomic in here, with one exception: the vibration calls at the
+// bottom read the mode, because they are made once per pad poll and not inside the event test or the
+// IOP's memory handlers. The generated code at every other call site is the code it was before.
 //
 // The crossing numbers (C3, C4, ...) are the rows of section 7.1 of the IOP thread design.
 // IopBridge.h has the other direction, the EE reaching into IOP state.
@@ -20,7 +21,9 @@
 
 #include "Common.h"
 #include "IopHw.h"
+#include "Input/InputManager.h"
 #include "IopThread/IopThreadMode.h"
+#include "IopThread/IopThreadVm.h"
 #include "IopThread/OwnerAsserts.h"
 #include "R3000A.h"
 #include "Sif.h"
@@ -97,5 +100,21 @@ namespace EeBridge
 	__forceinline_odr void RequestPause()
 	{
 		IopThread::RequestPause();
+	}
+
+	// ---- The IOP drives a motor (design 8.4) -------------------------------------------------
+	// The pad commands (DualShock 2, Negcon, Jogcon) and the USB trance vibrator set a motor's intensity from
+	// the IOP's code. The input manager's bindings, and the sources behind them, are the CPU thread's, so in
+	// Threaded mode the call is posted to the CPU thread and does not wait. In Off and Lockstep it is the call
+	// that was always made. Once per pad poll, at most a few times a frame.
+
+	__forceinline_odr void SetPadVibration(u32 pad_index, float large_or_single_motor_intensity, float small_motor_intensity)
+	{
+		IopThread::CallOnCpuThread([=] { InputManager::SetPadVibrationIntensity(pad_index, large_or_single_motor_intensity, small_motor_intensity); });
+	}
+
+	__forceinline_odr void SetUsbVibration(u32 port, float large_or_single_motor_intensity, float small_motor_intensity)
+	{
+		IopThread::CallOnCpuThread([=] { InputManager::SetUSBVibrationIntensity(port, large_or_single_motor_intensity, small_motor_intensity); });
 	}
 } // namespace EeBridge

@@ -10,6 +10,7 @@
 
 #include "CDVD/CDVD.h"
 #include "DEV9/DEV9.h"
+#include "Host.h"
 #include "IopDma.h"
 #include "IopThread/EeBridge.h"
 #include "IopThread/IopBridge.h"
@@ -434,6 +435,77 @@ TEST(IopThreadOwnerAsserts, EveryEeSideEntryRefusesTheIopThreadInThreadedMode)
 		EXPECT_EQ(violations.Violations()[0].side, IopThread::Side::Ee) << entry.name;
 		EXPECT_EQ(caught, entry.name);
 	}
+}
+
+// ---------------------------------------------------------------- a blocking call to the CPU thread from the IOP thread
+
+namespace
+{
+	// What each frontend's Host::RunOnCPUThread starts with.
+	void FakeRunOnCpuThread(bool block)
+	{
+		BLOCKING_HOST_CALL_ASSERT(block);
+	}
+} // namespace
+
+TEST(IopThreadOwnerAsserts, TheIopThreadMayNotMakeABlockingCallToTheCpuThread)
+{
+	REQUIRE_ARM64_HOST();
+	SettingsGuard guard;
+	StartLockstep();
+	ASSERT_TRUE(IopThread::LockstepActive());
+	ViolationRecorder violations;
+
+	// The EE is blocked in the handoff (Lockstep) or may be spinning on the IOP (Threaded): either way it is not
+	// running the queue a blocking call waits on.
+	const std::string caught = OnIopThread([] { FakeRunOnCpuThread(true); });
+	ASSERT_EQ(violations.Violations().size(), 1u);
+	EXPECT_EQ(violations.Violations()[0].side, IopThread::Side::BlockingHostCall);
+	EXPECT_EQ(caught, "FakeRunOnCpuThread");
+}
+
+TEST(IopThreadOwnerAsserts, TheIopThreadMayPostWithoutWaiting)
+{
+	REQUIRE_ARM64_HOST();
+	SettingsGuard guard;
+	StartLockstep();
+	ASSERT_TRUE(IopThread::LockstepActive());
+	ViolationRecorder violations;
+	EXPECT_EQ(OnIopThread([] { FakeRunOnCpuThread(false); }), "");
+	EXPECT_TRUE(violations.Violations().empty());
+}
+
+TEST(IopThreadOwnerAsserts, TheCpuThreadMayBlockWhateverTheModeIs)
+{
+	REQUIRE_ARM64_HOST();
+	SettingsGuard guard;
+	ViolationRecorder violations;
+
+	IopThread::ChooseMode();
+	FakeRunOnCpuThread(true);
+	EXPECT_TRUE(IopThread::BlockingHostCallAllowed());
+
+	StartLockstep();
+	ASSERT_TRUE(IopThread::LockstepActive());
+	FakeRunOnCpuThread(true);
+	EXPECT_TRUE(IopThread::BlockingHostCallAllowed());
+	EXPECT_TRUE(violations.Violations().empty());
+}
+
+TEST(IopThreadOwnerAsserts, TheStubHostsRunOnCpuThreadHasTheAssert)
+{
+	REQUIRE_ARM64_HOST();
+	SettingsGuard guard;
+	StartLockstep();
+	ASSERT_TRUE(IopThread::LockstepActive());
+	ViolationRecorder violations;
+	StubHost::TakeCpuThreadTasks();
+
+	const std::string caught = OnIopThread([] { Host::RunOnCPUThread([] {}, true); });
+	EXPECT_EQ(caught, "RunOnCPUThread");
+	ASSERT_EQ(violations.Violations().size(), 1u);
+	EXPECT_EQ(violations.Violations()[0].side, IopThread::Side::BlockingHostCall);
+	StubHost::TakeCpuThreadTasks();
 }
 
 #endif // PCSX2_DEBUG || PCSX2_DEVBUILD

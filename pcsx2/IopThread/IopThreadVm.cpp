@@ -7,6 +7,7 @@
 #include "Config.h"
 #include "DebugTools/Breakpoints.h"
 #include "GSDumpReplayer.h"
+#include "Host.h"
 #include "IopCounters.h"
 #include "IopDma.h"
 #include "IopHw.h"
@@ -259,12 +260,38 @@ namespace IopThread
 		s_violations.store(0, std::memory_order_relaxed);
 	}
 
+	namespace
+	{
+		const char* SideName(Side side)
+		{
+			switch (side)
+			{
+				case Side::Iop:
+					return "IOP";
+				case Side::Ee:
+					return "EE";
+				case Side::BlockingHostCall:
+					return "blocking host call";
+			}
+			return "?";
+		}
+	} // namespace
+
 	void FailOnViolation(Side side, const char* where)
 	{
 		Console.Error("IOP thread ownership: %s", where);
-		pxFailRel(side == Side::Iop ?
-					  "an IOP-side entry point was called from the EE thread with no hold and no queued item" :
-					  "an EE-side entry point was called from the IOP thread in Threaded mode");
+		switch (side)
+		{
+			case Side::Iop:
+				pxFailRel("an IOP-side entry point was called from the EE thread with no hold and no queued item");
+				break;
+			case Side::Ee:
+				pxFailRel("an EE-side entry point was called from the IOP thread in Threaded mode");
+				break;
+			case Side::BlockingHostCall:
+				pxFailRel("Host::RunOnCPUThread(fn, true) was called from the IOP thread, which would wait for a CPU thread that waits for it");
+				break;
+		}
 	}
 
 	void LogViolation(Side side, const char* where)
@@ -272,13 +299,13 @@ namespace IopThread
 		// One line per site: a run that trips a site thousands of times says so once.
 		static std::mutex mutex;
 		static std::set<std::string> seen;
-		const std::string key = std::string(side == Side::Iop ? "iop:" : "ee:") + where;
+		const std::string key = std::string(SideName(side)) + ":" + where;
 		{
 			std::lock_guard lock(mutex);
 			if (!seen.insert(key).second)
 				return;
 		}
-		Console.Error("IOP thread ownership: %s (%s side), called from %s", where, side == Side::Iop ? "IOP" : "EE",
+		Console.Error("IOP thread ownership: %s (%s), called from %s", where, SideName(side),
 			g_thread.OnIopThread() ? "the IOP thread" : "a thread that is not the IOP thread");
 	}
 
@@ -294,6 +321,19 @@ namespace IopThread
 	{
 		// Lockstep lets the IOP thread call into the EE directly: the EE is blocked in the handoff.
 		return s_mode != IopThreadMode::Threaded || !g_thread.OnIopThread();
+	}
+
+	bool BlockingHostCallAllowed()
+	{
+		return !g_thread.OnIopThread();
+	}
+
+	void CheckBlockingHostCall(const char* where)
+	{
+		if (BlockingHostCallAllowed())
+			return;
+		s_violations.fetch_add(1, std::memory_order_relaxed);
+		s_violation_handler(Side::BlockingHostCall, where);
 	}
 
 	void CheckIopSide(const char* where)
@@ -389,11 +429,16 @@ namespace IopThread
 		ApplyE2IItem(E2IItem{stamp, kind, 0, arg}, s_e2i_actions ? *s_e2i_actions : kRealE2IActions);
 	}
 
-	// ================================================================ host threads
+	// ================================================================ host threads and the CPU thread
 
 	bool TryPostToIop(HostCommandQueue::Command command)
 	{
 		return g_thread.TryPostHostCommand(std::move(command)) != 0;
+	}
+
+	void PostToCpuThread(std::function<void()> fn)
+	{
+		Host::RunOnCPUThread(std::move(fn), false);
 	}
 
 	// ================================================================ the EE core's calls

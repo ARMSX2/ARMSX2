@@ -29,6 +29,7 @@
 #include "pcsx2/GSDumpReplayer.h"
 #include "pcsx2/GameList.h"
 #include "pcsx2/Host.h"
+#include "pcsx2/IopThread/OwnerAsserts.h"
 #include "pcsx2/INISettingsInterface.h"
 #include "pcsx2/ImGui/FullscreenUI.h"
 #include "pcsx2/ImGui/ImGuiFullscreen.h"
@@ -1227,6 +1228,7 @@ void Host::PumpMessagesOnCPUThread()
 
 void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false */)
 {
+	BLOCKING_HOST_CALL_ASSERT(block);
 	if (block && g_emu_thread->isOnEmuThread())
 	{
 		// probably shouldn't ever happen, but just in case..

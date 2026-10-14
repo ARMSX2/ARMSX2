@@ -4,6 +4,7 @@
 #include "Host.h"
 #include "IconsPromptFont.h"
 #include "Input/InputManager.h"
+#include "IopThread/EeBridge.h"
 #include "StateWrapper.h"
 #include "USB/USB.h"
 #include "USB/deviceproxy.h"
@@ -87,7 +88,7 @@ namespace usb_pad
 			case VendorDeviceOutRequest:
 				// Vibration = wValue
 				// LED1 = wIndex&1, LED2 = wIndex&2, LED3 = wIndex&4
-				InputManager::SetUSBVibrationIntensity(s->port, value & 0xff, 0);
+				EeBridge::SetUsbVibration(s->port, value & 0xff, 0);
 				break;
 			default:
 				ret = usb_desc_handle_control(dev, p, request, value, index, length, data);

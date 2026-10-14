@@ -9,8 +9,14 @@
 #include "pcsx2/ImGui/ImGuiFullscreen.h"
 #include "pcsx2/ImGui/ImGuiManager.h"
 #include "pcsx2/Input/InputManager.h"
+#include "pcsx2/IopThread/OwnerAsserts.h"
+#include "StubHostTasks.h"
 #include "pcsx2/VMManager.h"
 #include "common/ProgressCallback.h"
+
+#include <mutex>
+#include <utility>
+#include <vector>
 
 void Host::CommitBaseSettingChanges()
 {
@@ -157,8 +163,22 @@ void Host::OnSaveStateSaved(const std::string_view filename)
 {
 }
 
+// A task posted for the CPU thread is kept for a test to look at and run. Nothing else in the test binary
+// runs a CPU thread, so a task nobody takes is simply never run, as before.
+static std::mutex s_cpu_thread_tasks_mutex;
+static std::vector<StubHost::CpuThreadTask> s_cpu_thread_tasks;
+
+std::vector<StubHost::CpuThreadTask> StubHost::TakeCpuThreadTasks()
+{
+	std::lock_guard lock(s_cpu_thread_tasks_mutex);
+	return std::exchange(s_cpu_thread_tasks, {});
+}
+
 void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false */)
 {
+	BLOCKING_HOST_CALL_ASSERT(block);
+	std::lock_guard lock(s_cpu_thread_tasks_mutex);
+	s_cpu_thread_tasks.push_back({std::move(function), block});
 }
 
 void Host::RunOnGSThread(std::function<void()> function)

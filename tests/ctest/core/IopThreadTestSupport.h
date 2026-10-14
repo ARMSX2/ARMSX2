@@ -16,10 +16,12 @@
 #include "IopThread/IopThreadVm.h"
 #include "R3000A.h"
 #include "R5900.h"
+#include "StubHostTasks.h"
 
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include <vector>

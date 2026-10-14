@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <condition_variable>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -380,9 +381,26 @@ void Host::OnSaveStateSaved(const std::string_view filename)
 {
 }
 
+// Work posted for the CPU thread (a hotkey that defers its action, a vibration the IOP thread hands over in Threaded
+// mode). It runs from PumpMessagesOnCPUThread(), which the CPU thread calls at every vsync. A blocking post from
+// the CPU thread itself runs at once, and one from another thread waits for the drain.
+static std::mutex s_cpu_thread_tasks_mutex;
+static std::condition_variable s_cpu_thread_tasks_done;
+static std::deque<std::function<void()>> s_cpu_thread_tasks;
+
 void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false */)
 {
-	pxFailRel("Not implemented");
+	BLOCKING_HOST_CALL_ASSERT(block);
+	if (block && VMManager::Internal::IsOnCPUThread())
+	{
+		function();
+		return;
+	}
+
+	std::unique_lock lock(s_cpu_thread_tasks_mutex);
+	s_cpu_thread_tasks.push_back(std::move(function));
+	if (block)
+		s_cpu_thread_tasks_done.wait(lock, [] { return s_cpu_thread_tasks.empty(); });
 }
 
 void Host::RefreshGameListAsync(bool invalidate_cache)
@@ -517,6 +535,23 @@ void Host::PumpMessagesOnCPUThread()
 		s_change_disc_pending = false;
 		const bool ok = VMManager::ChangeDisc(CDVD_SourceType::Iso, s_change_disc_path);
 		Console.WriteLn(fmt::format("eerunner: changed the disc to '{}': {}", s_change_disc_path, ok ? "ok" : "failed"));
+	}
+
+	// Work posted with Host::RunOnCPUThread. Tasks run outside the lock, so one that posts more cannot deadlock.
+	for (;;)
+	{
+		std::function<void()> task;
+		{
+			std::unique_lock lock(s_cpu_thread_tasks_mutex);
+			if (s_cpu_thread_tasks.empty())
+			{
+				s_cpu_thread_tasks_done.notify_all();
+				break;
+			}
+			task = std::move(s_cpu_thread_tasks.front());
+			s_cpu_thread_tasks.pop_front();
+		}
+		task();
 	}
 }
 

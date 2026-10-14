@@ -9,6 +9,11 @@
 //                        - the IOP thread mode is Off, or no IOP thread is running, or
 //                        - the caller is the IOP thread, or
 //                        - the caller is the EE thread with a ScopedHold live (the IOP is stopped).
+//   BLOCKING_HOST_CALL_ASSERT(block)
+//                      at the top of each frontend's Host::RunOnCPUThread (design 8.12). A blocking call
+//                      from the IOP thread waits for the CPU thread, which in Lockstep is blocked in the
+//                      handoff and in Threaded may be spinning on the IOP: it never answers. It passes
+//                      unless `block` is set and the caller is the IOP thread.
 //   EE_SIDE_ASSERT()   at an entry into EE-owned state (the interrupt controllers, the EE event
 //                      queue, the EE half of SIF). It passes when the mode is not Threaded, or the
 //                      caller is not the IOP thread. In Lockstep the IOP thread is allowed to call
@@ -39,6 +44,7 @@ namespace IopThread
 	{
 		Iop, // IOP_SIDE_ASSERT: an IOP entry called from the EE thread with no hold
 		Ee, // EE_SIDE_ASSERT: an EE entry called from the IOP thread in Threaded mode
+		BlockingHostCall, // BLOCKING_HOST_CALL_ASSERT: Host::RunOnCPUThread(fn, true) from the IOP thread
 	};
 
 	/// Called for every violation. The default logs it and fails an assert (pxFailRel); eerunner can
@@ -61,10 +67,13 @@ namespace IopThread
 	bool IopSideAllowed();
 	/// True when an EE-side entry may be called by this thread now.
 	bool EeSideAllowed();
+	/// True when this thread may make a blocking call to the CPU thread: any thread but the IOP thread.
+	bool BlockingHostCallAllowed();
 
 	/// The macros' out-of-line halves. They check, and report to the handler when the check fails.
 	void CheckIopSide(const char* where);
 	void CheckEeSide(const char* where);
+	void CheckBlockingHostCall(const char* where);
 } // namespace IopThread
 
 #if defined(PCSX2_DEBUG) || defined(PCSX2_DEVBUILD)
@@ -83,9 +92,19 @@ namespace IopThread
 			IopThread::CheckEeSide(__func__); \
 	} while (0)
 
+// Not in Off, where there is no IOP thread to be on: the same load of the mode as the other two. The call it
+// guards waits for another thread, so its cost is nothing next to the call.
+#define BLOCKING_HOST_CALL_ASSERT(block) \
+	do \
+	{ \
+		if ((block) && IopThread::s_mode != IopThreadMode::Off) [[unlikely]] \
+			IopThread::CheckBlockingHostCall(__func__); \
+	} while (0)
+
 #else
 
 #define IOP_SIDE_ASSERT() ((void)0)
 #define EE_SIDE_ASSERT() ((void)0)
+#define BLOCKING_HOST_CALL_ASSERT(block) ((void)0)
 
 #endif
