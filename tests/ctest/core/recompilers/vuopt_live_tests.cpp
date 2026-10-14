@@ -42,19 +42,26 @@ struct LiveScope
 {
 	const bool savedOpt = EmuConfig.Cpu.Recompiler.EnableVUOpt;
 	const bool savedFlagHack = EmuConfig.Speedhacks.vuFlagHack;
-	LiveScope(bool on, u32 threshold, bool flagHack, u32 jumpThreshold = vuopt::live::kJumpTierUpRuns)
+	// `sync`: the deterministic mode (every background job waited for and
+	// published where it was asked for), which keeps a test's sequence of
+	// compiles the same from run to run.
+	LiveScope(bool on, u32 threshold, bool flagHack, u32 jumpThreshold = vuopt::live::kJumpTierUpRuns, bool sync = true)
 	{
 		EmuConfig.Cpu.Recompiler.EnableVUOpt = on;
 		EmuConfig.Speedhacks.vuFlagHack = flagHack;
 		vuopt::live::SetTierUpRuns(threshold);
 		vuopt::live::SetJumpTierUpRuns(jumpThreshold);
+		vuopt::live::SetSynchronous(sync);
 	}
 	~LiveScope()
 	{
+		vuopt::live::SetWorkerGate(nullptr);
+		vuopt::live::HoldWorker(false);
 		EmuConfig.Cpu.Recompiler.EnableVUOpt = savedOpt;
 		EmuConfig.Speedhacks.vuFlagHack = savedFlagHack;
 		vuopt::live::SetTierUpRuns(vuopt::live::kTierUpRuns);
 		vuopt::live::SetJumpTierUpRuns(vuopt::live::kJumpTierUpRuns);
+		vuopt::live::SetSynchronous(false);
 		RecompilerTestEnvironment::ResetVuBlockCache(1);
 	}
 };
