@@ -20,6 +20,7 @@
 //#define mVUcacheTrace
 
 #include <atomic>
+#include <bit>
 #include <cfloat>
 #include <cstdio>
 #include <cstdlib>
@@ -1293,6 +1294,7 @@ void mVUreset(microVU& mVU, bool resetReserve)
 		mVU.prog.quick[i].block = NULL;
 		mVU.prog.quick[i].prog = NULL;
 	}
+	std::memset(mVU.prog.quickOcc, 0, sizeof(mVU.prog.quickOcc));
 
 #ifdef mVUcacheTrace
 	mVUCacheTraceResetWindow(mVU.index);
@@ -1332,6 +1334,15 @@ void mVUclose(microVU& mVU)
 	}
 }
 
+// quick[slot] takes a program. The one place a slot goes from empty to
+// occupied: it also sets the slot's bit in prog.quickOcc, which mVUclear walks
+// in place of the whole array.
+static __fi void mVUquickInstall(microVU& mVU, u32 slot, microProgram* prog)
+{
+	mVU.prog.quick[slot].prog = prog;
+	mVU.prog.quickOcc[slot >> 6] |= u64(1) << (slot & 63);
+}
+
 // Clears Block Data in specified range
 __fi void mVUclear(mV, u32 addr, u32 size)
 {
@@ -1363,10 +1374,15 @@ __fi void mVUclear(mV, u32 addr, u32 size)
 		{
 			mVU.prog.cleared = 1;
 			std::memset(&mVU.prog.lpState, 0, sizeof(mVU.prog.lpState));
-			for (u32 i = 0; i < (mVU.progSize / 2); i++)
+			for (u32 w = 0; w < (mVU.progSize / 2 + 63) / 64; w++)
 			{
-				mVU.prog.quick[i].block = NULL;
-				mVU.prog.quick[i].prog  = NULL;
+				for (u64 bits = mVU.prog.quickOcc[w]; bits; bits &= bits - 1)
+				{
+					microProgramQuick& q = mVU.prog.quick[w * 64 + std::countr_zero(bits)];
+					q.block = NULL;
+					q.prog  = NULL;
+				}
+				mVU.prog.quickOcc[w] = 0;
 			}
 		}
 		return;
@@ -1376,16 +1392,28 @@ __fi void mVUclear(mV, u32 addr, u32 size)
 	// compiled range overlapping [addr, addr+size). Programs whose ranges are
 	// disjoint from the touched bytes stay quick-cached, skipping the per-PC
 	// deque walk on the next dispatch.
-	for (u32 i = 0; i < (mVU.progSize / 2); i++)
+	//
+	// Only occupied slots are visited (prog.quickOcc): a game holds a handful
+	// out of 2048, and this runs on every micro-memory write, so a scan of the
+	// whole array was the dominant cost of the call. A bit with no program
+	// behind it (not reachable while every installer goes through
+	// mVUquickInstall) reads as "overlaps" in mVUProgRangesOverlap and is
+	// dropped here.
+	for (u32 w = 0; w < (mVU.progSize / 2 + 63) / 64; w++)
 	{
-		const microProgram* p = mVU.prog.quick[i].prog;
-		if (!p)
-			continue;
-		if (mVUProgRangesOverlap(p, addr, size))
+		u64 keep = mVU.prog.quickOcc[w];
+		for (u64 bits = keep; bits; bits &= bits - 1)
 		{
-			mVU.prog.quick[i].block = NULL;
-			mVU.prog.quick[i].prog  = NULL;
+			const u32 bit = std::countr_zero(bits);
+			microProgramQuick& q = mVU.prog.quick[w * 64 + bit];
+			if (mVUProgRangesOverlap(q.prog, addr, size))
+			{
+				q.block = NULL;
+				q.prog  = NULL;
+				keep &= ~(u64(1) << bit);
+			}
 		}
+		mVU.prog.quickOcc[w] = keep;
 	}
 
 	// Drop the carried entry-search key on ANY micro-mem write — x86's
@@ -1595,8 +1623,9 @@ __fi bool mVUcmpProg(microVU& mVU, microProgram& prog)
 _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 {
 	microVU& mVU = mVUx;
-	microProgramQuick& quick = mVU.prog.quick[mVU.regs().start_pc / 8];
-	microProgramList*  list  = mVU.prog.prog [mVU.regs().start_pc / 8];
+	const u32 slot = mVU.regs().start_pc / 8;
+	microProgramQuick& quick = mVU.prog.quick[slot];
+	microProgramList*  list  = mVU.prog.prog [slot];
 
 	if (!quick.prog)
 	{
@@ -1622,7 +1651,7 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 				mVUCacheTraceObserveWalk(mVU.index, walkIters, /*matched=*/true, /*matchPos=*/walkIters - 1);
 #endif
 				quick.block = it[0]->block[startPC / 8];
-				quick.prog  = it[0];
+				mVUquickInstall(mVU, slot, it[0]);
 				list->erase(it);
 				list->push_front(quick.prog);
 				// Per-PC deque match resolved to this program;
@@ -1656,7 +1685,7 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 			mVU.prog.cleared = 0;
 			mVU.prog.isSame  = 1;
 			mVU.prog.cur     = shared;
-			quick.prog       = shared;
+			mVUquickInstall(mVU, slot, shared);
 			quick.block      = shared->block[startPC / 8];
 			// Record the dispatched entry on the resolved program.
 			// Idempotent on duplicates; bumps `observed.version` only
@@ -1685,7 +1714,7 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 			mVU.prog.cleared = 0;
 			mVU.prog.isSame  = 1;
 			mVU.prog.cur     = hydrated;
-			quick.prog       = hydrated;
+			mVUquickInstall(mVU, slot, hydrated);
 			quick.block      = hydrated->block[startPC / 8];
 			hydrated->observed.record(startPC);
 			if (quick.block == nullptr)
@@ -1708,7 +1737,7 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 		mVU.prog.cur->observed.record(startPC);
 		void* entryPoint = mVUblockFetch(mVU,  startPC, pState);
 		quick.block      = mVU.prog.cur->block[startPC/8];
-		quick.prog       = mVU.prog.cur;
+		mVUquickInstall(mVU, slot, mVU.prog.cur);
 		// Count this deque insertion in the program's refcount.
 		// contentMap owns the program; per-PC deques are non-owning refs.
 		list->push_front(mVU.prog.cur);
@@ -2002,6 +2031,27 @@ namespace mvu_test_hooks
 		for (u32 i = 0; i < (mVU.progSize / 2); i++)
 			n += mVU.prog.quick[i].prog != nullptr;
 		return n;
+	}
+
+	// The occupancy bitmap mVUclear walks (prog.quickOcc) agrees with the
+	// array: bit i is set exactly when quick[i].prog is non-null, for every
+	// slot, and no bit is set past the last slot.
+	bool QuickOccupancyMatchesScan(int vu_index)
+	{
+		const microVU& mVU = vu_index ? microVU1 : microVU0;
+		const u32 slots = mVU.progSize / 2;
+		for (u32 i = 0; i < slots; i++)
+		{
+			const bool bit = (mVU.prog.quickOcc[i >> 6] >> (i & 63)) & 1;
+			if (bit != (mVU.prog.quick[i].prog != nullptr))
+				return false;
+		}
+		for (u32 w = (slots + 63) / 64; w < sizeof(mVU.prog.quickOcc) / sizeof(mVU.prog.quickOcc[0]); w++)
+		{
+			if (mVU.prog.quickOcc[w])
+				return false;
+		}
+		return true;
 	}
 
 	// Offline live-wedge repro knob (vurunner env PCSX2_VU_POISON_LPSTATE_BLOCKTYPE):

@@ -559,6 +559,15 @@ struct microProgManager
 	u8*                x86start; // Start of rec-cache
 	u8*                x86end;   // Reset threshold — mVUcacheSafeZone MB below the physical rec-region end
 	microRegInfo       lpState;
+	// One bit per quick[] slot that holds a program: bit (i % 64) of word
+	// (i / 64) is set iff quick[i].prog != NULL. mVUclear runs on every
+	// micro-memory write and only has work for occupied slots, of which a
+	// game has a handful out of 2048, so it walks these bits instead of the
+	// array. Set where a search installs a program into an empty slot
+	// (mVUquickInstall), cleared where a slot is nulled (mVUclear, mVUreset).
+	// Any new writer of quick[].prog must keep it in step: a set slot with
+	// no bit survives every later write to its program's code.
+	u64                quickOcc[mProgSize / 2 / 64];
 };
 
 // Safe-Zone (megabytes): the gap between prog.x86end (mVUcleanUp's

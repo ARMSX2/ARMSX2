@@ -15,8 +15,8 @@
 // slot then survives a write that should have invalidated it, and the next
 // dispatch runs stale code with no diagnostic. So alongside the slot-set
 // comparison the test rewrites program bytes and checks the NEW code runs
-// after the Clear, and (once the index exists) that the index agrees with a
-// full scan after every step.
+// after the Clear, and checks that the index (prog.quickOcc) agrees bit for
+// bit with a full scan of quick[] after every dispatch, Clear and reset.
 //
 // Setup: eight tiny E-bit programs at evenly spaced PCs, each leaving a
 // distinct value in vi3, dispatched through the production path so each owns
@@ -42,6 +42,7 @@ namespace mvu_test_hooks
 	bool QuickSlotOccupied(int vu_index, u32 start_pc_bytes);
 	bool QuickSlotWouldDrop(int vu_index, u32 start_pc_bytes, u32 addr, u32 size);
 	u32 QuickSlotCount(int vu_index);
+	bool QuickOccupancyMatchesScan(int vu_index);
 } // namespace mvu_test_hooks
 
 namespace recompiler_tests {
@@ -110,6 +111,8 @@ void RunAndCheck(const VuUnderTest& v, u32 i, u32 value, const char* what)
 		<< what << ": program " << i << " ran the wrong code (stale block?)";
 	ASSERT_TRUE(mvu_test_hooks::QuickSlotOccupied(v.idx, v.ProgramPc(i)))
 		<< what << ": program " << i << " must be quick-cached after a dispatch";
+	ASSERT_TRUE(mvu_test_hooks::QuickOccupancyMatchesScan(v.idx))
+		<< what << ": the occupied-slot index disagrees with quick[] after a dispatch";
 }
 
 u32 ValueFor(u32 i, u32 generation) { return 0x100u + i * 0x10u + (generation & 0xFu); }
@@ -145,6 +148,8 @@ void ClearAndCompare(const VuUnderTest& v, u32 addr, u32 size, const char* what,
 	}
 	ASSERT_EQ(mvu_test_hooks::QuickSlotCount(v.idx), expectCount)
 		<< what << ": a slot outside the programs changed";
+	ASSERT_TRUE(mvu_test_hooks::QuickOccupancyMatchesScan(v.idx))
+		<< what << ": the occupied-slot index disagrees with quick[] after a clear";
 }
 
 #define BAIL_ON_FATAL() \
@@ -262,6 +267,7 @@ void RunScenario(int vu_index)
 	// afterwards still invalidates what it should.
 	RecompilerTestEnvironment::ResetVuBlockCache(vu_index);
 	EXPECT_EQ(mvu_test_hooks::QuickSlotCount(vu_index), 0u);
+	EXPECT_TRUE(mvu_test_hooks::QuickOccupancyMatchesScan(vu_index));
 	for (u32 i = 0; i < kPrograms; i++)
 	{
 		RunAndCheck(v, i, value[i], "after reset");
