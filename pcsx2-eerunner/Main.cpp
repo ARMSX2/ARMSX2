@@ -814,6 +814,24 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 #endif
 				continue;
 			}
+			else if (CHECK_ARG_PARAM("--vuopt-jump-threshold"))
+			{
+				// ... and after N JR/JALR slow-path entries (the programs a stub reaches only by
+				// jumping) instead of the shipped constant.
+#if defined(ARCH_ARM64) && defined(PCSX2_RECOMPILER_TESTS)
+				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
+				if (!n.has_value() || n.value() == 0)
+				{
+					Console.Error("--vuopt-jump-threshold expects a count above zero.");
+					return false;
+				}
+				vuopt::live::SetJumpTierUpRuns(n.value());
+#else
+				++i;
+				Console.Warning("--vuopt-jump-threshold needs an arm64 build with the recompiler test hooks.");
+#endif
+				continue;
+			}
 			else if (CHECK_ARG_PARAM("--memdump"))
 			{
 				s_memdump_prefix = StringUtil::StripWhitespace(argv[++i]);

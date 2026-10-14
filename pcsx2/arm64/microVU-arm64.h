@@ -539,7 +539,8 @@ struct microProgram
 	MvuPersistLog* persist;
 
 	// vuopt live tier (microVU_VuOpt-arm64.inl). `vuoptRuns` counts the
-	// dispatches of this program while the tier is on; `vuopt` is the tier's
+	// dispatches of this program while the tier is on, plus the JR/JALR the jump
+	// cache missed that resolved to it; `vuopt` is the tier's
 	// state for it, null until the program is tiered up (so non-null means
 	// tiered). Both stay zero with EnableVUOpt off.
 	u32 vuoptRuns;
@@ -1041,12 +1042,14 @@ extern void* mVUlookupProg_VU1(u32 startPC, u32 cycles);
 //   - mVUlookupProgTier_VU1: mVUlookupProg_VU1 plus the run counter; the
 //     dispatcher calls it instead when the tier is on.
 //   - mVUvuoptAfterSearch: the slow path's chance to tier a program up.
+//   - mVUvuoptAfterJump: the same for a JR/JALR the jump cache did not know.
 //   - mVUvuoptLiveHooks: the compile hooks for a tiered-up program.
 extern void  mVUvuoptSyncConfig(microVU& mVU);
 extern bool  mVUvuoptEnabled();
 extern bool  mVUvuoptPending();
 extern void* mVUlookupProgTier_VU1(u32 startPC, u32 cycles);
 extern void* mVUvuoptAfterSearch(microVU& mVU, u32 startPC, uptr pState, void* result);
+extern void* mVUvuoptAfterJump(microVU& mVU, u32 startPC, uptr pState, void* result);
 extern void  mVUvuoptLiveHooks(microVU& mVU, vuopt::VuoptRegionHook& region, void*& regionUser,
 	vuopt::VuoptBodyHook& body, void*& bodyUser);
 extern void  mVUvuoptOnProgramDeleted(microProgram& prog);

@@ -599,6 +599,10 @@ _mVUt void* mVUcompileJIT(u32 startPC, uptr ptr)
 
 		mVUopenCodeCache(mVU);
 		void* v = mVUsearchProg<vuIndex>(startPC, (uptr)&pBlock->pStateEnd);
+		// A program microVU only ever reaches through a JR/JALR (an overlay the
+		// dispatcher never enters) is counted, and tiered up, here.
+		if constexpr (vuIndex == 1)
+			v = mVUvuoptAfterJump(mVU, startPC, (uptr)&pBlock->pStateEnd, v);
 		mVUcloseCodeCache(mVU);
 
 		jc.prog = mVU.prog.quick[startPC / 8].prog;
@@ -610,6 +614,8 @@ _mVUt void* mVUcompileJIT(u32 startPC, uptr ptr)
 	{
 		mVUopenCodeCache(mVU);
 		void* v = mVUsearchProg<vuIndex>(startPC, ptr);
+		if constexpr (vuIndex == 1)
+			v = mVUvuoptAfterJump(mVU, startPC, ptr, v);
 		mVUcloseCodeCache(mVU);
 		return v;
 	}

@@ -11,8 +11,10 @@
 //
 // What it does, in one paragraph: microVU keeps compiling and running every VU1
 // program as it always has. With the tier on, the dispatcher counts the runs of
-// each program. A program that reaches kTierUpRuns is tiered up on the VU1
-// thread at its next dispatch: the JR/JALR targets microVU has recorded for it
+// each program, and the JR/JALR slow path counts the entries it resolves to a
+// program (the ones the dispatcher never enters). A program that reaches
+// kTierUpRuns (or kJumpTierUpRuns of the latter) is tiered up on the VU1
+// thread at its next dispatch or slow-path jump: the JR/JALR targets microVU has recorded for it
 // (its jump caches) are collected, its microVU blocks are set aside (not freed:
 // older code and stale jump caches can still reach them), and the program is
 // compiled again with vuopt's compile hooks handed to microVU for that program,
@@ -34,6 +36,20 @@ namespace vuopt
 		// per scene.
 		constexpr u32 kTierUpRuns = 200;
 
+		// A program microVU reaches through JR/JALR slow-path entries (the jump cache
+		// missed and the search resolved the target to it) is tiered up after this many
+		// of them, counted with its dispatches. God of War II's overlays are never
+		// dispatched: the dispatcher enters a stub program, which jumps by JR into code
+		// microVU files as other programs, and every upload over an overlay nulls the quick
+		// slot of the program there, so each hot overlay entry goes through the slow path
+		// about 1,200 times in 300 frames. A slow-path entry is an entry, so this is far
+		// below the break-even of a tier-up (a compile of about 30-70 M instructions, a
+		// quarter of a run saved): the number only decides how soon the tier-up comes.
+		// Measured on three GoW2 savestates at 300 and 900 frames with 20, 50, 100, 200 and
+		// 400: lower tiers more programs, sooner, and wins at 900 frames; 20 and 50 are
+		// within 1% of each other. 32.
+		constexpr u32 kJumpTierUpRuns = 32;
+
 		// A tiered program looks for new jump targets every this many runs
 		// (when any JR/JALR missed the jump cache since), and is compiled again
 		// when it finds some, at most kMaxRetiers times and not within
@@ -53,6 +69,9 @@ namespace vuopt
 		struct Stats
 		{
 			u64 tierUps = 0;          // programs tiered up
+			u64 jumpTierUps = 0;      // ... of them, by the JR/JALR slow path (counted in tierUps too)
+			u64 jumpCounted = 0;      // JR/JALR slow-path entries counted on a program
+			u64 crossProgTargets = 0; // jump-cache entries seen at a harvest that resolved to another program
 			u64 retiers = 0;          // compiles of a tiered program for new jump targets
 			u64 retierChecks = 0;     // times a tiered program looked for new targets
 			u64 blocksSetAside = 0;   // microVU blocks moved out of the way by tier-ups
@@ -85,6 +104,8 @@ namespace vuopt
 		// Test runners only: tier programs up after `runs` dispatches instead of
 		// kTierUpRuns (a low number puts almost every program through vuopt).
 		void SetTierUpRuns(u32 runs);
+		// ... and after `runs` JR/JALR slow-path entries instead of kJumpTierUpRuns.
+		void SetJumpTierUpRuns(u32 runs);
 #endif
 	} // namespace live
 } // namespace vuopt
