@@ -23,6 +23,8 @@
 // Per-program state
 //------------------------------------------------------------------
 
+static u32 vuoptTotalRuns(const microProgram& p) { return p.vuoptRuns + p.vuoptJumpRuns; }
+
 // vuopt::live::kRetierCheckMask + 1 as a shift
 static constexpr u32 kCheckShift = 10;
 static_assert(vuopt::live::kRetierCheckMask + 1 == (1u << kCheckShift), "kCheckShift follows kRetierCheckMask");
@@ -33,7 +35,7 @@ struct VuoptProgramState
 	// Compiles of this program's graph under the tier: 1 after the tier-up,
 	// one more per re-tier.
 	u32 tiers = 0;
-	// microProgram::vuoptRuns when the program was last compiled under the tier.
+	// vuoptTotalRuns when the program was last compiled under the tier.
 	u32 runsAtTier = 0;
 	// The tier's jump-miss count when it last looked for new targets.
 	u64 missesSeen = 0;
@@ -41,9 +43,10 @@ struct VuoptProgramState
 	// the program is settled and no longer looks.
 	u32 emptyChecks = 0;
 	bool settled = false;
-	// microProgram::vuoptRuns in units of kRetierCheckMask + 1 as of the last time a look for
-	// new targets was due. The run count also climbs on the JR slow path, so it can step
-	// over a multiple; a look is due whenever the count has passed into a new unit.
+	// The program's runs (dispatches and JR slow-path entries, vuoptTotalRuns) in units of
+	// kRetierCheckMask + 1 as of the last time a look for new targets was due. The count
+	// climbs on two paths, so it can step over a multiple; a look is due whenever it has
+	// passed into a new unit.
 	u32 checkBlock = 0;
 	// JR/JALR targets seen for each jumping block, by the jumping block's start
 	// PC (bytes) and in ascending order: what the regions dispatch directly.
@@ -217,22 +220,24 @@ void* mVUlookupProgTier_VU1(u32 startPC, u32 cycles)
 	VuoptProgramState* const st = prog->vuopt;
 	if (!st)
 	{
-		// (>= and not ==: the JR slow path counts on the same program, so the count can
-		// step over the threshold)
 		if (runs >= s_vuopt.tierUpRuns)
 		{
 			s_vuopt.pending = true;
 			return nullptr;
 		}
 	}
-	else if (!st->settled && (runs >> kCheckShift) != st->checkBlock)
+	else if (!st->settled)
 	{
-		// a look for new targets is due; the crossing is used up either way
-		st->checkBlock = runs >> kCheckShift;
-		if (st->missesSeen != s_vuopt.jumpMisses)
+		const u32 total = runs + prog->vuoptJumpRuns;
+		if ((total >> kCheckShift) != st->checkBlock)
 		{
-			s_vuopt.pending = true;
-			return nullptr;
+			// a look for new targets is due; the crossing is used up either way
+			st->checkBlock = total >> kCheckShift;
+			if (st->missesSeen != s_vuopt.jumpMisses)
+			{
+				s_vuopt.pending = true;
+				return nullptr;
+			}
 		}
 	}
 	return pBlock->hostEntry;
@@ -313,8 +318,8 @@ static void vuoptTierUp(microVU& mVU, microProgram& prog, bool retier)
 	mVU.resumeBlock = nullptr;
 
 	st.tiers++;
-	st.runsAtTier = prog.vuoptRuns;
-	st.checkBlock = prog.vuoptRuns >> kCheckShift;
+	st.runsAtTier = vuoptTotalRuns(prog);
+	st.checkBlock = vuoptTotalRuns(prog) >> kCheckShift;
 	st.missesSeen = s_vuopt.jumpMisses;
 	if (st.tiers > vuopt::live::kMaxRetiers)
 		st.settled = true;
@@ -325,19 +330,20 @@ static void vuoptTierUp(microVU& mVU, microProgram& prog, bool retier)
 		s_vuopt.stats.tierUps++;
 	s_vuopt.stats.blocksSetAside += setAside;
 	DevCon.WriteLn(Color_StrongBlue, "vuopt: %s prog[%03d] after %u runs: %u blocks set aside, %u jump targets over %zu jumps",
-		retier ? "re-tier" : "tier-up", prog.idx, prog.vuoptRuns, setAside, st.targetCount, st.jumpTargets.size());
+		retier ? "re-tier" : "tier-up", prog.idx, vuoptTotalRuns(prog), setAside, st.targetCount, st.jumpTargets.size());
 }
 
 // The decision both slow paths share. `prog` (mVU.prog.cur) has been resolved and its
-// run counter bumped; `result` is the entry the search found for `startPC`. Tiers the
-// program up when it reaches `threshold` runs, or looks for new jump targets when a tiered
-// one has met some; either way the entry is compiled again with the hooks on.
-static void* vuoptConsider(microVU& mVU, microProgram& prog, u32 startPC, uptr pState, void* result, u32 threshold, bool viaJump)
+// run counters bumped; `result` is the entry the search found for `startPC`. An untiered
+// program is tiered up when `tierNow` (the caller's threshold test); a tiered one looks for
+// new jump targets when it has met some. Either way the entry is compiled again with the
+// hooks on.
+static void* vuoptConsider(microVU& mVU, microProgram& prog, u32 startPC, uptr pState, void* result, bool tierNow, bool viaJump)
 {
 	VuoptProgramState* const st = prog.vuopt;
 	if (!st)
 	{
-		if (prog.vuoptRuns < threshold)
+		if (!tierNow)
 			return result;
 		vuoptTierUp(mVU, prog, false);
 		if (viaJump)
@@ -345,7 +351,7 @@ static void* vuoptConsider(microVU& mVU, microProgram& prog, u32 startPC, uptr p
 	}
 	else
 	{
-		if (st->settled || prog.vuoptRuns - st->runsAtTier < vuopt::live::kRetierMinRuns ||
+		if (st->settled || vuoptTotalRuns(prog) - st->runsAtTier < vuopt::live::kRetierMinRuns ||
 			st->missesSeen == s_vuopt.jumpMisses)
 			return result;
 		s_vuopt.stats.retierChecks++;
@@ -384,12 +390,15 @@ void* mVUvuoptAfterSearch(microVU& mVU, u32 startPC, uptr pState, void* result)
 		return result;
 	if (!counted)
 		prog->vuoptRuns++;
-	return vuoptConsider(mVU, *prog, startPC, pState, result, s_vuopt.tierUpRuns, false);
+	return vuoptConsider(mVU, *prog, startPC, pState, result, prog->vuoptRuns >= s_vuopt.tierUpRuns, false);
 }
 
 // The same for a JR/JALR the jump cache missed (mVUcompileJIT), after the search resolved
-// its target to a program. Counts the entry on that program: a program the dispatcher
-// never enters (an overlay a stub program jumps into) has no other count.
+// its target to a program. Counts the entry on that program, and tiers it up when jumps are
+// how it is reached: a program the dispatcher never enters (an overlay a stub program jumps
+// into) has no dispatch count to go by. A program the dispatcher does enter keeps its
+// dispatch threshold: tiering it from a jump into the middle of it would root its first
+// compile there, which splits what a compile from the program's entry keeps in one region.
 void* mVUvuoptAfterJump(microVU& mVU, u32 startPC, uptr pState, void* result)
 {
 	if (!s_vuopt.enabled || mVU.index != 1)
@@ -397,17 +406,24 @@ void* mVUvuoptAfterJump(microVU& mVU, u32 startPC, uptr pState, void* result)
 	microProgram* const prog = mVU.prog.cur;
 	if (!prog || !result)
 		return result;
-	const u32 runs = ++prog->vuoptRuns;
+	const u32 jumps = ++prog->vuoptJumpRuns;
 	s_vuopt.stats.jumpCounted++;
+	bool tierNow = false;
 	if (VuoptProgramState* const st = prog->vuopt)
 	{
 		// A tiered program looks for new targets once per unit of runs, as on the
 		// dispatch path, not at every entry.
-		if (st->settled || (runs >> kCheckShift) == st->checkBlock)
+		const u32 total = vuoptTotalRuns(*prog);
+		if (st->settled || (total >> kCheckShift) == st->checkBlock)
 			return result;
-		st->checkBlock = runs >> kCheckShift;
+		st->checkBlock = total >> kCheckShift;
 	}
-	return vuoptConsider(mVU, *prog, startPC, pState, result, s_vuopt.jumpTierUpRuns, true);
+	else
+	{
+		// (jumps dominate: sixteen to one over dispatches)
+		tierNow = jumps >= s_vuopt.jumpTierUpRuns && static_cast<u64>(prog->vuoptRuns) * 16 <= jumps;
+	}
+	return vuoptConsider(mVU, *prog, startPC, pState, result, tierNow, true);
 }
 
 void mVUvuoptOnJumpMiss(microVU& mVU)

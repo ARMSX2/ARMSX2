@@ -539,11 +539,12 @@ struct microProgram
 	MvuPersistLog* persist;
 
 	// vuopt live tier (microVU_VuOpt-arm64.inl). `vuoptRuns` counts the
-	// dispatches of this program while the tier is on, plus the JR/JALR the jump
-	// cache missed that resolved to it; `vuopt` is the tier's
-	// state for it, null until the program is tiered up (so non-null means
-	// tiered). Both stay zero with EnableVUOpt off.
+	// dispatches of this program while the tier is on, `vuoptJumpRuns` the
+	// JR/JALR slow-path entries (the jump cache missed) that resolved to it;
+	// `vuopt` is the tier's state for it, null until the program is tiered up
+	// (so non-null means tiered). All stay zero with EnableVUOpt off.
 	u32 vuoptRuns;
+	u32 vuoptJumpRuns;
 	VuoptProgramState* vuopt;
 };
 

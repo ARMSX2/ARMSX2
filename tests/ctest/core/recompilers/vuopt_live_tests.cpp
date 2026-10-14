@@ -268,34 +268,24 @@ TEST(VuoptLive, JumpTargetsComeFromTheJumpCaches)
 		}
 }
 
-// The JR/JALR slow path counts too: with the dispatch threshold out of reach, a program
-// that keeps missing the jump cache is tiered up from inside mVUcompileJIT, while its own
-// code is running (the old graph is set aside under the caller, which carries on into the
-// new entry). Every run, the one that tiers up included, must equal microVU's.
-TEST(VuoptLive, JumpPathTiersUpAProgramMidRun)
+// The JR/JALR slow path counts, but it does not tier up a program the dispatcher enters: that
+// keeps its dispatch threshold, because tiering it from a jump into its middle would root its
+// first compile there. With the dispatch threshold out of reach nothing tiers up, and every
+// run equals microVU's.
+TEST(VuoptLive, JumpPathLeavesADispatchedProgramToItsDispatchCount)
 {
 	for (bool fh : {true, false})
-		for (u32 budget : {0u, 40u})
-		{
-			std::string problems;
-			const vuopt::live::Stats d = RunLive(JumpLoop(), SetupJump, fh, 1000000, 12, budget, problems, 6);
-			EXPECT_TRUE(problems.empty()) << "flagHack=" << fh << " budget=" << budget << "\n" << problems;
-			// (the harness's first run does the JIT pass more than once, each from a reset VU1,
-			// so more than one program can be tiered up)
-			EXPECT_GE(d.tierUps, 1u) << "flagHack=" << fh << " budget=" << budget;
-			EXPECT_EQ(d.jumpTierUps, d.tierUps) << "the dispatcher's count is out of reach: every tier-up is the JR path's";
-			EXPECT_GE(d.jumpCounted, 6u);
-			EXPECT_GE(d.regions, 1u);
-		}
-	// ... and with the jump threshold out of reach too, nothing tiers up
-	std::string problems;
-	const vuopt::live::Stats d = RunLive(JumpLoop(), SetupJump, true, 1000000, 12, 0, problems, 1000000);
-	EXPECT_TRUE(problems.empty()) << problems;
-	EXPECT_EQ(d.tierUps, 0u);
-	EXPECT_GT(d.jumpCounted, 0u) << "the JR path counts every entry it resolves";
+	{
+		std::string problems;
+		const vuopt::live::Stats d = RunLive(JumpLoop(), SetupJump, fh, 1000000, 12, 0, problems, 6);
+		EXPECT_TRUE(problems.empty()) << "flagHack=" << fh << "\n" << problems;
+		EXPECT_EQ(d.tierUps, 0u) << "flagHack=" << fh;
+		EXPECT_GT(d.jumpCounted, 6u) << "the JR path counts every entry it resolves";
+	}
 }
 
-// A stub program the dispatcher enters, whose JR goes into code the dispatcher never enters:
+// A stub program the dispatcher enters, whose JR goes into code the dispatcher never enters (JumpLoop's
+// code, so the overlay's own jumps meet the jump cache and the tier-up comes from inside its running code):
 // micro memory changed after the stub's program was made (the first run stops before the JR
 // executes, then a word outside its ranges is rewritten), so the search files the jump's
 // target as a program of its own. This is God of War II's shape (a stub, and overlays that
@@ -316,9 +306,17 @@ std::vector<VuOp> StubAndOverlay()
 	p.push_back(U(VSUB_U(mask::xyzw, vf::vf7, vf::vf7, vf::vf3)));                        // 6: delay slot
 	while (p.size() < kOverlayPair)
 		p.push_back(U(VNOP_U()));
-	for (const VuOp& op : CountedLoop(9))
+	// the overlay: JumpLoop's code, whose own JALR/JR meet the jump cache over and over
+	for (const VuOp& op : JumpLoop())
 		p.push_back(op);
 	return p;
+}
+
+void SetupOverlay(VuTestHarness& h)
+{
+	SetupJump(h);
+	h.WriteMemU32(0x00, kOverlayPair + kT2);
+	h.WriteMemU32(0x10, kOverlayPair + kT1);
 }
 
 std::vector<Result> OverlaySequence(bool on, bool flagHack, u32 runs, vuopt::live::Stats& delta)
@@ -327,7 +325,7 @@ std::vector<Result> OverlaySequence(bool on, bool flagHack, u32 runs, vuopt::liv
 	LiveScope scope(on, 1000000, flagHack, 5);
 	const vuopt::live::Stats before = vuopt::live::GetStats();
 	VuTestHarness h(1);
-	SetupLoop(h);
+	SetupOverlay(h);
 	h.TrackMemWindow(0, 0x4000);
 	h.LoadProgram(StubAndOverlay());
 	h.RunNoDiff(); // (leaves VU1 with no programs: the harness resets the cache after its second pass)
@@ -346,7 +344,7 @@ std::vector<Result> OverlaySequence(bool on, bool flagHack, u32 runs, vuopt::liv
 	{
 		// (a write over the overlay's range: micro-memory writes null only the quick slots of
 		// programs whose compiled ranges they overlap)
-		CpuMicroVU1.Clear(kOverlayPair * 8, 0x200);
+		CpuMicroVU1.Clear(kOverlayPair * 8, 0x100);
 		h.RunJitPreserveBlockCache();
 		out.push_back(Take(h));
 	}

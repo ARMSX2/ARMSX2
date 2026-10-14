@@ -36,18 +36,20 @@ namespace vuopt
 		// per scene.
 		constexpr u32 kTierUpRuns = 200;
 
-		// A program microVU reaches through JR/JALR slow-path entries (the jump cache
-		// missed and the search resolved the target to it) is tiered up after this many
-		// of them, counted with its dispatches. God of War II's overlays are never
-		// dispatched: the dispatcher enters a stub program, which jumps by JR into code
+		// A program the dispatcher (almost) never enters, reached through JR/JALR
+		// slow-path entries (the jump cache missed and the search resolved the target to
+		// it), is tiered up after this many of them. God of War II's overlays are such
+		// programs: the dispatcher enters a stub program, which jumps by JR into code
 		// microVU files as other programs, and every upload over an overlay nulls the quick
 		// slot of the program there, so each hot overlay entry goes through the slow path
-		// about 1,200 times in 300 frames. A slow-path entry is an entry, so this is far
-		// below the break-even of a tier-up (a compile of about 30-70 M instructions, a
-		// quarter of a run saved): the number only decides how soon the tier-up comes.
-		// Measured on three GoW2 savestates at 300 and 900 frames with 20, 50, 100, 200 and
-		// 400: lower tiers more programs, sooner, and wins at 900 frames; 20 and 50 are
-		// within 1% of each other. 32.
+		// about 1,200 times in 300 frames. A program the dispatcher does enter keeps
+		// kTierUpRuns: tiering it from a jump into its middle roots its first compile there,
+		// and the regions come out split (Katamari at 900 frames, 1.6% more instructions).
+		// A slow-path entry is an entry, so the number is far below the break-even of a tier-up
+		// (a compile of about 30-70 M instructions, a quarter of a run saved); it only decides
+		// how soon the tier-up comes. Measured on three GoW2 savestates at 300 and 900 frames
+		// with 20, 50, 100, 200 and 400: lower tiers more programs, sooner, and wins at 900
+		// frames; 20 and 50 are within 1% of each other. 32.
 		constexpr u32 kJumpTierUpRuns = 32;
 
 		// A tiered program looks for new jump targets every this many runs
