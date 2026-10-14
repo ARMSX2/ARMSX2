@@ -552,6 +552,13 @@ void Host::PumpMessagesOnCPUThread()
 	if (!s_host_actions_pending.empty())
 	{
 		const std::vector<std::string> pending = std::exchange(s_host_actions_pending, {});
+
+		// A liverun advances one frame at a time, so the VM is Paused whenever this pump runs, and a paused VM holds the
+		// IOP for the pause. A key pressed in a running VM has no such hold, and the holds the hotkeys take for themselves
+		// are the thing under test, so the pause hold is let go for the length of the actions.
+		const bool paused = (VMManager::GetState() == VMState::Paused);
+		if (paused)
+			IopThread::OnVmPaused(false);
 		for (const std::string& name : pending)
 		{
 			bool found = false;
@@ -567,6 +574,8 @@ void Host::PumpMessagesOnCPUThread()
 			}
 			Console.WriteLn(fmt::format("eerunner: hotkey '{}': {}", name, found ? "pressed" : "no such hotkey"));
 		}
+		if (paused)
+			IopThread::OnVmPaused(true);
 	}
 
 	// Work posted with Host::RunOnCPUThread. Tasks run outside the lock, so one that posts more cannot deadlock.
@@ -711,7 +720,8 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               frontend's change-disc menu does.\n");
 	std::fprintf(stderr, "  --host-action N <hotkey>: in a --liverun, press and release the hotkey <hotkey> (by its name in the hotkey\n");
 	std::fprintf(stderr, "               list: Mute, IncreaseVolume, DecreaseVolume, ToggleTurbo, ToggleSlowMotion, SwapMemCards ...) at\n");
-	std::fprintf(stderr, "               frame N, from the CPU thread, as the input manager does for a bound key. Repeatable.\n");
+	std::fprintf(stderr, "               frame N, from the CPU thread, as the input manager does for a bound key, with the pause hold of the\n");
+	std::fprintf(stderr, "               frame-by-frame liverun let go, as a running VM has none. Repeatable.\n");
 	std::fprintf(stderr, "  --iop-assert-log: an IOP thread ownership assert (a Devel build's IOP_SIDE_ASSERT/EE_SIDE_ASSERT) logs\n");
 	std::fprintf(stderr, "               the first violation at each site and the run goes on, instead of stopping at the first. The\n");
 	std::fprintf(stderr, "               IOPTHREAD: line at the end of the run says how many there were.\n");
