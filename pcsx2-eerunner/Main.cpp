@@ -530,6 +530,26 @@ struct HostAction
 static std::vector<HostAction> s_host_actions;
 static std::vector<std::string> s_host_actions_pending; // delivered at the next vsync
 
+// Work posted with Host::RunOnCPUThread. Tasks run outside the lock, so one that posts more cannot deadlock.
+static void DrainCpuThreadTasks()
+{
+	for (;;)
+	{
+		std::function<void()> task;
+		{
+			std::unique_lock lock(s_cpu_thread_tasks_mutex);
+			if (s_cpu_thread_tasks.empty())
+			{
+				s_cpu_thread_tasks_done.notify_all();
+				break;
+			}
+			task = std::move(s_cpu_thread_tasks.front());
+			s_cpu_thread_tasks.pop_front();
+		}
+		task();
+	}
+}
+
 void Host::PumpMessagesOnCPUThread()
 {
 	// Headless — no platform message pump, apart from the --settings-churn change a player's settings
@@ -574,26 +594,13 @@ void Host::PumpMessagesOnCPUThread()
 			}
 			Console.WriteLn(fmt::format("eerunner: hotkey '{}': {}", name, found ? "pressed" : "no such hotkey"));
 		}
+		// A hotkey that defers its action (the memory card swap) posted it; it runs here, still without the pause hold.
+		DrainCpuThreadTasks();
 		if (paused)
 			IopThread::OnVmPaused(true);
 	}
 
-	// Work posted with Host::RunOnCPUThread. Tasks run outside the lock, so one that posts more cannot deadlock.
-	for (;;)
-	{
-		std::function<void()> task;
-		{
-			std::unique_lock lock(s_cpu_thread_tasks_mutex);
-			if (s_cpu_thread_tasks.empty())
-			{
-				s_cpu_thread_tasks_done.notify_all();
-				break;
-			}
-			task = std::move(s_cpu_thread_tasks.front());
-			s_cpu_thread_tasks.pop_front();
-		}
-		task();
-	}
+	DrainCpuThreadTasks();
 }
 
 s32 Host::Internal::GetTranslatedStringImpl(
