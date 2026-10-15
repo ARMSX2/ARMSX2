@@ -204,8 +204,10 @@ namespace vuopt
 		size_t WorkerQueued();
 		// The tripwire, as a test or a runner flag sets it off.
 		void TripStickyForTest();
+#endif
 		// Test only: break parts of the tripwire on purpose, to show the tests notice. A mask of
-		// TripMask(TripMutation), 0 = none.
+		// TripMask(TripMutation), 0 = none. (Declared in every build so the tier's checks compile; in a
+		// build without the recompiler test hooks they are constant false and generate nothing.)
 		enum TripMutation : int
 		{
 			kTripMutNone = 0,
@@ -217,6 +219,7 @@ namespace vuopt
 			kTripMutNoRebuild = 6,     // the trip does not have VU1 rebuild its regions
 		};
 		constexpr int TripMask(int mutation) { return 1 << mutation; }
+#ifdef PCSX2_RECOMPILER_TESTS
 		void SetTripwireMutation(int mask);
 		// pcsx2-vurunner --vuopt-region-bg: a region hook (VuOptMvuTrace.h's
 		// VuoptRegionHook, `user` a RegionTier whose options it copies) that builds

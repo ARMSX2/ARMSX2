@@ -314,7 +314,9 @@ namespace
 		std::atomic<u64> trips{0}, resets{0};
 		std::atomic<u64> tripsBy[vuopt::live::kTripCauses] = {};
 		// Test only: a mask of vuopt::live::TripMask(TripMutation).
+#ifdef PCSX2_RECOMPILER_TESTS
 		std::atomic<int> mutation{0};
+#endif
 	};
 	VuoptTripwire& s_trip = *new VuoptTripwire();
 } // namespace
@@ -352,7 +354,12 @@ const char* vuopt::live::TripCauseName(TripCause c)
 	}
 }
 
+#ifdef PCSX2_RECOMPILER_TESTS
 static bool vuoptMutated(int m) { return (s_trip.mutation.load(std::memory_order_relaxed) >> m) & 1; }
+#else
+// (shipped builds: the tripwire's mutation checks fold away)
+static constexpr bool vuoptMutated(int) { return false; }
+#endif
 
 // The first reader of the sticky bits that anything has shown: from here on regions keep the byte,
 // and the ones built without it are rebuilt. Any thread.
