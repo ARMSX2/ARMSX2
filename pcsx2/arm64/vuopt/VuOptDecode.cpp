@@ -256,8 +256,15 @@ namespace vuopt
 	{
 		// Decoding is a pure function of the word and the compile passes ask
 		// for the same words many times: a small direct-mapped memo per thread.
-		// Entries are raw storage (zero-initialised thread storage, no
-		// constructor), so the lookup needs no per-access TLS init guard.
+		//
+		// The table is heap storage the thread owns, reached through a thread_local
+		// pointer. A thread_local array of 4096 entries (two tables, about 262 KB)
+		// made the program's static TLS block 265 KB, and glibc carves static TLS out
+		// of the stack of every thread it creates: cubeb's ALSA thread asks for 256 KiB
+		// and pthread_create failed on the handhelds. The pointer is constant-initialised
+		// (nullptr), so the lookup still needs no per-access TLS init guard; the first
+		// lookup of a thread allocates the zeroed table, and a thread_local holder
+		// frees it when the thread exits.
 		template <typename T, T (*Decode)(u32)>
 		const T& Memo(u32 code)
 		{
@@ -266,7 +273,22 @@ namespace vuopt
 				u32 key; // code + 1 (0: empty)
 				alignas(T) unsigned char value[sizeof(T)];
 			};
-			static thread_local Entry table[4096];
+			static thread_local Entry* t_table = nullptr;
+			Entry* table = t_table;
+			if (table == nullptr) [[unlikely]]
+			{
+				struct Owner
+				{
+					Entry* table = new Entry[4096](); // (value-initialised: every key 0)
+					~Owner()
+					{
+						t_table = nullptr;
+						delete[] table;
+					}
+				};
+				static thread_local Owner owner;
+				table = t_table = owner.table;
+			}
 			Entry& e = table[(code ^ (code >> 12) ^ (code >> 24)) & 4095];
 			T* v = reinterpret_cast<T*>(e.value);
 			if (e.key != code + 1)

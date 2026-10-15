@@ -32,7 +32,12 @@
 #include <cstring>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
+
+#if defined(__linux__)
+#include <link.h>
+#endif
 
 namespace recompiler_tests
 {
@@ -250,6 +255,71 @@ TEST(VuoptDecode, LowerForms)
 
 // MAC/status readers at every distance from a run of FMACs, in a loop whose
 // head reads flags (so the back edge is an exact-match link).
+// The decode memo is per thread, on the heap: a table every thread owns, found through a thread_local
+// pointer. Every thread, the compile worker among them, gets the same answers, a slot taken by another
+// word is replaced, and a thread that exits frees its table (a leak check would see it).
+TEST(VuoptDecode, MemoIsPerThreadAndConsistent)
+{
+	std::mt19937 rng(0x7e1f);
+	std::vector<u32> words;
+	for (int i = 0; i < 20000; i++)
+		words.push_back(static_cast<u32>(rng()));
+	// words that share a slot in the 4096-entry memo (code ^ code >> 12 ^ code >> 24, low 12 bits)
+	for (u32 k = 1; k < 64; k++)
+		words.push_back(0x00001000u * k + 0x2a5);
+	const auto digest = [&](std::vector<u64>& out) {
+		out.clear();
+		for (int pass = 0; pass < 2; pass++) // (the second pass hits what the first left, where it survives)
+			for (u32 w : words)
+			{
+				const vuopt::UpperInst& u = vuopt::DecodeUpperRef(w);
+				const vuopt::LowerInst& l = vuopt::DecodeLowerRef(w);
+				const vuopt::UpperInst uc = vuopt::DecodeUpper(w);
+				const vuopt::LowerInst lc = vuopt::DecodeLower(w);
+				EXPECT_EQ(u.word, w);
+				EXPECT_EQ(l.word, w);
+				EXPECT_EQ(std::memcmp(&u, &uc, sizeof(u)), 0);
+				EXPECT_EQ(l.op, lc.op);
+				if (pass == 0)
+					out.push_back((static_cast<u64>(u.op) << 40) ^ (static_cast<u64>(l.op) << 24) ^ (static_cast<u64>(u.mask) << 16) ^
+								  (static_cast<u64>(l.imm11) << 1) ^ l.imm12 ^ (static_cast<u64>(l.ft) << 48) ^ (static_cast<u64>(u.fd) << 56));
+			}
+	};
+	std::vector<u64> here;
+	digest(here);
+	for (int t = 0; t < 3; t++)
+	{
+		std::vector<u64> there;
+		std::thread th([&] { digest(there); });
+		th.join();
+		EXPECT_EQ(here, there) << "thread " << t;
+	}
+}
+
+#if defined(__linux__)
+// glibc carves a program's static TLS out of the stack of every thread it creates, and cubeb's ALSA
+// thread asks for 256 KiB: a program with 265 KB of static TLS (the decode memo used to be a
+// thread_local array) could not start that thread on the handhelds. The size of the program's
+// PT_TLS segment, which is what that block is, stays far below it.
+TEST(VuoptDecode, StaticTlsStaysSmall)
+{
+	u64 tls = 0;
+	dl_iterate_phdr(
+		[](struct dl_phdr_info* info, size_t, void* data) -> int {
+			u64* total = static_cast<u64*>(data);
+			for (int i = 0; i < info->dlpi_phnum; i++)
+				if (info->dlpi_phdr[i].p_type == PT_TLS)
+					*total += info->dlpi_phdr[i].p_memsz;
+			return 1; // (the first object is the program itself)
+		},
+		&tls);
+	constexpr u64 kMaxStaticTlsBytes = 64 * 1024;
+	std::printf("[vuopt tls] static TLS of the program: %llu bytes\n", static_cast<unsigned long long>(tls));
+	EXPECT_LE(tls, kMaxStaticTlsBytes) << "a thread_local array or a large thread_local object grew the static TLS block; "
+										  "allocate it on the heap behind a thread_local pointer";
+}
+#endif
+
 TEST(VuoptPipe, FlagReadersMatchMicroVU)
 {
 	for (int vu : {0, 1})
