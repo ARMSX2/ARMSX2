@@ -397,6 +397,50 @@ TEST_F(MvuProgCacheDisk, ConfigBoolGatesProductionInit)
 	EXPECT_TRUE(stats.enabled);
 }
 
+TEST_F(MvuProgCacheDisk, VuoptTurnsTheCacheOn)
+{
+	// Owner decision 2026-10-15: EnableVUOpt is bound to the program cache. With it set and
+	// EnableVUProgramCache clear, the next recompiler reset (what a settings change causes) brings the
+	// disk cache up and starts recording, exactly as EnableVUProgramCache does; clearing it takes
+	// recording away again (the disk state stays up for the session, as for the cache's own setting).
+	struct Restore
+	{
+		~Restore()
+		{
+			EmuConfig.Cpu.Recompiler.EnableVUOpt = false;
+			RecompilerTestEnvironment::ResetVuBlockCache(0);
+			mVUPersist::SetTestManualRecording(true);
+		}
+	} restore;
+
+	mVUProgCache::ResetForTest(0);
+	ASSERT_FALSE(EmuConfig.Cpu.Recompiler.EnableVUProgramCache);
+	ASSERT_FALSE(EmuConfig.Cpu.Recompiler.EnableVUOpt);
+	EXPECT_FALSE(EmuConfig.Cpu.Recompiler.UseVUProgramCache());
+	RecompilerTestEnvironment::ResetVuBlockCache(0);
+	EXPECT_FALSE(mVUProgCache::GetStats(0).initialized) << "disk cache initialized with both settings OFF";
+
+	EmuConfig.Cpu.Recompiler.EnableVUOpt = true;
+	EXPECT_TRUE(EmuConfig.Cpu.Recompiler.UseVUProgramCache());
+	RecompilerTestEnvironment::ResetVuBlockCache(0);
+	const auto stats = mVUProgCache::GetStats(0);
+	EXPECT_TRUE(stats.initialized) << "reset with EnableVUOpt ON did not initialize the disk cache";
+	EXPECT_TRUE(stats.enabled);
+
+	// The recording sync, with the test harness's manual control of it out of the way.
+	mVUPersist::SetTestManualRecording(false);
+	mVUPersist::SetRecordingEnabled(false);
+	RecompilerTestEnvironment::ResetVuBlockCache(0);
+	EXPECT_TRUE(mVUPersist::IsRecordingEnabled()) << "EnableVUOpt on: programs are recorded for the cache";
+	EmuConfig.Cpu.Recompiler.EnableVUProgramCache = true;
+	EmuConfig.Cpu.Recompiler.EnableVUOpt = false;
+	RecompilerTestEnvironment::ResetVuBlockCache(0);
+	EXPECT_TRUE(mVUPersist::IsRecordingEnabled()) << "EnableVUProgramCache alone still records";
+	EmuConfig.Cpu.Recompiler.EnableVUProgramCache = false;
+	RecompilerTestEnvironment::ResetVuBlockCache(0);
+	EXPECT_FALSE(mVUPersist::IsRecordingEnabled()) << "both off: recording is off";
+}
+
 TEST_F(MvuProgCacheDisk, HydratedProgramResavesWithoutGrowth)
 {
 	// A hydrated program that runs and resets again must NOT rewrite its
