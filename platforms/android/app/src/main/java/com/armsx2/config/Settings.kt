@@ -111,6 +111,14 @@ data class CpuSettings(
      *  Kept on by default for the mac ARM64 backend, but persisted normally
      *  so testers can A/B games which dislike MTVU. */
     val mtvu: Boolean = true,
+    /** EmuCore/Speedhacks/iopThread — runs the IOP (the PS2's I/O processor: sound, disc, controllers
+     *  and memory cards) on its own thread beside the EE. Off by default. The core turns it back off by
+     *  itself on a device without spare performance cores, for PS1 games, arcade games and while an IOP
+     *  breakpoint is set, so the switch can stay on everywhere. */
+    val iopThread: Boolean = false,
+    /** EmuCore/Speedhacks/iopThreadLag — how many EE cycles the EE may run ahead of the IOP thread before
+     *  it waits for it. Advanced. The core clamps it to 4096..196608; keep the pickers inside that. */
+    val iopThreadLag: Int = 6144,
     /** EmuCore/Speedhacks/vu1Instant — completes VU1 in one cycle. */
     val vu1Instant: Boolean = true,
     /** EmuCore/Speedhacks/vuFlagHack — skip VU flag computation when unread. */
@@ -921,6 +929,8 @@ data class Settings(
             put("EmuCore/CPU/Recompiler", "${vu}ExactMode", "bool", (mode >= 4).toString())
         }
         put("EmuCore/Speedhacks", "vuThread", "bool", cpu.mtvu.toString())
+        put("EmuCore/Speedhacks", "iopThread", "bool", cpu.iopThread.toString())
+        put("EmuCore/Speedhacks", "iopThreadLag", "int", cpu.iopThreadLag.toString())
         put("EmuCore/Speedhacks", "vu1Instant", "bool", cpu.vu1Instant.toString())
         put("EmuCore/Speedhacks", "vuFlagHack", "bool", cpu.vuFlagHack.toString())
         put("EmuCore/Speedhacks", "fastCDVD", "bool", cpu.fastCDVD.toString())
@@ -1217,6 +1227,8 @@ data class Settings(
                 vuClampMode = vuClamp,
                 vu1ClampMode = vu1Clamp,
                 mtvu = boolAt("EmuCore/Speedhacks/vuThread") ?: this.cpu.mtvu,
+                iopThread = boolAt("EmuCore/Speedhacks/iopThread") ?: this.cpu.iopThread,
+                iopThreadLag = intAt("EmuCore/Speedhacks/iopThreadLag") ?: this.cpu.iopThreadLag,
                 vu1Instant = boolAt("EmuCore/Speedhacks/vu1Instant") ?: this.cpu.vu1Instant,
                 vuFlagHack = boolAt("EmuCore/Speedhacks/vuFlagHack") ?: this.cpu.vuFlagHack,
                 fastCDVD = boolAt("EmuCore/Speedhacks/fastCDVD") ?: this.cpu.fastCDVD,
@@ -1926,6 +1938,8 @@ data class Settings(
         put("vuClampMode", cpu.vuClampMode)
         put("vu1ClampMode", cpu.vu1ClampMode)
         put("mtvu", cpu.mtvu)
+        put("iopThread", cpu.iopThread)
+        put("iopThreadLag", cpu.iopThreadLag)
         put("vu1Instant", cpu.vu1Instant)
         put("vuFlagHack", cpu.vuFlagHack)
         put("fastCDVD", cpu.fastCDVD)
@@ -2254,6 +2268,8 @@ data class Settings(
                     vuClampMode = json.optInt("vuClampMode", def.cpu.vuClampMode),
                     vu1ClampMode = json.optInt("vu1ClampMode", def.cpu.vu1ClampMode),
                     mtvu = json.optBoolean("mtvu", def.cpu.mtvu),
+                    iopThread = json.optBoolean("iopThread", def.cpu.iopThread),
+                    iopThreadLag = json.optInt("iopThreadLag", def.cpu.iopThreadLag),
                     vu1Instant = json.optBoolean("vu1Instant", def.cpu.vu1Instant),
                     vuFlagHack = json.optBoolean("vuFlagHack", def.cpu.vuFlagHack),
                     fastCDVD = json.optBoolean("fastCDVD", def.cpu.fastCDVD),
@@ -2552,6 +2568,8 @@ data class Settings(
             if (current.cpu.vuClampMode         != base.cpu.vuClampMode)         j.put("vuClampMode", current.cpu.vuClampMode)
             if (current.cpu.vu1ClampMode        != base.cpu.vu1ClampMode)        j.put("vu1ClampMode", current.cpu.vu1ClampMode)
             if (current.cpu.mtvu                != base.cpu.mtvu)                j.put("mtvu", current.cpu.mtvu)
+            if (current.cpu.iopThread           != base.cpu.iopThread)           j.put("iopThread", current.cpu.iopThread)
+            if (current.cpu.iopThreadLag        != base.cpu.iopThreadLag)        j.put("iopThreadLag", current.cpu.iopThreadLag)
             if (current.cpu.vu1Instant          != base.cpu.vu1Instant)          j.put("vu1Instant", current.cpu.vu1Instant)
             if (current.cpu.vuFlagHack          != base.cpu.vuFlagHack)          j.put("vuFlagHack", current.cpu.vuFlagHack)
             if (current.cpu.fastCDVD            != base.cpu.fastCDVD)            j.put("fastCDVD", current.cpu.fastCDVD)
@@ -2807,6 +2825,8 @@ data class Settings(
                 vuClampMode = if (overrides.has("vuClampMode")) overrides.getInt("vuClampMode") else base.cpu.vuClampMode,
                 vu1ClampMode = if (overrides.has("vu1ClampMode")) overrides.getInt("vu1ClampMode") else base.cpu.vu1ClampMode,
                 mtvu = if (overrides.has("mtvu")) overrides.getBoolean("mtvu") else base.cpu.mtvu,
+                iopThread = if (overrides.has("iopThread")) overrides.getBoolean("iopThread") else base.cpu.iopThread,
+                iopThreadLag = if (overrides.has("iopThreadLag")) overrides.getInt("iopThreadLag") else base.cpu.iopThreadLag,
                 vu1Instant = if (overrides.has("vu1Instant")) overrides.getBoolean("vu1Instant") else base.cpu.vu1Instant,
                 vuFlagHack = if (overrides.has("vuFlagHack")) overrides.getBoolean("vuFlagHack") else base.cpu.vuFlagHack,
                 fastCDVD = if (overrides.has("fastCDVD")) overrides.getBoolean("fastCDVD") else base.cpu.fastCDVD,

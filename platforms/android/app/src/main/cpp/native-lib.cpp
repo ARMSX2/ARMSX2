@@ -2146,13 +2146,15 @@ Java_kr_co_iefriends_pcsx2_NativeApp_commitSettings(JNIEnv *env, jclass clazz) {
     // allow forwarding references (T&&) to bind to bit-fields.
     Console.WriteLnFmt(
         "Settings commit: vuThread={} EECycleRate={} EECycleSkip={} "
-        "vu1Instant={} fastCDVD={} vuFlagHack={}",
+        "vu1Instant={} fastCDVD={} vuFlagHack={} iopThread={} iopThreadLag={}",
         +EmuConfig.Speedhacks.vuThread,
         +EmuConfig.Speedhacks.EECycleRate,
         +EmuConfig.Speedhacks.EECycleSkip,
         +EmuConfig.Speedhacks.vu1Instant,
         +EmuConfig.Speedhacks.fastCDVD,
-        +EmuConfig.Speedhacks.vuFlagHack);
+        +EmuConfig.Speedhacks.vuFlagHack,
+        +EmuConfig.Speedhacks.iopThread,
+        EmuConfig.Speedhacks.iopThreadLag);
 }
 
 // Generic live GS reconfigure. Reloads the whole EmuCore/GS section from the

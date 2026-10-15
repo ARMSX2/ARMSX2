@@ -440,6 +440,17 @@ fun PerformanceTab(state: MutableState<Settings>) {
         CollapsibleSection(str("perf.advancedSpeedhacks.title")) {
             Spacer(Modifier.height(8.dp))
             ToggleRow(str("perf.hack.mtvu"), s.cpu.mtvu, description = str("perf.hack.mtvu.desc"), field = "mtvu") { apply(s.copy(cpu = s.cpu.copy(mtvu = it))) }
+            ToggleRow(str("perf.hack.iopThread"), s.cpu.iopThread, description = str("perf.hack.iopThread.desc"), field = "iopThread") { apply(s.copy(cpu = s.cpu.copy(iopThread = it))) }
+            // The lag bound is advanced: only the usual choices are offered, and a value the file holds
+            // that is not one of them shows the nearest (the core clamps it to 4096..196608 anyway).
+            val lagChoices = listOf(4096, 6144, 12288, 24576)
+            SegmentedRow(
+                label = str("perf.hack.iopThreadLag"),
+                options = lagChoices.map { it.toString() },
+                selectedIndex = lagChoices.indices.minByOrNull { kotlin.math.abs(lagChoices[it] - s.cpu.iopThreadLag) } ?: 1,
+                description = str("perf.hack.iopThreadLag.desc"),
+                field = "iopThreadLag",
+            ) { apply(s.copy(cpu = s.cpu.copy(iopThreadLag = lagChoices[it]))) }
             ToggleRow(str("perf.hack.instantVu1"), s.cpu.vu1Instant, description = str("perf.hack.instantVu1.desc"), field = "vu1Instant") { apply(s.copy(cpu = s.cpu.copy(vu1Instant = it))) }
             ToggleRow(str("perf.hack.vuFlagHack"), s.cpu.vuFlagHack, description = str("perf.hack.vuFlagHack.desc"), field = "vuFlagHack") { apply(s.copy(cpu = s.cpu.copy(vuFlagHack = it))) }
             ToggleRow(str("perf.hack.fastCdvd"), s.cpu.fastCDVD, description = str("perf.hack.fastCdvd.desc"), field = "fastCDVD") { apply(s.copy(cpu = s.cpu.copy(fastCDVD = it))) }

@@ -41,6 +41,7 @@ internal object GameDbFields {
         "mvuFlag" to "vuFlagHack",
         "instantVU1" to "vu1Instant",
         "mtvu" to "mtvu",
+        "iopThread" to "iopThread",
         "eeCycleRate" to "eeCycleRate",
         // Game fixes.
         "GoemonTlb" to "gamefixGoemonTlb",

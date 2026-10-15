@@ -1264,6 +1264,9 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
     MenuSwitchRow(str("perf.hack.mtvu"), settings.cpu.mtvu, field = "mtvu") {
         viewModel.updateSettings { current -> current.copy(cpu = current.cpu.copy(mtvu = it)) }
     }
+    MenuSwitchRow(str("perf.hack.iopThread"), settings.cpu.iopThread, field = "iopThread") {
+        viewModel.updateSettings { current -> current.copy(cpu = current.cpu.copy(iopThread = it)) }
+    }
     MenuSwitchRow(str("perf.hack.instantVu1"), settings.cpu.vu1Instant, field = "vu1Instant") {
         viewModel.updateSettings { current -> current.copy(cpu = current.cpu.copy(vu1Instant = it)) }
     }
