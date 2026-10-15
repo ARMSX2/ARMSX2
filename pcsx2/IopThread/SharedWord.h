@@ -14,9 +14,10 @@
 // register), and the IOP's loads and stores call iopMemRead* and iopMemWrite* or, for RAM only, the store
 // stub. So making these accesses atomic needs no change in the JIT.
 //
-// std::atomic_ref is lock-free for these sizes on every host we build for, so each call is one
-// instruction (a load, a store, or one read-modify-write), and the relaxed forms are exactly the plain
-// load and store.
+// The calls are the compiler's __atomic builtins on the plain storage. That is what std::atomic_ref
+// would be, and it is not used because the Android NDK's libc++ (r28, LLVM 19) does not have it. The
+// builtins are lock-free for these sizes on every host we build for, so each call is one instruction (a
+// load, a store, or one read-modify-write), and the relaxed forms are exactly the plain load and store.
 //
 // Memory orders follow section 3.9 of the IOP thread design: loads acquire, stores release, read-modify-
 // writes acquire+release, so a register read that sees a flag also sees what the other side wrote before
@@ -34,41 +35,43 @@ namespace SharedWord
 	template <typename T>
 	__forceinline_odr T LoadRelaxed(T& word)
 	{
-		static_assert(std::atomic_ref<T>::is_always_lock_free);
-		return std::atomic_ref<T>(word).load(std::memory_order_relaxed);
+		static_assert(__atomic_always_lock_free(sizeof(T), 0));
+		T value;
+		__atomic_load(&word, &value, __ATOMIC_RELAXED);
+		return value;
 	}
 
 	template <typename T>
 	__forceinline_odr void StoreRelaxed(T& word, T value)
 	{
-		static_assert(std::atomic_ref<T>::is_always_lock_free);
-		std::atomic_ref<T>(word).store(value, std::memory_order_relaxed);
+		static_assert(__atomic_always_lock_free(sizeof(T), 0));
+		__atomic_store(&word, &value, __ATOMIC_RELAXED);
 	}
 
 	__forceinline_odr u32 LoadAcquire(u32& word)
 	{
-		return std::atomic_ref<u32>(word).load(std::memory_order_acquire);
+		return __atomic_load_n(&word, __ATOMIC_ACQUIRE);
 	}
 
 	__forceinline_odr void StoreRelease(u32& word, u32 value)
 	{
-		std::atomic_ref<u32>(word).store(value, std::memory_order_release);
+		__atomic_store_n(&word, value, __ATOMIC_RELEASE);
 	}
 
 	// word |= bits. Returns the old value.
 	__forceinline_odr u32 FetchOr(u32& word, u32 bits)
 	{
-		return std::atomic_ref<u32>(word).fetch_or(bits, std::memory_order_acq_rel);
+		return __atomic_fetch_or(&word, bits, __ATOMIC_ACQ_REL);
 	}
 
 	// word &= mask. Returns the old value.
 	__forceinline_odr u32 FetchAnd(u32& word, u32 mask)
 	{
-		return std::atomic_ref<u32>(word).fetch_and(mask, std::memory_order_acq_rel);
+		return __atomic_fetch_and(&word, mask, __ATOMIC_ACQ_REL);
 	}
 
 	// A load of a word through a const reference. The load does not change the word, so the const is
-	// dropped for atomic_ref, which has no const form before C++26.
+	// dropped; the builtins take a plain pointer for the word they load from.
 	template <typename T>
 	__forceinline_odr T LoadRelaxedConst(const T& word)
 	{
@@ -125,9 +128,8 @@ namespace SharedWord
 	template <typename Fn>
 	__forceinline_odr u32 Update(u32& word, Fn&& fn)
 	{
-		std::atomic_ref<u32> ref(word);
-		u32 old = ref.load(std::memory_order_relaxed);
-		while (!ref.compare_exchange_weak(old, fn(old), std::memory_order_acq_rel, std::memory_order_relaxed))
+		u32 old = __atomic_load_n(&word, __ATOMIC_RELAXED);
+		while (!__atomic_compare_exchange_n(&word, &old, fn(old), /*weak=*/true, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
 		{
 		}
 		return old;
