@@ -129,6 +129,11 @@ namespace vuopt
 				return {&xFlag, env.offVIbackup, 4};
 			if (v == var::XGKADDR)
 				return {&xFlag, env.offVIxgkick, 4};
+			if (var::IsFlagSrc(v))
+			{
+				pxAssertRel(env.offFlagSrc >= 0, "vuopt: a flag source without its home");
+				return {&xFlag, env.offFlagSrc + static_cast<s32>(v - var::MS(0)) * 16, 16};
+			}
 			return {nullptr, 0, 0};
 		}
 
@@ -168,7 +173,7 @@ namespace vuopt
 			switch (in.op)
 			{
 				case Op::LiveIn:
-					return (VecHomeOf(in.var) || IsPQ(in.var)) ? Cls::V : (in.type == Type::Mem ? Cls::None : Cls::G);
+					return (VecHomeOf(in.var) || IsPQ(in.var) || var::IsFlagSrc(in.var)) ? Cls::V : (in.type == Type::Mem ? Cls::None : Cls::G);
 				case Op::Const:
 					return in.type == Type::Vec ? Cls::V : Cls::G;
 				case Op::IConst:
@@ -188,6 +193,7 @@ namespace vuopt
 				case Op::DivFlags:
 				case Op::RUpd:
 				case Op::Cond:
+				case Op::StatusRest:
 					return Cls::G;
 				case Op::Fmac:
 				case Op::Opmula:
@@ -202,6 +208,7 @@ namespace vuopt
 				case Op::Efu:
 				case Op::RGet:
 				case Op::AccClamp:
+				case Op::FlagSrc:
 					return Cls::V;
 				default:
 					return Cls::None;
@@ -779,7 +786,9 @@ namespace vuopt
 				else
 				{
 					const MemLoc m = BoundaryLoc(v, env_);
-					if (cls_[c] == Cls::G)
+					if (m.size == 16)
+						armAsm->Str(Q(r), a64::MemOperand(*m.base, m.off)); // a flag source
+					else if (cls_[c] == Cls::G)
 					{
 						if (m.size == 2)
 							armAsm->Strh(W(r), a64::MemOperand(*m.base, m.off));
@@ -1949,6 +1958,8 @@ namespace vuopt
 					return 3;
 				case Op::Kick:
 					return 30;
+				case Op::FlagSrc:
+					return 2;
 				default:
 					return 1;
 			}
@@ -3502,6 +3513,13 @@ namespace vuopt
 				const MemLoc m = BoundaryLoc(v, env_);
 				if (!m.base)
 					continue;
+				if (m.size == 16)
+				{
+					// a flag source
+					armAsm->Str(Q(UseReg(a)), a64::MemOperand(*m.base, m.off));
+					ReleaseLocks();
+					continue;
+				}
 				const int r = IntOperand(a);
 				if (m.size == 2)
 					armAsm->Strh(W(r), a64::MemOperand(*m.base, m.off));
@@ -4173,6 +4191,47 @@ namespace vuopt
 					break;
 				}
 				case Op::Kick: Kick(id); break;
+				case Op::FlagSrc:
+				{
+					// (a whole field is the result itself: aliased in Check, never here)
+					const int r = UseReg(in.args[0]);
+					int k = kCMax; // a positive normal number: no zero, no sign
+					if (!env_.clampOverflow)
+					{
+						// (q25 holds the clamp bounds only in the clamp modes that use them)
+						k = TempV();
+						armAsm->Movi(V(k).V4S(), 0x3f, a64::LSL, 24);
+					}
+					const int d = DefV(id);
+					if (in.sub == 1 && Single(in.mask))
+					{
+						// STATUS's own layout packs a single lane as lane 0
+						armAsm->Mov(V(d).V16B(), V(k).V16B());
+						armAsm->Ins(V(d).V4S(), 0, V(r).V4S(), SingleLane(in.mask));
+						break;
+					}
+					armAsm->Mov(V(d).V16B(), V(r).V16B());
+					u8 outside = 0;
+					for (int l = 0; l < 4; l++)
+						if (!MaskLane(in.mask, l))
+							outside |= static_cast<u8>(1u << l);
+					for (int h = 0; h < 2; h++)
+					{
+						const u8 pair = (outside >> (2 * h)) & 3;
+						if (pair == 3)
+							armAsm->Ins(V(d).V2D(), h, V(k).V2D(), h);
+						else if (pair)
+							armAsm->Ins(V(d).V4S(), 2 * h + (pair == 2 ? 1 : 0), V(k).V4S(), 2 * h + (pair == 2 ? 1 : 0));
+					}
+					break;
+				}
+				case Op::StatusRest:
+				{
+					const int hi = IntOperand(in.args[0]);
+					const int d = DefG(id);
+					armAsm->And(W(d), W(hi), 0xfffc0000u);
+					break;
+				}
 				case Op::Cond:
 				{
 					const int a = IntOperand(in.args[0]);
@@ -4255,6 +4314,8 @@ namespace vuopt
 						vf0 = static_cast<ValueId>(v);
 					canon_[v] = vf0;
 				}
+				else if (in.op == Op::FlagSrc && in.mask == 0xF)
+					canon_[v] = canon_[in.args[0]]; // a whole field raises its own flags: the result itself
 				cls_[v] = ClsOf(in);
 				if (in.op == Op::LiveIn)
 				{
@@ -5344,5 +5405,104 @@ namespace vuopt
 		}
 		if (homes.cycles >= 0 && cyclesOff)
 			armAsm->Str(W(homes.cycles), a64::MemOperand(xFlag, cyclesOff));
+	}
+
+	//------------------------------------------------------------------
+	// Region flag sinking: words from flag sources and back
+	//------------------------------------------------------------------
+
+	namespace
+	{
+		// The full-field weights of a source's layout (FlagSrc::sub): 0 MAC (lane x at bit 3), 1 STATUS's own
+		// (lane x at bit 0).
+		const void* SourceWeights(int layout) { return &mVUglob.macWeights.byMask[0][layout ? 0 : 1][0xF][0]; }
+
+		s32 SourceOff(u32 v, const LowerEnv& env)
+		{
+			const u32 k = var::IsFlagSrc(v) ? v - var::MS(0) : (v >= var::S(0) && v <= var::S(3)) ? 4 + (v - var::S(0)) : v - var::M(0);
+			pxAssertRel(k < 8 && env.offFlagSrc >= 0 && (env.offFlagSrc & 15) == 0 && env.offFlagSrc + 8 * 16 <= 65520,
+				"vuopt: flag source out of reach");
+			return env.offFlagSrc + static_cast<s32>(k) * 16;
+		}
+	} // namespace
+
+	void EmitFlagMaterialise(u32 v, int layout, const HomeMap& homes, const LowerEnv& env, int mutation)
+	{
+		const bool status = IsStatus(v);
+		pxAssertRel(status || (v >= var::M(0) && v <= var::M(3)), "vuopt: materialising a variable that has no source");
+		// Mutation 5 (test only): a STATUS source packed with the other layout's weights.
+		const int lay = (status && mutation == 5) ? (layout ^ 1) : layout;
+		// mVUupdateFlags' pack of the whole field (Lowerer::PackFlags)
+		armAsm->Ldr(a64::q0, a64::MemOperand(xFlag, SourceOff(v, env)));
+		armAsm->Cmlt(a64::v1.V4S(), a64::v0.V4S(), 0);
+		armAsm->Fcmeq(a64::v2.V4S(), a64::v0.V4S(), 0.0);
+		armAsm->Sli(a64::v2.V4S(), a64::v1.V4S(), 4);
+		armAsm->Ldr(a64::q1, a64::MemOperand(xGlob, G(SourceWeights(lay))));
+		armAsm->And(a64::v2.V16B(), a64::v2.V16B(), a64::v1.V16B());
+		armAsm->Addv(a64::s2, a64::v2.V4S());
+		if (status)
+		{
+			// the home holds the rest of the instance; the pack is its byte at bit 8
+			const int sr = 20 + static_cast<int>(v - var::S(0));
+			armAsm->Fmov(a64::w16, a64::s2);
+			armAsm->Orr(W(sr), W(sr), a64::Operand(a64::w16, a64::LSL, 8));
+			return;
+		}
+		const Home& h = homes.home[v];
+		if (h.kind == HomeKind::GReg)
+			armAsm->Fmov(W(h.reg), a64::s2);
+		else
+		{
+			const MemLoc m = BoundaryLoc(v, env);
+			armAsm->Fmov(a64::w16, a64::s2);
+			armAsm->Str(a64::w16, a64::MemOperand(*m.base, m.off));
+		}
+	}
+
+	void EmitFlagSynthesise(u32 v, int layout, const HomeMap* homes, const LowerEnv& env)
+	{
+		const bool status = IsStatus(v);
+		pxAssertRel(status || (v >= var::M(0) && v <= var::M(3)), "vuopt: synthesising a variable that has no source");
+		// The word's zero and sign bits of each lane (the layout's weights), as a lane value raising
+		// exactly those flags: +1.0 none, +0.0 zero, -1.0 sign, -0.0 both.
+		if (status)
+			armAsm->Lsr(a64::w16, W(20 + static_cast<int>(v - var::S(0))), 8);
+		else if (homes && homes->home[v].kind == HomeKind::GReg)
+			armAsm->Mov(a64::w16, W(homes->home[v].reg));
+		else
+		{
+			const MemLoc m = BoundaryLoc(v, env);
+			armAsm->Ldr(a64::w16, a64::MemOperand(*m.base, m.off));
+		}
+		armAsm->Dup(a64::v0.V4S(), a64::w16);
+		armAsm->Ldr(a64::q1, a64::MemOperand(xGlob, G(SourceWeights(layout))));
+		armAsm->And(a64::v0.V16B(), a64::v0.V16B(), a64::v1.V16B());
+		armAsm->Movi(a64::v1.V4S(), 0x0f);
+		armAsm->Cmtst(a64::v2.V4S(), a64::v0.V4S(), a64::v1.V4S());
+		armAsm->Movi(a64::v1.V4S(), 0xf0);
+		armAsm->Cmtst(a64::v3.V4S(), a64::v0.V4S(), a64::v1.V4S());
+		armAsm->Fmov(a64::v4.V4S(), 1.0f);
+		armAsm->Bic(a64::v4.V16B(), a64::v4.V16B(), a64::v2.V16B());
+		armAsm->Movi(a64::v1.V4S(), 0x80, a64::LSL, 24);
+		armAsm->And(a64::v3.V16B(), a64::v3.V16B(), a64::v1.V16B());
+		armAsm->Orr(a64::v4.V16B(), a64::v4.V16B(), a64::v3.V16B());
+		armAsm->Str(a64::q4, a64::MemOperand(xFlag, SourceOff(v, env)));
+		if (status)
+		{
+			// the rest: everything but the pack (the sticky byte included: a word handed back unchanged
+			// keeps it)
+			const int sr = 20 + static_cast<int>(v - var::S(0));
+			armAsm->And(W(sr), W(sr), 0xffff00ffu);
+		}
+	}
+
+	void EmitFlagSourceGuard(a64::Label* bad)
+	{
+		armAsm->Ldr(a64::q0, a64::MemOperand(xFlag, 0)); // the four MAC instances
+		armAsm->Movi(a64::v1.V4S(), 0xff, a64::LSL, 8);
+		armAsm->Cmtst(a64::v0.V4S(), a64::v0.V4S(), a64::v1.V4S());
+		armAsm->Umaxv(a64::s0, a64::v0.V4S());
+		armAsm->Fmov(a64::w16, a64::s0);
+		armAsm->Cbnz(a64::w16, bad);
 	}
 } // namespace vuopt

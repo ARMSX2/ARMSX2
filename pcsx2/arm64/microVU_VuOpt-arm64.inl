@@ -132,6 +132,8 @@ struct VuoptRegionOptions
 	bool dropSticky = true;
 	int dropStickyMutation = 0;
 	vuopt::RegionTier::HandoffMutation handoffMutation = vuopt::RegionTier::HandoffMutation::None;
+	bool flagSink = vuopt::RegionTier::kFlagSinkDefault, flagSinkStatus = vuopt::RegionTier::kFlagSinkStatusDefault;
+	int flagSinkMutation = 0;
 
 	void From(const vuopt::RegionTier& t)
 	{
@@ -145,6 +147,9 @@ struct VuoptRegionOptions
 		handoffMutation = t.handoffMutation;
 		dropSticky = t.dropSticky;
 		dropStickyMutation = t.dropStickyMutation;
+		flagSink = t.flagSink;
+		flagSinkStatus = t.flagSinkStatus;
+		flagSinkMutation = t.flagSinkMutation;
 		dump = t.dump;
 	}
 	void To(vuopt::RegionTier& t) const
@@ -159,6 +164,9 @@ struct VuoptRegionOptions
 		t.handoffMutation = handoffMutation;
 		t.dropSticky = dropSticky;
 		t.dropStickyMutation = dropStickyMutation;
+		t.flagSink = flagSink;
+		t.flagSinkStatus = flagSinkStatus;
+		t.flagSinkMutation = flagSinkMutation;
 		t.dump = dump;
 	}
 };
@@ -249,6 +257,7 @@ struct VuoptJob final : vuopt::bg::Job
 	// byte (relaxation 3: decided by scanning the job's copy of micro memory; publication
 	// scans live micro memory again and discards the job if a sticky reader has appeared).
 	u32 statusReaders = 0, stickyReaders = 0, stickyDivReaders = 0, stickyDropped = 0, stickyImages = 0;
+	u32 fsinkPending = 0, fsinkMat = 0, fsinkSynth = 0, fsinkConf = 0;
 	u64 workerIns = 0;
 
 	void Run() override;
@@ -435,6 +444,12 @@ namespace vuopt::live
 #ifdef PCSX2_RECOMPILER_TESTS
 	void TripStickyForTest() { vuoptTrip(TripCause::Forced); }
 	void SetTripwireMutation(int mask) { s_trip.mutation.store(mask, std::memory_order_relaxed); }
+	void PoisonFlagSources()
+	{
+		for (auto& v : microVU1.vuoptFlagSrc)
+			for (u32& l : v)
+				l = 0x80000000u; // -0.0: zero and sign
+	}
 #endif
 } // namespace vuopt::live
 
@@ -547,11 +562,13 @@ namespace vuopt::live
 		{
 			s.bailsEntry += entry.second->vuoptBails[0];
 			s.bailsLoopHead += entry.second->vuoptBails[1];
+			s.fsinkSynthRuns += entry.second->vuoptBails[2];
 		}
 		for (const microProgram* prog : microVU1.mvuOrphanedProgs)
 		{
 			s.bailsEntry += prog->vuoptBails[0];
 			s.bailsLoopHead += prog->vuoptBails[1];
+			s.fsinkSynthRuns += prog->vuoptBails[2];
 		}
 		s.workerIns = s_vuopt.workerIns.load(std::memory_order_relaxed);
 		s.stickyTrips = s_trip.trips.load(std::memory_order_relaxed);
@@ -571,7 +588,7 @@ namespace vuopt::live
 			"roots=%llu regions=%llu rnodes=%llu rexits=%llu rbytes=%llu bodyblocks=%llu bodies=%llu bodybytes=%llu bails=%llu "
 			"jrtierups=%llu jrcounted=%llu xprogtargets=%llu bails_entry=%llu bails_loophead=%llu "
 			"status_readers=%llu sticky_readers=%llu sticky_div_readers=%llu sticky_dropped=%llu sticky_images=%llu "
-			"sticky_trips=%llu sticky_trip_resets=%llu sticky_tripped=%d",
+			"sticky_trips=%llu sticky_trip_resets=%llu sticky_tripped=%d fsink=%llu fsinkmat=%llu fsinksyn=%llu fsinkconf=%llu fsinkruns=%llu",
 			(unsigned long long)s.tierUps, (unsigned long long)s.retiers, (unsigned long long)s.retierChecks,
 			(unsigned long long)s.blocksSetAside, (unsigned long long)s.targetsRecorded, (unsigned long long)s.jumpMisses,
 			(unsigned long long)s.rootsCompiled, (unsigned long long)s.regions, (unsigned long long)s.regionNodes,
@@ -580,7 +597,9 @@ namespace vuopt::live
 			(unsigned long long)s.jumpTierUps, (unsigned long long)s.jumpCounted, (unsigned long long)s.crossProgTargets,
 			(unsigned long long)s.bailsEntry, (unsigned long long)s.bailsLoopHead, (unsigned long long)s.statusReaders,
 			(unsigned long long)s.stickyReaders, (unsigned long long)s.stickyDivReaders, (unsigned long long)s.stickyDropped,
-			(unsigned long long)s.stickyImages, (unsigned long long)s.stickyTrips, (unsigned long long)s.stickyTripResets, StickyTripped() ? 1 : 0);
+			(unsigned long long)s.stickyImages, (unsigned long long)s.stickyTrips, (unsigned long long)s.stickyTripResets, StickyTripped() ? 1 : 0,
+			(unsigned long long)s.fsinkPending, (unsigned long long)s.fsinkMat, (unsigned long long)s.fsinkSynth,
+			(unsigned long long)s.fsinkConf, (unsigned long long)s.fsinkSynthRuns);
 		out = buf;
 		if (s.stickyTrips)
 		{
@@ -906,6 +925,10 @@ void VuoptJob::Run()
 	stickyDivReaders = tier.StickyDivReaders();
 	stickyDropped = tier.StickyDropped();
 	stickyImages = tier.StickyReaderImages();
+	fsinkPending = tier.FsinkPending();
+	fsinkMat = tier.FsinkMaterialise(0) + tier.FsinkMaterialise(1) + tier.FsinkMaterialise(2);
+	fsinkSynth = tier.FsinkSynth();
+	fsinkConf = tier.FsinkConflicts();
 	workerIns = vuoptReadIns() - ins0;
 	s_vuopt.workerIns.fetch_add(workerIns, std::memory_order_relaxed);
 }
@@ -987,6 +1010,10 @@ static void vuoptCollect(VuoptJob& j)
 	s_vuopt.stats.stickyDivReaders += j.stickyDivReaders;
 	s_vuopt.stats.stickyDropped += j.stickyDropped;
 	s_vuopt.stats.stickyImages += j.stickyImages;
+	s_vuopt.stats.fsinkPending += j.fsinkPending;
+	s_vuopt.stats.fsinkMat += j.fsinkMat;
+	s_vuopt.stats.fsinkSynth += j.fsinkSynth;
+	s_vuopt.stats.fsinkConf += j.fsinkConf;
 	// The micro memory the job compiled under has a reader of the sticky bits (the scan is of the
 	// whole image, so this is the same fact the program-creation scan reports, found by another path).
 	if (j.stickyImages)
@@ -1669,6 +1696,7 @@ void mVUvuoptOnProgramDeleted(microProgram& prog)
 {
 	s_vuopt.stats.bailsEntry += prog.vuoptBails[0];
 	s_vuopt.stats.bailsLoopHead += prog.vuoptBails[1];
+	s_vuopt.stats.fsinkSynthRuns += prog.vuoptBails[2];
 	VuoptProgramState* st = prog.vuopt;
 	if (!st)
 		return;

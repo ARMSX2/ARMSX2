@@ -37,6 +37,10 @@ namespace vuopt::ir
 		else if (v == VIBACKUP) return "vibackup";
 		else if (v == XGKADDR) return "xgkaddr";
 		else if (v == MEM) return "mem";
+		else if (v >= MS(0) && v < MS(4))
+			std::snprintf(buf, sizeof(buf), "macsrc%u", v - MS(0));
+		else if (v >= SS(0) && v < SS(4))
+			std::snprintf(buf, sizeof(buf), "statsrc%u", v - SS(0));
 		else
 			std::snprintf(buf, sizeof(buf), "var%u", v);
 		return buf;
@@ -50,7 +54,7 @@ namespace vuopt::ir
 				return false;
 			if (v == var::VI(0))
 				return false;
-			return v < var::Count;
+			return v < var::StateCount; // (the flag sources exist only in region builds)
 		}
 
 		Type VarType(u32 v)
@@ -63,6 +67,8 @@ namespace vuopt::ir
 				return Type::Float;
 			if (v == var::MEM)
 				return Type::Mem;
+			if (var::IsFlagSrc(v))
+				return Type::Vec;
 			return Type::Int;
 		}
 
@@ -1545,7 +1551,7 @@ namespace vuopt::ir
 	static const char* const kOpNames[] = {"none", "livein", "phi", "const", "fmac", "opmula", "opmsub", "fmac2", "clipbits",
 		"macflags", "status.upd", "status.div", "status.set", "clip.upd", "clip.set", "flagread", "ialu", "incvi", "mtir",
 		"xtop", "loadq", "loadi", "storeq", "storei", "move", "mr32", "mfir", "mfp", "div", "divflags", "efu", "r.upd",
-		"r.get", "accclamp", "iconst", "kick", "cond", "yield-check", "exit-if", "exit", "leave"};
+		"r.get", "accclamp", "iconst", "kick", "flagsrc", "statusrest", "cond", "yield-check", "exit-if", "exit", "leave"};
 	const char* OpName(Op op) { return kOpNames[static_cast<int>(op)]; }
 
 	std::string Dump(const Function& f, const ProgramGraph& g)
@@ -1553,7 +1559,7 @@ namespace vuopt::ir
 		static const char* const kOp[] = {"none", "livein", "phi", "const", "fmac", "opmula", "opmsub", "fmac2", "clipbits",
 			"macflags", "status.upd", "status.div", "status.set", "clip.upd", "clip.set", "flagread", "ialu", "incvi", "mtir",
 			"xtop", "loadq", "loadi", "storeq", "storei", "move", "mr32", "mfir", "mfp", "div", "divflags", "efu", "r.upd",
-			"r.get", "accclamp", "iconst", "kick", "cond", "yield-check", "exit-if", "exit", "leave"};
+			"r.get", "accclamp", "iconst", "kick", "flagsrc", "statusrest", "cond", "yield-check", "exit-if", "exit", "leave"};
 		static_assert(sizeof(kOp) / sizeof(kOp[0]) == static_cast<size_t>(Op::Leave) + 1, "kOp out of step with Op");
 		static const char* const kMask[16] = {"", "w", "z", "zw", "y", "yw", "yz", "yzw", "x", "xw", "xz", "xzw", "xy", "xyw", "xyz", "xyzw"};
 		std::string s;

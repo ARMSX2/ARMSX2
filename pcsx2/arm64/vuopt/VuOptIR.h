@@ -162,7 +162,18 @@ namespace vuopt::ir
 		constexpr u32 M(u32 i) { return 158 + i; }
 		constexpr u32 C(u32 i) { return 162 + i; }
 		constexpr u32 DIVFLAG = 166, VIBACKUP = 167, XGKADDR = 168, MEM = 169;
-		constexpr u32 Count = 170;
+		// The VU state ends here: everything a whole-program build (BuildSSA) or a node's end
+		// tracks.
+		constexpr u32 StateCount = 170;
+		// Region flag sinking (VuOptRegion.cpp): where a flag instance is not built inside a
+		// loop, the inputs it would be built from. MS(k): the result vector of the FMAC whose
+		// MAC word instance k would hold; SS(k): that of the FMAC whose pack the low part of
+		// STATUS instance k would hold. Region nodes' ends hand them on like any variable;
+		// they live in memory only (microVU::vuoptFlagSrc).
+		constexpr u32 MS(u32 i) { return 170 + i; }
+		constexpr u32 SS(u32 i) { return 174 + i; }
+		constexpr u32 Count = 178;
+		constexpr bool IsFlagSrc(u32 v) { return v >= MS(0) && v < Count; }
 		std::string Name(u32 v);
 	} // namespace var
 
@@ -219,6 +230,12 @@ namespace vuopt::ir
 		AccClamp,    // clamp modes 2/3: MADD clamps microVU's cached ACC in place; mask = lanes clamped; args acc[4]
 		IConst,      // link address of BAL/JALR: imm
 		Kick,        // XGKICK transfer: args mem, addr -> Mem
+		// region flag sinking (VuOptRegion.cpp)
+		FlagSrc,     // a flag source: args result; mask = the FMAC's field; sub = layout (0 MAC, 1 STATUS's own).
+		             // The result with every lane outside the field set to a value that raises no flag
+		             // (a STATUS-layout single lane moved to lane 0 first), so the full-field pack of the
+		             // layout gives the producer's word.
+		StatusRest,  // the bits of a STATUS instance a sunk update does not build: args hi; hi & 0xfffc0000
 		// control
 		Cond,        // IBxx condition: sub = LOp; args a[, b]
 		YieldCheck,  // block-entry cycle-budget test: may exit with the args as state

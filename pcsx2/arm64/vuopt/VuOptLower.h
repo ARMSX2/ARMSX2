@@ -38,6 +38,11 @@
 #include <utility>
 #include <vector>
 
+namespace vixl::aarch64
+{
+	class Label;
+}
+
 namespace vuopt
 {
 	// One flag per IR variable (milestone 8's region liveness).
@@ -52,6 +57,7 @@ namespace vuopt
 		s32 offVIxgkick = 0;
 		s32 offBranch = 0;
 		s32 offNeonBackup = 48;         // mVU.neonBackup: the spill area
+		s32 offFlagSrc = -1;            // mVU.vuoptFlagSrc: the flag sources' homes (region flag sinking), -1: none
 		const void* xgkickFn = nullptr; // void mVU_XGKICK_(u32 addr)
 		const void* vifTop = nullptr;   // &VIFregisters.top
 		const void* vifItop = nullptr;  // &VIFregisters.itop
@@ -221,6 +227,21 @@ namespace vuopt
 		std::unique_ptr<Impl> impl_;
 	};
 	void EmitStoreHomes(const HomeMap& homes, const LowerEnv& env, s32 cyclesOff);
+
+	// Region flag sinking (VuOptRegion.cpp). `v` is a MAC instance M(k) or a STATUS instance S(k)
+	// whose word is not built; its source (var::MS(k) / var::SS(k), in microVU::vuoptFlagSrc) holds the
+	// FMAC result it would be built from, in `layout` (FlagSrc::sub). A STATUS instance's register
+	// (w20+k) then holds the rest of the word: everything but the pack at bits 8-15. Scratch: q0-q4, w16.
+	// The word into v's home in `homes`; a STATUS instance's pack ORed into its register.
+	// `mutation` (test only): 5 packs a STATUS source with the other layout.
+	void EmitFlagMaterialise(u32 v, int layout, const HomeMap& homes, const LowerEnv& env, int mutation = 0);
+	// v's source from its word, from its home in `homes` (null: microVU's location); a STATUS instance's
+	// register keeps the rest. Exact for any STATUS word, and for a MAC word without bits 8-15.
+	void EmitFlagSynthesise(u32 v, int layout, const HomeMap* homes, const LowerEnv& env);
+	// A MAC instance in microVU's ring with any of bits 8-15 set (the U / O nibbles clamp mode 4 builds,
+	// which a source cannot carry; such a word can only come from an earlier session's state): branch
+	// to `bad`. Scratch: q0, q1, w16.
+	void EmitFlagSourceGuard(vixl::aarch64::Label* bad);
 	// Milestone 10: moves the variables in `live` (null: all) from where
 	// `from` keeps them to where `to` does (registers, microVU's locations),
 	// and fills `to`'s clamped homes. The cycle counter and memory base are

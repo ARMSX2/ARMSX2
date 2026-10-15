@@ -94,6 +94,19 @@ namespace vuopt
 		// entry from microVU, and at a loop head (read from the programs; only valid while
 		// they are alive).
 		void BailCounts(u64& entry, u64& loopHead) const;
+		// Flag sinking: entries from microVU that built flag sources (counted by the regions' code, as the
+		// bails are).
+		u64 FsinkSynthRuns() const;
+		// Test only: forget the programs counted so far (they have been freed).
+		void ForgetPrograms() { progs_.clear(); }
+		// Flag sinking: producers whose MAC / STATUS word a loop no longer builds (a FlagSrc each); the
+		// places a word is built from a source instead ([0] a bail at a loop head, [1] a link out of a
+		// loop, to microVU or to a node outside it, [2] a JR fallback); entry routines and edges that build
+		// sources from words; links inside a loop whose two ends hold a variable differently.
+		u32 FsinkPending() const { return fsinkPending_; }
+		u32 FsinkMaterialise(int kind) const { return fsinkMat_[kind]; }
+		u32 FsinkSynth() const { return fsinkSynth_; }
+		u32 FsinkConflicts() const { return fsinkConf_; }
 		u32 HandoffEdges() const { return handoffEdges_; }
 		u32 HandoffRingsDead() const { return handoffRingsDead_; }
 		const std::map<std::string, u32>& Declined() const { return declined_; }
@@ -130,6 +143,20 @@ namespace vuopt
 		// (the tripwire, microVU_VuOpt-arm64.inl).
 		bool dropSticky = true;
 		int dropStickyMutation = 0; // test only: LowerEnv::dropStickyMutation
+		// Flag sinking (compiler-design.md 9ae): inside a loop, a MAC word and the low part of a STATUS
+		// word that nothing in the loop reads are not built; the FMAC result they come from is kept
+		// instead (a flag source), and the word is built only where something outside the loop can see
+		// it: a link out of the loop, a JR fallback, a bail at a loop head. An entry from microVU builds
+		// the sources from microVU's words. Every word anything observes is the one microVU builds.
+		// `flagSinkStatus` off keeps STATUS words (MAC only). STATUS sinking needs `dropSticky`.
+		static constexpr bool kFlagSinkDefault = false;
+		bool flagSink = kFlagSinkDefault;
+		static constexpr bool kFlagSinkStatusDefault = false;
+		bool flagSinkStatus = kFlagSinkStatusDefault;
+		// Test only: break flag sinking on purpose (1 bails skip materialising, 2 links out of a loop skip
+		// it, 3 sources are not normalised, 4 entries and edges skip synthesising, 5 a STATUS source is
+		// packed with the other layout, 7 the in-loop readers are ignored).
+		int flagSinkMutation = 0;
 		// Test only: break the rule above on purpose, to show the tests notice.
 		enum class HandoffMutation : u8
 		{
@@ -170,6 +197,7 @@ namespace vuopt
 		u32 handoffEdges_ = 0, handoffRingsDead_ = 0;
 		u32 statusReaders_ = 0, stickyReaders_ = 0, stickyDivReaders_ = 0;
 		u32 stickyDropped_ = 0, stickyReaderImages_ = 0;
+		u32 fsinkPending_ = 0, fsinkMat_[3] = {}, fsinkSynth_ = 0, fsinkConf_ = 0;
 		std::vector<std::pair<const void*, s32>> progs_;
 		void NoteProgram(const void* program, s32 off);
 		bool ImageReadsSticky() const { return MicroReadsSticky(micro_, vu_); }

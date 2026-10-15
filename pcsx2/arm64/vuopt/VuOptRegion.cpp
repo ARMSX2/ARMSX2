@@ -15,6 +15,8 @@
 #include <cstdio>
 #include <bitset>
 #include <cstring>
+#include <deque>
+#include <functional>
 
 namespace vuopt
 {
@@ -161,6 +163,24 @@ namespace vuopt
 			// Checkpoints: what a bail to microVU's block for this node needs exact (see
 			// ComputeHandoffMasks). All variables unless the ring instances the block hides are dead.
 			LiveSet bailMask;
+			// Flag sinking (PlanFlagSink). Per sinkable variable (0-3: M0-3, 4-7: S0-3), how the node's
+			// IR leaves it at its end (`dec`), whether the node reads the incoming word (`wordReads`: a MAC
+			// reader, or a STATUS reader of the low part), and its representation at the head and the end:
+			// kRepWord, or the source's layout + 1.
+			struct SinkDec
+			{
+				u8 kind = 0;            // kDecWord / kDecProduced / kDecFrom
+				u8 from = 0;            // kDecFrom: the sinkable variable whose incoming value it is (low part)
+				u8 mask = 0, layout = 0; // kDecProduced: the FMAC's field and the pack's layout
+				ir::ValueId result = 0; // kDecProduced: the FMAC result
+				ir::ValueId val = 0;    // the end's value (0: untouched)
+				u32 pc = 0;
+			};
+			SinkDec dec[8];
+			u8 wordReads = 0;
+			u8 repIn[8] = {}, repOut[8] = {};
+			bool sinkLoop = false;             // in a loop of the region
+			int comp = -1;                     // its strongly connected component
 			int map = 0;                       // its home map (maps_)
 			int taken = 0x7fffffff, fall = 0x7fffffff; // >= 0: node; < 0: exit -(k+1)
 			std::vector<std::pair<u32, int>> jumps;    // JR/JALR: recorded target PC -> node / exit
@@ -188,6 +208,30 @@ namespace vuopt
 			std::unique_ptr<a64::Label> label;
 		};
 		std::vector<Edge> edges_;
+		// Flag sinking: a link whose two ends hold some flag variable differently (a link out of a loop,
+		// into one, or a conflict inside one), converted in a stub of its own.
+		struct Fixup
+		{
+			int from, to;
+			std::unique_ptr<a64::Label> label;
+		};
+		std::vector<Fixup> fixups_;
+		struct JrMat // a JR fallback's words, built out of line
+		{
+			int node = 0;
+			a64::Label in, back;
+		};
+		std::deque<JrMat> jrMats_;
+		bool sinkAnyM_ = false, sinkAny_ = false;
+		u8 FixupNeed(int from, int target, u8& mat, u8& synth) const;
+		LiveSet XlateObs(const Node& n, LiveSet b) const;
+		LiveSet XlateEdge(const Node& n, const Node& t, LiveSet b) const;
+		LiveSet BailNeed(const Node& t) const;
+		void PlanFlagSink();
+		std::vector<u8> PlannedLive(const Node& n) const;
+		void DecodeSink(Node& n) const;
+		bool RewriteForSink(Node& n);
+		a64::Label* BaseTarget(int from, int target);
 
 		RegionTier& t_;
 		const MvuEmitEnv& env_;
@@ -438,6 +482,22 @@ namespace vuopt
 				m.set(var::C(e.fC));
 			return m;
 		}
+
+		// Flag sinking: a sinkable variable's representation at a node boundary is its word, or a source
+		// in a layout (kRepWord / layout + 1); kRepTop only while the plan is being solved.
+		constexpr u8 kRepWord = 0, kRepTop = 0xff;
+		constexpr u8 kDecWord = 0, kDecProduced = 1, kDecFrom = 2;
+		bool Pending(u8 r) { return r != kRepWord && r != kRepTop; }
+		u8 Meet(u8 a, u8 b) { return a == kRepTop ? b : b == kRepTop ? a : a == b ? a : kRepWord; }
+		u32 SinkVar(int k) { return k < 4 ? ir::var::M(k) : ir::var::S(k - 4); }
+		u32 SrcVar(int k) { return k < 4 ? ir::var::MS(k) : ir::var::SS(k - 4); }
+		LiveSet SrcBits()
+		{
+			LiveSet r;
+			for (int k = 0; k < 8; k++)
+				r.set(SrcVar(k));
+			return r;
+		}
 	} // namespace
 
 	// What a node reads of the incoming state and what it writes. A node's incoming
@@ -583,6 +643,625 @@ namespace vuopt
 		}
 	}
 
+	// Flag sinking (compiler-design.md 9ae): what a node's IR does with each MAC / STATUS instance.
+	void RegionBuilder::DecodeSink(Node& n) const
+	{
+		using namespace ir;
+		const Function& f = n.fn;
+		ValueId leave = 0;
+		const Block* nb = nullptr;
+		for (const Block& bl : f.blocks)
+			if (bl.node >= 0)
+				nb = &bl;
+		pxAssertRel(nb, "vuopt region: a node without its block");
+		std::vector<u8> read(f.insts.size(), 0); // values a flag reader in the node reads (through STATUS's divide merges)
+		n.wordReads = 0;
+		for (ValueId id : nb->insts)
+		{
+			const Inst& x = f.insts[id];
+			if (x.op == Op::Leave)
+				leave = id;
+			if (x.op != Op::FlagRead || x.args.empty() || !x.args[0])
+				continue;
+			const LOp op = static_cast<LOp>(x.sub);
+			ValueId v = x.args[0];
+			if (op == LOp::FMAND || op == LOp::FMEQ || op == LOp::FMOR)
+			{
+				read[v] = 1;
+				if (f.insts[v].op == Op::LiveIn && f.insts[v].var >= var::M(0) && f.insts[v].var <= var::M(3))
+					n.wordReads |= static_cast<u8>(1u << (f.insts[v].var - var::M(0)));
+			}
+			else if (op == LOp::FSAND || op == LOp::FSEQ || op == LOp::FSOR)
+			{
+				// (a divide merge or FSSET keeps the low part of the instance it starts from)
+				while (f.insts[v].op == Op::StatusDiv || f.insts[v].op == Op::StatusSet)
+				{
+					read[v] = 1;
+					v = f.insts[v].args[0];
+				}
+				read[v] = 1;
+				if (f.insts[v].op == Op::LiveIn && f.insts[v].var >= var::S(0) && f.insts[v].var <= var::S(3))
+					n.wordReads |= static_cast<u8>(1u << (4 + f.insts[v].var - var::S(0)));
+			}
+		}
+		pxAssertRel(leave, "vuopt region: a node without its end");
+		const Inst& lv = f.insts[leave];
+		for (int k = 0; k < 8; k++)
+		{
+			Node::SinkDec& d = n.dec[k];
+			d = Node::SinkDec();
+			d.kind = kDecWord;
+			const ValueId a = lv.args[SinkVar(k)];
+			d.val = a;
+			if (!a)
+			{
+				d.kind = kDecFrom;
+				d.from = static_cast<u8>(k);
+				continue;
+			}
+			if (k < 4)
+			{
+				const Inst& x = f.insts[a];
+				if (x.op == Op::LiveIn && x.var >= var::M(0) && x.var <= var::M(3))
+				{
+					d.kind = kDecFrom;
+					d.from = static_cast<u8>(x.var - var::M(0));
+				}
+				else if (x.op == Op::MacFlags && !read[a])
+				{
+					d.kind = kDecProduced;
+					d.result = x.args[0];
+					d.mask = x.mask;
+					d.layout = 0;
+					d.pc = x.pc;
+				}
+				continue;
+			}
+			ValueId v = a;
+			bool chainRead = false;
+			while (f.insts[v].op == Op::StatusDiv)
+			{
+				chainRead = chainRead || read[v];
+				v = f.insts[v].args[0];
+			}
+			const Inst& x = f.insts[v];
+			if (x.op == Op::LiveIn && x.var >= var::S(0) && x.var <= var::S(3))
+			{
+				d.kind = kDecFrom;
+				d.from = static_cast<u8>(4 + x.var - var::S(0));
+			}
+			else if (x.op == Op::StatusUpd && (x.imm & 1) && le_.dropSticky && !read[v] && !chainRead)
+			{
+				// (relaxation 3's update: the bits above the sticky byte from `hi`, its own pack, no sticky
+				// byte)
+				d.kind = kDecProduced;
+				d.result = x.args[1];
+				d.mask = x.mask;
+				d.layout = (x.imm & 2) ? 0 : 1;
+				d.pc = x.pc;
+			}
+		}
+	}
+
+	// The values a loop node still computes once the plan is applied (RewriteForSink): what its end hands
+	// on (a pending instance through its source and its rest), what its stores, kicks and branch read,
+	// and everything those read.
+	std::vector<u8> RegionBuilder::PlannedLive(const Node& n) const
+	{
+		using namespace ir;
+		const Function& f = n.fn;
+		std::vector<u8> live(f.insts.size(), 0);
+		std::vector<ValueId> work;
+		const auto mark = [&](ValueId v) {
+			if (v && !live[v])
+			{
+				live[v] = 1;
+				work.push_back(v);
+			}
+		};
+		// the rest of a pending STATUS instance (RewriteForSink's rest()): what it reads
+		std::function<void(ValueId)> rest = [&](ValueId v) {
+			const Inst& x = f.insts[v];
+			if (x.op == Op::StatusUpd)
+				rest(x.args[0]);
+			else if (x.op == Op::StatusDiv)
+			{
+				mark(x.args[1]);
+				rest(x.args[0]);
+			}
+			else
+				mark(v);
+		};
+		for (const Block& bl : f.blocks)
+		{
+			if (bl.node < 0)
+				continue;
+			for (ValueId id : bl.insts)
+			{
+				const Inst& x = f.insts[id];
+				if (x.op == Op::StoreQ || x.op == Op::StoreI || x.op == Op::Kick)
+					mark(id);
+				if (x.op != Op::Leave)
+					continue;
+				for (size_t k = 0; k < x.args.size(); k++)
+				{
+					const ValueId a = x.args[k];
+					if (!a)
+						continue;
+					int sk = -1;
+					for (int j = 0; j < 8; j++)
+						if (k == SinkVar(j))
+							sk = j;
+					if (sk < 0 || !Pending(n.repOut[sk]))
+					{
+						mark(a);
+						continue;
+					}
+					const Node::SinkDec& d = n.dec[sk];
+					if (d.kind == kDecProduced)
+					{
+						mark(d.result);
+						if (sk >= 4)
+							rest(a);
+					}
+					else if (sk >= 4)
+						mark(a);
+				}
+			}
+		}
+		while (!work.empty())
+		{
+			const ValueId v = work.back();
+			work.pop_back();
+			for (ValueId a : f.insts[v].args)
+				mark(a);
+		}
+		return live;
+	}
+
+	// Which flag instances each loop node keeps as sources rather than words, at its head and at its
+	// end. A word is needed inside a loop where a reader in it reads the instance before the loop
+	// overwrites it (the backward word demand); everywhere else in the loop an instance its node
+	// produces, or hands on from a source, can stay a source. A node's head takes what its predecessors
+	// in the loop agree on. Outside loops everything is a word: the links that leave a loop build the
+	// words, the links and entries into one build the sources.
+	void RegionBuilder::PlanFlagSink()
+	{
+		using namespace ir;
+		const size_t NN = nodes_.size();
+		std::vector<int> comp;
+		std::vector<u8> cyclic;
+		int ncomp = 0;
+		FindLoops(comp, cyclic, ncomp);
+		// STATUS sinks only on relaxation 3's updates, and not in a loop with an FSSET: it keeps the low
+		// part of the instance it starts from, which a source would have to be built back into first.
+		// (Unlike the accumulators, sinking does not need a linear status chain: it follows the values,
+		// a stale instance an FSSET kill leaves behind included.)
+		std::vector<u8> statusOK(ncomp, (t_.flagSinkStatus && le_.dropSticky && !acc_) ? 1 : 0);
+		for (size_t i = 0; i < NN; i++)
+		{
+			Node& n = *nodes_[i];
+			n.comp = comp[i];
+			n.sinkLoop = cyclic[i] != 0;
+			DecodeSink(n);
+			if (!n.sinkLoop)
+				continue;
+			bool fsset = false;
+			for (const Inst& x : n.fn.insts)
+				fsset = fsset || x.op == Op::StatusSet;
+			if (fsset)
+			{
+				if (t_.dump && statusOK[comp[i]])
+					std::printf("[vuopt fsink] loop %d: STATUS stays words (n%zu pc=%04x: FSSET)\n", comp[i], i, n.pc);
+				statusOK[comp[i]] = 0;
+			}
+		}
+		std::vector<std::vector<int>> succ(NN), pred(NN);
+		for (size_t i = 0; i < NN; i++)
+		{
+			const Node& n = *nodes_[i];
+			if (!n.sinkLoop)
+				continue;
+			const auto add = [&](int t) {
+				if (t < 0 || t == 0x7fffffff || comp[t] != comp[i])
+					return;
+				if (std::find(succ[i].begin(), succ[i].end(), t) == succ[i].end())
+				{
+					succ[i].push_back(t);
+					pred[t].push_back(static_cast<int>(i));
+				}
+			};
+			if (n.br.endKind != BlockEnd::EBit)
+			{
+				add(n.taken);
+				if (n.br.endKind == BlockEnd::CondBranch)
+					add(n.fall);
+			}
+			for (const auto& j : n.jumps)
+				add(j.second);
+		}
+		const bool ignoreReads = t_.flagSinkMutation == 7;
+		// The word demand inside each loop.
+		std::vector<u8> din(NN, 0), dout(NN, 0);
+		for (bool changed = true; changed;)
+		{
+			changed = false;
+			for (size_t ii = NN; ii-- > 0;)
+			{
+				const Node& n = *nodes_[ii];
+				if (!n.sinkLoop || ignoreReads)
+					continue;
+				u8 o = 0;
+				for (int t : succ[ii])
+					o |= din[t];
+				u8 ni = n.wordReads;
+				for (int k = 0; k < 8; k++)
+					if (((o >> k) & 1) && n.dec[k].kind == kDecFrom)
+						ni |= static_cast<u8>(1u << n.dec[k].from);
+				if (o != dout[ii] || ni != din[ii])
+				{
+					dout[ii] = o;
+					din[ii] = ni;
+					changed = true;
+				}
+			}
+		}
+		// The representations: optimistic first (a variable no node of the loop produces stays top), then
+		// with what is left at top made a word. A MAC producer whose pack a STATUS update in the MAC layout
+		// shares, while that update's word is still built, saves nothing (measured: God of War II's weighted
+		// sample 18.54 M -> 19.45 M host instructions with MAC sinking alone, the pack moving into the
+		// STATUS update): it is made a word and the plan solved again.
+		for (bool demoted = true; demoted;)
+		{
+		demoted = false;
+		for (size_t i = 0; i < NN; i++)
+		{
+			Node& n = *nodes_[i];
+			const u8 r = n.sinkLoop ? kRepTop : kRepWord;
+			std::fill(std::begin(n.repIn), std::end(n.repIn), r);
+			std::fill(std::begin(n.repOut), std::end(n.repOut), r);
+		}
+		for (int phase = 0; phase < 2; phase++)
+		{
+			for (bool changed = true; changed;)
+			{
+				changed = false;
+				for (size_t i = 0; i < NN; i++)
+				{
+					Node& n = *nodes_[i];
+					if (!n.sinkLoop)
+						continue;
+					for (int k = 0; k < 8; k++)
+					{
+						const bool allowed = k < 4 || statusOK[n.comp];
+						u8 in = kRepTop;
+						for (int p : pred[i])
+							in = Meet(in, nodes_[p]->repOut[k]);
+						if (!allowed || ((din[i] >> k) & 1))
+							in = kRepWord;
+						u8 out = kRepWord;
+						if (allowed && !((dout[i] >> k) & 1))
+						{
+							const Node::SinkDec& d = n.dec[k];
+							if (d.kind == kDecProduced)
+								out = static_cast<u8>(d.layout + 1);
+							else if (d.kind == kDecFrom)
+								out = n.repIn[d.from];
+						}
+						if (in != n.repIn[k] || out != n.repOut[k])
+						{
+							n.repIn[k] = in;
+							n.repOut[k] = out;
+							changed = true;
+						}
+					}
+				}
+			}
+			if (phase == 0)
+				for (auto& np : nodes_)
+					for (int k = 0; k < 8; k++)
+					{
+						if (np->repIn[k] == kRepTop)
+							np->repIn[k] = kRepWord;
+						if (np->repOut[k] == kRepTop)
+							np->repOut[k] = kRepWord;
+					}
+		}
+		for (size_t i = 0; i < NN; i++)
+		{
+			Node& n = *nodes_[i];
+			if (!n.sinkLoop)
+				continue;
+			const Function& f = n.fn;
+			const std::vector<u8> live = PlannedLive(n);
+			for (int k = 0; k < 8; k++)
+			{
+				Node::SinkDec& d = n.dec[k];
+				if (d.kind != kDecProduced || !Pending(n.repOut[k]) || k >= 4)
+					continue;
+				// The partner that shares the pack: a STATUS update in the MAC layout. (The other way round,
+				// a STATUS instance sunk while the MAC word of the same pack is built, still pays: measured,
+				// Katamari's loop 315 against 322 host instructions per iteration with it made a word.)
+				for (size_t v = 1; v < f.insts.size(); v++)
+				{
+					const Inst& x = f.insts[v];
+					const bool partner = x.op == Op::StatusUpd && (x.imm & 2) && x.args[1] == d.result && x.mask == d.mask;
+					if (partner && live[v])
+					{
+						if (t_.dump)
+							std::printf("[vuopt fsink] n%zu pc=%04x: M%d stays a word (its pack is built anyway, %%%zu)\n", i, n.pc, k, v);
+						d.kind = kDecWord;
+						demoted = true;
+						break;
+					}
+				}
+			}
+		}
+		}
+		for (size_t i = 0; i < NN; i++)
+		{
+			const Node& n = *nodes_[i];
+			for (int k = 0; k < 8; k++)
+			{
+				if (Pending(n.repIn[k]) || Pending(n.repOut[k]))
+				{
+					sinkAny_ = true;
+					if (k < 4)
+						sinkAnyM_ = true;
+				}
+			}
+			for (int t : succ[i])
+				for (int k = 0; k < 8; k++)
+					if (n.repOut[k] != nodes_[t]->repIn[k])
+					{
+						t_.fsinkConf_++;
+						break;
+					}
+		}
+	}
+
+	// Rewrites a loop node's IR for the plan: an instance pending at the end is handed on as its source
+	// (the FMAC result, normalised, or the source of the instance it was renamed from) and, for STATUS,
+	// the rest of its word; its producer then feeds nothing and goes as dead code.
+	bool RegionBuilder::RewriteForSink(Node& n)
+	{
+		using namespace ir;
+		if (!n.sinkLoop)
+			return false;
+		bool any = false;
+		for (int k = 0; k < 8; k++)
+			any = any || Pending(n.repIn[k]) || Pending(n.repOut[k]);
+		if (!any)
+			return false;
+		Function& f = n.fn;
+		int eb = -1, nb = -1;
+		for (size_t b = 0; b < f.blocks.size(); b++)
+			(f.blocks[b].node >= 0 ? nb : eb) = static_cast<int>(b);
+		pxAssertRel(nb >= 0 && eb >= 0, "vuopt region: a node's IR without its blocks");
+		ValueId leave = 0;
+		for (ValueId id : f.blocks[nb].insts)
+			if (f.insts[id].op == Op::Leave)
+				leave = id;
+		std::vector<ValueId> liveInOf(var::Count, 0);
+		for (size_t v = 1; v < f.insts.size(); v++)
+			if (f.insts[v].op == Op::LiveIn && f.insts[v].var < var::Count)
+				liveInOf[f.insts[v].var] = static_cast<ValueId>(v);
+		const auto add = [&](Inst x, bool entry) {
+			const ValueId id = static_cast<ValueId>(f.insts.size());
+			x.block = entry ? eb : nb;
+			f.insts.push_back(std::move(x));
+			std::vector<ValueId>& list = f.blocks[entry ? eb : nb].insts;
+			if (entry)
+				list.push_back(id);
+			else
+				list.insert(std::find(list.begin(), list.end(), leave), id);
+			return id;
+		};
+		const auto liveIn = [&](u32 v) {
+			if (!liveInOf[v])
+			{
+				Inst x;
+				x.op = Op::LiveIn;
+				x.type = Type::Vec;
+				x.var = v;
+				liveInOf[v] = add(std::move(x), true);
+			}
+			return liveInOf[v];
+		};
+		// The rest of an instance built by a sunk update: the instance's word & 0xfffc0000, computed without
+		// the packs of the updates it came through.
+		std::vector<std::pair<ValueId, ValueId>> memo;
+		std::vector<std::pair<u64, ValueId>> srcs;
+		std::function<ValueId(ValueId)> rest = [&](ValueId v) -> ValueId {
+			for (const auto& m : memo)
+				if (m.first == v)
+					return m.second;
+			const Inst x = f.insts[v];
+			ValueId r;
+			if (x.op == Op::StatusUpd)
+				r = rest(x.args[0]);
+			else if (x.op == Op::StatusDiv)
+			{
+				Inst y = x;
+				y.args[0] = rest(x.args[0]);
+				r = add(std::move(y), false);
+			}
+			else if (x.op == Op::StatusRest)
+				r = v;
+			else
+			{
+				Inst y;
+				y.op = Op::StatusRest;
+				y.type = Type::Int;
+				y.args = ArgVec{v};
+				y.pc = x.pc;
+				r = add(std::move(y), false);
+			}
+			memo.push_back({v, r});
+			return r;
+		};
+		// (mutation 7 lets a reader read a source's home on purpose: what it reads is wrong, not missing)
+		pxAssertRel(t_.flagSinkMutation == 7 || !(n.wordReads & [&] { u8 m = 0; for (int k = 0; k < 8; k++) m |= Pending(n.repIn[k]) ? (1u << k) : 0; return m; }()),
+			"vuopt region: a flag reader of an instance that is not built");
+		for (int k = 0; k < 8; k++)
+		{
+			const Node::SinkDec& d = n.dec[k];
+			const u32 u = SinkVar(k), s = SrcVar(k);
+			if (!Pending(n.repOut[k]))
+			{
+				pxAssertRel(t_.flagSinkMutation == 7 || !(d.kind == kDecFrom && Pending(n.repIn[d.from])),
+					"vuopt region: a word wanted from an instance that is not built");
+				continue;
+			}
+			if (d.kind == kDecProduced)
+			{
+				// (a MAC instance and a STATUS instance in the MAC layout from the same FMAC share one source)
+				ValueId src = 0;
+				for (const auto& fs : srcs)
+					if (fs.first == ((static_cast<u64>(d.result) << 16) | (d.mask << 8) | d.layout))
+						src = fs.second;
+				if (src)
+				{
+					f.insts[leave].args[s] = src;
+					f.insts[leave].args[u] = k < 4 ? 0 : rest(d.val);
+					continue;
+				}
+				Inst x;
+				x.op = Op::FlagSrc;
+				x.type = Type::Vec;
+				x.args = ArgVec{d.result};
+				x.mask = t_.flagSinkMutation == 3 ? 0xF : d.mask;
+				x.sub = d.layout;
+				x.pc = d.pc;
+				src = add(std::move(x), false);
+				srcs.push_back({(static_cast<u64>(d.result) << 16) | (d.mask << 8) | d.layout, src});
+				t_.fsinkPending_++;
+				const ValueId r = k < 4 ? 0 : rest(d.val);
+				f.insts[leave].args[s] = src;
+				f.insts[leave].args[u] = r;
+				continue;
+			}
+			pxAssertRel(d.kind == kDecFrom, "vuopt region: a pending instance with no source");
+			if (k < 4)
+				f.insts[leave].args[u] = 0; // (its home holds nothing anybody reads)
+			if (d.from != k)
+				f.insts[leave].args[s] = liveIn(SrcVar(d.from));
+		}
+		f.leaveArgs.clear();
+		const ArgVec& la = f.insts[leave].args;
+		for (size_t k = 0; k < la.size(); k++)
+			if (la[k])
+				f.leaveArgs.push_back(static_cast<u32>(k));
+		return true;
+	}
+
+	// The representations at both ends of a link, and what the link has to convert: `mat` the instances
+	// whose word the target needs and the source holds, `synth` those whose source the target needs and
+	// the word holds. A link out of the region (target < 0) needs every word.
+	u8 RegionBuilder::FixupNeed(int from, int target, u8& mat, u8& synth) const
+	{
+		const Node& n = *nodes_[from];
+		mat = synth = 0;
+		if (target == 0x7fffffff)
+			return 0;
+		if (target < 0)
+		{
+			for (int k = 0; k < 8; k++)
+				if (Pending(n.repOut[k]))
+					mat |= static_cast<u8>(1u << k);
+			return mat;
+		}
+		const Node& t = *nodes_[target];
+		LiveSet x = t.liveIn;
+		if (t.checkpoint)
+			x |= BailNeed(t);
+		for (int k = 0; k < 8; k++)
+		{
+			const u8 a = n.repOut[k], c = t.repIn[k];
+			if (a == c)
+				continue;
+			const u32 u = SinkVar(k), s = SrcVar(k);
+			const bool need = Pending(c) ? (x.test(s) || (k >= 4 && x.test(u))) : x.test(u);
+			if (!need)
+				continue;
+			if (Pending(a))
+				mat |= static_cast<u8>(1u << k);
+			if (Pending(c))
+				synth |= static_cast<u8>(1u << k);
+		}
+		return mat | synth;
+	}
+
+	// Liveness across a flag representation change. What a node's end must hold for an observation of
+	// `b` there (an exit to microVU, a JR fallback): a pending instance's source (and a STATUS instance's
+	// rest) instead of its word.
+	LiveSet RegionBuilder::XlateObs(const Node& n, LiveSet b) const
+	{
+		for (int k = 0; k < 8; k++)
+		{
+			const u32 u = SinkVar(k), s = SrcVar(k);
+			const bool want = b.test(u);
+			b.reset(s);
+			if (!Pending(n.repOut[k]) || !want)
+				continue;
+			b.set(s);
+			if (k < 4)
+				b.reset(u);
+		}
+		return b;
+	}
+
+	// ... for `b` live at the head of `t` (in t's representation), across the link n -> t.
+	LiveSet RegionBuilder::XlateEdge(const Node& n, const Node& t, LiveSet b) const
+	{
+		for (int k = 0; k < 8; k++)
+		{
+			const u8 a = n.repOut[k], c = t.repIn[k];
+			const u32 u = SinkVar(k), s = SrcVar(k);
+			if (a == c)
+			{
+				if (!Pending(a))
+					b.reset(s);
+				else if (k < 4)
+					b.reset(u); // (a pending MAC instance's home holds nothing)
+				continue;
+			}
+			const bool need = Pending(c) ? (b.test(s) || (k >= 4 && b.test(u))) : b.test(u);
+			b.reset(s);
+			b.reset(u);
+			if (!need)
+				continue;
+			if (Pending(a))
+			{
+				b.set(s);
+				if (k >= 4)
+					b.set(u);
+			}
+			else
+				b.set(u);
+		}
+		return b;
+	}
+
+	// What a bail at checkpoint `t` reads, in t's representation at its head: the ring instances of
+	// its mask, a pending one through its source.
+	LiveSet RegionBuilder::BailNeed(const Node& t) const
+	{
+		LiveSet b = t.bailMask;
+		for (int k = 0; k < 8; k++)
+		{
+			const u32 u = SinkVar(k), s = SrcVar(k);
+			const bool want = b.test(u);
+			b.reset(s);
+			if (!Pending(t.repIn[k]) || !want)
+				continue;
+			b.set(s);
+			if (k < 4)
+				b.reset(u);
+		}
+		return b;
+	}
+
 	// Milestone 8: which variables each node's end must hand on. Between the
 	// budget tests nothing outside the region sees the state, so a final value
 	// that every path overwrites before the next observation is dead: the
@@ -611,16 +1290,12 @@ namespace vuopt
 					observe[i] = 1;
 					obsMask[i] |= all;
 				}
-				else if (nodes_[t]->checkpoint)
+				else
 				{
-					// the bail sees what microVU's block needs; the run that does not bail
-					// goes on into the node, so its uses count too
-					observe[i] = 1;
-					obsMask[i] |= nodes_[t]->bailMask;
+					// (at a checkpoint the bail also sees what microVU's block needs, BailNeed below;
+					// the run that does not bail goes on into the node, so its uses count too)
 					succ[i].push_back(t);
 				}
-				else
-					succ[i].push_back(t);
 			};
 			if (n.br.endKind == BlockEnd::EBit)
 			{
@@ -650,18 +1325,24 @@ namespace vuopt
 					edge(n.fall);
 			}
 		}
+		std::vector<Bits> bailNeed(NN);
+		for (size_t i = 0; i < NN; i++)
+			if (nodes_[i]->checkpoint)
+				bailNeed[i] = BailNeed(*nodes_[i]);
 		for (bool changed = true; changed;)
 		{
 			changed = false;
 			for (size_t ii = NN; ii-- > 0;)
 			{
+				const Node& n = *nodes_[ii];
+				// (flag sinking: what each observation and link reads, in this node's representation of
+				// the flag instances at its end)
 				Bits o;
 				if (observe[ii])
-					o = obsMask[ii];
+					o = XlateObs(n, obsMask[ii]);
 				for (int t : succ[ii])
-					o |= in[t];
+					o |= XlateEdge(n, *nodes_[t], nodes_[t]->checkpoint ? (in[t] | bailNeed[t]) : in[t]);
 				o.set(var::MEM);
-				const Node& n = *nodes_[ii];
 				Bits ni = (acc_ ? n.useOpsNoChain : n.useOps) | (o & ~n.def);
 				for (const auto& c : n.copies)
 					if (o.test(c.first))
@@ -1102,9 +1783,25 @@ namespace vuopt
 		homes.Seal();
 	}
 
-	// Where a link from node `from` goes: the target's head when both use
-	// the same home map, else a transfer stub; an exit's stub for from's map.
+	// Where a link from node `from` goes: a flag-sinking fixup when the two ends hold a flag instance
+	// differently (FixupNeed), else BaseTarget.
 	a64::Label* RegionBuilder::Target(int from, int target)
+	{
+		u8 mat, synth;
+		if (sinkAny_ && FixupNeed(from, target, mat, synth))
+		{
+			for (Fixup& f : fixups_)
+				if (f.from == from && f.to == target)
+					return f.label.get();
+			fixups_.push_back({from, target, std::make_unique<a64::Label>()});
+			return fixups_.back().label.get();
+		}
+		return BaseTarget(from, target);
+	}
+
+	// The target's head when both use the same home map, else a transfer stub; an exit's stub for
+	// from's map.
+	a64::Label* RegionBuilder::BaseTarget(int from, int target)
 	{
 		const int m = nodes_[from]->map;
 		if (target < 0)
@@ -1127,7 +1824,8 @@ namespace vuopt
 
 	void RegionBuilder::Jump(int from, int target, int next)
 	{
-		if (target >= 0 && target == next && nodes_[target]->map == nodes_[from]->map)
+		u8 mat, synth;
+		if (target >= 0 && target == next && nodes_[target]->map == nodes_[from]->map && !(sinkAny_ && FixupNeed(from, target, mat, synth)))
 			return;
 		armAsm->B(Target(from, target));
 	}
@@ -1137,6 +1835,14 @@ namespace vuopt
 		const s32 cyclesOff = env_.offCycles;
 		a64::Label bailEntry, bailCompile, entryBail, bailGo;
 		std::vector<a64::Label> loadAll(maps_.size()), exitAll(maps_.size());
+		struct SynthRoutine
+		{
+			u8 set = 0;
+			u8 rep[8] = {};
+			int map = 0;
+			std::unique_ptr<a64::Label> label;
+		};
+		std::vector<SynthRoutine> synthRoutines;
 		// Entries from microVU (the root's is where microVU is compiling): the
 		// budget test, then the node's head address in x8 and the shared home
 		// loader.
@@ -1157,7 +1863,31 @@ namespace vuopt
 				armAsm->Movi(Q(kSaSReg).V2D(), 0);
 			}
 			armAsm->Adr(a64::x8, &n.head);
-			armAsm->B(&loadAll[n.map]);
+			// Flag sinking: microVU hands over words; the instances the node holds as sources are built
+			// from them first (a routine shared by the nodes that need the same ones).
+			u8 synth = 0;
+			for (int k = 0; k < 8; k++)
+				if (Pending(n.repIn[k]) && (n.liveIn.test(SrcVar(k)) || (k >= 4 && n.liveIn.test(SinkVar(k)))))
+					synth |= static_cast<u8>(1u << k);
+			if (!synth)
+			{
+				armAsm->B(&loadAll[n.map]);
+				continue;
+			}
+			SynthRoutine* sr = nullptr;
+			for (auto& r : synthRoutines)
+				if (r.set == synth && r.map == n.map && std::equal(std::begin(r.rep), std::end(r.rep), std::begin(n.repIn)))
+					sr = &r;
+			if (!sr)
+			{
+				synthRoutines.emplace_back();
+				sr = &synthRoutines.back();
+				sr->set = synth;
+				sr->map = n.map;
+				std::copy(std::begin(n.repIn), std::end(n.repIn), std::begin(sr->rep));
+				sr->label = std::make_unique<a64::Label>();
+			}
+			armAsm->B(sr->label.get());
 		}
 		// Bodies.
 		for (size_t i = 0; i < nodes_.size(); i++)
@@ -1239,6 +1969,14 @@ namespace vuopt
 			if (!n.checkpoint)
 				continue;
 			armAsm->Bind(&n.bail);
+			// Flag sinking: the instances of the bail's mask the node holds as sources, built.
+			for (int k = 0; k < 8; k++)
+				if (Pending(n.repIn[k]) && n.bailMask.test(SinkVar(k)))
+				{
+					t_.fsinkMat_[0]++;
+					if (t_.flagSinkMutation != 1)
+						EmitFlagMaterialise(SinkVar(k), n.repIn[k] - 1, maps_[n.map], le_, t_.flagSinkMutation);
+				}
 			armAsm->Adr(a64::x1, &n.rec);
 			armAsm->Adr(a64::x8, &bailEntry);
 			armAsm->B(&exitAll[n.map]);
@@ -1263,6 +2001,67 @@ namespace vuopt
 		armAsm->Ldr(a64::x0, a64::MemOperand(a64::x1, kBailSlot));
 		armAsm->Cbz(a64::x0, &bailCompile);
 		armAsm->Br(a64::x0);
+		// Flag sinking: links whose ends hold flag instances differently. A word built from a source goes to
+		// its home in the source node's map, a source built from a word to memory; then the link goes on
+		// as it would have.
+		for (size_t fi = 0; fi < fixups_.size(); fi++)
+		{
+			const int from = fixups_[fi].from, to = fixups_[fi].to;
+			const Node& n = *nodes_[from];
+			u8 mat, synth;
+			FixupNeed(from, to, mat, synth);
+			armAsm->Bind(fixups_[fi].label.get());
+			const bool leaves = to < 0 || !nodes_[to]->sinkLoop || nodes_[to]->comp != n.comp;
+			for (int k = 0; k < 8; k++)
+				if ((mat >> k) & 1)
+				{
+					if (leaves)
+						t_.fsinkMat_[1]++;
+					if (t_.flagSinkMutation != 2)
+						EmitFlagMaterialise(SinkVar(k), n.repOut[k] - 1, maps_[n.map], le_, t_.flagSinkMutation);
+				}
+			for (int k = 0; k < 8; k++)
+				if ((synth >> k) & 1)
+				{
+					t_.fsinkSynth_++;
+					if (t_.flagSinkMutation != 4)
+						EmitFlagSynthesise(SinkVar(k), nodes_[to]->repIn[k] - 1, &maps_[n.map], le_);
+				}
+			armAsm->B(BaseTarget(from, to));
+		}
+		for (JrMat& jm : jrMats_)
+		{
+			const Node& n = *nodes_[jm.node];
+			armAsm->Bind(&jm.in);
+			for (int k = 0; k < 8; k++)
+				if (Pending(n.repOut[k]))
+				{
+					t_.fsinkMat_[2]++;
+					if (t_.flagSinkMutation != 2)
+						EmitFlagMaterialise(SinkVar(k), n.repOut[k] - 1, maps_[n.map], le_, t_.flagSinkMutation);
+				}
+			armAsm->B(&jm.back);
+		}
+		// ... and entries from microVU into nodes that hold flag instances as sources: microVU's words
+		// built into sources (counted in the program, as the bails are), then the node's home loader.
+		for (auto& r : synthRoutines)
+		{
+			armAsm->Bind(r.label.get());
+			armAsm->Ldrsw(a64::x9, a64::MemOperand(a64::x1, 4));
+			armAsm->Add(a64::x9, a64::x1, a64::x9);
+			armAsm->Ldr(a64::x9, a64::MemOperand(a64::x9));
+			armAsm->Ldr(a64::x10, a64::MemOperand(a64::x9, env_.offProgBails + 16));
+			armAsm->Add(a64::x10, a64::x10, 1);
+			armAsm->Str(a64::x10, a64::MemOperand(a64::x9, env_.offProgBails + 16));
+			for (int k = 0; k < 8; k++)
+				if ((r.set >> k) & 1)
+				{
+					t_.fsinkSynth_++;
+					if (t_.flagSinkMutation != 4)
+						EmitFlagSynthesise(SinkVar(k), r.rep[k] - 1, nullptr, le_);
+				}
+			armAsm->B(&loadAll[r.map]);
+		}
 		// Links out of the region: the target (or its trampoline) in x8.
 		for (auto& e : exits_)
 			for (size_t m = 0; m < e->stubs.size(); m++)
@@ -1288,6 +2087,9 @@ namespace vuopt
 		for (size_t m = 0; m < maps_.size(); m++)
 		{
 			armAsm->Bind(&loadAll[m]);
+			// (flag sinking: a MAC word a source cannot carry goes to microVU's own code instead)
+			if (sinkAnyM_)
+				EmitFlagSourceGuard(&entryBail);
 			EmitLoadHomes(maps_[m], le_, cyclesOff);
 			armAsm->Ldp(Q(kCMin), Q(kCMax), a64::MemOperand(a64::x25, G(&mVUglob.minvals[0])));
 			EmitClampHomes(maps_[m], le_);
@@ -1404,6 +2206,17 @@ namespace vuopt
 			armAsm->B(Target(idx, j.second), a64::eq);
 		}
 		armAsm->Str(W(8), a64::MemOperand(a64::x24, env_.offBranch));
+		// flag sinking: microVU's dispatch takes words (built out of line, with the other stubs)
+		bool pend = false;
+		for (int k = 0; k < 8; k++)
+			pend = pend || Pending(n.repOut[k]);
+		if (pend)
+		{
+			jrMats_.emplace_back();
+			jrMats_.back().node = idx;
+			armAsm->B(&jrMats_.back().in);
+			armAsm->Bind(&jrMats_.back().back);
+		}
 		EmitStoreHomes(maps_[n.map], le_, env_.offCycles);
 		env_.emitJumpTail(env_.vuIndex, n.blk, n.br.end.bytes);
 	}
@@ -1463,6 +2276,13 @@ namespace vuopt
 				}
 			}
 		acc_ = t_.stickyAcc && !le_.dropSticky && WantsAcc();
+		if (t_.flagSink && le_.offFlagSrc >= 0)
+		{
+			PlanFlagSink();
+			for (auto& np : nodes_)
+				if (RewriteForSink(*np))
+					ScanUseDef(*np);
+		}
 		for (int pass = 0; pass < 2; pass++)
 		{
 			le_.stickyAcc = acc_;
@@ -1535,6 +2355,18 @@ namespace vuopt
 						if (nodes_[i]->bailMask.test(ir::var::C(k)))
 							std::printf(" C%u", k);
 				}
+				// flag sinking: the instances held as sources at the head / the end (layout: m MAC, s STATUS)
+				std::string pin, pout;
+				for (int k = 0; k < 8; k++)
+				{
+					const char* nm[8] = {"M0", "M1", "M2", "M3", "S0", "S1", "S2", "S3"};
+					if (Pending(nodes_[i]->repIn[k]))
+						pin += std::string(" ") + nm[k] + (nodes_[i]->repIn[k] == 1 ? "m" : "s");
+					if (Pending(nodes_[i]->repOut[k]))
+						pout += std::string(" ") + nm[k] + (nodes_[i]->repOut[k] == 1 ? "m" : "s");
+				}
+				if (!pin.empty() || !pout.empty())
+					std::printf(" pending in%s out%s", pin.empty() ? " -" : pin.c_str(), pout.empty() ? " -" : pout.c_str());
 				std::printf("\n");
 			}
 			for (size_t m = 0; m < maps_.size(); m++)
@@ -1628,6 +2460,14 @@ namespace vuopt
 		}
 	}
 
+	u64 RegionTier::FsinkSynthRuns() const
+	{
+		u64 n = 0;
+		for (const auto& p : progs_)
+			n += reinterpret_cast<const u64*>(static_cast<const u8*>(p.first) + p.second)[2];
+		return n;
+	}
+
 	bool RegionTier::Decline(const std::string& why, std::string* out)
 	{
 		declined_[why]++;
@@ -1675,6 +2515,7 @@ namespace vuopt
 		le.offVIxgkick = env.offVIxgkick;
 		le.offBranch = env.offBranch;
 		le.offNeonBackup = env.offNeonBackup;
+		le.offFlagSrc = env.offFlagSrc;
 		le.xgkickFn = env.xgkickFn;
 		le.vifTop = env.vifTop;
 		le.vifItop = env.vifItop;

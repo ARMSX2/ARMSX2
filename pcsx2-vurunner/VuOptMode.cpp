@@ -353,6 +353,11 @@ namespace
 				region->dropSticky = o.dropSticky;
 				region->handoffMutation = static_cast<vuopt::RegionTier::HandoffMutation>(o.handoffMutation);
 				region->dropStickyMutation = o.dropStickyMutation;
+				if (o.flagSink >= 0)
+					region->flagSink = o.flagSink != 0;
+				if (o.flagSinkStatus >= 0)
+					region->flagSinkStatus = o.flagSinkStatus != 0;
+				region->flagSinkMutation = o.flagSinkMutation;
 				region->dump = o.dumpIr;
 				regionBg = o.regionBg;
 			}
@@ -705,8 +710,14 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 		// The region counters: the worker's jobs' (through the live tier's stats) with
 		// --vuopt-region-bg, the region tier's own otherwise.
 		u32 stickyDropped = 0, stickyImages = 0, statusReaders = 0, stickyReaders = 0, stickyDivReaders = 0;
+		u64 fsink = 0, fsinkMat = 0, fsinkSyn = 0, fsinkConf = 0, fsinkRuns = 0;
 		if (ctx.region && ctx.regionBg)
 		{
+			fsink = bgAfter.fsinkPending - bgBefore.fsinkPending;
+			fsinkMat = bgAfter.fsinkMat - bgBefore.fsinkMat;
+			fsinkSyn = bgAfter.fsinkSynth - bgBefore.fsinkSynth;
+			fsinkConf = bgAfter.fsinkConf - bgBefore.fsinkConf;
+			fsinkRuns = bgAfter.fsinkSynthRuns - bgBefore.fsinkSynthRuns;
 			bailsEntry = bgAfter.bailsEntry - bgBefore.bailsEntry;
 			bailsLoop = bgAfter.bailsLoopHead - bgBefore.bailsLoopHead;
 			stickyDropped = static_cast<u32>(bgAfter.stickyDropped - bgBefore.stickyDropped);
@@ -718,6 +729,11 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 		else if (ctx.region)
 		{
 			ctx.region->BailCounts(bailsEntry, bailsLoop);
+			fsink = ctx.region->FsinkPending();
+			fsinkMat = ctx.region->FsinkMaterialise(0) + ctx.region->FsinkMaterialise(1) + ctx.region->FsinkMaterialise(2);
+			fsinkSyn = ctx.region->FsinkSynth();
+			fsinkConf = ctx.region->FsinkConflicts();
+			fsinkRuns = ctx.region->FsinkSynthRuns();
 			stickyDropped = ctx.region->StickyDropped();
 			stickyImages = ctx.region->StickyReaderImages();
 			statusReaders = ctx.region->StatusReaders();
@@ -803,6 +819,10 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 				static_cast<unsigned long long>(bailsEntry), static_cast<unsigned long long>(bailsLoop),
 				statusReaders, stickyReaders, stickyDivReaders);
 			obsText += buf;
+			std::snprintf(buf, sizeof(buf), " fsink=%llu fsinkmat=%llu fsinksyn=%llu fsinkconf=%llu fsinkruns=%llu",
+				static_cast<unsigned long long>(fsink), static_cast<unsigned long long>(fsinkMat), static_cast<unsigned long long>(fsinkSyn),
+				static_cast<unsigned long long>(fsinkConf), static_cast<unsigned long long>(fsinkRuns));
+			obsText += buf;
 		}
 		if (opts.trace)
 		{
@@ -876,6 +896,10 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			std::printf(" regions=%u rnodes=%u rexits=%u rbytes=%llu mvublocks=%u racc=%u raccnl=%u raccn=%u raccun=%u rhoe=%u rhod=%u", ctx.region->Regions(), ctx.region->Nodes(),
 				ctx.region->Exits(), static_cast<unsigned long long>(ctx.region->Bytes()), mvuBlocks, ctx.region->AccRegions(), ctx.region->AccNonLinear(),
 				ctx.region->AccAccumulated(), ctx.region->AccUnprofitable(), ctx.region->HandoffEdges(), ctx.region->HandoffRingsDead());
+			if (!opts.observe)
+				std::printf(" fsink=%llu fsinkmat=%llu fsinksyn=%llu fsinkconf=%llu fsinkruns=%llu", static_cast<unsigned long long>(fsink),
+					static_cast<unsigned long long>(fsinkMat), static_cast<unsigned long long>(fsinkSyn), static_cast<unsigned long long>(fsinkConf),
+					static_cast<unsigned long long>(fsinkRuns));
 			for (const auto& d : ctx.region->Declined())
 			{
 				std::string k = d.first;
