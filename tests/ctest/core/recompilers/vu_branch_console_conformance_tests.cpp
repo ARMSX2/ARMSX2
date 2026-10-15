@@ -40,6 +40,7 @@
 #include "harness/VuTestHarness.h"
 
 #include "autocases_vubranch.h"
+#include "autocases_vubranch_vidw.h"
 
 #include "VU.h"
 
@@ -341,6 +342,149 @@ TEST(VuBranchConsole, ViWriteIsVisibleToABranchOnePairLater)
 	for (const char* t : {"Q2_IHAZ_D1", "Q2_IHAZ_D2", "Q2_IHAZ_D3",
 	                      "Q2_IHAZ_D4", "Q2_IHAZ_D5"})
 		EXPECT_FALSE(SawStale(t)) << t << ": the write must be visible by now";
+}
+
+// =========================================================================
+//  3b. A branch after two writes to its VI
+// =========================================================================
+//
+//  ViWriteIsVisibleToABranchOnePairLater has one write per program. The rows
+//  in autocases_vubranch_vidw.h write the branch's VI twice or three times,
+//  or load it with ILW, or put a VWAITQ stall between the writes, and read
+//  what the branch saw. When the pair right before the branch writes the VI
+//  the branch tests, the branch reads the value that VI held before the
+//  EARLIEST write inside the last four cycles. A write more than three pairs
+//  back is visible, and a stall inside the window pushes an earlier write
+//  out of it.
+//
+//  Each row is scored on vi1..vi8 and TPC. The flag registers are left out:
+//  the harness starts VU0 with MAC and STATUS values the console does not
+//  have, whatever the program does.
+
+namespace
+{
+using console_vubranch::kVuBranchViDwCaseCount;
+using console_vubranch::kVuBranchViDwCases;
+
+// The registers one engine left that differ from the console, or empty when
+// vi1..vi8 and TPC all agree.
+std::string ViDwMismatch(const VuBranchCase& c, VuTestHarness& h, bool jit)
+{
+	std::string bad;
+	char buf[48];
+	const u32 tpc = jit ? h.GetViJit(REG_TPC) : h.GetViInterp(REG_TPC);
+	if (tpc != c.tpc)
+	{
+		std::snprintf(buf, sizeof(buf), " TPC=%u/%u", tpc, c.tpc);
+		bad += buf;
+	}
+	for (u32 n = 1; n <= 8; ++n)
+	{
+		const u32 v = jit ? h.GetViJit(n) : h.GetViInterp(n);
+		if (v != c.vi[n - 1])
+		{
+			std::snprintf(buf, sizeof(buf), " vi%u=%x/%x", n, v, c.vi[n - 1]);
+			bad += buf;
+		}
+	}
+	return bad;
+}
+
+// The rows one engine gets wrong, one line each: tag, then got/console.
+std::string ViDwMisses(bool jit, bool (*pick)(const char* tag))
+{
+	std::string out;
+	for (int i = 0; i < kVuBranchViDwCaseCount; ++i)
+	{
+		const VuBranchCase& c = kVuBranchViDwCases[i];
+		if (!pick(c.tag))
+			continue;
+		VuTestHarness h(0);
+		RunConsoleCase(c, h);
+		const std::string bad = ViDwMismatch(c, h, jit);
+		if (!bad.empty())
+			out += std::string("\n  ") + c.tag + ":" + bad;
+	}
+	return out;
+}
+
+// The rows the interpreter still gets wrong: its window is two cycles and
+// chains only writes in consecutive pairs, so a setter one or two pairs
+// before the writer (or a stall that would push it out) is read as the VI's
+// value instead of the value before it.
+const char* const kInterpreterMisses[] = {
+	"Q2_VIDW_IADDIU_N1_ISUBIUr_EQ_P",
+	"Q2_VIDW_IADDIU_N1_ISUBIUr_EQ_X",
+	"Q2_VIDW_IADDIU_N2_ISUBIUr_EQ_P",
+	"Q2_VIDW_IADDIU_N2_ISUBIUr_EQ_X",
+	"Q2_VIDW_LQI_N1_LQI_EQ_P",
+	"Q2_VIDW_LQI_N1_LQI_EQ_X",
+	"Q2_VIDW_LQI_N2_LQI_EQ_P",
+	"Q2_VIDW_LQI_N2_LQI_EQ_X",
+	"Q2_VIDW_IADD_N1_ISUBIUr_EQ_P",
+	"Q2_VIDW_IADD_N1_ISUBIUr_EQ_X",
+	"Q2_VIDW_ISUBIU_N1_ISUBIUr_EQ_P",
+	"Q2_VIDW_ISUBIU_N1_ISUBIUr_EQ_X",
+	"Q2_VIDW_IAND_N1_ISUBIUr_EQ_P",
+	"Q2_VIDW_IAND_N1_ISUBIUr_EQ_X",
+	"Q2_VIDW_IADDIU_N1_IADDIUr_EQ_P",
+	"Q2_VIDW_IADDIU_N1_IADDIUr_EQ_X",
+	"Q2_VIDW_IADDIU_N1_LQI_EQ_P",
+	"Q2_VIDW_IADDIU_N1_LQI_EQ_X",
+	"Q2_VIDW_IADDIU_N1_IADDIU_EQ_P",
+	"Q2_VIDW_IADDIU_N1_IADDIU_EQ_X",
+	"Q2_VIDW_IADDIU_N1_ISUBIU_EQ_P",
+	"Q2_VIDW_IADDIU_N1_ISUBIU_EQ_X",
+	"Q2_VIDW_LQI_N1_IADDIUr_EQ_P",
+	"Q2_VIDW_LQI_N1_IADDIUr_EQ_X",
+	"Q2_VIDW_LQI_N1_IADDIU_EQ_P",
+	"Q2_VIDW_LQI_N1_IADDIU_EQ_X",
+	"Q2_VIDW_STALL_IADDIU_N_ISUBIUr_EQ_P",
+	"Q2_VIDW_STALL_IADDIU_N_ISUBIUr_EQ_X",
+	"Q2_VIDW_STALL_IADDIU_noDIV_Q_ISUBIUr_EQ_P",
+	"Q2_VIDW_STALL_IADDIU_noDIV_Q_ISUBIUr_EQ_X",
+	"Q2_VIDW_ILW_N2_IADDIU_EQ_P_F1a",
+	"Q2_VIDW_ILW_N2_IADDIU_EQ_X_F1a",
+	"Q2_VIDW_IADDIU_N1_IADDIUr_LTZ_F1a",
+	"Q2_VIDW_IADDIU_N1_IADDIUr_GEZ_F1a",
+	"Q2_VIDW_IADDIU_N1_ISUBIUr_EQSW_X",
+	"Q2_VIDW_IADDIU_N1_ISUBIUr_NE_X",
+	"Q2_VIDW_IADDIU_N1_ISUBIUr_NESW_X",
+};
+
+bool InterpreterMisses(const char* tag)
+{
+	for (const char* t : kInterpreterMisses)
+	{
+		if (std::string(t) == tag)
+			return true;
+	}
+	return false;
+}
+
+bool Always(const char*) { return true; }
+bool InterpreterGetsIt(const char* tag) { return !InterpreterMisses(tag); }
+} // namespace
+
+TEST(VuBranchViDoubleWrite, MicroVuMatchesTheConsoleOnEveryRow)
+{
+	EXPECT_GT(kVuBranchViDwCaseCount, 100);
+	const std::string bad = ViDwMisses(true, Always);
+	EXPECT_TRUE(bad.empty()) << "rows where microVU differs from the console:" << bad;
+}
+
+TEST(VuBranchViDoubleWrite, InterpreterMatchesTheConsoleOnTheRowsItAlreadyGets)
+{
+	const std::string bad = ViDwMisses(false, InterpreterGetsIt);
+	EXPECT_TRUE(bad.empty()) << "rows where the interpreter differs from the console:" << bad;
+}
+
+// TRIPWIRE -- the interpreter reads the setter's value, not the value before
+// it, on these rows. Enabled by the change that replaces its two-cycle window.
+TEST(VuBranchViDoubleWrite, DISABLED_InterpreterMatchesTheConsoleOnTheRowsItMisses)
+{
+	const std::string bad = ViDwMisses(false, InterpreterMisses);
+	EXPECT_TRUE(bad.empty()) << "rows where the interpreter differs from the console:" << bad;
 }
 
 // =========================================================================

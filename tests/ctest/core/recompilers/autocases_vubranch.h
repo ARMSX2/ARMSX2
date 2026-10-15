@@ -32,7 +32,8 @@
 namespace console_vubranch
 {
 // Longest program in the corpus, in 32-bit words (lower, upper, lower, ...).
-inline constexpr u32 kMaxProgWords = 24;
+// The rows in autocases_vubranch_vidw.h run to 26, so the array is 32 wide.
+inline constexpr u32 kMaxProgWords = 32;
 
 struct VuBranchCase
 {
