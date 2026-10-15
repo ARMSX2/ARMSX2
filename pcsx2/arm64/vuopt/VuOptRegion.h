@@ -151,7 +151,7 @@ namespace vuopt
 		// `flagSinkStatus` off keeps STATUS words (MAC only). STATUS sinking needs `dropSticky`.
 		static constexpr bool kFlagSinkDefault = false;
 		bool flagSink = kFlagSinkDefault;
-		static constexpr bool kFlagSinkStatusDefault = false;
+		static constexpr bool kFlagSinkStatusDefault = true;
 		bool flagSinkStatus = kFlagSinkStatusDefault;
 		// Test only: break flag sinking on purpose (1 bails skip materialising, 2 links out of a loop skip
 		// it, 3 sources are not normalised, 4 entries and edges skip synthesising, 5 a STATUS source is
