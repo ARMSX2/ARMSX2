@@ -1542,6 +1542,8 @@ static inline u32 GetVertexAlignment(GSHWDrawConfig::VSExpand expand)
 }
 
 class GSPassScheduler;
+class GSLocalMemory;
+class GSOffset;
 
 class GSDevice : public GSAlignedClass<32>
 {
@@ -2136,6 +2138,20 @@ public:
 	/// A synchronous CPU readback follows: record every queued draw first, so the copy
 	/// sees what they wrote.
 	void FlushBeforeReadback() { FlushDeferredDraws(); }
+
+	/// Builds the single-level index texture `tex` (UNorm8, exactly `rect` in size) from the paletted window
+	/// `rect` of the surface `off` addresses, on the GPU, instead of the caller reading it through
+	/// ReadTexture and uploading it. True when the texture's contents are taken care of (the decode is queued,
+	/// and finished before anything draws with the texture); false leaves the texture untouched for the
+	/// caller's own upload. Only the Vulkan backend with the gpu_texture_decode setting on ever says true.
+	virtual bool DecodeHashTextureFromLocalMemory(GSTexture* tex, GSLocalMemory& mem, const GSOffset& off, const GSVector4i& rect)
+	{
+		return false;
+	}
+
+	/// `t` is going back to the pool. A backend that holds back work on a texture (the Vulkan GPU decode)
+	/// finishes it here, because a pooled texture is reused as if it were idle.
+	virtual void PrepareTextureForPool(GSTexture* t) {}
 
 	void CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
 	{

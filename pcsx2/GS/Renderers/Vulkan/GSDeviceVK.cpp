@@ -1715,6 +1715,8 @@ float GSDeviceVK::GetAndResetAccumulatedGPUTime()
 bool GSDeviceVK::SetGPUTimingEnabled(bool enabled)
 {
 	m_gpu_timing_enabled = enabled && m_gpu_timing_supported;
+	if (m_vram_mirror)
+		m_vram_mirror->EnableTiming(m_gpu_timing_enabled);
 	return (enabled == m_gpu_timing_enabled);
 }
 
@@ -1777,6 +1779,33 @@ std::vector<std::string> GSDeviceVK::GetExtendedStats() const
 		"vkQueuePresent:     avg {:.3f} ms, max {:.3f} ms, n={}", present_avg_ms, ps.present_max_ms, ps.present_count));
 	lines.push_back(fmt::format(
 		"Suboptimal: {}, OutOfDate: {}", ps.suboptimal_count, ps.out_of_date_count));
+
+	if (m_vram_mirror)
+	{
+		const GSVramMirror::Stats& ms = m_vram_mirror->GetStats();
+		lines.push_back(fmt::format(
+			"VRAM Mirror: {} windows decoded on the GPU ({} blocks, {:.1f} MB staged, {:.1f}% of table entries from staging, {} mixed, {} restaged), "
+			"{} flushes ({:.2f} per frame; {} for a full batch), {} resyncs, {} cancelled, {} submits asked for, {:.1f} MB scratch written, "
+			"{} blocks scattered",
+			ms.windows, ms.blocks_total, ms.blocks_staged * 256.0 / 1048576.0,
+			ms.blocks_total ? 100.0 * ms.blocks_from_staging / ms.blocks_total : 0.0, ms.mixed_windows, ms.blocks_restaged, ms.flushes,
+			m_frame ? static_cast<double>(ms.flushes) / m_frame : 0.0, ms.scratch_flushes, ms.resyncs, ms.cancelled, ms.need_submit,
+			ms.decoded_bytes / 1048576.0, ms.scatter_blocks));
+		const GSVramMirrorVK::TimingTotals tt = m_vram_mirror->GetTimingTotals();
+		if (tt.flushes)
+		{
+			// The barrier figure is the wait at the image barrier, whose source is every earlier command in the queue
+			// (a pooled image may still be sampled by an earlier submission): it is time the init buffer sat behind
+			// other work, not work of the mirror's.
+			lines.push_back(fmt::format(
+				"VRAM Mirror GPU time: {} flushes timed, {:.3f} ms decode, {:.3f} ms scatter, {:.3f} ms image barrier wait, "
+				"{:.3f} ms copies (sums); per flush {:.3f} ms of work (decode, scatter, copies), {:.3f} ms wait; "
+				"{:.1f} MB decoded, {:.1f} MB scattered",
+				tt.flushes, tt.decode_ms, tt.scatter_ms, tt.barrier_ms, tt.copy_ms,
+				(tt.decode_ms + tt.scatter_ms + tt.copy_ms) / tt.flushes, tt.barrier_ms / tt.flushes, tt.decoded_bytes / 1048576.0,
+				tt.scattered_bytes / 1048576.0));
+		}
+	}
 	return lines;
 }
 
@@ -1958,6 +1987,13 @@ void GSDeviceVK::WaitForCommandBufferCompletion(u32 index)
 
 void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 {
+	// First of all: a batch of GPU texture decodes records into the init command buffer, which this
+	// function ends and submits only if something began it (init_buffer_used). The flush gets the buffer
+	// through GetCurrentInitCommandBuffer(), which begins it and sets that flag, so everything below sees it.
+	// Every draw that samples a pending texture sits in the draw buffer, behind the init buffer.
+	if (m_vram_mirror)
+		m_vram_mirror->Flush();
+
 	m_render_passes_since_submit = 0;
 
 	FrameResources& resources = m_frame_resources[m_current_frame];
@@ -3120,6 +3156,11 @@ bool GSDeviceVK::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 
 	if (!CompileImGuiPipeline())
 		return false;
+
+	// The GPU copy of local memory, made now so that its pipelines are built before the first miss rather
+	// than during it. Not fatal: without it the paletted textures stay on the CPU.
+	if (GSConfig.GPUTextureDecode)
+		EnsureVramMirror();
 
 	InitializeState();
 	return true;
@@ -7274,6 +7315,69 @@ bool GSDeviceVK::CreateVramMirror()
 	if (!m_vram_mirror)
 		m_vram_mirror = GSVramMirrorVK::Create();
 	return m_vram_mirror != nullptr;
+}
+
+bool GSDeviceVK::EnsureVramMirror()
+{
+	if (m_vram_mirror)
+		return true;
+	if (m_vram_mirror_failed)
+		return false;
+	if (!CreateVramMirror())
+	{
+		// The log says why; the texture cache keeps the CPU path for the rest of this device's life.
+		Console.Warning("GS/Vulkan: GPU texture decode is unavailable on this device; paletted textures stay on the CPU.");
+		m_vram_mirror_failed = true;
+		return false;
+	}
+	if (m_gpu_timing_enabled)
+		m_vram_mirror->EnableTiming(true);
+	return true;
+}
+
+bool GSDeviceVK::DecodeHashTextureFromLocalMemory(GSTexture* tex, GSLocalMemory& mem, const GSOffset& off, const GSVector4i& rect)
+{
+	if (!GSConfig.GPUTextureDecode || !EnsureVramMirror())
+		return false;
+
+	// An upload only conflicts with a queued draw that reads or writes this very texture.
+	FlushDeferredDrawsFor(tex);
+
+	GSVramMirrorVK::Request request = {&off, rect, static_cast<GSTextureVK*>(tex), GSVramMirrorVK::SourceOf(mem)};
+	for (int attempt = 0; attempt < 2; attempt++)
+	{
+		switch (m_vram_mirror->DecodeWindow(request))
+		{
+			case GSVramMirrorVK::Result::Queued:
+				return true;
+
+			case GSVramMirrorVK::Result::NeedSubmit:
+			{
+				// The staging ring or the meta buffer is full of work that has not been submitted, and only the
+				// GPU retiring it frees room. A flush frees nothing: submit, as DoUpdate does for the texture
+				// ring (the submit flushes the batch on its way), then ask again.
+				if (attempt != 0)
+					return false;
+				if (!IsPresenting())
+					ExecuteCommandBuffer(false, "While waiting for room in the VRAM mirror staging ring");
+				else
+					ExecuteCommandBufferAndRestartPresent(false, "While waiting for room in the VRAM mirror staging ring");
+				break;
+			}
+
+			default:
+				return false;
+		}
+	}
+	return false;
+}
+
+void GSDeviceVK::PrepareTextureForPool(GSTexture* t)
+{
+	// A pooled texture is handed out as if it were idle. One with a decode still queued is finished first,
+	// so whatever records into the init buffer for it next comes after the decode's copy.
+	if (m_vram_mirror && static_cast<GSTextureVK*>(t)->IsDecodePending())
+		m_vram_mirror->Flush();
 }
 
 void GSDeviceVK::DestroyResources()

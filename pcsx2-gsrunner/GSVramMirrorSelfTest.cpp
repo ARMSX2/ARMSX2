@@ -412,6 +412,7 @@ namespace
 		void PhaseSync();
 		void PhasePooled();
 		void PhaseCancel();
+		void PhaseHooks();
 		void PhaseLimits();
 		void PhaseTiming();
 
@@ -664,6 +665,141 @@ namespace
 		Report("cancel (a pending texture destroyed before the flush)", t);
 		ST_PRINT("cancel: cancelled=%llu", static_cast<unsigned long long>(mirror->GetStats().cancelled));
 		if (mirror->GetStats().cancelled == 0)
+			m_ok = false;
+	}
+
+	/// The hooks that keep a texture with a queued decode from being touched before the decode has run,
+	/// on the device-owned mirror (the one the texture cache uses): the submit flushes the batch, a CPU
+	/// upload into a pending texture flushes first and then lands on top of the decode, a pending texture
+	/// going back to the pool is flushed, destroying one cancels its decode and keeps its blocks, and a
+	/// texture already used by the command buffer being built, or already queued, is refused.
+	void Test::PhaseHooks()
+	{
+		GSVramMirrorVK* mirror_ptr = m_dev->GetVramMirror();
+		if (!mirror_ptr)
+		{
+			m_ok = false;
+			ST_PRINT("hooks: the device has no mirror");
+			return;
+		}
+		GSVramMirrorVK& mirror = *mirror_ptr;
+		Memory mem(m_rng, true);
+		Totals t;
+		std::vector<Pending> batch;
+		u32 checks = 0, failed = 0;
+		const auto expect = [&](bool ok, const char* what) {
+			checks++;
+			if (!ok)
+			{
+				failed++;
+				ST_PRINT("hooks: FAIL: %s", what);
+			}
+		};
+		const auto window = [&]() {
+			WindowSpec s = RandomWindow(m_rng, Format::T8, mem);
+			s.rect = GSVector4i(s.rect.left, s.rect.top, s.rect.left + 48, s.rect.top + 40);
+			return s;
+		};
+
+		// (a) SubmitCommandBuffer flushes the batch on its way: nothing calls Flush here.
+		{
+			Queue(mirror, mem, window(), batch, t);
+			GSTextureVK* tex = batch.back().texture;
+			expect(tex->IsDecodePending(), "a queued texture is pending");
+			expect(mirror.HasPending(), "the batch has the decode");
+			m_dev->ExecuteCommandBuffer(true);
+			expect(!tex->IsDecodePending(), "the submit flushed the batch");
+			expect(!mirror.HasPending(), "nothing is left in the batch after the submit");
+			Check(mirror, batch, t);
+		}
+
+		// (b) A CPU upload into a pending texture goes after the decode, not before it: the texture ends up
+		// holding the uploaded bytes. (If the decode were recorded after the upload it would hold the decode.)
+		{
+			const WindowSpec s = window();
+			Queue(mirror, mem, s, batch, t);
+			Pending& p = batch.back();
+			std::vector<u8> cpu(static_cast<size_t>(s.rect.width()) * s.rect.height());
+			for (size_t i = 0; i < cpu.size(); i++)
+				cpu[i] = static_cast<u8>(0x40 + (i * 7) % 0x90);
+			const u64 flushes = mirror.GetStats().flushes;
+			p.texture->Update(GSVector4i(0, 0, s.rect.width(), s.rect.height()), cpu.data(), s.rect.width());
+			expect(!p.texture->IsDecodePending(), "the upload flushed the decode first");
+			expect(mirror.GetStats().flushes == flushes + 1, "exactly one flush for the upload");
+			p.expected = cpu;
+			Check(mirror, batch, t);
+		}
+
+		// (c) A pending texture going back to the pool is flushed, and is the decoded texture when the pool
+		// hands it out again.
+		{
+			const WindowSpec s = window();
+			Queue(mirror, mem, s, batch, t);
+			Pending p = std::move(batch.back());
+			batch.pop_back();
+			const VkImage image = p.texture->GetImage();
+			const u64 flushes = mirror.GetStats().flushes;
+			m_dev->Recycle(p.texture);
+			expect(!mirror.HasPending() && mirror.GetStats().flushes == flushes + 1, "Recycle flushed the batch");
+			m_dev->AgePool();
+			GSTextureVK* again = static_cast<GSTextureVK*>(m_dev->CreateTexture(s.rect.width(), s.rect.height(), 1, GSTexture::Format::UNorm8));
+			expect(again->GetImage() == image, "the pool handed the recycled image back");
+			expect(!again->IsDecodePending(), "and it is not pending");
+			p.texture = again;
+			batch.push_back(std::move(p));
+			Check(mirror, batch, t);
+		}
+
+		// (d) Destroying a pending texture cancels its decode and keeps the blocks it staged.
+		{
+			const WindowSpec s = window();
+			Queue(mirror, mem, s, batch, t);
+			GSTextureVK* tex = batch.back().texture;
+			batch.pop_back();
+			const u64 cancelled = mirror.GetStats().cancelled;
+			const u64 flushes = mirror.GetStats().flushes;
+			delete tex;
+			expect(mirror.GetStats().cancelled == cancelled + 1, "destroying the texture cancelled its decode");
+			expect(mirror.GetStats().flushes == flushes, "and did not flush");
+			expect(mirror.HasPending(), "the staged blocks are still to be scattered");
+			mirror.Flush();
+			m_dev->ExecuteCommandBuffer(true);
+			VerifyMirror(mirror, mem, t); // the cancelled window's blocks are in the mirror, clean
+			// Decoding the same window now reads them from the mirror.
+			Queue(mirror, mem, s, batch, t);
+			Check(mirror, batch, t);
+		}
+
+		// (e) A texture a draw or copy of the command buffer being built already used is refused, because its
+		// update would belong in the draw buffer; once that buffer is submitted it is not.
+		{
+			const WindowSpec s = window();
+			GSTextureVK* tex = NewTexture(s);
+			std::vector<u8> zeros(static_cast<size_t>(s.rect.width()) * s.rect.height(), 0);
+			tex->Update(GSVector4i(0, 0, s.rect.width(), s.rect.height()), zeros.data(), s.rect.width());
+			GSTexture* rt = m_dev->CreateRenderTarget(64, 64, GSTexture::Format::Color, true, false);
+			m_dev->StretchRect(tex, rt, ShaderConvertSelector(ShaderConvert::COPY), Filter::Nearest);
+			const GSOffset off = mem.mem->GetOffset(s.tbp, s.tbw, s.psm);
+			GSVramMirrorVK::Request rq{&off, s.rect, tex, mem.Source()};
+			expect(mirror.DecodeWindow(rq) == GSVramMirrorVK::Result::Unsupported, "a texture used by this command buffer is refused");
+			expect(!tex->IsDecodePending() && !mirror.HasPending(), "and nothing was queued");
+			m_dev->ExecuteCommandBuffer(true);
+			expect(mirror.DecodeWindow(rq) == GSVramMirrorVK::Result::Queued, "after the submit it is accepted");
+			// Queued twice is refused too: a decode of the image is already in flight.
+			expect(mirror.DecodeWindow(rq) == GSVramMirrorVK::Result::Unsupported, "a pending texture is not queued again");
+			Pending p;
+			p.spec = s;
+			p.texture = tex;
+			p.expected = CpuDecode(mem, s);
+			batch.push_back(std::move(p));
+			Check(mirror, batch, t);
+			m_dev->Recycle(rt);
+		}
+
+		VerifyMirror(mirror, mem, t);
+		Report("hooks (submit, upload, recycle, destroy, refusals)", t);
+		ST_PRINT("hooks: %u checks, %u failed", checks, failed);
+		if (failed != 0)
 			m_ok = false;
 	}
 
@@ -1010,6 +1146,7 @@ namespace
 		PhaseSync();
 		PhasePooled();
 		PhaseCancel();
+		PhaseHooks();
 		PhaseLimits();
 		PhaseTiming();
 
@@ -1034,12 +1171,42 @@ int GSVramMirrorSelfTest::Run(const Options& options)
 	return test.Run();
 }
 
+void GSVramMirrorSelfTest::SetVerify(bool enable)
+{
+	GSVramMirrorVK::SetVerify(enable);
+}
+
+bool GSVramMirrorSelfTest::ReportVerify()
+{
+	const GSVramMirrorVK::VerifyReport r = GSVramMirrorVK::GetVerifyReport();
+	std::printf("VRAM-MIRROR-VERIFY windows=%llu texels=%llu bad_windows=%llu bad_texels=%llu flushes=%llu mirror_blocks=%llu "
+				"mirror_bad_blocks=%llu mark_blocks=%llu mark_window_blocks=%llu mark_sweeps=%llu stale_blocks=%llu unseen_blocks=%llu\n",
+		static_cast<unsigned long long>(r.windows), static_cast<unsigned long long>(r.texels),
+		static_cast<unsigned long long>(r.bad_windows), static_cast<unsigned long long>(r.bad_texels),
+		static_cast<unsigned long long>(r.flushes), static_cast<unsigned long long>(r.mirror_blocks),
+		static_cast<unsigned long long>(r.mirror_bad_blocks), static_cast<unsigned long long>(r.mark_blocks),
+		static_cast<unsigned long long>(r.mark_window_blocks), static_cast<unsigned long long>(r.mark_sweeps),
+		static_cast<unsigned long long>(r.mark_stale), static_cast<unsigned long long>(r.mark_unseen));
+	std::fflush(stdout);
+	return r.Clean();
+}
+
 #else
 
 int GSVramMirrorSelfTest::Run(const Options&)
 {
 	std::printf("GPU-DECODE-SELFTEST RESULT: FAIL this build has no Vulkan renderer\n");
 	return 1;
+}
+
+void GSVramMirrorSelfTest::SetVerify(bool)
+{
+}
+
+bool GSVramMirrorSelfTest::ReportVerify()
+{
+	std::printf("VRAM-MIRROR-VERIFY unavailable: this build has no Vulkan renderer\n");
+	return false;
 }
 
 #endif

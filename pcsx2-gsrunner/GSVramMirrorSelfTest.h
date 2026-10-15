@@ -19,4 +19,13 @@ namespace GSVramMirrorSelfTest
 	/// Runs on the GS thread, with the Vulkan device open. Prints one GPU-DECODE-SELFTEST line per
 	/// phase and a result line, and returns 0 only if every comparison matched.
 	int Run(const Options& options);
+
+	/// -vram-mirror-verify. Call before the device is created: every GSVramMirrorVK made after it keeps a
+	/// CPU copy of what the mirror holds, checks the dirty marks against it as windows are queued, and
+	/// reads the mirror and each decoded texture back to compare them (GSVramMirrorVK::SetVerify).
+	void SetVerify(bool enable);
+
+	/// Prints one VRAM-MIRROR-VERIFY line (after the device is gone: the counts are process-wide) and
+	/// returns false if any comparison failed.
+	bool ReportVerify();
 } // namespace GSVramMirrorSelfTest
