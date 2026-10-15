@@ -23,8 +23,11 @@
 // microVU meets later in a tiered program become root jobs of their own, and
 // framed bodies where the region builder declines them. microVU remains the
 // fallback at every block boundary. A tiered program that meets new jump
-// targets asks for a new generation, a bounded number of times. Design:
-// compiler-design.md sections 9x and 9aa.
+// targets asks for a new generation, a bounded number of times. Regions leave
+// the sticky bits of STATUS out (the exactness contract's relaxation 3) while
+// no reader of them is known, in either flag-hack mode; the first reader the
+// tier hears of sets the tripwire (StickyTripped below) and VU1 rebuilds exact.
+// Design: compiler-design.md sections 9x, 9aa and 9ad.
 
 #include "common/Pcsx2Defs.h"
 #include "VuOptMvuTrace.h"
