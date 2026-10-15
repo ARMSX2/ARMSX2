@@ -79,6 +79,7 @@ SmallString s_cpu_usage_ee_line;
 SmallString s_cpu_usage_gs_line;
 SmallString s_cpu_usage_gs_back_line;
 SmallString s_cpu_usage_vu_line;
+SmallString s_cpu_usage_iop_line;
 // Devel builds, Threaded mode: the IOP thread's waits and queues per frame (IOP thread design, step 11).
 SmallString s_iop_thread_line;
 std::vector<SmallString> s_software_thread_lines;
@@ -717,6 +718,15 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 					s_cpu_usage_vu_line.assign("VU: ");
 					FormatProcessorStat(s_cpu_usage_vu_line, PerformanceMetrics::GetVUThreadUsage(), PerformanceMetrics::GetVUThreadAverageTime());
 					DRAW_LINE(osd_font, font_size, s_cpu_usage_vu_line.c_str(), OsdTextColor());
+				}
+
+				// Only exists while the IOP runs on its own thread beside the EE. The EE line above no longer
+				// includes the IOP's work then, so without this one that work is invisible.
+				if (PerformanceMetrics::HasIOPThread())
+				{
+					s_cpu_usage_iop_line.assign("IOP: ");
+					FormatProcessorStat(s_cpu_usage_iop_line, PerformanceMetrics::GetIOPThreadUsage(), PerformanceMetrics::GetIOPThreadAverageTime());
+					DRAW_LINE(osd_font, font_size, s_cpu_usage_iop_line.c_str(), OsdTextColor());
 				}
 
 #if defined(PCSX2_DEVBUILD) || defined(PCSX2_DEBUG)

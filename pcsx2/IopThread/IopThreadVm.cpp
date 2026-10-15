@@ -18,6 +18,7 @@
 #include "IopThread/OwnerAsserts.h"
 #include "IopThread/SharedWord.h"
 #include "Patch.h"
+#include "PerformanceMetrics.h"
 #include "R3000A.h"
 #include "R5900.h"
 #include "SIO/Sio.h"
@@ -174,6 +175,8 @@ namespace IopThread
 		{
 			if (g_thread.Mode() == IopThreadMode::Threaded)
 				BooksFromThread();
+			// The metrics stop reading the handle before the thread is joined, since a joined thread has none.
+			PerformanceMetrics::SetIOPThread({});
 			g_thread.Stop();
 		}
 	} // namespace
@@ -269,6 +272,7 @@ namespace IopThread
 		}
 		if (s_mode != IopThreadMode::Off && g_thread.Start(MakeParams()))
 		{
+			PerformanceMetrics::SetIOPThread(g_thread.GetThreadHandle());
 			const char* const names[] = {"Off", "Lockstep", "Threaded"};
 			Console.WriteLn(Color_StrongGreen, "IOP thread: started in %s mode.", names[static_cast<int>(s_mode)]);
 			if (s_mode == IopThreadMode::Threaded)

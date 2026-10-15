@@ -418,6 +418,7 @@ namespace PINEServer
 			"\"gs_thread_pct\":{:.3f},\"gs_thread_ms\":{:.3f},"
 			"\"gs_back_thread_pct\":{:.3f},\"gs_back_thread_ms\":{:.3f},"
 			"\"vu_thread_pct\":{:.3f},\"vu_thread_ms\":{:.3f},"
+			"\"iop_thread_pct\":{:.3f},\"iop_thread_ms\":{:.3f},"
 			"\"gpu_pct\":{:.3f},\"gpu_ms_avg\":{:.3f},\"gpu_ms_last\":{:.3f},"
 			"\"gpu_vs_invocations\":{:.0f},\"gpu_ps_invocations\":{:.0f},"
 			"\"prims\":{:.1f},\"draws\":{:.1f},\"draw_calls\":{:.1f},"
@@ -439,6 +440,8 @@ namespace PINEServer
 			// so under the split the two have to be read together to see the GS cost.
 			PerformanceMetrics::GetGSBackThreadUsage(), PerformanceMetrics::GetGSBackThreadAverageTime(),
 			PerformanceMetrics::GetVUThreadUsage(), PerformanceMetrics::GetVUThreadAverageTime(),
+			// Zero unless the IOP runs on its own thread beside the EE.
+			PerformanceMetrics::GetIOPThreadUsage(), PerformanceMetrics::GetIOPThreadAverageTime(),
 			PerformanceMetrics::GetGPUUsage(), PerformanceMetrics::GetGPUAverageTime(),
 			PerformanceMetrics::GetLastGPUTime(),
 			PerformanceMetrics::GetGPUAverageVSInvocations(), PerformanceMetrics::GetGPUAveragePSInvocations(),

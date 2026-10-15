@@ -26,6 +26,7 @@
 #include "IopThread/IopThreadVm.h"
 #include "IopThread/OwnerAsserts.h"
 #include "IopThreadTestSupport.h"
+#include "PerformanceMetrics.h"
 #include "R3000A.h"
 #include "R5900.h"
 #include "SIO/Pad/Pad.h"
@@ -1188,6 +1189,36 @@ TEST_F(ThreadedMachine, TurningTheThreadOffWhilePausedStopsItAndAnotherToggleBri
 	EventTest(2000);
 	ASSERT_TRUE(WaitFor([] { return s_slices_started.load() >= 1; }));
 	EXPECT_EQ(s_violations.load(), 0u);
+}
+
+// ---------------------------------------------------------------- the thread's CPU time in the metrics
+
+TEST_F(ThreadedMachine, AThreadedThreadIsRegisteredWithTheMetricsFromItsStartToItsStopAndAgainAfterARestart)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	EXPECT_FALSE(PerformanceMetrics::HasIOPThread());
+
+	StartThreaded();
+	EXPECT_TRUE(PerformanceMetrics::HasIOPThread());
+
+	// Turned off while paused, as a settings dialog does: the metrics let go of the thread before it is joined.
+	IopThread::OnVmPaused(true);
+	{
+		IopThread::VmHold apply_settings_holds;
+		EmuConfig.Speedhacks.iopThread = false;
+		IopThread::ChooseModeFor(Arm64Host(), IopThread::VmConditions());
+		IopThread::SyncThread();
+	}
+	EXPECT_FALSE(PerformanceMetrics::HasIOPThread());
+	EXPECT_EQ(PerformanceMetrics::GetIOPThreadUsage(), 0.0f);
+
+	{
+		IopThread::VmHold apply_settings_holds;
+		StartThreaded();
+	}
+	EXPECT_TRUE(PerformanceMetrics::HasIOPThread());
+	IopThread::OnVmPaused(false);
 }
 
 #endif // PCSX2_RECOMPILER_TESTS

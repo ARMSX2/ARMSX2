@@ -113,6 +113,12 @@ namespace PerformanceMetrics
 	/// "GS" figure alone reads as a ~50% drop in GS cost that never happened.
 	void SetGSBackThread(Threading::ThreadHandle thread);
 
+	/// Sets the timer for the IOP thread (exists only while the IOP runs on its own thread, concurrently
+	/// with the EE). Registered by the VM when it starts the thread and cleared before it is joined; an empty
+	/// handle means no such thread exists, which is the default configuration. Without it the EE thread's
+	/// figure alone reads as a drop in cost that is really the IOP's work moved to another thread.
+	void SetIOPThread(Threading::ThreadHandle thread);
+
 	u64 GetFrameNumber();
 
 	InternalFPSMethod GetInternalFPSMethod();
@@ -136,6 +142,10 @@ namespace PerformanceMetrics
 	float GetGSBackThreadAverageTime();
 	float GetVUThreadUsage();
 	float GetVUThreadAverageTime();
+	/// True while an IOP thread is registered. Both figures below read zero when it is not.
+	bool HasIOPThread();
+	float GetIOPThreadUsage();
+	float GetIOPThreadAverageTime();
 
 	u32 GetGSSWThreadCount();
 	double GetGSSWThreadUsage(u32 index);
