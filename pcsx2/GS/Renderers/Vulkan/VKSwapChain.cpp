@@ -1072,6 +1072,15 @@ bool VKSwapChain::RecreateSurface(const WindowInfo& new_wi)
 	return true;
 }
 
+VkSurfaceKHR VKSwapChain::ReleaseSurface()
+{
+	DestroySwapChainImages();
+	DestroySwapChain();
+	const VkSurfaceKHR surface = m_surface;
+	m_surface = VK_NULL_HANDLE;
+	return surface;
+}
+
 void VKSwapChain::DestroySurface()
 {
 	if (m_surface == VK_NULL_HANDLE)

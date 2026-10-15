@@ -5,6 +5,7 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <unistd.h>
 #include <android_linker_ns.h>
 #include <android/dlext.h>
 #include <android/log.h>
@@ -84,6 +85,14 @@ __attribute__((visibility("default"))) void *hook_android_dlopen_ext(const char 
         }
 
         LOGI("hook_android_dlopen_ext: applied libfile_redirect_hook");
+    }
+
+    if (hook_params->featureFlags & ADRENOTOOLS_DRIVER_CONTEXT_PRIORITY) {
+        // Not fatal: without it the driver's contexts keep its own priority
+        if (linkernsbypass_namespace_dlopen("libkgsl_priority_hook.so", RTLD_GLOBAL, driverNs))
+            LOGI("hook_android_dlopen_ext: applied libkgsl_priority_hook");
+        else
+            LOGI("hook_android_dlopen_ext: failed to apply libkgsl_priority_hook!");
     }
 
     // Use our new namespace to load the vulkan driver
@@ -167,6 +176,39 @@ __attribute__((visibility("default"))) FILE *hook_fopen(const char *filename, co
     LOGI("hook_fopen: %s -> %s", filename, replacement.c_str());
 
     return fopen(replacement.c_str(), mode);
+}
+
+// Whether fd is a KGSL device node (/dev/kgsl-3d0): the ioctl number alone
+// could in principle belong to another driver.
+static bool is_kgsl_fd(int fd) {
+    char path[32];
+    char target[64];
+    snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+    ssize_t length{readlink(path, target, sizeof(target) - 1)};
+    if (length <= 0)
+        return false;
+    target[length] = '\0';
+    return strstr(target, "/dev/kgsl") != nullptr;
+}
+
+// Every ioctl the driver makes passes here; only a draw context's creation is
+// changed, and only while a priority is set: its KGSL priority field.
+__attribute__((visibility("default"))) int hook_ioctl(int fd, int request, void *arg) {
+    if (static_cast<uint32_t>(request) == static_cast<uint32_t>(IOCTL_KGSL_DRAWCTXT_CREATE) && arg &&
+        hook_params && hook_params->contextPriority) {
+        uint32_t priority{hook_params->contextPriority->load(std::memory_order_acquire)};
+        if (priority && is_kgsl_fd(fd)) {
+            auto create{reinterpret_cast<kgsl_drawctxt_create *>(arg)};
+            create->flags = (create->flags & ~KGSL_CONTEXT_PRIORITY_MASK) |
+                            ((priority << KGSL_CONTEXT_PRIORITY_SHIFT) & KGSL_CONTEXT_PRIORITY_MASK);
+            int ret{ioctl(fd, request, arg)};
+            if (!ret && hook_params->contextsRaised)
+                hook_params->contextsRaised->fetch_add(1, std::memory_order_acq_rel);
+            LOGI("hook_ioctl: draw context %u created at KGSL priority %u (ret %d)", create->drawctxt_id, priority, ret);
+            return ret;
+        }
+    }
+    return ioctl(fd, request, arg);
 }
 
 static constexpr uintptr_t GslMemDescImportedPrivMagic{0xdeadb33f};

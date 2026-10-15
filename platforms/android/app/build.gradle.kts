@@ -114,6 +114,11 @@ val armsx2DiscordSdkDir: String? =
     (System.getenv("DISCORD_SDK_DIR") ?: providers.gradleProperty("DISCORD_SDK_DIR").orNull)
         ?.takeIf { File(it, "include/discordpp.h").isFile }
 
+// Local checkout of the ZeroFG engine (github.com/hy300leosquizz-ctrl/ZeroFG), for working on it
+// alongside ARMSX2. Unset, the native build fetches the published tag instead.
+val armsx2ZerofgDir: String? = providers.gradleProperty("armsx2.zerofgDir").orNull
+    ?.takeIf { File(it, "include/zerofg/zerofg.h").isFile }
+
 android {
     namespace = "com.armsx2"
     compileSdk = 37
@@ -274,6 +279,15 @@ android {
             // Kotlin so a play build never even fetches the library.
             buildConfigField("boolean", "LSFG", "true")
             externalNativeBuild { cmake { arguments += "-DARMSX2_ENABLE_LSFG=ON" } }
+            // ZeroFG frame generation, on its own Vulkan device. Github flavour only, beside LSFG,
+            // so the two can be compared in the same build.
+            buildConfigField("boolean", "ZEROFG", "true")
+            externalNativeBuild {
+                cmake {
+                    arguments += "-DARMSX2_ENABLE_ZEROFG=ON"
+                    armsx2ZerofgDir?.let { arguments += "-DZEROFG_SOURCE_DIR=$it" }
+                }
+            }
         }
         create("play") {
             dimension = "store"
@@ -281,6 +295,8 @@ android {
             buildConfigField("boolean", "IN_APP_UPDATER", "false")
             buildConfigField("boolean", "LSFG", "false")
             externalNativeBuild { cmake { arguments += "-DARMSX2_ENABLE_LSFG=OFF" } }
+            buildConfigField("boolean", "ZEROFG", "false")
+            externalNativeBuild { cmake { arguments += "-DARMSX2_ENABLE_ZEROFG=OFF" } }
         }
     }
     // Merge the generated bin/resources tree in as a second assets root. Passing
