@@ -1274,6 +1274,11 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -block-hash-cache on|off: Key paletted windows through the per-block hash cache (on, the default) "
 						 "or by one hash of their raw blocks with no cache (off). Pixels and hash cache hits are the same "
 						 "either way; off is for checking a suspect title without a rebuild.\n");
+	std::fprintf(stderr, "  -hash-cache-entries <n>: Most entries the hardware renderer's hash cache keeps (0 = no limit; "
+						 "the default is the renderer's own). Entries unused for 30 frames go regardless.\n");
+	std::fprintf(stderr, "  -hash-cache-mb <n>: Most megabytes of textures the hash cache keeps above its floor of 800 "
+						 "entries (0 = no limit; the default is the renderer's own). -hash-cache-entries 800 -hash-cache-mb 0 "
+						 "is the cache as it was before the memory limit.\n");
 	std::fprintf(stderr, "  -stats-json <path>: Write per-frame and run-summary statistics as JSON. Combine with -perf "
 						 "for frame/GPU timing.\n");
 	std::fprintf(stderr, "  -set <Section/Key>=<value>: Override any setting, e.g. -set EmuCore/GS/AccurateBlendingUnit=3. "
@@ -1811,6 +1816,26 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					ArgError("-block-hash-cache: expected on or off, got '{}'.", value);
 					return false;
 				}
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-hash-cache-entries"))
+			{
+				const std::optional<u32> value = ParseNumericArg<u32>("-hash-cache-entries", argv[++i]);
+				if (!value.has_value())
+					return false;
+				GSTextureCache::HashCacheLimits limits = GSTextureCache::GetHashCacheLimits();
+				limits.max_entries = value.value();
+				GSTextureCache::SetHashCacheLimits(limits);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-hash-cache-mb"))
+			{
+				const std::optional<u32> value = ParseNumericArg<u32>("-hash-cache-mb", argv[++i]);
+				if (!value.has_value())
+					return false;
+				GSTextureCache::HashCacheLimits limits = GSTextureCache::GetHashCacheLimits();
+				limits.max_bytes = static_cast<u64>(value.value()) << 20;
+				GSTextureCache::SetHashCacheLimits(limits);
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-drawlog"))
@@ -2709,6 +2734,17 @@ void GSRunner::DumpStats()
 		Ratio(s_total_tc_target_hit, s_total_tc_target_hit + s_total_tc_target_miss)));
 	Console.WriteLn(fmt::format("@HWSTAT@ Hash Cache Hit/Miss: {}/{} ({:.1f}% hit)", s_total_hash_cache_hit, s_total_hash_cache_miss,
 		Ratio(s_total_hash_cache_hit, s_total_hash_cache_hit + s_total_hash_cache_miss)));
+	// What the hash cache held at the end of a frame (before the frame's ageing): the peak of the run, and the
+	// mean over the frames; MB are 2^20 bytes. "VRAM" is what the renderer accounts for in all: targets,
+	// sources, hash cache and the device's texture pool.
+	{
+		const GSTextureCache::HashCacheStats hc = GSTextureCache::GetHashCacheStats();
+		const GSTextureCache::HashCacheLimits lim = GSTextureCache::GetHashCacheLimits();
+		Console.WriteLn(fmt::format("@HWSTAT@ Hash Cache Memory: peak {:.1f} MB in {} entries (mean {:.1f} MB over {} frames); "
+									"peak VRAM {:.1f} MB; limits {} entries (floor {}), {} MB",
+			hc.peak_bytes / 1048576.0, hc.peak_entries, hc.frames ? hc.sum_bytes / 1048576.0 / hc.frames : 0.0, hc.frames,
+			hc.peak_total_bytes / 1048576.0, lim.max_entries, lim.floor_entries, lim.max_bytes >> 20));
+	}
 	// The per-block hash cache: the paletted levels keyed through it, their blocks, and the blocks that had to be
 	// hashed (a mark since the last lookup). A block is 256 bytes.
 	{

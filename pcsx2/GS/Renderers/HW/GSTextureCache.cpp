@@ -55,6 +55,24 @@ static UnswizzledLevel s_unswizzled_level;
 /// List of candidates for purging when the hash cache gets too large.
 static std::vector<std::pair<GSTextureCache::HashCacheMap::iterator, s32>> s_hash_cache_purge_list;
 
+static GSTextureCache::HashCacheLimits s_hash_cache_limits;
+static GSTextureCache::HashCacheStats s_hash_cache_stats;
+
+void GSTextureCache::SetHashCacheLimits(const HashCacheLimits& limits)
+{
+	s_hash_cache_limits = limits;
+}
+
+GSTextureCache::HashCacheLimits GSTextureCache::GetHashCacheLimits()
+{
+	return s_hash_cache_limits;
+}
+
+GSTextureCache::HashCacheStats GSTextureCache::GetHashCacheStats()
+{
+	return s_hash_cache_stats;
+}
+
 // Verify mode of the hash memo (GSTextureCache::SetHashMemoVerify).
 static GSTextureCache::HashMemoVerifyReport s_hash_memo_verify_report;
 static constexpr u64 HASH_MEMO_VERIFY_PRINT_LIMIT = 20; // lines printed per kind of finding
@@ -7763,14 +7781,32 @@ GSTextureCache::HashCacheMap::iterator GSTextureCache::RemoveFromHashCache(HashC
 
 void GSTextureCache::AgeHashCache()
 {
-	// Where did this number come from?
-	// A game called Corvette draws its background FMVs with a ton of 17x17 tiles, which ends up
-	// being about 600 texture uploads per frame. We'll use 800 as an upper bound for a bit of
-	// a buffer, hopefully nothing's going to end up with more textures than that.
-	constexpr u32 MAX_HASH_CACHE_SIZE = 800;
 	constexpr u32 MAX_HASH_CACHE_AGE = 30;
 
-	bool might_need_cache_purge = (m_hash_cache.size() > MAX_HASH_CACHE_SIZE);
+	{
+		const u64 hash_bytes = GetTotalHashCacheMemoryUsage();
+		HashCacheStats& st = s_hash_cache_stats;
+		st.peak_entries = std::max<u64>(st.peak_entries, m_hash_cache.size());
+		st.peak_bytes = std::max(st.peak_bytes, hash_bytes);
+		st.peak_total_bytes = std::max(st.peak_total_bytes,
+			m_target_memory_usage + m_source_memory_usage + hash_bytes + (g_gs_device ? g_gs_device->GetPoolMemoryUsage() : 0));
+		st.frames++;
+		st.sum_bytes += hash_bytes;
+	}
+
+	// 800 entries used to be the whole limit. A game called Corvette draws its background FMVs with a ton of
+	// 17x17 tiles, which ends up being about 600 texture uploads per frame, so 800 was picked as an upper bound
+	// with a bit of a buffer. It is now the floor: nothing is dropped for memory while the cache is no larger.
+	// Above it the cache may grow to max_entries while the textures stay under max_bytes, so a title that comes
+	// back to the same thousand windows within 30 frames finds them instead of decoding and uploading them again.
+	const HashCacheLimits limits = s_hash_cache_limits;
+	const auto over_limit = [&]() {
+		const size_t entries = m_hash_cache.size();
+		return (limits.max_entries != 0 && entries > limits.max_entries) ||
+		       (limits.max_bytes != 0 && entries > limits.floor_entries && GetTotalHashCacheMemoryUsage() > limits.max_bytes);
+	};
+
+	bool might_need_cache_purge = over_limit();
 	if (might_need_cache_purge)
 		s_hash_cache_purge_list.clear();
 
@@ -7792,7 +7828,7 @@ void GSTextureCache::AgeHashCache()
 		// We might free up enough just with "normal" removals above.
 		if (might_need_cache_purge)
 		{
-			might_need_cache_purge = (m_hash_cache.size() > MAX_HASH_CACHE_SIZE);
+			might_need_cache_purge = over_limit();
 			if (might_need_cache_purge)
 				s_hash_cache_purge_list.emplace_back(it, static_cast<s32>(e.age));
 		}
@@ -7806,9 +7842,7 @@ void GSTextureCache::AgeHashCache()
 		std::sort(s_hash_cache_purge_list.begin(), s_hash_cache_purge_list.end(),
 			[](const auto& lhs, const auto& rhs) { return lhs.second > rhs.second; });
 
-		const u32 entries_to_purge = std::min(static_cast<u32>(m_hash_cache.size() - MAX_HASH_CACHE_SIZE),
-			static_cast<u32>(s_hash_cache_purge_list.size()));
-		for (u32 i = 0; i < entries_to_purge; i++)
+		for (size_t i = 0; i < s_hash_cache_purge_list.size() && over_limit(); i++)
 			RemoveFromHashCache(s_hash_cache_purge_list[i].first);
 	}
 }

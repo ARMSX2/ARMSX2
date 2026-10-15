@@ -680,6 +680,7 @@ public:
 	__fi u64 GetHashCacheMemoryUsage() const { return m_hash_cache_memory_usage; }
 	__fi u64 GetHashCacheReplacementMemoryUsage() const { return m_hash_cache_replacement_memory_usage; }
 	__fi u64 GetTotalHashCacheMemoryUsage() const { return (m_hash_cache_memory_usage + m_hash_cache_replacement_memory_usage); }
+	__fi size_t GetHashCacheEntryCount() const { return m_hash_cache.size(); }
 	__fi u64 GetSourceMemoryUsage() const { return m_source_memory_usage; }
 	__fi u64 GetTargetMemoryUsage() const { return m_target_memory_usage; }
 	__fi const HashMemoStats& GetHashMemoStats() const { return m_hash_memo.stats; }
@@ -717,6 +718,34 @@ public:
 	static bool IsBlockHashVerify() { return s_block_hash_verify; }
 	static BlockHashVerifyReport GetBlockHashVerifyReport();
 	static BlockHashStats GetBlockHashStats();
+
+	/// How much AgeHashCache keeps. Entries unused for 30 frames go regardless; past these limits the oldest
+	/// unreferenced entries go first. An entry's memory is its texture's, a replacement or an upscale counted
+	/// the same as a texture of the guest's own texels.
+	struct HashCacheLimits
+	{
+		/// Entries are never dropped for memory while there are no more than this many (the limit the cache had
+		/// before there was a memory limit), so a title keeps at least what it always did.
+		u32 floor_entries = 800;
+		/// The most entries kept, whatever they hold. 0 = no limit.
+		u32 max_entries = 1600;
+		/// The most bytes of textures kept above `floor_entries` entries. 0 = no limit.
+		u64 max_bytes = 128ull << 20;
+	};
+	static void SetHashCacheLimits(const HashCacheLimits& limits);
+	static HashCacheLimits GetHashCacheLimits();
+
+	/// The most the hash cache has held at the end of a frame (just before AgeHashCache drops anything), over
+	/// every cache of the process, and the same moment's total of the memory the renderer accounts for.
+	struct HashCacheStats
+	{
+		u64 peak_entries = 0;
+		u64 peak_bytes = 0; ///< The textures of the entries: GetTotalHashCacheMemoryUsage().
+		u64 peak_total_bytes = 0; ///< Targets, sources, hash cache and the device's texture pool.
+		u64 frames = 0; ///< Frames sampled.
+		u64 sum_bytes = 0; ///< Sum of the per-frame bytes, for the mean.
+	};
+	static HashCacheStats GetHashCacheStats();
 
 	/// The block hash of `block` of `mem`: of its 256 bytes, hashed now if its hash-dirty bit is set. The cache
 	/// is bound to the memory by GSLocalMemory::Id(); a different memory than the last one invalidates it.
