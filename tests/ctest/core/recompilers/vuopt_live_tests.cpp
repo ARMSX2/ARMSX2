@@ -16,18 +16,25 @@
 #include "Config.h"
 #include "VU.h"
 #include "VUmicro.h"
+#include "arm64/microVU_Persist-arm64.h"
+#include "arm64/microVU_ProgCache-arm64.h"
 #include "arm64/vuopt/VuOptLive.h"
+
+#include "common/FileSystem.h"
 
 #include <gtest/gtest.h>
 
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <unistd.h>
 
 namespace recompiler_tests
 {
@@ -1274,6 +1281,331 @@ TEST(VuoptLive, TripwireMutationsAreCaught)
 	};
 	EXPECT_EQ(published(0), "");
 	EXPECT_NE(published(vuopt::live::TripMask(vuopt::live::kTripMutPublish)), "") << "a job made with the drop was published after the trip and nobody noticed";
+}
+
+
+//------------------------------------------------------------------
+// The VU program cache and the tier (compiler-design.md 9ag)
+//------------------------------------------------------------------
+//
+// EnableVUOpt turns the on-disk program cache on. The cache stores what microVU compiled, from the
+// recorder's log of each program (mVUPersist), and the tier changes none of that: the log stops growing
+// when a program is tiered (RegisterBlock fails every episode of a program with tier state), so the image
+// saved for a program is the microVU code it had before its tier-up. These tests run the whole path:
+// a program is compiled, tiered up and saved; a later session loads it from the disk cache, tiers it up
+// again and every run equals microVU's.
+
+namespace
+{
+void RecursiveRm(const std::string& dir)
+{
+	if (!FileSystem::DirectoryExists(dir.c_str()))
+	{
+		::unlink(dir.c_str());
+		return;
+	}
+	FileSystem::FindResultsArray ents;
+	FileSystem::FindFiles(dir.c_str(), "*", FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_FOLDERS | FILESYSTEM_FIND_HIDDEN_FILES, &ents);
+	for (const auto& e : ents)
+	{
+		if (e.Attributes & FILESYSTEM_FILE_ATTRIBUTE_DIRECTORY)
+			RecursiveRm(e.FileName);
+		else
+			::unlink(e.FileName.c_str());
+	}
+	::rmdir(dir.c_str());
+}
+
+// A program with a second way in, after the first one's code, for runs that compile after its tier-up.
+constexpr u32 kSecondEntry = 10 * 8;
+std::vector<VuOp> TwoEntryLoop(u32 n)
+{
+	std::vector<VuOp> p = CountedLoop(n); // pairs 0-8, the E bit on the last
+	p.push_back(NopPair());               // 9: its delay slot
+	p.push_back(U(VADD_U(mask::xyzw, vf::vf10, vf::vf10, vf::vf4))); // 10: the second entry
+	p.push_back(P(VFMAND_L(vi::vi6, vi::vi2), VMUL_U(mask::xyz, vf::vf11, vf::vf10, vf::vf10)));
+	p.push_back(EBit(U(VSUB_U(mask::xyzw, vf::vf12, vf::vf11, vf::vf3))));
+	return p;
+}
+
+// A saved image without its list of compiled ranges: what the recorder's log made (the block records and
+// the chunks of code). The ranges are the program's own, read when the image is written, and grow with
+// every block compiled, a tiered program's included; they say which parts of micro memory the program
+// answers for and hold no code. (Layout: mVUPersist::ImageHeader, 88 bytes with the range count at 60,
+// then 8 bytes per range.)
+std::vector<u8> LoggedPart(const std::vector<u8>& image)
+{
+	constexpr size_t kHeader = 88, kRangeCountAt = 60;
+	if (image.size() < kHeader)
+		return {};
+	u32 ranges = 0;
+	std::memcpy(&ranges, image.data() + kRangeCountAt, sizeof(ranges));
+	if (image.size() < kHeader + size_t(ranges) * 8)
+		return {};
+	return std::vector<u8>(image.begin() + kHeader + size_t(ranges) * 8, image.end());
+}
+
+// What the process boundary does, in one process: the cache's in-memory state is dropped and the disk read again.
+void NewProcess()
+{
+	mVUProgCache::ResetForTest(1);
+}
+
+class VuoptCache : public ::testing::Test
+{
+protected:
+	void SetUp() override
+	{
+		ASSERT_TRUE(RecompilerTestEnvironment::IsReady());
+		char tmpl[] = "/tmp/vuopt_cache_XXXXXX";
+		char* d = ::mkdtemp(tmpl);
+		ASSERT_NE(d, nullptr);
+		root_ = d;
+		prevCache_ = EmuFolders::Cache;
+		prevProgCache_ = EmuConfig.Cpu.Recompiler.EnableVUProgramCache;
+		EmuFolders::Cache = root_;
+		// Recording is under the tests' control (RecompilerTestEnvironment): the reset-time sync
+		// from the setting does not touch it. The program cache itself follows the setting.
+		mVUPersist::SetRecordingEnabled(true);
+		NewProcess();
+	}
+
+	void TearDown() override
+	{
+		RecompilerTestEnvironment::ResetVuBlockCache(1);
+		EmuConfig.Cpu.Recompiler.EnableVUProgramCache = prevProgCache_;
+		RecompilerTestEnvironment::ResetVuBlockCache(1);
+		NewProcess();
+		mVUPersist::SetRecordingEnabled(false);
+		EmuFolders::Cache = prevCache_;
+		RecursiveRm(root_);
+	}
+
+	// The tier off, the program run once: the answer every later run must give.
+	static Result Reference(const std::vector<VuOp>& prog, const std::function<void(VuTestHarness&)>& setup, bool flagHack, u32 startPc = 0)
+	{
+		const bool savedCache = EmuConfig.Cpu.Recompiler.EnableVUProgramCache;
+		EmuConfig.Cpu.Recompiler.EnableVUProgramCache = false;
+		Result ref;
+		{
+			LiveScope off(false, 4, flagHack);
+			VuTestHarness h(1);
+			Prepare(h, prog, setup, 0);
+			h.SetStartPc(startPc);
+			h.RunNoDiff();
+			ref = Take(h);
+		}
+		EmuConfig.Cpu.Recompiler.EnableVUProgramCache = savedCache;
+		return ref;
+	}
+
+	std::string root_;
+	std::string prevCache_;
+	bool prevProgCache_ = false;
+};
+} // namespace
+
+// The tier does not change what a program saves: its image after the tier-up is the image it had before,
+// byte for byte, and after more of it compiled under the tier (a second entry, whose root the tier takes
+// into a region) the code in the image is the same (the ranges the program answers for have grown).
+// (Mutation: let the recorder keep episodes of a tiered program, and the region placed in one is in the
+// image.)
+TEST_F(VuoptCache, TierUpDoesNotChangeWhatIsSaved)
+{
+	for (bool sync : {true, false})
+		for (bool fh : {true, false})
+		{
+			NewProcess();
+			LiveScope on(true, 4, fh, vuopt::live::kJumpTierUpRuns, sync);
+			const std::vector<VuOp> prog = TwoEntryLoop(20);
+			VuTestHarness h(1);
+			Prepare(h, prog, SetupLoop, 0);
+			h.RunNoDiff();
+			ASSERT_TRUE(mVUProgCache::GetStats(1).initialized && mVUProgCache::GetStats(1).enabled)
+				<< "EnableVUOpt on, EnableVUProgramCache off: the cache is up";
+			h.RunJitPreserveBlockCache(); // the compile, untiered
+			std::vector<u8> before, afterTier, afterSecond;
+			ASSERT_TRUE(mVUPersist::TestSerializeNewestProgram(1, before)) << "the recorder did not log the program";
+			ASSERT_GT(before.size(), 88u);
+			const u64 tierUps0 = vuopt::live::GetStats().tierUps;
+			for (int i = 0; i < 14; i++)
+				h.RunJitPreserveBlockCache();
+			if (!sync)
+			{
+				vuopt::live::WaitWorkerIdle();
+				for (int i = 0; i < 4; i++)
+					h.RunJitPreserveBlockCache();
+			}
+			EXPECT_GT(vuopt::live::GetStats().tierUps, tierUps0) << "sync " << sync << ": the program tiered up";
+			ASSERT_TRUE(mVUPersist::TestSerializeNewestProgram(1, afterTier));
+			ASSERT_FALSE(LoggedPart(before).empty());
+			EXPECT_EQ(before, afterTier) << "sync " << sync << " flagHack " << fh << ": the tier-up changed the saved image";
+
+			// code compiled now belongs to a tiered program
+			const u64 compiles0 = mVUPersist::GetBlockCompileCount(1);
+			h.SetStartPc(kSecondEntry);
+			h.RunJitPreserveBlockCache();
+			if (!sync)
+			{
+				vuopt::live::WaitWorkerIdle();
+				h.RunJitPreserveBlockCache();
+			}
+			h.SetStartPc(0);
+			ASSERT_TRUE(mVUPersist::TestSerializeNewestProgram(1, afterSecond));
+			EXPECT_EQ(LoggedPart(before), LoggedPart(afterSecond)) << "sync " << sync << " flagHack " << fh << ": a compile under the tier changed the saved code";
+			EXPECT_GT(mVUPersist::GetBlockCompileCount(1), compiles0) << "the second entry compiled blocks under the tier";
+		}
+}
+
+// A cache filled in one session is loaded in the next: the program is hydrated (no microVU compile), tiers
+// up as any program does, and every run equals microVU's. `fill`: who filled it. The tier on (the cache is
+// on because of it), or the tier off with the cache's own setting on: the images are the same either way.
+TEST_F(VuoptCache, LoadedProgramsTierUpAndStayExact)
+{
+	struct Prog
+	{
+		const char* name;
+		std::vector<VuOp> ops;
+		std::function<void(VuTestHarness&)> setup;
+		u32 second; // a second entry to run after the tier-up (0: none): its blocks compile under the tier
+	};
+	const Prog progs[] = {{"two entries", TwoEntryLoop(20), SetupLoop, kSecondEntry}, {"jumps", JumpLoop(), SetupJump, 0}};
+	for (const Prog& pr : progs)
+		for (bool fillWithTier : {true, false})
+			for (bool fh : {true, false})
+			{
+				const Result ref = Reference(pr.ops, pr.setup, fh);
+				const Result ref2 = pr.second ? Reference(pr.ops, pr.setup, fh, pr.second) : Result{};
+				RecompilerTestEnvironment::ResetVuBlockCache(1);
+				NewProcess();
+				RecursiveRm(root_ + "/vu_jit");
+				std::string where = std::string(pr.name) + (fillWithTier ? ", filled by the tier" : ", filled by the cache setting") + (fh ? ", flag hack" : "");
+
+				// session one: compile, tier up (when on), save at the reset
+				{
+					EmuConfig.Cpu.Recompiler.EnableVUProgramCache = !fillWithTier;
+					LiveScope s1(fillWithTier, 4, fh);
+					VuTestHarness h(1);
+					Prepare(h, pr.ops, pr.setup, 0);
+					h.RunNoDiff();
+					ASSERT_TRUE(mVUProgCache::GetStats(1).initialized && mVUProgCache::GetStats(1).enabled) << where;
+					for (int i = 0; i < 12; i++)
+					{
+						h.RunJitPreserveBlockCache();
+						EXPECT_EQ(Diff(ref, Take(h)), "") << where << ": session one, run " << i;
+					}
+					if (pr.second)
+					{
+						h.SetStartPc(pr.second);
+						h.RunJitPreserveBlockCache();
+						EXPECT_EQ(Diff(ref2, Take(h)), "") << where << ": session one, the second entry";
+						h.SetStartPc(0);
+					}
+					RecompilerTestEnvironment::ResetVuBlockCache(1); // (the save)
+					EXPECT_GE(mVUProgCache::GetStats(1).payloadWrites, 1u) << where << ": no payload was written";
+				}
+				EmuConfig.Cpu.Recompiler.EnableVUProgramCache = false;
+
+				// session two: the tier on, the cache read from disk
+				NewProcess();
+				LiveScope s2(true, 4, fh);
+				VuTestHarness h(1);
+				Prepare(h, pr.ops, pr.setup, 0);
+				const u64 compiles0 = mVUPersist::GetBlockCompileCount(1);
+				h.RunNoDiff(); // (the JIT pass loads the program)
+				ASSERT_TRUE(mVUProgCache::GetStats(1).enabled) << where;
+				mVUProgCache::TestWaitForPreload(1);
+				EXPECT_EQ(Diff(ref, Take(h)), "") << where << ": the first run of the loaded program";
+				EXPECT_GE(mVUProgCache::GetStats(1).payloadHits, 1u) << where << ": the program was not loaded from the cache";
+				EXPECT_EQ(mVUProgCache::GetStats(1).payloadRejects, 0u) << where;
+				EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), compiles0) << where << ": the load compiled blocks";
+				const vuopt::live::Stats before = vuopt::live::GetStats();
+				for (int i = 0; i < 14; i++)
+				{
+					h.RunJitPreserveBlockCache();
+					EXPECT_EQ(Diff(ref, Take(h)), "") << where << ": session two, run " << i;
+				}
+				if (pr.second)
+					for (int i = 0; i < 3; i++)
+					{
+						h.SetStartPc(pr.second);
+						h.RunJitPreserveBlockCache();
+						EXPECT_EQ(Diff(ref2, Take(h)), "") << where << ": session two, the second entry, run " << i;
+						h.SetStartPc(0);
+						h.RunJitPreserveBlockCache();
+						EXPECT_EQ(Diff(ref, Take(h)), "") << where << ": session two, the first entry again, run " << i;
+					}
+				const vuopt::live::Stats after = vuopt::live::GetStats();
+				EXPECT_GT(after.tierUps, before.tierUps) << where << ": the loaded program did not tier up";
+				EXPECT_GT(after.regions, before.regions) << where << ": no region was built for the loaded program";
+				EXPECT_GE(mVUPersist::GetStats(1).programsHydrated, 1u) << where;
+			}
+}
+
+namespace
+{
+// StickyLoop with a reader of the sticky bits at its end.
+std::vector<VuOp> StickyReaderLoop(u32 n)
+{
+	std::vector<VuOp> p = StickyLoop(n);
+	p.back() = EBit(P(VFSAND_L(vi::vi4, 0xfc0), VNOP_U()));
+	return p;
+}
+} // namespace
+
+// A program whose image reads the sticky bits of STATUS is loaded from the cache: no microVU compile
+// notices the reader, so the scan of the image at program creation does (it runs before the cache is
+// asked). The tier then keeps the sticky bits, and every run equals microVU's, byte for byte.
+// (Mutation: the scan out of the way, and the tripwire stays armed.)
+TEST_F(VuoptCache, LoadedStickyReaderTripsTheWire)
+{
+	for (int mutation : {0, 1})
+		for (bool fh : {true, false})
+		{
+			const Result ref = Reference(StickyReaderLoop(10), SetupSticky, fh);
+			RecompilerTestEnvironment::ResetVuBlockCache(1);
+			NewProcess();
+			RecursiveRm(root_ + "/vu_jit");
+			{
+				EmuConfig.Cpu.Recompiler.EnableVUProgramCache = true;
+				LiveScope s1(false, 4, fh);
+				VuTestHarness h(1);
+				Prepare(h, StickyReaderLoop(10), SetupSticky, 0);
+				h.RunNoDiff();
+				ASSERT_TRUE(mVUProgCache::GetStats(1).enabled);
+				h.RunJitPreserveBlockCache();
+				RecompilerTestEnvironment::ResetVuBlockCache(1);
+				ASSERT_GE(mVUProgCache::GetStats(1).payloadWrites, 1u);
+			}
+			EmuConfig.Cpu.Recompiler.EnableVUProgramCache = false;
+			NewProcess();
+			LiveScope s2(true, 4, fh);
+			if (mutation)
+				vuopt::live::SetTripwireMutation(vuopt::live::TripMask(vuopt::live::kTripMutProgramImage));
+			VuTestHarness h(1);
+			Prepare(h, StickyReaderLoop(10), SetupSticky, 0);
+			const u64 compiles0 = mVUPersist::GetBlockCompileCount(1);
+			h.RunNoDiff();
+			EXPECT_GE(mVUProgCache::GetStats(1).payloadHits, 1u) << "the program was not loaded from the cache";
+			EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), compiles0) << "the load compiled blocks";
+			if (mutation)
+			{
+				EXPECT_FALSE(vuopt::live::StickyTripped()) << "with the scan out of the way, nothing else sees a loaded reader (the compile hook has no compile to see)";
+				continue;
+			}
+			ASSERT_TRUE(vuopt::live::StickyTripped()) << "flagHack " << fh << ": the load of a sticky reader did not set the tripwire off";
+			EXPECT_EQ(vuopt::live::StickyTripCause(), vuopt::live::TripCause::ProgramImage);
+			EXPECT_EQ(Diff(ref, Take(h)), "") << "the first run of the loaded program";
+			const vuopt::live::Stats before = vuopt::live::GetStats();
+			for (int i = 0; i < 14; i++)
+			{
+				h.RunJitPreserveBlockCache();
+				EXPECT_EQ(Diff(ref, Take(h)), "") << "flagHack " << fh << " run " << i;
+			}
+			const vuopt::live::Stats after = vuopt::live::GetStats();
+			EXPECT_GT(after.tierUps, before.tierUps);
+			EXPECT_EQ(after.stickyDropped, before.stickyDropped) << "no region built after the trip drops the sticky byte";
+		}
 }
 
 } // namespace recompiler_tests
