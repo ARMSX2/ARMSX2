@@ -46,6 +46,8 @@
 #include "arm64/microVU_Persist-arm64.h"
 #include "arm64/microVU_ProgCache-arm64.h"
 
+extern bool mVUvuoptVU0WindowHook(); // (microVU_VuOpt-arm64.inl)
+
 #include <gtest/gtest.h>
 
 #include <cinttypes>
@@ -491,6 +493,9 @@ constexpr AbiPin kPins[] = {
 	// abi 60: VU0's window onto VU1's registers calls the transfer thunk for the STATUS quadword
 	// without MTVU too (vu0LoadStore only).
 	{60, {0xcc5d8ed2aff67456, 0x3740d9d84d609b95, 0x49140181ed6daa6d, 0x8cd5553cb2a8daba, 0x30d527dd8fe4d10c, 0x1a887bba90ef1a41, 0x51df58673dbf1b10, 0x929029ca42ca98c1, 0x01e61f64bdbc1a38, 0x01c604cf32776547, 0x024ff6cd7fabd2c8, 0xace1f4023f0e8bf8, 0x021b1d8ea47dc8e8, 0xc8c50b58f3f9badd, 0x530cf428707c7f11, 0x0be3b676bc50b217, 0xd91488a73ad2068a, 0xd304c548206d672b, 0x0cc9eeeb40bf56e4, 0x43b9ebeda584952a, 0xed424f10e0661fdf, 0x029663d8580ead20, 0x72a4cdceb608619f, 0xe34a4dda6a35b3df, 0xf9c3d13580d762e9, 0x2c012558a97e0052, 0xdb4ba733afd41dec, 0x48975533172d5ce5}},
+	// abi 61: that hook only while the vuopt tier is wanted. The digests run with the setting off,
+	// so vu0LoadStore is abi 59's again.
+	{61, {0xcc5d8ed2aff67456, 0x3740d9d84d609b95, 0x49140181ed6daa6d, 0x8cd5553cb2a8daba, 0x30d527dd8fe4d10c, 0x1a887bba90ef1a41, 0x51df58673dbf1b10, 0x929029ca42ca98c1, 0x01e61f64bdbc1a38, 0x01c604cf32776547, 0x024ff6cd7fabd2c8, 0xace1f4023f0e8bf8, 0x021b1d8ea47dc8e8, 0xc8c50b58f3f9badd, 0x530cf428707c7f11, 0x0be3b676bc50b217, 0xd91488a73ad2068a, 0xd304c548206d672b, 0x0cc9eeeb40bf56e4, 0x43b9ebeda584952a, 0xed424f10e0661fdf, 0x029663d8580ead20, 0x72a4cdceb608619f, 0xe34a4dda6a35b3df, 0xf9c3d13580d762e9, 0x2c012558a97e0052, 0xdb4ba733afd41dec, 0x0e5205525af143af}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -1175,6 +1180,44 @@ TEST(MvuAbiDigest, EmittedShapeIndependentOfPriorCompile)
 		<< afterLow << " after VIADD vi5,vi6 vs 0x" << afterHigh
 		<< " after VIADD vi9,vi10) — mvuPreloadRegisters over-ran the block end "
 		   "into stale IRinfo.info[]. Emitted shape must be history-independent.";
+}
+
+// The vuopt tripwire's hook on VU1's STATUS quadword of VU0's register window is emitted only while
+// the tier is wanted (section 9ad, ABI 61): with EnableVUOpt off VU0's load/store shape is abi 59's,
+// from before the hook, and with it on it is abi 60's, the hook in. VU0's reset (the harness resets
+// before each compile) is where the choice is taken, as VMManager's settings change resets both VUs.
+TEST(MvuAbiDigest, Vu0WindowHookOnlyWhileVuoptIsWanted)
+{
+	ASSERT_TRUE(RecompilerTestEnvironment::IsReady());
+	mVUPersist::SetRecordingEnabled(true);
+	const auto findPin = [](u32 abi) -> u64 {
+		for (const AbiPin& p : kPins)
+			if (p.abi == abi)
+				return p.digests.vu0LoadStore;
+		return 0;
+	};
+	const auto probe = {
+		LowerOnly(VLQ_L(mask::xyzw, vf::vf4, vi::vi0, 3)),
+		LowerOnly(VSQ_L(mask::xyzw, vf::vf4, vi::vi1, 2)),
+		LowerOnly(VILW_L(mask::x, vi::vi2, vi::vi1, 4)),
+		LowerOnly(VISWR_L(mask::x, vi::vi2, vi::vi1)),
+		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf6, vf::vf4, vf::vf1)),
+	};
+	const bool savedOpt = EmuConfig.Cpu.Recompiler.EnableVUOpt;
+	EmuConfig.Cpu.Recompiler.EnableVUOpt = false;
+	const u64 off = CompileAndDigest(probe);
+	const bool hookOff = mVUvuoptVU0WindowHook();
+	EmuConfig.Cpu.Recompiler.EnableVUOpt = true;
+	const u64 on = CompileAndDigest(probe);
+	const bool hookOn = mVUvuoptVU0WindowHook();
+	EmuConfig.Cpu.Recompiler.EnableVUOpt = savedOpt;
+	RecompilerTestEnvironment::ResetVuBlockCache(0);
+	mVUPersist::SetRecordingEnabled(false);
+
+	EXPECT_FALSE(hookOff);
+	EXPECT_TRUE(hookOn);
+	EXPECT_EQ(off, findPin(59)) << std::hex << "setting off: 0x" << off << ", abi 59 pinned 0x" << findPin(59);
+	EXPECT_EQ(on, findPin(60)) << std::hex << "setting on: 0x" << on << ", abi 60 pinned 0x" << findPin(60);
 }
 
 } // namespace recompiler_tests

@@ -233,7 +233,10 @@
 //       addresses VU1's STATUS quadword: without MTVU it now compares the window index and
 //       calls the transfer thunk for that one quadword, and the thunk saves every
 //       caller-saved register and passes the address to its C function.
-static constexpr u32 kMvuCompilerAbiVersion = 60;
+//  61 — that hook is emitted only while the vuopt tier is wanted (EnableVUOpt and what it needs);
+//       with it off VU0's window sequence is version 59's again. The options sentinel of VU0
+//       carries the choice (vu0WindowHook).
+static constexpr u32 kMvuCompilerAbiVersion = 61;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
@@ -1066,6 +1069,9 @@ extern void* mVUlookupProg_VU1(u32 startPC, u32 cycles);
 //   - mVUvuoptLiveHooks: the compile hooks for a tiered-up program.
 extern void  mVUvuoptSyncConfig(microVU& mVU);
 extern bool  mVUvuoptEnabled();
+// Whether microVU0 emits the sticky tripwire's hook on VU1's STATUS quadword of its register window
+// (mVUaddrFix): the tier wanted by the config, latched at VU0's last init or reset.
+extern bool  mVUvuoptVU0WindowHook();
 extern bool  mVUvuoptPending();
 extern void* mVUlookupProgTier_VU1(u32 startPC, u32 cycles);
 extern void* mVUvuoptAfterSearch(microVU& mVU, u32 startPC, uptr pState, void* result);

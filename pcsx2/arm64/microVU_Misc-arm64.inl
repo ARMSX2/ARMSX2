@@ -371,12 +371,13 @@ __fi void mVUaddrFix(mV, const a64::Register& gprReg)
 			if (mVU.cop2)
 				armEmitEEClobberedPinReloadForCOP2();
 		}
-		else
+		else if (mVUvuoptVU0WindowHook())
 		{
 			// Nothing to wait for. The access to VU1's STATUS register (VI[16]: quadword 48 of the
 			// window) goes to the same thunk, which saves every register a C call can clobber, so
 			// no pin or cached value needs to be flushed around it. Any other quadword of the
-			// window costs the compare and the branch.
+			// window costs the compare and the branch. Only while the vuopt tier is wanted: it is
+			// the tripwire's hook, and with the setting off nothing is emitted here.
 			a64::Label notStatus;
 			armAsm->And(RWSCRATCH, gprReg.W(), 0x3f);
 			armAsm->Cmp(RWSCRATCH, VU0_WINDOW_VU1_STATUS_QWORD);

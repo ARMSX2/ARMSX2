@@ -344,13 +344,16 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 		// XgKickHack, which swaps a VI store for a whole cycle-by-cycle
 		// XGKICK sync at each kick and at every program end.
 		u8  xgKickHack;
+		// VU0 only: the vuopt tripwire's hook in VU0's register-window access (mVUaddrFix). 0 when
+		// the tier is not wanted, which emits what version 59 emitted.
+		u8  vu0WindowHook;
 		// Reserved tail so adding a future option byte doesn't shift downstream
 		// fields. Reclaim bytes with 0 == "feature off / old behavior" so the
 		// off-state sentinel stays bit-identical (no wholesale eviction for
 		// users who never enable the feature); a reclaimed byte whose zero
 		// state is NOT emission-identical needs a kMvuCompilerAbiVersion bump
 		// in the same commit.
-		u8  reserved[9];
+		u8  reserved[8];
 	};
 	static_assert(sizeof(Snapshot) == 64, "options sentinel layout drifted — bump kMvuCompilerAbiVersion");
 
@@ -395,6 +398,7 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 	s.progCacheRecording = mVUPersist::IsRecordingEnabled() ? 1 : 0;
 	s.threadVU1          = THREAD_VU1 ? 1 : 0;
 	s.xgKickHack         = EmuConfig.Gamefixes.XgKickHack ? 1 : 0;
+	s.vu0WindowHook      = (mVU.index == 0 && mVUvuoptVU0WindowHook()) ? 1 : 0;
 
 	mVU.optionsSentinel      = XXH3_128bits(&s, sizeof(s));
 	mVU.optionsSentinelValid = true;

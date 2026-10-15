@@ -431,22 +431,39 @@ namespace vuopt::live
 #endif
 } // namespace vuopt::live
 
-void mVUvuoptSyncConfig(microVU& mVU)
+// Whether the config asks for the tier and allows it: the setting, VU1 recompiled, and none of the
+// gamefixes or the clamp mode vuopt does not model (it declines every block under them, see
+// RegionTier::OnCompile, so tiering a program up would only set its microVU code aside).
+static bool vuoptWantedByConfig()
 {
-	if (mVU.index != 1)
-		return;
-	// (this reset throws away every region there was; the next ones are built under the tripwire)
-	s_trip.rebuildDue.store(false, std::memory_order_release);
-	s_trip.dropLive.store(false, std::memory_order_release);
-
-	// The gamefixes and clamp mode vuopt does not model (it declines every
-	// block under them, see RegionTier::OnCompile): tiering a program up would
-	// only set its microVU code aside.
 	const Pcsx2Config::RecompilerOptions& rc = EmuConfig.Cpu.Recompiler;
 	const bool supported = !CHECK_VU_EXACT(1) && !CHECK_XGKICKHACK && !EmuConfig.Gamefixes.IbitHack &&
 		!CHECK_VUOVERFLOWHACK && !CHECK_VUADDSUBHACK && !EmuConfig.Gamefixes.VUSyncHack &&
 		!EmuConfig.Gamefixes.FullVU0SyncHack;
-	const bool want = rc.EnableVUOpt && rc.EnableVU1 && supported;
+	return rc.EnableVUOpt && rc.EnableVU1 && supported;
+}
+
+// microVU0 emits the tripwire's window hook (mVUaddrFix) only while the tier is wanted, so with the
+// setting off VU0's code is what it was before vuopt. Latched at VU0's own init and reset, which a
+// change of any of the settings above always goes through (VMManager::CheckForCPUConfigChanges resets
+// both VUs), and which also builds VU0's options sentinel from it: a persisted VU0 program with the
+// hook is never loaded into a session without it, or the other way round.
+static bool s_vu0WindowHook = false;
+bool mVUvuoptVU0WindowHook() { return s_vu0WindowHook; }
+
+void mVUvuoptSyncConfig(microVU& mVU)
+{
+	if (mVU.index != 1)
+	{
+		s_vu0WindowHook = vuoptWantedByConfig();
+		return;
+	}
+	// (this reset throws away every region there was; the next ones are built under the tripwire)
+	s_trip.rebuildDue.store(false, std::memory_order_release);
+	s_trip.dropLive.store(false, std::memory_order_release);
+
+	const Pcsx2Config::RecompilerOptions& rc = EmuConfig.Cpu.Recompiler;
+	const bool want = vuoptWantedByConfig();
 
 	if (want != s_vuopt.enabled)
 		DevCon.WriteLn(Color_StrongBlue, "vuopt: live tier %s%s", want ? "ENABLED" : "disabled",
