@@ -31,7 +31,12 @@
 // ---------------------------------------------------------------------------------------------
 // States of the IOP thread (Threaded)
 //
-//   PARKED   no work. iop_parked is set and the thread is in WorkSema::WaitForWorkWithSpin.
+//   IDLE     no work, awake. The pacing loop watches the EE's words (the watermark's cache line) for
+//            Params::idle_spin_ns, waiting on that line with WFE where the CPU has it. `idle` is set.
+//            A publish is a plain store the IOP sees directly: the EE sends no wake-up.
+//   SLEEPING no work for idle_spin_ns. `sleeping` is set and the thread blocks in the kernel
+//            (WorkSema::WaitForWork). Holds, CallOnEE and Lockstep park the same way (ParkUntil),
+//            spinning first on the semaphore.
 //   RUNNING  the pacing loop of design section 5.1: apply host commands, kicks and due items, run
 //            a slice to min(ee_wm, next item stamp), publish iop_pos.
 //   HELD     the EE asked for a hold, the IOP ran up to the hold's cycle and stopped. It touches
@@ -40,11 +45,12 @@
 //            or empties the queue, and when the object is stopped.
 //
 // Transitions, with the atomic that makes each one happen:
-//   RUNNING -> PARKED   no budget: `iop_parked.store(true, seq_cst)`, then a re-check of ee_wm, the
-//                       queues, the kicks, the hold word and the host-command flag with seq_cst
-//                       loads. Work found: back to RUNNING. None: WaitForWorkWithSpin.
-//   PARKED -> RUNNING   a wake-up (WorkSema::NotifyOfWork) from the EE or a host thread, or from
-//                       Stop(). The EE sends the filtered wake only when it reads iop_parked set.
+//   RUNNING -> IDLE     no budget. Plain stores; the IOP re-checks for work on every change of the
+//                       EE's words.
+//   IDLE -> RUNNING     work: a new watermark with budget, an item, a hold, a host command...
+//   IDLE -> SLEEPING    idle_spin_ns without work: the sleep handshake below.
+//   SLEEPING -> RUNNING a wake-up (WorkSema::NotifyOfWork) from the EE or a host thread, or from
+//                       Stop(). The EE sends the filtered wake only when it reads `sleeping` set.
 //   RUNNING -> HELD     the EE stores hold_gen (relaxed), then hold_target (release). The IOP
 //                       loads hold_target (acquire), runs to it, and stores held_gen = gen
 //                       (release). The EE reads held_gen (acquire) and so sees everything the IOP
@@ -60,15 +66,41 @@
 //                       Idle) and returns false, a call already Running is waited out.
 //   any -> exit         Stop() stores shutdown (release), notifies, joins. A hold wait ends on shutdown.
 //
-// A wake-up can be missed in one narrow case, accepted by the design (section 3.9): the EE
-// publishes ee_wm and then reads iop_parked relaxed, and the IOP sets iop_parked and then re-reads
-// ee_wm. Neither side orders its store before its load, so both can read the old value and the IOP
-// sleeps with budget pending. Every spin wakes a parked IOP on entry and every 1024 iterations,
-// and the next event test wakes it too, so the cost is one wake-up latency. Making the EE's store
-// and load sequentially consistent would close the race, but the load would then have to wait for
-// the store's cache line to leave the IOP's core on every event test, which is the cost the design
-// avoids. The wake-ups that must never be lost are not filtered: releasing a hold, finishing a
-// CallOnEE, stopping, and posting a host command always notify.
+// ---------------------------------------------------------------------------------------------
+// Going to sleep: why no wake-up is lost (step 12b; this replaces the accepted lost wake-up of
+// design 3.9)
+//
+// The EE gives the IOP work by a store: the watermark (PublishWatermark, and PostE2I after its push),
+// the ring push, the kick bits, ee_spinning. Then it reads `sleeping` and wakes the IOP only if it is
+// set. The IOP, before it sleeps, stores `sleeping = true` and then reads all of those again. That is
+// Dekker's pattern: each side stores, then loads what the other stored. It is safe only if, for each
+// side, its store is ordered before its load; then at least one of the two loads sees the other's
+// store, so either the EE sees `sleeping` and wakes the IOP, or the IOP's re-check sees the work and
+// it does not sleep. Without that order both loads can read the old values (store buffering, which
+// ARM allows), and the IOP sleeps with work pending.
+//
+// The order costs a full barrier on each side, and a full barrier after the EE's watermark store has
+// to wait for that store to leave the core: a cache-line transfer to the IOP's core on every event
+// test, which is what this design is avoiding. So the barrier is made asymmetric (SleepBarrier):
+//   - Linux and Android: the IOP calls membarrier(MEMBARRIER_CMD_PRIVATE_EXPEDITED) between its
+//     store and its re-check. The kernel interrupts every core running a thread of this process and
+//     runs a full barrier there, so the EE thread passes a full barrier at some point P between the
+//     IOP's store of `sleeping` and the IOP's re-check. If P comes before the EE's store of the work
+//     in program order, the EE's later load of `sleeping` sees true. If P comes after it, the work is
+//     visible before membarrier returns, and the IOP's re-check sees it. The EE needs only a compiler
+//     barrier between its store and its load. (A descheduled EE thread passed a full barrier when it
+//     was switched out.) This is the pattern of the membarrier(2) manual.
+//   - Elsewhere, or when the kernel refuses MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED, or when
+//     Params::sleep_barrier says Fence: a seq_cst fence on both sides, the EE's after every store it
+//     wakes for. Correct, and as slow as the line transfer.
+// The barrier is chosen at Start() and fixed for the thread's life. A membarrier call that fails
+// after a successful registration (it should not) makes the IOP go back to watching instead of
+// sleeping, which is always safe.
+//
+// The IOP sleeps only after idle_spin_ns of watching with nothing to do, so membarrier runs about
+// once per EE stall (a frame-limiter sleep, a GS sync, a pause), not per event test. The wake-ups
+// that are not filtered by `sleeping` stay unfiltered: releasing a hold, finishing a CallOnEE,
+// stopping, and posting a host command always notify.
 //
 // ---------------------------------------------------------------------------------------------
 // Why the EE spinning on the IOP cannot deadlock with the IOP waiting on the EE
@@ -159,6 +191,18 @@ namespace IopThread
 	/// What hold_target holds when no hold is requested. No EE cycle reaches it.
 	inline constexpr u64 kNoHold = ~u64(0);
 
+	/// How long an idle IOP watches the watermark before it sleeps (Params::idle_spin_ns): 50 us, the
+	/// semaphore's own spin (SPIN_TIME_NS). The EE publishes every 0.1 to 6 us while it runs, so the IOP
+	/// sleeps only when the EE stops publishing: a frame-limiter sleep, a GS sync, a pause.
+	inline constexpr u32 kDefaultIdleSpinNs = 50'000;
+
+	/// The barrier of the sleep handshake (IopThread.h, "Going to sleep").
+	enum class SleepBarrier : u8
+	{
+		Auto, // membarrier(PRIVATE_EXPEDITED) on the IOP and a compiler barrier on the EE where the kernel has it; else Fence
+		Fence, // a seq_cst fence on both sides
+	};
+
 	/// What a hold is for. It only changes how the EE waits.
 	enum class HoldKind : u8
 	{
@@ -242,9 +286,18 @@ namespace IopThread
 		/// VMManager::GetState() being Stopping or Shutdown. A hold never asks.
 		std::function<bool()> should_stop;
 
-		/// Test only. Asked before an EE-side wake-up that was filtered by iop_parked is sent;
+		/// Test only. Asked before an EE-side wake-up that was filtered by `sleeping` is sent;
 		/// true loses it. Never consulted for the wake-ups that must not be lost.
 		std::function<bool(WakeSite)> drop_wake;
+
+		/// How long an idle IOP watches the EE's words before it goes to sleep in the kernel. While it
+		/// watches, a publish costs the EE nothing but its store. 0 sleeps at once (a test of the sleep
+		/// handshake).
+		u32 idle_spin_ns = kDefaultIdleSpinNs;
+
+		/// Which barrier pairs the EE's stores with the IOP's announcement that it is going to sleep (see
+		/// "Going to sleep"). Auto takes membarrier where the kernel has it. Fence is for the tests.
+		SleepBarrier sleep_barrier = SleepBarrier::Auto;
 	};
 
 	/// A snapshot of the counters. The EE-side ones are written by the EE thread, the rest by the
@@ -255,7 +308,7 @@ namespace IopThread
 		u64 lag_spins; // CheckLag calls that had to wait (W1)
 		u64 lag_spin_iterations;
 		u64 lag_stall_ns; // wall time spent in W1 spins
-		u64 lag_spins_parked; // W1 spins that found the IOP parked when they began
+		u64 lag_spins_parked; // W1 spins that found the IOP sleeping (or about to) when they began
 		u64 lag_parked_stall_ns; // ... and the wall time those spins took
 		u64 hold_requests; // holds that went through the handshake (W2/W4)
 		u64 emu_hold_requests; // ... of which on the emulation path (W2): EE access to IOP space, SIF pumps, the PS1 switch
@@ -282,6 +335,12 @@ namespace IopThread
 		u64 calls_cancelled;
 		u64 i2e_full_waits; // PostI2E calls that found the queue full
 		u64 kicks_applied;
+		// Appended in step 12b (the eerunner IOPSTATS-RAW parsers read the fields above by name).
+		u64 lag_spins_idle; // EE: W1 spins that found the IOP idle and awake (watching the watermark)
+		u64 lag_idle_stall_ns; // EE: ... and their wall time
+		u64 idle_waits; // IOP: times the pacing loop went idle
+		u64 idle_ns; // IOP: wall time idle, sleeping included
+		u64 sleep_barrier_membarrier; // 1 if the sleep handshake uses membarrier, 0 if the fence
 	};
 
 	namespace detail
@@ -343,8 +402,11 @@ namespace IopThread
 			// Pairs with the acquire load of ee_wm in the IOP's loop: every item stamped at or
 			// before `cycle` was pushed before this store, so the IOP sees it.
 			m_ee.wm.store(cycle, std::memory_order_release);
-			// Relaxed on purpose: see "A wake-up can be missed" above.
-			if (m_iop.parked.load(std::memory_order_relaxed)) [[unlikely]]
+			// The EE half of the sleep handshake ("Going to sleep"): the store above, then the load of
+			// `sleeping`. `sleeping` has a cache line of its own that the IOP writes only when it goes to
+			// sleep, so the load hits the EE's cache.
+			EeStoreLoadBarrier();
+			if (m_sleep.sleeping.load(std::memory_order_relaxed)) [[unlikely]]
 				WakeAfterPublish(cycle);
 		}
 
@@ -439,7 +501,10 @@ namespace IopThread
 		u64 PublishedPos() const { return m_iop.pos_pub.load(std::memory_order_acquire); }
 		/// The last watermark the EE published.
 		u64 Watermark() const { return m_ee.wm.load(std::memory_order_acquire); }
-		bool IsParked() const { return m_iop.parked.load(std::memory_order_acquire); }
+		/// The IOP has nothing to do: idle (watching the watermark) or asleep, in the pacing loop or in any park.
+		bool IsParked() const { return m_iop.idle.load(std::memory_order_acquire) || IsSleeping(); }
+		/// The IOP has announced it is going to sleep in the kernel, so a publish has to wake it.
+		bool IsSleeping() const { return m_sleep.sleeping.load(std::memory_order_acquire); }
 		/// The hint the EE sets while it is in a spin.
 		bool EeSpinning() const { return m_ee.spinning.load(std::memory_order_relaxed); }
 		/// True on the IOP thread, between Start() and Stop().
@@ -511,13 +576,27 @@ namespace IopThread
 		void ServeCall();
 		void WakeAfterPublish(u64 cycle);
 		void WakeIfParked(WakeSite site);
+		/// The EE's half of the sleep handshake's barrier: a compiler barrier with membarrier, a full fence without.
+		__fi void EeStoreLoadBarrier()
+		{
+			if (m_ee_fence) [[unlikely]]
+				std::atomic_thread_fence(std::memory_order_seq_cst);
+			else
+				std::atomic_signal_fence(std::memory_order_seq_cst);
+		}
+		// IOP thread: the idle wait of the pacing loop, and the IOP's half of the barrier.
+		void IdleWait();
+		bool IopStoreLoadBarrier();
 		bool ShouldStop();
 		u64 LockstepCall(u32 kind, u64 arg);
 
+		// Read by both threads, written only while the thread is stopped (m_lag: by the EE, rarely).
 		Params m_params;
 		IopThreadMode m_mode = IopThreadMode::Off;
 		s64 m_lag = 0;
 		s64 m_min_slice = 0;
+		u64 m_idle_spin_ns = 0;
+		bool m_use_membarrier = false; // the IOP's half of the sleep handshake
 
 		Threading::Thread m_thread;
 		bool m_running = false; // EE thread
@@ -540,10 +619,18 @@ namespace IopThread
 		struct alignas(kChannelLineSize) IopWords
 		{
 			std::atomic<u64> pos_pub{0}; // iop_pos
-			std::atomic<bool> parked{false}; // iop_parked
+			std::atomic<bool> idle{false}; // no work: watching or sleeping (statistics and tests)
 			std::atomic<u32> held_gen{0};
 			std::atomic<u64> done_seq{0}; // Lockstep: the last request finished
 		} m_iop;
+
+		// The IOP's announcement that it is going to sleep (`sleeping`, design 3.9's iop_parked). A line of
+		// its own, written only when the IOP sleeps and wakes, so the EE's load of it on every event test
+		// stays in the EE's cache.
+		struct alignas(kChannelLineSize) SleepWord
+		{
+			std::atomic<bool> sleeping{false};
+		} m_sleep;
 
 		// The CallOnEE request slot. The IOP fills fn and arg and moves the state to Posted
 		// (release); the EE claims it with a CAS, runs it, and moves it to Done (release).
@@ -562,6 +649,7 @@ namespace IopThread
 
 		// EE-thread private.
 		u64 m_ee_wm_local = 0;
+		bool m_ee_fence = false; // the EE's half of the sleep handshake is a fence (no membarrier)
 		u64 m_last_seen_iop_pos = 0;
 		u32 m_hold_depth = 0;
 		bool m_hold_requested = false; // hold_target is set for a hold this thread owns
@@ -586,6 +674,7 @@ namespace IopThread
 		detail::Counter m_wakes_sent, m_wakes_dropped, m_stop_checks, m_handoffs;
 		detail::Counter m_slices, m_items_applied, m_parks, m_holds_entered, m_calls_posted, m_calls_cancelled;
 		detail::Counter m_i2e_full_waits, m_kicks_applied;
+		detail::Counter m_lag_spins_idle, m_lag_idle_stall_ns, m_idle_waits, m_idle_ns;
 	};
 
 	/// A full stop of the IOP, for the EE thread to touch IOP state safely (design 3.8.1). Re-entrant.

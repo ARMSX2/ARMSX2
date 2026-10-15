@@ -2512,4 +2512,152 @@ namespace
 		thread->CountSifPump();
 		EXPECT_EQ(thread->GetStats().sif_ee_pumps, 2u);
 	}
+
+	// ============================================================ the idle wait and the sleep handshake
+
+	TEST_F(IopThreadObject, AnIdleIopSeesEachPublishWithoutAWakeUp)
+	{
+		// The idle IOP watches the watermark itself for idle_spin_ns before it sleeps, and says it is
+		// sleeping only then. While it watches, a publish is a plain store: the EE sends no wake-up, which
+		// is the read-modify-write on the semaphore word the step 12 profile found on every event test.
+		Params p = BaseParams();
+		p.idle_spin_ns = 2'000'000'000; // longer than the test: it never sleeps
+		StopOnExit stop_on_exit(*thread);
+		ASSERT_TRUE(thread->Start(p));
+		ASSERT_TRUE(WaitFor([&] { return thread->IsParked(); }));
+		for (u64 i = 1; i <= 2000; i++)
+		{
+			Publish(i * 100);
+			// WaitFor, not WaitEe: nothing here may wake the IOP.
+			ASSERT_TRUE(WaitFor([&] { return thread->PublishedPos() >= i * 100; }, 2s)) << "publish " << i;
+		}
+		const Stats stats = thread->GetStats();
+		EXPECT_EQ(stats.wakes_sent, 0u) << "a publish to an IOP that watches the watermark must not notify it";
+		EXPECT_EQ(stats.parks, 0u) << "the IOP never stopped watching";
+		EXPECT_FALSE(thread->IsSleeping());
+		EXPECT_GE(stats.idle_waits, 1u);
+	}
+
+	TEST_F(IopThreadObject, AfterItsIdleSpinTheIopSleepsAndAPublishWakesIt)
+	{
+		Params p = BaseParams();
+		p.idle_spin_ns = 200'000; // 200 us
+		StopOnExit stop_on_exit(*thread);
+		ASSERT_TRUE(thread->Start(p));
+		// `sleeping` is announced before the barrier and the re-check, and the sleep is counted after them.
+		ASSERT_TRUE(WaitFor([&] { return thread->GetStats().parks >= 1 && thread->IsSleeping(); }));
+		EXPECT_TRUE(thread->IsParked()) << "a sleeping IOP is also idle";
+		Publish(500);
+		ASSERT_TRUE(WaitFor([&] { return thread->PublishedPos() >= 500; }, 2s)) << "the publish's own wake-up must reach a sleeping IOP";
+		EXPECT_GE(thread->GetStats().wakes_sent, 1u);
+	}
+
+	// The handshake that keeps an EE publish and an IOP going to sleep from missing each other (IopThread.h,
+	// "Going to sleep"). Every round the EE publishes once and then waits WITHOUT waking anybody, so a lost
+	// wake-up leaves the IOP asleep with budget and the round times out. idle_spin_ns = 0 sends the IOP
+	// straight from "no work" to the sleep handshake, and the EE publishes after a short random delay, so the
+	// EE's store and the IOP's announcement land close together in most rounds. Run with each barrier: the
+	// default (membarrier where the kernel has it) and the plain fence on both sides.
+	struct HammerCase
+	{
+		SleepBarrier barrier;
+		bool through_post; // publish through PostE2I (an item at the new watermark) rather than PublishWatermark
+		const char* name;
+	};
+
+	class IopThreadSleepHandshake : public IopThreadObject, public ::testing::WithParamInterface<HammerCase>
+	{
+	};
+
+	TEST_P(IopThreadSleepHandshake, NoPublishIsSleptThrough)
+	{
+		const HammerCase hc = GetParam();
+		Params p = BaseParams();
+		p.idle_spin_ns = 0;
+		p.sleep_barrier = hc.barrier;
+		fake.block = 1;
+		StopOnExit stop_on_exit(*thread);
+		ASSERT_TRUE(thread->Start(p));
+		Rng rng(0x5eed + static_cast<u64>(hc.barrier) * 2 + (hc.through_post ? 1 : 0));
+
+		constexpr u32 kRounds = 200000;
+		u64 cycle = 0;
+		u32 lost = 0;
+		for (u32 round = 0; round < kRounds && !aborted.load(); round++)
+		{
+			// A random delay of 0 to a few microseconds, so that the publish falls on every phase of the IOP's
+			// way to sleep: still deciding, watching (none with idle_spin_ns = 0), announcing, in the barrier,
+			// re-checking, in the kernel.
+			const u32 spins = rng.Below(4) == 0 ? 0 : rng.Below(64) * rng.Below(64);
+			for (u32 s = 0; s < spins; s++)
+				SpinHint();
+			cycle += 1 + rng.Below(200);
+			ee_cycle = cycle;
+			if (hc.through_post)
+				ASSERT_TRUE(thread->PostE2I(cycle, 0, round));
+			else
+				thread->PublishWatermark(cycle);
+			// Spin, do not sleep, while waiting: the next round's publish has to follow the IOP's last slice
+			// by no more than the random delay, so that it lands while the IOP is on its way to sleep.
+			bool reached = false;
+			const auto end = Clock::now() + 1s;
+			for (u32 n = 0;; n++)
+			{
+				if (thread->PublishedPos() >= cycle)
+				{
+					reached = true;
+					break;
+				}
+				if ((n & 1023) == 1023 && (Clock::now() > end || aborted.load(std::memory_order_relaxed)))
+					break;
+				SpinHint();
+			}
+			if (!reached)
+			{
+				lost++;
+				ADD_FAILURE() << hc.name << ": round " << round << ": the IOP slept through the publish of " << cycle
+							  << " (position " << thread->PublishedPos() << ", sleeping " << thread->IsSleeping() << ")";
+				if (lost >= 3)
+					break;
+				thread->Wake(); // recover, to see how often it happens
+			}
+		}
+		const Stats stats = thread->GetStats();
+		EXPECT_EQ(lost, 0u);
+		// The test only means something if the IOP went to sleep many times and many publishes arrived while
+		// it was on its way there. A publish that arrives before the IOP has announced `sleeping` is found
+		// without a wake-up (by its loop or by the re-check), so rounds minus wakes counts those.
+		EXPECT_GE(stats.parks, kRounds / 20) << hc.name << ": too few sleeps to have tested the handshake";
+		std::printf("[  INFO  ] %s: %u rounds, %llu sleeps, %llu wakes sent, %llu publishes found without a wake-up\n", hc.name, kRounds,
+			static_cast<unsigned long long>(stats.parks), static_cast<unsigned long long>(stats.wakes_sent),
+			static_cast<unsigned long long>(kRounds > stats.wakes_sent ? kRounds - stats.wakes_sent : 0));
+	}
+
+	INSTANTIATE_TEST_SUITE_P(Barriers, IopThreadSleepHandshake,
+		::testing::Values(HammerCase{SleepBarrier::Auto, false, "auto-publish"}, HammerCase{SleepBarrier::Auto, true, "auto-post"},
+			HammerCase{SleepBarrier::Fence, false, "fence-publish"}, HammerCase{SleepBarrier::Fence, true, "fence-post"}),
+		[](const ::testing::TestParamInfo<HammerCase>& info) {
+			std::string name = info.param.name;
+			std::replace(name.begin(), name.end(), '-', '_');
+			return name;
+		});
+
+	TEST_F(IopThreadObject, AWaitThatFindsTheIopIdleButAwakeIsCountedAsIdleNotParked)
+	{
+		// A minimum slice above the EE's lead keeps the IOP idle (watching, awake) after the publish, until the
+		// EE's spin tells it to run, so the spin finds it idle every time.
+		Params p = BaseParams();
+		p.lag = 4096;
+		p.min_slice = 1 << 20;
+		p.idle_spin_ns = 2'000'000'000;
+		StopOnExit stop_on_exit(*thread);
+		ASSERT_TRUE(thread->Start(p));
+		ASSERT_TRUE(WaitFor([&] { return thread->IsParked(); }));
+		Publish(20000);
+		EXPECT_TRUE(thread->CheckLag(20000));
+		const Stats stats = thread->GetStats();
+		EXPECT_EQ(stats.lag_spins, 1u);
+		EXPECT_EQ(stats.lag_spins_parked, 0u) << "the IOP was awake, watching the watermark";
+		EXPECT_EQ(stats.lag_spins_idle, 1u);
+	}
 } // namespace

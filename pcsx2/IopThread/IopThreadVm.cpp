@@ -667,10 +667,11 @@ namespace IopThread
 	std::string FormatStats(const Stats& t, double frames)
 	{
 		const double f = std::max(frames, 1.0);
-		return fmt::format("W1 {:.2f}/f {:.1f} us/f (found IOP parked {:.2f}/f {:.1f} us/f) | W2 {:.2f}/f {:.1f} us/f | I2E {:.1f}/f | SIF pumps ee {:.2f}/f iop {:.2f}/f | IOP sleeps {:.1f}/f wakes {:.1f}/f | slices {:.0f}/f",
+		return fmt::format("W1 {:.2f}/f {:.1f} us/f (found IOP asleep {:.2f}/f {:.1f} us/f, idle {:.2f}/f {:.1f} us/f) | W2 {:.2f}/f {:.1f} us/f | I2E {:.1f}/f | SIF pumps ee {:.2f}/f iop {:.2f}/f | IOP sleeps {:.1f}/f wakes {:.1f}/f idle {:.0f} us/f | slices {:.0f}/f",
 			t.lag_spins / f, t.lag_stall_ns / 1000.0 / f, t.lag_spins_parked / f, t.lag_parked_stall_ns / 1000.0 / f,
+			t.lag_spins_idle / f, t.lag_idle_stall_ns / 1000.0 / f,
 			t.emu_hold_requests / f, t.emu_hold_stall_ns / 1000.0 / f, t.i2e_drained / f,
-			t.sif_ee_pumps / f, t.calls_posted / f, t.parks / f, t.wakes_sent / f, t.slices / f);
+			t.sif_ee_pumps / f, t.calls_posted / f, t.parks / f, t.wakes_sent / f, t.idle_ns / 1000.0 / f, t.slices / f);
 	}
 
 	std::string OsdStatsLine()

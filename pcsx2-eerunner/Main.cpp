@@ -5033,10 +5033,12 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 					Console.WriteLn(fmt::format(
 						"IOPSTATS-RAW: lag_spins={} lag_spin_iterations={} lag_stall_ns={} lag_spins_parked={} lag_parked_stall_ns={} emu_hold_requests={} emu_hold_stall_ns={} "
 						"hold_requests={} hold_markers={} sif_ee_pumps={} calls_posted={} calls_served={} i2e_drained={} slices={} items_applied={} parks={} wakes_sent={} wakes_dropped={} "
-						"holds_entered={} kicks_applied={} i2e_full_waits={} e2i_full_spins={} hold_sleeps={}",
+						"holds_entered={} kicks_applied={} i2e_full_waits={} e2i_full_spins={} hold_sleeps={} lag_spins_idle={} lag_idle_stall_ns={} idle_waits={} idle_ns={} "
+						"sleep_barrier_membarrier={}",
 						st.lag_spins, st.lag_spin_iterations, st.lag_stall_ns, st.lag_spins_parked, st.lag_parked_stall_ns, st.emu_hold_requests, st.emu_hold_stall_ns,
 						st.hold_requests, st.hold_markers, st.sif_ee_pumps, st.calls_posted, st.calls_served, st.i2e_drained, st.slices, st.items_applied, st.parks, st.wakes_sent,
-						st.wakes_dropped, st.holds_entered, st.kicks_applied, st.i2e_full_waits, st.e2i_full_spins, st.hold_sleeps));
+						st.wakes_dropped, st.holds_entered, st.kicks_applied, st.i2e_full_waits, st.e2i_full_spins, st.hold_sleeps, st.lag_spins_idle, st.lag_idle_stall_ns,
+						st.idle_waits, st.idle_ns, st.sleep_barrier_membarrier));
 #ifdef __linux__
 					u64 iop_vol = 0, iop_invol = 0, ee_vol = 0, ee_invol = 0;
 					const bool have_iop = ReadContextSwitches("IOP", &iop_vol, &iop_invol);

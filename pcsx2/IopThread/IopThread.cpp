@@ -13,6 +13,12 @@
 #include <algorithm>
 #include <chrono>
 
+#if defined(__linux__)
+#include <linux/membarrier.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 namespace IopThread
 {
 	namespace
@@ -28,6 +34,58 @@ namespace IopThread
 
 		// A Lifecycle hold that is sleeping wakes a parked IOP every this many looks.
 		constexpr u64 kSleepingWakeInterval = 64;
+
+		u64 NowNs()
+		{
+			return static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+		}
+
+#if defined(__linux__)
+		long Membarrier(int cmd)
+		{
+			return syscall(__NR_membarrier, cmd, 0, 0);
+		}
+
+		// MEMBARRIER_CMD_PRIVATE_EXPEDITED needs the process registered first (Linux 4.14). Registration is
+		// process-wide and cannot be undone, so it is done once.
+		bool RegisterMembarrier()
+		{
+			static const bool s_ok = [] {
+				const long cmds = Membarrier(MEMBARRIER_CMD_QUERY);
+				if (cmds < 0 || !(cmds & MEMBARRIER_CMD_PRIVATE_EXPEDITED))
+					return false;
+				return Membarrier(MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED) == 0;
+			}();
+			return s_ok;
+		}
+#endif
+
+		// Waits until another core writes the cache line holding `word` (or `word` is already not
+		// `expected`), the event stream fires, or an interrupt comes. Like ShortSpinOn (HostSys.cpp),
+		// for a 64-bit word: LDAXR arms the exclusive monitor on the line, and a store to it by the EE
+		// clears the monitor, which is the event WFE waits for. Elsewhere it is the spin hint.
+		__fi void WaitForLineChange(const std::atomic<u64>& word, u64 expected)
+		{
+#if defined(__aarch64__) && !defined(_MSC_VER)
+			u64 seen;
+			__asm__ __volatile__(
+				"sevl\n"
+				"wfe\n"
+				"ldaxr %0, [%1]\n"
+				"cmp   %0, %2\n"
+				"b.ne  1f\n"
+				"wfe\n"
+				"1:\n"
+				: "=&r"(seen)
+				: "r"(&word), "r"(expected)
+				: "cc", "memory");
+			(void)seen;
+#else
+			(void)word;
+			(void)expected;
+			SpinHint();
+#endif
+		}
 	} // namespace
 
 	Thread::Thread() = default;
@@ -51,6 +109,13 @@ namespace IopThread
 		m_mode = m_params.mode;
 		m_lag = m_params.lag;
 		m_min_slice = std::max<s32>(m_params.min_slice, 0);
+		m_idle_spin_ns = m_params.idle_spin_ns;
+#if defined(__linux__)
+		m_use_membarrier = (m_params.sleep_barrier == SleepBarrier::Auto) && RegisterMembarrier();
+#else
+		m_use_membarrier = false;
+#endif
+		m_ee_fence = !m_use_membarrier;
 
 		// Nothing else touches any of this: the IOP thread does not exist yet. The thread's creation
 		// orders these writes before its first read.
@@ -63,7 +128,8 @@ namespace IopThread
 
 		m_iop_pos = m_params.start_iop_pos;
 		m_iop.pos_pub.store(m_iop_pos, std::memory_order_relaxed);
-		m_iop.parked.store(false, std::memory_order_relaxed);
+		m_iop.idle.store(false, std::memory_order_relaxed);
+		m_sleep.sleeping.store(false, std::memory_order_relaxed);
 		m_iop.held_gen.store(0, std::memory_order_relaxed);
 		m_iop.done_seq.store(0, std::memory_order_relaxed);
 		m_ee_wm_local = m_params.start_ee_cycle;
@@ -85,7 +151,8 @@ namespace IopThread
 				 &m_emu_hold_requests, &m_emu_hold_stall_ns, &m_sif_ee_pumps, &m_hold_requests, &m_hold_markers, &m_hold_spin_iterations, &m_hold_sleeps,
 				 &m_e2i_full_spins, &m_e2i_full_iterations, &m_e2i_full_failfast, &m_i2e_drained, &m_calls_served, &m_wakes_sent,
 				 &m_wakes_dropped, &m_stop_checks, &m_handoffs, &m_slices, &m_items_applied, &m_parks, &m_holds_entered,
-				 &m_calls_posted, &m_calls_cancelled, &m_i2e_full_waits, &m_kicks_applied})
+				 &m_calls_posted, &m_calls_cancelled, &m_i2e_full_waits, &m_kicks_applied, &m_lag_spins_idle, &m_lag_idle_stall_ns,
+				 &m_idle_waits, &m_idle_ns})
 			c->Reset();
 
 		// A hold that is live when the thread starts keeps it stopped: the IOP comes up held at the
@@ -164,21 +231,74 @@ namespace IopThread
 		m_host.RunPending();
 	}
 
-	// Parks until `ready()` says there is work, or until woken. `ready` re-reads everything that can
-	// give the IOP work after iop_parked is set, so work published before the EE saw the flag is
-	// not slept through. The sleep is WorkSema's: it spins for SPIN_TIME_NS first, then blocks.
+	// Parks until `ready()` says there is work, or until woken: the waits for a hold to end, for a
+	// CallOnEE to be served, and Lockstep's wait for a request. `ready` re-reads everything that can
+	// end the wait after `sleeping` is set. What ends these waits is notified unconditionally (the
+	// hold's release, the call's completion, Stop()) or, in Lockstep, by a seq_cst store and load on
+	// the EE's side, so a seq_cst store here is enough. The sleep is WorkSema's: it spins for
+	// SPIN_TIME_NS first, then blocks.
 	template <class Ready>
 	void Thread::ParkUntil(Ready&& ready)
 	{
-		// seq_cst, with the seq_cst loads inside `ready`, is the IOP half of the store-then-load
-		// pairing the EE half of which is deliberately weaker (IopThread.h).
-		m_iop.parked.store(true, std::memory_order_seq_cst);
+		m_iop.idle.store(true, std::memory_order_relaxed);
+		m_sleep.sleeping.store(true, std::memory_order_seq_cst);
 		if (!ready())
 		{
 			m_parks.Add();
 			m_sema.WaitForWorkWithSpin();
 		}
-		m_iop.parked.store(false, std::memory_order_relaxed);
+		m_sleep.sleeping.store(false, std::memory_order_relaxed);
+		m_iop.idle.store(false, std::memory_order_relaxed);
+	}
+
+	// The IOP's half of the sleep handshake's barrier (IopThread.h, "Going to sleep"). False if the
+	// barrier could not be made, in which case the IOP must not sleep.
+	bool Thread::IopStoreLoadBarrier()
+	{
+#if defined(__linux__)
+		if (m_use_membarrier)
+			return Membarrier(MEMBARRIER_CMD_PRIVATE_EXPEDITED) == 0;
+#endif
+		std::atomic_thread_fence(std::memory_order_seq_cst);
+		return true;
+	}
+
+	// The pacing loop has nothing to run. Watch the EE's words for idle_spin_ns: each publish is a
+	// store to the watermark's line, which ends the WFE, and WorkAvailable() looks again. The EE sends
+	// no wake-up while the IOP watches, because `sleeping` is not set. After idle_spin_ns with nothing
+	// to do, go to sleep through the handshake. Returns with work available, or after a wake-up.
+	void Thread::IdleWait()
+	{
+		m_idle_waits.Add();
+		m_iop.idle.store(true, std::memory_order_relaxed);
+		const u64 begin = NowNs();
+		const u64 deadline = begin + m_idle_spin_ns;
+		for (;;)
+		{
+			const u64 wm = m_ee.wm.load(std::memory_order_acquire);
+			if (WorkAvailable())
+				break;
+			if (NowNs() >= deadline)
+			{
+				m_sleep.sleeping.store(true, std::memory_order_seq_cst);
+				// The barrier, then the re-check: see "Going to sleep".
+				if (IopStoreLoadBarrier())
+				{
+					if (!WorkAvailable())
+					{
+						m_parks.Add();
+						m_sema.WaitForWork();
+					}
+					m_sleep.sleeping.store(false, std::memory_order_relaxed);
+					break;
+				}
+				// No barrier, no sleep: keep watching.
+				m_sleep.sleeping.store(false, std::memory_order_relaxed);
+			}
+			WaitForLineChange(m_ee.wm, wm);
+		}
+		m_iop.idle.store(false, std::memory_order_relaxed);
+		m_idle_ns.Add(NowNs() - begin);
 	}
 
 	Thread::Plan Thread::MakePlan(u64 wm)
@@ -272,7 +392,7 @@ namespace IopThread
 				continue;
 			}
 
-			ParkUntil([this] { return WorkAvailable(); });
+			IdleWait();
 		}
 	}
 
@@ -418,7 +538,9 @@ namespace IopThread
 
 	void Thread::WakeIfParked(WakeSite site)
 	{
-		if (!m_iop.parked.load(std::memory_order_relaxed))
+		// The EE half of the sleep handshake: every caller has just stored what the IOP should see.
+		EeStoreLoadBarrier();
+		if (!m_sleep.sleeping.load(std::memory_order_relaxed))
 			return;
 		if (m_params.drop_wake && m_params.drop_wake(site))
 		{
@@ -500,9 +622,11 @@ namespace IopThread
 			return true;
 
 		m_lag_spins.Add();
-		// "Found the IOP parked" is read before the wake-up below: it says whether the EE's published
-		// watermark went unseen because the IOP was asleep (design 3.9: an accepted lost wake-up).
-		const bool found_parked = m_iop.parked.load(std::memory_order_relaxed);
+		// What the IOP was doing when the wait began, read before the wake-up below: asleep (or on its
+		// way), so the EE also waits for it to wake, or idle and awake, watching a watermark that gives it
+		// less than S_min to run.
+		const bool found_parked = m_sleep.sleeping.load(std::memory_order_relaxed);
+		const bool found_idle = !found_parked && m_iop.idle.load(std::memory_order_relaxed);
 		const auto begin = std::chrono::steady_clock::now();
 		m_ee.spinning.store(true, std::memory_order_relaxed);
 		WakeIfParked(WakeSite::SpinEntry);
@@ -537,6 +661,11 @@ namespace IopThread
 		{
 			m_lag_spins_parked.Add();
 			m_lag_parked_stall_ns.Add(stall_ns);
+		}
+		else if (found_idle)
+		{
+			m_lag_spins_idle.Add();
+			m_lag_idle_stall_ns.Add(stall_ns);
 		}
 		return reached;
 	}
@@ -733,10 +862,10 @@ namespace IopThread
 		m_ls.arg = arg;
 		const u64 seq = ++m_req_seq_local;
 		// The request is the plain writes above, released by this store. seq_cst, with the IOP's
-		// seq_cst parked store and re-check, means a request cannot be slept through, so the wake
-		// can be filtered by iop_parked and WorkSema's state does not pile up wake-ups.
+		// seq_cst store of `sleeping` and re-check (ParkUntil), means a request cannot be slept through, so
+		// the wake can be filtered by `sleeping` and WorkSema's state does not pile up wake-ups.
 		m_ee.req_seq.store(seq, std::memory_order_seq_cst);
-		if (m_iop.parked.load(std::memory_order_seq_cst))
+		if (m_sleep.sleeping.load(std::memory_order_seq_cst))
 		{
 			m_wakes_sent.Add();
 			m_sema.NotifyOfWork();
@@ -873,6 +1002,11 @@ namespace IopThread
 		s.calls_cancelled = m_calls_cancelled.Get();
 		s.i2e_full_waits = m_i2e_full_waits.Get();
 		s.kicks_applied = m_kicks_applied.Get();
+		s.lag_spins_idle = m_lag_spins_idle.Get();
+		s.lag_idle_stall_ns = m_lag_idle_stall_ns.Get();
+		s.idle_waits = m_idle_waits.Get();
+		s.idle_ns = m_idle_ns.Get();
+		s.sleep_barrier_membarrier = m_use_membarrier ? 1 : 0;
 		return s;
 	}
 } // namespace IopThread
