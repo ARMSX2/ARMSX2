@@ -838,6 +838,10 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 					DRAW_LINE(osd_font, font_size, s_cpu_usage_gs_back_line.c_str(), OsdTextColor());
 				if (THREAD_VU1)
 					DRAW_LINE(osd_font, font_size, s_cpu_usage_vu_line.c_str(), OsdTextColor());
+				// The frames between two refreshes of the figures draw the text of the last refresh. The IOP line is
+				// formatted where the others are, so without this it showed on the refresh frames only.
+				if (PerformanceMetrics::HasIOPThread())
+					DRAW_LINE(osd_font, font_size, s_cpu_usage_iop_line.c_str(), OsdTextColor());
 #if defined(PCSX2_DEVBUILD) || defined(PCSX2_DEBUG)
 				if (!s_iop_thread_line.empty())
 					DRAW_LINE(osd_font, font_size, s_iop_thread_line.c_str(), OsdTextColor());
