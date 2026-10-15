@@ -5512,37 +5512,38 @@ namespace vuopt
 	{
 		const bool status = IsStatus(v);
 		pxAssertRel(status || (v >= var::M(0) && v <= var::M(3)), "vuopt: synthesising a variable that has no source");
-		// The word's zero and sign bits of each lane (the layout's weights), as a lane value raising
-		// exactly those flags: +1.0 none, +0.0 zero, -1.0 sign, -0.0 both.
+		// The word's zero and sign bits (a MAC word's low byte, a STATUS instance's pack at bits 8-15)
+		// index a table of sources raising exactly those flags (FillFlagSynthTable), which sits right
+		// after the sources' homes.
+		const int sr = status ? 20 + static_cast<int>(v - var::S(0)) : -1;
 		if (status)
-			armAsm->Lsr(a64::w16, W(20 + static_cast<int>(v - var::S(0))), 8);
+			armAsm->Ubfx(a64::w16, W(sr), 8, 8);
 		else if (homes && homes->home[v].kind == HomeKind::GReg)
-			armAsm->Mov(a64::w16, W(homes->home[v].reg));
+			armAsm->And(a64::w16, W(homes->home[v].reg), 0xff);
 		else
 		{
 			const MemLoc m = BoundaryLoc(v, env);
-			armAsm->Ldr(a64::w16, a64::MemOperand(*m.base, m.off));
+			armAsm->Ldrb(a64::w16, a64::MemOperand(*m.base, m.off));
 		}
-		armAsm->Dup(a64::v0.V4S(), a64::w16);
-		armAsm->Ldr(a64::q1, a64::MemOperand(xGlob, G(SourceWeights(layout))));
-		armAsm->And(a64::v0.V16B(), a64::v0.V16B(), a64::v1.V16B());
-		armAsm->Movi(a64::v1.V4S(), 0x0f);
-		armAsm->Cmtst(a64::v2.V4S(), a64::v0.V4S(), a64::v1.V4S());
-		armAsm->Movi(a64::v1.V4S(), 0xf0);
-		armAsm->Cmtst(a64::v3.V4S(), a64::v0.V4S(), a64::v1.V4S());
-		armAsm->Fmov(a64::v4.V4S(), 1.0f);
-		armAsm->Bic(a64::v4.V16B(), a64::v4.V16B(), a64::v2.V16B());
-		armAsm->Movi(a64::v1.V4S(), 0x80, a64::LSL, 24);
-		armAsm->And(a64::v3.V16B(), a64::v3.V16B(), a64::v1.V16B());
-		armAsm->Orr(a64::v4.V16B(), a64::v4.V16B(), a64::v3.V16B());
-		armAsm->Str(a64::q4, a64::MemOperand(xFlag, SourceOff(v, env)));
+		armAsm->Add(a64::x16, xFlag, a64::Operand(a64::x16, a64::LSL, 4));
+		armAsm->Ldr(a64::q0, a64::MemOperand(a64::x16, env.offFlagSrc + 8 * 16 + layout * 256 * 16));
+		armAsm->Str(a64::q0, a64::MemOperand(xFlag, SourceOff(v, env)));
+		// the rest: everything but the pack (the sticky byte included: a word handed back unchanged keeps it)
 		if (status)
-		{
-			// the rest: everything but the pack (the sticky byte included: a word handed back unchanged
-			// keeps it)
-			const int sr = 20 + static_cast<int>(v - var::S(0));
 			armAsm->And(W(sr), W(sr), 0xffff00ffu);
-		}
+	}
+
+	void FillFlagSynthTable(u32 (*table)[256][4])
+	{
+		for (int layout = 0; layout < 2; layout++)
+			for (u32 b = 0; b < 256; b++)
+				for (int l = 0; l < 4; l++)
+				{
+					// the layout's weights: MAC lane x at bit 3, STATUS's own lane x at bit 0
+					const int bit = layout ? l : 3 - l;
+					const bool zero = (b >> bit) & 1, sign = (b >> (bit + 4)) & 1;
+					table[layout][b][l] = (sign ? 0x80000000u : 0u) | (zero ? 0u : 0x3f800000u);
+				}
 	}
 
 	void EmitFlagSourceGuard(a64::Label* bad)

@@ -2066,19 +2066,22 @@ namespace vuopt
 			if (t_.flagSinkMutation == 4)
 				synth = 0;
 			a64::Label* const on = BaseTarget(from, to);
+			// (a source from a word is four or five instructions: inline)
 			if (mat && synth)
 			{
 				a64::Label* const next = fixupLabels.emplace_back(std::make_unique<a64::Label>()).get();
 				callFlags(false, n.map, mat, n.repOut, next);
 				armAsm->Bind(next);
-				callFlags(true, n.map, synth, nodes_[to]->repIn, on);
 			}
 			else if (mat)
+			{
 				callFlags(false, n.map, mat, n.repOut, on);
-			else if (synth)
-				callFlags(true, n.map, synth, nodes_[to]->repIn, on);
-			else
-				armAsm->B(on);
+				continue;
+			}
+			for (int k = 0; k < 8; k++)
+				if ((synth >> k) & 1)
+					EmitFlagSynthesise(SinkVar(k), nodes_[to]->repIn[k] - 1, &maps_[n.map], le_);
+			armAsm->B(on);
 		}
 		for (JrMat& jm : jrMats_)
 		{
@@ -2099,31 +2102,26 @@ namespace vuopt
 		}
 
 		// ... and entries from microVU into nodes that hold flag instances as sources: microVU's words
-		// built into sources (counted in the program, as the bails are), then the node's home loader.
+		// built into sources (counted in microVU::vuoptFsinkRuns), then the node's home loader.
 		for (auto& r : synthRoutines)
 		{
 			armAsm->Bind(r.label.get());
-			armAsm->Ldrsw(a64::x9, a64::MemOperand(a64::x1, 4));
-			armAsm->Add(a64::x9, a64::x1, a64::x9);
-			armAsm->Ldr(a64::x9, a64::MemOperand(a64::x9));
-			armAsm->Ldr(a64::x10, a64::MemOperand(a64::x9, env_.offProgBails + 16));
-			armAsm->Add(a64::x10, a64::x10, 1);
-			armAsm->Str(a64::x10, a64::MemOperand(a64::x9, env_.offProgBails + 16));
+			const s32 offRuns = le_.offFlagSrc + 8 * 16 + 2 * 256 * 16; // (microVU::vuoptFsinkRuns)
+			armAsm->Ldr(a64::x9, a64::MemOperand(a64::x24, offRuns));
+			armAsm->Add(a64::x9, a64::x9, 1);
+			armAsm->Str(a64::x9, a64::MemOperand(a64::x24, offRuns));
 			t_.fsinkSynth_ += static_cast<u32>(__builtin_popcount(r.set));
-			if (t_.flagSinkMutation != 4)
-				callFlags(true, -1, r.set, r.rep, &loadAll[r.map]);
-			else
-				armAsm->B(&loadAll[r.map]);
+			for (int k = 0; k < 8; k++)
+				if (((r.set >> k) & 1) && t_.flagSinkMutation != 4)
+					EmitFlagSynthesise(SinkVar(k), r.rep[k] - 1, nullptr, le_);
+			armAsm->B(&loadAll[r.map]);
 		}
 		// The shared routines of the stubs above (none of them is emitted again by these).
 		for (size_t ri = 0; ri < flagRoutines.size(); ri++)
 		{
 			const FlagRoutine& r = flagRoutines[ri];
 			armAsm->Bind(r.label.get());
-			if (r.synth)
-				EmitFlagSynthesise(SinkVar(r.k), r.layout, r.map >= 0 ? &maps_[r.map] : nullptr, le_);
-			else
-				EmitFlagMaterialise(SinkVar(r.k), r.layout, maps_[r.map], le_, t_.flagSinkMutation);
+			EmitFlagMaterialise(SinkVar(r.k), r.layout, maps_[r.map], le_, t_.flagSinkMutation);
 			armAsm->Br(a64::x17);
 		}
 		// Links out of the region: the target (or its trampoline) in x8.
@@ -2522,14 +2520,6 @@ namespace vuopt
 			entry += c[0];
 			loopHead += c[1];
 		}
-	}
-
-	u64 RegionTier::FsinkSynthRuns() const
-	{
-		u64 n = 0;
-		for (const auto& p : progs_)
-			n += reinterpret_cast<const u64*>(static_cast<const u8*>(p.first) + p.second)[2];
-		return n;
 	}
 
 	bool RegionTier::Decline(const std::string& why, std::string* out)

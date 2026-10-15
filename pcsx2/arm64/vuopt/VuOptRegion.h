@@ -94,11 +94,7 @@ namespace vuopt
 		// entry from microVU, and at a loop head (read from the programs; only valid while
 		// they are alive).
 		void BailCounts(u64& entry, u64& loopHead) const;
-		// Flag sinking: entries from microVU that built flag sources (counted by the regions' code, as the
-		// bails are).
-		u64 FsinkSynthRuns() const;
-		// Test only: forget the programs counted so far (they have been freed).
-		void ForgetPrograms() { progs_.clear(); }
+
 		// Flag sinking: producers whose MAC / STATUS word a loop no longer builds (a FlagSrc each); the
 		// places a word is built from a source instead ([0] a bail at a loop head, [1] a link out of a
 		// loop, to microVU or to a node outside it, [2] a JR fallback); entry routines and edges that build

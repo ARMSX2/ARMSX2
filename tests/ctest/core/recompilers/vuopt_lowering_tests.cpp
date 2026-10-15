@@ -826,11 +826,9 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		bool stopped = false;
 		bool finStopped = false; // still running after the continuation (a program that does not end)
 	};
-	const auto runArm = [&](VuTestHarness& h, const std::function<void()>& afterFirst) {
+	const auto runArm = [&](VuTestHarness& h) {
 		Arm a;
 		h.RunNoDiff();
-		if (afterFirst)
-			afterFirst(); // (RunNoDiff's programs are gone: the interpreter pass reset the block cache)
 		if (!observe)
 		{
 			a.stop = h.JitSnapshot();
@@ -862,7 +860,7 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 			h.ResumeUntilTerminated();
 		if (budget)
 			h.SetCycleBudget(budget);
-		ref = runArm(h, nullptr);
+		ref = runArm(h);
 	}
 	RegionOutcome o;
 	VuTestHarness h(1);
@@ -893,7 +891,8 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		if (jumps)
 			rs.region.jumpTargets = *jumps;
 		vuopt::live::PoisonFlagSources();
-		got = runArm(h, [&rs] { rs.region.ForgetPrograms(); });
+		const u64 runs0 = vuopt::live::GetStats().fsinkSynthRuns;
+		got = runArm(h);
 		o.regions = rs.region.Regions();
 		o.nodes = rs.region.Nodes();
 		o.accRegions = rs.region.AccRegions();
@@ -909,7 +908,7 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		o.fsinkMat = rs.region.FsinkMaterialise(0) + rs.region.FsinkMaterialise(1) + rs.region.FsinkMaterialise(2);
 		o.fsinkSynth = rs.region.FsinkSynth();
 		o.fsinkConf = rs.region.FsinkConflicts();
-		o.fsinkSynthRuns = observe ? rs.region.FsinkSynthRuns() : 0; // (the programs of the run that is still alive)
+		o.fsinkSynthRuns = vuopt::live::GetStats().fsinkSynthRuns - runs0;
 	}
 	const bool relax = o.stickyDropped > 0;
 	if (observe)

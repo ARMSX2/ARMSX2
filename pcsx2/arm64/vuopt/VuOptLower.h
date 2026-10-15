@@ -242,6 +242,8 @@ namespace vuopt
 	// which a source cannot carry; such a word can only come from an earlier session's state): branch
 	// to `bad`. Scratch: q0, q1, w16.
 	void EmitFlagSourceGuard(vixl::aarch64::Label* bad);
+	// microVU::vuoptFlagSynth: per layout and byte, the source EmitFlagSynthesise loads.
+	void FillFlagSynthTable(u32 (*table)[256][4]);
 	// Milestone 10: moves the variables in `live` (null: all) from where
 	// `from` keeps them to where `to` does (registers, microVU's locations),
 	// and fills `to`'s clamped homes. The cycle counter and memory base are

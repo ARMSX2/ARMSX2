@@ -555,9 +555,8 @@ struct microProgram
 	VuoptProgramState* vuopt;
 	// Times a vuopt region of this program took the budget bail: [0] at an entry from
 	// microVU, [1] at a loop head (written by the region's own bail code, which reaches
-	// the program through the bail record), [2] entries from microVU that built flag
-	// sources (flag sinking; the same way).
-	u64 vuoptBails[3];
+	// the program through the bail record).
+	u64 vuoptBails[2];
 };
 
 typedef std::deque<microProgram*> microProgramList;
@@ -706,6 +705,12 @@ struct microVU
 	// [gprMVUFlag, #imm] like neonBackup. Only region code reads or writes
 	// them; nothing of microVU's does.
 	alignas(16) u32 vuoptFlagSrc[8][4];
+	// ... and right after them (the region code reaches both off the same offset): a source for
+	// every byte of a word, per layout (0 MAC, 1 STATUS's own), each lane +1.0, +0.0, -1.0 or -0.0
+	// so it raises exactly that byte's zero and sign bits (filled at mVUinit by
+	// vuopt::FillFlagSynthTable); then the entries from microVU that built sources from words.
+	alignas(16) u32 vuoptFlagSynth[2][256][4];
+	u64 vuoptFsinkRuns;
 
 	// Owning index keyed by content hash. Every live microProgram is
 	// referenced exactly once from here; per-startPC deques (prog.prog[]) and

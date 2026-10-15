@@ -733,7 +733,7 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			fsinkMat = ctx.region->FsinkMaterialise(0) + ctx.region->FsinkMaterialise(1) + ctx.region->FsinkMaterialise(2);
 			fsinkSyn = ctx.region->FsinkSynth();
 			fsinkConf = ctx.region->FsinkConflicts();
-			fsinkRuns = ctx.region->FsinkSynthRuns();
+			fsinkRuns = bgAfter.fsinkSynthRuns - bgBefore.fsinkSynthRuns;
 			stickyDropped = ctx.region->StickyDropped();
 			stickyImages = ctx.region->StickyReaderImages();
 			statusReaders = ctx.region->StatusReaders();

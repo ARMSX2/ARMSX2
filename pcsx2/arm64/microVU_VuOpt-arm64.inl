@@ -565,15 +565,14 @@ namespace vuopt::live
 		{
 			s.bailsEntry += entry.second->vuoptBails[0];
 			s.bailsLoopHead += entry.second->vuoptBails[1];
-			s.fsinkSynthRuns += entry.second->vuoptBails[2];
 		}
 		for (const microProgram* prog : microVU1.mvuOrphanedProgs)
 		{
 			s.bailsEntry += prog->vuoptBails[0];
 			s.bailsLoopHead += prog->vuoptBails[1];
-			s.fsinkSynthRuns += prog->vuoptBails[2];
 		}
 		s.workerIns = s_vuopt.workerIns.load(std::memory_order_relaxed);
+		s.fsinkSynthRuns = microVU1.vuoptFsinkRuns;
 		s.stickyTrips = s_trip.trips.load(std::memory_order_relaxed);
 		for (u32 i = 0; i < kTripCauses; i++)
 			s.stickyTripsBy[i] = s_trip.tripsBy[i].load(std::memory_order_relaxed);
@@ -1702,7 +1701,6 @@ void mVUvuoptOnProgramDeleted(microProgram& prog)
 {
 	s_vuopt.stats.bailsEntry += prog.vuoptBails[0];
 	s_vuopt.stats.bailsLoopHead += prog.vuoptBails[1];
-	s_vuopt.stats.fsinkSynthRuns += prog.vuoptBails[2];
 	VuoptProgramState* st = prog.vuopt;
 	if (!st)
 		return;
