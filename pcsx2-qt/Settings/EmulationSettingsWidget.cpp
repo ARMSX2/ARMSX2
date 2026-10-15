@@ -42,6 +42,7 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsWindow* settings_dialog
 	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.eeCycleSkipping, "EmuCore/Speedhacks", "EECycleSkip", DEFAULT_EE_CYCLE_SKIP);
 
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.MTVU, "EmuCore/Speedhacks", "vuThread", false);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.iopThread, "EmuCore/Speedhacks", "iopThread", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.threadPinning, "EmuCore", "EnableThreadPinning", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.fastCDVD, "EmuCore/Speedhacks", "fastCDVD", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.precacheCDVD, "EmuCore", "CdvdPrecache", false);
@@ -124,6 +125,11 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsWindow* settings_dialog
 	dialog()->registerWidgetHelp(m_ui.MTVU, tr("Enable Multithreaded VU1 (MTVU1)"), tr("Checked"),
 		tr("Generally a speedup on CPUs with 4 or more cores. "
 		   "Safe for most games, but a few are incompatible and may hang."));
+	//: IOP = the PS2's I/O processor, which runs sound, disc access, controllers and memory cards.
+	dialog()->registerWidgetHelp(m_ui.iopThread, tr("Enable IOP Thread"), tr("Unchecked"),
+		tr("Runs the PS2's I/O processor (sound, disc, controllers and memory cards) on its own thread. "
+		   "A speedup on CPUs with at least four fast cores. It turns itself off on CPUs without spare cores, "
+		   "and for PS1 games, arcade games and while an IOP breakpoint is set."));
 	dialog()->registerWidgetHelp(m_ui.fastCDVD, tr("Enable Fast CDVD"), tr("Unchecked"),
 		tr("Fast disc access, shorter loading times. Check HDLoader compatibility lists for games that are known to have issues with this."));
 	dialog()->registerWidgetHelp(m_ui.precacheCDVD, tr("Enable CDVD Precaching"), tr("Unchecked"),

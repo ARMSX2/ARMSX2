@@ -397,6 +397,23 @@
         </property>
        </widget>
       </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="iopThreadLagLabel">
+        <property name="text">
+         <string>IOP Thread Lag Bound (EE cycles):</string>
+        </property>
+        <property name="buddy">
+         <cstring>iopThreadLag</cstring>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QSpinBox" name="iopThreadLag">
+        <property name="singleStep">
+         <number>1024</number>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>
@@ -640,6 +657,7 @@
   <tabstop>vuFlagHack</tabstop>
   <tabstop>instantVU1</tabstop>
   <tabstop>iopRecompiler</tabstop>
+  <tabstop>iopThreadLag</tabstop>
   <tabstop>gameFixes</tabstop>
   <tabstop>patches</tabstop>
   <tabstop>savestateCompressionMethod</tabstop>
