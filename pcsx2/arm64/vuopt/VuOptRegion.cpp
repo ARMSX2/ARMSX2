@@ -1843,6 +1843,44 @@ namespace vuopt
 			std::unique_ptr<a64::Label> label;
 		};
 		std::vector<SynthRoutine> synthRoutines;
+		// Flag sinking: a word built from a source (or a source from a word) for one instance, layout and
+		// map (-1: from microVU's locations), shared by every bail, link, JR fallback and entry that needs
+		// it; entered with the continuation in x17.
+		struct FlagRoutine
+		{
+			bool synth = false;
+			int k = 0, layout = 0, map = 0;
+			std::unique_ptr<a64::Label> label;
+		};
+		std::deque<FlagRoutine> flagRoutines;
+		std::deque<a64::Label> flagConts;
+		const auto routine = [&](bool synth, int k, int layout, int map) -> a64::Label* {
+			for (auto& r : flagRoutines)
+				if (r.synth == synth && r.k == k && r.layout == layout && r.map == map)
+					return r.label.get();
+			flagRoutines.emplace_back();
+			FlagRoutine& r = flagRoutines.back();
+			r.synth = synth;
+			r.k = k;
+			r.layout = layout;
+			r.map = map;
+			r.label = std::make_unique<a64::Label>();
+			return r.label.get();
+		};
+		// The instances of `set` (reps from `rep`) in turn, then on to `cont`.
+		const auto callFlags = [&](bool synth, int map, u8 set, const u8* rep, a64::Label* cont) {
+			for (int k = 0; k < 8; k++)
+			{
+				if (!((set >> k) & 1))
+					continue;
+				const bool last = !(set >> (k + 1));
+				a64::Label* const next = last ? cont : &flagConts.emplace_back();
+				armAsm->Adr(a64::x17, next);
+				armAsm->B(routine(synth, k, rep[k] - 1, map));
+				if (!last)
+					armAsm->Bind(next);
+			}
+		};
 		// Entries from microVU (the root's is where microVU is compiling): the
 		// budget test, then the node's head address in x8 and the shared home
 		// loader.
@@ -1970,13 +2008,20 @@ namespace vuopt
 				continue;
 			armAsm->Bind(&n.bail);
 			// Flag sinking: the instances of the bail's mask the node holds as sources, built.
+			u8 mat = 0;
 			for (int k = 0; k < 8; k++)
 				if (Pending(n.repIn[k]) && n.bailMask.test(SinkVar(k)))
 				{
 					t_.fsinkMat_[0]++;
 					if (t_.flagSinkMutation != 1)
-						EmitFlagMaterialise(SinkVar(k), n.repIn[k] - 1, maps_[n.map], le_, t_.flagSinkMutation);
+						mat |= static_cast<u8>(1u << k);
 				}
+			a64::Label words;
+			if (mat)
+			{
+				callFlags(false, n.map, mat, n.repIn, &words);
+				armAsm->Bind(&words);
+			}
 			armAsm->Adr(a64::x1, &n.rec);
 			armAsm->Adr(a64::x8, &bailEntry);
 			armAsm->B(&exitAll[n.map]);
@@ -2004,6 +2049,7 @@ namespace vuopt
 		// Flag sinking: links whose ends hold flag instances differently. A word built from a source goes to
 		// its home in the source node's map, a source built from a word to memory; then the link goes on
 		// as it would have.
+		std::vector<std::unique_ptr<a64::Label>> fixupLabels;
 		for (size_t fi = 0; fi < fixups_.size(); fi++)
 		{
 			const int from = fixups_[fi].from, to = fixups_[fi].to;
@@ -2012,36 +2058,46 @@ namespace vuopt
 			FixupNeed(from, to, mat, synth);
 			armAsm->Bind(fixups_[fi].label.get());
 			const bool leaves = to < 0 || !nodes_[to]->sinkLoop || nodes_[to]->comp != n.comp;
-			for (int k = 0; k < 8; k++)
-				if ((mat >> k) & 1)
-				{
-					if (leaves)
-						t_.fsinkMat_[1]++;
-					if (t_.flagSinkMutation != 2)
-						EmitFlagMaterialise(SinkVar(k), n.repOut[k] - 1, maps_[n.map], le_, t_.flagSinkMutation);
-				}
-			for (int k = 0; k < 8; k++)
-				if ((synth >> k) & 1)
-				{
-					t_.fsinkSynth_++;
-					if (t_.flagSinkMutation != 4)
-						EmitFlagSynthesise(SinkVar(k), nodes_[to]->repIn[k] - 1, &maps_[n.map], le_);
-				}
-			armAsm->B(BaseTarget(from, to));
+			if (leaves)
+				t_.fsinkMat_[1] += static_cast<u32>(__builtin_popcount(mat));
+			t_.fsinkSynth_ += static_cast<u32>(__builtin_popcount(synth));
+			if (t_.flagSinkMutation == 2)
+				mat = 0;
+			if (t_.flagSinkMutation == 4)
+				synth = 0;
+			a64::Label* const on = BaseTarget(from, to);
+			if (mat && synth)
+			{
+				a64::Label* const next = fixupLabels.emplace_back(std::make_unique<a64::Label>()).get();
+				callFlags(false, n.map, mat, n.repOut, next);
+				armAsm->Bind(next);
+				callFlags(true, n.map, synth, nodes_[to]->repIn, on);
+			}
+			else if (mat)
+				callFlags(false, n.map, mat, n.repOut, on);
+			else if (synth)
+				callFlags(true, n.map, synth, nodes_[to]->repIn, on);
+			else
+				armAsm->B(on);
 		}
 		for (JrMat& jm : jrMats_)
 		{
 			const Node& n = *nodes_[jm.node];
 			armAsm->Bind(&jm.in);
+			u8 mat = 0;
 			for (int k = 0; k < 8; k++)
 				if (Pending(n.repOut[k]))
 				{
 					t_.fsinkMat_[2]++;
 					if (t_.flagSinkMutation != 2)
-						EmitFlagMaterialise(SinkVar(k), n.repOut[k] - 1, maps_[n.map], le_, t_.flagSinkMutation);
+						mat |= static_cast<u8>(1u << k);
 				}
-			armAsm->B(&jm.back);
+			if (mat)
+				callFlags(false, n.map, mat, n.repOut, &jm.back);
+			else
+				armAsm->B(&jm.back);
 		}
+
 		// ... and entries from microVU into nodes that hold flag instances as sources: microVU's words
 		// built into sources (counted in the program, as the bails are), then the node's home loader.
 		for (auto& r : synthRoutines)
@@ -2053,14 +2109,22 @@ namespace vuopt
 			armAsm->Ldr(a64::x10, a64::MemOperand(a64::x9, env_.offProgBails + 16));
 			armAsm->Add(a64::x10, a64::x10, 1);
 			armAsm->Str(a64::x10, a64::MemOperand(a64::x9, env_.offProgBails + 16));
-			for (int k = 0; k < 8; k++)
-				if ((r.set >> k) & 1)
-				{
-					t_.fsinkSynth_++;
-					if (t_.flagSinkMutation != 4)
-						EmitFlagSynthesise(SinkVar(k), r.rep[k] - 1, nullptr, le_);
-				}
-			armAsm->B(&loadAll[r.map]);
+			t_.fsinkSynth_ += static_cast<u32>(__builtin_popcount(r.set));
+			if (t_.flagSinkMutation != 4)
+				callFlags(true, -1, r.set, r.rep, &loadAll[r.map]);
+			else
+				armAsm->B(&loadAll[r.map]);
+		}
+		// The shared routines of the stubs above (none of them is emitted again by these).
+		for (size_t ri = 0; ri < flagRoutines.size(); ri++)
+		{
+			const FlagRoutine& r = flagRoutines[ri];
+			armAsm->Bind(r.label.get());
+			if (r.synth)
+				EmitFlagSynthesise(SinkVar(r.k), r.layout, r.map >= 0 ? &maps_[r.map] : nullptr, le_);
+			else
+				EmitFlagMaterialise(SinkVar(r.k), r.layout, maps_[r.map], le_, t_.flagSinkMutation);
+			armAsm->Br(a64::x17);
 		}
 		// Links out of the region: the target (or its trampoline) in x8.
 		for (auto& e : exits_)
