@@ -4248,18 +4248,29 @@ namespace vuopt
 						armAsm->Ins(V(d).V4S(), 0, V(r).V4S(), SingleLane(in.mask));
 						break;
 					}
-					armAsm->Mov(V(d).V16B(), V(r).V16B());
-					u8 outside = 0;
+					// Lanes inside the field from the result, outside it the neutral value: start from
+					// whichever needs fewer inserts (a pair of lanes in one half is one insert).
+					u8 inside = 0;
 					for (int l = 0; l < 4; l++)
-						if (!MaskLane(in.mask, l))
-							outside |= static_cast<u8>(1u << l);
+						if (MaskLane(in.mask, l))
+							inside |= static_cast<u8>(1u << l);
+					const auto inserts = [](u8 lanes) {
+						int n = 0;
+						for (int h = 0; h < 2; h++)
+							n += ((lanes >> (2 * h)) & 3) ? 1 : 0;
+						return n;
+					};
+					const bool fromResult = inserts(static_cast<u8>(~inside & 0xf)) <= inserts(inside);
+					const int base = fromResult ? r : k, other = fromResult ? k : r;
+					const u8 lanes = fromResult ? static_cast<u8>(~inside & 0xf) : inside;
+					armAsm->Mov(V(d).V16B(), V(base).V16B());
 					for (int h = 0; h < 2; h++)
 					{
-						const u8 pair = (outside >> (2 * h)) & 3;
+						const u8 pair = (lanes >> (2 * h)) & 3;
 						if (pair == 3)
-							armAsm->Ins(V(d).V2D(), h, V(k).V2D(), h);
+							armAsm->Ins(V(d).V2D(), h, V(other).V2D(), h);
 						else if (pair)
-							armAsm->Ins(V(d).V4S(), 2 * h + (pair == 2 ? 1 : 0), V(k).V4S(), 2 * h + (pair == 2 ? 1 : 0));
+							armAsm->Ins(V(d).V4S(), 2 * h + (pair == 2 ? 1 : 0), V(other).V4S(), 2 * h + (pair == 2 ? 1 : 0));
 					}
 					break;
 				}
