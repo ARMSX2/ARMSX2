@@ -228,7 +228,9 @@
 //       lane into that copy with one INS instead of a lane-0 slot and a merge.
 //  59 — a conditional branch carrying the E bit (and no M bit) no longer reorders
 //       the flag instances for a successor that never runs.
-static constexpr u32 kMvuCompilerAbiVersion = 59;
+//  60 — an allocReg write with an empty field (xyzw == 0) leaves a temp slot, not
+//       one recorded as an unmodified copy of the register it was told to write.
+static constexpr u32 kMvuCompilerAbiVersion = 60;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
