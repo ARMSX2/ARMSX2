@@ -838,11 +838,17 @@ namespace vuopt
 		// (Unlike the accumulators, sinking does not need a linear status chain: it follows the values,
 		// a stale instance an FSSET kill leaves behind included.)
 		std::vector<u8> statusOK(ncomp, (t_.flagSinkStatus && le_.dropSticky && !acc_) ? 1 : 0);
+		// A loop that goes through a JR's fallback (microVU's jump cache) would build every word there and
+		// the sources again where microVU links back in, on every pass: it sinks nothing.
+		std::vector<u8> jrLoop(ncomp, 0);
+		for (size_t i = 0; i < NN; i++)
+			if (cyclic[i] && nodes_[i]->br.endKind == BlockEnd::Jump && nodes_[i]->taken == 0x7fffffff)
+				jrLoop[comp[i]] = 1;
 		for (size_t i = 0; i < NN; i++)
 		{
 			Node& n = *nodes_[i];
 			n.comp = comp[i];
-			n.sinkLoop = cyclic[i] != 0;
+			n.sinkLoop = cyclic[i] != 0 && !jrLoop[comp[i]];
 			DecodeSink(n);
 			if (!n.sinkLoop)
 				continue;
