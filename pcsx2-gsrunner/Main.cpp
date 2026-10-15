@@ -1284,6 +1284,9 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -hash-cache-mb <n>: Most megabytes of textures the hash cache keeps above its floor of 800 "
 						 "entries (0 = no limit; the default is the renderer's own). -hash-cache-entries 800 -hash-cache-mb 0 "
 						 "is the cache as it was before the memory limit.\n");
+	std::fprintf(stderr, "  -gpu-texture-decode on|off: The gpu_texture_decode setting: decode paletted texture windows on the GPU "
+						 "from a GPU copy of local memory instead of on the CPU (Vulkan only; off is the default). Pixels are "
+						 "the same either way.\n");
 	std::fprintf(stderr, "  -gpu-decode-selftest: Check the Vulkan GPU texture decode (the VRAM mirror's PSMT8, PSMT4, PSMT8H, "
 						 "PSMT4HL and PSMT4HH decode) against the CPU readers on random local memory and windows, print one "
 						 "GPU-DECODE-SELFTEST line per phase, and exit non-zero on any mismatch. The dump argument is only there "
@@ -1824,6 +1827,24 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			{
 				s_verify_hash_memo = true;
 				GSTextureCache::SetHashMemoVerify(true);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-gpu-texture-decode"))
+			{
+				const char* const value = argv[++i];
+				if (!std::strcmp(value, "on"))
+				{
+					s_settings_interface.SetBoolValue("EmuCore/GS", "gpu_texture_decode", true);
+				}
+				else if (!std::strcmp(value, "off"))
+				{
+					s_settings_interface.SetBoolValue("EmuCore/GS", "gpu_texture_decode", false);
+				}
+				else
+				{
+					ArgError("-gpu-texture-decode: expected on or off, got '{}'.", value);
+					return false;
+				}
 				continue;
 			}
 			else if (CHECK_ARG("-verify-block-hash"))

@@ -936,6 +936,10 @@ struct Pcsx2Config
 					HWSpinGPUForReadbacks : 1,
 					HWSpinCPUForReadbacks : 1,
 					GPUPaletteConversion : 1,
+					// Vulkan only: decode paletted texture windows (PSMT8/4 and the H formats) on the GPU from
+					// a GPU copy of local memory instead of on the CPU, when the hash cache misses. Takes
+					// effect for the textures built after it is turned on; other backends ignore it.
+					GPUTextureDecode : 1,
 					AutoFlushSW : 1,
 					PreloadFrameWithGSData : 1,
 					Mipmap : 1,
