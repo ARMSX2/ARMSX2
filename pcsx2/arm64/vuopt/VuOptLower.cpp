@@ -2938,12 +2938,6 @@ namespace vuopt
 			const Inst& in = I(id);
 			const LOp op = static_cast<LOp>(in.sub);
 			const LowerInst l = DecodeLower(in.word);
-			int fsw = -1;
-			if (op != LOp::SQRT)
-				fsw = LaneWord(in.args[0], l.fsf);
-			const int ftw = LaneWord(in.args[1], l.ftf);
-			const int t9 = TempG(), t11 = TempG();
-			const int f = DefG(id);
 			// Relaxation 3 covers the sticky I / D bits too (decision j, 2026-10-14: all the sticky
 			// bits of STATUS): with the sticky byte dropped the divide builds only the bits its
 			// instance needs. Mutation 3 (test only) drops the instance's own bits instead.
@@ -2951,25 +2945,69 @@ namespace vuopt
 			u32 divD = env_.dropSticky ? (kDivD & kDivCurrent) : kDivD;
 			if (env_.dropSticky && env_.dropStickyMutation == 3)
 				divI = divD = 0;
-			armAsm->Mov(W(f), 0);
-			if (op == LOp::SQRT || op == LOp::RSQRT)
-			{
-				a64::Label pos;
-				armAsm->Tbz(W(ftw), 31, &pos);
-				armAsm->Mov(W(f), divI);
-				armAsm->Bind(&pos);
-			}
+			// mVU_DIV / mVU_SQRT / mVU_RSQRT's flags, without branches: I where the divisor is negative
+			// (SQRT, RSQRT); where it is zero (DIV, RSQRT), I when the dividend is zero too, else D. A
+			// dividend from VF0 is a constant (x, y, z: 0.0, w: 1.0), which leaves one select.
+			const ValueId fsv = op == LOp::SQRT ? 0 : C(in.args[0]);
+			const bool fsConst = fsv && I(fsv).op == Op::Const && I(fsv).type == Type::Vec;
+			const bool fsZero = fsConst && l.fsf != 3;
+			int fsw = -1;
+			if (op != LOp::SQRT && !fsConst)
+				fsw = LaneWord(in.args[0], l.fsf);
+			const int ftw = LaneWord(in.args[1], l.ftf);
+			int zf = -1; // the flags of a zero divisor
 			if (op == LOp::DIV || op == LOp::RSQRT)
 			{
-				a64::Label nonzero;
+				const u32 k = fsConst ? (fsZero ? divI : divD) : 0;
+				if (fsConst)
+				{
+					if (k)
+					{
+						zf = TempG();
+						armAsm->Mov(W(zf), k);
+					}
+				}
+				else if (divI | divD)
+				{
+					zf = TempG();
+					const int ti = TempG();
+					armAsm->Mov(W(zf), divD);
+					armAsm->Mov(W(ti), divI);
+					armAsm->Tst(W(fsw), kExpMask);
+					armAsm->Csel(W(zf), W(ti), W(zf), a64::eq);
+				}
+			}
+			int nf = -1; // the flags of a negative divisor
+			if ((op == LOp::SQRT || op == LOp::RSQRT) && divI)
+			{
+				nf = TempG();
+				armAsm->Mov(W(nf), divI);
+			}
+			const int f = DefG(id);
+			if (op == LOp::SQRT)
+			{
+				if (nf >= 0)
+				{
+					armAsm->Tst(W(ftw), 0x80000000u);
+					armAsm->Csel(W(f), W(nf), a64::wzr, a64::ne);
+				}
+				else
+					armAsm->Mov(W(f), 0);
+				return;
+			}
+			if (zf >= 0)
+			{
 				armAsm->Tst(W(ftw), kExpMask);
-				armAsm->B(&nonzero, a64::ne);
-				armAsm->Mov(W(t9), divD);
-				armAsm->Mov(W(t11), divI);
-				armAsm->Tst(W(fsw), kExpMask);
-				armAsm->Csel(W(t9), W(t11), W(t9), a64::eq);
-				armAsm->Orr(W(f), W(f), W(t9));
-				armAsm->Bind(&nonzero);
+				armAsm->Csel(W(f), W(zf), a64::wzr, a64::eq);
+			}
+			else
+				armAsm->Mov(W(f), 0);
+			if (op == LOp::RSQRT && nf >= 0)
+			{
+				// (a negative divisor's I with a zero one's flags: -0.0 is both)
+				armAsm->Tst(W(ftw), 0x80000000u);
+				armAsm->Csel(W(nf), W(nf), a64::wzr, a64::ne);
+				armAsm->Orr(W(f), W(f), W(nf));
 			}
 		}
 
