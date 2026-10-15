@@ -1377,13 +1377,23 @@ static bool vuoptDrainAndPublish(microVU& mVU, microProgram* cur)
 
 // The entry for (startPC, key) in `prog`'s graph as it is now (compiled with
 // the hooks if it is not there): where a slow path continues after a publication.
+//
+// The slot for the slow path's address is put back to `prog`, which the search
+// has just resolved from micro memory. A root publication empties every quick
+// slot of its program, and a JR slow path (mVUcompileJIT) copies this slot's
+// program into the jump cache entry it fills, next to the entry returned here.
+// Left empty, that would be an entry of no program with live code, and the
+// inline probe in front of the JR (normJumpCompile) takes an entry whose program
+// equals the slot's without asking whether it is null: every later JR there
+// would jump to `prog`'s code whenever the slot is empty, as it is after any
+// micro-memory write over that address, whatever code is in memory then.
 static void* vuoptRefetch(microVU& mVU, microProgram& prog, u32 startPC, const microRegInfo& key)
 {
 	alignas(16) microRegInfo k = key;
 	void* const entry = mVUblockFetch(mVU, startPC, reinterpret_cast<uptr>(&k));
 	microProgramQuick& quick = mVU.prog.quick[mVU.regs().start_pc / 8];
-	if (quick.prog == &prog)
-		quick.block = prog.block[startPC / 8];
+	quick.prog = &prog;
+	quick.block = prog.block[startPC / 8];
 	return entry;
 }
 

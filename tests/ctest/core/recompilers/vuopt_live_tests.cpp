@@ -760,6 +760,127 @@ TEST(VuoptLive, ManyConcurrentRequests)
 	EXPECT_GE(on.regions, kPrograms);
 }
 
+// A region rooted in a program reached by a JR (an overlay, God of War II's shape) is published at the
+// JR slow path that has just resolved that program. Publishing a root drops the program's quick slots,
+// so the jump cache entry the slow path then fills must not be left as "no program, this entry": the
+// inline probe in front of every JR (normJumpCompile) takes an entry whose program equals the quick
+// slot's, and does not ask whether that program is null. Such an entry would be taken by the next JR
+// to that address whenever the slot is empty, which it is after any micro-memory write over the code
+// there: the stub then jumps into the overlay's old code when a new overlay is in place.
+//
+// The stub at 0 jumps to the overlay at kOverlayPair (as in StubAndOverlay), which tiers up through
+// the jump path. A dispatch at a second entry of the overlay (kOverlayEntry2, a counted loop) asks for
+// a root job, held in the worker. The stub runs to its JR's block and stops (cycle budget), the job is
+// let go, and the stub resumes: its JR misses the jump cache (the overlay's slots were emptied by a
+// write) and the slow path publishes the root. Then a different routine is written over the overlay's
+// entry and the stub runs again: microVU alone makes a program of the new routine and runs it.
+// (Mutation: vuoptRefetch leaves the quick slot empty after a root publication; the last run then
+// executes the old overlay.)
+namespace
+{
+constexpr u32 kOverlayEntry2 = 64;
+std::vector<VuOp> StubOverlayAndSecondEntry()
+{
+	std::vector<VuOp> p = StubAndOverlay();
+	while (p.size() < kOverlayEntry2)
+		p.push_back(U(VNOP_U()));
+	std::vector<VuOp> loop = CountedLoop(10);
+	loop.back() = EBit(P(VFSAND_L(vi::vi4, 0x03f), VNOP_U())); // (no sticky bit read)
+	for (const VuOp& op : loop)
+		p.push_back(op);
+	return p;
+}
+
+// What replaces the overlay's entry: a routine of its own.
+void WriteNewOverlay()
+{
+	const std::vector<VuOp> c = {U(VADD_U(mask::xyzw, vf::vf8, vf::vf1, vf::vf2)), U(VMUL_U(mask::xyzw, vf::vf9, vf::vf8, vf::vf8)),
+		EBit(U(VNOP_U())), U(VNOP_U())};
+	for (size_t i = 0; i < c.size(); i++)
+	{
+		std::memcpy(vuRegs[1].Micro + (kOverlayPair + i) * 8 + 0, &c[i].lower, 4);
+		std::memcpy(vuRegs[1].Micro + (kOverlayPair + i) * 8 + 4, &c[i].upper, 4);
+	}
+	CpuMicroVU1.Clear(kOverlayPair * 8, static_cast<u32>(c.size() * 8));
+}
+} // namespace
+
+TEST(VuoptLive, RootPublishedAtAJumpLeavesNoUncheckedJumpCacheEntry)
+{
+	for (bool fh : {true, false})
+	{
+		const auto sequence = [&](bool on, vuopt::live::Stats& d) {
+			std::vector<Result> out;
+			LiveScope scope(on, 1000000, fh, 5, /*sync=*/false);
+			VuTestHarness h(1);
+			SetupOverlay(h);
+			h.TrackMemWindow(0, 0x4000);
+			h.LoadProgram(StubOverlayAndSecondEntry());
+			h.RunNoDiff();
+			out.push_back(Take(h));
+			// The stub's program ends before its JR, and a word nobody executes changes, so the JR's
+			// target becomes a program of its own (OverlaySequence).
+			h.SetCycleBudget(1);
+			h.RunJitPreserveBlockCache();
+			out.push_back(Take(h));
+			h.SetCycleBudget(100000);
+			const u32 marker = 0x12345678;
+			std::memcpy(vuRegs[1].Micro + 0x3000, &marker, 4);
+			// The overlay tiers up through the jump path; each publication waited for.
+			for (u32 i = 0; i < 10; i++)
+			{
+				CpuMicroVU1.Clear(kOverlayPair * 8, 0x100);
+				h.RunJitPreserveBlockCache();
+				out.push_back(Take(h));
+				if (on)
+					vuopt::live::WaitWorkerIdle();
+			}
+			const vuopt::live::Stats s0 = vuopt::live::GetStats();
+			// A dispatch at the overlay's second entry: microVU compiles it, a root job is held.
+			JobGate gate;
+			if (on)
+				gate.Install();
+			h.SetStartPc(kOverlayEntry2 * 8);
+			h.RunJitPreserveBlockCache();
+			out.push_back(Take(h));
+			if (on)
+				gate.WaitEntered();
+			// The stub up to its JR's block; the job finishes; the stub resumes into the JR slow path.
+			h.SetStartPc(0);
+			CpuMicroVU1.Clear(kOverlayPair * 8, 0x100);
+			h.SetCycleBudget(1);
+			h.RunJitPreserveBlockCache();
+			out.push_back(Take(h));
+			if (on)
+			{
+				vuopt::live::SetWorkerGate(nullptr);
+				gate.Release();
+				vuopt::live::WaitWorkerIdle();
+			}
+			h.ContinueJit(100000, 4);
+			out.push_back(Take(h));
+			d = Delta(s0, vuopt::live::GetStats());
+			// A new routine where the overlay was; the stub jumps to it.
+			h.SetCycleBudget(100000);
+			WriteNewOverlay();
+			for (u32 i = 0; i < 3; i++)
+			{
+				h.RunJitPreserveBlockCache();
+				out.push_back(Take(h));
+			}
+			return out;
+		};
+		vuopt::live::Stats off{}, on{};
+		const std::vector<Result> ref = sequence(false, off);
+		const std::vector<Result> got = sequence(true, on);
+		ASSERT_EQ(ref.size(), got.size());
+		for (size_t i = 0; i < ref.size(); i++)
+			EXPECT_EQ(Diff(ref[i], got[i]), "") << "flagHack=" << fh << " run " << i;
+		EXPECT_EQ(on.jobsRoot, 1u) << "flagHack=" << fh << ": the second entry asks for one root job";
+		EXPECT_EQ(on.publishedRoot, 1u) << "flagHack=" << fh << ": published at the stub's JR";
+	}
+}
+
 // A tiered program survives a settings round trip: switching the tier off and
 // on again resets VU1 (every program, with the tier's state for it, is freed)
 // and the next runs tier it up again.
