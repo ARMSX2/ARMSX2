@@ -27,7 +27,6 @@
 #include "EeFpuModelCall-arm64.h"
 #include "VuEfuModel.h"
 #include "VuMulBand.h"
-#include "MvuObservedEntries.h"
 #include "microVU_Persist-arm64.h"
 
 #ifndef XXH_versionNumber
@@ -471,14 +470,6 @@ struct microProgram
 	// The single owner is mVU.prog.contentMap[contentHash]; per-PC deques are
 	// non-owning references. Single-threaded per VU, so plain s32.
 	s32           refcount;
-
-	// Set of microMem byte offsets the dispatcher has handed off into this
-	// program. Initialized at mVUcreateProg with the creator's startPC;
-	// mVUsearchProg accumulates additional entries seen during the program's
-	// lifetime. `version` lets callers detect "new entry since last compile"
-	// cheaply (compare vs the version snapshotted by the most recent
-	// SaveProgram).
-	MvuObservedEntries observed;
 
 	// Recorded block-graph snapshot (chunks + fixups) for this program, built
 	// by the emit-time recorder in microVU_Persist-arm64.inl. Null when

@@ -127,7 +127,6 @@ add_pcsx2_test(recompiler_tests
 	ee_vu1_vif_dispatch_tests.cpp
 	vu_capture_format_tests.cpp
 	vu_replay_tests.cpp
-	mvu_observed_entries_tests.cpp
 	mvu_cache_exhaustion_tests.cpp
 	mvu_lpstate_invariant_tests.cpp
 	mvu_resume_dispatch_tests.cpp

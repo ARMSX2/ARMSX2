@@ -46,35 +46,6 @@ alignas(16) microVU microVU1;
 u32 mVU0ParkedSpin = 0;
 
 //------------------------------------------------------------------
-// Micro VU - Observed-entry-PC tracking on microProgram. Single-
-// threaded per VU; the dispatcher records each `startPC` it hands
-// off into the resolved program so additional entry trampolines
-// can be emitted for previously-unseen PCs.
-//------------------------------------------------------------------
-
-bool MvuObservedEntries::record(u32 startPC_bytes)
-{
-	for (u32 i = 0; i < count; ++i)
-	{
-		if (pcs[i] == startPC_bytes)
-			return false;
-	}
-	if (count >= kMax)
-		return false;
-	pcs[count++] = startPC_bytes;
-	++version;
-	return true;
-}
-
-void MvuObservedEntries::clear()
-{
-	count   = 0;
-	version = 0;
-	for (u32 i = 0; i < kMax; ++i)
-		pcs[i] = 0;
-}
-
-//------------------------------------------------------------------
 // Micro VU - Program-cache range overlap helper
 //
 // Returns true iff any compiled range in `prog->ranges` overlaps the byte
@@ -1439,11 +1410,6 @@ __ri microProgram* mVUcreateProg(microVU& mVU, int startPC, const XXH128_hash_t&
 	prog->ranges = new std::deque<microRange>();
 	prog->startPC = startPC;
 	prog->refcount = 0; // Caller increments when pushing into a per-PC deque.
-	// Record the creator's startPC (microMem byte offset) as the first
-	// observed entry. mVUsearchProg appends any additional PCs seen
-	// during the program's lifetime.
-	prog->observed.clear();
-	prog->observed.record(static_cast<u32>(startPC) * 8u);
 	if(doWholeProgCompare)
 		mVUcacheProg(mVU, *prog);
 
@@ -1618,9 +1584,6 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 				quick.prog  = it[0];
 				list->erase(it);
 				list->push_front(quick.prog);
-				// Per-PC deque match resolved to this program;
-				// record the dispatched entry.
-				quick.prog->observed.record(startPC);
 
 				if (quick.block == nullptr)
 				{
@@ -1651,10 +1614,6 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 			mVU.prog.cur     = shared;
 			quick.prog       = shared;
 			quick.block      = shared->block[startPC / 8];
-			// Record the dispatched entry on the resolved program.
-			// Idempotent on duplicates; bumps `observed.version` only
-			// when this PC is new for the program.
-			shared->observed.record(startPC);
 			if (quick.block == nullptr)
 			{
 				// First time this startPC is compiled for the shared program
@@ -1680,7 +1639,6 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 			mVU.prog.cur     = hydrated;
 			quick.prog       = hydrated;
 			quick.block      = hydrated->block[startPC / 8];
-			hydrated->observed.record(startPC);
 			if (quick.block == nullptr)
 			{
 				// The image carried no block for this entry PC — compile it
@@ -1695,10 +1653,6 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 		mVU.prog.cleared = 0;
 		mVU.prog.isSame  = 1;
 		mVU.prog.cur     = mVUcreateProg(mVU, mVU.regs().start_pc/8, liveHash);
-		// createProg seeded `observed` with its own startPC; record
-		// the dispatcher's `startPC` too (idempotent if they match,
-		// which is the common case).
-		mVU.prog.cur->observed.record(startPC);
 		void* entryPoint = mVUblockFetch(mVU,  startPC, pState);
 		quick.block      = mVU.prog.cur->block[startPC/8];
 		quick.prog       = mVU.prog.cur;
@@ -1712,9 +1666,6 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 	mVU.prog.isSame = -1;
 	mVU.prog.cur = quick.prog;
 	quick.block = mVU.prog.cur->block[startPC / 8];
-	// Quick-slot hit; record the dispatched entry on the resolved
-	// program (idempotent if already observed).
-	mVU.prog.cur->observed.record(startPC);
 
 	if (quick.block == nullptr)
 	{
@@ -1751,11 +1702,6 @@ _mVUt __fi void* mVUlookupProg(u32 startPC, uptr pState)
 	mVU.prog.isSame = -1;
 	mVU.prog.cur = quick.prog;
 	quick.block = block;
-	// No observed.record here, recording or not: the entry PCs a program
-	// keeps are the program-cache INDEX's telemetry (hydration looks programs
-	// up by content hash, never by PC), and the slow path in mVUsearchProg
-	// records every PC it resolves. A per-dispatch scan on this hot path
-	// would make recording cost execution time.
 	return pBlock->hostEntry;
 }
 
