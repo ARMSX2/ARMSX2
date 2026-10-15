@@ -149,7 +149,7 @@ namespace vuopt
 		// it: a link out of the loop, a JR fallback, a bail at a loop head. An entry from microVU builds
 		// the sources from microVU's words. Every word anything observes is the one microVU builds.
 		// `flagSinkStatus` off keeps STATUS words (MAC only). STATUS sinking needs `dropSticky`.
-		static constexpr bool kFlagSinkDefault = false;
+		static constexpr bool kFlagSinkDefault = true;
 		bool flagSink = kFlagSinkDefault;
 		static constexpr bool kFlagSinkStatusDefault = true;
 		bool flagSinkStatus = kFlagSinkStatusDefault;
