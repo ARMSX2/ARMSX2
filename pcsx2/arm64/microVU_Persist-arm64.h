@@ -6,6 +6,7 @@
 #include "common/Pcsx2Defs.h"
 
 #include <cstddef>
+#include <string>
 #include <vector>
 
 struct microVU;
@@ -89,8 +90,8 @@ namespace mVUPersist
 	void BeginEpisode(microVU& mVU, u8* chunkBase);
 	// mVUcloseCodeCache is about to unbind: finalize the chunk onto the
 	// owning program's persist log (or drop it if the episode failed).
-	// `chunkEnd` is the cursor after FinalizeCode (literal pool included).
-	void EndEpisode(microVU& mVU, u8* chunkEnd);
+	// [chunkStart, chunkEnd) is the episode's code, literal pool included.
+	void EndEpisode(microVU& mVU, u8* chunkStart, u8* chunkEnd);
 	// mVUinitFirstPass registered a block with the block manager. Also
 	// counts block compiles for the round-trip "no recompile" gate.
 	void OnBlockCompiled(microVU& mVU, microBlock* block, u8* entry, u32 startPC_bytes);
@@ -127,6 +128,19 @@ namespace mVUPersist
 	// Test-only (reads s_lastHydratedChunkBase, gated out of Release).
 #ifdef PCSX2_RECOMPILER_TESTS
 	bool TestVerifyHydratedCode(u32 vu_index, const u8* image, size_t size);
+
+	// Address-operand audit. While enabled, every recorded chunk is decoded
+	// in place and each instruction that carries a host address no fixup
+	// covers (out-of-chunk PC-relative operand, or an immediate-move run whose
+	// value lands in a mapped region) is counted by form and region. Enabling
+	// clears the census. An address no fixup covers is one that hydration in
+	// a process with a different layout would leave stale.
+	void TestSetAuditEnabled(bool enabled);
+	u64 TestAuditUncoveredCount();
+	std::string TestAuditReport();
+	// Fixups the census saw covering an address of each kind (image-address
+	// runs, block-object runs, ...), keyed like the report.
+	u64 TestAuditCoveredCount(const char* key);
 #endif
 	// Total mVU block compiles since process start (bumped in
 	// mVUinitFirstPass regardless of recording state).
@@ -150,6 +164,9 @@ namespace mVUPersist
 		u64 programsHydrated = 0;
 		u64 blocksHydrated = 0;
 		u64 hydrationRejects = 0;
+		// Bytes of microVU code emitted (every closed emission episode,
+		// recording or not; hydration copies included).
+		u64 emittedCodeBytes = 0;
 	};
 	Stats GetStats(u32 vu_index);
 }

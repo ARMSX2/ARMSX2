@@ -22,6 +22,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <mutex>
+#include <string>
 #include <unordered_map>
 
 namespace mVUPersist
@@ -66,10 +69,17 @@ namespace mVUPersist
 	};
 	static_assert(sizeof(PersistFixup) == 24);
 
+	// Instructions a fixup's patcher rewrites, starting at codeOffset.
+	static u32 FixupSpanInsns(const PersistFixup& f)
+	{
+		return (f.kind == kFixSelfBlockAbs) ? 4 : 1;
+	}
+
 	struct PersistChunk
 	{
 		std::vector<u8> code;
 		std::vector<PersistFixup> fixups;
+		const u8* liveBase = nullptr; // where this chunk runs in this process; not serialized
 	};
 
 	struct PersistBlockRec
@@ -306,6 +316,285 @@ namespace mVUPersist
 		}
 		return false;
 	}
+
+#ifdef PCSX2_RECOMPILER_TESTS
+	//------------------------------------------------------------------
+	// Address-operand audit (test tooling)
+	//------------------------------------------------------------------
+	//
+	// Decodes a recorded chunk as it sits in the slab and reports every
+	// instruction that carries a host address no fixup covers: a PC-relative
+	// operand (B/BL, B.cond, CBZ/CBNZ, TBZ/TBNZ, ADR/ADRP, LDR literal) whose
+	// target is outside the chunk, or a MOVZ/MOVN/ORR-immediate + MOVK run
+	// whose value lands in a mapped region. This is independent of the emit
+	// helpers, so it also catches code that bypasses them. Counts go into a
+	// census keyed by "<form>-><region>".
+
+	static bool s_auditEnabled = false;
+	static std::mutex s_auditMutex;
+	struct AuditCensus
+	{
+		std::map<std::string, u64> uncovered;
+		std::map<std::string, u64> covered;
+		std::vector<std::string> examples;
+		u64 chunks = 0;
+		u64 insns = 0;
+		u64 data32 = 0; // W-form immediate runs whose value happens to be a mapped address
+	};
+	static AuditCensus* s_audit = nullptr;
+
+	struct MapRange
+	{
+		uptr begin, end;
+	};
+	static std::vector<MapRange> s_auditMaps;
+
+	static void AuditRefreshMaps()
+	{
+		s_auditMaps.clear();
+#ifdef __linux__
+		std::FILE* f = std::fopen("/proc/self/maps", "r");
+		if (!f)
+			return;
+		char line[1024];
+		while (std::fgets(line, sizeof(line), f))
+		{
+			unsigned long long b = 0, e = 0;
+			if (std::sscanf(line, "%llx-%llx", &b, &e) == 2)
+				s_auditMaps.push_back({static_cast<uptr>(b), static_cast<uptr>(e)});
+		}
+		std::fclose(f);
+#endif
+	}
+
+	static bool AuditIsMapped(uptr v)
+	{
+		for (int pass = 0; pass < 2; pass++)
+		{
+			for (const MapRange& m : s_auditMaps)
+				if (v >= m.begin && v < m.end)
+					return true;
+			if (pass == 0)
+				AuditRefreshMaps(); // the heap may have grown since the last parse
+		}
+		return false;
+	}
+
+	static const char* AuditRegion(microVU& mVU, const MvuPersistLog& log, uptr v)
+	{
+		const InvariantRanges& r = GetInvariantRanges();
+		if (r.valid && v >= r.imgBegin && v < r.imgEnd)
+			return "image";
+		if (r.valid && v >= r.dataBegin && v < r.dataEnd)
+			return "data";
+		const uptr slab_begin = reinterpret_cast<uptr>(mVU.cache);
+		const uptr slab_end = reinterpret_cast<uptr>(mVU.prog.x86end) + mVUcacheSafeZone * _1mb;
+		if (v >= slab_begin && v < slab_end)
+		{
+			u8 stub = 0;
+			if (ResolveStub(mVU, reinterpret_cast<const void*>(v), stub))
+				return "stub";
+			if (log.blockByEntry.count(reinterpret_cast<const void*>(v)))
+				return "block-entry";
+			return "slab";
+		}
+		const uptr code_begin = reinterpret_cast<uptr>(SysMemory::GetCodePtr(0));
+		if (v >= code_begin && v < code_begin + HostMemoryMap::CodeSize)
+			return "code-arena";
+		for (const PersistBlockRec& b : log.blocks)
+		{
+			const uptr blk = reinterpret_cast<uptr>(b.live);
+			if (v >= blk && v < blk + sizeof(microBlock))
+				return "block-object";
+		}
+		if (AuditIsMapped(v))
+			return "mapped-other";
+		return nullptr;
+	}
+
+	static void AuditChunk(microVU& mVU, const MvuPersistLog& log, const PersistChunk& chunk, AuditCensus& out)
+	{
+		namespace a64 = vixl::aarch64;
+		const u8* base = chunk.liveBase;
+		const u32 n = static_cast<u32>(chunk.code.size() / 4);
+		std::vector<u8> covered(n, 0);
+		for (const PersistFixup& f : chunk.fixups)
+		{
+			const u32 first = f.codeOffset / 4;
+			for (u32 i = 0; i < FixupSpanInsns(f) && first + i < n; i++)
+				covered[first + i] = 1;
+		}
+		out.chunks++;
+		out.insns += n;
+
+		auto note = [&](u32 idx, const char* form, uptr value) {
+			const char* region = AuditRegion(mVU, log, value);
+			if (!region)
+				return;
+			const std::string key = std::string(form) + "->" + region;
+			if (covered[idx])
+			{
+				out.covered[key]++;
+				return;
+			}
+			out.uncovered[key]++;
+			if (out.examples.size() < 64)
+			{
+				char buf[160];
+				std::snprintf(buf, sizeof(buf), "vu%u %s at chunk+0x%x insn %08x value %p",
+					mVU.index, key.c_str(), idx * 4,
+					*reinterpret_cast<const u32*>(base + idx * 4), reinterpret_cast<void*>(value));
+				out.examples.emplace_back(buf);
+			}
+		};
+
+		const uptr chunk_begin = reinterpret_cast<uptr>(base);
+		const uptr chunk_end = chunk_begin + chunk.code.size();
+		for (u32 i = 0; i < n; i++)
+		{
+			const a64::Instruction* insn = reinterpret_cast<const a64::Instruction*>(base + i * 4);
+			const u32 bits = insn->GetInstructionBits();
+
+			const char* pcrel_form = nullptr;
+			if (insn->IsUncondBranchImm())
+				pcrel_form = (bits & 0x80000000u) ? "bl" : "b";
+			else if (insn->IsCondBranchImm())
+				pcrel_form = "b.cond";
+			else if (insn->IsCompareBranch())
+				pcrel_form = "cbz";
+			else if (insn->IsTestBranch())
+				pcrel_form = "tbz";
+			else if (insn->IsLoadLiteral())
+				pcrel_form = "ldr-literal";
+			else if (insn->IsPCRelAddressing())
+				pcrel_form = (bits & 0x80000000u) ? "adrp" : "adr";
+			if (pcrel_form)
+			{
+				uptr target = reinterpret_cast<uptr>(insn->GetImmPCOffsetTarget());
+				if ((bits & 0x9F000000u) == 0x90000000u && i + 1 < n)
+				{
+					// ADRP + ADD/ORR: classify the full address, not just the page.
+					const u32 next = *reinterpret_cast<const u32*>(base + (i + 1) * 4);
+					if ((next & 0xFF800000u) == 0x91000000u && ((next >> 5) & 31) == (bits & 31))
+						target += ((next >> 10) & 0xFFFu) << (((next >> 22) & 1) ? 12 : 0);
+				}
+				const bool in_chunk = target >= chunk_begin && target < chunk_end;
+				if (!in_chunk)
+					note(i, pcrel_form, target);
+				continue;
+			}
+
+			// Immediate-move runs: MOVZ/MOVN or ORR Rd, ZR, #imm, then MOVKs to
+			// the same Rd.
+			const bool sf = (bits & 0x80000000u) != 0;
+			const u32 rd = bits & 31;
+			u64 value = 0;
+			bool start = false;
+			if ((bits & 0x7F800000u) == 0x52800000u) // MOVZ
+			{
+				value = static_cast<u64>((bits >> 5) & 0xFFFFu) << (16 * ((bits >> 21) & 3));
+				start = true;
+			}
+			else if ((bits & 0x7F800000u) == 0x12800000u) // MOVN
+			{
+				value = ~(static_cast<u64>((bits >> 5) & 0xFFFFu) << (16 * ((bits >> 21) & 3)));
+				start = true;
+			}
+			else if ((bits & 0x7F800000u) == 0x32000000u && ((bits >> 5) & 31) == 31) // ORR imm, ZR
+			{
+				value = insn->GetImmLogical();
+				start = true;
+			}
+			if (!start)
+				continue;
+			u32 j = i + 1;
+			for (; j < n; j++)
+			{
+				const u32 k = *reinterpret_cast<const u32*>(base + j * 4);
+				if ((k & 0x7F800000u) != 0x72800000u || (k & 31) != rd || ((k & 0x80000000u) != 0) != sf)
+					break;
+				const u32 sh = 16 * ((k >> 21) & 3);
+				value = (value & ~(0xFFFFull << sh)) | (static_cast<u64>((k >> 5) & 0xFFFFu) << sh);
+			}
+			// A 32-bit run cannot carry a pointer above 4GB, and below it a
+			// non-PIE image range collides with float/data constants, so W-form
+			// runs are counted apart and never fail an audit. Small values are
+			// data (cycle counts, offsets, masks), not pointers.
+			if (!sf)
+			{
+				value &= 0xFFFFFFFFull;
+				if (value >= 0x10000 && AuditRegion(mVU, log, static_cast<uptr>(value)))
+					out.data32++;
+			}
+			else if (value >= 0x10000)
+				note(i, "movseq", static_cast<uptr>(value));
+			i = j - 1;
+		}
+	}
+
+	static void AuditChunkIfEnabled(microVU& mVU, const MvuPersistLog& log, const PersistChunk& chunk)
+	{
+		if (!s_auditEnabled)
+			return;
+		std::lock_guard<std::mutex> lock(s_auditMutex);
+		if (!s_audit)
+			s_audit = new AuditCensus();
+		AuditChunk(mVU, log, chunk, *s_audit);
+	}
+
+	void TestSetAuditEnabled(bool enabled)
+	{
+		std::lock_guard<std::mutex> lock(s_auditMutex);
+		s_auditEnabled = enabled;
+		delete s_audit;
+		s_audit = enabled ? new AuditCensus() : nullptr;
+	}
+
+	u64 TestAuditUncoveredCount()
+	{
+		std::lock_guard<std::mutex> lock(s_auditMutex);
+		u64 total = 0;
+		if (s_audit)
+			for (const auto& kv : s_audit->uncovered)
+				total += kv.second;
+		return total;
+	}
+
+	u64 TestAuditCoveredCount(const char* key)
+	{
+		std::lock_guard<std::mutex> lock(s_auditMutex);
+		if (!s_audit)
+			return 0;
+		const auto it = s_audit->covered.find(key);
+		return (it != s_audit->covered.end()) ? it->second : 0;
+	}
+
+	std::string TestAuditReport()
+	{
+		std::lock_guard<std::mutex> lock(s_auditMutex);
+		std::string s;
+		if (!s_audit)
+			return s;
+		char buf[192];
+		std::snprintf(buf, sizeof(buf), "[audit] chunks=%llu insns=%llu data32=%llu\n",
+			(unsigned long long)s_audit->chunks, (unsigned long long)s_audit->insns,
+			(unsigned long long)s_audit->data32);
+		s += buf;
+		for (const auto& kv : s_audit->uncovered)
+		{
+			std::snprintf(buf, sizeof(buf), "[audit] uncovered %-28s %llu\n", kv.first.c_str(), (unsigned long long)kv.second);
+			s += buf;
+		}
+		for (const auto& kv : s_audit->covered)
+		{
+			std::snprintf(buf, sizeof(buf), "[audit] covered   %-28s %llu\n", kv.first.c_str(), (unsigned long long)kv.second);
+			s += buf;
+		}
+		for (const std::string& e : s_audit->examples)
+			s += "[audit] example " + e + "\n";
+		return s;
+	}
+#endif // PCSX2_RECOMPILER_TESTS
 
 	//------------------------------------------------------------------
 	// Emit-time recorder
@@ -568,9 +857,13 @@ namespace mVUPersist
 			PersistChunk chunk;
 			chunk.code.assign(chunkBase, chunkEnd);
 			chunk.fixups = std::move(fixups);
+			chunk.liveBase = chunkBase;
 			s_stats[vu].fixupsRecorded += chunk.fixups.size();
 			log->chunks.push_back(std::move(chunk));
 			s_stats[vu].chunksRecorded++;
+#ifdef PCSX2_RECOMPILER_TESTS
+			AuditChunkIfEnabled(*mvu, *log, log->chunks.back());
+#endif
 		}
 	};
 
@@ -643,8 +936,9 @@ namespace mVUPersist
 		armAddressRecorder = &r;
 	}
 
-	void EndEpisode(microVU& mVU, u8* chunkEnd)
+	void EndEpisode(microVU& mVU, u8* chunkStart, u8* chunkEnd)
 	{
+		s_stats[mVU.index & 1].emittedCodeBytes += static_cast<u64>(chunkEnd - chunkStart);
 		Recorder& r = s_recorder[mVU.index & 1];
 		if (!r.active)
 			return;
@@ -1084,6 +1378,7 @@ namespace mVUPersist
 			PersistChunk pc;
 			pc.code.assign(chunks[i].code, chunks[i].code + chunks[i].codeSize);
 			pc.fixups = chunks[i].fixups;
+			pc.liveBase = chunk_base[i];
 			log->chunks.push_back(std::move(pc));
 		}
 		for (size_t i = 0; i < blocks.size(); i++)
