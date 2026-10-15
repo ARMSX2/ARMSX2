@@ -132,6 +132,7 @@ static bool s_no_console = false;
 static bool s_vu0_interp = false; // --vu0-interp: VU0 on its interpreter (every --contmem pass, --liverun)
 static bool s_vu1_interp = false; // --vu1-interp: VU1 on its interpreter (--liverun)
 static uint32_t s_vuopt_trip_at = 0; // --vuopt-trip-at N: set the vuopt sticky-STATUS tripwire off after frame N (--liverun)
+static uint32_t s_reload_state_at = 0; // --reload-state-at N: load the --savestate again after frame N (--liverun)
 static GSRendererType s_renderer = GSRendererType::Null; // --renderer (Null default; vk for Intel/headless)
 static bool s_renderer_explicit = false; // user passed --renderer (an explicit null is honored in liverun)
 static std::string s_memdump_prefix; // --memdump <prefix>: write <prefix>.{interp,jit}.bin at the last frame
@@ -989,6 +990,19 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			else if (CHECK_ARG_PARAM("--savestate"))
 			{
 				s_savestate_path = StringUtil::StripWhitespace(argv[++i]);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--reload-state-at"))
+			{
+				// Loads the --savestate again after frame N of a --liverun: a savestate load in the
+				// middle of a run, with everything it resets (the VU recompilers among them).
+				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
+				if (!n.has_value() || n.value() == 0)
+				{
+					Console.Error("--reload-state-at expects a frame number above zero.");
+					return false;
+				}
+				s_reload_state_at = n.value();
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--frames"))
@@ -4384,6 +4398,16 @@ static int RunLiveRun()
 			vuopt::live::TripStickyForTest();
 		}
 #endif
+		if (s_reload_state_at && (f + 1) == s_reload_state_at)
+		{
+			Console.WriteLn(fmt::format("LIVERUN: loading the savestate again after frame {}", f + 1));
+			Error error;
+			if (!VMManager::LoadState(s_savestate_path.c_str(), &error))
+			{
+				Console.ErrorFmt("LIVERUN: the reload failed: {}", error.GetDescription());
+				return 1;
+			}
+		}
 
 		// Arm the GS dump once the scene has settled. Recording stops on its own
 		// after s_gsdump_frames vsyncs (GSRenderer counts m_dump_frames down), so
