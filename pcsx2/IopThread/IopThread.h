@@ -361,7 +361,9 @@ namespace IopThread
 
 	class ScopedHold;
 
-	class Thread
+	// Aligned to the channel line so that whatever follows the object in memory does not share the IOP's
+	// last line.
+	class alignas(kChannelLineSize) Thread
 	{
 	public:
 		using Ticket = HostCommandQueue::Ticket;
@@ -647,8 +649,9 @@ namespace IopThread
 		HostCommandQueue m_host;
 		Threading::WorkSema m_sema;
 
-		// EE-thread private.
-		u64 m_ee_wm_local = 0;
+		// EE-thread private, with the EE's counters: lines the IOP never writes, so the event test's loads
+		// and stores of them stay in the EE's cache.
+		alignas(kChannelLineSize) u64 m_ee_wm_local = 0;
 		bool m_ee_fence = false; // the EE's half of the sleep handshake is a fence (no membarrier)
 		u64 m_last_seen_iop_pos = 0;
 		u32 m_hold_depth = 0;
@@ -664,17 +667,17 @@ namespace IopThread
 			u64 result = 0;
 		} m_ls; // the Lockstep mailbox; ordered by req_seq and done_seq
 
-		// IOP-thread private. The EE writes m_iop_pos only under a hold or while stopped.
-		u64 m_iop_pos = 0;
-
-		// Statistics.
+		// Statistics the EE thread writes.
 		detail::Counter m_lag_spins, m_lag_spin_iterations, m_hold_requests, m_hold_markers, m_hold_spin_iterations, m_hold_sleeps;
 		detail::Counter m_lag_stall_ns, m_lag_spins_parked, m_lag_parked_stall_ns, m_emu_hold_requests, m_emu_hold_stall_ns, m_sif_ee_pumps;
 		detail::Counter m_e2i_full_spins, m_e2i_full_iterations, m_e2i_full_failfast, m_i2e_drained, m_calls_served;
-		detail::Counter m_wakes_sent, m_wakes_dropped, m_stop_checks, m_handoffs;
+		detail::Counter m_wakes_sent, m_wakes_dropped, m_stop_checks, m_handoffs, m_lag_spins_idle, m_lag_idle_stall_ns;
+
+		// IOP-thread private, with the IOP's counters, on lines of their own. The EE writes m_iop_pos only
+		// under a hold or while stopped.
+		alignas(kChannelLineSize) u64 m_iop_pos = 0;
 		detail::Counter m_slices, m_items_applied, m_parks, m_holds_entered, m_calls_posted, m_calls_cancelled;
-		detail::Counter m_i2e_full_waits, m_kicks_applied;
-		detail::Counter m_lag_spins_idle, m_lag_idle_stall_ns, m_idle_waits, m_idle_ns;
+		detail::Counter m_i2e_full_waits, m_kicks_applied, m_idle_waits, m_idle_ns;
 	};
 
 	/// A full stop of the IOP, for the EE thread to touch IOP state safely (design 3.8.1). Re-entrant.
