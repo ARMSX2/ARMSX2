@@ -2306,6 +2306,9 @@
     <ClInclude Include="GS\Renderers\Common\GSVertexTrace.h">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSVramMirrorBatch.h">
+      <Filter>System\Ps2\GS\Renderers\Common</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSVramMirrorLayout.h">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClInclude>

@@ -25,7 +25,36 @@ namespace
 	constexpr u32 kBindingCount = 5;
 	constexpr u32 kDescriptorSets = 4; // the current set, and room for a second while buffers are replaced
 
-	constexpr u32 AlignWords8(u32 words) { return (words + 7u) & ~7u; }
+	std::atomic<bool> s_verify{false};
+
+	// The verify report, process-wide so it can be read after the device is gone.
+	struct VerifyCounters
+	{
+		std::atomic<u64> windows{0}, texels{0}, bad_windows{0}, bad_texels{0};
+		std::atomic<u64> flushes{0}, mirror_blocks{0}, mirror_bad_blocks{0};
+		std::atomic<u64> mark_blocks{0}, mark_stale{0}, mark_unseen{0}, mark_sweeps{0}, mark_window_blocks{0};
+		std::atomic<u32> printed{0};
+	};
+	VerifyCounters s_vc;
+
+	/// What the CPU readers make of the window right now: the R8 index bytes PreloadTexture would upload.
+	std::vector<u8> CpuDecodeWindow(GSLocalMemory& mem, const GSOffset& off, const GSVector4i& rect)
+	{
+		const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[off.psm()];
+		const GSVector4i block_rect = rect.ralign<Align_Outside>(psm.bs);
+		const u32 pitch = (static_cast<u32>(block_rect.width()) + 31u) & ~31u;
+		std::vector<u8> raw(static_cast<size_t>(pitch) * block_rect.height() + 64);
+		u8* const aligned = reinterpret_cast<u8*>((reinterpret_cast<uintptr_t>(raw.data()) + 31) & ~uintptr_t(31));
+		const GIFRegTEXA texa = {};
+		psm.rtxP(mem, off, block_rect, aligned, static_cast<int>(pitch), texa);
+
+		const int w = rect.width(), h = rect.height();
+		std::vector<u8> out(static_cast<size_t>(w) * h);
+		for (int y = 0; y < h; y++)
+			std::memcpy(&out[static_cast<size_t>(y) * w],
+				aligned + static_cast<size_t>(pitch) * (rect.top - block_rect.top + y) + (rect.left - block_rect.left), w);
+		return out;
+	}
 
 	/// The shader source for one entry point: the #version line first, the entry macro after it, and the
 	/// generated swizzle file where the #include line is.
@@ -63,6 +92,59 @@ bool GSVramMirrorVK::IsSupportedPSM(u32 psm)
 {
 	Format f;
 	return FormatFromPSM(psm, &f);
+}
+
+GSVramMirrorVK::Source GSVramMirrorVK::SourceOf(GSLocalMemory& mem)
+{
+	return {mem.vm8(), mem.Id(), mem.BlockDirtyWords(), &mem};
+}
+
+void GSVramMirrorVK::SetVerify(bool enable)
+{
+	s_verify.store(enable);
+}
+
+bool GSVramMirrorVK::VerifyEnabled()
+{
+	return s_verify.load();
+}
+
+GSVramMirrorVK::VerifyReport GSVramMirrorVK::GetVerifyReport()
+{
+	VerifyReport r;
+	r.windows = s_vc.windows;
+	r.texels = s_vc.texels;
+	r.bad_windows = s_vc.bad_windows;
+	r.bad_texels = s_vc.bad_texels;
+	r.flushes = s_vc.flushes;
+	r.mirror_blocks = s_vc.mirror_blocks;
+	r.mirror_bad_blocks = s_vc.mirror_bad_blocks;
+	r.mark_blocks = s_vc.mark_blocks;
+	r.mark_stale = s_vc.mark_stale;
+	r.mark_unseen = s_vc.mark_unseen;
+	r.mark_sweeps = s_vc.mark_sweeps;
+	r.mark_window_blocks = s_vc.mark_window_blocks;
+	return r;
+}
+
+u64 GSVramMirrorVK::DeviceFences::Completed()
+{
+	return GSDeviceVK::GetInstance()->GetCompletedFenceCounter();
+}
+
+u64 GSVramMirrorVK::DeviceFences::Current()
+{
+	return GSDeviceVK::GetInstance()->GetCurrentFenceCounter();
+}
+
+void GSVramMirrorVK::DeviceFences::Poll()
+{
+	GSDeviceVK::GetInstance()->ScanForCommandBufferCompletion();
+}
+
+void GSVramMirrorVK::DeviceFences::Wait(u64 counter)
+{
+	GSDeviceVK::GetInstance()->WaitForFenceCounter(counter);
 }
 
 std::unique_ptr<GSVramMirrorVK> GSVramMirrorVK::Create()
@@ -104,19 +186,12 @@ bool GSVramMirrorVK::Initialize()
 
 	const VkPhysicalDeviceLimits& limits = dev->GetDeviceProperties().limits;
 	if (limits.maxPerStageDescriptorStorageBuffers < kBindingCount || limits.maxComputeWorkGroupInvocations < 64 ||
-		limits.maxComputeWorkGroupSize[0] < 64 || limits.maxComputeWorkGroupCount[0] < kMaxWorkgroups ||
+		limits.maxComputeWorkGroupSize[0] < 64 || limits.maxComputeWorkGroupCount[0] < Batch::kMaxWorkgroups ||
 		limits.maxStorageBufferRange < m_config.scratch_bytes || limits.maxPushConstantsSize < 16)
 	{
 		Console.Error("GS/Vulkan: device limits are too low for the VRAM mirror decode.");
 		return false;
 	}
-
-	m_slot_epoch.assign(kMirrorBlocks, 0);
-	m_slot_of_block.assign(kMirrorBlocks, 0);
-	m_seen_epoch.assign(kMirrorBlocks, 0);
-	m_staged_blocks.reserve(kMirrorBlocks);
-	m_region_fence.assign(m_config.meta_regions, 0);
-	m_region_claimed.assign(m_config.meta_regions, 0);
 
 	if (!CreateBuffers() || !CreatePipelines() || !CreateDescriptors())
 	{
@@ -124,11 +199,16 @@ bool GSVramMirrorVK::Initialize()
 		return false;
 	}
 
+	m_batch = std::make_unique<Batch>(m_config, m_staging_ptr, reinterpret_cast<u32*>(m_meta_ptr), &m_fences);
+	m_verify = s_verify.load();
+	if (m_verify)
+		m_batch->EnableShadow();
+
 	Console.WriteLn("GS/Vulkan: VRAM mirror ready (generation %llu): mirror 4 MiB, staging %u KiB%s, meta %u x %u KiB%s, "
-					"scratch %u MiB.",
+					"scratch %u MiB%s.",
 		static_cast<unsigned long long>(m_generation), m_config.staging_slots / 4, m_staging_coherent ? " coherent" : " NON-coherent",
 		m_config.meta_regions, m_config.meta_region_bytes >> 10, m_meta_coherent ? " coherent" : " NON-coherent",
-		m_config.scratch_bytes >> 20);
+		m_config.scratch_bytes >> 20, m_verify ? ", verify mode" : "");
 	return true;
 }
 
@@ -304,7 +384,7 @@ bool GSVramMirrorVK::CreateDescriptors()
 	if (dev->IsGPUTimingSupported())
 	{
 		const VkQueryPoolCreateInfo qci = {
-			VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0, VK_QUERY_TYPE_TIMESTAMP, kQueryCount, 0};
+			VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0, VK_QUERY_TYPE_TIMESTAMP, kQueryCount * kTimingSets, 0};
 		if (vkCreateQueryPool(device, &qci, nullptr, &m_query_pool) != VK_SUCCESS)
 			m_query_pool = VK_NULL_HANDLE;
 	}
@@ -325,6 +405,22 @@ void GSVramMirrorVK::Destroy()
 			dev->ExecuteCommandBuffer(true);
 		else
 			dev->WaitForFenceCounter(m_last_flush_fence);
+	}
+
+	// Every readback in flight is compared before the buffers go; the report outlives the mirror.
+	if (m_verify)
+		VerifyDrain();
+
+	// A decode still queued belongs to a texture that outlives this object: it is not finished, and nobody
+	// is going to flush it. The texture is left as it is (its image was never written); only the flag goes,
+	// so its destructor does not call back into a mirror that is gone.
+	if (m_batch)
+	{
+		for (const Batch::Job& job : m_batch->Jobs())
+		{
+			if (job.texture)
+				static_cast<GSTextureVK*>(job.texture)->SetDecodePending(false);
+		}
 	}
 
 	const VkDevice device = dev->GetDevice();
@@ -358,128 +454,7 @@ void GSVramMirrorVK::Destroy()
 
 void GSVramMirrorVK::ForgetMemory()
 {
-	m_synced_memory_id = 0;
-}
-
-void GSVramMirrorVK::SyncTo(const Source& source)
-{
-	if (m_synced_memory_id == source.memory_id && m_synced_generation == m_generation)
-		return;
-
-	// The mirror's bytes belong to some other memory, or to none: every block of this one is unseen,
-	// whatever the bitmap says. The staged blocks of the pending batch come from the memory that was
-	// replaced, so they are not scattered; their windows still decode from their own table entries.
-	std::fill(source.dirty, source.dirty + kMirrorBlocks / 64, ~0ull);
-	m_staged_blocks.clear();
-	if (++m_epoch == 0)
-	{
-		std::fill(m_slot_epoch.begin(), m_slot_epoch.end(), 0);
-		m_epoch = 1;
-	}
-	m_synced_memory_id = source.memory_id;
-	m_synced_generation = m_generation;
-	m_stats.resyncs++;
-}
-
-bool GSVramMirrorVK::ClaimRegion()
-{
-	GSDeviceVK* dev = GSDeviceVK::GetInstance();
-	for (int attempt = 0; attempt < 2; attempt++)
-	{
-		const u64 completed = dev->GetCompletedFenceCounter();
-		for (u32 i = 0; i < m_config.meta_regions; i++)
-		{
-			if (!m_region_claimed[i] && m_region_fence[i] <= completed)
-			{
-				m_region_claimed[i] = 1;
-				m_batch_region = i;
-				m_table_words = 0;
-				return true;
-			}
-		}
-		if (attempt == 0)
-			dev->ScanForCommandBufferCompletion();
-	}
-
-	// Every region is in use. One whose flush was already submitted will come free, so wait for it.
-	// Regions held by the command buffer still being built cannot, and that is a submit.
-	u32 pick = kNoRegion;
-	for (u32 i = 0; i < m_config.meta_regions; i++)
-	{
-		if (!m_region_claimed[i] && m_region_fence[i] < dev->GetCurrentFenceCounter() &&
-			(pick == kNoRegion || m_region_fence[i] < m_region_fence[pick]))
-			pick = i;
-	}
-	if (pick == kNoRegion)
-		return false;
-	dev->WaitForFenceCounter(m_region_fence[pick]);
-	m_region_claimed[pick] = 1;
-	m_batch_region = pick;
-	m_table_words = 0;
-	return true;
-}
-
-void GSVramMirrorVK::ReclaimStaging()
-{
-	const u64 completed = GSDeviceVK::GetInstance()->GetCompletedFenceCounter();
-	while (!m_stage_marks.empty() && m_stage_marks.front().first <= completed)
-	{
-		m_stage_tail = m_stage_marks.front().second;
-		m_stage_marks.pop_front();
-	}
-}
-
-int GSVramMirrorVK::EnsureStagingSpace(u32 slots_needed)
-{
-	if (slots_needed == 0)
-		return 0;
-	if (slots_needed > m_config.staging_slots)
-		return 2;
-
-	GSDeviceVK* dev = GSDeviceVK::GetInstance();
-	ReclaimStaging();
-	while (m_config.staging_slots - (m_stage_head - m_stage_tail) < slots_needed)
-	{
-		// Slots come back when the GPU finishes the command buffer whose flush read them. A flush in the
-		// buffer still being built has not been submitted, and waiting for it would wait forever.
-		if (m_stage_marks.empty() || m_stage_marks.front().first >= dev->GetCurrentFenceCounter())
-			return 1;
-		dev->WaitForFenceCounter(m_stage_marks.front().first);
-		ReclaimStaging();
-	}
-	return 0;
-}
-
-bool GSVramMirrorVK::FitsBatch(const WindowLayout& layout, u32 new_staged_upper) const
-{
-	const u32 jobs = static_cast<u32>(m_jobs.size()) + 1;
-	if (jobs > kMaxJobs)
-		return false;
-	const u32 wgs = m_wg_total + (layout.UnitCount() + 63) / 64;
-	if (wgs > kMaxWorkgroups)
-		return false;
-	const u64 scratch = static_cast<u64>((m_scratch_used + 255u) & ~255u) + layout.scratch_bytes;
-	if (scratch > m_config.scratch_bytes)
-		return false;
-
-	const u32 pairs = std::min<u32>(kMirrorBlocks, static_cast<u32>(m_staged_blocks.size()) + new_staged_upper);
-	const u64 words = AlignWords8(m_table_words + layout.BlockCount()) + static_cast<u64>(jobs) * 8 + AlignWords8(wgs) +
-	                  static_cast<u64>(pairs) * 2;
-	return words <= m_config.meta_region_bytes / 4;
-}
-
-void GSVramMirrorVK::ResetBatch()
-{
-	m_jobs.clear();
-	m_staged_blocks.clear();
-	m_table_words = 0;
-	m_wg_total = 0;
-	m_scratch_used = 0;
-	if (++m_epoch == 0)
-	{
-		std::fill(m_slot_epoch.begin(), m_slot_epoch.end(), 0);
-		m_epoch = 1;
-	}
+	m_batch->ForgetMemory();
 }
 
 GSVramMirrorVK::Result GSVramMirrorVK::DecodeWindow(const Request& rq)
@@ -497,139 +472,60 @@ GSVramMirrorVK::Result GSVramMirrorVK::DecodeWindow(const Request& rq)
 		tex->GetWidth() != rq.rect.width() || tex->GetHeight() != rq.rect.height())
 		return Result::Unsupported;
 
-	// A window that cannot fit even an empty batch goes to the CPU.
-	if (layout.scratch_bytes > m_config.scratch_bytes)
+	// The decode goes into the init command buffer, ahead of the frame's draws. A texture that a draw or a
+	// copy of the command buffer being built has already used would have its update recorded into the draw
+	// buffer (GSTextureVK::GetCommandBufferForUpdate), where the mirror cannot be read in order; and one
+	// already queued has a decode in flight that this would race.
+	if (tex->IsDecodePending() || tex->GetUseFenceCounter() == GSDeviceVK::GetInstance()->GetCurrentFenceCounter())
 		return Result::Unsupported;
 
-	SyncTo(rq.source);
+	if (m_verify)
+		VerifyPoll(false);
 
-	BuildBlockNumbers(*rq.off, layout, &m_block_numbers);
-
-	// How many distinct blocks of the window the mirror has not seen: the staging slots it needs.
-	if (++m_seen_stamp == 0)
+	Batch::Result r = m_batch->Queue(*rq.off, layout, rq.source, m_generation, tex);
+	if (r == Batch::Result::NeedFlush)
 	{
-		std::fill(m_seen_epoch.begin(), m_seen_epoch.end(), 0);
-		m_seen_stamp = 1;
-	}
-	u32 need = 0;
-	for (const u32 bn : m_block_numbers)
-	{
-		if (((rq.source.dirty[bn >> 6] >> (bn & 63)) & 1) && m_seen_epoch[bn] != m_seen_stamp)
-		{
-			m_seen_epoch[bn] = m_seen_stamp;
-			need++;
-		}
-	}
-
-	if (!FitsBatch(layout, need))
-	{
-		// A full scratch (or job list, or meta region) is a flush: barrier A orders the reuse.
-		if (m_jobs.empty() && m_staged_blocks.empty())
-			return Result::Unsupported;
 		Flush();
-		m_stats.scratch_flushes++;
-		if (!FitsBatch(layout, need))
-			return Result::Unsupported;
+		m_batch->CountScratchFlush();
+		r = m_batch->Queue(*rq.off, layout, rq.source, m_generation, tex);
 	}
-
-	if (m_batch_region == kNoRegion && !ClaimRegion())
+	switch (r)
 	{
-		m_stats.need_submit++;
-		return Result::NeedSubmit;
-	}
-
-	switch (EnsureStagingSpace(need))
-	{
-		case 1:
-			m_stats.need_submit++;
-			return Result::NeedSubmit;
-		case 2:
-			return Result::Unsupported;
-		default:
+		case Batch::Result::Queued:
 			break;
+		case Batch::Result::NeedSubmit:
+			return Result::NeedSubmit;
+		default:
+			return Result::Unsupported;
 	}
-
-	// Stage what is new and write the block table. A block the batch already staged and nobody has
-	// written since reads that staged copy; one written since gets a fresh slot, and the windows
-	// that already point at the older slot keep their snapshot.
-	const u32 region_base_words = m_batch_region * (m_config.meta_region_bytes / 4);
-	u32* const table = reinterpret_cast<u32*>(m_meta_ptr) + region_base_words + m_table_words;
-	const u32 slot_mask = m_config.staging_slots - 1;
-	u32 staged_here = 0, from_staging = 0, restaged = 0;
-	for (u32 i = 0; i < layout.BlockCount(); i++)
-	{
-		const u32 bn = m_block_numbers[i];
-		u64& word = rq.source.dirty[bn >> 6];
-		u32 entry;
-		if ((word >> (bn & 63)) & 1)
-		{
-			const u32 slot = static_cast<u32>(m_stage_head++) & slot_mask;
-			std::memcpy(m_staging_ptr + static_cast<size_t>(slot) * kBlockBytes, rq.source.vm + static_cast<size_t>(bn) * kBlockBytes,
-				kBlockBytes);
-			word &= ~(1ull << (bn & 63));
-			if (m_slot_epoch[bn] != m_epoch)
-			{
-				m_slot_epoch[bn] = m_epoch;
-				m_staged_blocks.push_back(bn);
-			}
-			else
-			{
-				restaged++;
-			}
-			m_slot_of_block[bn] = slot;
-			entry = kTableStagedBit | slot;
-			staged_here++;
-			from_staging++;
-		}
-		else if (m_slot_epoch[bn] == m_epoch)
-		{
-			entry = kTableStagedBit | m_slot_of_block[bn];
-			from_staging++;
-		}
-		else
-		{
-			entry = bn;
-		}
-		table[i] = entry;
-	}
-
-	Job job;
-	job.texture = tex;
-	job.layout = layout;
-	job.table_word = region_base_words + m_table_words;
-	job.out_offset = (m_scratch_used + 255u) & ~255u;
-	job.first_wg = m_wg_total;
-	job.wg_count = (layout.UnitCount() + 63) / 64;
-	m_jobs.push_back(job);
-
-	m_table_words += layout.BlockCount();
-	m_wg_total += job.wg_count;
-	m_scratch_used = job.out_offset + layout.scratch_bytes;
 
 	// Where the image will be once the flush has run, which is where the draw buffer finds it.
 	tex->OverrideImageLayout(GSTextureVK::Layout::ShaderReadOnly);
+	tex->SetDecodePending(true);
 
-	m_stats.windows++;
-	m_stats.blocks_total += layout.BlockCount();
-	m_stats.blocks_staged += staged_here;
-	m_stats.blocks_restaged += restaged;
-	if (from_staging != 0 && from_staging != layout.BlockCount())
-		m_stats.mixed_windows++;
-	m_stats.blocks_from_staging += from_staging;
-	m_stats.decoded_bytes += layout.scratch_bytes;
+	if (m_verify)
+	{
+		// What the CPU readers make of the window right now, to compare with the texture once it is decoded.
+		// (A caller without a memory to read, like a test that models one, gets the other checks only.)
+		m_verify_expected.resize(m_batch->Jobs().size());
+		if (rq.source.mem)
+			m_verify_expected.back() = CpuDecodeWindow(*rq.source.mem, *rq.off, rq.rect);
+	}
 	return Result::Queued;
 }
 
-void GSVramMirrorVK::CancelTexture(const GSTextureVK* texture)
+void GSVramMirrorVK::CancelTexture(GSTextureVK* texture)
 {
-	for (Job& job : m_jobs)
+	if (!m_batch)
+		return;
+	const auto& jobs = m_batch->Jobs();
+	for (size_t j = 0; j < jobs.size(); j++)
 	{
-		if (job.texture == texture)
-		{
-			job.texture = nullptr;
-			m_stats.cancelled++;
-		}
+		if (jobs[j].texture == texture && j < m_verify_expected.size())
+			m_verify_expected[j].clear();
 	}
+	m_batch->Cancel(texture);
+	texture->SetDecodePending(false);
 }
 
 bool GSVramMirrorVK::EnableTiming(bool enable)
@@ -640,88 +536,92 @@ bool GSVramMirrorVK::EnableTiming(bool enable)
 	return true;
 }
 
+void GSVramMirrorVK::PollTimings()
+{
+	if (m_query_pool == VK_NULL_HANDLE)
+		return;
+
+	GSDeviceVK* dev = GSDeviceVK::GetInstance();
+	const double ns = dev->GetDeviceProperties().limits.timestampPeriod;
+	for (u32 i = 0; i < kTimingSets; i++)
+	{
+		TimingSet& ts = m_timing_sets[i];
+		if (!ts.pending || ts.fence > dev->GetCompletedFenceCounter())
+			continue;
+
+		u64 t[kQueryCount];
+		const VkResult res = vkGetQueryPoolResults(dev->GetDevice(), m_query_pool, i * kQueryCount, kQueryCount, sizeof(t), t,
+			sizeof(u64), VK_QUERY_RESULT_64_BIT);
+		if (res != VK_SUCCESS)
+			continue;
+		ts.pending = false;
+
+		Timings tm;
+		tm.decode_ms = (t[1] - t[0]) * ns * 1e-6;
+		tm.barrier_ms = (t[2] - t[1]) * ns * 1e-6;
+		tm.scatter_ms = (t[3] - t[2]) * ns * 1e-6;
+		tm.copy_ms = (t[4] - t[3]) * ns * 1e-6;
+		tm.decoded_bytes = ts.decoded;
+		tm.scattered_bytes = ts.scattered;
+
+		m_timing_totals.flushes++;
+		m_timing_totals.decode_ms += tm.decode_ms;
+		m_timing_totals.barrier_ms += tm.barrier_ms;
+		m_timing_totals.scatter_ms += tm.scatter_ms;
+		m_timing_totals.copy_ms += tm.copy_ms;
+		m_timing_totals.decoded_bytes += tm.decoded_bytes;
+		m_timing_totals.scattered_bytes += tm.scattered_bytes;
+		if (!m_have_last_timings || ts.fence >= m_last_timings_fence)
+		{
+			m_last_timings = tm;
+			m_last_timings_fence = ts.fence;
+			m_have_last_timings = true;
+		}
+	}
+}
+
 bool GSVramMirrorVK::ReadTimings(Timings* out)
 {
-	GSDeviceVK* dev = GSDeviceVK::GetInstance();
-	if (!m_timing_pending || m_query_pool == VK_NULL_HANDLE || m_timing_fence > dev->GetCompletedFenceCounter())
+	PollTimings();
+	if (!m_have_last_timings)
 		return false;
-
-	u64 t[kQueryCount];
-	const VkResult res = vkGetQueryPoolResults(dev->GetDevice(), m_query_pool, 0, kQueryCount, sizeof(t), t, sizeof(u64),
-		VK_QUERY_RESULT_64_BIT);
-	if (res != VK_SUCCESS)
-		return false;
-
-	const double ns = dev->GetDeviceProperties().limits.timestampPeriod;
-	out->decode_ms = (t[1] - t[0]) * ns * 1e-6;
-	out->barrier_ms = (t[2] - t[1]) * ns * 1e-6;
-	out->scatter_ms = (t[3] - t[2]) * ns * 1e-6;
-	out->copy_ms = (t[4] - t[3]) * ns * 1e-6;
-	out->decoded_bytes = m_timing_decoded;
-	out->scattered_bytes = m_timing_scattered;
+	*out = m_last_timings;
 	return true;
+}
+
+GSVramMirrorVK::TimingTotals GSVramMirrorVK::GetTimingTotals()
+{
+	PollTimings();
+	return m_timing_totals;
 }
 
 void GSVramMirrorVK::Flush()
 {
-	if (!HasPending())
+	if (!m_batch->HasPending())
 		return;
 
 	GSDeviceVK* dev = GSDeviceVK::GetInstance();
 	const VkCommandBuffer cb = dev->GetCurrentInitCommandBuffer();
-	const u32 region_words = m_config.meta_region_bytes / 4;
-	const u32 region_base = m_batch_region * region_words;
-	u32* const meta = reinterpret_cast<u32*>(m_meta_ptr) + region_base;
-
-	// Everything that follows the block tables: the job records, the workgroup -> job list, and the
-	// (block, slot) pairs the scatter copies. FitsBatch reserved the room.
-	u32 w = AlignWords8(m_table_words);
-	const u32 jobs_word = region_base + w;
-	for (size_t j = 0; j < m_jobs.size(); j++)
-	{
-		const Job& job = m_jobs[j];
-		u32* rec = meta + w + j * 8;
-		rec[0] = static_cast<u32>(job.layout.format);
-		rec[1] = job.table_word;
-		rec[2] = job.layout.blocks_wide;
-		rec[3] = job.layout.blocks_high;
-		rec[4] = job.out_offset;
-		rec[5] = job.layout.pitch;
-		rec[6] = job.first_wg;
-		rec[7] = job.layout.UnitCount();
-	}
-	w += static_cast<u32>(m_jobs.size()) * 8;
-	w = AlignWords8(w);
-	const u32 wg_word = region_base + w;
-	for (size_t j = 0; j < m_jobs.size(); j++)
-		for (u32 g = 0; g < m_jobs[j].wg_count; g++)
-			meta[w + m_jobs[j].first_wg + g] = static_cast<u32>(j);
-	w += m_wg_total;
-	w = AlignWords8(w);
-	const u32 scatter_word = region_base + w;
-	for (size_t i = 0; i < m_staged_blocks.size(); i++)
-	{
-		meta[w + i * 2] = m_staged_blocks[i];
-		meta[w + i * 2 + 1] = m_slot_of_block[m_staged_blocks[i]];
-	}
-	w += static_cast<u32>(m_staged_blocks.size()) * 2;
-	pxAssert(w <= region_words);
+	const Batch::FlushPlan plan = m_batch->PrepareFlush();
+	const std::vector<Batch::Job>& jobs = m_batch->Jobs();
 
 	const VmaAllocator allocator = dev->GetAllocator();
 	if (!m_meta_coherent)
-		vmaFlushAllocation(allocator, m_meta_alloc, static_cast<VkDeviceSize>(region_base) * 4, static_cast<VkDeviceSize>(w) * 4);
-	if (!m_staging_coherent && m_stage_head != m_stage_flushed)
+	{
+		vmaFlushAllocation(allocator, m_meta_alloc, static_cast<VkDeviceSize>(plan.region_base_word) * 4,
+			static_cast<VkDeviceSize>(plan.words_used) * 4);
+	}
+	if (!m_staging_coherent && plan.staged_end != plan.staged_first)
 	{
 		// The slots written since the last flush: one range, or two if it wrapped.
-		const u64 count = m_stage_head - m_stage_flushed;
-		const u32 first = static_cast<u32>(m_stage_flushed) & (m_config.staging_slots - 1);
+		const u64 count = plan.staged_end - plan.staged_first;
+		const u32 first = static_cast<u32>(plan.staged_first) & (m_config.staging_slots - 1);
 		const u32 head_part = static_cast<u32>(std::min<u64>(count, m_config.staging_slots - first));
 		vmaFlushAllocation(allocator, m_staging_alloc, static_cast<VkDeviceSize>(first) * kBlockBytes,
 			static_cast<VkDeviceSize>(head_part) * kBlockBytes);
 		if (count > head_part)
 			vmaFlushAllocation(allocator, m_staging_alloc, 0, static_cast<VkDeviceSize>(count - head_part) * kBlockBytes);
 	}
-	m_stage_flushed = m_stage_head;
 
 	// Timestamps 0-3 bracket the compute work and use the compute stage. malisx2 (a job-manager Mali) puts a
 	// timestamp on the fragment job chain unless its stage is exclusively vertex/tiler/compute, and a
@@ -729,10 +629,21 @@ void GSVramMirrorVK::Flush()
 	// G57 timed none of the decode, with compute-stage ones the decode time agrees with the wall time. The
 	// last stamp follows the copies, which are not compute work, and closes the flush. Honeykrisp separates
 	// the phases with neither stage (only the copies show in its timestamps), so wall time is the measure
-	// there.
-	const bool timed = m_timing && m_query_pool != VK_NULL_HANDLE;
+	// there. Each flush in flight has a query set of its own.
+	bool timed = m_timing && m_query_pool != VK_NULL_HANDLE;
+	u32 qbase = 0;
 	if (timed)
-		vkCmdResetQueryPool(cb, m_query_pool, 0, kQueryCount);
+	{
+		if (m_timing_sets[m_timing_next].pending)
+			PollTimings();
+		if (m_timing_sets[m_timing_next].pending)
+			timed = false; // every set is still in flight; skip this flush rather than overwrite one
+	}
+	if (timed)
+	{
+		qbase = m_timing_next * kQueryCount;
+		vkCmdResetQueryPool(cb, m_query_pool, qbase, kQueryCount);
+	}
 
 	// Barrier A: the previous flush's scatter writes to the mirror are visible to this flush's decode
 	// reads (compute -> compute), and the previous flush's copy reads of scratch are finished before
@@ -744,22 +655,19 @@ void GSVramMirrorVK::Flush()
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &a, 0, nullptr, 0, nullptr);
 	}
 	if (timed)
-		vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, m_query_pool, 0);
+		vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, m_query_pool, qbase + 0);
 
 	// One decode dispatch for every pending window.
-	u64 decoded_bytes = 0;
-	for (const Job& job : m_jobs)
-		decoded_bytes += job.layout.scratch_bytes;
-	if (!m_jobs.empty())
+	if (plan.job_count != 0)
 	{
-		const u32 push[4] = {jobs_word, wg_word, m_config.staging_slots - 1, 0};
+		const u32 push[4] = {plan.jobs_word, plan.wg_word, m_config.staging_slots - 1, 0};
 		vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, m_decode_pipeline);
 		vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline_layout, 0, 1, &m_set, 0, nullptr);
 		vkCmdPushConstants(cb, m_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
-		vkCmdDispatch(cb, m_wg_total, 1, 1);
+		vkCmdDispatch(cb, plan.wg_total, 1, 1);
 	}
 	if (timed)
-		vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, m_query_pool, 1);
+		vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, m_query_pool, qbase + 1);
 
 	// Barrier B (its own call): scratch, compute write -> transfer read; mirror, the decode's compute
 	// read -> the scatter's compute write.
@@ -776,19 +684,20 @@ void GSVramMirrorVK::Flush()
 	// The helper behind DoUpdate gets this from mapping Undefined to BOTTOM_OF_PIPE.
 	std::vector<VkImageMemoryBarrier> to_dst;
 	std::vector<VkImageMemoryBarrier> to_read;
-	to_dst.reserve(m_jobs.size());
-	to_read.reserve(m_jobs.size());
-	for (const Job& job : m_jobs)
+	to_dst.reserve(jobs.size());
+	to_read.reserve(jobs.size());
+	for (const Batch::Job& job : jobs)
 	{
 		if (!job.texture)
 			continue;
+		const VkImage image = static_cast<GSTextureVK*>(job.texture)->GetImage();
 		const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 		to_dst.push_back({VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, nullptr, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
 			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
-			job.texture->GetImage(), range});
+			image, range});
 		to_read.push_back({VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT,
 			VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, job.texture->GetImage(), range});
+			VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, range});
 	}
 	if (!to_dst.empty())
 	{
@@ -796,24 +705,24 @@ void GSVramMirrorVK::Flush()
 			nullptr, static_cast<u32>(to_dst.size()), to_dst.data());
 	}
 	if (timed)
-		vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, m_query_pool, 2);
+		vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, m_query_pool, qbase + 2);
 
-	// The scatter: the newest staged version of each block into the mirror, after the decode read it.
-	const u32 pairs = static_cast<u32>(m_staged_blocks.size());
-	if (pairs != 0)
+	// The scatter: the newest staged version of each block into the mirror, after the decode read it. It
+	// also takes the staged blocks of windows whose texture was destroyed before this flush.
+	if (plan.scatter_pairs != 0)
 	{
-		const u32 push[4] = {scatter_word, 0, m_config.staging_slots - 1, pairs};
+		const u32 push[4] = {plan.scatter_word, 0, m_config.staging_slots - 1, plan.scatter_pairs};
 		vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, m_scatter_pipeline);
 		vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline_layout, 0, 1, &m_set, 0, nullptr);
 		vkCmdPushConstants(cb, m_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
-		vkCmdDispatch(cb, (pairs + 3) / 4, 1, 1);
+		vkCmdDispatch(cb, (plan.scatter_pairs + 3) / 4, 1, 1);
 	}
 	if (timed)
-		vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, m_query_pool, 3);
+		vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, m_query_pool, qbase + 3);
 
 	// The copies: today's buffer-to-image copy, from the scratch buffer. The window starts mid-block in
 	// general, so the source offset is not aligned to anything; only the destination (0, 0) is.
-	for (const Job& job : m_jobs)
+	for (const Batch::Job& job : jobs)
 	{
 		if (!job.texture)
 			continue;
@@ -821,7 +730,8 @@ void GSVramMirrorVK::Flush()
 		const VkBufferImageCopy region = {static_cast<VkDeviceSize>(job.out_offset) + l.CopyOffset(), l.pitch, 0,
 			{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
 			{static_cast<u32>(l.rect.width()), static_cast<u32>(l.rect.height()), 1}};
-		vkCmdCopyBufferToImage(cb, m_scratch, job.texture->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+		vkCmdCopyBufferToImage(cb, m_scratch, static_cast<GSTextureVK*>(job.texture)->GetImage(),
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 	}
 
 	// Barrier D (one call): the images, TransferDst -> ShaderReadOnly, transfer -> fragment shader; and
@@ -834,25 +744,224 @@ void GSVramMirrorVK::Flush()
 			static_cast<u32>(to_read.size()), to_read.data());
 	}
 	if (timed)
-		vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_query_pool, 4);
+		vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_query_pool, qbase + 4);
 
 	const u64 fence = dev->GetCurrentFenceCounter();
 	if (timed)
 	{
-		m_timing_pending = true;
-		m_timing_fence = fence;
-		m_timing_decoded = decoded_bytes;
-		m_timing_scattered = static_cast<u64>(pairs) * kBlockBytes;
+		TimingSet& ts = m_timing_sets[m_timing_next];
+		ts.pending = true;
+		ts.fence = fence;
+		ts.decoded = plan.decoded_bytes;
+		ts.scattered = static_cast<u64>(plan.scatter_pairs) * kBlockBytes;
+		m_timing_next = (m_timing_next + 1) % kTimingSets;
 	}
-	m_last_flush_fence = fence;
-	m_region_fence[m_batch_region] = fence;
-	m_region_claimed[m_batch_region] = 0;
-	m_batch_region = kNoRegion;
-	m_stage_marks.emplace_back(fence, m_stage_head);
 
-	m_stats.flushes++;
-	m_stats.scatter_blocks += pairs;
-	ResetBatch();
+	// The textures are final once this has run: nothing is pending any more, and the verify mode reads
+	// each one back behind the flush.
+	std::vector<VerifyEntry> verify_entries;
+	std::vector<GSTextureVK*> verify_textures;
+	for (size_t j = 0; j < jobs.size(); j++)
+	{
+		if (!jobs[j].texture)
+			continue;
+		GSTextureVK* tex = static_cast<GSTextureVK*>(jobs[j].texture);
+		tex->SetDecodePending(false);
+		if (m_verify && j < m_verify_expected.size() && !m_verify_expected[j].empty())
+		{
+			VerifyEntry e;
+			e.offset = 0;
+			e.width = static_cast<u32>(jobs[j].layout.rect.width());
+			e.height = static_cast<u32>(jobs[j].layout.rect.height());
+			e.format = static_cast<u32>(jobs[j].layout.format);
+			e.expected = std::move(m_verify_expected[j]);
+			verify_entries.push_back(std::move(e));
+			verify_textures.push_back(tex);
+		}
+	}
+	if (m_verify)
+	{
+		RecordVerifyReadback(cb, std::move(verify_entries), verify_textures, fence);
+		m_verify_expected.clear();
+	}
+
+	m_last_flush_fence = fence;
+	m_batch->FinishFlush(fence);
+}
+
+// ---- Verify mode ----------------------------------------------------------------------------------------
+
+void GSVramMirrorVK::RecordVerifyReadback(
+	VkCommandBuffer cb, std::vector<VerifyEntry>&& textures, const std::vector<GSTextureVK*>& live, u64 fence)
+{
+	GSDeviceVK* dev = GSDeviceVK::GetInstance();
+
+	VerifyRecord record;
+	record.fence = fence;
+	u32 total = kMirrorBytes;
+	for (VerifyEntry& e : textures)
+	{
+		e.offset = total;
+		total += (e.width * e.height + 15u) & ~15u;
+	}
+	record.size = total;
+
+	const VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, nullptr, 0, total, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		VK_SHARING_MODE_EXCLUSIVE, 0, nullptr};
+	VmaAllocationCreateInfo aci = {};
+	aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+	aci.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
+	VmaAllocationInfo ai;
+	if (vmaCreateBuffer(dev->GetAllocator(), &bci, &aci, &record.buffer, &record.allocation, &ai) != VK_SUCCESS)
+	{
+		Console.Error("GS/Vulkan: VRAM mirror verify could not allocate its readback buffer; this flush is not checked.");
+		return;
+	}
+	record.mapped = static_cast<u8*>(ai.pMappedData);
+
+	// What the mirror should hold after this flush, as of now.
+	record.shadow.assign(m_batch->Shadow(), m_batch->Shadow() + kMirrorBytes);
+	record.shadow_valid = m_batch->ShadowValid();
+
+	// Verify is not a hot path: every barrier here is a full one.
+	const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+	std::vector<VkImageMemoryBarrier> to_src, to_read;
+	for (GSTextureVK* tex : live)
+	{
+		to_src.push_back({VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, nullptr, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED, tex->GetImage(), range});
+		to_read.push_back({VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_READ_BIT,
+			VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, tex->GetImage(), range});
+	}
+	const VkMemoryBarrier all_write = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_MEMORY_WRITE_BIT,
+		VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+	vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &all_write, 0,
+		nullptr, static_cast<u32>(to_src.size()), to_src.data());
+
+	const VkBufferCopy mirror_copy = {0, 0, kMirrorBytes};
+	vkCmdCopyBuffer(cb, m_mirror, record.buffer, 1, &mirror_copy);
+	for (size_t i = 0; i < textures.size(); i++)
+	{
+		const VkBufferImageCopy region = {textures[i].offset, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
+			{textures[i].width, textures[i].height, 1}};
+		vkCmdCopyImageToBuffer(cb, live[i]->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, record.buffer, 1, &region);
+	}
+
+	const VkMemoryBarrier to_host = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+		VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_HOST_READ_BIT};
+	vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+		0, 1, &to_host, 0, nullptr, static_cast<u32>(to_read.size()), to_read.data());
+
+	record.textures = std::move(textures);
+	m_verify_records.push_back(std::move(record));
+}
+
+void GSVramMirrorVK::PublishChecks()
+{
+	// The marks are checked inside the batch as windows are queued; move what it has counted since the last
+	// call into the process-wide report.
+	const GSVramMirror::MarkCheck& c = m_batch->Checks();
+	s_vc.mark_blocks += c.blocks - m_published_checks.blocks;
+	s_vc.mark_stale += c.stale - m_published_checks.stale;
+	s_vc.mark_unseen += c.unseen - m_published_checks.unseen;
+	s_vc.mark_sweeps += m_batch->ChecksSweeps() - m_published_check_sweeps;
+	s_vc.mark_window_blocks += m_batch->ChecksWindowBlocks() - m_published_check_window_blocks;
+	m_published_checks = c;
+	m_published_check_sweeps = m_batch->ChecksSweeps();
+	m_published_check_window_blocks = m_batch->ChecksWindowBlocks();
+}
+
+void GSVramMirrorVK::VerifyCompare(VerifyRecord& record)
+{
+	GSDeviceVK* dev = GSDeviceVK::GetInstance();
+	vmaInvalidateAllocation(dev->GetAllocator(), record.allocation, 0, record.size);
+
+	// The mirror: every block the shadow knows must hold the shadow's bytes.
+	u64 blocks = 0, bad = 0;
+	u32 first_bad = ~0u;
+	for (u32 bn = 0; bn < kMirrorBlocks; bn++)
+	{
+		if (!((record.shadow_valid[bn >> 6] >> (bn & 63)) & 1))
+			continue;
+		blocks++;
+		if (std::memcmp(record.mapped + static_cast<size_t>(bn) * kBlockBytes, record.shadow.data() + static_cast<size_t>(bn) * kBlockBytes,
+				kBlockBytes) != 0)
+		{
+			if (first_bad == ~0u)
+				first_bad = bn;
+			bad++;
+		}
+	}
+	s_vc.flushes++;
+	s_vc.mirror_blocks += blocks;
+	s_vc.mirror_bad_blocks += bad;
+	if (bad && s_vc.printed++ < 12)
+		Console.Error("VRAM-MIRROR-VERIFY: after the flush of fence %llu the mirror differs from what was staged in %llu of %llu blocks (first: block %u).",
+			static_cast<unsigned long long>(record.fence), static_cast<unsigned long long>(bad), static_cast<unsigned long long>(blocks),
+			first_bad);
+
+	// The textures: byte for byte what the CPU decoded at the miss.
+	for (const VerifyEntry& e : record.textures)
+	{
+		const size_t n = static_cast<size_t>(e.width) * e.height;
+		u64 bad_texels = 0;
+		size_t first = 0;
+		for (size_t i = 0; i < n; i++)
+		{
+			if (record.mapped[e.offset + i] != e.expected[i])
+			{
+				if (!bad_texels)
+					first = i;
+				bad_texels++;
+			}
+		}
+		s_vc.windows++;
+		s_vc.texels += n;
+		if (bad_texels)
+		{
+			s_vc.bad_windows++;
+			s_vc.bad_texels += bad_texels;
+			if (s_vc.printed++ < 12)
+				Console.Error("VRAM-MIRROR-VERIFY: a %ux%u window (format %u) differs from the CPU decode in %llu texels (first at %zu,%zu: gpu=%u cpu=%u).",
+					e.width, e.height, e.format, static_cast<unsigned long long>(bad_texels), first % e.width, first / e.width,
+					record.mapped[e.offset + first], e.expected[first]);
+		}
+	}
+}
+
+void GSVramMirrorVK::VerifyPoll(bool wait)
+{
+	GSDeviceVK* dev = GSDeviceVK::GetInstance();
+	if (!wait)
+		dev->ScanForCommandBufferCompletion();
+	while (!m_verify_records.empty())
+	{
+		VerifyRecord& record = m_verify_records.front();
+		if (record.fence > dev->GetCompletedFenceCounter())
+		{
+			if (!wait || record.fence >= dev->GetCurrentFenceCounter())
+				break;
+			dev->WaitForFenceCounter(record.fence);
+		}
+		if (record.buffer != VK_NULL_HANDLE)
+		{
+			VerifyCompare(record);
+			vmaDestroyBuffer(dev->GetAllocator(), record.buffer, record.allocation);
+		}
+		m_verify_records.pop_front();
+	}
+	PublishChecks();
+}
+
+void GSVramMirrorVK::VerifyDrain()
+{
+	GSDeviceVK* dev = GSDeviceVK::GetInstance();
+	// A readback recorded into the command buffer being built has not been submitted: do that first.
+	if (!m_verify_records.empty() && m_verify_records.back().fence >= dev->GetCurrentFenceCounter())
+		dev->ExecuteCommandBuffer(true);
+	VerifyPoll(true);
 }
 
 bool GSVramMirrorVK::DebugReadMirror(std::vector<u8>* out)

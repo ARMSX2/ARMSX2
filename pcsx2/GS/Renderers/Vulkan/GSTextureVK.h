@@ -87,12 +87,21 @@ public:
 
 	// Call when the texture is bound to the pipeline, or read from in a copy.
 	__fi void SetUseFenceCounter(u64 counter) { m_use_fence_counter = counter; }
+	__fi u64 GetUseFenceCounter() const { return m_use_fence_counter; }
+
+	/// True while a GPU decode of this texture's contents is queued in the VRAM mirror's batch and has not
+	/// been recorded yet (GSVramMirrorVK). The image is not valid until the flush has run, so anything that
+	/// records into the init command buffer for this image runs the flush first (FlushPendingDecode), and
+	/// destroying it cancels the decode.
+	__fi bool IsDecodePending() const { return m_decode_pending; }
+	__fi void SetDecodePending(bool pending) { m_decode_pending = pending; }
 
 private:
 	GSTextureVK(Usage usage, Format format, int width, int height, int levels, VkImage image, VmaAllocation allocation,
 		VkImageView view, VkFormat vk_format);
 
 	VkCommandBuffer GetCommandBufferForUpdate();
+	void FlushPendingDecode();
 	void CopyTextureDataForUpload(void* dst, const void* src, u32 pitch, u32 upload_pitch, u32 height) const;
 	VkBuffer AllocateUploadStagingBuffer(const void* data, u32 pitch, u32 upload_pitch, u32 height) const;
 	void UpdateFromBuffer(VkCommandBuffer cmdbuf, int level, u32 x, u32 y, u32 width, u32 height, u32 buffer_height,
@@ -107,6 +116,9 @@ private:
 	// Contains the fence counter when the texture was last used.
 	// When this matches the current fence counter, the texture was used this command buffer.
 	u64 m_use_fence_counter = 0;
+
+	// See IsDecodePending.
+	bool m_decode_pending = false;
 
 	int m_map_level = std::numeric_limits<int>::max();
 	GSVector4i m_map_area = GSVector4i::zero();

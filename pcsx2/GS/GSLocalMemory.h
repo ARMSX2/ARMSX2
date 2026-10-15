@@ -618,6 +618,9 @@ public:
 	/// Returns whether the bit was set, and clears it.
 	__forceinline bool TestAndClearBlockDirty(u32 block) { return TestAndClearDirtyBit(m_block_dirty, block); }
 	__forceinline bool TestAndClearHashDirty(u32 block) { return TestAndClearDirtyBit(m_hash_dirty, block); }
+	/// The block-dirty bitmap itself, 16384 bits in 256 words, for the one consumer that owns it: the GPU
+	/// copy (GSVramMirrorVK) clears the bits of the blocks it takes and marks everything on a resync.
+	__forceinline u64* BlockDirtyWords() { return m_block_dirty; }
 	/// Sets the bit of every block, in one bitmap only.
 	void MarkAllBlocksDirty();
 	void MarkAllHashDirty();
