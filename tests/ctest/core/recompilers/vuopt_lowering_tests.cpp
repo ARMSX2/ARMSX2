@@ -244,6 +244,37 @@ void SeedSpecials(VuTestHarness& h, u32 seed)
 	for (u32 a = 0; a < 0x4000; a += 4)
 		h.WriteMemU32(a, (rng() & 1) ? kWords[rng() % 20] : static_cast<u32>(rng()));
 }
+
+// An FMAC with an empty destination field (xyzw = 0). It writes no VF lane and no ACC lane, and still
+// writes the flags: the MAC word is all clear and STATUS's current ZSUO bits are clear, the sticky
+// bits kept (the interpreter's VU_MACx_CLEAR and VU_STAT_UPDATE). Fd is vf24..vf27, which no generator
+// reads: microVU's register allocator leaves the arithmetic result in a slot it takes for a clean copy
+// of Fd, and a read of Fd, or a partial write to it, that follows in a branch delay slot gets that
+// result in lanes the instruction did not write (VuoptEmptyField.MicroVuLeaksIntoALaterAccess, and
+// compiler-design.md 9ag). The ACC forms have no Fd.
+u32 EmptyFieldFmac(std::mt19937& rng)
+{
+	auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
+	const u32 fd = 24 + R(4), fs = 1 + R(8), ft = 1 + R(8);
+	switch (R(15))
+	{
+		case 0: return VADD_U(0, fd, fs, ft);
+		case 1: return VSUB_U(0, fd, fs, ft);
+		case 2: return VMUL_U(0, fd, fs, ft);
+		case 3: return VMADD_U(0, fd, fs, ft);
+		case 4: return VMSUB_U(0, fd, fs, ft);
+		case 5: return VMAX_U(0, fd, fs, ft);
+		case 6: return VMINI_U(0, fd, fs, ft);
+		case 7: return VMULA_U(0, fs, ft);
+		case 8: return VMADDA_U(0, fs, ft);
+		case 9: return VMULx_U(0, fd, fs, ft) + R(4);
+		case 10: return VMADDx_U(0, fd, fs, ft) + R(4);
+		case 11: return VMULAx_U(0, fs, ft) + R(4);
+		case 12: return VMADDAx_U(0, fs, ft) + R(4);
+		case 13: return VMULq_U(0, fd, fs);
+		default: return VOPMSUB_U(0, fd, fs, ft);
+	}
+}
 } // namespace
 
 // A branch reading a VI the previous block's delay slot overwrote reads the
@@ -1057,6 +1088,7 @@ TEST(VuoptRegion, LoopFuzz) { RegionLoopFuzzBody(); }
 static void RegionLoopFuzzBody()
 {
 	std::mt19937 rng(20261015);
+	std::mt19937 erng(20261016); // (the empty-field FMACs have their own stream: the programs around them are the ones the fuzz always made)
 	auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
 	auto vf = [&]() { return 1 + R(14); };
 	auto vi = [&]() { return 2 + R(3); }; // vi2..vi4; vi1 / vi5 are loop counters
@@ -1087,6 +1119,8 @@ static void RegionLoopFuzzBody()
 				case 7: up = VSUBx_U(msk(), vf(), vf(), vf()) + R(4); break;
 				default: break;
 			}
+			if (up == VNOP_U() && erng() % 2 == 0)
+				up = EmptyFieldFmac(erng);
 			switch (R(14))
 			{
 				case 0: lo = VFMAND_L(vi(), vi()); break;
@@ -2188,6 +2222,7 @@ TEST(VuoptRegion, StickyFuzz) { RegionStickyFuzzBody(); }
 static void RegionStickyFuzzBody()
 {
 	std::mt19937 rng(20261013);
+	std::mt19937 erng(20261014); // (the empty-field FMACs have their own stream, as in LoopFuzz)
 	auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
 	const int iters = getenv("VUOPT_STICKY_ITERS") ? std::atoi(getenv("VUOPT_STICKY_ITERS")) : 150;
 	int failures = 0;
@@ -2206,6 +2241,8 @@ static void RegionStickyFuzzBody()
 			u32 up = R(10) ? StickyFmac(R(1000), sparse) : VNOP_U(), lo = kNopL;
 			if (R(3) == 0)
 				up = (up & ~0x1E00000u) | ((R(15) + 1) << 21); // a random field
+			if (up == VNOP_U() && erng() % 2 == 0)
+				up = EmptyFieldFmac(erng);
 			switch (R(22))
 			{
 				case 0: lo = VFSAND_L(vi::vi3 + R(2), R(0x1000)); break;
@@ -2567,6 +2604,272 @@ TEST(VuoptLowering, Repro)
 	};
 	const Outcome o = RunBoth(p, fh, setup, 1, true);
 	EXPECT_TRUE(o.diffs.empty()) << Join(o.diffs, 20);
+}
+
+
+//------------------------------------------------------------------
+// FMACs with an empty destination field (compiler-design.md 9ag)
+//------------------------------------------------------------------
+//
+// The interpreter's account (VUops.cpp applyBinaryMACOp and its siblings): a lane outside the field is
+// not written, so an empty field writes no VF and no ACC lane, and its MAC lane bits are cleared, so
+// MAC is 0 and the current ZSUO bits of STATUS are 0 with the sticky bits kept. vuopt follows it.
+// microVU does not always: see MicroVuLeaksIntoALaterAccess.
+
+namespace
+{
+// The VF and ACC lanes of two snapshots that differ.
+std::vector<std::string> VfAccDiffs(const VuSnapshot& a, const VuSnapshot& b, const char* an, const char* bn)
+{
+	std::vector<std::string> out;
+	char buf[96];
+	for (int r = 0; r < 32; r++)
+		for (int l = 0; l < 4; l++)
+			if (a.regs.VF[r].UL[l] != b.regs.VF[r].UL[l])
+			{
+				std::snprintf(buf, sizeof(buf), "VF%d.%d %s=%08x %s=%08x", r, l, an, a.regs.VF[r].UL[l], bn, b.regs.VF[r].UL[l]);
+				out.emplace_back(buf);
+			}
+	for (int l = 0; l < 4; l++)
+		if (a.regs.ACC.UL[l] != b.regs.ACC.UL[l])
+		{
+			std::snprintf(buf, sizeof(buf), "ACC.%d %s=%08x %s=%08x", l, an, a.regs.ACC.UL[l], bn, b.regs.ACC.UL[l]);
+			out.emplace_back(buf);
+		}
+	return out;
+}
+
+struct VsInterp
+{
+	std::vector<std::string> vuopt; // vuopt region against the interpreter, VF and ACC lanes
+	std::vector<std::string> mvu;   // microVU against the interpreter, the same lanes
+	u32 regions = 0;
+};
+
+// One run of the interpreter and microVU together (the harness runs both), then the region tier.
+VsInterp RunVsInterp(const std::vector<VuOp>& prog, bool flagHack, const std::function<void(VuTestHarness&)>& setup)
+{
+	FlagHackScope fh(flagHack);
+	VsInterp r;
+	VuSnapshot mvu, interp;
+	{
+		VuTestHarness h(1);
+		setup(h);
+		h.LoadProgram(prog);
+		h.RunNoDiff();
+		mvu = h.JitSnapshot();
+		interp = h.InterpSnapshot();
+	}
+	VuTestHarness h(1);
+	setup(h);
+	h.LoadProgram(prog);
+	{
+		RegionScope rs(1);
+		rs.region.accAlways = true;
+		h.RunNoDiff();
+		r.regions = rs.region.Regions();
+	}
+	r.vuopt = VfAccDiffs(interp, h.JitSnapshot(), "interp", "vuopt");
+	r.mvu = VfAccDiffs(interp, mvu, "interp", "mvu");
+	return r;
+}
+
+// A counted loop: head work, then the branch pair, then the delay slot pair, then the E-bit pair.
+// `body` goes after VISUBIU in the branch's block; `delay` is the delay slot's upper.
+std::vector<VuOp> DelaySlotLoop(u32 trip, const std::vector<VuOp>& body, u32 delay)
+{
+	std::vector<VuOp> p;
+	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, static_cast<u16>(trip))));
+	const s32 head = static_cast<s32>(p.size());
+	for (const VuOp& op : body)
+		p.push_back(op);
+	p.push_back(L(VISUBIU_L(vi::vi1, vi::vi1, 1)));
+	const s32 at = static_cast<s32>(p.size());
+	p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(head - at - 1))));
+	p.push_back(U(delay));
+	p.push_back(EBit(U(VNOP_U())));
+	return p;
+}
+} // namespace
+
+// An empty-field FMAC to vf12, then the loop's delay slot reads vf12 whole, or writes a lane of it. vuopt
+// leaves vf12 as the interpreter does (no lane written by the empty FMAC); the lanes microVU differs in
+// are reported, not required (9ag: its allocator marks the slot an empty-field write leaves as a clean
+// copy of vf12 while it holds the arithmetic result).
+TEST(VuoptEmptyField, RegionsLeaveTheDestinationAlone)
+{
+	struct Case
+	{
+		const char* name;
+		u32 empty; // the empty-field FMAC to vf12
+	};
+	const Case forms[] = {
+		{"ADD", VADD_U(0, vf::vf12, vf::vf5, vf::vf6)},
+		{"SUB", VSUB_U(0, vf::vf12, vf::vf5, vf::vf6)},
+		{"MUL", VMUL_U(0, vf::vf12, vf::vf5, vf::vf6)},
+		{"MADD", VMADD_U(0, vf::vf12, vf::vf5, vf::vf6)},
+		{"MSUB", VMSUB_U(0, vf::vf12, vf::vf5, vf::vf6)},
+		{"MAX", VMAX_U(0, vf::vf12, vf::vf5, vf::vf6)},
+		{"MINI", VMINI_U(0, vf::vf12, vf::vf5, vf::vf6)},
+		{"MULx", VMULx_U(0, vf::vf12, vf::vf5, vf::vf6)},
+		{"MADDy", VMADDx_U(0, vf::vf12, vf::vf5, vf::vf6) + 1},
+		{"MULq", VMULq_U(0, vf::vf12, vf::vf5)},
+	};
+	const u32 delays[] = {
+		VSUB_U(mask::z, vf::vf12, vf::vf20, vf::vf6),   // a lane of vf12 written
+		VADD_U(mask::xyzw, vf::vf13, vf::vf12, vf::vf0), // vf12 read whole
+		VMUL_U(mask::x | mask::y, vf::vf13, vf::vf12, vf::vf6), // two lanes read
+	};
+	u32 runs = 0, mvuLanes = 0;
+	for (const Case& c : forms)
+		for (u32 d = 0; d < std::size(delays); d++)
+			for (u32 trip : {1u, 3u})
+				for (bool fh : {false, true})
+				{
+					const std::vector<VuOp> p = DelaySlotLoop(trip, {U(c.empty)}, delays[d]);
+					const VsInterp r = RunVsInterp(p, fh, [](VuTestHarness& h) { SeedMixed(h, 77); });
+					EXPECT_GE(r.regions, 1u);
+					EXPECT_TRUE(r.vuopt.empty()) << c.name << " delay " << d << " trip " << trip << " flagHack " << fh << "\n" << Join(r.vuopt, 6);
+					mvuLanes += r.mvu.size();
+					runs++;
+				}
+	std::printf("[vuopt empty field] %u runs; microVU differs from the interpreter in %u VF / ACC lanes (vuopt: none required)\n", runs, mvuLanes);
+}
+
+// The shrunk program 9af found: a counted loop of an empty-field MADD to vf12 and, in the delay slot, a
+// SUB of the z lane of vf12. Against microVU alone (no vuopt in the run) the interpreter shows who is
+// right: it leaves x, y and w as they were. This test pins the microVU side so that it is not lost: it
+// fails the day microVU stops doing this, and the line below can then go (compiler-design.md 9ag).
+TEST(VuoptEmptyField, MicroVuLeaksIntoALaterAccess)
+{
+	const std::vector<VuOp> p = DelaySlotLoop(5, {U(0x00063329)}, 0x0046a32c); // MADD.0 vf12,vf6,vf6 ; SUB.z vf12,vf20,vf6
+	const auto setup = [](VuTestHarness& h) { SeedSpecials(h, 4003); };
+	for (bool fh : {false, true})
+	{
+		const VsInterp r = RunVsInterp(p, fh, setup);
+		EXPECT_TRUE(r.vuopt.empty()) << "flagHack " << fh << "\n" << Join(r.vuopt);
+		EXPECT_FALSE(r.mvu.empty()) << "flagHack " << fh << ": microVU now agrees with the interpreter; drop this test's microVU half";
+	}
+}
+
+// What an empty-field FMAC does to the flags, read well after it (the readers wait out the flag
+// pipeline): MAC all clear, STATUS's current bits clear, the sticky bits kept. The interpreter, microVU
+// and vuopt agree.
+TEST(VuoptEmptyField, FlagsAreClearedStickyKept)
+{
+	std::vector<VuOp> p;
+	p.push_back(L(VIADDIU_L(vi::vi7, vi::vi0, 0x0f)));
+	p.push_back(U(VSUB_U(mask::xyzw, vf::vf13, vf::vf1, vf::vf1))); // +0 in every lane: MAC = 0xf, STATUS Z and sticky Z
+	for (int i = 0; i < 4; i++)
+		p.push_back(U(VNOP_U()));
+	p.push_back(L(VFMAND_L(vi::vi5, vi::vi7)));
+	p.push_back(L(VFSAND_L(vi::vi6, 0xfff)));
+	p.push_back(U(VMADD_U(0, vf::vf24, vf::vf2, vf::vf3))); // the empty field
+	for (int i = 0; i < 4; i++)
+		p.push_back(U(VNOP_U()));
+	p.push_back(L(VFMAND_L(vi::vi8, vi::vi7)));
+	p.push_back(L(VFSAND_L(vi::vi9, 0xfff)));
+	p.push_back(EBit(U(VNOP_U())));
+	for (bool fh : {false, true})
+	{
+		VuSnapshot interp, mvu;
+		{
+			FlagHackScope hack(fh);
+			VuTestHarness h(1);
+			SeedMixed(h, 5);
+			h.LoadProgram(p);
+			h.RunNoDiff();
+			interp = h.InterpSnapshot();
+			mvu = h.JitSnapshot();
+		}
+		const RegionOutcome o = RunRegion(p, fh, [](VuTestHarness& h) { SeedMixed(h, 5); }, false);
+		EXPECT_TRUE(o.diffs.empty()) << "flagHack " << fh << "\n" << Join(o.diffs);
+		for (const VuSnapshot* e : {&interp, &mvu})
+		{
+			EXPECT_EQ(e->regs.VI[5].UL, 0xfu) << "MAC after the +0 FMAC";
+			EXPECT_EQ(e->regs.VI[6].UL & 0xfff, 0x41u) << "STATUS after it: Z and sticky Z";
+			EXPECT_EQ(e->regs.VI[8].UL, 0u) << "MAC after the empty-field FMAC";
+			EXPECT_EQ(e->regs.VI[9].UL & 0xfff, 0x40u) << "STATUS after it: current bits clear, sticky kept";
+		}
+	}
+}
+
+// Programs from the loop fuzz's mix whose empty-field FMACs write registers nothing reads (vf24..vf27)
+// or ACC: every state vuopt leaves, flags and ACC included, is microVU's. 2 x 3,000 programs by default.
+TEST(VuoptEmptyField, DeadDestinationFuzzMatchesMicroVU)
+{
+	const int iters = getenv("VUOPT_EF_ITERS") ? std::atoi(getenv("VUOPT_EF_ITERS")) : 3000;
+	std::mt19937 rng(20261015), erng(20261017);
+	auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
+	int failures = 0;
+	u32 empties = 0, regions = 0;
+	for (int iter = 0; iter < iters; iter++)
+	{
+		std::vector<VuOp> p;
+		p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, static_cast<u16>(1 + R(8)))));
+		p.push_back(L(VIADDIU_L(vi::vi7, vi::vi0, 0x0f)));
+		const s32 head = static_cast<s32>(p.size());
+		const int len = 3 + R(8);
+		for (int i = 0; i < len; i++)
+		{
+			u32 lo = kNopL;
+			switch (R(8))
+			{
+				case 0: lo = VFMAND_L(vi::vi3 + R(2), vi::vi7); break;
+				case 1: lo = VFSAND_L(vi::vi3 + R(2), R(0x1000)); break;
+				default: break;
+			}
+			u32 up = VNOP_U();
+			if (R(5))
+			{
+				if (R(3) == 0)
+				{
+					up = EmptyFieldFmac(erng);
+					empties++;
+				}
+				else
+				{
+					const u32 m = (R(15) + 1) << 21, fd = 1 + R(6), fs = 1 + R(6), ft = 1 + R(6);
+					switch (R(6))
+					{
+						case 0: up = VADD_U(m, fd, fs, ft); break;
+						case 1: up = VSUB_U(m, fd, fs, ft); break;
+						case 2: up = VMUL_U(m, fd, fs, ft); break;
+						case 3: up = VMADD_U(m, fd, fs, ft); break;
+						case 4: up = VMULA_U(m, fs, ft); break;
+						default: up = VMAX_U(m, fd, fs, ft); break;
+					}
+				}
+			}
+			p.push_back(VuOp{lo, up});
+		}
+		p.push_back(L(VISUBIU_L(vi::vi1, vi::vi1, 1)));
+		const s32 at = static_cast<s32>(p.size());
+		p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(head - at - 1))));
+		p.push_back(U(EmptyFieldFmac(erng))); // the delay slot
+		empties++;
+		p.push_back(U(VADD_U(mask::xyzw, vf::vf1, vf::vf2, vf::vf3)));
+		p.push_back(EBit(L(VFSAND_L(vi::vi4, 0xfff))));
+		for (bool fh : {false, true})
+		{
+			const RegionOutcome o = RunRegion(p, fh, [iter](VuTestHarness& h) { SeedMixed(h, 6000 + iter); }, false);
+			regions += o.regions;
+			if (!o.diffs.empty() && ++failures <= 3)
+			{
+				std::string hex;
+				for (const VuOp& op : p)
+				{
+					char b[24];
+					std::snprintf(b, sizeof(b), "%s%08x:%08x", hex.empty() ? "" : ",", op.lower, op.upper);
+					hex += b;
+				}
+				ADD_FAILURE() << "iter " << iter << " flagHack " << fh << " hex=" << hex << "\n" << Join(o.diffs, 6);
+			}
+		}
+	}
+	EXPECT_EQ(failures, 0);
+	EXPECT_GT(empties, static_cast<u32>(iters));
+	std::printf("[vuopt empty field fuzz] programs=%d empty-field FMACs=%u regions=%u\n", iters * 2, empties, regions);
 }
 
 } // namespace recompiler_tests
