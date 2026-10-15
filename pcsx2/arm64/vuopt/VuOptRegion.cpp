@@ -153,6 +153,11 @@ namespace vuopt
 			// microVU's reading of the block; `useNoChain` leaves out a status update's read of
 			// the previous instance, which the sticky accumulators carry in a register instead.
 			LiveSet useAll, useNoChain, def;
+			// The same reads without the end's renames (a variable handed on as another one's value,
+			// the ring reorder at a link): for the region liveness a rename is a copy, whose source is
+			// read only if its destination is live. `copies`: (destination, source) of each.
+			LiveSet useOps, useOpsNoChain;
+			std::vector<std::pair<u32, u32>> copies;
 			// Checkpoints: what a bail to microVU's block for this node needs exact (see
 			// ComputeHandoffMasks). All variables unless the ring instances the block hides are dead.
 			LiveSet bailMask;
@@ -446,6 +451,9 @@ namespace vuopt
 		n.useAll.reset();
 		n.useNoChain.reset();
 		n.def.reset();
+		n.useOps.reset();
+		n.useOpsNoChain.reset();
+		n.copies.clear();
 		for (const Block& bl : f.blocks)
 		{
 			if (bl.node < 0)
@@ -468,6 +476,13 @@ namespace vuopt
 						{
 							n.useAll.set(ai.var);
 							n.useNoChain.set(ai.var);
+							if (k < var::Count)
+								n.copies.push_back({k, ai.var});
+							else
+							{
+								n.useOps.set(ai.var);
+								n.useOpsNoChain.set(ai.var);
+							}
 						}
 					}
 					continue;
@@ -481,8 +496,12 @@ namespace vuopt
 					if (a && f.insts[a].op == Op::LiveIn && f.insts[a].var < var::Count)
 					{
 						n.useAll.set(f.insts[a].var);
+						n.useOps.set(f.insts[a].var);
 						if (!(chain && k == 0))
+						{
 							n.useNoChain.set(f.insts[a].var);
+							n.useOpsNoChain.set(f.insts[a].var);
+						}
 					}
 				}
 			}
@@ -643,7 +662,10 @@ namespace vuopt
 					o |= in[t];
 				o.set(var::MEM);
 				const Node& n = *nodes_[ii];
-				const Bits ni = (acc_ ? n.useNoChain : n.useAll) | (o & ~n.def);
+				Bits ni = (acc_ ? n.useOpsNoChain : n.useOps) | (o & ~n.def);
+				for (const auto& c : n.copies)
+					if (o.test(c.first))
+						ni.set(c.second);
 				if (o != out[ii] || ni != in[ii])
 				{
 					out[ii] = o;
@@ -963,6 +985,9 @@ namespace vuopt
 			for (const auto& c : vc)
 				std::printf("  map %d home candidate %s%u: %u\n", map, (c.second & 0x1000) ? "clamped vf" : "var ", c.second & 0xfff, c.first);
 		std::sort(gc.begin(), gc.end(), [](auto a, auto b) { return a.first != b.first ? a.first > b.first : a.second < b.second; });
+		if (t_.dump)
+			for (const auto& c : gc)
+				std::printf("  map %d home candidate %s: %u\n", map, ir::var::Name(c.second).c_str(), c.first);
 		const size_t nvMax = std::min<size_t>(static_cast<size_t>(std::max(0, t_.maxVHomes)), std::size(kVHomeRegs));
 		const size_t ngMax = std::min<size_t>(static_cast<size_t>(std::max(0, t_.maxGHomes)), std::size(kGHomeRegs));
 		// Register -> key: a vector variable's lane 0, 0x1000|r for VF r's
