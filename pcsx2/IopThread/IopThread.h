@@ -418,6 +418,11 @@ namespace IopThread
 		/// Returns true at once when the IOP is held or stopped, since it cannot catch up.
 		__fi bool CheckLag(u64 cycle)
 		{
+			// The position only moves forward (Resync moves it only under a hold, and updates the copy), so
+			// a bound that holds against the last position seen holds against the current one, and the EE
+			// does not have to read the IOP's line.
+			if (static_cast<s64>(cycle - m_last_seen_iop_pos) <= m_lag) [[likely]]
+				return true;
 			// Pairs with the release store of iop_pos in the IOP's loop.
 			const u64 pos = m_iop.pos_pub.load(std::memory_order_acquire);
 			m_last_seen_iop_pos = pos;
