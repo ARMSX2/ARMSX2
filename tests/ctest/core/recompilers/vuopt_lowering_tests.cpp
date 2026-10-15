@@ -1966,6 +1966,127 @@ TEST(VuoptRegion, DropStickyMutationsAreCaught)
 	}
 }
 
+//------------------------------------------------------------------
+// Loops over every destination field, and flags only the program end reads
+//------------------------------------------------------------------
+//
+// (Written for flag sinking, 9ae/9af, which 9ag removed; they stay as coverage of what is kept: the divide's
+// flags without branches, the copy-aware liveness at bails, and the MAC and STATUS instances that go
+// round a loop untouched.)
+
+namespace
+{
+// A loop whose FMACs cover every destination field (the fifteen masks, the four single lanes twice, in
+// several ops), each writing MAC and STATUS, with a MAC and a STATUS reader of the current bits at
+// `readers` (0 none, 1 at the top of the loop, reading what the previous trip left, 2 after the
+// loop), a divide whose flags land in the loop when `divide`, ending at an E bit.
+std::vector<VuOp> FieldLoop(u32 trip, int readers, bool divide)
+{
+	std::vector<VuOp> p;
+	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, static_cast<u16>(trip))));
+	p.push_back(L(VIADDIU_L(vi::vi7, vi::vi0, 0x0f)));
+	const s32 head = static_cast<s32>(p.size());
+	for (u32 m = 1; m <= 15; m++)
+	{
+		const u32 fd = 9 + (m % 6), fs = 1 + (m * 3) % 8, ft = 1 + (m * 5 + 2) % 8;
+		const u32 field = m << 21; // (bit 3 of m is x: mask::x)
+		u32 up;
+		switch (m % 4)
+		{
+			case 0: up = VADD_U(field, fd, fs, ft); break;
+			case 1: up = VMUL_U(field, fd, fs, ft); break;
+			case 2: up = VSUB_U(field, fd, fs, ft); break;
+			default: up = VMADD_U(field, fd, fs, ft); break;
+		}
+		u32 lo = kNopL;
+		if (m == 1 && readers == 1)
+			lo = VFMAND_L(vi::vi5, vi::vi7);
+		if (m == 2 && readers == 1)
+			lo = VFSAND_L(vi::vi3, 0x03f);
+		if (m == 3 && divide)
+			lo = VDIV_L(vf::vf1, 0, vf::vf2, 1);
+		if (m == 5)
+			lo = VLQI_L(mask::xyzw, vf::vf20, vi::vi9);
+		p.push_back(VuOp{lo, up});
+	}
+	p.push_back(U(VMULA_U(mask::y, vf::vf20, vf::vf3)));
+	p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), VMUL_U(mask::w, vf::vf13, vf::vf20, vf::vf4)));
+	const s32 at = static_cast<s32>(p.size());
+	p.push_back(P(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(head - at - 1)), VADD_U(mask::x, vf::vf14, vf::vf20, vf::vf5)));
+	p.push_back(U(VSUB_U(mask::z, vf::vf12, vf::vf20, vf::vf6))); // delay slot
+	if (readers == 2)
+	{
+		p.push_back(L(VFMAND_L(vi::vi5, vi::vi7)));
+		p.push_back(L(VFSAND_L(vi::vi3, 0x03f)));
+	}
+	p.push_back(EBit(U(VNOP_U())));
+	return p;
+}
+
+// A loop whose FMACs run in its first trip only (a branch skips them afterwards), so the MAC and STATUS
+// instances they leave go round the loop untouched and the program end reads them. A bail at any
+// later trip hands them to microVU, and microVU's continuation enters the region again in the middle
+// of the loop: both have to rebuild exactly what the first trip made.
+std::vector<VuOp> OnceLoop(int variant)
+{
+	static const u32 kFields[][4] = {{0xF, 0x8, 0x6, 0x1}, {0x1, 0x2, 0x4, 0x8}, {0xE, 0xF, 0x9, 0x3}, {0x5, 0xA, 0xC, 0x7}};
+	const u32* f = kFields[variant % 4];
+	std::vector<VuOp> p;
+	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, static_cast<u16>(4 + variant))));
+	p.push_back(L(VIADDIU_L(vi::vi2, vi::vi0, 1)));
+	p.push_back(L(VIBEQ_L(vi::vi2, vi::vi0, 6))); // head: over the FMACs once vi2 is 0 (to pair 9)
+	p.push_back(U(VNOP_U()));                      // delay slot
+	p.push_back(U(VMUL_U(f[0] << 21, vf::vf9, vf::vf1, vf::vf2)));
+	p.push_back(U(VADD_U(f[1] << 21, vf::vf10, vf::vf3, vf::vf4)));
+	p.push_back(U(variant & 4 ? VMULA_U(f[2] << 21, vf::vf5, vf::vf6) : VSUB_U(f[2] << 21, vf::vf11, vf::vf5, vf::vf6)));
+	p.push_back(U(VMADD_U(f[3] << 21, vf::vf12, vf::vf7, vf::vf8)));
+	p.push_back(L(VIADDIU_L(vi::vi2, vi::vi0, 0)));
+	for (int k = 0; k < 2 + variant % 3; k++) // pair 9: the trips that skip
+		p.push_back(L(VIADDIU_L(vi::vi8, vi::vi8, 1)));
+	p.push_back(L(VISUBIU_L(vi::vi1, vi::vi1, 1)));
+	const s32 at = static_cast<s32>(p.size());
+	p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(2 - at - 1))));
+	p.push_back(U(VNOP_U())); // delay slot
+	p.push_back(EBit(U(VNOP_U())));
+	return p;
+}
+
+// FieldLoop and OnceLoop, the flag hack on and off, a run to the end and every budget from 1 to 150, so a bail
+// lands at every loop head and microVU's continuation enters the region again in the middle of the loop.
+u32 LoopFamilySweep(u32* runs, bool report)
+{
+	u32 failures = 0;
+	for (bool hack : {true, false})
+		for (int family = 3; family < 5; family++)
+			for (int variant = 0; variant < (family == 3 ? 9 : 8); variant++)
+			{
+				const std::vector<VuOp> p = family == 3 ? FieldLoop(variant < 3 ? 5 : 1 + variant, variant % 3, variant >= 3) : OnceLoop(variant);
+				const auto setup = [family, variant](VuTestHarness& h) {
+					SeedMixed(h, 71 + variant + 16 * family);
+					h.SetVi(8, 0);
+					if (family == 3)
+						h.SetVf(2, 0.0f, variant & 1 ? 0.0f : 1.0f, 1.0f, 1.0f); // (the divide: D, and I when vf1.x is 0 too)
+				};
+				for (u32 budget = 0; budget <= 150; budget++)
+				{
+					const RegionOutcome o = RunRegion(p, hack, setup, budget == 0, 14, false, nullptr, budget);
+					if (runs)
+						(*runs)++;
+					if (!o.diffs.empty() && (++failures <= 3) && report)
+						ADD_FAILURE() << "hack " << hack << " family " << family << " variant " << variant << " budget " << budget << "\n" << Join(o.diffs);
+				}
+			}
+	return failures;
+}
+} // namespace
+
+TEST(VuoptRegion, FieldAndOnceLoopsMatchMicroVU)
+{
+	u32 runs = 0;
+	EXPECT_EQ(LoopFamilySweep(&runs, true), 0u);
+	EXPECT_GT(runs, 5000u);
+}
+
 // Random FMAC-dense loops: every field shape, readers and a divide or an FSSET
 // now and then, forward branches that change how many status writes a trip
 // makes, run under random budgets so bails land anywhere.
