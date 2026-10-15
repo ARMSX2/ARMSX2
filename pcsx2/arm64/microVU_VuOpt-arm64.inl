@@ -295,6 +295,28 @@ namespace
 	// Never destroyed: recMicroVU1's own destructor can reach mVUclose (and so
 	// mVUvuoptOnClose) after this translation unit's statics are gone.
 	VuoptLive& s_vuopt = *new VuoptLive();
+
+	// Section 9ad, owner decision j: relaxation 3 (regions drop the sticky byte of STATUS) holds
+	// in every flag-hack mode while no sticky reader is known. This is the "known" part. It lives
+	// apart from VuoptLive because a reset (settings change, savestate load, cache exhaustion)
+	// rebuilds that one and must not forget what a game has already shown: only a VM reset or boot
+	// clears it (vuopt::live::ResetStickyTripwire). Atomics, because the writers are on three
+	// threads: microVU's compiles and the tier's publications run on the thread that executes VU1,
+	// and a VU0 access to VU1's STATUS runs on the EE thread (after MTVU has gone idle).
+	struct VuoptTripwire
+	{
+		std::atomic<bool> tripped{false};
+		// Regions built without the sticky byte may exist and must go: VU1 resets at its next run.
+		std::atomic<bool> rebuildDue{false};
+		// A region built without the sticky byte has been placed since VU1's last reset.
+		std::atomic<bool> dropLive{false};
+		std::atomic<u32> cause{0};
+		std::atomic<u64> trips{0}, resets{0};
+		std::atomic<u64> tripsBy[vuopt::live::kTripCauses] = {};
+		// Test only: a mask of vuopt::live::TripMask(TripMutation).
+		std::atomic<int> mutation{0};
+	};
+	VuoptTripwire& s_trip = *new VuoptTripwire();
 } // namespace
 
 #if defined(PCSX2_RECOMPILER_TESTS) && defined(__linux__)
@@ -316,10 +338,106 @@ static vuopt::bg::Worker& vuoptWorker()
 	return *s_vuopt.worker;
 }
 
+const char* vuopt::live::TripCauseName(TripCause c)
+{
+	switch (c)
+	{
+		case TripCause::None: return "none";
+		case TripCause::ProgramImage: return "a micro image with a sticky STATUS reader was loaded";
+		case TripCause::Compile: return "microVU compiled a sticky STATUS reader";
+		case TripCause::Job: return "a sticky STATUS reader is in the micro memory a region would run under";
+		case TripCause::OutsideRead: return "VU0 read VU1's STATUS register";
+		case TripCause::Forced: return "forced";
+		default: return "?";
+	}
+}
+
+static bool vuoptMutated(int m) { return (s_trip.mutation.load(std::memory_order_relaxed) >> m) & 1; }
+
+// The first reader of the sticky bits that anything has shown: from here on regions keep the byte,
+// and the ones built without it are rebuilt. Any thread.
+static void vuoptTrip(vuopt::live::TripCause why)
+{
+	// (with the tier off there are no regions, and the offline runners' region tiers have no
+	// session to trip)
+	if (!s_vuopt.enabled || s_trip.tripped.exchange(true, std::memory_order_acq_rel))
+		return;
+	s_trip.cause.store(static_cast<u32>(why), std::memory_order_relaxed);
+	s_trip.trips.fetch_add(1, std::memory_order_relaxed);
+	s_trip.tripsBy[static_cast<u32>(why)].fetch_add(1, std::memory_order_relaxed);
+	const bool rebuild = s_trip.dropLive.load(std::memory_order_acquire) && !vuoptMutated(vuopt::live::kTripMutNoRebuild);
+	if (rebuild)
+		s_trip.rebuildDue.store(true, std::memory_order_release);
+	Console.WriteLn(Color_StrongBlue, "vuopt: sticky STATUS tripwire: %s. Regions keep the sticky byte of STATUS from now on%s.",
+		vuopt::live::TripCauseName(why), rebuild ? "; VU1 resets at its next run to rebuild the regions that dropped it" : "");
+}
+
+// A VU0 access to VU1's STATUS register (the VU0 interpreter's GET_VU_MEM, microVU0's window seam).
+void vuoptNoteOutsideStatusRead()
+{
+	if (vuoptMutated(vuopt::live::kTripMutOutside))
+		return;
+	vuoptTrip(vuopt::live::TripCause::OutsideRead);
+}
+
+// microVU's analysis of an FSAND, FSEQ or FSOR that reads a sticky bit (bits 6-11 of the
+// immediate): the code is about to be compiled, so it can run.
+void mVUvuoptOnStatusReader(microVU& mVU, u32 imm12)
+{
+	if (mVU.index != 1 || !(imm12 & 0xFC0) || !s_vuopt.enabled || vuoptMutated(vuopt::live::kTripMutCompile))
+		return;
+	vuoptTrip(vuopt::live::TripCause::Compile);
+}
+
+// A program is created (or loaded from the disk cache) for the micro image now in memory: any
+// reader of the sticky bits in it, executed or not, sets the tripwire off. Once per program, at a
+// path that is about to compile it, so the scan of the 16 KB image is not measurable.
+void mVUvuoptOnNewProgram(microVU& mVU)
+{
+	if (mVU.index != 1 || !s_vuopt.enabled || s_trip.tripped.load(std::memory_order_relaxed) ||
+		vuoptMutated(vuopt::live::kTripMutProgramImage))
+		return;
+	if (vuopt::RegionTier::MicroReadsSticky(mVU.regs().Micro, 1))
+		vuoptTrip(vuopt::live::TripCause::ProgramImage);
+}
+
+// VU1's run entry. The tripwire has gone off and regions without the sticky byte exist: a reset
+// throws away every program and region, and the next compiles are exact. Not while a program is
+// parked at a cycle-budget stop (a reset would drop the pipeline state it resumes from); the next
+// run that starts a program finds it due again.
+void mVUvuoptRebuildIfDue()
+{
+	if (!s_trip.rebuildDue.load(std::memory_order_acquire) || microVU1.resumeEntry)
+		return;
+	s_trip.resets.fetch_add(1, std::memory_order_relaxed);
+	Console.WriteLn(Color_StrongBlue, "vuopt: resetting VU1: the regions that dropped the sticky byte of STATUS are rebuilt");
+	mVUreset(microVU1, false, /*vu1Idle=*/true);
+}
+
+void vuoptResetStickyTripwire() { vuopt::live::ResetStickyTripwire(); }
+
+namespace vuopt::live
+{
+	bool StickyTripped() { return s_trip.tripped.load(std::memory_order_acquire); }
+	TripCause StickyTripCause() { return static_cast<TripCause>(s_trip.cause.load(std::memory_order_relaxed)); }
+	void ResetStickyTripwire()
+	{
+		s_trip.tripped.store(false, std::memory_order_release);
+		s_trip.cause.store(0, std::memory_order_relaxed);
+	}
+#ifdef PCSX2_RECOMPILER_TESTS
+	void TripStickyForTest() { vuoptTrip(TripCause::Forced); }
+	void SetTripwireMutation(int mask) { s_trip.mutation.store(mask, std::memory_order_relaxed); }
+#endif
+} // namespace vuopt::live
+
 void mVUvuoptSyncConfig(microVU& mVU)
 {
 	if (mVU.index != 1)
 		return;
+	// (this reset throws away every region there was; the next ones are built under the tripwire)
+	s_trip.rebuildDue.store(false, std::memory_order_release);
+	s_trip.dropLive.store(false, std::memory_order_release);
 
 	// The gamefixes and clamp mode vuopt does not model (it declines every
 	// block under them, see RegionTier::OnCompile): tiering a program up would
@@ -412,6 +530,10 @@ namespace vuopt::live
 			s.bailsLoopHead += prog->vuoptBails[1];
 		}
 		s.workerIns = s_vuopt.workerIns.load(std::memory_order_relaxed);
+		s.stickyTrips = s_trip.trips.load(std::memory_order_relaxed);
+		for (u32 i = 0; i < kTripCauses; i++)
+			s.stickyTripsBy[i] = s_trip.tripsBy[i].load(std::memory_order_relaxed);
+		s.stickyTripResets = s_trip.resets.load(std::memory_order_relaxed);
 		return s;
 	}
 
@@ -419,12 +541,13 @@ namespace vuopt::live
 	{
 		const Stats s = GetStats();
 		std::string out;
-		char buf[1024];
+		char buf[1536];
 		std::snprintf(buf, sizeof(buf),
 			"vuopt live tier: tierups=%llu retiers=%llu retierchecks=%llu blocks_set_aside=%llu targets=%llu jumpmisses=%llu "
 			"roots=%llu regions=%llu rnodes=%llu rexits=%llu rbytes=%llu bodyblocks=%llu bodies=%llu bodybytes=%llu bails=%llu "
 			"jrtierups=%llu jrcounted=%llu xprogtargets=%llu bails_entry=%llu bails_loophead=%llu "
-			"status_readers=%llu sticky_readers=%llu sticky_dropped=%llu sticky_images=%llu",
+			"status_readers=%llu sticky_readers=%llu sticky_dropped=%llu sticky_images=%llu "
+			"sticky_trips=%llu sticky_trip_resets=%llu sticky_tripped=%d",
 			(unsigned long long)s.tierUps, (unsigned long long)s.retiers, (unsigned long long)s.retierChecks,
 			(unsigned long long)s.blocksSetAside, (unsigned long long)s.targetsRecorded, (unsigned long long)s.jumpMisses,
 			(unsigned long long)s.rootsCompiled, (unsigned long long)s.regions, (unsigned long long)s.regionNodes,
@@ -432,8 +555,19 @@ namespace vuopt::live
 			(unsigned long long)s.bodiesLowered, (unsigned long long)s.bodyBytes, (unsigned long long)s.bailCompiles,
 			(unsigned long long)s.jumpTierUps, (unsigned long long)s.jumpCounted, (unsigned long long)s.crossProgTargets,
 			(unsigned long long)s.bailsEntry, (unsigned long long)s.bailsLoopHead, (unsigned long long)s.statusReaders,
-			(unsigned long long)s.stickyReaders, (unsigned long long)s.stickyDropped, (unsigned long long)s.stickyImages);
+			(unsigned long long)s.stickyReaders, (unsigned long long)s.stickyDropped,
+			(unsigned long long)s.stickyImages, (unsigned long long)s.stickyTrips, (unsigned long long)s.stickyTripResets, StickyTripped() ? 1 : 0);
 		out = buf;
+		if (s.stickyTrips)
+		{
+			// (which readers set it off, in the order of TripCause; the last one's reason in words)
+			std::snprintf(buf, sizeof(buf),
+				"\n  sticky tripwire: trips=%llu (image %llu, compile %llu, job %llu, outside %llu, forced %llu) now %s: %s",
+				(unsigned long long)s.stickyTrips, (unsigned long long)s.stickyTripsBy[1], (unsigned long long)s.stickyTripsBy[2],
+				(unsigned long long)s.stickyTripsBy[3], (unsigned long long)s.stickyTripsBy[4], (unsigned long long)s.stickyTripsBy[5],
+				StickyTripped() ? "set" : "re-armed", TripCauseName(StickyTripCause()));
+			out += buf;
+		}
 		std::snprintf(buf, sizeof(buf),
 			"\n  background: sync=%d jobs=%llu (gen %llu, root %llu) dropped=%llu done=%llu published=%llu (gen %llu, root %llu) "
 			"declined=%llu coalesced=%llu discarded: stale=%llu gen=%llu memory=%llu sticky=%llu space=%llu trace=%llu | "
@@ -774,6 +908,8 @@ static std::shared_ptr<VuoptJob> vuoptMakeJob(microVU& mVU, microProgram& prog, 
 	j->flagHack = CHECK_VU_FLAGHACK;
 	j->cacheLo = mVU.cache;
 	j->cacheHi = mVU.prog.x86end + (mVUcacheSafeZone * _1mb);
+	// Relaxation 3 holds while no sticky reader is known (section 9ad).
+	j->opts.dropSticky = !s_trip.tripped.load(std::memory_order_acquire) || vuoptMutated(vuopt::live::kTripMutJobOption);
 	if (prog.vuopt)
 		j->jumpTargets = prog.vuopt->jumpTargets;
 	return j;
@@ -825,6 +961,10 @@ static void vuoptCollect(VuoptJob& j)
 	s_vuopt.stats.stickyReaders += j.stickyReaders;
 	s_vuopt.stats.stickyDropped += j.stickyDropped;
 	s_vuopt.stats.stickyImages += j.stickyImages;
+	// The micro memory the job compiled under has a reader of the sticky bits (the scan is of the
+	// whole image, so this is the same fact the program-creation scan reports, found by another path).
+	if (j.stickyImages)
+		vuoptTrip(vuopt::live::TripCause::Job);
 }
 
 //------------------------------------------------------------------
@@ -869,6 +1009,8 @@ static bool vuoptHasRoom(microVU& mVU, const VuoptJob& j)
 // the root and the code lands where microVU expects it.
 static void vuoptPlace(microVU& mVU, VuoptJob& j, microBlock* rootReal)
 {
+	if (j.stickyDropped)
+		s_trip.dropLive.store(true, std::memory_order_release);
 	u8* const base = armGetCurrentCodePointer();
 	if (rootReal)
 		pxAssertRel(base == rootReal->hostEntry, "vuopt: a region placed away from its root's entry");
@@ -1074,6 +1216,15 @@ static void vuoptPublishRoot(microVU& mVU, VuoptJob& j)
 		}
 }
 
+// Whether live micro memory has a sticky STATUS reader; if it has, the tripwire goes off.
+static bool vuoptLiveImageReadsSticky(microVU& mVU)
+{
+	if (!vuopt::RegionTier::MicroReadsSticky(mVU.regs().Micro, 1))
+		return false;
+	vuoptTrip(vuopt::live::TripCause::Job);
+	return true;
+}
+
 // Publishes what is ready for `prog`. `loaded`: the slow path has just resolved
 // it from micro memory. Returns true when its graph changed.
 static bool vuoptPublishReady(microVU& mVU, microProgram& prog, bool loaded)
@@ -1112,8 +1263,11 @@ static bool vuoptPublishReady(microVU& mVU, microProgram& prog, bool loaded)
 			continue;
 		}
 		// The region dropped the sticky STATUS byte because the job's micro image had no
-		// reader of it; the image a region runs under must not have one either.
-		if (j.stickyDropped && vuopt::RegionTier::MicroReadsSticky(mVU.regs().Micro, 1))
+		// reader of it and none was known when the job was made. The tripwire must still be armed
+		// and the image a region runs under must not have a reader either (a scan that finds one
+		// sets the tripwire off).
+		if (j.stickyDropped && !vuoptMutated(vuopt::live::kTripMutPublish) &&
+			(s_trip.tripped.load(std::memory_order_acquire) || vuoptLiveImageReadsSticky(mVU)))
 		{
 			drop(s_vuopt.stats.discardSticky);
 			continue;

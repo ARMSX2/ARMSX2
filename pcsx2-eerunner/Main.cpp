@@ -131,6 +131,7 @@ static uint32_t s_frames = 300;
 static bool s_no_console = false;
 static bool s_vu0_interp = false; // --vu0-interp: VU0 on its interpreter (every --contmem pass, --liverun)
 static bool s_vu1_interp = false; // --vu1-interp: VU1 on its interpreter (--liverun)
+static uint32_t s_vuopt_trip_at = 0; // --vuopt-trip-at N: set the vuopt sticky-STATUS tripwire off after frame N (--liverun)
 static GSRendererType s_renderer = GSRendererType::Null; // --renderer (Null default; vk for Intel/headless)
 static bool s_renderer_explicit = false; // user passed --renderer (an explicit null is honored in liverun)
 static std::string s_memdump_prefix; // --memdump <prefix>: write <prefix>.{interp,jit}.bin at the last frame
@@ -829,6 +830,24 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 #else
 				++i;
 				Console.Warning("--vuopt-jump-threshold needs an arm64 build with the recompiler test hooks.");
+#endif
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--vuopt-trip-at"))
+			{
+				// Sets the tier's sticky-STATUS tripwire off after frame N of a --liverun: the regions that
+				// dropped the sticky byte are rebuilt in the middle of a game, which is what the trip does.
+#if defined(ARCH_ARM64) && defined(PCSX2_RECOMPILER_TESTS)
+				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
+				if (!n.has_value() || n.value() == 0)
+				{
+					Console.Error("--vuopt-trip-at expects a frame number above zero.");
+					return false;
+				}
+				s_vuopt_trip_at = n.value();
+#else
+				++i;
+				Console.Warning("--vuopt-trip-at needs an arm64 build with the recompiler test hooks.");
 #endif
 				continue;
 			}
@@ -4340,6 +4359,13 @@ static int RunLiveRun()
 		VMManager::FrameAdvance(1);
 		VMManager::Execute(); // blocks for one frame; if the EE wedges, never returns
 		s_liverun_frame.store(f + 1, std::memory_order_relaxed);
+#if defined(ARCH_ARM64) && defined(PCSX2_RECOMPILER_TESTS)
+		if (s_vuopt_trip_at && (f + 1) == s_vuopt_trip_at)
+		{
+			Console.WriteLn(fmt::format("LIVERUN: setting the vuopt sticky-STATUS tripwire off after frame {}", f + 1));
+			vuopt::live::TripStickyForTest();
+		}
+#endif
 
 		// Arm the GS dump once the scene has settled. Recording stops on its own
 		// after s_gsdump_frames vsyncs (GSRenderer counts m_dump_frames down), so

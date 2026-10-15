@@ -146,6 +146,10 @@ public:
 	// each time until the program ends or `max_resumes` re-entries have been made. Updates
 	// JitSnapshot() and Path1PacketBytesJit() to the state at the end.
 	void ContinueJit(u32 budget, int max_resumes);
+	// The micro-memory byte address the next run starts at (default kProgramPc). The program a test
+	// loaded is at kProgramPc; a test that wrote another image elsewhere in micro memory starts it here
+	// with RunJitPreserveBlockCache(). Applies to every run after the call.
+	void SetStartPc(u32 pc) { start_pc_ = pc; }
 
 private:
 	void RunDiffing(const char* require_why);
@@ -227,6 +231,7 @@ private:
 	// E-bit terminator caps every test deterministically.
 	static constexpr u32 kCycleBudget = 4096;
 	u32 cycle_budget_ = kCycleBudget;
+	u32 start_pc_ = kProgramPc;
 
 	// Bound on ResumeUntilTerminated's re-entries. A program that has not
 	// terminated by then is reported rather than quietly truncated.

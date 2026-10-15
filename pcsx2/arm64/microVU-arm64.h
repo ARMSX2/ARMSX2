@@ -229,7 +229,11 @@
 //       lane into that copy with one INS instead of a lane-0 slot and a merge.
 //  59 — a conditional branch carrying the E bit (and no M bit) no longer reorders
 //       the flag instances for a successor that never runs.
-static constexpr u32 kMvuCompilerAbiVersion = 59;
+//  60 — VU0's access to VU1's register window (mVUaddrFix) tells the vuopt tier when it
+//       addresses VU1's STATUS quadword: without MTVU it now compares the window index and
+//       calls the transfer thunk for that one quadword, and the thunk saves every
+//       caller-saved register and passes the address to its C function.
+static constexpr u32 kMvuCompilerAbiVersion = 60;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
@@ -1024,7 +1028,9 @@ alignas(16) extern microVU microVU1;
 extern void DumpVUState(u32 n, u32 pc);
 
 extern void mVUclear(mV, u32, u32);
-extern void mVUreset(microVU& mVU, bool resetReserve);
+// `vu1Idle`: the caller is the thread that runs VU1, between two runs, so there is no program to
+// finish first (the MTVU branch of mVUreset finishes a VU1 run in progress, for resets from the EE thread).
+extern void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle = false);
 extern void* mVUblockFetch(microVU& mVU, u32 startPC, uptr pState);
 extern void* mVUcompile(microVU& mVU, u32 startPC, uptr pState);
 _mVUt extern void* mVUcompileJIT(u32 startPC, uptr ptr);
@@ -1070,6 +1076,12 @@ extern void  mVUvuoptOnProgramDeleted(microProgram& prog);
 extern void  mVUvuoptOnJumpMiss(microVU& mVU);
 extern void  mVUvuoptOnBail();
 extern void  mVUvuoptOnClose(microVU& mVU);
+// The sticky-STATUS tripwire (section 9ad): a sticky reader microVU has just compiled (FSAND, FSEQ
+// or FSOR with `imm12`), a program being created over the micro image in memory, and VU1's run
+// entry, where the regions that dropped the sticky byte are rebuilt once the tripwire has gone off.
+extern void  mVUvuoptOnStatusReader(microVU& mVU, u32 imm12);
+extern void  mVUvuoptOnNewProgram(microVU& mVU);
+extern void  mVUvuoptRebuildIfDue();
 // The run that opens and closes a compile of VU1 code: the tier drops its
 // per-compile analysis state when the outermost one ends.
 extern void  mVUvuoptCompileBegin(microVU& mVU);

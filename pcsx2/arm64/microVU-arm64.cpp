@@ -904,45 +904,52 @@ static void mVUGenerateWaitMTVU(mV)
 	// Sync the async VU1 worker before VU0/COP2 reads VU1's register space (the
 	// `addr & 0x400` seam in mVUaddrFix, reached under MTVU). x86's stub does the
 	// same save-call-restore around mVUwaitMTVU (microVU_Execute.inl); a bare Ret
-	// here silently skipped vu1Thread.WaitVU(), racing the VU1 thread.
+	// here silently skipped vu1Thread.WaitVU(), racing the VU1 thread. The same
+	// thunk is also what mVUaddrFix calls, without MTVU, for an access to VU1's
+	// STATUS quadword: mVUwaitMTVU tells the vuopt tier about it. The address
+	// (gprT1, x9) goes to the C function in w0.
 	//
 	// This thunk is reached via BL from inside a compiled VU/COP2 block whose
 	// register allocator is NOT flushed at the seam, so it must be transparent:
 	// preserve everything the AAPCS call to mVUwaitMTVU can clobber that may be
-	// live there. Callee-saved state survives the C call automatically (x19-x28 =
-	// gprVUState/flags/mVUglob + the VI pool's x26-x28; x29). What we must save:
+	// live there, which is every caller-saved register but x18. Callee-saved
+	// state survives the C call automatically (x19-x28 = gprVUState/flags/mVUglob
+	// + the VI pool's x26-x28; x29). What we must save:
 	//   * q0-q27  — the full VF allocation pool; any subset may be live, and the
 	//               C call only preserves the low 64 bits of q8-q15 (d8-d15), so
 	//               those must be spilled in full to keep the VF upper lanes.
 	//   * q28     — PQ (mVUbackupRegs treats it as live across every C call).
-	//   * x9      — gprT1, holds the fixed-up address, consumed after the call.
-	//   * x14/x15 — the caller-saved half of the VI GPR pool.
-	//   * x10-x13 — saved only to keep a clean contiguous window (harmless; in
-	//               COP2 macro mode x11-x13 are EE pins the seam flush/reloads).
+	//   * x0-x17  — x9 is gprT1 and holds the fixed-up address, consumed after
+	//               the call; x14/x15 are the caller-saved half of the VI GPR pool;
+	//               x11-x13 are EE pins in COP2 macro mode; x0-x7 are cached EE GPRs
+	//               there (a macro op that cannot reach this call evicts only the
+	//               slice of the cache it can touch, so they must survive it);
+	//               x8, x10, x16 and x17 are scratch, saved to keep one contiguous
+	//               window.
 	//   * x30     — the inner BL overwrites LR; without restoring it, ret returns
 	//               into this thunk and walks sp into the thread's guard page.
-	// The COP2 EE-pin flush/reload brackets this call at the seam, so the
-	// clobbered tier-2 EE pins are handled there, not here.
-	constexpr int kGprBytes  = 8 * 8;                  // x9-x15 + x30
+	// The COP2 EE-pin flush/reload brackets the MTVU call at the seam; it is no
+	// longer needed for the pins (x11-x13 are saved here) but costs nothing next
+	// to the wait it brackets.
+	constexpr int kGprBytes  = 20 * 8;                 // x0-x17, x30, one pad word
 	constexpr int kNeonBytes = 29 * 16;                // q0-q28
-	constexpr int kFrame     = kGprBytes + kNeonBytes; // 0x210, 16-byte aligned
+	constexpr int kFrame     = kGprBytes + kNeonBytes; // 0x270, 16-byte aligned
 
 	armAsm->Sub(a64::sp, a64::sp, kFrame);
 	// GPRs first (STP x has a ±504 signed offset limit; keep it near sp).
-	armAsm->Stp(a64::x9,  a64::x10, a64::MemOperand(a64::sp, 0));
-	armAsm->Stp(a64::x11, a64::x12, a64::MemOperand(a64::sp, 16));
-	armAsm->Stp(a64::x13, a64::x14, a64::MemOperand(a64::sp, 32));
-	armAsm->Stp(a64::x15, a64::x30, a64::MemOperand(a64::sp, 48));
+	for (int i = 0; i < 18; i += 2)
+		armAsm->Stp(armXRegister(i), armXRegister(i + 1), a64::MemOperand(a64::sp, i * 8));
+	armAsm->Str(a64::x30, a64::MemOperand(a64::sp, 18 * 8));
 	for (int i = 0; i < 28; i += 2)
 		armAsm->Stp(armQRegister(i), armQRegister(i + 1), a64::MemOperand(a64::sp, kGprBytes + i * 16));
 	armAsm->Str(qmmPQ, a64::MemOperand(a64::sp, kGprBytes + 28 * 16));
 
+	armAsm->Mov(a64::w0, a64::w9);
 	armEmitCall((void*)mVUwaitMTVU);
 
-	armAsm->Ldp(a64::x9,  a64::x10, a64::MemOperand(a64::sp, 0));
-	armAsm->Ldp(a64::x11, a64::x12, a64::MemOperand(a64::sp, 16));
-	armAsm->Ldp(a64::x13, a64::x14, a64::MemOperand(a64::sp, 32));
-	armAsm->Ldp(a64::x15, a64::x30, a64::MemOperand(a64::sp, 48));
+	for (int i = 0; i < 18; i += 2)
+		armAsm->Ldp(armXRegister(i), armXRegister(i + 1), a64::MemOperand(a64::sp, i * 8));
+	armAsm->Ldr(a64::x30, a64::MemOperand(a64::sp, 18 * 8));
 	for (int i = 0; i < 28; i += 2)
 		armAsm->Ldp(armQRegister(i), armQRegister(i + 1), a64::MemOperand(a64::sp, kGprBytes + i * 16));
 	armAsm->Ldr(qmmPQ, a64::MemOperand(a64::sp, kGprBytes + 28 * 16));
@@ -1168,7 +1175,7 @@ void mVUGenerateModelStubs(mV)
 }
 
 // Resets Rec Data
-void mVUreset(microVU& mVU, bool resetReserve)
+void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 {
 #ifdef mVUcacheTrace
 	mVUCacheTraceDump(mVU, "pre-reset");
@@ -1204,7 +1211,7 @@ void mVUreset(microVU& mVU, bool resetReserve)
 	// ClearCPUExecutionCaches → this reset.
 	mVUProgCache::Init(mVU);
 
-	if (THREAD_VU1)
+	if (THREAD_VU1 && !vu1Idle)
 	{
 		DevCon.Warning("mVU Reset");
 		if (VU0.VI[REG_VPU_STAT].UL & 0x100)
@@ -1698,6 +1705,10 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 		// program. Try hydrating the block graph from the on-disk cache
 		// before compiling from scratch.
 		mVUProgCache::ObserveDispatchHash(mVU, liveHash, startPC);
+		// A program is about to be made or loaded for the image in micro memory now: the vuopt
+		// tripwire looks it over for a reader of the sticky bits of STATUS.
+		if constexpr (vuIndex == 1)
+			mVUvuoptOnNewProgram(mVU);
 		if (microProgram* hydrated = mVUProgCache::TryLoadProgram(mVU, liveHash))
 		{
 			// Same install sequence as the contentMap-hit path above —
@@ -2375,6 +2386,9 @@ void recMicroVU1::Execute(u32 cycles)
 		if (!(VU0.VI[REG_VPU_STAT].UL & 0x100))
 			return;
 	}
+	// vuopt: after the tripwire has gone off, regions built without the sticky byte of STATUS are
+	// rebuilt: nothing of VU1's is running here, on any thread, so the reset is safe.
+	mVUvuoptRebuildIfDue();
 	VU1.VI[REG_TPC].UL <<= 3;
 #ifdef PCSX2_RECOMPILER_TESTS
 	vu1_trace::Entry* trace = vu1_trace::g_enabled.load(std::memory_order_relaxed)

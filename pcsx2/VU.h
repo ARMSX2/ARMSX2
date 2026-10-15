@@ -258,3 +258,19 @@ extern void vuMemAllocate();
 extern void vuMemReset();
 extern void vuMemRelease();
 extern u32* GET_VU_MEM(VURegs* VU, u32 addr);
+
+// VU0's window onto VU1's registers is 64 quadwords (VF0-31, then VI0-31, selected by bit 0x400 of the
+// VI-based address): VU1's STATUS register, VI[16], is quadword 48. The vuopt tier (ARM64 builds) drops
+// the sticky bits of STATUS from the programs it compiles until something reads them; a VU0 access to
+// this quadword, by the interpreter (GET_VU_MEM) or by microVU0's code (mVUaddrFix), is one of those
+// reads, and says so here.
+static constexpr u32 VU0_WINDOW_VU1_STATUS_QWORD = 32 + REG_STATUS_FLAG;
+// A new VM, booted or reset, starts with the tripwire armed again (a savestate load or a settings
+// change does not).
+#if defined(__aarch64__) || defined(_M_ARM64)
+extern void vuoptNoteOutsideStatusRead();
+extern void vuoptResetStickyTripwire();
+#else
+static inline void vuoptNoteOutsideStatusRead() {}
+static inline void vuoptResetStickyTripwire() {}
+#endif

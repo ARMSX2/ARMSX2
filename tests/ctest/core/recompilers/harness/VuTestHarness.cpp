@@ -267,8 +267,8 @@ void VuTestHarness::SeedEntryState(bool reset_block_cache)
 	// Start at pair 0 (kProgramPc / 8 = 0). Stored as a pair index in
 	// REG_TPC; InterpVU<idx>::Execute will internally `<<= 3` it to a
 	// byte address before fetching from VU.Micro.
-	vu.VI[REG_TPC].UL = kProgramPc / 8u;
-	vu.start_pc = kProgramPc;
+	vu.VI[REG_TPC].UL = start_pc_ / 8u;
+	vu.start_pc = start_pc_;
 
 	// Mark VU<idx> as "running" so Execute's loop predicate fires. The
 	// running-bit lives in VU0.VI[REG_VPU_STAT] for *both* VUs (bit 0x1
@@ -298,8 +298,8 @@ void VuTestHarness::SeedEntryState(bool reset_block_cache)
 	std::memset(&vu.fmac, 0, sizeof(vu.fmac));
 	std::memset(&vu.ialu, 0, sizeof(vu.ialu));
 
-	InterpCpu(vu_index_)->SetStartPC(kProgramPc);
-	JitCpu(vu_index_)->SetStartPC(kProgramPc);
+	InterpCpu(vu_index_)->SetStartPC(start_pc_);
+	JitCpu(vu_index_)->SetStartPC(start_pc_);
 
 	// Drop any compiled block left by a prior test. mVUreset re-emits the
 	// dispatcher and zeroes mVU.prog.lpState — cheapest correct invalidation.

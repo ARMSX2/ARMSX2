@@ -75,6 +75,23 @@ namespace vuopt
 		constexpr u32 kMaxTargetsPerJump = 48;
 		constexpr u32 kMaxTargetsPerProgram = 512;
 
+		// What set the sticky-STATUS tripwire off (owner decision j, 2026-10-14). While it is clear the
+		// regions drop the sticky byte of STATUS (RegionTier::dropSticky) whatever the flag hack; once
+		// anything below happens it stays set until the VM is reset or booted, and regions are built
+		// and kept exact.
+		enum class TripCause : u8
+		{
+			None,
+			ProgramImage, // a program was created (or loaded from the disk cache) over a micro image with a sticky reader
+			Compile,      // microVU compiled an FSAND/FSEQ/FSOR that selects a sticky bit
+			Job,          // a tier job's copy of micro memory, or live micro memory at publication, has a sticky reader
+			OutsideRead,  // VU0 (micro or macro mode) touched VU1's STATUS register through its window onto VU1's registers
+			Forced,       // a test or a runner flag set it off
+			kCount,
+		};
+		constexpr u32 kTripCauses = static_cast<u32>(TripCause::kCount);
+		const char* TripCauseName(TripCause c);
+
 		struct Stats
 		{
 			u64 tierUps = 0;          // programs tiered up
@@ -104,6 +121,12 @@ namespace vuopt
 			u64 stickyReaders = 0;
 			u64 stickyDropped = 0;
 			u64 stickyImages = 0;
+			// The sticky-STATUS tripwire (section 9ad): the number of times it went off (0 in a
+			// normal session; a VM reset or boot re-arms it), by what set it off, and the VU1
+			// resets it asked for to rebuild the regions that had dropped the sticky byte.
+			u64 stickyTrips = 0;
+			u64 stickyTripsBy[kTripCauses] = {};
+			u64 stickyTripResets = 0;
 			// pcsx2-eerunner --count-vu1-ins only: user-mode instructions VU1's compile
 			// sessions retired, for programs the tier took over and for the rest.
 			u64 compileInsTiered = 0;
@@ -140,6 +163,16 @@ namespace vuopt
 		// gamefix vuopt declines). Settled at init and at every reset.
 		bool IsEnabled();
 
+		// The sticky-STATUS tripwire (section 9ad). Armed (false) at the start; set by the first
+		// sticky reader the tier hears of -- a micro image containing one is uploaded or compiled, or
+		// anything outside VU1 reads VU1's STATUS -- and then kept for the session: a savestate load or
+		// a settings change does not re-arm it, a VM reset or boot does (ResetStickyTripwire).
+		// Setting it off counts it, logs it once, and has VU1 reset at its next run so the regions
+		// built without the sticky byte are rebuilt exact; jobs made before it are not published.
+		bool StickyTripped();
+		TripCause StickyTripCause();
+		void ResetStickyTripwire();
+
 		Stats GetStats();
 		// Human-readable counters, including every decline reason.
 		std::string FormatStats();
@@ -165,6 +198,22 @@ namespace vuopt
 		void SetWorkerGate(std::function<void()> gate);
 		void WaitWorkerIdle();
 		size_t WorkerQueued();
+		// The tripwire, as a test or a runner flag sets it off.
+		void TripStickyForTest();
+		// Test only: break parts of the tripwire on purpose, to show the tests notice. A mask of
+		// TripMask(TripMutation), 0 = none.
+		enum TripMutation : int
+		{
+			kTripMutNone = 0,
+			kTripMutProgramImage = 1,  // no scan when a program is created
+			kTripMutCompile = 2,       // no hook on a compiled sticky reader
+			kTripMutOutside = 3,       // VU0 touching VU1's STATUS is not noticed
+			kTripMutPublish = 4,       // a job made with the drop is published after the trip
+			kTripMutJobOption = 5,     // a job made after the trip still drops the sticky byte
+			kTripMutNoRebuild = 6,     // the trip does not have VU1 rebuild its regions
+		};
+		constexpr int TripMask(int mutation) { return 1 << mutation; }
+		void SetTripwireMutation(int mask);
 		// pcsx2-vurunner --vuopt-region-bg: a region hook (VuOptMvuTrace.h's
 		// VuoptRegionHook, `user` a RegionTier whose options it copies) that builds
 		// every region through the worker and copies it in.
