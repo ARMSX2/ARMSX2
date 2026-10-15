@@ -51,6 +51,20 @@ import com.armsx2.ui.settings.SegmentedRow
 import com.armsx2.ui.settings.ToggleRow
 import com.armsx2.ui.settings.controllerFocusable
 import kotlinx.coroutines.delay
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
 
 /**
  * Remote play from the library: join a friend as player 2, on the same Wi-Fi or with the invite
@@ -565,4 +579,52 @@ internal fun clipboardText(context: Context): String? {
     val clip = context.getSystemService(ClipboardManager::class.java)?.primaryClip ?: return null
     if (clip.itemCount == 0) return null
     return clip.getItemAt(0).coerceToText(context)?.toString()
+}
+
+/**
+ * "<name> joined as player 2" or "<name> left", at the top of the screen over the game, for the host:
+ * they are playing, with the in-game menu's hosting status out of sight. At the Activity root next to
+ * the Discord friend banner, and the same shape. Gone again by itself.
+ */
+@Composable
+fun RemotePlayNoticeBanner() {
+    val notice by RemotePlayHost.notice
+
+    // Keyed on the notice, so a second one during the first restarts the clock.
+    LaunchedEffect(notice) {
+        val shown = notice ?: return@LaunchedEffect
+        kotlinx.coroutines.delay(3_500)
+        RemotePlayHost.clearNotice(shown)
+    }
+
+    // The last notice, for the exit animation, which still draws after the state clears. Not state:
+    // keeping it must not compose again.
+    val last = remember { arrayOfNulls<RemotePlayHost.Notice>(1) }
+    notice?.let { last[0] = it }
+
+    AnimatedVisibility(
+        visible = notice != null,
+        enter = fadeIn(tween(180)) + slideInVertically(tween(240)) { -it },
+        exit = fadeOut(tween(160)) + slideOutVertically(tween(200)) { -it },
+    ) {
+        val shown = last[0] ?: return@AnimatedVisibility
+        Surface(
+            modifier = Modifier
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)),
+            shadowElevation = 14.dp,
+        ) {
+            Text(
+                str(if (shown.joined) "remoteplay.notice.joined" else "remoteplay.notice.left").format(shown.name),
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
 }

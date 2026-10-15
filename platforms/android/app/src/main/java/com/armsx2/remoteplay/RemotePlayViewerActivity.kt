@@ -1063,7 +1063,7 @@ internal class ViewerSession(
                     JSONObject()
                         .put("t", "hello")
                         .put("v", RemotePlayProtocol.VERSION)
-                        .put("name", Build.MODEL)
+                        .put("name", playerName())
                         // Asks the host to mark the video for the router's video queue (see
                         // RemotePlayRtc.configuration), when the player turned that on.
                         .put("qos", RemotePlayPrefs.wifiQos(context)),
@@ -1177,7 +1177,7 @@ internal class ViewerSession(
             link?.send(
                 RemotePlayRtc.sdpMessage("answer", description)
                     .put("v", RemotePlayProtocol.VERSION)
-                    .put("name", Build.MODEL)
+                    .put("name", playerName())
                     .put("audio", audioFormat),
             )
         }
@@ -1429,4 +1429,12 @@ internal class AudioOut {
         const val START_BYTES = BYTES_PER_MS * 40
         const val MAX_QUEUED_BYTES = BYTES_PER_MS * 120
     }
+}
+
+// How the host's screen names this player: the Discord name when signed in there, the device's model
+// otherwise.
+private fun playerName(): String {
+    val discord = com.armsx2.DiscordPresence.self.value?.name
+    val signedIn = com.armsx2.DiscordPresence.status.value == com.armsx2.DiscordPresence.CONNECTED
+    return if (signedIn && !discord.isNullOrBlank()) discord else Build.MODEL
 }

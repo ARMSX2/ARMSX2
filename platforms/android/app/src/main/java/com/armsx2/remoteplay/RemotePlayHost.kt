@@ -69,6 +69,21 @@ object RemotePlayHost {
     private val _status = mutableStateOf<Status>(Status.Off)
     val status: State<Status> get() = _status
 
+    /**
+     * A friend joining or leaving as player 2, for the banner over the game (RemotePlayNoticeBanner):
+     * the host is playing, with the in-game menu's hosting status out of sight. A new object each
+     * time, so the same friend joining again still shows.
+     */
+    class Notice(val name: String, val joined: Boolean)
+
+    private val _notice = mutableStateOf<Notice?>(null)
+    val notice: State<Notice?> get() = _notice
+
+    /** The banner is done with [shown]; a newer notice stays. */
+    fun clearNotice(shown: Notice) {
+        if (_notice.value === shown) _notice.value = null
+    }
+
     private val main = Handler(Looper.getMainLooper())
     private var appContext: Context? = null
     private var server: SignalingServer? = null
@@ -205,6 +220,9 @@ object RemotePlayHost {
 
     /** [message] is shown to the player when the session ended on a problem, not by choice. */
     private fun sessionEnded(ended: HostSession, message: String?) {
+        // Player 2 is gone, whether they left or their connection did. Stopping hosting does not
+        // come through here: the host knows they did that.
+        if (ended.hadPlayer) _notice.value = Notice(ended.playerName, joined = false)
         ended.end("ended")
         session = null
         val listener = server
@@ -224,6 +242,10 @@ object RemotePlayHost {
 
     internal fun report(status: Status) {
         main.post { _status.value = status }
+    }
+
+    internal fun announce(notice: Notice) {
+        main.post { _notice.value = notice }
     }
 }
 
@@ -248,6 +270,13 @@ private class HostSession(
     @Volatile
     private var opusAudio = false
     private var viewer = "?"
+
+    /** Who is playing, as their device introduced itself. */
+    val playerName: String get() = viewer
+
+    /** The friend got as far as playing: the stream started. Main thread. */
+    var hadPlayer = false
+        private set
     private var rtc: RemotePlayRtc.Factory? = null
     private var peer: PeerConnection? = null
     private var gather: GatherWait? = null
@@ -534,6 +563,8 @@ private class HostSession(
         }
 
         RemotePlayHost.report(RemotePlayHost.Status.Playing(viewer))
+        hadPlayer = true
+        RemotePlayHost.announce(RemotePlayHost.Notice(viewer, joined = true))
         wifi.hold()
         val observer = source.capturerObserver
         observer.onCapturerStarted(true)

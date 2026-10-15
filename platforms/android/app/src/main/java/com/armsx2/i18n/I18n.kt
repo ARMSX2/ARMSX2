@@ -213,6 +213,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "remoteplay.host.connecting" to "Connecting to %s...",
     "remoteplay.host.playing" to "%s is playing as player 2.",
     "remoteplay.host.stop" to "Stop hosting",
+    "remoteplay.notice.joined" to "%s joined as player 2",
+    "remoteplay.notice.left" to "%s left",
     "remoteplay.host.noGame" to "Start a game to host it.",
     "remoteplay.host.noNetwork" to "Couldn't start hosting. Check that Wi-Fi is on.",
     "remoteplay.host.failed" to "Remote play stopped because of a connection problem. Try again.",
