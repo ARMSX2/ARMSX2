@@ -88,6 +88,10 @@ static void PostLoadPrep()
 
 	UpdateVSyncRate(true);
 
+	// The recent VI writes behind the VU branch hazard are not in the state.
+	std::memset(VU0.VIWrites, 0, sizeof(VU0.VIWrites));
+	std::memset(VU1.VIWrites, 0, sizeof(VU1.VIWrites));
+
 	if (VMManager::Internal::HasBootedELF())
 		R5900SymbolImporter.OnElfLoadedInMemory();
 }

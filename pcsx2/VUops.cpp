@@ -463,19 +463,54 @@ __fi void _vuAddLowerStalls(VURegs* VU, _VURegsNum* VUregsn)
 	}
 }
 
+// A branch in the pair right after a write to the VI it tests reads the VI as
+// it stood before the earliest write to it inside the last four cycles, not the
+// new value (PS2 console, SCPH-30001; microVU's analyzeBranchVI does the same).
+// The window counts cycles, so a stall inside it pushes an earlier write out.
+// ILW is a write for this too. A branch right after one waits for the load
+// (_vuTestALUStalls), and that stall ends the window.
+//
+// VIBackupCycles starts at VI_BACKUP_WINDOW on a write and loses the cycles
+// each pair takes. A branch sees VIOldValue only while it is above
+// VI_BACKUP_BRANCH: one that issues the very next cycle finds 3, one that
+// stalled, or sits a pair further on, finds 2 or less and reads the VI as it
+// is. VIWrites holds the VI before each of the last three writes and the cycle
+// it happened, for the earliest-write search. They only count while the window
+// is open.
+#define VI_BACKUP_WINDOW 4
+#define VI_BACKUP_BRANCH (VI_BACKUP_WINDOW - 2)
+
 __fi void _vuBackupVI(VURegs* VU, u32 reg)
 {
 #ifdef VI_BACKUP
-	if (VU->VIBackupCycles && reg == VU->VIRegNumber)
-	{
-		//On repeat writes we need to remember the value from before the chain
-		VU->VIBackupCycles = 2;
+	if (reg == 0)
 		return;
+
+	if (VU->VIBackupCycles == 0)
+		std::memset(VU->VIWrites, 0, sizeof(VU->VIWrites));
+
+	const u8 now = (u8)VU->cycle;
+	const u16 cur = VU->VI[reg].US[0];
+
+	// Oldest first: the earliest write to this VI that is 3 cycles back or less
+	u16 old = cur;
+	for (int i = 2; i >= 0; i--)
+	{
+		const VIWriteRec& w = VU->VIWrites[i];
+		if (w.reg == reg && (u8)(now - w.cyc) <= 3)
+		{
+			old = w.old;
+			break;
+		}
 	}
 
-	VU->VIBackupCycles = 2;
+	VU->VIWrites[2] = VU->VIWrites[1];
+	VU->VIWrites[1] = VU->VIWrites[0];
+	VU->VIWrites[0] = VIWriteRec{cur, (u8)reg, now};
+
+	VU->VIBackupCycles = VI_BACKUP_WINDOW;
 	VU->VIRegNumber = reg;
-	VU->VIOldValue = VU->VI[reg].US[0];
+	VU->VIOldValue = old;
 #endif
 }
 
@@ -1308,6 +1343,8 @@ static __ri void _vuILW(VURegs* VU)
 	if (_It_ == 0)
 		return;
 
+	_vuBackupVI(VU, _It_);
+
 	s16 imm = (VU->code & 0x400) ? (VU->code & 0x3ff) | 0xfc00 : (VU->code & 0x3ff);
 	u16 addr = ((imm + VU->VI[_Is_].SS[0]) * 16);
 	u16* ptr = (u16*)GET_VU_MEM(VU, addr);
@@ -1330,6 +1367,8 @@ static __ri void _vuILWR(VURegs* VU)
 {
 	if (_It_ == 0)
 		return;
+
+	_vuBackupVI(VU, _It_);
 
 	u32 addr = (VU->VI[_Is_].US[0] * 16);
 	u16* ptr = (u16*)GET_VU_MEM(VU, addr);
@@ -1552,7 +1591,7 @@ static __ri void _vuIBEQ(VURegs* VU)
 	s16 dest = VU->VI[_It_].US[0];
 	s16 src = VU->VI[_Is_].US[0];
 #ifdef VI_BACKUP
-	if (VU->VIBackupCycles > 0)
+	if (VU->VIBackupCycles > VI_BACKUP_BRANCH)
 	{
 		if (VU->VIRegNumber == _It_)
 			dest = VU->VIOldValue;
@@ -1572,7 +1611,7 @@ static __ri void _vuIBGEZ(VURegs* VU)
 {
 	s16 src = VU->VI[_Is_].US[0];
 #ifdef VI_BACKUP
-	if (VU->VIBackupCycles > 0)
+	if (VU->VIBackupCycles > VI_BACKUP_BRANCH)
 	{
 		if (VU->VIRegNumber == _Is_)
 			src = VU->VIOldValue;
@@ -1589,7 +1628,7 @@ static __ri void _vuIBGTZ(VURegs* VU)
 {
 	s16 src = VU->VI[_Is_].US[0];
 #ifdef VI_BACKUP
-	if (VU->VIBackupCycles > 0)
+	if (VU->VIBackupCycles > VI_BACKUP_BRANCH)
 	{
 		if (VU->VIRegNumber == _Is_)
 			src = VU->VIOldValue;
@@ -1607,7 +1646,7 @@ static __ri void _vuIBLEZ(VURegs* VU)
 {
 	s16 src = VU->VI[_Is_].US[0];
 #ifdef VI_BACKUP
-	if (VU->VIBackupCycles > 0)
+	if (VU->VIBackupCycles > VI_BACKUP_BRANCH)
 	{
 		if (VU->VIRegNumber == _Is_)
 			src = VU->VIOldValue;
@@ -1624,7 +1663,7 @@ static __ri void _vuIBLTZ(VURegs* VU)
 {
 	s16 src = VU->VI[_Is_].US[0];
 #ifdef VI_BACKUP
-	if (VU->VIBackupCycles > 0)
+	if (VU->VIBackupCycles > VI_BACKUP_BRANCH)
 	{
 		if (VU->VIRegNumber == _Is_)
 			src = VU->VIOldValue;
@@ -1642,7 +1681,7 @@ static __ri void _vuIBNE(VURegs* VU)
 	s16 dest = VU->VI[_It_].US[0];
 	s16 src = VU->VI[_Is_].US[0];
 #ifdef VI_BACKUP
-	if (VU->VIBackupCycles > 0)
+	if (VU->VIBackupCycles > VI_BACKUP_BRANCH)
 	{
 		if (VU->VIRegNumber == _It_)
 			dest = VU->VIOldValue;

@@ -40,6 +40,7 @@
 #include "harness/VuTestHarness.h"
 
 #include "autocases_vubranch.h"
+#include "autocases_vubranch_vidw.h"
 
 #include "VU.h"
 
@@ -341,6 +342,88 @@ TEST(VuBranchConsole, ViWriteIsVisibleToABranchOnePairLater)
 	for (const char* t : {"Q2_IHAZ_D1", "Q2_IHAZ_D2", "Q2_IHAZ_D3",
 	                      "Q2_IHAZ_D4", "Q2_IHAZ_D5"})
 		EXPECT_FALSE(SawStale(t)) << t << ": the write must be visible by now";
+}
+
+// =========================================================================
+//  3b. A branch after two writes to its VI
+// =========================================================================
+//
+//  ViWriteIsVisibleToABranchOnePairLater has one write per program. The rows
+//  in autocases_vubranch_vidw.h write the branch's VI twice or three times,
+//  or load it with ILW, or put a VWAITQ stall between the writes, and read
+//  what the branch saw. When the pair right before the branch writes the VI
+//  the branch tests, the branch reads the value that VI held before the
+//  EARLIEST write inside the last four cycles. A write more than three pairs
+//  back is visible, and a stall inside the window pushes an earlier write
+//  out of it.
+//
+//  The interpreter used to keep a two-cycle window that chained only writes
+//  in consecutive pairs; it differed on 37 of these rows. microVU matched all
+//  of them. A writer that reads a VI an ILW is still loading waits for the
+//  load on the console and in microVU, and the interpreter stalls only a
+//  branch there. The capture has rows of that shape; they are left out here.
+//
+//  Each row is scored on vi1..vi8 and TPC. The flag registers are left out:
+//  the harness starts VU0 with MAC and STATUS values the console does not
+//  have, whatever the program does.
+
+namespace
+{
+using console_vubranch::kVuBranchViDwCaseCount;
+using console_vubranch::kVuBranchViDwCases;
+
+// The registers one engine left that differ from the console, or empty when
+// vi1..vi8 and TPC all agree.
+std::string ViDwMismatch(const VuBranchCase& c, VuTestHarness& h, bool jit)
+{
+	std::string bad;
+	char buf[48];
+	const u32 tpc = jit ? h.GetViJit(REG_TPC) : h.GetViInterp(REG_TPC);
+	if (tpc != c.tpc)
+	{
+		std::snprintf(buf, sizeof(buf), " TPC=%u/%u", tpc, c.tpc);
+		bad += buf;
+	}
+	for (u32 n = 1; n <= 8; ++n)
+	{
+		const u32 v = jit ? h.GetViJit(n) : h.GetViInterp(n);
+		if (v != c.vi[n - 1])
+		{
+			std::snprintf(buf, sizeof(buf), " vi%u=%x/%x", n, v, c.vi[n - 1]);
+			bad += buf;
+		}
+	}
+	return bad;
+}
+
+// The rows one engine gets wrong, one line each: tag, then got/console.
+std::string ViDwMisses(bool jit)
+{
+	std::string out;
+	for (int i = 0; i < kVuBranchViDwCaseCount; ++i)
+	{
+		const VuBranchCase& c = kVuBranchViDwCases[i];
+		VuTestHarness h(0);
+		RunConsoleCase(c, h);
+		const std::string bad = ViDwMismatch(c, h, jit);
+		if (!bad.empty())
+			out += std::string("\n  ") + c.tag + ":" + bad;
+	}
+	return out;
+}
+} // namespace
+
+TEST(VuBranchViDoubleWrite, MicroVuMatchesTheConsoleOnEveryRow)
+{
+	EXPECT_GT(kVuBranchViDwCaseCount, 100);
+	const std::string bad = ViDwMisses(true);
+	EXPECT_TRUE(bad.empty()) << "rows where microVU differs from the console:" << bad;
+}
+
+TEST(VuBranchViDoubleWrite, InterpreterMatchesTheConsoleOnEveryRow)
+{
+	const std::string bad = ViDwMisses(false);
+	EXPECT_TRUE(bad.empty()) << "rows where the interpreter differs from the console:" << bad;
 }
 
 // =========================================================================
