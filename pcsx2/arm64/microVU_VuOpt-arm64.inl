@@ -1251,6 +1251,8 @@ static void vuoptPublishRoot(microVU& mVU, VuoptJob& j)
 		{
 			mVU.prog.quick[i].prog = nullptr;
 			mVU.prog.quick[i].block = nullptr;
+			// prog.quickOcc has a bit for each slot that holds a program, and mVUclear visits only those.
+			mVU.prog.quickOcc[i >> 6] &= ~(u64(1) << (i & 63));
 		}
 }
 
@@ -1391,8 +1393,9 @@ static void* vuoptRefetch(microVU& mVU, microProgram& prog, u32 startPC, const m
 {
 	alignas(16) microRegInfo k = key;
 	void* const entry = mVUblockFetch(mVU, startPC, reinterpret_cast<uptr>(&k));
-	microProgramQuick& quick = mVU.prog.quick[mVU.regs().start_pc / 8];
-	quick.prog = &prog;
+	const u32 slot = mVU.regs().start_pc / 8;
+	microProgramQuick& quick = mVU.prog.quick[slot];
+	mVUquickInstall(mVU, slot, &prog); // sets the slot's bit in prog.quickOcc, which mVUclear walks
 	quick.block = prog.block[startPC / 8];
 	return entry;
 }

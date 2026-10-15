@@ -36,6 +36,13 @@
 
 #include <unistd.h>
 
+// Test hook exported by pcsx2/arm64/microVU-arm64.cpp under PCSX2_RECOMPILER_TESTS (see
+// mvu_clear_occupied_tests): prog.quickOcc, the bitmap mVUclear walks, agrees with quick[].
+namespace mvu_test_hooks
+{
+	bool QuickOccupancyMatchesScan(int vu_index);
+} // namespace mvu_test_hooks
+
 namespace recompiler_tests
 {
 
@@ -69,6 +76,9 @@ struct LiveScope
 	}
 	~LiveScope()
 	{
+		// Whatever the tier did to VU1's quick slots (a root publication empties a program's, a slow path
+		// puts one back), prog.quickOcc, the bitmap mVUclear walks instead of the array, still agrees.
+		EXPECT_TRUE(mvu_test_hooks::QuickOccupancyMatchesScan(1)) << "VU1's quick slots and prog.quickOcc disagree";
 		vuopt::live::SetWorkerGate(nullptr);
 		vuopt::live::HoldWorker(false);
 		vuopt::live::SetTripwireMutation(0);
@@ -878,6 +888,56 @@ TEST(VuoptLive, RootPublishedAtAJumpLeavesNoUncheckedJumpCacheEntry)
 			EXPECT_EQ(Diff(ref[i], got[i]), "") << "flagHack=" << fh << " run " << i;
 		EXPECT_EQ(on.jobsRoot, 1u) << "flagHack=" << fh << ": the second entry asks for one root job";
 		EXPECT_EQ(on.publishedRoot, 1u) << "flagHack=" << fh << ": published at the stub's JR";
+	}
+}
+
+// A root publication empties every quick slot of its program, and the slow path that publishes it puts
+// back only the one it is in. mVUclear walks the slots that prog.quickOcc marks occupied instead of the
+// array (microVU ABI 62), so the bits of the slots the publication emptied have to go with them. (Mutation:
+// vuoptPublishRoot leaves them set. A stale bit is harmless to mVUclear, which drops a slot with no program
+// as one that overlaps; what it breaks is the bitmap being exactly the set of occupied slots.)
+//
+// One program is dispatched at two entries, so two slots hold it. A root job asked for at the second
+// entry is held in the worker, released, and published at the next dispatch.
+TEST(VuoptLive, RootPublicationKeepsTheQuickOccupancyBitmapInStep)
+{
+	constexpr u32 kEntry2 = 64;
+	std::vector<VuOp> prog = CountedLoop(10);
+	while (prog.size() < kEntry2)
+		prog.push_back(U(VNOP_U()));
+	std::vector<VuOp> loop2 = CountedLoop(6);
+	loop2.back() = EBit(P(VFSAND_L(vi::vi4, 0x03f), VNOP_U())); // (no sticky bit read)
+	for (const VuOp& op : loop2)
+		prog.push_back(op);
+	for (bool fh : {true, false})
+	{
+		LiveScope scope(true, 3, fh, vuopt::live::kJumpTierUpRuns, /*sync=*/false);
+		VuTestHarness h(1);
+		Prepare(h, prog, SetupLoop, 0);
+		h.RunNoDiff();
+		for (int i = 0; i < 8; i++)
+			h.RunJitPreserveBlockCache();
+		vuopt::live::WaitWorkerIdle();
+		for (int i = 0; i < 4; i++)
+			h.RunJitPreserveBlockCache(); // the tier-up is published at one of these
+		const vuopt::live::Stats s0 = vuopt::live::GetStats();
+		JobGate gate;
+		gate.Install();
+		h.SetStartPc(kEntry2 * 8); // microVU compiles this entry's block as its own; a root job is held
+		h.RunJitPreserveBlockCache();
+		gate.WaitEntered();
+		h.SetStartPc(0);
+		h.RunJitPreserveBlockCache();
+		EXPECT_TRUE(mvu_test_hooks::QuickOccupancyMatchesScan(1)) << "flagHack=" << fh << ": before the publication";
+		vuopt::live::SetWorkerGate(nullptr);
+		gate.Release();
+		vuopt::live::WaitWorkerIdle();
+		for (int i = 0; i < 3; i++)
+			h.RunJitPreserveBlockCache();
+		const vuopt::live::Stats d = Delta(s0, vuopt::live::GetStats());
+		EXPECT_EQ(d.jobsRoot, 1u) << "flagHack=" << fh;
+		EXPECT_EQ(d.publishedRoot, 1u) << "flagHack=" << fh;
+		EXPECT_TRUE(mvu_test_hooks::QuickOccupancyMatchesScan(1)) << "flagHack=" << fh << ": after the publication";
 	}
 }
 
