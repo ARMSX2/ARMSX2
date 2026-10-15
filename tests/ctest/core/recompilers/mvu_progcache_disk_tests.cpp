@@ -354,7 +354,7 @@ TEST_F(MvuProgCacheDisk, PreloadServesHydrationWithoutDisk)
 TEST_F(MvuProgCacheDisk, RecordingStateJoinsOptionsSentinel)
 {
 	// Safety property: recording changes emitted code forms
-	// (canonical movs, forced-long cond branches), so the recording state
+	// (fixed-shape MOVZ/MOVK runs for recorded addresses), so the recording state
 	// MUST be part of program identity. A cache built with recording on
 	// must never be served to a recording-off run (or vice versa) — the
 	// sentinel divergence below is what makes the VERSION handshake evict

@@ -324,8 +324,8 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 		u32 vu0Fpcr;
 		u32 vu1Fpcr;
 		// mVUPersist emit-time recording (the persisted-JIT program cache).
-		// Recording changes emitted code forms — canonical movz+movk×3 for
-		// self-block pointers, forced-long cross-chunk cond branches — so a
+		// Recording changes emitted code forms — fixed-shape MOVZ/MOVK runs
+		// for recorded addresses (block pointers, image addresses) — so a
 		// recording-enabled cache must never be matched against a recording-
 		// disabled run. This field reclaims a zeroed reserved byte, so the
 		// recording-OFF sentinel is bit-identical to the pre-recording one.

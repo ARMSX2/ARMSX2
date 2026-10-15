@@ -248,6 +248,42 @@ void armDisassembleAndDumpCode(const void* ptr, size_t size)
 #endif
 }
 
+u32 armMovRunWidth(u64 value)
+{
+	u32 width = 1;
+	for (u32 hw = 1; hw < 4; hw++)
+	{
+		if ((value >> (16 * hw)) & 0xFFFFu)
+			width = hw + 1;
+	}
+	return width;
+}
+
+void armEmitMovRun(const vixl::aarch64::Register& reg, u64 value, u32 width)
+{
+	pxAssert(reg.IsX() && width >= 1 && width <= 4);
+	pxAssert(width == 4 || (value >> (16 * width)) == 0);
+	vixl::ExactAssemblyScope guard(armAsm, width * 4);
+	armAsm->movz(reg, value & 0xFFFF, 0);
+	for (u32 hw = 1; hw < width; hw++)
+		armAsm->movk(reg, (value >> (16 * hw)) & 0xFFFF, 16 * hw);
+}
+
+// Recorder path for an address materialized as an immediate. Returns false
+// when the recorder cannot relocate it (it has then failed the episode) and
+// the caller should emit its default form.
+static bool armEmitRecordedMovRun(const vixl::aarch64::Register& reg, const void* addr)
+{
+	const ArmAddressRecorder::AddressClass c = armAddressRecorder->ClassifyAddress(addr);
+	if (!c.relocatable)
+		return false;
+	const u64 v = reinterpret_cast<uintptr_t>(addr);
+	const u32 width = std::max(c.minMovWidth, armMovRunWidth(v));
+	armEmitMovRun(reg, v, width);
+	armAddressRecorder->OnMovRun(armGetCurrentCodePointer() - width * 4, width, addr);
+	return true;
+}
+
 void armEmitJmp(const void* ptr, bool force_inline)
 {
 	s64 displacement = GetPCDisplacement(armGetCurrentCodePointer(), ptr);
@@ -263,9 +299,8 @@ void armEmitJmp(const void* ptr, bool force_inline)
 
 	if (use_blr)
 	{
-		if (armAddressRecorder)
-			armAddressRecorder->OnAbsoluteTarget(ptr);
-		armAsm->Mov(RXVIXLSCRATCH, reinterpret_cast<uintptr_t>(ptr));
+		if (!armAddressRecorder || !armEmitRecordedMovRun(RXVIXLSCRATCH, ptr))
+			armAsm->Mov(RXVIXLSCRATCH, reinterpret_cast<uintptr_t>(ptr));
 		armAsm->Br(RXVIXLSCRATCH);
 	}
 	else
@@ -277,7 +312,7 @@ void armEmitJmp(const void* ptr, bool force_inline)
 		// Record after emission: the scope entry may flush a pending vixl
 		// literal pool, so the insn address is only known once it's out.
 		if (armAddressRecorder)
-			armAddressRecorder->OnDirectBranch(armGetCurrentCodePointer() - 4, ptr, false);
+			armAddressRecorder->OnBranch(armGetCurrentCodePointer() - 4, ptr, ArmAddressRecorder::BranchForm::Rel26);
 	}
 }
 
@@ -311,9 +346,8 @@ void armEmitCall(const void* ptr, bool force_inline)
 
 	if (use_blr)
 	{
-		if (armAddressRecorder)
-			armAddressRecorder->OnAbsoluteTarget(ptr);
-		armAsm->Mov(RXVIXLSCRATCH, reinterpret_cast<uintptr_t>(ptr));
+		if (!armAddressRecorder || !armEmitRecordedMovRun(RXVIXLSCRATCH, ptr))
+			armAsm->Mov(RXVIXLSCRATCH, reinterpret_cast<uintptr_t>(ptr));
 		armAsm->Blr(RXVIXLSCRATCH);
 	}
 	else
@@ -323,7 +357,7 @@ void armEmitCall(const void* ptr, bool force_inline)
 			armAsm->bl(displacement);
 		}
 		if (armAddressRecorder)
-			armAddressRecorder->OnDirectBranch(armGetCurrentCodePointer() - 4, ptr, true);
+			armAddressRecorder->OnBranch(armGetCurrentCodePointer() - 4, ptr, ArmAddressRecorder::BranchForm::Rel26);
 	}
 }
 
@@ -334,8 +368,12 @@ void armEmitCbnz(const vixl::aarch64::Register& reg, const void* ptr)
 	//pxAssert(Common::IsAligned(jump_distance, 4));
 	if (a64::Instruction::IsValidImmPCOffset(a64::CompareBranchType, jump_distance >> 2))
 	{
-		a64::SingleEmissionCheckScope guard(armAsm);
-		armAsm->cbnz(reg, jump_distance >> 2);
+		{
+			a64::SingleEmissionCheckScope guard(armAsm);
+			armAsm->cbnz(reg, jump_distance >> 2);
+		}
+		if (armAddressRecorder)
+			armAddressRecorder->OnBranch(armGetCurrentCodePointer() - 4, ptr, ArmAddressRecorder::BranchForm::Rel19);
 	}
 	else
 	{
@@ -346,6 +384,8 @@ void armEmitCbnz(const vixl::aarch64::Register& reg, const void* ptr)
 		const s64 new_jump_distance =
 			static_cast<s64>(reinterpret_cast<intptr_t>(ptr) - reinterpret_cast<intptr_t>(armGetCurrentCodePointer()));
 		armAsm->b(new_jump_distance >> 2);
+		if (armAddressRecorder)
+			armAddressRecorder->OnBranch(armGetCurrentCodePointer() - 4, ptr, ArmAddressRecorder::BranchForm::Rel26);
 		armAsm->bind(&branch_not_taken);
 	}
 }
@@ -356,27 +396,16 @@ void armEmitCondBranch(a64::Condition cond, const void* ptr)
 		static_cast<s64>(reinterpret_cast<intptr_t>(ptr) - reinterpret_cast<intptr_t>(armGetCurrentCodePointer()));
 	//pxAssert(Common::IsAligned(jump_distance, 4));
 
-	// A recorder patching this branch on relocation needs the imm26 reach of a
-	// plain B — B.cond's ±1MB imm19 may not survive the move. Force the long
-	// form for targets the recorder marks relocatable and record the B.
-	if (armAddressRecorder && armAddressRecorder->WantsLongCondBranch(ptr))
-	{
-		a64::MacroEmissionCheckScope guard(armAsm);
-		a64::Label branch_not_taken;
-		armAsm->b(&branch_not_taken, a64::InvertCondition(cond));
-
-		const s64 new_jump_distance =
-			static_cast<s64>(reinterpret_cast<intptr_t>(ptr) - reinterpret_cast<intptr_t>(armGetCurrentCodePointer()));
-		armAsm->b(new_jump_distance >> 2);
-		armAddressRecorder->OnDirectBranch(armGetCurrentCodePointer() - 4, ptr, false);
-		armAsm->bind(&branch_not_taken);
-		return;
-	}
-
+	// A recorded B.cond keeps its short form: the recorder logs it and the
+	// hydrator re-checks the ±1MB reach at the new placement.
 	if (a64::Instruction::IsValidImmPCOffset(a64::CondBranchType, jump_distance >> 2))
 	{
-		a64::SingleEmissionCheckScope guard(armAsm);
-		armAsm->b(jump_distance >> 2, cond);
+		{
+			a64::SingleEmissionCheckScope guard(armAsm);
+			armAsm->b(jump_distance >> 2, cond);
+		}
+		if (armAddressRecorder)
+			armAddressRecorder->OnBranch(armGetCurrentCodePointer() - 4, ptr, ArmAddressRecorder::BranchForm::Rel19);
 	}
 	else
 	{
@@ -387,6 +416,8 @@ void armEmitCondBranch(a64::Condition cond, const void* ptr)
 		const s64 new_jump_distance =
 			static_cast<s64>(reinterpret_cast<intptr_t>(ptr) - reinterpret_cast<intptr_t>(armGetCurrentCodePointer()));
 		armAsm->b(new_jump_distance >> 2);
+		if (armAddressRecorder)
+			armAddressRecorder->OnBranch(armGetCurrentCodePointer() - 4, ptr, ArmAddressRecorder::BranchForm::Rel26);
 		armAsm->bind(&branch_not_taken);
 	}
 }
@@ -396,21 +427,16 @@ void armMoveAddressToReg(const vixl::aarch64::Register& reg, const void* addr)
 	// psxAsm->Mov(reg, static_cast<u64>(reinterpret_cast<uintptr_t>(addr)));
 	pxAssert(reg.IsX());
 
-	if (armAddressRecorder &&
-		armAddressRecorder->ClassifyMove(addr) == ArmAddressRecorder::MoveForm::CanonicalAbs)
+	// A recorded address that ADRP may not carry (a heap object: its low 12
+	// bits move too) goes straight to the patchable MOVZ/MOVK run.
+	if (armAddressRecorder)
 	{
-		// Fixed-width 16-byte form: every operand bit lives in a movz/movk
-		// imm16 field a relocation patcher can rewrite in place.
-		const u64 v = reinterpret_cast<uintptr_t>(addr);
+		const ArmAddressRecorder::AddressClass c = armAddressRecorder->ClassifyAddress(addr);
+		if (c.relocatable && !c.allowAdrp)
 		{
-			vixl::ExactAssemblyScope guard(armAsm, 16);
-			armAsm->movz(reg, v & 0xFFFF, 0);
-			armAsm->movk(reg, (v >> 16) & 0xFFFF, 16);
-			armAsm->movk(reg, (v >> 32) & 0xFFFF, 32);
-			armAsm->movk(reg, (v >> 48) & 0xFFFF, 48);
+			armEmitRecordedMovRun(reg, addr);
+			return;
 		}
-		armAddressRecorder->OnCanonicalAbsMove(armGetCurrentCodePointer() - 16, addr);
-		return;
 	}
 
 	const void* current_code_ptr_page = reinterpret_cast<const void*>(
@@ -441,9 +467,8 @@ void armMoveAddressToReg(const vixl::aarch64::Register& reg, const void* addr)
 	}
 	else
 	{
-		if (armAddressRecorder)
-			armAddressRecorder->OnAbsoluteTarget(addr);
-		armAsm->Mov(reg, reinterpret_cast<uintptr_t>(addr));
+		if (!armAddressRecorder || !armEmitRecordedMovRun(reg, addr))
+			armAsm->Mov(reg, reinterpret_cast<uintptr_t>(addr));
 	}
 }
 

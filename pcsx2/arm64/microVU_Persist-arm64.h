@@ -20,25 +20,24 @@ struct MvuPersistLog;
 // While recording is enabled, every mVU code-cache emission episode (the
 // contiguous region emitted between mVUopenCodeCache and mVUcloseCodeCache)
 // is captured as a "chunk" on the owning microProgram's persist log: the raw
-// code bytes, the blocks whose entry points live inside it, and a fixup table
-// for the only address classes that are NOT run-invariant under the
-// deterministic process layout:
+// code bytes, the blocks whose entry points live inside it, and a fixup for
+// every instruction that carries a host address pointing outside the chunk.
+// A fixup names an encoding form and a target:
 //
-//   SelfBlockAbs    movz+movk×3 materializing a pointer into one of the
-//                   program's own heap-allocated microBlock objects
-//                   (&pState / &pStateEnd / the block itself).
-//   BlockEntryRel26 direct B/BL to another block of the same program whose
-//                   code lives in a different chunk.
-//   StubRel26       direct B/BL to a per-VU dispatcher stub (exitFunct,
-//                   copyPLState, ...) — re-resolved by name on hydration.
-//   AdrpPage21      ADRP whose target is run-invariant (image/arena) but
-//                   whose page displacement is PC-relative and must be
-//                   re-paged when the chunk moves.
+//   forms    MOVZ+MOVK run (1 to 4 instructions, one register), ADRP,
+//            B/BL imm26, B.cond/CBZ/CBNZ imm19.
+//   targets  one of the program's own microBlock objects (heap), another
+//            block's code entry, a per-VU dispatcher stub (by id), an offset
+//            into the emulator's module image (C helpers, globals), an
+//            offset into the data arena.
 //
-// Everything else a block bakes (absolute movz/movk or out-of-range BLR to
-// image globals / C helpers, intra-chunk PC-relative branches and literal
-// pools) is byte-valid at any 16-aligned slab position in any run with
-// matching image/arena bases, and is verified-not-recorded.
+// Hydration resolves every target against the running process and patches
+// the operand, so a payload hydrates wherever ASLR put the image, the heap,
+// the code slab and the data arena. It rejects the payload, before installing
+// anything, if a target cannot be encoded from the new placement (an ADRP
+// more than 4GB from a moved data arena, a run too narrow for a new address).
+// Intra-chunk PC-relative branches and literal pools move with the chunk and
+// need no fixup.
 //
 // Fail-safe invariant: an address the recorder cannot classify marks the
 // episode non-persistable and drops it from the log. Hydration of the
@@ -54,8 +53,8 @@ namespace mVUPersist
 	// set before the programs to persist are compiled — already-compiled
 	// episodes are not retroactively recorded.
 	//
-	// Changing it changes emitted code forms (canonical movs / forced-long
-	// cond branches), so it is mixed into the mVU options sentinel: a state
+	// Changing it changes emitted code forms (fixed-shape MOVZ/MOVK runs for
+	// recorded addresses), so it is mixed into the mVU options sentinel: a state
 	// flip invalidates both VUs' sentinels, re-keying program identity and
 	// the ProgCache VERSION handshake. SetProcessDisable(true) (the
 	// offline-tooling determinism gate) overrides any enable request.
@@ -105,8 +104,8 @@ namespace mVUPersist
 	// missed part of the program.
 	bool SerializeProgram(microVU& mVU, const microProgram& prog, std::vector<u8>& out);
 
-	// Rebuild a program from a serialized image: verifies the layout bases
-	// and the content hash against live microMem, copies the chunks to the
+	// Rebuild a program from a serialized image: verifies the checksum and
+	// the content hash against live microMem, copies the chunks to the
 	// current code-cache cursor, patches fixups, and registers every block
 	// with a fresh microProgram (created via mVUcreateProg, so the normal
 	// dispatch path resolves it through the content map). Returns the new
@@ -133,21 +132,35 @@ namespace mVUPersist
 	// in place and each instruction that carries a host address no fixup
 	// covers (out-of-chunk PC-relative operand, or an immediate-move run whose
 	// value lands in a mapped region) is counted by form and region. Enabling
-	// clears the census. An address no fixup covers is one that hydration in
-	// a process with a different layout would leave stale.
+	// clears the census. A persistable chunk must audit clean: an uncovered
+	// address is one hydration in another process would leave stale.
 	void TestSetAuditEnabled(bool enabled);
 	u64 TestAuditUncoveredCount();
 	std::string TestAuditReport();
 	// Fixups the census saw covering an address of each kind (image-address
 	// runs, block-object runs, ...), keyed like the report.
 	u64 TestAuditCoveredCount(const char* key);
+
+	// The region bases this process resolves image and data-arena fixups
+	// against.
+	void TestGetRegionBases(u64& image_base, u64& data_base);
+
+	// Edit the first fixup of a serialized image whose target is `target`
+	// (0 block object, 3 image, 4 data arena) and re-stamp the checksum, so
+	// tests can build images that are well-formed but unplaceable. `width`
+	// replaces a MOVZ/MOVK run's width when nonzero; `offset_delta` is added
+	// to the target offset. Returns false if no such fixup exists.
+	bool TestEditFirstFixup(std::vector<u8>& image, u8 target, u8 width, s64 offset_delta);
+	// Overwrite the image header's informational region bases with `value`
+	// and re-stamp the checksum.
+	bool TestOverwriteHeaderBases(std::vector<u8>& image, u64 value);
 #endif
 	// Total mVU block compiles since process start (bumped in
 	// mVUinitFirstPass regardless of recording state).
 	u64 GetBlockCompileCount(u32 vu_index);
 	// Structural digest of the newest program's serialized image with every
 	// address-bearing operand masked (sf=1 movz/movn/movk imm16, B/BL
-	// imm26, ADRP imm, fixup target fields). What survives is the emitter's
+	// imm26, ADRP imm, recorded B.cond imm19, image/data fixup offsets). What survives is the emitter's
 	// SHAPE — opcode selection, register allocation, instruction order,
 	// block/chunk/fixup structure — which is deterministic across runs,
 	// machines, and PIE/ASLR. The ABI-digest guard test pins this per

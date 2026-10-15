@@ -14,7 +14,8 @@
 //
 // The digest (mVUPersist::TestComputeEmitDigest) masks every operand that
 // may legitimately differ between correct emissions — 64-bit mov-chain
-// immediates, B/BL displacements, ADRP pages, fixup address payloads — and
+// immediates, B/BL displacements, ADRP pages, recorded B.cond displacements,
+// image and data-arena offsets in fixup records — and
 // hashes what remains: opcode selection, register allocation, instruction
 // order, block/chunk/fixup structure. That is deterministic across runs,
 // machines, and PIE/ASLR.
@@ -32,8 +33,8 @@
 //   are in.
 //
 // Recording is enabled during compilation because the cache only ever
-// stores recording-enabled forms (canonical movs, forced-long cond
-// branches) — those are the shapes worth pinning.
+// stores recording-enabled forms (fixed-shape MOVZ/MOVK runs for recorded
+// addresses) — those are the shapes worth pinning.
 
 #include "harness/VuTestHarness.h"
 #include "harness/RecompilerTestEnvironment.h"
@@ -69,7 +70,7 @@ inline VuOp LowerOnly(u32 lower)
 
 // One digest per probe program. The set mirrors the round-trip suite's
 // coverage axes: FMAC straight-line (upper pipeline + clamp emitters),
-// conditional branch both-arms (block linking, SelfBlockAbs fixups), and
+// conditional branch both-arms (block linking, block-object fixups), and
 // indirect jump (two emission episodes, jump-cache path, stub calls).
 struct DigestSet
 {
@@ -419,6 +420,11 @@ constexpr AbiPin kPins[] = {
 	// instead of loading them. The probes that compile at vuClampMode 3 and 4
 	// move; the single-lane forms keep their Ldp, and modes 0 to 2 never emit it.
 	{39, {0x1b6417d39088c445, 0x4fb21f7df2e0eba1, 0x5b22843577880a34, 0x367caabd4ce98b70, 0x931e4ce41aaddfee, 0x528f4bc3805ce760, 0x474ca3bc38053234, 0xf3c90aa7361cb856, 0x97abca8e1e797c8e, 0x3a85dc8fbf46e675, 0xa1e2f7d5c83033f5, 0x28d99b6d7e13c0c8, 0x191cc45df004b45c, 0x008451d3443b1898, 0xb4d7293333bb33b9, 0x22851a1d6e1da4f7, 0x218d866b851d4396, 0xf59d5b3e255ec796, 0x205545fc7b500ddb, 0xfd15d794fe441fbf, 0x51aad4123c80fc0f, 0xc4b3d7d6d8249b94, 0x742e2538da750e4d, 0xebe95cc4b6a325c2, 0x025ba9f9ef343b1c, 0x7b59f4d79964c4b3}},
+	// abi 40: recorded programs become relocatable across processes. Every
+	// digest moves: block pointers are runs as wide as the pointer (were four), the
+	// fixup records change shape, and a recorded cross-chunk B.cond keeps its
+	// short form.
+	{40, {0x3ed99762507399e4, 0x6d6770fe9db1990c, 0x2ecacab4f991dd23, 0xb09ef1af251ec07, 0x14e4b8fced0d04dc, 0xeb60426ed0d70940, 0xdf7c4e8bf13c94c9, 0xa4a58ecef6908f50, 0x48f270422976601e, 0x8fee7379cf74f2fb, 0xeb9e5fc25e015c26, 0xb15fe38a6532599b, 0x9693b1f71c097042, 0x25f18ca51006ba18, 0x9a357931f332e6bc, 0xe9d002c3cc7b0059, 0x79480329384807b8, 0x1ca3b68bad42404e, 0xcbb687b1290b357b, 0x968862c05b32be9c, 0xb3c344bd7013958c, 0x70d713c0cd79c108, 0xc1498f6b04171253, 0x7b9753e9f4c0149d, 0xcad12b13a6d6a865, 0x61ed338fecf3b6ac}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,

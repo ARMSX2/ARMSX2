@@ -108,9 +108,10 @@ bool SysMemory::AllocateMemoryMap()
 		return false;
 	}
 
-	// Constant-VA placement for the on-disk VU program cache: on arm64 the
-	// data + code reservations must sit at the same VAs every run so cached
-	// JIT code reloads without repatching its baked addresses. 4GB clears the
+	// Constant-VA placement, from the on-disk VU program cache: on arm64 the
+	// data + code reservations sit at the same VAs every run. Cached code no
+	// longer depends on it (its data-arena addresses are fixups), but a fixed
+	// arena keeps a cached ADRP's ±4GB reach from the code slab. 4GB clears the
 	// ASLR brk window (non-PIE image at 0x400000 + brk randomization < 2GB) and
 	// sits far below the mmap_base / PIE-load regions, so the slot-0 candidate
 	// succeeds deterministically; Create() walks 256MB-stride fallback slots and

@@ -68,44 +68,47 @@ const vixl::aarch64::VRegister& armQRegister(int n);
 class ArmConstantPool;
 
 // Address-emission observer for the on-disk VU program cache. While a
-// recorder is attached (mVU code-cache episodes only — see mVUopenCodeCache),
-// the emit helpers below report every host-address-bearing emission so the
-// recorder can build a relocation fixup table, and let it force canonical
-// fixed-width forms where the default encoding couldn't be patched after the
-// code block moves:
-//   - armMoveAddressToReg of a volatile (heap) target → movz+movk×3 (16 bytes,
-//     patchable) instead of the shortest mov/adrp form.
-//   - armEmitCondBranch to a relocatable target → inverted-cond skip + B imm26
-//     (B.cond's ±1MB imm19 can't survive arbitrary replacement).
-// `at` arguments are the address of the first emitted instruction of the
+// recorder is attached (mVU code-cache episodes only, see mVUopenCodeCache),
+// the emit helpers below report every host-address-bearing instruction they
+// emit, so the recorder can build a relocation table that lets the code run
+// at another address in another process (ASLR moves the image, the heap and
+// possibly the arenas).
+//
+// Emission stays in the forms the helpers use without a recorder, with one
+// exception: an address materialized as an immediate is emitted as a
+// fixed-shape MOVZ + MOVK run over halfwords 0..width-1 (see armEmitMovRun),
+// so a patcher can rewrite the value in place. The width is the value's own
+// minimum (top non-zero halfword) or the recorder's floor, whichever is
+// larger; that is the instruction count vixl's Mov emits for an address
+// unless a halfword below the top one happens to be zero. `at` arguments are the address of the first instruction of the
 // reported shape. All hooks are no-ops when no recorder is attached.
 class ArmAddressRecorder
 {
 public:
-	enum class MoveForm
+	struct AddressClass
 	{
-		Default, // emit in shortest form; recorder may still log it
-		CanonicalAbs, // emit fixed-width movz+movk×3 so the operand is patchable
+		bool relocatable = false; // false: the recorder has failed the episode
+		bool allowAdrp = false; // ADRP + ADD/ORR may carry it (page-aligned moves only)
+		u32 minMovWidth = 1; // floor for the MOVZ/MOVK run width
+	};
+
+	enum class BranchForm
+	{
+		Rel26, // B / BL
+		Rel19, // B.cond / CBZ / CBNZ
 	};
 
 	virtual ~ArmAddressRecorder() = default;
 
-	// armMoveAddressToReg: pick the emission form for `addr`.
-	virtual MoveForm ClassifyMove(const void* addr) = 0;
-	// armMoveAddressToReg emitted the canonical 16-byte movz+movk×3 at `at`.
-	virtual void OnCanonicalAbsMove(u8* at, const void* addr) = 0;
-	// armMoveAddressToReg emitted ADRP (+Add/Orr) at `at`; the page offset is
-	// PC-relative and must be re-paged if this code moves.
+	// Classify an address about to be materialized (armMoveAddressToReg, or
+	// the out-of-range paths of armEmitJmp/armEmitCall).
+	virtual AddressClass ClassifyAddress(const void* addr) = 0;
+	// A MOVZ + MOVK×(width-1) run carrying `addr` was emitted at `at`.
+	virtual void OnMovRun(u8* at, u32 width, const void* addr) = 0;
+	// ADRP (+ ADD/ORR of the page offset) carrying `addr` was emitted at `at`.
 	virtual void OnAdrp(u8* at, const void* addr) = 0;
-	// armEmitJmp/armEmitCall/armEmitCondBranch emitted a direct B/BL imm26 at
-	// `at` targeting `target`.
-	virtual void OnDirectBranch(u8* at, const void* target, bool is_call) = 0;
-	// armEmitCondBranch: return true to force the long (cond-skip + B) form.
-	virtual bool WantsLongCondBranch(const void* target) = 0;
-	// An absolute (movz/movk-materialized) target with no patch site — emitted
-	// by the out-of-range paths of armEmitJmp/armEmitCall/armMoveAddressToReg.
-	// Recorder uses this to verify the target is run-invariant.
-	virtual void OnAbsoluteTarget(const void* target) = 0;
+	// A direct PC-relative branch to `target` was emitted at `at`.
+	virtual void OnBranch(u8* at, const void* target, BranchForm form) = 0;
 };
 
 static const u32 SP_SCRATCH_OFFSET = 0;
@@ -156,6 +159,12 @@ void armEmitJmpPtr(void* code_address, const void* target, bool flush_icache = t
 void armEmitCbnz(const vixl::aarch64::Register& reg, const void* ptr);
 void armEmitCondBranch(vixl::aarch64::Condition cond, const void* ptr);
 void armMoveAddressToReg(const vixl::aarch64::Register& reg, const void* addr);
+// MOVZ reg, #hw0 then MOVK reg, #hwN, lsl 16N for N = 1..width-1: a fixed
+// shape whose value a relocation patcher can rewrite. `value` must fit in
+// `width` halfwords.
+void armEmitMovRun(const vixl::aarch64::Register& reg, u64 value, u32 width);
+// Halfwords needed to hold `value` in a MOVZ/MOVK run (1..4).
+u32 armMovRunWidth(u64 value);
 void armLoadPtr(const vixl::aarch64::CPURegister& reg, const void* addr);
 void armStorePtr(const vixl::aarch64::CPURegister& reg, const void* addr);
 void armBeginStackFrame(bool save_fpr);

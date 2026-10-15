@@ -10,7 +10,7 @@
 #include "Memory.h"
 
 #ifdef __linux__
-#include <unistd.h>
+#include <link.h>
 #endif
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -29,12 +29,27 @@
 
 namespace mVUPersist
 {
+	// A fixup is an encoding form (how the operand sits in the code) and a
+	// target (what it points at). Every target is resolved against this
+	// process at hydration, so nothing in a payload depends on the addresses
+	// of the process that recorded it.
 	enum : u8
 	{
-		kFixSelfBlockAbs = 0, // movz+movk×3 → &log.blocks[blockIndex] + fieldOffset
-		kFixBlockEntryRel26,  // B/BL → entry of log.blocks[blockIndex]
-		kFixStubRel26,        // B/BL → per-VU dispatcher stub `stubId`
-		kFixAdrpPage21,       // ADRP → run-invariant absolute `target`
+		kFormMovRun = 0, // MOVZ + MOVK×(width-1) over halfwords 0..width-1, one Rd
+		kFormAdrp,       // ADRP page21; the page offset rides in the next ADD/ORR
+		kFormRel26,      // B / BL imm26
+		kFormRel19,      // B.cond / CBZ / CBNZ imm19
+		kFormCount,
+	};
+
+	enum : u8
+	{
+		kTargetBlockObject = 0, // log.blocks[index]'s microBlock + offset (heap)
+		kTargetBlockEntry,      // log.blocks[index]'s code entry
+		kTargetStub,            // per-VU dispatcher stub, id = index
+		kTargetImage,           // image base + offset (code, data, bss of the emulator module)
+		kTargetData,            // data arena base + offset
+		kTargetCount,
 	};
 
 	enum : u8
@@ -60,19 +75,20 @@ namespace mVUPersist
 	struct PersistFixup
 	{
 		u32 codeOffset; // chunk-relative offset of the first patched insn
-		u8 kind;
-		u8 stubId;
-		u16 fieldOffset; // kFixSelfBlockAbs: byte offset within microBlock
-		u32 blockIndex; // kFixSelfBlockAbs / kFixBlockEntryRel26
-		u32 _pad;
-		u64 target; // kFixAdrpPage21: absolute target; debug aid otherwise
+		u8 form;
+		u8 target;
+		u8 width; // kFormMovRun: instruction count (1..4)
+		u8 _pad0;
+		u32 index; // block index (block targets) or stub id
+		u32 _pad1;
+		s64 offset; // byte offset from the target's base (block object, image, data arena)
 	};
 	static_assert(sizeof(PersistFixup) == 24);
 
 	// Instructions a fixup's patcher rewrites, starting at codeOffset.
 	static u32 FixupSpanInsns(const PersistFixup& f)
 	{
-		return (f.kind == kFixSelfBlockAbs) ? 4 : 1;
+		return (f.form == kFormMovRun) ? f.width : 1;
 	}
 
 	struct PersistChunk
@@ -127,155 +143,154 @@ namespace mVUPersist
 	// Address classification
 	//------------------------------------------------------------------
 
-	// Run-invariant static ranges under the deterministic layout:
-	// the executable image (incl. bss) and the fixed-base data arena. The
-	// code arena is deliberately NOT here — slab addresses are exactly the
-	// relocatable class and must resolve to stubs/blocks or fail.
-	struct InvariantRanges
+	// The two address regions a block may embed besides its own program's
+	// blocks and the dispatcher stubs: the emulator's module image (its code,
+	// data and bss; for Android that is the shared library, not the app
+	// process) and the data arena. Each region moves as a unit under ASLR, so
+	// an address in it is recorded as an offset from the region's base and
+	// re-based at hydration. The bases are page-aligned, which keeps the low 12
+	// bits an ADRP + ADD pair splits off unchanged by any move.
+	struct Regions
 	{
 		uptr imgBegin = 0, imgEnd = 0;
 		uptr dataBegin = 0, dataEnd = 0;
+		uptr imageBase = 0; // imgBegin rounded down to 4KB
+		uptr dataBase = 0;
 		bool valid = false;
 	};
 
-	static bool ResolveImageRange(uptr& out_begin, uptr& out_end)
+#if defined(__linux__)
+	struct ModuleSearch
 	{
-#ifdef __linux__
-		char exe_path[512];
-		const ssize_t exe_len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-		if (exe_len <= 0)
-			return false;
-		exe_path[exe_len] = 0;
+		uptr probe;
+		uptr begin, end;
+		bool found;
+	};
 
-		std::FILE* maps = std::fopen("/proc/self/maps", "r");
-		if (!maps)
-			return false;
-
-		uptr begin = 0, end = 0;
-		bool extended = false;
-		char line[1024];
-		while (std::fgets(line, sizeof(line), maps))
+	static int FindModuleCallback(dl_phdr_info* info, size_t, void* data)
+	{
+		ModuleSearch* ms = static_cast<ModuleSearch*>(data);
+		uptr lo = ~static_cast<uptr>(0), hi = 0;
+		bool contains = false;
+		for (int i = 0; i < info->dlpi_phnum; i++)
 		{
-			unsigned long long m_begin = 0, m_end = 0;
-			char perms[8] = {};
-			unsigned long long offset = 0;
-			unsigned dev_major = 0, dev_minor = 0;
-			unsigned long long inode = 0;
-			int path_pos = -1;
-			if (std::sscanf(line, "%llx-%llx %7s %llx %x:%x %llu %n",
-					&m_begin, &m_end, perms, &offset, &dev_major, &dev_minor, &inode, &path_pos) < 7)
+			const auto& ph = info->dlpi_phdr[i];
+			if (ph.p_type != PT_LOAD || ph.p_memsz == 0)
 				continue;
-			const char* path = (path_pos >= 0) ? line + path_pos : "";
-			// Trim trailing newline for the comparison.
-			std::string_view pv(path);
-			while (!pv.empty() && (pv.back() == '\n' || pv.back() == ' '))
-				pv.remove_suffix(1);
-
-			if (pv == exe_path)
-			{
-				if (!begin)
-					begin = static_cast<uptr>(m_begin);
-				end = static_cast<uptr>(m_end);
-				// A fresh file segment: the bss following the *final* file
-				// segment is the only anonymous region we want to absorb, so
-				// re-arm the one-shot extension on every file mapping.
-				extended = false;
-			}
-			else if (!extended && end && static_cast<uptr>(m_begin) == end && pv.empty())
-			{
-				// Anonymous mapping contiguous with the image's last file
-				// mapping: the bss. Extend exactly once — a run of contiguous
-				// unnamed mappings (glibc arena, ld scratch) must NOT chain the
-				// range past true bss. ([heap]/named regions also stop here.)
-				end = static_cast<uptr>(m_end);
-				extended = true;
-			}
+			const uptr b = static_cast<uptr>(info->dlpi_addr + ph.p_vaddr);
+			const uptr e = b + static_cast<uptr>(ph.p_memsz);
+			lo = std::min(lo, b);
+			hi = std::max(hi, e);
+			if (ms->probe >= b && ms->probe < e)
+				contains = true;
 		}
-		std::fclose(maps);
+		if (!contains)
+			return 0;
+		ms->begin = lo;
+		ms->end = hi;
+		ms->found = true;
+		return 1;
+	}
+#endif
 
-		if (!begin || end <= begin)
+	// The extent of the loaded module that holds `probe`: the union of its
+	// PT_LOAD segments (bss included, as p_memsz) on Linux and Android, of its
+	// mapped segments on Apple platforms.
+	static bool ResolveModuleRange(const void* probe, uptr& out_begin, uptr& out_end)
+	{
+#if defined(__linux__)
+		ModuleSearch ms = {reinterpret_cast<uptr>(probe), 0, 0, false};
+		dl_iterate_phdr(FindModuleCallback, &ms);
+		if (!ms.found || ms.end <= ms.begin)
 			return false;
-		out_begin = begin;
-		out_end = end;
+		out_begin = ms.begin;
+		out_end = ms.end;
 		return true;
 #elif defined(__APPLE__)
-		// Union of the main image's mapped segments (index 0 = the main
-		// executable), slid by ASLR. Unlike Linux non-PIE these addresses vary
-		// per run, so a payload recorded here never survives to another
-		// process — the hydration-side imageAnchor check rejects it and the
-		// program just recompiles. In-process recording (ABI digest, unit-test
-		// round-trips, and eventually the iOS in-session cache) works fully.
-		const mach_header_64* hdr =
-			reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(0));
-		if (!hdr || hdr->magic != MH_MAGIC_64)
-			return false;
-		const intptr_t slide = _dyld_get_image_vmaddr_slide(0);
-
-		uptr begin = ~static_cast<uptr>(0), end = 0;
-		const load_command* lc = reinterpret_cast<const load_command*>(hdr + 1);
-		for (u32 i = 0; i < hdr->ncmds; i++)
+		const uptr p = reinterpret_cast<uptr>(probe);
+		const u32 count = _dyld_image_count();
+		for (u32 img = 0; img < count; img++)
 		{
-			if (lc->cmd == LC_SEGMENT_64)
+			const mach_header_64* hdr =
+				reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(img));
+			if (!hdr || hdr->magic != MH_MAGIC_64)
+				continue;
+			const intptr_t slide = _dyld_get_image_vmaddr_slide(img);
+			uptr begin = ~static_cast<uptr>(0), end = 0;
+			const load_command* lc = reinterpret_cast<const load_command*>(hdr + 1);
+			for (u32 i = 0; i < hdr->ncmds; i++)
 			{
-				const segment_command_64* seg = reinterpret_cast<const segment_command_64*>(lc);
-				// __PAGEZERO is the unmapped 4 GB null-deref guard at vmaddr 0;
-				// absorbing it would classify most of the address space as
-				// image. Everything else (__TEXT, __DATA, __DATA_CONST,
-				// __common bss inside __DATA, ...) is genuinely the image.
-				if (seg->vmsize && std::strcmp(seg->segname, SEG_PAGEZERO) != 0)
+				if (lc->cmd == LC_SEGMENT_64)
 				{
-					begin = std::min(begin, static_cast<uptr>(seg->vmaddr) + slide);
-					end = std::max(end, static_cast<uptr>(seg->vmaddr + seg->vmsize) + slide);
+					const segment_command_64* seg = reinterpret_cast<const segment_command_64*>(lc);
+					// __PAGEZERO is the unmapped 4 GB null-deref guard at vmaddr 0;
+					// absorbing it would classify most of the address space as
+					// image.
+					if (seg->vmsize && std::strcmp(seg->segname, SEG_PAGEZERO) != 0)
+					{
+						begin = std::min(begin, static_cast<uptr>(seg->vmaddr) + slide);
+						end = std::max(end, static_cast<uptr>(seg->vmaddr + seg->vmsize) + slide);
+					}
 				}
+				lc = reinterpret_cast<const load_command*>(
+					reinterpret_cast<const u8*>(lc) + lc->cmdsize);
 			}
-			lc = reinterpret_cast<const load_command*>(
-				reinterpret_cast<const u8*>(lc) + lc->cmdsize);
+			if (end > begin && p >= begin && p < end)
+			{
+				out_begin = begin;
+				out_end = end;
+				return true;
+			}
 		}
-
-		if (!end || end <= begin)
-			return false;
-		out_begin = begin;
-		out_end = end;
-		return true;
+		return false;
 #else
 		return false;
 #endif
 	}
 
-	static const InvariantRanges& GetInvariantRanges()
+	static const Regions& GetRegions()
 	{
-		static InvariantRanges r = []() {
-			InvariantRanges out;
-			if (!ResolveImageRange(out.imgBegin, out.imgEnd))
+		static Regions r = []() {
+			Regions out;
+			// microVU0 lives in the module that holds the JIT and every C
+			// helper and global it calls or addresses.
+			if (!ResolveModuleRange(&microVU0, out.imgBegin, out.imgEnd))
 			{
-				DevCon.Warning("mVUPersist: could not resolve executable image range — recording will mark all programs non-persistable");
+				DevCon.Warning("mVUPersist: could not resolve the emulator module's range — recording will mark all programs non-persistable");
 				return out;
 			}
-			// Sanity: a known bss global must land inside the resolved image
-			// range; if it doesn't, the maps parse is wrong and trusting it
-			// would misclassify heap pointers as invariant (silent corruption).
-			const uptr probe = reinterpret_cast<uptr>(&microVU0);
-			if (probe < out.imgBegin || probe >= out.imgEnd)
-			{
-				DevCon.Warning("mVUPersist: image-range sanity probe failed (&microVU0=%p not in [%p,%p)) — recording disabled",
-					&microVU0, (void*)out.imgBegin, (void*)out.imgEnd);
-				return out;
-			}
+			out.imageBase = out.imgBegin & ~static_cast<uptr>(0xFFF);
 			out.dataBegin = reinterpret_cast<uptr>(SysMemory::GetDataPtr(0));
 			out.dataEnd = out.dataBegin + HostMemoryMap::MainSize;
+			out.dataBase = out.dataBegin & ~static_cast<uptr>(0xFFF);
 			out.valid = true;
+			DevCon.WriteLn("mVUPersist: emulator module %p-%p, data arena %p",
+				reinterpret_cast<void*>(out.imgBegin), reinterpret_cast<void*>(out.imgEnd),
+				reinterpret_cast<void*>(out.dataBegin));
 			return out;
 		}();
 		return r;
 	}
 
-	static bool IsInvariantAddress(const void* addr)
+	// Which region an address lies in: kTargetImage, kTargetData, or
+	// kTargetCount for neither.
+	static u8 RegionOf(const void* addr)
 	{
-		const InvariantRanges& r = GetInvariantRanges();
+		const Regions& r = GetRegions();
 		if (!r.valid)
-			return false;
+			return kTargetCount;
 		const uptr a = reinterpret_cast<uptr>(addr);
-		return (a >= r.imgBegin && a < r.imgEnd) || (a >= r.dataBegin && a < r.dataEnd);
+		if (a >= r.imgBegin && a < r.imgEnd)
+			return kTargetImage;
+		if (a >= r.dataBegin && a < r.dataEnd)
+			return kTargetData;
+		return kTargetCount;
+	}
+
+	static uptr RegionBase(u8 target)
+	{
+		const Regions& r = GetRegions();
+		return (target == kTargetImage) ? r.imageBase : r.dataBase;
 	}
 
 	//------------------------------------------------------------------
@@ -382,7 +397,7 @@ namespace mVUPersist
 
 	static const char* AuditRegion(microVU& mVU, const MvuPersistLog& log, uptr v)
 	{
-		const InvariantRanges& r = GetInvariantRanges();
+		const Regions& r = GetRegions();
 		if (r.valid && v >= r.imgBegin && v < r.imgEnd)
 			return "image";
 		if (r.valid && v >= r.dataBegin && v < r.dataEnd)
@@ -560,15 +575,6 @@ namespace mVUPersist
 		return total;
 	}
 
-	u64 TestAuditCoveredCount(const char* key)
-	{
-		std::lock_guard<std::mutex> lock(s_auditMutex);
-		if (!s_audit)
-			return 0;
-		const auto it = s_audit->covered.find(key);
-		return (it != s_audit->covered.end()) ? it->second : 0;
-	}
-
 	std::string TestAuditReport()
 	{
 		std::lock_guard<std::mutex> lock(s_auditMutex);
@@ -673,72 +679,107 @@ namespace mVUPersist
 
 		// --- ArmAddressRecorder ---
 
-		MoveForm ClassifyMove(const void* addr) override
-		{
-			const u8* a = static_cast<const u8*>(addr);
-			for (const EpisodeBlock& eb : episodeBlocks)
-			{
-				const u8* blk = reinterpret_cast<const u8*>(eb.live);
-				if (a >= blk && a < blk + sizeof(microBlock))
-					return MoveForm::CanonicalAbs;
-			}
-			if (IsInvariantAddress(addr))
-				return MoveForm::Default;
-			if (InSlab(addr))
-				Fail("address-of-code materialized outside branch helpers");
-			else
-				Fail("unclassifiable pointer materialized (heap?)");
-			return MoveForm::Default;
-		}
-
-		void OnCanonicalAbsMove(u8* at, const void* addr) override
+		// The episode block whose microBlock object holds `addr`, or -1.
+		int EpisodeBlockHolding(const void* addr) const
 		{
 			const u8* a = static_cast<const u8*>(addr);
 			for (size_t i = 0; i < episodeBlocks.size(); i++)
 			{
 				const u8* blk = reinterpret_cast<const u8*>(episodeBlocks[i].live);
 				if (a >= blk && a < blk + sizeof(microBlock))
-				{
-					PersistFixup f = {};
-					f.codeOffset = OffsetOf(at);
-					f.kind = kFixSelfBlockAbs;
-					f.fieldOffset = static_cast<u16>(a - blk);
-					f.blockIndex = ProvisionalIndex(i);
-					f.target = reinterpret_cast<u64>(addr);
-					fixups.push_back(f);
-					return;
-				}
+					return static_cast<int>(i);
 			}
-			Fail("canonical move target lost between classify and emit");
+			return -1;
+		}
+
+		AddressClass ClassifyAddress(const void* addr) override
+		{
+			AddressClass c;
+			if (EpisodeBlockHolding(addr) >= 0)
+			{
+				// Heap: the whole address moves, low bits included, so no ADRP.
+				// The run is as wide as this pointer needs (two halfwords for a
+				// non-PIE brk heap below 4GB, three for a PIE heap or a thread's
+				// mmap arena, four for an Android tagged pointer). A process
+				// whose allocator hands out a wider pointer for the same program
+				// is rare (the heap a VU compiles on is fixed by the build and by
+				// MTVU, which is in the options sentinel); hydration then
+				// discards the program and it recompiles.
+				c.relocatable = true;
+				c.allowAdrp = false;
+				c.minMovWidth = 1;
+				return c;
+			}
+			if (RegionOf(addr) != kTargetCount)
+			{
+				c.relocatable = true;
+				c.allowAdrp = true;
+				c.minMovWidth = 1;
+				return c;
+			}
+			if (InSlab(addr))
+				Fail("address-of-code materialized outside branch helpers");
+			else
+				Fail("unclassifiable pointer materialized (heap?)");
+			return c;
+		}
+
+		void OnMovRun(u8* at, u32 width, const void* addr) override
+		{
+			PersistFixup f = {};
+			f.codeOffset = OffsetOf(at);
+			f.form = kFormMovRun;
+			f.width = static_cast<u8>(width);
+			const int bi = EpisodeBlockHolding(addr);
+			if (bi >= 0)
+			{
+				f.target = kTargetBlockObject;
+				f.index = ProvisionalIndex(static_cast<size_t>(bi));
+				f.offset = static_cast<const u8*>(addr) - reinterpret_cast<const u8*>(episodeBlocks[bi].live);
+				fixups.push_back(f);
+				return;
+			}
+			const u8 region = RegionOf(addr);
+			if (region != kTargetCount)
+			{
+				f.target = region;
+				f.offset = static_cast<s64>(reinterpret_cast<uptr>(addr) - RegionBase(region));
+				fixups.push_back(f);
+				return;
+			}
+			Fail("move target lost between classify and emit");
 		}
 
 		void OnAdrp(u8* at, const void* addr) override
 		{
-			if (IsInvariantAddress(addr))
+			const u8 region = RegionOf(addr);
+			if (region != kTargetCount)
 			{
 				PersistFixup f = {};
 				f.codeOffset = OffsetOf(at);
-				f.kind = kFixAdrpPage21;
-				f.target = reinterpret_cast<u64>(addr);
+				f.form = kFormAdrp;
+				f.target = region;
+				f.offset = static_cast<s64>(reinterpret_cast<uptr>(addr) - RegionBase(region));
 				fixups.push_back(f);
 				return;
 			}
-			Fail("ADRP to non-invariant target");
+			Fail("ADRP to an address outside the image and data arena");
 		}
 
-		void OnDirectBranch(u8* at, const void* target, bool is_call) override
+		void OnBranch(u8* at, const void* target, BranchForm form) override
 		{
 			if (InChunk(target))
 				return; // relative distance preserved on relocation
 
+			PersistFixup f = {};
+			f.codeOffset = OffsetOf(at);
+			f.form = (form == BranchForm::Rel19) ? kFormRel19 : kFormRel26;
+
 			u8 stub_id = 0;
 			if (ResolveStub(*mvu, target, stub_id))
 			{
-				PersistFixup f = {};
-				f.codeOffset = OffsetOf(at);
-				f.kind = kFixStubRel26;
-				f.stubId = stub_id;
-				f.target = reinterpret_cast<u64>(target);
+				f.target = kTargetStub;
+				f.index = stub_id;
 				fixups.push_back(f);
 				return;
 			}
@@ -748,33 +789,24 @@ namespace mVUPersist
 				const auto it = log->blockByEntry.find(target);
 				if (it != log->blockByEntry.end())
 				{
-					PersistFixup f = {};
-					f.codeOffset = OffsetOf(at);
-					f.kind = kFixBlockEntryRel26;
-					f.blockIndex = it->second;
-					f.target = reinterpret_cast<u64>(target);
+					f.target = kTargetBlockEntry;
+					f.index = it->second;
 					fixups.push_back(f);
 					return;
 				}
 			}
 
-			Fail(InSlab(target) ? "direct branch to unrecorded slab target"
-			                    : "direct branch to non-slab target");
-		}
-
-		bool WantsLongCondBranch(const void* target) override
-		{
-			// Intra-chunk: short form relocates fine. Cross-chunk: needs the
-			// imm26 reach of a plain B so the patcher can retarget it.
-			return !InChunk(target) && InSlab(target);
-		}
-
-		void OnAbsoluteTarget(const void* target) override
-		{
-			if (IsInvariantAddress(target))
+			const u8 region = RegionOf(target);
+			if (region != kTargetCount)
+			{
+				f.target = region;
+				f.offset = static_cast<s64>(reinterpret_cast<uptr>(target) - RegionBase(region));
+				fixups.push_back(f);
 				return;
-			Fail(InSlab(target) ? "absolute slab address baked"
-			                    : "absolute unclassifiable address baked");
+			}
+
+			Fail(InSlab(target) ? "direct branch to unrecorded slab target"
+			                    : "direct branch outside the slab, image and data arena");
 		}
 
 		// --- episode lifecycle ---
@@ -826,7 +858,7 @@ namespace mVUPersist
 			// add() may have deduped a block against an existing variant (the
 			// manager then keeps the OLD entry and this episode's copy of the
 			// code is unreachable). Skipping just that record would shift the
-			// provisional indices already baked into SelfBlockAbs fixups —
+			// provisional indices already baked into block-object fixups —
 			// drop the whole episode instead. Rare corner, conservative.
 			for (const EpisodeBlock& eb : episodeBlocks)
 			{
@@ -884,8 +916,8 @@ namespace mVUPersist
 		// Recording sends every dispatch down the full path, bounce included.
 		mVU0ParkedSpin = 0;
 
-		// Recording state is part of program identity (canonical movs /
-		// forced-long cond branches change the bytes a program compiles to),
+		// Recording state is part of program identity (fixed-shape MOVZ/MOVK
+		// runs change the bytes a program compiles to),
 		// so flipping it invalidates both VUs' options sentinels. The next
 		// consumer — mVUcomputeProgramHash at dispatch, mVUbuildOptionsSentinel
 		// at init/reset, the ProgCache VERSION handshake — rebuilds with the
@@ -967,7 +999,9 @@ namespace mVUPersist
 	//------------------------------------------------------------------
 
 	static constexpr u32 kImageMagic = 0x5055564Du; // 'MVUP'
-	static constexpr u32 kImageVersion = 1;
+	// 2: fixups as form + target, image and data-arena addresses recorded as
+	//    region offsets; the checksum covers the header.
+	static constexpr u32 kImageVersion = 2;
 
 	struct ImageHeader
 	{
@@ -977,15 +1011,18 @@ namespace mVUPersist
 		u32 flags;
 		u64 hashLo;
 		u64 hashHi;
-		u64 imageAnchor; // &microVU0 — any bss global; fixed under non-PIE
-		u64 dataArena; // SysMemory::GetDataPtr(0)
-		u64 codeArena; // SysMemory::GetCodePtr(0)
+		// The recording process's region bases. Informational only: every
+		// address in the payload is a fixup resolved against the hydrating
+		// process, so none of these has to match.
+		u64 imageBase;
+		u64 dataBase;
+		u64 codeArena;
 		u32 progStartPC; // microMem byte offset of the creating entry
 		u32 rangeCount;
 		u32 blockCount;
 		u32 chunkCount;
-		u64 payloadHash; // XXH3-64 of every byte after this header — guards
-		                 // the on-disk .vuprog against bit rot / partial
+		u64 payloadHash; // XXH3-64 of the whole image with this field zeroed —
+		                 // guards the on-disk .vuprog against bit rot / partial
 		                 // writes the structural checks can't see (a flipped
 		                 // CODE byte is valid structure but wrong code)
 		u32 reserved[2];
@@ -1034,8 +1071,8 @@ namespace mVUPersist
 		hdr.vuIndex = mVU.index;
 		hdr.hashLo = prog.contentHash.low64;
 		hdr.hashHi = prog.contentHash.high64;
-		hdr.imageAnchor = reinterpret_cast<u64>(&microVU0);
-		hdr.dataArena = reinterpret_cast<u64>(SysMemory::GetDataPtr(0));
+		hdr.imageBase = GetRegions().imageBase;
+		hdr.dataBase = GetRegions().dataBase;
 		hdr.codeArena = reinterpret_cast<u64>(SysMemory::GetCodePtr(0));
 		hdr.progStartPC = static_cast<u32>(prog.startPC) * 8u;
 		hdr.rangeCount = prog.ranges ? static_cast<u32>(prog.ranges->size()) : 0;
@@ -1070,62 +1107,108 @@ namespace mVUPersist
 			out.insert(out.end(), chunk.code.begin(), chunk.code.end());
 		}
 
-		// Stamp the payload checksum into the already-appended header.
-		const u64 payload_hash = XXH3_64bits(
-			out.data() + sizeof(ImageHeader), out.size() - sizeof(ImageHeader));
+		// Stamp the checksum into the already-appended header (computed with
+		// the field still zero).
+		const u64 payload_hash = XXH3_64bits(out.data(), out.size());
 		std::memcpy(out.data() + offsetof(ImageHeader, payloadHash),
 			&payload_hash, sizeof(payload_hash));
 		return true;
+	}
+
+	// Checksum of a serialized image as SerializeProgram computed it.
+	static u64 ImageChecksum(const u8* data, size_t size)
+	{
+		std::vector<u8> copy(data, data + size);
+		std::memset(copy.data() + offsetof(ImageHeader, payloadHash), 0, sizeof(u64));
+		return XXH3_64bits(copy.data(), copy.size());
 	}
 
 	//------------------------------------------------------------------
 	// Instruction patchers
 	//------------------------------------------------------------------
 
-	static bool PatchAbsMov(u32* insn, u64 value)
+	enum class PatchResult
 	{
-		// movz xN, #imm16          (hw=0) — 0xD2800000
-		// movk xN, #imm16, lsl #s  (hw=s/16) — 0xF2800000
-		static constexpr u32 kOpMask = 0xFF800000u;
-		static constexpr u32 kMovz = 0xD2800000u;
-		static constexpr u32 kMovk = 0xF2800000u;
-		for (int i = 0; i < 4; i++)
+		Ok,
+		BadEncoding, // the code at the site is not the form the fixup names
+		OutOfRange,  // the target cannot be encoded from this placement
+	};
+
+	// Encode `value` into the fixup's instruction(s). `at` is the address the
+	// code executes from (the PC for relative forms); `insn` is where its words
+	// are read and written (the RW alias under iOS dual mapping). With `write`
+	// false it only checks, so a placement can be validated before anything is
+	// installed.
+	static PatchResult PatchSite(u32* insn, const u8* at, const PersistFixup& f, u64 value, bool write)
+	{
+		switch (f.form)
 		{
-			const u32 expect_op = (i == 0) ? kMovz : kMovk;
-			const u32 expect_hw = static_cast<u32>(i) << 21;
-			if ((insn[i] & kOpMask) != expect_op || (insn[i] & 0x00600000u) != expect_hw)
-				return false;
-			const u32 imm16 = static_cast<u32>((value >> (16 * i)) & 0xFFFFu);
-			insn[i] = (insn[i] & ~(0xFFFFu << 5)) | (imm16 << 5);
+			case kFormMovRun:
+			{
+				// movz xN, #imm16 (hw=0), then movk xN, #imm16, lsl 16*i, one Rd.
+				const u32 w = f.width;
+				const u32 rd = insn[0] & 31u;
+				for (u32 i = 0; i < w; i++)
+				{
+					const u32 expect_op = (i == 0) ? 0xD2800000u : 0xF2800000u;
+					if ((insn[i] & 0xFF800000u) != expect_op || ((insn[i] >> 21) & 3u) != i || (insn[i] & 31u) != rd)
+						return PatchResult::BadEncoding;
+				}
+				if (w < 4 && (value >> (16 * w)) != 0)
+					return PatchResult::OutOfRange;
+				if (write)
+				{
+					for (u32 i = 0; i < w; i++)
+						insn[i] = (insn[i] & ~(0xFFFFu << 5)) | (static_cast<u32>((value >> (16 * i)) & 0xFFFFu) << 5);
+				}
+				return PatchResult::Ok;
+			}
+			case kFormAdrp:
+			{
+				// ADRP = 0x90000000 | immlo[30:29] | immhi[23:5].
+				if ((*insn & 0x9F000000u) != 0x90000000u)
+					return PatchResult::BadEncoding;
+				const s64 page_disp = static_cast<s64>(value >> 12) -
+				                      static_cast<s64>(reinterpret_cast<uptr>(at) >> 12);
+				if (!vixl::IsInt21(page_disp))
+					return PatchResult::OutOfRange;
+				if (write)
+				{
+					const u32 immlo = static_cast<u32>(page_disp) & 3u;
+					const u32 immhi = (static_cast<u32>(page_disp) >> 2) & 0x7FFFFu;
+					*insn = (*insn & 0x9F00001Fu) | (immlo << 29) | (immhi << 5);
+				}
+				return PatchResult::Ok;
+			}
+			case kFormRel26:
+			{
+				// B = 0x14000000, BL = 0x94000000; imm26 in [25:0].
+				if ((*insn & 0x7C000000u) != 0x14000000u)
+					return PatchResult::BadEncoding;
+				const s64 disp = GetPCDisplacement(at, reinterpret_cast<const void*>(value));
+				if (!vixl::IsInt26(disp))
+					return PatchResult::OutOfRange;
+				if (write)
+					*insn = (*insn & 0xFC000000u) | (static_cast<u32>(disp) & 0x03FFFFFFu);
+				return PatchResult::Ok;
+			}
+			case kFormRel19:
+			{
+				// B.cond (0x54000000, bit 4 clear) or CBZ/CBNZ (0x34000000); imm19 in [23:5].
+				const bool bcond = (*insn & 0xFF000010u) == 0x54000000u;
+				const bool cbz = (*insn & 0x7E000000u) == 0x34000000u;
+				if (!bcond && !cbz)
+					return PatchResult::BadEncoding;
+				const s64 disp = GetPCDisplacement(at, reinterpret_cast<const void*>(value));
+				if (!vixl::IsInt19(disp))
+					return PatchResult::OutOfRange;
+				if (write)
+					*insn = (*insn & ~(0x7FFFFu << 5)) | ((static_cast<u32>(disp) & 0x7FFFFu) << 5);
+				return PatchResult::Ok;
+			}
+			default:
+				return PatchResult::BadEncoding;
 		}
-		return true;
-	}
-
-	static bool PatchRel26(u32* insn, const u8* at, const void* target)
-	{
-		// B = 0x14000000, BL = 0x94000000 — bit 31 selects, imm26 in [25:0].
-		if ((*insn & 0x7C000000u) != 0x14000000u)
-			return false;
-		const s64 disp = GetPCDisplacement(at, target);
-		if (!vixl::IsInt26(disp))
-			return false;
-		*insn = (*insn & 0xFC000000u) | (static_cast<u32>(disp) & 0x03FFFFFFu);
-		return true;
-	}
-
-	static bool PatchAdrpPage21(u32* insn, const u8* at, u64 target)
-	{
-		// ADRP = 0x90000000 | immlo[30:29] | immhi[23:5].
-		if ((*insn & 0x9F000000u) != 0x90000000u)
-			return false;
-		const s64 page_disp = static_cast<s64>(target >> 12) -
-		                      static_cast<s64>(reinterpret_cast<uptr>(at) >> 12);
-		if (!vixl::IsInt21(page_disp))
-			return false;
-		const u32 immlo = static_cast<u32>(page_disp) & 3u;
-		const u32 immhi = (static_cast<u32>(page_disp) >> 2) & 0x7FFFFu;
-		*insn = (*insn & 0x9F00001Fu) | (immlo << 29) | (immhi << 5);
-		return true;
 	}
 
 	//------------------------------------------------------------------
@@ -1148,6 +1231,18 @@ namespace mVUPersist
 		return true;
 	}
 
+	// Take a just-created program back out: it is in the content map only
+	// (the caller has not pushed it into any per-PC list yet). Its code stays
+	// in the slab, unreferenced, until the next cache reset.
+	static void DiscardHydratedProgram(microVU& mVU, microProgram*& prog)
+	{
+		const auto it = mVU.mvuContentMap.find(prog->contentHash);
+		if (it != mVU.mvuContentMap.end() && it->second == prog)
+			mVU.mvuContentMap.erase(it);
+		mVUdeleteProg(mVU, prog);
+		prog = nullptr;
+	}
+
 	microProgram* HydrateProgram(microVU& mVU, const u8* data, size_t size)
 	{
 		const u32 vu = mVU.index & 1;
@@ -1162,23 +1257,18 @@ namespace mVUPersist
 			return nullptr;
 		}
 
-		// Payload integrity. The structural checks below validate shape, not
+		// Image integrity. The structural checks below validate shape, not
 		// content — a flipped code byte parses fine and runs wrong.
-		if (XXH3_64bits(p, static_cast<size_t>(end - p)) != hdr.payloadHash)
+		if (ImageChecksum(data, size) != hdr.payloadHash)
 		{
 			DevCon.Warning("mVUPersist: VU%u hydration rejected — payload checksum mismatch", vu);
 			s_stats[vu].hydrationRejects++;
 			return nullptr;
 		}
 
-		// Layout-base verification: every unrecorded address class in the
-		// chunks assumes these. A PIE dev build / layout drift fails here and
-		// falls back to recompile (degrade, never corrupt).
-		if (hdr.imageAnchor != reinterpret_cast<u64>(&microVU0) ||
-			hdr.dataArena != reinterpret_cast<u64>(SysMemory::GetDataPtr(0)) ||
-			hdr.codeArena != reinterpret_cast<u64>(SysMemory::GetCodePtr(0)))
+		// Without the region bases no image or data address can be resolved.
+		if (!GetRegions().valid)
 		{
-			DevCon.Warning("mVUPersist: VU%u hydration rejected — layout bases differ", vu);
 			s_stats[vu].hydrationRejects++;
 			return nullptr;
 		}
@@ -1238,15 +1328,18 @@ namespace mVUPersist
 		{
 			for (const PersistFixup& f : c.fixups)
 			{
-				const u32 span = (f.kind == kFixSelfBlockAbs) ? 16 : 4;
-				if (f.codeOffset + span > c.codeSize)
+				if (f.form >= kFormCount || f.target >= kTargetCount)
 					return nullptr;
-				if ((f.kind == kFixSelfBlockAbs || f.kind == kFixBlockEntryRel26) &&
-					f.blockIndex >= blocks.size())
+				if (f.form == kFormMovRun && (f.width < 1 || f.width > 4))
 					return nullptr;
-				if (f.kind == kFixStubRel26 && f.stubId >= kStubCount)
+				if ((f.codeOffset & 3) || f.codeOffset + FixupSpanInsns(f) * 4 > c.codeSize)
 					return nullptr;
-				if (f.kind > kFixAdrpPage21)
+				if ((f.target == kTargetBlockObject || f.target == kTargetBlockEntry) &&
+					f.index >= blocks.size())
+					return nullptr;
+				if (f.target == kTargetBlockObject && (f.offset < 0 || f.offset >= static_cast<s64>(sizeof(microBlock))))
+					return nullptr;
+				if (f.target == kTargetStub && (f.index >= kStubCount || !StubAddress(mVU, static_cast<u8>(f.index))))
 					return nullptr;
 			}
 		}
@@ -1267,6 +1360,68 @@ namespace mVUPersist
 		pxAssert(!armAsm); // caller must not have an open emission episode
 		mVUopenCodeCache(mVU);
 
+		// Where each chunk will land: the copy loop below pads the cursor
+		// offset (from x86start, which need not itself be aligned) to 16 bytes
+		// before each chunk, exactly as here.
+		std::vector<u8*> chunk_base(chunks.size());
+		{
+			ptrdiff_t cursor = armAsm->GetCursorOffset();
+			for (size_t i = 0; i < chunks.size(); i++)
+			{
+				cursor = (cursor + 15) & ~static_cast<ptrdiff_t>(15);
+				chunk_base[i] = mVU.prog.x86start + cursor;
+				cursor += chunks[i].codeSize;
+			}
+		}
+
+		// Every target except a block object (heap, known only once the blocks
+		// are registered) resolves now, against this process.
+		auto resolve = [&](const PersistFixup& f, u64& out) -> bool {
+			switch (f.target)
+			{
+				case kTargetBlockEntry:
+				{
+					const DiskBlock& b = blocks[f.index];
+					out = reinterpret_cast<u64>(chunk_base[b.chunkIndex] + b.entryOffset);
+					return true;
+				}
+				case kTargetStub:
+					out = reinterpret_cast<u64>(StubAddress(mVU, static_cast<u8>(f.index)));
+					return true;
+				case kTargetImage:
+				case kTargetData:
+					out = static_cast<u64>(RegionBase(f.target)) + static_cast<u64>(f.offset);
+					return true;
+				default:
+					return false;
+			}
+		};
+
+		// Validate every placement-dependent encoding against the original
+		// bytes before anything is installed: a target out of reach (a far data
+		// arena for an ADRP, a narrower MOVZ/MOVK run than a new address needs)
+		// rejects the payload cleanly.
+		for (size_t i = 0; i < chunks.size(); i++)
+		{
+			for (const PersistFixup& f : chunks[i].fixups)
+			{
+				u64 value = 0;
+				if (!resolve(f, value))
+					continue;
+				u32 words[4] = {};
+				std::memcpy(words, chunks[i].code + f.codeOffset, FixupSpanInsns(f) * 4);
+				const PatchResult r = PatchSite(words, chunk_base[i] + f.codeOffset, f, value, false);
+				if (r != PatchResult::Ok)
+				{
+					DevCon.Warning("mVUPersist: VU%u hydration rejected — fixup (form %u target %u) %s at the new placement",
+						vu, f.form, f.target, (r == PatchResult::OutOfRange) ? "out of range" : "does not match its code");
+					mVUcloseCodeCache(mVU);
+					s_stats[vu].hydrationRejects++;
+					return nullptr;
+				}
+			}
+		}
+
 		microProgram* prog = mVUcreateProg(mVU, static_cast<int>(hdr.progStartPC / 8), live_hash);
 
 		// Restore compiled ranges + the range-compare image (mVUcmpProg under
@@ -1285,12 +1440,12 @@ namespace mVUPersist
 		}
 
 		// Copy each chunk to the current cursor (16-aligned, as recorded).
-		std::vector<u8*> chunk_base(chunks.size());
 		for (size_t i = 0; i < chunks.size(); i++)
 		{
 			while (armAsm->GetCursorOffset() & 15)
 				armAsm->Nop();
-			chunk_base[i] = mVU.prog.x86start + armAsm->GetCursorOffset();
+			pxAssertRel(mVU.prog.x86start + armAsm->GetCursorOffset() == chunk_base[i],
+				"mVUPersist: hydration placement differs from the validated one");
 			{
 				vixl::CodeBufferCheckScope scope(armAsm, chunks[i].codeSize,
 					vixl::CodeBufferCheckScope::kReserveBufferSpace,
@@ -1326,41 +1481,36 @@ namespace mVUPersist
 
 		// Patch fixups directly in the slab (still inside the BeginCodeWrite
 		// window; mVUcloseCodeCache flushes the icache over the whole span).
+		// Nothing can run these blocks yet: the program is reachable only
+		// through the content map, from this thread.
 		for (size_t i = 0; i < chunks.size(); i++)
 		{
 			for (const PersistFixup& f : chunks[i].fixups)
 			{
 				u8* at = chunk_base[i] + f.codeOffset;
-				// iOS dual-map W^X: `at` is the RX address the fixup math
-				// (Rel26/ADRP page deltas) must use; the store itself goes
-				// through the RW alias. Identity on every other platform.
+				// iOS dual-map W^X: `at` is the RX address the displacement math
+				// must use; the store itself goes through the RW alias. Identity
+				// on every other platform.
 				u32* insn = reinterpret_cast<u32*>(armGetWritableCodePtr(at));
-				bool ok = false;
-				switch (f.kind)
+				u64 value = 0;
+				if (f.target == kTargetBlockObject)
+					value = reinterpret_cast<u64>(final_block[f.index]) + static_cast<u64>(f.offset);
+				else if (f.target == kTargetBlockEntry)
+					value = reinterpret_cast<u64>(final_block[f.index]->hostEntry);
+				else
+					resolve(f, value);
+
+				const PatchResult r = PatchSite(insn, at, f, value, true);
+				if (r != PatchResult::Ok)
 				{
-					case kFixSelfBlockAbs:
-						ok = PatchAbsMov(insn,
-							reinterpret_cast<u64>(final_block[f.blockIndex]) + f.fieldOffset);
-						break;
-					case kFixBlockEntryRel26:
-						ok = PatchRel26(insn, at, final_block[f.blockIndex]->hostEntry);
-						break;
-					case kFixStubRel26:
-						ok = PatchRel26(insn, at, StubAddress(mVU, f.stubId));
-						break;
-					case kFixAdrpPage21:
-						ok = PatchAdrpPage21(insn, at, f.target);
-						break;
-				}
-				if (!ok)
-				{
-					// Encoding mismatch — the image doesn't describe this
-					// build's emitter output. Abandon: unregister nothing
-					// (blocks point at fully-written code; the only unsound
-					// state would be a half-patched chunk), so fail hard
-					// before any block can run.
-					pxFailRel("mVUPersist: fixup patch failed — serialized image inconsistent with emitter");
+					// Only a block object can fail here (the rest was validated
+					// above): an allocator that hands out a pointer wider than the
+					// recorded run. Take the program back out and recompile.
+					DevCon.Warning("mVUPersist: VU%u hydration rejected — block pointer %p does not fit a %u-instruction run",
+						vu, reinterpret_cast<void*>(value), f.width);
+					DiscardHydratedProgram(mVU, prog);
 					mVUcloseCodeCache(mVU);
+					s_stats[vu].hydrationRejects++;
 					return nullptr;
 				}
 			}
@@ -1369,7 +1519,9 @@ namespace mVUPersist
 		mVUcloseCodeCache(mVU);
 
 		// Rebuild the persist log so the hydrated program can grow new chunks
-		// and be re-serialized.
+		// and be re-serialized. The recorded bytes (not the patched ones) are
+		// kept: every address operand in them is a fixup, resolved afresh by
+		// whichever process hydrates the re-saved payload.
 		delete prog->persist;
 		prog->persist = new MvuPersistLog();
 		MvuPersistLog* log = prog->persist;
@@ -1397,6 +1549,8 @@ namespace mVUPersist
 
 #ifdef PCSX2_RECOMPILER_TESTS
 		s_lastHydratedChunkBase[vu] = chunk_base;
+		for (const PersistChunk& pc : log->chunks)
+			AuditChunkIfEnabled(mVU, *log, pc);
 #endif
 		s_stats[vu].programsHydrated++;
 		s_stats[vu].blocksHydrated += blocks.size();
@@ -1468,7 +1622,7 @@ namespace mVUPersist
 			std::vector<u8> mask(ch.codeSize, 0);
 			for (const PersistFixup& f : fixups)
 			{
-				const u32 span = (f.kind == kFixSelfBlockAbs) ? 16 : 4;
+				const u32 span = FixupSpanInsns(f) * 4;
 				for (u32 b = 0; b < span && f.codeOffset + b < ch.codeSize; b++)
 					mask[f.codeOffset + b] = 1;
 			}
@@ -1487,6 +1641,78 @@ namespace mVUPersist
 		return true;
 	}
 #endif // PCSX2_RECOMPILER_TESTS
+
+#ifdef PCSX2_RECOMPILER_TESTS
+	u64 TestAuditCoveredCount(const char* key)
+	{
+		std::lock_guard<std::mutex> lock(s_auditMutex);
+		if (!s_audit)
+			return 0;
+		const auto it = s_audit->covered.find(key);
+		return (it != s_audit->covered.end()) ? it->second : 0;
+	}
+
+	void TestGetRegionBases(u64& image_base, u64& data_base)
+	{
+		image_base = GetRegions().imageBase;
+		data_base = GetRegions().dataBase;
+	}
+
+	static void RestampChecksum(std::vector<u8>& image)
+	{
+		std::memset(image.data() + offsetof(ImageHeader, payloadHash), 0, sizeof(u64));
+		const u64 h = XXH3_64bits(image.data(), image.size());
+		std::memcpy(image.data() + offsetof(ImageHeader, payloadHash), &h, sizeof(h));
+	}
+
+	bool TestEditFirstFixup(std::vector<u8>& image, u8 target, u8 width, s64 offset_delta)
+	{
+		u8* p = image.data();
+		u8* const end = p + image.size();
+		ImageHeader hdr;
+		const u8* cp = p;
+		if (!ReadPod(cp, end, hdr))
+			return false;
+		size_t pos = sizeof(ImageHeader) + static_cast<size_t>(hdr.rangeCount) * sizeof(DiskRange) +
+		             static_cast<size_t>(hdr.blockCount) * sizeof(DiskBlock);
+		for (u32 c = 0; c < hdr.chunkCount; c++)
+		{
+			if (pos + sizeof(DiskChunkHeader) > image.size())
+				return false;
+			DiskChunkHeader ch;
+			std::memcpy(&ch, p + pos, sizeof(ch));
+			pos += sizeof(ch);
+			for (u32 i = 0; i < ch.fixupCount; i++, pos += sizeof(PersistFixup))
+			{
+				if (pos + sizeof(PersistFixup) > image.size())
+					return false;
+				PersistFixup f;
+				std::memcpy(&f, p + pos, sizeof(f));
+				if (f.target != target)
+					continue;
+				if (width)
+					f.width = width;
+				f.offset += offset_delta;
+				std::memcpy(p + pos, &f, sizeof(f));
+				RestampChecksum(image);
+				return true;
+			}
+			pos += ch.codeSize;
+		}
+		return false;
+	}
+
+	bool TestOverwriteHeaderBases(std::vector<u8>& image, u64 value)
+	{
+		if (image.size() < sizeof(ImageHeader))
+			return false;
+		std::memcpy(image.data() + offsetof(ImageHeader, imageBase), &value, sizeof(value));
+		std::memcpy(image.data() + offsetof(ImageHeader, dataBase), &value, sizeof(value));
+		std::memcpy(image.data() + offsetof(ImageHeader, codeArena), &value, sizeof(value));
+		RestampChecksum(image);
+		return true;
+	}
+#endif
 
 	u64 GetBlockCompileCount(u32 vu_index) { return s_blockCompiles[vu_index & 1]; }
 	Stats GetStats(u32 vu_index) { return s_stats[vu_index & 1]; }
@@ -1563,16 +1789,28 @@ namespace mVUPersist
 			if (!ReadPod(p, end, ch))
 				return false;
 			AppendPod(canon, ch);
+			// Image and data-arena offsets are left out: they move with any
+			// change anywhere in the binary, not with the emitter's shape.
+			std::vector<u8> rel19_site;
 			for (u32 f = 0; f < ch.fixupCount; f++)
 			{
 				PersistFixup fx;
 				if (!ReadPod(p, end, fx))
 					return false;
 				AppendPod(canon, fx.codeOffset);
-				AppendPod(canon, fx.kind);
-				AppendPod(canon, fx.stubId);
-				AppendPod(canon, fx.fieldOffset);
-				AppendPod(canon, fx.blockIndex);
+				AppendPod(canon, fx.form);
+				AppendPod(canon, fx.target);
+				AppendPod(canon, fx.width);
+				AppendPod(canon, fx.index);
+				if (fx.target == kTargetBlockObject)
+					AppendPod(canon, fx.offset);
+				if (fx.form == kFormRel19)
+				{
+					if (rel19_site.size() < ch.codeSize / 4)
+						rel19_site.resize(ch.codeSize / 4, 0);
+					if (fx.codeOffset / 4 < rel19_site.size())
+						rel19_site[fx.codeOffset / 4] = 1;
+				}
 			}
 			if (static_cast<size_t>(end - p) < ch.codeSize || (ch.codeSize & 3))
 				return false;
@@ -1580,7 +1818,11 @@ namespace mVUPersist
 			{
 				u32 insn;
 				std::memcpy(&insn, p + off, 4);
-				const u32 c = CanonicalizeInsn(insn);
+				u32 c = CanonicalizeInsn(insn);
+				// A recorded B.cond / CBZ across chunks: its displacement depends
+				// on what was compiled between the chunks.
+				if (off / 4 < rel19_site.size() && rel19_site[off / 4])
+					c &= ~(0x7FFFFu << 5);
 				AppendPod(canon, c);
 			}
 			p += ch.codeSize;

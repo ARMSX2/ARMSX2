@@ -174,7 +174,12 @@
 //  39 — the sign-preserving clamp's all-lane row reads qmmClampMax and
 //       qmmClampMin rather than loading the same two bounds from mVUglob, so
 //       each full-width operand clamp loses its Ldp.
-static constexpr u32 kMvuCompilerAbiVersion = 39;
+//  40 — recorded programs are relocatable across processes (ASLR): image and
+//       data-arena addresses are fixups (region + offset), an address
+//       materialized as an immediate is a MOVZ/MOVK run up to its top halfword
+//       (a block pointer's run was always four), and a recorded B.cond across
+//       chunks keeps its short form. Payload format version 2.
+static constexpr u32 kMvuCompilerAbiVersion = 40;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
