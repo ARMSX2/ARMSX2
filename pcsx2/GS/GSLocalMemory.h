@@ -11,6 +11,7 @@
 #include "common/Assertions.h"
 
 #include <array>
+#include <atomic>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -494,6 +495,37 @@ public:
 	static constexpr GSSwizzleInfo swizzle4    {swizzleTables4,   0x00};
 
 protected:
+	// Dirty bitmaps: one bit per 256-byte block, set by the same marks as the stamps. See BlockDirty().
+	static constexpr u32 DIRTY_WORDS = GS_MAX_BLOCKS / 64;
+	u64 m_block_dirty[DIRTY_WORDS];
+	u64 m_hash_dirty[DIRTY_WORDS];
+	u64 m_mark_all_events = 0;
+	u32 m_id;
+	static inline std::atomic<u64> s_total_mark_all_events{0};
+
+	__forceinline static bool DirtyBit(const u64* bitmap, u32 block)
+	{
+		block %= GS_MAX_BLOCKS;
+		return (bitmap[block >> 6] >> (block & 63)) & 1;
+	}
+
+	__forceinline static bool TestAndClearDirtyBit(u64* bitmap, u32 block)
+	{
+		block %= GS_MAX_BLOCKS;
+		const u64 bit = u64(1) << (block & 63);
+		const bool set = (bitmap[block >> 6] & bit) != 0;
+		bitmap[block >> 6] &= ~bit;
+		return set;
+	}
+
+	/// Sets the bits of both bitmaps for `block`.
+	__forceinline void SetBlockMarks(u32 block)
+	{
+		const u64 bit = u64(1) << (block & 63);
+		m_block_dirty[block >> 6] |= bit;
+		m_hash_dirty[block >> 6] |= bit;
+	}
+
 	__forceinline static u32 Expand24To32(u32 c, const GIFRegTEXA& TEXA)
 	{
 		return (((!TEXA.AEM | (c & 0xffffff)) ? TEXA.TA0 : 0) << 24) | (c & 0xffffff);
@@ -555,6 +587,45 @@ public:
 	__forceinline u64 WriteSeq() const { return m_write_seq; }
 	/// The step that last wrote `page` (0 if none has).
 	__forceinline u64 PageStamp(u32 page) const { return m_page_stamp[page]; }
+
+	// Dirty bitmaps. Every mark above also sets a bit for each 256-byte block it covers (all 32 blocks of each
+	// page for a page range, every block for a mark of everything), in two bitmaps that nothing but their
+	// consumer clears:
+	//
+	//  - the block-dirty bitmap belongs to the GPU copy of local memory: a block whose bit is set has changed
+	//    since the copy last took it, and the copy clears the bit when it does;
+	//  - the hash-dirty bitmap belongs to the texture cache's per-block hash cache: a block whose bit is set
+	//    has no valid cached hash, and the cache clears the bit when it hashes the block.
+	//
+	// Both start all set. The constructor's memset of local memory is not a mark, so a fresh memory has to
+	// read as entirely unseen by whatever comes to describe it. A consumer that is created over a memory that
+	// already exists, or that outlives the memory it described, compares Id() with the id it last synced
+	// against and marks everything dirty (MarkAllBlocksDirty, MarkAllHashDirty) on a mismatch.
+	//
+	// A block is marked when any byte of a rectangle's pixels may live in it, not when its bytes changed: a
+	// mark that rewrites the same bytes is an extra recomputation for the consumer, never a missed one.
+	// Same threading as the stamps: not atomic.
+
+	/// Unique among every GSLocalMemory the process has made, and never reused.
+	__forceinline u32 Id() const { return m_id; }
+
+	/// Whether `block` (a block number, wrapped the way GSOffset wraps it) is marked since its bit was last cleared.
+	__forceinline bool BlockDirty(u32 block) const { return DirtyBit(m_block_dirty, block); }
+	__forceinline bool HashDirty(u32 block) const { return DirtyBit(m_hash_dirty, block); }
+	/// Returns whether the bit was set, and clears it.
+	__forceinline bool TestAndClearBlockDirty(u32 block) { return TestAndClearDirtyBit(m_block_dirty, block); }
+	__forceinline bool TestAndClearHashDirty(u32 block) { return TestAndClearDirtyBit(m_hash_dirty, block); }
+	/// Sets the bit of every block, in one bitmap only.
+	void MarkAllBlocksDirty();
+	void MarkAllHashDirty();
+
+	/// Marks of everything so far: a rectangle with no page set (MarkPagesWritten), a page range of every page,
+	/// and MarkAllPagesWritten itself. Each one sets every block's bits and costs its consumers a full pass
+	/// (a rehash of every window, a restage of every window). A title that does it every frame is slow, not
+	/// wrong, so gsrunner reports the count per frame.
+	__forceinline u64 MarkAllEvents() const { return m_mark_all_events; }
+	/// The same over every memory in the process.
+	static u64 TotalMarkAllEvents() { return s_total_mark_all_events.load(std::memory_order_relaxed); }
 
 	GSOffset GetOffset(u32 bp, u32 bw, u32 psm) const
 	{

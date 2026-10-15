@@ -2488,6 +2488,7 @@ static void WriteStatsJson(const std::string& path)
 		s_total_tc_target_hit, s_total_tc_target_miss);
 	std::fprintf(fp.get(), "    \"hash_cache_hit\": %" PRIu64 ",\n    \"hash_cache_miss\": %" PRIu64 ",\n",
 		s_total_hash_cache_hit, s_total_hash_cache_miss);
+	std::fprintf(fp.get(), "    \"mark_all_events\": %" PRIu64 ",\n", GSLocalMemory::TotalMarkAllEvents());
 	std::fprintf(fp.get(), "    \"pipeline_switches\": %s,\n", j_u64(s_total_pipeline_switches).c_str());
 	std::fprintf(fp.get(), "    \"native_texel_grid_draws\": %" PRIu64 ",\n", s_total_native_texel_grid_draws);
 	std::fprintf(fp.get(), "    \"sprite_edge_clamp_draws\": %" PRIu64 ",\n", s_total_sprite_edge_clamp_draws);
@@ -2659,6 +2660,10 @@ void GSRunner::DumpStats()
 		Ratio(s_total_tc_target_hit, s_total_tc_target_hit + s_total_tc_target_miss)));
 	Console.WriteLn(fmt::format("@HWSTAT@ Hash Cache Hit/Miss: {}/{} ({:.1f}% hit)", s_total_hash_cache_hit, s_total_hash_cache_miss,
 		Ratio(s_total_hash_cache_hit, s_total_hash_cache_hit + s_total_hash_cache_miss)));
+	// Marks of all of local memory (GSLocalMemory::MarkAllEvents): each one dirties every block, so a title that
+	// does it every frame rehashes and restages everything. Counted over the whole process.
+	Console.WriteLn(fmt::format("@HWSTAT@ Mark-All Events: {} (avg {:.2f}/frame)", GSLocalMemory::TotalMarkAllEvents(),
+		GSLocalMemory::TotalMarkAllEvents() / static_cast<double>(std::max<u64>(s_total_drawn_frames, 1))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Native Texel Grid Draws: {} (avg {})", s_total_native_texel_grid_draws,
 		static_cast<u64>(std::ceil(s_total_native_texel_grid_draws / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Sprite Edge Clamp Draws: {} (avg {})", s_total_sprite_edge_clamp_draws,
