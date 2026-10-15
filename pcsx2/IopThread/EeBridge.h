@@ -14,7 +14,8 @@
 // IOP thread is suppressed or becomes an item the EE applies at its next event test. Each bridge reads the
 // mode once, on a path that runs at most a few hundred times a frame (counted at step 5: PSX_INT 2-27,
 // IopInterruptPending 19-112, the SBUS interrupt and the pump 0-9, the slice break 0-3.7); the read is
-// not in CPU_INT, the event test or any IOP memory access.
+// not in the event test or in any IOP memory access, and not at the entry of CPU_INT: the slice break
+// is reached from CPU_INT only behind CPU_INT's two existing conditions.
 //
 // The crossing numbers (C3, C4, ...) are the rows of section 7.1 of the IOP thread design.
 // IopBridge.h has the other direction, the EE reaching into IOP state.
