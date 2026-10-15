@@ -125,15 +125,6 @@ namespace vuopt
 			u64 stickyDivReaders = 0; // ... of those, the ones that read the sticky I / D bits (STATUS bits 10-11)
 			u64 stickyDropped = 0;
 			u64 stickyImages = 0;
-			// Flag sinking (9ae): producers whose word a loop no longer builds, places a word is built
-			// from a source (bails at loop heads, links out of loops, JR fallbacks), entry routines and
-			// links that build sources from words, links inside loops that convert, and the entries from
-			// microVU that built sources at run time.
-			u64 fsinkPending = 0;
-			u64 fsinkMat = 0;
-			u64 fsinkSynth = 0;
-			u64 fsinkConf = 0;
-			u64 fsinkSynthRuns = 0;
 			// The sticky-STATUS tripwire (section 9ad): the number of times it went off (0 in a
 			// normal session; a VM reset or boot re-arms it), by what set it off, and the VU1
 			// resets it asked for to rebuild the regions that had dropped the sticky byte.
@@ -230,11 +221,6 @@ namespace vuopt
 		constexpr int TripMask(int mutation) { return 1 << mutation; }
 #ifdef PCSX2_RECOMPILER_TESTS
 		void SetTripwireMutation(int mask);
-		// Flag sinking: fill microVU1's flag-source homes with lanes that raise every flag, so a test
-		// run cannot read a source a previous run left there by luck.
-		void PoisonFlagSources();
-		// The live tier's jobs with or without flag sinking (default: RegionTier's).
-		void SetFlagSink(bool on);
 		// pcsx2-vurunner --vuopt-region-bg: a region hook (VuOptMvuTrace.h's
 		// VuoptRegionHook, `user` a RegionTier whose options it copies) that builds
 		// every region through the worker and copies it in.

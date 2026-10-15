@@ -469,8 +469,6 @@ static __fi void mVUdequePushUnique(microProgramList* list, microProgram* prog)
 
 void mVUinit(microVU& mVU, uint vuIndex)
 {
-	vuopt::FillFlagSynthTable(mVU.vuoptFlagSynth);
-	mVU.vuoptFsinkRuns = 0;
 	std::memset(&mVU.prog, 0, sizeof(mVU.prog));
 
 	mVU.index        =  vuIndex;

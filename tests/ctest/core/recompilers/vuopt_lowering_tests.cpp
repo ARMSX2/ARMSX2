@@ -18,7 +18,6 @@
 #include "arm64/vuopt/VuOptDecode.h"
 #include "arm64/vuopt/VuOptTier.h"
 #include "arm64/vuopt/VuOptRegion.h"
-#include "arm64/vuopt/VuOptLive.h"
 
 #include <gtest/gtest.h>
 
@@ -67,11 +66,6 @@ bool g_noStickyAcc = getenv("VUOPT_NO_ACC") != nullptr;
 // A deliberate break of the hand-off liveness rule, to see the tests notice it
 // (VuoptRegion.HandoffMutationsAreCaught); None everywhere else.
 int g_dropStickyMutation = 0; // relaxation 3 broken on purpose (RegionTier::dropStickyMutation)
-// Flag sinking (RegionTier::flagSink): -1 the tier's default; VUOPT_FLAGSINK=0/1 sets it for every region
-// test. Its STATUS half, and a mutation (RegionTier::flagSinkMutation).
-int g_flagSink = getenv("VUOPT_FLAGSINK") ? std::atoi(getenv("VUOPT_FLAGSINK")) : -1;
-int g_flagSinkStatus = -1; // -1: the tier's default
-int g_flagSinkMutation = 0;
 vuopt::RegionTier::HandoffMutation g_handoffMutation = getenv("VUOPT_HANDOFF_MUTATION")
 	? static_cast<vuopt::RegionTier::HandoffMutation>(std::atoi(getenv("VUOPT_HANDOFF_MUTATION")))
 	: vuopt::RegionTier::HandoffMutation::None;
@@ -833,10 +827,6 @@ struct RegionOutcome
 	u32 statusReaders = 0, stickyReaders = 0, stickyDivReaders = 0; // the census of FSAND/FSEQ/FSOR in the regions
 	bool stickyDiffers = false;            // the end states differ in exactly the sticky bits relaxation 3 frees
 	bool divStickyDiffers = false;         // ... and among them the sticky I / D bits (STATUS bits 10-11) a divide sets
-	// flag sinking: producers a loop no longer builds a word for, places a word is built from a source,
-	// sources built from words (sites), loop links that convert, and entries that built sources at run time
-	u32 fsinkPending = 0, fsinkMat = 0, fsinkSynth = 0, fsinkConf = 0;
-	u64 fsinkSynthRuns = 0;
 };
 
 // microVU alone against vuopt regions (and framed bodies elsewhere), running
@@ -913,16 +903,9 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		rs.region.accAlways = true; // (the estimate would decline many of these small programs)
 		rs.region.handoffMutation = g_handoffMutation;
 		rs.region.dropStickyMutation = g_dropStickyMutation;
-		if (g_flagSink >= 0)
-			rs.region.flagSink = g_flagSink != 0;
-		if (g_flagSinkStatus >= 0)
-			rs.region.flagSinkStatus = g_flagSinkStatus != 0;
-		rs.region.flagSinkMutation = g_flagSinkMutation;
 		rs.region.dump = dump;
 		if (jumps)
 			rs.region.jumpTargets = *jumps;
-		vuopt::live::PoisonFlagSources();
-		const u64 runs0 = vuopt::live::GetStats().fsinkSynthRuns;
 		got = runArm(h);
 		o.regions = rs.region.Regions();
 		o.nodes = rs.region.Nodes();
@@ -935,11 +918,6 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		o.statusReaders = rs.region.StatusReaders();
 		o.stickyReaders = rs.region.StickyReaders();
 		o.stickyDivReaders = rs.region.StickyDivReaders();
-		o.fsinkPending = rs.region.FsinkPending();
-		o.fsinkMat = rs.region.FsinkMaterialise(0) + rs.region.FsinkMaterialise(1) + rs.region.FsinkMaterialise(2);
-		o.fsinkSynth = rs.region.FsinkSynth();
-		o.fsinkConf = rs.region.FsinkConflicts();
-		o.fsinkSynthRuns = vuopt::live::GetStats().fsinkSynthRuns - runs0;
 	}
 	const bool relax = o.stickyDropped > 0;
 	if (observe)
@@ -1985,232 +1963,6 @@ TEST(VuoptRegion, DropStickyMutationsAreCaught)
 	{
 		g_dropStickyMutation = m;
 		EXPECT_GT(DropStickySweep(nullptr, nullptr, nullptr, false, true), 0u) << "mutation " << m << " went unnoticed";
-	}
-}
-
-//------------------------------------------------------------------
-// Flag sinking (compiler-design.md 9ae): loops keep FMAC results instead of MAC / STATUS words
-//------------------------------------------------------------------
-
-namespace
-{
-// A loop whose FMACs cover every destination field (the fifteen masks, the four single lanes twice, in
-// several ops), each writing MAC and STATUS, with a MAC and a STATUS reader of the current bits at
-// `readers` (0 none, 1 at the top of the loop, reading what the previous trip left, 2 after the
-// loop), a divide whose flags land in the loop when `divide`, ending at an E bit.
-std::vector<VuOp> FieldLoop(u32 trip, int readers, bool divide)
-{
-	std::vector<VuOp> p;
-	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, static_cast<u16>(trip))));
-	p.push_back(L(VIADDIU_L(vi::vi7, vi::vi0, 0x0f)));
-	const s32 head = static_cast<s32>(p.size());
-	for (u32 m = 1; m <= 15; m++)
-	{
-		const u32 fd = 9 + (m % 6), fs = 1 + (m * 3) % 8, ft = 1 + (m * 5 + 2) % 8;
-		const u32 field = m << 21; // (bit 3 of m is x: mask::x)
-		u32 up;
-		switch (m % 4)
-		{
-			case 0: up = VADD_U(field, fd, fs, ft); break;
-			case 1: up = VMUL_U(field, fd, fs, ft); break;
-			case 2: up = VSUB_U(field, fd, fs, ft); break;
-			default: up = VMADD_U(field, fd, fs, ft); break;
-		}
-		u32 lo = kNopL;
-		if (m == 1 && readers == 1)
-			lo = VFMAND_L(vi::vi5, vi::vi7);
-		if (m == 2 && readers == 1)
-			lo = VFSAND_L(vi::vi3, 0x03f);
-		if (m == 3 && divide)
-			lo = VDIV_L(vf::vf1, 0, vf::vf2, 1);
-		if (m == 5)
-			lo = VLQI_L(mask::xyzw, vf::vf20, vi::vi9);
-		p.push_back(VuOp{lo, up});
-	}
-	p.push_back(U(VMULA_U(mask::y, vf::vf20, vf::vf3)));
-	p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), VMUL_U(mask::w, vf::vf13, vf::vf20, vf::vf4)));
-	const s32 at = static_cast<s32>(p.size());
-	p.push_back(P(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(head - at - 1)), VADD_U(mask::x, vf::vf14, vf::vf20, vf::vf5)));
-	p.push_back(U(VSUB_U(mask::z, vf::vf12, vf::vf20, vf::vf6))); // delay slot
-	if (readers == 2)
-	{
-		p.push_back(L(VFMAND_L(vi::vi5, vi::vi7)));
-		p.push_back(L(VFSAND_L(vi::vi3, 0x03f)));
-	}
-	p.push_back(EBit(U(VNOP_U())));
-	return p;
-}
-
-// A loop whose FMACs run in its first trip only (a branch skips them afterwards), so the MAC and STATUS
-// instances they leave go round the loop untouched and the program end reads them. A bail at any
-// later trip hands them to microVU, and microVU's continuation enters the region again in the middle
-// of the loop: both have to rebuild exactly what the first trip made.
-std::vector<VuOp> OnceLoop(int variant)
-{
-	static const u32 kFields[][4] = {{0xF, 0x8, 0x6, 0x1}, {0x1, 0x2, 0x4, 0x8}, {0xE, 0xF, 0x9, 0x3}, {0x5, 0xA, 0xC, 0x7}};
-	const u32* f = kFields[variant % 4];
-	std::vector<VuOp> p;
-	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, static_cast<u16>(4 + variant))));
-	p.push_back(L(VIADDIU_L(vi::vi2, vi::vi0, 1)));
-	p.push_back(L(VIBEQ_L(vi::vi2, vi::vi0, 6))); // head: over the FMACs once vi2 is 0 (to pair 9)
-	p.push_back(U(VNOP_U()));                      // delay slot
-	p.push_back(U(VMUL_U(f[0] << 21, vf::vf9, vf::vf1, vf::vf2)));
-	p.push_back(U(VADD_U(f[1] << 21, vf::vf10, vf::vf3, vf::vf4)));
-	p.push_back(U(variant & 4 ? VMULA_U(f[2] << 21, vf::vf5, vf::vf6) : VSUB_U(f[2] << 21, vf::vf11, vf::vf5, vf::vf6)));
-	p.push_back(U(VMADD_U(f[3] << 21, vf::vf12, vf::vf7, vf::vf8)));
-	p.push_back(L(VIADDIU_L(vi::vi2, vi::vi0, 0)));
-	for (int k = 0; k < 2 + variant % 3; k++) // pair 9: the trips that skip
-		p.push_back(L(VIADDIU_L(vi::vi8, vi::vi8, 1)));
-	p.push_back(L(VISUBIU_L(vi::vi1, vi::vi1, 1)));
-	const s32 at = static_cast<s32>(p.size());
-	p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(2 - at - 1))));
-	p.push_back(U(VNOP_U())); // delay slot
-	p.push_back(EBit(U(VNOP_U())));
-	return p;
-}
-
-struct FlagSinkTotals
-{
-	u32 runs = 0, pending = 0, mat = 0, synth = 0, conf = 0;
-	u64 synthRuns = 0;
-};
-
-// The loop families of the sticky and hand-off tests (sticky readers stripped, so STATUS can sink), the
-// divide loops and FieldLoop, both flag-hack settings, a run to the end and the budgets 1, 1 + step, ...,
-// up to 150, with flag sinking on. Returns the runs that differ from microVU.
-u32 FlagSinkSweep(FlagSinkTotals* tot, bool report, bool stopAtFirst, u32 step)
-{
-	struct Scope
-	{
-		int saved = g_flagSink, savedStatus = g_flagSinkStatus;
-		Scope()
-		{
-			g_flagSink = getenv("VUOPT_FLAGSINK_SWEEP") ? std::atoi(getenv("VUOPT_FLAGSINK_SWEEP")) : 1; // (0: the sweep without sinking, an A/B)
-			if (g_flagSinkStatus < 0)
-				g_flagSinkStatus = 1; // (STATUS too, unless a test asks otherwise)
-		}
-		~Scope()
-		{
-			g_flagSink = saved;
-			g_flagSinkStatus = savedStatus;
-		}
-	} scope;
-	u32 failures = 0;
-	for (bool hack : {true, false})
-	for (int family = 0; family < 5; family++)
-		for (int variant = 0; variant < (family == 2 ? 2 : family == 3 ? 6 : family == 4 ? 8 : 9); variant++)
-		{
-			std::vector<VuOp> p;
-			switch (family)
-			{
-				case 0: p = WithoutStickyReaders(StickyProgram(variant, variant == 4 ? 12 : 7, 16)); break;
-				case 1: p = WithoutStickyReaders(HandoffProgram(variant, 6)); break;
-				case 2: p = DivideFlagProgram(6); break;
-				case 3: p = FieldLoop(variant < 3 ? 5 : 1 + variant, variant % 3, variant >= 3); break;
-				default: p = OnceLoop(variant); break;
-			}
-			const auto setup = [family, variant](VuTestHarness& h) {
-				if (family == 0)
-				{
-					if (variant >= 6)
-						SeedSparse(h, 31 + variant);
-					else
-						SeedSpecials(h, 31 + variant);
-					h.SetVi(8, 0);
-					h.WriteMemU128(0x100, 0x00008001, 0x10000000, 0x0000000e, 0);
-					h.WriteMemU128(0x110, 0, 0, 0, 0);
-				}
-				else if (family == 1 || family == 3 || family == 4)
-				{
-					SeedMixed(h, 71 + variant + 16 * family);
-					h.SetVi(8, 0);
-					if (family == 3)
-						h.SetVf(2, 0.0f, variant & 1 ? 0.0f : 1.0f, 1.0f, 1.0f); // (the divide: D, and I when vf1.x is 0 too)
-				}
-				else
-				{
-					SeedSparse(h, 91 + variant);
-					h.SetVf(2, 0.0f, 1.0f, 1.0f, 1.0f);
-					h.SetVf(1, variant ? 0.0f : 1.0f, 2.0f, 3.0f, 4.0f);
-					h.SetVi(8, 0);
-				}
-			};
-			for (u32 budget = 0; budget <= 150; budget = budget ? budget + step : 1)
-			{
-				const RegionOutcome o = RunRegion(p, hack, setup, budget == 0, 14, false, nullptr, budget);
-				if (tot)
-				{
-					tot->runs++;
-					tot->pending += o.fsinkPending;
-					tot->mat += o.fsinkMat;
-					tot->synth += o.fsinkSynth;
-					tot->conf += o.fsinkConf;
-					tot->synthRuns += o.fsinkSynthRuns;
-				}
-				if (!o.diffs.empty() && (++failures <= 3) && report)
-				{
-					std::string hex; // (VUOPT_REGION_HEX for VuoptRegion.Repro)
-					for (const VuOp& op : p)
-					{
-						char b[24];
-						std::snprintf(b, sizeof(b), "%s%08x:%08x", hex.empty() ? "" : ",", op.lower, op.upper);
-						hex += b;
-					}
-					ADD_FAILURE() << "hack " << hack << " family " << family << " variant " << variant << " budget " << budget << "\n"
-								  << Join(o.diffs) << "program " << hex << "\n";
-				}
-				if (stopAtFirst && failures)
-					return failures;
-			}
-		}
-	return failures;
-}
-} // namespace
-
-// Every word anything outside a loop can see is microVU's: at the loop's exits, its ends, a JR fallback,
-// a bail at its head (every budget from 1 to 150), and after an entry from microVU in the middle of it
-// (the continuation of a bail), which builds the sources from microVU's words.
-TEST(VuoptFlagSink, LoopsMatchMicroVU)
-{
-	FlagSinkTotals t;
-	EXPECT_EQ(FlagSinkSweep(&t, true, false, 1), 0u);
-	// the point of the test: the loops do sink (MAC and STATUS), words are built at the places that
-	// see them, and entries from microVU do build sources at run time
-	EXPECT_GT(t.pending, 0u);
-	EXPECT_GT(t.mat, 0u);
-	EXPECT_GT(t.synth, 0u);
-	EXPECT_GT(t.synthRuns, 0u);
-	std::printf("[vuopt flagsink] runs=%u pending producers=%u materialise sites=%u synthesise sites=%u loop conflicts=%u "
-				"run-time syntheses=%llu\n",
-		t.runs, t.pending, t.mat, t.synth, t.conf, static_cast<unsigned long long>(t.synthRuns));
-}
-
-// The same with only MAC sinking (STATUS words kept).
-TEST(VuoptFlagSink, MacOnlyMatchesMicroVU)
-{
-	struct Scope
-	{
-		~Scope() { g_flagSinkStatus = -1; }
-	} scope;
-	g_flagSinkStatus = 0;
-	FlagSinkTotals t;
-	EXPECT_EQ(FlagSinkSweep(&t, true, false, 7), 0u);
-	EXPECT_GT(t.pending, 0u);
-}
-
-// Each part of flag sinking broken on purpose is seen by the sweep: bails that do not build their words
-// (1), links out of a loop that do not (2), sources not normalised (3), entries and edges that do not
-// build sources (4), a STATUS source packed with the other layout (5), the loop's readers ignored (7).
-TEST(VuoptFlagSink, MutationsAreCaught)
-{
-	struct Scope
-	{
-		~Scope() { g_flagSinkMutation = 0; }
-	} scope;
-	for (int m : {1, 2, 3, 4, 5, 7})
-	{
-		g_flagSinkMutation = m;
-		EXPECT_GT(FlagSinkSweep(nullptr, false, true, 1), 0u) << "mutation " << m << " went unnoticed";
 	}
 }
 

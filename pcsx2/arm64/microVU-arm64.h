@@ -699,19 +699,6 @@ struct microVU
 	XXH128_hash_t optionsSentinel;
 	bool          optionsSentinelValid;
 
-	// vuopt regions' flag sources (vuopt/VuOptRegion.cpp, flag sinking): the
-	// inputs of MAC / STATUS words a region's loop does not build, eight
-	// vectors (MAC instances 0-3, STATUS instances 0-3), reached as
-	// [gprMVUFlag, #imm] like neonBackup. Only region code reads or writes
-	// them; nothing of microVU's does.
-	alignas(16) u32 vuoptFlagSrc[8][4];
-	// ... and right after them (the region code reaches both off the same offset): a source for
-	// every byte of a word, per layout (0 MAC, 1 STATUS's own), each lane +1.0, +0.0, -1.0 or -0.0
-	// so it raises exactly that byte's zero and sign bits (filled at mVUinit by
-	// vuopt::FillFlagSynthTable); then the entries from microVU that built sources from words.
-	alignas(16) u32 vuoptFlagSynth[2][256][4];
-	u64 vuoptFsinkRuns;
-
 	// Owning index keyed by content hash. Every live microProgram is
 	// referenced exactly once from here; per-startPC deques (prog.prog[]) and
 	// quick slots (prog.quick[]) hold non-owning pointers tracked via

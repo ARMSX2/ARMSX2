@@ -282,14 +282,6 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 			opts.vuopt.handoff = false;
 		else if (a == "--vuopt-no-dropsticky")
 			opts.vuopt.dropSticky = false;
-		else if (a == "--vuopt-flagsink")
-			opts.vuopt.flagSink = 1;
-		else if (a == "--vuopt-no-flagsink")
-			opts.vuopt.flagSink = 0;
-		else if (a == "--vuopt-no-flagsink-status")
-			opts.vuopt.flagSinkStatus = 0;
-		else if (a == "--vuopt-flagsink-status")
-			opts.vuopt.flagSinkStatus = 1;
 		else if (a == "--vuopt-mutation" && i + 1 < argc)
 		{
 			const std::string m = argv[++i];
@@ -303,8 +295,6 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 				opts.vuopt.dropStickyMutation = 2;
 			else if (m == "sticky-div")
 				opts.vuopt.dropStickyMutation = 3;
-			else if (m.rfind("flagsink-", 0) == 0 && m.size() == 10 && m[9] >= '1' && m[9] <= '7')
-				opts.vuopt.flagSinkMutation = m[9] - '0';
 			else
 			{
 				std::fprintf(stderr, "vurunner: unknown --vuopt-mutation %s\n", m.c_str());

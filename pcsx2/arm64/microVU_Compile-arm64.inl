@@ -1212,7 +1212,6 @@ static vuopt::MvuEmitEnv mVUbuildEmitEnv(microVU& mVU)
 	e.offVIxgkick = static_cast<s32>(reinterpret_cast<const u8*>(&mVU.VIxgkick) - base);
 	e.offBranch = static_cast<s32>(reinterpret_cast<const u8*>(&mVU.branch) - base);
 	e.offNeonBackup = static_cast<s32>(reinterpret_cast<const u8*>(&mVU.neonBackup[0][0]) - base);
-	e.offFlagSrc = static_cast<s32>(reinterpret_cast<const u8*>(&mVU.vuoptFlagSrc[0][0]) - base);
 	e.xgkickFn = reinterpret_cast<const void*>(&mVU_XGKICK_);
 	e.vifTop = &mVU.getVifRegs().top;
 	e.vifItop = &mVU.getVifRegs().itop;

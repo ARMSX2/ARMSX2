@@ -35,11 +35,6 @@ struct VuoptModeOptions
 	// (handoff-ignore-reads, handoff-all-dead, sticky-hi, sticky-pack, sticky-div).
 	int handoffMutation = 0;
 	int dropStickyMutation = 0;
-	// Flag sinking (9ae): --vuopt-flagsink / --vuopt-no-flagsink, --vuopt-no-flagsink-status (MAC only);
-	// --vuopt-mutation flagsink-N breaks it on purpose (RegionTier::flagSinkMutation).
-	int flagSink = -1; // -1: the region tier's default
-	int flagSinkStatus = -1; // -1: the region tier's default
-	int flagSinkMutation = 0;
 	bool observe = false;   // --vuopt-observe: compare observable state (the exactness contract), classify the byte differences,
 	                        // and continue each run through its budget stops with --vuopt-resumes re-entries
 	u32 resumes = 6;
