@@ -170,6 +170,7 @@ static std::vector<SetOverride> s_set_overrides; // --set Section/Key=Value (rep
 static u32 s_iop_stats_every = 0;      // --iop-stats-every N: in a --liverun, log the IOP thread's Threaded counters every N frames
 static bool s_stress = false;          // --iop-stress <seed>: a --liverun that does random lifecycle things between frames
 static u32 s_stress_seed = 1;
+static u32 s_pause_toggle_at = 0;      // --pause-toggle N: in a --liverun, flip the IOP thread setting while the VM is paused after frame N
 static u32 s_churn_every = 0;          // --settings-churn N <kind>: apply a settings change every N frames of a twin pass
 static std::string s_churn_kind;       // "lockstep": flip the IOP thread between Off and Lockstep; "threaded": between Off and Threaded; "lag": flip the IOP thread lag
 static u32 s_rec_fallback_groups = 0; // --rec-fallback <groups>: EE opcode groups forced to interp
@@ -738,6 +739,8 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --iop-stress <seed>: in a --liverun, do things a player does between frames at random (seeded): switch the IOP thread\n");
 	std::fprintf(stderr, "               between Off and Threaded and change its lag bound from inside the event test, save and load a state,\n");
 	std::fprintf(stderr, "               pause for a while, reset the VM, press hotkeys. Every operation is logged as STRESS: lines.\n");
+	std::fprintf(stderr, "  --pause-toggle N: in a --liverun, flip the IOP thread setting (Off to Threaded, or back) while the VM is paused after\n");
+	std::fprintf(stderr, "               frame N, as a settings dialog does on a paused VM, and log the mode and the thread before and after as PAUSE-TOGGLE:.\n");
 	std::fprintf(stderr, "  --iop-min-slice N: Threaded IOP thread: S_min, the budget in EE cycles the IOP lets build up before it runs a\n");
 	std::fprintf(stderr, "               slice (design 5.3). Default 0 (run whenever there is budget). A measurement knob, not a setting.\n");
 	std::fprintf(stderr, "  --iop-spin-hint yield|isb: the instruction the Threaded spin loops use between looks (default yield).\n");
@@ -1028,6 +1031,17 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				}
 				s_stress = true;
 				s_stress_seed = v.value();
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--pause-toggle"))
+			{
+				const auto v = StringUtil::FromChars<u32>(argv[++i]);
+				if (!v.has_value() || v.value() == 0)
+				{
+					Console.Error("--pause-toggle expects a frame number, 1 or more.");
+					return false;
+				}
+				s_pause_toggle_at = v.value();
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--iop-min-slice"))
@@ -4541,6 +4555,22 @@ static struct StressCounts
 	u32 switches = 0, lags = 0, saves = 0, loads = 0, load_failures = 0, pauses = 0, resets = 0, hotkeys = 0;
 } s_stress_counts;
 
+// --pause-toggle: the settings change a player makes on a paused VM. Between two frames of a liverun the VM is Paused, so the
+// change goes through VMManager::ApplySettings() in that state (the pause hold is live), unlike --settings-churn, which delivers it
+// from the message pump inside the EE's event test.
+static void PauseToggle(u32 frame)
+{
+	const auto describe = [] {
+		const char* const names[] = {"Off", "Lockstep", "Threaded"};
+		return fmt::format("mode={} thread={} state={}", names[static_cast<int>(IopThread::GetMode())],
+			IopThread::g_thread.IsRunning() ? "running" : "none", static_cast<int>(VMManager::GetState()));
+	};
+	const std::string before = describe();
+	s_churn_kind = "threaded";
+	ApplySettingsChurn();
+	Console.WriteLn(fmt::format("PAUSE-TOGGLE@{}: [{}] -> [{}] {}", frame, before, describe(), VMManager::Internal::GetThreadPlacementDebug()));
+}
+
 static void StressStep(u32 frame)
 {
 	static u32 rng = 0;
@@ -4754,6 +4784,12 @@ static int RunLiveRun()
 		if (s_stress)
 			StressStep(f + 1);
 		s_liverun_frame.store(f + 1, std::memory_order_relaxed);
+		// Where the threads sit, once the scene has settled: the placement the VM chose (the affinity masks) and the core
+		// each thread last ran on. The IOP thread is in it while it runs.
+		if ((f + 1) == 100)
+			Console.WriteLn(fmt::format("PLACEMENT@{}: {}", f + 1, VMManager::Internal::GetThreadPlacementDebug()));
+		if (s_pause_toggle_at && (f + 1) == s_pause_toggle_at)
+			PauseToggle(f + 1);
 		if (s_iop_stats_every && ((f + 1) % s_iop_stats_every) == 0)
 		{
 			const std::string line = IopThread::OsdStatsLine();
@@ -5003,6 +5039,8 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 					break;
 			}
 
+			if (s_mode == RunMode::LiveRun)
+				Console.WriteLn(fmt::format("PLACEMENT-END: {}", VMManager::Internal::GetThreadPlacementDebug()));
 			// What the IOP thread did over the run, for the Lockstep cost record (all zero in Off).
 			{
 				const IopThread::Stats st = IopThread::GetStats();

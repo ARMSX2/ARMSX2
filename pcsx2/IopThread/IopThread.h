@@ -394,6 +394,14 @@ namespace IopThread
 		bool IsRunning() const { return m_running; }
 		IopThreadMode Mode() const { return m_mode; }
 
+		/// The OS thread, for placing it (SetAffinity) and reading its CPU time. Empty before the first Start()
+		/// and after Stop(). EE (CPU) thread only: Start() and Stop() are the writers.
+		const Threading::ThreadHandle& GetThreadHandle() const { return m_thread; }
+
+		/// How many times Start() has succeeded. A new thread begins with the mask of the thread that created it, so a
+		/// placement made for one thread says nothing about the next; the VM compares this to know it must place again.
+		u32 StartCount() const { return m_start_count; }
+
 		// ------------------------------------------------------------ EE side, Threaded
 
 		/// The EE's side of an event test: tell the IOP how far the EE has got (release store of
@@ -607,6 +615,7 @@ namespace IopThread
 
 		Threading::Thread m_thread;
 		bool m_running = false; // EE thread
+		u32 m_start_count = 0; // EE thread
 		std::atomic<bool> m_started{false}; // the IOP thread's setup is done
 		std::thread::id m_iop_tid; // written by the IOP thread before m_started, then read-only
 

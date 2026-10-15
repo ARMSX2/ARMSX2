@@ -183,6 +183,7 @@ namespace IopThread
 		while (!m_started.load(std::memory_order_acquire))
 			std::this_thread::yield();
 		m_running = true;
+		m_start_count++;
 		return true;
 	}
 

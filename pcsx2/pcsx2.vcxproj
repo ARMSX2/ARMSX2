@@ -687,6 +687,7 @@
     <ClCompile Include="IopIrq.cpp" />
     <ClCompile Include="IopMem.cpp" />
     <ClCompile Include="IopThread\IopChannels.cpp" />
+    <ClCompile Include="IopThread\IopPlacement.cpp" />
     <ClCompile Include="IopThread\IopThread.cpp" />
     <ClCompile Include="IopThread\IopThreadMode.cpp" />
     <ClCompile Include="IopThread\IopThreadVm.cpp" />
@@ -1198,6 +1199,7 @@
     <ClInclude Include="IopThread\EeBridge.h" />
     <ClInclude Include="IopThread\IopBridge.h" />
     <ClInclude Include="IopThread\IopChannels.h" />
+    <ClInclude Include="IopThread\IopPlacement.h" />
     <ClInclude Include="IopThread\IopThread.h" />
     <ClInclude Include="IopThread\IopThreadMode.h" />
     <ClInclude Include="IopThread\IopThreadVm.h" />

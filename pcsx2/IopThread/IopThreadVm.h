@@ -44,6 +44,15 @@ namespace IopThread
 	/// cores are performance cores (VMManager's GetPerformanceCoresMask; 0 where the cores cannot be told apart).
 	HostCpuInfo CurrentHostInfo();
 
+	/// The IOP thread runs concurrently with the EE, so it is one more busy thread that needs a processor of its own
+	/// (VMManager::SetEmuThreadAffinities counts it in the threads to place). False in Lockstep, whose two threads take
+	/// strict turns, and when there is no thread.
+	bool PlacesThread();
+
+	/// Changes whenever the thread that exists changes: 0 with no thread, else the number of the start. VMManager
+	/// places the thread when this differs from the value it last placed for. CPU thread only.
+	u32 PlacementToken();
+
 	/// The conditions about the running VM that rule the IOP thread out: PS1 mode, an arcade title,
 	/// a GS dump replay, an IOP breakpoint or memcheck, and the recompiler test harness flag.
 	VmConditions CurrentVmConditions();

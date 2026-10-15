@@ -101,6 +101,7 @@ set(pcsx2Sources
 	IopIrq.cpp
 	IopMem.cpp
 	IopThread/IopChannels.cpp
+	IopThread/IopPlacement.cpp
 	IopThread/IopThread.cpp
 	IopThread/IopThreadMode.cpp
 	IopThread/IopThreadVm.cpp
@@ -202,6 +203,7 @@ set(pcsx2Headers
 	IopThread/IopChannels.h
 	IopThread/EeBridge.h
 	IopThread/IopBridge.h
+	IopThread/IopPlacement.h
 	IopThread/IopThread.h
 	IopThread/IopThreadMode.h
 	IopThread/IopThreadVm.h

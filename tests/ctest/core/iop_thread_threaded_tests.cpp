@@ -1077,4 +1077,117 @@ TEST_F(ThreadedMachine, TheAnalogButtonsToggleRunsOnTheIopThreadInThreaded)
 	Pad::Shutdown();
 }
 
+// ---------------------------------------------------------------- placement (step 14)
+
+TEST_F(ThreadedMachine, AThreadedThreadIsOneMoreThreadToPlace)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	EXPECT_FALSE(IopThread::PlacesThread());
+	EXPECT_EQ(IopThread::PlacementToken(), 0u);
+
+	StartThreaded();
+	EXPECT_TRUE(IopThread::PlacesThread());
+	const u32 first = IopThread::PlacementToken();
+	EXPECT_NE(first, 0u);
+	EXPECT_TRUE(static_cast<bool>(IopThread::g_thread.GetThreadHandle()));
+
+	// A restart is a new thread, which begins with the creator's affinity again: the token must differ so the
+	// VM places it again.
+	IopThread::StopThread();
+	EXPECT_FALSE(IopThread::PlacesThread());
+	EXPECT_EQ(IopThread::PlacementToken(), 0u);
+	StartThreaded();
+	EXPECT_NE(IopThread::PlacementToken(), first);
+}
+
+TEST_F(ThreadedMachine, AThreadedThreadCanBeMovedToAnotherProcessorWhileItRuns)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	StartThreaded();
+	const Threading::ThreadHandle& handle = IopThread::g_thread.GetThreadHandle();
+	const u64 allowed = Threading::ThreadHandle::GetForCallingThread().GetAffinity();
+	if (allowed == 0)
+		GTEST_SKIP() << "this platform cannot read thread affinities";
+
+	const u64 one = allowed & (~allowed + 1); // the lowest processor this process may use
+	ASSERT_TRUE(handle.SetAffinity(one));
+	EXPECT_EQ(handle.GetAffinity(), one);
+
+	// It still works from there: the EE publishes and the IOP follows.
+	EventTest(5000);
+	ASSERT_TRUE(WaitForIop(cpuRegs.cycle - 1000));
+	ASSERT_TRUE(handle.SetAffinity(allowed));
+	EXPECT_EQ(handle.GetAffinity(), allowed);
+}
+
+// ---------------------------------------------------------------- a settings change while the VM is paused
+
+TEST_F(ThreadedMachine, TurningTheThreadOnWhilePausedStartsItHeldAndTheResumeLetsItRun)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+
+	// The VM is paused: SetState took the pause hold on the way in (design 9.3). The player opens the settings and ticks
+	// the box; ApplySettings holds around the change and the thread starts.
+	IopThread::OnVmPaused(true);
+	{
+		IopThread::VmHold apply_settings_holds;
+		StartThreaded();
+	}
+	ASSERT_TRUE(IopThread::g_thread.IsRunning());
+	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Threaded);
+	EXPECT_TRUE(IopThread::PlacesThread());
+	EXPECT_TRUE(IopThread::g_thread.IopIsStopped()) << "the thread ran while the VM was paused";
+
+	// The EE is not running, but a stray publish must not let the IOP run either.
+	cpuRegs.cycle += 3000;
+	IopThread::g_thread.PublishWatermark(cpuRegs.cycle);
+	std::this_thread::sleep_for(60ms);
+	EXPECT_EQ(s_slices_started.load(), 0u);
+
+	// Resume: the hold goes, and the next event test hands the IOP its budget.
+	IopThread::OnVmPaused(false);
+	EXPECT_FALSE(IopThread::g_thread.IopIsStopped());
+	EventTest(2000);
+	ASSERT_TRUE(WaitFor([] { return s_slices_started.load() >= 1; })) << "the toggle made while paused never took effect";
+	EXPECT_EQ(s_violations.load(), 0u);
+}
+
+TEST_F(ThreadedMachine, TurningTheThreadOffWhilePausedStopsItAndAnotherToggleBringsItBack)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	StartThreaded();
+	ASSERT_TRUE(IopThread::PlacesThread());
+	const u32 first = IopThread::PlacementToken();
+
+	IopThread::OnVmPaused(true);
+	{
+		IopThread::VmHold apply_settings_holds;
+		EmuConfig.Speedhacks.iopThread = false;
+		IopThread::ChooseModeFor(Arm64Host(), IopThread::VmConditions());
+		IopThread::SyncThread();
+	}
+	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Off);
+	EXPECT_FALSE(IopThread::g_thread.IsRunning());
+	EXPECT_FALSE(IopThread::PlacesThread());
+	EXPECT_EQ(IopThread::PlacementToken(), 0u);
+
+	// Ticked again, still paused: a new thread, held, with a new token for the VM to place.
+	{
+		IopThread::VmHold apply_settings_holds;
+		StartThreaded();
+	}
+	ASSERT_TRUE(IopThread::g_thread.IsRunning());
+	EXPECT_TRUE(IopThread::g_thread.IopIsStopped());
+	EXPECT_NE(IopThread::PlacementToken(), first);
+
+	IopThread::OnVmPaused(false);
+	EventTest(2000);
+	ASSERT_TRUE(WaitFor([] { return s_slices_started.load() >= 1; }));
+	EXPECT_EQ(s_violations.load(), 0u);
+}
+
 #endif // PCSX2_RECOMPILER_TESTS

@@ -14,6 +14,7 @@
 #include "IopDma.h"
 #include "IopHw.h"
 #include "IopMem.h"
+#include "IopThread/IopPlacement.h"
 #include "IopThread/OwnerAsserts.h"
 #include "IopThread/SharedWord.h"
 #include "Patch.h"
@@ -181,13 +182,12 @@ namespace IopThread
 
 	HostCpuInfo CurrentHostInfo()
 	{
-		HostCpuInfo host;
 #if defined(ARCH_ARM64)
-		host.is_arm64 = true;
+		constexpr bool is_arm64 = true;
+#else
+		constexpr bool is_arm64 = false;
 #endif
-		host.total_cores = std::thread::hardware_concurrency();
-		host.performance_cores = VMManager::Internal::GetPerformanceCoreCount();
-		return host;
+		return MakeHostInfo(is_arm64, std::thread::hardware_concurrency(), VMManager::Internal::GetPerformanceCoreMask());
 	}
 
 	VmConditions CurrentVmConditions()
@@ -240,6 +240,16 @@ namespace IopThread
 		// notes the request and leaves its loop at the next event test (recResetEE).
 		if (Cpu)
 			Cpu->Reset();
+	}
+
+	bool PlacesThread()
+	{
+		return g_thread.IsRunning() && g_thread.Mode() == IopThreadMode::Threaded;
+	}
+
+	u32 PlacementToken()
+	{
+		return g_thread.IsRunning() ? g_thread.StartCount() : 0;
 	}
 
 	void SyncThread()

@@ -24,6 +24,7 @@
 #include "ImGui/ImGuiOverlays.h"
 #include "Input/InputManager.h"
 #include "IopBios.h"
+#include "IopThread/IopPlacement.h"
 #include "IopThread/IopThreadVm.h"
 #include "MTGS.h"
 #include "MTVU.h"
@@ -248,6 +249,9 @@ static bool s_thread_affinities_set = false;
 // callback is a real-time thread and must not walk cpuinfo itself; 0 means "affinity is off",
 // which is also the correct answer whenever placement failed or was cleared.
 static std::atomic<u64> s_perf_cluster_mask{0};
+// The IOP thread that SetEmuThreadAffinities last placed (IopThread::PlacementToken()). A different value means a
+// thread that has not been placed has started, or the one that was placed has stopped.
+static u32 s_iop_placement_token = 0;
 
 static LimiterModeType s_limiter_mode = LimiterModeType::Nominal;
 static s64 s_limiter_ticks_per_frame = 0;
@@ -2497,6 +2501,10 @@ void VMManager::Reset()
 	cpuReset();
 	IopThread::SyncThread();
 	IopThread::ResyncClocks();
+	// A VM that a PS1 game demoted to Off gets its IOP thread back here, and a thread that has just started
+	// is on the CPU thread's affinity until it is placed.
+	if (IopThread::PlacementToken() != s_iop_placement_token)
+		SetEmuThreadAffinities();
 	hwReset();
 	if (Arcade::IsActive())
 		ResetArcadeBoard();
@@ -3933,8 +3941,12 @@ void VMManager::CheckForMiscConfigChanges(const Pcsx2Config& old_config)
 	// run is the usual way that happens) instead of trusting a config value that never changed.
 	ReloadPINE();
 
+	// The IOP thread starts and stops with a settings change (CheckForCPUConfigChanges ran first), and a thread
+	// that has just started is on the CPU thread's affinity until it is placed. It also counts as one of the
+	// threads to place, so the others' places can change with it.
 	if (HasValidVM() && (EmuConfig.EnableThreadPinning != old_config.EnableThreadPinning ||
-							(s_thread_affinities_set && EmuConfig.Speedhacks.vuThread != old_config.Speedhacks.vuThread)))
+							(s_thread_affinities_set && EmuConfig.Speedhacks.vuThread != old_config.Speedhacks.vuThread) ||
+							IopThread::PlacementToken() != s_iop_placement_token))
 	{
 		SetEmuThreadAffinities();
 	}
@@ -4562,42 +4574,36 @@ static std::vector<u32> GetProcessorWeights()
 	return weights;
 }
 
-// Every processor within PERF_CLUSTER_RATIO of the fastest one. Deliberately NOT "the cluster
-// owning the fastest core": cpuinfo starts a new cluster whenever max_frequency differs, so on
-// any 1+3+4 or 1+2+2+3 flagship the prime core is a cluster of ONE, and confining EE/VU/GS to
-// a single core is far worse than not confining them at all. Ranking by capacity puts the prime
-// and the big cores in one mask, which is the grouping a human means by "performance cores".
+// Reads each processor's capacity and hands the table to IopThread::PerformanceMask, which decides the tier
+// (and says why it is not simply the fastest cluster).
 static u64 GetPerformanceCoresMask()
 {
 	const std::vector<u32> weights = GetProcessorWeights();
-	const u32 peak = weights.empty() ? 0 : *std::max_element(weights.begin(), weights.end());
-	if (peak == 0)
-		return 0; // Indistinguishable cores — caller must not confine.
-
-	// 0.75 keeps a 4x A715 @ 855 tier with an X3 @ 1024 (0.83), while dropping an A510 @ 280
-	// (0.27). Mid tiers on 1+2+2+3 parts sit around 0.80-0.90 and are kept on purpose.
-	constexpr double PERF_CLUSTER_RATIO = 0.75;
-	const u32 threshold = static_cast<u32>(static_cast<double>(peak) * PERF_CLUSTER_RATIO);
-
-	u64 mask = 0;
+	std::vector<IopThread::CpuCapacity> cpus;
+	cpus.reserve(weights.size());
 	for (u32 i = 0; i < weights.size(); i++)
 	{
 		const cpuinfo_processor* proc = cpuinfo_get_processor(i);
-		if (!proc || proc->smt_id != 0 || weights[i] < threshold)
+		if (!proc)
 			continue;
-		mask |= static_cast<u64>(1) << GetProcessorIdForProcessor(proc);
+		cpus.push_back({GetProcessorIdForProcessor(proc), weights[i], proc->smt_id == 0});
 	}
-	return mask;
+	return IopThread::PerformanceMask(cpus);
 }
 #endif
 
-u32 VMManager::Internal::GetPerformanceCoreCount()
+u64 VMManager::Internal::GetPerformanceCoreMask()
 {
 #if defined(__linux__)
-	return static_cast<u32>(std::popcount(GetPerformanceCoresMask()));
+	return GetPerformanceCoresMask();
 #else
 	return 0; // no capacity source: the cores cannot be told apart, so Threaded is not offered
 #endif
+}
+
+u32 VMManager::Internal::GetPerformanceCoreCount()
+{
+	return static_cast<u32>(std::popcount(GetPerformanceCoreMask()));
 }
 
 // Widen a mask of individual processors to every processor sharing their clusters. cpuinfo
@@ -4868,7 +4874,8 @@ u64 VMManager::Internal::PlaceGSBackThreadNearGSThread()
 		return (std::popcount(mask) == 1) ? mask : 0;
 	};
 	const u64 gs_mask = MTGS::GetThreadHandle() ? MTGS::GetThreadHandle().GetAffinity() : 0;
-	const u64 occupied = gs_mask | pinned(s_vm_thread_handle) | pinned(vu1Thread.GetThreadHandle());
+	const u64 occupied = gs_mask | pinned(s_vm_thread_handle) | pinned(vu1Thread.GetThreadHandle()) |
+	                     pinned(IopThread::g_thread.GetThreadHandle());
 #if defined(__linux__) || defined(_WIN32)
 	const u64 mask = ChooseGSBackThreadAffinity(gs_mask, occupied);
 #else
@@ -4889,8 +4896,23 @@ u64 VMManager::Internal::PlaceGSBackThreadNearGSThread()
 int g_android_affinity_mode = 7;
 #endif
 
+// The IOP thread's place. The thread begins with the affinity of the thread that created it, which is the CPU
+// thread, and that may have been narrowed to one core, so a thread that exists is always given a mask explicitly
+// (0 meaning any processor) rather than left to inherit one. Without a thread there is nothing to place.
+static void SetIopThreadAffinity(u64 mask)
+{
+	if (IopThread::g_thread.IsRunning())
+		IopThread::g_thread.GetThreadHandle().SetAffinity(mask);
+}
+
 void VMManager::SetEmuThreadAffinities()
 {
+	// The IOP thread runs beside the EE, so it is one more busy thread that wants a processor of its own. In
+	// Lockstep the two take strict turns and it does not. Remembered before anything below can return, so that
+	// the thread this call places is the one the token names.
+	const bool iop_thread = IopThread::PlacesThread();
+	s_iop_placement_token = IopThread::PlacementToken();
+
 #if defined(__ANDROID__)
 	// Android: never hard-pin the emu threads to fixed cores. Under Android's EAS
 	// scheduler the busiest thread (VU1 sits at ~99% in VU-bound titles like GoW2)
@@ -4916,6 +4938,7 @@ void VMManager::SetEmuThreadAffinities()
 		MTGS::GetThreadHandle().SetAffinity(0);
 		vu1Thread.GetThreadHandle().SetAffinity(0);
 		s_vm_thread_handle.SetAffinity(0);
+		SetIopThreadAffinity(0);
 		SetGSBackThreadAffinityLocked(0);
 		s_software_renderer_processor_list = {};
 		s_thread_affinities_set = false;
@@ -4930,6 +4953,7 @@ void VMManager::SetEmuThreadAffinities()
 		MTGS::GetThreadHandle().SetAffinity(0);
 		vu1Thread.GetThreadHandle().SetAffinity(0);
 		s_vm_thread_handle.SetAffinity(0);
+		SetIopThreadAffinity(0);
 		SetGSBackThreadAffinityLocked(0);
 		s_software_renderer_processor_list = {};
 		s_thread_affinities_set = false;
@@ -4951,20 +4975,23 @@ void VMManager::SetEmuThreadAffinities()
 		// can't be read, or the fast tier is too narrow, we do NOTHING rather than something
 		// harmful. Note this deliberately does NOT fall through to the ordered per-core path
 		// below; that path is the pinning this mode exists to avoid.
-		const u32 threads_to_place = android_mtvu ? 3 : 2;
-		if (perf_mask != 0 && static_cast<u32>(std::popcount(perf_mask)) >= threads_to_place)
+		// The IOP thread, when it runs beside the EE, is one more of them (design 10.3).
+		const IopThread::TierPlan tier = IopThread::PlanTier(perf_mask, android_mtvu, iop_thread);
+		const u32 threads_to_place = tier.threads_to_place;
+		if (tier.tier_fits)
 		{
-			INFO_LOG("Affinity mode: Performance Cores (mask 0x{:x}, {} processors, mtvu={})",
-				perf_mask, std::popcount(perf_mask), android_mtvu ? 1 : 0);
+			INFO_LOG("Affinity mode: Performance Cores (mask 0x{:x}, {} processors, mtvu={}, iop thread={})",
+				perf_mask, std::popcount(perf_mask), android_mtvu ? 1 : 0, iop_thread ? 1 : 0);
 			s_vm_thread_handle.SetAffinity(perf_mask);
 			MTGS::GetThreadHandle().SetAffinity(perf_mask);
 			vu1Thread.GetThreadHandle().SetAffinity(android_mtvu ? perf_mask : 0);
+			SetIopThreadAffinity(perf_mask);
 			// The GS back thread (GS multi-threading) is busy 50-100% of the frame in GS-heavy
 			// titles, so it joins the tier only when the tier has a processor for it as well;
 			// otherwise it stays unpinned. It is placed separately so that it can never cost the
 			// other threads their placement. Set whether or not multi-threading is on: the mask
 			// is only used if a back thread starts.
-			const bool back_fits = static_cast<u32>(std::popcount(perf_mask)) >= threads_to_place + 1;
+			const bool back_fits = tier.back_thread_fits;
 			INFO_LOG("  GS back thread {}", back_fits ? "shares the performance cores" :
 														"left unpinned (no processor left for it in the tier)");
 			SetGSBackThreadAffinityLocked(back_fits ? perf_mask : 0);
@@ -4980,6 +5007,7 @@ void VMManager::SetEmuThreadAffinities()
 		MTGS::GetThreadHandle().SetAffinity(0);
 		vu1Thread.GetThreadHandle().SetAffinity(0);
 		s_vm_thread_handle.SetAffinity(0);
+		SetIopThreadAffinity(0);
 		SetGSBackThreadAffinityLocked(0);
 		s_software_renderer_processor_list = {};
 		s_thread_affinities_set = false;
@@ -4988,21 +5016,15 @@ void VMManager::SetEmuThreadAffinities()
 	}
 
 	// Modes 1-6: explicit EE/VU/GS priority over s_processor_list, which is ordered fastest
-	// core first. Rows are {ee_rank, vu_rank, gs_rank}; the row order matches the UI order.
+	// core first. The ranks are the rows of IopThread::PlanRanks, in the UI's order:
 	//   1 EE>VU>GS   2 EE>GS>VU   3 VU>EE>GS   4 VU>GS>EE   5 GS>EE>VU   6 GS>VU>EE
-	static constexpr int kAffinityRanks[6][3] = {
-		{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {2, 0, 1}, {1, 2, 0}, {2, 1, 0},
-	};
-	const int mode_row = std::clamp(g_android_affinity_mode, 1, 6) - 1;
-	int ee_rank = kAffinityRanks[mode_row][0];
-	int vu_rank = kAffinityRanks[mode_row][1];
-	int gs_rank = kAffinityRanks[mode_row][2];
-
-	// With MTVU off there is no VU thread to place, so let GS inherit VU's slot when VU
-	// ranked higher — otherwise the faster core sits idle. Mirrors the desktop path's
-	// "steal vu's thread if mtvu is off".
-	if (!android_mtvu && vu_rank < gs_rank)
-		gs_rank = vu_rank;
+	// With MTVU off there is no VU thread to place, so GS inherits VU's slot when VU ranked
+	// higher — otherwise the faster core sits idle. Mirrors the desktop path's "steal vu's
+	// thread if mtvu is off". The IOP thread takes the first rank none of the others uses.
+	const IopThread::RankPlan ranks = IopThread::PlanRanks(g_android_affinity_mode, android_mtvu, iop_thread, s_processor_list.size());
+	const int ee_rank = ranks.ee;
+	const int vu_rank = ranks.vu;
+	const int gs_rank = ranks.gs;
 
 	// cpuinfo frequently reports fewer usable processors than ranks; clamp rather than
 	// running off the end of the list.
@@ -5013,21 +5035,25 @@ void VMManager::SetEmuThreadAffinities()
 
 	const u64 android_ee_affinity = affinity_for_rank(ee_rank);
 	const u64 android_gs_affinity = affinity_for_rank(gs_rank);
-	INFO_LOG("Affinity mode {}: EE rank {} (0x{:x}), VU rank {}, GS rank {} (0x{:x}), mtvu={}",
+	// The IOP thread is never clamped onto another thread's processor: a list with no rank left for it leaves it
+	// to the scheduler.
+	const u64 android_iop_affinity = ranks.iop >= 0 ? affinity_for_rank(ranks.iop) : 0;
+	INFO_LOG("Affinity mode {}: EE rank {} (0x{:x}), VU rank {}, GS rank {} (0x{:x}), IOP rank {} (0x{:x}), mtvu={}",
 		g_android_affinity_mode, ee_rank, android_ee_affinity, vu_rank, gs_rank,
-		android_gs_affinity, android_mtvu ? 1 : 0);
+		android_gs_affinity, ranks.iop, android_iop_affinity, android_mtvu ? 1 : 0);
 
 	s_vm_thread_handle.SetAffinity(android_ee_affinity);
 	MTGS::GetThreadHandle().SetAffinity(android_gs_affinity);
 	const u64 android_vu_affinity = android_mtvu ? affinity_for_rank(vu_rank) : 0;
 	vu1Thread.GetThreadHandle().SetAffinity(android_vu_affinity);
+	SetIopThreadAffinity(android_iop_affinity);
 	const u64 android_gs_back_affinity = ChooseGSBackThreadAffinity(
-		android_gs_affinity, android_ee_affinity | android_gs_affinity | android_vu_affinity);
+		android_gs_affinity, android_ee_affinity | android_gs_affinity | android_vu_affinity | android_iop_affinity);
 	INFO_LOG("  GS back thread may run on 0x{:x}", android_gs_back_affinity);
 	SetGSBackThreadAffinityLocked(android_gs_back_affinity);
 	s_thread_affinities_set = true;
 	s_perf_cluster_mask.store(
-		ClusterMaskForProcessorMask(android_ee_affinity | android_gs_affinity | android_vu_affinity),
+		ClusterMaskForProcessorMask(android_ee_affinity | android_gs_affinity | android_vu_affinity | android_iop_affinity),
 		std::memory_order_relaxed);
 	return;
 #else
@@ -5062,6 +5088,7 @@ void VMManager::SetEmuThreadAffinities()
 		{
 			vu1Thread.GetThreadHandle().SetAffinity(0);
 			s_vm_thread_handle.SetAffinity(0);
+			SetIopThreadAffinity(0);
 		}
 		s_software_renderer_processor_list = {};
 
@@ -5084,10 +5111,11 @@ void VMManager::SetEmuThreadAffinities()
 	}
 	s_gs_tier_confined = false;
 
-	// steal vu's thread if mtvu is off
-	const u32 ee_index = s_processor_list[0];
-	const u32 vu_index = s_processor_list[1];
-	const u32 gs_index = s_processor_list[mtvu ? 2 : 1];
+	// steal vu's thread if mtvu is off; the IOP thread, when it runs beside the EE, takes the next slot
+	const IopThread::OrderedPlan plan = IopThread::PlanOrdered(s_processor_list.size(), mtvu, iop_thread);
+	const u32 ee_index = s_processor_list[plan.ee];
+	const u32 vu_index = s_processor_list[plan.vu];
+	const u32 gs_index = s_processor_list[plan.gs];
 	INFO_LOG("Processor order assignment: EE={}, VU={}, GS={}", ee_index, vu_index, gs_index);
 
 	const u64 ee_affinity = static_cast<u64>(1) << ee_index;
@@ -5109,7 +5137,19 @@ void VMManager::SetEmuThreadAffinities()
 	INFO_LOG("  GS thread is on processor {} (0x{:x})", gs_index, gs_affinity);
 	MTGS::GetThreadHandle().SetAffinity(gs_affinity);
 
-	const u64 occupied = ee_affinity | gs_affinity | (mtvu ? (static_cast<u64>(1) << vu_index) : 0);
+	// A thread that exists but has no slot (Lockstep, or a list with none left) is released rather than left on the
+	// EE's processor, which it inherited.
+	const u64 iop_affinity = plan.iop >= 0 ? (static_cast<u64>(1) << s_processor_list[plan.iop]) : 0;
+	if (IopThread::g_thread.IsRunning())
+	{
+		if (iop_affinity != 0)
+			INFO_LOG("  IOP thread is on processor {} (0x{:x})", s_processor_list[plan.iop], iop_affinity);
+		else
+			INFO_LOG("  IOP thread is not pinned");
+	}
+	SetIopThreadAffinity(iop_affinity);
+
+	const u64 occupied = ee_affinity | gs_affinity | iop_affinity | (mtvu ? (static_cast<u64>(1) << vu_index) : 0);
 #if defined(__linux__) || defined(_WIN32)
 	const u64 gs_back_affinity = ChooseGSBackThreadAffinity(gs_affinity, occupied);
 #else
@@ -5132,9 +5172,9 @@ void VMManager::SetEmuThreadAffinities()
 	// They should be in the same cluster as the main GS thread. If they're not, for example,
 	// we had 4 P cores and 6 E cores, let the OS schedule them instead.
 	s_software_renderer_processor_list.clear();
-	s_software_renderer_processor_list.reserve(s_processor_list.size() - (mtvu ? 3 : 2));
+	s_software_renderer_processor_list.reserve(s_processor_list.size() - plan.first_software_thread);
 	const u32 gs_cluster_id = cpuinfo_get_processor(gs_index)->cluster->cluster_id;
-	for (size_t i = mtvu ? 3 : 2; i < s_processor_list.size(); i++)
+	for (size_t i = plan.first_software_thread; i < s_processor_list.size(); i++)
 	{
 		const u32 proc_index = s_processor_list[i];
 		const u32 proc_cluster_id = cpuinfo_get_processor(proc_index)->cluster->cluster_id;
@@ -5169,6 +5209,8 @@ std::string VMManager::Internal::GetThreadPlacementDebug()
 	out += describe("VU", vu1Thread.GetThreadHandle());
 	out += ' ';
 	out += describe("GS", MTGS::GetThreadHandle());
+	out += ' ';
+	out += IopThread::g_thread.IsRunning() ? describe("IOP", IopThread::g_thread.GetThreadHandle()) : std::string("IOP=off");
 
 #if defined(__linux__) || defined(_WIN32)
 	if (cpuinfo_initialize())
