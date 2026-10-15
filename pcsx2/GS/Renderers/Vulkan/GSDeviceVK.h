@@ -28,6 +28,7 @@
 #include <thread>
 #include <vector>
 
+class GSVramMirrorVK;
 class VKSwapChain;
 struct GSSelfReadRoadDecision;
 
@@ -198,6 +199,12 @@ public:
 	__fi VkCommandBuffer GetCurrentCommandBuffer() const { return m_current_command_buffer; }
 	__fi VKStreamBuffer& GetTextureUploadBuffer() { return m_texture_stream_buffer; }
 	VkCommandBuffer GetCurrentInitCommandBuffer();
+	__fi bool IsGPUTimingSupported() const { return m_gpu_timing_supported; }
+
+	/// The GPU copy of GS local memory and its texture decode (GSVramMirrorVK.h). Null until
+	/// CreateVramMirror succeeds; destroyed with the device.
+	__fi GSVramMirrorVK* GetVramMirror() const { return m_vram_mirror.get(); }
+	bool CreateVramMirror();
 
 	/// Allocates a descriptor set from the pool reserved for the current frame.
 	VkDescriptorSet AllocatePersistentDescriptorSet(VkDescriptorSetLayout set_layout);
@@ -594,6 +601,7 @@ private:
 	VKStreamBuffer m_vertex_uniform_stream_buffer;
 	VKStreamBuffer m_fragment_uniform_stream_buffer;
 	VKStreamBuffer m_texture_stream_buffer;
+	std::unique_ptr<GSVramMirrorVK> m_vram_mirror;
 	VkBuffer m_expand_index_buffer = VK_NULL_HANDLE;
 	VmaAllocation m_expand_index_buffer_allocation = VK_NULL_HANDLE;
 

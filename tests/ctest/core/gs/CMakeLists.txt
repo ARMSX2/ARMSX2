@@ -205,3 +205,25 @@ target_compile_definitions(gs_texture_upscale_support_tests PRIVATE
 if(NOT MSVC)
 	set_source_files_properties(${raisr_engine_source} PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 endif()
+
+# The swizzle include of the GPU texture decode is rendered from GSTables.cpp by this test, which fails
+# when the committed bin/resources/shaders/vulkan/vram_mirror_swizzle.glsl differs, and which also runs
+# the rendered plan against the real CPU readers. Its own binary so it builds and runs in seconds.
+add_pcsx2_test(gs_vram_mirror_shader_tests
+	${CMAKE_CURRENT_SOURCE_DIR}/../StubHost.cpp
+	gs_vram_mirror_shader_tests.cpp
+)
+
+target_include_directories(gs_vram_mirror_shader_tests PRIVATE
+	${CMAKE_CURRENT_SOURCE_DIR}/../../../../pcsx2
+)
+
+target_compile_definitions(gs_vram_mirror_shader_tests PRIVATE
+	GS_VRAM_MIRROR_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../../../bin/resources/shaders/vulkan"
+)
+
+target_link_libraries(gs_vram_mirror_shader_tests PUBLIC
+	PCSX2_FLAGS
+	PCSX2
+	common
+)

@@ -691,6 +691,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSTexture.h
 	GS/Renderers/Common/GSVertex.h
 	GS/Renderers/Common/GSVertexTrace.h
+	GS/Renderers/Common/GSVramMirrorLayout.h
 	GS/Renderers/Null/GSDeviceNone.h
 	GS/Renderers/Null/GSNullDeviceProfile.h
 	GS/Renderers/Null/GSRendererNull.h
@@ -807,6 +808,7 @@ if(USE_VULKAN)
 		GS/Renderers/Vulkan/GSDeviceVK.cpp
 		GS/Renderers/Vulkan/GSLsfg.cpp
 		GS/Renderers/Vulkan/GSTextureVK.cpp
+		GS/Renderers/Vulkan/GSVramMirrorVK.cpp
 		GS/Renderers/Vulkan/vk_mem_alloc.cpp
 		GS/Renderers/Vulkan/VKBuilders.cpp
 		GS/Renderers/Vulkan/VKLibretro.cpp
@@ -878,6 +880,7 @@ if(USE_VULKAN)
 		GS/Renderers/Vulkan/GSDeviceVK.h
 		GS/Renderers/Vulkan/GSLsfg.h
 		GS/Renderers/Vulkan/GSTextureVK.h
+		GS/Renderers/Vulkan/GSVramMirrorVK.h
 		GS/Renderers/Vulkan/VKLibretro.h
 		GS/Renderers/Vulkan/VKBuilders.h
 		GS/Renderers/Vulkan/VKEntryPoints.h

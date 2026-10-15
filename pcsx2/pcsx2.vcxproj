@@ -408,6 +408,9 @@
     <ClCompile Include="GS\Renderers\Vulkan\GSTextureVK.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="GS\Renderers\Vulkan\GSVramMirrorVK.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="Host.cpp" />
     <ClCompile Include="Input\DInputSource.cpp" />
     <ClCompile Include="Input\InputManager.cpp" />
@@ -933,6 +936,9 @@
     <ClInclude Include="GS\Renderers\Vulkan\GSTextureVK.h">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Vulkan\GSVramMirrorVK.h">
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
+    </ClInclude>
     <ClInclude Include="Host.h" />
     <ClInclude Include="Input\AndroidNativeRumble.h" />
     <ClInclude Include="Input\DInputSource.h" />
@@ -1068,6 +1074,7 @@
     <ClInclude Include="GS\Renderers\HW\GSSpriteEdgeSnap.h" />
     <ClInclude Include="GS\Renderers\SW\GSVertexSW.h" />
     <ClInclude Include="GS\Renderers\Common\GSVertexTrace.h" />
+    <ClInclude Include="GS\Renderers\Common\GSVramMirrorLayout.h" />
     <ClInclude Include="GS\Renderers\Common\GSFieldShiftDetector.h" />
     <ClInclude Include="GS\Renderers\Common\GSFieldShiftPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSBlendConstantPolicy.h" />

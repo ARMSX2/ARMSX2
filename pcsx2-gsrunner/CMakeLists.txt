@@ -12,6 +12,8 @@ target_sources(pcsx2-gsrunner PRIVATE
 	GSReplayPayload.cpp
 	GSReplayPayload.h
 	GSRunnerAffinity.h
+	GSVramMirrorSelfTest.cpp
+	GSVramMirrorSelfTest.h
 	Main.cpp
 	RenderDocCapture.cpp
 	RenderDocCapture.h
