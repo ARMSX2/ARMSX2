@@ -104,7 +104,7 @@ namespace
 
 		pending_since = 0;
 		GSRemotePlay::Ring* const ring = GSRemotePlay::g_ring;
-		if (!ring || !ring->markers)
+		if (!ring || (!ring->markers && !ring->is_done))
 			return 0;
 
 		GSRemotePlay::Slot* newest = nullptr;
@@ -115,7 +115,8 @@ namespace
 			if (slot.state.load(std::memory_order_acquire) != GSRemotePlay::SlotRecorded)
 				continue;
 
-			if (ring->markers[i] != slot.seq)
+			const bool done = ring->markers ? ring->markers[i] == slot.seq : ring->is_done(ring->context, i);
+			if (!done)
 			{
 				if (!pending_since || slot.recorded_ns < pending_since)
 					pending_since = slot.recorded_ns;
@@ -142,7 +143,7 @@ namespace
 		if (!newest)
 			return 0;
 
-		// The marker was read before the frame; keep it that way.
+		// The marker or fence was read before the frame; keep it that way.
 		std::atomic_thread_fence(std::memory_order_acquire);
 
 		// How long that one took, for the next wait.

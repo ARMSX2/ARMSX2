@@ -8,9 +8,9 @@
 // where they play as player 2. Only the Android app ever turns it on; elsewhere nothing captures.
 //
 // Pictures: while remote play runs, the renderer draws every presented frame on the GPU, at the
-// stream's size, into a slot of a four-slot ring, and has the GPU write the slot's sequence number to
-// markers[i] once the frame is in. The app's video thread sees the number and takes the frame, which
-// is one of two kinds, chosen by the renderer as it records:
+// stream's size, into a slot of a four-slot ring, and says when the frame is in: Vulkan has the GPU
+// write the slot's sequence number to markers[i], OpenGL leaves a fence for is_done. The app's video
+// thread then takes the frame, which is one of two kinds, chosen by the renderer as it records:
 //  - hardware: the slot's AHardwareBuffer, filled with RGBA. The app hands it to the video encoder as
 //    a GL texture and gives the slot back when the encoder has drawn it, so the frame never passes
 //    through the CPU.
@@ -55,6 +55,7 @@ namespace GSRemotePlay
 		SlotFree = 0, ///< the renderer may record into it
 		SlotRecorded = 1, ///< the GPU is filling it, or has: markers[i] == seq says which
 		SlotHeld = 2, ///< hardware frame: the app has it until it gives the slot back
+		SlotPending = 3, ///< the renderer's still: a readback it has yet to copy out (OpenGL)
 	};
 
 	struct Slot
@@ -83,8 +84,12 @@ namespace GSRemotePlay
 	{
 		std::array<Slot, 4> slots;
 
-		/// One per slot, written by the GPU.
+		/// One per slot, written by the GPU: markers[i] == seq once slot i's frame is in (Vulkan).
 		const volatile u32* markers = nullptr;
+
+		/// Without markers: whether slot index's recorded frame is in, as its fence says (OpenGL).
+		/// Called under g_mutex.
+		bool (*is_done)(void* context, u32 index) = nullptr;
 
 		/// Makes a readback slot's data visible to the CPU, where its memory is not coherent. Called
 		/// under g_mutex before the data is read; may be null.
