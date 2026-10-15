@@ -65,6 +65,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_local_memory_write_stamp_tests.cpp
 	gs_write_stamp_writer_tests.cpp
 	gs_hash_memo_tests.cpp
+	gs_hash_raw_key_tests.cpp
 	gs_clut_tests.cpp
 	gs_alpha_known_bits_tests.cpp
 	gs_depth_coverage_tests.cpp

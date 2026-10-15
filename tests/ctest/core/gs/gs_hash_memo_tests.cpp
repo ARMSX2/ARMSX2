@@ -59,7 +59,7 @@ namespace
 
 		static u64 Hash(const GIFRegTEX0& tex0, const GIFRegTEXA& texa = {}, const GSVector2i* lod = nullptr, GSTextureCache::SourceRegion region = {})
 		{
-			return GSTextureCache::HashCacheKey::Create(tex0, texa, nullptr, lod, region).TEX0Hash;
+			return GSTextureCache::HashCacheKey::Create(tex0, texa, nullptr, lod, region, false).TEX0Hash;
 		}
 
 		/// The hash of a block-aligned 32-bit texture, built from its bytes: XXH3 of the blocks in the order

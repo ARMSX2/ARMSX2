@@ -112,7 +112,12 @@ public:
 
 		HashCacheKey();
 
-		static HashCacheKey Create(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, const u32* clut, const GSVector2i* lod, SourceRegion region);
+		/// `raw_blocks` lets a paletted window (T8, T4, T8H, T4HL, T4HH) that is at least one block in each
+		/// direction be hashed from the bytes of its blocks as they sit in local memory, instead of from the
+		/// texels they unswizzle to. Two windows with the same raw key have the same texels, so it is as good
+		/// a cache key, and it needs no unswizzle. It is not the texel hash, which names texture pack files
+		/// and upscaler results, so a lookup for those passes false and gets the texel hash.
+		static HashCacheKey Create(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, const u32* clut, const GSVector2i* lod, SourceRegion region, bool raw_blocks);
 
 		HashCacheKey WithRemovedCLUTHash() const;
 		void RemoveCLUTHash();
@@ -502,6 +507,7 @@ protected:
 		u64 region; ///< SourceRegion::bits of the base level.
 		u64 tex0[HASH_MEMO_MAX_LEVELS]; ///< Per level, the TEX0 bits the hash reads.
 		u32 levels; ///< Number of levels hashed. 0 in an empty entry.
+		bool raw_blocks; ///< The hash was allowed to read raw blocks (HashCacheKey::Create), which is a different hash.
 	};
 	struct HashMemo
 	{
