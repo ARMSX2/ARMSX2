@@ -522,7 +522,7 @@ namespace
 	struct SplitDiff
 	{
 		std::vector<std::string> obs, ring, other;
-		std::vector<std::string> sticky; // relaxation 3: the sticky zero/sign bits of STATUS (only with `relaxSticky`)
+		std::vector<std::string> sticky; // relaxation 3: the sticky bits of STATUS (only with `relaxSticky`)
 	};
 
 	SplitDiff DiffRegsSplit(const VURegs& a, const VURegs& b, bool relaxSticky)
@@ -562,15 +562,16 @@ namespace
 				std::memcpy(&vb, pb + f.off + i, n);
 				char buf[128];
 				std::snprintf(buf, sizeof(buf), "%s+%zu: mvu=%08x vuopt=%08x", f.name, i, va, vb);
-				// Relaxation 3: the sticky zero/sign bits, in the STATUS register (bits 6-7) and in the low
-				// byte of the status ring copies, may differ; anything else in those words may not.
+				// Relaxation 3: the sticky zero/sign bits (bits 6-7 of the STATUS register, the low byte of
+				// the status ring copies) and the sticky invalid/divide-by-zero bits (register bits 10-11,
+				// ring bits 24-25) may differ; anything else in those words may not.
 				if (relaxSticky)
 				{
 					u32 mask = 0;
 					if (std::strcmp(f.name, "VI") == 0 && i == REG_STATUS_FLAG * sizeof(REG_VI))
-						mask = 0xC0;
+						mask = 0xCC0;
 					else if (std::strcmp(f.name, "micro_statusflags") == 0)
-						mask = 0xFF;
+						mask = 0x30000FF;
 					if (mask && ((va ^ vb) & ~mask) == 0)
 					{
 						out.sticky.emplace_back(buf);
@@ -703,7 +704,7 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 		u64 bailsEntry = 0, bailsLoop = 0;
 		// The region counters: the worker's jobs' (through the live tier's stats) with
 		// --vuopt-region-bg, the region tier's own otherwise.
-		u32 stickyDropped = 0, stickyImages = 0, statusReaders = 0, stickyReaders = 0;
+		u32 stickyDropped = 0, stickyImages = 0, statusReaders = 0, stickyReaders = 0, stickyDivReaders = 0;
 		if (ctx.region && ctx.regionBg)
 		{
 			bailsEntry = bgAfter.bailsEntry - bgBefore.bailsEntry;
@@ -712,6 +713,7 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			stickyImages = static_cast<u32>(bgAfter.stickyImages - bgBefore.stickyImages);
 			statusReaders = static_cast<u32>(bgAfter.statusReaders - bgBefore.statusReaders);
 			stickyReaders = static_cast<u32>(bgAfter.stickyReaders - bgBefore.stickyReaders);
+			stickyDivReaders = static_cast<u32>(bgAfter.stickyDivReaders - bgBefore.stickyDivReaders);
 		}
 		else if (ctx.region)
 		{
@@ -720,6 +722,7 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			stickyImages = ctx.region->StickyReaderImages();
 			statusReaders = ctx.region->StatusReaders();
 			stickyReaders = ctx.region->StickyReaders();
+			stickyDivReaders = ctx.region->StickyDivReaders();
 		}
 		Uninstall();
 
@@ -796,9 +799,9 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			std::snprintf(buf, sizeof(buf), " stickydrop=%u stickyimg=%u stickydiff=%zu", stickyDropped, stickyImages,
 				first.sticky.size() + fin.sticky.size());
 			obsText += buf;
-			std::snprintf(buf, sizeof(buf), " bails_entry=%llu bails_loophead=%llu status_readers=%u sticky_readers=%u",
+			std::snprintf(buf, sizeof(buf), " bails_entry=%llu bails_loophead=%llu status_readers=%u sticky_readers=%u sticky_div_readers=%u",
 				static_cast<unsigned long long>(bailsEntry), static_cast<unsigned long long>(bailsLoop),
-				statusReaders, stickyReaders);
+				statusReaders, stickyReaders, stickyDivReaders);
 			obsText += buf;
 		}
 		if (opts.trace)

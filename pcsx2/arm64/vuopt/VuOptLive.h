@@ -119,6 +119,7 @@ namespace vuopt
 			// dropped the sticky byte, and compiles whose micro memory has a sticky reader.
 			u64 statusReaders = 0;
 			u64 stickyReaders = 0;
+			u64 stickyDivReaders = 0; // ... of those, the ones that read the sticky I / D bits (STATUS bits 10-11)
 			u64 stickyDropped = 0;
 			u64 stickyImages = 0;
 			// The sticky-STATUS tripwire (section 9ad): the number of times it went off (0 in a

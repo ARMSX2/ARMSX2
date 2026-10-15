@@ -131,15 +131,15 @@ std::vector<std::string> Compare(const VuSnapshot& ra, const VuSnapshot& rb,
 			u32 va = 0, vb = 0;
 			std::memcpy(&va, x + f.off + i, n);
 			std::memcpy(&vb, y + f.off + i, n);
-			// Relaxation 3: the sticky zero and sign bits of STATUS (bits 6-7 of the register, the low
-			// byte of its ring copies); the rest of those words stays pinned.
+			// Relaxation 3: the sticky bits of STATUS (bits 6-7 and 10-11 of the register, the low byte
+			// and bits 24-25 of its ring copies); the rest of those words stays pinned.
 			if (stickyRelax)
 			{
 				u32 mask = 0;
 				if (std::strcmp(f.name, "VI") == 0 && i == REG_STATUS_FLAG * sizeof(REG_VI))
-					mask = 0xC0;
+					mask = 0xCC0;
 				else if (std::strcmp(f.name, "micro_statusflags") == 0)
-					mask = 0xFF;
+					mask = 0x30000FF;
 				if (mask && ((va ^ vb) & ~mask) == 0)
 					continue;
 			}
@@ -793,7 +793,9 @@ struct RegionOutcome
 	u32 accRegions = 0, accNonLinear = 0, accAccumulated = 0; // sticky STATUS accumulation
 	u32 handoffEdges = 0, handoffDead = 0; // links into loop heads, and the ring instances their bails leave out
 	u32 stickyDropped = 0;                 // regions compiled without the sticky byte of STATUS (relaxation 3)
+	u32 statusReaders = 0, stickyReaders = 0, stickyDivReaders = 0; // the census of FSAND/FSEQ/FSOR in the regions
 	bool stickyDiffers = false;            // the end states differ in exactly the sticky bits relaxation 3 frees
+	bool divStickyDiffers = false;         // ... and among them the sticky I / D bits (STATUS bits 10-11) a divide sets
 };
 
 // microVU alone against vuopt regions (and framed bodies elsewhere), running
@@ -882,6 +884,9 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		o.handoffEdges = rs.region.HandoffEdges();
 		o.handoffDead = rs.region.HandoffRingsDead();
 		o.stickyDropped = rs.region.StickyDropped();
+		o.statusReaders = rs.region.StatusReaders();
+		o.stickyReaders = rs.region.StickyReaders();
+		o.stickyDivReaders = rs.region.StickyDivReaders();
 	}
 	const bool relax = o.stickyDropped > 0;
 	if (observe)
@@ -895,6 +900,8 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		for (const std::string& d : Compare(ref.fin, got.fin, ref.finPath, got.finPath, !ref.finStopped, relax))
 			o.diffs.push_back("at the end: " + d);
 		o.stickyDiffers = relax && o.diffs.empty() && !Compare(ref.fin, got.fin, ref.finPath, got.finPath, !ref.finStopped, false).empty();
+		o.divStickyDiffers = o.stickyDiffers &&
+			((ref.fin.regs.VI[REG_STATUS_FLAG].UL ^ got.fin.regs.VI[REG_STATUS_FLAG].UL) & 0xC00) != 0;
 	}
 	else
 		o.diffs = Compare(ref.stop, got.stop, ref.stopPath, got.stopPath, true, relax);
@@ -1774,12 +1781,13 @@ std::vector<VuOp> DivideFlagProgram(u32 trip)
 	return p;
 }
 
-// Hack on, every budget from 1 to 150, the loops above. Returns the runs that differ, and in the
-// out parameters the regions compiled without the sticky byte and the runs whose end states
-// differ in the sticky bits.
-u32 DropStickySweep(u32* dropped, u32* stickyRuns, bool report, bool stopAtFirst)
+// The flag hack on and off (decision j), every budget from 1 to 150, the loops above. Returns the runs
+// that differ, and in the out parameters the regions compiled without the sticky byte, the runs whose
+// end states differ in the sticky bits and those that differ in the sticky I / D bits a divide sets.
+u32 DropStickySweep(u32* dropped, u32* stickyRuns, u32* divStickyRuns, bool report, bool stopAtFirst)
 {
 	u32 failures = 0;
+	for (bool hack : {true, false})
 	for (int family = 0; family < 3; family++)
 		for (int variant = 0; variant < (family == 2 ? 2 : 9); variant++)
 		{
@@ -1787,7 +1795,7 @@ u32 DropStickySweep(u32* dropped, u32* stickyRuns, bool report, bool stopAtFirst
 														   : family == 1 ? HandoffProgram(variant, 6) : DivideFlagProgram(6));
 			for (u32 budget = 1; budget <= 150; budget++)
 			{
-				const RegionOutcome o = RunRegion(p, true, [family, variant](VuTestHarness& h) {
+				const RegionOutcome o = RunRegion(p, hack, [family, variant](VuTestHarness& h) {
 					if (family == 0)
 					{
 						if (variant >= 6)
@@ -1816,8 +1824,10 @@ u32 DropStickySweep(u32* dropped, u32* stickyRuns, bool report, bool stopAtFirst
 					*dropped += o.stickyDropped;
 				if (stickyRuns)
 					*stickyRuns += o.stickyDiffers ? 1 : 0;
+				if (divStickyRuns)
+					*divStickyRuns += o.divStickyDiffers ? 1 : 0;
 				if (!o.diffs.empty() && (++failures <= 3) && report)
-					ADD_FAILURE() << "family " << family << " variant " << variant << " budget " << budget << "\n" << Join(o.diffs);
+					ADD_FAILURE() << "hack " << hack << " family " << family << " variant " << variant << " budget " << budget << "\n" << Join(o.diffs);
 				if (stopAtFirst && failures)
 					return failures;
 			}
@@ -1828,12 +1838,15 @@ u32 DropStickySweep(u32* dropped, u32* stickyRuns, bool report, bool stopAtFirst
 
 TEST(VuoptRegion, DropStickyPinsEverythingElse)
 {
-	u32 dropped = 0, stickyRuns = 0;
-	EXPECT_EQ(DropStickySweep(&dropped, &stickyRuns, true, false), 0u);
-	// the point of the test: the regions do compile without the sticky byte, and it does show
+	u32 dropped = 0, stickyRuns = 0, divStickyRuns = 0;
+	EXPECT_EQ(DropStickySweep(&dropped, &stickyRuns, &divStickyRuns, true, false), 0u);
+	// the point of the test: the regions do compile without the sticky byte, and it does show, the
+	// sticky I / D bits of the divides in it too
 	EXPECT_GT(dropped, 0u);
 	EXPECT_GT(stickyRuns, 0u);
-	std::printf("[vuopt dropsticky] regions without the sticky byte=%u runs whose sticky bits differ=%u\n", dropped, stickyRuns);
+	EXPECT_GT(divStickyRuns, 0u);
+	std::printf("[vuopt dropsticky] regions without the sticky byte=%u runs whose sticky bits differ=%u (sticky I/D bits: %u)\n",
+		dropped, stickyRuns, divStickyRuns);
 }
 
 // The premise is checked per program image: with a sticky reader anywhere in it the sticky byte
@@ -1841,10 +1854,11 @@ TEST(VuoptRegion, DropStickyPinsEverythingElse)
 TEST(VuoptRegion, DropStickyOffWhereAStickyBitIsRead)
 {
 	int failures = 0;
+	for (bool hack : {true, false})
 	for (int variant = 0; variant <= 8; variant++)
 		for (u32 budget : {0u, 40u, 90u})
 		{
-			const RegionOutcome o = RunRegion(StickyProgram(variant, variant == 4 ? 12 : 7, 16), true, [variant](VuTestHarness& h) {
+			const RegionOutcome o = RunRegion(StickyProgram(variant, variant == 4 ? 12 : 7, 16), hack, [variant](VuTestHarness& h) {
 				SeedSparse(h, 31 + variant);
 				h.SetVi(8, 0);
 				h.WriteMemU128(0x100, 0x00008001, 0x10000000, 0x0000000e, 0);
@@ -1857,8 +1871,53 @@ TEST(VuoptRegion, DropStickyOffWhereAStickyBitIsRead)
 	EXPECT_EQ(failures, 0);
 }
 
+// The census of the readers in the regions counts the ones that select a sticky bit, and among
+// them the ones that select the sticky I / D bits a divide sets (STATUS bits 10-11): the premise of
+// dropping them.
+TEST(VuoptRegion, StickyReaderCensusSeparatesTheDivideBits)
+{
+	struct Case
+	{
+		u32 imm;
+		bool sticky, div;
+	};
+	for (const Case c : {Case{0x03f, false, false}, Case{0x030, false, false}, Case{0x040, true, false}, Case{0x080, true, false},
+			 Case{0x100, true, false}, Case{0x200, true, false}, Case{0x400, true, true}, Case{0x800, true, true},
+			 Case{0xc00, true, true}, Case{0xfff, true, true}})
+	{
+		std::vector<VuOp> p;
+		p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, 20)));
+		p.push_back(L(VIADDIU_L(vi::vi2, vi::vi0, 0x10)));
+		// loop head (pair 2)
+		p.push_back(P(VDIV_L(vf::vf1, 0, vf::vf2, 1), VMUL_U(mask::xyzw, vf::vf3, vf::vf3, vf::vf4)));
+		p.push_back(P(VFSAND_L(vi::vi3, c.imm), VADDq_U(mask::xyz, vf::vf5, vf::vf3)));
+		p.push_back(P(VSQ_L(mask::xyzw, vf::vf5, vi::vi2, 0), VMADDy_U(mask::x | mask::w, vf::vf6, vf::vf5, vf::vf4)));
+		p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), VSUB_U(mask::xyzw, vf::vf7, vf::vf6, vf::vf3)));
+		p.push_back(P(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(2 - 6 - 1)), VMULAx_U(mask::xyzw, vf::vf7, vf::vf4)));
+		p.push_back(P(VIADDIU_L(vi::vi2, vi::vi2, 1), VMADDAw_U(mask::xyzw, vf::vf3, vf::vf4))); // delay slot
+		p.push_back(EBit(U(VNOP_U())));
+		for (bool fh : {true, false})
+		{
+			const RegionOutcome o = RunRegion(p, fh, [](VuTestHarness& h) {
+				h.SetVf(1, 2.0f, 3.0f, 4.0f, 5.0f);
+				h.SetVf(2, 0.5f, 1.5f, 2.5f, 3.5f);
+				h.SetVf(3, 1.0f, 1.0f, 1.0f, 1.0f);
+				h.SetVf(4, 1.0001f, 0.9999f, 1.00001f, 0.5f);
+			});
+			EXPECT_TRUE(o.diffs.empty()) << "imm12=" << std::hex << c.imm << "\n" << Join(o.diffs, 6);
+			ASSERT_GE(o.regions, 1u);
+			EXPECT_GT(o.statusReaders, 0u) << "imm12=" << std::hex << c.imm;
+			EXPECT_EQ(o.stickyReaders > 0, c.sticky) << "imm12=" << std::hex << c.imm;
+			EXPECT_EQ(o.stickyDivReaders > 0, c.div) << "imm12=" << std::hex << c.imm;
+			// a sticky reader anywhere in the image keeps the sticky bits; none drops them
+			EXPECT_EQ(o.stickyDropped > 0, !c.sticky) << "imm12=" << std::hex << c.imm << " flagHack=" << fh;
+		}
+	}
+}
+
 // Observable state is still pinned: dropping the bits above the sticky byte too (a divide's D and
-// I flags), or leaving the update's own pack out (the current Z and S), must be seen.
+// I flags), leaving the update's own pack out (the current Z and S), or leaving a divide's own D / I
+// bits out of its flags, must be seen.
 TEST(VuoptRegion, DropStickyMutationsAreCaught)
 {
 	struct Guard
@@ -1866,10 +1925,10 @@ TEST(VuoptRegion, DropStickyMutationsAreCaught)
 		int saved = g_dropStickyMutation;
 		~Guard() { g_dropStickyMutation = saved; }
 	} guard;
-	for (int m : {1, 2})
+	for (int m : {1, 2, 3})
 	{
 		g_dropStickyMutation = m;
-		EXPECT_GT(DropStickySweep(nullptr, nullptr, false, true), 0u) << "mutation " << m << " went unnoticed";
+		EXPECT_GT(DropStickySweep(nullptr, nullptr, nullptr, false, true), 0u) << "mutation " << m << " went unnoticed";
 	}
 }
 

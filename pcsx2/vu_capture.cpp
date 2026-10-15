@@ -621,15 +621,13 @@ namespace vu_capture
 			SnapshotState(regs, st);
 			const u64 state_hash = Fnv1a(&st, sizeof(st));
 			// obs_hash: the same state with the bits the exactness contract frees (relaxation 3, flag
-			// hack on: the sticky zero/sign bits of STATUS, in the register and in its ring copies).
+			// hack on or off: the sticky zero/sign and invalid/divide-by-zero bits of STATUS, bits 6-7
+			// and 10-11 of the register and the low byte and bits 24-25 of its ring copies).
 			// Everything else a game can see is in it, the settled flags of a program end included.
 			CapturedState obs = st;
-			if (EmuConfig.Speedhacks.vuFlagHack)
-			{
-				obs.VI[REG_STATUS_FLAG] &= ~0xC0u;
-				for (u32& w : obs.micro_statusflags)
-					w &= ~0xFFu;
-			}
+			obs.VI[REG_STATUS_FLAG] &= ~0xCC0u;
+			for (u32& w : obs.micro_statusflags)
+				w &= ~0x30000FFu;
 			const u64 obs_hash = Fnv1a(&obs, sizeof(obs));
 			const u64 vumem_hash = Fnv1a(vumem_ptr, vumem_size);
 			// core_hash covers ONLY pure arithmetic/control state: VF[32] +

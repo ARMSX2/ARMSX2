@@ -88,6 +88,8 @@ namespace vuopt
 		u32 StickyReaderImages() const { return stickyReaderImages_; }
 		u32 StatusReaders() const { return statusReaders_; }
 		u32 StickyReaders() const { return stickyReaders_; }
+		// ... of which read the sticky I / D bits (STATUS bits 10-11), the ones a divide sets.
+		u32 StickyDivReaders() const { return stickyDivReaders_; }
 		// Budget bails the regions' code has taken, summed over the programs it saw: at an
 		// entry from microVU, and at a loop head (read from the programs; only valid while
 		// they are alive).
@@ -118,11 +120,14 @@ namespace vuopt
 		// only the instances microVU's code for the block can still see are
 		// handed over exactly. Off (A/B): all twelve, as before.
 		bool handoffLiveness = true;
-		// Relaxation 3 of the exactness contract: with the flag hack on and no instruction in the
-		// micro memory reading a sticky STATUS bit (FSAND/FSEQ/FSOR with a mask that selects bits
-		// 6-11), STATUS updates drop the sticky byte (BuildOptions::dropSticky). The STATUS a
+		// Relaxation 3 of the exactness contract: with no instruction in the micro memory reading a
+		// sticky STATUS bit (FSAND/FSEQ/FSOR with a mask that selects bits 6-11), whatever the flag
+		// hack (owner decision j, 2026-10-14), STATUS updates drop the sticky byte
+		// (BuildOptions::dropSticky) and a divide's flags drop the sticky I / D bits. The STATUS a
 		// program leaves can then differ from microVU's in bits 6-7 (the sticky zero and sign
-		// bits), which nothing in the corpora reads.
+		// bits) and 10-11 (the sticky invalid and divide-by-zero bits), which nothing in the corpora
+		// reads. The live tier switches this off for the rest of the session when something does
+		// (the tripwire, microVU_VuOpt-arm64.inl).
 		bool dropSticky = true;
 		int dropStickyMutation = 0; // test only: LowerEnv::dropStickyMutation
 		// Test only: break the rule above on purpose, to show the tests notice.
@@ -163,7 +168,7 @@ namespace vuopt
 		u32 compiles_ = 0, regions_ = 0, nodes_ = 0, exits_ = 0;
 		u32 accRegions_ = 0, accNonLinear_ = 0, accAccumulated_ = 0, accUnprofitable_ = 0;
 		u32 handoffEdges_ = 0, handoffRingsDead_ = 0;
-		u32 statusReaders_ = 0, stickyReaders_ = 0;
+		u32 statusReaders_ = 0, stickyReaders_ = 0, stickyDivReaders_ = 0;
 		u32 stickyDropped_ = 0, stickyReaderImages_ = 0;
 		std::vector<std::pair<const void*, s32>> progs_;
 		void NoteProgram(const void* program, s32 off);

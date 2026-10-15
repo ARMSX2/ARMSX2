@@ -30,8 +30,11 @@ namespace vuopt
 	namespace
 	{
 		constexpr u32 kExpMask = 0x7F800000;
+		// A divide's flags in microVU's STATUS layout: the instance's own I / D bit (18, 19) and the
+		// sticky I / D bit (24, 25; STATUS bits 10 and 11) that goes with it.
 		constexpr u32 kDivI = 0x1040000;
 		constexpr u32 kDivD = 0x2080000;
+		constexpr u32 kDivCurrent = 0x000C0000;
 		constexpr int kSlots = 32; // mVU.neonBackup[32]
 		// The top of the backup area holds a region's clamped copies of
 		// invariant registers kept in memory (HomeMap::clampSlot); node spills
@@ -2930,12 +2933,19 @@ namespace vuopt
 			const int ftw = LaneWord(in.args[1], l.ftf);
 			const int t9 = TempG(), t11 = TempG();
 			const int f = DefG(id);
+			// Relaxation 3 covers the sticky I / D bits too (decision j, 2026-10-14: all the sticky
+			// bits of STATUS): with the sticky byte dropped the divide builds only the bits its
+			// instance needs. Mutation 3 (test only) drops the instance's own bits instead.
+			u32 divI = env_.dropSticky ? (kDivI & kDivCurrent) : kDivI;
+			u32 divD = env_.dropSticky ? (kDivD & kDivCurrent) : kDivD;
+			if (env_.dropSticky && env_.dropStickyMutation == 3)
+				divI = divD = 0;
 			armAsm->Mov(W(f), 0);
 			if (op == LOp::SQRT || op == LOp::RSQRT)
 			{
 				a64::Label pos;
 				armAsm->Tbz(W(ftw), 31, &pos);
-				armAsm->Mov(W(f), kDivI);
+				armAsm->Mov(W(f), divI);
 				armAsm->Bind(&pos);
 			}
 			if (op == LOp::DIV || op == LOp::RSQRT)
@@ -2943,8 +2953,8 @@ namespace vuopt
 				a64::Label nonzero;
 				armAsm->Tst(W(ftw), kExpMask);
 				armAsm->B(&nonzero, a64::ne);
-				armAsm->Mov(W(t9), kDivD);
-				armAsm->Mov(W(t11), kDivI);
+				armAsm->Mov(W(t9), divD);
+				armAsm->Mov(W(t11), divI);
 				armAsm->Tst(W(fsw), kExpMask);
 				armAsm->Csel(W(t9), W(t11), W(t9), a64::eq);
 				armAsm->Orr(W(f), W(f), W(t9));

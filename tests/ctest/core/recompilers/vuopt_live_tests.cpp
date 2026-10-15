@@ -835,16 +835,16 @@ void SetupSticky(VuTestHarness& h)
 	h.SetVf(2, 0.5f, 0.0f, 2.5f, 3.5f); // the loop's DIV is vf1.x / vf2.y
 }
 
-// Everything but the sticky bits of STATUS: the register's bits 6-7, the low byte of its ring
-// copies. What the contract frees while the tripwire is armed.
+// Everything but the sticky bits of STATUS: the register's bits 6-7 and 10-11, the low byte and
+// bits 24-25 of its ring copies. What the contract frees while the tripwire is armed.
 std::string DiffExceptSticky(const Result& a, const Result& b)
 {
 	Result x = a, y = b;
 	for (Result* r : {&x, &y})
 	{
-		r->snap.regs.VI[REG_STATUS_FLAG].UL &= ~0xC0u;
+		r->snap.regs.VI[REG_STATUS_FLAG].UL &= ~0xCC0u;
 		for (u32& w : r->snap.regs.micro_statusflags)
-			w &= ~0xFFu;
+			w &= ~0x30000FFu;
 	}
 	return Diff(x, y);
 }
@@ -902,7 +902,7 @@ TripOutcome RunTripScenario(Trigger trig, bool flagHack, int mutation, u32 reade
 	Prepare(h, StickyLoop(10), SetupSticky, 0);
 	h.RunNoDiff();
 	const vuopt::live::Stats s0 = vuopt::live::GetStats();
-	bool sawSticky = false;
+	bool sawSticky = false, sawDivSticky = false;
 	const auto expectDropped = [&](int runs, const char* when) {
 		for (int i = 0; i < runs; i++)
 		{
@@ -911,6 +911,7 @@ TripOutcome RunTripScenario(Trigger trig, bool flagHack, int mutation, u32 reade
 			if (const std::string d = DiffExceptSticky(ref, got); !d.empty())
 				out.problems += std::string(when) + " run " + std::to_string(i) + ": " + d;
 			sawSticky |= StickyBitsDiffer(ref, got, 0xC0);
+			sawDivSticky |= StickyBitsDiffer(ref, got, 0xC00);
 		}
 	};
 	expectDropped(10, "armed");
@@ -918,6 +919,8 @@ TripOutcome RunTripScenario(Trigger trig, bool flagHack, int mutation, u32 reade
 		out.problems += "no region dropped the sticky byte before the trip\n";
 	if (!sawSticky)
 		out.problems += "the drop was not visible in the sticky zero/sign bits\n";
+	if (!sawDivSticky)
+		out.problems += "the drop was not visible in the sticky divide bits\n";
 	if (vuopt::live::StickyTripped())
 		out.problems += "tripped before any reader\n";
 
@@ -1004,7 +1007,7 @@ std::string TripReport(const TripOutcome& o, const char* what)
 // the STATUS at a program's end is microVU's again, byte for byte, and the new regions keep it so.
 TEST(VuoptLive, TripwireImageUploadRebuildsExact)
 {
-	for (bool fh : {true})
+	for (bool fh : {true, false})
 	{
 		const TripOutcome o = RunTripScenario(Trigger::Upload, fh, 0);
 		EXPECT_EQ(TripReport(o, "upload"), "") << "flagHack=" << fh;
@@ -1014,7 +1017,7 @@ TEST(VuoptLive, TripwireImageUploadRebuildsExact)
 // ... and the compile alone notices it too (the scan of a new program's image out of the way).
 TEST(VuoptLive, TripwireCompiledReaderRebuildsExact)
 {
-	for (bool fh : {true})
+	for (bool fh : {true, false})
 	{
 		const TripOutcome o = RunTripScenario(Trigger::Compile, fh, 0);
 		EXPECT_EQ(TripReport(o, "compile"), "") << "flagHack=" << fh;
@@ -1027,7 +1030,7 @@ TEST(VuoptLive, TripwireEveryStickyBitTripsAndTheCurrentBitsDoNot)
 {
 	for (u32 imm : {0x040u, 0x080u, 0x100u, 0x200u, 0x400u, 0x800u, 0xc00u, 0xfffu})
 	{
-		LiveScope on(true, 4, true);
+		LiveScope on(true, 4, false);
 		VuTestHarness h(1);
 		Prepare(h, StickyLoop(10), SetupSticky, 0);
 		h.RunNoDiff();
@@ -1041,7 +1044,7 @@ TEST(VuoptLive, TripwireEveryStickyBitTripsAndTheCurrentBitsDoNot)
 	}
 	for (u32 imm : {0x000u, 0x001u, 0x03fu, 0x030u, 0x03cu})
 	{
-		LiveScope on(true, 4, true);
+		LiveScope on(true, 4, false);
 		VuTestHarness h(1);
 		Prepare(h, StickyLoop(10), SetupSticky, 0);
 		h.RunNoDiff();
@@ -1056,7 +1059,7 @@ TEST(VuoptLive, TripwireEveryStickyBitTripsAndTheCurrentBitsDoNot)
 // and from the interpreter.
 TEST(VuoptLive, TripwireOutsideReadRebuildsExact)
 {
-	for (bool fh : {true})
+	for (bool fh : {true, false})
 	{
 		TripOutcome o = RunTripScenario(Trigger::OutsideJit, fh, 0);
 		EXPECT_EQ(TripReport(o, "outside, jit"), "") << "flagHack=" << fh;
@@ -1069,7 +1072,7 @@ TEST(VuoptLive, TripwireOutsideReadRebuildsExact)
 // VU1's STATUS.
 TEST(VuoptLive, TripwireOrdinaryAccessesDoNotTrip)
 {
-	LiveScope on(true, 4, true);
+	LiveScope on(true, 4, false);
 	const vuopt::live::Stats base = vuopt::live::GetStats();
 	VuTestHarness h1(1);
 	Prepare(h1, StickyLoop(10), SetupSticky, 0);
@@ -1122,7 +1125,7 @@ TEST(VuoptLive, TripwireOrdinaryAccessesDoNotTrip)
 // runs equal microVU's throughout.
 TEST(VuoptLive, TripwireJobMadeBeforeItIsNotPublished)
 {
-	for (bool fh : {true})
+	for (bool fh : {true, false})
 	{
 		const auto sequence = [&](int mutation, bool on, std::string& problems, vuopt::live::Stats& d) {
 			Result ref;
@@ -1167,7 +1170,9 @@ TEST(VuoptLive, TripwireJobMadeBeforeItIsNotPublished)
 		EXPECT_EQ(problems, "") << "flagHack=" << fh;
 		EXPECT_EQ(d.stickyDropped, 1u) << "the job was made with the drop";
 		EXPECT_EQ(d.discardSticky, 1u) << "flagHack=" << fh;
-		EXPECT_EQ(d.publishedGen, 0u) << "flagHack=" << fh;
+		// (a tier-up asked for after the trip is built without the drop and may be published in the
+		// runs that follow: at most that one)
+		EXPECT_LE(d.publishedGen, 1u) << "flagHack=" << fh;
 		EXPECT_EQ(d.stickyTripResets, 0u) << "nothing was built with the drop, so nothing is rebuilt";
 	}
 }
@@ -1176,7 +1181,7 @@ TEST(VuoptLive, TripwireJobMadeBeforeItIsNotPublished)
 // or boot does, and the regions drop the byte again.
 TEST(VuoptLive, TripwireStaysSetThroughResetsUntilTheVmIsReset)
 {
-	LiveScope on(true, 4, true);
+	LiveScope on(true, 4, false);
 	VuTestHarness h(1);
 	Prepare(h, StickyLoop(10), SetupSticky, 0);
 	h.RunNoDiff();
@@ -1201,7 +1206,7 @@ TEST(VuoptLive, TripwireStaysSetThroughResetsUntilTheVmIsReset)
 // The counters and the log: the live stats line carries the trip.
 TEST(VuoptLive, TripwireIsCountedInTheStatsLine)
 {
-	LiveScope on(true, 4, true);
+	LiveScope on(true, 4, false);
 	RecompilerTestEnvironment::ResetVuBlockCache(1); // (the setting reaches the tier at a reset)
 	const u64 trips0 = vuopt::live::GetStats().stickyTrips;
 	std::string line = vuopt::live::FormatStats();
@@ -1235,20 +1240,20 @@ TEST(VuoptLive, TripwireMutationsAreCaught)
 	};
 	for (const Case& c : cases)
 	{
-		const TripOutcome o = RunTripScenario(c.trig, true, c.mutation);
+		const TripOutcome o = RunTripScenario(c.trig, false, c.mutation);
 		EXPECT_NE(TripReport(o, c.what), "") << "mutation went unnoticed: " << c.what;
 	}
 	// a job published after the trip
 	const auto published = [](int mutation) {
 		Result ref;
 		{
-			LiveScope off(false, 4, true);
+			LiveScope off(false, 4, false);
 			VuTestHarness h(1);
 			Prepare(h, StickyLoop(10), SetupSticky, 0);
 			h.RunNoDiff();
 			ref = Take(h);
 		}
-		LiveScope scope(true, 4, true, vuopt::live::kJumpTierUpRuns, /*sync=*/false);
+		LiveScope scope(true, 4, false, vuopt::live::kJumpTierUpRuns, /*sync=*/false);
 		VuTestHarness h(1);
 		Prepare(h, StickyLoop(10), SetupSticky, 0);
 		h.RunNoDiff();

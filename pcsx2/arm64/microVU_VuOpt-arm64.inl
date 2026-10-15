@@ -248,7 +248,7 @@ struct VuoptJob final : vuopt::bg::Job
 	// The flag-reader census of the compile (9ab), and whether it dropped the sticky STATUS
 	// byte (relaxation 3: decided by scanning the job's copy of micro memory; publication
 	// scans live micro memory again and discards the job if a sticky reader has appeared).
-	u32 statusReaders = 0, stickyReaders = 0, stickyDropped = 0, stickyImages = 0;
+	u32 statusReaders = 0, stickyReaders = 0, stickyDivReaders = 0, stickyDropped = 0, stickyImages = 0;
 	u64 workerIns = 0;
 
 	void Run() override;
@@ -546,7 +546,7 @@ namespace vuopt::live
 			"vuopt live tier: tierups=%llu retiers=%llu retierchecks=%llu blocks_set_aside=%llu targets=%llu jumpmisses=%llu "
 			"roots=%llu regions=%llu rnodes=%llu rexits=%llu rbytes=%llu bodyblocks=%llu bodies=%llu bodybytes=%llu bails=%llu "
 			"jrtierups=%llu jrcounted=%llu xprogtargets=%llu bails_entry=%llu bails_loophead=%llu "
-			"status_readers=%llu sticky_readers=%llu sticky_dropped=%llu sticky_images=%llu "
+			"status_readers=%llu sticky_readers=%llu sticky_div_readers=%llu sticky_dropped=%llu sticky_images=%llu "
 			"sticky_trips=%llu sticky_trip_resets=%llu sticky_tripped=%d",
 			(unsigned long long)s.tierUps, (unsigned long long)s.retiers, (unsigned long long)s.retierChecks,
 			(unsigned long long)s.blocksSetAside, (unsigned long long)s.targetsRecorded, (unsigned long long)s.jumpMisses,
@@ -555,7 +555,7 @@ namespace vuopt::live
 			(unsigned long long)s.bodiesLowered, (unsigned long long)s.bodyBytes, (unsigned long long)s.bailCompiles,
 			(unsigned long long)s.jumpTierUps, (unsigned long long)s.jumpCounted, (unsigned long long)s.crossProgTargets,
 			(unsigned long long)s.bailsEntry, (unsigned long long)s.bailsLoopHead, (unsigned long long)s.statusReaders,
-			(unsigned long long)s.stickyReaders, (unsigned long long)s.stickyDropped,
+			(unsigned long long)s.stickyReaders, (unsigned long long)s.stickyDivReaders, (unsigned long long)s.stickyDropped,
 			(unsigned long long)s.stickyImages, (unsigned long long)s.stickyTrips, (unsigned long long)s.stickyTripResets, StickyTripped() ? 1 : 0);
 		out = buf;
 		if (s.stickyTrips)
@@ -879,6 +879,7 @@ void VuoptJob::Run()
 		declined[d.first] += d.second;
 	statusReaders = tier.StatusReaders();
 	stickyReaders = tier.StickyReaders();
+	stickyDivReaders = tier.StickyDivReaders();
 	stickyDropped = tier.StickyDropped();
 	stickyImages = tier.StickyReaderImages();
 	workerIns = vuoptReadIns() - ins0;
@@ -959,6 +960,7 @@ static void vuoptCollect(VuoptJob& j)
 		s_vuopt.stats.regionDeclined[d.first] += d.second;
 	s_vuopt.stats.statusReaders += j.statusReaders;
 	s_vuopt.stats.stickyReaders += j.stickyReaders;
+	s_vuopt.stats.stickyDivReaders += j.stickyDivReaders;
 	s_vuopt.stats.stickyDropped += j.stickyDropped;
 	s_vuopt.stats.stickyImages += j.stickyImages;
 	// The micro memory the job compiled under has a reader of the sticky bits (the scan is of the

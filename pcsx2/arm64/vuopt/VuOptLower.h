@@ -76,10 +76,11 @@ namespace vuopt
 		// in); the nodes' STATUS ring variables then carry only those instances.
 		bool stickyAcc = false;
 		// Relaxation 3 (BuildOptions::dropSticky): a STATUS update builds the instance from the
-		// bits above the sticky byte of the one it depends on and its own pack, no sticky byte.
+		// bits above the sticky byte of the one it depends on and its own pack, no sticky byte, and
+		// a divide's flags carry the instance's I / D bits without the sticky I / D bits.
 		bool dropSticky = false;
 		// Test only: break relaxation 3 on purpose (1: the bits above the sticky byte are dropped too,
-		// 2: the update's own pack is left out).
+		// 2: the update's own pack is left out, 3: a divide's own I / D bits are left out).
 		int dropStickyMutation = 0;
 		// Testing: allocate from at most this many NEON / general registers
 		// (0 = all), to reach spills and early write-backs in small programs.

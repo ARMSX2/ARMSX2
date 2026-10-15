@@ -1433,6 +1433,8 @@ namespace vuopt
 					t_.statusReaders_++;
 					if (ip.lower.imm12 & 0xFC0)
 						t_.stickyReaders_++;
+					if (ip.lower.imm12 & 0xC00) // (the sticky I / D bits, the divides')
+						t_.stickyDivReaders_++;
 				}
 			}
 		acc_ = t_.stickyAcc && !le_.dropSticky && WantsAcc();
@@ -1663,8 +1665,12 @@ namespace vuopt
 			const bool readsSticky = ImageReadsSticky();
 			if (readsSticky)
 				stickyReaderImages_++;
-			else if (env.flagHack)
+			else
 			{
+				// Owner decision j (2026-10-14): the flag hack on or off. With it off microVU's
+				// sticky bits are exact and the final STATUS of a program loses them here; the live
+				// tier's tripwire (microVU_VuOpt-arm64.inl) turns `dropSticky` off for the rest of the
+				// session when a reader of those bits turns up.
 				le.dropSticky = true;
 				le.dropStickyMutation = dropStickyMutation;
 				stickyDropped_++;

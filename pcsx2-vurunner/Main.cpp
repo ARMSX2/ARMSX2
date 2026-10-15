@@ -117,7 +117,7 @@ void PrintUsage(const char* argv0)
 		"                --vuopt-observe compares the observable state of the exactness\n"
 		"                contract instead (exactness-contract.md), continuing each run\n"
 		"                through its budget stops (--vuopt-resumes N); --vuopt-mutation\n"
-		"                handoff-ignore-reads|handoff-all-dead|sticky-hi|sticky-pack breaks\n"
+		"                handoff-ignore-reads|handoff-all-dead|sticky-hi|sticky-pack|sticky-div breaks\n"
 		"                one relaxation on purpose to show the gate notices.\n"
 		"  --scan-external  Without replaying, report per capture whether the code\n"
 		"                reachable from start_pc reads VIF TOP/ITOP (XTOP/XITOP),\n"
@@ -293,6 +293,8 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 				opts.vuopt.dropStickyMutation = 1;
 			else if (m == "sticky-pack")
 				opts.vuopt.dropStickyMutation = 2;
+			else if (m == "sticky-div")
+				opts.vuopt.dropStickyMutation = 3;
 			else
 			{
 				std::fprintf(stderr, "vurunner: unknown --vuopt-mutation %s\n", m.c_str());
