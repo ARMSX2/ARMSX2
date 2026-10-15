@@ -851,6 +851,16 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 #endif
 				continue;
 			}
+			else if (CHECK_ARG("--vuopt-no-flagsink"))
+			{
+				// The vuopt tier's regions without flag sinking (compiler-design.md 9af), an A/B on one binary.
+#if defined(ARCH_ARM64) && defined(PCSX2_RECOMPILER_TESTS)
+				vuopt::live::SetFlagSink(false);
+#else
+				Console.Warning("--vuopt-no-flagsink needs an arm64 build with the recompiler test hooks.");
+#endif
+				continue;
+			}
 			else if (CHECK_ARG("--vuopt-sync"))
 			{
 				// The vuopt tier's deterministic mode: every background compile is waited

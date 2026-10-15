@@ -364,6 +364,8 @@ const char* vuopt::live::TripCauseName(TripCause c)
 }
 
 #ifdef PCSX2_RECOMPILER_TESTS
+// pcsx2-eerunner --vuopt-no-flagsink: the live tier's jobs without flag sinking (an A/B).
+static bool s_flagSinkJobs = vuopt::RegionTier::kFlagSinkDefault;
 static bool vuoptMutated(int m) { return (s_trip.mutation.load(std::memory_order_relaxed) >> m) & 1; }
 #else
 // (shipped builds: the tripwire's mutation checks fold away)
@@ -444,6 +446,7 @@ namespace vuopt::live
 #ifdef PCSX2_RECOMPILER_TESTS
 	void TripStickyForTest() { vuoptTrip(TripCause::Forced); }
 	void SetTripwireMutation(int mask) { s_trip.mutation.store(mask, std::memory_order_relaxed); }
+	void SetFlagSink(bool on) { s_flagSinkJobs = on; }
 	void PoisonFlagSources()
 	{
 		for (auto& v : microVU1.vuoptFlagSrc)
@@ -958,6 +961,9 @@ static std::shared_ptr<VuoptJob> vuoptMakeJob(microVU& mVU, microProgram& prog, 
 	j->cacheHi = mVU.prog.x86end + (mVUcacheSafeZone * _1mb);
 	// Relaxation 3 holds while no sticky reader is known (section 9ad).
 	j->opts.dropSticky = !s_trip.tripped.load(std::memory_order_acquire) || vuoptMutated(vuopt::live::kTripMutJobOption);
+#ifdef PCSX2_RECOMPILER_TESTS
+	j->opts.flagSink = s_flagSinkJobs;
+#endif
 	if (prog.vuopt)
 		j->jumpTargets = prog.vuopt->jumpTargets;
 	return j;

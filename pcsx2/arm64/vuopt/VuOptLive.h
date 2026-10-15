@@ -233,6 +233,8 @@ namespace vuopt
 		// Flag sinking: fill microVU1's flag-source homes with lanes that raise every flag, so a test
 		// run cannot read a source a previous run left there by luck.
 		void PoisonFlagSources();
+		// The live tier's jobs with or without flag sinking (default: RegionTier's).
+		void SetFlagSink(bool on);
 		// pcsx2-vurunner --vuopt-region-bg: a region hook (VuOptMvuTrace.h's
 		// VuoptRegionHook, `user` a RegionTier whose options it copies) that builds
 		// every region through the worker and copies it in.
