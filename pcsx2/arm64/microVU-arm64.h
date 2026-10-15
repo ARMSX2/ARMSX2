@@ -236,7 +236,9 @@
 //  61 — that hook is emitted only while the vuopt tier is wanted (EnableVUOpt and what it needs);
 //       with it off VU0's window sequence is version 59's again. The options sentinel of VU0
 //       carries the choice (vu0WindowHook).
-static constexpr u32 kMvuCompilerAbiVersion = 61;
+//  62 — an allocReg write with an empty field (xyzw == 0) leaves a temp slot, not
+//       one recorded as an unmodified copy of the register it was told to write.
+static constexpr u32 kMvuCompilerAbiVersion = 62;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
@@ -581,6 +583,15 @@ struct microProgManager
 	u8*                x86start; // Start of rec-cache
 	u8*                x86end;   // Reset threshold — mVUcacheSafeZone MB below the physical rec-region end
 	microRegInfo       lpState;
+	// One bit per quick[] slot that holds a program: bit (i % 64) of word
+	// (i / 64) is set iff quick[i].prog != NULL. mVUclear runs on every
+	// micro-memory write and only has work for occupied slots, of which a
+	// game has a handful out of 2048, so it walks these bits instead of the
+	// array. Set where a search installs a program into an empty slot
+	// (mVUquickInstall), cleared where a slot is nulled (mVUclear, mVUreset).
+	// Any new writer of quick[].prog must keep it in step: a set slot with
+	// no bit survives every later write to its program's code.
+	u64                quickOcc[mProgSize / 2 / 64];
 };
 
 // Safe-Zone (megabytes): the gap between prog.x86end (mVUcleanUp's
@@ -876,6 +887,23 @@ private:
 
 public:
 	inline int getFullListCount() const { return fListI; }
+#ifdef PCSX2_RECOMPILER_TESTS
+	// Test probe (mvu_block_list_tests): the number of links a walk from the
+	// head of the full-compare list reaches, and whether fBlockEnd is the
+	// last of them.
+	int testWalkFullList(bool& endIsLast) const
+	{
+		int count = 0;
+		const microBlockLink* last = nullptr;
+		for (const microBlockLink* linkI = fBlockList; linkI != nullptr; linkI = linkI->next)
+		{
+			last = linkI;
+			count++;
+		}
+		endIsLast = (last == fBlockEnd);
+		return count;
+	}
+#endif
 	// Every block, quick list then full list, in registration order.
 	template <typename F>
 	void forEachBlock(F&& f)
@@ -972,6 +1000,12 @@ public:
 					if (linkI != fBlockList)
 					{
 						prevI->next = linkI->next;
+						// Moving the last link to the front leaves its
+						// predecessor last. add() appends at fBlockEnd; left
+						// pointing at the new head, it would cut off every
+						// link behind the head.
+						if (linkI == fBlockEnd)
+							fBlockEnd = prevI;
 						linkI->next = fBlockList;
 						fBlockList = linkI;
 					}

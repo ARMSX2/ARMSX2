@@ -48,6 +48,7 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_cond_veneer_tests.cpp
 	ee_rec_cop0_tests.cpp
 	ee_event_test_quiet_path_tests.cpp
+	mtvu_savestate_load_tests.cpp
 	ee_rec_fpu_tests.cpp
 	ee_rec_fpu_divunit_rounding_tests.cpp
 	ee_rec_fpu_full_mode_tests.cpp
@@ -131,6 +132,9 @@ add_pcsx2_test(recompiler_tests
 	mvu_observed_entries_tests.cpp
 	mvu_cache_exhaustion_tests.cpp
 	mvu_lpstate_invariant_tests.cpp
+	mvu_clear_occupied_tests.cpp
+	mvu_block_list_tests.cpp
+	mvu_empty_field_tests.cpp
 	mvu_resume_dispatch_tests.cpp
 	mvu_spin_ff_tests.cpp
 	mvu_contentmap_drift_tests.cpp

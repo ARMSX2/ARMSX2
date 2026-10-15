@@ -101,10 +101,6 @@ public:
 	// Writes to VU's Data Memory (size in bytes)
 	void WriteDataMem(u32 vu_data_addr, const void* data, u32 size);
 
-	void WriteVIRegs(REG_VI* viRegs);
-
-	void WriteVFRegs(VECTOR* vfRegs);
-
 	void WriteCol(vifStruct& _vif);
 
 	void WriteRow(vifStruct& _vif);

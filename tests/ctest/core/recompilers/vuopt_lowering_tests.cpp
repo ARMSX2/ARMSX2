@@ -242,14 +242,15 @@ void SeedSpecials(VuTestHarness& h, u32 seed)
 // An FMAC with an empty destination field (xyzw = 0). It writes no VF lane and no ACC lane, and still
 // writes the flags: the MAC word is all clear and STATUS's current ZSUO bits are clear, the sticky
 // bits kept (the interpreter's VU_MACx_CLEAR and VU_STAT_UPDATE). Fd is vf24..vf27, which no generator
-// reads: microVU's register allocator leaves the arithmetic result in a slot it takes for a clean copy
-// of Fd, and a read of Fd, or a partial write to it, that follows in a branch delay slot gets that
-// result in lanes the instruction did not write (VuoptEmptyField.MicroVuLeaksIntoALaterAccess, and
-// compiler-design.md 9ag). The ACC forms have no Fd.
-u32 EmptyFieldFmac(std::mt19937& rng)
+// reads. (Until microVU's allocReg fix, which 9ai took in with mvu-local-rules, its register allocator
+// left the arithmetic result in a slot it took for a clean copy of Fd, so a later read of Fd gave that
+// result in lanes the instruction did not write; the destinations stayed on registers nothing reads for
+// that reason. VuoptEmptyField.EmptyFieldFuzzMatchesMicroVU now also draws live ones.) The ACC
+// forms have no Fd.
+u32 EmptyFieldFmac(std::mt19937& rng, bool liveFd = false)
 {
 	auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
-	const u32 fd = 24 + R(4), fs = 1 + R(8), ft = 1 + R(8);
+	const u32 fd = liveFd ? 1 + R(8) : 24 + R(4), fs = 1 + R(8), ft = 1 + R(8);
 	switch (R(15))
 	{
 		case 0: return VADD_U(0, fd, fs, ft);
@@ -2486,8 +2487,9 @@ TEST(VuoptLowering, Repro)
 //
 // The interpreter's account (VUops.cpp applyBinaryMACOp and its siblings): a lane outside the field is
 // not written, so an empty field writes no VF and no ACC lane, and its MAC lane bits are cleared, so
-// MAC is 0 and the current ZSUO bits of STATUS are 0 with the sticky bits kept. vuopt follows it.
-// microVU does not always: see MicroVuLeaksIntoALaterAccess.
+// MAC is 0 and the current ZSUO bits of STATUS are 0 with the sticky bits kept. vuopt follows it, and
+// since 9ai (microVU's allocReg leaves a temp slot for an empty-field write) so does microVU. Before
+// that these tests pinned microVU's fault, 9ag's finding, and failed with a message the day it went.
 
 namespace
 {
@@ -2566,9 +2568,9 @@ std::vector<VuOp> DelaySlotLoop(u32 trip, const std::vector<VuOp>& body, u32 del
 } // namespace
 
 // An empty-field FMAC to vf12, then the loop's delay slot reads vf12 whole, or writes a lane of it. vuopt
-// leaves vf12 as the interpreter does (no lane written by the empty FMAC); the lanes microVU differs in
-// are reported, not required (9ag: its allocator marks the slot an empty-field write leaves as a clean
-// copy of vf12 while it holds the arithmetic result).
+// and microVU both leave vf12 as the interpreter does (no lane written by the empty FMAC). (Until 9ai the
+// microVU half was reported, not required: its allocator marked the slot an empty-field write leaves as a
+// clean copy of vf12 while it held the arithmetic result.)
 TEST(VuoptEmptyField, RegionsLeaveTheDestinationAlone)
 {
 	struct Case
@@ -2593,7 +2595,7 @@ TEST(VuoptEmptyField, RegionsLeaveTheDestinationAlone)
 		VADD_U(mask::xyzw, vf::vf13, vf::vf12, vf::vf0), // vf12 read whole
 		VMUL_U(mask::x | mask::y, vf::vf13, vf::vf12, vf::vf6), // two lanes read
 	};
-	u32 runs = 0, mvuLanes = 0;
+	u32 runs = 0;
 	for (const Case& c : forms)
 		for (u32 d = 0; d < std::size(delays); d++)
 			for (u32 trip : {1u, 3u})
@@ -2603,17 +2605,17 @@ TEST(VuoptEmptyField, RegionsLeaveTheDestinationAlone)
 					const VsInterp r = RunVsInterp(p, fh, [](VuTestHarness& h) { SeedMixed(h, 77); });
 					EXPECT_GE(r.regions, 1u);
 					EXPECT_TRUE(r.vuopt.empty()) << c.name << " delay " << d << " trip " << trip << " flagHack " << fh << "\n" << Join(r.vuopt, 6);
-					mvuLanes += r.mvu.size();
+					EXPECT_TRUE(r.mvu.empty()) << "microVU: " << c.name << " delay " << d << " trip " << trip << " flagHack " << fh << "\n" << Join(r.mvu, 6);
 					runs++;
 				}
-	std::printf("[vuopt empty field] %u runs; microVU differs from the interpreter in %u VF / ACC lanes (vuopt: none required)\n", runs, mvuLanes);
+	std::printf("[vuopt empty field] %u runs; vuopt and microVU equal the interpreter in every VF / ACC lane\n", runs);
 }
 
 // The shrunk program 9af found: a counted loop of an empty-field MADD to vf12 and, in the delay slot, a
-// SUB of the z lane of vf12. Against microVU alone (no vuopt in the run) the interpreter shows who is
-// right: it leaves x, y and w as they were. This test pins the microVU side so that it is not lost: it
-// fails the day microVU stops doing this, and the line below can then go (compiler-design.md 9ag).
-TEST(VuoptEmptyField, MicroVuLeaksIntoALaterAccess)
+// SUB of the z lane of vf12. The interpreter leaves x, y and w as they were, and so do vuopt and microVU.
+// microVU did not until 9ai: it left the MADD's arithmetic result in them (compiler-design.md 9ag). The
+// microVU half used to assert that it still differed; it is now the regression test for the fix.
+TEST(VuoptEmptyField, MicroVuAndVuoptLeaveALaterAccessAlone)
 {
 	const std::vector<VuOp> p = DelaySlotLoop(5, {U(0x00063329)}, 0x0046a32c); // MADD.0 vf12,vf6,vf6 ; SUB.z vf12,vf20,vf6
 	const auto setup = [](VuTestHarness& h) { SeedSpecials(h, 4003); };
@@ -2621,7 +2623,7 @@ TEST(VuoptEmptyField, MicroVuLeaksIntoALaterAccess)
 	{
 		const VsInterp r = RunVsInterp(p, fh, setup);
 		EXPECT_TRUE(r.vuopt.empty()) << "flagHack " << fh << "\n" << Join(r.vuopt);
-		EXPECT_FALSE(r.mvu.empty()) << "flagHack " << fh << ": microVU now agrees with the interpreter; drop this test's microVU half";
+		EXPECT_TRUE(r.mvu.empty()) << "microVU, flagHack " << fh << "\n" << Join(r.mvu);
 	}
 }
 
@@ -2667,9 +2669,12 @@ TEST(VuoptEmptyField, FlagsAreClearedStickyKept)
 	}
 }
 
-// Programs from the loop fuzz's mix whose empty-field FMACs write registers nothing reads (vf24..vf27)
-// or ACC: every state vuopt leaves, flags and ACC included, is microVU's. 2 x 3,000 programs by default.
-TEST(VuoptEmptyField, DeadDestinationFuzzMatchesMicroVU)
+// Programs from the loop fuzz's mix with empty-field FMACs: every state vuopt leaves, flags and ACC
+// included, is microVU's. The empty-field FMACs of the even programs write registers nothing reads
+// (vf24..vf27) or ACC, as the fuzzers always did; those of the odd programs write the registers the
+// program computes with (vf1..vf8), which microVU's allocReg fault made unsafe to compare before 9ai.
+// 2 x 3,000 programs by default.
+TEST(VuoptEmptyField, EmptyFieldFuzzMatchesMicroVU)
 {
 	const int iters = getenv("VUOPT_EF_ITERS") ? std::atoi(getenv("VUOPT_EF_ITERS")) : 3000;
 	std::mt19937 rng(20261015), erng(20261017);
@@ -2697,7 +2702,7 @@ TEST(VuoptEmptyField, DeadDestinationFuzzMatchesMicroVU)
 			{
 				if (R(3) == 0)
 				{
-					up = EmptyFieldFmac(erng);
+					up = EmptyFieldFmac(erng, iter & 1);
 					empties++;
 				}
 				else
@@ -2719,7 +2724,7 @@ TEST(VuoptEmptyField, DeadDestinationFuzzMatchesMicroVU)
 		p.push_back(L(VISUBIU_L(vi::vi1, vi::vi1, 1)));
 		const s32 at = static_cast<s32>(p.size());
 		p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(head - at - 1))));
-		p.push_back(U(EmptyFieldFmac(erng))); // the delay slot
+		p.push_back(U(EmptyFieldFmac(erng, iter & 1))); // the delay slot
 		empties++;
 		p.push_back(U(VADD_U(mask::xyzw, vf::vf1, vf::vf2, vf::vf3)));
 		p.push_back(EBit(L(VFSAND_L(vi::vi4, 0xfff))));
