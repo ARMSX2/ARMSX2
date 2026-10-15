@@ -101,7 +101,7 @@ namespace mVUPersist
 	// When true, mVUinit/mVUreset's SyncRecordingFromConfig is a no-op so the
 	// unit-test harness keeps manual control of recording (ABI-digest pins,
 	// in-process round-trips, disk round-trips). Default false = production,
-	// where recording follows the program cache setting at every reset.
+	// where recording follows EnableVUProgramCache at every reset.
 	static bool s_manualRecording = false;
 	static u64 s_blockCompiles[2] = {};
 	static Stats s_stats[2] = {};
@@ -620,8 +620,7 @@ namespace mVUPersist
 
 	void SyncRecordingFromConfig(bool config_enabled)
 	{
-		// Production: recording follows the program cache setting (EnableVUProgramCache
-		// or EnableVUOpt: UseVUProgramCache), called from
+		// Production: recording follows EnableVUProgramCache, called from
 		// mVUinit/mVUreset before the options sentinel is rebuilt. The
 		// test-manual override lets the recompiler-test harness drive
 		// recording itself without these reset-time syncs clobbering it.

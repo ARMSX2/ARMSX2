@@ -528,16 +528,15 @@ void Init(microVU& mVU)
 {
 	// Production gate: the whole on-disk cache — init, INDEX
 	// telemetry, .vuprog payloads, dispatch-time hydration — sits behind the
-	// EmuCore/CPU/Recompiler EnableVUProgramCache INI bool, or EnableVUOpt,
-	// which is bound to the cache (RecompilerOptions::UseVUProgramCache). Off
-	// (the default) means no disk side effects at all. Toggling either on at
-	// runtime works because mVUreset re-enters here after every settings-driven
-	// recompiler clear; toggling the cache off (both bits clear) leaves the
-	// already-initialized state up for the rest of the session (entries written
-	// after the toggle are keyed to the post-toggle sentinel and are evicted
-	// wholesale on the next handshake — bounded garbage, never corruption).
-	// Tests bypass this gate through InitWithSentinel / TestReinitFromLiveSentinel.
-	if (!EmuConfig.Cpu.Recompiler.UseVUProgramCache())
+	// EmuCore/CPU/Recompiler EnableVUProgramCache INI bool. Off (the default)
+	// means no disk side effects at all. Toggling it on at runtime works
+	// because mVUreset re-enters here after every settings-driven recompiler
+	// clear; toggling it OFF leaves the already-initialized state up for the
+	// rest of the session (entries written after the toggle are keyed to the
+	// post-toggle sentinel and are evicted wholesale on the next handshake —
+	// bounded garbage, never corruption). Tests bypass this gate through
+	// InitWithSentinel / TestReinitFromLiveSentinel.
+	if (!EmuConfig.Cpu.Recompiler.EnableVUProgramCache)
 		return;
 	InitImpl(mVU.index & 1u, mVU.optionsSentinel);
 }
@@ -767,7 +766,7 @@ microProgram* TryLoadProgram(microVU& mVU, const XXH128_hash_t& contentHash)
 		// Cache disabled/not initialized: the INDEX was never consulted, so
 		// this is not an INDEX miss. Leave `misses` alone (it counts genuine
 		// hash-not-in-INDEX lookups below) — otherwise the production default
-		// (the cache off) inflates the miss count on every dispatch.
+		// (EnableVUProgramCache OFF) inflates the miss count on every dispatch.
 		return nullptr;
 	}
 	auto it = s.entries.find(contentHash);

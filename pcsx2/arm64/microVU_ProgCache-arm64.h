@@ -41,9 +41,8 @@ namespace mVUProgCache
 	static constexpr u32 kProgCacheFormatVersion = 3;
 
 	// Initialize the per-VU on-disk cache. Gated on the
-	// EmuCore/CPU/Recompiler EnableVUProgramCache config bool or EnableVUOpt,
-	// which turns the cache on (UseVUProgramCache; neither = no disk side
-	// effects at all). Reads VERSION; if it diverges from the running
+	// EmuCore/CPU/Recompiler EnableVUProgramCache config bool (off = no disk
+	// side effects at all). Reads VERSION; if it diverges from the running
 	// build's (compiler ABI, options sentinel, arch tag), evicts the stale
 	// dir and starts fresh. Loads INDEX into memory. Idempotent — called
 	// from mVUinit AND every mVUreset (the reset call is what activates a

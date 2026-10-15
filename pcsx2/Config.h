@@ -793,26 +793,17 @@ struct Pcsx2Config
 
 		// Cache compiled VU micro-programs to disk and reload them across
 		// sessions to cut recompilation stutter on later runs. arm64-only;
-		// no-op on x86. Read through UseVUProgramCache(), not directly: the
-		// cache is also on whenever EnableVUOpt is.
+		// no-op on x86.
 		bool
 			EnableVUProgramCache : 1;
 
 		// vuopt, the whole-program VU1 compiler (pcsx2/arm64/vuopt/): programs
 		// that run often enough are recompiled above microVU, which stays the
 		// fallback at every block boundary. arm64-only; no-op on x86. Default
-		// off. It turns the VU program cache on (UseVUProgramCache()).
+		// off.
 		bool
 			EnableVUOpt : 1;
 		BITFIELD_END
-
-		// Whether the on-disk VU program cache runs: EnableVUProgramCache, or
-		// EnableVUOpt (owner decision 2026-10-15: vuopt is bound to the cache,
-		// there is no separate switch). Every reader of the cache setting goes
-		// through this. Both bits are part of the CPU options, so changing
-		// either one resets the VU recompilers (VMManager::CheckForCPUConfigChanges),
-		// and the reset re-reads this.
-		bool UseVUProgramCache() const { return EnableVUProgramCache || EnableVUOpt; }
 
 		RecompilerOptions();
 		void ApplySanityCheck();
