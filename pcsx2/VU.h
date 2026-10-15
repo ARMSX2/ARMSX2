@@ -115,6 +115,15 @@ struct ialuPipe
 	u32 Cycle;
 };
 
+// One write to a VI by a lower instruction, as the branch hazard in VUops.cpp
+// sees it.
+struct VIWriteRec
+{
+	u16 old; // the VI before the write
+	u8 reg;  // 0: no record, a write to VI0 is never kept
+	u8 cyc;  // the low byte of VURegs::cycle at the write
+};
+
 struct alignas(16) VURegs
 {
 	VECTOR VF[32]; // VF and VI need to be first in this struct for proper mapping
@@ -169,6 +178,9 @@ struct alignas(16) VURegs
 	u32 xgkickenable;
 	u32 xgkickendpacket;
 
+	// The branch hazard. A write to a VI opens a four cycle window in
+	// VIBackupCycles; while a branch is the very next cycle it reads
+	// VIOldValue for VIRegNumber instead of the VI. See _vuBackupVI.
 	u8 VIBackupCycles;
 	u32 VIOldValue;
 	u32 VIRegNumber;
@@ -184,6 +196,13 @@ struct alignas(16) VURegs
 	u32 ialuwritepos;
 	u32 ialucount;
 
+	// The last three writes to a VI, newest first, for the earliest-write
+	// search in _vuBackupVI. These fill the 12 bytes of tail padding that
+	// alignas(16) leaves, so sizeof(VURegs) is what it was: microVU's emitted
+	// code reaches VU1's data memory through that size (kVU1MemFromState).
+	// Not part of a save state; a load drops them.
+	VIWriteRec VIWrites[3];
+
 	VURegs()
 	{
 		Mem = NULL;
@@ -198,6 +217,8 @@ struct alignas(16) VURegs
 		return IsVU1() ? vif1Regs : vif0Regs;
 	}
 };
+
+static_assert(sizeof(VURegs) == 1680, "VIWrites must fit in VURegs's tail padding: a larger VURegs moves VU1 memory relative to the register file in microVU's code");
 
 // Which lane of a quadword an ILW or ILWR reads.
 //
