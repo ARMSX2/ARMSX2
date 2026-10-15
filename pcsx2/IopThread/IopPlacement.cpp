@@ -26,6 +26,29 @@ u64 IopThread::PerformanceMask(const std::vector<CpuCapacity>& cpus)
 	return mask;
 }
 
+std::vector<u32> IopThread::OrderProcessors(const std::vector<CpuCapacity>& cpus)
+{
+	std::vector<CpuCapacity> cores;
+	for (const CpuCapacity& cpu : cpus)
+	{
+		if (cpu.first_thread)
+			cores.push_back(cpu);
+	}
+	std::stable_sort(cores.begin(), cores.end(), [](const CpuCapacity& lhs, const CpuCapacity& rhs) {
+		if (lhs.capacity != rhs.capacity)
+			return lhs.capacity > rhs.capacity;
+		if (lhs.frequency_hz != rhs.frequency_hz)
+			return lhs.frequency_hz > rhs.frequency_hz;
+		return lhs.processor_id < rhs.processor_id;
+	});
+
+	std::vector<u32> order;
+	order.reserve(cores.size());
+	for (const CpuCapacity& core : cores)
+		order.push_back(core.processor_id);
+	return order;
+}
+
 IopThread::HostCpuInfo IopThread::MakeHostInfo(bool is_arm64, u32 total_cores, u64 performance_mask)
 {
 	HostCpuInfo host;

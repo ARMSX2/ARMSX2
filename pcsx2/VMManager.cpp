@@ -4703,33 +4703,34 @@ static void InitializeProcessorList()
 	INFO_LOG("Processor count: {} cores, {} processors, {} clusters",
 		cpuinfo_get_cores_count(), cpuinfo_get_processors_count(), cpuinfo_get_clusters_count());
 
+	// Prioritize faster cores in heterogeneous CPUs, ignoring hyperthreads/SMT (they're not helpful for pinning).
+	// The order comes from the kernel's capacity table where there is one (IopThread::OrderProcessors says why the
+	// frequency cpuinfo reports is not enough).
 	const u32 processor_count = cpuinfo_get_processors_count();
-	std::vector<const cpuinfo_processor*> processors;
+#if defined(__linux__)
+	const std::vector<u32> capacities = GetProcessorWeights();
+#endif
+	std::vector<IopThread::CpuCapacity> cpus;
+	cpus.reserve(processor_count);
 	for (u32 i = 0; i < processor_count; i++)
 	{
-		// Ignore hyperthreads/SMT. They're not helpful for pinning.
 		const cpuinfo_processor* proc = cpuinfo_get_processor(i);
-		if (!proc || proc->smt_id != 0)
+		if (!proc)
 			continue;
 
-		processors.push_back(proc);
+		u32 capacity = 0;
+#if defined(__linux__)
+		capacity = (i < capacities.size()) ? capacities[i] : 0;
+#endif
+		cpus.push_back({GetProcessorIdForProcessor(proc), capacity, proc->smt_id == 0,
+			(proc->core ? static_cast<u64>(proc->core->frequency) : 0)});
 	}
-
-	// Prioritize faster cores in heterogeneous CPUs.
-	std::sort(processors.begin(), processors.end(),
-		[](const cpuinfo_processor* lhs, const cpuinfo_processor* rhs) {
-			return (lhs->core->frequency > rhs->core->frequency);
-		});
+	s_processor_list = IopThread::OrderProcessors(cpus);
 
 	SmallString str;
 	str.assign("Ordered processor list: ");
-	s_processor_list.reserve(processors.size());
-	for (const cpuinfo_processor* proc : processors)
-	{
-		const u32 proc_id = GetProcessorIdForProcessor(proc);
-		str.append_format("{}{}", (proc == processors.front()) ? "" : ", ", proc_id);
-		s_processor_list.push_back(proc_id);
-	}
+	for (size_t i = 0; i < s_processor_list.size(); i++)
+		str.append_format("{}{}", (i == 0) ? "" : ", ", s_processor_list[i]);
 	Console.WriteLn(str.view());
 }
 

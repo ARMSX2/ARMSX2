@@ -30,6 +30,7 @@ namespace IopThread
 		u32 processor_id = 0; // the OS's number for it (Linux: linux_id); the mask bit is this number
 		u32 capacity = 0; // cpu_capacity, else the maximum frequency, else cpuinfo's frequency: only ratios matter
 		bool first_thread = true; // false for the second hardware thread of a core, which is never pinned to
+		u64 frequency_hz = 0; // what cpuinfo reports, 0 when it cannot read it (the ROCKNIX and Android kernels leave it at 0)
 	};
 
 	/// A processor is in the tier when its capacity is at least this fraction of the fastest one's.
@@ -49,6 +50,15 @@ namespace IopThread
 	/// What ResolveMode needs to know about a host, from the topology: the performance-core count is
 	/// the number of processors in the mask.
 	HostCpuInfo MakeHostInfo(bool is_arm64, u32 total_cores, u64 performance_mask);
+
+	/// The processor numbers in the order pinned threads take them: fastest first, one entry per core (the second hardware
+	/// thread of a core is left out). The key is the capacity, then the frequency cpuinfo reports, then the processor number,
+	/// so equal cores keep their number order.
+	///
+	/// The capacity comes first because it is the one reading every target has. On the SD865 and the MQ65 under ROCKNIX cpuinfo
+	/// sees one cluster of eight cores and no frequency, so a list ordered by frequency alone comes out 0, 1, 2 ... and the
+	/// EE thread is pinned to cpu 0, a little core, with the GS and the VU1 thread on the other little ones.
+	std::vector<u32> OrderProcessors(const std::vector<CpuCapacity>& cpus);
 
 	// ---- the placement plans -------------------------------------------------------------------
 

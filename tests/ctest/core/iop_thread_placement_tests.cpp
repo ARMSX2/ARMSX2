@@ -249,6 +249,101 @@ TEST(IopThreadResolveFromMask, TheRealHostIsDescribedByItsOwnMask)
 	EXPECT_EQ(host.performance_cores, VMManager::Internal::GetPerformanceCoreCount());
 }
 
+// ---------------------------------------------------------------- the order pinned threads take processors in
+
+namespace
+{
+	using IopThread::OrderProcessors;
+	using ProcessorList = std::vector<u32>;
+
+	// The capacity table of a device with the cpuinfo frequency of each core, which the ROCKNIX and Android kernels leave at 0.
+	std::vector<CpuCapacity> WithFrequencies(std::vector<CpuCapacity> cpus, u64 hz)
+	{
+		for (CpuCapacity& cpu : cpus)
+			cpu.frequency_hz = hz;
+		return cpus;
+	}
+} // namespace
+
+TEST(IopThreadProcessorOrder, TheSd865PutsThePrimeCoreFirstThenTheOtherThreeBigCores)
+{
+	// cpuinfo sees "8 cores, 8 processors, 1 clusters" and no frequencies on this device, so the order has to come from the
+	// capacity table. Before it did, the EE thread was pinned to cpu 0, a Cortex-A55.
+	EXPECT_EQ(OrderProcessors(Sd865()), (ProcessorList{7, 4, 5, 6, 0, 1, 2, 3}));
+}
+
+TEST(IopThreadProcessorOrder, TheMq65PutsTheGoldCoresFirst)
+{
+	EXPECT_EQ(OrderProcessors(Mq65()), (ProcessorList{4, 5, 6, 7, 0, 1, 2, 3}));
+}
+
+TEST(IopThreadProcessorOrder, TheDimensity8300PutsThePrimeCoreFirst)
+{
+	EXPECT_EQ(OrderProcessors(Dimensity8300()), (ProcessorList{7, 4, 5, 6, 0, 1, 2, 3}));
+}
+
+TEST(IopThreadProcessorOrder, TheM2MaxPutsThePerformanceCoresFirst)
+{
+	EXPECT_EQ(OrderProcessors(M2Max()), (ProcessorList{4, 5, 6, 7, 8, 9, 10, 11, 0, 1, 2, 3}));
+}
+
+TEST(IopThreadProcessorOrder, WithNoCapacityTheFrequencyOrdersThemAsItAlwaysDid)
+{
+	// A desktop where cpuinfo knows the frequency and the kernel has no capacity table.
+	std::vector<CpuCapacity> cpus = {{0, 0, true, 3000000000ull}, {1, 0, true, 4800000000ull}, {2, 0, true, 3000000000ull}, {3, 0, true, 4800000000ull}};
+	EXPECT_EQ(OrderProcessors(cpus), (ProcessorList{1, 3, 0, 2}));
+}
+
+TEST(IopThreadProcessorOrder, ACapacityOutranksAFrequency)
+{
+	std::vector<CpuCapacity> cpus = {{0, 1024, true, 1000000000ull}, {1, 500, true, 3000000000ull}};
+	EXPECT_EQ(OrderProcessors(cpus), (ProcessorList{0, 1}));
+}
+
+TEST(IopThreadProcessorOrder, EqualCoresKeepTheirNumberOrder)
+{
+	EXPECT_EQ(OrderProcessors(Rk3562()), (ProcessorList{0, 1, 2, 3}));
+	EXPECT_EQ(OrderProcessors(WithFrequencies(Mq65(), 0)), (ProcessorList{4, 5, 6, 7, 0, 1, 2, 3}));
+	// Nothing is known about any core: the numbers, in order, whatever order the list came in.
+	std::vector<CpuCapacity> cpus = {{3, 0, true, 0}, {1, 0, true, 0}, {2, 0, true, 0}, {0, 0, true, 0}};
+	EXPECT_EQ(OrderProcessors(cpus), (ProcessorList{0, 1, 2, 3}));
+}
+
+TEST(IopThreadProcessorOrder, TheSecondThreadOfACoreIsLeftOut)
+{
+	std::vector<CpuCapacity> cpus = {{0, 1024, true, 0}, {1, 1024, false, 0}, {2, 1024, true, 0}, {3, 1024, false, 0}};
+	EXPECT_EQ(OrderProcessors(cpus), (ProcessorList{0, 2}));
+}
+
+TEST(IopThreadProcessorOrder, EveryPinnedThreadLandsInThePerformanceTierOnTheTargetDevices)
+{
+	// The point of the order: with the emulator's thread pinning on, the EE, GS, VU1 and IOP threads each get one
+	// processor, and on a big.LITTLE handheld all of them are performance cores.
+	const std::pair<const char*, std::vector<CpuCapacity>> devices[] = {
+		{"SD865", Sd865()}, {"MQ65", Mq65()}, {"Dimensity 8300", Dimensity8300()}, {"M2 Max", M2Max()}};
+	for (const auto& [name, cpus] : devices)
+	{
+		const u64 tier = PerformanceMask(cpus);
+		const ProcessorList order = OrderProcessors(cpus);
+		for (const bool mtvu : {true, false})
+		{
+			const auto plan = IopThread::PlanOrdered(order.size(), mtvu, true);
+			ASSERT_GE(plan.iop, 0) << name;
+			std::vector<u32> slots = {plan.ee, plan.gs, static_cast<u32>(plan.iop)};
+			if (mtvu)
+				slots.push_back(plan.vu);
+			u64 used = 0;
+			for (const u32 slot : slots)
+			{
+				const u64 bit = 1ull << order[slot];
+				EXPECT_NE(tier & bit, 0u) << name << " mtvu " << mtvu << ": a pinned thread is on cpu " << order[slot] << ", not in the tier";
+				EXPECT_EQ(used & bit, 0u) << name << ": two threads on cpu " << order[slot];
+				used |= bit;
+			}
+		}
+	}
+}
+
 // ---------------------------------------------------------------- Android: the performance tier
 
 TEST(IopThreadPlaceTier, WithoutTheIopThreadTheCountsAreWhatTheyWere)
