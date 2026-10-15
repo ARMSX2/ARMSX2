@@ -64,6 +64,7 @@ struct Options
 	bool hash_pipeline = true;        // hash carried microVU flag/Q-P pipeline (see below)
 	bool divtrace = false;
 	bool bench_no_reprime = false;
+	bool bench_steady = false;  // re-seed each iter but keep the compiled blocks
 	bool print_bases = false;
 	bool no_progcache = false;  // determinism gate: force program cache + recording off
 	bool recording = false;     // emit-time fixup recording on, no disk cache
@@ -105,6 +106,10 @@ void PrintUsage(const char* argv0)
 		"                recompiling. Run twice with the same D for the\n"
 		"                cross-process gate: the 2nd run must report\n"
 		"                payloadHits>0 / blockCompiles=0 per capture.\n"
+		"  --bench-steady  With --bench: re-seed the capture's state before each\n"
+		"                iteration but keep the compiled blocks, so iterations\n"
+		"                after the first measure execution without the compile.\n"
+		"                (Plain --bench drops the block cache every iteration.)\n"
 		"  --recording   Turn emit-time fixup recording on without a disk cache, so\n"
 		"                the code recording produces can be measured against a\n"
 		"                run without it ([codesize] line, --bench).\n"
@@ -205,6 +210,10 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 		else if (a == "--divtrace")
 		{
 			opts.divtrace = true;
+		}
+		else if (a == "--bench-steady")
+		{
+			opts.bench_steady = true;
 		}
 		else if (a == "--bench-no-reprime")
 		{
@@ -890,17 +899,22 @@ int RunDiff(const std::vector<vu_capture::CaptureRecord>& records,
 int RunBench(const std::vector<vu_capture::CaptureRecord>& records,
 	const std::vector<std::string>& names,
 	u32 iters,
-	bool no_reprime)
+	bool no_reprime,
+	bool steady)
 {
 	const u32 effective_iters = std::max(2u, iters);  // need at least 1 warmup + 1 sample
 	std::printf("# bench: iters=%u (iter 0 dropped as warmup), counters: cycles instructions branch-misses, reprime=%s\n",
-		effective_iters, no_reprime ? "off" : "on");
+		effective_iters, steady ? "steady" : (no_reprime ? "off" : "on"));
 	std::printf("%-50s %12s %12s %12s\n", "capture", "cycles_med", "insns_med", "br_miss_med");
 	for (size_t fi = 0; fi < records.size(); ++fi)
 	{
 		const auto& rec = records[fi];
 		ApplyReplayConfig(rec);
-		const auto samples = recompiler_tests::BenchJit(rec, effective_iters, 0, !no_reprime);
+		// Default: every iteration re-primes and drops the block cache, so it
+		// measures compile + run. --bench-steady re-seeds the state but keeps
+		// the compiled blocks: iterations after the first measure run only.
+		const auto samples = steady ? recompiler_tests::BenchJitSteady(rec, effective_iters)
+		                            : recompiler_tests::BenchJit(rec, effective_iters, 0, !no_reprime);
 		if (samples.size() < 2)
 		{
 			std::printf("%-50s  bench unavailable (PMU open failed?)\n", names[fi].c_str());
@@ -1655,7 +1669,7 @@ int main(int argc, char** argv)
 	if (opts.diff)
 		exit_code |= RunDiff(records, names, opts.iters, opts.cycle_override);
 	if (opts.bench)
-		exit_code |= RunBench(records, names, opts.iters, opts.bench_no_reprime);
+		exit_code |= RunBench(records, names, opts.iters, opts.bench_no_reprime, opts.bench_steady);
 	if (opts.dump_asm)
 		exit_code |= RunDumpAsm(records, names);
 	if (opts.divtrace)
