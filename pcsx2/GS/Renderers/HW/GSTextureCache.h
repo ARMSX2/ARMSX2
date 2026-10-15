@@ -169,6 +169,29 @@ public:
 		u64 missed_writers = 0; ///< Pages whose bytes changed between two sweeps with no mark in between.
 	};
 
+	/// A 64-bit hash for each 256-byte block of local memory, kept valid by the hash-dirty bitmap of
+	/// GSLocalMemory (see HashCacheKey::Create). Defined in the .cpp.
+	struct BlockHashCache;
+
+	/// What the block hash cache did, over every cache of the process.
+	struct BlockHashStats
+	{
+		u64 levels = 0; ///< Texture levels keyed through the cache.
+		u64 blocks = 0; ///< Blocks of those levels.
+		u64 rehashed = 0; ///< Of those, how many had to be hashed (their hash-dirty bit was set), or were masked H-format blocks.
+	};
+
+	/// What -verify-block-hash found. Totals over every cache of the process.
+	struct BlockHashVerifyReport
+	{
+		u64 levels = 0; ///< Levels whose cached block hashes were each compared with a fresh hash.
+		u64 blocks = 0; ///< Blocks compared.
+		u64 stale_blocks = 0; ///< Of those, how many cached hashes differed: a store into local memory that was not marked.
+		u64 lookups = 0; ///< Keys whose cached form was compared with the form without the cache.
+		u64 extra_misses = 0; ///< Lookups where two windows had one key without the cache and two with it: a hit lost.
+		u64 false_hits = 0; ///< Lookups where two windows had one key with the cache and two without it: a wrong texture.
+	};
+
 	class Surface : public GSAlignedClass<32>
 	{
 	protected:
@@ -508,6 +531,7 @@ protected:
 		u64 tex0[HASH_MEMO_MAX_LEVELS]; ///< Per level, the TEX0 bits the hash reads.
 		u32 levels; ///< Number of levels hashed. 0 in an empty entry.
 		bool raw_blocks; ///< The hash was allowed to read raw blocks (HashCacheKey::Create), which is a different hash.
+		bool block_hash_cache; ///< The raw levels were keyed through the block hash cache, which is another hash again.
 	};
 	struct HashMemo
 	{
@@ -519,6 +543,12 @@ protected:
 	static inline bool s_hash_memo_verify = false;
 	struct HashMemoSweep;
 	std::unique_ptr<HashMemoSweep> m_hash_memo_sweep;
+
+	/// The block hash cache of this texture cache, made at the first lookup that needs it.
+	std::unique_ptr<BlockHashCache> m_block_hash_cache;
+	BlockHashCache& SyncBlockHashCache(GSLocalMemory& mem);
+	static inline bool s_block_hash_cache_enabled = true;
+	static inline bool s_block_hash_verify = false;
 
 	FastList<Target*> m_dst[2];
 	FastList<TargetHeightElem> m_target_heights;
@@ -664,6 +694,33 @@ public:
 	/// its stamp did not, which is a store that was not marked. Call at a frame boundary, on the thread that
 	/// writes `mem`, with no writer in flight.
 	void VerifyWriteStamps(const GSLocalMemory& mem);
+
+	/// The per-block hash cache. A paletted window that is keyed from the bytes of its blocks (see
+	/// HashCacheKey::Create) is keyed from a hash of each block's hash, and the hash of a block is computed
+	/// when its hash-dirty bit in GSLocalMemory is set and kept until it is set again, so a window that was
+	/// looked up last frame costs the blocks written since, and not all of its bytes. Every lookup of such a
+	/// window, on every backend, relies on the marks of the writers of local memory to be complete.
+	///
+	/// On by default. Off, a window is keyed by one hash of its raw blocks, with no cache (gsrunner
+	/// -block-hash-cache off, to check a suspect title without a rebuild). The two keys of a window differ,
+	/// and two windows have one key if and only if they have one in the other, so which is in use changes no
+	/// pixel and no hit.
+	static void SetBlockHashCacheEnabled(bool enable) { s_block_hash_cache_enabled = enable; }
+	static bool IsBlockHashCacheEnabled() { return s_block_hash_cache_enabled; }
+
+	/// Verify mode for the block hash cache (pcsx2-gsrunner -verify-block-hash), off by default. While it is
+	/// on, every level keyed through the cache has each of its blocks hashed afresh and compared with the
+	/// cached hash, the key is also made without the cache, and the two forms must agree on which windows are
+	/// one. The memo of texture hashes is not consulted, so every lookup is checked. Neither changes what the
+	/// renderer does.
+	static void SetBlockHashVerify(bool enable);
+	static bool IsBlockHashVerify() { return s_block_hash_verify; }
+	static BlockHashVerifyReport GetBlockHashVerifyReport();
+	static BlockHashStats GetBlockHashStats();
+
+	/// The block hash of `block` of `mem`: of its 256 bytes, hashed now if its hash-dirty bit is set. The cache
+	/// is bound to the memory by GSLocalMemory::Id(); a different memory than the last one invalidates it.
+	u64 BlockHash(GSLocalMemory& mem, u32 block);
 
 	void Read(Target* t, const GSVector4i& r, bool force_synchronous = false);
 	void Read(Source* t, const GSVector4i& r);

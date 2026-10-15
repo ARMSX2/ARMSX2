@@ -10,6 +10,9 @@
 // The texels are what PSM::rtxP hands PreloadTexture. The key is allowed to be stricter than the texels (it
 // reads the whole of the window's edge blocks, so a byte outside the window changes it), never looser.
 //
+// The second half of the file pins the per-block hash cache, which keys such a window by a hash of the hashes
+// of its blocks instead of by their bytes: the same equivalence of windows, from far fewer bytes read.
+//
 // Only a window that used to be unswizzled to be hashed (it has a region, or the format shares its words with
 // other data) changes. Everything else keeps the key it had, bit for bit: a window smaller than a block, a
 // format that is not paletted, an unregioned 8 or 4-bit window (always hashed from its blocks, and the names
@@ -842,5 +845,479 @@ namespace
 		EXPECT_FALSE(Key(win, true) == first);
 		EXPECT_EQ(Stats().stale, 2u);
 		ExpectVerified();
+	}
+	// --- The per-block hash cache ---------------------------------------------------------------------
+	//
+	// With the cache a raw level is keyed by a hash of the 64-bit hashes of its blocks, and a block's hash is
+	// kept until a mark of the block. The tests pin what a cache key needs: it is the key a from-scratch
+	// computation gives (so a write is seen), and two windows have one with the cache exactly when they have
+	// one without it (so no hit is lost and no wrong texture is used).
+
+	class GSBlockHashCache : public GSHashRawKey
+	{
+	protected:
+		void SetUp() override
+		{
+			GSHashRawKey::SetUp();
+			GSTextureCache::SetBlockHashCacheEnabled(true);
+			GSTextureCache::SetBlockHashVerify(false);
+		}
+
+		void TearDown() override
+		{
+			GSTextureCache::SetBlockHashCacheEnabled(true);
+			GSTextureCache::SetBlockHashVerify(false);
+			GSHashRawKey::TearDown();
+		}
+
+		/// The key of the window with the cache, or without it (one hash of the raw blocks).
+		HashCacheKey KeyWith(const Window& win, bool cache, const GSVector2i* lod = nullptr) const
+		{
+			GSTextureCache::SetBlockHashCacheEnabled(cache);
+			const HashCacheKey key = Key(win, true, lod);
+			GSTextureCache::SetBlockHashCacheEnabled(true);
+			return key;
+		}
+
+		/// The hash a single-level window of a paletted format must have with the cache, built here from the
+		/// bytes of local memory with no cache: the 64-bit XXH3 of each block (of its masked words, for the H
+		/// formats), in the order the unswizzle reads them, then where the window starts inside its first
+		/// block if that is not the corner, all hashed once more.
+		u64 CachedHashFromScratch(const Window& win)
+		{
+			const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[win.psm];
+			std::vector<u8> bytes;
+			for (const u32 bn : Blocks(win))
+			{
+				u8 block[GS_BLOCK_SIZE];
+				std::memcpy(block, m_gs->m_mem.BlockPtr(bn), GS_BLOCK_SIZE);
+				if (psm.fmsk != 0xFFFFFFFFu)
+				{
+					u32 words[GS_BLOCK_SIZE / sizeof(u32)];
+					std::memcpy(words, block, GS_BLOCK_SIZE);
+					for (u32& w : words)
+						w &= psm.fmsk;
+					std::memcpy(block, words, GS_BLOCK_SIZE);
+				}
+				const u64 h = XXH3_64bits(block, GS_BLOCK_SIZE);
+				const u8* hp = reinterpret_cast<const u8*>(&h);
+				bytes.insert(bytes.end(), hp, hp + sizeof(h));
+			}
+
+			const GSVector4i rect = Rect(win);
+			const GSVector4i block_rect = BlockRect(win);
+			const u64 offset = static_cast<u64>(rect.left - block_rect.left) | (static_cast<u64>(rect.top - block_rect.top) << 8);
+			if (offset)
+			{
+				const u8* op = reinterpret_cast<const u8*>(&offset);
+				bytes.insert(bytes.end(), op, op + sizeof(offset));
+			}
+			return XXH3_64bits(bytes.data(), bytes.size());
+		}
+
+		/// A write of random bytes into a random part of the window's own blocks, or somewhere else, through the
+		/// host-to-local writer and marked the way a transfer marks it (the rectangle grown by a pixel).
+		void RandomMarkedWrite(std::mt19937& rng, const std::vector<Window>& wins)
+		{
+			Window target = wins[rng() % wins.size()];
+			if (rng() % 4 == 0)
+			{
+				target = RandomWindow(rng, target.psm);
+			}
+			const GSLocalMemory::psm_t& p = GSLocalMemory::m_psm[target.psm];
+			const GSVector4i rect = Rect(target);
+			const int x0 = rect.left + static_cast<int>(rng() % rect.width());
+			const int y0 = rect.top + static_cast<int>(rng() % rect.height());
+			const int w = 1 + static_cast<int>(rng() % (rect.right - x0));
+			const int h = 1 + static_cast<int>(rng() % (rect.bottom - y0));
+
+			GIFRegBITBLTBUF blit = {};
+			blit.DBP = target.tbp0;
+			blit.DBW = target.tbw;
+			blit.DPSM = target.psm;
+			GIFRegTRXPOS pos = {};
+			pos.DSAX = x0;
+			pos.DSAY = y0;
+			GIFRegTRXREG reg = {};
+			reg.RRW = w;
+			reg.RRH = h;
+			const size_t len = (static_cast<size_t>(w) * h * p.trbpp + 7) / 8;
+			std::vector<u8> data(len);
+			for (u8& b : data)
+				b = static_cast<u8>(rng());
+
+			int tx = x0, ty = y0;
+			p.wi(m_gs->m_mem, tx, ty, data.data(), static_cast<int>(len), blit, pos, reg);
+			m_gs->m_mem.MarkPagesWritten(Offset(target), GSVector4i(x0, y0, x0 + w + 1, y0 + h + 1));
+		}
+
+		static GSTextureCache::BlockHashStats Stats3() { return GSTextureCache::GetBlockHashStats(); }
+	};
+
+	TEST_F(GSBlockHashCache, TheKeyIsTheHashOfTheBlockHashesWhateverHasBeenWritten)
+	{
+		// R8 (i): after random marked writes, the key the cache gives is the key built from scratch from the bytes
+		// of local memory, so a block hash that was kept past a write would show.
+		BringUp();
+		Randomise();
+		std::mt19937 rng(31);
+
+		u32 checked = 0, changed = 0;
+		for (const u32 psm : kPaletted)
+		{
+			// Windows that are raw: an unregioned 8 or 4-bit window keeps the key it always had.
+			std::vector<Window> wins;
+			while (wins.size() < 6)
+			{
+				const Window win = RandomWindow(rng, psm);
+				if (ChangesWithRawKeys(win))
+					wins.push_back(win);
+			}
+
+			std::vector<u64> last(wins.size(), 0);
+			for (int round = 0; round < 40; round++)
+			{
+				RandomMarkedWrite(rng, wins);
+				for (size_t i = 0; i < wins.size(); i++)
+				{
+					const HashCacheKey key = Key(wins[i], true);
+					ASSERT_EQ(key.TEX0.U64 & 1, 1u) << "the window is raw";
+					ASSERT_EQ(key.TEX0Hash, CachedHashFromScratch(wins[i])) << "psm " << psm << " round " << round << " window " << i;
+					changed += (key.TEX0Hash != last[i]);
+					last[i] = key.TEX0Hash;
+					checked++;
+				}
+			}
+		}
+		EXPECT_EQ(checked, 5u * 40u * 6u);
+		EXPECT_GT(changed, checked / 10) << "the writes did not reach the windows";
+		ExpectVerified();
+	}
+
+	TEST_F(GSBlockHashCache, TwoWindowsHaveOneKeyWithTheCacheExactlyWhenTheyHaveOneWithout)
+	{
+		// R8 (ii): the cache changes the number a window hashes to and nothing about which windows are one.
+		BringUp();
+		std::mt19937 rng(32);
+
+		u32 equal = 0, different = 0;
+		const auto compare = [&](const Window& a, const Window& b, const char* what, u32 psm) {
+			const bool with_cache = KeyWith(a, true) == KeyWith(b, true);
+			const bool without = KeyWith(a, false) == KeyWith(b, false);
+			EXPECT_EQ(with_cache, without) << what << " psm " << psm;
+			(with_cache ? equal : different)++;
+		};
+
+		for (const u32 psm : kPaletted)
+		{
+			const u32 fmsk = GSLocalMemory::m_psm[psm].fmsk;
+			Randomise();
+			for (int trial = 0; trial < 120; trial++)
+			{
+				const Window a = RandomWindow(rng, psm);
+				Window b;
+
+				// A copy of the window elsewhere: one key, unless the H format's other bits differ.
+				if (CopyElsewhere(rng, a, b))
+				{
+					compare(a, b, "copy", psm);
+					if (fmsk != 0xFFFFFFFFu)
+					{
+						for (const u32 bn : Blocks(b))
+						{
+							u32* words = reinterpret_cast<u32*>(m_gs->m_mem.BlockPtr(bn));
+							for (u32 i = 0; i < GS_BLOCK_SIZE / sizeof(u32); i++)
+								words[i] = (words[i] & fmsk) | (static_cast<u32>(rng()) & ~fmsk);
+						}
+						m_gs->m_mem.MarkAllPagesWritten();
+						compare(a, b, "copy with junk in the other bits", psm);
+					}
+
+					// One bit of one block of the copy changed.
+					const std::vector<u32> blocks = Blocks(b);
+					m_gs->m_mem.BlockPtr(blocks[rng() % blocks.size()])[rng() % GS_BLOCK_SIZE] ^= static_cast<u8>(1u << (rng() % 8));
+					m_gs->m_mem.MarkAllPagesWritten();
+					compare(a, b, "copy with one bit changed", psm);
+				}
+
+				// Another window of the same format: a different size, a different place, a different offset.
+				compare(a, RandomWindow(rng, psm), "unrelated window", psm);
+			}
+
+			// Blocks that are all alike, so that only the shape and the offset tell the windows apart.
+			FillUniform();
+			for (int trial = 0; trial < 60; trial++)
+				compare(RandomWindow(rng, psm), RandomWindow(rng, psm), "windows over uniform memory", psm);
+		}
+
+		EXPECT_GT(equal, 100u);
+		EXPECT_GT(different, 100u);
+		ExpectVerified();
+	}
+
+	TEST_F(GSBlockHashCache, AMipmapChainIsKeyedThroughTheCacheToo)
+	{
+		// Two levels, both raw: each is keyed through the cache, and the chain keeps the equivalence it had. On
+		// memory of one repeated block, windows differ only by where they start inside a block at each level.
+		BringUp();
+		FillUniform();
+
+		Packet p;
+		GIFReg r = {};
+		r.U64 = 0;
+		r.TEX0.TBP0 = 96;
+		r.TEX0.TBW = 8;
+		r.TEX0.PSM = PSMT8;
+		r.TEX0.TW = 8;
+		r.TEX0.TH = 8;
+		p.Reg(GIF_A_D_REG_TEX0_1, r);
+		r.U64 = 0;
+		r.MIPTBP1.TBP1 = 1024;
+		r.MIPTBP1.TBW1 = 4;
+		p.Reg(GIF_A_D_REG_MIPTBP1_1, r);
+		p.Send(*m_gs, GIFRegPRIM{});
+
+		const GSVector2i lod(0, 1);
+		const auto at = [&](int x) {
+			Window win;
+			win.psm = PSMT8;
+			win.tbp0 = 96;
+			win.tbw = 8;
+			win.has_x = win.has_y = true;
+			win.x0 = x;
+			win.w = 32;
+			win.h = 32;
+			return win;
+		};
+
+		u32 equal = 0, different = 0;
+		for (const int xa : {4, 20, 36, 52, 3})
+		{
+			for (const int xb : {4, 20, 36, 52, 3})
+			{
+				const bool with_cache = KeyWith(at(xa), true, &lod) == KeyWith(at(xb), true, &lod);
+				const bool without = KeyWith(at(xa), false, &lod) == KeyWith(at(xb), false, &lod);
+				EXPECT_EQ(with_cache, without) << xa << " and " << xb;
+				(with_cache ? equal : different)++;
+			}
+		}
+		EXPECT_GT(equal, 5u);
+		EXPECT_GT(different, 5u);
+
+		// Both levels of a lookup go through the cache.
+		const GSTextureCache::BlockHashStats before = Stats3();
+		Key(at(4), true, &lod);
+		EXPECT_EQ(Stats3().levels - before.levels, 2u);
+
+		// A byte of the second level's blocks moves the key, and the key is the one built from scratch.
+		const HashCacheKey one = Key(at(4), true, &lod);
+		Window level1;
+		level1.psm = PSMT8;
+		level1.tbp0 = 1024;
+		level1.tbw = 4;
+		level1.has_x = level1.has_y = true;
+		level1.x0 = 2;
+		level1.w = 16;
+		level1.h = 16;
+		m_gs->m_mem.BlockPtr(Blocks(level1)[0])[100] ^= 0x08;
+		m_gs->m_mem.MarkAllPagesWritten();
+		EXPECT_FALSE(Key(at(4), true, &lod) == one);
+		ExpectVerified();
+	}
+
+	TEST_F(GSBlockHashCache, OnlyTheBlocksThatWereMarkedAreHashedAgain)
+	{
+		BringUp();
+		Randomise();
+		Window win;
+		win.psm = PSMT8;
+		win.tbp0 = 64;
+		win.tbw = 2;
+		win.tw = 7;
+		win.th = 6;
+		win.has_x = true;
+		win.x0 = 0;
+		win.w = 100; // a region, so a raw window
+		const std::vector<u32> blocks = Blocks(win);
+		const GSVector4i block_rect = BlockRect(win);
+		const GSVector2i bs = GSLocalMemory::m_psm[PSMT8].bs;
+		const int per_row = block_rect.width() / bs.x;
+		ASSERT_GT(blocks.size(), 16u);
+
+		// The first lookup hashes every block, which no hash has been kept for.
+		GSTextureCache::BlockHashStats before = Stats3();
+		const HashCacheKey first = Key(win, true);
+		GSTextureCache::BlockHashStats after = Stats3();
+		EXPECT_EQ(after.levels - before.levels, 1u);
+		EXPECT_EQ(after.blocks - before.blocks, blocks.size());
+		EXPECT_EQ(after.rehashed - before.rehashed, blocks.size());
+
+		// The second hashes none.
+		before = after;
+		EXPECT_TRUE(Key(win, true) == first);
+		after = Stats3();
+		EXPECT_EQ(after.blocks - before.blocks, blocks.size());
+		EXPECT_EQ(after.rehashed - before.rehashed, 0u);
+
+		// Three blocks of the window are written and marked, each by a rectangle of exactly that block; the next
+		// lookup hashes those and no other, and its key moves.
+		for (const size_t k : {size_t(2), size_t(5), blocks.size() - 1})
+		{
+			const int bx = static_cast<int>(k) % per_row, by = static_cast<int>(k) / per_row;
+			m_gs->m_mem.BlockPtr(blocks[k])[40] ^= 0x20;
+			const int x = block_rect.left + bx * bs.x, y = block_rect.top + by * bs.y;
+			m_gs->m_mem.MarkPagesWritten(Offset(win), GSVector4i(x, y, x + bs.x, y + bs.y));
+		}
+		before = Stats3();
+		const HashCacheKey moved = Key(win, true);
+		after = Stats3();
+		EXPECT_EQ(after.rehashed - before.rehashed, 3u);
+		EXPECT_FALSE(moved == first);
+		EXPECT_EQ(moved.TEX0Hash, CachedHashFromScratch(win));
+
+		// A mark that changed no byte costs a rehash and moves nothing.
+		const int x = block_rect.left, y = block_rect.top;
+		m_gs->m_mem.MarkPagesWritten(Offset(win), GSVector4i(x, y, x + bs.x, y + bs.y));
+		before = Stats3();
+		EXPECT_TRUE(Key(win, true) == moved);
+		after = Stats3();
+		EXPECT_EQ(after.rehashed - before.rehashed, 1u);
+
+		// Another window over the same blocks is served by the same hashes.
+		Window other = win;
+		other.w = 90;
+		before = Stats3();
+		Key(other, true);
+		after = Stats3();
+		EXPECT_EQ(after.rehashed - before.rehashed, 0u);
+		ExpectVerified();
+	}
+
+	TEST_F(GSBlockHashCache, AnHFormatIsKeyedFromItsMaskedBitsEveryTime)
+	{
+		BringUp();
+		Randomise();
+		for (const u32 psm : {PSMT8H, PSMT4HL, PSMT4HH})
+		{
+			Window win;
+			win.psm = psm;
+			win.tbp0 = 160;
+			win.tbw = 1;
+			win.tw = 5;
+			win.th = 5;
+			const GSTextureCache::BlockHashStats before = Stats3();
+			const HashCacheKey first = Key(win, true);
+			Key(win, true);
+			const GSTextureCache::BlockHashStats after = Stats3();
+			EXPECT_EQ(after.levels - before.levels, 2u) << psm;
+			EXPECT_EQ(after.rehashed - before.rehashed, 32u) << psm << ": no block hash is kept for a masked block";
+			EXPECT_EQ(first.TEX0Hash, CachedHashFromScratch(win)) << psm;
+		}
+		ExpectVerified();
+	}
+
+	TEST_F(GSBlockHashCache, WithTheCacheOffNoBlockIsCachedAndTheMarksAreLeftAlone)
+	{
+		BringUp();
+		Randomise();
+		Window win;
+		win.psm = PSMT8;
+		win.tbp0 = 64;
+		win.tbw = 2;
+		win.tw = 7;
+		win.th = 6;
+		win.has_x = true;
+		win.w = 100;
+
+		const GSTextureCache::BlockHashStats before = Stats3();
+		const HashCacheKey off_key = KeyWith(win, false);
+		const GSTextureCache::BlockHashStats after = Stats3();
+		EXPECT_EQ(after.levels, before.levels);
+		for (const u32 bn : Blocks(win))
+			EXPECT_TRUE(m_gs->m_mem.HashDirty(bn)) << "block " << bn << ": the uncached key cleared a bit it does not own";
+
+		// The two keys of a window are two numbers.
+		EXPECT_FALSE(KeyWith(win, true) == off_key);
+		ExpectVerified();
+	}
+
+	TEST_F(GSBlockHashCache, TheCacheIsBoundToTheMemoryItDescribes)
+	{
+		// A cache that outlives the memory it described, or is made over a memory that exists already, must
+		// not trust a bit that some other history cleared.
+		BringUp();
+		Randomise();
+		GSLocalMemory other;
+		std::mt19937 rng(34);
+		for (u32 i = 0; i < GSLocalMemory::m_vmsize; i += 4)
+		{
+			const u32 v = static_cast<u32>(rng());
+			std::memcpy(other.m_vm8 + i, &v, 4);
+		}
+		ASSERT_NE(other.Id(), m_gs->m_mem.Id());
+
+		GSLocalMemory& mine = m_gs->m_mem;
+		const u32 block = 5;
+		const u64 first = g_texture_cache->BlockHash(mine, block);
+		EXPECT_FALSE(mine.HashDirty(block)) << "the cache cleared the bit it keeps the hash by";
+
+		// A store with no mark, then the cache is asked about another memory and back. Binding to the other
+		// memory marked this one's every hash invalid, so the store is seen.
+		mine.BlockPtr(block)[7] ^= 0x01;
+		const u64 theirs = g_texture_cache->BlockHash(other, block);
+		EXPECT_EQ(theirs, XXH3_64bits(other.BlockPtr(block), GS_BLOCK_SIZE));
+		const u64 again = g_texture_cache->BlockHash(mine, block);
+		EXPECT_EQ(again, XXH3_64bits(mine.BlockPtr(block), GS_BLOCK_SIZE));
+		EXPECT_NE(again, first);
+
+		// While bound, a block is not hashed twice.
+		mine.BlockPtr(block)[9] ^= 0x01;
+		EXPECT_EQ(g_texture_cache->BlockHash(mine, block), again);
+	}
+
+	TEST_F(GSBlockHashCache, VerifyModeFindsAStoreThatWasNotMarked)
+	{
+		BringUp();
+		Randomise();
+		Window win;
+		win.psm = PSMT8;
+		win.tbp0 = 64;
+		win.tbw = 2;
+		win.tw = 7;
+		win.th = 6;
+		win.has_x = true;
+		win.w = 100;
+		const std::vector<u32> blocks = Blocks(win);
+
+		GSTextureCache::SetBlockHashVerify(true);
+		const HashCacheKey before = Key(win, true);
+		GSTextureCache::BlockHashVerifyReport report = GSTextureCache::GetBlockHashVerifyReport();
+		EXPECT_EQ(report.levels, 1u);
+		EXPECT_EQ(report.blocks, blocks.size());
+		EXPECT_EQ(report.stale_blocks, 0u);
+		EXPECT_EQ(report.lookups, 1u);
+
+		// A store that is marked is seen.
+		m_gs->m_mem.BlockPtr(blocks[1])[3] ^= 0x01;
+		m_gs->m_mem.MarkPagesWritten(Offset(win), GSVector4i(0, 0, 100, 64));
+		EXPECT_FALSE(Key(win, true) == before);
+		report = GSTextureCache::GetBlockHashVerifyReport();
+		EXPECT_EQ(report.stale_blocks, 0u);
+		EXPECT_EQ(report.extra_misses + report.false_hits, 0u);
+
+		// One that is not is found, and counted once.
+		const HashCacheKey marked = Key(win, true);
+		m_gs->m_mem.BlockPtr(blocks[4])[3] ^= 0x01;
+		EXPECT_TRUE(Key(win, true) == marked) << "the key could not know";
+		report = GSTextureCache::GetBlockHashVerifyReport();
+		EXPECT_EQ(report.stale_blocks, 1u);
+		Key(win, true);
+		report = GSTextureCache::GetBlockHashVerifyReport();
+		EXPECT_EQ(report.stale_blocks, 1u) << "the cached hash was put right";
+
+		// The two forms of that key now disagree on which windows are one: the stale key still equals the key of
+		// the window as it was, which the uncached form says is another.
+		EXPECT_GT(report.false_hits, 0u);
+		GSTextureCache::SetBlockHashVerify(false);
 	}
 } // namespace

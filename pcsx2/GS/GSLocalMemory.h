@@ -513,9 +513,12 @@ protected:
 	{
 		block %= GS_MAX_BLOCKS;
 		const u64 bit = u64(1) << (block & 63);
-		const bool set = (bitmap[block >> 6] & bit) != 0;
-		bitmap[block >> 6] &= ~bit;
-		return set;
+		const u64 word = bitmap[block >> 6];
+		// Most bits a consumer asks about are clear, so the store is only paid when there is a bit to clear.
+		if (!(word & bit))
+			return false;
+		bitmap[block >> 6] = word & ~bit;
+		return true;
 	}
 
 	/// Sets the bits of both bitmaps for `block`.

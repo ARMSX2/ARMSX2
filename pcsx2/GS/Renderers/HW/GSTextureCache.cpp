@@ -103,6 +103,113 @@ void GSTextureCache::VerifyWriteStamps(const GSLocalMemory& mem)
 	sweep.primed = true;
 }
 
+// --- The per-block hash cache (GSTextureCache::SetBlockHashCacheEnabled) ------------------------------------
+
+struct GSTextureCache::BlockHashCache
+{
+	/// GSLocalMemory::Id() of the memory the hashes describe. 0, which no memory has, before the first use.
+	u32 mem_id = 0;
+	/// The hash of each block of local memory. Valid where the hash-dirty bit of the memory is clear.
+	std::unique_ptr<u64[]> hash{new u64[GS_MAX_BLOCKS]()};
+};
+
+static GSTextureCache::BlockHashStats s_block_hash_stats;
+static GSTextureCache::BlockHashVerifyReport s_block_hash_verify_report;
+static constexpr u64 BLOCK_HASH_VERIFY_PRINT_LIMIT = 20; // lines printed per kind of finding
+
+/// Levels keyed through the cache so far; a counter that HashCacheKey::Create reads before and after a key to
+/// tell whether the key used the cache at all.
+static u64 s_block_hash_levels_cached = 0;
+
+/// The block hashes of the level being keyed, in the order they are fed to the hash. A level is at most 1024
+/// texels each way, and the smallest block, of the 32-bit formats, is 8 x 8 texels; a window that starts away
+/// from a block edge reaches one block further each way. A level with more blocks than that is keyed without
+/// the cache (see HashTextureLevel), which no real level is.
+static constexpr u32 BLOCK_HASH_GATHER_MAX = (1024 / 8 + 1) * (1024 / 8 + 1);
+static u64 s_block_hash_gather[BLOCK_HASH_GATHER_MAX];
+
+/// What verify mode has seen of the keys of both forms: the key without the cache to the key with it, and back.
+/// Two lookups have the same window if and only if both maps keep one answer for the key.
+static std::unordered_map<GSTextureCache::HashCacheKey, u64, GSTextureCache::HashCacheKeyHash> s_block_hash_verify_forward;
+static std::unordered_map<GSTextureCache::HashCacheKey, u64, GSTextureCache::HashCacheKeyHash> s_block_hash_verify_reverse;
+
+void GSTextureCache::SetBlockHashVerify(bool enable)
+{
+	s_block_hash_verify = enable;
+	s_block_hash_verify_report = {};
+	s_block_hash_verify_forward.clear();
+	s_block_hash_verify_reverse.clear();
+}
+
+GSTextureCache::BlockHashVerifyReport GSTextureCache::GetBlockHashVerifyReport()
+{
+	return s_block_hash_verify_report;
+}
+
+GSTextureCache::BlockHashStats GSTextureCache::GetBlockHashStats()
+{
+	return s_block_hash_stats;
+}
+
+/// The hash of one block's 256 bytes.
+__fi static u64 HashOneBlock(const u8* block)
+{
+	return GSXXH3_64bits(block, GS_BLOCK_SIZE);
+}
+
+/// The cache, bound to `mem`: made at first use, and every hash invalid again if it described another memory.
+/// A memory made after the one the cache described has an id of its own, so this also catches a renderer that
+/// was replaced under a texture cache that was kept.
+GSTextureCache::BlockHashCache& GSTextureCache::SyncBlockHashCache(GSLocalMemory& mem)
+{
+	if (!m_block_hash_cache)
+		m_block_hash_cache = std::make_unique<BlockHashCache>();
+
+	BlockHashCache& cache = *m_block_hash_cache;
+	if (cache.mem_id != mem.Id())
+	{
+		mem.MarkAllHashDirty();
+		cache.mem_id = mem.Id();
+	}
+	return cache;
+}
+
+u64 GSTextureCache::BlockHash(GSLocalMemory& mem, u32 block)
+{
+	BlockHashCache& cache = SyncBlockHashCache(mem);
+	block %= GS_MAX_BLOCKS;
+	if (mem.TestAndClearHashDirty(block))
+		cache.hash[block] = HashOneBlock(mem.BlockPtr(block));
+	return cache.hash[block];
+}
+
+/// Verify mode, one lookup: the key the cache gave the window (`cached`, whose TEX0Hash is the cached form) and
+/// the hash it has without the cache. Checks that the two forms agree on which windows are one.
+static void VerifyBlockHashKey(const GSTextureCache::HashCacheKey& cached, u64 uncached_hash)
+{
+	GSTextureCache::BlockHashVerifyReport& report = s_block_hash_verify_report;
+	report.lookups++;
+
+	GSTextureCache::HashCacheKey uncached = cached;
+	uncached.TEX0Hash = uncached_hash;
+
+	// Two windows with one key without the cache must have one with it, or a hit is lost.
+	const auto forward = s_block_hash_verify_forward.emplace(uncached, cached.TEX0Hash);
+	if (!forward.second && forward.first->second != cached.TEX0Hash)
+	{
+		if (++report.extra_misses <= BLOCK_HASH_VERIFY_PRINT_LIMIT)
+			Console.Error("TC: block hash cache EXTRA MISS: tbp0 0x%x psm %u: one key without the cache, two with it", static_cast<u32>(cached.TEX0.TBP0), static_cast<u32>(cached.TEX0.PSM));
+	}
+
+	// Two windows with one key with the cache must have one without it, or a wrong texture is used.
+	const auto reverse = s_block_hash_verify_reverse.emplace(cached, uncached_hash);
+	if (!reverse.second && reverse.first->second != uncached_hash)
+	{
+		if (++report.false_hits <= BLOCK_HASH_VERIFY_PRINT_LIMIT)
+			Console.Error("TC: block hash cache FALSE HIT: tbp0 0x%x psm %u: one key with the cache, two without it", static_cast<u32>(cached.TEX0.TBP0), static_cast<u32>(cached.TEX0.PSM));
+	}
+}
+
 /// Counts a memo hit and compares its hash with the one computed afresh. False if they differ.
 static bool VerifyHashMemoHit(const GIFRegTEX0& TEX0, u64 memo, u64 fresh)
 {
@@ -9681,7 +9788,7 @@ static bool HashLevelIsRaw(const GSLocalMemory::psm_t& psm, const HashLevelGeome
 
 // Hashes the texture level into hash_st, and returns where its window starts inside its first block as
 // x | y << 8, or 0 if the level is not hashed from raw blocks.
-static u32 HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTextureCache::SourceRegion region, BlockHashState& hash_st, u8* temp, bool raw_blocks)
+static u32 HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTextureCache::SourceRegion region, BlockHashState& hash_st, u8* temp, bool raw_blocks, GSTextureCache::BlockHashCache* block_hashes = nullptr)
 {
 	const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[TEX0.PSM];
 	const HashLevelGeometry geometry = GetHashLevelGeometry(TEX0, region);
@@ -9698,6 +9805,101 @@ static u32 HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTe
 	// returned below) mean equal texels. The blocks go in whole, so a byte of an edge block outside the window
 	// changes the hash: that can only turn a texel-hash hit into a miss, never the reverse.
 	const bool raw = HashLevelIsRaw(psm, geometry, region, raw_blocks);
+
+	// With the block hash cache, a raw level is keyed by one hash of the hashes of its blocks, in the same
+	// order, instead of by the bytes: each block's hash is kept until a mark of the block's bytes, so a block
+	// that was not written since the last lookup is not read. Two windows have the same key here if and only
+	// if they have the same raw key, because a block hash is a function of the block's bytes alone, and the
+	// blocks a window reads, and where it starts inside the first, are what the rest of the key and the offset
+	// below say.
+	const int right = block_rect.right >> off.blockShiftX();
+	const int bottom = block_rect.bottom >> off.blockShiftY();
+	if (raw && block_hashes &&
+		static_cast<u64>((block_rect.width() >> off.blockShiftX())) * static_cast<u64>((block_rect.height() >> off.blockShiftY())) <= BLOCK_HASH_GATHER_MAX)
+	{
+		const u32 fmsk = psm.fmsk;
+		GSOffset::BNHelper bn = off.bnMulti(block_rect.left, block_rect.top);
+		u64* const hashes = block_hashes->hash.get();
+		u64* out = s_block_hash_gather;
+		u64 rehashed = 0;
+
+		if (fmsk == 0xFFFFFFFFu)
+		{
+			for (; bn.blkY() < bottom; bn.nextBlockY())
+			{
+				for (; bn.blkX() < right; bn.nextBlockX())
+				{
+					const u32 block = bn.value();
+					if (mem.TestAndClearHashDirty(block))
+					{
+						hashes[block] = HashOneBlock(mem.BlockPtr(block));
+						rehashed++;
+					}
+					*out++ = hashes[block];
+				}
+			}
+		}
+		else
+		{
+			// The H formats share their words with other data, which changes without the format's own bits
+			// changing, so a block hash would be dirtied by writes that are not the format's. Hash only the
+			// format's bits, afresh each time: these formats are rare, and nothing is gained by caching.
+			alignas(16) u32 masked[GS_BLOCK_SIZE / sizeof(u32)];
+			for (; bn.blkY() < bottom; bn.nextBlockY())
+			{
+				for (; bn.blkX() < right; bn.nextBlockX())
+				{
+					const u32* block = reinterpret_cast<const u32*>(mem.BlockPtr(bn.value()));
+					for (u32 i = 0; i < GS_BLOCK_SIZE / sizeof(u32); i++)
+						masked[i] = block[i] & fmsk;
+					*out++ = HashOneBlock(reinterpret_cast<const u8*>(masked));
+					rehashed++;
+				}
+			}
+		}
+
+		const u64 count = static_cast<u64>(out - s_block_hash_gather);
+		BlockHashAccumulate(hash_st, reinterpret_cast<const u8*>(s_block_hash_gather), static_cast<u32>(count * sizeof(u64)));
+
+		s_block_hash_levels_cached++;
+		s_block_hash_stats.levels++;
+		s_block_hash_stats.blocks += count;
+		s_block_hash_stats.rehashed += rehashed;
+
+		if (GSTextureCache::IsBlockHashVerify()) [[unlikely]]
+		{
+			// Each block of the full-mask formats, hashed afresh, against the hash the key was made from. A
+			// difference is a store into local memory that nothing marked. The cached hash is put right
+			// after, so a missed store is counted once and not once per lookup.
+			GSTextureCache::BlockHashVerifyReport& report = s_block_hash_verify_report;
+			report.levels++;
+			if (fmsk == 0xFFFFFFFFu)
+			{
+				GSOffset::BNHelper check = off.bnMulti(block_rect.left, block_rect.top);
+				const u64* used = s_block_hash_gather;
+				for (; check.blkY() < bottom; check.nextBlockY())
+				{
+					for (; check.blkX() < right; check.nextBlockX(), used++)
+					{
+						const u32 block = check.value();
+						const u64 fresh = HashOneBlock(mem.BlockPtr(block));
+						report.blocks++;
+						if (fresh != *used)
+						{
+							if (++report.stale_blocks <= BLOCK_HASH_VERIFY_PRINT_LIMIT)
+							{
+								Console.Error("TC: block hash cache STALE: block %u of tbp0 0x%x psm %u has bytes that changed with no mark (frame %u)",
+									block, static_cast<u32>(TEX0.TBP0), static_cast<u32>(TEX0.PSM), static_cast<u32>(g_perfmon.GetFrame()));
+							}
+							hashes[block] = fresh;
+						}
+					}
+				}
+			}
+		}
+
+		return static_cast<u32>(rect.left - block_rect.left) | (static_cast<u32>(rect.top - block_rect.top) << 8);
+	}
 
 	// For textures which are smaller than the block size, we expand and then hash.
 	// This is because otherwise we get the padding bytes, which can be random junk.
@@ -9738,8 +9940,6 @@ static u32 HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTe
 	}
 
 	GSOffset::BNHelper bn = off.bnMulti(block_rect.left, block_rect.top);
-	const int right = block_rect.right >> off.blockShiftX();
-	const int bottom = block_rect.bottom >> off.blockShiftY();
 
 	if (psm.fmsk == 0xFFFFFFFFu)
 	{
@@ -9900,18 +10100,24 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 	for (u32 i = 1; i < std::min(levels, HASH_MEMO_MAX_LEVELS); i++)
 		level_tex0[i] = g_gs_renderer->GetTex0Layer(basemip + i);
 
-	const auto hash_levels = [&]() {
+	// The raw levels of a lookup are keyed through the block hash cache when it is on. A paletted format is
+	// the only one with a raw level, so no other lookup makes the cache.
+	GSTextureCache* const tc = g_texture_cache.get();
+	GSTextureCache::BlockHashCache* const block_hashes =
+		(raw_blocks && psm.pal > 0 && s_block_hash_cache_enabled && tc) ? &tc->SyncBlockHashCache(g_gs_renderer->m_mem) : nullptr;
+
+	const auto hash_levels = [&](GSTextureCache::BlockHashCache* cache) {
 		BlockHashState hash_st;
 		BlockHashReset(hash_st);
 
 		// base level is always hashed
-		u64 window_offsets = HashTextureLevel(TEX0, TEXA, region, hash_st, s_unswizzle_buffer, raw_blocks);
+		u64 window_offsets = HashTextureLevel(TEX0, TEXA, region, hash_st, s_unswizzle_buffer, raw_blocks, cache);
 
 		// hash and combine full mipmaps when enabled
 		for (u32 i = 1; i < levels; i++)
 		{
 			const GIFRegTEX0 MIP_TEX0 = (i < HASH_MEMO_MAX_LEVELS) ? level_tex0[i] : g_gs_renderer->GetTex0Layer(basemip + i);
-			const u32 offset = HashTextureLevel(MIP_TEX0, TEXA, region.AdjustForMipmap(i), hash_st, s_unswizzle_buffer, raw_blocks);
+			const u32 offset = HashTextureLevel(MIP_TEX0, TEXA, region.AdjustForMipmap(i), hash_st, s_unswizzle_buffer, raw_blocks, cache);
 			window_offsets = window_offsets * 0x100000001B3ULL + offset;
 		}
 
@@ -9933,10 +10139,20 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 	// few KiB and most of those written again before the next frame, and a memo of 32 entries that took
 	// them all would lose the one large texture that hits to the small ones that do not.
 	const int base_blocks = (base_geometry.block_rect.width() / psm.bs.x) * (base_geometry.block_rect.height() / psm.bs.y);
-	GSTextureCache* const tc = g_texture_cache.get();
+
+	// Verify mode of the block hash cache: every lookup, memo or not, is keyed both ways and the two are compared.
+	if (s_block_hash_verify && block_hashes) [[unlikely]]
+	{
+		const u64 cached_levels = s_block_hash_levels_cached;
+		ret.TEX0Hash = hash_levels(block_hashes);
+		if (s_block_hash_levels_cached != cached_levels)
+			VerifyBlockHashKey(ret, hash_levels(nullptr));
+		return ret;
+	}
+
 	if (!tc || levels > HASH_MEMO_MAX_LEVELS || base_blocks < HASH_MEMO_MIN_BLOCKS)
 	{
-		ret.TEX0Hash = hash_levels();
+		ret.TEX0Hash = hash_levels(block_hashes);
 		return ret;
 	}
 
@@ -9950,7 +10166,8 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 	static_assert(HASH_MEMO_ENTRIES == 32, "the index above takes 5 bits");
 	memo.stats.lookups++;
 
-	bool key_matches = entry.levels == levels && entry.texa == texa && entry.region == region.bits && entry.raw_blocks == raw_blocks;
+	bool key_matches = entry.levels == levels && entry.texa == texa && entry.region == region.bits && entry.raw_blocks == raw_blocks &&
+	                   entry.block_hash_cache == (block_hashes != nullptr);
 	for (u32 i = 0; key_matches && i < levels; i++)
 		key_matches = entry.tex0[i] == (level_tex0[i].U64 & HASH_MEMO_TEX0_BITS);
 
@@ -9971,7 +10188,7 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 
 			if (s_hash_memo_verify) [[unlikely]]
 			{
-				const HashType fresh = hash_levels();
+				const HashType fresh = hash_levels(block_hashes);
 				if (!VerifyHashMemoHit(TEX0, entry.hash, fresh))
 				{
 					ret.TEX0Hash = fresh;
@@ -9986,7 +10203,7 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 
 	// The sequence is noted before the pages are read: a store after this has a stamp past it.
 	const u64 seq = mem.WriteSeq();
-	ret.TEX0Hash = hash_levels();
+	ret.TEX0Hash = hash_levels(block_hashes);
 
 	bool has_page_sets = true;
 	for (u32 i = 0; has_page_sets && i < levels; i++)
@@ -9999,6 +10216,7 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 		entry.texa = texa;
 		entry.region = region.bits;
 		entry.raw_blocks = raw_blocks;
+		entry.block_hash_cache = (block_hashes != nullptr);
 		entry.levels = levels;
 		for (u32 i = 0; i < levels; i++)
 			entry.tex0[i] = level_tex0[i].U64 & HASH_MEMO_TEX0_BITS;
