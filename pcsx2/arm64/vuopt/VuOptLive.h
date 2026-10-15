@@ -202,6 +202,9 @@ namespace vuopt
 		void SetWorkerGate(std::function<void()> gate);
 		void WaitWorkerIdle();
 		size_t WorkerQueued();
+		// pcsx2-eerunner --vuopt-worker-delay-us: the worker sleeps this long before each job,
+		// so publication lags the request as on a loaded or slow machine (0: no delay).
+		void SetWorkerDelayUs(u32 us);
 		// The tripwire, as a test or a runner flag sets it off.
 		void TripStickyForTest();
 #endif

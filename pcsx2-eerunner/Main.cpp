@@ -851,6 +851,24 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 #endif
 				continue;
 			}
+			else if (CHECK_ARG_PARAM("--vuopt-worker-delay-us"))
+			{
+				// The vuopt worker sleeps this long before each job: publication lags the
+				// request as it does on a loaded or slow machine.
+#if defined(ARCH_ARM64) && defined(PCSX2_RECOMPILER_TESTS)
+				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
+				if (!n.has_value())
+				{
+					Console.Error("--vuopt-worker-delay-us expects a number of microseconds.");
+					return false;
+				}
+				vuopt::live::SetWorkerDelayUs(n.value());
+#else
+				++i;
+				Console.Warning("--vuopt-worker-delay-us needs an arm64 build with the recompiler test hooks.");
+#endif
+				continue;
+			}
 			else if (CHECK_ARG("--vuopt-sync"))
 			{
 				// The vuopt tier's deterministic mode: every background compile is waited

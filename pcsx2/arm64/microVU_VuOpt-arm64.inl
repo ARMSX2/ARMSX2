@@ -24,8 +24,10 @@
 // (The vuopt headers are included at the top of microVU-arm64.cpp: they cannot
 // follow microVU's macros.)
 
+#include <chrono>
 #include <map>
 #include <memory>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -321,6 +323,11 @@ namespace
 	VuoptTripwire& s_trip = *new VuoptTripwire();
 } // namespace
 
+#ifdef PCSX2_RECOMPILER_TESTS
+// vuopt::live::SetWorkerDelayUs
+static std::atomic<u32> s_vuoptWorkerDelayUs{0};
+#endif
+
 #if defined(PCSX2_RECOMPILER_TESTS) && defined(__linux__)
 static bool vuoptCountingIns() { return mvu_test_hooks::g_vu1InsCount.load(std::memory_order_relaxed); }
 static u64 vuoptReadIns() { return vuoptCountingIns() ? mvu_test_hooks::ReadThreadInstructions() : 0; }
@@ -530,6 +537,7 @@ namespace vuopt::live
 			s_vuopt.worker->WaitIdle();
 	}
 	size_t WorkerQueued() { return s_vuopt.worker ? s_vuopt.worker->Queued() : 0; }
+	void SetWorkerDelayUs(u32 us) { s_vuoptWorkerDelayUs.store(us, std::memory_order_relaxed); }
 #endif
 
 	Stats GetStats()
@@ -785,6 +793,10 @@ namespace
 
 void VuoptJob::Run()
 {
+#ifdef PCSX2_RECOMPILER_TESTS
+	if (const u32 us = s_vuoptWorkerDelayUs.load(std::memory_order_relaxed))
+		std::this_thread::sleep_for(std::chrono::microseconds(us));
+#endif
 	const u64 ins0 = vuoptReadIns();
 	thread_local std::unique_ptr<vuopt::bg::CodeSink> sink;
 	if (!sink)
