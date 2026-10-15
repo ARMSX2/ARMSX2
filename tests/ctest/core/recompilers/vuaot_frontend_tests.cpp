@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 //
-// vuopt front end: decoder, the port of microVU's first pass, the program
+// vu-aot front end: decoder, the port of microVU's first pass, the program
 // graph and SSA construction.
 //
 // The port is checked against microVU itself rather than against expected
 // values written by hand: each program runs through microVU with the
 // first-pass hook armed, and every block microVU compiles is re-analysed by
-// vuopt from the same entry key, in the same order, field by field. The
+// vu-aot from the same entry key, in the same order, field by field. The
 // hand-written programs aim at the timing rules (flag instances, Q/P lanes,
 // stalls, the branch VI backup); the fuzzed ones at everything else.
 //
@@ -21,11 +21,11 @@
 
 #include "Config.h"
 #include "VU.h"
-#include "arm64/vuopt/VuOptDecode.h"
-#include "arm64/vuopt/VuOptGraph.h"
-#include "arm64/vuopt/VuOptIR.h"
-#include "arm64/vuopt/VuOptMvuTrace.h"
-#include "arm64/vuopt/VuOptPipe.h"
+#include "arm64/vuaot/VuAotDecode.h"
+#include "arm64/vuaot/VuAotGraph.h"
+#include "arm64/vuaot/VuAotIR.h"
+#include "arm64/vuaot/VuAotMvuTrace.h"
+#include "arm64/vuaot/VuAotPipe.h"
 
 #include <gtest/gtest.h>
 
@@ -53,22 +53,22 @@ constexpr u32 kNopL = 0x8000033c;
 
 struct HookScope
 {
-	std::vector<vuopt::MvuBlockTrace> blocks;
+	std::vector<vuaot::MvuBlockTrace> blocks;
 	int vu;
 	explicit HookScope(int vuIndex)
 		: vu(vuIndex)
 	{
-		vuopt::g_mvuBlockHook = [](const vuopt::MvuBlockTrace& b, void* user) {
+		vuaot::g_mvuBlockHook = [](const vuaot::MvuBlockTrace& b, void* user) {
 			HookScope* s = static_cast<HookScope*>(user);
 			if (static_cast<int>(b.vuIndex) == s->vu)
 				s->blocks.push_back(b);
 		};
-		vuopt::g_mvuBlockHookUser = this;
+		vuaot::g_mvuBlockHookUser = this;
 	}
 	~HookScope()
 	{
-		vuopt::g_mvuBlockHook = nullptr;
-		vuopt::g_mvuBlockHookUser = nullptr;
+		vuaot::g_mvuBlockHook = nullptr;
+		vuaot::g_mvuBlockHookUser = nullptr;
 	}
 };
 
@@ -84,32 +84,32 @@ struct FlagHackScope
 };
 
 // Runs `prog` through microVU and replays every compiled block through
-// vuopt's port. Returns the mismatching fields (empty = identical).
+// vu-aot's port. Returns the mismatching fields (empty = identical).
 std::vector<std::string> CompareWithMicroVU(int vu, const std::vector<VuOp>& prog, bool flagHack,
-	std::vector<vuopt::MvuBlockTrace>* blocksOut = nullptr)
+	std::vector<vuaot::MvuBlockTrace>* blocksOut = nullptr)
 {
 	FlagHackScope fh(flagHack);
 	VuTestHarness h(vu);
 	h.LoadProgram(prog);
 	std::vector<std::string> out;
-	std::vector<vuopt::MvuBlockTrace> blocks;
+	std::vector<vuaot::MvuBlockTrace> blocks;
 	{
 		HookScope hook(vu);
 		h.RunNoDiff();
 		blocks = hook.blocks;
 	}
-	vuopt::PipeConfig cfg;
+	vuaot::PipeConfig cfg;
 	cfg.vuIndex = vu;
 	cfg.flagHack = flagHack;
 	cfg.xgkickHack = EmuConfig.Gamefixes.XgKickHack;
-	vuopt::PipeAnalyzer an(vuRegs[vu].Micro, cfg);
+	vuaot::PipeAnalyzer an(vuRegs[vu].Micro, cfg);
 	for (const auto& mb : blocks)
 	{
-		vuopt::PipeState entry;
+		vuaot::PipeState entry;
 		std::memcpy(entry.bytes, mb.entryState, 96);
-		vuopt::MvuBlockTrace ours;
+		vuaot::MvuBlockTrace ours;
 		an.Analyze(mb.startPC, entry).ToTrace(ours, vu);
-		for (const auto& d : vuopt::CompareBlockTraces(mb, ours))
+		for (const auto& d : vuaot::CompareBlockTraces(mb, ours))
 			out.push_back("block@" + std::to_string(mb.startPC) + ": " + d);
 	}
 	if (blocks.empty())
@@ -155,27 +155,27 @@ std::vector<u8> Image(std::vector<VuOp> prog, u32 size = 0x4000)
 
 struct Built
 {
-	vuopt::ProgramGraph graph;
-	vuopt::ir::Function fn;
+	vuaot::ProgramGraph graph;
+	vuaot::ir::Function fn;
 };
 
 Built Build(const std::vector<u8>& img, bool flagHack = true)
 {
-	vuopt::GraphOptions go;
+	vuaot::GraphOptions go;
 	go.cfg.vuIndex = 1;
 	go.cfg.flagHack = flagHack;
-	go.entries.push_back({0, vuopt::PipeState()});
+	go.entries.push_back({0, vuaot::PipeState()});
 	Built b;
-	b.graph = vuopt::BuildProgramGraph(img.data(), go);
-	vuopt::ir::BuildOptions bo;
-	b.fn = vuopt::ir::BuildSSA(b.graph, bo);
+	b.graph = vuaot::BuildProgramGraph(img.data(), go);
+	vuaot::ir::BuildOptions bo;
+	b.fn = vuaot::ir::BuildSSA(b.graph, bo);
 	return b;
 }
 
 // The IR instructions of `op` emitted for the pair at `pc`, in order.
-std::vector<vuopt::ir::ValueId> InstsAt(const vuopt::ir::Function& f, u32 pc, vuopt::ir::Op op)
+std::vector<vuaot::ir::ValueId> InstsAt(const vuaot::ir::Function& f, u32 pc, vuaot::ir::Op op)
 {
-	std::vector<vuopt::ir::ValueId> r;
+	std::vector<vuaot::ir::ValueId> r;
 	for (const auto& bl : f.blocks)
 		for (auto v : bl.insts)
 			if (f.insts[v].pc == pc && f.insts[v].op == op)
@@ -188,9 +188,9 @@ std::vector<vuopt::ir::ValueId> InstsAt(const vuopt::ir::Function& f, u32 pc, vu
 // Decoder
 //------------------------------------------------------------------
 
-TEST(VuoptDecode, UpperForms)
+TEST(VuAotDecode, UpperForms)
 {
-	using namespace vuopt;
+	using namespace vuaot;
 	const UpperInst a = DecodeUpper(VMULx_U(mask::xyz, vf::vf3, vf::vf1, vf::vf2));
 	EXPECT_EQ(a.op, UOp::MULbc);
 	EXPECT_EQ(a.form, FtForm::Bc);
@@ -220,9 +220,9 @@ TEST(VuoptDecode, UpperForms)
 	EXPECT_TRUE(DecodeUpper(EBit(U(VNOP_U())).upper).eBit);
 }
 
-TEST(VuoptDecode, LowerForms)
+TEST(VuAotDecode, LowerForms)
 {
-	using namespace vuopt;
+	using namespace vuaot;
 	const LowerInst a = DecodeLower(VIBNE_L(vi::vi1, vi::vi2, -3));
 	EXPECT_EQ(a.op, LOp::IBNE);
 	EXPECT_EQ(a.it, 1);
@@ -258,7 +258,7 @@ TEST(VuoptDecode, LowerForms)
 // The decode memo is per thread, on the heap: a table every thread owns, found through a thread_local
 // pointer. Every thread, the compile worker among them, gets the same answers, a slot taken by another
 // word is replaced, and a thread that exits frees its table (a leak check would see it).
-TEST(VuoptDecode, MemoIsPerThreadAndConsistent)
+TEST(VuAotDecode, MemoIsPerThreadAndConsistent)
 {
 	std::mt19937 rng(0x7e1f);
 	std::vector<u32> words;
@@ -272,10 +272,10 @@ TEST(VuoptDecode, MemoIsPerThreadAndConsistent)
 		for (int pass = 0; pass < 2; pass++) // (the second pass hits what the first left, where it survives)
 			for (u32 w : words)
 			{
-				const vuopt::UpperInst& u = vuopt::DecodeUpperRef(w);
-				const vuopt::LowerInst& l = vuopt::DecodeLowerRef(w);
-				const vuopt::UpperInst uc = vuopt::DecodeUpper(w);
-				const vuopt::LowerInst lc = vuopt::DecodeLower(w);
+				const vuaot::UpperInst& u = vuaot::DecodeUpperRef(w);
+				const vuaot::LowerInst& l = vuaot::DecodeLowerRef(w);
+				const vuaot::UpperInst uc = vuaot::DecodeUpper(w);
+				const vuaot::LowerInst lc = vuaot::DecodeLower(w);
 				EXPECT_EQ(u.word, w);
 				EXPECT_EQ(l.word, w);
 				EXPECT_EQ(std::memcmp(&u, &uc, sizeof(u)), 0);
@@ -301,7 +301,7 @@ TEST(VuoptDecode, MemoIsPerThreadAndConsistent)
 // thread asks for 256 KiB: a program with 265 KB of static TLS (the decode memo used to be a
 // thread_local array) could not start that thread on the handhelds. The size of the program's
 // PT_TLS segment, which is what that block is, stays far below it.
-TEST(VuoptDecode, StaticTlsStaysSmall)
+TEST(VuAotDecode, StaticTlsStaysSmall)
 {
 	u64 tls = 0;
 	dl_iterate_phdr(
@@ -314,13 +314,13 @@ TEST(VuoptDecode, StaticTlsStaysSmall)
 		},
 		&tls);
 	constexpr u64 kMaxStaticTlsBytes = 64 * 1024;
-	std::printf("[vuopt tls] static TLS of the program: %llu bytes\n", static_cast<unsigned long long>(tls));
+	std::printf("[vuaot tls] static TLS of the program: %llu bytes\n", static_cast<unsigned long long>(tls));
 	EXPECT_LE(tls, kMaxStaticTlsBytes) << "a thread_local array or a large thread_local object grew the static TLS block; "
 										  "allocate it on the heap behind a thread_local pointer";
 }
 #endif
 
-TEST(VuoptPipe, FlagReadersMatchMicroVU)
+TEST(VuAotPipe, FlagReadersMatchMicroVU)
 {
 	for (int vu : {0, 1})
 	{
@@ -345,7 +345,7 @@ TEST(VuoptPipe, FlagReadersMatchMicroVU)
 	}
 }
 
-TEST(VuoptPipe, QAndPLatencyMatchMicroVU)
+TEST(VuAotPipe, QAndPLatencyMatchMicroVU)
 {
 	for (int dist = 1; dist <= 14; dist++)
 	{
@@ -369,7 +369,7 @@ TEST(VuoptPipe, QAndPLatencyMatchMicroVU)
 
 // A branch reading a VI the previous pair (or the previous block's delay slot)
 // wrote: microVU's branch VI backup.
-TEST(VuoptPipe, BranchViBackupMatchesMicroVU)
+TEST(VuAotPipe, BranchViBackupMatchesMicroVU)
 {
 	std::vector<VuOp> p;
 	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, 2)));
@@ -390,7 +390,7 @@ TEST(VuoptPipe, BranchViBackupMatchesMicroVU)
 // occasional branch in a delay slot, and E-bit ends. No loops, so every
 // program terminates; no imm=1 branches, the one shape microVU decides from a
 // neighbouring slot's record left by an earlier compile.
-TEST(VuoptPipe, FuzzMatchesMicroVU)
+TEST(VuAotPipe, FuzzMatchesMicroVU)
 {
 	std::mt19937 rng(20261013);
 	auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
@@ -473,12 +473,12 @@ TEST(VuoptPipe, FuzzMatchesMicroVU)
 				p.back().upper &= ~bits::I;
 				p.back().lower = kNopL;
 			}
-			if (vuopt::DecodeLower(p.back().lower).isBranch())
+			if (vuaot::DecodeLower(p.back().lower).isBranch())
 				p.back().lower = kNopL;
 			for (bool fh : {true, false})
 			{
 				programs++;
-				std::vector<vuopt::MvuBlockTrace> blocks;
+				std::vector<vuaot::MvuBlockTrace> blocks;
 				const auto d = CompareWithMicroVU(vu, p, fh, &blocks);
 				blocksCompared += blocks.size();
 				for (const auto& b : blocks)
@@ -502,7 +502,7 @@ TEST(VuoptPipe, FuzzMatchesMicroVU)
 	EXPECT_GT(blocksCompared, static_cast<size_t>(programs) * 2);
 	EXPECT_GT(evilBlocks, 0u);
 	EXPECT_GT(flagDecisions, 100u);
-	std::printf("[vuopt fuzz] programs=%d blocks=%zu ops=%zu evil=%zu flagdecisions=%zu\n",
+	std::printf("[vuaot fuzz] programs=%d blocks=%zu ops=%zu evil=%zu flagdecisions=%zu\n",
 		programs, blocksCompared, opsCompared, evilBlocks, flagDecisions);
 }
 
@@ -511,7 +511,7 @@ TEST(VuoptPipe, FuzzMatchesMicroVU)
 //------------------------------------------------------------------
 
 // Every block microVU compiles is a graph node with the same key.
-TEST(VuoptGraph, CoversMicroVUBlocks)
+TEST(VuAotGraph, CoversMicroVUBlocks)
 {
 	std::vector<VuOp> p;
 	p.push_back(L(VIADDIU_L(vi::vi2, vi::vi0, 4)));
@@ -526,18 +526,18 @@ TEST(VuoptGraph, CoversMicroVUBlocks)
 	p.push_back(EBit(U(VNOP_U())));
 	for (bool fh : {true, false})
 	{
-		std::vector<vuopt::MvuBlockTrace> blocks;
+		std::vector<vuaot::MvuBlockTrace> blocks;
 		ASSERT_TRUE(CompareWithMicroVU(1, p, fh, &blocks).empty());
-		vuopt::GraphOptions go;
+		vuaot::GraphOptions go;
 		go.cfg.vuIndex = 1;
 		go.cfg.flagHack = fh;
-		vuopt::PipeState entry;
+		vuaot::PipeState entry;
 		std::memcpy(entry.bytes, blocks.front().entryState, 96);
 		go.entries.push_back({blocks.front().startPC, entry});
-		const vuopt::ProgramGraph g = vuopt::BuildProgramGraph(vuRegs[1].Micro, go);
+		const vuaot::ProgramGraph g = vuaot::BuildProgramGraph(vuRegs[1].Micro, go);
 		for (const auto& mb : blocks)
 		{
-			vuopt::PipeState st;
+			vuaot::PipeState st;
 			std::memcpy(st.bytes, mb.entryState, 96);
 			EXPECT_GE(g.Find(mb.startPC, st, fh), 0) << "block at " << mb.startPC << " flagHack=" << fh;
 		}
@@ -546,7 +546,7 @@ TEST(VuoptGraph, CoversMicroVUBlocks)
 }
 
 // A return through a BAL link register resolves statically.
-TEST(VuoptGraph, ReturnToLinkResolvesStatically)
+TEST(VuAotGraph, ReturnToLinkResolvesStatically)
 {
 	std::vector<VuOp> p;
 	p.push_back(L(VBAL_L(vi::vi15, 4)));            // 0x00: call 0x28
@@ -564,11 +564,11 @@ TEST(VuoptGraph, ReturnToLinkResolvesStatically)
 	EXPECT_EQ(b.graph.stats.jumpSitesUnresolved, 0u);
 	bool found = false;
 	for (const auto& n : b.graph.nodes)
-		if (n.block.endKind == vuopt::BlockEnd::Jump)
+		if (n.block.endKind == vuaot::BlockEnd::Jump)
 			for (int t : n.jumpTargets)
 				found |= (b.graph.nodes[t].pc == 0x10);
 	EXPECT_TRUE(found);
-	EXPECT_TRUE(vuopt::ir::Verify(b.fn).empty());
+	EXPECT_TRUE(vuaot::ir::Verify(b.fn).empty());
 }
 
 //------------------------------------------------------------------
@@ -576,7 +576,7 @@ TEST(VuoptGraph, ReturnToLinkResolvesStatically)
 //------------------------------------------------------------------
 
 // A MAC reader binds to the producer four cycles back, not to the newest one.
-TEST(VuoptSSA, MacReaderBindsToProducerFourCyclesBack)
+TEST(VuAotSSA, MacReaderBindsToProducerFourCyclesBack)
 {
 	std::vector<VuOp> p;
 	p.push_back(L(VIADDIU_L(vi::vi2, vi::vi0, 0xFF)));             // 0x00
@@ -588,8 +588,8 @@ TEST(VuoptSSA, MacReaderBindsToProducerFourCyclesBack)
 	p.push_back(L(VFMAND_L(vi::vi3, vi::vi2)));                     // 0x30: sees B
 	const auto img = Image(p);
 	const Built b = Build(img);
-	ASSERT_TRUE(vuopt::ir::Verify(b.fn).empty());
-	using vuopt::ir::Op;
+	ASSERT_TRUE(vuaot::ir::Verify(b.fn).empty());
+	using vuaot::ir::Op;
 	const auto r1 = InstsAt(b.fn, 0x28, Op::FlagRead);
 	const auto r2 = InstsAt(b.fn, 0x30, Op::FlagRead);
 	ASSERT_EQ(r1.size(), 1u);
@@ -603,7 +603,7 @@ TEST(VuoptSSA, MacReaderBindsToProducerFourCyclesBack)
 }
 
 // A Q reader before the divide lands sees the old Q; after, the new one.
-TEST(VuoptSSA, QReaderBindsByLatency)
+TEST(VuAotSSA, QReaderBindsByLatency)
 {
 	std::vector<VuOp> p;
 	p.push_back(L(VDIV_L(vf::vf1, 0, vf::vf2, 0)));  // 0x00
@@ -613,8 +613,8 @@ TEST(VuoptSSA, QReaderBindsByLatency)
 	p.push_back(U(VMULq_U(mask::xyzw, vf::vf4, vf::vf1)));  // 0x50: new Q
 	const auto img = Image(p);
 	const Built b = Build(img);
-	ASSERT_TRUE(vuopt::ir::Verify(b.fn).empty());
-	using vuopt::ir::Op;
+	ASSERT_TRUE(vuaot::ir::Verify(b.fn).empty());
+	using vuaot::ir::Op;
 	const auto early = InstsAt(b.fn, 0x08, Op::Fmac);
 	const auto late = InstsAt(b.fn, 0x50, Op::Fmac);
 	ASSERT_EQ(early.size(), 1u);
@@ -627,15 +627,15 @@ TEST(VuoptSSA, QReaderBindsByLatency)
 }
 
 // A .xyz write leaves .w's definition alone.
-TEST(VuoptSSA, PartialWriteKeepsUntouchedLane)
+TEST(VuAotSSA, PartialWriteKeepsUntouchedLane)
 {
 	std::vector<VuOp> p;
 	p.push_back(U(VADD_U(mask::xyz, vf::vf1, vf::vf2, vf::vf3)));     // 0x00
 	p.push_back(L(VMOVE_L(mask::xyzw, vf::vf4, vf::vf1)));             // 0x08
 	const auto img = Image(p);
 	const Built b = Build(img);
-	ASSERT_TRUE(vuopt::ir::Verify(b.fn).empty());
-	using vuopt::ir::Op;
+	ASSERT_TRUE(vuaot::ir::Verify(b.fn).empty());
+	using vuaot::ir::Op;
 	const auto add = InstsAt(b.fn, 0x00, Op::Fmac);
 	const auto mv = InstsAt(b.fn, 0x08, Op::Move);
 	ASSERT_EQ(add.size(), 1u);
@@ -645,12 +645,12 @@ TEST(VuoptSSA, PartialWriteKeepsUntouchedLane)
 	EXPECT_EQ(a[1], add[0]);
 	EXPECT_EQ(a[2], add[0]);
 	EXPECT_EQ(b.fn.insts[a[3]].op, Op::LiveIn);
-	EXPECT_EQ(b.fn.insts[a[3]].var, vuopt::ir::var::VF(1, 3));
+	EXPECT_EQ(b.fn.insts[a[3]].var, vuaot::ir::var::VF(1, 3));
 }
 
 // A loop of two blocks, each entered from outside: irreducible in the graph
 // the SSA is built on. SSA stays valid and minimal.
-TEST(VuoptSSA, IrreducibleLoopIsValid)
+TEST(VuAotSSA, IrreducibleLoopIsValid)
 {
 	std::vector<VuOp> p;
 	p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, 5)));                       // 0x00: -> 0x30 (Y)
@@ -665,7 +665,7 @@ TEST(VuoptSSA, IrreducibleLoopIsValid)
 	p.push_back(U(VNOP_U()));                                            // 0x48
 	const auto img = Image(p);
 	const Built b = Build(img);
-	EXPECT_TRUE(vuopt::ir::Verify(b.fn).empty()) << Join(vuopt::ir::Verify(b.fn));
+	EXPECT_TRUE(vuaot::ir::Verify(b.fn).empty()) << Join(vuaot::ir::Verify(b.fn));
 	EXPECT_GE(b.graph.stats.irreducibleEdges, 1u);
 	// No phi may merge one value with only itself.
 	for (const auto& bl : b.fn.blocks)
@@ -673,7 +673,7 @@ TEST(VuoptSSA, IrreducibleLoopIsValid)
 		for (auto ph : bl.phis)
 		{
 			const auto& in = b.fn.insts[ph];
-			vuopt::ir::ValueId other = 0;
+			vuaot::ir::ValueId other = 0;
 			bool trivial = true;
 			for (auto a : in.args)
 			{

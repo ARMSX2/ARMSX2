@@ -89,7 +89,7 @@
 
 #if defined(ARCH_ARM64)
 #include "pcsx2/arm64/iR5900-arm64.h"
-#include "pcsx2/arm64/vuopt/VuOptLive.h"
+#include "pcsx2/arm64/vuaot/VuAotLive.h"
 #endif
 
 #include "svnrev.h"
@@ -131,7 +131,7 @@ static uint32_t s_frames = 300;
 static bool s_no_console = false;
 static bool s_vu0_interp = false; // --vu0-interp: VU0 on its interpreter (every --contmem pass, --liverun)
 static bool s_vu1_interp = false; // --vu1-interp: VU1 on its interpreter (--liverun)
-static uint32_t s_vuopt_trip_at = 0; // --vuopt-trip-at N: set the vuopt sticky-STATUS tripwire off after frame N (--liverun)
+static uint32_t s_vuaot_trip_at = 0; // --vuaot-trip-at N: set the vu-aot sticky-STATUS tripwire off after frame N (--liverun)
 static uint32_t s_reload_state_at = 0; // --reload-state-at N: load the --savestate again after frame N (--liverun)
 static GSRendererType s_renderer = GSRendererType::Null; // --renderer (Null default; vk for Intel/headless)
 static bool s_renderer_explicit = false; // user passed --renderer (an explicit null is honored in liverun)
@@ -797,26 +797,26 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 #endif
 				continue;
 			}
-			else if (CHECK_ARG_PARAM("--vuopt-threshold"))
+			else if (CHECK_ARG_PARAM("--vuaot-threshold"))
 			{
-				// With EmuCore/CPU/Recompiler/EnableVUOpt on (--set), tier VU1
+				// With EmuCore/CPU/Recompiler/EnableVUAot on (--set), tier VU1
 				// programs up after N dispatches instead of the shipped constant:
-				// a low N puts almost every program through vuopt for an identity run.
+				// a low N puts almost every program through vu-aot for an identity run.
 #if defined(ARCH_ARM64) && defined(PCSX2_RECOMPILER_TESTS)
 				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
 				if (!n.has_value() || n.value() == 0)
 				{
-					Console.Error("--vuopt-threshold expects a run count above zero.");
+					Console.Error("--vuaot-threshold expects a run count above zero.");
 					return false;
 				}
-				vuopt::live::SetTierUpRuns(n.value());
+				vuaot::live::SetTierUpRuns(n.value());
 #else
 				++i;
-				Console.Warning("--vuopt-threshold needs an arm64 build with the recompiler test hooks.");
+				Console.Warning("--vuaot-threshold needs an arm64 build with the recompiler test hooks.");
 #endif
 				continue;
 			}
-			else if (CHECK_ARG_PARAM("--vuopt-jump-threshold"))
+			else if (CHECK_ARG_PARAM("--vuaot-jump-threshold"))
 			{
 				// ... and after N JR/JALR slow-path entries (the programs a stub reaches only by
 				// jumping) instead of the shipped constant.
@@ -824,17 +824,17 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
 				if (!n.has_value() || n.value() == 0)
 				{
-					Console.Error("--vuopt-jump-threshold expects a count above zero.");
+					Console.Error("--vuaot-jump-threshold expects a count above zero.");
 					return false;
 				}
-				vuopt::live::SetJumpTierUpRuns(n.value());
+				vuaot::live::SetJumpTierUpRuns(n.value());
 #else
 				++i;
-				Console.Warning("--vuopt-jump-threshold needs an arm64 build with the recompiler test hooks.");
+				Console.Warning("--vuaot-jump-threshold needs an arm64 build with the recompiler test hooks.");
 #endif
 				continue;
 			}
-			else if (CHECK_ARG_PARAM("--vuopt-trip-at"))
+			else if (CHECK_ARG_PARAM("--vuaot-trip-at"))
 			{
 				// Sets the tier's sticky-STATUS tripwire off after frame N of a --liverun: the regions that
 				// dropped the sticky byte are rebuilt in the middle of a game, which is what the trip does.
@@ -842,43 +842,43 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
 				if (!n.has_value() || n.value() == 0)
 				{
-					Console.Error("--vuopt-trip-at expects a frame number above zero.");
+					Console.Error("--vuaot-trip-at expects a frame number above zero.");
 					return false;
 				}
-				s_vuopt_trip_at = n.value();
+				s_vuaot_trip_at = n.value();
 #else
 				++i;
-				Console.Warning("--vuopt-trip-at needs an arm64 build with the recompiler test hooks.");
+				Console.Warning("--vuaot-trip-at needs an arm64 build with the recompiler test hooks.");
 #endif
 				continue;
 			}
-			else if (CHECK_ARG_PARAM("--vuopt-worker-delay-us"))
+			else if (CHECK_ARG_PARAM("--vuaot-worker-delay-us"))
 			{
-				// The vuopt worker sleeps this long before each job: publication lags the
+				// The vu-aot worker sleeps this long before each job: publication lags the
 				// request as it does on a loaded or slow machine.
 #if defined(ARCH_ARM64) && defined(PCSX2_RECOMPILER_TESTS)
 				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
 				if (!n.has_value())
 				{
-					Console.Error("--vuopt-worker-delay-us expects a number of microseconds.");
+					Console.Error("--vuaot-worker-delay-us expects a number of microseconds.");
 					return false;
 				}
-				vuopt::live::SetWorkerDelayUs(n.value());
+				vuaot::live::SetWorkerDelayUs(n.value());
 #else
 				++i;
-				Console.Warning("--vuopt-worker-delay-us needs an arm64 build with the recompiler test hooks.");
+				Console.Warning("--vuaot-worker-delay-us needs an arm64 build with the recompiler test hooks.");
 #endif
 				continue;
 			}
-			else if (CHECK_ARG("--vuopt-sync"))
+			else if (CHECK_ARG("--vuaot-sync"))
 			{
-				// The vuopt tier's deterministic mode: every background compile is waited
+				// The vu-aot tier's deterministic mode: every background compile is waited
 				// for and published where it was asked for (the synchronous tier's timing),
 				// so two runs compile the same things at the same dispatches.
 #if defined(ARCH_ARM64) && defined(PCSX2_RECOMPILER_TESTS)
-				vuopt::live::SetSynchronous(true);
+				vuaot::live::SetSynchronous(true);
 #else
-				Console.Warning("--vuopt-sync needs an arm64 build with the recompiler test hooks.");
+				Console.Warning("--vuaot-sync needs an arm64 build with the recompiler test hooks.");
 #endif
 				continue;
 			}
@@ -4392,10 +4392,10 @@ static int RunLiveRun()
 		VMManager::Execute(); // blocks for one frame; if the EE wedges, never returns
 		s_liverun_frame.store(f + 1, std::memory_order_relaxed);
 #if defined(ARCH_ARM64) && defined(PCSX2_RECOMPILER_TESTS)
-		if (s_vuopt_trip_at && (f + 1) == s_vuopt_trip_at)
+		if (s_vuaot_trip_at && (f + 1) == s_vuaot_trip_at)
 		{
-			Console.WriteLn(fmt::format("LIVERUN: setting the vuopt sticky-STATUS tripwire off after frame {}", f + 1));
-			vuopt::live::TripStickyForTest();
+			Console.WriteLn(fmt::format("LIVERUN: setting the vu-aot sticky-STATUS tripwire off after frame {}", f + 1));
+			vuaot::live::TripStickyForTest();
 		}
 #endif
 		if (s_reload_state_at && (f + 1) == s_reload_state_at)
@@ -4538,8 +4538,8 @@ static int RunLiveRun()
 #endif
 
 #if defined(ARCH_ARM64)
-	if (vuopt::live::IsEnabled())
-		Console.WriteLn(fmt::format("@VUOPT@ {}", vuopt::live::FormatStats()));
+	if (vuaot::live::IsEnabled())
+		Console.WriteLn(fmt::format("@VUAOT@ {}", vuaot::live::FormatStats()));
 #if defined(PCSX2_RECOMPILER_TESTS)
 	{
 		u64 ins = 0, disp = 0;

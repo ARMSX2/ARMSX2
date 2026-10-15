@@ -29,7 +29,7 @@
 #include "VuMulBand.h"
 #include "MvuObservedEntries.h"
 #include "microVU_Persist-arm64.h"
-#include "vuopt/VuOptMvuTrace.h"
+#include "vuaot/VuAotMvuTrace.h"
 
 #ifndef XXH_versionNumber
 #define XXH_STATIC_LINKING_ONLY 1
@@ -229,11 +229,11 @@
 //       lane into that copy with one INS instead of a lane-0 slot and a merge.
 //  59 — a conditional branch carrying the E bit (and no M bit) no longer reorders
 //       the flag instances for a successor that never runs.
-//  60 — VU0's access to VU1's register window (mVUaddrFix) tells the vuopt tier when it
+//  60 — VU0's access to VU1's register window (mVUaddrFix) tells the vu-aot tier when it
 //       addresses VU1's STATUS quadword: without MTVU it now compares the window index and
 //       calls the transfer thunk for that one quadword, and the thunk saves every
 //       caller-saved register and passes the address to its C function.
-//  61 — that hook is emitted only while the vuopt tier is wanted (EnableVUOpt and what it needs);
+//  61 — that hook is emitted only while the vu-aot tier is wanted (EnableVUAot and what it needs);
 //       with it off VU0's window sequence is version 59's again. The options sentinel of VU0
 //       carries the choice (vu0WindowHook).
 //  62 — an allocReg write with an empty field (xyzw == 0) leaves a temp slot, not
@@ -317,7 +317,7 @@ static_assert(sizeof(microRegInfo) == 96, "microRegInfo was not 96 bytes");
 
 struct microProgram;
 struct MvuPersistLog;
-struct VuoptProgramState;
+struct VuAotProgramState;
 struct microJumpCache
 {
 	microJumpCache() : prog(NULL), x86ptrStart(NULL), hostEntry(NULL) {}
@@ -547,18 +547,18 @@ struct microProgram
 	// memset-constructed in mVUcreateProg, so a raw pointer is the right shape.)
 	MvuPersistLog* persist;
 
-	// vuopt live tier (microVU_VuOpt-arm64.inl). `vuoptRuns` counts the
-	// dispatches of this program while the tier is on, `vuoptJumpRuns` the
+	// vu-aot live tier (microVU_VuAot-arm64.inl). `vuAotRuns` counts the
+	// dispatches of this program while the tier is on, `vuAotJumpRuns` the
 	// JR/JALR slow-path entries (the jump cache missed) that resolved to it;
-	// `vuopt` is the tier's state for it, null until the program is tiered up
-	// (so non-null means tiered). All stay zero with EnableVUOpt off.
-	u32 vuoptRuns;
-	u32 vuoptJumpRuns;
-	VuoptProgramState* vuopt;
-	// Times a vuopt region of this program took the budget bail: [0] at an entry from
+	// `vuaot` is the tier's state for it, null until the program is tiered up
+	// (so non-null means tiered). All stay zero with EnableVUAot off.
+	u32 vuAotRuns;
+	u32 vuAotJumpRuns;
+	VuAotProgramState* vuaot;
+	// Times a vu-aot region of this program took the budget bail: [0] at an entry from
 	// microVU, [1] at a loop head (written by the region's own bail code, which reaches
 	// the program through the bail record).
-	u64 vuoptBails[2];
+	u64 vuAotBails[2];
 };
 
 typedef std::deque<microProgram*> microProgramList;
@@ -914,7 +914,7 @@ public:
 			f(l->block);
 	}
 	// Every block in the order a search that needs no exact match tries them:
-	// registration order, both lists together (vuopt's background jobs search
+	// registration order, both lists together (vu-aot's background jobs search
 	// a copy of the graph by the same rules).
 	template <typename F>
 	void forEachInSearchOrder(F&& f)
@@ -1091,41 +1091,41 @@ extern void* mVUexecuteVU1(u32 startPC, u32 cycles);
 extern void* mVUlookupProg_VU0(u32 startPC, u32 cycles);
 extern void* mVUlookupProg_VU1(u32 startPC, u32 cycles);
 
-// vuopt live tier (microVU_VuOpt-arm64.inl). Every function here is inert
-// with EnableVUOpt off: the dispatcher calls the plain lookup above, and the
+// vu-aot live tier (microVU_VuAot-arm64.inl). Every function here is inert
+// with EnableVUAot off: the dispatcher calls the plain lookup above, and the
 // compile hooks are never handed out.
-//   - mVUvuoptSyncConfig(): decides, from the config, whether the tier runs.
+//   - mVUvuAotSyncConfig(): decides, from the config, whether the tier runs.
 //     Called at init and at every reset, before the dispatchers are emitted.
 //   - mVUlookupProgTier_VU1: mVUlookupProg_VU1 plus the run counter; the
 //     dispatcher calls it instead when the tier is on.
-//   - mVUvuoptAfterSearch: the slow path's chance to tier a program up.
-//   - mVUvuoptAfterJump: the same for a JR/JALR the jump cache did not know.
-//   - mVUvuoptLiveHooks: the compile hooks for a tiered-up program.
-extern void  mVUvuoptSyncConfig(microVU& mVU);
-extern bool  mVUvuoptEnabled();
+//   - mVUvuAotAfterSearch: the slow path's chance to tier a program up.
+//   - mVUvuAotAfterJump: the same for a JR/JALR the jump cache did not know.
+//   - mVUvuAotLiveHooks: the compile hooks for a tiered-up program.
+extern void  mVUvuAotSyncConfig(microVU& mVU);
+extern bool  mVUvuAotEnabled();
 // Whether microVU0 emits the sticky tripwire's hook on VU1's STATUS quadword of its register window
 // (mVUaddrFix): the tier wanted by the config, latched at VU0's last init or reset.
-extern bool  mVUvuoptVU0WindowHook();
-extern bool  mVUvuoptPending();
+extern bool  mVUvuAotVU0WindowHook();
+extern bool  mVUvuAotPending();
 extern void* mVUlookupProgTier_VU1(u32 startPC, u32 cycles);
-extern void* mVUvuoptAfterSearch(microVU& mVU, u32 startPC, uptr pState, void* result);
-extern void* mVUvuoptAfterJump(microVU& mVU, u32 startPC, uptr pState, void* result);
-extern void  mVUvuoptLiveHooks(microVU& mVU, vuopt::VuoptRegionHook& region, void*& regionUser,
-	vuopt::VuoptBodyHook& body, void*& bodyUser);
-extern void  mVUvuoptOnProgramDeleted(microProgram& prog);
-extern void  mVUvuoptOnJumpMiss(microVU& mVU);
-extern void  mVUvuoptOnBail();
-extern void  mVUvuoptOnClose(microVU& mVU);
+extern void* mVUvuAotAfterSearch(microVU& mVU, u32 startPC, uptr pState, void* result);
+extern void* mVUvuAotAfterJump(microVU& mVU, u32 startPC, uptr pState, void* result);
+extern void  mVUvuAotLiveHooks(microVU& mVU, vuaot::VuAotRegionHook& region, void*& regionUser,
+	vuaot::VuAotBodyHook& body, void*& bodyUser);
+extern void  mVUvuAotOnProgramDeleted(microProgram& prog);
+extern void  mVUvuAotOnJumpMiss(microVU& mVU);
+extern void  mVUvuAotOnBail();
+extern void  mVUvuAotOnClose(microVU& mVU);
 // The sticky-STATUS tripwire (section 9ad): a sticky reader microVU has just compiled (FSAND, FSEQ
 // or FSOR with `imm12`), a program being created over the micro image in memory, and VU1's run
 // entry, where the regions that dropped the sticky byte are rebuilt once the tripwire has gone off.
-extern void  mVUvuoptOnStatusReader(microVU& mVU, u32 imm12);
-extern void  mVUvuoptOnNewProgram(microVU& mVU);
-extern void  mVUvuoptRebuildIfDue();
+extern void  mVUvuAotOnStatusReader(microVU& mVU, u32 imm12);
+extern void  mVUvuAotOnNewProgram(microVU& mVU);
+extern void  mVUvuAotRebuildIfDue();
 // The run that opens and closes a compile of VU1 code: the tier drops its
 // per-compile analysis state when the outermost one ends.
-extern void  mVUvuoptCompileBegin(microVU& mVU);
-extern void  mVUvuoptCompileEnd(microVU& mVU);
+extern void  mVUvuAotCompileBegin(microVU& mVU);
+extern void  mVUvuAotCompileEnd(microVU& mVU);
 
 // Content-hash plumbing (xxhash3-128 program identity).
 //   - mVUbuildOptionsSentinel populates mVU.optionsSentinel from the current

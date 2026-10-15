@@ -3,7 +3,7 @@
 
 #pragma once
 
-// vuopt's intermediate form: SSA over the program graph (VuOptGraph), with
+// vu-aot's intermediate form: SSA over the program graph (VuAotGraph), with
 // VU-semantic operations.
 //
 // - One IR block per graph node (a microVU block variant), plus one entry
@@ -26,7 +26,7 @@
 // Single Assignment Form" (CC 2013), including its SCC pass that removes the
 // redundant phi cycles irreducible control flow leaves behind.
 
-#include "VuOptGraph.h"
+#include "VuAotGraph.h"
 
 #include <algorithm>
 #include <initializer_list>
@@ -35,7 +35,7 @@
 #include <string>
 #include <vector>
 
-namespace vuopt::ir
+namespace vuaot::ir
 {
 	using ValueId = u32; // 0 = none
 
@@ -232,7 +232,7 @@ namespace vuopt::ir
 	{
 		EBit,       // E-bit end
 		JumpBail,   // indirect jump to a target outside the compiled set
-		Unsupported // a construct vuopt does not compile (evil branch, VU0 M-bit)
+		Unsupported // a construct vu-aot does not compile (evil branch, VU0 M-bit)
 	};
 
 	struct Inst
@@ -269,7 +269,7 @@ namespace vuopt::ir
 		u32 cycles = 0;             // microVU's static cycle count of the block
 	};
 
-	// A node that ends the program inside a vuopt region (mVUendProgram):
+	// A node that ends the program inside a vu-aot region (mVUendProgram):
 	// what its tail needs once the Leave has handed every value back.
 	struct EndInfo
 	{
@@ -314,7 +314,7 @@ namespace vuopt::ir
 		// Emit microVU's block-entry cycle-budget test (with the whole state
 		// live) in every block. Off only for measuring what it costs.
 		bool yieldChecks = true;
-		// Node-local build for a vuopt region: the Leave hands back each
+		// Node-local build for a vu-aot region: the Leave hands back each
 		// variable after microVU's link-time ring reorder and Q/P lane swap
 		// (mVUsetupBranch), i.e. in the successor's numbering.
 		bool remapAtLeave = false;
@@ -358,4 +358,4 @@ namespace vuopt::ir
 
 	std::string Dump(const Function& f, const ProgramGraph& g);
 	const char* OpName(Op op);
-} // namespace vuopt::ir
+} // namespace vuaot::ir

@@ -1419,15 +1419,15 @@ set(pcsx2arm64Sources
 	arm64/Vif_UnpackNEON.cpp
 	arm64/RecStubs.cpp
 	arm64/microVU-arm64.cpp
-	arm64/vuopt/VuOptBackground.cpp
-	arm64/vuopt/VuOptDecode.cpp
-	arm64/vuopt/VuOptGraph.cpp
-	arm64/vuopt/VuOptIR.cpp
-	arm64/vuopt/VuOptLower.cpp
-	arm64/vuopt/VuOptMvuTrace.cpp
-	arm64/vuopt/VuOptPipe.cpp
-	arm64/vuopt/VuOptTier.cpp
-	arm64/vuopt/VuOptRegion.cpp
+	arm64/vuaot/VuAotBackground.cpp
+	arm64/vuaot/VuAotDecode.cpp
+	arm64/vuaot/VuAotGraph.cpp
+	arm64/vuaot/VuAotIR.cpp
+	arm64/vuaot/VuAotLower.cpp
+	arm64/vuaot/VuAotMvuTrace.cpp
+	arm64/vuaot/VuAotPipe.cpp
+	arm64/vuaot/VuAotTier.cpp
+	arm64/vuaot/VuAotRegion.cpp
 	x86/iR5900Analysis.cpp  # arch-neutral EE instruction-liveness analysis, shared with the x86 build
 	)
 
@@ -1443,19 +1443,19 @@ set(pcsx2arm64Headers
 	arm64/microVU_Persist-arm64.inl
 	arm64/microVU_ProgCache-arm64.h
 	arm64/microVU_ProgCache-arm64.inl
-	arm64/microVU_VuOpt-arm64.inl
+	arm64/vuaot/microVU_VuAot-arm64.inl
 	arm64/microVU_Misc-arm64.h
 	arm64/VuFmacFlags-arm64.h
-	arm64/vuopt/VuOptBackground.h
-	arm64/vuopt/VuOptDecode.h
-	arm64/vuopt/VuOptGraph.h
-	arm64/vuopt/VuOptIR.h
-	arm64/vuopt/VuOptLive.h
-	arm64/vuopt/VuOptLower.h
-	arm64/vuopt/VuOptMvuTrace.h
-	arm64/vuopt/VuOptPipe.h
-	arm64/vuopt/VuOptTier.h
-	arm64/vuopt/VuOptRegion.h
+	arm64/vuaot/VuAotBackground.h
+	arm64/vuaot/VuAotDecode.h
+	arm64/vuaot/VuAotGraph.h
+	arm64/vuaot/VuAotIR.h
+	arm64/vuaot/VuAotLive.h
+	arm64/vuaot/VuAotLower.h
+	arm64/vuaot/VuAotMvuTrace.h
+	arm64/vuaot/VuAotPipe.h
+	arm64/vuaot/VuAotTier.h
+	arm64/vuaot/VuAotRegion.h
 )
 
 # Mobile (arm64) platform sources, relocated from the former android/iOS core

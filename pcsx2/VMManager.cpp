@@ -2165,7 +2165,7 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	UpdateCPUImplementations();
 	mmap_ResetBlockTracking();
 	memSetExtraMemMode(EmuConfig.Cpu.ExtraMemory);
-	vuoptResetStickyTripwire();
+	vuAotResetStickyTripwire();
 	Internal::ClearCPUExecutionCaches();
 	FPControlRegister::SetCurrent(EmuConfig.Cpu.FPUFPCR);
 	memBindConditionalHandlers();
@@ -2459,7 +2459,7 @@ void VMManager::Reset()
 
 	mmap_ResetBlockTracking();
 	memSetExtraMemMode(EmuConfig.Cpu.ExtraMemory);
-	vuoptResetStickyTripwire();
+	vuAotResetStickyTripwire();
 	Internal::ClearCPUExecutionCaches();
 	memBindConditionalHandlers();
 	SysMemory::Reset();

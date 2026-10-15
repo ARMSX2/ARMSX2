@@ -5,7 +5,7 @@
 
 // microVU's per-block pass-1 decisions in a form that does not need the
 // microVU headers. Two producers fill it: microVU itself, through a test-only
-// hook at the end of mVUcompile's first pass, and vuopt's port of that pass.
+// hook at the end of mVUcompile's first pass, and vu-aot's port of that pass.
 // Comparing the two is how the port is validated.
 //
 // Every field mirrors a microOp / microRegInfo field of the same name. The
@@ -15,7 +15,7 @@
 
 #include <vector>
 
-namespace vuopt
+namespace vuaot
 {
 	struct MvuVFRegTrace
 	{
@@ -91,7 +91,7 @@ namespace vuopt
 		bool flagHack = false;
 		bool vuSyncHack = false;      // VUSyncHack / FullVU0SyncHack (cycle accounting differs)
 
-		// Milestone 4 (vuopt regions): what replacing microVU's block framing
+		// Milestone 4 (vu-aot regions): what replacing microVU's block framing
 		// needs from microVU.
 		s32 offCycles = 0;                // mVU.cycles, from x24
 		const void* cycleBreak = nullptr; // mVU.cycleBreak stub
@@ -130,7 +130,7 @@ namespace vuopt
 		// mVU.prog.cur is only microVU's idea of the current program (a jump
 		// cache hit enters another program's code without updating it).
 		void* program = nullptr;
-		// offsetof(microProgram, vuoptBails): the region's bail code counts into it.
+		// offsetof(microProgram, vuAotBails): the region's bail code counts into it.
 		s32 offProgBails = 0;
 	};
 
@@ -143,7 +143,7 @@ namespace vuopt
 #endif
 
 	// The compile hooks. Tests install them through the globals below;
-	// the live tier (VuOptLive.h) hands microVU its own for a program it has
+	// the live tier (VuAotLive.h) hands microVU its own for a program it has
 	// tiered up, so every build carries the call sites. A hook is only ever
 	// consulted for VU1 blocks it asked for: with none set, microVU compiles
 	// as it always has.
@@ -152,18 +152,18 @@ namespace vuopt
 	// Returning true means the hook emitted the whole block body at armAsm's
 	// cursor, honouring microVU's block-boundary state contract, and microVU
 	// emits only its framing (cycle test already done, links, ends).
-	using VuoptBodyHook = bool (*)(const MvuBlockTrace& block, const MvuEmitEnv& env, void* user);
-	extern VuoptBodyHook g_vuoptBodyHook;
-	extern void* g_vuoptBodyHookUser;
+	using VuAotBodyHook = bool (*)(const MvuBlockTrace& block, const MvuEmitEnv& env, void* user);
+	extern VuAotBodyHook g_vuAotBodyHook;
+	extern void* g_vuAotBodyHookUser;
 
 	// Called by microVU after every block's first pass, before it emits
 	// anything, when set. Returning true means the hook emitted the block in
-	// full at armAsm's cursor (a vuopt region rooted at it: its own cycle
+	// full at armAsm's cursor (a vu-aot region rooted at it: its own cycle
 	// tests, links and exits back into microVU) and microVU emits nothing.
-	using VuoptRegionHook = bool (*)(const MvuBlockTrace& block, const MvuEmitEnv& env, void* user);
-	extern VuoptRegionHook g_vuoptRegionHook;
-	extern void* g_vuoptRegionHookUser;
+	using VuAotRegionHook = bool (*)(const MvuBlockTrace& block, const MvuEmitEnv& env, void* user);
+	extern VuAotRegionHook g_vuAotRegionHook;
+	extern void* g_vuAotRegionHookUser;
 	// Set around a compile that must be microVU's own (a region's bail
 	// target): the hooks above are skipped for that block.
-	extern thread_local bool g_vuoptShadowCompile;
-} // namespace vuopt
+	extern thread_local bool g_vuAotShadowCompile;
+} // namespace vuaot

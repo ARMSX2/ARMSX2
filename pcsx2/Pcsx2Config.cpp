@@ -461,7 +461,7 @@ Pcsx2Config::RecompilerOptions::RecompilerOptions()
 	EnableFastmem = true;
 	PauseOnTLBMiss = false;
 	EnableVUProgramCache = false; // default off; opt-in until the on-disk cache is validated on the target hardware
-	EnableVUOpt = false; // default off; opt-in until vuopt is validated and measured on the target hardware
+	EnableVUAot = false; // default off; opt-in until vu-aot is validated and measured on the target hardware
 
 	// vu and fpu clamping default to standard overflow.
 	vu0Overflow = true;
@@ -551,7 +551,7 @@ void Pcsx2Config::RecompilerOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(EnableFastmem);
 	SettingsWrapBitBool(PauseOnTLBMiss);
 	SettingsWrapBitBool(EnableVUProgramCache);
-	SettingsWrapBitBool(EnableVUOpt);
+	SettingsWrapBitBool(EnableVUAot);
 
 	SettingsWrapBitBool(vu0Overflow);
 	SettingsWrapBitBool(vu0ExtraOverflow);

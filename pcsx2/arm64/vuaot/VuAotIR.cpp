@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-#include "VuOptIR.h"
+#include "VuAotIR.h"
 
 #include <algorithm>
 #include <memory>
@@ -9,7 +9,7 @@
 #include <cstdio>
 #include <functional>
 
-namespace vuopt::ir
+namespace vuaot::ir
 {
 	std::string var::Name(u32 v)
 	{
@@ -1558,7 +1558,7 @@ namespace vuopt::ir
 		static const char* const kMask[16] = {"", "w", "z", "zw", "y", "yw", "yz", "yzw", "x", "xw", "xz", "xzw", "xy", "xyw", "xyz", "xyzw"};
 		std::string s;
 		char buf[512];
-		std::snprintf(buf, sizeof(buf), "; vuopt IR: %zu blocks (%zu entries), %u insts, %u phis%s%s\n",
+		std::snprintf(buf, sizeof(buf), "; vu-aot IR: %zu blocks (%zu entries), %u insts, %u phis%s%s\n",
 			f.blocks.size(), f.entryBlocks.size(), f.LiveInsts(), f.LivePhis(),
 			f.unsupported ? ", UNSUPPORTED: " : "", f.unsupported ? f.unsupportedWhy.c_str() : "");
 		s += buf;
@@ -1707,4 +1707,4 @@ namespace vuopt::ir
 		}
 		return s;
 	}
-} // namespace vuopt::ir
+} // namespace vuaot::ir

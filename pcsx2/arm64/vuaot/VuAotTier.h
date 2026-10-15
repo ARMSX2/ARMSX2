@@ -4,20 +4,20 @@
 #pragma once
 
 // Milestone 2's test-only tier: called from microVU's block-body hook
-// (VuOptMvuTrace.h), it lowers the block from vuopt's IR if it can and
+// (VuAotMvuTrace.h), it lowers the block from vu-aot's IR if it can and
 // otherwise leaves the block to microVU. One BodyTier per program run: it
 // owns the first-pass port, which has to see every block in microVU's compile
-// order (VuOptPipe.h).
+// order (VuAotPipe.h).
 
-#include "VuOptLower.h"
-#include "VuOptMvuTrace.h"
+#include "VuAotLower.h"
+#include "VuAotMvuTrace.h"
 
 #include <map>
 #include <set>
 #include <memory>
 #include <string>
 
-namespace vuopt
+namespace vuaot
 {
 	class BodyTier
 	{
@@ -60,4 +60,4 @@ namespace vuopt
 
 		bool Decline(const std::string& why, std::string* out);
 	};
-} // namespace vuopt
+} // namespace vuaot

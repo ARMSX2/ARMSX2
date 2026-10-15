@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-#include "VuOptBackground.h"
+#include "VuAotBackground.h"
 
 #include "arm64/AsmHelpers.h"
 #include "common/Assertions.h"
@@ -9,7 +9,7 @@
 
 #include <cstring>
 
-namespace vuopt::bg
+namespace vuaot::bg
 {
 	namespace a64 = vixl::aarch64;
 
@@ -97,7 +97,7 @@ namespace vuopt::bg
 
 	void CodeSink::Begin()
 	{
-		pxAssertRel(!armAsm && !masm_, "vuopt worker: assembler already bound");
+		pxAssertRel(!armAsm && !masm_, "vu-aot worker: assembler already bound");
 		fixups.clear();
 		failed.clear();
 		// The same assembler setup as microVU's (mVUreset's persistent one):
@@ -116,7 +116,7 @@ namespace vuopt::bg
 	u32 CodeSink::End()
 	{
 		auto* m = static_cast<a64::MacroAssembler*>(masm_);
-		pxAssertRel(m && armAsm == m, "vuopt worker: assembler not bound");
+		pxAssertRel(m && armAsm == m, "vu-aot worker: assembler not bound");
 		m->FinalizeCode(a64::MacroAssembler::kFallThrough);
 		const u32 size = static_cast<u32>(m->GetSizeOfCodeGenerated());
 		delete m;
@@ -249,7 +249,7 @@ namespace vuopt::bg
 
 	void Worker::Loop()
 	{
-		Threading::SetNameOfCurrentThread("VU1 vuopt compile");
+		Threading::SetNameOfCurrentThread("VU1 vu-aot compile");
 		// Below the emulator's threads: a tier-up may wait, the VU must not.
 		Threading::ThreadHandle::GetForCallingThread().SetNicePriority(10);
 		for (;;)
@@ -281,4 +281,4 @@ namespace vuopt::bg
 		}
 		doneCv_.notify_all();
 	}
-} // namespace vuopt::bg
+} // namespace vuaot::bg

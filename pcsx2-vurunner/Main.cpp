@@ -19,7 +19,7 @@
 #include "harness/RecompilerTestEnvironment.h"
 #include "harness/VuReplay.h"
 #include "harness/VuSnapshot.h"
-#include "VuOptMode.h"
+#include "VuAotMode.h"
 
 #include "vu_capture.h"
 #include "Config.h"
@@ -65,9 +65,9 @@ struct Options
 	bool dump_jit_state_raw = false;  // + full per-field raw dump
 	bool hash_pipeline = true;        // hash carried microVU flag/Q-P pipeline (see below)
 	bool divtrace = false;
-	bool vuopt_ir = false;       // --vuopt-ir: validate vuopt's front end against microVU
-	bool vuopt_run = false;      // --vuopt-run: vuopt block bodies vs microVU, byte for byte
-	VuoptModeOptions vuopt;
+	bool vuaot_ir = false;       // --vuaot-ir: validate vu-aot's front end against microVU
+	bool vuaot_run = false;      // --vuaot-run: vu-aot block bodies vs microVU, byte for byte
+	VuAotModeOptions vuaot;
 	bool bench_no_reprime = false;
 	bool bench_steady = false;
 	bool print_bases = false;
@@ -105,18 +105,18 @@ void PrintUsage(const char* argv0)
 		"  --dump-microcode  Disassemble VU microcode starting at start_pc to stdout.\n"
 		"  --divtrace    Per-microvu-op state-snapshot diff between JIT and interp;\n"
 		"                report the FIRST divergent op with full context. ARM64 only.\n"
-		"  --vuopt-ir    Validate the vuopt front end (whole-program VU1 compiler)\n"
+		"  --vuaot-ir    Validate the vu-aot front end (whole-program VU1 compiler)\n"
 		"                against microVU: per-block timing decisions, CFG stats,\n"
 		"                SSA build. Runs the JIT only.\n"
-		"                --vuopt-flaghack 0|1 (default 1, the shipped config)\n"
-		"                --vuopt-dump (print the IR), --vuopt-verbose.\n"
-		"  --vuopt-run   Run each capture through microVU, then with every block\n"
-		"                body vuopt can lower emitted from vuopt's IR; compare the\n"
-		"                final state byte for byte. --vuopt-bench N adds steady-state\n"
+		"                --vuaot-flaghack 0|1 (default 1, the shipped config)\n"
+		"                --vuaot-dump (print the IR), --vuaot-verbose.\n"
+		"  --vuaot-run   Run each capture through microVU, then with every block\n"
+		"                body vu-aot can lower emitted from vu-aot's IR; compare the\n"
+		"                final state byte for byte. --vuaot-bench N adds steady-state\n"
 		"                retired-instruction counts for both engines.\n"
-		"                --vuopt-observe compares the observable state of the exactness\n"
+		"                --vuaot-observe compares the observable state of the exactness\n"
 		"                contract instead (exactness-contract.md), continuing each run\n"
-		"                through its budget stops (--vuopt-resumes N); --vuopt-mutation\n"
+		"                through its budget stops (--vuaot-resumes N); --vuaot-mutation\n"
 		"                handoff-ignore-reads|handoff-all-dead|sticky-hi|sticky-pack|sticky-div breaks\n"
 		"                one relaxation on purpose to show the gate notices.\n"
 		"  --scan-external  Without replaying, report per capture whether the code\n"
@@ -247,107 +247,107 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 		{
 			opts.divtrace = true;
 		}
-		else if (a == "--vuopt-ir")
+		else if (a == "--vuaot-ir")
 		{
-			opts.vuopt_ir = true;
+			opts.vuaot_ir = true;
 		}
-		else if (a == "--vuopt-trace")
+		else if (a == "--vuaot-trace")
 		{
-			opts.vuopt.trace = true;
+			opts.vuaot.trace = true;
 		}
-		else if (a == "--vuopt-run")
+		else if (a == "--vuaot-run")
 		{
-			opts.vuopt_run = true;
+			opts.vuaot_run = true;
 		}
-		else if (a == "--vuopt-region")
-			opts.vuopt.region = true;
-		else if (a == "--vuopt-region-bg")
+		else if (a == "--vuaot-region")
+			opts.vuaot.region = true;
+		else if (a == "--vuaot-region-bg")
 		{
-			opts.vuopt.region = true;
-			opts.vuopt.regionBg = true;
+			opts.vuaot.region = true;
+			opts.vuaot.regionBg = true;
 		}
-		else if (a == "--vuopt-region-limit" && i + 1 < argc)
-			opts.vuopt.regionLimit = std::atoi(argv[++i]);
-		else if (a == "--vuopt-vhomes" && i + 1 < argc)
-			opts.vuopt.vHomes = std::atoi(argv[++i]);
-		else if (a == "--vuopt-no-sched")
-			opts.vuopt.schedule = false;
-		else if (a == "--vuopt-no-split")
-			opts.vuopt.splitHomes = false;
-		else if (a == "--vuopt-no-acc")
-			opts.vuopt.stickyAcc = false;
-		else if (a == "--vuopt-acc-always")
-			opts.vuopt.accAlways = true;
-		else if (a == "--vuopt-no-handoff")
-			opts.vuopt.handoff = false;
-		else if (a == "--vuopt-no-dropsticky")
-			opts.vuopt.dropSticky = false;
-		else if (a == "--vuopt-mutation" && i + 1 < argc)
+		else if (a == "--vuaot-region-limit" && i + 1 < argc)
+			opts.vuaot.regionLimit = std::atoi(argv[++i]);
+		else if (a == "--vuaot-vhomes" && i + 1 < argc)
+			opts.vuaot.vHomes = std::atoi(argv[++i]);
+		else if (a == "--vuaot-no-sched")
+			opts.vuaot.schedule = false;
+		else if (a == "--vuaot-no-split")
+			opts.vuaot.splitHomes = false;
+		else if (a == "--vuaot-no-acc")
+			opts.vuaot.stickyAcc = false;
+		else if (a == "--vuaot-acc-always")
+			opts.vuaot.accAlways = true;
+		else if (a == "--vuaot-no-handoff")
+			opts.vuaot.handoff = false;
+		else if (a == "--vuaot-no-dropsticky")
+			opts.vuaot.dropSticky = false;
+		else if (a == "--vuaot-mutation" && i + 1 < argc)
 		{
 			const std::string m = argv[++i];
 			if (m == "handoff-ignore-reads")
-				opts.vuopt.handoffMutation = 1;
+				opts.vuaot.handoffMutation = 1;
 			else if (m == "handoff-all-dead")
-				opts.vuopt.handoffMutation = 2;
+				opts.vuaot.handoffMutation = 2;
 			else if (m == "sticky-hi")
-				opts.vuopt.dropStickyMutation = 1;
+				opts.vuaot.dropStickyMutation = 1;
 			else if (m == "sticky-pack")
-				opts.vuopt.dropStickyMutation = 2;
+				opts.vuaot.dropStickyMutation = 2;
 			else if (m == "sticky-div")
-				opts.vuopt.dropStickyMutation = 3;
+				opts.vuaot.dropStickyMutation = 3;
 			else
 			{
-				std::fprintf(stderr, "vurunner: unknown --vuopt-mutation %s\n", m.c_str());
+				std::fprintf(stderr, "vurunner: unknown --vuaot-mutation %s\n", m.c_str());
 				return false;
 			}
 		}
-		else if (a == "--vuopt-observe")
-			opts.vuopt.observe = true;
-		else if (a == "--vuopt-resumes" && i + 1 < argc)
-			opts.vuopt.resumes = static_cast<u32>(std::atoi(argv[++i]));
-		else if (a == "--vuopt-profile")
-			opts.vuopt.profile = true;
-		else if (a == "--vuopt-ghomes" && i + 1 < argc)
-			opts.vuopt.gHomes = std::atoi(argv[++i]);
-		else if (a == "--vuopt-trace-dump" && i + 1 < argc)
-			opts.vuopt.traceDump = std::atol(argv[++i]);
-		else if (a == "--vuopt-skip" && i + 1 < argc)
-			opts.vuopt.lowerSkip = argv[++i];
-		else if (a == "--vuopt-only" || a == "--vuopt-limit")
+		else if (a == "--vuaot-observe")
+			opts.vuaot.observe = true;
+		else if (a == "--vuaot-resumes" && i + 1 < argc)
+			opts.vuaot.resumes = static_cast<u32>(std::atoi(argv[++i]));
+		else if (a == "--vuaot-profile")
+			opts.vuaot.profile = true;
+		else if (a == "--vuaot-ghomes" && i + 1 < argc)
+			opts.vuaot.gHomes = std::atoi(argv[++i]);
+		else if (a == "--vuaot-trace-dump" && i + 1 < argc)
+			opts.vuaot.traceDump = std::atol(argv[++i]);
+		else if (a == "--vuaot-skip" && i + 1 < argc)
+			opts.vuaot.lowerSkip = argv[++i];
+		else if (a == "--vuaot-only" || a == "--vuaot-limit")
 		{
 			if (i + 1 >= argc)
 				return false;
-			(a == "--vuopt-only" ? opts.vuopt.lowerOnly : opts.vuopt.lowerLimit) = std::atoi(argv[++i]);
+			(a == "--vuaot-only" ? opts.vuaot.lowerOnly : opts.vuaot.lowerLimit) = std::atoi(argv[++i]);
 		}
-		else if (a == "--vuopt-bench")
-		{
-			if (i + 1 >= argc)
-			{
-				std::fprintf(stderr, "vurunner: --vuopt-bench requires an iteration count\n");
-				return false;
-			}
-			opts.vuopt.benchIters = static_cast<u32>(std::atoi(argv[++i]));
-		}
-		else if (a == "--vuopt-dump")
-		{
-			opts.vuopt.dumpIr = true;
-		}
-		else if (a == "--vuopt-no-yield")
-		{
-			opts.vuopt.noYield = true;
-		}
-		else if (a == "--vuopt-verbose")
-		{
-			opts.vuopt.verbose = true;
-		}
-		else if (a == "--vuopt-flaghack")
+		else if (a == "--vuaot-bench")
 		{
 			if (i + 1 >= argc)
 			{
-				std::fprintf(stderr, "vurunner: --vuopt-flaghack requires 0 or 1\n");
+				std::fprintf(stderr, "vurunner: --vuaot-bench requires an iteration count\n");
 				return false;
 			}
-			opts.vuopt.flagHack = std::atoi(argv[++i]) != 0;
+			opts.vuaot.benchIters = static_cast<u32>(std::atoi(argv[++i]));
+		}
+		else if (a == "--vuaot-dump")
+		{
+			opts.vuaot.dumpIr = true;
+		}
+		else if (a == "--vuaot-no-yield")
+		{
+			opts.vuaot.noYield = true;
+		}
+		else if (a == "--vuaot-verbose")
+		{
+			opts.vuaot.verbose = true;
+		}
+		else if (a == "--vuaot-flaghack")
+		{
+			if (i + 1 >= argc)
+			{
+				std::fprintf(stderr, "vurunner: --vuaot-flaghack requires 0 or 1\n");
+				return false;
+			}
+			opts.vuaot.flagHack = std::atoi(argv[++i]) != 0;
 		}
 		else if (a == "--bench-no-reprime")
 		{
@@ -492,7 +492,7 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 	}
 	if (!opts.diff && !opts.bench && !opts.dump_asm
 		&& !opts.dump_microcode && !opts.divtrace && !opts.print_bases
-		&& !opts.dump_jit_state && !opts.vuopt_ir && !opts.vuopt_run && !opts.scan_external && !opts.vif_probe)
+		&& !opts.dump_jit_state && !opts.vuaot_ir && !opts.vuaot_run && !opts.scan_external && !opts.vif_probe)
 		opts.diff = true;
 	return true;
 }
@@ -1965,15 +1965,15 @@ int main(int argc, char** argv)
 		exit_code |= RunDumpAsm(records, names);
 	if (opts.divtrace)
 		exit_code |= RunDivTrace(records, names, opts.cycle_override);
-	if (opts.vuopt_ir)
+	if (opts.vuaot_ir)
 	{
-		opts.vuopt.cycleOverride = opts.cycle_override;
-		exit_code |= RunVuoptIr(records, names, opts.vuopt, &ApplyReplayConfig);
+		opts.vuaot.cycleOverride = opts.cycle_override;
+		exit_code |= RunVuAotIr(records, names, opts.vuaot, &ApplyReplayConfig);
 	}
-	if (opts.vuopt_run)
+	if (opts.vuaot_run)
 	{
-		opts.vuopt.cycleOverride = opts.cycle_override;
-		exit_code |= RunVuoptRun(records, names, opts.vuopt, &ApplyReplayConfig);
+		opts.vuaot.cycleOverride = opts.cycle_override;
+		exit_code |= RunVuAotRun(records, names, opts.vuaot, &ApplyReplayConfig);
 	}
 
 #if defined(_M_ARM64) || defined(__aarch64__)

@@ -5,15 +5,15 @@
 // mirrors; keep them in step. The line-by-line shape is deliberate: the point
 // is that a reader can hold this file next to microVU_Compile-arm64.inl,
 // x86/microVU_Analyze.inl and microVU_Flags-arm64.inl and see the same
-// algorithm, and that pcsx2-vurunner --vuopt-ir can prove it.
+// algorithm, and that pcsx2-vurunner --vuaot-ir can prove it.
 
-#include "VuOptPipe.h"
+#include "VuAotPipe.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <string>
 
-namespace vuopt
+namespace vuaot
 {
 	namespace
 	{
@@ -1562,9 +1562,9 @@ namespace vuopt
 			if (va == vb)
 				return;
 			if (op < 0)
-				std::snprintf(buf, sizeof(buf), "block %s: mvu=%lld vuopt=%lld", name, va, vb);
+				std::snprintf(buf, sizeof(buf), "block %s: mvu=%lld vuaot=%lld", name, va, vb);
 			else
-				std::snprintf(buf, sizeof(buf), "op %d pc 0x%04x %s: mvu=%lld vuopt=%lld", op, pc, name, va, vb);
+				std::snprintf(buf, sizeof(buf), "op %d pc 0x%04x %s: mvu=%lld vuaot=%lld", op, pc, name, va, vb);
 			out.emplace_back(buf);
 		};
 		field("startPC", a.startPC, b.startPC, -1, 0);
@@ -1575,7 +1575,7 @@ namespace vuopt
 		{
 			if (a.endState[i] != b.endState[i])
 			{
-				std::snprintf(buf, sizeof(buf), "block endState[%d]: mvu=%u vuopt=%u", i, a.endState[i], b.endState[i]);
+				std::snprintf(buf, sizeof(buf), "block endState[%d]: mvu=%u vuaot=%u", i, a.endState[i], b.endState[i]);
 				out.emplace_back(buf);
 			}
 		}
@@ -1604,4 +1604,4 @@ namespace vuopt
 		}
 		return out;
 	}
-} // namespace vuopt
+} // namespace vuaot

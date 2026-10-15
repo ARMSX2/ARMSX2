@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 yaps2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-// The vuopt headers name things (Ft, Fs, X, Y ...) microVU's headers define as
+// The vu-aot headers name things (Ft, Fs, X, Y ...) microVU's headers define as
 // macros, so they come first.
-#include "vuopt/VuOptBackground.h"
-#include "vuopt/VuOptLive.h"
-#include "vuopt/VuOptRegion.h"
-#include "vuopt/VuOptTier.h"
+#include "vuaot/VuAotBackground.h"
+#include "vuaot/VuAotLive.h"
+#include "vuaot/VuAotRegion.h"
+#include "vuaot/VuAotTier.h"
 
 #include "microVU-arm64.h"
 
@@ -345,7 +345,7 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 		// XgKickHack, which swaps a VI store for a whole cycle-by-cycle
 		// XGKICK sync at each kick and at every program end.
 		u8  xgKickHack;
-		// VU0 only: the vuopt tripwire's hook in VU0's register-window access (mVUaddrFix). 0 when
+		// VU0 only: the vu-aot tripwire's hook in VU0's register-window access (mVUaddrFix). 0 when
 		// the tier is not wanted, which emits what version 59 emitted.
 		u8  vu0WindowHook;
 		// Reserved tail so adding a future option byte doesn't shift downstream
@@ -399,7 +399,7 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 	s.progCacheRecording = mVUPersist::IsRecordingEnabled() ? 1 : 0;
 	s.threadVU1          = THREAD_VU1 ? 1 : 0;
 	s.xgKickHack         = EmuConfig.Gamefixes.XgKickHack ? 1 : 0;
-	s.vu0WindowHook      = (mVU.index == 0 && mVUvuoptVU0WindowHook()) ? 1 : 0;
+	s.vu0WindowHook      = (mVU.index == 0 && mVUvuAotVU0WindowHook()) ? 1 : 0;
 
 	mVU.optionsSentinel      = XXH3_128bits(&s, sizeof(s));
 	mVU.optionsSentinelValid = true;
@@ -489,9 +489,9 @@ void mVUinit(microVU& mVU, uint vuIndex)
 	// mVUreset corrects it. No-op under the test-manual override. See mVUreset.
 	mVUPersist::SyncRecordingFromConfig(EmuConfig.Cpu.Recompiler.EnableVUProgramCache);
 
-	// vuopt live tier: whether it runs follows the config (VU1 only). Re-synced
+	// vu-aot live tier: whether it runs follows the config (VU1 only). Re-synced
 	// at every reset, before the dispatchers are emitted.
-	mVUvuoptSyncConfig(mVU);
+	mVUvuAotSyncConfig(mVU);
 
 	// Seed options sentinel from current config snapshot. Reset will rebuild it
 	// in case the user toggled clamp / FPCR / speedhack settings since init.
@@ -568,9 +568,9 @@ static void mVUdispatcherAB(mV)
 	armAsm->Mov(a64::w26, a64::w0);  // stash startPC
 	armAsm->Mov(a64::w27, a64::w1);  // stash cycles
 
-	// With the vuopt live tier on, VU1 dispatches through the counting variant
+	// With the vu-aot live tier on, VU1 dispatches through the counting variant
 	// of the lookup; with it off the dispatcher is exactly what it was.
-	armEmitCall(isVU1 ? (mVUvuoptEnabled() ? (void*)mVUlookupProgTier_VU1 : (void*)mVUlookupProg_VU1)
+	armEmitCall(isVU1 ? (mVUvuAotEnabled() ? (void*)mVUlookupProgTier_VU1 : (void*)mVUlookupProg_VU1)
 	                  : (void*)mVUlookupProg_VU0);
 
 	a64::Label gotHostEntry;
@@ -911,7 +911,7 @@ static void mVUGenerateWaitMTVU(mV)
 	// same save-call-restore around mVUwaitMTVU (microVU_Execute.inl); a bare Ret
 	// here silently skipped vu1Thread.WaitVU(), racing the VU1 thread. The same
 	// thunk is also what mVUaddrFix calls, without MTVU, for an access to VU1's
-	// STATUS quadword: mVUwaitMTVU tells the vuopt tier about it. The address
+	// STATUS quadword: mVUwaitMTVU tells the vu-aot tier about it. The address
 	// (gprT1, x9) goes to the C function in w0.
 	//
 	// This thunk is reached via BL from inside a compiled VU/COP2 block whose
@@ -1198,11 +1198,11 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	// override (the recompiler-test harness drives recording itself).
 	mVUPersist::SyncRecordingFromConfig(EmuConfig.Cpu.Recompiler.EnableVUProgramCache);
 
-	// vuopt live tier (EnableVUOpt): re-read the config now, because the VU1
+	// vu-aot live tier (EnableVUAot): re-read the config now, because the VU1
 	// dispatcher emitted below calls the counting lookup only while it is on.
 	// Settings changes, savestate loads and cache exhaustion all come through
 	// this reset, which also frees every program (and so the tier's state for it).
-	mVUvuoptSyncConfig(mVU);
+	mVUvuAotSyncConfig(mVU);
 
 	// Rebuild options sentinel before any program rebuilds — config may have
 	// changed since the last init/reset (clamp flips, FPCR edits, speedhack
@@ -1344,7 +1344,7 @@ void mVUclose(microVU& mVU)
 	// new has been added since the last reset.
 	mVUProgCache::SaveAllPrograms(mVU);
 	mVUProgCache::Close(mVU);
-	mVUvuoptOnClose(mVU);
+	mVUvuAotOnClose(mVU);
 
 	// Same ownership rule as mVUreset: free via contentMap (plus the
 	// drift-evicted orphans), then drop the per-PC deque shells.
@@ -1491,7 +1491,7 @@ __ri void mVUdeleteProg(microVU& mVU, microProgram*& prog)
 	}
 	safe_delete(prog->ranges);
 	mVUPersist::OnProgramDeleted(*prog);
-	mVUvuoptOnProgramDeleted(*prog);
+	mVUvuAotOnProgramDeleted(*prog);
 	safe_aligned_free(prog);
 }
 
@@ -1738,10 +1738,10 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 		// program. Try hydrating the block graph from the on-disk cache
 		// before compiling from scratch.
 		mVUProgCache::ObserveDispatchHash(mVU, liveHash, startPC);
-		// A program is about to be made or loaded for the image in micro memory now: the vuopt
+		// A program is about to be made or loaded for the image in micro memory now: the vu-aot
 		// tripwire looks it over for a reader of the sticky bits of STATUS.
 		if constexpr (vuIndex == 1)
-			mVUvuoptOnNewProgram(mVU);
+			mVUvuAotOnNewProgram(mVU);
 		if (microProgram* hydrated = mVUProgCache::TryLoadProgram(mVU, liveHash))
 		{
 			// Same install sequence as the contentMap-hit path above —
@@ -1865,16 +1865,16 @@ _mVUt void* mVUexecute(u32 startPC, u32 cycles)
 	const u32 maskedPC = startPC & vuLimit;
 	const uptr pState = (uptr)&mVU.prog.lpState;
 
-	// A VU1 dispatch the vuopt tier asked to look at (it returned null from its
+	// A VU1 dispatch the vu-aot tier asked to look at (it returned null from its
 	// counting lookup) goes to the full search without a second lookup that
 	// would hit.
-	void* result = (vuIndex == 1 && mVUvuoptPending()) ? nullptr : mVUlookupProg<vuIndex>(maskedPC, pState);
+	void* result = (vuIndex == 1 && mVUvuAotPending()) ? nullptr : mVUlookupProg<vuIndex>(maskedPC, pState);
 	if (!result)
 	{
 		mVUopenCodeCache(mVU);
 		result = mVUsearchProg<vuIndex>(maskedPC, pState);
 		if constexpr (vuIndex == 1)
-			result = mVUvuoptAfterSearch(mVU, maskedPC, pState, result);
+			result = mVUvuAotAfterSearch(mVU, maskedPC, pState, result);
 		mVUcloseCodeCache(mVU);
 	}
 
@@ -2494,9 +2494,9 @@ void recMicroVU1::Execute(u32 cycles)
 		if (!(VU0.VI[REG_VPU_STAT].UL & 0x100))
 			return;
 	}
-	// vuopt: after the tripwire has gone off, regions built without the sticky byte of STATUS are
+	// vu-aot: after the tripwire has gone off, regions built without the sticky byte of STATUS are
 	// rebuilt: nothing of VU1's is running here, on any thread, so the reset is safe.
-	mVUvuoptRebuildIfDue();
+	mVUvuAotRebuildIfDue();
 	VU1.VI[REG_TPC].UL <<= 3;
 #ifdef PCSX2_RECOMPILER_TESTS
 	vu1_trace::Entry* trace = vu1_trace::g_enabled.load(std::memory_order_relaxed)
@@ -2800,12 +2800,12 @@ MVU_MACRO_EMIT_ADAPTER(RXOR,  false)
 #include "microVU_Persist-arm64.inl"
 
 //------------------------------------------------------------------
-// vuopt live tier — tier-up policy and the glue between microVU's
-// program/block manager and vuopt's regions. Same single-TU inclusion
+// vu-aot live tier — tier-up policy and the glue between microVU's
+// program/block manager and vu-aot's regions. Same single-TU inclusion
 // pattern (it needs microVU's program and block types, mVUblockFetch and the
 // code-cache open/close that are TU-local).
 //------------------------------------------------------------------
-#include "microVU_VuOpt-arm64.inl"
+#include "vuaot/microVU_VuAot-arm64.inl"
 
 //------------------------------------------------------------------
 // Save State

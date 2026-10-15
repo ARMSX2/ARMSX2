@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-// Node lowering. See VuOptLower.h for the contract.
+// Node lowering. See VuAotLower.h for the contract.
 //
 // Each operation names the microVU emitter whose arithmetic it reproduces.
 // Register choice is free (it cannot change a result); the arithmetic
@@ -9,7 +9,7 @@
 // rounding, NaN propagation and flushes. Moves, copies and the order of
 // independent instructions are free too.
 
-#include "VuOptLower.h"
+#include "VuAotLower.h"
 
 #include "VU.h"
 #include "common/Assertions.h"
@@ -20,7 +20,7 @@
 #include <cstdio>
 #include <map>
 
-namespace vuopt
+namespace vuaot
 {
 	namespace a64 = vixl::aarch64;
 	using namespace ir;
@@ -700,7 +700,7 @@ namespace vuopt
 					slotBusy_[k] = 1;
 					return k;
 				}
-			pxFailRel("vuopt: out of spill slots");
+			pxFailRel("vu-aot: out of spill slots");
 			return 0;
 		}
 
@@ -890,10 +890,10 @@ namespace vuopt
 					}
 				}
 				if (r < 0)
-					std::fprintf(stderr, "vuopt: no register to spill: op %d at %u, class %d, pool %08x locked %08x\n",
+					std::fprintf(stderr, "vu-aot: no register to spill: op %d at %u, class %d, pool %08x locked %08x\n",
 						static_cast<int>(I(order_[std::min<size_t>(pos_, order_.size() - 1)]).op), pos_, static_cast<int>(k),
 						k == Cls::V ? vPool_ : gPool_, k == Cls::V ? vLock_ : gLock_);
-				pxAssertRel(r >= 0, "vuopt: no register to spill");
+				pxAssertRel(r >= 0, "vu-aot: no register to spill");
 				SpillValue(own[r]);
 			}
 			if (owner)
@@ -966,7 +966,7 @@ namespace vuopt
 					armAsm->Ldr(Q(r), a64::MemOperand(xState, kOffVF));
 					break;
 				default:
-					pxFailRel("vuopt: value has no location");
+					pxFailRel("vu-aot: value has no location");
 			}
 		}
 
@@ -1814,7 +1814,7 @@ namespace vuopt
 			const bool nonSticky = in.imm & 1;
 			const bool real = chainReal_[id];
 			const ValueId res = C(in.args[1]);
-			pxAssertRel(hm_->stkReg >= 0 && hm_->saZ >= 0 && hm_->saS >= 0, "vuopt: sticky accumulation without its registers");
+			pxAssertRel(hm_->stkReg >= 0 && hm_->saZ >= 0 && hm_->saS >= 0, "vu-aot: sticky accumulation without its registers");
 			const bool dirty = dirty_;
 			if (AccCand(in))
 			{
@@ -1878,7 +1878,7 @@ namespace vuopt
 		{
 			const Inst& in = I(id);
 			const bool real = chainReal_[id];
-			pxAssertRel(hm_->stkReg >= 0 && hm_->saZ >= 0 && hm_->saS >= 0, "vuopt: sticky accumulation without its registers");
+			pxAssertRel(hm_->stkReg >= 0 && hm_->saZ >= 0 && hm_->saS >= 0, "vu-aot: sticky accumulation without its registers");
 			const int bs = BaseReg(id);
 			const int df = IntOperand(in.args[1]);
 			const int d = DefG(id);
@@ -1899,7 +1899,7 @@ namespace vuopt
 		void Lowerer::ChainStatusSet(ValueId id)
 		{
 			const Inst& in = I(id);
-			pxAssertRel(hm_->stkReg >= 0 && hm_->saZ >= 0 && hm_->saS >= 0, "vuopt: sticky accumulation without its registers");
+			pxAssertRel(hm_->stkReg >= 0 && hm_->saZ >= 0 && hm_->saS >= 0, "vu-aot: sticky accumulation without its registers");
 			u32 imm = 0;
 			const u32 i12 = static_cast<u32>(in.imm);
 			if (i12 & 0x0040) imm |= 0x000000f;
@@ -2223,7 +2223,7 @@ namespace vuopt
 						avail.push_back(s);
 				}
 			}
-			pxAssertRel(out.size() + (leaveIdx < n ? 1 : 0) == n, "vuopt: scheduling lost an operation");
+			pxAssertRel(out.size() + (leaveIdx < n ? 1 : 0) == n, "vu-aot: scheduling lost an operation");
 			static thread_local std::vector<ValueId> newOrder;
 			newOrder.clear();
 			for (u32 i : out)
@@ -3887,7 +3887,7 @@ namespace vuopt
 					const int d = DefG(id);
 					if (env_.dropSticky)
 					{
-						pxAssertRel(nonSticky && acc < 0, "vuopt: a sticky-only STATUS update in a build that drops the sticky byte");
+						pxAssertRel(nonSticky && acc < 0, "vu-aot: a sticky-only STATUS update in a build that drops the sticky byte");
 						armAsm->And(W(d), W(prev), env_.dropStickyMutation == 1 ? 0u : 0xfffc0000u);
 						if (env_.dropStickyMutation != 2)
 							armAsm->Orr(W(d), W(d), a64::Operand(W(p), a64::LSL, 8));
@@ -5351,7 +5351,7 @@ namespace vuopt
 	LowerResult NodeLowering::Emit(const HomeMap& homes)
 	{
 		LowerResult r;
-		pxAssertRel(!impl_->emitted, "vuopt: a node lowering emitted twice");
+		pxAssertRel(!impl_->emitted, "vu-aot: a node lowering emitted twice");
 		impl_->emitted = true;
 		if (!impl_->lw.Rebind(homes, r.why))
 			return r;
@@ -5383,4 +5383,4 @@ namespace vuopt
 		if (homes.cycles >= 0 && cyclesOff)
 			armAsm->Str(W(homes.cycles), a64::MemOperand(xFlag, cyclesOff));
 	}
-} // namespace vuopt
+} // namespace vuaot

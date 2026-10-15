@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-#include "VuOptDecode.h"
+#include "VuAotDecode.h"
 
 #include <cstdio>
 #include <cstring>
 
-namespace vuopt
+namespace vuaot
 {
 	namespace
 	{
@@ -539,4 +539,4 @@ namespace vuopt
 		}
 		std::snprintf(buf, bufSize, "%04x: %-34s | %s%s%s", p.pc, ub, lb, nb ? " " : "", bits);
 	}
-} // namespace vuopt
+} // namespace vuaot

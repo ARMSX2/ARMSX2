@@ -145,9 +145,9 @@ add_pcsx2_test(recompiler_tests
 	mvu_progcache_disk_tests.cpp
 	mvu_waitmtvu_stub_tests.cpp
 	mvu_ebit_exit_tests.cpp
-	vuopt_frontend_tests.cpp
-	vuopt_live_tests.cpp
-	vuopt_lowering_tests.cpp
+	vuaot_frontend_tests.cpp
+	vuaot_live_tests.cpp
+	vuaot_lowering_tests.cpp
 	mvu_ebit_condbranch_status_tests.cpp
 	mvu_options_sentinel_tests.cpp
 	mvu_model_stub_tests.cpp

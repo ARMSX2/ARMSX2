@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-#include "VuOptRegion.h"
+#include "VuAotRegion.h"
 
-#include "VuOptIR.h"
+#include "VuAotIR.h"
 
 #include "VU.h"
 #include "common/Assertions.h"
@@ -16,7 +16,7 @@
 #include <bitset>
 #include <cstring>
 
-namespace vuopt
+namespace vuaot
 {
 	namespace a64 = vixl::aarch64;
 
@@ -771,7 +771,7 @@ namespace vuopt
 		for (size_t i = 0; i < NN; i++)
 			net += static_cast<s64>(cyclic[i] ? 8 : 1) * (5 * static_cast<s64>(eff[i].accumulated) - 7 * static_cast<s64>(eff[i].reduces[in[i]]));
 		if (t_.dump)
-			std::printf("[vuopt acc] root %04x: %zu nodes, net %lld\n", nodes_[0]->pc, NN, static_cast<long long>(net));
+			std::printf("[vuaot acc] root %04x: %zu nodes, net %lld\n", nodes_[0]->pc, NN, static_cast<long long>(net));
 		return net > 0;
 	}
 
@@ -1197,7 +1197,7 @@ namespace vuopt
 			}
 			const LowerResult r = n.low->Emit(maps_[n.map]);
 			g_lowerMarks = nullptr;
-			pxAssertRel(r.ok, "vuopt region: node no longer lowers with region homes");
+			pxAssertRel(r.ok, "vu-aot region: node no longer lowers with region homes");
 			const u8* tailStart = armGetCurrentCodePointer();
 			if (t_.profile)
 			{
@@ -1344,7 +1344,7 @@ namespace vuopt
 	void RegionBuilder::EmitEnd(const Node& n)
 	{
 		const ir::EndInfo& e = n.fn.end;
-		pxAssertRel(e.valid, "vuopt region: program end without its end info");
+		pxAssertRel(e.valid, "vu-aot region: program end without its end info");
 		EmitStoreHomes(maps_[n.map], le_, env_.offCycles);
 		armEmitCall(env_.clearLpState);
 		// P/Q to VI[REG_Q] / pending_q and VI[REG_P] / pending_p, choosing lanes
@@ -1374,7 +1374,7 @@ namespace vuopt
 			armAsm->Ldr(a64::w10, a64::MemOperand(a64::x19, static_cast<s32>(offsetof(VURegs, VI) + REG_CLIP_FLAG * sizeof(REG_VI))));
 		armAsm->Str(a64::w9, a64::MemOperand(a64::x19, static_cast<s32>(offsetof(VURegs, VI) + REG_MAC_FLAG * sizeof(REG_VI))));
 		armAsm->Str(a64::w10, a64::MemOperand(a64::x19, static_cast<s32>(offsetof(VURegs, VI) + REG_CLIP_FLAG * sizeof(REG_VI))));
-		pxAssertRel(e.fS >= 0 && e.fS < 4, "vuopt region: status instance out of range");
+		pxAssertRel(e.fS >= 0 && e.fS < 4, "vu-aot region: status instance out of range");
 		armAsm->Mov(a64::w11, W(20 + e.fS));
 		armEmitCall(env_.endFlagsB);
 		armAsm->Add(a64::x8, a64::x19, static_cast<s32>(offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI)));
@@ -1470,7 +1470,7 @@ namespace vuopt
 			for (auto& n : nodes_)
 			{
 				n->low = NodeLowering::Check(n->fn, le_, n->clamped, &n->liveOut);
-				pxAssertRel(n->low != nullptr, "vuopt region: a lowerable node failed its analysis");
+				pxAssertRel(n->low != nullptr, "vu-aot region: a lowerable node failed its analysis");
 			}
 			// (the analysis ran with the accumulators on; a region they do not pay in
 			// is analysed again without)
@@ -1508,14 +1508,14 @@ namespace vuopt
 		const u8* start = armGetCurrentCodePointer();
 		const u8* end = nullptr;
 		Emit(end);
-		pxAssertRel(start == env_.blockEntry(env_.rootBlock), "vuopt region: the root entry is not where microVU expects it");
+		pxAssertRel(start == env_.blockEntry(env_.rootBlock), "vu-aot region: the root entry is not where microVU expects it");
 		for (size_t i = 1; i < nodes_.size(); i++)
 			env_.setBlockEntry(nodes_[i]->blk, nodes_[i]->entry);
 		for (const auto& n : nodes_)
 			env_.addRange(env_.vuIndex, n->pc, n->br.pcs.back());
 		if (t_.dump)
 		{
-			std::printf("[vuopt region] root %04x: %zu nodes, %zu exits, %zu bytes\n", nodes_[0]->pc, nodes_.size(), exits_.size(),
+			std::printf("[vuaot region] root %04x: %zu nodes, %zu exits, %zu bytes\n", nodes_[0]->pc, nodes_.size(), exits_.size(),
 				static_cast<size_t>(end - start));
 			for (size_t i = 0; i < nodes_.size(); i++)
 			{
@@ -1694,7 +1694,7 @@ namespace vuopt
 			{
 				// Owner decision j (2026-10-14): the flag hack on or off. With it off microVU's
 				// sticky bits are exact and the final STATUS of a program loses them here; the live
-				// tier's tripwire (microVU_VuOpt-arm64.inl) turns `dropSticky` off for the rest of the
+				// tier's tripwire (microVU_VuAot-arm64.inl) turns `dropSticky` off for the rest of the
 				// session when a reader of those bits turns up.
 				le.dropSticky = true;
 				le.dropStickyMutation = dropStickyMutation;
@@ -1704,4 +1704,4 @@ namespace vuopt
 		RegionBuilder rb(*this, env, le);
 		return rb.Run(br, why);
 	}
-} // namespace vuopt
+} // namespace vuaot

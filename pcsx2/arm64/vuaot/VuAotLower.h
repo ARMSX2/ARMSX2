@@ -3,7 +3,7 @@
 
 #pragma once
 
-// Lowering of one microVU block's body, from vuopt's per-node IR
+// Lowering of one microVU block's body, from vu-aot's per-node IR
 // (ir::BuildNodeLocal) to AArch64 through vixl.
 //
 // Every piece of VU state has a home: the place it lives whenever control is
@@ -25,12 +25,12 @@
 // Each operation emits the arithmetic microVU's emitter for it emits in the
 // shipped configuration (same operations, operand order and clamp
 // placement), so results are bit-identical by construction; the register
-// choice and the moves around them are free. pcsx2-vurunner --vuopt-run
+// choice and the moves around them are free. pcsx2-vurunner --vuaot-run
 // checks it on the whole corpus.
 //
 // Supported: VU1, clamp modes 0-3, no clamp-affecting gamefixes.
 
-#include "VuOptIR.h"
+#include "VuAotIR.h"
 
 #include <bitset>
 #include <memory>
@@ -38,7 +38,7 @@
 #include <utility>
 #include <vector>
 
-namespace vuopt
+namespace vuaot
 {
 	// One flag per IR variable (milestone 8's region liveness).
 	using LiveSet = std::bitset<ir::var::Count>;
@@ -154,7 +154,7 @@ namespace vuopt
 		// Inside microVU's framing: the branch value / jump target is stored
 		// to mVU.branch for microVU's tail.
 		Framed,
-		// Inside a vuopt region: the branch condition is left sign-extended in
+		// Inside a vu-aot region: the branch condition is left sign-extended in
 		// w8, or a JR/JALR's target byte address (the region's tail compares
 		// it); nothing is stored to mVU.branch.
 		Region,
@@ -226,4 +226,4 @@ namespace vuopt
 	// and fills `to`'s clamped homes. The cycle counter and memory base are
 	// the same in every map. Uses v0 and w16 as scratch.
 	void EmitHomeTransfer(const HomeMap& from, const HomeMap& to, const LiveSet* live, const LowerEnv& env);
-} // namespace vuopt
+} // namespace vuaot

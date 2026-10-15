@@ -1243,7 +1243,7 @@ __fi u32* GET_VU_MEM(VURegs* VU, u32 addr) // non-static, also used by sVU for n
 	else if (addr & 0x4000)
 	{
 		if (((addr & 0x3ff) >> 4) == VU0_WINDOW_VU1_STATUS_QWORD)
-			vuoptNoteOutsideStatusRead();
+			vuAotNoteOutsideStatusRead();
 		return (u32*)((u8*)vuRegs[1].VF + (addr & 0x3ff)); // get VF and VI regs (they're mapped to 0x4xx0 in VU0 mem!)
 	}
 	else

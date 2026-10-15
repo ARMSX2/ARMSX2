@@ -3,7 +3,7 @@
 
 #pragma once
 
-// The program graph vuopt compiles: every microVU block variant reachable
+// The program graph vu-aot compiles: every microVU block variant reachable
 // from the program's entries, linked the way microVU links them.
 //
 // A node is what microVU calls a block: a start PC plus the pipeline state it
@@ -12,7 +12,7 @@
 // two nodes, exactly as microVU compiles two copies. That gives the compiler
 // three properties for free:
 //   - every pipeline-time decision inside a node is a compile-time constant,
-//     already validated against microVU (VuOptPipe);
+//     already validated against microVU (VuAotPipe);
 //   - the tail duplication the design needs at joins whose incoming pipeline
 //     states differ is the duplication microVU already does;
 //   - every node boundary is a point where microVU itself can take over with
@@ -24,12 +24,12 @@
 // that is depends on registration order, so the closure registers blocks in
 // microVU's compile order (depth-first, not-taken before taken).
 
-#include "VuOptPipe.h"
+#include "VuAotPipe.h"
 
 #include <utility>
 #include <vector>
 
-namespace vuopt
+namespace vuaot
 {
 	struct GraphNode
 	{
@@ -95,4 +95,4 @@ namespace vuopt
 	};
 
 	ProgramGraph BuildProgramGraph(const u8* micro, const GraphOptions& opts);
-} // namespace vuopt
+} // namespace vuaot

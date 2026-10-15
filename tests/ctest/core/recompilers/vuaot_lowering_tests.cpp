@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 //
-// vuopt milestone 2: block bodies lowered from vuopt's IR, run inside
+// vu-aot milestone 2: block bodies lowered from vu-aot's IR, run inside
 // microVU's framing through the test-only body hook, must leave exactly the
 // state microVU's own bodies leave. Every test runs a program twice from the
-// same entry state -- microVU alone, then with every block body vuopt's --
+// same entry state -- microVU alone, then with every block body vu-aot's --
 // and compares all of VURegs, VU memory and the GIF output byte for byte,
 // with the flag hack on and off.
 
@@ -14,10 +14,10 @@
 
 #include "Config.h"
 #include "VU.h"
-#include "arm64/vuopt/VuOptMvuTrace.h"
-#include "arm64/vuopt/VuOptDecode.h"
-#include "arm64/vuopt/VuOptTier.h"
-#include "arm64/vuopt/VuOptRegion.h"
+#include "arm64/vuaot/VuAotMvuTrace.h"
+#include "arm64/vuaot/VuAotDecode.h"
+#include "arm64/vuaot/VuAotTier.h"
+#include "arm64/vuaot/VuAotRegion.h"
 
 #include <gtest/gtest.h>
 
@@ -62,29 +62,29 @@ int g_clampMode = -1;
 // Whether framed bodies are list-scheduled (milestone 9; regions always are).
 bool g_schedule = false;
 // Regions without the sticky STATUS accumulation (debugging a failure).
-bool g_noStickyAcc = getenv("VUOPT_NO_ACC") != nullptr;
+bool g_noStickyAcc = getenv("VUAOT_NO_ACC") != nullptr;
 // A deliberate break of the hand-off liveness rule, to see the tests notice it
-// (VuoptRegion.HandoffMutationsAreCaught); None everywhere else.
+// (VuAotRegion.HandoffMutationsAreCaught); None everywhere else.
 int g_dropStickyMutation = 0; // relaxation 3 broken on purpose (RegionTier::dropStickyMutation)
-vuopt::RegionTier::HandoffMutation g_handoffMutation = getenv("VUOPT_HANDOFF_MUTATION")
-	? static_cast<vuopt::RegionTier::HandoffMutation>(std::atoi(getenv("VUOPT_HANDOFF_MUTATION")))
-	: vuopt::RegionTier::HandoffMutation::None;
+vuaot::RegionTier::HandoffMutation g_handoffMutation = getenv("VUAOT_HANDOFF_MUTATION")
+	? static_cast<vuaot::RegionTier::HandoffMutation>(std::atoi(getenv("VUAOT_HANDOFF_MUTATION")))
+	: vuaot::RegionTier::HandoffMutation::None;
 
 struct TierScope
 {
-	vuopt::BodyTier tier;
+	vuaot::BodyTier tier;
 	explicit TierScope(int vu)
 		: tier(vu, vuRegs[vu].Micro)
 	{
-		vuopt::g_vuoptBodyHook = [](const vuopt::MvuBlockTrace& b, const vuopt::MvuEmitEnv& env, void* user) {
-			return static_cast<vuopt::BodyTier*>(user)->TryLower(b, env, nullptr);
+		vuaot::g_vuAotBodyHook = [](const vuaot::MvuBlockTrace& b, const vuaot::MvuEmitEnv& env, void* user) {
+			return static_cast<vuaot::BodyTier*>(user)->TryLower(b, env, nullptr);
 		};
-		vuopt::g_vuoptBodyHookUser = &tier;
+		vuaot::g_vuAotBodyHookUser = &tier;
 	}
 	~TierScope()
 	{
-		vuopt::g_vuoptBodyHook = nullptr;
-		vuopt::g_vuoptBodyHookUser = nullptr;
+		vuaot::g_vuAotBodyHook = nullptr;
+		vuaot::g_vuAotBodyHookUser = nullptr;
 	}
 };
 
@@ -144,7 +144,7 @@ std::vector<std::string> Compare(const VuSnapshot& ra, const VuSnapshot& rb,
 					continue;
 			}
 			char buf[96];
-			std::snprintf(buf, sizeof(buf), "%s+%zu: mvu=%08x vuopt=%08x", f.name, i, va, vb);
+			std::snprintf(buf, sizeof(buf), "%s+%zu: mvu=%08x vuaot=%08x", f.name, i, va, vb);
 			out.emplace_back(buf);
 		}
 	}
@@ -156,7 +156,7 @@ std::vector<std::string> Compare(const VuSnapshot& ra, const VuSnapshot& rb,
 	return out;
 }
 
-// Runs `prog` on VU1 through microVU, then with vuopt bodies, each in a fresh
+// Runs `prog` on VU1 through microVU, then with vu-aot bodies, each in a fresh
 // harness seeded the same way (a harness takes its pre-state from whatever
 // its previous run left).
 Outcome RunBoth(const std::vector<VuOp>& prog, bool flagHack,
@@ -245,7 +245,7 @@ void SeedSpecials(VuTestHarness& h, u32 seed)
 // reads. (Until microVU's allocReg fix, which 9ai took in with mvu-local-rules, its register allocator
 // left the arithmetic result in a slot it took for a clean copy of Fd, so a later read of Fd gave that
 // result in lanes the instruction did not write; the destinations stayed on registers nothing reads for
-// that reason. VuoptEmptyField.EmptyFieldFuzzMatchesMicroVU now also draws live ones.) The ACC
+// that reason. VuAotEmptyField.EmptyFieldFuzzMatchesMicroVU now also draws live ones.) The ACC
 // forms have no Fd.
 u32 EmptyFieldFmac(std::mt19937& rng, bool liveFd = false)
 {
@@ -275,7 +275,7 @@ u32 EmptyFieldFmac(std::mt19937& rng, bool liveFd = false)
 // A branch reading a VI the previous block's delay slot overwrote reads the
 // old value from microVU's VI backup slot. The body's write-back once stored
 // the new VI into its home first and then read "the old value" from that home.
-TEST(VuoptLowering, ViBackupSurvivesHomeWriteback)
+TEST(VuAotLowering, ViBackupSurvivesHomeWriteback)
 {
 	std::vector<VuOp> p;
 	p.push_back(L(VIADDIU_L(vi::vi7, vi::vi0, 8)));      // 0x00
@@ -298,7 +298,7 @@ TEST(VuoptLowering, ViBackupSurvivesHomeWriteback)
 // Every FMAC form and dest-field shape over special values, with MAC and
 // status readers so microVU writes the flag instances too.
 static void FmacFormsOverSpecialsBody();
-TEST(VuoptLowering, FmacFormsOverSpecials) { FmacFormsOverSpecialsBody(); }
+TEST(VuAotLowering, FmacFormsOverSpecials) { FmacFormsOverSpecialsBody(); }
 static void FmacFormsOverSpecialsBody()
 {
 	const u32 masks[] = {mask::xyzw, mask::x, mask::y, mask::z, mask::w, mask::xyz, mask::x | mask::w, mask::y | mask::z};
@@ -343,7 +343,7 @@ static void FmacFormsOverSpecialsBody()
 }
 
 static void ConversionsClipAndClipReadersBody();
-TEST(VuoptLowering, ConversionsClipAndClipReaders) { ConversionsClipAndClipReadersBody(); }
+TEST(VuAotLowering, ConversionsClipAndClipReaders) { ConversionsClipAndClipReadersBody(); }
 static void ConversionsClipAndClipReadersBody()
 {
 	for (u32 seed = 1; seed <= 6; seed++)
@@ -378,7 +378,7 @@ static void ConversionsClipAndClipReadersBody()
 }
 
 static void DivideUnitAndEfuBody();
-TEST(VuoptLowering, DivideUnitAndEfu) { DivideUnitAndEfuBody(); }
+TEST(VuAotLowering, DivideUnitAndEfu) { DivideUnitAndEfuBody(); }
 static void DivideUnitAndEfuBody()
 {
 	for (u32 seed = 1; seed <= 6; seed++)
@@ -416,7 +416,7 @@ static void DivideUnitAndEfuBody()
 }
 
 static void MovesMemoryRandomAndKickBody();
-TEST(VuoptLowering, MovesMemoryRandomAndKick) { MovesMemoryRandomAndKickBody(); }
+TEST(VuAotLowering, MovesMemoryRandomAndKick) { MovesMemoryRandomAndKickBody(); }
 static void MovesMemoryRandomAndKickBody()
 {
 	for (u32 seed = 1; seed <= 4; seed++)
@@ -458,11 +458,11 @@ static void MovesMemoryRandomAndKickBody()
 }
 
 // Random VU1 programs over special values: forward branches, E-bits, I-bit
-// pairs, flag readers and writers, the divide unit and the EFU. Blocks vuopt
+// pairs, flag readers and writers, the divide unit and the EFU. Blocks vu-aot
 // declines (a branch in a delay slot) run in microVU; everything else is
-// vuopt's, and the result has to be byte for byte microVU's.
+// vu-aot's, and the result has to be byte for byte microVU's.
 static void FuzzBody();
-TEST(VuoptLowering, Fuzz) { FuzzBody(); }
+TEST(VuAotLowering, Fuzz) { FuzzBody(); }
 static void FuzzBody()
 {
 	std::mt19937 rng(20261013);
@@ -562,16 +562,16 @@ static void FuzzBody()
 				for (size_t k = 0; k < p.size(); k++)
 				{
 					char buf[160];
-					vuopt::InstPair ip;
+					vuaot::InstPair ip;
 					ip.pc = static_cast<u32>(k * 8);
-					ip.upper = vuopt::DecodeUpper(p[k].upper);
-					ip.lower = vuopt::DecodeLower(p[k].lower);
-					vuopt::FormatPair(ip, buf, sizeof(buf));
+					ip.upper = vuaot::DecodeUpper(p[k].upper);
+					ip.lower = vuaot::DecodeLower(p[k].lower);
+					vuaot::FormatPair(ip, buf, sizeof(buf));
 					listing += std::string(buf) + "\n";
 				}
 				ADD_FAILURE() << "iter " << iter << " flagHack=" << fh << " declined: " << o.declined << "\n" << Join(o.diffs, 6)
-							  << (getenv("VUOPT_LISTING") ? listing : std::string());
-				if (getenv("VUOPT_BISECT"))
+							  << (getenv("VUAOT_LISTING") ? listing : std::string());
+				if (getenv("VUAOT_BISECT"))
 				{
 					const auto seed = [iter](VuTestHarness& h) { SeedSpecials(h, 1000 + iter); };
 					for (s32 lim = 1; lim <= static_cast<s32>(o.blocks); lim++)
@@ -588,16 +588,16 @@ static void FuzzBody()
 		}
 	}
 	EXPECT_EQ(failures, 0) << programs << " programs";
-	// The rest are blocks around a branch in a delay slot, which vuopt declines.
+	// The rest are blocks around a branch in a delay slot, which vu-aot declines.
 	EXPECT_GT(lowered, blocks * 8 / 10) << lowered << " of " << blocks << " blocks lowered";
-	std::printf("[vuopt lowering fuzz] programs=%d blocks=%u lowered=%u\n", programs, blocks, lowered);
+	std::printf("[vuaot lowering fuzz] programs=%d blocks=%u lowered=%u\n", programs, blocks, lowered);
 }
 
 // A block ending in JR whose target VI is also that VI's final value, under
 // enough general-register pressure that the value is evicted before the end.
 // It must not take the early write-back to its home: the end of the block
 // still reads it as the jump target.
-TEST(VuoptLowering, JumpTargetSurvivesEarlyWriteback)
+TEST(VuAotLowering, JumpTargetSurvivesEarlyWriteback)
 {
 	for (int filler = 10; filler <= 22; filler += 3)
 	{
@@ -637,7 +637,7 @@ TEST(VuoptLowering, JumpTargetSurvivesEarlyWriteback)
 // allocator spills and reloads, with every broadcast form, partial writes,
 // moves and flag readers in between.
 static void PressureFuzzBody();
-TEST(VuoptLowering, PressureFuzz) { PressureFuzzBody(); }
+TEST(VuAotLowering, PressureFuzz) { PressureFuzzBody(); }
 static void PressureFuzzBody()
 {
 	std::mt19937 rng(20261014);
@@ -645,7 +645,7 @@ static void PressureFuzzBody()
 	auto vf = [&]() { return 1 + R(31); };
 	auto vi = [&]() { return 1 + R(6); };
 	auto msk = [&]() { return (R(15) + 1) << 21; };
-	const int iters = getenv("VUOPT_PRESSURE_ITERS") ? std::atoi(getenv("VUOPT_PRESSURE_ITERS")) : 60;
+	const int iters = getenv("VUAOT_PRESSURE_ITERS") ? std::atoi(getenv("VUAOT_PRESSURE_ITERS")) : 60;
 	int programs = 0, failures = 0;
 	u32 lowered = 0, blocks = 0;
 	std::string lastDeclined;
@@ -710,7 +710,7 @@ static void PressureFuzzBody()
 			{
 				failures++;
 				ADD_FAILURE() << "iter " << iter << " flagHack=" << fh << " declined: " << o.declined << "\n" << Join(o.diffs, 6);
-				if (getenv("VUOPT_SHRINK"))
+				if (getenv("VUAOT_SHRINK"))
 				{
 					// Replace pairs with NOPs while the program still fails.
 					const auto seed = [iter](VuTestHarness& h) {
@@ -760,11 +760,11 @@ static void PressureFuzzBody()
 						if (q[k].upper == VNOP_U() && q[k].lower == kNopL)
 							continue;
 						char buf[160];
-						vuopt::InstPair ip;
+						vuaot::InstPair ip;
 						ip.pc = static_cast<u32>(k * 8);
-						ip.upper = vuopt::DecodeUpper(q[k].upper);
-						ip.lower = vuopt::DecodeLower(q[k].lower);
-						vuopt::FormatPair(ip, buf, sizeof(buf));
+						ip.upper = vuaot::DecodeUpper(q[k].upper);
+						ip.lower = vuaot::DecodeLower(q[k].lower);
+						vuaot::FormatPair(ip, buf, sizeof(buf));
 						listing += std::string(buf) + "\n";
 					}
 					std::string hex;
@@ -782,11 +782,11 @@ static void PressureFuzzBody()
 	}
 	EXPECT_EQ(failures, 0) << programs << " programs";
 	EXPECT_GT(lowered, blocks * 9 / 10) << lowered << " of " << blocks << " blocks lowered";
-	std::printf("[vuopt pressure fuzz] programs=%d blocks=%u lowered=%u declined: %s\n", programs, blocks, lowered, lastDeclined.c_str());
+	std::printf("[vuaot pressure fuzz] programs=%d blocks=%u lowered=%u declined: %s\n", programs, blocks, lowered, lastDeclined.c_str());
 }
 
 //------------------------------------------------------------------
-// Regions (milestone 4): microVU's framing replaced between vuopt's own
+// Regions (milestone 4): microVU's framing replaced between vu-aot's own
 // blocks, state in register homes across links.
 //------------------------------------------------------------------
 
@@ -794,27 +794,27 @@ namespace
 {
 struct RegionScope
 {
-	vuopt::RegionTier region;
-	vuopt::BodyTier body;
+	vuaot::RegionTier region;
+	vuaot::BodyTier body;
 	explicit RegionScope(int vu)
 		: region(vu, vuRegs[vu].Micro)
 		, body(vu, vuRegs[vu].Micro)
 	{
-		vuopt::g_vuoptRegionHook = [](const vuopt::MvuBlockTrace& b, const vuopt::MvuEmitEnv& env, void* user) {
+		vuaot::g_vuAotRegionHook = [](const vuaot::MvuBlockTrace& b, const vuaot::MvuEmitEnv& env, void* user) {
 			return static_cast<RegionScope*>(user)->region.OnCompile(b, env, nullptr);
 		};
-		vuopt::g_vuoptRegionHookUser = this;
-		vuopt::g_vuoptBodyHook = [](const vuopt::MvuBlockTrace& b, const vuopt::MvuEmitEnv& env, void* user) {
+		vuaot::g_vuAotRegionHookUser = this;
+		vuaot::g_vuAotBodyHook = [](const vuaot::MvuBlockTrace& b, const vuaot::MvuEmitEnv& env, void* user) {
 			return static_cast<RegionScope*>(user)->body.TryLower(b, env, nullptr);
 		};
-		vuopt::g_vuoptBodyHookUser = this;
+		vuaot::g_vuAotBodyHookUser = this;
 	}
 	~RegionScope()
 	{
-		vuopt::g_vuoptRegionHook = nullptr;
-		vuopt::g_vuoptRegionHookUser = nullptr;
-		vuopt::g_vuoptBodyHook = nullptr;
-		vuopt::g_vuoptBodyHookUser = nullptr;
+		vuaot::g_vuAotRegionHook = nullptr;
+		vuaot::g_vuAotRegionHookUser = nullptr;
+		vuaot::g_vuAotBodyHook = nullptr;
+		vuaot::g_vuAotBodyHookUser = nullptr;
 	}
 };
 
@@ -830,7 +830,7 @@ struct RegionOutcome
 	bool divStickyDiffers = false;         // ... and among them the sticky I / D bits (STATUS bits 10-11) a divide sets
 };
 
-// microVU alone against vuopt regions (and framed bodies elsewhere), running
+// microVU alone against vu-aot regions (and framed bodies elsewhere), running
 // past the cycle budget so budget breaks and resumes happen.
 RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std::function<void(VuTestHarness&)>& setup,
 	bool resume = true, s32 vHomes = 14, bool dump = false, const std::map<u32, std::vector<u32>>* jumps = nullptr, u32 budget = 0)
@@ -944,7 +944,7 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 // A counted loop: FMACs, a flag reader, a divide whose Q crosses the link,
 // a store; runs long enough to break on the cycle budget several times.
 static void RegionCountedLoopBody();
-TEST(VuoptRegion, CountedLoop) { RegionCountedLoopBody(); }
+TEST(VuAotRegion, CountedLoop) { RegionCountedLoopBody(); }
 static void RegionCountedLoopBody()
 {
 	for (u32 n : {1u, 2u, 7u, 300u, 900u})
@@ -978,7 +978,7 @@ static void RegionCountedLoopBody()
 // table-loaded JALR, and each returns with JR. The region dispatches the
 // targets it was given and sends every other one through microVU's jump
 // cache; both must leave microVU's state.
-TEST(VuoptRegion, RecordedJumpTargets)
+TEST(VuAotRegion, RecordedJumpTargets)
 {
 	constexpr u32 kT1 = 12, kT2 = 16, kRet = 6, kHead = 2;
 	std::vector<VuOp> p;
@@ -1057,13 +1057,13 @@ static void RegionInvariantMatrixBody()
 		EXPECT_GE(o.regions, 1u);
 	}
 }
-TEST(VuoptRegion, InvariantMatrix) { RegionInvariantMatrixBody(); }
+TEST(VuAotRegion, InvariantMatrix) { RegionInvariantMatrixBody(); }
 
 // Random loop programs: an outer counted loop (vi1) around random FMAC,
 // flag, divide, memory and VI work with forward branches inside, and an
 // inner counted loop (vi5) on some.
 static void RegionLoopFuzzBody();
-TEST(VuoptRegion, LoopFuzz) { RegionLoopFuzzBody(); }
+TEST(VuAotRegion, LoopFuzz) { RegionLoopFuzzBody(); }
 static void RegionLoopFuzzBody()
 {
 	std::mt19937 rng(20261015);
@@ -1072,7 +1072,7 @@ static void RegionLoopFuzzBody()
 	auto vf = [&]() { return 1 + R(14); };
 	auto vi = [&]() { return 2 + R(3); }; // vi2..vi4; vi1 / vi5 are loop counters
 	auto msk = [&]() { return (R(15) + 1) << 21; };
-	const int iters = getenv("VUOPT_REGION_ITERS") ? std::atoi(getenv("VUOPT_REGION_ITERS")) : 120;
+	const int iters = getenv("VUAOT_REGION_ITERS") ? std::atoi(getenv("VUAOT_REGION_ITERS")) : 120;
 	int failures = 0;
 	u32 regions = 0, nodes = 0;
 	for (int iter = 0; iter < iters; iter++)
@@ -1166,7 +1166,7 @@ static void RegionLoopFuzzBody()
 	}
 	EXPECT_EQ(failures, 0);
 	EXPECT_GT(regions, static_cast<u32>(iters)); // most programs form a region per flag-hack setting
-	std::printf("[vuopt region fuzz] programs=%d regions=%u nodes=%u\n", iters * 2, regions, nodes);
+	std::printf("[vuaot region fuzz] programs=%d regions=%u nodes=%u\n", iters * 2, regions, nodes);
 }
 
 // Milestone 8: a region tests the cycle budget only at loop heads and at
@@ -1175,7 +1175,7 @@ static void RegionLoopFuzzBody()
 // single run under every budget from 1 up must stop exactly where microVU
 // stops, with microVU's state.
 static void RegionBudgetSweepBody();
-TEST(VuoptRegion, BudgetSweep) { RegionBudgetSweepBody(); }
+TEST(VuAotRegion, BudgetSweep) { RegionBudgetSweepBody(); }
 static void RegionBudgetSweepBody()
 {
 	std::vector<std::vector<VuOp>> progs;
@@ -1233,7 +1233,7 @@ static void RegionBudgetSweepBody()
 // between registers and memory (and fills clamped copies). Every budget
 // from 1 up, so bails land inside each loop too.
 static void RegionLoopMapsBody();
-TEST(VuoptRegion, LoopMaps) { RegionLoopMapsBody(); }
+TEST(VuAotRegion, LoopMaps) { RegionLoopMapsBody(); }
 static void RegionLoopMapsBody()
 {
 	std::vector<VuOp> p;
@@ -1468,7 +1468,7 @@ std::vector<VuOp> StickyProgram(int variant, u32 trip, u32 body)
 } // namespace
 
 static void RegionStickyAccumulationBody();
-TEST(VuoptRegion, StickyAccumulation) { RegionStickyAccumulationBody(); }
+TEST(VuAotRegion, StickyAccumulation) { RegionStickyAccumulationBody(); }
 static void RegionStickyAccumulationBody()
 {
 	int failures = 0;
@@ -1504,15 +1504,15 @@ static void RegionStickyAccumulationBody()
 	// the point of the test: with the flag hack off the regions accumulate
 	EXPECT_GT(accRegions, 0u);
 	EXPECT_GT(accumulated, runs);
-	std::printf("[vuopt sticky] runs=%u acc regions=%u accumulated updates=%u\n", runs, accRegions, accumulated);
+	std::printf("[vuaot sticky] runs=%u acc regions=%u accumulated updates=%u\n", runs, accRegions, accumulated);
 }
 
 // Accumulations made in one block are owed to the first instance built in the
-// next: loops (found by the large fuzz, shrunk by VuoptRegion.Repro) where the
+// next: loops (found by the large fuzz, shrunk by VuAotRegion.Repro) where the
 // instance a link later hands over needs the sticky bits the block before
 // only accumulated. A region that forgot the debt at a link (the dirty state
 // of the dataflow) fails these and nothing smaller.
-TEST(VuoptRegion, StickyFoldAcrossLinks)
+TEST(VuAotRegion, StickyFoldAcrossLinks)
 {
 	struct Case
 	{
@@ -1699,7 +1699,7 @@ const HandoffRepro kHandoffRepros[] = {
 } // namespace
 
 static void RegionHandoffRingsBody();
-TEST(VuoptRegion, HandoffRings) { RegionHandoffRingsBody(); }
+TEST(VuAotRegion, HandoffRings) { RegionHandoffRingsBody(); }
 static void RegionHandoffRingsBody()
 {
 	u32 dead = 0, edges = 0;
@@ -1707,14 +1707,14 @@ static void RegionHandoffRingsBody()
 	// the point of the test: the bails do leave instances out
 	EXPECT_GT(edges, 0u);
 	EXPECT_GT(dead, edges);
-	std::printf("[vuopt handoff] link edges into loop heads=%u ring instances left out=%u\n", edges, dead);
+	std::printf("[vuaot handoff] link edges into loop heads=%u ring instances left out=%u\n", edges, dead);
 }
 
 // The same sweep with the rule broken two ways must fail: an instance the continuation reads
 // counted as dead where the block also writes it; every instance dead.
-TEST(VuoptRegion, HandoffMutationsAreCaught)
+TEST(VuAotRegion, HandoffMutationsAreCaught)
 {
-	using M = vuopt::RegionTier::HandoffMutation;
+	using M = vuaot::RegionTier::HandoffMutation;
 	struct Guard
 	{
 		M saved = g_handoffMutation;
@@ -1728,9 +1728,9 @@ TEST(VuoptRegion, HandoffMutationsAreCaught)
 	}
 }
 
-TEST(VuoptRegion, HandoffMutationRepros)
+TEST(VuAotRegion, HandoffMutationRepros)
 {
-	using M = vuopt::RegionTier::HandoffMutation;
+	using M = vuaot::RegionTier::HandoffMutation;
 	struct Guard
 	{
 		M saved = g_handoffMutation;
@@ -1782,12 +1782,12 @@ std::vector<VuOp> WithoutStickyReaders(std::vector<VuOp> p)
 	{
 		if (op.upper & bits::I)
 			continue; // the lower word is an immediate
-		const vuopt::LowerInst l = vuopt::DecodeLower(op.lower);
-		if (l.op == vuopt::LOp::FSAND)
+		const vuaot::LowerInst l = vuaot::DecodeLower(op.lower);
+		if (l.op == vuaot::LOp::FSAND)
 			op.lower = VFSAND_L(l.it, l.imm12 & 0x03f);
-		else if (l.op == vuopt::LOp::FSEQ)
+		else if (l.op == vuaot::LOp::FSEQ)
 			op.lower = VFSEQ_L(l.it, l.imm12 & 0x03f);
-		else if (l.op == vuopt::LOp::FSOR)
+		else if (l.op == vuaot::LOp::FSOR)
 			op.lower = VFSOR_L(l.it, l.imm12 & 0x03f);
 	}
 	return p;
@@ -1871,7 +1871,7 @@ u32 DropStickySweep(u32* dropped, u32* stickyRuns, u32* divStickyRuns, bool repo
 }
 } // namespace
 
-TEST(VuoptRegion, DropStickyPinsEverythingElse)
+TEST(VuAotRegion, DropStickyPinsEverythingElse)
 {
 	u32 dropped = 0, stickyRuns = 0, divStickyRuns = 0;
 	EXPECT_EQ(DropStickySweep(&dropped, &stickyRuns, &divStickyRuns, true, false), 0u);
@@ -1880,13 +1880,13 @@ TEST(VuoptRegion, DropStickyPinsEverythingElse)
 	EXPECT_GT(dropped, 0u);
 	EXPECT_GT(stickyRuns, 0u);
 	EXPECT_GT(divStickyRuns, 0u);
-	std::printf("[vuopt dropsticky] regions without the sticky byte=%u runs whose sticky bits differ=%u (sticky I/D bits: %u)\n",
+	std::printf("[vuaot dropsticky] regions without the sticky byte=%u runs whose sticky bits differ=%u (sticky I/D bits: %u)\n",
 		dropped, stickyRuns, divStickyRuns);
 }
 
 // The premise is checked per program image: with a sticky reader anywhere in it the sticky byte
 // stays, and the run is byte-identical to microVU's. (The loops here read STATUS with 0xfff.)
-TEST(VuoptRegion, DropStickyOffWhereAStickyBitIsRead)
+TEST(VuAotRegion, DropStickyOffWhereAStickyBitIsRead)
 {
 	int failures = 0;
 	for (bool hack : {true, false})
@@ -1909,7 +1909,7 @@ TEST(VuoptRegion, DropStickyOffWhereAStickyBitIsRead)
 // The census of the readers in the regions counts the ones that select a sticky bit, and among
 // them the ones that select the sticky I / D bits a divide sets (STATUS bits 10-11): the premise of
 // dropping them.
-TEST(VuoptRegion, StickyReaderCensusSeparatesTheDivideBits)
+TEST(VuAotRegion, StickyReaderCensusSeparatesTheDivideBits)
 {
 	struct Case
 	{
@@ -1953,7 +1953,7 @@ TEST(VuoptRegion, StickyReaderCensusSeparatesTheDivideBits)
 // Observable state is still pinned: dropping the bits above the sticky byte too (a divide's D and
 // I flags), leaving the update's own pack out (the current Z and S), or leaving a divide's own D / I
 // bits out of its flags, must be seen.
-TEST(VuoptRegion, DropStickyMutationsAreCaught)
+TEST(VuAotRegion, DropStickyMutationsAreCaught)
 {
 	struct Guard
 	{
@@ -2081,7 +2081,7 @@ u32 LoopFamilySweep(u32* runs, bool report)
 }
 } // namespace
 
-TEST(VuoptRegion, FieldAndOnceLoopsMatchMicroVU)
+TEST(VuAotRegion, FieldAndOnceLoopsMatchMicroVU)
 {
 	u32 runs = 0;
 	EXPECT_EQ(LoopFamilySweep(&runs, true), 0u);
@@ -2092,13 +2092,13 @@ TEST(VuoptRegion, FieldAndOnceLoopsMatchMicroVU)
 // now and then, forward branches that change how many status writes a trip
 // makes, run under random budgets so bails land anywhere.
 static void RegionStickyFuzzBody();
-TEST(VuoptRegion, StickyFuzz) { RegionStickyFuzzBody(); }
+TEST(VuAotRegion, StickyFuzz) { RegionStickyFuzzBody(); }
 static void RegionStickyFuzzBody()
 {
 	std::mt19937 rng(20261013);
 	std::mt19937 erng(20261014); // (the empty-field FMACs have their own stream, as in LoopFuzz)
 	auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
-	const int iters = getenv("VUOPT_STICKY_ITERS") ? std::atoi(getenv("VUOPT_STICKY_ITERS")) : 150;
+	const int iters = getenv("VUAOT_STICKY_ITERS") ? std::atoi(getenv("VUAOT_STICKY_ITERS")) : 150;
 	int failures = 0;
 	u32 accRegions = 0, nonLinear = 0, accumulated = 0;
 	for (int iter = 0; iter < iters; iter++)
@@ -2176,16 +2176,16 @@ static void RegionStickyFuzzBody()
 	}
 	EXPECT_EQ(failures, 0);
 	EXPECT_GT(accRegions, static_cast<u32>(iters) / 2);
-	std::printf("[vuopt sticky fuzz] programs=%d acc regions=%u declined (FSSET kills)=%u accumulated updates=%u\n", iters * 2, accRegions, nonLinear, accumulated);
+	std::printf("[vuaot sticky fuzz] programs=%d acc regions=%u declined (FSSET kills)=%u accumulated updates=%u\n", iters * 2, accRegions, nonLinear, accumulated);
 }
 
-// Debugging aid for the sticky fuzz: VUOPT_REGION_HEX="lower:upper,..."
-// VUOPT_REGION_SEED=n (the iteration number) VUOPT_REGION_FH=0|1
-// VUOPT_REGION_BUDGET=n [VUOPT_REGION_SPARSE=1 for the odd iterations] runs one
+// Debugging aid for the sticky fuzz: VUAOT_REGION_HEX="lower:upper,..."
+// VUAOT_REGION_SEED=n (the iteration number) VUAOT_REGION_FH=0|1
+// VUAOT_REGION_BUDGET=n [VUAOT_REGION_SPARSE=1 for the odd iterations] runs one
 // program as the fuzz does, region code dumped.
-TEST(VuoptRegion, Repro)
+TEST(VuAotRegion, Repro)
 {
-	const char* hex = getenv("VUOPT_REGION_HEX");
+	const char* hex = getenv("VUAOT_REGION_HEX");
 	if (!hex)
 		GTEST_SKIP();
 	std::vector<VuOp> p;
@@ -2199,10 +2199,10 @@ TEST(VuoptRegion, Repro)
 			c++;
 		p.push_back(op);
 	}
-	const int iter = getenv("VUOPT_REGION_SEED") ? std::atoi(getenv("VUOPT_REGION_SEED")) : 0;
-	const bool fh = getenv("VUOPT_REGION_FH") && std::atoi(getenv("VUOPT_REGION_FH"));
-	const u32 budget = getenv("VUOPT_REGION_BUDGET") ? static_cast<u32>(std::atoi(getenv("VUOPT_REGION_BUDGET"))) : 0;
-	const bool sparse = getenv("VUOPT_REGION_SPARSE") != nullptr;
+	const int iter = getenv("VUAOT_REGION_SEED") ? std::atoi(getenv("VUAOT_REGION_SEED")) : 0;
+	const bool fh = getenv("VUAOT_REGION_FH") && std::atoi(getenv("VUAOT_REGION_FH"));
+	const u32 budget = getenv("VUAOT_REGION_BUDGET") ? static_cast<u32>(std::atoi(getenv("VUAOT_REGION_BUDGET"))) : 0;
+	const bool sparse = getenv("VUAOT_REGION_SPARSE") != nullptr;
 	const auto setup = [iter, sparse](VuTestHarness& h) {
 		if (sparse)
 			SeedSparse(h, 4000 + iter);
@@ -2210,7 +2210,7 @@ TEST(VuoptRegion, Repro)
 			SeedSpecials(h, 4000 + iter);
 		h.SetVi(2, 8);
 	};
-	if (getenv("VUOPT_REGION_SHRINK"))
+	if (getenv("VUAOT_REGION_SHRINK"))
 	{
 		// Drop every operation the failure survives losing (loop control stays).
 		const auto control = [](u32 lo) {
@@ -2250,14 +2250,14 @@ TEST(VuoptRegion, Repro)
 
 // A run that stops on the cycle budget with an XGKICK in flight (the loop of
 // StickyProgram variant 5, stopped 11 to 16 cycles into a trip) used to differ
-// from microVU in VPU_STAT bit 12. It was the harness, not vuopt: the
+// from microVU in VPU_STAT bit 12. It was the harness, not vu-aot: the
 // interpreter sets bit 12 when a kick starts and clears it when the transfer
 // ends, and its pass of the reference run, stopped at the budget, left it set
 // in VU0's copy of VPU_STAT; the next harness started from that and kept it,
 // because VuTestHarness::SeedEntryState cleared only bits 0-11. microVU and
-// vuopt never write bit 12. RunRegion's reference run is followed by the
+// vu-aot never write bit 12. RunRegion's reference run is followed by the
 // region run in the same process, which is what exposes it.
-TEST(VuoptRegion, StoppedMidKickInheritsNothing)
+TEST(VuAotRegion, StoppedMidKickInheritsNothing)
 {
 	const std::vector<VuOp> p = StickyProgram(5, 7, 16);
 	for (bool fh : {false, true})
@@ -2278,7 +2278,7 @@ TEST(VuoptRegion, StoppedMidKickInheritsNothing)
 // reads its source, a second LQ of the same address reuses the first, and an
 // LQ after a full-mask SQ to the same address reads the stored register.
 static void ViConstantsAndAddressesBody();
-TEST(VuoptLowering, ViConstantsAndAddresses) { ViConstantsAndAddressesBody(); }
+TEST(VuAotLowering, ViConstantsAndAddresses) { ViConstantsAndAddressesBody(); }
 static void ViConstantsAndAddressesBody()
 {
 	std::vector<std::vector<VuOp>> progs;
@@ -2324,7 +2324,7 @@ static void ViConstantsAndAddressesBody()
 // bits its immediate keeps. Every FSAND immediate shape over status words
 // with sticky, divide and single-lane bits set.
 static void FlagPacksAndFsandBody();
-TEST(VuoptLowering, FlagPacksAndFsand) { FlagPacksAndFsandBody(); }
+TEST(VuAotLowering, FlagPacksAndFsand) { FlagPacksAndFsandBody(); }
 static void FlagPacksAndFsandBody()
 {
 	static const u32 kImm[] = {0x000, 0xfff, 0x001, 0x002, 0x004, 0x008, 0x010, 0x020, 0x040, 0x080, 0x100, 0x200,
@@ -2364,7 +2364,7 @@ static void FlagPacksAndFsandBody()
 // mapping and clamps that cached register in place. The clamped copy is what
 // the rest of the block reads, and it reaches ACC's home when the block writes
 // ACC before or after; a clean cached copy is dropped.
-TEST(VuoptLowering, MaddClampsCachedAcc)
+TEST(VuAotLowering, MaddClampsCachedAcc)
 {
 	const auto seed = [](VuTestHarness& h) {
 		h.SetVfBits(1, 0x7f800000, 0xff800000, 0x7fffffff, 0x3f800000);
@@ -2408,7 +2408,7 @@ TEST(VuoptLowering, MaddClampsCachedAcc)
 // clamps nothing, modes 2 and 3 clamp every FMAC step's operands (mode 3
 // sign-preservingly) and mode 2 its results, and at both MADD clamps
 // microVU's cached ACC in place.
-TEST(VuoptLowering, ClampModes)
+TEST(VuAotLowering, ClampModes)
 {
 	for (int mode : {0, 2, 3})
 	{
@@ -2436,7 +2436,7 @@ TEST(VuoptLowering, ClampModes)
 // Milestone 9: the lowering suites again with every body list-scheduled
 // (operations reordered by latency before the allocator sees them), small
 // register pools included.
-TEST(VuoptLowering, Scheduled)
+TEST(VuAotLowering, Scheduled)
 {
 	g_schedule = true;
 	FmacFormsOverSpecialsBody();
@@ -2450,12 +2450,12 @@ TEST(VuoptLowering, Scheduled)
 	g_schedule = false;
 }
 
-// Debugging aid: VUOPT_REPRO_HEX="lower:upper,..." VUOPT_REPRO_SEED=n
-// VUOPT_REPRO_FH=0|1 runs one program (as the pressure fuzz seeds it) with
+// Debugging aid: VUAOT_REPRO_HEX="lower:upper,..." VUAOT_REPRO_SEED=n
+// VUAOT_REPRO_FH=0|1 runs one program (as the pressure fuzz seeds it) with
 // the lowered code dumped.
-TEST(VuoptLowering, Repro)
+TEST(VuAotLowering, Repro)
 {
-	const char* hex = getenv("VUOPT_REPRO_HEX");
+	const char* hex = getenv("VUAOT_REPRO_HEX");
 	if (!hex)
 		GTEST_SKIP();
 	std::vector<VuOp> p;
@@ -2469,8 +2469,8 @@ TEST(VuoptLowering, Repro)
 			c++;
 		p.push_back(op);
 	}
-	const int seed = getenv("VUOPT_REPRO_SEED") ? std::atoi(getenv("VUOPT_REPRO_SEED")) : 5000;
-	const bool fh = !getenv("VUOPT_REPRO_FH") || std::atoi(getenv("VUOPT_REPRO_FH"));
+	const int seed = getenv("VUAOT_REPRO_SEED") ? std::atoi(getenv("VUAOT_REPRO_SEED")) : 5000;
+	const bool fh = !getenv("VUAOT_REPRO_FH") || std::atoi(getenv("VUAOT_REPRO_FH"));
 	const auto setup = [seed](VuTestHarness& h) {
 		SeedSpecials(h, seed);
 		for (int r = 12; r < 32; r++)
@@ -2487,7 +2487,7 @@ TEST(VuoptLowering, Repro)
 //
 // The interpreter's account (VUops.cpp applyBinaryMACOp and its siblings): a lane outside the field is
 // not written, so an empty field writes no VF and no ACC lane, and its MAC lane bits are cleared, so
-// MAC is 0 and the current ZSUO bits of STATUS are 0 with the sticky bits kept. vuopt follows it, and
+// MAC is 0 and the current ZSUO bits of STATUS are 0 with the sticky bits kept. vu-aot follows it, and
 // since 9ai (microVU's allocReg leaves a temp slot for an empty-field write) so does microVU. Before
 // that these tests pinned microVU's fault, 9ag's finding, and failed with a message the day it went.
 
@@ -2516,7 +2516,7 @@ std::vector<std::string> VfAccDiffs(const VuSnapshot& a, const VuSnapshot& b, co
 
 struct VsInterp
 {
-	std::vector<std::string> vuopt; // vuopt region against the interpreter, VF and ACC lanes
+	std::vector<std::string> vuaot; // vu-aot region against the interpreter, VF and ACC lanes
 	std::vector<std::string> mvu;   // microVU against the interpreter, the same lanes
 	u32 regions = 0;
 };
@@ -2544,7 +2544,7 @@ VsInterp RunVsInterp(const std::vector<VuOp>& prog, bool flagHack, const std::fu
 		h.RunNoDiff();
 		r.regions = rs.region.Regions();
 	}
-	r.vuopt = VfAccDiffs(interp, h.JitSnapshot(), "interp", "vuopt");
+	r.vuaot = VfAccDiffs(interp, h.JitSnapshot(), "interp", "vuaot");
 	r.mvu = VfAccDiffs(interp, mvu, "interp", "mvu");
 	return r;
 }
@@ -2567,11 +2567,11 @@ std::vector<VuOp> DelaySlotLoop(u32 trip, const std::vector<VuOp>& body, u32 del
 }
 } // namespace
 
-// An empty-field FMAC to vf12, then the loop's delay slot reads vf12 whole, or writes a lane of it. vuopt
+// An empty-field FMAC to vf12, then the loop's delay slot reads vf12 whole, or writes a lane of it. vu-aot
 // and microVU both leave vf12 as the interpreter does (no lane written by the empty FMAC). (Until 9ai the
 // microVU half was reported, not required: its allocator marked the slot an empty-field write leaves as a
 // clean copy of vf12 while it held the arithmetic result.)
-TEST(VuoptEmptyField, RegionsLeaveTheDestinationAlone)
+TEST(VuAotEmptyField, RegionsLeaveTheDestinationAlone)
 {
 	struct Case
 	{
@@ -2604,33 +2604,33 @@ TEST(VuoptEmptyField, RegionsLeaveTheDestinationAlone)
 					const std::vector<VuOp> p = DelaySlotLoop(trip, {U(c.empty)}, delays[d]);
 					const VsInterp r = RunVsInterp(p, fh, [](VuTestHarness& h) { SeedMixed(h, 77); });
 					EXPECT_GE(r.regions, 1u);
-					EXPECT_TRUE(r.vuopt.empty()) << c.name << " delay " << d << " trip " << trip << " flagHack " << fh << "\n" << Join(r.vuopt, 6);
+					EXPECT_TRUE(r.vuaot.empty()) << c.name << " delay " << d << " trip " << trip << " flagHack " << fh << "\n" << Join(r.vuaot, 6);
 					EXPECT_TRUE(r.mvu.empty()) << "microVU: " << c.name << " delay " << d << " trip " << trip << " flagHack " << fh << "\n" << Join(r.mvu, 6);
 					runs++;
 				}
-	std::printf("[vuopt empty field] %u runs; vuopt and microVU equal the interpreter in every VF / ACC lane\n", runs);
+	std::printf("[vuaot empty field] %u runs; vu-aot and microVU equal the interpreter in every VF / ACC lane\n", runs);
 }
 
 // The shrunk program 9af found: a counted loop of an empty-field MADD to vf12 and, in the delay slot, a
-// SUB of the z lane of vf12. The interpreter leaves x, y and w as they were, and so do vuopt and microVU.
+// SUB of the z lane of vf12. The interpreter leaves x, y and w as they were, and so do vu-aot and microVU.
 // microVU did not until 9ai: it left the MADD's arithmetic result in them (compiler-design.md 9ag). The
 // microVU half used to assert that it still differed; it is now the regression test for the fix.
-TEST(VuoptEmptyField, MicroVuAndVuoptLeaveALaterAccessAlone)
+TEST(VuAotEmptyField, MicroVuAndVuAotLeaveALaterAccessAlone)
 {
 	const std::vector<VuOp> p = DelaySlotLoop(5, {U(0x00063329)}, 0x0046a32c); // MADD.0 vf12,vf6,vf6 ; SUB.z vf12,vf20,vf6
 	const auto setup = [](VuTestHarness& h) { SeedSpecials(h, 4003); };
 	for (bool fh : {false, true})
 	{
 		const VsInterp r = RunVsInterp(p, fh, setup);
-		EXPECT_TRUE(r.vuopt.empty()) << "flagHack " << fh << "\n" << Join(r.vuopt);
+		EXPECT_TRUE(r.vuaot.empty()) << "flagHack " << fh << "\n" << Join(r.vuaot);
 		EXPECT_TRUE(r.mvu.empty()) << "microVU, flagHack " << fh << "\n" << Join(r.mvu);
 	}
 }
 
 // What an empty-field FMAC does to the flags, read well after it (the readers wait out the flag
 // pipeline): MAC all clear, STATUS's current bits clear, the sticky bits kept. The interpreter, microVU
-// and vuopt agree.
-TEST(VuoptEmptyField, FlagsAreClearedStickyKept)
+// and vu-aot agree.
+TEST(VuAotEmptyField, FlagsAreClearedStickyKept)
 {
 	std::vector<VuOp> p;
 	p.push_back(L(VIADDIU_L(vi::vi7, vi::vi0, 0x0f)));
@@ -2669,14 +2669,14 @@ TEST(VuoptEmptyField, FlagsAreClearedStickyKept)
 	}
 }
 
-// Programs from the loop fuzz's mix with empty-field FMACs: every state vuopt leaves, flags and ACC
+// Programs from the loop fuzz's mix with empty-field FMACs: every state vu-aot leaves, flags and ACC
 // included, is microVU's. The empty-field FMACs of the even programs write registers nothing reads
 // (vf24..vf27) or ACC, as the fuzzers always did; those of the odd programs write the registers the
 // program computes with (vf1..vf8), which microVU's allocReg fault made unsafe to compare before 9ai.
 // 2 x 3,000 programs by default.
-TEST(VuoptEmptyField, EmptyFieldFuzzMatchesMicroVU)
+TEST(VuAotEmptyField, EmptyFieldFuzzMatchesMicroVU)
 {
-	const int iters = getenv("VUOPT_EF_ITERS") ? std::atoi(getenv("VUOPT_EF_ITERS")) : 3000;
+	const int iters = getenv("VUAOT_EF_ITERS") ? std::atoi(getenv("VUAOT_EF_ITERS")) : 3000;
 	std::mt19937 rng(20261015), erng(20261017);
 	auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
 	int failures = 0;
@@ -2747,7 +2747,7 @@ TEST(VuoptEmptyField, EmptyFieldFuzzMatchesMicroVU)
 	}
 	EXPECT_EQ(failures, 0);
 	EXPECT_GT(empties, static_cast<u32>(iters));
-	std::printf("[vuopt empty field fuzz] programs=%d empty-field FMACs=%u regions=%u\n", iters * 2, empties, regions);
+	std::printf("[vuaot empty field fuzz] programs=%d empty-field FMACs=%u regions=%u\n", iters * 2, empties, regions);
 }
 
 } // namespace recompiler_tests

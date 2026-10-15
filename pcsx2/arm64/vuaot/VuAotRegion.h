@@ -3,12 +3,12 @@
 
 #pragma once
 
-// Milestone 4: vuopt regions. A region replaces microVU's per-block framing
+// Milestone 4: vu-aot regions. A region replaces microVU's per-block framing
 // for a set of microVU blocks (graph nodes) that link to each other, so state
 // can stay in host registers across their links.
 //
 // When microVU starts compiling a block, the test-only region hook
-// (VuOptMvuTrace.h) asks this tier to take it. The tier follows microVU's own
+// (VuAotMvuTrace.h) asks this tier to take it. The tier follows microVU's own
 // compile order (depth first, not-taken before taken) from that block,
 // collecting every block that ends in a plain branch or conditional branch and
 // that the lowering supports; those are the region's nodes, and each is
@@ -23,7 +23,7 @@
 //     words in general registers, the rest in microVU's boundary locations;
 //     the cycle counter and the VU1 memory base sit in registers too;
 //   - each node runs microVU's cycle test against the counter register, then
-//     its body (VuOptLower, region mode), whose final values go straight to
+//     its body (VuAotLower, region mode), whose final values go straight to
 //     the homes with microVU's link-time ring reorder and Q/P swap folded in;
 //   - links are direct branches; a conditional link compares the condition
 //     the body left in w8.
@@ -36,8 +36,8 @@
 // link to an exit stores them and jumps to microVU's block for that exit,
 // compiled by microVU after the region.
 
-#include "VuOptLower.h"
-#include "VuOptMvuTrace.h"
+#include "VuAotLower.h"
+#include "VuAotMvuTrace.h"
 
 #include <cstdio>
 #include <map>
@@ -45,7 +45,7 @@
 #include <string>
 #include <vector>
 
-namespace vuopt
+namespace vuaot
 {
 	class RegionTier
 	{
@@ -127,7 +127,7 @@ namespace vuopt
 		// program leaves can then differ from microVU's in bits 6-7 (the sticky zero and sign
 		// bits) and 10-11 (the sticky invalid and divide-by-zero bits), which nothing in the corpora
 		// reads. The live tier switches this off for the rest of the session when something does
-		// (the tripwire, microVU_VuOpt-arm64.inl).
+		// (the tripwire, microVU_VuAot-arm64.inl).
 		bool dropSticky = true;
 		int dropStickyMutation = 0; // test only: LowerEnv::dropStickyMutation
 		// Test only: break the rule above on purpose, to show the tests notice.
@@ -188,4 +188,4 @@ namespace vuopt
 		friend class RegionBuilder;
 		bool Decline(const std::string& why, std::string* out);
 	};
-} // namespace vuopt
+} // namespace vuaot

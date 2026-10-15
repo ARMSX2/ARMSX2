@@ -12,7 +12,7 @@ endif()
 # pcsx2-gsrunner's single-binary-no-extra-libs pattern.
 target_sources(pcsx2-vurunner PRIVATE
 	Main.cpp
-	VuOptMode.cpp
+	VuAotMode.cpp
 	${CMAKE_SOURCE_DIR}/tests/ctest/core/StubHost.cpp
 	${CMAKE_SOURCE_DIR}/tests/ctest/core/recompilers/harness/RecompilerTestEnvironment.cpp
 	${CMAKE_SOURCE_DIR}/tests/ctest/core/recompilers/harness/VuSnapshot.cpp

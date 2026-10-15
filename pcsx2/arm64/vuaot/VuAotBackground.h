@@ -3,12 +3,12 @@
 
 #pragma once
 
-// The background half of the vuopt live tier (compiler-design.md section
+// The background half of the vu-aot live tier (compiler-design.md section
 // 9aa): one low-priority worker thread that builds regions while microVU keeps
 // running the program, and the private code buffer it emits into.
 //
-// Nothing here knows microVU. The worker runs jobs (VuoptJob, in
-// microVU_VuOpt-arm64.inl) that hold copies of everything they read; the VU1
+// Nothing here knows microVU. The worker runs jobs (VuAotJob, in
+// microVU_VuAot-arm64.inl) that hold copies of everything they read; the VU1
 // thread publishes what a job made, copying its code into microVU's code cache
 // and patching the places the buffer could not know (the fixups below).
 //
@@ -29,7 +29,7 @@
 #include <thread>
 #include <vector>
 
-namespace vuopt::bg
+namespace vuaot::bg
 {
 	// A place in the job's code the copy has to patch.
 	struct Fixup
@@ -164,4 +164,4 @@ namespace vuopt::bg
 		bool hold_ = false;
 		std::atomic<u32> completed_{0};
 	};
-} // namespace vuopt::bg
+} // namespace vuaot::bg

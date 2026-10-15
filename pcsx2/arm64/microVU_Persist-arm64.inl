@@ -498,14 +498,14 @@ namespace mVUPersist
 			microProgram* cur = mvu->prog.cur;
 			if (!cur)
 				return;
-			// A program the vuopt live tier has taken over compiles through
-			// vuopt's regions, whose code bakes raw block pointers the fixup
+			// A program the vu-aot live tier has taken over compiles through
+			// vu-aot's regions, whose code bakes raw block pointers the fixup
 			// recorder does not see (bail records). Nothing of it is persisted:
 			// the log keeps the microVU graph recorded before the tier-up,
 			// which is a valid image of its own.
-			if (cur->vuopt)
+			if (cur->vuaot)
 			{
-				Fail("vuopt program");
+				Fail("vu-aot program");
 				return;
 			}
 			if (!prog)

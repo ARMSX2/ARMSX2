@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-#include "VuOptGraph.h"
+#include "VuAotGraph.h"
 
 #include <algorithm>
 #include <map>
 #include <set>
 
-namespace vuopt
+namespace vuaot
 {
 	namespace
 	{
@@ -626,4 +626,4 @@ namespace vuopt
 		GraphBuilder b(micro, opts);
 		return b.Build();
 	}
-} // namespace vuopt
+} // namespace vuaot

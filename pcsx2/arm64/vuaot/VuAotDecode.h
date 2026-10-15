@@ -4,13 +4,13 @@
 #pragma once
 
 // Decoder for VU micro instruction pairs, for the whole-program VU1 compiler
-// (vuopt). One entry per mnemonic, with the operand fields every later stage
+// (vu-aot). One entry per mnemonic, with the operand fields every later stage
 // needs. The tables follow microVU's dispatch tables (x86/microVU_Tables.inl)
 // slot for slot, so an opcode microVU treats as unknown is unknown here too.
 
 #include "common/Pcsx2Defs.h"
 
-namespace vuopt
+namespace vuaot
 {
 	enum class UOp : u8
 	{
@@ -137,4 +137,4 @@ namespace vuopt
 
 	// Short disassembly for IR dumps and test messages.
 	void FormatPair(const InstPair& p, char* buf, size_t bufSize);
-} // namespace vuopt
+} // namespace vuaot

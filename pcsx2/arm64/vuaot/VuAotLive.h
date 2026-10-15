@@ -3,9 +3,9 @@
 
 #pragma once
 
-// The live tier: vuopt running inside the emulator, behind
-// EmuCore/CPU/Recompiler/EnableVUOpt (default off). The machinery lives in
-// microVU's translation unit (microVU_VuOpt-arm64.inl), because it works on
+// The live tier: vu-aot running inside the emulator, behind
+// EmuCore/CPU/Recompiler/EnableVUAot (default off). The machinery lives in
+// microVU's translation unit (microVU_VuAot-arm64.inl), because it works on
 // microVU's programs and block managers; this header is the policy and what
 // the rest of the tree (and the test runners) may see of it.
 //
@@ -15,7 +15,7 @@
 // program (the ones the dispatcher never enters). A program that reaches
 // kTierUpRuns (or kJumpTierUpRuns of the latter) asks for its tier-up: the
 // JR/JALR targets microVU has recorded for it (its jump caches) are collected
-// and a job goes to the tier's worker thread, which builds the vuopt region
+// and a job goes to the tier's worker thread, which builds the vu-aot region
 // rooted at the entry the request came through while microVU runs on. When the
 // job is done, a slow path on the VU1 thread publishes it: the program's microVU
 // blocks are set aside (not freed: older code and stale jump caches can still
@@ -30,19 +30,19 @@
 // Design: compiler-design.md sections 9x, 9aa and 9ad.
 
 #include "common/Pcsx2Defs.h"
-#include "VuOptMvuTrace.h"
+#include "VuAotMvuTrace.h"
 
 #include <functional>
 #include <map>
 #include <string>
 
-namespace vuopt
+namespace vuaot
 {
 	namespace live
 	{
 		// Runs of one program (dispatches that resolve to it) before it is tiered
 		// up. 9n of compiler-design.md: 150-300 runs, a fraction of a second of
-		// play, put 85-93% of GoW2's runs in vuopt and compile 140-430 programs
+		// play, put 85-93% of GoW2's runs in vu-aot and compile 140-430 programs
 		// per scene.
 		constexpr u32 kTierUpRuns = 200;
 
@@ -163,8 +163,8 @@ namespace vuopt
 			std::map<std::string, u32> regionDeclined;
 		};
 
-		// Whether the tier runs this session (EnableVUOpt, VU1 recompiled, no
-		// gamefix vuopt declines). Settled at init and at every reset.
+		// Whether the tier runs this session (EnableVUAot, VU1 recompiled, no
+		// gamefix vu-aot declines). Settled at init and at every reset.
 		bool IsEnabled();
 
 		// The sticky-STATUS tripwire (section 9ad). Armed (false) at the start; set by the first
@@ -183,7 +183,7 @@ namespace vuopt
 
 #ifdef PCSX2_RECOMPILER_TESTS
 		// Test runners only: tier programs up after `runs` dispatches instead of
-		// kTierUpRuns (a low number puts almost every program through vuopt).
+		// kTierUpRuns (a low number puts almost every program through vu-aot).
 		void SetTierUpRuns(u32 runs);
 		// ... and after `runs` JR/JALR slow-path entries instead of kJumpTierUpRuns.
 		void SetJumpTierUpRuns(u32 runs);
@@ -202,7 +202,7 @@ namespace vuopt
 		void SetWorkerGate(std::function<void()> gate);
 		void WaitWorkerIdle();
 		size_t WorkerQueued();
-		// pcsx2-eerunner --vuopt-worker-delay-us: the worker sleeps this long before each job,
+		// pcsx2-eerunner --vuaot-worker-delay-us: the worker sleeps this long before each job,
 		// so publication lags the request as on a loaded or slow machine (0: no delay).
 		void SetWorkerDelayUs(u32 us);
 		// The tripwire, as a test or a runner flag sets it off.
@@ -224,13 +224,13 @@ namespace vuopt
 		constexpr int TripMask(int mutation) { return 1 << mutation; }
 #ifdef PCSX2_RECOMPILER_TESTS
 		void SetTripwireMutation(int mask);
-		// pcsx2-vurunner --vuopt-region-bg: a region hook (VuOptMvuTrace.h's
-		// VuoptRegionHook, `user` a RegionTier whose options it copies) that builds
+		// pcsx2-vurunner --vuaot-region-bg: a region hook (VuAotMvuTrace.h's
+		// VuAotRegionHook, `user` a RegionTier whose options it copies) that builds
 		// every region through the worker and copies it in.
 		bool RegionHookViaWorker(const MvuBlockTrace& b, const MvuEmitEnv& env, void* user);
 #endif
 	} // namespace live
-} // namespace vuopt
+} // namespace vuaot
 
 #ifdef PCSX2_RECOMPILER_TESTS
 namespace mvu_test_hooks

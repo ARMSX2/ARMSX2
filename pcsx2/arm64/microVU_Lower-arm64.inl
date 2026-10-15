@@ -1195,7 +1195,7 @@ mVUop(mVU_FMOR)
 
 mVUop(mVU_FSAND)
 {
-	pass1 { mVUanalyzeSflag(mVU, _It_); mVUvuoptOnStatusReader(mVU, _Imm12_); }
+	pass1 { mVUanalyzeSflag(mVU, _It_); mVUvuAotOnStatusReader(mVU, _Imm12_); }
 	pass2
 	{
 		if (_Imm12_ & 0x0c30) DevCon.WriteLn(Color_Green, "mVU_FSAND: Checking I/D/IS/DS Flags");
@@ -1220,7 +1220,7 @@ mVUop(mVU_FSAND)
 
 mVUop(mVU_FSOR)
 {
-	pass1 { mVUanalyzeSflag(mVU, _It_); mVUvuoptOnStatusReader(mVU, _Imm12_); }
+	pass1 { mVUanalyzeSflag(mVU, _It_); mVUvuAotOnStatusReader(mVU, _Imm12_); }
 	pass2
 	{
 		const a64::Register& reg = mVU.regAlloc->allocGPR(-1, _It_, mVUlow.backupVI);
@@ -1239,7 +1239,7 @@ mVUop(mVU_FSOR)
 
 mVUop(mVU_FSEQ)
 {
-	pass1 { mVUanalyzeSflag(mVU, _It_); mVUvuoptOnStatusReader(mVU, _Imm12_); }
+	pass1 { mVUanalyzeSflag(mVU, _It_); mVUvuAotOnStatusReader(mVU, _Imm12_); }
 	pass2
 	{
 		if (_Imm12_ & 0x0c30) DevCon.WriteLn(Color_Green, "mVU_FSEQ: Checking I/D/IS/DS Flags");

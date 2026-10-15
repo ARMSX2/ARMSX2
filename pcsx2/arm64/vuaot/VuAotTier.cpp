@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-#include "VuOptTier.h"
+#include "VuAotTier.h"
 
 #include "arm64/AsmHelpers.h"
 #include "vixl/aarch64/disasm-aarch64.h"
@@ -9,7 +9,7 @@
 #include <cstdio>
 #include <cstring>
 
-namespace vuopt
+namespace vuaot
 {
 	bool BodyTier::Decline(const std::string& why, std::string* out)
 	{
@@ -121,4 +121,4 @@ namespace vuopt
 		bytes_ += r.bytes;
 		return true;
 	}
-} // namespace vuopt
+} // namespace vuaot

@@ -3,7 +3,7 @@
 
 #pragma once
 
-// Pipeline-time resolution for vuopt: a port of microVU's first pass
+// Pipeline-time resolution for vu-aot: a port of microVU's first pass
 // (mVUcompile's analysis loop, x86/microVU_Analyze.inl, _mVUflagPass /
 // mVUsetFlagInfo, mVUsetFlags, mVUoptimizePipeState).
 //
@@ -12,12 +12,12 @@
 // Q/P lane is current, how many stall cycles each pair costs, which flag
 // updates the flag hack drops. Rather than re-derive any of that, this file
 // runs microVU's own algorithm over microVU's own block structure and keys,
-// and pcsx2-vurunner --vuopt-ir checks the answers against microVU's live
-// decisions (VuOptMvuTrace.h). Names follow microVU's so the two can be read
+// and pcsx2-vurunner --vuaot-ir checks the answers against microVU's live
+// decisions (VuAotMvuTrace.h). Names follow microVU's so the two can be read
 // side by side.
 
-#include "VuOptDecode.h"
-#include "VuOptMvuTrace.h"
+#include "VuAotDecode.h"
+#include "VuAotMvuTrace.h"
 
 #include "common/Pcsx2Defs.h"
 
@@ -26,7 +26,7 @@
 #include <string>
 #include <vector>
 
-namespace vuopt
+namespace vuaot
 {
 	// Mirror of microRegInfo, byte for byte (microVU-arm64.h). It is both the
 	// pipeline state flowing between blocks and microVU's block-lookup key.
@@ -331,6 +331,6 @@ namespace vuopt
 	int GetLastFlagInst(const PipeState& pState, const int* xFlag, int flagType, int isEbit);
 
 	// Field-by-field comparison of two block traces. Returns one line per
-	// mismatching field ("op 3 pc 0x0128 sFlag.read: mvu=1 vuopt=2").
+	// mismatching field ("op 3 pc 0x0128 sFlag.read: mvu=1 vuaot=2").
 	std::vector<std::string> CompareBlockTraces(const MvuBlockTrace& mvu, const MvuBlockTrace& ours);
-} // namespace vuopt
+} // namespace vuaot

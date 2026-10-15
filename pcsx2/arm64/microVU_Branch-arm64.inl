@@ -592,17 +592,17 @@ _mVUt void* mVUcompileJIT(u32 startPC, uptr ptr)
 		if (jc.prog && jc.prog == mVU.prog.quick[startPC / 8].prog)
 			return jc.hostEntry;
 
-		// A jump the cache did not know: the vuopt tier counts these to see
+		// A jump the cache did not know: the vu-aot tier counts these to see
 		// when a tiered program has met a target its regions do not hold.
 		if constexpr (vuIndex == 1)
-			mVUvuoptOnJumpMiss(mVU);
+			mVUvuAotOnJumpMiss(mVU);
 
 		mVUopenCodeCache(mVU);
 		void* v = mVUsearchProg<vuIndex>(startPC, (uptr)&pBlock->pStateEnd);
 		// A program microVU only ever reaches through a JR/JALR (an overlay the
 		// dispatcher never enters) is counted, and tiered up, here.
 		if constexpr (vuIndex == 1)
-			v = mVUvuoptAfterJump(mVU, startPC, (uptr)&pBlock->pStateEnd, v);
+			v = mVUvuAotAfterJump(mVU, startPC, (uptr)&pBlock->pStateEnd, v);
 		mVUcloseCodeCache(mVU);
 
 		jc.prog = mVU.prog.quick[startPC / 8].prog;
@@ -615,7 +615,7 @@ _mVUt void* mVUcompileJIT(u32 startPC, uptr ptr)
 		mVUopenCodeCache(mVU);
 		void* v = mVUsearchProg<vuIndex>(startPC, ptr);
 		if constexpr (vuIndex == 1)
-			v = mVUvuoptAfterJump(mVU, startPC, ptr, v);
+			v = mVUvuAotAfterJump(mVU, startPC, ptr, v);
 		mVUcloseCodeCache(mVU);
 		return v;
 	}

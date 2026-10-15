@@ -1,25 +1,25 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-// pcsx2-vurunner --vuopt-ir
+// pcsx2-vurunner --vuaot-ir
 //
 // For each capture: replay it through microVU (JIT only) with the first-pass
 // hook armed, collecting every block microVU compiles together with its
-// decisions. Then run vuopt's port of that pass on the same program image,
+// decisions. Then run vu-aot's port of that pass on the same program image,
 // block by block in microVU's compile order and from the same entry state,
 // and compare every decision field. Output is one summary line per capture
 // plus the mismatching fields; a final line aggregates the run.
 
-#include "VuOptMode.h"
+#include "VuAotMode.h"
 
 #include "harness/RecompilerTestEnvironment.h"
 #include "harness/VuReplay.h"
 
 #include "Config.h"
-#include "arm64/vuopt/VuOptMvuTrace.h"
-#include "arm64/vuopt/VuOptGraph.h"
-#include "arm64/vuopt/VuOptIR.h"
-#include "arm64/vuopt/VuOptPipe.h"
+#include "arm64/vuaot/VuAotMvuTrace.h"
+#include "arm64/vuaot/VuAotGraph.h"
+#include "arm64/vuaot/VuAotIR.h"
+#include "arm64/vuaot/VuAotPipe.h"
 #include "common/PmuCounters.h"
 
 #include <chrono>
@@ -36,10 +36,10 @@ namespace
 	struct HookSink
 	{
 		u32 vuIndex = 1;
-		std::vector<vuopt::MvuBlockTrace> blocks;
+		std::vector<vuaot::MvuBlockTrace> blocks;
 	};
 
-	void OnBlock(const vuopt::MvuBlockTrace& b, void* user)
+	void OnBlock(const vuaot::MvuBlockTrace& b, void* user)
 	{
 		HookSink* s = static_cast<HookSink*>(user);
 		if (b.vuIndex == s->vuIndex)
@@ -69,9 +69,9 @@ namespace
 	}
 } // namespace
 
-int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,
+int RunVuAotIr(const std::vector<vu_capture::CaptureRecord>& records,
 	const std::vector<std::string>& names,
-	const VuoptModeOptions& opts,
+	const VuAotModeOptions& opts,
 	void (*applyConfig)(const vu_capture::CaptureRecord&))
 {
 	u64 totBlocks = 0, totMatched = 0, totOps = 0;
@@ -86,36 +86,36 @@ int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,
 
 		HookSink sink;
 		sink.vuIndex = rec.vu_index;
-		vuopt::g_mvuBlockHook = &OnBlock;
-		vuopt::g_mvuBlockHookUser = &sink;
+		vuaot::g_mvuBlockHook = &OnBlock;
+		vuaot::g_mvuBlockHookUser = &sink;
 		const auto r = recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
-		vuopt::g_mvuBlockHook = nullptr;
-		vuopt::g_mvuBlockHookUser = nullptr;
+		vuaot::g_mvuBlockHook = nullptr;
+		vuaot::g_mvuBlockHookUser = nullptr;
 		if (!r.ok)
 		{
-			std::printf("[vuopt] %s replay-failed\n", names[fi].c_str());
+			std::printf("[vuaot] %s replay-failed\n", names[fi].c_str());
 			failures++;
 			continue;
 		}
 
-		vuopt::PipeConfig cfg;
+		vuaot::PipeConfig cfg;
 		cfg.vuIndex = rec.vu_index;
 		cfg.flagHack = opts.flagHack != 0;
 		cfg.xgkickHack = EmuConfig.Gamefixes.XgKickHack;
 		cfg.ibitHack = EmuConfig.Gamefixes.IbitHack;
-		vuopt::PipeAnalyzer an(rec.microcode.data(), cfg);
+		vuaot::PipeAnalyzer an(rec.microcode.data(), cfg);
 
 		u64 matched = 0, ops = 0;
 		std::map<std::string, u64> classes;
 		std::vector<std::string> firstLines;
 		for (const auto& mb : sink.blocks)
 		{
-			vuopt::PipeState entry;
+			vuaot::PipeState entry;
 			std::memcpy(entry.bytes, mb.entryState, 96);
-			const vuopt::BlockResult br = an.Analyze(mb.startPC, entry);
-			vuopt::MvuBlockTrace ours;
+			const vuaot::BlockResult br = an.Analyze(mb.startPC, entry);
+			vuaot::MvuBlockTrace ours;
 			br.ToTrace(ours, rec.vu_index);
-			const auto diffs = vuopt::CompareBlockTraces(mb, ours);
+			const auto diffs = vuaot::CompareBlockTraces(mb, ours);
 			ops += mb.ops.size();
 			if (diffs.empty())
 			{
@@ -137,7 +137,7 @@ int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,
 			}
 		}
 
-		std::printf("[vuopt] %s vu%u pc=%04x blocks=%zu match=%llu ops=%llu ebit=%d",
+		std::printf("[vuaot] %s vu%u pc=%04x blocks=%zu match=%llu ops=%llu ebit=%d",
 			names[fi].c_str(), rec.vu_index, rec.start_pc, sink.blocks.size(),
 			static_cast<unsigned long long>(matched), static_cast<unsigned long long>(ops), r.jit_ebit ? 1 : 0);
 		for (const auto& c : classes)
@@ -148,10 +148,10 @@ int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,
 
 		// ---- Whole-program graph + SSA ----
 		// Entry: the capture's start PC with the key microVU dispatched it with.
-		vuopt::GraphOptions gopt;
+		vuaot::GraphOptions gopt;
 		gopt.cfg = cfg;
 		{
-			vuopt::PipeState entry;
+			vuaot::PipeState entry;
 			for (const auto& mb : sink.blocks)
 			{
 				if (mb.startPC == rec.start_pc)
@@ -165,12 +165,12 @@ int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,
 		// Pass 1, static only; then feed the PCs of microVU blocks the static
 		// graph did not reach as observed jump targets (the record half of
 		// record-then-recompile).
-		vuopt::ProgramGraph graph = vuopt::BuildProgramGraph(rec.microcode.data(), gopt);
+		vuaot::ProgramGraph graph = vuaot::BuildProgramGraph(rec.microcode.data(), gopt);
 		{
 			std::vector<u32> extra;
 			for (const auto& mb : sink.blocks)
 			{
-				vuopt::PipeState st;
+				vuaot::PipeState st;
 				std::memcpy(st.bytes, mb.entryState, 96);
 				if (graph.Find(mb.startPC, st, cfg.flagHack) < 0 &&
 					std::find(extra.begin(), extra.end(), mb.startPC) == extra.end())
@@ -179,13 +179,13 @@ int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,
 			if (!extra.empty())
 			{
 				gopt.recordedJumpTargets = extra;
-				graph = vuopt::BuildProgramGraph(rec.microcode.data(), gopt);
+				graph = vuaot::BuildProgramGraph(rec.microcode.data(), gopt);
 			}
 		}
 		u32 covered = 0, pcOnly = 0, missing = 0;
 		for (const auto& mb : sink.blocks)
 		{
-			vuopt::PipeState st;
+			vuaot::PipeState st;
 			std::memcpy(st.bytes, mb.entryState, 96);
 			if (graph.Find(mb.startPC, st, cfg.flagHack) >= 0)
 				covered++;
@@ -206,14 +206,14 @@ int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,
 			std::map<std::vector<u32>, int> withStall, noStall;
 			for (const auto& n : graph.nodes)
 			{
-				vuopt::MvuBlockTrace t;
+				vuaot::MvuBlockTrace t;
 				n.block.ToTrace(t, rec.vu_index);
 				std::vector<u32> sigA, sigB;
 				sigA.push_back(n.pc);
 				int perm[3][4];
-				vuopt::SortFlag(n.block.mFC.xStatus, perm[0], n.block.mFC.cycles);
-				vuopt::SortFlag(n.block.mFC.xMac, perm[1], n.block.mFC.cycles);
-				vuopt::SortFlag(n.block.mFC.xClip, perm[2], n.block.mFC.cycles);
+				vuaot::SortFlag(n.block.mFC.xStatus, perm[0], n.block.mFC.cycles);
+				vuaot::SortFlag(n.block.mFC.xMac, perm[1], n.block.mFC.cycles);
+				vuaot::SortFlag(n.block.mFC.xClip, perm[2], n.block.mFC.cycles);
 				sigA.push_back(n.block.end.needExactMatch);
 				for (int a = 0; a < 3; a++)
 					for (int b = 0; b < 4; b++)
@@ -237,8 +237,8 @@ int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,
 			codeClasses = static_cast<u32>(withStall.size());
 			codeClassesNoStall = static_cast<u32>(noStall.size());
 		}
-		const vuopt::GraphStats& gs = graph.stats;
-		std::printf("[vuopt-graph] nodes=%u blockpcs=%u pairs=%u insts=%u pcbbs=%u edges=%u back=%u irr=%u pcback=%u pcirr=%u "
+		const vuaot::GraphStats& gs = graph.stats;
+		std::printf("[vuaot-graph] nodes=%u blockpcs=%u pairs=%u insts=%u pcbbs=%u edges=%u back=%u irr=%u pcback=%u pcirr=%u "
 					"jr=%u jrstatic=%u jrrec=%u jrunres=%u cond=%u br=%u ebit=%u tbit=%u evil=%u trunc=%d "
 					"mvu_cover=%u/%zu pconly=%u missing=%u codeclasses=%u codeclasses_nostall=%u\n",
 			gs.nodes, gs.distinctBlockPCs, gs.reachedPairs, gs.instructions, gs.pcBasicBlocks, gs.edges, gs.backEdges,
@@ -246,29 +246,29 @@ int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,
 			gs.jumpSitesUnresolved, gs.condBranches, gs.branches, gs.ebitExits, gs.tbitExits, gs.evilJumps, gs.truncated ? 1 : 0,
 			covered, sink.blocks.size(), pcOnly, missing, codeClasses, codeClassesNoStall);
 
-		vuopt::ir::BuildOptions bopt;
+		vuaot::ir::BuildOptions bopt;
 		bopt.vuIndex = rec.vu_index;
 		bopt.clampIImmediate = (rec.vu_index ? EmuConfig.Cpu.Recompiler.vu1Overflow && !EmuConfig.Cpu.Recompiler.vu1SignOverflow
 											 : EmuConfig.Cpu.Recompiler.vu0Overflow && !EmuConfig.Cpu.Recompiler.vu0SignOverflow);
 		bopt.xgkickHack = cfg.xgkickHack;
 		bopt.ibitHack = cfg.ibitHack;
 		bopt.yieldChecks = !opts.noYield;
-		vuopt::ir::Function fn;
+		vuaot::ir::Function fn;
 		u64 ssaInsns = 0;
 		const auto t0 = std::chrono::steady_clock::now();
 		{
 			PmuCounters::Group pmu;
 			if (pmu.Open() && pmu.IsAvailable(PmuCounters::InstructionsRetired))
 			{
-				const auto v = pmu.Measure([&]() { fn = vuopt::ir::BuildSSA(graph, bopt); });
+				const auto v = pmu.Measure([&]() { fn = vuaot::ir::BuildSSA(graph, bopt); });
 				ssaInsns = v[PmuCounters::InstructionsRetired];
 			}
 			else
-				fn = vuopt::ir::BuildSSA(graph, bopt);
+				fn = vuaot::ir::BuildSSA(graph, bopt);
 		}
 		const auto t1 = std::chrono::steady_clock::now();
-		const auto problems = vuopt::ir::Verify(fn);
-		std::printf("[vuopt-ssa] blocks=%zu insts=%u phis=%u phis_created=%u trivial_removed=%u scc_removed=%u "
+		const auto problems = vuaot::ir::Verify(fn);
+		std::printf("[vuaot-ssa] blocks=%zu insts=%u phis=%u phis_created=%u trivial_removed=%u scc_removed=%u "
 					"verify=%zu build_insns=%llu build_us=%lld badops=%u%s%s\n",
 			fn.blocks.size(), fn.LiveInsts(), fn.LivePhis(), fn.phisCreated, fn.phisRemovedTrivial, fn.phisRemovedScc,
 			problems.size(), static_cast<unsigned long long>(ssaInsns),
@@ -277,7 +277,7 @@ int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,
 		for (size_t k = 0; k < problems.size() && k < 5; k++)
 			std::printf("  verify: %s\n", problems[k].c_str());
 		if (opts.dumpIr)
-			std::fputs(vuopt::ir::Dump(fn, graph).c_str(), stdout);
+			std::fputs(vuaot::ir::Dump(fn, graph).c_str(), stdout);
 
 		totBlocks += sink.blocks.size();
 		totMatched += matched;
@@ -286,7 +286,7 @@ int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,
 			totClasses[c.first] += c.second;
 	}
 
-	std::printf("[vuopt-total] captures=%zu blocks=%llu match=%llu ops=%llu",
+	std::printf("[vuaot-total] captures=%zu blocks=%llu match=%llu ops=%llu",
 		records.size(), static_cast<unsigned long long>(totBlocks),
 		static_cast<unsigned long long>(totMatched), static_cast<unsigned long long>(totOps));
 	for (const auto& c : totClasses)
@@ -296,12 +296,12 @@ int RunVuoptIr(const std::vector<vu_capture::CaptureRecord>& records,
 }
 
 //------------------------------------------------------------------
-// --vuopt-run
+// --vuaot-run
 //------------------------------------------------------------------
 
-#include "arm64/vuopt/VuOptTier.h"
-#include "arm64/vuopt/VuOptRegion.h"
-#include "arm64/vuopt/VuOptLive.h"
+#include "arm64/vuaot/VuAotTier.h"
+#include "arm64/vuaot/VuAotRegion.h"
+#include "arm64/vuaot/VuAotLive.h"
 #include "arm64/AsmHelpers.h"
 #include "harness/VuSnapshot.h"
 
@@ -316,15 +316,15 @@ namespace
 {
 	struct BodyCtx
 	{
-		std::unique_ptr<vuopt::BodyTier> tier;
-		std::unique_ptr<vuopt::RegionTier> region; // --vuopt-region
-		bool regionBg = false;                     // --vuopt-region-bg: `region` is the options template of the worker's jobs
+		std::unique_ptr<vuaot::BodyTier> tier;
+		std::unique_ptr<vuaot::RegionTier> region; // --vuaot-region
+		bool regionBg = false;                     // --vuaot-region-bg: `region` is the options template of the worker's jobs
 		bool trace = false;
 		bool traceOnly = false; // reference arm: trace, never lower
 		u32 blocks = 0;
 
-		BodyCtx(u32 vu, const u8* micro, const VuoptModeOptions& o)
-			: tier(std::make_unique<vuopt::BodyTier>(vu, micro))
+		BodyCtx(u32 vu, const u8* micro, const VuAotModeOptions& o)
+			: tier(std::make_unique<vuaot::BodyTier>(vu, micro))
 		{
 			tier->only = o.lowerOnly;
 			tier->limit = o.lowerLimit;
@@ -340,7 +340,7 @@ namespace
 			trace = o.trace;
 			if (o.region)
 			{
-				region = std::make_unique<vuopt::RegionTier>(vu, micro);
+				region = std::make_unique<vuaot::RegionTier>(vu, micro);
 				region->maxRegions = o.regionLimit;
 				region->maxVHomes = o.vHomes;
 				region->maxGHomes = o.gHomes;
@@ -351,7 +351,7 @@ namespace
 				region->accAlways = o.accAlways;
 				region->handoffLiveness = o.handoff;
 				region->dropSticky = o.dropSticky;
-				region->handoffMutation = static_cast<vuopt::RegionTier::HandoffMutation>(o.handoffMutation);
+				region->handoffMutation = static_cast<vuaot::RegionTier::HandoffMutation>(o.handoffMutation);
 				region->dropStickyMutation = o.dropStickyMutation;
 				region->dump = o.dumpIr;
 				regionBg = o.regionBg;
@@ -362,7 +362,7 @@ namespace
 		void Install();
 	};
 
-	bool OnRegion(const vuopt::MvuBlockTrace& b, const vuopt::MvuEmitEnv& env, void* user)
+	bool OnRegion(const vuaot::MvuBlockTrace& b, const vuaot::MvuEmitEnv& env, void* user)
 	{
 		BodyCtx& c = *static_cast<BodyCtx*>(user);
 		return c.region->OnCompile(b, env, nullptr);
@@ -370,17 +370,17 @@ namespace
 
 	void Uninstall()
 	{
-		vuopt::g_vuoptBodyHook = nullptr;
-		vuopt::g_vuoptBodyHookUser = nullptr;
-		vuopt::g_vuoptRegionHook = nullptr;
-		vuopt::g_vuoptRegionHookUser = nullptr;
+		vuaot::g_vuAotBodyHook = nullptr;
+		vuaot::g_vuAotBodyHookUser = nullptr;
+		vuaot::g_vuAotRegionHook = nullptr;
+		vuaot::g_vuAotRegionHookUser = nullptr;
 	}
 
-	// --vuopt-trace: every compiled block logs its start PC and entry key on
+	// --vuaot-trace: every compiled block logs its start PC and entry key on
 	// entry, in both runs, to find where two executions part.
 	std::vector<u64> g_trace;
 	std::vector<u64> g_traceVals;
-	long dumpAt = -1; // --vuopt-trace-dump N: print the state at block entry N
+	long dumpAt = -1; // --vuaot-trace-dump N: print the state at block entry N
 	// The entry state of a block: VF, VI (low halves), ACC from VURegs, the
 	// MAC and clip instances, the status instances and the Q/P lanes.
 	void TraceBlock(u64 v, const u8* flags, u64 s01, u64 s23, u64 pq0, u64 pq1)
@@ -443,7 +443,7 @@ namespace
 		armAsm->Add(a64::sp, a64::sp, 64);
 	}
 
-	bool OnBody(const vuopt::MvuBlockTrace& b, const vuopt::MvuEmitEnv& env, void* user)
+	bool OnBody(const vuaot::MvuBlockTrace& b, const vuaot::MvuEmitEnv& env, void* user)
 	{
 		BodyCtx& c = *static_cast<BodyCtx*>(user);
 		if (b.vuIndex == env.vuIndex)
@@ -457,12 +457,12 @@ namespace
 
 	void BodyCtx::Install()
 	{
-		vuopt::g_vuoptBodyHook = &OnBody;
-		vuopt::g_vuoptBodyHookUser = this;
+		vuaot::g_vuAotBodyHook = &OnBody;
+		vuaot::g_vuAotBodyHookUser = this;
 		if (region)
 		{
-			vuopt::g_vuoptRegionHook = regionBg ? &vuopt::live::RegionHookViaWorker : &OnRegion;
-			vuopt::g_vuoptRegionHookUser = regionBg ? static_cast<void*>(region.get()) : static_cast<void*>(this);
+			vuaot::g_vuAotRegionHook = regionBg ? &vuaot::live::RegionHookViaWorker : &OnRegion;
+			vuaot::g_vuAotRegionHookUser = regionBg ? static_cast<void*>(region.get()) : static_cast<void*>(this);
 		}
 	}
 
@@ -507,7 +507,7 @@ namespace
 				std::memcpy(&va, pa + f.off + i, n);
 				std::memcpy(&vb, pb + f.off + i, n);
 				char buf[128];
-				std::snprintf(buf, sizeof(buf), "%s+%zu: mvu=%08x vuopt=%08x", f.name, i, va, vb);
+				std::snprintf(buf, sizeof(buf), "%s+%zu: mvu=%08x vuaot=%08x", f.name, i, va, vb);
 				out.emplace_back(buf);
 			}
 		}
@@ -561,7 +561,7 @@ namespace
 				std::memcpy(&va, pa + f.off + i, n);
 				std::memcpy(&vb, pb + f.off + i, n);
 				char buf[128];
-				std::snprintf(buf, sizeof(buf), "%s+%zu: mvu=%08x vuopt=%08x", f.name, i, va, vb);
+				std::snprintf(buf, sizeof(buf), "%s+%zu: mvu=%08x vuaot=%08x", f.name, i, va, vb);
 				// Relaxation 3: the sticky zero/sign bits (bits 6-7 of the STATUS register, the low byte of
 				// the status ring copies) and the sticky invalid/divide-by-zero bits (register bits 10-11,
 				// ring bits 24-25) may differ; anything else in those words may not.
@@ -610,7 +610,7 @@ namespace
 
 	// Steady-state retired instructions: the least over the iterations after
 	// the first. A later iteration can still compile a block it had not
-	// reached before (and, in the vuopt arm, run the hook's analysis), which
+	// reached before (and, in the vu-aot arm, run the hook's analysis), which
 	// only ever adds instructions.
 	u64 MinCounter(const std::vector<PmuCounters::Values>& v, int counter)
 	{
@@ -623,9 +623,9 @@ namespace
 	}
 } // namespace
 
-int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
+int RunVuAotRun(const std::vector<vu_capture::CaptureRecord>& records,
 	const std::vector<std::string>& names,
-	const VuoptModeOptions& opts,
+	const VuAotModeOptions& opts,
 	void (*applyConfig)(const vu_capture::CaptureRecord&))
 {
 	int failures = 0;
@@ -638,21 +638,21 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 		EmuConfig.Speedhacks.vuFlagHack = opts.flagHack != 0;
 		const int vu = rec.vu_index;
 
-		// Reference: microVU alone (with --vuopt-trace, the hook only traces).
+		// Reference: microVU alone (with --vuaot-trace, the hook only traces).
 		BodyCtx refCtx(vu, vuRegs[vu].Micro, opts);
 		refCtx.traceOnly = true;
 		g_trace.clear();
 		g_traceVals.clear();
 		if (opts.trace)
 		{
-			vuopt::g_vuoptBodyHook = &OnBody;
-			vuopt::g_vuoptBodyHookUser = &refCtx;
+			vuaot::g_vuAotBodyHook = &OnBody;
+			vuaot::g_vuAotBodyHookUser = &refCtx;
 		}
 		recompiler_tests::VuChainResult refChain;
 		if (opts.observe)
 			refChain = recompiler_tests::ReplayJitChain(rec, opts.cycleOverride, opts.resumes);
 		const auto ref = opts.observe ? refChain.first : recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
-		vuopt::g_vuoptBodyHook = nullptr;
+		vuaot::g_vuAotBodyHook = nullptr;
 		const std::vector<u64> refTrace = g_trace;
 		const std::vector<u64> refVals = g_traceVals;
 		g_trace.clear();
@@ -671,8 +671,8 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			recCtx.trace = true;
 			g_trace.clear();
 			g_traceVals.clear();
-			vuopt::g_vuoptBodyHook = &OnBody;
-			vuopt::g_vuoptBodyHookUser = &recCtx;
+			vuaot::g_vuAotBodyHook = &OnBody;
+			vuaot::g_vuAotBodyHookUser = &recCtx;
 			recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
 			Uninstall();
 			mvuBlocks = recCtx.blocks;
@@ -687,23 +687,23 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			g_traceVals.clear();
 		}
 
-		// vuopt bodies.
+		// vu-aot bodies.
 		BodyCtx ctx(vu, vuRegs[vu].Micro, opts);
 		if (ctx.region)
 			ctx.region->jumpTargets = jumpTargets;
-		const vuopt::live::Stats bgBefore = vuopt::live::GetStats();
+		const vuaot::live::Stats bgBefore = vuaot::live::GetStats();
 		ctx.Install();
 		recompiler_tests::VuChainResult runChain;
 		if (opts.observe)
 			runChain = recompiler_tests::ReplayJitChain(rec, opts.cycleOverride, opts.resumes);
 		const auto run = opts.observe ? runChain.first : recompiler_tests::ReplayJitOnly(rec, opts.cycleOverride);
-		const vuopt::live::Stats bgAfter = vuopt::live::GetStats();
+		const vuaot::live::Stats bgAfter = vuaot::live::GetStats();
 		if (ctx.region && opts.profile)
 			ctx.region->PrintProfile(stdout);
 		const u64 runBytes = CompiledBytes(vu);
 		u64 bailsEntry = 0, bailsLoop = 0;
 		// The region counters: the worker's jobs' (through the live tier's stats) with
-		// --vuopt-region-bg, the region tier's own otherwise.
+		// --vuaot-region-bg, the region tier's own otherwise.
 		u32 stickyDropped = 0, stickyImages = 0, statusReaders = 0, stickyReaders = 0, stickyDivReaders = 0;
 		if (ctx.region && ctx.regionBg)
 		{
@@ -728,7 +728,7 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 
 		if (!ref.ok || !run.ok)
 		{
-			std::printf("[vuopt-run] %s replay-failed\n", names[fi].c_str());
+			std::printf("[vuaot-run] %s replay-failed\n", names[fi].c_str());
 			failures++;
 			continue;
 		}
@@ -814,7 +814,7 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			diffs.emplace_back(buf);
 			for (size_t j = (k > 3 ? k - 3 : 0); j < k + 3; j++)
 			{
-				std::snprintf(buf, sizeof(buf), "  [%zu] mvu=%04x/%08x state=%08x/%04x vuopt=%04x/%08x state=%08x/%04x", j,
+				std::snprintf(buf, sizeof(buf), "  [%zu] mvu=%04x/%08x state=%08x/%04x vuaot=%04x/%08x state=%08x/%04x", j,
 					j < refTrace.size() ? static_cast<u32>(refTrace[j] >> 32) : 0xffff, j < refTrace.size() ? static_cast<u32>(refTrace[j]) : 0,
 					j < refVals.size() ? static_cast<u32>(refVals[j]) : 0, j < refVals.size() ? static_cast<u32>(refVals[j] >> 32) : 0,
 					j < g_trace.size() ? static_cast<u32>(g_trace[j] >> 32) : 0xffff, j < g_trace.size() ? static_cast<u32>(g_trace[j]) : 0,
@@ -833,7 +833,7 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 			cycRef = MinCounter(refSamples, PmuCounters::CpuCycles);
 			if (insRef)
 				compRef = refSamples[0][PmuCounters::InstructionsRetired] - std::min<u64>(insRef, refSamples[0][PmuCounters::InstructionsRetired]);
-			VuoptModeOptions bo = opts;
+			VuAotModeOptions bo = opts;
 			bo.trace = false;
 			bo.dumpIr = false;
 			BodyCtx bctx(vu, vuRegs[vu].Micro, bo);
@@ -852,8 +852,8 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 		}
 
 		const bool identical = diffs.empty();
-		std::printf("[vuopt-run] %s vu%d pc=%04x blocks=%u lowered=%u identical=%d ebit=%d refcode=%llu runcode=%llu body=%llu "
-					"ins_mvu=%llu ins_vuopt=%llu cyc_mvu=%llu cyc_vuopt=%llu steadycompiles=%u cins_mvu=%llu cins_vuopt=%llu",
+		std::printf("[vuaot-run] %s vu%d pc=%04x blocks=%u lowered=%u identical=%d ebit=%d refcode=%llu runcode=%llu body=%llu "
+					"ins_mvu=%llu ins_vuaot=%llu cyc_mvu=%llu cyc_vuaot=%llu steadycompiles=%u cins_mvu=%llu cins_vuaot=%llu",
 			names[fi].c_str(), vu, rec.start_pc, ctx.blocks, ctx.tier->Lowered(), identical ? 1 : 0, ref.jit_ebit ? 1 : 0,
 			static_cast<unsigned long long>(refBytes), static_cast<unsigned long long>(runBytes),
 			static_cast<unsigned long long>(ctx.tier->BodyBytes()), static_cast<unsigned long long>(insRef),
@@ -904,7 +904,7 @@ int RunVuoptRun(const std::vector<vu_capture::CaptureRecord>& records,
 		if (opts.observe ? !observable : !identical)
 			failures++;
 	}
-	std::printf("[vuopt-run-total] captures=%zu identical=%llu blocks=%llu lowered=%llu\n", records.size(),
+	std::printf("[vuaot-run-total] captures=%zu identical=%llu blocks=%llu lowered=%llu\n", records.size(),
 		static_cast<unsigned long long>(totIdentical), static_cast<unsigned long long>(totBlocks),
 		static_cast<unsigned long long>(totLowered));
 	return failures ? 4 : 0;
