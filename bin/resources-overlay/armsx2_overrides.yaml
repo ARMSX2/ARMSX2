@@ -1248,3 +1248,42 @@ SLUS-20675:
         author=bmdhacks
         comment=Keeps textures that are drawn every frame resident in the game's VRAM texture cache instead of evicting and re-uploading them (0x001f7640: lw v0,-0x654c(gp) -> lw v0,-0x6548(gp)).
         patch=1,EE,001f7640,word,8f829ab8
+
+# Baldur's Gate: Dark Alliance (PAL, En/Fr/De/Es/It) — the same VRAM texture-cache stamp
+# fix as the NTSC-U entry above (SLUS-20035). bmdhacks, 2026-10-14; ARMSX2 umbrella,
+# devs/bmdhacks/campaigns/g57-bgda-slowdown/PATCH-STUDY.md (the NTSC-U analysis this follows).
+#
+# Same code, found in the PAL boot ELF (SLES_506.72) by instruction pattern, not by address.
+# The three functions are the NTSC-U ones word for word except for gp offsets, data addresses
+# and one jump target (gp is 0x329f70 here, 0x328a70 there). The code that queues an
+# already-resident texture (0x135178) refreshes its stamp from the game-time counter
+# (gp-0x5b38, 0x324438), while the allocator (0x1407e0) and the per-frame sweep (0x140a78)
+# use the render-frame counter (gp-0x5b34, 0x32443c). The sweep is called right after the
+# main loop increments the render-frame counter (0x2033e8), and the game-time counter is
+# zeroed at 0x2027cc, 0x20376c and 0x203aa0 and skipped while a flag at gp-0x4334 is set
+# (0x20305c; apparently pause). The patch makes the refresh read the render-frame counter.
+#
+# Cost it saves, from a scripted boot-from-disc session (title, character select, first
+# street) on the M2, seven GS dumps (vsync 3500 to 7000) replayed once each on Vulkan:
+# hash-cache hits 62.2% -> 75.1% and texture uploads 1970 -> 1359 (-31%). Three of the
+# seven points (the later ones, after walking around) go from 49-57% to 89-91% hits and
+# uploads fall 68-71%; the other four are about unchanged (uploads +1% to -15%). The two arms had identical game-time
+# and render-frame counters at every 300-vsync sample, and once in play the game-time counter
+# stayed 1735 behind the render-frame counter.
+# Pixels: software-renderer replays of the same dumps, frames 5-11. Where two unpatched boots
+# are byte-identical (five of the seven points) the patched arm differs by at most 15 px in
+# three frames at one point and by 60-210 px a frame at the other four, at most 23 levels,
+# singly along polygon and character edges. At the other two points the unpatched boots differ from
+# each other too (hundreds of px, at most 2 levels) and the patched arm by 200-4500 px, at
+# most 23 levels, so no clean figure there. Not looked at on the owner's flips.
+# Verified: boot from the PAL disc on the M2 (probe build from g57-slowdown 694e23d0a3, EE
+# JIT, MTVU off, isolated data path) found the entry for SLES-50672 / 4A9D8E01 and read
+# 8f82a4cc at 0x135250 with it, 8f82a4c8 without. Not run: device timing, a console, other
+# levels. patches only: upstream's gsHWFixes for this serial stay in force.
+SLES-50672:
+  patches:
+    4A9D8E01:
+      content: |-
+        author=bmdhacks
+        comment=Keeps textures that are drawn every frame resident in the game's VRAM texture cache instead of evicting and re-uploading them (0x00135250: lw v0,-0x5b38(gp) -> lw v0,-0x5b34(gp)).
+        patch=1,EE,00135250,word,8f82a4cc
