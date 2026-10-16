@@ -291,6 +291,8 @@ private class HostSession(
     private var streaming = false
     private var videoThread: Thread? = null
     private var audioThread: Thread? = null
+    // Built and used on the video thread; released by end()'s thread once that one has ended.
+    @Volatile
     private var frames: RemotePlayFrames? = null
     private var offered = false
     private var answered = false
@@ -568,8 +570,14 @@ private class HostSession(
         wifi.hold()
         val observer = source.capturerObserver
         observer.onCapturerStarted(true)
-        val pipeline = RemotePlayFrames(textureInput = rtc?.textureInput == true).also { frames = it }
-        videoThread = thread(name = "rp-video") { videoLoop(observer, pipeline) }
+        // The pipeline is built on the video thread: it sets up a GL context and waits for it, for
+        // up to a second, which on the main thread held the host's game.
+        val textureInput = rtc?.textureInput == true
+        videoThread = thread(name = "rp-video") {
+            val pipeline = RemotePlayFrames(textureInput)
+            frames = pipeline
+            videoLoop(observer, pipeline)
+        }
         audioThread = thread(name = "rp-audio") { audioLoop() }
         input.post { lastPadAt = SystemClock.uptimeMillis() }
         input.postDelayed(padWatch, 250)
@@ -757,12 +765,8 @@ private class HostSession(
             // Unblocks both loops at once: their polls return -1.
             NativeApp.remotePlayStop()
         }
-        videoThread?.join(500)
-        audioThread?.join(500)
-        // The input thread first, so nothing applies a press after the release below.
+        // Takes no more presses from here, so none lands after the release at the end.
         inputThread.quitSafely()
-        runCatching { inputThread.join(200) }
-        applyPad(RemotePlayProtocol.PadState())
         // Player 2's rumble goes back to this device's second pad. The port keeps its pad until
         // the game closes: unplugging it would show the game a controller pulled out mid-play.
         if (wasStreaming) RemotePlayCore.hostPlayer2(false)
@@ -781,12 +785,22 @@ private class HostSession(
         val track = videoTrack
         val source = videoSource
         val factory = rtc
-        val pipeline = frames
-        frames = null
+        val video = videoThread
+        val sound = audioThread
         peer = null
         audioChannel = null
         inputChannel = null
-        val dispose = {
+        // Every wait is on a thread of its own. The host's game takes its input through the main
+        // thread, and joining the stream's threads there held it for up to 1.2 s.
+        //
+        // A loop still running would use what is disposed here (a freed video source, a disposed
+        // channel): a crash. Both are on their way out (their polls return -1, the GL waits are
+        // bounded), so they are waited for before anything goes.
+        thread(name = "rp-end", isDaemon = true) {
+            video?.join()
+            sound?.join()
+            runCatching { inputThread.join(200) }
+            applyPad(RemotePlayProtocol.PadState())
             runCatching { pc?.close() }
             runCatching { input?.unregisterObserver() }
             runCatching { input?.dispose() }
@@ -796,19 +810,9 @@ private class HostSession(
             runCatching { source?.dispose() }
             factory?.dispose()
             // The encoder is gone with the peer, so nothing draws the frame textures any more.
-            pipeline?.release()
-        }
-        // A loop still running would use what is disposed here (a freed video source, a disposed
-        // channel): a crash. Both are on their way out (their polls return -1, the GL waits are
-        // bounded), so a straggler is waited for off the main thread before anything goes.
-        val stragglers = listOfNotNull(videoThread, audioThread).filter { it.isAlive }
-        if (stragglers.isEmpty()) {
-            dispose()
-        } else {
-            thread(name = "rp-end", isDaemon = true) {
-                stragglers.forEach { it.join() }
-                dispose()
-            }
+            // Taken only now: the video thread builds the pipeline, and it has ended.
+            frames?.release()
+            frames = null
         }
     }
 }
