@@ -626,7 +626,16 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 	// through the CPU. Both are on practically every Android driver; the foreign queue family is what
 	// lets the encoder's GL take a frame over, so the buffer extension is only asked for alongside it.
 	// Without them, frames are read back instead.
+	//
+	// Both or neither. SupportsExtension enables what it finds, so asking for the two in a row
+	// enabled the foreign queue family alone on a driver that lists it without the buffer one.
+	const auto listed = [&available_extension_list](const char* name) {
+		return std::any_of(available_extension_list.begin(), available_extension_list.end(),
+			[name](const VkExtensionProperties& properties) { return !std::strcmp(name, properties.extensionName); });
+	};
 	m_optional_extensions.vk_android_external_memory_ahb =
+		listed(VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME) &&
+		listed(VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME) &&
 		SupportsExtension(VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME, false) &&
 		SupportsExtension(VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME, false);
 #endif
@@ -3932,6 +3941,15 @@ void GSDeviceVK::PublishGPUProfile()
 	const GpuProfileSelection& mobile_profile = m_gpu_profile;
 	SetMobileDriverProfile(mobile_profile.driver);
 #if defined(__ANDROID__)
+	// Remote play's buffer handoff, turned off for a driver whose profile says so. The profile is
+	// only known now, after the device was created with the extensions, so it is their use that
+	// goes: frames are read back instead.
+	if (m_optional_extensions.vk_android_external_memory_ahb &&
+		GetMobileDriverProfile().UsesWorkaround(DriverWorkaround::ReadBackRemotePlayFrames))
+	{
+		Console.WriteLn("VK: remote play reads frames back on this driver (driver profile).");
+		m_optional_extensions.vk_android_external_memory_ahb = false;
+	}
 	// So that IsMaliGPUProfile() and IsAdrenoGPUProfile() answer for the Vulkan device too.
 	SetRuntimeGPUProfile(mobile_profile.runtime_profile);
 	// Per-model pool sizes and ages, which drive GSDevice's pool sizing. From sashkinbro/EmuCoreX.
