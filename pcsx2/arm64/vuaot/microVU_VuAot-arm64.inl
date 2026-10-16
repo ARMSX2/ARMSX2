@@ -452,7 +452,13 @@ static void vuAotTripRemembered()
 static std::atomic<u32> s_vuAotWorkerDelayUs{0};
 // vuaot::live::TakeRecordCodeSamples (VU1 thread)
 static std::vector<vuaot::live::RecordCodeSample> s_vuAotRecordSamples;
+// vuaot::live::SetInstallEnabled
+static bool s_vuAotInstall = true;
+#else
+static constexpr bool s_vuAotInstall = true;
 #endif
+// vuaot::live::LastPlacedOffset
+static size_t s_vuAotLastPlaced = 0;
 
 #if defined(PCSX2_RECOMPILER_TESTS) && defined(__linux__)
 static bool vuAotCountingIns() { return mvu_test_hooks::g_vu1InsCount.load(std::memory_order_relaxed); }
@@ -686,6 +692,24 @@ namespace vuaot::live
 	}
 	size_t WorkerQueued() { return s_vuaot.worker ? s_vuaot.worker->Queued() : 0; }
 	void SetWorkerDelayUs(u32 us) { s_vuAotWorkerDelayUs.store(us, std::memory_order_relaxed); }
+	void SetInstallEnabled(bool on) { s_vuAotInstall = on; }
+	void TestPadCodeCache(u32 bytes)
+	{
+		microVU& mVU = microVU1;
+		const bool wasOpen = armAsm != nullptr;
+		if (wasOpen)
+			mVUcloseCodeCache(mVU);
+		mVUopenCodeCache(mVU);
+		{
+			vixl::ExactAssemblyScope scope(armAsm, bytes & ~3u);
+			for (u32 i = 0; i < bytes / 4; i++)
+				armAsm->dc32(0xD4200000u); // brk #0
+		}
+		mVUcloseCodeCache(mVU);
+		if (wasOpen)
+			mVUopenCodeCache(mVU);
+	}
+	size_t LastPlacedOffset() { return s_vuAotLastPlaced; }
 	std::vector<RecordCodeSample> TakeRecordCodeSamples()
 	{
 		std::vector<RecordCodeSample> out;
@@ -786,6 +810,23 @@ namespace vuaot::live
 				{
 					std::snprintf(buf, sizeof(buf), "\n  persist rejected: %s = %llu",
 						vuaot::persist::ParseResultName(static_cast<vuaot::persist::ParseResult>(i)), (unsigned long long)s.planRejectedBy[i]);
+					out += buf;
+				}
+		}
+		if (s.aotPrograms || s.aotNoCode || s.aotRejectedBy[kAotNoCode] || s.aotRejectedBy[kAotSticky] || s.aotRejectedBy[kAotAddress] ||
+			s.aotRejectedBy[kAotShape] || s.aotRejectedBy[kAotCacheRun] || s.aotRejectedBy[kAotSpace])
+		{
+			std::snprintf(buf, sizeof(buf),
+				"\n  installed: programs=%llu records=%llu regions=%llu bytes=%llu roots_to_plan=%llu saved_without_code=%llu install_ins=%llu",
+				(unsigned long long)s.aotPrograms, (unsigned long long)s.aotRecords, (unsigned long long)s.aotRegions,
+				(unsigned long long)s.aotBytes, (unsigned long long)s.aotRootsToPlan, (unsigned long long)s.aotNoCode,
+				(unsigned long long)s.installIns);
+			out += buf;
+			for (u32 i = 1; i < kAotRejects; i++)
+				if (s.aotRejectedBy[i])
+				{
+					std::snprintf(buf, sizeof(buf), "\n  install refused: %s = %llu", AotRejectName(static_cast<AotReject>(i)),
+						(unsigned long long)s.aotRejectedBy[i]);
 					out += buf;
 				}
 		}
@@ -1377,6 +1418,9 @@ static void vuAotCollect(VuAotJob& j)
 // The saved plan (VU1 thread): persistence-design.md, the plan half
 //------------------------------------------------------------------
 
+static bool vuAotTryInstall(microVU& mVU, microProgram& prog, VuAotProgramState& st, vuaot::persist::File& f);
+static void vuAotSubmitPlanRoots(microVU& mVU, microProgram& prog, VuAotProgramState& st);
+
 // A program saves its plan once it has gone this many runs without a publication (the re-tier
 // check interval), or at the next reset or close.
 static constexpr u32 kSaveQuietRuns = vuaot::live::kRetierCheckMask + 1;
@@ -1384,6 +1428,25 @@ static constexpr u32 kSaveQuietRuns = vuaot::live::kRetierCheckMask + 1;
 static bool vuAotSidecarsOn(const microProgram& prog)
 {
 	return prog.contentHashValid && mVUProgCache::SidecarsEnabled(1);
+}
+
+// The struct offsets and sizes region code bakes in as immediates (persistence-design.md 2.1): saved code
+// from a build whose layout differs is refused even if the build id did not change.
+static u32 vuAotLayoutHash()
+{
+	static const u32 hash = [] {
+		const vuaot::MvuEmitEnv e = mVUbuildEmitEnv(microVU1);
+		const s64 words[] = {e.offDivFlag, e.offVIbackup, e.offVIxgkick, e.offBranch, e.offNeonBackup, e.offCycles, e.offProgBails,
+			static_cast<s64>(offsetof(VURegs, VI)), static_cast<s64>(offsetof(VURegs, pending_q)),
+			static_cast<s64>(offsetof(VURegs, pending_p)), static_cast<s64>(offsetof(VURegs, start_pc)),
+			static_cast<s64>(offsetof(mVU_Globals, minvals)), static_cast<s64>(offsetof(mVU_Globals, maxvals)),
+			static_cast<s64>(sizeof(microRegInfo)), static_cast<s64>(offsetof(microBlock, pState)),
+			static_cast<s64>(offsetof(microBlock, jumpCache)), static_cast<s64>(sizeof(microJumpCache)),
+			static_cast<s64>(offsetof(microJumpCache, prog)), static_cast<s64>(offsetof(microJumpCache, hostEntry)),
+			static_cast<s64>(offsetof(VuAotWBlock, pState)), static_cast<s64>(sizeof(VURegs))};
+		return static_cast<u32>(XXH3_64bits(words, sizeof(words)));
+	}();
+	return hash;
 }
 
 static vuaot::persist::Identity vuAotSidecarIdentity(const microProgram& prog)
@@ -1397,11 +1460,13 @@ static vuaot::persist::Identity vuAotSidecarIdentity(const microProgram& prog)
 	id.sentinelHi = microVU1.optionsSentinel.high64;
 	mVUPersist::GetBuildId(id.buildLo, id.buildHi);
 	id.mvuAbi = kMvuCompilerAbiVersion;
+	id.layoutHash = vuAotLayoutHash();
 	return id;
 }
 
-// A published job's plan joins its program's list (a generation starts the list again).
-static void vuAotRecordPublished(microProgram& prog, const VuAotJob& j)
+// A published job's record joins its program's list (a generation starts the list again): its plan, and its
+// code when the worker could describe every address in it.
+static void vuAotRecordPublished(microProgram& prog, VuAotJob& j)
 {
 	VuAotProgramState* const st = prog.vuaot;
 	if (!st || !vuAotSidecarsOn(prog))
@@ -1416,6 +1481,16 @@ static void vuAotRecordPublished(microProgram& prog, const VuAotJob& j)
 	r->pc = j.pc;
 	std::memcpy(r->key, &j.key, sizeof(j.key));
 	r->SetReadSet(j.readMask.data(), j.micro.get());
+	if (j.accepted && j.wantRecord)
+	{
+		if (j.notPersistable.empty() && !j.recordCode.code.empty())
+		{
+			r->flags |= vuaot::persist::kHasCode;
+			r->code = std::move(j.recordCode);
+		}
+		else
+			s_vuaot.stats.aotNoCode++;
+	}
 	st->published.push_back(std::move(r));
 	st->dirty = true;
 	st->publishRuns = vuAotTotalRuns(prog);
@@ -1518,12 +1593,22 @@ void mVUvuAotOnProgramReady(microVU& mVU, microProgram& prog)
 	st->loadedChecksum = XXH3_64bits(bytes.data(), bytes.size());
 	st->fromPlan = true;
 	for (size_t i = 1; i < f.records.size(); i++)
-	{
-		if (f.records[i].MatchesMicro(mVU.regs().Micro))
-			st->planRoots.push_back(std::move(f.records[i]));
-		else
+		if (!f.records[i].MatchesMicro(mVU.regs().Micro))
+		{
 			s_vuaot.stats.planRootsStale++;
-	}
+			f.records[i].kind = 0xff; // (dropped)
+		}
+
+	// The saved code, when the generation's can go in: no compile, the regions run from the first dispatch.
+	if (vuAotTryInstall(mVU, prog, *st, f))
+		return;
+
+	for (size_t i = 1; i < f.records.size(); i++)
+		if (f.records[i].kind == vuaot::persist::kRoot)
+		{
+			f.records[i].DropCode();
+			st->planRoots.push_back(std::move(f.records[i]));
+		}
 
 	auto j = vuAotMakeJob(mVU, prog, VuAotJob::Generation, gen.pc, gen.key);
 	j->viaJump = (gen.flags & vuaot::persist::kViaJump) != 0;
@@ -1695,6 +1780,21 @@ static void vuAotPatchBranch(u8* at, const void* to, std::map<const void*, const
 	pxAssertRel(vuaot::bg::PatchRel26(insn, at, it->second), "vu-aot: a region branch out of reach of its veneer");
 }
 
+// What a stub placeholder stands for, in the process that places the code.
+static const void* vuAotStubTarget(const vuaot::MvuEmitEnv& e, u32 id)
+{
+	switch (id)
+	{
+		case VuAotJob::kPhBailTarget: return reinterpret_cast<const void*>(e.bailTarget);
+		case VuAotJob::kPhClearLpState: return e.clearLpState;
+		case VuAotJob::kPhEndFlagsB: return e.endFlagsB;
+		case VuAotJob::kPhExitEBit: return e.exitEBit;
+		case VuAotJob::kPhXgkick: return e.xgkickFn;
+		case VuAotJob::kPhCycleBreak: return e.cycleBreak;
+		default: return nullptr;
+	}
+}
+
 // A region of `prog` is in place: the first one of the program counts how long it ran on microVU's code
 // before it (of any job).
 static void vuAotNoteRegionPlaced(microVU& mVU, const microProgram& prog)
@@ -1729,6 +1829,7 @@ static void vuAotPlace(microVU& mVU, VuAotJob& j, microBlock* rootReal)
 	if (j.stickyDropped)
 		s_trip.dropLive.store(true, std::memory_order_release);
 	u8* const base = armGetCurrentCodePointer();
+	s_vuAotLastPlaced = static_cast<size_t>(base - mVU.cache);
 	if (rootReal)
 		pxAssertRel(base == rootReal->hostEntry, "vu-aot: a region placed away from its root's entry");
 	{
@@ -1752,19 +1853,8 @@ static void vuAotPlace(microVU& mVU, VuAotJob& j, microBlock* rootReal)
 
 	std::vector<const void*> target(j.ph.size(), nullptr);
 	for (size_t id = 0; id < j.ph.size(); id++)
-	{
-		if (j.ph[id].first != VuAotJob::PhStub)
-			continue;
-		switch (j.ph[id].second)
-		{
-			case VuAotJob::kPhBailTarget: target[id] = reinterpret_cast<const void*>(j.env.bailTarget); break;
-			case VuAotJob::kPhClearLpState: target[id] = j.env.clearLpState; break;
-			case VuAotJob::kPhEndFlagsB: target[id] = j.env.endFlagsB; break;
-			case VuAotJob::kPhExitEBit: target[id] = j.env.exitEBit; break;
-			case VuAotJob::kPhXgkick: target[id] = j.env.xgkickFn; break;
-			case VuAotJob::kPhCycleBreak: target[id] = j.env.cycleBreak; break;
-		}
-	}
+		if (j.ph[id].first == VuAotJob::PhStub)
+			target[id] = vuAotStubTarget(j.env, j.ph[id].second);
 	// microVU's dispatch for the JR/JALR nodes, then the exits, compiled now
 	// in the order the region met them (as the synchronous tier compiled them
 	// after the region).
@@ -1843,6 +1933,367 @@ static u32 vuAotSetAside(microVU& mVU, microProgram& prog, VuAotProgramState& st
 	mVU.resumeEntry = nullptr;
 	mVU.resumeBlock = nullptr;
 	return setAside;
+}
+
+//------------------------------------------------------------------
+// Installing saved region code (VU1 thread): persistence-design.md, the install half
+//------------------------------------------------------------------
+
+const char* vuaot::live::AotRejectName(AotReject r)
+{
+	switch (r)
+	{
+		case kAotOk: return "ok";
+		case kAotNoCode: return "plan only";
+		case kAotSticky: return "dropped the sticky byte, tripwire set";
+		case kAotAddress: return "address outside this process's module or arena";
+		case kAotShape: return "operand of the wrong shape";
+		case kAotCacheRun: return "code-cache address too wide for its run";
+		case kAotSpace: return "no room in the code cache";
+		default: return "?";
+	}
+}
+
+// The MOVZ + MOVK x (width-1) run a fixup names, on one 64-bit register.
+static bool vuAotMovRunShape(const u32* insn, u32 width)
+{
+	if ((insn[0] & 0xFFE00000u) != 0xD2800000u)
+		return false;
+	const u32 rd = insn[0] & 31;
+	for (u32 k = 1; k < width; k++)
+		if ((insn[k] & 0xFFE0001Fu) != (0xF2800000u | (k << 21) | rd))
+			return false;
+	return true;
+}
+
+static void vuAotPatchMovRun(u8* at, u32 width, u64 value)
+{
+	u32* const insn = reinterpret_cast<u32*>(armGetWritableCodePtr(at));
+	pxAssertRel(vuAotMovRunShape(insn, width) && armMovRunWidth(value) <= width, "vu-aot: a saved run does not take its address");
+	for (u32 k = 0; k < width; k++)
+		insn[k] = (insn[k] & ~(0xFFFFu << 5)) | (static_cast<u32>((value >> (16 * k)) & 0xFFFFu) << 5);
+}
+
+// The address an image or data-arena fixup stands for in this process, or null.
+static const void* vuAotResolveRegion(const vuaot::persist::Fixup& f)
+{
+	const u8 region = f.target == vuaot::persist::kTargetImage ? mVUPersist::kTargetImage : mVUPersist::kTargetData;
+	const void* addr = reinterpret_cast<const void*>(mVUPersist::RegionBase(region) + static_cast<u64>(f.value));
+	return mVUPersist::RegionOf(addr) == region ? addr : nullptr;
+}
+
+// Whether a record's code can go in, in this process, under the live tripwire: every operand where its fixup
+// says and of that shape, every image and arena address inside this process's, wide enough for its run, every
+// stub known. Nothing is written. (The read set is checked by the caller; the parser has checked the shape of
+// the tables.)
+static vuaot::live::AotReject vuAotCheckRecord(microVU& mVU, const vuaot::persist::Record& r, const vuaot::MvuEmitEnv& env)
+{
+	namespace ps = vuaot::persist;
+	if (!r.HasCode())
+		return vuaot::live::kAotNoCode;
+	// A region that dropped the sticky STATUS byte runs only while no sticky reader is known (section 9ad): the
+	// image scan has run before this (mVUvuAotOnNewProgram), so a reader in it has set the tripwire.
+	if ((r.flags & ps::kStickyDropped) && s_trip.tripped.load(std::memory_order_acquire))
+		return vuaot::live::kAotSticky;
+	const ps::RegionCode& c = r.code;
+	std::vector<u32> words(c.code.size() / 4);
+	std::memcpy(words.data(), c.code.data(), words.size() * 4);
+	const u8* const cacheLo = mVU.cache;
+	const u8* const cacheHi = mVU.prog.x86end + (mVUcacheSafeZone * _1mb);
+	const u32 cacheWidth = std::max(armMovRunWidth(reinterpret_cast<u64>(cacheLo)), armMovRunWidth(reinterpret_cast<u64>(cacheHi - 1)));
+	for (const ps::Fixup& f : c.fixups)
+	{
+		const u32* insn = words.data() + f.offset / 4;
+		if (f.form == ps::kFormMovRun && !vuAotMovRunShape(insn, f.width))
+			return vuaot::live::kAotShape;
+		if (f.form == ps::kFormRel26 && (*insn & 0x7C000000u) != 0x14000000u)
+			return vuaot::live::kAotShape;
+		switch (f.target)
+		{
+			case ps::kTargetPlaceholder:
+			{
+				const ps::Placeholder& ph = c.ph[f.index];
+				if (ph.kind == ps::kPhStub && (ph.index >= VuAotJob::kPhStubs || !vuAotStubTarget(env, ph.index)))
+					return vuaot::live::kAotShape;
+				break;
+			}
+			case ps::kTargetImage:
+			case ps::kTargetData:
+			{
+				const void* addr = vuAotResolveRegion(f);
+				if (!addr || (f.form == ps::kFormMovRun && armMovRunWidth(reinterpret_cast<u64>(addr)) > f.width))
+					return vuaot::live::kAotAddress;
+				break;
+			}
+			case ps::kTargetBlockRef:
+				if (cacheWidth > f.width)
+					return vuaot::live::kAotCacheRun;
+				break;
+			default:
+				break;
+		}
+	}
+	return vuaot::live::kAotOk;
+}
+
+// The entry of the block of `prog`'s graph whose key is exactly `key`, else the one microVU finds or compiles
+// for it (the region linked to that exact block in the session that saved it).
+static void* vuAotBlockRefEntry(microVU& mVU, microProgram& prog, u32 pc, const u8* key)
+{
+	void* entry = nullptr;
+	if (microBlockManager* m = prog.block[pc / 8])
+		m->forEachBlock([&](microBlock& b) {
+			if (!entry && b.hostEntry && std::memcmp(&b.pState, key, sizeof(microRegInfo)) == 0)
+				entry = b.hostEntry;
+		});
+	if (entry)
+		return entry;
+	alignas(16) microRegInfo k;
+	std::memcpy(&k, key, sizeof(k));
+	return mVUblockFetch(mVU, pc, reinterpret_cast<uptr>(&k));
+}
+
+// Puts `recs` (the generation first, then roots, in the order they were published) in place for `prog`, which
+// mVUsearchProg has just created or hydrated and nothing names yet (no quick slot, no jump cache, no code).
+// The program's microVU graph (from its payload) is set aside, as a generation's publication does; every
+// record's code is copied in and its nodes registered; then, with every node of every record in the graph,
+// each record is linked: its jump tails and exits compiled by microVU (or found among the nodes), its links to
+// earlier records' nodes and to the graph's blocks looked up, every placeholder, image, arena, program and
+// handle operand patched. Nothing runs between the copy and the last patch.
+static void vuAotInstall(microVU& mVU, microProgram& prog, VuAotProgramState& st,
+	const std::vector<std::shared_ptr<const vuaot::persist::Record>>& recs)
+{
+	namespace ps = vuaot::persist;
+	const u64 ins0 = vuAotReadIns();
+	const microRegInfo savedLp = mVU.prog.lpState;
+	pxAssert(mVU.prog.cur == &prog);
+	for (u32 i = 0; i < mVU.progSize / 2; i++)
+		pxAssertRel(mVU.prog.quick[i].prog != &prog, "vu-aot: an install into a program a quick slot already holds");
+
+	u32 setAside = 0;
+	for (u32 i = 0; i < mProgSize / 2; i++)
+	{
+		if (!prog.block[i])
+			continue;
+		prog.block[i]->forEachBlock([&](microBlock&) { setAside++; });
+		st.graveyard.push_back(prog.block[i]);
+		prog.block[i] = nullptr;
+	}
+	s_vuaot.stats.blocksSetAside += setAside;
+	st.gen = 1;
+	st.runsAtTier = vuAotTotalRuns(prog);
+	st.checkBlock = vuAotTotalRuns(prog) >> kCheckShift;
+	st.missesSeen = s_vuaot.jumpMisses;
+	st.tiers++;
+	if (st.tiers > vuaot::live::kMaxRetiers)
+		st.settled = true;
+	// What the program saves from now on: these records, then whatever is published into this generation.
+	st.published = recs;
+	st.dirty = false;
+	st.publishRuns = vuAotTotalRuns(prog);
+
+	const bool wasOpen = armAsm != nullptr;
+	if (wasOpen)
+		mVUcloseCodeCache(mVU);
+	mVUopenCodeCache(mVU);
+
+	struct Placed
+	{
+		u8* base = nullptr;
+		std::vector<microBlock*> real;
+		std::vector<VuAotWBlock*> handle;
+	};
+	std::vector<Placed> placed(recs.size());
+	for (size_t ri = 0; ri < recs.size(); ri++)
+	{
+		const ps::Record& r = *recs[ri];
+		if (!r.HasCode())
+			continue;
+		const ps::RegionCode& c = r.code;
+		if (r.flags & ps::kStickyDropped)
+			s_trip.dropLive.store(true, std::memory_order_release);
+		Placed& p = placed[ri];
+		p.base = armGetCurrentCodePointer();
+		s_vuAotLastPlaced = static_cast<size_t>(p.base - mVU.cache);
+		{
+			vixl::CodeBufferCheckScope scope(armAsm, c.code.size(), vixl::CodeBufferCheckScope::kReserveBufferSpace,
+				vixl::CodeBufferCheckScope::kNoAssert);
+			armAsm->GetBuffer()->EmitData(c.code.data(), c.code.size());
+		}
+		for (const ps::Fixup& f : c.fixups)
+			if (f.target == ps::kTargetIntra)
+				vuAotPatchMovRun(p.base + f.offset, 4, reinterpret_cast<u64>(p.base + f.value));
+		for (const ps::CodeNode& n : c.nodes)
+		{
+			auto w = std::make_unique<VuAotWBlock>();
+			std::memcpy(&w->pState, c.keys[n.key].data(), sizeof(microRegInfo));
+			w->pc = n.pc;
+			w->hasEntry = true;
+			w->entryOff = n.entryOff;
+			w->real = vuAotRegisterNode(mVU, n.pc, w->pState, p.base + n.entryOff, nullptr);
+			p.real.push_back(w->real);
+			p.handle.push_back(w.get());
+			s_vuaot.handles.push_back(std::move(w));
+		}
+		for (const ps::CodeRange& rg : c.ranges)
+			vuAotAddRange(1, rg.start, rg.last);
+		s_vuaot.stats.aotRecords++;
+		s_vuaot.stats.aotRegions += c.regions;
+		s_vuaot.stats.aotBytes += c.code.size();
+	}
+
+	const vuaot::MvuEmitEnv env = mVUbuildEmitEnv(mVU);
+	for (size_t ri = 0; ri < recs.size(); ri++)
+	{
+		const ps::Record& r = *recs[ri];
+		if (!r.HasCode())
+			continue;
+		const ps::RegionCode& c = r.code;
+		Placed& p = placed[ri];
+		// Placeholders, in vuAotPlace's order: stubs, jump tails, exits, earlier records' nodes.
+		std::vector<const void*> target(c.ph.size(), nullptr);
+		for (size_t id = 0; id < c.ph.size(); id++)
+			if (c.ph[id].kind == ps::kPhStub)
+				target[id] = vuAotStubTarget(env, c.ph[id].index);
+		for (size_t id = 0; id < c.ph.size(); id++)
+			if (c.ph[id].kind == ps::kPhTail)
+			{
+				const ps::CodeTail& t = c.tails[c.ph[id].index];
+				target[id] = armGetCurrentCodePointer();
+				vuAotEmitJumpTail(1, p.real[t.node], c.keys[t.key].data());
+			}
+		for (size_t id = 0; id < c.ph.size(); id++)
+			if (c.ph[id].kind == ps::kPhExit)
+			{
+				const ps::BlockAt& x = c.exits[c.ph[id].index];
+				alignas(16) microRegInfo k;
+				std::memcpy(&k, c.keys[x.key].data(), sizeof(k));
+				target[id] = mVUblockFetch(mVU, x.pc, reinterpret_cast<uptr>(&k));
+			}
+		for (size_t id = 0; id < c.ph.size(); id++)
+			if (c.ph[id].kind == ps::kPhPending)
+			{
+				const ps::BlockAt& x = c.pending[c.ph[id].index];
+				alignas(16) microRegInfo k;
+				std::memcpy(&k, c.keys[x.key].data(), sizeof(k));
+				target[id] = mVUblockFetch(mVU, x.pc, reinterpret_cast<uptr>(&k));
+			}
+		std::vector<void*> refs(c.blockRefs.size(), nullptr);
+		for (size_t i = 0; i < c.blockRefs.size(); i++)
+			refs[i] = vuAotBlockRefEntry(mVU, prog, c.blockRefs[i].pc, c.keys[c.blockRefs[i].key].data());
+
+		std::map<const void*, const u8*> veneers;
+		for (const ps::Fixup& f : c.fixups)
+		{
+			u8* const at = p.base + f.offset;
+			const void* to = nullptr;
+			switch (f.target)
+			{
+				case ps::kTargetIntra: continue; // (done at the copy)
+				case ps::kTargetPlaceholder: to = target[f.index]; break;
+				case ps::kTargetImage:
+				case ps::kTargetData: to = vuAotResolveRegion(f); break;
+				case ps::kTargetBlockRef: to = refs[f.index]; break;
+				case ps::kTargetProgram: to = &prog; break;
+				case ps::kTargetNodeHandle: to = p.handle[f.index]; break;
+			}
+			pxAssertRel(to, "vu-aot: a saved region operand with no target");
+			if (f.form == ps::kFormMovRun)
+				vuAotPatchMovRun(at, f.width, reinterpret_cast<u64>(to));
+			else if (f.form == ps::kFormRel26)
+				vuAotPatchBranch(at, to, veneers);
+			else
+			{
+				const u64 v = reinterpret_cast<u64>(to);
+				std::memcpy(armGetWritableCodePtr(at), &v, sizeof(v));
+			}
+		}
+	}
+
+	mVUcloseCodeCache(mVU);
+	if (wasOpen)
+		mVUopenCodeCache(mVU);
+	// (the compiles above leave their keys in the dispatcher's carried state)
+	mVU.prog.lpState = savedLp;
+	s_vuaot.stats.aotPrograms++;
+	vuAotNoteRegionPlaced(mVU, prog);
+	s_vuaot.stats.installIns += vuAotReadIns() - ins0;
+	DevCon.WriteLn(Color_StrongBlue, "vu-aot: prog[%03d] installed %zu saved records (%u microVU blocks set aside)", prog.idx, recs.size(), setAside);
+}
+
+// A program created or hydrated with its sidecar loaded and its generation's read set matching micro memory:
+// installs the saved code when the generation's record can go in (its root records that cannot become plans,
+// sent to the worker once the rest is in). Returns false, with nothing done, when the generation's cannot:
+// the caller sends the plans instead. Records whose read set no longer matches are marked dropped by the
+// caller (kind 0xff).
+static bool vuAotTryInstall(microVU& mVU, microProgram& prog, VuAotProgramState& st, vuaot::persist::File& f)
+{
+	namespace ps = vuaot::persist;
+	if (!s_vuAotInstall)
+		return false;
+	const vuaot::MvuEmitEnv env = mVUbuildEmitEnv(mVU);
+	const ps::Record& gen = f.records.front();
+	// A generation the builder declined placed no code (its publication set the graph aside); its roots may have.
+	const bool genDeclined = !(gen.flags & ps::kAccepted);
+	if (!genDeclined)
+	{
+		const vuaot::live::AotReject why = vuAotCheckRecord(mVU, gen, env);
+		if (why != vuaot::live::kAotOk)
+		{
+			s_vuaot.stats.aotRejectedBy[why]++;
+			return false;
+		}
+	}
+	std::vector<size_t> install, plan;
+	std::vector<vuaot::live::AotReject> whys;
+	size_t bytes = gen.code.code.size();
+	for (size_t i = 1; i < f.records.size(); i++)
+	{
+		const ps::Record& r = f.records[i];
+		if (r.kind != ps::kRoot)
+			continue;
+		const vuaot::live::AotReject why = vuAotCheckRecord(mVU, r, env);
+		if (why == vuaot::live::kAotOk)
+		{
+			install.push_back(i);
+			bytes += r.code.code.size();
+		}
+		else
+		{
+			plan.push_back(i);
+			whys.push_back(why);
+		}
+	}
+	// (nothing to place: the plan does as well)
+	if (genDeclined && install.empty())
+		return false;
+	// Room for every record, its exits, jump tails and veneers, as a compile session may use it.
+	const u8* const limit = mVU.prog.x86end + (mVUcacheSafeZone * _1mb);
+	if (armGetCurrentCodePointer() + bytes + (2u << 20) >= limit)
+	{
+		s_vuaot.stats.aotRejectedBy[vuaot::live::kAotSpace]++;
+		return false;
+	}
+	for (vuaot::live::AotReject why : whys)
+		s_vuaot.stats.aotRejectedBy[why]++;
+	std::vector<std::shared_ptr<const ps::Record>> recs;
+	recs.push_back(std::make_shared<const ps::Record>(std::move(f.records.front())));
+	for (size_t i : install)
+		recs.push_back(std::make_shared<const ps::Record>(std::move(f.records[i])));
+	std::vector<ps::Record> toPlan;
+	for (size_t i : plan)
+	{
+		f.records[i].DropCode();
+		toPlan.push_back(std::move(f.records[i]));
+	}
+	vuAotInstall(mVU, prog, st, recs);
+	s_vuaot.stats.aotRootsToPlan += toPlan.size();
+	if (!toPlan.empty())
+	{
+		st.planRoots = std::move(toPlan);
+		vuAotSubmitPlanRoots(mVU, prog, st);
+	}
+	return true;
 }
 
 // A generation: the program's graph is set aside and its root compiled again;

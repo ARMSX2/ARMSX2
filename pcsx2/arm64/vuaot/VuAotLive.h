@@ -189,7 +189,32 @@ namespace vuaot
 			// subset whose tier-up came from a loaded sidecar.
 			u64 firstRegions = 0, firstRegionRuns = 0, firstRegionDispatches = 0, firstRegionCycles = 0;
 			u64 planFirstRegions = 0, planFirstRegionRuns = 0, planFirstRegionDispatches = 0, planFirstRegionCycles = 0;
+
+			// Saved region code (persistence-design.md, the install half). A loaded sidecar whose generation
+			// record can be installed puts its records' code in place at load (aotPrograms programs,
+			// aotRecords records holding aotRegions regions and aotBytes bytes of code); a record that
+			// cannot is refused for the reason in aotRejectedBy (AotReject) and its plan goes to the worker.
+			// aotRootsToPlan: root records refused while their generation went in. aotNoCode: published
+			// jobs saved without their code (an address nothing can re-base). installIns:
+			// pcsx2-eerunner --count-vu1-ins only, the VU1 thread's instructions in installs.
+			u64 aotPrograms = 0, aotRecords = 0, aotRegions = 0, aotBytes = 0, aotRootsToPlan = 0, aotNoCode = 0;
+			u64 aotRejectedBy[8] = {};
+			u64 installIns = 0;
 		};
+
+		// Why a saved record's code was not installed (Stats::aotRejectedBy).
+		enum AotReject : u8
+		{
+			kAotOk = 0,
+			kAotNoCode,   // the record holds its plan only
+			kAotSticky,   // it dropped the sticky STATUS byte and the tripwire is set
+			kAotAddress,  // an address outside this process's module or data arena, or too wide for its run
+			kAotShape,    // an operand that is not the shape its fixup says, or an unknown stub
+			kAotCacheRun, // a code-cache address could be too wide for a run that links to a block
+			kAotSpace,    // no room in the code cache for the program's records
+			kAotRejects,
+		};
+		const char* AotRejectName(AotReject r);
 
 		// Whether the tier runs this session (EnableVUAot, VU1 recompiled, no
 		// gamefix vu-aot declines). Settled at init and at every reset.
@@ -258,6 +283,13 @@ namespace vuaot
 		constexpr int TripMask(int mutation) { return 1 << mutation; }
 #ifdef PCSX2_RECOMPILER_TESTS
 		void SetTripwireMutation(int mask);
+		// pcsx2-eerunner --vuaot-no-install: loaded sidecars are used as plans only (no saved code runs).
+		void SetInstallEnabled(bool on);
+		// The offset from VU1's code cache of the last region placed, by a publication or an install.
+		size_t LastPlacedOffset();
+		// Moves VU1's code-cache cursor on by `bytes` of BRK (a test that installs saved code wants it to
+		// land somewhere other than where it was made).
+		void TestPadCodeCache(u32 bytes);
 		// The record code (vuaot/VuAotPersist.h) of every job published since the last call, with why a
 		// job had none ("" when it has one), for jobs made while the program cache keeps sidecars.
 		struct RecordCodeSample

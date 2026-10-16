@@ -37,6 +37,11 @@
 #include <vector>
 
 #include <unistd.h>
+#ifdef __linux__
+#include <spawn.h>
+#include <sys/wait.h>
+extern char** environ;
+#endif
 
 // Test hook exported by pcsx2/arm64/microVU-arm64.cpp under PCSX2_RECOMPILER_TESTS (see
 // mvu_clear_occupied_tests): prog.quickOcc, the bitmap mVUclear walks, agrees with quick[].
@@ -1722,8 +1727,9 @@ TEST_F(VuAotCache, LoadedProgramsTierUpAndStayExact)
 						EXPECT_EQ(Diff(ref, Take(h)), "") << where << ": session two, the first entry again, run " << i;
 					}
 				const vuaot::live::Stats after = vuaot::live::GetStats();
-				EXPECT_GT(after.tierUps, before.tierUps) << where << ": the loaded program did not tier up";
-				EXPECT_GT(after.regions, before.regions) << where << ": no region was built for the loaded program";
+				// (filled by the tier, the program installs its saved regions instead: VuAotCache.Installed*)
+				EXPECT_GT(after.tierUps + after.aotPrograms, before.tierUps + before.aotPrograms) << where << ": the loaded program did not tier up";
+				EXPECT_GT(after.regions + after.aotRegions, before.regions + before.aotRegions) << where << ": no region for the loaded program";
 				EXPECT_GE(mVUPersist::GetStats(1).programsHydrated, 1u) << where;
 			}
 }
@@ -1827,6 +1833,7 @@ vuaot::persist::Identity ClaimedIdentity(const std::vector<u8>& b)
 	std::memcpy(&id.sentinelHi, b.data() + 56, 8);
 	std::memcpy(&id.buildLo, b.data() + 64, 8);
 	std::memcpy(&id.buildHi, b.data() + 72, 8);
+	std::memcpy(&id.layoutHash, b.data() + 28, 4);
 	return id;
 }
 
@@ -1852,6 +1859,14 @@ vuaot::live::Stats PlanDelta(const vuaot::live::Stats& a, const vuaot::live::Sta
 	d.sidecarsQueued -= a.sidecarsQueued;
 	return d;
 }
+
+// A loaded sidecar is used as a plan only (pcsx2-eerunner --vuaot-no-install): the plan tests below test the
+// path a sidecar whose code cannot be installed takes.
+struct PlanOnly
+{
+	PlanOnly() { vuaot::live::SetInstallEnabled(false); }
+	~PlanOnly() { vuaot::live::SetInstallEnabled(true); }
+};
 
 // Two counted loops, the second entered at its own PC: after the tier-up, a dispatch there is a root
 // whose region the builder accepts (it has a loop). The first loop's end reads the sticky bits, so the
@@ -1906,6 +1921,7 @@ size_t FillPlan(const std::string& root, bool sync, bool fh, const Result& ref, 
 // Nothing about the saved plan is code, so nothing it holds can run.
 TEST_F(VuAotCache, SavedPlanTiersUpAtTheFirstRun)
 {
+	const PlanOnly planOnly;
 	for (bool sync : {true, false})
 		for (bool fh : {true, false})
 		{
@@ -1964,6 +1980,7 @@ TEST_F(VuAotCache, SavedPlanTiersUpAtTheFirstRun)
 // has the generation alone.)
 TEST_F(VuAotCache, ResetBeforeTheRootsArriveKeepsThePlan)
 {
+	const PlanOnly planOnly;
 	const bool fh = true;
 	const Result ref = Reference(TwoLoopProg(), SetupLoop, fh);
 	const Result ref2 = Reference(TwoLoopProg(), SetupLoop, fh, kLoopEntry2);
@@ -2140,6 +2157,7 @@ TEST_F(VuAotCache, GenerationPublishedAtAnotherProgramsSlowPathLeavesItsBlocksRe
 // for B; then C, which no plan covers, compiles as a synchronous root.
 TEST_F(VuAotCache, SynchronousRootJobLeavesPlanRootsToTheirPublication)
 {
+	const PlanOnly planOnly;
 	constexpr u32 kEntryC = 128 * 8;
 	std::vector<VuOp> prog = TwoLoopProg();
 	while (prog.size() < kEntryC / 8)
@@ -2199,6 +2217,7 @@ TEST_F(VuAotCache, SynchronousRootJobLeavesPlanRootsToTheirPublication)
 // program does, and every run equals microVU's.
 TEST_F(VuAotCache, DamagedOrStaleSidecarIsRefused)
 {
+	const PlanOnly planOnly;
 	const bool fh = true;
 	const Result ref = Reference(TwoLoopProg(), SetupLoop, fh);
 	const Result ref2 = Reference(TwoLoopProg(), SetupLoop, fh, kLoopEntry2);
@@ -2493,6 +2512,381 @@ TEST_F(VuAotCache, WorkerRecordsEveryAddressItsRegionsHold)
 		counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], counts[6]);
 }
 
+namespace
+{
+struct InstallCase
+{
+	const char* name;
+	std::vector<VuOp> prog;
+	::recompiler_tests::Setup setup;
+	std::vector<u32> entries;
+	std::vector<u32> budgets; // cycle budgets that stop a run inside its regions and still finish in the harness's resumes
+};
+
+std::vector<InstallCase> InstallCases()
+{
+	return {
+		{"two loops", TwoLoopProg(), SetupLoop, {0, kLoopEntry2}, {61, 97}},
+		{"jump loop", JumpLoop(), SetupJump, {0}, {61, 97, 193}},
+		{"loop into the first", LoopIntoTheFirst(), SetupLoop, {0, kLinkEntry}, {61, 97}},
+		{"kick loop", KickLoop(), SetupKick, {0}, {3, 5, 9}},
+	};
+}
+
+// The tier off: each entry's answer.
+std::vector<Result> References(const InstallCase& c, bool fh, u32 budget)
+{
+	const bool savedCache = EmuConfig.Cpu.Recompiler.EnableVUProgramCache;
+	EmuConfig.Cpu.Recompiler.EnableVUProgramCache = false;
+	std::vector<Result> out;
+	for (u32 e : c.entries)
+	{
+		LiveScope off(false, 4, fh);
+		VuTestHarness h(1);
+		Prepare(h, c.prog, c.setup, budget);
+		h.SetStartPc(e);
+		h.RunNoDiff();
+		out.push_back(Take(h));
+	}
+	EmuConfig.Cpu.Recompiler.EnableVUProgramCache = savedCache;
+	return out;
+}
+
+// Session one of an install test: the tier on, each entry run ten times (so the program tiers up and every
+// entry's root is built), then the reset that saves. Returns the offset of the last region placed.
+size_t FillInstall(const InstallCase& c, bool sync, bool fh, const std::vector<Result>& ref, std::string& problems)
+{
+	LiveScope s1(true, 4, fh, vuaot::live::kJumpTierUpRuns, sync);
+	VuTestHarness h(1);
+	Prepare(h, c.prog, c.setup, 0);
+	h.RunNoDiff();
+	for (size_t k = 0; k < c.entries.size(); k++)
+		for (int i = 0; i < 10; i++)
+		{
+			h.SetStartPc(c.entries[k]);
+			h.RunJitPreserveBlockCache();
+			if (const std::string d = Diff(ref[k], Take(h)); !d.empty())
+				problems += std::string("session one, entry ") + std::to_string(k) + ": " + d;
+			if (!sync)
+				vuaot::live::WaitWorkerIdle();
+		}
+	const size_t placed = vuaot::live::LastPlacedOffset();
+	RecompilerTestEnvironment::ResetVuBlockCache(1); // (the save)
+	mVUProgCache::FlushSidecars(1);
+	return placed;
+}
+
+vuaot::live::Stats AotDelta(const vuaot::live::Stats& a, const vuaot::live::Stats& b)
+{
+	vuaot::live::Stats d = PlanDelta(a, b);
+	d.aotPrograms -= a.aotPrograms;
+	d.aotRecords -= a.aotRecords;
+	d.aotRegions -= a.aotRegions;
+	d.aotBytes -= a.aotBytes;
+	d.aotRootsToPlan -= a.aotRootsToPlan;
+	d.aotNoCode -= a.aotNoCode;
+	for (int i = 0; i < 8; i++)
+		d.aotRejectedBy[i] -= a.aotRejectedBy[i];
+	d.firstRegions -= a.firstRegions;
+	d.firstRegionRuns -= a.firstRegionRuns;
+	d.bailsEntry -= a.bailsEntry;
+	d.bailsLoopHead -= a.bailsLoopHead;
+	d.bailCompiles -= a.bailCompiles;
+	return d;
+}
+
+// Session two: the program loads with its sidecar (after `pad` bytes of other code, so it lands elsewhere),
+// each entry runs `runs` times under `budget` and every run must equal the tier off's.
+struct InstallRun
+{
+	vuaot::live::Stats d;  // over the runs after the first (the program loaded again)
+	vuaot::live::Stats d0; // over both loads
+	size_t placed = 0;
+	std::string problems;
+};
+InstallRun LoadInstall(const InstallCase& c, bool sync, bool fh, const std::vector<Result>& ref, u32 budget, u32 pad, int runs = 4)
+{
+	InstallRun out;
+	NewProcess();
+	LiveScope s2(true, 1000000, fh, 1000000, sync);
+	const vuaot::live::Stats s0 = vuaot::live::GetStats();
+	VuTestHarness h(1);
+	Prepare(h, c.prog, c.setup, budget);
+	h.SetStartPc(c.entries[0]);
+	h.RunNoDiff(); // (loads the program in its JIT pass, then the reset drops it and saves it)
+	if (const std::string d = Diff(ref[0], Take(h)); !d.empty())
+		out.problems += "the first run: " + d;
+	mVUProgCache::FlushSidecars(1);
+	const vuaot::live::Stats s1 = vuaot::live::GetStats();
+	if (pad)
+		vuaot::live::TestPadCodeCache(pad);
+	for (size_t k = 0; k < c.entries.size(); k++)
+		for (int i = 0; i < runs; i++)
+		{
+			h.SetStartPc(c.entries[k]);
+			h.RunJitPreserveBlockCache();
+			if (const std::string d = Diff(ref[k], Take(h)); !d.empty())
+				out.problems += std::string("entry ") + std::to_string(k) + " run " + std::to_string(i) + ": " + d;
+			if (k == 0 && i == 0)
+				out.placed = vuaot::live::LastPlacedOffset();
+			if (!sync)
+				vuaot::live::WaitWorkerIdle();
+		}
+	out.d = AotDelta(s1, vuaot::live::GetStats());
+	out.d0 = AotDelta(s0, vuaot::live::GetStats());
+	return out;
+}
+} // namespace
+
+// A tiered program's regions are saved with their code, and the next session puts them in place as the
+// program loads: no generation job, no root job for a saved root, regions from the very first dispatch, and
+// every run equals the tier off's. The code lands at another offset of the code cache than where it was made,
+// so every relocation is exercised. (Mutations, run by hand: no program-word patch, no handle patch, block refs
+// left at the saved address, one record linked at a time; see compiler-design.md 9ap.)
+TEST_F(VuAotCache, InstalledRegionsRunFromTheFirstDispatch)
+{
+	for (bool sync : {true, false})
+		for (bool fh : {true, false})
+			for (const InstallCase& c : InstallCases())
+			{
+				const std::string where = std::string(c.name) + (sync ? " sync" : " background") + (fh ? " fh" : "");
+				const std::vector<Result> ref = References(c, fh, 0);
+				RecompilerTestEnvironment::ResetVuBlockCache(1);
+				NewProcess();
+				RecursiveRm(root_ + "/vu_jit");
+				std::string problems;
+				const size_t madeAt = FillInstall(c, sync, fh, ref, problems);
+				EXPECT_EQ(problems, "") << where;
+				ASSERT_EQ(FindSidecars(root_ + "/vu_jit").size(), 1u) << where;
+
+				const InstallRun r = LoadInstall(c, sync, fh, ref, 0, 4096 + 64);
+				EXPECT_EQ(r.problems, "") << where;
+				EXPECT_EQ(r.d.aotPrograms, 1u) << where << ": the program installed its saved regions";
+				EXPECT_GE(r.d.aotRecords, c.entries.size()) << where << ": a record per entry's region";
+				EXPECT_EQ(r.d.planGenJobs, 0u) << where;
+				EXPECT_EQ(r.d.jobsGen, 0u) << where << ": no generation was compiled";
+				EXPECT_EQ(r.d.tierUps, 0u) << where;
+				EXPECT_EQ(r.d.firstRegionRuns, 0u) << where << ": the regions were there before the first run";
+				for (int i = 1; i < vuaot::live::kAotRejects; i++)
+					EXPECT_EQ(r.d.aotRejectedBy[i], 0u) << where << ": refused " << vuaot::live::AotRejectName(static_cast<vuaot::live::AotReject>(i));
+				EXPECT_NE(r.placed, madeAt) << where << ": the code went in where it was made, which proves nothing about its fixups";
+				EXPECT_GE(mVUProgCache::GetStats(1).payloadHits, 1u) << where;
+			}
+}
+
+// The same under cycle budgets that stop the runs inside the regions: their bails read the program word, the
+// node handles and the bail slots of installed code, and compile microVU's code for the block they stop in.
+TEST_F(VuAotCache, InstalledRegionsBailUnderSmallBudgets)
+{
+	const bool sync = true;
+	for (bool fh : {true, false})
+		for (const InstallCase& c : InstallCases())
+			for (u32 budget : c.budgets)
+			{
+				const std::string where = std::string(c.name) + (fh ? " fh" : "") + " budget " + std::to_string(budget);
+				const std::vector<Result> ref = References(c, fh, budget);
+				RecompilerTestEnvironment::ResetVuBlockCache(1);
+				NewProcess();
+				RecursiveRm(root_ + "/vu_jit");
+				std::string problems;
+				FillInstall(c, sync, fh, References(c, fh, 0), problems);
+				EXPECT_EQ(problems, "") << where;
+				const InstallRun r = LoadInstall(c, sync, fh, ref, budget, 1024, 6);
+				EXPECT_EQ(r.problems, "") << where;
+				EXPECT_EQ(r.d.aotPrograms, 1u) << where;
+				EXPECT_GT(r.d.bailsEntry + r.d.bailsLoopHead, 0u) << where << ": no installed region bailed";
+			}
+}
+
+// A saved record the session cannot use is refused without anything going in: the program falls back to its
+// plan (the generation compiled on the worker at once) or, for a root, that root's plan, and every run equals
+// the tier off's. Cases: a word of the generation's read set changed (the whole file is stale), a root's word
+// changed (that root alone), a C helper's offset past the module, a block reference's run too short for this
+// process's code cache, a file from a build whose struct layout differs.
+TEST_F(VuAotCache, UnusableSavedCodeFallsBackToThePlan)
+{
+	const bool fh = true;
+	const InstallCase c = InstallCases()[2]; // loop into the first: a generation, and a root with a block reference
+	const std::vector<Result> ref = References(c, fh, 0);
+	RecompilerTestEnvironment::ResetVuBlockCache(1);
+	NewProcess();
+	RecursiveRm(root_ + "/vu_jit");
+	std::string problems;
+	FillInstall(c, true, fh, ref, problems);
+	ASSERT_EQ(problems, "");
+	const std::string path = FindSidecars(root_ + "/vu_jit").front();
+	const std::optional<std::vector<u8>> good = FileSystem::ReadBinaryFile(path.c_str());
+	ASSERT_TRUE(good.has_value());
+	{
+		vuaot::persist::File f;
+		ASSERT_EQ(vuaot::persist::Parse(good->data(), good->size(), ClaimedIdentity(*good), f), vuaot::persist::ParseResult::Ok);
+		ASSERT_GE(f.records.size(), 2u);
+		ASSERT_TRUE(f.records[0].HasCode() && f.records[1].HasCode());
+		bool ref = false;
+		for (const auto& fx : f.records[1].code.fixups)
+			ref |= fx.target == vuaot::persist::kTargetBlockRef;
+		ASSERT_TRUE(ref) << "the root links to a block of the graph";
+	}
+	enum Case
+	{
+		GenWord,
+		RootWord,
+		ImagePastModule,
+		NarrowBlockRef,
+		OtherLayout,
+	};
+	for (Case k : {GenWord, RootWord, ImagePastModule, NarrowBlockRef, OtherLayout})
+	{
+		std::vector<u8> bytes = *good;
+		vuaot::persist::File f;
+		ASSERT_EQ(vuaot::persist::Parse(bytes.data(), bytes.size(), ClaimedIdentity(bytes), f), vuaot::persist::ParseResult::Ok);
+		switch (k)
+		{
+			case GenWord: f.records[0].readValues[0] ^= 0x100; break;
+			case RootWord: f.records[1].readValues[0] ^= 0x100; break;
+			case ImagePastModule:
+				for (auto& fx : f.records[0].code.fixups)
+					if (fx.target == vuaot::persist::kTargetImage)
+						fx.value += s64(1) << 40;
+				break;
+			case NarrowBlockRef:
+				for (auto& fx : f.records[1].code.fixups)
+					if (fx.target == vuaot::persist::kTargetBlockRef)
+						fx.width = 1;
+				break;
+			case OtherLayout: f.id.layoutHash ^= 1; break;
+		}
+		bytes = vuaot::persist::Serialize(f);
+		ASSERT_TRUE(FileSystem::WriteBinaryFile(path.c_str(), bytes.data(), bytes.size()));
+		const std::string where = std::string("case ") + std::to_string(int(k));
+		const InstallRun r = LoadInstall(c, true, fh, ref, 0, 512);
+		EXPECT_EQ(r.problems, "") << where;
+		// (the first load meets the edited file; the reset after it saves a good one, which the second load installs)
+		const vuaot::live::Stats& d = r.d0;
+		switch (k)
+		{
+			case GenWord:
+				EXPECT_GE(d.planStale, 1u) << where << ": the generation's read set no longer matches";
+				EXPECT_EQ(d.planGenJobs, 0u) << where;
+				break;
+			case RootWord:
+				EXPECT_GE(d.planRootsStale, 1u) << where << ": the root whose word changed is dropped";
+				EXPECT_GE(d.aotPrograms, 1u) << where << ": the generation went in";
+				break;
+			case ImagePastModule:
+				EXPECT_GE(d.aotRejectedBy[vuaot::live::kAotAddress], 1u) << where;
+				EXPECT_GE(d.planGenJobs, 1u) << where << ": the plan took over";
+				EXPECT_GE(d.planPublishedGen, 1u) << where;
+				break;
+			case NarrowBlockRef:
+				EXPECT_GE(d.aotRejectedBy[vuaot::live::kAotCacheRun], 1u) << where;
+				EXPECT_GE(d.aotRootsToPlan, 1u) << where;
+				EXPECT_GE(d.planRootJobs, 1u) << where << ": the root's plan was sent";
+				break;
+			case OtherLayout:
+				EXPECT_GE(d.planRejectedBy[static_cast<int>(vuaot::persist::ParseResult::OtherLayout)], 1u) << where;
+				EXPECT_EQ(d.planGenJobs, 0u) << where;
+				break;
+		}
+		if (k != GenWord && k != OtherLayout)
+			EXPECT_EQ(r.d.aotPrograms, 1u) << where << ": the file the first load's session saved installs";
+		ASSERT_TRUE(FileSystem::WriteBinaryFile(path.c_str(), good->data(), good->size()));
+		RecompilerTestEnvironment::ResetVuBlockCache(1);
+		mVUProgCache::FlushSidecars(1);
+		ASSERT_TRUE(FileSystem::WriteBinaryFile(path.c_str(), good->data(), good->size()));
+	}
+}
+
+// Regions saved while the sticky drop was allowed are not installed into a session whose tripwire is set: the
+// generation's plan compiles exact regions instead, and every run equals microVU's, the sticky bits of STATUS
+// included. With the tripwire armed they install, and a trip after the load rebuilds them exact.
+TEST_F(VuAotCache, DroppedStickyRecordsStayOutOfATrippedSession)
+{
+	for (bool fh : {true, false})
+	{
+		InstallCase c{"sticky loop", StickyLoop(10), SetupSticky, {0}};
+		const std::vector<Result> ref = References(c, fh, 0);
+		RecompilerTestEnvironment::ResetVuBlockCache(1);
+		NewProcess();
+		RecursiveRm(root_ + "/vu_jit");
+		{
+			LiveScope s1(true, 4, fh);
+			const vuaot::live::Stats s0 = vuaot::live::GetStats();
+			VuTestHarness h(1);
+			Prepare(h, c.prog, c.setup, 0);
+			h.RunNoDiff();
+			for (int i = 0; i < 10; i++)
+				h.RunJitPreserveBlockCache();
+			ASSERT_GT(vuaot::live::GetStats().stickyDropped, s0.stickyDropped) << "fh " << fh << ": session one dropped the sticky bits";
+			RecompilerTestEnvironment::ResetVuBlockCache(1);
+			mVUProgCache::FlushSidecars(1);
+		}
+		// Tripped before the load: refused, exact.
+		{
+			NewProcess();
+			LiveScope s2(true, 1000000, fh, 1000000, true);
+			RecompilerTestEnvironment::ResetVuBlockCache(1); // (the tier takes the setting at a reset)
+			vuaot::live::TripStickyForTest();
+			ASSERT_TRUE(vuaot::live::StickyTripped());
+			const vuaot::live::Stats s0 = vuaot::live::GetStats();
+			VuTestHarness h(1);
+			Prepare(h, c.prog, c.setup, 0);
+			h.RunNoDiff();
+			EXPECT_EQ(Diff(ref[0], Take(h)), "") << "fh " << fh;
+			const vuaot::live::Stats d = AotDelta(s0, vuaot::live::GetStats());
+			EXPECT_EQ(d.aotPrograms, 0u) << "fh " << fh;
+			EXPECT_GE(d.aotRejectedBy[vuaot::live::kAotSticky], 1u) << "fh " << fh;
+			EXPECT_GE(d.planPublishedGen, 1u) << "fh " << fh << ": the plan compiled the exact regions";
+			// (the reset saved the exact regions over the dropped ones; the next load installs those)
+			mVUProgCache::FlushSidecars(1);
+			for (int i = 0; i < 6; i++)
+			{
+				h.RunJitPreserveBlockCache();
+				EXPECT_EQ(Diff(ref[0], Take(h)), "") << "fh " << fh << " run " << i << ": a dropped region ran in a tripped session";
+			}
+		}
+		RecompilerTestEnvironment::ResetVuBlockCache(1);
+		mVUProgCache::FlushSidecars(1);
+		NewProcess();
+		RecursiveRm(root_ + "/vu_jit");
+		NewProcess();
+		{
+			// refill with the drop (the tripped session saved exact regions over the dropped ones)
+			LiveScope s1(true, 4, fh);
+			VuTestHarness h(1);
+			Prepare(h, c.prog, c.setup, 0);
+			h.RunNoDiff();
+			for (int i = 0; i < 10; i++)
+				h.RunJitPreserveBlockCache();
+			RecompilerTestEnvironment::ResetVuBlockCache(1);
+			mVUProgCache::FlushSidecars(1);
+		}
+		// Armed: installed; then a trip, and from the next run on exactly microVU's.
+		{
+			NewProcess();
+			LiveScope s2(true, 1000000, fh, 1000000, true);
+			const vuaot::live::Stats s0 = vuaot::live::GetStats();
+			VuTestHarness h(1);
+			Prepare(h, c.prog, c.setup, 0);
+			h.RunNoDiff();
+			for (int i = 0; i < 4; i++)
+			{
+				h.RunJitPreserveBlockCache();
+				EXPECT_EQ(DiffExceptSticky(ref[0], Take(h)), "") << "fh " << fh << " run " << i;
+			}
+			const vuaot::live::Stats d = AotDelta(s0, vuaot::live::GetStats());
+			EXPECT_GE(d.aotPrograms, 1u) << "fh " << fh << ": armed, the dropped regions install";
+			vuaot::live::TripStickyForTest();
+			for (int i = 0; i < 6; i++)
+			{
+				h.RunJitPreserveBlockCache();
+				EXPECT_EQ(Diff(ref[0], Take(h)), "") << "fh " << fh << " after the trip, run " << i;
+			}
+			EXPECT_GE(vuaot::live::GetStats().stickyTripResets, s0.stickyTripResets + 1) << "fh " << fh;
+		}
+	}
+}
+
 // The jump cache fault of compiler-design.md 9ah, over a program loaded with its plan: the overlay a stub
 // JRs into is loaded from the cache, its generation comes from the plan, and its root plan (a second entry
 // the session never runs) is held in the worker, then published at the stub's JR slow path. Then a new
@@ -2501,6 +2895,7 @@ TEST_F(VuAotCache, WorkerRecordsEveryAddressItsRegionsHold)
 // slot.
 TEST_F(VuAotCache, LoadedOverlayRootPublishedAtAJumpLeavesNoUncheckedJumpCacheEntry)
 {
+	const PlanOnly planOnly;
 	for (bool fh : {true, false})
 	{
 		// session one: the overlay tiers up through the jump path; the second entry becomes a root
@@ -2604,6 +2999,189 @@ TEST_F(VuAotCache, LoadedOverlayRootPublishedAtAJumpLeavesNoUncheckedJumpCacheEn
 		EXPECT_GE(on.planRootJobs, 1u) << "flagHack=" << fh << ": the second entry's root plan was sent";
 		EXPECT_EQ(on.planPublishedRoot, on.planRootJobs) << "flagHack=" << fh << ": and published (one at the stub's JR)";
 	}
+}
+
+// The jump cache fault of compiler-design.md 9ah, over an overlay whose saved regions are installed: the stub's
+// JR loads the overlay from the cache and its generation and root go in at that slow path, before the jump cache
+// entry is filled (from the quick slot the search installs afterwards). Then a new routine is written over the
+// overlay and the stub jumps there: every run equals microVU alone.
+TEST_F(VuAotCache, InstalledOverlayLeavesNoUncheckedJumpCacheEntry)
+{
+	for (bool fh : {true, false})
+	{
+		RecompilerTestEnvironment::ResetVuBlockCache(1);
+		NewProcess();
+		RecursiveRm(root_ + "/vu_jit");
+		{
+			LiveScope s1(true, 1000000, fh, 5, /*sync=*/false);
+			VuTestHarness h(1);
+			SetupOverlay(h);
+			h.TrackMemWindow(0, 0x4000);
+			h.LoadProgram(StubOverlayAndSecondEntry());
+			h.RunNoDiff();
+			h.SetCycleBudget(1);
+			h.RunJitPreserveBlockCache();
+			h.SetCycleBudget(100000);
+			const u32 marker = 0x12345678;
+			std::memcpy(vuRegs[1].Micro + 0x3000, &marker, 4);
+			for (u32 i = 0; i < 10; i++)
+			{
+				CpuMicroVU1.Clear(kOverlayPair * 8, 0x100);
+				h.RunJitPreserveBlockCache();
+				vuaot::live::WaitWorkerIdle();
+			}
+			h.SetStartPc(kOverlayEntry2 * 8);
+			h.RunJitPreserveBlockCache();
+			vuaot::live::WaitWorkerIdle();
+			h.RunJitPreserveBlockCache();
+			h.SetStartPc(0);
+			CpuMicroVU1.Clear(kOverlayPair * 8, 0x100);
+			h.RunJitPreserveBlockCache();
+			RecompilerTestEnvironment::ResetVuBlockCache(1);
+			mVUProgCache::FlushSidecars(1);
+		}
+		ASSERT_GE(FindSidecars(root_ + "/vu_jit").size(), 1u) << "flagHack=" << fh;
+
+		const auto sequence = [&](bool on, vuaot::live::Stats& d) {
+			std::vector<Result> out;
+			NewProcess();
+			LiveScope scope(on, 1000000, fh, 1000000, /*sync=*/false);
+			const vuaot::live::Stats s0 = vuaot::live::GetStats();
+			VuTestHarness h(1);
+			SetupOverlay(h);
+			h.TrackMemWindow(0, 0x4000);
+			h.LoadProgram(StubOverlayAndSecondEntry());
+			h.RunNoDiff();
+			out.push_back(Take(h));
+			h.SetCycleBudget(1);
+			h.RunJitPreserveBlockCache();
+			out.push_back(Take(h));
+			h.SetCycleBudget(100000);
+			const u32 marker = 0x12345678;
+			std::memcpy(vuRegs[1].Micro + 0x3000, &marker, 4);
+			// The stub JRs into the overlay: it loads, and its saved regions go in at that slow path.
+			for (u32 i = 0; i < 3; i++)
+			{
+				CpuMicroVU1.Clear(kOverlayPair * 8, 0x100);
+				h.RunJitPreserveBlockCache();
+				out.push_back(Take(h));
+			}
+			// The stub up to its JR's block, then on into the JR slow path.
+			CpuMicroVU1.Clear(kOverlayPair * 8, 0x100);
+			h.SetCycleBudget(1);
+			h.RunJitPreserveBlockCache();
+			out.push_back(Take(h));
+			h.ContinueJit(100000, 4);
+			out.push_back(Take(h));
+			d = AotDelta(s0, vuaot::live::GetStats());
+			// A new routine where the overlay was; the stub jumps to it.
+			h.SetCycleBudget(100000);
+			WriteNewOverlay();
+			for (u32 i = 0; i < 3; i++)
+			{
+				h.RunJitPreserveBlockCache();
+				out.push_back(Take(h));
+			}
+			return out;
+		};
+		vuaot::live::Stats off{}, on{};
+		const std::vector<Result> ref = sequence(false, off);
+		const std::vector<Result> got = sequence(true, on);
+		ASSERT_EQ(ref.size(), got.size());
+		for (size_t i = 0; i < ref.size(); i++)
+			EXPECT_EQ(Diff(ref[i], got[i]), "") << "flagHack=" << fh << " run " << i;
+		EXPECT_GE(on.aotPrograms, 1u) << "flagHack=" << fh << ": the overlay installed its saved regions";
+		EXPECT_GE(on.aotRecords, 2u) << "flagHack=" << fh << ": its generation and the second entry's root";
+		EXPECT_EQ(on.jobsGen, 0u) << "flagHack=" << fh;
+	}
+}
+
+namespace
+{
+constexpr const char* kXprocDirEnv = "PCSX2_TEST_VUAOT_XPROC_DIR";
+} // namespace
+
+// The child half of the cross-process test: runs only when the parent names a cache directory, fills it with
+// every install case's program (flag hack on) and writes its module base next to it.
+TEST_F(VuAotCache, CrossProcessChildFill)
+{
+	const char* dir = std::getenv(kXprocDirEnv);
+	if (!dir)
+		GTEST_SKIP() << "runs as the child of InstallsRegionsFromAnotherProcess";
+	EmuFolders::Cache = dir;
+	NewProcess();
+	for (const InstallCase& c : InstallCases())
+	{
+		std::string problems;
+		FillInstall(c, true, true, References(c, true, 0), problems);
+		EXPECT_EQ(problems, "") << c.name;
+		NewProcess();
+	}
+	u64 imageBase = 0, dataBase = 0;
+	mVUPersist::TestGetRegionBases(imageBase, dataBase);
+	std::FILE* f = std::fopen((std::string(dir) + "/child-image-base").c_str(), "wb");
+	ASSERT_NE(f, nullptr);
+	std::fwrite(&imageBase, sizeof(imageBase), 1, f);
+	std::fclose(f);
+}
+
+// Saved regions made by another process (this binary re-executed: a fresh ASLR draw for the module, the heap
+// and the code cache) install here: no rejects, no generation compiled, every run equals the tier off's. The
+// image, data-arena, program, handle and block-reference operands all had to move.
+TEST_F(VuAotCache, InstallsRegionsFromAnotherProcess)
+{
+#ifndef __linux__
+	GTEST_SKIP() << "spawns this test binary through /proc/self/exe";
+#else
+	if (std::getenv(kXprocDirEnv))
+		GTEST_SKIP() << "already the child";
+	char exe[4096];
+	const ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+	ASSERT_GT(n, 0);
+	exe[n] = 0;
+	std::vector<std::string> envStore;
+	for (char** e = environ; *e; e++)
+		envStore.emplace_back(*e);
+	envStore.push_back(std::string(kXprocDirEnv) + "=" + root_);
+	std::vector<char*> envp;
+	for (std::string& e : envStore)
+		envp.push_back(e.data());
+	envp.push_back(nullptr);
+	std::string filter = "--gtest_filter=VuAotCache.CrossProcessChildFill";
+	char* argv[] = {exe, filter.data(), nullptr};
+	pid_t pid = 0;
+	ASSERT_EQ(posix_spawn(&pid, exe, nullptr, nullptr, argv, envp.data()), 0);
+	int status = 0;
+	ASSERT_EQ(waitpid(pid, &status, 0), pid);
+	ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0) << "child failed, status " << status;
+
+	u64 childBase = 0;
+	{
+		std::FILE* f = std::fopen((root_ + "/child-image-base").c_str(), "rb");
+		ASSERT_NE(f, nullptr);
+		ASSERT_EQ(std::fread(&childBase, sizeof(childBase), 1, f), 1u);
+		std::fclose(f);
+	}
+	u64 imageBase = 0, dataBase = 0;
+	mVUPersist::TestGetRegionBases(imageBase, dataBase);
+	std::printf("[vuaot-xproc] module base here %#llx, in the filling process %#llx\n", (unsigned long long)imageBase,
+		(unsigned long long)childBase);
+	if (imageBase == childBase)
+		GTEST_SKIP() << "both processes loaded the module at the same base (ASLR off?): nothing about relocation is shown";
+	EXPECT_EQ(FindSidecars(root_ + "/vu_jit").size(), InstallCases().size());
+	for (bool sync : {true, false})
+		for (const InstallCase& c : InstallCases())
+		{
+			const std::string where = std::string(c.name) + (sync ? " sync" : " background");
+			const InstallRun r = LoadInstall(c, sync, true, References(c, true, 0), 0, 0);
+			EXPECT_EQ(r.problems, "") << where;
+			EXPECT_EQ(r.d0.aotPrograms, 2u) << where << ": both loads installed";
+			EXPECT_EQ(r.d0.jobsGen, 0u) << where;
+			for (int i = 1; i < vuaot::live::kAotRejects; i++)
+				EXPECT_EQ(r.d0.aotRejectedBy[i], 0u) << where << ": refused " << vuaot::live::AotRejectName(static_cast<vuaot::live::AotReject>(i));
+			EXPECT_EQ(r.d0.planRejected, 0u) << where;
+		}
+#endif
 }
 
 } // namespace recompiler_tests
