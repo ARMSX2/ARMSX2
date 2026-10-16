@@ -9,9 +9,9 @@
 // that must hold is that a store into local memory is never missed. The page sets are therefore checked
 // against what the writers really store, not against the page looper's own idea of a rectangle.
 //
-// The same marks also set one bit per 256-byte block in two dirty bitmaps (the GPU copy of local memory
-// reads one, the per-block hash cache the other), and the same rule holds for them: every block a writer
-// changes is marked, in both. Each writer case below asserts it beside the page rule.
+// The same marks also set one bit per 256-byte block in a dirty bitmap, which the per-block hash cache
+// reads, and the same rule holds for it: every block a writer changes is marked. Each writer case below
+// asserts it beside the page rule.
 
 #include "gs_write_stamp_watch.h"
 
@@ -73,34 +73,23 @@ namespace
 			return pages;
 		}
 
-		/// The blocks whose bit is set in one dirty bitmap (the block-dirty one, or else the hash-dirty one), in order.
-		std::vector<u32> DirtyBlocks(bool block_bitmap) const
+		/// The blocks whose bit is set in the dirty bitmap, in order.
+		std::vector<u32> DirtyBlocks() const
 		{
 			std::vector<u32> blocks;
 			for (u32 block = 0; block < GS_MAX_BLOCKS; block++)
 			{
-				if (block_bitmap ? m_mem->BlockDirty(block) : m_mem->HashDirty(block))
+				if (m_mem->HashDirty(block))
 					blocks.push_back(block);
 			}
 			return blocks;
 		}
 
-		/// Both bitmaps are set for the same blocks, which are returned.
-		std::vector<u32> DirtyBlocks() const
-		{
-			const std::vector<u32> blocks = DirtyBlocks(true);
-			EXPECT_EQ(blocks, DirtyBlocks(false)) << "the two dirty bitmaps differ";
-			return blocks;
-		}
-
-		/// Clears both bitmaps of the fixture's memory.
+		/// Clears the dirty bitmap of the fixture's memory.
 		void ClearDirty()
 		{
 			for (u32 block = 0; block < GS_MAX_BLOCKS; block++)
-			{
-				m_mem->TestAndClearBlockDirty(block);
 				m_mem->TestAndClearHashDirty(block);
-			}
 		}
 
 		// bw counts 64-pixel columns; 8 and 4-bit pages are 128 wide and take it in pairs.
@@ -596,11 +585,10 @@ namespace
 
 	// --- The dirty bitmaps --------------------------------------------------------------------------
 
-	TEST_F(GSLocalMemoryWriteStamps, AFreshMemoryHasBothDirtyBitmapsSetAndAnIdOfItsOwn)
+	TEST_F(GSLocalMemoryWriteStamps, AFreshMemoryHasTheDirtyBitmapSetAndAnIdOfItsOwn)
 	{
 		// The constructor's memset of local memory is not a mark: nothing may read as already seen.
-		EXPECT_EQ(DirtyBlocks(true).size(), static_cast<size_t>(GS_MAX_BLOCKS));
-		EXPECT_EQ(DirtyBlocks(false).size(), static_cast<size_t>(GS_MAX_BLOCKS));
+		EXPECT_EQ(DirtyBlocks().size(), static_cast<size_t>(GS_MAX_BLOCKS));
 		EXPECT_EQ(m_mem->MarkAllEvents(), 0u);
 
 		const u32 first = m_mem->Id();
@@ -610,7 +598,7 @@ namespace
 		EXPECT_EQ(second.Id(), first + 1) << "ids count up, so two memories alive at once never share one";
 		for (u32 block = 0; block < GS_MAX_BLOCKS; block++)
 		{
-			ASSERT_TRUE(second.BlockDirty(block) && second.HashDirty(block)) << "block " << block;
+			ASSERT_TRUE(second.HashDirty(block)) << "block " << block;
 		}
 
 		// A memory made after another is gone does not get its id back.
@@ -623,37 +611,25 @@ namespace
 		EXPECT_GT(third.Id(), gone);
 	}
 
-	TEST_F(GSLocalMemoryWriteStamps, TheDirtyBitmapsAreClearedOneBlockAtATimeAndIndependently)
+	TEST_F(GSLocalMemoryWriteStamps, TheDirtyBitmapIsClearedOneBlockAtATime)
 	{
-		EXPECT_TRUE(m_mem->TestAndClearBlockDirty(100));
-		EXPECT_FALSE(m_mem->BlockDirty(100));
-		EXPECT_TRUE(m_mem->HashDirty(100)) << "clearing the block-dirty bit left the hash-dirty bit alone";
-		EXPECT_FALSE(m_mem->TestAndClearBlockDirty(100)) << "already clear";
-
 		EXPECT_TRUE(m_mem->TestAndClearHashDirty(101));
 		EXPECT_FALSE(m_mem->HashDirty(101));
-		EXPECT_TRUE(m_mem->BlockDirty(101));
-		EXPECT_FALSE(m_mem->TestAndClearHashDirty(101));
+		EXPECT_FALSE(m_mem->TestAndClearHashDirty(101)) << "already clear";
 
 		// The neighbours, in the same word and the next, are untouched.
-		for (const u32 block : {99u, 102u, 63u, 64u, 127u, 128u})
-			EXPECT_TRUE(m_mem->BlockDirty(block) && m_mem->HashDirty(block)) << block;
+		for (const u32 block : {99u, 100u, 102u, 63u, 64u, 127u, 128u})
+			EXPECT_TRUE(m_mem->HashDirty(block)) << block;
 
 		// A block number past the end wraps the way GSOffset's block numbers do.
-		EXPECT_TRUE(m_mem->BlockDirty(GS_MAX_BLOCKS + 5));
-		EXPECT_TRUE(m_mem->TestAndClearBlockDirty(GS_MAX_BLOCKS + 5));
-		EXPECT_FALSE(m_mem->BlockDirty(5));
+		EXPECT_TRUE(m_mem->HashDirty(GS_MAX_BLOCKS + 5));
+		EXPECT_TRUE(m_mem->TestAndClearHashDirty(GS_MAX_BLOCKS + 5));
+		EXPECT_FALSE(m_mem->HashDirty(5));
 
-		// Marking everything in one bitmap sets that bitmap only.
-		ClearDirty();
-		m_mem->MarkAllBlocksDirty();
-		EXPECT_EQ(DirtyBlocks(true).size(), static_cast<size_t>(GS_MAX_BLOCKS));
-		EXPECT_TRUE(DirtyBlocks(false).empty());
 		ClearDirty();
 		m_mem->MarkAllHashDirty();
-		EXPECT_TRUE(DirtyBlocks(true).empty());
-		EXPECT_EQ(DirtyBlocks(false).size(), static_cast<size_t>(GS_MAX_BLOCKS));
-		EXPECT_EQ(m_mem->MarkAllEvents(), 0u) << "the consumers' own resets are not marks of everything";
+		EXPECT_EQ(DirtyBlocks().size(), static_cast<size_t>(GS_MAX_BLOCKS));
+		EXPECT_EQ(m_mem->MarkAllEvents(), 0u) << "the consumer's own reset is not a mark of everything";
 	}
 
 	TEST_F(GSLocalMemoryWriteStamps, ARectangleMarksTheBlocksItsPixelsLiveIn)
@@ -695,8 +671,8 @@ namespace
 
 	TEST_F(GSLocalMemoryWriteStamps, ARectangleOverBlocksAlreadyMarkedMarksTheRestOfItsBlocks)
 	{
-		// A mark skips its block walk when every page it touches is already all set in both bitmaps. Start from
-		// everything set with a few blocks cleared (in one bitmap, the other or both), so both roads are taken.
+		// A mark skips its block walk when every page it touches is already all set. Start from everything set
+		// with a few blocks cleared, so both roads are taken.
 		u32 skipped = 0, walked = 0;
 		for (int i = 0; i < 600; i++)
 		{
@@ -707,31 +683,21 @@ namespace
 			const GSVector4i r(x0, y0, x0 + 1 + static_cast<int>(Random(400)), y0 + 1 + static_cast<int>(Random(300)));
 			const GSOffset off = m_mem->GetOffset(bp, bw, psm);
 
-			m_mem->MarkAllBlocksDirty();
 			m_mem->MarkAllHashDirty();
-			std::vector<bool> block_set(GS_MAX_BLOCKS, true), hash_set(GS_MAX_BLOCKS, true);
+			std::vector<bool> set(GS_MAX_BLOCKS, true);
 			const u32 clears = Random(3) == 0 ? 0 : 1 + Random(8);
 			for (u32 c = 0; c < clears; c++)
 			{
 				// Near the rectangle half the time, so a cleared block is often one it covers.
 				const u32 block = Random(2) ? off.bn(r.left + static_cast<int>(Random(r.width())), r.top + static_cast<int>(Random(r.height()))) :
 				                              Random(GS_MAX_BLOCKS);
-				const u32 which = Random(3);
-				if (which != 1)
-				{
-					m_mem->TestAndClearBlockDirty(block);
-					block_set[block] = false;
-				}
-				if (which != 0)
-				{
-					m_mem->TestAndClearHashDirty(block);
-					hash_set[block] = false;
-				}
+				m_mem->TestAndClearHashDirty(block);
+				set[block] = false;
 			}
 
 			for (int y = r.top; y < r.bottom; y++)
 				for (int x = r.left; x < r.right; x++)
-					block_set[off.bn(x, y)] = hash_set[off.bn(x, y)] = true;
+					set[off.bn(x, y)] = true;
 
 			const u32 events = m_mem->MarkAllEvents();
 			m_mem->MarkPagesWritten(off, r);
@@ -740,10 +706,8 @@ namespace
 
 			for (u32 block = 0; block < GS_MAX_BLOCKS; block++)
 			{
-				ASSERT_EQ(m_mem->BlockDirty(block), block_set[block])
-					<< "block bitmap, block " << block << " psm " << psm << " bp " << bp << " bw " << bw << " rect " << r.x << "," << r.y << " " << r.z << "," << r.w;
-				ASSERT_EQ(m_mem->HashDirty(block), hash_set[block])
-					<< "hash bitmap, block " << block << " psm " << psm << " bp " << bp << " bw " << bw << " rect " << r.x << "," << r.y << " " << r.z << "," << r.w;
+				ASSERT_EQ(m_mem->HashDirty(block), set[block])
+					<< "block " << block << " psm " << psm << " bp " << bp << " bw " << bw << " rect " << r.x << "," << r.y << " " << r.z << "," << r.w;
 			}
 			(clears == 0 ? skipped : walked)++;
 		}
@@ -770,7 +734,7 @@ namespace
 
 		ClearDirty();
 		m_mem->MarkPageRangeWritten(100, 0);
-		EXPECT_TRUE(DirtyBlocks(true).empty()) << "an empty range marks nothing";
+		EXPECT_TRUE(DirtyBlocks().empty()) << "an empty range marks nothing";
 	}
 
 	TEST_F(GSLocalMemoryWriteStamps, AMarkOfEverythingDirtiesEveryBlockAndIsCounted)
@@ -781,8 +745,7 @@ namespace
 			mark();
 			EXPECT_EQ(m_mem->MarkAllEvents(), mine + 1);
 			EXPECT_EQ(GSLocalMemory::TotalMarkAllEvents(), total + 1);
-			EXPECT_EQ(DirtyBlocks(true).size(), static_cast<size_t>(GS_MAX_BLOCKS));
-			EXPECT_EQ(DirtyBlocks(false).size(), static_cast<size_t>(GS_MAX_BLOCKS));
+			EXPECT_EQ(DirtyBlocks().size(), static_cast<size_t>(GS_MAX_BLOCKS));
 		};
 		const GSOffset off = m_mem->GetOffset(0, 32, PSMCT32);
 
@@ -801,7 +764,7 @@ namespace
 		m_mem->MarkPagesWritten(off, GSVector4i(1984, 0, 2048, 32));
 		m_mem->MarkPageRangeWritten(5, 2);
 		EXPECT_EQ(m_mem->MarkAllEvents(), mine);
-		EXPECT_LT(DirtyBlocks(true).size(), 100u);
+		EXPECT_LT(DirtyBlocks().size(), 100u);
 	}
 
 	// A raw store that nothing marks shows up as unmarked: the watch itself has to be able to fail.

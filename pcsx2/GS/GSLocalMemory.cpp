@@ -52,10 +52,9 @@ GSLocalMemory::readImage GSLocalMemory::m_readImageX;
 GSLocalMemory::GSLocalMemory()
 	: m_clut(this)
 {
-	// The memset below is not a mark, so a fresh memory reads as entirely unseen by both dirty bitmaps.
+	// The memset below is not a mark, so a fresh memory reads as entirely unseen by the dirty bitmap.
 	static std::atomic<u32> s_next_id{0};
 	m_id = ++s_next_id;
-	std::fill(std::begin(m_block_dirty), std::end(m_block_dirty), ~u64(0));
 	std::fill(std::begin(m_hash_dirty), std::end(m_hash_dirty), ~u64(0));
 
 	m_vm8 = (u8*)GSAllocateWrappedMemory(m_vmsize, 4);
@@ -674,7 +673,7 @@ void GSLocalMemory::MarkPagesWritten(const GSOffset& off, const GSVector4i& r)
 		return;
 	}
 
-	// A page whose blocks are all set in both bitmaps already holds every mark this rectangle can add. Render
+	// A page whose blocks are all set already holds every mark this rectangle can add. Render
 	// targets drawn on the CPU (two marks per draw, frame and depth) are seldom read back as textures, so their
 	// pages mostly stay that way, and the walk over the blocks is skipped.
 	const u64 seq = ++m_write_seq;
@@ -714,15 +713,9 @@ void GSLocalMemory::MarkAllPagesWritten()
 {
 	const u64 seq = ++m_write_seq;
 	std::fill(std::begin(m_page_stamp), std::end(m_page_stamp), seq);
-	MarkAllBlocksDirty();
 	MarkAllHashDirty();
 	m_mark_all_events++;
 	s_total_mark_all_events.fetch_add(1, std::memory_order_relaxed);
-}
-
-void GSLocalMemory::MarkAllBlocksDirty()
-{
-	std::fill(std::begin(m_block_dirty), std::end(m_block_dirty), ~u64(0));
 }
 
 void GSLocalMemory::MarkAllHashDirty()

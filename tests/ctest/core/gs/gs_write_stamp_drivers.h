@@ -136,8 +136,6 @@ namespace GSWriteStamps
 				<< what << ": changed but unmarked pages " << Watch::Describe(watch.UnmarkedChangedPages());
 			EXPECT_TRUE(watch.UnmarkedChangedBlocks().empty())
 				<< what << ": changed but unmarked blocks " << Watch::Describe(watch.UnmarkedChangedBlocks());
-			EXPECT_TRUE(watch.DisagreeingBlocks().empty())
-				<< what << ": blocks the two dirty bitmaps disagree on " << Watch::Describe(watch.DisagreeingBlocks());
 		}
 
 		// A sprite of one colour over the frame, which the renderer takes for a clear of local memory.
