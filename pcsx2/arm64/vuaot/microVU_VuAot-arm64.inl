@@ -27,6 +27,7 @@
 #include <chrono>
 #include <map>
 #include <memory>
+#include <set>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -129,6 +130,10 @@ struct VuAotProgramState
 	bool fromPlan = false;
 	// A region of the program has been placed (the time-to-first-region figures count the first).
 	bool hadRegion = false;
+	// Roots the builder declined in the current generation (saved with the sidecar), and those a loaded
+	// sidecar named: microVU compiling one of those asks for no job (the answer is known: no region).
+	std::vector<vuaot::persist::DeclinedRoot> declined;
+	std::set<std::pair<u32, vuaot::persist::Key>> knownDeclined;
 };
 
 // A block as a job sees it. The pipeline state comes first, where microBlock
@@ -817,10 +822,11 @@ namespace vuaot::live
 			s.aotRejectedBy[kAotShape] || s.aotRejectedBy[kAotCacheRun] || s.aotRejectedBy[kAotSpace])
 		{
 			std::snprintf(buf, sizeof(buf),
-				"\n  installed: programs=%llu records=%llu regions=%llu bytes=%llu roots_to_plan=%llu saved_without_code=%llu install_ins=%llu",
+				"\n  installed: programs=%llu records=%llu regions=%llu bytes=%llu roots_to_plan=%llu saved_without_code=%llu install_ins=%llu "
+				"declined_loaded=%llu declined_skipped=%llu",
 				(unsigned long long)s.aotPrograms, (unsigned long long)s.aotRecords, (unsigned long long)s.aotRegions,
 				(unsigned long long)s.aotBytes, (unsigned long long)s.aotRootsToPlan, (unsigned long long)s.aotNoCode,
-				(unsigned long long)s.installIns);
+				(unsigned long long)s.installIns, (unsigned long long)s.declinedLoaded, (unsigned long long)s.declinedSkipped);
 			out += buf;
 			for (u32 i = 1; i < kAotRejects; i++)
 				if (s.aotRejectedBy[i])
@@ -1473,7 +1479,15 @@ static void vuAotRecordPublished(microProgram& prog, VuAotJob& j)
 		return;
 	static_assert(sizeof(microRegInfo) == vuaot::persist::kKeyBytes, "a plan's key is a microRegInfo");
 	if (j.kind == VuAotJob::Generation)
+	{
 		st->published.clear();
+		// (a generation from a loaded plan rebuilds the one the declined roots were met in)
+		if (!j.fromPlan)
+		{
+			st->declined.clear();
+			st->knownDeclined.clear();
+		}
+	}
 	auto r = std::make_shared<vuaot::persist::Record>();
 	r->kind = (j.kind == VuAotJob::Generation) ? vuaot::persist::kGeneration : vuaot::persist::kRoot;
 	r->flags = static_cast<u8>((j.viaJump ? vuaot::persist::kViaJump : 0) | (j.opts.dropSticky ? vuaot::persist::kDropSticky : 0) |
@@ -1514,8 +1528,10 @@ static void vuAotSaveProgram(microProgram& prog)
 		std::map<u32, std::vector<u32>> jumpTargets;
 		std::vector<std::shared_ptr<const vuaot::persist::Record>> records;
 		u64 loadedChecksum;
+		std::vector<vuaot::persist::DeclinedRoot> declined;
 	};
-	auto req = std::make_shared<Request>(Request{vuAotSidecarIdentity(prog), st->tiers, st->settled, st->jumpTargets, st->published, st->loadedChecksum});
+	auto req = std::make_shared<Request>(
+		Request{vuAotSidecarIdentity(prog), st->tiers, st->settled, st->jumpTargets, st->published, st->loadedChecksum, st->declined});
 	// Root plans of a loaded sidecar not yet published stay in the plan: a session reset before their jobs
 	// came back must not write a smaller plan over the one it loaded.
 	if (st->planGen == st->gen)
@@ -1532,6 +1548,7 @@ static void vuAotSaveProgram(microProgram& prog)
 		f.records.reserve(req->records.size());
 		for (const auto& r : req->records)
 			f.records.push_back(*r);
+		f.declinedRoots = req->declined;
 		std::vector<u8> bytes = vuaot::persist::Serialize(f);
 		// (the plan this program was loaded with, unchanged: the file on disk already holds it)
 		if (req->loadedChecksum && XXH3_64bits(bytes.data(), bytes.size()) == req->loadedChecksum)
@@ -1592,6 +1609,10 @@ void mVUvuAotOnProgramReady(microVU& mVU, microProgram& prog)
 	st->tiers = f.tiers ? f.tiers - 1 : 0;
 	st->loadedChecksum = XXH3_64bits(bytes.data(), bytes.size());
 	st->fromPlan = true;
+	st->declined = f.declinedRoots;
+	for (const vuaot::persist::DeclinedRoot& d : f.declinedRoots)
+		st->knownDeclined.insert({d.pc, d.key});
+	s_vuaot.stats.declinedLoaded += f.declinedRoots.size();
 	for (size_t i = 1; i < f.records.size(); i++)
 		if (!f.records[i].MatchesMicro(mVU.regs().Micro))
 		{
@@ -1699,6 +1720,22 @@ void mVUvuAotSaveAll(microVU& mVU)
 			vuAotSaveProgram(*entry.second);
 	for (microProgram* prog : mVU.mvuOrphanedProgs)
 		vuAotSaveProgram(*prog);
+}
+
+// A root job of the program's current generation came back declined: the program's sidecar remembers it, so
+// a later session does not build it again.
+static void vuAotNoteDeclined(microProgram& prog, const VuAotJob& j)
+{
+	VuAotProgramState* const st = prog.vuaot;
+	if (!st || j.gen != st->gen || st->gen == 0 || !vuAotSidecarsOn(prog))
+		return;
+	vuaot::persist::DeclinedRoot d;
+	d.pc = j.pc;
+	std::memcpy(d.key.data(), &j.key, vuaot::persist::kKeyBytes);
+	if (!st->knownDeclined.insert({d.pc, d.key}).second)
+		return;
+	st->declined.push_back(d);
+	st->dirty = true;
 }
 
 //------------------------------------------------------------------
@@ -2264,9 +2301,6 @@ static bool vuAotTryInstall(microVU& mVU, microProgram& prog, VuAotProgramState&
 			whys.push_back(why);
 		}
 	}
-	// (nothing to place: the plan does as well)
-	if (genDeclined && install.empty())
-		return false;
 	// Room for every record, its exits, jump tails and veneers, as a compile session may use it.
 	const u8* const limit = mVU.prog.x86end + (mVUcacheSafeZone * _1mb);
 	if (armGetCurrentCodePointer() + bytes + (2u << 20) >= limit)
@@ -2546,6 +2580,7 @@ static void vuAotCollectFinished(std::vector<microProgram*>& touched, const VuAo
 				// (nothing to publish; microVU's block stays)
 				if (j->fromPlan)
 					vuAotForgetPlanRoot(st, *j);
+				vuAotNoteDeclined(*j->prog, *j);
 				continue;
 			}
 			if (std::find(touched.begin(), touched.end(), j->prog) == touched.end())
@@ -3003,6 +3038,22 @@ static bool vuAotLiveRegionHook(const vuaot::MvuBlockTrace& b, const vuaot::MvuE
 		return false;
 	}
 
+	// A root a loaded sidecar says the builder declined in this generation: no job. microVU compiles it, and
+	// what it reaches, as its own, as after any root job (and as after this one's, which came back empty).
+	if (!st.knownDeclined.empty())
+	{
+		std::pair<u32, vuaot::persist::Key> k;
+		k.first = b.startPC;
+		std::memcpy(k.second.data(), b.entryState, vuaot::persist::kKeyBytes);
+		if (st.knownDeclined.count(k))
+		{
+			s_vuaot.stats.declinedSkipped++;
+			st.provisional.insert(static_cast<const microBlock*>(env.rootBlock));
+			s_vuaot.plainRootDepth = s_vuaot.compileDepth;
+			return false;
+		}
+	}
+
 	// A block microVU meets in a program already tiered up: a region rooted at
 	// it goes to the worker, built against the program's graph as it is now.
 	auto j = vuAotMakeJob(mVU, *mVU.prog.cur, VuAotJob::Root, b.startPC, b.entryState);
@@ -3020,7 +3071,10 @@ static bool vuAotLiveRegionHook(const vuaot::MvuBlockTrace& b, const vuaot::MvuE
 		vuAotCollectFinished(touched, j.get());
 		vuAotCollect(*j);
 		if (!j->accepted)
+		{
+			vuAotNoteDeclined(*mVU.prog.cur, *j);
 			return false;
+		}
 		s_vuaot.stats.publishedRoot++;
 		vuAotPlace(mVU, *j, static_cast<microBlock*>(env.rootBlock));
 		vuAotRecordPublished(*mVU.prog.cur, *j);

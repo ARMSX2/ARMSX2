@@ -325,6 +325,13 @@ namespace vuaot::persist
 				PutCode(out, r.code);
 		}
 
+		Put(out, static_cast<u32>(f.declinedRoots.size()));
+		for (const DeclinedRoot& d : f.declinedRoots)
+		{
+			Put(out, d.pc);
+			PutVec(out, std::vector<u8>(d.key.begin(), d.key.end()));
+		}
+
 		Put(out, static_cast<u64>(XXH3_64bits(out.data(), out.size())));
 		return out;
 	}
@@ -427,6 +434,17 @@ namespace vuaot::persist
 			rec.readValues.resize(rh.readCount);
 			r.Bytes(rec.readValues.data(), size_t(rh.readCount) * sizeof(u32));
 			if (rec.HasCode() && !GetCode(r, rec.code))
+				return ParseResult::Malformed;
+		}
+		const u32 declined = r.Get<u32>();
+		if (!r.ok || declined > kMaxDeclinedRoots || r.Left() / (4 + kKeyBytes) < declined)
+			return ParseResult::Malformed;
+		out.declinedRoots.resize(declined);
+		for (DeclinedRoot& d : out.declinedRoots)
+		{
+			d.pc = r.Get<u32>();
+			r.Bytes(d.key.data(), kKeyBytes);
+			if (d.pc >= 0x4000 || (d.pc & 7))
 				return ParseResult::Malformed;
 		}
 		if (!r.ok || r.Left() != 0)

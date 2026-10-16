@@ -200,6 +200,9 @@ namespace vuaot
 			u64 aotPrograms = 0, aotRecords = 0, aotRegions = 0, aotBytes = 0, aotRootsToPlan = 0, aotNoCode = 0;
 			u64 aotRejectedBy[8] = {};
 			u64 installIns = 0;
+			// Roots the builder declined in a program's current generation, saved with its sidecar: loaded
+			// (declinedLoaded), and the root jobs not asked for because a loaded one said so (declinedSkipped).
+			u64 declinedLoaded = 0, declinedSkipped = 0;
 		};
 
 		// Why a saved record's code was not installed (Stats::aotRejectedBy).

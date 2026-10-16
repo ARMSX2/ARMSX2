@@ -24,6 +24,7 @@
 //   records: u32 count, then per record: RecordHeader, the read bitmap (kReadBitmapBytes), then
 //            one u32 value per set bit, in word order; with kHasCode, the code section (CodeHeader,
 //            then each table in the order of its count)
+//   declined roots: u32 count, then per root: u32 pc, the key (kKeyBytes)
 //   u64 XXH3-64 of everything before it
 //
 // Nothing here knows microVU: the caller passes the identity fields in and resolves the fixups.
@@ -37,7 +38,7 @@
 namespace vuaot::persist
 {
 	constexpr u32 kMagic = 0x544F4156u; // "VAOT"
-	constexpr u32 kFormatVersion = 2;
+	constexpr u32 kFormatVersion = 3;
 	// The meaning of a record: what a root (PC, key) and a read set stand for, and what region code
 	// assumes of microVU (its boundary state, the bail record, the placeholders). Bumped with any change
 	// to them. (While vu-aot changes daily the build id keys the files too: persistence-design.md,
@@ -53,6 +54,7 @@ namespace vuaot::persist
 	constexpr u32 kMaxJumpBlocks = kMicroWords / 2;
 	constexpr u32 kMaxTargetsPerBlock = kMicroWords / 2;
 	constexpr u32 kMaxCodeBytes = 16u << 20;
+	constexpr u32 kMaxDeclinedRoots = 1u << 16;
 	// Placeholder ids a record may name for microVU's stubs (the caller checks its own count).
 	constexpr u32 kMaxStubs = 16;
 
@@ -206,6 +208,14 @@ namespace vuaot::persist
 		}
 	};
 
+	// A root the region builder declined in the current generation (a block microVU compiled in the tiered
+	// program, whose job came back without a region): a later session does not ask for it again.
+	struct DeclinedRoot
+	{
+		u32 pc = 0;
+		Key key = {};
+	};
+
 	struct File
 	{
 		Identity id;
@@ -213,6 +223,7 @@ namespace vuaot::persist
 		bool settled = false;
 		std::map<u32, std::vector<u32>> jumpTargets;
 		std::vector<Record> records; // publication order; the generation first when there is one
+		std::vector<DeclinedRoot> declinedRoots;
 	};
 
 	std::vector<u8> Serialize(const File& f);

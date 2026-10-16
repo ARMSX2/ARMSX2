@@ -2585,6 +2585,8 @@ vuaot::live::Stats AotDelta(const vuaot::live::Stats& a, const vuaot::live::Stat
 	d.aotBytes -= a.aotBytes;
 	d.aotRootsToPlan -= a.aotRootsToPlan;
 	d.aotNoCode -= a.aotNoCode;
+	d.declinedLoaded -= a.declinedLoaded;
+	d.declinedSkipped -= a.declinedSkipped;
 	for (int i = 0; i < 8; i++)
 		d.aotRejectedBy[i] -= a.aotRejectedBy[i];
 	d.firstRegions -= a.firstRegions;
@@ -2999,6 +3001,44 @@ TEST_F(VuAotCache, LoadedOverlayRootPublishedAtAJumpLeavesNoUncheckedJumpCacheEn
 		EXPECT_GE(on.planRootJobs, 1u) << "flagHack=" << fh << ": the second entry's root plan was sent";
 		EXPECT_EQ(on.planPublishedRoot, on.planRootJobs) << "flagHack=" << fh << ": and published (one at the stub's JR)";
 	}
+}
+
+// A root the builder declines (the second entry of TwoEntryLoop: one straight block to an E bit) is saved with
+// the program's sidecar, and a later session that loads it asks for no job when microVU compiles that root:
+// the answer was no region, and microVU's own code is what runs either way. Every run equals the tier off's.
+TEST_F(VuAotCache, DeclinedRootsAreNotAskedForAgain)
+{
+	for (bool sync : {true, false})
+		for (bool fh : {true, false})
+		{
+			const std::string where = std::string(sync ? "sync" : "background") + (fh ? " fh" : "");
+			const InstallCase c{"two entries", TwoEntryLoop(20), SetupLoop, {0, kSecondEntry}, {}};
+			const std::vector<Result> ref = References(c, fh, 0);
+			RecompilerTestEnvironment::ResetVuBlockCache(1);
+			NewProcess();
+			RecursiveRm(root_ + "/vu_jit");
+			std::string problems;
+			const vuaot::live::Stats f0 = vuaot::live::GetStats();
+			FillInstall(c, sync, fh, ref, problems);
+			EXPECT_EQ(problems, "") << where;
+			EXPECT_GT(vuaot::live::GetStats().jobsDeclined, f0.jobsDeclined) << where << ": session one declined the second entry's root";
+			{
+				const std::string path = FindSidecars(root_ + "/vu_jit").front();
+				const std::optional<std::vector<u8>> b = FileSystem::ReadBinaryFile(path.c_str());
+				vuaot::persist::File f;
+				ASSERT_TRUE(b.has_value());
+				ASSERT_EQ(vuaot::persist::Parse(b->data(), b->size(), ClaimedIdentity(*b), f), vuaot::persist::ParseResult::Ok) << where;
+				bool found = false;
+				for (const auto& d : f.declinedRoots)
+					found |= d.pc == kSecondEntry;
+				EXPECT_TRUE(found) << where << ": the declined root is in the sidecar";
+			}
+			const InstallRun r = LoadInstall(c, sync, fh, ref, 0, 0);
+			EXPECT_EQ(r.problems, "") << where;
+			EXPECT_EQ(r.d.aotPrograms, 1u) << where;
+			EXPECT_GE(r.d.declinedSkipped, 1u) << where;
+			EXPECT_EQ(r.d.jobsRoot, 0u) << where << ": the declined root was asked for again";
+		}
 }
 
 // The jump cache fault of compiler-design.md 9ah, over an overlay whose saved regions are installed: the stub's

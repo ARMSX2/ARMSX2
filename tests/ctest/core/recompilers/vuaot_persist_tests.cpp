@@ -121,6 +121,10 @@ File Sample(std::mt19937& rng)
 		}
 		f.records.push_back(rec);
 	}
+	DeclinedRoot d;
+	d.pc = 0x1f8;
+	d.key[3] = 7;
+	f.declinedRoots.push_back(d);
 	return f;
 }
 
@@ -162,6 +166,9 @@ TEST(VuAotPersist, PlanRoundTrips)
 		EXPECT_EQ(a.regionBytes, b.regionBytes);
 	}
 	EXPECT_TRUE(g.records[0].HasCode() && !g.records[1].HasCode()) << "a record may hold its plan alone";
+	ASSERT_EQ(g.declinedRoots.size(), 1u);
+	EXPECT_EQ(g.declinedRoots[0].pc, 0x1f8u);
+	EXPECT_EQ(g.declinedRoots[0].key, f.declinedRoots[0].key);
 	EXPECT_EQ(Serialize(g), bytes) << "a parsed file serializes to the same bytes";
 }
 
@@ -337,6 +344,9 @@ TEST(VuAotPersist, CountsPastTheEndAreRefused)
 	EXPECT_EQ(edit(firstTargetCountAt, 0x10000000u), ParseResult::Malformed);
 	EXPECT_EQ(edit(recordCountAt, 1), ParseResult::Malformed);
 	EXPECT_EQ(edit(recordCountAt, 0x7fffffffu), ParseResult::Malformed);
+	const size_t declinedCountAt = recordCountAt + 4;
+	EXPECT_EQ(edit(declinedCountAt, 1), ParseResult::Malformed);
+	EXPECT_EQ(edit(declinedCountAt, 0xffffffffu), ParseResult::Malformed);
 	// a trailing byte inside the checksummed body
 	std::vector<u8> longer = bytes;
 	longer.insert(longer.end() - 8, u8{0});
