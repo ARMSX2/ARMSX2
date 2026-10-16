@@ -529,6 +529,23 @@ protected:
 		m_hash_dirty[block >> 6] |= bit;
 	}
 
+	/// The 32 blocks of a page are half a word of each bitmap.
+	__forceinline void SetPageBlockMarks(u32 page)
+	{
+		static_assert(GS_BLOCKS_PER_PAGE == 32, "a page is half a word of a dirty bitmap");
+		const u64 bits = u64(0xFFFFFFFFu) << ((page & 1) * 32);
+		m_block_dirty[(page % GS_MAX_PAGES) >> 1] |= bits;
+		m_hash_dirty[(page % GS_MAX_PAGES) >> 1] |= bits;
+	}
+
+	/// Whether all 32 blocks of a page are set in both bitmaps.
+	__forceinline bool PageBlocksAllMarked(u32 page) const
+	{
+		const u64 bits = u64(0xFFFFFFFFu) << ((page & 1) * 32);
+		const u32 word = (page % GS_MAX_PAGES) >> 1;
+		return (m_block_dirty[word] & m_hash_dirty[word] & bits) == bits;
+	}
+
 	__forceinline static u32 Expand24To32(u32 c, const GIFRegTEXA& TEXA)
 	{
 		return (((!TEXA.AEM | (c & 0xffffff)) ? TEXA.TA0 : 0) << 24) | (c & 0xffffff);

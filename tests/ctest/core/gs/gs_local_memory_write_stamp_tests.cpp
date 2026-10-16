@@ -693,6 +693,64 @@ namespace
 		EXPECT_EQ(cases, 1500u);
 	}
 
+	TEST_F(GSLocalMemoryWriteStamps, ARectangleOverBlocksAlreadyMarkedMarksTheRestOfItsBlocks)
+	{
+		// A mark skips its block walk when every page it touches is already all set in both bitmaps. Start from
+		// everything set with a few blocks cleared (in one bitmap, the other or both), so both roads are taken.
+		u32 skipped = 0, walked = 0;
+		for (int i = 0; i < 600; i++)
+		{
+			const u32 psm = kPsms[Random(std::size(kPsms))];
+			const u32 bp = Random(GS_MAX_BLOCKS);
+			const u32 bw = RandomBw(m_rng, psm);
+			const int x0 = static_cast<int>(Random(300)), y0 = static_cast<int>(Random(300));
+			const GSVector4i r(x0, y0, x0 + 1 + static_cast<int>(Random(400)), y0 + 1 + static_cast<int>(Random(300)));
+			const GSOffset off = m_mem->GetOffset(bp, bw, psm);
+
+			m_mem->MarkAllBlocksDirty();
+			m_mem->MarkAllHashDirty();
+			std::vector<bool> block_set(GS_MAX_BLOCKS, true), hash_set(GS_MAX_BLOCKS, true);
+			const u32 clears = Random(3) == 0 ? 0 : 1 + Random(8);
+			for (u32 c = 0; c < clears; c++)
+			{
+				// Near the rectangle half the time, so a cleared block is often one it covers.
+				const u32 block = Random(2) ? off.bn(r.left + static_cast<int>(Random(r.width())), r.top + static_cast<int>(Random(r.height()))) :
+				                              Random(GS_MAX_BLOCKS);
+				const u32 which = Random(3);
+				if (which != 1)
+				{
+					m_mem->TestAndClearBlockDirty(block);
+					block_set[block] = false;
+				}
+				if (which != 0)
+				{
+					m_mem->TestAndClearHashDirty(block);
+					hash_set[block] = false;
+				}
+			}
+
+			for (int y = r.top; y < r.bottom; y++)
+				for (int x = r.left; x < r.right; x++)
+					block_set[off.bn(x, y)] = hash_set[off.bn(x, y)] = true;
+
+			const u32 events = m_mem->MarkAllEvents();
+			m_mem->MarkPagesWritten(off, r);
+			if (m_mem->MarkAllEvents() != events)
+				continue; // past the end of local memory: everything is marked, which the other tests cover
+
+			for (u32 block = 0; block < GS_MAX_BLOCKS; block++)
+			{
+				ASSERT_EQ(m_mem->BlockDirty(block), block_set[block])
+					<< "block bitmap, block " << block << " psm " << psm << " bp " << bp << " bw " << bw << " rect " << r.x << "," << r.y << " " << r.z << "," << r.w;
+				ASSERT_EQ(m_mem->HashDirty(block), hash_set[block])
+					<< "hash bitmap, block " << block << " psm " << psm << " bp " << bp << " bw " << bw << " rect " << r.x << "," << r.y << " " << r.z << "," << r.w;
+			}
+			(clears == 0 ? skipped : walked)++;
+		}
+		EXPECT_GT(skipped, 50u);
+		EXPECT_GT(walked, 200u);
+	}
+
 	TEST_F(GSLocalMemoryWriteStamps, ARangeMarksTheThirtyTwoBlocksOfEachPageItNames)
 	{
 		for (const u32 first : {0u, 1u, 200u, 201u, 510u, 511u})
