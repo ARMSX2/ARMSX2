@@ -30,14 +30,14 @@ target_link_libraries(pcsx2-vurunner PRIVATE
 	PCSX2
 )
 
-# Deterministic process layout for the persisted-JIT VU program cache: a
-# non-PIE executable (ET_EXEC) loads at its fixed link address even with
-# ASLR enabled, so every libpcsx2 symbol address is run-invariant —
-# paired with the image-anchored fixed-base arena reservation in
-# SysMemory::AllocateVirtualMemory. Verify with `pcsx2-vurunner
-# --print-bases` (two runs must print identical addresses). Linux-only;
-# macOS has no non-PIE executables. libpcsx2's -fPIC objects link into an
-# ET_EXEC fine.
+# A non-PIE executable (ET_EXEC) loads at its fixed link address even with
+# ASLR enabled. The persisted-JIT VU program cache used to need that; its
+# payloads now relocate (image and data-arena addresses are fixups), and a
+# PIE build hydrates them too. vurunner stays non-PIE so its corpus gates
+# keep exercising the fixed layout the handheld build (pcsx2-sdl) runs with;
+# pcsx2-eerunner and recompiler_tests are PIE and cover the other case.
+# `pcsx2-vurunner --print-bases` prints the layout. Linux-only; libpcsx2's
+# -fPIC objects link into an ET_EXEC fine.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 	set_target_properties(pcsx2-vurunner PROPERTIES POSITION_INDEPENDENT_CODE OFF)
 	target_link_options(pcsx2-vurunner PRIVATE -no-pie)

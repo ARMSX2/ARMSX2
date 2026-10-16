@@ -32,13 +32,13 @@ namespace mVUProgCache
 	// Bumped together with kMvuCompilerAbiVersion when the on-disk layout
 	// changes. Mismatch nukes the cache directory at startup.
 	//
-	// IndexEntry is variable-length: a fixed 64-byte header carrying
-	// `entryCount`, followed by `entryCount` × `u32` entry-PC values
-	// (microMem byte offsets), so multi-entry programs carry every
-	// dispatched PC. Older fixed-layout entries are structurally
-	// incompatible with this format — a version mismatch evicts rather
-	// than silently loading wrong data.
-	static constexpr u32 kProgCacheFormatVersion = 3;
+	// 4: an INDEX record is a fixed 64 bytes (content hash, sizes, flags,
+	//    timestamps). Version 3 followed each record with a list of entry
+	//    PCs; nothing read that list outside tests (hydration looks a
+	//    program up by content hash) and the dispatcher no longer kept it
+	//    complete, so it is gone. A version-3 directory is evicted rather
+	//    than parsed with the wrong record size.
+	static constexpr u32 kProgCacheFormatVersion = 4;
 
 	// Initialize the per-VU on-disk cache. Gated on the
 	// EmuCore/CPU/Recompiler EnableVUProgramCache config bool (off = no disk
@@ -60,9 +60,9 @@ namespace mVUProgCache
 	void Close(microVU& mVU);
 
 	// Walk mVU.mvuContentMap and save every program whose contentHash is not
-	// already represented in the on-disk INDEX (or whose observed entry-PC
-	// set widened). Called from mVUreset (pre-program-free) and mVUclose so
-	// the next process boot has artifacts.
+	// already represented in the on-disk INDEX (or whose recorded block graph
+	// grew since its payload was written). Called from mVUreset
+	// (pre-program-free) and mVUclose so the next process boot has artifacts.
 	void SaveAllPrograms(microVU& mVU);
 
 	// Save a single program: append an INDEX entry, and — when the program
@@ -70,8 +70,7 @@ namespace mVUProgCache
 	// compiled) — write the serialized block graph as a content-addressed
 	// .vuprog payload (<root>/<hh>/<hash32hex>.vuprog, tmp+rename). The
 	// payload is rewritten when the recorded block graph grew past what is
-	// on disk; the INDEX append still short-circuits when neither the
-	// entry-PC set nor the payload changed.
+	// on disk; the INDEX append short-circuits when the payload is current.
 	void SaveProgram(microVU& mVU, const microProgram& prog);
 
 	// Promote an on-disk program to a live one. On an INDEX hit with a
@@ -129,23 +128,17 @@ namespace mVUProgCache
 	// preload and proving hydration still succeeds).
 	void TestWaitForPreload(u32 vu_index);
 
-	// Test-only: append an INDEX entry for `hash` carrying the given
-	// entry-PC list, applying the same persistence path SaveProgram uses
-	// (single atomic append + in-memory registration; dedupe on existing
-	// hash). Returns true iff the entry was written. Lets format tests
-	// drive the variable-length serializer without constructing a
-	// microVU/microProgram.
-	bool TestAppendIndexEntry(u32 vu_index, const XXH128_hash_t& hash,
-	                          const u32* entry_pcs, size_t entry_pc_count);
+	// Test-only: append an INDEX entry for `hash`, applying the same
+	// persistence path SaveProgram uses (single atomic append + in-memory
+	// registration; dedupe on existing hash). Returns true iff the entry was
+	// written. Lets format tests drive the record serializer without
+	// constructing a microVU/microProgram.
+	bool TestAppendIndexEntry(u32 vu_index, const XXH128_hash_t& hash);
 
-	// Test-only: read back the entry-PC list the cache holds for a given
-	// content hash. Returns true if the hash is in the in-memory entries
-	// map and writes the entry_pcs (microMem byte offsets) into `out_pcs`;
-	// false otherwise. Used by the IndexFormat tests to pin the
-	// variable-length serializer's round-trip behavior.
-	bool TestGetEntryPcs(u32 vu_index, const XXH128_hash_t& hash,
-	                      u32* out_pcs, size_t out_pcs_cap,
-	                      size_t* out_count);
+	// Test-only: true if the in-memory INDEX of the given VU holds a live
+	// entry for `hash`. Used by the IndexFormat tests to pin the record
+	// serializer's round-trip behavior.
+	bool TestHasIndexEntry(u32 vu_index, const XXH128_hash_t& hash);
 
 	// Test-only: read back the per-VU counters DumpStats would log. Used by
 	// the versioning tests to assert that eviction fired (staleEvictions++)

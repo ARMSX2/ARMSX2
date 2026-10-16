@@ -13,9 +13,12 @@
 //       outside the fixup spans (relocation operands are the ONLY thing
 //       the patcher may touch);
 //   (c) the hydrated run performs ZERO block compiles;
-//   (d) a corrupted image (hash, layout bases, fixup table, truncation) is
-//       rejected before any side effect — fail-safe means recompile, never
-//       run wrong code.
+//   (d) a corrupted image (content hash, header, fixup table, truncation)
+//       is rejected before any side effect — fail-safe means recompile,
+//       never run wrong code.
+//
+// Relocation across processes (a different image base) is covered by
+// mvu_persist_relocation_tests.cpp.
 //
 // All tests drive VU0: its compile + execution stay on the test thread
 // (VU1 routes through the MTVU thread, which TestHydrate must not cross).
@@ -48,10 +51,10 @@ inline VuOp LowerOnly(u32 lower)
 	return VuOp{lower, VNOP_U()};
 }
 
-// Serialized-image header offsets (pinned by mVUPersist::ImageHeader v1;
+// Serialized-image header offsets (pinned by mVUPersist::ImageHeader v2;
 // the corruption tests poke these fields directly).
 constexpr size_t kOffHashLo = 16;
-constexpr size_t kOffImageAnchor = 32;
+constexpr size_t kOffImageBase = 32;
 constexpr size_t kOffChunkCount = 68;
 constexpr size_t kHeaderSize = 88;
 
@@ -269,7 +272,7 @@ TEST_F(MvuPersistRoundTrip, RejectsContentHashMismatch)
 	EXPECT_FALSE(mVUPersist::TestHydrate(0, image.data(), image.size()));
 }
 
-TEST_F(MvuPersistRoundTrip, RejectsLayoutBaseMismatch)
+TEST_F(MvuPersistRoundTrip, RejectsTamperedHeader)
 {
 	VuTestHarness h(0);
 	h.SetVf(1, 1.0f, 2.0f, 3.0f, 4.0f);
@@ -279,9 +282,9 @@ TEST_F(MvuPersistRoundTrip, RejectsLayoutBaseMismatch)
 	});
 	std::vector<u8> image = MakeImage(h);
 
-	// Pretend the image was produced by a process with a different
-	// executable base (PIE dev box / layout drift).
-	image[kOffImageAnchor + 5] ^= 0x01;
+	// The checksum covers the header: a flipped bit in a field hydration does
+	// not otherwise read (the recorded image base) is still caught.
+	image[kOffImageBase + 5] ^= 0x01;
 	EXPECT_FALSE(mVUPersist::TestHydrate(0, image.data(), image.size()));
 }
 

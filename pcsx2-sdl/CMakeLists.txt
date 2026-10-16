@@ -32,14 +32,11 @@ target_link_libraries(pcsx2-sdl PRIVATE
 # because EmuFolders::SetResourcesDirectory() looks for AppRoot/resources.
 pcsx2_copy_runtime_resources(pcsx2-sdl)
 
-# Deterministic process layout for the persisted-JIT VU program cache: a
-# non-PIE executable (ET_EXEC) loads at its fixed link address even with
-# ASLR enabled, so every libpcsx2 symbol address is run-invariant —
-# paired with the image-anchored fixed-base arena reservation in
-# SysMemory::AllocateVirtualMemory. This is what lets cached VU code
-# reload across boots on the handheld without repatching baked
-# addresses. Linux-only; libpcsx2's -fPIC objects link into an ET_EXEC
-# fine.
+# A non-PIE executable (ET_EXEC) loads at its fixed link address even with
+# ASLR enabled. This was added for the persisted-JIT VU program cache, which
+# no longer needs it: its payloads relocate (image and data-arena addresses
+# are fixups), so a PIE build hydrates them too. Linux-only; libpcsx2's
+# -fPIC objects link into an ET_EXEC fine.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 	set_target_properties(pcsx2-sdl PROPERTIES POSITION_INDEPENDENT_CODE OFF)
 	target_link_options(pcsx2-sdl PRIVATE -no-pie)

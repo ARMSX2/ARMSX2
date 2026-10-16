@@ -55,10 +55,10 @@ namespace mvu_test_hooks
 	void* ResolveLookupEntry(int vu_index);
 } // namespace mvu_test_hooks
 
-// The resume fast path is gated off while ProgCache recording is on (the
-// full path keeps observed.record seeing resume TPCs). Force it off here
-// so these tests exercise the fast path regardless of suite ordering
-// (mvu_abi_digest_tests / mvu_progcache_disk_tests toggle recording).
+// Recording changes emitted code forms (fixed-shape address runs), not the
+// dispatch path. These tests force it off so the code they compile is the
+// default shape regardless of suite ordering (mvu_abi_digest_tests /
+// mvu_progcache_disk_tests toggle recording).
 namespace mVUPersist
 {
 	void SetRecordingEnabled(bool enabled);

@@ -72,6 +72,8 @@ struct Options
 	bool bench_steady = false;
 	bool print_bases = false;
 	bool no_progcache = false;  // determinism gate: force program cache + recording off
+	bool recording = false;     // emit-time fixup recording on, no disk cache
+	bool persist_audit = false; // audit every recorded chunk for uncovered address operands
 	bool perf_jitdump = false;  // emit Linux perf jitdump for `perf inject --jit` (profiling)
 	bool scan_external = false;       // static report of outside-state reads, no replay
 	bool skip_unrecorded_vif = false; // drop pre-v3 captures that read VIF TOP/ITOP
@@ -142,6 +144,12 @@ void PrintUsage(const char* argv0)
 		"                recompiling. Run twice with the same D for the\n"
 		"                cross-process gate: the 2nd run must report\n"
 		"                payloadHits>0 / blockCompiles=0 per capture.\n"
+		"  --recording   Turn emit-time fixup recording on without a disk cache, so\n"
+		"                the code recording produces can be measured against a\n"
+		"                run without it ([codesize] line, --bench).\n"
+		"  --persist-audit  Implies --recording. Decode every recorded chunk and\n"
+		"                count the instructions that carry a host address no\n"
+		"                fixup covers, by form and region ([audit] lines).\n"
 		"  --no-progcache  Force the persisted-JIT program cache and emit-time\n"
 		"                recording off for the whole process (overrides\n"
 		"                --cache-dir) so a JIT-vs-interp diff run is\n"
@@ -365,6 +373,15 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 		else if (a == "--no-progcache")
 		{
 			opts.no_progcache = true;
+		}
+		else if (a == "--recording")
+		{
+			opts.recording = true;
+		}
+		else if (a == "--persist-audit")
+		{
+			opts.recording = true;
+			opts.persist_audit = true;
 		}
 		else if (a == "--perf-jitdump")
 		{
@@ -1816,6 +1833,10 @@ int main(int argc, char** argv)
 			mVUPersist::SetRecordingEnabled(true);
 		}
 	}
+	if (opts.recording && !mVUPersist::IsProcessDisabled())
+		mVUPersist::SetRecordingEnabled(true);
+	if (opts.persist_audit)
+		mVUPersist::TestSetAuditEnabled(true);
 #endif
 
 	if (!recompiler_tests::RecompilerTestEnvironment::Initialize())
@@ -2006,6 +2027,15 @@ int main(int argc, char** argv)
 				(unsigned long long)mVUPersist::GetBlockCompileCount(vu));
 		}
 	}
+#endif
+
+#if defined(_M_ARM64) || defined(__aarch64__)
+	std::printf("[codesize] vu0=%llu vu1=%llu recording=%d\n",
+		(unsigned long long)mVUPersist::GetStats(0).emittedCodeBytes,
+		(unsigned long long)mVUPersist::GetStats(1).emittedCodeBytes,
+		mVUPersist::IsRecordingEnabled() ? 1 : 0);
+	if (opts.persist_audit)
+		std::fputs(mVUPersist::TestAuditReport().c_str(), stdout);
 #endif
 
 	recompiler_tests::RecompilerTestEnvironment::Shutdown();

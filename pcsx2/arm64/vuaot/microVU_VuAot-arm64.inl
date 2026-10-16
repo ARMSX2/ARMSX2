@@ -1435,8 +1435,6 @@ void* mVUlookupProgTier_VU1(u32 startPC, u32 cycles)
 	mVU.prog.isSame = -1;
 	mVU.prog.cur = prog;
 	quick.block = block;
-	if (mVUPersist::IsRecordingEnabled())
-		prog->observed.record(maskedPC);
 
 	const u32 runs = ++prog->vuAotRuns;
 	// The worker has finished something: one slow path collects it.

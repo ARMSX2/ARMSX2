@@ -61,10 +61,8 @@ struct VersionHeader
 };
 static_assert(sizeof(VersionHeader) == 64, "VersionHeader layout drift");
 
-// On-disk header for an IndexEntry. Each record is the 64-byte header
-// followed by `entryCount` × u32 entry-PC values (microMem byte
-// offsets). entryCount must be >= 1 for a valid entry; entryCount == 0
-// indicates a tombstone alongside the flags-bit-0 check.
+// One INDEX record: a fixed 64 bytes, appended whole. A record whose
+// flags bit 0 is clear is a tombstone and is skipped on load.
 struct IndexEntryHeader
 {
 	XXH128_hash_t contentHash;  // 16 — the program's identity
@@ -75,21 +73,11 @@ struct IndexEntryHeader
 	u32           flags;        //  4 — bit 0 = valid; tombstones leave it clear
 	u64           lastUsedNs;   //  8
 	u64           execCount;    //  8 — running dispatch count, reserved
-	u32           entryCount;   //  4 — number of trailing u32 entry-PC values
-	u8            pad[12];      // 12 — round to 64 for trivial mmap
+	u8            pad[16];      // 16 — round to 64 for trivial mmap
 };
 static_assert(sizeof(IndexEntryHeader) == 64,
               "IndexEntryHeader layout drift");
 #pragma pack(pop)
-
-// In-memory companion. Holds the on-disk header plus the trailing
-// entry-PC list. Tests + dispatcher consume IndexEntry; serialization
-// in/out of disk uses IndexEntryHeader + the appended u32 array.
-struct IndexEntry
-{
-	IndexEntryHeader hdr;
-	std::vector<u32> entry_pcs;
-};
 
 struct State
 {
@@ -99,7 +87,7 @@ struct State
 	std::string indexPath;   // $root/INDEX
 	std::string versionPath; // $root/VERSION
 
-	std::unordered_map<XXH128_hash_t, IndexEntry,
+	std::unordered_map<XXH128_hash_t, IndexEntryHeader,
 	                   MvuContentHashHash, MvuContentHashEq> entries;
 
 	u64 wouldBeHits        = 0;
@@ -205,13 +193,11 @@ static void EvictStaleCache(State& s)
 	}
 }
 
-// Parse a variable-length INDEX. Each record is a fixed 64-byte
-// IndexEntryHeader followed by `entryCount` × u32 entry-PC values.
-// Truncated tails (partial header, partial trailing array) are silently
-// dropped — the next SaveProgram will rewrite a clean copy, and the
-// partial bytes don't poison any in-memory state. Last-writer-wins on
-// duplicate contentHash so re-saves can extend a program's entry list
-// in place.
+// Parse the INDEX: a stream of fixed 64-byte IndexEntryHeader records.
+// A truncated tail (partial record) is dropped with a warning — the next
+// SaveProgram appends a clean record, and the partial bytes don't poison
+// any in-memory state. Last-writer-wins on duplicate contentHash so a
+// re-save (payload growth) supersedes the earlier record.
 static void LoadIndex(State& s)
 {
 	auto bytes = FileSystem::ReadBinaryFile(s.indexPath.c_str());
@@ -226,75 +212,39 @@ static void LoadIndex(State& s)
 		std::memcpy(&hdr, base + off, sizeof(hdr));
 		off += sizeof(hdr);
 
-		const size_t trail_bytes = static_cast<size_t>(hdr.entryCount) * sizeof(u32);
-		if (off + trail_bytes > total)
-		{
-			Console.Warning("mVUProgCache: INDEX %s truncated at off=%zu "
-			                "(need %zu trailing bytes, have %zu) — ignoring tail",
-			                s.indexPath.c_str(), off, trail_bytes,
-			                total - off);
-			return;
-		}
+		if ((hdr.flags & 1u) == 0u)
+			continue; // tombstone
 
-		if ((hdr.flags & 1u) == 0u || hdr.entryCount == 0u)
-		{
-			off += trail_bytes;
-			continue;
-		}
-
-		IndexEntry e;
-		e.hdr = hdr;
-		e.entry_pcs.resize(hdr.entryCount);
-		std::memcpy(e.entry_pcs.data(), base + off, trail_bytes);
-		off += trail_bytes;
-
-		s.entries[hdr.contentHash] = std::move(e); // last-writer-wins
+		s.entries[hdr.contentHash] = hdr; // last-writer-wins
 	}
 	if (off != total)
 	{
 		Console.Warning("mVUProgCache: INDEX %s has %zu trailing bytes past last "
-		                "header — ignoring", s.indexPath.c_str(), total - off);
+		                "record — ignoring", s.indexPath.c_str(), total - off);
 	}
 }
 
-// Serialize one in-memory IndexEntry as a single contiguous
-// header+trailing block. Single fwrite keeps the append atomic against
-// process death between header and trailing writes.
-static bool AppendIndexEntry(const State& s, const IndexEntry& e)
+// Append one record with a single fwrite, so a process death can't leave a
+// header without its tail.
+static bool AppendIndexEntry(const State& s, const IndexEntryHeader& e)
 {
 	std::FILE* fp = FileSystem::OpenCFile(s.indexPath.c_str(), "ab");
 	if (!fp)
 		return false;
-
-	std::vector<u8> buf(sizeof(IndexEntryHeader)
-	                    + e.entry_pcs.size() * sizeof(u32));
-	std::memcpy(buf.data(), &e.hdr, sizeof(IndexEntryHeader));
-	if (!e.entry_pcs.empty())
-	{
-		std::memcpy(buf.data() + sizeof(IndexEntryHeader),
-		            e.entry_pcs.data(),
-		            e.entry_pcs.size() * sizeof(u32));
-	}
-	const bool ok = std::fwrite(buf.data(), buf.size(), 1, fp) == 1;
+	const bool ok = std::fwrite(&e, sizeof(e), 1, fp) == 1;
 	std::fclose(fp);
 	return ok;
 }
 
 // Persist an entry: append to disk + register in the in-memory map.
-// Keeps header.entryCount and entry_pcs.size() in lock-step — callers
-// populate entry_pcs; this is the single point that updates the
-// on-disk count field.
-static bool PersistIndexEntry(State& s, const IndexEntry& e_in)
+static bool PersistIndexEntry(State& s, const IndexEntryHeader& e)
 {
-	IndexEntry e = e_in;
-	e.hdr.entryCount = static_cast<u32>(e.entry_pcs.size());
-
 	if (!AppendIndexEntry(s, e))
 	{
-		Console.Warning("mVUProgCache[%u]: INDEX append failed", e.hdr.vuIndex);
+		Console.Warning("mVUProgCache[%u]: INDEX append failed", e.vuIndex);
 		return false;
 	}
-	s.entries[e.hdr.contentHash] = std::move(e);
+	s.entries[e.contentHash] = e;
 	++s.savesWritten;
 	return true;
 }
@@ -371,8 +321,8 @@ static void StartPreload(State& s)
 	std::vector<Item> items;
 	for (const auto& kv : s.entries)
 	{
-		if (kv.second.hdr.codeSize > 0)
-			items.push_back({kv.first, kv.second.hdr.lastUsedNs, kv.second.hdr.codeSize});
+		if (kv.second.codeSize > 0)
+			items.push_back({kv.first, kv.second.lastUsedNs, kv.second.codeSize});
 	}
 	if (items.empty())
 		return;
@@ -598,13 +548,13 @@ void SaveProgram(microVU& mVU, const microProgram& prog)
 
 	// Write/refresh the .vuprog payload when the serialized graph grew (a
 	// hydrated program compiled new blocks since the last save) or the
-	// file is missing. hdr.codeSize tracks the last-written payload size —
+	// file is missing. codeSize tracks the last-written payload size —
 	// the cheap growth signal (same program + same emitters can't change
 	// bytes without changing size).
-	auto write_payload_if_grown = [&](IndexEntry& e) -> bool {
+	auto write_payload_if_grown = [&](IndexEntryHeader& e) -> bool {
 		if (!have_image)
 			return false;
-		if (e.hdr.codeSize == static_cast<u32>(image.size()) &&
+		if (e.codeSize == static_cast<u32>(image.size()) &&
 			FileSystem::FileExists(PayloadPath(s, prog.contentHash).c_str()))
 			return false;
 		if (!WritePayload(s, prog.contentHash, image))
@@ -612,117 +562,49 @@ void SaveProgram(microVU& mVU, const microProgram& prog)
 			Console.Warning("mVUProgCache[%u]: payload write failed", mVU.index);
 			return false;
 		}
-		e.hdr.codeSize = static_cast<u32>(image.size());
+		e.codeSize = static_cast<u32>(image.size());
 		++s.payloadWrites;
 		return true;
 	};
 
-	// When this hash has been seen before, the on-disk entry_pcs is the
-	// cumulative truth. Union the existing set with what the current
-	// program instance observed; only re-persist if the union widens past
-	// what's already on disk. This handles the cross-program-instance
-	// case: the dispatcher hits N PCs across several mVUreset cycles, but
-	// each instance starts fresh with observed={its createProg PC}.
-	// Without the union, the FIRST instance's SaveProgram wins and
-	// subsequent calls short-circuit via s.entries dedupe. Reading the
-	// existing set and unioning lets the on-disk entry list converge to
-	// all observed PCs over enough boots.
-	const u32 primary_pc = static_cast<u32>(prog.startPC) * 8u;
-
+	// A hash seen before already has an INDEX record. Re-append it only when
+	// the payload grew (a hydrated program compiled new blocks), so the
+	// record carries the new size; last-writer-wins on the next LoadIndex.
 	auto it_existing = s.entries.find(prog.contentHash);
 	if (it_existing != s.entries.end())
 	{
-		// Existing entry — widening check. Probe for genuinely-new PCs
-		// against the on-disk set without copying it first: once a
-		// program's observed-PC set has converged (the steady state
-		// after a few boots) this branch runs on every SaveProgram and
-		// the copy would be pure waste. Only materialize the wider list
-		// when a new PC actually appears.
-		IndexEntry& existing = it_existing->second;
-		std::unordered_map<u32, bool> seen;
-		for (u32 pc : existing.entry_pcs) seen.emplace(pc, true);
+		IndexEntryHeader& existing = it_existing->second;
+		if (!write_payload_if_grown(existing))
+			return; // payload current (or none to write) — nothing to record
 
-		std::vector<u32> new_pcs;
-		auto note = [&](u32 pc) {
-			if (seen.emplace(pc, true).second) new_pcs.push_back(pc);
-		};
-		// Ensure primary_pc is present (it would be, but seed
-		// defensively in case a prior save was malformed).
-		note(primary_pc);
-		for (size_t i = 0; i < prog.observed.count; ++i)
-			note(prog.observed.pcs[i]);
-
-		const bool widened = !new_pcs.empty();
-		const bool payload_written = write_payload_if_grown(existing);
-		if (!widened && !payload_written)
-			return; // No new PCs, payload current — short-circuit.
-
-		// Re-persist with the wider set / refreshed payload size
-		// (last-writer-wins on the next LoadIndex).
-		IndexEntry e = existing;
-		if (widened)
-		{
-			e.entry_pcs.reserve(e.entry_pcs.size() + new_pcs.size());
-			e.entry_pcs.insert(e.entry_pcs.end(), new_pcs.begin(), new_pcs.end());
-		}
-		e.hdr.lastUsedNs  = NowNs();
-		e.hdr.blockCount  = blockCount;
+		IndexEntryHeader e = existing;
+		e.lastUsedNs = NowNs();
+		e.blockCount = blockCount;
 		PersistIndexEntry(s, e);
 		return;
 	}
 
 	// First-time save for this hash.
-	IndexEntry e;
-	e.hdr.contentHash = prog.contentHash;
-	e.hdr.vuIndex     = mVU.index & 1u;
-	e.hdr.codeSize    = 0; // set by write_payload_if_grown on success
-	e.hdr.blockCount  = blockCount;
-	e.hdr.flags       = 1u;
-	e.hdr.lastUsedNs  = NowNs();
-	e.hdr.execCount   = 0;
-	// Primary entry is always the creator's startPC at index 0; observed
-	// PCs follow.
-	e.entry_pcs.push_back(primary_pc);
-	const auto& observed = prog.observed;
-	for (u32 i = 0; i < observed.count; ++i)
-	{
-		const u32 pc = observed.pcs[i];
-		if (pc == primary_pc)
-			continue;
-		e.entry_pcs.push_back(pc);
-	}
+	IndexEntryHeader e = {};
+	e.contentHash = prog.contentHash;
+	e.vuIndex     = mVU.index & 1u;
+	e.codeSize    = 0; // set by write_payload_if_grown on success
+	e.blockCount  = blockCount;
+	e.flags       = 1u;
+	e.lastUsedNs  = NowNs();
+	e.execCount   = 0;
 
 	write_payload_if_grown(e);
 	PersistIndexEntry(s, e);
 }
 
-bool TestGetEntryPcs(u32 vu_index, const XXH128_hash_t& hash,
-                      u32* out_pcs, size_t out_pcs_cap,
-                      size_t* out_count)
+bool TestHasIndexEntry(u32 vu_index, const XXH128_hash_t& hash)
 {
-	if (out_count)
-		*out_count = 0;
 	State& s = g_state[vu_index & 1];
-	if (!s.initialized)
-		return false;
-	auto it = s.entries.find(hash);
-	if (it == s.entries.end())
-		return false;
-	const auto& pcs = it->second.entry_pcs;
-	const size_t n  = pcs.size();
-	if (out_count)
-		*out_count = n;
-	if (out_pcs && out_pcs_cap > 0)
-	{
-		const size_t copy = (n < out_pcs_cap) ? n : out_pcs_cap;
-		for (size_t i = 0; i < copy; ++i)
-			out_pcs[i] = pcs[i];
-	}
-	return true;
+	return s.initialized && s.entries.find(hash) != s.entries.end();
 }
 
-bool TestAppendIndexEntry(u32 vu_index, const XXH128_hash_t& hash,
-                          const u32* entry_pcs, size_t entry_pc_count)
+bool TestAppendIndexEntry(u32 vu_index, const XXH128_hash_t& hash)
 {
 	State& s = g_state[vu_index & 1];
 	if (!s.initialized || !s.enabled)
@@ -733,15 +615,11 @@ bool TestAppendIndexEntry(u32 vu_index, const XXH128_hash_t& hash,
 	if (s.entries.find(hash) != s.entries.end())
 		return false;
 
-	IndexEntry e;
-	e.hdr.contentHash = hash;
-	e.hdr.vuIndex     = vu_index & 1u;
-	e.hdr.codeSize    = 0;
-	e.hdr.blockCount  = 0;
-	e.hdr.flags       = 1u;
-	e.hdr.lastUsedNs  = NowNs();
-	e.hdr.execCount   = 0;
-	e.entry_pcs.assign(entry_pcs, entry_pcs + entry_pc_count);
+	IndexEntryHeader e = {};
+	e.contentHash = hash;
+	e.vuIndex     = vu_index & 1u;
+	e.flags       = 1u;
+	e.lastUsedNs  = NowNs();
 
 	return PersistIndexEntry(s, e);
 }
@@ -824,7 +702,7 @@ microProgram* TryLoadProgram(microVU& mVU, const XXH128_hash_t& contentHash)
 		return nullptr;
 	}
 	++s.payloadHits;
-	it->second.hdr.lastUsedNs = NowNs();
+	it->second.lastUsedNs = NowNs();
 	return prog;
 }
 

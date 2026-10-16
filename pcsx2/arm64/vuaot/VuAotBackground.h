@@ -59,9 +59,10 @@ namespace vuaot::bg
 
 	// The worker's emission buffer. While bound (Begin..End) this thread's
 	// armAsm writes into it, and every address-bearing emission goes through
-	// the recorder: addresses are materialised in the fixed 16-byte form (so
-	// the code means the same wherever it lands), and branches to placeholders
-	// or into the outside world are logged as fixups.
+	// the recorder: an address inside the buffer is materialised as a full
+	// four-halfword MOVZ/MOVK run (so the copy can patch it), any other address
+	// at its own width (it means the same wherever the code lands), and
+	// branches to placeholders or into the outside world are logged as fixups.
 	//
 	// Placeholders are addresses in a reserved tail of the buffer that nothing
 	// is ever written to. A branch to one is always in B/BL range, and its

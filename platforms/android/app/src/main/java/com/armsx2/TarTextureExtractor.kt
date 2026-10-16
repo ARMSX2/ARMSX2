@@ -17,13 +17,17 @@ import java.io.InputStream
  * blocks, and zero trailing padding are all validated, and the total decompressed byte count must
  * land exactly on [expectedDecompressedBytes] (which also caps what the zstd layer emits).
  *
+ * A pack the user imports from a local file has no catalog entry, so [expectedDecompressedBytes]
+ * and [expectedTextureCount] are null there and those two checks are skipped; every container
+ * rule above still applies.
+ *
  * Bytes flow straight from the zstd stream to per-file writes; no uncompressed tar file ever
  * exists. All work chunks are at most 256 KiB with a cancellation check between them.
  */
 internal class TarTextureExtractor(
     private val dest: File,
-    private val expectedDecompressedBytes: Long,
-    private val expectedTextureCount: Int,
+    private val expectedDecompressedBytes: Long?,
+    private val expectedTextureCount: Int?,
     private val onProgress: (done: Int, total: Int) -> Unit,
     private val isCancelled: () -> Boolean,
     raw: InputStream,
@@ -170,7 +174,7 @@ internal class TarTextureExtractor(
                     skipPadding(size)
                 }
                 textures++
-                if (textures % 32 == 0) onProgress(textures, expectedTextureCount)
+                if (textures % 32 == 0) onProgress(textures, expectedTextureCount ?: 0)
             }
 
             // Second end block, then only zero padding out to the blocking factor. The final -1
@@ -188,18 +192,18 @@ internal class TarTextureExtractor(
                 }
             }
 
-            if (counting.bytesRead != expectedDecompressedBytes) {
+            if (expectedDecompressedBytes != null && counting.bytesRead != expectedDecompressedBytes) {
                 return Outcome.Failure(
                     "tar: decompressed size mismatch (stream ${counting.bytesRead}, " +
                         "catalog $expectedDecompressedBytes)",
                 )
             }
-            if (textures != expectedTextureCount) {
+            if (expectedTextureCount != null && textures != expectedTextureCount) {
                 return Outcome.Failure(
                     "tar: texture count mismatch (stream $textures, catalog $expectedTextureCount)",
                 )
             }
-            onProgress(textures, expectedTextureCount)
+            onProgress(textures, expectedTextureCount ?: textures)
             return Outcome.Success(textures)
         } catch (e: Cancelled) {
             return Outcome.Cancelled

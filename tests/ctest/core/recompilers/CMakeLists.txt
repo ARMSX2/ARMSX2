@@ -129,7 +129,6 @@ add_pcsx2_test(recompiler_tests
 	ee_vu1_vif_dispatch_tests.cpp
 	vu_capture_format_tests.cpp
 	vu_replay_tests.cpp
-	mvu_observed_entries_tests.cpp
 	mvu_cache_exhaustion_tests.cpp
 	mvu_lpstate_invariant_tests.cpp
 	mvu_clear_occupied_tests.cpp
@@ -142,6 +141,8 @@ add_pcsx2_test(recompiler_tests
 	mvu_lane_fmul_fold_tests.cpp
 	mvu_abi_digest_tests.cpp
 	mvu_persist_roundtrip_tests.cpp
+	mvu_persist_relocation_tests.cpp
+	mvu_block_sharing_cycles_tests.cpp
 	mvu_progcache_disk_tests.cpp
 	mvu_waitmtvu_stub_tests.cpp
 	mvu_ebit_exit_tests.cpp

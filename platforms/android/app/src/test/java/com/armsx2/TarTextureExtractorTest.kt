@@ -60,8 +60,8 @@ class TarTextureExtractorTest {
 
     private fun extract(
         tar: ByteArray,
-        expectedDecompressed: Long = tar.size.toLong(),
-        expectedTextures: Int = 1,
+        expectedDecompressed: Long? = tar.size.toLong(),
+        expectedTextures: Int? = 1,
         cancelled: Boolean = false,
     ): TarTextureExtractor.Outcome {
         val dest = tmp.newFolder()
@@ -122,6 +122,23 @@ class TarTextureExtractorTest {
         val out = File(dest, "nested/b.ktx")
         assertTrue(out.isFile)
         assertTrue(out.readBytes().contentEquals(KTX_PAYLOAD))
+    }
+
+    @Test
+    fun localImportWithoutCatalogSizesExtracts() {
+        // A pack picked from storage has no catalog entry, so neither size is known.
+        val tar = header("SLUS-21447/replacements/a.ktx", KTX_PAYLOAD.size.toLong()) + padded(KTX_PAYLOAD) +
+            header("SLUS-21447/replacements/b.ktx", KTX_PAYLOAD.size.toLong()) + padded(KTX_PAYLOAD) + END
+        assertEquals(
+            TarTextureExtractor.Outcome.Success(2),
+            extract(tar, expectedDecompressed = null, expectedTextures = null),
+        )
+    }
+
+    @Test
+    fun localImportStillAppliesContainerRules() {
+        val tar = header("../a.ktx", KTX_PAYLOAD.size.toLong()) + padded(KTX_PAYLOAD) + END
+        assertFailure(extract(tar, expectedDecompressed = null, expectedTextures = null), "rejected path")
     }
 
     // ---- malformed input ------------------------------------------------------------------------

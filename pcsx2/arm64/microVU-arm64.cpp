@@ -54,35 +54,6 @@ alignas(16) microVU microVU1;
 u32 mVU0ParkedSpin = 0;
 
 //------------------------------------------------------------------
-// Micro VU - Observed-entry-PC tracking on microProgram. Single-
-// threaded per VU; the dispatcher records each `startPC` it hands
-// off into the resolved program so additional entry trampolines
-// can be emitted for previously-unseen PCs.
-//------------------------------------------------------------------
-
-bool MvuObservedEntries::record(u32 startPC_bytes)
-{
-	for (u32 i = 0; i < count; ++i)
-	{
-		if (pcs[i] == startPC_bytes)
-			return false;
-	}
-	if (count >= kMax)
-		return false;
-	pcs[count++] = startPC_bytes;
-	++version;
-	return true;
-}
-
-void MvuObservedEntries::clear()
-{
-	count   = 0;
-	version = 0;
-	for (u32 i = 0; i < kMax; ++i)
-		pcs[i] = 0;
-}
-
-//------------------------------------------------------------------
 // Micro VU - Program-cache range overlap helper
 //
 // Returns true iff any compiled range in `prog->ranges` overlaps the byte
@@ -332,8 +303,8 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 		u32 vu0Fpcr;
 		u32 vu1Fpcr;
 		// mVUPersist emit-time recording (the persisted-JIT program cache).
-		// Recording changes emitted code forms — canonical movz+movk×3 for
-		// self-block pointers, forced-long cross-chunk cond branches — so a
+		// Recording changes emitted code forms — fixed-shape MOVZ/MOVK runs
+		// for recorded addresses (block pointers, image addresses) — so a
 		// recording-enabled cache must never be matched against a recording-
 		// disabled run. This field reclaims a zeroed reserved byte, so the
 		// recording-OFF sentinel is bit-identical to the pre-recording one.
@@ -1507,11 +1478,6 @@ __ri microProgram* mVUcreateProg(microVU& mVU, int startPC, const XXH128_hash_t&
 	prog->ranges = new std::deque<microRange>();
 	prog->startPC = startPC;
 	prog->refcount = 0; // Caller increments when pushing into a per-PC deque.
-	// Record the creator's startPC (microMem byte offset) as the first
-	// observed entry. mVUsearchProg appends any additional PCs seen
-	// during the program's lifetime.
-	prog->observed.clear();
-	prog->observed.record(static_cast<u32>(startPC) * 8u);
 	if(doWholeProgCompare)
 		mVUcacheProg(mVU, *prog);
 
@@ -1687,9 +1653,6 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 				mVUquickInstall(mVU, slot, it[0]);
 				list->erase(it);
 				list->push_front(quick.prog);
-				// Per-PC deque match resolved to this program;
-				// record the dispatched entry.
-				quick.prog->observed.record(startPC);
 
 				if (quick.block == nullptr)
 				{
@@ -1720,10 +1683,6 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 			mVU.prog.cur     = shared;
 			mVUquickInstall(mVU, slot, shared);
 			quick.block      = shared->block[startPC / 8];
-			// Record the dispatched entry on the resolved program.
-			// Idempotent on duplicates; bumps `observed.version` only
-			// when this PC is new for the program.
-			shared->observed.record(startPC);
 			if (quick.block == nullptr)
 			{
 				// First time this startPC is compiled for the shared program
@@ -1753,7 +1712,6 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 			mVU.prog.cur     = hydrated;
 			mVUquickInstall(mVU, slot, hydrated);
 			quick.block      = hydrated->block[startPC / 8];
-			hydrated->observed.record(startPC);
 			if (quick.block == nullptr)
 			{
 				// The image carried no block for this entry PC — compile it
@@ -1768,10 +1726,6 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 		mVU.prog.cleared = 0;
 		mVU.prog.isSame  = 1;
 		mVU.prog.cur     = mVUcreateProg(mVU, mVU.regs().start_pc/8, liveHash);
-		// createProg seeded `observed` with its own startPC; record
-		// the dispatcher's `startPC` too (idempotent if they match,
-		// which is the common case).
-		mVU.prog.cur->observed.record(startPC);
 		void* entryPoint = mVUblockFetch(mVU,  startPC, pState);
 		quick.block      = mVU.prog.cur->block[startPC/8];
 		mVUquickInstall(mVU, slot, mVU.prog.cur);
@@ -1785,9 +1739,6 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 	mVU.prog.isSame = -1;
 	mVU.prog.cur = quick.prog;
 	quick.block = mVU.prog.cur->block[startPC / 8];
-	// Quick-slot hit; record the dispatched entry on the resolved
-	// program (idempotent if already observed).
-	mVU.prog.cur->observed.record(startPC);
 
 	if (quick.block == nullptr)
 	{
@@ -1824,15 +1775,6 @@ _mVUt __fi void* mVUlookupProg(u32 startPC, uptr pState)
 	mVU.prog.isSame = -1;
 	mVU.prog.cur = quick.prog;
 	quick.block = block;
-	// Fast-path also resolves to a program; record the dispatched entry
-	// (idempotent on duplicates). observed.pcs is consumed ONLY by the
-	// on-disk program-cache persistence path, which is inactive unless
-	// recording is enabled — so skip the per-dispatch linear scan on the
-	// hot path when recording is off (the default). IsRecordingEnabled()
-	// inlines to a TU-local bool read here. If recording flips on later,
-	// createProg's slow-path seed keeps observed valid going forward.
-	if (mVUPersist::IsRecordingEnabled())
-		quick.prog->observed.record(startPC);
 	return pBlock->hostEntry;
 }
 
@@ -2301,7 +2243,7 @@ static bool mVUspinBounce(microVU& mVU, u32 cycles)
 		return false;
 #endif
 	microBlock* const blk = mVU.resumeBlock;
-	if (!mVU.resumeEntry || !blk || mVUPersist::IsRecordingEnabled())
+	if (!mVU.resumeEntry || !blk)
 		return false;
 	if (EmuConfig.Gamefixes.VUSyncHack || EmuConfig.Gamefixes.FullVU0SyncHack)
 		return false;
@@ -2372,7 +2314,7 @@ static void mVU0ArmParkedSpin()
 	const microBlock* const blk = microVU0.resumeBlock;
 	if (CpuVU0 != &CpuMicroVU0 || !microVU0.resumeEntry || !blk || blk->spinState != mVUspinYes)
 		return;
-	if (mVUPersist::IsRecordingEnabled() || EmuConfig.Speedhacks.EECycleSkip)
+	if (EmuConfig.Speedhacks.EECycleSkip)
 		return;
 	if (EmuConfig.Gamefixes.VUSyncHack || EmuConfig.Gamefixes.FullVU0SyncHack)
 		return;
@@ -2402,10 +2344,9 @@ void recMicroVU0::Execute(u32 cycles)
 		// Resume fast path (VE-07): a preceding cycle-budget break parked the
 		// breaking block's hostEntry (mVU.cycleBreak); re-enter it directly,
 		// skipping mVUlookupProg. Consume-once: every other exit kind (E-bit,
-		// T/D/M-bit) leaves the slot empty and takes the full path. Recording
-		// gets the full path so observed.record keeps seeing resume TPCs.
+		// T/D/M-bit) leaves the slot empty and takes the full path.
 		void* const resume = std::exchange(microVU0.resumeEntry, nullptr);
-		if (resume && !mVUPersist::IsRecordingEnabled())
+		if (resume)
 			((mVUrecCallResume)microVU0.startFunctResume)(resume, cycles);
 		else
 			((mVUrecCall)microVU0.startFunct)(VU0.VI[REG_TPC].UL, cycles);
@@ -2509,7 +2450,7 @@ void recMicroVU1::Execute(u32 cycles)
 #endif
 	// Resume fast path — see recMicroVU0::Execute (VE-07).
 	void* const resume = std::exchange(microVU1.resumeEntry, nullptr);
-	if (resume && !mVUPersist::IsRecordingEnabled())
+	if (resume)
 		((mVUrecCallResume)microVU1.startFunctResume)(resume, cycles);
 	else
 		((mVUrecCall)microVU1.startFunct)(VU1.VI[REG_TPC].UL, cycles);

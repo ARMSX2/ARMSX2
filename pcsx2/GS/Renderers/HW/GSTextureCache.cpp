@@ -32,6 +32,26 @@ std::unique_ptr<GSTextureCache> g_texture_cache;
 
 static u8* s_unswizzle_buffer;
 
+namespace
+{
+	/// The texture level a hash pass expanded into s_unswizzle_buffer, so that PreloadTexture can upload it
+	/// without expanding it a second time. Every other writer of the buffer clears it, and it only matches while
+	/// local memory has not been written since the expansion.
+	struct UnswizzledLevel
+	{
+		bool valid = false;
+		bool palette = false; ///< Expanded to palette indices (rtxP) rather than colours (rtx).
+		u32 tbp0 = 0, tbw = 0, psm = 0;
+		u32 pitch = 0;
+		u64 texa = 0;
+		u64 write_seq = 0;
+		const GSLocalMemory* mem = nullptr;
+		GSVector4i block_rect = GSVector4i::zero();
+	};
+} // namespace
+
+static UnswizzledLevel s_unswizzled_level;
+
 /// List of candidates for purging when the hash cache gets too large.
 static std::vector<std::pair<GSTextureCache::HashCacheMap::iterator, s32>> s_hash_cache_purge_list;
 
@@ -7152,6 +7172,7 @@ GSTextureCache::Source* GSTextureCache::CreateMergedSource(GIFRegTEX0 TEX0, GIFR
 		{
 			// Slow for DX11... page_width * 4 should still be 32 byte aligned for AVX.
 			const int pitch = page_width * sizeof(u32);
+			s_unswizzled_level.valid = false;
 			psm.rtx(g_gs_renderer->m_mem, lm_off, rect, s_unswizzle_buffer, pitch, TEXA);
 			lmtex->Update(rect, s_unswizzle_buffer, pitch);
 		}
@@ -8364,6 +8385,7 @@ void GSTextureCache::Source::Flush(u32 count, int layer, const GSOffset& off)
 		if (rint.width() == 0 || rint.height() == 0)
 			continue;
 
+		s_unswizzled_level.valid = false;
 		rtx(mem, off, r, s_unswizzle_buffer, pitch, m_TEXA);
 
 		// need to offset if we're a region texture
@@ -8563,6 +8585,7 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 
 		// Unswizzle into the scratch buffer: unswizzling straight into mapped upload memory is slow where that memory is write-combined.
 		const int pitch = VectorAlign(read_r.width() * sizeof(u32));
+		s_unswizzled_level.valid = false;
 		g_gs_renderer->m_mem.ReadTexture(off, read_r, s_unswizzle_buffer, pitch, TEXA);
 
 		if (((m_TEX0.PSM & 0xf) != PSMCT24 || m_valid_alpha_high || m_valid_alpha_low) && m_dirty[i].rgba.c.a && bpp >= 16)
@@ -9667,6 +9690,11 @@ static void HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GST
 
 		// Use temp buffer for expanding, since we may not need to update.
 		rtx(mem, off, block_rect, temp, pitch, TEXA);
+		if (temp == s_unswizzle_buffer)
+		{
+			s_unswizzled_level = {true, palette, TEX0.TBP0, TEX0.TBW, TEX0.PSM, pitch, TEXA.U64, mem.WriteSeq(), &mem,
+				block_rect};
+		}
 
 		// Hash the expanded texture.
 		u8* ptr = temp + (pitch * static_cast<u32>(rect.top - block_rect.top)) +
@@ -9744,8 +9772,20 @@ void GSTextureCache::PreloadTexture(const GIFRegTEX0& TEX0, const GIFRegTEXA& TE
 	{
 		pitch = VectorAlign(pitch);
 
+		// A hash of this level on a cache miss has usually just expanded it into the buffer the same way.
 		u8* buff = s_unswizzle_buffer;
-		rtx(mem, off, block_rect, buff, pitch, TEXA);
+		const UnswizzledLevel& ul = s_unswizzled_level;
+		if (ul.valid && ul.mem == &mem && ul.write_seq == mem.WriteSeq() && ul.palette == paltex &&
+			ul.tbp0 == TEX0.TBP0 && ul.tbw == TEX0.TBW && ul.psm == TEX0.PSM && ul.texa == TEXA.U64 &&
+			ul.block_rect.eq(block_rect))
+		{
+			pitch = ul.pitch;
+		}
+		else
+		{
+			s_unswizzled_level.valid = false;
+			rtx(mem, off, block_rect, buff, pitch, TEXA);
+		}
 
 		const u8* ptr = buff + (pitch * static_cast<u32>(rect.top - block_rect.top)) +
 		                (static_cast<u32>(rect.left - block_rect.left) << (paltex ? 0 : 2));

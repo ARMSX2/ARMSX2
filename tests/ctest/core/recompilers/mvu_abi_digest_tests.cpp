@@ -14,7 +14,8 @@
 //
 // The digest (mVUPersist::TestComputeEmitDigest) masks every operand that
 // may legitimately differ between correct emissions — 64-bit mov-chain
-// immediates, B/BL displacements, ADRP pages, fixup address payloads — and
+// immediates, B/BL displacements, ADRP pages, recorded B.cond displacements,
+// image and data-arena offsets in fixup records — and
 // hashes what remains: opcode selection, register allocation, instruction
 // order, block/chunk/fixup structure. That is deterministic across runs,
 // machines, and PIE/ASLR.
@@ -32,8 +33,8 @@
 //   are in.
 //
 // Recording is enabled during compilation because the cache only ever
-// stores recording-enabled forms (canonical movs, forced-long cond
-// branches) — those are the shapes worth pinning.
+// stores recording-enabled forms (fixed-shape MOVZ/MOVK runs for recorded
+// addresses) — those are the shapes worth pinning.
 
 #include "harness/VuTestHarness.h"
 #include "harness/RecompilerTestEnvironment.h"
@@ -71,7 +72,7 @@ inline VuOp LowerOnly(u32 lower)
 
 // One digest per probe program. The set mirrors the round-trip suite's
 // coverage axes: FMAC straight-line (upper pipeline + clamp emitters),
-// conditional branch both-arms (block linking, SelfBlockAbs fixups), and
+// conditional branch both-arms (block linking, block-object fixups), and
 // indirect jump (two emission episodes, jump-cache path, stub calls).
 struct DigestSet
 {
@@ -501,6 +502,13 @@ constexpr AbiPin kPins[] = {
 	// field, which for it is not a destination mask, and its Fs slot is no longer recorded as VF0.
 	// Every other column is abi 61's. Pinned from the merged code.
 	{62, {0xcc5d8ed2aff67456, 0x3740d9d84d609b95, 0x49140181ed6daa6d, 0x8cd5553cb2a8daba, 0x30d527dd8fe4d10c, 0x1a887bba90ef1a41, 0x51df58673dbf1b10, 0x929029ca42ca98c1, 0x01e61f64bdbc1a38, 0x01c604cf32776547, 0x024ff6cd7fabd2c8, 0xace1f4023f0e8bf8, 0x021b1d8ea47dc8e8, 0xc8c50b58f3f9badd, 0x530cf428707c7f11, 0x0be3b676bc50b217, 0x791e61d19068a3bd, 0x14765f7c645b4aee, 0x0cc9eeeb40bf56e4, 0x43b9ebeda584952a, 0xed424f10e0661fdf, 0x029663d8580ead20, 0x72a4cdceb608619f, 0xe34a4dda6a35b3df, 0xf9c3d13580d762e9, 0x2c012558a97e0052, 0xdb4ba733afd41dec, 0x0e5205525af143af}},
+	// abi 63: recorded programs become relocatable across processes (the vu-progcache-aslr branch,
+	// numbered 40 there). Block pointers are runs as wide as the pointer (were four), the fixup
+	// records change shape, and a recorded cross-chunk B.cond keeps its short form. The digest also
+	// changed with it (it masks recorded B.cond displacements and the image and data-arena offsets
+	// in fixup records), so every column moves and none of the rows above is comparable to this one.
+	// Pinned from the merged code, stable across shuffled runs.
+	{63, {0xa48aa35478a78bdc, 0xd2cd8a66fb118db3, 0x3eb36a9cd84f76c7, 0x9cdcaa9d4fbe4aed, 0xac9ba26d82b481cf, 0x15c7e07ec93fdeb, 0x5dfd36d8bf388956, 0x2f39a76f7c0463d, 0xd6505b9f58da0e3d, 0xb167cadfd82d572a, 0xcff9c1f9cf303b6f, 0x20c6e112f962a426, 0x85ca05f33a95303a, 0x4fb1bf9c5361c248, 0xfcd572c1c3cd38fb, 0x48a8cdab505c6ae3, 0x9f82581ec2b20523, 0xbe0aaa4977c08f5a, 0x1d33ada241458b9a, 0x586a9035b7d90693, 0xe03d34d038f6e0a9, 0x4a888cdf933e9c1a, 0xc3d6512831b59ba7, 0x3a4c8b9888d132b1, 0xb391e1e028a4ecbd, 0x424df76350b0cc50, 0xacc16ea21944cbbd, 0x326f8e96526c9b16}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -1188,9 +1196,11 @@ TEST(MvuAbiDigest, EmittedShapeIndependentOfPriorCompile)
 }
 
 // The vu-aot tripwire's hook on VU1's STATUS quadword of VU0's register window is emitted only while
-// the tier is wanted (section 9ad, ABI 61): with EnableVUAot off VU0's load/store shape is abi 59's,
-// from before the hook, and with it on it is abi 60's, the hook in. VU0's reset (the harness resets
-// before each compile) is where the choice is taken, as VMManager's settings change resets both VUs.
+// the tier is wanted (section 9ad, ABI 61): with EnableVUAot off VU0's load/store shape is the one
+// from before the hook (the current pin, vu0LoadStore), and with it on it is the hook's shape. Rows
+// 59 to 62 of the table were computed before the digest changed with ABI 63 and no longer compare
+// with anything; the hook-on shape is pinned here instead. VU0's reset (the harness resets before
+// each compile) is where the choice is taken, as VMManager's settings change resets both VUs.
 TEST(MvuAbiDigest, Vu0WindowHookOnlyWhileVuAotIsWanted)
 {
 	ASSERT_TRUE(RecompilerTestEnvironment::IsReady());
@@ -1221,8 +1231,13 @@ TEST(MvuAbiDigest, Vu0WindowHookOnlyWhileVuAotIsWanted)
 
 	EXPECT_FALSE(hookOff);
 	EXPECT_TRUE(hookOn);
-	EXPECT_EQ(off, findPin(59)) << std::hex << "setting off: 0x" << off << ", abi 59 pinned 0x" << findPin(59);
-	EXPECT_EQ(on, findPin(60)) << std::hex << "setting on: 0x" << on << ", abi 60 pinned 0x" << findPin(60);
+	const u32 abi = mVUProgCache::GetCompilerAbiVersion();
+	EXPECT_EQ(off, findPin(abi)) << std::hex << "setting off: 0x" << off << ", abi " << std::dec << abi << " pinned 0x" << std::hex << findPin(abi);
+	EXPECT_NE(on, off) << "the hook changed nothing";
+	// Pinned from the merged code at abi 63. Re-pin it with the table when an emitter change moves it.
+	constexpr u64 kHookOnDigestAbi63 = 0xccc45e874390054b;
+	EXPECT_EQ(abi, 63u) << "the hook-on pin is for abi 63: re-pin kHookOnDigestAbi63";
+	EXPECT_EQ(on, kHookOnDigestAbi63) << std::hex << "setting on: 0x" << on << ", pinned 0x" << kHookOnDigestAbi63;
 }
 
 } // namespace recompiler_tests

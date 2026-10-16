@@ -1,14 +1,18 @@
 package com.armsx2
 
 import android.content.Context
+import android.net.Uri
 import android.util.Log
 import com.armsx2.runtime.MainActivityRuntime
 import kr.co.iefriends.pcsx2.NativeApp
+import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.security.MessageDigest
 import java.util.zip.ZipFile
+import java.util.zip.ZipInputStream
 
 /**
  * Downloads and installs a catalog texture pack into `<dataRoot>/textures/<SERIAL>/replacements`.
@@ -38,6 +42,10 @@ object TexturePackInstaller {
     /** A removed pack's folder while its files are deleted. It sits beside the game folders so
      *  moving it there is one rename, and the leading dot keeps it from reading as a serial. */
     private const val REMOVED_PREFIX = ".deleting-"
+    /** The native zstd decoder's own ceiling. */
+    private const val MAX_LOCAL_TAR_BYTES = 16L shl 30
+    private val ZSTD_MAGIC = byteArrayOf(0x28, 0xB5.toByte(), 0x2F, 0xFD.toByte())
+    private val ZIP_MAGIC = byteArrayOf(0x50, 0x4B, 0x03, 0x04)
 
     sealed interface Progress {
         data class Downloading(val read: Long, val total: Long) : Progress
@@ -46,7 +54,8 @@ object TexturePackInstaller {
         data object Installing : Progress
     }
 
-    data class Outcome(val ok: Boolean, val error: String? = null)
+    /** [textures] is filled in by [installLocal] only. */
+    data class Outcome(val ok: Boolean, val error: String? = null, val textures: Int = 0)
 
     /**
      * Blocking; call from a background dispatcher. [isCancelled] is polled throughout so the user
@@ -227,6 +236,80 @@ object TexturePackInstaller {
             .forEach { runCatching { it.deleteRecursively() } }
     }
 
+    /**
+     * Installs a .zip or .tar.zst pack the user picked from storage into
+     * `<dataRoot>/textures/<SERIAL>/replacements`. Blocking; call from a background dispatcher.
+     *
+     * The format is read from the first bytes, not the name: a document provider's display name
+     * can lack the extension. There is no catalog entry, so nothing is checked against declared
+     * sizes or a digest, but the archive goes through the same path policy and tar rules as a
+     * catalog install. Files are extracted to staging first and then moved over the existing
+     * pack, so a failed archive leaves the game's textures as they were. Like the folder import,
+     * this adds to an existing pack rather than replacing it, and the catalog's install record is
+     * left alone.
+     */
+    fun installLocal(
+        context: Context,
+        uri: Uri,
+        serial: String,
+        onProgress: (Progress) -> Unit,
+        isCancelled: () -> Boolean,
+    ): Outcome {
+        val root = File(MainActivityRuntime.assetCopyRoot(context))
+        // Not install()'s staging folder: a catalog download can run at the same time.
+        val staging = File(root, ".texturepacks-local-tmp")
+        staging.deleteRecursively()
+        staging.mkdirs()
+        try {
+            val resolver = context.contentResolver
+            val magic = ByteArray(4)
+            val got = resolver.openInputStream(uri)?.use { readUpTo(it, magic) }
+                ?: return Outcome(false, "Could not open the selected file")
+            val format = when {
+                got == 4 && magic.contentEquals(ZSTD_MAGIC) -> TextureCatalog.ArchiveFormat.TAR_ZSTD
+                got == 4 && magic.contentEquals(ZIP_MAGIC) -> TextureCatalog.ArchiveFormat.ZIP
+                else -> return Outcome(false, "Not a .zip or .tar.zst texture pack")
+            }
+            if (format == TextureCatalog.ArchiveFormat.TAR_ZSTD && NativeApp.hasNoNativeBinary) {
+                return Outcome(false, "The emulator core is not available on this device")
+            }
+
+            val extracted = File(staging, "out")
+            extracted.mkdirs()
+            val count = resolver.openInputStream(uri)?.use { raw ->
+                when (format) {
+                    TextureCatalog.ArchiveFormat.TAR_ZSTD -> {
+                        // Nothing declares the unpacked size, so the most the zstd layer may emit is
+                        // what the disk can hold.
+                        val free = runCatching { root.usableSpace }.getOrDefault(0L)
+                        val cap = (free - FREE_SPACE_SLACK).coerceIn(1L, MAX_LOCAL_TAR_BYTES)
+                        extractTarZstdStream(raw, extracted, cap, null, null, onProgress, isCancelled)
+                    }
+                    TextureCatalog.ArchiveFormat.ZIP ->
+                        extractZipStream(raw, extracted, onProgress, isCancelled)
+                }
+            } ?: return Outcome(false, "Could not open the selected file")
+            when (count) {
+                is ExtractionResult.Cancelled -> return Outcome(false, null)
+                is ExtractionResult.Failure -> return Outcome(false, count.reason)
+                is ExtractionResult.Done ->
+                    if (count.textures <= 0) return Outcome(false, "Archive contained no textures")
+            }
+
+            onProgress(Progress.Installing)
+            val dest = File(File(File(root, "textures"), serial.uppercase()), "replacements")
+            if (!mergeInto(extracted, dest)) {
+                return Outcome(false, "Could not write to the textures folder")
+            }
+            return Outcome(true, textures = (count as ExtractionResult.Done).textures)
+        } catch (e: Exception) {
+            Log.w(TAG, "local install failed: ${e.message}")
+            return Outcome(false, e.message ?: "Install failed")
+        } finally {
+            staging.deleteRecursively()
+        }
+    }
+
     private sealed interface ExtractionResult {
         data class Done(val textures: Int) : ExtractionResult
         data object Cancelled : ExtractionResult
@@ -361,29 +444,101 @@ object TexturePackInstaller {
         pack: TextureCatalog.Pack,
         onProgress: (Progress) -> Unit,
         isCancelled: () -> Boolean,
+    ): ExtractionResult = archive.inputStream().use { raw ->
+        // The native layer caps output at the catalog's declared decompressed size; the tar
+        // extractor additionally requires the stream to land on it exactly.
+        extractTarZstdStream(
+            raw, dest, pack.decompressedSizeBytes, pack.decompressedSizeBytes, pack.fileCount,
+            onProgress, isCancelled,
+        )
+    }
+
+    /** [expectedBytes] and [expectedTextures] are null for a local import, which has no catalog
+     *  entry to hold them to; [maxOutputBytes] still bounds the zstd layer. */
+    private fun extractTarZstdStream(
+        raw: InputStream,
+        dest: File,
+        maxOutputBytes: Long,
+        expectedBytes: Long?,
+        expectedTextures: Int?,
+        onProgress: (Progress) -> Unit,
+        isCancelled: () -> Boolean,
     ): ExtractionResult {
-        archive.inputStream().use { raw ->
-            // The native layer caps output at the catalog's declared decompressed size; the tar
-            // extractor additionally requires the stream to land on it exactly.
-            ZstdInputStream(raw, pack.decompressedSizeBytes).use { zstd ->
-                val extractor = TarTextureExtractor(
-                    dest = dest,
-                    expectedDecompressedBytes = pack.decompressedSizeBytes,
-                    expectedTextureCount = pack.fileCount,
-                    onProgress = { done, total -> onProgress(Progress.Extracting(done, total)) },
-                    isCancelled = isCancelled,
-                    raw = zstd,
-                )
-                return when (val outcome = extractor.extract()) {
-                    is TarTextureExtractor.Outcome.Success -> ExtractionResult.Done(outcome.textureCount)
-                    is TarTextureExtractor.Outcome.Cancelled -> ExtractionResult.Cancelled
-                    is TarTextureExtractor.Outcome.Failure -> {
-                        Log.w(TAG, "tar extraction failed: ${outcome.reason}")
-                        ExtractionResult.Failure(outcome.reason)
-                    }
+        ZstdInputStream(raw, maxOutputBytes).use { zstd ->
+            val extractor = TarTextureExtractor(
+                dest = dest,
+                expectedDecompressedBytes = expectedBytes,
+                expectedTextureCount = expectedTextures,
+                onProgress = { done, total -> onProgress(Progress.Extracting(done, total)) },
+                isCancelled = isCancelled,
+                raw = zstd,
+            )
+            return when (val outcome = extractor.extract()) {
+                is TarTextureExtractor.Outcome.Success -> ExtractionResult.Done(outcome.textureCount)
+                is TarTextureExtractor.Outcome.Cancelled -> ExtractionResult.Cancelled
+                is TarTextureExtractor.Outcome.Failure -> {
+                    Log.w(TAG, "tar extraction failed: ${outcome.reason}")
+                    ExtractionResult.Failure(outcome.reason)
                 }
             }
         }
+    }
+
+    // ---- extract: local zip -------------------------------------------------------------------
+
+    /**
+     * [extractZip] for a zip read from a document provider, which gives a stream rather than a
+     * file. Same path policy; the entry count is not known up front, so progress has no total.
+     */
+    private fun extractZipStream(
+        raw: InputStream,
+        dest: File,
+        onProgress: (Progress) -> Unit,
+        isCancelled: () -> Boolean,
+    ): ExtractionResult {
+        return runCatching {
+            ZipInputStream(BufferedInputStream(raw)).use { zin ->
+                var done = 0
+                val destCanonical = dest.canonicalPath + File.separator
+                val seen = HashSet<String>()
+                while (true) {
+                    val entry = zin.nextEntry ?: break
+                    if (isCancelled()) return ExtractionResult.Cancelled
+                    if (entry.isDirectory || TextureArchivePath.isJunkEntry(entry.name) ||
+                        !TextureArchivePath.isTextureFile(entry.name)
+                    ) continue
+                    val rel = TextureArchivePath.replacementRelativePath(entry.name) ?: continue
+                    val out = File(dest, rel)
+                    if (!out.canonicalPath.startsWith(destCanonical)) {
+                        Log.w(TAG, "zip-slip entry rejected: ${entry.name}")
+                        return ExtractionResult.Failure("Archive contained an unsafe path")
+                    }
+                    if (!seen.add(TextureArchivePath.collisionKey(rel))) {
+                        Log.w(TAG, "duplicate destination rejected: $rel")
+                        return ExtractionResult.Failure("Archive contains duplicate textures ($rel)")
+                    }
+                    out.parentFile?.mkdirs()
+                    FileOutputStream(out).use { zin.copyTo(it, 256 * 1024) }
+                    done++
+                    if (done % 32 == 0) onProgress(Progress.Extracting(done, 0))
+                }
+                ExtractionResult.Done(done)
+            }
+        }.getOrElse {
+            Log.w(TAG, "extract failed: ${it.message}")
+            ExtractionResult.Failure("Archive could not be read: ${it.message ?: "unknown error"}")
+        }
+    }
+
+    /** Fills [buf] from [input] as far as the stream allows; returns the bytes read. */
+    private fun readUpTo(input: InputStream, buf: ByteArray): Int {
+        var n = 0
+        while (n < buf.size) {
+            val r = input.read(buf, n, buf.size - n)
+            if (r < 0) break
+            n += r
+        }
+        return n
     }
 
     // ---- commit -------------------------------------------------------------------------------
@@ -408,6 +563,27 @@ object TexturePackInstaller {
             return false
         }
         backup.deleteRecursively()
+        return true
+    }
+
+    /**
+     * Moves every file under [staged] to the same relative path under [target], replacing files of
+     * the same name and keeping the rest. Both are on one filesystem, so each move is a rename.
+     */
+    private fun mergeInto(staged: File, target: File): Boolean {
+        if (!target.isDirectory && !target.mkdirs()) return false
+        for (file in staged.walkTopDown().filter(File::isFile)) {
+            val out = File(target, file.relativeTo(staged).path)
+            out.parentFile?.mkdirs()
+            if (out.exists() && !out.delete()) return false
+            if (!file.renameTo(out)) {
+                Log.w(TAG, "could not move ${file.name} into place")
+                return false
+            }
+        }
+        // The size cache in the texture screen is keyed on this folder's mtime, and a rename deep
+        // inside it does not always change that.
+        target.setLastModified(System.currentTimeMillis())
         return true
     }
 

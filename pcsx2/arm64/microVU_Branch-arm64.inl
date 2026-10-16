@@ -539,7 +539,7 @@ static void mVUcloseCodeCache(microVU& mVU)
 
 	// Persisted-JIT recorder: finalize (or drop) the chunk. Runs after
 	// FinalizeCode so the captured bytes include any literal pool.
-	mVUPersist::EndEpisode(mVU, codeStart + codeSize);
+	mVUPersist::EndEpisode(mVU, codeStart, codeStart + codeSize);
 
 	armAsm = nullptr; // unbind; do not delete (persistent)
 	HostSys::EndCodeWriteRange(mVU.prog.x86start, mVUcodeCacheWriteSpan(mVU));

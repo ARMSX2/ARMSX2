@@ -27,7 +27,6 @@
 #include "EeFpuModelCall-arm64.h"
 #include "VuEfuModel.h"
 #include "VuMulBand.h"
-#include "MvuObservedEntries.h"
 #include "microVU_Persist-arm64.h"
 #include "vuaot/VuAotMvuTrace.h"
 
@@ -238,7 +237,14 @@
 //       carries the choice (vu0WindowHook).
 //  62 — an allocReg write with an empty field (xyzw == 0) leaves a temp slot, not
 //       one recorded as an unmodified copy of the register it was told to write.
-static constexpr u32 kMvuCompilerAbiVersion = 62;
+//  63 — recorded programs are relocatable across processes (ASLR): image and
+//       data-arena addresses are fixups (region + offset), an address
+//       materialized as an immediate is a MOVZ/MOVK run up to its top halfword
+//       (a block pointer's run was always four), and a recorded B.cond across
+//       chunks keeps its short form. Payload format version 2. (The
+//       vu-progcache-aslr branch numbered this 40, from master's count; the
+//       vu-aot branch was at 62 when the two met.)
+static constexpr u32 kMvuCompilerAbiVersion = 63;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
@@ -531,14 +537,6 @@ struct microProgram
 	// The single owner is mVU.prog.contentMap[contentHash]; per-PC deques are
 	// non-owning references. Single-threaded per VU, so plain s32.
 	s32           refcount;
-
-	// Set of microMem byte offsets the dispatcher has handed off into this
-	// program. Initialized at mVUcreateProg with the creator's startPC;
-	// mVUsearchProg accumulates additional entries seen during the program's
-	// lifetime. `version` lets callers detect "new entry since last compile"
-	// cheaply (compare vs the version snapshotted by the most recent
-	// SaveProgram).
-	MvuObservedEntries observed;
 
 	// Recorded block-graph snapshot (chunks + fixups) for this program, built
 	// by the emit-time recorder in microVU_Persist-arm64.inl. Null when

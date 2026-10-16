@@ -59,7 +59,7 @@
 // round-trip tests.
 namespace pcsx2_test
 {
-	static constexpr u32 kMvuCompilerAbiVersionMirror = 62;
+	static constexpr u32 kMvuCompilerAbiVersionMirror = 63;
 }
 
 namespace
@@ -449,14 +449,16 @@ TEST(ProgCacheVersioning, empty_emu_folders_disables_cache)
 	EmuFolders::Cache = prev;
 }
 
-// --- Variable-length INDEX format ---------------------------------
+// --- INDEX record format ------------------------------------------
 //
-// IndexEntry on disk is a fixed 64-byte header followed by
-// `entryCount` × u32 entry-PC values (microMem byte offsets). The
-// tests below mirror that header layout test-side so they can write
-// synthetic records and assert the loader parses them. A
-// static_assert on the mirror size catches any drift from the
-// production layout at compile time.
+// An INDEX record is a fixed 64 bytes, appended whole. The tests below
+// mirror that layout test-side so they can write synthetic records and
+// assert the loader parses them. A static_assert on the mirror size
+// catches any drift from the production layout at compile time.
+//
+// Format version 3 followed every record with a list of entry PCs
+// (header.entryCount trailing u32 values); version 4 dropped it. A
+// version-3 directory must be evicted, not parsed at the new record size.
 
 namespace
 {
@@ -470,8 +472,7 @@ namespace
 		u32           flags;
 		u64           lastUsedNs;
 		u64           execCount;
-		u32           entryCount;
-		u8            pad[12];
+		u8            pad[16];
 	};
 #pragma pack(pop)
 	static_assert(sizeof(IndexEntryHeaderMirror) == 64,
@@ -480,11 +481,12 @@ namespace
 	// Build a current-format VERSION file in `vu_subdir/VERSION` so Init
 	// doesn't evict the synthetic INDEX we're about to write.
 	void WriteCurrentVersion(const std::string& version_path, u32 vu_index,
-	                         const XXH128_hash_t& sentinel)
+	                         const XXH128_hash_t& sentinel,
+	                         u32 format_version = mVUProgCache::kProgCacheFormatVersion)
 	{
 		VersionHeaderMirror hdr{};
 		hdr.magic              = kVersionMagicMirror;
-		hdr.formatVersion      = mVUProgCache::kProgCacheFormatVersion;
+		hdr.formatVersion      = format_version;
 		hdr.compilerAbiVersion = pcsx2_test::kMvuCompilerAbiVersionMirror;
 		hdr.vuIndex            = vu_index & 1u;
 		hdr.optionsSentinel    = sentinel;
@@ -504,24 +506,24 @@ namespace
 		std::fclose(fp);
 	}
 
-	std::vector<u8> SerializeOne(const IndexEntryHeaderMirror& hdr,
-	                              const std::vector<u32>& entry_pcs)
+	void AppendRecord(std::vector<u8>& out, const IndexEntryHeaderMirror& rec)
 	{
-		IndexEntryHeaderMirror h = hdr;
-		h.entryCount = static_cast<u32>(entry_pcs.size());
-		std::vector<u8> out(sizeof(h) + entry_pcs.size() * sizeof(u32));
-		std::memcpy(out.data(), &h, sizeof(h));
-		if (!entry_pcs.empty())
-		{
-			std::memcpy(out.data() + sizeof(h),
-			            entry_pcs.data(),
-			            entry_pcs.size() * sizeof(u32));
-		}
-		return out;
+		const u8* p = reinterpret_cast<const u8*>(&rec);
+		out.insert(out.end(), p, p + sizeof(rec));
+	}
+
+	IndexEntryHeaderMirror MakeRecord(u64 lo, u64 hi, u32 vu_index, u32 flags)
+	{
+		IndexEntryHeaderMirror r{};
+		r.contentHash.low64  = lo;
+		r.contentHash.high64 = hi;
+		r.vuIndex            = vu_index;
+		r.flags              = flags;
+		return r;
 	}
 }
 
-TEST(ProgCacheIndexFormatV3, single_entry_round_trip_via_test_helper)
+TEST(ProgCacheIndexFormatV4, single_entry_round_trip_via_test_helper)
 {
 	TempCacheRoot tmp;
 	mVUProgCache::ResetForTest(1);
@@ -535,47 +537,37 @@ TEST(ProgCacheIndexFormatV3, single_entry_round_trip_via_test_helper)
 	hash.low64  = 0x1111222233334444ull;
 	hash.high64 = 0x5555666677778888ull;
 
-	// Append a single-entry record through the production persistence
-	// path (atomic append + in-memory registration), then assert the
-	// entry-PC round-trips in-process and across a simulated process
-	// boundary (ResetForTest + re-Init re-reads the on-disk INDEX).
-	const u32 seeded_pc = 0x58u;
-	ASSERT_TRUE(mVUProgCache::TestAppendIndexEntry(1, hash, &seeded_pc, 1));
+	// Append a record through the production persistence path (atomic
+	// append + in-memory registration), then assert it round-trips
+	// in-process and across a simulated process boundary (ResetForTest +
+	// re-Init re-reads the on-disk INDEX).
+	EXPECT_FALSE(mVUProgCache::TestHasIndexEntry(1, hash));
+	ASSERT_TRUE(mVUProgCache::TestAppendIndexEntry(1, hash));
+	EXPECT_TRUE(mVUProgCache::TestHasIndexEntry(1, hash));
 
 	// Duplicate hash short-circuits via the in-memory dedupe.
-	EXPECT_FALSE(mVUProgCache::TestAppendIndexEntry(1, hash, &seeded_pc, 1));
+	EXPECT_FALSE(mVUProgCache::TestAppendIndexEntry(1, hash));
 
-	// On-disk record is the 64-byte header + 1 trailing u32 = 68 bytes.
+	// On-disk record is exactly the 64-byte header: no trailing list.
 	const std::string idx = Path::Combine(tmp.vu_subdir(1), "INDEX");
 	ASSERT_TRUE(FileSystem::FileExists(idx.c_str()));
 	const auto bytes = FileSystem::ReadBinaryFile(idx.c_str());
 	ASSERT_TRUE(bytes.has_value());
-	EXPECT_EQ(bytes->size(), 68u);
-
-	// In-process: in-memory entry has the seeded PC.
-	u32 pcs[8] = {0};
-	size_t cnt = 0;
-	ASSERT_TRUE(mVUProgCache::TestGetEntryPcs(1, hash, pcs, 8, &cnt));
-	ASSERT_EQ(cnt, 1u);
-	EXPECT_EQ(pcs[0], seeded_pc);
+	EXPECT_EQ(bytes->size(), 64u);
 
 	// Reset + Init: cross-process reload reads it back from disk.
 	mVUProgCache::ResetForTest(1);
 	mVUProgCache::InitWithSentinel(1, sentinel);
 
-	std::memset(pcs, 0, sizeof(pcs));
-	cnt = 0;
-	ASSERT_TRUE(mVUProgCache::TestGetEntryPcs(1, hash, pcs, 8, &cnt));
-	EXPECT_EQ(cnt, 1u);
-	EXPECT_EQ(pcs[0], seeded_pc);
+	EXPECT_EQ(mVUProgCache::GetStats(1).entries, 1u);
+	EXPECT_TRUE(mVUProgCache::TestHasIndexEntry(1, hash));
 
 	mVUProgCache::ResetForTest(1);
 }
 
-TEST(ProgCacheIndexFormatV3, multi_entry_synthetic_load)
+TEST(ProgCacheIndexFormatV4, multi_record_synthetic_load)
 {
-	// Synthesize a 3-entry record. Init must round-trip every entry
-	// PC through LoadIndex.
+	// Three back-to-back records. Init must load every one of them.
 	TempCacheRoot tmp;
 	mVUProgCache::ResetForTest(1);
 
@@ -588,39 +580,30 @@ TEST(ProgCacheIndexFormatV3, multi_entry_synthetic_load)
 	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(sub.c_str(), true));
 	WriteCurrentVersion(Path::Combine(sub, "VERSION"), 1, sentinel);
 
-	XXH128_hash_t hash{};
-	hash.low64  = 0xAAAA111122223333ull;
-	hash.high64 = 0xBBBB444455556666ull;
-
-	IndexEntryHeaderMirror hdr{};
-	hdr.contentHash = hash;
-	hdr.vuIndex     = 1u;
-	hdr.flags       = 1u; // valid
-	const std::vector<u32> entry_pcs = {0x000u, 0x058u, 0x148u};
-	const auto bytes = SerializeOne(hdr, entry_pcs);
+	std::vector<u8> bytes;
+	for (u64 i = 1; i <= 3; ++i)
+		AppendRecord(bytes, MakeRecord(0xAAAA000000000000ull | i, 0xBBBB000000000000ull | i, 1u, 1u));
+	ASSERT_EQ(bytes.size(), 3u * 64u);
 	WriteRawIndex(Path::Combine(sub, "INDEX"), bytes);
 
 	mVUProgCache::InitWithSentinel(1, sentinel);
 
-	const auto stats = mVUProgCache::GetStats(1);
-	ASSERT_EQ(stats.entries, 1u);
-
-	u32 pcs[8] = {0};
-	size_t cnt = 0;
-	ASSERT_TRUE(mVUProgCache::TestGetEntryPcs(1, hash, pcs, 8, &cnt));
-	ASSERT_EQ(cnt, 3u);
-	EXPECT_EQ(pcs[0], 0x000u);
-	EXPECT_EQ(pcs[1], 0x058u);
-	EXPECT_EQ(pcs[2], 0x148u);
+	EXPECT_EQ(mVUProgCache::GetStats(1).entries, 3u);
+	for (u64 i = 1; i <= 3; ++i)
+	{
+		XXH128_hash_t h{};
+		h.low64  = 0xAAAA000000000000ull | i;
+		h.high64 = 0xBBBB000000000000ull | i;
+		EXPECT_TRUE(mVUProgCache::TestHasIndexEntry(1, h)) << "record " << i;
+	}
 
 	mVUProgCache::ResetForTest(1);
 }
 
-TEST(ProgCacheIndexFormatV3, truncated_trailing_drops_record_cleanly)
+TEST(ProgCacheIndexFormatV4, truncated_tail_drops_partial_record_cleanly)
 {
-	// Header claims entryCount=4 but only 2 trailing u32s follow.
-	// LoadIndex must drop the (partial) record and not poison
-	// in-memory state.
+	// One whole record, then half of a second. LoadIndex must keep the
+	// first and not let the partial tail poison in-memory state.
 	TempCacheRoot tmp;
 	mVUProgCache::ResetForTest(1);
 
@@ -632,39 +615,28 @@ TEST(ProgCacheIndexFormatV3, truncated_trailing_drops_record_cleanly)
 	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(sub.c_str(), true));
 	WriteCurrentVersion(Path::Combine(sub, "VERSION"), 1, sentinel);
 
-	XXH128_hash_t hash{};
-	hash.low64  = 0xC0DEFADEC0DEFADEull;
-	hash.high64 = 0xC0DEC0DEC0DEC0DEull;
-
-	IndexEntryHeaderMirror hdr{};
-	hdr.contentHash = hash;
-	hdr.vuIndex     = 1u;
-	hdr.flags       = 1u;
-	hdr.entryCount  = 4u; // claims 4
-	std::vector<u8> bytes(sizeof(hdr) + 2 * sizeof(u32));
-	std::memcpy(bytes.data(), &hdr, sizeof(hdr));
-	const u32 trail[2] = {0x10u, 0x20u};
-	std::memcpy(bytes.data() + sizeof(hdr), trail, sizeof(trail));
+	const IndexEntryHeaderMirror whole = MakeRecord(0xC0DEFADEC0DEFADEull, 0xC0DEC0DEC0DEC0DEull, 1u, 1u);
+	const IndexEntryHeaderMirror cut   = MakeRecord(0x7A11000000000001ull, 0x7A11000000000002ull, 1u, 1u);
+	std::vector<u8> bytes;
+	AppendRecord(bytes, whole);
+	AppendRecord(bytes, cut);
+	bytes.resize(sizeof(whole) + sizeof(cut) / 2); // second record cut in half
 	WriteRawIndex(Path::Combine(sub, "INDEX"), bytes);
 
 	mVUProgCache::InitWithSentinel(1, sentinel);
 
-	const auto stats = mVUProgCache::GetStats(1);
-	EXPECT_EQ(stats.entries, 0u)
-		<< "truncated tail must not be loaded as a valid entry";
-
-	u32 pcs[8] = {0};
-	size_t cnt = 0;
-	EXPECT_FALSE(mVUProgCache::TestGetEntryPcs(1, hash, pcs, 8, &cnt));
+	EXPECT_EQ(mVUProgCache::GetStats(1).entries, 1u)
+		<< "a truncated tail must not be loaded as a valid entry";
+	EXPECT_TRUE(mVUProgCache::TestHasIndexEntry(1, whole.contentHash));
+	EXPECT_FALSE(mVUProgCache::TestHasIndexEntry(1, cut.contentHash));
 
 	mVUProgCache::ResetForTest(1);
 }
 
-TEST(ProgCacheIndexFormatV3, tombstone_skipped_on_load)
+TEST(ProgCacheIndexFormatV4, tombstone_skipped_on_load)
 {
-	// flags-bit-0 cleared OR entryCount==0 → tombstone; LoadIndex
-	// must skip the record (advancing past the trailing bytes if
-	// any) and continue parsing the rest of the file.
+	// flags-bit-0 cleared → tombstone; LoadIndex must skip the record and
+	// continue parsing the rest of the file.
 	TempCacheRoot tmp;
 	mVUProgCache::ResetForTest(1);
 
@@ -676,45 +648,61 @@ TEST(ProgCacheIndexFormatV3, tombstone_skipped_on_load)
 	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(sub.c_str(), true));
 	WriteCurrentVersion(Path::Combine(sub, "VERSION"), 1, sentinel);
 
-	XXH128_hash_t deadHash{};
-	deadHash.low64  = 0xDEADAAAA00000001ull;
-	deadHash.high64 = 0xDEADAAAA00000002ull;
-	XXH128_hash_t liveHash{};
-	liveHash.low64  = 0xA11EAAAA00000001ull;
-	liveHash.high64 = 0xA11EAAAA00000002ull;
-
-	IndexEntryHeaderMirror dead{};
-	dead.contentHash = deadHash;
-	dead.vuIndex     = 1u;
-	dead.flags       = 0u; // tombstone via cleared valid-bit
-	const std::vector<u32> dead_pcs = {0x000u, 0x004u};
-
-	IndexEntryHeaderMirror live{};
-	live.contentHash = liveHash;
-	live.vuIndex     = 1u;
-	live.flags       = 1u;
-	const std::vector<u32> live_pcs = {0x100u};
+	const IndexEntryHeaderMirror dead = MakeRecord(0xDEADAAAA00000001ull, 0xDEADAAAA00000002ull, 1u, 0u);
+	const IndexEntryHeaderMirror live = MakeRecord(0xA11EAAAA00000001ull, 0xA11EAAAA00000002ull, 1u, 1u);
 
 	std::vector<u8> bytes;
-	{
-		const auto a = SerializeOne(dead, dead_pcs);
-		const auto b = SerializeOne(live, live_pcs);
-		bytes.insert(bytes.end(), a.begin(), a.end());
-		bytes.insert(bytes.end(), b.begin(), b.end());
-	}
+	AppendRecord(bytes, dead);
+	AppendRecord(bytes, live);
+	WriteRawIndex(Path::Combine(sub, "INDEX"), bytes);
+
+	mVUProgCache::InitWithSentinel(1, sentinel);
+
+	EXPECT_EQ(mVUProgCache::GetStats(1).entries, 1u) << "tombstone must not count";
+	EXPECT_FALSE(mVUProgCache::TestHasIndexEntry(1, dead.contentHash));
+	EXPECT_TRUE(mVUProgCache::TestHasIndexEntry(1, live.contentHash));
+
+	mVUProgCache::ResetForTest(1);
+}
+
+TEST(ProgCacheIndexFormatV4, version3_directory_is_evicted_not_misparsed)
+{
+	// A directory written by the format-3 build: VERSION says 3 and the
+	// INDEX holds a 68-byte record (64-byte header + one entry PC). Read at
+	// the 64-byte record size it would load one entry and leave four stray
+	// bytes, so the format version has to differ and the directory has to
+	// go.
+	EXPECT_GT(mVUProgCache::kProgCacheFormatVersion, 3u)
+		<< "the INDEX record size changed in format 4; the version must stay past 3";
+
+	TempCacheRoot tmp;
+	mVUProgCache::ResetForTest(1);
+
+	XXH128_hash_t sentinel{};
+	sentinel.low64  = 0xC0FFEEBBC0FFEEBBull;
+	sentinel.high64 = 0xC0FFEEBBC0FFEEBBull;
+
+	const std::string sub = tmp.vu_subdir(1);
+	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(sub.c_str(), true));
+	WriteCurrentVersion(Path::Combine(sub, "VERSION"), 1, sentinel, /*format_version=*/3u);
+
+	IndexEntryHeaderMirror rec = MakeRecord(0x3333000000000001ull, 0x3333000000000002ull, 1u, 1u);
+	u32 entry_count = 1; // format 3: the u32 at header offset 48
+	std::memcpy(rec.pad, &entry_count, sizeof(entry_count)); // offset 48 is pad[0] in format 4
+	std::vector<u8> bytes;
+	AppendRecord(bytes, rec);
+	const u32 entry_pc = 0x58u;
+	bytes.insert(bytes.end(), reinterpret_cast<const u8*>(&entry_pc),
+	             reinterpret_cast<const u8*>(&entry_pc) + sizeof(entry_pc));
+	ASSERT_EQ(bytes.size(), 68u);
 	WriteRawIndex(Path::Combine(sub, "INDEX"), bytes);
 
 	mVUProgCache::InitWithSentinel(1, sentinel);
 
 	const auto stats = mVUProgCache::GetStats(1);
-	EXPECT_EQ(stats.entries, 1u) << "tombstone must not count";
-
-	u32 pcs[8] = {0};
-	size_t cnt = 0;
-	EXPECT_FALSE(mVUProgCache::TestGetEntryPcs(1, deadHash, pcs, 8, &cnt));
-	ASSERT_TRUE(mVUProgCache::TestGetEntryPcs(1, liveHash, pcs, 8, &cnt));
-	EXPECT_EQ(cnt, 1u);
-	EXPECT_EQ(pcs[0], 0x100u);
+	EXPECT_EQ(stats.staleEvictions, 1u);
+	EXPECT_EQ(stats.entries, 0u);
+	ReadAndVerifyCurrentVersion(Path::Combine(sub, "VERSION"), /*vu_index=*/1);
 
 	mVUProgCache::ResetForTest(1);
 }

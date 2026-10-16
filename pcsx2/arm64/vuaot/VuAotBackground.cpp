@@ -25,12 +25,19 @@ namespace vuaot::bg
 		{
 		}
 
-		// Every address goes in the fixed 16-byte form: an address in the
-		// outside world then means the same wherever the code lands, and one
-		// inside the buffer is patched by the copy.
-		MoveForm ClassifyMove(const void*) override { return MoveForm::CanonicalAbs; }
+		// An address inside the buffer (code or placeholder) is emitted as a full four-halfword
+		// MOVZ/MOVK run, the shape the copy and the patcher look for. Every other address means the
+		// same wherever the code lands and is emitted at its own width, as vixl's Mov would.
+		AddressClass ClassifyAddress(const void* addr) override
+		{
+			AddressClass c;
+			c.relocatable = true;
+			c.allowAdrp = false;
+			c.minMovWidth = (s_.PlaceholderId(addr) >= 0 || s_.InCode(addr)) ? 4 : 1;
+			return c;
+		}
 
-		void OnCanonicalAbsMove(u8* at, const void* addr) override
+		void OnMovRun(u8* at, u32, const void* addr) override
 		{
 			if (const s32 id = s_.PlaceholderId(addr); id >= 0)
 				s_.fixups.push_back({Off(at), Fixup::SiteAbs, static_cast<u32>(id), 0});
@@ -40,22 +47,21 @@ namespace vuaot::bg
 
 		void OnAdrp(u8*, const void*) override { Fail("ADRP emitted"); }
 
-		void OnDirectBranch(u8* at, const void* target, bool) override
+		void OnBranch(u8* at, const void* target, BranchForm form) override
 		{
+			// (the tier's emitters use B and BL only; a B.cond or CBZ here would need a reach check the
+			// copy cannot make)
+			if (form != BranchForm::Rel26)
+			{
+				Fail("conditional direct branch emitted");
+				return;
+			}
 			const s32 id = s_.PlaceholderId(target);
 			if (id >= 0)
 				s_.fixups.push_back({Off(at), Fixup::Site26, static_cast<u32>(id), 0});
 			else if (!s_.InCode(target))
 				s_.fixups.push_back({Off(at), Fixup::External26, 0, reinterpret_cast<u64>(target)});
 			// (a branch to a place in the buffer moves with it)
-		}
-
-		bool WantsLongCondBranch(const void* target) override { return !s_.InCode(target); }
-
-		void OnAbsoluteTarget(const void* target) override
-		{
-			if (s_.PlaceholderId(target) >= 0 || s_.InCode(target))
-				Fail("buffer address in an absolute branch");
 		}
 
 	private:
