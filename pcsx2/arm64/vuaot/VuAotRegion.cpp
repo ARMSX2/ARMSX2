@@ -1685,7 +1685,7 @@ namespace vuaot
 
 		PlanChecks();
 		// (after PlanChecks: loop heads stay alone in their classes)
-		if (t_.merge && !t_.profile)
+		if (t_.merge)
 			MergeVariants();
 		for (auto& np : nodes_)
 			if (!np->alias)
