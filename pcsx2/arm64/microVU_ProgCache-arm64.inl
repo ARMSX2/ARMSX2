@@ -439,9 +439,11 @@ static void StartPreload(State& s)
 		std::string payload, sidecar;
 		u32 payloadSize;
 	};
+	// (sidecars are read for the vu-aot tier only: with it off they would sit unread)
+	const bool sidecars = EmuConfig.Cpu.Recompiler.EnableVUAot;
 	std::vector<File> files;
 	for (const Item& it : items)
-		files.push_back({it.hash, PayloadPath(s, it.hash), SidecarPath(s, it.hash), it.size});
+		files.push_back({it.hash, PayloadPath(s, it.hash), sidecars ? SidecarPath(s, it.hash) : std::string(), it.size});
 
 	s.preloadStop.store(false, std::memory_order_relaxed);
 	// The &s capture is intentional and safe: s aliases a process-lifetime
@@ -459,7 +461,7 @@ static void StartPreload(State& s)
 		{
 			if (s.preloadStop.load(std::memory_order_relaxed))
 				return;
-			const s64 sideSize = FileSystem::GetPathFileSize(f.sidecar.c_str());
+			const s64 sideSize = f.sidecar.empty() ? 0 : FileSystem::GetPathFileSize(f.sidecar.c_str());
 			const size_t need = f.payloadSize + static_cast<size_t>(std::max<s64>(sideSize, 0));
 			wanted += need;
 			if (full || budget + need > kPreloadBudgetBytes)
