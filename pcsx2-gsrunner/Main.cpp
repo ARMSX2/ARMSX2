@@ -140,6 +140,7 @@ namespace GSRunner
 	static bool ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& params);
 	static void DumpStats();
 	static bool ReportHashMemoVerify();
+	static bool ReportBlockHashVerify();
 
 	static bool CreatePlatformWindow();
 	static void DestroyPlatformWindow();
@@ -475,6 +476,7 @@ static double s_last_sw_palette_block_copies = 0;
 static u64 s_total_sw_palette_block_copies = 0;
 static bool s_vm_hash = false;
 static bool s_verify_hash_memo = false;
+static bool s_verify_block_hash = false;
 
 static u64 s_total_prims = 0;
 static u64 s_total_tc_source_hit = 0;
@@ -1264,6 +1266,19 @@ static void PrintCommandLineHelp(const char* progname)
 						 "it relies on. Every memo hit also hashes the texture afresh and compares, and at every frame "
 						 "boundary each page of local memory is hashed to find stores that were not marked. Prints one "
 						 "HASH-MEMO-VERIFY line at exit and exits non-zero on a mismatch or a missed writer.\n");
+	std::fprintf(stderr, "  -verify-block-hash: Check the hardware renderer's per-block hash cache and the marks it relies on. "
+						 "Every paletted window keyed through the cache has each of its blocks hashed afresh and compared "
+						 "with the cached hash, is keyed again without the cache, and the two keys must agree on which "
+						 "windows are one. Prints one BLOCK-HASH-VERIFY line at exit and exits non-zero on a stale block "
+						 "hash or a disagreement. Slow: the memo of texture hashes is not used.\n");
+	std::fprintf(stderr, "  -block-hash-cache on|off: Key paletted windows through the per-block hash cache (on, the default) "
+						 "or by one hash of their raw blocks with no cache (off). Pixels and hash cache hits are the same "
+						 "either way; off is for checking a suspect title without a rebuild.\n");
+	std::fprintf(stderr, "  -hash-cache-entries <n>: Most entries the hardware renderer's hash cache keeps (0 = no limit; "
+						 "the default is the renderer's own). Entries unused for 30 frames go regardless.\n");
+	std::fprintf(stderr, "  -hash-cache-mb <n>: Most megabytes of textures the hash cache keeps above its floor of 800 "
+						 "entries (0 = no limit; the default is the renderer's own). -hash-cache-entries 800 -hash-cache-mb 0 "
+						 "is the cache as it was before the memory limit.\n");
 	std::fprintf(stderr, "  -stats-json <path>: Write per-frame and run-summary statistics as JSON. Combine with -perf "
 						 "for frame/GPU timing.\n");
 	std::fprintf(stderr, "  -set <Section/Key>=<value>: Override any setting, e.g. -set EmuCore/GS/AccurateBlendingUnit=3. "
@@ -1777,6 +1792,50 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			{
 				s_verify_hash_memo = true;
 				GSTextureCache::SetHashMemoVerify(true);
+				continue;
+			}
+			else if (CHECK_ARG("-verify-block-hash"))
+			{
+				s_verify_block_hash = true;
+				GSTextureCache::SetBlockHashVerify(true);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-block-hash-cache"))
+			{
+				const char* const value = argv[++i];
+				if (!std::strcmp(value, "off"))
+				{
+					GSTextureCache::SetBlockHashCacheEnabled(false);
+				}
+				else if (!std::strcmp(value, "on"))
+				{
+					GSTextureCache::SetBlockHashCacheEnabled(true);
+				}
+				else
+				{
+					ArgError("-block-hash-cache: expected on or off, got '{}'.", value);
+					return false;
+				}
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-hash-cache-entries"))
+			{
+				const std::optional<u32> value = ParseNumericArg<u32>("-hash-cache-entries", argv[++i]);
+				if (!value.has_value())
+					return false;
+				GSTextureCache::HashCacheLimits limits = GSTextureCache::GetHashCacheLimits();
+				limits.max_entries = value.value();
+				GSTextureCache::SetHashCacheLimits(limits);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-hash-cache-mb"))
+			{
+				const std::optional<u32> value = ParseNumericArg<u32>("-hash-cache-mb", argv[++i]);
+				if (!value.has_value())
+					return false;
+				GSTextureCache::HashCacheLimits limits = GSTextureCache::GetHashCacheLimits();
+				limits.max_bytes = static_cast<u64>(value.value()) << 20;
+				GSTextureCache::SetHashCacheLimits(limits);
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-drawlog"))
@@ -2488,6 +2547,7 @@ static void WriteStatsJson(const std::string& path)
 		s_total_tc_target_hit, s_total_tc_target_miss);
 	std::fprintf(fp.get(), "    \"hash_cache_hit\": %" PRIu64 ",\n    \"hash_cache_miss\": %" PRIu64 ",\n",
 		s_total_hash_cache_hit, s_total_hash_cache_miss);
+	std::fprintf(fp.get(), "    \"mark_all_events\": %" PRIu64 ",\n", GSLocalMemory::TotalMarkAllEvents());
 	std::fprintf(fp.get(), "    \"pipeline_switches\": %s,\n", j_u64(s_total_pipeline_switches).c_str());
 	std::fprintf(fp.get(), "    \"native_texel_grid_draws\": %" PRIu64 ",\n", s_total_native_texel_grid_draws);
 	std::fprintf(fp.get(), "    \"sprite_edge_clamp_draws\": %" PRIu64 ",\n", s_total_sprite_edge_clamp_draws);
@@ -2602,6 +2662,21 @@ bool GSRunner::ReportHashMemoVerify()
 	return report.mismatches == 0 && report.missed_writers == 0;
 }
 
+// Prints what -verify-block-hash found. False if a cached block hash was stale, which is a store into local
+// memory that nothing marked, or if keying with the cache and without it disagreed on which windows are one.
+bool GSRunner::ReportBlockHashVerify()
+{
+	if (!s_verify_block_hash)
+		return true;
+
+	const GSTextureCache::BlockHashVerifyReport report = GSTextureCache::GetBlockHashVerifyReport();
+	const std::string line = fmt::format("BLOCK-HASH-VERIFY levels={} blocks={} stale_blocks={} lookups={} extra_misses={} false_hits={}",
+		report.levels, report.blocks, report.stale_blocks, report.lookups, report.extra_misses, report.false_hits);
+	Console.WriteLn(line);
+	std::fprintf(stderr, "%s\n", line.c_str());
+	return report.stale_blocks == 0 && report.extra_misses == 0 && report.false_hits == 0;
+}
+
 void GSRunner::DumpStats()
 {
 	std::atomic_thread_fence(std::memory_order_acquire);
@@ -2659,6 +2734,31 @@ void GSRunner::DumpStats()
 		Ratio(s_total_tc_target_hit, s_total_tc_target_hit + s_total_tc_target_miss)));
 	Console.WriteLn(fmt::format("@HWSTAT@ Hash Cache Hit/Miss: {}/{} ({:.1f}% hit)", s_total_hash_cache_hit, s_total_hash_cache_miss,
 		Ratio(s_total_hash_cache_hit, s_total_hash_cache_hit + s_total_hash_cache_miss)));
+	// What the hash cache held at the end of a frame (before the frame's ageing): the peak of the run, and the
+	// mean over the frames; MB are 2^20 bytes. "VRAM" is what the renderer accounts for in all: targets,
+	// sources, hash cache and the device's texture pool.
+	{
+		const GSTextureCache::HashCacheStats hc = GSTextureCache::GetHashCacheStats();
+		const GSTextureCache::HashCacheLimits lim = GSTextureCache::GetHashCacheLimits();
+		Console.WriteLn(fmt::format("@HWSTAT@ Hash Cache Memory: peak {:.1f} MB in {} entries (mean {:.1f} MB over {} frames); "
+									"peak VRAM {:.1f} MB; limits {} entries (floor {}), {} MB",
+			hc.peak_bytes / 1048576.0, hc.peak_entries, hc.frames ? hc.sum_bytes / 1048576.0 / hc.frames : 0.0, hc.frames,
+			hc.peak_total_bytes / 1048576.0, lim.max_entries, lim.floor_entries, lim.max_bytes >> 20));
+	}
+	// The per-block hash cache: the paletted levels keyed through it, their blocks, and the blocks that had to be
+	// hashed (a mark since the last lookup). A block is 256 bytes.
+	{
+		const GSTextureCache::BlockHashStats block_hashes = GSTextureCache::GetBlockHashStats();
+		const double frames = static_cast<double>(std::max<u64>(s_total_drawn_frames, 1));
+		Console.WriteLn(fmt::format("@HWSTAT@ Block Hash Cache: {} levels, {} blocks keyed, {} hashed ({:.1f}% of blocks; {:.2f} MB/frame hashed)",
+			block_hashes.levels, block_hashes.blocks, block_hashes.rehashed,
+			Ratio(block_hashes.rehashed, block_hashes.blocks),
+			block_hashes.rehashed * static_cast<double>(GS_BLOCK_SIZE) / frames / (1024.0 * 1024.0)));
+	}
+	// Marks of all of local memory (GSLocalMemory::MarkAllEvents): each one dirties every block, so a title that
+	// does it every frame rehashes and restages everything. Counted over the whole process.
+	Console.WriteLn(fmt::format("@HWSTAT@ Mark-All Events: {} (avg {:.2f}/frame)", GSLocalMemory::TotalMarkAllEvents(),
+		GSLocalMemory::TotalMarkAllEvents() / static_cast<double>(std::max<u64>(s_total_drawn_frames, 1))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Native Texel Grid Draws: {} (avg {})", s_total_native_texel_grid_draws,
 		static_cast<u64>(std::ceil(s_total_native_texel_grid_draws / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Sprite Edge Clamp Draws: {} (avg {})", s_total_sprite_edge_clamp_draws,
@@ -2941,8 +3041,9 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 				s_extended_stats_snapshot = g_gs_device->GetExtendedStats();
 			VMManager::Shutdown(false);
 			GSRunner::DumpStats();
-			const bool verify_ok = GSRunner::ReportHashMemoVerify();
-			ret->store((ladder_ok && verify_ok) ? EXIT_SUCCESS : EXIT_FAILURE);
+			const bool memo_verify_ok = GSRunner::ReportHashMemoVerify();
+			const bool block_hash_verify_ok = GSRunner::ReportBlockHashVerify();
+			ret->store((ladder_ok && memo_verify_ok && block_hash_verify_ok) ? EXIT_SUCCESS : EXIT_FAILURE);
 		}
 	}
 

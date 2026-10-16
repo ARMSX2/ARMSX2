@@ -65,6 +65,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_local_memory_write_stamp_tests.cpp
 	gs_write_stamp_writer_tests.cpp
 	gs_hash_memo_tests.cpp
+	gs_hash_raw_key_tests.cpp
 	gs_clut_tests.cpp
 	gs_alpha_known_bits_tests.cpp
 	gs_depth_coverage_tests.cpp
@@ -94,6 +95,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_sw_palette_block_copy_tests.cpp
 	gs_cache_file_tests.cpp
 	gs_hash_cache_inject_tests.cpp
+	gs_hash_cache_limits_tests.cpp
 	gs_xxh_block_hasher_tests.cpp
 	gs_texture_replacement_worker_tests.cpp
 )

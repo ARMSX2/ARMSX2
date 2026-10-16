@@ -6,6 +6,7 @@
 #include "GS/GSExtra.h"
 #include "GS/GSPng.h"
 #include <algorithm>
+#include <atomic>
 #include <unordered_set>
 
 template <typename Fn>
@@ -51,6 +52,11 @@ GSLocalMemory::readImage GSLocalMemory::m_readImageX;
 GSLocalMemory::GSLocalMemory()
 	: m_clut(this)
 {
+	// The memset below is not a mark, so a fresh memory reads as entirely unseen by the dirty bitmap.
+	static std::atomic<u32> s_next_id{0};
+	m_id = ++s_next_id;
+	std::fill(std::begin(m_hash_dirty), std::end(m_hash_dirty), ~u64(0));
+
 	m_vm8 = (u8*)GSAllocateWrappedMemory(m_vmsize, 4);
 	if (!m_vm8)
 		pxFailRel("Failed to allocate GS memory storage.");
@@ -667,8 +673,21 @@ void GSLocalMemory::MarkPagesWritten(const GSOffset& off, const GSVector4i& r)
 		return;
 	}
 
+	// A page whose blocks are all set already holds every mark this rectangle can add. Render
+	// targets drawn on the CPU (two marks per draw, frame and depth) are seldom read back as textures, so their
+	// pages mostly stay that way, and the walk over the blocks is skipped.
 	const u64 seq = ++m_write_seq;
-	off.loopPages(r, [this, seq](u32 page) { m_page_stamp[page] = seq; });
+	bool all_marked = true;
+	off.loopPages(r, [this, seq, &all_marked](u32 page) {
+		m_page_stamp[page] = seq;
+		all_marked &= PageBlocksAllMarked(page);
+	});
+	if (all_marked)
+		return;
+
+	// The blocks of the same rectangle. loopBlocks walks them with the swizzle of `off`, so the set is exactly
+	// the blocks a pixel of `r` lives in (the page set above is sometimes a page larger).
+	off.loopBlocks(r, [this](u32 block) { SetBlockMarks(block); });
 }
 
 void GSLocalMemory::MarkPageRangeWritten(u32 first_page, u32 count)
@@ -684,13 +703,24 @@ void GSLocalMemory::MarkPageRangeWritten(u32 first_page, u32 count)
 
 	const u64 seq = ++m_write_seq;
 	for (u32 i = 0, page = first_page % GS_MAX_PAGES; i < count; i++, page = (page + 1) % GS_MAX_PAGES)
+	{
 		m_page_stamp[page] = seq;
+		SetPageBlockMarks(page);
+	}
 }
 
 void GSLocalMemory::MarkAllPagesWritten()
 {
 	const u64 seq = ++m_write_seq;
 	std::fill(std::begin(m_page_stamp), std::end(m_page_stamp), seq);
+	MarkAllHashDirty();
+	m_mark_all_events++;
+	s_total_mark_all_events.fetch_add(1, std::memory_order_relaxed);
+}
+
+void GSLocalMemory::MarkAllHashDirty()
+{
+	std::fill(std::begin(m_hash_dirty), std::end(m_hash_dirty), ~u64(0));
 }
 
 void GSLocalMemory::ReadTexture(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA)

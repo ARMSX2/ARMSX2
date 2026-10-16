@@ -8,6 +8,10 @@
 // The texture hash memo reuses a hash while no page it read has been written since, so the one thing
 // that must hold is that a store into local memory is never missed. The page sets are therefore checked
 // against what the writers really store, not against the page looper's own idea of a rectangle.
+//
+// The same marks also set one bit per 256-byte block in a dirty bitmap, which the per-block hash cache
+// reads, and the same rule holds for it: every block a writer changes is marked. Each writer case below
+// asserts it beside the page rule.
 
 #include "gs_write_stamp_watch.h"
 
@@ -67,6 +71,25 @@ namespace
 					pages.push_back(page);
 			}
 			return pages;
+		}
+
+		/// The blocks whose bit is set in the dirty bitmap, in order.
+		std::vector<u32> DirtyBlocks() const
+		{
+			std::vector<u32> blocks;
+			for (u32 block = 0; block < GS_MAX_BLOCKS; block++)
+			{
+				if (m_mem->HashDirty(block))
+					blocks.push_back(block);
+			}
+			return blocks;
+		}
+
+		/// Clears the dirty bitmap of the fixture's memory.
+		void ClearDirty()
+		{
+			for (u32 block = 0; block < GS_MAX_BLOCKS; block++)
+				m_mem->TestAndClearHashDirty(block);
 		}
 
 		// bw counts 64-pixel columns; 8 and 4-bit pages are 128 wide and take it in pairs.
@@ -192,8 +215,13 @@ namespace
 	TEST_F(GSLocalMemoryWriteStamps, ARectangleThatRunsPastTheEndOfLocalMemoryWrapsToTheStart)
 	{
 		// Page 511 and the page below it in a buffer one page wide: the second is page 512, which is page 0.
+		ClearDirty();
 		m_mem->MarkPagesWritten(m_mem->GetOffset(511 * 32, 1, PSMCT32), GSVector4i(0, 0, 64, 64));
 		EXPECT_EQ(LatestMark(), (std::vector<u32>{0, 511}));
+		std::vector<u32> blocks = Range(0, 31);
+		for (u32 b = 511 * 32; b < 512 * 32; b++)
+			blocks.push_back(b);
+		EXPECT_EQ(DirtyBlocks(), blocks);
 	}
 
 	TEST_F(GSLocalMemoryWriteStamps, ARectangleThatReaches2048MarksEveryPage)
@@ -319,6 +347,9 @@ namespace
 			ASSERT_TRUE(watch.UnmarkedChangedPages().empty())
 				<< "psm " << psm << " bp " << bp << " bw " << bw << " rect " << x0 << "," << y0 << " " << w << "x" << h
 				<< ": unmarked " << Watch::Describe(watch.UnmarkedChangedPages());
+			ASSERT_TRUE(watch.UnmarkedChangedBlocks().empty())
+				<< "psm " << psm << " bp " << bp << " bw " << bw << " rect " << x0 << "," << y0 << " " << w << "x" << h
+				<< ": unmarked blocks " << Watch::Describe(watch.UnmarkedChangedBlocks());
 			cases += !watch.ChangedPages().empty();
 		}
 		EXPECT_GT(cases, 1400u) << "the cases did not write";
@@ -349,14 +380,17 @@ namespace
 		int tx = x0, ty = y0;
 		p.wi(*m_mem, tx, ty, data.data(), static_cast<int>(len), blit, pos, reg);
 
-		// The page set of the exact rectangle leaves out a page the write changed...
+		// The page set of the exact rectangle leaves out a page the write changed, and the block set the blocks
+		// of it...
 		const GSOffset off = m_mem->GetOffset(bp, bw, psm);
 		m_mem->MarkPagesWritten(off, GSVector4i(x0, y0, x0 + w, y0 + h));
 		EXPECT_FALSE(watch.UnmarkedChangedPages().empty());
+		EXPECT_FALSE(watch.UnmarkedChangedBlocks().empty());
 
-		// ...and the grown one does not.
+		// ...and the grown one leaves out neither.
 		m_mem->MarkPagesWritten(off, GSVector4i(x0, y0, x0 + w + 1, y0 + h + 1));
 		EXPECT_TRUE(watch.UnmarkedChangedPages().empty());
+		EXPECT_TRUE(watch.UnmarkedChangedBlocks().empty());
 	}
 
 	// The same question for a transfer that arrives in slices. A slice after the first starts below the
@@ -407,6 +441,9 @@ namespace
 			ASSERT_TRUE(watch.UnmarkedChangedPages().empty())
 				<< "psm " << psm << " bp " << bp << " bw " << bw << " rect " << x0 << "," << y0 << " " << w << "x" << h
 				<< ": unmarked " << Watch::Describe(watch.UnmarkedChangedPages());
+			ASSERT_TRUE(watch.UnmarkedChangedBlocks().empty())
+				<< "psm " << psm << " bp " << bp << " bw " << bw << " rect " << x0 << "," << y0 << " " << w << "x" << h
+				<< ": unmarked blocks " << Watch::Describe(watch.UnmarkedChangedBlocks());
 		}
 	}
 
@@ -448,6 +485,9 @@ namespace
 			ASSERT_TRUE(watch.UnmarkedChangedPages().empty())
 				<< "psm " << spsm << "->" << dpsm << " dbp " << blit.DBP << " dbw " << blit.DBW << " dest " << pos.DSAX << "," << pos.DSAY
 				<< " " << reg.RRW << "x" << reg.RRH << ": unmarked " << Watch::Describe(watch.UnmarkedChangedPages());
+			ASSERT_TRUE(watch.UnmarkedChangedBlocks().empty())
+				<< "psm " << spsm << "->" << dpsm << " dbp " << blit.DBP << " dbw " << blit.DBW << " dest " << pos.DSAX << "," << pos.DSAY
+				<< " " << reg.RRW << "x" << reg.RRH << ": unmarked blocks " << Watch::Describe(watch.UnmarkedChangedBlocks());
 			cases += !watch.ChangedPages().empty();
 		}
 		EXPECT_GT(cases, 500u) << "the cases did not write";
@@ -535,9 +575,196 @@ namespace
 			ASSERT_TRUE(watch.UnmarkedChangedPages().empty())
 				<< "writer " << kind << " psm " << psm << " bp " << bp << " bw " << bw << " rect " << r.x << "," << r.y << " " << r.z << "," << r.w
 				<< ": unmarked " << Watch::Describe(watch.UnmarkedChangedPages());
+			ASSERT_TRUE(watch.UnmarkedChangedBlocks().empty())
+				<< "writer " << kind << " psm " << psm << " bp " << bp << " bw " << bw << " rect " << r.x << "," << r.y << " " << r.z << "," << r.w
+				<< ": unmarked blocks " << Watch::Describe(watch.UnmarkedChangedBlocks());
 			cases += !watch.ChangedPages().empty();
 		}
 		EXPECT_GT(cases, 700u) << "the cases did not write";
+	}
+
+	// --- The dirty bitmaps --------------------------------------------------------------------------
+
+	TEST_F(GSLocalMemoryWriteStamps, AFreshMemoryHasTheDirtyBitmapSetAndAnIdOfItsOwn)
+	{
+		// The constructor's memset of local memory is not a mark: nothing may read as already seen.
+		EXPECT_EQ(DirtyBlocks().size(), static_cast<size_t>(GS_MAX_BLOCKS));
+		EXPECT_EQ(m_mem->MarkAllEvents(), 0u);
+
+		const u32 first = m_mem->Id();
+		EXPECT_NE(first, 0u);
+		GSLocalMemory second;
+		EXPECT_NE(second.Id(), first);
+		EXPECT_EQ(second.Id(), first + 1) << "ids count up, so two memories alive at once never share one";
+		for (u32 block = 0; block < GS_MAX_BLOCKS; block++)
+		{
+			ASSERT_TRUE(second.HashDirty(block)) << "block " << block;
+		}
+
+		// A memory made after another is gone does not get its id back.
+		u32 gone;
+		{
+			GSLocalMemory temporary;
+			gone = temporary.Id();
+		}
+		GSLocalMemory third;
+		EXPECT_GT(third.Id(), gone);
+	}
+
+	TEST_F(GSLocalMemoryWriteStamps, TheDirtyBitmapIsClearedOneBlockAtATime)
+	{
+		EXPECT_TRUE(m_mem->TestAndClearHashDirty(101));
+		EXPECT_FALSE(m_mem->HashDirty(101));
+		EXPECT_FALSE(m_mem->TestAndClearHashDirty(101)) << "already clear";
+
+		// The neighbours, in the same word and the next, are untouched.
+		for (const u32 block : {99u, 100u, 102u, 63u, 64u, 127u, 128u})
+			EXPECT_TRUE(m_mem->HashDirty(block)) << block;
+
+		// A block number past the end wraps the way GSOffset's block numbers do.
+		EXPECT_TRUE(m_mem->HashDirty(GS_MAX_BLOCKS + 5));
+		EXPECT_TRUE(m_mem->TestAndClearHashDirty(GS_MAX_BLOCKS + 5));
+		EXPECT_FALSE(m_mem->HashDirty(5));
+
+		ClearDirty();
+		m_mem->MarkAllHashDirty();
+		EXPECT_EQ(DirtyBlocks().size(), static_cast<size_t>(GS_MAX_BLOCKS));
+		EXPECT_EQ(m_mem->MarkAllEvents(), 0u) << "the consumer's own reset is not a mark of everything";
+	}
+
+	TEST_F(GSLocalMemoryWriteStamps, ARectangleMarksTheBlocksItsPixelsLiveIn)
+	{
+		u32 cases = 0;
+		for (int i = 0; i < 1500; i++)
+		{
+			const u32 psm = kPsms[Random(std::size(kPsms))];
+			const u32 bp = Random(GS_MAX_BLOCKS);
+			const u32 bw = RandomBw(m_rng, psm);
+			const int x0 = static_cast<int>(Random(300)), y0 = static_cast<int>(Random(300));
+			const GSVector4i r(x0, y0, x0 + 1 + static_cast<int>(Random(200)), y0 + 1 + static_cast<int>(Random(200)));
+			const GSOffset off = m_mem->GetOffset(bp, bw, psm);
+
+			// Every pixel's block, from the arithmetic every writer addresses by. A pixel past the width of a
+			// row of pages is the pixel one row of pages down, and bn() knows that too.
+			std::vector<bool> holds(GS_MAX_BLOCKS, false);
+			for (int y = r.top; y < r.bottom; y++)
+				for (int x = r.left; x < r.right; x++)
+					holds[off.bn(x, y)] = true;
+
+			ClearDirty();
+			m_mem->MarkPagesWritten(off, r);
+
+			std::vector<u32> expected;
+			for (u32 block = 0; block < GS_MAX_BLOCKS; block++)
+			{
+				if (holds[block])
+					expected.push_back(block);
+			}
+			// Exactly the blocks with a pixel of the rectangle: nothing missed, and (unlike the page set,
+			// which has a page more now and then) nothing more.
+			ASSERT_EQ(DirtyBlocks(), expected)
+				<< "psm " << psm << " bp " << bp << " bw " << bw << " rect " << r.x << "," << r.y << " " << r.z << "," << r.w;
+			cases += !expected.empty();
+		}
+		EXPECT_EQ(cases, 1500u);
+	}
+
+	TEST_F(GSLocalMemoryWriteStamps, ARectangleOverBlocksAlreadyMarkedMarksTheRestOfItsBlocks)
+	{
+		// A mark skips its block walk when every page it touches is already all set. Start from everything set
+		// with a few blocks cleared, so both roads are taken.
+		u32 skipped = 0, walked = 0;
+		for (int i = 0; i < 600; i++)
+		{
+			const u32 psm = kPsms[Random(std::size(kPsms))];
+			const u32 bp = Random(GS_MAX_BLOCKS);
+			const u32 bw = RandomBw(m_rng, psm);
+			const int x0 = static_cast<int>(Random(300)), y0 = static_cast<int>(Random(300));
+			const GSVector4i r(x0, y0, x0 + 1 + static_cast<int>(Random(400)), y0 + 1 + static_cast<int>(Random(300)));
+			const GSOffset off = m_mem->GetOffset(bp, bw, psm);
+
+			m_mem->MarkAllHashDirty();
+			std::vector<bool> set(GS_MAX_BLOCKS, true);
+			const u32 clears = Random(3) == 0 ? 0 : 1 + Random(8);
+			for (u32 c = 0; c < clears; c++)
+			{
+				// Near the rectangle half the time, so a cleared block is often one it covers.
+				const u32 block = Random(2) ? off.bn(r.left + static_cast<int>(Random(r.width())), r.top + static_cast<int>(Random(r.height()))) :
+				                              Random(GS_MAX_BLOCKS);
+				m_mem->TestAndClearHashDirty(block);
+				set[block] = false;
+			}
+
+			for (int y = r.top; y < r.bottom; y++)
+				for (int x = r.left; x < r.right; x++)
+					set[off.bn(x, y)] = true;
+
+			const u32 events = m_mem->MarkAllEvents();
+			m_mem->MarkPagesWritten(off, r);
+			if (m_mem->MarkAllEvents() != events)
+				continue; // past the end of local memory: everything is marked, which the other tests cover
+
+			for (u32 block = 0; block < GS_MAX_BLOCKS; block++)
+			{
+				ASSERT_EQ(m_mem->HashDirty(block), set[block])
+					<< "block " << block << " psm " << psm << " bp " << bp << " bw " << bw << " rect " << r.x << "," << r.y << " " << r.z << "," << r.w;
+			}
+			(clears == 0 ? skipped : walked)++;
+		}
+		EXPECT_GT(skipped, 50u);
+		EXPECT_GT(walked, 200u);
+	}
+
+	TEST_F(GSLocalMemoryWriteStamps, ARangeMarksTheThirtyTwoBlocksOfEachPageItNames)
+	{
+		for (const u32 first : {0u, 1u, 200u, 201u, 510u, 511u})
+		{
+			ClearDirty();
+			m_mem->MarkPageRangeWritten(first, 3);
+			std::vector<u32> expected;
+			for (u32 i = 0; i < 3; i++)
+			{
+				const u32 page = (first + i) % GS_MAX_PAGES;
+				for (u32 b = 0; b < GS_BLOCKS_PER_PAGE; b++)
+					expected.push_back(page * GS_BLOCKS_PER_PAGE + b);
+			}
+			std::sort(expected.begin(), expected.end());
+			EXPECT_EQ(DirtyBlocks(), expected) << "first page " << first;
+		}
+
+		ClearDirty();
+		m_mem->MarkPageRangeWritten(100, 0);
+		EXPECT_TRUE(DirtyBlocks().empty()) << "an empty range marks nothing";
+	}
+
+	TEST_F(GSLocalMemoryWriteStamps, AMarkOfEverythingDirtiesEveryBlockAndIsCounted)
+	{
+		const auto clean_and_count = [&](auto&& mark) {
+			ClearDirty();
+			const u64 mine = m_mem->MarkAllEvents(), total = GSLocalMemory::TotalMarkAllEvents();
+			mark();
+			EXPECT_EQ(m_mem->MarkAllEvents(), mine + 1);
+			EXPECT_EQ(GSLocalMemory::TotalMarkAllEvents(), total + 1);
+			EXPECT_EQ(DirtyBlocks().size(), static_cast<size_t>(GS_MAX_BLOCKS));
+		};
+		const GSOffset off = m_mem->GetOffset(0, 32, PSMCT32);
+
+		clean_and_count([&] { m_mem->MarkAllPagesWritten(); });
+		clean_and_count([&] { m_mem->MarkPageRangeWritten(37, GS_MAX_PAGES); });
+
+		// A rectangle with no page set: the transfer-edge-at-2048 cliff, which is correct and slow. A transfer
+		// whose right edge is x 2048 is marked as 2049 once grown by a pixel.
+		clean_and_count([&] { m_mem->MarkPagesWritten(off, GSVector4i(1984, 0, 2049, 32)); });
+		clean_and_count([&] { m_mem->MarkPagesWritten(off, GSVector4i(0, 0, 64, 2049)); });
+		clean_and_count([&] { m_mem->MarkPagesWritten(off, GSVector4i(10, 10, 10, 20)); });
+
+		// An ordinary mark is not one, nor is a rectangle that ends at 2048 itself.
+		ClearDirty();
+		const u64 mine = m_mem->MarkAllEvents();
+		m_mem->MarkPagesWritten(off, GSVector4i(1984, 0, 2048, 32));
+		m_mem->MarkPageRangeWritten(5, 2);
+		EXPECT_EQ(m_mem->MarkAllEvents(), mine);
+		EXPECT_LT(DirtyBlocks().size(), 100u);
 	}
 
 	// A raw store that nothing marks shows up as unmarked: the watch itself has to be able to fail.
@@ -548,5 +775,6 @@ namespace
 		m_mem->m_vm8[9 * GS_PAGE_SIZE] = 0x5a;
 		m_mem->MarkPageRangeWritten(9, 1);
 		EXPECT_EQ(watch.UnmarkedChangedPages(), (std::vector<u32>{5}));
+		EXPECT_EQ(watch.UnmarkedChangedBlocks(), (std::vector<u32>{5 * GS_BLOCKS_PER_PAGE})); // byte 100 is in the page's first block
 	}
 } // namespace
