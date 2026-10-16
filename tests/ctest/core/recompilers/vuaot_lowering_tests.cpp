@@ -64,6 +64,7 @@ bool g_schedule = false;
 // Regions without the sticky STATUS accumulation (debugging a failure).
 bool g_noStickyAcc = getenv("VUAOT_NO_ACC") != nullptr;
 bool g_merge = true; // RegionTier::merge (variant merging)
+bool g_wMem = true;  // RegionTier::wMemHomes
 bool g_mergeIgnoreLinks = false; // RegionTier::mergeIgnoreLinksMutation
 // A deliberate break of the hand-off liveness rule, to see the tests notice it
 // (VuAotRegion.HandoffMutationsAreCaught); None everywhere else.
@@ -825,6 +826,7 @@ struct RegionOutcome
 	std::vector<std::string> diffs;
 	u32 regions = 0, nodes = 0;
 	u32 merged = 0;  // nodes that ran another node's body (variant merging)
+	u32 wMem = 0;    // vector homes whose w lane stayed in memory
 	u64 bytes = 0;   // region code
 	u32 accRegions = 0, accNonLinear = 0, accAccumulated = 0; // sticky STATUS accumulation
 	u32 handoffEdges = 0, handoffDead = 0; // links into loop heads, and the ring instances their bails leave out
@@ -910,6 +912,7 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		rs.region.dropStickyMutation = g_dropStickyMutation;
 		rs.region.dump = dump;
 		rs.region.merge = g_merge;
+		rs.region.wMemHomes = g_wMem;
 		rs.region.mergeIgnoreLinksMutation = g_mergeIgnoreLinks;
 		if (jumps)
 			rs.region.jumpTargets = *jumps;
@@ -917,6 +920,7 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		o.regions = rs.region.Regions();
 		o.nodes = rs.region.Nodes();
 		o.merged = rs.region.Merged();
+		o.wMem = rs.region.WMemHomes();
 		o.bytes = rs.region.Bytes();
 		o.accRegions = rs.region.AccRegions();
 		o.accNonLinear = rs.region.AccNonLinear();
@@ -1376,6 +1380,274 @@ static void RegionBudgetSweepBody()
 					ADD_FAILURE() << "program " << k << " flagHack=" << fh << " budget " << budget << "\n" << Join(o.diffs);
 			}
 	EXPECT_EQ(failures, 0);
+}
+
+// Conditional branches and VI values across links, on the 16-bit edges: a
+// counter stepping through 0x7fff -> 0x8000 (the sign of IBLTZ and friends)
+// and 0xffff -> 0x0000 (a carry out of the low half), every branch kind,
+// against VI0 and against another VI, the counter also stored (ISW / ISWR),
+// read as a float (MFIR) and summed with IADD. Run to the end and under
+// budgets that stop the loop at its head.
+static void RegionViBranchEdgesBody();
+TEST(VuAotRegion, ViBranchEdges) { RegionViBranchEdgesBody(); }
+static void RegionViBranchEdgesBody()
+{
+	using BranchFn = u32 (*)(u32, s16);
+	struct Kind
+	{
+		const char* name;
+		bool two;
+		BranchFn one;
+	};
+	const Kind kinds[] = {
+		{"IBEQ", true, nullptr}, {"IBNE", true, nullptr},
+		{"IBLTZ", false, [](u32 is, s16 off) { return VIBLTZ_L(is, off); }},
+		{"IBGTZ", false, [](u32 is, s16 off) { return VIBGTZ_L(is, off); }},
+		{"IBLEZ", false, [](u32 is, s16 off) { return VIBLEZ_L(is, off); }},
+		{"IBGEZ", false, [](u32 is, s16 off) { return VIBGEZ_L(is, off); }},
+	};
+	int failures = 0, runs = 0;
+	u32 regions = 0;
+	for (const Kind& k : kinds)
+		for (u32 start : {0x7ffbu, 0xfffbu, 0x0003u})
+			for (u32 other : {0u, 2u})
+			{
+				if (!k.two && other)
+					continue;
+				std::vector<VuOp> p;
+				// vi1 = start (ISUBIU from VI0 reaches the top half)
+				if (start & 0x8000)
+					p.push_back(L(VISUBIU_L(vi::vi1, vi::vi0, (0x10000u - start) & 0x7fff))); // 0
+				else
+					p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, start)));                        // 0
+				p.push_back(L(VIADDIU_L(vi::vi3, vi::vi0, 11)));                                // 1
+				p.push_back(L(VISUBIU_L(vi::vi2, vi::vi0, 0x7fff)));                            // 2: vi2 = 0x8001
+				p.push_back(P(VIADDIU_L(vi::vi1, vi::vi1, 1), VADD_U(mask::xyzw, vf::vf1, vf::vf1, vf::vf2)));  // 3: head
+				p.push_back(P(VIADD_L(vi::vi5, vi::vi5, vi::vi1), VMUL_U(mask::xyz, vf::vf3, vf::vf1, vf::vf2))); // 4
+				const u32 cmp = other ? vi::vi2 : vi::vi0;
+				const s16 fwd = 2; // -> 8
+				if (k.two)
+					p.push_back(L(std::string(k.name) == "IBEQ" ? VIBEQ_L(cmp, vi::vi1, fwd) : VIBNE_L(cmp, vi::vi1, fwd))); // 5
+				else
+					p.push_back(L(k.one(vi::vi1, fwd)));                                         // 5
+				p.push_back(L(VISW_L(mask::x, vi::vi1, vi::vi3, 4)));                           // 6: delay slot
+				p.push_back(P(VMFIR_L(mask::xyzw, vf::vf4, vi::vi1), VMULx_U(mask::w, vf::vf7, vf::vf1, vf::vf2)));  // 7: not taken
+				p.push_back(P(VISUBIU_L(vi::vi3, vi::vi3, 1), VSUB_U(mask::xyzw, vf::vf5, vf::vf3, vf::vf1))); // 8
+				p.push_back(L(VIBNE_L(vi::vi3, vi::vi0, static_cast<s16>(3 - 9 - 1))));          // 9 -> 3
+				p.push_back(L(VISWR_L(mask::y, vi::vi1, vi::vi3)));                             // 10: delay slot
+				p.push_back(L(VMFIR_L(mask::xyzw, vf::vf6, vi::vi5)));                          // 11
+				p.push_back(EBit(L(VISW_L(mask::z, vi::vi5, vi::vi0, 40))));                    // 12
+				for (bool fh : {true, false})
+					for (u32 budget : {0u, 3u, 17u, 40u})
+					{
+						runs++;
+						const RegionOutcome o = RunRegion(p, fh, [](VuTestHarness& h) {
+							h.SetVf(1, 1.0f, 2.0f, 3.0f, 4.0f);
+							h.SetVf(2, 0.5f, -0.5f, 0.25f, 2.0f);
+							h.SetVi(5, 0xfff0);
+						}, budget == 0, 14, false, nullptr, budget);
+						regions += o.regions;
+						if (!o.diffs.empty() && ++failures <= 6)
+							ADD_FAILURE() << k.name << " start=" << std::hex << start << " other=" << other << std::dec
+										  << " flagHack=" << fh << " budget=" << budget << "\n" << Join(o.diffs);
+					}
+			}
+	EXPECT_EQ(failures, 0) << runs << " runs";
+	EXPECT_GT(regions, static_cast<u32>(runs / 2));
+}
+
+// FMEQ compares the whole register microVU holds a VI in, and microVU holds a
+// VI from an earlier block zero-extended: a counter carried across a link past
+// 0xffff must compare as its low half (MAC is 0 here, so vi7 counts the trips
+// where the counter's low half is 0).
+static void RegionFmeqOnCarriedViBody();
+TEST(VuAotRegion, FmeqOnCarriedVi) { RegionFmeqOnCarriedViBody(); }
+static void RegionFmeqOnCarriedViBody()
+{
+	std::vector<VuOp> p;
+	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, 0x7fff)));                                  // 0
+	p.push_back(L(VIADD_L(vi::vi1, vi::vi1, vi::vi1)));                                   // 1: 0xfffe
+	p.push_back(L(VIADDIU_L(vi::vi3, vi::vi0, 5)));                                       // 2
+	p.push_back(P(VIADDIU_L(vi::vi1, vi::vi1, 1), VADD_U(mask::xyzw, vf::vf1, vf::vf1, vf::vf2))); // 3: head
+	p.push_back(L(VISUBIU_L(vi::vi3, vi::vi3, 1)));                                       // 4
+	p.push_back(U(VNOP_U()));                                                             // 5
+	p.push_back(L(VIBEQ_L(vi::vi3, vi::vi0, 5)));                                         // 6 -> 12
+	p.push_back(U(VNOP_U()));                                                             // 7: delay slot
+	p.push_back(L(VFMEQ_L(vi::vi6, vi::vi1)));                                            // 8
+	p.push_back(L(VIADD_L(vi::vi7, vi::vi7, vi::vi6)));                                   // 9
+	p.push_back(L(VB_L(static_cast<s16>(3 - 10 - 1))));                                   // 10 -> 3
+	p.push_back(U(VNOP_U()));                                                             // 11: delay slot
+	p.push_back(EBit(U(VNOP_U())));                                                       // 12
+	for (bool fh : {true, false})
+	{
+		const RegionOutcome o = RunRegion(p, fh, [](VuTestHarness& h) {
+			h.SetVf(1, 1.0f, 2.0f, 3.0f, 4.0f);
+			h.SetVf(2, 0.5f, 0.5f, 0.25f, 2.0f);
+		});
+		EXPECT_TRUE(o.diffs.empty()) << "flagHack=" << fh << "\n" << Join(o.diffs);
+		EXPECT_GE(o.regions, 1u);
+	}
+}
+
+// VI arithmetic across links: loops of random integer operations on vi2..vi6
+// seeded at the 16-bit edges (0x7fff, 0x8000, 0xffff, ...), with VI loads and
+// stores, MFIR, FMEQ / FMAND / FMOR, forward IBxx of every kind and the VI
+// copies microVU folds (IADDIU x, y, 0), so values reach register homes with
+// carries out of the low half and results are computed straight into the
+// homes of their own operands. To the end and under budgets that stop runs at
+// loop heads. FMEQ reads vi8 / vi9, which nothing writes: on a VI computed in
+// the same block microVU's answer depends on whether its register allocator
+// wrote the VI back and reloaded it (zero-extended) in between, which neither
+// the interpreter nor vu-aot reproduces.
+static void RegionViFuzzBody();
+TEST(VuAotRegion, ViFuzz) { RegionViFuzzBody(); }
+static void RegionViFuzzBody()
+{
+	std::mt19937 rng(20261016);
+	const int iters = getenv("VUAOT_REGION_ITERS") ? std::atoi(getenv("VUAOT_REGION_ITERS")) : 150;
+	int failures = 0, runs = 0;
+	u32 regions = 0;
+	for (int iter = 0; iter < iters; iter++)
+	{
+		auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
+		auto vi = [&]() { return 2 + R(5); }; // vi2..vi6; vi1 counts the loop
+		auto vf = [&]() { return 1 + R(8); };
+		std::vector<VuOp> p;
+		p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, static_cast<u16>(2 + R(9)))));
+		const size_t head = p.size();
+		const int len = 4 + R(12);
+		int lastBranch = -10;
+		for (int i = 0; i < len; i++)
+		{
+			u32 lo = kNopL, up = VNOP_U();
+			if (R(3) == 0)
+				up = R(2) ? VADD_U(mask::xyzw, vf(), vf(), vf()) : VMUL_U((R(15) + 1) << 21, vf(), vf(), vf());
+			switch (R(17))
+			{
+				case 0: lo = VIADD_L(vi(), vi(), vi()); break;
+				case 1: lo = VISUB_L(vi(), vi(), vi()); break;
+				case 2: lo = VIAND_L(vi(), vi(), vi()); break;
+				case 3: lo = VIOR_L(vi(), vi(), vi()); break;
+				case 4: lo = VIADDI_L(vi(), vi(), static_cast<s32>(R(32)) - 16); break;
+				case 5: lo = VIADDIU_L(vi(), vi(), R(2) ? 0u : R(0x8000)); break;
+				case 6: lo = VISUBIU_L(vi(), vi(), R(0x8000)); break;
+				case 7: lo = VILW_L((R(15) + 1) << 21, vi(), vi(), static_cast<s16>(R(16))); break;
+				case 8: lo = VISW_L((R(15) + 1) << 21, vi(), vi(), static_cast<s16>(R(16))); break;
+				case 9: lo = VISWR_L((R(15) + 1) << 21, vi(), vi()); break;
+				case 10: lo = VILWR_L(1u << (21 + R(4)), vi(), vi()); break;
+				case 11: lo = VMFIR_L(mask::xyzw, vf(), vi()); break;
+				case 12: lo = VFMEQ_L(vi(), 8 + R(2)); break; // (see below)
+				case 13: lo = VFMAND_L(vi(), vi()); break;
+				case 14: lo = VFMOR_L(vi(), vi()); break;
+				case 15:
+				case 16:
+					if (i + 4 < len && i >= lastBranch + 3)
+					{
+						const s16 off = static_cast<s16>(1 + R(2));
+						switch (R(6))
+						{
+							case 0: lo = VIBEQ_L(vi(), R(2) ? vi() : 0u, off); break;
+							case 1: lo = VIBNE_L(vi(), R(2) ? vi() : 0u, off); break;
+							case 2: lo = VIBLTZ_L(vi(), off); break;
+							case 3: lo = VIBGTZ_L(vi(), off); break;
+							case 4: lo = VIBLEZ_L(vi(), off); break;
+							default: lo = VIBGEZ_L(vi(), off); break;
+						}
+						lastBranch = i;
+					}
+					break;
+			}
+			p.push_back(VuOp{lo, up});
+		}
+		p.push_back(U(VNOP_U()));
+		p.push_back(L(VISUBIU_L(vi::vi1, vi::vi1, 1)));
+		p.push_back(U(VNOP_U()));
+		p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(static_cast<int>(head) - static_cast<int>(p.size()) - 1))));
+		p.push_back(L(VIADD_L(vi::vi7, vi::vi2, vi::vi3)));
+		p.push_back(EBit(L(VISW_L(mask::xyzw, vi::vi7, vi::vi0, 60))));
+		const u16 seeds[] = {0x7fff, 0x8000, 0xffff, 0xfffe, 0x0001, 0x7ffe, 0x8001, 0x0000, 0x3ff, 0x400};
+		const auto setup = [&](VuTestHarness& h) {
+			for (int r = 2; r <= 6; r++)
+				h.SetVi(r, seeds[(iter + r * 3) % 10]);
+			h.SetVi(8, 0x0000);
+			h.SetVi(9, seeds[iter % 10]);
+			for (int r = 1; r <= 8; r++)
+				h.SetVf(r, 1.0f + r, -0.5f * r, 0.0f, 0.25f * r);
+		};
+		for (bool fh : {true, false})
+			for (u32 budget : {0u, 7u, 23u})
+			{
+				runs++;
+				const RegionOutcome o = RunRegion(p, fh, setup, budget == 0, 14, false, nullptr, budget);
+				regions += o.regions;
+				if (!o.diffs.empty() && ++failures <= 4)
+					ADD_FAILURE() << "iter " << iter << " flagHack=" << fh << " budget=" << budget << " hex=" << Hex(p) << "\n" << Join(o.diffs, 8);
+			}
+	}
+	EXPECT_EQ(failures, 0) << runs << " runs";
+	EXPECT_GT(regions, static_cast<u32>(runs / 2));
+}
+
+// A vector home whose w lane the region never writes keeps that lane in
+// microVU's location (HomeMap::wMem): x, y and z writes go whole into the
+// register, a node reading w (a broadcast, a whole-vector store) loads it
+// first, and the boundary stores write x, y and z only. Two loops, the second
+// without a w reader, so the maps differ on vf5 and the transfers between them
+// go both ways; every budget from 1 so bails land everywhere; with the homes
+// on and off.
+static void RegionWLaneInMemoryBody();
+TEST(VuAotRegion, WLaneInMemory) { RegionWLaneInMemoryBody(); }
+static void RegionWLaneInMemoryBody()
+{
+	std::vector<VuOp> p;
+	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, 6)));                                       // 0
+	p.push_back(U(VMUL_U(mask::xyz, vf::vf5, vf::vf5, vf::vf2)));                          // 1: head 1
+	p.push_back(U(VADD_U(mask::xyz, vf::vf6, vf::vf6, vf::vf5)));                          // 2
+	p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), VMULw_U(mask::x, vf::vf7, vf::vf1, vf::vf5))); // 3: reads vf5.w
+	p.push_back(U(VNOP_U()));                                                             // 4
+	p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(1 - 5 - 1))));                // 5 -> 1
+	p.push_back(U(VMUL_U(mask::xyz, vf::vf8, vf::vf5, vf::vf2)));                          // 6: delay slot
+	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, 5)));                                       // 7
+	p.push_back(U(VADD_U(mask::xyz, vf::vf5, vf::vf5, vf::vf3)));                          // 8: head 2
+	p.push_back(U(VMADD_U(mask::xyz, vf::vf6, vf::vf5, vf::vf3)));                         // 9
+	p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), VMUL_U(mask::x | mask::y, vf::vf8, vf::vf8, vf::vf5))); // 10
+	p.push_back(U(VNOP_U()));                                                             // 11
+	p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(8 - 12 - 1))));               // 12 -> 8
+	p.push_back(U(VSUB_U(mask::xyz, vf::vf5, vf::vf5, vf::vf2)));                          // 13: delay slot
+	p.push_back(L(VSQ_L(mask::xyzw, vf::vf5, vi::vi0, 0)));                               // 14: stores vf5.w
+	p.push_back(EBit(U(VADD_U(mask::xyzw, vf::vf9, vf::vf5, vf::vf6))));                   // 15
+	const auto setup = [](VuTestHarness& h) {
+		h.SetVf(1, 1.0f, 2.0f, 3.0f, 4.0f);
+		h.SetVf(2, 1.01f, 0.99f, 1.02f, -3.0f);
+		h.SetVf(3, 0.25f, -0.5f, 0.125f, 9.0f);
+		h.SetVf(5, 1.5f, 2.0f, 2.5f, 7.0f);
+		h.SetVf(6, 0.5f, 0.5f, 0.5f, -2.0f);
+		h.SetVf(8, 3.0f, 2.0f, 1.0f, 5.0f);
+	};
+	struct Scope
+	{
+		~Scope() { g_wMem = true; }
+	} scope;
+	int failures = 0;
+	u32 wMem = 0;
+	for (bool on : {true, false})
+	{
+		g_wMem = on;
+		for (bool fh : {true, false})
+			for (u32 budget = 0; budget <= 120; budget++)
+			{
+				const RegionOutcome o = RunRegion(p, fh, setup, budget == 0, 14, false, nullptr, budget);
+				EXPECT_GT(o.regions, 0u);
+				if (on)
+					wMem += o.wMem;
+				else
+					EXPECT_EQ(o.wMem, 0u);
+				if (!o.diffs.empty() && ++failures <= 4)
+					ADD_FAILURE() << "wMem=" << on << " flagHack=" << fh << " budget=" << budget << "\n" << Join(o.diffs);
+			}
+	}
+	EXPECT_EQ(failures, 0);
+	EXPECT_GT(wMem, 0u) << "no home kept its w lane in memory";
 }
 
 // Milestone 10: two loops working on different vector registers get

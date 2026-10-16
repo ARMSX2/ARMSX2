@@ -73,6 +73,7 @@ namespace vuaot
 		// Variant merging: nodes that share another node's code (their own entry stub and bail
 		// record only), and the code classes that have more than one node.
 		u32 Merged() const { return merged_; }
+		u32 WMemHomes() const { return wMemHomes_; } // vector homes whose w lane stayed in memory (HomeMap::wMem), per map
 		u32 MergeClasses() const { return mergeClasses_; }
 		// Sticky STATUS accumulation: regions that use it, regions that could have but
 		// whose status chains the lowering cannot carry (FSSET kills), and the status
@@ -115,6 +116,9 @@ namespace vuaot
 		// Milestone 10: each loop keeps its own homes (live ranges split at
 		// loop boundaries).
 		bool splitHomes = true;
+		// A vector home whose w lane the region never writes keeps that lane in
+		// microVU's location (HomeMap::wMem).
+		bool wMemHomes = true;
 		// Sticky STATUS accumulation (LowerEnv::stickyAcc) in regions that have
 		// status updates it can take. Costs two vector homes and one general home.
 		bool stickyAcc = true;
@@ -202,6 +206,7 @@ namespace vuaot
 	private:
 		u64 bytes_ = 0;
 		u32 merged_ = 0, mergeClasses_ = 0;
+		u32 wMemHomes_ = 0;
 		std::map<std::string, u32> declined_;
 
 		friend class RegionBuilder;

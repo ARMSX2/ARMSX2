@@ -304,6 +304,12 @@ namespace vuaot
 			static bool CheckShape(const Function& f_, const LowerEnv& env_, std::string& why);
 		private:
 			const Inst& LeaveInst() const { return hasLeave2_ ? leave2_ : f_.insts[leave_]; }
+			// Lane l of vector home r needs no value at the node's end: dead, or the
+			// w lane of a HomeMap::wMem home.
+			bool LaneFree(u32 r, u32 l) const
+			{
+				return (liveOut_ && !liveOut_->test(VecVar(r) + l)) || (l == 3 && hm_->WMem(r));
+			}
 			// The value that is the whole final value of vector home VF(v0):
 			// every lane is it, or dead at the node's end (no merge needed for
 			// a dead lane); 0 if none.
@@ -315,7 +321,7 @@ namespace vuaot
 				{
 					const u32 v = v0 + l;
 					const ValueId a = lv.args[v];
-					if (liveOut_ && !liveOut_->test(v))
+					if (LaneFree(VecHomeOf(v0), l))
 						continue; // dead: any value will do
 					if (!a)
 						return 0;
@@ -338,7 +344,7 @@ namespace vuaot
 				for (u32 l = 0; l < 4; l++)
 				{
 					const u32 v = v0 + l;
-					if (liveOut_ && !liveOut_->test(v))
+					if (LaneFree(VecHomeOf(v0), l))
 						continue;
 					const ValueId a = lv.args[v];
 					if (!a)
@@ -484,6 +490,7 @@ namespace vuaot
 			ValueId vOwner_[32] = {};
 			ValueId gOwner_[32] = {};
 			u32 vLock_ = 0, gLock_ = 0;   // registers in use by the current instruction
+			u32 vBound_ = 0, gBound_ = 0; // registers holding a value
 			u32 vTemp_ = 0, gTemp_ = 0;   // temporaries of the current instruction
 			u32 vPool_ = 0, gPool_ = 0;   // allocatable (homes excluded)
 			std::vector<u8> slotBusy_;
@@ -538,18 +545,30 @@ namespace vuaot
 			{
 				reg_[c] = static_cast<s8>(r);
 				if (cls_[c] == Cls::V)
+				{
 					vOwner_[r] = c;
+					vBound_ |= 1u << r;
+				}
 				else
+				{
 					gOwner_[r] = c;
+					gBound_ |= 1u << r;
+				}
 			}
 			void Unbind(ValueId c)
 			{
 				if (reg_[c] < 0)
 					return;
 				if (cls_[c] == Cls::V)
+				{
 					vOwner_[reg_[c]] = 0;
+					vBound_ &= ~(1u << reg_[c]);
+				}
 				else
+				{
 					gOwner_[reg_[c]] = 0;
+					gBound_ &= ~(1u << reg_[c]);
+				}
 				reg_[c] = -1;
 			}
 			a64::MemOperand SlotMem(int s) const { return a64::MemOperand(xFlag, env_.offNeonBackup + s * 16); }
@@ -562,7 +581,10 @@ namespace vuaot
 			int TempV();
 			int TempG();
 			int DefV(ValueId id);
-			int DefG(ValueId id);
+			// inPlace: the instruction is one host instruction that reads its
+			// operands before it writes, so the result may take the register of an
+			// operand that dies here (x = x + 1 straight into x's home).
+			int DefG(ValueId id, bool inPlace = false);
 			void EndInst();
 		public:
 			void CountClampedLiveIns(u32 counts[33]) const
@@ -685,7 +707,26 @@ namespace vuaot
 			void Leave(ValueId id);
 			void One(ValueId id);
 
-			bool Known16(ValueId v) const;
+			// Region mode: a VI's register home holds the VI in its low 16 bits
+			// and anything above them (no normalisation at node ends; every
+			// reader of a VI value already takes only the bits it needs, and the
+			// boundary stores are 16 bits wide). The two 32-bit fields that take
+			// an old VI value, microVU's VI backup and kick address, still get
+			// the zero-extended value they always got.
+			bool WideViLiveIn(ValueId c) const;
+			// FMEQ compares the whole register, and microVU's register holds a VI
+			// from an earlier block zero-extended, so whatever the operand is
+			// computed from in this node (VI arithmetic, FMAND / FMOR) must start
+			// from zero-extended VIs too: those coming from register homes are
+			// zero-extended in place where the node starts.
+			void NormalizeFmeqInputs();
+			// HomeMap::wMem: a node that reads the w lane of such a home's incoming
+			// value loads it into the register where the node starts.
+			void FillWMemLanes();
+			bool TruncFor(u32 var, ValueId c) const
+			{
+				return (var == var::VIBACKUP || var == var::XGKADDR) && WideViLiveIn(c);
+			}
 		};
 
 		//------------------------------------------------------------------
@@ -781,6 +822,8 @@ namespace vuaot
 					const MemLoc m = BoundaryLoc(v, env_);
 					if (cls_[c] == Cls::G)
 					{
+						if (TruncFor(v, c))
+							armAsm->Uxth(W(r), W(r));
 						if (m.size == 2)
 							armAsm->Strh(W(r), a64::MemOperand(*m.base, m.off));
 						else
@@ -1020,7 +1063,7 @@ namespace vuaot
 			return AllocReg(Cls::V, c);
 		}
 
-		int Lowerer::DefG(ValueId id)
+		int Lowerer::DefG(ValueId id, bool inPlace)
 		{
 			const ValueId c = C(id);
 			if (finalOf_[c])
@@ -1031,7 +1074,21 @@ namespace vuaot
 					hr = 20 + static_cast<int>(var - var::S(0));
 				else if (hm_->home[var].kind == HomeKind::GReg)
 					hr = hm_->home[var].reg;
-				if (hr >= 0 && !gOwner_[hr] && !(gLock_ & (1u << hr)))
+				if (hr >= 0 && inPlace && gOwner_[hr] && (gLock_ & (1u << hr)) && !(gTemp_ & (1u << hr)))
+				{
+					// the home holds an operand of this instruction with no later use
+					const ValueId o = gOwner_[hr];
+					if (!LiveAfter(o) && !(homeReg_[o] && finalOf_[o]))
+					{
+						Unbind(o);
+						if (slot_[o] >= 0)
+						{
+							FreeSlot(slot_[o]);
+							slot_[o] = -1;
+						}
+					}
+				}
+				if (hr >= 0 && !gOwner_[hr] && !(gTemp_ & (1u << hr)) && (inPlace || !(gLock_ & (1u << hr))))
 				{
 					Bind(c, hr);
 					homeReg_[c] = 1;
@@ -1067,6 +1124,27 @@ namespace vuaot
 							FreeSlot(slot_[c]);
 							slot_[c] = -1;
 						}
+					}
+				}
+			}
+			// A value read only through an assembled or clamped operand was never
+			// locked: free every register whose value has no use left, or it stays
+			// taken until the node ends and is spilled when the file fills.
+			for (int file = 0; file < 2; file++)
+			{
+				ValueId* own = file ? gOwner_ : vOwner_;
+				// (home registers too: a dead incoming value there frees the home for
+				// the variable's final value)
+				for (u32 m = file ? gBound_ : vBound_; m; m &= m - 1)
+				{
+					const ValueId c = own[Ctz(m)];
+					if (!c || (!uses_[c].empty() && uses_[c].back() > pos_) || (homeReg_[c] && finalOf_[c]))
+						continue;
+					Unbind(c);
+					if (slot_[c] >= 0)
+					{
+						FreeSlot(slot_[c]);
+						slot_[c] = -1;
 					}
 				}
 			}
@@ -1346,6 +1424,19 @@ namespace vuaot
 					case Op::StoreI:
 						mem.clear();
 						break;
+					case Op::Cond:
+					{
+						// IBEQ / IBNE against a constant 0 (VI0) and the one-operand
+						// forms test the operand itself.
+						u32 b;
+						if (in.args.size() < 2 || !in.args[1])
+							canon_[v] = C(in.args[0]);
+						else if (ConstOf(C(in.args[1]), b) && b == 0)
+							canon_[v] = C(in.args[0]);
+						else if (ConstOf(C(in.args[0]), b) && b == 0)
+							canon_[v] = C(in.args[1]);
+						break;
+					}
 					default:
 						break;
 				}
@@ -2683,6 +2774,8 @@ namespace vuaot
 						armAsm->Orr(W(d), W(vi), W(src));
 					else
 					{
+						// (the VIs this operand is computed from were zero-extended at
+						// the start of the node: NormalizeFmeqInputs)
 						armAsm->Eor(W(d), W(vi), W(src));
 						armAsm->Sub(W(d), W(d), 1);
 						armAsm->Lsr(W(d), W(d), 31);
@@ -3340,24 +3433,105 @@ namespace vuaot
 			}
 		}
 
-		bool Lowerer::Known16(ValueId v) const
+		void Lowerer::FillWMemLanes()
 		{
-			if (v < folded_.size() && folded_[v])
-				return constVal_[v] < 0x10000;
-			const Inst& in = I(v);
-			switch (in.op)
+			if (!hm_->wMem)
+				return;
+			// the w-lane incoming values of the wMem homes (index 1..32), then which are read
+			ValueId l3[33] = {};
+			bool any = false;
+			for (size_t v = 1; v < f_.insts.size(); v++)
 			{
-				case Op::LiveIn:
-					return in.var >= var::VI(1) && in.var <= var::VI(15);
-				case Op::Const:
-				case Op::IConst:
-					return static_cast<u32>(in.imm) < 0x10000;
-				case Op::LoadI:
-				case Op::Xtop:
-					return true;
-				default:
-					return false;
+				const Inst& in = f_.insts[v];
+				if (in.op != Op::LiveIn || (in.var & 3) != 3)
+					continue;
+				const u32 r = VecHomeOf(in.var);
+				if (r && hm_->WMem(r) && hm_->home[VecVar(r)].kind == HomeKind::VReg && !l3[r])
+				{
+					l3[r] = static_cast<ValueId>(v);
+					any = true;
+				}
 			}
+			if (!any)
+				return;
+			u64 read = 0;
+			for (ValueId v : order_)
+			{
+				if (!emit_[v])
+					continue;
+				ForArgs(v, I(v), [&](size_t k, ValueId a) {
+					const Inst& x = I(a);
+					if (x.op != Op::LiveIn || (x.var & 3) != 3)
+						return;
+					const u32 r = VecHomeOf(x.var);
+					if (r && l3[r] == a && !(v == leave_ && k == x.var))
+						read |= u64(1) << r;
+				});
+			}
+			for (u32 r = 1; r <= 32; r++)
+			{
+				if (!((read >> r) & 1))
+					continue;
+				const u32 v0 = VecVar(r);
+				const MemLoc m = BoundaryLoc(v0, env_);
+				armAsm->Ldr(a64::w16, a64::MemOperand(xState, m.off + 12));
+				armAsm->Ins(V(hm_->home[v0].reg).V4S(), 3, a64::w16);
+			}
+		}
+
+		void Lowerer::NormalizeFmeqInputs()
+		{
+			if (mode_ != LowerMode::Region)
+				return;
+			std::vector<ValueId>& work = work_;
+			work.clear();
+			for (ValueId v : order_)
+			{
+				const Inst& in = I(v);
+				if (emit_[v] && canon_[v] == v && in.op == Op::FlagRead && static_cast<LOp>(in.sub) == LOp::FMEQ && in.args.size() > 1)
+					work.push_back(C(in.args[1]));
+			}
+			u32 done = 0; // VI variables already zero-extended
+			std::vector<ValueId> seen;
+			while (!work.empty())
+			{
+				const ValueId c = work.back();
+				work.pop_back();
+				if (!c || std::find(seen.begin(), seen.end(), c) != seen.end())
+					continue;
+				seen.push_back(c);
+				if (folded_[c])
+					continue;
+				const Inst& in = I(c);
+				if (WideViLiveIn(c))
+				{
+					const u32 bit = 1u << (in.var - var::VI(0));
+					if (!(done & bit) && reg_[c] >= 0)
+						armAsm->Uxth(W(reg_[c]), W(reg_[c]));
+					done |= bit;
+					continue;
+				}
+				if (in.op == Op::IAlu || in.op == Op::IncVI)
+				{
+					for (ValueId a : in.args)
+						if (a)
+							work.push_back(C(a));
+				}
+				else if (in.op == Op::FlagRead && in.args.size() > 1)
+				{
+					const LOp op = static_cast<LOp>(in.sub);
+					if (op == LOp::FMAND || op == LOp::FMOR || op == LOp::FMEQ)
+						work.push_back(C(in.args[1]));
+				}
+			}
+		}
+
+		bool Lowerer::WideViLiveIn(ValueId c) const
+		{
+			if (mode_ != LowerMode::Region || (c < folded_.size() && folded_[c]))
+				return false;
+			const Inst& in = I(c);
+			return in.op == Op::LiveIn && in.var >= var::VI(1) && in.var <= var::VI(15) && hm_->home[in.var].kind == HomeKind::GReg;
 		}
 
 		// The end of the node: every variable's final value to its home.
@@ -3386,8 +3560,12 @@ namespace vuaot
 			const ValueId jump = in.args[var::Count + 1];
 			if (mode_ == LowerMode::Region)
 			{
+				// The flags for the region's conditional branch: the 16-bit value
+				// against 0, as microVU's sign-extended compare. N is bit 15, Z is
+				// the low half all clear, V and C are clear. Nothing the node end
+				// emits after this sets flags.
 				if (cond)
-					armAsm->Sxth(W(kCondReg), W(IntOperand(cond)));
+					armAsm->Cmn(a64::wzr, a64::Operand(W(IntOperand(cond)), a64::LSL, 16));
 				else if (jump)
 				{
 					// JR/JALR: the target byte address, as microVU stores it in mVU.branch
@@ -3541,6 +3719,8 @@ namespace vuaot
 				if (!m.base)
 					continue;
 				const int r = IntOperand(a);
+				if (TruncFor(v, C(a)))
+					armAsm->Uxth(W(r), W(r)); // (the VI's own home: its low half is unchanged)
 				if (m.size == 2)
 					armAsm->Strh(W(r), a64::MemOperand(*m.base, m.off));
 				else
@@ -3570,18 +3750,13 @@ namespace vuaot
 					return;
 				const ValueId c = C(a);
 				if (reg_[c] == dst && cls_[c] == Cls::G)
-				{
-					// computed in place; a VI home still keeps 16 bits
-					if (mode_ == LowerMode::Region && v >= var::VI(1) && v <= var::VI(15) && !Known16(c))
-						moves.push_back({false, dst, false, dst, 0, true});
-					return;
-				}
+					return; // computed in place
 				if (ownLiveIn(v, a))
 					return;
 				Move mv;
 				mv.dstV = false;
 				mv.dst = dst;
-				mv.trunc16 = mode_ == LowerMode::Region && v >= var::VI(1) && v <= var::VI(15) && !Known16(c);
+				mv.trunc16 = TruncFor(v, c);
 				if (reg_[c] >= 0)
 				{
 					mv.srcV = cls_[c] == Cls::V;
@@ -3736,7 +3911,7 @@ namespace vuaot
 					for (u32 k = 0; k < 4 && all; k++)
 					{
 						const ValueId a = in.args[v0 + k];
-						if (liveOut_ && !liveOut_->test(v0 + k))
+						if (LaneFree(r, k))
 							continue;
 						if (!a || ownLiveIn(v0 + k, a))
 							all = false;
@@ -3966,7 +4141,7 @@ namespace vuaot
 						case LOp::IADD: case LOp::ISUB: case LOp::IAND: case LOp::IOR:
 						{
 							const int b = IntOperand(in.args[1]);
-							const int d = DefG(id);
+							const int d = DefG(id, true);
 							if (op == LOp::IADD) armAsm->Add(W(d), W(a), W(b));
 							else if (op == LOp::ISUB) armAsm->Sub(W(d), W(a), W(b));
 							else if (op == LOp::IAND) armAsm->And(W(d), W(a), W(b));
@@ -3975,13 +4150,13 @@ namespace vuaot
 						}
 						case LOp::ISUBIU:
 						{
-							const int d = DefG(id);
+							const int d = DefG(id, true);
 							armAsm->Sub(W(d), W(a), static_cast<u32>(in.imm));
 							break;
 						}
 						default: // IADDI / IADDIU
 						{
-							const int d = DefG(id);
+							const int d = DefG(id, true);
 							armAsm->Add(W(d), W(a), static_cast<u32>(in.imm));
 							break;
 						}
@@ -3991,7 +4166,7 @@ namespace vuaot
 				case Op::IncVI:
 				{
 					const int a = IntOperand(in.args[0]);
-					const int d = DefG(id);
+					const int d = DefG(id, true);
 					if (in.imm > 0)
 						armAsm->Add(W(d), W(a), 1);
 					else
@@ -4997,6 +5172,8 @@ namespace vuaot
 				Bind(clampOf_[c], r);
 				homeReg_[clampOf_[c]] = 1;
 			}
+			FillWMemLanes();
+			NormalizeFmeqInputs();
 			for (pos_ = 0; pos_ < order_.size(); pos_++)
 			{
 				const ValueId id = order_[pos_];
@@ -5146,6 +5323,20 @@ namespace vuaot
 		}
 	}
 
+	// A vector home to microVU's location: x, y and z only for a HomeMap::wMem
+	// home (its w lane there is the valid one).
+	static void StoreVecHome(const HomeMap& homes, u32 r, int reg, s32 off)
+	{
+		if (!homes.WMem(r))
+		{
+			armAsm->Str(Q(reg), a64::MemOperand(xState, off));
+			return;
+		}
+		armAsm->Str(D(reg), a64::MemOperand(xState, off));
+		armAsm->Umov(a64::w16, V(reg).V4S(), 2);
+		armAsm->Str(a64::w16, a64::MemOperand(xState, off + 8));
+	}
+
 	void EmitHomeTransfer(const HomeMap& from, const HomeMap& to, const LiveSet* live, const LowerEnv& env)
 	{
 		struct Mv
@@ -5178,13 +5369,19 @@ namespace vuaot
 				continue;
 			const HomeKind k = vec ? HomeKind::VReg : HomeKind::GReg;
 			const int fr = regOf(from, v, k), tr = regOf(to, v, k);
-			if (fr == tr || !isLive(v, vec))
+			if (!isLive(v, vec))
 				continue;
 			const MemLoc m = BoundaryLoc(v, env);
+			// Into a HomeMap::wMem home from a register holding the w lane: the
+			// lane goes to microVU's location, where the target map keeps it.
+			if (vec && fr >= 0 && tr >= 0 && to.WMem(vr) && !from.WMem(vr))
+				armAsm->Str(Q(fr), a64::MemOperand(*m.base, m.off));
+			if (fr == tr)
+				continue;
 			if (fr >= 0 && tr < 0)
 			{
 				if (vec)
-					armAsm->Str(Q(fr), a64::MemOperand(*m.base, m.off));
+					StoreVecHome(from, vr, fr, m.off);
 				else if (m.size == 2)
 					armAsm->Strh(W(fr), a64::MemOperand(*m.base, m.off));
 				else
@@ -5262,6 +5459,17 @@ namespace vuaot
 		}
 		if (loadVf0)
 			armAsm->Ldr(Q(to.vf0Reg), a64::MemOperand(xState, kOffVF));
+		// A register that held a HomeMap::wMem home and now holds a full one: its w
+		// lane from microVU's location (valid: the region never writes it).
+		for (u32 r = 1; r <= 32; r++)
+		{
+			const u32 v0 = VecVar(r);
+			if (!from.WMem(r) || to.WMem(r) || from.home[v0].kind != HomeKind::VReg || to.home[v0].kind != HomeKind::VReg ||
+				(live && !live->test(v0 + 3)))
+				continue;
+			armAsm->Ldr(a64::w16, a64::MemOperand(xState, BoundaryLoc(v0, env).off + 12));
+			armAsm->Ins(V(to.home[v0].reg).V4S(), 3, a64::w16);
+		}
 		for (u32 r = 1; r <= 32; r++)
 			if (to.clampSlot[r] >= 0 && from.clampSlot[r] != to.clampSlot[r] && isLive(VecVar(r), true))
 				ClampSlotFill(to, env, r);
@@ -5374,7 +5582,7 @@ namespace vuaot
 				continue;
 			const MemLoc m = BoundaryLoc(v, env);
 			if (h.kind == HomeKind::VReg)
-				armAsm->Str(Q(h.reg), a64::MemOperand(*m.base, m.off));
+				StoreVecHome(homes, vr, h.reg, m.off);
 			else if (m.size == 2)
 				armAsm->Strh(W(h.reg), a64::MemOperand(*m.base, m.off));
 			else

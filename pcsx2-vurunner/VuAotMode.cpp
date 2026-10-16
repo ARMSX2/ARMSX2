@@ -347,6 +347,7 @@ namespace
 				region->schedule = o.schedule;
 				region->profile = o.profile;
 				region->splitHomes = o.splitHomes;
+				region->wMemHomes = o.wMemHomes;
 				region->stickyAcc = o.stickyAcc;
 				region->accAlways = o.accAlways;
 				region->handoffLiveness = o.handoff;
