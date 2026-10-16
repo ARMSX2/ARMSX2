@@ -90,6 +90,7 @@ namespace vuaot
 			Job,          // a tier job's copy of micro memory, or live micro memory at publication, has a sticky reader
 			OutsideRead,  // VU0 (micro or macro mode) touched VU1's STATUS register through its window onto VU1's registers
 			Forced,       // a test or a runner flag set it off
+			Remembered,   // the running title set it off in an earlier session (owner's default on decision 3, 2026-10-15)
 			kCount,
 		};
 		constexpr u32 kTripCauses = static_cast<u32>(TripCause::kCount);
@@ -131,6 +132,9 @@ namespace vuaot
 			u64 stickyTrips = 0;
 			u64 stickyTripsBy[kTripCauses] = {};
 			u64 stickyTripResets = 0;
+			// Sessions (VM boots and resets, or a title change) that started with the tripwire set because
+			// the running title set it off before (TripCause::Remembered; not counted in stickyTrips).
+			u64 stickyRemembered = 0;
 			// pcsx2-eerunner --count-vu1-ins only: user-mode instructions VU1's compile
 			// sessions retired, for programs the tier took over and for the rest.
 			u64 compileInsTiered = 0;
@@ -187,6 +191,12 @@ namespace vuaot
 		// Whether the tier runs this session (EnableVUAot, VU1 recompiled, no
 		// gamefix vu-aot declines). Settled at init and at every reset.
 		bool IsEnabled();
+
+		// The sticky-STATUS tripwire across sessions (persistence-design.md, the owner's default on decision
+		// 3): a title (disc serial and CRC) that set the tripwire off is remembered in the program cache's
+		// directory (vu_jit/vuaot_tripped.txt), and every later session of it starts with the tripwire set.
+		// SetTitle is what VMManager calls when the disc details change; an empty serial is no title.
+		void SetTitle(const std::string& serial, u32 crc);
 
 		// The sticky-STATUS tripwire (section 9ad). Armed (false) at the start; set by the first
 		// sticky reader the tier hears of -- a micro image containing one is uploaded or compiled, or

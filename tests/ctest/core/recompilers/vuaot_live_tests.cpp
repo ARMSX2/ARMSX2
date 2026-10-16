@@ -2007,6 +2007,76 @@ TEST_F(VuAotCache, ResetBeforeTheRootsArriveKeepsThePlan)
 	EXPECT_EQ(records(), saved) << "the reset wrote a plan without the root that was still out";
 }
 
+// The tripwire across sessions (the owner's default on decision 3): a title that set it off starts every
+// later session (a VM boot or reset) with it set, so the regions keep the sticky bits from the start and every
+// run equals microVU byte for byte; another title, or the same with the program cache off, starts armed.
+// (Mutation: no memory, and session two's regions drop the sticky bits again.)
+TEST_F(VuAotCache, TrippedTitleStartsTheNextSessionTripped)
+{
+	for (bool fh : {true, false})
+	{
+		const Result ref = Reference(StickyLoop(10), SetupSticky, fh);
+		RecompilerTestEnvironment::ResetVuBlockCache(1);
+		NewProcess();
+		RecursiveRm(root_ + "/vu_jit");
+		vuAotSetTitle("SLUS-99999", 0x1234ABCD);
+		// session one: the tier drops the sticky bits until the tripwire goes off
+		{
+			LiveScope s1(true, 4, fh);
+			EXPECT_FALSE(vuaot::live::StickyTripped()) << "a title with no trip on record starts armed";
+			const vuaot::live::Stats s0 = vuaot::live::GetStats();
+			VuTestHarness h(1);
+			Prepare(h, StickyLoop(10), SetupSticky, 0);
+			h.RunNoDiff();
+			for (int i = 0; i < 8; i++)
+				h.RunJitPreserveBlockCache();
+			EXPECT_GT(vuaot::live::GetStats().stickyDropped, s0.stickyDropped) << "fh " << fh << ": session one dropped the sticky bits";
+			vuaot::live::TripStickyForTest();
+			ASSERT_TRUE(vuaot::live::StickyTripped());
+			RecompilerTestEnvironment::ResetVuBlockCache(1);
+		}
+		const std::optional<std::string> file = FileSystem::ReadFileToString((root_ + "/vu_jit/vuaot_tripped.txt").c_str());
+		ASSERT_TRUE(file.has_value()) << "the trip was not remembered";
+		EXPECT_NE(file->find("SLUS-99999 1234ABCD"), std::string::npos) << *file;
+
+		// session two, same title: a new process, then the VM boot (LiveScope re-arms as the boot does)
+		NewProcess();
+		{
+			LiveScope s2(true, 4, fh);
+			ASSERT_TRUE(vuaot::live::StickyTripped()) << "fh " << fh << ": the remembered trip did not carry over";
+			EXPECT_EQ(vuaot::live::StickyTripCause(), vuaot::live::TripCause::Remembered);
+			const vuaot::live::Stats s0 = vuaot::live::GetStats();
+			VuTestHarness h(1);
+			Prepare(h, StickyLoop(10), SetupSticky, 0);
+			h.RunNoDiff();
+			EXPECT_EQ(Diff(ref, Take(h)), "") << "fh " << fh;
+			for (int i = 0; i < 10; i++)
+			{
+				h.RunJitPreserveBlockCache();
+				EXPECT_EQ(Diff(ref, Take(h)), "") << "fh " << fh << " run " << i << ": the regions must keep the sticky bits";
+			}
+			const vuaot::live::Stats s1 = vuaot::live::GetStats();
+			EXPECT_GT(s1.tierUps, s0.tierUps) << "fh " << fh;
+			EXPECT_EQ(s1.stickyDropped, s0.stickyDropped) << "fh " << fh << ": session two started with the drop off";
+			EXPECT_EQ(s1.stickyTrips, s0.stickyTrips) << "a remembered trip is not a new trip";
+			EXPECT_GE(s1.stickyRemembered, 1u);
+		}
+
+		// another title starts armed; so does this one with the program cache off (nowhere to remember)
+		vuAotSetTitle("SLUS-99998", 0x1234ABCD);
+		{
+			LiveScope s3(true, 4, fh);
+			EXPECT_FALSE(vuaot::live::StickyTripped()) << "fh " << fh << ": another title";
+		}
+		vuAotSetTitle("SLUS-99999", 0x1234ABCD);
+		{
+			LiveScope s4(false, 4, fh);
+			EXPECT_FALSE(vuaot::live::StickyTripped()) << "fh " << fh << ": with vu-aot (and so the program cache) off";
+		}
+		vuAotSetTitle("", 0);
+	}
+}
+
 // A sidecar that is damaged, truncated, from another build, or whose read set no longer matches micro memory
 // is refused cleanly: no job from it, the payload still loads, the program tiers up by its run count as any
 // program does, and every run equals microVU's.

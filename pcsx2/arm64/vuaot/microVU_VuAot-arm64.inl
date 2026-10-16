@@ -353,7 +353,86 @@ namespace
 #endif
 	};
 	VuAotTripwire& s_trip = *new VuAotTripwire();
+
+	// The tripwire's memory across sessions: the titles that set it off are lines ("SERIAL CRC") of
+	// vu_jit/vuaot_tripped.txt under the cache folder, read when a session starts or the title changes and
+	// appended to at a trip. The running title is kept here. Any thread (a trip can come from VU0 on the
+	// EE thread); small and rare, so one mutex.
+	struct VuAotTitles
+	{
+		std::mutex mu;
+		std::string title; // "SERIAL CRC" of the running title; empty when there is none
+	};
+	VuAotTitles& s_titles = *new VuAotTitles();
 } // namespace
+
+static std::string vuAotTrippedPath()
+{
+	if (EmuFolders::Cache.empty())
+		return {};
+	return Path::Combine(Path::Combine(EmuFolders::Cache, "vu_jit"), "vuaot_tripped.txt");
+}
+
+// (s_titles.mu held) Whether the file at `path` has the running title.
+static bool vuAotTitleInFileLocked(const std::string& path)
+{
+	const std::optional<std::string> text = FileSystem::ReadFileToString(path.c_str());
+	if (!text.has_value())
+		return false;
+	size_t at = 0;
+	while (at < text->size())
+	{
+		size_t end = text->find('\n', at);
+		if (end == std::string::npos)
+			end = text->size();
+		if (text->compare(at, end - at, s_titles.title) == 0)
+			return true;
+		at = end + 1;
+	}
+	return false;
+}
+
+// Whether the running title set the tripwire off in an earlier session (only with the program cache on:
+// the memory lives in its folder).
+static bool vuAotTitleRemembered()
+{
+	std::lock_guard<std::mutex> lock(s_titles.mu);
+	const std::string path = vuAotTrippedPath();
+	if (s_titles.title.empty() || path.empty() || !EmuConfig.Cpu.Recompiler.UseVUProgramCache())
+		return false;
+	return vuAotTitleInFileLocked(path);
+}
+
+// The running title has set the tripwire off: remember it.
+static void vuAotRememberTitle()
+{
+	std::lock_guard<std::mutex> lock(s_titles.mu);
+	const std::string path = vuAotTrippedPath();
+	if (s_titles.title.empty() || path.empty() || !EmuConfig.Cpu.Recompiler.UseVUProgramCache() || vuAotTitleInFileLocked(path))
+		return;
+	Error error;
+	const std::string line = s_titles.title + "\n";
+	if (!FileSystem::EnsureDirectoryExists(std::string(Path::GetDirectory(path)).c_str(), true, &error))
+		return;
+	if (std::FILE* fp = FileSystem::OpenCFile(path.c_str(), "ab"))
+	{
+		std::fwrite(line.data(), 1, line.size(), fp);
+		std::fclose(fp);
+	}
+}
+
+// The tripwire set because the running title set it off before: as a trip (regions keep the sticky
+// byte from now on; any placed without it are rebuilt), but neither counted as one nor remembered again.
+static void vuAotTripRemembered()
+{
+	if (s_trip.tripped.exchange(true, std::memory_order_acq_rel))
+		return;
+	s_trip.cause.store(static_cast<u32>(vuaot::live::TripCause::Remembered), std::memory_order_relaxed);
+	s_trip.tripsBy[static_cast<u32>(vuaot::live::TripCause::Remembered)].fetch_add(1, std::memory_order_relaxed);
+	if (s_trip.dropLive.load(std::memory_order_acquire))
+		s_trip.rebuildDue.store(true, std::memory_order_release);
+	Console.WriteLn(Color_StrongBlue, "vu-aot: sticky STATUS tripwire set: this title set it off in an earlier session.");
+}
 
 #ifdef PCSX2_RECOMPILER_TESTS
 // vuaot::live::SetWorkerDelayUs
@@ -389,6 +468,7 @@ const char* vuaot::live::TripCauseName(TripCause c)
 		case TripCause::Job: return "a sticky STATUS reader is in the micro memory a region would run under";
 		case TripCause::OutsideRead: return "VU0 read VU1's STATUS register";
 		case TripCause::Forced: return "forced";
+		case TripCause::Remembered: return "this title set it off in an earlier session";
 		default: return "?";
 	}
 }
@@ -416,6 +496,7 @@ static void vuAotTrip(vuaot::live::TripCause why)
 		s_trip.rebuildDue.store(true, std::memory_order_release);
 	Console.WriteLn(Color_StrongBlue, "vu-aot: sticky STATUS tripwire: %s. Regions keep the sticky byte of STATUS from now on%s.",
 		vuaot::live::TripCauseName(why), rebuild ? "; VU1 resets at its next run to rebuild the regions that dropped it" : "");
+	vuAotRememberTitle();
 }
 
 // A VU0 access to VU1's STATUS register (the VU0 interpreter's GET_VU_MEM, microVU0's window seam).
@@ -461,6 +542,7 @@ void mVUvuAotRebuildIfDue()
 }
 
 void vuAotResetStickyTripwire() { vuaot::live::ResetStickyTripwire(); }
+void vuAotSetTitle(const std::string& serial, u32 crc) { vuaot::live::SetTitle(serial, crc); }
 
 namespace vuaot::live
 {
@@ -470,6 +552,25 @@ namespace vuaot::live
 	{
 		s_trip.tripped.store(false, std::memory_order_release);
 		s_trip.cause.store(0, std::memory_order_relaxed);
+		// A new session of a title that set it off before starts with it set.
+		if (vuAotTitleRemembered())
+		{
+			s_trip.tripped.store(true, std::memory_order_release);
+			s_trip.cause.store(static_cast<u32>(TripCause::Remembered), std::memory_order_relaxed);
+			s_trip.tripsBy[static_cast<u32>(TripCause::Remembered)].fetch_add(1, std::memory_order_relaxed);
+		}
+	}
+	void SetTitle(const std::string& serial, u32 crc)
+	{
+		{
+			std::lock_guard<std::mutex> lock(s_titles.mu);
+			s_titles.title.clear();
+			if (!serial.empty())
+				s_titles.title = fmt::format("{} {:08X}", serial, crc);
+		}
+		// (a title changed in mid-session, which a boot or reset does not come after)
+		if (s_vuaot.enabled && vuAotTitleRemembered())
+			vuAotTripRemembered();
 	}
 #ifdef PCSX2_RECOMPILER_TESTS
 	void TripStickyForTest() { vuAotTrip(TripCause::Forced); }
@@ -598,6 +699,7 @@ namespace vuaot::live
 		for (u32 i = 0; i < kTripCauses; i++)
 			s.stickyTripsBy[i] = s_trip.tripsBy[i].load(std::memory_order_relaxed);
 		s.stickyTripResets = s_trip.resets.load(std::memory_order_relaxed);
+		s.stickyRemembered = s_trip.tripsBy[static_cast<u32>(TripCause::Remembered)].load(std::memory_order_relaxed);
 		return s;
 	}
 
@@ -611,7 +713,7 @@ namespace vuaot::live
 			"roots=%llu regions=%llu rnodes=%llu rexits=%llu rbytes=%llu bodyblocks=%llu bodies=%llu bodybytes=%llu bails=%llu "
 			"jrtierups=%llu jrcounted=%llu xprogtargets=%llu bails_entry=%llu bails_loophead=%llu "
 			"status_readers=%llu sticky_readers=%llu sticky_div_readers=%llu sticky_dropped=%llu sticky_images=%llu "
-			"sticky_trips=%llu sticky_trip_resets=%llu sticky_tripped=%d",
+			"sticky_trips=%llu sticky_trip_resets=%llu sticky_tripped=%d sticky_remembered=%llu",
 			(unsigned long long)s.tierUps, (unsigned long long)s.retiers, (unsigned long long)s.retierChecks,
 			(unsigned long long)s.blocksSetAside, (unsigned long long)s.targetsRecorded, (unsigned long long)s.jumpMisses,
 			(unsigned long long)s.rootsCompiled, (unsigned long long)s.regions, (unsigned long long)s.regionNodes,
@@ -620,7 +722,8 @@ namespace vuaot::live
 			(unsigned long long)s.jumpTierUps, (unsigned long long)s.jumpCounted, (unsigned long long)s.crossProgTargets,
 			(unsigned long long)s.bailsEntry, (unsigned long long)s.bailsLoopHead, (unsigned long long)s.statusReaders,
 			(unsigned long long)s.stickyReaders, (unsigned long long)s.stickyDivReaders, (unsigned long long)s.stickyDropped,
-			(unsigned long long)s.stickyImages, (unsigned long long)s.stickyTrips, (unsigned long long)s.stickyTripResets, StickyTripped() ? 1 : 0);
+			(unsigned long long)s.stickyImages, (unsigned long long)s.stickyTrips, (unsigned long long)s.stickyTripResets, StickyTripped() ? 1 : 0,
+			(unsigned long long)s.stickyRemembered);
 		out = buf;
 		if (s.stickyTrips)
 		{

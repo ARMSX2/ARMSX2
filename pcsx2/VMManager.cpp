@@ -1380,6 +1380,7 @@ void VMManager::UpdateDiscDetails(bool booting)
 		}
 
 		SaveSessionTime(old_serial);
+		vuAotSetTitle(s_disc_serial, s_disc_crc);
 
 		s_title_en_search.clear();
 		s_title_en_replace.clear();

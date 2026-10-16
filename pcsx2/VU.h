@@ -288,10 +288,14 @@ extern u32* GET_VU_MEM(VURegs* VU, u32 addr);
 static constexpr u32 VU0_WINDOW_VU1_STATUS_QWORD = 32 + REG_STATUS_FLAG;
 // A new VM, booted or reset, starts with the tripwire armed again (a savestate load or a settings
 // change does not).
+// The running title (disc serial and CRC), for the vu-aot tripwire's memory across sessions: a title that
+// set it off starts every later session with it set.
 #if defined(__aarch64__) || defined(_M_ARM64)
 extern void vuAotNoteOutsideStatusRead();
 extern void vuAotResetStickyTripwire();
+extern void vuAotSetTitle(const std::string& serial, u32 crc);
 #else
 static inline void vuAotNoteOutsideStatusRead() {}
 static inline void vuAotResetStickyTripwire() {}
+static inline void vuAotSetTitle(const std::string&, u32) {}
 #endif
