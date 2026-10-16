@@ -8,7 +8,8 @@
 //
 // The app (RemotePlayUpnp.kt) asks for the UDP port WebRTC already listens on, adds the router's
 // public address for it to the offer, renews the lease while the session lasts and closes the port
-// when it ends. The lease means a port left open by a crash closes itself.
+// when it ends. The lease means a port left open by a crash closes itself, so a router that only
+// opens ports for good is not used at all: nothing would ever close a port the app did not live to.
 
 #include <jni.h>
 #include <android/log.h>
@@ -129,19 +130,23 @@ Java_kr_co_iefriends_pcsx2_NativeApp_remotePlayUpnpMap(JNIEnv* env, jclass, jint
 		return nullptr;
 
 	const std::string internal = std::to_string(internalPort);
-	std::string lease = std::to_string(leaseSeconds);
+	const std::string lease = std::to_string(leaseSeconds);
 	const int first = externalHint > 0 ? externalHint : internalPort;
+	// A renewal asks for the port it had and no other. That port is the one in the friend's offer,
+	// and a mapping moved anywhere else would only leave the old one open behind it.
+	const int last = externalHint > 0 ? first : std::min(first + 32, 0xffff);
 
-	for (int external_port = first; external_port <= std::min(first + 32, 0xffff); external_port++)
+	for (int external_port = first; external_port <= last; external_port++)
 	{
 		const std::string external = std::to_string(external_port);
-		int result = AddMapping(external, internal, lease);
+		const int result = AddMapping(external, internal, lease);
 
 		if (result == ONLY_PERMANENT_LEASES_SUPPORTED)
 		{
-			// Some routers take no lease: permanent it is, and the app removes it at the end.
-			lease = "0";
-			result = AddMapping(external, internal, lease);
+			// Not taken: a permanent forward stays open on the router for good if the app is killed
+			// before the session ends. The offer goes out as it was, as with no router at all.
+			RP_UPNP_LOG("remote play: the router only opens ports permanently, so it is not used");
+			return nullptr;
 		}
 
 		if (result == UPNPCOMMAND_SUCCESS)
