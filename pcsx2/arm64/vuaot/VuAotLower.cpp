@@ -562,7 +562,10 @@ namespace vuaot
 			int TempV();
 			int TempG();
 			int DefV(ValueId id);
-			int DefG(ValueId id);
+			// inPlace: the instruction is one host instruction that reads its
+			// operands before it writes, so the result may take the register of an
+			// operand that dies here (x = x + 1 straight into x's home).
+			int DefG(ValueId id, bool inPlace = false);
 			void EndInst();
 		public:
 			void CountClampedLiveIns(u32 counts[33]) const
@@ -1038,7 +1041,7 @@ namespace vuaot
 			return AllocReg(Cls::V, c);
 		}
 
-		int Lowerer::DefG(ValueId id)
+		int Lowerer::DefG(ValueId id, bool inPlace)
 		{
 			const ValueId c = C(id);
 			if (finalOf_[c])
@@ -1049,7 +1052,21 @@ namespace vuaot
 					hr = 20 + static_cast<int>(var - var::S(0));
 				else if (hm_->home[var].kind == HomeKind::GReg)
 					hr = hm_->home[var].reg;
-				if (hr >= 0 && !gOwner_[hr] && !(gLock_ & (1u << hr)))
+				if (hr >= 0 && inPlace && gOwner_[hr] && (gLock_ & (1u << hr)) && !(gTemp_ & (1u << hr)))
+				{
+					// the home holds an operand of this instruction with no later use
+					const ValueId o = gOwner_[hr];
+					if (!LiveAfter(o) && !(homeReg_[o] && finalOf_[o]))
+					{
+						Unbind(o);
+						if (slot_[o] >= 0)
+						{
+							FreeSlot(slot_[o]);
+							slot_[o] = -1;
+						}
+					}
+				}
+				if (hr >= 0 && !gOwner_[hr] && !(gTemp_ & (1u << hr)) && (inPlace || !(gLock_ & (1u << hr))))
 				{
 					Bind(c, hr);
 					homeReg_[c] = 1;
@@ -4035,7 +4052,7 @@ namespace vuaot
 						case LOp::IADD: case LOp::ISUB: case LOp::IAND: case LOp::IOR:
 						{
 							const int b = IntOperand(in.args[1]);
-							const int d = DefG(id);
+							const int d = DefG(id, true);
 							if (op == LOp::IADD) armAsm->Add(W(d), W(a), W(b));
 							else if (op == LOp::ISUB) armAsm->Sub(W(d), W(a), W(b));
 							else if (op == LOp::IAND) armAsm->And(W(d), W(a), W(b));
@@ -4044,13 +4061,13 @@ namespace vuaot
 						}
 						case LOp::ISUBIU:
 						{
-							const int d = DefG(id);
+							const int d = DefG(id, true);
 							armAsm->Sub(W(d), W(a), static_cast<u32>(in.imm));
 							break;
 						}
 						default: // IADDI / IADDIU
 						{
-							const int d = DefG(id);
+							const int d = DefG(id, true);
 							armAsm->Add(W(d), W(a), static_cast<u32>(in.imm));
 							break;
 						}
@@ -4060,7 +4077,7 @@ namespace vuaot
 				case Op::IncVI:
 				{
 					const int a = IntOperand(in.args[0]);
-					const int d = DefG(id);
+					const int d = DefG(id, true);
 					if (in.imm > 0)
 						armAsm->Add(W(d), W(a), 1);
 					else
