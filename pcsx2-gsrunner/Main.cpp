@@ -12,7 +12,6 @@
 #include <deque>
 #include <functional>
 #include <condition_variable>
-#include <future>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -85,7 +84,6 @@
 #include "GSLadder.h"
 #include "GSReplayPayload.h"
 #include "GSRunnerAffinity.h"
-#include "GSVramMirrorSelfTest.h"
 #include "RenderDocCapture.h"
 
 #include "svnrev.h"
@@ -479,9 +477,6 @@ static u64 s_total_sw_palette_block_copies = 0;
 static bool s_vm_hash = false;
 static bool s_verify_hash_memo = false;
 static bool s_verify_block_hash = false;
-// -gpu-decode-selftest: check the GPU texture decode against the CPU readers, then exit. No replay runs.
-static bool s_gpu_decode_selftest = false;
-static GSVramMirrorSelfTest::Options s_gpu_decode_selftest_options;
 
 static u64 s_total_prims = 0;
 static u64 s_total_tc_source_hit = 0;
@@ -1284,12 +1279,6 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -hash-cache-mb <n>: Most megabytes of textures the hash cache keeps above its floor of 800 "
 						 "entries (0 = no limit; the default is the renderer's own). -hash-cache-entries 800 -hash-cache-mb 0 "
 						 "is the cache as it was before the memory limit.\n");
-	std::fprintf(stderr, "  -gpu-decode-selftest: Check the Vulkan GPU texture decode (the VRAM mirror's PSMT8, PSMT4, PSMT8H, "
-						 "PSMT4HL and PSMT4HH decode) against the CPU readers on random local memory and windows, print one "
-						 "GPU-DECODE-SELFTEST line per phase, and exit non-zero on any mismatch. The dump argument is only there "
-						 "to boot the device; it is not replayed. Needs -renderer vulkan.\n");
-	std::fprintf(stderr, "  -gpu-decode-selftest-windows <n>: Random windows per format for -gpu-decode-selftest. Default 1000.\n");
-	std::fprintf(stderr, "  -gpu-decode-selftest-seed <n>: Seed for -gpu-decode-selftest. Default 1.\n");
 	std::fprintf(stderr, "  -stats-json <path>: Write per-frame and run-summary statistics as JSON. Combine with -perf "
 						 "for frame/GPU timing.\n");
 	std::fprintf(stderr, "  -set <Section/Key>=<value>: Override any setting, e.g. -set EmuCore/GS/AccurateBlendingUnit=3. "
@@ -1797,27 +1786,6 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			else if (CHECK_ARG("-vmhash"))
 			{
 				s_vm_hash = true;
-				continue;
-			}
-			else if (CHECK_ARG("-gpu-decode-selftest"))
-			{
-				s_gpu_decode_selftest = true;
-				continue;
-			}
-			else if (CHECK_ARG_PARAM("-gpu-decode-selftest-windows"))
-			{
-				const std::optional<int> parsed = ParseNumericArg<int>("-gpu-decode-selftest-windows", argv[++i]);
-				if (!parsed.has_value())
-					return false;
-				s_gpu_decode_selftest_options.windows_per_format = static_cast<u32>(std::max(1, parsed.value()));
-				continue;
-			}
-			else if (CHECK_ARG_PARAM("-gpu-decode-selftest-seed"))
-			{
-				const std::optional<int> parsed = ParseNumericArg<int>("-gpu-decode-selftest-seed", argv[++i]);
-				if (!parsed.has_value())
-					return false;
-				s_gpu_decode_selftest_options.seed = static_cast<u32>(parsed.value());
 				continue;
 			}
 			else if (CHECK_ARG("-verify-hash-memo"))
@@ -3037,21 +3005,6 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			// the only visible symptom would be that the flag stops doing anything.
 			ApplyGSThreadPin();
 			ApplyGSBackThreadPin();
-
-			if (s_gpu_decode_selftest)
-			{
-				// The device is open and nothing has been replayed. The test drives it directly on the
-				// GS thread, then the VM goes down without ever running.
-				std::promise<int> done;
-				std::future<int> result = done.get_future();
-				MTGS::RunOnGSThread([&done]() { done.set_value(GSVramMirrorSelfTest::Run(s_gpu_decode_selftest_options)); });
-				const int rc = result.get();
-				VMManager::Shutdown(false);
-				ret->store(rc == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
-				VMManager::Internal::CPUThreadShutdown();
-				GSRunner::StopPlatformMessagePump();
-				return;
-			}
 
 			// run until end
 			GSDumpReplayer::SetLoopCount(s_loop_count);

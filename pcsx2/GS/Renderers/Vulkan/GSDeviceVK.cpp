@@ -11,7 +11,6 @@
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
 #include "GS/Renderers/Vulkan/GSLsfg.h"
 #include "GS/Renderers/Vulkan/VKBuilders.h"
-#include "GS/Renderers/Vulkan/GSVramMirrorVK.h"
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
 #include "GS/Renderers/Vulkan/VKSwapChain.h"
 #include "GS/Renderers/Vulkan/VKLibretro.h"
@@ -7269,21 +7268,10 @@ bool GSDeviceVK::DoSGSR(GSTexture* sTex, GSTexture* dTex, const std::array<u32, 
 	return true;
 }
 
-bool GSDeviceVK::CreateVramMirror()
-{
-	if (!m_vram_mirror)
-		m_vram_mirror = GSVramMirrorVK::Create();
-	return m_vram_mirror != nullptr;
-}
-
 void GSDeviceVK::DestroyResources()
 {
 	// Before anything a worker reads is destroyed.
 	StopPipelinePrecompile();
-
-	// The mirror's flush may still sit in the command buffer being built; its destructor submits and
-	// waits for that, so it goes while the pools, the allocator and the pipeline cache are alive.
-	m_vram_mirror.reset();
 
 	if (m_tfx_ubo_descriptor_set != VK_NULL_HANDLE)
 		FreePersistentDescriptorSet(m_tfx_ubo_descriptor_set);

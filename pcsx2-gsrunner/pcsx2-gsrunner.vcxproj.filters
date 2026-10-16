@@ -3,7 +3,6 @@
   <ItemGroup>
     <ClCompile Include="GSLadder.cpp" />
     <ClCompile Include="GSReplayPayload.cpp" />
-    <ClCompile Include="GSVramMirrorSelfTest.cpp" />
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="RenderDocCapture.cpp" />
   </ItemGroup>
@@ -11,7 +10,6 @@
     <ClInclude Include="GSLadder.h" />
     <ClInclude Include="GSReplayPayload.h" />
     <ClInclude Include="GSRunnerAffinity.h" />
-    <ClInclude Include="GSVramMirrorSelfTest.h" />
     <ClInclude Include="RenderDocCapture.h" />
   </ItemGroup>
 </Project>
