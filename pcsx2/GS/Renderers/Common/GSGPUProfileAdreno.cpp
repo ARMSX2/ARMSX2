@@ -25,7 +25,7 @@ constexpr MobileGsTuning T(u32 pool, u32 target_age, u32 texture_age, bool prefe
 
 // Renderer names are stable (for example "Adreno (TM) 740"), while Snapdragon product names are not.
 // Keep one entry per shipping renderer model so adjacent parts are not silently treated as equivalent.
-static constexpr std::array<AdrenoSpec, 52> s_adreno_specs = {{
+static constexpr std::array<AdrenoSpec, 53> s_adreno_specs = {{
 	{200, 0, MobileGpuArchitecture::Adreno2xx, T(48, 4, 4)},
 	{203, 0, MobileGpuArchitecture::Adreno2xx, T(48, 4, 4)},
 	{205, 0, MobileGpuArchitecture::Adreno2xx, T(48, 4, 4)},
@@ -78,6 +78,14 @@ static constexpr std::array<AdrenoSpec, 52> s_adreno_specs = {{
 	{702, 0, MobileGpuArchitecture::Adreno7xx, T(88, 7, 6)},
 	{710, 0, MobileGpuArchitecture::Adreno7xx, T(104, 8, 7)},
 	{720, 0, MobileGpuArchitecture::Adreno7xx, T(128, 9, 7, true)},
+	// Snapdragon 7 Gen 4 and Dragonwing Q-7790 (Retroid Pocket Duo): an a7xx generation 1 part derived
+	// from the 730, with fewer cores and caches and 1 MiB of GMEM like the 720. The pool sizes and ages
+	// are memory-budget heuristics, not measurements, so this row copies the 720's: the sibling with the
+	// same GMEM, unconstrained, and the same values the generic 7xx fallback returns. Recognising the
+	// part therefore changes its identity and confidence in the driver report and leaves its pools as
+	// they were. No measurement supports a pool larger than the 720's, nor a smaller one that would
+	// make it constrained.
+	{722, 0, MobileGpuArchitecture::Adreno7xx, T(128, 9, 7, true)},
 }};
 
 // Later 7xx/8xx models are a different renderer generation, kept separate from the table above.

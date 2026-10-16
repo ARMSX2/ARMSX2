@@ -107,8 +107,8 @@ TEST(GSGpuProfileAdreno, AnUnlistedEightHundredPartKeepsItsGeneration)
 
 TEST(GSGpuProfileAdreno, SevenHundredSeriesPartsAreAdreno7xx)
 {
-	for (const char* name : {"Adreno (TM) 702", "Adreno (TM) 710", "Adreno (TM) 725", "Adreno (TM) 730",
-			 "Turnip Adreno (TM) 740", "Adreno (TM) 750"})
+	for (const char* name : {"Adreno (TM) 702", "Adreno (TM) 710", "Adreno (TM) 722", "Adreno (TM) 725",
+			 "Adreno (TM) 730", "Turnip Adreno (TM) 740", "Adreno (TM) 750"})
 	{
 		const ResolvedGpuProfile p = Adreno(name);
 		EXPECT_EQ(p.gpu.architecture, MobileGpuArchitecture::Adreno7xx) << name;
@@ -118,6 +118,33 @@ TEST(GSGpuProfileAdreno, SevenHundredSeriesPartsAreAdreno7xx)
 	ExpectTuning(Adreno("Adreno (TM) 740").tuning, 160, 12, 8, true);
 	// The low 7xx parts are constrained.
 	ExpectTuning(Adreno("Adreno (TM) 702").tuning, 88, 7, 6, false);
+}
+
+// The 722 (Snapdragon 7 Gen 4, Retroid Pocket Duo) sits between the 720 and the 725. Its row copies
+// the 720's sizing, the sibling with the same 1 MiB of GMEM, and that is also what an unlisted 7xx
+// number gets from the fallback. So listing it changes `recognized` and the confidence in the driver
+// report, and nothing about how the part is sized. The numbers beside it stay unlisted.
+TEST(GSGpuProfileAdreno, TheAdreno722IsListedWithTheAdreno720Sizing)
+{
+	for (const char* name : {"Adreno (TM) 722", "Turnip Adreno (TM) 722"})
+	{
+		const ResolvedGpuProfile p = Adreno(name);
+		EXPECT_EQ(p.gpu.architecture, MobileGpuArchitecture::Adreno7xx) << name;
+		EXPECT_EQ(p.gpu.model_number, 722) << name;
+		EXPECT_EQ(p.gpu.name, "Adreno 722") << name;
+		EXPECT_TRUE(p.gpu.recognized) << name;
+		ExpectTuning(p.tuning, 128, 9, 7, true);
+		EXPECT_FALSE(p.tuning.constrained) << name;
+	}
+
+	ExpectTuning(Adreno("Adreno (TM) 720").tuning, 128, 9, 7, true);
+	for (const char* name : {"Adreno (TM) 721", "Adreno (TM) 723"})
+	{
+		const ResolvedGpuProfile p = Adreno(name);
+		EXPECT_EQ(p.gpu.architecture, MobileGpuArchitecture::Adreno7xx) << name;
+		EXPECT_FALSE(p.gpu.recognized) << name;
+		ExpectTuning(p.tuning, 128, 9, 7, true);
+	}
 }
 
 TEST(GSGpuProfileAdreno, TheAdreno650IsAnUnconstrainedAdreno6xx)
