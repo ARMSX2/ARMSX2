@@ -495,18 +495,6 @@ final class PadLayoutStore: @unchecked Sendable {
         }
     }
 
-    func resetPortrait() {
-        portrait = Self.defaultPortrait
-    }
-
-    func resetLandscape() {
-        landscape = Self.defaultLandscape
-    }
-
-    func reset(isLandscape: Bool) {
-        if isLandscape { resetLandscape() } else { resetPortrait() }
-    }
-
     func resetPerButtonActionButtons(isLandscape: Bool) {
         if isLandscape {
             for id in ["triangle", "circle", "square", "cross"] {

@@ -180,14 +180,10 @@ private struct RetroAchievementEntry: Identifiable, Equatable {
     let badgePath: String?
     let measuredProgress: String
     let points: Int
-    let unlockTime: Int
     let state: Int
     let category: Int
     let bucket: Int
-    let unlocked: Int
     let measuredPercent: Double
-    let rarity: Double
-    let rarityHardcore: Double
 
     init?(dictionary: [String: Any]) {
         guard let idNumber = dictionary["id"] as? NSNumber else { return nil }
@@ -198,14 +194,10 @@ private struct RetroAchievementEntry: Identifiable, Equatable {
         badgePath = rawBadgePath.isEmpty ? nil : rawBadgePath
         measuredProgress = dictionary["measuredProgress"] as? String ?? ""
         points = (dictionary["points"] as? NSNumber)?.intValue ?? 0
-        unlockTime = (dictionary["unlockTime"] as? NSNumber)?.intValue ?? 0
         state = (dictionary["state"] as? NSNumber)?.intValue ?? 0
         category = (dictionary["category"] as? NSNumber)?.intValue ?? 0
         bucket = (dictionary["bucket"] as? NSNumber)?.intValue ?? 0
-        unlocked = (dictionary["unlocked"] as? NSNumber)?.intValue ?? 0
         measuredPercent = (dictionary["measuredPercent"] as? NSNumber)?.doubleValue ?? 0
-        rarity = (dictionary["rarity"] as? NSNumber)?.doubleValue ?? 0
-        rarityHardcore = (dictionary["rarityHardcore"] as? NSNumber)?.doubleValue ?? 0
     }
 
     var isUnlocked: Bool { state == 2 }
@@ -2577,13 +2569,6 @@ struct GameScreenView: View {
             initialSnapshot: preset?.snapshot,
             skinDescriptor: effectivePadSkinDescriptor
         )
-    }
-
-    private func runtimePadLayoutIdentityForCurrentGame() -> PadLayoutGameIdentity? {
-        guard let info = ARMSX2Bridge.perGameIdentityForCurrentGame() else {
-            return nil
-        }
-        return runtimePadLayoutIdentity(from: info)
     }
 
     private func runtimePadLayoutIdentity(

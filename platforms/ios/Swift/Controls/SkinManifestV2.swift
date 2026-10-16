@@ -282,8 +282,6 @@ enum SkinVisibility: Equatable {
     case autoHideWithPad
     case unknown
 
-    var isKnown: Bool { self != .unknown }
-
     static func from(_ raw: String) -> SkinVisibility {
         switch raw {
         case "", "always":          return .always
@@ -330,15 +328,6 @@ enum SkinScreenClass: Equatable {
 enum SkinOrientation: Equatable {
     case portrait
     case landscape
-    case unknown
-
-    static func from(_ raw: String) -> SkinOrientation {
-        switch raw.lowercased() {
-        case "portrait":    return .portrait
-        case "landscape":   return .landscape
-        default:            return .unknown
-        }
-    }
 }
 
 /// Every PS2 input identifier a manifest control may reference.
@@ -495,9 +484,6 @@ struct SkinManifestQuery: Equatable {
 extension SkinManifestV2 {
     /// A representation selected by ``bestRepresentation(for:)``.
     struct ResolvedRepresentation: Equatable {
-        let device: String
-        let screenClass: String
-        let orientation: String
         let representation: SkinOrientationRepresentation
     }
 
@@ -513,21 +499,21 @@ extension SkinManifestV2 {
                 guard let set = byScreenClass[screenClass] else { continue }
                 for orientation in Self.orderedRawOrientations(preferred: query.orientation) {
                     if orientation == "portrait", let portrait = set.portrait {
-                        return ResolvedRepresentation(device: device, screenClass: screenClass, orientation: orientation, representation: portrait)
+                        return ResolvedRepresentation(representation: portrait)
                     }
                     if orientation == "landscape", let landscape = set.landscape {
-                        return ResolvedRepresentation(device: device, screenClass: screenClass, orientation: orientation, representation: landscape)
+                        return ResolvedRepresentation(representation: landscape)
                     }
                 }
             }
         }
-        for (device, byScreenClass) in available {
-            for (screenClass, set) in byScreenClass {
+        for byScreenClass in available.values {
+            for set in byScreenClass.values {
                 if let portrait = set.portrait {
-                    return ResolvedRepresentation(device: device, screenClass: screenClass, orientation: "portrait", representation: portrait)
+                    return ResolvedRepresentation(representation: portrait)
                 }
                 if let landscape = set.landscape {
-                    return ResolvedRepresentation(device: device, screenClass: screenClass, orientation: "landscape", representation: landscape)
+                    return ResolvedRepresentation(representation: landscape)
                 }
             }
         }
@@ -562,17 +548,6 @@ enum SkinManifestValidator {
     struct Result: Equatable {
         var errors: [Issue] = []
         var warnings: [Issue] = []
-
-        var isValid: Bool { errors.isEmpty }
-    }
-
-    /// Convenience entry point: decode then validate. A decode failure is
-    /// reported as a single root error rather than throwing.
-    static func validate(jsonData: Data, packageRoot: URL? = nil) -> Result {
-        guard let manifest = try? SkinManifestV2.decode(from: jsonData) else {
-            return Result(errors: [Issue(location: "(root)", message: "the manifest is not valid JSON or does not match the v2 shape")])
-        }
-        return validate(manifest, packageRoot: packageRoot)
     }
 
     /// Validates an already-decoded manifest. When `packageRoot` is supplied,

@@ -20,24 +20,15 @@ enum SkinManifestImporter {
         case failed(SkinImportError)
     }
 
-    /// Structured result for an accepted v2 skin, used by later phases and by
-    /// the import alert.
+    /// Result of an accepted v2 import, shown by the import alert.
     struct V2ImportOutcome {
         let descriptor: VPadSkinDescriptor
         let warnings: [String]
-        let manifestName: String?
-        let manifestIdentifier: String?
-        let manifestVersion: String?
-        let manifestAuthor: String?
-        let copiedAssetCount: Int
-        let repairedParentFolder: Bool
 
         func asImportResult() -> VPadSkinImportResult {
             VPadSkinImportResult(
                 descriptor: descriptor,
-                warnings: warnings,
-                importedImageCount: copiedAssetCount,
-                extractedFileCount: copiedAssetCount
+                warnings: warnings
             )
         }
     }
@@ -146,7 +137,6 @@ enum SkinManifestImporter {
     /// callers parse strictly first and only fall back on failure. Nothing below
     /// 0x20 can be a UTF-8 continuation byte or half of a "\t" pair, so escapes
     /// and multi-byte text are left alone.
-    /// Manifest sanitizer for hand-edited JSON files containing unescaped control bytes.
     static func repairedJSON(_ data: Data) -> Data? {
         var out = Data(capacity: data.count)
         var inString = false
@@ -178,19 +168,14 @@ enum SkinManifestImporter {
     struct InstallValidation {
         let errors: [String]
         let warnings: [String]
-        let ignoredReservedFields: [String]
     }
 
-    /// Runs the Phase 1 validator (structure only) plus an install-readiness
-    /// check for required assets. Reserved fields surface as warnings, never as
-    /// errors. Missing required control art blocks install.
+    /// Structure checks plus required control art. Reserved fields stay
+    /// warnings; missing art blocks install.
     static func validateForInstall(_ manifest: SkinManifestV2, packageRoot: URL) -> InstallValidation {
         let result = SkinManifestValidator.validate(manifest, packageRoot: nil)
         var errors = result.errors.map(\.description)
         let warnings = result.warnings.map(\.description)
-        let ignoredReservedFields = result.warnings
-            .filter { $0.message.contains("reserved and ignored") || $0.message.contains("parsed but ignored") }
-            .map { $0.location }
 
         for path in missingRequiredAssets(manifest, packageRoot: packageRoot) {
             let message = "required asset \"\(path)\" was not found in the package"
@@ -198,7 +183,7 @@ enum SkinManifestImporter {
                 errors.append(message)
             }
         }
-        return InstallValidation(errors: errors, warnings: warnings, ignoredReservedFields: ignoredReservedFields)
+        return InstallValidation(errors: errors, warnings: warnings)
     }
 
     /// Asset paths required for a control to render (its normal art, or a
@@ -275,19 +260,12 @@ enum SkinManifestImporter {
 
     // MARK: - Storage
 
-    struct AssetInstall {
-        let copiedAssetCount: Int
-        let totalFiles: Int
-        let skipped: [String]
-    }
-
     static let storedManifestFileName = "manifest-v2.json"
     static let assetExtensions: Set<String> = ["png", "jpg", "jpeg", "webp", "pdf"]
     static let manifestFileNames: Set<String> = ["info.json", "manifest.json", "manifest-v2.json"]
 
-    /// Copies the package's asset files into `destination` (preserving safe
-    /// relative paths), then writes the validated manifest as
-    /// `manifest-v2.json`. Must be called only after validation passes.
+    /// Copies the package's safe asset files into `destination` and writes the
+    /// manifest as `manifest-v2.json`. Call only after validation passes.
     static func installValidatedPackage(
         manifest: SkinManifestV2,
         manifestData: Data?,
@@ -295,12 +273,10 @@ enum SkinManifestImporter {
         destination: URL,
         maxFileBytes: Int64,
         maxFiles: Int
-    ) throws -> AssetInstall {
+    ) throws {
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         let manager = FileManager.default
         var copied = 0
-        var total = 0
-        var skipped: [String] = []
 
         guard let enumerator = manager.enumerator(
             at: packageRoot,
@@ -313,24 +289,17 @@ enum SkinManifestImporter {
         for case let url as URL in enumerator {
             let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
             guard values?.isRegularFile == true else { continue }
-            total += 1
 
             let baseName = url.lastPathComponent.lowercased()
             if manifestFileNames.contains(baseName) { continue }
             let fileExtension = url.pathExtension.lowercased()
             guard assetExtensions.contains(fileExtension) else { continue }
             guard let relative = relativePath(of: url, from: packageRoot), SkinAssetPath.isSafeRelative(relative) else {
-                skipped.append(url.lastPathComponent)
                 continue
             }
 
             let size = ((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize) ?? 0
-            if Int64(size) > maxFileBytes {
-                skipped.append(relative)
-                continue
-            }
-            if copied >= maxFiles {
-                skipped.append(relative)
+            if Int64(size) > maxFileBytes || copied >= maxFiles {
                 continue
             }
 
@@ -341,19 +310,14 @@ enum SkinManifestImporter {
             if manager.fileExists(atPath: destinationURL.path) {
                 try? manager.removeItem(at: destinationURL)
             }
-            do {
-                try manager.copyItem(at: url, to: destinationURL)
+            if (try? manager.copyItem(at: url, to: destinationURL)) != nil {
                 copied += 1
-            } catch {
-                skipped.append(relative)
             }
         }
 
         let manifestDestination = destination.appendingPathComponent(storedManifestFileName)
         let payload = manifestData ?? (try? JSONEncoder().encode(manifest)) ?? Data()
         try payload.write(to: manifestDestination, options: .atomic)
-
-        return AssetInstall(copiedAssetCount: copied, totalFiles: total, skipped: skipped)
     }
 
     // MARK: - File helpers

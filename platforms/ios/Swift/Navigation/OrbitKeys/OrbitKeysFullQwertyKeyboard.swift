@@ -48,15 +48,6 @@ struct OrbitKeysFullQwertyKey: Identifiable, Equatable, Sendable {
     }
   }
 
-  var isModeKey: Bool {
-    switch action {
-    case .shift, .numbers:
-      return true
-    case .character, .space, .backspace, .returnKey:
-      return false
-    }
-  }
-
   var usesAccentColor: Bool {
     switch action {
     case .shift, .numbers, .space, .backspace, .returnKey:

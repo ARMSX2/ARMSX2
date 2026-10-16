@@ -1292,17 +1292,6 @@ struct PlayStation2MenuVector3 {
     )
   }
 
-  static func * (
-    vector: PlayStation2MenuVector3,
-    scalar: Double
-  ) -> PlayStation2MenuVector3 {
-    PlayStation2MenuVector3(
-      x: vector.x * scalar,
-      y: vector.y * scalar,
-      z: vector.z * scalar
-    )
-  }
-
   func rotatedX(_ angle: Double) -> PlayStation2MenuVector3 {
     PlayStation2MenuVector3(
       x: x,
@@ -2693,92 +2682,6 @@ struct PlayStation3XMBMartGradient {
     self.curvature = curvature
   }
 
-  var stops: [Gradient.Stop] {
-    (0...12).map { index in
-      let progress = Double(index) / 12
-      let smoothProgress = progress * progress * (3 - 2 * progress)
-      return Gradient.Stop(
-        color: blend(startColor, endColor, amount: smoothProgress),
-        location: CGFloat(progress)
-      )
-    }
-  }
-
-  var startPoint: UnitPoint {
-    let direction = gradientDirection
-    let range = gradientRange(direction: direction)
-    let centerProjection = 0.5 * direction.x + 0.5 * direction.y
-    let offset = range.minimum - centerProjection
-    return UnitPoint(
-      x: CGFloat(0.5 + direction.x * offset),
-      y: CGFloat(0.5 + direction.y * offset)
-    )
-  }
-
-  var endPoint: UnitPoint {
-    let direction = gradientDirection
-    let range = gradientRange(direction: direction)
-    let centerProjection = 0.5 * direction.x + 0.5 * direction.y
-    let offset = range.maximum - centerProjection
-    return UnitPoint(
-      x: CGFloat(0.5 + direction.x * offset),
-      y: CGFloat(0.5 + direction.y * offset)
-    )
-  }
-
-  private var gradientDirection: (x: Double, y: Double) {
-    let radians = angleDegrees * .pi / 180
-    return (cos(radians), sin(radians))
-  }
-
-  private func gradientRange(
-    direction: (x: Double, y: Double)
-  ) -> (minimum: Double, maximum: Double) {
-    let projections = [
-      0,
-      direction.x,
-      direction.y,
-      direction.x + direction.y,
-    ]
-    return (projections.min() ?? 0, projections.max() ?? 1)
-  }
-
-  private func blend(_ first: Color, _ second: Color, amount: Double) -> Color {
-    let firstColor = UIColor(first)
-    let secondColor = UIColor(second)
-    var firstRed: CGFloat = 0
-    var firstGreen: CGFloat = 0
-    var firstBlue: CGFloat = 0
-    var firstAlpha: CGFloat = 0
-    var secondRed: CGFloat = 0
-    var secondGreen: CGFloat = 0
-    var secondBlue: CGFloat = 0
-    var secondAlpha: CGFloat = 0
-
-    guard
-      firstColor.getRed(
-        &firstRed,
-        green: &firstGreen,
-        blue: &firstBlue,
-        alpha: &firstAlpha
-      ),
-      secondColor.getRed(
-        &secondRed,
-        green: &secondGreen,
-        blue: &secondBlue,
-        alpha: &secondAlpha
-      )
-    else {
-      return amount < 0.5 ? first : second
-    }
-
-    return Color(
-      red: Double(firstRed + (secondRed - firstRed) * amount),
-      green: Double(firstGreen + (secondGreen - firstGreen) * amount),
-      blue: Double(firstBlue + (secondBlue - firstBlue) * amount),
-      opacity: Double(firstAlpha + (secondAlpha - firstAlpha) * amount)
-    )
-  }
 }
 
 struct PlayStation3XMBMartRGB {
@@ -2918,28 +2821,6 @@ final class PlayStation3XMBMartSplinePipeline {
     buildSplineTable(settings: settings)
     runKernel(settings: settings, time: time)
     writeDisplacementTexture(settings: settings, time: time)
-  }
-
-  func sample(u: Double, v: Double) -> Double {
-    let x = clamp(u, lower: 0, upper: 1) * Double(textureWidth - 1)
-    let y = clamp(v, lower: 0, upper: 1) * Double(textureHeight - 1)
-    let x0 = Int(floor(x))
-    let y0 = Int(floor(y))
-    let x1 = min(textureWidth - 1, x0 + 1)
-    let y1 = min(textureHeight - 1, y0 + 1)
-    let xBlend = x - floor(x)
-    let yBlend = y - floor(y)
-    let top = mix(
-      displacement[y0 * textureWidth + x0],
-      displacement[y0 * textureWidth + x1],
-      amount: xBlend
-    )
-    let bottom = mix(
-      displacement[y1 * textureWidth + x0],
-      displacement[y1 * textureWidth + x1],
-      amount: xBlend
-    )
-    return mix(top, bottom, amount: yBlend)
   }
 
   func copyDisplacement(into values: inout [Float]) {
@@ -4275,8 +4156,6 @@ struct FaceButtonsBackground: View {
         * settings.faceButtonSpeed
         * settings.backgrounds.faceButtonsSpeed
       let paletteProgress = paletteTransitionProgress(at: time)
-      let deepColor = sharedColor(index: 0, time: time, progress: paletteProgress)
-      let midColor = sharedColor(index: 1, time: time, progress: paletteProgress)
       let lightColor = sharedColor(index: 2, time: time, progress: paletteProgress)
       let sharedGradient = displayedTheme.sharedGradientPoints(
         from: .topLeading,

@@ -10,7 +10,6 @@ enum ARMSX2BouncingLogoAsset {
 }
 
 struct OrbTrailBezierSegment {
-  let start: CGPoint
   let end: CGPoint
   let control1: CGPoint
   let control2: CGPoint
@@ -36,7 +35,6 @@ enum OrbTrailGeometry {
     )
 
     return OrbTrailBezierSegment(
-      start: start,
       end: end,
       control1: CGPoint(
         x: start.x + startTangent.dx / 3,

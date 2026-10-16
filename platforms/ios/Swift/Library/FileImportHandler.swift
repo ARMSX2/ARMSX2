@@ -179,7 +179,7 @@ final class FileImportHandler {
               fileName, ext.isEmpty ? "(none)" : ext, accessing ? 1 : 0)
 
         if preferredDestination == .pnachCheat || (preferredDestination == .automatic && Self.pnachExtensions.contains(ext)) {
-            return importPNACHFile(url, destinationPath: ARMSX2Bridge.pnachPathForCurrentGame(asCheat: true), asCheat: true)
+            return importPNACHFile(url, asCheat: true)
         }
 
         let docsPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
@@ -252,7 +252,7 @@ final class FileImportHandler {
         }
     }
 
-    private func importPNACHFile(_ url: URL, destinationPath: String?, asCheat: Bool) -> ImportResult {
+    private func importPNACHFile(_ url: URL, asCheat: Bool) -> ImportResult {
         let fileName = url.lastPathComponent
         if !Self.pnachExtensions.contains(url.pathExtension.lowercased()) {
             NSLog("[ARMSX2 iOS Import] PNACH file has non-standard extension, attempting text import: %@", fileName)

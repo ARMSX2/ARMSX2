@@ -302,43 +302,6 @@ enum ControllerAsset {
         return nil
     }
 
-    static func gameplayFullSkinImage(skin: VirtualPadSkin, isLandscape: Bool) -> UIImage? {
-        guard skin == .custom, let directory = VirtualPadSkin.customSkinDirectory() else {
-            return nil
-        }
-
-        // Manic/Delta-style full-phone skins include their own game viewport and
-        // need info.json coordinates before we can place them accurately. For
-        // gameplay, only use simple pad-area skins; otherwise fall back to the
-        // built-in ARMSX2 controls so inputs never become visually misleading.
-        guard !isLandscape else {
-            return nil
-        }
-
-        let candidates = [
-            "controller_portrait",
-            "skin_portrait",
-            "background_portrait",
-            "gamepad_portrait",
-            "portrait",
-            "controller",
-            "skin",
-            "background",
-            "gamepad",
-            "full",
-            "layout"
-        ]
-
-        for baseName in candidates {
-            if let image = customImage(named: "\(baseName).png", baseName: baseName, directory: directory),
-               !looksLikeEdgeToEdgePortrait(image) {
-                return image
-            }
-        }
-
-        return nil
-    }
-
     static func gameplayFullSkinImage(
         descriptor: VPadSkinDescriptor,
         isLandscape: Bool,

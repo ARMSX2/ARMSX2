@@ -374,7 +374,6 @@ struct ControllerNavigationAlertDetail: Identifiable {
 private struct ControllerNavigationAlertDetailRow: View {
     let detail: ControllerNavigationAlertDetail
     let isSelected: Bool
-    let contentColour: Color
     let secondaryContentColour: Color
     let valueColour: Color
     let isCompact: Bool
@@ -851,7 +850,6 @@ struct ControllerNavigationAlert: View {
                         ControllerNavigationAlertDetailRow(
                             detail: detail,
                             isSelected: isSelected,
-                            contentColour: contentColour ?? .white,
                             secondaryContentColour:
                                 secondaryContentColour
                                 ?? (contentColour ?? .white).opacity(0.78),

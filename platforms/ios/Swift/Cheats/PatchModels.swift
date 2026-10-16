@@ -147,7 +147,6 @@ struct PatchEntry: Identifiable, Hashable {
     let category: PatchCategory
     let source: PatchSource
     let isCheat: Bool
-    let fileName: String
     let isLegacy: Bool
     var enabled: Bool
     // Carries the originating database name (e.g. "PCSX2 database") when source is .database,

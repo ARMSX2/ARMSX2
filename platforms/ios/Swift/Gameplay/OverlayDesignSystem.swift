@@ -39,8 +39,6 @@ enum OverlayTheme {
 
     // MARK: Accents — used sparingly
 
-    /// Destructive ONLY: Reset ROM / Reset All Overrides.
-    static let destructive = Color(red: 0.898, green: 0.282, blue: 0.302)    // #E5484D
     /// Status / warning ONLY (e.g. "Start this game once before saving").
     static let warm = Color(red: 0.941, green: 0.627, blue: 0.125)           // #F0A020
 
@@ -274,28 +272,6 @@ struct OverlayHeader: View {
 }
 
 // MARK: - Rows
-
-/// Puts a plain `Label` on the same icon column as the rows below, so an injected `Menu` lines up
-/// with the hand-built rows either side of it instead of using `Label`'s own narrower icon slot.
-struct OverlayRowLabelStyle: LabelStyle {
-    @Environment(\.uiAccentColour) private var accentColour
-    @Environment(\.controllerTextAppearance) private var textAppearance
-
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: OverlayTheme.rowIconSpacing) {
-            configuration.icon
-                .frame(width: OverlayTheme.rowIconWidth)
-                .foregroundStyle(accentColour)
-            configuration.title
-                .controllerFocusedTextColor(
-                    normal: textAppearance.normalColor
-                        ?? OverlayTheme.textPrimary
-                )
-                .lineLimit(1)
-                .layoutPriority(1)
-        }
-    }
-}
 
 /// A fixed-min-height overlay action row that GUARANTEES the main label wins over a trailing
 /// value: the label gets `layoutPriority(1)` and the trailing value `layoutPriority(-1)` with tail

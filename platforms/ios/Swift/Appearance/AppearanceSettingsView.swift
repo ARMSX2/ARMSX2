@@ -686,7 +686,6 @@ struct AppearanceSettingsView: View {
                 optionalRolePalettePicker(
                     "Tab Titles Colours",
                     id: "tab-titles-colour",
-                    icon: "textformat.size.larger",
                     selection: manualBinding(
                         for: \.controllerTabTitlePalette
                     )
@@ -695,7 +694,6 @@ struct AppearanceSettingsView: View {
                 optionalRolePalettePicker(
                     "Tab Sub Titles Colour",
                     id: "tab-subtitles-colour",
-                    icon: "textformat.size.smaller",
                     selection: manualBinding(
                         for: \.controllerTabSubtitlePalette
                     )
@@ -704,7 +702,6 @@ struct AppearanceSettingsView: View {
                 optionalRolePalettePicker(
                     "Bottom Tab Bar Colour",
                     id: "bottom-tab-bar-colour",
-                    icon: "rectangle.bottomthird.inset.filled",
                     selection: manualBinding(
                         for: \.controllerBottomTabBarPalette
                     )
@@ -713,7 +710,6 @@ struct AppearanceSettingsView: View {
                 optionalRolePalettePicker(
                     "Bottom Tab Bar Unselected Colour",
                     id: "bottom-tab-bar-unselected-colour",
-                    icon: "rectangle.bottomthird.inset.filled",
                     selection: manualBinding(
                         for: \.controllerBottomTabBarUnselectedPalette
                     )
@@ -722,7 +718,6 @@ struct AppearanceSettingsView: View {
                 optionalRolePalettePicker(
                     "Game & BIOS Card Titles Colour",
                     id: "card-titles-colour",
-                    icon: "rectangle.stack.fill",
                     selection: manualBinding(
                         for: \.controllerCardTitlePalette
                     )
@@ -731,7 +726,6 @@ struct AppearanceSettingsView: View {
                 optionalRolePalettePicker(
                     "Context Menu Colour",
                     id: "context-menu-colour",
-                    icon: "contextualmenu.and.cursorarrow",
                     selection: manualBinding(
                         for: \.controllerContextMenuPalette
                     )
@@ -740,7 +734,6 @@ struct AppearanceSettingsView: View {
                 optionalRolePalettePicker(
                     "Import Actions Colour",
                     id: "import-actions-colour",
-                    icon: "square.and.arrow.down.fill",
                     selection: manualBinding(
                         for: \.controllerImportActionPalette
                     )
@@ -749,7 +742,6 @@ struct AppearanceSettingsView: View {
                 optionalRolePalettePicker(
                     "Toolbar Icons Colour",
                     id: "toolbar-icons-colour",
-                    icon: "ellipsis.circle.fill",
                     selection: manualBinding(
                         for: \.controllerToolbarPalette
                     )
@@ -1276,7 +1268,6 @@ struct AppearanceSettingsView: View {
     private func optionalRolePalettePicker(
         _ title: String,
         id: String,
-        icon: String,
         selection: Binding<ThemePalette?>
     ) -> some View {
         colourPicker(

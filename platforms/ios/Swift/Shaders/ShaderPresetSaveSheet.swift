@@ -11,7 +11,6 @@ struct ShaderPresetSaveRequest: Identifiable {
 }
 
 struct ShaderPresetSaveSheet: View {
-    let request: ShaderPresetSaveRequest
     let localized: @MainActor (String) -> String
     let onSave: @MainActor (String) -> Void
 
@@ -23,7 +22,6 @@ struct ShaderPresetSaveSheet: View {
         localized: @escaping @MainActor (String) -> String,
         onSave: @escaping @MainActor (String) -> Void
     ) {
-        self.request = request
         self.localized = localized
         self.onSave = onSave
         _name = State(initialValue: request.suggestedName)

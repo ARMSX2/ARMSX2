@@ -22,7 +22,6 @@ private struct StorageClearResult: Sendable {
 }
 
 private struct StoragePaths: Sendable {
-    let documentsURL: URL
     let emulatorCacheURL: URL
     let systemCachesURL: URL?
     let temporaryURL: URL
@@ -37,7 +36,6 @@ private struct StoragePaths: Sendable {
         let documentsURL = URL(fileURLWithPath: ARMSX2Bridge.documentsDirectory(), isDirectory: true)
         let systemCachesURL = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first
         return StoragePaths(
-            documentsURL: documentsURL,
             emulatorCacheURL: documentsURL.appendingPathComponent("cache", isDirectory: true),
             systemCachesURL: systemCachesURL,
             temporaryURL: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),

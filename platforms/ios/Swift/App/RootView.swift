@@ -460,10 +460,6 @@ struct GameplayControllerShortcutHelpOverlay: View {
         settings.controllerBottomTabBarColor
     }
 
-    private var themedPrimaryTextColor: Color {
-        settings.controllerBottomTabBarColor
-    }
-
     private var themedSecondaryTextColor: Color {
         settings.controllerBottomTabBarUnselectedColor
     }

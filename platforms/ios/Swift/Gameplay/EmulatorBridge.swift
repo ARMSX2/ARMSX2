@@ -77,33 +77,16 @@ enum StikDebugLauncher {
     }
 }
 
-enum EmulatorState: String {
-    case stopped = "Stopped"
-    case running = "Running"
-    case paused = "Paused"
-    case saving = "Saving"
-    case suspended = "Suspended"
-}
-
 @Observable
 final class EmulatorBridge: @unchecked Sendable {
     static let shared = EmulatorBridge()
-
-    var state: EmulatorState = .stopped
-    var lastSaveDate: Date? = nil
-    var lastSaveSuccess: Bool = true
-    var biosName: String = "Unknown"
-    var buildVersion: String = ""
 
     @ObservationIgnored private var virtualRightTouchX: Float = 0
     @ObservationIgnored private var virtualRightTouchY: Float = 0
     @ObservationIgnored private var virtualRightMotionX: Float = 0
     @ObservationIgnored private var virtualRightMotionY: Float = 0
 
-    private init() {
-        biosName = ARMSX2Bridge.biosName()
-        buildVersion = ARMSX2Bridge.buildVersion()
-    }
+    private init() {}
 
     func setPadButton(_ button: ARMSX2PadButton, pressed: Bool) {
         ARMSX2Bridge.setPadButton(button, pressed: pressed)

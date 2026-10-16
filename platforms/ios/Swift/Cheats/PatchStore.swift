@@ -250,13 +250,13 @@ final class PatchStore {
             let originDetail = originPair.detail
 
             guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
-                entries.append(unparseableEntry(path: path, fileName: fileName, isCheat: isCheat, origin: origin, detail: originDetail))
+                entries.append(unparseableEntry(path: path, isCheat: isCheat, origin: origin, detail: originDetail))
                 continue
             }
 
             switch PnachParser.parse(text) {
             case .invalid:
-                entries.append(unparseableEntry(path: path, fileName: fileName, isCheat: isCheat, origin: origin, detail: originDetail))
+                entries.append(unparseableEntry(path: path, isCheat: isCheat, origin: origin, detail: originDetail))
             case .valid(let parsed):
                 let enabledNames = isCheat ? enabledCheats : enabledPatches
                 for parsedEntry in parsed {
@@ -270,7 +270,6 @@ final class PatchStore {
                         category: parsedEntry.category,
                         source: origin,
                         isCheat: isCheat,
-                        fileName: fileName,
                         isLegacy: parsedEntry.isLegacy,
                         enabled: enabled,
                         sourceDetail: originDetail
@@ -299,7 +298,7 @@ final class PatchStore {
         iso == isoName ? canManageInstalledFiles : hasManagedPath(forISO: iso)
     }
 
-    private func unparseableEntry(path: String, fileName: String, isCheat: Bool, origin: PatchSource, detail: String? = nil) -> PatchEntry {
+    private func unparseableEntry(path: String, isCheat: Bool, origin: PatchSource, detail: String? = nil) -> PatchEntry {
         PatchEntry(
             id: "\(path)|legacy",
             name: "",
@@ -307,7 +306,6 @@ final class PatchStore {
             category: isCheat ? .cheats : .other,
             source: origin,
             isCheat: isCheat,
-            fileName: fileName,
             isLegacy: true,
             enabled: true,
             sourceDetail: detail

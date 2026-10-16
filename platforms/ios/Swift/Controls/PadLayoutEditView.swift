@@ -17,17 +17,8 @@ struct PadEditorControlGeometry {
     let id: String
     let center: CGPoint
     let baseSize: CGSize
-    let visibleScaleX: CGFloat
-    let visibleScaleY: CGFloat
     let hitScaleX: CGFloat
     let hitScaleY: CGFloat
-
-    var visibleSize: CGSize {
-        return CGSize(
-            width: PadLayoutMetrics.visibleLength(baseLength: baseSize.width, visibleScale: visibleScaleX),
-            height: PadLayoutMetrics.visibleLength(baseLength: baseSize.height, visibleScale: visibleScaleY)
-        )
-    }
 
     var hitSize: CGSize {
         if isStick(id) {

@@ -610,8 +610,6 @@ final class VirtualPadGyroscopeController {
     private var filteredRate = DynamicThumbstickVector.zero
     var onCameraMotion: ((DynamicThumbstickVector) -> Void)?
 
-    var isAvailable: Bool { motionManager.isGyroAvailable }
-
     init() {
         motionManager.gyroUpdateInterval = 1.0 / 60.0
     }
