@@ -2130,6 +2130,70 @@ TEST_F(VuAotCache, GenerationPublishedAtAnotherProgramsSlowPathLeavesItsBlocksRe
 	}
 }
 
+// Deterministic mode (pcsx2-eerunner --vuaot-sync, the unit tests): a root job microVU asks for while a loaded
+// plan's root jobs are finished but not yet published takes only its own job off the worker's finished list;
+// the plan's go to their program and are published at its next slow path. (Before, the synchronous root path
+// threw every other finished job away, so those roots never got their regions.)
+//
+// Session one saves a plan with the generation at entry A and a root at entry B. Session two first dispatches a
+// third entry C: the load sends the generation and, once it is published in that same slow path, the root plan
+// for B; then C, which no plan covers, compiles as a synchronous root.
+TEST_F(VuAotCache, SynchronousRootJobLeavesPlanRootsToTheirPublication)
+{
+	constexpr u32 kEntryC = 128 * 8;
+	std::vector<VuOp> prog = TwoLoopProg();
+	while (prog.size() < kEntryC / 8)
+		prog.push_back(U(VNOP_U()));
+	std::vector<VuOp> loop3 = CountedLoop(5);
+	loop3.back() = EBit(P(VFSAND_L(vi::vi4, 0x03f), VNOP_U()));
+	for (const VuOp& op : loop3)
+		prog.push_back(op);
+	for (bool fh : {true, false})
+	{
+		const Result refA = Reference(prog, SetupLoop, fh), refB = Reference(prog, SetupLoop, fh, kLoopEntry2),
+					 refC = Reference(prog, SetupLoop, fh, kEntryC);
+		RecompilerTestEnvironment::ResetVuBlockCache(1);
+		NewProcess();
+		RecursiveRm(root_ + "/vu_jit");
+		{
+			LiveScope s1(true, 4, fh);
+			VuTestHarness h(1);
+			Prepare(h, prog, SetupLoop, 0);
+			h.RunNoDiff();
+			for (int i = 0; i < 8; i++)
+				h.RunJitPreserveBlockCache();
+			h.SetStartPc(kLoopEntry2);
+			for (int i = 0; i < 2; i++)
+				h.RunJitPreserveBlockCache();
+			RecompilerTestEnvironment::ResetVuBlockCache(1);
+			mVUProgCache::FlushSidecars(1);
+		}
+		ASSERT_EQ(FindSidecars(root_ + "/vu_jit").size(), 1u);
+		NewProcess();
+		LiveScope s2(true, 1000000, fh, 1000000, /*sync=*/true);
+		const vuaot::live::Stats s0 = vuaot::live::GetStats();
+		VuTestHarness h(1);
+		Prepare(h, prog, SetupLoop, 0);
+		h.SetStartPc(kEntryC);
+		h.RunNoDiff();
+		h.RunJitPreserveBlockCache();
+		EXPECT_EQ(Diff(refC, Take(h)), "") << "fh " << fh << ": entry C";
+		h.SetStartPc(0);
+		h.RunJitPreserveBlockCache();
+		EXPECT_EQ(Diff(refA, Take(h)), "") << "fh " << fh << ": entry A";
+		h.SetStartPc(kLoopEntry2);
+		for (int i = 0; i < 2; i++)
+		{
+			h.RunJitPreserveBlockCache();
+			EXPECT_EQ(Diff(refB, Take(h)), "") << "fh " << fh << ": entry B, run " << i;
+		}
+		const vuaot::live::Stats d = PlanDelta(s0, vuaot::live::GetStats());
+		EXPECT_GE(d.planRootJobs, 1u) << "fh " << fh;
+		// (the program loads twice: RunNoDiff's JIT pass, then its cache reset, which drops what that load sent)
+		EXPECT_GE(d.planPublishedRoot, 1u) << "fh " << fh << ": the root plan sent by the load that runs was published";
+	}
+}
+
 // A sidecar that is damaged, truncated, from another build, or whose read set no longer matches micro memory
 // is refused cleanly: no job from it, the payload still loads, the program tiers up by its run count as any
 // program does, and every run equals microVU's.

@@ -1844,18 +1844,19 @@ static bool vuAotPublishReady(microVU& mVU, microProgram& prog, bool loaded)
 	return changed;
 }
 
-// Collects the worker's finished jobs onto their programs, then publishes what
-// it can: `cur`'s (resolved by the slow path) and any other program's whose
-// image is in micro memory now. Returns true when `cur`'s graph changed.
-static bool vuAotDrainAndPublish(microVU& mVU, microProgram* cur)
+// Collects the worker's finished jobs (all but `except`, which the caller takes
+// itself) onto their programs' ready lists; `touched` gets each program that
+// received one.
+static void vuAotCollectFinished(std::vector<microProgram*>& touched, const VuAotJob* except)
 {
-	std::vector<microProgram*> touched;
 	if (s_vuaot.worker && s_vuaot.worker->CompletedCount())
 	{
 		std::vector<std::shared_ptr<vuaot::bg::Job>> done;
 		s_vuaot.worker->TakeCompleted(done);
 		for (auto& jb : done)
 		{
+			if (jb.get() == except)
+				continue;
 			auto j = std::static_pointer_cast<VuAotJob>(jb);
 			vuAotCollect(*j);
 			if (j->epoch != s_vuaot.epoch || !j->prog->vuaot)
@@ -1876,6 +1877,15 @@ static bool vuAotDrainAndPublish(microVU& mVU, microProgram* cur)
 			st.ready.push_back(std::move(j));
 		}
 	}
+}
+
+// Collects the worker's finished jobs onto their programs, then publishes what
+// it can: `cur`'s (resolved by the slow path) and any other program's whose
+// image is in micro memory now. Returns true when `cur`'s graph changed.
+static bool vuAotDrainAndPublish(microVU& mVU, microProgram* cur)
+{
+	std::vector<microProgram*> touched;
+	vuAotCollectFinished(touched, nullptr);
 	bool changed = false;
 	if (cur)
 		changed = vuAotPublishReady(mVU, *cur, true);
@@ -2328,9 +2338,10 @@ static bool vuAotLiveRegionHook(const vuaot::MvuBlockTrace& b, const vuaot::MvuE
 		if (!vuAotSubmit(j))
 			return false;
 		vuAotWorker().Wait(j);
-		// (taken out of the worker's finished list here, not by a slow path)
-		std::vector<std::shared_ptr<vuaot::bg::Job>> done;
-		s_vuaot.worker->TakeCompleted(done);
+		// (taken out of the worker's finished list here, not by a slow path; any other finished job,
+		// one a loaded plan sent, goes to its program's ready list for the next slow path)
+		std::vector<microProgram*> touched;
+		vuAotCollectFinished(touched, j.get());
 		vuAotCollect(*j);
 		if (!j->accepted)
 			return false;
