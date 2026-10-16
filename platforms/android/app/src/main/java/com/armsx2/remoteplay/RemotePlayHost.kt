@@ -24,6 +24,7 @@ import org.webrtc.RtpTransceiver
 import org.webrtc.SessionDescription
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
+import java.io.IOException
 import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -39,6 +40,12 @@ private const val CONNECT_TIMEOUT_MS = 60_000L
 
 /** On the same Wi-Fi, how long a viewer that connected gets to answer the offer. */
 private const val WIFI_ANSWER_TIMEOUT_MS = 30_000L
+
+/** How long the host gets to let a friend in before the friend is told there was no answer. */
+private const val ASK_TIMEOUT_MS = 60_000L
+
+/** While the host decides, how often the friend's screen is told it is waiting for them. */
+private const val ASK_TELL_MS = 500L
 
 /**
  * The hosting side. Takes one viewer at a time, streams the running game to it and feeds the
@@ -62,6 +69,11 @@ object RemotePlayHost {
          */
         data class Inviting(val code: String? = null, val lobbyCode: String? = null) : Status
         data class Connecting(val viewer: String) : Status
+        /**
+         * [viewer] is connected and waits for the host to let them in ([accept]) or not
+         * ([decline]). Nothing streams and their pad does nothing until then.
+         */
+        data class Asking(val viewer: String) : Status
         data class Playing(val viewer: String) : Status
         data class Failed(val message: String) : Status
     }
@@ -89,6 +101,14 @@ object RemotePlayHost {
     private var server: SignalingServer? = null
     private var advertiser: HostAdvertiser? = null
     private var session: HostSession? = null
+
+    // Same Wi-Fi: the address the current viewer connected from, and the addresses the host turned
+    // away while hosting, which are turned away again at once instead of asking each time.
+    private var sessionAddress: String? = null
+    private val declined = HashSet<String>()
+
+    // The in-game menu was opened to ask the host, so it closes again once they have answered.
+    private var openedToAsk = false
 
     // Hosting belongs to the running game: a closed game ends it, whichever path closed it.
     private val gameWatch = object : Runnable {
@@ -167,6 +187,8 @@ object RemotePlayHost {
         main.removeCallbacks(gameWatch)
         session?.end("stopped")
         session = null
+        sessionAddress = null
+        openedToAsk = false
         stopWifi()
         _status.value = Status.Off
     }
@@ -176,6 +198,42 @@ object RemotePlayHost {
         advertiser = null
         server?.stop()
         server = null
+        declined.clear()
+    }
+
+    /** Lets in the friend the host is being asked about ([Status.Asking]). */
+    fun accept() {
+        if (_status.value !is Status.Asking) return
+        session?.approve()
+        closeAskMenu()
+    }
+
+    /**
+     * Turns away the friend the host is being asked about. On the same Wi-Fi their device is then
+     * turned away at once for as long as this hosting lasts, so it cannot keep asking.
+     */
+    fun decline() {
+        if (_status.value !is Status.Asking) return
+        sessionAddress?.let(declined::add)
+        session?.decline()
+        closeAskMenu()
+    }
+
+    // A viewer is connected and waits to be let in. The host answers in the in-game menu, which is
+    // opened for it (pausing the game) unless it is open already.
+    internal fun ask(viewer: String) {
+        _status.value = Status.Asking(viewer)
+        if (!com.armsx2.ui.WindowImpl.overlayVisible.value) {
+            com.armsx2.ui.InGameOverlay.open()
+            openedToAsk = true
+        }
+    }
+
+    // Back to the game once the host has answered, if the menu was opened only to ask them.
+    private fun closeAskMenu() {
+        if (!openedToAsk) return
+        openedToAsk = false
+        if (com.armsx2.ui.WindowImpl.overlayVisible.value) com.armsx2.ui.InGameOverlay.toggle()
     }
 
     private fun runningGame(): String? {
@@ -197,23 +255,36 @@ object RemotePlayHost {
     private fun onWifiViewer(socket: Socket) {
         val app = appContext
         val game = RemotePlayCore.runningGame()
-        if (session != null || server == null || app == null || game == null) {
-            // One player 2 at a time.
-            SignalingConnection(socket, {}, {}).also { it.start() }.sendAndClose(RemotePlayRtc.bye("busy"))
+        val address = socket.inetAddress?.hostAddress
+        // A peer that connected and reset at once has no streams left to talk on. The IOException
+        // that says so, uncaught here on the main thread, took the app down with the host's game in
+        // it, so every SignalingConnection made here is guarded.
+        val turnedAway = address != null && address in declined
+        if (session != null || server == null || app == null || game == null || turnedAway) {
+            // One player 2 at a time; and a device the host turned away stays turned away.
+            val reason = if (turnedAway) "denied" else "busy"
+            runCatching { SignalingConnection(socket, {}, {}).also { it.start() }.sendAndClose(RemotePlayRtc.bye(reason)) }
+                .onFailure { runCatching { socket.close() } }
             return
         }
 
         lateinit var created: HostSession
-        val connection = SignalingConnection(
-            socket,
-            onMessage = { message -> main.post { if (session === created) created.onSignal(message) } },
-            onClosed = { main.post { if (session === created) created.linkClosed() } },
-        )
+        val connection = try {
+            SignalingConnection(
+                socket,
+                onMessage = { message -> main.post { if (session === created) created.onSignal(message) } },
+                onClosed = { main.post { if (session === created) created.linkClosed() } },
+            )
+        } catch (_: IOException) {
+            runCatching { socket.close() }
+            return
+        }
         created = HostSession(
             app, TcpLink(connection), game, online = false,
             onFinished = { ended, message -> main.post { if (session === ended) sessionEnded(ended, message) } },
         )
         session = created
+        sessionAddress = address
         created.expectAnswerWithin(WIFI_ANSWER_TIMEOUT_MS)
         connection.start()
     }
@@ -225,6 +296,9 @@ object RemotePlayHost {
         if (ended.hadPlayer) _notice.value = Notice(ended.playerName, joined = false)
         ended.end("ended")
         session = null
+        sessionAddress = null
+        // A menu opened to ask about this viewer stays: the host may be using it by now.
+        openedToAsk = false
         val listener = server
         _status.value = when {
             message != null -> Status.Failed(message)
@@ -345,6 +419,59 @@ private class HostSession(
     fun expectAnswerWithin(ms: Long) {
         main.removeCallbacks(answerTimeout)
         main.postDelayed(answerTimeout, ms)
+    }
+
+    // Nobody streams to a viewer, or takes their pad, until the host lets them in: connecting is
+    // not joining. [asking] while the host is being asked; [approved] once they said yes.
+    private var asking = false
+    private var approved = false
+
+    // Why the viewer is told the session ended, when it is not the reason end() is given: the host
+    // turned them away ("denied") or never answered ("noanswer").
+    private var byeReason: String? = null
+
+    private val askTimeout = Runnable {
+        if (asking && !ended) {
+            byeReason = "noanswer"
+            finish(null)
+        }
+    }
+
+    // The viewer's screen says it is waiting for the host while it is. The channel drops what it
+    // cannot deliver, so it is told again every half second instead of once.
+    private val askTell = object : Runnable {
+        override fun run() {
+            if (!asking || ended) return
+            audioChannel?.takeIf { it.state() == DataChannel.State.OPEN }
+                ?.send(DataChannel.Buffer(RemotePlayProtocol.encodeWaiting(), true))
+            main.postDelayed(this, ASK_TELL_MS)
+        }
+    }
+
+    private fun ask() {
+        if (asking || approved || ended) return
+        asking = true
+        RemotePlayHost.ask(viewer)
+        main.post(askTell)
+        main.postDelayed(askTimeout, ASK_TIMEOUT_MS)
+    }
+
+    /** The host let the viewer in: the stream starts. */
+    fun approve() {
+        if (!asking || ended) return
+        asking = false
+        approved = true
+        main.removeCallbacks(askTell)
+        main.removeCallbacks(askTimeout)
+        startStreaming()
+    }
+
+    /** The host turned the viewer away: the session ends and the viewer is told so. */
+    fun decline() {
+        if (ended) return
+        asking = false
+        byeReason = "denied"
+        finish(null)
     }
 
     // What the stream is doing, in logcat (tag RemotePlay) every few seconds while it runs.
@@ -527,7 +654,8 @@ private class HostSession(
             PeerConnection.PeerConnectionState.CONNECTED -> {
                 connectedOnce = true
                 main.removeCallbacks(connectTimeout)
-                startStreaming()
+                // The first time, the host is asked; after a reconnect, streaming carries on.
+                if (approved) startStreaming() else ask()
             }
             // Before the first connection, a failure can still recover once the friend's side
             // starts answering; the connect timeout decides. After it, failed means gone.
@@ -757,6 +885,9 @@ private class HostSession(
         main.removeCallbacks(hostStatsTick)
         main.removeCallbacks(prioritize)
         main.removeCallbacks(rumbleTick)
+        main.removeCallbacks(askTell)
+        main.removeCallbacks(askTimeout)
+        asking = false
         gather?.cancel()
 
         val wasStreaming = streaming
@@ -774,10 +905,12 @@ private class HostSession(
         upnp?.close()
 
         // A few times, since the channel drops what it cannot deliver.
+        val why = byeReason ?: reason
         audioChannel?.takeIf { it.state() == DataChannel.State.OPEN }?.let { channel ->
-            repeat(3) { channel.send(DataChannel.Buffer(RemotePlayProtocol.encodeBye(), true)) }
+            val bye = RemotePlayProtocol.byeCode(why)
+            repeat(3) { channel.send(DataChannel.Buffer(RemotePlayProtocol.encodeBye(bye), true)) }
         }
-        link.close(RemotePlayRtc.bye(reason))
+        link.close(RemotePlayRtc.bye(why))
 
         val pc = peer
         val input = inputChannel

@@ -414,6 +414,8 @@ fun RemotePlayHostPanel(modifier: Modifier = Modifier) {
                     StopButton(stop)
                 }
 
+                is RemotePlayHost.Status.Asking -> AskPanel(current.viewer)
+
                 is RemotePlayHost.Status.Playing -> {
                     Text(str("remoteplay.host.playing").format(current.viewer), style = MaterialTheme.typography.bodySmall)
                     StopButton(stop)
@@ -574,6 +576,38 @@ private fun StopButton(stop: () -> Unit, label: String = str("remoteplay.host.st
         onClick = stop,
         modifier = Modifier.controllerFocusable("remoteplay.host.stop", onConfirm = stop),
     ) { Text(label) }
+}
+
+/** A friend is connected and waits to be let in: the host accepts or declines them. */
+@Composable
+private fun AskPanel(viewer: String) {
+    // The menu may have opened by itself over the game, so the buttons wait a moment before they
+    // take a press: one still coming from play must not answer for the host.
+    var armed by remember(viewer) { mutableStateOf(false) }
+    LaunchedEffect(viewer) {
+        delay(700)
+        armed = true
+    }
+    val accept = { if (armed) RemotePlayHost.accept() }
+    val decline = { if (armed) RemotePlayHost.decline() }
+
+    Text(
+        str("remoteplay.request.title").format(viewer),
+        style = MaterialTheme.typography.bodyMedium,
+        fontWeight = FontWeight.SemiBold,
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(
+            onClick = accept,
+            enabled = armed,
+            modifier = Modifier.controllerFocusable("remoteplay.request.accept", onConfirm = accept),
+        ) { Text(str("remoteplay.request.accept")) }
+        OutlinedButton(
+            onClick = decline,
+            enabled = armed,
+            modifier = Modifier.controllerFocusable("remoteplay.request.decline", onConfirm = decline),
+        ) { Text(str("remoteplay.request.decline")) }
+    }
 }
 
 /** Opens the share sheet, so the player can send a code over Discord or any chat. */

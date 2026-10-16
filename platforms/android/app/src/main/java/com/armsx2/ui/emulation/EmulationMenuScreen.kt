@@ -95,6 +95,11 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
     var shown by remember { mutableStateOf(false) }
     var dismissing by remember { mutableStateOf(false) }
     var friendsOpen by remember { mutableStateOf(false) }
+    // A friend waiting to be let in is answered in the hosting panel, which sits with Friends: the
+    // menu opens there, whether it was opened for the question or was already open.
+    val hostStatus by com.armsx2.remoteplay.RemotePlayHost.status
+    val asking = hostStatus is com.armsx2.remoteplay.RemotePlayHost.Status.Asking
+    LaunchedEffect(asking) { if (asking) friendsOpen = true }
     val closeMenu: () -> Unit = remember(viewModel, scope) {
         {
             if (!dismissing) {

@@ -464,6 +464,9 @@ class RemotePlayViewerActivity : ComponentActivity() {
                 connected.value = true
                 status.value = I18n.get("remoteplay.viewer.waitingVideo")
             },
+            onWaitingForHost = {
+                if (!playing.value) status.value = I18n.get("remoteplay.viewer.waitingAccept")
+            },
             onEnded = { message ->
                 if (message != null) Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                 finish()
@@ -919,6 +922,7 @@ internal class ViewerSession(
     private val onHostPaused: (Boolean) -> Unit,
     private val onReply: (String) -> Unit,
     private val onConnected: () -> Unit,
+    private val onWaitingForHost: () -> Unit,
     private val onEnded: (String?) -> Unit,
 ) {
     private val main = Handler(Looper.getMainLooper())
@@ -1204,7 +1208,12 @@ internal class ViewerSession(
                         channel.registerObserver(MessageObserver { buffer ->
                             val data = buffer.data
                             if (RemotePlayProtocol.isBye(data)) {
-                                main.post { end(I18n.get("remoteplay.bye.stopped")) }
+                                val reason = RemotePlayProtocol.byeReason(data)
+                                main.post { end(byeMessage(reason)) }
+                                return@MessageObserver
+                            }
+                            if (RemotePlayProtocol.isWaiting(data)) {
+                                main.post { if (!ended) onWaitingForHost() }
                                 return@MessageObserver
                             }
                             RemotePlayProtocol.decodeHostStats(data)?.let {
@@ -1288,6 +1297,8 @@ internal class ViewerSession(
         "busy" -> I18n.get("remoteplay.bye.busy")
         "stopped" -> I18n.get("remoteplay.bye.stopped")
         "version" -> I18n.get("remoteplay.bye.version")
+        "denied" -> I18n.get("remoteplay.bye.denied")
+        "noanswer" -> I18n.get("remoteplay.bye.noAnswer")
         else -> I18n.get("remoteplay.bye.ended")
     }
 

@@ -74,7 +74,13 @@ internal object RemotePlayProtocol {
     private const val PACKET_HOST_STATS: Byte = 4
     private const val PACKET_AUDIO_OPUS: Byte = 5
     private const val PACKET_RUMBLE: Byte = 6
+    private const val PACKET_WAITING: Byte = 7
     private const val RUMBLE_PACKET_SIZE = 8
+
+    // Why a session ended, in the second byte of a bye. Every bye before these carried 0 there.
+    private const val BYE_ENDED = 0
+    private const val BYE_DENIED = 1
+    private const val BYE_NO_ANSWER = 2
     private const val ZERO: Byte = 0
     private const val PAD_PACKET_SIZE = 16
     const val AUDIO_HEADER_SIZE = 8
@@ -237,14 +243,38 @@ internal object RemotePlayProtocol {
      * Sent a few times on the way out, on the data channels, so the other side ends at once
      * instead of waiting for the connection to time out. A pasted-code session has no other way.
      */
-    fun encodeBye(): ByteBuffer {
+    fun encodeBye(reason: Int = BYE_ENDED): ByteBuffer {
         val out = ByteBuffer.allocate(4)
-        out.put(PACKET_BYE).put(ZERO).put(ZERO).put(ZERO)
+        out.put(PACKET_BYE).put(reason.toByte()).put(ZERO).put(ZERO)
         out.flip()
         return out
     }
 
     fun isBye(data: ByteBuffer): Boolean = data.remaining() >= 1 && data.get(data.position()) == PACKET_BYE
+
+    /** A bye's reason for [encodeBye], from the reason the signalling bye names. */
+    fun byeCode(reason: String): Int = when (reason) {
+        "denied" -> BYE_DENIED
+        "noanswer" -> BYE_NO_ANSWER
+        else -> BYE_ENDED
+    }
+
+    /** The reason [byeCode] put in a bye, as the signalling bye names it: "denied", "noanswer" or "stopped". */
+    fun byeReason(data: ByteBuffer): String = when (if (data.remaining() >= 2) data.get(data.position() + 1).toInt() else BYE_ENDED) {
+        BYE_DENIED -> "denied"
+        BYE_NO_ANSWER -> "noanswer"
+        else -> "stopped"
+    }
+
+    /** The host is being asked whether to let this viewer in. Sent until it answers. */
+    fun encodeWaiting(): ByteBuffer {
+        val out = ByteBuffer.allocate(4)
+        out.put(PACKET_WAITING).put(ZERO).put(ZERO).put(ZERO)
+        out.flip()
+        return out
+    }
+
+    fun isWaiting(data: ByteBuffer): Boolean = data.remaining() >= 1 && data.get(data.position()) == PACKET_WAITING
 
     /**
      * The host's side of the stream over the last second, for the viewer's stats: frames the game
