@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <bitset>
 #include <cstring>
+#include <unordered_map>
 
 namespace vuaot
 {
@@ -173,6 +174,11 @@ namespace vuaot
 			bool checkpoint = false;
 			u32 need = 1;                  // budget that guarantees no microVU test fails before the next test
 			a64::Label bail, rec;
+			// Variant merging (RegionTier::merge): the node whose body this one runs (itself
+			// unless `alias`). An alias keeps its identity (block, key, entry stub, bail record)
+			// and nothing else: the region's analyses and its code see only its representative.
+			int rep = 0;
+			bool alias = false;
 		};
 		struct Exit
 		{
@@ -239,6 +245,10 @@ namespace vuaot
 		void AssignHomes();
 		void ChooseHomes(int map, const std::vector<u32>& weight);
 		void PlanChecks();
+		void MergeVariants();
+		static u64 CodeHash(const Node& n);
+		static bool SameCode(const Node& a, const Node& b);
+		bool JumpsAtRunTime(const Node& n) const { return n.br.endKind == BlockEnd::Jump && n.taken == 0x7fffffff; }
 		void ScanUseDef(Node& n) const;
 		void ComputeHandoffMasks();
 		void ComputeLiveness();
@@ -275,6 +285,7 @@ namespace vuaot
 		n->key = st;
 		n->br = std::move(br);
 		n->blk = env_.addBlock(env_.vuIndex, pc, st.bytes);
+		n->rep = id;
 		nodes_.push_back(std::move(n));
 		Expand(id);
 		return id;
@@ -327,6 +338,8 @@ namespace vuaot
 		for (size_t i = 0; i < NN; i++)
 		{
 			const Node& n = *nodes_[i];
+			if (n.alias)
+				continue;
 			if (n.taken >= 0 && n.taken != 0x7fffffff)
 				succ[i].push_back(n.taken);
 			if (n.fall >= 0 && n.fall != 0x7fffffff)
@@ -340,7 +353,7 @@ namespace vuaot
 		std::vector<std::pair<int, size_t>> st;
 		for (size_t root = 0; root < NN; root++)
 		{
-			if (state[root])
+			if (state[root] || nodes_[root]->alias)
 				continue;
 			st.push_back({static_cast<int>(root), 0});
 			state[root] = 1;
@@ -371,7 +384,7 @@ namespace vuaot
 		std::vector<std::pair<int, size_t>> walk;
 		for (size_t root = 0; root < NN; root++)
 		{
-			if (need[root] >= 0)
+			if (need[root] >= 0 || nodes_[root]->alias)
 				continue;
 			walk.push_back({static_cast<int>(root), 0});
 			while (!walk.empty())
@@ -403,7 +416,198 @@ namespace vuaot
 			}
 		}
 		for (size_t i = 0; i < NN; i++)
-			nodes_[i]->need = static_cast<u32>(std::min<s64>(need[i], 0x7fffffff));
+			if (!nodes_[i]->alias)
+				nodes_[i]->need = static_cast<u32>(std::min<s64>(need[i], 0x7fffffff));
+	}
+
+	// The IR of a node, hashed: everything the lowering reads (MergeVariants confirms a match
+	// with SameCode).
+	u64 RegionBuilder::CodeHash(const Node& n)
+	{
+		using namespace ir;
+		u64 h = 1469598103934665603ull;
+		const auto mix = [&h](u64 v) {
+			h ^= v;
+			h *= 1099511628211ull;
+			h ^= h >> 29;
+		};
+		const Function& f = n.fn;
+		mix(n.pc);
+		mix(n.br.cycles);
+		mix(static_cast<u64>(n.br.endKind) | (static_cast<u64>(n.br.branchKind) << 8));
+		mix(f.insts.size());
+		for (const Inst& x : f.insts)
+		{
+			mix(static_cast<u64>(x.op) | (static_cast<u64>(x.type) << 8) | (static_cast<u64>(x.mask) << 16) | (static_cast<u64>(x.lane) << 24) |
+				(static_cast<u64>(x.sub) << 32) | (static_cast<u64>(x.dead) << 48));
+			mix(static_cast<u64>(x.var) | (static_cast<u64>(static_cast<u32>(x.imm)) << 32));
+			mix(static_cast<u64>(x.word) | (static_cast<u64>(static_cast<u32>(x.block)) << 32));
+			for (ValueId a : x.args)
+				mix(a);
+		}
+		mix(f.blocks.size());
+		mix(f.leaveArgs.size());
+		mix(static_cast<u64>(static_cast<u32>(f.statusHead)) | (static_cast<u64>(static_cast<u32>(f.statusHeadOut)) << 32));
+		return h;
+	}
+
+	bool RegionBuilder::SameCode(const Node& a, const Node& b)
+	{
+		using namespace ir;
+		if (a.pc != b.pc || a.br.cycles != b.br.cycles || a.br.endKind != b.br.endKind || a.br.branchKind != b.br.branchKind)
+			return false;
+		const Function& f = a.fn;
+		const Function& g = b.fn;
+		if (f.insts.size() != g.insts.size() || f.blocks.size() != g.blocks.size() || f.entryBlocks != g.entryBlocks ||
+			f.unsupported != g.unsupported || f.leaveArgs != g.leaveArgs || f.statusHead != g.statusHead || f.statusHeadOut != g.statusHeadOut)
+			return false;
+		const EndInfo& e = f.end;
+		const EndInfo& d = g.end;
+		if (e.valid != d.valid || e.fS != d.fS || e.fM != d.fM || e.fC != d.fC || e.qInst != d.qInst || e.pInst != d.pInst || e.tpc != d.tpc)
+			return false;
+		for (size_t i = 0; i < f.insts.size(); i++)
+		{
+			const Inst& x = f.insts[i];
+			const Inst& y = g.insts[i];
+			if (x.op != y.op || x.type != y.type || x.mask != y.mask || x.lane != y.lane || x.sub != y.sub || x.var != y.var || x.imm != y.imm ||
+				x.pc != y.pc || x.word != y.word || x.block != y.block || x.dead != y.dead || x.args.size() != y.args.size() ||
+				!std::equal(x.args.begin(), x.args.end(), y.args.begin()))
+				return false;
+		}
+		for (size_t i = 0; i < f.blocks.size(); i++)
+		{
+			const Block& x = f.blocks[i];
+			const Block& y = g.blocks[i];
+			if (x.node != y.node || x.phis != y.phis || x.insts != y.insts || x.preds != y.preds || x.succs != y.succs ||
+				x.dispatchTargets != y.dispatchTargets || x.term != y.term || x.cond != y.cond || x.cycles != y.cycles)
+				return false;
+		}
+		return true;
+	}
+
+	// Variant merging (RegionTier::merge). Two nodes may share one body when the body would be
+	// the same code and every link out of it goes to the same place: the coarsest partition of
+	// the nodes in which the members of a class have the same IR (SameCode) and, link by link,
+	// successors in one class (or the same exit). A class's members then run the same
+	// instructions, charge the same cycles and leave through the same links, whichever variant
+	// the run entered; so the body of its first member serves them all. What stays per node is
+	// its identity: its entry stub (the budget test against the class's need and the home
+	// loader, then the shared body), its bail record (an entry's budget bail resumes microVU's
+	// code for its own block) and its registration in microVU's block manager, which the walk
+	// has already made, unchanged.
+	//
+	// A node whose body names its own block cannot share: a loop head (its budget bail resumes
+	// microVU's code for that block, entered with its key) and a JR/JALR with run-time targets
+	// (its tail is microVU's jump cache for the block, and the key it compiles targets with).
+	// They stay classes of one. Every cycle of the region passes through a loop head, so no
+	// loop's nodes merge with another loop's, and the loop heads PlanChecks found stay valid
+	// for the merged graph: every cycle of it is the image of a cycle of the original. The
+	// class's need (PlanChecks) is part of the first split; members of a class have equal needs
+	// anyway, since their successors are pairwise in one class.
+	void RegionBuilder::MergeVariants()
+	{
+		const size_t NN = nodes_.size();
+		std::vector<int> cls(NN, -1);
+		int ncls = 0;
+		{
+			std::unordered_map<u64, std::vector<int>> buckets;
+			buckets.reserve(NN);
+			for (size_t i = 0; i < NN; i++)
+			{
+				const Node& n = *nodes_[i];
+				if (n.checkpoint || JumpsAtRunTime(n))
+				{
+					cls[i] = ncls++;
+					continue;
+				}
+				std::vector<int>& b = buckets[CodeHash(n) ^ (static_cast<u64>(n.need) << 40)];
+				for (int j : b)
+					if (nodes_[j]->need == n.need && SameCode(*nodes_[j], n))
+					{
+						cls[i] = cls[j];
+						break;
+					}
+				if (cls[i] < 0)
+				{
+					cls[i] = ncls++;
+					b.push_back(static_cast<int>(i));
+				}
+			}
+		}
+		if (ncls == static_cast<int>(NN))
+			return;
+		// Refine by the successors' classes until nothing splits.
+		struct VecHash
+		{
+			size_t operator()(const std::vector<s64>& v) const
+			{
+				u64 h = 1469598103934665603ull;
+				for (s64 x : v)
+				{
+					h ^= static_cast<u64>(x);
+					h *= 1099511628211ull;
+				}
+				return static_cast<size_t>(h ^ (h >> 31));
+			}
+		};
+		std::vector<s64> sig;
+		std::unordered_map<std::vector<s64>, int, VecHash> ids;
+		std::vector<int> next(NN);
+		const auto succClass = [&](int t) -> s64 { return (t >= 0 && t != 0x7fffffff) ? cls[t] : (static_cast<s64>(t) - (1ll << 40)); };
+		for (; !t_.mergeIgnoreLinksMutation;)
+		{
+			ids.clear();
+			ids.reserve(NN);
+			for (size_t i = 0; i < NN; i++)
+			{
+				const Node& n = *nodes_[i];
+				sig.clear();
+				sig.push_back(cls[i]);
+				sig.push_back(succClass(n.taken));
+				sig.push_back(succClass(n.fall));
+				for (const auto& j : n.jumps)
+				{
+					sig.push_back(j.first);
+					sig.push_back(succClass(j.second));
+				}
+				const auto it = ids.emplace(sig, static_cast<int>(ids.size())).first;
+				next[i] = it->second;
+			}
+			const int n2 = static_cast<int>(ids.size());
+			cls.swap(next);
+			if (n2 == ncls)
+				break;
+			ncls = n2;
+		}
+		// The first node of each class (the root is always its class's first) is its
+		// representative; every link is redirected to representatives.
+		std::vector<int> first(ncls, -1);
+		std::vector<int> size(ncls, 0);
+		for (size_t i = 0; i < NN; i++)
+		{
+			if (first[cls[i]] < 0)
+				first[cls[i]] = static_cast<int>(i);
+			size[cls[i]]++;
+		}
+		const auto redirect = [&](int& t) {
+			if (t >= 0 && t != 0x7fffffff)
+				t = first[cls[t]];
+		};
+		u32 merged = 0;
+		for (size_t i = 0; i < NN; i++)
+		{
+			Node& n = *nodes_[i];
+			n.rep = first[cls[i]];
+			n.alias = n.rep != static_cast<int>(i);
+			merged += n.alias ? 1 : 0;
+			redirect(n.taken);
+			redirect(n.fall);
+			for (auto& j : n.jumps)
+				redirect(j.second);
+		}
+		for (int c = 0; c < ncls; c++)
+			t_.mergeClasses_ += size[c] > 1 ? 1 : 0;
+		t_.merged_ += merged;
 	}
 
 	namespace
@@ -533,6 +737,8 @@ namespace vuaot
 			for (size_t ii = NN; ii-- > 0;)
 			{
 				const Node& n = *nodes_[ii];
+				if (n.alias)
+					continue;
 				LiveSet o;
 				const auto edge = [&](int t) {
 					if (t == 0x7fffffff)
@@ -603,6 +809,8 @@ namespace vuaot
 		for (size_t i = 0; i < NN; i++)
 		{
 			Node& n = *nodes_[i];
+			if (n.alias)
+				continue;
 			const auto edge = [&](int t) {
 				if (t == 0x7fffffff)
 					return;
@@ -655,6 +863,8 @@ namespace vuaot
 			changed = false;
 			for (size_t ii = NN; ii-- > 0;)
 			{
+				if (nodes_[ii]->alias)
+					continue;
 				Bits o;
 				if (observe[ii])
 					o = obsMask[ii];
@@ -716,7 +926,7 @@ namespace vuaot
 			for (size_t i = 0; i < NN; i++)
 			{
 				const Node& n = *nodes_[i];
-				if (!eff[i].dirtyOut[in[i]])
+				if (n.alias || !eff[i].dirtyOut[in[i]])
 					continue;
 				const auto mark = [&](int t) {
 					if (t >= 0 && t != 0x7fffffff && !in[t])
@@ -740,6 +950,8 @@ namespace vuaot
 		std::vector<NodeLowering::ChainEffect> eff(NN);
 		for (size_t i = 0; i < NN; i++)
 		{
+			if (nodes_[i]->alias)
+				continue;
 			eff[i] = nodes_[i]->low->Chain();
 			t_.accAccumulated_ += eff[i].accumulated;
 		}
@@ -747,7 +959,8 @@ namespace vuaot
 		std::vector<u8> in;
 		DirtyIn(eff, in);
 		for (size_t i = 0; i < NN; i++)
-			nodes_[i]->low->SetDirtyIn(in[i] != 0);
+			if (!nodes_[i]->alias)
+				nodes_[i]->low->SetDirtyIn(in[i] != 0);
 	}
 
 	// Whether the accumulators save instructions in this region. An accumulated
@@ -760,7 +973,8 @@ namespace vuaot
 		const size_t NN = nodes_.size();
 		std::vector<NodeLowering::ChainEffect> eff(NN);
 		for (size_t i = 0; i < NN; i++)
-			eff[i] = nodes_[i]->low->Chain();
+			if (!nodes_[i]->alias)
+				eff[i] = nodes_[i]->low->Chain();
 		std::vector<u8> in;
 		DirtyIn(eff, in);
 		std::vector<int> comp;
@@ -769,7 +983,8 @@ namespace vuaot
 		FindLoops(comp, cyclic, ncomp);
 		s64 net = 0;
 		for (size_t i = 0; i < NN; i++)
-			net += static_cast<s64>(cyclic[i] ? 8 : 1) * (5 * static_cast<s64>(eff[i].accumulated) - 7 * static_cast<s64>(eff[i].reduces[in[i]]));
+			if (!nodes_[i]->alias)
+				net += static_cast<s64>(cyclic[i] ? 8 : 1) * (5 * static_cast<s64>(eff[i].accumulated) - 7 * static_cast<s64>(eff[i].reduces[in[i]]));
 		if (t_.dump)
 			std::printf("[vuaot acc] root %04x: %zu nodes, net %lld\n", nodes_[0]->pc, NN, static_cast<long long>(net));
 		return net > 0;
@@ -784,6 +999,8 @@ namespace vuaot
 		for (size_t i = 0; i < NN; i++)
 		{
 			const Node& n = *nodes_[i];
+			if (n.alias)
+				continue;
 			if (n.taken >= 0 && n.taken != 0x7fffffff)
 				succ[i].push_back(n.taken);
 			if (n.fall >= 0 && n.fall != 0x7fffffff)
@@ -801,7 +1018,7 @@ namespace vuaot
 		ncomp = 0;
 		for (size_t root = 0; root < NN; root++)
 		{
-			if (index[root] >= 0)
+			if (index[root] >= 0 || nodes_[root]->alias)
 				continue;
 			call.push_back({static_cast<int>(root), 0});
 			while (!call.empty())
@@ -845,15 +1062,25 @@ namespace vuaot
 		}
 		std::vector<u32> compSize(ncomp, 0);
 		for (size_t i = 0; i < NN; i++)
-			compSize[comp[i]]++;
+			if (!nodes_[i]->alias)
+				compSize[comp[i]]++;
 		cyclic.assign(NN, 0);
 		for (size_t i = 0; i < NN; i++)
 		{
+			if (nodes_[i]->alias)
+				continue;
 			bool cyc = compSize[comp[i]] > 1;
 			for (int y : succ[i])
 				cyc = cyc || y == static_cast<int>(i);
 			cyclic[i] = cyc;
 		}
+		// (an alias is where its representative is)
+		for (size_t i = 0; i < NN; i++)
+			if (nodes_[i]->alias)
+			{
+				comp[i] = comp[nodes_[i]->rep];
+				cyclic[i] = cyclic[nodes_[i]->rep];
+			}
 	}
 
 	void RegionBuilder::AssignHomes()
@@ -890,6 +1117,9 @@ namespace vuaot
 				}
 				nodes_[i]->map = m;
 			}
+			for (size_t i = 0; i < NN; i++)
+				if (nodes_[i]->alias)
+					nodes_[i]->map = nodes_[nodes_[i]->rep]->map;
 			maps_.assign(nmaps, HomeMap());
 		}
 		for (size_t m = 0; m < maps_.size(); m++)
@@ -910,7 +1140,7 @@ namespace vuaot
 		for (size_t ni = 0; ni < NN; ni++)
 		{
 			const auto& n = nodes_[ni];
-			if (map != 0 && n->map != map)
+			if (n->alias || (map != 0 && n->map != map))
 				continue; // a loop's map counts its own nodes; the region's map counts all
 			const u32 w = weight[ni];
 			const Function& f = n->fn;
@@ -1140,29 +1370,35 @@ namespace vuaot
 		// Entries from microVU (the root's is where microVU is compiling): the
 		// budget test, then the node's head address in x8 and the shared home
 		// loader.
+		// An alias's entry is its own (its bail record names its own block) and runs its
+		// representative's body.
 		for (size_t i = 0; i < nodes_.size(); i++)
 		{
 			Node& n = *nodes_[i];
+			Node& r = *nodes_[n.rep];
 			n.entry = armGetCurrentCodePointer();
 			armAsm->Adr(a64::x1, &n.rec);
 			armAsm->Ldr(W(8), a64::MemOperand(a64::x24, cyclesOff));
-			armAsm->Cmp(W(8), n.need);
+			armAsm->Cmp(W(8), r.need);
 			armAsm->B(&entryBail, a64::lt);
 			if (acc_)
 			{
 				// microVU hands over every STATUS instance whole: the chain starts
 				// from the newest, with nothing owed by the accumulators.
+				pxAssert(StatusHead(n.key) == StatusHead(r.key));
 				armAsm->Mov(W(kStkReg), W(20 + StatusHead(n.key)));
 				armAsm->Movi(Q(kSaZReg).V2D(), 0);
 				armAsm->Movi(Q(kSaSReg).V2D(), 0);
 			}
-			armAsm->Adr(a64::x8, &n.head);
-			armAsm->B(&loadAll[n.map]);
+			armAsm->Adr(a64::x8, &r.head);
+			armAsm->B(&loadAll[r.map]);
 		}
 		// Bodies.
 		for (size_t i = 0; i < nodes_.size(); i++)
 		{
 			Node& n = *nodes_[i];
+			if (n.alias)
+				continue;
 			armAsm->Bind(&n.head);
 			size_t pi = 0;
 			std::vector<std::pair<const u8*, ir::ValueId>> marks;
@@ -1213,7 +1449,10 @@ namespace vuaot
 				if (tailStart > at)
 					t_.prof_[pi].segs.push_back({at, tailStart, tag});
 			}
-			const int next = static_cast<int>(i + 1);
+			size_t nexti = i + 1;
+			while (nexti < nodes_.size() && nodes_[nexti]->alias)
+				nexti++;
+			const int next = static_cast<int>(nexti);
 			if (n.br.endKind == BlockEnd::CondBranch)
 			{
 				armAsm->Cmp(W(8), 0);
@@ -1236,7 +1475,7 @@ namespace vuaot
 		for (size_t i = 0; i < nodes_.size(); i++)
 		{
 			Node& n = *nodes_[i];
-			if (!n.checkpoint)
+			if (!n.checkpoint || n.alias)
 				continue;
 			armAsm->Bind(&n.bail);
 			armAsm->Adr(a64::x1, &n.rec);
@@ -1445,8 +1684,12 @@ namespace vuaot
 			return t_.Decline("single block, no loop", why);
 
 		PlanChecks();
+		// (after PlanChecks: loop heads stay alone in their classes)
+		if (t_.merge && !t_.profile)
+			MergeVariants();
 		for (auto& np : nodes_)
-			ScanUseDef(*np);
+			if (!np->alias)
+				ScanUseDef(*np);
 		ComputeHandoffMasks();
 		t_.NoteProgram(env_.program, env_.offProgBails);
 		for (const auto& np : nodes_)
@@ -1469,6 +1712,8 @@ namespace vuaot
 			ComputeLiveness();
 			for (auto& n : nodes_)
 			{
+				if (n->alias)
+					continue;
 				n->low = NodeLowering::Check(n->fn, le_, n->clamped, &n->liveOut);
 				pxAssertRel(n->low != nullptr, "vu-aot region: a lowerable node failed its analysis");
 			}
@@ -1495,7 +1740,7 @@ namespace vuaot
 					t_.handoffEdges_++;
 					t_.handoffRingsDead_ += static_cast<u32>(ring.count() - (nodes_[t]->bailMask & ring).count());
 				};
-				if (u.br.endKind == BlockEnd::EBit)
+				if (u.alias || u.br.endKind == BlockEnd::EBit)
 					continue;
 				count(u.taken);
 				if (u.br.endKind == BlockEnd::CondBranch)
@@ -1519,6 +1764,11 @@ namespace vuaot
 				static_cast<size_t>(end - start));
 			for (size_t i = 0; i < nodes_.size(); i++)
 			{
+				if (nodes_[i]->alias)
+				{
+					std::printf("  n%zu pc=%04x entry=%p runs n%d\n", i, nodes_[i]->pc, nodes_[i]->entry, nodes_[i]->rep);
+					continue;
+				}
 				std::printf("  n%zu pc=%04x cycles=%u taken=%d fall=%d entry=%p need=%u", i, nodes_[i]->pc, nodes_[i]->br.cycles,
 					nodes_[i]->taken, nodes_[i]->br.endKind == BlockEnd::CondBranch ? nodes_[i]->fall : 0, nodes_[i]->entry, nodes_[i]->need);
 				if (nodes_[i]->checkpoint)

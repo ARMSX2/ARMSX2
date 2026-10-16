@@ -165,6 +165,7 @@ struct VuAotRegionOptions
 	bool schedule = true, splitHomes = true, stickyAcc = true, accAlways = false, handoffLiveness = true, dump = false;
 	bool dropSticky = true;
 	int dropStickyMutation = 0;
+	bool merge = true;
 	vuaot::RegionTier::HandoffMutation handoffMutation = vuaot::RegionTier::HandoffMutation::None;
 
 	void From(const vuaot::RegionTier& t)
@@ -179,6 +180,7 @@ struct VuAotRegionOptions
 		handoffMutation = t.handoffMutation;
 		dropSticky = t.dropSticky;
 		dropStickyMutation = t.dropStickyMutation;
+		merge = t.merge;
 		dump = t.dump;
 	}
 	void To(vuaot::RegionTier& t) const
@@ -193,6 +195,7 @@ struct VuAotRegionOptions
 		t.handoffMutation = handoffMutation;
 		t.dropSticky = dropSticky;
 		t.dropStickyMutation = dropStickyMutation;
+		t.merge = merge;
 		t.dump = dump;
 	}
 };
@@ -278,7 +281,7 @@ struct VuAotJob final : vuaot::bg::Job
 	std::vector<VuAotWBlock*> pendingRefs; // PhPending placeholders
 	std::vector<std::pair<PhKind, u32>> ph; // per placeholder id
 	std::vector<u8> readMask;               // per micro-memory word: the compile read it
-	u32 regions = 0, regionNodes = 0, regionExits = 0;
+	u32 regions = 0, regionNodes = 0, regionExits = 0, regionMerged = 0;
 	u64 regionBytes = 0;
 	std::map<std::string, u32> declined;
 	// The flag-reader census of the compile (9ab), and whether it dropped the sticky STATUS
@@ -712,14 +715,14 @@ namespace vuaot::live
 		char buf[1536];
 		std::snprintf(buf, sizeof(buf),
 			"vu-aot live tier: tierups=%llu retiers=%llu retierchecks=%llu blocks_set_aside=%llu targets=%llu jumpmisses=%llu "
-			"roots=%llu regions=%llu rnodes=%llu rexits=%llu rbytes=%llu bodyblocks=%llu bodies=%llu bodybytes=%llu bails=%llu "
+			"roots=%llu regions=%llu rnodes=%llu rmerged=%llu rexits=%llu rbytes=%llu bodyblocks=%llu bodies=%llu bodybytes=%llu bails=%llu "
 			"jrtierups=%llu jrcounted=%llu xprogtargets=%llu bails_entry=%llu bails_loophead=%llu "
 			"status_readers=%llu sticky_readers=%llu sticky_div_readers=%llu sticky_dropped=%llu sticky_images=%llu "
 			"sticky_trips=%llu sticky_trip_resets=%llu sticky_tripped=%d sticky_remembered=%llu",
 			(unsigned long long)s.tierUps, (unsigned long long)s.retiers, (unsigned long long)s.retierChecks,
 			(unsigned long long)s.blocksSetAside, (unsigned long long)s.targetsRecorded, (unsigned long long)s.jumpMisses,
 			(unsigned long long)s.rootsCompiled, (unsigned long long)s.regions, (unsigned long long)s.regionNodes,
-			(unsigned long long)s.regionExits, (unsigned long long)s.regionBytes, (unsigned long long)s.bodyBlocks,
+			(unsigned long long)s.regionMerged, (unsigned long long)s.regionExits, (unsigned long long)s.regionBytes, (unsigned long long)s.bodyBlocks,
 			(unsigned long long)s.bodiesLowered, (unsigned long long)s.bodyBytes, (unsigned long long)s.bailCompiles,
 			(unsigned long long)s.jumpTierUps, (unsigned long long)s.jumpCounted, (unsigned long long)s.crossProgTargets,
 			(unsigned long long)s.bailsEntry, (unsigned long long)s.bailsLoopHead, (unsigned long long)s.statusReaders,
@@ -1076,6 +1079,7 @@ void VuAotJob::Run()
 		fixups = sink->fixups;
 		regions = tier.Regions();
 		regionNodes = tier.Nodes();
+		regionMerged = tier.Merged();
 		regionExits = tier.Exits();
 		regionBytes = tier.Bytes();
 	}
@@ -1595,6 +1599,7 @@ static void vuAotPlace(microVU& mVU, VuAotJob& j, microBlock* rootReal)
 	}
 	s_vuaot.stats.regions += j.regions;
 	s_vuaot.stats.regionNodes += j.regionNodes;
+	s_vuaot.stats.regionMerged += j.regionMerged;
 	s_vuaot.stats.regionExits += j.regionExits;
 	s_vuaot.stats.regionBytes += j.regionBytes;
 }

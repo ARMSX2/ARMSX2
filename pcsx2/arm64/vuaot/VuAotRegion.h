@@ -70,6 +70,10 @@ namespace vuaot
 		u32 Nodes() const { return nodes_; }
 		u32 Exits() const { return exits_; }
 		u64 Bytes() const { return bytes_; }
+		// Variant merging: nodes that share another node's code (their own entry stub and bail
+		// record only), and the code classes that have more than one node.
+		u32 Merged() const { return merged_; }
+		u32 MergeClasses() const { return mergeClasses_; }
 		// Sticky STATUS accumulation: regions that use it, regions that could have but
 		// whose status chains the lowering cannot carry (FSSET kills), and the status
 		// updates accumulated instead of packed.
@@ -138,6 +142,20 @@ namespace vuaot
 			AllDead,     // every ring instance is dead at a hand-off
 		};
 		HandoffMutation handoffMutation = HandoffMutation::None;
+		// Variant merging (item 7). microVU compiles a block once per pipeline state it is entered
+		// with, and the region keeps every one of those variants as a node of its own (each is
+		// registered in microVU's block manager, where and when microVU would register it, and
+		// keeps its own entry). Many variants compute exactly the same thing: the same IR, the
+		// same cycle count, and successors that are themselves the same. Such a node emits no
+		// body of its own: its entry stub runs the body of the first node of its class, so the
+		// state and the cycles of every run are the ones its own body would give. Loop heads
+		// (budget checkpoints) and JR/JALR blocks with run-time targets never share, because their
+		// code names their own microVU block (a budget bail resumes microVU's code for that block;
+		// the jump tail uses its jump cache). Off: the A/B.
+		bool merge = true;
+		// Test only: merge on the IR alone, ignoring where the links go (wrong on purpose, to
+		// show the tests notice).
+		bool mergeIgnoreLinksMutation = false;
 		// Recorded JR/JALR targets: block start PC of the jump -> target PCs
 		// seen at run time. A region dispatches these directly; any other
 		// target goes through microVU's jump cache.
@@ -183,6 +201,7 @@ namespace vuaot
 
 	private:
 		u64 bytes_ = 0;
+		u32 merged_ = 0, mergeClasses_ = 0;
 		std::map<std::string, u32> declined_;
 
 		friend class RegionBuilder;

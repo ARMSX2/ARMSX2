@@ -31,6 +31,7 @@ struct VuAotModeOptions
 		bool accAlways = false; // --vuaot-acc-always: the accumulators even where the estimate says they would not pay (A/B)
 	bool handoff = true;    // --vuaot-no-handoff: every flag-ring instance exact at a bail to microVU (A/B)
 	bool dropSticky = true; // --vuaot-no-dropsticky: relaxation 3 off (the sticky bits of STATUS kept, flag hack on or off)
+	bool merge = true;      // --vuaot-no-merge: region variant merging off (RegionTier::merge, A/B)
 	// --vuaot-mutation NAME: break one relaxation on purpose, to show the observable gate catches it
 	// (handoff-ignore-reads, handoff-all-dead, sticky-hi, sticky-pack, sticky-div).
 	int handoffMutation = 0;

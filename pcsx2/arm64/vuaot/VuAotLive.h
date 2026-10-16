@@ -110,6 +110,7 @@ namespace vuaot
 			u64 rootsCompiled = 0;    // blocks offered to the region tier
 			u64 regions = 0;
 			u64 regionNodes = 0;
+			u64 regionMerged = 0;     // ... of them, aliases sharing another node's body (variant merging)
 			u64 regionExits = 0;
 			u64 regionBytes = 0;
 			u64 bodyBlocks = 0;       // blocks offered to the body tier (the region declined them)

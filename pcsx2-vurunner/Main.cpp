@@ -121,6 +121,7 @@ void PrintUsage(const char* argv0)
 		"                through its budget stops (--vuaot-resumes N); --vuaot-mutation\n"
 		"                handoff-ignore-reads|handoff-all-dead|sticky-hi|sticky-pack|sticky-div breaks\n"
 		"                one relaxation on purpose to show the gate notices.\n"
+		"                --vuaot-no-merge turns region variant merging off (A/B).\n"
 		"  --scan-external  Without replaying, report per capture whether the code\n"
 		"                reachable from start_pc reads VIF TOP/ITOP (XTOP/XITOP),\n"
 		"                whether it has a JR/JALR the scan can't follow (and an\n"
@@ -290,6 +291,8 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 			opts.vuaot.handoff = false;
 		else if (a == "--vuaot-no-dropsticky")
 			opts.vuaot.dropSticky = false;
+		else if (a == "--vuaot-no-merge")
+			opts.vuaot.merge = false;
 		else if (a == "--vuaot-mutation" && i + 1 < argc)
 		{
 			const std::string m = argv[++i];

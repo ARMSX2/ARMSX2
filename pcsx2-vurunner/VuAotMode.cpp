@@ -353,6 +353,7 @@ namespace
 				region->dropSticky = o.dropSticky;
 				region->handoffMutation = static_cast<vuaot::RegionTier::HandoffMutation>(o.handoffMutation);
 				region->dropStickyMutation = o.dropStickyMutation;
+				region->merge = o.merge;
 				region->dump = o.dumpIr;
 				regionBg = o.regionBg;
 			}
@@ -862,9 +863,10 @@ int RunVuAotRun(const std::vector<vu_capture::CaptureRecord>& records,
 		if (ctx.region && ctx.regionBg)
 		{
 			// (the regions were built by the worker's jobs: the live tier's counters)
-			std::printf(" regions=%llu rnodes=%llu rexits=%llu rbytes=%llu mvublocks=%u bgjobs=%llu bgdeclined=%llu veneers=%llu",
+			std::printf(" regions=%llu rnodes=%llu rmerged=%llu rexits=%llu rbytes=%llu mvublocks=%u bgjobs=%llu bgdeclined=%llu veneers=%llu",
 				static_cast<unsigned long long>(bgAfter.regions - bgBefore.regions),
 				static_cast<unsigned long long>(bgAfter.regionNodes - bgBefore.regionNodes),
+				static_cast<unsigned long long>(bgAfter.regionMerged - bgBefore.regionMerged),
 				static_cast<unsigned long long>(bgAfter.regionExits - bgBefore.regionExits),
 				static_cast<unsigned long long>(bgAfter.regionBytes - bgBefore.regionBytes), mvuBlocks,
 				static_cast<unsigned long long>(bgAfter.jobsDone - bgBefore.jobsDone),
@@ -873,8 +875,8 @@ int RunVuAotRun(const std::vector<vu_capture::CaptureRecord>& records,
 		}
 		else if (ctx.region)
 		{
-			std::printf(" regions=%u rnodes=%u rexits=%u rbytes=%llu mvublocks=%u racc=%u raccnl=%u raccn=%u raccun=%u rhoe=%u rhod=%u", ctx.region->Regions(), ctx.region->Nodes(),
-				ctx.region->Exits(), static_cast<unsigned long long>(ctx.region->Bytes()), mvuBlocks, ctx.region->AccRegions(), ctx.region->AccNonLinear(),
+			std::printf(" regions=%u rnodes=%u rmerged=%u rmclasses=%u rexits=%u rbytes=%llu mvublocks=%u racc=%u raccnl=%u raccn=%u raccun=%u rhoe=%u rhod=%u", ctx.region->Regions(), ctx.region->Nodes(),
+				ctx.region->Merged(), ctx.region->MergeClasses(), ctx.region->Exits(), static_cast<unsigned long long>(ctx.region->Bytes()), mvuBlocks, ctx.region->AccRegions(), ctx.region->AccNonLinear(),
 				ctx.region->AccAccumulated(), ctx.region->AccUnprofitable(), ctx.region->HandoffEdges(), ctx.region->HandoffRingsDead());
 			for (const auto& d : ctx.region->Declined())
 			{

@@ -63,6 +63,8 @@ int g_clampMode = -1;
 bool g_schedule = false;
 // Regions without the sticky STATUS accumulation (debugging a failure).
 bool g_noStickyAcc = getenv("VUAOT_NO_ACC") != nullptr;
+bool g_merge = true; // RegionTier::merge (variant merging)
+bool g_mergeIgnoreLinks = false; // RegionTier::mergeIgnoreLinksMutation
 // A deliberate break of the hand-off liveness rule, to see the tests notice it
 // (VuAotRegion.HandoffMutationsAreCaught); None everywhere else.
 int g_dropStickyMutation = 0; // relaxation 3 broken on purpose (RegionTier::dropStickyMutation)
@@ -822,6 +824,8 @@ struct RegionOutcome
 {
 	std::vector<std::string> diffs;
 	u32 regions = 0, nodes = 0;
+	u32 merged = 0;  // nodes that ran another node's body (variant merging)
+	u64 bytes = 0;   // region code
 	u32 accRegions = 0, accNonLinear = 0, accAccumulated = 0; // sticky STATUS accumulation
 	u32 handoffEdges = 0, handoffDead = 0; // links into loop heads, and the ring instances their bails leave out
 	u32 stickyDropped = 0;                 // regions compiled without the sticky byte of STATUS (relaxation 3)
@@ -905,11 +909,15 @@ RegionOutcome RunRegion(const std::vector<VuOp>& prog, bool flagHack, const std:
 		rs.region.handoffMutation = g_handoffMutation;
 		rs.region.dropStickyMutation = g_dropStickyMutation;
 		rs.region.dump = dump;
+		rs.region.merge = g_merge;
+		rs.region.mergeIgnoreLinksMutation = g_mergeIgnoreLinks;
 		if (jumps)
 			rs.region.jumpTargets = *jumps;
 		got = runArm(h);
 		o.regions = rs.region.Regions();
 		o.nodes = rs.region.Nodes();
+		o.merged = rs.region.Merged();
+		o.bytes = rs.region.Bytes();
 		o.accRegions = rs.region.AccRegions();
 		o.accNonLinear = rs.region.AccNonLinear();
 		o.accAccumulated = rs.region.AccAccumulated();
@@ -1064,109 +1072,251 @@ TEST(VuAotRegion, InvariantMatrix) { RegionInvariantMatrixBody(); }
 // inner counted loop (vi5) on some.
 static void RegionLoopFuzzBody();
 TEST(VuAotRegion, LoopFuzz) { RegionLoopFuzzBody(); }
-static void RegionLoopFuzzBody()
+namespace
 {
-	std::mt19937 rng(20261015);
-	std::mt19937 erng(20261016); // (the empty-field FMACs have their own stream: the programs around them are the ones the fuzz always made)
+// One random loop program for RegionLoopFuzz: an outer counted loop (vi1) around random FMAC,
+// flag, divide, memory and VI work with forward branches inside, and an inner counted loop (vi5)
+// on some.
+std::vector<VuOp> LoopFuzzProgram(std::mt19937& rng, std::mt19937& erng)
+{
 	auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
 	auto vf = [&]() { return 1 + R(14); };
 	auto vi = [&]() { return 2 + R(3); }; // vi2..vi4; vi1 / vi5 are loop counters
 	auto msk = [&]() { return (R(15) + 1) << 21; };
+	std::vector<VuOp> p;
+	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, static_cast<u16>(1 + R(60)))));
+	const size_t head = p.size();
+	const bool inner = R(2);
+	const int len = 4 + R(14);
+	int lastBranch = -10;
+	for (int i = 0; i < len; i++)
+	{
+		u32 up = VNOP_U(), lo = kNopL;
+		switch (R(10))
+		{
+			case 0: up = VADD_U(msk(), vf(), vf(), vf()); break;
+			case 1: up = VMUL_U(msk(), vf(), vf(), vf()); break;
+			case 2: up = VMADDx_U(msk(), vf(), vf(), vf()) + R(4); break;
+			case 3: up = VMULAx_U(msk(), vf(), vf()) + R(4); break;
+			case 4: up = VMULq_U(msk(), vf(), vf()); break;
+			case 5: up = VMAX_U(msk(), vf(), vf(), vf()); break;
+			case 6: up = VCLIP_U(vf(), vf()); break;
+			case 7: up = VSUBx_U(msk(), vf(), vf(), vf()) + R(4); break;
+			default: break;
+		}
+		if (up == VNOP_U() && erng() % 2 == 0)
+			up = EmptyFieldFmac(erng);
+		switch (R(14))
+		{
+			case 0: lo = VFMAND_L(vi(), vi()); break;
+			case 1: lo = VFSAND_L(vi(), R(0x1000)); break;
+			case 2: lo = VFCAND_L(R(0x1000000)); break;
+			case 3: lo = VDIV_L(vf(), R(4), vf(), R(4)); break;
+			case 4: lo = VSQ_L(msk(), vf(), vi(), static_cast<s16>(R(8))); break;
+			case 5: lo = VLQ_L(msk(), vf(), vi(), static_cast<s16>(R(8))); break;
+			case 6: lo = VIADDIU_L(vi(), vi(), static_cast<u16>(R(8))); break;
+			case 7: lo = VMTIR_L(vi(), vf(), R(4)); break;
+			case 8: lo = VMOVE_L(msk(), vf(), vf()); break;
+			case 9:
+				// forward, inside the body, never in another branch's delay
+				// slot or with a branch target in one
+				if (i + 4 < len && i >= lastBranch + 3)
+				{
+					lo = VIBNE_L(vi(), vi(), static_cast<s16>(1 + R(2)));
+					lastBranch = i;
+				}
+				break;
+			case 10: lo = VSQRT_L(vf(), R(4)); break;
+			default: break;
+		}
+		p.push_back(VuOp{lo, up});
+	}
+	if (inner)
+	{
+		p.push_back(L(VIADDIU_L(vi::vi5, vi::vi0, static_cast<u16>(1 + R(5)))));
+		const size_t ih = p.size();
+		p.push_back(U(VMADDAx_U(mask::xyzw, vf(), vf()) + R(4)));
+		p.push_back(L(VISUBIU_L(vi::vi5, vi::vi5, 1)));
+		p.push_back(L(VIBNE_L(vi::vi5, vi::vi0, static_cast<s16>(static_cast<int>(ih) - static_cast<int>(p.size()) - 1))));
+		p.push_back(U(VMADD_U(mask::xyzw, vf(), vf(), vf())));
+	}
+	p.push_back(L(VISUBIU_L(vi::vi1, vi::vi1, 1)));
+	p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(static_cast<int>(head) - static_cast<int>(p.size()) - 1))));
+	p.push_back(U(VMUL_U(mask::xyzw, vf(), vf(), vf())));
+	p.push_back(EBit(L(VFSAND_L(vi::vi4, 0xfff))));
+	return p;
+}
+
+std::function<void(VuTestHarness&)> LoopFuzzSetup(int iter)
+{
+	return [iter](VuTestHarness& h) {
+		SeedSpecials(h, 9000 + iter);
+		for (int r = 4; r < 16; r++)
+			h.SetVf(r, 1.0f + 0.01f * r, 0.99f, -1.0f + 0.001f * r, 0.5f);
+		for (int r = 2; r <= 4; r++)
+			h.SetVi(r, static_cast<u16>(r * 8));
+	};
+}
+
+std::string Hex(const std::vector<VuOp>& p)
+{
+	std::string hex;
+	for (const VuOp& op : p)
+	{
+		char buf[24];
+		std::snprintf(buf, sizeof(buf), "%08x:%08x,", op.lower, op.upper);
+		hex += buf;
+	}
+	return hex;
+}
+} // namespace
+
+static void RegionLoopFuzzBody()
+{
+	std::mt19937 rng(20261015);
+	std::mt19937 erng(20261016); // (the empty-field FMACs have their own stream: the programs around them are the ones the fuzz always made)
 	const int iters = getenv("VUAOT_REGION_ITERS") ? std::atoi(getenv("VUAOT_REGION_ITERS")) : 120;
 	int failures = 0;
-	u32 regions = 0, nodes = 0;
+	u32 regions = 0, nodes = 0, merged = 0;
 	for (int iter = 0; iter < iters; iter++)
 	{
-		std::vector<VuOp> p;
-		p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, static_cast<u16>(1 + R(60)))));
-		const size_t head = p.size();
-		const bool inner = R(2);
-		const int len = 4 + R(14);
-		int lastBranch = -10;
-		for (int i = 0; i < len; i++)
-		{
-			u32 up = VNOP_U(), lo = kNopL;
-			switch (R(10))
-			{
-				case 0: up = VADD_U(msk(), vf(), vf(), vf()); break;
-				case 1: up = VMUL_U(msk(), vf(), vf(), vf()); break;
-				case 2: up = VMADDx_U(msk(), vf(), vf(), vf()) + R(4); break;
-				case 3: up = VMULAx_U(msk(), vf(), vf()) + R(4); break;
-				case 4: up = VMULq_U(msk(), vf(), vf()); break;
-				case 5: up = VMAX_U(msk(), vf(), vf(), vf()); break;
-				case 6: up = VCLIP_U(vf(), vf()); break;
-				case 7: up = VSUBx_U(msk(), vf(), vf(), vf()) + R(4); break;
-				default: break;
-			}
-			if (up == VNOP_U() && erng() % 2 == 0)
-				up = EmptyFieldFmac(erng);
-			switch (R(14))
-			{
-				case 0: lo = VFMAND_L(vi(), vi()); break;
-				case 1: lo = VFSAND_L(vi(), R(0x1000)); break;
-				case 2: lo = VFCAND_L(R(0x1000000)); break;
-				case 3: lo = VDIV_L(vf(), R(4), vf(), R(4)); break;
-				case 4: lo = VSQ_L(msk(), vf(), vi(), static_cast<s16>(R(8))); break;
-				case 5: lo = VLQ_L(msk(), vf(), vi(), static_cast<s16>(R(8))); break;
-				case 6: lo = VIADDIU_L(vi(), vi(), static_cast<u16>(R(8))); break;
-				case 7: lo = VMTIR_L(vi(), vf(), R(4)); break;
-				case 8: lo = VMOVE_L(msk(), vf(), vf()); break;
-				case 9:
-					// forward, inside the body, never in another branch's delay
-					// slot or with a branch target in one
-					if (i + 4 < len && i >= lastBranch + 3)
-					{
-						lo = VIBNE_L(vi(), vi(), static_cast<s16>(1 + R(2)));
-						lastBranch = i;
-					}
-					break;
-				case 10: lo = VSQRT_L(vf(), R(4)); break;
-				default: break;
-			}
-			p.push_back(VuOp{lo, up});
-		}
-		if (inner)
-		{
-			p.push_back(L(VIADDIU_L(vi::vi5, vi::vi0, static_cast<u16>(1 + R(5)))));
-			const size_t ih = p.size();
-			p.push_back(U(VMADDAx_U(mask::xyzw, vf(), vf()) + R(4)));
-			p.push_back(L(VISUBIU_L(vi::vi5, vi::vi5, 1)));
-			p.push_back(L(VIBNE_L(vi::vi5, vi::vi0, static_cast<s16>(static_cast<int>(ih) - static_cast<int>(p.size()) - 1))));
-			p.push_back(U(VMADD_U(mask::xyzw, vf(), vf(), vf())));
-		}
-		p.push_back(L(VISUBIU_L(vi::vi1, vi::vi1, 1)));
-		p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(static_cast<int>(head) - static_cast<int>(p.size()) - 1))));
-		p.push_back(U(VMUL_U(mask::xyzw, vf(), vf(), vf())));
-		p.push_back(EBit(L(VFSAND_L(vi::vi4, 0xfff))));
+		const std::vector<VuOp> p = LoopFuzzProgram(rng, erng);
 		for (bool fh : {true, false})
 		{
-			const auto setup = [iter](VuTestHarness& h) {
-				SeedSpecials(h, 9000 + iter);
-				for (int r = 4; r < 16; r++)
-					h.SetVf(r, 1.0f + 0.01f * r, 0.99f, -1.0f + 0.001f * r, 0.5f);
-				for (int r = 2; r <= 4; r++)
-					h.SetVi(r, static_cast<u16>(r * 8));
-			};
-			const RegionOutcome o = RunRegion(p, fh, setup, false);
+			const RegionOutcome o = RunRegion(p, fh, LoopFuzzSetup(iter), false);
 			regions += o.regions;
 			nodes += o.nodes;
+			merged += o.merged;
 			if (!o.diffs.empty())
 			{
 				failures++;
-				std::string hex;
-				for (const VuOp& op : p)
-				{
-					char buf[24];
-					std::snprintf(buf, sizeof(buf), "%08x:%08x,", op.lower, op.upper);
-					hex += buf;
-				}
-				ADD_FAILURE() << "iter " << iter << " flagHack=" << fh << " hex=" << hex << "\n" << Join(o.diffs, 8);
+				ADD_FAILURE() << "iter " << iter << " flagHack=" << fh << " hex=" << Hex(p) << "\n" << Join(o.diffs, 8);
 			}
 		}
 	}
 	EXPECT_EQ(failures, 0);
 	EXPECT_GT(regions, static_cast<u32>(iters)); // most programs form a region per flag-hack setting
-	std::printf("[vuaot region fuzz] programs=%d regions=%u nodes=%u\n", iters * 2, regions, nodes);
+	std::printf("[vuaot region fuzz] programs=%d regions=%u nodes=%u merged=%u\n", iters * 2, regions, nodes, merged);
+}
+
+// Variant merging: a node whose IR, cycles and links equal another node's runs that node's body.
+// Over the loop fuzz's programs, merging must leave every run identical to microVU, merge some
+// nodes and shrink the code; the programs that merged run again under a range of cycle budgets,
+// so runs stop and resume at merged nodes' own entries (each keeps its own bail record).
+TEST(VuAotRegion, MergedVariants)
+{
+	struct Scope
+	{
+		~Scope() { g_merge = true; }
+	} restore;
+	std::mt19937 rng(20261015);
+	std::mt19937 erng(20261016);
+	int failures = 0;
+	u32 merged = 0;
+	u64 bytesOn = 0, bytesOff = 0;
+	std::vector<std::pair<int, std::vector<VuOp>>> withMerges;
+	for (int iter = 0; iter < 120; iter++)
+	{
+		const std::vector<VuOp> p = LoopFuzzProgram(rng, erng);
+		for (bool fh : {true, false})
+		{
+			bool any = false;
+			for (bool on : {false, true})
+			{
+				g_merge = on;
+				const RegionOutcome o = RunRegion(p, fh, LoopFuzzSetup(iter), false);
+				(on ? bytesOn : bytesOff) += o.bytes;
+				if (on)
+				{
+					merged += o.merged;
+					any = o.merged > 0;
+				}
+				else
+					EXPECT_EQ(o.merged, 0u);
+				if (!o.diffs.empty() && ++failures <= 4)
+					ADD_FAILURE() << "iter " << iter << " flagHack=" << fh << " merge=" << on << " hex=" << Hex(p) << "\n" << Join(o.diffs, 8);
+			}
+			if (any && fh && withMerges.size() < 16)
+				withMerges.push_back({iter, p});
+		}
+	}
+	EXPECT_EQ(failures, 0);
+	EXPECT_GT(merged, 0u);
+	EXPECT_LT(bytesOn, bytesOff);
+	ASSERT_FALSE(withMerges.empty());
+	g_merge = true;
+	for (const auto& [iter, p] : withMerges)
+		for (bool fh : {true, false})
+			for (u32 budget : {1u, 2u, 3u, 5u, 8u, 13u, 21u, 34u, 55u, 89u, 144u})
+			{
+				const RegionOutcome o = RunRegion(p, fh, LoopFuzzSetup(iter), false, 14, false, nullptr, budget);
+				if (!o.diffs.empty() && ++failures <= 4)
+					ADD_FAILURE() << "iter " << iter << " flagHack=" << fh << " budget " << budget << " hex=" << Hex(p) << "\n" << Join(o.diffs, 8);
+			}
+	EXPECT_EQ(failures, 0);
+	std::printf("[vuaot merge] merged=%u bytes on=%llu off=%llu, %zu programs swept over budgets\n", merged,
+		static_cast<unsigned long long>(bytesOn), static_cast<unsigned long long>(bytesOff), withMerges.size());
+}
+
+// Variants of one block with the same code whose successors are not the same must keep their
+// own bodies. The program (found by a search over random diamonds) splits at pair 0 into two
+// paths with different flag work, which meet at a join block (pair 14) through conditional links
+// that are always taken; the join's two variants compile alike, but the pipeline states they hand
+// on are not, and their successors are different code. Merging on the IR alone (a mutation) sends
+// the run from the shared body on to one variant's successor whichever variant entered it, which
+// this must notice.
+TEST(VuAotRegion, MergeKeepsVariantsWhoseSuccessorsDiffer)
+{
+	struct Scope
+	{
+		~Scope() { g_mergeIgnoreLinks = false; }
+	} restore;
+	const std::vector<VuOp> p = {
+		{0x50060006, 0x000002ff}, // 0
+		{0x8000033c, 0x000002ff}, // 1
+		{0x8000033c, 0x000002ff}, // 2
+		{0x5000000a, 0x000002ff}, // 3
+		{0x8000033c, 0x000002ff}, // 4
+		{0x8000033c, 0x400002ff}, // 5
+		{0x8000033c, 0x000002ff}, // 6
+		{0x2c240067, 0x01a568ea}, // 7
+		{0x8000033c, 0x000109ff}, // 8
+		{0x38040000, 0x000002ff}, // 9
+		{0x50000003, 0x000002ff}, // 10
+		{0x8000033c, 0x000002ff}, // 11
+		{0x8000033c, 0x400002ff}, // 12
+		{0x8000033c, 0x000002ff}, // 13
+		{0x34042800, 0x00c711ea}, // 14
+		{0x8000033c, 0x000002ff}, // 15
+		{0x2c04070d, 0x000002ff}, // 16
+		{0x50000003, 0x000002ff}, // 17
+		{0x8000033c, 0x000002ff}, // 18
+		{0x8000033c, 0x400002ff}, // 19
+		{0x8000033c, 0x000002ff}, // 20
+		{0x8000033c, 0x000002ff}, // 21
+		{0x8000033c, 0x000002ff}, // 22
+		{0x8000033c, 0x400002ff}, // 23
+	};
+	u32 merged[2] = {}, caught = 0;
+	for (bool mutate : {false, true})
+		for (u16 path : {0, 1})
+			for (bool fh : {true, false})
+			{
+				g_mergeIgnoreLinks = mutate;
+				const RegionOutcome o = RunRegion(p, fh, [path](VuTestHarness& h) {
+					SeedSpecials(h, 31);
+					h.SetVi(6, path);
+					h.SetVi(5, 0xffff);
+				}, false, 14, getenv("VUAOT_TEST_DUMP") != nullptr);
+				EXPECT_GE(o.regions, 1u);
+				merged[mutate] += o.merged;
+				if (!mutate)
+					EXPECT_TRUE(o.diffs.empty()) << "path " << path << " flagHack=" << fh << "\n" << Join(o.diffs, 8);
+				else
+					caught += o.diffs.empty() ? 0 : 1;
+			}
+	EXPECT_LT(merged[0], merged[1]); // the links kept some variants apart
+	EXPECT_GT(caught, 0u) << "a body shared by variants with different successors went unnoticed";
 }
 
 // Milestone 8: a region tests the cycle budget only at loop heads and at
