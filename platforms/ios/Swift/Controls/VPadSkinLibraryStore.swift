@@ -65,8 +65,6 @@ struct VPadSkinDescriptor: Codable, Equatable, Identifiable {
 struct VPadSkinImportResult {
     var descriptor: VPadSkinDescriptor
     var warnings: [String]
-    var importedImageCount: Int
-    var extractedFileCount: Int
 
     var includesLinkedLayout: Bool {
         descriptor.linkedLayoutPresetID != nil
@@ -461,9 +459,7 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         persist()
         return VPadSkinImportResult(
             descriptor: descriptor,
-            warnings: warnings,
-            importedImageCount: importedImageCount,
-            extractedFileCount: files.count
+            warnings: warnings
         )
     }
 
@@ -562,7 +558,7 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
             do {
                 let manifestURL = SkinManifestImporter.manifestFile(in: packageRoot)
                 let manifestData = manifestURL.flatMap { try? Data(contentsOf: $0) }
-                let install = try SkinManifestImporter.installValidatedPackage(
+                try SkinManifestImporter.installValidatedPackage(
                     manifest: manifest,
                     manifestData: manifestData,
                     packageRoot: packageRoot,
@@ -598,13 +594,7 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
 
                 let outcome = SkinManifestImporter.V2ImportOutcome(
                     descriptor: descriptor,
-                    warnings: warnings,
-                    manifestName: manifest.name,
-                    manifestIdentifier: manifest.identifier,
-                    manifestVersion: manifest.version,
-                    manifestAuthor: manifest.author,
-                    copiedAssetCount: install.copiedAssetCount,
-                    repairedParentFolder: repairedParentFolder
+                    warnings: warnings
                 )
                 return .imported(outcome)
             } catch {

@@ -93,7 +93,6 @@ enum BackgroundStorage {
         }
     }
 
-    static func isLarge(_ data: Data) -> Bool { data.count > maxWarningBytes }
     static func isLarge(_ url: URL) -> Bool {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attrs[.size] as? NSNumber else { return false }

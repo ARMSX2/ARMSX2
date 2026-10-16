@@ -53,8 +53,6 @@ struct PadLayoutSnapshot: Codable, Equatable {
                 id: id,
                 center: CGPoint(x: p.x * size.width, y: p.y * size.height),
                 baseSize: padEditorBaseSize(for: id, isLandscape: isLandscape, analogStickScale: analogStickScale),
-                visibleScaleX: p.scaleX,
-                visibleScaleY: p.scaleY,
                 hitScaleX: isStick ? p.scaleX : p.hitScaleX,
                 hitScaleY: isStick ? p.scaleY : p.hitScaleY
             )
@@ -199,11 +197,6 @@ struct PadLayoutGameIdentity: Codable, Equatable, Hashable, Identifiable {
         }
         self.serial = normalizedSerial
         self.crc = normalizedCRC
-    }
-
-    init(serial: String, crc: String) {
-        self.serial = Self.normalizedSerial(serial)
-        self.crc = Self.normalizedCRC(crc)
     }
 
     static func normalizedSerial(_ value: String?) -> String {

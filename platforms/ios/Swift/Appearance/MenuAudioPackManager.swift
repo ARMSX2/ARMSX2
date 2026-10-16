@@ -241,11 +241,7 @@ final class MenuAudioPackManager {
     }
 
     func volume(for sound: Sound) -> Double {
-        soundVolumes[sound] ?? Self.defaultVolume(for: sound)
-    }
-
-    private nonisolated static func defaultVolume(for sound: Sound) -> Double {
-        1
+        soundVolumes[sound] ?? 1
     }
 
     func setUIAudioVolume(_ volume: Double) {

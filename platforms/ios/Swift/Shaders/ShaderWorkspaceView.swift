@@ -22,7 +22,7 @@ struct ShaderWorkspaceView: View {
     let settings: SettingsStore
     let controllerInput: MenuControllerInputRouter?
     let savesToRunningGame: Bool
-    let onLivePreviewChange: (@MainActor (String, String) -> Void)?
+    let onLivePreviewChange: (@MainActor (String) -> Void)?
 
     @Binding var selectedCategoryID: String
     @Binding var detailPresented: Bool
@@ -672,10 +672,7 @@ struct ShaderWorkspaceView: View {
                     if params.hasOverrides {
                         Button(role: .destructive) {
                             params.resetAll()
-                            onLivePreviewChange?(
-                                settings.localized("Parameters"),
-                                settings.localized("Defaults")
-                            )
+                            onLivePreviewChange?(settings.localized("Defaults"))
                         } label: {
                             Label(
                                 settings.localized("Reset All Parameters"),
@@ -688,10 +685,7 @@ struct ShaderWorkspaceView: View {
                             label: settings.localized("Reset All Parameters")
                         ) {
                             params.resetAll()
-                            onLivePreviewChange?(
-                                settings.localized("Parameters"),
-                                settings.localized("Defaults")
-                            )
+                            onLivePreviewChange?(settings.localized("Defaults"))
                         }
                     }
                 }
@@ -780,10 +774,7 @@ struct ShaderWorkspaceView: View {
                 set: { next in
                     guard (chain.wrappedValue != 0) != next else { return }
                     chain.wrappedValue = next ? -1 : 0
-                    onLivePreviewChange?(
-                        settings.localized("Shader Chain"),
-                        settings.localized(next ? "On" : "Off")
-                    )
+                    onLivePreviewChange?(settings.localized(next ? "On" : "Off"))
                 }
             )
         }
@@ -792,10 +783,7 @@ struct ShaderWorkspaceView: View {
             set: { next in
                 guard enabled != next else { return }
                 enabled = next
-                onLivePreviewChange?(
-                    settings.localized("Shader Chain"),
-                    settings.localized(next ? "On" : "Off")
-                )
+                onLivePreviewChange?(settings.localized(next ? "On" : "Off"))
             }
         )
     }
@@ -929,7 +917,6 @@ struct ShaderWorkspaceView: View {
             expandedPassIDs.subtract(layer.passes.map(\.id))
         }
         persistWorkspacePreset(
-            previewLabel: layer.name,
             previewValue: settings.localized(
                 hiddenLayerIDs.contains(layer.id) ? "Off" : "On"
             )
@@ -952,7 +939,6 @@ struct ShaderWorkspaceView: View {
         }), workspaceLayers.indices.contains(index + offset) else { return }
         workspaceLayers.swapAt(index, index + offset)
         persistWorkspacePreset(
-            previewLabel: layer.name,
             previewValue: settings.localized(
                 offset < 0 ? "Moved Up" : "Moved Down"
             )
@@ -969,7 +955,6 @@ struct ShaderWorkspaceView: View {
             return
         }
         persistWorkspacePreset(
-            previewLabel: layer.name,
             previewValue: settings.localized("Removed")
         )
     }
@@ -982,16 +967,12 @@ struct ShaderWorkspaceView: View {
         Task { @MainActor in
             await passLibrary.load(layers: workspaceLayers)
             persistWorkspacePreset(
-                previewLabel: settings.localized("Shader"),
                 previewValue: displayName(for: token)
             )
         }
     }
 
-    private func persistWorkspacePreset(
-        previewLabel: String,
-        previewValue: String
-    ) {
+    private func persistWorkspacePreset(previewValue: String) {
         do {
             guard let token = try ShaderWorkspacePresetEditor.write(
                 layers: workspaceLayers,
@@ -1007,7 +988,7 @@ struct ShaderWorkspaceView: View {
             } else {
                 enabled = hasVisibleLayer
             }
-            onLivePreviewChange?(previewLabel, previewValue)
+            onLivePreviewChange?(previewValue)
             ARMSX2Bridge.retryShaderChain()
         } catch {
             validatePreset()
@@ -1031,10 +1012,7 @@ struct ShaderWorkspaceView: View {
         }
         presetRef = token
         browseRequest = nil
-        onLivePreviewChange?(
-            settings.localized("Preset"),
-            displayName(for: token)
-        )
+        onLivePreviewChange?(displayName(for: token))
     }
 
     private func validatePreset() {
@@ -1097,10 +1075,7 @@ struct ShaderWorkspaceView: View {
 
     private func presentParameterPreview(_ param: ShaderParam) {
         let value = params.value(for: param)
-        onLivePreviewChange?(
-            param.label,
-            String(format: "%.*f", param.decimals, Double(value))
-        )
+        onLivePreviewChange?(String(format: "%.*f", param.decimals, Double(value)))
     }
 
     private func shareLayer(_ layer: ShaderPresetLayerDescriptor) {

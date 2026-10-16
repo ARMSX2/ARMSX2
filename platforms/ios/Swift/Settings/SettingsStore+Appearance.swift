@@ -249,11 +249,9 @@ extension SettingsStore {
             ?? controllerTabSubtitleColor
     }
     var controllerCardFocusedColor: Color {
-        // A focused library card is an interactive selection, so its title
-        // uses the same theme accent as buttons and focus artwork. Several
-        // readability profiles intentionally keep normal card copy neutral;
-        // reusing that neutral colour for `cardFocused` made the transition
-        // imperceptible on most presets.
+        // A focused card uses the theme accent like buttons and focus artwork;
+        // the neutral card colour of several readability profiles made the
+        // focus change hard to see.
         controllerNavigationAccentColor
     }
     var controllerContextMenuColor: Color {
@@ -266,10 +264,6 @@ extension SettingsStore {
         controllerEffectiveThemePreset.readabilityOverrides?.contextSecondary
             ?? controllerTextAppearance.secondaryColor
             ?? .secondary
-    }
-    var controllerContextMenuFocusedColor: Color {
-        controllerEffectiveThemePreset.readabilityOverrides?.contextFocused
-            ?? controllerTextAppearance.focusedColor
     }
     var controllerQuickMenuTextAppearance: ControllerTextAppearance {
         guard let readability = controllerEffectiveThemePreset.readabilityOverrides

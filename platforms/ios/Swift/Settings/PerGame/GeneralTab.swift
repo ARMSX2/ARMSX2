@@ -39,7 +39,7 @@ struct GeneralTab: View {
                 savesToRunningGame: savesToRunningGame,
                 settings: settings
             )
-            PerGameStatusSection(statusMessage: statusMessage, settings: settings)
+            PerGameStatusSection(statusMessage: statusMessage)
         }
     }
 }
@@ -229,7 +229,6 @@ struct PerGameOverridesSection: View {
 
 struct PerGameStatusSection: View {
     let statusMessage: String?
-    let settings: SettingsStore
 
     var body: some View {
         if let statusMessage {

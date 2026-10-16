@@ -211,7 +211,6 @@ final class ControllerAccessibilityNavigationSession {
         var navigationID: String?
         var label: String
         var value: String?
-        var traits: UIAccessibilityTraits
         var view: WeakView
         var focusState: ControllerAccessibilityTargetFocusState
         var isEnabled: Bool
@@ -665,7 +664,6 @@ final class ControllerAccessibilityNavigationSession {
         navigationID: String?,
         label: String,
         value: String?,
-        traits: UIAccessibilityTraits,
         focusState: ControllerAccessibilityTargetFocusState,
         isEnabled: Bool,
         persistent: Bool,
@@ -704,7 +702,6 @@ final class ControllerAccessibilityNavigationSession {
             navigationID: navigationID,
             label: label,
             value: value,
-            traits: traits,
             view: WeakView(view),
             focusState: focusState,
             isEnabled: isEnabled,
@@ -1923,7 +1920,7 @@ final class ControllerAccessibilityNavigationSession {
             // Resolve the current owner after yielding: a replacement probe
             // may have registered while this single reconciliation was queued.
             guard let key = self.pendingFocusKey ?? self.focusedKey,
-                  let owner = self.targets[key]?.view.value,
+                  self.targets[key]?.view.value != nil,
                   self.isMountedAndEnabled(key) else { return }
             if self.pendingFocusKey == key {
                 guard !self.needsLogicalScrollOwner(for: key) else { return }
@@ -2464,7 +2461,6 @@ fileprivate final class ControllerAccessibilityActionProbeView: UIControl {
     private var navigationID: String?
     private var targetLabel = ""
     private var targetValue: String?
-    private var targetTraits: UIAccessibilityTraits = .button
     private var targetFocusState: ControllerAccessibilityTargetFocusState?
     private var targetEnabled = true
     private var targetPersistent = false
@@ -2514,7 +2510,6 @@ fileprivate final class ControllerAccessibilityActionProbeView: UIControl {
         navigationID: String?,
         label: String,
         value: String?,
-        traits: UIAccessibilityTraits,
         focusState: ControllerAccessibilityTargetFocusState,
         isEnabled: Bool,
         persistent: Bool,
@@ -2542,7 +2537,6 @@ fileprivate final class ControllerAccessibilityActionProbeView: UIControl {
         self.navigationID = navigationID
         targetLabel = label
         targetValue = value
-        targetTraits = traits
         targetFocusState = focusState
         targetEnabled = isEnabled
         targetPersistent = persistent
@@ -2582,7 +2576,6 @@ fileprivate final class ControllerAccessibilityActionProbeView: UIControl {
             navigationID: navigationID,
             label: targetLabel,
             value: targetValue,
-            traits: targetTraits,
             focusState: targetFocusState,
             isEnabled: targetEnabled,
             persistent: targetPersistent,
@@ -2603,7 +2596,6 @@ private struct ControllerAccessibilityActionProbe: UIViewRepresentable {
     let navigationID: String?
     let label: String
     let value: String?
-    let traits: UIAccessibilityTraits
     let focusState: ControllerAccessibilityTargetFocusState
     let isEnabled: Bool
     let persistent: Bool
@@ -2628,7 +2620,6 @@ private struct ControllerAccessibilityActionProbe: UIViewRepresentable {
             navigationID: navigationID,
             label: label,
             value: value,
-            traits: traits,
             focusState: focusState,
             isEnabled: isEnabled,
             persistent: persistent,
@@ -2656,7 +2647,6 @@ private struct ControllerAccessibilityExplicitTargetModifier: ViewModifier {
     let navigationID: String?
     let label: String
     let value: String?
-    let traits: UIAccessibilityTraits
     let focusedColor: Color?
     let focusedNeonCornerRadius: CGFloat?
     let activationFeedback: MenuControllerFeedback
@@ -2728,7 +2718,6 @@ private struct ControllerAccessibilityExplicitTargetModifier: ViewModifier {
                     navigationID: trimmedID,
                     label: trimmedLabel,
                     value: value,
-                    traits: traits,
                     focusState: focusState,
                     isEnabled: isEnabled,
                     persistent: trimmedID != nil || !trimmedLabel.isEmpty,
@@ -3801,7 +3790,6 @@ extension View {
                 navigationID: id,
                 label: label,
                 value: nil,
-                traits: .button,
                 focusedColor: focusedColor,
                 focusedNeonCornerRadius: focusedNeonCornerRadius,
                 activationFeedback: activationFeedback,
@@ -3818,7 +3806,6 @@ extension View {
                 navigationID: id,
                 label: label,
                 value: nil,
-                traits: .button,
                 focusedColor: nil,
                 focusedNeonCornerRadius: nil,
                 activationFeedback: .activate,
@@ -3839,7 +3826,6 @@ extension View {
                 navigationID: id,
                 label: label,
                 value: isOn.wrappedValue ? "On" : "Off",
-                traits: .adjustable,
                 focusedColor: nil,
                 focusedNeonCornerRadius: nil,
                 activationFeedback: .toggle(isOn: !isOn.wrappedValue),
@@ -3863,7 +3849,6 @@ extension View {
                 navigationID: id,
                 label: label,
                 value: value,
-                traits: .adjustable,
                 focusedColor: nil,
                 focusedNeonCornerRadius: nil,
                 activationFeedback: .activate,
@@ -3887,7 +3872,6 @@ extension View {
                 navigationID: id,
                 label: label,
                 value: value,
-                traits: [.button, .adjustable],
                 focusedColor: nil,
                 focusedNeonCornerRadius: nil,
                 activationFeedback: .activate,

@@ -81,9 +81,6 @@ struct PerGameSettingsPanel: View {
         }
     }
 
-    /// Whether this build has librashader, read once for the Graphics tab.
-    private static let shaderChainSupported = ARMSX2Bridge.isShaderChainSupported()
-
     private enum PerGameSettingsLayout: String, Hashable {
         case portrait
         case landscape
@@ -194,9 +191,6 @@ struct PerGameSettingsPanel: View {
             values[key(section, name)] as? NSNumber
         }
 
-        func string(_ section: String, _ name: String) -> String? {
-            values[key(section, name)] as? String
-        }
     }
 
     let game: ISOEntry
@@ -1055,7 +1049,7 @@ struct PerGameSettingsPanel: View {
     }
 
     @MainActor
-    private func requestShaderLivePreview(_ label: String, _ value: String) {
+    private func requestShaderLivePreview(_ value: String) {
         shaderParameterPreviewSequence &+= 1
         publishLivePreviewStatus(value: value, countsDown: false)
     }

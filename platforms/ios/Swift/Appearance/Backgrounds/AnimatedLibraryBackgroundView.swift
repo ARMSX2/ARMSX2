@@ -253,13 +253,6 @@ enum AnimatedBackgroundLoader {
     static let maxFrameDimension: CGFloat = 1280
     static let maxDecodedBytes = 160 * 1024 * 1024
 
-    /// True when the file at `url` is a multi-frame image that the loader will
-    /// animate. Used to decide between the animated and static render paths.
-    static func isAnimated(_ url: URL) -> Bool {
-        guard let source = cgSource(url) else { return false }
-        return CGImageSourceGetCount(source) > 1
-    }
-
     /// Decodes the frames of an animated image, honoring per-frame durations
     /// and the safety caps. Returns an empty array on failure or when caps are
     /// exceeded (caller falls back to a static image).

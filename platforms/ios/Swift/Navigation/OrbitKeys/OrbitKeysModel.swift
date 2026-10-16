@@ -65,15 +65,6 @@ enum OrbitKeysFaceButton: String, CaseIterable, Identifiable, Sendable {
 
   var id: String { rawValue }
 
-  var directionName: String {
-    switch self {
-    case .square: "left"
-    case .cross: "bottom"
-    case .circle: "right"
-    case .triangle: "top"
-    }
-  }
-
   static func from(characterStickX x: Float, y: Float, threshold: Float = 0.68) -> OrbitKeysFaceButton? {
     guard max(abs(x), abs(y)) >= threshold else { return nil }
 
@@ -88,22 +79,6 @@ enum OrbitKeysKeyboardMode: String, Sendable {
   case letters
   case shifted
   case numbers
-
-  var title: String {
-    switch self {
-    case .letters: "abc"
-    case .shifted: "ABC"
-    case .numbers: "123"
-    }
-  }
-
-  var accessibilityName: String {
-    switch self {
-    case .letters: "lowercase letters"
-    case .shifted: "uppercase letters and alternate punctuation"
-    case .numbers: "numbers and special characters"
-    }
-  }
 }
 
 enum OrbitKeysArrangement: String, Sendable {
@@ -715,14 +690,6 @@ final class OrbitKeysModel: ObservableObject {
     MenuAudioPackManager.shared.playEvent(.navigation)
   }
 
-  func moveCursorToStart() {
-    guard cursor != 0 else { return }
-    cursor = 0
-    selectionSequence += 1
-    haptics.play(.selection)
-    MenuAudioPackManager.shared.playEvent(.navigation)
-  }
-
   func toggleShiftLock() {
     touchShiftLocked.toggle()
     if touchShiftLocked {
@@ -852,17 +819,6 @@ final class OrbitKeysModel: ObservableObject {
     closeKeyboard(clearsActivation: true, feedback: .mode)
   }
 
-  func clearAndClose() {
-    guard isKeyboardVisible else { return }
-    characters = []
-    cursor = 0
-    committedText = ""
-    lastSubmittedText = ""
-    onCommit("")
-    showToast("Text cleared")
-    closeKeyboard(clearsActivation: true, feedback: .delete)
-  }
-
   // Drops the closed keyboard's duplicate text buffer, repeat tasks, and haptic engines.
   // Controller input remains connected so the keyboard can still be opened from the menu.
   func releaseClosedKeyboardResources() {
@@ -937,16 +893,6 @@ final class OrbitKeysModel: ObservableObject {
     gamepad.dpad.down.pressedChangedHandler = nil
   }
 
-  // Leaves only the background renderer active while the main interface is hidden.
-  func prepareForBackgroundOnlyDisplay() {
-    if isKeyboardVisible {
-      commitAndClose()
-    }
-    setKeyboardSettingsVisible(false, playsHaptic: false)
-    toastMessage = nil
-    releaseClosedKeyboardResources()
-  }
-
   func clearText() {
     characters = []
     cursor = 0
@@ -957,11 +903,6 @@ final class OrbitKeysModel: ObservableObject {
     feedbackSequence += 1
     haptics.play(.delete)
     MenuAudioPackManager.shared.playEvent(.uiToast)
-  }
-
-  func updateExternalText(_ value: String) {
-    guard !isKeyboardVisible, value != committedText else { return }
-    committedText = value
   }
 
   private func insert(_ value: String) {

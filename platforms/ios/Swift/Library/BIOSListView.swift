@@ -11,7 +11,6 @@ struct BIOSLibraryEntry: Identifiable, Equatable, Sendable {
     let regionName: String
     let countryCode: String
     let descriptionText: String
-    let regionCode: Int
     let valid: Bool
 
     var id: String { filePath }
@@ -22,7 +21,6 @@ struct BIOSLibraryEntry: Identifiable, Equatable, Sendable {
         regionName = info.regionName
         countryCode = info.countryCode
         descriptionText = info.descriptionText
-        regionCode = info.regionCode
         valid = info.valid
     }
 }

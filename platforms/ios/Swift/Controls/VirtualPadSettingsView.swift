@@ -1170,10 +1170,6 @@ struct VirtualPadSettingsView: View {
             || ext == "armsx2skin" || ext == "deltaskin" || ext == "manicskin"
     }
 
-    static func canonicalSkinFileName(forImportPath path: String) -> String? {
-        VPadSkinLibraryStore.canonicalSkinFileName(forImportPath: path)
-    }
-
     @ViewBuilder
     private var controlSensitivitySection: some View {
         Section {

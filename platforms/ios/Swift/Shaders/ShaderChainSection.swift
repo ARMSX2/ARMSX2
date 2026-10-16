@@ -115,7 +115,7 @@ struct ShaderChainSection: View {
     @Binding var presetRef: String
     let localized: @MainActor (String) -> String
     var controllerInput: MenuControllerInputRouter? = nil
-    var onLivePreviewChange: (@MainActor (String, String) -> Void)? = nil
+    var onLivePreviewChange: (@MainActor (String) -> Void)? = nil
     var showsParameters = true
     var showsClearPresetAction = true
     var showsEnabledToggle = true
@@ -342,10 +342,7 @@ struct ShaderChainSection: View {
                     controllerTargetID: "shader-chain.reset-parameters"
                 ) {
                     params.resetAll()
-                    onLivePreviewChange?(
-                        localized("Parameters"),
-                        localized("Defaults")
-                    )
+                    onLivePreviewChange?(localized("Defaults"))
                 }
                 .uiCriticalForegroundStyle()
             }
@@ -449,10 +446,7 @@ struct ShaderChainSection: View {
             set: { next in
                 guard enabled != next else { return }
                 enabled = next
-                onLivePreviewChange?(
-                    localized("Shader Chain"),
-                    localized(next ? "On" : "Off")
-                )
+                onLivePreviewChange?(localized(next ? "On" : "Off"))
             }
         )
     }
@@ -483,10 +477,7 @@ struct ShaderChainSection: View {
             enabled = true
         }
         presetRef = token
-        onLivePreviewChange?(
-            localized("Preset"),
-            token.isEmpty ? localized("None") : presetDisplayName(token)
-        )
+        onLivePreviewChange?(token.isEmpty ? localized("None") : presetDisplayName(token))
     }
 
     private func setParameter(_ value: Float, for param: ShaderParam) {
@@ -496,10 +487,7 @@ struct ShaderChainSection: View {
 
     private func presentParameterPreview(_ param: ShaderParam) {
         let value = params.value(for: param)
-        onLivePreviewChange?(
-            param.name,
-            String(format: "%.*f", param.decimals, Double(value))
-        )
+        onLivePreviewChange?(String(format: "%.*f", param.decimals, Double(value)))
     }
 
     private func parameterTargetID(_ param: ShaderParam) -> String {

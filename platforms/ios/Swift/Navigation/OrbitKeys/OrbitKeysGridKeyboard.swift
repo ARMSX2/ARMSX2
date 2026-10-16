@@ -1189,10 +1189,6 @@ struct OrbitKeysOrbAnchorTransition {
   let startTime: TimeInterval
   let duration: TimeInterval
 
-  var endTime: TimeInterval {
-    startTime + duration
-  }
-
   func value(at time: TimeInterval) -> CGSize {
     guard duration > 0 else { return to }
     let linearProgress = min(max((time - startTime) / duration, 0), 1)

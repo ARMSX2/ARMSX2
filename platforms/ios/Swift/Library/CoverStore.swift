@@ -23,8 +23,6 @@ struct CoverLibraryLookupIndex {
 
 struct CoverDownloadSummary: Sendable {
     let downloaded: Int
-    let skippedExisting: Int
-    let failed: Int
 }
 
 @MainActor
@@ -67,16 +65,6 @@ final class CoverStore {
         let dir = docs.appendingPathComponent("armsx2_covers", isDirectory: true)
         try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
-    }
-
-    func coverURL(forGameName gameName: String, gamePath: URL?) -> URL? {
-        let candidates = coverBaseCandidates(forGameName: gameName, metadata: [:])
-        for dir in coverSearchDirectories(gamePath: gamePath) {
-            if let url = findCover(in: dir, matching: candidates) {
-                return url
-            }
-        }
-        return nil
     }
 
     func coverURL(forGameName gameName: String, gamePath: URL?, metadata: [String: String]) -> URL? {
@@ -148,7 +136,7 @@ final class CoverStore {
             } else {
                 NSLog("[ARMSX2 iOS Covers] auto-download skipped: cover URL template is empty")
             }
-            return CoverDownloadSummary(downloaded: 0, skippedExisting: 0, failed: games.count)
+            return CoverDownloadSummary(downloaded: 0)
         }
 
         guard !isDownloadingCovers else {
@@ -158,7 +146,7 @@ final class CoverStore {
             } else {
                 NSLog("[ARMSX2 iOS Covers] auto-download skipped: cover download already in progress")
             }
-            return CoverDownloadSummary(downloaded: 0, skippedExisting: 0, failed: 0)
+            return CoverDownloadSummary(downloaded: 0)
         }
 
         isDownloadingCovers = true
@@ -205,7 +193,7 @@ final class CoverStore {
         } else {
             NSLog("[ARMSX2 iOS Covers] auto-download finished downloaded=%d skipped=%d failed=%d", downloaded, skipped, failed)
         }
-        return CoverDownloadSummary(downloaded: downloaded, skippedExisting: skipped, failed: failed)
+        return CoverDownloadSummary(downloaded: downloaded)
     }
 
     @discardableResult

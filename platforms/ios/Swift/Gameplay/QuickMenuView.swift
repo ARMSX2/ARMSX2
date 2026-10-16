@@ -156,9 +156,7 @@ struct QuickMenuView: View {
                     showStopConfirmation
                         ? []
                         : usesLandscapeMap
-                            ? quickMenuLandscapeControllerTargetOrder(
-                                twoColumns: usesTwoColumns
-                            )
+                            ? quickMenuLandscapeControllerTargetOrder()
                             : quickMenuPortraitControllerTargetOrder()
                 )
                 .controllerAccessibilityNavigation(
@@ -567,9 +565,7 @@ struct QuickMenuView: View {
     /// Fallback ordering uses the same mounted rows as the explicit landscape
     /// links. This keeps a briefly recycled row (notably Shaders) from being
     /// skipped while the scroll view is mounting.
-    private func quickMenuLandscapeControllerTargetOrder(
-        twoColumns: Bool
-    ) -> [String] {
+    private func quickMenuLandscapeControllerTargetOrder() -> [String] {
         var contentOrder = [
             ControllerTargetID.osd,
             ControllerTargetID.virtualPad,
@@ -677,7 +673,6 @@ struct QuickMenuView: View {
         } else if variant == .phoneLandscape {
             landscapeBody(
                 width: width,
-                height: height,
                 twoColumns: twoColumns
             )
         } else {
@@ -712,7 +707,6 @@ struct QuickMenuView: View {
     @ViewBuilder
     private func landscapeBody(
         width: CGFloat,
-        height: CGFloat,
         twoColumns: Bool
     ) -> some View {
         OverlayPanelScaffold {

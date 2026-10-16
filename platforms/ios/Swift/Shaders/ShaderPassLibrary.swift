@@ -52,14 +52,6 @@ final class ShaderPassLibrary: ObservableObject {
 
     private var loadIdentity = ""
 
-    func load(token newToken: String) async {
-        let layer = ShaderWorkspaceLayerConfiguration(
-            id: Self.stableLayerID(for: newToken),
-            token: newToken
-        )
-        await load(layers: newToken.isEmpty ? [] : [layer])
-    }
-
     func load(layers configurations: [ShaderWorkspaceLayerConfiguration]) async {
         let identity = configurations.map { "\($0.id):\($0.token)" }
             .joined(separator: "|")

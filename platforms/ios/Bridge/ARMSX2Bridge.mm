@@ -225,7 +225,6 @@ static ARMSX2BIOSInfo* ARMSX2MakeBIOSInfo(NSString* fileName, NSString* director
     info.regionName = @"Unknown Region";
     info.countryCode = @"";
     info.descriptionText = @"Region unavailable";
-    info.regionCode = -1;
     info.valid = NO;
 
     u32 version = 0;
@@ -235,7 +234,6 @@ static ARMSX2BIOSInfo* ARMSX2MakeBIOSInfo(NSString* fileName, NSString* director
     if (IsBIOS(info.filePath.UTF8String, version, description, region, zone)) {
         NSString* zoneString = ARMSX2NSStringFromStdString(zone);
         info.valid = YES;
-        info.regionCode = static_cast<NSInteger>(region);
         info.regionName = ARMSX2BIOSDisplayRegionForZone(zoneString);
         info.countryCode = ARMSX2BIOSCountryCodeForZone(zoneString);
         info.descriptionText = ARMSX2NSStringFromStdString(description);
@@ -2491,10 +2489,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     ARMSX2ConsumeControllerMacroInput(inputMask);
 }
 
-+ (nonnull NSString *)biosName {
-    return @"PS2";
-}
-
 + (void)requestVMStop {
     extern std::atomic<bool> s_requestVMStop;
     s_requestVMStop.store(true);
@@ -4147,15 +4141,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
  #endif
  }
 
-// Whether librashader was compiled in, read from the define because Swift can't see it.
-+ (BOOL)isShaderChainSupported {
-#ifdef ARMSX2_HAS_LIBRASHADER
-	return YES;
-#else
-	return NO;
-#endif
-}
-
 #pragma mark - Shader chain parameters
 
 #ifdef ARMSX2_HAS_LIBRASHADER
@@ -4625,21 +4610,6 @@ static void ARMSX2MutatePerGameINI(NSString* isoName, NSString* section, NSStrin
     return [self perGameIdentityKeyForISO:nil];
 }
 
-+ (nullable NSDictionary<NSString *, NSString *> *)perGameIdentityForCurrentGame {
-    if (!VMManager::HasValidVM())
-        return nil;
-    std::string serial;
-    u32 crc = 0;
-    // Matches what gameSettingsForCurrentGame leaves in the dictionary when the
-    // identity is not resolvable: the globals-seeded blanks, not the partial serial.
-    if (!ARMSX2PerGameIdentityForCurrentGame(&serial, &crc))
-        return @{@"serial": @"", @"crc": @""};
-    return @{
-        @"serial": ARMSX2NSStringFromStdString(serial),
-        @"crc": [NSString stringWithFormat:@"%08X", crc],
-    };
-}
-
 + (int)limiterMode
 {
     if (!VMManager::HasValidVM())
@@ -4708,7 +4678,7 @@ static void ARMSX2MutatePerGameINI(NSString* isoName, NSString* section, NSStrin
 
     // Apply the scalar and limiter as one CPU-thread transaction. Separate INI
     // and limiter updates can otherwise briefly restore the previous mode.
-    Host::RunOnCPUThread([enabled, normalizedPercent, turboScalar]() {
+    Host::RunOnCPUThread([enabled, turboScalar]() {
         if (!VMManager::HasValidVM())
             return;
 
@@ -4734,7 +4704,7 @@ static void ARMSX2MutatePerGameINI(NSString* isoName, NSString* section, NSStrin
     const float scalar = static_cast<float>(normalizedPercent) / 100.0f;
 
     // Session-only: the persisted frame-pacing configuration is left alone.
-    Host::RunOnCPUThread([scalar, normalizedPercent]() {
+    Host::RunOnCPUThread([scalar]() {
         if (!VMManager::HasValidVM())
             return;
         EmuConfig.EmulationSpeed.NominalScalar = scalar;
@@ -5490,10 +5460,6 @@ static void ARMSX2WithSaveStateSlotPath(NSInteger slot, ARMSX2SaveStateCompletio
     return ARMSX2NSStringFromStdString(Patch::GetPnachFilename(serial, crc, asCheat));
 }
 
-+ (nullable NSString *)pnachPathForCurrentGameAsCheat:(BOOL)asCheat {
-    return [self pnachPathForISO:nil asCheat:asCheat];
-}
-
 + (void)reloadPatches {
     std::string serial;
     u32 crc = 0;
@@ -5813,14 +5779,10 @@ static void ARMSX2WithSaveStateSlotPath(NSInteger slot, ARMSX2SaveStateCompletio
             @"badgePath": ARMSX2NSStringFromStdString(achievement.badge_path),
             @"measuredProgress": ARMSX2NSStringFromStdString(achievement.measured_progress),
             @"points": @(achievement.points),
-            @"unlockTime": @(achievement.unlock_time),
             @"state": @(achievement.state),
             @"category": @(achievement.category),
             @"bucket": @(achievement.bucket),
-            @"unlocked": @(achievement.unlocked),
             @"measuredPercent": @(achievement.measured_percent),
-            @"rarity": @(achievement.rarity),
-            @"rarityHardcore": @(achievement.rarity_hardcore),
         }];
     }
 

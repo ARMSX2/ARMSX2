@@ -432,7 +432,7 @@ final class InitialContentBootstrap {
 
     private func downloadMissingCovers(for importedGameFiles: [URL]) async -> CoverDownloadSummary {
         guard !importedGameFiles.isEmpty else {
-            return CoverDownloadSummary(downloaded: 0, skippedExisting: 0, failed: 0)
+            return CoverDownloadSummary(downloaded: 0)
         }
 
         let coverStore = CoverStore.shared

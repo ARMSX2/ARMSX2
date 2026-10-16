@@ -300,7 +300,6 @@ private struct GameLibraryTouchLongPressObserver: UIViewRepresentable {
         view.isUserInteractionEnabled = false
         view.accessibilityElementsHidden = true
         view.coordinator = context.coordinator
-        context.coordinator.markerView = view
         return view
     }
 
@@ -337,7 +336,6 @@ private struct GameLibraryTouchLongPressObserver: UIViewRepresentable {
         var registry: GameplayLaunchCardRegistry
         var onTouchBegan: () -> Void
         var onRecognized: (String) -> Void
-        weak var markerView: MarkerView?
         private weak var scrollView: UIScrollView?
         private var pendingGameID: String?
         private lazy var recognizer: UILongPressGestureRecognizer = {
@@ -374,12 +372,8 @@ private struct GameLibraryTouchLongPressObserver: UIViewRepresentable {
                 }
                 ancestor = view.superview
             }
-            guard scrollView !== enclosingScrollView else {
-                self.markerView = markerView
-                return
-            }
+            guard scrollView !== enclosingScrollView else { return }
             uninstall()
-            self.markerView = markerView
             guard let enclosingScrollView else { return }
             enclosingScrollView.addGestureRecognizer(recognizer)
             scrollView = enclosingScrollView
@@ -388,7 +382,6 @@ private struct GameLibraryTouchLongPressObserver: UIViewRepresentable {
         func uninstall() {
             scrollView?.removeGestureRecognizer(recognizer)
             scrollView = nil
-            markerView = nil
             pendingGameID = nil
         }
 
@@ -694,20 +687,6 @@ private final class GameLibrarySnapshot {
 	func markLibraryRefreshCompleted() {
 		libraryRefreshNeeded = false
 		lastLibraryRefresh = Date()
-	}
-
-	/// Returns cached metadata when the file is unchanged: a matching modification
-	/// time, or a matching size when the modification time is unavailable (some
-	/// external folders report no stable date).
-	func cachedMetadata(for id: String, modificationDate: Date?, size: UInt64) -> [String: String]? {
-		guard let cached = metadataCache[id] else { return nil }
-		if let fileDate = modificationDate, let cachedDate = cached.modificationDate, fileDate == cachedDate {
-			return cached.metadata
-		}
-		if modificationDate == nil, cached.size > 0, cached.size == size {
-			return cached.metadata
-		}
-		return nil
 	}
 
 	func storeMetadata(_ metadata: [String: String], modificationDate: Date?, size: UInt64, for id: String) {
@@ -2273,9 +2252,6 @@ struct GameListView: View {
     @Environment(\.uiAccentColour) private var accentColour
     @Environment(\.uiCardTitleColour) private var contentTextColour
     @Environment(\.uiCardSubtitleColour) private var secondaryTextColour
-    @Environment(\.uiTitleTextColour) private var titleTextColour
-    @Environment(\.uiContentTextColour) private var themedContentTextColour
-    @Environment(\.uiSecondaryTextColour) private var themedSecondaryTextColour
     @Environment(\.uiCriticalTextColour) private var criticalTextColour
     @State private var showRestartAlert = false
     @State private var showStopAlert = false
@@ -3892,17 +3868,14 @@ struct GameListView: View {
             }
         }
         .onReceive(
-            NotificationCenter.default.publisher(for: ExternalGameLibrary.didChangeNotification),
-            perform: handleExternalLibraryDidChange
-        )
+            NotificationCenter.default.publisher(for: ExternalGameLibrary.didChangeNotification)
+        ) { _ in handleExternalLibraryDidChange() }
         .onReceive(
-            NotificationCenter.default.publisher(for: InitialContentBootstrap.didChangeNotification),
-            perform: handleInitialContentDidChange
-        )
+            NotificationCenter.default.publisher(for: InitialContentBootstrap.didChangeNotification)
+        ) { _ in handleInitialContentDidChange() }
         .onReceive(
-            NotificationCenter.default.publisher(for: NSNotification.Name("ARMSX2iOSReturnToMenu")),
-            perform: handleReturnToMenu
-        )
+            NotificationCenter.default.publisher(for: NSNotification.Name("ARMSX2iOSReturnToMenu"))
+        ) { _ in handleReturnToMenu() }
 
         return libraryObservers
         .onChange(of: games) { _, updatedGames in
@@ -4037,7 +4010,7 @@ struct GameListView: View {
         }
     }
 
-    private func handleExternalLibraryDidChange(_ notification: Notification) {
+    private func handleExternalLibraryDidChange() {
         GameLibrarySnapshot.shared.markLibraryRefreshNeeded()
         scheduleLibraryReload(
             after: .milliseconds(120),
@@ -4045,7 +4018,7 @@ struct GameListView: View {
         )
     }
 
-    private func handleInitialContentDidChange(_ notification: Notification) {
+    private func handleInitialContentDidChange() {
         GameLibrarySnapshot.shared.markLibraryRefreshNeeded()
         scheduleLibraryReload(
             after: .milliseconds(120),
@@ -4053,7 +4026,7 @@ struct GameListView: View {
         )
     }
 
-    private func handleReturnToMenu(_ notification: Notification) {
+    private func handleReturnToMenu() {
         runningGameControllerFocusPending =
             controllerInput?.hasConnectedController == true
             && appState.runningGameName != nil
@@ -5336,9 +5309,6 @@ struct GameListView: View {
                 return
             }
             if !moved, command.verticalComponent == .down {
-                controllerInput?.prepareTabBarOrbTransition(
-                    sourceFrame: controllerFocusedCardFrameInWindow()
-                )
                 controllerNavigationActive = false
                 controllerInput?.setNavigationZone(.tabBar)
                 controllerInput?.playFeedback(.move(.down))
@@ -5546,16 +5516,6 @@ struct GameListView: View {
             return games[index]
         }
         return games.first(where: { $0.id == controllerSelectedGameID })
-    }
-
-    private func controllerFocusedCardFrameInWindow() -> CGRect? {
-        guard let gameID = controllerSelectedGameID,
-              let cardView = gameplayLaunchCardRegistry.view(for: gameID),
-              let window = cardView.window else { return nil }
-        let frame = cardView.convert(cardView.bounds, to: window)
-        guard !frame.isNull, !frame.isInfinite,
-              frame.width > 1, frame.height > 1 else { return nil }
-        return frame
     }
 
     @discardableResult
@@ -5913,10 +5873,6 @@ struct GameListView: View {
         default:
             return direction
         }
-    }
-
-    private func isControllerFocused(_ game: ISOEntry) -> Bool {
-        controllerFocusState.isFocused(gameID: game.id)
     }
 
     private func controllerToolbarFocus(
@@ -8295,159 +8251,6 @@ struct GameListView: View {
         .stopConfirmationCard()
     }
 
-	@ViewBuilder
-	private func gameContextMenu(for game: ISOEntry) -> some View {
-        Button {
-            presentMenuPanel("game_info") {
-                gameInfoTarget = game
-            }
-        } label: {
-            Label(settings.localized("Game Info"), systemImage: "info.circle")
-        }
-
-		Button {
-			presentMenuPanel("per_game_settings") {
-				gameSettingsStartsInShaders = false
-				prepareGameSettings(for: game)
-				gameSettingsTarget = game
-			}
-		} label: {
-			Label(settings.localized("Per-Game Settings"), systemImage: "slider.horizontal.3")
-		}
-
-        Button {
-            presentMenuPanel("per_game_custom_skin") {
-                presentPerGameCustomSkin(for: game)
-            }
-        } label: {
-            Label(
-                settings.localized("Per-Game Custom Skin"),
-                systemImage: "gamecontroller.fill"
-            )
-        }
-
-        if game.isELF {
-            discPathMenu(for: game)
-        }
-
-        Button {
-            presentMenuPanel("cheats_patches") {
-                cheatsManagerTarget = game
-            }
-        } label: {
-            Label(settings.localized("Cheats & Patches"), systemImage: "rectangle.stack.badge.plus")
-        }
-
-        Menu {
-            Button {
-                downloadCover(for: game)
-            } label: {
-                Label(settings.localized("Download Cover"), systemImage: "icloud.and.arrow.down")
-            }
-            .disabled(coverStore.isDownloadingCovers)
-
-            Button {
-                presentMenuPanel("cover_photos") {
-                    pendingCoverPhotoGameName = game.name
-                    showCoverPhotoPicker = true
-                }
-            } label: {
-                Label(settings.localized("Choose from Photos"), systemImage: "photo.on.rectangle")
-            }
-
-            Button {
-                presentMenuPanel("cover_files") {
-                    pendingCoverGameName = game.name
-                    showCoverImporter = true
-                }
-            } label: {
-                Label(settings.localized("Choose from Files"), systemImage: "folder")
-            }
-
-            if game.coverURL != nil {
-                Button(role: .destructive) {
-                    coverStore.removeManagedCovers(forGameNamed: game.name)
-                    loadGames()
-                } label: {
-                    Label(settings.localized("Remove Cover"), systemImage: "trash")
-                }
-            }
-        } label: {
-            Label(settings.localized("Covers"), systemImage: "photo.stack")
-        }
-
-        Button {
-            copyLaunchLink(game)
-        } label: {
-            Label(settings.localized("Copy Launch Link"), systemImage: "doc.on.doc")
-        }
-
-        Divider()
-
-        Menu {
-            Button {
-                clearGameCache(game)
-            } label: {
-                Label(settings.localized("Clear Game Cache"), systemImage: "trash.slash")
-            }
-
-            Button(role: .destructive) {
-                presentMenuPanel("delete_game_data") {
-                    pendingDeleteDataGame = game
-                }
-            } label: {
-                Label(settings.localized("Delete Game Data"), systemImage: "externaldrive.badge.xmark")
-            }
-
-			if !game.isExternal {
-				Button(role: .destructive) {
-					presentMenuPanel("delete_game") {
-						pendingDeleteGame = game
-					}
-				} label: {
-					Label(settings.localized("Delete Game"), systemImage: "trash")
-				}
-			}
-		} label: {
-			Label(settings.localized("Game Data"), systemImage: "externaldrive")
-		}
-
-        Divider()
-
-        Button {
-            presentMenuPanel("rename") {
-                beginRenaming(game)
-            }
-        } label: {
-            Label(settings.localized("Rename"), systemImage: "pencil")
-        }
-	}
-
-	@ViewBuilder
-	private func discPathMenu(for game: ISOEntry) -> some View {
-		let linkedDisc = ARMSX2Bridge.linkedDiscPath(forELF: game.bootName)
-		Menu {
-			Button {
-				presentMenuPanel("disc_path") {
-					discLinkTarget = game
-				}
-			} label: {
-				Label(settings.localized(linkedDisc?.isEmpty == false ? "Change Disc Image" : "Link Disc Image"), systemImage: "link")
-			}
-
-			if let linkedDisc, !linkedDisc.isEmpty {
-				Button(role: .destructive) {
-					ARMSX2Bridge.setLinkedDiscPath(nil, forELF: game.bootName)
-					loadGames()
-				} label: {
-					Label(settings.localized("Remove Disc Link"), systemImage: "xmark.circle")
-				}
-			}
-		} label: {
-			Label(settings.localized("Disc Path"), systemImage: "opticaldisc")
-		}
-	}
-
 	private func presentMenuPanel(_ name: String, _ action: @escaping () -> Void) {
 		NSLog("[ARMSX2 iOS GameListMenu] present \(name)")
 		DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
@@ -8783,81 +8586,6 @@ struct GameListView: View {
             usesSingleLineGameName: singleLineGameNames,
             usesClearGlass: true
         )
-    }
-
-    /// Supplies a larger live SwiftUI target for the system context-menu zoom.
-    /// Reusing the launch card keeps its glass, cover, text, and star in one
-    /// composited surface instead of scaling a rasterized snapshot.
-    @ViewBuilder
-    private func gameContextMenuPreview(for game: ISOEntry) -> some View {
-        if let transition = makeGameplayLaunchTransition(
-            for: game,
-            respectingLaunchAnimationSetting: false
-        ) {
-            let sourceSize = contextMenuPreviewSourceSize(
-                for: game,
-                transition: transition
-            )
-            let scale = contextMenuPreviewScale(
-                for: transition.style,
-                sourceSize: sourceSize
-            )
-
-            FluidGameplayLaunchCard(
-                transition: transition,
-                showsUnselectedFavoriteIndicator: true
-            )
-                .frame(width: sourceSize.width, height: sourceSize.height)
-                .scaleEffect(scale)
-                .frame(
-                    width: sourceSize.width * scale,
-                    height: sourceSize.height * scale
-                )
-                .shadow(
-                    color: .black.opacity(0.32),
-                    radius: 22,
-                    y: 12
-                )
-        } else {
-            EmptyView()
-        }
-    }
-
-    private func contextMenuPreviewSourceSize(
-        for game: ISOEntry,
-        transition: GameplayLaunchTransition
-    ) -> CGSize {
-        if let view = gameplayLaunchCardRegistry.view(for: game.id) {
-            let size = view.bounds.size
-            if size.width > 2,
-               size.height > 2,
-               size.width.isFinite,
-               size.height.isFinite {
-                return size
-            }
-        }
-        return transition.sourceFrame.size
-    }
-
-    private func contextMenuPreviewScale(
-        for style: GameplayLaunchCardStyle,
-        sourceSize: CGSize
-    ) -> CGFloat {
-        let desiredScale: CGFloat
-        switch style {
-        case .list:
-            desiredScale = 1.06
-        case .grid:
-            desiredScale = 1.20
-        case .coverFlow:
-            desiredScale = 1.14
-        }
-
-        let viewport = activeMenuWindow()?.bounds.size
-            ?? UIScreen.main.bounds.size
-        let widthLimit = (viewport.width * 0.88) / max(sourceSize.width, 1)
-        let heightLimit = (viewport.height * 0.76) / max(sourceSize.height, 1)
-        return max(1, min(desiredScale, min(widthLimit, heightLimit)))
     }
 
     @MainActor
@@ -10012,8 +9740,7 @@ private struct GameLibraryViewOptionsPanel: View {
 
     private func updateSliderPreview(
         _ title: String,
-        _ value: String,
-        _ interactionContinues: Bool
+        _ value: String
     ) {
         previewEndTask?.cancel()
         previewEndTask = nil
@@ -10071,8 +9798,7 @@ private struct GameLibraryViewOptionsPanel: View {
                 isOn.wrappedValue = newValue
                 updateSliderPreview(
                     title,
-                    settings.localized(newValue ? "On" : "Off"),
-                    false
+                    settings.localized(newValue ? "On" : "Off")
                 )
             }
         )
@@ -10093,8 +9819,7 @@ private struct ExperimentalLibrarySliderRow: View {
     let range: ClosedRange<Double>
     let step: Double
     let format: (Double) -> String
-    let onPreview: (_ title: String, _ value: String,
-                    _ interactionContinues: Bool) -> Void
+    let onPreview: (_ title: String, _ value: String) -> Void
 
     @State private var isTouchEditing = false
 
@@ -10128,7 +9853,7 @@ private struct ExperimentalLibrarySliderRow: View {
         let next = min(max(value + delta, range.lowerBound), range.upperBound)
         guard next != value else { return }
         value = next
-        onPreview(title, format(next), false)
+        onPreview(title, format(next))
     }
 
     private var previewingValue: Binding<Double> {
@@ -10137,14 +9862,14 @@ private struct ExperimentalLibrarySliderRow: View {
             set: { next in
                 value = next
                 guard isTouchEditing else { return }
-                onPreview(title, format(next), true)
+                onPreview(title, format(next))
             }
         )
     }
 
     private func touchEditingChanged(_ editing: Bool) {
         isTouchEditing = editing
-        onPreview(title, format(value), editing)
+        onPreview(title, format(value))
     }
 }
 

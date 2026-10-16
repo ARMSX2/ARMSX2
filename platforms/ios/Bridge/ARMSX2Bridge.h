@@ -53,7 +53,6 @@ typedef NS_ENUM(NSInteger, ARMSX2PadButton) {
 @property (nonatomic, copy, nonnull) NSString *regionName;
 @property (nonatomic, copy, nonnull) NSString *countryCode;
 @property (nonatomic, copy, nonnull) NSString *descriptionText;
-@property (nonatomic, assign) NSInteger regionCode;
 @property (nonatomic, assign) BOOL valid;
 @end
 
@@ -102,7 +101,6 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (BOOL)isSDLFullscreen;
 
 // Info
-+ (nonnull NSString *)biosName;
 + (nonnull NSString *)buildVersion;
 + (BOOL)isJITAvailable;
 + (BOOL)isNoJITFallbackActive;
@@ -226,9 +224,6 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // hardware). Used by the settings UI to hide the Upscaler option where unusable.
 + (BOOL)isMetalFXSupported;
 
-// Whether this build includes librashader. Without cargo it is compiled out and Settings hides Shaders.
-+ (BOOL)isShaderChainSupported;
-
 // A .slangp preset's parameters as a JSON array of {name, description, initial, minimum,
 // maximum, step} in declaration order, or "[]" for none. nil when this build has no
 // librashader or the preset won't load, with librashader's message in error. Reads files,
@@ -266,8 +261,6 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // variant only reads VM state; the ISO variant opens the disc image, so keep it
 // off render paths. Pass nil for isoName to target the running game.
 + (nonnull NSString *)perGameIdentityKeyForCurrentGame;
-// Serial and crc from VM state, without the INI parse gameSettingsForCurrentGame does.
-+ (nullable NSDictionary<NSString *, NSString *> *)perGameIdentityForCurrentGame;
 + (nonnull NSString *)perGameIdentityKeyForISO:(nullable NSString *)isoName NS_SWIFT_NAME(perGameIdentityKey(forISO:));
 
 // Runtime speed control
@@ -325,7 +318,6 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (double)currentGamePlayedSeconds;
 
 // PNACH cheats/patches (pass nil for isoName to target the running game)
-+ (nullable NSString *)pnachPathForCurrentGameAsCheat:(BOOL)asCheat NS_SWIFT_NAME(pnachPathForCurrentGame(asCheat:));
 + (nullable NSString *)pnachPathForISO:(nullable NSString *)isoName asCheat:(BOOL)asCheat NS_SWIFT_NAME(pnachPath(forISO:asCheat:));
 + (void)reloadPatches;
 

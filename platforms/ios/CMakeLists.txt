@@ -380,6 +380,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	endif()
 
 	target_compile_options(ARMSX2iOS PRIVATE $<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-pipe>)
+	# With OBJCXX not enabled, CMake builds this target's .mm files as CXX. The core keeps its own warnings.
+	target_compile_options(ARMSX2iOS PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-Wunused-function;-Wunused-variable;-Wunused-private-field;-Wunused-but-set-variable;-Wunused-lambda-capture;-Wunused-local-typedef;-Wunused-label>")
 
 	# The hash used to be resolved here, which meant it stuck at whatever cmake
 	# last saw and a build after a commit reported the wrong revision. Resolve it

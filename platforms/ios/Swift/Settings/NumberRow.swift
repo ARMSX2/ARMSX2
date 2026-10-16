@@ -111,7 +111,7 @@ struct NumberFormat {
 
     /// Undoes `scale`, so typing 70 into a 0...1 opacity row gets you 0.7.
     /// Respects .grouping(.never): settings sliders never group thousands. Accepts both '.' and ',' as decimal separators.
-    func parse(_ text: String, locale: Locale = .autoupdatingCurrent) -> Double? {
+    func parse(_ text: String) -> Double? {
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalized = cleaned.replacingOccurrences(of: ",", with: ".")
         guard let val = Double(normalized), val.isFinite else { return nil }
@@ -387,32 +387,6 @@ struct NumberRow: View {
                 action: { value.wrappedValue = fallback }
             )
         }
-    }
-
-    init(_ title: String,
-         value: Binding<Int>,
-         in range: ClosedRange<Int>,
-         format: NumberFormat = .plain,
-         detents: [Int] = [],
-         icon: String? = nil,
-         style: Style = .slider,
-         default defaultValue: Int? = nil,
-         accessory: NumberRowAccessory? = nil,
-         hint: String? = nil,
-         settings: SettingsStore) {
-        self.init(title,
-                  value: Binding(get: { Double(value.wrappedValue) },
-                                 set: { value.wrappedValue = Int($0.rounded()) }),
-                  in: Double(range.lowerBound)...Double(range.upperBound),
-                  format: format,
-                  step: 1,
-                  detents: detents.map(Double.init),
-                  icon: icon,
-                  style: style,
-                  default: defaultValue.map(Double.init),
-                  accessory: accessory,
-                  hint: hint,
-                  settings: settings)
     }
 
     init(_ title: String,
@@ -912,7 +886,7 @@ struct NumberRow: View {
         // as the rounded readout, so writing it back would quietly drop whatever precision the
         // stored value had beyond the decimals on show.
         guard draft != seededDraft else { return }
-        guard let parsed = format.parse(draft, locale: editingLocale) else { return }
+        guard let parsed = format.parse(draft) else { return }
         let next = clamped(parsed)
         guard next != store.wrappedValue else { return }
         store.wrappedValue = next

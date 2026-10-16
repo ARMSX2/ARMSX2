@@ -370,14 +370,6 @@ struct EmulationControllerShortcutRequest: Equatable, Sendable {
     let shortcut: EmulationControllerShortcut
 }
 
-struct MenuControllerTabBarOrbEntryRequest: Equatable, Sendable {
-    let sequence: UInt64
-    /// Window-space frame of the focus surface which handed control to the
-    /// persistent tab bar. The local bar overlay converts it into its own
-    /// coordinates before beginning the shared OrbitKeys-style travel.
-    let sourceFrame: CGRect?
-}
-
 struct MenuControllerThemePresetRequest: Equatable, Sendable {
     let sequence: UInt64
     let step: Int
@@ -479,7 +471,6 @@ final class MenuControllerInputRouter {
     private(set) var latestQuickPauseRequest: MenuControllerQuickPauseRequest?
     private(set) var latestEmulationShortcutRequest:
         EmulationControllerShortcutRequest?
-    private(set) var latestTabBarOrbEntryRequest: MenuControllerTabBarOrbEntryRequest?
     private(set) var latestThemePresetRequest: MenuControllerThemePresetRequest?
     private(set) var pendingNavigationModeSwitchRequest:
         MenuNavigationModeSwitchRequest?
@@ -493,7 +484,6 @@ final class MenuControllerInputRouter {
     private(set) var rightStickScrollEndSequence: UInt64 = 0
     private(set) var isMenuActive = false
     private(set) var isNavigationCaptured = false
-    private(set) var hasNavigationSession = false
     private(set) var hasConnectedController = false
     private(set) var isControllerNavigationEnabled = false
     private(set) var activeNavigationInputMode: MenuNavigationInputMode = .touch
@@ -523,7 +513,6 @@ final class MenuControllerInputRouter {
         ObjectIdentifier: Task<Void, Never>
     ] = [:]
     @ObservationIgnored private var libraryEntrySuppressedEventSequence: UInt64?
-    @ObservationIgnored private var pendingTabBarOrbSourceFrame: CGRect?
     @ObservationIgnored private var pressedButtons: [ObjectIdentifier: Set<Button>] = [:]
     @ObservationIgnored private var emulationMacroLatches: [
         ObjectIdentifier: Set<ControllerMacroAction>
@@ -661,7 +650,6 @@ final class MenuControllerInputRouter {
             navigationSessionEntryTask = nil
             pendingNavigationSessionEntryRequest = nil
             pendingNavigationSessionCommands.removeAll(keepingCapacity: true)
-            hasNavigationSession = false
             updateNavigationCaptureState()
             navigationZone = .library
             libraryEntrySuppressedEventSequence = nil
@@ -822,7 +810,6 @@ final class MenuControllerInputRouter {
         requestFocusRelease()
         tabBarOrbFocusFrameInWindow = nil
         tabBarOrbFocusedIndex = nil
-        pendingTabBarOrbSourceFrame = nil
         updateNavigationCaptureState()
         dispatchRightStickVector()
         retireControllerNavigationResourcesAfterHandoff()
@@ -831,7 +818,6 @@ final class MenuControllerInputRouter {
     private func activateControllerNavigation() {
         activeNavigationInputMode = .controller
         isControllerNavigationEnabled = true
-        hasNavigationSession = !navigationSessions.isEmpty
         updateNavigationCaptureState()
         feedbackPlayer.attach(to: GCController.controllers())
     }
@@ -847,7 +833,6 @@ final class MenuControllerInputRouter {
             self.pendingNavigationSessionEntryRequest = nil
             self.pendingNavigationSessionCommands.removeAll(keepingCapacity: false)
             self.navigationSessions.removeAll(keepingCapacity: false)
-            self.hasNavigationSession = false
             self.manuallyCapturedNavigation = false
             self.manualNavigationCaptures.removeAll(keepingCapacity: false)
             self.rightStickRedispatchTask?.cancel()
@@ -918,7 +903,6 @@ final class MenuControllerInputRouter {
             scrollHandler: scrollHandler,
             scrollStateHandler: scrollStateHandler
         )
-        hasNavigationSession = !navigationSessions.isEmpty
         updateNavigationCaptureState()
         schedulePendingNavigationSessionCommandIfReady(id: id)
         schedulePendingNavigationSessionEntryIfReady()
@@ -998,7 +982,6 @@ final class MenuControllerInputRouter {
             cancelNavigationSessionEntry()
         }
         pendingNavigationSessionCommands.removeValue(forKey: id)
-        hasNavigationSession = !navigationSessions.isEmpty
         updateNavigationCaptureState()
         activeRightStickTargetID = nil
         scheduleRightStickRedispatch()
@@ -1025,18 +1008,6 @@ final class MenuControllerInputRouter {
         // A command captured while the previous focus owner was mounting must
         // never be replayed into the newly selected tab or chrome region.
         pendingNavigationSessionCommands.removeAll(keepingCapacity: true)
-        if zone == .tabBar {
-            let sourceFrame = pendingTabBarOrbSourceFrame
-                ?? frontmostNavigationSession?.scrollFocusFrame
-            pendingTabBarOrbSourceFrame = nil
-            sequence &+= 1
-            latestTabBarOrbEntryRequest = MenuControllerTabBarOrbEntryRequest(
-                sequence: sequence,
-                sourceFrame: sourceFrame
-            )
-        } else {
-            pendingTabBarOrbSourceFrame = nil
-        }
         navigationZone = zone
         activeRightStickTargetID = nil
         dispatchRightStickVector()
@@ -1079,12 +1050,6 @@ final class MenuControllerInputRouter {
               let session = frontmostNavigationSessionEntry?.value,
               session.isReady else { return false }
         return session.handler(command)
-    }
-
-    /// Supplies exact geometry for custom controller surfaces that don't use
-    /// the shared accessibility session, such as Game Library cards.
-    func prepareTabBarOrbTransition(sourceFrame: CGRect?) {
-        pendingTabBarOrbSourceFrame = sourceFrame
     }
 
     func updateTabBarOrbFocusFrame(
@@ -2005,10 +1970,6 @@ final class MenuControllerInputRouter {
             return true
         }
         return target.handler(command)
-    }
-
-    private var frontmostNavigationSession: NavigationSessionTarget? {
-        frontmostNavigationSessionEntry?.value
     }
 
     /// Resolves an entry request only against the newly selected retained

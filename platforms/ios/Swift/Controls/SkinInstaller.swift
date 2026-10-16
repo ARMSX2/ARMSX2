@@ -271,10 +271,6 @@ final class AutomaticCustomSkinManager {
         startWorkerIfNeeded()
     }
 
-    func proposal(forSerial rawSerial: String?) -> AutomaticCustomSkinProposal? {
-        availableProposals(forSerial: rawSerial).first
-    }
-
     func availableProposals(
         forSerial rawSerial: String?
     ) -> [AutomaticCustomSkinProposal] {
