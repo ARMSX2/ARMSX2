@@ -324,9 +324,13 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
                                 fontWeight = FontWeight.Bold,
                             )
                             // Between the title and Close: whose Discord this is.
-                            com.armsx2.ui.friends.SelfChip(
-                                Modifier.weight(1f).padding(horizontal = 12.dp),
-                            )
+                            if (com.armsx2.DiscordPresence.available()) {
+                                com.armsx2.ui.friends.SelfChip(
+                                    Modifier.weight(1f).padding(horizontal = 12.dp),
+                                )
+                            } else {
+                                Spacer(Modifier.weight(1f))
+                            }
                             TextButton(
                                 onClick = { friendsOpen = false },
                                 modifier = Modifier.controllerFocusable(
@@ -339,7 +343,9 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
                         com.armsx2.remoteplay.RemotePlayHostPanel(
                             Modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
                         )
-                        com.armsx2.ui.friends.FriendsPanel(Modifier.padding(horizontal = 12.dp))
+                        if (com.armsx2.DiscordPresence.available()) {
+                            com.armsx2.ui.friends.FriendsPanel(Modifier.padding(horizontal = 12.dp))
+                        }
                     }
                 }
             }
@@ -634,27 +640,26 @@ private fun MenuHeader(
             Modifier.align(Alignment.CenterVertically),
         )
 
-        // Friends, in the header where it is always visible, with the online count on it. A build
-        // without the SDK has nothing to show, so it does not take up header space there.
-        if (com.armsx2.DiscordPresence.available()) {
-            Spacer(Modifier.width(8.dp))
-            Surface(
-                onClick = onOpenFriends,
-                modifier = Modifier.controllerFocusable(
-                    "menu.friends",
-                    RoundedCornerShape(14.dp),
-                    onConfirm = onOpenFriends,
-                ),
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
-            ) {
-                Box(Modifier.padding(horizontal = 11.dp, vertical = 9.dp)) {
-                    com.armsx2.ui.friends.FriendsGlyphWithBadge(
-                        color = MaterialTheme.colorScheme.onSurface,
-                        glyphSize = 19.sp,
-                    )
-                }
+        // Friends, in the header where it is always visible, with the online count on it. Shown
+        // even where Discord is not available: remote play hosting lives behind it too, and
+        // hosting does not need Discord. The Discord parts inside hide themselves there.
+        Spacer(Modifier.width(8.dp))
+        Surface(
+            onClick = onOpenFriends,
+            modifier = Modifier.controllerFocusable(
+                "menu.friends",
+                RoundedCornerShape(14.dp),
+                onConfirm = onOpenFriends,
+            ),
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+        ) {
+            Box(Modifier.padding(horizontal = 11.dp, vertical = 9.dp)) {
+                com.armsx2.ui.friends.FriendsGlyphWithBadge(
+                    color = MaterialTheme.colorScheme.onSurface,
+                    glyphSize = 19.sp,
+                )
             }
         }
     }
