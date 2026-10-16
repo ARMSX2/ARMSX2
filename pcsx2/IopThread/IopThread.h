@@ -191,10 +191,13 @@ namespace IopThread
 	/// What hold_target holds when no hold is requested. No EE cycle reaches it.
 	inline constexpr u64 kNoHold = ~u64(0);
 
-	/// How long an idle IOP watches the watermark before it sleeps (Params::idle_spin_ns): 50 us, the
-	/// semaphore's own spin (SPIN_TIME_NS). The EE publishes every 0.1 to 6 us while it runs, so the IOP
-	/// sleeps only when the EE stops publishing: a frame-limiter sleep, a GS sync, a pause.
-	inline constexpr u32 kDefaultIdleSpinNs = 50'000;
+	/// How long an idle IOP watches the watermark before it sleeps (Params::idle_spin_ns): 500 us. The EE
+	/// publishes every 0.1 to 6 us while it runs, so the IOP sleeps only when the EE stops publishing: a
+	/// frame-limiter sleep, a GS or VU sync, a pause. A short EE stall then ends with the IOP still watching,
+	/// and the EE does not have to wake it. Measured on the SD865 and the MQ65 against 50, 100 and 200 us
+	/// (step 12c): fewer sleeps and wake-ups, and against 50 us the EE's cycles are equal or lower in every
+	/// title. The watch waits in WFE, so it holds the core without spinning it.
+	inline constexpr u32 kDefaultIdleSpinNs = 500'000;
 
 	/// The barrier of the sleep handshake (IopThread.h, "Going to sleep").
 	enum class SleepBarrier : u8
