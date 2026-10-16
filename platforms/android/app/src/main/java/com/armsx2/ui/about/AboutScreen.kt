@@ -19,7 +19,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
@@ -34,6 +39,9 @@ import com.armsx2.ui.common.ArmsLogo
 import com.armsx2.ui.common.ArmsTopBar
 import com.armsx2.ui.common.GlassPanel
 import com.armsx2.ui.common.RoundAction
+import com.armsx2.ui.settings.ControllerAutoScroll
+import com.armsx2.ui.settings.LocalSettingsScrollState
+import com.armsx2.ui.settings.controllerFocusable
 
 private const val RepositoryUrl = "https://github.com/ARMSX2/ARMSX2"
 private const val Pcsx2RepositoryUrl = "https://github.com/PCSX2/pcsx2"
@@ -43,92 +51,81 @@ fun AboutScreen(onBack: () -> Unit, viewModel: AboutViewModel = viewModel()) {
     val state = viewModel.state.value
     val uriHandler = LocalUriHandler.current
     LaunchedEffect(Unit) { viewModel.load() }
+    var showLicense by remember { mutableStateOf(false) }
+    var showOpenSource by remember { mutableStateOf(false) }
+    // The cards are controller rows, so the page scrolls to whichever one is selected.
+    val scroll = rememberScrollState()
+    ControllerAutoScroll(scroll)
 
     ArmsBackdrop {
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-            ArmsTopBar(
-                title = str("about.title"),
-                leading = { RoundAction("←", str("action.back"), onBack) },
-            )
-            BoxWithConstraints(Modifier.fillMaxWidth()) {
-                val compact = maxWidth < 760.dp
-                val overview: @Composable (Modifier) -> Unit = { panelModifier ->
-                    GlassPanel(panelModifier) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            ArmsLogo(showWordmark = true)
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                str("about.tagline"),
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+        CompositionLocalProvider(LocalSettingsScrollState provides scroll) {
+            Column(Modifier.fillMaxSize().verticalScroll(scroll)) {
+                ArmsTopBar(
+                    title = str("about.title"),
+                    leading = { RoundAction("←", str("action.back"), onBack) },
+                )
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    val compact = maxWidth < 760.dp
+                    val overview: @Composable (Modifier) -> Unit = { panelModifier ->
+                        GlassPanel(panelModifier) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                ArmsLogo(showWordmark = true)
+                                Spacer(Modifier.height(12.dp))
+                                Text(
+                                    str("about.tagline"),
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
-                }
-                val information: @Composable (Modifier) -> Unit = { panelModifier ->
-                    GlassPanel(panelModifier) {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            PanelTitle(str("about.build.title"))
-                            InfoRow(str("about.appVersion"), state.appVersion)
-                            InfoRow(str("about.coreVersion"), state.coreVersion)
+                    val information: @Composable (Modifier) -> Unit = { panelModifier ->
+                        GlassPanel(panelModifier) {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                PanelTitle(str("about.build.title"))
+                                InfoRow(str("about.appVersion"), state.appVersion)
+                                InfoRow(str("about.coreVersion"), state.coreVersion)
+                            }
                         }
                     }
-                }
-                val hardware: @Composable (Modifier) -> Unit = { panelModifier ->
-                    GlassPanel(panelModifier) {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            PanelTitle(str("about.hardware.title"))
-                            InfoRow(str("about.device"), state.device)
-                            InfoRow(str("about.androidVersion"), state.androidVersion)
-                            InfoRow(str("about.soc"), state.soc)
-                            InfoRow(str("about.gpu"), state.gpu)
-                            InfoRow(str("about.cpuCores"), state.cpu)
-                            InfoRow(str("about.memory"), state.memory)
-                            InfoRow(str("about.display"), state.display)
-                            InfoRow(str("about.architecture"), state.architecture)
-                            InfoRow(str("about.pageSize"), state.pageSize)
+                    val hardware: @Composable (Modifier) -> Unit = { panelModifier ->
+                        GlassPanel(panelModifier) {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                PanelTitle(str("about.hardware.title"))
+                                InfoRow(str("about.device"), state.device)
+                                InfoRow(str("about.androidVersion"), state.androidVersion)
+                                InfoRow(str("about.soc"), state.soc)
+                                InfoRow(str("about.gpu"), state.gpu)
+                                InfoRow(str("about.cpuCores"), state.cpu)
+                                InfoRow(str("about.memory"), state.memory)
+                                InfoRow(str("about.display"), state.display)
+                                InfoRow(str("about.architecture"), state.architecture)
+                                InfoRow(str("about.pageSize"), state.pageSize)
+                            }
                         }
                     }
-                }
-                Column(
-                    Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    if (compact) {
-                        overview(Modifier.fillMaxWidth())
-                        information(Modifier.fillMaxWidth())
-                        hardware(Modifier.fillMaxWidth())
-                    } else {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                            overview(Modifier.weight(1f))
-                            information(Modifier.weight(1f))
+                    Column(
+                        Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        if (compact) {
+                            overview(Modifier.fillMaxWidth())
+                            information(Modifier.fillMaxWidth())
+                            hardware(Modifier.fillMaxWidth())
+                        } else {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                                overview(Modifier.weight(1f))
+                                information(Modifier.weight(1f))
+                            }
+                            hardware(Modifier.fillMaxWidth())
                         }
-                        hardware(Modifier.fillMaxWidth())
-                    }
-                    if (compact) {
-                        ProjectCard(
-                            title = str("about.repository.title"),
-                            repository = "ARMSX2/ARMSX2",
-                            description = str("about.repository.description"),
-                            glyph = "⌘",
-                            onOpen = { uriHandler.openUri(RepositoryUrl) },
-                        )
-                        ProjectCard(
-                            title = str("about.pcsx2.title"),
-                            repository = "PCSX2/pcsx2",
-                            description = str("about.pcsx2.description"),
-                            glyph = "PS2",
-                            secondary = true,
-                            onOpen = { uriHandler.openUri(Pcsx2RepositoryUrl) },
-                        )
-                    } else {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        if (compact) {
                             ProjectCard(
                                 title = str("about.repository.title"),
                                 repository = "ARMSX2/ARMSX2",
                                 description = str("about.repository.description"),
                                 glyph = "⌘",
-                                modifier = Modifier.weight(1f),
+                                controllerId = "about.repository",
                                 onOpen = { uriHandler.openUri(RepositoryUrl) },
                             )
                             ProjectCard(
@@ -136,45 +133,106 @@ fun AboutScreen(onBack: () -> Unit, viewModel: AboutViewModel = viewModel()) {
                                 repository = "PCSX2/pcsx2",
                                 description = str("about.pcsx2.description"),
                                 glyph = "PS2",
-                                modifier = Modifier.weight(1f),
                                 secondary = true,
+                                controllerId = "about.pcsx2",
                                 onOpen = { uriHandler.openUri(Pcsx2RepositoryUrl) },
                             )
+                        } else {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                ProjectCard(
+                                    title = str("about.repository.title"),
+                                    repository = "ARMSX2/ARMSX2",
+                                    description = str("about.repository.description"),
+                                    glyph = "⌘",
+                                    modifier = Modifier.weight(1f),
+                                    controllerId = "about.repository",
+                                    onOpen = { uriHandler.openUri(RepositoryUrl) },
+                                )
+                                ProjectCard(
+                                    title = str("about.pcsx2.title"),
+                                    repository = "PCSX2/pcsx2",
+                                    description = str("about.pcsx2.description"),
+                                    glyph = "PS2",
+                                    modifier = Modifier.weight(1f),
+                                    secondary = true,
+                                    controllerId = "about.pcsx2",
+                                    onOpen = { uriHandler.openUri(Pcsx2RepositoryUrl) },
+                                )
+                            }
                         }
+                        // ARMSX2's own license, and the open-source code it is built with: the GPL asks for
+                        // the first in the app (copyright, no warranty, where to read it), and the
+                        // libraries' licenses ask for their notices to come with it.
+                        val license: @Composable (Modifier) -> Unit = { cardModifier ->
+                            ProjectCard(
+                                title = str("about.license.title"),
+                                repository = str("about.license.name"),
+                                description = ArmsCopyright + ". " + str("about.license.description"),
+                                glyph = "§",
+                                modifier = cardModifier,
+                                controllerId = "about.license",
+                                trailing = "›",
+                                onOpen = { showLicense = true },
+                            )
+                        }
+                        val openSource: @Composable (Modifier) -> Unit = { cardModifier ->
+                            ProjectCard(
+                                title = str("about.oss.title"),
+                                repository = str("about.oss.subtitle"),
+                                description = str("about.oss.description"),
+                                glyph = "{ }",
+                                modifier = cardModifier,
+                                secondary = true,
+                                controllerId = "about.oss",
+                                trailing = "›",
+                                onOpen = { showOpenSource = true },
+                            )
+                        }
+                        if (compact) {
+                            license(Modifier)
+                            openSource(Modifier)
+                        } else {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                license(Modifier.weight(1f))
+                                openSource(Modifier.weight(1f))
+                            }
+                        }
+                        // The library music is CC0, so no attribution is legally required — the
+                        // author asks for credit and it costs nothing to give it.
+                        Text(
+                            str("app.credits.music"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                        )
+                        // The Icon Museum's track asks for attribution; this and MC Icon Info give it.
+                        Text(
+                            str("app.credits.museumMusic"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                        )
+                        // The texture screen's track is The Cynic Project's too, and asks for the same credit.
+                        Text(
+                            str("app.credits.texturesMusic"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                        )
+                        // Bundled menu sound effects — also CC0, credited voluntarily.
+                        Text(
+                            str("app.credits.sfx"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                        )
                     }
-                    // The library music is CC0, so no attribution is legally required — the
-                    // author asks for credit and it costs nothing to give it.
-                    Text(
-                        str("app.credits.music"),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    )
-                    // The Icon Museum's track asks for attribution; this and MC Icon Info give it.
-                    Text(
-                        str("app.credits.museumMusic"),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    )
-                    // The texture screen's track is The Cynic Project's too, and asks for the same credit.
-                    Text(
-                        str("app.credits.texturesMusic"),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    )
-                    // Bundled menu sound effects — also CC0, credited voluntarily.
-                    Text(
-                        str("app.credits.sfx"),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    )
                 }
             }
         }
     }
+    if (showLicense) GplPanel(onClose = { showLicense = false })
+    if (showOpenSource) OpenSourceLicensesPanel(onClose = { showOpenSource = false })
 }
 
 @Composable
@@ -185,13 +243,17 @@ private fun ProjectCard(
     glyph: String,
     modifier: Modifier = Modifier,
     secondary: Boolean = false,
+    controllerId: String,
+    // ↗ leaves the app (a link); › opens a panel in it.
+    trailing: String = "↗",
     onOpen: () -> Unit,
 ) {
     val accent = if (secondary) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
+    val shape = RoundedCornerShape(20.dp)
     Surface(
         onClick = onOpen,
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        modifier = modifier.fillMaxWidth().controllerFocusable(controllerId, shape, onConfirm = onOpen),
+        shape = shape,
         color = accent.copy(alpha = 0.10f),
         border = BorderStroke(1.dp, accent.copy(alpha = 0.46f)),
     ) {
@@ -224,7 +286,7 @@ private fun ProjectCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Text("↗", color = accent, fontSize = 22.sp)
+            Text(trailing, color = accent, fontSize = 22.sp)
         }
     }
 }
