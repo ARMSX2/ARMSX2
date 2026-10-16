@@ -882,6 +882,17 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 #endif
 				continue;
 			}
+			else if (CHECK_ARG("--vuaot-no-install"))
+			{
+				// Loaded vu-aot sidecars are used as plans only: no saved region code is installed, the
+				// worker compiles every region again (the plan-only half, for A/B against the install).
+#if defined(ARCH_ARM64) && defined(PCSX2_RECOMPILER_TESTS)
+				vuaot::live::SetInstallEnabled(false);
+#else
+				Console.Warning("--vuaot-no-install needs an arm64 build with the recompiler test hooks.");
+#endif
+				continue;
+			}
 			else if (CHECK_ARG_PARAM("--memdump"))
 			{
 				s_memdump_prefix = StringUtil::StripWhitespace(argv[++i]);
