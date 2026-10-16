@@ -122,7 +122,11 @@ fun RemotePlayScreen(onBack: () -> Unit) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
             ArmsTopBar(
                 title = str("remoteplay.title"),
-                leading = { RoundAction("←", str("action.back"), onClick = onBack) },
+                // Reachable by the pad: it is the only control above the code field, so Up from
+                // there lands here and the page scrolls back to its top instead of sticking.
+                leading = {
+                    RoundAction("←", str("action.back"), onClick = onBack, controllerId = "remoteplay.top.back")
+                },
             )
             Column(
                 Modifier.padding(horizontal = 8.dp),
@@ -271,13 +275,26 @@ fun RemotePlayScreen(onBack: () -> Unit) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         SectionTitle(str("remoteplay.join.manual"))
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            // Typed on the app's own keyboard with a controller, like the code above.
+                            val typeAddress = {
+                                com.armsx2.ui.home.LibraryKeyboard.open(
+                                    address,
+                                    { address = it.trim() },
+                                    I18n.get("remoteplay.join.address"),
+                                )
+                            }
+                            // A placeholder, not a label: a label reserves room above the box, and the
+                            // pad's highlight, which follows the field's bounds, then sat above the
+                            // outline instead of on it.
                             OutlinedTextField(
                                 value = address,
                                 onValueChange = { address = it.trim() },
                                 singleLine = true,
-                                label = { Text(str("remoteplay.join.address")) },
+                                placeholder = { Text(str("remoteplay.join.address")) },
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .controllerFocusable("remoteplay.join.addressField", onConfirm = typeAddress),
                             )
                             Spacer(Modifier.width(8.dp))
                             val join = { joinAddress(context, address) }
@@ -539,10 +556,12 @@ private fun ErrorText(text: String) {
 /** A pasted code is long, so the field shows its start and keeps it on a few lines. */
 @Composable
 private fun CodeField(value: String, onValueChange: (String) -> Unit, label: String, modifier: Modifier = Modifier) {
+    // A placeholder, not a label: a label reserves room above the box, and the pad's highlight,
+    // which follows the field's bounds, then sat above the outline instead of on it.
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
-        label = { Text(label) },
+        placeholder = { Text(label) },
         maxLines = 3,
         textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
         modifier = modifier.fillMaxWidth(),

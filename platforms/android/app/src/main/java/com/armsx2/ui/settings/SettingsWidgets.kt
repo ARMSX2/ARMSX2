@@ -147,7 +147,8 @@ internal object SettingsControllerNav {
     // sibling subtrees dispose in the order Compose happens to pick: the survivor is left
     // holding a layer that is no longer active, so it looks fine and answers nothing.
     //
-    // Written only by PadModal, via pushLayer/popLayer. Everything else reads.
+    // Written only via pushLayer/popLayer: by PadModal, and by the in-game menu's Friends panel.
+    // Everything else reads.
     private val layers = mutableStateListOf<Layer>()
 
     /** The layer that currently owns input; null when the base screen does. */
