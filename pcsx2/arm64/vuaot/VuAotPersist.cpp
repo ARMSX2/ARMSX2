@@ -23,7 +23,7 @@ namespace vuaot::persist
 			u32 keyBytes;   // kKeyBytes
 			u32 tiers;
 			u32 settled;
-			u32 reserved;
+			u32 layoutHash;
 			u64 contentHashLo, contentHashHi;
 			u64 sentinelLo, sentinelHi;
 			u64 buildLo, buildHi;
@@ -40,6 +40,17 @@ namespace vuaot::persist
 			u8 key[kKeyBytes];
 		};
 		static_assert(sizeof(RecordHeader) == 12 + kKeyBytes, "RecordHeader layout");
+
+		// The code section of a record with kHasCode: the counts, then the code bytes and each table in
+		// this order.
+		struct CodeHeader
+		{
+			u32 codeBytes;
+			u32 keys, nodes, exits, pending, blockRefs, tails, ranges, ph, fixups;
+			u32 regions, regionNodes, regionMerged, regionExits;
+			u64 regionBytes;
+		};
+		static_assert(sizeof(CodeHeader) == 64, "CodeHeader layout");
 #pragma pack(pop)
 
 		template <typename T>
@@ -48,6 +59,16 @@ namespace vuaot::persist
 			const size_t at = out.size();
 			out.resize(at + sizeof(T));
 			std::memcpy(out.data() + at, &v, sizeof(T));
+		}
+
+		template <typename T>
+		void PutVec(std::vector<u8>& out, const std::vector<T>& v)
+		{
+			if (v.empty())
+				return;
+			const size_t at = out.size();
+			out.resize(at + v.size() * sizeof(T));
+			std::memcpy(out.data() + at, v.data(), v.size() * sizeof(T));
 		}
 
 		struct Reader
@@ -78,7 +99,132 @@ namespace vuaot::persist
 				return true;
 			}
 			size_t Left() const { return static_cast<size_t>(end - p); }
+			// `n` elements, allocated only once the bytes are known to be there.
+			template <typename T>
+			bool Vec(std::vector<T>& v, u32 n)
+			{
+				if (Left() / sizeof(T) < n)
+					return ok = false;
+				v.resize(n);
+				return n == 0 || Bytes(v.data(), size_t(n) * sizeof(T));
+			}
 		};
+
+		void PutCode(std::vector<u8>& out, const RegionCode& c)
+		{
+			CodeHeader ch = {};
+			ch.codeBytes = static_cast<u32>(c.code.size());
+			ch.keys = static_cast<u32>(c.keys.size());
+			ch.nodes = static_cast<u32>(c.nodes.size());
+			ch.exits = static_cast<u32>(c.exits.size());
+			ch.pending = static_cast<u32>(c.pending.size());
+			ch.blockRefs = static_cast<u32>(c.blockRefs.size());
+			ch.tails = static_cast<u32>(c.tails.size());
+			ch.ranges = static_cast<u32>(c.ranges.size());
+			ch.ph = static_cast<u32>(c.ph.size());
+			ch.fixups = static_cast<u32>(c.fixups.size());
+			ch.regions = c.regions;
+			ch.regionNodes = c.regionNodes;
+			ch.regionMerged = c.regionMerged;
+			ch.regionExits = c.regionExits;
+			ch.regionBytes = c.regionBytes;
+			Put(out, ch);
+			PutVec(out, c.code);
+			PutVec(out, c.keys);
+			PutVec(out, c.nodes);
+			PutVec(out, c.exits);
+			PutVec(out, c.pending);
+			PutVec(out, c.blockRefs);
+			PutVec(out, c.tails);
+			PutVec(out, c.ranges);
+			PutVec(out, c.ph);
+			PutVec(out, c.fixups);
+		}
+
+		// The shape of a code section: everything a fixup or a table names is inside the code or its
+		// table, and each fixup's form fits its target.
+		bool CodeShapeOk(const RegionCode& c)
+		{
+			const size_t size = c.code.size();
+			if (size == 0 || size > kMaxCodeBytes || (size & 3) || c.nodes.empty())
+				return false;
+			const auto keyOk = [&](u32 k) { return k < c.keys.size(); };
+			for (const CodeNode& n : c.nodes)
+				if (!keyOk(n.key) || n.pc >= 0x4000 || (n.pc & 7) || n.entryOff >= size || (n.entryOff & 3))
+					return false;
+			for (const auto* v : {&c.exits, &c.pending, &c.blockRefs})
+				for (const BlockAt& b : *v)
+					if (!keyOk(b.key) || b.pc >= 0x4000 || (b.pc & 7))
+						return false;
+			for (const CodeTail& t : c.tails)
+				if (!keyOk(t.key) || t.node >= c.nodes.size())
+					return false;
+			for (const CodeRange& r : c.ranges)
+				if (r.start >= 0x4000 || r.last >= 0x4000 || (r.start & 7) || (r.last & 7))
+					return false;
+			for (const Placeholder& ph : c.ph)
+			{
+				const size_t limit = ph.kind == kPhStub ? kMaxStubs : ph.kind == kPhExit ? c.exits.size() :
+									 ph.kind == kPhTail ? c.tails.size() : ph.kind == kPhPending ? c.pending.size() : 0;
+				if (ph.index >= limit)
+					return false;
+			}
+			for (const Fixup& f : c.fixups)
+			{
+				if (f.form >= kFormCount || f.target >= kTargetCount)
+					return false;
+				if (f.form == kFormMovRun && (f.width < 1 || f.width > 4))
+					return false;
+				const size_t span = (f.form == kFormData64) ? 8 : size_t(RegionCode::Span(f)) * 4;
+				if (f.offset > size || size - f.offset < span || (f.form != kFormData64 && (f.offset & 3)))
+					return false;
+				switch (f.target)
+				{
+					case kTargetIntra:
+						// (an address inside the code, as a full run: the worker emits nothing else for one)
+						if (f.form != kFormMovRun || f.width != 4 || f.value < 0 || static_cast<u64>(f.value) >= size)
+							return false;
+						break;
+					case kTargetPlaceholder:
+						if (f.form == kFormData64 || f.index >= c.ph.size() || (f.form == kFormMovRun && f.width != 4))
+							return false;
+						break;
+					case kTargetImage:
+					case kTargetData:
+						if (f.form == kFormData64 || f.value < 0)
+							return false;
+						break;
+					case kTargetBlockRef:
+						if (f.form != kFormMovRun || f.index >= c.blockRefs.size())
+							return false;
+						break;
+					case kTargetProgram:
+						if (f.form != kFormData64)
+							return false;
+						break;
+					case kTargetNodeHandle:
+						if (f.form != kFormData64 || f.index >= c.nodes.size())
+							return false;
+						break;
+				}
+			}
+			return true;
+		}
+
+		bool GetCode(Reader& r, RegionCode& c)
+		{
+			CodeHeader ch;
+			if (!r.Bytes(&ch, sizeof(ch)) || ch.codeBytes > kMaxCodeBytes)
+				return false;
+			c.regions = ch.regions;
+			c.regionNodes = ch.regionNodes;
+			c.regionMerged = ch.regionMerged;
+			c.regionExits = ch.regionExits;
+			c.regionBytes = ch.regionBytes;
+			return r.Vec(c.code, ch.codeBytes) && r.Vec(c.keys, ch.keys) && r.Vec(c.nodes, ch.nodes) && r.Vec(c.exits, ch.exits) &&
+				   r.Vec(c.pending, ch.pending) && r.Vec(c.blockRefs, ch.blockRefs) && r.Vec(c.tails, ch.tails) &&
+				   r.Vec(c.ranges, ch.ranges) && r.Vec(c.ph, ch.ph) && r.Vec(c.fixups, ch.fixups) && CodeShapeOk(c);
+		}
 
 		u32 PopCount(const std::vector<u8>& bits)
 		{
@@ -106,6 +252,17 @@ namespace vuaot::persist
 		return v == readValues.size();
 	}
 
+	u32 RegionCode::KeyIndex(const u8* k)
+	{
+		for (size_t i = 0; i < keys.size(); i++)
+			if (std::memcmp(keys[i].data(), k, kKeyBytes) == 0)
+				return static_cast<u32>(i);
+		Key key;
+		std::memcpy(key.data(), k, kKeyBytes);
+		keys.push_back(key);
+		return static_cast<u32>(keys.size() - 1);
+	}
+
 	void Record::SetReadSet(const u8* perWordMask, const u8* micro)
 	{
 		readBits.assign(kReadBitmapBytes, 0);
@@ -130,6 +287,7 @@ namespace vuaot::persist
 		h.keyBytes = kKeyBytes;
 		h.tiers = f.tiers;
 		h.settled = f.settled ? 1 : 0;
+		h.layoutHash = f.id.layoutHash;
 		h.contentHashLo = f.id.contentHashLo;
 		h.contentHashHi = f.id.contentHashHi;
 		h.sentinelLo = f.id.sentinelLo;
@@ -163,6 +321,8 @@ namespace vuaot::persist
 				std::memcpy(out.data() + at, r.readBits.data(), kReadBitmapBytes);
 			for (u32 v : r.readValues)
 				Put(out, v);
+			if (r.HasCode())
+				PutCode(out, r.code);
 		}
 
 		Put(out, static_cast<u64>(XXH3_64bits(out.data(), out.size())));
@@ -181,6 +341,7 @@ namespace vuaot::persist
 			case ParseResult::BadMvuAbi: return "microVU ABI version";
 			case ParseResult::BadKeySize: return "key size";
 			case ParseResult::OtherBuild: return "another build";
+			case ParseResult::OtherLayout: return "another struct layout";
 			case ParseResult::OtherSentinel: return "another options sentinel";
 			case ParseResult::OtherProgram: return "another program";
 			case ParseResult::BadChecksum: return "checksum";
@@ -213,6 +374,8 @@ namespace vuaot::persist
 			return ParseResult::BadKeySize;
 		if (h.buildLo != expect.buildLo || h.buildHi != expect.buildHi)
 			return ParseResult::OtherBuild;
+		if (h.layoutHash != expect.layoutHash)
+			return ParseResult::OtherLayout;
 		if (h.sentinelLo != expect.sentinelLo || h.sentinelHi != expect.sentinelHi)
 			return ParseResult::OtherSentinel;
 		if (h.contentHashLo != expect.contentHashLo || h.contentHashHi != expect.contentHashHi)
@@ -263,6 +426,8 @@ namespace vuaot::persist
 				return ParseResult::Malformed;
 			rec.readValues.resize(rh.readCount);
 			r.Bytes(rec.readValues.data(), size_t(rh.readCount) * sizeof(u32));
+			if (rec.HasCode() && !GetCode(r, rec.code))
+				return ParseResult::Malformed;
 		}
 		if (!r.ok || r.Left() != 0)
 			return ParseResult::Malformed;

@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 //
-// The vu-aot sidecar format (vuaot/VuAotPersist.h): a plan file round-trips, and every kind of
-// damage or mismatch is refused by the parser without reading past the buffer. The live save and
+// The vu-aot sidecar format (vuaot/VuAotPersist.h): a file of plans and region code round-trips, and
+// every kind of damage or mismatch is refused by the parser without reading past the buffer. The live save and
 // load paths are tested in vuaot_live_tests.cpp (VuAotCache).
 
 #if defined(_M_ARM64) || defined(__aarch64__)
@@ -33,7 +33,62 @@ Identity Id()
 	id.buildLo = 0xaaaabbbbccccddddull;
 	id.buildHi = 0x9999000011112222ull;
 	id.mvuAbi = 63;
+	id.layoutHash = 0x5a5a1234u;
 	return id;
+}
+
+// A code section of the shape the worker leaves: two nodes, every fixup form and target.
+RegionCode SampleCode(std::mt19937& rng)
+{
+	RegionCode c;
+	c.code.resize(256);
+	for (auto& b : c.code)
+		b = static_cast<u8>(rng());
+	u8 k0[kKeyBytes], k1[kKeyBytes];
+	for (u32 i = 0; i < kKeyBytes; i++)
+	{
+		k0[i] = static_cast<u8>(rng());
+		k1[i] = static_cast<u8>(rng());
+	}
+	c.nodes.push_back({0x40, c.KeyIndex(k0), 0});
+	c.nodes.push_back({0x48, c.KeyIndex(k1), 32});
+	EXPECT_EQ(c.KeyIndex(k0), 0u) << "a key is stored once";
+	c.exits.push_back({0x100, c.KeyIndex(k1)});
+	c.pending.push_back({0x108, c.KeyIndex(k0)});
+	c.blockRefs.push_back({0x110, c.KeyIndex(k1)});
+	c.tails.push_back({1, c.KeyIndex(k0)});
+	c.ranges.push_back({0x40, 0x48});
+	Placeholder stub, exit, tail, pend;
+	stub.kind = kPhStub;
+	stub.index = 2;
+	exit.kind = kPhExit;
+	tail.kind = kPhTail;
+	pend.kind = kPhPending;
+	c.ph = {stub, exit, tail, pend};
+	const auto fix = [&](u32 off, u8 form, u8 target, u8 width, u32 index, s64 value) {
+		Fixup f;
+		f.offset = off;
+		f.form = form;
+		f.target = target;
+		f.width = width;
+		f.index = index;
+		f.value = value;
+		c.fixups.push_back(f);
+	};
+	fix(0, kFormMovRun, kTargetIntra, 4, 0, 200);
+	fix(16, kFormRel26, kTargetPlaceholder, 0, 1, 0);
+	fix(20, kFormMovRun, kTargetPlaceholder, 4, 0, 0);
+	fix(36, kFormMovRun, kTargetImage, 3, 0, 0x123450);
+	fix(48, kFormRel26, kTargetImage, 0, 0, 0x2000);
+	fix(52, kFormMovRun, kTargetData, 2, 0, 0x88);
+	fix(60, kFormMovRun, kTargetBlockRef, 3, 0, 0);
+	fix(200, kFormData64, kTargetProgram, 0, 0, 0);
+	fix(208, kFormData64, kTargetNodeHandle, 0, 1, 0);
+	c.regions = 1;
+	c.regionNodes = 2;
+	c.regionExits = 1;
+	c.regionBytes = 256;
+	return c;
 }
 
 File Sample(std::mt19937& rng)
@@ -59,6 +114,11 @@ File Sample(std::mt19937& rng)
 			m = (rng() % 7) == 0;
 		rec.SetReadSet(mask.data(), micro.data());
 		EXPECT_TRUE(rec.MatchesMicro(micro.data()));
+		if (r != 1)
+		{
+			rec.flags |= kHasCode;
+			rec.code = SampleCode(rng);
+		}
 		f.records.push_back(rec);
 	}
 	return f;
@@ -91,7 +151,17 @@ TEST(VuAotPersist, PlanRoundTrips)
 		EXPECT_EQ(std::memcmp(g.records[i].key, f.records[i].key, kKeyBytes), 0);
 		EXPECT_EQ(g.records[i].readBits, f.records[i].readBits);
 		EXPECT_EQ(g.records[i].readValues, f.records[i].readValues);
+		const RegionCode &a = g.records[i].code, &b = f.records[i].code;
+		EXPECT_EQ(g.records[i].HasCode(), f.records[i].HasCode());
+		EXPECT_EQ(a.code, b.code);
+		EXPECT_EQ(a.keys, b.keys);
+		ASSERT_EQ(a.fixups.size(), b.fixups.size());
+		EXPECT_EQ(std::memcmp(a.fixups.data(), b.fixups.data(), a.fixups.size() * sizeof(Fixup)), 0);
+		EXPECT_EQ(a.nodes.size(), b.nodes.size());
+		EXPECT_EQ(a.ph.size(), b.ph.size());
+		EXPECT_EQ(a.regionBytes, b.regionBytes);
 	}
+	EXPECT_TRUE(g.records[0].HasCode() && !g.records[1].HasCode()) << "a record may hold its plan alone";
 	EXPECT_EQ(Serialize(g), bytes) << "a parsed file serializes to the same bytes";
 }
 
@@ -150,10 +220,10 @@ TEST(VuAotPersist, IdentityFieldsAreChecked)
 		size_t offset;
 		ParseResult expect;
 	};
-	// FileHeader: magic 0, format 4, abi 8, mvuAbi 12, keyBytes 16, tiers 20, settled 24, reserved 28,
+	// FileHeader: magic 0, format 4, abi 8, mvuAbi 12, keyBytes 16, tiers 20, settled 24, layout hash 28,
 	// content hash 32, sentinel 48, build 64.
 	const Case cases[] = {{0, ParseResult::BadMagic}, {4, ParseResult::BadFormatVersion}, {8, ParseResult::BadAbiVersion},
-		{12, ParseResult::BadMvuAbi}, {16, ParseResult::BadKeySize}, {32, ParseResult::OtherProgram}, {40, ParseResult::OtherProgram},
+		{12, ParseResult::BadMvuAbi}, {16, ParseResult::BadKeySize}, {28, ParseResult::OtherLayout}, {32, ParseResult::OtherProgram}, {40, ParseResult::OtherProgram},
 		{48, ParseResult::OtherSentinel}, {56, ParseResult::OtherSentinel}, {64, ParseResult::OtherBuild}, {72, ParseResult::OtherBuild}};
 	for (const Case& c : cases)
 	{
@@ -169,6 +239,80 @@ TEST(VuAotPersist, IdentityFieldsAreChecked)
 	other = Id();
 	other.mvuAbi++;
 	EXPECT_EQ(Parse(good.data(), good.size(), other, g), ParseResult::BadMvuAbi);
+	other = Id();
+	other.layoutHash ^= 0x100;
+	EXPECT_EQ(Parse(good.data(), good.size(), other, g), ParseResult::OtherLayout);
+}
+
+// A code section whose tables do not hold together is refused, checksum or not: a fixup or an entry past
+// the code, an index past its table, a form that cannot carry its target.
+TEST(VuAotPersist, CodeOfTheWrongShapeIsRefused)
+{
+	std::mt19937 rng(4);
+	const auto parsed = [](const File& f) {
+		const std::vector<u8> bytes = Serialize(f);
+		File g;
+		return Parse(bytes.data(), bytes.size(), Id(), g);
+	};
+	const File good = Sample(rng);
+	ASSERT_EQ(parsed(good), ParseResult::Ok);
+	using Edit = void (*)(RegionCode&);
+	const struct
+	{
+		const char* what;
+		Edit edit;
+	} cases[] = {
+		{"fixup past the end", [](RegionCode& c) { c.fixups[3].offset = static_cast<u32>(c.code.size() - 8); }},
+		{"misaligned instruction", [](RegionCode& c) { c.fixups[1].offset = 18; }},
+		{"run wider than 4", [](RegionCode& c) { c.fixups[3].width = 5; }},
+		{"run of width 0", [](RegionCode& c) { c.fixups[3].width = 0; }},
+		{"intra target past the code", [](RegionCode& c) { c.fixups[0].value = static_cast<s64>(c.code.size()); }},
+		{"intra target in a short run", [](RegionCode& c) { c.fixups[0].width = 3; }},
+		{"placeholder past the table", [](RegionCode& c) { c.fixups[1].index = 9; }},
+		{"block ref past the table", [](RegionCode& c) { c.fixups[6].index = 1; }},
+		{"node handle past the table", [](RegionCode& c) { c.fixups[8].index = 2; }},
+		{"program word as a branch", [](RegionCode& c) { c.fixups[7].form = kFormRel26; }},
+		{"image word as data", [](RegionCode& c) { c.fixups[3].form = kFormData64; }},
+		{"unknown target", [](RegionCode& c) { c.fixups[3].target = kTargetCount; }},
+		{"unknown form", [](RegionCode& c) { c.fixups[3].form = kFormCount; }},
+		{"entry past the code", [](RegionCode& c) { c.nodes[1].entryOff = static_cast<u32>(c.code.size()); }},
+		{"key past the table", [](RegionCode& c) { c.nodes[1].key = 7; }},
+		{"tail of no node", [](RegionCode& c) { c.tails[0].node = 2; }},
+		{"exit placeholder past the exits", [](RegionCode& c) { c.ph[1].index = 1; }},
+		{"stub id past the stubs", [](RegionCode& c) { c.ph[0].index = kMaxStubs; }},
+		{"unknown placeholder kind", [](RegionCode& c) { c.ph[0].kind = kPhCount; }},
+		{"no nodes", [](RegionCode& c) { c.nodes.clear(); c.tails.clear(); c.fixups.pop_back(); }},
+		{"code not whole instructions", [](RegionCode& c) { c.code.push_back(0); }},
+		{"node PC past micro memory", [](RegionCode& c) { c.nodes[0].pc = 0x4000; }},
+	};
+	for (const auto& k : cases)
+	{
+		File bad = good;
+		k.edit(bad.records[0].code);
+		EXPECT_EQ(parsed(bad), ParseResult::Malformed) << k.what;
+	}
+	// and a code table count that runs past the file, checksum restamped
+	File one;
+	one.id = Id();
+	Record r;
+	r.flags = kHasCode;
+	r.code = SampleCode(rng);
+	std::vector<u8> mask(kMicroWords, 0), micro(0x4000, 0);
+	r.SetReadSet(mask.data(), micro.data());
+	one.records.push_back(r);
+	std::vector<u8> bytes = Serialize(one);
+	File g;
+	ASSERT_EQ(Parse(bytes.data(), bytes.size(), Id(), g), ParseResult::Ok);
+	// (header 80, no jump blocks 4, one record 4, its header 108, bitmap 512, no values: the code header)
+	const size_t codeHeaderAt = 80 + 4 + 4 + 108 + kReadBitmapBytes;
+	for (size_t field = 0; field < 10; field++)
+	{
+		std::vector<u8> bad = bytes;
+		const u32 huge = 0x40000000u;
+		std::memcpy(bad.data() + codeHeaderAt + 4 * field, &huge, 4);
+		Restamp(bad);
+		EXPECT_EQ(Parse(bad.data(), bad.size(), Id(), g), ParseResult::Malformed) << "count " << field;
+	}
 }
 
 // Counts that point past the end, or past the parser's bounds, are refused before any allocation they
