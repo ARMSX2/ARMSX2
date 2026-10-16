@@ -227,10 +227,10 @@ TEST(VuEndDrainConsole, MicroVuEndDoesNotWaitForFmacOrIlw)
 	EXPECT_TRUE(bad.empty()) << "microVU ends that differ from the console:" << bad;
 }
 
-// TRIPWIRE -- _vuFlushAll moves the interpreter's cycle count to the completion of every FMAC and
-// ILW still in flight: 4 - p extra cycles for p = 0..3 on 18 of the 76 rows (FMAC and ILW at
-// p = 0..3 and four FMACs, on both VUs).  Enabled by the change that stops waiting for them.
-TEST(VuEndDrainConsole, DISABLED_InterpreterEndDoesNotWaitForFmacOrIlw)
+// _vuFlushAll used to move the interpreter's cycle count to the completion of every FMAC and ILW
+// still in flight: 4 - p extra cycles for p = 0..3 on 18 of the 76 rows (FMAC and ILW at p = 0..3
+// and four FMACs, on both VUs).
+TEST(VuEndDrainConsole, InterpreterEndDoesNotWaitForFmacOrIlw)
 {
 	const std::string bad = EndMisses(false, FmacIlwOrControl);
 	EXPECT_TRUE(bad.empty()) << "interpreter ends that differ from the console:" << bad;
@@ -329,9 +329,9 @@ TEST(VuEndDrainConsole, MicroVuFmacBesideQOrPAddsNothing)
 	EXPECT_TRUE(bad.empty()) << "microVU cycle counts that changed when FMACs were added:" << bad;
 }
 
-// TRIPWIRE -- with a divide or EFU op that finishes before the FMACs do (DIV at p = 3..5, for one), the
-// interpreter's end is the FMACs' completion.  Enabled by the change that stops waiting for them.
-TEST(VuEndDrainConsole, DISABLED_InterpreterFmacBesideQOrPAddsNothing)
+// With a divide or EFU op that finishes before the FMACs do (DIV at p = 4 and 5), the interpreter's end
+// used to be the FMACs' completion.
+TEST(VuEndDrainConsole, InterpreterFmacBesideQOrPAddsNothing)
 {
 	const std::string bad = FmacBesideQOrPMisses(false);
 	EXPECT_TRUE(bad.empty()) << "interpreter cycle counts that changed when FMACs were added:" << bad;
