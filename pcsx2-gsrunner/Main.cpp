@@ -143,7 +143,6 @@ namespace GSRunner
 	static void DumpStats();
 	static bool ReportHashMemoVerify();
 	static bool ReportBlockHashVerify();
-	static bool ReportVramMirrorVerify();
 
 	static bool CreatePlatformWindow();
 	static void DestroyPlatformWindow();
@@ -480,8 +479,6 @@ static u64 s_total_sw_palette_block_copies = 0;
 static bool s_vm_hash = false;
 static bool s_verify_hash_memo = false;
 static bool s_verify_block_hash = false;
-// -vram-mirror-verify: the GPU local-memory copy and the textures it decodes, checked against the CPU.
-static bool s_vram_mirror_verify = false;
 // -gpu-decode-selftest: check the GPU texture decode against the CPU readers, then exit. No replay runs.
 static bool s_gpu_decode_selftest = false;
 static GSVramMirrorSelfTest::Options s_gpu_decode_selftest_options;
@@ -1290,11 +1287,6 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -gpu-texture-decode on|off: The gpu_texture_decode setting: decode paletted texture windows on the GPU "
 						 "from a GPU copy of local memory instead of on the CPU (Vulkan only; off is the default). Pixels are "
 						 "the same either way.\n");
-	std::fprintf(stderr, "  -vram-mirror-verify: Check the GPU copy of local memory and the textures decoded from it. Implies "
-						 "-gpu-texture-decode on. Every window queued is checked against the CPU's dirty marks as it is "
-						 "queued; at every flush the mirror and each decoded texture are read back and compared with what was "
-						 "staged and with the CPU's own decode of the window at the miss. Prints one VRAM-MIRROR-VERIFY line at "
-						 "exit and exits non-zero on any difference. Slow.\n");
 	std::fprintf(stderr, "  -gpu-decode-selftest: Check the Vulkan GPU texture decode (the VRAM mirror's PSMT8, PSMT4, PSMT8H, "
 						 "PSMT4HL and PSMT4HH decode) against the CPU readers on random local memory and windows, print one "
 						 "GPU-DECODE-SELFTEST line per phase, and exit non-zero on any mismatch. The dump argument is only there "
@@ -1853,13 +1845,6 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					ArgError("-gpu-texture-decode: expected on or off, got '{}'.", value);
 					return false;
 				}
-				continue;
-			}
-			else if (CHECK_ARG("-vram-mirror-verify"))
-			{
-				s_vram_mirror_verify = true;
-				GSVramMirrorSelfTest::SetVerify(true);
-				s_settings_interface.SetBoolValue("EmuCore/GS", "gpu_texture_decode", true);
 				continue;
 			}
 			else if (CHECK_ARG("-verify-block-hash"))
@@ -2745,15 +2730,6 @@ bool GSRunner::ReportBlockHashVerify()
 	return report.stale_blocks == 0 && report.extra_misses == 0 && report.false_hits == 0;
 }
 
-// Prints what -vram-mirror-verify found. False if the mirror differed from what was staged into it, a decoded
-// texture from the CPU's decode of the same window, or a block the dirty bitmap called clean from local memory.
-bool GSRunner::ReportVramMirrorVerify()
-{
-	if (!s_vram_mirror_verify)
-		return true;
-	return GSVramMirrorSelfTest::ReportVerify();
-}
-
 void GSRunner::DumpStats()
 {
 	std::atomic_thread_fence(std::memory_order_acquire);
@@ -3135,8 +3111,7 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			GSRunner::DumpStats();
 			const bool memo_verify_ok = GSRunner::ReportHashMemoVerify();
 			const bool block_hash_verify_ok = GSRunner::ReportBlockHashVerify();
-			const bool vram_mirror_verify_ok = GSRunner::ReportVramMirrorVerify();
-			ret->store((ladder_ok && memo_verify_ok && block_hash_verify_ok && vram_mirror_verify_ok) ? EXIT_SUCCESS : EXIT_FAILURE);
+			ret->store((ladder_ok && memo_verify_ok && block_hash_verify_ok) ? EXIT_SUCCESS : EXIT_FAILURE);
 		}
 	}
 

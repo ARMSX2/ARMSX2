@@ -5,7 +5,6 @@
 #include "GS/GSPerfMon.h"
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
 #include "GS/Renderers/Vulkan/GSTextureVK.h"
-#include "GS/Renderers/Vulkan/GSVramMirrorVK.h"
 #include "GS/Renderers/Vulkan/VKBuilders.h"
 
 #include "common/Assertions.h"
@@ -202,16 +201,6 @@ void GSTextureVK::Destroy(bool defer)
 {
 	GSDeviceVK::GetInstance()->UnbindTexture(this);
 
-	// A decode queued for this image is cancelled, not flushed: this runs at teardown too, after the last
-	// submit, where a flush would record into a command buffer nobody submits. The blocks the decode
-	// staged still reach the mirror. (The mirror clears the flag itself when it goes first.)
-	if (m_decode_pending)
-	{
-		if (GSVramMirrorVK* mirror = GSDeviceVK::GetInstance()->GetVramMirror())
-			mirror->CancelTexture(this);
-		m_decode_pending = false;
-	}
-
 	if (IsRenderTargetOrDepthStencil())
 	{
 		for (const auto& [other_tex, fb, feedback_color, feedback_depth] : m_framebuffers)
@@ -271,23 +260,8 @@ void* GSTextureVK::GetNativeHandle() const
 	return const_cast<GSTextureVK*>(this);
 }
 
-void GSTextureVK::FlushPendingDecode()
-{
-	// The queued decode writes this image in the init command buffer. Whatever records into the init
-	// buffer for the image next (an upload, a mip chain) has to come after that copy, so the batch is
-	// recorded first.
-	if (GSVramMirrorVK* mirror = GSDeviceVK::GetInstance()->GetVramMirror())
-		mirror->Flush();
-	pxAssert(!m_decode_pending);
-	m_decode_pending = false;
-}
-
 VkCommandBuffer GSTextureVK::GetCommandBufferForUpdate()
 {
-	// Every CPU upload into a reused texture and GenerateMipmap come through here.
-	if (m_decode_pending)
-		FlushPendingDecode();
-
 	if (!IsTexture() || m_use_fence_counter == GSDeviceVK::GetInstance()->GetCurrentFenceCounter())
 	{
 		// Console.WriteLn("Texture update within frame, can't use do beforehand");
@@ -522,7 +496,6 @@ void GSTextureVK::Unmap()
 
 void GSTextureVK::GenerateMipmap()
 {
-	// GetCommandBufferForUpdate runs the flush of a pending decode first, so the blits come after it.
 	const VkCommandBuffer cmdbuf = GetCommandBufferForUpdate();
 
 	if (m_layout == Layout::Undefined)

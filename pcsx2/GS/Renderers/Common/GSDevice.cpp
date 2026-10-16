@@ -925,10 +925,6 @@ void GSDevice::Recycle(GSTexture* t)
 		return;
 	}
 
-	// After the deferred-recycle check above: a texture parked there is not reusable yet, and the queue
-	// that holds it still names it.
-	PrepareTextureForPool(t);
-
 	t->SetLastFrameUsed(m_frame);
 	
 #ifdef PCSX2_DEVBUILD

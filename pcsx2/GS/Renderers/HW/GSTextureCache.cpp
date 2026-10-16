@@ -7704,21 +7704,7 @@ GSTextureCache::HashCacheEntry* GSTextureCache::LookupHashCache(const GIFRegTEX0
 	std::pair<u8, u8> alpha_minmax = {0u, 255u};
 
 	// upload base level
-	//
-	// A one-level index texture can be decoded on the GPU from its copy of local memory instead
-	// (gpu_texture_decode, Vulkan only; the device says no otherwise). Not while dumping, replacing or upscaling:
-	// those want the texels on the CPU. An index texture skips the alpha min/max (compute_alpha_minmax is off),
-	// so nothing else here needs them either. The device queues the decode and finishes it ahead of any draw
-	// that samples the texture; a false answer leaves the texture empty for the upload below.
-	bool decoded_on_gpu = false;
-	if (paltex && tlevels == 1 && !dump && !replace && !upscale && GSConfig.GPUTextureDecode)
-	{
-		const GSOffset off(g_gs_renderer->m_mem.GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM));
-		decoded_on_gpu = g_gs_device->DecodeHashTextureFromLocalMemory(
-			tex, g_gs_renderer->m_mem, off, GSVector4i(region.GetRect(tw, th)));
-	}
-	if (!decoded_on_gpu)
-		PreloadTexture(TEX0, TEXA, region, g_gs_renderer->m_mem, paltex, tex, 0, compute_alpha_minmax ? &alpha_minmax : nullptr);
+	PreloadTexture(TEX0, TEXA, region, g_gs_renderer->m_mem, paltex, tex, 0, compute_alpha_minmax ? &alpha_minmax : nullptr);
 
 	// upload mips if present
 	if (lod)
