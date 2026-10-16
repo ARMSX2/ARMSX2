@@ -260,8 +260,16 @@ static void recEventTest()
 	_cpuEventTest_Shared<M>();
 	eeEventTestIsActive = false;
 
-	if (eeRecExitRequested.load(std::memory_order_acquire))
+	// A relaxed load, and the acquire as a fence on the taken path. An acquire load (LDAR) may not
+	// complete before an earlier release store (STLR) has, and the Threaded event test has just made
+	// one, of the IOP's watermark, to a line the IOP thread is reading: an LDAR here would wait for
+	// that line on every event test. Same guarantee: a relaxed load that reads the release store of
+	// `true` in recSafeExitExecution, followed by an acquire fence, synchronizes with that store, so
+	// what the requesting thread wrote before it is visible to the exit below. Reading `false`
+	// gives nothing to depend on: `false` is stored only by this thread.
+	if (eeRecExitRequested.load(std::memory_order_relaxed))
 	{
+		std::atomic_thread_fence(std::memory_order_acquire);
 		eeRecExitRequested.store(false, std::memory_order_relaxed);
 		recExitExecution();
 	}

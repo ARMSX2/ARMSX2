@@ -509,9 +509,17 @@ __fi void _cpuEventTest_Shared()
 	// immediately so the recompiler's outer recEventTest can fastjmp out of
 	// Cpu->Execute(). Without this, PSX-vsync/IOP work can keep running after
 	// the stop latch and the Java shutdown call times out.
-	const VMState vm_state = VMManager::GetState();
+	//
+	// A relaxed load, and the acquire as a fence on the taken path, not GetState()'s acquire load. In
+	// Threaded mode the previous event test ended with a release store (STLR) of the IOP's watermark,
+	// to a line the IOP thread reads, and an acquire load (LDAR) may not complete before an earlier
+	// STLR has: GetState()'s LDAR would wait for that line. Same guarantee: a relaxed load that reads
+	// the release store of Stopping or Shutdown, followed by an acquire fence, synchronizes with that
+	// store. Any other state only means "go on", and nothing below reads data published with it.
+	const VMState vm_state = VMManager::Internal::GetStateForEventTest();
 	if (vm_state == VMState::Stopping || vm_state == VMState::Shutdown)
 	{
+		std::atomic_thread_fence(std::memory_order_acquire);
 		eeEventTestIsActive = false;
 		return;
 	}

@@ -425,6 +425,9 @@ namespace VMManager
 
 		const std::string& GetELFOverride();
 		bool IsExecutionInterrupted();
+		/// GetState() without the acquire, for the EE event test, which puts an acquire fence after it where it
+		/// relies on the value (see _cpuEventTest_Shared).
+		VMState GetStateForEventTest();
 		void ELFLoadingOnCPUThread(std::string elf_path);
 		void EntryPointCompilingOnCPUThread();
 		void VSyncOnCPUThread();

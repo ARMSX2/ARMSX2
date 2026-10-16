@@ -431,8 +431,16 @@ namespace IopThread
 			// does not have to read the IOP's line.
 			if (static_cast<s64>(cycle - m_last_seen_iop_pos) <= m_lag) [[likely]]
 				return true;
-			// Pairs with the release store of iop_pos in the IOP's loop.
-			const u64 pos = m_iop.pos_pub.load(std::memory_order_acquire);
+			// Pairs with the release store of iop_pos in the IOP's loop: the EE goes on past the bound, and
+			// trusts this position at later event tests, only after the IOP's work up to it. A relaxed load
+			// and an acquire fence, not an acquire load: the event test has just made a release store of the
+			// watermark (STLR) to a line the IOP is reading, and an acquire load (LDAR) may not complete
+			// before that store has, so it would wait for the line. The fence (DMB ISHLD) orders this load
+			// before every later load and store, which is all the acquire load gave, and it does not wait for
+			// earlier stores. A relaxed load that reads the IOP's release store, followed by an acquire
+			// fence, synchronizes with that store.
+			const u64 pos = m_iop.pos_pub.load(std::memory_order_relaxed);
+			std::atomic_thread_fence(std::memory_order_acquire);
 			m_last_seen_iop_pos = pos;
 			if (static_cast<s64>(cycle - pos) <= m_lag) [[likely]]
 				return true;
