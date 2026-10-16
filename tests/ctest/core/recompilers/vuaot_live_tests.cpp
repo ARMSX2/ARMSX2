@@ -1469,7 +1469,7 @@ TEST(VuAotLive, TripwireMutationsAreCaught)
 // The VU program cache and the tier (compiler-design.md 9ag)
 //------------------------------------------------------------------
 //
-// The tier with the on-disk program cache on (EnableVUProgramCache). The cache stores what microVU compiled, from the
+// EnableVUAot turns the on-disk program cache on. The cache stores what microVU compiled, from the
 // recorder's log of each program (mVUPersist), and the tier changes none of that: the log stops growing
 // when a program is tiered (RegisterBlock fails every episode of a program with tier state), so the image
 // saved for a program is the microVU code it had before its tier-up. These tests run the whole path:
@@ -1545,10 +1545,8 @@ protected:
 		prevCache_ = EmuFolders::Cache;
 		prevProgCache_ = EmuConfig.Cpu.Recompiler.EnableVUProgramCache;
 		EmuFolders::Cache = root_;
-		// The cache follows its own setting (Reference turns it off for the tier-off answer).
-		EmuConfig.Cpu.Recompiler.EnableVUProgramCache = true;
 		// Recording is under the tests' control (RecompilerTestEnvironment): the reset-time sync
-		// from the setting does not touch it.
+		// from the setting does not touch it. The program cache itself follows the setting.
 		mVUPersist::SetRecordingEnabled(true);
 		NewProcess();
 	}
@@ -1605,7 +1603,7 @@ TEST_F(VuAotCache, TierUpDoesNotChangeWhatIsSaved)
 			Prepare(h, prog, SetupLoop, 0);
 			h.RunNoDiff();
 			ASSERT_TRUE(mVUProgCache::GetStats(1).initialized && mVUProgCache::GetStats(1).enabled)
-				<< "EnableVUProgramCache on: the cache is up";
+				<< "EnableVUAot on, EnableVUProgramCache off: the cache is up";
 			h.RunJitPreserveBlockCache(); // the compile, untiered
 			std::vector<u8> before, afterTier, afterSecond;
 			ASSERT_TRUE(mVUPersist::TestSerializeNewestProgram(1, before)) << "the recorder did not log the program";
@@ -1641,8 +1639,8 @@ TEST_F(VuAotCache, TierUpDoesNotChangeWhatIsSaved)
 }
 
 // A cache filled in one session is loaded in the next: the program is hydrated (no microVU compile), tiers
-// up as any program does, and every run equals microVU's. `fillWithTier`: whether the session that filled
-// it ran the tier: the images are the same either way.
+// up as any program does, and every run equals microVU's. `fill`: who filled it. The tier on (the cache is
+// on because of it), or the tier off with the cache's own setting on: the images are the same either way.
 TEST_F(VuAotCache, LoadedProgramsTierUpAndStayExact)
 {
 	struct Prog
@@ -1662,10 +1660,11 @@ TEST_F(VuAotCache, LoadedProgramsTierUpAndStayExact)
 				RecompilerTestEnvironment::ResetVuBlockCache(1);
 				NewProcess();
 				RecursiveRm(root_ + "/vu_jit");
-				std::string where = std::string(pr.name) + (fillWithTier ? ", filled with the tier on" : ", filled with the tier off") + (fh ? ", flag hack" : "");
+				std::string where = std::string(pr.name) + (fillWithTier ? ", filled by the tier" : ", filled by the cache setting") + (fh ? ", flag hack" : "");
 
 				// session one: compile, tier up (when on), save at the reset
 				{
+					EmuConfig.Cpu.Recompiler.EnableVUProgramCache = !fillWithTier;
 					LiveScope s1(fillWithTier, 4, fh);
 					VuTestHarness h(1);
 					Prepare(h, pr.ops, pr.setup, 0);
@@ -1686,6 +1685,7 @@ TEST_F(VuAotCache, LoadedProgramsTierUpAndStayExact)
 					RecompilerTestEnvironment::ResetVuBlockCache(1); // (the save)
 					EXPECT_GE(mVUProgCache::GetStats(1).payloadWrites, 1u) << where << ": no payload was written";
 				}
+				EmuConfig.Cpu.Recompiler.EnableVUProgramCache = false;
 
 				// session two: the tier on, the cache read from disk
 				NewProcess();
@@ -1748,6 +1748,7 @@ TEST_F(VuAotCache, LoadedStickyReaderTripsTheWire)
 			NewProcess();
 			RecursiveRm(root_ + "/vu_jit");
 			{
+				EmuConfig.Cpu.Recompiler.EnableVUProgramCache = true;
 				LiveScope s1(false, 4, fh);
 				VuTestHarness h(1);
 				Prepare(h, StickyReaderLoop(10), SetupSticky, 0);
@@ -1757,6 +1758,7 @@ TEST_F(VuAotCache, LoadedStickyReaderTripsTheWire)
 				RecompilerTestEnvironment::ResetVuBlockCache(1);
 				ASSERT_GE(mVUProgCache::GetStats(1).payloadWrites, 1u);
 			}
+			EmuConfig.Cpu.Recompiler.EnableVUProgramCache = false;
 			NewProcess();
 			LiveScope s2(true, 4, fh);
 			if (mutation)

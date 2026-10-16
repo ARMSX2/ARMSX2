@@ -454,11 +454,12 @@ void mVUinit(microVU& mVU, uint vuIndex)
 
 	mVU.regAlloc.reset(new microRegAlloc(mVU.index));
 
-	// Persisted-JIT recording follows the config bool — established before the
-	// sentinel (which bakes the recording byte). At boot this runs before
-	// settings finish loading, so it typically latches off and the first
-	// mVUreset corrects it. No-op under the test-manual override. See mVUreset.
-	mVUPersist::SyncRecordingFromConfig(EmuConfig.Cpu.Recompiler.EnableVUProgramCache);
+	// Persisted-JIT recording follows the config (EnableVUProgramCache or
+	// EnableVUAot: UseVUProgramCache) — established before the sentinel (which
+	// bakes the recording byte). At boot this runs before settings finish
+	// loading, so it typically latches off and the first mVUreset corrects it.
+	// No-op under the test-manual override. See mVUreset.
+	mVUPersist::SyncRecordingFromConfig(EmuConfig.Cpu.Recompiler.UseVUProgramCache());
 
 	// vu-aot live tier: whether it runs follows the config (VU1 only). Re-synced
 	// at every reset, before the dispatchers are emitted.
@@ -1158,16 +1159,17 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	++g_mVUCacheTrace[mVU.index & 1].reset_calls;
 #endif
 
-	// Persisted-JIT recording follows the EnableVUProgramCache config bool, and
-	// MUST be established here — before mVUbuildOptionsSentinel bakes the
-	// recording byte and before any gameplay program compiles. This is the
-	// authoritative sync point: InitializeCPUProviders runs before settings
-	// load the bool, so a one-shot enable there would latch the default (off)
-	// and never correct, leaving the disk cache writing telemetry-only entries
-	// with no payloads. The disk Init below is re-synced on the same reset, so
-	// recording and the cache move in lockstep. No-op under the test-manual
-	// override (the recompiler-test harness drives recording itself).
-	mVUPersist::SyncRecordingFromConfig(EmuConfig.Cpu.Recompiler.EnableVUProgramCache);
+	// Persisted-JIT recording follows the program cache setting (EnableVUProgramCache,
+	// or EnableVUAot, which turns the cache on: UseVUProgramCache), and MUST be
+	// established here — before mVUbuildOptionsSentinel bakes the recording byte
+	// and before any gameplay program compiles. This is the authoritative sync
+	// point: InitializeCPUProviders runs before settings load the bool, so a
+	// one-shot enable there would latch the default (off) and never correct,
+	// leaving the disk cache writing telemetry-only entries with no payloads.
+	// The disk Init below is re-synced on the same reset, so recording and the
+	// cache move in lockstep. No-op under the test-manual override (the
+	// recompiler-test harness drives recording itself).
+	mVUPersist::SyncRecordingFromConfig(EmuConfig.Cpu.Recompiler.UseVUProgramCache());
 
 	// vu-aot live tier (EnableVUAot): re-read the config now, because the VU1
 	// dispatcher emitted below calls the counting lookup only while it is on.
@@ -1182,9 +1184,9 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	mVUbuildOptionsSentinel(mVU);
 
 	// Re-enter the disk-cache init: a no-op when already up (or when the
-	// EnableVUProgramCache config bool is off), but the activation point when
-	// the user toggled the cache on — settings changes funnel through
-	// ClearCPUExecutionCaches → this reset.
+	// cache is off: neither EnableVUProgramCache nor EnableVUAot is set), but the
+	// activation point when the user toggled the cache or vu-aot on — settings
+	// changes funnel through ClearCPUExecutionCaches → this reset.
 	mVUProgCache::Init(mVU);
 
 	if (THREAD_VU1 && !vu1Idle)

@@ -48,8 +48,8 @@ namespace mVUPersist
 {
 	// Master gate for emit-time recording. Default off. In production,
 	// VMManager syncs it from the EmuCore/CPU/Recompiler EnableVUProgramCache
-	// config bool (at CPU-provider init and on settings changes, before the
-	// recompiler clear); tests and pcsx2-vurunner set it directly. Must be
+	// config bool, or EnableVUAot (UseVUProgramCache; at CPU-provider init and
+	// on settings changes, before the recompiler clear); tests and pcsx2-vurunner set it directly. Must be
 	// set before the programs to persist are compiled — already-compiled
 	// episodes are not retroactively recorded.
 	//
@@ -69,9 +69,9 @@ namespace mVUPersist
 	void SetProcessDisable(bool disable);
 	bool IsProcessDisabled();
 
-	// Production recording sync: set recording to match the
-	// EnableVUProgramCache config bool, unless the test-manual override is
-	// engaged. Called from mVUinit/mVUreset before the options sentinel is
+	// Production recording sync: set recording to match the program cache
+	// setting (EnableVUProgramCache or EnableVUAot), unless the test-manual
+	// override is engaged. Called from mVUinit/mVUreset before the options sentinel is
 	// rebuilt, so the recording byte the sentinel bakes — and every program
 	// compiled after the reset — reflects the live config. This is the
 	// authoritative sync point (InitializeCPUProviders runs before settings
