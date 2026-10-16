@@ -262,10 +262,10 @@ struct MobileDriverProfile
 	/// our barriers give the ordering. Weaker than orders_declared_feedback_loop, which lets the
 	/// barriers go and wins if both are set.
 	///
-	/// True for Turnip on Adreno 730 and up (measured on the 740), where the copy road renders
-	/// wrong. The barrier-less declared road races on a7xx under stock Turnip, which never emits
-	/// the ordering state there; a generation-2 build does, and then orders_declared_feedback_loop
-	/// is set as well and wins.
+	/// True for Turnip on Adreno 730 and up and on the 722 (measured on the 740 only), where the
+	/// copy road renders wrong. The barrier-less declared road races on a7xx under stock Turnip,
+	/// which never emits the ordering state there; a generation-2 build does, and then
+	/// orders_declared_feedback_loop is set as well and wins.
 	bool prefers_declared_loop_with_barriers = false;
 
 	std::string driver_name;

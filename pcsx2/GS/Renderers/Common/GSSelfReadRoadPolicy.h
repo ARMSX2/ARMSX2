@@ -128,8 +128,8 @@ struct GSSelfReadRoadInputs
 
 	/// MobileDriverProfile::prefers_declared_loop_with_barriers: this part's best in-pass road is
 	/// the declared loop with our per-draw barriers doing the ordering. Turnip on Adreno 730 and up
-	/// only. Outranks rt_self_read_is_broken on auto: on those parts the copy road also renders
-	/// some titles wrong.
+	/// and on the 722 only. Outranks rt_self_read_is_broken on auto: on those parts the copy road
+	/// also renders some titles wrong.
 	///
 	/// ⚠️ It claims nothing about ordering. Turnip never emits the sysmem ordering state on a7xx, so
 	/// the barrier-less declared road races there. If both facts are set, the ordering one wins.
