@@ -36,8 +36,12 @@ struct GSSwPrimRenderState
 	};
 	std::vector<PaletteBlock> palette_blocks;
 
+	/// The palette index of each texel a masked texel copy reads, in the order it writes them.
+	std::vector<u8> texel_scratch;
+
 	/// When false every draw goes through the rasterizer, including the ones the palette block copy
-	/// would take. The copy is exact, so this changes no output; tests use it to run the reference.
+	/// and the masked texel copy would take. The copies are exact, so this changes no output; tests
+	/// use it to run the reference.
 	bool palette_block_copy = true;
 };
 
