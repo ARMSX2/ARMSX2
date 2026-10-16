@@ -490,6 +490,7 @@ namespace vuaot
 			ValueId vOwner_[32] = {};
 			ValueId gOwner_[32] = {};
 			u32 vLock_ = 0, gLock_ = 0;   // registers in use by the current instruction
+			u32 vBound_ = 0, gBound_ = 0; // registers holding a value
 			u32 vTemp_ = 0, gTemp_ = 0;   // temporaries of the current instruction
 			u32 vPool_ = 0, gPool_ = 0;   // allocatable (homes excluded)
 			std::vector<u8> slotBusy_;
@@ -544,18 +545,30 @@ namespace vuaot
 			{
 				reg_[c] = static_cast<s8>(r);
 				if (cls_[c] == Cls::V)
+				{
 					vOwner_[r] = c;
+					vBound_ |= 1u << r;
+				}
 				else
+				{
 					gOwner_[r] = c;
+					gBound_ |= 1u << r;
+				}
 			}
 			void Unbind(ValueId c)
 			{
 				if (reg_[c] < 0)
 					return;
 				if (cls_[c] == Cls::V)
+				{
 					vOwner_[reg_[c]] = 0;
+					vBound_ &= ~(1u << reg_[c]);
+				}
 				else
+				{
 					gOwner_[reg_[c]] = 0;
+					gBound_ &= ~(1u << reg_[c]);
+				}
 				reg_[c] = -1;
 			}
 			a64::MemOperand SlotMem(int s) const { return a64::MemOperand(xFlag, env_.offNeonBackup + s * 16); }
@@ -1120,10 +1133,12 @@ namespace vuaot
 			for (int file = 0; file < 2; file++)
 			{
 				ValueId* own = file ? gOwner_ : vOwner_;
-				for (int r = 0; r < 32; r++)
+				// (home registers too: a dead incoming value there frees the home for
+				// the variable's final value)
+				for (u32 m = file ? gBound_ : vBound_; m; m &= m - 1)
 				{
-					const ValueId c = own[r];
-					if (!c || LiveAfter(c) || (homeReg_[c] && finalOf_[c]))
+					const ValueId c = own[Ctz(m)];
+					if (!c || (!uses_[c].empty() && uses_[c].back() > pos_) || (homeReg_[c] && finalOf_[c]))
 						continue;
 					Unbind(c);
 					if (slot_[c] >= 0)
@@ -3422,29 +3437,42 @@ namespace vuaot
 		{
 			if (!hm_->wMem)
 				return;
+			// the w-lane incoming values of the wMem homes (index 1..32), then which are read
+			ValueId l3[33] = {};
+			bool any = false;
+			for (size_t v = 1; v < f_.insts.size(); v++)
+			{
+				const Inst& in = f_.insts[v];
+				if (in.op != Op::LiveIn || (in.var & 3) != 3)
+					continue;
+				const u32 r = VecHomeOf(in.var);
+				if (r && hm_->WMem(r) && hm_->home[VecVar(r)].kind == HomeKind::VReg && !l3[r])
+				{
+					l3[r] = static_cast<ValueId>(v);
+					any = true;
+				}
+			}
+			if (!any)
+				return;
+			u64 read = 0;
+			for (ValueId v : order_)
+			{
+				if (!emit_[v])
+					continue;
+				ForArgs(v, I(v), [&](size_t k, ValueId a) {
+					const Inst& x = I(a);
+					if (x.op != Op::LiveIn || (x.var & 3) != 3)
+						return;
+					const u32 r = VecHomeOf(x.var);
+					if (r && l3[r] == a && !(v == leave_ && k == x.var))
+						read |= u64(1) << r;
+				});
+			}
 			for (u32 r = 1; r <= 32; r++)
 			{
+				if (!((read >> r) & 1))
+					continue;
 				const u32 v0 = VecVar(r);
-				if (!hm_->WMem(r) || hm_->home[v0].kind != HomeKind::VReg)
-					continue;
-				ValueId l3 = 0;
-				for (size_t v = 1; v < f_.insts.size() && !l3; v++)
-					if (f_.insts[v].op == Op::LiveIn && f_.insts[v].var == v0 + 3)
-						l3 = static_cast<ValueId>(v);
-				if (!l3)
-					continue;
-				bool read = false;
-				for (ValueId v : order_)
-				{
-					if (!emit_[v] || read)
-						continue;
-					ForArgs(v, I(v), [&](size_t k, ValueId a) {
-						if (a == l3 && !(v == leave_ && k == v0 + 3))
-							read = true;
-					});
-				}
-				if (!read)
-					continue;
 				const MemLoc m = BoundaryLoc(v0, env_);
 				armAsm->Ldr(a64::w16, a64::MemOperand(xState, m.off + 12));
 				armAsm->Ins(V(hm_->home[v0].reg).V4S(), 3, a64::w16);
