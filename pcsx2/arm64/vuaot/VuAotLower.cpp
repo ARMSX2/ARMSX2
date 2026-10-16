@@ -304,6 +304,12 @@ namespace vuaot
 			static bool CheckShape(const Function& f_, const LowerEnv& env_, std::string& why);
 		private:
 			const Inst& LeaveInst() const { return hasLeave2_ ? leave2_ : f_.insts[leave_]; }
+			// Lane l of vector home r needs no value at the node's end: dead, or the
+			// w lane of a HomeMap::wMem home.
+			bool LaneFree(u32 r, u32 l) const
+			{
+				return (liveOut_ && !liveOut_->test(VecVar(r) + l)) || (l == 3 && hm_->WMem(r));
+			}
 			// The value that is the whole final value of vector home VF(v0):
 			// every lane is it, or dead at the node's end (no merge needed for
 			// a dead lane); 0 if none.
@@ -315,7 +321,7 @@ namespace vuaot
 				{
 					const u32 v = v0 + l;
 					const ValueId a = lv.args[v];
-					if (liveOut_ && !liveOut_->test(v))
+					if (LaneFree(VecHomeOf(v0), l))
 						continue; // dead: any value will do
 					if (!a)
 						return 0;
@@ -338,7 +344,7 @@ namespace vuaot
 				for (u32 l = 0; l < 4; l++)
 				{
 					const u32 v = v0 + l;
-					if (liveOut_ && !liveOut_->test(v))
+					if (LaneFree(VecHomeOf(v0), l))
 						continue;
 					const ValueId a = lv.args[v];
 					if (!a)
@@ -701,6 +707,9 @@ namespace vuaot
 			// from zero-extended VIs too: those coming from register homes are
 			// zero-extended in place where the node starts.
 			void NormalizeFmeqInputs();
+			// HomeMap::wMem: a node that reads the w lane of such a home's incoming
+			// value loads it into the register where the node starts.
+			void FillWMemLanes();
 			bool TruncFor(u32 var, ValueId c) const
 			{
 				return (var == var::VIBACKUP || var == var::XGKADDR) && WideViLiveIn(c);
@@ -3409,6 +3418,39 @@ namespace vuaot
 			}
 		}
 
+		void Lowerer::FillWMemLanes()
+		{
+			if (!hm_->wMem)
+				return;
+			for (u32 r = 1; r <= 32; r++)
+			{
+				const u32 v0 = VecVar(r);
+				if (!hm_->WMem(r) || hm_->home[v0].kind != HomeKind::VReg)
+					continue;
+				ValueId l3 = 0;
+				for (size_t v = 1; v < f_.insts.size() && !l3; v++)
+					if (f_.insts[v].op == Op::LiveIn && f_.insts[v].var == v0 + 3)
+						l3 = static_cast<ValueId>(v);
+				if (!l3)
+					continue;
+				bool read = false;
+				for (ValueId v : order_)
+				{
+					if (!emit_[v] || read)
+						continue;
+					ForArgs(v, I(v), [&](size_t k, ValueId a) {
+						if (a == l3 && !(v == leave_ && k == v0 + 3))
+							read = true;
+					});
+				}
+				if (!read)
+					continue;
+				const MemLoc m = BoundaryLoc(v0, env_);
+				armAsm->Ldr(a64::w16, a64::MemOperand(xState, m.off + 12));
+				armAsm->Ins(V(hm_->home[v0].reg).V4S(), 3, a64::w16);
+			}
+		}
+
 		void Lowerer::NormalizeFmeqInputs()
 		{
 			if (mode_ != LowerMode::Region)
@@ -3841,7 +3883,7 @@ namespace vuaot
 					for (u32 k = 0; k < 4 && all; k++)
 					{
 						const ValueId a = in.args[v0 + k];
-						if (liveOut_ && !liveOut_->test(v0 + k))
+						if (LaneFree(r, k))
 							continue;
 						if (!a || ownLiveIn(v0 + k, a))
 							all = false;
@@ -5102,6 +5144,7 @@ namespace vuaot
 				Bind(clampOf_[c], r);
 				homeReg_[clampOf_[c]] = 1;
 			}
+			FillWMemLanes();
 			NormalizeFmeqInputs();
 			for (pos_ = 0; pos_ < order_.size(); pos_++)
 			{
@@ -5252,6 +5295,20 @@ namespace vuaot
 		}
 	}
 
+	// A vector home to microVU's location: x, y and z only for a HomeMap::wMem
+	// home (its w lane there is the valid one).
+	static void StoreVecHome(const HomeMap& homes, u32 r, int reg, s32 off)
+	{
+		if (!homes.WMem(r))
+		{
+			armAsm->Str(Q(reg), a64::MemOperand(xState, off));
+			return;
+		}
+		armAsm->Str(D(reg), a64::MemOperand(xState, off));
+		armAsm->Umov(a64::w16, V(reg).V4S(), 2);
+		armAsm->Str(a64::w16, a64::MemOperand(xState, off + 8));
+	}
+
 	void EmitHomeTransfer(const HomeMap& from, const HomeMap& to, const LiveSet* live, const LowerEnv& env)
 	{
 		struct Mv
@@ -5284,13 +5341,19 @@ namespace vuaot
 				continue;
 			const HomeKind k = vec ? HomeKind::VReg : HomeKind::GReg;
 			const int fr = regOf(from, v, k), tr = regOf(to, v, k);
-			if (fr == tr || !isLive(v, vec))
+			if (!isLive(v, vec))
 				continue;
 			const MemLoc m = BoundaryLoc(v, env);
+			// Into a HomeMap::wMem home from a register holding the w lane: the
+			// lane goes to microVU's location, where the target map keeps it.
+			if (vec && fr >= 0 && tr >= 0 && to.WMem(vr) && !from.WMem(vr))
+				armAsm->Str(Q(fr), a64::MemOperand(*m.base, m.off));
+			if (fr == tr)
+				continue;
 			if (fr >= 0 && tr < 0)
 			{
 				if (vec)
-					armAsm->Str(Q(fr), a64::MemOperand(*m.base, m.off));
+					StoreVecHome(from, vr, fr, m.off);
 				else if (m.size == 2)
 					armAsm->Strh(W(fr), a64::MemOperand(*m.base, m.off));
 				else
@@ -5368,6 +5431,17 @@ namespace vuaot
 		}
 		if (loadVf0)
 			armAsm->Ldr(Q(to.vf0Reg), a64::MemOperand(xState, kOffVF));
+		// A register that held a HomeMap::wMem home and now holds a full one: its w
+		// lane from microVU's location (valid: the region never writes it).
+		for (u32 r = 1; r <= 32; r++)
+		{
+			const u32 v0 = VecVar(r);
+			if (!from.WMem(r) || to.WMem(r) || from.home[v0].kind != HomeKind::VReg || to.home[v0].kind != HomeKind::VReg ||
+				(live && !live->test(v0 + 3)))
+				continue;
+			armAsm->Ldr(a64::w16, a64::MemOperand(xState, BoundaryLoc(v0, env).off + 12));
+			armAsm->Ins(V(to.home[v0].reg).V4S(), 3, a64::w16);
+		}
 		for (u32 r = 1; r <= 32; r++)
 			if (to.clampSlot[r] >= 0 && from.clampSlot[r] != to.clampSlot[r] && isLive(VecVar(r), true))
 				ClampSlotFill(to, env, r);
@@ -5480,7 +5554,7 @@ namespace vuaot
 				continue;
 			const MemLoc m = BoundaryLoc(v, env);
 			if (h.kind == HomeKind::VReg)
-				armAsm->Str(Q(h.reg), a64::MemOperand(*m.base, m.off));
+				StoreVecHome(homes, vr, h.reg, m.off);
 			else if (m.size == 2)
 				armAsm->Strh(W(h.reg), a64::MemOperand(*m.base, m.off));
 			else

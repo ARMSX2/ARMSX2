@@ -27,6 +27,7 @@ struct VuAotModeOptions
 	s32 vHomes = 14;       // --vuaot-vhomes N: at most N NEON homes per region
 	bool schedule = true;
 	bool splitHomes = true; // --vuaot-no-split: one home map per region (milestone 10 A/B)
+	bool wMemHomes = true;  // --vuaot-no-wmem: every vector home keeps its w lane in the register (A/B)
 	bool stickyAcc = true;  // --vuaot-no-acc: every status update builds its instance (no sticky accumulators; A/B)
 		bool accAlways = false; // --vuaot-acc-always: the accumulators even where the estimate says they would not pay (A/B)
 	bool handoff = true;    // --vuaot-no-handoff: every flag-ring instance exact at a bail to microVU (A/B)

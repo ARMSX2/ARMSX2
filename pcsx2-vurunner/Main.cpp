@@ -283,6 +283,8 @@ bool ParseArgs(int argc, char** argv, Options& opts)
 			opts.vuaot.schedule = false;
 		else if (a == "--vuaot-no-split")
 			opts.vuaot.splitHomes = false;
+		else if (a == "--vuaot-no-wmem")
+			opts.vuaot.wMemHomes = false;
 		else if (a == "--vuaot-no-acc")
 			opts.vuaot.stickyAcc = false;
 		else if (a == "--vuaot-acc-always")

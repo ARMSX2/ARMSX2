@@ -244,6 +244,7 @@ namespace vuaot
 		void Expand(int id);
 		void AssignHomes();
 		void ChooseHomes(int map, const std::vector<u32>& weight);
+		void ChooseWMem(const std::vector<u32>& weight);
 		void PlanChecks();
 		void MergeVariants();
 		static u64 CodeHash(const Node& n);
@@ -1127,6 +1128,66 @@ namespace vuaot
 		}
 		for (size_t m = 0; m < maps_.size(); m++)
 			ChooseHomes(static_cast<int>(m), weight);
+		if (t_.wMemHomes)
+			ChooseWMem(weight);
+	}
+
+	// HomeMap::wMem: a vector home whose w lane no node of the map writes keeps
+	// that lane in microVU's location when the map's nodes write x, y and z
+	// (each such end saves the lane inserts, about two instructions) more than
+	// they read w (each such node loads it, two instructions). A transfer into
+	// the map from one holding the lane in a register stores it there first.
+	void RegionBuilder::ChooseWMem(const std::vector<u32>& weight)
+	{
+		using namespace ir;
+		const size_t NN = nodes_.size();
+		const auto lane = [](u32 r, u32 l) { return (r == 32 ? var::ACC(0) : var::VF(r, 0)) + l; };
+		std::vector<u64> writtenIn(maps_.size(), 0);
+		for (size_t i = 0; i < NN; i++)
+			for (u32 r = 1; r <= 32; r++)
+				if (nodes_[i]->def.test(lane(r, 3)))
+					writtenIn[nodes_[i]->map] |= u64(1) << r;
+		for (size_t m = 0; m < maps_.size(); m++)
+		{
+			HomeMap& homes = maps_[m];
+			const u64 written = writtenIn[m];
+			for (u32 r = 1; r <= 32; r++)
+			{
+				if (homes.home[lane(r, 0)].kind != HomeKind::VReg)
+					continue;
+				if ((written >> r) & 1)
+					continue;
+				s64 gain = 0;
+				for (size_t i = 0; i < NN; i++)
+				{
+					const Node& n = *nodes_[i];
+					if (n.map != static_cast<int>(m))
+						continue;
+					const s64 w = weight[i];
+					if (n.useAll.test(lane(r, 3)))
+						gain -= 2 * w;
+					if (!n.liveOut.test(lane(r, 3)))
+						continue; // (w is free at this end anyway)
+					u32 wr = 0, free = 0;
+					for (u32 l = 0; l < 3; l++)
+					{
+						if (!n.liveOut.test(lane(r, l)))
+							free++;
+						else if (n.def.test(lane(r, l)))
+							wr++;
+					}
+					if (wr && wr + free == 3)
+						gain += (wr >= 2 ? 2 : 1) * w;
+				}
+				if (t_.dump)
+					std::printf("  map %zu w lane in memory, vf%u: gain %lld\n", m, r, (long long)gain);
+				if (gain > 0)
+				{
+					homes.wMem |= u64(1) << r;
+					t_.wMemHomes_++;
+				}
+			}
+		}
 	}
 
 	void RegionBuilder::ChooseHomes(int map, const std::vector<u32>& weight)

@@ -123,6 +123,14 @@ namespace vuaot
 		// A register holding VF0 (+0, +0, +0, +1.0) for the whole map, or -1.
 		s8 vf0Reg = -1;
 
+		// Vector homes (bit r: VF r, bit 32: ACC) whose w lane the region never
+		// writes: it stays in microVU's location, which stays valid, and the
+		// register's w lane holds nothing at a node boundary. A write of x, y and
+		// z then goes whole into the register; a node reading w loads it into the
+		// register first; boundary stores write x, y and z only.
+		u64 wMem = 0;
+		bool WMem(u32 r) const { return (wMem >> r) & 1; }
+
 		// LowerEnv::stickyAcc: the general register holding the status chain's
 		// word (without the sticky bits the accumulators still owe it), and the
 		// zero / sign accumulators. Fixed for every map of a region and taken from
