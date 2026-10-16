@@ -685,7 +685,23 @@ namespace vuaot
 			void Leave(ValueId id);
 			void One(ValueId id);
 
-			bool Known16(ValueId v) const;
+			// Region mode: a VI's register home holds the VI in its low 16 bits
+			// and anything above them (no normalisation at node ends; every
+			// reader of a VI value already takes only the bits it needs, and the
+			// boundary stores are 16 bits wide). The two 32-bit fields that take
+			// an old VI value, microVU's VI backup and kick address, still get
+			// the zero-extended value they always got.
+			bool WideViLiveIn(ValueId c) const;
+			// FMEQ compares the whole register, and microVU's register holds a VI
+			// from an earlier block zero-extended, so whatever the operand is
+			// computed from in this node (VI arithmetic, FMAND / FMOR) must start
+			// from zero-extended VIs too: those coming from register homes are
+			// zero-extended in place where the node starts.
+			void NormalizeFmeqInputs();
+			bool TruncFor(u32 var, ValueId c) const
+			{
+				return (var == var::VIBACKUP || var == var::XGKADDR) && WideViLiveIn(c);
+			}
 		};
 
 		//------------------------------------------------------------------
@@ -781,6 +797,8 @@ namespace vuaot
 					const MemLoc m = BoundaryLoc(v, env_);
 					if (cls_[c] == Cls::G)
 					{
+						if (TruncFor(v, c))
+							armAsm->Uxth(W(r), W(r));
 						if (m.size == 2)
 							armAsm->Strh(W(r), a64::MemOperand(*m.base, m.off));
 						else
@@ -2696,6 +2714,8 @@ namespace vuaot
 						armAsm->Orr(W(d), W(vi), W(src));
 					else
 					{
+						// (the VIs this operand is computed from were zero-extended at
+						// the start of the node: NormalizeFmeqInputs)
 						armAsm->Eor(W(d), W(vi), W(src));
 						armAsm->Sub(W(d), W(d), 1);
 						armAsm->Lsr(W(d), W(d), 31);
@@ -3353,24 +3373,59 @@ namespace vuaot
 			}
 		}
 
-		bool Lowerer::Known16(ValueId v) const
+		void Lowerer::NormalizeFmeqInputs()
 		{
-			if (v < folded_.size() && folded_[v])
-				return constVal_[v] < 0x10000;
-			const Inst& in = I(v);
-			switch (in.op)
+			if (mode_ != LowerMode::Region)
+				return;
+			std::vector<ValueId>& work = work_;
+			work.clear();
+			for (ValueId v : order_)
 			{
-				case Op::LiveIn:
-					return in.var >= var::VI(1) && in.var <= var::VI(15);
-				case Op::Const:
-				case Op::IConst:
-					return static_cast<u32>(in.imm) < 0x10000;
-				case Op::LoadI:
-				case Op::Xtop:
-					return true;
-				default:
-					return false;
+				const Inst& in = I(v);
+				if (emit_[v] && canon_[v] == v && in.op == Op::FlagRead && static_cast<LOp>(in.sub) == LOp::FMEQ && in.args.size() > 1)
+					work.push_back(C(in.args[1]));
 			}
+			u32 done = 0; // VI variables already zero-extended
+			std::vector<ValueId> seen;
+			while (!work.empty())
+			{
+				const ValueId c = work.back();
+				work.pop_back();
+				if (!c || std::find(seen.begin(), seen.end(), c) != seen.end())
+					continue;
+				seen.push_back(c);
+				if (folded_[c])
+					continue;
+				const Inst& in = I(c);
+				if (WideViLiveIn(c))
+				{
+					const u32 bit = 1u << (in.var - var::VI(0));
+					if (!(done & bit) && reg_[c] >= 0)
+						armAsm->Uxth(W(reg_[c]), W(reg_[c]));
+					done |= bit;
+					continue;
+				}
+				if (in.op == Op::IAlu || in.op == Op::IncVI)
+				{
+					for (ValueId a : in.args)
+						if (a)
+							work.push_back(C(a));
+				}
+				else if (in.op == Op::FlagRead && in.args.size() > 1)
+				{
+					const LOp op = static_cast<LOp>(in.sub);
+					if (op == LOp::FMAND || op == LOp::FMOR || op == LOp::FMEQ)
+						work.push_back(C(in.args[1]));
+				}
+			}
+		}
+
+		bool Lowerer::WideViLiveIn(ValueId c) const
+		{
+			if (mode_ != LowerMode::Region || (c < folded_.size() && folded_[c]))
+				return false;
+			const Inst& in = I(c);
+			return in.op == Op::LiveIn && in.var >= var::VI(1) && in.var <= var::VI(15) && hm_->home[in.var].kind == HomeKind::GReg;
 		}
 
 		// The end of the node: every variable's final value to its home.
@@ -3558,6 +3613,8 @@ namespace vuaot
 				if (!m.base)
 					continue;
 				const int r = IntOperand(a);
+				if (TruncFor(v, C(a)))
+					armAsm->Uxth(W(r), W(r)); // (the VI's own home: its low half is unchanged)
 				if (m.size == 2)
 					armAsm->Strh(W(r), a64::MemOperand(*m.base, m.off));
 				else
@@ -3587,18 +3644,13 @@ namespace vuaot
 					return;
 				const ValueId c = C(a);
 				if (reg_[c] == dst && cls_[c] == Cls::G)
-				{
-					// computed in place; a VI home still keeps 16 bits
-					if (mode_ == LowerMode::Region && v >= var::VI(1) && v <= var::VI(15) && !Known16(c))
-						moves.push_back({false, dst, false, dst, 0, true});
-					return;
-				}
+					return; // computed in place
 				if (ownLiveIn(v, a))
 					return;
 				Move mv;
 				mv.dstV = false;
 				mv.dst = dst;
-				mv.trunc16 = mode_ == LowerMode::Region && v >= var::VI(1) && v <= var::VI(15) && !Known16(c);
+				mv.trunc16 = TruncFor(v, c);
 				if (reg_[c] >= 0)
 				{
 					mv.srcV = cls_[c] == Cls::V;
@@ -5014,6 +5066,7 @@ namespace vuaot
 				Bind(clampOf_[c], r);
 				homeReg_[clampOf_[c]] = 1;
 			}
+			NormalizeFmeqInputs();
 			for (pos_ = 0; pos_ < order_.size(); pos_++)
 			{
 				const ValueId id = order_[pos_];

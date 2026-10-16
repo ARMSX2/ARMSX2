@@ -1452,6 +1452,138 @@ static void RegionViBranchEdgesBody()
 	EXPECT_GT(regions, static_cast<u32>(runs / 2));
 }
 
+// FMEQ compares the whole register microVU holds a VI in, and microVU holds a
+// VI from an earlier block zero-extended: a counter carried across a link past
+// 0xffff must compare as its low half (MAC is 0 here, so vi7 counts the trips
+// where the counter's low half is 0).
+static void RegionFmeqOnCarriedViBody();
+TEST(VuAotRegion, FmeqOnCarriedVi) { RegionFmeqOnCarriedViBody(); }
+static void RegionFmeqOnCarriedViBody()
+{
+	std::vector<VuOp> p;
+	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, 0x7fff)));                                  // 0
+	p.push_back(L(VIADD_L(vi::vi1, vi::vi1, vi::vi1)));                                   // 1: 0xfffe
+	p.push_back(L(VIADDIU_L(vi::vi3, vi::vi0, 5)));                                       // 2
+	p.push_back(P(VIADDIU_L(vi::vi1, vi::vi1, 1), VADD_U(mask::xyzw, vf::vf1, vf::vf1, vf::vf2))); // 3: head
+	p.push_back(L(VISUBIU_L(vi::vi3, vi::vi3, 1)));                                       // 4
+	p.push_back(U(VNOP_U()));                                                             // 5
+	p.push_back(L(VIBEQ_L(vi::vi3, vi::vi0, 5)));                                         // 6 -> 12
+	p.push_back(U(VNOP_U()));                                                             // 7: delay slot
+	p.push_back(L(VFMEQ_L(vi::vi6, vi::vi1)));                                            // 8
+	p.push_back(L(VIADD_L(vi::vi7, vi::vi7, vi::vi6)));                                   // 9
+	p.push_back(L(VB_L(static_cast<s16>(3 - 10 - 1))));                                   // 10 -> 3
+	p.push_back(U(VNOP_U()));                                                             // 11: delay slot
+	p.push_back(EBit(U(VNOP_U())));                                                       // 12
+	for (bool fh : {true, false})
+	{
+		const RegionOutcome o = RunRegion(p, fh, [](VuTestHarness& h) {
+			h.SetVf(1, 1.0f, 2.0f, 3.0f, 4.0f);
+			h.SetVf(2, 0.5f, 0.5f, 0.25f, 2.0f);
+		});
+		EXPECT_TRUE(o.diffs.empty()) << "flagHack=" << fh << "\n" << Join(o.diffs);
+		EXPECT_GE(o.regions, 1u);
+	}
+}
+
+// VI arithmetic across links: loops of random integer operations on vi2..vi6
+// seeded at the 16-bit edges (0x7fff, 0x8000, 0xffff, ...), with VI loads and
+// stores, MFIR, FMEQ / FMAND / FMOR, forward IBxx of every kind and the VI
+// copies microVU folds (IADDIU x, y, 0), so values reach register homes with
+// carries out of the low half and results are computed straight into the
+// homes of their own operands. To the end and under budgets that stop runs at
+// loop heads. FMEQ reads vi8 / vi9, which nothing writes: on a VI computed in
+// the same block microVU's answer depends on whether its register allocator
+// wrote the VI back and reloaded it (zero-extended) in between, which neither
+// the interpreter nor vu-aot reproduces.
+static void RegionViFuzzBody();
+TEST(VuAotRegion, ViFuzz) { RegionViFuzzBody(); }
+static void RegionViFuzzBody()
+{
+	std::mt19937 rng(20261016);
+	const int iters = getenv("VUAOT_REGION_ITERS") ? std::atoi(getenv("VUAOT_REGION_ITERS")) : 150;
+	int failures = 0, runs = 0;
+	u32 regions = 0;
+	for (int iter = 0; iter < iters; iter++)
+	{
+		auto R = [&](u32 n) { return static_cast<u32>(rng() % n); };
+		auto vi = [&]() { return 2 + R(5); }; // vi2..vi6; vi1 counts the loop
+		auto vf = [&]() { return 1 + R(8); };
+		std::vector<VuOp> p;
+		p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, static_cast<u16>(2 + R(9)))));
+		const size_t head = p.size();
+		const int len = 4 + R(12);
+		int lastBranch = -10;
+		for (int i = 0; i < len; i++)
+		{
+			u32 lo = kNopL, up = VNOP_U();
+			if (R(3) == 0)
+				up = R(2) ? VADD_U(mask::xyzw, vf(), vf(), vf()) : VMUL_U((R(15) + 1) << 21, vf(), vf(), vf());
+			switch (R(17))
+			{
+				case 0: lo = VIADD_L(vi(), vi(), vi()); break;
+				case 1: lo = VISUB_L(vi(), vi(), vi()); break;
+				case 2: lo = VIAND_L(vi(), vi(), vi()); break;
+				case 3: lo = VIOR_L(vi(), vi(), vi()); break;
+				case 4: lo = VIADDI_L(vi(), vi(), static_cast<s32>(R(32)) - 16); break;
+				case 5: lo = VIADDIU_L(vi(), vi(), R(2) ? 0u : R(0x8000)); break;
+				case 6: lo = VISUBIU_L(vi(), vi(), R(0x8000)); break;
+				case 7: lo = VILW_L((R(15) + 1) << 21, vi(), vi(), static_cast<s16>(R(16))); break;
+				case 8: lo = VISW_L((R(15) + 1) << 21, vi(), vi(), static_cast<s16>(R(16))); break;
+				case 9: lo = VISWR_L((R(15) + 1) << 21, vi(), vi()); break;
+				case 10: lo = VILWR_L(1u << (21 + R(4)), vi(), vi()); break;
+				case 11: lo = VMFIR_L(mask::xyzw, vf(), vi()); break;
+				case 12: lo = VFMEQ_L(vi(), 8 + R(2)); break; // (see below)
+				case 13: lo = VFMAND_L(vi(), vi()); break;
+				case 14: lo = VFMOR_L(vi(), vi()); break;
+				case 15:
+				case 16:
+					if (i + 4 < len && i >= lastBranch + 3)
+					{
+						const s16 off = static_cast<s16>(1 + R(2));
+						switch (R(6))
+						{
+							case 0: lo = VIBEQ_L(vi(), R(2) ? vi() : 0u, off); break;
+							case 1: lo = VIBNE_L(vi(), R(2) ? vi() : 0u, off); break;
+							case 2: lo = VIBLTZ_L(vi(), off); break;
+							case 3: lo = VIBGTZ_L(vi(), off); break;
+							case 4: lo = VIBLEZ_L(vi(), off); break;
+							default: lo = VIBGEZ_L(vi(), off); break;
+						}
+						lastBranch = i;
+					}
+					break;
+			}
+			p.push_back(VuOp{lo, up});
+		}
+		p.push_back(U(VNOP_U()));
+		p.push_back(L(VISUBIU_L(vi::vi1, vi::vi1, 1)));
+		p.push_back(U(VNOP_U()));
+		p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(static_cast<int>(head) - static_cast<int>(p.size()) - 1))));
+		p.push_back(L(VIADD_L(vi::vi7, vi::vi2, vi::vi3)));
+		p.push_back(EBit(L(VISW_L(mask::xyzw, vi::vi7, vi::vi0, 60))));
+		const u16 seeds[] = {0x7fff, 0x8000, 0xffff, 0xfffe, 0x0001, 0x7ffe, 0x8001, 0x0000, 0x3ff, 0x400};
+		const auto setup = [&](VuTestHarness& h) {
+			for (int r = 2; r <= 6; r++)
+				h.SetVi(r, seeds[(iter + r * 3) % 10]);
+			h.SetVi(8, 0x0000);
+			h.SetVi(9, seeds[iter % 10]);
+			for (int r = 1; r <= 8; r++)
+				h.SetVf(r, 1.0f + r, -0.5f * r, 0.0f, 0.25f * r);
+		};
+		for (bool fh : {true, false})
+			for (u32 budget : {0u, 7u, 23u})
+			{
+				runs++;
+				const RegionOutcome o = RunRegion(p, fh, setup, budget == 0, 14, false, nullptr, budget);
+				regions += o.regions;
+				if (!o.diffs.empty() && ++failures <= 4)
+					ADD_FAILURE() << "iter " << iter << " flagHack=" << fh << " budget=" << budget << " hex=" << Hex(p) << "\n" << Join(o.diffs, 8);
+			}
+	}
+	EXPECT_EQ(failures, 0) << runs << " runs";
+	EXPECT_GT(regions, static_cast<u32>(runs / 2));
+}
+
 // Milestone 10: two loops working on different vector registers get
 // different home maps, so entering and leaving each loop moves variables
 // between registers and memory (and fills clamped copies). Every budget
