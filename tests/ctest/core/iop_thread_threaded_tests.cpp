@@ -87,6 +87,7 @@ namespace
 	std::atomic<u32> s_slices_started{0};
 	std::atomic<u32> s_hook_runs{0};
 	std::atomic<bool> s_gate{false}; // a gated hook waits for this before it runs
+	std::atomic<u64> s_fake_advance{0}; // EE cycles the fake IOP has run since SetUp: each slice's budget plus its overshoot
 
 	// Runs the whole budget and a bit more, like the JIT finishing its last block, and gives back what is left (negative
 	// when it overshot), as ExecuteBlock does.
@@ -108,6 +109,9 @@ namespace
 		for (int i = 0; s_hold_slice.load() && i < 20000; i++)
 			std::this_thread::sleep_for(1ms);
 		const s32 overshoot = (ee_cycles > 0) ? (ee_cycles % 23) : 0;
+		// Before the slice returns, so anything the IOP thread does after the slice sees the clock it ended on.
+		if (ee_cycles > 0)
+			s_fake_advance.fetch_add(static_cast<u64>(ee_cycles) + overshoot);
 		return ee_cycles > 0 ? -overshoot : ee_cycles;
 	}
 
@@ -199,6 +203,7 @@ namespace
 			}
 			s_hold_slice = false;
 			s_gate = false;
+			s_fake_advance = 0;
 			s_slices_started = 0;
 			s_hook_runs = 0;
 			s_violations = 0;
@@ -764,12 +769,53 @@ TEST_F(ThreadedMachine, AnItemTheEePostsIsAppliedByTheIopThreadAndTheEeDoesNotWa
 		EXPECT_NE(item.thread, std::this_thread::get_id()) << item.what << " ran on the EE thread";
 }
 
+namespace
+{
+	// The fake IOP's clock when the vblank_end item was applied, for the test below.
+	std::atomic<u64> s_advance_at_apply{~0ull};
+	const IopThread::E2IActions kClockProbeActions = {
+		[] { Record("hblank_start"); },
+		[] { Record("hblank_end"); },
+		[] { Record("vblank_start"); },
+		[] {
+			s_advance_at_apply.store(s_fake_advance.load());
+			Record("vblank_end");
+		},
+		[](u32 line) { Record("iop_irq", line); },
+		[](u32 job) { Record("job", job); },
+	};
+
+	// A Recorder whose vblank_end action also reads the fake IOP's clock.
+	class ClockProbeRecorder
+	{
+	public:
+		ClockProbeRecorder()
+		{
+			s_seen = &m_seen;
+			m_previous = IopThread::SetE2IActionsForTests(&kClockProbeActions);
+		}
+		~ClockProbeRecorder()
+		{
+			IopThread::SetE2IActionsForTests(m_previous);
+			s_seen = nullptr;
+		}
+		const std::vector<Applied>& Items() const { return m_seen; }
+
+	private:
+		std::vector<Applied> m_seen;
+		const IopThread::E2IActions* m_previous;
+	};
+} // namespace
+
 TEST_F(ThreadedMachine, AnItemIsNotAppliedBeforeTheIopsClockReachesItsStamp)
 {
 	REQUIRE_ARM64_HOST();
 	Reset();
+	// Where the IOP starts: the EE's cycle less what the IOP is owed (design 9.1).
+	const u64 start = static_cast<u64>(cpuRegs.cycle) - static_cast<u64>(static_cast<s64>(EEsCycle));
 	StartThreaded();
-	Recorder recorder;
+	s_advance_at_apply = ~0ull;
+	ClockProbeRecorder recorder;
 
 	// A far stamp: the watermark follows it, so the IOP runs up to it and applies it then, and not before the slice that reaches it.
 	cpuRegs.cycle += 40000;
@@ -779,8 +825,14 @@ TEST_F(ThreadedMachine, AnItemIsNotAppliedBeforeTheIopsClockReachesItsStamp)
 		std::lock_guard lock(s_seen_mutex);
 		return s_seen && !s_seen->empty();
 	}));
-	// The item was applied after the IOP reached the stamp.
-	EXPECT_GE(static_cast<s64>(IopThread::g_thread.PublishedPos() - stamp), 0);
+	// The item was applied after the IOP reached the stamp. The IOP's clock at the moment of the apply is what the fake slices had
+	// added up by then. (Not PublishedPos(): the thread applies the items that fall due in a slice and publishes its position
+	// after them, IopThread.cpp RunOneSlice, so a published position read when the item is first seen can still be the previous
+	// slice's. A test that compared with it failed once in 40 repeats of the suites on a loaded machine.)
+	ASSERT_NE(s_advance_at_apply.load(), ~0ull);
+	EXPECT_GE(static_cast<s64>(start + s_advance_at_apply.load() - stamp), 0);
+	// And the position does get published, after the item.
+	EXPECT_TRUE(WaitForIop(stamp));
 	std::lock_guard lock(s_seen_mutex);
 	EXPECT_STREQ(recorder.Items()[0].what, "vblank_end");
 }
