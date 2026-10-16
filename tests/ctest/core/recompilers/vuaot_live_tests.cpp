@@ -2077,6 +2077,59 @@ TEST_F(VuAotCache, TrippedTitleStartsTheNextSessionTripped)
 	}
 }
 
+// A generation published at a slow path that has just compiled blocks for another program, still untiered,
+// leaves that program's blocks to the persisted-program recorder: the publication runs in a code-cache episode
+// of its own. (Before, the recorder dropped the slow path's whole episode once the tiered program's root
+// registered in it, and the untiered program's blocks never reached its payload: 0 to 9 episodes, up to 1,161
+// blocks, per God of War II scene on a cold launch.)
+//
+// The overlay tiers up through the jump path and its job is finished but not yet published; then the stub's
+// first word changes, so the next dispatch makes a new program for the stub and compiles its blocks, and the
+// same slow path publishes the overlay's generation (its code is still in micro memory).
+TEST_F(VuAotCache, GenerationPublishedAtAnotherProgramsSlowPathLeavesItsBlocksRecorded)
+{
+	for (bool fh : {true, false})
+	{
+		RecompilerTestEnvironment::ResetVuBlockCache(1);
+		NewProcess();
+		LiveScope scope(true, 1000000, fh, 5, /*sync=*/false);
+		VuTestHarness h(1);
+		SetupOverlay(h);
+		h.TrackMemWindow(0, 0x4000);
+		h.LoadProgram(StubAndOverlay());
+		h.RunNoDiff();
+		h.SetCycleBudget(1);
+		h.RunJitPreserveBlockCache();
+		h.SetCycleBudget(100000);
+		const u32 marker = 0x12345678;
+		std::memcpy(vuRegs[1].Micro + 0x3000, &marker, 4);
+		JobGate gate;
+		gate.Install();
+		for (u32 i = 0; i < 8; i++)
+		{
+			CpuMicroVU1.Clear(kOverlayPair * 8, 0x100);
+			h.RunJitPreserveBlockCache();
+		}
+		gate.WaitEntered();
+		const vuaot::live::Stats s0 = vuaot::live::GetStats();
+		vuaot::live::SetWorkerGate(nullptr);
+		gate.Release();
+		vuaot::live::WaitWorkerIdle();
+		// A new stub: same code but its first upper instruction (vf5 += vf2 instead of vf1).
+		const u32 upper = VADD_U(mask::xyzw, vf::vf5, vf::vf5, vf::vf2);
+		std::memcpy(vuRegs[1].Micro + 4, &upper, 4);
+		CpuMicroVU1.Clear(0, 8);
+		const mVUPersist::Stats p0 = mVUPersist::GetStats(1);
+		h.RunJitPreserveBlockCache();
+		const vuaot::live::Stats d = Delta(s0, vuaot::live::GetStats());
+		const mVUPersist::Stats p1 = mVUPersist::GetStats(1);
+		ASSERT_EQ(d.publishedGen, 1u) << "fh " << fh << ": the overlay's generation was published at the new stub's dispatch";
+		std::vector<u8> image;
+		EXPECT_TRUE(mVUPersist::TestSerializeNewestProgram(1, image)) << "fh " << fh << ": the new stub's blocks were not recorded";
+		EXPECT_GT(p1.blocksRecorded, p0.blocksRecorded) << "fh " << fh;
+	}
+}
+
 // A sidecar that is damaged, truncated, from another build, or whose read set no longer matches micro memory
 // is refused cleanly: no job from it, the payload still loads, the program tiers up by its run count as any
 // program does, and every run equals microVU's.

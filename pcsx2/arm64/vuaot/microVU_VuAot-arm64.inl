@@ -1648,6 +1648,11 @@ static void vuAotPublishGeneration(microVU& mVU, VuAotJob& j)
 
 	microProgram* const savedCur = mVU.prog.cur;
 	mVU.prog.cur = &prog;
+	// In a code-cache episode of its own, as a root's publication: the slow path's episode can hold blocks
+	// it compiled for another program, still untiered, and the persisted-program recorder drops a whole
+	// episode once a block of a tiered program is registered in it (it would lose those blocks).
+	mVUcloseCodeCache(mVU);
+	mVUopenCodeCache(mVU);
 	s_vuaot.prepared = &j;
 	mVUblockFetch(mVU, j.pc, reinterpret_cast<uptr>(&j.key));
 	if (s_vuaot.prepared == &j)
@@ -1656,6 +1661,8 @@ static void vuAotPublishGeneration(microVU& mVU, VuAotJob& j)
 		s_vuaot.prepared = nullptr;
 		s_vuaot.stats.discardTrace++;
 	}
+	mVUcloseCodeCache(mVU);
+	mVUopenCodeCache(mVU);
 	mVU.prog.cur = savedCur;
 }
 
