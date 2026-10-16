@@ -1460,7 +1460,7 @@ namespace vuaot
 			const int next = static_cast<int>(nexti);
 			if (n.br.endKind == BlockEnd::CondBranch)
 			{
-				armAsm->Cmp(W(8), 0);
+				// (the node end left the flags of its condition)
 				armAsm->B(Target(static_cast<int>(i), n.taken), BranchCond(n.br.branchKind));
 				Jump(static_cast<int>(i), n.fall, next);
 			}

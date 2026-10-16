@@ -1378,6 +1378,80 @@ static void RegionBudgetSweepBody()
 	EXPECT_EQ(failures, 0);
 }
 
+// Conditional branches and VI values across links, on the 16-bit edges: a
+// counter stepping through 0x7fff -> 0x8000 (the sign of IBLTZ and friends)
+// and 0xffff -> 0x0000 (a carry out of the low half), every branch kind,
+// against VI0 and against another VI, the counter also stored (ISW / ISWR),
+// read as a float (MFIR) and summed with IADD. Run to the end and under
+// budgets that stop the loop at its head.
+static void RegionViBranchEdgesBody();
+TEST(VuAotRegion, ViBranchEdges) { RegionViBranchEdgesBody(); }
+static void RegionViBranchEdgesBody()
+{
+	using BranchFn = u32 (*)(u32, s16);
+	struct Kind
+	{
+		const char* name;
+		bool two;
+		BranchFn one;
+	};
+	const Kind kinds[] = {
+		{"IBEQ", true, nullptr}, {"IBNE", true, nullptr},
+		{"IBLTZ", false, [](u32 is, s16 off) { return VIBLTZ_L(is, off); }},
+		{"IBGTZ", false, [](u32 is, s16 off) { return VIBGTZ_L(is, off); }},
+		{"IBLEZ", false, [](u32 is, s16 off) { return VIBLEZ_L(is, off); }},
+		{"IBGEZ", false, [](u32 is, s16 off) { return VIBGEZ_L(is, off); }},
+	};
+	int failures = 0, runs = 0;
+	u32 regions = 0;
+	for (const Kind& k : kinds)
+		for (u32 start : {0x7ffbu, 0xfffbu, 0x0003u})
+			for (u32 other : {0u, 2u})
+			{
+				if (!k.two && other)
+					continue;
+				std::vector<VuOp> p;
+				// vi1 = start (ISUBIU from VI0 reaches the top half)
+				if (start & 0x8000)
+					p.push_back(L(VISUBIU_L(vi::vi1, vi::vi0, (0x10000u - start) & 0x7fff))); // 0
+				else
+					p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, start)));                        // 0
+				p.push_back(L(VIADDIU_L(vi::vi3, vi::vi0, 11)));                                // 1
+				p.push_back(L(VISUBIU_L(vi::vi2, vi::vi0, 0x7fff)));                            // 2: vi2 = 0x8001
+				p.push_back(P(VIADDIU_L(vi::vi1, vi::vi1, 1), VADD_U(mask::xyzw, vf::vf1, vf::vf1, vf::vf2)));  // 3: head
+				p.push_back(P(VIADD_L(vi::vi5, vi::vi5, vi::vi1), VMUL_U(mask::xyz, vf::vf3, vf::vf1, vf::vf2))); // 4
+				const u32 cmp = other ? vi::vi2 : vi::vi0;
+				const s16 fwd = 2; // -> 8
+				if (k.two)
+					p.push_back(L(std::string(k.name) == "IBEQ" ? VIBEQ_L(cmp, vi::vi1, fwd) : VIBNE_L(cmp, vi::vi1, fwd))); // 5
+				else
+					p.push_back(L(k.one(vi::vi1, fwd)));                                         // 5
+				p.push_back(L(VISW_L(mask::x, vi::vi1, vi::vi3, 4)));                           // 6: delay slot
+				p.push_back(P(VMFIR_L(mask::xyzw, vf::vf4, vi::vi1), VMULx_U(mask::w, vf::vf7, vf::vf1, vf::vf2)));  // 7: not taken
+				p.push_back(P(VISUBIU_L(vi::vi3, vi::vi3, 1), VSUB_U(mask::xyzw, vf::vf5, vf::vf3, vf::vf1))); // 8
+				p.push_back(L(VIBNE_L(vi::vi3, vi::vi0, static_cast<s16>(3 - 9 - 1))));          // 9 -> 3
+				p.push_back(L(VISWR_L(mask::y, vi::vi1, vi::vi3)));                             // 10: delay slot
+				p.push_back(L(VMFIR_L(mask::xyzw, vf::vf6, vi::vi5)));                          // 11
+				p.push_back(EBit(L(VISW_L(mask::z, vi::vi5, vi::vi0, 40))));                    // 12
+				for (bool fh : {true, false})
+					for (u32 budget : {0u, 3u, 17u, 40u})
+					{
+						runs++;
+						const RegionOutcome o = RunRegion(p, fh, [](VuTestHarness& h) {
+							h.SetVf(1, 1.0f, 2.0f, 3.0f, 4.0f);
+							h.SetVf(2, 0.5f, -0.5f, 0.25f, 2.0f);
+							h.SetVi(5, 0xfff0);
+						}, budget == 0, 14, false, nullptr, budget);
+						regions += o.regions;
+						if (!o.diffs.empty() && ++failures <= 6)
+							ADD_FAILURE() << k.name << " start=" << std::hex << start << " other=" << other << std::dec
+										  << " flagHack=" << fh << " budget=" << budget << "\n" << Join(o.diffs);
+					}
+			}
+	EXPECT_EQ(failures, 0) << runs << " runs";
+	EXPECT_GT(regions, static_cast<u32>(runs / 2));
+}
+
 // Milestone 10: two loops working on different vector registers get
 // different home maps, so entering and leaving each loop moves variables
 // between registers and memory (and fills clamped copies). Every budget

@@ -1346,6 +1346,19 @@ namespace vuaot
 					case Op::StoreI:
 						mem.clear();
 						break;
+					case Op::Cond:
+					{
+						// IBEQ / IBNE against a constant 0 (VI0) and the one-operand
+						// forms test the operand itself.
+						u32 b;
+						if (in.args.size() < 2 || !in.args[1])
+							canon_[v] = C(in.args[0]);
+						else if (ConstOf(C(in.args[1]), b) && b == 0)
+							canon_[v] = C(in.args[0]);
+						else if (ConstOf(C(in.args[0]), b) && b == 0)
+							canon_[v] = C(in.args[1]);
+						break;
+					}
 					default:
 						break;
 				}
@@ -3386,8 +3399,12 @@ namespace vuaot
 			const ValueId jump = in.args[var::Count + 1];
 			if (mode_ == LowerMode::Region)
 			{
+				// The flags for the region's conditional branch: the 16-bit value
+				// against 0, as microVU's sign-extended compare. N is bit 15, Z is
+				// the low half all clear, V and C are clear. Nothing the node end
+				// emits after this sets flags.
 				if (cond)
-					armAsm->Sxth(W(kCondReg), W(IntOperand(cond)));
+					armAsm->Cmn(a64::wzr, a64::Operand(W(IntOperand(cond)), a64::LSL, 16));
 				else if (jump)
 				{
 					// JR/JALR: the target byte address, as microVU stores it in mVU.branch
