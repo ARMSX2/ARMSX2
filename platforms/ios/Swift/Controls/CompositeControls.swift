@@ -261,7 +261,7 @@ struct CompositeDPadView: View {
             CompositeDPadTouchSurface(
                 onBegan: {
                     if SettingsStore.shared.hapticFeedback {
-                        HapticManager.medium.impactOccurred()
+                        GameEventHaptics.shared.medium.impactOccurred()
                     }
                 },
                 onLocation: { offset in
@@ -589,7 +589,7 @@ struct CompositeFaceView: View {
             EmulatorBridge.shared.setPadButton(button, pressed: true)
         }
         if !newlyPressed.isEmpty, SettingsStore.shared.hapticFeedback {
-            HapticManager.medium.impactOccurred()
+            GameEventHaptics.shared.medium.impactOccurred()
         }
         pressed = next
     }

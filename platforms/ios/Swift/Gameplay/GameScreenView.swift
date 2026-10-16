@@ -538,7 +538,7 @@ struct GameScreenView: View {
                     onStop: {
                         MenuAudioPackManager.shared
                             .playStoppingGameOnMainInterface()
-                        if settings.hapticFeedback { HapticManager.medium.impactOccurred() }
+                        if settings.hapticFeedback { GameEventHaptics.shared.medium.impactOccurred() }
                         overlayRoute = .hidden
                         // Leave now rather than waiting on the shutdown notification, so nobody
                         // watches live gameplay through the card and NVRAM flush.
@@ -546,7 +546,7 @@ struct GameScreenView: View {
                         appState.stopGame()
                     },
                     onResume: {
-                        if settings.hapticFeedback { HapticManager.light.impactOccurred() }
+                        if settings.hapticFeedback { GameEventHaptics.shared.light.impactOccurred() }
                         resumeGameplayAfterControllerRelease()
                     }
                 )
@@ -923,7 +923,6 @@ struct GameScreenView: View {
                 restoreEmulationOnlyPresentation()
             } else if !appState.isEmulationOnlyMode {
                 FrameTimeDynamicResolutionController.shared.resumeAfterEmulationOnlyMode()
-                GameEventHaptics.shared.prepareForGameplaySession()
             }
             enterGameplaySystemChromeMode()
             syncFullscreenStateFromWindow()
@@ -962,7 +961,7 @@ struct GameScreenView: View {
             guard request != nil,
                   overlayRoute == .hidden,
                   !saveStateShortcutOperationActive else { return }
-            if settings.hapticFeedback { HapticManager.medium.impactOccurred() }
+            if settings.hapticFeedback { GameEventHaptics.shared.medium.impactOccurred() }
             controllerInput?.setMenuActive(true)
             controllerInput?.playFeedback(.tabTransition)
             refreshRuntimeMenuState()
@@ -1074,7 +1073,7 @@ struct GameScreenView: View {
         Button {
             controllerInput?.setMenuActive(true)
             MenuAudioPackManager.shared.playEvent(.tabTransition)
-            if settings.hapticFeedback { HapticManager.light.impactOccurred() }
+            if settings.hapticFeedback { GameEventHaptics.shared.light.impactOccurred() }
             refreshRuntimeMenuState()
             overlayRoute = .paused
         } label: {
@@ -1204,7 +1203,6 @@ struct GameScreenView: View {
 
         if !presentation.showsVirtualControls {
             ARMSX2VirtualPadMaskImageCache.releaseForEmulationOnlyMode()
-            HapticManager.releaseForEmulationOnlyMode()
         }
         GameEventHaptics.shared.releaseForEmulationOnlyMode()
         PatchStore.shared.releasePresentationResources()
