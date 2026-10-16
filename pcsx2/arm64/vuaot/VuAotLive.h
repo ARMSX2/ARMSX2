@@ -180,10 +180,10 @@ namespace vuaot
 			u64 planGenJobs = 0, planRootJobs = 0, planRootsStale = 0, planRootsCovered = 0;
 			u64 planRootsTraced = 0, planRootsUnplaced = 0, planPublishedGen = 0, planPublishedRoot = 0;
 			u64 sidecarsQueued = 0;   // programs handed to the writer
-			// Time to the first region: per program whose first generation was published, VU1 runs of
-			// the program (dispatches and JR slow-path entries) before it, VU1 dispatches of all
-			// programs from the program's creation, and VU1 cycles in that time. "plan": the subset whose
-			// generation came from a loaded sidecar.
+			// Time to the first region: per program that got a region (from any job), VU1 runs of the
+			// program (dispatches and JR slow-path entries) before it, VU1 dispatches of all programs from
+			// the program's creation, and VU1 cycles in that time (VURegs::cycle; 0 under MTVU). "plan": the
+			// subset whose tier-up came from a loaded sidecar.
 			u64 firstRegions = 0, firstRegionRuns = 0, firstRegionDispatches = 0, firstRegionCycles = 0;
 			u64 planFirstRegions = 0, planFirstRegionRuns = 0, planFirstRegionDispatches = 0, planFirstRegionCycles = 0;
 		};

@@ -127,6 +127,8 @@ struct VuAotProgramState
 	u32 planGen = 0;
 	// The generation came from a loaded plan (the time-to-first-region figures are split by it).
 	bool fromPlan = false;
+	// A region of the program has been placed (the time-to-first-region figures count the first).
+	bool hadRegion = false;
 };
 
 // A block as a job sees it. The pipeline state comes first, where microBlock
@@ -1573,6 +1575,24 @@ static void vuAotPlace(microVU& mVU, VuAotJob& j, microBlock* rootReal)
 		if (!b->snapshot && !b->pending)
 			s_vuaot.handles.push_back(std::move(b));
 	j.blocks.clear();
+	if (VuAotProgramState* const st = mVU.prog.cur->vuaot; st && j.regions && !st->hadRegion)
+	{
+		// How long the program ran on microVU's code before its first region (of any job).
+		st->hadRegion = true;
+		const microProgram& prog = *mVU.prog.cur;
+		const u64 runs = vuAotTotalRuns(prog), disp = s_vuaot.dispatches - prog.vuAotBornAt, cyc = mVU.regs().cycle - prog.vuAotBornCycle;
+		s_vuaot.stats.firstRegions++;
+		s_vuaot.stats.firstRegionRuns += runs;
+		s_vuaot.stats.firstRegionDispatches += disp;
+		s_vuaot.stats.firstRegionCycles += cyc;
+		if (st->fromPlan)
+		{
+			s_vuaot.stats.planFirstRegions++;
+			s_vuaot.stats.planFirstRegionRuns += runs;
+			s_vuaot.stats.planFirstRegionDispatches += disp;
+			s_vuaot.stats.planFirstRegionCycles += cyc;
+		}
+	}
 	s_vuaot.stats.regions += j.regions;
 	s_vuaot.stats.regionNodes += j.regionNodes;
 	s_vuaot.stats.regionExits += j.regionExits;
@@ -1608,22 +1628,6 @@ static void vuAotPublishGeneration(microVU& mVU, VuAotJob& j)
 	VuAotProgramState& st = *prog.vuaot;
 	const u32 setAside = vuAotSetAside(mVU, prog, st);
 	st.provisional.clear();
-	if (st.gen == 0 && j.accepted)
-	{
-		// (how long the program ran on microVU's code before its first region)
-		const u64 runs = vuAotTotalRuns(prog), disp = s_vuaot.dispatches - prog.vuAotBornAt, cyc = mVU.regs().cycle - prog.vuAotBornCycle;
-		s_vuaot.stats.firstRegions++;
-		s_vuaot.stats.firstRegionRuns += runs;
-		s_vuaot.stats.firstRegionDispatches += disp;
-		s_vuaot.stats.firstRegionCycles += cyc;
-		if (j.fromPlan)
-		{
-			s_vuaot.stats.planFirstRegions++;
-			s_vuaot.stats.planFirstRegionRuns += runs;
-			s_vuaot.stats.planFirstRegionDispatches += disp;
-			s_vuaot.stats.planFirstRegionCycles += cyc;
-		}
-	}
 	st.gen++;
 	st.tiers++;
 	st.runsAtTier = vuAotTotalRuns(prog);
