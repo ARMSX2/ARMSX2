@@ -2789,6 +2789,52 @@ TEST_F(VuAotCache, InstalledRegionsRunFromTheFirstDispatch)
 			}
 }
 
+// An installed program is found at every start PC it holds a block for, as one compiled by microVU is. A dispatch
+// at a start PC walks that PC's list of programs and compares ranges; only a search puts a program in a list, and
+// the regions of an installed program take their jumps inside their code, so none of its PCs has been searched. After
+// a write to micro memory that misses the program's ranges, the first dispatch at its other entry then found an empty
+// list, hashed the changed image and made a new program, which compiled the same code again (God of War II scene 3:
+// 145 programs in a second launch against 125 in the first, 16.5 G VU1 instructions against 14.1 G).
+// (Mutation: leave the lists alone at install, and the second entry makes a program.)
+TEST_F(VuAotCache, InstalledProgramIsFoundAtItsOtherEntryAfterAWriteOutsideItsRanges)
+{
+	for (bool fh : {true, false})
+	{
+		const InstallCase c = InstallCases()[0]; // two loops: entries 0 and kLoopEntry2
+		ASSERT_EQ(c.entries.size(), 2u);
+		const std::vector<Result> ref = References(c, fh, 0);
+		RecompilerTestEnvironment::ResetVuBlockCache(1);
+		NewProcess();
+		RecursiveRm(root_ + "/vu_jit");
+		std::string problems;
+		FillInstall(c, true, fh, ref, problems);
+		EXPECT_EQ(problems, "");
+		ASSERT_EQ(FindSidecars(root_ + "/vu_jit").size(), 1u);
+
+		NewProcess();
+		LiveScope s2(true, 1000000, fh, 1000000, true);
+		VuTestHarness h(1);
+		Prepare(h, c.prog, c.setup, 0);
+		h.SetStartPc(c.entries[0]);
+		h.RunNoDiff(); // (loads the program in its JIT pass, then the reset drops it and saves it)
+		mVUProgCache::FlushSidecars(1);
+		h.SetStartPc(c.entries[0]);
+		h.RunJitPreserveBlockCache(); // the program installs from its sidecar
+		EXPECT_EQ(Diff(ref[0], Take(h)), "") << "first entry";
+
+		// A write far from the program, then its other entry: the program still answers for the image.
+		const vuaot::live::Stats before = vuaot::live::GetStats();
+		const u32 marker = 0x12345678;
+		std::memcpy(vuRegs[1].Micro + 0x3000, &marker, 4);
+		CpuMicroVU1.Clear(0x3000, 8);
+		h.SetStartPc(c.entries[1]);
+		h.RunJitPreserveBlockCache();
+		EXPECT_EQ(Diff(ref[1], Take(h)), "") << "second entry";
+		const vuaot::live::Stats d = PlanDelta(before, vuaot::live::GetStats());
+		EXPECT_EQ(d.planLookups, 0u) << (fh ? "flag hack: " : "") << "the second entry made a program for the changed image";
+	}
+}
+
 // The same under cycle budgets that stop the runs inside the regions: their bails read the program word, the
 // node handles and the bail slots of installed code, and compile microVU's code for the block they stop in.
 TEST_F(VuAotCache, InstalledRegionsBailUnderSmallBudgets)

@@ -2249,6 +2249,16 @@ static void vuAotInstall(microVU& mVU, microProgram& prog, VuAotProgramState& st
 		}
 	}
 
+	// The program joins the list of every start PC it holds a block for. A dispatch at a start PC finds its
+	// program by walking that PC's list and comparing ranges (mVUsearchProg), and only a search puts a program
+	// there. In a session that compiled the program with microVU, its jumps searched these PCs one by one; the
+	// regions of an installed program take those jumps inside their code, so none of its PCs has been searched.
+	// After a micro-memory write that misses the program's ranges, the first dispatch at such a PC found an
+	// empty list, hashed the changed image and made a new program, which compiled the same code again. The
+	// comparison of ranges keeps this exact: a program whose ranges no longer match is skipped.
+	for (u32 i = 0; i < mVU.progSize / 2; i++)
+		if (prog.block[i])
+			mVUdequePushUnique(mVU.prog.prog[i], &prog);
 	mVUcloseCodeCache(mVU);
 	if (wasOpen)
 		mVUopenCodeCache(mVU);
