@@ -2558,6 +2558,25 @@ namespace
 	// straight from "no work" to the sleep handshake, and the EE publishes after a short random delay, so the
 	// EE's store and the IOP's announcement land close together in most rounds. Run with each barrier: the
 	// default (membarrier where the kernel has it) and the plain fence on both sides.
+	//
+	// How long the run goes on is set by what it has covered, not by a round count. The test only means
+	// something once the IOP has gone to sleep many times, and how often it does depends on the machine:
+	// under load the IOP's membarrier call takes longer, more publishes arrive while it is inside, the IOP
+	// then finds work and does not sleep. With 200,000 rounds fixed, a loaded machine (load average 22 to 28)
+	// gave 7,500 to 9,300 sleeps in 4 repeats of 40, and six copies of the test running at once as low as
+	// 1,100, against 20,000 to 190,000 on a quiet one; no wake-up was lost in any of them. So the run goes
+	// on past kHammerMinRounds until the IOP has slept kHammerTargetSleeps times, up to a wall-clock budget
+	// (under the fixture's watchdog, which would turn a long run into a failure of its own). Losing a
+	// wake-up fails the test at any load. Reaching the budget with fewer than kHammerFloorSleeps sleeps
+	// fails it too (a run that covered almost nothing proves nothing); between the floor and the target it
+	// passes and says so. The worst load seen so far, six copies of the test at once, slept once in 330
+	// rounds, 3 million rounds in 30 s.
+	constexpr u32 kHammerMinRounds = 200000;
+	constexpr u64 kHammerTargetSleeps = kHammerMinRounds / 20;
+	constexpr u64 kHammerFloorSleeps = kHammerTargetSleeps / 10;
+	constexpr auto kHammerBudget = 20s;
+	static_assert(std::chrono::duration_cast<std::chrono::milliseconds>(kHammerBudget).count() < IOP_THREAD_TEST_LIMIT_MS,
+		"the hammer's time budget has to end before the fixture's watchdog does");
 	struct HammerCase
 	{
 		SleepBarrier barrier;
@@ -2580,11 +2599,24 @@ namespace
 		ASSERT_TRUE(thread->Start(p));
 		Rng rng(0x5eed + static_cast<u64>(hc.barrier) * 2 + (hc.through_post ? 1 : 0));
 
-		constexpr u32 kRounds = 200000;
 		u64 cycle = 0;
 		u32 lost = 0;
-		for (u32 round = 0; round < kRounds && !aborted.load(); round++)
+		u64 rounds = 0;
+		bool budget_spent = false;
+		const auto budget_end = Clock::now() + kHammerBudget;
+		for (u64 round = 0; !aborted.load(); round++)
 		{
+			rounds = round;
+			if ((round & 4095) == 0)
+			{
+				if (round >= kHammerMinRounds && thread->GetStats().parks >= kHammerTargetSleeps)
+					break;
+				if (Clock::now() > budget_end)
+				{
+					budget_spent = true;
+					break;
+				}
+			}
 			// A random delay of 0 to a few microseconds, so that the publish falls on every phase of the IOP's
 			// way to sleep: still deciding, watching (none with idle_spin_ns = 0), announcing, in the barrier,
 			// re-checking, in the kernel.
@@ -2614,6 +2646,8 @@ namespace
 			}
 			if (!reached)
 			{
+				if (aborted.load(std::memory_order_relaxed))
+					break; // the watchdog fired: the fixture reports that, and it is not a lost wake-up
 				lost++;
 				ADD_FAILURE() << hc.name << ": round " << round << ": the IOP slept through the publish of " << cycle
 							  << " (position " << thread->PublishedPos() << ", sleeping " << thread->IsSleeping() << ")";
@@ -2627,10 +2661,16 @@ namespace
 		// The test only means something if the IOP went to sleep many times and many publishes arrived while
 		// it was on its way there. A publish that arrives before the IOP has announced `sleeping` is found
 		// without a wake-up (by its loop or by the re-check), so rounds minus wakes counts those.
-		EXPECT_GE(stats.parks, kRounds / 20) << hc.name << ": too few sleeps to have tested the handshake";
-		std::printf("[  INFO  ] %s: %u rounds, %llu sleeps, %llu wakes sent, %llu publishes found without a wake-up\n", hc.name, kRounds,
-			static_cast<unsigned long long>(stats.parks), static_cast<unsigned long long>(stats.wakes_sent),
-			static_cast<unsigned long long>(kRounds > stats.wakes_sent ? kRounds - stats.wakes_sent : 0));
+		if (lost == 0 && !aborted.load())
+		{
+			EXPECT_GE(stats.parks, budget_spent ? kHammerFloorSleeps : kHammerTargetSleeps)
+				<< hc.name << ": too few sleeps to have tested the handshake (" << rounds << " rounds, budget spent " << budget_spent << ")";
+		}
+		std::printf("[  INFO  ] %s: %llu rounds, %llu sleeps, %llu wakes sent, %llu publishes found without a wake-up%s\n", hc.name,
+			static_cast<unsigned long long>(rounds), static_cast<unsigned long long>(stats.parks),
+			static_cast<unsigned long long>(stats.wakes_sent),
+			static_cast<unsigned long long>(rounds > stats.wakes_sent ? rounds - stats.wakes_sent : 0),
+			budget_spent && stats.parks < kHammerTargetSleeps ? " (time budget spent before the sleep target)" : "");
 	}
 
 	INSTANTIATE_TEST_SUITE_P(Barriers, IopThreadSleepHandshake,
