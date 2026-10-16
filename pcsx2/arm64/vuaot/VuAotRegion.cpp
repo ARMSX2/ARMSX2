@@ -982,9 +982,12 @@ namespace vuaot
 		int ncomp = 0;
 		FindLoops(comp, cyclic, ncomp);
 		s64 net = 0;
+		// (an alias counts as its representative once more, as without merging)
 		for (size_t i = 0; i < NN; i++)
-			if (!nodes_[i]->alias)
-				net += static_cast<s64>(cyclic[i] ? 8 : 1) * (5 * static_cast<s64>(eff[i].accumulated) - 7 * static_cast<s64>(eff[i].reduces[in[i]]));
+		{
+			const size_t r = static_cast<size_t>(nodes_[i]->rep);
+			net += static_cast<s64>(cyclic[i] ? 8 : 1) * (5 * static_cast<s64>(eff[r].accumulated) - 7 * static_cast<s64>(eff[r].reduces[in[r]]));
+		}
 		if (t_.dump)
 			std::printf("[vuaot acc] root %04x: %zu nodes, net %lld\n", nodes_[0]->pc, NN, static_cast<long long>(net));
 		return net > 0;
@@ -1140,7 +1143,9 @@ namespace vuaot
 		for (size_t ni = 0; ni < NN; ni++)
 		{
 			const auto& n = nodes_[ni];
-			if (n->alias || (map != 0 && n->map != map))
+			// (an alias counts as its representative once more: the weights stay those of the
+			// variants, as without merging)
+			if (map != 0 && n->map != map)
 				continue; // a loop's map counts its own nodes; the region's map counts all
 			const u32 w = weight[ni];
 			const Function& f = n->fn;
