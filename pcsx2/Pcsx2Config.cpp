@@ -779,7 +779,6 @@ Pcsx2Config::GSOptions::GSOptions()
 	HWSpinGPUForReadbacks = false;
 	HWSpinCPUForReadbacks = false;
 	GPUPaletteConversion = false;
-	GPUTextureDecode = false;
 	AutoFlushSW = true;
 	PreloadFrameWithGSData = false;
 	Mipmap = true;
@@ -1069,7 +1068,6 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(HWSpinGPUForReadbacks);
 	SettingsWrapBitBool(HWSpinCPUForReadbacks);
 	SettingsWrapBitBoolEx(GPUPaletteConversion, "paltex");
-	SettingsWrapBitBoolEx(GPUTextureDecode, "gpu_texture_decode");
 	SettingsWrapBitBoolEx(AutoFlushSW, "autoflush_sw");
 	SettingsWrapBitBoolEx(PreloadFrameWithGSData, "preload_frame_with_gs_data");
 	SettingsWrapBitBoolEx(Mipmap, "mipmap");
