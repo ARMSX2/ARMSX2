@@ -300,6 +300,7 @@ namespace vuaot
 			persist::RegionCode code;
 			std::string notPersistable;
 			bool generation = false;
+			u32 wMemHomes = 0; // vector homes of the job's region whose w lane stayed in microVU's location
 		};
 		std::vector<RecordCodeSample> TakeRecordCodeSamples();
 		// pcsx2-vurunner --vuaot-region-bg: a region hook (VuAotMvuTrace.h's

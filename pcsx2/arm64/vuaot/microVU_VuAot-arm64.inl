@@ -290,6 +290,7 @@ struct VuAotJob final : vuaot::bg::Job
 	std::vector<u8> readMask;               // per micro-memory word: the compile read it
 	u32 regions = 0, regionNodes = 0, regionExits = 0, regionMerged = 0;
 	u64 regionBytes = 0;
+	u32 wMemHomes = 0; // vector homes whose w lane stayed in microVU's location (HomeMap::wMem)
 	std::map<std::string, u32> declined;
 	// The flag-reader census of the compile (9ab), and whether it dropped the sticky STATUS
 	// byte (relaxation 3: decided by scanning the job's copy of micro memory; publication
@@ -1147,6 +1148,7 @@ void VuAotJob::Run()
 		regionMerged = tier.Merged();
 		regionExits = tier.Exits();
 		regionBytes = tier.Bytes();
+		wMemHomes = tier.WMemHomes();
 		if (wantRecord)
 			MakeRecordCode();
 	}
@@ -1942,7 +1944,7 @@ static void vuAotPlace(microVU& mVU, VuAotJob& j, microBlock* rootReal)
 		vuAotNoteRegionPlaced(mVU, *mVU.prog.cur);
 #ifdef PCSX2_RECOMPILER_TESTS
 	if (j.wantRecord && j.accepted)
-		s_vuAotRecordSamples.push_back({j.recordCode, j.notPersistable, j.kind == VuAotJob::Generation});
+		s_vuAotRecordSamples.push_back({j.recordCode, j.notPersistable, j.kind == VuAotJob::Generation, j.wMemHomes});
 #endif
 	s_vuaot.stats.regions += j.regions;
 	s_vuaot.stats.regionNodes += j.regionNodes;

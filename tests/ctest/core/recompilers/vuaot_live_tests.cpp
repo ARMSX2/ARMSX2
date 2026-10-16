@@ -2371,6 +2371,41 @@ void SetupKick(VuTestHarness& h)
 	h.WriteMemU32(kTagQword * 16 + 12, 0);
 }
 
+// Two loops over vf5, the first reading its w lane and the second never touching it, so the region's home
+// maps differ on vf5 and its w lane stays in microVU's location in the second (HomeMap::wMem, whose loads,
+// partial stores and transfers address VU state off the pinned base). One region, the whole program.
+std::vector<VuOp> WLaneLoops()
+{
+	std::vector<VuOp> p;
+	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, 6)));                                                // 0
+	p.push_back(U(VMUL_U(mask::xyz, vf::vf5, vf::vf5, vf::vf2)));                                   // 1: head 1
+	p.push_back(U(VADD_U(mask::xyz, vf::vf6, vf::vf6, vf::vf5)));                                   // 2
+	p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), VMULw_U(mask::x, vf::vf7, vf::vf1, vf::vf5)));       // 3: reads vf5.w
+	p.push_back(U(VNOP_U()));                                                                      // 4
+	p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(1 - 5 - 1))));                         // 5 -> 1
+	p.push_back(U(VMUL_U(mask::xyz, vf::vf8, vf::vf5, vf::vf2)));                                   // 6: delay slot
+	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, 5)));                                                // 7
+	p.push_back(U(VADD_U(mask::xyz, vf::vf5, vf::vf5, vf::vf3)));                                   // 8: head 2
+	p.push_back(U(VMADD_U(mask::xyz, vf::vf6, vf::vf5, vf::vf3)));                                  // 9
+	p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), VMUL_U(mask::x | mask::y, vf::vf8, vf::vf8, vf::vf5))); // 10
+	p.push_back(U(VNOP_U()));                                                                      // 11
+	p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(8 - 12 - 1))));                        // 12 -> 8
+	p.push_back(U(VSUB_U(mask::xyz, vf::vf5, vf::vf5, vf::vf2)));                                   // 13: delay slot
+	p.push_back(P(VSQ_L(mask::xyzw, vf::vf5, vi::vi0, 0), VADD_U(mask::xyzw, vf::vf9, vf::vf5, vf::vf6))); // 14: stores vf5.w
+	p.push_back(EBit(P(VFSAND_L(vi::vi4, 0xfff), VNOP_U())));                                      // 15 (a STATUS reader: the sticky bits stay)
+	return p;
+}
+
+void SetupWLane(VuTestHarness& h)
+{
+	h.SetVf(1, 1.0f, 2.0f, 3.0f, 4.0f);
+	h.SetVf(2, 1.01f, 0.99f, 1.02f, -3.0f);
+	h.SetVf(3, 0.25f, -0.5f, 0.125f, 9.0f);
+	h.SetVf(5, 1.5f, 2.0f, 2.5f, 7.0f);
+	h.SetVf(6, 0.5f, 0.5f, 0.5f, -2.0f);
+	h.SetVf(8, 3.0f, 2.0f, 1.0f, 5.0f);
+}
+
 // The address-shaped operands of a record's code that no fixup covers: a 64-bit MOVZ/MOVK run whose
 // value lands in a mapped page of this process, a B or BL that leaves the code, and any ADRP. It reads
 // the instruction words, not the emitters, so a new emitter that bakes in an address shows here.
@@ -2468,8 +2503,10 @@ TEST_F(VuAotCache, WorkerRecordsEveryAddressItsRegionsHold)
 		{"jump loop", JumpLoop(), SetupJump, {0}},
 		{"loop into the first", LoopIntoTheFirst(), SetupLoop, {0, kLinkEntry}},
 		{"kick loop", KickLoop(), SetupKick, {0}},
+		{"w lane loops", WLaneLoops(), SetupWLane, {0}},
 	};
 	u32 counts[vuaot::persist::kTargetCount] = {};
+	u32 wMemJobs = 0;
 	for (bool sync : {true, false})
 		for (bool fh : {true, false})
 			for (const Case& c : cases)
@@ -2501,6 +2538,8 @@ TEST_F(VuAotCache, WorkerRecordsEveryAddressItsRegionsHold)
 					EXPECT_EQ(AuditRecordCode(smp.code, maps), "") << where;
 					for (const auto& f : smp.code.fixups)
 						counts[f.target]++;
+					if (smp.wMemHomes)
+						wMemJobs++;
 				}
 			}
 	EXPECT_GT(counts[vuaot::persist::kTargetPlaceholder], 0u);
@@ -2508,6 +2547,7 @@ TEST_F(VuAotCache, WorkerRecordsEveryAddressItsRegionsHold)
 	EXPECT_GT(counts[vuaot::persist::kTargetProgram], 0u);
 	EXPECT_GT(counts[vuaot::persist::kTargetNodeHandle], 0u);
 	EXPECT_GT(counts[vuaot::persist::kTargetBlockRef], 0u) << "no root region linked to a block of its program's graph";
+	EXPECT_GT(wMemJobs, 0u) << "no audited region kept a w lane in microVU's location";
 	std::printf("[record targets] intra %u placeholder %u image %u data %u blockref %u program %u handle %u\n",
 		counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], counts[6]);
 }
@@ -2530,6 +2570,7 @@ std::vector<InstallCase> InstallCases()
 		{"jump loop", JumpLoop(), SetupJump, {0}, {61, 97, 193}},
 		{"loop into the first", LoopIntoTheFirst(), SetupLoop, {0, kLinkEntry}, {61, 97}},
 		{"kick loop", KickLoop(), SetupKick, {0}, {3, 5, 9}},
+		{"w lane loops", WLaneLoops(), SetupWLane, {0}, {7, 13, 29}},
 	};
 }
 
