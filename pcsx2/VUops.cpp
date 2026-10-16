@@ -330,7 +330,8 @@ static __fi void _vuTestALUStalls(VURegs* VU, _VURegsNum* VUregsn)
 		if ((VU->cycle - VU->ialu[currentpipe].sCycle) >= VU->ialu[currentpipe].Cycle)
 			continue;
 
-		if (VU->ialu[currentpipe].reg & VUregsn->VIread) // Read and written VI regs share the same register
+		// vi0 is wired to zero: an ILW into it loads nothing and no reader of vi0 waits.
+		if (VU->ialu[currentpipe].reg & VUregsn->VIread & ~1u) // Read and written VI regs share the same register
 		{
 			u64 newCycle = VU->ialu[currentpipe].Cycle + VU->ialu[currentpipe].sCycle;
 
@@ -356,8 +357,11 @@ __fi void _vuTestLowerStalls(VURegs* VU, _VURegsNum* VUregsn)
 		case VUPIPE_FMAC: _vuTestFMACStalls(VU, VUregsn); break;
 		case VUPIPE_FDIV: _vuTestFDIVStalls(VU, VUregsn); break;
 		case VUPIPE_EFU:  _vuTestEFUStalls(VU, VUregsn); break;
-		case VUPIPE_BRANCH: _vuTestALUStalls(VU, VUregsn); break;
 	}
+
+	// Any lower op that reads a VI waits for an ILW/ILWR still loading it, not only a
+	// branch (the console and microVU do the same).
+	_vuTestALUStalls(VU, VUregsn);
 }
 
 __fi void _vuClearFMAC(VURegs* VU)

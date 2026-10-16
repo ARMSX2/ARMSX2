@@ -453,10 +453,9 @@ TEST(VuBranchIlwLoadUse, MicroVuMatchesTheConsoleOnEveryRow)
 	EXPECT_TRUE(bad.empty()) << "rows where microVU differs from the console:" << bad;
 }
 
-// TRIPWIRE -- the interpreter differs from the console on all 40 rows: it
-// stalls only a branch on the loading VI, so the writer does not wait. Enabled
-// by the change that stalls every reader.
-TEST(VuBranchIlwLoadUse, DISABLED_InterpreterMatchesTheConsoleOnEveryRow)
+// The interpreter used to differ on all 40 rows: it stalled only a branch on
+// the loading VI, so the writer did not wait.
+TEST(VuBranchIlwLoadUse, InterpreterMatchesTheConsoleOnEveryRow)
 {
 	const std::string bad = ViDwMisses(false, kVuBranchIlwUseCases, kVuBranchIlwUseCaseCount);
 	EXPECT_TRUE(bad.empty()) << "rows where the interpreter differs from the console:" << bad;

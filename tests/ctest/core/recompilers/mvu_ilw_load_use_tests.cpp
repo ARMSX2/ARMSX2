@@ -185,16 +185,15 @@ TEST(MvuIlwLoadUse, MicroVuReaderOfVi0NeverWaits)
 	EXPECT_TRUE(bad.empty()) << "microVU cycle counts that differ from the rule:" << bad;
 }
 
-// TRIPWIRE -- the interpreter stalls only a branch on the loading VI, so
-// every other reader issues too early. Enabled by the change that stalls
-// every reader.
-TEST(MvuIlwLoadUse, DISABLED_InterpreterReaderWaitsForTheLoad)
+// The interpreter used to stall only a branch on the loading VI, so every
+// other reader issued too early.
+TEST(MvuIlwLoadUse, InterpreterReaderWaitsForTheLoad)
 {
 	const std::string bad = Misses(false, false);
 	EXPECT_TRUE(bad.empty()) << "interpreter cycle counts that differ from the rule:" << bad;
 }
 
-TEST(MvuIlwLoadUse, DISABLED_InterpreterReaderOfVi0NeverWaits)
+TEST(MvuIlwLoadUse, InterpreterReaderOfVi0NeverWaits)
 {
 	const std::string bad = Misses(false, true);
 	EXPECT_TRUE(bad.empty()) << "interpreter cycle counts that differ from the rule:" << bad;
