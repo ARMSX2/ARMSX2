@@ -1074,7 +1074,6 @@
     <ClInclude Include="GS\Renderers\HW\GSSpriteEdgeSnap.h" />
     <ClInclude Include="GS\Renderers\SW\GSVertexSW.h" />
     <ClInclude Include="GS\Renderers\Common\GSVertexTrace.h" />
-    <ClInclude Include="GS\Renderers\Common\GSVramMirrorBatch.h" />
     <ClInclude Include="GS\Renderers\Common\GSVramMirrorLayout.h" />
     <ClInclude Include="GS\Renderers\Common\GSFieldShiftDetector.h" />
     <ClInclude Include="GS\Renderers\Common\GSFieldShiftPolicy.h" />

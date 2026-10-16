@@ -208,13 +208,10 @@ endif()
 
 # The swizzle include of the GPU texture decode is rendered from GSTables.cpp by this test, which fails
 # when the committed bin/resources/shaders/vulkan/vram_mirror_swizzle.glsl differs, and which also runs
-# the rendered plan against the real CPU readers. gs_vram_mirror_batch_tests.cpp is the same binary: the
-# CPU half of the mirror's batching (GSVramMirrorBatch.h) against a model of the GPU's progress. Its own
-# binary so it builds and runs in seconds.
+# the rendered plan against the real CPU readers. Its own binary so it builds and runs in seconds.
 add_pcsx2_test(gs_vram_mirror_shader_tests
 	${CMAKE_CURRENT_SOURCE_DIR}/../StubHost.cpp
 	gs_vram_mirror_shader_tests.cpp
-	gs_vram_mirror_batch_tests.cpp
 )
 
 target_include_directories(gs_vram_mirror_shader_tests PRIVATE
