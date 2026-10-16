@@ -97,6 +97,36 @@ struct VuAotProgramState
 	// (there they would not exist), and the region that holds one takes over its
 	// entry. A block stays here until a region does.
 	std::unordered_set<const microBlock*> provisional;
+
+	// The program cache's sidecar (persistence-design.md, the plan half; vuaot/VuAotPersist.h).
+	// The plans of the jobs published into the current generation, in publication order (the
+	// generation first): a new generation starts the list again. Kept only while the cache is on.
+	std::vector<std::shared_ptr<const vuaot::persist::Record>> published;
+	// `published` changed since the program's sidecar was last handed to the writer.
+	bool dirty = false;
+	// vuAotTotalRuns at the last publication: a program is saved once it has run this many
+	// runs and more without one (kSaveQuietRuns), or at the next reset.
+	u32 publishRuns = 0;
+	// XXH3 of the sidecar the program was loaded with (0: none); an identical plan is not written again.
+	u64 loadedChecksum = 0;
+	// From a loaded sidecar: the root plans, sent to the worker when the generation is published.
+	std::vector<vuaot::persist::Record> planRoots;
+	// Root jobs sent from planRoots, into generation `planGen`. When microVU compiles one of their
+	// roots first, the region hook keeps its first pass here (instead of asking for a second job),
+	// and the publication compares it with the port's, as a generation's publication does.
+	struct PlanRoot
+	{
+		u32 pc = 0;
+		alignas(16) microRegInfo key;
+		const VuAotJob* job = nullptr;
+		vuaot::persist::Record rec; // (saved again while the job is out)
+		bool haveTrace = false;
+		vuaot::MvuBlockTrace trace;
+	};
+	std::vector<std::unique_ptr<PlanRoot>> planOut;
+	u32 planGen = 0;
+	// The generation came from a loaded plan (the time-to-first-region figures are split by it).
+	bool fromPlan = false;
 };
 
 // A block as a job sees it. The pipeline state comes first, where microBlock
@@ -207,6 +237,8 @@ struct VuAotJob final : vuaot::bg::Job
 	alignas(16) microRegInfo key;
 	u64 requestedAt = 0;   // VU1 dispatches so far
 	u64 missesAtRequest = 0;
+	// Sent from a loaded sidecar's plan (a generation at load, a root once the generation is in).
+	bool fromPlan = false;
 
 	// Inputs.
 	std::unique_ptr<u8[]> micro; // micro memory when the job was made (kept: publication compares against it)
@@ -614,6 +646,37 @@ namespace vuaot::live
 			s.publishedRoot ? static_cast<double>(s.lagRootSum) / s.publishedRoot : 0.0, (unsigned long long)s.lagRootMax,
 			(unsigned long long)s.workerIns, (unsigned long long)s.publishIns, (unsigned long long)s.veneers);
 		out += buf;
+		if (s.planLookups || s.sidecarsQueued)
+		{
+			std::snprintf(buf, sizeof(buf),
+				"\n  persist: lookups=%llu loaded=%llu rejected=%llu stale=%llu gen_jobs=%llu root_jobs=%llu roots_stale=%llu "
+				"roots_covered=%llu roots_traced=%llu roots_unplaced=%llu published(gen %llu, root %llu) queued=%llu",
+				(unsigned long long)s.planLookups, (unsigned long long)s.planLoaded, (unsigned long long)s.planRejected,
+				(unsigned long long)s.planStale, (unsigned long long)s.planGenJobs, (unsigned long long)s.planRootJobs,
+				(unsigned long long)s.planRootsStale, (unsigned long long)s.planRootsCovered, (unsigned long long)s.planRootsTraced,
+				(unsigned long long)s.planRootsUnplaced, (unsigned long long)s.planPublishedGen, (unsigned long long)s.planPublishedRoot,
+				(unsigned long long)s.sidecarsQueued);
+			out += buf;
+			for (u32 i = 1; i < static_cast<u32>(vuaot::persist::ParseResult::kCount); i++)
+				if (s.planRejectedBy[i])
+				{
+					std::snprintf(buf, sizeof(buf), "\n  persist rejected: %s = %llu",
+						vuaot::persist::ParseResultName(static_cast<vuaot::persist::ParseResult>(i)), (unsigned long long)s.planRejectedBy[i]);
+					out += buf;
+				}
+		}
+		if (s.firstRegions)
+		{
+			const auto avg = [](u64 sum, u64 n) { return n ? static_cast<double>(sum) / n : 0.0; };
+			std::snprintf(buf, sizeof(buf),
+				"\n  first region: programs=%llu runs avg=%.1f dispatches avg=%.1f vu1_cycles avg=%.0f | from a plan: programs=%llu "
+				"runs avg=%.1f dispatches avg=%.1f vu1_cycles avg=%.0f",
+				(unsigned long long)s.firstRegions, avg(s.firstRegionRuns, s.firstRegions), avg(s.firstRegionDispatches, s.firstRegions),
+				avg(s.firstRegionCycles, s.firstRegions), (unsigned long long)s.planFirstRegions,
+				avg(s.planFirstRegionRuns, s.planFirstRegions), avg(s.planFirstRegionDispatches, s.planFirstRegions),
+				avg(s.planFirstRegionCycles, s.planFirstRegions));
+			out += buf;
+		}
 		if (s.compileInsTiered || s.compileInsPlain)
 		{
 			std::snprintf(buf, sizeof(buf), "\n  compile instructions: tiered programs %llu, others %llu",
@@ -1006,6 +1069,249 @@ static void vuAotCollect(VuAotJob& j)
 }
 
 //------------------------------------------------------------------
+// The saved plan (VU1 thread): persistence-design.md, the plan half
+//------------------------------------------------------------------
+
+// A program saves its plan once it has gone this many runs without a publication (the re-tier
+// check interval), or at the next reset or close.
+static constexpr u32 kSaveQuietRuns = vuaot::live::kRetierCheckMask + 1;
+
+static bool vuAotSidecarsOn(const microProgram& prog)
+{
+	return prog.contentHashValid && mVUProgCache::SidecarsEnabled(1);
+}
+
+static vuaot::persist::Identity vuAotSidecarIdentity(const microProgram& prog)
+{
+	vuaot::persist::Identity id;
+	id.contentHashLo = prog.contentHash.low64;
+	id.contentHashHi = prog.contentHash.high64;
+	if (!microVU1.optionsSentinelValid)
+		mVUbuildOptionsSentinel(microVU1);
+	id.sentinelLo = microVU1.optionsSentinel.low64;
+	id.sentinelHi = microVU1.optionsSentinel.high64;
+	mVUPersist::GetBuildId(id.buildLo, id.buildHi);
+	id.mvuAbi = kMvuCompilerAbiVersion;
+	return id;
+}
+
+// A published job's plan joins its program's list (a generation starts the list again).
+static void vuAotRecordPublished(microProgram& prog, const VuAotJob& j)
+{
+	VuAotProgramState* const st = prog.vuaot;
+	if (!st || !vuAotSidecarsOn(prog))
+		return;
+	static_assert(sizeof(microRegInfo) == vuaot::persist::kKeyBytes, "a plan's key is a microRegInfo");
+	if (j.kind == VuAotJob::Generation)
+		st->published.clear();
+	auto r = std::make_shared<vuaot::persist::Record>();
+	r->kind = (j.kind == VuAotJob::Generation) ? vuaot::persist::kGeneration : vuaot::persist::kRoot;
+	r->flags = static_cast<u8>((j.viaJump ? vuaot::persist::kViaJump : 0) | (j.opts.dropSticky ? vuaot::persist::kDropSticky : 0) |
+							   (j.stickyDropped ? vuaot::persist::kStickyDropped : 0) | (j.accepted ? vuaot::persist::kAccepted : 0));
+	r->pc = j.pc;
+	std::memcpy(r->key, &j.key, sizeof(j.key));
+	r->SetReadSet(j.readMask.data(), j.micro.get());
+	st->published.push_back(std::move(r));
+	st->dirty = true;
+	st->publishRuns = vuAotTotalRuns(prog);
+}
+
+// Hands the program's plan to the program cache's writer, which serializes and writes it off this
+// thread. A plan without its generation is not a plan: nothing to write.
+static void vuAotSaveProgram(microProgram& prog)
+{
+	VuAotProgramState* const st = prog.vuaot;
+	if (!st || !st->dirty)
+		return;
+	st->dirty = false;
+	if (st->published.empty() || st->published.front()->kind != vuaot::persist::kGeneration || !vuAotSidecarsOn(prog))
+		return;
+	struct Request
+	{
+		vuaot::persist::Identity id;
+		u32 tiers;
+		bool settled;
+		std::map<u32, std::vector<u32>> jumpTargets;
+		std::vector<std::shared_ptr<const vuaot::persist::Record>> records;
+		u64 loadedChecksum;
+	};
+	auto req = std::make_shared<Request>(Request{vuAotSidecarIdentity(prog), st->tiers, st->settled, st->jumpTargets, st->published, st->loadedChecksum});
+	// Root plans of a loaded sidecar not yet published stay in the plan: a session reset before their jobs
+	// came back must not write a smaller plan over the one it loaded.
+	if (st->planGen == st->gen)
+		for (const auto& pr : st->planOut)
+			req->records.push_back(std::make_shared<const vuaot::persist::Record>(pr->rec));
+	for (const vuaot::persist::Record& r : st->planRoots)
+		req->records.push_back(std::make_shared<const vuaot::persist::Record>(r));
+	mVUProgCache::QueueSidecar(1, prog.contentHash, [req]() {
+		vuaot::persist::File f;
+		f.id = req->id;
+		f.tiers = req->tiers;
+		f.settled = req->settled;
+		f.jumpTargets = req->jumpTargets;
+		f.records.reserve(req->records.size());
+		for (const auto& r : req->records)
+			f.records.push_back(*r);
+		std::vector<u8> bytes = vuaot::persist::Serialize(f);
+		// (the plan this program was loaded with, unchanged: the file on disk already holds it)
+		if (req->loadedChecksum && XXH3_64bits(bytes.data(), bytes.size()) == req->loadedChecksum)
+			bytes.clear();
+		return bytes;
+	});
+	s_vuaot.stats.sidecarsQueued++;
+}
+
+static void vuAotMaybeSave(microProgram& prog, u32 total)
+{
+	const VuAotProgramState& st = *prog.vuaot;
+	if (st.dirty && !st.genOutstanding && st.ready.empty() && total - st.publishRuns >= kSaveQuietRuns)
+		vuAotSaveProgram(prog);
+}
+
+// A program was created or loaded for the image now in micro memory, and nothing names it yet (no
+// quick slot, no jump cache, no code). With its sidecar found and accepted, and its generation's read
+// set matching micro memory, the program starts tiered: its generation goes to the worker now, rooted
+// where the saved one was and with the saved jump targets, and its root plans wait for the generation
+// to be published. Nothing is installed here, so the program runs microVU's code until a slow path
+// publishes the job, exactly as after a tier-up.
+void mVUvuAotOnProgramReady(microVU& mVU, microProgram& prog)
+{
+	prog.vuAotBornAt = s_vuaot.dispatches;
+	prog.vuAotBornCycle = mVU.regs().cycle;
+	if (mVU.index != 1 || !s_vuaot.enabled || prog.vuaot || !vuAotSidecarsOn(prog))
+		return;
+	s_vuaot.stats.planLookups++;
+	std::vector<u8> bytes;
+	if (!mVUProgCache::ReadSidecar(1, prog.contentHash, bytes))
+		return;
+	vuaot::persist::File f;
+	vuaot::persist::ParseResult pr = vuaot::persist::Parse(bytes.data(), bytes.size(), vuAotSidecarIdentity(prog), f);
+	if (pr == vuaot::persist::ParseResult::Ok && (f.records.empty() || f.records.front().kind != vuaot::persist::kGeneration))
+		pr = vuaot::persist::ParseResult::Malformed;
+	if (pr != vuaot::persist::ParseResult::Ok)
+	{
+		s_vuaot.stats.planRejected++;
+		s_vuaot.stats.planRejectedBy[std::min<u32>(static_cast<u32>(pr), 15)]++;
+		DevCon.WriteLn(Color_StrongBlue, "vu-aot: prog[%03d] sidecar refused (%s)", prog.idx, vuaot::persist::ParseResultName(pr));
+		return;
+	}
+	const vuaot::persist::Record& gen = f.records.front();
+	if (!gen.MatchesMicro(mVU.regs().Micro))
+	{
+		s_vuaot.stats.planStale++;
+		return;
+	}
+	s_vuaot.stats.planLoaded++;
+
+	VuAotProgramState* const st = prog.vuaot = new VuAotProgramState();
+	st->jumpTargets = f.jumpTargets;
+	for (const auto& jt : st->jumpTargets)
+		st->targetCount += static_cast<u32>(jt.second.size());
+	st->settled = f.settled;
+	// (the publication counts the generation it brings back)
+	st->tiers = f.tiers ? f.tiers - 1 : 0;
+	st->loadedChecksum = XXH3_64bits(bytes.data(), bytes.size());
+	st->fromPlan = true;
+	for (size_t i = 1; i < f.records.size(); i++)
+	{
+		if (f.records[i].MatchesMicro(mVU.regs().Micro))
+			st->planRoots.push_back(std::move(f.records[i]));
+		else
+			s_vuaot.stats.planRootsStale++;
+	}
+
+	auto j = vuAotMakeJob(mVU, prog, VuAotJob::Generation, gen.pc, gen.key);
+	j->viaJump = (gen.flags & vuaot::persist::kViaJump) != 0;
+	j->fromPlan = true;
+	st->requestRuns = 0;
+	st->missesSeen = s_vuaot.jumpMisses;
+	if (!vuAotSubmit(j))
+	{
+		st->genAttempts++;
+		return;
+	}
+	st->genOutstanding = true;
+	s_vuaot.stats.planGenJobs++;
+	// Deterministic mode: the job is finished before the program first runs, and the slow path that
+	// is loading the program publishes it (mVUvuAotAfterSearch, mVUvuAotAfterJump).
+	if (s_vuaot.synchronous)
+		vuAotWorker().Wait(j);
+}
+
+// The root plans of a loaded sidecar, once its generation is in: each goes to the worker, built against
+// the graph as it is now, unless the graph already holds its root.
+static void vuAotSubmitPlanRoots(microVU& mVU, microProgram& prog, VuAotProgramState& st)
+{
+	std::vector<vuaot::persist::Record> roots;
+	roots.swap(st.planRoots);
+	st.planOut.clear();
+	st.planGen = st.gen;
+	for (const vuaot::persist::Record& r : roots)
+	{
+		if (!r.MatchesMicro(mVU.regs().Micro))
+		{
+			s_vuaot.stats.planRootsStale++;
+			continue;
+		}
+		// (exact keys, without microBlockManager::search, which reorders what it finds)
+		bool covered = false;
+		if (microBlockManager* m = prog.block[r.pc / 8])
+			m->forEachBlock([&](microBlock& b) { covered |= std::memcmp(&b.pState, r.key, sizeof(b.pState)) == 0; });
+		if (covered)
+		{
+			s_vuaot.stats.planRootsCovered++;
+			continue;
+		}
+		auto j = vuAotMakeJob(mVU, prog, VuAotJob::Root, r.pc, r.key);
+		j->fromPlan = true;
+		vuAotSnapshotGraph(prog, nullptr, *j);
+		if (!vuAotSubmit(j))
+			continue;
+		auto out = std::make_unique<VuAotProgramState::PlanRoot>();
+		out->pc = j->pc;
+		std::memcpy(&out->key, r.key, sizeof(out->key));
+		out->job = j.get();
+		out->rec = r;
+		st.planOut.push_back(std::move(out));
+		s_vuaot.stats.planRootJobs++;
+		if (s_vuaot.synchronous)
+			vuAotWorker().Wait(j);
+	}
+}
+
+// The plan root a job was sent for, or null.
+static VuAotProgramState::PlanRoot* vuAotPlanRootOf(VuAotProgramState& st, const VuAotJob& j)
+{
+	if (!j.fromPlan || j.kind != VuAotJob::Root || st.planGen != st.gen)
+		return nullptr;
+	for (auto& pr : st.planOut)
+		if (pr->job == &j)
+			return pr.get();
+	return nullptr;
+}
+
+static void vuAotForgetPlanRoot(VuAotProgramState& st, const VuAotJob& j)
+{
+	for (auto it = st.planOut.begin(); it != st.planOut.end(); ++it)
+		if ((*it)->job == &j)
+		{
+			st.planOut.erase(it);
+			return;
+		}
+}
+
+void mVUvuAotSaveAll(microVU& mVU)
+{
+	if (mVU.index != 1)
+		return;
+	for (const auto& entry : mVU.mvuContentMap)
+		if (entry.second)
+			vuAotSaveProgram(*entry.second);
+	for (microProgram* prog : mVU.mvuOrphanedProgs)
+		vuAotSaveProgram(*prog);
+}
+
+//------------------------------------------------------------------
 // Publishing (VU1 thread)
 //------------------------------------------------------------------
 
@@ -1199,6 +1505,22 @@ static void vuAotPublishGeneration(microVU& mVU, VuAotJob& j)
 	VuAotProgramState& st = *prog.vuaot;
 	const u32 setAside = vuAotSetAside(mVU, prog, st);
 	st.provisional.clear();
+	if (st.gen == 0 && j.accepted)
+	{
+		// (how long the program ran on microVU's code before its first region)
+		const u64 runs = vuAotTotalRuns(prog), disp = s_vuaot.dispatches - prog.vuAotBornAt, cyc = mVU.regs().cycle - prog.vuAotBornCycle;
+		s_vuaot.stats.firstRegions++;
+		s_vuaot.stats.firstRegionRuns += runs;
+		s_vuaot.stats.firstRegionDispatches += disp;
+		s_vuaot.stats.firstRegionCycles += cyc;
+		if (j.fromPlan)
+		{
+			s_vuaot.stats.planFirstRegions++;
+			s_vuaot.stats.planFirstRegionRuns += runs;
+			s_vuaot.stats.planFirstRegionDispatches += disp;
+			s_vuaot.stats.planFirstRegionCycles += cyc;
+		}
+	}
 	st.gen++;
 	st.tiers++;
 	st.runsAtTier = vuAotTotalRuns(prog);
@@ -1230,6 +1552,19 @@ static void vuAotPublishGeneration(microVU& mVU, VuAotJob& j)
 	mVU.prog.cur = savedCur;
 }
 
+// Empties every quick slot that holds `prog`, so every jump cache that knew its old entries asks again.
+static void vuAotDropQuickSlots(microVU& mVU, microProgram& prog)
+{
+	for (u32 i = 0; i < mVU.progSize / 2; i++)
+		if (mVU.prog.quick[i].prog == &prog)
+		{
+			mVU.prog.quick[i].prog = nullptr;
+			mVU.prog.quick[i].block = nullptr;
+			// prog.quickOcc has a bit for each slot that holds a program, and mVUclear visits only those.
+			mVU.prog.quickOcc[i >> 6] &= ~(u64(1) << (i & 63));
+		}
+}
+
 // A region rooted at a block microVU compiled on its own while the job ran:
 // placed in a code-cache episode of its own (so the persisted-program recorder
 // never takes its bytes for microVU's), its nodes take over the entries of the
@@ -1246,14 +1581,30 @@ static void vuAotPublishRoot(microVU& mVU, VuAotJob& j)
 	mVUcloseCodeCache(mVU);
 	mVUopenCodeCache(mVU);
 	mVU.prog.cur = savedCur;
-	for (u32 i = 0; i < mVU.progSize / 2; i++)
-		if (mVU.prog.quick[i].prog == &prog)
-		{
-			mVU.prog.quick[i].prog = nullptr;
-			mVU.prog.quick[i].block = nullptr;
-			// prog.quickOcc has a bit for each slot that holds a program, and mVUclear visits only those.
-			mVU.prog.quickOcc[i >> 6] &= ~(u64(1) << (i & 63));
-		}
+	vuAotDropQuickSlots(mVU, prog);
+}
+
+// A root from a loaded plan whose root microVU has not compiled: its root is compiled now, in an
+// episode of its own, and the compile finds the job prepared and places it there (as a generation's
+// root compile does: vuAotLiveRegionHook compares microVU's first pass with the port's first). The
+// region's other nodes may take over blocks microVU compiled since the generation, so the program's
+// quick slots are dropped as for any root. Returns whether the region went in.
+static bool vuAotPublishPlanRootByCompile(microVU& mVU, VuAotJob& j)
+{
+	microProgram& prog = *j.prog;
+	microProgram* const savedCur = mVU.prog.cur;
+	mVU.prog.cur = &prog;
+	mVUcloseCodeCache(mVU);
+	mVUopenCodeCache(mVU);
+	s_vuaot.prepared = &j;
+	mVUblockFetch(mVU, j.pc, reinterpret_cast<uptr>(&j.key));
+	const bool placed = s_vuaot.prepared != &j;
+	s_vuaot.prepared = nullptr;
+	mVUcloseCodeCache(mVU);
+	mVUopenCodeCache(mVU);
+	mVU.prog.cur = savedCur;
+	vuAotDropQuickSlots(mVU, prog);
+	return placed;
 }
 
 // Whether live micro memory has a sticky STATUS reader; if it has, the tripwire goes off.
@@ -1291,6 +1642,8 @@ static bool vuAotPublishReady(microVU& mVU, microProgram& prog, bool loaded)
 				if (st->gen == 0)
 					st->genAttempts++;
 			}
+			else if (j.fromPlan)
+				vuAotForgetPlanRoot(*st, j);
 		};
 		if (j.gen != st->gen)
 		{
@@ -1325,6 +1678,41 @@ static bool vuAotPublishReady(microVU& mVU, microProgram& prog, bool loaded)
 			s_vuaot.stats.lagGenMax = std::max(s_vuaot.stats.lagGenMax, lag);
 			st->genOutstanding = false;
 			vuAotPublishGeneration(mVU, j);
+			vuAotRecordPublished(prog, j);
+			if (j.fromPlan)
+				s_vuaot.stats.planPublishedGen++;
+			if (!st->planRoots.empty())
+				vuAotSubmitPlanRoots(mVU, prog, *st);
+		}
+		else if (VuAotProgramState::PlanRoot* const pr = vuAotPlanRootOf(*st, j))
+		{
+			// A root from a loaded plan: microVU's first pass of the root against the port's, from the
+			// compile microVU made of it meanwhile, or from the compile made for it now.
+			bool placed = false;
+			if (pr->haveTrace)
+			{
+				if (!vuaot::CompareBlockTraces(pr->trace, j.rootTrace).empty())
+				{
+					s_vuaot.stats.discardTrace++;
+					s_vuaot.stats.regionDeclined["timing port disagrees"]++;
+				}
+				else
+				{
+					vuAotPublishRoot(mVU, j);
+					placed = true;
+				}
+			}
+			else if (!(placed = vuAotPublishPlanRootByCompile(mVU, j)))
+				s_vuaot.stats.planRootsUnplaced++;
+			vuAotForgetPlanRoot(*st, j);
+			if (placed)
+			{
+				s_vuaot.stats.publishedRoot++;
+				s_vuaot.stats.planPublishedRoot++;
+				s_vuaot.stats.lagRootSum += lag;
+				s_vuaot.stats.lagRootMax = std::max(s_vuaot.stats.lagRootMax, lag);
+				vuAotRecordPublished(prog, j);
+			}
 		}
 		else
 		{
@@ -1332,6 +1720,7 @@ static bool vuAotPublishReady(microVU& mVU, microProgram& prog, bool loaded)
 			s_vuaot.stats.lagRootSum += lag;
 			s_vuaot.stats.lagRootMax = std::max(s_vuaot.stats.lagRootMax, lag);
 			vuAotPublishRoot(mVU, j);
+			vuAotRecordPublished(prog, j);
 		}
 		changed = true;
 	}
@@ -1362,7 +1751,12 @@ static bool vuAotDrainAndPublish(microVU& mVU, microProgram* cur)
 			}
 			VuAotProgramState& st = *j->prog->vuaot;
 			if (j->kind == VuAotJob::Root && !j->accepted)
-				continue; // (nothing to publish; microVU's block stays)
+			{
+				// (nothing to publish; microVU's block stays)
+				if (j->fromPlan)
+					vuAotForgetPlanRoot(st, *j);
+				continue;
+			}
 			if (std::find(touched.begin(), touched.end(), j->prog) == touched.end())
 				touched.push_back(j->prog);
 			st.ready.push_back(std::move(j));
@@ -1465,17 +1859,25 @@ void* mVUlookupProgTier_VU1(u32 startPC, u32 cycles)
 			return nullptr;
 		}
 	}
-	else if (!st->settled && !st->genOutstanding)
+	else
 	{
 		const u32 total = runs + prog->vuAotJumpRuns;
 		if ((total >> kCheckShift) != st->checkBlock)
 		{
-			// a look for new targets is due; the crossing is used up either way
-			st->checkBlock = total >> kCheckShift;
-			if (st->missesSeen != s_vuaot.jumpMisses)
+			// A quiet program with a new plan hands it to the program cache's writer (no slow path
+			// needed). (A settled program no longer moves checkBlock, so this asks at every run
+			// until the plan is handed over.)
+			if (st->dirty)
+				vuAotMaybeSave(*prog, total);
+			if (!st->settled && !st->genOutstanding)
 			{
-				s_vuaot.pending = true;
-				return nullptr;
+				// a look for new targets is due; the crossing is used up either way
+				st->checkBlock = total >> kCheckShift;
+				if (st->missesSeen != s_vuaot.jumpMisses)
+				{
+					s_vuaot.pending = true;
+					return nullptr;
+				}
 			}
 		}
 	}
@@ -1655,6 +2057,9 @@ void* mVUvuAotAfterJump(microVU& mVU, u32 startPC, uptr pState, void* result)
 		// A tiered program looks for new targets once per unit of runs, as on the
 		// dispatch path, not at every entry.
 		const u32 total = vuAotTotalRuns(*prog);
+		// (a program the dispatcher never enters saves its plan from here)
+		if (st->dirty && (total >> kCheckShift) != st->checkBlock)
+			vuAotMaybeSave(*prog, total);
 		if (st->settled || (total >> kCheckShift) == st->checkBlock)
 			return result;
 		st->checkBlock = total >> kCheckShift;
@@ -1777,6 +2182,21 @@ static bool vuAotLiveRegionHook(const vuaot::MvuBlockTrace& b, const vuaot::MvuE
 			return true;
 		}
 	}
+	// A root a loaded plan has already sent to the worker: no second job. microVU compiles the block
+	// as its own for now (as for any root whose job is out), and its first pass is kept for the
+	// publication's check.
+	if (!st.planOut.empty() && st.planGen == st.gen)
+		for (auto& pr : st.planOut)
+			if (!pr->haveTrace && pr->pc == b.startPC && std::memcmp(&pr->key, b.entryState, sizeof(pr->key)) == 0)
+			{
+				pr->haveTrace = true;
+				pr->trace = b;
+				s_vuaot.stats.planRootsTraced++;
+				st.provisional.insert(static_cast<const microBlock*>(env.rootBlock));
+				if (!vuAotUnderPlainRoot())
+					s_vuaot.plainRootDepth = s_vuaot.compileDepth;
+				return false;
+			}
 	if (vuAotUnderPlainRoot())
 	{
 		st.provisional.insert(static_cast<const microBlock*>(env.rootBlock));
@@ -1802,6 +2222,7 @@ static bool vuAotLiveRegionHook(const vuaot::MvuBlockTrace& b, const vuaot::MvuE
 			return false;
 		s_vuaot.stats.publishedRoot++;
 		vuAotPlace(mVU, *j, static_cast<microBlock*>(env.rootBlock));
+		vuAotRecordPublished(*mVU.prog.cur, *j);
 		return true;
 	}
 	vuAotSubmit(j);

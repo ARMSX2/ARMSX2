@@ -5,6 +5,7 @@
 // macros, so they come first.
 #include "vuaot/VuAotBackground.h"
 #include "vuaot/VuAotLive.h"
+#include "vuaot/VuAotPersist.h"
 #include "vuaot/VuAotRegion.h"
 #include "vuaot/VuAotTier.h"
 
@@ -1270,7 +1271,9 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	// Checkpoint the live programs to the on-disk program cache before we
 	// free them. Subsequent process boots can hit this VU image without
 	// re-emitting. SaveAllPrograms is idempotent (no-op on hashes already
-	// in the on-disk INDEX) so calling on every reset is cheap.
+	// in the on-disk INDEX) so calling on every reset is cheap. The vu-aot
+	// tier hands its programs' plans to the cache's writer first.
+	mVUvuAotSaveAll(mVU);
 	mVUProgCache::SaveAllPrograms(mVU);
 
 	// Single ownership lives in mVU.mvuContentMap. Free each program
@@ -1314,7 +1317,9 @@ void mVUclose(microVU& mVU)
 
 	// Final checkpoint of live programs to the on-disk cache before we let
 	// the contentMap go. Mirrors the mVUreset path; harmless if nothing
-	// new has been added since the last reset.
+	// new has been added since the last reset. The vu-aot tier's plans go to the
+	// cache's writer first; Close writes them before it returns.
+	mVUvuAotSaveAll(mVU);
 	mVUProgCache::SaveAllPrograms(mVU);
 	mVUProgCache::Close(mVU);
 	mVUvuAotOnClose(mVU);
@@ -1712,6 +1717,10 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 			mVU.prog.cleared = 0;
 			mVU.prog.isSame  = 1;
 			mVU.prog.cur     = hydrated;
+			// The vu-aot tier reads the program's saved plan, if it has one, before anything can
+			// reach the program: no quick slot or jump cache names it yet.
+			if constexpr (vuIndex == 1)
+				mVUvuAotOnProgramReady(mVU, *hydrated);
 			mVUquickInstall(mVU, slot, hydrated);
 			quick.block      = hydrated->block[startPC / 8];
 			if (quick.block == nullptr)
@@ -1728,6 +1737,8 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 		mVU.prog.cleared = 0;
 		mVU.prog.isSame  = 1;
 		mVU.prog.cur     = mVUcreateProg(mVU, mVU.regs().start_pc/8, liveHash);
+		if constexpr (vuIndex == 1)
+			mVUvuAotOnProgramReady(mVU, *mVU.prog.cur);
 		void* entryPoint = mVUblockFetch(mVU,  startPC, pState);
 		quick.block      = mVU.prog.cur->block[startPC/8];
 		mVUquickInstall(mVU, slot, mVU.prog.cur);

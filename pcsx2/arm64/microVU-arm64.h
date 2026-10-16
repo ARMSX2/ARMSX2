@@ -557,6 +557,10 @@ struct microProgram
 	// microVU, [1] at a loop head (written by the region's own bail code, which reaches
 	// the program through the bail record).
 	u64 vuAotBails[2];
+	// VU1 dispatches and VU1 cycles when the program was created or loaded (how long it waited for
+	// its first region).
+	u64 vuAotBornAt;
+	u64 vuAotBornCycle;
 };
 
 typedef std::deque<microProgram*> microProgramList;
@@ -1111,6 +1115,13 @@ extern void* mVUvuAotAfterJump(microVU& mVU, u32 startPC, uptr pState, void* res
 extern void  mVUvuAotLiveHooks(microVU& mVU, vuaot::VuAotRegionHook& region, void*& regionUser,
 	vuaot::VuAotBodyHook& body, void*& bodyUser);
 extern void  mVUvuAotOnProgramDeleted(microProgram& prog);
+// A program was just created, or loaded from the disk cache, for the image in micro memory (from
+// mVUsearchProg, before it is installed in a quick slot): with the program cache on, the tier reads
+// its saved plan and sends the jobs it describes to the worker.
+extern void  mVUvuAotOnProgramReady(microVU& mVU, microProgram& prog);
+// Before a reset or close frees the programs: every program whose plan changed since its sidecar was
+// written goes to the program cache's writer.
+extern void  mVUvuAotSaveAll(microVU& mVU);
 extern void  mVUvuAotOnJumpMiss(microVU& mVU);
 extern void  mVUvuAotOnBail();
 extern void  mVUvuAotOnClose(microVU& mVU);

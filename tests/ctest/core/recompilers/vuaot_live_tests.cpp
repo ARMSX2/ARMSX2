@@ -19,6 +19,7 @@
 #include "arm64/microVU_Persist-arm64.h"
 #include "arm64/microVU_ProgCache-arm64.h"
 #include "arm64/vuaot/VuAotLive.h"
+#include "arm64/vuaot/VuAotPersist.h"
 
 #include "common/FileSystem.h"
 
@@ -30,6 +31,7 @@
 #include <cstring>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1699,7 +1701,10 @@ TEST_F(VuAotCache, LoadedProgramsTierUpAndStayExact)
 				EXPECT_EQ(Diff(ref, Take(h)), "") << where << ": the first run of the loaded program";
 				EXPECT_GE(mVUProgCache::GetStats(1).payloadHits, 1u) << where << ": the program was not loaded from the cache";
 				EXPECT_EQ(mVUProgCache::GetStats(1).payloadRejects, 0u) << where;
-				EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), compiles0) << where << ": the load compiled blocks";
+				// (filled by the tier, the program's saved plan sends its generation as it loads, and the
+				// publication compiles the region's root and exits: VuAotCache.SavedPlanTiersUpAtTheFirstRun)
+				if (!fillWithTier)
+					EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), compiles0) << where << ": the load compiled blocks";
 				const vuaot::live::Stats before = vuaot::live::GetStats();
 				for (int i = 0; i < 14; i++)
 				{
@@ -1787,6 +1792,438 @@ TEST_F(VuAotCache, LoadedStickyReaderTripsTheWire)
 			EXPECT_GT(after.tierUps, before.tierUps);
 			EXPECT_EQ(after.stickyDropped, before.stickyDropped) << "no region built after the trip drops the sticky byte";
 		}
+}
+
+
+//------------------------------------------------------------------
+// The saved plan (persistence-design.md, the plan half): with the program cache on, a tiered program's
+// regions are saved as their plan (roots, jump targets, the micro-memory words each compile read) in a
+// sidecar next to its payload, and a later session sends the jobs to the worker as the program loads.
+//------------------------------------------------------------------
+
+namespace
+{
+// Every sidecar under `dir`.
+std::vector<std::string> FindSidecars(const std::string& dir)
+{
+	std::vector<std::string> out;
+	FileSystem::FindResultsArray ents;
+	FileSystem::FindFiles(dir.c_str(), "*.vuaot", FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_RECURSIVE, &ents);
+	for (const auto& e : ents)
+		out.push_back(e.FileName);
+	return out;
+}
+
+// The identity a sidecar claims (FileHeader: mvuAbi at 12, content hash at 32, sentinel at 48, build at 64).
+vuaot::persist::Identity ClaimedIdentity(const std::vector<u8>& b)
+{
+	vuaot::persist::Identity id;
+	if (b.size() < 80)
+		return id;
+	std::memcpy(&id.mvuAbi, b.data() + 12, 4);
+	std::memcpy(&id.contentHashLo, b.data() + 32, 8);
+	std::memcpy(&id.contentHashHi, b.data() + 40, 8);
+	std::memcpy(&id.sentinelLo, b.data() + 48, 8);
+	std::memcpy(&id.sentinelHi, b.data() + 56, 8);
+	std::memcpy(&id.buildLo, b.data() + 64, 8);
+	std::memcpy(&id.buildHi, b.data() + 72, 8);
+	return id;
+}
+
+vuaot::live::Stats PlanDelta(const vuaot::live::Stats& a, const vuaot::live::Stats& b)
+{
+	vuaot::live::Stats d = Delta(a, b);
+	d.planLookups -= a.planLookups;
+	d.planLoaded -= a.planLoaded;
+	d.planRejected -= a.planRejected;
+	d.planStale -= a.planStale;
+	for (int i = 0; i < 16; i++)
+		d.planRejectedBy[i] -= a.planRejectedBy[i];
+	d.planGenJobs -= a.planGenJobs;
+	d.planRootJobs -= a.planRootJobs;
+	d.planRootsStale -= a.planRootsStale;
+	d.planRootsCovered -= a.planRootsCovered;
+	d.planRootsTraced -= a.planRootsTraced;
+	d.planRootsUnplaced -= a.planRootsUnplaced;
+	d.planPublishedGen -= a.planPublishedGen;
+	d.planPublishedRoot -= a.planPublishedRoot;
+	d.planFirstRegions -= a.planFirstRegions;
+	d.planFirstRegionRuns -= a.planFirstRegionRuns;
+	d.sidecarsQueued -= a.sidecarsQueued;
+	return d;
+}
+
+// Two counted loops, the second entered at its own PC: after the tier-up, a dispatch there is a root
+// whose region the builder accepts (it has a loop). The first loop's end reads the sticky bits, so the
+// image sets the tripwire off and the regions keep them (runs compare byte for byte with microVU's).
+constexpr u32 kLoopEntry2 = 64 * 8;
+std::vector<VuOp> TwoLoopProg()
+{
+	std::vector<VuOp> p = CountedLoop(10);
+	while (p.size() < kLoopEntry2 / 8)
+		p.push_back(U(VNOP_U()));
+	std::vector<VuOp> loop2 = CountedLoop(6);
+	loop2.back() = EBit(P(VFSAND_L(vi::vi4, 0x03f), VNOP_U()));
+	for (const VuOp& op : loop2)
+		p.push_back(op);
+	return p;
+}
+
+// Session one of a plan test: the tier on, TwoLoopProg tiered up, its second entry run under the tier
+// (a root job), and the reset that saves. Returns the number of sidecars on disk afterwards.
+size_t FillPlan(const std::string& root, bool sync, bool fh, const Result& ref, const Result& ref2)
+{
+	LiveScope s1(true, 4, fh, vuaot::live::kJumpTierUpRuns, sync);
+	VuTestHarness h(1);
+	Prepare(h, TwoLoopProg(), SetupLoop, 0);
+	h.RunNoDiff();
+	for (int i = 0; i < 12; i++)
+	{
+		h.RunJitPreserveBlockCache();
+		EXPECT_EQ(Diff(ref, Take(h)), "") << "session one, run " << i;
+		if (!sync)
+			vuaot::live::WaitWorkerIdle();
+	}
+	for (int i = 0; i < 2; i++)
+	{
+		h.SetStartPc(kLoopEntry2);
+		h.RunJitPreserveBlockCache();
+		EXPECT_EQ(Diff(ref2, Take(h)), "") << "session one, the second entry";
+		if (!sync)
+			vuaot::live::WaitWorkerIdle();
+	}
+	h.SetStartPc(0);
+	h.RunJitPreserveBlockCache();
+	RecompilerTestEnvironment::ResetVuBlockCache(1); // (the save)
+	mVUProgCache::FlushSidecars(1);
+	return FindSidecars(root + "/vu_jit").size();
+}
+} // namespace
+
+// A tiered program's plan is saved, and the next session tiers the program up from it as it loads: the
+// generation is published at the first runs (the tier-up threshold is out of reach in session two), the
+// root plan (the second entry) is published before that entry has ever run, and every run equals microVU's.
+// Nothing about the saved plan is code, so nothing it holds can run.
+TEST_F(VuAotCache, SavedPlanTiersUpAtTheFirstRun)
+{
+	for (bool sync : {true, false})
+		for (bool fh : {true, false})
+		{
+			const std::string where = std::string(sync ? "sync" : "background") + (fh ? ", flag hack" : "");
+			const Result ref = Reference(TwoLoopProg(), SetupLoop, fh);
+			const Result ref2 = Reference(TwoLoopProg(), SetupLoop, fh, kLoopEntry2);
+			RecompilerTestEnvironment::ResetVuBlockCache(1);
+			NewProcess();
+			RecursiveRm(root_ + "/vu_jit");
+			ASSERT_EQ(FillPlan(root_, sync, fh, ref, ref2), 1u) << where << ": one program, one sidecar";
+			EXPECT_GE(mVUProgCache::GetStats(1).sidecarWrites, 1u) << where;
+
+			NewProcess();
+			LiveScope s2(true, 1000000, fh, 1000000, sync);
+			const vuaot::live::Stats s0 = vuaot::live::GetStats();
+			VuTestHarness h(1);
+			Prepare(h, TwoLoopProg(), SetupLoop, 0);
+			h.RunNoDiff();
+			EXPECT_EQ(Diff(ref, Take(h)), "") << where << ": the first run";
+			for (int i = 0; i < 4; i++)
+			{
+				if (!sync)
+					vuaot::live::WaitWorkerIdle();
+				h.RunJitPreserveBlockCache();
+				EXPECT_EQ(Diff(ref, Take(h)), "") << where << ": run " << i;
+			}
+			const vuaot::live::Stats d = PlanDelta(s0, vuaot::live::GetStats());
+			EXPECT_GE(d.planLoaded, 1u) << where;
+			EXPECT_EQ(d.planRejected, 0u) << where;
+			EXPECT_GE(d.planGenJobs, 1u) << where;
+			EXPECT_GE(d.planPublishedGen, 1u) << where << ": the generation from the plan was published";
+			EXPECT_GE(d.publishedGen, 1u) << where;
+			EXPECT_GE(d.planRootJobs, 1u) << where << ": the second entry's root plan was sent";
+			EXPECT_GE(d.planPublishedRoot, 1u) << where << ": and published before the entry ran";
+			EXPECT_GE(d.planFirstRegions, 1u) << where;
+			EXPECT_LE(d.planFirstRegionRuns, 4u * d.planFirstRegions) << where << ": regions within the first runs";
+			EXPECT_GE(mVUProgCache::GetStats(1).payloadHits, 1u) << where << ": the payload loaded too";
+			for (int i = 0; i < 3; i++)
+			{
+				h.SetStartPc(kLoopEntry2);
+				h.RunJitPreserveBlockCache();
+				EXPECT_EQ(Diff(ref2, Take(h)), "") << where << ": the second entry, run " << i;
+				h.SetStartPc(0);
+				h.RunJitPreserveBlockCache();
+				EXPECT_EQ(Diff(ref, Take(h)), "") << where << ": the first entry again, run " << i;
+			}
+			const vuaot::live::Stats d2 = PlanDelta(s0, vuaot::live::GetStats());
+			EXPECT_EQ(d2.jobsRoot - d.jobsRoot, 0u) << where << ": the second entry asked for no job of its own";
+			EXPECT_EQ(d2.tierUps, d2.planPublishedGen) << where << ": every tier-up came from the plan";
+		}
+}
+
+// A session that loads a plan and is reset (a savestate load, a settings change) while the root plans'
+// jobs are still out saves the plan again with those roots in it: a reset must not write a smaller plan
+// over the one the session loaded. (Mutation: save only what was published, and the second session's file
+// has the generation alone.)
+TEST_F(VuAotCache, ResetBeforeTheRootsArriveKeepsThePlan)
+{
+	const bool fh = true;
+	const Result ref = Reference(TwoLoopProg(), SetupLoop, fh);
+	const Result ref2 = Reference(TwoLoopProg(), SetupLoop, fh, kLoopEntry2);
+	RecompilerTestEnvironment::ResetVuBlockCache(1);
+	NewProcess();
+	RecursiveRm(root_ + "/vu_jit");
+	ASSERT_EQ(FillPlan(root_, true, fh, ref, ref2), 1u);
+	const std::string path = FindSidecars(root_ + "/vu_jit").front();
+	const auto records = [&]() -> size_t {
+		const std::optional<std::vector<u8>> b = FileSystem::ReadBinaryFile(path.c_str());
+		vuaot::persist::File f;
+		if (!b.has_value() || vuaot::persist::Parse(b->data(), b->size(), ClaimedIdentity(*b), f) != vuaot::persist::ParseResult::Ok)
+			return 0;
+		return f.records.size();
+	};
+	const size_t saved = records();
+	ASSERT_GE(saved, 2u) << "the plan has its generation and a root";
+
+	NewProcess();
+	{
+		LiveScope s2(true, 1000000, fh, 1000000, /*sync=*/false);
+		VuTestHarness h(1);
+		Prepare(h, TwoLoopProg(), SetupLoop, 0);
+		h.RunNoDiff();
+		h.RunJitPreserveBlockCache(); // (the load: the generation goes to the worker)
+		vuaot::live::WaitWorkerIdle();
+		JobGate gate;
+		gate.Install();
+		h.RunJitPreserveBlockCache(); // the generation is published, its root plan sent and held
+		EXPECT_EQ(Diff(ref, Take(h)), "");
+		gate.WaitEntered();
+		const vuaot::live::Stats st = vuaot::live::GetStats();
+		EXPECT_GE(st.planPublishedGen, 1u);
+		// The reset saves (the root job is still held), then the job is let go.
+		RecompilerTestEnvironment::ResetVuBlockCache(1);
+		mVUProgCache::FlushSidecars(1);
+		vuaot::live::SetWorkerGate(nullptr);
+		gate.Release();
+		vuaot::live::WaitWorkerIdle();
+	}
+	EXPECT_EQ(records(), saved) << "the reset wrote a plan without the root that was still out";
+}
+
+// A sidecar that is damaged, truncated, from another build, or whose read set no longer matches micro memory
+// is refused cleanly: no job from it, the payload still loads, the program tiers up by its run count as any
+// program does, and every run equals microVU's.
+TEST_F(VuAotCache, DamagedOrStaleSidecarIsRefused)
+{
+	const bool fh = true;
+	const Result ref = Reference(TwoLoopProg(), SetupLoop, fh);
+	const Result ref2 = Reference(TwoLoopProg(), SetupLoop, fh, kLoopEntry2);
+	RecompilerTestEnvironment::ResetVuBlockCache(1);
+	NewProcess();
+	RecursiveRm(root_ + "/vu_jit");
+	ASSERT_EQ(FillPlan(root_, true, fh, ref, ref2), 1u);
+	const std::string path = FindSidecars(root_ + "/vu_jit").front();
+	const std::optional<std::vector<u8>> good = FileSystem::ReadBinaryFile(path.c_str());
+	ASSERT_TRUE(good.has_value() && good->size() > 100);
+
+	enum Case
+	{
+		FlipByte,
+		Truncate,
+		Empty,
+		OtherBuild,
+		WrongWord,
+		WrongRootWord,
+		Garbage,
+	};
+	for (Case c : {FlipByte, Truncate, Empty, OtherBuild, WrongWord, WrongRootWord, Garbage})
+	{
+		std::vector<u8> bytes = *good;
+		bool overrideBuild = false;
+		switch (c)
+		{
+			case FlipByte: bytes[bytes.size() / 2] ^= 0x40; break;
+			case Truncate: bytes.resize(bytes.size() - 13); break;
+			case Empty: bytes.resize(3); break;
+			case OtherBuild: overrideBuild = true; break;
+			case Garbage:
+				for (size_t i = 0; i < bytes.size(); i++)
+					bytes[i] = static_cast<u8>(i * 131 + 7);
+				break;
+			case WrongWord:
+			case WrongRootWord:
+			{
+				vuaot::persist::File f;
+				ASSERT_EQ(vuaot::persist::Parse(bytes.data(), bytes.size(), ClaimedIdentity(bytes), f), vuaot::persist::ParseResult::Ok);
+				const size_t which = (c == WrongWord) ? 0 : f.records.size() - 1;
+				ASSERT_TRUE(c == WrongWord || f.records.size() >= 2) << "the plan has a root record";
+				ASSERT_FALSE(f.records[which].readValues.empty());
+				f.records[which].readValues[0] ^= 0x100; // as if the image there had changed
+				bytes = vuaot::persist::Serialize(f);
+				break;
+			}
+		}
+		const std::string where = std::string("case ") + std::to_string(int(c));
+		ASSERT_TRUE(FileSystem::WriteBinaryFile(path.c_str(), bytes.data(), bytes.size()));
+		NewProcess();
+		if (overrideBuild)
+			mVUPersist::TestOverrideBuildId(true, 0x1234, 0x5678);
+		{
+			LiveScope s2(true, 4, fh, vuaot::live::kJumpTierUpRuns, true);
+			const vuaot::live::Stats s0 = vuaot::live::GetStats();
+			VuTestHarness h(1);
+			Prepare(h, TwoLoopProg(), SetupLoop, 0);
+			h.RunNoDiff();
+			EXPECT_EQ(Diff(ref, Take(h)), "") << where;
+			for (int i = 0; i < 12; i++)
+			{
+				h.RunJitPreserveBlockCache();
+				EXPECT_EQ(Diff(ref, Take(h)), "") << where << " run " << i;
+			}
+			h.SetStartPc(kLoopEntry2);
+			h.RunJitPreserveBlockCache();
+			EXPECT_EQ(Diff(ref2, Take(h)), "") << where << " second entry";
+			h.SetStartPc(0);
+			const vuaot::live::Stats d = PlanDelta(s0, vuaot::live::GetStats());
+			EXPECT_GE(mVUProgCache::GetStats(1).payloadHits, 1u) << where << ": the payload still loads";
+			EXPECT_GE(d.tierUps, 1u) << where << ": the program tiers up by its run count";
+			switch (c)
+			{
+				case WrongRootWord:
+					EXPECT_GE(d.planLoaded, 1u) << where;
+					EXPECT_GE(d.planRootsStale, 1u) << where << ": the root plan whose word changed is dropped";
+					EXPECT_EQ(d.planRootJobs, 0u) << where;
+					break;
+				case WrongWord:
+					EXPECT_EQ(d.planLoaded, 0u) << where;
+					EXPECT_GE(d.planStale, 1u) << where << ": the generation's read set no longer matches";
+					EXPECT_EQ(d.planGenJobs, 0u) << where;
+					break;
+				default:
+					EXPECT_EQ(d.planLoaded, 0u) << where;
+					EXPECT_GE(d.planRejected, 1u) << where;
+					EXPECT_EQ(d.planGenJobs, 0u) << where;
+					break;
+			}
+			if (c == OtherBuild)
+				EXPECT_GE(d.planRejectedBy[static_cast<int>(vuaot::persist::ParseResult::OtherBuild)], 1u);
+			if (c == FlipByte || c == Truncate)
+				EXPECT_GE(d.planRejectedBy[static_cast<int>(vuaot::persist::ParseResult::BadChecksum)], 1u) << where;
+		}
+		mVUPersist::TestOverrideBuildId(false, 0, 0);
+		RecompilerTestEnvironment::ResetVuBlockCache(1);
+		mVUProgCache::FlushSidecars(1);
+	}
+}
+
+// The jump cache fault of compiler-design.md 9ah, over a program loaded with its plan: the overlay a stub
+// JRs into is loaded from the cache, its generation comes from the plan, and its root plan (a second entry
+// the session never runs) is held in the worker, then published at the stub's JR slow path. Then a new
+// routine is written over the overlay and the stub jumps there: every run equals microVU alone, so the jump
+// cache entry the slow path filled names a program (vuAotRefetch), and nothing the load did wrote a quick
+// slot.
+TEST_F(VuAotCache, LoadedOverlayRootPublishedAtAJumpLeavesNoUncheckedJumpCacheEntry)
+{
+	for (bool fh : {true, false})
+	{
+		// session one: the overlay tiers up through the jump path; the second entry becomes a root
+		RecompilerTestEnvironment::ResetVuBlockCache(1);
+		NewProcess();
+		RecursiveRm(root_ + "/vu_jit");
+		{
+			LiveScope s1(true, 1000000, fh, 5, /*sync=*/false);
+			VuTestHarness h(1);
+			SetupOverlay(h);
+			h.TrackMemWindow(0, 0x4000);
+			h.LoadProgram(StubOverlayAndSecondEntry());
+			h.RunNoDiff();
+			h.SetCycleBudget(1);
+			h.RunJitPreserveBlockCache();
+			h.SetCycleBudget(100000);
+			const u32 marker = 0x12345678;
+			std::memcpy(vuRegs[1].Micro + 0x3000, &marker, 4);
+			for (u32 i = 0; i < 10; i++)
+			{
+				CpuMicroVU1.Clear(kOverlayPair * 8, 0x100);
+				h.RunJitPreserveBlockCache();
+				vuaot::live::WaitWorkerIdle();
+			}
+			h.SetStartPc(kOverlayEntry2 * 8);
+			h.RunJitPreserveBlockCache();
+			vuaot::live::WaitWorkerIdle();
+			h.RunJitPreserveBlockCache();
+			h.SetStartPc(0);
+			CpuMicroVU1.Clear(kOverlayPair * 8, 0x100);
+			h.RunJitPreserveBlockCache();
+			RecompilerTestEnvironment::ResetVuBlockCache(1);
+			mVUProgCache::FlushSidecars(1);
+		}
+		ASSERT_GE(FindSidecars(root_ + "/vu_jit").size(), 1u) << "flagHack=" << fh;
+
+		const auto sequence = [&](bool on, vuaot::live::Stats& d) {
+			std::vector<Result> out;
+			NewProcess();
+			LiveScope scope(on, 1000000, fh, 1000000, /*sync=*/false);
+			const vuaot::live::Stats s0 = vuaot::live::GetStats();
+			VuTestHarness h(1);
+			SetupOverlay(h);
+			h.TrackMemWindow(0, 0x4000);
+			h.LoadProgram(StubOverlayAndSecondEntry());
+			h.RunNoDiff();
+			out.push_back(Take(h));
+			h.SetCycleBudget(1);
+			h.RunJitPreserveBlockCache();
+			out.push_back(Take(h));
+			h.SetCycleBudget(100000);
+			const u32 marker = 0x12345678;
+			std::memcpy(vuRegs[1].Micro + 0x3000, &marker, 4);
+			// The stub JRs into the overlay: it loads with its plan, and the generation goes to the worker.
+			CpuMicroVU1.Clear(kOverlayPair * 8, 0x100);
+			h.RunJitPreserveBlockCache();
+			out.push_back(Take(h));
+			if (on)
+				vuaot::live::WaitWorkerIdle();
+			// The generation is published at this run's slow path; the root plan it sends is held.
+			JobGate gate;
+			if (on)
+				gate.Install();
+			CpuMicroVU1.Clear(kOverlayPair * 8, 0x100);
+			h.RunJitPreserveBlockCache();
+			out.push_back(Take(h));
+			if (on)
+				gate.WaitEntered();
+			// The stub up to its JR's block; the job finishes; the stub resumes into the JR slow path.
+			CpuMicroVU1.Clear(kOverlayPair * 8, 0x100);
+			h.SetCycleBudget(1);
+			h.RunJitPreserveBlockCache();
+			out.push_back(Take(h));
+			if (on)
+			{
+				vuaot::live::SetWorkerGate(nullptr);
+				gate.Release();
+				vuaot::live::WaitWorkerIdle();
+			}
+			h.ContinueJit(100000, 4);
+			out.push_back(Take(h));
+			d = PlanDelta(s0, vuaot::live::GetStats());
+			// A new routine where the overlay was; the stub jumps to it.
+			h.SetCycleBudget(100000);
+			WriteNewOverlay();
+			for (u32 i = 0; i < 3; i++)
+			{
+				h.RunJitPreserveBlockCache();
+				out.push_back(Take(h));
+			}
+			return out;
+		};
+		vuaot::live::Stats off{}, on{};
+		const std::vector<Result> ref = sequence(false, off);
+		const std::vector<Result> got = sequence(true, on);
+		ASSERT_EQ(ref.size(), got.size());
+		for (size_t i = 0; i < ref.size(); i++)
+			EXPECT_EQ(Diff(ref[i], got[i]), "") << "flagHack=" << fh << " run " << i;
+		EXPECT_GE(on.planLoaded, 1u) << "flagHack=" << fh;
+		EXPECT_EQ(on.planPublishedGen, 1u) << "flagHack=" << fh << ": the overlay's generation came from its plan";
+		EXPECT_GE(on.planRootJobs, 1u) << "flagHack=" << fh << ": the second entry's root plan was sent";
+		EXPECT_EQ(on.planPublishedRoot, on.planRootJobs) << "flagHack=" << fh << ": and published (one at the stub's JR)";
+	}
 }
 
 } // namespace recompiler_tests

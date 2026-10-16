@@ -161,6 +161,27 @@ namespace vuaot
 			u64 publishIns = 0;
 			u64 veneers = 0;          // branches from placed code to targets out of B/BL range
 			std::map<std::string, u32> regionDeclined;
+
+			// The program cache's sidecars (the saved plans, persistence-design.md). A program created or
+			// loaded with the cache on looks for its sidecar: found and accepted (planLoaded), refused by
+			// the parser (planRejected, by reason in planRejectedBy), or accepted but its generation's
+			// read set no longer matches micro memory (planStale). An accepted plan sends its generation
+			// at once (planGenJobs) and its roots when the generation is in (planRootJobs); a root plan is
+			// dropped when its read set no longer matches (planRootsStale) or when the graph already holds
+			// its root (planRootsCovered). planRootsTraced: microVU compiled a sent root before its job
+			// came back; planRootsUnplaced: a root job came back but its root was already compiled
+			// without the hook seeing it, so nothing was placed.
+			u64 planLookups = 0, planLoaded = 0, planRejected = 0, planStale = 0;
+			u64 planRejectedBy[16] = {};
+			u64 planGenJobs = 0, planRootJobs = 0, planRootsStale = 0, planRootsCovered = 0;
+			u64 planRootsTraced = 0, planRootsUnplaced = 0, planPublishedGen = 0, planPublishedRoot = 0;
+			u64 sidecarsQueued = 0;   // programs handed to the writer
+			// Time to the first region: per program whose first generation was published, VU1 runs of
+			// the program (dispatches and JR slow-path entries) before it, VU1 dispatches of all
+			// programs from the program's creation, and VU1 cycles in that time. "plan": the subset whose
+			// generation came from a loaded sidecar.
+			u64 firstRegions = 0, firstRegionRuns = 0, firstRegionDispatches = 0, firstRegionCycles = 0;
+			u64 planFirstRegions = 0, planFirstRegionRuns = 0, planFirstRegionDispatches = 0, planFirstRegionCycles = 0;
 		};
 
 		// Whether the tier runs this session (EnableVUAot, VU1 recompiled, no
