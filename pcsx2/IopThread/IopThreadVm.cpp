@@ -52,6 +52,9 @@ namespace IopThread
 		// The testing knob for S_min (design 5.3); 0 runs a slice whenever there is budget.
 		s32 s_min_slice = 0;
 
+		// The testing knob for the idle-watch window (Params::idle_spin_ns).
+		u32 s_idle_spin_ns = kDefaultIdleSpinNs;
+
 		// The pause hold (design 9.3), kept for as long as the VM stays paused.
 		std::optional<ScopedHold> s_pause_hold;
 
@@ -139,6 +142,7 @@ namespace IopThread
 			params.mode = s_mode;
 			params.lag = ClampLag(EmuConfig.Speedhacks.iopThreadLag);
 			params.min_slice = s_mode == IopThreadMode::Threaded ? s_min_slice : 0;
+			params.idle_spin_ns = s_idle_spin_ns;
 			params.start_ee_cycle = cpuRegs.cycle;
 			params.start_iop_pos = IopPosition();
 			params.fpcr = EmuConfig.Cpu.FPUFPCR;
@@ -277,7 +281,8 @@ namespace IopThread
 			Console.WriteLn(Color_StrongGreen, "IOP thread: started in %s mode.", names[static_cast<int>(s_mode)]);
 			if (s_mode == IopThreadMode::Threaded)
 			{
-				Console.WriteLn(Color_StrongGreen, "IOP thread: lag bound %d EE cycles, minimum slice %d.", g_thread.Lag(), static_cast<int>(s_min_slice));
+				Console.WriteLn(Color_StrongGreen, "IOP thread: lag bound %d EE cycles, minimum slice %d, idle watch %u us.", g_thread.Lag(),
+					static_cast<int>(s_min_slice), s_idle_spin_ns / 1000u);
 				if (eeEventTestIsActive && !s_start_hold)
 				{
 					// Started from inside an event test: stopped until the next one (see g_start_hold_pending).
@@ -674,6 +679,16 @@ namespace IopThread
 	s32 ThreadedMinSlice()
 	{
 		return s_min_slice;
+	}
+
+	void SetThreadedIdleSpinNs(u32 ns)
+	{
+		s_idle_spin_ns = ns;
+	}
+
+	u32 ThreadedIdleSpinNs()
+	{
+		return s_idle_spin_ns;
 	}
 
 	// ================================================================ counters

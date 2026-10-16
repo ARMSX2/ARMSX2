@@ -226,6 +226,10 @@ namespace IopThread
 	/// S_min for the next Start() (design 5.3: 0 by default; step 11 and 12 measure 256). Not a setting.
 	void SetThreadedMinSlice(s32 min_slice);
 	s32 ThreadedMinSlice();
+	/// The idle-watch window for the next Start(): how long an idle IOP watches the watermark before it sleeps
+	/// (Params::idle_spin_ns; default kDefaultIdleSpinNs). Not a setting.
+	void SetThreadedIdleSpinNs(u32 ns);
+	u32 ThreadedIdleSpinNs();
 
 	// ---- Counters ------------------------------------------------------------------------------
 	/// One line of the Threaded counters, per frame over the time since the last call, for the OSD. Empty unless

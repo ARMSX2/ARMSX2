@@ -744,6 +744,8 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --iop-min-slice N: Threaded IOP thread: S_min, the budget in EE cycles the IOP lets build up before it runs a\n");
 	std::fprintf(stderr, "               slice (design 5.3). Default 0 (run whenever there is budget). A measurement knob, not a setting.\n");
 	std::fprintf(stderr, "  --iop-spin-hint yield|isb: the instruction the Threaded spin loops use between looks (default yield).\n");
+	std::fprintf(stderr, "  --iop-idle-spin-us N: Threaded IOP thread: how long an idle IOP watches the watermark before it sleeps, in\n");
+	std::fprintf(stderr, "               microseconds (0 sleeps at once). Default: the built-in window. A measurement knob, not a setting.\n");
 	std::fprintf(stderr, "  --iop-stats-every N: in a --liverun, log the Threaded IOP counters per frame every N frames. The IOPSTATS: line\n");
 	std::fprintf(stderr, "               at the end of the run gives the whole-run figures.\n");
 	std::fprintf(stderr, "  --set Section/Key=Value: base-layer settings override, applied after the harness pinning\n");
@@ -1053,6 +1055,17 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					return false;
 				}
 				IopThread::SetThreadedMinSlice(v.value());
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--iop-idle-spin-us"))
+			{
+				const auto v = StringUtil::FromChars<u32>(argv[++i]);
+				if (!v.has_value() || v.value() > 4'000'000)
+				{
+					Console.Error("--iop-idle-spin-us expects a number of microseconds, 0 to 4000000.");
+					return false;
+				}
+				IopThread::SetThreadedIdleSpinNs(v.value() * 1000u);
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--iop-spin-hint"))
