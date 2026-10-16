@@ -1649,6 +1649,74 @@ static bool vuAotHasRoom(microVU& mVU, const VuAotJob& j)
 	return armGetCurrentCodePointer() + j.code.size() + (1u << 20) < limit;
 }
 
+// Registers a region node as the program's (mVU.prog.cur's) block for (pc, key): `rootReal` when microVU is
+// compiling the node (a generation's root), else the block the graph already has for the key (whose entry the
+// node takes over), else a new one. Its entry becomes `entry`.
+static microBlock* vuAotRegisterNode(microVU& mVU, u32 pc, const microRegInfo& key, u8* entry, microBlock* rootReal)
+{
+	microBlock* b = rootReal;
+	if (!b)
+	{
+		alignas(16) microRegInfo k = key;
+		blockCreate(pc / 8);
+		b = mVUblocks[pc / 8]->search(mVU, &k);
+		if (!b)
+		{
+			alignas(16) microBlock t;
+			std::memset(&t, 0, sizeof(t));
+			t.pState = key;
+			b = mVUblocks[pc / 8]->add(mVU, &t);
+		}
+	}
+	if (VuAotProgramState* st = mVU.prog.cur->vuaot)
+		st->provisional.erase(b);
+	b->x86ptrStart = entry;
+	b->hostEntry = entry;
+	return b;
+}
+
+// Aims the B or BL at `at` (placed code) at `to`. A target out of B/BL range (a C helper, from the code
+// cache) goes through a veneer placed at the cursor, one per target: x16 is the branch's scratch, as in
+// armEmitCall's long form.
+static void vuAotPatchBranch(u8* at, const void* to, std::map<const void*, const u8*>& veneers)
+{
+	u32* const insn = reinterpret_cast<u32*>(armGetWritableCodePtr(at));
+	if (vuaot::bg::PatchRel26(insn, at, to))
+		return;
+	auto it = veneers.find(to);
+	if (it == veneers.end())
+	{
+		const u8* v = armGetCurrentCodePointer();
+		armAsm->Mov(a64::x16, reinterpret_cast<uintptr_t>(to));
+		armAsm->Br(a64::x16);
+		it = veneers.emplace(to, v).first;
+		s_vuaot.stats.veneers++;
+	}
+	pxAssertRel(vuaot::bg::PatchRel26(insn, at, it->second), "vu-aot: a region branch out of reach of its veneer");
+}
+
+// A region of `prog` is in place: the first one of the program counts how long it ran on microVU's code
+// before it (of any job).
+static void vuAotNoteRegionPlaced(microVU& mVU, const microProgram& prog)
+{
+	VuAotProgramState* const st = prog.vuaot;
+	if (!st || st->hadRegion)
+		return;
+	st->hadRegion = true;
+	const u64 runs = vuAotTotalRuns(prog), disp = s_vuaot.dispatches - prog.vuAotBornAt, cyc = mVU.regs().cycle - prog.vuAotBornCycle;
+	s_vuaot.stats.firstRegions++;
+	s_vuaot.stats.firstRegionRuns += runs;
+	s_vuaot.stats.firstRegionDispatches += disp;
+	s_vuaot.stats.firstRegionCycles += cyc;
+	if (st->fromPlan)
+	{
+		s_vuaot.stats.planFirstRegions++;
+		s_vuaot.stats.planFirstRegionRuns += runs;
+		s_vuaot.stats.planFirstRegionDispatches += disp;
+		s_vuaot.stats.planFirstRegionCycles += cyc;
+	}
+}
+
 // Places a job's code at the cursor of the open episode and wires it into
 // the graph of mVU.prog.cur (the job's program): its nodes become the
 // program's blocks for their keys (taking over the entry of a block already
@@ -1676,25 +1744,8 @@ static void vuAotPlace(microVU& mVU, VuAotJob& j, microBlock* rootReal)
 	// The nodes, the root first, in the order the region registered them.
 	for (VuAotWBlock* n : j.nodes)
 	{
-		microBlock* b = (n == j.root) ? rootReal : nullptr;
-		if (!b)
-		{
-			blockCreate(n->pc / 8);
-			b = mVUblocks[n->pc / 8]->search(mVU, &n->pState);
-			if (!b)
-			{
-				alignas(16) microBlock t;
-				std::memset(&t, 0, sizeof(t));
-				t.pState = n->pState;
-				b = mVUblocks[n->pc / 8]->add(mVU, &t);
-			}
-		}
 		pxAssertRel(n->hasEntry, "vu-aot: a region node without an entry");
-		if (VuAotProgramState* st = mVU.prog.cur->vuaot)
-			st->provisional.erase(b);
-		b->x86ptrStart = base + n->entryOff;
-		b->hostEntry = base + n->entryOff;
-		n->real = b;
+		n->real = vuAotRegisterNode(mVU, n->pc, n->pState, base + n->entryOff, (n == j.root) ? rootReal : nullptr);
 	}
 	for (const auto& r : j.ranges)
 		vuAotAddRange(1, r.first, r.second);
@@ -1744,10 +1795,8 @@ static void vuAotPlace(microVU& mVU, VuAotJob& j, microBlock* rootReal)
 			pxAssertRel(vuaot::bg::PatchAbsMov(reinterpret_cast<u32*>(armGetWritableCodePtr(base + f.offset)), reinterpret_cast<u64>(target[f.id])),
 				"vu-aot: an address in a region is not where its fixup says");
 
-	// The branches to placeholders and to the outside world. A target out of
-	// B/BL range (a C helper, from the code cache) goes through a veneer
-	// placed after the code: x16 is the branch's scratch, as in armEmitCall's
-	// long form.
+	// The branches to placeholders and to the outside world (through a veneer
+	// placed after the code when out of reach).
 	std::map<const void*, const u8*> veneers;
 	for (const vuaot::bg::Fixup& f : j.fixups)
 	{
@@ -1755,44 +1804,15 @@ static void vuAotPlace(microVU& mVU, VuAotJob& j, microBlock* rootReal)
 			continue;
 		const void* to = (f.kind == vuaot::bg::Fixup::Site26) ? target[f.id] : reinterpret_cast<const void*>(f.value);
 		pxAssertRel(to, "vu-aot: a region branch with no target");
-		u8* const at = base + f.offset;
-		u32* const insn = reinterpret_cast<u32*>(armGetWritableCodePtr(at));
-		if (vuaot::bg::PatchRel26(insn, at, to))
-			continue;
-		auto it = veneers.find(to);
-		if (it == veneers.end())
-		{
-			const u8* v = armGetCurrentCodePointer();
-			armAsm->Mov(a64::x16, reinterpret_cast<uintptr_t>(to));
-			armAsm->Br(a64::x16);
-			it = veneers.emplace(to, v).first;
-			s_vuaot.stats.veneers++;
-		}
-		pxAssertRel(vuaot::bg::PatchRel26(insn, at, it->second), "vu-aot: a region branch out of reach of its veneer");
+		vuAotPatchBranch(base + f.offset, to, veneers);
 	}
 
 	for (auto& b : j.blocks)
 		if (!b->snapshot && !b->pending)
 			s_vuaot.handles.push_back(std::move(b));
 	j.blocks.clear();
-	if (VuAotProgramState* const st = mVU.prog.cur->vuaot; st && j.regions && !st->hadRegion)
-	{
-		// How long the program ran on microVU's code before its first region (of any job).
-		st->hadRegion = true;
-		const microProgram& prog = *mVU.prog.cur;
-		const u64 runs = vuAotTotalRuns(prog), disp = s_vuaot.dispatches - prog.vuAotBornAt, cyc = mVU.regs().cycle - prog.vuAotBornCycle;
-		s_vuaot.stats.firstRegions++;
-		s_vuaot.stats.firstRegionRuns += runs;
-		s_vuaot.stats.firstRegionDispatches += disp;
-		s_vuaot.stats.firstRegionCycles += cyc;
-		if (st->fromPlan)
-		{
-			s_vuaot.stats.planFirstRegions++;
-			s_vuaot.stats.planFirstRegionRuns += runs;
-			s_vuaot.stats.planFirstRegionDispatches += disp;
-			s_vuaot.stats.planFirstRegionCycles += cyc;
-		}
-	}
+	if (j.regions)
+		vuAotNoteRegionPlaced(mVU, *mVU.prog.cur);
 #ifdef PCSX2_RECOMPILER_TESTS
 	if (j.wantRecord && j.accepted)
 		s_vuAotRecordSamples.push_back({j.recordCode, j.notPersistable, j.kind == VuAotJob::Generation});
