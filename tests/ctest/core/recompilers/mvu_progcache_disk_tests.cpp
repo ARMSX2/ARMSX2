@@ -39,8 +39,11 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -514,6 +517,261 @@ TEST_F(MvuProgCacheDisk, PayloadOfAnotherBuildIsRefusedAndReplaced)
 	cstats = mVUProgCache::GetStats(0);
 	EXPECT_GE(cstats.payloadHits, 1u) << "the build that saved the replacement could not load it";
 	mVUPersist::TestOverrideBuildId(false, 0, 0);
+}
+
+//------------------------------------------------------------------
+// The preload budget: the most recently used programs come first, the rest
+// load when their program appears, and programs unused for long are deleted.
+//------------------------------------------------------------------
+
+namespace
+{
+// Programs that differ only in the destination of the last op: one content hash each.
+std::vector<vu::VuOp> Variant(u32 k)
+{
+	return {
+		UpperOnly(VADD_U(mask::xyzw, vf::vf3, vf::vf1, vf::vf2)),
+		UpperOnly(VMUL_U(mask::xyzw, vf::vf4, vf::vf3, vf::vf2)),
+		UpperOnly(bits::E | VSUB_U(mask::xyzw, vf::vf5 + k, vf::vf4, vf::vf1)),
+	};
+}
+
+void SeedVariant(VuTestHarness& h, u32 k)
+{
+	h.SetVf(1, 1.5f, -2.25f, 3.0f, 0.0625f);
+	h.SetVf(2, 4.0f, 0.5f, -1.0f, 8.0f);
+	h.LoadProgram(Variant(k));
+	CpuMicroVU0.Clear(0, VU0_PROGSIZE);
+}
+
+XXH128_hash_t HashOfPayload(const std::string& path)
+{
+	const std::string name(Path::GetFileName(path));
+	XXH128_hash_t h;
+	h.high64 = std::strtoull(name.substr(0, 16).c_str(), nullptr, 16);
+	h.low64 = std::strtoull(name.substr(16, 16).c_str(), nullptr, 16);
+	return h;
+}
+
+// The file's last-use time, `days` ago (the preload's ranking and age-out read it).
+void SetAge(const std::string& path, double days)
+{
+	std::error_code ec;
+	std::filesystem::last_write_time(path,
+		std::filesystem::file_time_type::clock::now() - std::chrono::duration_cast<std::filesystem::file_time_type::duration>(
+			std::chrono::duration<double, std::ratio<86400>>(days)), ec);
+	ASSERT_FALSE(ec) << path;
+}
+
+double AgeDays(const std::string& path)
+{
+	std::error_code ec;
+	const auto t = std::filesystem::last_write_time(path, ec);
+	if (ec)
+		return -1.0;
+	return std::chrono::duration<double, std::ratio<86400>>(std::filesystem::file_time_type::clock::now() - t).count();
+}
+} // namespace
+
+// K programs, each saved on its own: variant k's payload path.
+class MvuProgCachePreload : public MvuProgCacheDisk
+{
+protected:
+	static constexpr u32 kPrograms = 4;
+
+	// The sidecars are read for the vu-aot tier only. Turning it on changes the options sentinel (the reset
+	// rebuilds it), so it goes on before the cache directory is first written.
+	struct AotOn
+	{
+		AotOn()
+		{
+			saved = EmuConfig.Cpu.Recompiler.EnableVUAot;
+			EmuConfig.Cpu.Recompiler.EnableVUAot = true;
+			RecompilerTestEnvironment::ResetVuBlockCache(0);
+		}
+		~AotOn() { EmuConfig.Cpu.Recompiler.EnableVUAot = saved; }
+		bool saved;
+	};
+
+	void SaveVariants()
+	{
+		h_ = std::make_unique<VuTestHarness>(0);
+		VuTestHarness& h = *h_;
+		InitDiskCache();
+		for (u32 k = 0; k < kPrograms; k++)
+		{
+			SeedVariant(h, k);
+			h.Run();
+			h.RunJitPreserveBlockCache();
+			RecompilerTestEnvironment::ResetVuBlockCache(0); // saves variant k
+			std::vector<std::string> now;
+			FindPayloads(vu0_root(), now);
+			ASSERT_EQ(now.size(), k + 1u);
+			for (const std::string& p : now)
+				if (std::find(paths_.begin(), paths_.end(), p) == paths_.end())
+					paths_.push_back(p);
+			ASSERT_EQ(paths_.size(), k + 1u);
+		}
+		ASSERT_EQ(mVUProgCache::GetStats(0).payloadWrites, kPrograms);
+	}
+
+	// A new session over the same directory, the preload budget `bytes` (0: the default).
+	void Reopen(size_t bytes)
+	{
+		mVUProgCache::ResetForTest(0);
+		mVUProgCache::TestSetPreloadBudget(0, bytes);
+		mVUProgCache::TestReinitFromLiveSentinel(0);
+		mVUProgCache::TestWaitForPreload(0);
+	}
+
+	size_t SizeOf(const std::string& path) { return static_cast<size_t>(FileSystem::GetPathFileSize(path.c_str())); }
+
+	std::vector<std::string> paths_; // variant k's payload
+	std::unique_ptr<VuTestHarness> h_;
+};
+
+TEST_F(MvuProgCachePreload, ThePreloadTakesTheMostRecentlyUsedFirst)
+{
+	SaveVariants();
+	// Last used: variant 2 (a day ago), 0 (two), 3 (three), 1 (four). Not the order they were saved in.
+	const u32 rank[kPrograms] = {2, 0, 3, 1}; // newest first
+	SetAge(paths_[2], 1);
+	SetAge(paths_[0], 2);
+	SetAge(paths_[3], 3);
+	SetAge(paths_[1], 4);
+	const size_t two = SizeOf(paths_[rank[0]]) + SizeOf(paths_[rank[1]]);
+
+	Reopen(two);
+	auto cstats = mVUProgCache::GetStats(0);
+	EXPECT_EQ(cstats.preloadedPayloads, 2u);
+	EXPECT_EQ(cstats.preloadBudgetHit, 1u);
+	EXPECT_EQ(cstats.preloadReadBytes, two);
+	for (u32 i = 0; i < kPrograms; i++)
+		EXPECT_EQ(mVUProgCache::TestIsPreloaded(0, HashOfPayload(paths_[rank[i]]), false), i < 2) << "rank " << i;
+
+	// A budget of one byte less than the two takes one; of everything, all four.
+	Reopen(two - 1);
+	EXPECT_EQ(mVUProgCache::GetStats(0).preloadedPayloads, 1u);
+	EXPECT_TRUE(mVUProgCache::TestIsPreloaded(0, HashOfPayload(paths_[rank[0]]), false));
+	size_t all = 0;
+	for (const std::string& p : paths_)
+		all += SizeOf(p);
+	Reopen(all);
+	cstats = mVUProgCache::GetStats(0);
+	EXPECT_EQ(cstats.preloadedPayloads, 4u);
+	EXPECT_EQ(cstats.preloadBudgetHit, 0u);
+}
+
+TEST_F(MvuProgCachePreload, AProgramNotPreloadedLoadsWhenItAppearsAndRanksFirstAfterwards)
+{
+	SaveVariants();
+	SetAge(paths_[0], 1);
+	SetAge(paths_[1], 2);
+	SetAge(paths_[2], 3);
+	SetAge(paths_[3], 4);
+	const size_t two = SizeOf(paths_[0]) + SizeOf(paths_[1]);
+	Reopen(two);
+	ASSERT_EQ(mVUProgCache::GetStats(0).preloadedPayloads, 2u);
+	ASSERT_FALSE(mVUProgCache::TestIsPreloaded(0, HashOfPayload(paths_[3]), false));
+
+	// Variant 3 was not preloaded: it is read from disk and hydrated, no compile.
+	VuTestHarness& h = *h_;
+	SeedVariant(h, 3);
+	const u64 compiles_before = mVUPersist::GetBlockCompileCount(0);
+	h.RunJitPreserveBlockCache();
+	EXPECT_EQ(mVUPersist::GetBlockCompileCount(0), compiles_before) << "the program compiled instead of loading from disk";
+	auto cstats = mVUProgCache::GetStats(0);
+	EXPECT_EQ(cstats.payloadHits, 1u);
+	EXPECT_EQ(cstats.preloadHits, 0u) << "served from the preload";
+	EXPECT_EQ(cstats.payloadMissing, 0u);
+	EXPECT_FLOAT_EQ(h.GetVfJit(3, 'x'), 5.5f);
+	EXPECT_FLOAT_EQ(h.GetVfJit(8, 'x'), 20.5f);
+
+	// The load counts as a use: variant 3 is the newest file now, and the next session's one-program
+	// budget takes it.
+	EXPECT_LT(AgeDays(paths_[3]), 0.01);
+	RecompilerTestEnvironment::ResetVuBlockCache(0); // (the session ends: its programs go)
+	Reopen(SizeOf(paths_[3]));
+	EXPECT_EQ(mVUProgCache::GetStats(0).preloadedPayloads, 1u);
+	EXPECT_TRUE(mVUProgCache::TestIsPreloaded(0, HashOfPayload(paths_[3]), false));
+
+	// A preloaded one is served from RAM.
+	SeedVariant(h, 3);
+	h.RunJitPreserveBlockCache();
+	EXPECT_EQ(mVUProgCache::GetStats(0).preloadHits, 1u);
+}
+
+TEST_F(MvuProgCachePreload, ASidecarFollowsItsProgramsRankAndLoadsOnDemandPastTheBudget)
+{
+	const AotOn aot;
+	SaveVariants();
+	// 1 KiB sidecars of recognisable bytes
+	std::vector<std::vector<u8>> side(kPrograms);
+	for (u32 k = 0; k < kPrograms; k++)
+	{
+		side[k].assign(1024, static_cast<u8>(0x40 + k));
+		mVUProgCache::QueueSidecar(0, HashOfPayload(paths_[k]), [b = side[k]]() { return b; });
+	}
+	mVUProgCache::FlushSidecars(0);
+	SetAge(paths_[0], 1);
+	SetAge(paths_[1], 2);
+	SetAge(paths_[2], 3);
+	SetAge(paths_[3], 4);
+	// the sidecars count against the budget: two programs' payloads and sidecars
+	Reopen(SizeOf(paths_[0]) + SizeOf(paths_[1]) + 2 * 1024);
+	auto cstats = mVUProgCache::GetStats(0);
+	EXPECT_EQ(cstats.preloadedPayloads, 2u);
+	EXPECT_EQ(cstats.sidecarsPreloaded, 2u);
+	EXPECT_EQ(cstats.preloadBudgetHit, 1u);
+	for (u32 k = 0; k < kPrograms; k++)
+	{
+		EXPECT_EQ(mVUProgCache::TestIsPreloaded(0, HashOfPayload(paths_[k]), true), k < 2) << "variant " << k;
+		std::vector<u8> got;
+		ASSERT_TRUE(mVUProgCache::ReadSidecar(0, HashOfPayload(paths_[k]), got)) << "variant " << k;
+		EXPECT_EQ(got, side[k]) << "variant " << k;
+	}
+	cstats = mVUProgCache::GetStats(0);
+	EXPECT_EQ(cstats.sidecarReads, 4u);
+	EXPECT_EQ(cstats.sidecarPreloadHits, 2u) << "the other two were read from disk";
+}
+
+TEST_F(MvuProgCachePreload, ProgramsUnusedForLongAreDeletedAndCompileAgainIfTheyReturn)
+{
+	const AotOn aot;
+	SaveVariants();
+	for (u32 k = 0; k < kPrograms; k++)
+		mVUProgCache::QueueSidecar(0, HashOfPayload(paths_[k]), [k]() { return std::vector<u8>(512, static_cast<u8>(k + 1)); });
+	mVUProgCache::FlushSidecars(0);
+	const std::string sideOld = mVUProgCache::TestSidecarPath(0, HashOfPayload(paths_[1]));
+	ASSERT_TRUE(FileSystem::FileExists(sideOld.c_str()));
+	SetAge(paths_[1], 200); // far past the limit
+	SetAge(paths_[2], 30);  // inside it
+
+	Reopen(0);
+	auto cstats = mVUProgCache::GetStats(0);
+	EXPECT_EQ(cstats.ageOutFiles, 2u) << "the payload and the sidecar";
+	EXPECT_GT(cstats.ageOutBytes, 512u);
+	EXPECT_FALSE(FileSystem::FileExists(paths_[1].c_str()));
+	EXPECT_FALSE(FileSystem::FileExists(sideOld.c_str()));
+	for (u32 k : {0u, 2u, 3u})
+	{
+		EXPECT_TRUE(FileSystem::FileExists(paths_[k].c_str())) << "variant " << k;
+		EXPECT_TRUE(FileSystem::FileExists(mVUProgCache::TestSidecarPath(0, HashOfPayload(paths_[k])).c_str())) << "variant " << k;
+	}
+	EXPECT_EQ(cstats.preloadedPayloads, 3u) << "the deleted program is not preloaded";
+	EXPECT_EQ(cstats.sidecarsPreloaded, 3u);
+
+	// The program comes back: its INDEX entry has no file, so it compiles, and the next save writes it again.
+	VuTestHarness& h = *h_;
+	SeedVariant(h, 1);
+	const u64 compiles_before = mVUPersist::GetBlockCompileCount(0);
+	h.RunJitPreserveBlockCache();
+	EXPECT_GT(mVUPersist::GetBlockCompileCount(0), compiles_before);
+	EXPECT_EQ(mVUProgCache::GetStats(0).payloadMissing, 1u);
+	EXPECT_FLOAT_EQ(h.GetVfJit(6, 'x'), 20.5f);
+	RecompilerTestEnvironment::ResetVuBlockCache(0);
+	EXPECT_TRUE(FileSystem::FileExists(paths_[1].c_str())) << "the returned program was not saved again";
+	EXPECT_LT(AgeDays(paths_[1]), 0.01);
 }
 
 } // namespace recompiler_tests

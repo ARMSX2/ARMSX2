@@ -142,6 +142,11 @@ namespace mVUProgCache
 	// versa).
 	bool TestGetLiveSentinel(u32 vu_index, XXH128_hash_t* out_sentinel);
 
+	// Test-only: the preload's byte budget for the next Init of this VU (0: the default). ResetForTest
+	// puts the default back.
+	void TestSetPreloadBudget(u32 vu_index, size_t bytes);
+	// Test-only: the preload holds the payload (or, with `sidecar`, the vu-aot sidecar) of `hash` in RAM.
+	bool TestIsPreloaded(u32 vu_index, const XXH128_hash_t& hash, bool sidecar);
 	// Test-only: block until the background payload preload spawned by Init
 	// (if any) has finished. Lets tests deterministically assert the RAM-
 	// served hydration path (e.g. by deleting the on-disk payload after the
@@ -196,6 +201,9 @@ namespace mVUProgCache
 		u64  sidecarSkips       = 0; // requests whose build returned nothing
 		u64  preloadBudgetHit   = 0; // 1 when the preload stopped at its budget
 		u64  preloadWantedBytes = 0; // payload + sidecar bytes the preload would have read without one
+		u64  preloadReadBytes   = 0; // payload + sidecar bytes the preload did read
+		u64  ageOutFiles        = 0; // payload and sidecar files deleted for being unused too long
+		u64  ageOutBytes        = 0;
 	};
 	Stats GetStats(u32 vu_index);
 }

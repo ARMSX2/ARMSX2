@@ -18,12 +18,14 @@
 #include <cinttypes>
 #include <condition_variable>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -130,6 +132,10 @@ struct State
 	u64 sidecarReads        = 0;
 	u64 preloadBudgetHit    = 0;
 	u64 preloadWantedBytes  = 0;
+	u64 preloadReadBytes    = 0; // payload + sidecar bytes the preload read, over the session
+	u64 ageOutFiles         = 0; // files the preload's age-out pass deleted
+	u64 ageOutBytes         = 0;
+	size_t preloadBudget    = 0; // 0: kPreloadBudgetBytes (a test sets another)
 
 	// The sidecar writer (QueueSidecar): one thread, started by the first request and stopped
 	// (after draining its queue) by Close. writerMutex guards the queue and the flags; the writer
@@ -407,11 +413,30 @@ static void SidecarWriterLoop(State& s)
 	s.writerIdleCv.notify_all();
 }
 
-// Read the payload-bearing INDEX entries into RAM on a background thread,
-// most-recently-used first, bounded by kPreloadBudgetBytes. The bound is a
-// cap, not a target — resident cost matters on low-memory devices, but
-// buffers drain as hydrations consume them. A program's vu-aot sidecar, when
-// it has one, is read with its payload and counts against the same budget.
+// A program's last use is the modification time of its payload: a hydration touches it
+// (TouchPayload) and a save writes it, so it survives a crash and needs no INDEX rewrite. The INDEX's
+// own lastUsedNs only changes when a payload grows, which is a write time, not a use.
+static std::filesystem::file_time_type::rep FileTimeNow()
+{
+	return std::filesystem::file_time_type::clock::now().time_since_epoch().count();
+}
+
+static void TouchPayload(const std::string& path)
+{
+	std::error_code ec; // (best effort: a read-only or foreign cache just keeps its old rank)
+	std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now(), ec);
+}
+
+// Programs not used for this long are deleted, payload and sidecar, by the preload's background
+// thread when the cache comes up. The cost of a wrong guess is one cold compile of that program.
+static constexpr int kMaxUnusedDays = 60;
+
+// Read the payload-bearing INDEX entries into RAM on a background thread, the most recently used
+// program first (payload mtime, see above), until kPreloadBudgetBytes. The bound is a cap, not a
+// target: resident cost matters on low-memory devices, but buffers drain as hydrations consume
+// them. A program's vu-aot sidecar, when it has one, is read with its payload and counts against
+// the same budget. The directory is shared by every game played under the same settings, so it can
+// hold more than the budget: what is not preloaded is read when its program appears.
 static constexpr size_t kPreloadBudgetBytes = 32 * 1024 * 1024;
 
 static void StartPreload(State& s)
@@ -419,7 +444,7 @@ static void StartPreload(State& s)
 	struct Item
 	{
 		XXH128_hash_t hash;
-		u64 lastUsedNs;
+		u64 lastUsedNs; // the INDEX's (a write time): breaks ties between equal mtimes
 		u32 size;
 	};
 	std::vector<Item> items;
@@ -430,41 +455,88 @@ static void StartPreload(State& s)
 	}
 	if (items.empty())
 		return;
-	std::sort(items.begin(), items.end(),
-		[](const Item& a, const Item& b) { return a.lastUsedNs > b.lastUsedNs; });
 
 	struct File
 	{
 		XXH128_hash_t hash;
 		std::string payload, sidecar;
 		u32 payloadSize;
+		u64 lastUsedNs;
+		std::filesystem::file_time_type::rep mtime;
 	};
 	// (sidecars are read for the vu-aot tier only: with it off they would sit unread)
 	const bool sidecars = EmuConfig.Cpu.Recompiler.EnableVUAot;
 	std::vector<File> files;
 	for (const Item& it : items)
-		files.push_back({it.hash, PayloadPath(s, it.hash), sidecars ? SidecarPath(s, it.hash) : std::string(), it.size});
+		files.push_back({it.hash, PayloadPath(s, it.hash), SidecarPath(s, it.hash), it.size, it.lastUsedNs, 0});
+	const size_t budgetBytes = s.preloadBudget ? s.preloadBudget : kPreloadBudgetBytes;
 
 	s.preloadStop.store(false, std::memory_order_relaxed);
 	// The &s capture is intentional and safe: s aliases a process-lifetime
 	// static (g_state[]), and StopPreload() joins this thread before Close/
 	// ResetForTest ever mutate that state. Don't "fix" this into a by-value or
 	// shared_ptr capture — there is no lifetime bug to solve.
-	s.preloadThread = std::thread([&s, files = std::move(files)]() {
-		// Strict MRU prefix (the first program over budget stops the reads, no
-		// skip-and-refill) so what got preloaded is a deterministic function of
-		// the INDEX and the sidecars, not of file-size interleaving. Past the
-		// budget the walk only sizes the files, for the stats.
-		size_t budget = 0, wanted = 0, kept = 0;
-		bool full = false;
-		for (const File& f : files)
+	s.preloadThread = std::thread([&s, sidecars, budgetBytes, files = std::move(files)]() mutable {
+		// Rank by last use and age out what has not been used for a long time. A payload that is not
+		// on disk (evicted by hand, or aged out earlier) has nothing to preload.
+		const auto now = FileTimeNow();
+		const auto maxAge = std::chrono::duration_cast<std::filesystem::file_time_type::duration>(
+			std::chrono::hours(24 * kMaxUnusedDays)).count();
+		std::vector<File> ranked;
+		ranked.reserve(files.size());
+		u64 agedFiles = 0, agedBytes = 0;
+		for (File& f : files)
 		{
 			if (s.preloadStop.load(std::memory_order_relaxed))
 				return;
-			const s64 sideSize = f.sidecar.empty() ? 0 : FileSystem::GetPathFileSize(f.sidecar.c_str());
+			std::error_code ec;
+			const auto t = std::filesystem::last_write_time(f.payload, ec);
+			if (ec)
+				continue;
+			f.mtime = t.time_since_epoch().count();
+			if (now - f.mtime > maxAge)
+			{
+				for (const std::string* path : {&f.payload, &f.sidecar})
+				{
+					const s64 size = FileSystem::GetPathFileSize(path->c_str());
+					if (FileSystem::DeleteFilePath(path->c_str()))
+					{
+						agedFiles++;
+						agedBytes += static_cast<u64>(std::max<s64>(size, 0));
+					}
+				}
+				continue;
+			}
+			ranked.push_back(std::move(f));
+		}
+		// Newest first. Equal times (a file system with coarse stamps; a session loads all its programs
+		// within seconds) fall back to the INDEX's time, then the hash, so the order is a function of
+		// the files and the INDEX alone.
+		std::sort(ranked.begin(), ranked.end(), [](const File& a, const File& b) {
+			if (a.mtime != b.mtime)
+				return a.mtime > b.mtime;
+			if (a.lastUsedNs != b.lastUsedNs)
+				return a.lastUsedNs > b.lastUsedNs;
+			if (a.hash.high64 != b.hash.high64)
+				return a.hash.high64 > b.hash.high64;
+			return a.hash.low64 > b.hash.low64;
+		});
+
+		// Strict MRU prefix (the first program over budget stops the reads, no
+		// skip-and-refill) so what got preloaded is a deterministic function of
+		// the files and the INDEX, not of file-size interleaving. Past the
+		// budget the walk only sizes the files, for the stats.
+		size_t budget = 0, wanted = 0, kept = 0;
+		u64 readBytes = 0;
+		bool full = false;
+		for (const File& f : ranked)
+		{
+			if (s.preloadStop.load(std::memory_order_relaxed))
+				return;
+			const s64 sideSize = sidecars ? FileSystem::GetPathFileSize(f.sidecar.c_str()) : 0;
 			const size_t need = f.payloadSize + static_cast<size_t>(std::max<s64>(sideSize, 0));
 			wanted += need;
-			if (full || budget + need > kPreloadBudgetBytes)
+			if (full || budget + need > budgetBytes)
 			{
 				full = true;
 				continue;
@@ -479,6 +551,7 @@ static void StartPreload(State& s)
 			if (bytes.has_value() && !bytes->empty())
 			{
 				s.preloadedBytes += bytes->size();
+				readBytes += bytes->size();
 				++s.preloadedPayloads;
 				s.preloaded[f.hash] = std::move(*bytes);
 			}
@@ -487,6 +560,7 @@ static void StartPreload(State& s)
 			{
 				s.preloadedBytes += side->size();
 				s.sidecarPreloadBytes += side->size();
+				readBytes += side->size();
 				++s.sidecarsPreloaded;
 				s.preloadedSidecars[f.hash] = std::move(*side);
 			}
@@ -494,12 +568,21 @@ static void StartPreload(State& s)
 		std::lock_guard<std::mutex> lock(s.preloadMutex);
 		s.preloadWantedBytes = wanted;
 		s.preloadBudgetHit = full ? 1 : 0;
+		s.preloadReadBytes += readBytes;
+		s.ageOutFiles += agedFiles;
+		s.ageOutBytes += agedBytes;
+		if (agedFiles)
+		{
+			Console.WriteLn("mVUProgCache: %llu files (%llu KiB) unused for %d days deleted",
+			                static_cast<unsigned long long>(agedFiles),
+			                static_cast<unsigned long long>(agedBytes / 1024), kMaxUnusedDays);
+		}
 		if (full)
 		{
 			Console.WriteLn("mVUProgCache: preload budget (%zu MiB) reached — "
 			                "%zu of %zu programs stay on disk (%zu KiB wanted)",
-			                kPreloadBudgetBytes / (1024 * 1024),
-			                files.size() - kept, files.size(), wanted / 1024);
+			                budgetBytes / (1024 * 1024),
+			                ranked.size() - kept, ranked.size(), wanted / 1024);
 		}
 	});
 }
@@ -660,6 +743,9 @@ void Close(microVU& mVU)
 		s.sidecarReads = 0;
 		s.preloadBudgetHit = 0;
 		s.preloadWantedBytes = 0;
+		s.preloadReadBytes = 0;
+		s.ageOutFiles = 0;
+		s.ageOutBytes = 0;
 	}
 	s.sidecarWrites = 0;
 	s.sidecarWriteBytes = 0;
@@ -922,6 +1008,7 @@ microProgram* TryLoadProgram(microVU& mVU, const XXH128_hash_t& contentHash)
 	}
 	++s.payloadHits;
 	it->second.lastUsedNs = NowNs();
+	TouchPayload(PayloadPath(s, contentHash));
 	return prog;
 }
 
@@ -966,6 +1053,9 @@ Stats GetStats(u32 vu_index)
 		out.sidecarPreloadBytes = s.sidecarPreloadBytes;
 		out.preloadBudgetHit    = s.preloadBudgetHit;
 		out.preloadWantedBytes  = s.preloadWantedBytes;
+		out.preloadReadBytes    = s.preloadReadBytes;
+		out.ageOutFiles         = s.ageOutFiles;
+		out.ageOutBytes         = s.ageOutBytes;
 	}
 	out.sidecarWrites     = s.sidecarWrites.load(std::memory_order_relaxed);
 	out.sidecarWriteBytes = s.sidecarWriteBytes.load(std::memory_order_relaxed);
@@ -1032,10 +1122,26 @@ void ResetForTest(u32 vu_index)
 		s.sidecarReads        = 0;
 		s.preloadBudgetHit    = 0;
 		s.preloadWantedBytes  = 0;
+		s.preloadReadBytes    = 0;
+		s.ageOutFiles         = 0;
+		s.ageOutBytes         = 0;
 	}
+	s.preloadBudget = 0;
 	s.sidecarWrites = 0;
 	s.sidecarWriteBytes = 0;
 	s.sidecarSkips = 0;
+}
+
+void TestSetPreloadBudget(u32 vu_index, size_t bytes)
+{
+	g_state[vu_index & 1].preloadBudget = bytes;
+}
+
+bool TestIsPreloaded(u32 vu_index, const XXH128_hash_t& hash, bool sidecar)
+{
+	State& s = g_state[vu_index & 1];
+	std::lock_guard<std::mutex> lock(s.preloadMutex);
+	return sidecar ? s.preloadedSidecars.count(hash) != 0 : s.preloaded.count(hash) != 0;
 }
 
 void TestWaitForPreload(u32 vu_index)
@@ -1056,7 +1162,8 @@ void DumpStats(const microVU& mVU, const char* tag)
 		"payload(writes/hits/missing/rejects)=%llu/%llu/%llu/%llu "
 		"preload(loaded/residentB/hits)=%llu/%llu/%llu "
 		"sidecars(reads/preloadHits/preloaded/preloadB/writes/writeB/skips)=%llu/%llu/%llu/%llu/%llu/%llu/%llu "
-		"preload(wantedB/budgetHit)=%llu/%llu",
+		"preload(wantedB/budgetHit)=%llu/%llu "
+		"preload(readB)=%llu ageOut(files/B)=%llu/%llu",
 		mVU.index, tag,
 		(unsigned long long)entries,
 		(unsigned long long)s.savesAttempted,
@@ -1081,6 +1188,9 @@ void DumpStats(const microVU& mVU, const char* tag)
 		(unsigned long long)s.sidecarWriteBytes,
 		(unsigned long long)s.sidecarSkips,
 		(unsigned long long)s.preloadWantedBytes,
-		(unsigned long long)s.preloadBudgetHit);
+		(unsigned long long)s.preloadBudgetHit,
+		(unsigned long long)s.preloadReadBytes,
+		(unsigned long long)s.ageOutFiles,
+		(unsigned long long)s.ageOutBytes);
 }
 }
