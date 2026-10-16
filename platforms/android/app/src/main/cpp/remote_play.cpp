@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
+// SPDX-License-Identifier: GPL-3.0+
+
 // Remote play, core side: hands the running game's picture and sound to the app, which streams them
 // to a friend's device, where the friend plays as player 2 (com.armsx2.remoteplay).
 //

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
+// SPDX-License-Identifier: GPL-3.0+
+
 // Remote play, online hosting: a port opened on the host's router (UPnP) for the session.
 //
 // Online, the friend reaches the host straight across the internet, with no relay. Where the

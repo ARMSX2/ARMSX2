@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
+// SPDX-License-Identifier: GPL-3.0+
+
 package com.armsx2.remoteplay
 
 import android.view.KeyEvent
