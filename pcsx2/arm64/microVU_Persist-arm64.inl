@@ -410,6 +410,14 @@ namespace mVUPersist
 		hi = id.high64;
 	}
 
+	// The build's identity folded to the 64 bits a payload header carries.
+	static u64 BuildTag()
+	{
+		u64 lo, hi;
+		GetBuildId(lo, hi);
+		return lo ^ hi;
+	}
+
 	//------------------------------------------------------------------
 	// Dispatcher stub table
 	//------------------------------------------------------------------
@@ -1127,7 +1135,11 @@ namespace mVUPersist
 	static constexpr u32 kImageMagic = 0x5055564Du; // 'MVUP'
 	// 2: fixups as form + target, image and data-arena addresses recorded as
 	//    region offsets; the checksum covers the header.
-	static constexpr u32 kImageVersion = 2;
+	// 3: the header names the build that recorded the payload (buildTag). An
+	//    image fixup is an offset into the emulator module, which any other
+	//    build lays out differently, so a payload is only good for the build
+	//    that made it.
+	static constexpr u32 kImageVersion = 3;
 
 	struct ImageHeader
 	{
@@ -1151,7 +1163,7 @@ namespace mVUPersist
 		                 // guards the on-disk .vuprog against bit rot / partial
 		                 // writes the structural checks can't see (a flipped
 		                 // CODE byte is valid structure but wrong code)
-		u32 reserved[2];
+		u64 buildTag;    // BuildTag() of the recording build
 	};
 	static_assert(sizeof(ImageHeader) == 88);
 
@@ -1200,6 +1212,7 @@ namespace mVUPersist
 		hdr.imageBase = GetRegions().imageBase;
 		hdr.dataBase = GetRegions().dataBase;
 		hdr.codeArena = reinterpret_cast<u64>(SysMemory::GetCodePtr(0));
+		hdr.buildTag = BuildTag();
 		hdr.progStartPC = static_cast<u32>(prog.startPC) * 8u;
 		hdr.rangeCount = prog.ranges ? static_cast<u32>(prog.ranges->size()) : 0;
 		hdr.blockCount = static_cast<u32>(log->blocks.size());
@@ -1379,6 +1392,15 @@ namespace mVUPersist
 		if (!ReadPod(p, end, hdr) || hdr.magic != kImageMagic || hdr.version != kImageVersion ||
 			hdr.vuIndex != mVU.index)
 		{
+			s_stats[vu].hydrationRejects++;
+			return nullptr;
+		}
+
+		// A payload from another build: its image fixups are offsets into that build's module, so
+		// patching them here would call whatever sits at those offsets in this one.
+		if (hdr.buildTag != BuildTag())
+		{
+			DevCon.Warning("mVUPersist: VU%u hydration rejected — payload recorded by another build", vu);
 			s_stats[vu].hydrationRejects++;
 			return nullptr;
 		}

@@ -51,7 +51,7 @@ inline VuOp LowerOnly(u32 lower)
 	return VuOp{lower, VNOP_U()};
 }
 
-// Serialized-image header offsets (pinned by mVUPersist::ImageHeader v2;
+// Serialized-image header offsets (pinned by mVUPersist::ImageHeader v3;
 // the corruption tests poke these fields directly).
 constexpr size_t kOffHashLo = 16;
 constexpr size_t kOffImageBase = 32;

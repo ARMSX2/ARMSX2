@@ -354,4 +354,30 @@ TEST_F(MvuPersistRelocation, RejectsUnencodableBlockPointerAfterInstalling)
 	EXPECT_FLOAT_EQ(h.GetVfJit(6, 'x'), 0.5f);
 }
 
+// (e) The image fixups of a payload are offsets into the module of the build that recorded it. Another build
+// puts the same helpers elsewhere, so the payload is refused whole, before anything is installed.
+TEST_F(MvuPersistRelocation, RejectsPayloadFromAnotherBuild)
+{
+	const Program& p = Programs()[2]; // jr: calls a C helper
+	const std::vector<u8> image = RecordProgram(p);
+
+	VuTestHarness h(0);
+	Load(h, p);
+	mVUPersist::TestOverrideBuildId(true, 0x1234, 0x5678);
+	const auto before = mVUPersist::GetStats(0);
+	EXPECT_FALSE(mVUPersist::TestHydrate(0, image.data(), image.size()));
+	const auto after = mVUPersist::GetStats(0);
+	mVUPersist::TestOverrideBuildId(false, 0, 0);
+	EXPECT_EQ(after.hydrationRejects, before.hydrationRejects + 1);
+	EXPECT_EQ(after.programsHydrated, before.programsHydrated);
+
+	// The same payload, back in the build that recorded it.
+	h.Run();
+	RecompilerTestEnvironment::ResetVuBlockCache(0);
+	CpuMicroVU0.Clear(0, VU0_PROGSIZE);
+	EXPECT_TRUE(mVUPersist::TestHydrate(0, image.data(), image.size()));
+	RecompilerTestEnvironment::ResetVuBlockCache(0);
+}
+
+
 } // namespace recompiler_tests

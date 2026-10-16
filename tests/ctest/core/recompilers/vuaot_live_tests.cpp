@@ -2288,7 +2288,12 @@ TEST_F(VuAotCache, DamagedOrStaleSidecarIsRefused)
 			EXPECT_EQ(Diff(ref2, Take(h)), "") << where << " second entry";
 			h.SetStartPc(0);
 			const vuaot::live::Stats d = PlanDelta(s0, vuaot::live::GetStats());
-			EXPECT_GE(mVUProgCache::GetStats(1).payloadHits, 1u) << where << ": the payload still loads";
+			// (another build's payload is refused too and replaced by the save at the first reset, which the
+			// program's next lookup in this session then loads)
+			if (c == OtherBuild)
+				EXPECT_GE(mVUProgCache::GetStats(1).payloadRejects, 1u) << where << ": another build's payload is refused too";
+			else
+				EXPECT_GE(mVUProgCache::GetStats(1).payloadHits, 1u) << where << ": the payload still loads";
 			EXPECT_GE(d.tierUps, 1u) << where << ": the program tiers up by its run count";
 			switch (c)
 			{
@@ -2317,6 +2322,73 @@ TEST_F(VuAotCache, DamagedOrStaleSidecarIsRefused)
 		RecompilerTestEnvironment::ResetVuBlockCache(1);
 		mVUProgCache::FlushSidecars(1);
 	}
+}
+
+// Files are good for the build that wrote them only: a payload's image fixups are offsets into that build's
+// module, so another build lays the same program's helpers out elsewhere. A launch over files of another build
+// refuses the payload and the sidecar, compiles the program as new, and its save replaces both; the next launch of
+// that build loads them. (MvuProgCacheDisk.PayloadOfAnotherBuildIsRefusedAndReplaced pins the payload's replacement
+// when the new image is the size of the old.)
+TEST_F(VuAotCache, FilesOfAnotherBuildAreRefusedAndReplaced)
+{
+	const bool fh = true;
+	const Result ref = Reference(TwoLoopProg(), SetupLoop, fh);
+	const Result ref2 = Reference(TwoLoopProg(), SetupLoop, fh, kLoopEntry2);
+	NewProcess();
+	RecursiveRm(root_ + "/vu_jit");
+	struct Launch
+	{
+		vuaot::live::Stats d;
+		u64 installed = 0; // programs whose saved regions went in
+		mVUProgCache::Stats cache;
+	};
+	const auto launch = [&](bool otherBuild) {
+		Launch out;
+		NewProcess();
+		if (otherBuild)
+			mVUPersist::TestOverrideBuildId(true, 0x1234, 0x5678);
+		{
+			LiveScope s(true, 4, fh, vuaot::live::kJumpTierUpRuns, true);
+			const vuaot::live::Stats s0 = vuaot::live::GetStats();
+			VuTestHarness h(1);
+			Prepare(h, TwoLoopProg(), SetupLoop, 0);
+			h.RunNoDiff();
+			EXPECT_EQ(Diff(ref, Take(h)), "");
+			for (int i = 0; i < 12; i++)
+			{
+				h.RunJitPreserveBlockCache();
+				EXPECT_EQ(Diff(ref, Take(h)), "") << "run " << i;
+			}
+			h.SetStartPc(kLoopEntry2);
+			h.RunJitPreserveBlockCache();
+			EXPECT_EQ(Diff(ref2, Take(h)), "") << "second entry";
+			h.SetStartPc(0);
+			const vuaot::live::Stats s1 = vuaot::live::GetStats();
+			out.d = PlanDelta(s0, s1);
+			out.installed = s1.aotPrograms - s0.aotPrograms;
+			out.cache = mVUProgCache::GetStats(1);
+			RecompilerTestEnvironment::ResetVuBlockCache(1); // (the save)
+			mVUProgCache::FlushSidecars(1);
+		}
+		mVUPersist::TestOverrideBuildId(false, 0, 0);
+		return out;
+	};
+	const Launch fill = launch(false); // this build's files, from an empty cache
+	ASSERT_EQ(FindSidecars(root_ + "/vu_jit").size(), 1u);
+	EXPECT_EQ(fill.cache.payloadRejects, 0u);
+	// (The first dispatch of a launch refuses the files. The reset after it saves the program, replacing them, and
+	// the dispatch after that loads what was saved: that is the one payload hit of such a launch.)
+	const Launch other = launch(true);
+	EXPECT_GE(other.cache.payloadRejects, 1u);
+	EXPECT_GE(other.d.planRejectedBy[static_cast<int>(vuaot::persist::ParseResult::OtherBuild)], 1u);
+	EXPECT_EQ(other.installed, 0u);
+	const Launch again = launch(true);
+	EXPECT_EQ(again.cache.payloadRejects, 0u) << "the payload the first launch saved was refused by its own build";
+	EXPECT_GE(again.cache.payloadHits, 1u);
+	EXPECT_GE(again.installed, 1u) << "the sidecar the first launch saved was not loaded by its own build";
+	const Launch back = launch(false);
+	EXPECT_GE(back.cache.payloadRejects, 1u) << "the files of the other build were not refused";
+	EXPECT_EQ(back.installed, 0u);
 }
 
 //------------------------------------------------------------------

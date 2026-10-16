@@ -911,9 +911,13 @@ microProgram* TryLoadProgram(microVU& mVU, const XXH128_hash_t& contentHash)
 
 	if (!prog)
 	{
-		// Layout-base / content-hash / structural rejection — degrade to
-		// recompile, never corrupt. HydrateProgram counted the reason.
+		// Another build's payload, a damaged one, or a content mismatch: degrade
+		// to recompile, never corrupt. HydrateProgram counted the reason. The
+		// file is dead weight, so the next save replaces it even when the
+		// recompiled image comes out the same size (SaveProgram skips a payload
+		// whose recorded size matches).
 		++s.payloadRejects;
+		it->second.codeSize = 0;
 		return nullptr;
 	}
 	++s.payloadHits;

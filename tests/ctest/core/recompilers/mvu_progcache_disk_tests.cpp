@@ -467,4 +467,53 @@ TEST_F(MvuProgCacheDisk, HydratedProgramResavesWithoutGrowth)
 		<< "unchanged hydrated program rewrote its payload on re-save";
 }
 
+TEST_F(MvuProgCacheDisk, PayloadOfAnotherBuildIsRefusedAndReplaced)
+{
+	// A payload's image fixups are offsets into the module of the build that
+	// recorded it. Another build refuses it, compiles the program as new, and
+	// its next save replaces the file -- also though the new image is the size
+	// the INDEX records for the old one (SaveProgram skips a payload of the
+	// recorded size). The build after that loads the replacement.
+	VuTestHarness h(0);
+	SeedAndLoad(h);
+	h.Run();
+	h.RunJitPreserveBlockCache();
+	const VuSnapshot fresh_jit = h.JitSnapshot();
+
+	InitDiskCache();
+	RecompilerTestEnvironment::ResetVuBlockCache(0);
+	ASSERT_EQ(mVUProgCache::GetStats(0).payloadWrites, 1u);
+	std::vector<std::string> payloads;
+	FindPayloads(vu0_root(), payloads);
+	ASSERT_EQ(payloads.size(), 1u);
+	const auto recorded = FileSystem::ReadBinaryFile(payloads[0].c_str());
+	ASSERT_TRUE(recorded.has_value());
+
+	mVUPersist::TestOverrideBuildId(true, 0x1234, 0x5678);
+	h.LoadProgram(kProgram);
+	CpuMicroVU0.Clear(0, VU0_PROGSIZE);
+	const u64 compiles_before = mVUPersist::GetBlockCompileCount(0);
+	h.RunJitPreserveBlockCache();
+	EXPECT_GT(mVUPersist::GetBlockCompileCount(0), compiles_before) << "the other build's payload was used";
+	auto cstats = mVUProgCache::GetStats(0);
+	EXPECT_GE(cstats.payloadRejects, 1u);
+	EXPECT_EQ(cstats.payloadHits, 0u);
+	EXPECT_TRUE(DiffVu(fresh_jit, h.JitSnapshot(), VuDiffMode::Strict).empty());
+
+	RecompilerTestEnvironment::ResetVuBlockCache(0); // saves
+	cstats = mVUProgCache::GetStats(0);
+	EXPECT_EQ(cstats.payloadWrites, 2u) << "the refused payload was not replaced";
+	const auto replaced = FileSystem::ReadBinaryFile(payloads[0].c_str());
+	ASSERT_TRUE(replaced.has_value());
+	EXPECT_EQ(replaced->size(), recorded->size()) << "the program's image should come out the same size";
+	EXPECT_NE(*replaced, *recorded);
+
+	h.LoadProgram(kProgram);
+	CpuMicroVU0.Clear(0, VU0_PROGSIZE);
+	h.RunJitPreserveBlockCache();
+	cstats = mVUProgCache::GetStats(0);
+	EXPECT_GE(cstats.payloadHits, 1u) << "the build that saved the replacement could not load it";
+	mVUPersist::TestOverrideBuildId(false, 0, 0);
+}
+
 } // namespace recompiler_tests
