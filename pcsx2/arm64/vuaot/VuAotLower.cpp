@@ -1105,6 +1105,25 @@ namespace vuaot
 					}
 				}
 			}
+			// A value read only through an assembled or clamped operand was never
+			// locked: free every register whose value has no use left, or it stays
+			// taken until the node ends and is spilled when the file fills.
+			for (int file = 0; file < 2; file++)
+			{
+				ValueId* own = file ? gOwner_ : vOwner_;
+				for (int r = 0; r < 32; r++)
+				{
+					const ValueId c = own[r];
+					if (!c || LiveAfter(c) || (homeReg_[c] && finalOf_[c]))
+						continue;
+					Unbind(c);
+					if (slot_[c] >= 0)
+					{
+						FreeSlot(slot_[c]);
+						slot_[c] = -1;
+					}
+				}
+			}
 			vLock_ = gLock_ = 0;
 			vTemp_ = gTemp_ = 0;
 		}
