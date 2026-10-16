@@ -1425,6 +1425,7 @@ set(pcsx2arm64Sources
 	arm64/vuaot/VuAotIR.cpp
 	arm64/vuaot/VuAotLower.cpp
 	arm64/vuaot/VuAotMvuTrace.cpp
+	arm64/vuaot/VuAotPersist.cpp
 	arm64/vuaot/VuAotPipe.cpp
 	arm64/vuaot/VuAotTier.cpp
 	arm64/vuaot/VuAotRegion.cpp
@@ -1448,6 +1449,7 @@ set(pcsx2arm64Headers
 	arm64/VuFmacFlags-arm64.h
 	arm64/vuaot/VuAotBackground.h
 	arm64/vuaot/VuAotDecode.h
+	arm64/vuaot/VuAotPersist.h
 	arm64/vuaot/VuAotGraph.h
 	arm64/vuaot/VuAotIR.h
 	arm64/vuaot/VuAotLive.h
