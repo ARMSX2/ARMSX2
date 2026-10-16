@@ -1870,7 +1870,11 @@ struct MenuTabView: View {
     /// Settings lists don't get the tab bar's safe area inset and run on to the bottom of the
     /// safe area, so they need room for the part the bar covers. Their own bottom padding is the gap.
     private var settingsTabBarContentMargin: CGFloat {
+#if targetEnvironment(macCatalyst)
+        let offset: CGFloat = 0
+#else
         let offset = verticalSizeClass == .compact ? ControllerFocusedMenuTabBar.compactOffset : 0
+#endif
         return bottomTabBarLayout.height + bottomTabBarLayout.bottomClearance - offset
     }
 

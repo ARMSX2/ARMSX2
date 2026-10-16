@@ -2058,11 +2058,13 @@ if (APPLE)
 	# "framework not found".
 	#
 	# ARMSX2_REAL_DEVICE is the iOS app's own switch and nothing sets it for the
-	# libretro core, which is only ever built against a device SDK - and without
-	# the framework the link is short MTLFXSpatialScalerDescriptor, because the
-	# header is there and PCSX2_HAS_METALFX is 1.
+	# libretro core, which is only ever built against a device SDK, or for Mac
+	# Catalyst - and without the framework the link is short
+	# MTLFXSpatialScalerDescriptor, because the header is there and
+	# PCSX2_HAS_METALFX is 1.
 	if(NOT CMAKE_SYSTEM_NAME STREQUAL "tvOS"
-	   AND (ARMSX2_REAL_DEVICE OR ENABLE_LIBRETRO OR NOT CMAKE_SYSTEM_NAME STREQUAL "iOS"))
+	   AND (ARMSX2_REAL_DEVICE OR ARMSX2_MAC_CATALYST OR ENABLE_LIBRETRO
+	        OR NOT CMAKE_SYSTEM_NAME STREQUAL "iOS"))
 		target_link_options(PCSX2_FLAGS INTERFACE "SHELL:-weak_framework MetalFX")
 	endif()
 endif()

@@ -27,9 +27,10 @@ find_package(Git)
 # Require threads on all OSes.
 find_package(Threads REQUIRED)
 
-# zlib: iOS/macOS ship zlib in the SDK, so a system find works. (Neither the
-# monorepo root nor the Android tree vendors zlib.)
-find_package(ZLIB REQUIRED)
+# zlib: every Apple SDK ships libz, so link it by name and let the SDK being
+# built resolve it. (Neither the monorepo root nor the Android tree vendors zlib.)
+add_library(ZLIB::ZLIB INTERFACE IMPORTED)
+set_property(TARGET ZLIB::ZLIB PROPERTY INTERFACE_LINK_LIBRARIES z)
 
 # Path to the Android app's vendored 3rdparty tree (shared dep source).
 get_filename_component(ARMSX2_ANDROID_VENDORED
@@ -51,13 +52,14 @@ if(NOT TARGET Zstd::Zstd)
 endif()
 
 # freetype -- builds 'freetype' target, we alias to Freetype::Freetype
-# (Disable every optional freetype backend: iOS provides none of them and we do
-#  not want freetype pulling in zlib/png/bzip2/brotli/harfbuzz as build deps.)
+# (Disable every optional freetype backend: we do not want freetype pulling in
+#  zlib/png/bzip2/brotli/harfbuzz as build deps, or the SDK's libhvf at link time.)
 set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
 set(FT_DISABLE_BZIP2 ON CACHE BOOL "" FORCE)
 set(FT_DISABLE_ZLIB ON CACHE BOOL "" FORCE)
 set(FT_DISABLE_PNG ON CACHE BOOL "" FORCE)
 set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_HVF ON CACHE BOOL "" FORCE)
 add_subdirectory("${ARMSX2_ANDROID_VENDORED}/freetype" "${CMAKE_BINARY_DIR}/3rdparty/freetype" EXCLUDE_FROM_ALL)
 if(NOT TARGET Freetype::Freetype)
 	add_library(Freetype::Freetype ALIAS freetype)
