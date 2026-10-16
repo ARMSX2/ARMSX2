@@ -12,6 +12,7 @@
 #include "Common.h"
 #include "common/ARCADE.h"
 #include "VMManager.h"
+#include "GS/GSRemotePlay.h"
 
 #include "common/Error.h"
 
@@ -589,6 +590,14 @@ __forceinline void spu2Output(StereoOut32 out)
 	if (s_current_chunk_pos == s_current_chunk.size())
 	{
 		s_current_chunk_pos = 0;
+
+		// Remote play: the same sound for the friend's device, which plays it at 48 kHz, so only at
+		// that rate (an arcade board's runs faster).
+		if (GSRemotePlay::g_audio_on.load(std::memory_order_relaxed) &&
+			SPU2::GetConsoleSampleRate() == GSRemotePlay::AUDIO_SAMPLE_RATE) [[unlikely]]
+		{
+			GSRemotePlay::PushAudio(s_current_chunk.data(), AudioStream::CHUNK_SIZE);
+		}
 
 		s_output_stream->WriteChunk(s_current_chunk.data());
 	}

@@ -2355,17 +2355,20 @@ Java_kr_co_iefriends_pcsx2_NativeApp_enablePad2(JNIEnv *env, jclass clazz) {
     ScopedVMPause vm_pause(false);
     if (!vm_pause.parked())
         return;
-    {
-        auto lock = Host::GetSettingsLock();
-        if (SettingsInterface* si = Host::GetSettingsInterface()) {
-            si->SetStringValue("Pad2", "Type", "DualShock2");
-            si->SetFloatValue("Pad2", "Deadzone", 0.0f);        // app shapes the stick (shapeStickMag)
-            si->SetFloatValue("Pad2", "AxisScale", 1.33f);      // PCSX2 default
-            si->SetFloatValue("Pad2", "ButtonDeadzone", 0.0f);
-        }
-    }
+    // Into the BASE layer, as setSetting and setMultitap write. Host::GetSettingsInterface() is the
+    // layered view and every setter on it is a pxFailRel: writing through it aborted the app the
+    // moment a second pad was plugged in with a game running, which is why hot-plug was switched off.
+    // Remote play (a friend as player 2) needs the port, so it is safe again. The SetBase* calls lock
+    // for themselves.
+    Host::SetBaseStringSettingValue("Pad2", "Type", "DualShock2");
+    Host::SetBaseFloatSettingValue("Pad2", "Deadzone", 0.0f);        // app shapes the stick (shapeStickMag)
+    Host::SetBaseFloatSettingValue("Pad2", "AxisScale", 1.33f);      // PCSX2 default
+    Host::SetBaseFloatSettingValue("Pad2", "ButtonDeadzone", 0.0f);
     {
         std::lock_guard<std::mutex> lk(s_pad_mutex);
+        // Held across the reload, as setMultitap does: pad mutex first, then the settings lock, the
+        // order ApplyUsbPortsToRunningVM takes them in.
+        auto settings_lock = Host::GetSettingsLock();
         EmuConfig.Pad.Ports[1].Type = Pad::ControllerType::DualShock2;
         Pad::LoadConfig(*Host::GetSettingsInterface());
     }

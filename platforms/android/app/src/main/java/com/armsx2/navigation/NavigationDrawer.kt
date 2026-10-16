@@ -232,6 +232,7 @@ private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, on
         // anyone who wants the repo itself.
         DrawerItem("news.title", "📰", AppRoute.News),
         DrawerItem("friends.title", "👥", AppRoute.Friends, friendsBadge = true),
+        DrawerItem("remoteplay.title", "📡", AppRoute.RemotePlay),
         // About left the settings tab strip: it is a read-only page, not a setting, and it sat in
         // the tab row costing a slot on every settings visit.
         DrawerItem("about.title", "ℹ️", AppRoute.About),
@@ -377,5 +378,6 @@ private fun sameDestination(current: AppRoute, target: AppRoute): Boolean = when
     AppRoute.Language -> current is AppRoute.Language
     AppRoute.News -> current is AppRoute.News
     AppRoute.Friends -> current is AppRoute.Friends
+    AppRoute.RemotePlay -> current is AppRoute.RemotePlay
     AppRoute.About -> current is AppRoute.About
 }

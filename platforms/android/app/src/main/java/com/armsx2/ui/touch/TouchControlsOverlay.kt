@@ -529,6 +529,124 @@ fun TouchControlsOverlay() {
 }
 
 /* -------------------------------------------------------------------- */
+/*  Remote play: these controls on a friend's device, as player 2        */
+/* -------------------------------------------------------------------- */
+
+/** Where presses go while a remote play viewer is open (com.armsx2.remoteplay): to the stream's
+ *  player 2 instead of this device's emulator. Set for the viewer's whole life rather than while the
+ *  controls are composed, so the releases they send as they hide still reach player 2. */
+@Volatile
+private var remotePlayPadSink: ((keycode: Int, value: Int, pressed: Boolean) -> Unit)? = null
+
+/** Remote play's viewer sets this when it opens; see [RemotePlayTouchControls]. */
+fun setRemotePlayPadSink(sink: ((keycode: Int, value: Int, pressed: Boolean) -> Unit)?) {
+    remotePlayPadSink = sink
+}
+
+/**
+ * Clears the sink, but only while it is still [sink]: a second viewer screen that closes (refused,
+ * say) must not cut off the one still playing.
+ */
+fun clearRemotePlayPadSink(sink: (keycode: Int, value: Int, pressed: Boolean) -> Unit) {
+    if (remotePlayPadSink === sink) remotePlayPadSink = null
+}
+
+/** What a remote play viewer gets: the controller itself. Pause, fast forward, save states, the
+ *  pressure modifier and the light gun act on a game running on this device, and there is none. */
+private fun isRemotePlayKind(kind: TouchButtonId.Kind): Boolean = when (kind) {
+    TouchButtonId.Kind.FACE, TouchButtonId.Kind.SHOULDER, TouchButtonId.Kind.MENU,
+    TouchButtonId.Kind.DPAD, TouchButtonId.Kind.STICK, TouchButtonId.Kind.MACRO,
+    TouchButtonId.Kind.ANALOGEXTRA -> true
+    else -> false
+}
+
+/**
+ * Remote play: the player's own touch controls (layout, skin, size, opacity, multi-touch and glide
+ * settings) on a friend's stream, playing as player 2. Presses go to the sink set with
+ * [setRemotePlayPadSink]. Built from the same widgets as [TouchControlsOverlay], minus everything
+ * tied to a local game: the light gun, screen gestures, gyro and the buttons [isRemotePlayKind]
+ * leaves out.
+ */
+@Composable
+fun RemotePlayTouchControls() {
+    TouchControls.ensureLoaded()
+    val context = LocalContext.current
+    val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
+    TouchControls.portrait.value = isPortrait
+    LaunchedEffect(isPortrait) {
+        // The global profile and skin, as outside a game.
+        TouchControls.applyActiveProfileForOrientation()
+        ControllerSkinStore.applyForSerial(context, null)
+    }
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val w = maxWidth
+        val h = maxHeight
+        val density = LocalDensity.current
+        val widthPx = with(density) { w.toPx() }
+        val heightPx = with(density) { h.toPx() }
+        LaunchedEffect(widthPx, heightPx, density.density) {
+            OverlayDims.last = OverlayDims.Dims(widthPx, heightPx, density.density)
+        }
+        val full = TouchControls.activeLayout.value
+        val layout = remember(full) { TouchLayout(full.buttons.filter { isRemotePlayKind(it.id.kind) }) }
+        var unifiedPressed by remember { mutableStateOf<Set<TouchButtonId>>(emptySet()) }
+        var unifiedDpad by remember { mutableStateOf(DpadState()) }
+        val faceMulti = TouchControls.faceMultiTouch.value
+        if (!faceMulti) {
+            if (unifiedPressed.isNotEmpty()) unifiedPressed = emptySet()
+            if (unifiedDpad.any()) unifiedDpad = DpadState()
+        }
+
+        // Layered as in TouchControlsOverlay: the full-screen layers under the widgets.
+        if (faceMulti) {
+            UnifiedTouchLayer(
+                layout = layout,
+                widthPx = widthPx,
+                heightPx = heightPx,
+                glideMode = TouchControls.glideMode.value,
+                gunAttached = false,
+                onPressedChange = { unifiedPressed = it },
+                onDpadChange = { unifiedDpad = it },
+            )
+        }
+        val halfSticks = TouchControls.fullHalfSticks.value
+        if (halfSticks) {
+            FullHalfStickLayer(layout = layout, widthPx = widthPx, heightPx = heightPx, faceMulti = faceMulti, gunAttached = false)
+        }
+        for (cfg in layout.buttons) {
+            if (!cfg.enabled) continue
+            if (halfSticks && cfg.id.kind == TouchButtonId.Kind.STICK &&
+                !(cfg.id == TouchButtonId.L_STICK && TouchControls.fullHalfKeepLeftStick.value)) continue
+            if (!extraShown(cfg, gunAttached = false)) continue
+            val size = cfg.sizeDp.dp
+            Box(
+                modifier = Modifier
+                    .offset(x = w * cfg.xFrac - size / 2, y = h * cfg.yFrac - size / 2)
+                    .size(size),
+            ) {
+                when (cfg.id.kind) {
+                    TouchButtonId.Kind.DPAD -> DpadWidget(
+                        cfg, edit = false,
+                        inputEnabled = !faceMulti,
+                        forced = if (faceMulti) unifiedDpad else null,
+                    )
+                    TouchButtonId.Kind.STICK -> StickWidget(cfg, edit = false)
+                    TouchButtonId.Kind.MACRO -> MacroWidget(cfg, edit = false, inputEnabled = !(faceMulti && !cfg.tapToHold))
+                    TouchButtonId.Kind.ANALOGEXTRA -> AnalogExtraWidget(cfg, edit = false)
+                    else -> ButtonWidget(
+                        cfg = cfg,
+                        edit = false,
+                        inputEnabled = !(faceMulti && isMultiTouchKind(cfg.id.kind) && !cfg.tapToHold),
+                        forcedPressed = faceMulti && cfg.id in unifiedPressed,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/* -------------------------------------------------------------------- */
 /*  Digital button widget                                                */
 /* -------------------------------------------------------------------- */
 
@@ -1972,20 +2090,25 @@ private fun computeStickEmit(nx: Float, ny: Float, left: Boolean): StickEmit {
 }
 
 private fun applyStickDiff(codes: StickCodes, prev: StickEmit, next: StickEmit) {
-    // The player the touch controls play as (Player 1 unless set to 2); see sendDigital.
-    val port = TouchControls.playerPort
-    if (prev.xPos != next.xPos) NativeApp.setPadButtonForPort(port, codes.xPos, next.xPos, next.xPos > 0)
-    if (prev.xNeg != next.xNeg) NativeApp.setPadButtonForPort(port, codes.xNeg, next.xNeg, next.xNeg > 0)
-    if (prev.yPos != next.yPos) NativeApp.setPadButtonForPort(port, codes.yPos, next.yPos, next.yPos > 0)
-    if (prev.yNeg != next.yNeg) NativeApp.setPadButtonForPort(port, codes.yNeg, next.yNeg, next.yNeg > 0)
+    if (prev.xPos != next.xPos) sendStickAxis(codes.xPos, next.xPos)
+    if (prev.xNeg != next.xNeg) sendStickAxis(codes.xNeg, next.xNeg)
+    if (prev.yPos != next.yPos) sendStickAxis(codes.yPos, next.yPos)
+    if (prev.yNeg != next.yNeg) sendStickAxis(codes.yNeg, next.yNeg)
 }
 
 private fun releaseStick(codes: StickCodes, last: StickEmit) {
-    val port = TouchControls.playerPort
-    if (last.xPos != 0) NativeApp.setPadButtonForPort(port, codes.xPos, 0, false)
-    if (last.xNeg != 0) NativeApp.setPadButtonForPort(port, codes.xNeg, 0, false)
-    if (last.yPos != 0) NativeApp.setPadButtonForPort(port, codes.yPos, 0, false)
-    if (last.yNeg != 0) NativeApp.setPadButtonForPort(port, codes.yNeg, 0, false)
+    if (last.xPos != 0) sendStickAxis(codes.xPos, 0)
+    if (last.xNeg != 0) sendStickAxis(codes.xNeg, 0)
+    if (last.yPos != 0) sendStickAxis(codes.yPos, 0)
+    if (last.yNeg != 0) sendStickAxis(codes.yNeg, 0)
+}
+
+/** One stick half-axis (0..32767) to the player the touch controls play as (Player 1 unless set to
+ *  2; see sendDigital), or to a friend's game as player 2 during remote play. */
+private fun sendStickAxis(code: Int, value: Int) {
+    val sink = remotePlayPadSink
+    if (sink != null) sink(code, value, value > 0)
+    else NativeApp.setPadButtonForPort(TouchControls.playerPort, code, value, value > 0)
 }
 
 /* -------------------------------------------------------------------- */
@@ -2166,6 +2289,13 @@ private class HalfStickInputNode(private var params: HalfStickParams) : Modifier
 /* -------------------------------------------------------------------- */
 
 private fun sendDigital(keycode: Int, pressed: Boolean) {
+    remotePlayPadSink?.let { sink ->
+        // Remote play: a full press to player 2 (the stream carries no pressure), and none of the
+        // local pressure bookkeeping, which belongs to a game on this device.
+        sink(keycode, if (pressed) 255 else 0, pressed)
+        if (pressed && TouchControls.touchHaptics.value) NativeApp.touchHaptic()
+        return
+    }
     // Pressure modifier: send a soft (~50%) range for pressure-capable buttons
     // while the modifier is held; 0 (full press) otherwise. native-lib.cpp's
     // setPadButton turns the range into a 0..1 pressure value.

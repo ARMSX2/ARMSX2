@@ -327,6 +327,10 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
                             ),
                         ) { Text(str("action.close")) }
                     }
+                    // Hosting sits with Friends: there is no room for another tab in this menu.
+                    com.armsx2.remoteplay.RemotePlayHostPanel(
+                        Modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
+                    )
                     com.armsx2.ui.friends.FriendsPanel(Modifier.padding(horizontal = 12.dp))
                 }
             }

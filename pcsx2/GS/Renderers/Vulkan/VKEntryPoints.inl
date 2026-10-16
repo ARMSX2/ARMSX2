@@ -254,4 +254,9 @@ VULKAN_DEVICE_ENTRY_POINT(vkGetDeviceFaultInfoEXT, false)
 // VK_EXT_attachment_feedback_loop_dynamic_state
 VULKAN_DEVICE_ENTRY_POINT(vkCmdSetAttachmentFeedbackLoopEnableEXT, false)
 
+#if defined(VK_USE_PLATFORM_ANDROID_KHR)
+// VK_ANDROID_external_memory_android_hardware_buffer: remote play's shared frames
+VULKAN_DEVICE_ENTRY_POINT(vkGetAndroidHardwareBufferPropertiesANDROID, false)
+#endif
+
 #endif // VULKAN_DEVICE_ENTRY_POINT

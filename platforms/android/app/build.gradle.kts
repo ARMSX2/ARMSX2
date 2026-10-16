@@ -436,6 +436,9 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
 
+    // Remote play (com.armsx2.remoteplay): video, audio and player 2's input between two devices.
+    implementation(libs.streamWebrtc)
+
     testImplementation(libs.junit)
     // Real org.json for JVM unit tests: the mockable android.jar stubs throw "not mocked", and
     // this artifact wins the classpath ordering, so catalog parsing tests exercise real behavior.
