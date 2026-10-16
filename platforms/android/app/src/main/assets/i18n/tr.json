@@ -1454,6 +1454,8 @@
  "remoteplay.bye.stopped": "Arkadaşınız barındırmayı durdurdu.",
  "remoteplay.bye.version": "O cihazda farklı bir ARMSX2 sürümü var. İkisini de aynı sürüme güncelleyin.",
  "remoteplay.bye.ended": "Oturum sona erdi.",
+ "remoteplay.permission.host": "Aynı Wi-Fi'da barındırmak için Yakındaki cihazlar izni gerekir. Sorulduğunda izin verin veya bu uygulamanın ayarlarındaki İzinler bölümünden açın. Arkadaşınızı yine de çevrimiçi davet edebilirsiniz.",
+ "remoteplay.permission.join": "Aynı Wi-Fi'daki bir arkadaşınızı bulmak için Yakındaki cihazlar izni gerekir. Sorulduğunda izin verin veya bu uygulamanın ayarlarındaki İzinler bölümünden açın. Yine de bir kodla katılabilirsiniz.",
  "remoteplay.request.title": "%s 2. oyuncu olarak katılmak istiyor",
  "remoteplay.request.accept": "Kabul et",
  "remoteplay.request.decline": "Reddet",

@@ -1478,6 +1478,8 @@
   "remoteplay.bye.stopped": "Mêvandar êdî mêvandariyê nake.",
   "remoteplay.bye.version": "Guhertoya ARMSX2 ya wê cîhazê cuda ye. Herdu cîhazan bi heman guhertoyê nûve bike.",
   "remoteplay.bye.ended": "Danişîn qediya.",
+  "remoteplay.permission.host": "Ji bo mêvandariyê li ser heman Wi-Fi destûra Amûrên nêzîk pêwîst e. Dema tê xwestin destûrê bide, an jî di mîhengên vê sepanê de di beşa Destûr de. Tu hîn jî dikarî hevalekî serhêl vexwînî.",
+  "remoteplay.permission.join": "Ji bo dîtina hevalekî li ser heman Wi-Fi destûra Amûrên nêzîk pêwîst e. Dema tê xwestin destûrê bide, an jî di mîhengên vê sepanê de di beşa Destûr de. Tu hîn jî dikarî bi kodekê tevlî bibî.",
   "remoteplay.request.title": "%s dixwaze wek lîstikvanê 2 tevlî bibe",
   "remoteplay.request.accept": "Qebûl bike",
   "remoteplay.request.decline": "Red bike",

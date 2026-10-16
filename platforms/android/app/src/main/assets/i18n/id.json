@@ -1454,6 +1454,8 @@
   "remoteplay.bye.stopped": "Temanmu berhenti jadi host.",
   "remoteplay.bye.version": "Perangkat itu memakai versi ARMSX2 yang berbeda. Perbarui keduanya ke versi yang sama.",
   "remoteplay.bye.ended": "Sesi berakhir.",
+  "remoteplay.permission.host": "Menjadi host di Wi-Fi yang sama memerlukan izin Perangkat di sekitar. Izinkan saat diminta, atau di Izin pada setelan aplikasi ini. Kamu tetap bisa mengundang teman secara online.",
+  "remoteplay.permission.join": "Menemukan teman di Wi-Fi yang sama memerlukan izin Perangkat di sekitar. Izinkan saat diminta, atau di Izin pada setelan aplikasi ini. Kamu tetap bisa bergabung dengan kode.",
   "remoteplay.request.title": "%s ingin bergabung sebagai pemain 2",
   "remoteplay.request.accept": "Terima",
   "remoteplay.request.decline": "Tolak",

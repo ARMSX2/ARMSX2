@@ -86,6 +86,11 @@ fun RemotePlayScreen(onBack: () -> Unit) {
     var statsOn by remember { mutableStateOf(RemotePlayPrefs.streamStats(context)) }
     var qosOn by remember { mutableStateOf(RemotePlayPrefs.wifiQos(context)) }
 
+    // Android 17: finding and joining a host on the same Wi-Fi needs the local network permission
+    // (RemotePlayLocalNetwork). Set once the player refused it, so the screen says why nothing comes up.
+    val localNetwork = rememberLocalNetworkAccess()
+    var localNetworkRefused by remember { mutableStateOf(false) }
+
     // Looking for hosts only when asked, and for a minute at most: browsing holds a Wi-Fi
     // multicast lock and keeps the radio busier, which is battery nobody should pay by opening
     // this screen.
@@ -102,7 +107,9 @@ fun RemotePlayScreen(onBack: () -> Unit) {
         }
     }
 
-    // A six-character code from the lobby service, or a whole pasted invite.
+    // A six-character code from the lobby service, or a whole pasted invite. Online works without
+    // the local network, so this asks for it (a host in the same house needs it) but goes ahead
+    // either way.
     val joinInvite: () -> Unit = {
         val lobbyCode = RemotePlayLobby.normalize(invite)
         val offer = if (lobbyCode == null) RemotePlayProtocol.decodeCode(invite) else null
@@ -110,12 +117,12 @@ fun RemotePlayScreen(onBack: () -> Unit) {
             lobbyCode != null -> {
                 inviteError = false
                 invite = ""
-                RemotePlayViewerActivity.startWithLobby(context, lobbyCode)
+                localNetwork { RemotePlayViewerActivity.startWithLobby(context, lobbyCode) }
             }
             offer != null && offer.optString("t") == "offer" -> {
                 inviteError = false
                 invite = ""
-                RemotePlayViewerActivity.startWithInvite(context, offer)
+                localNetwork { RemotePlayViewerActivity.startWithInvite(context, offer) }
             }
             else -> inviteError = true
         }
@@ -196,7 +203,17 @@ fun RemotePlayScreen(onBack: () -> Unit) {
                 GlassPanel(Modifier.fillMaxWidth()) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         SectionTitle(str("remoteplay.join.title"))
-                        val toggleScan = { scanning = !scanning }
+                        if (localNetworkRefused) ErrorText(str("remoteplay.permission.join"))
+                        val toggleScan = {
+                            if (scanning) {
+                                scanning = false
+                            } else {
+                                localNetwork { allowed ->
+                                    localNetworkRefused = !allowed
+                                    scanning = allowed
+                                }
+                            }
+                        }
                         if (scanning) {
                             if (hosts.isEmpty()) {
                                 Busy(str("remoteplay.join.searching"))
@@ -222,7 +239,15 @@ fun RemotePlayScreen(onBack: () -> Unit) {
                             ) { Text(str("remoteplay.join.scan")) }
                         }
                         hosts.forEach { host ->
-                            HostRow(host) { RemotePlayViewerActivity.start(context, host.address, host.port, host.name) }
+                            HostRow(host) {
+                                localNetwork { allowed ->
+                                    if (allowed) {
+                                        RemotePlayViewerActivity.start(context, host.address, host.port, host.name)
+                                    } else {
+                                        localNetworkRefused = true
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -277,6 +302,7 @@ fun RemotePlayScreen(onBack: () -> Unit) {
                 GlassPanel(Modifier.fillMaxWidth()) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         SectionTitle(str("remoteplay.join.manual"))
+                        if (localNetworkRefused) ErrorText(str("remoteplay.permission.join"))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             // Typed on the app's own keyboard with a controller, like the code above.
                             val typeAddress = {
@@ -300,7 +326,11 @@ fun RemotePlayScreen(onBack: () -> Unit) {
                                     .controllerFocusable("remoteplay.join.addressField", onConfirm = typeAddress),
                             )
                             Spacer(Modifier.width(8.dp))
-                            val join = { joinAddress(context, address) }
+                            val join = {
+                                localNetwork { allowed ->
+                                    if (allowed) joinAddress(context, address) else localNetworkRefused = true
+                                }
+                            }
                             Button(
                                 onClick = join,
                                 enabled = address.isNotBlank(),
@@ -363,8 +393,16 @@ private fun joinAddress(context: Context, text: String) {
 fun RemotePlayHostPanel(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val status by RemotePlayHost.status
-    val hostWifi = { RemotePlayHost.startWifi(context) }
-    val invite = { RemotePlayHost.createInvite(context) }
+    // Android 17: hosting on the same Wi-Fi needs the local network permission. Online works
+    // without it, so an invite asks too (for the router port and a friend in the same house) but
+    // goes ahead either way.
+    val localNetwork = rememberLocalNetworkAccess()
+    val hostWifi = {
+        localNetwork { allowed ->
+            if (allowed) RemotePlayHost.startWifi(context) else RemotePlayHost.refuseLocalNetwork()
+        }
+    }
+    val invite = { localNetwork { RemotePlayHost.createInvite(context) } }
     val stop = { RemotePlayHost.stop() }
 
     GlassPanel(modifier.fillMaxWidth()) {

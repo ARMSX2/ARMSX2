@@ -10,6 +10,11 @@
     <!-- Remote play: finding hosts on the same Wi-Fi (DNS-SD). Some drivers drop the multicast
          replies unless an app holds a multicast lock. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Remote play on Android 17, which keeps an app that targets it off the local network
+         without this: finding and joining hosts on the same Wi-Fi, and the router port for online
+         hosting. A runtime permission in the Nearby devices group, asked for only when remote play
+         needs it (RemotePlayLocalNetwork.kt). -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <!-- Remote play: a low-latency Wi-Fi lock while a stream runs, so the radio does not doze
          between packets (Android requires this permission for any Wi-Fi lock). -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />

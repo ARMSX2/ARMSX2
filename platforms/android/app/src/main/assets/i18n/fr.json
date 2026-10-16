@@ -1449,6 +1449,8 @@
   "remoteplay.bye.stopped": "L'hôte a arrêté d'héberger.",
   "remoteplay.bye.version": "Cet appareil a une autre version d'ARMSX2. Mettez les deux appareils à jour vers la même version.",
   "remoteplay.bye.ended": "La session est terminée.",
+  "remoteplay.permission.host": "Héberger sur le même Wi-Fi nécessite l'autorisation Appareils à proximité. Autorisez-la quand elle vous est demandée, ou dans Autorisations, dans les paramètres de cette application. Vous pouvez toujours inviter un ami en ligne.",
+  "remoteplay.permission.join": "Trouver un ami sur le même Wi-Fi nécessite l'autorisation Appareils à proximité. Autorisez-la quand elle vous est demandée, ou dans Autorisations, dans les paramètres de cette application. Vous pouvez toujours rejoindre avec un code.",
   "remoteplay.request.title": "%s veut rejoindre la partie en tant que joueur 2",
   "remoteplay.request.accept": "Accepter",
   "remoteplay.request.decline": "Refuser",

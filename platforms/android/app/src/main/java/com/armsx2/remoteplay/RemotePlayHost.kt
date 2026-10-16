@@ -186,6 +186,12 @@ object RemotePlayHost {
         pending.onSignal(message)
     }
 
+    /** Hosting on this Wi-Fi was asked for, and the local network permission refused (Android 17). */
+    fun refuseLocalNetwork() {
+        if (server != null || session != null) return
+        _status.value = Status.Failed(I18n.get("remoteplay.permission.host"))
+    }
+
     fun stop() {
         main.removeCallbacks(gameWatch)
         session?.end("stopped")

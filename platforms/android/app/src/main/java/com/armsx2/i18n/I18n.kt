@@ -260,6 +260,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "remoteplay.bye.stopped" to "The host stopped hosting.",
     "remoteplay.bye.version" to "That device has a different version of ARMSX2. Update both to the same version.",
     "remoteplay.bye.ended" to "The session ended.",
+    "remoteplay.permission.host" to "Hosting on the same Wi-Fi needs the Nearby devices permission. Allow it when asked, or under Permissions in this app's settings. You can still invite a friend online.",
+    "remoteplay.permission.join" to "Finding a friend on the same Wi-Fi needs the Nearby devices permission. Allow it when asked, or under Permissions in this app's settings. You can still join with a code.",
     "remoteplay.request.title" to "%s wants to join as player 2",
     "remoteplay.request.accept" to "Accept",
     "remoteplay.request.decline" to "Decline",

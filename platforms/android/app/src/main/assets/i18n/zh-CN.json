@@ -1454,6 +1454,8 @@
  "remoteplay.bye.stopped": "房主已关闭房间。",
  "remoteplay.bye.version": "对方设备的 ARMSX2 版本不同。请将两台设备更新到相同版本。",
  "remoteplay.bye.ended": "本次游玩已结束。",
+ "remoteplay.permission.host": "在同一 Wi-Fi 下当房主需要“附近的设备”权限。请在弹出请求时允许，或在本应用设置的“权限”中开启。你仍然可以在线邀请朋友。",
+ "remoteplay.permission.join": "在同一 Wi-Fi 下查找朋友需要“附近的设备”权限。请在弹出请求时允许，或在本应用设置的“权限”中开启。你仍然可以用代码加入。",
  "remoteplay.request.title": "%s 想以玩家 2 身份加入",
  "remoteplay.request.accept": "接受",
  "remoteplay.request.decline": "拒绝",

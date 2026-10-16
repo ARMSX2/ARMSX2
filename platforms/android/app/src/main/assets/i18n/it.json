@@ -1449,6 +1449,8 @@
  "remoteplay.bye.stopped": "L'host ha smesso di ospitare.",
  "remoteplay.bye.version": "Quel dispositivo ha una versione diversa di ARMSX2. Aggiornali entrambi alla stessa versione.",
  "remoteplay.bye.ended": "La sessione è terminata.",
+ "remoteplay.permission.host": "Per ospitare sulla stessa rete Wi-Fi serve l'autorizzazione Dispositivi nelle vicinanze. Consentila quando ti viene chiesto, oppure in Autorizzazioni nelle impostazioni di questa app. Puoi comunque invitare un amico online.",
+ "remoteplay.permission.join": "Per trovare un amico sulla stessa rete Wi-Fi serve l'autorizzazione Dispositivi nelle vicinanze. Consentila quando ti viene chiesto, oppure in Autorizzazioni nelle impostazioni di questa app. Puoi comunque entrare con un codice.",
  "remoteplay.request.title": "%s vuole unirsi alla partita come giocatore 2",
  "remoteplay.request.accept": "Accetta",
  "remoteplay.request.decline": "Rifiuta",

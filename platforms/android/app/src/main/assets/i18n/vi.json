@@ -1454,6 +1454,8 @@
   "remoteplay.bye.stopped": "Chủ phòng đã đóng phòng.",
   "remoteplay.bye.version": "Thiết bị đó dùng phiên bản ARMSX2 khác. Hãy cập nhật cả hai lên cùng một phiên bản.",
   "remoteplay.bye.ended": "Phiên chơi đã kết thúc.",
+  "remoteplay.permission.host": "Để làm chủ phòng trên cùng mạng Wi-Fi, cần quyền Thiết bị ở gần. Hãy cho phép khi được hỏi, hoặc trong mục Quyền ở phần cài đặt của ứng dụng này. Bạn vẫn có thể mời bạn bè qua mạng.",
+  "remoteplay.permission.join": "Để tìm bạn bè trên cùng mạng Wi-Fi, cần quyền Thiết bị ở gần. Hãy cho phép khi được hỏi, hoặc trong mục Quyền ở phần cài đặt của ứng dụng này. Bạn vẫn có thể tham gia bằng mã.",
   "remoteplay.request.title": "%s muốn tham gia với vai trò người chơi 2",
   "remoteplay.request.accept": "Chấp nhận",
   "remoteplay.request.decline": "Từ chối",

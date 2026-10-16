@@ -1454,6 +1454,8 @@
  "remoteplay.bye.stopped": "호스트가 호스팅을 중지했습니다.",
  "remoteplay.bye.version": "상대 기기의 ARMSX2 버전이 다릅니다. 두 기기를 같은 버전으로 업데이트하세요.",
  "remoteplay.bye.ended": "세션이 종료되었습니다.",
+ "remoteplay.permission.host": "같은 Wi-Fi에서 호스팅하려면 '근처 기기' 권한이 필요합니다. 요청이 표시되면 허용하거나 이 앱 설정의 '권한'에서 허용하세요. 온라인으로 친구를 초대하는 것은 계속할 수 있습니다.",
+ "remoteplay.permission.join": "같은 Wi-Fi에서 친구를 찾으려면 '근처 기기' 권한이 필요합니다. 요청이 표시되면 허용하거나 이 앱 설정의 '권한'에서 허용하세요. 코드로 참가하는 것은 계속할 수 있습니다.",
  "remoteplay.request.title": "%s 님이 플레이어 2로 참가하려고 합니다",
  "remoteplay.request.accept": "수락",
  "remoteplay.request.decline": "거절",

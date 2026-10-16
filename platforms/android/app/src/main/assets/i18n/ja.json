@@ -1454,6 +1454,8 @@
   "remoteplay.bye.stopped": "友達がホストを終了しました。",
   "remoteplay.bye.version": "相手の端末の ARMSX2 はバージョンが異なります。両方を同じバージョンにアップデートしてください。",
   "remoteplay.bye.ended": "セッションが終了しました。",
+  "remoteplay.permission.host": "同じWi-Fiでホストするには「付近のデバイス」の権限が必要です。確認が表示されたら許可するか、このアプリの設定の「権限」から許可してください。オンラインで友達を招待することはできます。",
+  "remoteplay.permission.join": "同じWi-Fiで友達を見つけるには「付近のデバイス」の権限が必要です。確認が表示されたら許可するか、このアプリの設定の「権限」から許可してください。コードで参加することはできます。",
   "remoteplay.request.title": "%s がプレイヤー2として参加を希望しています",
   "remoteplay.request.accept": "許可",
   "remoteplay.request.decline": "拒否",
