@@ -5,6 +5,10 @@
 
 #include "common/Pcsx2Defs.h"
 
+#include <functional>
+#include <string>
+#include <vector>
+
 #ifndef XXH_versionNumber
 #define XXH_STATIC_LINKING_ONLY 1
 #define XXH_INLINE_ALL 1
@@ -85,6 +89,21 @@ namespace mVUProgCache
 	// reopened before returning.
 	microProgram* TryLoadProgram(microVU& mVU, const XXH128_hash_t& contentHash);
 
+	// vu-aot sidecars (VU1): `<root>/<hh>/<hash32hex>.vuaot`, beside the program's payload, written
+	// and read for the vu-aot live tier (vuaot/VuAotPersist.h has the format). The cache's directory
+	// handshake covers them like the payloads: an options change renames them aside with the rest.
+	//
+	// Whether the cache is up for this VU (sidecars can be read and written).
+	bool SidecarsEnabled(u32 vu_index);
+	// The sidecar for `hash`: from the preload (consumed), else from disk. False when there is none.
+	bool ReadSidecar(u32 vu_index, const XXH128_hash_t& hash, std::vector<u8>& out);
+	// Hands a sidecar to the cache's writer thread: `build` runs there and returns the bytes to write
+	// (tmp + rename), or nothing to skip the write. A newer request for a hash replaces an older one
+	// still queued. The caller's thread never touches the disk.
+	void QueueSidecar(u32 vu_index, const XXH128_hash_t& hash, std::function<std::vector<u8>()> build);
+	// Waits until every queued sidecar has been written (Close does this too).
+	void FlushSidecars(u32 vu_index);
+
 	// Dispatch-time probe used by mVUsearchProg on the in-process-miss
 	// path. Tracks whether the INDEX already knows the (program, startPC)
 	// tuple the dispatcher is about to recompile — the hit-rate equals the
@@ -128,6 +147,8 @@ namespace mVUProgCache
 	// served hydration path (e.g. by deleting the on-disk payload after the
 	// preload and proving hydration still succeeds).
 	void TestWaitForPreload(u32 vu_index);
+	// Test-only: the path a sidecar for `hash` is written to.
+	std::string TestSidecarPath(u32 vu_index, const XXH128_hash_t& hash);
 
 	// Test-only: append an INDEX entry for `hash`, applying the same
 	// persistence path SaveProgram uses (single atomic append + in-memory
@@ -166,6 +187,15 @@ namespace mVUProgCache
 		                             // map (consumed buffers are released)
 		u64  preloadHits        = 0; // hydrations served from RAM instead of
 		                             // a dispatch-thread disk read
+		u64  sidecarReads       = 0; // ReadSidecar calls that found one
+		u64  sidecarPreloadHits = 0; // ... of them, served from the preload
+		u64  sidecarsPreloaded  = 0; // .vuaot files the preload read
+		u64  sidecarPreloadBytes = 0; // ... and their bytes (inside the preload budget)
+		u64  sidecarWrites      = 0; // .vuaot files written
+		u64  sidecarWriteBytes  = 0; // ... and their bytes
+		u64  sidecarSkips       = 0; // requests whose build returned nothing
+		u64  preloadBudgetHit   = 0; // 1 when the preload stopped at its budget
+		u64  preloadWantedBytes = 0; // payload + sidecar bytes the preload would have read without one
 	};
 	Stats GetStats(u32 vu_index);
 }

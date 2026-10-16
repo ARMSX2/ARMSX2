@@ -16,6 +16,9 @@
 #include <atomic>
 #include <chrono>
 #include <cinttypes>
+#include <condition_variable>
+#include <deque>
+#include <functional>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -118,6 +121,29 @@ struct State
 	u64 preloadedPayloads = 0;
 	u64 preloadedBytes    = 0;
 	u64 preloadHits       = 0;
+	// vu-aot sidecars the preload read (consumed by ReadSidecar, like the payloads).
+	std::unordered_map<XXH128_hash_t, std::vector<u8>,
+	                   MvuContentHashHash, MvuContentHashEq> preloadedSidecars;
+	u64 sidecarsPreloaded   = 0;
+	u64 sidecarPreloadBytes = 0;
+	u64 sidecarPreloadHits  = 0;
+	u64 sidecarReads        = 0;
+	u64 preloadBudgetHit    = 0;
+	u64 preloadWantedBytes  = 0;
+
+	// The sidecar writer (QueueSidecar): one thread, started by the first request and stopped
+	// (after draining its queue) by Close. writerMutex guards the queue and the flags; the writer
+	// reads `root`, which stays fixed while the cache is initialized.
+	std::thread             writerThread;
+	std::mutex              writerMutex;
+	std::condition_variable writerCv;     // work queued, or stop
+	std::condition_variable writerIdleCv; // queue empty and nothing being written
+	std::deque<XXH128_hash_t> writerOrder;
+	std::unordered_map<XXH128_hash_t, std::function<std::vector<u8>()>,
+	                   MvuContentHashHash, MvuContentHashEq> writerQueue;
+	bool writerStop = false;
+	bool writerBusy = false;
+	std::atomic<u64> sidecarWrites{0}, sidecarWriteBytes{0}, sidecarSkips{0};
 
 	void StopPreload()
 	{
@@ -126,10 +152,30 @@ struct State
 			preloadThread.join();
 	}
 
+	// Writes whatever is queued, then ends the writer thread.
+	void StopWriter()
+	{
+		{
+			std::lock_guard<std::mutex> lock(writerMutex);
+			writerStop = true;
+		}
+		writerCv.notify_all();
+		if (writerThread.joinable())
+			writerThread.join();
+		std::lock_guard<std::mutex> lock(writerMutex);
+		writerStop = false;
+		writerOrder.clear();
+		writerQueue.clear();
+	}
+
 	// Joinable-thread backstop: a std::thread destroyed while joinable
 	// terminates the process. Close/ResetForTest join explicitly; this
 	// covers exit paths that skip mVUclose.
-	~State() { StopPreload(); }
+	~State()
+	{
+		StopPreload();
+		StopWriter();
+	}
 };
 
 static State g_state[2];
@@ -257,11 +303,12 @@ static bool PersistIndexEntry(State& s, const IndexEntryHeader& e)
 //------------------------------------------------------------------
 
 static std::string PayloadPath(const State& s, const XXH128_hash_t& hash,
-                                std::string* out_shard_dir = nullptr)
+                                std::string* out_shard_dir = nullptr,
+                                const char* extension = ".vuprog")
 {
 	char name[48];
-	std::snprintf(name, sizeof(name), "%016" PRIx64 "%016" PRIx64 ".vuprog",
-		hash.high64, hash.low64);
+	std::snprintf(name, sizeof(name), "%016" PRIx64 "%016" PRIx64 "%s",
+		hash.high64, hash.low64, extension);
 	const char shard[3] = {name[0], name[1], 0};
 	std::string shard_dir = Path::Combine(s.root, shard);
 	std::string path = Path::Combine(shard_dir, name);
@@ -304,10 +351,67 @@ static bool WritePayload(State& s, const XXH128_hash_t& hash,
 	return true;
 }
 
+static constexpr char kSidecarExtension[] = ".vuaot";
+
+static std::string SidecarPath(const State& s, const XXH128_hash_t& hash,
+                                std::string* out_shard_dir = nullptr)
+{
+	return PayloadPath(s, hash, out_shard_dir, kSidecarExtension);
+}
+
+// The sidecar writer's loop: one request at a time, tmp + rename, until stopped with nothing left.
+static void SidecarWriterLoop(State& s)
+{
+	std::unique_lock<std::mutex> lock(s.writerMutex);
+	for (;;)
+	{
+		s.writerCv.wait(lock, [&] { return s.writerStop || !s.writerOrder.empty(); });
+		if (s.writerOrder.empty())
+			break; // (stopping, and drained)
+		const XXH128_hash_t hash = s.writerOrder.front();
+		s.writerOrder.pop_front();
+		auto it = s.writerQueue.find(hash);
+		if (it == s.writerQueue.end())
+			continue;
+		std::function<std::vector<u8>()> build = std::move(it->second);
+		s.writerQueue.erase(it);
+		s.writerBusy = true;
+		lock.unlock();
+
+		const std::vector<u8> bytes = build();
+		if (bytes.empty())
+			s.sidecarSkips.fetch_add(1, std::memory_order_relaxed);
+		else
+		{
+			std::string shard_dir;
+			const std::string path = SidecarPath(s, hash, &shard_dir);
+			const std::string tmp = path + ".tmp";
+			Error error;
+			if (FileSystem::EnsureDirectoryExists(shard_dir.c_str(), false, &error) &&
+				FileSystem::WriteBinaryFile(tmp.c_str(), bytes.data(), bytes.size()) &&
+				std::rename(tmp.c_str(), path.c_str()) == 0)
+			{
+				s.sidecarWrites.fetch_add(1, std::memory_order_relaxed);
+				s.sidecarWriteBytes.fetch_add(bytes.size(), std::memory_order_relaxed);
+			}
+			else
+				Console.Warning("mVUProgCache: sidecar write failed: %s", path.c_str());
+		}
+
+		lock.lock();
+		s.writerBusy = false;
+		if (s.writerOrder.empty())
+			s.writerIdleCv.notify_all();
+	}
+	s.writerBusy = false;
+	s.writerIdleCv.notify_all();
+}
+
 // Read the payload-bearing INDEX entries into RAM on a background thread,
 // most-recently-used first, bounded by kPreloadBudgetBytes. The bound is a
 // cap, not a target — resident cost matters on low-memory devices, but
-// buffers drain as hydrations consume them.
+// buffers drain as hydrations consume them. A program's vu-aot sidecar, when
+// it has one, is read with its payload and counts against the same budget.
 static constexpr size_t kPreloadBudgetBytes = 32 * 1024 * 1024;
 
 static void StartPreload(State& s)
@@ -329,25 +433,15 @@ static void StartPreload(State& s)
 	std::sort(items.begin(), items.end(),
 		[](const Item& a, const Item& b) { return a.lastUsedNs > b.lastUsedNs; });
 
-	// Strict MRU prefix (first over-budget item stops the walk, no
-	// skip-and-refill) so what got preloaded is a deterministic function of
-	// the INDEX, not of file-size interleaving.
-	std::vector<std::pair<XXH128_hash_t, std::string>> files;
-	size_t budget = 0;
+	struct File
+	{
+		XXH128_hash_t hash;
+		std::string payload, sidecar;
+		u32 payloadSize;
+	};
+	std::vector<File> files;
 	for (const Item& it : items)
-	{
-		if (budget + it.size > kPreloadBudgetBytes)
-			break;
-		budget += it.size;
-		files.emplace_back(it.hash, PayloadPath(s, it.hash));
-	}
-	if (files.size() < items.size())
-	{
-		Console.WriteLn("mVUProgCache: preload budget (%zu MiB) reached — "
-		                "%zu of %zu payloads stay on disk",
-		                kPreloadBudgetBytes / (1024 * 1024),
-		                items.size() - files.size(), items.size());
-	}
+		files.push_back({it.hash, PayloadPath(s, it.hash), SidecarPath(s, it.hash), it.size});
 
 	s.preloadStop.store(false, std::memory_order_relaxed);
 	// The &s capture is intentional and safe: s aliases a process-lifetime
@@ -355,17 +449,55 @@ static void StartPreload(State& s)
 	// ResetForTest ever mutate that state. Don't "fix" this into a by-value or
 	// shared_ptr capture — there is no lifetime bug to solve.
 	s.preloadThread = std::thread([&s, files = std::move(files)]() {
-		for (const auto& [hash, path] : files)
+		// Strict MRU prefix (the first program over budget stops the reads, no
+		// skip-and-refill) so what got preloaded is a deterministic function of
+		// the INDEX and the sidecars, not of file-size interleaving. Past the
+		// budget the walk only sizes the files, for the stats.
+		size_t budget = 0, wanted = 0, kept = 0;
+		bool full = false;
+		for (const File& f : files)
 		{
 			if (s.preloadStop.load(std::memory_order_relaxed))
 				return;
-			auto bytes = FileSystem::ReadBinaryFile(path.c_str());
-			if (!bytes.has_value() || bytes->empty())
-				continue; // dispatch-time read will count payloadMissing
+			const s64 sideSize = FileSystem::GetPathFileSize(f.sidecar.c_str());
+			const size_t need = f.payloadSize + static_cast<size_t>(std::max<s64>(sideSize, 0));
+			wanted += need;
+			if (full || budget + need > kPreloadBudgetBytes)
+			{
+				full = true;
+				continue;
+			}
+			budget += need;
+			kept++;
+			auto bytes = FileSystem::ReadBinaryFile(f.payload.c_str());
+			std::optional<std::vector<u8>> side;
+			if (sideSize > 0)
+				side = FileSystem::ReadBinaryFile(f.sidecar.c_str());
 			std::lock_guard<std::mutex> lock(s.preloadMutex);
-			s.preloadedBytes += bytes->size();
-			++s.preloadedPayloads;
-			s.preloaded[hash] = std::move(*bytes);
+			if (bytes.has_value() && !bytes->empty())
+			{
+				s.preloadedBytes += bytes->size();
+				++s.preloadedPayloads;
+				s.preloaded[f.hash] = std::move(*bytes);
+			}
+			// (an unreadable payload: the dispatch-time read will count payloadMissing)
+			if (side.has_value() && !side->empty())
+			{
+				s.preloadedBytes += side->size();
+				s.sidecarPreloadBytes += side->size();
+				++s.sidecarsPreloaded;
+				s.preloadedSidecars[f.hash] = std::move(*side);
+			}
+		}
+		std::lock_guard<std::mutex> lock(s.preloadMutex);
+		s.preloadWantedBytes = wanted;
+		s.preloadBudgetHit = full ? 1 : 0;
+		if (full)
+		{
+			Console.WriteLn("mVUProgCache: preload budget (%zu MiB) reached — "
+			                "%zu of %zu programs stay on disk (%zu KiB wanted)",
+			                kPreloadBudgetBytes / (1024 * 1024),
+			                files.size() - kept, files.size(), wanted / 1024);
 		}
 	});
 }
@@ -502,6 +634,8 @@ void Close(microVU& mVU)
 	State& s = g_state[mVU.index & 1];
 	if (!s.initialized)
 		return;
+	// Sidecars still queued are written first (the tier handed its last ones over just before).
+	s.StopWriter();
 	DumpStats(mVU, "close");
 	// No file handles kept open (per-call open/append/close). Clear the
 	// in-memory index so the next mVUreset starts fresh.
@@ -509,6 +643,7 @@ void Close(microVU& mVU)
 	{
 		std::lock_guard<std::mutex> lock(s.preloadMutex);
 		s.preloaded.clear();
+		s.preloadedSidecars.clear();
 		s.preloadedBytes = 0;
 		// Zero the cumulative preload counters too (mirror ResetForTest) so a
 		// Close+Init cycle starts from a consistent baseline — otherwise
@@ -517,9 +652,86 @@ void Close(microVU& mVU)
 		// emitted this lifecycle's lifetime totals.
 		s.preloadedPayloads = 0;
 		s.preloadHits = 0;
+		s.sidecarsPreloaded = 0;
+		s.sidecarPreloadBytes = 0;
+		s.sidecarPreloadHits = 0;
+		s.sidecarReads = 0;
+		s.preloadBudgetHit = 0;
+		s.preloadWantedBytes = 0;
 	}
+	s.sidecarWrites = 0;
+	s.sidecarWriteBytes = 0;
+	s.sidecarSkips = 0;
 	s.initialized = false;
 	s.entries.clear();
+}
+
+bool SidecarsEnabled(u32 vu_index)
+{
+	const State& s = g_state[vu_index & 1];
+	return s.initialized && s.enabled;
+}
+
+bool ReadSidecar(u32 vu_index, const XXH128_hash_t& hash, std::vector<u8>& out)
+{
+	State& s = g_state[vu_index & 1];
+	if (!s.initialized || !s.enabled)
+		return false;
+	{
+		std::lock_guard<std::mutex> lock(s.preloadMutex);
+		auto it = s.preloadedSidecars.find(hash);
+		if (it != s.preloadedSidecars.end())
+		{
+			out = std::move(it->second);
+			s.preloadedBytes -= out.size();
+			s.preloadedSidecars.erase(it);
+			++s.sidecarPreloadHits;
+			++s.sidecarReads;
+			return true;
+		}
+	}
+	// (a sidecar still queued for writing is newer than the disk's: this session wrote it, and a
+	// program asks only once per session for its own, so it is not asked for here)
+	auto bytes = FileSystem::ReadBinaryFile(SidecarPath(s, hash).c_str());
+	if (!bytes.has_value() || bytes->empty())
+		return false;
+	out = std::move(*bytes);
+	std::lock_guard<std::mutex> lock(s.preloadMutex);
+	++s.sidecarReads;
+	return true;
+}
+
+void QueueSidecar(u32 vu_index, const XXH128_hash_t& hash, std::function<std::vector<u8>()> build)
+{
+	State& s = g_state[vu_index & 1];
+	if (!s.initialized || !s.enabled)
+		return;
+	{
+		std::lock_guard<std::mutex> lock(s.writerMutex);
+		auto it = s.writerQueue.find(hash);
+		if (it != s.writerQueue.end())
+			it->second = std::move(build); // (keeps its place in the queue)
+		else
+		{
+			s.writerQueue.emplace(hash, std::move(build));
+			s.writerOrder.push_back(hash);
+		}
+		if (!s.writerThread.joinable())
+			s.writerThread = std::thread([&s]() { SidecarWriterLoop(s); });
+	}
+	s.writerCv.notify_one();
+}
+
+void FlushSidecars(u32 vu_index)
+{
+	State& s = g_state[vu_index & 1];
+	std::unique_lock<std::mutex> lock(s.writerMutex);
+	s.writerIdleCv.wait(lock, [&] { return !s.writerThread.joinable() || (s.writerOrder.empty() && !s.writerBusy); });
+}
+
+std::string TestSidecarPath(u32 vu_index, const XXH128_hash_t& hash)
+{
+	return SidecarPath(g_state[vu_index & 1], hash);
 }
 
 void SaveProgram(microVU& mVU, const microProgram& prog)
@@ -742,7 +954,16 @@ Stats GetStats(u32 vu_index)
 		out.preloadedPayloads = s.preloadedPayloads;
 		out.preloadedBytes    = s.preloadedBytes;
 		out.preloadHits       = s.preloadHits;
+		out.sidecarReads        = s.sidecarReads;
+		out.sidecarPreloadHits  = s.sidecarPreloadHits;
+		out.sidecarsPreloaded   = s.sidecarsPreloaded;
+		out.sidecarPreloadBytes = s.sidecarPreloadBytes;
+		out.preloadBudgetHit    = s.preloadBudgetHit;
+		out.preloadWantedBytes  = s.preloadWantedBytes;
 	}
+	out.sidecarWrites     = s.sidecarWrites.load(std::memory_order_relaxed);
+	out.sidecarWriteBytes = s.sidecarWriteBytes.load(std::memory_order_relaxed);
+	out.sidecarSkips      = s.sidecarSkips.load(std::memory_order_relaxed);
 	return out;
 }
 
@@ -773,6 +994,7 @@ bool TestGetLiveSentinel(u32 vu_index, XXH128_hash_t* out_sentinel)
 void ResetForTest(u32 vu_index)
 {
 	State& s = g_state[vu_index & 1];
+	s.StopWriter();
 	s.StopPreload();
 	s.initialized      = false;
 	s.enabled          = true;
@@ -797,7 +1019,17 @@ void ResetForTest(u32 vu_index)
 		s.preloadedPayloads = 0;
 		s.preloadedBytes    = 0;
 		s.preloadHits       = 0;
+		s.preloadedSidecars.clear();
+		s.sidecarsPreloaded   = 0;
+		s.sidecarPreloadBytes = 0;
+		s.sidecarPreloadHits  = 0;
+		s.sidecarReads        = 0;
+		s.preloadBudgetHit    = 0;
+		s.preloadWantedBytes  = 0;
 	}
+	s.sidecarWrites = 0;
+	s.sidecarWriteBytes = 0;
+	s.sidecarSkips = 0;
 }
 
 void TestWaitForPreload(u32 vu_index)
@@ -816,7 +1048,9 @@ void DumpStats(const microVU& mVU, const char* tag)
 		"loads(indexHit/miss)=%llu/%llu staleEvicts=%llu "
 		"dispatchProbes=%llu dispatchIndexAvail=%llu "
 		"payload(writes/hits/missing/rejects)=%llu/%llu/%llu/%llu "
-		"preload(loaded/residentB/hits)=%llu/%llu/%llu",
+		"preload(loaded/residentB/hits)=%llu/%llu/%llu "
+		"sidecars(reads/preloadHits/preloaded/preloadB/writes/writeB/skips)=%llu/%llu/%llu/%llu/%llu/%llu/%llu "
+		"preload(wantedB/budgetHit)=%llu/%llu",
 		mVU.index, tag,
 		(unsigned long long)entries,
 		(unsigned long long)s.savesAttempted,
@@ -832,6 +1066,15 @@ void DumpStats(const microVU& mVU, const char* tag)
 		(unsigned long long)s.payloadRejects,
 		(unsigned long long)s.preloadedPayloads,
 		(unsigned long long)s.preloadedBytes,
-		(unsigned long long)s.preloadHits);
+		(unsigned long long)s.preloadHits,
+		(unsigned long long)s.sidecarReads,
+		(unsigned long long)s.sidecarPreloadHits,
+		(unsigned long long)s.sidecarsPreloaded,
+		(unsigned long long)s.sidecarPreloadBytes,
+		(unsigned long long)s.sidecarWrites,
+		(unsigned long long)s.sidecarWriteBytes,
+		(unsigned long long)s.sidecarSkips,
+		(unsigned long long)s.preloadWantedBytes,
+		(unsigned long long)s.preloadBudgetHit);
 }
 }

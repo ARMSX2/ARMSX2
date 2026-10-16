@@ -294,6 +294,123 @@ namespace mVUPersist
 	}
 
 	//------------------------------------------------------------------
+	// Build identity
+	//------------------------------------------------------------------
+
+#if defined(__linux__)
+	struct BuildIdSearch
+	{
+		uptr probe;
+		std::vector<u8> id;
+	};
+
+	// The NT_GNU_BUILD_ID note of the module that holds `probe`, from its PT_NOTE segments.
+	static int FindBuildIdCallback(dl_phdr_info* info, size_t, void* data)
+	{
+		BuildIdSearch* bs = static_cast<BuildIdSearch*>(data);
+		bool contains = false;
+		for (int i = 0; i < info->dlpi_phnum && !contains; i++)
+		{
+			const auto& ph = info->dlpi_phdr[i];
+			const uptr b = static_cast<uptr>(info->dlpi_addr + ph.p_vaddr);
+			contains = ph.p_type == PT_LOAD && bs->probe >= b && bs->probe < b + ph.p_memsz;
+		}
+		if (!contains)
+			return 0;
+		for (int i = 0; i < info->dlpi_phnum; i++)
+		{
+			const auto& ph = info->dlpi_phdr[i];
+			if (ph.p_type != PT_NOTE)
+				continue;
+			const u8* p = reinterpret_cast<const u8*>(info->dlpi_addr + ph.p_vaddr);
+			const u8* const end = p + ph.p_memsz;
+			while (p + 12 <= end)
+			{
+				u32 namesz, descsz, type;
+				std::memcpy(&namesz, p, 4);
+				std::memcpy(&descsz, p + 4, 4);
+				std::memcpy(&type, p + 8, 4);
+				const u8* name = p + 12;
+				const u8* desc = name + ((namesz + 3) & ~3u);
+				const u8* next = desc + ((descsz + 3) & ~3u);
+				if (next > end)
+					break;
+				if (type == 3 /* NT_GNU_BUILD_ID */ && namesz == 4 && std::memcmp(name, "GNU", 4) == 0 && descsz)
+				{
+					bs->id.assign(desc, desc + descsz);
+					return 1;
+				}
+				p = next;
+			}
+		}
+		return 1;
+	}
+#endif
+
+	static std::vector<u8> ReadBuildIdBytes()
+	{
+#if defined(__linux__)
+		BuildIdSearch bs{reinterpret_cast<uptr>(&microVU0), {}};
+		dl_iterate_phdr(FindBuildIdCallback, &bs);
+		if (!bs.id.empty())
+			return bs.id;
+#elif defined(__APPLE__)
+		const uptr p = reinterpret_cast<uptr>(&microVU0);
+		const u32 count = _dyld_image_count();
+		for (u32 img = 0; img < count; img++)
+		{
+			const mach_header_64* hdr = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(img));
+			if (!hdr || hdr->magic != MH_MAGIC_64)
+				continue;
+			uptr begin = 0, end = 0;
+			if (!ResolveModuleRange(hdr, begin, end) || p < begin || p >= end)
+				continue;
+			const load_command* lc = reinterpret_cast<const load_command*>(hdr + 1);
+			for (u32 i = 0; i < hdr->ncmds; i++)
+			{
+				if (lc->cmd == LC_UUID)
+				{
+					const uuid_command* u = reinterpret_cast<const uuid_command*>(lc);
+					return std::vector<u8>(u->uuid, u->uuid + sizeof(u->uuid));
+				}
+				lc = reinterpret_cast<const load_command*>(reinterpret_cast<const u8*>(lc) + lc->cmdsize);
+			}
+		}
+#endif
+		static const char kWhen[] = __DATE__ " " __TIME__;
+		return std::vector<u8>(kWhen, kWhen + sizeof(kWhen));
+	}
+
+#ifdef PCSX2_RECOMPILER_TESTS
+	static bool s_buildIdOverride = false;
+	static u64 s_buildIdOverrideLo = 0, s_buildIdOverrideHi = 0;
+	void TestOverrideBuildId(bool on, u64 lo, u64 hi)
+	{
+		s_buildIdOverride = on;
+		s_buildIdOverrideLo = lo;
+		s_buildIdOverrideHi = hi;
+	}
+#endif
+
+	void GetBuildId(u64& lo, u64& hi)
+	{
+#ifdef PCSX2_RECOMPILER_TESTS
+		if (s_buildIdOverride)
+		{
+			lo = s_buildIdOverrideLo;
+			hi = s_buildIdOverrideHi;
+			return;
+		}
+#endif
+		static const XXH128_hash_t id = []() {
+			const std::vector<u8> bytes = ReadBuildIdBytes();
+			return XXH3_128bits(bytes.data(), bytes.size());
+		}();
+		lo = id.low64;
+		hi = id.high64;
+	}
+
+	//------------------------------------------------------------------
 	// Dispatcher stub table
 	//------------------------------------------------------------------
 

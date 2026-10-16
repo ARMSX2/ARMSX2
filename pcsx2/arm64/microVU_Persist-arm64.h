@@ -113,6 +113,16 @@ namespace mVUPersist
 	// Must be called with the code cache CLOSED (it opens its own episode).
 	microProgram* HydrateProgram(microVU& mVU, const u8* data, size_t size);
 
+	// The running build's identity, as a 128-bit hash: the GNU build-id note of the module that holds
+	// the JIT (Linux, Android), its LC_UUID (Apple), else the compile date and time of this file. The
+	// vu-aot sidecars are keyed on it while vu-aot changes daily (persistence-design.md, the owner's
+	// default on decision 2): every new build ignores the sidecars of the last one.
+	void GetBuildId(u64& lo, u64& hi);
+#ifdef PCSX2_RECOMPILER_TESTS
+	// Test only: report this id instead (a file "from another build").
+	void TestOverrideBuildId(bool on, u64 lo, u64 hi);
+#endif
+
 	// --- Test hooks (vu_index-keyed so test TUs don't need microVU types) ---
 
 	// Serialize the most-recently-created program of the given VU.
