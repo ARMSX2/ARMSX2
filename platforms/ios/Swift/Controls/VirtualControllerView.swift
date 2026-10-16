@@ -8,50 +8,6 @@ import UIKit
 // screen can reveal a hidden menu button the zones would otherwise swallow.
 let gameplaySurfaceTapNotification = Notification.Name("ARMSX2iOSGameplaySurfaceTap")
 
-// Lazily-created haptic generators reused for button presses and explicitly releasable
-// when the gameplay UI is removed.
-@MainActor
-enum HapticManager {
-    private static var mediumGenerator: UIImpactFeedbackGenerator?
-    private static var lightGenerator: UIImpactFeedbackGenerator?
-
-    static var medium: UIImpactFeedbackGenerator {
-        if let mediumGenerator { return mediumGenerator }
-        let generator = UIImpactFeedbackGenerator(style: .medium)
-        generator.prepare()
-        mediumGenerator = generator
-        return generator
-    }
-
-    static var light: UIImpactFeedbackGenerator {
-        if let lightGenerator { return lightGenerator }
-        let generator = UIImpactFeedbackGenerator(style: .light)
-        generator.prepare()
-        lightGenerator = generator
-        return generator
-    }
-
-    static func dynamicActionAim() {
-        guard SettingsStore.shared.hapticFeedback else { return }
-        light.impactOccurred(intensity: 0.55)
-    }
-
-    static func dynamicActionShot() {
-        guard SettingsStore.shared.hapticFeedback else { return }
-        medium.impactOccurred(intensity: 0.75)
-    }
-
-    static func dynamicActionRapidFire() {
-        guard SettingsStore.shared.hapticFeedback else { return }
-        medium.impactOccurred(intensity: 0.9)
-    }
-
-    static func releaseForEmulationOnlyMode() {
-        mediumGenerator = nil
-        lightGenerator = nil
-    }
-}
-
 struct VirtualControllerView: View {
     @State private var settings = SettingsStore.shared
     @State private var dynamicSettings = DynamicThumbstickSettings.shared
@@ -999,7 +955,7 @@ private struct SkinManifestButtonView: View {
         on = pressed
         EmulatorBridge.shared.setPadButton(button, pressed: pressed)
         if pressed, SettingsStore.shared.hapticFeedback {
-            HapticManager.medium.impactOccurred()
+            GameEventHaptics.shared.medium.impactOccurred()
         }
     }
 }

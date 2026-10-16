@@ -174,8 +174,8 @@ struct DynamicThumbstickView: View {
                         isActive = true
                     }
                     if hapticsEnabled && SettingsStore.shared.hapticFeedback {
-                        HapticManager.light.impactOccurred(intensity: 0.72)
-                        HapticManager.medium.prepare()
+                        GameEventHaptics.shared.light.impactOccurred(intensity: 0.72)
+                        GameEventHaptics.shared.medium.prepare()
                     }
                 }
 
@@ -226,8 +226,8 @@ struct DynamicThumbstickView: View {
         if overextended {
             maximumPullPulseToken &+= 1
             if hapticsEnabled && SettingsStore.shared.hapticFeedback {
-                HapticManager.medium.impactOccurred(intensity: 1)
-                HapticManager.medium.prepare()
+                GameEventHaptics.shared.medium.impactOccurred(intensity: 1)
+                GameEventHaptics.shared.medium.prepare()
             }
         }
     }
@@ -396,7 +396,7 @@ struct VirtualPadCameraSwipeView: View {
                     if convertsToDynamicJoystick &&
                         hapticsEnabled &&
                         SettingsStore.shared.hapticFeedback {
-                        HapticManager.medium.prepare()
+                        GameEventHaptics.shared.medium.prepare()
                     }
                 }
                 let rawTravel = hypot(value.translation.width, value.translation.height)
@@ -487,8 +487,8 @@ struct VirtualPadCameraSwipeView: View {
         if overextended {
             maximumPullPulseToken &+= 1
             if hapticsEnabled && SettingsStore.shared.hapticFeedback {
-                HapticManager.medium.impactOccurred(intensity: 1)
-                HapticManager.medium.prepare()
+                GameEventHaptics.shared.medium.impactOccurred(intensity: 1)
+                GameEventHaptics.shared.medium.prepare()
             }
         }
     }
@@ -1106,7 +1106,7 @@ final class VirtualPadTouchActionController {
         setTapFirePressed(false)
         setTapFirePressed(true)
         crosshairState.triggerShot()
-        HapticManager.dynamicActionShot()
+        GameEventHaptics.shared.dynamicActionShot()
         tapFireTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(75))
             guard !Task.isCancelled else { return }
@@ -1147,7 +1147,7 @@ final class VirtualPadTouchActionController {
         cancelPendingSingleFire()
         rapidFireEngaged = true
         crosshairState.setRapidFiring(true)
-        HapticManager.dynamicActionRapidFire()
+        GameEventHaptics.shared.dynamicActionRapidFire()
         fireLoopTask?.cancel()
         fireLoopTask = Task { @MainActor [weak self] in
             while !Task.isCancelled, let self, self.rapidFireEngaged {
@@ -1186,7 +1186,7 @@ final class VirtualPadTouchActionController {
             source: "\(sourcePrefix).aim"
         )
         if pressed {
-            HapticManager.dynamicActionAim()
+            GameEventHaptics.shared.dynamicActionAim()
         }
     }
 

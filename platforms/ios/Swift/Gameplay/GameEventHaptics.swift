@@ -1,5 +1,4 @@
-// GameEventHaptics.swift — device-level haptic fallback for game rumble events
-// when no rumble-capable controller is connected.
+// GameEventHaptics.swift — device haptics for the pad, dynamic actions and the rumble fallback.
 // SPDX-License-Identifier: GPL-3.0+
 
 import UIKit
@@ -9,66 +8,74 @@ final class GameEventHaptics {
     static let shared = GameEventHaptics()
     private var heavyGenerator: UIImpactFeedbackGenerator?
     private var mediumGenerator: UIImpactFeedbackGenerator?
+    private var lightGenerator: UIImpactFeedbackGenerator?
     private var lastFire = Date.distantPast
-    private var hapticsEnabled = true
 
-    private init() {
-        hapticsEnabled = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "HapticFeedback", defaultValue: true)
+    private init() {}
+
+    var heavy: UIImpactFeedbackGenerator {
+        if let heavyGenerator { return heavyGenerator }
+        let generator = UIImpactFeedbackGenerator(style: .heavy)
+        generator.prepare()
+        heavyGenerator = generator
+        return generator
     }
 
-    /// Called from the bridge (game rumble path) when no rumble-capable controller is connected.
-    /// Respects the user's HapticFeedback setting and throttles to avoid motor fatigue.
+    var medium: UIImpactFeedbackGenerator {
+        if let mediumGenerator { return mediumGenerator }
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.prepare()
+        mediumGenerator = generator
+        return generator
+    }
+
+    var light: UIImpactFeedbackGenerator {
+        if let lightGenerator { return lightGenerator }
+        let generator = UIImpactFeedbackGenerator(style: .light)
+        generator.prepare()
+        lightGenerator = generator
+        return generator
+    }
+
+    /// Game rumble from the bridge when no rumble-capable controller is connected.
     func trigger(large: UInt16, small: UInt16) {
-        guard hapticsEnabled else { return }
+        guard SettingsStore.shared.hapticFeedback else { return }
         guard large > 0 || small > 0 else { return }
         let now = Date()
         // Throttle to ~20 Hz so sustained rumble does not peg the haptic engine.
         guard now.timeIntervalSince(lastFire) > 0.05 else { return }
         lastFire = now
 
-        // The heavy motor is the only one with a speed. The PS2 buzzer is on or off,
-        // so taking the larger of the two used to pin this to full every time a game
-        // so much as touched it.
+        // Only the heavy motor has a speed; the PS2 buzzer is on or off.
         let intensity = large > 0
             ? Float(large) / Float(UInt16.max)
             : 0.55
         // Heavy motor (large) dominates; fall back to medium for small-only rumble.
-        let generator: UIImpactFeedbackGenerator
-        if large > 0 {
-            if let heavyGenerator {
-                generator = heavyGenerator
-            } else {
-                let created = UIImpactFeedbackGenerator(style: .heavy)
-                heavyGenerator = created
-                generator = created
-            }
-        } else if let mediumGenerator {
-            generator = mediumGenerator
-        } else {
-            let created = UIImpactFeedbackGenerator(style: .medium)
-            mediumGenerator = created
-            generator = created
-        }
-        // No floor. It used to be 0.3, which flattened every weak rumble onto the same
-        // knock as a medium one. This path is only reached on hardware with no taptic
-        // engine to run the continuous one, so it is a fallback rather than the norm.
+        let generator = large > 0 ? heavy : medium
+        // No floor, so a weak rumble stays weaker than a medium knock.
         generator.impactOccurred(intensity: CGFloat(min(1.0, intensity)))
     }
 
-    func prepareForGameplaySession() {
-        refreshEnabled()
+    func dynamicActionAim() {
+        guard SettingsStore.shared.hapticFeedback else { return }
+        light.impactOccurred(intensity: 0.55)
     }
 
-    /// Drops the cached generators. trigger() builds them again on demand, so this is a
-    /// resource release and not an off switch: rumble after this still gets through.
+    func dynamicActionShot() {
+        guard SettingsStore.shared.hapticFeedback else { return }
+        medium.impactOccurred(intensity: 0.75)
+    }
+
+    func dynamicActionRapidFire() {
+        guard SettingsStore.shared.hapticFeedback else { return }
+        medium.impactOccurred(intensity: 0.9)
+    }
+
+    /// Drops the generators; the next use rebuilds them, so this is not an off switch.
     func releaseForEmulationOnlyMode() {
         heavyGenerator = nil
         mediumGenerator = nil
+        lightGenerator = nil
         lastFire = .distantPast
-    }
-
-    /// Refresh the enabled flag when the user changes the HapticFeedback setting.
-    func refreshEnabled() {
-        hapticsEnabled = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "HapticFeedback", defaultValue: true)
     }
 }
