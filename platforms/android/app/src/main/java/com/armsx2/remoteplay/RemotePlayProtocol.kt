@@ -441,6 +441,11 @@ internal object RemotePlayProtocol {
             }
         } catch (_: java.util.zip.DataFormatException) {
             return null
+        } catch (_: RuntimeException) {
+            // setDictionary throws IllegalArgumentException for a code made with another
+            // dictionary, which is what any other version's code is. A bad code is just not a code:
+            // uncaught, this took the app down, and on a host the running game with it.
+            return null
         } finally {
             inflater.end()
         }

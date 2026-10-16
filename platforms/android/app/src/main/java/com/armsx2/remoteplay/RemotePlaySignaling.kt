@@ -255,7 +255,14 @@ internal class SignalingServer(private val onClient: (Socket) -> Unit) {
                 } catch (_: IOException) {
                     break
                 }
-                client.tcpNoDelay = true
+                // A peer that connects and resets at once makes this throw. Uncaught on this thread
+                // it took the app down, and the host's game with it: drop that peer, keep listening.
+                try {
+                    client.tcpNoDelay = true
+                } catch (_: IOException) {
+                    runCatching { client.close() }
+                    continue
+                }
                 onClient(client)
             }
         }
