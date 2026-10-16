@@ -132,6 +132,10 @@ namespace vuaot
 		void* program = nullptr;
 		// offsetof(microProgram, vuAotBails): the region's bail code counts into it.
 		s32 offProgBails = 0;
+		// Told of every 8-byte data word a region writes that holds an address (the
+		// program word and each bail record's block pointer), so a saved region can
+		// re-point them. Null outside the background worker.
+		void (*noteDataWord)(const u8* at, u64 value) = nullptr;
 	};
 
 #ifdef PCSX2_RECOMPILER_TESTS

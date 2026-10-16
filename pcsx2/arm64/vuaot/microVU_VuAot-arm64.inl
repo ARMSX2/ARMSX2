@@ -244,6 +244,8 @@ struct VuAotJob final : vuaot::bg::Job
 	u64 missesAtRequest = 0;
 	// Sent from a loaded sidecar's plan (a generation at load, a root once the generation is in).
 	bool fromPlan = false;
+	// The program cache keeps sidecars: the job also describes its code as a record's (recordCode).
+	bool wantRecord = false;
 
 	// Inputs.
 	std::unique_ptr<u8[]> micro; // micro memory when the job was made (kept: publication compares against it)
@@ -289,8 +291,14 @@ struct VuAotJob final : vuaot::bg::Job
 	// scans live micro memory again and discards the job if a sticky reader has appeared).
 	u32 statusReaders = 0, stickyReaders = 0, stickyDivReaders = 0, stickyDropped = 0, stickyImages = 0;
 	u64 workerIns = 0;
+	// With wantRecord: the code as a saved record holds it, every address in it a fixup
+	// (persistence-design.md section 3), or why the job cannot be saved with its code (an address
+	// nothing can re-base in another process; the job is still published, and saved as its plan).
+	vuaot::persist::RegionCode recordCode;
+	std::string notPersistable;
 
 	void Run() override;
+	void MakeRecordCode();
 };
 
 namespace
@@ -442,6 +450,8 @@ static void vuAotTripRemembered()
 #ifdef PCSX2_RECOMPILER_TESTS
 // vuaot::live::SetWorkerDelayUs
 static std::atomic<u32> s_vuAotWorkerDelayUs{0};
+// vuaot::live::TakeRecordCodeSamples (VU1 thread)
+static std::vector<vuaot::live::RecordCodeSample> s_vuAotRecordSamples;
 #endif
 
 #if defined(PCSX2_RECOMPILER_TESTS) && defined(__linux__)
@@ -676,6 +686,12 @@ namespace vuaot::live
 	}
 	size_t WorkerQueued() { return s_vuaot.worker ? s_vuaot.worker->Queued() : 0; }
 	void SetWorkerDelayUs(u32 us) { s_vuAotWorkerDelayUs.store(us, std::memory_order_relaxed); }
+	std::vector<RecordCodeSample> TakeRecordCodeSamples()
+	{
+		std::vector<RecordCodeSample> out;
+		out.swap(s_vuAotRecordSamples);
+		return out;
+	}
 #endif
 
 	Stats GetStats()
@@ -951,6 +967,7 @@ namespace
 		return const_cast<void*>(vuAotPlaceholder(j, VuAotJob::PhExit, static_cast<u32>(j.exits.size() - 1)));
 	}
 	void vuAotWRange(u32, u32 startPC, u32 lastPC) { t_vuAotCtx->job->ranges.push_back({startPC, lastPC}); }
+	void vuAotWNoteData(const u8* at, u64 value) { t_vuAotCtx->sink->NoteData64(at, value); }
 	void vuAotWTail(u32, void* block, const u8* endKey)
 	{
 		VuAotJob& j = *t_vuAotCtx->job;
@@ -1038,6 +1055,7 @@ void VuAotJob::Run()
 	e.fetchBlock = &vuAotWFetch;
 	e.addRange = &vuAotWRange;
 	e.emitJumpTail = &vuAotWTail;
+	e.noteDataWord = &vuAotWNoteData;
 	// microVU's stubs live in the code cache, where the region will land: a
 	// placeholder, patched to a direct branch. A C helper keeps its address and
 	// gets armEmitCall's usual form from here (absolute when it is out of reach,
@@ -1082,6 +1100,8 @@ void VuAotJob::Run()
 		regionMerged = tier.Merged();
 		regionExits = tier.Exits();
 		regionBytes = tier.Bytes();
+		if (wantRecord)
+			MakeRecordCode();
 	}
 	for (const auto& d : tier.Declined())
 		declined[d.first] += d.second;
@@ -1094,9 +1114,184 @@ void VuAotJob::Run()
 	s_vuaot.workerIns.fetch_add(workerIns, std::memory_order_relaxed);
 }
 
+// (worker) The job's code as a saved record holds it. Every address in it becomes a fixup with a
+// target another process can resolve: the job's own code, a placeholder (microVU code the install
+// compiles or looks up), an offset into the module image or the data arena (C helpers, globals, VU
+// state), a block of the program's graph by its PC and key, the program, a node's handle. Anything
+// else (a heap address: --vuaot-profile's counters) leaves the job without a saved copy of its code.
+void VuAotJob::MakeRecordCode()
+{
+	namespace ps = vuaot::persist;
+	ps::RegionCode& c = recordCode;
+	c = ps::RegionCode{};
+	const auto fail = [&](const char* why) {
+		if (notPersistable.empty())
+			notPersistable = why;
+	};
+	std::map<ps::Key, u32> keyIndex;
+	const auto key = [&](const void* k) -> u32 {
+		ps::Key kk;
+		std::memcpy(kk.data(), k, ps::kKeyBytes);
+		const auto it = keyIndex.find(kk);
+		if (it != keyIndex.end())
+			return it->second;
+		const u32 i = static_cast<u32>(c.keys.size());
+		c.keys.push_back(kk);
+		keyIndex.emplace(kk, i);
+		return i;
+	};
+	std::map<const VuAotWBlock*, u32> nodeIndex;
+	for (const VuAotWBlock* n : nodes)
+	{
+		if (!n->hasEntry)
+		{
+			fail("a node without an entry");
+			return;
+		}
+		nodeIndex.emplace(n, static_cast<u32>(c.nodes.size()));
+		c.nodes.push_back({n->pc, key(&n->pState), n->entryOff});
+	}
+	for (const Exit& e : exits)
+		c.exits.push_back({e.pc, key(&e.key)});
+	for (const VuAotWBlock* w : pendingRefs)
+		c.pending.push_back({w->pc, key(&w->pState)});
+	for (const Tail& t : tails)
+	{
+		const auto it = nodeIndex.find(t.blk);
+		if (it == nodeIndex.end())
+		{
+			fail("a jump tail of a block that is not a node");
+			return;
+		}
+		c.tails.push_back({it->second, key(&t.endKey)});
+	}
+	for (const auto& r : ranges)
+		c.ranges.push_back({r.first, r.second});
+	for (const auto& p : ph)
+	{
+		ps::Placeholder q;
+		q.kind = p.first == PhStub ? ps::kPhStub : p.first == PhExit ? ps::kPhExit : p.first == PhTail ? ps::kPhTail : ps::kPhPending;
+		q.index = p.second;
+		c.ph.push_back(q);
+	}
+	// The program's blocks by their entry (a region links to one through its address): one block per entry,
+	// or the link cannot be told from another.
+	std::map<const void*, const VuAotWBlock*> byEntry;
+	for (const auto& b : blocks)
+		if (b->snapshot && b->entry)
+		{
+			const auto it = byEntry.find(b->entry);
+			if (it == byEntry.end())
+				byEntry.emplace(b->entry, b.get());
+			else if (it->second && std::memcmp(&it->second->pState, &b->pState, sizeof(microRegInfo)) != 0)
+				it->second = nullptr;
+		}
+	std::map<const VuAotWBlock*, u32> refIndex;
+	const auto classify = [&](u64 value, ps::Fixup& f) -> bool {
+		const void* addr = reinterpret_cast<const void*>(value);
+		const u8 region = mVUPersist::RegionOf(addr);
+		if (region == mVUPersist::kTargetImage || region == mVUPersist::kTargetData)
+		{
+			f.target = region == mVUPersist::kTargetImage ? ps::kTargetImage : ps::kTargetData;
+			f.value = static_cast<s64>(value - mVUPersist::RegionBase(region));
+			return true;
+		}
+		return false;
+	};
+	for (const vuaot::bg::Fixup& g : fixups)
+	{
+		ps::Fixup f;
+		f.offset = g.offset;
+		switch (g.kind)
+		{
+			case vuaot::bg::Fixup::IntraAbs:
+				f.form = ps::kFormMovRun;
+				f.width = 4;
+				f.target = ps::kTargetIntra;
+				f.value = static_cast<s64>(g.value);
+				break;
+			case vuaot::bg::Fixup::SiteAbs:
+			case vuaot::bg::Fixup::Site26:
+				f.form = g.kind == vuaot::bg::Fixup::SiteAbs ? ps::kFormMovRun : ps::kFormRel26;
+				f.width = g.kind == vuaot::bg::Fixup::SiteAbs ? 4 : 0;
+				f.target = ps::kTargetPlaceholder;
+				f.index = g.id;
+				break;
+			case vuaot::bg::Fixup::External26:
+				f.form = ps::kFormRel26;
+				if (!classify(g.value, f))
+				{
+					fail("a branch to an address outside the image");
+					return;
+				}
+				break;
+			case vuaot::bg::Fixup::OutsideAbs:
+			{
+				f.form = ps::kFormMovRun;
+				f.width = static_cast<u8>(g.id);
+				const u8* addr = reinterpret_cast<const u8*>(g.value);
+				if (addr >= cacheLo && addr < cacheHi)
+				{
+					// (a link to a block of the program's graph: microVU's code, or an earlier region's node)
+					const auto it = byEntry.find(addr);
+					if (it == byEntry.end() || !it->second)
+					{
+						fail(it == byEntry.end() ? "a code-cache address that is no block's entry" : "two blocks at one entry");
+						return;
+					}
+					auto [ri, added] = refIndex.emplace(it->second, static_cast<u32>(c.blockRefs.size()));
+					if (added)
+						c.blockRefs.push_back({it->second->pc, key(&it->second->pState)});
+					f.target = ps::kTargetBlockRef;
+					f.index = ri->second;
+				}
+				else if (!classify(g.value, f))
+				{
+					fail("an address outside the image and the data arena");
+					return;
+				}
+				break;
+			}
+			case vuaot::bg::Fixup::Data64:
+			{
+				f.form = ps::kFormData64;
+				if (g.value == reinterpret_cast<u64>(env.program))
+					f.target = ps::kTargetProgram;
+				else if (const auto it = nodeIndex.find(reinterpret_cast<const VuAotWBlock*>(g.value)); it != nodeIndex.end())
+				{
+					f.target = ps::kTargetNodeHandle;
+					f.index = it->second;
+					// The bail slot after the block pointer is written at run time and must start empty.
+					u64 slot;
+					if (g.offset + 16 > code.size() || (std::memcpy(&slot, code.data() + g.offset + 8, 8), slot != 0))
+					{
+						fail("a bail record whose slot is not empty");
+						return;
+					}
+				}
+				else
+				{
+					fail("a data word that is neither the program nor a node");
+					return;
+				}
+				break;
+			}
+		}
+		c.fixups.push_back(f);
+	}
+	c.code = code;
+	c.regions = regions;
+	c.regionNodes = regionNodes;
+	c.regionMerged = regionMerged;
+	c.regionExits = regionExits;
+	c.regionBytes = regionBytes;
+}
+
 //------------------------------------------------------------------
 // Making jobs (VU1 thread)
 //------------------------------------------------------------------
+
+static bool vuAotSidecarsOn(const microProgram& prog);
 
 static std::shared_ptr<VuAotJob> vuAotMakeJob(microVU& mVU, microProgram& prog, VuAotJob::Kind kind, u32 pc, const void* key)
 {
@@ -1121,6 +1316,7 @@ static std::shared_ptr<VuAotJob> vuAotMakeJob(microVU& mVU, microProgram& prog, 
 	j->opts.dropSticky = !s_trip.tripped.load(std::memory_order_acquire) || vuAotMutated(vuaot::live::kTripMutJobOption);
 	if (prog.vuaot)
 		j->jumpTargets = prog.vuaot->jumpTargets;
+	j->wantRecord = vuAotSidecarsOn(prog);
 	return j;
 }
 
@@ -1555,7 +1751,7 @@ static void vuAotPlace(microVU& mVU, VuAotJob& j, microBlock* rootReal)
 	std::map<const void*, const u8*> veneers;
 	for (const vuaot::bg::Fixup& f : j.fixups)
 	{
-		if (f.kind == vuaot::bg::Fixup::IntraAbs || f.kind == vuaot::bg::Fixup::SiteAbs)
+		if (f.kind != vuaot::bg::Fixup::Site26 && f.kind != vuaot::bg::Fixup::External26)
 			continue;
 		const void* to = (f.kind == vuaot::bg::Fixup::Site26) ? target[f.id] : reinterpret_cast<const void*>(f.value);
 		pxAssertRel(to, "vu-aot: a region branch with no target");
@@ -1597,6 +1793,10 @@ static void vuAotPlace(microVU& mVU, VuAotJob& j, microBlock* rootReal)
 			s_vuaot.stats.planFirstRegionCycles += cyc;
 		}
 	}
+#ifdef PCSX2_RECOMPILER_TESTS
+	if (j.wantRecord && j.accepted)
+		s_vuAotRecordSamples.push_back({j.recordCode, j.notPersistable, j.kind == VuAotJob::Generation});
+#endif
 	s_vuaot.stats.regions += j.regions;
 	s_vuaot.stats.regionNodes += j.regionNodes;
 	s_vuaot.stats.regionMerged += j.regionMerged;

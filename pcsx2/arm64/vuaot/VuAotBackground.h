@@ -45,11 +45,18 @@ namespace vuaot::bg
 			// movz+movk*3 holding a placeholder (`id`): an address only the
 			// publisher knows.
 			SiteAbs,
-			// B or BL to an absolute address outside the buffer (`value`).
-			// The job's emission never makes one (every outside target it
-			// branches to is a placeholder), but the recorder keeps them so
-			// a new call site cannot slip through unpatched.
+			// B or BL to an absolute address outside the buffer (`value`): a C
+			// helper close enough to the buffer for armEmitCall's short form.
+			// The copy re-aims it, through a veneer if need be.
 			External26,
+			// MOVZ+MOVK run of `id` instructions holding an address outside the
+			// buffer (`value`): a C helper, a global, VU state, a block of the
+			// program's graph. It means the same wherever the copy lands, so the
+			// copy leaves it alone; a saved region re-bases it at install.
+			OutsideAbs,
+			// An 8-byte data word holding `value` (the region builder's bail
+			// records: the program, a node's handle). The copy leaves it alone.
+			Data64,
 		};
 		u32 offset;
 		Kind kind;
@@ -61,8 +68,9 @@ namespace vuaot::bg
 	// armAsm writes into it, and every address-bearing emission goes through
 	// the recorder: an address inside the buffer is materialised as a full
 	// four-halfword MOVZ/MOVK run (so the copy can patch it), any other address
-	// at its own width (it means the same wherever the code lands), and
-	// branches to placeholders or into the outside world are logged as fixups.
+	// at its own width (it means the same wherever the code lands), and every
+	// one of them, and every branch to a placeholder or into the outside world,
+	// is logged as a fixup.
 	//
 	// Placeholders are addresses in a reserved tail of the buffer that nothing
 	// is ever written to. A branch to one is always in B/BL range, and its
@@ -90,6 +98,8 @@ namespace vuaot::bg
 		// The placeholder id of `p`, or -1.
 		s32 PlaceholderId(const void* p) const;
 		bool InCode(const void* p) const;
+		// A data word the emission wrote at `at` (inside the buffer) holds `value`.
+		void NoteData64(const u8* at, u64 value);
 
 		std::vector<Fixup> fixups;
 		// Set when an emission took a shape the copy cannot relocate.

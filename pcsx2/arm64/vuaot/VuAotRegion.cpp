@@ -1569,16 +1569,23 @@ namespace vuaot
 			programWord = armGetCurrentCodePointer();
 			armAsm->dc64(reinterpret_cast<u64>(env_.program));
 		}
+		if (env_.noteDataWord)
+			env_.noteDataWord(programWord, reinterpret_cast<u64>(env_.program));
 		for (auto& np : nodes_)
 		{
 			Node& n = *np;
 			armAsm->Bind(&n.rec);
-			vixl::ExactAssemblyScope scope(armAsm, kBailRecordSize);
-			const u8* const record = armGetCurrentCodePointer();
-			armAsm->dc32(n.pc);
-			armAsm->dc32(static_cast<u32>(static_cast<s32>(programWord - record)));
-			armAsm->dc64(reinterpret_cast<u64>(n.blk));
-			armAsm->dc64(0);
+			const u8* record;
+			{
+				vixl::ExactAssemblyScope scope(armAsm, kBailRecordSize);
+				record = armGetCurrentCodePointer();
+				armAsm->dc32(n.pc);
+				armAsm->dc32(static_cast<u32>(static_cast<s32>(programWord - record)));
+				armAsm->dc64(reinterpret_cast<u64>(n.blk));
+				armAsm->dc64(0); // (the bail slot: microVU's code for the block, written at run time)
+			}
+			if (env_.noteDataWord)
+				env_.noteDataWord(record + 8, reinterpret_cast<u64>(n.blk));
 		}
 		regionEnd = armGetCurrentCodePointer();
 	}

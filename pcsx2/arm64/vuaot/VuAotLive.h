@@ -31,10 +31,12 @@
 
 #include "common/Pcsx2Defs.h"
 #include "VuAotMvuTrace.h"
+#include "VuAotPersist.h"
 
 #include <functional>
 #include <map>
 #include <string>
+#include <vector>
 
 namespace vuaot
 {
@@ -256,6 +258,15 @@ namespace vuaot
 		constexpr int TripMask(int mutation) { return 1 << mutation; }
 #ifdef PCSX2_RECOMPILER_TESTS
 		void SetTripwireMutation(int mask);
+		// The record code (vuaot/VuAotPersist.h) of every job published since the last call, with why a
+		// job had none ("" when it has one), for jobs made while the program cache keeps sidecars.
+		struct RecordCodeSample
+		{
+			persist::RegionCode code;
+			std::string notPersistable;
+			bool generation = false;
+		};
+		std::vector<RecordCodeSample> TakeRecordCodeSamples();
 		// pcsx2-vurunner --vuaot-region-bg: a region hook (VuAotMvuTrace.h's
 		// VuAotRegionHook, `user` a RegionTier whose options it copies) that builds
 		// every region through the worker and copies it in.

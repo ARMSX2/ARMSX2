@@ -37,12 +37,14 @@ namespace vuaot::bg
 			return c;
 		}
 
-		void OnMovRun(u8* at, u32, const void* addr) override
+		void OnMovRun(u8* at, u32 width, const void* addr) override
 		{
 			if (const s32 id = s_.PlaceholderId(addr); id >= 0)
 				s_.fixups.push_back({Off(at), Fixup::SiteAbs, static_cast<u32>(id), 0});
 			else if (s_.InCode(addr))
 				s_.fixups.push_back({Off(at), Fixup::IntraAbs, 0, static_cast<u64>(static_cast<const u8*>(addr) - s_.base_)});
+			else
+				s_.fixups.push_back({Off(at), Fixup::OutsideAbs, width, reinterpret_cast<u64>(addr)});
 		}
 
 		void OnAdrp(u8*, const void*) override { Fail("ADRP emitted"); }
@@ -99,6 +101,12 @@ namespace vuaot::bg
 	{
 		const u8* b = static_cast<const u8*>(p);
 		return b >= base_ && b < base_ + kCapacity - kPlaceholderZone;
+	}
+
+	void CodeSink::NoteData64(const u8* at, u64 value)
+	{
+		pxAssert(InCode(at));
+		fixups.push_back({static_cast<u32>(at - base_), Fixup::Data64, 0, value});
 	}
 
 	void CodeSink::Begin()

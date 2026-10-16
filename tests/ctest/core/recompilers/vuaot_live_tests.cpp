@@ -2300,6 +2300,199 @@ TEST_F(VuAotCache, DamagedOrStaleSidecarIsRefused)
 	}
 }
 
+//------------------------------------------------------------------
+// Saved region code (persistence-design.md, the install half): a published job's code with every
+// address in it a fixup another process can resolve, and the install of it at load.
+//------------------------------------------------------------------
+
+namespace
+{
+// A loop with a second entry whose own small loop then branches into the first program's root: a root
+// region that links to a block of the graph it was built against.
+constexpr u32 kLinkEntry = 64 * 8;
+std::vector<VuOp> LoopIntoTheFirst()
+{
+	std::vector<VuOp> p = CountedLoop(10);
+	while (p.size() < kLinkEntry / 8)
+		p.push_back(U(VNOP_U()));
+	p.push_back(L(VIADDIU_L(vi::vi8, vi::vi0, 3)));                                          // 64
+	p.push_back(P(VISUBIU_L(vi::vi8, vi::vi8, 1), VADD_U(mask::xyzw, vf::vf13, vf::vf13, vf::vf4))); // 65
+	p.push_back(L(VIBNE_L(vi::vi8, vi::vi0, static_cast<s16>(65 - 66 - 1))));               // 66: to 65
+	p.push_back(U(VNOP_U()));                                                                // 67: delay slot
+	p.push_back(L(VB_L(static_cast<s16>(0 - 68 - 1))));                                      // 68: to 0
+	p.push_back(U(VNOP_U()));                                                                // 69: delay slot
+	p.push_back(EBit(U(VNOP_U())));                                                          // (never reached; the harness wants an end)
+	return p;
+}
+
+// A loop that reads VIF's TOP, kicks a GIF packet and ends a program: a C helper, VIF state and VU0's
+// VPU_STAT word in a region.
+constexpr u32 kTagQword = 0x40;
+std::vector<VuOp> KickLoop()
+{
+	std::vector<VuOp> p;
+	p.push_back(L(VIADDIU_L(vi::vi1, vi::vi0, 4)));
+	p.push_back(L(VIADDIU_L(vi::vi5, vi::vi0, kTagQword)));
+	p.push_back(P(VXTOP_L(vi::vi6), VADD_U(mask::xyzw, vf::vf8, vf::vf8, vf::vf4)));          // 2: head
+	p.push_back(P(VXGKICK_L(vi::vi5), VMUL_U(mask::xyz, vf::vf9, vf::vf8, vf::vf8)));
+	p.push_back(P(VISUBIU_L(vi::vi1, vi::vi1, 1), VSUB_U(mask::xyzw, vf::vf10, vf::vf9, vf::vf3)));
+	p.push_back(L(VIBNE_L(vi::vi1, vi::vi0, static_cast<s16>(2 - 5 - 1))));
+	p.push_back(U(VNOP_U()));                                                                 // delay slot
+	p.push_back(EBit(P(VFSAND_L(vi::vi7, 0xfff), VNOP_U())));
+	return p;
+}
+
+void SetupKick(VuTestHarness& h)
+{
+	SetupLoop(h);
+	// an EOP-only GIF tag
+	h.WriteMemU32(kTagQword * 16 + 0, 0x00008000u);
+	h.WriteMemU32(kTagQword * 16 + 4, 0);
+	h.WriteMemU32(kTagQword * 16 + 8, 0);
+	h.WriteMemU32(kTagQword * 16 + 12, 0);
+}
+
+// The address-shaped operands of a record's code that no fixup covers: a 64-bit MOVZ/MOVK run whose
+// value lands in a mapped page of this process, a B or BL that leaves the code, and any ADRP. It reads
+// the instruction words, not the emitters, so a new emitter that bakes in an address shows here.
+struct MappedRanges
+{
+	std::vector<std::pair<u64, u64>> r;
+	MappedRanges()
+	{
+		std::FILE* f = std::fopen("/proc/self/maps", "r");
+		if (!f)
+			return;
+		char line[512];
+		while (std::fgets(line, sizeof(line), f))
+		{
+			unsigned long long a = 0, b = 0;
+			if (std::sscanf(line, "%llx-%llx", &a, &b) == 2)
+				r.push_back({a, b});
+		}
+		std::fclose(f);
+	}
+	bool Has(u64 v) const
+	{
+		for (const auto& x : r)
+			if (v >= x.first && v < x.second)
+				return true;
+		return false;
+	}
+};
+
+std::string AuditRecordCode(const vuaot::persist::RegionCode& c, const MappedRanges& maps)
+{
+	const size_t n = c.code.size() / 4;
+	std::vector<u8> covered(n, 0);
+	for (const vuaot::persist::Fixup& f : c.fixups)
+		for (u32 i = 0; i < vuaot::persist::RegionCode::Span(f); i++)
+			if (f.offset / 4 + i < n)
+				covered[f.offset / 4 + i] = 1;
+	const auto word = [&](size_t i) {
+		u32 w;
+		std::memcpy(&w, c.code.data() + 4 * i, 4);
+		return w;
+	};
+	std::string out;
+	for (size_t i = 0; i < n; i++)
+	{
+		const u32 w = word(i);
+		if (covered[i])
+			continue;
+		if ((w & 0x9F000000u) == 0x90000000u)
+			out += "ADRP at " + std::to_string(4 * i) + "\n";
+		if ((w & 0x7C000000u) == 0x14000000u)
+		{
+			const s64 disp = static_cast<s64>(static_cast<s32>(w << 6) >> 6) * 4;
+			const s64 to = static_cast<s64>(4 * i) + disp;
+			if (to < 0 || to >= static_cast<s64>(c.code.size()))
+				out += "B/BL out of the code at " + std::to_string(4 * i) + "\n";
+		}
+		// movz xN, #imm, lsl 0, then movk xN, #imm, lsl 16*k
+		if ((w & 0xFFE00000u) == 0xD2800000u)
+		{
+			const u32 rd = w & 31;
+			u64 v = (w >> 5) & 0xFFFF;
+			size_t k = 1;
+			while (i + k < n && k < 4 && (word(i + k) & 0xFFE0001Fu) == (0xF2800000u | (static_cast<u32>(k) << 21) | rd))
+			{
+				v |= static_cast<u64>((word(i + k) >> 5) & 0xFFFF) << (16 * k);
+				k++;
+			}
+			if (k >= 2 && v >= 0x10000 && maps.Has(v))
+				out += "address run at " + std::to_string(4 * i) + "\n";
+		}
+	}
+	return out;
+}
+} // namespace
+
+// Every job the worker publishes while the program cache keeps sidecars describes its code with a fixup for
+// every address in it, of a kind another process can resolve (persistence-design.md section 3): no address
+// run, outside branch or ADRP is left uncovered, and C helpers, VU state, the program, the nodes' handles and
+// placeholders for microVU's code all show up. (Mutation: drop the recorder's outside runs, and the audit
+// finds the C helpers.)
+TEST_F(VuAotCache, WorkerRecordsEveryAddressItsRegionsHold)
+{
+	const MappedRanges maps;
+	ASSERT_FALSE(maps.r.empty());
+	struct Case
+	{
+		const char* name;
+		std::vector<VuOp> prog;
+		::recompiler_tests::Setup setup;
+		std::vector<u32> entries;
+	};
+	const Case cases[] = {
+		{"two loops", TwoLoopProg(), SetupLoop, {0, kLoopEntry2}},
+		{"jump loop", JumpLoop(), SetupJump, {0}},
+		{"loop into the first", LoopIntoTheFirst(), SetupLoop, {0, kLinkEntry}},
+		{"kick loop", KickLoop(), SetupKick, {0}},
+	};
+	u32 counts[vuaot::persist::kTargetCount] = {};
+	for (bool sync : {true, false})
+		for (bool fh : {true, false})
+			for (const Case& c : cases)
+			{
+				const std::string where = std::string(c.name) + (sync ? " sync" : " background") + (fh ? " fh" : "");
+				RecompilerTestEnvironment::ResetVuBlockCache(1);
+				NewProcess();
+				(void)vuaot::live::TakeRecordCodeSamples();
+				{
+					LiveScope s(true, 4, fh, vuaot::live::kJumpTierUpRuns, sync);
+					VuTestHarness h(1);
+					Prepare(h, c.prog, c.setup, 0);
+					h.RunNoDiff();
+					for (u32 e : c.entries)
+						for (int i = 0; i < 10; i++)
+						{
+							h.SetStartPc(e);
+							h.RunJitPreserveBlockCache();
+							if (!sync)
+								vuaot::live::WaitWorkerIdle();
+						}
+				}
+				const std::vector<vuaot::live::RecordCodeSample> samples = vuaot::live::TakeRecordCodeSamples();
+				EXPECT_GE(samples.size(), 1u) << where << ": no job was published";
+				std::printf("[case] %s: %zu jobs\n", where.c_str(), samples.size());
+				for (const auto& smp : samples)
+				{
+					EXPECT_EQ(smp.notPersistable, "") << where;
+					EXPECT_EQ(AuditRecordCode(smp.code, maps), "") << where;
+					for (const auto& f : smp.code.fixups)
+						counts[f.target]++;
+				}
+			}
+	EXPECT_GT(counts[vuaot::persist::kTargetPlaceholder], 0u);
+	EXPECT_GT(counts[vuaot::persist::kTargetImage], 0u) << "no C helper or global was recorded";
+	EXPECT_GT(counts[vuaot::persist::kTargetProgram], 0u);
+	EXPECT_GT(counts[vuaot::persist::kTargetNodeHandle], 0u);
+	EXPECT_GT(counts[vuaot::persist::kTargetBlockRef], 0u) << "no root region linked to a block of its program's graph";
+	std::printf("[record targets] intra %u placeholder %u image %u data %u blockref %u program %u handle %u\n",
+		counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], counts[6]);
+}
+
 // The jump cache fault of compiler-design.md 9ah, over a program loaded with its plan: the overlay a stub
 // JRs into is loaded from the cache, its generation comes from the plan, and its root plan (a second entry
 // the session never runs) is held in the worker, then published at the stub's JR slow path. Then a new
