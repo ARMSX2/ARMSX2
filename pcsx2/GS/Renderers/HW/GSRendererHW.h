@@ -35,6 +35,10 @@ public:
 	static constexpr int MAX_FRAMEBUFFER_HEIGHT = 1280;
 
 private:
+	// Frontend acceptance of the final color dispatch, not GPU completion.
+	bool m_draw_color_dispatch_accepted = false;
+	bool UseSelectedColorInvalidation(const GSTextureCache::Target* rt, const GSVector4i& rect, bool skip_draw) const;
+
 	static constexpr float SSR_UV_TOLERANCE = 1.0f;
 
 	using GSC_Ptr = bool(*)(GSRendererHW& r, int& skip);	// GSC - Get Skip Count

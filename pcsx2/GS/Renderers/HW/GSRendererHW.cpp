@@ -3379,8 +3379,21 @@ std::string GSRendererHW::DescribeDraw() const
 	return desc;
 }
 
+bool GSRendererHW::UseSelectedColorInvalidation(const GSTextureCache::Target* rt,
+	const GSVector4i& rect, bool skip_draw) const
+{
+	// A declined clear still dispatches; a successful clear never accepts DrawPrims.
+	return rt && m_in_target_draw && !skip_draw && m_draw_color_dispatch_accepted &&
+		!m_texture_shuffle && !m_channel_shuffle && !m_using_temp_z && !rect.rempty() &&
+		rt->m_TEX0.TBP0 != m_cached_ctx.FRAME.Block() &&
+		((rt->m_TEX0.TBP0 | m_cached_ctx.FRAME.Block()) & (GS_BLOCKS_PER_PAGE - 1)) == 0 &&
+		rt->m_TEX0.PSM == m_cached_ctx.FRAME.PSM && rt->m_TEX0.TBW != 0 &&
+		rt->m_TEX0.TBW == m_cached_ctx.FRAME.FBW;
+}
+
 void GSRendererHW::Draw()
 {
+	m_draw_color_dispatch_accepted = false;
 	static u32 num_skipped_channel_shuffle_draws = 0;
 
 	// We mess with this state as an optimization, so take a copy and use that instead.
@@ -5878,11 +5891,21 @@ void GSRendererHW::Draw()
 		if (m_mem.m_clut.GetGPUTexture() && m_mem.m_clut.GetGPUTexture() == rt->m_texture)
 			m_mem.m_clut.SetGPUTextureDirty(rt->m_last_draw, rt->m_texture);
 
-		g_texture_cache->InvalidateVideoMem(context->offset.fb, real_rect, false);
+		// Inside-target draws translate real_rect into the selected target's coordinates.
+		// Snapshot its layout and the bound depth guard before invalidation can retire targets.
+		const bool selected_color = UseSelectedColorInvalidation(rt, real_rect, skip_draw);
+		const GIFRegTEX0 selected_layout = selected_color ? rt->m_TEX0 : GIFRegTEX0{};
+		const bool selected_depth = selected_color && (!ds || ds->m_TEX0.TBP0 != selected_layout.TBP0);
+		const GSOffset color_offset = selected_color ?
+			m_mem.GetOffset(selected_layout.TBP0, selected_layout.TBW, selected_layout.PSM) : context->offset.fb;
+		g_texture_cache->InvalidateVideoMem(color_offset, real_rect, false);
 
 		// Remove overwritten Zs at the FBP.
 		g_texture_cache->InvalidateVideoMemType(GSTextureCache::DepthStencil, m_cached_ctx.FRAME.Block(),
 			m_cached_ctx.FRAME.PSM, m_texture_shuffle ? GetEffectiveTextureShuffleFbmsk() : fm);
+		if (selected_depth)
+			g_texture_cache->InvalidateVideoMemType(GSTextureCache::DepthStencil, selected_layout.TBP0,
+				selected_layout.PSM, fm);
 
 		if (rt && !m_using_temp_z && g_texture_cache->GetTemporaryZ() != nullptr)
 		{
@@ -11337,7 +11360,10 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	GSDrawLog::EndDraw(m_conf, static_cast<u8>(m_prim_overlap));
 
 	if (!m_channel_shuffle_width)
+	{
+		m_draw_color_dispatch_accepted = rt && m_conf.rt == rt->m_texture && m_conf.colormask.wrgba != 0;
 		g_gs_device->RenderHW(m_conf);
+	}
 	else
 		m_last_rt = rt;
 
