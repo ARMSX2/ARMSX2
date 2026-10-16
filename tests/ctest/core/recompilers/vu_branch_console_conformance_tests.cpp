@@ -40,6 +40,7 @@
 #include "harness/VuTestHarness.h"
 
 #include "autocases_vubranch.h"
+#include "autocases_vubranch_ilwuse.h"
 #include "autocases_vubranch_vidw.h"
 
 #include "VU.h"
@@ -359,9 +360,8 @@ TEST(VuBranchConsole, ViWriteIsVisibleToABranchOnePairLater)
 //
 //  The interpreter used to keep a two-cycle window that chained only writes
 //  in consecutive pairs; it differed on 37 of these rows. microVU matched all
-//  of them. A writer that reads a VI an ILW is still loading waits for the
-//  load on the console and in microVU, and the interpreter stalls only a
-//  branch there. The capture has rows of that shape; they are left out here.
+//  of them. Rows where an instruction reads a VI an ILW is still loading are
+//  in autocases_vubranch_ilwuse.h and scored in the next block.
 //
 //  Each row is scored on vi1..vi8 and TPC. The flag registers are left out:
 //  the harness starts VU0 with MAC and STATUS values the console does not
@@ -397,12 +397,12 @@ std::string ViDwMismatch(const VuBranchCase& c, VuTestHarness& h, bool jit)
 }
 
 // The rows one engine gets wrong, one line each: tag, then got/console.
-std::string ViDwMisses(bool jit)
+std::string ViDwMisses(bool jit, const VuBranchCase* rows, int count)
 {
 	std::string out;
-	for (int i = 0; i < kVuBranchViDwCaseCount; ++i)
+	for (int i = 0; i < count; ++i)
 	{
-		const VuBranchCase& c = kVuBranchViDwCases[i];
+		const VuBranchCase& c = rows[i];
 		VuTestHarness h(0);
 		RunConsoleCase(c, h);
 		const std::string bad = ViDwMismatch(c, h, jit);
@@ -416,13 +416,48 @@ std::string ViDwMisses(bool jit)
 TEST(VuBranchViDoubleWrite, MicroVuMatchesTheConsoleOnEveryRow)
 {
 	EXPECT_GT(kVuBranchViDwCaseCount, 100);
-	const std::string bad = ViDwMisses(true);
+	const std::string bad = ViDwMisses(true, kVuBranchViDwCases, kVuBranchViDwCaseCount);
 	EXPECT_TRUE(bad.empty()) << "rows where microVU differs from the console:" << bad;
 }
 
 TEST(VuBranchViDoubleWrite, InterpreterMatchesTheConsoleOnEveryRow)
 {
-	const std::string bad = ViDwMisses(false);
+	const std::string bad = ViDwMisses(false, kVuBranchViDwCases, kVuBranchViDwCaseCount);
+	EXPECT_TRUE(bad.empty()) << "rows where the interpreter differs from the console:" << bad;
+}
+
+// =========================================================================
+//  3c. An instruction that reads a VI an ILW is still loading
+// =========================================================================
+//
+//  ILW and ILWR load their VI over four cycles. On the console and in
+//  microVU an instruction that reads that VI waits for the load, whatever
+//  it is; the interpreter used to wait only for a branch. A writer that
+//  reads the loading VI (IADDIU vi1,vi1,1, LQI) therefore issued too early,
+//  and the branch after it looked back through a window that held the
+//  wrong writes. The 40 rows in autocases_vubranch_ilwuse.h are the
+//  corpus-protocol rows of that shape: ILW, N = 0..2 pairs, then a writer
+//  that reads the VI, and ILW followed by two such writers back to back.
+//  Each row is scored like the ones above.
+
+namespace
+{
+using console_vubranch::kVuBranchIlwUseCaseCount;
+using console_vubranch::kVuBranchIlwUseCases;
+} // namespace
+
+TEST(VuBranchIlwLoadUse, MicroVuMatchesTheConsoleOnEveryRow)
+{
+	EXPECT_EQ(kVuBranchIlwUseCaseCount, 40);
+	const std::string bad = ViDwMisses(true, kVuBranchIlwUseCases, kVuBranchIlwUseCaseCount);
+	EXPECT_TRUE(bad.empty()) << "rows where microVU differs from the console:" << bad;
+}
+
+// The interpreter used to differ on all 40 rows: it stalled only a branch on
+// the loading VI, so the writer did not wait.
+TEST(VuBranchIlwLoadUse, InterpreterMatchesTheConsoleOnEveryRow)
+{
+	const std::string bad = ViDwMisses(false, kVuBranchIlwUseCases, kVuBranchIlwUseCaseCount);
 	EXPECT_TRUE(bad.empty()) << "rows where the interpreter differs from the console:" << bad;
 }
 

@@ -171,7 +171,18 @@ static __ri bool _vuEFUflush(VURegs* VU)
 	return false;
 }
 
-// called at end of program
+// Called when a program ends, after the delay-slot pair of the E bit.
+//
+// Everything still in flight is written back, so the next program starts from
+// the final registers and flags. Only the divide and EFU results move the
+// cycle count on to their completion: on the console the end of a program (the
+// time the EE sees VPU_STAT busy clear) never waits for an FMAC or an ILW/ILWR,
+// because their result lands at most four cycles after the delay slot, inside
+// the fixed part of the end (microVU stops at the delay slot too). A divide or
+// EFU op does move it, but the console waits for less than the whole latency
+// (max(0, L - p - 5) for a divide, max(0, L - p - 6) for an EFU op, p pairs
+// before the delay slot) and neither engine models that; the wait here is
+// unchanged from before.
 void _vuFlushAll(VURegs* VU)
 {
 	int i = 0;
@@ -213,20 +224,14 @@ void _vuFlushAll(VURegs* VU)
 		VU->VI[REG_MAC_FLAG].UL = VU->fmac[i].macflag;
 
 		VU->fmacreadpos = (VU->fmacreadpos + 1) & 3;
-
-		if ((VU->cycle - VU->fmac[i].sCycle) < VU->fmac[i].Cycle)
-			VU->cycle = VU->fmac[i].sCycle + VU->fmac[i].Cycle;
-
 		VU->fmaccount--;
 	}
 
-	for (i = VU->ialureadpos; VU->ialucount > 0; i = (i + 1) & 3)
+	// An ILW/ILWR has already written its VI. The pipe only tracks the load for
+	// instructions that read that VI, and none follows the end.
+	while (VU->ialucount > 0)
 	{
 		VU->ialureadpos = (VU->ialureadpos + 1) & 3;
-
-		if ((VU->cycle - VU->ialu[i].sCycle) < VU->ialu[i].Cycle)
-			VU->cycle = VU->ialu[i].sCycle + VU->ialu[i].Cycle;
-
 		VU->ialucount--;
 	}
 }
@@ -330,7 +335,8 @@ static __fi void _vuTestALUStalls(VURegs* VU, _VURegsNum* VUregsn)
 		if ((VU->cycle - VU->ialu[currentpipe].sCycle) >= VU->ialu[currentpipe].Cycle)
 			continue;
 
-		if (VU->ialu[currentpipe].reg & VUregsn->VIread) // Read and written VI regs share the same register
+		// vi0 is wired to zero: an ILW into it loads nothing and no reader of vi0 waits.
+		if (VU->ialu[currentpipe].reg & VUregsn->VIread & ~1u) // Read and written VI regs share the same register
 		{
 			u64 newCycle = VU->ialu[currentpipe].Cycle + VU->ialu[currentpipe].sCycle;
 
@@ -356,8 +362,11 @@ __fi void _vuTestLowerStalls(VURegs* VU, _VURegsNum* VUregsn)
 		case VUPIPE_FMAC: _vuTestFMACStalls(VU, VUregsn); break;
 		case VUPIPE_FDIV: _vuTestFDIVStalls(VU, VUregsn); break;
 		case VUPIPE_EFU:  _vuTestEFUStalls(VU, VUregsn); break;
-		case VUPIPE_BRANCH: _vuTestALUStalls(VU, VUregsn); break;
 	}
+
+	// Any lower op that reads a VI waits for an ILW/ILWR still loading it, not only a
+	// branch (the console and microVU do the same).
+	_vuTestALUStalls(VU, VUregsn);
 }
 
 __fi void _vuClearFMAC(VURegs* VU)
