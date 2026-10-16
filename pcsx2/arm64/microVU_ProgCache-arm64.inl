@@ -421,10 +421,17 @@ static std::filesystem::file_time_type::rep FileTimeNow()
 	return std::filesystem::file_time_type::clock::now().time_since_epoch().count();
 }
 
+// (the paths here are UTF-8, as FileSystem takes them; a std::string handed to std::filesystem::path is the
+// ANSI code page on Windows, where a profile directory with an accented name would then not be found at all)
+static std::filesystem::path Utf8Path(const std::string& path)
+{
+	return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(path.data()), path.size()));
+}
+
 static void TouchPayload(const std::string& path)
 {
 	std::error_code ec; // (best effort: a read-only or foreign cache just keeps its old rank)
-	std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now(), ec);
+	std::filesystem::last_write_time(Utf8Path(path), std::filesystem::file_time_type::clock::now(), ec);
 }
 
 // Programs not used for this long are deleted, payload and sidecar, by the preload's background
@@ -490,7 +497,7 @@ static void StartPreload(State& s)
 			if (s.preloadStop.load(std::memory_order_relaxed))
 				return;
 			std::error_code ec;
-			const auto t = std::filesystem::last_write_time(f.payload, ec);
+			const auto t = std::filesystem::last_write_time(Utf8Path(f.payload), ec);
 			if (ec)
 				continue;
 			f.mtime = t.time_since_epoch().count();
