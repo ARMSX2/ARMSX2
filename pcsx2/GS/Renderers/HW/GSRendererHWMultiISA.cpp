@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <type_traits>
 
 class CURRENT_ISA::GSRendererHWFunctions
 {
@@ -1151,18 +1152,8 @@ bool GSSwPrimRenderFunctions::DrawMaskedTexels(GSRenderer& hw, GSSwPrimRenderSta
 	const u8* vm8 = hw.m_mem.m_vm8;
 	const u32* vm32 = reinterpret_cast<const u32*>(vm8);
 
-	// How the palette index sits at a texel's address, and how far that address may reach.
-	enum Source { T8, T4, T8H, T4HL, T4HH } source;
-	u32 limit;
-	switch (LEVEL0.PSM)
-	{
-		case PSMT8: source = T8; limit = VM_SIZE; break;
-		case PSMT4: source = T4; limit = VM_SIZE * 2; break;
-		case PSMT8H: source = T8H; limit = VM_SIZE / 4; break;
-		case PSMT4HL: source = T4HL; limit = VM_SIZE / 4; break;
-		case PSMT4HH: source = T4HH; limit = VM_SIZE / 4; break;
-		default: return false;
-	}
+	// How the palette index sits at a texel's address.
+	enum Source { T8, T4, T8H, T4HL, T4HH };
 
 	// The frame mask in the pixel's own bits, as the scanline holds it (gd.fm repeats it above bit 16).
 #if _M_SSE >= 0x501
@@ -1226,55 +1217,97 @@ bool GSSwPrimRenderFunctions::DrawMaskedTexels(GSRenderer& hw, GSSwPrimRenderSta
 	};
 
 	sw.texel_scratch.resize(texels);
-	u8* indices = sw.texel_scratch.data();
-
-	u16 columns[max_width];
+	u8* const scratch = sw.texel_scratch.data();
 
 	// The coordinate's step from one pixel to the next: a texel of the level read.
 	const s32 step = 65536 << lod;
 
-	for (const GSSwPrimRenderState::PaletteBlock& b : sw.palette_blocks)
-	{
-		const int width = b.rect.width();
+	// Reads every texel of every sprite into the scratch, in the order they are written, for one source format.
+	const auto gather = [&](auto format) -> bool {
+		constexpr int F = decltype(format)::value;
+		// How far a texel's address may reach: bytes, nibbles, or 32-bit pixels.
+		constexpr u32 limit = F == T8 ? VM_SIZE : F == T4 ? VM_SIZE * 2 : VM_SIZE / 4;
 
-		for (int k = 0; k < width; k++)
+		u8* indices = scratch;
+		u16 columns[max_width];
+
+		for (const GSSwPrimRenderState::PaletteBlock& b : sw.palette_blocks)
 		{
-			const u32 u = WrapTexel(b.u + k * step, umin, umax, urepeat, lod);
-			if (static_cast<int>(u) < cover.left || static_cast<int>(u) >= cover.right)
-				return false;
-			columns[k] = static_cast<u16>(u);
-		}
+			const int width = b.rect.width();
 
-		for (int y = b.rect.top; y < b.rect.bottom; y++)
-		{
-			const u32 v = WrapTexel(b.v + (y - b.rect.top) * step, vmin, vmax, vrepeat, lod);
-			if (static_cast<int>(v) < cover.top || static_cast<int>(v) >= cover.bottom)
-				return false;
-
-			const GSOffset::PAHelper pa = off.paMulti(0, static_cast<int>(v));
-
-			for (int k = 0; k < width; k++)
+			// Almost always the coordinate of pixel k is the first one plus k, with no wrap to apply: it steps a
+			// whole texel of the level a pixel, so the first and last decide. Only plain repeat and clamp reach
+			// here (the region modes are refused), so a repeat's max is 0 and its min a low mask, and a clamp's
+			// min is 0: a coordinate in [0, limit] passes through the wrap unchanged.
+			const int u_first = (b.u >> lod) >> 16;
+			const int u_last = ((b.u + (width - 1) * step) >> lod) >> 16;
+			if (u_first >= 0 && u_last <= (urepeat ? umin : umax))
 			{
-				const u32 addr = pa.value(columns[k]);
-				if (addr >= limit)
+				if (u_first < cover.left || u_last >= cover.right)
+					return false;
+				for (int k = 0; k < width; k++)
+					columns[k] = static_cast<u16>(u_first + k);
+			}
+			else
+			{
+				for (int k = 0; k < width; k++)
+				{
+					const u32 u = WrapTexel(b.u + k * step, umin, umax, urepeat, lod);
+					if (static_cast<int>(u) < cover.left || static_cast<int>(u) >= cover.right)
+						return false;
+					columns[k] = static_cast<u16>(u);
+				}
+			}
+
+			for (int y = b.rect.top; y < b.rect.bottom; y++)
+			{
+				const u32 v = WrapTexel(b.v + (y - b.rect.top) * step, vmin, vmax, vrepeat, lod);
+				if (static_cast<int>(v) < cover.top || static_cast<int>(v) >= cover.bottom)
 					return false;
 
-				u32 index;
-				switch (source)
+				const GSOffset::PAHelper pa = off.paMulti(0, static_cast<int>(v));
+
+				for (int k = 0; k < width; k++)
 				{
-					case T8: index = vm8[addr]; break;
-					case T4: index = (vm8[addr >> 1] >> ((addr & 1) << 2)) & 0x0f; break;
-					case T8H: index = vm32[addr] >> 24; break;
-					case T4HL: index = (vm32[addr] >> 24) & 0x0f; break;
-					default: index = vm32[addr] >> 28; break;
+					const u32 addr = pa.value(columns[k]);
+					if (addr >= limit)
+						return false;
+
+					u32 index;
+					if constexpr (F == T8)
+						index = vm8[addr];
+					else if constexpr (F == T4)
+						index = (vm8[addr >> 1] >> ((addr & 1) << 2)) & 0x0f;
+					else if constexpr (F == T8H)
+						index = vm32[addr] >> 24;
+					else if constexpr (F == T4HL)
+						index = (vm32[addr] >> 24) & 0x0f;
+					else
+						index = vm32[addr] >> 28;
+					*indices++ = static_cast<u8>(index);
 				}
-				*indices++ = static_cast<u8>(index);
 			}
 		}
+
+		return true;
+	};
+
+	bool read;
+	switch (LEVEL0.PSM)
+	{
+		case PSMT8: read = gather(std::integral_constant<int, T8>()); break;
+		case PSMT4: read = gather(std::integral_constant<int, T4>()); break;
+		case PSMT8H: read = gather(std::integral_constant<int, T8H>()); break;
+		case PSMT4HL: read = gather(std::integral_constant<int, T4HL>()); break;
+		case PSMT4HH: read = gather(std::integral_constant<int, T4HH>()); break;
+		default: return false;
 	}
 
+	if (!read)
+		return false;
+
 	// Nothing was written until every texel was read.
-	indices = sw.texel_scratch.data();
+	const u8* indices = scratch;
 	for (const GSSwPrimRenderState::PaletteBlock& b : sw.palette_blocks)
 	{
 		write_block(b, indices);
