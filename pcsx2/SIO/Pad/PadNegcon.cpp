@@ -7,6 +7,7 @@
 
 #include "Common.h"
 #include "Input/InputManager.h"
+#include "IopThread/EeBridge.h"
 #include "Host.h"
 
 #include "IconsPromptFont.h"
@@ -129,7 +130,7 @@ u8 PadNegcon::Poll(u8 commandByte)
 			}
 
 			// Order is reversed here - SetPadVibrationIntensity takes large motor first, then small. PS2 orders small motor first, large motor second.
-			InputManager::SetPadVibrationIntensity(this->unifiedSlot,
+			EeBridge::SetPadVibration(this->unifiedSlot,
 				std::min(static_cast<float>(largeMotor) * GetVibrationScale(1) * (1.0f / 255.0f), 1.0f),
 				// Small motor on the PS2 is either on full power or zero power, it has no variable speed. If the game supplies any value here at all,
 				// the pad in turn supplies full power to the motor, or no power at all if zero.
@@ -327,13 +328,13 @@ void PadNegcon::Set(u32 index, float value)
 		switch (index)
 		{
 			case PAD_I:
-				this->analogs.i = this->rawInputs[index];
+				this->analogs.i = static_cast<u8>(this->rawInputs[index]);
 				break;
 			case PAD_II:
-				this->analogs.ii = this->rawInputs[index];
+				this->analogs.ii = static_cast<u8>(this->rawInputs[index]);
 				break;
 			case PAD_L:
-				this->analogs.l = this->rawInputs[index];
+				this->analogs.l = static_cast<u8>(this->rawInputs[index]);
 				break;
 		}
 	}

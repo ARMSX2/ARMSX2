@@ -17,6 +17,7 @@
 #include "IopBios.h"
 #include "IopHw.h"
 #include "IopDma.h"
+#include "IopThread/OwnerAsserts.h"
 #include "VMManager.h"
 
 #include "common/ARCADE.h"
@@ -1086,6 +1087,8 @@ bool SaveStateBase::cdvdFreeze()
 
 void cdvdNewDiskCB()
 {
+	IOP_SIDE_ASSERT();
+
 	DoCDVDresetDiskTypeCache();
 	cdvdDetectDisk();
 
@@ -1663,6 +1666,8 @@ void cdvdUpdateTrayState()
 
 void cdvdVsync()
 {
+	IOP_SIDE_ASSERT();
+
 	// We're counting in frames, but one second isn't exactly 50 or 60 frames in most cases, so we'll keep the fractions.
 	cdvd.RTCcount++;
 	const double verticalFrequency = GetVerticalFrequency();

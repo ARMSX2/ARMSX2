@@ -29,6 +29,7 @@
 #include "pcsx2/GSDumpReplayer.h"
 #include "pcsx2/GameList.h"
 #include "pcsx2/Host.h"
+#include "pcsx2/IopThread/OwnerAsserts.h"
 #include "pcsx2/INISettingsInterface.h"
 #include "pcsx2/ImGui/FullscreenUI.h"
 #include "pcsx2/ImGui/ImGuiFullscreen.h"
@@ -995,6 +996,10 @@ void EmuThread::updatePerformanceMetrics(bool force)
 			// roughly half the GS work runs on a second thread this line would otherwise hide.
 			if (PerformanceMetrics::HasGSBackThread())
 				gs_stat += tr(" | GSB: %1%").arg(PerformanceMetrics::GetGSBackThreadUsage(), 0, 'f', 0);
+
+			// Likewise the IOP thread, which has its own thread only when the IOP thread setting is on.
+			if (PerformanceMetrics::HasIOPThread())
+				gs_stat += tr(" | IOP: %1%").arg(PerformanceMetrics::GetIOPThreadUsage(), 0, 'f', 0);
 		}
 
 		QMetaObject::invokeMethod(g_main_window, "setStatusVerboseText", Qt::QueuedConnection, Q_ARG(const QString&, gs_stat));
@@ -1227,6 +1232,7 @@ void Host::PumpMessagesOnCPUThread()
 
 void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false */)
 {
+	BLOCKING_HOST_CALL_ASSERT(block);
 	if (block && g_emu_thread->isOnEmuThread())
 	{
 		// probably shouldn't ever happen, but just in case..

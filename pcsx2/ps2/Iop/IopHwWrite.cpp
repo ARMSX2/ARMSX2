@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "IopHw_Internal.h"
+#include "IopThread/EeBridge.h"
+#include "IopThread/SharedWord.h"
 #include "Sif.h"
 #include "SIO/Sio2.h"
 #include "SIO/Sio0.h"
@@ -287,10 +289,11 @@ static __fi void _HwWrite_16or32_Page1( u32 addr, T val )
 		switch( masked_addr )
 		{
 			case 0x450:
-				psxHu(addr) = val;
+				// ICFG: the EE thread reads this word (HwRead.cpp, with a relaxed load).
+				SharedWord::StoreRelaxed<u32>(psxHu(addr), val);
 				if (val & (1 << 1))
 				{
-					hwIntcIrq(INTC_SBUS);
+					EeBridge::RaiseSbusIrq();
 				}
 				break;
 			// ------------------------------------------------------------------------

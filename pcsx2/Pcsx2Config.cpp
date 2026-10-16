@@ -15,6 +15,7 @@
 #include "GameDatabase.h"
 #include "Host.h"
 #include "Host/AudioStream.h"
+#include "IopThread/IopThreadMode.h"
 #include "SIO/Memcard/MemcardBackup.h"
 #include "SIO/Memcard/MemoryCardFile.h"
 #include "SIO/Pad/Pad.h"
@@ -326,6 +327,7 @@ static constexpr const char* s_speed_hack_names[] = {
 	"instantVU1",
 	"mtvu",
 	"eeCycleRate",
+	"iopThread",
 };
 
 const char* Pcsx2Config::SpeedhackOptions::GetSpeedHackName(SpeedHack id)
@@ -363,13 +365,16 @@ void Pcsx2Config::SpeedhackOptions::Set(SpeedHack id, int value)
 		case SpeedHack::EECycleRate:
 			EECycleRate = static_cast<int>(std::clamp<int>(value, MIN_EE_CYCLE_RATE, MAX_EE_CYCLE_RATE));
 			break;
+		case SpeedHack::IOPThread:
+			iopThread = (value != 0);
+			break;
 			jNO_DEFAULT
 	}
 }
 
 bool Pcsx2Config::SpeedhackOptions::operator==(const SpeedhackOptions& right) const
 {
-	return OpEqu(bitset) && OpEqu(EECycleRate) && OpEqu(EECycleSkip);
+	return OpEqu(bitset) && OpEqu(EECycleRate) && OpEqu(EECycleSkip) && OpEqu(iopThreadLag);
 }
 
 bool Pcsx2Config::SpeedhackOptions::operator!=(const SpeedhackOptions& right) const
@@ -393,6 +398,7 @@ Pcsx2Config::SpeedhackOptions& Pcsx2Config::SpeedhackOptions::DisableAll()
 	bitset = 0;
 	EECycleRate = 0;
 	EECycleSkip = 0;
+	iopThreadLag = IopThread::kDefaultLag;
 
 	return *this;
 }
@@ -409,9 +415,13 @@ void Pcsx2Config::SpeedhackOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(vuFlagHack);
 	SettingsWrapBitBool(vuThread);
 	SettingsWrapBitBool(vu1Instant);
+	SettingsWrapBitBool(iopThread);
+	SettingsWrapBitBool(iopThreadLockstep);
+	SettingsWrapEntry(iopThreadLag);
 
 	EECycleRate = std::clamp(EECycleRate, MIN_EE_CYCLE_RATE, MAX_EE_CYCLE_RATE);
 	EECycleSkip = std::min(EECycleSkip, MAX_EE_CYCLE_SKIP);
+	iopThreadLag = IopThread::ClampLag(iopThreadLag);
 }
 
 Pcsx2Config::ProfilerOptions::ProfilerOptions()

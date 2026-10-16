@@ -686,6 +686,11 @@
     <ClCompile Include="IopDma.cpp" />
     <ClCompile Include="IopIrq.cpp" />
     <ClCompile Include="IopMem.cpp" />
+    <ClCompile Include="IopThread\IopChannels.cpp" />
+    <ClCompile Include="IopThread\IopPlacement.cpp" />
+    <ClCompile Include="IopThread\IopThread.cpp" />
+    <ClCompile Include="IopThread\IopThreadMode.cpp" />
+    <ClCompile Include="IopThread\IopThreadVm.cpp" />
     <ClCompile Include="R3000A.cpp" />
     <ClCompile Include="R3000AInterpreter.cpp" />
     <ClCompile Include="R3000AOpcodeTables.cpp" />
@@ -1191,6 +1196,15 @@
     <ClInclude Include="IopCounters.h" />
     <ClInclude Include="IopDma.h" />
     <ClInclude Include="IopMem.h" />
+    <ClInclude Include="IopThread\EeBridge.h" />
+    <ClInclude Include="IopThread\IopBridge.h" />
+    <ClInclude Include="IopThread\IopChannels.h" />
+    <ClInclude Include="IopThread\IopPlacement.h" />
+    <ClInclude Include="IopThread\IopThread.h" />
+    <ClInclude Include="IopThread\IopThreadMode.h" />
+    <ClInclude Include="IopThread\IopThreadVm.h" />
+    <ClInclude Include="IopThread\OwnerAsserts.h" />
+    <ClInclude Include="IopThread\SharedWord.h" />
     <ClInclude Include="R3000A.h" />
     <ClInclude Include="x86\iR3000A.h" />
     <ClInclude Include="IopHw.h" />

@@ -410,13 +410,24 @@ namespace VMManager
 		/// Returns a list of processors in the system, suitable for pinning for the software renderer.
 		const std::vector<u32>& GetSoftwareRendererProcessorList();
 
-		/// Diagnostic (OSD): where the EE/VU/GS threads are actually running (current core +
-		/// affinity mask) plus the cpuinfo cluster/frequency topology. Used to see whether the
+		/// The performance cores: every processor of at least 0.75 of the fastest one's capacity
+		/// (IopThread::PerformanceMask), one bit per processor number. 0 when the cores cannot be told apart or
+		/// there is no source for it on this platform (everything but Linux and Android).
+		u64 GetPerformanceCoreMask();
+
+		/// How many of them there are. The IOP thread's ResolveMode wants it (design 10.2).
+		u32 GetPerformanceCoreCount();
+
+		/// Diagnostic (OSD): where the EE/VU/GS threads, and the IOP thread while it runs, are actually
+		/// running (current core + affinity mask) plus the cpuinfo cluster/frequency topology. Used to see whether the
 		/// worker threads are being scheduled onto slow cores / clamped by a cpuset.
 		std::string GetThreadPlacementDebug();
 
 		const std::string& GetELFOverride();
 		bool IsExecutionInterrupted();
+		/// GetState() without the acquire, for the EE event test, which puts an acquire fence after it where it
+		/// relies on the value (see _cpuEventTest_Shared).
+		VMState GetStateForEventTest();
 		void ELFLoadingOnCPUThread(std::string elf_path);
 		void EntryPointCompilingOnCPUThread();
 		void VSyncOnCPUThread();

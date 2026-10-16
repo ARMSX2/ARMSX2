@@ -4,6 +4,7 @@
 #pragma once
 
 #include "EeFpuFormat.h"
+#include "IopThread/IopThreadMode.h"
 
 #include "common/Pcsx2Defs.h"
 
@@ -498,7 +499,33 @@ extern int  cpuTestCycle( u64 startCycle, s32 delta );
 extern void cpuSetEvent();
 extern int cpuGetCycles(int interrupt);
 
-extern void _cpuEventTest_Shared();		// for internal use by the Dynarecs and Ints inside R5900:
+// The shared event test, compiled once per IOP thread mode. The mode only changes how the IOP's slice
+// is run, and which instance is called is chosen where the CPU provider is reset (the JIT's dispatcher
+// is generated for it, the interpreter's pointer is set with it), so the Off instance has no test of
+// the mode in it. Instances exist for Off, Lockstep and Threaded.
+template <IopThreadMode M>
+extern void _cpuEventTest_Shared();
+
+// The unchanged name, for internal use by the Dynarecs and Ints inside R5900. It is the Off instance:
+// the x86 recompilers call it exactly as they always did (x86 resolves every IOP thread mode to Off),
+// and the ARM64 JIT and interpreter call the instance of the mode in effect. Inline, so no second
+// copy of the event test is built where nothing calls it.
+inline void _cpuEventTest_Shared()
+{
+	_cpuEventTest_Shared<IopThreadMode::Off>();
+}
+
+using CpuEventTestFn = void (*)();
+/// The event test instance for `mode`.
+CpuEventTestFn cpuEventTestFor(IopThreadMode mode);
+
+/// The interpreter's event test calls this. It is the instance for the mode in effect; the IOP
+/// thread code sets it together with the mode.
+extern CpuEventTestFn g_intEventTestShared;
+
+/// What the IOP does with a slice once the EE has settled its books: its CPU runs the budget if it
+/// has work, then its event test. In Lockstep the IOP thread runs this while the EE waits.
+void iopRunSliceOnIopThread();
 
 extern void cpuTestINTCInts();
 extern void cpuTestDMACInts();

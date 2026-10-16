@@ -51,17 +51,17 @@ public:
 private:
 	struct Analogs
 	{
-		u8 lx = Pad::ANALOG_NEUTRAL_POSITION;
-		u8 ly = Pad::ANALOG_NEUTRAL_POSITION;
-		u8 rx = Pad::ANALOG_NEUTRAL_POSITION;
-		u8 ry = Pad::ANALOG_NEUTRAL_POSITION;
+		SharedWord::Relaxed<u8> lx{Pad::ANALOG_NEUTRAL_POSITION};
+		SharedWord::Relaxed<u8> ly{Pad::ANALOG_NEUTRAL_POSITION};
+		SharedWord::Relaxed<u8> rx{Pad::ANALOG_NEUTRAL_POSITION};
+		SharedWord::Relaxed<u8> ry{Pad::ANALOG_NEUTRAL_POSITION};
 		bool lxInvert = false;
 		bool lyInvert = false;
 		bool rxInvert = false;
 		bool ryInvert = false;
 	};
 
-	u32 buttons = 0xffffffffu;
+	SharedWord::Relaxed<u32> buttons{0xffffffffu};
 	Analogs analogs;
 	// Analog button can be held without changing its state.
 	// We track here if it is currently held down, to avoid flipping in
@@ -135,6 +135,11 @@ public:
 	{
 		return (index == Inputs::PAD_L2 || index == Inputs::PAD_R2);
 	}
+
+	/// The analog button's toggle: flips the analog light and the mode with it, and says so on the OSD. The IOP's
+	/// mode-switch command writes the same two fields (ModeSwitch), so with the IOP on its own thread the
+	/// toggle runs there: Set() posts it through the IOP thread's host command queue.
+	void ToggleAnalogLight();
 
 	Pad::ControllerType GetType() const override;
 	const Pad::ControllerInfo& GetInfo() const override;

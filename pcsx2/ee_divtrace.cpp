@@ -21,8 +21,18 @@
 #endif
 
 #ifdef PCSX2_RECOMPILER_TESTS
+#include "Common.h"
+#include "SaveState.h"
+#include "Sif.h"
+#include "SIO/Multitap/MultitapProtocol.h"
+#include "SIO/Sio0.h"
+#include "SIO/Sio2.h"
+#include "SPU2/spu2.h"
+#include "StateWrapper.h"
+
 extern u64 g_twinEeEventTests;
 extern u64 g_twinIopSlices;
+extern s16 _spu2mem[0x200000 / sizeof(s16)]; // SPU2/spu2sys.cpp; SPU2/defs.h is private to the SPU2
 #endif
 
 namespace ee_divtrace
@@ -216,6 +226,83 @@ namespace ee_divtrace
 #endif
 		return h;
 	}
+
+#ifdef PCSX2_RECOMPILER_TESTS
+	// Takes the cdvd freeze the way a savestate does, but hashes the bytes
+	// instead of storing them. SaveStateBase::cdvdFreeze is protected, hence the
+	// subclass. It reports IsSaving() == true, so cdvdFreeze only reads: its
+	// loading branch (re-read the current track from the disc) never runs.
+	static SaveStateBase::VmStateBuffer s_unused_state_buffer; // SaveStateBase wants one; the Freeze calls here never touch it
+
+	class HashingSaveState final : public SaveStateBase
+	{
+	public:
+		HashingSaveState()
+			: SaveStateBase(s_unused_state_buffer)
+		{
+			XXH3_64bits_reset(&m_xxh);
+		}
+
+		void FreezeMem(void* data, int size) override { XXH3_64bits_update(&m_xxh, data, static_cast<size_t>(size)); }
+		bool IsSaving() const override { return true; }
+
+		u64 HashCdvd()
+		{
+			return cdvdFreeze() ? XXH3_64bits_digest(&m_xxh) : 0;
+		}
+
+	private:
+		XXH3_state_t m_xxh;
+	};
+
+	// Field by field: _sif has two bytes of padding after each pair of bools.
+	static u64 hash_sif(u64 h, const _sif& s)
+	{
+		static_assert(sizeof(_sif) == 580, "_sif changed: add the new field to hash_sif");
+		h = hash_words(h, s.fifo);
+		h = hash_mix(h, s.ee.end);
+		h = hash_mix(h, s.ee.busy);
+		h = hash_mix(h, static_cast<u32>(s.ee.cycles));
+		h = hash_mix(h, s.iop.end);
+		h = hash_mix(h, s.iop.busy);
+		h = hash_mix(h, static_cast<u32>(s.iop.cycles));
+		h = hash_mix(h, static_cast<u32>(s.iop.writeJunk));
+		h = hash_mix(h, static_cast<u32>(s.iop.counter));
+		h = hash_words(h, s.iop.data);
+		return h;
+	}
+
+	IopFingerprint FingerprintIop()
+	{
+		IopFingerprint fp;
+
+		// SPU2: the savestate block, and the sample memory on its own so it stays
+		// covered if the block's layout ever stops carrying it.
+		static std::vector<u8> s_spu2_block;
+		SPU2freezeForFingerprint(s_spu2_block);
+		fp.spu2 = XXH3_64bits(s_spu2_block.data(), s_spu2_block.size());
+		fp.spu2 = XXH3_64bits_withSeed(_spu2mem, sizeof(_spu2mem), fp.spu2);
+
+		u64 h = 1469598103934665603ull;
+		h = hash_sif(h, sif0);
+		h = hash_sif(h, sif1);
+		h = hash_sif(h, sif2);
+		fp.sif = h;
+
+		// The StateWrapper block of SaveStateBase::FreezeInternals, in Write mode.
+		StateWrapper::VectorMemoryStream stream(4096);
+		StateWrapper sw(&stream, StateWrapper::Mode::Write, g_SaveVersion);
+		bool ok = g_Sio0.DoState(sw);
+		ok = ok && g_Sio2.DoState(sw);
+		ok = ok && g_MultitapArr.at(0).DoState(sw);
+		ok = ok && g_MultitapArr.at(1).DoState(sw);
+		fp.sio = ok ? XXH3_64bits(stream.GetBuffer().data(), stream.GetBuffer().size()) : 0;
+
+		HashingSaveState cdvd_state;
+		fp.cdvd = cdvd_state.HashCdvd();
+		return fp;
+	}
+#endif
 
 	void RecordSample(u32 pc)
 	{

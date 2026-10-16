@@ -118,6 +118,7 @@ namespace
 		"vu1Instant", // SpeedHack::InstantVU1
 		"vuThread", // SpeedHack::MTVU
 		"EECycleRate", // SpeedHack::EECycleRate
+		"iopThread", // SpeedHack::IOPThread
 	};
 } // namespace
 

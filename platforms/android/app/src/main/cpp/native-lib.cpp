@@ -12,6 +12,7 @@
 #include "pcsx2/GS.h"
 #include "pcsx2/Counters.h"
 #include "pcsx2/Elfheader.h" // ElfObject, for the boot-ELF disc pairing
+#include "pcsx2/IopThread/OwnerAsserts.h"
 #include "pcsx2/VMManager.h"
 #include "pcsx2/CDVD/CDVDcommon.h"
 #include "pcsx2/CDVD/IsoReader.h" // ISO extraction for host: quick-loading setups
@@ -2145,13 +2146,15 @@ Java_kr_co_iefriends_pcsx2_NativeApp_commitSettings(JNIEnv *env, jclass clazz) {
     // allow forwarding references (T&&) to bind to bit-fields.
     Console.WriteLnFmt(
         "Settings commit: vuThread={} EECycleRate={} EECycleSkip={} "
-        "vu1Instant={} fastCDVD={} vuFlagHack={}",
+        "vu1Instant={} fastCDVD={} vuFlagHack={} iopThread={} iopThreadLag={}",
         +EmuConfig.Speedhacks.vuThread,
         +EmuConfig.Speedhacks.EECycleRate,
         +EmuConfig.Speedhacks.EECycleSkip,
         +EmuConfig.Speedhacks.vu1Instant,
         +EmuConfig.Speedhacks.fastCDVD,
-        +EmuConfig.Speedhacks.vuFlagHack);
+        +EmuConfig.Speedhacks.vuFlagHack,
+        +EmuConfig.Speedhacks.iopThread,
+        EmuConfig.Speedhacks.iopThreadLag);
 }
 
 // Generic live GS reconfigure. Reloads the whole EmuCore/GS section from the
@@ -4838,6 +4841,7 @@ void Host::OnSaveStateSaved(const std::string_view filename)
 
 void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false */)
 {
+    BLOCKING_HOST_CALL_ASSERT(block);
     const std::thread::id current_thread = std::this_thread::get_id();
     std::mutex wait_mutex;
     std::condition_variable wait_cv;

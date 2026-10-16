@@ -100,6 +100,11 @@ set(pcsx2Sources
 	IopHw.cpp
 	IopIrq.cpp
 	IopMem.cpp
+	IopThread/IopChannels.cpp
+	IopThread/IopPlacement.cpp
+	IopThread/IopThread.cpp
+	IopThread/IopThreadMode.cpp
+	IopThread/IopThreadVm.cpp
 	PINE.cpp
 	Mdec.cpp
 	Memory.cpp
@@ -195,6 +200,15 @@ set(pcsx2Headers
 	IopGte.h
 	IopHw.h
 	IopMem.h
+	IopThread/IopChannels.h
+	IopThread/EeBridge.h
+	IopThread/IopBridge.h
+	IopThread/IopPlacement.h
+	IopThread/IopThread.h
+	IopThread/IopThreadMode.h
+	IopThread/IopThreadVm.h
+	IopThread/OwnerAsserts.h
+	IopThread/SharedWord.h
 	LayeredSettingsInterface.h
 	PINE.h
 	Mdec.h

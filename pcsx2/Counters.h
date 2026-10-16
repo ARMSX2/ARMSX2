@@ -4,6 +4,7 @@
 #pragma once
 
 #include "MemoryTypes.h"
+#include "IopThread/IopThreadMode.h"
 
 struct EECNT_MODE
 {
@@ -121,10 +122,16 @@ extern s32 nextDeltaCounter;		// delta until the next counter event (must be sig
 extern u64 nextStartCounter;
 extern uint g_FrameCount;
 
+// The counters' per-event-test update. Instances for Off and Lockstep, called by the instance of the
+// event test for the same mode (_cpuEventTest_Shared<M>), so the calls they make to the IOP's counters
+// (IopBridge::HBlankStart<M> and the rest) are chosen at compile time.
+template <IopThreadMode M>
 extern void rcntUpdate_hScanline();
+template <IopThreadMode M>
 extern void rcntUpdate_vSync();
 extern bool rcntCanCount(int i);
 extern void rcntSyncCounter(int i);
+template <IopThreadMode M>
 extern void rcntUpdate();
 
 extern void rcntInit();

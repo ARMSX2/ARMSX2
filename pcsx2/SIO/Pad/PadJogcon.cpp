@@ -7,6 +7,7 @@
 
 #include "Common.h"
 #include "Input/InputManager.h"
+#include "IopThread/EeBridge.h"
 #include "Host.h"
 
 #include "IconsPromptFont.h"
@@ -132,7 +133,7 @@ u8 PadJogcon::Poll(u8 commandByte)
 			}
 
 			// Order is reversed here - SetPadVibrationIntensity takes large motor first, then small. PS2 orders small motor first, large motor second.
-			InputManager::SetPadVibrationIntensity(this->unifiedSlot,
+			EeBridge::SetPadVibration(this->unifiedSlot,
 				std::min(static_cast<float>(largeMotor) * GetVibrationScale(1) * (1.0f / 255.0f), 1.0f),
 				// Small motor on the PS2 is either on full power or zero power, it has no variable speed. If the game supplies any value here at all,
 				// the pad in turn supplies full power to the motor, or no power at all if zero.
@@ -334,9 +335,8 @@ void PadJogcon::Set(u32 index, float value)
 		const float dz_value = (this->dialDeadzone > 0.0f && value < this->dialDeadzone) ? 0.0f : value;
 		this->rawInputs[index] = static_cast<u8>(std::clamp(dz_value * this->dialScale * 255.0f, 0.0f, 255.0f));
 
-		this->dial = this->rawInputs[Inputs::PAD_DIAL_RIGHT] != 0
-				   ? this->rawInputs[Inputs::PAD_DIAL_RIGHT]
-				   : -this->rawInputs[Inputs::PAD_DIAL_LEFT];
+		const int dial_right = this->rawInputs[Inputs::PAD_DIAL_RIGHT];
+		this->dial = static_cast<s16>(dial_right != 0 ? dial_right : -static_cast<int>(this->rawInputs[Inputs::PAD_DIAL_LEFT]));
 		return;
 	}
 

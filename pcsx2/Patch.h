@@ -61,6 +61,16 @@ namespace Patch
 		CPU_IOP
 	};
 
+	// Which CPU's lines an ApplyPatches pass writes. A pass for one CPU skips the other CPU's lines
+	// and never touches the other CPU's memory interface. ApplyVsyncPatches uses this to apply the
+	// IOP lines separately from the EE lines.
+	enum class patch_cpu_filter : u8
+	{
+		Both,
+		EEOnly,
+		IOPOnly,
+	};
+
 	enum patch_data_type : u8
 	{
 		BYTE_T,
@@ -174,8 +184,14 @@ namespace Patch
 	/// being recompiled.
 	extern void ApplyBootPatches();
 
-	/// Apply all loaded patches that should be applied during vsync.
+	/// Apply all loaded patches that should be applied during vsync: the ones that write EE
+	/// memory, then the ones that write IOP memory.
 	extern void ApplyVsyncPatches();
+
+	/// The two halves of ApplyVsyncPatches. The IOP half is a separate call because it has to run
+	/// where IOP memory is owned (IopBridge::ApplyVsyncPatches).
+	extern void ApplyVsyncPatchesEE();
+	extern void ApplyVsyncPatchesIOP();
 
 	/// Apply the patches from the provided list which have place values that
 	/// match the one specified.
@@ -183,12 +199,14 @@ namespace Patch
 		const std::vector<const PatchCommand*>& patches,
 		patch_place_type place,
 		EEMemoryInterface& ee,
-		IOPMemoryInterface& iop);
+		IOPMemoryInterface& iop,
+		patch_cpu_filter filter = patch_cpu_filter::Both);
 	extern void ApplyPatches(
 		const std::vector<const PatchCommand*>& patches,
 		patch_place_type place,
 		MemoryInterface& ee,
-		MemoryInterface& iop);
+		MemoryInterface& iop,
+		patch_cpu_filter filter = patch_cpu_filter::Both);
 
 	// Get the total counts of the active game patches.
 	extern u32 GetActiveGameDBPatchesCount();

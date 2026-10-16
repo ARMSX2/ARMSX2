@@ -602,10 +602,15 @@ static void intReset()
 	NoJITImprovements::ResetEEBlockCache();
 }
 
+// The event test instance for the IOP thread mode in effect. The interpreter reaches it through this
+// pointer, which the IOP thread code sets with the mode; the JIT has the address baked into its
+// dispatcher instead and pays no load.
+CpuEventTestFn g_intEventTestShared = &_cpuEventTest_Shared<IopThreadMode::Off>;
+
 void intEventTest()
 {
 	// Perform counters, ints, and IOP updates:
-	_cpuEventTest_Shared();
+	g_intEventTestShared();
 
 	if (intExitExecution)
 	{

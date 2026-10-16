@@ -127,6 +127,7 @@ private fun entryName(entry: GameDbOverrides.Entry): String {
         "mvuFlag" -> "perf.hack.vuFlagHack"
         "instantVU1" -> "perf.hack.instantVu1"
         "mtvu" -> "perf.hack.mtvu"
+        "iopThread" -> "perf.hack.iopThread"
         "eeCycleRate" -> "perf.eeCycleRate.label"
         "FpuMul" -> "gamedb.name.fpuMul"
         "GoemonTlb" -> "perf.fix.goemonTlb"

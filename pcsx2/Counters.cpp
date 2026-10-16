@@ -8,6 +8,8 @@
 #include "R3000A.h"
 #include "Counters.h"
 #include "IopCounters.h"
+#include "IopThread/IopBridge.h"
+#include "IopThread/SharedWord.h"
 
 #include "GS.h"
 #include "GS/GS.h"
@@ -309,7 +311,8 @@ double GetVerticalFrequency()
 
 	std::string cur_region = VMManager::Internal::GetCurrentRegion();
 
-	switch (gsVideoMode)
+	// Called from threads other than the one that sets the video mode (see gsSetVideoMode).
+	switch (SharedWord::LoadRelaxed(gsVideoMode))
 	{
 		case GS_VideoMode::Uninitialized: // SetGsCrt hasn't executed yet, give some temporary values.
 			return (cur_region == "PAL") ? Pcsx2Config::GSOptions::DEFAULT_FRAME_RATE_PAL : Pcsx2Config::GSOptions::DEFAULT_FRAME_RATE_NTSC;
@@ -498,6 +501,7 @@ static __fi void DoFMVSwitch()
 	}
 }
 
+template <IopThreadMode M>
 static __fi void VSyncStart(u64 sCycle)
 {
 	// End-of-frame tasks.
@@ -521,15 +525,15 @@ static __fi void VSyncStart(u64 sCycle)
 	EECNT_LOG("    ================  EE COUNTER VSYNC START (frame: %d)  ================", g_FrameCount);
 
 	// Memcard auto ejection - Uses a tick system timed off of real time, decrementing one tick per frame.
-	AutoEject::CountDownTicks();
+	IopBridge::AutoEjectTick<M>();
 	// Memcard IO detection - Uses a tick system to determine when memcards are no longer being written.
-	MemcardBusy::Decrement();
+	IopBridge::MemcardBusyTick<M>();
 
 	if (!GSSMODE1reg.SINT)
 	{
 		hwIntcIrq(INTC_VBLANK_S);
 		rcntStartGate(true, sCycle); // Counters Start Gate code
-		psxVBlankStart();
+		IopBridge::VBlankStart<M>();
 	}
 
 	// INTC - VB Blank Start Hack --
@@ -580,6 +584,7 @@ static __fi void GSVSync()
 	}
 }
 
+template <IopThreadMode M>
 static __fi void VSyncEnd(u64 sCycle)
 {
 	EECNT_LOG("    ================  EE COUNTER VSYNC END (frame: %d)  ================", g_FrameCount);
@@ -597,7 +602,7 @@ static __fi void VSyncEnd(u64 sCycle)
 	if (!GSSMODE1reg.SINT)
 	{
 		hwIntcIrq(INTC_VBLANK_E); // HW Irq
-		psxVBlankEnd(); // psxCounters vBlank End
+		IopBridge::VBlankEnd<M>(); // psxCounters vBlank End
 		rcntEndGate(true, sCycle); // Counters End Gate Code
 	}
 
@@ -612,6 +617,7 @@ static u32 hsc = 0;
 static int vblankinc = 0;
 #endif
 
+template <IopThreadMode M>
 __fi void rcntUpdate_vSync()
 {
 	if (!cpuTestCycle(vsyncCounter.startCycle, vsyncCounter.deltaCycles))
@@ -622,7 +628,7 @@ __fi void rcntUpdate_vSync()
 		vsyncCounter.startCycle += vSyncInfo.Blank;
 		vsyncCounter.deltaCycles = vSyncInfo.Render;
 
-		VSyncEnd(vsyncCounter.startCycle);
+		VSyncEnd<M>(vsyncCounter.startCycle);
 
 		vsyncCounter.Mode = MODE_VRENDER; // VSYNC END - Render begin
 	}
@@ -639,7 +645,7 @@ __fi void rcntUpdate_vSync()
 		vsyncCounter.startCycle += vSyncInfo.Render;
 		vsyncCounter.deltaCycles = vSyncInfo.GSBlank;
 
-		VSyncStart(vsyncCounter.startCycle);
+		VSyncStart<M>(vsyncCounter.startCycle);
 
 		vsyncCounter.Mode = MODE_GSBLANK;
 
@@ -659,6 +665,7 @@ __fi void rcntUpdate_vSync()
 	}
 }
 
+template <IopThreadMode M>
 __fi void rcntUpdate_hScanline()
 {
 	if (!cpuTestCycle(hsyncCounter.startCycle, hsyncCounter.deltaCycles))
@@ -674,7 +681,7 @@ __fi void rcntUpdate_hScanline()
 		if (!GSSMODE1reg.SINT)
 		{
 			rcntEndGate(false, hsyncCounter.startCycle);
-			psxHBlankEnd();
+			IopBridge::HBlankEnd<M>();
 		}
 
 		hsyncCounter.Mode = MODE_HRENDER;
@@ -695,7 +702,7 @@ __fi void rcntUpdate_hScanline()
 			}
 
 			rcntStartGate(false, hsyncCounter.startCycle);
-			psxHBlankStart();
+			IopBridge::HBlankStart<M>();
 		}
 
 		hsyncCounter.Mode = MODE_HBLANK;
@@ -797,11 +804,12 @@ __fi void rcntSyncCounter(int i)
 // forceinline note: this method is called from two locations, but one
 // of them is the interpreter, which doesn't count. ;)  So might as
 // well forceinline it!
+template <IopThreadMode M>
 __fi void rcntUpdate()
 {
-	rcntUpdate_vSync();
+	rcntUpdate_vSync<M>();
 	// HBlank after as VSync can do error compensation
-	rcntUpdate_hScanline();
+	rcntUpdate_hScanline<M>();
 
 	// Update counters so that we can perform overflow and target tests.
 
@@ -818,6 +826,17 @@ __fi void rcntUpdate()
 
 	cpuRcntSet();
 }
+
+// One instance per IOP thread mode, called by the event test instance for the same mode.
+template void rcntUpdate_hScanline<IopThreadMode::Off>();
+template void rcntUpdate_hScanline<IopThreadMode::Lockstep>();
+template void rcntUpdate_hScanline<IopThreadMode::Threaded>();
+template void rcntUpdate_vSync<IopThreadMode::Off>();
+template void rcntUpdate_vSync<IopThreadMode::Lockstep>();
+template void rcntUpdate_vSync<IopThreadMode::Threaded>();
+template void rcntUpdate<IopThreadMode::Off>();
+template void rcntUpdate<IopThreadMode::Lockstep>();
+template void rcntUpdate<IopThreadMode::Threaded>();
 
 static __fi void _rcntSetGate(int index)
 {

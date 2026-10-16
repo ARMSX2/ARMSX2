@@ -5,6 +5,7 @@
 #include "USB/USB.h"
 #include "IopHw.h"
 #include "IopDma.h"
+#include "IopThread/OwnerAsserts.h"
 #include "Common.h"
 #include "R3000A.h"
 
@@ -47,6 +48,8 @@ void spu2Irq()
 
 void iopIntcIrq(uint irqType)
 {
+	IOP_SIDE_ASSERT();
+
 	psxHu32(HW_ISTAT) |= 1 << irqType;
 	iopTestIntc();
 }

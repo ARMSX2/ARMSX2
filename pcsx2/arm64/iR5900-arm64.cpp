@@ -25,6 +25,7 @@
 #include "Host.h"
 #include "R3000A.h"
 #include "R5900.h"
+#include "IopThread/IopThreadMode.h"
 #include "arm64/BaseblockEx-arm64.h"
 #include "R5900OpcodeTables.h"
 #include "Common.h"
@@ -250,14 +251,25 @@ const void* g_fpuGuardMaskStub = nullptr;
 void (*g_eeHarnessEventTestHook)() = nullptr;
 #endif
 
+// One instance per IOP thread mode. The dispatcher stub calls the instance of the mode in effect when
+// it was generated (_DynGen_DispatcherEvent), so the Off instance carries no test of the mode.
+template <IopThreadMode M>
 static void recEventTest()
 {
 	eeEventTestIsActive = true;
-	_cpuEventTest_Shared();
+	_cpuEventTest_Shared<M>();
 	eeEventTestIsActive = false;
 
-	if (eeRecExitRequested.load(std::memory_order_acquire))
+	// A relaxed load, and the acquire as a fence on the taken path. An acquire load (LDAR) may not
+	// complete before an earlier release store (STLR) has, and the Threaded event test has just made
+	// one, of the IOP's watermark, to a line the IOP thread is reading: an LDAR here would wait for
+	// that line on every event test. Same guarantee: a relaxed load that reads the release store of
+	// `true` in recSafeExitExecution, followed by an acquire fence, synchronizes with that store, so
+	// what the requesting thread wrote before it is visible to the exit below. Reading `false`
+	// gives nothing to depend on: `false` is stored only by this thread.
+	if (eeRecExitRequested.load(std::memory_order_relaxed))
 	{
+		std::atomic_thread_fence(std::memory_order_acquire);
 		eeRecExitRequested.store(false, std::memory_order_relaxed);
 		recExitExecution();
 	}
@@ -276,6 +288,21 @@ static void recEventTest()
 	{
 		eeRecNeedsReset = false;
 		recResetRaw();
+	}
+}
+
+// The event test the dispatcher stub calls for `mode`.
+static const void* RecEventTestFor(IopThreadMode mode)
+{
+	switch (mode)
+	{
+		case IopThreadMode::Lockstep:
+			return reinterpret_cast<const void*>(&recEventTest<IopThreadMode::Lockstep>);
+		case IopThreadMode::Threaded:
+			return reinterpret_cast<const void*>(&recEventTest<IopThreadMode::Threaded>);
+		case IopThreadMode::Off:
+		default:
+			return reinterpret_cast<const void*>(&recEventTest<IopThreadMode::Off>);
 	}
 }
 
@@ -356,7 +383,7 @@ static const void* _DynGen_DispatcherEvent()
 	// Store every pin: a savestate save from the host message pump at vsync
 	// reads GPR memory, and recExitExecution leaves with only memory.
 	armFlushEEGPRPins();
-	armEmitCall((void*)recEventTest);
+	armEmitCall(RecEventTestFor(IopThread::GetMode()));
 	armReloadCycleDelta();
 	// A normal return means nothing wrote guest GPR memory: interrupt and
 	// exception delivery write only CP0 and pc, and whatever does rewrite GPRs

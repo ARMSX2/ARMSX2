@@ -12,6 +12,8 @@
 #include "IopBios.h"
 #include "IopHw.h"
 #include "IopDma.h"
+#include "IopThread/EeBridge.h"
+#include "IopThread/OwnerAsserts.h"
 #include "CDVD/Ps1CD.h"
 #include "CDVD/CDVD.h"
 #include "SIO/Sio2.h"
@@ -133,6 +135,8 @@ __fi int psxRemainingCycles(IopEventId n)
 
 __fi void PSX_INT( IopEventId n, s32 ecycle )
 {
+	IOP_SIDE_ASSERT();
+
 	// 19 is CDVD read int, it's supposed to be high.
 	//if (ecycle > 8192 && n != 19)
 	//	DevCon.Warning( "IOP cycles high: %d, n %d", ecycle, n );
@@ -157,7 +161,7 @@ __fi void PSX_INT( IopEventId n, s32 ecycle )
 	{
 		// The EE called this int, so inform it to branch as needed:
 		
-		cpuSetNextEventDelta(iopDelta - psxRegs.iopCycleEE);
+		EeBridge::ScheduleEeEvent(iopDelta - psxRegs.iopCycleEE);
 	}
 }
 
@@ -262,20 +266,7 @@ void iopTestIntc()
 	if( psxHu32(HW_ICTRL) == 0 ) return;
 	if( (psxHu32(HW_ISTAT) & psxHu32(HW_IMASK)) == 0 ) return;
 
-	if( !eeEventTestIsActive )
-	{
-		// An iop exception has occurred while the EE is running code.
-		// Inform the EE to branch so the IOP can handle it promptly:
-
-		cpuSetNextEventDelta( 16 );
-		iopEventAction = true;
-		//Console.Error( "** IOP Needs an EE EventText, kthx **  %d", iopCycleEE );
-
-		// Note: No need to set the iop's branch delta here, since the EE
-		// will run an IOP branch test regardless.
-	}
-	else if ( !iopEventTestIsActive )
-		psxSetNextBranchDelta( 2 );
+	EeBridge::IopInterruptPending();
 }
 
 inline bool psxIsBranchOrJump(u32 addr)

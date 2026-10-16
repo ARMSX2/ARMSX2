@@ -21,6 +21,7 @@
 
 #include "Config.h"
 #include "Host.h"
+#include "IopThread/OwnerAsserts.h"
 #include "VMManager.h"
 #include "IconsPromptFont.h"
 
@@ -695,11 +696,15 @@ void FileMcd_Flush()
 
 void FileMcd_CancelEject()
 {
+	// Clears the eject ticks the IOP's SIO2 code counts down (IOP thread design 8.4).
+	IOP_SIDE_ASSERT();
 	AutoEject::ClearAll();
 }
 
 void FileMcd_Reopen(std::string new_serial)
 {
+	// Closes and reopens the cards the IOP's SIO2 code reads and writes.
+	IOP_SIDE_ASSERT();
 	Console.WriteLn("Reopening memory cards...");
 	FileMcd_EmuClose();
 	FileMcd_SetType();
@@ -725,6 +730,7 @@ bool FileMcd_IsAutoEjecting()
 
 void FileMcd_Swap()
 {
+	IOP_SIDE_ASSERT();
 	if (MemcardBusy::IsBusy())
 	{
 		Host::AddIconOSDMessage("MemoryCardSwap_Busy", ICON_PF_MEMORY_CARD, TRANSLATE_SV("MemoryCardSwap_Busy", "Memory cards are busy. Can't swap right now."));

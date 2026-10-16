@@ -57,6 +57,8 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("perf.fix.goemonTlb", true, SettingsCategory.Advanced, listOf("perf.gamedbFixes.title")),
     SettingsSearchEntry("perf.fix.vuSync", true, SettingsCategory.Advanced, listOf("perf.gamedbFixes.title")),
     SettingsSearchEntry("perf.hack.mtvu", true, SettingsCategory.Performance, listOf("perf.advancedSpeedhacks.title")),
+    SettingsSearchEntry("perf.hack.iopThread", true, SettingsCategory.Performance, listOf("perf.advancedSpeedhacks.title")),
+    SettingsSearchEntry("perf.hack.iopThreadLag", true, SettingsCategory.Performance, listOf("perf.advancedSpeedhacks.title")),
     SettingsSearchEntry("perf.hack.instantVu1", true, SettingsCategory.Performance, listOf("perf.advancedSpeedhacks.title")),
     SettingsSearchEntry("perf.hack.vuFlagHack", true, SettingsCategory.Performance, listOf("perf.advancedSpeedhacks.title")),
     SettingsSearchEntry("perf.hack.fastCdvd", true, SettingsCategory.Performance, listOf("perf.advancedSpeedhacks.title")),

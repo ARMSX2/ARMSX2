@@ -42,6 +42,7 @@
 #include "pcsx2/GameList.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/ImGui/FullscreenUI.h"
+#include "pcsx2/IopThread/IopThreadVm.h"
 #include "pcsx2/MTGS.h"
 #include "pcsx2/PerformanceMetrics.h"
 #include "pcsx2/VMManager.h"
@@ -368,6 +369,8 @@ void MainWindow::setupStatusBarWidgets()
 		Host::RunOnCPUThread([value]() {
 			if (!VMManager::HasValidVM())
 				return;
+			// The audio stream belongs to the IOP thread (IOP thread design 8.10).
+			IopThread::VmHold iop_hold(IopThread::HoldKind::Emulation);
 			EmuConfig.SPU2.StandardVolume = static_cast<u32>(value);
 			SPU2::SetOutputVolume(static_cast<u32>(value));
 		});
@@ -485,6 +488,7 @@ void MainWindow::applyStatusBarVolumeChanges(std::optional<int> volume, bool tog
 
 		if (VMManager::HasValidVM())
 		{
+			IopThread::VmHold iop_hold(IopThread::HoldKind::Emulation);
 			EmuConfig.SPU2.StandardVolume = static_cast<u32>(target_vol);
 			EmuConfig.SPU2.OutputMuted = target_mute;
 			SPU2::SetOutputMuted(target_mute);

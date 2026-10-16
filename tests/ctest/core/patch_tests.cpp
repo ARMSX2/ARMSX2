@@ -5,7 +5,14 @@
 
 #include "MockMemoryInterface.h"
 
+#include "fmt/format.h"
 #include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cstring>
+#include <map>
+#include <string>
+#include <vector>
 
 // Create a test that makes sure applying a given list of patch commands results
 // in a certain sequence of memory reads/writes.
@@ -631,4 +638,213 @@ PATCH_TEST(ExtendedConditionalResetSkipCount,
 	ee.ExpectRead8(0x00100000, 0xab);
 	ee.ExpectRead8(0x00200000, 0);
 	ee.ExpectWrite8(0x00200000, 0x12);
+}
+
+// *****************************************************************************
+// The vsync patches are applied in two passes, EE lines and then IOP lines
+// *****************************************************************************
+//
+// Patch::ApplyVsyncPatches used to make one pass over the patch list with both memories. The IOP
+// thread needs the IOP lines as a pass of their own (they have to run where IOP memory is owned),
+// so the list is now walked once per CPU. The two memories are independent, so each must see the
+// same accesses in the same order as before; only the interleaving between the two memories may
+// change. These tests pin that, including the state that carries from one line to the next.
+
+namespace
+{
+	// A guest memory that keeps its bytes and logs every access it gets, so that two ways of applying
+	// the same patch list can be compared access for access.
+	class LoggingMemory final : public MemoryInterface
+	{
+	public:
+		std::vector<std::string> log;
+
+		u8 Read8(u32 address, bool* valid = nullptr) override { return static_cast<u8>(Read("r8", address, 1, valid)); }
+		u16 Read16(u32 address, bool* valid = nullptr) override { return static_cast<u16>(Read("r16", address, 2, valid)); }
+		u32 Read32(u32 address, bool* valid = nullptr) override { return static_cast<u32>(Read("r32", address, 4, valid)); }
+		u64 Read64(u32 address, bool* valid = nullptr) override { return Read("r64", address, 8, valid); }
+		u128 Read128(u32 address, bool* valid = nullptr) override
+		{
+			Note("r128", address, 0);
+			if (valid)
+				*valid = true;
+			return {};
+		}
+		bool ReadBytes(u32 address, void* dest, u32 size) override
+		{
+			Note("rbytes", address, size);
+			std::memset(dest, 0, size);
+			return true;
+		}
+
+		bool Write8(u32 address, u8 value) override { return Write("w8", address, 1, value); }
+		bool Write16(u32 address, u16 value) override { return Write("w16", address, 2, value); }
+		bool Write32(u32 address, u32 value) override { return Write("w32", address, 4, value); }
+		bool Write64(u32 address, u64 value) override { return Write("w64", address, 8, value); }
+		bool Write128(u32 address, u128 value) override
+		{
+			Note("w128", address, value._u64[0] ^ value._u64[1]);
+			return true;
+		}
+		bool WriteBytes(u32 address, const void* src, u32 size) override
+		{
+			const u8* bytes = static_cast<const u8*>(src);
+			u64 sum = 0;
+			for (u32 i = 0; i < size; i++)
+			{
+				sum = sum * 31 + bytes[i];
+				m_bytes[address + i] = bytes[i];
+			}
+			Note("wbytes", address, sum);
+			return true;
+		}
+		bool CompareBytes(u32 address, const void* src, u32 size) override
+		{
+			const u8* bytes = static_cast<const u8*>(src);
+			for (u32 i = 0; i < size; i++)
+			{
+				if (ByteAt(address + i) != bytes[i])
+					return false;
+			}
+			return true;
+		}
+
+	private:
+		std::map<u32, u8> m_bytes;
+
+		u8 ByteAt(u32 address) const
+		{
+			const auto it = m_bytes.find(address);
+			return it == m_bytes.end() ? 0 : it->second;
+		}
+		void Note(const char* what, u32 address, u64 value) { log.push_back(fmt::format("{} {:08x} {:x}", what, address, value)); }
+		u64 Read(const char* what, u32 address, u32 size, bool* valid)
+		{
+			u64 value = 0;
+			for (u32 i = 0; i < size; i++)
+				value |= static_cast<u64>(ByteAt(address + i)) << (8 * i);
+			Note(what, address, value);
+			if (valid)
+				*valid = true;
+			return value;
+		}
+		bool Write(const char* what, u32 address, u32 size, u64 value)
+		{
+			for (u32 i = 0; i < size; i++)
+				m_bytes[address + i] = static_cast<u8>(value >> (8 * i));
+			Note(what, address, value);
+			return true;
+		}
+	};
+
+	constexpr Patch::patch_place_type kVsyncPlaces[] = {Patch::PPT_CONTINUOUSLY, Patch::PPT_COMBINED_0_1};
+
+	// Every kind of line that matters to the split: EE and IOP lines interleaved, in both vsync
+	// places and in the other two, a separator that resets the carried state, and an EE
+	// conditional that skips the extended line after it with an IOP line in between.
+	std::vector<Patch::PatchCommand> BuildMixedPatchList()
+	{
+		std::vector<Patch::PatchCommand> list;
+		list.push_back(BuildPatchCommand(Patch::PPT_CONTINUOUSLY, Patch::CPU_EE, 0x00100000, Patch::WORD_T, 0x11111111));
+		list.push_back(BuildPatchCommand(Patch::PPT_CONTINUOUSLY, Patch::CPU_IOP, 0x00001000, Patch::BYTE_T, 0xaa));
+		list.push_back(BuildPatchCommand(Patch::PPT_CONTINUOUSLY, Patch::CPU_EE, 0xd0100000, Patch::EXTENDED_T, 0x01001234));
+		list.push_back(BuildPatchCommand(Patch::PPT_CONTINUOUSLY, Patch::CPU_IOP, 0x00001004, Patch::SHORT_T, 0xbbbb));
+		list.push_back(BuildPatchCommand(Patch::PPT_CONTINUOUSLY, Patch::CPU_EE, 0x00200000, Patch::EXTENDED_T, 0x00000012)); // skipped
+		list.push_back(BuildPatchCommand(Patch::PPT_CONTINUOUSLY, Patch::CPU_EE, 0x00300000, Patch::EXTENDED_T, 0x00000034));
+		list.push_back(BuildPatchCommand(Patch::PPT_ONCE_ON_LOAD, Patch::CPU_IOP, 0x00001008, Patch::WORD_T, 0xdeadbeef)); // not a vsync place
+		list.push_back(BuildPatchCommand(Patch::PPT_COMBINED_0_1, Patch::CPU_IOP, 0x0000100c, Patch::WORD_T, 0xcccccccc));
+		list.push_back(BuildPatchCommand(Patch::PPT_COMBINED_0_1, Patch::CPU_EE, 0x00400000, Patch::SHORT_BE_T, 0x1234));
+		list.push_back(BuildPatchCommand(Patch::PPT_COMBINED_0_1, Patch::CPU_EE, 0xd0100000, Patch::EXTENDED_T, 0x01001234));
+		list.push_back(BuildPatchCommand(Patch::PPT_COMBINED_0_1, Patch::CPU_IOP, 0x00001010, Patch::WORD_T, 0xdddddddd));
+		list.push_back(BuildPatchCommand(Patch::PPT_COMBINED_0_1, Patch::CPU_EE, 0x00500000, Patch::EXTENDED_T, 0x00000056)); // skipped
+		list.push_back(BuildPatchCommand(Patch::PPT_ON_LOAD_OR_WHEN_ENABLED, Patch::CPU_EE, 0x00600000, Patch::WORD_T, 0x66666666));
+		Patch::PatchCommand bytes = BuildPatchCommand(Patch::PPT_CONTINUOUSLY, Patch::CPU_IOP, 0x00001100, Patch::BYTES_T, 4);
+		bytes.data_ptr = static_cast<u8*>(std::malloc(4));
+		std::memcpy(bytes.data_ptr, "\x01\x02\x03\x04", 4);
+		list.push_back(std::move(bytes));
+		return list;
+	}
+
+	// The pointer list ApplyPatches takes. A null entry separates groups of lines and resets the
+	// carried state, so the pass over one CPU has to honour it too.
+	std::vector<const Patch::PatchCommand*> PointersWithSeparator(const std::vector<Patch::PatchCommand>& list)
+	{
+		std::vector<const Patch::PatchCommand*> pointers;
+		for (size_t i = 0; i < list.size(); i++)
+		{
+			pointers.push_back(&list[i]);
+			if (i == 5)
+				pointers.push_back(nullptr);
+		}
+		return pointers;
+	}
+
+	void ApplyVsyncPlaces(const std::vector<const Patch::PatchCommand*>& pointers, LoggingMemory& ee, LoggingMemory& iop, Patch::patch_cpu_filter filter)
+	{
+		for (const Patch::patch_place_type place : kVsyncPlaces)
+			Patch::ApplyPatches(pointers, place, ee, iop, filter);
+	}
+} // namespace
+
+TEST(Patch, VsyncPassPerCpuGivesEachMemoryTheSameAccessesAsOnePassOverAllLines)
+{
+	const std::vector<Patch::PatchCommand> list = BuildMixedPatchList();
+	const std::vector<const Patch::PatchCommand*> pointers = PointersWithSeparator(list);
+
+	LoggingMemory ee_one, iop_one;
+	ApplyVsyncPlaces(pointers, ee_one, iop_one, Patch::patch_cpu_filter::Both);
+
+	LoggingMemory ee_two, iop_two;
+	ApplyVsyncPlaces(pointers, ee_two, iop_two, Patch::patch_cpu_filter::EEOnly);
+	ApplyVsyncPlaces(pointers, ee_two, iop_two, Patch::patch_cpu_filter::IOPOnly);
+
+	EXPECT_EQ(ee_one.log, ee_two.log);
+	EXPECT_EQ(iop_one.log, iop_two.log);
+
+	// The comparison means nothing if neither memory was written.
+	const auto wrote = [](const std::vector<std::string>& log, const char* what) {
+		return std::count_if(log.begin(), log.end(), [&](const std::string& s) { return s.rfind(what, 0) == 0; });
+	};
+	EXPECT_GE(wrote(ee_one.log, "w32"), 1);
+	EXPECT_GE(wrote(iop_one.log, "w32"), 2);
+	EXPECT_GE(wrote(iop_one.log, "wbytes"), 1);
+	// The two lines the conditionals skip must be skipped in both ways of applying the list.
+	const auto touched = [](const std::vector<std::string>& log, const char* address) {
+		return std::count_if(log.begin(), log.end(), [&](const std::string& s) { return s.find(address) != std::string::npos; });
+	};
+	EXPECT_EQ(touched(ee_two.log, "00200000"), 0);
+	EXPECT_EQ(touched(ee_two.log, "00500000"), 0);
+	EXPECT_GE(touched(ee_two.log, "00300000"), 1);
+}
+
+TEST(Patch, EEOnlyPassNeverTouchesIopMemoryAndIOPOnlyPassNeverTouchesEeMemory)
+{
+	const std::vector<Patch::PatchCommand> list = BuildMixedPatchList();
+	const std::vector<const Patch::PatchCommand*> pointers = PointersWithSeparator(list);
+
+	LoggingMemory ee_a, iop_a;
+	ApplyVsyncPlaces(pointers, ee_a, iop_a, Patch::patch_cpu_filter::EEOnly);
+	EXPECT_FALSE(ee_a.log.empty());
+	EXPECT_TRUE(iop_a.log.empty());
+
+	LoggingMemory ee_b, iop_b;
+	ApplyVsyncPlaces(pointers, ee_b, iop_b, Patch::patch_cpu_filter::IOPOnly);
+	EXPECT_TRUE(ee_b.log.empty());
+	EXPECT_FALSE(iop_b.log.empty());
+}
+
+TEST(Patch, ApplyPatchesAppliesBothCpusWhenNoFilterIsGiven)
+{
+	const std::vector<Patch::PatchCommand> list = BuildMixedPatchList();
+	const std::vector<const Patch::PatchCommand*> pointers = PointersWithSeparator(list);
+
+	LoggingMemory ee_default, iop_default;
+	for (const Patch::patch_place_type place : kVsyncPlaces)
+		Patch::ApplyPatches(pointers, place, ee_default, iop_default);
+
+	LoggingMemory ee_both, iop_both;
+	ApplyVsyncPlaces(pointers, ee_both, iop_both, Patch::patch_cpu_filter::Both);
+
+	EXPECT_EQ(ee_default.log, ee_both.log);
+	EXPECT_EQ(iop_default.log, iop_both.log);
 }

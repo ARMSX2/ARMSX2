@@ -38,17 +38,17 @@ public:
 private:
 	struct Analogs
 	{
-		u8 lx = Pad::ANALOG_NEUTRAL_POSITION;
-		u8 ly = Pad::ANALOG_NEUTRAL_POSITION;
-		u8 rx = Pad::ANALOG_NEUTRAL_POSITION;
-		u8 ry = Pad::ANALOG_NEUTRAL_POSITION;
+		SharedWord::Relaxed<u8> lx{Pad::ANALOG_NEUTRAL_POSITION};
+		SharedWord::Relaxed<u8> ly{Pad::ANALOG_NEUTRAL_POSITION};
+		SharedWord::Relaxed<u8> rx{Pad::ANALOG_NEUTRAL_POSITION};
+		SharedWord::Relaxed<u8> ry{Pad::ANALOG_NEUTRAL_POSITION};
 		bool lxInvert = false;
 		bool lyInvert = false;
 		bool rxInvert = false;
 		bool ryInvert = false;
 	};
 
-	u32 buttons = 0xffffffffu;
+	SharedWord::Relaxed<u32> buttons{0xffffffffu};
 	Analogs analogs;
 	// Analog button can be held without changing its state.
 	// We track here if it is currently held down, to avoid flipping in

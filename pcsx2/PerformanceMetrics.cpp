@@ -66,6 +66,7 @@ static u64 s_last_cpu_time = 0;
 static u64 s_last_gs_time = 0;
 static u64 s_last_gs_back_time = 0;
 static u64 s_last_vu_time = 0;
+static u64 s_last_iop_time = 0;
 static u64 s_last_ticks = 0;
 
 // The GS back thread registers itself from its own entry point and is cleared from the MTGS
@@ -85,6 +86,24 @@ static u64 SampleGSBackThreadCPUTime()
 	const u64 now = s_gs_back_thread_handle ? s_gs_back_thread_handle.GetCPUTime() : s_last_gs_back_time;
 	const u64 delta = (now > s_last_gs_back_time) ? (now - s_last_gs_back_time) : 0;
 	s_last_gs_back_time = now;
+	return delta;
+}
+
+// The IOP thread is started and stopped by the CPU thread and sampled by whichever thread presents a
+// frame, so like the GS back thread its handle and running total are owned by a mutex, taken twice a
+// second at most.
+static std::mutex s_iop_thread_mutex;
+static Threading::ThreadHandle s_iop_thread_handle;
+
+/// CPU time consumed by the IOP thread since the last call, in Threading tick units. A thread that
+/// started or stopped inside the window contributes only the part of it that the handle was installed
+/// for, for the same reason as the GS back thread's.
+static u64 SampleIOPThreadCPUTime()
+{
+	std::unique_lock lock(s_iop_thread_mutex);
+	const u64 now = s_iop_thread_handle ? s_iop_thread_handle.GetCPUTime() : s_last_iop_time;
+	const u64 delta = (now > s_last_iop_time) ? (now - s_last_iop_time) : 0;
+	s_last_iop_time = now;
 	return delta;
 }
 
@@ -194,6 +213,8 @@ static float s_gs_back_thread_usage = 0.0f;
 static float s_gs_back_thread_time = 0.0f;
 static float s_vu_thread_usage = 0.0f;
 static float s_vu_thread_time = 0.0f;
+static float s_iop_thread_usage = 0.0f;
+static float s_iop_thread_time = 0.0f;
 
 static PerformanceMetrics::FrameTimeHistory s_frame_time_history;
 static u32 s_frame_time_history_pos = 0;
@@ -237,6 +258,8 @@ void PerformanceMetrics::Clear()
 	s_gs_back_thread_time = 0.0f;
 	s_vu_thread_usage = 0.0f;
 	s_vu_thread_time = 0.0f;
+	s_iop_thread_usage = 0.0f;
+	s_iop_thread_time = 0.0f;
 
 	s_average_gpu_time = 0.0f;
 	s_last_gpu_time = 0.0f;
@@ -282,6 +305,7 @@ void PerformanceMetrics::Reset()
 	s_last_gs_time = MTGS::GetThreadHandle().GetCPUTime();
 	SampleGSBackThreadCPUTime(); // rebases the running total; the delta is deliberately dropped
 	s_last_vu_time = THREAD_VU1 ? vu1Thread.GetThreadHandle().GetCPUTime() : 0;
+	SampleIOPThreadCPUTime(); // rebases the running total; the delta is deliberately dropped
 	s_last_ticks = GetCPUTicks();
 
 	for (GSSWThreadStats& stat : s_gs_sw_threads)
@@ -360,6 +384,7 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 	const u64 gs_time = MTGS::GetThreadHandle().GetCPUTime();
 	const u64 gs_back_delta = SampleGSBackThreadCPUTime();
 	const u64 vu_time = THREAD_VU1 ? vu1Thread.GetThreadHandle().GetCPUTime() : 0;
+	const u64 iop_delta = SampleIOPThreadCPUTime();
 
 	const u64 cpu_delta = cpu_time - s_last_cpu_time;
 	const u64 gs_delta = gs_time - s_last_gs_time;
@@ -372,10 +397,12 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 	s_gs_thread_usage = static_cast<double>(gs_delta) * pct_divider;
 	s_gs_back_thread_usage = static_cast<double>(gs_back_delta) * pct_divider;
 	s_vu_thread_usage = static_cast<double>(vu_delta) * pct_divider;
+	s_iop_thread_usage = static_cast<double>(iop_delta) * pct_divider;
 	s_cpu_thread_time = static_cast<double>(cpu_delta) * time_divider;
 	s_gs_thread_time = static_cast<double>(gs_delta) * time_divider;
 	s_gs_back_thread_time = static_cast<double>(gs_back_delta) * time_divider;
 	s_vu_thread_time = static_cast<double>(vu_delta) * time_divider;
+	s_iop_thread_time = static_cast<double>(iop_delta) * time_divider;
 
 	for (GSSWThreadStats& thread : s_gs_sw_threads)
 	{
@@ -397,9 +424,14 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 		if (HasGSBackThread())
 			std::snprintf(gs_back, sizeof(gs_back), " GSB %.0f%%", s_gs_back_thread_usage);
 
-		Console.WriteLn("PerfLog: %.1f fps | EE %.0f%% GS %.0f%%%s VU %.0f%% GPU %.0f%% | frame %llu",
+		// The IOP thread only exists while the IOP runs concurrently, so likewise omitted otherwise.
+		char iop[32] = {};
+		if (HasIOPThread())
+			std::snprintf(iop, sizeof(iop), " IOP %.0f%%", s_iop_thread_usage);
+
+		Console.WriteLn("PerfLog: %.1f fps | EE %.0f%% GS %.0f%%%s VU %.0f%%%s GPU %.0f%% | frame %llu",
 			static_cast<float>(s_log_accum_frames) / s_log_accum_time, s_cpu_thread_usage,
-			s_gs_thread_usage, gs_back, s_vu_thread_usage, s_gpu_usage,
+			s_gs_thread_usage, gs_back, s_vu_thread_usage, iop, s_gpu_usage,
 			static_cast<unsigned long long>(s_frame_number));
 		s_log_accum_time = 0.0f;
 		s_log_accum_frames = 0;
@@ -589,6 +621,20 @@ void PerformanceMetrics::SetGSBackThread(Threading::ThreadHandle thread)
 	s_gs_back_thread_handle = std::move(thread);
 }
 
+void PerformanceMetrics::SetIOPThread(Threading::ThreadHandle thread)
+{
+	std::unique_lock lock(s_iop_thread_mutex);
+	// Rebase off the incoming handle, so the first window after a start measures this thread's time
+	// and not its difference against the retired thread's total.
+	s_last_iop_time = thread ? thread.GetCPUTime() : 0;
+	s_iop_thread_handle = std::move(thread);
+	if (!s_iop_thread_handle)
+	{
+		s_iop_thread_usage = 0.0f;
+		s_iop_thread_time = 0.0f;
+	}
+}
+
 u64 PerformanceMetrics::GetFrameNumber()
 {
 	return s_frame_number;
@@ -683,6 +729,22 @@ float PerformanceMetrics::GetVUThreadUsage()
 float PerformanceMetrics::GetVUThreadAverageTime()
 {
 	return s_vu_thread_time;
+}
+
+bool PerformanceMetrics::HasIOPThread()
+{
+	std::unique_lock lock(s_iop_thread_mutex);
+	return static_cast<bool>(s_iop_thread_handle);
+}
+
+float PerformanceMetrics::GetIOPThreadUsage()
+{
+	return s_iop_thread_usage;
+}
+
+float PerformanceMetrics::GetIOPThreadAverageTime()
+{
+	return s_iop_thread_time;
 }
 
 u32 PerformanceMetrics::GetGSSWThreadCount()

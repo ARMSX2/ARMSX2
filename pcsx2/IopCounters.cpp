@@ -13,6 +13,7 @@
 #include "USB/USB.h"
 #include "IopHw.h"
 #include "IopDma.h"
+#include "IopThread/OwnerAsserts.h"
 #include "CDVD/CDVD.h"
 
 #include <math.h>
@@ -409,6 +410,8 @@ static void _psxCheckEndGate(int i)
 
 void psxHBlankStart()
 {
+	IOP_SIDE_ASSERT();
+
 	// AlternateSource/scanline counters for Gates 1 and 3.
 	// We count them here so that they stay nicely synced with the EE's hsync.
 	if ((psxCounters[1].rate == PSXHBLANK) && psxRcntCanCount(1))
@@ -434,6 +437,8 @@ void psxHBlankStart()
 
 void psxHBlankEnd()
 {
+	IOP_SIDE_ASSERT();
+
 	_psxCheckEndGate(0);
 
 	hBlanking = false;
@@ -443,6 +448,8 @@ void psxHBlankEnd()
 
 void psxVBlankStart()
 {
+	IOP_SIDE_ASSERT();
+
 	cdvdVsync();
 	iopIntcIrq(0);
 	
@@ -457,6 +464,8 @@ void psxVBlankStart()
 
 void psxVBlankEnd()
 {
+	IOP_SIDE_ASSERT();
+
 	iopIntcIrq(11);
 	
 	_psxCheckEndGate(1);

@@ -632,6 +632,21 @@
     <ClCompile Include="IopMem.cpp">
       <Filter>System\Ps2\Iop</Filter>
     </ClCompile>
+    <ClCompile Include="IopThread\IopChannels.cpp">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClCompile>
+    <ClCompile Include="IopThread\IopPlacement.cpp">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClCompile>
+    <ClCompile Include="IopThread\IopThread.cpp">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClCompile>
+    <ClCompile Include="IopThread\IopThreadMode.cpp">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClCompile>
+    <ClCompile Include="IopThread\IopThreadVm.cpp">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClCompile>
     <ClCompile Include="R3000A.cpp">
       <Filter>System\Ps2\Iop</Filter>
     </ClCompile>
@@ -1785,6 +1800,33 @@
       <Filter>System\Ps2\Iop</Filter>
     </ClInclude>
     <ClInclude Include="IopMem.h">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClInclude>
+    <ClInclude Include="IopThread\EeBridge.h">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClInclude>
+    <ClInclude Include="IopThread\IopBridge.h">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClInclude>
+    <ClInclude Include="IopThread\IopChannels.h">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClInclude>
+    <ClInclude Include="IopThread\IopPlacement.h">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClInclude>
+    <ClInclude Include="IopThread\IopThread.h">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClInclude>
+    <ClInclude Include="IopThread\IopThreadMode.h">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClInclude>
+    <ClInclude Include="IopThread\IopThreadVm.h">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClInclude>
+    <ClInclude Include="IopThread\OwnerAsserts.h">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClInclude>
+    <ClInclude Include="IopThread\SharedWord.h">
       <Filter>System\Ps2\Iop</Filter>
     </ClInclude>
     <ClInclude Include="R3000A.h">

@@ -23,9 +23,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <condition_variable>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -70,6 +72,8 @@
 #include "pcsx2/ImGui/ImGuiManager.h"
 #include "pcsx2/Hw.h"
 #include "pcsx2/Input/InputManager.h"
+#include "pcsx2/IopThread/IopThreadVm.h"
+#include "pcsx2/IopThread/OwnerAsserts.h"
 #include "pcsx2/Memory.h"
 #include "pcsx2/R5900.h"
 #include "pcsx2/SIO/Pad/Pad.h"
@@ -166,6 +170,12 @@ struct SetOverride
 	std::string section, key, value;
 };
 static std::vector<SetOverride> s_set_overrides; // --set Section/Key=Value (repeatable)
+static u32 s_iop_stats_every = 0;      // --iop-stats-every N: in a --liverun, log the IOP thread's Threaded counters every N frames
+static bool s_stress = false;          // --iop-stress <seed>: a --liverun that does random lifecycle things between frames
+static u32 s_stress_seed = 1;
+static u32 s_pause_toggle_at = 0;      // --pause-toggle N: in a --liverun, flip the IOP thread setting while the VM is paused after frame N
+static u32 s_churn_every = 0;          // --settings-churn N <kind>: apply a settings change every N frames of a twin pass
+static std::string s_churn_kind;       // "lockstep": flip the IOP thread between Off and Lockstep; "threaded": between Off and Threaded; "lag": flip the IOP thread lag
 static u32 s_rec_fallback_groups = 0; // --rec-fallback <groups>: EE opcode groups forced to interp
 #if defined(ARCH_ARM64)
 static u32 s_rec_fallback_reg_masks[EERecFallback::kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u}; // per-COP2-move-op register filters
@@ -378,9 +388,26 @@ void Host::OnSaveStateSaved(const std::string_view filename)
 {
 }
 
+// Work posted for the CPU thread (a hotkey that defers its action, a vibration the IOP thread hands over in Threaded
+// mode). It runs from PumpMessagesOnCPUThread(), which the CPU thread calls at every vsync. A blocking post from
+// the CPU thread itself runs at once, and one from another thread waits for the drain.
+static std::mutex s_cpu_thread_tasks_mutex;
+static std::condition_variable s_cpu_thread_tasks_done;
+static std::deque<std::function<void()>> s_cpu_thread_tasks;
+
 void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false */)
 {
-	pxFailRel("Not implemented");
+	BLOCKING_HOST_CALL_ASSERT(block);
+	if (block && VMManager::Internal::IsOnCPUThread())
+	{
+		function();
+		return;
+	}
+
+	std::unique_lock lock(s_cpu_thread_tasks_mutex);
+	s_cpu_thread_tasks.push_back(std::move(function));
+	if (block)
+		s_cpu_thread_tasks_done.wait(lock, [] { return s_cpu_thread_tasks.empty(); });
 }
 
 void Host::RefreshGameListAsync(bool invalidate_cache)
@@ -493,9 +520,94 @@ const char* InputManager::ConvertHostKeyboardCodeToIcon(u32 code)
 BEGIN_HOTKEY_LIST(g_host_hotkeys)
 END_HOTKEY_LIST()
 
+static void ApplySettingsChurn();
+static bool s_churn_pending = false; // a settings change waits for the next vsync (the CPU thread pumps messages there)
+static u32 s_change_disc_at = 0; // --change-disc N <image>: swap the disc at frame N of a liverun
+static std::string s_change_disc_path;
+static bool s_change_disc_pending = false; // the swap waits for the next vsync, where a player's menu would deliver it
+
+// --host-action N <hotkey>: press and release a hotkey at frame N of a liverun, from the CPU thread, as the input
+// manager does for a bound key. Several may be given. The hotkey's own handler runs, so the holds it takes are the
+// ones a player's key press takes.
+struct HostAction
+{
+	u32 frame;
+	std::string hotkey;
+};
+static std::vector<HostAction> s_host_actions;
+static std::vector<std::string> s_host_actions_pending; // delivered at the next vsync
+
+// Work posted with Host::RunOnCPUThread. Tasks run outside the lock, so one that posts more cannot deadlock.
+static void DrainCpuThreadTasks()
+{
+	for (;;)
+	{
+		std::function<void()> task;
+		{
+			std::unique_lock lock(s_cpu_thread_tasks_mutex);
+			if (s_cpu_thread_tasks.empty())
+			{
+				s_cpu_thread_tasks_done.notify_all();
+				break;
+			}
+			task = std::move(s_cpu_thread_tasks.front());
+			s_cpu_thread_tasks.pop_front();
+		}
+		task();
+	}
+}
+
 void Host::PumpMessagesOnCPUThread()
 {
-	// Headless — no platform message pump.
+	// Headless — no platform message pump, apart from the --settings-churn change a player's settings
+	// dialog would deliver at this point: from inside the EE's event test, while the VM runs.
+	if (s_churn_pending)
+	{
+		s_churn_pending = false;
+		ApplySettingsChurn();
+	}
+
+	// --change-disc: what the frontend's "change disc" menu does, from the CPU thread, mid-run.
+	if (s_change_disc_pending)
+	{
+		s_change_disc_pending = false;
+		const bool ok = VMManager::ChangeDisc(CDVD_SourceType::Iso, s_change_disc_path);
+		Console.WriteLn(fmt::format("eerunner: changed the disc to '{}': {}", s_change_disc_path, ok ? "ok" : "failed"));
+	}
+
+	// --host-action: a hotkey pressed and released.
+	if (!s_host_actions_pending.empty())
+	{
+		const std::vector<std::string> pending = std::exchange(s_host_actions_pending, {});
+
+		// A liverun advances one frame at a time, so the VM is Paused whenever this pump runs, and a paused VM holds the
+		// IOP for the pause. A key pressed in a running VM has no such hold, and the holds the hotkeys take for themselves
+		// are the thing under test, so the pause hold is let go for the length of the actions.
+		const bool paused = (VMManager::GetState() == VMState::Paused);
+		if (paused)
+			IopThread::OnVmPaused(false);
+		for (const std::string& name : pending)
+		{
+			bool found = false;
+			for (const HotkeyInfo* hotkey : InputManager::GetHotkeyList())
+			{
+				if (hotkey->name && name == hotkey->name)
+				{
+					hotkey->handler(1);
+					hotkey->handler(0);
+					found = true;
+					break;
+				}
+			}
+			Console.WriteLn(fmt::format("eerunner: hotkey '{}': {}", name, found ? "pressed" : "no such hotkey"));
+		}
+		// A hotkey that defers its action (the memory card swap) posted it; it runs here, still without the pause hold.
+		DrainCpuThreadTasks();
+		if (paused)
+			IopThread::OnVmPaused(true);
+	}
+
+	DrainCpuThreadTasks();
 }
 
 s32 Host::Internal::GetTranslatedStringImpl(
@@ -612,6 +724,33 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --mkstate <out.p2s>: run --frames under the production JIT (from --savestate if given, else a\n");
 	std::fprintf(stderr, "               cold disc boot) and write a savestate. Bootstrap twindiff states on the WORKING\n");
 	std::fprintf(stderr, "               binary, positioned BEFORE the corrupting computation (e.g. before a level load).\n");
+	std::fprintf(stderr, "  --settings-churn N <lockstep|threaded|lag>: in the twin passes and the --liverun, apply a settings change through\n");
+	std::fprintf(stderr, "               VMManager::ApplySettings every N frames, as a player changing a setting mid-game would.\n");
+	std::fprintf(stderr, "               'lockstep' flips the IOP thread between Off and Lockstep (a mode change: the thread\n");
+	std::fprintf(stderr, "               starts or stops and the EE recompiler is reset); 'lag' flips only the IOP thread lag\n");
+	std::fprintf(stderr, "               (the same recompiler resets, no mode change), the control for it. Each pass starts from\n");
+	std::fprintf(stderr, "               the settings it began the run with. Both must leave the fingerprint unchanged.\n");
+	std::fprintf(stderr, "  --change-disc N <image>: in a --liverun, swap the disc for <image> at frame N, from the CPU thread, as the\n");
+	std::fprintf(stderr, "               frontend's change-disc menu does.\n");
+	std::fprintf(stderr, "  --host-action N <hotkey>: in a --liverun, press and release the hotkey <hotkey> (by its name in the hotkey\n");
+	std::fprintf(stderr, "               list: Mute, IncreaseVolume, DecreaseVolume, ToggleTurbo, ToggleSlowMotion, SwapMemCards ...) at\n");
+	std::fprintf(stderr, "               frame N, from the CPU thread, as the input manager does for a bound key, with the pause hold of the\n");
+	std::fprintf(stderr, "               frame-by-frame liverun let go, as a running VM has none. Repeatable.\n");
+	std::fprintf(stderr, "  --iop-assert-log: an IOP thread ownership assert (a Devel build's IOP_SIDE_ASSERT/EE_SIDE_ASSERT) logs\n");
+	std::fprintf(stderr, "               the first violation at each site and the run goes on, instead of stopping at the first. The\n");
+	std::fprintf(stderr, "               IOPTHREAD: line at the end of the run says how many there were.\n");
+	std::fprintf(stderr, "  --iop-stress <seed>: in a --liverun, do things a player does between frames at random (seeded): switch the IOP thread\n");
+	std::fprintf(stderr, "               between Off and Threaded and change its lag bound from inside the event test, save and load a state,\n");
+	std::fprintf(stderr, "               pause for a while, reset the VM, press hotkeys. Every operation is logged as STRESS: lines.\n");
+	std::fprintf(stderr, "  --pause-toggle N: in a --liverun, flip the IOP thread setting (Off to Threaded, or back) while the VM is paused after\n");
+	std::fprintf(stderr, "               frame N, as a settings dialog does on a paused VM, and log the mode and the thread before and after as PAUSE-TOGGLE:.\n");
+	std::fprintf(stderr, "  --iop-min-slice N: Threaded IOP thread: S_min, the budget in EE cycles the IOP lets build up before it runs a\n");
+	std::fprintf(stderr, "               slice (design 5.3). Default 0 (run whenever there is budget). A measurement knob, not a setting.\n");
+	std::fprintf(stderr, "  --iop-spin-hint yield|isb: the instruction the Threaded spin loops use between looks (default yield).\n");
+	std::fprintf(stderr, "  --iop-idle-spin-us N: Threaded IOP thread: how long an idle IOP watches the watermark before it sleeps, in\n");
+	std::fprintf(stderr, "               microseconds (0 sleeps at once). Default: the built-in window. A measurement knob, not a setting.\n");
+	std::fprintf(stderr, "  --iop-stats-every N: in a --liverun, log the Threaded IOP counters per frame every N frames. The IOPSTATS: line\n");
+	std::fprintf(stderr, "               at the end of the run gives the whole-run figures.\n");
 	std::fprintf(stderr, "  --set Section/Key=Value: base-layer settings override, applied after the harness pinning\n");
 	std::fprintf(stderr, "               (repeatable). E.g. --set EmuCore/CPU/Recompiler/fpuFullMode=true. GameDB\n");
 	std::fprintf(stderr, "               per-game keys still win; the twin passes own the EnableEE/VU0/VU1/IOP toggles.\n");
@@ -952,6 +1091,117 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					return false;
 				}
 				s_set_overrides.push_back({kv.substr(0, slash), kv.substr(slash + 1, eq - slash - 1), kv.substr(eq + 1)});
+				continue;
+			}
+			else if (CHECK_ARG("--settings-churn") && (i + 2) < argc)
+			{
+				const std::string_view n = StringUtil::StripWhitespace(argv[++i]);
+				s_churn_kind = StringUtil::StripWhitespace(argv[++i]);
+				const std::optional<u32> every = StringUtil::FromChars<u32>(n, 10);
+				if (!every.has_value() || every.value() == 0 || (s_churn_kind != "lockstep" && s_churn_kind != "threaded" && s_churn_kind != "lag"))
+				{
+					Console.Error("--settings-churn expects N (frames) and a kind: lockstep, threaded or lag.");
+					return false;
+				}
+				s_churn_every = every.value();
+				continue;
+			}
+			else if (CHECK_ARG("--change-disc") && (i + 2) < argc)
+			{
+				const std::optional<u32> at = StringUtil::FromChars<u32>(StringUtil::StripWhitespace(argv[++i]), 10);
+				if (!at.has_value() || at.value() == 0)
+				{
+					Console.Error("--change-disc expects a frame number and an image path.");
+					return false;
+				}
+				s_change_disc_at = at.value();
+				s_change_disc_path = StringUtil::StripWhitespace(argv[++i]);
+				continue;
+			}
+			else if (CHECK_ARG("--host-action") && (i + 2) < argc)
+			{
+				const std::optional<u32> at = StringUtil::FromChars<u32>(StringUtil::StripWhitespace(argv[++i]), 10);
+				if (!at.has_value() || at.value() == 0)
+				{
+					Console.Error("--host-action expects a frame number and a hotkey name.");
+					return false;
+				}
+				s_host_actions.push_back({at.value(), std::string(StringUtil::StripWhitespace(argv[++i]))});
+				continue;
+			}
+			else if (CHECK_ARG("--iop-assert-log"))
+			{
+				IopThread::SetViolationHandler(&IopThread::LogViolation);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--iop-stress"))
+			{
+				const auto v = StringUtil::FromChars<u32>(argv[++i]);
+				if (!v.has_value())
+				{
+					Console.Error("--iop-stress expects a seed.");
+					return false;
+				}
+				s_stress = true;
+				s_stress_seed = v.value();
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--pause-toggle"))
+			{
+				const auto v = StringUtil::FromChars<u32>(argv[++i]);
+				if (!v.has_value() || v.value() == 0)
+				{
+					Console.Error("--pause-toggle expects a frame number, 1 or more.");
+					return false;
+				}
+				s_pause_toggle_at = v.value();
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--iop-min-slice"))
+			{
+				const auto v = StringUtil::FromChars<s32>(argv[++i]);
+				if (!v.has_value() || v.value() < 0)
+				{
+					Console.Error("--iop-min-slice expects a number of EE cycles, 0 or more.");
+					return false;
+				}
+				IopThread::SetThreadedMinSlice(v.value());
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--iop-idle-spin-us"))
+			{
+				const auto v = StringUtil::FromChars<u32>(argv[++i]);
+				if (!v.has_value() || v.value() > 4'000'000)
+				{
+					Console.Error("--iop-idle-spin-us expects a number of microseconds, 0 to 4000000.");
+					return false;
+				}
+				IopThread::SetThreadedIdleSpinNs(v.value() * 1000u);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--iop-spin-hint"))
+			{
+				const std::string_view kind = argv[++i];
+				if (kind == "yield")
+					IopThread::g_spin_hint.store(IopThread::SpinHintKind::Yield, std::memory_order_relaxed);
+				else if (kind == "isb")
+					IopThread::g_spin_hint.store(IopThread::SpinHintKind::Isb, std::memory_order_relaxed);
+				else
+				{
+					Console.Error("--iop-spin-hint expects yield or isb.");
+					return false;
+				}
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--iop-stats-every"))
+			{
+				const auto v = StringUtil::FromChars<u32>(argv[++i]);
+				if (!v.has_value())
+				{
+					Console.Error("--iop-stats-every expects a number of frames.");
+					return false;
+				}
+				s_iop_stats_every = v.value();
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--rec-fallback"))
@@ -2909,6 +3159,12 @@ namespace
 		u64 mem;
 		u64 reg;
 		u64 cyc;
+		// IOP-side hashes (ee_divtrace::FingerprintIop); recorded only with
+		// EERUNNER_SYSFULL=1, zero otherwise and in files from before they existed.
+		u64 spu2 = 0;
+		u64 sif = 0;
+		u64 sio = 0;
+		u64 cdvd = 0;
 	};
 
 	struct TwinTrace
@@ -2920,6 +3176,7 @@ namespace
 		int nofp = 0;
 		int vu0full = 0;
 		int sysfull = 0;
+		int iopfp = 0; // the records carry the IOP-side hashes
 		std::vector<TwinRec> i1, i2, j;
 	};
 } // namespace
@@ -2948,6 +3205,63 @@ namespace mvu_test_hooks
 } // namespace mvu_test_hooks
 #endif
 
+// --settings-churn: the settings change a pass applies every N frames. The settings the run began with
+// are remembered and put back at the start of each pass, so every pass sees the same sequence.
+static void ApplyChurnBaseline(bool restore)
+{
+	struct Base
+	{
+		bool lockstep, iop_thread;
+		int lag;
+	};
+	static std::optional<Base> base;
+	if (!base)
+	{
+		base = Base{s_settings_interface.GetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", false),
+			s_settings_interface.GetBoolValue("EmuCore/Speedhacks", "iopThread", false),
+			s_settings_interface.GetIntValue("EmuCore/Speedhacks", "iopThreadLag", 6144)};
+	}
+	if (!restore)
+		return;
+	s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", base->lockstep);
+	s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThread", base->iop_thread);
+	s_settings_interface.SetIntValue("EmuCore/Speedhacks", "iopThreadLag", base->lag);
+	VMManager::ApplySettings();
+}
+
+static u32 s_stress_lag_pick = 0;
+
+static void ApplySettingsChurn()
+{
+	if (s_churn_kind == "lockstep")
+	{
+		const bool on = s_settings_interface.GetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", false);
+		s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThread", !on);
+		s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", !on);
+	}
+	else if (s_churn_kind == "threaded")
+	{
+		const bool on = s_settings_interface.GetBoolValue("EmuCore/Speedhacks", "iopThread", false);
+		s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThread", !on);
+		s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", false);
+		if (s_stress)
+			Console.WriteLn(fmt::format("STRESS: settings change: iopThread {} -> {}", on ? "on" : "off", on ? "off" : "on"));
+	}
+	else if (s_stress && s_churn_kind == "lag-random")
+	{
+		static constexpr int kLags[] = {4096, 6144, 8192, 12288, 24576, 196608};
+		const int lag = kLags[s_stress_lag_pick % (sizeof(kLags) / sizeof(kLags[0]))];
+		s_settings_interface.SetIntValue("EmuCore/Speedhacks", "iopThreadLag", lag);
+		Console.WriteLn(fmt::format("STRESS: settings change: iopThreadLag {}", lag));
+	}
+	else
+	{
+		const int lag = s_settings_interface.GetIntValue("EmuCore/Speedhacks", "iopThreadLag", 6144);
+		s_settings_interface.SetIntValue("EmuCore/Speedhacks", "iopThreadLag", lag == 6144 ? 8192 : 6144);
+	}
+	VMManager::ApplySettings();
+}
+
 // One free-running pass from the start savestate. Optionally dumps raw EE
 // RAM+scratch at --twin-ram-at to <prefix>.f<N>.{interp,jit}.bin (skipped for
 // the i2 control twin).
@@ -2959,6 +3273,11 @@ static bool TwinRunPass(bool jit, const char* cell, std::vector<TwinRec>& out)
 	{
 		Console.ErrorFmt("twin: load failed: {}", error.GetDescription());
 		return false;
+	}
+	if (s_churn_every)
+	{
+		s_churn_pending = false;
+		ApplyChurnBaseline(true);
 	}
 	SetAllCpuMode(jit);
 	out.reserve(s_frames);
@@ -2973,11 +3292,27 @@ static bool TwinRunPass(bool jit, const char* cell, std::vector<TwinRec>& out)
 	{
 		VMManager::FrameAdvance(1);
 		VMManager::Execute();
+		// A settings change applied during the frame resets the recompilers and leaves the execution
+		// loop early, as it does for a player; carry on until the frame ends.
+		while (s_churn_every && VMManager::GetState() == VMState::Running)
+			VMManager::Execute();
 		TwinRec r;
 		r.mem = ee_divtrace::HashMemory();
 		r.reg = ee_divtrace::FingerprintCpu();
 		r.cyc = cpuRegs.cycle;
+#ifdef PCSX2_RECOMPILER_TESTS
+		if (ee_divtrace::g_sys_full)
+		{
+			const ee_divtrace::IopFingerprint io = ee_divtrace::FingerprintIop();
+			r.spu2 = io.spu2;
+			r.sif = io.sif;
+			r.sio = io.sio;
+			r.cdvd = io.cdvd;
+		}
+#endif
 		out.push_back(r);
+		if (s_churn_every && ((f + 1) % s_churn_every) == 0)
+			s_churn_pending = true; // applied at the next frame's vsync, inside the event test
 		if (s_twin_ram_at >= 0 && f == static_cast<uint32_t>(s_twin_ram_at) &&
 			std::strcmp(cell, "i2") != 0 && !s_twin_prefix.empty())
 		{
@@ -3014,6 +3349,9 @@ static bool TwinRunAll(TwinTrace& t)
 	t.nofp = ee_divtrace::g_fp_exclude ? 1 : 0;
 	t.vu0full = ee_divtrace::g_vu0_full ? 1 : 0;
 	t.sysfull = ee_divtrace::g_sys_full ? 1 : 0;
+#ifdef PCSX2_RECOMPILER_TESTS
+	t.iopfp = ee_divtrace::g_sys_full ? 1 : 0;
+#endif
 	return TwinRunPass(false, "i1", t.i1) &&
 		   TwinRunPass(false, "i2", t.i2) &&
 		   TwinRunPass(true, "j", t.j);
@@ -3028,12 +3366,18 @@ static bool WriteTwinTrace(const TwinTrace& t, const std::string& path)
 		return false;
 	}
 	f << "# twindiff trace v1\n";
-	f << fmt::format("meta label={} serial={} frames={} vu0fp={} nofp={} vu0full={} sysfull={} savestate={}\n",
-		t.label, t.serial.empty() ? "?" : t.serial, t.frames, t.vu0fp, t.nofp, t.vu0full, t.sysfull,
+	f << fmt::format("meta label={} serial={} frames={} vu0fp={} nofp={} vu0full={} sysfull={} iopfp={} savestate={}\n",
+		t.label, t.serial.empty() ? "?" : t.serial, t.frames, t.vu0fp, t.nofp, t.vu0full, t.sysfull, t.iopfp,
 		Path::GetFileName(s_savestate_path));
-	const auto cell = [&f](const char* name, const std::vector<TwinRec>& v) {
+	// With iopfp the line carries four more hashes after the cycle: spu2 sif sio cdvd.
+	const auto cell = [&f, &t](const char* name, const std::vector<TwinRec>& v) {
 		for (size_t i = 0; i < v.size(); ++i)
-			f << fmt::format("rec {} {} {:016x} {:016x} {}\n", i, name, v[i].mem, v[i].reg, v[i].cyc);
+		{
+			f << fmt::format("rec {} {} {:016x} {:016x} {}", i, name, v[i].mem, v[i].reg, v[i].cyc);
+			if (t.iopfp)
+				f << fmt::format(" {:016x} {:016x} {:016x} {:016x}", v[i].spu2, v[i].sif, v[i].sio, v[i].cdvd);
+			f << '\n';
+		}
 	};
 	cell("i1", t.i1);
 	cell("i2", t.i2);
@@ -3081,6 +3425,8 @@ static bool LoadTwinTrace(TwinTrace& t, const std::string& path)
 					t.vu0full = (v == "1");
 				else if (k == "sysfull")
 					t.sysfull = (v == "1");
+				else if (k == "iopfp")
+					t.iopfp = (v == "1");
 			}
 		}
 		else if (tok == "rec")
@@ -3098,6 +3444,20 @@ static bool LoadTwinTrace(TwinTrace& t, const std::string& path)
 			r.mem = std::strtoull(memh.c_str(), nullptr, 16);
 			r.reg = std::strtoull(regh.c_str(), nullptr, 16);
 			r.cyc = cyc;
+			if (t.iopfp)
+			{
+				std::string spu2h, sifh, sioh, cdvdh;
+				ss >> spu2h >> sifh >> sioh >> cdvdh;
+				if (ss.fail())
+				{
+					Console.ErrorFmt("twin: malformed iop fields in {}: '{}'", path, line);
+					return false;
+				}
+				r.spu2 = std::strtoull(spu2h.c_str(), nullptr, 16);
+				r.sif = std::strtoull(sifh.c_str(), nullptr, 16);
+				r.sio = std::strtoull(sioh.c_str(), nullptr, 16);
+				r.cdvd = std::strtoull(cdvdh.c_str(), nullptr, 16);
+			}
 			auto& v = (cell == "i1") ? t.i1 : (cell == "i2") ? t.i2 : t.j;
 			if (idx != v.size())
 			{
@@ -3119,6 +3479,18 @@ static int TwinFirstDiff(const std::vector<TwinRec>& a, const std::vector<TwinRe
 	for (size_t f = 0; f < n; ++f)
 	{
 		if (reg ? (a[f].reg != b[f].reg) : (a[f].mem != b[f].mem))
+			return static_cast<int>(f);
+	}
+	return -1;
+}
+
+// First frame where any IOP-side hash (spu2 sif sio cdvd) differs; -1 = none.
+static int TwinFirstIopDiff(const std::vector<TwinRec>& a, const std::vector<TwinRec>& b)
+{
+	const size_t n = std::min(a.size(), b.size());
+	for (size_t f = 0; f < n; ++f)
+	{
+		if (a[f].spu2 != b[f].spu2 || a[f].sif != b[f].sif || a[f].sio != b[f].sio || a[f].cdvd != b[f].cdvd)
 			return static_cast<int>(f);
 	}
 	return -1;
@@ -3231,6 +3603,10 @@ static int RunTwinCompare()
 		drift[p] = TwinMaxCycDrift(*pairs[p].a, *pairs[p].b, &drift_at[p]);
 		Console.WriteLn(fmt::format("  {}  {}: first mem-div frame {}, first regfp-div frame {} (advisory), max |cycle drift| {:+d} @ frame {}.",
 			pairs[p].tag, pairs[p].desc, first_mem[p], first_reg[p], drift[p], drift_at[p]));
+		// The IOP-side hashes (spu2 sif sio cdvd) are advisory too; they only exist in files taken with EERUNNER_SYSFULL=1.
+		if (other.iopfp && local.iopfp)
+			Console.WriteLn(fmt::format("      first iop-state-div frame {} (spu2/sif/sio/cdvd, advisory).",
+				TwinFirstIopDiff(*pairs[p].a, *pairs[p].b)));
 	}
 
 	// XI is real only while BOTH trees' own determinism floors are still clean.
@@ -4142,6 +4518,7 @@ static int RunStateReport()
 }
 
 static std::atomic<uint32_t> s_liverun_frame{0};
+static u32 s_liverun_first_frame = 0; // g_FrameCount when the liverun's frames began, for per-frame figures
 static std::atomic<bool>     s_liverun_done{false};
 
 // Step-0 wedge classifier: snapshot the EE event/interrupt scheduler state. The
@@ -4271,6 +4648,139 @@ static void ReportThreadPerfCounters()
 }
 #endif
 
+#ifdef __linux__
+// The voluntary and involuntary context switches of the thread named `comm` (/proc/self/task/<tid>/status). A thread that
+// goes to sleep in the kernel makes a voluntary switch, so for the IOP thread this is the count of real sleeps (its parks
+// are mostly spins, WorkSema spins for SPIN_TIME_NS before it sleeps), and for the CPU thread, which must never sleep on the
+// emulation path, it is what proves it did not.
+static bool ReadContextSwitches(const char* comm, u64* voluntary, u64* involuntary)
+{
+	for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task"))
+	{
+		std::ifstream comm_file(entry.path() / "comm");
+		std::string name;
+		std::getline(comm_file, name);
+		if (name != comm)
+			continue;
+		std::ifstream status(entry.path() / "status");
+		std::string line;
+		bool got = false;
+		while (std::getline(status, line))
+		{
+			if (line.rfind("voluntary_ctxt_switches:", 0) == 0)
+			{
+				*voluntary = std::strtoull(line.c_str() + 24, nullptr, 10);
+				got = true;
+			}
+			else if (line.rfind("nonvoluntary_ctxt_switches:", 0) == 0)
+			{
+				*involuntary = std::strtoull(line.c_str() + 27, nullptr, 10);
+			}
+		}
+		return got;
+	}
+	return false;
+}
+#endif
+
+// --iop-stress: the things a player does between frames, at random (a fixed seed repeats the sequence): turn the IOP thread
+// off and on and change its lag bound from inside the event test, save the state and load it, pause for a while (the IOP is
+// held and goes to sleep), reset the VM, press a hotkey. The IOP-thread design's section 11 lists these as the lifecycle
+// paths the deadlock analysis has to hold for.
+static struct StressCounts
+{
+	u32 switches = 0, lags = 0, saves = 0, loads = 0, load_failures = 0, pauses = 0, resets = 0, hotkeys = 0;
+} s_stress_counts;
+
+// --pause-toggle: the settings change a player makes on a paused VM. Between two frames of a liverun the VM is Paused, so the
+// change goes through VMManager::ApplySettings() in that state (the pause hold is live), unlike --settings-churn, which delivers it
+// from the message pump inside the EE's event test.
+static void PauseToggle(u32 frame)
+{
+	const auto describe = [] {
+		const char* const names[] = {"Off", "Lockstep", "Threaded"};
+		return fmt::format("mode={} thread={} state={}", names[static_cast<int>(IopThread::GetMode())],
+			IopThread::g_thread.IsRunning() ? "running" : "none", static_cast<int>(VMManager::GetState()));
+	};
+	const std::string before = describe();
+	s_churn_kind = "threaded";
+	ApplySettingsChurn();
+	Console.WriteLn(fmt::format("PAUSE-TOGGLE@{}: [{}] -> [{}] {}", frame, before, describe(), VMManager::Internal::GetThreadPlacementDebug()));
+}
+
+static void StressStep(u32 frame)
+{
+	static u32 rng = 0;
+	static bool saved = false;
+	if (rng == 0)
+	{
+		rng = s_stress_seed * 2654435761u + 12345u;
+		if (rng == 0)
+			rng = 1;
+	}
+	const auto next = [] {
+		rng ^= rng << 13;
+		rng ^= rng >> 17;
+		rng ^= rng << 5;
+		return rng;
+	};
+	const std::string path = EmuFolders::DataRoot + "/iop-stress.p2s";
+	const u32 r = next() % 1000;
+	if (r < 20)
+	{
+		s_churn_kind = "threaded";
+		s_churn_pending = true; // applied at the next vsync, inside the event test, as a settings dialog would
+		s_stress_counts.switches++;
+	}
+	else if (r < 35)
+	{
+		s_churn_kind = "lag-random";
+		s_stress_lag_pick = next();
+		s_churn_pending = true;
+		s_stress_counts.lags++;
+	}
+	else if (r < 39)
+	{
+		bool ok = true;
+		VMManager::SaveState(path.c_str(), /*zip_on_thread=*/false, /*backup_old_state=*/false, [&](const std::string& e) {
+			ok = false;
+			Console.ErrorFmt("STRESS: save failed: {}", e);
+		});
+		VMManager::WaitForSaveStateFlush();
+		saved = saved || ok;
+		s_stress_counts.saves++;
+		Console.WriteLn(fmt::format("STRESS: frame {} saved a state: {} (IOP thread mode {})", frame, ok ? "ok" : "FAILED", static_cast<int>(IopThread::GetMode())));
+	}
+	else if (r < 43 && saved)
+	{
+		Error error;
+		const bool ok = VMManager::LoadState(path.c_str(), &error);
+		s_stress_counts.loads++;
+		if (!ok)
+			s_stress_counts.load_failures++;
+		Console.WriteLn(fmt::format("STRESS: frame {} loaded the state: {}{}", frame, ok ? "ok" : "FAILED ", ok ? "" : error.GetDescription()));
+	}
+	else if (r < 58)
+	{
+		const u32 ms = next() % 40;
+		Console.WriteLn(fmt::format("STRESS: frame {} paused for {} ms", frame, ms));
+		std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+		s_stress_counts.pauses++;
+	}
+	else if (r < 60)
+	{
+		Console.WriteLn(fmt::format("STRESS: frame {} reset the VM", frame));
+		VMManager::Reset();
+		s_stress_counts.resets++;
+	}
+	else if (r < 75)
+	{
+		static constexpr const char* kKeys[] = {"Mute", "IncreaseVolume", "DecreaseVolume", "ToggleSlowMotion", "ToggleTurbo"};
+		s_host_actions_pending.push_back(kKeys[next() % (sizeof(kKeys) / sizeof(kKeys[0]))]);
+		s_stress_counts.hotkeys++;
+	}
+}
+
 static int RunLiveRun()
 {
 	Error error;
@@ -4283,6 +4793,7 @@ static int RunLiveRun()
 #ifdef __linux__
 	StartThreadPerfCounters();
 #endif
+	s_liverun_first_frame = g_FrameCount;
 
 	Console.WriteLn(fmt::format(
 		"LIVERUN: EE={}, VU0={}, VU1={}, MTVU={}, real GS — running up to {} frames (10s no-progress watchdog)...",
@@ -4401,6 +4912,14 @@ static int RunLiveRun()
 	{
 		VMManager::FrameAdvance(1);
 		VMManager::Execute(); // blocks for one frame; if the EE wedges, never returns
+		// A settings change delivered inside the frame (--settings-churn, --iop-stress) resets the recompilers and leaves the
+		// execution loop early, as it does for a player; carry on until the frame ends.
+		while ((s_churn_every || s_stress) && VMManager::GetState() == VMState::Running)
+			VMManager::Execute();
+		if (s_churn_every && ((f + 1) % s_churn_every) == 0)
+			s_churn_pending = true;
+		if (s_stress)
+			StressStep(f + 1);
 		s_liverun_frame.store(f + 1, std::memory_order_relaxed);
 #if defined(ARCH_ARM64) && defined(PCSX2_RECOMPILER_TESTS)
 		if (s_vuaot_trip_at && (f + 1) == s_vuaot_trip_at)
@@ -4418,6 +4937,26 @@ static int RunLiveRun()
 				Console.ErrorFmt("LIVERUN: the reload failed: {}", error.GetDescription());
 				return 1;
 			}
+		}
+
+		// Where the threads sit, once the scene has settled: the placement the VM chose (the affinity masks) and the core
+		// each thread last ran on. The IOP thread is in it while it runs.
+		if ((f + 1) == 100)
+			Console.WriteLn(fmt::format("PLACEMENT@{}: {}", f + 1, VMManager::Internal::GetThreadPlacementDebug()));
+		if (s_pause_toggle_at && (f + 1) == s_pause_toggle_at)
+			PauseToggle(f + 1);
+		if (s_iop_stats_every && ((f + 1) % s_iop_stats_every) == 0)
+		{
+			const std::string line = IopThread::OsdStatsLine();
+			if (!line.empty())
+				Console.WriteLn(fmt::format("IOPSTATS@{}: {}", f + 1, line));
+		}
+		if (s_change_disc_at && (f + 1) == s_change_disc_at)
+			s_change_disc_pending = true;
+		for (const HostAction& action : s_host_actions)
+		{
+			if (action.frame == f + 1)
+				s_host_actions_pending.push_back(action.hotkey);
 		}
 
 		// Arm the GS dump once the scene has settled. Recording stops on its own
@@ -4666,6 +5205,56 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 
 				default:
 					break;
+			}
+
+			if (s_mode == RunMode::LiveRun)
+				Console.WriteLn(fmt::format("PLACEMENT-END: {}", VMManager::Internal::GetThreadPlacementDebug()));
+			// What the IOP thread did over the run, for the Lockstep cost record (all zero in Off).
+			{
+				const IopThread::Stats st = IopThread::GetStats();
+				const char* const mode_names[] = {"Off", "Lockstep", "Threaded"};
+				Console.WriteLn(fmt::format("IOPTHREAD: mode={} handoffs={} parks={} wakes_sent={} slices={} items={} violations={} holds={}",
+					mode_names[static_cast<int>(IopThread::GetMode())], st.handoffs, st.parks, st.wakes_sent, st.slices,
+					st.items_applied, IopThread::ViolationCount(), st.hold_requests + st.hold_markers));
+				if (s_mode == RunMode::LiveRun && s_stress)
+				{
+					Console.WriteLn(fmt::format("STRESS-SUMMARY: seed={} iop_thread_switches={} lag_changes={} saves={} loads={} (failed {}) pauses={} resets={} hotkeys={}",
+						s_stress_seed, s_stress_counts.switches, s_stress_counts.lags, s_stress_counts.saves, s_stress_counts.loads,
+						s_stress_counts.load_failures, s_stress_counts.pauses, s_stress_counts.resets, s_stress_counts.hotkeys));
+				}
+				if (s_mode == RunMode::LiveRun)
+				{
+					// What the EE and the IOP did per frame, in every mode, for the "sane against Off" check of the Threaded runs: EE event
+					// tests, and IOP slices (Off and Lockstep count them on the EE side; Threaded is the thread's own count).
+					const double frames = static_cast<double>(g_FrameCount - s_liverun_first_frame);
+					const u64 slices = IopThread::GetMode() == IopThreadMode::Threaded ? st.slices : g_twinIopSlices;
+					Console.WriteLn(fmt::format("COUNTS: mode={} frames={} ee_event_tests={} ({:.0f}/frame) iop_slices={} ({:.0f}/frame)",
+						mode_names[static_cast<int>(IopThread::GetMode())], static_cast<u32>(frames), g_twinEeEventTests, g_twinEeEventTests / std::max(frames, 1.0),
+						slices, slices / std::max(frames, 1.0)));
+				}
+				if (IopThread::GetMode() == IopThreadMode::Threaded && s_mode == RunMode::LiveRun)
+				{
+					const double frames = static_cast<double>(g_FrameCount - s_liverun_first_frame);
+					Console.WriteLn(fmt::format("IOPSTATS: frames={} {}", static_cast<u32>(frames), IopThread::FormatStats(st, frames)));
+					Console.WriteLn(fmt::format(
+						"IOPSTATS-RAW: lag_spins={} lag_spin_iterations={} lag_stall_ns={} lag_spins_parked={} lag_parked_stall_ns={} emu_hold_requests={} emu_hold_stall_ns={} "
+						"hold_requests={} hold_markers={} sif_ee_pumps={} calls_posted={} calls_served={} i2e_drained={} slices={} items_applied={} parks={} wakes_sent={} wakes_dropped={} "
+						"holds_entered={} kicks_applied={} i2e_full_waits={} e2i_full_spins={} hold_sleeps={} lag_spins_idle={} lag_idle_stall_ns={} idle_waits={} idle_ns={} "
+						"sleep_barrier_membarrier={}",
+						st.lag_spins, st.lag_spin_iterations, st.lag_stall_ns, st.lag_spins_parked, st.lag_parked_stall_ns, st.emu_hold_requests, st.emu_hold_stall_ns,
+						st.hold_requests, st.hold_markers, st.sif_ee_pumps, st.calls_posted, st.calls_served, st.i2e_drained, st.slices, st.items_applied, st.parks, st.wakes_sent,
+						st.wakes_dropped, st.holds_entered, st.kicks_applied, st.i2e_full_waits, st.e2i_full_spins, st.hold_sleeps, st.lag_spins_idle, st.lag_idle_stall_ns,
+						st.idle_waits, st.idle_ns, st.sleep_barrier_membarrier));
+#ifdef __linux__
+					u64 iop_vol = 0, iop_invol = 0, ee_vol = 0, ee_invol = 0;
+					const bool have_iop = ReadContextSwitches("IOP", &iop_vol, &iop_invol);
+					const bool have_ee = ReadContextSwitches("CPU Thread", &ee_vol, &ee_invol);
+					if (have_iop && have_ee)
+						Console.WriteLn(fmt::format("IOPSTATS-CTXT: iop_thread_sleeps={} iop_thread_preemptions={} ee_thread_sleeps={} ee_thread_preemptions={} "
+													"(whole process; the EE thread's sleeps include the savestate load and the frame-by-frame pause)",
+							iop_vol, iop_invol, ee_vol, ee_invol));
+#endif
+				}
 			}
 
 			VMManager::Shutdown(false);
