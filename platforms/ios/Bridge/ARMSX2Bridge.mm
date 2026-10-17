@@ -642,15 +642,6 @@ static BOOL ARMSX2StartExternalGameDirectoryAccessForPathSafe(NSString* path)
 	}
 }
 
-extern "C" bool ARMSX2_StartExternalGameDirectoryAccess(const char* path)
-{
-	if (!path || path[0] == '\0')
-		return false;
-
-	NSString* nsPath = [NSString stringWithUTF8String:path];
-	return ARMSX2StartExternalGameDirectoryAccessForPathSafe(nsPath) ? true : false;
-}
-
 static BOOL ARMSX2IsSupportedGameImageAtPath(NSString* path)
 {
 	NSString* ext = path.pathExtension.lowercaseString;
@@ -2402,15 +2393,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     ARMSX2_PrepareGameRenderViewForCurrentRenderer("swift_preboot");
 }
 
-+ (void)saveAllState {
-    cdvdSaveNVRAM();
-    s_lastNVMSaveDate = [NSDate date];
-    Host::RunOnCPUThread([]() {
-        const bool flushed = ARMSX2FlushNVRAMAndMemoryCards("manual-save-all-state");
-        NSLog(@"[ARMSX2Bridge] Memory card save requested result=%d", flushed ? 1 : 0);
-    }, false);
-}
-
 + (void)setPadButton:(ARMSX2PadButton)button pressed:(BOOL)pressed {
     auto* pad = static_cast<PadDualshock2*>(Pad::GetPad(0, 0));
     if (!pad) return;
@@ -3699,17 +3681,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     });
 }
 
-+ (BOOL)isPerformanceOverlayVisible {
-    // Read the INI, not GSConfig: the setter writes the INI now and hands the
-    // config update to the CPU thread, so GSConfig lags a toggle by a hop and a
-    // UI read-back would bounce the switch.
-    if (g_p44_settings_interface) {
-        return g_p44_settings_interface->GetIntValue("EmuCore/GS", "OsdPerformancePos",
-            static_cast<int>(OsdOverlayPos::None)) != static_cast<int>(OsdOverlayPos::None);
-    }
-    return EmuConfig.GS.OsdPerformancePos != OsdOverlayPos::None;
-}
-
 + (nonnull NSDictionary<NSString *, id> *)deviceStatsForAccessibility {
     int battery = -1, severity = 0;
     double ramGB = 0.0;
@@ -4616,57 +4587,6 @@ static void ARMSX2MutatePerGameINI(NSString* isoName, NSString* section, NSStrin
         return static_cast<int>(LimiterModeType::Nominal);
 
     return static_cast<int>(VMManager::GetLimiterMode());
-}
-
-+ (void)setLimiterMode:(int)mode
-{
-    const bool hasValidVM = VMManager::HasValidVM();
-    std::fprintf(stderr, "@@LIMITER_MODE_REQUEST@@ mode=%d valid=%d state=%d\n",
-        mode, hasValidVM ? 1 : 0, static_cast<int>(VMManager::GetState()));
-    std::fflush(stderr);
-
-    if (!hasValidVM)
-        return;
-
-    LimiterModeType limiterMode = LimiterModeType::Nominal;
-    switch (mode) {
-    case static_cast<int>(LimiterModeType::Turbo):
-        limiterMode = LimiterModeType::Turbo;
-        break;
-    case static_cast<int>(LimiterModeType::Slomo):
-        limiterMode = LimiterModeType::Slomo;
-        break;
-    case static_cast<int>(LimiterModeType::Unlimited):
-        limiterMode = LimiterModeType::Unlimited;
-        break;
-    default:
-        break;
-    }
-
-    if (ARMSX2RetroAchievementsHardcoreActive() && limiterMode == LimiterModeType::Slomo) {
-        ARMSX2LogRetroAchievementsHardcoreBlock("slomo_limiter_mode");
-        limiterMode = LimiterModeType::Nominal;
-    }
-
-    Host::RunOnCPUThread([limiterMode]() {
-        if (!VMManager::HasValidVM())
-            return;
-
-        const LimiterModeType previousMode = VMManager::GetLimiterMode();
-        VMManager::SetLimiterMode(limiterMode);
-        const LimiterModeType appliedMode = VMManager::GetLimiterMode();
-        // Update cap suspension after the VM mode changes on the same CPU-thread
-        // task. This avoids a settings reload racing Turbo and restoring a cap
-        // using the previous limiter mode.
-        GSSetPresentCapSuspended(
-            appliedMode == LimiterModeType::Turbo && GSGetMaxPresentInterval() != 0);
-        std::fprintf(stderr,
-            "@@LIMITER_MODE@@ before=%d after=%d target=%.3f nominal=%.3f turbo=%.3f slomo=%.3f\n",
-            static_cast<int>(previousMode), static_cast<int>(appliedMode), VMManager::GetTargetSpeed(),
-            EmuConfig.EmulationSpeed.NominalScalar, EmuConfig.EmulationSpeed.TurboScalar,
-            EmuConfig.EmulationSpeed.SlomoScalar);
-        std::fflush(stderr);
-    }, false);
 }
 
 + (void)setRuntimeFastForwardEnabled:(BOOL)enabled speedPercent:(int)percent

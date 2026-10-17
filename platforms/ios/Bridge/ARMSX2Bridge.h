@@ -4,21 +4,6 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
-typedef NS_ENUM(NSInteger, ARMSX2EmulatorState) {
-    ARMSX2EmulatorStateStopped = 0,
-    ARMSX2EmulatorStateRunning,
-    ARMSX2EmulatorStatePaused,
-    ARMSX2EmulatorStateSaving,
-    ARMSX2EmulatorStateSuspended,
-};
-
-typedef NS_ENUM(NSInteger, ARMSX2CoreType) {
-    ARMSX2CoreTypeLegacyRecompiler = 0,
-    ARMSX2CoreTypeInterpreter = 1,
-    ARMSX2CoreTypeARM64JIT = 2,
-    ARMSX2CoreTypeJIT = ARMSX2CoreTypeARM64JIT,
-};
-
 typedef NS_ENUM(NSInteger, ARMSX2PadButton) {
     ARMSX2PadButtonUp = 0,
     ARMSX2PadButtonDown,
@@ -72,9 +57,6 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // Game render view (for UIViewRepresentable)
 + (nonnull UIView *)gameRenderView;
 + (void)prepareGameRenderViewForCurrentRenderer;
-
-// Lifecycle
-+ (void)saveAllState;  // NVM + MC
 
 // Pad input
 + (void)setPadButton:(ARMSX2PadButton)button pressed:(BOOL)pressed;
@@ -136,7 +118,6 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 
 // OSD overlay
 + (void)setPerformanceOverlayVisible:(BOOL)visible;
-+ (BOOL)isPerformanceOverlayVisible;
 + (void)applyOsdPreset:(int)preset;  // 0=off, 1=simple, 2=detail, 3=full
 
 // Permanently releases the selected optional runtime resources for the current VM session.
@@ -211,17 +192,12 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (nonnull NSDictionary<NSString *, id> *)graphicsHackState;
 + (void)setGraphicsHackPinned:(nonnull NSString *)iniKey pinned:(BOOL)pinned NS_SWIFT_NAME(setGraphicsHackPinned(_:pinned:));
 
-// Frame-time history (read-only). frameTimeHistory wraps
-// PerformanceMetrics::GetFrameTimeHistory() (a thread-safe read of the
-// 150-sample ring buffer) and frameTimeHistoryPos returns its current write
-// cursor. Used by the adaptive-resolution controller to read the freshest
-// samples before the cursor.
+// A thread-safe copy of PerformanceMetrics' 150-sample frame-time ring and its write
+// cursor, for the adaptive-resolution controller.
 + (nonnull NSData *)frameTimeHistory;
 + (NSUInteger)frameTimeHistoryPos;
 
-// MetalFX Spatial upscaler availability probe. Returns YES only on iOS 16+ with
-// a device GPU that reports MetalFX support (NO on the simulator and unsupported
-// hardware). Used by the settings UI to hide the Upscaler option where unusable.
+// YES only on iOS 16+ with a GPU that supports the MetalFX spatial scaler; NO on the simulator.
 + (BOOL)isMetalFXSupported;
 
 // A .slangp preset's parameters as a JSON array of {name, description, initial, minimum,
@@ -257,15 +233,12 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (BOOL)hasPerGameINIValueForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key NS_SWIFT_NAME(hasPerGameINIValueForCurrentGame(_:key:));
 + (BOOL)getPerGameINIBoolForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(BOOL)def NS_SWIFT_NAME(getPerGameINIBoolForCurrentGame(_:key:defaultValue:));
 
-// Identity the accessors above key on, or "" when there isn't one. The current-game
-// variant only reads VM state; the ISO variant opens the disc image, so keep it
-// off render paths. Pass nil for isoName to target the running game.
+// Identity the accessors above key on for the running game, or "" when there isn't
+// one. Reads VM state only.
 + (nonnull NSString *)perGameIdentityKeyForCurrentGame;
-+ (nonnull NSString *)perGameIdentityKeyForISO:(nullable NSString *)isoName NS_SWIFT_NAME(perGameIdentityKey(forISO:));
 
 // Runtime speed control
 + (int)limiterMode;
-+ (void)setLimiterMode:(int)mode;
 + (void)setRuntimeFastForwardEnabled:(BOOL)enabled speedPercent:(int)percent
     NS_SWIFT_NAME(setRuntimeFastForward(enabled:speedPercent:));
 + (void)setRuntimeEmulationSpeedPercent:(int)percent

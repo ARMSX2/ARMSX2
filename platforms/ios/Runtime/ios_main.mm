@@ -988,7 +988,6 @@ void ARMSX2DiscardCPUThreadTasks()
     }
 }
 
-extern "C" bool ARMSX2_StartExternalGameDirectoryAccess(const char* path);
 extern "C" void ARMSX2_PostRuntimeMenuStateChanged(void)
 {
     dispatch_async(dispatch_get_main_queue(), ^{
